@@ -50,7 +50,31 @@ void DictationBrowserTestBase::SetUpOnMainThread() {
   ASSERT_TRUE(embedded_test_server()->Start());
   profile()->GetPrefs()->SetBoolean(prefs::kPrefDictationOnboardingCompleted,
                                     true);
+  // Suppress the "Reviewing page" status that is otherwise shown at the start
+  // of a session. While visible, it hides the bubble's toggle button and
+  // compacts the waveform until a timer expires, which would make tests that
+  // interact with the bubble timing-dependent. Tests covering this status
+  // re-enable it explicitly.
+  if (auto* service = DictationKeyedService::Get(profile())) {
+    service->SetReviewingPageStatusEnabledForTesting(false);
+    fake_global_listener_ =
+        std::make_unique<ScopedFakeGlobalAcceleratorListener>(*service);
+    // Onboarding is marked complete after the service is created, so hotkeys
+    // must be re-evaluated for the hotkey manager to exist.
+    service->DidInstallConnector();
+  }
   LoadTestExtensionInManualMode(profile());
+}
+
+void DictationBrowserTestBase::TearDownOnMainThread() {
+  fake_global_listener_.reset();
+  PlatformBrowserTest::TearDownOnMainThread();
+}
+
+FakeGlobalAcceleratorListener&
+DictationBrowserTestBase::fake_global_listener() {
+  CHECK(fake_global_listener_);
+  return fake_global_listener_->listener();
 }
 
 Profile* DictationBrowserTestBase::profile() {

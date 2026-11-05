@@ -8,14 +8,12 @@
 #include <memory>
 #include <string>
 
-#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "build/buildflag.h"
 #include "media/base/decoder_factory.h"
 #include "media/base/decoder_status.h"
-#include "media/base/media_switches.h"
 #include "media/base/media_util.h"
 #include "media/base/video_decoder_config.h"
 #include "media/mojo/buildflags.h"
@@ -35,8 +33,6 @@
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_mojo.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "ui/gfx/color_space.h"
@@ -137,9 +133,7 @@ class MediaVideoTaskWrapper {
     // automatic call to Initialize() after Flush() destroys the codec;
     // invalidating any unrendered output buffers.
     // See https://crbug.com/474398415
-    if (decoder_ && !decoder_factory_needs_update_ &&
-        base::FeatureList::IsEnabled(
-            media::kWebCodecsDecoderFlushOptimizations)) {
+    if (decoder_ && !decoder_factory_needs_update_) {
       selector_->PrependDecoder(std::move(decoder_));
     }
 

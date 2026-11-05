@@ -64,6 +64,8 @@
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/timer.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 
 namespace network {
@@ -145,10 +147,6 @@ class PLATFORM_EXPORT ResourceFetcher
   const DetachableResourceFetcherProperties& GetProperties() const {
     return *properties_;
   }
-
-  // Returns true if optimizations for loading 1x1 transparent placeholder
-  // images is enabled.
-  bool IsSimplifyLoadingTransparentPlaceholderImageEnabled();
 
   // Returns whether this fetcher is detached from the associated context.
   bool IsDetached() const;
@@ -334,8 +332,6 @@ class PLATFORM_EXPORT ResourceFetcher
   std::optional<base::UnguessableToken> GetSubresourceBundleToken(
       const KURL& url) const;
 
-  std::optional<KURL> GetSubresourceBundleSourceUrl(const KURL& url) const;
-
   enum IsImageSet { kImageNotImageSet, kImageIsImageSet };
 
   [[nodiscard]] static mojom::blink::RequestContextType DetermineRequestContext(
@@ -351,6 +347,14 @@ class PLATFORM_EXPORT ResourceFetcher
   bool ContainsAsPreload(Resource*) const;
 
   void RemovePreload(Resource*);
+
+  // Called when a CSS font face is resolved from a local font source (via
+  // src: local()). Deduplicates loads per document by font name and updates
+  // SubresourceLoadMetrics.
+  void DidLoadResourceFromFontCache(const AtomicString& font_name);
+  const SubresourceLoadMetrics& GetSubresourceLoadMetricsForTesting() const {
+    return subresource_load_metrics_;
+  }
 
   void LoosenLoadThrottlingPolicy() { scheduler_->LoosenThrottlingPolicy(); }
 
@@ -613,11 +617,7 @@ class PLATFORM_EXPORT ResourceFetcher
   void WarnUnusedPreloads(
       base::OnceCallback<void(Vector<KURL> unused_preloads)> callback);
 
-  void RemoveResourceStrongReference(Resource* resource);
-
   KURL PrepareRequestForWebBundle(ResourceRequest& resource_request) const;
-
-  void AttachWebBundleTokenIfNeeded(ResourceRequest&) const;
 
   // Information about a resource fetch that had started but not completed yet.
   // Would be added to the response data when the response arrives.
@@ -755,6 +755,7 @@ class PLATFORM_EXPORT ResourceFetcher
   std::unique_ptr<ukm::MojoUkmRecorder> ukm_recorder_;
 
   SubresourceLoadMetrics subresource_load_metrics_;
+  HashSet<AtomicString> loaded_local_fonts_;
 
   // Number of images that have had their priority boosted by heuristics.
   uint32_t boosted_image_count_ = 0;

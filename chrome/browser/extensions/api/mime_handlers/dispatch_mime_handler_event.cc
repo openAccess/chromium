@@ -37,12 +37,13 @@ void SendExecuteMimeTypeHandlerEvent(
     const std::string& stream_id,
     bool embedded,
     content::FrameTreeNodeId frame_tree_node_id,
+    int64_t navigation_id,
     blink::mojom::TransferrableURLLoaderPtr transferrable_loader,
     const GURL& original_url,
     const std::string& internal_id,
     const std::string& mime_type,
     scoped_refptr<MimeHandlerBodyCache> body_cache) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   content::WebContents* web_contents =
       content::WebContents::FromFrameTreeNodeId(frame_tree_node_id);
@@ -97,9 +98,9 @@ void SendExecuteMimeTypeHandlerEvent(
     extensions::mime_handler::MimeHandlerStreamManager::Create(web_contents);
     extensions::mime_handler::MimeHandlerStreamManager::FromWebContents(
         web_contents)
-        ->AddStreamContainer(frame_tree_node_id, internal_id,
-                             std::move(stream_container),
-                             std::make_unique<pdf::PdfHandlerStreamDelegate>());
+        ->AddStreamContainer(
+            frame_tree_node_id, internal_id, std::move(stream_container),
+            std::make_unique<pdf::PdfHandlerStreamDelegate>(), navigation_id);
     return;
   }
 #endif  // BUILDFLAG(ENABLE_PDF)
@@ -113,7 +114,8 @@ void SendExecuteMimeTypeHandlerEvent(
         ->AddStreamContainer(
             frame_tree_node_id, internal_id, std::move(stream_container),
             std::make_unique<
-                extensions::mime_handler::GenericMimeHandlerStreamDelegate>());
+                extensions::mime_handler::GenericMimeHandlerStreamDelegate>(),
+            navigation_id);
     return;
   }
 

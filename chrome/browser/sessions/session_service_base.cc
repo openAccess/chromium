@@ -37,6 +37,7 @@
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_selection_state.h"
+#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
@@ -52,12 +53,13 @@
 #include "components/sessions/core/session_types.h"
 #include "components/split_tabs/split_tab_id.h"
 #include "components/split_tabs/split_tab_visual_data.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/navigation_entry.h"
-#include "content/public/browser/session_storage_namespace.h"
+#include "content/public/browser/session_storage_namespace_handle.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -174,7 +176,7 @@ SessionServiceBase::SessionServiceBase(Profile* profile,
       TaskRunnerData::GetBackendTaskRunnerForProfile(profile, type));
 
   // We should never be created when incognito.
-  DCHECK(!profile->IsOffTheRecord());
+  CHECK(!profile->IsOffTheRecord(), base::NotFatalUntil::M163);
   if (profile->AllowsBrowserWindows()) {
     browser_collection_observer_.Observe(
         ProfileBrowserCollection::GetForProfile(profile));
@@ -188,7 +190,7 @@ SessionServiceBase::~SessionServiceBase() {
   session_service_base_observers_.Clear();
   // command_storage_manager_->Save() should be called by child classes which
   // should have destructed the command_storage_manager.
-  DCHECK(command_storage_manager_ == nullptr);
+  CHECK(command_storage_manager_ == nullptr, base::NotFatalUntil::M163);
 }
 
 void SessionServiceBase::AddObserver(SessionServiceBaseObserver* observer) {
@@ -286,13 +288,13 @@ void SessionServiceBase::TabInserted(WebContents* contents) {
                          session_tab_helper->session_id(), app_id);
   }
 
-  // Record the association between the SessionStorageNamespace and the
+  // Record the association between the SessionStorageNamespaceHandle and the
   // tab.
   //
   // TODO(ajwong): This should be processing the whole map rather than
   // just the default. This in particular will not work for tabs with only
   // isolated apps which won't have a default partition.
-  content::SessionStorageNamespace* session_storage_namespace =
+  content::SessionStorageNamespaceHandle* session_storage_namespace =
       contents->GetController().GetDefaultSessionStorageNamespace();
   ScheduleCommand(sessions::CreateSessionStorageAssociatedCommand(
       session_tab_helper->session_id(), session_storage_namespace->id()));
@@ -306,13 +308,15 @@ void SessionServiceBase::TabInserted(WebContents* contents) {
 }
 
 void SessionServiceBase::TabClosing(WebContents* contents) {
-  // Allow the associated sessionStorage to get deleted; it won't be needed
-  // in the session restore.
-  content::SessionStorageNamespace* session_storage_namespace =
-      contents->GetController().GetDefaultSessionStorageNamespace();
-  session_storage_namespace->SetShouldPersist(false);
   sessions::SessionTabHelper* session_tab_helper =
       sessions::SessionTabHelper::FromWebContents(contents);
+  if (ShouldDeleteSessionStorageOnTabClosing(session_tab_helper->window_id())) {
+    content::SessionStorageNamespaceHandle* session_storage_namespace =
+        contents->GetController().GetDefaultSessionStorageNamespace();
+    // Allow the associated sessionStorage to get deleted; the tab close is
+    // being committed and it won't be needed in session restore.
+    session_storage_namespace->SetShouldPersist(false);
+  }
   TabClosed(session_tab_helper->window_id(), session_tab_helper->session_id());
 }
 
@@ -371,8 +375,7 @@ void SessionServiceBase::SetLastActiveTime(SessionID window_id,
       sessions::CreateLastActiveTimeCommand(tab_id, last_active_time));
 }
 
-void SessionServiceBase::GetLastSession(
-    sessions::GetLastSessionCallback callback) {
+void SessionServiceBase::GetLastSession(LastSessionCallback callback) {
   // OnGotSessionCommands maps the SessionCommands to browser state, then run
   // the callback.
   return command_storage_manager_->GetLastSessionCommands(
@@ -407,7 +410,8 @@ void SessionServiceBase::OnWillSaveCommands() {
   if (!is_saving_enabled_) {
     // There should be no commands scheduled, otherwise data will be written,
     // potentially clobbering the last file.
-    DCHECK(command_storage_manager_->pending_commands().empty());
+    CHECK(command_storage_manager_->pending_commands().empty(),
+          base::NotFatalUntil::M163);
     return;
   }
 
@@ -479,8 +483,8 @@ void SessionServiceBase::TabNavigationPathPruned(SessionID window_id,
     return;
   }
 
-  DCHECK_GE(index, 0);
-  DCHECK_GT(count, 0);
+  CHECK_GE(index, 0, base::NotFatalUntil::M163);
+  CHECK_GT(count, 0, base::NotFatalUntil::M163);
 
   // Update the range of available indices.
   auto it = tab_to_available_range_.find(tab_id);
@@ -580,23 +584,24 @@ void SessionServiceBase::OnBrowserActivated(BrowserWindowInterface* browser) {
 }
 
 void SessionServiceBase::OnGotSessionCommands(
-    sessions::GetLastSessionCallback callback,
+    LastSessionCallback callback,
     std::vector<std::unique_ptr<sessions::SessionCommand>> commands,
-    bool read_error) {
+    sessions::CommandStorageReadStatus status) {
   std::vector<std::unique_ptr<sessions::SessionWindow>> valid_windows;
   SessionID active_window_id = SessionID::InvalidValue();
   std::string platform_session_id;
   std::set<SessionID> discarded_window_ids;
 
-  sessions::RestoreSessionFromCommands(commands, &valid_windows,
-                                       &active_window_id, &platform_session_id,
-                                       &discarded_window_ids);
+  const sessions::SessionReplayResult replay_result =
+      sessions::RestoreSessionFromCommands(
+          commands, &valid_windows, &active_window_id, &platform_session_id,
+          &discarded_window_ids);
   RemoveUnusedRestoreWindows(&valid_windows);
 
   InitializePlatformSessionIfNeeded(platform_session_id, discarded_window_ids);
 
-  std::move(callback).Run(std::move(valid_windows), active_window_id,
-                          read_error);
+  std::move(callback).Run(std::move(valid_windows), active_window_id, status,
+                          replay_result);
 }
 
 void SessionServiceBase::BuildCommandsForTab(
@@ -607,8 +612,8 @@ void SessionServiceBase::BuildCommandsForTab(
     std::optional<split_tabs::SplitTabId> split,
     bool is_pinned,
     IdToRange* tab_to_available_range) {
-  DCHECK(tab);
-  DCHECK(window_id.is_valid());
+  CHECK(tab, base::NotFatalUntil::M163);
+  CHECK(window_id.is_valid(), base::NotFatalUntil::M163);
 
   // A replay tab is not part of the session (see
   // session_tab_helper_factory.cc).
@@ -653,7 +658,7 @@ void SessionServiceBase::BuildCommandsForTab(
     NavigationEntry* entry = (i == pending_index)
                                  ? tab->GetController().GetPendingEntry()
                                  : tab->GetController().GetEntryAtIndex(i);
-    DCHECK(entry);
+    CHECK(entry, base::NotFatalUntil::M163);
     if (ShouldTrackURLForRestore(entry->GetVirtualURL()) &&
         !entry->IsInitialEntry()) {
       // Don't try to persist initial NavigationEntry, as it is not actually
@@ -681,7 +686,7 @@ void SessionServiceBase::BuildCommandsForTab(
   }
 
   // Record the association between the sessionStorage namespace and the tab.
-  content::SessionStorageNamespace* session_storage_namespace =
+  content::SessionStorageNamespaceHandle* session_storage_namespace =
       tab->GetController().GetDefaultSessionStorageNamespace();
   ScheduleCommand(sessions::CreateSessionStorageAssociatedCommand(
       session_tab_helper->session_id(), session_storage_namespace->id()));
@@ -691,9 +696,9 @@ void SessionServiceBase::BuildCommandsForBrowser(
     BrowserWindowInterface* browser,
     IdToRange* tab_to_available_range,
     std::set<SessionID>* windows_to_track) {
-  DCHECK(is_saving_enabled_);
-  DCHECK(browser);
-  DCHECK(browser->GetSessionID().is_valid());
+  CHECK(is_saving_enabled_, base::NotFatalUntil::M163);
+  CHECK(browser, base::NotFatalUntil::M163);
+  CHECK(browser->GetSessionID().is_valid(), base::NotFatalUntil::M163);
 
   command_storage_manager()->AppendRebuildCommand(
       sessions::CreateSetWindowBoundsCommand(
@@ -781,10 +786,24 @@ void SessionServiceBase::BuildCommandsForBrowser(
     }
   }
 
+  if (const auto* const controller =
+          tabs::VerticalTabStripStateController::From(browser)) {
+    command_storage_manager()->AppendRebuildCommand(
+        sessions::CreateAddWindowExtraDataCommand(
+            browser->GetSessionID(),
+            tabs::VerticalTabStripStateController::kCollapsedKey,
+            base::ToString(controller->IsCollapsed())));
+    command_storage_manager()->AppendRebuildCommand(
+        sessions::CreateAddWindowExtraDataCommand(
+            browser->GetSessionID(),
+            tabs::VerticalTabStripStateController::kUncollapsedWidthKey,
+            base::NumberToString(controller->GetUncollapsedWidth())));
+  }
+
   int index = 0;
   for (const tabs::TabInterface* tab_interface : *tab_strip) {
     WebContents* tab = tab_interface->GetContents();
-    DCHECK(tab);
+    CHECK(tab, base::NotFatalUntil::M163);
     const std::optional<tab_groups::TabGroupId> group_id =
         tab_strip->GetTabGroupForTab(index);
     const std::optional<split_tabs::SplitTabId> split_id =
@@ -802,7 +821,7 @@ void SessionServiceBase::BuildCommandsForBrowser(
 void SessionServiceBase::BuildCommandsFromBrowsers(
     IdToRange* tab_to_available_range,
     std::set<SessionID>* windows_to_track) {
-  DCHECK(is_saving_enabled_);
+  CHECK(is_saving_enabled_, base::NotFatalUntil::M163);
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
       [this, tab_to_available_range,
        windows_to_track](BrowserWindowInterface* browser) {
@@ -826,7 +845,7 @@ void SessionServiceBase::ScheduleCommand(
     return;
   }
 
-  DCHECK(command);
+  CHECK(command, base::NotFatalUntil::M163);
   if (ReplacePendingCommand(command_storage_manager_.get(), &command)) {
     return;
   }
@@ -887,6 +906,11 @@ bool SessionServiceBase::ShouldTrackBrowser(
       WindowTypeForBrowserType(browser->GetType()));
 }
 
+bool SessionServiceBase::ShouldDeleteSessionStorageOnTabClosing(
+    SessionID window_id) const {
+  return true;
+}
+
 sessions::CommandStorageManager*
 SessionServiceBase::GetCommandStorageManagerForTest() {
   return command_storage_manager_.get();
@@ -919,7 +943,7 @@ void SessionServiceBase::SetSavingEnabled(bool enabled) {
     // before any commands are actually written. If commands are written, then
     // the purpose of disabling will have failed (because by writing some
     // commands the previous session is going to be lost on exit).
-    DCHECK(!did_save_commands_at_least_once_);
+    CHECK(!did_save_commands_at_least_once_, base::NotFatalUntil::M163);
     command_storage_manager()->ClearPendingCommands();
   } else {
     ScheduleResetCommands();
@@ -948,7 +972,7 @@ void SessionServiceBase::InitializePlatformSessionIfNeeded(
     return;
   }
 
-  DCHECK(platform->GetSessionManager());
+  CHECK(platform->GetSessionManager(), base::NotFatalUntil::M163);
   ui::PlatformSessionManager* session_manager = platform->GetSessionManager();
   const bool should_restore = !restored_platform_session_id.empty();
 

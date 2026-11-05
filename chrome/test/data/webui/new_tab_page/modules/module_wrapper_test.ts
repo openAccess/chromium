@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {ModuleDescriptor, ModuleWrapperElement} from 'chrome://new-tab-page/lazy_load.js';
-import type {ModuleInstance} from 'chrome://new-tab-page/lazy_load.js';
-import {NewTabPageProxy, PageCallbackRouter, PageHandlerRemote, WindowProxy} from 'chrome://new-tab-page/new_tab_page.js';
+import {ModuleDescriptor} from 'chrome://new-tab-page/lazy_load.js';
+import type {ModuleInstance, ModuleWrapperElement} from 'chrome://new-tab-page/lazy_load.js';
+import {newTabPageProxyFactory, PageHandlerRemote, WindowProxy} from 'chrome://new-tab-page/new_tab_page.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertDeepEquals, assertEquals} from 'chrome://webui-test/chai_assert.js';
 import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
@@ -26,14 +26,15 @@ suite('NewTabPageModulesModuleWrapperTest', () => {
     });
     handler = installMock(
         PageHandlerRemote,
-        (mock: PageHandlerRemote) =>
-            NewTabPageProxy.setInstance(mock, new PageCallbackRouter()));
+        (mock: PageHandlerRemote) => newTabPageProxyFactory.setInstance(
+            newTabPageProxyFactory.createForTest(mock).instance));
     metrics = fakeMetricsPrivate();
     windowProxy = installMock(WindowProxy);
   });
 
   function createModuleWrapper(module: ModuleInstance): ModuleWrapperElement {
-    const moduleWrapper: ModuleWrapperElement = new ModuleWrapperElement();
+    const moduleWrapper: ModuleWrapperElement =
+        document.createElement('ntp-module-wrapper');
     moduleWrapper.module = module;
     return moduleWrapper;
   }

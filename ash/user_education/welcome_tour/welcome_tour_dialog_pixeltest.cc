@@ -26,12 +26,10 @@ class WelcomeTourDialogPixelTest
   }
 
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kWelcomeTour,
-                              features::kWelcomeTourForceUserEligibility},
-        /*disabled_features=*/{});
+    scoped_feature_list_.InitAndEnableFeature(
+        features::kWelcomeTourForceUserEligibility);
     UserEducationAshTestBase::SetUp();
-    SimulateUserLogin({"primary@test"});
+    SimulateUserLogin(AccountId::FromUserEmail("primary@test"));
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -48,7 +46,7 @@ TEST_P(WelcomeTourDialogPixelTest, Appearance) {
   // Take a screenshot of the Welcome Tour dialog.
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       GenerateScreenshotName("welcome_tour_dialog"),
-      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 5 : 0,
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 6 : 1,
       WelcomeTourDialog::Get()));
 }
 

@@ -9,16 +9,16 @@
 #include <string>
 
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/autofill/autofill_popup_hide_helper.h"
 #include "chrome/browser/ui/autofill/autofill_popup_view_delegate.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
-#include "components/autofill/core/common/unique_ids.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "net/base/schemeful_site.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "url/origin.h"
 
 namespace views {
 class Widget;
@@ -45,13 +45,14 @@ class EmailVerificationPopupController : public AutofillPopupViewDelegate,
   ~EmailVerificationPopupController() override;
 
   // Shows the email verification popup anchored to the element bounds.
-  // `callback` is invoked with the permission UI dismissal status
+  // `callback` is invoked with the permission UI decision or dismissal status
   // (`AutofillClient::EmailVerificationPermissionUiStatus`).
   void Show(const gfx::RectF& element_bounds,
-            const net::SchemefulSite& issuer,
+            const url::Origin& issuer_origin,
             const std::u16string& email,
             base::OnceCallback<void(
-                AutofillClient::EmailVerificationPermissionUiStatus)> callback);
+                AutofillClient::EmailVerificationPermissionUiStatus)> callback,
+            base::OnceClosure on_dismissed = base::DoNothing());
 
   // AutofillPopupViewDelegate:
   void Hide(SuggestionHidingReason reason) override;
@@ -65,6 +66,14 @@ class EmailVerificationPopupController : public AutofillPopupViewDelegate,
   // content::WebContentsObserver:
   void DidGetUserInteraction(const blink::WebInputEvent& event) override;
 
+  // Immediately closes the popup view and cleans up controller state. Called by
+  // EmailVerificationController when the popup should be dismissed. If the
+  // popup was still awaiting a user decision, resolves `callback_` with
+  // `kOther`.
+  void Dismiss();
+
+  bool is_loading() const { return is_loading_; }
+
   base::WeakPtr<EmailVerificationPopupController> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
   }
@@ -73,7 +82,7 @@ class EmailVerificationPopupController : public AutofillPopupViewDelegate,
       base::RepeatingCallback<base::WeakPtr<EmailVerificationPopupView>(
           base::WeakPtr<EmailVerificationPopupController> delegate,
           views::Widget* parent_widget,
-          const net::SchemefulSite& issuer,
+          const url::Origin& issuer_origin,
           const std::u16string& email,
           base::OnceCallback<void(bool)> callback)>;
 
@@ -87,12 +96,18 @@ class EmailVerificationPopupController : public AutofillPopupViewDelegate,
   void HideImpl(AutofillClient::EmailVerificationPermissionUiStatus status);
   bool OverlapsWithPictureInPictureWindow() const;
 
+  // Whether the popup is in the loading state waiting for token response.
+  bool is_loading_ = false;
+
   // The bounds of the element that triggered the popup.
   gfx::RectF element_bounds_;
 
   // The callback to invoke with the user's decision.
   base::OnceCallback<void(AutofillClient::EmailVerificationPermissionUiStatus)>
       callback_;
+
+  // Callback to notify the caller when the popup is dismissed or closed.
+  base::OnceClosure on_dismissed_;
 
   // The view representing the popup.
   base::WeakPtr<EmailVerificationPopupView> view_;
@@ -103,6 +118,8 @@ class EmailVerificationPopupController : public AutofillPopupViewDelegate,
   // Factory function used to create the view in tests.
   ViewFactoryForTesting view_factory_for_testing_;
 
+  // Invalidated in `HideImpl()` to detach any active popup view or decision
+  // callback when the popup closes.
   base::WeakPtrFactory<EmailVerificationPopupController> weak_ptr_factory_{
       this};
 };

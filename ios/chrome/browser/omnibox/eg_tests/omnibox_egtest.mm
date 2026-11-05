@@ -36,6 +36,7 @@
 #import "ios/chrome/test/earl_grey/test_switches.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/web/public/test/element_selector.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "net/test/embedded_test_server/http_request.h"
@@ -444,16 +445,6 @@ void FocusFakebox() {
 
 @implementation LocationBarSteadyStateTestCase
 
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config;
-  config.relaunch_policy = ForceRelaunchByCleanShutdown;
-  if ([self isRunningTest:@selector(testShareButtonInContextMenu)]) {
-    config.features_enabled_and_params.push_back(
-        {kChromeNextIa, {{"chrome_next_ia_share_icon_visible", "false"}}});
-  }
-  return config;
-}
-
 - (void)setUp {
   [super setUp];
 
@@ -483,6 +474,7 @@ void FocusFakebox() {
 }
 
 // Tapping on steady view starts editing.
+TAG_SMOKE_TEST(LocationBarSteadyStateTestCase, testTapSwitchesToEditing);
 - (void)testTapSwitchesToEditing {
   [self openPage1];
 
@@ -497,13 +489,6 @@ void FocusFakebox() {
   [self openPage1];
 
   if ([ChromeEarlGrey isCompactWidth]) {
-    // Under Chrome Next IA, the share button is not visible on the steady state
-    // location bar by default.
-    if ([ChromeEarlGrey isChromeNextEnabled]) {
-      [[EarlGrey selectElementWithMatcher:chrome_test_util::TabShareButton()]
-          assertWithMatcher:grey_notVisible()];
-      return;
-    }
     [[EarlGrey selectElementWithMatcher:chrome_test_util::TabShareButton()]
         assertWithMatcher:grey_sufficientlyVisible()];
   }
@@ -744,30 +729,6 @@ void FocusFakebox() {
       assertWithMatcher:grey_sufficientlyVisible()];
 }
 
-// Tests that the Share button is visible in the context menu of the location
-// bar.
-- (void)testShareButtonInContextMenu {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Share is not in the menu on iPad.");
-  }
-
-  [self openPage1];
-
-  // Long pressing should allow copying and sharing.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::DefocusedLocationView()]
-      performAction:grey_longPress()];
-
-  // Verify that the Share button is displayed.
-  id<GREYMatcher> shareButton =
-      grey_allOf(chrome_test_util::ContextMenuItemWithAccessibilityLabelId(
-                     IDS_IOS_TOOLS_MENU_SHARE_THIS_PAGE),
-                 grey_accessibilityTrait(UIAccessibilityTraitButton),
-                 grey_hidden(NO), nil);
-
-  [[EarlGrey selectElementWithMatcher:shareButton]
-      assertWithMatcher:grey_sufficientlyVisible()];
-}
-
 @end
 
 #pragma mark - Pre-edit state tests
@@ -812,6 +773,7 @@ void FocusFakebox() {
 // Tests that tapping on steady view on webpage and starting typing a query
 // would clear the page url and have instead the typed query in the omnibox text
 // field.
+TAG_SMOKE_TEST(LocationBarPreEditStateTestCase, testTypingOnPreEditState);
 - (void)testTypingOnPreEditState {
   // Load a web page.
   [ChromeEarlGrey loadURL:_URL];

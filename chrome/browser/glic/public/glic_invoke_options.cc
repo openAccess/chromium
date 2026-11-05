@@ -4,6 +4,9 @@
 
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 
+#include <string_view>
+
+#include "base/check.h"
 #include "base/notreached.h"
 #include "chrome/browser/glic/public/glic_instance.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
@@ -112,9 +115,29 @@ glic::mojom::InvocationSource GlicInvokeOptions::GetInvocationSource() const {
             if (payload->is_skills_payload()) {
               return glic::mojom::InvocationSource::kSkills;
             }
+            if (payload->is_experimental_triggering()) {
+              return glic::mojom::InvocationSource::kExperimentalTriggering;
+            }
+            if (payload->is_capture_region()) {
+              return glic::mojom::InvocationSource::kCaptureRegionHotkey;
+            }
             NOTREACHED();
           }},
       source_or_payload);
+}
+
+bool GlicInvokeOptions::RequiresContextClipboardPolicyCheck() const {
+  return additional_context.has_value() &&
+         additional_context->policy_check == PolicyCheck::kClipboard;
+}
+
+bool GlicInvokeOptions::RequiresPromptClipboardPolicyCheck() const {
+  if (!prompt_policy.has_value()) {
+    return false;
+  }
+  DCHECK(!prompts.empty());
+  return prompt_policy->policy_check == PolicyCheck::kClipboard &&
+         !prompts.empty();
 }
 
 GlicInvokeOptions::~GlicInvokeOptions() = default;
@@ -129,5 +152,65 @@ GlicInvokeWithAutoSubmitOptions::GlicInvokeWithAutoSubmitOptions(
     GlicInvokeWithAutoSubmitOptions&&) = default;
 GlicInvokeWithAutoSubmitOptions& GlicInvokeWithAutoSubmitOptions::operator=(
     GlicInvokeWithAutoSubmitOptions&&) = default;
+
+// LINT.IfChange(GlicInvokeErrorToString)
+std::string_view GlicInvokeErrorToString(GlicInvokeError error) {
+  switch (error) {
+    case GlicInvokeError::kUnknown:
+      return "Unknown error";
+    case GlicInvokeError::kTimeout:
+      return "Invocation timed out";
+    case GlicInvokeError::kInvalidConversationId:
+      return "Invalid conversation ID";
+    case GlicInvokeError::kInvalidTab:
+      return "Target tab was invalid";
+    case GlicInvokeError::kTabClosed:
+      return "Target tab was closed";
+    case GlicInvokeError::kInvokeInProgress:
+      return "Another invocation is already in progress";
+    case GlicInvokeError::kInvalidConfiguration:
+      return "Invalid configuration for invocation";
+    case GlicInvokeError::kAdditionalContextSawNavigation:
+      return "Navigation occurred while gathering additional context";
+    case GlicInvokeError::kAdditionalContextFailedCopyPolicy:
+      return "Additional context failed the copy policy check";
+    case GlicInvokeError::kAdditionalContextFailedPastePolicy:
+      return "Additional context failed the paste policy check";
+    case GlicInvokeError::kAdditionalContextNoSourceFrame:
+      return "No source frame for additional context";
+    case GlicInvokeError::kAdditionalContextNoClientFrame:
+      return "No client frame for additional context";
+    case GlicInvokeError::kAdditionalContextNoClipboardMetadata:
+      return "No clipboard metadata for additional context";
+    case GlicInvokeError::kInstanceNotFound:
+      return "Glic instance not found";
+    case GlicInvokeError::kProfileNotEnabled:
+      return "Glic is not enabled for the profile";
+    case GlicInvokeError::kCancelled:
+      return "Invocation was cancelled";
+    case GlicInvokeError::kSuperseded:
+      return "Invocation was superseded";
+    case GlicInvokeError::kLiveModeActive:
+      return "Glic instance is in live mode";
+    case GlicInvokeError::kClientLoadError:
+      return "Client load error";
+    case GlicInvokeError::kInstanceDestroyedBlankInstanceClosed:
+      return "Glic instance was destroyed: blank instance closed";
+    case GlicInvokeError::kInstanceDestroyedUnbound:
+      return "Glic instance was destroyed: unbound";
+    case GlicInvokeError::kInstanceDestroyedArchived:
+      return "Glic instance was destroyed: archived";
+    case GlicInvokeError::kInstanceDestroyedSignedOut:
+      return "Glic instance was destroyed: signed out";
+    case GlicInvokeError::kInstanceDestroyedShutdown:
+      return "Glic instance was destroyed: shutdown";
+    case GlicInvokeError::kPanelClosed:
+      return "Panel was closed before the client was ready";
+    case GlicInvokeError::kSignInRequired:
+      return "User did not sign in before the invocation timed out";
+  }
+  NOTREACHED();
+}
+// LINT.ThenChange(//chrome/browser/glic/public/glic_invoke_options.h:GlicInvokeError)
 
 }  // namespace glic

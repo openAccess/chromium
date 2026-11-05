@@ -9,40 +9,68 @@
 
 #include "base/callback_list.h"
 #include "base/containers/span.h"
-#include "base/feature_list.h"
-#include "base/metrics/histogram_functions.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
-#include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 
 namespace autofill {
 
-bool OtpFieldDetector::IsOtpForm(const FormStructure& form) {
-  const bool restrict_to_same_tld = base::FeatureList::IsEnabled(
-      features::kAutofillRestrictOtpToSameTldPlusOne);
+namespace {
 
+bool IsSameDomainOrHostAsMainFrame(const FormStructure& form,
+                                   const FormFieldData& field) {
+  return net::registry_controlled_domains::SameDomainOrHost(
+      field.origin(), form.main_frame_origin(),
+      net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
+}
+
+bool HasEligibleOtpFieldProperties(const FormStructure& form,
+                                   const FormFieldData& field) {
+  return field.is_focusable() && !field.IsPasswordInputElement() &&
+         IsSameDomainOrHostAsMainFrame(form, field);
+}
+
+}  // namespace
+
+// static
+bool OtpFieldDetector::IsOtpField(const FormStructure& form,
+                                  const AutofillField& field) {
+  return field.Type().GetTypes().contains(ONE_TIME_CODE) &&
+         HasEligibleOtpFieldProperties(form, field);
+}
+
+// static
+bool OtpFieldDetector::IsOtpField(const FormStructure& form,
+                                  const FormFieldData& field) {
+  const AutofillField* autofill_field = form.GetFieldById(field.global_id());
+  if (!autofill_field || !IsOtpField(form, *autofill_field)) {
+    return false;
+  }
+  return field.is_focusable() && !field.IsPasswordInputElement() &&
+         (field.origin() == autofill_field->origin() ||
+          IsSameDomainOrHostAsMainFrame(form, field));
+}
+
+// static
+bool OtpFieldDetector::IsOtpForm(const FormStructure& form) {
   bool has_otp_field = false;
   for (const std::unique_ptr<AutofillField>& f : form.fields()) {
-    if (!f->Type().GetTypes().contains(ONE_TIME_CODE) || !f->is_focusable()) {
+    if (!f->Type().GetTypes().contains(ONE_TIME_CODE)) {
       continue;
     }
-    has_otp_field = true;
-    if (!restrict_to_same_tld) {
-      return true;
-    }
-
-    if (!net::registry_controlled_domains::SameDomainOrHost(
-            f->origin(), form.main_frame_origin(),
-            net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES)) {
+    if (!IsSameDomainOrHostAsMainFrame(form, *f)) {
       // TODO(crbug.com/441433533): Consider making this less strict by
       // introducing a field-level check in the manager instead of dropping
       // the entire form.
       return false;
+    }
+    if (!has_otp_field && IsOtpField(form, *f)) {
+      has_otp_field = true;
     }
   }
 
@@ -69,16 +97,7 @@ OtpFieldDetector::RegisterOtpFieldsSubmittedCallback(
 }
 
 bool OtpFieldDetector::IsOtpFieldPresent() const {
-  const bool is_otp_present = !forms_with_otps_.empty();
-  // TODO(crbug.com/415273270) This metric could be improved because
-  // 1) there is no guarantee inside `OtpFieldDetector` that
-  //   `IsOneTimeTokenFieldPresent()` is called only once
-  // 2) because the `OtpFieldDetector` also also considers OTP fields
-  //    in iframes (i.e. the "InMainFrame" suffix is incorrect).
-  // This exists for legacy purposes.
-  base::UmaHistogramBoolean("PasswordManager.OtpPresentInMainTab",
-                            is_otp_present);
-  return is_otp_present;
+  return !forms_with_otps_.empty();
 }
 
 void OtpFieldDetector::OnFieldTypesDetermined(AutofillManager& manager,
@@ -86,7 +105,8 @@ void OtpFieldDetector::OnFieldTypesDetermined(AutofillManager& manager,
                                               FieldTypeSource source,
                                               bool small_forms_were_parsed) {
   const FormStructure* form_structure = manager.FindCachedFormById(form);
-  if (form_structure && IsOtpForm(*form_structure)) {
+  if (!manager.driver().IsEmbedded() && form_structure &&
+      IsOtpForm(*form_structure)) {
     AddFormAndNotifyIfNecessary(form);
   } else {
     RemoveFormAndNotifyIfNecessary(form);
@@ -106,7 +126,8 @@ void OtpFieldDetector::OnAutofillManagerStateChanged(
     AutofillManager& manager,
     AutofillDriver::LifecycleState old_state,
     AutofillDriver::LifecycleState new_state) {
-  if (new_state != AutofillDriver::LifecycleState::kActive) {
+  if (new_state != AutofillDriver::LifecycleState::kActive ||
+      manager.driver().IsEmbedded()) {
     manager.ForEachCachedForm([&](const FormStructure& form) {
       RemoveFormAndNotifyIfNecessary(form.global_id());
     });
@@ -127,7 +148,7 @@ void OtpFieldDetector::OnAfterFormSubmitted(AutofillManager& manager,
 void OtpFieldDetector::AddFormAndNotifyIfNecessary(FormGlobalId form_id) {
   // Memorize the state of `forms_with_otps_` before the update, then perform
   // the update and only then notify the callbacks to ensure that
-  // `IsOneTimeTokenFieldPresent()` returns the correct answer when called by
+  // `IsOtpFieldPresent()` returns the correct answer when called by
   // a notified callback.
   const bool was_empty = forms_with_otps_.empty();
   forms_with_otps_.insert(form_id);

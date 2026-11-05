@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "ash/style/ash_color_id.h"
-#include "ash/style/ash_color_provider.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
@@ -97,7 +96,7 @@ PasspointDialogView::PasspointDialogView(
 
   auto border = std::make_unique<views::BubbleBorder>(
       views::BubbleBorder::NONE, views::BubbleBorder::STANDARD_SHADOW);
-  border->SetColor(ash::kColorAshDialogBackgroundColor);
+  border->set_background_color(ash::kColorAshDialogBackgroundColor);
   border->set_rounded_corners(gfx::RoundedCornersF(kCornerRadius));
   SetBackground(std::make_unique<views::BubbleBackground>(border.get()));
   SetBorder(std::move(border));

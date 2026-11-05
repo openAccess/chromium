@@ -7,29 +7,30 @@
 #include "base/base64.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/history/history_test_utils.h"
 #include "chrome/browser/history_clusters/history_clusters_metrics_logger.h"
 #include "chrome/browser/history_clusters/history_clusters_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/history/history_ui.h"
 #include "chrome/browser/ui/webui/history_clusters/history_clusters_handler.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/history_clusters/core/features.h"
 #include "components/history_clusters/core/url_constants.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "components/variations/active_field_trials.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_source.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/webui/resources/cr_components/history_clusters/history_clusters.mojom.h"
 
 namespace history_clusters {
@@ -66,10 +67,6 @@ void ValidateHistoryClustersUKMEntry(const ukm::mojom::UkmEntry* entry,
 
 class HistoryClustersMetricsBrowserTest : public InProcessBrowserTest {
  public:
-  HistoryClustersMetricsBrowserTest() {
-    feature_list_.InitWithFeatures({history_clusters::internal::kJourneys}, {});
-  }
-
   // Toggle to the specified `tab`, either the basic history (0) or clusters UI
   // (1).
   void ToggleToUi(UiTab tab) {
@@ -117,9 +114,6 @@ class HistoryClustersMetricsBrowserTest : public InProcessBrowserTest {
                           ui::PAGE_TRANSITION_RELOAD);
     ui_test_utils::NavigateToURL(&params);
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(HistoryClustersMetricsBrowserTest,

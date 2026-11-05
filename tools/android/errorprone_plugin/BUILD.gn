@@ -15,8 +15,10 @@ java_binary("errorprone_plugin") {
     "src/org/chromium/tools/errorprone/plugin/AndroidNullableCheck.java",
     "src/org/chromium/tools/errorprone/plugin/CallbackBindCheck.java",
     "src/org/chromium/tools/errorprone/plugin/ChromeNullAwayLibraryModel.java",
+    "src/org/chromium/tools/errorprone/plugin/ChromiumDoNotMockChecker.java",
     "src/org/chromium/tools/errorprone/plugin/NoAndroidAsyncTaskCheck.java",
     "src/org/chromium/tools/errorprone/plugin/NoAndroidLog.java",
+    "src/org/chromium/tools/errorprone/plugin/NoClippedSuperscript.java",
     "src/org/chromium/tools/errorprone/plugin/NoDynamicStringsInTraceEventCheck.java",
     "src/org/chromium/tools/errorprone/plugin/NoMoveTaskToFront.java",
     "src/org/chromium/tools/errorprone/plugin/NoRedundantFieldInitCheck.java",
@@ -35,10 +37,11 @@ java_binary("errorprone_plugin") {
   # GN adds nullaway.jar when nullaway is enabled, so add it as a
   # build-time-only dep here.
   input_jars_paths =
-      [ "//third_party/android_build_tools/nullaway/cipd/nullaway.jar" ]
+      [ "//third_party/android_build_tools/error_prone/cipd/nullaway.jar" ]
 
   deps = [
     "//build/android:build_java",
+    "//third_party/android_build_tools/error_prone:error_prone_checks_java",
     "//third_party/android_build_tools/error_prone:error_prone_java",
     "//third_party/android_build_tools/error_prone_javac:error_prone_javac_java",
   ]

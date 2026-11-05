@@ -40,6 +40,7 @@
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 #include "components/signin/public/base/binding_key_registration_token_result.h"
 #include "components/unexportable_keys/unexportable_key_id.h"
+#include "crypto/sign.h"
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 namespace {
@@ -117,11 +118,9 @@ class FakeProfileOAuth2TokenServiceDelegateDesktop
         account_id, url_loader_factory, consumer, token_binding_challenge);
   }
   void InvalidateTokenForMultilogin(
-      const CoreAccountId& failed_account) override {
-    UpdateAuthError(
-        failed_account,
-        GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
-            GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
+      const CoreAccountId& failed_account,
+      const GoogleServiceAuthError& error) override {
+    UpdateAuthError(failed_account, error);
   }
 };
 
@@ -790,15 +789,16 @@ TEST_F(ProfileOAuth2TokenServiceTest, InvalidateTokensForMultiloginDesktop) {
       signin_metrics::SourceForRefreshTokenOperation::
           kDiceResponseHandler_Signin);
 
-  EXPECT_CALL(
-      observer,
-      OnAuthErrorChanged(
-          account_id_,
-          GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
-              GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN),
-          signin_metrics::SourceForRefreshTokenOperation::kUnknown))
+  const GoogleServiceAuthError error =
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN);
+  EXPECT_CALL(observer,
+              OnAuthErrorChanged(
+                  account_id_, error,
+                  signin_metrics::SourceForRefreshTokenOperation::kUnknown))
       .Times(1);
-  token_service.InvalidateTokenForMultilogin(account_id_, "refreshToken");
+  token_service.InvalidateTokenForMultilogin(account_id_, "refreshToken",
+                                             error);
   // Check that refresh tokens for failed accounts are set in error.
   EXPECT_EQ(token_service.GetDelegate()->GetAuthError(account_id_).state(),
             GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS);
@@ -816,15 +816,13 @@ TEST_F(ProfileOAuth2TokenServiceTest, InvalidateTokensForMultiloginMobile) {
   oauth2_service_->GetDelegate()->UpdateCredentials(account_id_2,
                                                     "refreshToken2");
 
-  EXPECT_CALL(
-      observer,
-      OnAuthErrorChanged(
-          account_id_,
-          GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
-              GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN),
-          testing::_))
+  const GoogleServiceAuthError error =
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN);
+  EXPECT_CALL(observer, OnAuthErrorChanged(account_id_, error, testing::_))
       .Times(0);
-  oauth2_service_->InvalidateTokenForMultilogin(account_id_, "refreshToken");
+  oauth2_service_->InvalidateTokenForMultilogin(account_id_, "refreshToken",
+                                                error);
   // Check that refresh tokens are not affected.
   EXPECT_EQ(oauth2_service_->GetDelegate()->GetAuthError(account_id_).state(),
             GoogleServiceAuthError::NONE);
@@ -993,13 +991,11 @@ TEST_F(ProfileOAuth2TokenServiceTest, GenerateBindingKeyRegistrationToken) {
       std::optional<signin::BindingKeyRegistrationTokenResult>>
       future;
   EXPECT_FALSE(oauth2_service_->GenerateBindingKeyRegistrationToken(
-      {crypto::SignatureVerifier::ECDSA_SHA256}, "test_code",
-      future.GetCallback()));
+      {crypto::sign::ECDSA_SHA256}, "test_code", future.GetCallback()));
 
   delegate_ptr_->EnableTokenBindingRegistration();
   EXPECT_TRUE(oauth2_service_->GenerateBindingKeyRegistrationToken(
-      {crypto::SignatureVerifier::ECDSA_SHA256}, "test_code",
-      future.GetCallback()));
+      {crypto::sign::ECDSA_SHA256}, "test_code", future.GetCallback()));
   EXPECT_FALSE(future.IsReady());
 
   delegate_ptr_->IssueTokenBindingRegistrationTokenForAuthCode(

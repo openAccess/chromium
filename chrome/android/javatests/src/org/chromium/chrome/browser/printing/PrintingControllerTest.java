@@ -7,7 +7,6 @@ package org.chromium.chrome.browser.printing;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-import android.app.Activity;
 import android.os.Build.VERSION_CODES;
 import android.os.CancellationSignal;
 import android.os.ParcelFileDescriptor;
@@ -33,6 +32,7 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.TestFileUtil;
@@ -55,9 +55,9 @@ import org.chromium.chrome.test.transit.page.PdfCtaPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.content_public.browser.test.util.DomAutomationController;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
+import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.printing.PrintDocumentAdapterWrapper.LayoutResultCallbackWrapper;
 import org.chromium.printing.PrintDocumentAdapterWrapper.WriteResultCallbackWrapper;
 import org.chromium.printing.PrintManagerDelegate;
@@ -417,7 +417,7 @@ public class PrintingControllerTest {
     @Test
     @SmallTest
     @Feature({"Printing"})
-    public void testGetFileDescriptorAfterFinish() throws Exception {
+    public void testFileDescriptorIsDetachedOnWrite() throws Exception {
         WebPageStation page = mActivityTestRule.startOnUrl(URL);
         final PrintingControllerImpl controller = createControllerOnUiThread();
 
@@ -426,22 +426,31 @@ public class PrintingControllerTest {
         try (TemporaryFileHandler handler = new TemporaryFileHandler()) {
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
-                        Assert.assertNull(controller.getParcelFileDescriptor());
+                        ParcelFileDescriptor pfd = handler.getFileDescriptor();
+                        Assert.assertTrue(pfd.getFd() >= 0);
                         controller.onStart();
 
-                        // Simulate onWrite to set the file descriptor
+                        // onLayout() must run first: it is what supplies the DPI and
+                        // media size that onWrite() forwards to native.
+                        controller.onLayout(
+                                null,
+                                createPlaceholderPrintAttributes(),
+                                new CancellationSignal(),
+                                new LayoutResultCallbackWrapperMock(),
+                                null);
+
+                        // Simulate onWrite: destination FD is detached and passed directly to JNI.
                         controller.onWrite(
                                 new PageRange[] {PageRange.ALL_PAGES},
-                                handler.getFileDescriptor(),
+                                pfd,
                                 new CancellationSignal(),
                                 new WriteResultCallbackWrapperMock());
 
-                        // Check that it is now a valid FD (non-null ParcelFileDescriptor)
-                        Assert.assertNotNull(controller.getParcelFileDescriptor());
+                        // Verify that the file descriptor has been detached by onWrite:
+                        // ParcelFileDescriptor#getFd() throws once ownership was given away.
+                        Assert.assertThrows(IllegalStateException.class, pfd::getFd);
 
                         controller.onFinish();
-                        // Verify it goes back to invalid after finish
-                        Assert.assertNull(controller.getParcelFileDescriptor());
                     });
         }
     }
@@ -489,6 +498,7 @@ public class PrintingControllerTest {
     @Test
     @SmallTest
     @Feature({"Printing"})
+    @DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_WEB_UI_HISTORY)
     public void testDisallowPrintOnNativePage() {
         mActivityTestRule.startOnBlankPage();
         mActivityTestRule.loadUrl(UrlConstants.HISTORY_URL);
@@ -918,54 +928,343 @@ public class PrintingControllerTest {
     }
 
     /**
-     * Test to verify that if the Activity is finishing, calling startPendingPrint() will
-     * immediately invoke the pending print callback and not start printing.
+     * Test to verify that sequential print jobs do not leak state (pages, callbacks, finished flag)
+     * across jobs.
      */
     @Test
     @SmallTest
     @Feature({"Printing"})
-    public void testStartPendingPrintWhenActivityIsFinishing() throws Throwable {
+    public void testSequentialPrintJobsDoNotLeakState() throws Throwable {
         WebPageStation page = mActivityTestRule.startOnUrl(URL);
         Tab tab = page.getTab();
         WindowAndroid window = tab.getWindowAndroid();
-        Activity activity = window.getActivity().get();
-        Assert.assertNotNull(activity);
 
-        PrintManagerDelegate failIfCalledPrintManager =
+        PrintManagerDelegate successfulPrintManager =
                 new PrintManagerDelegate() {
                     @Override
                     public boolean print(
                             String printJobName,
                             PrintDocumentAdapter documentAdapter,
                             @Nullable PrintAttributes attributes) {
-                        Assert.fail("print() must not be called for a finishing Activity.");
-                        return false;
+                        return true;
                     }
                 };
-
-        Runnable mockCallback = Mockito.mock(Runnable.class);
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     PrintingControllerImpl printingController =
                             (PrintingControllerImpl) PrintingControllerImpl.getInstance(window);
-                    printingController.setPendingPrint(
-                            new TabPrinter(tab), failIfCalledPrintManager, -1, -1);
-                    printingController.setPendingPrintCallback(mockCallback);
+                    // Start first job.
+                    printingController.startPrint(new TabPrinter(tab), successfulPrintManager);
+                    Assert.assertTrue(printingController.isBusy());
+                    Assert.assertFalse(printingController.hasPrintingFinished());
 
-                    activity.finish();
-                    Assert.assertTrue(activity.isFinishing());
-
-                    printingController.startPendingPrint();
-
-                    // The callback should have been invoked immediately because the Activity is
-                    // finishing.
-                    Mockito.verify(mockCallback, Mockito.times(1)).run();
+                    // Simulate completion of first job.
+                    printingController.onStart();
+                    printingController.onFinish();
                     Assert.assertFalse(printingController.isBusy());
                     Assert.assertTrue(printingController.hasPrintingFinished());
 
+                    // Start second job.
+                    printingController.startPrint(new TabPrinter(tab), successfulPrintManager);
+                    Assert.assertTrue(printingController.isBusy());
+                    // Verify that finished flag from job 1 does not leak into job 2.
+                    Assert.assertFalse(printingController.hasPrintingFinished());
+
                     // Cleanup
-                    printingController.onActivityDestroyed();
+                    printingController.onFinish();
                 });
+    }
+
+    /**
+     * Test the 3-stage asynchronous print lifecycle (InitiatePrint -> RenderPages -> FinishPrint)
+     * for a canvas-rendering page that sets up content on beforeprint and cleans up on afterprint.
+     */
+    @Test
+    @MediumTest
+    @Feature({"Printing"})
+    public void testThreeStageAsyncPrintLifecycleWithCanvas() throws Throwable {
+        final String canvasHtml =
+                "<html><head><script>"
+                        + "window.beforePrintCount = 0;"
+                        + "window.afterPrintCount = 0;"
+                        + "window.canvasRenderedAsync = false;"
+                        + "window.addEventListener('beforeprint', () => {"
+                        + "  window.beforePrintCount++;"
+                        + "  window.requestAnimationFrame(() => {"
+                        + "    const canvas = document.getElementById('c');"
+                        + "    if (canvas) {"
+                        + "      const ctx = canvas.getContext('2d');"
+                        + "      ctx.fillStyle = 'green';"
+                        + "      ctx.fillRect(0, 0, 50, 50);"
+                        + "    }"
+                        + "    window.canvasRenderedAsync = true;"
+                        + "  });"
+                        + "});"
+                        + "window.addEventListener('afterprint', () => {"
+                        + "  window.afterPrintCount++;"
+                        + "});"
+                        + "</script></head>"
+                        + "<body><canvas id='c' width='50' height='50'></canvas></body></html>";
+
+        WebPageStation page = mActivityTestRule.startOnUrl(UrlUtils.encodeHtmlDataUri(canvasHtml));
+        Tab tab = page.getTab();
+        WebContents webContents = tab.getWebContents();
+        final PrintingControllerImpl printingController = createControllerOnUiThread();
+
+        startControllerOnUiThread(printingController, tab);
+
+        // Stage 1: onStart (InitiatePrint) - should dispatch beforeprint and allow async rendering.
+        callStartOnUiThread(printingController);
+
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    try {
+                        String count =
+                                JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                                        webContents, "window.beforePrintCount.toString()");
+                        return "\"1\"".equals(count);
+                    } catch (TimeoutException e) {
+                        return false;
+                    }
+                },
+                "beforeprint event was not dispatched during onStart");
+
+        // Verify async canvas rendering completed across the event loop while print session was
+        // initiated but before onWrite is triggered.
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    try {
+                        String rendered =
+                                JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                                        webContents, "window.canvasRenderedAsync.toString()");
+                        return "\"true\"".equals(rendered);
+                    } catch (TimeoutException e) {
+                        return false;
+                    }
+                },
+                "async canvas rendering did not complete across the event loop");
+
+        // Verify afterprint has NOT been dispatched yet.
+        String afterCountBeforeWrite =
+                JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                        webContents, "window.afterPrintCount.toString()");
+        Assert.assertEquals("\"0\"", afterCountBeforeWrite);
+
+        // Stage 2: onLayout and onWrite (RenderPages to PDF)
+        final File tempFile = File.createTempFile(TEMP_FILE_NAME, TEMP_FILE_EXTENSION);
+        final ParcelFileDescriptor fileDescriptor =
+                ParcelFileDescriptor.open(tempFile, ParcelFileDescriptor.MODE_READ_WRITE);
+        final WaitForOnWriteHelper onWriteFinishedCompleted = new WaitForOnWriteHelper();
+
+        final WriteResultCallbackWrapper writeResultCallback =
+                new WriteResultCallbackWrapperMock() {
+                    @Override
+                    public void onWriteFinished(PageRange[] pages) {
+                        onWriteFinishedCompleted.notifyCalled();
+                    }
+                };
+
+        final LayoutResultCallbackWrapper layoutResultCallback =
+                new LayoutResultCallbackWrapperMock() {
+                    @Override
+                    public void onLayoutFinished(PrintDocumentInfo info, boolean changed) {
+                        printingController.onWrite(
+                                new PageRange[] {PageRange.ALL_PAGES},
+                                fileDescriptor,
+                                new CancellationSignal(),
+                                writeResultCallback);
+                    }
+                };
+
+        callLayoutOnUiThread(
+                printingController, null, createPlaceholderPrintAttributes(), layoutResultCallback);
+
+        FileInputStream in = null;
+        try {
+            onWriteFinishedCompleted.waitForCallback("onWriteFinished callback never completed.");
+            Assert.assertTrue(tempFile.length() > 0);
+            in = new FileInputStream(tempFile);
+            byte[] b = new byte[PDF_PREAMBLE.length()];
+            in.read(b);
+            Assert.assertEquals(PDF_PREAMBLE, new String(b));
+
+            // afterprint must STILL not be called after onWrite completes (session is still
+            // active).
+            String afterCountAfterWrite =
+                    JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                            webContents, "window.afterPrintCount.toString()");
+            Assert.assertEquals("\"0\"", afterCountAfterWrite);
+        } finally {
+            if (in != null) in.close();
+
+            // Stage 3: onFinish (FinishPrint) - should dispatch afterprint and restore normal mode.
+            callFinishOnUiThread(printingController);
+            fileDescriptor.close();
+            TestFileUtil.deleteFile(tempFile.getAbsolutePath());
+        }
+
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    try {
+                        String count =
+                                JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                                        webContents, "window.afterPrintCount.toString()");
+                        return "\"1\"".equals(count);
+                    } catch (TimeoutException e) {
+                        return false;
+                    }
+                },
+                "afterprint event was not dispatched during onFinish");
+    }
+
+    /**
+     * Test that multiple onLayout and onWrite cycles (e.g. user toggles orientation in the OS print
+     * dialog) do not re-dispatch beforeprint or prematurely dispatch afterprint.
+     */
+    @Test
+    @MediumTest
+    @Feature({"Printing"})
+    public void testThreeStageAsyncPrintLifecycleMultipleLayoutCycles() throws Throwable {
+        final String html =
+                "<html><head><script>window.beforePrintCount = 0;window.afterPrintCount ="
+                    + " 0;window.addEventListener('beforeprint', () => { window.beforePrintCount++;"
+                    + " });window.addEventListener('afterprint', () => { window.afterPrintCount++;"
+                    + " });</script></head><body>Multiple Layout Test</body></html>";
+
+        WebPageStation page = mActivityTestRule.startOnUrl(UrlUtils.encodeHtmlDataUri(html));
+        Tab tab = page.getTab();
+        WebContents webContents = tab.getWebContents();
+        final PrintingControllerImpl printingController = createControllerOnUiThread();
+
+        startControllerOnUiThread(printingController, tab);
+
+        // Stage 1: onStart (InitiatePrint)
+        callStartOnUiThread(printingController);
+
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    try {
+                        String count =
+                                JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                                        webContents, "window.beforePrintCount.toString()");
+                        return "\"1\"".equals(count);
+                    } catch (TimeoutException e) {
+                        return false;
+                    }
+                },
+                "beforeprint event was not dispatched during onStart");
+
+        // Cycle 1: onLayout -> onWrite
+        final File tempFile1 = File.createTempFile(TEMP_FILE_NAME, TEMP_FILE_EXTENSION);
+        final ParcelFileDescriptor fd1 =
+                ParcelFileDescriptor.open(tempFile1, ParcelFileDescriptor.MODE_READ_WRITE);
+        final WaitForOnWriteHelper onWrite1Completed = new WaitForOnWriteHelper();
+
+        final WriteResultCallbackWrapper writeResultCallback1 =
+                new WriteResultCallbackWrapperMock() {
+                    @Override
+                    public void onWriteFinished(PageRange[] pages) {
+                        onWrite1Completed.notifyCalled();
+                    }
+                };
+
+        final LayoutResultCallbackWrapper layoutResultCallback1 =
+                new LayoutResultCallbackWrapperMock() {
+                    @Override
+                    public void onLayoutFinished(PrintDocumentInfo info, boolean changed) {
+                        printingController.onWrite(
+                                new PageRange[] {PageRange.ALL_PAGES},
+                                fd1,
+                                new CancellationSignal(),
+                                writeResultCallback1);
+                    }
+                };
+
+        callLayoutOnUiThread(
+                printingController,
+                null,
+                createPlaceholderPrintAttributes(),
+                layoutResultCallback1);
+
+        onWrite1Completed.waitForCallback("First onWrite callback never completed.");
+        Assert.assertTrue(tempFile1.length() > 0);
+        fd1.close();
+        TestFileUtil.deleteFile(tempFile1.getAbsolutePath());
+
+        // Verify beforeprint is still 1 and afterprint is still 0
+        String beforeCountAfterCycle1 =
+                JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                        webContents, "window.beforePrintCount.toString()");
+        Assert.assertEquals("\"1\"", beforeCountAfterCycle1);
+        String afterCountAfterCycle1 =
+                JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                        webContents, "window.afterPrintCount.toString()");
+        Assert.assertEquals("\"0\"", afterCountAfterCycle1);
+
+        // Cycle 2: second onLayout -> onWrite (simulating layout/attribute change)
+        final File tempFile2 = File.createTempFile(TEMP_FILE_NAME, TEMP_FILE_EXTENSION);
+        final ParcelFileDescriptor fd2 =
+                ParcelFileDescriptor.open(tempFile2, ParcelFileDescriptor.MODE_READ_WRITE);
+        final WaitForOnWriteHelper onWrite2Completed = new WaitForOnWriteHelper();
+
+        final WriteResultCallbackWrapper writeResultCallback2 =
+                new WriteResultCallbackWrapperMock() {
+                    @Override
+                    public void onWriteFinished(PageRange[] pages) {
+                        onWrite2Completed.notifyCalled();
+                    }
+                };
+
+        final LayoutResultCallbackWrapper layoutResultCallback2 =
+                new LayoutResultCallbackWrapperMock() {
+                    @Override
+                    public void onLayoutFinished(PrintDocumentInfo info, boolean changed) {
+                        printingController.onWrite(
+                                new PageRange[] {PageRange.ALL_PAGES},
+                                fd2,
+                                new CancellationSignal(),
+                                writeResultCallback2);
+                    }
+                };
+
+        callLayoutOnUiThread(
+                printingController,
+                createPlaceholderPrintAttributes(),
+                createPlaceholderPrintAttributes(),
+                layoutResultCallback2);
+
+        try {
+            onWrite2Completed.waitForCallback("Second onWrite callback never completed.");
+            Assert.assertTrue(tempFile2.length() > 0);
+
+            // Verify counts remain unchanged (beforeprint=1, afterprint=0)
+            String beforeCountAfterCycle2 =
+                    JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                            webContents, "window.beforePrintCount.toString()");
+            Assert.assertEquals("\"1\"", beforeCountAfterCycle2);
+            String afterCountAfterCycle2 =
+                    JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                            webContents, "window.afterPrintCount.toString()");
+            Assert.assertEquals("\"0\"", afterCountAfterCycle2);
+        } finally {
+            // Stage 3: onFinish (FinishPrint)
+            callFinishOnUiThread(printingController);
+            fd2.close();
+            TestFileUtil.deleteFile(tempFile2.getAbsolutePath());
+        }
+
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    try {
+                        String count =
+                                JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                                        webContents, "window.afterPrintCount.toString()");
+                        return "\"1\"".equals(count);
+                    } catch (TimeoutException e) {
+                        return false;
+                    }
+                },
+                "afterprint event was not dispatched during onFinish");
     }
 }

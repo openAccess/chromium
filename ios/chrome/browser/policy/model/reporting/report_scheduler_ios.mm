@@ -4,7 +4,6 @@
 
 #import "ios/chrome/browser/policy/model/reporting/report_scheduler_ios.h"
 
-#import "components/device_signals/core/common/signals_features.h"
 #import "components/enterprise/browser/reporting/reporting_features.h"
 #import "components/enterprise/browser/reporting/user_security_signals_service.h"
 #import "components/policy/core/common/cloud/cloud_policy_store.h"
@@ -26,7 +25,6 @@ ReportSchedulerIOS::ReportSchedulerIOS(ProfileIOS* profile)
     ProfilePolicyConnector* policy_connector = profile_->GetPolicyConnector();
     if (base::FeatureList::IsEnabled(
             enterprise_reporting::kIOSSignalSharingEnabled) &&
-        enterprise_signals::features::IsProfileSignalsReportingEnabled() &&
         policy_connector && policy_connector->GetPolicyService()) {
       user_security_signals_service_ =
           std::make_unique<UserSecuritySignalsService>(
@@ -42,9 +40,6 @@ PrefService* ReportSchedulerIOS::GetPrefService() {
                   : GetApplicationContext()->GetLocalState();
 }
 
-void ReportSchedulerIOS::OnInitializationCompleted() {
-  // No-op.
-}
 
 void ReportSchedulerIOS::StartWatchingUpdatesIfNeeded(
     base::Time last_upload,
@@ -81,8 +76,12 @@ policy::DMToken ReportSchedulerIOS::GetProfileDMToken() {
     return policy::DMToken::CreateEmptyToken();
   }
   CHECK(profile_);
-  return profile_->GetUserCloudPolicyManager()->GetDMToken().value_or(
-      policy::DMToken::CreateEmptyToken());
+  policy::UserCloudPolicyManager* manager =
+      profile_->GetUserCloudPolicyManager();
+  if (!manager) {
+    return policy::DMToken::CreateEmptyToken();
+  }
+  return manager->GetDMToken().value_or(policy::DMToken::CreateEmptyToken());
 }
 
 std::string ReportSchedulerIOS::GetProfileClientId() {
@@ -92,8 +91,16 @@ std::string ReportSchedulerIOS::GetProfileClientId() {
     return std::string();
   }
   CHECK(profile_);
-  return profile_->GetUserCloudPolicyManager()->GetClientId().value_or(
-      std::string());
+  policy::UserCloudPolicyManager* manager =
+      profile_->GetUserCloudPolicyManager();
+  if (!manager) {
+    return std::string();
+  }
+  return manager->GetClientId().value_or(std::string());
+}
+
+bool ReportSchedulerIOS::IsIsolatedProfile() const {
+  return false;
 }
 
 }  // namespace enterprise_reporting

@@ -6,8 +6,6 @@ package org.chromium.chrome.browser.subscriptions;
 
 import static org.mockito.Mockito.doReturn;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -16,7 +14,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
@@ -25,7 +22,6 @@ import org.chromium.components.commerce.core.ShoppingService;
 
 /** Unit tests for {@link CommerceSubscriptionsServiceFactory}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class CommerceSubscriptionsServiceFactoryUnitTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -50,7 +46,6 @@ public class CommerceSubscriptionsServiceFactoryUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testFactoryMethod() {
         CommerceSubscriptionsServiceFactory factory =
                 CommerceSubscriptionsServiceFactory.getInstance();

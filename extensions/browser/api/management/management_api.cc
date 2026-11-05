@@ -16,8 +16,10 @@
 #include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
@@ -37,11 +39,13 @@
 #include "extensions/browser/management_policy.h"
 #include "extensions/browser/manifest_v2_handler.h"
 #include "extensions/browser/requirements_checker.h"
+#include "extensions/browser/supervised_extension_approval_result.h"
 #include "extensions/browser/supervised_user_extensions_delegate.h"
 #include "extensions/browser/uninstall_reason.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/management.h"
 #include "extensions/common/error_utils.h"
+#include "extensions/common/event_args.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/extension_urls.h"
@@ -473,14 +477,22 @@ ExtensionFunction::ResponseAction ManagementSetEnabledFunction::Run() {
 
   // Disable extension.
   if (!should_enable) {
+    disable_reason::DisableReason reason = disable_reason::DISABLE_USER_ACTION;
+    if (extension()) {
+      // If a policy or component extension disables a policy-installed target
+      // extension, use DISABLE_BLOCKED_BY_POLICY so that the disable is
+      // permitted by ManagementPolicy and re-evaluated on startup/policy
+      // refresh. For all other target extensions, use
+      // DISABLE_BY_ANOTHER_EXTENSION so the disabled state persists across
+      // restarts and the user can still re-enable the extension.
+      reason = Manifest::IsPolicyLocation(target_extension->location())
+                   ? disable_reason::DISABLE_BLOCKED_BY_POLICY
+                   : disable_reason::DISABLE_BY_ANOTHER_EXTENSION;
+    }
+
     const ManagementAPIDelegate* delegate = ManagementAPI::GetFactoryInstance()
                                                 ->Get(browser_context())
                                                 ->GetDelegate();
-    auto reason = (extension() &&
-                   (Manifest::IsPolicyLocation(extension()->location()) ||
-                    Manifest::IsComponentLocation(extension()->location())))
-                      ? disable_reason::DISABLE_BLOCKED_BY_POLICY
-                      : disable_reason::DISABLE_USER_ACTION;
     delegate->DisableExtension(browser_context(), extension(), extension_id_,
                                reason);
     return RespondNow(NoArguments());
@@ -491,6 +503,15 @@ ExtensionFunction::ResponseAction ManagementSetEnabledFunction::Run() {
   // Cannot enable policy disabled extensions.
   if (policy->MustRemainDisabled(target_extension, /*reason=*/nullptr)) {
     return RespondNow(Error(keys::kUserCantModifyError, extension_id_));
+  }
+
+  if (extension() &&
+      ExtensionPrefs::Get(browser_context())
+          ->HasDisableReason(extension_id_,
+                             disable_reason::DISABLE_NOT_ALLOWLISTED)) {
+    return RespondNow(
+        Error(keys::kCannotReEnableEnhancedSafeBrowsingDisallowedError,
+              extension_id_));
   }
 
   // Start the various checks needed before enabling an extension.
@@ -1135,11 +1156,11 @@ void ManagementEventRouter::BroadcastEvent(
   if (!ShouldExposeViaManagementAPI(*extension)) {
     return;
   }
-  base::ListValue args;
+  auto args = base::MakeRefCounted<EventArgs>();
   if (event_name == management::OnUninstalled::kEventName) {
-    args.Append(extension->id());
+    args->data.Append(extension->id());
   } else {
-    args.Append(
+    args->data.Append(
         CreateExtensionInfo(nullptr, *extension, browser_context_).ToValue());
   }
 

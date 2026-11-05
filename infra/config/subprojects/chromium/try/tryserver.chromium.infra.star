@@ -24,6 +24,7 @@ consoles.list_view(
 
 try_.builder(
     name = "3pp-linux-amd64-packager",
+    description_html = "Chromium 3PP packager on Linux AMD64 platform.",
     executable = "recipe:chromium_3pp",
     builderless = False,
     cores = 8,
@@ -33,10 +34,6 @@ try_.builder(
             # Enable for CLs touching files under "3pp" directories which are
             # two level deep or more from the repo root.
             ".+/3pp/.+",
-            # Also enable for cls that affect fetch_all.py or the groovy scripts
-            # it runs unders buildSrc.
-            "third_party/android_deps/fetch_all.py",
-            "third_party/android_deps/buildSrc/src/main/groovy/.+",
         ],
     ),
     execution_timeout = 6 * time.hour,
@@ -44,13 +41,6 @@ try_.builder(
         "$build/chromium_3pp": {
             "platform": "linux-amd64",
             "package_prefix": "chromium_3pp",
-            "preprocess": [{
-                "name": "third_party/android_deps",
-                "cmd": [
-                    "{CHECKOUT}/src/third_party/android_deps/fetch_all.py",
-                    "-v",
-                ],
-            }],
             "gclient_config": "chromium",
             "gclient_apply_config": ["android"],
         },
@@ -59,6 +49,7 @@ try_.builder(
 
 try_.builder(
     name = "3pp-mac-amd64-packager",
+    description_html = "Chromium 3PP packager on Mac AMD64 platform.",
     executable = "recipe:chromium_3pp",
     builderless = True,
     # TODO(crbug.com/543006750): Revert to MAC_DEFAULT after arm migration.
@@ -95,6 +86,7 @@ try_.builder(
     executable = "recipe:chromium_3pp",
     builderless = True,
     os = os.WINDOWS_DEFAULT,
+    ssd = None,
     contact_team_email = "chrome-browser-infra-team@google.com",
     properties = {
         "$build/chromium_3pp": {
@@ -152,6 +144,7 @@ try_.builder(
     builderless = True,
     cores = 8,
     os = os.LINUX_DEFAULT,
+    ssd = True,
     contact_team_email = "chrome-dev-infra-team@google.com",
     cq_settings = try_.cq_settings(
         location_filters = [
@@ -214,6 +207,7 @@ try_.builder(
     builderless = True,
     cores = 8,
     os = os.WINDOWS_DEFAULT,
+    ssd = None,
     contact_team_email = "chrome-dev-infra-team@google.com",
     cq_settings = try_.cq_settings(
         location_filters = [
@@ -311,7 +305,9 @@ try_.builder(
         ),
     ),
     builderless = True,
+    cores = 8,
     os = os.LINUX_DEFAULT,
+    ssd = True,
     contact_team_email = "pdeio-chrome-test-infra-mx@google.com",
     execution_timeout = 2 * time.hour,
     properties = {
@@ -337,6 +333,7 @@ try_.builder(
     #         "tools/autotest.py",
     #     ],
     # ),
+    service_account = try_constants.DEFAULT_SERVICE_ACCOUNT,
 )
 
 try_.builder(
@@ -354,6 +351,7 @@ try_.builder(
     ),
     builderless = True,
     os = os.WINDOWS_DEFAULT,
+    ssd = None,
     contact_team_email = "pdeio-chrome-test-infra-mx@google.com",
     execution_timeout = 2 * time.hour,
     properties = {
@@ -379,6 +377,7 @@ try_.builder(
     #         "tools/autotest.py",
     #     ],
     # ),
+    service_account = try_constants.DEFAULT_SERVICE_ACCOUNT,
 )
 
 try_.builder(
@@ -422,4 +421,16 @@ try_.builder(
     #         "tools/autotest.py",
     #     ],
     # ),
+    service_account = try_constants.DEFAULT_SERVICE_ACCOUNT,
+)
+
+try_.builder(
+    name = "rts-complement-runner",
+    description_html = "Runs RTS-skipped (complement) test suites for a CQ build to measure post-submit RTS safety.",
+    executable = "recipe:chromium/rts_complement_runner",
+    builderless = True,
+    cores = 2,
+    os = os.LINUX_DEFAULT,
+    contact_team_email = "chrome-test-infra-mx@google.com",
+    service_account = "chromium-orchestrator@chops-service-accounts.iam.gserviceaccount.com",
 )

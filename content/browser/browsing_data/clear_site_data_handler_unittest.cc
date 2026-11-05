@@ -19,6 +19,8 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
+#include "content/public/browser/clear_site_data_utils.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_browser_context.h"
@@ -53,7 +55,7 @@ const StoragePartitionConfig kTestStoragePartitionConfig;
 class TestHandler : public ClearSiteDataHandler {
  public:
   TestHandler(base::WeakPtr<BrowserContext> browser_context,
-              base::WeakPtr<WebContents> web_contents,
+              scoped_refptr<NavigationOrDocumentHandle> navigation_or_document,
               const StoragePartitionConfig& storage_partition_config,
               const GURL& url,
               const std::string& header_value,
@@ -64,7 +66,7 @@ class TestHandler : public ClearSiteDataHandler {
               base::OnceClosure callback,
               std::unique_ptr<ConsoleMessagesDelegate> delegate)
       : ClearSiteDataHandler(browser_context,
-                             web_contents,
+                             std::move(navigation_or_document),
                              storage_partition_config,
                              url,
                              header_value,
@@ -120,7 +122,8 @@ class VectorConsoleMessagesDelegate : public ConsoleMessagesDelegate {
       : message_buffer_(message_buffer) {}
   ~VectorConsoleMessagesDelegate() override = default;
 
-  void OutputMessages(base::WeakPtr<WebContents> web_contents) override {
+  void OutputMessages(
+      NavigationOrDocumentHandle* navigation_or_document) override {
     *message_buffer_ = GetMessagesForTesting();
   }
 
@@ -141,10 +144,12 @@ class StringConsoleMessagesDelegate : public ConsoleMessagesDelegate {
   ~StringConsoleMessagesDelegate() override {}
 
  private:
-  static void OutputFormattedMessage(std::string* output_buffer,
-                                     WebContents* web_contents,
-                                     blink::mojom::ConsoleMessageLevel level,
-                                     const std::string& formatted_text) {
+  static void OutputFormattedMessage(
+      std::string* output_buffer,
+      NavigationOrDocumentHandle* navigation_or_document,
+      const GURL& url,
+      blink::mojom::ConsoleMessageLevel level,
+      const std::string& formatted_text) {
     *output_buffer += formatted_text + "\n";
   }
 };
@@ -594,44 +599,30 @@ TEST_F(ClearSiteDataHandlerTest, FormattedConsoleOutput) {
        "No recognized types specified.\n"},
   };
 
-  // TODO(crbug.com/41409604): Delay output until next frame for navigations.
-  bool kHandlerTypeIsNavigation[] = {false};
+  std::string output_buffer;
+  std::string last_seen_console_output;
 
-  for (bool navigation : kHandlerTypeIsNavigation) {
-    SCOPED_TRACE(navigation ? "Navigation test." : "Subresource test.");
+  // |StoragePartitionImpl::OnClearSiteData| creates a new
+  // |ClearSiteDataHandler| for each navigation, redirect, or subresource
+  // header response.
+  for (const auto& test : kTestCases) {
+    TestHandler handler(
+        nullptr, nullptr, kTestStoragePartitionConfig, GURL(test.url),
+        test.header, net::LOAD_NORMAL, /*cookie_partition_key=*/std::nullopt,
+        /*storage_key=*/std::nullopt,
+        /*partitioned_state_allowed_only=*/false, base::DoNothing(),
+        std::make_unique<StringConsoleMessagesDelegate>(&output_buffer));
+    handler.DoHandleHeader();
 
-    std::string output_buffer;
-    std::string last_seen_console_output;
-
-    // |NetworkServiceClient| creates a new |ClearSiteDataHandler| for each
-    // navigation, redirect, or subresource header responses.
-    for (const auto& test : kTestCases) {
-      TestHandler handler(
-          nullptr, nullptr, kTestStoragePartitionConfig, GURL(test.url),
-          test.header, net::LOAD_NORMAL, /*cookie_partition_key=*/std::nullopt,
-          /*storage_key=*/std::nullopt,
-          /*partitioned_state_allowed_only=*/false, base::DoNothing(),
-          std::make_unique<StringConsoleMessagesDelegate>(&output_buffer));
-      handler.DoHandleHeader();
-
-      // For navigations, the console should be still empty. For subresource
-      // requests, messages should be added progressively.
-      if (navigation) {
-        EXPECT_TRUE(output_buffer.empty());
-      } else {
-        EXPECT_EQ(last_seen_console_output + test.output, output_buffer);
-      }
-
-      last_seen_console_output = output_buffer;
-    }
-
-    // At the end, the console must contain all messages regardless of whether
-    // it was a navigation or a subresource request.
-    std::string expected_output;
-    for (struct TestCase& test_case : kTestCases)
-      expected_output += test_case.output;
-    EXPECT_EQ(expected_output, output_buffer);
+    EXPECT_EQ(last_seen_console_output + test.output, output_buffer);
+    last_seen_console_output = output_buffer;
   }
+
+  std::string expected_output;
+  for (struct TestCase& test_case : kTestCases) {
+    expected_output += test_case.output;
+  }
+  EXPECT_EQ(expected_output, output_buffer);
 }
 
 TEST_F(ClearSiteDataHandlerTest, CookiePartitionKey) {
@@ -793,6 +784,119 @@ TEST_F(ClearSiteDataHandlerTest, ClearPrefetchAndPrerenderCacheSuccess) {
   EXPECT_EQ(message_buffer.front().level,
             blink::mojom::ConsoleMessageLevel::kInfo);
   testing::Mock::VerifyAndClearExpectations(&handler);
+}
+
+TEST_F(ClearSiteDataHandlerTest, ClearSiteDataDuringBrowserContextShutdown) {
+  const GURL kTestUrl("https://example.com");
+  const url::Origin kTestOrigin = url::Origin::Create(kTestUrl);
+
+  // Verify normal asynchronous clearing on an active BrowserContext.
+  {
+    TestBrowserContext browser_context;
+    base::test::TestFuture<void> future;
+    ClearSiteData(browser_context.GetWeakPtr(),
+                  /*storage_partition_config=*/std::nullopt, kTestOrigin,
+                  {ClearSiteDataType::kCookies, ClearSiteDataType::kStorage,
+                   ClearSiteDataType::kCache, ClearSiteDataType::kClientHints},
+                  /*storage_buckets_to_remove=*/{},
+                  /*avoid_closing_connections=*/true,
+                  /*cookie_partition_key=*/std::nullopt,
+                  /*storage_key=*/std::nullopt,
+                  /*partitioned_state_allowed_only=*/false,
+                  future.GetCallback());
+    EXPECT_TRUE(future.Wait());
+  }
+
+  // Verify clearing when BrowserContext shutdown has started while its WeakPtr
+  // is still valid (e.g., during off-the-record profile teardown).
+  {
+    TestBrowserContext browser_context;
+    browser_context.NotifyWillBeDestroyed();
+    ASSERT_TRUE(browser_context.ShutdownStarted());
+    ASSERT_TRUE(browser_context.GetWeakPtr());
+
+    base::test::TestFuture<void> cookies_and_storage_future;
+    ClearSiteData(browser_context.GetWeakPtr(),
+                  /*storage_partition_config=*/std::nullopt, kTestOrigin,
+                  {ClearSiteDataType::kCookies, ClearSiteDataType::kStorage,
+                   ClearSiteDataType::kCache, ClearSiteDataType::kClientHints},
+                  /*storage_buckets_to_remove=*/{},
+                  /*avoid_closing_connections=*/true,
+                  /*cookie_partition_key=*/std::nullopt,
+                  /*storage_key=*/std::nullopt,
+                  /*partitioned_state_allowed_only=*/false,
+                  cookies_and_storage_future.GetCallback());
+    EXPECT_TRUE(cookies_and_storage_future.Wait());
+
+    base::test::TestFuture<void> buckets_future;
+    ClearSiteData(browser_context.GetWeakPtr(),
+                  /*storage_partition_config=*/std::nullopt, kTestOrigin,
+                  {ClearSiteDataType::kCookies},
+                  /*storage_buckets_to_remove=*/{"drafts"},
+                  /*avoid_closing_connections=*/true,
+                  /*cookie_partition_key=*/std::nullopt,
+                  /*storage_key=*/std::nullopt,
+                  /*partitioned_state_allowed_only=*/false,
+                  buckets_future.GetCallback());
+    EXPECT_TRUE(buckets_future.Wait());
+
+    base::test::TestFuture<void> handler_future;
+    ClearSiteDataHandler::HandleHeader(
+        browser_context.GetWeakPtr(),
+        /*navigation_or_document=*/nullptr,
+        StoragePartitionConfig::CreateDefault(&browser_context), kTestUrl,
+        kClearCookiesHeader, net::LOAD_NORMAL,
+        /*cookie_partition_key=*/std::nullopt,
+        /*storage_key=*/std::nullopt,
+        /*partitioned_state_allowed_only=*/false, handler_future.GetCallback());
+    EXPECT_TRUE(handler_future.Wait());
+  }
+}
+
+TEST_F(ClearSiteDataHandlerTest,
+       ClearSiteDataSynchronousAndZeroTaskCompletion) {
+  TestBrowserContext browser_context;
+  ASSERT_FALSE(browser_context.ShutdownStarted());
+
+  const url::Origin kTestOrigin =
+      url::Origin::Create(GURL("https://example.com"));
+
+  // In TestBrowserContext, GetPrefetchService() is null, so
+  // BrowsingDataRemoverImpl::RemoveImpl() completes synchronously inside
+  // SiteDataClearer::RunAndDestroySelfWhenDone(). Verify that synchronous
+  // completion followed by client hints clearing keeps SiteDataClearer alive
+  // until all tasks are queued and finished.
+  {
+    base::test::TestFuture<void> future;
+    ClearSiteData(
+        browser_context.GetWeakPtr(),
+        /*storage_partition_config=*/std::nullopt, kTestOrigin,
+        {ClearSiteDataType::kPrefetchCache, ClearSiteDataType::kClientHints},
+        /*storage_buckets_to_remove=*/{},
+        /*avoid_closing_connections=*/true,
+        /*cookie_partition_key=*/std::nullopt,
+        /*storage_key=*/std::nullopt,
+        /*partitioned_state_allowed_only=*/false, future.GetCallback());
+    EXPECT_TRUE(future.Wait());
+  }
+
+  // When only kClientHints is requested in a third-party context, zero tasks
+  // are queued in SiteDataClearer::RunAndDestroySelfWhenDone(). Verify that
+  // the callback still runs and SiteDataClearer cleans itself up.
+  {
+    base::test::TestFuture<void> future;
+    ClearSiteData(browser_context.GetWeakPtr(),
+                  /*storage_partition_config=*/std::nullopt, kTestOrigin,
+                  {ClearSiteDataType::kClientHints},
+                  /*storage_buckets_to_remove=*/{},
+                  /*avoid_closing_connections=*/true,
+                  /*cookie_partition_key=*/std::nullopt,
+                  blink::StorageKey::CreateWithNonce(
+                      kTestOrigin, base::UnguessableToken::Create()),
+                  /*partitioned_state_allowed_only=*/false,
+                  future.GetCallback());
+    EXPECT_TRUE(future.Wait());
+  }
 }
 
 void ParseHeader(const std::string& data) {

@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/supervised_user/model/supervised_user_url_filtering_service_factory.h"
 
 #import <memory>
+#import <utility>
 
 #import "base/check_deref.h"
 #import "components/prefs/pref_service.h"
@@ -31,35 +32,21 @@ class FilterDelegateImpl : public FamilyLinkUrlFilter::Delegate {
 
 }  // namespace
 
-// static
-SupervisedUserUrlFilteringService*
-SupervisedUserUrlFilteringServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()
-      ->GetServiceForProfileAs<SupervisedUserUrlFilteringService>(
-          profile, /*create=*/true);
-}
-
-// static
-SupervisedUserUrlFilteringServiceFactory*
-SupervisedUserUrlFilteringServiceFactory::GetInstance() {
-  static base::NoDestructor<SupervisedUserUrlFilteringServiceFactory> instance;
-  return instance.get();
-}
-
 SupervisedUserUrlFilteringServiceFactory::
-    SupervisedUserUrlFilteringServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("SupervisedUserUrlFilteringService") {
+    SupervisedUserUrlFilteringServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "SupervisedUserUrlFilteringService") {
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(FamilyLinkSettingsServiceFactory::GetInstance());
 }
 
 std::unique_ptr<KeyedService>
 SupervisedUserUrlFilteringServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   // TODO(crbug.com/297313665): Use command line hooks to enable substitution of
   // prod components with test components (with extended interfaces).
 
-  SupervisedUserServicePlatformDelegate platform_delegate(profile);
+  SupervisedUserServicePlatformDelegate platform_delegate(&profile);
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
@@ -68,11 +55,11 @@ SupervisedUserUrlFilteringServiceFactory::BuildServiceInstanceFor(
   return std::make_unique<SupervisedUserUrlFilteringService>(
       std::make_unique<FamilyLinkUrlFilter>(
           CHECK_DEREF(FamilyLinkSettingsServiceFactory::GetForProfile(profile)),
-          CHECK_DEREF(profile->GetPrefs()),
+          CHECK_DEREF(profile.GetPrefs()),
           std::make_unique<FilterDelegateImpl>(),
           std::make_unique<SupervisedUserUrlCheckerClient>(
               identity_manager, url_loader_factory,
-              CHECK_DEREF(profile->GetPrefs()),
+              CHECK_DEREF(profile.GetPrefs()),
               platform_delegate.GetCountryCode(),
               platform_delegate.GetChannel())),
       std::make_unique<DeviceParentalControlsUrlFilter>(

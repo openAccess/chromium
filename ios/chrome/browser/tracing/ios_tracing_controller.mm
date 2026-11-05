@@ -6,6 +6,7 @@
 
 #import <UIKit/UIKit.h>
 
+#import "base/command_line.h"
 #import "base/files/file_path.h"
 #import "base/functional/callback_helpers.h"
 #import "base/logging.h"
@@ -13,7 +14,6 @@
 #import "base/no_destructor.h"
 #import "base/path_service.h"
 #import "base/task/sequenced_task_runner.h"
-#import "base/task/single_thread_task_runner.h"
 #import "base/task/thread_pool.h"
 #import "base/task/thread_pool/thread_pool_instance.h"
 #import "base/trace_event/trace_config.h"
@@ -50,25 +50,27 @@ bool IOSTracingController::HasInstance() {
 
 // static
 void IOSTracingController::CreateInstance() {
+  tracing::TraceStartupConfig::InitializeFromCommandLine(
+      *base::CommandLine::ForCurrentProcess());
   static base::NoDestructor<IOSTracingController> instance;
   instance->Initialize();
 }
 
-// static
-void IOSTracingController::MaybeCreateInstanceForTesting() {
-  static base::NoDestructor<IOSTracingController> instance;
-}
-
-IOSTracingController::IOSTracingController() {
+IOSTracingController::IOSTracingController(
+    scoped_refptr<base::SequencedTaskRunner> task_runner) {
   CHECK_EQ(g_instance, nullptr);
   g_instance = this;
 
-  platform_ = std::make_unique<base::tracing::PerfettoPlatform>(
-      base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()}));
+  base::tracing::PerfettoPlatform::MaybeCreateInstance(
+      task_runner
+          ? std::move(task_runner)
+          : base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()}));
 
+  // Pass nullptr for `io_task_runner` because iOS uses in-process tracing only
+  // (no multi-process Mojo coordination required).
   startup_tracing_controller_ =
       std::make_unique<tracing::StartupTracingController>(
-          base::SingleThreadTaskRunner::GetCurrentDefault());
+          /*io_task_runner=*/nullptr);
 }
 
 IOSTracingController::~IOSTracingController() {
@@ -87,7 +89,7 @@ void IOSTracingController::Initialize() {
   init_args.shmem_direct_patching_enabled = true;
   init_args.disallow_merging_with_system_tracks = true;
 
-  init_args.platform = platform_.get();
+  init_args.platform = &base::tracing::PerfettoPlatform::Get();
 
   perfetto::Tracing::Initialize(init_args);
   tracing::RegisterCommonPerfettoDataSources(/*enable_consumer=*/true);
@@ -106,11 +108,10 @@ void IOSTracingController::Initialize() {
   }
 }
 
-perfetto::TraceConfig IOSTracingController::CreateDeveloperTraceConfig() {
+perfetto::TraceConfig IOSTracingController::CreateDeveloperTraceConfig(
+    std::string_view category_filter_string) {
   base::trace_event::TraceConfig trace_config(
-      "*,disabled-by-default-cpu_profiler,disabled-by-default-system_metrics,"
-      "disabled-by-default-histogram_samples",
-      base::trace_event::RECORD_CONTINUOUSLY);
+      category_filter_string, base::trace_event::RECORD_CONTINUOUSLY);
   trace_config.SetTraceBufferSizeInBytes(base::ByteSize(50 * 1024 * 1024));
 
   perfetto::TraceConfig perfetto_config = tracing::GetDefaultPerfettoConfig(
@@ -123,31 +124,11 @@ perfetto::TraceConfig IOSTracingController::CreateDeveloperTraceConfig() {
   return perfetto_config;
 }
 
-void IOSTracingController::ResetForTesting() {
+base::FilePath IOSTracingController::StopStartupTracingForTesting() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  startup_tracing_controller_->ShutdownAndWaitForStopIfNeeded();
-  DisableScenarios();
-  field_scenarios_.clear();
-  trace_database_.reset();
-  trace_report_to_upload_.reset();
-  tracing::TrackNameRecorder::GetInstance()->StopRecording();
-  tracing::TraceStartupConfig::ResetForTesting();        // IN-TEST
-  platform_->ResetTaskRunner(base::SingleThreadTaskRunner::GetCurrentDefault());
-  if (base::ThreadPoolInstance::Get()) {
-    base::ThreadPoolInstance::Get()->FlushForTesting();  // IN-TEST
-  }
-  perfetto::Tracing::ResetForTesting();                  // IN-TEST
-  incognito_tracker_subscription_ = {};
-  tracing::CustomEventRecorder::GetInstance()->DetachFromSequence();
-}
-
-void IOSTracingController::InitializeForTesting() {
-  platform_->ResetTaskRunner(
-      base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()}));
-  database_task_runner_ =
-      base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()});
-  Initialize();
-  InitializeTraceReportDatabase(/*open_in_memory=*/true);
+  tracing::StartupTracingController::EmergencyStop();
+  CHECK(startup_tracing_controller_);
+  return startup_tracing_controller_->GetOutputPath();
 }
 
 void IOSTracingController::SetLatestIncognitoLaunchedForTesting(  // IN-TEST
@@ -193,12 +174,8 @@ void IOSTracingController::OnIncognitoSessionStateChanged(
 }
 
 bool IOSTracingController::IsRecordingAllowed(
-    bool privacy_filter_enabled,
+    bool is_local_scenario,
     base::TimeTicks scenario_start_time) {
-  if (!privacy_filter_enabled) {
-    return true;
-  }
-
   bool incognito_active = false;
   if (GetApplicationContext() &&
       GetApplicationContext()->GetIncognitoSessionTracker()) {

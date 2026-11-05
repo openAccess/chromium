@@ -80,6 +80,8 @@ crash_reporter::CrashKeyString<7>* GetScanCrashKey(ScanningCrashKey key) {
       "pending-file-download-scans");
   static crash_reporter::CrashKeyString<7> pending_prints(
       "pending-print-scans");
+  static crash_reporter::CrashKeyString<7> pending_network_requests(
+      "pending-network-request-scans");
   static crash_reporter::CrashKeyString<7> total_file_uploads(
       "total-file-upload-scans");
   static crash_reporter::CrashKeyString<7> total_text_uploads(
@@ -87,6 +89,8 @@ crash_reporter::CrashKeyString<7>* GetScanCrashKey(ScanningCrashKey key) {
   static crash_reporter::CrashKeyString<7> total_file_downloads(
       "total-file-download-scans");
   static crash_reporter::CrashKeyString<7> total_prints("total-print-scans");
+  static crash_reporter::CrashKeyString<7> total_network_requests(
+      "total-network-request-scans");
   switch (key) {
     case ScanningCrashKey::PENDING_FILE_UPLOADS:
       return &pending_file_uploads;
@@ -96,6 +100,8 @@ crash_reporter::CrashKeyString<7>* GetScanCrashKey(ScanningCrashKey key) {
       return &pending_file_downloads;
     case ScanningCrashKey::PENDING_PRINTS:
       return &pending_prints;
+    case ScanningCrashKey::PENDING_NETWORK_REQUESTS:
+      return &pending_network_requests;
     case ScanningCrashKey::TOTAL_FILE_UPLOADS:
       return &total_file_uploads;
     case ScanningCrashKey::TOTAL_TEXT_UPLOADS:
@@ -104,6 +110,8 @@ crash_reporter::CrashKeyString<7>* GetScanCrashKey(ScanningCrashKey key) {
       return &total_file_downloads;
     case ScanningCrashKey::TOTAL_PRINTS:
       return &total_prints;
+    case ScanningCrashKey::TOTAL_NETWORK_REQUESTS:
+      return &total_network_requests;
   }
 }
 
@@ -112,10 +120,12 @@ int* GetScanCrashKeyCount(ScanningCrashKey key) {
   static int pending_text_uploads = 0;
   static int pending_file_downloads = 0;
   static int pending_prints = 0;
+  static int pending_network_requests = 0;
   static int total_file_uploads = 0;
   static int total_text_uploads = 0;
   static int total_file_downloads = 0;
   static int total_prints = 0;
+  static int total_network_requests = 0;
   switch (key) {
     case ScanningCrashKey::PENDING_FILE_UPLOADS:
       return &pending_file_uploads;
@@ -125,6 +135,8 @@ int* GetScanCrashKeyCount(ScanningCrashKey key) {
       return &pending_file_downloads;
     case ScanningCrashKey::PENDING_PRINTS:
       return &pending_prints;
+    case ScanningCrashKey::PENDING_NETWORK_REQUESTS:
+      return &pending_network_requests;
     case ScanningCrashKey::TOTAL_FILE_UPLOADS:
       return &total_file_uploads;
     case ScanningCrashKey::TOTAL_TEXT_UPLOADS:
@@ -133,6 +145,8 @@ int* GetScanCrashKeyCount(ScanningCrashKey key) {
       return &total_file_downloads;
     case ScanningCrashKey::TOTAL_PRINTS:
       return &total_prints;
+    case ScanningCrashKey::TOTAL_NETWORK_REQUESTS:
+      return &total_network_requests;
   }
 }
 
@@ -167,7 +181,7 @@ void MaybeReportDeepScanningVerdict(
     const std::string& file_name,
     const HashCallbackVariant& sha256_or_cb,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& content_transfer_method,
     const std::string& source_email,
     const int64_t content_size,
@@ -186,7 +200,8 @@ void MaybeReportDeepScanningVerdict(
         GURL(content_analysis_info->url()), content_analysis_info->tab_url(),
         source, destination, file_name, sha256_or_cb, mime_type, trigger,
         response.request_token(), unscanned_reason, content_transfer_method,
-        content_size, content_analysis_info->referrer_chain(), event_result);
+        content_size, content_analysis_info->referrer_chain(), event_result,
+        content_analysis_info->extension_initiator());
   }
 
   if (result != ScanRequestUploadResult::kSuccess) {
@@ -207,7 +222,8 @@ void MaybeReportDeepScanningVerdict(
           source, destination, file_name, sha256_or_cb, mime_type, trigger,
           response.request_token(), std::move(unscanned_reason),
           content_transfer_method, content_size,
-          content_analysis_info->referrer_chain(), event_result);
+          content_analysis_info->referrer_chain(), event_result,
+          content_analysis_info->extension_initiator());
     } else if (response_result.triggered_rules_size() > 0) {
       reporting_event_router->OnAnalysisConnectorResult(
           GURL(content_analysis_info->url()), content_analysis_info->tab_url(),
@@ -215,7 +231,8 @@ void MaybeReportDeepScanningVerdict(
           response.request_token(), content_transfer_method, source_email,
           content_analysis_info->GetContentAreaAccountEmail(), response_result,
           content_size, content_analysis_info->referrer_chain(),
-          content_analysis_info->frame_url_chain(), event_result);
+          content_analysis_info->frame_url_chain(), event_result,
+          content_analysis_info->extension_initiator());
     }
   }
 }
@@ -228,7 +245,7 @@ void ReportAnalysisConnectorWarningBypass(
     const std::string& file_name,
     const enterprise_connectors::HashCallbackVariant& sha256_or_cb,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& content_transfer_method,
     const int64_t content_size,
     const ContentAnalysisResponse& response,
@@ -252,7 +269,8 @@ void ReportAnalysisConnectorWarningBypass(
         /*source_email=*/"",
         content_analysis_info->GetContentAreaAccountEmail(), user_justification,
         result, content_size, content_analysis_info->referrer_chain(),
-        content_analysis_info->frame_url_chain(), EventResult::BYPASSED);
+        content_analysis_info->frame_url_chain(), EventResult::BYPASSED,
+        content_analysis_info->extension_initiator());
   }
 }
 
@@ -350,6 +368,14 @@ void InitializeBinaryUploadRequest(BinaryUploadRequest* request,
 
     if (base::FeatureList::IsEnabled(kEnterpriseIframeDlpRulesSupport)) {
       request->set_frame_url_chain(info.frame_url_chain());
+    }
+
+    // Only set the initiator when known so the server can tell "unknown" from
+    // "empty".
+    if (base::FeatureList::IsEnabled(kEnterpriseExtensionActorAttribution)) {
+      if (auto extension_initiator = info.extension_initiator()) {
+        request->set_extension_initiator(std::move(*extension_initiator));
+      }
     }
   }
 

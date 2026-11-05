@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
+import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
@@ -11,7 +12,6 @@ import android.app.Activity;
 import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.offlinepages.OfflinePageUtils;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
 /**
@@ -40,6 +41,7 @@ public class TabBookmarker {
     private final BookmarkManagerOpener mBookmarkManagerOpener;
     private final Supplier<PriceDropNotificationManager> mPriceDropNotificationManagerSupplier;
     private final Supplier<Boolean> mBookmarkBarVisibilitySupplier;
+    private final BiConsumer<BookmarkId, Tab> mSaveBookmarkOfflineCallback;
 
     /**
      * Constructor.
@@ -52,6 +54,8 @@ public class TabBookmarker {
      * @param bookmarkManagerOpener Helper to open bookmark activities.
      * @param priceDropNotificationManagerSupplier Supplies the {@link PriceDropNotificationManager}
      *     which manages price drop notifications.
+     * @param bookmarkBarVisibilitySupplier Supplies the visibility of the bookmarks bar.
+     * @param saveBookmarkOfflineCallback Callback to save a newly added bookmark offline.
      */
     public TabBookmarker(
             Activity activity,
@@ -60,7 +64,8 @@ public class TabBookmarker {
             Supplier<SnackbarManager> snackbarManagerSupplier,
             BookmarkManagerOpener bookmarkManagerOpener,
             Supplier<PriceDropNotificationManager> priceDropNotificationManagerSupplier,
-            Supplier<Boolean> bookmarkBarVisibilitySupplier) {
+            Supplier<Boolean> bookmarkBarVisibilitySupplier,
+            BiConsumer<BookmarkId, Tab> saveBookmarkOfflineCallback) {
         mActivity = activity;
         mBookmarkModelSupplier = bookmarkModelSupplier;
         mBottomSheetControllerSupplier = bottomSheetControllerSupplier;
@@ -68,6 +73,7 @@ public class TabBookmarker {
         mBookmarkManagerOpener = bookmarkManagerOpener;
         mPriceDropNotificationManagerSupplier = priceDropNotificationManagerSupplier;
         mBookmarkBarVisibilitySupplier = bookmarkBarVisibilitySupplier;
+        mSaveBookmarkOfflineCallback = saveBookmarkOfflineCallback;
     }
 
     /**
@@ -110,7 +116,7 @@ public class TabBookmarker {
                 assumeNonNull(mBookmarkModelSupplier.get()).getUserBookmarkIdForTab(currentTab);
         if (bookmarkId == null) {
             addOrEditBookmark(
-                    Collections.singletonList(currentTab),
+                    Collections.singletonList(assertNonNull(currentTab)),
                     BookmarkType.NORMAL,
                     /* fromExplicitTrackUi= */ true);
         } else {
@@ -199,7 +205,7 @@ public class TabBookmarker {
                         // Add offline page for a new bookmark.
                         if (newBookmarkId != null
                                 && !Objects.equals(newBookmarkId, currentBookmarkId)) {
-                            OfflinePageUtils.saveBookmarkOffline(
+                            mSaveBookmarkOfflineCallback.accept(
                                     newBookmarkId, tabsToBookmark.get(i));
                         }
                     }

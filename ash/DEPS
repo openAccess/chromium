@@ -1,4 +1,5 @@
 include_rules = [
+  "+device/base/public/cpp",
   "+device/bluetooth",
   "+cc/base/math_util.h",
   "+cc/debug",
@@ -72,7 +73,7 @@ include_rules = [
   "+skia/ext",
   "+third_party/cros_system_api",
   "+third_party/icu",
-  "+third_party/khronos/GLES2",
+  "+third_party/angle/include/GLES2",
   "+third_party/re2",
   "+third_party/rust/fend_core/v1/wrapper/fend_core.h",
   "+third_party/skia",
@@ -97,6 +98,7 @@ include_rules = [
   "+chromeos/ash/components/cryptohome",
   "+chromeos/ash/components/editor_menu",
   "+chromeos/ash/components/emoji",
+  "+chromeos/ash/components/favicon",
   "+chromeos/ash/components/feature_usage",
   "+chromeos/ash/components/geolocation",
   "+chromeos/ash/components/human_presence",
@@ -108,6 +110,7 @@ include_rules = [
   "+chromeos/ash/components/osauth",
   "+chromeos/ash/components/peripheral_notification",
   "+chromeos/ash/components/proximity_auth",
+  "+chromeos/ash/components/signin",
   "+chromeos/ash/components/string_matching",
   "+chromeos/ash/components/system",
   "+chromeos/ash/components/system_web_apps",
@@ -127,7 +130,7 @@ include_rules = [
   # //ash/session and the state in //chromeos/ash/components/login/login_state
   # are both derived from the canonical state in the browser. Using both sources
   # could create subtle inconsistencies based on when observers are called.
-  "-chromeos/ash/compoments/login/login_state",
+  "-chromeos/ash/components/login/login_state",
   "+chromeos/ash/components/network",
   # //ash can use resources from the internal ash resources repo.
   "+chromeos/ash/resources/internal",
@@ -177,11 +180,36 @@ specific_include_rules = {
   "ash_prefs\\.cc": [
     "+components/user_manager/user_manager.h",
   ],
-  "keyboard_capability_unittest\\.cc": [
-    "+device/udev_linux/fake_udev_loader.h",
+  # TODO(crbug.com/546860700): the entries below use
+  # session_manager::SessionManager as an interim way to get the active
+  # session's AccountId while ash's session_manager migration is in progress;
+  # revisit.
+  "capture_mode_controller\\.cc": [
+    "+components/session_manager/core/session.h",
+    "+components/session_manager/core/session_manager.h",
   ],
-  "policy_recommendation_restorer_unittest\\.cc": [
-    "+components/sync_preferences/testing_pref_service_syncable.h"
+  "companion_app_broker_impl(_unittest)?\\.cc": [
+    "+components/session_manager/core/session.h",
+    "+components/session_manager/core/session_manager.h",
+  ],
+  "fast_pair_presenter_impl(_unittest)?\\.cc": [
+    "+chromeos/ash/components/policy/device_local_account",
+    "+components/session_manager/core/session.h",
+    "+components/session_manager/core/session_manager.h",
+  ],
+  "nearby_share_detailed_view_impl(_unittest)?\\.cc": [
+    "+components/session_manager/core/session.h",
+    "+components/session_manager/core/session_manager.h",
+  ],
+  "oauth_http_fetcher\\.cc": [
+    "+components/session_manager/core/session.h",
+    "+components/session_manager/core/session_manager.h",
+  ],
+  # oauth_http_fetcher_unittest.cc isn't an AshTestBase test, so unlike the
+  # three above it can't reuse the UserManager/SessionManager pair that
+  # AshTestHelper sets up; it brings up its own via UserSessionTestEnvironment.
+  "oauth_http_fetcher_unittest\\.cc": [
+    "+components/session_manager/test/user_session_test_environment.h",
   ],
   "root_window_controller\\.(cc|h)": [
     "+ash/host"
@@ -190,12 +218,22 @@ specific_include_rules = {
     "+ash/host/ash_window_tree_host_init_params.h",
     "+chromeos/ash/components/fwupd",
   ],
-  "window_manager\\.cc": [
-    "+ash/host/ash_window_tree_host.h"
+  # See the TODO(crbug.com/546860700) comment on capture_mode_controller.cc
+  # above: this test drives the real SessionManager because AshTestHelper's
+  # SimulateUserLogin() only updates ash's SessionController.
+  "sunfish_unittest\\.cc": [
+    "+components/session_manager/core/session_manager.h",
+  ],
+  "window_restore_util\\.cc": [
+    # The active user's AccountId comes from SessionManager, per the migration
+    # away from the historical SessionController.
+    "+components/session_manager/core/session.h",
+    "+components/session_manager/core/session_manager.h",
   ],
   ".*test\\.cc": [
     # Allowed to access user_manager in test code to set up testing environment
     # close to the production.
+    "+components/session_manager/test/user_session_test_environment.h",
     "+components/user_manager",
   ]
 }

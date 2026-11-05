@@ -47,17 +47,14 @@ void BoxPainter::RecordScrollHitTestData(
   // content under <canvas>, which disables compositing but which needs scroll
   // hit test data.
   if (paint_info.ShouldOmitCompositingInfo()) {
-    bool painting_canvas_child =
-        RuntimeEnabledFeatures::CanvasDrawElementEnabled(
-            layout_box_.GetDocument().GetExecutionContext()) &&
-        layout_box_.IsInCanvasSubtree();
+    bool painting_canvas_child = layout_box_.IsInCanvasSubtree();
     if (!painting_canvas_child) {
       return;
     }
   }
 
   // If an object is not visible, it does not scroll.
-  const ComputedStyle& style = layout_box_.StyleRef();
+  const ComputedStyle& style = layout_box_.Style();
   if (style.Visibility() != EVisibility::kVisible) {
     return;
   }
@@ -90,28 +87,10 @@ void BoxPainter::RecordScrollHitTestData(
         << border_box_properties.Clip().ToTreeString().Utf8()
         << current_properties.Clip().ToTreeString().Utf8();
 #endif
-    gfx::Rect cull_rect;
-    if (!RuntimeEnabledFeatures::
-            ScrollingContentsCullRectOnScrollNodeEnabled()) {
-      cull_rect = fragment->GetContentsCullRect().Rect();
-      if (cull_rect.Contains(properties->Scroll()->ContentsRect())) {
-        cull_rect = CullRect::Infinite().Rect();
-      } else {
-        // Don't pass the cull rect if it doesn't cover the container rect
-        // because cc can't distinguish the case from paint checkerboarding.
-        gfx::Rect cull_rect_in_container_space = gfx::ToEnclosingRect(
-            gfx::RectF(cull_rect) +
-            properties->ScrollTranslation()->Get2dTranslation());
-        if (!cull_rect_in_container_space.Contains(
-                properties->Scroll()->ContainerRect())) {
-          cull_rect = CullRect::Infinite().Rect();
-        }
-      }
-    }
     paint_controller.RecordScrollHitTestData(
         background_client, DisplayItem::kScrollHitTest,
         properties->ScrollTranslation(), VisualRect(fragment->PaintOffset()),
-        hit_test_opaqueness, cull_rect);
+        hit_test_opaqueness);
   }
 
   if (hit_test_opaqueness != cc::HitTestOpaqueness::kTransparent) {
@@ -123,7 +102,7 @@ void BoxPainter::RecordScrollHitTestData(
 
 gfx::Rect BoxPainter::VisualRect(const PhysicalOffset& paint_offset) {
   DCHECK(!layout_box_.VisualRectRespectsVisibility() ||
-         layout_box_.StyleRef().Visibility() == EVisibility::kVisible);
+         layout_box_.Style().Visibility() == EVisibility::kVisible);
   PhysicalRect rect = layout_box_.SelfVisualOverflowRect();
   rect.Move(paint_offset);
   return ToEnclosingRect(rect);

@@ -20,6 +20,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "components/optimization_guide/content/browser/mock_media_transcript_provider.h"
 #include "components/optimization_guide/content/browser/no_response_ai_page_content_agent.h"
 #include "components/optimization_guide/content/browser/page_content_test_utils.h"
@@ -37,8 +38,8 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/media_start_stop_observer.h"
+#include "content/public/test/popup_test_utils.h"
 #include "content/shell/browser/shell.h"
 #include "content/shell/common/shell_switches.h"
 #include "net/dns/mock_host_resolver.h"
@@ -671,7 +672,7 @@ IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTest,
       testing::UnorderedElementsAre(
           optimization_guide::proto::CLICKABILITY_REASON_CLICKABLE_CONTROL,
           optimization_guide::proto::CLICKABILITY_REASON_CLICK_HANDLER,
-          optimization_guide::proto::CLICKABILITY_REASON_MOUSE_HOVER,
+          optimization_guide::proto::CLICKABILITY_REASON_MOUSE_OVER,
           optimization_guide::proto::CLICKABILITY_REASON_MOUSE_CLICK,
           optimization_guide::proto::CLICKABILITY_REASON_KEY_EVENTS,
           optimization_guide::proto::CLICKABILITY_REASON_EDITABLE,
@@ -768,7 +769,14 @@ IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTest,
           optimization_guide::proto::CLICKABILITY_REASON_CLICKABLE_CONTROL));
 
   const auto& label = ActionableContentRootNode().children_nodes()[1];
-  EXPECT_FALSE(label.content_attributes().has_interaction_info());
+  ASSERT_TRUE(label.content_attributes().has_interaction_info());
+  const auto& label_interaction = label.content_attributes().interaction_info();
+  EXPECT_TRUE(label_interaction.clickability_reasons().empty());
+  EXPECT_FALSE(label_interaction.is_disabled());
+  EXPECT_THAT(label_interaction.interaction_disabled_reasons(),
+              testing::UnorderedElementsAre(
+                  optimization_guide::proto::
+                      INTERACTION_DISABLED_REASON_POINTER_EVENTS_NONE));
   EXPECT_EQ(label.content_attributes().label_for_dom_node_id(),
             input.content_attributes().common_ancestor_dom_node_id());
 }
@@ -830,7 +838,14 @@ IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTest,
   // be offscreen because there is no overlap with the viewport rect.
   EXPECT_GE(option_geometry.outer_bounding_box().y(),
             page_content().viewport_geometry().height());
-  EXPECT_FALSE(size_option->content_attributes().has_interaction_info());
+  ASSERT_TRUE(size_option->content_attributes().has_interaction_info());
+  const auto& option_interaction =
+      size_option->content_attributes().interaction_info();
+  EXPECT_TRUE(option_interaction.clickability_reasons().empty());
+  EXPECT_THAT(option_interaction.interaction_disabled_reasons(),
+              testing::UnorderedElementsAre(
+                  optimization_guide::proto::
+                      INTERACTION_DISABLED_REASON_VISUALLY_UNREACHABLE));
 }
 
 IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTest,
@@ -858,7 +873,14 @@ IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTest,
   // it as directly actionable because scrolling cannot bring it on screen.
   const auto& option_geometry = size_option->content_attributes().geometry();
   EXPECT_LT(option_geometry.outer_bounding_box().x(), 0);
-  EXPECT_FALSE(size_option->content_attributes().has_interaction_info());
+  ASSERT_TRUE(size_option->content_attributes().has_interaction_info());
+  const auto& option_interaction =
+      size_option->content_attributes().interaction_info();
+  EXPECT_TRUE(option_interaction.clickability_reasons().empty());
+  EXPECT_THAT(option_interaction.interaction_disabled_reasons(),
+              testing::UnorderedElementsAre(
+                  optimization_guide::proto::
+                      INTERACTION_DISABLED_REASON_VISUALLY_UNREACHABLE));
 }
 
 IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTest,
@@ -938,6 +960,113 @@ IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTest, Video) {
   AssertValidOrigin(
       video_node.content_attributes().video_data().security_origin(),
       url::Origin::Create(video_url));
+}
+
+IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTest, MathML) {
+  LoadPage(https_server()->GetURL("/mathml.html"));
+
+  // The visibility:hidden formula in mathml.html is omitted.
+  ASSERT_EQ(page_content().root_node().children_nodes_size(), 3);
+
+  // 1. MathML formula (fraction)
+  const auto& math_node = page_content().root_node().children_nodes(0);
+  ASSERT_TRUE(math_node.content_attributes().has_math_data());
+  EXPECT_EQ(math_node.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_MATH);
+  EXPECT_EQ(math_node.content_attributes().math_data().stripped_mathml(),
+            "<math><mfrac><mrow><mi>x</mi></mrow><mrow><mi>y</mi><mo>+</mo><mn>"
+            "1</mn></mrow></mfrac></math>");
+  EXPECT_TRUE(math_node.content_attributes().math_data().is_block());
+
+  // Descendant text nodes are still emitted as children for backward
+  // compatibility.
+  ASSERT_EQ(math_node.children_nodes_size(), 4);
+  const auto& frac_child0 = math_node.children_nodes(0);
+  EXPECT_EQ(frac_child0.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
+  EXPECT_EQ(frac_child0.content_attributes().text_data().text_content(),
+            "\xf0\x9d\x91\xa5");  // Mathematical italic small x (U+1D465)
+
+  const auto& frac_child1 = math_node.children_nodes(1);
+  EXPECT_EQ(frac_child1.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
+  EXPECT_EQ(frac_child1.content_attributes().text_data().text_content(),
+            "\xf0\x9d\x91\xa6");  // Mathematical italic small y (U+1D466)
+
+  const auto& frac_child2 = math_node.children_nodes(2);
+  EXPECT_EQ(frac_child2.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
+  EXPECT_EQ(frac_child2.content_attributes().text_data().text_content(), "+");
+
+  const auto& frac_child3 = math_node.children_nodes(3);
+  EXPECT_EQ(frac_child3.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
+  EXPECT_EQ(frac_child3.content_attributes().text_data().text_content(), "1");
+
+  // 2. Standalone MathML Matrix
+  const auto& matrix_math = page_content().root_node().children_nodes(1);
+  ASSERT_TRUE(matrix_math.content_attributes().has_math_data());
+  EXPECT_EQ(matrix_math.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_MATH);
+  EXPECT_EQ(matrix_math.content_attributes().math_data().stripped_mathml(),
+            "<math><mtable><mtr><mtd><mn>1</mn></mtd></mtr></mtable></math>");
+  EXPECT_FALSE(matrix_math.content_attributes().math_data().is_block());
+
+  // Descendant <mtable>/<mtr>/<mtd> elements also extract as standard table
+  // nodes.
+  ASSERT_EQ(matrix_math.children_nodes_size(), 1);
+  const auto& matrix_table = matrix_math.children_nodes(0);
+  EXPECT_EQ(matrix_table.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_TABLE);
+  ASSERT_EQ(matrix_table.children_nodes_size(), 1);
+
+  const auto& matrix_row = matrix_table.children_nodes(0);
+  EXPECT_EQ(matrix_row.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_TABLE_ROW);
+  ASSERT_EQ(matrix_row.children_nodes_size(), 1);
+
+  const auto& matrix_cell = matrix_row.children_nodes(0);
+  EXPECT_EQ(matrix_cell.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_TABLE_CELL);
+  ASSERT_EQ(matrix_cell.children_nodes_size(), 1);
+
+  const auto& matrix_text = matrix_cell.children_nodes(0);
+  EXPECT_EQ(matrix_text.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
+  EXPECT_EQ(matrix_text.content_attributes().text_data().text_content(), "1");
+
+  // 3. Formula wrapped in an anchor
+  const auto& anchor_node = page_content().root_node().children_nodes(2);
+  EXPECT_EQ(anchor_node.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_ANCHOR);
+  EXPECT_EQ(anchor_node.content_attributes().anchor_data().url(),
+            "https://example.com/equation");
+  ASSERT_EQ(anchor_node.children_nodes_size(), 1);
+
+  const auto& linked_math = anchor_node.children_nodes(0);
+  ASSERT_TRUE(linked_math.content_attributes().has_math_data());
+  EXPECT_EQ(linked_math.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_MATH);
+  EXPECT_EQ(linked_math.content_attributes().math_data().stripped_mathml(),
+            "<math><mrow><mi>z</mi><mo>=</mo><mn>0</mn></mrow></math>");
+  EXPECT_FALSE(linked_math.content_attributes().math_data().is_block());
+
+  ASSERT_EQ(linked_math.children_nodes_size(), 3);
+  const auto& linked_child0 = linked_math.children_nodes(0);
+  EXPECT_EQ(linked_child0.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
+  EXPECT_EQ(linked_child0.content_attributes().text_data().text_content(),
+            "\xf0\x9d\x91\xa7");  // Mathematical italic small z (U+1D467)
+
+  const auto& linked_child1 = linked_math.children_nodes(1);
+  EXPECT_EQ(linked_child1.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
+  EXPECT_EQ(linked_child1.content_attributes().text_data().text_content(), "=");
+
+  const auto& linked_child2 = linked_math.children_nodes(2);
+  EXPECT_EQ(linked_child2.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_TEXT);
+  EXPECT_EQ(linked_child2.content_attributes().text_data().text_content(), "0");
 }
 
 namespace {
@@ -1389,18 +1518,26 @@ class PageContentProtoProviderBrowserTestMultiProcess
     }
   }
 
- protected:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-
  private:
   base::test::ScopedFeatureList feature_list_;
 };
 
-// TODO(crbug.com/438250758): Test is flaky.
 IN_PROC_BROWSER_TEST_P(PageContentProtoProviderBrowserTestMultiProcess,
-                       DISABLED_AIPageContentMultipleCrossSiteFrames) {
-  LoadPage(https_server()->GetURL("a.com", "/iframe_cross_site.html"),
-           GetActionableAIPageContentOptions());
+                       AIPageContentMultipleCrossSiteFrames) {
+  LoadPage(https_server()->GetURL("a.com", "/iframe_cross_site.html"), nullptr);
+
+  for (size_t i = 0; i < 2; ++i) {
+    auto* sub_frame = ChildFrameAt(web_contents()->GetPrimaryMainFrame(), i);
+    ASSERT_TRUE(sub_frame);
+
+    base::test::TestFuture<bool> future;
+    sub_frame->GetRenderWidgetHost()->InsertVisualStateCallback(
+        future.GetCallback());
+    ASSERT_TRUE(future.Wait())
+        << "Timeout waiting for subframe syncing with renderer";
+  }
+
+  LoadData(GetActionableAIPageContentOptions());
 
   const auto& root_node = ActionableContentRootNode();
   EXPECT_EQ(root_node.children_nodes().size(), 2);
@@ -1580,40 +1717,6 @@ INSTANTIATE_TEST_SUITE_P(All,
                          PageContentProtoProviderBrowserTestMultiProcess,
                          testing::Bool());
 
-class PageContentProtoProviderBrowserTestFencedFrame
-    : public PageContentProtoProviderBrowserTest {
- protected:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTestFencedFrame,
-                       AIPageContentFencedFrame) {
-  LoadPage(https_server()->GetURL("a.com", "/fenced_frame/basic.html"),
-           nullptr);
-
-  const GURL fenced_frame_url =
-      https_server()->GetURL("b.com", "/fenced_frame/simple.html");
-  auto* fenced_frame_rfh = fenced_frame_helper_.CreateFencedFrame(
-      web_contents()->GetPrimaryMainFrame(), fenced_frame_url);
-  ASSERT_NE(nullptr, fenced_frame_rfh);
-  LoadData();
-
-  EXPECT_EQ(page_content().root_node().children_nodes().size(), 1);
-
-  const auto& b_frame = page_content().root_node().children_nodes()[0];
-  EXPECT_EQ(b_frame.content_attributes().attribute_type(),
-            optimization_guide::proto::CONTENT_ATTRIBUTE_IFRAME);
-  const auto& b_frame_data = b_frame.content_attributes().iframe_data();
-  AssertValidOrigin(b_frame_data.frame_data().security_origin(),
-                    fenced_frame_rfh->GetLastCommittedOrigin());
-  EXPECT_FALSE(b_frame.content_attributes().is_ad_related());
-  EXPECT_EQ(b_frame.children_nodes().size(), 1);
-  AssertHasText(b_frame.children_nodes()[0], "Non empty simple page\n\n");
-  const auto& b_geometry = b_frame.content_attributes().geometry();
-  AssertRectsEqual(b_geometry.outer_bounding_box(),
-                   b_geometry.visible_bounding_box());
-}
-
 IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTest,
                        AIPageContentInnerWebContents) {
   LoadPage(https_server()->GetURL("a.com", "/iframe.html"), nullptr);
@@ -1688,20 +1791,14 @@ IN_PROC_BROWSER_TEST_P(PageContentProtoProviderBrowserTestMultiProcess,
 
 IN_PROC_BROWSER_TEST_P(PageContentProtoProviderBrowserTestMultiProcess,
                        AIPageContentFrameIdentifiersTheSame) {
-  LoadPage(https_server()->GetURL("a.com", "/fenced_frame/basic.html"),
-           nullptr);
+  LoadPage(https_server()->GetURL("a.com", "/iframe_same_site.html"), nullptr);
 
-  const GURL fenced_frame_url =
-      https_server()->GetURL("b.com", "/fenced_frame/simple.html");
-  auto* fenced_frame_rfh = fenced_frame_helper_.CreateFencedFrame(
-      web_contents()->GetPrimaryMainFrame(), fenced_frame_url);
-  ASSERT_NE(nullptr, fenced_frame_rfh);
   LoadData();
   auto document_identifiers_1 = document_identifiers();
   LoadData();
   auto document_identifiers_2 = document_identifiers();
-  EXPECT_EQ(2u, document_identifiers_1.size());
-  EXPECT_EQ(2u, document_identifiers_2.size());
+  EXPECT_EQ(3u, document_identifiers_1.size());
+  EXPECT_EQ(3u, document_identifiers_2.size());
   for (const auto& [document_identifier_key, doc_ptr] :
        document_identifiers_1) {
     EXPECT_NE(document_identifiers_2.end(),
@@ -3036,6 +3133,8 @@ IN_PROC_BROWSER_TEST_P(PageContentProtoProviderMainFrameTimeoutBrowserTest,
   LoadPage(https_server()->GetURL("a.com", "/simple.html"),
            /*options=*/nullptr);
 
+  base::HistogramTester histogram_tester;
+
   // Make the main frame non-responsive.
   NoResponseAIPageContentAgent no_response_agent(
       web_contents()->GetPrimaryMainFrame());
@@ -3052,6 +3151,9 @@ IN_PROC_BROWSER_TEST_P(PageContentProtoProviderMainFrameTimeoutBrowserTest,
 
   // The APC should have timed out.
   EXPECT_TRUE(loading_run_loop.AnyQuitCalled());
+  histogram_tester.ExpectUniqueSample(
+      kAIPageContentExtractionStatusHistogram,
+      AIPageContentExtractionStatus::kMainFrameTimeout, 1);
 }
 
 // Regression test for crbug.com/497815610.
@@ -3167,6 +3269,8 @@ IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTestNoTimeouts,
                        MainFrameMojoDisconnect) {
   LoadPage(https_server()->GetURL("/simple.html"), /*options=*/nullptr);
 
+  base::HistogramTester histogram_tester;
+
   // Hold the main-frame APC response so the request is still pending when the
   // pipe closes.
   NoResponseAIPageContentAgent no_response_agent(
@@ -3185,6 +3289,39 @@ IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTestNoTimeouts,
 
   // A missing main-frame APC response makes the whole extraction fail.
   EXPECT_FALSE(has_page_content());
+  histogram_tester.ExpectUniqueSample(
+      kAIPageContentExtractionStatusHistogram,
+      AIPageContentExtractionStatus::
+          kMainFrameEmptyOrDisconnectedRendererResponse,
+      1);
+}
+
+IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTest,
+                       ExtractionStatusSuccessAndMainFrameNotLive) {
+  base::HistogramTester histogram_tester;
+  LoadPage(https_server()->GetURL("/simple.html"));
+  histogram_tester.ExpectUniqueSample(
+      kAIPageContentExtractionStatusHistogram,
+      AIPageContentExtractionStatus::kSuccess, 1);
+
+  content::RenderProcessHost* child_process =
+      web_contents()->GetPrimaryMainFrame()->GetProcess();
+  content::RenderProcessHostWatcher crash_observer(
+      child_process, content::RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+  ASSERT_TRUE(child_process->Shutdown(0));
+  crash_observer.Wait();
+
+  base::test::TestFuture<AIPageContentResultOrError> future;
+  GetAIPageContent(web_contents(), GetAIPageContentOptions(),
+                   future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+  ASSERT_FALSE(future.Get().has_value());
+  EXPECT_EQ(future.Get().error().status,
+            AIPageContentExtractionStatus::kMainFrameNotLive);
+  histogram_tester.ExpectBucketCount(
+      kAIPageContentExtractionStatusHistogram,
+      AIPageContentExtractionStatus::kMainFrameNotLive, 1);
+  histogram_tester.ExpectTotalCount(kAIPageContentExtractionStatusHistogram, 2);
 }
 
 IN_PROC_BROWSER_TEST_F(PageContentProtoProviderBrowserTestNoTimeouts,

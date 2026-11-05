@@ -21,17 +21,20 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_function.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_clipboard_read_options.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_clipboard_unsanitized_formats.h"
 #include "third_party/blink/renderer/core/clipboard/system_clipboard.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/editing/commands/clipboard_commands.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
+#include "third_party/blink/renderer/core/workers/worker_global_scope.h"
 #include "third_party/blink/renderer/modules/clipboard/clipboard.h"
 #include "third_party/blink/renderer/modules/clipboard/clipboard_item.h"
 #include "third_party/blink/renderer/modules/clipboard/clipboard_reader.h"
+#include "third_party/blink/renderer/modules/clipboard/clipboard_utilities.h"
 #include "third_party/blink/renderer/modules/clipboard/clipboard_writer.h"
 #include "third_party/blink/renderer/modules/permissions/permission_utils.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
@@ -62,7 +65,7 @@ using mojom::blink::PermissionService;
 ScriptPromise<IDLSequence<ClipboardItem>> ClipboardPromise::CreateForRead(
     ExecutionContext* context,
     ScriptState* script_state,
-    ClipboardReadOptions* options,
+    ClipboardUnsanitizedFormats* formats,
     ExceptionState& exception_state) {
   if (!script_state->ContextIsValid()) {
     return ScriptPromise<IDLSequence<ClipboardItem>>();
@@ -73,7 +76,7 @@ ScriptPromise<IDLSequence<ClipboardItem>> ClipboardPromise::CreateForRead(
   auto promise = resolver->Promise();
   ClipboardPromise* clipboard_promise = MakeGarbageCollected<ClipboardPromise>(
       context, resolver, exception_state);
-  clipboard_promise->HandleRead(options);
+  clipboard_promise->HandleRead(formats);
   return promise;
 }
 
@@ -152,12 +155,11 @@ void ClipboardPromise::WriteNextRepresentation() {
     return;
   }
   ScriptState::Scope scope(GetScriptState());
-  LocalFrame* local_frame = GetLocalFrame();
   // Commit to system clipboard when all representations are written.
   // This is in the start flow so that a |clipboard_item_data_| with 0 items
   // will still commit gracefully.
   if (clipboard_representation_index_ == clipboard_item_data_.size()) {
-    local_frame->GetSystemClipboard()->CommitWrite();
+    GetSystemClipboard()->CommitWrite();
     script_promise_resolver_->DowncastTo<IDLUndefined>()->Resolve();
     return;
   }
@@ -169,8 +171,7 @@ void ClipboardPromise::WriteNextRepresentation() {
       clipboard_item_data_[clipboard_representation_index_].second;
 
   DCHECK(!clipboard_writer_);
-  clipboard_writer_ =
-      ClipboardWriter::Create(local_frame->GetSystemClipboard(), type, this);
+  clipboard_writer_ = ClipboardWriter::Create(GetSystemClipboard(), type, this);
   if (!clipboard_writer_) {
     script_promise_resolver_->RejectWithDOMException(
         DOMExceptionCode::kNotAllowedError,
@@ -195,11 +196,11 @@ void ClipboardPromise::RejectFromReadOrDecodeFailure() {
               "."}));
 }
 
-void ClipboardPromise::HandleRead(ClipboardReadOptions* options) {
+void ClipboardPromise::HandleRead(ClipboardUnsanitizedFormats* formats) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (options && options->hasUnsanitized() && !options->unsanitized().empty()) {
-    Vector<String> unsanitized_formats = options->unsanitized();
+  if (formats && formats->hasUnsanitized() && !formats->unsanitized().empty()) {
+    Vector<String> unsanitized_formats = formats->unsanitized();
     if (unsanitized_formats.size() > 1) {
       script_promise_resolver_->RejectWithDOMException(
           DOMExceptionCode::kNotAllowedError,
@@ -218,18 +219,6 @@ void ClipboardPromise::HandleRead(ClipboardReadOptions* options) {
     will_read_unprocessed_html_ = true;
   }
 
-  if (RuntimeEnabledFeatures::SelectiveClipboardFormatReadEnabled() &&
-      options && options->hasTypes()) {
-    read_clipboard_item_types_ = HashSet<String>();
-    if (options->types().has_value()) {
-      const auto& types = options->types();
-      for (const String& type : *types) {
-        if (ClipboardItem::supports(type)) {
-          read_clipboard_item_types_->insert(type);
-        }
-      }
-    }
-  }
   ValidatePreconditions(mojom::blink::PermissionName::CLIPBOARD_READ,
                         /*will_be_sanitized=*/false,
                         BindOnce(&ClipboardPromise::HandleReadWithPermission,
@@ -315,6 +304,10 @@ void ClipboardPromise::HandleReadWithPermission(
     return;
   }
 
+  if (RejectIfDocumentNotFocused()) {
+    return;
+  }
+
   // Snapshot the sequence number before format enumeration so a clipboard
   // change during the async IPC will be detected by getType() (fail-closed).
   // See crbug.com/498411773.
@@ -378,26 +371,14 @@ void ClipboardPromise::OnReadAvailableFormatNames(
     return;
   }
 
-  const bool check_types_to_read =
-      RuntimeEnabledFeatures::SelectiveClipboardFormatReadEnabled() &&
-      read_clipboard_item_types_.has_value();
-  if (check_types_to_read && read_clipboard_item_types_->empty()) {
-    ResolveRead();  // No supported types to read.
-    return;
-  }
   if (RuntimeEnabledFeatures::
           ReadClipboardDataOnClipboardItemGetTypeEnabled()) {
     item_mime_types_.ReserveInitialCapacity(format_names.size());
   } else {
-    clipboard_item_data_.ReserveInitialCapacity(
-        check_types_to_read
-            ? std::min(format_names.size(), read_clipboard_item_types_->size())
-            : format_names.size());
+    clipboard_item_data_.ReserveInitialCapacity(format_names.size());
   }
   for (const String& format_name : format_names) {
-    if (ClipboardItem::supports(format_name) &&
-        (!check_types_to_read ||
-         read_clipboard_item_types_->Contains(format_name))) {
+    if (ClipboardItem::supports(GetExecutionContext(), format_name)) {
       if (RuntimeEnabledFeatures::
               ReadClipboardDataOnClipboardItemGetTypeEnabled()) {
         item_mime_types_.emplace_back(format_name);
@@ -425,7 +406,7 @@ void ClipboardPromise::ReadNextRepresentation() {
   }
 
   ClipboardReader* clipboard_reader = ClipboardReader::Create(
-      GetSystemClipboard(),
+      GetExecutionContext(), GetSystemClipboard(),
       clipboard_item_data_[clipboard_representation_index_].first, this,
       /*sanitize_html=*/!will_read_unprocessed_html_);
   if (!clipboard_reader) {
@@ -484,6 +465,10 @@ void ClipboardPromise::HandleReadTextWithPermission(
     return;
   }
 
+  if (RejectIfDocumentNotFocused()) {
+    return;
+  }
+
   // Non-Mac platforms proceed directly to an asynchronous OS clipboard read so
   // the renderer main thread is not blocked. Tracks crbug.com/474131935.
   system_clipboard->ReadPlainText(
@@ -517,6 +502,10 @@ void ClipboardPromise::OnPlatformPermissionResultForReadText(
     return;
   }
 
+  if (RejectIfDocumentNotFocused()) {
+    return;
+  }
+
   system_clipboard->ReadPlainText(
       mojom::blink::ClipboardBuffer::kStandard,
       BindOnce(&ClipboardPromise::OnReadPlainText, WrapPersistent(this)));
@@ -543,6 +532,10 @@ void ClipboardPromise::OnPlatformPermissionResultForRead(
   }
 
   if (RejectIfClipboardChangedSincePasteStart(*system_clipboard)) {
+    return;
+  }
+
+  if (RejectIfDocumentNotFocused()) {
     return;
   }
 
@@ -618,17 +611,22 @@ void ClipboardPromise::HandleWriteWithPermission(
   // Check that all types are valid.
   for (const auto& type_and_promise : clipboard_item_data_with_promises_) {
     const String& type = type_and_promise.first;
-    write_clipboard_item_types_.emplace_back(type);
-    promise_list.emplace_back(type_and_promise.second);
-    if (!ClipboardItem::supports(type)) {
+
+    if (!ClipboardItem::supports(GetExecutionContext(), type)) {
       script_promise_resolver_->RejectWithDOMException(
           DOMExceptionCode::kNotAllowedError,
           StrCat({"Type ", type, " not supported on write."}));
       return;
     }
+
+    write_clipboard_item_types_.emplace_back(type);
+    promise_list.emplace_back(type_and_promise.second);
   }
   ScriptState* script_state = GetScriptState();
   ScriptState::Scope scope(script_state);
+  // `promise_list` might be out of control and GCed without resolving.
+  // Therefore, `script_promise_resolver_` needs to suppress the detach check.
+  script_promise_resolver_->SuppressDetachCheck();
   PromiseAll<V8UnionBlobOrString>::WaitForAll(
       script_state, promise_list,
       bindings::HeapBind(&ClipboardPromise::HandlePromiseWrite, this),
@@ -681,13 +679,15 @@ void ClipboardPromise::ValidatePreconditions(
 
   ExecutionContext* context = GetExecutionContext();
   DCHECK(context);
-  LocalDOMWindow& window = *To<LocalDOMWindow>(context);
-  DCHECK(window.IsSecureContext());  // [SecureContext] in IDL
+  DCHECK(context->IsSecureContext());  // [SecureContext] in IDL
 
-  if (!window.document()->hasFocus()) {
-    script_promise_resolver_->RejectWithDOMException(
-        DOMExceptionCode::kNotAllowedError, "Document is not focused.");
-    return;
+  // A worker has no document, so the focus requirement cannot apply to one.
+  if (IsA<LocalDOMWindow>(context)) {
+    if (RejectIfDocumentNotFocused()) {
+      return;
+    }
+  } else {
+    CHECK(context->IsWorkerGlobalScope());
   }
 
   constexpr char kFeaturePolicyMessage[] =
@@ -696,11 +696,11 @@ void ClipboardPromise::ValidatePreconditions(
       "more details.";
 
   if ((permission == mojom::blink::PermissionName::CLIPBOARD_READ &&
-       !window.IsFeatureEnabled(
+       !context->IsFeatureEnabled(
            network::mojom::PermissionsPolicyFeature::kClipboardRead,
            ReportOptions::kReportOnFailure, kFeaturePolicyMessage)) ||
       (permission == mojom::blink::PermissionName::CLIPBOARD_WRITE &&
-       !window.IsFeatureEnabled(
+       !context->IsFeatureEnabled(
            network::mojom::PermissionsPolicyFeature::kClipboardWrite,
            ReportOptions::kReportOnFailure, kFeaturePolicyMessage))) {
     script_promise_resolver_->RejectWithDOMException(
@@ -708,16 +708,30 @@ void ClipboardPromise::ValidatePreconditions(
     return;
   }
 
+  // Extensions only support read in the DOM.
+  if (permission == mojom::blink::PermissionName::CLIPBOARD_READ &&
+      context->IsWorkerGlobalScope()) {
+    script_promise_resolver_->RejectWithDOMException(
+        DOMExceptionCode::kNotAllowedError, "Read not supported in Worker");
+    return;
+  }
+
+  WebContentSettingsClient* content_settings_client = nullptr;
+  if (auto* window = DynamicTo<LocalDOMWindow>(context)) {
+    if (auto* frame = window->GetFrame()) {
+      content_settings_client = frame->GetContentSettingsClient();
+    }
+  } else {
+    content_settings_client =
+        To<WorkerGlobalScope>(context)->ContentSettingsClient();
+  }
+
   // Grant permission by-default if extension has read/write permissions.
-  if (GetLocalFrame()->GetContentSettingsClient() &&
+  if (content_settings_client &&
       ((permission == mojom::blink::PermissionName::CLIPBOARD_READ &&
-        GetLocalFrame()
-            ->GetContentSettingsClient()
-            ->AllowReadFromClipboard()) ||
+        content_settings_client->AllowReadFromClipboard()) ||
        (permission == mojom::blink::PermissionName::CLIPBOARD_WRITE &&
-        GetLocalFrame()
-            ->GetContentSettingsClient()
-            ->AllowWriteToClipboard()))) {
+        content_settings_client->AllowWriteToClipboard()))) {
     GetClipboardTaskRunner()->PostTask(
         FROM_HERE,
         blink::BindOnce(std::move(callback),
@@ -765,8 +779,22 @@ void ClipboardPromise::ValidatePreconditions(
     return;
   }
 
-  bool has_transient_user_activation =
-      LocalFrame::HasTransientUserActivation(GetLocalFrame());
+  bool has_transient_user_activation = false;
+  if (auto* window = DynamicTo<LocalDOMWindow>(context)) {
+    has_transient_user_activation =
+        LocalFrame::HasTransientUserActivation(window->GetFrame());
+  } else if (context->IsServiceWorkerGlobalScope() &&
+             IsExtensionContext(context)) {
+    // Extension service workers lack DOM windows and frames, so they cannot
+    // have DOM user gestures. They are still permitted to use the clipboard
+    // API without one, e.g. when responding to a keyboard shortcut, an alarm,
+    // or a background event listener. Setting this true keeps the descriptor
+    // from asking for a gesture the context can never have. The grant itself
+    // is decided in the browser process by the clipboard permission contexts,
+    // which consult the extension's clipboardWrite permission.
+    has_transient_user_activation = true;
+  }
+
   auto permission_descriptor = CreateClipboardPermissionDescriptor(
       permission, /*has_user_gesture=*/has_transient_user_activation,
       /*will_be_sanitized=*/will_be_sanitized);
@@ -790,6 +818,28 @@ bool ClipboardPromise::RejectIfClipboardChangedSincePasteStart(
   return true;
 }
 
+bool ClipboardPromise::RejectIfDocumentNotFocused() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  auto* window = To<LocalDOMWindow>(GetExecutionContext());
+
+  // Trusted surfaces (WebUI, DevTools, chrome-untrusted, and Isolated Web Apps)
+  // are exempt from the focus requirement. See the corresponding browser-side
+  // check in ContentBrowserClient::IsClipboardPasteAllowed().
+  // Prerendering documents are excluded because WebPreferences (which carries
+  // clipboard_focus_exempt from the primary main frame) is shared with the
+  // prerendering page, and prerendering documents must not bind ClipboardHost.
+  LocalFrame* frame = window->GetFrame();
+  const bool clipboard_focus_exempt =
+      frame && frame->GetSettings()->GetClipboardFocusExempt();
+  if (!window->document()->IsPrerendering() &&
+      (clipboard_focus_exempt || window->document()->hasFocus())) {
+    return false;
+  }
+  script_promise_resolver_->RejectWithDOMException(
+      DOMExceptionCode::kNotAllowedError, "Document is not focused.");
+  return true;
+}
+
 LocalFrame* ClipboardPromise::GetLocalFrame() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ExecutionContext* context = GetExecutionContext();
@@ -798,16 +848,23 @@ LocalFrame* ClipboardPromise::GetLocalFrame() const {
   if (!context) {
     return nullptr;
   }
-  LocalFrame* local_frame = To<LocalDOMWindow>(context)->GetFrame();
-  return local_frame;
+  if (auto* window = DynamicTo<LocalDOMWindow>(context)) {
+    return window->GetFrame();
+  }
+  return nullptr;
 }
 
-SystemClipboard* ClipboardPromise::GetSystemClipboard() const {
-  LocalFrame* local_frame = GetLocalFrame();
-  if (!local_frame) {
+SystemClipboard* ClipboardPromise::GetSystemClipboard() {
+  ExecutionContext* context = GetExecutionContext();
+  if (!context) {
     return nullptr;
   }
-  return local_frame->GetSystemClipboard();
+  if (auto* window = DynamicTo<LocalDOMWindow>(context)) {
+    auto* frame = window->GetFrame();
+    return frame ? frame->GetSystemClipboard() : nullptr;
+  }
+  CHECK(context->IsWorkerGlobalScope());
+  return To<WorkerGlobalScope>(context)->GetSystemClipboard();
 }
 
 SystemClipboard* ClipboardPromise::GetSystemClipboardOrReject() {

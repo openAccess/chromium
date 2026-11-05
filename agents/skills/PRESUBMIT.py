@@ -17,8 +17,15 @@ def _EnsureRepoRootInSysPath(input_api):
 
 
 def CheckPythonTests(input_api, output_api):
+    if not (
+        input_api.HasAffectedFiles(extensions='.py')
+        or input_api.HasAffectedFiles(
+            path='multi-agent-engineering-workflow/tests'
+        )
+    ):
+        return []
     _EnsureRepoRootInSysPath(input_api)
-    from agents import presubmit_support  # pylint: disable=import-outside-toplevel
+    from agents import presubmit_support
 
     return input_api.RunTests(
         input_api.canned_checks.GetUnitTestsRecursively(
@@ -34,6 +41,6 @@ def CheckPythonTests(input_api, output_api):
 
 def CheckSkills(input_api, output_api):
     _EnsureRepoRootInSysPath(input_api)
-    from agents.presubmit_support import CheckSkillPresubmit  # pylint: disable=import-outside-toplevel
+    from agents.presubmit_support import CheckSkillPresubmit
 
     return CheckSkillPresubmit(input_api, output_api, check_personas=True)

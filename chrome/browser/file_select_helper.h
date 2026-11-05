@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/callback_list.h"
+#include "base/feature_list.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
@@ -17,12 +18,13 @@
 #include "components/enterprise/buildflags/buildflags.h"
 #include "components/enterprise/common/files_scan_data.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/web_contents_based_canceller.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "net/base/directory_lister.h"
 #include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 
-#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
+#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/enterprise/connectors/analysis/content_analysis_delegate.h"
 #endif
 
@@ -88,6 +90,7 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
 
   FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, IsAcceptTypeValid);
   FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, ZipPackage);
+  FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, ZipPackageSkipsSymlinks);
   FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, GetSanitizedFileName);
   FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, LastSelectedDirectory);
   FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest,
@@ -115,6 +118,8 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
   FRIEND_TEST_ALL_PREFIXES(
       FileSelectHelperTest,
       ContentAnalysisCompletionCallback_FolderUpload_OKBad);
+  FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest,
+                           ContentAnalysisCompletionCallback_ContentUriFile);
   FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, GetFileTypesFromAcceptType);
   FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, MultipleFileExtensionsForMime);
   FRIEND_TEST_ALL_PREFIXES(FileSelectHelperTest, ConfirmationDialog);
@@ -152,9 +157,11 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
                               content::RenderFrameHost* new_host) override;
   void RenderFrameDeleted(content::RenderFrameHost* render_frame_host) override;
   void WebContentsDestroyed() override;
+  void OnVisibilityChanged(content::Visibility visibility) override;
 
   void InitLifecycleObserver(content::WebContents* web_contents);
   void OnTabDeactivated(tabs::TabInterface* tab);
+  void OnCancelledByWindowSize();
 
   void EnumerateDirectoryImpl(
       content::WebContents* tab,
@@ -240,7 +247,7 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
   base::FilePath MaybeSubstituteFuseboxFilePath(
       const blink::mojom::FileSystemFileInfo& file_system_info);
 
-#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
+#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
   // Callback used to receive the results of a content analysis scan.
   void ContentAnalysisCompletionCallback(
       std::vector<blink::mojom::FileChooserFileInfoPtr> list,
@@ -343,6 +350,9 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
   bool abort_on_missing_web_contents_in_tests_ = true;
 
   base::CallbackListSubscription tab_deactivated_subscription_;
+
+  std::unique_ptr<content::WebContentsBasedCanceller>
+      web_contents_based_canceller_;
 
 #if !BUILDFLAG(IS_ANDROID)
   // When not null, this prevents picture-in-picture windows from opening.

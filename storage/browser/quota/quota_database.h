@@ -27,14 +27,11 @@
 #include "components/services/storage/public/cpp/buckets/bucket_locator.h"
 #include "components/services/storage/public/cpp/buckets/constants.h"
 #include "components/services/storage/public/cpp/quota_error_or.h"
+#include "sql/transaction.h"
 #include "storage/browser/quota/quota_internals.mojom-forward.h"
 #include "storage/browser/quota/storage_directory.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/quota/quota_types.mojom-shared.h"
-
-namespace base {
-class Clock;
-}
 
 namespace sql {
 class Database;
@@ -45,20 +42,6 @@ class Statement;
 namespace storage {
 
 class SpecialStoragePolicy;
-
-// These values are logged to UMA. Entries should not be renumbered and numeric
-// values should never be reused. Please keep in sync with "DatabaseResetReason"
-// in tools/metrics/histograms/enums.xml.
-enum class DatabaseResetReason {
-  kOpenDatabase = 0,
-  kOpenInMemoryDatabase = 1,
-  kCreateSchema = 2,
-  kDatabaseMigration = 3,
-  kDatabaseVersionTooNew = 4,
-  kInitMetaTable = 5,
-  kCreateDirectory = 6,
-  kMaxValue = kCreateDirectory
-};
 
 // Stores all quota managed origin bucket data and metadata.
 //
@@ -230,9 +213,6 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaDatabase {
   // Manually disable database to test database error scenarios for testing.
   void SetDisabledForTesting(bool disable);
 
-  static base::Time GetNow();
-  static void SetClockForTesting(const base::Clock* clock);
-
   void SetAlreadyEvictedStaleStorageForTesting(
       bool already_evicted_stale_storage);
 
@@ -261,7 +241,6 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaDatabase {
 
   QuotaError EnsureOpened();
   void OnSqliteError(int sqlite_error_code, sql::Statement* statement);
-  bool MoveLegacyDatabase();
   bool OpenDatabase();
   bool EnsureDatabaseVersion();
   bool ResetStorage();
@@ -285,9 +264,14 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaDatabase {
 
   const std::unique_ptr<StorageDirectory> storage_directory_;
   const base::FilePath db_file_path_;
-  const base::FilePath legacy_db_file_path_;
 
   std::unique_ptr<sql::Database> db_ GUARDED_BY_CONTEXT(sequence_checker_);
+  // The long-running transaction that batches writes between two commits.
+  // Re-created by Commit(). Empty while the database is not open, and after a
+  // failed Begin(), in which case statements run in autocommit. Declared
+  // after `db_` so that it is destroyed first.
+  std::optional<sql::Transaction> transaction_
+      GUARDED_BY_CONTEXT(sequence_checker_);
   std::unique_ptr<sql::MetaTable> meta_table_
       GUARDED_BY_CONTEXT(sequence_checker_);
   bool is_recreating_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
@@ -312,7 +296,7 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaDatabase {
   // We need to delay evicting stale buckets until after any session
   // restore has taken place, otherwise we might fail to record current usage.
   // See crbug.com/40281870 for more info.
-  base::Time evict_stale_buckets_after_{GetNow() + base::Minutes(1)};
+  base::Time evict_stale_buckets_after_{base::Time::Now() + base::Minutes(1)};
 
   // We only need to evict stale storage once per profile load. Unlike
   // expired storage, there is no contract with the site to evict storage

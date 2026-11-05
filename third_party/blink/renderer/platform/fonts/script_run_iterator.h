@@ -36,7 +36,7 @@ class PLATFORM_EXPORT ScriptRunIterator {
   ScriptRunIterator(const ScriptRunIterator&) = delete;
   ScriptRunIterator& operator=(const ScriptRunIterator&) = delete;
 
-  bool Consume(unsigned* limit, UScriptCode*);
+  bool Consume(wtf_size_t* limit, UScriptCode*);
 
   static constexpr int kMaxUnicodeScriptExtensions = 23;
   static constexpr int kMaxScriptCount = kMaxUnicodeScriptExtensions + 1;
@@ -61,22 +61,25 @@ class PLATFORM_EXPORT ScriptRunIterator {
   const wtf_size_t length_;
 
   Deque<BracketRec> brackets_;
-  wtf_size_t brackets_fixup_depth_;
+  wtf_size_t brackets_fixup_depth_ = 0;
   // Limit max brackets so that the bracket tracking buffer does not grow
   // excessively large when processing long runs of text.
   static const int kMaxBrackets = 32;
 
   UScriptCodeList current_set_;
+  UScriptCodeList next_set_storage_;
+  UScriptCodeList ahead_set_storage_;
   // Because next_set_ and ahead_set_ are swapped as we consume characters, and
   // swapping inlined vector is not cheap, next_set_ and ahead_set_ are
-  // pointers.
-  std::unique_ptr<UScriptCodeList> next_set_;
-  std::unique_ptr<UScriptCodeList> ahead_set_;
+  // pointers to inline storage.
+  UScriptCodeList* next_set_ = &next_set_storage_;
+  UScriptCodeList* ahead_set_ = &ahead_set_storage_;
 
-  UChar32 ahead_character_;
-  wtf_size_t ahead_pos_;
+  // The initial value of ahead_character_ is not used.
+  UChar32 ahead_character_ = 0;
+  wtf_size_t ahead_pos_ = 0;
 
-  UScriptCode common_preferred_;
+  UScriptCode common_preferred_ = USCRIPT_COMMON;
 
   const ScriptData* script_data_;
 };
@@ -115,7 +118,7 @@ class PLATFORM_EXPORT ScriptData {
 
   virtual PairedBracketType GetPairedBracketType(UChar32) const = 0;
 
-  static constexpr unsigned kFirstSurrogate = 0xD800;
+  static constexpr wtf_size_t kFirstSurrogate = 0xD800;
   using UnicodeBitSet = std::bitset<kFirstSurrogate>;
 
   // Get the set of Unicode code points that would be allowed to skip
@@ -126,7 +129,7 @@ class PLATFORM_EXPORT ScriptData {
   // which have special handling.
   //
   // This takes a bit of time to compute, so we cache it per-script
-  // across the entire rendering process (ICUScriptData is already
+  // across the entire rendering process (IcuScriptData is already
   // a process-wide singleton). We also only care about the code points
   // up to U+D800 (which covers most of the BMP), in order to never
   // have to worry about surrogates; as long as the UChars we read
@@ -135,6 +138,9 @@ class PLATFORM_EXPORT ScriptData {
   // The second return value is the set of inherited and not-common
   // characters (see inherited_not_common_chars_ for description).
   struct RunExtensionLookups {
+    STACK_ALLOCATED();
+
+   public:
     const ScriptData::UnicodeBitSet* can_remain_in_script;
     const ScriptData::UnicodeBitSet* inherited_not_common_chars;
   };
@@ -142,11 +148,11 @@ class PLATFORM_EXPORT ScriptData {
       UScriptCode script) const = 0;
 };
 
-class PLATFORM_EXPORT ICUScriptData final : public ScriptData {
+class PLATFORM_EXPORT IcuScriptData final : public ScriptData {
  public:
-  ~ICUScriptData() override = default;
+  ~IcuScriptData() override = default;
 
-  static const ICUScriptData* Instance();
+  static const IcuScriptData* Instance();
 
   void GetScripts(UChar32, UScriptCodeList& dst) const override;
 

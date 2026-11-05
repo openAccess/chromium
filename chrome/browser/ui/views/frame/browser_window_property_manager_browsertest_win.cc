@@ -45,6 +45,7 @@
 #include "content/public/test/test_utils.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/views/win/hwnd_util.h"
 
 typedef extensions::ExtensionBrowserTest BrowserWindowPropertyManagerTest;
@@ -214,7 +215,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowPropertyManagerTest, DISABLED_HostedApp) {
       browser()->GetProfile(),
       apps::AppLaunchParams(extension->id(),
                             apps::LaunchContainer::kLaunchContainerWindow,
-                            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
                             apps::LaunchSource::kFromTest),
       base::IgnoreArgs<content::WebContents*>(done.QuitClosure()));
   done.Run();
@@ -242,7 +243,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowPropertyManagerTest,
           /*user_gesture=*/true);
   BrowserWindowInterface* pip_browser = CreateBrowserWindow(std::move(params));
   ASSERT_EQ(pip_browser->GetType(),
-            BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE);
+            BrowserWindowInterface::Type::TYPE_FLOATING);
   ASSERT_EQ(app_name,
             BrowserInitState::From(pip_browser)->create_params().app_name);
 
@@ -274,7 +275,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowPropertyManagerTest,
           /*user_gesture=*/true);
   BrowserWindowInterface* pip_browser = CreateBrowserWindow(std::move(params));
   ASSERT_EQ(pip_browser->GetType(),
-            BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE);
+            BrowserWindowInterface::Type::TYPE_FLOATING);
   ASSERT_TRUE(
       BrowserInitState::From(pip_browser)->create_params().app_name.empty());
 

@@ -18,10 +18,13 @@
 #include "components/omnibox/browser/omnibox_popup_selection.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/strings/grit/components_strings.h"
+#include "third_party/omnibox_proto/formatted_string.pb.h"
+#include "third_party/omnibox_proto/suggest_template_info.pb.h"
 #include "ui/base/l10n/l10n_util.h"
 
-// static
-std::string AutocompleteMatchType::ToString(AutocompleteMatchType::Type type) {
+namespace omnibox {
+
+std::string AutocompleteMatchTypeToString(AutocompleteMatchType type) {
   // clang-format off
   static constexpr auto strings = std::to_array<const char*>({
     "url-what-you-typed",
@@ -65,22 +68,24 @@ std::string AutocompleteMatchType::ToString(AutocompleteMatchType::Type type) {
     "history-embeddings-answer",
     "tab-group",
     "cross-device-tab",
+    "recently-closed-tab",
   });
   // clang-format on
-  static_assert(strings.size() == AutocompleteMatchType::NUM_TYPES,
-                "strings array must have NUM_TYPES elements");
-  return strings[type];
+  static_assert(strings.size() ==
+                    static_cast<size_t>(AutocompleteMatchType::kMaxValue) + 1,
+                "strings array must have all AutocompleteMatchType elements");
+  return strings[static_cast<size_t>(type)];
 }
 
-// static
-bool AutocompleteMatchType::FromInteger(int value, Type* result) {
+bool AutocompleteMatchTypeFromInteger(int value,
+                                      AutocompleteMatchType* result) {
   DCHECK(result);
 
-  if (value < Type::URL_WHAT_YOU_TYPED || value >= Type::NUM_TYPES) {
+  if (value < 0 || value > static_cast<int>(AutocompleteMatchType::kMaxValue)) {
     return false;
   }
 
-  *result = static_cast<Type>(value);
+  *result = static_cast<AutocompleteMatchType>(value);
   return true;
 }
 
@@ -103,6 +108,23 @@ std::u16string AddAdditionalMessaging(const std::u16string& format,
             format, {kAccessibilityLabelPrefixEndSentinel}, nullptr));
   }
   return l10n_util::FormatString(format, {replacement}, nullptr);
+}
+
+// Returns the text to read for `match.description`: the accessibility text the
+// server sent for the SuggestTemplateInfo secondary text (e.g. for text with
+// symbols like stars), as long as `description` still equals that text.
+// Otherwise, returns `description`.
+static std::u16string GetDescriptionForAccessibility(
+    const AutocompleteMatch& match) {
+  if (match.suggest_template.has_value()) {
+    const FormattedString& secondary_text =
+        match.suggest_template->secondary_text();
+    if (!secondary_text.a11y_text().empty() &&
+        match.description == base::UTF8ToUTF16(secondary_text.text())) {
+      return base::UTF8ToUTF16(secondary_text.a11y_text());
+    }
+  }
+  return match.description;
 }
 
 // Returns the base label for this match, without handling the positional or
@@ -162,27 +184,29 @@ std::u16string GetAccessibilityBaseLabel(const AutocompleteMatch& match,
       0,                                        // HISTORY_EMBEDDINGS_ANSWER
       0,                                        // TAB_GROUP
       0,                                        // CROSS_DEVICE_TAB
+      0,                                        // RECENTLY_CLOSED_TAB
   });
-  static_assert(std::size(message_ids) == AutocompleteMatchType::NUM_TYPES,
-                "message_ids must have NUM_TYPES elements");
+  static_assert(std::size(message_ids) ==
+                    static_cast<size_t>(AutocompleteMatchType::kMaxValue) + 1,
+                "message_ids must have all AutocompleteMatchType elements");
 
   // Document provider should use its full display text; description has
   // already been constructed via IDS_DRIVE_SUGGESTION_DESCRIPTION_TEMPLATE.
   // TODO(skare) http://crbug.com/951109: format as string in grd so this isn't
   // special-cased.
-  if (match.type == AutocompleteMatchType::DOCUMENT_SUGGESTION) {
+  if (match.type == AutocompleteMatchType::kDocumentSuggestion) {
     std::u16string doc_string =
         match.contents + u", " + match.description + u", " + match_text;
     return doc_string;
   }
 
   // Standalone action suggestions must use the associated accessibility hint.
-  if (match.type == AutocompleteMatchType::PEDAL) {
+  if (match.type == AutocompleteMatchType::kPedal) {
     DCHECK(match.takeover_action);
     return match.takeover_action->GetLabelStrings().accessibility_hint;
   }
 
-  int message = message_ids[match.type];
+  int message = message_ids[static_cast<size_t>(match.type)];
   if (!message || match.IsThreadsHistorySuggestion()) {
     return match_text;
   }
@@ -201,20 +225,21 @@ std::u16string GetAccessibilityBaseLabel(const AutocompleteMatch& match,
         message = IDS_ACC_AUTOCOMPLETE_SUGGESTED_SEARCH;
       } else {
         // Full entity search suggestion with description.
-        description = match.description;
+        description = GetDescriptionForAccessibility(match);
       }
       break;
     case IDS_ACC_AUTOCOMPLETE_HISTORY:
+    case IDS_ACC_AUTOCOMPLETE_HISTORY_EMBEDDINGS:
     case IDS_ACC_AUTOCOMPLETE_BOOKMARK:
       // History match.
       // May have descriptive text for the title of the page.
-      description = match.description;
+      description = GetDescriptionForAccessibility(match);
       break;
     case IDS_ACC_AUTOCOMPLETE_CLIPBOARD_URL:
     case IDS_ACC_AUTOCOMPLETE_CLIPBOARD_TEXT:
       // Clipboard match.
       // Description contains clipboard content
-      description = match.description;
+      description = GetDescriptionForAccessibility(match);
       show_match_text = false;
       break;
     case IDS_ACC_AUTOCOMPLETE_CLIPBOARD_IMAGE:
@@ -244,8 +269,7 @@ std::u16string GetAccessibilityBaseLabel(const AutocompleteMatch& match,
   return l10n_util::GetStringFUTF16(message, *description);
 }
 
-// static
-std::u16string AutocompleteMatchType::ToAccessibilityLabel(
+std::u16string AutocompleteMatchToAccessibilityLabel(
     const AutocompleteMatch& match,
     const std::u16string& header_text,
     const std::u16string& match_text,
@@ -282,3 +306,5 @@ std::u16string AutocompleteMatchType::ToAccessibilityLabel(
 
   return result;
 }
+
+}  // namespace omnibox

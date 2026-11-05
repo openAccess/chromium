@@ -14,7 +14,9 @@
 #include "components/find_in_page/find_tab_helper.h"
 #include "components/paint_preview/buildflags/buildflags.h"
 #include "content/public/browser/immersive_playback_options.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "third_party/blink/public/mojom/frame/blocked_navigation_types.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "url/origin.h"
 
 namespace content {
@@ -38,10 +40,12 @@ namespace android {
 // the Chromium Android port but not to be shared with WebView.
 class TabWebContentsDelegateAndroid
     : public web_contents_delegate_android::WebContentsDelegateAndroid,
-      public find_in_page::FindResultObserver {
+      public find_in_page::FindResultObserver,
+      public content::WebContentsObserver {
  public:
   TabWebContentsDelegateAndroid(JNIEnv* env,
-                                const jni_zero::JavaRef<jobject>& obj);
+                                const jni_zero::JavaRef<jobject>& obj,
+                                content::WebContents* web_contents);
 
   TabWebContentsDelegateAndroid(const TabWebContentsDelegateAndroid&) = delete;
   TabWebContentsDelegateAndroid& operator=(
@@ -49,18 +53,33 @@ class TabWebContentsDelegateAndroid
 
   ~TabWebContentsDelegateAndroid() override;
 
+  // Marks `web_contents` so that its next `beforeunload` completion leaves the
+  // page open, giving Java's TabRemover sole authority to close it. See
+  // BeforeUnloadFired().
+  //
+  // A mark covers exactly one completion and is dropped on the abandonments
+  // that leave the tab behind: `web_contents` went away, its primary page
+  // changed, or `web_contents` left the tab whose closure marked it. A gone
+  // renderer is not among them, because the `beforeunload` timeout still
+  // produces a completion for the mark to meet. Some abandonments produce
+  // neither a completion nor a drop -- a dispatch consumed by an inner-delegate
+  // attach, or a hang on a build with the beforeunload timeout suppressed --
+  // and strand the mark until the next completion spends it. A null
+  // `web_contents` is a no-op.
+  static void SetSuppressBeforeUnloadAutoClose(
+      content::WebContents* web_contents,
+      bool suppress);
+
+  void BeforeUnloadFired(content::WebContents* web_contents,
+                         bool proceed,
+                         bool* proceed_to_fire_unload) override;
+
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
                       scoped_refptr<content::FileSelectListener> listener,
                       const blink::mojom::FileChooserParams& params) override;
   bool ShouldFocusLocationBarByDefault(content::WebContents* source) override;
   void NavigationStateChanged(content::WebContents* source,
                               content::InvalidateTypes changed_flags) override;
-  void FindReply(content::WebContents* web_contents,
-                 int request_id,
-                 int number_of_matches,
-                 const gfx::Rect& selection_rect,
-                 int active_match_ordinal,
-                 bool final_update) override;
   void FindMatchRectsReply(content::WebContents* web_contents,
                            int version,
                            const std::vector<gfx::RectF>& rects,
@@ -79,10 +98,11 @@ class TabWebContentsDelegateAndroid
       const GURL& opener_url,
       const std::string& frame_name,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       const content::StoragePartitionConfig& partition_config,
-      content::SessionStorageNamespace* session_storage_namespace) override;
+      content::SessionStorageNamespaceHandle* session_storage_namespace)
+      override;
   content::JavaScriptDialogManager* GetJavaScriptDialogManager(
       content::WebContents* source) override;
   void RequestMediaAccessPermission(
@@ -103,7 +123,7 @@ class TabWebContentsDelegateAndroid
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
@@ -112,6 +132,8 @@ class TabWebContentsDelegateAndroid
       const GURL& blocked_url,
       const GURL& initiator_url,
       const url::Origin& initiator_origin,
+      scoped_refptr<content::InitiatorNavigationState>
+          initiator_navigation_state,
       blink::mojom::NavigationBlockedReason reason) override;
   void UpdateUserGestureCarryoverInfo(
       content::WebContents* web_contents) override;
@@ -131,10 +153,6 @@ class TabWebContentsDelegateAndroid
                           bool user_gesture,
                           bool last_unlocked_by_target) override;
   void LostPointerLock() override;
-  void GetAIPageContent(
-      content::WebContents* web_contents,
-      bool include_actionable_elements,
-      base::OnceCallback<void(const std::string&)> callback) override;
 
 #if BUILDFLAG(ENABLE_PAINT_PREVIEW)
   void CapturePaintPreviewOfSubframe(
@@ -147,6 +165,16 @@ class TabWebContentsDelegateAndroid
   // find_in_page::FindResultObserver:
   void OnFindResultAvailable(content::WebContents* web_contents) override;
   void OnFindTabHelperDestroyed(find_in_page::FindTabHelper* helper) override;
+
+  // content::WebContentsObserver:
+  // Bring WebContentsObserver::BeforeUnloadFired(bool) into the scope so the
+  // WebContentsDelegate::BeforeUnloadFired() override below does not hide it.
+  using content::WebContentsObserver::BeforeUnloadFired;
+  void DidReceiveFindReply(int request_id,
+                           int number_of_matches,
+                           const gfx::Rect& selection_rect,
+                           int active_match_ordinal,
+                           bool final_update) override;
 
   bool ShouldEnableEmbeddedMediaExperience() const;
   bool IsDocumentPictureInPictureBlockedBySystem() const override;
@@ -168,6 +196,13 @@ class TabWebContentsDelegateAndroid
 
   bool IsImmersivePlaybackEnabled() const override;
 
+  // Reports whether `web_contents` is currently marked by
+  // SetSuppressBeforeUnloadAutoClose(). Production code reads the mark only
+  // through BeforeUnloadFired(), which consumes it; this is the non-consuming
+  // peek tests need to tell "mark still set" from "mark spent".
+  static bool ShouldSuppressBeforeUnloadAutoCloseForTesting(
+      const content::WebContents* web_contents);
+
  private:
   std::unique_ptr<device::mojom::GeolocationContext>
       installed_webapp_geolocation_context_;
@@ -175,9 +210,6 @@ class TabWebContentsDelegateAndroid
   base::ScopedMultiSourceObservation<find_in_page::FindTabHelper,
                                      find_in_page::FindResultObserver>
       find_result_observations_{this};
-
-  // Timestamp when the user last successfully escaped from a lock request.
-  base::TimeTicks pointer_lock_last_user_escape_time_;
 
   void NavigationStateChangedDeferred(content::WebContents* source,
                                       content::InvalidateTypes changed_flags);

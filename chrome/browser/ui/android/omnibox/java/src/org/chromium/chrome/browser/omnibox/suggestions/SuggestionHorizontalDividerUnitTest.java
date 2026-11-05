@@ -6,16 +6,15 @@ package org.chromium.chrome.browser.omnibox.suggestions;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
+import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Region.Op;
 import android.view.View;
 
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -24,6 +23,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 import org.robolectric.Robolectric;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -31,17 +31,58 @@ import org.chromium.chrome.R;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 /** Tests for {@link SuggestionHorizontalDivider}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class SuggestionHorizontalDividerUnitTest {
-    @Rule public final MockitoRule mockitoRule = MockitoJUnit.rule();
-    @Mock private RecyclerView mRecyclerView;
-    @Mock private View mChildViewWithDivider;
-    @Mock private View mChildViewWithNoDivider;
+    private static class TestRecyclerView extends RecyclerView {
+        private final List<View> mChildren = new ArrayList<>();
+        private final Map<View, ViewHolder> mViewHolders = new HashMap<>();
+
+        TestRecyclerView(Context context) {
+            super(context);
+        }
+
+        void registerViewHolder(View view, ViewHolder holder) {
+            mViewHolders.put(view, holder);
+        }
+
+        @Override
+        public void addView(View child) {
+            mChildren.add(child);
+        }
+
+        @Override
+        public int getChildCount() {
+            return mChildren.size();
+        }
+
+        @Override
+        public View getChildAt(int index) {
+            return mChildren.get(index);
+        }
+
+        @Override
+        public ViewHolder getChildViewHolder(View child) {
+            return mViewHolders.get(child);
+        }
+    }
+
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
+
     @Mock private RecyclerView.State mState;
-    @Mock private SimpleRecyclerViewAdapter.ViewHolder mShowDividerViewHolder;
-    @Mock private SimpleRecyclerViewAdapter.ViewHolder mNoDividerViewHolder;
     @Mock private Canvas mCanvas;
+
+    private TestRecyclerView mRecyclerView;
+    private View mChildViewWithDivider;
+    private View mChildViewWithNoDivider;
+    private SimpleRecyclerViewAdapter.ViewHolder mShowDividerViewHolder;
+    private SimpleRecyclerViewAdapter.ViewHolder mNoDividerViewHolder;
 
     private final PropertyModel mShowDividerModel =
             new PropertyModel.Builder(SuggestionCommonProperties.ALL_KEYS)
@@ -60,34 +101,31 @@ public class SuggestionHorizontalDividerUnitTest {
         mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
         mDecoration = new SuggestionHorizontalDivider(mActivity);
+        mRecyclerView = new TestRecyclerView(mActivity);
+        mChildViewWithDivider = new View(mActivity);
+        mChildViewWithNoDivider = new View(mActivity);
+        mShowDividerViewHolder =
+                new SimpleRecyclerViewAdapter.ViewHolder(mChildViewWithDivider, null);
+        mNoDividerViewHolder =
+                new SimpleRecyclerViewAdapter.ViewHolder(mChildViewWithNoDivider, null);
         mShowDividerViewHolder.model = mShowDividerModel;
         mNoDividerViewHolder.model = mNoDividerModel;
 
-        doReturn(mShowDividerViewHolder)
-                .when(mRecyclerView)
-                .getChildViewHolder(mChildViewWithDivider);
-        doReturn(mNoDividerViewHolder)
-                .when(mRecyclerView)
-                .getChildViewHolder(mChildViewWithNoDivider);
-        doReturn(2).when(mRecyclerView).getChildCount();
-        doReturn(mChildViewWithDivider).when(mRecyclerView).getChildAt(0);
-        doReturn(mChildViewWithNoDivider).when(mRecyclerView).getChildAt(1);
+        mRecyclerView.registerViewHolder(mChildViewWithDivider, mShowDividerViewHolder);
+        mRecyclerView.registerViewHolder(mChildViewWithNoDivider, mNoDividerViewHolder);
+        mRecyclerView.addView(mChildViewWithDivider);
+        mRecyclerView.addView(mChildViewWithNoDivider);
     }
 
     @Test
-    @SmallTest
     public void testShouldDraw() {
         assertTrue(mDecoration.shouldDrawDivider(mChildViewWithDivider, mRecyclerView));
         assertFalse(mDecoration.shouldDrawDivider(mChildViewWithNoDivider, mRecyclerView));
     }
 
     @Test
-    @SmallTest
     public void testDraw() {
-        doReturn(8.0f).when(mChildViewWithDivider).getX();
-        doReturn(92).when(mChildViewWithDivider).getWidth();
-        doReturn(10.0f).when(mChildViewWithDivider).getY();
-        doReturn(30).when(mChildViewWithDivider).getHeight();
+        mChildViewWithDivider.layout(8, 10, 8 + 92, 10 + 30);
 
         mDecoration.onDraw(mCanvas, mRecyclerView, mState);
         verify(mCanvas).clipRect(8, 40 - 1, 100, 40, Op.DIFFERENCE);

@@ -12,8 +12,8 @@
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/uuid.h"
-#include "components/browser_actuator/internal/metrics_utils.h"
-#include "components/browser_actuator/internal/proto/transport_messages.pb.h"
+#include "components/browser_actuator/internal/transport/metrics_utils.h"
+#include "components/browser_actuator/internal/transport/proto/transport_messages.pb.h"
 #include "components/endpoint_fetcher/endpoint_fetcher.h"
 #include "components/signin/public/base/oauth_consumer_id.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -21,7 +21,7 @@
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
-namespace browser_actuator {
+namespace browser_actuator::transport {
 
 namespace {
 
@@ -33,6 +33,8 @@ ActuatorUpstreamPayloadType ToProtoPayloadType(PayloadType payload_type) {
       return ACTUATOR_UPSTREAM_PAYLOAD_TYPE_CONTROL_COMMAND;
     case PayloadType::kExperimentalTriggering:
       return ACTUATOR_UPSTREAM_PAYLOAD_TYPE_EXPERIMENTAL_TRIGGERING;
+    case PayloadType::kActuation:
+      return ACTUATOR_UPSTREAM_PAYLOAD_TYPE_ACTUATION;
   }
   NOTREACHED();
 }
@@ -55,7 +57,7 @@ UpstreamMessageClient::~UpstreamMessageClient() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
-void UpstreamMessageClient::SendUpstreamMessage(
+ActuatorUpstreamMessage UpstreamMessageClient::SendUpstreamMessage(
     std::string_view session_id,
     int64_t client_sequence_number,
     std::optional<int64_t> responding_to_sequence_number,
@@ -64,15 +66,19 @@ void UpstreamMessageClient::SendUpstreamMessage(
     SendCompleteCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  ActuatorUpstreamMessage upstream;
-  upstream.set_session_id(session_id);
-  upstream.set_client_sequence_number(client_sequence_number);
+  SendSessionMessageRequest request;
+  request.set_request_id(base::Uuid::GenerateRandomV4().AsLowercaseString());
+
+  ActuatorUpstreamMessage* upstream =
+      request.mutable_actuator_upstream_message();
+  upstream->set_session_id(session_id);
+  upstream->set_client_sequence_number(client_sequence_number);
   if (responding_to_sequence_number.has_value()) {
-    upstream.set_responding_to_sequence_number(*responding_to_sequence_number);
+    upstream->set_responding_to_sequence_number(*responding_to_sequence_number);
   }
 
   // Pack payload into Any.
-  ActuatorUpstreamTypedPayload* typed_payload = upstream.add_typed_payloads();
+  ActuatorUpstreamTypedPayload* typed_payload = upstream->add_typed_payloads();
   google::protobuf::Any* any_proto = typed_payload->mutable_proto_payload();
   any_proto->set_type_url(
       base::StrCat({"type.googleapis.com/", message.GetTypeName()}));
@@ -81,10 +87,6 @@ void UpstreamMessageClient::SendUpstreamMessage(
 
   UpstreamRequestLog metrics_log(payload_type);
   metrics_log.RecordPayloadSize(message.ByteSizeLong());
-
-  SendSessionMessageRequest request;
-  request.set_request_id(base::Uuid::GenerateRandomV4().AsLowercaseString());
-  *request.mutable_actuator_upstream_message() = std::move(upstream);
 
   endpoint_fetcher::EndpointFetcher::RequestParams::Builder params_builder(
       endpoint_fetcher::HttpMethod::kPost, traffic_annotation_);
@@ -104,6 +106,8 @@ void UpstreamMessageClient::SendUpstreamMessage(
   fetcher_ptr->Fetch(base::BindOnce(
       &UpstreamMessageClient::OnMessageSent, weak_ptr_factory_.GetWeakPtr(),
       fetcher_ptr, std::move(metrics_log), std::move(callback)));
+
+  return std::move(*upstream);
 }
 
 void UpstreamMessageClient::OnMessageSent(
@@ -132,4 +136,4 @@ void UpstreamMessageClient::OnMessageSent(
   std::move(callback).Run(success, response_code);
 }
 
-}  // namespace browser_actuator
+}  // namespace browser_actuator::transport

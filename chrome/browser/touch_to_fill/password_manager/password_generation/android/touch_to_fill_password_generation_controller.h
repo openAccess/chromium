@@ -8,12 +8,13 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/keyboard_accessory/android/manual_filling_controller.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/password_manager/android/password_generation_element_data.h"
 #include "chrome/browser/touch_to_fill/password_manager/password_generation/android/touch_to_fill_password_generation_bridge.h"
 #include "chrome/browser/touch_to_fill/password_manager/password_generation/android/touch_to_fill_password_generation_delegate.h"
 #include "components/autofill/core/common/password_generation_util.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/web_contents.h"
 
@@ -39,8 +40,7 @@ class TouchToFillPasswordGenerationController
       content::WebContents* web_contents,
       PasswordGenerationElementData generation_element_data,
       std::unique_ptr<TouchToFillPasswordGenerationBridge> bridge,
-      OnDismissedCallback on_dismissed_callback,
-      base::WeakPtr<ManualFillingController> manual_filling_controller);
+      OnDismissedCallback on_dismissed_callback);
   TouchToFillPasswordGenerationController(
       const TouchToFillPasswordGenerationController&) = delete;
   TouchToFillPasswordGenerationController& operator=(
@@ -55,7 +55,8 @@ class TouchToFillPasswordGenerationController
 
   void OnDismissed(bool generated_password_accepted) override;
 
-  void OnGeneratedPasswordAccepted(const std::u16string& password) override;
+  void OnGeneratedPasswordAccepted(
+      const password_manager::PasswordString& password) override;
 
   void OnGeneratedPasswordRejected() override;
 
@@ -74,12 +75,12 @@ class TouchToFillPasswordGenerationController
   PasswordGenerationElementData generation_element_data_;
   std::unique_ptr<TouchToFillPasswordGenerationBridge> bridge_;
   OnDismissedCallback on_dismissed_callback_;
-  // The manual filling controller object to forward client requests to.
-  base::WeakPtr<ManualFillingController> manual_filling_controller_;
 
   content::RenderWidgetHost::SuppressShowingImeCallback
       suppress_showing_ime_callback_;
   bool suppress_showing_ime_callback_added_ = false;
+  // The frame to whose widget `suppress_showing_ime_callback_` was added.
+  content::GlobalRenderFrameHostId suppress_showing_ime_frame_id_;
 
   autofill::password_generation::PasswordGenerationType
       password_generation_type_;

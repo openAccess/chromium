@@ -9,6 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/password_manager/password_change/annotated_page_content_capturer.h"
 #include "chrome/browser/password_manager/password_change/features.h"
@@ -208,7 +209,7 @@ void LoginStateChecker::CheckLoginState(bool ignore_attempts_limit) {
   cached_page_content_ = std::nullopt;
 
   capturer_ = AnnotatedPageContentCapturer::Create(
-      web_contents(), client_, GetAIPageContentOptions(),
+      web_contents(), GetAIPageContentOptions(),
       base::BindRepeating(&LoginStateChecker::OnPageContentReceived,
                           weak_ptr_factory_.GetWeakPtr()));
 }

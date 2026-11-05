@@ -210,6 +210,12 @@ declare_args() {
   # away from the opt-in wexit_time_destructors config, and into the default
   # compiler config.
   is_wexit_time_destructors_default = build_with_chromium
+
+  # Enable Clang's -Wlifetime-safety-permissive warnings in chromium_code.
+  # https://clang.llvm.org/docs/LifetimeSafety.html
+  # TODO(crbug.com/570169685): Enable by default once baseline warnings are
+  # fixed.
+  enable_lifetime_safety_warnings = false
 }
 
 declare_args() {
@@ -847,6 +853,8 @@ config("compiler") {
         # TODO(crbug.com/40219076): Investigate if we can get the > 6% perf win
         # of import_instr_limit 30 with a binary size hit smaller than ~2 MiB.
         import_instr_limit = 5
+      } else if (is_castos && optimize_for_size) {
+        import_instr_limit = 0
       }
 
       ldflags += [ "-Wl,-mllvm,-import-instr-limit=$import_instr_limit" ]
@@ -1051,6 +1059,15 @@ config("compiler") {
   # as NEON is a mandatory part of ARMv8 anyway.
   if (current_cpu == "arm64") {
     defines += [ "__ARM_NEON__=1" ]
+  }
+
+  # This reduces the core_runtime_starboard binary size by ~4.2MB uncompressed
+  # (~1.25MB compressed) on ARM32 embedded platforms.
+  if (enable_cast_receiver) {
+    cflags += [
+      "-mllvm",
+      "-inline-threshold=32",
+    ]
   }
 }
 
@@ -1312,7 +1329,11 @@ config("thinlto_optimize_default") {
 config("thinlto_optimize_max") {
   if (!is_debug && use_thin_lto && is_a_target_toolchain) {
     if (thin_lto_enable_optimizations) {
-      lto_opt_level = 2
+      if (is_castos && optimize_for_size) {
+        lto_opt_level = 1
+      } else {
+        lto_opt_level = 2
+      }
     } else {
       lto_opt_level = 0
     }
@@ -1533,22 +1554,55 @@ config("clang_revision") {
 
     if (toolchain_has_rust && _perform_consistency_checks &&
         !rust_force_head_revision) {
-      # Ensure that the synced rust version matches what's in git.
-      _rust_revision_lines =
-          filter_include(read_file("//tools/rust/update_rust.py", "list lines"),
-                         [ "RUST_*REVISION = *" ])
-      _py_revision =
-          string_replace(_rust_revision_lines[0], "RUST_REVISION = '", "")
-      _py_revision = string_replace(_py_revision, "'", "")
-      _py_subrevision =
-          string_replace(_rust_revision_lines[1], "RUST_SUB_REVISION = ", "")
-      _expected_rust_revision = "$_py_revision-$_py_subrevision"
+      # Ensure that synced rust, crubit, and bindgen versions match what's in
+      # git.
+      _rust_update_lines =
+          read_file("//tools/rust/update_rust.py", "list lines")
+      _version_lines =
+          read_file("//third_party/rust-toolchain/VERSION", "list lines")
 
-      # Ensure the rust version matches the clang version.
-      assert(
-          filter_include([ rustc_revision ],
-                         [ "*-$_expected_rust_revision-*" ]) != [],
-          "rustc_revision=\"$rustc_revision\" but update_rust.py expected \"$_expected_rust_revision\". Run \"gclient sync\"?")
+      # The rust revision combines two lines of the file, so we need to do
+      # some preprocessing to combine them.
+      _lines = filter_include(_rust_update_lines, [ "RUST_*REVISION = *" ])
+      _rust_rev =
+          string_replace(string_replace(_lines[0], "RUST_REVISION = '", ""),
+                         "'",
+                         "")
+      _rust_subrev = string_replace(_lines[1], "RUST_SUB_REVISION = ", "")
+
+      _tools = [
+        {
+          name = "rustc"
+          expected_pattern = "rustc *$_rust_rev-$_rust_subrev-*"
+        },
+        {
+          name = "crubit"
+          update_variable = "CRUBIT_REVISION"
+        },
+        {
+          name = "bindgen"
+          update_variable = "BINDGEN_REVISION"
+        },
+      ]
+
+      foreach(_tool, _tools) {
+        if (defined(_tool.expected_pattern)) {
+          _expected = _tool.expected_pattern
+        } else {
+          _lines = []
+          _lines = filter_include(_rust_update_lines,
+                                  [ "${_tool.update_variable} = *" ])
+          _expected =
+              string_replace(string_replace(_lines[0],
+                                            "${_tool.update_variable} = '",
+                                            "${_tool.name}: "),
+                             "'",
+                             "")
+        }
+        assert(
+            filter_include(_version_lines, [ _expected ]) != [],
+            "${_tool.name} revision in //third_party/rust-toolchain/VERSION does not match update_rust.py. Run \"gclient sync\"?")
+      }
     }
 
     # This is here so that all files get recompiled after a clang roll and
@@ -1606,6 +1660,18 @@ ubsan_hardening("c_array_bounds") {
 # `NOTREACHED()` at the end of such functions.
 ubsan_hardening("return") {
   sanitizer = "return"
+}
+
+# Enable `-fsanitize=unreachable` to crash deterministically if control
+# flow hits an unreachable point.
+ubsan_hardening("unreachable") {
+  sanitizer = "unreachable"
+
+  # TODO(crbug.com/501143596):
+  # 1.  `fuchsia-binary-size` tells us that web_engine and
+  #     chrome_fuchsia both grow 32768 bytes (10x that, uncompressed).
+  # 2.  `headless_shell_wpt_tests` fail on `mac-rel`.
+  condition = is_debug || !(is_mac || is_fuchsia)
 }
 
 config("rustc_revision") {
@@ -2049,25 +2115,21 @@ config("default_warnings") {
     ldflags += [ "-Wl,-no_warn_duplicate_libraries" ]
   }
 
-  configs = [ ":default_clippy_lints" ]
+  if (enable_rust_clippy) {
+    configs = [ ":default_clippy_lints" ]
+  }
 }
 
 # default_clippy_lints --------------------------------------------------------
 
 config("default_clippy_lints") {
   rustflags = [
-    # NOTE: Change `cr_clippy_revision` when 1) enabling new Clippy warnings or
-    # 2) enabling Clippy on new platforms/bots.  This is quite similar to
-    # `config("rustc_revision")` - a custom `--cfg` flag is used to force
-    # rebuilding of all `.rs` files (which as a side-effect should also trigger
-    # a Clippy check if `enable_rust_clippy = true`).
-    "--cfg=cr_clippy_revision=\"2026-07-20\"",
-
     # Treat all default Clippy lints as warnings.
     # See also `config("treat_warnings_as_errors")`.
     "-Wclippy::all",
 
     # Additional lints that we enable beyond the defaults
+    "-Wclippy::missing_safety_doc",
     "-Wclippy::undocumented_unsafe_blocks",
 
     # Lints disabled during the initial rollout period (when any objection
@@ -2076,6 +2138,9 @@ config("default_clippy_lints") {
 
     # TODO(crbug.com/534628766): Fix and re-enable.
     "-Aclippy::chunks_exact_to_as_chunks",
+
+    # TODO(crbug.com/573308406): Fix and re-enable.
+    "-Aclippy::needless_range_loop",
   ]
 }
 
@@ -2230,6 +2295,7 @@ config("chromium_code") {
 
   configs = [
     ":default_warnings",
+    ":lifetime_safety",
     ":noshadowing",
   ]
   if (treat_warnings_as_errors) {
@@ -2411,6 +2477,16 @@ config("no_exceptions") {
 config("wglobal_constructors") {
   if (is_clang) {
     cflags = [ "-Wglobal-constructors" ]
+  }
+}
+
+# Enables Clang's compile-time lifetime safety analysis
+# (-Wlifetime-safety-permissive).
+# See: https://clang.llvm.org/docs/LifetimeSafety.html
+config("lifetime_safety") {
+  if (is_clang && enable_lifetime_safety_warnings) {
+    cflags_cc = [ "-Wlifetime-safety-permissive" ]
+    cflags_objcc = cflags_cc
   }
 }
 

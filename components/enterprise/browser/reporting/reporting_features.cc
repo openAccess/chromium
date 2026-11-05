@@ -19,7 +19,7 @@ BASE_FEATURE(kSaasUsageReporting,
 BASE_FEATURE(kGeminiInChromeUsageReporting, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kBrowserLaunchMetadataReporting,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kCbcmAndroidPackageNameIdentifier,
@@ -27,9 +27,12 @@ BASE_FEATURE(kCbcmAndroidPackageNameIdentifier,
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_IOS)
-BASE_FEATURE(kIOSSignalSharingEnabled, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kIOSSignalSharingEnabled, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_IOS)
 
-BASE_FEATURE(kUploadReportOnProfileOpen, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kUploadReportOnProfileOpen, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kChromeEnterpriseUMAMetricsCollection,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace enterprise_reporting

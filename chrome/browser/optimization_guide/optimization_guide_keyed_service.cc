@@ -25,7 +25,6 @@
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/component_updater/optimization_guide_on_device_model_installer.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
@@ -48,13 +47,14 @@
 #include "components/metrics_services_manager/metrics_services_manager.h"
 #include "components/optimization_guide/core/delivery/model_util.h"
 #include "components/optimization_guide/core/delivery/prediction_manager.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/hints/command_line_top_host_provider.h"
 #include "components/optimization_guide/core/hints/hints_processing_util.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #include "components/optimization_guide/core/hints/optimization_guide_navigation_data.h"
 #include "components/optimization_guide/core/hints/optimization_guide_store.h"
 #include "components/optimization_guide/core/hints/tab_url_provider.h"
 #include "components/optimization_guide/core/hints/top_host_provider.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/model_broker_client.h"
 #include "components/optimization_guide/core/model_execution/model_execution_features.h"
 #include "components/optimization_guide/core/model_execution/model_execution_features_controller.h"
@@ -68,8 +68,6 @@
 #include "components/optimization_guide/core/optimization_guide_common.mojom-shared.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/optimization_guide_buildflags.h"
 #include "components/optimization_guide/proto/hints.pb.h"
@@ -84,6 +82,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/storage_partition.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -115,8 +114,8 @@ std::optional<bool> g_is_official_build_for_testing;
 // profile is Off-The-Record. For guest profiles, returns a loaded regular
 // profile if one exists, otherwise nullptr.
 Profile* GetProfileForOTROptimizationGuide(Profile* profile) {
-  DCHECK(profile);
-  DCHECK(profile->IsOffTheRecord());
+  CHECK(profile, base::NotFatalUntil::M161);
+  CHECK(profile->IsOffTheRecord(), base::NotFatalUntil::M161);
 
   if (profile->IsGuestSession()) {
     // Guest sessions need to rely on the stores from real profiles
@@ -135,9 +134,9 @@ Profile* GetProfileForOTROptimizationGuide(Profile* profile) {
   return profile->GetOriginalProfile();
 }
 
-class FetcherDelegate : public ModelExecutionManager::Delegate {
+class ModelExecutionDelegate : public ModelExecutionManager::Delegate {
  public:
-  ~FetcherDelegate() override = default;
+  ~ModelExecutionDelegate() override = default;
 
   // Takes a BrowserContext instead of a private_ai::Client directly to avoid a
   // dangling pointer. The KeyedService dependency (DependsOn) ensures that
@@ -146,13 +145,16 @@ class FetcherDelegate : public ModelExecutionManager::Delegate {
   // this service has been created, immediately destroying the original
   // PrivateAiService and its Client. Holding a BrowserContext allows for
   // fetching the correct, current PrivateAiService instance at execution time.
-  explicit FetcherDelegate(content::BrowserContext* browser_context)
+  explicit ModelExecutionDelegate(content::BrowserContext* browser_context)
       : browser_context_(browser_context) {
     CHECK(browser_context_);
   }
 
   std::unique_ptr<optimization_guide::ModelExecutionFetcher>
   CreatePrivateAiFetcher() override {
+    if (!base::FeatureList::IsEnabled(private_ai::kPrivateAi)) {
+      return nullptr;
+    }
     private_ai::PrivateAiService* private_ai_service =
         private_ai::PrivateAiServiceFactory::GetForProfile(
             Profile::FromBrowserContext(browser_context_));
@@ -167,29 +169,6 @@ class FetcherDelegate : public ModelExecutionManager::Delegate {
  private:
   raw_ptr<content::BrowserContext> browser_context_;
 };
-
-ModelExecutionFeaturesController::SettingsVisibilityResult
-ShouldHideHistorySearch(PrefService* local_state) {
-  using SettingsVisibilityResult =
-      ModelExecutionFeaturesController::SettingsVisibilityResult;
-#if BUILDFLAG(BUILD_WITH_MODEL_EXECUTION)
-  // Component updates policy check.
-  if (!local_state->GetBoolean(::prefs::kComponentUpdatesEnabled)) {
-    return SettingsVisibilityResult::kNotVisibleEnterprisePolicy;
-  }
-
-  // Performance class check.
-  if (!IsPerformanceClassCompatible(
-          optimization_guide::features::internal::
-              kPerformanceClassListForHistorySearch.Get(),
-          optimization_guide::PerformanceClassFromPref(*local_state))) {
-    return SettingsVisibilityResult::kNotVisibleHardwareUnsupported;
-  }
-  return SettingsVisibilityResult::kUnknown;
-#else
-  return SettingsVisibilityResult::kNotVisibleHardwareUnsupported;
-#endif  // BUILDFLAG(BUILD_WITH_MODEL_EXECUTION)
-}
 
 }  // namespace
 
@@ -218,14 +197,14 @@ void OptimizationGuideKeyedService::SetIsOfficialBuildForTesting(
 OptimizationGuideKeyedService::OptimizationGuideKeyedService(
     content::BrowserContext* browser_context)
     : browser_context_(browser_context) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (browser_context_) {  // Null in MockOptimizationGuideKeyedService.
     Initialize();
   }
 }
 
 OptimizationGuideKeyedService::~OptimizationGuideKeyedService() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 }
 
 void OptimizationGuideKeyedService::BindModelBroker(
@@ -264,7 +243,7 @@ OptimizationGuideKeyedService::GetJavaObject() {
 #endif
 
 void OptimizationGuideKeyedService::Initialize() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   Profile* profile = Profile::FromBrowserContext(browser_context_);
 
@@ -328,7 +307,7 @@ void OptimizationGuideKeyedService::Initialize() {
   }
 
   optimization_guide_logger_ = OptimizationGuideLogger::GetInstance();
-  DCHECK(optimization_guide_logger_);
+  CHECK(optimization_guide_logger_, base::NotFatalUntil::M161);
   hints_manager_ = std::make_unique<optimization_guide::ChromeHintsManager>(
       profile, profile->GetPrefs(), hint_store, top_host_provider_.get(),
       tab_url_provider_.get(), url_loader_factory,
@@ -372,9 +351,7 @@ void OptimizationGuideKeyedService::InitializeModelExecution(Profile* profile) {
         std::make_unique<optimization_guide::ModelExecutionFeaturesController>(
             profile->GetPrefs(), IdentityManagerFactory::GetForProfile(profile),
             policy::ManagementServiceFactory::GetForProfile(profile),
-            dogfood_status, is_official_build,
-            base::BindRepeating(&ShouldHideHistorySearch,
-                                g_browser_process->local_state()));
+            dogfood_status, is_official_build);
 
     // Don't create logs uploader service when feature is disabled. All the
     // logs upload get route through this service which exists one per
@@ -388,20 +365,21 @@ void OptimizationGuideKeyedService::InitializeModelExecution(Profile* profile) {
               ? model_execution_features_controller_->GetWeakPtr()
               : nullptr);
     }
-    RecordModelExecutionFeatureSyntheticFieldTrial(
-        optimization_guide::UserVisibleFeatureKey::kHistorySearch,
-        "HistorySearch");
-  }
-
-  std::unique_ptr<ModelExecutionManager::Delegate> delegate;
-
-  if (base::FeatureList::IsEnabled(private_ai::kPrivateAi)) {
-    delegate = std::make_unique<FetcherDelegate>(browser_context_);
   }
 
   model_execution_manager_ = std::make_unique<ModelExecutionManager>(
-      url_loader_factory, IdentityManagerFactory::GetForProfile(profile),
-      std::move(delegate), optimization_guide_logger_.get(),
+      url_loader_factory,
+      base::BindRepeating(
+          [](base::WeakPtr<Profile> profile)
+              -> network::mojom::NetworkContext* {
+            return profile ? profile->GetDefaultStoragePartition()
+                                 ->GetNetworkContext()
+                           : nullptr;
+          },
+          profile->GetWeakPtr()),
+      IdentityManagerFactory::GetForProfile(profile),
+      std::make_unique<ModelExecutionDelegate>(browser_context_),
+      optimization_guide_logger_.get(),
       model_quality_logs_uploader_service_
           ? model_quality_logs_uploader_service_->GetWeakPtr()
           : nullptr);
@@ -414,7 +392,7 @@ OptimizationGuideKeyedService::GetHintsManager() {
 
 void OptimizationGuideKeyedService::OnNavigationStartOrRedirect(
     OptimizationGuideNavigationData* navigation_data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   base::flat_set<optimization_guide::proto::OptimizationType>
       registered_optimization_types =
@@ -432,7 +410,7 @@ void OptimizationGuideKeyedService::OnNavigationStartOrRedirect(
 
 void OptimizationGuideKeyedService::OnNavigationFinish(
     const std::vector<GURL>& navigation_redirect_chain) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   hints_manager_->OnNavigationFinish(navigation_redirect_chain);
 }
@@ -464,7 +442,7 @@ OptimizationGuideKeyedService::CanApplyOptimization(
     const GURL& url,
     optimization_guide::proto::OptimizationType optimization_type,
     optimization_guide::OptimizationMetadata* optimization_metadata) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   optimization_guide::OptimizationTypeDecision optimization_type_decision =
       hints_manager_->CanApplyOptimization(url, optimization_type,
@@ -496,9 +474,10 @@ void OptimizationGuideKeyedService::CanApplyOptimizationOnDemand(
         callback,
     std::optional<optimization_guide::proto::RequestContextMetadata>
         request_context_metadata) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(request_context !=
-         optimization_guide::proto::RequestContext::CONTEXT_UNSPECIFIED);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(request_context !=
+            optimization_guide::proto::RequestContext::CONTEXT_UNSPECIFIED,
+        base::NotFatalUntil::M161);
 
   hints_manager_->CanApplyOptimizationOnDemand(urls, optimization_types,
                                                request_context, callback,
@@ -520,7 +499,7 @@ void OptimizationGuideKeyedService::ExecuteModel(
     const optimization_guide::ModelExecutionOptions& options,
     optimization_guide::OptimizationGuideModelExecutionResultCallback
         callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!model_execution_manager_) {
     std::move(callback).Run(
         optimization_guide::OptimizationGuideModelExecutionResult(
@@ -546,10 +525,29 @@ OptimizationGuideKeyedService::StartStreamingSession(
     const optimization_guide::StreamingModelExecutionOptions& options,
     optimization_guide::OptimizationGuideModelExecutionStreamingCallback
         callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  // TODO(crbug.com/553134125): Delegate streaming session creation to
-  // ModelExecutionManager.
-  return nullptr;
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  Profile* profile = Profile::FromBrowserContext(browser_context_);
+  return optimization_guide::RemoteModelExecutionSession::Create(
+      feature, options, std::move(callback),
+      base::BindRepeating(
+          [](base::WeakPtr<Profile> profile)
+              -> network::mojom::NetworkContext* {
+            return profile ? profile->GetDefaultStoragePartition()
+                                 ->GetNetworkContext()
+                           : nullptr;
+          },
+          profile->GetWeakPtr()),
+      IdentityManagerFactory::GetForProfile(profile),
+      optimization_guide_logger_.get());
+}
+
+void OptimizationGuideKeyedService::PrewarmModelExecution(
+    optimization_guide::ModelBasedCapabilityKey feature) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!model_execution_manager_) {
+    return;
+  }
+  model_execution_manager_->PrewarmModelExecution(feature);
 }
 
 void OptimizationGuideKeyedService::AddOnDeviceModelAvailabilityChangeObserver(
@@ -571,7 +569,8 @@ void OptimizationGuideKeyedService::
 
 void OptimizationGuideKeyedService::OnProfileInitializationComplete(
     Profile* profile) {
-  DCHECK(profile_observation_.IsObservingSource(profile));
+  CHECK(profile_observation_.IsObservingSource(profile),
+        base::NotFatalUntil::M161);
   profile_observation_.Reset();
 }
 
@@ -653,7 +652,7 @@ void OptimizationGuideKeyedService::AllowUnsignedUserForTesting(
 
 bool OptimizationGuideKeyedService::ShouldFeatureBeCurrentlyEnabledForUser(
     optimization_guide::UserVisibleFeatureKey feature) const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!model_execution_features_controller_) {
     return false;
   }
@@ -673,13 +672,13 @@ bool OptimizationGuideKeyedService::
 
 bool OptimizationGuideKeyedService::ShouldFeatureBeCurrentlyAllowedForFeedback(
     optimization_guide::proto::LogAiDataRequest::FeatureCase feature) const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // If logging is enabled, feedback is always also enabled.
   const optimization_guide::MqlsFeatureMetadata* metadata =
       optimization_guide::MqlsFeatureRegistry::GetInstance().GetFeature(
           feature);
-  DCHECK(metadata);
+  CHECK(metadata, base::NotFatalUntil::M161);
   if (model_execution_features_controller_ &&
       model_execution_features_controller_
           ->ShouldFeatureBeCurrentlyAllowedForLogging(metadata)) {
@@ -701,7 +700,7 @@ bool OptimizationGuideKeyedService::ShouldModelExecutionBeAllowedForUser()
 
 bool OptimizationGuideKeyedService::IsSettingVisible(
     optimization_guide::UserVisibleFeatureKey feature) const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!model_execution_features_controller_) {
     return false;
   }
@@ -731,7 +730,7 @@ bool OptimizationGuideKeyedService::IsSettingVisible(
 
 void OptimizationGuideKeyedService::AddModelExecutionSettingsEnabledObserver(
     optimization_guide::SettingsEnabledObserver* observer) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!model_execution_features_controller_) {
     return;
   }
@@ -740,21 +739,11 @@ void OptimizationGuideKeyedService::AddModelExecutionSettingsEnabledObserver(
 
 void OptimizationGuideKeyedService::RemoveModelExecutionSettingsEnabledObserver(
     optimization_guide::SettingsEnabledObserver* observer) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!model_execution_features_controller_) {
     return;
   }
   model_execution_features_controller_->RemoveObserver(observer);
-}
-
-void OptimizationGuideKeyedService::
-    RecordModelExecutionFeatureSyntheticFieldTrial(
-        optimization_guide::UserVisibleFeatureKey feature,
-        std::string_view feature_name) {
-  ChromeMetricsServiceAccessor::RegisterSyntheticFieldTrial(
-      base::StrCat({"SyntheticModelExecutionFeature", feature_name}),
-      ShouldFeatureBeCurrentlyEnabledForUser(feature) ? "Enabled" : "Disabled",
-      variations::SyntheticTrialAnnotationMode::kCurrentLog);
 }
 
 optimization_guide::OnDeviceModelEligibilityReason

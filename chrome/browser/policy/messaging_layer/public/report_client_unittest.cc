@@ -4,18 +4,21 @@
 
 #include "chrome/browser/policy/messaging_layer/public/report_client.h"
 
+#include <array>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "base/base64.h"
-#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/types/expected.h"
@@ -36,6 +39,7 @@
 #include "components/reporting/encryption/primitives.h"
 #include "components/reporting/encryption/testing_primitives.h"
 #include "components/reporting/proto/synced/record_constants.pb.h"
+#include "components/reporting/storage/storage_uploader_interface.h"
 #include "components/reporting/util/encrypted_reporting_json_keys.h"
 #include "components/reporting/util/status.h"
 #include "components/reporting/util/statusor.h"
@@ -45,6 +49,7 @@
 
 using ::testing::_;
 using ::testing::Eq;
+using ::testing::IsEmpty;
 using ::testing::Ne;
 using ::testing::SizeIs;
 using ::testing::StrEq;
@@ -83,9 +88,7 @@ class ReportClientTest : public ::testing::TestWithParam<bool> {
     ASSERT_TRUE(location_.CreateUniqueTempDir());
     test_reporting_ = ReportingClient::TestEnvironment::CreateWithLocalStorage(
         location_.GetPath(),
-        std::string_view(
-            reinterpret_cast<const char*>(signature_verification_public_key_),
-            kKeySize));
+        base::as_string_view(signature_verification_public_key_));
 #endif
 
     // Use MockDMTokenRetriever and configure it to always return the test DM
@@ -101,43 +104,37 @@ class ReportClientTest : public ::testing::TestWithParam<bool> {
   SignedEncryptionInfo GenerateAndSignKey() {
     CHECK(decryptor_) << "Decryptor not created";
     // Generate new pair of private key and public value.
-    uint8_t private_key[kKeySize];
+    std::array<uint8_t, kKeySize> private_key;
     Encryptor::PublicKeyId public_key_id;
-    uint8_t public_value[kKeySize];
+    std::array<uint8_t, kKeySize> public_value;
     test::GenerateEncryptionKeyPair(private_key, public_value);
     test::TestEvent<StatusOr<Encryptor::PublicKeyId>> prepare_key_pair;
-    decryptor_->RecordKeyPair(
-        std::string(reinterpret_cast<const char*>(private_key), kKeySize),
-        std::string(reinterpret_cast<const char*>(public_value), kKeySize),
-        prepare_key_pair.cb());
+    decryptor_->RecordKeyPair(base::as_string_view(private_key),
+                              base::as_string_view(public_value),
+                              prepare_key_pair.cb());
     auto prepare_key_result = prepare_key_pair.result();
     CHECK(prepare_key_result.has_value()) << prepare_key_result.error();
     public_key_id = prepare_key_result.value();
     // Prepare public key to be delivered to Storage.
     SignedEncryptionInfo signed_encryption_key;
     signed_encryption_key.set_public_asymmetric_key(
-        std::string(reinterpret_cast<const char*>(public_value), kKeySize));
+        base::as_string_view(public_value));
     signed_encryption_key.set_public_key_id(public_key_id);
     // Sign public key.
-    uint8_t value_to_sign[sizeof(Encryptor::PublicKeyId) + kKeySize];
-    UNSAFE_TODO(
-        memcpy(value_to_sign, &public_key_id, sizeof(Encryptor::PublicKeyId)));
-    UNSAFE_TODO(memcpy(value_to_sign + sizeof(Encryptor::PublicKeyId),
-                       public_value, kKeySize));
-    uint8_t signature[kSignatureSize];
-    test::SignMessage(
-        signing_private_key_,
-        std::string_view(reinterpret_cast<const char*>(value_to_sign),
-                         sizeof(value_to_sign)),
-        signature);
-    signed_encryption_key.set_signature(
-        std::string(reinterpret_cast<const char*>(signature), kSignatureSize));
+    std::array<uint8_t, sizeof(Encryptor::PublicKeyId) + kKeySize>
+        value_to_sign;
+    auto [key_id_part, public_value_part] =
+        base::span(value_to_sign).split_at<sizeof(Encryptor::PublicKeyId)>();
+    key_id_part.copy_from(base::byte_span_from_ref(public_key_id));
+    public_value_part.copy_from(public_value);
+    std::array<uint8_t, kSignatureSize> signature;
+    test::SignMessage(signing_private_key_, base::as_string_view(value_to_sign),
+                      signature);
+    signed_encryption_key.set_signature(base::as_string_view(signature));
     // Double check signature.
-    EXPECT_TRUE(VerifySignature(
-        signature_verification_public_key_,
-        std::string_view(reinterpret_cast<const char*>(value_to_sign),
-                         sizeof(value_to_sign)),
-        signature));
+    EXPECT_TRUE(VerifySignature(signature_verification_public_key_,
+                                base::as_string_view(value_to_sign),
+                                signature));
     return signed_encryption_key;
   }
 
@@ -274,8 +271,8 @@ class ReportClientTest : public ::testing::TestWithParam<bool> {
 
   base::ScopedTempDir location_;
 
-  uint8_t signature_verification_public_key_[kKeySize];
-  uint8_t signing_private_key_[kSignKeySize];
+  std::array<uint8_t, kKeySize> signature_verification_public_key_;
+  std::array<uint8_t, kSignKeySize> signing_private_key_;
   scoped_refptr<test::Decryptor> decryptor_;
   SignedEncryptionInfo signed_encryption_key_;
 
@@ -409,6 +406,63 @@ TEST_P(ReportClientTest, SpeculativelyEnqueueMessageAndUpload) {
   EXPECT_THAT(request_body, IsDataUploadRequestValid());
   VerifyDataUpload(std::move(request_body));
   test_env_.SimulateResponseForRequest(0);
+}
+
+// Verifies that uploaders existing at the same time can all hand their records
+// over to the upload provider, even though each of them completes on its own
+// sequence.
+TEST_P(ReportClientTest, OverlappingUploadersComplete) {
+  // Create queue, so that the storage gets initialized.
+  auto report_queue_result = CreateQueue();
+  ASSERT_TRUE(report_queue_result.has_value());
+
+  if (is_encryption_enabled()) {
+    // Satisfy the initial key delivery triggered by the periodic storage timer
+    // so background flushes do not compete with the uploaders below when
+    // `RunUntil` advances mock time.
+    task_environment_.FastForwardBy(base::Seconds(1));
+    ASSERT_THAT(*test_env_.url_loader_factory()->pending_requests(), SizeIs(1));
+    test_env_.SimulateCustomResponseForRequest(0, GetEncryptionKeyResponse());
+    task_environment_.FastForwardBy(base::Seconds(1));
+    ASSERT_THAT(*test_env_.url_loader_factory()->pending_requests(), IsEmpty());
+  }
+
+  // Start two uploaders before either of them completes.
+  test::TestEvent<StatusOr<std::unique_ptr<UploaderInterface>>>
+      start_first_uploader_event;
+  test_reporting_->StartUploader(UploaderInterface::UploadReason::KEY_DELIVERY,
+                                 start_first_uploader_event.cb());
+  auto first_uploader_result = start_first_uploader_event.result();
+  ASSERT_TRUE(first_uploader_result.has_value())
+      << first_uploader_result.error();
+
+  test::TestEvent<StatusOr<std::unique_ptr<UploaderInterface>>>
+      start_second_uploader_event;
+  test_reporting_->StartUploader(UploaderInterface::UploadReason::KEY_DELIVERY,
+                                 start_second_uploader_event.cb());
+  auto second_uploader_result = start_second_uploader_event.result();
+  ASSERT_TRUE(second_uploader_result.has_value())
+      << second_uploader_result.error();
+
+  // Complete both uploaders one by one. Since they request the encryption key,
+  // each of them hands over to the upload provider even without any records.
+  for (auto* uploader_result :
+       {&first_uploader_result, &second_uploader_result}) {
+    uploader_result->value()->Completed(Status::StatusOK());
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return !test_env_.url_loader_factory()->pending_requests()->empty();
+    }));
+
+    ASSERT_THAT(*test_env_.url_loader_factory()->pending_requests(), SizeIs(1));
+    EXPECT_THAT(test_env_.request_body(0),
+                IsEncryptionKeyRequestUploadRequestValid());
+    if (is_encryption_enabled()) {
+      test_env_.SimulateCustomResponseForRequest(0, GetEncryptionKeyResponse());
+    } else {
+      test_env_.SimulateResponseForRequest(0);
+    }
+    ASSERT_THAT(*test_env_.url_loader_factory()->pending_requests(), IsEmpty());
+  }
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 

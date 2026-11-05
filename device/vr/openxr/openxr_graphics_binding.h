@@ -107,10 +107,11 @@ class OpenXrGraphicsBinding {
   // during the cycle. Since this third code-path only exists on Windows we
   // restrict this method to that platform.
 #if BUILDFLAG(IS_WIN)
-  virtual void SetWebXrTexture(mojo::PlatformHandle texture_handle,
-                               const gpu::SyncToken& sync_token,
-                               const gfx::RectF& left,
-                               const gfx::RectF& right) = 0;
+  virtual void SetWebXrTexture(
+      scoped_refptr<gpu::ClientSharedImage> shared_image,
+      const gpu::SyncToken& sync_token,
+      const gfx::RectF& left,
+      const gfx::RectF& right) = 0;
 #endif
 
   // Much like the `SetWebXrTexture` path above, the texture submitted here is
@@ -119,7 +120,7 @@ class OpenXrGraphicsBinding {
   // with the texture, but it's not tied to a swapchain info the same way that
   // the page's textures are, so we provide this additional method and simply
   // overwrite the overlay whenever we receive it.
-  virtual bool SetOverlayTexture(gfx::GpuMemoryBufferHandle texture,
+  virtual bool SetOverlayTexture(scoped_refptr<gpu::ClientSharedImage> texture,
                                  const gpu::SyncToken& sync_token,
                                  const gfx::RectF& left,
                                  const gfx::RectF& right) = 0;
@@ -140,6 +141,11 @@ class OpenXrGraphicsBinding {
 
   // Return if the graphics binding supports multiple XR layers.
   virtual bool SupportsLayers() const = 0;
+
+#if BUILDFLAG(IS_LINUX)
+  // Return if the graphics binding can create layers of the given type.
+  virtual bool SupportsLayerType(OpenXrCompositionLayer::Type type) const = 0;
+#endif
 
   // Resizes the shared buffer for the given swapchain info if the transfer size
   // has changed.
@@ -206,6 +212,12 @@ class OpenXrGraphicsBinding {
   // Performs a server wait on the provided gpu_fence. Returns true if it was
   // able to successfully schedule and perform the wait, and false otherwise.
   bool WaitOnBaseLayerFence(gfx::GpuFence& gpu_fence);
+
+#if BUILDFLAG(IS_LINUX)
+  // Waits on the fences that the shared images of `updated_layers` carry for
+  // the writes to them. Returns false if there are none.
+  bool WaitOnImplicitFences(const std::vector<LayerId>& updated_layers);
+#endif
 
   // Updates the active swapchain image size if the transfer size has changed.
   // No-ops if there is currently no active swapchain image.
@@ -274,6 +286,11 @@ class OpenXrGraphicsBinding {
   virtual bool WaitOnFence(OpenXrCompositionLayer& layer,
                            gfx::GpuFence& gpu_fence) = 0;
 
+#if BUILDFLAG(IS_LINUX)
+  // As WaitOnImplicitFences(), for `layer`'s active shared image.
+  virtual bool WaitOnImplicitFence(OpenXrCompositionLayer& layer) = 0;
+#endif
+
   // Render a single layer.
   virtual bool RenderLayer(
       OpenXrCompositionLayer& layer,
@@ -314,7 +331,7 @@ class OpenXrGraphicsBinding {
   bool overlay_visible_ = false;
 
   // This will only be valid if `fb_composition_layer_ext_enabled_` is true.
-  XrCompositionLayerImageLayoutFB y_flip_layer_layout_;
+  XrCompositionLayerImageLayoutFB y_flip_layer_layout_{};
 };
 
 }  // namespace device

@@ -29,8 +29,12 @@ MenuClosureAnimationMac::MenuClosureAnimationMac(MenuItemView* item,
 
 MenuClosureAnimationMac::~MenuClosureAnimationMac() = default;
 
+SubmenuView* MenuClosureAnimationMac::menu() {
+  return static_cast<SubmenuView*>(menu_.view());
+}
+
 void MenuClosureAnimationMac::Start() {
-  DCHECK_EQ(step_, AnimationStep::kStart);
+  CHECK_EQ(step_, AnimationStep::kStart, base::NotFatalUntil::M163);
   if (g_disable_animations_for_testing) {
     // Even when disabling animations, simulate the fact that the eventual
     // accept callback will happen after a runloop cycle by skipping to the end
@@ -79,16 +83,22 @@ void MenuClosureAnimationMac::AdvanceAnimation() {
   }
 }
 
-// static
-void MenuClosureAnimationMac::DisableAnimationsForTesting() {
-  g_disable_animations_for_testing = true;
+MenuClosureAnimationMac::ScopedDisableAnimationsForTesting::
+    ScopedDisableAnimationsForTesting(bool disable)
+    : previous_value_(g_disable_animations_for_testing) {
+  g_disable_animations_for_testing = disable;
+}
+
+MenuClosureAnimationMac::ScopedDisableAnimationsForTesting::
+    ~ScopedDisableAnimationsForTesting() {
+  g_disable_animations_for_testing = previous_value_;
 }
 
 void MenuClosureAnimationMac::AnimationProgressed(
     const gfx::Animation* animation) {
   // Walk up the menu from |menu_|, fading the NSWindows for all its ancestor
   // menus in lockstep.
-  SubmenuView* submenu = menu_;
+  SubmenuView* submenu = menu();
   while (submenu) {
     // When our menu hierarchy consists of the top-level menu and one or more
     // submenus, the MenuController creates a single animation that targets the

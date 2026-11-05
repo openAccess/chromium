@@ -15,7 +15,6 @@
 #include "skia/public/mojom/skcolor4f_mojom_traits.h"
 #include "third_party/blink/public/common/tokens/tokens_mojom_traits.h"
 #include "ui/gfx/geometry/mojom/geometry_mojom_traits.h"
-#include "ui/gfx/mojom/display_color_spaces_mojom_traits.h"
 #include "ui/gfx/mojom/selection_bound_mojom_traits.h"
 #include "ui/latency/mojom/latency_info_mojom_traits.h"
 
@@ -36,6 +35,8 @@ StructTraits<viz::mojom::CompositorFrameMetadataDataView,
   }
 
   out->page_scale_factor = data.page_scale_factor();
+  out->surface_backing_size_scale_factor =
+      data.surface_backing_size_scale_factor();
   if (!data.ReadScrollableViewportSize(&out->scrollable_viewport_size)) {
     return base::unexpected(DeserializationError());
   }
@@ -47,10 +48,6 @@ StructTraits<viz::mojom::CompositorFrameMetadataDataView,
     return base::unexpected(DeserializationError());
   }
   out->frame_token = data.frame_token();
-
-  if (!data.ReadContentColorUsage(&out->content_color_usage)) {
-    return base::unexpected(DeserializationError());
-  }
 
   if (!data.ReadRootBackgroundColor(&out->root_background_color)) {
     return base::unexpected(DeserializationError());
@@ -66,6 +63,8 @@ StructTraits<viz::mojom::CompositorFrameMetadataDataView,
   out->is_mobile_optimized = data.is_mobile_optimized();
   out->is_software = data.is_software();
   out->top_controls_visible_height = data.top_controls_visible_height();
+  out->view_transition_deadline_in_frames =
+      data.view_transition_deadline_in_frames();
 
   if (!data.ReadScreenshotDestination(&out->screenshot_destination)) {
     return base::unexpected(DeserializationError());

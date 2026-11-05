@@ -10,7 +10,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/glic/host/glic.mojom.h"                    // nogncheck
+#include "chrome/browser/glic/host/glic.mojom-forward.h"            // nogncheck
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"  // nogncheck
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
 
@@ -72,6 +72,7 @@ class BrowserTabStripModelDelegate : public TabStripModelDelegate {
   bool RunUnloadListenerBeforeClosing(content::WebContents* contents) override;
   bool ShouldRunUnloadListenerBeforeClosing(
       content::WebContents* contents) override;
+  bool IsTabClosable(const tabs::TabInterface* tab) const override;
   bool CanReload() const override;
   void AddToReadLater(
       std::vector<content::WebContents*> web_contentses) override;

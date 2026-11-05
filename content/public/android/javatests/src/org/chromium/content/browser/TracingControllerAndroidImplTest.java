@@ -9,6 +9,7 @@ import android.util.Pair;
 import androidx.test.filters.MediumTest;
 
 import org.hamcrest.CoreMatchers;
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
@@ -19,6 +20,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.content_shell_apk.ContentShellActivity;
 import org.chromium.content_shell_apk.ContentShellActivityTestRule;
@@ -35,6 +37,15 @@ public class TracingControllerAndroidImplTest {
     public ContentShellActivityTestRule mActivityTestRule = new ContentShellActivityTestRule();
 
     private static final long TIMEOUT_MILLIS = (long) (30 * 1000);
+    private TracingControllerAndroidImpl mTracingController;
+
+    @After
+    public void tearDown() {
+        if (mTracingController != null) {
+            ThreadUtils.runOnUiThreadBlocking(() -> mTracingController.destroy());
+            mTracingController = null;
+        }
+    }
 
     @Test
     @MediumTest
@@ -45,6 +56,7 @@ public class TracingControllerAndroidImplTest {
 
         final TracingControllerAndroidImpl tracingController =
                 new TracingControllerAndroidImpl(activity);
+        mTracingController = tracingController;
         Assert.assertFalse(tracingController.isTracing());
         Assert.assertNull(tracingController.getOutputPath());
 
@@ -87,12 +99,14 @@ public class TracingControllerAndroidImplTest {
     @Test
     @MediumTest
     @Feature({"GPU"})
+    @DisabledTest(message = "https://crbug.com/552128780")
     public void testGetKnownCategories() throws Exception {
         ContentShellActivity activity = mActivityTestRule.launchContentShellWithUrl("about:blank");
         mActivityTestRule.waitForActiveShellToBeDoneLoading();
 
         final TracingControllerAndroidImpl tracingController =
                 new TracingControllerAndroidImpl(activity);
+        mTracingController = tracingController;
         Assert.assertFalse(tracingController.isTracing());
 
         TestCallback<String[]> callback = new TestCallback<>();
@@ -115,6 +129,7 @@ public class TracingControllerAndroidImplTest {
 
         final TracingControllerAndroidImpl tracingController =
                 new TracingControllerAndroidImpl(activity);
+        mTracingController = tracingController;
         Assert.assertFalse(tracingController.isTracing());
 
         // This should obtain an empty buffer usage, since we aren't tracing.
@@ -139,6 +154,7 @@ public class TracingControllerAndroidImplTest {
 
         final TracingControllerAndroidImpl tracingController =
                 new TracingControllerAndroidImpl(activity);
+        mTracingController = tracingController;
         Assert.assertFalse(tracingController.isTracing());
         Assert.assertNull(tracingController.getOutputPath());
 
@@ -183,6 +199,7 @@ public class TracingControllerAndroidImplTest {
 
         final TracingControllerAndroidImpl tracingController =
                 new TracingControllerAndroidImpl(activity);
+        mTracingController = tracingController;
         Assert.assertFalse(tracingController.isTracing());
         Assert.assertNull(tracingController.getOutputPath());
 

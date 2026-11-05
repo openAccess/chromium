@@ -5,10 +5,12 @@
 #include "cc/paint/paint_op_buffer.h"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/memory/safety_checks.h"
 #include "base/notreached.h"
 #include "base/types/optional_util.h"
 #include "cc/paint/display_item_list.h"
@@ -53,7 +55,7 @@ PaintOpBuffer::SerializeOptions::SerializeOptions(
     bool can_use_lcd_text,
     bool context_supports_distance_field_text,
     int max_texture_size,
-    const ScrollOffsetMap* raster_inducing_scroll_offsets)
+    const RasterInducingValues* raster_inducing_values)
     : image_provider(image_provider),
       transfer_cache(transfer_cache),
       paint_cache(paint_cache),
@@ -64,7 +66,7 @@ PaintOpBuffer::SerializeOptions::SerializeOptions(
       context_supports_distance_field_text(
           context_supports_distance_field_text),
       max_texture_size(max_texture_size),
-      raster_inducing_scroll_offsets(raster_inducing_scroll_offsets) {}
+      raster_inducing_values(raster_inducing_values) {}
 
 PaintOpBuffer::SerializeOptions::SerializeOptions() = default;
 PaintOpBuffer::SerializeOptions::SerializeOptions(const SerializeOptions&) =
@@ -79,38 +81,141 @@ PaintOpBuffer::PaintOpBuffer(PaintOpBuffer&& other) {
   *this = std::move(other);
 }
 
-PaintRecord PaintOpBuffer::DeepCopyAsRecord() const {
+PaintRecord PaintOpBuffer::DeepCopyAsRecord(
+    bool strip_read_back_disallowed_ops) const {
+  // TODO(paint-dev): This was added at a time when DrawTextBlobOp was racy, but
+  // it's not any more, so is this method still necessary, or can we safely
+  // share PaintOpBuffers across threads?
+  if (is_read_back_disallowed_ && strip_read_back_disallowed_ops) {
+    return PaintRecord();
+  }
   auto result = sk_make_sp<PaintOpBuffer>();
-  *result += *this;
+  result->Append(*this, /*replacements=*/nullptr,
+                 strip_read_back_disallowed_ops);
+  if (is_read_back_disallowed_) {
+    result->set_is_read_back_disallowed();
+  }
+  result->ShrinkToFit();
+  DCHECK(!strip_read_back_disallowed_ops ||
+         !result->has_read_back_disallowed_content());
   return PaintRecord(std::move(result));
 }
 
 PaintRecord PaintOpBuffer::ReplaceCustomData(
-    const base::flat_map<uint32_t, PaintRecord>& replacements) const {
+    const base::flat_map<uint32_t, PaintRecord>& replacements,
+    bool strip_read_back_disallowed_ops) const {
   if (replacements.empty()) {
-    return DeepCopyAsRecord();
+    return DeepCopyAsRecord(strip_read_back_disallowed_ops);
+  }
+  if (is_read_back_disallowed_ && strip_read_back_disallowed_ops) {
+    return PaintRecord();
   }
   auto result = sk_make_sp<PaintOpBuffer>();
-  result->Append(*this, &replacements);
-  return result->ReleaseAsRecord();
+  result->Append(*this, &replacements, strip_read_back_disallowed_ops);
+  if (is_read_back_disallowed_) {
+    result->set_is_read_back_disallowed();
+  }
+  // Replacing `CustomDataOp` with a larger `DrawRecordOp` can grow `result`
+  // geometrically, and stripping ops can leave unused capacity.
+  result->ShrinkToFit();
+  DCHECK(!strip_read_back_disallowed_ops ||
+         !result->has_read_back_disallowed_content());
+  return PaintRecord(std::move(result));
+}
+
+void PaintOpBuffer::Append(const PaintOpBuffer& other,
+                           bool strip_read_back_disallowed_ops) {
+  if (!strip_read_back_disallowed_ops) {
+    CHECK(!other.is_read_back_disallowed_);
+  } else if (other.is_read_back_disallowed_) {
+    return;
+  }
+  const bool had_disallowed = has_read_back_disallowed_content_;
+  Append(other, /*replacements=*/nullptr, strip_read_back_disallowed_ops);
+  DCHECK(!strip_read_back_disallowed_ops || had_disallowed ||
+         !has_read_back_disallowed_content_);
 }
 
 PaintOpBuffer& PaintOpBuffer::operator+=(const PaintOpBuffer& other) {
-  Append(other, nullptr);
+  Append(other, /*strip_read_back_disallowed_ops=*/false);
   return *this;
 }
 
+namespace {
+
+bool ContainsCustomDataToReplace(
+    const PaintOpBuffer& buffer,
+    const base::flat_map<uint32_t, PaintRecord>& replacements) {
+  for (const PaintOp& op : buffer) {
+    if (op.GetType() == PaintOpType::kCustomData) {
+      if (replacements.contains(static_cast<const CustomDataOp&>(op).id)) {
+        return true;
+      }
+    } else if (op.GetType() == PaintOpType::kDrawRecord) {
+      if (ContainsCustomDataToReplace(
+              static_cast<const DrawRecordOp&>(op).record.buffer(),
+              replacements)) {
+        return true;
+      }
+    } else if (op.GetType() == PaintOpType::kDrawScrollingContents) {
+      if (ContainsCustomDataToReplace(
+              static_cast<const DrawScrollingContentsOp&>(op)
+                  .display_item_list->paint_op_buffer(),
+              replacements)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 void PaintOpBuffer::Append(
     const PaintOpBuffer& other,
-    const base::flat_map<uint32_t, PaintRecord>* replacements) {
+    const base::flat_map<uint32_t, PaintRecord>* replacements,
+    bool strip_read_back_disallowed_ops) {
   CHECK_NE(this, &other);
+  DCHECK(!other.is_read_back_disallowed_ ||
+         (empty() && !strip_read_back_disallowed_ops));
   if (other.used_) {
     // Note: If `replacements` is provided, replacing CustomDataOp with
     // DrawRecordOp may exceed this initial reservation. `push()` will
     // reallocate if needed.
     ReallocBuffer(used_ + other.used_);
   }
+  const bool check_disallowed_ops =
+      strip_read_back_disallowed_ops && other.has_read_back_disallowed_content_;
+  // Tracks save-stack depth inside an omitted SaveLayer[Filters]Op so its
+  // matching RestoreOp (and any nested Save..Restore pairs) is also skipped
+  // without unbalancing the outer save stack.
+  size_t omitted_save_layer_depth = 0;
   for (const PaintOp& op : other) {
+    if (omitted_save_layer_depth > 0) {
+      switch (op.GetType()) {
+        case PaintOpType::kSave:
+        case PaintOpType::kSaveLayer:
+        case PaintOpType::kSaveLayerAlpha:
+        case PaintOpType::kSaveLayerFilters:
+          ++omitted_save_layer_depth;
+          break;
+        case PaintOpType::kRestore:
+          --omitted_save_layer_depth;
+          break;
+        default:
+          break;
+      }
+      continue;
+    }
+    if (check_disallowed_ops && op.GetType() != PaintOpType::kDrawRecord &&
+        op.GetType() != PaintOpType::kDrawScrollingContents &&
+        PaintOp::OpHasReadBackDisallowedContent(op)) {
+      if (op.GetType() == PaintOpType::kSaveLayer ||
+          op.GetType() == PaintOpType::kSaveLayerFilters) {
+        omitted_save_layer_depth = 1;
+      }
+      continue;
+    }
     switch (op.GetType()) {
       case PaintOpType::kAnnotate: {
         const auto& o = static_cast<const AnnotateOp&>(op);
@@ -137,7 +242,16 @@ void PaintOpBuffer::Append(
         if (replacements) {
           auto it = replacements->find(o.id);
           if (it != replacements->end()) {
-            push<DrawRecordOp>(it->second);
+            if (strip_read_back_disallowed_ops &&
+                it->second.has_read_back_disallowed_content()) {
+              PaintRecord filtered = it->second.buffer().DeepCopyAsRecord(
+                  /*strip_read_back_disallowed_ops=*/true);
+              if (!filtered.empty()) {
+                push<DrawRecordOp>(std::move(filtered));
+              }
+            } else if (!it->second.empty()) {
+              push<DrawRecordOp>(it->second);
+            }
             break;
           }
         }
@@ -192,11 +306,13 @@ void PaintOpBuffer::Append(
       } break;
       case PaintOpType::kDrawRecord: {
         const auto& o = static_cast<const DrawRecordOp&>(op);
-        if (replacements) {
-          push<DrawRecordOp>(o.record.ReplaceCustomData(*replacements),
-                             o.local_ctm);
-        } else {
-          push<DrawRecordOp>(o.record.buffer().DeepCopyAsRecord(), o.local_ctm);
+        PaintRecord record =
+            replacements ? o.record.ReplaceCustomData(
+                               *replacements, strip_read_back_disallowed_ops)
+                         : o.record.buffer().DeepCopyAsRecord(
+                               strip_read_back_disallowed_ops);
+        if (!record.empty()) {
+          push<DrawRecordOp>(std::move(record), o.local_ctm);
         }
       } break;
       case PaintOpType::kDrawRect: {
@@ -209,6 +325,37 @@ void PaintOpBuffer::Append(
       } break;
       case PaintOpType::kDrawScrollingContents: {
         const auto& o = static_cast<const DrawScrollingContentsOp&>(op);
+        const bool replace_custom_data =
+            replacements &&
+            ContainsCustomDataToReplace(o.display_item_list->paint_op_buffer(),
+                                        *replacements);
+        const bool strip_scrolling_ops =
+            check_disallowed_ops &&
+            o.HasReadBackDisallowedContentIgnoringFlags();
+        if (replace_custom_data || strip_scrolling_ops) {
+          PaintRecord subrecord =
+              replace_custom_data
+                  ? o.display_item_list->paint_op_buffer().ReplaceCustomData(
+                        *replacements, strip_read_back_disallowed_ops)
+                  : o.display_item_list->paint_op_buffer().DeepCopyAsRecord(
+                        strip_read_back_disallowed_ops);
+          if (subrecord.empty()) {
+            break;
+          }
+          auto new_list = base::MakeRefCounted<DisplayItemList>();
+          new_list->StartPaint();
+          new_list->push<DrawRecordOp>(std::move(subrecord));
+          constexpr gfx::Rect kInfiniteBounds(
+              std::numeric_limits<int>::min() / 2,
+              std::numeric_limits<int>::min() / 2,
+              std::numeric_limits<int>::max(), std::numeric_limits<int>::max());
+          new_list->EndPaintOfUnpaired(
+              o.display_item_list->bounds().value_or(kInfiniteBounds));
+          new_list->Finalize();
+          push<DrawScrollingContentsOp>(o.scroll_element_id,
+                                        std::move(new_list));
+          break;
+        }
         push<DrawScrollingContentsOp>(o.scroll_element_id, o.display_item_list);
       } break;
       case PaintOpType::kDrawSkottie: {
@@ -224,6 +371,9 @@ void PaintOpBuffer::Append(
         const auto& o = static_cast<const DrawTextBlobOp&>(op);
         push<DrawTextBlobOp>(o.blob, o.x, o.y, o.node_id, o.flags);
       } break;
+      case PaintOpType::kDrawTextSlugs: {
+        NOTREACHED();
+      }
       case PaintOpType::kDrawVertices: {
         const auto& o = static_cast<const DrawVerticesOp&>(op);
         push<DrawVerticesOp>(o.vertices, o.uvs, o.indices, o.flags);
@@ -277,7 +427,16 @@ void PaintOpBuffer::Append(
 }
 
 PaintOpBuffer::~PaintOpBuffer() {
+  // Frees immutable serialized `PaintOp` value/Skia buffers and internal
+  // `AlignedAlloc` backing bytes with no JS/DOM callbacks or escaping
+  // untrusted pointers. Excluding paint teardown avoids quarantine churn on
+  // the backing buffer and allows immediate `ThreadCache` reuse of
+  // `SkTextBlob` and `SkPathData` allocations.
+  base::ScopedSafetyChecksExclusion excluded;
   DestroyOps();
+  // Explicitly free `data_` before `excluded` goes out of scope, since member
+  // destructors run after the destructor body exits.
+  data_ = BufferData();
 }
 
 PaintOpBuffer& PaintOpBuffer::operator=(PaintOpBuffer&& other) {
@@ -291,12 +450,13 @@ PaintOpBuffer& PaintOpBuffer::operator=(PaintOpBuffer&& other) {
   has_non_aa_paint_ = other.has_non_aa_paint_;
   has_draw_ops_ = other.has_draw_ops_;
   has_draw_text_ops_ = other.has_draw_text_ops_;
-  has_save_layer_ops_ = other.has_save_layer_ops_;
   has_save_layer_alpha_ops_ = other.has_save_layer_alpha_ops_;
   has_effects_preventing_lcd_text_for_save_layer_alpha_ =
       other.has_effects_preventing_lcd_text_for_save_layer_alpha_;
   has_discardable_images_ = other.has_discardable_images_;
-  content_color_usage_ = other.content_color_usage_;
+  is_read_back_disallowed_ = other.is_read_back_disallowed_;
+  has_read_back_disallowed_content_ = other.has_read_back_disallowed_content_;
+  content_color_volume_ = other.content_color_volume_;
 
   // Make sure the other pob can destruct safely or is ready for reuse.
   other.ResetRetainingBuffer();
@@ -315,7 +475,14 @@ void PaintOpBuffer::DestroyOps() {
 
 void PaintOpBuffer::Reset() {
   DCHECK(is_mutable());
-  DestroyOps();
+  {
+    // Frees immutable serialized `PaintOp` value/Skia buffers with no JS/DOM
+    // callbacks or escaping untrusted pointers, allowing immediate
+    // `ThreadCache` reuse of `SkTextBlob` and `SkPathData` allocations during
+    // paint teardown.
+    base::ScopedSafetyChecksExclusion excluded;
+    DestroyOps();
+  }
   // Leave data_ allocated, reserved_ unchanged. ShrinkToFit() will take care
   // of that if called.
   ResetRetainingBuffer();
@@ -331,11 +498,12 @@ void PaintOpBuffer::ResetRetainingBuffer() {
   subrecord_op_count_ = 0;
   has_draw_ops_ = false;
   has_draw_text_ops_ = false;
-  has_save_layer_ops_ = false;
   has_save_layer_alpha_ops_ = false;
   has_effects_preventing_lcd_text_for_save_layer_alpha_ = false;
   has_discardable_images_ = false;
-  content_color_usage_ = gfx::ContentColorUsage::kSRGB;
+  is_read_back_disallowed_ = false;
+  has_read_back_disallowed_content_ = false;
+  content_color_volume_ = gfx::ContentColorVolume();
 }
 
 void PaintOpBuffer::Playback(SkCanvas* canvas) const {
@@ -542,13 +710,23 @@ base::span<uint8_t> PaintOpBuffer::AllocatePaintOpSlowPath(
   while (required_size > new_size) {
     new_size *= 2;
   }
-  ReallocBuffer(new_size);
+  {
+    // Frees the superseded internal `AlignedAlloc` backing buffer during
+    // geometric growth, with no JS/DOM callbacks or escaping untrusted
+    // pointers, avoiding quarantine churn on transient intermediate buffers.
+    base::ScopedSafetyChecksExclusion excluded;
+    ReallocBuffer(new_size);
+  }
   DCHECK_LE(required_size, data_.size());
 
   return AllocatePaintOp(aligned_size);
 }
 
 void PaintOpBuffer::ShrinkToFit() {
+  // Frees excess internal `AlignedAlloc` backing bytes during buffer
+  // compaction, with no JS/DOM callbacks or escaping untrusted pointers,
+  // avoiding quarantine churn on the old backing buffer.
+  base::ScopedSafetyChecksExclusion excluded;
   ReallocIfNeededToFit();
 }
 
@@ -575,7 +753,10 @@ bool PaintOpBuffer::EqualsForTesting(const PaintOpBuffer& other) const {
       has_effects_preventing_lcd_text_for_save_layer_alpha_ !=
           other.has_effects_preventing_lcd_text_for_save_layer_alpha_ ||
       has_non_aa_paint_ != other.has_non_aa_paint_ ||
-      has_discardable_images_ != other.has_discardable_images_) {
+      has_discardable_images_ != other.has_discardable_images_ ||
+      is_read_back_disallowed_ != other.is_read_back_disallowed_ ||
+      has_read_back_disallowed_content_ !=
+          other.has_read_back_disallowed_content_) {
     return false;
   }
 

@@ -18,13 +18,28 @@ public class TestTracker implements Tracker {
     public void notifyEvent(String event) {}
 
     @Override
+    @Deprecated
     public boolean shouldTriggerHelpUi(String feature) {
         return false;
     }
 
     @Override
+    @SuppressWarnings("deprecation")
+    public boolean shouldTriggerHelpUi(String feature, FeatureProperties featureProperties) {
+        return shouldTriggerHelpUi(feature);
+    }
+
+    @Override
+    @Deprecated
     public TriggerDetails shouldTriggerHelpUiWithSnooze(String feature) {
         return new TriggerDetails(false, false);
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public TriggerDetails shouldTriggerHelpUiWithSnooze(
+            String feature, FeatureProperties featureProperties) {
+        return shouldTriggerHelpUiWithSnooze(feature);
     }
 
     @Override
@@ -35,11 +50,6 @@ public class TestTracker implements Tracker {
     @Override
     public boolean hasEverTriggered(String feature, boolean fromWindow) {
         return false;
-    }
-
-    @Override
-    public @TriggerState int getTriggerState(String feature) {
-        return TriggerState.NOT_READY;
     }
 
     @Override

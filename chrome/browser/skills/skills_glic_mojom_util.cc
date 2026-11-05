@@ -8,6 +8,7 @@
 
 #include "base/check.h"
 #include "base/notreached.h"
+#include "chrome/browser/glic/host/glic.mojom.h"
 #include "components/skills/public/skill.h"
 #include "url/gurl.h"
 
@@ -73,7 +74,7 @@ glic::mojom::SkillPreviewPtr SkillToGlicMojomSkillPreview(
   return glic::mojom::SkillPreview::New(
       skill->id, skill->name, skill->icon,
       SyncPbToGlicMojomSkillSource(skill->source), skill->description,
-      curated_by, image_url, category, creation_time);
+      curated_by, image_url, category, creation_time, skill->enabled);
 }
 
 }  // namespace skills

@@ -52,6 +52,8 @@ struct BASE_EXPORT MemoryConsumerTraits {
   // Passive consumers (kPassive) do not react to memory pressure. They only
   // query the memory limit on-demand to gate their activities. They do not
   // require active traits as they are mostly non-applicable.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
   enum class ConsumerType : uint8_t {
     kActive,
     kPassive,
@@ -72,6 +74,8 @@ struct BASE_EXPORT MemoryConsumerTraits {
   // physical memory reclamation until the next GC cycle. This estimation
   // should still include the V8 memory that is expected to be reclaimed
   // once GC runs.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
   enum class EstimatedMemoryUsage : uint8_t {
     // Under 10 MBs.
     kSmall,
@@ -85,23 +89,45 @@ struct BASE_EXPORT MemoryConsumerTraits {
     kMaxValue = kNA,
   };
 
-  // Indicates the CPU and paging cost of executing the OnReleaseMemory()
-  // callback. This should be evaluated based on the work done in the callback
-  // itself (e.g. traversing a data structure to drop references), independent
-  // of whether physical memory reclamation is deferred to garbage collection.
-  enum class ReleaseMemoryCost : uint8_t {
-    // Most of the savings are from allocations larger than the page size that
-    // are freed without being accessed.
-    kFreesPagesWithoutTraversal,
-    // Most of the savings are from allocations smaller than the page size, or
-    // from larger allocations that are accessed prior to be freed.
-    kRequiresTraversal,
+  // Indicates whether releasing memory reads the memory being released. If that
+  // memory were swapped out, reading it would force the OS to page it back in,
+  // which would cost disk IO or decompression (e.g. zram) and temporarily
+  // worsen the memory shortage, so such releases are best avoided while the
+  // system is paging heavily.
+  //
+  // Reading memory that is unlikely to be swapped out doesn't count. This
+  // includes widely used data structures, like RenderProcessHosts, since many
+  // components access them frequently.
+  //
+  // This covers the work done in OnReleaseMemory() and, for stateful
+  // consumers, the work done afterwards to stay under a lowered limit. It
+  // excludes work deferred to a later garbage collection (see
+  // ReleaseGCReferences).
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
+  enum class ReleaseMemoryDataAccess : uint8_t {
+    // Memory is freed without being read, or only after reading memory that is
+    // unlikely to be swapped out. E.g. calling free() on a large buffer, or
+    // terminating a process.
+    kNone,
+    // Memory that may be swapped out, typically the memory being released, is
+    // read before or while being freed. E.g. evicting the least recently used
+    // entries of a cache reads the pages holding them. Freeing many small
+    // allocations also counts, as the allocator touches the pages they live
+    // on.
+    kReads,
+    // Like kReads, and the memory is also written to disk before being freed.
+    // E.g. paging data to files. In addition to paging memory back in, this
+    // adds disk IO.
+    kReadsAndWritesToDisk,
     // Not applicable (e.g. for passive consumers).
     kNA,
 
     kMaxValue = kNA,
   };
 
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
   enum class InformationRetention : uint8_t {
     // Freeing memory will result in loss of user state. I.e. discarding a tab.
     kLossy,
@@ -124,6 +150,8 @@ struct BASE_EXPORT MemoryConsumerTraits {
   //
   // Note: If `AsyncMemoryConsumerRegistration` is used to register the
   // consumer, the execution should be considered asynchronous.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
   enum class ExecutionType : uint8_t {
     kSynchronous,
     kAsynchronous,
@@ -136,6 +164,8 @@ struct BASE_EXPORT MemoryConsumerTraits {
   // `kDefaultValue` defined in each enum.
 
   // Indicates if this MemoryConsumer supports the concept of a memory limit.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
   enum class SupportsMemoryLimit : uint8_t {
     kYes,
     kNo,
@@ -147,6 +177,8 @@ struct BASE_EXPORT MemoryConsumerTraits {
   // Indicates if the memory freed happens inside the process where the consumer
   // lives. If yes, then the consumer can be notified to help in the case of
   // address space exhaustion in the current process.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
   enum class InProcess : uint8_t {
     kYes,
     kNo,
@@ -159,6 +191,8 @@ struct BASE_EXPORT MemoryConsumerTraits {
 
   // Indicates if recreating the memory is possible, and if so, if is it
   // expensive to do so.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
   enum class RecreateMemoryCost : uint8_t {
     // Freed memory can't be recreated.
     kNA,
@@ -173,6 +207,8 @@ struct BASE_EXPORT MemoryConsumerTraits {
 
   // Indicates if this consumer manages references to the v8 heap. In this case,
   // no memory is actually released until a garbage collection is done.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
   enum class ReleaseGCReferences : uint8_t {
     kYes,
     kNo,
@@ -181,7 +217,9 @@ struct BASE_EXPORT MemoryConsumerTraits {
     kDefaultValue = kNo,
   };
 
-  // Trait for the v8 garbage collector.
+  // Indicates whether releasing memory runs a V8 garbage collection.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
   enum class GarbageCollectsV8Heap : uint8_t {
     kYes,
     kNo,
@@ -207,6 +245,8 @@ struct BASE_EXPORT MemoryConsumerTraits {
   // "remember" a restricted state, the memory coordinator will call its
   // `OnReleaseMemory()` method repeatedly if the system remains under pressure,
   // until the pressure is relieved.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
   enum class IsStateful : uint8_t {
     kYes,
     kNo,
@@ -215,10 +255,57 @@ struct BASE_EXPORT MemoryConsumerTraits {
     kDefaultValue = kYes,
   };
 
+  // Indicates whether the consumer performs a "recovery", i.e. takes an
+  // explicit action to use more memory when its memory limit is raised
+  // (typically once memory pressure is over).
+  //
+  // A consumer whose OnUpdateMemoryLimit() merely raises an internal maximum
+  // size does not recover: no memory is used as a result of the update. Such a
+  // consumer is kNone, even though normal Chrome usage may later grow its
+  // memory usage back up (e.g. a cache refilling as entries are inserted) --
+  // that growth is driven by usage, not by the limit change.
+  //
+  // kNone is the default because it is by far the common case. Consumers that
+  // explicitly allocate on a limit increase must set kImmediate.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
+  enum class RecoveryBehavior : uint8_t {
+    // The consumer takes no action to use more memory when its limit is raised.
+    kNone,
+    // The consumer allocates or repopulates memory as soon as its limit is
+    // raised. This has an instant memory cost that risks re-creating the
+    // pressure that was just relieved, so the memory coordinator may restore
+    // such limits more conservatively.
+    kImmediate,
+    // Not applicable (e.g. for passive consumers).
+    kNA,
+
+    kMaxValue = kNA,
+    kDefaultValue = kNone,
+  };
+
+  // Indicates the CPU cost of releasing memory, excluding the cost of paging
+  // memory back in (see ReleaseMemoryDataAccess). This covers the work done in
+  // OnReleaseMemory() and, for stateful consumers, the work done afterwards to
+  // stay under a lowered limit.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.base.memory_coordinator
+  // GENERATED_JAVA_PREFIX_TO_STRIP: k
+  enum class ReleaseMemoryCpuCost : uint8_t {
+    // E.g. freeing buffers, or evicting entries from a cache.
+    kCheap,
+    // E.g. compressing data, or running a garbage collection.
+    kExpensive,
+    // Not applicable (e.g. for passive consumers).
+    kNA,
+
+    kMaxValue = kNA,
+    kDefaultValue = kCheap,
+  };
+
   // ---- End of traits --------------------------------------------------------
 
   using RequiredTraitsList = base::ParameterPack<EstimatedMemoryUsage,
-                                                 ReleaseMemoryCost,
+                                                 ReleaseMemoryDataAccess,
                                                  InformationRetention,
                                                  ExecutionType>;
 
@@ -228,6 +315,8 @@ struct BASE_EXPORT MemoryConsumerTraits {
                                                  ReleaseGCReferences,
                                                  GarbageCollectsV8Heap,
                                                  IsStateful,
+                                                 RecoveryBehavior,
+                                                 ReleaseMemoryCpuCost,
                                                  ConsumerType>;
 
   using PassiveOptionalTraitsList =
@@ -240,8 +329,8 @@ struct BASE_EXPORT MemoryConsumerTraits {
   //
   // Passive consumers only use the memory limit as a binary pressure gate and
   // do not actively release memory. Therefore, all active-only traits (like
-  // EstimatedMemoryUsage, ReleaseMemoryCost, etc.) are automatically set to
-  // kNA or passive-safe defaults and cannot be customized.
+  // EstimatedMemoryUsage, ReleaseMemoryDataAccess, etc.) are automatically set
+  // to kNA or passive-safe defaults and cannot be customized.
   //
   // A limited subset of optional traits that are relevant for passive consumers
   // (SupportsMemoryLimit, InProcess, and ReleaseGCReferences) can be optionally
@@ -263,7 +352,7 @@ struct BASE_EXPORT MemoryConsumerTraits {
                                           Args... args)
       : consumer_type(ConsumerType::kPassive),
         estimated_memory_usage(EstimatedMemoryUsage::kNA),
-        release_memory_cost(ReleaseMemoryCost::kNA),
+        release_memory_data_access(ReleaseMemoryDataAccess::kNA),
         information_retention(InformationRetention::kNA),
         execution_type(ExecutionType::kSynchronous),
         supports_memory_limit(
@@ -278,7 +367,9 @@ struct BASE_EXPORT MemoryConsumerTraits {
                                               ReleaseGCReferences::kNo>(
                 args...)),
         garbage_collects_v8_heap(GarbageCollectsV8Heap::kNo),
-        is_stateful(IsStateful::kYes) {
+        is_stateful(IsStateful::kYes),
+        recovery_behavior(RecoveryBehavior::kNA),
+        release_memory_cpu_cost(ReleaseMemoryCpuCost::kNA) {
     CHECK_EQ(consumer_type, ConsumerType::kPassive);
   }
 
@@ -290,14 +381,14 @@ struct BASE_EXPORT MemoryConsumerTraits {
   //   // Only required traits:
   //   constexpr base::MemoryConsumerTraits traits(
   //       base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-  //       base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+  //       base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
   //       base::MemoryConsumerTraits::InformationRetention::kLossy,
   //       base::MemoryConsumerTraits::ExecutionType::kSynchronous);
   //
   //   // Required + some optional traits:
   //   constexpr base::MemoryConsumerTraits traits(
   //       base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
-  //       base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+  //       base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
   //       base::MemoryConsumerTraits::InformationRetention::kLossless,
   //       base::MemoryConsumerTraits::ExecutionType::kAsynchronous,
   //       base::MemoryConsumerTraits::InProcess::kNo,
@@ -305,14 +396,15 @@ struct BASE_EXPORT MemoryConsumerTraits {
   //
   template <typename... Args>
     requires trait_helpers::AreValidTraits<OptionalTraitsList, Args...>
-  constexpr MemoryConsumerTraits(EstimatedMemoryUsage estimated_memory_usage,
-                                 ReleaseMemoryCost release_memory_cost,
-                                 InformationRetention information_retention,
-                                 ExecutionType execution_type,
-                                 Args... args)
+  constexpr MemoryConsumerTraits(
+      EstimatedMemoryUsage estimated_memory_usage,
+      ReleaseMemoryDataAccess release_memory_data_access,
+      InformationRetention information_retention,
+      ExecutionType execution_type,
+      Args... args)
       : consumer_type(internal::GetTraitOrDefault<ConsumerType>(args...)),
         estimated_memory_usage(estimated_memory_usage),
-        release_memory_cost(release_memory_cost),
+        release_memory_data_access(release_memory_data_access),
         information_retention(information_retention),
         execution_type(execution_type),
         supports_memory_limit(
@@ -324,7 +416,11 @@ struct BASE_EXPORT MemoryConsumerTraits {
             internal::GetTraitOrDefault<ReleaseGCReferences>(args...)),
         garbage_collects_v8_heap(
             internal::GetTraitOrDefault<GarbageCollectsV8Heap>(args...)),
-        is_stateful(internal::GetTraitOrDefault<IsStateful>(args...)) {
+        is_stateful(internal::GetTraitOrDefault<IsStateful>(args...)),
+        recovery_behavior(
+            internal::GetTraitOrDefault<RecoveryBehavior>(args...)),
+        release_memory_cpu_cost(
+            internal::GetTraitOrDefault<ReleaseMemoryCpuCost>(args...)) {
     CHECK_EQ(consumer_type, ConsumerType::kActive);
   }
 
@@ -349,7 +445,7 @@ struct BASE_EXPORT MemoryConsumerTraits {
   // LINT.IfChange
   ConsumerType consumer_type;
   EstimatedMemoryUsage estimated_memory_usage;
-  ReleaseMemoryCost release_memory_cost;
+  ReleaseMemoryDataAccess release_memory_data_access;
   InformationRetention information_retention;
   ExecutionType execution_type;
   SupportsMemoryLimit supports_memory_limit;
@@ -358,7 +454,11 @@ struct BASE_EXPORT MemoryConsumerTraits {
   ReleaseGCReferences release_gc_references;
   GarbageCollectsV8Heap garbage_collects_v8_heap;
   IsStateful is_stateful;
-  // LINT.ThenChange(//content/common/memory_coordinator/mojom/memory_coordinator.mojom)
+  RecoveryBehavior recovery_behavior;
+  ReleaseMemoryCpuCost release_memory_cpu_cost;
+  // LINT.ThenChange(//content/common/memory_coordinator/mojom/memory_coordinator.mojom,
+  // //base/android/java/src/org/chromium/base/memory_coordinator/MemoryConsumerTraits.java:MemoryConsumerTraits,
+  // //base/memory_coordinator/memory_consumer_android.cc:TraitsFromJava)
 };
 
 }  // namespace base

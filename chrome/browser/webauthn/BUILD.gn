@@ -18,6 +18,7 @@ source_set("webauthn") {
   public_deps = [
     "//components/password_manager/core/browser",
     "//components/password_manager/core/browser:password_form",
+    "//components/webauthn:features",
     "//content/public/browser",
     "//device/fido",
   ]
@@ -55,9 +56,11 @@ source_set("webauthn") {
       "enclave_manager_interface.h",
       "gpm_enclave_controller.h",
       "gpm_enclave_transaction.h",
+      "gpm_pin_crypto.h",
       "immediate_request_rate_limiter_factory.h",
       "local_authentication_token.h",
       "passkey_model_factory.h",
+      "passkey_unlock_error_strings.h",
       "passkey_unlock_manager.h",
       "passkey_unlock_manager_factory.h",
       "password_credential_ui_controller.h",
@@ -81,7 +84,10 @@ source_set("webauthn") {
   }
 
   if (is_mac) {
-    public += [ "chrome_authenticator_request_delegate_mac.h" ]
+    public += [
+      "chrome_authenticator_request_delegate_mac.h",
+      "icloud_recovery.h",
+    ]
   }
 }
 
@@ -92,15 +98,13 @@ source_set("impl") {
     "webauthn_switches.cc",
   ]
 
-  public_deps = [
-    ":webauthn",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ ":webauthn" ]
 
   deps = [
     "//base",
     "//chrome/browser/password_manager",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/webauthn/proto",
     "//components/password_manager/core/browser",
     "//components/password_manager/core/browser:password_form",
     "//components/password_manager/core/browser/password_store:password_store_interface",
@@ -149,8 +153,10 @@ source_set("impl") {
       "enclave_manager_interface.cc",
       "gpm_enclave_controller.cc",
       "gpm_enclave_transaction.cc",
+      "gpm_pin_crypto.cc",
       "immediate_request_rate_limiter_factory.cc",
       "passkey_model_factory.cc",
+      "passkey_unlock_error_strings.cc",
       "passkey_unlock_manager.cc",
       "passkey_unlock_manager_factory.cc",
       "password_credential_ui_controller.cc",
@@ -166,11 +172,12 @@ source_set("impl") {
       "//chrome/browser/profiles",
       "//chrome/browser/signin",
       "//chrome/browser/sync",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:chrome_pages",
+      "//chrome/browser/ui:singleton_tabs",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/navigator",
       "//chrome/browser/ui/passwords",
-      "//chrome/browser/ui/signin",
       "//chrome/browser/ui/webauthn",
       "//components/cbor",
       "//components/device_event_log",
@@ -194,7 +201,10 @@ source_set("impl") {
   }
 
   if (is_mac) {
-    sources += [ "chrome_authenticator_request_delegate_mac.mm" ]
+    sources += [
+      "chrome_authenticator_request_delegate_mac.mm",
+      "icloud_recovery.cc",
+    ]
   }
 
   if (is_win) {
@@ -230,10 +240,7 @@ if (is_android) {
       "android/webauthn_request_delegate_android.cc",
     ]
 
-    public_deps = [
-      ":webauthn_request_delegate_android",
-      "//chrome/browser:browser_public_dependencies",
-    ]
+    public_deps = [ ":webauthn_request_delegate_android" ]
 
     deps = [
       ":webauthn",
@@ -279,7 +286,6 @@ source_set("chrome_web_authentication_delegate") {
       "//chrome/browser/sync",
       "//chrome/browser/ui/passwords",
       "//components/device_event_log",
-      "//components/webapps/isolated_web_apps:scheme",
       "//components/webauthn/core/browser",
       "//components/webauthn/core/browser:signal_api_utils",
     ]
@@ -391,6 +397,7 @@ if (!is_android) {
       "//components/trusted_vault/proto",
       "//components/webauthn/core/browser",
       "//components/webauthn/core/browser:passkey_model",
+      "//components/webauthn/core/browser:test_support",
       "//crypto:test_support",
       "//device/fido",
       "//device/fido:test_support",
@@ -429,6 +436,7 @@ source_set("unit_tests") {
     "//chrome/browser/password_manager",
     "//chrome/browser/profiles:profile",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/cbor",
     "//components/password_manager/core/browser",
     "//components/password_manager/core/browser:test_support",
@@ -456,6 +464,7 @@ source_set("unit_tests") {
       "cmtg_key_fetcher_unittest.cc",
       "credential_sorter_desktop_unittest.cc",
       "enclave_manager_unittest.cc",
+      "passkey_unlock_error_strings_unittest.cc",
       "passkey_unlock_manager_unittest.cc",
       "password_credential_ui_controller_unittest.cc",
       "ui_readiness_barrier_unittest.cc",
@@ -469,10 +478,12 @@ source_set("unit_tests") {
       "//chrome/browser/signin:test_support",
       "//chrome/browser/sync",
       "//chrome/browser/sync:factories",
+      "//chrome/browser/ui/autofill",
       "//chrome/browser/ui/passwords",
-      "//chrome/browser/ui/signin",
       "//components/signin/public/identity_manager",
       "//components/signin/public/identity_manager:test_support",
+      "//components/tabs:public",
+      "//components/tabs:test_support",
       "//components/trusted_vault",
       "//components/trusted_vault:test_support",
       "//components/trusted_vault/proto",
@@ -482,7 +493,11 @@ source_set("unit_tests") {
     ]
 
     if (is_mac) {
-      sources += [ "local_credential_management_mac_unittest.mm" ]
+      sources += [
+        "icloud_recovery_unittest.cc",
+        "local_credential_management_mac_unittest.mm",
+        "unexportable_key_utils_mac_unittest.mm",
+      ]
     }
 
     if (is_win) {
@@ -534,9 +549,11 @@ if (!is_android) {
       "//chrome/browser/sync",
       "//chrome/browser/sync:factories",
       "//chrome/browser/sync/test/integration:sync_integration_test_support",
-      "//chrome/browser/ui",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/passwords",
+      "//chrome/browser/ui/views/frame:browser_view_header",
+      "//chrome/browser/ui/views/location_bar",
+      "//chrome/browser/ui/views/permissions/chip",
       "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/test:test_support",
       "//chrome/test:test_support_ui",
@@ -544,6 +561,7 @@ if (!is_android) {
       "//components/password_manager/core/browser",
       "//components/password_manager/core/browser:test_support",
       "//components/signin/public/identity_manager",
+      "//components/strings",
       "//components/sync:test_support",
       "//components/trusted_vault",
       "//components/trusted_vault:test_support",
@@ -564,6 +582,10 @@ if (!is_android) {
     ]
 
     if (!is_chromeos) {
+      deps += [
+        "//chrome/browser/ui:browser_tabstrip",
+        "//chrome/browser/ui:browser_window_header",
+      ]
       sources += [
         "change_pin_controller_impl_browsertest.cc",
         "enclave_authenticator_browsertest.cc",
@@ -610,7 +632,7 @@ if (!is_android) {
         "//chrome/browser/devtools:test_support",
         "//chrome/browser/ssl:cert_verifier_test_support",
         "//chrome/browser/sync",
-        "//chrome/browser/ui",
+        "//chrome/browser/ui:browser_commands",
         "//chrome/browser/ui/autofill",
         "//chrome/browser/ui/browser_window",
         "//chrome/browser/ui/views/webauthn",

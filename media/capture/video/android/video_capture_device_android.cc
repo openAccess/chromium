@@ -198,9 +198,6 @@ std::optional<gpu::VulkanYCbCrInfo> GetVulkanYCbCrInfo(
   return result;
 }
 
-BASE_FEATURE(kUseNV12FormatForAndroidZeroCopyVideoCapture,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 }  // anonymous namespace
 
 VideoCaptureDeviceAndroid::VideoCaptureDeviceAndroid(
@@ -426,7 +423,10 @@ void VideoCaptureDeviceAndroid::OnI420FrameAvailable(
 
   // Deliver the frame when it doesn't arrive too early.
   if (ThrottleFrame(current_time)) {
-    client_->OnFrameDropped(VideoCaptureFrameDropReason::kAndroidThrottling);
+    base::AutoLock lock(lock_);
+    if (client_) {
+      client_->OnFrameDropped(VideoCaptureFrameDropReason::kAndroidThrottling);
+    }
     return;
   }
 
@@ -483,7 +483,10 @@ void VideoCaptureDeviceAndroid::OnHardwareBufferAvailableOnMainThread(
 
   // Deliver the frame when it doesn't arrive too early.
   if (ThrottleFrame(current_time)) {
-    client_->OnFrameDropped(VideoCaptureFrameDropReason::kAndroidThrottling);
+    base::AutoLock lock(lock_);
+    if (client_) {
+      client_->OnFrameDropped(VideoCaptureFrameDropReason::kAndroidThrottling);
+    }
     return;
   }
 
@@ -494,17 +497,7 @@ void VideoCaptureDeviceAndroid::OnHardwareBufferAvailableOnMainThread(
   viz::SharedImageFormat shared_image_format;
   switch (desc.format) {
     case AndroidImageFormat::ANDROID_IMAGE_FORMAT_YUV_420_888:
-      if (base::FeatureList::IsEnabled(
-              kUseNV12FormatForAndroidZeroCopyVideoCapture)) {
-        video_pixel_format = PIXEL_FORMAT_NV12;
-      } else {
-        // Even though the AHB has an NV12 internal format, its pixel layout
-        // is never directly exposed anywhere, we only access it via
-        // the external texture sampler.
-        // Shared image readback will produce RGB output, that's why it makes
-        // sense to use PIXEL_FORMAT_XBGR VideoFrame format.
-        video_pixel_format = PIXEL_FORMAT_XBGR;
-      }
+      video_pixel_format = PIXEL_FORMAT_NV12;
       shared_image_format = viz::MultiPlaneFormat::kNV12;
       shared_image_format.SetPrefersExternalSampler();
       break;
@@ -862,6 +855,7 @@ void VideoCaptureDeviceAndroid::OnPhotoTaken(
 }
 
 void VideoCaptureDeviceAndroid::OnStarted(JNIEnv* env) {
+  base::AutoLock lock(lock_);
   if (client_)
     client_->OnStarted();
 }
@@ -891,6 +885,7 @@ bool VideoCaptureDeviceAndroid::IsClientConfigured() {
 }
 
 bool VideoCaptureDeviceAndroid::ThrottleFrame(base::TimeTicks current_time) {
+  base::AutoLock lock(lock_);
   if (expected_next_frame_time_ > current_time)
     return true;
   expected_next_frame_time_ += frame_interval_;

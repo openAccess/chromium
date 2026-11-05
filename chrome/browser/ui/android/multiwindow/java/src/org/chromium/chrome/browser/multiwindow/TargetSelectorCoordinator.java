@@ -20,6 +20,7 @@ import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.util.TimeTextResolver;
+import org.chromium.components.browser_ui.widget.DialogListItemDecoration;
 import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -43,7 +44,7 @@ public class TargetSelectorCoordinator {
     static @Nullable TargetSelectorCoordinator sPrevInstance;
 
     private final Context mContext;
-    private final Callback<InstanceInfo> mMoveCallback;
+    private final Callback<@Nullable InstanceInfo> mMoveCallback;
 
     private final ModelList mModelList = new ModelList();
     private final InstanceSwitcherFaviconHelper mFaviconHelper;
@@ -60,14 +61,15 @@ public class TargetSelectorCoordinator {
      * @param context Context to use to build the dialog.
      * @param modalDialogManager {@link ModalDialogManager} object.
      * @param iconBridge An object that fetches favicons from local DB.
-     * @param moveCallback Action to take when asked to open a chosen instance.
+     * @param moveCallback Action to take when asked to open a chosen instance, or invoked with null
+     *     if dismissed without selecting an instance.
      * @param instanceInfo List of {@link InstanceInfo} for available Chrome instances.
      */
     public static void showDialog(
             Context context,
             ModalDialogManager modalDialogManager,
             LargeIconBridge iconBridge,
-            Callback<InstanceInfo> moveCallback,
+            Callback<@Nullable InstanceInfo> moveCallback,
             List<InstanceInfo> instanceInfo,
             @StringRes int titleId) {
         new TargetSelectorCoordinator(context, modalDialogManager, iconBridge, moveCallback)
@@ -78,7 +80,7 @@ public class TargetSelectorCoordinator {
             Context context,
             ModalDialogManager modalDialogManager,
             LargeIconBridge iconBridge,
-            Callback<InstanceInfo> moveCallback) {
+            Callback<@Nullable InstanceInfo> moveCallback) {
         mContext = context;
         mModalDialogManager = modalDialogManager;
         mMoveCallback = moveCallback;
@@ -89,7 +91,10 @@ public class TargetSelectorCoordinator {
                 TYPE_ENTRY,
                 parentView ->
                         LayoutInflater.from(mContext)
-                                .inflate(R.layout.instance_switcher_item, null),
+                                .inflate(
+                                        R.layout.instance_switcher_item,
+                                        parentView,
+                                        /* attachToRoot= */ false),
                 TargetSelectorItemViewBinder::bind);
 
         mDialogView = LayoutInflater.from(context).inflate(R.layout.target_selector_dialog, null);
@@ -130,6 +135,9 @@ public class TargetSelectorCoordinator {
                     public void onDismiss(
                             PropertyModel model, @DialogDismissalCause int dismissalCause) {
                         sPrevInstance = null;
+                        if (dismissalCause != DialogDismissalCause.POSITIVE_BUTTON_CLICKED) {
+                            mMoveCallback.onResult(null);
+                        }
                     }
 
                     @Override

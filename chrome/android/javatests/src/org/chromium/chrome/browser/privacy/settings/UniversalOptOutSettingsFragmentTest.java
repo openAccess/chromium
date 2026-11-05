@@ -4,17 +4,35 @@
 
 package org.chromium.chrome.browser.privacy.settings;
 
+import static androidx.test.espresso.Espresso.onView;
+import static androidx.test.espresso.matcher.ViewMatchers.withText;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+
+import android.text.Spanned;
+import android.text.style.ClickableSpan;
+import android.view.View;
+import android.widget.TextView;
 
 import androidx.preference.Preference;
 import androidx.test.core.app.ApplicationProvider;
+import androidx.test.espresso.NoMatchingViewException;
+import androidx.test.espresso.UiController;
+import androidx.test.espresso.ViewAction;
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
 
+import org.hamcrest.Matcher;
+import org.hamcrest.Matchers;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -28,6 +46,7 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
@@ -36,6 +55,7 @@ import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
+import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
@@ -46,7 +66,6 @@ import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures(ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS)
-@DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
 public class UniversalOptOutSettingsFragmentTest {
     @Rule
     public final SettingsActivityTestRule<UniversalOptOutSettings> mSettingsActivityTestRule =
@@ -54,16 +73,26 @@ public class UniversalOptOutSettingsFragmentTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
+    private UserActionTester mActionTester;
     @Mock private SettingsIndexData mSearchIndexDataMock;
+    @Mock private SettingsCustomTabLauncher mCustomTabLauncherMock;
+    @Mock private PrivacyPreferencesManagerImpl.Natives mPrivacyPreferencesManagerJniMock;
 
     @Before
     public void setUp() {
         NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
+        PrivacyPreferencesManagerImplJni.setInstanceForTesting(mPrivacyPreferencesManagerJniMock);
         // Assume default is false, but clear just in case.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     getPrefService().clearPref(Pref.UNIVERSAL_OPT_OUT_ENABLED);
                 });
+        mActionTester = new UserActionTester();
+    }
+
+    @After
+    public void tearDown() {
+        if (mActionTester != null) mActionTester.tearDown();
     }
 
     private PrefService getPrefService() {
@@ -117,17 +146,29 @@ public class UniversalOptOutSettingsFragmentTest {
         ChromeSwitchPreference switchPref =
                 fragment.findPreference(UniversalOptOutSettings.PREF_UNIVERSAL_OPT_OUT_SWITCH);
         assertNotNull(switchPref);
+        assertFalse(switchPref.isChecked());
 
+        // Click the switch preference to turn it on.
+        ThreadUtils.runOnUiThreadBlocking(() -> switchPref.performClick());
+
+        assertTrue(switchPref.isChecked());
+        assertTrue(
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> getPrefService().getBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED)));
+
+        assertEquals(1, mActionTester.getActionCount("Privacy.UniversalOptOut.SettingsToggleOn"));
+        assertEquals(0, mActionTester.getActionCount("Privacy.UniversalOptOut.SettingsToggleOff"));
+
+        // Click the switch preference again to turn it off.
+        ThreadUtils.runOnUiThreadBlocking(() -> switchPref.performClick());
+
+        assertFalse(switchPref.isChecked());
         assertFalse(
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> getPrefService().getBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED)));
 
-        // Click the switch preference
-        ThreadUtils.runOnUiThreadBlocking(() -> switchPref.performClick());
-
-        assertTrue(
-                ThreadUtils.runOnUiThreadBlocking(
-                        () -> getPrefService().getBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED)));
+        assertEquals(1, mActionTester.getActionCount("Privacy.UniversalOptOut.SettingsToggleOn"));
+        assertEquals(1, mActionTester.getActionCount("Privacy.UniversalOptOut.SettingsToggleOff"));
     }
 
     @Test
@@ -141,8 +182,7 @@ public class UniversalOptOutSettingsFragmentTest {
 
         String expectedSummary =
                 ApplicationProvider.getApplicationContext()
-                        .getString(R.string.universal_opt_out_info_text)
-                        .replaceAll("<.?link>", "");
+                        .getString(R.string.universal_opt_out_info_text);
         assertEquals(expectedSummary, infoTextPref.getSummary().toString());
     }
 
@@ -159,13 +199,16 @@ public class UniversalOptOutSettingsFragmentTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS)
+    @EnableFeatures({
+        ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS,
+        ChromeFeatureList.UNIVERSAL_OPT_OUT
+    })
     public void testSearchableIndex_RemovedWhenNonEligible() {
+        setUniversalOptOutEligibleForTesting(false);
         var indexProvider = UniversalOptOutSettings.SEARCH_INDEX_DATA_PROVIDER;
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, false);
-                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE, false);
                     indexProvider.updateDynamicPreferences(
                             mSettingsActivityTestRule.getActivity(),
                             mSearchIndexDataMock,
@@ -180,6 +223,27 @@ public class UniversalOptOutSettingsFragmentTest {
                 .removeEntry(
                         indexProvider.getUniqueId(
                                 UniversalOptOutSettings.PREF_UNIVERSAL_OPT_OUT_INFO_TEXT));
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures({
+        ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS,
+        ChromeFeatureList.UNIVERSAL_OPT_OUT
+    })
+    public void testSearchableIndex_KeptWhenEligible() {
+        setUniversalOptOutEligibleForTesting(true);
+        var indexProvider = UniversalOptOutSettings.SEARCH_INDEX_DATA_PROVIDER;
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, false);
+                    indexProvider.updateDynamicPreferences(
+                            mSettingsActivityTestRule.getActivity(),
+                            mSearchIndexDataMock,
+                            ProfileManager.getLastUsedRegularProfile());
+                });
+
+        verify(mSearchIndexDataMock, never()).removeEntry(any());
     }
 
     @Test
@@ -203,5 +267,55 @@ public class UniversalOptOutSettingsFragmentTest {
                 .removeEntry(
                         indexProvider.getUniqueId(
                                 UniversalOptOutSettings.PREF_UNIVERSAL_OPT_OUT_INFO_TEXT));
+    }
+
+    private void setUniversalOptOutEligibleForTesting(boolean eligible) {
+        doReturn(eligible).when(mPrivacyPreferencesManagerJniMock).isUniversalOptOutEligible(any());
+    }
+
+    private ViewAction clickOnLearnMoreLink() {
+        return new ViewAction() {
+            @Override
+            public Matcher<View> getConstraints() {
+                return Matchers.instanceOf(TextView.class);
+            }
+
+            @Override
+            public String getDescription() {
+                return "Clicks on the learn more link in the info text";
+            }
+
+            @Override
+            public void perform(UiController uiController, View view) {
+                TextView textView = (TextView) view;
+                Spanned spannedString = (Spanned) textView.getText();
+                ClickableSpan[] spans =
+                        spannedString.getSpans(0, spannedString.length(), ClickableSpan.class);
+                if (spans.length != 1) {
+                    throw new NoMatchingViewException.Builder()
+                            .includeViewHierarchy(true)
+                            .withRootView(textView)
+                            .build();
+                }
+                spans[0].onClick(view);
+            }
+        };
+    }
+
+    @Test
+    @LargeTest
+    public void testLearnMoreLinkOpensCustomTab() {
+        mSettingsActivityTestRule.startSettingsActivity();
+        UniversalOptOutSettings fragment = mSettingsActivityTestRule.getFragment();
+        fragment.setCustomTabLauncher(mCustomTabLauncherMock);
+
+        String summaryText =
+                ApplicationProvider.getApplicationContext()
+                        .getString(R.string.universal_opt_out_info_text)
+                        .replaceAll("<.?link>", "");
+        onView(withText(summaryText)).perform(clickOnLearnMoreLink());
+
+        verify(mCustomTabLauncherMock)
+                .openUrlInCct(any(), eq(UniversalOptOutSettings.UNIVERSAL_OPT_OUT_LEARN_MORE_URL));
     }
 }

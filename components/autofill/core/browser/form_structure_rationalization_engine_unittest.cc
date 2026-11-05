@@ -18,8 +18,10 @@
 namespace autofill::rationalization {
 namespace {
 
+using ::testing::AllOf;
 using ::testing::Contains;
 using ::testing::ElementsAre;
+using ::testing::Field;
 
 BASE_FEATURE(kTestFeatureForFormStructureRationalizationEngine,
              "TestFeature",
@@ -122,17 +124,18 @@ TEST(FormStructureRationalizationEngine, TestBuilder) {
   EXPECT_EQ(rule.trigger_field.regex_reference_match,
             "ADDRESS_HOME_DEPENDENT_LOCALITY");
 
-  ASSERT_EQ(rule.other_field_conditions.size(), 1u);
-  EXPECT_EQ(rule.other_field_conditions[0].location,
-            FieldLocation::kLastClassifiedPredecessor);
-  EXPECT_EQ(rule.other_field_conditions[0].possible_overall_types,
-            FieldTypeSet{ADDRESS_HOME_LINE1});
+  EXPECT_THAT(rule.other_field_conditions,
+              ElementsAre(FieldCondition{
+                  .location = FieldLocation::kLastClassifiedPredecessor,
+                  .possible_overall_types = FieldTypeSet{ADDRESS_HOME_LINE1}}));
 
-  ASSERT_EQ(rule.actions.size(), 2u);
-  EXPECT_EQ(rule.actions[0].target, FieldLocation::kLastClassifiedPredecessor);
-  EXPECT_EQ(rule.actions[0].set_overall_type, ADDRESS_HOME_STREET_ADDRESS);
-  EXPECT_EQ(rule.actions[1].target, FieldLocation::kTriggerField);
-  EXPECT_EQ(rule.actions[1].set_overall_type, ADDRESS_HOME_DEPENDENT_LOCALITY);
+  EXPECT_THAT(
+      rule.actions,
+      ElementsAre(
+          SetTypeAction{.target = FieldLocation::kLastClassifiedPredecessor,
+                        .set_overall_type = ADDRESS_HOME_STREET_ADDRESS},
+          SetTypeAction{.target = FieldLocation::kTriggerField,
+                        .set_overall_type = ADDRESS_HOME_DEPENDENT_LOCALITY}));
 }
 
 // Verifies that the client country is correctly handled by
@@ -826,9 +829,8 @@ TEST(FormStructureRationalizationEngine,
 // Tests that in Japan, if there are name fields duplicated, the second pair is
 // classified as alternative.
 TEST(FormStructureRationalizationEngine, TestJPAlternativeNames) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      {kTestFeatureForFormStructureRationalizationEngine}, {});
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillImproveClassificationForTwoWordLastNames};
 
   // Most common order of name fields in JP.
   std::vector<std::unique_ptr<AutofillField>> fields = CreateFields(
@@ -864,6 +866,60 @@ TEST(FormStructureRationalizationEngine, TestJPAlternativeNames) {
                             /*changed*/ ALTERNATIVE_GIVEN_NAME,
                             /*changed*/ ALTERNATIVE_FAMILY_NAME,
                             ADDRESS_HOME_STREET_ADDRESS));
+}
+
+// Tests that if a field classified as `NAME_LAST_SECOND` and no fields
+// have been classified as `NAME_LAST_FIRST` or `NAME_LAST_CONJUNCTION` then the
+// original classification will be changed to `NAME_LAST`.
+TEST(FormStructureRationalizationEngine,
+     TestTwoWordLastNameClassificationImprovement) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillImproveClassificationForTwoWordLastNames};
+
+  // Form with a `NAME_LAST` field misscalssified as `NAME_LAST_SECOND`.
+  std::vector<std::unique_ptr<AutofillField>> fields = CreateFields(
+      {{u"First name", u"firstname", NAME_FIRST},
+       {u"Last name", u"lastname", NAME_LAST_SECOND},
+       {u"Street Address", u"street-address", ADDRESS_HOME_STREET_ADDRESS}});
+
+  ParsingContext parsing_context(
+      fields, GeoIpCountryCode("US"), LanguageCode("en"), GetPatternFile(),
+      /*active_features=*/{}, /*log_manager=*/nullptr);
+
+  ApplyRationalizationEngineRules(parsing_context, fields, nullptr);
+  EXPECT_THAT(GetTypes(fields), FieldTypesAre(NAME_FIRST,
+                                              /*changed*/ NAME_LAST,
+                                              ADDRESS_HOME_STREET_ADDRESS));
+}
+
+// Check that in the case of two word last names in credit card related
+// forms `NAME_LAST_SECOND` isn't switched to `NAME_LAST` even if
+// `NAME_LAST_FIRST` has not been observed.
+TEST(FormStructureRationalizationEngine,
+     TestTwoWordLastNameClassificationImprovement_CreditCardCase) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kAutofillImproveClassificationForTwoWordLastNames}, {});
+
+  std::vector<std::unique_ptr<AutofillField>> credit_card_fields = CreateFields(
+      {{u"Card number", u"1234 1234 1234 1234", CREDIT_CARD_NUMBER},
+       {u"Name", u"name", CREDIT_CARD_NAME_FIRST},
+       {u"Paternal last name", u"paternallastname", CREDIT_CARD_NAME_LAST},
+       {u"Maternal last name", u"maternallastname", NAME_LAST_SECOND},
+       {u"Card expiry4", u"1111", CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR},
+       {u"Card verification", u"111", CREDIT_CARD_VERIFICATION_CODE}});
+
+  ParsingContext parsing_context(credit_card_fields, GeoIpCountryCode("US"),
+                                 LanguageCode("en"), GetPatternFile(),
+                                 /*active_features=*/{},
+                                 /*log_manager=*/nullptr);
+
+  ApplyRationalizationEngineRules(parsing_context, credit_card_fields, nullptr);
+  EXPECT_THAT(GetTypes(credit_card_fields),
+              FieldTypesAre(CREDIT_CARD_NUMBER, CREDIT_CARD_NAME_FIRST,
+                            CREDIT_CARD_NAME_LAST, NAME_LAST_SECOND,
+                            CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR,
+                            CREDIT_CARD_VERIFICATION_CODE));
 }
 
 }  // namespace

@@ -52,8 +52,8 @@ class SiteSettingsHandler
   class GroupingKey {
    public:
     static GroupingKey Create(const url::Origin& origin);
-    static GroupingKey CreateFromEtldPlus1(const std::string& etld_plus1);
-    static GroupingKey Deserialize(const std::string& serialized);
+    static GroupingKey CreateFromEtldPlus1(std::string_view etld_plus1);
+    static GroupingKey Deserialize(std::string_view serialized);
 
     GroupingKey(const GroupingKey& other);
     GroupingKey& operator=(const GroupingKey& other);
@@ -333,9 +333,6 @@ class SiteSettingsHandler
   // Returns a dictionary containing the lists of the allowed permission
   // grant objects granted via the File System Access API, per origin.
   base::ListValue PopulateFileSystemGrantData();
-
-  // Sends the list of notification permissions to review to the WebUI.
-  void SendNotificationPermissionReviewList();
 
   // Returns the list of permissions blocked at the system level.
   base::Value GetSystemDeniedPermissions();

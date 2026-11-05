@@ -62,6 +62,11 @@ install:
 
 	install "$(SRC_DIR)/remoting/host/linux/linux_me2me_host.py" \
 	  "$(INSTALL_DIR)/chrome-remote-desktop"
+	install "$(SRC_DIR)/remoting/host/linux/desktop_session.py" \
+	  "$(INSTALL_DIR)/desktop-session"
+	install -m 0644 \
+	  "$(SRC_DIR)/remoting/host/linux/shared_lib.py" \
+	  "$(INSTALL_DIR)/shared_lib.py"
 	install "$(SRC_DIR)/remoting/host/installer/linux/is-remoting-session" \
 	  "$(INSTALL_DIR)"
 	install "$(SRC_DIR)/remoting/host/installer/linux/setup-session-environment" \
@@ -155,13 +160,16 @@ endif
 	eu-strip -f "$(REMOTE_WEBAUTHN_DEBUGFILE)" "$(INSTALL_DIR)/remote-webauthn"
 
 	install -m 0644 \
+	  "$(BUILD_DIR)/remoting/com.google.ChromeRemoteDesktop.desktop" \
+	  "$(SYSTEM_WIDE_DESKTOP_ENTRIES_DIR)/com.google.ChromeRemoteDesktop.desktop"
+	install -m 0644 \
 	  "$(BUILD_DIR)/remoting/crd-url-forwarder.desktop" \
 	  "$(SYSTEM_WIDE_DESKTOP_ENTRIES_DIR)/crd-url-forwarder.desktop"
 
 	install -m 0644 \
 	  "$(BUILD_DIR)/icudtl.dat" "$(INSTALL_DIR)/icudtl.dat"
 
-	for locale in $$(ls $(BUILD_DIR)/remoting_locales); do \
+	for locale in $$(ls "$(BUILD_DIR)/remoting_locales"); do \
 	  install "$(BUILD_DIR)/remoting_locales/$$locale" \
 	    "$(INSTALL_DIR)/remoting_locales/$$locale"; \
 	done
@@ -169,8 +177,11 @@ endif
 	install -m 0644 \
 	  "$(SRC_DIR)/remoting/host/installer/linux/chrome-remote-desktop@.service" \
 	  "$(SYSTEMD_UNIT_DIR)/chrome-remote-desktop@.service"
+	install -m 0644 \
+	  "$(SRC_DIR)/remoting/host/installer/linux/chrome-remote-desktop-x11-session@.service" \
+	  "$(SYSTEMD_UNIT_DIR)/chrome-remote-desktop-x11-session@.service"
 
-	install $(BUILD_DIR)/remoting/installer/cron/chrome-remote-desktop \
+	install "$(BUILD_DIR)/remoting/installer/cron/chrome-remote-desktop" \
 	  "$(CRON_DIR)/chrome-remote-desktop"
 
 	install -m 0644 \

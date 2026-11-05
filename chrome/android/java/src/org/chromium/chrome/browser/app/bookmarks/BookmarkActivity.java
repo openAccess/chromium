@@ -29,10 +29,12 @@ import org.chromium.chrome.browser.bookmarks.BookmarkOpener;
 import org.chromium.chrome.browser.bookmarks.BookmarkOpenerImpl;
 import org.chromium.chrome.browser.bookmarks.BookmarkPage;
 import org.chromium.chrome.browser.bookmarks.BookmarkUiPrefs;
+import org.chromium.chrome.browser.device_lock.DeviceLockActivityLauncherImpl;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManagerFactory;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerFactory;
 import org.chromium.chrome.browser.ui.system.StatusBarColorController;
@@ -75,12 +77,17 @@ public class BookmarkActivity extends SnackbarActivity {
         @Nullable ComponentName parentComponent =
                 IntentUtils.safeGetParcelableExtra(
                         getIntent(), IntentHandler.EXTRA_PARENT_COMPONENT);
+        // Use the original profile: `profile` may be an OTR profile that gets destroyed while this
+        // activity is still showing (e.g. last incognito tab closed), which would make the
+        // supplier return null.
+        Profile originalProfile = profile.getOriginalProfile();
         mBookmarkOpener =
                 new BookmarkOpenerImpl(
-                        () -> BookmarkModel.getForProfile(profile),
+                        () -> BookmarkModel.getForProfile(originalProfile),
                         /* context= */ this,
                         /* componentName= */ parentComponent,
-                        /* multiInstanceManager= */ null);
+                        /* multiInstanceManager= */ null,
+                        /* currentTabSupplier= */ null);
 
         ScrimManager scrimManager =
                 new ScrimManager(this, getContentView(), ScrimClient.BOOKMARK_ACTIVITY);
@@ -107,7 +114,7 @@ public class BookmarkActivity extends SnackbarActivity {
                 new BookmarkManagerCoordinator(
                         getWindowAndroid(),
                         this,
-                        true,
+                        /* isDialogUi= */ true,
                         getSnackbarManager(),
                         () -> bottomSheetController,
                         getActivityResultTracker(),
@@ -115,11 +122,13 @@ public class BookmarkActivity extends SnackbarActivity {
                         mBookmarkUiPrefs,
                         mBookmarkOpener,
                         new BookmarkManagerOpenerImpl(),
-                        PriceDropNotificationManagerFactory.create(profile),
+                        PriceDropNotificationManagerFactory.create(originalProfile),
                         /* edgeToEdgePadAdjusterGenerator= */ view ->
                                 EdgeToEdgeControllerFactory.createForViewAndObserveSupplier(
                                         view, getEdgeToEdgeSupplier()),
-                        /* backPressManager= */ null);
+                        /* backPressManager= */ null,
+                        SigninAndHistorySyncActivityLauncherImpl.get(),
+                        DeviceLockActivityLauncherImpl.get());
         String url = getIntent().getDataString();
         UrlConstantResolver resolver = UrlConstantResolverFactory.getForProfile(profile);
         if (TextUtils.isEmpty(url)) url = resolver.getBookmarksPageUrl();

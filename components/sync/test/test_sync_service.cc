@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -64,6 +66,7 @@ void TestSyncService::SetSignedIn(signin::ConsentLevel consent_level,
                                   const CoreAccountInfo& account_info) {
   CHECK(!local_sync_enabled_)
       << "Cannot set signed in while local sync is enabled.";
+  CHECK(!account_info.IsEmpty()) << "Cannot set signed in with empty account.";
 
   disable_reasons_.Remove(DISABLE_REASON_NOT_SIGNED_IN);
   account_info_ = account_info;
@@ -187,6 +190,10 @@ void TestSyncService::SetTrustedVaultRecoverabilityDegraded(bool degraded) {
   user_settings_.SetTrustedVaultRecoverabilityDegraded(degraded);
 }
 
+bool TestSyncService::passkeys_locked() const {
+  return passkeys_locked_;
+}
+
 void TestSyncService::SetIsUsingExplicitPassphrase(bool enabled) {
   user_settings_.SetIsUsingExplicitPassphrase(enabled);
 }
@@ -279,6 +286,11 @@ SyncService::UserActionableError TestSyncService::GetUserActionableError()
                ? UserActionableError::kNeedsTrustedVaultKeyForEverything
                : UserActionableError::kNeedsTrustedVaultKeyForPasswords;
   }
+#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
+  if (passkeys_locked_ && GetActiveDataTypes().Has(WEBAUTHN_CREDENTIAL)) {
+    return UserActionableError::kPasskeysLocked;
+  }
+#endif  // !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
   if (user_settings_.IsTrustedVaultRecoverabilityDegraded()) {
     return user_settings_.IsEncryptEverythingEnabled()
                ? UserActionableError::
@@ -433,6 +445,10 @@ const GURL& TestSyncService::GetSyncServiceUrlForDebugging() const {
   return sync_service_url_;
 }
 
+base::FilePath TestSyncService::GetLocalSyncBackendFolderForDebugging() const {
+  return base::FilePath();
+}
+
 std::string TestSyncService::GetUnrecoverableErrorMessageForDebugging() const {
   return std::string();
 }
@@ -459,7 +475,13 @@ SyncService::DataTypeDownloadStatus TestSyncService::GetDownloadStatusFor(
   return DataTypeDownloadStatus::kUpToDate;
 }
 
+#if BUILDFLAG(IS_ANDROID)
 void TestSyncService::SetInvalidationsForSessionsEnabled(bool enabled) {}
+#endif  // BUILDFLAG(IS_ANDROID)
+
+void TestSyncService::SetPasskeysLocked(bool passkeys_locked) {
+  passkeys_locked_ = passkeys_locked;
+}
 
 void TestSyncService::SendExplicitPassphraseToPlatformClient() {
   if (send_passphrase_to_platform_client_cb_) {

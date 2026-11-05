@@ -20,7 +20,6 @@
 #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
 #include "third_party/blink/renderer/core/input/event_handling_util.h"
 #include "third_party/blink/renderer/core/input/touch_action_util.h"
-#include "third_party/blink/renderer/core/layout/hit_test_canvas_result.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/platform/instrumentation/histogram.h"
@@ -538,6 +537,7 @@ void TouchEventManager::UpdateTouchAttributeMapsForPointerDown(
     TouchAction effective_touch_action) {
   DCHECK(event.GetType() == WebInputEvent::Type::kPointerDown);
   DCHECK(touch_node);
+  DCHECK(TouchAttributeMap::IsValidKey(event.id));
 
   // Ideally we'd DCHECK(!touch_attribute_map_.Contains(event.id))
   // since we shouldn't get a touchstart for a touch that's already
@@ -584,6 +584,7 @@ void TouchEventManager::HandleTouchPoint(
   DCHECK_GE(event.GetType(), WebInputEvent::Type::kPointerTypeFirst);
   DCHECK_LE(event.GetType(), WebInputEvent::Type::kPointerTypeLast);
   DCHECK_NE(event.GetType(), WebInputEvent::Type::kPointerCausedUaAction);
+  DCHECK(TouchAttributeMap::IsValidKey(event.id));
 
   if (touch_attribute_map_.empty()) {
     // Ideally we'd DCHECK(!m_touchSequenceDocument) here since we should

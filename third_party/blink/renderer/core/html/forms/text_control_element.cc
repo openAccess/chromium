@@ -71,7 +71,8 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
-#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
@@ -144,9 +145,9 @@ void AppendText(const String& value,
 TextControlElement::TextControlElement(const QualifiedName& tag_name,
                                        Document& doc)
     : HTMLFormControlElementWithState(tag_name, doc),
-      last_change_was_user_edit_(false),
       cached_selection_start_(0),
-      cached_selection_end_(0) {
+      cached_selection_end_(0),
+      last_change_was_user_edit_(false) {
   cached_selection_direction_ =
       doc.GetFrame() && doc.GetFrame()
                             ->GetEditor()
@@ -164,7 +165,6 @@ bool TextControlElement::DispatchFocusEvent(
     InputDeviceCapabilities* source_capabilities) {
   if (SupportsPlaceholder())
     UpdatePlaceholderVisibility();
-  HandleFocusEvent(old_focused_element, type);
   return HTMLFormControlElementWithState::DispatchFocusEvent(
       old_focused_element, type, source_capabilities);
 }
@@ -188,8 +188,54 @@ void TextControlElement::DefaultEventHandler(Event& event) {
     CaptureOpaqueRangePreEdit();
   }
 
-  if (event.type() == event_type_names::kWebkitEditableContentChanged &&
-      GetLayoutObject() && GetLayoutObject()->IsTextControl()) {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    if (event.type() == event_type_names::kWebkitEditableContentChanged &&
+        GetLayoutObject() && GetLayoutObject()->IsTextControl()) {
+      last_change_was_user_edit_ = !GetDocument().IsRunningExecCommand();
+      if (last_change_was_user_edit_) {
+        SetUserHasEditedTheField();
+      }
+
+      if (IsFocused()) {
+        // Updating the cache in SelectionChanged() isn't enough because
+        // SelectionChanged() is not called if:
+        // - Text nodes in the inner-editor is split to multiple, and
+        // - The caret is on the beginning of a Text node, and its previous node
+        //   is updated, or
+        // - The caret is on the end of a text node, and its next node is
+        // updated.
+        ComputedSelection computed_selection;
+        ComputeSelection(kStart | kEnd | kDirection, computed_selection);
+        CacheSelection(computed_selection.start, computed_selection.end,
+                       computed_selection.direction);
+      } else if (RuntimeEnabledFeatures::
+                     ClampUnfocusedSelectionCacheEnabled()) {
+        // If the element is not focused, the selection cache is not updated
+        // during text mutations because the global Selection doesn't point to
+        // this element. This can cause the cache to exceed the new text length.
+        // We clamp the cache here to prevent out-of-bounds index crashes.
+        // Note: While this doesn't perfectly adjust selection offsets (e.g. if
+        // text is deleted from the beginning), it is sufficient to prevent
+        // crashes in rare non-focused edit cases.
+        unsigned len = InnerEditorValue().length();
+        if (cached_selection_start_ > len || cached_selection_end_ > len) {
+          CacheSelection(std::min(cached_selection_start_, len),
+                         std::min(cached_selection_end_, len),
+                         cached_selection_direction_);
+        }
+      }
+
+      SubtreeHasChanged();
+      return;
+    }
+  }
+
+  HTMLFormControlElementWithState::DefaultEventHandler(event);
+}
+
+void TextControlElement::NotifyEditableContentChanged() {
+  CHECK(RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled());
+  if (GetLayoutObject() && GetLayoutObject()->IsTextControl()) {
     last_change_was_user_edit_ = !GetDocument().IsRunningExecCommand();
     if (last_change_was_user_edit_) {
       SetUserHasEditedTheField();
@@ -223,10 +269,7 @@ void TextControlElement::DefaultEventHandler(Event& event) {
     }
 
     SubtreeHasChanged();
-    return;
   }
-
-  HTMLFormControlElementWithState::DefaultEventHandler(event);
 }
 
 void TextControlElement::ForwardEvent(Event& event) {
@@ -373,11 +416,18 @@ void TextControlElement::ClearValueBeforeFirstUserEdit() {
 }
 
 void TextControlElement::SetFocused(bool flag,
-                                    mojom::blink::FocusType focus_type) {
-  HTMLFormControlElementWithState::SetFocused(flag, focus_type);
+                                    mojom::blink::FocusType focus_type,
+                                    BlurEventBehavior blur_event_behavior) {
+  HTMLFormControlElementWithState::SetFocused(flag, focus_type,
+                                              blur_event_behavior);
 
-  if (!flag)
-    DispatchFormControlChangeEvent();
+  if (!flag) {
+    if (blur_event_behavior != BlurEventBehavior::kDropWhenRemoving) {
+      DispatchFormControlChangeEvent();
+    } else {
+      ClearValueBeforeFirstUserEdit();
+    }
+  }
 
   if (auto* inner_editor = InnerEditorElement())
     inner_editor->FocusChanged();
@@ -386,6 +436,8 @@ void TextControlElement::SetFocused(bool flag,
 void TextControlElement::DispatchFormControlChangeEvent() {
   if (!value_before_first_user_edit_.IsNull() &&
       !EqualIgnoringNullity(value_before_first_user_edit_, Value())) {
+    // We need to clear after checking the condition, because clearing
+    // changes Value().
     ClearValueBeforeFirstUserEdit();
     DispatchChangeEvent();
   } else {
@@ -418,9 +470,9 @@ void TextControlElement::setRangeText(const String& replacement,
   if (start > end) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"The provided start value (", String::Number(start),
-                ") is larger than the provided end value (",
-                String::Number(end), ")."}));
+        Format("The provided start value ({}) is larger than the provided end "
+               "value ({}).",
+               start, end));
     return;
   }
   if (OpenShadowRoot())
@@ -838,8 +890,7 @@ void TextControlElement::setMaxLength(int new_value,
   if (new_value < 0) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"The value provided (", String::Number(new_value),
-                ") is not positive or 0."}));
+        Format("The value provided ({}) is not positive or 0.", new_value));
   } else if (min >= 0 && new_value < min) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
@@ -856,8 +907,7 @@ void TextControlElement::setMinLength(int new_value,
   if (new_value < 0) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"The value provided (", String::Number(new_value),
-                ") is not positive or 0."}));
+        Format("The value provided ({}) is not positive or 0.", new_value));
   } else if (max >= 0 && new_value > max) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
@@ -990,11 +1040,10 @@ std::pair<Text*, unsigned> TextControlElement::ResolveValueOffset(
   return {nullptr, 0};
 }
 
-Node* TextControlElement::CreatePlaceholderBreakElement() const {
+HTMLBRElement* TextControlElement::CreatePlaceholderBreakElement() const {
   auto* element = MakeGarbageCollected<HTMLBRElement>(GetDocument());
   element->setAttribute(html_names::kIdAttr,
                         shadow_element_names::kIdPlaceholderBreak);
-  element->setAttribute(html_names::kAriaHiddenAttr, keywords::kTrue);
   return element;
 }
 
@@ -1004,10 +1053,40 @@ bool TextControlElement::IsPlaceholderBreakElement(const Node* node) {
              shadow_element_names::kIdPlaceholderBreak;
 }
 
+void TextControlElement::UpdatePlaceholderBreakAriaHidden(const String& value) {
+  if (!RuntimeEnabledFeatures::
+          TextAreaPlaceholderBreakAriaHiddenUpdateEnabled() ||
+      !IsA<HTMLTextAreaElement>(this)) {
+    return;
+  }
+  Node* last_child = InnerEditorElement()->lastChild();
+  if (!IsPlaceholderBreakElement(last_child)) {
+    return;
+  }
+  // The same placeholder break can be kept while the value changes, e.g. when
+  // text is pasted into an empty <textarea>. So the attribute is updated here
+  // rather than when the element is created.
+  // If the value ends with a newline, the placeholder break represents the
+  // blank last line, and should be exposed to accessibility. Otherwise, e.g.
+  // for an empty value, it only provides one line-height and should be hidden.
+  auto& placeholder_break = To<Element>(*last_child);
+  const bool should_hide = !value.ends_with('\n');
+  if (should_hide ==
+      placeholder_break.FastHasAttribute(html_names::kAriaHiddenAttr)) {
+    return;
+  }
+  if (should_hide) {
+    placeholder_break.setAttribute(html_names::kAriaHiddenAttr,
+                                   keywords::kTrue);
+  } else {
+    placeholder_break.removeAttribute(html_names::kAriaHiddenAttr);
+  }
+}
+
 void TextControlElement::AdjustPlaceholderBreakElement() {
   HTMLElement* inner_editor = InnerEditorElement();
   if (inner_editor->GetLayoutObject() &&
-      inner_editor->GetLayoutObject()->StyleRef().ShouldCollapseBreaks()) {
+      inner_editor->GetLayoutObject()->Style().ShouldCollapseBreaks()) {
     return;
   }
   Node* last_child = inner_editor->lastChild();
@@ -1037,7 +1116,10 @@ void TextControlElement::AdjustPlaceholderBreakElement() {
   if (!last_child && IsA<HTMLTextAreaElement>(this)) {
     // We need a placeholder break for an empty value in order to provide one
     // line-height and a baseline even if this element is not editable.
-    inner_editor->AppendChild(CreatePlaceholderBreakElement());
+    auto* placeholder_break = CreatePlaceholderBreakElement();
+    placeholder_break->setAttribute(html_names::kAriaHiddenAttr,
+                                    keywords::kTrue);
+    inner_editor->AppendChild(placeholder_break);
     return;
   }
   auto* last_child_text_node = DynamicTo<Text>(last_child);
@@ -1080,6 +1162,7 @@ void TextControlElement::SetInnerEditorValue(const String& value) {
   // Add a placeholder <br> so that we can put the caret at the next line of
   // the last newline.
   AdjustPlaceholderBreakElement();
+  UpdatePlaceholderBreakAriaHidden(value);
 
   if (text_is_changed) {
     MaybeSetHasBeenHeuristicCustomPasswordJS();
@@ -1310,6 +1393,14 @@ void TextControlElement::SetAutofillValue(const String& value,
            TextFieldEventBehavior::kDispatchInputAndChangeEvent,
            TextControlSetValueSelection::kSetSelectionToEnd,
            value.empty() ? WebAutofillState::kNotFilled : autofill_state);
+}
+
+void TextControlElement::SetAutofillState(WebAutofillState autofill_state) {
+  if (autofill_state == WebAutofillState::kNotFilled &&
+      !SuggestedValue().empty()) {
+    SetSuggestedValue(String());
+  }
+  HTMLFormControlElementWithState::SetAutofillState(autofill_state);
 }
 
 void TextControlElement::SetSuggestedValue(const String& value) {

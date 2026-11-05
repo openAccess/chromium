@@ -10,8 +10,8 @@
 
 namespace web {
 
-NSString* CreateLocalBlockingJsonRuleList() {
-  NSMutableArray* local_schemes_urls = [@[ @"^file://.*" ] mutableCopy];
+NSString* CreateAppSpecificURLsJsonRuleList() {
+  NSMutableArray* local_schemes_urls = [[NSMutableArray alloc] init];
   WebClient::Schemes schemes;
   GetWebClient()->AddAdditionalSchemes(&schemes);
   GetWebClient()->GetAdditionalWebUISchemes(&(schemes.standard_schemes));
@@ -25,12 +25,20 @@ NSString* CreateLocalBlockingJsonRuleList() {
       @"url-filter" : @"^https?://.*",
       @"if-top-url" : local_schemes_urls,
       @"resource-type" : @[
-        // These should be all resource types except document.
-        // "document" cannot be blocked because it breaks error pages displayed
-        // when a WebStatePolicyDecider blocks a navigation.
         @"image", @"style-sheet", @"script", @"font", @"raw", @"svg-document",
-        @"media", @"popup", @"ping"
+        @"media", @"popup", @"ping", @"document"
       ],
+    },
+    @"action" : @{
+      @"type" : @"block",
+    },
+  };
+
+  NSDictionary* local_websocket_block = @{
+    @"trigger" : @{
+      @"url-filter" : @"^wss?://.*",
+      @"if-top-url" : local_schemes_urls,
+      @"resource-type" : @[ @"websocket" ],
     },
     @"action" : @{
       @"type" : @"block",
@@ -51,10 +59,10 @@ NSString* CreateLocalBlockingJsonRuleList() {
     },
   };
 
-  NSData* json_data =
-      [NSJSONSerialization dataWithJSONObject:@[ local_block, allow_crbug ]
-                                      options:NSJSONWritingPrettyPrinted
-                                        error:nil];
+  NSData* json_data = [NSJSONSerialization
+      dataWithJSONObject:@[ local_block, local_websocket_block, allow_crbug ]
+                 options:NSJSONWritingPrettyPrinted
+                   error:nil];
   NSString* json_string = [[NSString alloc] initWithData:json_data
                                                 encoding:NSUTF8StringEncoding];
   return json_string;

@@ -10,10 +10,8 @@
 #include "ash/public/cpp/window_properties.h"
 #include "ash/shell.h"
 #include "ash/wm/mru_window_tracker.h"
-#include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/strings/string_number_conversions.h"
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
@@ -26,11 +24,11 @@ namespace ash {
 
 namespace {
 
-std::unique_ptr<ThottleControllerWindowDelegate> instance = nullptr;
+ThottleControllerWindowDelegate* g_delegate_instance = nullptr;
 
 viz::FrameSinkId GetFrameSinkId(const aura::Window* window) {
-  if (instance) {
-    return instance->GetFrameSinkIdForWindow(window);
+  if (g_delegate_instance) {
+    return g_delegate_instance->GetFrameSinkIdForWindow(window);
   }
   return window->GetFrameSinkId();
 }
@@ -74,7 +72,8 @@ void CollectBrowserFrameSinkIdsInWindow(
 
 void SetThottleControllerWindowDelegate(
     std::unique_ptr<ThottleControllerWindowDelegate> delegate) {
-  instance = std::move(delegate);
+  delete g_delegate_instance;
+  g_delegate_instance = delegate.release();
 }
 
 ThrottleCandidates::ThrottleCandidates() = default;
@@ -97,21 +96,18 @@ void FrameThrottlingController::ResetThrottleCandidates(
 
 FrameThrottlingController::FrameThrottlingController(
     viz::HostFrameSinkManager* host_frame_sink_manager)
-    : host_frame_sink_manager_(host_frame_sink_manager) {
+    : host_frame_sink_manager_(host_frame_sink_manager),
+      current_throttled_frame_interval_(base::Hertz(kDefaultThrottleFps)) {
   DCHECK(host_frame_sink_manager_);
-  default_throttled_frame_interval_ = base::Hertz(kDefaultThrottleFps);
-  current_throttled_frame_interval_ = default_throttled_frame_interval_;
 }
 
 FrameThrottlingController::~FrameThrottlingController() {
   EndThrottling();
+  SetThottleControllerWindowDelegate(nullptr);
 }
 
 void FrameThrottlingController::StartThrottling(
-    const std::vector<raw_ptr<aura::Window, VectorExperimental>>& windows,
-    base::TimeDelta requested_frame_interval) {
-  latest_custom_throttled_frame_interval_ = requested_frame_interval;
-
+    const std::vector<raw_ptr<aura::Window, VectorExperimental>>& windows) {
   if (windows_manually_throttled_)
     EndThrottling();
 
@@ -146,22 +142,21 @@ void FrameThrottlingController::StartThrottling(
 
   // Throttle browser and lacros windows.
   if (!manually_throttled_candidates_.IsEmpty()) {
-    SetWindowsManuallyThrottled(true);
+    windows_manually_throttled_ = true;
     UpdateThrottlingOnFrameSinks();
   }
 
   // Do not throttle arc if at least one arc window should not be throttled.
   if (!arc_windows.empty() && (arc_windows.size() == all_arc_windows.size())) {
-    SetWindowsManuallyThrottled(true);
-    StartThrottlingArc(arc_windows, GetCurrentThrottledFrameRate());
+    windows_manually_throttled_ = true;
+    StartThrottlingArc(arc_windows);
   }
 }
 
 void FrameThrottlingController::StartThrottlingArc(
-    const std::vector<aura::Window*>& arc_windows,
-    uint8_t throttled_fps) {
+    const std::vector<aura::Window*>& arc_windows) {
   for (auto& arc_observer : arc_observers_) {
-    arc_observer.OnThrottlingStarted(arc_windows, throttled_fps);
+    arc_observer.OnThrottlingStarted(arc_windows, kDefaultThrottleFps);
   }
 }
 
@@ -173,7 +168,7 @@ void FrameThrottlingController::EndThrottlingArc() {
 
 void FrameThrottlingController::EndThrottling() {
   if (windows_manually_throttled_) {
-    SetWindowsManuallyThrottled(false);
+    windows_manually_throttled_ = false;
     ResetThrottleCandidates(&manually_throttled_candidates_);
     UpdateThrottlingOnFrameSinks();
     EndThrottlingArc();
@@ -233,33 +228,8 @@ FrameThrottlingController::GetFrameSinkIdsToThrottle() const {
 }
 
 void FrameThrottlingController::UpdateThrottlingOnFrameSinks() {
-  SetCurrentThrottledFrameInterval();
   host_frame_sink_manager_->Throttle(GetFrameSinkIdsToThrottle(),
                                      current_throttled_frame_interval_);
-}
-
-void FrameThrottlingController::SetWindowsManuallyThrottled(
-    bool windows_manually_throttled) {
-  windows_manually_throttled_ = windows_manually_throttled;
-  // The current frame interval is partially dictated by
-  // |windows_manually_throttled_|, so it may have changed.
-  SetCurrentThrottledFrameInterval();
-}
-
-void FrameThrottlingController::SetCurrentThrottledFrameInterval() {
-  // Implements the criteria described above StartThrottling() in the header.
-  bool use_latest_custom_throttled_frame_interval =
-      windows_manually_throttled_ &&
-      latest_custom_throttled_frame_interval_.is_positive() &&
-      (!HasCompositingBasedThrottling() ||
-       latest_custom_throttled_frame_interval_ <=
-           default_throttled_frame_interval_);
-  current_throttled_frame_interval_ =
-      use_latest_custom_throttled_frame_interval
-          ? latest_custom_throttled_frame_interval_
-          : default_throttled_frame_interval_;
-  DVLOG(1) << "Throttled frame interval set to "
-           << current_throttled_frame_interval_;
 }
 
 void FrameThrottlingController::AddArcObserver(
@@ -275,14 +245,6 @@ void FrameThrottlingController::RemoveArcObserver(
 bool FrameThrottlingController::HasArcObserver(
     FrameThrottlingObserver* observer) {
   return arc_observers_.HasObserver(observer);
-}
-
-bool FrameThrottlingController::HasCompositingBasedThrottling() const {
-  for (const auto& [_, candidates] : host_to_candidates_map_) {
-    if (!candidates.IsEmpty())
-      return true;
-  }
-  return false;
 }
 
 }  // namespace ash

@@ -58,10 +58,43 @@ class ScopedPixelUnpackBufferOverride {
   }
 
  private:
-    GLint orig_binding_;
+  GLint orig_binding_;
+};
+
+// Restores both draw and read framebuffer bindings on destruction to prevent
+// driver state desync when GL_READ_FRAMEBUFFER_BINDING is supported.
+// See https://crbug.com/507351786
+class ScopedFramebufferOverride {
+ public:
+  explicit ScopedFramebufferOverride(bool supports_read_framebuffer_binding)
+      : supports_read_framebuffer_binding_(supports_read_framebuffer_binding) {
+    if (supports_read_framebuffer_binding_) {
+      glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_binding_);
+      glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_binding_);
+    } else {
+      glGetIntegerv(GL_FRAMEBUFFER_BINDING, &draw_binding_);
+    }
+  }
+
+  ~ScopedFramebufferOverride() {
+    if (supports_read_framebuffer_binding_) {
+      glBindFramebufferEXT(GL_DRAW_FRAMEBUFFER,
+                           static_cast<GLuint>(draw_binding_));
+      glBindFramebufferEXT(GL_READ_FRAMEBUFFER,
+                           static_cast<GLuint>(read_binding_));
+    } else {
+      glBindFramebufferEXT(GL_FRAMEBUFFER, static_cast<GLuint>(draw_binding_));
+    }
+  }
+
+ private:
+  const bool supports_read_framebuffer_binding_ = false;
+  GLint draw_binding_ = 0;
+  GLint read_binding_ = 0;
 };
 
 bool IsWebGLDrawBuffersSupported(bool webglCompatibilityContext,
+                                 bool supports_read_framebuffer_binding,
                                  GLenum depth_texture_internal_format,
                                  GLenum depth_stencil_texture_internal_format,
                                  GLuint complete_fbo_for_workarounds) {
@@ -74,9 +107,9 @@ bool IsWebGLDrawBuffersSupported(bool webglCompatibilityContext,
     return false;
   }
 
-  GLint fb_binding = 0;
+  ScopedFramebufferOverride scoped_fbo(supports_read_framebuffer_binding);
+
   GLint tex_binding = 0;
-  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fb_binding);
   glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex_binding);
 
   GLuint fbo;
@@ -163,7 +196,6 @@ bool IsWebGLDrawBuffersSupported(bool webglCompatibilityContext,
   if (complete_fbo_for_workarounds) {
     glBindFramebufferEXT(GL_FRAMEBUFFER, complete_fbo_for_workarounds);
   }
-  glBindFramebufferEXT(GL_FRAMEBUFFER, static_cast<GLuint>(fb_binding));
   glDeleteFramebuffersEXT(1, &fbo);
 
   glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(tex_binding));
@@ -181,8 +213,6 @@ size_t GetNumAttachments(GLenum attachment) {
   glGetIntegerv(attachment, &max_color_attachments);
   return base::checked_cast<size_t>(max_color_attachments);
 }
-
-const char kEnableWebGLDraftExtensions[] = "enable-webgl-draft-extensions";
 
 }  // anonymous namespace.
 
@@ -207,9 +237,6 @@ FeatureInfo::FeatureInfo(
 void FeatureInfo::InitializeBasicState(const base::CommandLine* command_line) {
   if (!command_line)
     return;
-
-  enable_webgl_draft_extensions_ =
-      command_line->HasSwitch(kEnableWebGLDraftExtensions);
 
   feature_flags_.enable_shader_name_hashing =
       !command_line->HasSwitch(switches::kDisableShaderNameHashing);
@@ -726,10 +753,9 @@ void FeatureInfo::InitializeFeatures(uint32_t complete_fbo_for_workarounds) {
   //
   bool enable_depth_texture = false;
   GLenum depth_texture_format = GL_NONE;
-  if (!workarounds_.disable_depth_texture &&
-      (gfx::HasExtension(extensions, "GL_OES_depth_texture") ||
-       gfx::HasExtension(extensions, "GL_ANGLE_depth_texture"))) {
-    // Note that we don't expose depth_texture extenion on top of ES3 if
+  if (gfx::HasExtension(extensions, "GL_OES_depth_texture") ||
+      gfx::HasExtension(extensions, "GL_ANGLE_depth_texture")) {
+    // Note that we don't expose depth_texture extension on top of ES3 if
     // the depth_texture extension isn't exposed by the ES3 driver.
     // This is because depth textures are filterable under linear mode in
     // ES2 + extension, but not in core ES3.
@@ -1026,24 +1052,22 @@ void FeatureInfo::InitializeFeatures(uint32_t complete_fbo_for_workarounds) {
   InitializeFloatAndHalfFloatFeatures(extensions);
 
   // Check for multisample support
-  if (!workarounds_.disable_chromium_framebuffer_multisample) {
-    bool ext_has_multisample =
-        (gfx::HasExtension(extensions, "GL_EXT_framebuffer_multisample") &&
-         gfx::HasExtension(extensions, "GL_EXT_framebuffer_blit")) ||
-        gl_version_info_->is_es3;
-    if (gl_version_info_->is_angle || gl_version_info_->is_swiftshader) {
-      ext_has_multisample |=
-          gfx::HasExtension(extensions, "GL_ANGLE_framebuffer_multisample");
-    }
-    if (ext_has_multisample) {
-      feature_flags_.chromium_framebuffer_multisample = true;
-      validators_.framebuffer_target.AddValue(GL_READ_FRAMEBUFFER);
-      validators_.framebuffer_target.AddValue(GL_DRAW_FRAMEBUFFER);
-      validators_.g_l_state.AddValue(GL_READ_FRAMEBUFFER_BINDING);
-      validators_.g_l_state.AddValue(GL_MAX_SAMPLES_EXT);
-      validators_.render_buffer_parameter.AddValue(GL_RENDERBUFFER_SAMPLES_EXT);
-      AddExtensionString("GL_CHROMIUM_framebuffer_multisample");
-    }
+  bool ext_has_multisample =
+      (gfx::HasExtension(extensions, "GL_EXT_framebuffer_multisample") &&
+       gfx::HasExtension(extensions, "GL_EXT_framebuffer_blit")) ||
+      gl_version_info_->is_es3;
+  if (gl_version_info_->is_angle || gl_version_info_->is_swiftshader) {
+    ext_has_multisample |=
+        gfx::HasExtension(extensions, "GL_ANGLE_framebuffer_multisample");
+  }
+  if (ext_has_multisample) {
+    feature_flags_.chromium_framebuffer_multisample = true;
+    validators_.framebuffer_target.AddValue(GL_READ_FRAMEBUFFER);
+    validators_.framebuffer_target.AddValue(GL_DRAW_FRAMEBUFFER);
+    validators_.g_l_state.AddValue(GL_READ_FRAMEBUFFER_BINDING);
+    validators_.g_l_state.AddValue(GL_MAX_SAMPLES_EXT);
+    validators_.render_buffer_parameter.AddValue(GL_RENDERBUFFER_SAMPLES_EXT);
+    AddExtensionString("GL_CHROMIUM_framebuffer_multisample");
   }
 
   if (gfx::HasExtension(extensions, "GL_EXT_multisampled_render_to_texture")) {
@@ -1242,8 +1266,10 @@ void FeatureInfo::InitializeFeatures(uint32_t complete_fbo_for_workarounds) {
       (context_type_ == CONTEXT_TYPE_OPENGLES2 ||
        (context_type_ == CONTEXT_TYPE_WEBGL1 &&
         IsWebGLDrawBuffersSupported(
-            is_webgl_compatibility_context, depth_texture_format,
-            depth_stencil_texture_format, complete_fbo_for_workarounds)));
+            is_webgl_compatibility_context,
+            validators_.g_l_state.IsValid(GL_READ_FRAMEBUFFER_BINDING),
+            depth_texture_format, depth_stencil_texture_format,
+            complete_fbo_for_workarounds)));
   if (have_es2_draw_buffers) {
     AddExtensionString("GL_EXT_draw_buffers");
     feature_flags_.ext_draw_buffers = true;
@@ -1566,14 +1592,12 @@ void FeatureInfo::InitializeFeatures(uint32_t complete_fbo_for_workarounds) {
     AddExtensionString("GL_AMD_framebuffer_multisample_advanced");
   }
 
-  if (enable_webgl_draft_extensions_ &&
-      gfx::HasExtension(extensions, "GL_ANGLE_shader_pixel_local_storage")) {
+  if (gfx::HasExtension(extensions, "GL_ANGLE_shader_pixel_local_storage")) {
     feature_flags_.angle_shader_pixel_local_storage = true;
     AddExtensionString("GL_ANGLE_shader_pixel_local_storage");
   }
 
-  if (enable_webgl_draft_extensions_ &&
-      gfx::HasExtension(extensions,
+  if (gfx::HasExtension(extensions,
                         "GL_ANGLE_shader_pixel_local_storage_coherent")) {
     AddExtensionString("GL_ANGLE_shader_pixel_local_storage_coherent");
   }
@@ -1668,6 +1692,12 @@ void FeatureInfo::InitializeFeatures(uint32_t complete_fbo_for_workarounds) {
       gfx::HasExtension(extensions, "GL_ANGLE_blob_cache")) {
     if (base::FeatureList::IsEnabled(features::kANGLEPerContextBlobCache)) {
       feature_flags_.angle_blob_cache = true;
+    }
+  }
+
+  if (gfx::HasExtension(extensions, "GL_ANGLE_trim_memory")) {
+    if (base::FeatureList::IsEnabled(features::kANGLETrimMemory)) {
+      feature_flags_.angle_trim_memory = true;
     }
   }
 

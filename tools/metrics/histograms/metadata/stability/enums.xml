@@ -6,6 +6,8 @@ found in the LICENSE file.
 
 <!--
 
+        You DON'T need an OWNER review to submit changes to this file.
+
 This file describes the enumerations referenced by entries in histograms.xml for
 this directory. Some enums may instead be listed in the central enums.xml file
 at src/tools/metrics/histograms/enums.xml when multiple files use them.
@@ -124,14 +126,14 @@ Called by update_bad_message_reasons.py.-->
   <int value="4" label="RFH_DISPLAY_CAPTURE_PERMISSION_MISSING"/>
   <int value="5" label="MSFD_MULTIPLE_CLOSURES_OF_FOCUSABILITY_WINDOW"/>
   <int value="6" label="MSFD_MULTIPLE_EXPLICIT_CALLS_TO_FOCUS"/>
-  <int value="7" label="PVM_SCRIPTED_PRINT_FENCED_FRAME"/>
-  <int value="8" label="PVMB_SCRIPTED_PRINT_FENCED_FRAME"/>
+  <int value="7" label="OBSOLETE_PVM_SCRIPTED_PRINT_FENCED_FRAME"/>
+  <int value="8" label="OBSOLETE_PVMB_SCRIPTED_PRINT_FENCED_FRAME"/>
   <int value="9" label="SSI_CREATE_FENCED_FRAME"/>
   <int value="10" label="CCU_SUPERFLUOUS_BIND"/>
   <int value="11" label="RFH_INVALID_WEB_FRAME_URL"/>
-  <int value="12" label="PVM_PRINT_FENCED_FRAME"/>
+  <int value="12" label="OBSOLETE_PVM_PRINT_FENCED_FRAME"/>
   <int value="13" label="SAGPC_INVALID_PERMISSION_REQUEST_CONTEXT"/>
-  <int value="14" label="TLSAPC_INVALID_PERMISSION_REQUEST_CONTEXT"/>
+  <int value="14" label="OBSOLETE_TLSAPC_INVALID_PERMISSION_REQUEST_CONTEXT"/>
   <int value="15" label="CCBC_GOOGLE_CHROME_SCHEME"/>
   <int value="16" label="PWC_BRIDGE_UNQUALIFIED_FRAME"/>
 </enum>
@@ -431,7 +433,7 @@ Called by update_bad_message_reasons.py.-->
   <int value="272" label="RFHI_SUBFRAME_NAV_WOULD_CHANGE_MAINFRAME_ORIGIN"/>
   <int value="273" label="FF_CREATE_WHILE_PRERENDERING"/>
   <int value="274" label="RFHI_SET_OVERLAYS_CONTENT_NOT_OUTERMOST_FRAME"/>
-  <int value="275" label="FF_DIFFERENT_MODE_THAN_EMBEDDER"/>
+  <int value="275" label="OBSOLETE_FF_DIFFERENT_MODE_THAN_EMBEDDER"/>
   <int value="276" label="RFHI_UNFENCED_TOP_IPC_OUTSIDE_FENCED_FRAME"/>
   <int value="277" label="FF_NAVIGATION_INVALID_URL"/>
   <int value="278" label="FTN_ANONYMOUS"/>
@@ -517,13 +519,13 @@ Called by update_bad_message_reasons.py.-->
   <int value="341" label="SWSI_CROSS_ORIGIN_SCRIPT_URL"/>
   <int value="342" label="RFH_INVALID_NAVIGATION_HEADERS"/>
   <int value="343" label="RFHI_WEBMCP_NOT_ENABLED"/>
-  <int value="344" label="RFHI_WEBMCP_UNKNOWN_TOOL_NAME"/>
+  <int value="344" label="RFHI_WEBMCP_UNREGISTER_INVALID_TOOL_ID"/>
   <int value="345" label="RFHI_WEBMCP_REGISTER_DUPLICATE_TOOL_NAME"/>
   <int value="346" label="RFHI_WEBMCP_DUPLICATE_BIND"/>
   <int value="347" label="RFHI_WEBMCP_DUPLICATE_SET_RECEIVER"/>
   <int value="348" label="RFHI_WEBMCP_EXPOSED_UNTRUSTWORTHY_ORIGIN"/>
-  <int value="349" label="RFHI_SYNCHONOUS_COMMIT_ORIGIN_MISMATCH"/>
-  <int value="350" label="RFHI_WEBMCP_INVALID_TOOL_OWNER"/>
+  <int value="349" label="RFHI_SYNCHRONOUS_COMMIT_ORIGIN_MISMATCH"/>
+  <int value="350" label="OBSOLETE_RFHI_WEBMCP_INVALID_TOOL_OWNER"/>
   <int value="351" label="NR_BAD_ORIGIN_HEADER"/>
   <int value="352" label="RFH_DID_COMMIT_NAVIGATION_WHILE_BFCACHED"/>
   <int value="353"
@@ -549,16 +551,52 @@ Called by update_bad_message_reasons.py.-->
   <int value="369" label="BIBI_BIND_VIBRATION_MANAGER_FOR_FENCED_FRAME"/>
   <int value="370" label="RFH_BEGIN_NAVIGATION_NO_INITIATOR_TOKENS"/>
   <int value="371" label="RFHI_INVALID_CLIENT_SIDE_REDIRECT_URL"/>
-  <int value="372"
-      label="OBSOLETE_RFH_BLOB_URL_STORE_ASSOCIATED_PDF_PROCESS_BLOCKED"/>
-  <int value="373"
-      label="OBSOLETE_RFH_BLOB_URL_STORE_RECEIVER_PDF_PROCESS_BLOCKED"/>
+  <int value="372" label="RFH_BLOB_URL_STORE_ASSOCIATED_PDF_PROCESS_BLOCKED"/>
+  <int value="373" label="RFH_BLOB_URL_STORE_RECEIVER_PDF_PROCESS_BLOCKED"/>
   <int value="374" label="RFH_DOWNLOAD_URL_INVALID_REFERRER"/>
   <int value="375" label="HSI_PLAY_HAPTICS_INVALID_INTENSITY"/>
   <int value="376" label="HSI_PLAY_HAPTICS_IN_FENCED_FRAME"/>
   <int value="377" label="PSI_STORAGE_ACCESS_FROM_SANDBOXED_FRAME"/>
   <int value="378" label="HSI_PLAY_HAPTICS_BLOCKED_BY_PERMISSIONS_POLICY"/>
   <int value="379" label="RFH_CREATE_CHILD_FRAME_INVALID_INITIATOR_TOKEN"/>
+  <int value="380" label="RFH_COMMIT_NAVIGATION_INVALID_TRANSITION_TYPE"/>
+  <int value="381" label="RFH_COMMIT_NAVIGATION_NON_WEBBY_TRANSITION"/>
+  <int value="382"
+      label="RFH_COMMIT_NAVIGATION_TRANSITION_FRAME_TYPE_MISMATCH"/>
+  <int value="383" label="RFH_COMMIT_NAVIGATION_DISALLOWED_QUALIFIER"/>
+  <int value="384"
+      label="RFH_COMMIT_NAVIGATION_BROWSER_INITIATED_TRANSITION_MISMATCH"/>
+  <int value="385" label="RFH_ISSUE_KEEP_ALIVE_HANDLE_INVALID_INITIATOR_TOKEN"/>
+  <int value="386" label="RFPH_OPEN_URL_INVALID_INITIATOR_TOKENS"/>
+  <int value="387" label="RFPH_OPEN_URL_INVALID_INITIATOR_PROCESS"/>
+  <int value="388" label="RFHI_OPEN_URL_INVALID_INITIATOR_TOKENS"/>
+  <int value="389" label="RFHI_OPEN_URL_INVALID_INITIATOR_PROCESS"/>
+  <int value="390" label="RFHI_BEGIN_NAVIGATION_INVALID_INITIATOR_TOKENS"/>
+  <int value="391" label="RFHI_BEGIN_NAVIGATION_INVALID_INITIATOR_PROCESS"/>
+  <int value="392" label="RFHI_INVALID_INITIATOR_STATE_TOKEN_UPDATE"/>
+  <int value="393" label="RFHI_WEBMCP_INVALID_TOOL_NAME"/>
+  <int value="394" label="MSDH_REQUEST_ALL_SCREENS_WITH_INVALID_STREAM_TYPE"/>
+  <int value="395"
+      label="RFPH_SET_INHERITED_EFFECTIVE_TOUCH_ACTION_WITHOUT_CPFC"/>
+  <int value="396" label="RFPH_UPDATE_RENDER_THROTTLING_STATUS_WITHOUT_CPFC"/>
+  <int value="397" label="RFPH_VISIBILITY_CHANGED_WITHOUT_CPFC"/>
+  <int value="398" label="RFPH_SET_IS_INERT_WITHOUT_CPFC"/>
+  <int value="399" label="RFPH_SYNCHRONIZE_VISUAL_PROPERTIES_WITHOUT_CPFC"/>
+  <int value="400" label="RFPH_UPDATE_VIEWPORT_INTERSECTION_WITHOUT_CPFC"/>
+  <int value="401"
+      label="RFH_DEDICATED_WORKER_HOST_FACTORY_PDF_PROCESS_BLOCKED"/>
+  <int value="402"
+      label="BIBI_BIND_PICTURE_IN_PICTURE_SERVICE_FOR_FENCED_FRAME"/>
+  <int value="403"
+      label="BIBI_BIND_PICTURE_IN_PICTURE_SERVICE_BLOCKED_BY_PERMISSIONS_POLICY"/>
+  <int value="404" label="RFH_DETACH_WHILE_BFCACHED"/>
+  <int value="405" label="RFH_DOWNLOAD_URL_BLOB_WITHOUT_TOKEN"/>
+  <int value="406" label="RPH_DUPLICATE_MEMORY_COORDINATOR_HOST"/>
+  <int value="407" label="RFHI_WEBMCP_REGISTER_INVALID_TOOL_ID"/>
+  <int value="408" label="RFH_CREATE_NEW_WINDOW_INVALID_SPLIT_TAB_FEATURES"/>
+  <int value="409" label="RFH_CREATE_NEW_WINDOW_INVALID_REFERRER"/>
+  <int value="410" label="RFH_DEVICE_BOUND_SESSION_JS_API_NOT_AVAILABLE"/>
+  <int value="411" label="RFHI_BEGIN_NAVIGATION_DISALLOWED_QUALIFIER"/>
 </enum>
 
 <enum name="BadMessageReasonExtensions">
@@ -612,6 +650,7 @@ Called by update_bad_message_reasons.py.-->
   <int value="42" label="WER_INVALID_EXTENSION_ID"/>
   <int value="43" label="AER_INVALID_PROCESS_FOR_AUTOMATION_BINDING"/>
   <int value="44" label="MS_EMPTY_ANDROID_CERTIFICATES_FOR_PACKED_EXTENSION"/>
+  <int value="45" label="EMF_INVALID_CHANNEL_TYPE"/>
 </enum>
 
 <enum name="BadMessageReasonGuestView">
@@ -1419,6 +1458,11 @@ Called by update_debug_scenarios.py.-->
       label="chrome::RESULT_CODE_NORMAL_EXIT_PACK_EXTENSION_SUCCESS"/>
   <int value="37" label="chrome::RESULT_CODE_SYSTEM_RESOURCE_EXHAUSTED"/>
   <int value="38" label="chrome::RESULT_CODE_NORMAL_EXIT_AUTO_DE_ELEVATED"/>
+  <int value="39"
+      label="chrome::RESULT_CODE_TERMINATED_BY_OTHER_PROCESS_ON_COMMIT_FAILURE"/>
+  <int value="40" label="chrome::RESULT_CODE_INVALID_ISOLATED_BROWSER_PROCESS"/>
+  <int value="41" label="chrome::RESULT_CODE_NORMAL_EXIT_RELAUNCH_REQUESTED"/>
+  <int value="42" label="chrome::RESULT_CODE_NORMAL_EXIT_RELAUNCH_BACKGROUND"/>
   <int value="259" label="0x103 - STILL_ACTIVE."/>
   <int value="1285" label="ERROR_DELAY_LOAD_FAILED"/>
   <int value="1717" label="RPC_S_UNKNOWN_IF"/>

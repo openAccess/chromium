@@ -15,8 +15,6 @@ static_library("inline_login_dialog") {
     "//ash/constants",
     "//ash/public/cpp",
     "//base",
-    "//chrome/browser/profiles",
-    "//chrome/browser/profiles:profile",
     "//chrome/browser/ui:chrome_web_modal_dialog_manager_delegate",
     "//chrome/browser/ui/webui/ash/system_web_dialog",
     "//chrome/common",
@@ -49,10 +47,7 @@ static_library("ash") {
     "user_cloud_signin_restriction_policy_fetcher.h",
   ]
 
-  public_deps = [
-    ":inline_login_dialog",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ ":inline_login_dialog" ]
 
   deps = [
     "//ash",
@@ -68,6 +63,7 @@ static_library("ash") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/signin",
     "//chrome/browser/signin:signin_promo",
+    "//chrome/browser/ui:browser_commands",
     "//chrome/browser/ui:chrome_web_modal_dialog_manager_delegate",
     "//chrome/browser/ui/ash/account_manager",
     "//chrome/browser/ui/webui/ash/edu_coexistence",
@@ -119,11 +115,11 @@ source_set("browser_tests") {
     "//chrome/browser",
     "//chrome/browser:browser_process",
     "//chrome/browser:browser_process_platform_part",
+    "//chrome/browser:global_features",
     "//chrome/browser/ash/account_manager",
     "//chrome/browser/ash/test:test_support",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/signin:signin_promo",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/webui/ash/edu_coexistence",
     "//chrome/test:test_support",
     "//chromeos/ash/components/account_manager",
@@ -162,6 +158,7 @@ source_set("unit_tests") {
     "//services/network:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//ui/chromeos/resources",
     "//ui/gfx:test_support",
   ]
 }

@@ -18,9 +18,9 @@
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
-#import "ios/testing/earl_grey/disabled_test_macros.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/web/public/test/element_selector.h"
 #import "net/test/embedded_test_server/http_request.h"
 #import "net/test/embedded_test_server/http_response.h"
@@ -297,6 +297,7 @@ void TapSuppressDialogsButton() {
 #pragma mark - Tests
 
 // Tests that an alert is shown, and that the completion block is called.
+TAG_SMOKE_TEST(JavaScriptDialogTestCase, testShowJavaScriptAlert);
 - (void)testShowJavaScriptAlert {
   // Load the alert test page and tap on the link.
   const GURL kURL = self.testServer->GetURL(kAlertURLPath);
@@ -436,13 +437,7 @@ void TapSuppressDialogsButton() {
 // Tests to ensure crbug.com/658260 does not regress.
 // Tests that if an alert should be called when settings are displays, the alert
 // waits for the dismiss of the settings.
-- (void)MAYBE_testShowJavaScriptBehindSettings {
-// TODO(crbug.com/40182086): test failing on ipad device
-#if !TARGET_OS_SIMULATOR
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"This test doesn't pass on iPad device.");
-  }
-#endif
+- (void)testShowJavaScriptBehindSettings {
   // Load the alert test page.
   const GURL kURL = self.testServer->GetURL(kAlertURLPath);
   [ChromeEarlGrey loadURL:kURL];

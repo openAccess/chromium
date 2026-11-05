@@ -13,7 +13,7 @@ import {WindowProxy} from 'chrome://resources/cr_components/composebox/window_pr
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {PageRemote as SearchboxPageRemote} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import type {TestMock} from 'chrome://webui-test/test_mock.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
@@ -108,7 +108,9 @@ suite('ComposeboxInputPlaceholder', () => {
     await setupComposeboxWithInputState(testInputState);
     assertEquals(
         modelHint,
-        composebox.getInputElement().$.input.getAttribute('placeholder'));
+        composebox.getInputElement()
+            .shadowRoot.querySelector<HTMLElement>('#input')!.getAttribute(
+                'placeholder'));
   });
 
   const defaultApiHint = loadTimeData.getString('searchboxComposePlaceholder');
@@ -146,13 +148,16 @@ suite('ComposeboxInputPlaceholder', () => {
                                       disableActiveModelSelection: false,
                                       aimUrlParams: [],
                                       menuTooltip: '',
+                                      icon: 0,
                                     })),
       }));
 
       // Initial placeholder check.
       assertEquals(
           defaultApiHint,
-          composebox.getInputElement().$.input.getAttribute('placeholder'));
+          composebox.getInputElement()
+              .shadowRoot.querySelector<HTMLElement>('#input')!.getAttribute(
+                  'placeholder'));
 
       // Enable tool mode.
       composebox.onToolClick(new CustomEvent('tool-click', {
@@ -170,7 +175,9 @@ suite('ComposeboxInputPlaceholder', () => {
 
       assertEquals(
           hint,
-          composebox.getInputElement().$.input.getAttribute('placeholder'));
+          composebox.getInputElement()
+              .shadowRoot.querySelector<HTMLElement>('#input')!.getAttribute(
+                  'placeholder'));
 
       // Disable tool mode.
       composebox.onToolClick(new CustomEvent('tool-click', {
@@ -188,7 +195,9 @@ suite('ComposeboxInputPlaceholder', () => {
 
       assertEquals(
           defaultApiHint,
-          composebox.getInputElement().$.input.getAttribute('placeholder'));
+          composebox.getInputElement()
+              .shadowRoot.querySelector<HTMLElement>('#input')!.getAttribute(
+                  'placeholder'));
     });
   });
 
@@ -257,5 +266,226 @@ suite('ComposeboxInputPlaceholder', () => {
         // 5. Assertions.
         assertEquals(ToolMode.kImageGen, composebox.inputState!.activeTool);
         assertTrue(queryAutocompleteCalledWithTrue);
+      });
+
+  test('tool mode update queries autocomplete only once', async () => {
+    const initialInputState: InputState = new MockInputState({
+      activeTool: ToolMode.kUnspecified,
+    });
+    await setupComposeboxWithInputState(initialInputState);
+
+    let queryAutocompleteCount = 0;
+    composebox.queryAutocomplete = (_clearMatches: boolean) => {
+      queryAutocompleteCount++;
+    };
+
+    composebox.handleToolClick(ToolMode.kDeepSearch);
+    await microtasksFinished();
+
+    // handleToolClick should not call queryAutocomplete synchronously.
+    assertEquals(0, queryAutocompleteCount);
+
+    const newInputState: InputState = new MockInputState({
+      activeTool: ToolMode.kDeepSearch,
+    });
+    searchboxPageRemote.onInputStateChanged(newInputState);
+    await searchboxPageRemote.$.flushForTesting();
+    await microtasksFinished();
+    await composebox.updateComplete;
+
+    assertEquals(1, queryAutocompleteCount);
+  });
+
+  test(
+      'canceling with active tool queries autocomplete only once', async () => {
+        const initialInputState: InputState = new MockInputState({
+          activeTool: ToolMode.kDeepSearch,
+        });
+        await setupComposeboxWithInputState(initialInputState);
+
+        let queryAutocompleteCount = 0;
+        composebox.queryAutocomplete = (_clearMatches: boolean) => {
+          queryAutocompleteCount++;
+        };
+
+        composebox.onCancelClick();
+        await microtasksFinished();
+
+        // onCancelClick should not call queryAutocomplete synchronously when an
+        // active tool is present.
+        assertEquals(0, queryAutocompleteCount);
+
+        const newInputState: InputState = new MockInputState({
+          activeTool: ToolMode.kUnspecified,
+        });
+        searchboxPageRemote.onInputStateChanged(newInputState);
+        await searchboxPageRemote.$.flushForTesting();
+        await microtasksFinished();
+        await composebox.updateComplete;
+
+        assertEquals(1, queryAutocompleteCount);
+      });
+
+  test(
+      'updateState with tool mode does not eagerly query ZPS without tool',
+      async () => {
+        const initialInputState: InputState = new MockInputState({
+          activeTool: ToolMode.kUnspecified,
+        });
+        await setupComposeboxWithInputState(initialInputState);
+
+        composebox.showZps = true;
+        let queryAutocompleteCount = 0;
+        composebox.queryAutocomplete = (_clearMatches: boolean) => {
+          queryAutocompleteCount++;
+        };
+
+        await composebox.updateState({
+          text: '',
+          files: [],
+          mode: ToolMode.kDeepSearch,
+          model: ModelMode.kUnspecified,
+        });
+        await microtasksFinished();
+
+        assertEquals(0, queryAutocompleteCount);
+      });
+
+  test(
+      'updateState queries ZPS when tool mode matches activeTool', async () => {
+        const initialInputState: InputState = new MockInputState({
+          activeTool: ToolMode.kDeepSearch,
+        });
+        await setupComposeboxWithInputState(initialInputState);
+
+        composebox.showZps = true;
+        let queryAutocompleteCount = 0;
+        composebox.queryAutocomplete = (_clearMatches: boolean) => {
+          queryAutocompleteCount++;
+        };
+
+        await composebox.updateState({
+          text: '',
+          files: [],
+          mode: ToolMode.kDeepSearch,
+          model: ModelMode.kUnspecified,
+        });
+        await microtasksFinished();
+
+        assertEquals(1, queryAutocompleteCount);
+      });
+
+  test(
+      'cold-start SRP sets placeholder before getInputState resolves',
+      async () => {
+        const srpHint =
+            loadTimeData.getString('searchboxSrpComposePlaceholder');
+        assertTrue(srpHint.length > 0);
+        assertNotEquals(srpHint, defaultApiHint);
+        assertNotEquals(srpHint, 'Ask anything');
+        loadTimeData.overrideValues({dynamicAimFulfillmentEnabled: true});
+        try {
+          document.body.innerHTML = window.trustedTypes!.emptyHTML;
+          let resolveInputState!: (result: {state: InputState}) => void;
+          searchboxHandler.setResultFor(
+              'getInputState', new Promise(resolve => {
+                resolveInputState = resolve;
+              }));
+
+          composebox = document.createElement('test-composebox-mixin');
+          document.body.appendChild(composebox);
+          await microtasksFinished();
+
+          assertFalse(composebox.willFulfillInAim);
+          assertEquals(
+              srpHint,
+              composebox.getInputElement()
+                  .shadowRoot.querySelector<HTMLElement>(
+                                 '#input')!.getAttribute('placeholder'));
+
+          resolveInputState({
+            state: new MockInputState({
+              hintText: 'Ask anything',
+              willFulfillInAim: false,
+            }),
+          });
+          await microtasksFinished();
+
+          assertEquals(
+              srpHint,
+              composebox.getInputElement()
+                  .shadowRoot.querySelector<HTMLElement>(
+                                 '#input')!.getAttribute('placeholder'));
+        } finally {
+          loadTimeData.overrideValues({dynamicAimFulfillmentEnabled: false});
+        }
+      });
+
+  test(
+      'willFulfillInAim toggles between SRP and generic inputState hintText',
+      async () => {
+        const srpHint =
+            loadTimeData.getString('searchboxSrpComposePlaceholder');
+        assertTrue(srpHint.length > 0);
+        assertNotEquals(srpHint, 'Ask anything');
+
+        await setupComposeboxWithInputState(new MockInputState({
+          hintText: 'Ask anything',
+          willFulfillInAim: false,
+        }));
+
+        const getPlaceholder = () =>
+            composebox.getInputElement()
+                .shadowRoot.querySelector<HTMLElement>('#input')!.getAttribute(
+                    'placeholder');
+
+        assertEquals(srpHint, getPlaceholder());
+
+        searchboxPageRemote.onInputStateChanged(new MockInputState({
+          hintText: 'Ask anything',
+          willFulfillInAim: true,
+        }));
+        await searchboxPageRemote.$.flushForTesting();
+        await microtasksFinished();
+        assertEquals('Ask anything', getPlaceholder());
+
+        searchboxPageRemote.onInputStateChanged(new MockInputState({
+          hintText: 'Ask anything',
+          willFulfillInAim: false,
+        }));
+        await searchboxPageRemote.$.flushForTesting();
+        await microtasksFinished();
+        assertEquals(srpHint, getPlaceholder());
+      });
+
+  test(
+      'ImageGen tool preserves tool placeholder when willFulfillInAim is false',
+      async () => {
+        // 1. Non-empty ToolConfig.hintText wins over SRP "Ask Google".
+        await setupComposeboxWithInputState(new MockInputState({
+          activeTool: ToolMode.kImageGen,
+          hintText: 'Ask anything',
+          willFulfillInAim: false,
+        }));
+        const getPlaceholder = () =>
+            composebox.getInputElement()
+                .shadowRoot.querySelector<HTMLElement>('#input')!.getAttribute(
+                    'placeholder');
+        assertEquals('Describe your image', getPlaceholder());
+
+        // 2. Empty ToolConfig.hintText falls back to localized
+        // composeCreateImagePlaceholder rather than SRP "Ask Google" or generic
+        // inputState.hintText.
+        searchboxPageRemote.onInputStateChanged(new MockInputState({
+          activeTool: ToolMode.kImageGen,
+          toolConfigs: [],
+          hintText: 'Ask anything',
+          willFulfillInAim: false,
+        }));
+        await searchboxPageRemote.$.flushForTesting();
+        await microtasksFinished();
+        assertEquals(
+            loadTimeData.getString('composeCreateImagePlaceholder'),
+            getPlaceholder());
       });
 });

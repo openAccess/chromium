@@ -11,7 +11,10 @@ component("system") {
   defines = [ "IS_CHROMEOS_ASH_COMPONENTS_SYSTEM_IMPL" ]
 
   public_deps = [ "//base" ]
-  deps = [ "//ash/constants" ]
+  deps = [
+    "//ash/constants",
+    "//components/prefs",
+  ]
   sources = [
     "factory_ping_embargo_check.cc",
     "factory_ping_embargo_check.h",
@@ -51,5 +54,8 @@ source_set("unit_tests") {
 
 fuzzer_test("name_value_pairs_parser_fuzzer") {
   sources = [ "name_value_pairs_parser_fuzzer.cc" ]
-  deps = [ ":system" ]
+  deps = [
+    ":system",
+    "//testing/libfuzzer:libfuzzer_base_wrappers",
+  ]
 }

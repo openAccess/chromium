@@ -12,7 +12,7 @@
 #include "build/build_config.h"
 #include "components/signin/public/identity_manager/account_capabilities.h"
 
-struct AccountInfo;
+class AccountInfo;
 
 // Support class that allows callers to modify internal capability state
 // mappings used for tests.
@@ -26,7 +26,7 @@ class AccountCapabilitiesTestMutator {
   GetSupportedAccountCapabilityNames();
 
   // Exposes setters for the supported capabilities.
-  // keep-sorted start sticky_prefixes=#if,BUILDFLAG group_prefixes=#endif
+  // keep-sorted start sticky_prefixes=#if,BUILDFLAG group_prefixes=#endif,set_
   void set_can_fetch_family_member_info(bool value);
 #if !BUILDFLAG(IS_IOS)
   void set_can_have_email_address_displayed(bool value);
@@ -35,9 +35,6 @@ class AccountCapabilitiesTestMutator {
   void set_can_make_chrome_search_engine_choice_screen_choice(bool value);
 #endif
   void set_can_override_account_info(bool value);
-#if !BUILDFLAG(IS_IOS)
-  void set_can_run_chrome_privacy_sandbox_trials(bool value);
-#endif
   void set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
       bool value);
 #if BUILDFLAG(IS_IOS)
@@ -72,17 +69,22 @@ class AccountCapabilitiesTestMutator {
   void set_is_allowed_for_machine_learning(bool value);
   void set_is_opted_in_to_parental_supervision(bool value);
   void set_is_subject_to_account_level_enterprise_policies(bool value);
-  void set_is_subject_to_chrome_privacy_sandbox_restricted_measurement_notice(
-      bool value);
   void set_is_subject_to_enterprise_features(bool value);
   void set_is_subject_to_parental_controls(bool value);
+  void set_is_subject_to_parental_controls_via_bundle(bool value);
   void set_is_subject_to_universal_opt_out(bool value);
 #if BUILDFLAG(IS_IOS)
   void set_must_fetch_apple_age_range_in_chrome(bool value);
 #endif
+  void
+  set_must_show_equally_weighted_buttons_for_private_passes_in_chrome_autofill(
+      bool value);
 #if BUILDFLAG(IS_IOS)
   void set_must_skip_apple_age_range_in_chrome(bool value);
 #endif
+  void set_should_be_addressed_in_feminine_grammatical_gender(bool value);
+  void set_should_be_addressed_in_masculine_grammatical_gender(bool value);
+  void set_should_be_addressed_in_neuter_grammatical_gender(bool value);
   void set_supports_wallet_private_passes_in_autofill(bool value);
   // keep-sorted end
 

@@ -154,6 +154,7 @@ class MEDIA_GPU_EXPORT VTVideoEncodeAccelerator
   int32_t frame_rate_ = 0;
   int num_temporal_layers_ = 1;
   VideoPixelFormat input_format_ = PIXEL_FORMAT_UNKNOWN;
+  std::vector<VideoPixelFormat> gpu_supported_pixel_formats_;
   VideoCodecProfile profile_ = H264PROFILE_BASELINE;
   VideoCodec codec_ = VideoCodec::kH264;
   bool calculate_psnr_ = false;
@@ -192,11 +193,11 @@ class MEDIA_GPU_EXPORT VTVideoEncodeAccelerator
   FlushCallback pending_flush_cb_;
   bool flush_complete_frames_issued_ = false;
 
-  // Color space of the first frame sent to Encode().
-  std::optional<gfx::ColorSpace> encoder_color_space_;
-  // HDR metadata from the first frame, used for VT session MDCV/CLLI
-  // properties.
-  std::optional<gfx::HDRMetadata> encoder_hdr_metadata_;
+  // Color space of the first frame sent to Encode(). Invalid if not yet set.
+  gfx::ColorSpace encoder_color_space_;
+  // MDCV and CLLI HDR metadata from the first frame, used for VT session
+  // MDCV/CLLI properties.
+  gfx::HDRMetadata encoder_hdr_metadata_;
   bool can_set_encoder_color_space_ = true;
 
   bool encoder_produces_svc_spec_compliant_bitstream_ = false;

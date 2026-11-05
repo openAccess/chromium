@@ -27,7 +27,7 @@ void DisableThreadCacheForRootIfEnabled(PartitionRoot* root) {
     return;
   }
 
-  ThreadCacheRegistry::Instance().PurgeAll();
+  ThreadCache::PurgeAll();
   root->settings_.with_thread_cache = false;
   root->settings_.thread_cache_index = kInvalidThreadCacheIndex;
 
@@ -84,6 +84,14 @@ ThreadAllocStats GetAllocStatsForCurrentThread() {
     return thread_cache->thread_alloc_stats();
   }
   return {};
+}
+
+size_t GetThreadCacheCachedMemoryForCurrentThreadForTesting() {
+  ThreadCache* thread_cache = ThreadCache::Get(kDefaultRootThreadCacheIndex);
+  if (ThreadCache::IsValid(thread_cache)) {
+    return thread_cache->CachedMemory();
+  }
+  return 0;
 }
 
 #if PA_CONFIG(THREAD_CACHE_SUPPORTED)

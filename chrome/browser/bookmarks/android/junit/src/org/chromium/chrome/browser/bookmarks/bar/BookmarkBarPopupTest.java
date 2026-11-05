@@ -24,7 +24,6 @@ import android.widget.ListView;
 import android.widget.TextView;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -58,24 +57,23 @@ public class BookmarkBarPopupTest {
 
     @Mock private AnchoredPopupWindow mAnchoredPopupWindow;
     @Mock private BasicListMenu mMockListMenu;
-
-    @Mock private View mAnchorView;
     @Mock private ChromePopupWindow mMockPopupWindow;
     @Captor private ArgumentCaptor<Drawable> mDrawableCaptor;
 
     private Activity mActivity;
+    private View mAnchorView;
     private BookmarkBarPopup mPopup;
 
     @Before
     public void setUp() {
         mActivityScenarioRule.getScenario().onActivity((activity) -> mActivity = activity);
+        mAnchorView = new View(mActivity);
         when(mMockPopupWindow.getBackground()).thenReturn(new ColorDrawable(Color.TRANSPARENT));
 
         mPopup = new BookmarkBarPopup(mActivity, () -> new Pair<>(0, 0)); // controlsHeightSupplier
     }
 
     @Test
-    @SmallTest
     public void testSetupEmptyView() {
         ViewGroup contentParent = new LinearLayout(mActivity);
         ListView menuList = new ListView(mActivity);
@@ -105,7 +103,6 @@ public class BookmarkBarPopupTest {
     }
 
     @Test
-    @SmallTest
     public void testConfigurePopupWindowSize_measuredWidthLessThanMax() {
         mPopup.setPopupWindowForTesting(mAnchoredPopupWindow);
         setupMockListMenuWithContent();
@@ -127,7 +124,6 @@ public class BookmarkBarPopupTest {
     }
 
     @Test
-    @SmallTest
     public void testConfigurePopupWindowSize_measuredWidthGreaterThanMax() {
         mPopup.setPopupWindowForTesting(mAnchoredPopupWindow);
         setupMockListMenuWithContent();
@@ -149,7 +145,6 @@ public class BookmarkBarPopupTest {
     }
 
     @Test
-    @SmallTest
     public void testConfigurePopupWindowSize_measuredLessThanMin() {
         mPopup.setPopupWindowForTesting(mAnchoredPopupWindow);
         setupMockListMenuWithContent();
@@ -184,12 +179,7 @@ public class BookmarkBarPopupTest {
     }
 
     @Test
-    @SmallTest
     public void testShow_usesTransparentBackground() {
-        View rootView = new View(mActivity);
-        when(mAnchorView.getRootView()).thenReturn(rootView);
-        when(mAnchorView.getViewTreeObserver()).thenReturn(rootView.getViewTreeObserver());
-
         UiWidgetFactory originalFactory = UiWidgetFactory.getInstance();
         UiWidgetFactory.setInstance(
                 new UiWidgetFactory() {
@@ -220,12 +210,7 @@ public class BookmarkBarPopupTest {
     }
 
     @Test
-    @SmallTest
     public void testShowAtOffset_usesTransparentBackground() {
-        View rootView = new View(mActivity);
-        when(mAnchorView.getRootView()).thenReturn(rootView);
-        when(mAnchorView.getViewTreeObserver()).thenReturn(rootView.getViewTreeObserver());
-
         UiWidgetFactory originalFactory = UiWidgetFactory.getInstance();
         UiWidgetFactory.setInstance(
                 new UiWidgetFactory() {
@@ -257,12 +242,7 @@ public class BookmarkBarPopupTest {
     }
 
     @Test
-    @SmallTest
     public void testShow_initializesFlyoutController() {
-        View rootView = new View(mActivity);
-        when(mAnchorView.getRootView()).thenReturn(rootView);
-        when(mAnchorView.getViewTreeObserver()).thenReturn(rootView.getViewTreeObserver());
-
         mPopup.show(
                 mAnchorView,
                 new ModelList(),
@@ -277,7 +257,6 @@ public class BookmarkBarPopupTest {
     }
 
     @Test
-    @SmallTest
     public void testFlyoutHandler_getPopupRectAndDismiss() {
         mPopup.dismissPopup(mAnchoredPopupWindow);
         verify(mAnchoredPopupWindow).dismiss();

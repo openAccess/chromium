@@ -5,16 +5,24 @@
 #ifndef CHROME_BROWSER_ACTOR_UI_ACTOR_UI_TAB_CONTROLLER_INTERFACE_H_
 #define CHROME_BROWSER_ACTOR_UI_ACTOR_UI_TAB_CONTROLLER_INTERFACE_H_
 
+#include <string>
+
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "chrome/browser/actor/actor_navigation_throttle.h"
 #include "chrome/browser/actor/ui/states/actor_overlay_state.h"
 #include "chrome/browser/actor/ui/states/handoff_button_state.h"
 #include "chrome/browser/actor/ui/states/tab_indicator_state.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
-#include "url/gurl.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+namespace views {
+class Widget;
+}  // namespace views
+#endif
 
 namespace actor::ui {
 #if !BUILDFLAG(IS_ANDROID)
@@ -43,11 +51,11 @@ inline std::ostream& operator<<(std::ostream& os, UiTabState state) {
             << "}";
 }
 
-class ActorUiTabControllerInterface {
+class ActorUiTabControllerInterface : public ActorNavigationThrottle::Delegate {
  public:
   DECLARE_USER_DATA(ActorUiTabControllerInterface);
   explicit ActorUiTabControllerInterface(tabs::TabInterface& tab);
-  virtual ~ActorUiTabControllerInterface();
+  ~ActorUiTabControllerInterface() override;
 
   // Called whenever the UiTabState changes. These calls will be debounced by a
   // kUpdateUiDebounceDelay period of time. This means the callback will always
@@ -80,6 +88,9 @@ class ActorUiTabControllerInterface {
       ActorTabIndicatorStateChangedCallback callback);
 
 #if !BUILDFLAG(IS_ANDROID)
+  virtual views::Widget* GetActiveNavigationConfirmDialogWidgetForTesting()
+      const;
+
   // Called whenever web contents are attached to this tab.
   virtual void OnWebContentsAttached() = 0;
 
@@ -115,10 +126,21 @@ class ActorUiTabControllerInterface {
   [[nodiscard]] virtual base::ScopedClosureRunner
   RegisterActorOverlayBackgroundChange(
       ActorOverlayBackgroundChangeCallback callback) = 0;
+
+  // Sets the text of the chip next to the magic cursor. Empty text hides it.
+  // A change runs only the cursor chip callback, not the overlay state one.
+  // Repeating the current text is a no-op. The text persists until cleared and
+  // is re-sent each time the overlay shows.
+  virtual void SetCursorChipText(const std::string& text) = 0;
+  virtual std::string GetCursorChipText() const = 0;
+  using CursorChipTextChangeCallback =
+      base::RepeatingCallback<void(const std::string&)>;
+  [[nodiscard]] virtual base::ScopedClosureRunner RegisterCursorChipTextChange(
+      CursorChipTextChangeCallback callback) = 0;
 #endif
 
  protected:
-  bool NotifyActorTabIndicatorStateChanged(
+  void NotifyActorTabIndicatorStateChanged(
       TabIndicatorStatus tab_indicator_status);
 
  private:

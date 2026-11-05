@@ -5,16 +5,21 @@
 #ifndef COMPONENTS_ACTOR_CORE_SAFETY_LIST_MANAGER_H_
 #define COMPONENTS_ACTOR_CORE_SAFETY_LIST_MANAGER_H_
 
+#include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
+#include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
-#include "base/thread_annotations.h"
-#include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/content_settings/core/common/host_indexed_content_settings.h"
+#include "url/gurl.h"
+#include "url/origin.h"
 
 namespace base {
 template <typename T>
@@ -23,6 +28,13 @@ class NoDestructor;
 
 namespace actor {
 
+// Manages actor safety lists (navigation allow/block rules and payment iframe
+// origin allowlists).
+//
+// All methods must be called on the same sequence (the main thread). Parsing of
+// raw JSON safety list data is performed off-thread on the thread pool, and all
+// lookup callbacks (`Find()` and `IsPaymentIframeOriginAllowed()`) are always
+// invoked asynchronously on the calling sequence.
 class SafetyListManager {
  public:
   // LINT.IfChange(ParseResult)
@@ -45,7 +57,9 @@ class SafetyListManager {
     kInvalidFromField = 6,
     // The `from` field was not a valid URL pattern.
     kInvalidFromUrlPattern = 7,
-    kMaxValue = kInvalidFromUrlPattern,
+    // A value in the list was not in the expected format.
+    kEntryFormatInvalid = 8,
+    kMaxValue = kEntryFormatInvalid,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:SafetyListParseResult)
 
@@ -59,6 +73,11 @@ class SafetyListManager {
     kBlock,
   };
 
+  using FindCallback = base::OnceCallback<void(Decision)>;
+  using PaymentIframeOriginAllowedCallback = base::OnceCallback<void(bool)>;
+  using LoadSafetyListsClosure =
+      base::OnceCallback<std::optional<std::string>()>;
+
   ~SafetyListManager();
 
   SafetyListManager(const SafetyListManager&) = delete;
@@ -66,54 +85,133 @@ class SafetyListManager {
   SafetyListManager(SafetyListManager&&) = delete;
   SafetyListManager& operator=(SafetyListManager&&) = delete;
 
+  // Returns the process-wide singleton instance. Must be accessed on the same
+  // sequence across all calls.
   static SafetyListManager* GetInstance();
   static std::unique_ptr<SafetyListManager> CreateForTesting();
 
   // Looks up the most specific rule applying to a navigation from `source` to
-  // `destination`. If no such rule exists, returns `Decision::kNone`.
-  Decision Find(const GURL& source, const GURL& destination) const;
+  // `destination` and invokes `callback` asynchronously on the calling sequence
+  // with the resulting `Decision` (or `Decision::kNone` if no rule matches).
+  //
+  // If the safety lists have not yet been parsed but the data is available for
+  // parsing, this triggers parsing off the main thread before resolving the
+  // decision. If the safety lists have not yet been parsed and the data is not
+  // available for parsing (and no parse is currently in progress), this invokes
+  // `callback` asynchronously with `Decision::kNone`.
+  void Find(const GURL& source, const GURL& destination, FindCallback callback);
 
-  // ParseSafetyLists parses the input JSON off the main thread and
-  // posts the reply back. Callback is invoked when parsing is complete, calling
-  // Find() before this callback runs will result in possibly inaccurate
-  // results. In practice, this should not matter, since the actor framework
-  // calls Find() after startup completes and the user enters a task.
-  void ParseSafetyLists(const std::string json_string,
-                        base::OnceClosure done_callback);
+  // Checks whether `origin` is in the payment iframe allowlist and invokes
+  // `callback` asynchronously on the calling sequence with the result.
+  //
+  // If the safety lists have not yet been parsed but the data is available for
+  // parsing, this triggers parsing off the main thread before resolving the
+  // lookup. If the safety lists have not yet been parsed and the data is not
+  // available for parsing (and no parse is currently in progress), this invokes
+  // `callback` asynchronously with `false`.
+  void IsPaymentIframeOriginAllowed(
+      const url::Origin& origin,
+      PaymentIframeOriginAllowedCallback callback);
+
+  // Stores `closure` to be invoked and parsed off the main thread when `Find()`
+  // or `IsPaymentIframeOriginAllowed()` is next called.
+  void SetLoadSafetyListsClosure(LoadSafetyListsClosure closure);
 
  private:
   // For singleton pattern.
   friend class base::NoDestructor<SafetyListManager>;
   SafetyListManager();
 
+  using PendingFinds = std::vector<base::OnceClosure>;
+
+  // Stores the setting rules. Optimizes for storing common rule types
+  // efficiently in memory.
+  class SettingsStore {
+   public:
+    class Builder;
+
+    SettingsStore(
+        const std::map<std::string, std::map<std::string, ContentSetting>>&
+            https_host_rules,
+        content_settings::HostIndexedContentSettings fallback_settings,
+        base::flat_set<url::Origin> payment_iframe_allowed_origins);
+    SettingsStore() = delete;
+    ~SettingsStore();
+
+    SettingsStore(SettingsStore&&) = delete;
+    SettingsStore& operator=(SettingsStore&&) = delete;
+
+    Decision Find(const GURL& source, const GURL& destination) const;
+    bool IsPaymentIframeOriginAllowed(const url::Origin& origin) const;
+
+   private:
+    using DestSettingsMap = base::flat_map<std::string_view, ContentSetting>;
+
+    // Get a view of a string from the `owned_hosts_` pool. This CHECKs the host
+    // is already in the pool.
+    std::string_view GetViewFromPool(std::string_view host) const;
+
+    // Owns one copy of each unique hostname.
+    const base::flat_set<std::string> owned_hosts_;
+
+    // Fast path for `https://<exact-host>:* -> https://<exact-host>:*` rules.
+    // Keys are views into `owned_hosts_`.
+    const base::flat_map<std::string_view, DestSettingsMap>
+        https_host_scoped_settings_;
+
+    // Fallback for wildcards, non-HTTPS schemes, paths, and custom ports.
+    const content_settings::HostIndexedContentSettings fallback_settings_;
+
+    const base::flat_set<url::Origin> payment_iframe_allowed_origins_;
+  };
+
   struct ParseResultsAndSettings {
     ParseResult allowed_result;
     ParseResult blocked_result;
-    std::unique_ptr<content_settings::HostIndexedContentSettings> settings;
+    ParseResult payment_iframe_allowed_result;
+    std::unique_ptr<SettingsStore> store;
   };
 
   // Private static so it can use ParseResultsAndSettings.
   static ParseResultsAndSettings ParseSafetyListsInternal(
       std::string_view json_string);
+
   // Private static so it can use ParseSafetyListsInternal.
-  static std::unique_ptr<content_settings::HostIndexedContentSettings>
-  DoParseSafetyLists(const std::string json_string);
-  void OnParsedSafetyLists(
-      base::OnceClosure done_callback,
-      std::unique_ptr<content_settings::HostIndexedContentSettings>
-          new_navigation_settings);
+  static std::unique_ptr<SettingsStore> DoParseSafetyLists(
+      LoadSafetyListsClosure closure);
+
+  void OnParsedSafetyLists(std::unique_ptr<SettingsStore> new_store);
 
   SEQUENCE_CHECKER(sequence_checker_);
 
+  // Returns true iff there's a pending parse operation in progress.
+  bool IsParseInProgress() const;
+
+  // Fetches the underlying data and begins parsing it, if possible.
+  void MaybeStartParse();
+
+  // Synchronously evaluates the lookup against the current data.
+  Decision FindSync(const GURL& source, const GURL& destination) const;
+  bool IsPaymentIframeOriginAllowedSync(const url::Origin& origin) const;
+
+  // Producer closure to read the raw JSON string when `Find()` is first called.
+  // May be null. Must not be invoked on the main thread.
+  LoadSafetyListsClosure load_safety_lists_closure_;
+
+  // Calls to `Find` that have been deferred until parsing is complete.
+  PendingFinds pending_finds_;
+
   // Settings for allowing/blocking navigations.
-  std::unique_ptr<content_settings::HostIndexedContentSettings>
-      navigation_settings_ GUARDED_BY_CONTEXT(sequence_checker_) =
-          std::make_unique<content_settings::HostIndexedContentSettings>();
+  std::unique_ptr<SettingsStore> store_ = nullptr;
+
+  // Used for `OnParsedSafetyLists` replies so in-flight parses can be
+  // invalidated if a newer closure is provided before parsing finishes.
+  base::WeakPtrFactory<SafetyListManager> parse_weak_ptr_factory_{this};
+
   base::WeakPtrFactory<SafetyListManager> weak_ptr_factory_{this};
 };
 
-void ParseSafetyListsForTesting(SafetyListManager* manager,
-                                const std::string json);
+void SetSafetyListsForTesting(SafetyListManager* manager, std::string json);
 
 }  // namespace actor
 

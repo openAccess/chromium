@@ -10,6 +10,7 @@
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
@@ -200,10 +201,18 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
           }
 
           if (!options->hidden || !*options->hidden) {
+            // Showing the existing window may synchronously close the native
+            // window and destroy `existing_window`.
+            base::WeakPtr<AppWindow> weak_existing_window =
+                existing_window->GetWeakPtr();
             if (options->focused && !*options->focused)
               existing_window->Show(AppWindow::SHOW_INACTIVE);
             else
               existing_window->Show(AppWindow::SHOW_ACTIVE);
+            if (!weak_existing_window) {
+              return RespondNow(
+                  Error(app_window_constants::kPrematureWindowClose));
+            }
           }
 
           // We should not return the window until that window is properly
@@ -288,7 +297,7 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
           "0F585FB1D0FDFBEBCE1FEB5E9DFFB6DA476B8C9B"};
       if (AppWindowClient::Get()->IsCurrentChannelOlderThanDev() &&
           !std::ranges::contains(kAllowlist,
-                                 extension()->hashed_id().value())) {
+                                 extension()->hashed_id().value_sha1())) {
         return RespondNow(
             Error(app_window_constants::kAlphaEnabledWrongChannel));
       }
@@ -385,12 +394,19 @@ ExtensionFunction::ResponseAction AppWindowCreateFunction::Run() {
   if (!app_window)
     return RespondNow(Error(app_window_constants::kAppWindowCreationFailed));
 
+  base::WeakPtr<AppWindow> weak_app_window = app_window->GetWeakPtr();
   app_window->Init(url, std::make_unique<AppWindowContentsImpl>(app_window),
                    render_frame_host(), create_params);
+  if (!weak_app_window) {
+    return RespondNow(Error(app_window_constants::kPrematureWindowClose));
+  }
 
   if (ExtensionsBrowserClient::Get()->IsRunningInForcedAppMode() &&
       !app_window->is_ime_window()) {
     app_window->ForcedFullscreen();
+    if (!weak_app_window) {
+      return RespondNow(Error(app_window_constants::kPrematureWindowClose));
+    }
   }
 
   if (AppWindowRegistry::Get(browser_context())

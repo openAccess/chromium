@@ -20,6 +20,7 @@
 #include "chrome/browser/ash/arc/instance_throttle/arcvm_kiosk_mode_throttle_observer.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
+#include "chromeos/ash/components/dbus/vm_concierge/concierge_service.pb.h"
 #include "chromeos/ash/experiences/arc/arc_browser_context_keyed_service_factory_base.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/mojom/power.mojom.h"
@@ -144,7 +145,7 @@ void SetArcVmCpuRestriction(CpuRestrictionState cpu_restriction_state,
   request.set_cpu_cgroup(vm_tools::concierge::CPU_CGROUP_ARCVM);
   switch (cpu_restriction_state) {
     case CpuRestrictionState::CPU_RESTRICTION_FOREGROUND:
-      DCHECK(!use_quota);
+      CHECK(!use_quota, base::NotFatalUntil::M160);
       request.set_cpu_restriction_state(
           vm_tools::concierge::CPU_RESTRICTION_FOREGROUND);
       break;
@@ -307,7 +308,7 @@ ArcInstanceThrottle::ArcInstanceThrottle(content::BrowserContext* context,
   }
 
   StartObservers();
-  DCHECK(bridge_);
+  CHECK(bridge_, base::NotFatalUntil::M160);
   bridge_->power()->AddObserver(this);
 
   ArcMetricsService::GetForBrowserContext(context)->AddBootTypeObserver(this);

@@ -134,10 +134,6 @@ Vector<gfx::Rect> Scrollbar::GetTickmarks() const {
   return Vector<gfx::Rect>();
 }
 
-bool Scrollbar::IsScrollableAreaActive() const {
-  return scrollable_area_ && scrollable_area_->IsActive();
-}
-
 bool Scrollbar::IsLeftSideVerticalScrollbar() const {
   if (orientation_ == kVerticalScrollbar && scrollable_area_)
     return scrollable_area_->ShouldPlaceVerticalScrollbarOnLeft();
@@ -186,9 +182,8 @@ void Scrollbar::OffsetDidChange(mojom::blink::ScrollType scroll_type) {
   int old_thumb_position = GetTheme().ThumbPosition(*this);
   current_pos_ = position;
 
-  ScrollbarPart invalid_parts =
-      GetTheme().PartsToInvalidateOnThumbPositionChange(*this, old_position,
-                                                        position);
+  int invalid_parts = GetTheme().PartsToInvalidateOnThumbPositionChange(
+      *this, old_position, position);
   SetNeedsPaintInvalidation(invalid_parts);
 
   // Don't update the pressed position if scroll anchoring takes place as
@@ -280,17 +275,18 @@ void Scrollbar::StopTimerIfNeeded() {
   scroll_timer_.Stop();
 }
 
-ScrollDirectionPhysical Scrollbar::PressedPartScrollDirectionPhysical() {
+mojom::blink::ScrollDirectionPhysical
+Scrollbar::PressedPartScrollDirectionPhysical() {
   if (orientation_ == kHorizontalScrollbar) {
     if (pressed_part_ == kBackButtonStartPart ||
         pressed_part_ == kBackButtonEndPart || pressed_part_ == kBackTrackPart)
-      return kScrollLeft;
-    return kScrollRight;
+      return mojom::blink::ScrollDirectionPhysical::kLeft;
+    return mojom::blink::ScrollDirectionPhysical::kRight;
   } else {
     if (pressed_part_ == kBackButtonStartPart ||
         pressed_part_ == kBackButtonEndPart || pressed_part_ == kBackTrackPart)
-      return kScrollUp;
-    return kScrollDown;
+      return mojom::blink::ScrollDirectionPhysical::kUp;
+    return mojom::blink::ScrollDirectionPhysical::kDown;
   }
 }
 
@@ -359,28 +355,31 @@ void Scrollbar::SetHoveredPart(ScrollbarPart part) {
   if (part == hovered_part_)
     return;
 
+  int invalid_parts = hovered_part_ | part;
+  hovered_part_ = part;
   // When there's a pressed part, we don't draw a hovered state, so there's no
   // reason to invalidate.
   if (pressed_part_ == kNoPart) {
-    SetNeedsPaintInvalidation(static_cast<ScrollbarPart>(hovered_part_ | part));
+    SetNeedsPaintInvalidation(invalid_parts);
   }
-
-  hovered_part_ = part;
 }
 
 void Scrollbar::SetPressedPart(ScrollbarPart part, WebInputEvent::Type type) {
-  if (pressed_part_ != kNoPart
+  if (part == pressed_part_) {
+    return;
+  }
+
+  ScrollbarPart old_pressed_part = pressed_part_;
+  pressed_part_ = part;
+  SetNeedsPaintInvalidation(
+      old_pressed_part |
       // When we no longer have a pressed part, we can start drawing a hovered
       // state on the hovered part.
-      || hovered_part_ != kNoPart)
-    SetNeedsPaintInvalidation(
-        static_cast<ScrollbarPart>(pressed_part_ | hovered_part_ | part));
+      hovered_part_ | pressed_part_);
 
   if (scrollable_area_ && part != kNoPart) {
     scrollable_area_->DidScrollWithScrollbar(part, Orientation(), type);
   }
-
-  pressed_part_ = part;
 }
 
 bool Scrollbar::HandlePointerEvent(const WebPointerEvent& event) {
@@ -855,7 +854,7 @@ float Scrollbar::ScrollableAreaTargetPos() const {
          scrollable_area_->MinimumScrollOffset().y();
 }
 
-void Scrollbar::SetNeedsPaintInvalidation(ScrollbarPart invalid_parts) {
+void Scrollbar::SetNeedsPaintInvalidation(int invalid_parts) {
   needs_update_display_ = true;
   if (theme_->ShouldRepaintAllPartsOnInvalidation()) {
     invalid_parts = kAllParts;
@@ -882,14 +881,14 @@ float Scrollbar::ScaleFromDIP() const {
 
 float Scrollbar::EffectiveZoom() const {
   if (style_source_) {
-    return style_source_->StyleRef().EffectiveZoom();
+    return style_source_->Style().EffectiveZoom();
   }
   return 1.0;
 }
 
 bool Scrollbar::ContainerIsRightToLeft() const {
   if (style_source_) {
-    TextDirection dir = style_source_->StyleRef().Direction();
+    TextDirection dir = style_source_->Style().Direction();
     return IsRtl(dir);
   }
   return false;
@@ -907,7 +906,7 @@ bool Scrollbar::ContainerIsFormControl() const {
 
 EScrollbarWidth Scrollbar::CSSScrollbarWidth() const {
   if (style_source_) {
-    return style_source_->StyleRef().UsedScrollbarWidth();
+    return style_source_->Style().UsedScrollbarWidth();
   }
   return EScrollbarWidth::kAuto;
 }
@@ -927,9 +926,8 @@ std::optional<blink::Color> Scrollbar::RootScrollbarThemeColor() const {
 }
 
 std::optional<blink::Color> Scrollbar::ScrollbarThumbColor() const {
-  if (style_source_ &&
-      style_source_->StyleRef().ScrollbarThumbColorResolved()) {
-    return style_source_->StyleRef().ScrollbarThumbColorResolved();
+  if (style_source_ && style_source_->Style().ScrollbarThumbColorResolved()) {
+    return style_source_->Style().ScrollbarThumbColorResolved();
   }
   if (theme_->UsesFluentScrollbars() && !InForcedColorsMode() &&
       !ScrollbarTrackColor().has_value()) {
@@ -940,7 +938,7 @@ std::optional<blink::Color> Scrollbar::ScrollbarThumbColor() const {
 
 std::optional<blink::Color> Scrollbar::ScrollbarTrackColor() const {
   if (style_source_) {
-    return style_source_->StyleRef().ScrollbarTrackColorResolved();
+    return style_source_->Style().ScrollbarTrackColorResolved();
   }
   return std::nullopt;
 }

@@ -10,6 +10,7 @@
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/json/json_writer.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
@@ -19,9 +20,11 @@
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/test/values_test_util.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
@@ -35,14 +38,13 @@
 #include "chrome/browser/password_manager/chrome_webauthn_credentials_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/cert_verifier_browser_test.h"
-#include "chrome/browser/ui/page_action/action_ids.h"
+#include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/passwords/passwords_model_delegate.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/location_bar/location_bar_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_container_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_view.h"
-#include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
-#include "chrome/browser/ui/webauthn/ambient/ambient_signin_controller.h"
+#include "chrome/browser/ui/views/permissions/chip/chip_controller.h"
+#include "chrome/browser/ui/views/permissions/chip/permission_prompt_chip_model.h"
+#include "chrome/browser/ui/webauthn/ambient/ambient_login_permission_request.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "chrome/browser/web_applications/test/os_integration_test_override_impl.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
@@ -62,6 +64,9 @@
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/common/password_manager_ui.h"
+#include "components/permissions/permission_request_manager.h"
+#include "components/permissions/test/permission_request_observer.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/sync/protocol/webauthn_credential_specifics.pb.h"
 #include "components/webauthn/core/browser/passkey_change_quota_tracker.h"
 #include "components/webauthn/core/browser/test_passkey_model.h"
@@ -85,9 +90,12 @@
 #include "device/fido/virtual_fido_device_factory.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/install_verifier.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension_builder.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -132,7 +140,7 @@ PublicKeyCredential.signalUnknownCredential({
 // In practice, Chromium will only consider the first recognised hint and ignore
 // the rest for the purposes of configuring the UI.
 // For cases where Chromium delegates WebAuthn to the OS (e.g. Windows), unknown
-// hints are filtered, but they are otherwise passed as received.
+// and duplicate hints are filtered, preserving their preference order.
 static constexpr char kMakeCredentialWithHints[] = R"((() => {
   return navigator.credentials.create({ publicKey: {
     rp: { name: "" },
@@ -331,6 +339,14 @@ IN_PROC_BROWSER_TEST_F(WebAuthnBrowserTest, ChromeExtensions) {
       .SetLocation(extensions::mojom::ManifestLocation::kExternalPolicyDownload)
       .SetManifestKey("web_accessible_resources",
                       base::test::ParseJson(kWebAccessibleResources));
+  // On branded builds where extension content verification defaults to
+  // ENFORCE_STRICT, WebAuthnBrowserTest.ChromeExtensions fails because it
+  // creates an in-memory kExternalPolicyDownload extension in a temp directory
+  // without writing manifest.json to disk. Write the generated manifest to
+  // manifest.json in the extension's temp directory so content verification
+  // succeeds.
+  WriteFile(temp_dir.GetPath().Append(extensions::kManifestFilename),
+            *base::WriteJson(builder.BuildManifest()));
 
   scoped_refptr<const extensions::Extension> extension = builder.Build();
   extensions::ExtensionRegistrar::Get(browser()->GetProfile())
@@ -643,8 +659,7 @@ IN_PROC_BROWSER_TEST_F(WinWebAuthnBrowserTest, MakeCredentialHints) {
       EXPECT_THAT(win_api_.last_hints(),
                   testing::ElementsAre(
                       testing::StrEq(WEBAUTHN_CREDENTIAL_HINT_HYBRID),
-                      testing::StrEq(WEBAUTHN_CREDENTIAL_HINT_SECURITY_KEY),
-                      testing::StrEq(WEBAUTHN_CREDENTIAL_HINT_HYBRID)));
+                      testing::StrEq(WEBAUTHN_CREDENTIAL_HINT_SECURITY_KEY)));
     }
   }
 }
@@ -668,8 +683,7 @@ IN_PROC_BROWSER_TEST_F(WinWebAuthnBrowserTest, GetAssertionHints) {
       EXPECT_THAT(win_api_.last_hints(),
                   testing::ElementsAre(
                       testing::StrEq(WEBAUTHN_CREDENTIAL_HINT_HYBRID),
-                      testing::StrEq(WEBAUTHN_CREDENTIAL_HINT_SECURITY_KEY),
-                      testing::StrEq(WEBAUTHN_CREDENTIAL_HINT_HYBRID)));
+                      testing::StrEq(WEBAUTHN_CREDENTIAL_HINT_SECURITY_KEY)));
     }
   }
 }
@@ -1203,21 +1217,7 @@ class WebAuthnAmbientUITest : public WebAuthnBrowserTest {
 
   class Observer : public ChromeAuthenticatorRequestDelegate::TestObserver {
    public:
-    enum State {
-      kHasNotShowedUI,
-      kWaitingForUI,
-      kShowedUI,
-    };
-
     virtual ~Observer() = default;
-
-    void WaitForUI() {
-      if (state_ != kHasNotShowedUI) {
-        return;
-      }
-      state_ = kWaitingForUI;
-      run_loop_.Run();
-    }
 
     // ChromeAuthenticatorRequestDelegate::TestObserver:
     void Created(ChromeAuthenticatorRequestDelegate* delegate) override {
@@ -1226,36 +1226,12 @@ class WebAuthnAmbientUITest : public WebAuthnBrowserTest {
       }
     }
 
-    void OnTransportAvailabilityEnumerated(
-        ChromeAuthenticatorRequestDelegate* delegate,
-        device::FidoRequestHandlerBase::TransportAvailabilityInfo* tai)
-        override {}
-
-    void UIShown(ChromeAuthenticatorRequestDelegate* delegate) override {
-      if (state_ == kWaitingForUI) {
-        run_loop_.QuitWhenIdle();
-      }
-      state_ = kShowedUI;
-    }
-
-    void AccountSelectorShown(
-        const std::vector<device::AuthenticatorGetAssertionResponse>& responses)
-        override {
-      for (const auto& response : responses) {
-        accounts_.emplace_back(base::HexEncode(response.credential->id));
-      }
-    }
-
     void SetPasswordFetcher(
         std::unique_ptr<PasswordCredentialFetcher> fetcher) {
       password_fetcher_ = std::move(fetcher);
     }
 
-    std::vector<std::string> accounts_;
-
    private:
-    State state_ = kHasNotShowedUI;
-    base::RunLoop run_loop_;
     std::unique_ptr<PasswordCredentialFetcher> password_fetcher_;
   };
 
@@ -1307,22 +1283,82 @@ class WebAuthnAmbientUITest : public WebAuthnBrowserTest {
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-// Tests that the ambient UI page action is shown and can be clicked.
-IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUIPageAction) {
+// Tests that the ambient UI permission request is shown and can be accepted.
+IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUISingleCredential) {
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   content::DOMMessageQueue message_queue(web_contents);
+  permissions::PermissionRequestObserver permission_observer(web_contents);
 
   content::ExecuteScriptAsync(web_contents, kAmbientUIGetRequest);
-  observer_->WaitForUI();
+  permission_observer.Wait();
+  ASSERT_TRUE(permission_observer.request_shown());
 
-  // Verify that the page action is shown.
-  page_actions::PageActionTestAccessor action_view(
-      browser(), kActionWebAuthnAmbientSignin);
-  EXPECT_TRUE(action_view.GetVisible());
+  permissions::PermissionRequestManager* permission_request_manager =
+      permissions::PermissionRequestManager::FromWebContents(web_contents);
+  ASSERT_FALSE(permission_request_manager->Requests().empty());
+  auto* ambient_request =
+      static_cast<ambient_signin::AmbientLoginPermissionRequest*>(
+          permission_request_manager->Requests().front().get());
+  EXPECT_EQ(ambient_request->credentials().size(), 1u);
 
-  // Simulate user selection.
-  action_view.Click();
+  ChipController* chip_controller =
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->GetLocationBar()
+          ->GetChipController();
+  ASSERT_NE(chip_controller, nullptr);
+  EXPECT_TRUE(chip_controller->IsPermissionPromptChipVisible());
+  EXPECT_EQ(chip_controller->chip()->GetTextForTesting(),
+            l10n_util::GetStringUTF16(IDS_AMBIENT_LOGIN_PERMISSION_CHIP));
+  ASSERT_NE(chip_controller->permission_prompt_model(), nullptr);
+  EXPECT_EQ(&chip_controller->permission_prompt_model()->GetIcon(),
+            &ambient_signin::AmbientLoginPermissionRequest::GetCredentialIcon(
+                ambient_signin::CredentialType::kPasskey));
+
+  permission_request_manager->Accept(std::monostate());
+  EXPECT_FALSE(chip_controller->IsPermissionPromptChipVisible());
+
+  std::string result;
+  ASSERT_TRUE(message_queue.WaitForMessage(&result));
+  EXPECT_EQ(result, "\"webauthn: OK\"");
+}
+
+// Tests that closing the ambient UI bubble keeps the request pending and the
+// chip showing, so that the bubble can be reopened from the chip.
+IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUIClosingBubbleKeepsChip) {
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::DOMMessageQueue message_queue(web_contents);
+  permissions::PermissionRequestObserver permission_observer(web_contents);
+
+  content::ExecuteScriptAsync(web_contents, kAmbientUIGetRequest);
+  permission_observer.Wait();
+  ASSERT_TRUE(permission_observer.request_shown());
+
+  ChipController* chip_controller =
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->GetLocationBar()
+          ->GetChipController();
+  ASSERT_NE(chip_controller, nullptr);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return chip_controller->IsBubbleShowing(); }));
+
+  // Closing the bubble with its close button keeps the request pending, and
+  // the chip showing.
+  chip_controller->GetBubbleWidget()->CloseWithReason(
+      views::Widget::ClosedReason::kCloseButtonClicked);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !chip_controller->IsBubbleShowing(); }));
+  permissions::PermissionRequestManager* permission_request_manager =
+      permissions::PermissionRequestManager::FromWebContents(web_contents);
+  ASSERT_FALSE(permission_request_manager->Requests().empty());
+  EXPECT_TRUE(chip_controller->IsPermissionPromptChipVisible());
+
+  // Clicking the chip reopens the bubble, which can still be accepted.
+  chip_controller->chip()->ExecuteForTesting();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return chip_controller->IsBubbleShowing(); }));
+  permission_request_manager->Accept(std::monostate());
 
   std::string result;
   ASSERT_TRUE(message_queue.WaitForMessage(&result));
@@ -1331,7 +1367,7 @@ IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUIPageAction) {
 
 // Tests that the ambient UI bubble is shown and can be interacted with.
 IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUIBubble) {
-  // Inject TWO credentials to trigger bubble.
+  // Inject TWO credentials to trigger prompt.
   virtual_device_factory_->mutable_state()->InjectResidentKey(
       kCredentialID2, "www.example.com", std::vector<uint8_t>{1, 2, 3, 4},
       "sakuya", "Sakuya Izayoi");
@@ -1344,23 +1380,21 @@ IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUIBubble) {
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   content::DOMMessageQueue message_queue(web_contents);
+  permissions::PermissionRequestObserver permission_observer(web_contents);
 
   content::ExecuteScriptAsync(web_contents, kAmbientUIGetRequest);
-  observer_->WaitForUI();
+  permission_observer.Wait();
+  ASSERT_TRUE(permission_observer.request_shown());
 
-  ambient_signin::AmbientSigninController* ambient_controller = nullptr;
-  web_contents->ForEachRenderFrameHost([&](content::RenderFrameHost* rfh) {
-    auto* c =
-        ambient_signin::AmbientSigninController::GetForCurrentDocument(rfh);
-    if (c) {
-      ambient_controller = c;
-    }
-  });
-  ASSERT_TRUE(ambient_controller);
+  permissions::PermissionRequestManager* permission_request_manager =
+      permissions::PermissionRequestManager::FromWebContents(web_contents);
+  ASSERT_FALSE(permission_request_manager->Requests().empty());
+  auto* ambient_request =
+      static_cast<ambient_signin::AmbientLoginPermissionRequest*>(
+          permission_request_manager->Requests().front().get());
+  EXPECT_EQ(ambient_request->credentials().size(), 2u);
 
-  // Simulate user selection.
-  // There are two credentials, so they should be at indices 0 and 1.
-  ambient_controller->OnMechanismSelected(0);
+  permission_request_manager->Accept(std::monostate());
 
   std::string result;
   ASSERT_TRUE(message_queue.WaitForMessage(&result));
@@ -1384,18 +1418,21 @@ IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUIDeduplication) {
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   content::DOMMessageQueue message_queue(web_contents);
+  permissions::PermissionRequestObserver permission_observer(web_contents);
 
   content::ExecuteScriptAsync(web_contents, kAmbientUIGetRequest);
-  observer_->WaitForUI();
+  permission_observer.Wait();
+  ASSERT_TRUE(permission_observer.request_shown());
 
-  page_actions::PageActionTestAccessor action_view(
-      browser(), kActionWebAuthnAmbientSignin);
-  // If deduplication failed, there would be 2 credentials, triggering the
-  // bubble instead of page action.
-  EXPECT_TRUE(action_view.GetVisible());
+  permissions::PermissionRequestManager* permission_request_manager =
+      permissions::PermissionRequestManager::FromWebContents(web_contents);
+  ASSERT_FALSE(permission_request_manager->Requests().empty());
+  auto* ambient_request =
+      static_cast<ambient_signin::AmbientLoginPermissionRequest*>(
+          permission_request_manager->Requests().front().get());
+  EXPECT_EQ(ambient_request->credentials().size(), 1u);
 
-  // Simulate user selection.
-  action_view.Click();
+  permission_request_manager->Accept(std::monostate());
 
   std::string result;
   ASSERT_TRUE(message_queue.WaitForMessage(&result));
@@ -1431,17 +1468,21 @@ IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUIPasswordDeduplication) {
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   content::DOMMessageQueue message_queue(web_contents);
+  permissions::PermissionRequestObserver permission_observer(web_contents);
 
   content::ExecuteScriptAsync(web_contents, kAmbientUIGetRequestWithPassword);
-  observer_->WaitForUI();
+  permission_observer.Wait();
+  ASSERT_TRUE(permission_observer.request_shown());
 
-  page_actions::PageActionTestAccessor action_view(
-      browser(), kActionWebAuthnAmbientSignin);
-  // If deduplication failed, there would be 2 mechanisms (1 passkey, 1
-  // password), triggering the bubble instead of page action.
-  EXPECT_TRUE(action_view.GetVisible());
+  permissions::PermissionRequestManager* permission_request_manager =
+      permissions::PermissionRequestManager::FromWebContents(web_contents);
+  ASSERT_FALSE(permission_request_manager->Requests().empty());
+  auto* ambient_request =
+      static_cast<ambient_signin::AmbientLoginPermissionRequest*>(
+          permission_request_manager->Requests().front().get());
+  EXPECT_EQ(ambient_request->credentials().size(), 1u);
 
-  action_view.Click();
+  permission_request_manager->Accept(std::monostate());
 
   std::string result;
   ASSERT_TRUE(message_queue.WaitForMessage(&result));
@@ -1635,10 +1676,7 @@ IN_PROC_BROWSER_TEST_F(WebAuthnActorBrowserTest,
 class WebAuthnIWABrowserTest : public WebAuthnBrowserTest {
  public:
   WebAuthnIWABrowserTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {device::kWebAuthnIWARemoteDesktopAllowedOriginsPolicy,
-         features::kIsolatedWebApps},
-        {});
+    scoped_feature_list_.InitAndEnableFeature(features::kIsolatedWebApps);
   }
 
   WebAuthnIWABrowserTest(const WebAuthnIWABrowserTest&) = delete;

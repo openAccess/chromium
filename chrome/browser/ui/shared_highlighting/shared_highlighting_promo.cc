@@ -31,8 +31,7 @@ void OnGetExistingSelectorsComplete(
 
 SharedHighlightingPromo::SharedHighlightingPromo(
     content::WebContents* web_contents)
-    : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<SharedHighlightingPromo>(*web_contents) {}
+    : content::WebContentsObserver(web_contents) {}
 
 SharedHighlightingPromo::~SharedHighlightingPromo() = default;
 
@@ -52,7 +51,7 @@ void SharedHighlightingPromo::DidFinishLoad(
 
 void SharedHighlightingPromo::CheckExistingSelectors(
     content::RenderFrameHost* render_frame_host) {
-  DCHECK(render_frame_host->GetOutermostMainFrame());
+  CHECK(render_frame_host->GetOutermostMainFrame(), base::NotFatalUntil::M162);
   if (!remote_.is_bound()) {
     render_frame_host->GetRemoteInterfaces()->GetInterface(
         remote_.BindNewPipeAndPassReceiver());
@@ -72,5 +71,3 @@ bool SharedHighlightingPromo::HasTextFragment(std::string url) {
 
   return url.find(":~:text=") != std::string::npos;
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(SharedHighlightingPromo);

@@ -6,25 +6,21 @@
 
 #import <UIKit/UIKit.h>
 
-#import "base/test/task_environment.h"
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_context_style.h"
 #import "ios/chrome/browser/metrics/model/activity_reporter.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
-#import "ios/chrome/browser/signin/model/authentication_service.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/scoped_key_window.h"
 #import "ios/web/public/test/web_task_environment.h"
-#import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
-#import "third_party/ocmock/gtest_support.h"
 
 // A minimal subclass of SigninCoordinator because it is abstract.
 @interface TestSigninCoordinator : SigninCoordinator
@@ -44,16 +40,15 @@ class SigninCoordinatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
-    profile_ = std::move(builder).Build();
+    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
     scene_state_ = [[SceneState alloc] init];
     profile_state_ = [[ProfileState alloc] initWithAppState:nil];
     scene_state_.profileState = profile_state_;
-    browser_ = std::make_unique<TestBrowser>(profile_.get(), scene_state_);
+    browser_ = std::make_unique<TestBrowser>(profile_, scene_state_);
 
     view_controller_ = [[UIViewController alloc] init];
     [scoped_key_window_.Get() setRootViewController:view_controller_];
@@ -70,15 +65,22 @@ class SigninCoordinatorTest : public PlatformTest {
 
     // signinCompletion must be set before start.
     coordinator_.signinCompletion =
-        ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-          id<SystemIdentity> identity) {
+        ^(SigninCoordinator* coordinator,
+          SigninCoordinatorResultOrIdentity result) {
         };
+  }
+
+  ~SigninCoordinatorTest() override {
+    coordinator_ = nil;
+    browser_.reset();
+    profile_ = nullptr;
   }
 
  protected:
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   web::WebTaskEnvironment task_environment_;
-  std::unique_ptr<TestProfileIOS> profile_;
+  TestProfileManagerIOS profile_manager_;
+  raw_ptr<TestProfileIOS> profile_ = nullptr;
   SceneState* scene_state_;
   ProfileState* profile_state_;
   std::unique_ptr<TestBrowser> browser_;

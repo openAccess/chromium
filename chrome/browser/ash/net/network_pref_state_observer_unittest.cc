@@ -18,6 +18,7 @@
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_handler_test_helper.h"
 #include "chromeos/ash/components/network/proxy/ui_proxy_config_service.h"
+#include "chromeos/ash/components/sync_wifi/wifi_configuration_sync_service_provider.h"
 #include "components/onc/onc_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/proxy_config/proxy_config_pref_names.h"
@@ -25,6 +26,7 @@
 #include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
@@ -35,6 +37,18 @@ namespace {
 
 const char kUserId[] = "test@example.com";
 const char kNetworkId[] = "wifi1_guid";  // Matches FakeShillManagerClient
+
+// Installs a no-op WifiConfigurationSyncServiceProvider so the observer can
+// resolve the service without depending on the //chrome factory. The service
+// is never created in tests, matching the production create=false behavior.
+class FakeWifiConfigurationSyncServiceProvider
+    : public WifiConfigurationSyncServiceProvider {
+ public:
+  sync_wifi::WifiConfigurationSyncService* Find(
+      const AccountId& account_id) override {
+    return nullptr;
+  }
+};
 
 }  // namespace
 
@@ -51,6 +65,7 @@ class NetworkPrefStateObserverTest : public testing::Test {
   void SetUp() override {
     testing::Test::SetUp();
     fake_user_manager_.Reset(std::make_unique<FakeChromeUserManager>());
+    session_manager_.OnUserManagerCreated(fake_user_manager_.Get());
     profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(profile_manager_->SetUp());
@@ -60,30 +75,45 @@ class NetworkPrefStateObserverTest : public testing::Test {
 
   void TearDown() override {
     network_pref_state_observer_.reset();
+    // Detach the profile prefs from the User before the Profile that owns them
+    // is destroyed, as profile destruction does in production.
+    if (account_id_.is_valid()) {
+      fake_user_manager_->OnUserProfileWillBeDestroyed(account_id_);
+    }
     profile_manager_.reset();
-    fake_user_manager_.Reset();
     testing::Test::TearDown();
   }
 
  protected:
   Profile* LoginAndReturnProfile() {
-    AccountId account_id = AccountId::FromUserEmail(kUserId);
-    fake_user_manager_->AddUser(account_id);
-    fake_user_manager_->LoginUser(account_id);
+    account_id_ = AccountId::FromUserEmail(kUserId);
+    fake_user_manager_->AddUser(account_id_);
+    // Start the primary session, then create the profile and attach its prefs
+    // to the user, as production does.
+    session_manager_.CreateSession(
+        account_id_, user_manager::TestHelper::GetFakeUsernameHash(account_id_),
+        /*new_user=*/false, /*has_active_session=*/false);
     Profile* profile = profile_manager_->CreateTestingProfile(kUserId);
-    session_manager_.NotifyUserProfileLoaded(account_id);
+    fake_user_manager_->OnUserProfileCreated(account_id_, profile->GetPrefs());
+    session_manager_.NotifyUserProfileLoaded(account_id_);
     base::RunLoop().RunUntilIdle();
     return profile;
   }
 
   content::BrowserTaskEnvironment task_environment_;
   NetworkHandlerTestHelper network_handler_test_helper_;
-  session_manager::SessionManager session_manager_{
-      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
+  // The UserManager outlives the SessionManager, as it does in production.
   user_manager::TypedScopedUserManager<FakeChromeUserManager>
       fake_user_manager_;
+  session_manager::SessionManager session_manager_{
+      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
   std::unique_ptr<TestingProfileManager> profile_manager_;
+  FakeWifiConfigurationSyncServiceProvider
+      wifi_configuration_sync_service_provider_;
   std::unique_ptr<NetworkPrefStateObserver> network_pref_state_observer_;
+
+ private:
+  AccountId account_id_;
 };
 
 TEST_F(NetworkPrefStateObserverTest, LoginUser) {

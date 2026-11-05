@@ -251,6 +251,16 @@ SameThreadMediaSourceAttachment::StartAttachingToMediaElement(
 void SameThreadMediaSourceAttachment::CompleteAttachingToMediaElement(
     MediaSourceTracer* tracer,
     std::unique_ptr<WebMediaSource> web_media_source) {
+  // The MediaSource's context (e.g. a since-detached iframe) may have been
+  // destroyed after attachment started, but before the media element's player
+  // opened its demuxer. The MediaSource closed itself upon that context
+  // destruction, and Close() will not be called on it again, so it must not be
+  // opened now: nothing would then release |web_media_source| before the
+  // player destroys the demuxer which |web_media_source| references.
+  if (media_source_context_destroyed_) {
+    return;
+  }
+
   VerifyCalledWhileContextsAliveForDebugging();
 
   GetMediaSource(tracer)->CompleteAttachingToMediaElement(
@@ -290,6 +300,10 @@ WebTimeRanges SameThreadMediaSourceAttachment::BufferedInternal(
 
 WebTimeRanges SameThreadMediaSourceAttachment::SeekableInternal(
     MediaSourceTracer* tracer) const {
+  if (media_source_context_destroyed_) {
+    return {};
+  }
+
   VerifyCalledWhileContextsAliveForDebugging();
 
   // Since the attached MediaSource, HTMLMediaElement and the element's player's
@@ -302,6 +316,10 @@ WebTimeRanges SameThreadMediaSourceAttachment::SeekableInternal(
 
 void SameThreadMediaSourceAttachment::OnTrackChanged(MediaSourceTracer* tracer,
                                                      TrackBase* track) {
+  if (media_source_context_destroyed_) {
+    return;
+  }
+
   // In this same thread implementation, the MSE side of the attachment can loop
   // back into this from SourceBuffer's initialization segment received
   // algorithm notifying the element, which then calls this. Regardless, we are
@@ -326,6 +344,10 @@ void SameThreadMediaSourceAttachment::OnElementTimeUpdate(double time) {
 
 void SameThreadMediaSourceAttachment::OnElementError() {
   DVLOG(3) << __func__ << " this=" << this;
+
+  if (media_source_context_destroyed_) {
+    return;
+  }
 
   VerifyCalledWhileContextsAliveForDebugging();
 

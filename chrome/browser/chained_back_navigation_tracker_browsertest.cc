@@ -5,7 +5,7 @@
 #include "chrome/browser/chained_back_navigation_tracker.h"
 
 #include "base/test/bind.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -50,9 +50,8 @@ IN_PROC_BROWSER_TEST_F(ChainedBackNavigationTrackerBrowserTest,
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url_a1));
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url_a2));
 
-  ChainedBackNavigationTracker::CreateForWebContents(web_contents());
   ChainedBackNavigationTracker* tracker =
-      ChainedBackNavigationTracker::FromWebContents(web_contents());
+      ChainedBackNavigationTracker::From(browser()->GetActiveTabInterface());
   ASSERT_TRUE(tracker);
 
   // The main frame back navigation should increment the count by 1.
@@ -96,9 +95,8 @@ IN_PROC_BROWSER_TEST_F(ChainedBackNavigationTrackerBrowserTest,
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url_c));
   ASSERT_TRUE(content::NavigateToURL(web_contents(), url_d));
 
-  ChainedBackNavigationTracker::CreateForWebContents(web_contents());
   ChainedBackNavigationTracker* tracker =
-      ChainedBackNavigationTracker::FromWebContents(web_contents());
+      ChainedBackNavigationTracker::From(browser()->GetActiveTabInterface());
   ASSERT_TRUE(tracker);
 
   // No back navigation is performed yet, the chain length should not be

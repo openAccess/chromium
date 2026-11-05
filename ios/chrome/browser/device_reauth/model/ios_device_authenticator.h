@@ -8,11 +8,13 @@
 #import "base/functional/callback.h"
 #import "base/memory/weak_ptr.h"
 #import "components/device_reauth/device_authenticator_common.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
+
+@protocol ReauthenticationProtocol;
 
 // The DeviceAuthenticator implementation on iOS. This wraps up a
-// `ReauthenticationModule`. Use this instead of the `ReauthenticationModule`
-// when callsite specifically requires a `device_reauth::DeviceAuthenticator`.
+// `ReauthenticationProtocol`. Use this instead of the
+// `ReauthenticationProtocol` when callsite specifically requires a
+// `device_reauth::DeviceAuthenticator`.
 class IOSDeviceAuthenticator : public DeviceAuthenticatorCommon {
  public:
   IOSDeviceAuthenticator(id<ReauthenticationProtocol> reauth_module,
@@ -26,6 +28,11 @@ class IOSDeviceAuthenticator : public DeviceAuthenticatorCommon {
   void AuthenticateWithMessage(const std::u16string& message,
                                AuthenticateCallback callback) override;
   void Cancel() override;
+
+  // Asynchronously checks whether biometrics or screen lock are available.
+  // Calls `callback` on the calling sequence with the result.
+  void CanAuthenticateWithBiometricOrScreenLock(
+      base::OnceCallback<void(bool)> callback);
 
  private:
   // Called when the authentication completes with the result `succeeded`.

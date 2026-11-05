@@ -138,9 +138,9 @@ bool DoesItemChangedEventMatch(
     const ExtensionId& extension_id,
     const api::developer_private::EventType event_type,
     api::developer_private::ExtensionInfo* info_from_event) {
-  CHECK_GE(1u, event.event_args.size());
+  CHECK_GE(1u, event.args().size());
   std::optional<api::developer_private::EventData> event_data =
-      api::developer_private::EventData::FromValue(event.event_args[0]);
+      api::developer_private::EventData::FromValue(event.args()[0]);
   if (!event_data) {
     return false;
   }
@@ -187,9 +187,9 @@ bool WasUserSiteSettingsChangedEventDispatched(
   }
 
   const Event& event = *iter->second;
-  CHECK_GE(1u, event.event_args.size());
+  CHECK_GE(1u, event.args().size());
   auto site_settings =
-      api::developer_private::UserSiteSettings::FromValue(event.event_args[0]);
+      api::developer_private::UserSiteSettings::FromValue(event.args()[0]);
   if (!site_settings) {
     return false;
   }
@@ -794,7 +794,7 @@ TEST_F(DeveloperPrivateApiUnitTest,
   };
   TestExtensionPrefSetting(base::BindLambdaForTesting(pinned_to_toolbar),
                            "pinnedToToolbar", id,
-                           /*expected_default_value=*/false);
+                           /*expected_default_value=*/true);
 
   TestExtensionPrefSetting(
       base::BindRepeating(
@@ -2956,6 +2956,21 @@ TEST_F(DeveloperPrivateApiUnitTest,
               testing::UnorderedElementsAre(MatchMatchingExtensionInfo(
                   extension_1->id(), developer::HostAccess::kOnSpecificSites,
                   /*can_request_all_sites=*/false)));
+
+  // An extension that should not be displayed in extension settings (such as a
+  // component extension) should not be returned.
+  scoped_refptr<const Extension> component_extension =
+      ExtensionBuilder("component")
+          .SetLocation(mojom::ManifestLocation::kComponent)
+          .AddHostPermission("*://mail.google.com/")
+          .Build();
+  AddExtensionAndGrantPermissions(profile(), registrar(), *component_extension);
+
+  GetMatchingExtensionsForSite(profile(), "http://mail.google.com/", &infos);
+  EXPECT_THAT(infos,
+              testing::UnorderedElementsAre(MatchMatchingExtensionInfo(
+                  extension_1->id(), developer::HostAccess::kOnSpecificSites,
+                  /*can_request_all_sites=*/false)));
 }
 
 // Test that the host access returned by GetMatchingExtensionsForSite reflects
@@ -3878,7 +3893,7 @@ TEST_F(DeveloperPrivateApiUnitTest,
   auto function =
       base::MakeRefCounted<api::DeveloperPrivateOpenReviewPageFunction>();
   function->SetRenderFrameHost(web_contents->GetPrimaryMainFrame());
-  EXPECT_EQ("Review prompts are disabled by policy.",
+  EXPECT_EQ("The extension is ineligible for review prompts.",
             api_test_utils::RunFunctionAndReturnError(
                 function.get(), std::move(args), profile()));
 }

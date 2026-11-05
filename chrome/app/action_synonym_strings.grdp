@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Search synonyms for actions. Result titles reuse the existing action
+     strings, so this file only holds alternate search terms.
+
+     Each action has a single message holding a comma-separated list of
+     synonyms, split at runtime in browser_actions.cc.
+
+     The messages are marked is_accessibility_with_no_ui because they are never
+     rendered; they are only used as indexing terms for menu search, so no
+     screenshots are required. -->
+<grit-part>
+  <!-- kActionShowPasswordManager: "Google Password Manager". -->
+  <message name="IDS_ACTION_SYNONYMS_SHOW_PASSWORD_MANAGER" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Google Password Manager') that users might type in the Chrome menu search bar to find the 'Google Password Manager' action. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    credentials, sign-in, passkey, lock, vault, keys
+  </message>
+  <!-- kActionShowPaymentMethods: "Payments". -->
+  <message name="IDS_ACTION_SYNONYMS_SHOW_PAYMENT_METHODS" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Payments') that users might type in the Chrome menu search bar to find the 'Payments' action, which manages saved payment methods. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    credit cards, debit, purchase, billing, money, visa, mastercard, wallet, security, pay
+  </message>
+  <!-- kActionShowContactInfo: "Contact Info". -->
+  <message name="IDS_ACTION_SYNONYMS_SHOW_CONTACT_INFO" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Contact Info') that users might type in the Chrome menu search bar to find the 'Contact Info' action, which manages saved addresses and contact details. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    autofill, shipping, home, work, checkout, forms, post code, zip, personal, info, phone, number
+  </message>
+  <!-- kActionCustomizeChrome: "Customize your Chrome". -->
+  <message name="IDS_ACTION_SYNONYMS_CUSTOMIZE_CHROME" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Customize your Chrome') that users might type in the Chrome menu search bar to find the 'Customize your Chrome' action in the profile menu. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    theme, color, avatar, name, background, account
+  </message>
+  <!-- kActionCloseProfile: "Close this profile". -->
+  <message name="IDS_ACTION_SYNONYMS_CLOSE_PROFILE" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Close this profile') that users might type in the Chrome menu search bar to find the 'Close this profile' action. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    exit, quit, logout, windows, workspace, end
+  </message>
+  <!-- kActionManageGoogleAccount: "Manage your Google Account". -->
+  <message name="IDS_ACTION_SYNONYMS_MANAGE_GOOGLE_ACCOUNT" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Manage your Google Account') that users might type in the Chrome menu search bar to find the 'Manage your Google Account' action. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    security, privacy, personal info, data, password, subscription, profile
+  </message>
+  <!-- kActionOpenGuestProfile: "Open Guest profile". -->
+  <message name="IDS_ACTION_SYNONYMS_OPEN_GUEST_PROFILE" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Open Guest profile') that users might type in the Chrome menu search bar to find the 'Open Guest profile' action. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    incognito, anonymous, temporary, share, computer, friend
+  </message>
+  <!-- kActionAddNewProfile: "Add new profile". -->
+  <message name="IDS_ACTION_SYNONYMS_ADD_NEW_PROFILE" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Add new profile') that users might type in the Chrome menu search bar to find the 'Add new profile' action. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    switch, multiple, accounts, family, work, profile, person, separate, history
+  </message>
+  <!-- kActionManageChromeProfiles: "Manage Chrome profiles". -->
+  <message name="IDS_ACTION_SYNONYMS_MANAGE_CHROME_PROFILES" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Manage Chrome profiles') that users might type in the Chrome menu search bar to find the 'Manage Chrome profiles' action. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    switch, multiple, accounts, users, account, settings, profile
+  </message>
+  <!-- kActionSendTabToSelf: "Send to your device". -->
+  <message name="IDS_ACTION_SYNONYMS_SEND_TAB_TO_SELF" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Send to your device') that users might type in the Chrome menu search bar to find the 'Send to your device' action, which sends the current page to another of the user's signed-in devices. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    share, mobile, device, chromebook, pixel, sync history, transfer, phone, tablet
+  </message>
+  <!-- kActionQrCodeGenerator: "Create QR code". -->
+  <message name="IDS_ACTION_SYNONYMS_QR_CODE_GENERATOR" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Create QR code') that users might type in the Chrome menu search bar to find the 'Create QR code' action, which creates a QR code for the current page's URL. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    share, camera, mobile scan, barcode, transfer link
+  </message>
+  <!-- kActionRouteMedia: "Cast". -->
+  <message name="IDS_ACTION_SYNONYMS_ROUTE_MEDIA" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Cast') that users might type in the Chrome menu search bar to find the 'Cast' action, which casts the current tab or screen to a TV, speaker, or other device. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    tv, screen, mirroring, stream, wireless, display, project, speaker, audio, video
+  </message>
+  <!-- kActionTabSearch: "Tab Search". -->
+  <message name="IDS_ACTION_SYNONYMS_TAB_SEARCH" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Tab Search') that users might type in the Chrome menu search bar to find the 'Tab Search' action, which lets the user search through their open and recently closed tabs. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    tabs, list, navigate, sidebar, controls, search, change
+  </message>
+  <!-- kActionNameWindow: "Name Window". -->
+  <message name="IDS_ACTION_SYNONYMS_NAME_WINDOW" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Name Window') that users might type in the Chrome menu search bar to find the 'Name Window' action, which lets the user give the current browser window a custom name. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    organization, naming, group, multi-task, productivity, custom
+  </message>
+  <!-- kActionToggleVerticalTabs: "Show tabs vertically". -->
+  <message name="IDS_ACTION_SYNONYMS_TOGGLE_VERTICAL_TABS" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Show tabs vertically') that users might type in the Chrome menu search bar to find the 'Show tabs vertically' action, which moves the tab strip to a vertical list on the side of the window. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    layout, sidebar, vertical, side, visible, screen, space, wide, monitors, organization
+  </message>
+  <!-- kActionSidePanelShowCustomizeChrome: "Customize Chrome". -->
+  <message name="IDS_ACTION_SYNONYMS_SIDE_PANEL_CUSTOMIZE_CHROME" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Customize Chrome') that users might type in the Chrome menu search bar to find the 'Customize Chrome' action, which opens a side panel for changing the browser's theme, colors, and appearance. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    themes, backgrounds, wallpaper, colors, dark, mode, personal, styling, aesthetic
+  </message>
+  <!-- kActionShowReadingModeSidePanel: "Reading Mode". -->
+  <message name="IDS_ACTION_SYNONYMS_SHOW_READING_MODE" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Reading mode') that users might type in the Chrome menu search bar to find the 'Reading mode' action, which opens a simplified, distraction-free view of the page's text in a side panel. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    tts, speech, declutter, distraction, accessibility, contrast, font, size, simplify, text, reading, articles
+  </message>
+  <!-- kActionPerformance: "Performance". -->
+  <message name="IDS_ACTION_SYNONYMS_PERFORMANCE" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Performance') that users might type in the Chrome menu search bar to find the 'Performance' action, which opens settings for memory, power, and speed optimizations. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    speed, RAM, lag, freeze, crash, resource, usage, battery, optimizer, slow
+  </message>
+  <!-- kActionTaskManagerAppMenu: "Task Manager". -->
+  <message name="IDS_ACTION_SYNONYMS_TASK_MANAGER" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Task Manager' that users might type in the Chrome menu search bar to find the 'Task Manager' action, which shows the processes Chrome is running and their resource usage. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    speed, monitor, active, processes, tab, list, developer, slow, computer, CPU, resource, leak
+  </message>
+  <!-- kActionDevTools: "Developer Tools". -->
+  <message name="IDS_ACTION_SYNONYMS_DEV_TOOLS" is_accessibility_with_no_ui="true" desc="Comma-separated list of search terms (other than the title 'Developer Tools') that users might type in the Chrome menu search bar to find the 'Developer Tools' action, which opens tools for inspecting and debugging web pages. Do not translate the list 1:1; list the terms users typing in the target language might search for, delimited by commas.">
+    inspect, CSS, HTML, console, coding, debugging, source, code, tools, javascript
+  </message>
+</grit-part>

@@ -13,7 +13,7 @@ enum class PermissionType;
 }
 
 // PermissionControllerDelegate implementation for WebEngine. It redirects
-// permission redirects all calls to the appropriate FramePermissionController
+// all permission-related calls to the appropriate FramePermissionController
 // instance.
 class WebEnginePermissionDelegate
     : public content::PermissionControllerDelegate {
@@ -49,14 +49,6 @@ class WebEnginePermissionDelegate
       const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
       content::RenderProcessHost* render_process_host,
       const GURL& worker_origin) override;
-  content::PermissionResult GetPermissionResultForEmbeddedRequester(
-      const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
-      content::RenderFrameHost* render_frame_host,
-      const url::Origin& overridden_origin) override;
-  void OnPermissionStatusChangeSubscriptionAdded(
-      content::PermissionController::SubscriptionId subscription_id) override;
-  void UnsubscribeFromPermissionResultChange(
-      content::PermissionController::SubscriptionId subscription_id) override;
 };
 
 #endif  // FUCHSIA_WEB_WEBENGINE_BROWSER_WEB_ENGINE_PERMISSION_DELEGATE_H_

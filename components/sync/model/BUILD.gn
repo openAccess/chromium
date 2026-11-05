@@ -4,6 +4,7 @@
 
 static_library("model") {
   sources = [
+    "attachment_uploader.h",
     "blocking_data_type_store.h",
     "blocking_data_type_store_impl.cc",
     "blocking_data_type_store_impl.h",
@@ -73,8 +74,6 @@ static_library("model") {
     "type_entities_count.h",
     "wipe_model_upon_sync_disabled_behavior.h",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   public_deps = [
     "//base",

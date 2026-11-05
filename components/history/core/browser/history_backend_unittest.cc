@@ -24,8 +24,10 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gtest_util.h"
@@ -48,6 +50,8 @@
 #include "components/history/core/browser/history_types.h"
 #include "components/history/core/browser/in_memory_database.h"
 #include "components/history/core/browser/in_memory_history_backend.h"
+#include "components/history/core/browser/journeys/journey.h"
+#include "components/history/core/browser/journeys/journey_row.h"
 #include "components/history/core/browser/keyword_search_term.h"
 #include "components/history/core/browser/keyword_search_term_util.h"
 #include "components/history/core/browser/page_usage_data.h"
@@ -766,7 +770,7 @@ class InMemoryHistoryBackendTest : public HistoryBackendTestBase,
     NotifyDeletions(DeletionInfo::ForUrls(rows, std::set<GURL>()));
   }
 
-  size_t GetNumberOfMatchingSearchTerms(const int keyword_id,
+  size_t GetNumberOfMatchingSearchTerms(const KeywordID keyword_id,
                                         const std::u16string& prefix) {
     URLDatabase* url_db = mem_backend_->db();
     auto enumerator =
@@ -820,7 +824,7 @@ class InMemoryHistoryBackendTest : public HistoryBackendTestBase,
   static const char16_t kTestSearchTerm2[];
 };
 
-const KeywordID InMemoryHistoryBackendTest::kTestKeywordId = 42;
+const KeywordID InMemoryHistoryBackendTest::kTestKeywordId(42);
 const char16_t InMemoryHistoryBackendTest::kTestSearchTerm1[] = u"banana";
 const char16_t InMemoryHistoryBackendTest::kTestSearchTerm2[] = u"orange";
 
@@ -2558,6 +2562,87 @@ TEST_F(HistoryBackendTest, QueryHistoryWithTextQueryIncludesActorSource) {
                       testing::Property(&URLResult::has_actor_source, true))));
 }
 
+// Tests that a text search returns each visit's own content annotations.
+TEST_F(HistoryBackendTest,
+       QueryHistoryWithTextQueryIncludesContentAnnotations) {
+  ASSERT_TRUE(backend_.get());
+
+  const GURL url("http://www.example.com/page");
+  const base::Time now = base::Time::Now();
+  constexpr size_t kNumVisits = 5;
+  for (size_t i = 0; i < kNumVisits; ++i) {
+    HistoryAddPageArgs request(
+        url, now - base::Minutes(kNumVisits - i), /*context_id=*/1,
+        /*nav_entry_id=*/base::checked_cast<int>(i + 1),
+        /*local_navigation_id=*/std::nullopt, GURL(), RedirectList(),
+        ui::PAGE_TRANSITION_TYPED, false, SOURCE_BROWSED,
+        VisitResponseCodeCategory::kNot404, false, true);
+    backend_->AddPage(request);
+  }
+
+  URLRow row;
+  URLID url_id = backend_->db()->GetRowForURL(url, &row);
+  VisitVector visits;
+  ASSERT_TRUE(backend_->db()->GetVisitsForURL(url_id, &visits));
+  ASSERT_EQ(kNumVisits, visits.size());
+  for (const VisitRow& visit : visits) {
+    VisitContentAnnotations annotations;
+    annotations.alternative_title = base::NumberToString(visit.visit_id);
+    backend_->db()->AddContentAnnotationsForVisit(visit.visit_id, annotations);
+  }
+
+  QueryOptions options;
+  options.duplicate_policy = QueryOptions::KEEP_ALL_DUPLICATES;
+  options.max_count = 2;
+  QueryResults results = backend_->QueryHistory(u"example", options);
+
+  // Only the two newest visits are returned, and each keeps its annotations.
+  ASSERT_EQ(2u, results.size());
+  EXPECT_EQ(now - base::Minutes(1), results[0].visit_time());
+  EXPECT_EQ(now - base::Minutes(2), results[1].visit_time());
+  for (const URLResult& result : results) {
+    EXPECT_EQ(base::NumberToString(result.visit_id()),
+              result.content_annotations().alternative_title);
+  }
+}
+
+// Tests that a text search doesn't report reaching the beginning of history
+// when the per-URL visit query is truncated by `max_count`, even though the
+// merged results don't exceed `max_count`.
+TEST_F(HistoryBackendTest,
+       QueryHistoryTextNotReachedBeginningWhenPerUrlVisitsTruncated) {
+  ASSERT_TRUE(backend_.get());
+
+  const GURL url("http://www.example.com/page");
+  const base::Time now = base::Time::Now();
+  constexpr size_t kNumVisits = 3;
+  for (size_t i = 0; i < kNumVisits; ++i) {
+    HistoryAddPageArgs request(
+        url, now - base::Minutes(kNumVisits - i), /*context_id=*/1,
+        /*nav_entry_id=*/base::checked_cast<int>(i + 1),
+        /*local_navigation_id=*/std::nullopt, GURL(), RedirectList(),
+        ui::PAGE_TRANSITION_TYPED, false, SOURCE_BROWSED,
+        VisitResponseCodeCategory::kNot404, false, true);
+    backend_->AddPage(request);
+  }
+
+  QueryOptions options;
+  options.duplicate_policy = QueryOptions::KEEP_ALL_DUPLICATES;
+
+  // The only matching URL has more visits than `max_count`, so older visits
+  // remain beyond the returned results.
+  options.max_count = base::checked_cast<int>(kNumVisits - 1);
+  QueryResults results = backend_->QueryHistory(u"example", options);
+  EXPECT_EQ(kNumVisits - 1, results.size());
+  EXPECT_FALSE(results.reached_beginning());
+
+  // All visits fit within `max_count`, so the beginning is reached.
+  options.max_count = base::checked_cast<int>(kNumVisits);
+  results = backend_->QueryHistory(u"example", options);
+  EXPECT_EQ(kNumVisits, results.size());
+  EXPECT_TRUE(results.reached_beginning());
+}
+
 TEST_F(HistoryBackendTest, SetHasUrlKeyedImage) {
   ASSERT_TRUE(backend_.get());
 
@@ -2672,6 +2757,164 @@ TEST_F(HistoryBackendTest, MixedContentAnnotationsRequestTypes) {
                           VisitContentModelAnnotations::Category(
                               /*id=*/"entity2", /*weight=*/1)));
 }
+
+class HistoryBackendQueryHistoryBasicTest
+    : public HistoryBackendTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  HistoryBackendQueryHistoryBasicTest() {
+    feature_list_.InitWithFeatureState(kHistoryQueryBatchedLookups,
+                                       IsBatchedLookupsEnabled());
+  }
+
+  bool IsBatchedLookupsEnabled() const { return GetParam(); }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_P(HistoryBackendQueryHistoryBasicTest, QueryHistoryBasic_BatchedLookups) {
+  ASSERT_TRUE(backend_.get());
+
+  base::Time now = base::Time::Now();
+  GURL url1("http://www.example.com/1");
+  GURL url2("http://www.example.com/2");
+
+  HistoryAddPageArgs request1(
+      url1, now - base::Minutes(2), /*context_id=*/1, /*nav_entry_id=*/1,
+      /*local_navigation_id=*/std::nullopt, GURL(), RedirectList(),
+      ui::PAGE_TRANSITION_TYPED, false, SOURCE_BROWSED,
+      VisitResponseCodeCategory::kNot404, false, true);
+  backend_->AddPage(request1);
+
+  HistoryAddPageArgs request2(
+      url2, now - base::Minutes(1), /*context_id=*/1, /*nav_entry_id=*/2,
+      /*local_navigation_id=*/std::nullopt, GURL(), RedirectList(),
+      ui::PAGE_TRANSITION_TYPED, false, SOURCE_BROWSED,
+      VisitResponseCodeCategory::kNot404, false, true);
+  backend_->AddPage(request2);
+
+  // Add a 2nd visit to url1 to verify URL deduplication across visits.
+  HistoryAddPageArgs request3(url1, now, /*context_id=*/1, /*nav_entry_id=*/3,
+                              /*local_navigation_id=*/std::nullopt, GURL(),
+                              RedirectList(), ui::PAGE_TRANSITION_TYPED, false,
+                              SOURCE_BROWSED,
+                              VisitResponseCodeCategory::kNot404, false, true);
+  backend_->AddPage(request3);
+
+  // Retrieve visit IDs.
+  URLRow row1;
+  URLID id1 = backend_->db()->GetRowForURL(url1, &row1);
+  VisitVector visits1;
+  ASSERT_TRUE(backend_->db()->GetVisitsForURL(id1, &visits1));
+  ASSERT_EQ(2u, visits1.size());
+
+  URLRow row2;
+  URLID id2 = backend_->db()->GetRowForURL(url2, &row2);
+  VisitVector visits2;
+  ASSERT_TRUE(backend_->db()->GetVisitsForURL(id2, &visits2));
+  ASSERT_EQ(1u, visits2.size());
+
+  // Attach content annotations to visit 1 of url1 and visit of url2, leaving
+  // visit 2 of url1 empty.
+  VisitContentAnnotations annot1;
+  annot1.alternative_title = "Title for URL 1 Visit 1";
+  annot1.search_terms = u"search terms 1";
+  backend_->db()->AddContentAnnotationsForVisit(visits1[0].visit_id, annot1);
+
+  VisitContentAnnotations annot2;
+  annot2.alternative_title = "Title for URL 2";
+  annot2.related_searches = {"related 1", "related 2"};
+  backend_->db()->AddContentAnnotationsForVisit(visits2[0].visit_id, annot2);
+
+  QueryOptions options;
+  options.duplicate_policy = QueryOptions::KEEP_ALL_DUPLICATES;
+
+  base::HistogramTester histogram_tester;
+
+  QueryResults results = backend_->QueryHistory(/*text_query=*/{}, options);
+
+  ASSERT_EQ(3u, results.size());
+
+  // Visits are returned in reverse-chronological order: visits1[1] (now),
+  // visits2[0] (now - 1 min), visits1[0] (now - 2 min).
+  EXPECT_EQ(url1, results[0].url());
+  EXPECT_EQ(visits1[1].visit_id, results[0].visit_id());
+  EXPECT_TRUE(results[0].content_annotations().alternative_title.empty());
+
+  EXPECT_EQ(url2, results[1].url());
+  EXPECT_EQ(visits2[0].visit_id, results[1].visit_id());
+  EXPECT_EQ("Title for URL 2",
+            results[1].content_annotations().alternative_title);
+  EXPECT_THAT(results[1].content_annotations().related_searches,
+              ElementsAre("related 1", "related 2"));
+
+  EXPECT_EQ(url1, results[2].url());
+  EXPECT_EQ(visits1[0].visit_id, results[2].visit_id());
+  EXPECT_EQ("Title for URL 1 Visit 1",
+            results[2].content_annotations().alternative_title);
+  EXPECT_EQ(u"search terms 1", results[2].content_annotations().search_terms);
+
+  histogram_tester.ExpectTotalCount("History.QueryHistoryBasic.Duration", 1);
+  histogram_tester.ExpectUniqueSample("History.QueryHistoryBasic.ResultCount",
+                                      3, 1);
+}
+
+TEST_P(HistoryBackendQueryHistoryBasicTest,
+       QueryHistoryBasic_ExceedsBatchSize) {
+  ASSERT_TRUE(backend_.get());
+
+  base::Time now = base::Time::Now();
+  constexpr size_t kNumVisits = 260;
+
+  for (size_t i = 0; i < kNumVisits; ++i) {
+    GURL url(base::StringPrintf("http://www.batched%zu.com", i));
+    HistoryAddPageArgs request(
+        url, now - base::Seconds(kNumVisits - i), /*context_id=*/1,
+        /*nav_entry_id=*/static_cast<int>(i + 1),
+        /*local_navigation_id=*/std::nullopt, GURL(), RedirectList(),
+        ui::PAGE_TRANSITION_TYPED, false, SOURCE_BROWSED,
+        VisitResponseCodeCategory::kNot404, false, true);
+    backend_->AddPage(request);
+
+    URLRow row;
+    URLID id = backend_->db()->GetRowForURL(url, &row);
+    VisitVector visits;
+    ASSERT_TRUE(backend_->db()->GetVisitsForURL(id, &visits));
+    ASSERT_FALSE(visits.empty());
+
+    VisitContentAnnotations annot;
+    annot.alternative_title = base::StringPrintf("Title %zu", i);
+    backend_->db()->AddContentAnnotationsForVisit(visits[0].visit_id, annot);
+  }
+
+  QueryOptions options;
+  options.duplicate_policy = QueryOptions::KEEP_ALL_DUPLICATES;
+  options.max_count = 300;
+
+  base::HistogramTester histogram_tester;
+
+  QueryResults results = backend_->QueryHistory(/*text_query=*/{}, options);
+
+  ASSERT_EQ(kNumVisits, results.size());
+  for (size_t i = 0; i < kNumVisits; ++i) {
+    // Reverse chronological order: index 0 has i = 259, etc.
+    size_t original_index = kNumVisits - 1 - i;
+    EXPECT_EQ(
+        GURL(base::StringPrintf("http://www.batched%zu.com", original_index)),
+        results[i].url());
+    EXPECT_EQ(base::StringPrintf("Title %zu", original_index),
+              results[i].content_annotations().alternative_title);
+  }
+
+  histogram_tester.ExpectTotalCount("History.QueryHistoryBasic.Duration", 1);
+  histogram_tester.ExpectUniqueSample("History.QueryHistoryBasic.ResultCount",
+                                      kNumVisits, 1);
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         HistoryBackendQueryHistoryBasicTest,
+                         ::testing::Bool());
 
 TEST_F(HistoryBackendTest, GetMostRecentVisits) {
   ASSERT_TRUE(backend_.get());
@@ -3578,7 +3821,7 @@ TEST_F(HistoryBackendTest, DeleteMatchingUrlsForKeyword) {
   const URLID url1_id = backend_->db()->AddURL(url_info1);
   EXPECT_NE(0, url1_id);
 
-  KeywordID keyword_id = 1;
+  KeywordID keyword_id(1);
   std::u16string keyword = u"bar";
   ASSERT_TRUE(backend_->db()->SetKeywordSearchTermsForURL(url1_id, keyword_id,
                                                           keyword));
@@ -3592,7 +3835,7 @@ TEST_F(HistoryBackendTest, DeleteMatchingUrlsForKeyword) {
   const URLID url2_id = backend_->db()->AddURL(url_info2);
   EXPECT_NE(0, url2_id);
 
-  KeywordID keyword_id2 = 2;
+  KeywordID keyword_id2(2);
   ASSERT_TRUE(backend_->db()->SetKeywordSearchTermsForURL(url2_id, keyword_id2,
                                                           keyword));
 
@@ -3857,6 +4100,51 @@ TEST_F(HistoryBackendTest, ClientRedirectScoring) {
   EXPECT_EQ(1, url_row.typed_count());
   ASSERT_TRUE(backend_->GetURL(redirected_url, &url_row));
   EXPECT_EQ(0, url_row.typed_count());
+}
+
+// The in-memory backend of a freshly initialized HistoryBackend must contain
+// what earlier sessions wrote to disk: the URLs that were typed or searched
+// for, with their keyword search terms, but not URLs that were only followed.
+TEST_P(InMemoryHistoryBackendTest, PopulatedFromDiskOnInit) {
+  const GURL typed_url("http://typed.com/");
+  const GURL link_url("http://link.com/");
+  const GURL search_url("http://search.com/?q=term");
+  const base::Time visit_time = base::Time::Now();
+  backend_->AddPage(HistoryAddPageArgs(
+      typed_url, visit_time, 0, 0, std::nullopt, GURL(), RedirectList(),
+      ui::PAGE_TRANSITION_TYPED, false, SOURCE_BROWSED,
+      VisitResponseCodeCategory::kNot404, false, true));
+  backend_->AddPage(HistoryAddPageArgs(
+      link_url, visit_time, 0, 0, std::nullopt, GURL(), RedirectList(),
+      ui::PAGE_TRANSITION_LINK, false, SOURCE_BROWSED,
+      VisitResponseCodeCategory::kNot404, false, true));
+  backend_->AddPage(HistoryAddPageArgs(
+      search_url, visit_time, 0, 0, std::nullopt, GURL(), RedirectList(),
+      ui::PAGE_TRANSITION_LINK, false, SOURCE_BROWSED,
+      VisitResponseCodeCategory::kNot404, false, true));
+  backend_->SetKeywordSearchTermsForURL(search_url, kTestKeywordId, u"term");
+
+  // Simulate a restart: shut the backend down and initialize a new one on the
+  // same directory.
+  backend_->Closing();
+  backend_ = nullptr;
+  mem_backend_.reset();
+  backend_ = base::MakeRefCounted<TestHistoryBackend>(
+      std::make_unique<HistoryBackendTestDelegate>(this),
+      history_client_.CreateBackendClient(),
+      base::SingleThreadTaskRunner::GetCurrentDefault());
+  backend_->Init(false, TestHistoryDatabaseParamsForPath(test_dir()));
+  ASSERT_TRUE(mem_backend_);
+
+  URLRow row;
+  ASSERT_NE(0, mem_backend_->db()->GetRowForURL(typed_url, &row));
+  EXPECT_EQ(1, row.typed_count());
+  EXPECT_EQ(0, mem_backend_->db()->GetRowForURL(link_url, nullptr));
+  ASSERT_NE(0, mem_backend_->db()->GetRowForURL(search_url, &row));
+  KeywordSearchTermRow term;
+  ASSERT_TRUE(mem_backend_->db()->GetKeywordSearchTermRow(row.id(), &term));
+  EXPECT_EQ(kTestKeywordId, term.keyword_id);
+  EXPECT_EQ(u"term", term.term);
 }
 
 // Common implementation for the two tests below, given that the only difference
@@ -4221,7 +4509,7 @@ TEST_F(HistoryBackendTest, QueryMostRepeatedQueriesForKeyword) {
   base::Time base_time = base::Time::Now().LocalMidnight() - base::Days(7);
   const size_t result_count = 3;
 
-  const KeywordID first_keyword_id = 1;
+  const KeywordID first_keyword_id(1);
   for (size_t i = 0; i < result_count * 2; ++i) {
     HistoryAddPageArgs args;
     const std::u16string term = u"First" + base::NumberToString16(i + 1);
@@ -4232,7 +4520,7 @@ TEST_F(HistoryBackendTest, QueryMostRepeatedQueriesForKeyword) {
     backend_->SetKeywordSearchTermsForURL(args.url, first_keyword_id, term);
   }
 
-  const KeywordID second_keyword_id = 2;
+  const KeywordID second_keyword_id(2);
   for (size_t i = 0; i < result_count * 2; ++i) {
     HistoryAddPageArgs args;
     const std::u16string term = u"Second" + base::NumberToString16(i + 1);
@@ -4406,65 +4694,6 @@ TEST_F(HistoryBackendTest, AddPageWithContextAnnotations) {
 
   EXPECT_EQ(context_annotations,
             annotated_visits[0].context_annotations.on_visit);
-}
-
-TEST_F(HistoryBackendTest, AddPageVisitAddedDueTo404) {
-  base::HistogramTester histogram_tester;
-
-  // Test a redirect chain ending in a 404.
-  {
-    // Create a redirect chain of length 2 (the last entry in the chain is the
-    // ultimate destination of the chain).
-    RedirectList redirects;
-    redirects.emplace_back("http://example.com/a");
-    redirects.emplace_back("http://example.com/b");
-
-    HistoryAddPageArgs add_page_args(
-        redirects.back(), base::Time::Now(), /*context_id=*/1,
-        /*nav_entry_id=*/1,
-        /*local_navigation_id=*/std::nullopt, GURL(), redirects,
-        ui::PageTransitionFromInt(ui::PAGE_TRANSITION_SERVER_REDIRECT |
-                                  ui::PAGE_TRANSITION_CHAIN_END),
-        /*hidden=*/true, SOURCE_BROWSED, VisitResponseCodeCategory::k404,
-        /*did_replace_entry=*/false,
-        /*consider_for_ntp_most_visited=*/false);
-    add_page_args.context_annotations = {.response_code = 404};
-    backend_->AddPage(add_page_args);
-
-    // The redirect visit and the actual 404 are added due to a 404, so both
-    // should go in the `true` bucket and none in the `false` bucket.
-    histogram_tester.ExpectBucketCount("History.VisitAddedDueTo404", true, 2);
-    histogram_tester.ExpectBucketCount("History.VisitAddedDueTo404", false, 0);
-  }
-
-  // Test a redirect chain ending in a non-404.
-  {
-    // Create a redirect chain of length 3 (the last entry in the chain is the
-    // ultimate destination of the chain).
-    RedirectList redirects;
-    redirects.emplace_back("http://example.com/c");
-    redirects.emplace_back("http://example.com/d");
-    redirects.emplace_back("http://example.com/e");
-
-    HistoryAddPageArgs add_page_args(
-        redirects.back(), base::Time::Now(), /*context_id=*/2,
-        /*nav_entry_id=*/2,
-        /*local_navigation_id=*/std::nullopt, GURL(), redirects,
-        ui::PageTransitionFromInt(ui::PAGE_TRANSITION_SERVER_REDIRECT |
-                                  ui::PAGE_TRANSITION_CHAIN_END),
-        /*hidden=*/false, SOURCE_BROWSED, VisitResponseCodeCategory::kNot404,
-        /*did_replace_entry=*/false,
-        /*consider_for_ntp_most_visited=*/true);
-    add_page_args.context_annotations = {.response_code = 401};
-    backend_->AddPage(add_page_args);
-
-    // Neither the redirect visits nor the ultimate destination are added due to
-    // a 404, so all three should go in the `false` bucket.
-    histogram_tester.ExpectBucketCount("History.VisitAddedDueTo404", false, 3);
-    // None should go in the `true` bucket, so the count should be the same as
-    // before.
-    histogram_tester.ExpectBucketCount("History.VisitAddedDueTo404", true, 2);
-  }
 }
 
 TEST_F(HistoryBackendTest, GetAnnotatedVisits) {
@@ -6630,6 +6859,182 @@ TEST_F(HistoryBackendTest, ProcessDBTaskWithMultipleIterations) {
   EXPECT_CALL(first_task_done, Run);
   EXPECT_CALL(second_task_done, Run);
   task_environment_.RunUntilIdle();
+}
+
+TEST_F(HistoryBackendTest, GetRedirectChain_CappedAtMaxLength) {
+  const int kChainLength = 50;
+  base::Time now = base::Time::Now();
+
+  auto [url_id, prev_visit_id] = backend_->AddPageVisit(
+      GURL("https://example.com/start"), now, /*referring_visit=*/0,
+      /*external_referrer_url=*/GURL(),
+      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_TYPED |
+                                ui::PAGE_TRANSITION_CHAIN_START |
+                                ui::PAGE_TRANSITION_CHAIN_END),
+      /*hidden=*/false, SOURCE_BROWSED, VisitResponseCodeCategory::kNot404,
+      /*should_increment_typed_count=*/false, /*opener_visit=*/0,
+      /*consider_for_ntp_most_visited=*/true);
+
+  VisitRow last_visit;
+  for (int i = 1; i < kChainLength; ++i) {
+    auto [refresh_url_id, next_visit_id] = backend_->AddPageVisit(
+        GURL("https://example.com/refresh"), now + base::Seconds(i),
+        /*referring_visit=*/prev_visit_id,
+        /*external_referrer_url=*/GURL(),
+        ui::PageTransitionFromInt(ui::PAGE_TRANSITION_LINK |
+                                  ui::PAGE_TRANSITION_CLIENT_REDIRECT |
+                                  ui::PAGE_TRANSITION_CHAIN_END),
+        /*hidden=*/false, SOURCE_BROWSED, VisitResponseCodeCategory::kNot404,
+        /*should_increment_typed_count=*/false, /*opener_visit=*/0,
+        /*consider_for_ntp_most_visited=*/true);
+    prev_visit_id = next_visit_id;
+    if (i == kChainLength - 1) {
+      backend_->db()->GetRowForVisit(next_visit_id, &last_visit);
+    }
+  }
+
+  VisitVector chain = backend_->GetRedirectChain(last_visit);
+  EXPECT_EQ(chain.size(), HistoryBackend::kMaxRedirectChainLength);
+  EXPECT_EQ(chain.back().visit_id, last_visit.visit_id);
+}
+
+TEST_F(HistoryBackendTest, GetAnnotatedVisits_LongRedirectChain) {
+  const int kChainLength = 50;
+  base::Time now = base::Time::Now();
+
+  auto [url_id, prev_visit_id] = backend_->AddPageVisit(
+      GURL("https://example.com/start"), now, /*referring_visit=*/0,
+      /*external_referrer_url=*/GURL(),
+      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_TYPED |
+                                ui::PAGE_TRANSITION_CHAIN_START |
+                                ui::PAGE_TRANSITION_CHAIN_END),
+      /*hidden=*/false, SOURCE_BROWSED, VisitResponseCodeCategory::kNot404,
+      /*should_increment_typed_count=*/false, /*opener_visit=*/0,
+      /*consider_for_ntp_most_visited=*/true);
+
+  for (int i = 1; i < kChainLength; ++i) {
+    auto [refresh_url_id, next_visit_id] = backend_->AddPageVisit(
+        GURL("https://example.com/refresh"), now + base::Seconds(i),
+        /*referring_visit=*/prev_visit_id,
+        /*external_referrer_url=*/GURL(),
+        ui::PageTransitionFromInt(ui::PAGE_TRANSITION_LINK |
+                                  ui::PAGE_TRANSITION_CLIENT_REDIRECT |
+                                  ui::PAGE_TRANSITION_CHAIN_END),
+        /*hidden=*/false, SOURCE_BROWSED, VisitResponseCodeCategory::kNot404,
+        /*should_increment_typed_count=*/false, /*opener_visit=*/0,
+        /*consider_for_ntp_most_visited=*/true);
+    prev_visit_id = next_visit_id;
+  }
+
+  QueryOptions options;
+  options.duplicate_policy = QueryOptions::KEEP_ALL_DUPLICATES;
+  options.max_count = kChainLength;
+
+  auto annotated_visits = backend_->GetAnnotatedVisits(
+      options, /*compute_redirect_chain_start_properties=*/true,
+      /*get_unclustered_visits_only=*/false);
+  EXPECT_EQ(annotated_visits.size(), static_cast<size_t>(kChainLength));
+}
+
+TEST_F(HistoryBackendTest, JourneysSyncDisabledByDefault) {
+  ASSERT_TRUE(backend_);
+  EXPECT_EQ(backend_->GetJourneysSyncControllerDelegate(), nullptr);
+}
+
+class HistoryBackendJourneysSyncTest : public HistoryBackendTest {
+ public:
+  HistoryBackendJourneysSyncTest() {
+    scoped_feature_list_.InitAndEnableFeature(syncer::kSyncJourney);
+  }
+};
+
+TEST_F(HistoryBackendJourneysSyncTest, JourneysSyncBackendIntegration) {
+  ASSERT_TRUE(backend_);
+  EXPECT_NE(backend_->GetJourneysSyncControllerDelegate(), nullptr);
+
+  journeys::JourneyRow journey1(
+      "backend_journey_1", "Trip to Tokyo",
+      /*creation_time=*/
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(1000)));
+  journeys::JourneyRow journey2(
+      "backend_journey_2", "Trip to Kyoto",
+      /*creation_time=*/
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(2000)));
+
+  EXPECT_TRUE(backend_->AddOrUpdateJourneyRows({journey1, journey2}));
+  EXPECT_EQ(backend_->GetAllJourneyRows().size(), 2u);
+
+  EXPECT_TRUE(backend_->DeleteJourneys({"backend_journey_1"}));
+  std::vector<journeys::JourneyRow> remaining = backend_->GetAllJourneyRows();
+  ASSERT_EQ(remaining.size(), 1u);
+  EXPECT_EQ(remaining[0].journey_id, "backend_journey_2");
+
+  EXPECT_TRUE(backend_->DeleteAllJourneys());
+  EXPECT_TRUE(backend_->GetAllJourneyRows().empty());
+
+  // DeleteAllHistory should also clear all journeys.
+  EXPECT_TRUE(backend_->AddOrUpdateJourneyRows({journey1, journey2}));
+  EXPECT_EQ(backend_->GetAllJourneyRows().size(), 2u);
+  backend_->DeleteAllHistory();
+  EXPECT_TRUE(backend_->GetAllJourneyRows().empty());
+}
+
+TEST_F(HistoryBackendJourneysSyncTest,
+       GetAllJourneysWithVisits_ResolvesVisits) {
+  ASSERT_TRUE(backend_);
+
+  base::Time visit_time =
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(1000));
+  GURL visited_url("https://www.example.com/page1");
+  std::u16string page_title = u"Page 1";
+
+  // Add a visit to history.
+  backend_->AddPageVisit(
+      visited_url, visit_time, /*referring_visit=*/0,
+      /*external_referrer_url=*/GURL(), ui::PAGE_TRANSITION_TYPED,
+      /*hidden=*/false, SOURCE_BROWSED, VisitResponseCodeCategory::kNot404,
+      /*should_increment_typed_count=*/true, /*opener_visit=*/0,
+      /*consider_for_ntp_most_visited=*/true,
+      VisitContextEphemerality::kNotEphemeral,
+      /*local_navigation_id=*/std::nullopt, page_title);
+
+  // Create:
+  // 1. One journey where all visits are in history.
+  journeys::JourneyRow valid_journey(
+      "test_journey_resolve", "Researching Chromium",
+      /*creation_time=*/
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(5000)),
+      /*emoji=*/std::nullopt, /*overview=*/std::nullopt,
+      /*short_overview=*/std::nullopt,
+      /*history_entries=*/{journeys::JourneyHistoryEntry(visit_time)});
+
+  // 2. One journey where a visit timestamp is not present in history.
+  base::Time unknown_time =
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(9999));
+  journeys::JourneyRow incomplete_journey(
+      "test_journey_incomplete", "Incomplete Journey",
+      /*creation_time=*/
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(6000)),
+      /*emoji=*/std::nullopt, /*overview=*/std::nullopt,
+      /*short_overview=*/std::nullopt,
+      /*history_entries=*/{journeys::JourneyHistoryEntry(unknown_time)});
+
+  ASSERT_TRUE(
+      backend_->AddOrUpdateJourneyRows({valid_journey, incomplete_journey}));
+
+  // Verify GetAllJourneysWithVisits returns only journeys with all visits
+  // resolved.
+  journeys::Journey expected_journey(
+      "test_journey_resolve", "Researching Chromium",
+      /*creation_time=*/
+      base::Time::FromDeltaSinceWindowsEpoch(base::Microseconds(5000)),
+      /*emoji=*/std::nullopt, /*overview=*/std::nullopt,
+      /*short_overview=*/std::nullopt,
+      /*visits=*/
+      {journeys::JourneyVisit(visited_url, page_title, visit_time,
+                              /*is_foreign=*/false)});
+  EXPECT_THAT(backend_->GetAllJourneysWithVisits(),
+              testing::ElementsAre(expected_journey));
 }
 
 }  // namespace history

@@ -120,12 +120,12 @@ Clipboard* Clipboard::Create() {
 
 // ClipboardMac implementation.
 ClipboardMac::ClipboardMac() {
-  DCHECK(CalledOnValidThread());
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
   ClipboardMonitor::GetInstance()->SetNotifier(this);
 }
 
 ClipboardMac::~ClipboardMac() {
-  DCHECK(CalledOnValidThread());
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
   if (ClipboardMonitor::GetInstance()->GetNotifier() == this) {
     ClipboardMonitor::GetInstance()->SetNotifier(nullptr);
   }
@@ -140,7 +140,7 @@ void ClipboardMac::StartNotifying() {
     // lifetime of this object.
     clipboard_change_subscription_ =
         base::RegisterPasteboardChangedCallback(base::BindRepeating(
-            &ClipboardMac::ClipboardChanged, base::Unretained(this)));
+            &ClipboardMac::OnPasteboardChanged, base::Unretained(this)));
   }
 }
 
@@ -160,8 +160,8 @@ void ClipboardMac::GetSource(ClipboardBuffer buffer,
 void ClipboardMac::GetSourceInternal(ClipboardBuffer buffer,
                                      NSPasteboard* pasteboard,
                                      GetSourceCallback callback) const {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
 
   NSString* source_url = [pasteboard stringForType:kUTTypeChromiumSourceUrl];
 
@@ -181,10 +181,14 @@ void ClipboardMac::GetSourceInternal(ClipboardBuffer buffer,
 
 const ClipboardSequenceNumberToken& ClipboardMac::GetSequenceNumber(
     ClipboardBuffer buffer) const {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
+  return GetSequenceNumber(GetPasteboard());
+}
 
-  NSInteger sequence_number = [GetPasteboard() changeCount];
+const ClipboardSequenceNumberToken& ClipboardMac::GetSequenceNumber(
+    NSPasteboard* pasteboard) const {
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  NSInteger sequence_number = pasteboard.changeCount;
   if (sequence_number != clipboard_sequence_.sequence_number) {
     // Generate a unique token associated with the current sequence number.
     clipboard_sequence_ = {sequence_number, ClipboardSequenceNumberToken()};
@@ -197,8 +201,8 @@ void ClipboardMac::GetAllAvailableFormats(
     const std::optional<DataTransferEndpoint>& data_dst,
     base::OnceCallback<void(base::flat_set<ClipboardFormatType>)> callback)
     const {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
 
   // https://crbug.com/1016740#c21: The pasteboard types array may end up going
   // away; make a copy.
@@ -228,7 +232,7 @@ void ClipboardMac::GetAllAvailableFormats(
 }
 
 bool ClipboardMac::IsMarkedByOriginatorAsConfidential() const {
-  DCHECK(CalledOnValidThread());
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
 
   NSPasteboardType type =
       [GetPasteboard() availableTypeFromArray:@[ kUTTypeConfidentialData ]];
@@ -245,8 +249,8 @@ void ClipboardMac::Clear(ClipboardBuffer buffer) {
 
 void ClipboardMac::ClearInternal(ClipboardBuffer buffer,
                                  NSPasteboard* pasteboard) {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
 
   [pasteboard clearContents];
 }
@@ -299,7 +303,7 @@ void ClipboardMac::ReadAvailableTypes(
     ClipboardBuffer buffer,
     const std::optional<DataTransferEndpoint>& data_dst,
     ReadAvailableTypesCallback callback) const {
-  DCHECK(CalledOnValidThread());
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
   GetStandardFormats(
       buffer, data_dst,
       base::BindOnce(
@@ -324,8 +328,8 @@ void ClipboardMac::ReadAvailableTypes(
 void ClipboardMac::ReadText(ClipboardBuffer buffer,
                             const std::optional<DataTransferEndpoint>& data_dst,
                             ReadTextCallback callback) const {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kText);
   NSString* contents = [GetPasteboard() stringForType:NSPasteboardTypeString];
 
@@ -338,8 +342,8 @@ void ClipboardMac::ReadAsciiText(
     ClipboardBuffer buffer,
     const std::optional<DataTransferEndpoint>& data_dst,
     ReadAsciiTextCallback callback) const {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kText);
   NSString* contents = [GetPasteboard() stringForType:NSPasteboardTypeString];
 
@@ -355,8 +359,8 @@ void ClipboardMac::ReadAsciiText(
 void ClipboardMac::ReadHTML(ClipboardBuffer buffer,
                             const std::optional<DataTransferEndpoint>& data_dst,
                             ReadHtmlCallback callback) const {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kHtml);
 
   std::u16string markup;
@@ -375,7 +379,8 @@ void ClipboardMac::ReadHTML(ClipboardBuffer buffer,
   }
 
   uint32_t fragment_start = 0;
-  DCHECK_LE(markup.length(), std::numeric_limits<uint32_t>::max());
+  CHECK_LE(markup.length(), std::numeric_limits<uint32_t>::max(),
+           base::NotFatalUntil::M163);
   uint32_t fragment_end = static_cast<uint32_t>(markup.length());
   std::move(callback).Run(std::move(markup), GURL(), fragment_start,
                           fragment_end);
@@ -384,8 +389,8 @@ void ClipboardMac::ReadHTML(ClipboardBuffer buffer,
 void ClipboardMac::ReadSvg(ClipboardBuffer buffer,
                            const std::optional<DataTransferEndpoint>& data_dst,
                            ReadSvgCallback callback) const {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kSvg);
   NSString* contents = [GetPasteboard()
       stringForType:ClipboardFormatType::SvgType().ToNSString()];
@@ -398,8 +403,8 @@ void ClipboardMac::ReadSvg(ClipboardBuffer buffer,
 void ClipboardMac::ReadRTF(ClipboardBuffer buffer,
                            const std::optional<DataTransferEndpoint>& data_dst,
                            ReadRTFCallback callback) const {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kRtf);
 
   ReadData(ClipboardFormatType::RtfType(), data_dst, std::move(callback));
@@ -421,8 +426,8 @@ void ClipboardMac::ReadDataTransferCustomData(
     const std::u16string& type,
     const std::optional<DataTransferEndpoint>& data_dst,
     ReadDataTransferCustomDataCallback callback) const {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kCustomData);
 
   std::u16string result;
@@ -446,8 +451,8 @@ void ClipboardMac::ReadFilenames(
     ClipboardBuffer buffer,
     const std::optional<DataTransferEndpoint>& data_dst,
     ReadFilenamesCallback callback) const {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kFilenames);
 
   std::move(callback).Run(clipboard_util::FilesFromPasteboard(GetPasteboard()));
@@ -457,7 +462,7 @@ void ClipboardMac::ReadFilenames(
 // platforms.
 void ClipboardMac::ReadURL(const std::optional<DataTransferEndpoint>& data_dst,
                            ReadUrlCallback callback) const {
-  DCHECK(CalledOnValidThread());
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kUrl);
   NSPasteboard* pb = GetPasteboard();
 
@@ -479,7 +484,7 @@ void ClipboardMac::ReadURL(const std::optional<DataTransferEndpoint>& data_dst,
 void ClipboardMac::ReadData(const ClipboardFormatType& format,
                             const std::optional<DataTransferEndpoint>& data_dst,
                             ReadDataCallback callback) const {
-  DCHECK(CalledOnValidThread());
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
   RecordRead(ClipboardFormatMetric::kData);
   NSData* data = [GetPasteboard() dataForType:format.ToNSString()];
   std::string result;
@@ -510,8 +515,8 @@ void ClipboardMac::WritePortableAndPlatformRepresentationsInternal(
     std::unique_ptr<DataTransferEndpoint> data_src,
     NSPasteboard* pasteboard,
     uint32_t privacy_types) {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
 
   NSPasteboardContentsOptions pasteboard_options = 0;
   if (privacy_types & Clipboard::PrivacyTypes::kNoCloudClipboard) {
@@ -606,7 +611,7 @@ void ClipboardMac::WriteBitmap(const SkBitmap& bitmap) {
   // The bitmap type is sanitized to be N32 before we get here. The conversion
   // to an NSImage would not explode if we got this wrong, so this is not a
   // security CHECK.
-  DCHECK_EQ(bitmap.colorType(), kN32_SkColorType);
+  CHECK_EQ(bitmap.colorType(), kN32_SkColorType, base::NotFatalUntil::M163);
 
   WriteBitmapInternal(bitmap, GetPasteboard());
 }
@@ -627,8 +632,8 @@ void ClipboardMac::WriteWebSmartPaste() {
 void ClipboardMac::ReadPngInternal(ClipboardBuffer buffer,
                                    NSPasteboard* pasteboard,
                                    ReadPngCallback callback) const {
-  DCHECK(CalledOnValidThread());
-  DCHECK_EQ(buffer, ClipboardBuffer::kCopyPaste);
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer, ClipboardBuffer::kCopyPaste, base::NotFatalUntil::M163);
 
   std::vector<uint8_t> png = GetPngFromPasteboard(pasteboard);
   if (!png.empty()) {
@@ -661,7 +666,7 @@ void ClipboardMac::WriteBitmapInternal(const SkBitmap& bitmap,
   // The bitmap type is sanitized to be N32 before we get here. The conversion
   // to an NSImage would not explode if we got this wrong, so this is not a
   // security CHECK.
-  DCHECK_EQ(bitmap.colorType(), kN32_SkColorType);
+  CHECK_EQ(bitmap.colorType(), kN32_SkColorType, base::NotFatalUntil::M163);
 
   NSBitmapImageRep* image_rep = skia::SkBitmapToNSBitmapImageRep(bitmap);
   CHECK(image_rep) << "SkBitmapToNSBitmapImageRep failed";
@@ -685,17 +690,30 @@ void ClipboardMac::WriteBitmapInternal(const SkBitmap& bitmap,
   [pasteboard writeObjects:@[ image ]];
 }
 
-void ClipboardMac::ClipboardChanged() {
-  NSInteger current_sequence_number = GetPasteboard().changeCount;
-  if (current_sequence_number != last_known_sequence_number_) {
-    last_known_sequence_number_ = current_sequence_number;
-    // Update clipboard_sequence_ to reflect the new number and generate a new
-    // token, so subsequent calls to GetSequenceNumber() return the latest
-    // state.
+void ClipboardMac::OnPasteboardChanged() {
+  ClipboardChanged(GetPasteboard());
+}
+
+void ClipboardMac::ClipboardChanged(NSPasteboard* pasteboard) {
+  CHECK(CalledOnValidThread(), base::NotFatalUntil::M163);
+  NSInteger current_sequence_number = pasteboard.changeCount;
+  if (current_sequence_number == last_known_sequence_number_) {
+    return;
+  }
+  last_known_sequence_number_ = current_sequence_number;
+  // Make sure `clipboard_sequence_` reflects the new changeCount so subsequent
+  // calls to GetSequenceNumber() return the latest state. Only mint a new token
+  // if GetSequenceNumber() has not already done so for this changeCount: this
+  // notification is delivered asynchronously and may arrive after a consumer
+  // (e.g. Blink at the start of a paste) already observed a token for it.
+  // Minting a second token for an unchanged pasteboard would make that
+  // in-flight paste look like the clipboard changed underneath it, and Blink
+  // would drop the paste. See crbug.com/568453825.
+  if (current_sequence_number != clipboard_sequence_.sequence_number) {
     clipboard_sequence_ = {current_sequence_number,
                            ClipboardSequenceNumberToken()};
-    ClipboardMonitor::GetInstance()->NotifyClipboardDataChanged();
   }
+  ClipboardMonitor::GetInstance()->NotifyClipboardDataChanged();
 }
 
 }  // namespace ui

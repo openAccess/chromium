@@ -8,14 +8,18 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model_delegate.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom-shared.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/user_education/common/feature_promo/feature_promo_controller.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/gfx/image/image.h"
@@ -52,7 +56,7 @@ class ContentSettingImageModel {
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kClipboardRWElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kStorageAccessElementId);
   // Notifications has global ID kNotificationContentSettingImageView.
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSmartCardIconElementId);
 #endif
 #if BUILDFLAG(IS_WIN)
@@ -62,14 +66,24 @@ class ContentSettingImageModel {
   ContentSettingImageModel(const ContentSettingImageModel&) = delete;
   ContentSettingImageModel& operator=(const ContentSettingImageModel&) = delete;
 
-  virtual ~ContentSettingImageModel() = default;
+  virtual ~ContentSettingImageModel();
 
   // Generates a vector of all image models to be used within one window.
   static std::vector<std::unique_ptr<ContentSettingImageModel>>
   GenerateContentSettingImageModels();
 
   // Returns all element identifiers for all content setting image models.
-  static std::vector<ui::ElementIdentifier> GetAllElementIdentifiers();
+  static base::span<const ui::ElementIdentifier> GetAllElementIdentifiers();
+
+  // Returns whether `image_type` is drawn as a left-hand-side activity
+  // indicator by the permission dashboard, rather than as a right-hand-side
+  // content setting image. This is the single source of truth for that mapping;
+  // every location bar implementation must route through it so that exactly one
+  // of the two containers draws the indicator.
+  //
+  // Callers must additionally apply any window-specific conditions. For
+  // instance, web app windows never show the permission dashboard.
+  static bool IsLeftHandSideIndicatorEnabled(ImageType image_type);
 
   // Returns the corresponding index into the above vector for the given
   // ContentSettingsType. For testing.
@@ -83,6 +97,9 @@ class ContentSettingImageModel {
   void Update(content::WebContents* contents);
 
   // Creates the model for the bubble that will be attached to this image.
+  // Returns nullptr if the state backing the image is gone (e.g. cleared after
+  // the image was shown); callers must not show a bubble and should refresh
+  // the image instead.
   std::unique_ptr<ContentSettingBubbleModel> CreateBubbleModel(
       ContentSettingBubbleModel::Delegate* delegate,
       content::WebContents* web_contents);
@@ -100,6 +117,12 @@ class ContentSettingImageModel {
   // Remembers that the bubble was auto-opened for the given |web_contents|,
   // so that we do not auto-open it again when the parent view is updated.
   void SetBubbleWasAutoOpened(content::WebContents* contents);
+
+  // Returns and clears the in-product help promo parameters to show for this
+  // icon in the given `contents`, recording that the promo was requested so it
+  // is not returned again until the icon is hidden.
+  std::optional<user_education::FeaturePromoParams> TakePromoParams(
+      content::WebContents* contents);
 
   bool is_visible() const { return is_visible_; }
 
@@ -136,6 +159,13 @@ class ContentSettingImageModel {
 
   bool should_auto_open_bubble() { return should_auto_open_bubble_; }
 
+  // Whether the explanatory label should stay expanded once it has animated in,
+  // rather than animating back out after a short delay. The label collapses
+  // once the user has opened and closed the bubble, or the icon is hidden.
+  bool should_keep_label_expanded() const {
+    return should_keep_label_expanded_;
+  }
+
   bool blocked_on_system_level() { return blocked_on_system_level_; }
 
  protected:
@@ -162,6 +192,15 @@ class ContentSettingImageModel {
   void set_should_auto_open_bubble(const bool should_auto_open_bubble) {
     should_auto_open_bubble_ = should_auto_open_bubble;
   }
+  void set_should_keep_label_expanded(bool keep_expanded) {
+    should_keep_label_expanded_ = keep_expanded;
+  }
+  // Note: Currently only consumed by `ContentSettingImageView` (not WebUI
+  // location bar controls).
+  void set_promo_params(
+      std::optional<user_education::FeaturePromoParams> promo_params) {
+    promo_params_ = std::move(promo_params);
+  }
   void set_blocked_on_system_level(const bool blocked_on_system_level) {
     blocked_on_system_level_ = blocked_on_system_level;
   }
@@ -187,6 +226,8 @@ class ContentSettingImageModel {
   const ImageType image_type_;
   const bool image_type_should_notify_accessibility_;
   bool should_auto_open_bubble_ = false;
+  bool should_keep_label_expanded_ = false;
+  std::optional<user_education::FeaturePromoParams> promo_params_;
   bool blocked_on_system_level_ = false;
   std::optional<int> icon_size_;
 };

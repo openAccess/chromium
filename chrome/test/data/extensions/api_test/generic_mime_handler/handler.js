@@ -6,13 +6,22 @@ chrome.test.runTests([
   async function getStreamInfoAndFetchStream() {
     const info = await chrome.mimeHandler.getStreamInfo();
 
-    // Branch for the options-disable test: if the original URL carries
-    // ?action=disable, call setMimeHandlerOptions to disable this
-    // handler for application/pdf, then succeed.
-    const url = new URL(info.originalUrl);
-    if (url.searchParams.get('action') === 'disable') {
+    // The ?action query of the PDF URL picks which setMimeHandlerOptions() call
+    // the handler makes.
+    const optionsByAction = {
+      'disable': {enabled: false},
+      'disable-embedded': {canEmbed: false},
+    };
+    const options =
+        optionsByAction[new URL(info.originalUrl).searchParams.get('action')];
+    if (options) {
       await chrome.mimeHandler.setMimeHandlerOptions(
-          'application/pdf', {enabled: false});
+          'application/pdf', options);
+      const storedOptions =
+          await chrome.mimeHandler.getMimeHandlerOptions('application/pdf');
+      for (const [member, value] of Object.entries(options)) {
+        chrome.test.assertEq(value, storedOptions[member]);
+      }
       chrome.test.succeed();
       return;
     }
@@ -24,6 +33,11 @@ chrome.test.runTests([
 
     const response = await fetch(info.streamUrl);
     chrome.test.assertEq(200, response.status);
+
+    // Record what the stream fetch exposed. The browser-side test decides
+    // which names are allowed.
+    window.streamFetchHeaderNames = [...response.headers.keys()];
+
     const buffer = await response.arrayBuffer();
     const header = new Uint8Array(buffer, 0, 5);
     const magic = String.fromCharCode(...header);

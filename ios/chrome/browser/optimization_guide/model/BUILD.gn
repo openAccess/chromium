@@ -20,8 +20,6 @@ source_set("model") {
     "optimization_guide_service_factory.mm",
     "optimization_guide_tab_helper.h",
     "optimization_guide_tab_helper.mm",
-    "optimization_guide_validation_tab_helper.h",
-    "optimization_guide_validation_tab_helper.mm",
     "prediction_model_download_client.mm",
     "tab_url_provider_impl.h",
     "tab_url_provider_impl.mm",
@@ -66,6 +64,7 @@ source_set("model") {
     "//ios/web",
     "//ios/web/public",
     "//ios/web/public:web_state_observer",
+    "//services/network/public/cpp",
   ]
 
   if (build_with_model_execution) {
@@ -115,7 +114,6 @@ source_set("unit_tests") {
     "optimization_guide_tab_helper_unittest.mm",
     "optimization_guide_test_utils.h",
     "optimization_guide_test_utils.mm",
-    "optimization_guide_validation_tab_helper_unittest.mm",
     "prediction_manager_browsertest.mm",
     "tab_url_provider_impl_unittest.mm",
   ]
@@ -151,6 +149,8 @@ source_set("unit_tests") {
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/shared/model/profile/test",
     "//ios/chrome/browser/shared/model/web_state_list",
+    "//ios/chrome/browser/signin/model:fake_system_identity",
+    "//ios/chrome/browser/signin/model:test_support",
     "//ios/chrome/test:test_support",
     "//ios/web/public/test",
     "//ios/web/public/test/fakes",
@@ -199,7 +199,8 @@ source_set("eg2_tests") {
   deps = [
     ":eg_test_support+eg2",
     "//base/test:test_support",
-    "//components/optimization_guide/core:eg_test_support+eg2",
+    "//components/optimization_guide/core:core_util",
+    "//components/optimization_guide/core:hints_test_support",
     "//ios/chrome/browser/metrics/model:eg_test_support+eg2",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
     "//ios/testing/earl_grey:eg_test_support+eg2",

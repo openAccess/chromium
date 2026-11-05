@@ -35,6 +35,8 @@ import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.crash.ChromePureJavaExceptionReporter;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.intents.BrowserIntentUtils;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -69,7 +71,8 @@ public class ShareHelper extends org.chromium.components.browser_ui.share.ShareH
      * Shares the params using the system share sheet.
      *
      * @param params The share parameters.
-     * @param profile The profile last shared component will be saved to, if |saveLastUsed| is set.
+     * @param profile Used to determine incognito vs. regular, and to save the last shared component
+     *     to, if `saveLastUsed` is set.
      * @param saveLastUsed True if the chosen share component should be saved for future reuse.
      */
     // TODO(crbug.com/40106499): Should be package-protected once modularization is complete.
@@ -79,10 +82,11 @@ public class ShareHelper extends org.chromium.components.browser_ui.share.ShareH
     }
 
     /**
-     * Shares the params using the system share sheet with custom actinos.
+     * Shares the params using the system share sheet with custom actions.
      *
      * @param params The share parameters.
-     * @param profile The profile last shared component will be saved to, if |saveLastUsed| is set.
+     * @param profile Used to determine incognito vs. regular, and to save the last shared component
+     *     to, if `saveLastUsed` is set.
      * @param saveLastUsed True if the chosen share component should be saved for future reuse.
      * @param customActionProvider List of custom actions for Android share sheet.
      */
@@ -100,7 +104,8 @@ public class ShareHelper extends org.chromium.components.browser_ui.share.ShareH
         }
         Intent intent = getShareIntent(params);
 
-        sendChooserIntent(params.getWindow(), intent, params.getCallback(), customActionProvider);
+        sendChooserIntent(
+                params.getWindow(), intent, params.getCallback(), profile, customActionProvider);
     }
 
     /**
@@ -168,7 +173,8 @@ public class ShareHelper extends org.chromium.components.browser_ui.share.ShareH
     }
 
     /** Convenience method to retrieve the most recent app that support sharing text. */
-    public static Pair<Drawable, CharSequence> getShareableIconAndNameForText() {
+    public static Pair<@Nullable Drawable, @Nullable CharSequence>
+            getShareableIconAndNameForText() {
         return getShareableIconAndName(getShareTextAppCompatibilityIntent());
     }
 
@@ -176,17 +182,19 @@ public class ShareHelper extends org.chromium.components.browser_ui.share.ShareH
      * Convenience method to retrieve the most recent app that support sharing {@code
      * fileContentType}.
      */
-    public static Pair<Drawable, CharSequence> getShareableIconAndNameForFileContentType(
-            String fileContentType) {
+    public static Pair<@Nullable Drawable, @Nullable CharSequence>
+            getShareableIconAndNameForFileContentType(String fileContentType) {
         return getShareableIconAndName(getShareFileAppCompatibilityIntent(fileContentType));
     }
 
     /**
      * Get the icon and name of the most recently shared app by certain app.
+     *
      * @param shareIntent Intent used to get list of apps support sharing.
      * @return The Image and the String of the recently shared Icon.
      */
-    private static Pair<Drawable, CharSequence> getShareableIconAndName(Intent shareIntent) {
+    private static Pair<@Nullable Drawable, @Nullable CharSequence> getShareableIconAndName(
+            Intent shareIntent) {
         Drawable directShareIcon = null;
         CharSequence directShareTitle = null;
 
@@ -261,8 +269,9 @@ public class ShareHelper extends org.chromium.components.browser_ui.share.ShareH
             WindowAndroid window,
             Intent sharingIntent,
             @Nullable TargetChosenCallback callback,
+            @Nullable Profile profile,
             ChromeCustomShareAction.@Nullable Provider customActions) {
-        new CustomActionChosenReceiver(callback, customActions)
+        new CustomActionChosenReceiver(callback, profile, customActions)
                 .sendChooserIntent(window, sharingIntent);
     }
 
@@ -297,14 +306,19 @@ public class ShareHelper extends org.chromium.components.browser_ui.share.ShareH
     }
 
     /** Helper class for injecting extras into the sharing intents. */
-    private static class CustomActionChosenReceiver extends TargetChosenReceiver {
+    @VisibleForTesting
+    static class CustomActionChosenReceiver extends TargetChosenReceiver {
+        private final @Nullable Profile mProfile;
         private final ChromeCustomShareAction.@Nullable Provider mCustomActionProvider;
         private final Map<String, Runnable> mActionsMap = new HashMap<>();
 
+        @VisibleForTesting
         protected CustomActionChosenReceiver(
                 @Nullable TargetChosenCallback callback,
+                @Nullable Profile profile,
                 ChromeCustomShareAction.@Nullable Provider customActionProvider) {
             super(callback);
+            mProfile = profile;
             mCustomActionProvider = customActionProvider;
         }
 
@@ -314,9 +328,36 @@ public class ShareHelper extends org.chromium.components.browser_ui.share.ShareH
             super.sendChooserIntent(windowAndroid, sharingIntent);
         }
 
+        @VisibleForTesting
+        protected Intent createBaseChooserIntent(WindowAndroid window, Intent sharingIntent) {
+            return super.getChooserIntent(window, sharingIntent);
+        }
+
         @Override
+        @VisibleForTesting
         protected Intent getChooserIntent(WindowAndroid window, Intent sharingIntent) {
-            Intent chooserIntent = super.getChooserIntent(window, sharingIntent);
+            Intent chooserIntent = createBaseChooserIntent(window, sharingIntent);
+            if (mProfile != null
+                    && mProfile.isOffTheRecord()
+                    && ChromeFeatureList.isEnabled(
+                            ChromeFeatureList.EXCLUDE_CHROME_IN_INCOGNITO_SHARE_SHEET)) {
+                ComponentName intentDispatcher =
+                        new ComponentName(
+                                ContextUtils.getApplicationContext(),
+                                BrowserIntentUtils.CHROME_LAUNCHER_ACTIVITY_CLASS_NAME);
+                Parcelable[] existing =
+                        chooserIntent.getParcelableArrayExtra(Intent.EXTRA_EXCLUDE_COMPONENTS);
+                if (existing == null || existing.length == 0) {
+                    chooserIntent.putExtra(
+                            Intent.EXTRA_EXCLUDE_COMPONENTS,
+                            new ComponentName[] {intentDispatcher});
+                } else {
+                    ComponentName[] updated = new ComponentName[existing.length + 1];
+                    System.arraycopy(existing, 0, updated, 0, existing.length);
+                    updated[existing.length] = intentDispatcher;
+                    chooserIntent.putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, updated);
+                }
+            }
             if (mCustomActionProvider == null || !isChooserActionSupported()) {
                 return chooserIntent;
             }

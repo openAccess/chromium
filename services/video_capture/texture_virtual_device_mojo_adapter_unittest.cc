@@ -12,7 +12,6 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-using testing::InvokeWithoutArgs;
 using testing::_;
 
 namespace video_capture {
@@ -33,7 +32,8 @@ class TextureVirtualDeviceMojoAdapterTest : public ::testing::Test {
   void ProducerSharesBufferHandle(int32_t buffer_id) {
     auto shared_image = gpu::ClientSharedImage::CreateForTesting();
     auto dummy_buffer_handle = media::mojom::SharedImageBufferHandleSet::New(
-        shared_image->Export(), gpu::SyncToken());
+        shared_image->Export(), gpu::SyncToken(),
+        /*is_rewritten_in_place=*/false);
     adapter_->OnNewSharedImageBufferHandle(buffer_id,
                                            std::move(dummy_buffer_handle));
   }
@@ -85,18 +85,18 @@ TEST_F(TextureVirtualDeviceMojoAdapterTest,
   int buffer_received_count = 0;
   EXPECT_CALL(*mock_video_frame_handler_1_,
               DoOnNewBuffer(kArbitraryBufferId1, _))
-      .WillOnce(InvokeWithoutArgs([&wait_loop, &buffer_received_count]() {
+      .WillOnce([&wait_loop, &buffer_received_count]() {
         buffer_received_count++;
         if (buffer_received_count == 2)
           wait_loop.Quit();
-      }));
+      });
   EXPECT_CALL(*mock_video_frame_handler_1_,
               DoOnNewBuffer(kArbitraryBufferId2, _))
-      .WillOnce(InvokeWithoutArgs([&wait_loop, &buffer_received_count]() {
+      .WillOnce([&wait_loop, &buffer_received_count]() {
         buffer_received_count++;
         if (buffer_received_count == 2)
           wait_loop.Quit();
-      }));
+      });
   Receiver1Connects();
   wait_loop.Run();
 }
@@ -118,7 +118,7 @@ TEST_F(TextureVirtualDeviceMojoAdapterTest,
   base::RunLoop wait_loop;
   EXPECT_CALL(*mock_video_frame_handler_2_,
               DoOnNewBuffer(kArbitraryBufferId2, _))
-      .WillOnce(InvokeWithoutArgs([&wait_loop]() { wait_loop.Quit(); }));
+      .WillOnce([&wait_loop]() { wait_loop.Quit(); });
   Receiver2Connects();
   wait_loop.Run();
 }

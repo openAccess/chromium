@@ -32,7 +32,7 @@
 #endif
 
 #if BUILDFLAG(ENABLE_VULKAN)
-#include "components/viz/common/gpu/vulkan_in_process_context_provider.h"
+#include "gpu/command_buffer/service/vulkan_in_process_context_provider.h"
 #include "gpu/vulkan/init/vulkan_factory.h"
 #include "gpu/vulkan/vulkan_implementation.h"
 #endif
@@ -78,6 +78,13 @@ void InsertRecordingAndSubmit(gpu::SharedContextState* context,
 }  // namespace
 
 namespace gpu {
+
+// static
+SkAlphaType SharedImageTestBase::GetAlphaType(viz::SharedImageFormat format) {
+  return (format.is_multi_plane() && !format.PrefersExternalSampler())
+             ? kUnpremul_SkAlphaType
+             : kPremul_SkAlphaType;
+}
 
 // static
 SkBitmap SharedImageTestBase::MakeRedBitmap(SkColorType color_type,
@@ -130,6 +137,8 @@ SharedImageTestBase::~SharedImageTestBase() {
   if (context_state_) {
     // |context_state_| must be destroyed while current.
     context_state_->MakeCurrent(gl_surface_.get(), /*needs_gl=*/true);
+    // Clear the thread-local pointer when the test context is destroyed.
+    SharedContextState::ClearForCurrentThread();
   }
 }
 
@@ -178,8 +187,8 @@ void SharedImageTestBase::InitializeContext(GrContextType context_type) {
     vulkan_implementation_ = gpu::CreateVulkanImplementation();
     ASSERT_TRUE(vulkan_implementation_);
     ASSERT_TRUE(vulkan_implementation_->InitializeVulkanInstance());
-    vulkan_context_provider_ = viz::VulkanInProcessContextProvider::Create(
-        vulkan_implementation_.get());
+    vulkan_context_provider_ =
+        VulkanInProcessContextProvider::Create(vulkan_implementation_.get());
     ASSERT_TRUE(vulkan_context_provider_);
 #else
     FAIL() << "Vulkan not available";
@@ -222,6 +231,9 @@ void SharedImageTestBase::InitializeContext(GrContextType context_type) {
   bool initialize_skia =
       context_state_->InitializeSkia(gpu_preferences_, gpu_workarounds_);
   ASSERT_TRUE(initialize_skia);
+  // Register as the active SharedContextState on the test thread so fallback
+  // copy strategies and representations can access it.
+  SharedContextState::SetForCurrentThread(context_state_.get());
 }
 
 void SharedImageTestBase::VerifyPixelsWithReadback(
@@ -329,6 +341,9 @@ void SharedImageTestBase::VerifyPixelsWithReadbackGraphite(
         sk_image.get(), dst_info, src_rect, SkImage::RescaleGamma::kSrc,
         SkImage::RescaleMode::kRepeatedLinear,
         base::BindOnce(&OnReadPixelsDone), &context);
+    if (plane == num_planes - 1) {
+      scoped_read_access->ApplyBackendSurfaceEndState();
+    }
     InsertRecordingAndSubmit(context_state_.get(), /*sync_cpu=*/true);
     ASSERT_TRUE(context.finished) << "plane_index=" << plane;
     if (context.async_result) {

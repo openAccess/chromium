@@ -38,8 +38,10 @@ class CC_PAINT_EXPORT PaintRecord {
   }
 
   PaintRecord ReplaceCustomData(
-      const base::flat_map<uint32_t, PaintRecord>& replacements) const {
-    return buffer_->ReplaceCustomData(replacements);
+      const base::flat_map<uint32_t, PaintRecord>& replacements,
+      bool strip_read_back_disallowed_ops = false) const {
+    return buffer_->ReplaceCustomData(replacements,
+                                      strip_read_back_disallowed_ops);
   }
 
   const PaintOpBuffer& buffer() const {
@@ -59,7 +61,6 @@ class CC_PAINT_EXPORT PaintRecord {
   bool has_non_aa_paint() const { return buffer_->has_non_aa_paint(); }
   bool has_draw_ops() const { return buffer_->has_draw_ops(); }
   bool has_draw_text_ops() const { return buffer_->has_draw_text_ops(); }
-  bool has_save_layer_ops() const { return buffer_->has_save_layer_ops(); }
   bool has_save_layer_alpha_ops() const {
     return buffer_->has_save_layer_alpha_ops();
   }
@@ -69,8 +70,22 @@ class CC_PAINT_EXPORT PaintRecord {
   bool has_discardable_images() const {
     return buffer_->has_discardable_images();
   }
-  gfx::ContentColorUsage content_color_usage() const {
-    return buffer_->content_color_usage();
+  bool has_read_back_disallowed_content() const {
+    return buffer_->has_read_back_disallowed_content();
+  }
+  // True when the entire PaintRecord was explicitly marked as disallowed via
+  // SetIsReadBackDisallowed() (e.g., a cross-origin SVG or vector recording
+  // whose individual ops do not carry a disallowed image), so stripping omits
+  // the whole record rather than individual child ops.
+  bool is_read_back_disallowed() const {
+    return buffer_->is_read_back_disallowed();
+  }
+  // Marks the entire PaintRecord as read-back disallowed (copying the
+  // underlying buffer if shared), so stripping disallowed ops omits this record
+  // as a unit.
+  void SetIsReadBackDisallowed();
+  const gfx::ContentColorVolume& content_color_volume() const {
+    return buffer_->content_color_volume();
   }
   const PaintOp& GetFirstOp() const { return buffer_->GetFirstOp(); }
 

@@ -17,6 +17,7 @@
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/common/aliases.h"
+#include "components/autofill/core/common/unique_ids.h"
 
 namespace content {
 class WebContents;
@@ -49,14 +50,28 @@ class AutofillSuggestionController : public AutofillPopupViewDelegate {
   // redraw when suggestions change.
   virtual void OnSuggestionsChanged() = 0;
 
-  // Accepts the suggestion at `index`. The suggestion is only accepted if the
-  // UI has been shown for at least `kIgnoreEarlyClicksOnSuggestionsDuration` to
-  // allow ruling out accidental UI interactions (crbug.com/40058217).
+  // The minimum amount of time required for the UI to be shown in order for a
+  // suggestion to be accepted. This helps rule out accidental UI interactions;
+  // https://crbug.com/40058217.
+  // LINT.IfChange(IgnoreEarlyClicksDuration)
   static constexpr base::TimeDelta kIgnoreEarlyClicksOnSuggestionsDuration =
       base::Milliseconds(500);
+  // LINT.ThenChange(
+  //     //components/remote_cocoa/app_shim/select_file_dialog_bridge.mm:MinDisplayDuration,
+  //     //ui/shell_dialogs/safe_accept_file_dialog_event_handler_win.cc:MinDisplayDuration
+  // )
+
+  // Accepts the suggestion at `index`.
+  //
+  // `was_obscured` indicates if the application window was fully or partially
+  // obscured when the click event happened. This is only populated on Android
+  // at the moment.
+  //
+  // This enforces the `kIgnoreEarlyClicksOnSuggestionsDuration` requirement.
   virtual void AcceptSuggestion(
       int index,
-      AutofillMetrics::SuggestionAcceptedMethod accept_method) = 0;
+      AutofillMetrics::SuggestionAcceptedMethod accept_method,
+      bool was_obscured) = 0;
 
   // Selects the suggestion with `index`. For fillable items, this will trigger
   // preview. For other items, it does not do anything.
@@ -65,11 +80,8 @@ class AutofillSuggestionController : public AutofillPopupViewDelegate {
   // Unselect currently selected suggestion, noop if nothing is selected.
   virtual void UnselectSuggestion() = 0;
 
-  // Removes the suggestion at the given `index`. `removal_method`specifies the
-  // UI entry point for removal, e.g. clicking on a delete button.
-  virtual bool RemoveSuggestion(
-      int index,
-      AutofillMetrics::SingleEntryRemovalMethod removal_method) = 0;
+  // Removes the suggestion at the given `index`.
+  virtual bool RemoveSuggestion(int index) = 0;
 
   // Returns the number of lines of data that there are.
   virtual int GetLineCount() const = 0;
@@ -109,10 +121,14 @@ class AutofillSuggestionController : public AutofillPopupViewDelegate {
   // Updates the data list values currently shown.
   virtual void UpdateDataListValues(base::span<const SelectOption> options) = 0;
 
+  // Returns the token of the frame that this controller is anchored to.
+  virtual const LocalFrameToken& GetAnchorFrameToken() const = 0;
+
   // Returns true if the controller can be reused for the given parameters.
   virtual bool MayRecycle(
       base::WeakPtr<AutofillSuggestionDelegate> delegate,
       content::WebContents* web_contents,
+      const LocalFrameToken& anchor_frame_token,
       AutofillSuggestionTriggerSource trigger_source) const = 0;
 
   // Reuses the controller with the new parameters.

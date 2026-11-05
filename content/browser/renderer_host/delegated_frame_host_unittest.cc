@@ -6,12 +6,18 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
+#include <utility>
 
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/unguessable_token.h"
 #include "components/viz/client/frame_evictor.h"
+#include "components/viz/common/frame_sinks/copy_output_request.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
+#include "components/viz/common/surfaces/local_surface_id.h"
+#include "components/viz/test/test_frame_sink_manager.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_image_transport_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -19,9 +25,56 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/compositor/layer.h"
+#include "ui/compositor/layer_surface.h"
 #include "ui/compositor/test/test_context_factories.h"
 
 namespace content {
+
+namespace {
+
+class CapturingFrameSinkManager : public viz::TestFrameSinkManagerImpl {
+ public:
+  void RequestCopyOfOutput(const viz::SurfaceId& surface_id,
+                           std::unique_ptr<viz::CopyOutputRequest> request,
+                           bool capture_exact_surface_id,
+                           base::TimeDelta timeout) override {
+    last_request_is_secure_ = request->is_secure();
+    last_request_surface_id_ = surface_id;
+  }
+
+  std::optional<bool> TakeLastRequestIsSecure() {
+    return std::exchange(last_request_is_secure_, std::nullopt);
+  }
+
+  std::optional<viz::SurfaceId> TakeLastRequestSurfaceId() {
+    return std::exchange(last_request_surface_id_, std::nullopt);
+  }
+
+ private:
+  std::optional<bool> last_request_is_secure_;
+  std::optional<viz::SurfaceId> last_request_surface_id_;
+};
+
+class CapturingImageTransportFactory : public TestImageTransportFactory {
+ public:
+  CapturingImageTransportFactory() {
+    host_frame_sink_manager_.SetLocalManager(&frame_sink_manager_);
+  }
+
+  viz::HostFrameSinkManager* GetHostFrameSinkManager() override {
+    return &host_frame_sink_manager_;
+  }
+
+  CapturingFrameSinkManager& frame_sink_manager() {
+    return frame_sink_manager_;
+  }
+
+ private:
+  CapturingFrameSinkManager frame_sink_manager_;
+  viz::HostFrameSinkManager host_frame_sink_manager_;
+};
+
+}  // namespace
 
 class MockDelegatedFrameHostClient : public DelegatedFrameHostClient {
  public:
@@ -62,23 +115,28 @@ class DelegatedFrameHostTest : public testing::Test {
     }
     delegated_frame_host_.reset();
     compositor_.reset();
+    image_transport_factory_ = nullptr;
     ImageTransportFactory::Terminate();
   }
+
+ protected:
+  testing::StrictMock<MockDelegatedFrameHostClient> mock_client_;
+  raw_ptr<CapturingImageTransportFactory> image_transport_factory_ = nullptr;
 
  private:
   BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME,
       base::test::TaskEnvironment::ThreadingMode::MULTIPLE_THREADS,
       base::test::TaskEnvironment::MainThreadType::UI};
-  testing::StrictMock<MockDelegatedFrameHostClient> mock_client_;
   std::unique_ptr<DelegatedFrameHost> delegated_frame_host_;
   ui::TestContextFactories context_factory_{/*enable_pixel_output=*/false};
   std::unique_ptr<ui::Compositor> compositor_;
 };
 
 void DelegatedFrameHostTest::SetUp() {
-  ImageTransportFactory::SetFactory(
-      std::make_unique<TestImageTransportFactory>());
+  auto factory = std::make_unique<CapturingImageTransportFactory>();
+  image_transport_factory_ = factory.get();
+  ImageTransportFactory::SetFactory(std::move(factory));
   viz::FrameSinkId frame_sink_id =
       context_factory_.GetContextFactory()->AllocateFrameSinkId();
   compositor_ = std::make_unique<ui::Compositor>(
@@ -117,7 +175,8 @@ TEST_F(DelegatedFrameHostTest, NoCopyOutputRequestWithNoValidSurface) {
   base::RunLoop run_loop;
   dfh->CopyFromCompositingSurface(
       /*src_subrect=*/gfx::Rect(),
-      /*output_size=*/gfx::Size(), base::TimeDelta(),
+      /*output_size=*/gfx::Size(),
+      /*is_copy_request_secure=*/false, base::TimeDelta(),
       base::BindOnce(
           [](base::RepeatingClosure quit_closure,
              const content::CopyFromSurfaceResult& result) {
@@ -126,6 +185,42 @@ TEST_F(DelegatedFrameHostTest, NoCopyOutputRequestWithNoValidSurface) {
           },
           run_loop.QuitClosure()));
   run_loop.Run();
+  EXPECT_EQ(
+      std::nullopt,
+      image_transport_factory_->frame_sink_manager().TakeLastRequestIsSecure());
+}
+
+TEST_F(DelegatedFrameHostTest, CopyFromCompositingSurfaceSetsIsSecure) {
+  auto* dfh = delegated_frame_host();
+  ui::LayerSurface layer;
+  EXPECT_CALL(mock_client_, GetDelegatedFrameHostLayer)
+      .WillOnce(testing::Return(&layer));
+  EXPECT_CALL(mock_client_, DelegatedFrameHostIsVisible)
+      .WillOnce(testing::Return(false));
+
+  const viz::LocalSurfaceId local_surface_id(1, 1,
+                                             base::UnguessableToken::Create());
+  dfh->EmbedSurface(local_surface_id, gfx::Size(100, 100),
+                    cc::DeadlinePolicy::UseDefaultDeadline());
+  EXPECT_TRUE(dfh->CanCopyFromCompositingSurface());
+
+  for (bool is_secure : {false, true}) {
+    base::RunLoop run_loop;
+    dfh->CopyFromCompositingSurface(
+        /*src_subrect=*/gfx::Rect(),
+        /*output_size=*/gfx::Size(),
+        /*is_copy_request_secure=*/is_secure, base::TimeDelta(),
+        base::BindOnce(
+            [](base::RepeatingClosure quit_closure,
+               const content::CopyFromSurfaceResult& result) {
+              EXPECT_FALSE(result.has_value());
+              quit_closure.Run();
+            },
+            run_loop.QuitClosure()));
+    run_loop.Run();
+    EXPECT_EQ(is_secure, image_transport_factory_->frame_sink_manager()
+                             .TakeLastRequestIsSecure());
+  }
 }
 
 TEST_F(DelegatedFrameHostTest, ForceSpecifiedDeadline) {
@@ -135,6 +230,84 @@ TEST_F(DelegatedFrameHostTest, ForceSpecifiedDeadline) {
   EXPECT_EQ(5u, dfh->GetForceSpecifiedDeadlineForTesting());
   dfh->SetForceSpecifiedDeadline(std::nullopt);
   EXPECT_EQ(std::nullopt, dfh->GetForceSpecifiedDeadlineForTesting());
+}
+
+TEST_F(DelegatedFrameHostTest,
+       EvictDelegatedFrameRequestsOldestAcceptableSurfaceAndEvictsOnEmptyCopy) {
+  auto* dfh = delegated_frame_host();
+  ui::LayerSurface layer;
+  EXPECT_CALL(mock_client_, GetDelegatedFrameHostLayer)
+      .WillRepeatedly(testing::Return(&layer));
+  EXPECT_CALL(mock_client_, DelegatedFrameHostIsVisible)
+      .WillRepeatedly(testing::Return(true));
+  EXPECT_CALL(mock_client_, GetDeviceScaleFactor)
+      .WillRepeatedly(testing::Return(1.0f));
+  EXPECT_CALL(mock_client_, DelegatedFrameHostGetGutterColor)
+      .WillRepeatedly(testing::Return(SK_ColorWHITE));
+  EXPECT_CALL(mock_client_, ShouldShowStaleContentOnEviction)
+      .WillRepeatedly(testing::Return(true));
+
+  const auto embed_token = base::UnguessableToken::Create();
+  const viz::LocalSurfaceId active_id(2, 1, embed_token);
+  const viz::LocalSurfaceId pending_id(3, 1, embed_token);
+
+  dfh->WasShown(active_id, gfx::Size(100, 100), std::nullopt);
+  dfh->DidNavigate();
+  dfh->EmbedSurface(pending_id, gfx::Size(100, 100),
+                    cc::DeadlinePolicy::UseDefaultDeadline());
+  dfh->WasHidden(DelegatedFrameHost::HiddenCause::kOther);
+
+  const viz::SurfaceId current_surface_id = dfh->GetCurrentSurfaceId();
+  EXPECT_CALL(mock_client_, CollectSurfaceIdsForEviction)
+      .WillRepeatedly([current_surface_id]() {
+        viz::FrameEvictorClient::EvictIds evict_ids;
+        evict_ids.embedded_ids = {current_surface_id};
+        return evict_ids;
+      });
+
+  // 1. Start an eviction, then cancel it via `WasShown()` and hide again via
+  // `WasHidden()` before the async copy callback runs. The superseded empty
+  // copy callback must be ignored and must not evict the newly shown surface.
+  EXPECT_TRUE(dfh->HasPrimarySurface());
+  static_cast<viz::FrameEvictorClient*>(dfh)->EvictDelegatedFrame(
+      {current_surface_id});
+  EXPECT_EQ(DelegatedFrameHost::FrameEvictionState::kPendingEvictionRequests,
+            dfh->frame_eviction_state());
+
+  std::optional<viz::SurfaceId> requested_surface_id =
+      image_transport_factory_->frame_sink_manager().TakeLastRequestSurfaceId();
+  ASSERT_TRUE(requested_surface_id.has_value());
+  // The requested LocalSurfaceId must be the smallest ID for the current embed
+  // token so CompositorFrameSinkSupport::TakeCopyOutputRequests accepts it when
+  // `active_id` (2, 1) is the active fallback surface in Viz while `pending_id`
+  // (3, 1) has not been submitted yet.
+  EXPECT_EQ(viz::SurfaceId(dfh->frame_sink_id(), active_id.ToSmallestId()),
+            *requested_surface_id);
+  EXPECT_TRUE(
+      active_id.IsSameOrNewerThan(requested_surface_id->local_surface_id()));
+
+  dfh->WasShown(pending_id, gfx::Size(100, 100), std::nullopt);
+  dfh->WasHidden(DelegatedFrameHost::HiddenCause::kOther);
+  EXPECT_EQ(DelegatedFrameHost::FrameEvictionState::kNotStarted,
+            dfh->frame_eviction_state());
+  EXPECT_TRUE(dfh->HasPrimarySurface());
+
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(dfh->HasPrimarySurface());
+
+  // 2. Start a second eviction while hidden and let the empty copy result
+  // arrive without an intervening `WasShown()`. `DidCopyStaleContent` must
+  // reset `frame_eviction_state_` to `kNotStarted` and complete surface
+  // eviction.
+  static_cast<viz::FrameEvictorClient*>(dfh)->EvictDelegatedFrame(
+      {current_surface_id});
+  EXPECT_EQ(DelegatedFrameHost::FrameEvictionState::kPendingEvictionRequests,
+            dfh->frame_eviction_state());
+
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(DelegatedFrameHost::FrameEvictionState::kNotStarted,
+            dfh->frame_eviction_state());
+  EXPECT_FALSE(dfh->HasPrimarySurface());
 }
 
 }  // namespace content

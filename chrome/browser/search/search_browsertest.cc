@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/search/instant_service.h"
@@ -20,6 +21,7 @@
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_test_util.h"
 #include "chrome/browser/supervised_user/supervised_user_test_util.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
@@ -115,8 +117,8 @@ class SearchTest : public MixinBasedInProcessBrowserTest {
     data.SetShortName(u"foo.com");
     data.SetURL("http://foo.com/url?bar={searchTerms}");
     if (set_ntp_url) {
-      data.new_tab_url = (insecure_ntp_url ? "http" : "https") +
-                         std::string("://foo.com/newtab");
+      data.new_tab_url = base::StrCat(
+          {insecure_ntp_url ? "http" : "https", "://foo.com/newtab"});
     }
     data.alternate_urls.push_back("http://foo.com/alt#quux={searchTerms}");
 

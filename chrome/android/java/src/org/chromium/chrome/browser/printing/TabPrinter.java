@@ -62,6 +62,9 @@ public class TabPrinter implements Printable {
     private final String mErrorMessage;
     private final boolean mPrintSelectionOnly;
 
+    // Lifecycle state active between initiatePrint() and finishPrint().
+    private @Nullable WebContentsPrinter mWebContentsPrinter;
+
     @CalledByNative
     private static TabPrinter getPrintable(Tab tab) {
         return new TabPrinter(tab);
@@ -136,17 +139,68 @@ public class TabPrinter implements Printable {
     }
 
     @Override
-    public boolean print(int renderProcessId, int renderFrameId) {
-        if (!canPrint()) return false;
-        Tab tab = mTab.get();
-        assert tab != null && tab.isInitialized();
-        WebContents webContents = tab.getWebContents();
+    public boolean initiatePrint(int renderProcessId, int renderFrameId) {
+        assert mWebContentsPrinter == null;
+
+        WebContents webContents = getWebContentsIfInitialized();
         if (webContents == null) return false;
-        int targetProcessId = mTargetFrameId != null ? mTargetFrameId.childId() : renderProcessId;
-        int targetFrameId =
-                mTargetFrameId != null ? mTargetFrameId.frameRoutingId() : renderFrameId;
-        return new WebContentsPrinter(webContents, mPrintSelectionOnly)
-                .print(targetProcessId, targetFrameId);
+        mWebContentsPrinter = new WebContentsPrinter(webContents, mPrintSelectionOnly);
+        boolean initiated =
+                mWebContentsPrinter.initiatePrint(
+                        targetProcessId(renderProcessId), targetFrameId(renderFrameId));
+        if (!initiated) {
+            mWebContentsPrinter = null;
+        }
+        return initiated;
+    }
+
+    @Override
+    public boolean print(
+            int renderProcessId,
+            int renderFrameId,
+            int fd,
+            int dpi,
+            int width,
+            int height,
+            int @Nullable [] pages) {
+        if (!canPrint() || mWebContentsPrinter == null) {
+            Printable.closeFd(fd);
+            return false;
+        }
+        return mWebContentsPrinter.print(
+                targetProcessId(renderProcessId),
+                targetFrameId(renderFrameId),
+                fd,
+                dpi,
+                width,
+                height,
+                pages);
+    }
+
+    @Override
+    public void finishPrint(int renderProcessId, int renderFrameId) {
+        // Deliberately not gated on canPrint(): the Activity may be stopped (and therefore the
+        // Tab hidden) while the system print dialog is up, but afterprint must still be
+        // dispatched so the renderer does not stay stuck in the printing state.
+        if (mWebContentsPrinter != null) {
+            mWebContentsPrinter.finishPrint(
+                    targetProcessId(renderProcessId), targetFrameId(renderFrameId));
+            mWebContentsPrinter = null;
+        }
+    }
+
+    private @Nullable WebContents getWebContentsIfInitialized() {
+        Tab tab = mTab.get();
+        if (tab == null || !tab.isInitialized()) return null;
+        return tab.getWebContents();
+    }
+
+    private int targetProcessId(int renderProcessId) {
+        return mTargetFrameId != null ? mTargetFrameId.childId() : renderProcessId;
+    }
+
+    private int targetFrameId(int renderFrameId) {
+        return mTargetFrameId != null ? mTargetFrameId.frameRoutingId() : renderFrameId;
     }
 
     @Override
@@ -156,10 +210,7 @@ public class TabPrinter implements Printable {
 
         String title = tab.getTitle();
         if (!TextUtils.isEmpty(title)) {
-            if (tab.isNativePage()
-                    && tab.getNativePage() != null
-                    && tab.getNativePage().isPdf()
-                    && !title.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
+            if (isPdf() && !title.toLowerCase(Locale.ROOT).endsWith(".pdf")) {
                 // Ensure the document title has a .pdf extension so that print destinations
                 // (such as "Save as PDF") suggest a valid PDF file name.
                 title = title + ".pdf";
@@ -210,14 +261,24 @@ public class TabPrinter implements Printable {
     }
 
     @Override
+    public boolean isPdf() {
+        Tab tab = mTab.get();
+        return tab != null
+                && tab.isInitialized()
+                && tab.isNativePage()
+                && tab.getNativePage() != null
+                && tab.getNativePage().isPdf();
+    }
+
+    @Override
     public @Nullable InputStream getPdfInputStream() {
         Tab tab = mTab.get();
-        if (tab == null || !tab.isInitialized()) {
+        if (tab == null || !isPdf()) {
             return null;
         }
 
-        if (tab.isNativePage() && tab.getNativePage() != null && tab.getNativePage().isPdf()) {
-            NativePage pdfPage = tab.getNativePage();
+        NativePage pdfPage = tab.getNativePage();
+        if (pdfPage != null) {
             String filepath = pdfPage.getCanonicalFilepath();
             if (filepath == null) {
                 return null;

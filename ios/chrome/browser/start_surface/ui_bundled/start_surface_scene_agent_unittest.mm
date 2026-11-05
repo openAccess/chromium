@@ -8,7 +8,6 @@
 #import "base/test/scoped_feature_list.h"
 #import "components/favicon/ios/web_favicon_driver.h"
 #import "components/prefs/pref_service.h"
-#import "components/signin/public/base/signin_switches.h"
 #import "components/tab_groups/tab_group_id.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/application_delegate/fake_startup_information.h"
@@ -31,8 +30,6 @@
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/signin/model/fake_system_identity.h"
-#import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/start_surface/ui_bundled/start_surface_features.h"
 #import "ios/chrome/browser/start_surface/ui_bundled/start_surface_recent_tab_browser_agent.h"
 #import "ios/chrome/browser/start_surface/ui_bundled/start_surface_util.h"
@@ -58,27 +55,26 @@ const char kURL[] = "https://chromium.org/";
 class StartSurfaceSceneAgentTest : public PlatformTest {
  public:
   StartSurfaceSceneAgentTest() {
-    TestProfileIOS::Builder builder;
-    builder.SetName(profile_manager_.ReserveNewProfileName());
-    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
+    personal_profile_ =
+        profile_manager_.AddProfileWithBuilder(TestProfileIOS::Builder());
     startup_information_ = [[FakeStartupInformation alloc] init];
     app_state_ = OCMClassMock([AppState class]);
     OCMStub([app_state_ startupInformation]).andReturn(startup_information_);
 
     profile_state_ = [[ProfileState alloc] initWithAppState:app_state_];
     SetProfileStateInitStage(profile_state_, ProfileInitStage::kFinal);
-    profile_state_.profile = profile_.get();
+    profile_state_.profile = personal_profile_.get();
 
-    scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_.get()];
+    scene_state_ =
+        [[FakeSceneState alloc] initWithProfile:personal_profile_.get()];
     scene_state_.activationLevel = SceneActivationLevelUnattached;
     scene_state_.profileState = profile_state_;
     scene_state_.sceneSessionID = "scene";
     scene_state_.UIEnabled = YES;
     scene_state_.prefs = [[SceneStatePrefs alloc]
         initWithProfileManager:&profile_manager_
-                   profileName:profile_->GetProfileName()
-             sessionIdentifier:scene_state_.sceneSessionID
-                  sceneSession:nil];
+                   profileName:personal_profile_->GetProfileName()
+             sessionIdentifier:scene_state_.sceneSessionID];
 
     agent_ = [[StartSurfaceSceneAgent alloc] init];
     agent_.sceneState = scene_state_;
@@ -117,16 +113,11 @@ class StartSurfaceSceneAgentTest : public PlatformTest {
     PlatformTest::TearDown();
   }
 
-  FakeSystemIdentityManager* fake_system_identity_manager() {
-    return FakeSystemIdentityManager::FromSystemIdentityManager(
-        GetApplicationContext()->GetSystemIdentityManager());
-  }
-
  protected:
   web::WebTaskEnvironment task_environment_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   TestProfileManagerIOS profile_manager_;
-  raw_ptr<TestProfileIOS> profile_;
+  raw_ptr<TestProfileIOS> personal_profile_;
   FakeStartupInformation* startup_information_;
   AppState* app_state_;
   ProfileState* profile_state_;
@@ -157,7 +148,7 @@ class StartSurfaceSceneAgentTest : public PlatformTest {
     auto test_web_state = std::make_unique<web::FakeWebState>();
     test_web_state->SetCurrentURL(url);
     test_web_state->SetNavigationItemCount(1);
-    test_web_state->SetBrowserState(profile_.get());
+    test_web_state->SetBrowserState(personal_profile_.get());
     NewTabPageTabHelper::CreateForWebState(test_web_state.get());
     GetWebStateList()->InsertWebState(
         std::move(test_web_state),
@@ -169,7 +160,7 @@ class StartSurfaceSceneAgentTest : public PlatformTest {
     auto test_web_state = std::make_unique<web::FakeWebState>();
     test_web_state->SetCurrentURL(url);
     test_web_state->SetNavigationItemCount(1);
-    test_web_state->SetBrowserState(profile_.get());
+    test_web_state->SetBrowserState(personal_profile_.get());
     NewTabPageTabHelper::CreateForWebState(test_web_state.get());
     GetIncognitoWebStateList()->InsertWebState(
         std::move(test_web_state),
@@ -429,42 +420,6 @@ TEST_F(StartSurfaceSceneAgentTest, LogCorrectColdStartHistogram) {
   histogram_tester_.ExpectTotalCount("IOS.BackgroundTimeBeforeColdStart", 1);
 }
 
-TEST_F(StartSurfaceSceneAgentTest, PrefetchCapabilitiesOnAppStart) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      switches::kBuildExternalPrivacyContext);
-
-  // Set up fake identity with account capabilities.
-  FakeSystemIdentity* identity = [FakeSystemIdentity fakeIdentity1];
-  fake_system_identity_manager()->AddIdentity(identity);
-
-  AccountCapabilitiesTestMutator* mutator =
-      fake_system_identity_manager()->GetPendingCapabilitiesMutator(identity);
-  mutator->SetAllSupportedCapabilities(true);
-
-  // Set up expected app state that prefetches capabilities.
-  [startup_information_ setIsColdStart:YES];
-
-  InsertNewWebState(0, GURL(kURL));
-  InsertNewWebState(1, GURL(kChromeUINewTabURL));
-  WebStateList* web_state_list = GetWebStateList();
-  web_state_list->ActivateWebStateAt(0);
-  favicon::WebFaviconDriver::CreateForWebState(
-      web_state_list->GetActiveWebState(),
-      /*favicon_service=*/nullptr);
-
-  ASSERT_FALSE(fake_system_identity_manager()
-                   ->GetVisibleCapabilities(identity)
-                   .AreAnyCapabilitiesKnown());
-
-  scene_state_.activationLevel = SceneActivationLevelForegroundActive;
-  base::RunLoop().RunUntilIdle();
-
-  EXPECT_TRUE(fake_system_identity_manager()
-                  ->GetVisibleCapabilities(identity)
-                  .AreAnyCapabilitiesKnown());
-}
-
 // Tests that the tab group in grid view is opened if Chrome is activated in the
 // right time interval.
 TEST_F(StartSurfaceSceneAgentTest, ShowTabGroupInGridOnStart) {
@@ -690,7 +645,7 @@ TEST_F(StartSurfaceSceneAgentTest, OpenNTPAfterThresholdSettingOff) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kStartSurfaceUserSetting);
 
-  profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, false);
+  personal_profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, false);
 
   base::Time time_last_background = base::Time::Now() - base::Hours(5);
   test::SetStartSurfaceSessionObjectForSceneStateForTesting(
@@ -720,7 +675,7 @@ TEST_F(StartSurfaceSceneAgentTest, OpenNTPAfterThresholdSettingOn) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kStartSurfaceUserSetting);
 
-  profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, true);
+  personal_profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, true);
 
   base::Time time_last_background = base::Time::Now() - base::Hours(5);
   test::SetStartSurfaceSessionObjectForSceneStateForTesting(
@@ -749,7 +704,7 @@ TEST_F(StartSurfaceSceneAgentTest, OpenNTPWithinThresholdSettingOn) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kStartSurfaceUserSetting);
 
-  profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, true);
+  personal_profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, true);
 
   base::Time time_last_background = base::Time::Now() - base::Hours(2);
   test::SetStartSurfaceSessionObjectForSceneStateForTesting(
@@ -778,7 +733,7 @@ TEST_F(StartSurfaceSceneAgentTest, OpenNTPWithinThresholdSettingOff) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kStartSurfaceUserSetting);
 
-  profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, false);
+  personal_profile_->GetPrefs()->SetBoolean(prefs::kStartSurfaceEnabled, false);
 
   base::Time time_last_background = base::Time::Now() - base::Hours(2);
   test::SetStartSurfaceSessionObjectForSceneStateForTesting(

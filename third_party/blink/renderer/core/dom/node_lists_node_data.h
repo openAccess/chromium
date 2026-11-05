@@ -63,7 +63,7 @@ class NodeListsNodeData final : public GarbageCollected<NodeListsNodeData>,
   using NamedNodeListKey = std::pair<CollectionType, AtomicString>;
   struct NodeListAtomicCacheMapEntryHashTraits
       : HashTraits<std::pair<CollectionType, AtomicString>> {
-    static unsigned GetHash(const NamedNodeListKey& entry) {
+    static uint32_t GetHash(const NamedNodeListKey& entry) {
       return blink::GetHash(entry.second == CSSSelector::UniversalSelectorAtom()
                                 ? g_star_atom
                                 : entry.second) +
@@ -154,7 +154,7 @@ class NodeListsNodeData final : public GarbageCollected<NodeListsNodeData>,
   void AdoptTreeScope() { InvalidateCaches(); }
 
   void AdoptDocument(Document& old_document, Document& new_document) {
-    DCHECK_NE(old_document, new_document);
+    DCHECK_NE(&old_document, &new_document);
 
     NodeListAtomicNameCacheMap::const_iterator atomic_name_cache_end =
         atomic_name_caches_.end();

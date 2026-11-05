@@ -6,6 +6,7 @@
 
 #import <Foundation/Foundation.h>
 #import <dispatch/dispatch.h>
+#include <stddef.h>
 
 #include "base/apple/foundation_util.h"
 #include "base/files/file_path.h"
@@ -199,16 +200,16 @@ TEST_F(CRUAsyncTaskRunnerTest, LongBoth) {
   // the intake side hides incorrect asynchronous stream consumption.
   //
   // Currently, this creates 16 MiB of output.
-  const NSUInteger reps = 1048576;
+  constexpr NSUInteger kReps = 1048576;
   NSString* const text = @"0123456789ABCDEF";
-  ASSERT_TRUE(RunEmitText(text, (int)reps, EmitTextOutputTarget::kBoth));
+  ASSERT_TRUE(RunEmitText(text, (int)kReps, EmitTextOutputTarget::kBoth));
   EXPECT_FALSE(got_error_);
   EXPECT_TRUE(got_stdout_);
   EXPECT_TRUE(got_stderr_);
 
   // Construct the expectation string.
-  NSMutableArray<NSString*>* chunks = [NSMutableArray arrayWithCapacity:reps];
-  for (NSUInteger k = 0; k < reps; k++) {
+  NSMutableArray<NSString*>* chunks = [NSMutableArray arrayWithCapacity:kReps];
+  for (NSUInteger k = 0; k < kReps; k++) {
     [chunks addObject:text];
   }
   NSString* want = [chunks componentsJoinedByString:@""];

@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -23,7 +24,6 @@ import android.content.Intent;
 import android.provider.Settings;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -43,7 +43,9 @@ import org.robolectric.ParameterizedRobolectricTestRunner.Parameter;
 import org.robolectric.ParameterizedRobolectricTestRunner.Parameters;
 import org.robolectric.Robolectric;
 
+import org.chromium.base.Callback;
 import org.chromium.base.DeviceInfo;
+import org.chromium.base.UnownedUserDataHost;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRule;
@@ -77,6 +79,7 @@ import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncConfig;
 import org.chromium.chrome.test.util.browser.signin.AccountManagerTestRule;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
+import org.chromium.components.signin.AccountManagerFacade;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.GAIAServiceType;
 import org.chromium.components.signin.SigninFeatures;
@@ -111,6 +114,7 @@ public class SigninBridgeTest {
     }
 
     private GURL mContinueUrl;
+    private GURL mInitialTabUrl;
     private static final @TabId int TAB_ID = 1;
 
     @Rule(order = -2)
@@ -152,6 +156,8 @@ public class SigninBridgeTest {
 
     @Mock private AccountPreviewDataService mAccountPreviewDataServiceMock;
     @Mock private ModalDialogManager mModalDialogManagerMock;
+    @Mock private WebSigninRedirectCoordinator mWebSigninRedirectCoordinatorMock;
+    @Mock private AccountManagerFacade mAccountManagerFacadeMock;
 
     private final SettableMonotonicObservableSupplier<BottomSheetSigninAndHistorySyncCoordinator>
             mWebSigninAndHistorySyncCoordinatorSupplier = ObservableSuppliers.createMonotonic();
@@ -159,6 +165,7 @@ public class SigninBridgeTest {
     @Before
     public void setUp() {
         mContinueUrl = new GURL("https://test-continue-url.com");
+        mInitialTabUrl = new GURL("https://test-initial-tab-url.com");
         BottomSheetControllerProvider.setInstanceForTesting(mBottomSheetControllerMock);
         Context context = ApplicationProvider.getApplicationContext();
 
@@ -188,7 +195,6 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     public void testAccountPickerSuppressedWhenNoWindow() {
         //  Reset default values configured in `setUp`.
         Mockito.reset(mTabMock);
@@ -218,7 +224,6 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     public void testAccountPickerSuppressedWhenTabNotInteractable() {
         //  Reset default values configured in `setUp`.
         Mockito.reset(mTabMock);
@@ -249,7 +254,6 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     public void testAccountPickerSuppressedWhenSigninNotAllowed() {
         when(mSigninManagerMock.isSigninAllowed()).thenReturn(false);
 
@@ -281,7 +285,6 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     public void testAccountPickerSuppressedWhenNoAccountsOnDevice() {
         when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
 
@@ -312,7 +315,6 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     public void testAccountPickerSuppressedIfDismissLimitReached() {
         Assume.assumeTrue(mIsWebSignin);
         when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
@@ -347,11 +349,7 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
-    @DisableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @DisableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testAccountPickerHasNoLimitIfAccountIsSpecified_legacy() {
         Assume.assumeTrue(mIsWebSignin);
         when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
@@ -390,11 +388,7 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testAccountPickerHasNoLimitIfAccountIsSpecified() {
         Assume.assumeTrue(mIsWebSignin);
         when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
@@ -420,11 +414,7 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
-    @DisableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @DisableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testAccountPickerShown_legacy() {
         Assume.assumeTrue(mIsWebSignin);
         when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
@@ -454,11 +444,7 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testAccountPickerShown() {
         when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
         mAccountManagerTestRule.addAccount(TestAccounts.ACCOUNT1);
@@ -475,11 +461,7 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
-    @DisableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @DisableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testAccountPickerShownWithNoSelectedAccountId_legacy() {
         Assume.assumeTrue(mIsWebSignin);
         when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
@@ -505,11 +487,7 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testAccountPickerShownWithNoSelectedAccountId() {
         when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
         mAccountManagerTestRule.addAccount(TestAccounts.ACCOUNT1);
@@ -526,12 +504,8 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(SigninFeatures.ENABLE_ADD_SESSION_REDIRECT)
-    @DisableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @DisableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testBottomSheetInvokedAfterAddAccountFlow_legacy() {
         Assume.assumeTrue(mIsWebSignin);
         ArgumentCaptor<WindowAndroid.IntentCallback> intentCaptor =
@@ -572,10 +546,8 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({
         SigninFeatures.ENABLE_ADD_SESSION_REDIRECT,
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
         SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
     })
     public void testBottomSheetInvokedAfterAddAccountFlow() {
@@ -600,10 +572,8 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     public void testSigninDeepLinkFlow_userSignedOut_targetAccountNotOnDevice() {
         Context context = Robolectric.buildActivity(Activity.class).get();
-        lenient().when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
         lenient().when(mWindowAndroidMock.getContext()).thenReturn(new WeakReference<>(context));
         lenient().when(mProfileMock.getOriginalProfile()).thenReturn(mProfileMock);
 
@@ -614,8 +584,6 @@ public class SigninBridgeTest {
                 new SigninDeepLinkPayload(
                         /* externalEntryPoint= */ ExternalEntryPoint.DESKTOP_DEFAULT,
                         /* email= */ TestAccounts.ACCOUNT1.getEmail());
-
-        SigninBridge.startSigninDeepLinkFlow(mWindowAndroidMock, mProfileMock, payload);
 
         var expectedConfig =
                 FullscreenSigninAndHistorySyncConfig.builder(
@@ -628,6 +596,11 @@ public class SigninBridgeTest {
                         .historyOptInMode(HistorySyncConfig.OptInMode.NONE)
                         .selectedAccountEmail(TestAccounts.ACCOUNT1.getEmail())
                         .build();
+        when(mSigninAndHistorySyncActivityLauncherMock.createFullscreenSigninIntentOrShowError(
+                        any(), any(), any(), anyInt()))
+                .thenReturn(new Intent());
+
+        SigninBridge.startSigninDeepLinkFlow(mWindowAndroidMock, mProfileMock, payload);
 
         verify(mSigninAndHistorySyncActivityLauncherMock)
                 .createFullscreenSigninIntentOrShowError(
@@ -642,11 +615,9 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     public void
             testSigninDeepLinkFlow_userSignedIn_toDifferentAccount_targetAccountNotOnTheDevice() {
         Context context = Robolectric.buildActivity(Activity.class).get();
-        lenient().when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
         lenient().when(mWindowAndroidMock.getContext()).thenReturn(new WeakReference<>(context));
         lenient().when(mProfileMock.getOriginalProfile()).thenReturn(mProfileMock);
 
@@ -660,8 +631,6 @@ public class SigninBridgeTest {
                 new SigninDeepLinkPayload(
                         /* externalEntryPoint= */ ExternalEntryPoint.DESKTOP_DEFAULT,
                         /* email= */ TestAccounts.ACCOUNT2.getEmail());
-
-        SigninBridge.startSigninDeepLinkFlow(mWindowAndroidMock, mProfileMock, payload);
 
         var expectedConfig =
                 FullscreenSigninAndHistorySyncConfig.builderForSwitchAccountFlow(
@@ -679,6 +648,11 @@ public class SigninBridgeTest {
                                 TestAccounts.ACCOUNT2.getEmail())
                         .historyOptInMode(HistorySyncConfig.OptInMode.NONE)
                         .build();
+        when(mSigninAndHistorySyncActivityLauncherMock.createFullscreenSigninIntentOrShowError(
+                        any(), any(), any(), anyInt()))
+                .thenReturn(new Intent());
+
+        SigninBridge.startSigninDeepLinkFlow(mWindowAndroidMock, mProfileMock, payload);
 
         verify(mSigninAndHistorySyncActivityLauncherMock)
                 .createFullscreenSigninIntentOrShowError(
@@ -695,10 +669,8 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     public void testSigninDeepLinkFlow_userSignedIn_withTheTargetAccount() {
         Context context = Robolectric.buildActivity(Activity.class).get();
-        lenient().when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
         lenient().when(mWindowAndroidMock.getContext()).thenReturn(new WeakReference<>(context));
         lenient().when(mProfileMock.getOriginalProfile()).thenReturn(mProfileMock);
 
@@ -723,10 +695,8 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
-    public void testSigninDeepLinkFlow_signinNotAllowed() {
+    public void testSigninDeepLinkFlow_launcherReturnsNull_recordsFlowForbidden() {
         Context context = Robolectric.buildActivity(Activity.class).get();
-        lenient().when(mSigninManagerMock.isSigninAllowed()).thenReturn(false);
         lenient().when(mWindowAndroidMock.getContext()).thenReturn(new WeakReference<>(context));
         lenient().when(mProfileMock.getOriginalProfile()).thenReturn(mProfileMock);
 
@@ -737,8 +707,6 @@ public class SigninBridgeTest {
                 new SigninDeepLinkPayload(
                         /* externalEntryPoint= */ ExternalEntryPoint.DESKTOP_DEFAULT,
                         /* email= */ TestAccounts.ACCOUNT1.getEmail());
-
-        SigninBridge.startSigninDeepLinkFlow(mWindowAndroidMock, mProfileMock, payload);
 
         var expectedConfig =
                 FullscreenSigninAndHistorySyncConfig.builder(
@@ -751,6 +719,11 @@ public class SigninBridgeTest {
                         .historyOptInMode(HistorySyncConfig.OptInMode.NONE)
                         .selectedAccountEmail(TestAccounts.ACCOUNT1.getEmail())
                         .build();
+        when(mSigninAndHistorySyncActivityLauncherMock.createFullscreenSigninIntentOrShowError(
+                        any(), any(), any(), anyInt()))
+                .thenReturn(null);
+
+        SigninBridge.startSigninDeepLinkFlow(mWindowAndroidMock, mProfileMock, payload);
 
         verify(mSigninAndHistorySyncActivityLauncherMock)
                 .createFullscreenSigninIntentOrShowError(
@@ -765,10 +738,8 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     public void testSigninDeepLinkFlow_userSignedOut_targetAccountOnDevice() {
         Context context = Robolectric.buildActivity(Activity.class).get();
-        lenient().when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
         lenient().when(mWindowAndroidMock.getContext()).thenReturn(new WeakReference<>(context));
         lenient().when(mProfileMock.getOriginalProfile()).thenReturn(mProfileMock);
 
@@ -782,8 +753,6 @@ public class SigninBridgeTest {
                         /* externalEntryPoint= */ ExternalEntryPoint.DESKTOP_DEFAULT,
                         /* email= */ TestAccounts.ACCOUNT1.getEmail());
 
-        SigninBridge.startSigninDeepLinkFlow(mWindowAndroidMock, mProfileMock, payload);
-
         var expectedConfig =
                 FullscreenSigninAndHistorySyncConfig.builder(
                                 context.getString(R.string.signin_deep_link_flow_signin_title),
@@ -795,6 +764,11 @@ public class SigninBridgeTest {
                         .historyOptInMode(HistorySyncConfig.OptInMode.NONE)
                         .selectedAccountEmail(TestAccounts.ACCOUNT1.getEmail())
                         .build();
+        when(mSigninAndHistorySyncActivityLauncherMock.createFullscreenSigninIntentOrShowError(
+                        any(), any(), any(), anyInt()))
+                .thenReturn(new Intent());
+
+        SigninBridge.startSigninDeepLinkFlow(mWindowAndroidMock, mProfileMock, payload);
 
         verify(mSigninAndHistorySyncActivityLauncherMock)
                 .createFullscreenSigninIntentOrShowError(
@@ -809,10 +783,8 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     public void testSigninDeepLinkFlow_userSignedIn_toDifferentAccount_targetAccountOnTheDevice() {
         Context context = Robolectric.buildActivity(Activity.class).get();
-        lenient().when(mSigninManagerMock.isSigninAllowed()).thenReturn(true);
         lenient().when(mWindowAndroidMock.getContext()).thenReturn(new WeakReference<>(context));
         lenient().when(mProfileMock.getOriginalProfile()).thenReturn(mProfileMock);
 
@@ -827,8 +799,6 @@ public class SigninBridgeTest {
                 new SigninDeepLinkPayload(
                         /* externalEntryPoint= */ ExternalEntryPoint.DESKTOP_DEFAULT,
                         /* email= */ TestAccounts.ACCOUNT2.getEmail());
-
-        SigninBridge.startSigninDeepLinkFlow(mWindowAndroidMock, mProfileMock, payload);
 
         var expectedConfig =
                 FullscreenSigninAndHistorySyncConfig.builderForSwitchAccountFlow(
@@ -846,6 +816,11 @@ public class SigninBridgeTest {
                                 TestAccounts.ACCOUNT2.getEmail())
                         .historyOptInMode(HistorySyncConfig.OptInMode.NONE)
                         .build();
+        when(mSigninAndHistorySyncActivityLauncherMock.createFullscreenSigninIntentOrShowError(
+                        any(), any(), any(), anyInt()))
+                .thenReturn(new Intent());
+
+        SigninBridge.startSigninDeepLinkFlow(mWindowAndroidMock, mProfileMock, payload);
 
         verify(mSigninAndHistorySyncActivityLauncherMock)
                 .createFullscreenSigninIntentOrShowError(
@@ -911,7 +886,6 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(SigninFeatures.OPEN_SYSTEM_ACCOUNT_SETTINGS_DIRECTLY)
     public void testOpenAccountManagementScreen_desktop_flagEnabled() {
         DeviceInfo.setIsDesktopForTesting(true);
@@ -929,7 +903,6 @@ public class SigninBridgeTest {
     }
 
     @Test
-    @SmallTest
     @DisableFeatures(SigninFeatures.OPEN_SYSTEM_ACCOUNT_SETTINGS_DIRECTLY)
     public void testOpenAccountManagementScreen_desktop_flagDisabled() {
         DeviceInfo.setIsDesktopForTesting(true);
@@ -945,14 +918,13 @@ public class SigninBridgeTest {
         // When SettingsInTab is enabled on desktop, settings opens in a browser tab via
         // ChromeLauncherActivity (chrome://settings) instead of starting SettingsActivity.
         Assert.assertEquals(
-                SettingsInTab.isEnabled()
+                SettingsInTab.shouldOpenSettingsInTab()
                         ? ChromeLauncherActivity.class.getName()
                         : SettingsActivity.class.getName(),
                 intent.getComponent().getClassName());
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(SigninFeatures.OPEN_SYSTEM_ACCOUNT_SETTINGS_DIRECTLY)
     public void testOpenAccountManagementScreen_nonDesktop_flagEnabled() {
         DeviceInfo.setIsDesktopForTesting(false);
@@ -966,5 +938,73 @@ public class SigninBridgeTest {
         Assert.assertNotNull(intent);
         Assert.assertNotEquals(Settings.ACTION_SYNC_SETTINGS, intent.getAction());
         Assert.assertEquals(SettingsActivity.class.getName(), intent.getComponent().getClassName());
+    }
+
+    private void setupForUpdateCredentialsFlow() {
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        lenient().when(mWindowAndroidMock.getActivity()).thenReturn(new WeakReference<>(activity));
+        lenient().when(mTabMock.getUrl()).thenReturn(mInitialTabUrl);
+        lenient().when(mTabMock.isDestroyed()).thenReturn(false);
+        AccountManagerFacadeProvider.setInstanceForTests(mAccountManagerFacadeMock);
+
+        UnownedUserDataHost host = new UnownedUserDataHost();
+        lenient().when(mWindowAndroidMock.getUnownedUserDataHost()).thenReturn(host);
+        SettableMonotonicObservableSupplier<WebSigninRedirectCoordinator> supplier =
+                ObservableSuppliers.createMonotonic();
+        supplier.set(mWebSigninRedirectCoordinatorMock);
+        WebSigninRedirectCoordinatorSupplier.attach(host, supplier);
+    }
+
+    @Test
+    public void testStartUpdateCredentialsFlow_differentTargetAccount_success() {
+        setupForUpdateCredentialsFlow();
+
+        doAnswer(
+                        invocation -> {
+                            Callback<Boolean> callback = invocation.getArgument(2);
+                            callback.onResult(true);
+                            return null;
+                        })
+                .when(mAccountManagerFacadeMock)
+                .updateCredentials(eq(TestAccounts.ACCOUNT1.getId()), any(), any());
+
+        SigninBridge.startUpdateCredentialsFlow(
+                mTabMock,
+                mContinueUrl,
+                TestAccounts.ACCOUNT1.getId(),
+                TestAccounts.ACCOUNT2.getId());
+
+        verify(mAccountManagerFacadeMock)
+                .updateCredentials(eq(TestAccounts.ACCOUNT1.getId()), any(), any());
+        verify(mWebSigninRedirectCoordinatorMock)
+                .initializeWebSigninAndRedirect(
+                        eq(mTabMock),
+                        eq(TestAccounts.ACCOUNT2.getId()),
+                        eq(mContinueUrl),
+                        eq(mInitialTabUrl));
+    }
+
+    @Test
+    public void testStartUpdateCredentialsFlow_reauthFails_aborts() {
+        setupForUpdateCredentialsFlow();
+
+        doAnswer(
+                        invocation -> {
+                            Callback<Boolean> callback = invocation.getArgument(2);
+                            callback.onResult(false);
+                            return null;
+                        })
+                .when(mAccountManagerFacadeMock)
+                .updateCredentials(eq(TestAccounts.ACCOUNT1.getId()), any(), any());
+
+        SigninBridge.startUpdateCredentialsFlow(
+                mTabMock,
+                mContinueUrl,
+                TestAccounts.ACCOUNT1.getId(),
+                TestAccounts.ACCOUNT2.getId());
+
+        verify(mAccountManagerFacadeMock)
+                .updateCredentials(eq(TestAccounts.ACCOUNT1.getId()), any(), any());
+        verifyNoInteractions(mWebSigninRedirectCoordinatorMock);
     }
 }

@@ -10,6 +10,8 @@ static_library("renderer") {
     "at_memory_handler.h",
     "autofill_agent.cc",
     "autofill_agent.h",
+    "custom_form_control_script_executor.cc",
+    "custom_form_control_script_executor.h",
     "email_verification_handler.cc",
     "email_verification_handler.h",
     "form_autofill_issues.cc",
@@ -69,9 +71,10 @@ static_library("renderer") {
     "//third_party/blink/public/common",
     "//third_party/re2",
     "//ui/base",
+    "//ui/events/blink",
+    "//url",
+    "//v8",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 static_library("test_support") {
@@ -82,6 +85,7 @@ static_library("test_support") {
     "autofill_renderer_test.h",
     "focus_test_util.cc",
     "focus_test_util.h",
+    "form_cache_test_api.h",
     "form_submission_tracker_test_api.h",
     "javascript_autofill_tracker_test_api.h",
     "test_password_autofill_agent.cc",
@@ -131,6 +135,7 @@ source_set("browser_tests") {
     "at_memory_handler_browsertest.cc",
     "autofill_agent_browsertest.cc",
     "autofill_agent_form_interaction_browsertest.cc",
+    "custom_form_control_script_executor_browsertest.cc",
     "dom_label_browsertest.cc",
     "email_verification_handler_browsertest.cc",
     "form_autofill_issues_browsertest.cc",

@@ -2,14 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/test/bind.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
+#include "chrome/browser/ui/content_settings/content_setting_image_model.h"
+#include "chrome/browser/ui/location_bar/location_bar.h"
+#include "chrome/browser/ui/views/permissions/chip/permission_chip_view.h"
+#include "chrome/browser/ui/views/permissions/chip/permission_dashboard_controller.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
-#include "components/content_settings/core/common/features.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -25,8 +28,6 @@ DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
 class PermissionIndicatorsInteractiveUITest : public InteractiveBrowserTest {
  public:
   PermissionIndicatorsInteractiveUITest() {
-    scoped_feature_list_.InitWithFeatures(
-        {}, {content_settings::features::kLeftHandSideActivityIndicators});
     https_server_ = std::make_unique<net::EmbeddedTestServer>(
         net::EmbeddedTestServer::TYPE_HTTPS);
   }
@@ -87,9 +88,27 @@ class PermissionIndicatorsInteractiveUITest : public InteractiveBrowserTest {
     return state_change;
   }
 
+  // Waits for the media stream (camera/mic) activity indicator to show and
+  // verifies its icon.
+  auto VerifyMediaStreamIndicator(const gfx::VectorIcon* expected_icon) {
+    return AfterShow(
+        PermissionChipView::kIndicatorChipElementId,
+        base::BindLambdaForTesting([this,
+                                    expected_icon](ui::TrackedElement* element) {
+          auto* dashboard_controller = BrowserWindow::FromBrowser(browser())
+                                           ->GetLocationBar()
+                                           ->GetPermissionDashboardController();
+          ASSERT_TRUE(dashboard_controller);
+          auto* model = dashboard_controller->indicator_model_for_testing();
+          ASSERT_TRUE(model);
+          EXPECT_EQ(model->icon(), expected_icon);
+          // Permission is granted, there is no badge.
+          EXPECT_EQ(model->get_icon_badge(), &gfx::VectorIcon::EmptyIcon());
+        }));
+  }
+
  private:
   std::unique_ptr<net::EmbeddedTestServer> https_server_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Tests that after a camera stream is stopped, a camera activity indicator is
@@ -104,18 +123,12 @@ IN_PROC_BROWSER_TEST_F(PermissionIndicatorsInteractiveUITest,
       ExecuteJs(kWebContentsElementId, "requestCamera"),
       // `getUserMedia` is async, so wait until media stream is opened.
       WaitForStateChange(kWebContentsElementId, GetCameraStreamStateChange()),
-      WaitForShow(ContentSettingImageModel::kMediaStreamIconElementId),
-      CheckViewProperty(ContentSettingImageModel::kMediaStreamIconElementId,
-                        &ContentSettingImageView::get_icon_for_testing,
-                        &(features::IsRoundedIconsEnabled()
-                              ? vector_icons::kVideocamIcon
-                              : vector_icons::kVideocamChromeRefreshOldIcon)),
-      // Permission is granted, there is no badge.
-      CheckViewProperty(ContentSettingImageModel::kMediaStreamIconElementId,
-                        &ContentSettingImageView::get_icon_badge_for_testing,
-                        &gfx::VectorIcon::EmptyIcon()),
+      VerifyMediaStreamIndicator(
+          &(features::IsRoundedIconsEnabled()
+                ? vector_icons::kVideocamIcon
+                : vector_icons::kVideocamChromeRefreshOldIcon)),
       ExecuteJs(kWebContentsElementId, "stopCamera"),
-      WaitForHide(ContentSettingImageModel::kMediaStreamIconElementId));
+      WaitForHide(PermissionChipView::kIndicatorChipElementId));
 }
 
 // Start using a camera, then start using a microphone, stop using the camera,
@@ -130,30 +143,18 @@ IN_PROC_BROWSER_TEST_F(PermissionIndicatorsInteractiveUITest,
       NavigateWebContents(kWebContentsElementId, GetURL()),
       ExecuteJs(kWebContentsElementId, "requestMicrophone"),
       WaitForStateChange(kWebContentsElementId, GetMicStreamStateChange()),
-      WaitForShow(ContentSettingImageModel::kMediaStreamIconElementId),
-      CheckViewProperty(ContentSettingImageModel::kMediaStreamIconElementId,
-                        &ContentSettingImageView::get_icon_for_testing,
-                        &(features::IsRoundedIconsEnabled()
-                              ? vector_icons::kMicIcon
-                              : vector_icons::kMicChromeRefreshOldIcon)),
-      // Permission is granted, there is no badge.
-      CheckViewProperty(ContentSettingImageModel::kMediaStreamIconElementId,
-                        &ContentSettingImageView::get_icon_badge_for_testing,
-                        &gfx::VectorIcon::EmptyIcon()),
+      VerifyMediaStreamIndicator(
+          &(features::IsRoundedIconsEnabled()
+                ? vector_icons::kMicIcon
+                : vector_icons::kMicChromeRefreshOldIcon)),
       ExecuteJs(kWebContentsElementId, "requestCamera"),
       // `getUserMedia` is async, so wait until media stream is opened.
       WaitForStateChange(kWebContentsElementId, GetCameraStreamStateChange()),
-      WaitForShow(ContentSettingImageModel::kMediaStreamIconElementId),
-      CheckViewProperty(ContentSettingImageModel::kMediaStreamIconElementId,
-                        &ContentSettingImageView::get_icon_for_testing,
-                        &(features::IsRoundedIconsEnabled()
-                              ? vector_icons::kVideocamIcon
-                              : vector_icons::kVideocamChromeRefreshOldIcon)),
-      // Permission is granted, there is no badge.
-      CheckViewProperty(ContentSettingImageModel::kMediaStreamIconElementId,
-                        &ContentSettingImageView::get_icon_badge_for_testing,
-                        &gfx::VectorIcon::EmptyIcon()),
+      VerifyMediaStreamIndicator(
+          &(features::IsRoundedIconsEnabled()
+                ? vector_icons::kVideocamIcon
+                : vector_icons::kVideocamChromeRefreshOldIcon)),
       ExecuteJs(kWebContentsElementId, "stopCamera"),
       ExecuteJs(kWebContentsElementId, "stopMic"),
-      WaitForHide(ContentSettingImageModel::kMediaStreamIconElementId));
+      WaitForHide(PermissionChipView::kIndicatorChipElementId));
 }

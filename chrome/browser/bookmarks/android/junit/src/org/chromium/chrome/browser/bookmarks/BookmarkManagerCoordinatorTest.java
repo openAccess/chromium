@@ -11,7 +11,11 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
 import android.view.FocusFinder;
@@ -46,6 +50,8 @@ import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.device_reauth.ReauthenticatorBridge;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.incognito.IncognitoUtils;
+import org.chromium.chrome.browser.incognito.IncognitoUtilsJni;
 import org.chromium.chrome.browser.page_image_service.ImageServiceBridge;
 import org.chromium.chrome.browser.page_image_service.ImageServiceBridgeJni;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManager;
@@ -55,9 +61,14 @@ import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelperJni;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
 import org.chromium.chrome.browser.ui.signin.PersonalizedSigninPromoView;
+import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
 import org.chromium.chrome.test.util.browser.signin.AccountManagerTestRule;
+import org.chromium.components.bookmarks.BookmarkId;
+import org.chromium.components.bookmarks.BookmarkType;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.commerce.core.CommerceFeatureUtils;
 import org.chromium.components.commerce.core.CommerceFeatureUtilsJni;
 import org.chromium.components.commerce.core.ShoppingService;
@@ -79,17 +90,15 @@ import java.util.Collection;
  * MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS launch.
  */
 @RunWith(ParameterizedRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @CommandLineFlags.Add({
     ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     BaseSwitches.DISABLE_NATIVE_INITIALIZATION
 })
-@Features.EnableFeatures({
-    ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES,
-    SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-    SigninFeatures.ENABLE_ACCOUNT_PREVIEW_PREFERRED_ACCOUNT
+@Features.EnableFeatures({SigninFeatures.ENABLE_ACCOUNT_PREVIEW_PREFERRED_ACCOUNT})
+@Features.DisableFeatures({
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG
 })
-@Features.DisableFeatures({ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT})
 public class BookmarkManagerCoordinatorTest {
 
     @Rule(order = Rule.DEFAULT_ORDER - 1)
@@ -113,6 +122,9 @@ public class BookmarkManagerCoordinatorTest {
     @Mock private BottomSheetController mBottomSheetController;
     @Mock private ActivityResultTracker mActivityResultTracker;
     @Mock private Profile mProfile;
+    @Mock private Profile mOtrProfile;
+    @Mock private BookmarkBridge.Natives mBookmarkBridgeJni;
+    @Mock private IncognitoUtils.Natives mIncognitoUtilsJni;
     @Mock private FaviconHelperJni mFaviconHelperJni;
     @Mock private ImageServiceBridge.Natives mImageServiceBridgeJni;
     @Mock private SyncService mSyncService;
@@ -126,6 +138,9 @@ public class BookmarkManagerCoordinatorTest {
     @Mock private ReauthenticatorBridge mReauthenticatorMock;
     @Mock private BookmarkOpener mBookmarkOpener;
     @Mock private BookmarkManagerOpener mBookmarkManagerOpener;
+    @Mock private SigninAndHistorySyncActivityLauncher mSigninAndHistorySyncActivityLauncher;
+    @Mock private BottomSheetSigninAndHistorySyncCoordinator mSigninCoordinator;
+    @Mock private DeviceLockActivityLauncher mDeviceLockActivityLauncher;
     @Mock private PriceDropNotificationManager mPriceDropNotificationManager;
 
     private Activity mActivity;
@@ -154,9 +169,18 @@ public class BookmarkManagerCoordinatorTest {
         doReturn(mSigninManager).when(mIdentityServicesProvider).getSigninManager(mProfile);
         doReturn(mIdentityManager).when(mSigninManager).getIdentityManager();
         doReturn(mIdentityManager).when(mIdentityServicesProvider).getIdentityManager(any());
-        BookmarkModel.setInstanceForTesting(mBookmarkModel);
+        BookmarkBridgeJni.setInstanceForTesting(mBookmarkBridgeJni);
+        doReturn(mBookmarkModel).when(mBookmarkBridgeJni).nativeGetForProfile(mProfile);
+        IncognitoUtilsJni.setInstanceForTesting(mIncognitoUtilsJni);
         ShoppingServiceFactory.setShoppingServiceForTesting(mShoppingService);
         ReauthenticatorBridge.setInstanceForTesting(mReauthenticatorMock);
+
+        // The promo coordinator is now assigned unconditionally, so the factory must not
+        // return null.
+        doReturn(mSigninCoordinator)
+                .when(mSigninAndHistorySyncActivityLauncher)
+                .createBottomSheetSigninCoordinatorAndObserveAddAccountResult(
+                        any(), any(), any(), any(), any(), any(), any(), any(), any(), anyInt());
 
         // Setup bookmark model.
         doReturn(true).when(mBookmarkModel).areAccountBookmarkFoldersActive();
@@ -181,7 +205,9 @@ public class BookmarkManagerCoordinatorTest {
                                             mBookmarkManagerOpener,
                                             mPriceDropNotificationManager,
                                             /* edgeToEdgePadAdjusterGenerator= */ null,
-                                            /* backPressManager= */ null);
+                                            /* backPressManager= */ null,
+                                            mSigninAndHistorySyncActivityLauncher,
+                                            mDeviceLockActivityLauncher);
                             mActivity.setContentView(mCoordinator.getView());
                         });
     }
@@ -214,8 +240,8 @@ public class BookmarkManagerCoordinatorTest {
         assertNotNull(mCoordinator.buildBatchUploadCardView(parent));
         assertNotNull(mCoordinator.buildSectionHeaderView(parent));
         assertNotNull(BookmarkManagerCoordinator.buildDividerView(parent));
-        assertNotNull(BookmarkManagerCoordinator.buildCompactImprovedBookmarkRow(parent));
-        assertNotNull(BookmarkManagerCoordinator.buildVisualImprovedBookmarkRow(parent));
+        assertNotNull(ImprovedBookmarkRow.buildCompactRow(parent));
+        assertNotNull(ImprovedBookmarkRow.buildVisualRow(parent));
         assertNotNull(mCoordinator.buildSearchBoxRow(parent));
         assertNotNull(mCoordinator.buildSigninPromoView(parent));
     }
@@ -311,7 +337,9 @@ public class BookmarkManagerCoordinatorTest {
                         mBookmarkManagerOpener,
                         mPriceDropNotificationManager,
                         /* edgeToEdgePadAdjusterGenerator= */ null,
-                        /* backPressManager= */ null);
+                        /* backPressManager= */ null,
+                        mSigninAndHistorySyncActivityLauncher,
+                        mDeviceLockActivityLauncher);
 
         assertNotNull(desktopCoordinator.getView());
         assertNotNull(desktopCoordinator.getView().findViewById(R.id.navigation_pane));
@@ -335,7 +363,9 @@ public class BookmarkManagerCoordinatorTest {
                         mBookmarkManagerOpener,
                         mPriceDropNotificationManager,
                         /* edgeToEdgePadAdjusterGenerator= */ null,
-                        /* backPressManager= */ null);
+                        /* backPressManager= */ null,
+                        mSigninAndHistorySyncActivityLauncher,
+                        mDeviceLockActivityLauncher);
         mActivity.setContentView(mCoordinator.getView());
         ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
     }
@@ -668,5 +698,54 @@ public class BookmarkManagerCoordinatorTest {
             assertNotEquals(mainView.findViewById(R.id.selectable_list), nextFocus);
             assertNotEquals(mCoordinator.getToolbarForTesting(), nextFocus);
         }
+    }
+
+    @Test
+    public void testOffTheRecordProfileUsesOriginalProfile() {
+        mCoordinator.onDestroyed();
+        clearInvocations(mBookmarkBridgeJni, mImageServiceBridgeJni, mIncognitoUtilsJni, mProfile);
+
+        doReturn(true).when(mOtrProfile).isOffTheRecord();
+        doReturn(mProfile).when(mOtrProfile).getOriginalProfile();
+
+        BookmarkManagerCoordinator otrCoordinator =
+                new BookmarkManagerCoordinator(
+                        mWindowAndroid,
+                        mActivity,
+                        /* isDialogUi= */ true,
+                        mSnackbarManager,
+                        () -> mBottomSheetController,
+                        mActivityResultTracker,
+                        mOtrProfile,
+                        mBookmarkUiPrefs,
+                        mBookmarkOpener,
+                        mBookmarkManagerOpener,
+                        mPriceDropNotificationManager,
+                        /* edgeToEdgePadAdjusterGenerator= */ null,
+                        /* backPressManager= */ null,
+                        mSigninAndHistorySyncActivityLauncher,
+                        mDeviceLockActivityLauncher);
+
+        verify(mBookmarkBridgeJni).nativeGetForProfile(mProfile);
+        verify(mBookmarkBridgeJni, never()).nativeGetForProfile(mOtrProfile);
+        verify(mProfile).getProfileKey();
+        verify(mOtrProfile, never()).getProfileKey();
+        verify(mImageServiceBridgeJni).init(mProfile);
+        verify(mImageServiceBridgeJni, never()).init(mOtrProfile);
+
+        // Simulate OTR profile native destruction while the coordinator remains open.
+        doReturn(null).when(mOtrProfile).getOriginalProfile();
+        BookmarkId bookmarkId = new BookmarkId(/* id= */ 1, BookmarkType.NORMAL);
+        otrCoordinator
+                .getBookmarkDelegateForTesting()
+                .getSelectionDelegate()
+                .toggleSelectionForItem(bookmarkId);
+        verify(mIncognitoUtilsJni).getIncognitoModeEnabled(mProfile);
+        verify(mIncognitoUtilsJni, never()).getIncognitoModeEnabled(mOtrProfile);
+
+        otrCoordinator.openBookmark(bookmarkId);
+        verify(mBookmarkOpener).openBookmarkInCurrentTab(bookmarkId, /* incognito= */ true);
+
+        otrCoordinator.onDestroyed();
     }
 }

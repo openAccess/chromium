@@ -6,28 +6,27 @@
 
 #include "ash/public/cpp/new_window_delegate.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/profiles/signin_profile_handler.h"
-#include "chrome/browser/chromeos/network/network_portal_signin_window.h"
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
-#include "chrome/browser/ui/navigator/browser_navigator_params.h"
-#include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
 #include "chrome/browser/ui/webui/ash/floating_workspace/floating_workspace_dialog.h"
-#include "chromeos/ash/components/login/login_state/login_state.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/network/network_event_log.h"
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "chromeos/ash/components/network/proxy/proxy_config_service_impl.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/constants/pref_names.h"
 #include "components/captive_portal/core/captive_portal_detector.h"
+#include "components/captive_portal/core/captive_portal_types.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/proxy_config/proxy_prefs.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/user_manager/user_manager.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -61,9 +60,11 @@ bool ProxyActive(PrefService& local_state, Profile* profile) {
 
 class SigninWebDialogDelegate : public ui::WebDialogDelegate {
  public:
-  SigninWebDialogDelegate(GURL url, bool disable_https_upgrades)
-      : disable_https_upgrades_(disable_https_upgrades) {
+  explicit SigninWebDialogDelegate(GURL url) {
     set_can_close(true);
+    // The dialog renders an untrusted, network-controlled portal page in the
+    // signin profile with no download UI; never allow it to write files.
+    set_can_download(false);
     set_can_resize(false);
     set_dialog_content_url(url);
     set_dialog_modal_type(ui::mojom::ModalType::kSystem);
@@ -78,16 +79,9 @@ class SigninWebDialogDelegate : public ui::WebDialogDelegate {
 
   ~SigninWebDialogDelegate() override = default;
 
-  bool ShouldDisableHttpsUpgrades() const override {
-    return disable_https_upgrades_;
-  }
-
   void OnLoadingStateChanged(content::WebContents* source) override {
     NetworkHandler::Get()->network_state_handler()->RequestPortalDetection();
   }
-
- private:
-  const bool disable_https_upgrades_;
 };
 
 }  // namespace
@@ -171,7 +165,7 @@ void NetworkPortalSigninController::ShowSignin(SigninSource source) {
       break;
     }
     case SigninMode::kIncognitoDisabledByPolicy:
-      ShowTab(ProfileManager::GetActiveUserProfile(), url);
+      ShowTab(url);
       break;
     case SigninMode::kIncognitoDisabledByParentalControls: {
       // Supervised users require SupervisedUserNavigationThrottle, now
@@ -298,21 +292,14 @@ void NetworkPortalSigninController::ShowSigninDialog(const GURL& url) {
     return;
   }
 
-  // Disable ABH/HTTPS-First Mode when logged out because captive portals
-  // require unencrypted HTTP redirects to serve login pages. Forcing HTTPS
-  // would block these redirects with SSL error. See crbug.com/493517524
-  // for details.
-  const bool disable_https_upgrades = ash::LoginState::IsInitialized() &&
-                                      !ash::LoginState::Get()->IsUserLoggedIn();
-
-  auto web_dialog_delegate =
-      std::make_unique<SigninWebDialogDelegate>(url, disable_https_upgrades);
+  auto web_dialog_delegate = std::make_unique<SigninWebDialogDelegate>(url);
 
   dialog_widget_ = views::Widget::GetWidgetForNativeWindow(
       // ui::WebDialogDelegate is self-deleting, so pass ownership of it (as a
       // raw pointer) in here.
       chrome::ShowWebDialog(nullptr, ProfileHelper::GetSigninProfile(),
-                            web_dialog_delegate.release()));
+                            web_dialog_delegate.release(), /*show=*/true,
+                            captive_portal::CaptivePortalWindowType::kPopup));
   dialog_widget_observation_.Observe(dialog_widget_.get());
 }
 
@@ -321,21 +308,12 @@ void NetworkPortalSigninController::ShowSigninWindow(const GURL& url) {
   ash::NewWindowDelegate::GetInstance()->OpenCaptivePortalSignin(url);
 }
 
-void NetworkPortalSigninController::ShowTab(Profile* profile, const GURL& url) {
-  chrome::ScopedTabbedBrowserDisplayer displayer(profile);
-  if (!displayer.browser_window_interface()) {
-    return;
-  }
-
-  NavigateParams params(displayer.browser_window_interface(), url,
-                        ui::PAGE_TRANSITION_LINK);
-  // `captive_portal_window_type = kTab` is used on desktop Chrome to identify
-  // captive portal signin tabs. This disables HTTPS-Upgrades for the captive
-  // portal navigation.
-  params.captive_portal_window_type =
-      captive_portal::CaptivePortalWindowType::kTab;
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-  ::Navigate(&params);
+void NetworkPortalSigninController::ShowTab(const GURL& url) {
+  const auto& session =
+      CHECK_DEREF(session_manager::SessionManager::Get()->GetActiveSession());
+  BrowserController::GetInstance()->OpenCaptivePortalSignin(
+      session.account_id(), url,
+      BrowserController::CaptivePortalWindowMode::kTab);
 }
 
 void NetworkPortalSigninController::ShowActiveProfileTab(const GURL& url) {

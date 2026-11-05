@@ -1191,6 +1191,7 @@ bool IsPlainContentElement(ax::mojom::Role role) {
     case ax::mojom::Role::kGenericContainer:
     case ax::mojom::Role::kNone:
     case ax::mojom::Role::kGroup:
+    case ax::mojom::Role::kParagraph:
       return true;
     default:
       return false;
@@ -1227,6 +1228,10 @@ bool SupportsNamingWithChildContent(const ax::mojom::Role role) {
     default:
       return false;
   }
+}
+
+bool IsRoleFinal(ax::mojom::Role role) {
+  return role == ax::mojom::Role::kInlineTextBox;
 }
 
 }  // namespace ui

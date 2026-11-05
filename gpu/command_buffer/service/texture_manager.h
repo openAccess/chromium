@@ -377,6 +377,13 @@ class GPU_GLES2_EXPORT Texture final : public TextureBase {
     return face_infos_[0].level_infos.size();
   }
 
+  GLsizei NumMipLevels(size_t face_index = 0) const {
+    if (face_index < face_infos_.size()) {
+      return face_infos_[face_index].num_mip_levels;
+    }
+    return 0;
+  }
+
  private:
   friend class TextureManager;
   friend class TextureRef;
@@ -700,11 +707,11 @@ struct DecoderTextureState {
 
   bool force_cube_map_positive_x_allocation;
   bool force_cube_complete;
-  bool force_int_or_srgb_cube_texture_complete;
   bool unpack_alignment_workaround_with_unpack_buffer;
   bool unpack_overlapping_rows_separately_unpack_buffer;
   bool split_level_0_pbo_full_sub_image_2d;
   bool upload_oversized_mip_levels_via_unpack_buffer;
+  bool use_tex_sub_image_for_client_data_npot_uploads;
 };
 
 // This class keeps track of the textures and their sizes so we can do NPOT and
@@ -1121,17 +1128,6 @@ class GPU_GLES2_EXPORT TextureManager
 
   static GLenum AdjustTexStorageFormat(const gles2::FeatureInfo* feature_info,
                                        GLenum format);
-
-  void WorkaroundCopyTexImageCubeMap(DecoderTextureState* texture_state,
-                                     ContextState* state,
-                                     ErrorState* error_state,
-                                     DecoderFramebufferState* framebuffer_state,
-                                     TextureRef* texture_ref,
-                                     const char* function_name,
-                                     const DoTexImageArguments& args) {
-    DoCubeMapWorkaround(texture_state, state, error_state, framebuffer_state,
-                        texture_ref, function_name, args);
-  }
 
  private:
   friend class Texture;

@@ -110,10 +110,6 @@ BASE_DECLARE_FEATURE(kLensOverlayEduActionChip);
 COMPONENT_EXPORT(LENS_FEATURES)
 BASE_DECLARE_FEATURE(kLensOverlayKeyboardSelection);
 
-// Use alternate appearance for permission bubble.
-COMPONENT_EXPORT(LENS_FEATURES)
-BASE_DECLARE_FEATURE(kLensOverlayPermissionBubbleAlt);
-
 // Enables the search not found on page toast when a user clicks a citation for
 // the current page they are viewing but the text was not found.
 COMPONENT_EXPORT(LENS_FEATURES)
@@ -148,10 +144,6 @@ BASE_DECLARE_FEATURE(kLensOverlayTextSelectionContextMenuEntrypoint);
 // debugging only.
 COMPONENT_EXPORT(LENS_FEATURES)
 BASE_DECLARE_FEATURE(kLensOverlayForceEmptyCsbQuery);
-
-// Enables using a webview for the results frame instead of an iframe.
-COMPONENT_EXPORT(LENS_FEATURES)
-BASE_DECLARE_FEATURE(kLensSidePanelEnableWebviewResults);
 
 // Enables AIM suggestions in the composebox.
 COMPONENT_EXPORT(LENS_FEATURES)
@@ -216,6 +208,11 @@ BASE_DECLARE_FEATURE(kLensSendQuerySubmissionTime);
 COMPONENT_EXPORT(LENS_FEATURES)
 BASE_DECLARE_FEATURE(kLensSendUrlsInComposeboxes);
 
+// Enables sending Google Drive / Docs tab URLs as unresolved URLs from the
+// Query Contextualizer in composeboxes.
+COMPONENT_EXPORT(LENS_FEATURES)
+BASE_DECLARE_FEATURE(kLensSendDriveTabUrlsInComposeboxes);
+
 // Enables skipping unresolved urls and Lens files, and only sending AAI for
 // modality chips in composebox queries.
 COMPONENT_EXPORT(LENS_FEATURES)
@@ -226,6 +223,14 @@ BASE_DECLARE_FEATURE(kLensOnlySendAaiForModalityChips);
 COMPONENT_EXPORT(LENS_FEATURES)
 BASE_DECLARE_FEATURE(
     kLensRestrictAnnotatedPageContentToSameSiteFramesForNextQueries);
+
+// Enables temporarily marking a hidden tab as visible to its renderer while
+// extracting its annotated page content. Hidden pages may be frozen by the
+// renderer scheduler (e.g. after being backgrounded for a while on Android), in
+// which case extraction would otherwise stall until it times out. Enabled by
+// default only on Android, where background page freezing is on by default.
+COMPONENT_EXPORT(LENS_FEATURES)
+BASE_DECLARE_FEATURE(kLensWakeHiddenTabForPageContentExtraction);
 
 // Enables deletion of context if a previously uploaded context is associated
 // with a page that was navigated away from or tab that was closed.
@@ -1031,10 +1036,6 @@ base::TimeDelta GetLensOverlayEduActionChipShowDebounceInterval();
 COMPONENT_EXPORT(LENS_FEATURES)
 extern bool IsLensOverlayKeyboardSelectionEnabled();
 
-// Whether to use alternate appearance for permission bubble.
-COMPONENT_EXPORT(LENS_FEATURES)
-bool IsLensOverlayPermissionBubbleAltEnabled();
-
 // Whether to enable the not found on page toast.
 COMPONENT_EXPORT(LENS_FEATURES)
 extern bool IsLensSearchNotFoundOnPageToastEnabled();
@@ -1055,11 +1056,6 @@ extern bool IsLensOverlayTextSelectionContextMenuEntrypointContextualized();
 // internal debugging only.
 COMPONENT_EXPORT(LENS_FEATURES)
 extern bool IsLensOverlayForceEmptyCsbQueryEnabled();
-
-// Whether to use a webview for the results frame instead of an iframe.
-COMPONENT_EXPORT(LENS_FEATURES)
-extern bool IsLensSidePanelWebviewResultsEnabled();
-
 
 // Whether the feature to enable the special handling for video citations is
 // enabled.
@@ -1116,6 +1112,11 @@ extern bool IsLensSendRawFileMediaTypesEnabled();
 // Enables sending URLs from the Query Contextualizer in composeboxes.
 COMPONENT_EXPORT(LENS_FEATURES)
 extern bool IsLensSendUrlsInComposeboxesEnabled();
+
+// Enables sending Google Drive / Docs tab URLs as unresolved URLs from the
+// Query Contextualizer in composeboxes.
+COMPONENT_EXPORT(LENS_FEATURES)
+extern bool IsLensSendDriveTabUrlsInComposeboxesEnabled();
 
 COMPONENT_EXPORT(LENS_FEATURES)
 extern bool IsLensOnlySendAaiForModalityChipsEnabled();

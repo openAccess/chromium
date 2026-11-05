@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 
 #include "base/cancelable_callback.h"
 #include "base/compiler_specific.h"
@@ -30,11 +31,12 @@
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "media/audio/apple/audio_manager_apple.h"
+#include "media/audio/apple/scoped_audio_unit.h"
 #include "media/audio/audio_io.h"
 #include "media/audio/audio_manager.h"
-#include "media/audio/apple/scoped_audio_unit.h"
 #include "media/audio/system_glitch_reporter.h"
 #include "media/base/amplitude_peak_detector.h"
 #include "media/base/audio_parameters.h"
@@ -84,6 +86,7 @@ class AUHALStream : public AudioOutputStream {
   AUHALStream(AudioManagerApple* manager,
               const AudioParameters& params,
               AudioDeviceID device,
+              const std::string& device_unique_id,
               const AudioManager::LogCallback& log_callback);
 
   AUHALStream(const AUHALStream&) = delete;
@@ -142,6 +145,8 @@ class AUHALStream : public AudioOutputStream {
   // Sends a log message to the registered log callback.
   void SendLogMessage(const std::string& message);
 
+  const base::UnguessableToken id_;
+
   // Our creator, the audio manager needs to be notified when we close.
   const raw_ptr<AudioManagerApple> manager_;
 
@@ -159,6 +164,9 @@ class AUHALStream : public AudioOutputStream {
   // The audio device to use with the AUHAL.
   // We can potentially handle both input and output with this device.
   const AudioDeviceID device_;
+
+  // Unique ID string of the audio output device (e.g. GUID or "default").
+  const std::string device_unique_id_;
 
   // The AUHAL Audio Unit which talks to |device_|.
   std::unique_ptr<ScopedAudioUnit> audio_unit_;

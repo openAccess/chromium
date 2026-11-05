@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/notimplemented.h"
@@ -19,6 +20,7 @@
 #include "components/guest_view/browser/slim_web_view/grit/slim_web_view_strings.h"
 #include "components/guest_view/browser/slim_web_view/request_utils.h"
 #include "components/guest_view/browser/slim_web_view/slim_web_view_constants.h"
+#include "components/guest_view/common/guest_view_features.h"
 #include "components/url_pattern/simple_url_pattern_matcher.h"
 #include "components/zoom/zoom_controller.h"
 #include "content/public/browser/navigation_entry.h"
@@ -33,6 +35,7 @@
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 #include "url/url_constants.h"
@@ -191,21 +194,21 @@ ParseOriginCheckParams(const base::DictValue& create_params) {
 }
 
 std::string WindowOpenDispositionToString(
-    WindowOpenDisposition window_open_disposition) {
+    ui::mojom::WindowOpenDisposition window_open_disposition) {
   switch (window_open_disposition) {
-    case WindowOpenDisposition::IGNORE_ACTION:
+    case ui::mojom::WindowOpenDisposition::kIgnoreAction:
       return "ignore";
-    case WindowOpenDisposition::SAVE_TO_DISK:
+    case ui::mojom::WindowOpenDisposition::kSaveToDisk:
       return "save_to_disk";
-    case WindowOpenDisposition::CURRENT_TAB:
+    case ui::mojom::WindowOpenDisposition::kCurrentTab:
       return "current_tab";
-    case WindowOpenDisposition::NEW_BACKGROUND_TAB:
+    case ui::mojom::WindowOpenDisposition::kNewBackgroundTab:
       return "new_background_tab";
-    case WindowOpenDisposition::NEW_FOREGROUND_TAB:
+    case ui::mojom::WindowOpenDisposition::kNewForegroundTab:
       return "new_foreground_tab";
-    case WindowOpenDisposition::NEW_WINDOW:
+    case ui::mojom::WindowOpenDisposition::kNewWindow:
       return "new_window";
-    case WindowOpenDisposition::NEW_POPUP:
+    case ui::mojom::WindowOpenDisposition::kNewPopup:
       return "new_popup";
     default:
       NOTREACHED() << "Unknown Window Open Disposition";
@@ -290,6 +293,12 @@ bool SlimWebViewGuest::HasAllowedOrigins() const {
   return !!allowed_origins_params_;
 }
 
+bool SlimWebViewGuest::HasAllowedOrigins(
+    RequestResourceType resource_type) const {
+  return allowed_origins_params_ &&
+         allowed_origins_params_->resource_types.contains(resource_type);
+}
+
 base::expected<void, std::string> SlimWebViewGuest::IsUrlAllowed(
     RequestResourceType resource_type,
     const GURL& url) const {
@@ -349,10 +358,10 @@ content::WebContents* SlimWebViewGuest::CreateCustomWebContents(
     const GURL& opener_url,
     const std::string& frame_name,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     const content::StoragePartitionConfig& partition_config,
-    content::SessionStorageNamespace* session_storage_namespace) {
+    content::SessionStorageNamespaceHandle* session_storage_namespace) {
   CHECK(!base::FeatureList::IsEnabled(features::kGuestViewMPArch));
 
   base::DictValue request_info;
@@ -424,6 +433,12 @@ void SlimWebViewGuest::DidFinishNavigation(
   if (!IsObservedNavigationWithinGuest(navigation_handle)) {
     return;
   }
+  if (base::FeatureList::IsEnabled(
+          kGuestViewMatchEmbedderZoomAfterNavigation)) {
+    // Matches the guest's zoom to the embedder's, unless an explicit zoom was
+    // set.
+    GuestViewBase::DidFinishNavigation(navigation_handle);
+  }
   if (navigation_handle->IsErrorPage() || !navigation_handle->HasCommitted()) {
     // Suppress loadabort for "mailto" URLs.
     // Also during destruction, the owner is null so there's no point
@@ -485,10 +500,20 @@ void SlimWebViewGuest::GuestSizeChangedDueToAutoSize(
     const gfx::Size& old_size,
     const gfx::Size& new_size) {
   base::DictValue args;
-  args.Set(slim_web_view::kOldHeight, old_size.height());
-  args.Set(slim_web_view::kOldWidth, old_size.width());
-  args.Set(slim_web_view::kNewHeight, new_size.height());
-  args.Set(slim_web_view::kNewWidth, new_size.width());
+  if (AutoSizeUsesLogicalPixels()) {
+    // The element applies these to its style as CSS px.
+    const gfx::SizeF logical_old_size = AutoSizeToLogicalPixels(old_size);
+    const gfx::SizeF logical_new_size = AutoSizeToLogicalPixels(new_size);
+    args.Set(slim_web_view::kOldHeight, logical_old_size.height());
+    args.Set(slim_web_view::kOldWidth, logical_old_size.width());
+    args.Set(slim_web_view::kNewHeight, logical_new_size.height());
+    args.Set(slim_web_view::kNewWidth, logical_new_size.width());
+  } else {
+    args.Set(slim_web_view::kOldHeight, old_size.height());
+    args.Set(slim_web_view::kOldWidth, old_size.width());
+    args.Set(slim_web_view::kNewHeight, new_size.height());
+    args.Set(slim_web_view::kNewWidth, new_size.width());
+  }
   DispatchEventToView(std::make_unique<GuestViewEvent>(
       slim_web_view::kEventSizeChanged, std::move(args)));
 }
@@ -601,11 +626,21 @@ void SlimWebViewGuest::LoadAbort(bool is_top_level,
 }
 
 void SlimWebViewGuest::SetZoom(double zoom_factor) {
+  did_set_explicit_zoom_ = true;
   auto* zoom_controller = GetZoomController();
   if (zoom_controller) {
     double zoom_level = blink::ZoomFactorToZoomLevel(zoom_factor);
     zoom_controller->SetZoomLevel(zoom_level);
   }
+}
+
+bool SlimWebViewGuest::ZoomPropagatesFromEmbedderToGuest() const {
+  if (base::FeatureList::IsEnabled(
+          kGuestViewMatchEmbedderZoomAfterNavigation)) {
+    // Use the embedder's zoom unless one was set explicitly with SetZoom().
+    return !did_set_explicit_zoom_;
+  }
+  return GuestViewBase::ZoomPropagatesFromEmbedderToGuest();
 }
 
 double SlimWebViewGuest::GetZoom() const {

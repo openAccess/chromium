@@ -34,6 +34,7 @@
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
 #include "third_party/blink/public/mojom/scroll/scroll_into_view_params.mojom-blink-forward.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include "third_party/blink/renderer/bindings/core/v8/js_event_handler.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
@@ -128,8 +129,10 @@ class ElementAnimations;
 class ElementInternals;
 class ElementIntersectionObserverData;
 class ExceptionState;
+class FloatClipRect;
 class FocusEvent;
 class FocusOptions;
+class Focusable;
 class GetAnimationsOptions;
 class HTMLCanvasElement;
 class HTMLElement;
@@ -171,7 +174,8 @@ class StylePropertyMapReadOnly;
 class StyleRecalcContext;
 class StyleScopeData;
 class TextVisitor;
-class TrustedParserOptions;
+class TrustedHTMLParserOptions;
+class UIEvent;
 class V8UnionBooleanOrScrollIntoViewOptions;
 class V8UnionCSSPseudoElementOrDocumentOrElementOrText;
 class V8UnionKeyframeAnimationOptionsOrUnrestrictedDouble;
@@ -230,6 +234,11 @@ enum class SelectionBehaviorOnFocus {
   kReset,
   kRestore,
   kNone,
+};
+
+enum class BlurEventBehavior {
+  kFire,
+  kDropWhenRemoving,
 };
 
 enum class FocusableState {
@@ -295,8 +304,8 @@ enum class CommandEventType {
 };
 
 // Defaults for the `interestfor` API's `normal` value.
-static constexpr double kDefaultInterestDelayStartSeconds = 0.5;
-static constexpr double kDefaultInterestDelayEndSeconds = 0.25;
+static constexpr double kDefaultInterestDelayStartSeconds = 0.25;
+static constexpr double kDefaultInterestDelayEndSeconds = 0.15;
 
 typedef HeapVector<Member<Attr>> AttrNodeList;
 
@@ -515,8 +524,7 @@ class CORE_EXPORT Element : public ContainerNode {
   // Returns attributes that should be checked against Trusted Types
   virtual const AttrNameToTrustedType& GetCheckedAttributeTypes() const;
   const std::tuple<SpecificTrustedType, const AtomicString, const AtomicString>
-  GetTrustedTypeDataForAttribute(const QualifiedName& q_name,
-                                 const char* legacy_sink_name) const;
+  GetTrustedTypeDataForAttribute(const QualifiedName& q_name) const;
 
   static std::optional<QualifiedName> ParseAttributeName(
       const AtomicString& namespace_uri,
@@ -676,7 +684,7 @@ class CORE_EXPORT Element : public ContainerNode {
   DOMRect* GetBoundingClientRect();
   DOMRect* GetBoundingClientRectForBinding();
 
-  ContainerQueryList* matchContainer(const String& query);
+  ContainerQueryList* matchContainer(const String& query, ExceptionState&);
 
   // Call the NoLifecycleUpdate variants if you are sure that the lifcycle is
   // already updated to at least pre-paint clean.
@@ -914,7 +922,7 @@ class CORE_EXPORT Element : public ContainerNode {
   using TinyBloomFilter = uint32_t;
   static TinyBloomFilter FilterForAttribute(
       const QualifiedName& attribute_name) {
-    return FilterForString(attribute_name.LocalNameUpper());
+    return attribute_name.BloomFilter();
   }
   static TinyBloomFilter FilterForString(const AtomicString& str) {
     unsigned hash = str.Hash();
@@ -1139,8 +1147,6 @@ class CORE_EXPORT Element : public ContainerNode {
   // Implements manual slot assignment for user agent shadow roots.
   virtual void ManuallyAssignSlots() { DCHECK(false); }
 
-  bool IsInDescendantTreeOf(const Element* shadow_host) const;
-
   // Returns the Element’s ComputedStyle. If the ComputedStyle is not already
   // stored on the Element, computes the ComputedStyle and stores it on the
   // Element’s NodeRareData.  Used for getComputedStyle when Element is display
@@ -1162,31 +1168,45 @@ class CORE_EXPORT Element : public ContainerNode {
     SetElementFlag(ElementFlags::kStyleAffectedByEmpty);
   }
 
-  // Determine whether the parent or owner of this element in the flat tree is a
-  // canvas element or in a canvas subtree.
-  bool ComputeIsInCanvasSubtree() const;
+  enum class CanvasSubtreePropagation { kOnlyIfChanged, kAlways };
+
   // Recursively sets the IsInCanvasSubtree bit for the element and its subtree.
-  void SetIsInCanvasSubtree(bool value);
-  // Is in the flat subtree of a canvas element, but not the canvas element
-  // itself.
+  // If propagation_behavior is kOnlyIfChanged, the recursion stops when it
+  // reaches a Node where `value` is the same as the Node's current state. If
+  // the behavior is kAlways, the recursion forcibly continues all the way down
+  // the tree regardless of the previous value.
+  void SetIsInCanvasSubtree(bool value,
+                            CanvasSubtreePropagation propagation_behavior =
+                                CanvasSubtreePropagation::kOnlyIfChanged);
+  // True if this element has a flat-tree DOM ancestor <canvas> (including
+  // across local frame boundaries).
+  // Warning: This is a pure DOM check; it is true regardless of
+  // `content=drawable` or `drawable`, and remains true for elements that
+  // escape their canvas into the top layer (e.g., modal <dialog> or popover).
+  // See also `EffectPaintPropertyNode::IsInDrawableCanvasSubtree()`.
   bool IsInCanvasSubtree() const {
     return HasElementFlag(ElementFlags::kIsInCanvasSubtree);
   }
   // Like `IsInCanvasSubtree()`, but includes <canvas> elements.
   bool IsCanvasOrInCanvasSubtree() const;
-  // Called when `IsInCanvasSubtree()` changes.
-  virtual void DidChangeIsInCanvasSubtree();
+  // Called when `IsInCanvasSubtree()` changes, or when content should be
+  // invalidated *as if* `IsInCanvasSubtree()` changed (e.g., when showing
+  // or hiding a popover).
+  virtual void DidChangeIsInCanvasSubtree(CanvasSubtreePropagation);
 #if DCHECK_IS_ON()
   void VerifySubtreeIsInCanvas(bool value);
 #endif
 
-  // Returns the nearest ancestor <canvas layoutsubtree> if this element is
-  // eligible for drawing into it (i.e. is connected, is in a canvas subtree,
-  // is not a pseudo-element, and is an immediate child of the canvas or has
-  // the 'drawable' attribute). Returns nullptr otherwise.
+  // If this is a connected, non-pseudo element with the `drawable` attribute,
+  // returns the nearest flat-tree DOM ancestor <canvas> (in the same document)
+  // if that <canvas> has `content=drawable`; returns nullptr otherwise.
+  // Warning: This is a DOM check and does not check whether the element has a
+  // drawable LayoutObject or escapes its canvas into the top layer. See also
+  // `LayoutObject::CanvasForDrawingLayoutObject()` and
+  // `EffectPaintPropertyNode::IsInDrawableCanvasSubtree()`.
   HTMLCanvasElement* CanvasForDrawing() const;
+  void RequestCanvasPaintOnDrawableRemoved();
 
-  bool HasCanvasTransform() const;
   // Returns the transform that should be used for mapping the border-box,
   // before CSS transforms, to the canvas coordinate space. When the element
   // has a CanvasForDrawing, this affects the geometry of the element (e.g.,
@@ -1197,6 +1217,16 @@ class CORE_EXPORT Element : public ContainerNode {
   const gfx::Transform* GetCanvasTransform() const;
   void SetCanvasTransform(const gfx::Transform& transform);
   void ClearCanvasTransform();
+
+  // Returns the clip that should be used for hit-testing in the coordinate
+  // space of the element's canvas transform. When the element has a
+  // CanvasForDrawing, this affects hit-testing of the element and its
+  // descendants. Returns an infinite clip rect if the element does not have a
+  // CanvasForDrawing.
+  FloatClipRect GetUsedCanvasClip() const;
+  FloatClipRect GetCanvasClip() const;
+  void SetCanvasClip(const FloatClipRect& clip);
+  void ClearCanvasClip();
 
   bool IsDefined() const {
     // An element whose custom element state is "uncustomized" or "custom"
@@ -1244,6 +1274,11 @@ class CORE_EXPORT Element : public ContainerNode {
   // Element focus function called through IDL (i.e. element.focus() in JS)
   // Delegates to Focus() with focus type set to kScript
   void focusForBindings(const FocusOptions*);
+  // Return the next/previous item in the sequential focus navigation order
+  // (i.e. what Tab/Shift+Tab would move focus to) starting from this element,
+  // without changing focus. Return nullptr at either end of the order.
+  Focusable* nextFocusable();
+  Focusable* previousFocusable();
   // Element focus function called from outside IDL (user focus,
   // accessibility, etc...)
   virtual void Focus(const FocusParams&);
@@ -1251,7 +1286,12 @@ class CORE_EXPORT Element : public ContainerNode {
   void Focus();
   void Focus(const FocusOptions*);
 
-  virtual void SetFocused(bool received, mojom::blink::FocusType);
+  void SetFocused(bool received, mojom::blink::FocusType focus_type) {
+    SetFocused(received, focus_type, BlurEventBehavior::kFire);
+  }
+  virtual void SetFocused(bool received,
+                          mojom::blink::FocusType,
+                          BlurEventBehavior);
   virtual void SetHasFocusWithinUpToAncestor(bool has_focus_within,
                                              Element* ancestor,
                                              bool need_snap_container_search);
@@ -1382,7 +1422,8 @@ class CORE_EXPORT Element : public ContainerNode {
     return false;
   }
   virtual bool HandleCommandInternal(HTMLElement& invoker,
-                                     CommandEventType command) {
+                                     CommandEventType command,
+                                     UIEvent* activate_event) {
     CHECK(command != CommandEventType::kCustom &&
           command != CommandEventType::kNone);
 
@@ -1446,10 +1487,15 @@ class CORE_EXPORT Element : public ContainerNode {
       InterestLostPopoverBehavior =
           InterestLostPopoverBehavior::kClosePopovers);
 
+  enum class InterestForType {
+    kAny,
+    kExplicitOnly,
+  };
+
   // Returns the target of the `interestfor` attribute, if any, and only if
   // the element supports this attribute. For example, `interestfor` is not
   // allowed on a `<div>`.
-  Element* InterestForElement() const;
+  Element* InterestForElement(InterestForType = InterestForType::kAny) const;
   // Checks that the provided interest invoker relationship is valid. For this
   // call, `this` is the interest invoker (with the `interestfor` attribute),
   // and the provided `target` is the proposed target element.
@@ -1542,7 +1588,7 @@ class CORE_EXPORT Element : public ContainerNode {
                      SetHTMLUnsafeOptions*,
                      ExceptionState&);
   void setHTMLUnsafe(const V8UnionStringOrTrustedHTML* html,
-                     TrustedParserOptions*,
+                     TrustedHTMLParserOptions*,
                      ExceptionState&);
   void setHTML(const String& html, SetHTMLOptions*, ExceptionState&);
 
@@ -1607,6 +1653,8 @@ class CORE_EXPORT Element : public ContainerNode {
   // Returns true if this element contains any ::scroll-button or
   // ::scroll-marker-group pseudos.
   bool HasScrollButtonOrMarkerGroupPseudos() const;
+  // Returns true if this element contains an ::interest-button pseudo.
+  bool HasInterestButtonPseudo() const;
 
   bool PseudoElementStylesAffectCounters() const;
 
@@ -1639,6 +1687,10 @@ class CORE_EXPORT Element : public ContainerNode {
   const ComputedStyle* StyleForPseudoElement(const StyleRecalcContext&,
                                              const StyleRequest&);
 
+  // StyleForPseudoElement specifically for kPseudoIdFirstLineInherited.
+  const ComputedStyle* StyleForFirstLineInherited(const StyleRecalcContext&,
+                                                  const StyleRequest&);
+
   // These are used by ResolveStyle with Highlight Inheritance when caching
   // is not used.
   const ComputedStyle* StyleForHighlightPseudoElement(
@@ -1662,6 +1714,8 @@ class CORE_EXPORT Element : public ContainerNode {
   virtual bool MatchesReadWritePseudoClass() const { return false; }
   virtual bool MatchesValidityPseudoClasses() const { return false; }
   bool MatchesOverscrollOpen() const;
+  // Unlike !MatchesOverscrollOpen(), only true for valid overscroll areas.
+  bool MatchesOverscrollClosed() const;
 
   virtual bool MayTriggerVirtualKeyboard() const;
 
@@ -1696,7 +1750,6 @@ class CORE_EXPORT Element : public ContainerNode {
   virtual bool IsValidElement() { return false; }
   virtual bool IsInRange() const { return false; }
   virtual bool IsOutOfRange() const { return false; }
-  virtual bool IsClearButtonElement() const { return false; }
   virtual bool IsScriptElement() const { return false; }
   virtual bool IsVTTCueBackgroundBox() const { return false; }
   virtual bool IsVTTCueBox() const { return false; }
@@ -1711,8 +1764,8 @@ class CORE_EXPORT Element : public ContainerNode {
   bool CanContainRangeEndPoint() const override { return true; }
 
   // Used for disabled form elements; if true, prevents mouse events from being
-  // dispatched to event listeners, and prevents DOMActivate events from being
-  // sent at all.
+  // dispatched to event listeners, and prevents activation behavior from
+  // running.
   virtual bool IsDisabledFormControl() const { return false; }
 
   void SetCustomElementDefinition(CustomElementDefinition*);
@@ -1898,8 +1951,24 @@ class CORE_EXPORT Element : public ContainerNode {
   // `ad_provenance` is not overwritten).
   void SetIsAdRelated(AdProvenance ad_provenance);
 
+  // Marks this element as an ad-related video stream.
+  void UpdateToVideoAd();
+
+  // Marks this element as an overlay popup ad.
+  void SetIsOverlayPopupAd();
+
   // Returns true if the element is considered ad-related.
   bool IsAdRelated() const;
+
+  // Returns true if the element is an ad-related video stream.
+  bool IsVideoAd() const;
+
+  // Returns true if the element is an ad that has been detected to stay in
+  // place in the viewport while the page scrolls.
+  bool IsStickyAd() const;
+
+  // Returns true if the element is an overlay popup ad.
+  bool IsOverlayPopupAd() const;
 
   // Returns the `AdProvenance` if the element is ad-related, or `std::nullopt`
   // otherwise.
@@ -2036,6 +2105,9 @@ class CORE_EXPORT Element : public ContainerNode {
 
   void DefaultEventHandler(Event&) override;
 
+  virtual String FilterBeforeTextInserted(const String& text);
+  virtual void NotifyEditableContentChanged();
+
   // Set on elements with scroll-target-group property to
   // collect HTMLAnchorElement scroll markers.
   ScrollMarkerGroupData& EnsureScrollTargetGroupData();
@@ -2074,17 +2146,6 @@ class CORE_EXPORT Element : public ContainerNode {
   void UpdateAncestorWithDirAuto(UpdateAncestorTraversal traversal);
   void AdjustDirectionalityIfNeededAfterChildrenChanged(
       const ChildrenChange& change);
-
-  // True if this element carries the container timing ignore marker, either
-  // spelled `containertimingignore` or with the deprecated dashed
-  // `containertiming-ignore` spelling. Both are functional; the dashed one
-  // additionally warns in the console.
-  //
-  // TODO(crbug.com/539984792): the dashed spelling is going away right after
-  // the origin trial ends. Once it does, drop this helper and inline
-  // FastHasAttribute(html_names::kContainertimingignoreAttr) back into its
-  // callers.
-  bool HasContainerTimingIgnoreAttribute() const;
 
   // The "nonce" attribute is hidden when:
   // 1) The Content-Security-Policy is delivered from the HTTP headers.
@@ -2150,6 +2211,8 @@ class CORE_EXPORT Element : public ContainerNode {
   OverscrollAreaTracker* GetOverscrollAreaTracker() const;
 
   Element* GetOverscrollContainer() const;
+  // Updated before styling by OverscrollAreaTracker::UpdateOverscrollArea().
+  bool IsValidOverscrollArea() const;
   void SetOverscrollContainer(Element*);
   void ClearOverscrollContainer();
   void DetachOverscroll();
@@ -2197,6 +2260,10 @@ class CORE_EXPORT Element : public ContainerNode {
   UniqueElementData& EnsureUniqueElementData();
 
   bool IsViewportScrollElement();
+
+  // Returns the rect reported by clientLeft/Top/Width/Height: the padding
+  // box, but text fields use the content box in the inline axis.
+  static PhysicalRect PhysicalClientRect(const LayoutBox&);
 
   void AddPropertyToPresentationAttributeStyle(HeapVector<CSSPropertyValue, 8>&,
                                                CSSPropertyID,
@@ -2308,6 +2375,27 @@ class CORE_EXPORT Element : public ContainerNode {
   virtual bool SupportsBaseAppearanceInternal(BaseAppearanceValue) const {
     return false;
   }
+
+  void SetElementAttributeEventListenerFromScriptBody(
+      const AtomicString& event_type_name,
+      const QualifiedName& attribute_name,
+      const AtomicString& script_body,
+      AttributeModificationReason,
+      JSEventHandler::HandlerType = JSEventHandler::HandlerType::kEventHandler);
+
+  void SetDocumentAttributeEventListenerFromScriptBody(
+      const AtomicString& event_type_name,
+      const QualifiedName& attribute_name,
+      const AtomicString& script_body,
+      AttributeModificationReason,
+      JSEventHandler::HandlerType = JSEventHandler::HandlerType::kEventHandler);
+
+  void SetWindowAttributeEventListenerFromScriptBody(
+      const AtomicString& event_type_name,
+      const QualifiedName& attribute_name,
+      const AtomicString& script_body,
+      AttributeModificationReason,
+      JSEventHandler::HandlerType = JSEventHandler::HandlerType::kEventHandler);
 
  private:
   friend class AXObject;
@@ -2470,25 +2558,13 @@ class CORE_EXPORT Element : public ContainerNode {
     AttachPrecedingScrollControlsPseudoElements(context);
   }
 
-  void AttachLayoutPrecedingPseudoElements(AttachContext& context) {
-    if (IsDocumentElement()) {
-      return;
-    }
-    AttachPrecedingScrollControlsPseudoElements(context);
-  }
+  void AttachLayoutPrecedingPseudoElements(AttachContext& context);
 
   void AttachPrecedingScrollControlsPseudoElements(AttachContext& context) {
     AttachPseudoElement(kPseudoIdScrollMarkerGroupBefore, context);
   }
 
-  void AttachPrecedingPseudoElements(AttachContext& context) {
-    AttachDocumentElementPrecedingPseudoElements(context);
-    AttachOverscrollPseudoElements(context);
-    AttachPseudoElement(kPseudoIdScrollMarker, context);
-    AttachPseudoElement(kPseudoIdMarker, context);
-    AttachPseudoElement(kPseudoIdCheckMark, context);
-    AttachPseudoElement(kPseudoIdBefore, context);
-  }
+  void AttachPrecedingPseudoElements(AttachContext& context);
 
   // For document element scroll control pseudo-elements become not layout
   // siblings, but layout children.
@@ -2499,23 +2575,8 @@ class CORE_EXPORT Element : public ContainerNode {
     AttachSucceedingScrollControlsPseudoElements(context);
   }
 
-  void AttachLayoutSucceedingPseudoElements(AttachContext& context) {
-    if (IsDocumentElement()) {
-      return;
-    }
-    AttachSucceedingScrollControlsPseudoElements(context);
-  }
-
-  void AttachSucceedingPseudoElements(AttachContext& context) {
-    AttachPseudoElement(kPseudoIdAfter, context);
-    AttachPseudoElement(kPseudoIdExpandIcon, context);
-    AttachPseudoElement(kPseudoIdPickerIcon, context);
-    AttachPseudoElement(kPseudoIdInterestButton, context);
-    AttachDocumentElementSucceedingPseudoElements(context);
-    AttachPseudoElement(kPseudoIdBackdrop, context);
-    UpdateFirstLetterPseudoElement(StyleUpdatePhase::kAttachLayoutTree);
-    AttachPseudoElement(kPseudoIdFirstLetter, context);
-  }
+  void AttachLayoutSucceedingPseudoElements(AttachContext& context);
+  void AttachSucceedingPseudoElements(AttachContext& context);
 
   void AttachSucceedingScrollControlsPseudoElements(AttachContext& context) {
     // The order for buttons is described in
@@ -2535,28 +2596,8 @@ class CORE_EXPORT Element : public ContainerNode {
   void AttachColumnPseudoElements(AttachContext& context);
   void AttachTransitionPseudoElements(AttachContext& context);
 
-  void DetachPrecedingPseudoElements(bool performing_reattach) {
-    DetachPseudoElement(kPseudoIdScrollMarker, performing_reattach);
-    DetachPseudoElement(kPseudoIdScrollMarkerGroupBefore, performing_reattach);
-    DetachPseudoElement(kPseudoIdMarker, performing_reattach);
-    DetachPseudoElement(kPseudoIdCheckMark, performing_reattach);
-    DetachPseudoElement(kPseudoIdBefore, performing_reattach);
-    DetachOverscrollPseudoElements(performing_reattach);
-  }
-
-  void DetachSucceedingPseudoElements(bool performing_reattach) {
-    DetachPseudoElement(kPseudoIdAfter, performing_reattach);
-    DetachPseudoElement(kPseudoIdExpandIcon, performing_reattach);
-    DetachPseudoElement(kPseudoIdPickerIcon, performing_reattach);
-    DetachPseudoElement(kPseudoIdInterestButton, performing_reattach);
-    DetachPseudoElement(kPseudoIdScrollButtonBlockStart, performing_reattach);
-    DetachPseudoElement(kPseudoIdScrollButtonInlineStart, performing_reattach);
-    DetachPseudoElement(kPseudoIdScrollButtonInlineEnd, performing_reattach);
-    DetachPseudoElement(kPseudoIdScrollButtonBlockEnd, performing_reattach);
-    DetachPseudoElement(kPseudoIdScrollMarkerGroupAfter, performing_reattach);
-    DetachPseudoElement(kPseudoIdBackdrop, performing_reattach);
-    DetachPseudoElement(kPseudoIdFirstLetter, performing_reattach);
-  }
+  void DetachPrecedingPseudoElements(bool performing_reattach);
+  void DetachSucceedingPseudoElements(bool performing_reattach);
 
   void DetachColumnPseudoElements(bool performing_reattach);
   void DetachTransitionPseudoElements(bool performing_reattach);
@@ -2618,11 +2659,9 @@ class CORE_EXPORT Element : public ContainerNode {
   void RemoveAttributeInternal(wtf_size_t index, AttributeModificationReason);
   AtomicString TrustedTypesCheckForAttribute(const QualifiedName&,
                                              AtomicString value,
-                                             const char* legacy_sink_name,
                                              ExceptionState&) const;
   AtomicString TrustedTypesCheckForAttribute(const QualifiedName&,
                                              const V8TrustedType* value,
-                                             const char* legacy_sink_name,
                                              ExceptionState&) const;
 
   // These Hinted versions of the functions are subtle hot path
@@ -2684,10 +2723,6 @@ class CORE_EXPORT Element : public ContainerNode {
                                      const AtomicString& new_name);
 
   void CreateUniqueElementData();
-
-  bool ShouldInvalidateDistributionWhenAttributeChanged(ShadowRoot&,
-                                                        const QualifiedName&,
-                                                        const AtomicString&);
 
   void SetInnerHTMLInternal(const String&,
                             FragmentParserConfig::ParseDeclarativeShadowRoots,

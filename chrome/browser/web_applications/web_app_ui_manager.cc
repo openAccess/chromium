@@ -6,6 +6,7 @@
 
 #include "base/feature_list.h"
 #include "chrome/common/chrome_switches.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace web_app {
 
@@ -19,11 +20,12 @@ apps::AppLaunchParams WebAppUiManager::CreateAppLaunchParamsWithoutWindowConfig(
     const std::optional<GURL>& file_launch_url,
     const std::vector<base::FilePath>& launch_files) {
   // At most one of these parameters should be non-empty.
-  DCHECK_LE(protocol_handler_launch_url.has_value() + !launch_files.empty(), 1);
+  CHECK_LE(protocol_handler_launch_url.has_value() + !launch_files.empty(), 1,
+           base::NotFatalUntil::M162);
 
   apps::LaunchSource launch_source = apps::LaunchSource::kFromCommandLine;
   if (!launch_files.empty()) {
-    DCHECK(file_launch_url.has_value());
+    CHECK(file_launch_url.has_value(), base::NotFatalUntil::M162);
     launch_source = apps::LaunchSource::kFromFileManager;
   }
 
@@ -33,9 +35,9 @@ apps::AppLaunchParams WebAppUiManager::CreateAppLaunchParamsWithoutWindowConfig(
     launch_source = apps::LaunchSource::kFromProtocolHandler;
   }
 
-  apps::AppLaunchParams params(app_id,
-                               apps::LaunchContainer::kLaunchContainerNone,
-                               WindowOpenDisposition::UNKNOWN, launch_source);
+  apps::AppLaunchParams params(
+      app_id, apps::LaunchContainer::kLaunchContainerNone,
+      ui::mojom::WindowOpenDisposition::kUnknown, launch_source);
   params.command_line = command_line;
   params.current_directory = current_directory;
   params.launch_files = launch_files;

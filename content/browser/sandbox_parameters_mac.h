@@ -5,6 +5,7 @@
 #ifndef CONTENT_BROWSER_SANDBOX_PARAMETERS_MAC_H_
 #define CONTENT_BROWSER_SANDBOX_PARAMETERS_MAC_H_
 
+#include "base/feature_list.h"
 #include "content/common/content_export.h"
 
 namespace base {
@@ -20,6 +21,9 @@ enum class Sandbox;
 }  // namespace sandbox
 
 namespace content {
+
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kMacSandboxAllowNetworkSymlinkCreation);
+CONTENT_EXPORT BASE_DECLARE_FEATURE(kMacSandboxAllowRendererPidinfo);
 
 // This populates the sandbox parameters in the client for the given
 // |sandbox_type|. Some parameters may be extracted from the |command_line|.

@@ -9,6 +9,7 @@
 #include <iterator>
 #include <optional>
 #include <ostream>
+#include <ranges>
 #include <set>
 #include <sstream>
 #include <string>
@@ -19,12 +20,12 @@
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
-#include "base/containers/adapters.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/trace_event/memory_usage_estimator.h"
@@ -74,7 +75,7 @@
 using metrics::OmniboxEventProto;
 using TemplateAction = omnibox::SuggestTemplateInfo::TemplateAction;
 
-typedef AutocompleteMatchType ACMatchType;
+using AutocompleteMatchType = omnibox::AutocompleteMatchType;
 
 namespace {
 
@@ -193,8 +194,6 @@ size_t AutocompleteResult::GetDynamicMaxMatches() {
 
 AutocompleteResult::AutocompleteResult()
     : max_url_matches_(is_android_mobile || is_ios ? 5 : 7) {
-  matches_.reserve(kMaxAutocompletePositionValue);
-
   static uint32_t next_sequence_id = 1;
   sequence_id_ = next_sequence_id;
   next_sequence_id++;
@@ -209,6 +208,11 @@ AutocompleteResult::~AutocompleteResult() {
   DestroyJavaObject();
 #endif
 }
+
+AutocompleteResult::AutocompleteResult(AutocompleteResult&&) noexcept = default;
+
+AutocompleteResult& AutocompleteResult::operator=(
+    AutocompleteResult&& other) noexcept = default;
 
 void AutocompleteResult::TransferOldMatches(const AutocompleteInput& input,
                                             AutocompleteResult* old_matches) {
@@ -229,12 +233,13 @@ void AutocompleteResult::TransferOldMatches(const AutocompleteInput& input,
   // Exclude specialized suggestion types from being transferred to prevent
   // user-visible artifacts.
   std::erase_if(old_matches->matches_, [](const auto& old_match) {
-    return old_match.type == AutocompleteMatchType::PEDAL ||
+    return old_match.type == omnibox::AutocompleteMatchType::kPedal ||
            (old_match.provider && old_match.provider->done()) ||
-           old_match.type == AutocompleteMatchType::URL_WHAT_YOU_TYPED ||
-           old_match.type == AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED ||
-           old_match.type == AutocompleteMatchType::TILE_NAVSUGGEST ||
-           old_match.type == AutocompleteMatchType::TILE_SUGGESTION;
+           old_match.type == omnibox::AutocompleteMatchType::kUrlWhatYouTyped ||
+           old_match.type ==
+               omnibox::AutocompleteMatchType::kSearchWhatYouTyped ||
+           old_match.type == omnibox::AutocompleteMatchType::kTileNavsuggest ||
+           old_match.type == omnibox::AutocompleteMatchType::kTileSuggestion;
   });
 
   if (old_matches->empty())
@@ -304,11 +309,22 @@ void AutocompleteResult::TransferOldMatches(const AutocompleteInput& input,
 }
 
 void AutocompleteResult::AppendMatches(const ACMatches& matches) {
+  if (matches.empty()) {
+    return;
+  }
+
+  // Reserve at least `kMaxAutocompletePositionValue` to avoid reallocating
+  // across `AppendMatches()` calls.
+  if (matches_.capacity() < kMaxAutocompletePositionValue) {
+    matches_.reserve(kMaxAutocompletePositionValue);
+  }
+
   for (const auto& match : matches) {
     std::stringstream debug_stream;
     debug_stream << "Contents: " << match.contents;
     debug_stream << ", Description: " << match.description;
-    debug_stream << ", Type: " << AutocompleteMatchType::ToString(match.type);
+    debug_stream << ", Type: "
+                 << omnibox::AutocompleteMatchTypeToString(match.type);
     std::string provider_name =
         match.provider ? match.provider->GetName() : "None";
     debug_stream << ", Provider: " << provider_name;
@@ -368,7 +384,7 @@ void AutocompleteResult::Sort(
   auto top_match = FindTopMatch(input, &matches_);
   if (default_match_to_preserve &&
       (top_match == matches_.end() ||
-       top_match->type != AutocompleteMatchType::URL_WHAT_YOU_TYPED)) {
+       top_match->type != omnibox::AutocompleteMatchType::kUrlWhatYouTyped)) {
     const auto default_match_fields =
         GetMatchComparisonFields(default_match_to_preserve.value());
     const auto preserved_default_match =
@@ -381,6 +397,28 @@ void AutocompleteResult::Sort(
         });
     if (preserved_default_match != matches_.end())
       top_match = preserved_default_match;
+  }
+
+  // URL paths may be case sensitive, so let the URL-what-you-typed match be
+  // default rather than a match for the same URL with different casing.
+  if (base::FeatureList::IsEnabled(omnibox::kOmniboxPreserveVerbatimUrlCase) &&
+      top_match != matches_.end()) {
+    const auto verbatim_match =
+        std::ranges::find(matches_, AutocompleteMatchType::kUrlWhatYouTyped,
+                          &AutocompleteMatch::type);
+    // Stripping ignores differences like 'www.', but only keeps an explicitly
+    // typed https scheme for URLs that match the input case sensitively, so
+    // compare the unstripped URLs too.
+    if (verbatim_match != matches_.end() &&
+        verbatim_match->allowed_to_be_default_match &&
+        (base::EqualsCaseInsensitiveASCII(
+             top_match->stripped_destination_url.spec(),
+             verbatim_match->stripped_destination_url.spec()) ||
+         base::EqualsCaseInsensitiveASCII(
+             top_match->destination_url.spec(),
+             verbatim_match->destination_url.spec()))) {
+      top_match = verbatim_match;
+    }
   }
 
   RotateMatchToFront(top_match, &matches_);
@@ -751,7 +789,7 @@ void AutocompleteResult::SortAndCull(
     bool history_cluster_included = false;
     std::erase_if(matches_, [&](const auto& match) {
       // If not a history cluster match, don't erase it.
-      if (match.type != AutocompleteMatch::Type::HISTORY_CLUSTER) {
+      if (match.type != omnibox::AutocompleteMatchType::kHistoryCluster) {
         return false;
       }
       // If not the 1st history cluster match, do erase it.
@@ -829,12 +867,15 @@ void AutocompleteResult::TrimOmniboxActions(bool is_zero_suggest) {
   //   (Android only)
   // - TAB_SWITCH actions are not considered because they're never attached.
   //   On Android, the tab switch match is attached as ACTION_IN_SUGGEST.
+  // - CROSS_DEVICE_TAB actions are permitted in all slots (they only appear on
+  //   dedicated CROSS_DEVICE_TAB matches, of which there is at most one).
   if constexpr (is_desktop) {
     return;
   }
 
   std::vector<OmniboxActionId> include_all{OmniboxActionId::ACTION_IN_SUGGEST,
-                                           OmniboxActionId::PEDAL};
+                                           OmniboxActionId::PEDAL,
+                                           OmniboxActionId::CROSS_DEVICE_TAB};
   std::vector<OmniboxActionId> include_pedals_and_others;
   std::vector<OmniboxActionId> exclude_pedals;
   if constexpr (is_android_any) {
@@ -842,6 +883,8 @@ void AutocompleteResult::TrimOmniboxActions(bool is_zero_suggest) {
     exclude_pedals.push_back(OmniboxActionId::ACTION_IN_SUGGEST);
   }
   include_pedals_and_others.push_back(OmniboxActionId::PEDAL);
+  include_pedals_and_others.push_back(OmniboxActionId::CROSS_DEVICE_TAB);
+  exclude_pedals.push_back(OmniboxActionId::CROSS_DEVICE_TAB);
 
   for (size_t index = 0u; index < matches_.size(); ++index) {
     matches_[index].FilterOmniboxActions(
@@ -887,7 +930,7 @@ void AutocompleteResult::SplitActionsToSuggestions() {
   // By design, do not change result size. But allow triggering
   // for the edge case where the pedal extends a list that still
   // does not exceed maximum.
-  if (matches_[size() - 1].type != AutocompleteMatchType::PEDAL ||
+  if (matches_[size() - 1].type != omnibox::AutocompleteMatchType::kPedal ||
       size() > GetDynamicMaxMatches()) {
     matches_.resize(size_before);
   }
@@ -912,7 +955,7 @@ void AutocompleteResult::GroupAndDemoteMatchesInGroups() {
     any_matches_in_groups = true;
 
     // Record suggestion group information into the additional_info field
-    // for chrome://omnibox.
+    // for chrome://omnibox-internals.
     match.RecordAdditionalInfo("group id", group_id);
     match.RecordAdditionalInfo("group header",
                                GetHeaderForSuggestionGroup(group_id));
@@ -1090,7 +1133,8 @@ void AutocompleteResult::ConvertOpenTabMatches(
     // Note: explicitly check for value rather than deferring to implicit
     // boolean conversion of std::optional.
     if (match.has_tab_match.has_value() ||
-        match.type == AutocompleteMatchType::HISTORY_EMBEDDINGS_ANSWER) {
+        match.type ==
+            omnibox::AutocompleteMatchType::kHistoryEmbeddingsAnswer) {
       continue;
     }
     batch_lookup_map.insert({match.destination_url, {}});
@@ -1101,7 +1145,8 @@ void AutocompleteResult::ConvertOpenTabMatches(
 
     for (auto& match : matches_) {
       if (match.has_tab_match.has_value() ||
-          match.type == AutocompleteMatchType::HISTORY_EMBEDDINGS_ANSWER) {
+          match.type ==
+              omnibox::AutocompleteMatchType::kHistoryEmbeddingsAnswer) {
         continue;
       }
 
@@ -1122,7 +1167,7 @@ void AutocompleteResult::ConvertOpenTabMatches(
       match.android_tab_id = tab_info->second.android_tab_id;
 #endif
       if ((!match.from_keyword ||
-           match.type != AutocompleteMatchType::OPEN_TAB) &&
+           match.type != omnibox::AutocompleteMatchType::kOpenTab) &&
           !(client->IsWebUiNtpEnabledForDesktopAndroid() && input &&
             input->current_page_classification() ==
                 OmniboxEventProto::NTP_REALBOX)) {
@@ -1295,7 +1340,7 @@ size_t AutocompleteResult::CalculateNumMatchesPerUrlCount(
     // Skip unscoped extension provider matches. This match limit will be
     // adjusted to include these matches.
     if (match.provider && match.provider->type() ==
-                              AutocompleteProvider::TYPE_UNSCOPED_EXTENSION) {
+                              AutocompleteProvider::Type::kUnscopedExtension) {
       num_unscoped_extension_matches++;
       continue;
     }
@@ -1371,6 +1416,15 @@ void AutocompleteResult::CopyMatchesFrom(const AutocompleteResult& other) {
 #if BUILDFLAG(IS_ANDROID)
   DestroyJavaObject();
 #endif
+}
+
+AutocompleteResult AutocompleteResult::CopyForSnapshot() const {
+  AutocompleteResult snapshot;
+  snapshot.CopyMatchesFrom(*this);
+  snapshot.max_url_matches_ = max_url_matches_;
+  snapshot.session_ = session_;
+  snapshot.sequence_id_ = sequence_id_;
+  return snapshot;
 }
 
 #if DCHECK_IS_ON()
@@ -1479,7 +1533,7 @@ std::u16string AutocompleteResult::GetCommonPrefix() {
   std::u16string common_prefix;
 
   for (const auto& match : matches_) {
-    if (match.type == ACMatchType::SEARCH_SUGGEST_TAIL) {
+    if (match.type == AutocompleteMatchType::kSearchSuggestTail) {
       int common_length;
       // TODO (manukh): `GetAdditionalInfoForDebugging()` shouldn't be used for
       //   non-debugging purposes.
@@ -1570,11 +1624,11 @@ void AutocompleteResult::MaybeCullTailSuggestions(
     const CompareWithDemoteByType<AutocompleteMatch>& comparing_object) {
   std::function<bool(const AutocompleteMatch&)> is_tail =
       [](const AutocompleteMatch& match) {
-        return match.type == ACMatchType::SEARCH_SUGGEST_TAIL;
+        return match.type == AutocompleteMatchType::kSearchSuggestTail;
       };
   std::function<bool(const AutocompleteMatch&)> is_history_cluster =
       [&](const AutocompleteMatch& match) {
-        return match.type == ACMatchType::HISTORY_CLUSTER;
+        return match.type == AutocompleteMatchType::kHistoryCluster;
       };
   // 'normal' refers to a suggestion that is neither a tail nor history cluster.
   bool default_normal = false;
@@ -1638,8 +1692,9 @@ bool AutocompleteResult::UndedupeTopSearchEntityMatch(ACMatches* matches) {
     return false;
 
   auto top_match = matches->begin();
-  if (top_match->type != ACMatchType::SEARCH_SUGGEST_ENTITY)
+  if (top_match->type != AutocompleteMatchType::kSearchSuggestEntity) {
     return false;
+  }
 
   // We define an iterator to capture the non-entity duplicate match (if any)
   // so that we can later use it with duplicate_matches.erase().
@@ -1649,7 +1704,7 @@ bool AutocompleteResult::UndedupeTopSearchEntityMatch(ACMatches* matches) {
   for (auto it = top_match->duplicate_matches.begin();
        it != top_match->duplicate_matches.end(); ++it) {
     // Reject any ineligible duplicates.
-    if (it->type == ACMatchType::SEARCH_SUGGEST_ENTITY ||
+    if (it->type == AutocompleteMatchType::kSearchSuggestEntity ||
         !AutocompleteMatch::IsSearchType(it->type) ||
         !it->allowed_to_be_default_match) {
       continue;
@@ -1679,7 +1734,7 @@ bool AutocompleteResult::UndedupeTopSearchEntityMatch(ACMatches* matches) {
     // top match, we are deliberately separating the two matches that have the
     // same |deletion_url|, thereby eliminating any redundant network calls
     // upon suggestion removal.
-    if (it->type == ACMatchType::SEARCH_SUGGEST ||
+    if (it->type == AutocompleteMatchType::kSearchSuggest ||
         AutocompleteMatch::IsSpecializedSearchType(it->type)) {
       non_entity_it = it;
       break;
@@ -1692,13 +1747,6 @@ bool AutocompleteResult::UndedupeTopSearchEntityMatch(ACMatches* matches) {
     // iterators, including |top_match|.
     AutocompleteMatch non_entity_match_copy{std::move(*non_entity_it)};
     top_match->duplicate_matches.erase(non_entity_it);
-
-    // When we spawn our non-entity match copy, we still want to preserve any
-    // entity ID that was provided by the server for logging purposes, even if
-    // we don't display it.
-    if (non_entity_match_copy.entity_id.empty()) {
-      non_entity_match_copy.entity_id = top_match->entity_id;
-    }
 
     // Unless the entity match has Actions in Suggest, promote the non-entity
     // match to the top. Otherwise keep the entity match at the top followed by
@@ -1799,7 +1847,7 @@ void AutocompleteResult::MergeMatchesByProvider(ACMatches* old_matches,
   // "overwrite" the initial matches from that provider's previous results,
   // minimally disturbing the rest of the matches.
   size_t delta = old_matches->size() - new_matches.size();
-  for (const AutocompleteMatch& old_match : base::Reversed(*old_matches)) {
+  for (const AutocompleteMatch& old_match : std::views::reverse(*old_matches)) {
     if (delta == 0) {
       break;
     }
@@ -1818,9 +1866,9 @@ AutocompleteResult::MatchDedupComparator
 AutocompleteResult::GetMatchComparisonFields(const AutocompleteMatch& match) {
   AutocompleteMatchDedupeType type;
   if (match.provider != nullptr &&
-      match.provider->type() == AutocompleteProvider::TYPE_VERBATIM_MATCH) {
+      match.provider->type() == AutocompleteProvider::Type::kVerbatimMatch) {
     type = AutocompleteMatchDedupeType::kVerbatimProvider;
-  } else if (match.type == ACMatchType::CALCULATOR) {
+  } else if (match.type == AutocompleteMatchType::kCalculator) {
     type = AutocompleteMatchDedupeType::kCalculator;
   } else if (match.IsSearchAimSuggestion() &&
              omnibox_feature_configs::AiMode::Get()

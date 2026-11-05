@@ -31,6 +31,7 @@
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/stored_credential.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/ui/actor_login_permission.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #include "content/public/browser/web_contents.h"
@@ -57,15 +58,16 @@ class MockPage : public mojom::Page {
   MockPage() = default;
   ~MockPage() override = default;
 
-  MOCK_METHOD(void,
-              OnPasswordAutomaticChangeStateUpdated,
-              (int32_t credential_id,
-               mojom::PasswordAutomaticChangeState state),
-              (override));
+  MOCK_METHOD(
+      void,
+      OnPasswordAutomaticChangeStateUpdated,
+      (int32_t credential_id,
+       PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState state),
+      (override));
 
   MOCK_METHOD(void,
               OnPasswordsExportProgress,
-              (password_manager::mojom::ExportProgressStatus,
+              (password_manager::ExportProgressStatus,
                const std::optional<std::string>&),
               (override));
 
@@ -117,7 +119,10 @@ class MockPasswordChangeActuator : public PasswordChangeActuator {
               (),
               (const, override));
   MOCK_METHOD(void, OpenPasswordChangeTab, (content::WebContents*), (override));
-  MOCK_METHOD(std::u16string, GetGeneratedPassword, (), (const, override));
+  MOCK_METHOD(password_manager::PasswordString,
+              GetGeneratedPassword,
+              (),
+              (const, override));
   MOCK_METHOD(void, AddObserver, (Observer*), (override));
   MOCK_METHOD(void, RemoveObserver, (Observer*), (override));
 };
@@ -278,12 +283,14 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
   CreateAndSeedPasswordForm(kTestUrl, kTestUsername,
                             /*actor_login_approved=*/true);
 
-  base::test::TestFuture<std::vector<mojom::ActorLoginPermissionPtr>> future;
+  base::test::TestFuture<
+      const std::vector<password_manager::ActorLoginPermission>&>
+      future;
   handler().GetActorLoginPermissions(future.GetCallback());
 
   const auto& permissions = future.Get();
   ASSERT_EQ(permissions.size(), 1u);
-  EXPECT_EQ(permissions[0]->domain_info->url, kTestUrl);
+  EXPECT_EQ(permissions[0].domain_info.url, kTestUrl);
 }
 
 TEST_F(PasswordManagerUIHandlerUnitTest,
@@ -294,15 +301,16 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
   CreateAndSeedPasswordForm(kTestUrl, kTestUsername,
                             /*actor_login_approved=*/true);
 
-  auto site = mojom::ActorLoginPermission::New();
-  site->domain_info = mojom::DomainInfo::New(
-      /*human_redable_name*/ std::string(kTestUrl.host()),
-      /*url=*/kTestUrl,
-      /*signon_realm=*/kTestUrl.spec());
-  site->username = base::UTF16ToUTF8(kTestUsername);
+  password_manager::ActorLoginPermission site;
+  site.domain_info = {
+      .name = std::string(kTestUrl.host()),
+      .url = kTestUrl,
+      .signon_realm = kTestUrl.spec(),
+  };
+  site.username = kTestUsername;
 
   SavedPasswordsChangedWaiter waiter(presenter_);
-  handler().RevokeActorLoginPermission(std::move(site));
+  handler().RevokeActorLoginPermission(site);
   waiter.Wait();
 
   ASSERT_EQ(GetAllLoginsSync(password_store_.get()).size(), 1u);
@@ -369,11 +377,11 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
       .WillOnce(
           Return(password_manager::ActionableError::kTrustedVaultKeyNeeded));
 
-  base::test::TestFuture<mojom::PasswordManagerActionableError> future;
+  base::test::TestFuture<password_manager::ActionableError> future;
   handler().GetPasswordManagerActionableError(future.GetCallback());
 
   EXPECT_EQ(future.Get(),
-            mojom::PasswordManagerActionableError::kTrustedVaultKeyNeeded);
+            password_manager::ActionableError::kTrustedVaultKeyNeeded);
 }
 
 TEST_F(PasswordManagerUIHandlerUnitTest,
@@ -426,25 +434,44 @@ TEST_F(PasswordManagerUIHandlerUnitTest, RequestPasswordsExport_CallsDelegate) {
 
 TEST_F(PasswordManagerUIHandlerUnitTest,
        GetPasswordsExportProgress_CallsDelegate) {
-  base::test::TestFuture<mojom::ExportProgressStatus> future;
+  base::test::TestFuture<password_manager::ExportProgressStatus> future;
   EXPECT_CALL(mock_delegate(), GetExportProgressStatus())
-      .WillOnce(Return(extensions::api::passwords_private::
-                           ExportProgressStatus::kInProgress));
+      .WillOnce(Return(password_manager::ExportProgressStatus::kInProgress));
 
   handler().GetPasswordsExportProgress(future.GetCallback());
 
-  EXPECT_EQ(mojom::ExportProgressStatus::kInProgress, future.Get());
+  EXPECT_EQ(password_manager::ExportProgressStatus::kInProgress, future.Get());
 }
 
 TEST_F(PasswordManagerUIHandlerUnitTest,
        OnPasswordsExportProgress_CallsMojoObserver) {
-  EXPECT_CALL(mock_page_, OnPasswordsExportProgress(
-                              mojom::ExportProgressStatus::kSucceeded,
-                              Eq(std::optional<std::string>("folder"))));
+  EXPECT_CALL(mock_page_,
+              OnPasswordsExportProgress(
+                  password_manager::ExportProgressStatus::kSucceeded,
+                  Eq(std::optional<std::string>("folder"))));
 
   handler().OnPasswordsExportProgress(
       password_manager::ExportProgressStatus::kSucceeded, "folder");
   mock_page_.FlushForTesting();
+}
+
+TEST_F(PasswordManagerUIHandlerUnitTest, RemoveCredential_CallsDelegate) {
+  EXPECT_CALL(
+      mock_delegate(),
+      RemoveCredential(
+          42, extensions::api::passwords_private::PasswordStoreSet::kDevice));
+  handler().RemoveCredential(42, mojom::PasswordStoreSet::kDevice);
+
+  EXPECT_CALL(
+      mock_delegate(),
+      RemoveCredential(
+          43, extensions::api::passwords_private::PasswordStoreSet::kAccount));
+  handler().RemoveCredential(43, mojom::PasswordStoreSet::kAccount);
+
+  EXPECT_CALL(mock_delegate(),
+              RemoveCredential(44, extensions::api::passwords_private::
+                                       PasswordStoreSet::kDeviceAndAccount));
+  handler().RemoveCredential(44, mojom::PasswordStoreSet::kDeviceAndAccount);
 }
 
 TEST_F(PasswordManagerUIHandlerUnitTest,
@@ -452,6 +479,19 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
   EXPECT_CALL(mock_delegate(), RemovePasswordException(42));
 
   handler().RemovePasswordException(42);
+}
+
+TEST_F(PasswordManagerUIHandlerUnitTest, MuteInsecureCredential_CallsDelegate) {
+  EXPECT_CALL(mock_delegate(), MuteInsecureCredential(42));
+
+  handler().MuteInsecureCredential(42);
+}
+
+TEST_F(PasswordManagerUIHandlerUnitTest,
+       UnmuteInsecureCredential_CallsDelegate) {
+  EXPECT_CALL(mock_delegate(), UnmuteInsecureCredential(42));
+
+  handler().UnmuteInsecureCredential(42);
 }
 
 TEST_F(PasswordManagerUIHandlerUnitTest, StartBulkPasswordCheck_CallsDelegate) {
@@ -598,10 +638,11 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
 
   ASSERT_TRUE(captured_callback);
 
-  EXPECT_CALL(mock_page_,
-              OnPasswordAutomaticChangeStateUpdated(
-                  kCredentialId,
-                  mojom::PasswordAutomaticChangeState::kChangingPassword));
+  EXPECT_CALL(
+      mock_page_,
+      OnPasswordAutomaticChangeStateUpdated(
+          kCredentialId, PasswordChangeFromCheckupDelegate::
+                             PasswordAutomaticChangeState::kChangingPassword));
 
   captured_callback.Run(PasswordChangeFromCheckupDelegate::
                             PasswordAutomaticChangeState::kChangingPassword);
@@ -706,30 +747,36 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
   ASSERT_TRUE(captured_callback);
 
   testing::InSequence s;
-  EXPECT_CALL(mock_page_, OnPasswordAutomaticChangeStateUpdated(
-                              kCredentialId,
-                              mojom::PasswordAutomaticChangeState::kInactive));
   EXPECT_CALL(mock_page_,
               OnPasswordAutomaticChangeStateUpdated(
-                  kCredentialId,
-                  mojom::PasswordAutomaticChangeState::kAttemptingSignIn));
-  EXPECT_CALL(mock_page_,
-              OnPasswordAutomaticChangeStateUpdated(
-                  kCredentialId,
-                  mojom::PasswordAutomaticChangeState::kChangingPassword));
+                  kCredentialId, PasswordChangeFromCheckupDelegate::
+                                     PasswordAutomaticChangeState::kInactive));
+  EXPECT_CALL(
+      mock_page_,
+      OnPasswordAutomaticChangeStateUpdated(
+          kCredentialId, PasswordChangeFromCheckupDelegate::
+                             PasswordAutomaticChangeState::kAttemptingSignIn));
+  EXPECT_CALL(
+      mock_page_,
+      OnPasswordAutomaticChangeStateUpdated(
+          kCredentialId, PasswordChangeFromCheckupDelegate::
+                             PasswordAutomaticChangeState::kChangingPassword));
   EXPECT_CALL(
       mock_page_,
       OnPasswordAutomaticChangeStateUpdated(
           kCredentialId,
-          mojom::PasswordAutomaticChangeState::kConfirmingChangedPassword));
+          PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState::
+              kConfirmingChangedPassword));
   EXPECT_CALL(
       mock_page_,
       OnPasswordAutomaticChangeStateUpdated(
           kCredentialId,
-          mojom::PasswordAutomaticChangeState::kPasswordChangedSuccessfully));
+          PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState::
+              kPasswordChangedSuccessfully));
   EXPECT_CALL(mock_page_,
               OnPasswordAutomaticChangeStateUpdated(
-                  kCredentialId, mojom::PasswordAutomaticChangeState::kError));
+                  kCredentialId, PasswordChangeFromCheckupDelegate::
+                                     PasswordAutomaticChangeState::kError));
 
   captured_callback.Run(PasswordChangeFromCheckupDelegate::
                             PasswordAutomaticChangeState::kInactive);
@@ -914,9 +961,10 @@ TEST_F(PasswordManagerUIHandlerUnitTest,
   // StopPasswordChange(kCredentialId1)
   EXPECT_CALL(*mock_actuator_ptr2, Cancel()).Times(0);
 
-  EXPECT_CALL(mock_page_, OnPasswordAutomaticChangeStateUpdated(
-                              kCredentialId1,
-                              mojom::PasswordAutomaticChangeState::kInactive));
+  EXPECT_CALL(mock_page_,
+              OnPasswordAutomaticChangeStateUpdated(
+                  kCredentialId1, PasswordChangeFromCheckupDelegate::
+                                      PasswordAutomaticChangeState::kInactive));
   EXPECT_CALL(mock_page_,
               OnPasswordAutomaticChangeStateUpdated(kCredentialId2, testing::_))
       .Times(0);

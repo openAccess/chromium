@@ -8,6 +8,8 @@
 
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
+#include "components/autofill/core/browser/autofill_type.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -311,8 +313,9 @@ TEST_F(AutofillPolicyServiceTest,
       AutofillClient::AutofillPolicyDataCategory::kContactInfo));
 }
 
-// Tests that policy rules with malformed URL patterns are filtered out
-// silently without invalidating valid co-existing rules.
+// Tests that policy rules with malformed URL patterns or unknown category
+// strings are filtered out silently without invalidating valid co-existing
+// rules.
 TEST_F(AutofillPolicyServiceTest,
        MalformedUrlPatternRuleIsIgnoredWithoutAffectingValidRules) {
   base::ListValue blocked_list;
@@ -321,6 +324,7 @@ TEST_F(AutofillPolicyServiceTest,
   valid_entry.Set("url_pattern", "https://[*.]example.com");
   base::ListValue valid_types;
   valid_types.Append("contact_info");
+  valid_types.Append("unknown_future_category");
   valid_entry.Set("blocked_types", std::move(valid_types));
   blocked_list.Append(std::move(valid_entry));
 
@@ -331,6 +335,14 @@ TEST_F(AutofillPolicyServiceTest,
   invalid_entry.Set("blocked_types", std::move(invalid_types));
   blocked_list.Append(std::move(invalid_entry));
 
+  base::DictValue malformed_pattern_entry;
+  malformed_pattern_entry.Set("url_pattern", "http://[*.]example.com:invalid");
+  base::ListValue malformed_pattern_types;
+  malformed_pattern_types.Append("payments");
+  malformed_pattern_entry.Set("blocked_types",
+                              std::move(malformed_pattern_types));
+  blocked_list.Append(std::move(malformed_pattern_entry));
+
   SetPolicy(std::move(blocked_list));
 
   EXPECT_TRUE(IsAutofillTypeBlockedByPolicy(
@@ -339,6 +351,9 @@ TEST_F(AutofillPolicyServiceTest,
   EXPECT_FALSE(IsAutofillTypeBlockedByPolicy(
       GURL("https://www.example.com"),
       AutofillClient::AutofillPolicyDataCategory::kTravel));
+  EXPECT_FALSE(IsAutofillTypeBlockedByPolicy(
+      GURL("https://www.example.com"),
+      AutofillClient::AutofillPolicyDataCategory::kPayments));
 }
 
 // Tests that shopping category is blocked when the policy rule configures it
@@ -478,6 +493,52 @@ TEST_F(AutofillPolicyServiceTest,
       url, AutofillClient::AutofillPolicyDataCategory::kShopping));
   EXPECT_FALSE(AutofillPolicyService::IsAutofillTypeDisabledByEnterprisePolicy(
       prefs_, url, AutofillClient::AutofillPolicyDataCategory::kShopping));
+}
+
+TEST(AutofillPolicyServiceCategoryTest,
+     GetAutofillPolicyDataCategoriesForType) {
+  using enum AutofillClient::AutofillPolicyDataCategory;
+
+  auto categories_for_type = [](FieldType type) {
+    return AutofillPolicyService::GetAutofillPolicyDataCategoriesForType(
+        AutofillType(type));
+  };
+
+  // Payments
+  EXPECT_TRUE(categories_for_type(CREDIT_CARD_NUMBER).contains(kPayments));
+  EXPECT_TRUE(categories_for_type(CREDIT_CARD_NAME_FULL).contains(kPayments));
+  EXPECT_TRUE(categories_for_type(IBAN_VALUE).contains(kPayments));
+  EXPECT_TRUE(categories_for_type(CREDIT_CARD_STANDALONE_VERIFICATION_CODE)
+                  .contains(kPayments));
+
+  // Autofill AI
+  EXPECT_TRUE(categories_for_type(PASSPORT_NUMBER).contains(kIdentityDocs));
+  EXPECT_TRUE(
+      categories_for_type(DRIVERS_LICENSE_NUMBER).contains(kIdentityDocs));
+  EXPECT_TRUE(categories_for_type(VEHICLE_VIN).contains(kTravel));
+  EXPECT_TRUE(categories_for_type(FLIGHT_RESERVATION_CONFIRMATION_CODE)
+                  .contains(kTravel));
+  EXPECT_TRUE(categories_for_type(ORDER_ID).contains(kShopping));
+  EXPECT_TRUE(
+      categories_for_type(SHIPMENT_TRACKING_NUMBER).contains(kShopping));
+
+  // Contact Info
+  // NAME_FIRST is an address type and also an Autofill AI type (passport,
+  // travel).
+  EXPECT_TRUE(categories_for_type(NAME_FIRST).contains(kContactInfo));
+  EXPECT_TRUE(categories_for_type(NAME_FIRST).contains(kIdentityDocs));
+  EXPECT_TRUE(categories_for_type(ADDRESS_HOME_LINE1).contains(kContactInfo));
+  EXPECT_TRUE(categories_for_type(EMAIL_ADDRESS).contains(kContactInfo));
+
+  // Types that do not match any data category return an empty set.
+  EXPECT_TRUE(categories_for_type(UNKNOWN_TYPE).empty());
+
+  // Multi-typed field with predictions in both payments and identity docs.
+  DenseSet<AutofillClient::AutofillPolicyDataCategory> multi_categories =
+      AutofillPolicyService::GetAutofillPolicyDataCategoriesForType(
+          AutofillType({CREDIT_CARD_NUMBER, PASSPORT_NUMBER}));
+  EXPECT_TRUE(multi_categories.contains(kPayments));
+  EXPECT_TRUE(multi_categories.contains(kIdentityDocs));
 }
 
 }  // namespace

@@ -6,12 +6,10 @@
 #include <string>
 
 #include "ash/clipboard/clipboard_history_controller_impl.h"
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/window_properties.h"
 #include "ash/shell.h"
 #include "base/containers/fixed_flat_set.h"
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/hash/hash.h"
 #include "base/location.h"
@@ -186,8 +184,7 @@ void AssistiveSuggester::FetchEnabledSuggestionsFromBrowserContextThen(
 }
 
 bool AssistiveSuggester::IsMultiWordSuggestEnabled() {
-  return base::FeatureList::IsEnabled(features::kAssistMultiWord) &&
-         IsPredictiveWritingPrefEnabled(*profile_->GetPrefs(),
+  return IsPredictiveWritingPrefEnabled(*profile_->GetPrefs(),
                                         active_engine_id_);
 }
 
@@ -199,9 +196,6 @@ bool AssistiveSuggester::IsDiacriticsOnPhysicalKeyboardLongpressEnabled() {
 
 DisabledReason AssistiveSuggester::GetDisabledReasonForMultiWord(
     const AssistiveSuggesterSwitch::EnabledSuggestions& enabled_suggestions) {
-  if (!base::FeatureList::IsEnabled(features::kAssistMultiWord)) {
-    return DisabledReason::kFeatureFlagOff;
-  }
   if (!profile_->GetPrefs()->GetBoolean(
           prefs::kAssistPredictiveWritingEnabled)) {
     return DisabledReason::kUserSettingsOff;
@@ -218,7 +212,7 @@ void AssistiveSuggester::OnFocus(int context_id,
   // context. As a result we should make sure it is not being errornously set to
   // a negative number, and cause unexpected behaviour.
   context_ = context;
-  DCHECK(context_id > 0);
+  CHECK(context_id > 0, base::NotFatalUntil::M160);
   focused_context_id_ = context_id;
   multi_word_suggester_.OnFocus(context_id);
   longpress_diacritics_suggester_.OnFocus(context_id);
@@ -352,7 +346,8 @@ void AssistiveSuggester::OnLongpressDetected() {
 }
 
 void AssistiveSuggester::OnClipboardHistoryMenuClosing(bool will_paste_item) {
-  DCHECK_EQ(current_suggester_, &longpress_control_v_suggester_);
+  CHECK_EQ(current_suggester_, &longpress_control_v_suggester_,
+           base::NotFatalUntil::M160);
   if (will_paste_item) {
     // Note: The suggestion index is irrelevant for long-pressed Ctrl+V.
     AcceptSuggestion(/*index=*/-1);
@@ -407,10 +402,8 @@ void AssistiveSuggester::ProcessExternalSuggestions(
 
 void AssistiveSuggester::RecordTextInputStateMetrics(
     const AssistiveSuggesterSwitch::EnabledSuggestions& enabled_suggestions) {
-  if (base::FeatureList::IsEnabled(features::kAssistMultiWord)) {
-    RecordMultiWordTextInputState(profile_->GetPrefs(), active_engine_id_,
-                                  enabled_suggestions);
-  }
+  RecordMultiWordTextInputState(profile_->GetPrefs(), active_engine_id_,
+                                enabled_suggestions);
 }
 
 bool AssistiveSuggester::WithinGrammarFragment() {
@@ -506,10 +499,8 @@ void AssistiveSuggester::OnActivate(const std::string& engine_id) {
   active_engine_id_ = engine_id;
   longpress_diacritics_suggester_.SetEngineId(engine_id);
 
-  if (base::FeatureList::IsEnabled(features::kAssistMultiWord)) {
-    RecordAssistiveUserPrefForMultiWord(
-        IsPredictiveWritingPrefEnabled(*profile_->GetPrefs(), engine_id));
-  }
+  RecordAssistiveUserPrefForMultiWord(
+      IsPredictiveWritingPrefEnabled(*profile_->GetPrefs(), engine_id));
   if (IsUsEnglishEngine(active_engine_id_)) {
     RecordAssistiveUserPrefForDiacriticsOnLongpress(
         IsDiacriticsOnLongpressPrefEnabled(profile_->GetPrefs(), engine_id));

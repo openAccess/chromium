@@ -4,6 +4,9 @@
 
 #include "chrome/browser/browsing_data/counters/site_settings_counter.h"
 
+#include <optional>
+#include <utility>
+
 #include "base/json/values_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/performance_manager/public/user_tuning/user_performance_tuning_manager.h"
@@ -32,14 +35,14 @@ SiteSettingsCounter::SiteSettingsCounter(
       zoom_map_(zoom_map),
       handler_registry_(handler_registry),
       pref_service_(pref_service) {
-  DCHECK(map_);
-  DCHECK(handler_registry_);
+  CHECK(map_, base::NotFatalUntil::M161);
+  CHECK(handler_registry_, base::NotFatalUntil::M161);
 #if !BUILDFLAG(IS_ANDROID)
-  DCHECK(zoom_map_);
+  CHECK(zoom_map_, base::NotFatalUntil::M161);
 #else
-  DCHECK(!zoom_map_);
+  CHECK(!zoom_map_, base::NotFatalUntil::M161);
 #endif
-  DCHECK(pref_service_);
+  CHECK(pref_service_, base::NotFatalUntil::M161);
 }
 
 SiteSettingsCounter::~SiteSettingsCounter() = default;
@@ -112,14 +115,11 @@ void SiteSettingsCounter::Count() {
       performance_manager::user_tuning::prefs::GetTabDiscardExceptionsBetween(
           pref_service_, period_start, period_end);
   for (const auto& exception : tab_discard_exceptions) {
-    url_matcher::util::FilterComponents components;
-    bool is_valid = url_matcher::util::FilterToComponents(
-        exception, &components.scheme, &components.host,
-        &components.match_subdomains, &components.port, &components.path,
-        &components.query);
+    std::optional<url_matcher::util::FilterComponents> components =
+        url_matcher::util::FilterToComponents(exception);
 
-    if (is_valid && !components.host.empty()) {
-      hosts.insert(components.host);
+    if (components && !components->host.empty()) {
+      hosts.insert(std::move(components->host));
     } else {
       empty_host_pattern++;
     }

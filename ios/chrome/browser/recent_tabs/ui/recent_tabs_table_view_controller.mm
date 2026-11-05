@@ -16,50 +16,21 @@
 #import "base/numerics/safe_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
-#import "components/prefs/pref_service.h"
 #import "components/sessions/core/session_id.h"
 #import "components/sessions/core/tab_restore_service.h"
 #import "components/strings/grit/components_strings.h"
-#import "components/sync/base/user_selectable_type.h"
-#import "components/sync/service/sync_service.h"
-#import "components/sync/service/sync_user_settings.h"
-#import "components/sync_sessions/open_tabs_ui_delegate.h"
-#import "components/sync_sessions/session_sync_service.h"
 #import "ios/chrome/app/tests_hook.h"
-#import "ios/chrome/browser/authentication/history_sync/model/history_sync_utils.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_configurator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_consumer.h"
+#import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/table_view_signin_promo_item.h"
-#import "ios/chrome/browser/authentication/ui_bundled/change_profile/change_profile_recent_tabs_continuation.h"
-#import "ios/chrome/browser/authentication/ui_bundled/enterprise/enterprise_utils.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_presenter.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_promo_view_mediator.h"
 #import "ios/chrome/browser/drag_and_drop/model/drag_item_util.h"
 #import "ios/chrome/browser/drag_and_drop/model/table_view_url_drag_drop_handler.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
-#import "ios/chrome/browser/metrics/model/new_tab_page_uma.h"
 #import "ios/chrome/browser/net/model/crurl.h"
-#import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
 #import "ios/chrome/browser/recent_tabs/public/recent_tabs_constants.h"
 #import "ios/chrome/browser/recent_tabs/ui/recent_tabs_menu_provider.h"
 #import "ios/chrome/browser/recent_tabs/ui/recent_tabs_presentation_delegate.h"
-#import "ios/chrome/browser/sessions/model/live_tab_context_browser_agent.h"
-#import "ios/chrome/browser/sessions/model/session_util.h"
-#import "ios/chrome/browser/settings/model/sync/utils/sync_util.h"
-#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
-#import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
-#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
-#import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
-#import "ios/chrome/browser/shared/model/web_state_list/web_state_opener.h"
-#import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
-#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
-#import "ios/chrome/browser/shared/public/commands/settings_commands.h"
-#import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_activity_indicator_header_footer_item.h"
@@ -72,26 +43,15 @@
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_url_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_favicon_data_source.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
-#import "ios/chrome/browser/signin/model/authentication_service.h"
-#import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
-#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
-#import "ios/chrome/browser/sync/model/enterprise_utils.h"
-#import "ios/chrome/browser/sync/model/session_sync_service_factory.h"
-#import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/synced_sessions/model/distant_session.h"
 #import "ios/chrome/browser/synced_sessions/model/distant_tab.h"
 #import "ios/chrome/browser/synced_sessions/model/synced_sessions.h"
-#import "ios/chrome/browser/url_loading/model/url_loading_browser_agent.h"
-#import "ios/chrome/browser/url_loading/model/url_loading_params.h"
-#import "ios/chrome/browser/url_loading/model/url_loading_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/favicon/favicon_attributes.h"
 #import "ios/chrome/common/ui/favicon/favicon_view.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
-#import "ios/web/public/web_state.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/l10n/time_format.h"
 
@@ -142,7 +102,6 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
 @end
 
 @interface RecentTabsTableViewController () <SigninPromoViewConsumer,
-                                             SigninPromoViewMediatorDelegate,
                                              TableViewURLDragDataSource,
                                              UIContextMenuInteractionDelegate,
                                              UIGestureRecognizerDelegate> {
@@ -155,27 +114,20 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
   // `_syncedSessions`, but `_displayedTabs` allows for filtering to display
   // only particular tabs.
   std::vector<synced_sessions::DistantTabsSet> _displayedTabs;
+
+  BOOL _syncDisabledByAdministrator;
+  BOOL _signinDisabledByPolicy;
+  BOOL _signinDisabledByUser;
 }
 // The service that manages the recently closed tabs
 @property(nonatomic, assign) sessions::TabRestoreService* tabRestoreService;
 // The sync state.
 @property(nonatomic, assign) SessionsSyncUserState sessionState;
-// Mediator in charge of inviting the user to sign-in with a Google account.
-@property(nonatomic, strong) SigninPromoViewMediator* signinPromoViewMediator;
-// The browser state used for many operations, derived from the one provided by
-// `self.browser`.
-@property(nonatomic, readonly) ProfileIOS* profile;
-// YES if this ViewController is being presented on incognito mode.
-@property(nonatomic, readonly, getter=isIncognito) BOOL incognito;
-// Convenience getter for `self.browser`'s WebStateList
-@property(nonatomic, readonly) WebStateList* webStateList;
 // Handler for URL drag interactions.
 @property(nonatomic, strong) TableViewURLDragDropHandler* dragDropHandler;
 @end
 
-@implementation RecentTabsTableViewController {
-  SigninCoordinator* _signinCoordinator;
-}
+@implementation RecentTabsTableViewController
 
 #pragma mark - Public Interface
 
@@ -221,24 +173,6 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
 
 #pragma mark - Setters & Getters
 
-- (void)setBrowser:(Browser*)browser {
-  _browser = browser;
-  if (browser) {
-    ProfileIOS* profile = browser->GetProfile();
-    // Some RecentTabs services depend on objects not present in the
-    // OffTheRecord profile, in order to prevent crashes set
-    // `_profile` to `profile->OriginalProfile`. While
-    // doing this check if incognito or not so that pages are loaded
-    // accordingly.
-    _profile = profile->GetOriginalProfile();
-    _incognito = profile->IsOffTheRecord();
-  }
-}
-
-- (WebStateList*)webStateList {
-  return self.browser->GetWebStateList();
-}
-
 - (void)setPreventUpdates:(BOOL)preventUpdates {
   if (_preventUpdates == preventUpdates) {
     return;
@@ -251,38 +185,6 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
   }
   [self loadModel];
   [self.tableView reloadData];
-}
-
-- (syncer::SyncService*)syncService {
-  DCHECK(_profile);
-  return SyncServiceFactory::GetForProfile(_profile);
-}
-
-// Returns YES if the user cannot turn on sync for enterprise policy reasons.
-- (BOOL)isSyncDisabledByAdministrator {
-  DCHECK(self.syncService);
-  if (self.syncService->HasDisableReason(
-          syncer::SyncService::DISABLE_REASON_ENTERPRISE_POLICY)) {
-    // Return YES if the SyncDisabled policy is enabled.
-    return YES;
-  }
-
-  if (self.syncService->GetUserSettings()->IsTypeManagedByPolicy(
-          syncer::UserSelectableType::kTabs) ||
-      self.syncService->GetUserSettings()->IsTypeManagedByPolicy(
-          syncer::UserSelectableType::kHistory)) {
-    // Return YES if the data type is disabled by the SyncTypesListDisabled
-    // policy.
-    return YES;
-  }
-
-  DCHECK(self.profile);
-  AuthenticationService* authService =
-      AuthenticationServiceFactory::GetForProfile(self.profile);
-  DCHECK(authService);
-  // Return NO is sign-in is disabled by the BrowserSignin policy.
-  return authService->GetServiceStatus() ==
-         AuthenticationService::ServiceStatus::SigninDisabledByPolicy;
 }
 
 #pragma mark - TableViewModel
@@ -542,21 +444,11 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
 
 // Adds Other Devices Section and its header.
 - (void)addOtherDevicesSectionForState:(SessionsSyncUserState)state {
-  AuthenticationService* authService =
-      AuthenticationServiceFactory::GetForProfile(self.profile);
-  const AuthenticationService::ServiceStatus authServiceStatus =
-      authService->GetServiceStatus();
   // If sign-in is disabled through user Settings, do not show Other Devices
   // section. However, if sign-in is disabled by policy Chrome will
   // continue to show the Other Devices section with a specialized message.
-  switch (authServiceStatus) {
-    case AuthenticationService::ServiceStatus::SigninDisabledByUser:
-    case AuthenticationService::ServiceStatus::SigninDisabledByInternal:
-      return;
-    case AuthenticationService::ServiceStatus::SigninDisabledByPolicy:
-    case AuthenticationService::ServiceStatus::SigninForcedByPolicy:
-    case AuthenticationService::ServiceStatus::SigninAllowed:
-      break;
+  if (_signinDisabledByUser) {
+    return;
   }
 
   TableViewModel* model = self.tableViewModel;
@@ -580,7 +472,7 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
         [[TableViewDisclosureHeaderFooterItem alloc]
             initWithType:ItemTypeRecentlyClosedHeader];
     header.text = l10n_util::GetNSString(IDS_IOS_RECENT_TABS_OTHER_DEVICES);
-    if (self.isSyncDisabledByAdministrator) {
+    if (_syncDisabledByAdministrator) {
       header.disabled = YES;
       header.subtitleText =
           l10n_util::GetNSString(IDS_IOS_RECENT_TABS_DISABLED_BY_ORGANIZATION);
@@ -591,9 +483,7 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
         [self.tableViewModel sectionIsCollapsed:SectionIdentifierOtherDevices];
   }
 
-  if (!self.isSyncDisabledByAdministrator &&
-      authServiceStatus !=
-          AuthenticationService::ServiceStatus::SigninDisabledByPolicy) {
+  if (!_syncDisabledByAdministrator && !_signinDisabledByPolicy) {
     ItemType itemType;
     NSString* itemSubtitle;
     NSString* itemButtonText;
@@ -659,37 +549,14 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
 }
 
 - (void)addSigninPromoViewItem {
-  // Init `_signinPromoViewMediator` if nil.
-  ProfileIOS* profile = self.profile;
-  if (!self.signinPromoViewMediator && profile) {
-    self.signinPromoViewMediator = [[SigninPromoViewMediator alloc]
-                  initWithIdentityManager:IdentityManagerFactory::GetForProfile(
-                                              profile)
-                    accountManagerService:ChromeAccountManagerServiceFactory::
-                                              GetForProfile(profile)
-                              authService:AuthenticationServiceFactory::
-                                              GetForProfile(profile)
-                              prefService:profile->GetPrefs()
-                              syncService:self.syncService
-                              accessPoint:signin_metrics::AccessPoint::
-                                              kRecentTabs
-                                 delegate:self
-                 accountSettingsPresenter:nil
-        changeProfileContinuationProvider:
-            base::BindRepeating(&CreateChangeProfileRecentTabsContinuation)];
-    self.signinPromoViewMediator.signinPromoAction =
-        SigninPromoAction::kSigninWithNoDefaultIdentity;
-    self.signinPromoViewMediator.consumer = self;
-  }
-
   // Configure and add a TableViewSigninPromoItem to the model.
   TableViewSigninPromoItem* signinPromoItem = [[TableViewSigninPromoItem alloc]
       initWithType:ItemTypeOtherDevicesSigninPromo];
   signinPromoItem.text =
       l10n_util::GetNSString(IDS_IOS_SIGNIN_PROMO_RECENT_TABS_WITH_UNITY);
-  signinPromoItem.delegate = self.signinPromoViewMediator;
+  signinPromoItem.delegate = self.signinPromoViewDelegate;
   signinPromoItem.configurator =
-      [self.signinPromoViewMediator createConfigurator];
+      [self.signinPromoViewDelegate createConfigurator];
   [self.tableViewModel addItem:signinPromoItem
        toSectionWithIdentifier:SectionIdentifierOtherDevices];
 }
@@ -834,11 +701,6 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
 
 #pragma mark - Private
 
-- (void)stopSigninCoordinator {
-  [_signinCoordinator stop];
-  _signinCoordinator = nil;
-}
-
 // Returns YES if `sectionIdentifier` is a Sessions sectionIdentifier.
 - (BOOL)isSessionSectionIdentifier:(NSInteger)sectionIdentifier {
   NSArray* sessionSectionIdentifiers = [self allSessionSectionIdentifiers];
@@ -853,23 +715,27 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
 
 #pragma mark - Consumer Protocol
 
-- (void)refreshUserState:(SessionsSyncUserState)newSessionState {
+- (void)refreshUserState:(SessionsSyncUserState)newSessionState
+                 syncedSessions:
+                     (std::unique_ptr<synced_sessions::SyncedSessions>)
+                         syncedSessions
+    syncDisabledByAdministrator:(BOOL)syncDisabledByAdministrator
+         signinDisabledByPolicy:(BOOL)signinDisabledByPolicy
+           signinDisabledByUser:(BOOL)signinDisabledByUser {
+  _syncDisabledByAdministrator = syncDisabledByAdministrator;
+  _signinDisabledByPolicy = signinDisabledByPolicy;
+  _signinDisabledByUser = signinDisabledByUser;
+
   if ((newSessionState == self.sessionState &&
        self.sessionState !=
            SessionsSyncUserState::USER_SIGNED_IN_SYNC_ON_WITH_SESSIONS) ||
-      self.signinPromoViewMediator.showSpinner) {
+      self.signinPromoViewDelegate.spinnerVisible) {
     // No need to refresh the sections since all states other than
     // USER_SIGNED_IN_SYNC_ON_WITH_SESSIONS only have static content. This means
     // that if the previous State is the same as the new one the static content
     // won't change.
     return;
   }
-
-  // A manual item refresh is necessary.
-  sync_sessions::SessionSyncService* syncService =
-      SessionSyncServiceFactory::GetForProfile(self.profile);
-  auto syncedSessions =
-      std::make_unique<synced_sessions::SyncedSessions>(syncService);
 
   std::vector<synced_sessions::DistantTabsSet> displayedTabs;
   for (size_t s = 0; s < syncedSessions->GetSessionCount(); s++) {
@@ -911,10 +777,6 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
   // Table updates must happen before `sessionState` gets updated, since some
   // table updates rely on knowing the previous state.
   self.sessionState = newSessionState;
-
-  if (self.sessionState != SessionsSyncUserState::USER_SIGNED_OUT) {
-    [self disconnectMediator];
-  }
 }
 
 - (void)refreshRecentlyClosedTabs {
@@ -934,8 +796,6 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
 }
 
 - (void)dismissModals {
-  [self disconnectMediator];
-  [self stopSigninCoordinator];
   [self.tableView.contextMenuInteraction dismissMenu];
 }
 
@@ -956,9 +816,14 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
       }
       break;
     case ItemTypeSessionTabData:
-      [self
-          openTabWithContentOfDistantTab:[self
-                                             distantTabAtIndexPath:indexPath]];
+      if (!self.presentedViewController) {
+        // It is reasonable to ignore this request if a modal UI is already
+        // showing above recent tabs. This can happen when a user simultaneously
+        // taps a distant tab and "enable sync". The sync settings UI appears
+        // first and we should not dismiss it to show a distant tab.
+        [self.presentationDelegate
+            openDistantTab:[self distantTabAtIndexPath:indexPath]];
+      }
       break;
     case ItemTypeShowFullHistory:
       base::RecordAction(
@@ -1010,9 +875,9 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
   UITableViewCell* cell = [super tableView:tableView
                      cellForRowAtIndexPath:indexPath];
 
-  // If SigninPromo will be shown, `self.signinPromoViewMediator` must know.
+  // If SigninPromo will be shown, `self.signinPromoViewDelegate` must know.
   if (itemTypeSelected == ItemTypeOtherDevicesSigninPromo) {
-    [self.signinPromoViewMediator signinPromoViewIsVisible];
+    [self.signinPromoViewDelegate signinPromoDidBecomeVisible];
     TableViewSigninPromoCell* signinPromoCell =
         base::apple::ObjCCastStrict<TableViewSigninPromoCell>(cell);
     TableViewSigninPromoItem* signinPromoItem =
@@ -1302,61 +1167,6 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
   return [NSString stringWithFormat:@"%@ %@", timeString, dateString];
 }
 
-#pragma mark - Navigation helpers
-
-- (void)openTabWithContentOfDistantTab:
-    (synced_sessions::DistantTab const*)distantTab {
-  if (!self.browser) {
-    // Prevent interactions if the browser is nil, for example during dismissal.
-    return;
-  }
-
-  // Shouldn't reach this if in incognito.
-  DCHECK(!self.isIncognito);
-
-  // It is reasonable to ignore this request if a modal UI is already showing
-  // above recent tabs. This can happen when a user simultaneously taps a
-  // distant tab and "enable sync". The sync settings UI appears first and we
-  // should not dismiss it to show a distant tab.
-  if (self.presentedViewController) {
-    return;
-  }
-
-  sync_sessions::OpenTabsUIDelegate* openTabs =
-      SessionSyncServiceFactory::GetForProfile(self.profile)
-          ->GetOpenTabsUIDelegate();
-  const sessions::SessionTab* toLoad = nullptr;
-  if (openTabs->GetForeignTab(distantTab->session_tag, distantTab->tab_id,
-                              &toLoad)) {
-    base::TimeDelta time_since_last_use = base::Time::Now() - toLoad->timestamp;
-    base::UmaHistogramCustomTimes("IOS.DistantTab.TimeSinceLastUse",
-                                  time_since_last_use, base::Minutes(1),
-                                  base::Days(24), 50);
-
-    base::RecordAction(base::UserMetricsAction(
-        "MobileRecentTabManagerTabFromOtherDeviceOpened"));
-    web::WebState* currentWebState = self.webStateList->GetActiveWebState();
-    bool is_ntp = currentWebState &&
-                  currentWebState->GetVisibleURL() == kChromeUINewTabURL;
-    new_tab_page_uma::RecordNTPAction(
-        self.isIncognito, is_ntp,
-        new_tab_page_uma::ACTION_OPENED_FOREIGN_SESSION);
-    std::unique_ptr<web::WebState> web_state =
-        session_util::CreateWebStateWithNavigationEntries(
-            self.profile, toLoad->current_navigation_index,
-            toLoad->navigations);
-    if (IsNTPWithoutHistory(currentWebState)) {
-      self.webStateList->ReplaceWebStateAt(self.webStateList->active_index(),
-                                           std::move(web_state));
-    } else {
-      self.webStateList->InsertWebState(
-          std::move(web_state),
-          WebStateList::InsertionParams::Automatic().Activate());
-    }
-  }
-  [self.presentationDelegate showActiveRegularTabFromRecentTabs];
-}
-
 #pragma mark - Collapse/Expand sections
 
 - (void)handleTap:(UITapGestureRecognizer*)sender {
@@ -1432,17 +1242,10 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
 
 - (void)configureSigninPromoWithConfigurator:
     (SigninPromoViewConfigurator*)configurator {
-  DCHECK(self.signinPromoViewMediator);
   if (![self.tableViewModel
           hasSectionForSectionIdentifier:SectionIdentifierOtherDevices] ||
       ![self.tableViewModel hasItemForItemType:ItemTypeOtherDevicesSigninPromo
                              sectionIdentifier:SectionIdentifierOtherDevices]) {
-    // Need to remove the sign-in promo view mediator when the section doesn't
-    // exist anymore. The mediator should not be removed each time the section
-    // is removed since the section is replaced at each reload.
-    // Metrics would be recorded too often.
-    // The other device section can be present even without the promo.
-    [self disconnectMediator];
     return;
   }
   if ([self.tableViewModel hasItemForItemType:ItemTypeOtherDevicesSigninPromo
@@ -1466,38 +1269,6 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
     [self reloadCellsForItems:@[ signInItem ]
              withRowAnimation:UITableViewRowAnimationNone];
   }
-}
-
-#pragma mark - SigninPromoViewMediatorDelegate
-
-- (void)showSignin:(SigninPromoViewMediator*)mediator
-           command:(ShowSigninCommand*)command {
-  CHECK_EQ(mediator, self.signinPromoViewMediator);
-  __weak __typeof(self) weakSelf = self;
-  [command addSigninCompletion:^(SigninCoordinator* coordinator,
-                                 SigninCoordinatorResult result,
-                                 id<SystemIdentity>) {
-    [weakSelf signinDidCompleteWithCoordinator:coordinator result:result];
-  }];
-  if (_signinCoordinator.viewWillPersist) {
-    return;
-  }
-  [_signinCoordinator stop];
-  _signinCoordinator = [SigninCoordinator
-      signinCoordinatorWithCommand:command
-                           browser:signin::GetRegularBrowser(_browser)
-                baseViewController:self];
-  [_signinCoordinator start];
-}
-
-#pragma mark - SigninPromoViewMediatorDelegate Helper
-
-- (void)signinDidCompleteWithCoordinator:(SigninCoordinator*)coordinator
-                                  result:(SigninCoordinatorResult)result {
-  CHECK_EQ(_signinCoordinator, coordinator, base::NotFatalUntil::M151);
-  [self.signinPromoViewMediator signinDidCompleteWithResult:result];
-  [self stopSigninCoordinator];
-  [self.presentationDelegate showHistorySyncOptInAfterDedicatedSignIn:YES];
 }
 
 #pragma mark - UIAdaptivePresentationControllerDelegate
@@ -1539,55 +1310,8 @@ typedef std::pair<SessionID, TableViewURLItem*> RecentlyClosedTableViewItemPair;
   [self.presentationDelegate showActiveRegularTabFromRecentTabs];
 }
 
-#pragma mark - Private Helpers
-
-- (void)showPrimaryAccountReauth {
-  [self.presentationDelegate showPrimaryAccountReauth];
-}
-
-- (void)showSyncPassphraseSettings {
-  [self.settingsHandler showSyncPassphraseSettingsFromViewController:self];
-}
-
-// Disconnects the mediator.
-- (void)disconnectMediator {
-  [self.signinPromoViewMediator disconnect];
-  self.signinPromoViewMediator = nil;
-}
-
 - (void)didTapPromoActionButton {
-  syncer::SyncService* const syncService = self.syncService;
-  if (!syncService) {
-    return;
-  }
-  syncer::SyncService::UserActionableError error =
-      syncService->GetUserActionableError();
-  if (error == syncer::SyncService::UserActionableError::kSignInNeedsUpdate) {
-    [self showPrimaryAccountReauth];
-  } else if ([self shouldShowHistorySyncOnPromoAction]) {
-    [self.presentationDelegate showHistorySyncOptInAfterDedicatedSignIn:NO];
-  } else if (ShouldShowSyncSettings(error)) {
-    [self.settingsHandler showSyncSettingsFromViewController:self];
-  } else if (error ==
-             syncer::SyncService::UserActionableError::kNeedsPassphrase) {
-    [self showSyncPassphraseSettings];
-  }
-}
-
-// Returns YES if the History Sync Opt-In should be shown when the promo action
-// button is tapped.
-// TODO(crbug.com/40921836): This logic should be moved outside of the
-// ViewController.
-- (BOOL)shouldShowHistorySyncOnPromoAction {
-  AuthenticationService* authenticationService =
-      AuthenticationServiceFactory::GetForProfile(_profile);
-  // Check if History Sync Opt-In should be skipped.
-  // In case it's not necessary to show the history opt-in, but the promo action
-  // button is still available, sync errors should be checked to show the
-  // correct screen to handle the error (ex. passphrase screen).
-  return history_sync::GetSkipReason(self.syncService, authenticationService,
-                                     _profile->GetPrefs(), NO) ==
-         history_sync::HistorySyncSkipReason::kNone;
+  [self.presentationDelegate didTapPromoActionButton];
 }
 
 @end

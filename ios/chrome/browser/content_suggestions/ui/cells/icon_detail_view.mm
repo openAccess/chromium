@@ -242,6 +242,8 @@ UIView* BadgeIconInContainer(UIImageView* icon,
   UITapGestureRecognizer* _tapGestureRecognizer;
   // The container view for the image, if one exists.
   UIView* _imageContainerView;
+  // The trailing toggle switch when `_config.showSwitch` is enabled.
+  UISwitch* _toggleSwitch;
 }
 
 - (instancetype)initWithConfig:(IconDetailViewConfig*)config {
@@ -288,6 +290,13 @@ UIView* BadgeIconInContainer(UIImageView* icon,
                                 : kGrey100Color];
   }
   _config.ntpBackgroundColorPalette = colorPalette;
+}
+
+#pragma mark - Public
+
+- (void)setSwitchOn:(BOOL)switchOn animated:(BOOL)animated {
+  _config.switchOn = switchOn;
+  [_toggleSwitch setOn:switchOn animated:animated];
 }
 
 #pragma mark - Private
@@ -357,9 +366,11 @@ UIView* BadgeIconInContainer(UIImageView* icon,
 
   BOOL isHeroLayout = _config.layoutType == IconDetailViewLayoutType::kHero;
 
-  // When the item is displayed in a hero-style layout, the icon is more
-  // prominently displayed via an icon container view.
-  if (isHeroLayout) {
+  // When the item is displayed in a hero-style layout without a trailing
+  // switch, the icon is prominently framed inside `_imageContainerView`. Items
+  // with `showSwitch` enabled display the compact `IconView` directly so more
+  // horizontal space is preserved for the text stack and `UISwitch`.
+  if (isHeroLayout && !_config.showSwitch) {
     _imageContainerView =
         [self imageInContainer:image
              useLargeContainer:(_config.backgroundImage != nil)];
@@ -433,8 +444,24 @@ UIView* BadgeIconInContainer(UIImageView* icon,
 
   [arrangedSubviews addObject:textStack];
 
-  // For compact layout, display a chevron at the end of the item.
-  if (!isHeroLayout) {
+  if (_config.showSwitch) {
+    // Disable container-level accessibility aggregation so VoiceOver can focus
+    // the text labels and the interactive `UISwitch` as separate elements.
+    self.isAccessibilityElement = NO;
+    _toggleSwitch = [[UISwitch alloc] init];
+    _toggleSwitch.on = _config.switchOn;
+    [_toggleSwitch setContentHuggingPriority:UILayoutPriorityDefaultHigh
+                                     forAxis:UILayoutConstraintAxisHorizontal];
+    [_toggleSwitch
+        setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                        forAxis:
+                                            UILayoutConstraintAxisHorizontal];
+    [_toggleSwitch addTarget:self
+                      action:@selector(switchValueChanged:)
+            forControlEvents:UIControlEventValueChanged];
+    [arrangedSubviews addObject:_toggleSwitch];
+  } else if (!isHeroLayout) {
+    // For compact layout, display a chevron at the end of the item.
     UIImageView* chevron = [[UIImageView alloc]
         initWithImage:[UIImage imageNamed:@"table_view_cell_chevron"]];
 
@@ -455,14 +482,28 @@ UIView* BadgeIconInContainer(UIImageView* icon,
   [self addSubview:contentStack];
   AddSameConstraints(contentStack, self);
 
-  // Set up the tap gesture recognizer.
-  _tapGestureRecognizer =
-      [[UITapGestureRecognizer alloc] initWithTarget:self
-                                              action:@selector(handleTap:)];
+  // Only attach a full-view tap gesture recognizer when `showSwitch` is
+  // disabled; when `showSwitch` is enabled, user interaction is handled
+  // exclusively by `toggleSwitch` rather than navigating on card tap.
+  if (!_config.showSwitch) {
+    // Set up the tap gesture recognizer.
+    _tapGestureRecognizer =
+        [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                action:@selector(handleTap:)];
 
-  [self addGestureRecognizer:_tapGestureRecognizer];
+    [self addGestureRecognizer:_tapGestureRecognizer];
+  }
 
   [self applyBackgroundColors];
+}
+
+// Called when the trailing switch is toggled.
+- (void)switchValueChanged:(UISwitch*)sender {
+  if ([self.tapDelegate
+          respondsToSelector:@selector(
+                                 didToggleSwitchInIconDetailView:isOn:)]) {
+    [self.tapDelegate didToggleSwitchInIconDetailView:self isOn:sender.isOn];
+  }
 }
 
 // Called when the view is tapped. This method notifies the `tapDelegate`
@@ -529,7 +570,7 @@ UIView* BadgeIconInContainer(UIImageView* icon,
   UILabel* label = [[UILabel alloc] init];
 
   label.text = _config.descriptionText;
-  label.numberOfLines = 2;
+  label.numberOfLines = _config.showSwitch ? 3 : 2;
   label.lineBreakMode = NSLineBreakByTruncatingTail;
   label.font = PreferredFontForTextStyle(UIFontTextStyleFootnote, std::nullopt,
                                          kMaxTextSizeForStyleFootnote);

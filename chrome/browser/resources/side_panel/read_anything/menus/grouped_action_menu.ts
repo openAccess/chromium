@@ -74,6 +74,16 @@ export class GroupedActionMenuElement extends GroupedActionMenuElementBase {
     this.$.lazyMenu.get().close();
   }
 
+  focusItem(groupIndex: number, itemIndex: number) {
+    const actionMenu = this.$.lazyMenu.getIfExists();
+    if (!actionMenu?.open) {
+      return;
+    }
+    const item = actionMenu.querySelector<HTMLElement>(
+        `#${this.getItemId_(groupIndex, itemIndex)}`);
+    item?.focus();
+  }
+
   protected onClick_(e: Event) {
     const currentTarget = e.currentTarget as HTMLElement;
     const groupIndex = Number.parseInt(currentTarget.dataset['groupIndex']!);
@@ -82,16 +92,24 @@ export class GroupedActionMenuElement extends GroupedActionMenuElementBase {
     assert(group);
     const menuItem = group.items[itemIndex];
     assert(menuItem);
-    this.fire(group.eventName, {data: menuItem.data});
+    const eventName = menuItem.eventName || group.eventName;
+    assert(
+        eventName,
+        'At least one of menu item or menu group should have an event name');
+    this.fire(eventName, {data: menuItem.data});
     if (this.closeOnClick) {
       this.$.lazyMenu.get().close();
     }
   }
 
+  protected getItemId_(groupIndex: number, itemIndex: number): string {
+    return `group-${groupIndex}-item-${itemIndex}`;
+  }
+
   protected getAriaOwns_(groupIndex: number, length: number): string {
     return Array
         .from(
-            {length}, (_, itemIndex) => `group-${groupIndex}-item-${itemIndex}`)
+            {length}, (_, itemIndex) => this.getItemId_(groupIndex, itemIndex))
         .join(' ');
   }
 
@@ -100,15 +118,38 @@ export class GroupedActionMenuElement extends GroupedActionMenuElementBase {
                                                        'menuitemradio';
   }
 
+  protected isItemSelected_(
+      group: MenuGroup<unknown>, item: MenuStateItem<unknown>): boolean {
+    return item.data === group.selectedValue;
+  }
+
   // Returns the aria-checked attribute for the menuitemradio role (radio item
   // type). Returns nothing for menuitem roles (action item) since those don't
   // require the attribute.
-  protected getItemAriaChecked_(item: MenuStateItem<unknown>): boolean|
+  protected getItemAriaChecked_(
+      group: MenuGroup<unknown>, item: MenuStateItem<unknown>): boolean|
       typeof nothing {
     if (item.itemType === SettingsItemType.ACTION) {
       return nothing;
     }
-    return item.selected ?? false;
+    return this.isItemSelected_(group, item);
+  }
+
+  // Returns the aria-haspopup attribute for items that open a dialog, so
+  // screen readers announce that this item opens another surface rather than
+  // acting immediately. Returns nothing for items without a dialog so the
+  // attribute isn't rendered at all.
+  protected getItemAriaHasPopup_(item: MenuStateItem<unknown>): string|
+      typeof nothing {
+    return item.opensDialog ? 'dialog' : nothing;
+  }
+
+  // Returns the visible text for the item title. Items that open a dialog get a
+  // localized trailing ellipsis to indicate action.
+  protected getItemDisplayTitle_(item: MenuStateItem<unknown>): string {
+    return item.opensDialog ?
+        loadTimeData.getStringF('menuItemOpensDialogLabel', item.title) :
+        item.title;
   }
 
   protected getItemIcon_(item: MenuStateItem<unknown>): string|null {

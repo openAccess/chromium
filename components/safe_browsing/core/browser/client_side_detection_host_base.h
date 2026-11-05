@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -23,13 +24,17 @@
 #include "components/history/core/browser/history_service_observer.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/safe_browsing/core/browser/credit_card_form_event.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/browser/safe_browsing_token_fetcher.h"
 #include "components/safe_browsing/core/common/client_side_detection_enums.h"
+#include "components/safe_browsing/core/common/phishing_classifier/phishing_classifier.h"
 #include "components/safe_browsing/core/common/phishing_classifier/phishing_image_embedder.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/threat_enums.h"
+#include "components/safe_browsing/core/common/visual_utils.h"
 #include "net/http/http_status_code.h"
+#include "ui/gfx/image/image.h"
 #include "url/gurl.h"
 
 class PrefService;
@@ -58,6 +63,20 @@ inline constexpr float kProbabilityForAcceptingHCAllowlistTrigger = 0.9999f;
 class ClientSideDetectionFeatureCacheBase;
 class ClientSideDetectionServiceBase;
 class VerdictCacheManager;
+
+// Reasons why browser-side visual classification stopped before the
+// classifier ran. These values are persisted to logs. Entries should not be
+// renumbered and numeric values should never be reused.
+//
+// LINT.IfChange(VisualClassificationEarlyReturnReason)
+enum class VisualClassificationEarlyReturnReason {
+  kScorerMissingBeforeSnapshot = 0,
+  kSnapshotHelperMissing = 1,
+  kSnapshotFailed = 2,
+  kScorerMissingAfterSnapshot = 3,
+  kMaxValue = kScorerMissingAfterSnapshot,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/sb_client/enums.xml:SBClientPhishingVisualClassificationEarlyReturnReason)
 
 class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
                                     public history::HistoryServiceObserver {
@@ -110,6 +129,11 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
 
   virtual bool IsAccountSignedIn() = 0;
   virtual bool IsErrorDocument() = 0;
+
+  // Returns the site engagement score for `url`. Returns std::nullopt if the
+  // score is not available (e.g., for off-the-record profiles, if WebContents
+  // is null, or if SiteEngagementService is unavailable).
+  virtual std::optional<double> GetSiteEngagementScore(const GURL& url) const;
 
   // Returns the inner text from the tab. The callback is used to retrieve a
   // string back when the inner text function is completed. This string is then
@@ -184,9 +208,7 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
   // Used for testing.  This function does not take ownership of the service
   // class.
   void set_client_side_detection_service_for_testing(
-      base::WeakPtr<ClientSideDetectionServiceBase> service) {
-    csd_service_ = service;
-  }
+      base::WeakPtr<ClientSideDetectionServiceBase> service);
 
   void set_token_fetcher_for_testing(
       std::unique_ptr<SafeBrowsingTokenFetcher> token_fetcher) {
@@ -197,6 +219,8 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
       IntelligentScanDelegate* intelligent_scan_delegate) {
     intelligent_scan_delegate_ = intelligent_scan_delegate;
   }
+
+  bool is_off_the_record() const { return is_off_the_record_; }
 
   void set_is_off_the_record_for_testing(bool is_off_the_record) {
     is_off_the_record_ = is_off_the_record;
@@ -218,6 +242,14 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
     probability_for_sending_sample_request_ = sample_ping_rate;
   }
 
+  // Returns the PNG-encoded screenshot bytes passed to the most recent
+  // `StartIntelligentScan` call, used in unit tests to verify multimodal
+  // screenshot capture and encoding.
+  const std::optional<std::string>&
+  last_intelligent_scan_tab_screenshot_for_testing() const {
+    return last_intelligent_scan_tab_screenshot_for_testing_;
+  }
+
  protected:
   base::WeakPtr<ClientSideDetectionServiceBase> GetClientSideDetectionService()
       const;
@@ -229,6 +261,19 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
 
   static safe_browsing::ThreatSubtype GetThreatSubtype(
       IntelligentScanVerdict intelligent_scan_verdict);
+
+  // Returns the allowlist match result enum based on whether the CSD and
+  // High-Confidence allowlists matched.
+  static ClientSideAllowlistMatchResult GetClientSideAllowlistMatchResult(
+      bool match_csd_allowlist,
+      bool match_hc_allowlist);
+
+  // Returns the SBThreatType to use for the blocking page. Billing scam
+  // verdicts show the billing interstitial, unless the page is also classified
+  // as phishing, in which case the more severe phishing interstitial is shown.
+  static SBThreatType GetBlockingPageThreatType(
+      bool is_phishing,
+      safe_browsing::ThreatSubtype threat_subtype);
 
   // Cancels any pending asynchronous requests bound to this host.
   // Intended to handle the case where the primary page changes while there is
@@ -306,6 +351,29 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
       bool is_invalid_ip,
       std::string inner_text);
 
+  // Returns true if the feature configuration and device capabilities allow
+  // capturing a screenshot for multimodal intelligent scan.
+  bool ShouldCaptureScreenshotForIntelligentScan() const;
+
+  // Optionally captures a viewport screenshot for multimodal intelligent scan
+  // before starting the scan via `StartIntelligentScan`. By default, invokes
+  // `StartIntelligentScan` immediately without a screenshot.
+  virtual void MaybeCaptureScreenshotAndStartIntelligentScan(
+      std::unique_ptr<ClientPhishingRequest> verdict,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
+      std::string inner_text);
+
+  // Invokes `IntelligentScanDelegate::StartIntelligentScan` and logs the begin
+  // event, or skips the scan if `inner_text` is empty or too short and
+  // `tab_screenshot` is empty.
+  void StartIntelligentScan(
+      std::unique_ptr<ClientPhishingRequest> verdict,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
+      std::string inner_text,
+      std::optional<std::string> tab_screenshot);
+
   // Callback function when StartIntelligentScan from the intelligent scan
   // delegate is completed.
   // TODO: Remove the parameter is_invalid_ip once the feature flag,
@@ -366,6 +434,7 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
       GURL phishing_url,
       ClientSideDetectionType request_type,
       std::optional<IntelligentScanVerdict> intelligent_scan_verdict,
+      bool is_phishing,
       bool should_show_scam_warning) = 0;
 
   // Subclasses override this to update local feature caches with network
@@ -484,11 +553,110 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
 
   const base::TickClock* tick_clock() const { return tick_clock_; }
 
+  // --- Browser-side visual classification ------------------------------------
+  //
+  // Shared by platforms that run `PhishingClassifier` / `PhishingImageEmbedder`
+  // in the browser process against the `Scorer` owned by
+  // `ClientSideDetectionServiceBase` (iOS, and content platforms behind
+  // `kClientSideDetectionCopyFromSurface`). Platforms supply the page capture
+  // via `CaptureScreenshot()` and start the pipeline with
+  // `StartVisualClassification()`.
+
+  using ScreenshotCallback = base::OnceCallback<void(const gfx::Image&)>;
+
+  // Captures the current page for visual classification and runs `callback`
+  // with the result, or with an empty image if the capture failed.
+  virtual void CaptureScreenshot(ScreenshotCallback callback) = 0;
+
+  // Decides whether visual features (the blurred page image) may be attached
+  // to the ping, based on opt-in, incognito state, viewport size and zoom, and
+  // records the `SBClientPhishing.Viewport.*` / `VisualFeaturesClearReason2`
+  // histograms.
+  virtual visual_utils::CanExtractVisualFeaturesResult
+  DetermineVisualFeaturesExtraction() = 0;
+
+  // Called when browser-side visual classification stops before the classifier
+  // runs. The default implementation marks CSD as no longer running and records
+  // `SBClientPhishing.VisualClassificationEarlyReturnReason`.
+  virtual void OnVisualClassificationEarlyReturn(
+      VisualClassificationEarlyReturnReason reason);
+
+  // Upgrades `TRIGGER_MODELS` to `IMAGE_EMBEDDING_MATCH` for Enhanced
+  // Protection users when `kClientSideDetectionImageEmbeddingMatch` is
+  // enabled.
+  ClientSideDetectionType MaybeUpgradeRequestTypeForImageEmbeddingMatch(
+      ClientSideDetectionType request_type) const;
+
+  // Classifies `image` for `url` with the browser-side `Scorer`. Upgrades
+  // `TRIGGER_MODELS` to `IMAGE_EMBEDDING_MATCH` for Enhanced Protection users
+  // when `kClientSideDetectionImageEmbeddingMatch` is enabled, and forwards the
+  // verdict to `PhishingDetectionDone()`. `is_sample_ping` and
+  // `did_match_high_confidence_allowlist` come from pre-classification.
+  void StartVisualClassification(
+      const GURL& url,
+      ClientSideDetectionType request_type,
+      bool is_sample_ping,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      const gfx::Image& image);
+
+  // Browser-side implementation of `MaybeStartImageEmbedding()`: applies the
+  // visual-features gate, runs the image embedder on the retained
+  // classification image when needed, and otherwise continues to
+  // `MaybeStartIntelligentScanForScamDetection()`.
+  void StartBrowserSideImageEmbedding(
+      std::unique_ptr<ClientPhishingRequest> verdict,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
+      PhishingDetectorResult result);
+
+  // Cancels in-flight browser-side classification and image embedding and
+  // releases the retained classification image. Does not reset the
+  // `is_csd_running()` / `is_classifying()` state; callers decide that.
+  void CancelBrowserSideClassification();
+
+  // Completion callbacks for `StartVisualClassification()` and
+  // `StartBrowserSideImageEmbedding()`. Protected so platform tests can drive
+  // them directly.
+  void OnVisualClassificationDone(
+      const GURL& url,
+      const gfx::Image& image,
+      ClientSideDetectionType request_type,
+      bool is_sample_ping,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      base::TimeTicks classification_start_time,
+      const ClientPhishingRequest& verdict,
+      PhishingClassifier::Result result);
+  void OnImageEmbeddingDone(
+      std::unique_ptr<ClientPhishingRequest> verdict,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
+      PhishingImageEmbedder::Result result,
+      const ImageFeatureEmbedding& image_embedding,
+      const VisualFeatures& visual_features);
+
+  // Browser-side classification engines. Their `Scorer` is injected from
+  // `ClientSideDetectionServiceBase::GetScorer()` right before use and dropped
+  // again whenever the service reports a scorer change.
+  std::unique_ptr<PhishingClassifier> classifier_;
+  std::unique_ptr<PhishingImageEmbedder> image_embedder_;
+
+  // The page capture used for the last successful classification, retained
+  // until image embedding has consumed it (or classification is cancelled).
+  gfx::Image classification_image_;
+
  private:
   friend class ClientSideDetectionTabHelperTest;
 
   int GetTriggerModelVersion() const;
   bool IsModelAvailable() const;
+
+  // Subscribes to scorer updates from `csd_service_`, if any.
+  void SubscribeToScorerUpdates();
+
+  // Called when the service's browser-side `Scorer` changes. The previous
+  // `Scorer` is destroyed on a background thread, so in-flight requests are
+  // cancelled and the cached raw pointers dropped (crbug.com/561910278).
+  void OnScorerChanged();
 
   // MaybeTriggerCreditCardFormPing is a helper that determines whether
   // a credit card form event should trigger a CSD ping. It takes
@@ -553,6 +721,10 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
   // The intelligent scan ID for the current intelligent scan request.
   std::optional<base::UnguessableToken> intelligent_scan_id_;
 
+  // Stores the last `tab_screenshot` passed to `StartIntelligentScan` for
+  // testing.
+  std::optional<std::string> last_intelligent_scan_tab_screenshot_for_testing_;
+
   // The last text that was copied to the clipboard.
   std::u16string last_copied_text_;
   std::unique_ptr<ClipboardExtractedData> clipboard_extracted_data_;
@@ -580,6 +752,10 @@ class ClientSideDetectionHostBase : public autofill::AutofillManager::Observer,
   raw_ptr<const base::TickClock> tick_clock_ = nullptr;
 
   base::CancelableTaskTracker task_tracker_;
+
+  // Declared after `classifier_` / `image_embedder_` so that it is destroyed
+  // first and no scorer-change notification can reach them mid-destruction.
+  base::CallbackListSubscription scorer_update_subscription_;
 
   // Ensures that all methods are called on the same sequence.
   SEQUENCE_CHECKER(sequence_checker_);

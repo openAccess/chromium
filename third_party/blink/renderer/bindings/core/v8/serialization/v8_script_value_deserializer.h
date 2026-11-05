@@ -117,7 +117,8 @@ class CORE_EXPORT V8ScriptValueDeserializer
   File* ReadFile();
   File* ReadFileIndex();
 
-  scoped_refptr<BlobDataHandle> GetBlobDataHandle(const String& uuid);
+  scoped_refptr<BlobDataHandle> GetBlobDataHandle(
+      const String& blob_index_string);
 
   // v8::ValueDeserializer::Delegate
   v8::MaybeLocal<v8::Object> ReadHostObject(v8::Isolate*) override;
@@ -143,6 +144,12 @@ class CORE_EXPORT V8ScriptValueDeserializer
 
   // Blob info for blobs stored by index.
   const WebBlobInfoArray* blob_info_array_ = nullptr;
+
+  const String histogram_variant_;
+  // These members are used to make sure successful blob deserialization is only
+  // logged once per object deserialization.
+  bool recorded_blob_deserialization_success_ = false;
+  bool recorded_file_deserialization_success_ = false;
 
   // Set during deserialize after the header is read.
   uint32_t version_ = 0;

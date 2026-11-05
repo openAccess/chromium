@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 
@@ -119,21 +120,23 @@ TEST_F(LayoutSVGContainerTest,
 
 TEST_F(LayoutSVGContainerTest, PatternWithContentVisibility) {
   SetBodyInnerHTML(R"HTML(
-    <svg viewBox="0 0 230 100" xmlns="http://www.w3.org/2000/svg">
+    <svg id="locked-svg" viewBox="0 0 230 100" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <pattern id="pattern" viewBox="0,0,10,10" width="10%" height="10%">
           <polygon id="polygon" points="0,0 2,5 0,10 5,8 10,10 8,5 10,0 5,2"/>
         </pattern>
       </defs>
-
+    </svg>
+    <svg viewBox="0 0 230 100" xmlns="http://www.w3.org/2000/svg">
       <circle id="circle" cx="50"  cy="50" r="50" fill="url(#pattern)"/>
     </svg>
   )HTML");
 
+  auto* locked_svg = GetElementById("locked-svg");
   auto* pattern = GetElementById("pattern");
   auto* polygon = GetElementById("polygon");
 
-  pattern->setAttribute(
+  locked_svg->setAttribute(
       svg_names::kStyleAttr,
       AtomicString("contain: strict; content-visibility: hidden"));
 
@@ -147,6 +150,25 @@ TEST_F(LayoutSVGContainerTest, PatternWithContentVisibility) {
 
   EXPECT_TRUE(pattern->GetLayoutObject()->NeedsLayout());
   EXPECT_FALSE(pattern->GetLayoutObject()->SelfNeedsFullLayout());
+}
+
+TEST_F(LayoutSVGContainerTest, BoundingBoxesWith3DTransformedChild) {
+  ScopedSvgCss3dTransformsForTest svg_css_3d_transforms(true);
+  SetBodyInnerHTML(R"HTML(
+    <svg width="200" height="200">
+      <g id="g">
+        <rect x="50" y="50" width="100" height="100"
+              style="transform: perspective(300px) translateZ(-100px);
+                     transform-origin: 100px 100px"/>
+      </g>
+    </svg>
+  )HTML");
+
+  // The rect renders scaled by 300 / (300 + 100) = 0.75 about the transform
+  // origin (100, 100).
+  auto* g = GetLayoutObjectByElementId("g");
+  EXPECT_EQ(gfx::RectF(62.5, 62.5, 75, 75), g->ObjectBoundingBox());
+  EXPECT_EQ(gfx::RectF(62.5, 62.5, 75, 75), g->DecoratedBoundingBox());
 }
 
 }  // namespace blink

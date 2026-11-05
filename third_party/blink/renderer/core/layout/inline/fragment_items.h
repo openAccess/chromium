@@ -14,6 +14,7 @@ namespace blink {
 
 class FragmentItemsBuilder;
 class LayoutInline;
+class LayoutResultList;
 
 // Represents the inside of an inline formatting context.
 //
@@ -71,9 +72,8 @@ class CORE_EXPORT FragmentItems final {
 
   // Associate |FragmentItem|s with |LayoutObject|s and finalize the items
   // (set which ones are the first / last for the LayoutObject).
-  static void FinalizeAfterLayout(
-      const HeapVector<Member<const LayoutResult>, 1>& results,
-      LayoutBlockFlow& container);
+  static void FinalizeAfterLayout(const LayoutResultList& results,
+                                  LayoutBlockFlow& container);
 
   // Disassociate |FragmentItem|s with |LayoutObject|s. And more.
   static void ClearAssociatedFragments(LayoutObject* container);
@@ -90,13 +90,10 @@ class CORE_EXPORT FragmentItems final {
   // Return true if any items inside the culled inline occur here. In that case,
   // |is_first_container| and |is_last_container| will also be set to indicate
   // whether this is the first/last container for the culled inline. If false is
-  // returned, the |is_first_container| and |is_last_container| out-parameters
-  // must be ignored. |child_has_any_child_items| will be set to true if there
-  // are any items inside the LayoutInline at all, regardless of return value.
+  // returned, these out-parameters must be ignored.
   bool IsContainerForCulledInline(const LayoutInline&,
                                   bool* is_first_container,
-                                  bool* is_last_container,
-                                  bool* child_has_any_child_items) const;
+                                  bool* is_last_container) const;
 
   // Mark items dirty when |child| is removed from the tree.
   static void DirtyLinesFromChangedChild(const LayoutObject& child,

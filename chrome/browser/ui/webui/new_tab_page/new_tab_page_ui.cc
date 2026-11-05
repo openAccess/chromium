@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
@@ -33,25 +34,21 @@
 #include "chrome/browser/new_tab_page/feature_promo_helper/new_tab_page_feature_promo_helper.h"
 #include "chrome/browser/new_tab_page/modules/file_suggestion/drive_service.h"
 #include "chrome/browser/new_tab_page/modules/file_suggestion/drive_suggestion_handler.h"
-#include "chrome/browser/new_tab_page/modules/file_suggestion/microsoft_files_page_handler.h"
 #include "chrome/browser/new_tab_page/modules/new_tab_page_modules.h"
-#include "chrome/browser/new_tab_page/modules/v2/authentication/microsoft_auth_page_handler.h"
 #include "chrome/browser/new_tab_page/modules/v2/calendar/google_calendar_page_handler.h"
-#include "chrome/browser/new_tab_page/modules/v2/calendar/outlook_calendar_page_handler.h"
 #include "chrome/browser/new_tab_page/modules/v2/most_relevant_tab_resumption/most_relevant_tab_resumption_page_handler.h"
-#include "chrome/browser/new_tab_page/modules/v2/tab_groups/tab_groups_page_handler.h"
 #include "chrome/browser/new_tab_page/new_tab_page_util.h"
 #include "chrome/browser/new_tab_page/prefs/ntp_pref_names.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/page_image_service/image_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/background/ntp_custom_background_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/search_provider_logos/logo_service_factory.h"
 #include "chrome/browser/segmentation_platform/segmentation_platform_service_factory.h"
+#include "chrome/browser/signin/chrome_signin_helper.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
+#include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/search/ntp_user_data_logger.h"
@@ -60,6 +57,7 @@
 #include "chrome/browser/ui/webui/cr_components/composebox/composebox_handler.h"
 #include "chrome/browser/ui/webui/cr_components/most_visited/most_visited_handler.h"
 #include "chrome/browser/ui/webui/cr_components/most_visited/most_visited_pref_observer.h"
+#include "chrome/browser/ui/webui/cr_components/searchbox/plural_string_provider.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.h"
 #include "chrome/browser/ui/webui/customize_buttons/customize_buttons_handler.h"
 #include "chrome/browser/ui/webui/favicon_source.h"
@@ -71,7 +69,6 @@
 #include "chrome/browser/ui/webui/new_tab_page/new_tab_page_handler.h"
 #include "chrome/browser/ui/webui/new_tab_page/untrusted_source.h"
 #include "chrome/browser/ui/webui/page_not_available_for_guest/page_not_available_for_guest_ui.h"
-#include "chrome/browser/ui/webui/plural_string_handler.h"
 #include "chrome/browser/ui/webui/sanitized_image/sanitized_image_source.h"
 #include "chrome/browser/ui/webui/searchbox/realbox_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
@@ -86,11 +83,14 @@
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/new_tab_page_resources.h"
 #include "chrome/grit/new_tab_page_resources_map.h"
+#include "chrome/grit/new_tab_shared_resources.h"
+#include "chrome/grit/new_tab_shared_resources_map.h"
 #include "chrome/grit/theme_resources.h"
 #include "components/commerce/core/commerce_feature_list.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/contextual_search/contextual_search_metrics_recorder.h"
 #include "components/contextual_search/contextual_search_service.h"
+#include "components/contextual_tasks/public/features.h"
 #include "components/favicon_base/favicon_url_parser.h"
 #include "components/google/core/common/google_util.h"
 #include "components/grit/components_scaled_resources.h"
@@ -100,7 +100,6 @@
 #include "components/lens/lens_url_utils.h"
 #include "components/ntp_tiles/features.h"
 #include "components/ntp_tiles/most_visited_sites.h"
-#include "components/ntp_tiles/pref_names.h"
 #include "components/ntp_tiles/tile_type.h"
 #include "components/omnibox/browser/aim_eligibility_service.h"
 #include "components/omnibox/browser/omnibox_prefs.h"
@@ -117,6 +116,7 @@
 #include "components/sync/service/sync_service.h"
 #include "components/user_education/common/ntp_promo/ntp_promo_controller.h"
 #include "components/user_education/common/user_education_features.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -128,6 +128,7 @@
 #include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "skia/ext/skia_utils_base.h"
 #include "third_party/omnibox_proto/chrome_aim_entry_point.pb.h"
+#include "third_party/omnibox_proto/lhs_rail_config.pb.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -143,16 +144,14 @@
 #include "url/url_util.h"
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/new_tab_page/modules/file_suggestion/microsoft_files_page_handler.h"
+#include "chrome/browser/new_tab_page/modules/v2/calendar/outlook_calendar_page_handler.h"
+#include "chrome/browser/new_tab_page/modules/v2/tab_groups/tab_groups_page_handler.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/views/side_panel/customize_chrome/customize_chrome_utils.h"
 #include "chrome/browser/ui/webui/new_tab_page/ntp_promo/ntp_promo_handler.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
-
-#if !BUILDFLAG(OPTIMIZE_WEBUI)
-#include "chrome/grit/new_tab_shared_resources.h"
-#include "chrome/grit/new_tab_shared_resources_map.h"
-#endif  // !BUILDFLAG(OPTIMIZE_WEBUI)
 
 #if !defined(OFFICIAL_BUILD)
 #include "chrome/browser/ui/webui/new_tab_page/foo/foo_handler.h"
@@ -190,6 +189,12 @@ constexpr char kAIMDisplayMode[] = "50";
 // The value for the "atvm" (AIM Threads Visibility Mode) query parameter.
 // value "3" corresponds to Threads Visibility Mode "Always Open".
 constexpr char kAIMThreadsVisibilityMode[] = "3";
+// The value for the "csui" (Conversational Search UI) query parameter.
+// value "3" enables CGI parameter color-scheme triggering (cs=0|1).
+constexpr char kAIMConversationalSearchUI[] = "3";
+// Google Search page shown in the NTP's left-hand side (LHS) panel, relative
+// to the Google base URL.
+constexpr char kLhsRelativeUrl[] = "/search?nem=341";
 
 bool HasCredentials(Profile* profile) {
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
@@ -200,27 +205,88 @@ bool HasCredentials(Profile* profile) {
            .empty();
 }
 
-content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
+// Returns whether the action chips are shown on the NTP.
+bool AreActionChipsEnabled(Profile* profile) {
+  const auto* aim_eligibility_service =
+      AimEligibilityServiceFactory::GetForProfile(profile);
+  int num_tools_eligible = 0;
+  if (aim_eligibility_service) {
+    if (aim_eligibility_service->IsDeepSearchEligible()) {
+      num_tools_eligible++;
+    }
+    if (aim_eligibility_service->IsCreateImagesEligible()) {
+      num_tools_eligible++;
+      if (base::FeatureList::IsEnabled(ntp_features::kNtpStarterChip)) {
+        num_tools_eligible++;
+      }
+    }
+    if (base::FeatureList::IsEnabled(ntp_features::kNtpNextCanvasChip) &&
+        aim_eligibility_service->IsCanvasEligible()) {
+      num_tools_eligible++;
+    }
+  }
+  bool ntp_next_features_enabled =
+      ntp_realbox::IsNtpRealboxNextEnabled(profile) &&
+      base::FeatureList::IsEnabled(ntp_features::kNtpNextFeatures);
+  bool action_chips_eligible =
+      ntp_next_features_enabled &&
+      ((base::FeatureList::IsEnabled(ntp_features::kNtpScaledActionChips) ||
+        base::FeatureList::IsEnabled(
+            ntp_features::kNtpScaledActionChipsSmall)) ||
+       (aim_eligibility_service && aim_eligibility_service->IsAimEligible() &&
+        num_tools_eligible >= 2));
+  return action_chips_eligible &&
+         (!ntp_features::kNtpNextDisablementParam.Get() ||
+          profile->GetPrefs()->GetBoolean(prefs::kNtpToolChipsVisible));
+}
+
+// Returns whether the 2026 version of the Google logo is used.
+bool UseGoogleLogo26() {
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  return base::FeatureList::IsEnabled(ntp_features::kNtpGoogleLogo26);
+#else
+  return false;
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+}
+
+// Returns whether the left-hand side (LHS) threads rail is shown on the NTP.
+// The rail embeds Google Search AI Mode content, so it is only available on
+// Google Chrome branded builds. In hybrid mode, the local rail renders items
+// from `LhsRailConfig`, so a non-null config is required.
+bool IsThreadsRailEnabled(bool aim_eligible, bool has_lhs_rail_config) {
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  if (!aim_eligible ||
+      !base::FeatureList::IsEnabled(ntp_features::kNtpThreadsRail)) {
+    return false;
+  }
+  return !ntp_features::kNtpThreadsRailHybridParam.Get() || has_lhs_rail_config;
+#else
+  return false;
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+}
+
+}  // namespace
+
+// static
+base::DictValue NewTabPageUI::GetLoadTimeData(
     Profile* profile,
     bool session_allows_drag_and_drop) {
-  content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      profile, chrome::kChromeUINewTabPageHost);
+  base::DictValue dict;
 
   ui::Accelerator undo_accelerator(ui::VKEY_Z, ui::EF_PLATFORM_ACCELERATOR);
-  source->AddString("undoDescription", l10n_util::GetStringFUTF16(
-                                           IDS_UNDO_DESCRIPTION,
-                                           undo_accelerator.GetShortcutText()));
-  source->AddString("ntpPromoDismiss",
-                    l10n_util::GetStringUTF16(IDS_NTP_PROMO_DISMISS));
-  source->AddString("ntpPromoMenu",
-                    l10n_util::GetStringUTF16(IDS_NTP_PROMO_MENU_TOOLTIP));
-  source->AddString("ntpPromoMenuA11yLabel",
-                    l10n_util::GetStringUTF16(IDS_NTP_PROMO_MENU_A11Y_LABEL));
+  dict.Set("undoDescription",
+           l10n_util::GetStringFUTF16(IDS_UNDO_DESCRIPTION,
+                                      undo_accelerator.GetShortcutText()));
+  dict.Set("ntpPromoDismiss", l10n_util::GetStringUTF16(IDS_NTP_PROMO_DISMISS));
+  dict.Set("ntpPromoMenu",
+           l10n_util::GetStringUTF16(IDS_NTP_PROMO_MENU_TOOLTIP));
+  dict.Set("ntpPromoMenuA11yLabel",
+           l10n_util::GetStringUTF16(IDS_NTP_PROMO_MENU_A11Y_LABEL));
 
   GURL google_base_url = GURL(TemplateURLServiceFactory::GetForProfile(profile)
                                   ->search_terms_data()
                                   .GoogleBaseURLValue());
-  source->AddString("googleBaseUrl", google_base_url.spec());
+  dict.Set("googleBaseUrl", google_base_url.spec());
 
   GURL threads_url = google_base_url.Resolve("/search");
   threads_url = net::AppendQueryParameter(threads_url, "udm", kAIMDisplayMode);
@@ -232,127 +298,134 @@ content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
   threads_url = lens::AppendInvocationSourceParamToURL(
       threads_url, lens::LensOverlayInvocationSource::kNtpContextualQuery,
       /*is_contextual_tasks=*/true);
-  source->AddString("threadsUrl", threads_url.spec());
+  dict.Set("threadsUrl", threads_url.spec());
 
-  source->AddInteger(
-      "preconnectStartTimeThreshold",
-      features::kNewTabPagePreconnectStartDelayOnMouseHoverByMilliSeconds
-          .Get());
-  source->AddInteger(
+  GURL expanded_lhs_url = google_base_url.Resolve(kLhsRelativeUrl);
+  if (ntp_features::kNtpThreadsRailHybridParam.Get()) {
+    expanded_lhs_url = net::AppendQueryParameter(expanded_lhs_url, "atvm",
+                                                 kAIMThreadsVisibilityMode);
+  }
+  expanded_lhs_url = net::AppendQueryParameter(expanded_lhs_url, "csui",
+                                               kAIMConversationalSearchUI);
+  expanded_lhs_url = net::AppendQueryParameter(
+      expanded_lhs_url, lens::kLanguageCodeParameterKey,
+      g_browser_process->GetApplicationLocale());
+  if (auto forced_host = contextual_tasks::GetForcedEmbeddedPageHost()) {
+    expanded_lhs_url = forced_host->ApplyToUrl(expanded_lhs_url);
+  }
+  dict.Set("expandedLhsUrl", expanded_lhs_url.spec());
+
+  dict.Set("preconnectStartTimeThreshold",
+           features::kNewTabPagePreconnectStartDelayOnMouseHoverByMilliSeconds
+               .Get());
+  dict.Set(
       "prefetchStartTimeThreshold",
       features::kNewTabPagePrefetchStartDelayOnMouseHoverByMilliSeconds.Get());
-  source->AddBoolean(
+  dict.Set(
       "prefetchTriggerEnabled",
       base::FeatureList::IsEnabled(features::kNewTabPageTriggerForPrefetch));
-  source->AddBoolean(
+  dict.Set(
       "prerenderOnPressEnabled",
       base::FeatureList::IsEnabled(features::kNewTabPageTriggerForPrerender2));
-  source->AddBoolean("mostVisitedHighDpiFaviconsEnabled",
-                     base::FeatureList::IsEnabled(
-                         ntp_features::kNtpMostVisitedHighDpiFavicons));
+  dict.Set("mostVisitedHighDpiFaviconsEnabled",
+           base::FeatureList::IsEnabled(
+               ntp_features::kNtpMostVisitedHighDpiFavicons));
+  dict.Set("ntpShortcutsReorderEnabled",
+           base::FeatureList::IsEnabled(ntp_features::kNtpShortcutsReorder));
 
-  source->AddInteger("maxTilesInCollapsedState",
-                     ntp_features::GetMaxTilesInCollapsedState());
-  source->AddInteger("maxShortcutsInExpandedState",
-                     ntp_features::GetMaxShortcutsInExpandedState());
-  source->AddInteger("maxMostVisitedTilesInExpandedState",
-                     ntp_features::GetMaxMostVisitedTilesInExpandedState());
-  source->AddInteger("maxEnterpriseShortcuts",
-                     ntp_features::GetMaxEnterpriseShortcuts());
+  dict.Set("maxTilesInCollapsedState",
+           ntp_features::GetMaxTilesInCollapsedState());
+  dict.Set("maxShortcutsInExpandedState",
+           ntp_features::GetMaxShortcutsInExpandedState());
+  dict.Set("maxMostVisitedTilesInExpandedState",
+           ntp_features::GetMaxMostVisitedTilesInExpandedState());
+  dict.Set("maxEnterpriseShortcuts", ntp_features::GetMaxEnterpriseShortcuts());
 
-  source->AddBoolean("energyEffectEnabled",
-                     base::FeatureList::IsEnabled(ntp_features::kEnergyEffect));
-  source->AddString("energyEffectVariant",
-                    base::FeatureList::IsEnabled(ntp_features::kEnergyEffect)
-                        ? ntp_features::kEnergyEffectVariantParam.GetName(
-                              ntp_features::kEnergyEffectVariantParam.Get())
-                        : std::string());
-  source->AddBoolean(
-      "energyEffectAnimationEnabled",
-      base::FeatureList::IsEnabled(ntp_features::kEnergyEffectAnimation));
-  source->AddBoolean(
+  dict.Set("energyEffectEnabled",
+           base::FeatureList::IsEnabled(ntp_features::kEnergyEffect));
+  dict.Set("energyEffectVariant",
+           base::FeatureList::IsEnabled(ntp_features::kEnergyEffect)
+               ? ntp_features::kEnergyEffectVariantParam.GetName(
+                     ntp_features::kEnergyEffectVariantParam.Get())
+               : std::string());
+  dict.Set("energyEffectAnimationEnabled",
+           base::FeatureList::IsEnabled(ntp_features::kEnergyEffectAnimation));
+  dict.Set(
       "contextMenuAnimationLimitingEnabled",
       base::FeatureList::IsEnabled(omnibox::kContextMenuAnimationLimiting));
   bool ntp_next_features_enabled =
       ntp_realbox::IsNtpRealboxNextEnabled(profile) &&
       base::FeatureList::IsEnabled(ntp_features::kNtpNextFeatures);
-  source->AddBoolean("ntpNextFeaturesEnabled", ntp_next_features_enabled);
-  source->AddBoolean("ntpNextShowDismissalUIEnabled",
-                     ntp_features::kNtpNextShowDismissalUIParam.Get());
-  source->AddBoolean("ntpNextDisablementContextMenuEnabled",
-                     ntp_features::kNtpNextDisablementContextMenuParam.Get());
-  source->AddBoolean(
-
-      "oneGoogleBarEnabled",
-      base::FeatureList::IsEnabled(ntp_features::kNtpOneGoogleBar));
-  source->AddBoolean("shortcutsEnabled",
-                     base::FeatureList::IsEnabled(ntp_features::kNtpShortcuts));
-  source->AddBoolean("logoEnabled",
-                     base::FeatureList::IsEnabled(ntp_features::kNtpLogo));
-  source->AddBoolean(
-      "animatedDoodlesEnabled",
-      base::FeatureList::IsEnabled(ntp_features::kNtpAnimatedDoodles));
-  source->AddBoolean(
-      "doodleMuralsEnabled",
-      base::FeatureList::IsEnabled(ntp_features::kNtpDoodleMurals));
-  bool use_google_logo_26 = false;
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  use_google_logo_26 =
-      base::FeatureList::IsEnabled(ntp_features::kNtpGoogleLogo26);
-#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  source->AddBoolean("useGoogleLogo26", use_google_logo_26);
-  source->AddBoolean("modulesLoadEnabled", base::FeatureList::IsEnabled(
-                                               ntp_features::kNtpModulesLoad));
-  source->AddInteger("modulesLoadTimeout",
-                     ntp_features::GetModulesLoadTimeout().InMilliseconds());
-  source->AddInteger("modulesMaxColumnCount",
-                     ntp_features::GetModulesMaxColumnCount());
-  source->AddInteger(
-      "multipleLoadedModulesMaxModuleInstanceCount",
-      ntp_features::GetMultipleLoadedModulesMaxModuleInstanceCount());
-  source->AddBoolean(
-      "mostRelevantTabResumptionAllowFaviconServerFallback",
-      base::FeatureList::IsEnabled(
-          ntp_features::
-              kNtpMostRelevantTabResumptionAllowFaviconServerFallback));
-  source->AddBoolean(
+  dict.Set("ntpNextFeaturesEnabled", ntp_next_features_enabled);
+  dict.Set("ntpNextShowDismissalUIEnabled",
+           ntp_features::kNtpNextShowDismissalUIParam.Get());
+  dict.Set("ntpNextDisablementContextMenuEnabled",
+           ntp_features::kNtpNextDisablementContextMenuParam.Get());
+  dict.Set("oneGoogleBarEnabled",
+           base::FeatureList::IsEnabled(ntp_features::kNtpOneGoogleBar));
+  dict.Set("shortcutsEnabled",
+           base::FeatureList::IsEnabled(ntp_features::kNtpShortcuts));
+  dict.Set("logoEnabled", base::FeatureList::IsEnabled(ntp_features::kNtpLogo));
+  dict.Set("animatedDoodlesEnabled",
+           base::FeatureList::IsEnabled(ntp_features::kNtpAnimatedDoodles));
+  dict.Set("doodleMuralsEnabled",
+           base::FeatureList::IsEnabled(ntp_features::kNtpDoodleMurals));
+  dict.Set("useGoogleLogo26", UseGoogleLogo26());
+  dict.Set(
+      "modulesLoadTimeout",
+      static_cast<int>(ntp_features::GetModulesLoadTimeout().InMilliseconds()));
+  dict.Set("modulesMaxColumnCount", ntp_features::GetModulesMaxColumnCount());
+  dict.Set("multipleLoadedModulesMaxModuleInstanceCount",
+           ntp_features::GetMultipleLoadedModulesMaxModuleInstanceCount());
+  dict.Set("mostRelevantTabResumptionAllowFaviconServerFallback",
+           base::FeatureList::IsEnabled(
+               ntp_features::
+                   kNtpMostRelevantTabResumptionAllowFaviconServerFallback));
+  dict.Set(
       "mostRelevantTabResumptionModuleFallbackToHost",
       base::FeatureList::IsEnabled(
           ntp_features::kNtpMostRelevantTabResumptionModuleFallbackToHost));
-  source->AddBoolean("footerEnabled",
-                     base::FeatureList::IsEnabled(ntp_features::kNtpFooter));
-  source->AddBoolean(
+  dict.Set("footerEnabled",
+           base::FeatureList::IsEnabled(ntp_features::kNtpFooter));
+  dict.Set(
       "showCustomizeButton",
       base::FeatureList::IsEnabled(ntp_features::kNtpCustomizeWebUiAndroid) ||
           !BUILDFLAG(IS_ANDROID));
-  source->AddBoolean("isAndroid", BUILDFLAG(IS_ANDROID));
+  dict.Set("isAndroid", static_cast<bool>(BUILDFLAG(IS_ANDROID)));
+  // On Android `webkitSpeechRecognition` is backed by `SpeechRecognitionImpl`,
+  // which owns the microphone itself. The shared composebox voice search UI
+  // uses this to simulate the audio wave and to interpret cumulative result
+  // snapshots. Kept separate from `isAndroid` so that voice behavior can be
+  // decoupled from Android-specific composebox styling.
+  dict.Set("androidSpeechRecognition",
+           static_cast<bool>(BUILDFLAG(IS_ANDROID)));
 
-  source->AddBoolean("ntpRealboxNextEnabled",
-                     ntp_realbox::IsNtpRealboxNextEnabled(profile));
+  dict.Set("ntpRealboxNextEnabled",
+           ntp_realbox::IsNtpRealboxNextEnabled(profile));
   // Fusebox being enabled on the NTP is the same as realbox next being
   // enabled. Add this param for reusable components that shouldn't rely on NTP
   // specific booleans.
-  source->AddBoolean("isFuseboxEnabled",
-                     ntp_realbox::IsNtpRealboxNextEnabled(profile));
-  source->AddBoolean("searchboxCyclingPlaceholders",
-                     ntp_realbox::IsNtpRealboxNextEnabled(profile) &&
-                         base::FeatureList::IsEnabled(
-                             ntp_realbox::kNtpRealboxCyclingPlaceholders));
-  source->AddBoolean("multiLineEnabled",
-                     ntp_realbox::IsNtpRealboxNextEnabled(profile) &&
-                         ntp_realbox::kMultiLineEnabled.Get());
-  source->AddBoolean(
-      "caretAnimationEnabled",
-      base::FeatureList::IsEnabled(ntp_features::kNtpAnimatedCaret));
-  source->AddBoolean(
+  dict.Set("isFuseboxEnabled", ntp_realbox::IsNtpRealboxNextEnabled(profile));
+  dict.Set("searchboxCyclingPlaceholders",
+           ntp_realbox::IsNtpRealboxNextEnabled(profile) &&
+               base::FeatureList::IsEnabled(
+                   ntp_realbox::kNtpRealboxCyclingPlaceholders));
+  dict.Set("multiLineEnabled", ntp_realbox::IsNtpRealboxNextEnabled(profile) &&
+                                   ntp_realbox::kMultiLineEnabled.Get());
+  dict.Set("caretAnimationEnabled",
+           base::FeatureList::IsEnabled(ntp_features::kNtpAnimatedCaret));
+  dict.Set(
       "voiceSearchCoherenceSearchboxEnabled",
       base::FeatureList::IsEnabled(omnibox::kVoiceSearchCoherenceSearchbox));
-  source->AddBoolean(
+  dict.Set(
       "voiceSearchCoherenceAnySearchboxExperimentEnabled",
       SearchboxHandler::GetVoiceSearchCoherenceAnySearchboxExperimentEnabled());
-  source->AddBoolean(
-      "voiceSearchCoherenceSearchboxWithLiveTranscriptionEnabled",
-      omnibox::kVoiceSearchCoherenceSearchboxWithLiveTranscription.Get());
+  dict.Set("voiceSearchCoherenceSearchboxWithLiveTranscriptionEnabled",
+           omnibox::kVoiceSearchCoherenceSearchboxWithLiveTranscription.Get());
+  dict.Set("voiceSearchCoherenceRealboxAutoEndpointEnabled",
+           omnibox::kVoiceSearchCoherenceRealboxAutoEndpoint.Get());
+  dict.Set("voiceSearchCoherenceRealboxHelperTextEnabled",
+           omnibox::kVoiceSearchCoherenceRealboxHelperText.Get());
 
   static constexpr webui::LocalizedString kStrings[] = {
       {"doneButton", IDS_DONE},
@@ -377,6 +450,8 @@ content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
       {"linkDone", IDS_NTP_CUSTOM_LINKS_DONE},
       {"linkEditedMsg", IDS_NTP_CONFIRM_MSG_SHORTCUT_EDITED},
       {"linkRemove", IDS_NTP_CUSTOM_LINKS_REMOVE},
+      {"shortcutReorder", IDS_NTP_CUSTOM_LINKS_REORDER},
+      {"shortcutReorderA11y", IDS_NTP_SHORTCUT_REORDER_A11Y},
       {"linkRemoveA11y", IDS_NTP_MOST_VISITED_SITES_REMOVE},
       {"linkRemovedMsg", IDS_NTP_CONFIRM_MSG_SHORTCUT_REMOVED},
       {"shortcutMoreActions", IDS_NTP_CUSTOM_LINKS_MORE_ACTIONS},
@@ -626,6 +701,7 @@ content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
       {"mobilePromoQrCode", IDS_NTP_MOBILE_PROMO_QR_CODE_LABEL},
 
       // Threads rail.
+      {"aimThreadsGoogleSearchLabel", IDS_NTP_THREADS_GOOGLE_SEARCH_LABEL},
       {"aimThreadsHistoryLabel", IDS_NTP_THREADS_HISTORY_LABEL},
       {"aimThreadsNewSearchLabel", IDS_NTP_THREADS_NEW_SEARCH_LABEL},
 
@@ -634,82 +710,67 @@ content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
       {"webstoreThemesToastButtonText", IDS_NTP_WEBSTORE_TOAST_BUTTON_TEXT},
   };
 
-  source->AddLocalizedStrings(kStrings);
+  for (const auto& str : kStrings) {
+    dict.Set(str.name, l10n_util::GetStringUTF8(str.id));
+  }
 
-  source->AddBoolean(
-      "hideDismissModules",
-      base::FeatureList::IsEnabled(
-          ntp_features::kNtpFeatureOptimizationDismissModulesRemoval));
-  source->AddBoolean(
-      "showDriveModuleSeeMoreLink",
-      base::FeatureList::IsEnabled(ntp_features::kNtpDriveModuleLink));
-
-  source->AddString(
-      "calendarModuleDismissHours",
-      base::NumberToString(
-          ntp_features::kNtpCalendarModuleWindowEndDeltaParam.Get().InHours()));
-  source->AddString(
-      "fileSuggestionDismissHours",
-      base::NumberToString(DriveService::kDismissDuration.InHours()));
-  source->AddString(
-      "tabGroupsModuleDismissHours",
-      base::NumberToString(
-          ntp_features::kNtpTabGroupsModuleWindowEndDeltaParam.Get()
-              .InHours()));
+  dict.Set("showDriveModuleSeeMoreLink",
+           base::FeatureList::IsEnabled(ntp_features::kNtpDriveModuleLink));
 
   bool microsoft_module_enabled = IsMicrosoftModuleEnabledForProfile(profile);
-  source->AddBoolean("microsoftModuleEnabled", microsoft_module_enabled);
-  source->AddBoolean("modulesReloadable", microsoft_module_enabled);
-  source->AddBoolean("waitToLoadModules", microsoft_module_enabled);
+  dict.Set("microsoftModuleEnabled", microsoft_module_enabled);
+  dict.Set("modulesReloadable", microsoft_module_enabled);
+  dict.Set("waitToLoadModules", microsoft_module_enabled);
 
   // ComposeBox LoadTimeData
   auto composebox_config =
       ntp_composebox::FeatureConfig::Get().config.composebox();
   const std::string image_mime_types =
       composebox_config.image_upload().mime_types_allowed();
-  source->AddString("composeboxImageFileTypes", image_mime_types);
-  source->AddBoolean("lensSendRawFileMediaTypesEnabled",
-                     lens::features::IsLensSendRawFileMediaTypesEnabled());
+  dict.Set("composeboxImageFileTypes", image_mime_types);
+  dict.Set("lensSendRawFileMediaTypesEnabled",
+           lens::features::IsLensSendRawFileMediaTypesEnabled());
+  dict.Set("lensBypassCompressionForC2pa",
+           base::FeatureList::IsEnabled(
+               lens::features::kLensBypassCompressionForC2pa));
   const std::string attachment_mime_types =
       composebox_config.attachment_upload().mime_types_allowed();
-  source->AddString("composeboxAttachmentFileTypes", attachment_mime_types);
-  source->AddInteger("composeboxFileMaxSize",
-                     composebox_config.attachment_upload().max_size_bytes());
-  source->AddString(
-      "composeboxSource",
-      contextual_search::ContextualSearchMetricsRecorder::
-          ContextualSearchSourceToString(
-              contextual_search::ContextualSearchSource::kNewTabPage));
+  dict.Set("composeboxAttachmentFileTypes", attachment_mime_types);
+  dict.Set("composeboxFileMaxSize",
+           composebox_config.attachment_upload().max_size_bytes());
+  dict.Set("composeboxSource",
+           contextual_search::ContextualSearchMetricsRecorder::
+               ContextualSearchSourceToString(
+                   contextual_search::ContextualSearchSource::kNewTabPage));
 
   auto* service = AimEligibilityServiceFactory::GetForProfile(profile);
   bool aim_eligible = service && service->IsAimEligible();
 
-  source->AddBoolean(
-      "searchboxShowComposeEntrypoint",
-      (aim_eligible || ntp_composebox::IsNtpComposeboxEnabled(profile)));
+  dict.Set("searchboxShowComposeEntrypoint",
+           (aim_eligible || ntp_composebox::IsNtpComposeboxEnabled(profile)));
 
-  source->AddBoolean("ntpRealboxDynamicAiModeButton",
-                     ntp_realbox::IsNtpRealboxNextEnabled(profile) &&
-                         base::FeatureList::IsEnabled(
-                             ntp_realbox::kNtpRealboxDynamicAiModeButton));
+  dict.Set("ntpRealboxDynamicAiModeButton",
+           ntp_realbox::IsNtpRealboxNextEnabled(profile) &&
+               base::FeatureList::IsEnabled(
+                   ntp_realbox::kNtpRealboxDynamicAiModeButton));
 
   if (ntp_realbox::IsNtpRealboxNextEnabled(profile)) {
     if (base::FeatureList::IsEnabled(
             ntp_realbox::kNtpRealboxCyclingPlaceholders)) {
-      source->AddLocalizedString(
-          "searchBoxPlaceholder",
-          IDS_NTP_SEARCH_BOX_DYNAMIC_PLACEHOLDER_ASK_GOOGLE);
+      dict.Set("searchBoxPlaceholder",
+               l10n_util::GetStringUTF8(
+                   IDS_NTP_SEARCH_BOX_DYNAMIC_PLACEHOLDER_ASK_GOOGLE));
     } else {
       switch (ntp_realbox::kSteadyPlaceholder.Get()) {
         case ntp_realbox::PlaceholderText::ASK_OR_TYPE:
-          source->AddString("searchBoxPlaceholder",
-                            l10n_util::GetStringFUTF16(
-                                IDS_WEBUI_OMNIBOX_PLACEHOLDER_TEXT, u"Google"));
+          dict.Set("searchBoxPlaceholder",
+                   l10n_util::GetStringFUTF16(
+                       IDS_WEBUI_OMNIBOX_PLACEHOLDER_TEXT, u"Google"));
           break;
         case ntp_realbox::PlaceholderText::ASK:
-          source->AddLocalizedString(
-              "searchBoxPlaceholder",
-              IDS_NTP_SEARCH_BOX_DYNAMIC_PLACEHOLDER_ASK_GOOGLE);
+          dict.Set("searchBoxPlaceholder",
+                   l10n_util::GetStringUTF8(
+                       IDS_NTP_SEARCH_BOX_DYNAMIC_PLACEHOLDER_ASK_GOOGLE));
           break;
         default:
           NOTREACHED();
@@ -717,86 +778,92 @@ content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
     }
 
   } else {
-    source->AddLocalizedString("searchBoxPlaceholder",
-                               IDS_GOOGLE_SEARCH_BOX_EMPTY_HINT_MD);
+    dict.Set("searchBoxPlaceholder",
+             l10n_util::GetStringUTF8(IDS_GOOGLE_SEARCH_BOX_EMPTY_HINT_MD));
   }
 
-  source->AddBoolean("keepMenuOpenOnTabSelectForRealbox",
-                     omnibox::kKeepMenuOpenOnTabSelectForRealbox.Get());
-  source->AddBoolean("composeboxShowContextMenu",
-                     ntp_composebox::kShowContextMenu.Get());
-  source->AddBoolean("composeboxShowContextMenuTabPreviews",
-                     ntp_composebox::kShowContextMenuTabPreviews.Get());
-  source->AddBoolean("composeboxContextMenuEnableMultiTabSelection",
-                     ntp_composebox::kContextMenuEnableMultiTabSelection.Get());
-  source->AddBoolean(
-      "composeboxSkillsEnabled",
-      base::FeatureList::IsEnabled(omnibox::kComposeboxSkillsNtp));
-  source->AddBoolean(
+  dict.Set("keepMenuOpenOnTabSelectForRealbox",
+           omnibox::kKeepMenuOpenOnTabSelectForRealbox.Get());
+  dict.Set("composeboxShowContextMenu", ntp_composebox::kShowContextMenu.Get());
+  dict.Set("composeboxShowContextMenuTabPreviews",
+           ntp_composebox::kShowContextMenuTabPreviews.Get());
+  dict.Set("composeboxContextMenuEnableMultiTabSelection",
+           ntp_composebox::kContextMenuEnableMultiTabSelection.Get());
+  dict.Set("composeboxSkillsEnabled",
+           base::FeatureList::IsEnabled(omnibox::kComposeboxSkillsNtp));
+  dict.Set(
       "contextManagementInComposeboxEnabled",
       base::FeatureList::IsEnabled(omnibox::kContextManagementInComposebox));
-  source->AddBoolean(
+  dict.Set(
       "tabFaviconChipsToCoinsEnabled",
       base::FeatureList::IsEnabled(omnibox::kContextManagementInComposebox) &&
           base::FeatureList::IsEnabled(omnibox::kTabFaviconChipsToCoins));
-  source->AddBoolean("searchboxShowComposebox",
-                     ntp_composebox::IsNtpComposeboxEnabled(profile));
-  source->AddBoolean("composeboxShowZps", true);
-  source->AddBoolean("composeboxShowTypedSuggest",
-                     ntp_composebox::kShowComposeboxTypedSuggest.Get());
-  source->AddBoolean("composeboxShowImageSuggest",
-                     ntp_composebox::kShowComposeboxImageSuggestions.Get());
+  dict.Set("searchboxShowComposebox",
+           ntp_composebox::IsNtpComposeboxEnabled(profile));
+  dict.Set("composeboxContextMenuTooltipsEnabled",
+           omnibox::IsContextMenuTooltipsInComposeboxEnabled());
+  dict.Set("composeboxShowZps", true);
+  dict.Set("composeboxShowTypedSuggest",
+           ntp_composebox::kShowComposeboxTypedSuggest.Get());
+  dict.Set("composeboxShowImageSuggest",
+           ntp_composebox::kShowComposeboxImageSuggestions.Get());
+  dict.Set("composeboxRichImageSuggestionsEnabled",
+           base::FeatureList::IsEnabled(
+               omnibox::kComposeboxRichImageSuggestionsRealbox));
+  dict.Set("composeboxSmartComposeEnabled",
+           ntp_composebox::kShowSmartCompose.Get());
 
-  source->AddBoolean("composeboxSmartComposeEnabled",
-                     ntp_composebox::kShowSmartCompose.Get());
-
-  source->AddBoolean("enableThreadsRail", base::FeatureList::IsEnabled(
-                                              ntp_features::kNtpThreadsRail));
+  // The left-hand side (LHS) threads rail embeds AI Mode content, so it is only
+  // shown to AIM eligible users.
+  const omnibox::LhsRailConfig* lhs_rail_config =
+      service ? service->GetLhsRailConfig() : nullptr;
+  const bool enable_threads_rail =
+      IsThreadsRailEnabled(aim_eligible, lhs_rail_config != nullptr);
+  dict.Set("enableThreadsRail", enable_threads_rail);
+  dict.Set("enableThreadsRailHybrid",
+           ntp_features::kNtpThreadsRailHybridParam.Get());
+  if (enable_threads_rail && lhs_rail_config) {
+    base::DictValue lhs_rail_config_dict;
+    base::ListValue items_list;
+    const url::Origin google_base_origin = url::Origin::Create(google_base_url);
+    for (const auto& item : lhs_rail_config->lhs_items()) {
+      base::DictValue item_dict;
+      // `icon_svg` is untrusted server-supplied markup; WebUI consumers must
+      // render it in a non-script-executing context (e.g., CSS `mask-image`
+      // `data:image/svg+xml` URI) rather than injecting raw markup into the
+      // DOM.
+      item_dict.Set("iconSvg", item.icon_svg());
+      item_dict.Set("name", item.name());
+      item_dict.Set("clientAction",
+                    static_cast<int>(item.click_action().client_action()));
+      const std::string& relative_url =
+          item.click_action().link().relative_url();
+      // Ensure `relative_url` is a root-relative path (not an absolute URL or
+      // a scheme-relative `"//"` / `"/\\"` authority override) and resolves
+      // to the same origin as `google_base_url`.
+      if (relative_url.starts_with("/") && !relative_url.starts_with("//") &&
+          !relative_url.starts_with("/\\")) {
+        GURL target_url = google_base_url.Resolve(relative_url);
+        if (target_url.is_valid() && target_url.SchemeIsHTTPOrHTTPS() &&
+            google_base_origin.IsSameOriginWith(target_url)) {
+          item_dict.Set("targetUrl", target_url.spec());
+        }
+      }
+      items_list.Append(std::move(item_dict));
+    }
+    lhs_rail_config_dict.Set("items", std::move(items_list));
+    dict.Set("lhsRailConfig", std::move(lhs_rail_config_dict));
+  }
 
   // Action Chips LoadTimeData
-  const auto* aim_eligibility_service =
-      AimEligibilityServiceFactory::GetForProfile(profile);
-  int num_tools_eligible = 0;
-  if (aim_eligibility_service) {
-    if (aim_eligibility_service->IsDeepSearchEligible()) {
-      num_tools_eligible++;
-    }
-    if (aim_eligibility_service->IsCreateImagesEligible()) {
-      num_tools_eligible++;
-      if (base::FeatureList::IsEnabled(ntp_features::kNtpStarterChip)) {
-        num_tools_eligible++;
-      }
-    }
-    if (base::FeatureList::IsEnabled(ntp_features::kNtpNextCanvasChip) &&
-        aim_eligibility_service->IsCanvasEligible()) {
-      num_tools_eligible++;
-    }
-  }
-  bool action_chips_eligible =
-      (base::FeatureList::IsEnabled(ntp_features::kNtpScaledActionChips) ||
-       base::FeatureList::IsEnabled(ntp_features::kNtpScaledActionChipsSmall))
-          ? ntp_next_features_enabled
-          : (aim_eligibility_service &&
-             aim_eligibility_service->IsAimEligible() &&
-             num_tools_eligible >= 2);
-  bool show_action_chips =
-      action_chips_eligible &&
-      (!ntp_features::kNtpNextDisablementParam.Get() ||
-       profile->GetPrefs()->GetBoolean(prefs::kNtpToolChipsVisible));
-  if (!show_action_chips) {
-    action_chips::RecordActionChipsAnyShown(false);
-  }
   bool add_tab_upload_delay_on_action_chip_click =
       ntp_features::kAddTabUploadDelayOnActionChipClick.Get();
-  source->AddBoolean("addTabUploadDelayOnActionChipClick",
-                     add_tab_upload_delay_on_action_chip_click);
-  source->AddBoolean("actionChipsEnabled", show_action_chips);
-  source->AddBoolean(
+  dict.Set("addTabUploadDelayOnActionChipClick",
+           add_tab_upload_delay_on_action_chip_click);
+  dict.Set("actionChipsEnabled", AreActionChipsEnabled(profile));
+  dict.Set(
       "ntpSmallActionChipsEnabled",
       base::FeatureList::IsEnabled(ntp_features::kNtpScaledActionChipsSmall));
-  // TODO(crbug.com/548681676): Remove once TutorialId proto rolls from server.
-  source->AddBoolean("scaledActionChipsInTestMode",
-                     ntp_features::kNtpScaledActionChipsSmallInTestMode.Get());
 
   // User education browser promos.
   int browser_promo_limit = 0;
@@ -809,45 +876,116 @@ content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
     case user_education::features::NtpBrowserPromoType::kNone:
       break;
   }
-  source->AddInteger("browserPromoLimit", browser_promo_limit);
-  source->AddInteger("browserPromoCompletedLimit",
-                     browser_completed_promo_limit);
+  dict.Set("browserPromoLimit", browser_promo_limit);
+  dict.Set("browserPromoCompletedLimit", browser_completed_promo_limit);
 
-  source->AddLocalizedStrings(SearchboxHandler::GetWebUIDataSourceDict(
+  dict.Set("composeboxPersistentAimButton",
+           base::FeatureList::IsEnabled(
+               omnibox::kComposeboxPersistentAimButtonRealbox));
+  dict.Set(
+      "composeboxRealboxOutsideClick",
+      base::FeatureList::IsEnabled(omnibox::kComposeboxRealboxOutsideClick));
+  dict.Set("composeboxPersistentAimButtonWithX",
+           base::FeatureList::IsEnabled(
+               omnibox::kComposeboxPersistentAimButtonWithX));
+  dict.Set("dynamicAimFulfillmentEnabled",
+           omnibox::IsDynamicAimFulfillmentEnabledForRealbox());
+
+  dict.Merge(SearchboxHandler::GetWebUIDataSourceDict(
       profile, {.enable_voice_search = true,
                 .enable_lens_search = profile->GetPrefs()->GetBoolean(
                     prefs::kLensDesktopNTPSearchEnabled),
                 .session_allows_drag_and_drop = session_allows_drag_and_drop}));
 
+// TODO(b/502297163): Implement for Android.
+#if BUILDFLAG(IS_ANDROID)
+  bool wallpaper_search_button_enabled = false;
+#else
+  bool wallpaper_search_button_enabled =
+      base::FeatureList::IsEnabled(ntp_features::kNtpWallpaperSearchButton) &&
+      customize_chrome::IsWallpaperSearchEnabledForProfile(profile);
+#endif
+  dict.Set("wallpaperSearchButtonEnabled", wallpaper_search_button_enabled);
+// TODO(b/502297163): Implement for Android.
+#if BUILDFLAG(IS_ANDROID)
+  bool should_animate_wallpaper_search_button = false;
+#else
+  int wallpaper_search_animation_shown_threshold =
+      ntp_features::GetWallpaperSearchButtonAnimationShownThreshold();
+  // Animate the button if the threshold is negative (unconditional) or if the
+  // button has has been shown less times than the threshold.
+  bool should_animate_wallpaper_search_button =
+      wallpaper_search_animation_shown_threshold < 0 ||
+      wallpaper_search_animation_shown_threshold >=
+          profile->GetPrefs()->GetInteger(
+              prefs::kNtpWallpaperSearchButtonShownCount);
+#endif
+  dict.Set("wallpaperSearchButtonAnimationEnabled",
+           wallpaper_search_button_enabled &&
+               base::FeatureList::IsEnabled(
+                   ntp_features::kNtpWallpaperSearchButtonAnimation) &&
+               should_animate_wallpaper_search_button);
+  dict.Set("wallpaperSearchButtonHideCondition",
+           ntp_features::GetWallpaperSearchButtonHideCondition());
+  return dict;
+}
+
+namespace {
+
+content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
+    Profile* profile,
+    bool session_allows_drag_and_drop) {
+  content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
+      profile, chrome::kChromeUINewTabPageHost);
+
+  if (!AreActionChipsEnabled(profile)) {
+    action_chips::RecordActionChipsAnyShown(false);
+  }
+  source->AddLocalizedStrings(
+      NewTabPageUI::GetLoadTimeData(profile, session_allows_drag_and_drop));
+
   webui::SetupWebUIDataSource(source, kNewTabPageResources,
                               IDR_NEW_TAB_PAGE_NEW_TAB_PAGE_HTML);
 
-#if !BUILDFLAG(OPTIMIZE_WEBUI)
-  source->AddResourcePaths(kNewTabSharedResources);
-#endif  // BUILDFLAG(OPTIMIZE_WEBUI)
-
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  // Overrides the mapping installed by SetupWebUIDataSource() above, so the
-  // stable logo path serves the 2026 version of the Google logo.
-  if (use_google_logo_26) {
-    source->AddResourcePath("icons/google_logo.svg",
-                            IDR_NEW_TAB_PAGE_BRANDED_GOOGLE_LOGO_SVG);
+#if BUILDFLAG(OPTIMIZE_WEBUI)
+  // By default, `SetupWebUIDataSource` maps `new_tab_page.js` to the bundle
+  // that defers modules like ntp composebox to `lazy_load.js`. When
+  // `kNtpLazyLoadComposebox` is disabled, remap all three Rollup chunks to the
+  // eager bundle built from `new_tab_page_eager.ts`, which eagerly includes
+  // those modules.
+  if (!base::FeatureList::IsEnabled(ntp_features::kNtpLazyLoadComposebox)) {
+    source->AddResourcePath(
+        "new_tab_page.js", IDR_NEW_TAB_PAGE_EAGER_NEW_TAB_PAGE_EAGER_ROLLUP_JS);
+    source->AddResourcePath("lazy_load.js",
+                            IDR_NEW_TAB_PAGE_EAGER_LAZY_LOAD_ROLLUP_JS);
+    source->AddResourcePath("shared.rollup.js",
+                            IDR_NEW_TAB_PAGE_EAGER_SHARED_ROLLUP_JS);
   }
-#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+#endif
+
+  source->AddResourcePaths(kNewTabSharedResources);
 
   // Allow embedding of iframes for the doodle and
   // chrome-untrusted://new-tab-page for other external content and resources.
   // NOTE: Use caution when overriding content security policies as that cean
   // lead to subtle security bugs such as https://crbug.com/40057334.
+  GURL google_base_url = GURL(TemplateURLServiceFactory::GetForProfile(profile)
+                                  ->search_terms_data()
+                                  .GoogleBaseURLValue());
   source->OverrideContentSecurityPolicy(
       network::mojom::CSPDirectiveName::ChildSrc,
-      base::StringPrintf("child-src https: %s %s %s;",
+      base::StringPrintf("child-src https: %s %s %s %s;",
                          google_util::CommandLineGoogleBaseURL().spec().c_str(),
+                         google_base_url.spec().c_str(),
                          chrome::kChromeUIUntrustedNewTabPageUrl,
                          chrome::kChromeUIUntrustedNtpMicrosoftAuthURL));
   source->OverrideContentSecurityPolicy(
       network::mojom::CSPDirectiveName::MediaSrc,
       "media-src blob: data: 'self';");
+  source->OverrideContentSecurityPolicy(
+      network::mojom::CSPDirectiveName::TrustedTypes,
+      base::StrCat(
+          {webui::kDefaultTrustedTypesPolicies, " composebox-input;"}));
 
   return source;
 }
@@ -886,12 +1024,7 @@ NewTabPageUI::NewTabPageUI(content::WebUI* web_ui)
       searchbox_page_factory_receiver_(this),
       help_bubble_handler_factory_receiver_(this),
       profile_(Profile::FromWebUI(web_ui)),
-// TODO(b/502297163): Implement for Android.
-#if BUILDFLAG(IS_ANDROID)
-      theme_service_(nullptr),
-#else
       theme_service_(ThemeServiceFactory::GetForProfile(profile_)),
-#endif
       ntp_custom_background_service_(
           NtpCustomBackgroundServiceFactory::GetForProfile(profile_)),
       ntp_custom_background_service_observation_(this),
@@ -912,48 +1045,7 @@ NewTabPageUI::NewTabPageUI(content::WebUI* web_ui)
         session_handle->CheckSearchContentSharingSettings(profile_->GetPrefs());
   }
 
-  auto* source = CreateAndAddNewTabPageUiHtmlSource(
-      profile_, session_allows_drag_and_drop);
-// TODO(b/502297163): Implement for Android.
-#if BUILDFLAG(IS_ANDROID)
-  bool wallpaper_search_button_enabled = false;
-#else
-  bool wallpaper_search_button_enabled =
-      base::FeatureList::IsEnabled(ntp_features::kNtpWallpaperSearchButton) &&
-      customize_chrome::IsWallpaperSearchEnabledForProfile(profile_);
-#endif
-  source->AddBoolean("wallpaperSearchButtonEnabled",
-                     wallpaper_search_button_enabled);
-// TODO(b/502297163): Implement for Android.
-#if BUILDFLAG(IS_ANDROID)
-  bool should_animate_wallpaper_search_button = false;
-#else
-  int wallpaper_search_animation_shown_threshold =
-      ntp_features::GetWallpaperSearchButtonAnimationShownThreshold();
-  // Animate the button if the threshold is negative (unconditional) or if the
-  // button has has been shown less times than the threshold.
-  bool should_animate_wallpaper_search_button =
-      wallpaper_search_animation_shown_threshold < 0 ||
-      wallpaper_search_animation_shown_threshold >=
-          profile_->GetPrefs()->GetInteger(
-              prefs::kNtpWallpaperSearchButtonShownCount);
-#endif
-  source->AddBoolean(
-      "wallpaperSearchButtonAnimationEnabled",
-      wallpaper_search_button_enabled &&
-          base::FeatureList::IsEnabled(
-              ntp_features::kNtpWallpaperSearchButtonAnimation) &&
-          should_animate_wallpaper_search_button);
-  source->AddInteger("wallpaperSearchButtonHideCondition",
-                     ntp_features::GetWallpaperSearchButtonHideCondition());
-
-  // Add a handler to provide pluralized strings.
-  auto plural_string_handler = std::make_unique<PluralStringHandler>();
-  plural_string_handler->AddLocalizedString("modulesTabGroupsTabsText",
-                                            IDS_SAVED_TAB_GROUP_TABS_COUNT);
-  plural_string_handler->AddLocalizedString("sharingTabs",
-                                            IDS_COMPOSE_SHARING_TABS);
-  web_ui->AddMessageHandler(std::move(plural_string_handler));
+  CreateAndAddNewTabPageUiHtmlSource(profile_, session_allows_drag_and_drop);
 
   content::URLDataSource::Add(profile_,
                               std::make_unique<SanitizedImageSource>(profile_));
@@ -1028,7 +1120,6 @@ bool NewTabPageUI::IsNewTabPageOrigin(const GURL& url) {
 // static
 void NewTabPageUI::RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterTimePref(kPrevNavigationTimePrefName, base::Time());
-  registry->RegisterBooleanPref(prefs::kNtpPromoVisible, true);
   registry->RegisterTimePref(ntp_prefs::kNtpLastModuleStalenessUpdate,
                              base::Time());
   registry->RegisterDictionaryPref(ntp_prefs::kNtpModuleStalenessCountDict);
@@ -1128,13 +1219,6 @@ void NewTabPageUI::BindInterface(
 #endif
 
 void NewTabPageUI::BindInterface(
-    mojo::PendingReceiver<ntp::tab_groups::mojom::PageHandler>
-        pending_page_handler) {
-  tab_groups_handler_ = std::make_unique<TabGroupsPageHandler>(
-      std::move(pending_page_handler), web_contents());
-}
-
-void NewTabPageUI::BindInterface(
     mojo::PendingReceiver<ntp::most_relevant_tab_resumption::mojom::PageHandler>
         pending_page_handler) {
   most_relevant_tab_resumption_handler_ =
@@ -1150,24 +1234,13 @@ void NewTabPageUI::BindInterface(
 }
 
 void NewTabPageUI::BindInterface(
-    mojo::PendingReceiver<ntp::calendar::mojom::OutlookCalendarPageHandler>
-        pending_page_handler) {
-  outlook_calendar_handler_ = std::make_unique<OutlookCalendarPageHandler>(
-      std::move(pending_page_handler), profile_);
-}
-
-void NewTabPageUI::BindInterface(
-    mojo::PendingReceiver<ntp::authentication::mojom::MicrosoftAuthPageHandler>
-        pending_page_handler) {
-  microsoft_auth_handler_ = std::make_unique<MicrosoftAuthPageHandler>(
-      std::move(pending_page_handler), profile_);
-}
-
-void NewTabPageUI::BindInterface(
-    mojo::PendingReceiver<file_suggestion::mojom::MicrosoftFilesPageHandler>
-        pending_page_handler) {
-  microsoft_files_handler_ = std::make_unique<MicrosoftFilesPageHandler>(
-      std::move(pending_page_handler), profile_);
+    mojo::PendingReceiver<plural_string::mojom::PluralStringProvider>
+        receiver) {
+  PluralStringProvider::MessageIdMap message_ids =
+      GetSearchboxPluralStringIds();
+  message_ids.emplace("modulesTabGroupsTabsText",
+                      IDS_SAVED_TAB_GROUP_TABS_COUNT);
+  PluralStringProvider::Create(std::move(receiver), std::move(message_ids));
 }
 
 void NewTabPageUI::BindInterface(
@@ -1210,8 +1283,29 @@ void NewTabPageUI::BindInterface(
   help_bubble_handler_factory_receiver_.Bind(std::move(pending_receiver));
 }
 
-// TODO(b/502297163): Implement for Android.
 #if !BUILDFLAG(IS_ANDROID)
+void NewTabPageUI::BindInterface(
+    mojo::PendingReceiver<ntp::tab_groups::mojom::PageHandler>
+        pending_page_handler) {
+  tab_groups_handler_ = std::make_unique<TabGroupsPageHandler>(
+      std::move(pending_page_handler), web_contents());
+}
+
+void NewTabPageUI::BindInterface(
+    mojo::PendingReceiver<ntp::calendar::mojom::OutlookCalendarPageHandler>
+        pending_page_handler) {
+  outlook_calendar_handler_ = std::make_unique<OutlookCalendarPageHandler>(
+      std::move(pending_page_handler), profile_);
+}
+
+void NewTabPageUI::BindInterface(
+    mojo::PendingReceiver<file_suggestion::mojom::MicrosoftFilesPageHandler>
+        pending_page_handler) {
+  microsoft_files_handler_ = std::make_unique<MicrosoftFilesPageHandler>(
+      std::move(pending_page_handler), profile_);
+}
+
+// TODO(b/502297163): Implement for Android.
 void NewTabPageUI::BindInterface(
     mojo::PendingReceiver<ntp_promo::mojom::NtpPromoHandlerFactory>
         pending_receiver) {
@@ -1235,7 +1329,7 @@ void NewTabPageUI::CreatePageHandler(
     mojo::PendingRemote<new_tab_page::mojom::Page> pending_page,
     mojo::PendingReceiver<new_tab_page::mojom::PageHandler>
         pending_page_handler) {
-  DCHECK(pending_page.is_valid());
+  CHECK(pending_page.is_valid(), base::NotFatalUntil::M162);
 
   page_handler_ = std::make_unique<NewTabPageHandler>(
       std::move(pending_page_handler), std::move(pending_page), profile_,
@@ -1289,7 +1383,7 @@ void NewTabPageUI::CreatePageHandler(
     mojo::PendingRemote<most_visited::mojom::MostVisitedPage> pending_page,
     mojo::PendingReceiver<most_visited::mojom::MostVisitedPageHandler>
         pending_page_handler) {
-  DCHECK(pending_page.is_valid());
+  CHECK(pending_page.is_valid(), base::NotFatalUntil::M162);
   most_visited_page_handler_ = std::make_unique<MostVisitedHandler>(
       std::move(pending_page_handler), std::move(pending_page), profile_,
       web_contents(),
@@ -1342,7 +1436,7 @@ void NewTabPageUI::CreateHelpBubbleHandler(
 void NewTabPageUI::CreateNtpPromoHandler(
     mojo::PendingRemote<ntp_promo::mojom::NtpPromoClient> client,
     mojo::PendingReceiver<ntp_promo::mojom::NtpPromoHandler> handler) {
-  ntp_promo_handler_ = NtpPromoHandler::Create(
+  ntp_promo_handler_ = std::make_unique<NtpPromoHandler>(
       std::move(client), std::move(handler), web_contents());
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -1351,7 +1445,7 @@ void NewTabPageUI::CreateActionChipsHandler(
     mojo::PendingReceiver<action_chips::mojom::ActionChipsHandler> handler,
     mojo::PendingRemote<action_chips::mojom::Page> page) {
   action_chips_handler_ = std::make_unique<ActionChipsHandler>(
-      std::move(handler), std::move(page), profile_, web_ui(),
+      std::move(handler), std::move(page), profile_, web_ui()->GetWebContents(),
       std::make_unique<ActionChipsGeneratorImpl>(profile_),
       base::BindRepeating(&NewTabPageUI::GetOrCreateContextualSessionHandle,
                           base::Unretained(this)));

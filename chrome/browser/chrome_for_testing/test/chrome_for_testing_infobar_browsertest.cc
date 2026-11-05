@@ -5,10 +5,10 @@
 #include <memory>
 #include <utility>
 
+#include "base/memory/ptr_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/infobars/confirm_infobar_creator.h"
 #include "chrome/browser/infobars/infobar_features.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -157,8 +157,10 @@ class TestInfoBarDelegate : public ConfirmInfoBarDelegate {
                      bool has_buttons,
                      bool replace_existing = false) {
     infobar_manager->AddInfoBar(
-        CreateConfirmInfoBar(std::unique_ptr<ConfirmInfoBarDelegate>(
-            new TestInfoBarDelegate(has_buttons))),
+        CreateConfirmInfoBar(
+            ConfirmInfoBarCreationAllowlist::GetPassKeyForTesting(),
+            base::WrapUnique<ConfirmInfoBarDelegate>(
+                new TestInfoBarDelegate(has_buttons))),
         replace_existing);
   }
 

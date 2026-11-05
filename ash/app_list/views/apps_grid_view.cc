@@ -353,6 +353,7 @@ AppsGridView::AppsGridView(AppListA11yAnnouncer* a11y_announcer,
 
   items_container_ = AddChildView(std::make_unique<views::View>());
   items_container_->SetPaintToLayer();
+  items_container_->layer()->SetName("AppsGridView:ItemsContainer");
   items_container_->layer()->SetFillsBoundsOpaquely(false);
 
   GetViewAccessibility().SetRole(ax::mojom::Role::kGroup);
@@ -367,8 +368,7 @@ AppsGridView::AppsGridView(AppListA11yAnnouncer* a11y_announcer,
   if (!IsTabletMode()) {
     // `context_menu_` is only set in clamshell mode. The sort options in tablet
     // mode are handled in RootWindowController with ShelfContextMenuModel.
-    context_menu_ = std::make_unique<AppsGridContextMenu>(
-        AppsGridContextMenu::GridType::kAppsGrid);
+    context_menu_ = std::make_unique<AppsGridContextMenu>();
     set_context_menu_controller(context_menu_.get());
   }
   row_change_animator_ = std::make_unique<AppsGridRowChangeAnimator>(this);
@@ -721,7 +721,7 @@ void AppsGridView::EndDrag(bool cancel) {
   AnimateDragIconToTargetPosition(drag_item, target_folder_id);
 }
 
-AppListItemView* AppsGridView::GetItemViewForItem(const std::string& item_id) {
+AppListItemView* AppsGridView::GetItemViewForItem(std::string_view item_id) {
   const AppListItem* const item = item_list_->FindItem(item_id);
   if (!item) {
     return nullptr;
@@ -2498,7 +2498,7 @@ void AppsGridView::ReparentItemForReorder(AppListItem* item,
 }
 
 void AppsGridView::MaybeRecordFolderDeleteUserAction(
-    const std::string& folder_id) {
+    std::string_view folder_id) {
   // Ignore the top-level grid (which isn't a folder and can't be deleted).
   if (folder_id.empty()) {
     return;
@@ -3228,8 +3228,7 @@ void AppsGridView::OnAppListItemViewActivated(
 
   base::RecordAction(base::UserMetricsAction("AppList_ClickOnApp"));
 
-  RecordAppListByCollectionLaunched(pressed_item_view->item()->collection_id(),
-                                    /*is_apps_collections_page=*/false);
+  RecordAppListByCollectionLaunched(pressed_item_view->item()->collection_id());
 
   // Avoid using |item->id()| as the parameter. In some rare situations,
   // activating the item may destruct it. Using the reference to an object

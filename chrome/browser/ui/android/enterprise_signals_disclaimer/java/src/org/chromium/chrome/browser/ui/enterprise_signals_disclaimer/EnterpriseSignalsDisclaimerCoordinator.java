@@ -5,119 +5,128 @@
 package org.chromium.chrome.browser.ui.enterprise_signals_disclaimer;
 
 import android.content.Context;
+import android.view.View;
+
+import androidx.annotation.IntDef;
 
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.chrome.browser.signin.services.SigninManager;
-import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
-import org.chromium.ui.base.DeviceFormFactor;
-import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
+
 /**
- * Coordinator for the enterprise signals disclaimer bottom sheet. The disclaimer is shown on
- * startup and on primary account change for managed enterprise users who have not acknowledged the
- * disclaimer previously.
+ * Coordinator for the enterprise signals disclaimer UI.
+ *
+ * <p>This coordinator is only responsible for rendering the disclaimer content and notifying the
+ * embedder, via {@link Delegate}, about the disclaimer being shown and about the user interaction.
+ * Hosting the view returned by {@link #getView()} (e.g. in a bottom sheet or a modal dialog) and
+ * acting on the user's decision is the responsibility of the embedder.
  */
 @NullMarked
-public class EnterpriseSignalsDisclaimerCoordinator {
+public class EnterpriseSignalsDisclaimerCoordinator implements View.OnAttachStateChangeListener {
+    /** How the embedder is going to present the disclaimer. Affects the rendered layout. */
+    @IntDef({
+        PresentationMode.MODAL_DIALOG,
+        PresentationMode.BOTTOM_SHEET,
+        PresentationMode.FIRST_RUN_EXPERIENCE
+    })
+    @Target(ElementType.TYPE_USE)
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface PresentationMode {
+        int MODAL_DIALOG = 0;
+        int BOTTOM_SHEET = 1;
+
+        /** Shown as a page of the First Run Experience. Uses FRE-specific strings and footer. */
+        int FIRST_RUN_EXPERIENCE = 2;
+    }
+
     /** Delegate for the enterprise signals disclaimer. */
-    public interface Delegate {
-        /**
-         * Opens the info page for the given URL.
-         *
-         * @param url The URL of the webpage to show.
-         */
-        void showInfoPage(String url);
+    public interface Delegate extends EnterpriseSignalsDisclaimerMediator.Delegate {
+        /** Called the first time the disclaimer view is attached to a window. */
+        default void onShown() {}
     }
 
     private final EnterpriseSignalsDisclaimerMediator mMediator;
     private final PropertyModelChangeProcessor mModelChangeProcessor;
-    private final EnterpriseSignalsDisclaimerHost mDisclaimerHost;
+    private final Delegate mDelegate;
+    private final EnterpriseSignalsDisclaimerView mView;
     private boolean mIsDestroyed;
 
     /**
      * Constructs an {@link EnterpriseSignalsDisclaimerCoordinator}.
      *
-     * <p>This class should only be instantiated if the primary account is set and managed.
+     * <p>This class should only be instantiated for a managed account.
      *
      * @param context The Android {@link Context}.
-     * @param bottomSheetController The {@link BottomSheetController} for showing the bottom sheet.
-     * @param modalDialogManager The {@link ModalDialogManager} for showing the modal dialog.
-     * @param signinManager The {@link SigninManager} for checking management status and fetching
-     *     the profile picture.
+     * @param identityManager The {@link IdentityManager} used to fetch the account information.
+     * @param account The account the disclaimer is shown for.
+     * @param presentationMode How the embedder is going to present the disclaimer.
      * @param delegate The {@link Delegate} for embedder interactions.
      */
     public EnterpriseSignalsDisclaimerCoordinator(
             Context context,
-            BottomSheetController bottomSheetController,
-            ModalDialogManager modalDialogManager,
-            SigninManager signinManager,
+            IdentityManager identityManager,
+            CoreAccountInfo account,
+            @PresentationMode int presentationMode,
             Delegate delegate) {
-        mIsDestroyed = false;
-        final IdentityManager identityManager = signinManager.getIdentityManager();
-        assert identityManager.hasPrimaryAccount();
+        mDelegate = delegate;
+        mView = new EnterpriseSignalsDisclaimerView(context, presentationMode);
 
-        EnterpriseSignalsDisclaimerView view;
-        // For the large form factors a modal dialog will be displayed, while smaller screens will
-        // get a bottom sheet.
-        if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(context)) {
-            view = EnterpriseSignalsDisclaimerView.createForModalDialog(context);
-            mDisclaimerHost =
-                    new ModalDialogDisclaimerHost(
-                            modalDialogManager, view, this::onDialogDismissed);
-        } else {
-            var sheetContent = new EnterpriseSignalsDisclaimerBottomSheetView(context);
-            view = sheetContent;
-            mDisclaimerHost =
-                    new BottomSheetDisclaimerHost(
-                            bottomSheetController, sheetContent, this::onDialogDismissed);
-        }
+        mView.addOnAttachStateChangeListener(this);
 
         mMediator =
                 new EnterpriseSignalsDisclaimerMediator(
-                        context, identityManager, delegate, signinManager, mDisclaimerHost::hide);
+                        context, identityManager, account, presentationMode, delegate);
         mModelChangeProcessor =
                 PropertyModelChangeProcessor.create(
-                        mMediator.getModel(), view, EnterpriseSignalsDisclaimerViewBinder::bind);
+                        mMediator.getModel(), mView, EnterpriseSignalsDisclaimerViewBinder::bind);
+    }
+
+    /** Returns the root view of the disclaimer, to be hosted by the embedder. */
+    public View getView() {
+        return mView;
     }
 
     /**
-     * Attempts to show the enterprise signals disclaimer. If the dialog cannot be shown it will be
-     * put in a queue and shown whenever possible.
+     * Returns the title view of the disclaimer. Embedders can use it to move accessibility focus to
+     * the disclaimer when it's shown.
      */
-    public void show() {
-        assert !mIsDestroyed;
-        mDisclaimerHost.show();
+    public View getTitleView() {
+        return mView.getTitleView();
     }
 
-    /**
-     * @return true if dialog is being shown or is in queue, false otherwise.
-     */
-    public boolean isActive() {
-        return !mIsDestroyed && mDisclaimerHost.isActive();
+    /** Returns the vertical scroll offset of the disclaimer content. */
+    public int getVerticalScrollOffset() {
+        return mView.getScrollViewScrollY();
     }
 
-    /** Destroys the coordinator, hiding the sheet and cleaning up resources. */
+    /** Destroys the coordinator, cleaning up resources. Does not affect the hosting UI. */
     public void destroy() {
         if (mIsDestroyed) {
             return;
         }
         mIsDestroyed = true;
-        mDisclaimerHost.destroy();
+        mView.removeOnAttachStateChangeListener(this);
         mModelChangeProcessor.destroy();
         mMediator.destroy();
     }
 
-    private void onDialogDismissed(boolean reasonWasUserAction) {
+    // View.OnAttachStateChangeListener implementation.
+    @Override
+    public void onViewAttachedToWindow(View view) {
         if (mIsDestroyed) {
             return;
         }
-        if (reasonWasUserAction) {
-            // The user should not be signed out if the dialog is being dismissed by an external
-            // force - for instance, the Controller being destroyed.
-            mMediator.signOutUser();
-        }
-        destroy();
+
+        mDelegate.onShown();
+        view.removeOnAttachStateChangeListener(this);
     }
+
+    @Override
+    public void onViewDetachedFromWindow(View view) {}
 }

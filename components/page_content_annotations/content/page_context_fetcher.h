@@ -25,20 +25,16 @@
 #include "components/content_extraction/content/browser/inner_text.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#include "components/page_content_annotations/content/page_context_fetcher_metrics.h"
 #include "components/page_content_annotations/content/page_context_fetcher_options.h"
 #include "components/viz/common/surfaces/tracked_element_rects.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "pdf/buildflags.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/origin.h"
-
-#if BUILDFLAG(ENABLE_PDF)
-#include "pdf/mojom/pdf.mojom.h"
-#endif  // BUILDFLAG(ENABLE_PDF)
 
 namespace content {
 class BrowserContext;
@@ -99,6 +95,14 @@ struct PageContentResultWithEndTime
   base::TimeTicks end_time;
 };
 
+struct ScreenshotError {
+  ScreenshotCaptureStatus status = ScreenshotCaptureStatus::kUnknown;
+  std::string message;
+
+  friend bool operator==(const ScreenshotError&,
+                         const ScreenshotError&) = default;
+};
+
 struct FetchPageContextResult {
   FetchPageContextResult();
   FetchPageContextResult(const FetchPageContextResult&) = delete;
@@ -106,10 +110,11 @@ struct FetchPageContextResult {
   FetchPageContextResult(FetchPageContextResult&&);
   FetchPageContextResult& operator=(FetchPageContextResult&&);
   ~FetchPageContextResult();
-  base::expected<ScreenshotResult, std::string> screenshot_result;
+  base::expected<ScreenshotResult, ScreenshotError> screenshot_result;
   std::optional<InnerTextResultWithTruncation> inner_text_result;
   std::optional<PdfResult> pdf_result;
-  base::expected<PageContentResultWithEndTime, std::string>
+  base::expected<PageContentResultWithEndTime,
+                 optimization_guide::AIPageContentError>
       annotated_page_content_result;
   std::optional<optimization_guide::proto::ScreenshotInfo> screenshot_info;
 };
@@ -145,6 +150,16 @@ BASE_DECLARE_FEATURE(kGlicScreenshotPasswordRedaction);
 // Controls whether sensitive payment fields are redacted from screenshots.
 BASE_DECLARE_FEATURE(kGlicScreenshotSensitivePaymentRedaction);
 
+// Controls whether embedded PDF bytes are extracted. Supports only PDFs
+// rendered in the Chrome PDF viewer.
+BASE_DECLARE_FEATURE(kGlicEmbeddedPdfBytesExtraction);
+
+// Controls PDF extraction parameters such as the timeout limit. It is not a
+// kill switch for the PDF extraction support.
+BASE_DECLARE_FEATURE(kPageContextFetcherPdfExtraction);
+
+extern const base::FeatureParam<base::TimeDelta> kPdfExtractionTimeout;
+
 extern const base::FeatureParam<int> kMaxScreenshotWidthParam;
 
 extern const base::FeatureParam<int> kMaxScreenshotHeightParam;
@@ -177,6 +192,28 @@ using GetScreenshotServiceCallback =
     base::RepeatingCallback<PageContentScreenshotService*(
         content::BrowserContext*)>;
 
+// Fetches the PDF content of a `WebContents` for `PageContextFetcher`. The
+// implementation is provided by the embedder since PDF support is platform
+// specific, e.g. `FetchPdfContentForWebContents()`.
+//
+// Implementations must follow this contract:
+// - It is run on the UI thread. The `FetchPdfContentResultCallback` must be run
+//   on the UI thread as well.
+// - The `WebContents&` must not be retained beyond the call.
+// - The result callback may be run synchronously or asynchronously, and should
+//   be run exactly once. Run it with `std::nullopt` if there is no PDF content
+//   or the extraction fails.
+// - `PageContextFetcher` stops waiting for the result after
+//   `kPdfExtractionTimeout`. At that point, or when `PageContextFetcher` is
+//   destroyed, the result callback is cancelled (i.e. `IsCancelled()` returns
+//   true) and a late result is ignored.
+using FetchPdfContentResultCallback =
+    base::OnceCallback<void(std::optional<PdfResult>)>;
+using FetchPdfContentCallback =
+    base::RepeatingCallback<void(content::WebContents&,
+                                 const PdfOptions&,
+                                 FetchPdfContentResultCallback)>;
+
 // Encodes a screenshot according to the enabled feature flags.
 std::optional<std::vector<uint8_t>> EncodeScreenshot(const SkBitmap& bitmap,
     const std::optional<ScreenshotOptions::ScreenshotCollectionOptions>&
@@ -185,9 +222,13 @@ std::optional<std::vector<uint8_t>> EncodeScreenshot(const SkBitmap& bitmap,
 // Coordinates fetching multiple types of page context.
 class PageContextFetcher : public content::WebContentsObserver {
  public:
+  // `fetch_pdf_content_callback` fetches the PDF content when
+  // `FetchPageContextOptions::pdf_options` is set. Pass `base::NullCallback()`
+  // if PDF content fetching is not supported.
   explicit PageContextFetcher(
       GetScreenshotServiceCallback get_screenshot_service_callback,
-      std::unique_ptr<FetchPageProgressListener> progress_listener);
+      std::unique_ptr<FetchPageProgressListener> progress_listener,
+      FetchPdfContentCallback fetch_pdf_content_callback);
   ~PageContextFetcher() override;
 
   void FetchStart(content::WebContents& aweb_contents,
@@ -205,6 +246,11 @@ class PageContextFetcher : public content::WebContentsObserver {
                            AddIframeInfoNoUrlOrigin);
   FRIEND_TEST_ALL_PREFIXES(PageContextFetcherIframeInfoTest,
                            NoIframeInfoWhenFeatureDisabled);
+  friend class PageContextFetcherPdfTest;
+  friend class PageContextFetcherPdfBytesExtractionTest;
+  friend class PageContextFetcherPdfTextExtractionTest;
+  friend class PageContextFetcherHangingPdfTest;
+  friend class PageContextFetcherScreenshotMetricsTest;
 
   // Redacts a screenshot by painting over sensitive regions with
   // `redaction_color`.
@@ -213,17 +259,19 @@ class PageContextFetcher : public content::WebContentsObserver {
       const std::vector<gfx::Rect>& visible_bounding_boxes_for_redaction,
       SkColor4f redaction_color);
 
-#if BUILDFLAG(ENABLE_PDF)
-  void FetchPdfContent(const PdfOptions& options);
-  void ReceivedPdfBytes(url::Origin pdf_origin,
-                        uint32_t pdf_size_limit,
-                        pdf::mojom::PdfListener::GetPdfBytesStatus status,
-                        const std::vector<uint8_t>& pdf_bytes,
-                        uint32_t page_count);
-  void ReceivedPdfText(url::Origin pdf_origin,
-                       uint32_t text_byte_limit,
-                       const std::u16string& text);
-#endif  // BUILDFLAG(ENABLE_PDF)
+  void SchedulePdfExtractionTimeout();
+
+  // Invoked when the timeout for the PDF extraction has been reached, to abort
+  // the PDF extraction, completing the fetch with a null result (if not already
+  // completed). The pending PDF result callback is cancelled, so that a late
+  // extraction result is ignored.
+  //
+  // Note: Other cases where the PDF extraction is aborted, e.g. the IPC pipe to
+  // PDFium disconnects, are handled by the `FetchPdfContentCallback`
+  // implementation, which replies with a null result.
+  void AbortPdfExtraction();
+
+  void ReceivedPdfResult(std::optional<PdfResult> pdf_result);
 
   void GetTabScreenshot(content::WebContents& web_contents,
                         const ScreenshotOptions& screenshot_options);
@@ -249,7 +297,7 @@ class PageContextFetcher : public content::WebContentsObserver {
   void OnScreenshotTimeout();
 
   void ReceivedEncodedScreenshot(
-      base::expected<std::pair<std::vector<uint8_t>, SkBitmap>, std::string>
+      base::expected<std::pair<std::vector<uint8_t>, SkBitmap>, ScreenshotError>
           screenshot_data);
 
   void ReceivedInnerText(
@@ -274,6 +322,7 @@ class PageContextFetcher : public content::WebContentsObserver {
   base::WeakPtr<PageContextFetcher> GetWeakPtr();
 
   const GetScreenshotServiceCallback get_screenshot_service_callback_;
+  const FetchPdfContentCallback fetch_pdf_content_callback_;
   FetchPageContextResultCallback callback_;
 
   uint32_t inner_text_bytes_limit_ = 0;
@@ -306,6 +355,9 @@ class PageContextFetcher : public content::WebContentsObserver {
 
   std::unique_ptr<FetchPageProgressListener> progress_listener_;
 
+  // Only used for the PDF result callback, so that the callback can be
+  // cancelled on PDF extraction timeout without cancelling other callbacks.
+  base::WeakPtrFactory<PageContextFetcher> pdf_weak_ptr_factory_{this};
   base::WeakPtrFactory<PageContextFetcher> weak_ptr_factory_{this};
 };
 

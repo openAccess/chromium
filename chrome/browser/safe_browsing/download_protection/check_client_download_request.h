@@ -21,7 +21,7 @@
 #include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
 #include "components/download/public/common/download_item.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_service.h"
-#include "components/safe_browsing/core/browser/download_check_result.h"
+#include "components/safe_browsing/core/browser/download/download_check_result.h"
 #include "content/public/browser/browser_thread.h"
 
 class Profile;
@@ -73,7 +73,8 @@ class CheckClientDownloadRequest : public CheckClientDownloadRequestBase,
   void SetDownloadProtectionData(
       const std::string& token,
       const ClientDownloadResponse::Verdict& verdict,
-      const ClientDownloadResponse::TailoredVerdict& tailored_verdict) override;
+      const ClientDownloadResponse::TailoredVerdict& tailored_verdict,
+      bool is_registered_app_store) override;
 #if !BUILDFLAG(IS_ANDROID)
   void MaybeBeginFeedbackForDownload(DownloadCheckResult result,
                                      bool upload_requested,

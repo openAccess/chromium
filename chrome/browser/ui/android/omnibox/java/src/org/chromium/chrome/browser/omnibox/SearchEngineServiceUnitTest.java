@@ -6,24 +6,27 @@ package org.chromium.chrome.browser.omnibox;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNotNull;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+
+import androidx.annotation.DrawableRes;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -34,26 +37,30 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 import org.robolectric.shadow.api.Shadow;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.locale.LocaleManager;
 import org.chromium.chrome.browser.locale.LocaleManagerDelegate;
 import org.chromium.chrome.browser.omnibox.SearchEngineService.SearchEngineIconObserver;
 import org.chromium.chrome.browser.omnibox.SearchEngineService.SearchEngineNameObserver;
 import org.chromium.chrome.browser.omnibox.status.StatusProperties.StatusIconResource;
 import org.chromium.chrome.browser.omnibox.suggestions.CachedZeroSuggestionsManager;
-import org.chromium.chrome.browser.omnibox.suggestions.CachedZeroSuggestionsManager.JumpStartContext;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.SearchEngineType;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
-import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
+import org.chromium.components.image_fetcher.ImageFetcher;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
+import org.chromium.components.omnibox.AutocompleteResult;
 import org.chromium.components.omnibox.OmniboxCapabilities;
+import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.components.search_engines.AiModeButtonUiConfig;
 import org.chromium.components.search_engines.StarterPackId;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
@@ -65,11 +72,14 @@ public class SearchEngineServiceUnitTest {
     private static final String LOGO_URL = "https://www.search.com/";
     private static final String TEMPLATE_URL = "https://www.search.com/search?q={query}";
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Captor private ArgumentCaptor<FaviconHelper.FaviconImageCallback> mCallbackCaptor;
+    @Captor private ArgumentCaptor<Callback<Bitmap>> mImageFetcherCallbackCaptor;
     @Captor private ArgumentCaptor<StatusIconResource> mStatusIconCaptor;
     @Mock private FaviconHelper mFaviconHelper;
+    @Mock private ImageFetcher mImageFetcher;
     @Mock private TemplateUrlService mTemplateUrlService;
     @Mock private TemplateUrl mTemplateUrl;
     @Mock private Callback<StatusIconResource> mStarterPackCallback;
@@ -77,6 +87,7 @@ public class SearchEngineServiceUnitTest {
     @Mock private Profile mProfile;
     @Mock private SearchEngineNameObserver mHintTextObserver;
     @Mock private SearchEngineIconObserver mEngineIconObserver;
+    @Mock private SearchEngineService.Natives mSearchEngineServiceNatives;
     private Context mContext;
     private Bitmap mBitmap;
 
@@ -86,19 +97,28 @@ public class SearchEngineServiceUnitTest {
         mBitmap = Shadow.newInstanceOf(Bitmap.class);
         shadowOf(mBitmap).appendDescription("test");
 
+        lenient().doReturn(true).when(mProfile).isNativeInitialized();
+        SearchEngineServiceJni.setInstanceForTesting(mSearchEngineServiceNatives);
+        lenient().doReturn(1L).when(mSearchEngineServiceNatives).init(any(), any());
         TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
-        doReturn(TEMPLATE_URL).when(mTemplateUrl).getURL();
+        lenient().doReturn("keyword").when(mTemplateUrl).getKeyword();
+        lenient().doReturn(TEMPLATE_URL).when(mTemplateUrl).getURL();
         GURL faviconUrl = new GURL(LOGO_URL);
-        doReturn(faviconUrl).when(mTemplateUrl).getFaviconURL();
-        doReturn(mTemplateUrl).when(mTemplateUrlService).getDefaultSearchEngineTemplateUrl();
-        doReturn(false).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
-        doReturn(SearchEngineType.SEARCH_ENGINE_OTHER)
+        lenient().doReturn(faviconUrl).when(mTemplateUrl).getFaviconURL();
+        lenient()
+                .doReturn(mTemplateUrl)
+                .when(mTemplateUrlService)
+                .getDefaultSearchEngineTemplateUrl();
+        lenient().doReturn(false).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
+        lenient()
+                .doReturn(SearchEngineType.SEARCH_ENGINE_OTHER)
                 .when(mTemplateUrlService)
                 .getSearchEngineTypeFromTemplateUrl(any());
-        doReturn(true)
+        lenient()
+                .doReturn(true)
                 .when(mFaviconHelper)
                 .getLocalFaviconImageForURL(any(), any(), anyInt(), anyBoolean(), any());
-        doReturn(false).when(mLocaleManagerDelegate).needToCheckForSearchEnginePromo();
+        lenient().doReturn(false).when(mLocaleManagerDelegate).needToCheckForSearchEnginePromo();
         LocaleManager.getInstance().setDelegateForTest(mLocaleManagerDelegate);
 
         lenient()
@@ -110,17 +130,17 @@ public class SearchEngineServiceUnitTest {
 
     @Test
     public void testDefaultEnabledBehavior() {
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         searchEngineService.addSearchEngineNameObserver(mHintTextObserver);
 
         // Show DSE logo when using regular profile.
         doReturn(false).when(mProfile).isOffTheRecord();
-        searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         assertTrue(searchEngineService.shouldShowSearchEngineLogo());
 
         // Suppress DSE logo when using incognito profile.
         doReturn(true).when(mProfile).isOffTheRecord();
-        searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         assertFalse(searchEngineService.shouldShowSearchEngineLogo());
 
         // Verify observer notified.
@@ -129,10 +149,10 @@ public class SearchEngineServiceUnitTest {
 
     @Test
     public void getSearchEngineLogo() {
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         searchEngineService.addIconObserver(mEngineIconObserver);
         verify(mEngineIconObserver).onSearchEngineIconChanged(null);
-        reset(mEngineIconObserver);
+        clearInvocations(mEngineIconObserver);
 
         // SearchEngineService retrieves logo when it's first created, and whenever the DSE changes.
         verify(mFaviconHelper)
@@ -144,7 +164,7 @@ public class SearchEngineServiceUnitTest {
 
     @Test
     public void getSearchEngineLogo_nullTemplateUrlService() {
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         searchEngineService.addIconObserver(mEngineIconObserver);
 
         verify(mEngineIconObserver).onSearchEngineIconChanged(null);
@@ -152,13 +172,12 @@ public class SearchEngineServiceUnitTest {
 
     @Test
     public void getSearchEngineLogo_searchEngineGoogle() {
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         searchEngineService.addIconObserver(mEngineIconObserver);
         verify(mEngineIconObserver).onSearchEngineIconChanged(null);
-        reset(mEngineIconObserver);
+        clearInvocations(mEngineIconObserver);
 
         // Simulate DSE change to Google.
-        doReturn(true).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
         doReturn(SearchEngineType.SEARCH_ENGINE_GOOGLE)
                 .when(mTemplateUrlService)
                 .getSearchEngineTypeFromTemplateUrl(any());
@@ -171,7 +190,6 @@ public class SearchEngineServiceUnitTest {
     }
 
     private void configureSearchEngine(String keyword, String shortName) {
-        doReturn("google".equals(keyword)).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
         doReturn(
                         "google".equals(keyword)
                                 ? SearchEngineType.SEARCH_ENGINE_GOOGLE
@@ -188,31 +206,34 @@ public class SearchEngineServiceUnitTest {
     }
 
     private void saveSearchEngineSpecificDataToCache() {
-        CachedZeroSuggestionsManager.saveJumpStartContext(
-                new JumpStartContext(new GURL("https://some.url"), 12345));
+        CachedZeroSuggestionsManager.saveToCache(
+                PageClassification.ANDROID_SEARCH_WIDGET, AutocompleteResult.fromCache(null, null));
     }
 
     private void verifyNoSearchEngineSpecificDataInCache() {
-        var jumpStartContext = CachedZeroSuggestionsManager.readJumpStartContext();
-        assertEquals(UrlConstantResolver.getOriginalNativeNtpUrl(), jumpStartContext.url.getSpec());
-        assertEquals(
-                PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS,
-                jumpStartContext.pageClass);
+        assertFalse(
+                ContextUtils.getAppSharedPreferences()
+                        .contains(
+                                "omnibox:cached_suggestions:"
+                                        + PageClassification.ANDROID_SEARCH_WIDGET));
     }
 
     private void verifySearchEngineSpecificDataRetainedInCache() {
-        var jumpStartContext = CachedZeroSuggestionsManager.readJumpStartContext();
-        assertEquals(new GURL("https://some.url"), jumpStartContext.url);
-        assertEquals(12345, jumpStartContext.pageClass);
+        assertTrue(
+                ContextUtils.getAppSharedPreferences()
+                        .contains(
+                                "omnibox:cached_suggestions:"
+                                        + PageClassification.ANDROID_SEARCH_WIDGET));
     }
 
     @Test
+    @EnableFeatures(OmniboxFeatureList.SERVE_JAVA_CACHED_ZERO_SUGGEST)
     public void onTemplateUrlServiceChanged_newTemplateUrl_noPreviousEngine() {
         {
             // To Google
             saveSearchEngineSpecificDataToCache();
             configureSearchEngine("google", "Google");
-            new SearchEngineService(mProfile, mFaviconHelper);
+            new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
             verifyPersistedSearchEngine("google");
             verifyNoSearchEngineSpecificDataInCache();
         }
@@ -221,18 +242,20 @@ public class SearchEngineServiceUnitTest {
             // To Non-Google
             saveSearchEngineSpecificDataToCache();
             configureSearchEngine("engine", "Some Engine");
-            new SearchEngineService(mProfile, mFaviconHelper);
+            new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
             verifyPersistedSearchEngine("engine");
             verifyNoSearchEngineSpecificDataInCache();
         }
     }
 
     @Test
+    @EnableFeatures(OmniboxFeatureList.SERVE_JAVA_CACHED_ZERO_SUGGEST)
     public void onTemplateUrlServiceChanged_newTemplateUrl_withDifferentPreviousEngine() {
         {
             // To Google
             configureSearchEngine("engine", "Some Engine");
-            var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+            var searchEngineService =
+                    new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
 
             // Make an update
             saveSearchEngineSpecificDataToCache();
@@ -245,7 +268,8 @@ public class SearchEngineServiceUnitTest {
         {
             // To Non-Google
             configureSearchEngine("google", "Google");
-            var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+            var searchEngineService =
+                    new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
 
             // Make an update
             saveSearchEngineSpecificDataToCache();
@@ -257,11 +281,13 @@ public class SearchEngineServiceUnitTest {
     }
 
     @Test
+    @EnableFeatures(OmniboxFeatureList.SERVE_JAVA_CACHED_ZERO_SUGGEST)
     public void onTemplateUrlServiceChanged_newTemplateUrl_withSamePreviousEngine() {
         {
             // Google to Google
             configureSearchEngine("google", "Google");
-            var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+            var searchEngineService =
+                    new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
             searchEngineService.addSearchEngineNameObserver(mHintTextObserver);
 
             // Verify observer notified.
@@ -284,7 +310,8 @@ public class SearchEngineServiceUnitTest {
         {
             // Non-Google to same non-Google.
             configureSearchEngine("engine", "Some Engine");
-            var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+            var searchEngineService =
+                    new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
             searchEngineService.addSearchEngineNameObserver(mHintTextObserver);
             clearInvocations(mHintTextObserver);
 
@@ -304,7 +331,8 @@ public class SearchEngineServiceUnitTest {
         {
             // Non-Google, unnamed engine
             configureSearchEngine("engine", "Some Engine");
-            var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+            var searchEngineService =
+                    new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
             searchEngineService.addSearchEngineNameObserver(mHintTextObserver);
             clearInvocations(mHintTextObserver);
 
@@ -324,7 +352,8 @@ public class SearchEngineServiceUnitTest {
         {
             // Non-Google, unnamed engine
             configureSearchEngine("engine", "Some Engine");
-            var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+            var searchEngineService =
+                    new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
             searchEngineService.addSearchEngineNameObserver(mHintTextObserver);
             clearInvocations(mHintTextObserver);
 
@@ -341,10 +370,10 @@ public class SearchEngineServiceUnitTest {
     public void getSearchEngineLogo_faviconCached() {
         // Expect only one actual fetch, that happens independently from get request.
         // All get requests always supply cached value.
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         searchEngineService.addIconObserver(mEngineIconObserver);
         verify(mEngineIconObserver).onSearchEngineIconChanged(null);
-        reset(mEngineIconObserver);
+        clearInvocations(mEngineIconObserver);
 
         verify(mFaviconHelper)
                 .getLocalFaviconImageForURL(any(), any(), anyInt(), anyBoolean(), any());
@@ -355,7 +384,7 @@ public class SearchEngineServiceUnitTest {
 
     @Test
     public void getSearchEngineLogo_nullUrl() {
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         searchEngineService.addIconObserver(mEngineIconObserver);
 
         // Simulate DSE change - policy blocking searches
@@ -372,7 +401,7 @@ public class SearchEngineServiceUnitTest {
                 .when(mFaviconHelper)
                 .getLocalFaviconImageForURL(
                         any(), any(), anyInt(), anyBoolean(), mCallbackCaptor.capture());
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         searchEngineService.addIconObserver(mEngineIconObserver);
 
         verify(mEngineIconObserver).onSearchEngineIconChanged(null);
@@ -380,11 +409,11 @@ public class SearchEngineServiceUnitTest {
 
     @Test
     public void getSearchEngineLogo_returnedBitmapNull() {
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         searchEngineService.addIconObserver(mEngineIconObserver);
 
         verify(mEngineIconObserver).onSearchEngineIconChanged(null);
-        reset(mEngineIconObserver);
+        clearInvocations(mEngineIconObserver);
 
         verify(mFaviconHelper)
                 .getLocalFaviconImageForURL(
@@ -398,7 +427,7 @@ public class SearchEngineServiceUnitTest {
 
     @Test
     public void needToCheckForSearchEnginePromo_SecurityExceptionThrown() {
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         doThrow(SecurityException.class)
                 .when(mLocaleManagerDelegate)
                 .needToCheckForSearchEnginePromo();
@@ -412,7 +441,7 @@ public class SearchEngineServiceUnitTest {
 
     @Test
     public void needToCheckForSearchEnginePromo_DeadObjectRuntimeExceptionThrown() {
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         doThrow(RuntimeException.class)
                 .when(mLocaleManagerDelegate)
                 .needToCheckForSearchEnginePromo();
@@ -426,19 +455,19 @@ public class SearchEngineServiceUnitTest {
 
     @Test
     public void needToCheckForSearchEnginePromo_resultCached() {
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         doThrow(RuntimeException.class)
                 .when(mLocaleManagerDelegate)
                 .needToCheckForSearchEnginePromo();
         assertFalse(searchEngineService.needToCheckForSearchEnginePromo());
 
-        reset(mLocaleManagerDelegate);
+        clearInvocations(mLocaleManagerDelegate);
 
         doReturn(true).when(mLocaleManagerDelegate).needToCheckForSearchEnginePromo();
 
         assertTrue(searchEngineService.needToCheckForSearchEnginePromo());
 
-        reset(mLocaleManagerDelegate);
+        clearInvocations(mLocaleManagerDelegate);
 
         doReturn(false).when(mLocaleManagerDelegate).needToCheckForSearchEnginePromo();
 
@@ -446,12 +475,12 @@ public class SearchEngineServiceUnitTest {
         assertFalse(searchEngineService.needToCheckForSearchEnginePromo());
         assertFalse(searchEngineService.needToCheckForSearchEnginePromo());
 
-        verify(mLocaleManagerDelegate, times(1)).needToCheckForSearchEnginePromo();
+        verify(mLocaleManagerDelegate).needToCheckForSearchEnginePromo();
     }
 
     @Test
     public void testIsDefaultSearchEngineGoogle() {
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
 
         doReturn(true).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
         assertTrue(searchEngineService.isDefaultSearchEngineGoogle());
@@ -462,7 +491,7 @@ public class SearchEngineServiceUnitTest {
 
     @Test
     public void testRetrieveFavicon_Gemini() {
-        checkStarterPackFavicon(StarterPackId.GEMINI, R.drawable.ic_spark_4c_16dp);
+        checkStarterPackFavicon(StarterPackId.GEMINI, R.drawable.ic_spark_24dp);
     }
 
     @Test
@@ -482,31 +511,45 @@ public class SearchEngineServiceUnitTest {
 
     private void checkStarterPackFavicon(
             @StarterPackId int starterPackId, int expectedDrawableRes) {
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
         doReturn(starterPackId).when(mTemplateUrl).getStarterPackId();
 
         searchEngineService.retrieveFavicon(mTemplateUrl, mStarterPackCallback);
 
         verify(mStarterPackCallback).onResult(mStatusIconCaptor.capture());
-        assertEquals(expectedDrawableRes, mStatusIconCaptor.getValue().getIconRes());
+        assertEquals(
+                new StatusIconResource(
+                        expectedDrawableRes, R.color.default_icon_color_accent1_tint_list),
+                mStatusIconCaptor.getValue());
     }
 
     @Test
     public void testGetNtpHintText_UseShortAskHint_onDesktop() {
         OmniboxCapabilities.setIsDesktopPlatformForTesting(true);
         configureSearchEngine("google", "Google");
-        OmniboxFeatures.sUseAskHintForNtp.setForTesting(true);
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        doReturn(true).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
 
         assertEquals("Ask Google", searchEngineService.getNtpHintText(mContext));
+    }
+
+    @Test
+    public void testGetNtpHintText_Default_onMobile() {
+        OmniboxCapabilities.setIsDesktopPlatformForTesting(false);
+        configureSearchEngine("google", "Google");
+        OmniboxFeatures.sUseAskHintForNtp.setForTesting(false);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
+
+        assertEquals("Search Google or type URL", searchEngineService.getNtpHintText(mContext));
     }
 
     @Test
     public void testGetNtpHintText_UseLongAskHint_onMobile() {
         OmniboxCapabilities.setIsDesktopPlatformForTesting(false);
         configureSearchEngine("google", "Google");
+        doReturn(true).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
         OmniboxFeatures.sUseAskHintForNtp.setForTesting(true);
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
 
         assertEquals("Ask Google or type URL", searchEngineService.getNtpHintText(mContext));
     }
@@ -514,40 +557,204 @@ public class SearchEngineServiceUnitTest {
     @Test
     public void testGetNtpHintText_UseEmptyHint() {
         configureSearchEngine("engine", "");
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
 
         assertEquals("Search or type URL", searchEngineService.getNtpHintText(mContext));
     }
 
     @Test
-    public void testGetOmniboxHintString_Default() {
+    public void testGetOmniboxHintStringRes_Default() {
+        OmniboxCapabilities.setIsDesktopPlatformForTesting(false);
         configureSearchEngine("google", "Google");
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
-        assertEquals("Search Google or type URL", searchEngineService.getOmniboxHintString());
+        OmniboxFeatures.sUseAskHintForNtp.setForTesting(false);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
+        assertEquals(
+                R.string.omnibox_empty_hint_with_dse_name,
+                searchEngineService.getOmniboxHintStringRes());
     }
 
     @Test
-    public void testGetOmniboxHintString_AskHint() {
+    public void testGetOmniboxHintStringRes_AskHint() {
+        OmniboxCapabilities.setIsDesktopPlatformForTesting(false);
         configureSearchEngine("google", "Google");
+        doReturn(true).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
         OmniboxFeatures.sUseAskHintForNtp.setForTesting(true);
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
-        assertEquals("Ask Google or type URL", searchEngineService.getOmniboxHintString());
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
+        assertEquals(
+                R.string.omnibox_empty_ask_hint_with_dse_name,
+                searchEngineService.getOmniboxHintStringRes());
     }
 
     @Test
-    public void testGetOmniboxHintString_AskHint_onDesktop_stillLong() {
+    public void testGetOmniboxHintStringRes_onDesktop() {
         OmniboxCapabilities.setIsDesktopPlatformForTesting(true);
         configureSearchEngine("google", "Google");
-        OmniboxFeatures.sUseAskHintForNtp.setForTesting(true);
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
-        assertEquals("Ask Google or type URL", searchEngineService.getOmniboxHintString());
+        doReturn(true).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
+        assertEquals(
+                R.string.omnibox_empty_ask_hint_with_dse_name,
+                searchEngineService.getOmniboxHintStringRes());
     }
 
     @Test
-    public void testGetOmniboxHintString_NonGoogle() {
+    public void testGetOmniboxHintStringRes_NonGoogle() {
         configureSearchEngine("yahoo", "Yahoo");
         OmniboxFeatures.sUseAskHintForNtp.setForTesting(true);
-        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper);
-        assertEquals("Search Yahoo or type URL", searchEngineService.getOmniboxHintString());
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
+        assertEquals(
+                R.string.omnibox_empty_hint_with_dse_name,
+                searchEngineService.getOmniboxHintStringRes());
+    }
+
+    private static AiModeButtonUiConfig createTestAiModeButtonUiConfig(GURL faviconUrl) {
+        return new AiModeButtonUiConfig(
+                "AI Mode",
+                "Ask AI Mode",
+                "AI Mode button",
+                "Always show AI Mode",
+                "Ask AI Mode",
+                faviconUrl,
+                "",
+                GURL.emptyGURL());
+    }
+
+    @Test
+    public void getAiModeButtonUiConfigSupplier_initialState() {
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
+
+        assertNull(searchEngineService.getAiModeButtonUiConfigSupplier().get());
+        assertEquals(
+                new StatusIconResource(R.drawable.ic_search_spark_24dp, 0),
+                searchEngineService.getAiModeButtonIconSupplier().get());
+        verify(mSearchEngineServiceNatives).init(searchEngineService, mProfile);
+    }
+
+    @Test
+    public void onAiModeButtonUiConfigChanged_updatesSupplier() {
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
+        assertNull(searchEngineService.getAiModeButtonUiConfigSupplier().get());
+
+        doReturn(true).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
+        var config = createTestAiModeButtonUiConfig(GURL.emptyGURL());
+        searchEngineService.onAiModeButtonUiConfigChanged(config);
+        assertSame(config, searchEngineService.getAiModeButtonUiConfigSupplier().get());
+        assertEquals(
+                new StatusIconResource(R.drawable.ic_search_spark_24dp, 0),
+                searchEngineService.getAiModeButtonIconSupplier().get());
+
+        searchEngineService.onAiModeButtonUiConfigChanged(null);
+        assertNull(searchEngineService.getAiModeButtonUiConfigSupplier().get());
+    }
+
+    @Test
+    public void onAiModeButtonUiConfigChanged_retrievesFaviconAndIgnoresDuplicateConfig() {
+        OmniboxCapabilities.setIsDesktopPlatformForTesting(false);
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
+        var faviconUrl = new GURL(LOGO_URL);
+        var config = createTestAiModeButtonUiConfig(faviconUrl);
+
+        // A third party engine shows the loupe until its icon is fetched.
+        searchEngineService.onAiModeButtonUiConfigChanged(config);
+        assertEquals(
+                new StatusIconResource(R.drawable.ic_search_24dp, 0),
+                searchEngineService.getAiModeButtonIconSupplier().get());
+
+        int iconSizePx =
+                mContext.getResources()
+                        .getDimensionPixelSize(R.dimen.omnibox_search_engine_logo_composed_size);
+        var expectedParams =
+                ImageFetcher.Params.create(
+                        faviconUrl, ImageFetcher.OMNIBOX_UMA_CLIENT_NAME, iconSizePx, iconSizePx);
+        verify(mImageFetcher).fetchImage(eq(expectedParams), mImageFetcherCallbackCaptor.capture());
+        mImageFetcherCallbackCaptor.getValue().onResult(mBitmap);
+        assertEquals(
+                new StatusIconResource(LOGO_URL, mBitmap, 0),
+                searchEngineService.getAiModeButtonIconSupplier().get());
+
+        // Replacing with a new instance carrying identical data should not reset icon or refetch.
+        clearInvocations(mImageFetcher);
+        searchEngineService.onAiModeButtonUiConfigChanged(
+                createTestAiModeButtonUiConfig(faviconUrl));
+        assertEquals(
+                new StatusIconResource(LOGO_URL, mBitmap, 0),
+                searchEngineService.getAiModeButtonIconSupplier().get());
+        verify(mImageFetcher, never()).fetchImage(any(), any());
+    }
+
+    @Test
+    public void onAiModeButtonUiConfigChanged_keepsLoupeOnNullBitmapAndResetsWhenReplaced() {
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
+        searchEngineService.onAiModeButtonUiConfigChanged(
+                createTestAiModeButtonUiConfig(new GURL(LOGO_URL)));
+        verify(mImageFetcher).fetchImage(any(), mImageFetcherCallbackCaptor.capture());
+
+        // Null bitmap from ImageFetcher must leave the fallback loupe icon intact.
+        mImageFetcherCallbackCaptor.getValue().onResult(null);
+        assertEquals(
+                new StatusIconResource(R.drawable.ic_search_24dp, 0),
+                searchEngineService.getAiModeButtonIconSupplier().get());
+
+        // Valid bitmap updates the supplier, and replacing the config with Google's resets it
+        // back to the spark icon.
+        mImageFetcherCallbackCaptor.getValue().onResult(mBitmap);
+        assertEquals(
+                new StatusIconResource(LOGO_URL, mBitmap, 0),
+                searchEngineService.getAiModeButtonIconSupplier().get());
+
+        doReturn(true).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
+        searchEngineService.onAiModeButtonUiConfigChanged(
+                createTestAiModeButtonUiConfig(GURL.emptyGURL()));
+        assertEquals(
+                new StatusIconResource(R.drawable.ic_search_spark_24dp, 0),
+                searchEngineService.getAiModeButtonIconSupplier().get());
+    }
+
+    @Test
+    public void onAiModeButtonUiConfigChanged_ignoresIconOfReplacedConfig_ThirdParty() {
+        testIgnoresIconOfReplacedConfigImpl(
+                /* isReplacementGoogle= */ false, R.drawable.ic_search_24dp);
+    }
+
+    @Test
+    public void onAiModeButtonUiConfigChanged_ignoresIconOfReplacedConfig_Google() {
+        testIgnoresIconOfReplacedConfigImpl(
+                /* isReplacementGoogle= */ true, R.drawable.ic_search_spark_24dp);
+    }
+
+    @Test
+    public void destroy_destroysNativePeer() {
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
+        searchEngineService.destroy();
+
+        verify(mSearchEngineServiceNatives).destroy(1L);
+        verify(mImageFetcher).destroy();
+    }
+
+    /**
+     * Verifies that a late icon of a replaced third party config doesn't replace the icon of the
+     * new config.
+     *
+     * @param isReplacementGoogle Whether the new config is Google's.
+     * @param expectedIconRes The icon expected for the new config.
+     */
+    private void testIgnoresIconOfReplacedConfigImpl(
+            boolean isReplacementGoogle, @DrawableRes int expectedIconRes) {
+        var searchEngineService = new SearchEngineService(mProfile, mFaviconHelper, mImageFetcher);
+        searchEngineService.onAiModeButtonUiConfigChanged(
+                createTestAiModeButtonUiConfig(new GURL(LOGO_URL)));
+        verify(mImageFetcher).fetchImage(any(), mImageFetcherCallbackCaptor.capture());
+        Callback<Bitmap> replacedConfigCallback = mImageFetcherCallbackCaptor.getValue();
+
+        doReturn(isReplacementGoogle).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
+        searchEngineService.onAiModeButtonUiConfigChanged(
+                createTestAiModeButtonUiConfig(
+                        isReplacementGoogle
+                                ? GURL.emptyGURL()
+                                : new GURL("https://www.other.com/")));
+        replacedConfigCallback.onResult(mBitmap);
+
+        assertEquals(
+                new StatusIconResource(expectedIconRes, 0),
+                searchEngineService.getAiModeButtonIconSupplier().get());
     }
 }

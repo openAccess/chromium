@@ -11,6 +11,7 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -36,8 +37,8 @@ FileStreamForwarder::FileStreamForwarder(
     ResultCallback callback)
     : context_(context),
       url_(url),
-      offset_(offset),
-      remaining_size_(size),
+      offset_((offset >= 0) ? offset : 0),
+      remaining_size_((size >= 0) ? size : 0),
       fd_dest_(std::move(fd_dest)),
       callback_(std::move(callback)),
       task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
@@ -46,21 +47,21 @@ FileStreamForwarder::FileStreamForwarder(
           {base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN,
            base::MayBlock()})),
       buf_(base::MakeRefCounted<net::IOBufferWithSize>(kBufSize)) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   content::GetIOThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(&FileStreamForwarder::Start, base::Unretained(this)));
 }
 
 void FileStreamForwarder::Destroy() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   content::GetIOThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce(&FileStreamForwarder::DestroyOnIOThread,
                                 base::Unretained(this)));
 }
 
 FileStreamForwarder::~FileStreamForwarder() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   if (!callback_.is_null())  // Aborted before completion.
     NotifyCompleted(false);
   // Use the task runner to close the FD.
@@ -69,12 +70,12 @@ FileStreamForwarder::~FileStreamForwarder() {
 }
 
 void FileStreamForwarder::DestroyOnIOThread() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   delete this;
 }
 
 void FileStreamForwarder::Start() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   stream_reader_ = context_->CreateFileStreamReader(
       url_, offset_, remaining_size_, base::Time());
   if (!stream_reader_) {
@@ -86,15 +87,18 @@ void FileStreamForwarder::Start() {
 }
 
 void FileStreamForwarder::DoRead() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK_GE(remaining_size_, 0, base::NotFatalUntil::M160);
   if (remaining_size_ == 0) {
     NotifyCompleted(true);
     return;
   }
-  const int result = stream_reader_->Read(
-      buf_.get(), std::min<int64_t>(buf_->size(), remaining_size_),
-      base::BindOnce(&FileStreamForwarder::OnReadCompleted,
-                     weak_ptr_factory_.GetWeakPtr()));
+  const int size = base::saturated_cast<int>(
+      std::min<int64_t>(static_cast<int64_t>(buf_->size()), remaining_size_));
+  const int result =
+      stream_reader_->Read(buf_, size,
+                           base::BindOnce(&FileStreamForwarder::OnReadCompleted,
+                                          weak_ptr_factory_.GetWeakPtr()));
   if (result != net::ERR_IO_PENDING) {
     // Read result is returned synchronously.
     OnReadCompleted(result);
@@ -102,7 +106,7 @@ void FileStreamForwarder::DoRead() {
 }
 
 void FileStreamForwarder::OnReadCompleted(int result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   if (result <= 0) {
     if (result == 0) {
       LOG(ERROR) << remaining_size_ << " more bytes to read, but reached EOF.";
@@ -113,7 +117,7 @@ void FileStreamForwarder::OnReadCompleted(int result) {
     return;
   }
   remaining_size_ -= result;
-  DCHECK_GE(remaining_size_, 0);
+  CHECK_GE(remaining_size_, 0, base::NotFatalUntil::M160);
 
   task_runner_->PostTaskAndReplyWithResult(
       FROM_HERE,
@@ -130,7 +134,7 @@ void FileStreamForwarder::OnReadCompleted(int result) {
 }
 
 void FileStreamForwarder::OnWriteCompleted(bool result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   if (!result) {
     NotifyCompleted(false);
     return;
@@ -140,8 +144,8 @@ void FileStreamForwarder::OnWriteCompleted(bool result) {
 }
 
 void FileStreamForwarder::NotifyCompleted(bool result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(!callback_.is_null());
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK(!callback_.is_null(), base::NotFatalUntil::M160);
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce(std::move(callback_), result));
 }

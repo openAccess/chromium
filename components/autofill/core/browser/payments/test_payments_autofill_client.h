@@ -32,6 +32,7 @@
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/ui/payments/autofill_progress_ui_type.h"
 #include "components/autofill/core/browser/ui/payments/bnpl_ui_delegate.h"
+#include "components/autofill/core/browser/ui/payments/payments_churned_users_ui_delegate.h"
 #include "components/autofill/core/browser/ui/payments/wallet_reminder_notice_ui_delegate.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 
@@ -182,12 +183,12 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
   MockIbanManager* GetIbanManager() override;
   MockIbanAccessManager* GetIbanAccessManager() override;
   MockMerchantPromoCodeManager* GetMerchantPromoCodeManager() override;
-  void OpenPromoCodeOfferDetailsURL(const GURL& url) override;
   AutofillOfferManager* GetAutofillOfferManager() override;
   void UpdateOfferNotification(
       const AutofillOfferData& offer,
       const OfferNotificationOptions& options) override;
   void DismissOfferNotification() override;
+  bool IsTabVisibleForOfferNotification() const override;
   bool ShowTouchToFillCreditCard(
       base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
       base::span<const Suggestion> suggestions) override;
@@ -240,10 +241,16 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
   BnplUiDelegate* GetBnplUiDelegate() override;
   WalletReminderNoticeUiDelegate* GetWalletReminderNoticeUiDelegate() override;
   WalletReminderNoticeManager* GetWalletReminderNoticeManager() override;
+  PaymentsChurnedUsersUiDelegate* GetPaymentsChurnedUsersUiDelegate() override;
 
   void set_wallet_reminder_notice_ui_delegate(
       std::unique_ptr<WalletReminderNoticeUiDelegate> ui_delegate) {
     wallet_reminder_notice_ui_delegate_ = std::move(ui_delegate);
+  }
+
+  void set_payments_churned_users_ui_delegate(
+      std::unique_ptr<PaymentsChurnedUsersUiDelegate> ui_delegate) {
+    payments_churned_users_ui_delegate_ = std::move(ui_delegate);
   }
 
   void set_wallet_reminder_notice_manager(
@@ -298,6 +305,17 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
 
   bool autofill_progress_dialog_shown() {
     return autofill_progress_dialog_shown_;
+  }
+
+  bool autofill_progress_dialog_closed() const {
+    return autofill_progress_dialog_closed_;
+  }
+
+  // Simulates the user cancelling the autofill progress dialog by running the
+  // `cancel_callback` that was passed to ShowAutofillProgressDialog().
+  void CancelAutofillProgressDialog() {
+    CHECK(autofill_progress_dialog_cancel_callback_);
+    std::move(autofill_progress_dialog_cancel_callback_).Run();
   }
 
   void set_payments_network_interface(
@@ -383,6 +401,10 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
     autofill_offer_manager_ = std::move(autofill_offer_manager);
   }
 
+  void set_is_tab_visible_for_offer_notification(bool visible) {
+    is_tab_visible_for_offer_notification_ = visible;
+  }
+
   void set_merchant_promo_code_manager(
       std::unique_ptr<MockMerchantPromoCodeManager>
           mock_merchant_promo_code_manager) {
@@ -417,6 +439,9 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
       multiple_request_payments_network_interface_;
 
   bool autofill_progress_dialog_shown_ = false;
+  bool autofill_progress_dialog_closed_ = false;
+
+  base::OnceClosure autofill_progress_dialog_cancel_callback_;
 
   bool autofill_error_dialog_shown_ = false;
 
@@ -495,6 +520,7 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
   std::unique_ptr<MockMerchantPromoCodeManager>
       mock_merchant_promo_code_manager_;
   std::unique_ptr<AutofillOfferManager> autofill_offer_manager_;
+  bool is_tab_visible_for_offer_notification_ = true;
   std::unique_ptr<MockMandatoryReauthManager>
       mock_payments_mandatory_reauth_manager_;
 
@@ -511,6 +537,8 @@ class TestPaymentsAutofillClient : public PaymentsAutofillClient {
   std::unique_ptr<WalletReminderNoticeUiDelegate>
       wallet_reminder_notice_ui_delegate_;
   std::unique_ptr<WalletReminderNoticeManager> wallet_reminder_notice_manager_;
+  std::unique_ptr<PaymentsChurnedUsersUiDelegate>
+      payments_churned_users_ui_delegate_;
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   // The OmniboxAutofillDelegate used to handle the logic flow and user

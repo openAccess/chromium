@@ -15,9 +15,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -46,9 +46,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -80,9 +80,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -109,9 +109,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -136,9 +136,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -176,9 +176,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -224,9 +224,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -263,9 +263,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -302,9 +302,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -345,9 +345,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -393,9 +393,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -433,9 +433,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -472,9 +472,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -511,9 +511,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -532,7 +532,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gles --force_high_performance_gpu",
           "--enforce-browser-version",
           "--webgl-conformance-version=2.0.1",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl2_conformance_linux_runtimes.json",
@@ -543,7 +543,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test",
         "module_scheme": "flat",
-        "name": "webgl2_conformance_gl_passthrough_tests",
+        "name": "webgl2_conformance_gles_passthrough_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -552,9 +552,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -574,7 +574,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-angle=gles --use-cmd-decoder=passthrough --use-gl=angle --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_linux_runtimes.json",
           "--jobs=4"
@@ -584,7 +584,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test",
         "module_scheme": "flat",
-        "name": "webgl_conformance_gl_passthrough_tests",
+        "name": "webgl_conformance_gles_passthrough_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -593,9 +593,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,
@@ -633,9 +633,9 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_attached": "1",
-            "display_server": "x11",
-            "gpu": "8086:4680-23.2.1",
-            "os": "Ubuntu-22.04",
+            "display_server": "wayland",
+            "gpu": "8086:4680-26.0.8",
+            "os": "Ubuntu-26.04",
             "pool": "chromium.tests.gpu"
           },
           "hard_timeout": 1800,

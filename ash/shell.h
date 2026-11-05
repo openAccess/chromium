@@ -5,8 +5,10 @@
 #ifndef ASH_SHELL_H_
 #define ASH_SHELL_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -20,13 +22,13 @@
 #include "ash/public/cpp/session/session_observer.h"
 #include "ash/public/cpp/shelf_types.h"
 #include "ash/public/cpp/tab_strip_delegate.h"
-#include "ash/quick_pair/keyed_service/quick_pair_mediator.h"
 #include "ash/system/input_device_settings/touchscreen_metrics_recorder.h"
 #include "ash/system/toast/system_nudge_pause_manager_impl.h"
 #include "ash/wm/system_modal_container_event_filter_delegate.h"
 #include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation_traits.h"
@@ -66,12 +68,7 @@ class ImageSkia;
 class Point;
 }  // namespace gfx
 
-namespace keyboard {
-class KeyboardUIFactory;
-}
-
 namespace ui {
-class ContextFactory;
 class KeyboardCapability;
 class UserActivityPowerManagerNotifier;
 }  // namespace ui
@@ -112,7 +109,6 @@ class AnnotatorController;
 class AppListControllerImpl;
 class AppListFeatureUsageMetrics;
 class AshAcceleratorConfiguration;
-class AshColorProvider;
 class AshDBusServices;
 class AshFocusRules;
 class AshTouchTransformController;
@@ -141,7 +137,6 @@ class DarkLightModeControllerImpl;
 class DesksController;
 class DetachableBaseHandler;
 class DetachableBaseNotificationController;
-class DisplayAlignmentController;
 class DisplayColorManager;
 class NativeCursorManagerAsh;
 class DisplayConfigurationController;
@@ -199,6 +194,7 @@ class MessageCenterAshImpl;
 class MessageCenterController;
 class MouseCursorEventFilter;
 class MouseKeysController;
+class MouseShakeToLocateController;
 class MruWindowTracker;
 class MultiDeviceNotificationPresenter;
 class MultiDisplayMetricsController;
@@ -519,10 +515,6 @@ class ASH_EXPORT Shell : public SessionObserver,
     return display_configuration_controller_.get();
   }
 
-  DisplayAlignmentController* display_alignment_controller() {
-    return display_alignment_controller_.get();
-  }
-
   display::DisplayConfigurator* display_configurator();
 
   RefreshRateController* refresh_rate_controller() {
@@ -665,6 +657,9 @@ class ASH_EXPORT Shell : public SessionObserver,
   }
   MouseKeysController* mouse_keys_controller() {
     return mouse_keys_controller_.get();
+  }
+  MouseShakeToLocateController* mouse_shake_to_locate_controller() {
+    return mouse_shake_to_locate_controller_.get();
   }
   MruWindowTracker* mru_window_tracker() { return mru_window_tracker_.get(); }
   MultiDeviceNotificationPresenter* multidevice_notification_presenter() {
@@ -840,7 +835,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   ToplevelWindowEventHandler* toplevel_window_event_handler() {
     return toplevel_window_event_handler_.get();
   }
-  AshColorProvider* ash_color_provider() { return ash_color_provider_.get(); }
 
   PrefService* local_state() { return local_state_; }
 
@@ -984,14 +978,7 @@ class ASH_EXPORT Shell : public SessionObserver,
   explicit Shell(std::unique_ptr<ShellDelegate> shell_delegate);
   ~Shell() override;
 
-  void Init(
-      ui::ContextFactory* context_factory,
-      PrefService* local_state,
-      std::unique_ptr<keyboard::KeyboardUIFactory> keyboard_ui_factory,
-      std::unique_ptr<ash::quick_pair::Mediator::Factory>
-          quick_pair_mediator_factory,
-      scoped_refptr<dbus::Bus> dbus_bus,
-      std::unique_ptr<display::NativeDisplayDelegate> native_display_delegate);
+  void Init(ShellInitParams init_params);
 
   // Initializes the display manager and related components.
   void InitializeDisplayManager();
@@ -1148,7 +1135,6 @@ class ASH_EXPORT Shell : public SessionObserver,
       sunfish_scanner_feature_watcher_;
   std::unique_ptr<FeatureDiscoveryDurationReporterImpl>
       feature_discover_reporter_;
-  std::unique_ptr<AshColorProvider> ash_color_provider_;
   std::unique_ptr<NightLightControllerImpl> night_light_controller_;
   std::unique_ptr<InformedRestoreController> informed_restore_controller_;
   std::unique_ptr<PipController> pip_controller_;
@@ -1201,6 +1187,8 @@ class ASH_EXPORT Shell : public SessionObserver,
       fullscreen_magnifier_controller_;
   std::unique_ptr<AutoclickController> autoclick_controller_;
   std::unique_ptr<MouseKeysController> mouse_keys_controller_;
+  std::unique_ptr<MouseShakeToLocateController>
+      mouse_shake_to_locate_controller_;
   std::unique_ptr<::wm::FocusController> focus_controller_;
 
   std::unique_ptr<MouseCursorEventFilter> mouse_cursor_filter_;
@@ -1249,7 +1237,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   std::unique_ptr<BluetoothDeviceStatusUiHandler>
       bluetooth_device_status_ui_handler_;
   std::unique_ptr<KeyboardControllerImpl> keyboard_controller_;
-  std::unique_ptr<DisplayAlignmentController> display_alignment_controller_;
   std::unique_ptr<ui::KeyboardCapability> keyboard_capability_;
   std::unique_ptr<DisplayColorManager> display_color_manager_;
   std::unique_ptr<DisplayErrorObserver> display_error_observer_;

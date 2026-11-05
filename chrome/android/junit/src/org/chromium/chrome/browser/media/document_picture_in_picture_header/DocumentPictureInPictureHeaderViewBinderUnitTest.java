@@ -6,12 +6,9 @@ package org.chromium.chrome.browser.media.document_picture_in_picture_header;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
+import static org.robolectric.Shadows.shadowOf;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
@@ -20,15 +17,14 @@ import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.text.TextUtils;
 import android.view.ContextThemeWrapper;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
 
 import androidx.core.graphics.Insets;
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -36,8 +32,8 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
-import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 import org.chromium.url.JUnitTestGURLs;
@@ -49,7 +45,7 @@ import java.util.List;
 @RunWith(BaseRobolectricTestRunner.class)
 public class DocumentPictureInPictureHeaderViewBinderUnitTest {
     private Context mContext;
-    private ViewGroup mHeaderView;
+    private DocumentPictureInPictureHeaderView mHeaderView;
     private ImageView mBackToTabButton;
     private ImageView mSecurityIcon;
     private TextView mUrlBar;
@@ -61,29 +57,18 @@ public class DocumentPictureInPictureHeaderViewBinderUnitTest {
                 new ContextThemeWrapper(
                         ApplicationProvider.getApplicationContext(),
                         R.style.Theme_BrowserUI_DayNight);
-        mHeaderView = spy(new FrameLayout(mContext));
+        mHeaderView =
+                (DocumentPictureInPictureHeaderView)
+                        LayoutInflater.from(mContext)
+                                .inflate(
+                                        R.layout.document_picture_in_picture_header_layout,
+                                        /* root= */ null);
         mHeaderView.setLayoutParams(
                 new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0));
 
-        mSecurityIcon = mock(ImageView.class);
-        mBackToTabButton = mock(ImageView.class);
-        mUrlBar = mock(TextView.class);
-        doReturn(mSecurityIcon)
-                .when(mHeaderView)
-                .findViewById(R.id.document_picture_in_picture_header_security_icon);
-        doReturn(mBackToTabButton)
-                .when(mHeaderView)
-                .findViewById(R.id.document_picture_in_picture_header_back_to_tab);
-        doReturn(mUrlBar)
-                .when(mHeaderView)
-                .findViewById(R.id.document_picture_in_picture_header_url_bar);
-
-        ViewGroup.LayoutParams securityIconLayoutParams = new ViewGroup.LayoutParams(0, 0);
-        ViewGroup.LayoutParams backToTabButtonLayoutParams = new ViewGroup.LayoutParams(0, 0);
-        ViewGroup.LayoutParams urlBarLayoutParams = new ViewGroup.LayoutParams(0, 0);
-        doReturn(securityIconLayoutParams).when(mSecurityIcon).getLayoutParams();
-        doReturn(backToTabButtonLayoutParams).when(mBackToTabButton).getLayoutParams();
-        doReturn(urlBarLayoutParams).when(mUrlBar).getLayoutParams();
+        mSecurityIcon = mHeaderView.getSecurityIconForTesting();
+        mBackToTabButton = mHeaderView.getBackToTabButtonForTesting();
+        mUrlBar = mHeaderView.getUrlBarForTesting();
 
         mModel =
                 new PropertyModel.Builder(DocumentPictureInPictureHeaderProperties.ALL_KEYS)
@@ -93,7 +78,6 @@ public class DocumentPictureInPictureHeaderViewBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIsShown() {
         mModel.set(DocumentPictureInPictureHeaderProperties.IS_SHOWN, true);
         assertEquals(View.VISIBLE, mHeaderView.getVisibility());
@@ -103,7 +87,6 @@ public class DocumentPictureInPictureHeaderViewBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBackgroundColor() {
         int color = Color.RED;
         mModel.set(DocumentPictureInPictureHeaderProperties.BACKGROUND_COLOR, color);
@@ -114,17 +97,15 @@ public class DocumentPictureInPictureHeaderViewBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testTintColorList() {
         ColorStateList tint = ColorStateList.valueOf(Color.RED);
         mModel.set(DocumentPictureInPictureHeaderProperties.TINT_COLOR_LIST, tint);
 
-        verify(mBackToTabButton).setImageTintList(tint);
-        verify(mSecurityIcon).setImageTintList(tint);
+        assertEquals(tint, mBackToTabButton.getImageTintList());
+        assertEquals(tint, mSecurityIcon.getImageTintList());
     }
 
     @Test
-    @SmallTest
     public void testHeaderHeight() {
         int height = 123;
         mModel.set(DocumentPictureInPictureHeaderProperties.HEADER_HEIGHT, height);
@@ -133,7 +114,6 @@ public class DocumentPictureInPictureHeaderViewBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHeaderSpacing() {
         int left = 10;
         int top = 20;
@@ -149,91 +129,98 @@ public class DocumentPictureInPictureHeaderViewBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testNonDraggableAreas() {
         List<Rect> rects = new ArrayList<>();
         rects.add(new Rect(0, 0, 10, 10));
         mModel.set(DocumentPictureInPictureHeaderProperties.NON_DRAGGABLE_AREAS, rects);
 
-        verify(mHeaderView).setSystemGestureExclusionRects(rects);
+        assertEquals(rects, mHeaderView.getSystemGestureExclusionRects());
     }
 
     @Test
-    @SmallTest
     public void testBackToTabClickListener() {
-        View.OnClickListener listener = ViewUtils.emptyClickListener();
+        View.OnClickListener listener = mock(View.OnClickListener.class);
         mModel.set(
                 DocumentPictureInPictureHeaderProperties.ON_BACK_TO_TAB_CLICK_LISTENER, listener);
-        verify(mBackToTabButton).setOnClickListener(listener);
+        mBackToTabButton.performClick();
+        verify(listener).onClick(mBackToTabButton);
     }
 
     @Test
-    @SmallTest
     public void testIsBackToTabShown() {
+        mBackToTabButton.setVisibility(View.GONE);
         mModel.set(DocumentPictureInPictureHeaderProperties.IS_BACK_TO_TAB_SHOWN, true);
-        verify(mBackToTabButton).setVisibility(View.VISIBLE);
+        assertEquals(View.VISIBLE, mBackToTabButton.getVisibility());
 
         mModel.set(DocumentPictureInPictureHeaderProperties.IS_BACK_TO_TAB_SHOWN, false);
-        verify(mBackToTabButton).setVisibility(View.GONE);
+        assertEquals(View.GONE, mBackToTabButton.getVisibility());
     }
 
     @Test
-    @SmallTest
     public void testSecurityIcon() {
-        int iconRes = 123;
+        int iconRes = R.drawable.omnibox_info;
         mModel.set(DocumentPictureInPictureHeaderProperties.SECURITY_ICON, iconRes);
-        verify(mSecurityIcon).setImageResource(iconRes);
+        assertEquals(iconRes, shadowOf(mSecurityIcon.getDrawable()).getCreatedFromResId());
     }
 
     @Test
-    @SmallTest
     public void testSecurityIconClickListener() {
-        View.OnClickListener listener = ViewUtils.emptyClickListener();
+        View.OnClickListener listener = mock(View.OnClickListener.class);
         mModel.set(
                 DocumentPictureInPictureHeaderProperties.ON_SECURITY_ICON_CLICK_LISTENER, listener);
-        verify(mSecurityIcon).setOnClickListener(listener);
+        mSecurityIcon.performClick();
+        verify(listener).onClick(mSecurityIcon);
     }
 
     @Test
-    @SmallTest
     public void testUrlHost() {
         String host = JUnitTestGURLs.EXAMPLE_URL.getHost();
         mModel.set(DocumentPictureInPictureHeaderProperties.URL_STRING, host);
-        verify(mUrlBar).setText(host);
-        verify(mUrlBar).setTooltipText(host);
+        assertEquals(host, mUrlBar.getText().toString());
+        assertEquals(host, mUrlBar.getTooltipText().toString());
     }
 
     @Test
-    @SmallTest
     public void testBrandedColorScheme() {
+        mUrlBar.setTextColor(Color.RED);
         mModel.set(
                 DocumentPictureInPictureHeaderProperties.BRANDED_COLOR_SCHEME,
                 BrandedColorScheme.APP_DEFAULT);
-        verify(mUrlBar).setTextColor(anyInt());
+        assertEquals(
+                OmniboxResourceProvider.getUrlBarPrimaryTextColor(
+                        mContext, BrandedColorScheme.APP_DEFAULT),
+                mUrlBar.getCurrentTextColor());
     }
 
     @Test
-    @SmallTest
     public void testUrlEllipsizeBehavior() {
         mModel.set(
                 DocumentPictureInPictureHeaderProperties.URL_ELLIPSIZE_BEHAVIOR,
                 TextUtils.TruncateAt.START);
-        verify(mUrlBar).setEllipsize(TextUtils.TruncateAt.START);
+        assertEquals(TextUtils.TruncateAt.START, mUrlBar.getEllipsize());
 
         mModel.set(
                 DocumentPictureInPictureHeaderProperties.URL_ELLIPSIZE_BEHAVIOR,
                 TextUtils.TruncateAt.END);
-        verify(mUrlBar).setEllipsize(TextUtils.TruncateAt.END);
+        assertEquals(TextUtils.TruncateAt.END, mUrlBar.getEllipsize());
     }
 
     @Test
-    @SmallTest
     public void testComponentSize() {
         int size = 42;
         mModel.set(DocumentPictureInPictureHeaderProperties.COMPONENT_SIZE, size);
 
-        verify(mBackToTabButton).setLayoutParams(any());
-        verify(mSecurityIcon).setLayoutParams(any());
-        verify(mUrlBar).setLayoutParams(any());
+        assertEquals(size, mBackToTabButton.getLayoutParams().width);
+        assertEquals(size, mBackToTabButton.getLayoutParams().height);
+        assertEquals(size, mSecurityIcon.getLayoutParams().width);
+        assertEquals(size, mSecurityIcon.getLayoutParams().height);
+        assertEquals(size, mUrlBar.getLayoutParams().height);
+    }
+
+    @Test
+    public void testInflationAndChildViewCaching() {
+        assertNotNull(mHeaderView.getSecurityIconForTesting());
+        assertNotNull(mHeaderView.getUrlBarForTesting());
+        assertNotNull(mHeaderView.getBackToTabButtonForTesting());
     }
 }

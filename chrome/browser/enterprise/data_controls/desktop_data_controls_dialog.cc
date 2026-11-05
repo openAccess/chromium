@@ -47,6 +47,12 @@ class DataControlsDialogDelegate : public views::DialogDelegate {
       : type_(type), dialog_(dialog) {
     set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
         views::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH));
+    // Unlike most dialogs, "esc" is not equivalent to the "cancel" button as it
+    // bypasses warnings for this dialog, so this override is necessary to have
+    // "esc" behave the same as dismissing the dialog without letting data
+    // through.
+    set_esc_should_cancel_dialog_override(false);
+
     // TODO(crbug.com/351342878): Move shared logic for dialog button styling to
     // `DataControlsDialog`.
     // For warning dialogs, "cancel" means "ignore the warning and bypass" and
@@ -234,9 +240,9 @@ DesktopDataControlsDialog::TestObserver::~TestObserver() {
 void DesktopDataControlsDialog::SetObserverForTesting(TestObserver* observer) {
   // These checks add safety that tests are only setting one observer at a time.
   if (observer_for_testing_) {
-    DCHECK_EQ(observer, nullptr);
+    CHECK_EQ(observer, nullptr, base::NotFatalUntil::M161);
   } else {
-    DCHECK_NE(observer, nullptr);
+    CHECK_NE(observer, nullptr, base::NotFatalUntil::M161);
   }
 
   observer_for_testing_ = observer;

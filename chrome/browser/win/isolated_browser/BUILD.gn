@@ -12,12 +12,16 @@ source_set("isolated_browser_support") {
 
   deps = [
     "//base",
+    "//chrome/browser:browser_process",
     "//chrome/browser/os_crypt",
-    "//chrome/common:non_code_constants",
+    "//chrome/common:constants",
     "//chrome/elevation_service:public_headers",
     "//chrome/install_static:install_static_util",
     "//chrome/installer/util:isolation_support",
+    "//components/keep_alive_registry",
+    "//components/os_crypt/async/browser",
     "//components/os_crypt/browser:key_provider_interface",
+    "//components/prefs",
     "//content/public/browser",
   ]
 }
@@ -59,6 +63,7 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/browser/os_crypt",
+    "//chrome/browser/os_crypt:test_support",
     "//chrome/chrome_elf:constants",
     "//chrome/common:constants",
     "//chrome/elevation_service:public_headers",
@@ -67,6 +72,8 @@ source_set("unit_tests") {
     "//chrome/installer/util:with_no_strings",
     "//chrome/test:test_support",
     "//components/crash/core/common:crash_key",
+    "//components/keep_alive_registry",
+    "//components/os_crypt/async/browser",
     "//components/prefs",
     "//components/prefs:test_support",
     "//components/variations",

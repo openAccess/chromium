@@ -8,8 +8,10 @@
 
 #import "base/strings/strcat.h"
 #import "base/strings/utf_string_conversions.h"
+#import "components/device_signals/core/browser/user_permission_service.h"
 #import "components/enterprise/browser/reporting/common_pref_names.h"
 #import "components/enterprise/connectors/core/features.h"
+#import "components/enterprise/net/core/utils.h"
 #import "components/grit/management_resources.h"
 #import "components/grit/management_resources_map.h"
 #import "components/policy/core/common/cloud/cloud_policy_core.h"
@@ -20,6 +22,7 @@
 #import "ios/chrome/browser/enterprise/connectors/connectors_service.h"
 #import "ios/chrome/browser/enterprise/connectors/connectors_service_factory.h"
 #import "ios/chrome/browser/enterprise/connectors/connectors_util.h"
+#import "ios/chrome/browser/enterprise/signals/model/ios_user_permission_service_factory.h"
 #import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/policy/ui_bundled/management_util.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -35,8 +38,6 @@
 namespace {
 
 using enterprise_connectors::ConnectorsService;
-
-// TODO(crbug.com/539934808): Add eg test for the iOS management page.
 
 // Returns the management message depending on the levels of the policies that
 // are applied. Returns std::nullopt if there are no policies.
@@ -98,6 +99,14 @@ bool IsProfileReportingEnabled(PrefService* profile_prefs) {
       enterprise_reporting::kCloudProfileReportingEnabled);
 }
 
+// Whether the Device Signals disclosure should be displayed.
+bool IsDeviceSignalsDisclosureEnabled(
+    const device_signals::UserPermissionService* user_permission_service) {
+  return user_permission_service &&
+         user_permission_service->CanCollectSignals() ==
+             device_signals::UserPermission::kGranted;
+}
+
 // Whether the "Page is visited" event subsection under Chrome Enteprise
 // Connectors should be displayed. This subsection is visible if Enterprise Url
 // filtering is enabled.
@@ -107,7 +116,7 @@ bool IsPageVisitEventEnabled(ConnectorsService* connectors_service) {
              connectors_service->GetAppliedRealTimeUrlCheck());
 }
 
-// Whether the "Security event occurs" event subsection under Chrome Enteprise
+// Whether the "Security event occurs" event subsection under Chrome Enterprise
 // Connectors should be displayed. This subsection is visible if Enterprise
 // Event Reporting is enabled.
 bool IsSecurityEventEnabled(ConnectorsService* connectors_service) {
@@ -267,6 +276,14 @@ web::WebUIIOSDataSource* CreateManagementUIHTMLSource(web::WebUIIOS* web_ui) {
   source->AddLocalizedString("profileReportingLearnMore",
                              IDS_MANAGEMENT_PROFILE_REPORTING_LEARN_MORE);
 
+  // Device signals disclosure
+  source->AddLocalizedString("deviceSignalsDisclosure",
+                             IDS_MANAGEMENT_DEVICE_SIGNALS_DISCLOSURE);
+  source->AddBoolean(
+      "deviceSignalsDisclosureEnabled",
+      IsDeviceSignalsDisclosureEnabled(
+          IOSUserPermissionServiceFactory::GetForProfile(profile)));
+
   // Connectors Section
   auto* connectors_service =
       enterprise_connectors::ConnectorsServiceFactory::GetForProfile(profile);
@@ -276,6 +293,16 @@ web::WebUIIOSDataSource* CreateManagementUIHTMLSource(web::WebUIIOS* web_ui) {
                              IDS_MANAGEMENT_THREAT_PROTECTION);
   source->AddString("connectorsDescription",
                     GetConnectorsSectionDescription(connectors_service));
+  source->AddLocalizedString("threatProtectionMore",
+                             IDS_MANAGEMENT_THREAT_PROTECTION_MORE);
+
+  source->AddBoolean(
+      "secureGatewayDisclosureEnabled",
+      enterprise_net::IsSecureGatewayEnabled(profile->GetPrefs()));
+  source->AddLocalizedString("secureGatewayTitle",
+                             IDS_MANAGEMENT_SECURE_GATEWAY_TITLE);
+  source->AddLocalizedString("secureGatewayDisclosure",
+                             IDS_MANAGEMENT_SECURE_GATEWAY_DISCLOSURE);
 
   source->AddBoolean("pageVisitEventEnabled",
                      IsPageVisitEventEnabled(connectors_service));

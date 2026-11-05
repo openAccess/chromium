@@ -86,7 +86,6 @@ class CORE_EXPORT Scrollbar : public GarbageCollected<Scrollbar>,
 
   bool HasTickmarks() const;
   Vector<gfx::Rect> GetTickmarks() const;
-  bool IsScrollableAreaActive() const;
 
   gfx::Point ConvertFromRootFrame(const gfx::Point&) const;
 
@@ -203,7 +202,7 @@ class CORE_EXPORT Scrollbar : public GarbageCollected<Scrollbar>,
   // Even if no parts are invalidated, the scrollbar may need to be redrawn
   // if, for instance, the thumb moves without changing the appearance of any
   // part.
-  void SetNeedsPaintInvalidation(ScrollbarPart invalid_parts);
+  void SetNeedsPaintInvalidation(int invalid_parts);
 
   CompositorElementId GetElementId() const;
 
@@ -255,7 +254,7 @@ class CORE_EXPORT Scrollbar : public GarbageCollected<Scrollbar>,
   void InjectScrollGesture(WebInputEvent::Type type,
                            ScrollOffset delta,
                            ui::ScrollGranularity granularity);
-  ScrollDirectionPhysical PressedPartScrollDirectionPhysical();
+  mojom::blink::ScrollDirectionPhysical PressedPartScrollDirectionPhysical();
   ui::ScrollGranularity PressedPartScrollGranularity();
 
   Member<ScrollableArea> scrollable_area_;

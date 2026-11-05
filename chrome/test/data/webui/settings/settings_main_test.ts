@@ -4,9 +4,10 @@
 
 // clang-format off
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import type {SettingsMainElement, SettingsPrefsElement} from 'chrome://settings/settings.js';
-import {CrSettingsPrefs, loadTimeData, Router, routes, setSearchManagerForTesting} from 'chrome://settings/settings.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import type {SettingsMainElement} from 'chrome://settings/settings.js';
+import {loadTimeData, Router, routes, setSearchManagerForTesting} from 'chrome://settings/settings.js';
+import {assertEquals, assertFalse, assertGT, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {eventToPromise} from 'chrome://webui-test/test_util.js';
 
 import {TestSearchManager} from './test_search_manager.js';
 // clang-format on
@@ -14,12 +15,6 @@ import {TestSearchManager} from './test_search_manager.js';
 suite('MainPageTests', function() {
   let searchManager: TestSearchManager;
   let settingsMain: SettingsMainElement;
-  let settingsPrefs: SettingsPrefsElement;
-
-  suiteSetup(function() {
-    settingsPrefs = document.createElement('settings-prefs');
-    return CrSettingsPrefs.initialized;
-  });
 
   setup(function() {
     Router.getInstance().navigateTo(routes.BASIC);
@@ -27,7 +22,6 @@ suite('MainPageTests', function() {
     setSearchManagerForTesting(searchManager);
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     settingsMain = document.createElement('settings-main');
-    settingsMain.prefs = settingsPrefs.prefs!;
     settingsMain.toolbarSpinnerActive = false;
     document.body.appendChild(settingsMain);
   });
@@ -62,7 +56,7 @@ suite('MainPageTests', function() {
   });
 
   function showingManagedHeader(): boolean {
-    return !!settingsMain.shadowRoot!.querySelector('managed-footnote');
+    return !!settingsMain.shadowRoot.querySelector('managed-footnote');
   }
 
   test('managed header hides when searching', async function() {
@@ -131,7 +125,7 @@ suite('MainPageTests', function() {
    */
   function assertPageVisibility(expected: string) {
     flush();
-    const page = settingsMain.shadowRoot!.querySelector('settings-basic-page')!;
+    const page = settingsMain.shadowRoot.querySelector('settings-basic-page')!;
     assertEquals(
         expected,
         getComputedStyle(page.shadowRoot!.querySelector('#basicPage')!)
@@ -149,9 +143,8 @@ suite('MainPageTests', function() {
     await settingsMain.searchContents('Query1');
     // Simulate navigating into a subpage.
     Router.getInstance().navigateTo(routes.SEARCH_ENGINES);
-    settingsMain.shadowRoot!.querySelector('settings-basic-page')!
-        .dispatchEvent(
-            new CustomEvent('subpage-expand', {bubbles: true, composed: true}));
+    settingsMain.shadowRoot.querySelector('settings-basic-page')!.dispatchEvent(
+        new CustomEvent('subpage-expand', {bubbles: true, composed: true}));
     flush();
 
     // Simulate clicking the left arrow to go back to the search results.
@@ -185,4 +178,62 @@ suite('MainPageTests', function() {
             'settingsAltPageTitle',
             loadTimeData.getString('privacyPageTitle')));
   });
+
+  test('fires search-finished when a search completes', async function() {
+    flush();
+
+    searchManager.setMatchesFound(true);
+    let whenFired = eventToPromise('search-finished', settingsMain);
+    await settingsMain.searchContents('foo');
+    let event = await whenFired;
+    assertEquals('foo', event.detail.query);
+    assertGT(event.detail.matchCount, 0);
+
+    searchManager.setMatchesFound(false);
+    whenFired = eventToPromise('search-finished', settingsMain);
+    await settingsMain.searchContents('bar');
+    event = await whenFired;
+    assertEquals('bar', event.detail.query);
+    assertEquals(0, event.detail.matchCount);
+  });
+
+  test(
+      'fires search-result-interaction only while in search mode',
+      async function() {
+        flush();
+
+        // Controls like settings-toggle-button stop 'click' events from
+        // propagating, and fire no 'click' at all when activated with the
+        // keyboard, but they do fire a composed 'change' event.
+        const fireChange = () => {
+          settingsMain.$.switcher.fire('change');
+        };
+
+        // No listener is registered when not searching.
+        let fired = false;
+        settingsMain.addEventListener(
+            'search-result-interaction', () => fired = true);
+        fireChange();
+        assertFalse(fired);
+        settingsMain.$.switcher.click();
+        assertFalse(fired);
+
+        searchManager.setMatchesFound(true);
+        await settingsMain.searchContents('foo');
+
+        fireChange();
+        assertTrue(fired);
+
+        fired = false;
+        settingsMain.$.switcher.click();
+        assertTrue(fired);
+
+        // Both listeners are removed once the search is cleared.
+        await settingsMain.searchContents('');
+        fired = false;
+        fireChange();
+        assertFalse(fired);
+        settingsMain.$.switcher.click();
+        assertFalse(fired);
+      });
 });

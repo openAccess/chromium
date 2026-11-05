@@ -7,13 +7,13 @@
 #include <algorithm>
 #include <memory>
 
+#include "base/auto_reset.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/glic/browser_ui/glic_nudge_controller.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_context_menu_controller.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
@@ -29,7 +29,8 @@
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/menu/menu_scroll_view_container.h"
 #include "ui/views/controls/menu/submenu_view.h"
-#include "ui/views/view_shadow.h"
+#include "ui/views/view_decoration.h"
+#include "ui/views/widget/widget.h"
 
 namespace {
 // New main menu width.
@@ -38,7 +39,7 @@ constexpr int kMainMenuWidthWithSubmenuEnabled = 240;
 constexpr int kDefaultMenuWidth = 320;
 // Maximum height of tab sub menu before scroll is activated.
 constexpr int kMaxTabSubMenuHeight = 344;
-// The shadow variation to use for `ViewShadow`
+// The shadow variation to use for `ViewDecoration`
 constexpr int kShadowOption = 3;
 }  // namespace
 
@@ -46,7 +47,7 @@ OmniboxContextMenu::OmniboxContextMenu(views::Widget* parent_widget,
                                        OmniboxPopupFileSelector* file_selector,
                                        content::WebContents* web_contents,
                                        base::RepeatingClosure on_menu_closed)
-    : parent_widget_(parent_widget),
+    : parent_widget_(parent_widget ? parent_widget->GetWeakPtr() : nullptr),
       controller_(std::make_unique<OmniboxContextMenuController>(file_selector,
                                                                  web_contents)),
       on_menu_closed_(std::move(on_menu_closed)),
@@ -58,30 +59,11 @@ OmniboxContextMenu::OmniboxContextMenu(views::Widget* parent_widget,
       std::move(menu), views::MenuRunner::HAS_MNEMONICS |
                            views::MenuRunner::MENU_ITEM_CONTEXT_MENU);
   ui::SimpleMenuModel* menu_model = controller_->menu_model();
-  menu_model->SetMenuModelDelegate(this);
-  // Register `this` to listen for live icon updates on the secondary submenu.
-  if (controller_->shared_tabs_menu_model()) {
-    controller_->shared_tabs_menu_model()->SetMenuModelDelegate(this);
+  if (menu_model && menu_model->menu_model_delegate() != this) {
+    menu_model->SetMenuModelDelegate(this);
   }
 
-  for (size_t i = 0; i < menu_model->GetItemCount(); ++i) {
-    // Use default vertical margins for top-level items.
-    views::MenuItemView* item =
-        views::MenuModelAdapter::AppendMenuItemFromModel(
-            menu_model, i, menu_, menu_model->GetCommandIdAt(i));
-    // If the top-level item is a real submenu container, recursively append its
-    // underlying child items (tabs) to ensure the menu tree is fully populated.
-    if (item && menu_model->GetTypeAt(i) == ui::MenuModel::TYPE_SUBMENU) {
-      ui::MenuModel* submodel = menu_model->GetSubmenuModelAt(i);
-      if (submodel) {
-        for (size_t j = 0; j < submodel->GetItemCount(); ++j) {
-          // Use default vertical margins for submenu items.
-          views::MenuModelAdapter::AppendMenuItemFromModel(
-              submodel, j, item, submodel->GetCommandIdAt(j));
-        }
-      }
-    }
-  }
+  BuildMenuTree();
 }
 
 int OmniboxContextMenu::GetMaxWidthForMenu(views::MenuItemView* menu) {
@@ -141,13 +123,18 @@ void OmniboxContextMenu::WillShowMenu(views::MenuItemView* menu) {
       }
 
       // Add elevation shadow based on variation option `kShadowOption`
-      // for both tabs submenu and context menu.
-      if (!view_shadows_.contains(scroll_container)) {
-        auto shadow = std::make_unique<views::ViewShadow>(scroll_container,
-                                                          kShadowOption);
+      // for both tabs submenu and context menu on platforms that do not use a
+      // bubble border. When a bubble border is present (e.g. on Windows and
+      // Linux), `BubbleBorder` already renders the drop shadow within its
+      // outside border insets, and applying a `ViewDecoration` to
+      // `scroll_container` erroneously casts an outer shadow around the insets.
+      if (!scroll_container->HasBubbleBorder() &&
+          !view_shadows_.contains(scroll_container)) {
+        auto shadow = std::make_unique<views::ViewDecoration>(scroll_container);
         int corner_radius = views::MenuConfig::instance().CornerRadiusForMenu(
             menu->GetMenuController());
         shadow->SetRoundedCornerRadius(corner_radius);
+        shadow->SetShadow(kShadowOption);
         view_shadows_[scroll_container] = std::move(shadow);
       }
     }
@@ -155,12 +142,18 @@ void OmniboxContextMenu::WillShowMenu(views::MenuItemView* menu) {
 }
 
 OmniboxContextMenu::~OmniboxContextMenu() {
-  if (controller_ && controller_->menu_model()) {
-    controller_->menu_model()->SetMenuModelDelegate(nullptr);
-    if (controller_->shared_tabs_menu_model()) {
+  is_closing_ = true;
+  if (controller_) {
+    if (controller_->menu_model() &&
+        controller_->menu_model()->menu_model_delegate() == this) {
+      controller_->menu_model()->SetMenuModelDelegate(nullptr);
+    }
+    if (controller_->shared_tabs_menu_model() &&
+        controller_->shared_tabs_menu_model()->menu_model_delegate() == this) {
       controller_->shared_tabs_menu_model()->SetMenuModelDelegate(nullptr);
     }
   }
+  view_shadows_.clear();
 }
 
 void OmniboxContextMenu::RunMenuAt(const gfx::Point& point,
@@ -168,13 +161,15 @@ void OmniboxContextMenu::RunMenuAt(const gfx::Point& point,
   if (menu_ && menu_->HasSubmenu()) {
     if (base::FeatureList::IsEnabled(omnibox::kContextManagementInComposebox) &&
         base::FeatureList::IsEnabled(omnibox::kContextManagementInOmnibox)) {
-      menu_->GetSubmenu()->set_minimum_preferred_width(GetMinimumMenuWidth(menu_));
+      menu_->GetSubmenu()->set_minimum_preferred_width(
+          GetMinimumMenuWidth(menu_));
       // Apply preferred width to each submenu width; this is more robust
       // than applying the width to the submenu itself or a command ID, which
       // causes the width of submenu items to be incorrect.
       for (views::MenuItemView* item : menu_->GetSubmenu()->GetMenuItems()) {
         if (item->HasSubmenu()) {
-          item->GetSubmenu()->set_minimum_preferred_width(GetMinimumMenuWidth(item));
+          item->GetSubmenu()->set_minimum_preferred_width(
+              GetMinimumMenuWidth(item));
         }
       }
     } else {
@@ -182,7 +177,7 @@ void OmniboxContextMenu::RunMenuAt(const gfx::Point& point,
     }
   }
 
-  menu_runner_->RunMenuAt(parent_widget_, nullptr,
+  menu_runner_->RunMenuAt(parent_widget_.get(), nullptr,
                           gfx::Rect(point, gfx::Size()),
                           views::MenuAnchorPosition::kTopLeft, source_type);
 
@@ -196,7 +191,7 @@ void OmniboxContextMenu::RunMenuAt(const gfx::Point& point,
     return;
   }
   auto* glic_nudge_controller =
-      browser_window_interface->GetFeatures().glic_nudge_controller();
+      glic::GlicNudgeController::From(browser_window_interface);
   if (!glic_nudge_controller) {
     return;
   }
@@ -214,12 +209,14 @@ void OmniboxContextMenu::RunMenuAt(const gfx::Point& point,
 }
 
 void OmniboxContextMenu::Cancel() {
+  is_closing_ = true;
   if (menu_runner_) {
     menu_runner_->Cancel();
   }
 }
 
 void OmniboxContextMenu::ExecuteCommand(int command_id, int event_flags) {
+  base::AutoReset<bool> auto_reset(&is_executing_command_, true);
   controller_->ExecuteCommand(command_id, event_flags);
 }
 
@@ -247,6 +244,15 @@ std::optional<SkColor> OmniboxContextMenu::GetLabelColor(int command_id) const {
              : std::nullopt;
 }
 
+std::u16string OmniboxContextMenu::GetTooltipText(int command_id,
+                                                  const gfx::Point& p) const {
+  if (!omnibox::IsContextMenuTooltipsInComposeboxEnabled()) {
+    return std::u16string();
+  }
+  return controller_ ? controller_->GetTooltipForCommandId(command_id)
+                     : std::u16string();
+}
+
 bool OmniboxContextMenu::IsCommandEnabled(int command_id) const {
   return controller_->IsCommandIdEnabled(command_id);
 }
@@ -256,6 +262,7 @@ bool OmniboxContextMenu::IsCommandVisible(int command_id) const {
 }
 
 void OmniboxContextMenu::OnMenuClosed(views::MenuItemView* menu) {
+  is_closing_ = true;
   view_shadows_.clear();
   if (on_menu_closed_) {
     on_menu_closed_.Run();
@@ -281,7 +288,47 @@ void OmniboxContextMenu::OnIconChanged(int command_id) {
   }
 }
 
-int OmniboxContextMenu::GetMinimumMenuWidth(const views::MenuItemView* menu) const {
+void OmniboxContextMenu::BuildMenuTree() {
+  view_shadows_.clear();
+  if (menu_->HasSubmenu()) {
+    menu_->RemoveAllMenuItems();
+  }
+  ui::SimpleMenuModel* menu_model = controller_->menu_model();
+  if (controller_->shared_tabs_menu_model() &&
+      controller_->shared_tabs_menu_model()->menu_model_delegate() != this) {
+    controller_->shared_tabs_menu_model()->SetMenuModelDelegate(this);
+  }
+  for (size_t i = 0; i < menu_model->GetItemCount(); ++i) {
+    // Use default vertical margins for top-level items.
+    views::MenuItemView* item =
+        views::MenuModelAdapter::AppendMenuItemFromModel(
+            menu_model, i, menu_, menu_model->GetCommandIdAt(i));
+    // If the top-level item is a real submenu container, recursively append its
+    // underlying child items (tabs) to ensure the menu tree is fully populated.
+    if (item && menu_model->GetTypeAt(i) == ui::MenuModel::TYPE_SUBMENU) {
+      ui::MenuModel* submodel = menu_model->GetSubmenuModelAt(i);
+      CHECK(submodel);
+      for (size_t j = 0; j < submodel->GetItemCount(); ++j) {
+        // Use default vertical margins for submenu items.
+        views::MenuModelAdapter::AppendMenuItemFromModel(
+            submodel, j, item, submodel->GetCommandIdAt(j));
+      }
+    }
+  }
+  if (menu_runner_) {
+    menu_->ChildrenChanged();
+  }
+}
+
+void OmniboxContextMenu::OnMenuStructureChanged() {
+  if (is_executing_command_ || is_closing_) {
+    return;
+  }
+  BuildMenuTree();
+}
+
+int OmniboxContextMenu::GetMinimumMenuWidth(
+    const views::MenuItemView* menu) const {
   if (menu != menu_) {
     return kDefaultMenuWidth;
   }

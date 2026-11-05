@@ -4,10 +4,10 @@
 
 package org.chromium.chrome.test.transit.ntp;
 
+import static androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
 import static org.chromium.base.test.transit.Condition.whether;
-import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
 
 import android.view.View;
 
@@ -18,8 +18,11 @@ import org.chromium.base.test.transit.TripBuilder;
 import org.chromium.base.test.transit.ViewElement;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ntp.NewTabPage;
+import org.chromium.chrome.browser.ntp.search.SearchBoxContainerView;
 import org.chromium.chrome.browser.omnibox.UrlBar;
 import org.chromium.chrome.browser.suggestions.SiteSuggestion;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
+import org.chromium.chrome.browser.url_constants.UrlOverrideUtils;
 import org.chromium.chrome.test.transit.page.CtaPageStation;
 import org.chromium.chrome.test.transit.page.NativePageCondition;
 import org.chromium.chrome.test.transit.page.WebPageStation;
@@ -39,8 +42,13 @@ public class RegularNewTabPageStation extends CtaPageStation {
     public ViewElement<View> logoElement;
     public Element<NewTabPage> nativePageElement;
 
-    public RegularNewTabPageStation(Config config) {
-        super(config.withIncognito(false).withExpectedUrlSubstring(getOriginalNativeNtpUrl()));
+    public RegularNewTabPageStation(Config config, boolean nativeNtp) {
+        super(
+                config.withIncognito(false)
+                        .withExpectedUrlSubstring(
+                                nativeNtp
+                                        ? UrlConstantResolver.getOriginalNativeNtpUrl()
+                                        : UrlConstantResolver.getOriginalNtpUrl()));
 
         declareElementFactory(
                 mActivityElement,
@@ -52,22 +60,40 @@ public class RegularNewTabPageStation extends CtaPageStation {
                     }
                 });
 
-        logoElement = declareView(withId(R.id.search_provider_logo));
-        searchBoxElement = declareView(withId(R.id.search_box));
-        ntpMicButtonElement = declareOptionalView(withId(R.id.voice_search_button));
+        if (nativeNtp) {
+            logoElement = declareView(withId(R.id.search_provider_logo));
+            // Scoped to the NTP's own fakebox class: R.id.search_box is also used by the Hub
+            // toolbar (and by bookmarks and settings search boxes), and an unscoped matcher
+            // here would match the Hub's search box while leaving the NTP for the Hub.
+            // TODO(crbug.com/570644422): Replace isAssignableFrom(SearchBoxContainerView.class)
+            // with SearchBoxContainerView.class once ViewSpec includes isAssignableFrom() in its
+            // generated Matcher<View>.
+            searchBoxElement =
+                    declareView(
+                            withId(R.id.search_box),
+                            isAssignableFrom(SearchBoxContainerView.class));
+            ntpMicButtonElement = declareOptionalView(withId(R.id.voice_search_button));
 
-        nativePageElement =
-                declareEnterConditionAsElement(
-                        new NativePageCondition<>(NewTabPage.class, loadedTabElement));
-        declareEnterCondition(
-                SimpleConditions.uiThreadCondition(
-                        "Regular NTP is loaded",
-                        nativePageElement,
-                        nativePage -> whether(nativePage.isLoadedForTests())));
+            nativePageElement =
+                    declareEnterConditionAsElement(
+                            new NativePageCondition<>(NewTabPage.class, loadedTabElement));
+            declareEnterCondition(
+                    SimpleConditions.uiThreadCondition(
+                            "Regular NTP is loaded",
+                            nativePageElement,
+                            nativePage -> whether(nativePage.isLoadedForTests())));
+        }
     }
 
     public static Builder<RegularNewTabPageStation> newBuilder() {
-        return new Builder<>(RegularNewTabPageStation::new);
+        return new Builder<>(
+                c ->
+                        new RegularNewTabPageStation(
+                                c, /* nativeNtp= */ !UrlOverrideUtils.isWebUiNtpOverrideEnabled()));
+    }
+
+    public static Builder<RegularNewTabPageStation> newNativeNtpBuilder() {
+        return new Builder<>(c -> new RegularNewTabPageStation(c, /* nativeNtp= */ true));
     }
 
     /** Opens the app menu by pressing the toolbar "..." button */

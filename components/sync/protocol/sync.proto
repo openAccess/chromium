@@ -244,15 +244,8 @@ message ChipBag {
 
 // Information about the syncer's state.
 message ClientStatus {
-  // Flag to indicate if the client has detected hierarchy conflcits.  The flag
-  // is left unset if update application has not been attempted yet.
-  //
-  // The server should attempt to resolve any hierarchy conflicts when this flag
-  // is set.  The client may not assume that any particular action will be
-  // taken.  There is no guarantee the problem will be addressed in a reasonable
-  // amount of time.
-  // TODO(crbug.com/40833583): Deprecated in M103.
-  optional bool hierarchy_conflict_detected = 1 [deprecated = true];
+  reserved 1;
+  reserved "hierarchy_conflict_detected";
 
   // Whether the client has full sync (or, sync the feature) enabled or not.
   optional bool is_sync_feature_enabled = 2;
@@ -331,8 +324,8 @@ message CommitResponse {
   enum ResponseType {
     SUCCESS = 1;
     CONFLICT = 2;  // You're out of date; update and check your data
-    // TODO(ncarter): What's the difference between RETRY and TRANSIENT_ERROR?
-    RETRY = 3;            // Someone has a conflicting, non-expired session open
+    reserved 3;
+    reserved "RETRY";
     INVALID_MESSAGE = 4;  // What the client sent was invalid, and trying again
                           // won't help.
     OVER_QUOTA = 5;  // This operation would put you, or you are, over quota
@@ -368,10 +361,8 @@ message CommitResponse {
 
     optional string error_message = 9;
 
-    // Last modification time (in milliseconds since Unix epoch).  Allows the
-    // server to override the client-supplied mtime during a commit operation.
-    // TODO(crbug.com/40751358): Delete this field too.
-    optional int64 mtime = 10 [deprecated = true];
+    reserved 10;
+    reserved "mtime";
 
     message DatatypeSpecificError {
       oneof datatype_error {
@@ -382,6 +373,10 @@ message CommitResponse {
     }
     // Datatype specific error (if any).
     optional DatatypeSpecificError datatype_specific_error = 11;
+
+    // If the commit updated an attachment, echoes back the server-assigned
+    // modification time of the attachment (in milliseconds since Unix epoch).
+    optional int64 attachment_modification_time_unix_epoch_millis = 12;
   }
 }
 

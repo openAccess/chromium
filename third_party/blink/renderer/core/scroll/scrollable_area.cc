@@ -54,6 +54,8 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
+#include "third_party/blink/renderer/core/frame/web_frame_widget_impl.h"
+#include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html/anchor_element_viewport_position_tracker.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
@@ -197,13 +199,6 @@ ProgrammaticScrollAnimator& ScrollableArea::GetProgrammaticScrollAnimator()
   }
 
   return *programmatic_scroll_animator_;
-}
-
-ScrollbarOrientation ScrollableArea::ScrollbarOrientationFromDirection(
-    ScrollDirectionPhysical direction) const {
-  return (direction == kScrollUp || direction == kScrollDown)
-             ? kVerticalScrollbar
-             : kHorizontalScrollbar;
 }
 
 float ScrollableArea::ScrollStep(ui::ScrollGranularity granularity,
@@ -444,7 +439,7 @@ void ScrollableArea::ScrollToScrollInitialTarget(
     return;
   }
   cc::ScrollSnapAlign snap_alignment =
-      scroll_initial_target->StyleRef().GetScrollSnapAlign();
+      scroll_initial_target->Style().GetScrollSnapAlign();
   switch (snap_alignment.alignment_block) {
     case cc::SnapAlignment::kStart:
       align_y = ScrollAlignment::TopAlways();
@@ -767,7 +762,7 @@ void ScrollableArea::RecalculateOverlayScrollbarColorScheme() {
   // If there is a background color set on the scroller, use the lightness of
   // the background color for the scrollbar overlay color theme.
   if (GetLayoutBox()) {
-    Color background_color = GetLayoutBox()->StyleRef().VisitedDependentColor(
+    Color background_color = GetLayoutBox()->Style().VisitedDependentColor(
         GetCSSPropertyBackgroundColor());
     if (!background_color.IsFullyTransparent()) {
       const float lightness =
@@ -795,15 +790,8 @@ void ScrollableArea::SetScrollbarNeedsPaintInvalidation(
     if (auto* scrollbar = GetScrollbar(orientation)) {
       if (auto* compositor =
               box->GetFrameView()->GetPaintArtifactCompositor()) {
-        CompositorElementId element_id = GetScrollbarElementId(orientation);
-        if (scrollbar->IsSolidColor()) {
-          // This will call SetNeedsDisplay() if the color changes (which is
-          // the only reason for a SolidColorScrollbarLayer to update display).
-          if (compositor->SetScrollbarSolidColor(
-                  element_id, scrollbar->GetTheme().ThumbColor(*scrollbar))) {
-            scrollbar->ClearNeedsUpdateDisplay();
-          }
-        } else if (compositor->SetScrollbarNeedsDisplay(element_id)) {
+        if (compositor->SetScrollbarNeedsDisplay(
+                GetScrollbarElementId(orientation))) {
           scrollbar->ClearNeedsUpdateDisplay();
         }
       }
@@ -938,6 +926,16 @@ bool ScrollableArea::UsesCompositedOverlayScrollbars() const {
       !UsesCompositedScrolling()) {
     return false;
   }
+  if (const auto* box = GetLayoutBox()) {
+    // Some overlay scrollbar themes (e.g. Aura) needs the non-composited code
+    // path to initially show overlay scrollbars before the actual composited
+    // scrollbar is created. Only observed a difference in browser test
+    // SitePerProcessHitTestBrowserTest.CrossProcessMouseCapture on ChromeOS,
+    // but this is a safe check to have in place.
+    if (!box->GetFrameView()->GetPaintArtifactCompositor()) {
+      return false;
+    }
+  }
   if (const auto* scrollbar = HorizontalScrollbar()) {
     if (MayCompositeScrollbar(*scrollbar)) {
       return true;
@@ -1026,6 +1024,26 @@ const Document* ScrollableArea::GetDocument() const {
   if (auto* box = GetLayoutBox())
     return &box->GetDocument();
   return nullptr;
+}
+
+bool ScrollableArea::IsLatchedForGestureScroll() const {
+  const Document* document = GetDocument();
+  if (!document) {
+    return false;
+  }
+  LocalFrame* frame = document->GetFrame();
+  if (!frame) {
+    return false;
+  }
+  auto* web_frame = WebLocalFrameImpl::FromFrame(frame);
+  if (!web_frame) {
+    return false;
+  }
+  WebFrameWidgetImpl* widget = web_frame->LocalRootFrameWidget();
+  if (!widget) {
+    return false;
+  }
+  return widget->ScrollLatchedElementId() == GetScrollElementId();
 }
 
 gfx::Vector2d ScrollableArea::ClampScrollOffset(
@@ -1186,13 +1204,6 @@ void ScrollableArea::OnScrollFinished(bool enqueue_scrollend) {
       .MarkHoverStateDirty();
 }
 
-void ScrollableArea::SnapAfterScrollbarScrolling(
-    ScrollbarOrientation orientation,
-    cc::ScrollSourceType source_type) {
-  SnapAtCurrentPosition(orientation == kHorizontalScrollbar,
-                        orientation == kVerticalScrollbar, source_type);
-}
-
 bool ScrollableArea::SnapAtCurrentPosition(bool scrolled_x,
                                            bool scrolled_y,
                                            cc::ScrollSourceType source_type) {
@@ -1214,7 +1225,8 @@ bool ScrollableArea::SnapForEndPosition(const gfx::PointF& end_position,
                          /*preserve_pinned_marker=*/false);
 }
 
-bool ScrollableArea::SnapForDirection(ScrollDirectionPhysical direction) {
+bool ScrollableArea::SnapForDirection(
+    mojom::blink::ScrollDirectionPhysical direction) {
   DCHECK(IsRootFrameViewport() || !GetLayoutBox()->IsGlobalRootScroller());
   ScrollOffset delta = ToScrollDelta(direction, 1);
   delta.Scale(LineStep(kHorizontalScrollbar), LineStep(kVerticalScrollbar));
@@ -1231,7 +1243,8 @@ bool ScrollableArea::SnapForDirection(ScrollDirectionPhysical direction) {
                          /*preserve_pinned_marker=*/false);
 }
 
-bool ScrollableArea::SnapForPageScroll(ScrollDirectionPhysical direction) {
+bool ScrollableArea::SnapForPageScroll(
+    mojom::blink::ScrollDirectionPhysical direction) {
   DCHECK(IsRootFrameViewport() || !GetLayoutBox()->IsGlobalRootScroller());
   std::unique_ptr<cc::SnapSelectionStrategy> strategy =
       PageScrollSnapStrategy(direction);
@@ -1242,13 +1255,16 @@ bool ScrollableArea::SnapForPageScroll(ScrollDirectionPhysical direction) {
                          /*preserve_pinned_marker=*/false);
 }
 
-bool ScrollableArea::SnapForDocumentScroll(ScrollDirectionPhysical direction) {
+bool ScrollableArea::SnapForDocumentScroll(
+    mojom::blink::ScrollDirectionPhysical direction) {
   ScrollOffset delta = ToScrollDelta(direction, 1);
   delta.Scale(DocumentStep(kHorizontalScrollbar),
               DocumentStep(kVerticalScrollbar));
   gfx::PointF end_position = ScrollPosition() + delta;
-  bool scrolled_x = direction == kScrollLeft || direction == kScrollRight;
-  bool scrolled_y = direction == kScrollUp || direction == kScrollDown;
+  bool scrolled_x = direction == mojom::blink::ScrollDirectionPhysical::kLeft ||
+                    direction == mojom::blink::ScrollDirectionPhysical::kRight;
+  bool scrolled_y = direction == mojom::blink::ScrollDirectionPhysical::kUp ||
+                    direction == mojom::blink::ScrollDirectionPhysical::kDown;
   // Only called for Home/End key press scrolls, which are absolute scrolls.
   // https://drafts.csswg.org/css-scroll-snap-1/#scroll-types
   return SnapForEndPosition(end_position, scrolled_x, scrolled_y,
@@ -1257,7 +1273,7 @@ bool ScrollableArea::SnapForDocumentScroll(ScrollDirectionPhysical direction) {
 
 std::unique_ptr<cc::SnapSelectionStrategy>
 ScrollableArea::PageScrollSnapStrategy(
-    ScrollDirectionPhysical direction) const {
+    mojom::blink::ScrollDirectionPhysical direction) const {
   return cc::SnapSelectionStrategy::CreateForPageScroll(
       ScrollPosition(), ToScrollDelta(direction, 1), PageSize(),
       RuntimeEnabledFeatures::FractionalScrollOffsetsEnabled());
@@ -1461,16 +1477,6 @@ void ScrollableArea::EnqueueScrollSnapChangingEvent() const {
       target_node, block_target, inline_target);
 }
 
-ScrollOffset ScrollableArea::GetWebExposedScrollOffset() const {
-  ScrollOffset scroll_offset =
-      SnapScrollOffsetToPhysicalPixels(GetScrollOffset());
-
-  // Ensure that, if fractional scroll offsets are not enabled, the scroll
-  // offset is an floored value.
-  CHECK_EQ(gfx::ToRoundedVector2d(scroll_offset), scroll_offset);
-  return scroll_offset;
-}
-
 ScrollOffset ScrollableArea::GetScrollOffsetForScrollMarkerUpdate() {
   ScrollOffset offset_for_scroll_marker_update = GetScrollOffset();
   if (GetScrollAnimator().HasRunningAnimation()) {
@@ -1491,7 +1497,7 @@ LayoutBox* GetEnclosingLayoutBoxCrossingDocumentBoundary(
   return IsA<LayoutView>(layout_box)
              ? static_cast<LayoutBox*>(
                    layout_box->GetFrame()->OwnerLayoutObject())
-             : static_cast<LayoutBox*>(layout_box->ContainingBlock());
+             : layout_box->ContainingBox();
 }
 
 ScrollableArea* GetNearestScrollableArea(LayoutBox* current_box) {
@@ -1509,7 +1515,8 @@ ScrollableArea* GetNearestScrollableArea(LayoutBox* current_box) {
         (next_box->IsScrollContainer() &&
          (next_box->GetScrollableArea()->ScrollsOverflow() ||
           !next_box->GetScrollableArea()->CanPropagateScroll())) ||
-        next_box->IsOverscrollContainer()) {
+        next_box->IsOverscrollContainer() ||
+        next_box->IsOverscrollAreaParent()) {
       CHECK(next_box->GetScrollableArea());
       return next_box->GetScrollableArea();
     }

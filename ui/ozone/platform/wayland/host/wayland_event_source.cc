@@ -138,7 +138,7 @@ struct WaylandEventSource::TouchPoint {
 WaylandEventSource::TouchPoint::TouchPoint(gfx::PointF location,
                                            WaylandWindow* current_window)
     : window(current_window), last_known_location(location) {
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M163);
 }
 
 // WaylandEventSource::PointerScrollData implementation
@@ -187,8 +187,8 @@ void WaylandEventSource::ConvertEventToTarget(EventTarget* new_target,
                                               LocatedEvent* event) {
   auto* current_target = static_cast<WaylandWindow*>(event->target());
   auto* new_target_window = static_cast<WaylandWindow*>(new_target);
-  DCHECK(current_target);
-  DCHECK(new_target_window);
+  CHECK(current_target, base::NotFatalUntil::M163);
+  CHECK(new_target_window, base::NotFatalUntil::M163);
   // GetOriginInScreen returns a location in UI coordinates space, ie:
   // ui_scale'd. OTOH `event` location is assumed to be in Wayland
   // coordinates, thus `diff` must be converted before used below.
@@ -209,7 +209,7 @@ WaylandEventSource::WaylandEventSource(wl_display* display,
           display,
           event_queue,
           use_threaded_polling)) {
-  DCHECK(window_manager_);
+  CHECK(window_manager_, base::NotFatalUntil::M163);
 
   // Observes remove changes to know when touch points can be removed.
   window_manager_->AddObserver(this);
@@ -227,10 +227,11 @@ void WaylandEventSource::StartProcessingEvents() {
 
 void WaylandEventSource::OnKeyboardFocusChanged(WaylandWindow* window,
                                                 bool focused) {
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M163);
 #if DCHECK_IS_ON()
   if (!focused) {
-    DCHECK_EQ(window, window_manager_->GetCurrentKeyboardFocusedWindow());
+    CHECK_EQ(window, window_manager_->GetCurrentKeyboardFocusedWindow(),
+             base::NotFatalUntil::M163);
   }
 #endif
   window_manager_->SetKeyboardFocusedWindow(focused ? window : nullptr);
@@ -248,7 +249,8 @@ uint32_t WaylandEventSource::OnKeyboardKeyEvent(
     base::TimeTicks timestamp,
     int device_id,
     WaylandKeyboard::KeyEventKind kind) {
-  DCHECK(type == EventType::kKeyPressed || type == EventType::kKeyReleased);
+  CHECK(type == EventType::kKeyPressed || type == EventType::kKeyReleased,
+        base::NotFatalUntil::M163);
 
   DomKey dom_key;
   KeyboardCode key_code;
@@ -385,8 +387,9 @@ void WaylandEventSource::OnPointerButtonEvent(
     wl::EventDispatchPolicy dispatch_policy,
     bool allow_release_of_unpressed_button,
     bool is_synthesized) {
-  DCHECK(type == EventType::kMousePressed || type == EventType::kMouseReleased);
-  DCHECK(HasAnyPointerButtonFlag(changed_button));
+  CHECK(type == EventType::kMousePressed || type == EventType::kMouseReleased,
+        base::NotFatalUntil::M163);
+  CHECK(HasAnyPointerButtonFlag(changed_button), base::NotFatalUntil::M163);
 
   // Ignore release events for buttons that aren't currently pressed. Such
   // events should never happen, but there have been compositor bugs before
@@ -453,14 +456,18 @@ void WaylandEventSource::OnPointerMotionEvent(
     bool is_synthesized) {
   pointer_location_ = location;
 
-  // Deliberately excludes `tablet_tool_buttons_`. Some compositors warp the
-  // seat cursor to follow a tablet tool, emitting a wl_pointer.motion alongside
-  // the tool's own events; folding the tool's buttons in here would report a
-  // mouse move with a button held that the mouse does not have held. The tool's
-  // own button state reaches Aura through OnTabletToolMotion().
+  // Non-synthesized motion events deliberately exclude `tablet_tool_buttons_`.
+  // Some compositors warp the seat cursor to follow a tablet tool, emitting a
+  // wl_pointer.motion alongside the tool's own events; folding the tool's
+  // buttons in here would report a mouse move with a button held that the mouse
+  // does not have held. The tool's own button state reaches Aura through
+  // OnTabletToolMotion(). However, during a DnD session the compositor stops
+  // sending tablet motion events and sends wl_data_device.motion instead, which
+  // arrives here with `is_synthesized` set, so `tablet_tool_buttons_` must be
+  // included for synthesized events.
   int flags = pointer_flags_ | keyboard_modifiers_;
   if (is_synthesized) {
-    flags |= EF_IS_SYNTHESIZED;
+    flags |= EF_IS_SYNTHESIZED | tablet_tool_buttons_;
   }
   MouseEvent event(EventType::kMouseMoved, pointer_location_, pointer_location_,
                    timestamp, flags, 0);
@@ -697,7 +704,7 @@ void WaylandEventSource::OnTouchPressEvent(
     base::TimeTicks timestamp,
     PointerId id,
     wl::EventDispatchPolicy dispatch_policy) {
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M163);
   HandleTouchFocusChange(window, true);
 
   // Make sure this touch point wasn't present before.
@@ -841,9 +848,11 @@ void WaylandEventSource::OnTouchCancelEvent() {
   if (connection_->IsDragInProgress()) {
     return;
   }
+  CancelActiveTouches(base::TimeTicks::Now());
+}
 
+void WaylandEventSource::CancelActiveTouches(base::TimeTicks timestamp) {
   gfx::PointF location;
-  base::TimeTicks timestamp = base::TimeTicks::Now();
   std::vector<PointerId> ids;
   ids.reserve(touch_points_.size());
   for (const auto& touch_point : touch_points_) {
@@ -883,7 +892,8 @@ void WaylandEventSource::OnTouchFocusChanged(WaylandWindow* window) {
   // touch points to it.
   auto drag_source = connection_->window_drag_controller()->drag_source();
   if (drag_source && window) {
-    DCHECK_EQ(*drag_source, mojom::DragEventSource::kTouch);
+    CHECK_EQ(*drag_source, mojom::DragEventSource::kTouch,
+             base::NotFatalUntil::M163);
     for (auto& touch_point : touch_points_) {
       touch_point.second->window = window;
     }
@@ -981,7 +991,7 @@ void WaylandEventSource::SetRelativePointerMotionEnabled(bool enabled) {
 
 void WaylandEventSource::OnRelativePointerMotion(const gfx::Vector2dF& delta,
                                                  base::TimeTicks timestamp) {
-  DCHECK(relative_pointer_location_.has_value());
+  CHECK(relative_pointer_location_.has_value(), base::NotFatalUntil::M163);
   relative_pointer_location_ = *relative_pointer_location_ + delta;
   OnPointerMotionEvent(*relative_pointer_location_, timestamp,
                        wl::EventDispatchPolicy::kImmediate,
@@ -989,7 +999,7 @@ void WaylandEventSource::OnRelativePointerMotion(const gfx::Vector2dF& delta,
 }
 
 bool WaylandEventSource::IsPointerButtonPressed(EventFlags button) const {
-  DCHECK(HasAnyPointerButtonFlag(button));
+  CHECK(HasAnyPointerButtonFlag(button), base::NotFatalUntil::M163);
   return pointer_flags_ & button;
 }
 
@@ -1071,7 +1081,7 @@ void WaylandEventSource::OnWindowRemoved(WaylandWindow* window) {
 void WaylandEventSource::HandleTouchFocusChange(WaylandWindow* window,
                                                 bool focused,
                                                 std::optional<PointerId> id) {
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M163);
   bool actual_focus = id ? !ShouldUnsetTouchFocus(window, id.value()) : focused;
   window->set_touch_focus(actual_focus);
 }
@@ -1175,7 +1185,7 @@ void WaylandEventSource::EnsurePointerScrollData(
 // that, it needs to be ensured that flings are aborted when new axis events
 // arrive.
 void WaylandEventSource::ProcessPointerScrollData() {
-  DCHECK(pointer_scroll_data_);
+  CHECK(pointer_scroll_data_, base::NotFatalUntil::M163);
   // While it does not make sense for a server to send axis source only,
   // the protocol does not explicitly specify it's illegal. Just skip if
   // that happens.
@@ -1238,10 +1248,17 @@ void WaylandEventSource::ProcessPointerScrollData() {
         pointer_frames_.push_back(std::make_unique<FrameData>(
             stop_fling_event, base::NullCallback()));
       }
+      float dx = pointer_scroll_data_->dx;
+      float dy = pointer_scroll_data_->dy;
+      if (IsWaylandUnscaledTouchpadScrollingEnabled()) {
+        float touchpad_scroll_scaling_factor = static_cast<float>(
+            GetWaylandUnscaledTouchpadScrollingNewFactor());
+        dx = dx * touchpad_scroll_scaling_factor;
+        dy = dy * touchpad_scroll_scaling_factor;
+      }
       ScrollEvent event(EventType::kScroll, pointer_location_,
-                        pointer_location_, timestamp, flags,
-                        pointer_scroll_data_->dx, pointer_scroll_data_->dy,
-                        pointer_scroll_data_->dx, pointer_scroll_data_->dy,
+                        pointer_location_, timestamp, flags, dx, dy,
+                        dx, dy,
                         kGestureScrollFingerCount);
       pointer_frames_.push_back(
           std::make_unique<FrameData>(event, base::NullCallback()));

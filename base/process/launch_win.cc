@@ -1,7 +1,6 @@
 // Copyright 2012 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-
 #include "base/process/launch.h"
 
 #include <fcntl.h>
@@ -142,6 +141,11 @@ bool GetAppOutputInternal(
 
       // The process ended, so continue reading as long as there is data
       // available.
+    }
+
+    // Callers may poll the child here, so call this even without output.
+    if (!process_exited) {
+      still_waiting(process, {});
     }
   } while (!process_exited && (timer.Elapsed() < timeout));
 
@@ -343,7 +347,7 @@ Process LaunchProcess(const CommandLine::StringType& cmdline,
 
     if (!startup_info_wrapper.UpdateProcThreadAttribute(
             PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            const_cast<HANDLE*>(&options.handles_to_inherit[0]),
+            const_cast<HANDLE*>(options.handles_to_inherit.data()),
             static_cast<DWORD>(options.handles_to_inherit.size() *
                                sizeof(HANDLE)))) {
       DPLOG(ERROR);

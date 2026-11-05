@@ -89,7 +89,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/global_features.h"
-#include "chrome/browser/lifetime/termination_notification.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/webui_login_view.h"
@@ -149,6 +148,7 @@
 #include "net/test/embedded_test_server/register_basic_auth_handler.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "remoting/host/chromeos/features.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -569,6 +569,8 @@ class WizardControllerFlowTest : public WizardControllerTest {
     device_disabled_screen_view_ =
         std::make_unique<MockDeviceDisabledScreenView>();
     MockScreen(std::make_unique<DeviceDisabledScreen>(
+        g_browser_process->platform_part()
+            ->device_restriction_schedule_controller(),
         device_disabled_screen_view_->AsWeakPtr()));
     EXPECT_CALL(*device_disabled_screen_view_, Show(_)).Times(0);
 
@@ -1478,13 +1480,23 @@ IN_PROC_BROWSER_TEST_F(WizardControllerFjordOOBETest, FjordOobeScreenFlow) {
   EXPECT_TRUE(StartupUtils::IsOobeCompleted(
       CHECK_DEREF(g_browser_process->local_state())));
   CheckCurrentScreen(FjordTouchControllerScreenView::kScreenId);
+  OobeScreenWaiter(FjordTouchControllerScreenView::kScreenId).Wait();
 
-  EXPECT_TRUE(wizard_controller->ExitFjordTouchControllerScreen());
+  // Finishing the touch controller setup only enables the next button; the
+  // screen does not exit until the user clicks it.
+  const test::UIPath kTouchControllerNextButton = {"fjord-touch-controller",
+                                                   "primaryButton"};
+  EXPECT_TRUE(wizard_controller->OnFjordTouchControllerSetupFinished());
+  test::OobeJS().CreateEnabledWaiter(true, kTouchControllerNextButton)->Wait();
+  CheckCurrentScreen(FjordTouchControllerScreenView::kScreenId);
+
+  test::OobeJS().TapOnPath(kTouchControllerNextButton);
+  OobeScreenWaiter(FjordFwUpdateScreenView::kScreenId).Wait();
   EXPECT_EQ(FjordOobeStateManager::Get()->GetFjordOobeStateInfo().oobe_state(),
             fjord_oobe_state::proto::FjordOobeStateInfo::
                 FJORD_OOBE_STATE_ENROLLMENT_DONE);
   CheckCurrentScreen(FjordFwUpdateScreenView::kScreenId);
-  EXPECT_TRUE(wizard_controller->ExitFjordTouchControllerScreen());
+  EXPECT_TRUE(wizard_controller->OnFjordTouchControllerSetupFinished());
 }
 
 IN_PROC_BROWSER_TEST_F(WizardControllerFjordOOBETest,
@@ -1512,8 +1524,8 @@ IN_PROC_BROWSER_TEST_F(WizardControllerFjordOOBETest,
       FjordOobeStateManager::Get()->GetFjordOobeStateInfo().oobe_state(),
       fjord_oobe_state::proto::FjordOobeStateInfo::FJORD_OOBE_STATE_START);
 
-  // Expect that Exit has no affect since TC setup screen is not showing.
-  EXPECT_FALSE(wizard_controller->ExitFjordTouchControllerScreen());
+  // Expect that this has no effect since TC setup screen is not showing.
+  EXPECT_FALSE(wizard_controller->OnFjordTouchControllerSetupFinished());
   CheckCurrentScreen(EnrollmentScreenView::kScreenId);
   EXPECT_EQ(
       FjordOobeStateManager::Get()->GetFjordOobeStateInfo().oobe_state(),

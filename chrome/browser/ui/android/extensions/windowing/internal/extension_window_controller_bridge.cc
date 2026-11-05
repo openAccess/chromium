@@ -7,7 +7,6 @@
 #include <jni.h>
 
 #include "base/android/jni_android.h"
-#include "base/android/scoped_java_ref.h"
 #include "base/check.h"
 #include "chrome/browser/extensions/browser_extension_window_controller.h"
 #include "chrome/browser/extensions/window_controller.h"
@@ -15,25 +14,21 @@
 #include "chrome/browser/ui/android/extensions/windowing/internal/jni/ExtensionWindowControllerBridgeImpl_jni.h"
 #include "chrome/browser/ui/android/extensions/windowing/internal/window_controller_list_observer_for_testing.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 namespace {
 using base::android::AttachCurrentThread;
-using base::android::JavaRef;
 using extensions::BrowserExtensionWindowController;
 using extensions::WindowController;
 using extensions::WindowControllerList;
 }  // namespace
 
 // Implements Java |ExtensionWindowControllerBridgeImpl.Natives#create|
-static int64_t JNI_ExtensionWindowControllerBridgeImpl_Create(
+static jni_zero::JniUniquePtr<ExtensionWindowControllerBridge>
+JNI_ExtensionWindowControllerBridgeImpl_Create(
     JNIEnv* env,
-    const JavaRef<jobject>& caller,
-    int64_t native_browser_window_ptr) {
-  BrowserWindowInterface* browser_window =
-      reinterpret_cast<BrowserWindowInterface*>(native_browser_window_ptr);
-
-  return reinterpret_cast<intptr_t>(
-      new ExtensionWindowControllerBridge(env, caller, browser_window));
+    BrowserWindowInterface* browser_window) {
+  return jni_zero::MakeUnique<ExtensionWindowControllerBridge>(browser_window);
 }
 
 // Implements the Java |addWindowControllerListObserverForTesting()| method in
@@ -64,24 +59,11 @@ void ExtensionWindowControllerBridge::RecordExtensionInternalEventForTesting(
 }
 
 ExtensionWindowControllerBridge::ExtensionWindowControllerBridge(
-    JNIEnv* env,
-    const base::android::JavaRef<jobject>&
-        java_extension_window_controller_bridge,
     BrowserWindowInterface* browser_window)
     : extension_window_controller_(
-          BrowserExtensionWindowController(browser_window)) {
-  java_extension_window_controller_bridge_.Reset(
-      env, java_extension_window_controller_bridge);
-}
+          BrowserExtensionWindowController(browser_window)) {}
 
-ExtensionWindowControllerBridge::~ExtensionWindowControllerBridge() {
-  Java_ExtensionWindowControllerBridgeImpl_clearNativePtr(
-      AttachCurrentThread(), java_extension_window_controller_bridge_);
-}
-
-void ExtensionWindowControllerBridge::Destroy(JNIEnv* env) {
-  delete this;
-}
+ExtensionWindowControllerBridge::~ExtensionWindowControllerBridge() = default;
 
 void ExtensionWindowControllerBridge::OnTaskBoundsChanged(JNIEnv* env) {
   extension_window_controller_.NotifyWindowBoundsChanged();

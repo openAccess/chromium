@@ -10,7 +10,6 @@
 #include <map>
 #include <memory>
 #include <ostream>
-#include <set>
 #include <utility>
 
 #include "ash/constants/ash_pref_names.h"
@@ -29,8 +28,6 @@
 #include "base/values.h"
 #include "build/branding_buildflags.h"
 #include "chrome/browser/apps/app_preload_service/app_preload_service.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/package_id_util.h"
 #include "chrome/browser/apps/app_service/policy_util.h"
 #include "chrome/browser/ash/app_list/app_list_syncable_service.h"
@@ -46,7 +43,6 @@
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chromeos/ash/components/default_pinned_apps/default_pinned_apps.h"
 #include "chromeos/ash/components/file_manager/app_id.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/app_constants/constants.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_registry.h"
@@ -196,7 +192,7 @@ syncer::StringOrdinal GetAppPosition(
 constexpr char kDefaultPinnedAppsKey[] = "default";
 constexpr char kPreloadPinnedAppsKey[] = "preload";
 
-bool should_add_default_apps_for_test = false;
+std::optional<bool> should_add_default_apps_for_test;
 
 struct PinInfo {
   PinInfo(const std::string& app_id, const syncer::StringOrdinal& item_ordinal)
@@ -273,7 +269,7 @@ void InsertPinsAfterChromeAndBeforeFirstPinnedApp(
   // Chrome must be pinned at this point.
   syncer::StringOrdinal chrome_position =
       syncable_service->GetPinPosition(app_constants::kChromeAppId);
-  DCHECK(chrome_position.IsValid());
+  CHECK(chrome_position.IsValid(), base::NotFatalUntil::M162);
 
   // New pins are inserted after this position.
   syncer::StringOrdinal after;
@@ -312,10 +308,6 @@ void AddGeminiAppPinIfNeeded(
     ShelfControllerHelper* helper,
     app_list::AppListSyncableService* syncable_service) {
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  if (!chromeos::features::IsGeminiAppPreinstallEnabled()) {
-    return;
-  }
-
   if (!profile->GetPrefs()
            ->GetList(ash::prefs::kShelfGeminiAppPinRolls)
            .empty()) {
@@ -469,29 +461,6 @@ void ChromeShelfPrefs::RegisterProfilePrefs(
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PREF);
 }
 
-// TODO(crbug.com/350769496): Fixes bug from M127 beta, can be removed once M127
-// is no longer in stable (end of 2024, or mid 2025 is ok).
-void ChromeShelfPrefs::CleanupPreloadPrefs(PrefService* profile_prefs) {
-  constexpr std::array<const char*, 2> kPrefNames{
-      ash::prefs::kShelfDefaultPinLayoutRolls,
-      ash::prefs::kShelfDefaultPinLayoutRollsForTabletFormFactor};
-
-  for (auto* const pref_name : kPrefNames) {
-    // Deduplicate items in list.
-    ScopedListPrefUpdate list(profile_prefs, pref_name);
-    std::set<base::Value> set;
-    for (const auto& item : *list) {
-      set.insert(item.Clone());
-    }
-    if (set.size() < list->size()) {
-      list->clear();
-      for (const auto& item : set) {
-        list->Append(item.Clone());
-      }
-    }
-  }
-}
-
 void ChromeShelfPrefs::InitLocalPref(PrefService* prefs,
                                      const char* local,
                                      const char* synced) {
@@ -640,7 +609,7 @@ std::vector<ash::ShelfID> ChromeShelfPrefs::GetPinnedAppsFromSync(
 }
 
 void ChromeShelfPrefs::RemovePinPosition(const ash::ShelfID& shelf_id) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M162);
 
   const std::string& app_id = shelf_id.app_id;
   if (!shelf_id.launch_id.empty()) {
@@ -649,7 +618,7 @@ void ChromeShelfPrefs::RemovePinPosition(const ash::ShelfID& shelf_id) {
             << "' is not supported.";
     return;
   }
-  DCHECK(!app_id.empty());
+  CHECK(!app_id.empty(), base::NotFatalUntil::M162);
   app_list::AppListSyncableServiceFactory::GetForProfile(profile_)
       ->RemovePinPosition(app_id);
 }
@@ -669,8 +638,8 @@ void ChromeShelfPrefs::SetPinPosition(
 
   const std::string& app_id_before = shelf_id_before.app_id;
 
-  DCHECK(!app_id.empty());
-  DCHECK_NE(app_id, app_id_before);
+  CHECK(!app_id.empty(), base::NotFatalUntil::M162);
+  CHECK_NE(app_id, app_id_before, base::NotFatalUntil::M162);
 
   auto* syncable_service =
       app_list::AppListSyncableServiceFactory::GetForProfile(profile_);
@@ -685,11 +654,11 @@ void ChromeShelfPrefs::SetPinPosition(
   syncer::StringOrdinal position_after;
   for (const auto& shelf_id_after : shelf_ids_after) {
     const std::string& app_id_after = shelf_id_after.app_id;
-    DCHECK_NE(app_id_after, app_id);
-    DCHECK_NE(app_id_after, app_id_before);
+    CHECK_NE(app_id_after, app_id, base::NotFatalUntil::M162);
+    CHECK_NE(app_id_after, app_id_before, base::NotFatalUntil::M162);
     syncer::StringOrdinal position =
         syncable_service->GetPinPosition(app_id_after);
-    DCHECK(position.IsValid());
+    CHECK(position.IsValid(), base::NotFatalUntil::M162);
     if (!position.IsValid()) {
       LOG(ERROR) << "Sync pin position was not found for " << app_id_after;
       continue;
@@ -705,7 +674,8 @@ void ChromeShelfPrefs::SetPinPosition(
   syncable_service->SetPinPosition(app_id, pin_position);
 }
 
-void ChromeShelfPrefs::SetShouldAddDefaultAppsForTest(bool value) {
+void ChromeShelfPrefs::SetShouldAddDefaultAppsForTest(
+    std::optional<bool> value) {
   should_add_default_apps_for_test = value;
 }
 
@@ -764,8 +734,8 @@ bool ChromeShelfPrefs::DidAddDefaultApps() const {
 }
 
 bool ChromeShelfPrefs::ShouldAddDefaultApps() const {
-  if (should_add_default_apps_for_test) {
-    return true;
+  if (should_add_default_apps_for_test.has_value()) {
+    return *should_add_default_apps_for_test;
   }
   // Apply default apps in case profile syncing is done. Otherwise there is a
   // risk that applied default apps would be overwritten by sync once it is
@@ -882,10 +852,6 @@ void ChromeShelfPrefs::AttachProfile(Profile* profile) {
   profile_ = profile;
   needs_consistency_migrations_ = true;
   sync_service_observer_.Reset();
-  if (profile_) {
-    CleanupPreloadPrefs(profile_->GetPrefs());
-  }
-
   pending_preload_apps_.clear();
   preload_pin_order_.clear();
   if (profile_ && !DidAddPreloadApps()) {

@@ -4,22 +4,30 @@
 
 package org.chromium.chrome.browser.chrome_item_picker;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.eq;
-import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.robolectric.Shadows.shadowOf;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
+import android.app.Activity;
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -27,14 +35,15 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
-import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
+import org.mockito.stubbing.Answer;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
@@ -42,7 +51,9 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.chrome.browser.actor.background_tabs.OffscreenRenderingManager;
 import org.chromium.chrome.browser.chrome_item_picker.TabItemPickerCoordinator.ItemPickerNavigationProvider;
+import org.chromium.chrome.browser.chrome_item_picker.TabItemPickerCoordinator.ThumbnailCaptureResult;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
@@ -55,32 +66,44 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator.TabListEditorController;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorItemSelectionId;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.components.browser_ui.util.ChromeItemPickerExtras;
 import org.chromium.content_public.browser.RenderWidgetHostView;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.url.JUnitTestGURLs;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 /** Integration tests for TabItemPickerCoordinator. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabItemPickerCoordinatorNavigationUnitTest {
     private static final int WINDOW_ID = 5;
+
+    // cancel_load_on_deselection defaults to false, so tests that exercise cancellation opt in.
+    private static final String OPTIMIZATION_CANCEL_ON_DESELECTION =
+            ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
+                    + ":cancel_load_on_deselection/true";
+    private static final String OPTIMIZATION_CANCEL_AND_FIRST_PAINT =
+            OPTIMIZATION_CANCEL_ON_DESELECTION + "/enable_first_paint/true";
+
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private TabModelSelectorImpl mTabModelSelector;
-    @Mock private ChromeItemPickerActivity mActivity;
     @Mock private TabListEditorCoordinator mTabListEditorCoordinator;
     @Mock private TabListEditorController mTabListEditorController;
     @Mock private TabContentManager mTabContentManager;
+    @Mock private OffscreenRenderingManager mOffscreenRenderingManager;
+    @Mock private WebContents mWebContents;
+    @Mock private RenderWidgetHostView mRenderWidgetHostView;
     @Captor private ArgumentCaptor<TabObserver> mTabObserverCaptor;
     @Captor private ArgumentCaptor<Callback<Bitmap>> mCallbackCaptor;
 
     private final Set<TabListEditorItemSelectionId> mInitialSelectedTabIds = new HashSet<>();
 
+    private ChromeItemPickerActivity mActivity;
     private TabItemPickerCoordinator mItemPickerCoordinator;
     private ItemPickerNavigationProvider mNavigationProvider;
     private Set<Integer> mCachedTabIds = new HashSet<>();
@@ -89,8 +112,11 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     public void setUp() {
         TabLoadingService.getInstance().clearForTesting();
         OneshotSupplierImpl<Profile> profileSupplierImpl = new OneshotSupplierImpl<>();
-        ViewGroup rootView = Mockito.mock(ViewGroup.class);
-        ViewGroup containerView = Mockito.mock(ViewGroup.class);
+        // The activity is only used for finishing with a result, so it is not created.
+        mActivity = Robolectric.buildActivity(ChromeItemPickerActivity.class).get();
+        Context context = ContextUtils.getApplicationContext();
+        ViewGroup rootView = new FrameLayout(context);
+        ViewGroup containerView = new FrameLayout(context);
         SnackbarManager snackbarManager = Mockito.mock(SnackbarManager.class);
         TabItemPickerCoordinator realCoordinator =
                 new TabItemPickerCoordinator(
@@ -102,7 +128,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
                         containerView,
                         new ArrayList<Integer>(),
                         TabListEditorCoordinator.UNLIMITED_SELECTION,
-                        false);
+                        /* includePdfTabs= */ false);
         mItemPickerCoordinator = Mockito.spy(realCoordinator);
         mCachedTabIds = new HashSet<>();
     }
@@ -122,6 +148,31 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
             when(tab.getWebContents()).thenReturn(null);
         }
         return tab;
+    }
+
+    private void assertFinishedWithCancel() {
+        assertTrue(mActivity.isFinishing());
+        assertEquals(Activity.RESULT_CANCELED, shadowOf(mActivity).getResultCode());
+        // finishWithCancel() sets a result intent, unlike a bare finish().
+        assertNotNull(shadowOf(mActivity).getResultIntent());
+    }
+
+    /** Returns an Answer that asserts the activity has not started finishing yet. */
+    private Answer<Void> assertNotFinishingAnswer() {
+        return invocation -> {
+            assertFalse(mActivity.isFinishing());
+            return null;
+        };
+    }
+
+    private void assertFinishedWithTabIds(Integer... tabIds) {
+        assertTrue(mActivity.isFinishing());
+        assertEquals(Activity.RESULT_OK, shadowOf(mActivity).getResultCode());
+        assertEquals(
+                Arrays.asList(tabIds),
+                shadowOf(mActivity)
+                        .getResultIntent()
+                        .getIntegerArrayListExtra(ChromeItemPickerExtras.EXTRA_ATTACHMENT_TAB_IDS));
     }
 
     private void captureAndSpyNavigationProvider() {
@@ -148,6 +199,8 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     public void testGoBackTriggersCancel() {
         captureAndSpyNavigationProvider();
         when(mTabListEditorController.isVisible()).thenReturn(true);
+        // The UI must be hidden before the activity finishes.
+        doAnswer(assertNotFinishingAnswer()).when(mTabListEditorController).hide();
 
         HistogramWatcher watcher =
                 HistogramWatcher.newBuilder()
@@ -157,13 +210,8 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
         mNavigationProvider.goBack();
 
         watcher.assertExpected();
-
-        InOrder inOrder = inOrder(mTabListEditorController, mActivity);
-
-        inOrder.verify(mTabListEditorController).hide();
-        inOrder.verify(mActivity).finishWithCancel();
-
-        verify(mActivity, never()).finish();
+        verify(mTabListEditorController).hide();
+        assertFinishedWithCancel();
     }
 
     @Test
@@ -184,7 +232,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
         mNavigationProvider.goBack();
 
         watcher.assertExpected();
-        verify(mActivity).finishWithCancel();
+        assertFinishedWithCancel();
     }
 
     @Test
@@ -194,18 +242,15 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
         TabListEditorItemSelectionId id1 = TabListEditorItemSelectionId.createTabId(101);
         TabListEditorItemSelectionId id2 = TabListEditorItemSelectionId.createTabId(102);
         List<TabListEditorItemSelectionId> selectedList = Arrays.asList(id1, id2);
+        // The UI hide action must be called before the activity finishes.
+        doAnswer(assertNotFinishingAnswer()).when(mTabListEditorController).hideByAction();
 
         // Simulate finishSelection() being called.
         mNavigationProvider.finishSelection(selectedList);
 
-        InOrder inOrder = inOrder(mTabListEditorController, mActivity);
-
-        // Verify the UI hide action is called first.
-        inOrder.verify(mTabListEditorController).hideByAction();
-
-        // Verify the Activity success method is called second with the expected data.
-        inOrder.verify(mActivity).finishWithSelectedItems(selectedList);
-        verify(mActivity, never()).finish();
+        verify(mTabListEditorController).hideByAction();
+        // Verify the Activity finishes successfully with the expected data.
+        assertFinishedWithTabIds(101, 102);
     }
 
     @Test
@@ -230,7 +275,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
         mNavigationProvider.finishSelection(selectedList);
 
         watcher.assertExpected();
-        verify(mActivity).finishWithSelectedItems(selectedList);
+        assertFinishedWithTabIds(101, 102);
     }
 
     @Test
@@ -314,11 +359,14 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
         watcher.assertExpected();
         verify(tab).removeObserver(observer);
         verify(mTabContentManager)
-                .cacheTabThumbnailWithCallback(eq(tab), eq(false), mCallbackCaptor.capture());
+                .cacheTabThumbnailWithCallback(eq(tab), eq(true), mCallbackCaptor.capture());
 
         var thumbnailWatcher =
                 HistogramWatcher.newBuilder()
                         .expectAnyRecord("Android.TabItemPicker.OnDemandThumbnailFetchDuration")
+                        .expectIntRecord(
+                                "Android.TabItemPicker.ThumbnailCaptureResult",
+                                ThumbnailCaptureResult.CAPTURE_EMPTY)
                         .build();
 
         mCallbackCaptor.getValue().onResult(null);
@@ -543,5 +591,437 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
         mNavigationProvider.onSelectionStateChange(selection);
 
         verify(tab, never()).loadIfNeeded(anyBoolean());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        OPTIMIZATION_CANCEL_AND_FIRST_PAINT
+    })
+    public void testOffscreenRendering_StartedOnSelectionAndStoppedOnCaptureComplete() {
+        OffscreenRenderingManager mockOffscreenManager =
+                Mockito.mock(OffscreenRenderingManager.class);
+        OffscreenRenderingManager.setInstanceForTesting(mockOffscreenManager);
+
+        int tabId = 101;
+        Tab tab = mockTabActiveState(tabId, false);
+        when(tab.getUrl()).thenReturn(JUnitTestGURLs.URL_1);
+        when(tab.loadIfNeeded(anyBoolean())).thenReturn(true);
+        when(tab.isLoading()).thenReturn(true);
+
+        WebContents webContents = Mockito.mock(WebContents.class);
+        when(tab.getWebContents()).thenReturn(webContents);
+        when(webContents.isDestroyed()).thenReturn(false);
+
+        captureAndSpyNavigationProvider();
+
+        TabListEditorItemSelectionId id = TabListEditorItemSelectionId.createTabId(tabId);
+        Set<TabListEditorItemSelectionId> selection = new HashSet<>();
+        selection.add(id);
+
+        mNavigationProvider.onSelectionStateChange(selection);
+
+        verify(mockOffscreenManager).startOffscreenRendering(eq(tab), anyInt(), anyInt());
+
+        verify(tab).addObserver(mTabObserverCaptor.capture());
+        TabObserver observer = mTabObserverCaptor.getValue();
+
+        observer.didFirstVisuallyNonEmptyPaint(tab);
+
+        verify(mTabContentManager)
+                .cacheTabThumbnailWithCallback(eq(tab), eq(true), mCallbackCaptor.capture());
+        verify(mockOffscreenManager, never()).stopOffscreenRendering(tab);
+
+        mCallbackCaptor.getValue().onResult(null);
+        verify(mockOffscreenManager).stopOffscreenRendering(tab);
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
+    })
+    public void testOffscreenRendering_StoppedOnLoadFailure() {
+        OffscreenRenderingManager mockOffscreenManager =
+                Mockito.mock(OffscreenRenderingManager.class);
+        OffscreenRenderingManager.setInstanceForTesting(mockOffscreenManager);
+
+        int tabId = 101;
+        Tab tab = mockTabActiveState(tabId, false);
+        when(tab.getUrl()).thenReturn(JUnitTestGURLs.URL_1);
+        when(tab.loadIfNeeded(anyBoolean())).thenReturn(true);
+        when(tab.isLoading()).thenReturn(true);
+
+        WebContents webContents = Mockito.mock(WebContents.class);
+        when(tab.getWebContents()).thenReturn(webContents);
+        when(webContents.isDestroyed()).thenReturn(false);
+
+        captureAndSpyNavigationProvider();
+
+        TabListEditorItemSelectionId id = TabListEditorItemSelectionId.createTabId(tabId);
+        Set<TabListEditorItemSelectionId> selection = new HashSet<>();
+        selection.add(id);
+
+        mNavigationProvider.onSelectionStateChange(selection);
+
+        verify(mockOffscreenManager).startOffscreenRendering(eq(tab), anyInt(), anyInt());
+
+        verify(tab).addObserver(mTabObserverCaptor.capture());
+        TabObserver observer = mTabObserverCaptor.getValue();
+
+        observer.onPageLoadFailed(tab, 500);
+
+        verify(mockOffscreenManager).stopOffscreenRendering(tab);
+        verify(mTabContentManager, never())
+                .cacheTabThumbnailWithCallback(any(), anyBoolean(), any());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
+    })
+    public void testOffscreenRendering_CleanedUpOnDestroy() {
+        OffscreenRenderingManager mockOffscreenManager =
+                Mockito.mock(OffscreenRenderingManager.class);
+        OffscreenRenderingManager.setInstanceForTesting(mockOffscreenManager);
+
+        int tabId = 101;
+        Tab tab = mockTabActiveState(tabId, false);
+        when(tab.getUrl()).thenReturn(JUnitTestGURLs.URL_1);
+        when(tab.loadIfNeeded(anyBoolean())).thenReturn(true);
+        when(tab.isLoading()).thenReturn(true);
+
+        WebContents webContents = Mockito.mock(WebContents.class);
+        when(tab.getWebContents()).thenReturn(webContents);
+        when(webContents.isDestroyed()).thenReturn(false);
+
+        captureAndSpyNavigationProvider();
+
+        TabListEditorItemSelectionId id = TabListEditorItemSelectionId.createTabId(tabId);
+        Set<TabListEditorItemSelectionId> selection = new HashSet<>();
+        selection.add(id);
+
+        mNavigationProvider.onSelectionStateChange(selection);
+
+        verify(mockOffscreenManager).startOffscreenRendering(eq(tab), anyInt(), anyInt());
+
+        verify(tab).addObserver(mTabObserverCaptor.capture());
+        TabObserver observer = mTabObserverCaptor.getValue();
+
+        // Load finishes and thumbnail capture is in flight.
+        observer.didFirstVisuallyNonEmptyPaint(tab);
+        verify(mockOffscreenManager, never()).stopOffscreenRendering(tab);
+
+        // Picker destroyed while thumbnail capture is in flight.
+        mNavigationProvider.destroy();
+
+        verify(mockOffscreenManager).stopOffscreenRendering(tab);
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        OPTIMIZATION_CANCEL_ON_DESELECTION
+    })
+    public void testSelectionKeepsExistingThumbnail() {
+        selectLoadableTab(101);
+
+        verify(mTabContentManager, never()).removeTabThumbnail(anyInt(), anyBoolean());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        OPTIMIZATION_CANCEL_ON_DESELECTION
+    })
+    public void testDeselectionKeepsExistingThumbnail() {
+        Tab tab = selectLoadableTab(101);
+
+        mNavigationProvider.onSelectionStateChange(new HashSet<>());
+
+        verify(tab).stopLoading();
+        verify(mTabContentManager, never()).removeTabThumbnail(anyInt(), anyBoolean());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
+                + ":cancel_load_on_deselection/false"
+    })
+    public void testDeselectionDoesNotCancelWhenParamDisabled() {
+        Tab tab = selectLoadableTab(101);
+        clearInvocations(tab);
+
+        mNavigationProvider.onSelectionStateChange(new HashSet<>());
+
+        verify(tab, never()).stopLoading();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
+    @DisableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION)
+    public void testDeselectionDoesNotCancelWhenOptimizationDisabled() {
+        Tab tab = selectLoadableTab(101);
+        clearInvocations(tab);
+
+        mNavigationProvider.onSelectionStateChange(new HashSet<>());
+
+        verify(tab, never()).stopLoading();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
+    @DisableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION)
+    public void testSelectionClearsThumbnailWhenOptimizationDisabled() {
+        selectLoadableTab(101);
+
+        verify(mTabContentManager).removeTabThumbnail(101, /* forceRemoval= */ true);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
+    @DisableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION)
+    public void testReselectionSkipsActiveTabWhenOptimizationDisabled() {
+        Tab tab = selectLoadableTab(101);
+        verify(tab).addObserver(mTabObserverCaptor.capture());
+        mTabObserverCaptor.getValue().onPageLoadFinished(tab, JUnitTestGURLs.URL_1);
+        simulateCancelledRendererState(tab);
+        clearInvocations(tab);
+
+        mNavigationProvider.onSelectionStateChange(selectionFor(101));
+
+        verify(tab, never()).loadIfNeeded(anyBoolean());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
+    })
+    public void testLoadFailureRemovesStaleThumbnail() {
+        Tab tab = selectLoadableTab(101);
+        verify(tab).addObserver(mTabObserverCaptor.capture());
+
+        mTabObserverCaptor.getValue().onPageLoadFailed(tab, 500);
+
+        verify(mTabContentManager).removeTabThumbnail(101, /* forceRemoval= */ true);
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        OPTIMIZATION_CANCEL_ON_DESELECTION
+    })
+    public void testReselectionAfterCancelReloadsTab() {
+        Tab tab = selectLoadableTab(101);
+        mNavigationProvider.onSelectionStateChange(new HashSet<>());
+        simulateCancelledRendererState(tab);
+        clearInvocations(tab);
+
+        mNavigationProvider.onSelectionStateChange(selectionFor(101));
+
+        verify(tab).loadIfNeeded(anyBoolean());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
+    })
+    public void testReselectionSkipsTabWithLoadedContent() {
+        Tab tab = selectLoadableTab(101);
+        mNavigationProvider.onSelectionStateChange(new HashSet<>());
+        simulateCancelledRendererState(tab);
+        when(tab.needsReload()).thenReturn(false);
+        clearInvocations(tab);
+
+        mNavigationProvider.onSelectionStateChange(selectionFor(101));
+
+        verify(tab, never()).loadIfNeeded(anyBoolean());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
+    })
+    public void testDestroyKeepsSelectedTabLoading() {
+        Tab tab = selectLoadableTab(101);
+        clearInvocations(tab);
+
+        mNavigationProvider.destroy();
+
+        verify(tab, never()).stopLoading();
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        OPTIMIZATION_CANCEL_ON_DESELECTION
+    })
+    public void testFinishSelection_RecordsCancelledLoadsCount() {
+        Tab tab = selectLoadableTab(101);
+        mNavigationProvider.onSelectionStateChange(Collections.emptySet());
+
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord("Android.TabItemPicker.CancelledLoads.Count", 1)
+                        .expectIntRecord("Android.TabItemPicker.NetCancelledTabs.Count", 1)
+                        .expectBooleanRecord("Android.TabItemPicker.CancelledTabReselected", false)
+                        .build();
+
+        mNavigationProvider.finishSelection(Collections.emptyList());
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        OPTIMIZATION_CANCEL_ON_DESELECTION
+    })
+    public void testCancelPicker_RecordsCancelCancelledLoadsCount() {
+        Tab tab = selectLoadableTab(101);
+        when(mTabListEditorController.isVisible()).thenReturn(true);
+        mNavigationProvider.onSelectionStateChange(Collections.emptySet());
+
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord("Android.TabItemPicker.Cancel.CancelledLoads.Count", 1)
+                        .expectIntRecord("Android.TabItemPicker.Cancel.NetCancelledTabs.Count", 1)
+                        .expectBooleanRecord("Android.TabItemPicker.CancelledTabReselected", false)
+                        .build();
+
+        mNavigationProvider.goBack();
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        OPTIMIZATION_CANCEL_ON_DESELECTION
+    })
+    public void testReselectionAfterCancellation_GrossVsNetMetrics() {
+        Tab tab = selectLoadableTab(101);
+        mNavigationProvider.onSelectionStateChange(Collections.emptySet());
+        simulateCancelledRendererState(tab);
+
+        // Re-select tab 101.
+        mNavigationProvider.onSelectionStateChange(selectionFor(101));
+
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord("Android.TabItemPicker.CancelledLoads.Count", 1)
+                        .expectIntRecord("Android.TabItemPicker.NetCancelledTabs.Count", 0)
+                        .expectBooleanRecord("Android.TabItemPicker.CancelledTabReselected", true)
+                        .build();
+
+        mNavigationProvider.finishSelection(
+                Arrays.asList(TabListEditorItemSelectionId.createTabId(101)));
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        OPTIMIZATION_CANCEL_ON_DESELECTION
+    })
+    public void testFinishSelection_NoCancellations_DoesNotRecordCancelledTabReselected() {
+        selectLoadableTab(101);
+
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.TabItemPicker.CancelledTabReselected")
+                        .build();
+
+        mNavigationProvider.finishSelection(
+                Arrays.asList(TabListEditorItemSelectionId.createTabId(101)));
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
+    public void testThumbnailCaptureResult_LiveCaptured() {
+        Tab tab = selectLoadableTab(101);
+        verify(tab).addObserver(mTabObserverCaptor.capture());
+        TabObserver observer = mTabObserverCaptor.getValue();
+
+        observer.onPageLoadFinished(tab, JUnitTestGURLs.URL_1);
+        verify(mTabContentManager)
+                .cacheTabThumbnailWithCallback(eq(tab), eq(true), mCallbackCaptor.capture());
+
+        Bitmap bitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888);
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                "Android.TabItemPicker.ThumbnailCaptureResult",
+                                ThumbnailCaptureResult.LIVE_CAPTURED)
+                        .build();
+
+        mCallbackCaptor.getValue().onResult(bitmap);
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
+        OPTIMIZATION_CANCEL_ON_DESELECTION
+    })
+    public void testThumbnailCaptureResult_CancelledPreserved() {
+        selectLoadableTab(101);
+
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                "Android.TabItemPicker.ThumbnailCaptureResult",
+                                ThumbnailCaptureResult.CANCELLED_PRESERVED)
+                        .build();
+
+        mNavigationProvider.onSelectionStateChange(Collections.emptySet());
+
+        watcher.assertExpected();
+    }
+
+    /**
+     * Simulates the state a tab is left in after its on-demand load is cancelled: the renderer is
+     * still alive, but the content must be reloaded.
+     */
+    private void simulateCancelledRendererState(Tab tab) {
+        when(tab.isInitialized()).thenReturn(true);
+        when(tab.isFrozen()).thenReturn(false);
+        when(tab.needsReload()).thenReturn(true);
+        when(mWebContents.getRenderWidgetHostView()).thenReturn(mRenderWidgetHostView);
+    }
+
+    private static Set<TabListEditorItemSelectionId> selectionFor(int... tabIds) {
+        Set<TabListEditorItemSelectionId> selection = new HashSet<>();
+        for (int tabId : tabIds) {
+            selection.add(TabListEditorItemSelectionId.createTabId(tabId));
+        }
+        return selection;
+    }
+
+    /** Mocks a frozen, eligible tab and selects it so that a load is started. */
+    private Tab selectLoadableTab(int tabId) {
+        OffscreenRenderingManager.setInstanceForTesting(mOffscreenRenderingManager);
+
+        Tab tab = mockTabActiveState(tabId, false);
+        when(tab.getUrl()).thenReturn(JUnitTestGURLs.URL_1);
+        when(tab.loadIfNeeded(anyBoolean())).thenReturn(true);
+        when(tab.isLoading()).thenReturn(true);
+
+        when(tab.getWebContents()).thenReturn(mWebContents);
+        when(mWebContents.isDestroyed()).thenReturn(false);
+
+        captureAndSpyNavigationProvider();
+
+        mNavigationProvider.onSelectionStateChange(selectionFor(tabId));
+        return tab;
     }
 }

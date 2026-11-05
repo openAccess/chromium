@@ -21,6 +21,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
 #include "base/trace_event/typed_macros.h"
@@ -111,10 +112,10 @@ bool SetStreamFormat(int channels,
 void MaybeMapRearSurroundChannelToSurroundChannel(
     const AudioUnit& audio_unit,
     AudioChannelLayout* audio_layout) {
+  const auto audio_descriptions = GetDescriptions(*audio_layout);
   bool maybe_need_mapping = false;
-  for (UInt32 i = 0; i < audio_layout->mNumberChannelDescriptions; i++) {
-    AudioChannelLabel label =
-        UNSAFE_TODO(audio_layout->mChannelDescriptions[i]).mChannelLabel;
+  for (const AudioChannelDescription& description : audio_descriptions) {
+    const AudioChannelLabel label = description.mChannelLabel;
     // If audio already has Ls or Rs channel, skip.
     if (label == kAudioChannelLabel_LeftSurround ||
         label == kAudioChannelLabel_RightSurround) {
@@ -136,13 +137,13 @@ void MaybeMapRearSurroundChannelToSurroundChannel(
   if (!scoped_device_layout) {
     return;
   }
-  AudioChannelLayout* device_layout = scoped_device_layout->layout();
+  const AudioChannelLayout* device_layout = scoped_device_layout->layout();
 
   // If device has Rls or Rrs channel, skip. Since we only do mapping when
   // Rls or Rrs channel do not exist.
-  for (UInt32 i = 0; i < device_layout->mNumberChannelDescriptions; ++i) {
-    AudioChannelLabel label =
-        UNSAFE_TODO(device_layout->mChannelDescriptions[i]).mChannelLabel;
+  for (const AudioChannelDescription& description :
+       GetDescriptions(*device_layout)) {
+    const AudioChannelLabel label = description.mChannelLabel;
     if (label == kAudioChannelLabel_RearSurroundLeft ||
         label == kAudioChannelLabel_RearSurroundRight) {
       return;
@@ -150,15 +151,12 @@ void MaybeMapRearSurroundChannelToSurroundChannel(
   }
 
   // Map Rls to Ls, Rrs to Rs.
-  for (UInt32 i = 0; i < audio_layout->mNumberChannelDescriptions; i++) {
-    AudioChannelLabel label =
-        UNSAFE_TODO(audio_layout->mChannelDescriptions[i]).mChannelLabel;
+  for (AudioChannelDescription& description : audio_descriptions) {
+    const AudioChannelLabel label = description.mChannelLabel;
     if (label == kAudioChannelLabel_RearSurroundLeft) {
-      UNSAFE_TODO(audio_layout->mChannelDescriptions[i]).mChannelLabel =
-          kAudioChannelLabel_LeftSurround;
+      description.mChannelLabel = kAudioChannelLabel_LeftSurround;
     } else if (label == kAudioChannelLabel_RearSurroundRight) {
-      UNSAFE_TODO(audio_layout->mChannelDescriptions[i]).mChannelLabel =
-          kAudioChannelLabel_RightSurround;
+      description.mChannelLabel = kAudioChannelLabel_RightSurround;
     }
   }
 }
@@ -202,11 +200,14 @@ void ReportFramesRequestedUma(int number_of_frames_requested) {
 AUHALStream::AUHALStream(AudioManagerApple* manager,
                          const AudioParameters& params,
                          AudioDeviceID device,
+                         const std::string& device_unique_id,
                          const AudioManager::LogCallback& log_callback)
-    : manager_(manager),
+    : id_(base::UnguessableToken::Create()),
+      manager_(manager),
       params_(params),
       source_(nullptr),
       device_(device),
+      device_unique_id_(device_unique_id),
       volume_(1),
       stopped_(true),
       last_sample_time_(0.0),
@@ -230,8 +231,8 @@ AUHALStream::~AUHALStream() {
 
 void AUHALStream::SendLogMessage(const std::string& message) {
   if (!log_callback_.is_null()) {
-    log_callback_.Run(
-        base::StringPrintf("AUHAL[%p]::%s", this, message.c_str()));
+    log_callback_.Run(base::StringPrintf(
+        "AUHAL[id=%s]::%s", id_.ToString().c_str(), message.c_str()));
   }
 }
 
@@ -635,8 +636,16 @@ bool AUHALStream::ConfigureAUHAL() {
     return false;
   }
 
-  if (!manager_->MaybeChangeBufferSize(device_, local_audio_unit->audio_unit(),
-                                       0, params_.frames_per_buffer())) {
+  OSStatus result = manager_->MaybeChangeBufferSize(
+      device_, local_audio_unit->audio_unit(), /*element=*/0,
+      params_.frames_per_buffer());
+  if (result != noErr) {
+    std::string device_name =
+        manager_->GetDeviceNameFromCache(device_unique_id_, /*is_input=*/false);
+    SendLogMessage(
+        base::StrCat({"MaybeChangeBufferSize failed for device ", device_name,
+                      " (", logging::DescriptionFromOSStatus(result), ", code ",
+                      base::NumberToString(result), ")"}));
     return false;
   }
 
@@ -644,7 +653,7 @@ bool AUHALStream::ConfigureAUHAL() {
   AURenderCallbackStruct callback;
   callback.inputProc = InputProc;
   callback.inputProcRefCon = this;
-  OSStatus result = AudioUnitSetProperty(
+  result = AudioUnitSetProperty(
       local_audio_unit->audio_unit(), kAudioUnitProperty_SetRenderCallback,
       kAudioUnitScope_Input, AUElement::OUTPUT, &callback, sizeof(callback));
   if (result != noErr)

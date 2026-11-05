@@ -122,13 +122,19 @@ using LockContentsViewKeyboardUnitTest = LoginKeyboardTestBase;
 class LockContentsViewUnitTest : public LoginTestBase {
  public:
   LockContentsViewUnitTest() {
-    set_start_session(true);
     AuthEventsRecorder::Get()->OnAuthenticationSurfaceChange(
         AuthEventsRecorder::AuthenticationSurface::kLogin);
   }
   LockContentsViewUnitTest(LockContentsViewUnitTest&) = delete;
   LockContentsViewUnitTest& operator=(LockContentsViewUnitTest&) = delete;
   ~LockContentsViewUnitTest() override = default;
+
+  // LoginTestBase:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    LoginTestBase::SetUpInitParams(init_params);
+    ASSERT_TRUE(init_params.users.empty());
+    init_params.users.push_back(LoginInfo{});
+  }
 
   // Change the active LoginBigUserView by sending a mouse click event.
   void MakeAuthViewActive(LoginBigUserView* view) {
@@ -169,7 +175,6 @@ class LockContentsViewUnitTest : public LoginTestBase {
 class LockContentsMediaViewUnitTest : public LockContentsViewUnitTest {
  public:
   LockContentsMediaViewUnitTest() {
-    set_start_session(true);
     AuthEventsRecorder::Get()->OnAuthenticationSurfaceChange(
         AuthEventsRecorder::AuthenticationSurface::kLogin);
   }

@@ -4,7 +4,6 @@
 
 #import "ios/chrome/browser/authentication/account_menu/coordinator/account_menu_mediator.h"
 
-#import "base/containers/flat_map.h"
 #import "base/memory/raw_ptr.h"
 #import "base/test/metrics/user_action_tester.h"
 #import "base/test/scoped_feature_list.h"
@@ -12,7 +11,6 @@
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_pref_names.h"
 #import "components/subscription_eligibility/subscription_eligibility_prefs.h"
-#import "components/subscription_eligibility/subscription_eligibility_service.h"
 #import "components/sync/test/test_sync_service.h"
 #import "components/test/ios/test_utils.h"
 #import "ios/chrome/browser/authentication/account_menu/coordinator/account_menu_mediator_delegate.h"
@@ -20,13 +18,14 @@
 #import "ios/chrome/browser/authentication/account_menu/ui/account_menu_consumer.h"
 #import "ios/chrome/browser/authentication/account_menu/ui/account_menu_view_controller.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow.h"
-#import "ios/chrome/browser/authentication/ui_bundled/cells/table_view_account_item.h"
+#import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/settings/manage_sync/public/sync_error_settings_command_handler.h"
 #import "ios/chrome/browser/settings/model/sync/utils/account_error_ui_info.h"
 #import "ios/chrome/browser/settings/model/sync/utils/identity_error_util.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
@@ -34,11 +33,10 @@
 #import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
-#import "ios/chrome/browser/signin/model/identity_test_environment_browser_state_adaptor.h"
 #import "ios/chrome/browser/subscription_eligibility/model/subscription_eligibility_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
@@ -77,9 +75,8 @@ class AccountMenuMediatorTest : public PlatformTest {
                               base::BindRepeating(&CreateTestSyncService));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
-    profile_ = std::move(builder).Build();
+        AuthenticationServiceFactory::GetDefaultFactory());
+    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
     avatar_provider_ = std::make_unique<signin::AvatarProvider>();
 
     // Set the manager and services variables.
@@ -87,12 +84,12 @@ class AccountMenuMediatorTest : public PlatformTest {
         FakeSystemIdentityManager::FromSystemIdentityManager(
             GetApplicationContext()->GetSystemIdentityManager());
     authentication_service_ =
-        AuthenticationServiceFactory::GetForProfile(profile_.get());
+        AuthenticationServiceFactory::GetForProfile(profile_);
     account_manager_service_ =
-        ChromeAccountManagerServiceFactory::GetForProfile(profile_.get());
+        ChromeAccountManagerServiceFactory::GetForProfile(profile_);
     test_sync_service_ = static_cast<syncer::TestSyncService*>(
-        SyncServiceFactory::GetForProfile(profile_.get()));
-    identity_manager_ = IdentityManagerFactory::GetForProfile(profile_.get());
+        SyncServiceFactory::GetForProfile(profile_));
+    identity_manager_ = IdentityManagerFactory::GetForProfile(profile_);
 
     AddPrimaryIdentity();
     AddSecondaryIdentity();
@@ -110,7 +107,7 @@ class AccountMenuMediatorTest : public PlatformTest {
                        identityManager:identity_manager_
                                  prefs:profile_->GetPrefs()
         subscriptionEligibilityService:SubscriptionEligibilityServiceFactory::
-                                           GetForProfile(profile_.get())
+                                           GetForProfile(profile_)
                            accessPoint:AccountMenuAccessPoint::kNewTabPage
                                    URL:GURL()
                   prepareChangeProfile:nil
@@ -128,6 +125,7 @@ class AccountMenuMediatorTest : public PlatformTest {
     account_manager_service_ = nullptr;
     test_sync_service_ = nullptr;
     identity_manager_ = nullptr;
+    profile_ = nullptr;
 
     [mediator_ disconnect];
     mediator_ = nil;
@@ -175,20 +173,11 @@ class AccountMenuMediatorTest : public PlatformTest {
         GetApplicationContext()->GetSystemIdentityManager());
   }
 
-  void SignOut() {
-    base::RunLoop run_loop;
-    base::RepeatingClosure closure = run_loop.QuitClosure();
-    authentication_service_->SignOut(signin_metrics::ProfileSignout::kTest,
-                                     ^() {
-                                       closure.Run();
-                                     });
-    run_loop.Run();
-  }
-
  protected:
   web::WebTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
+  TestProfileManagerIOS profile_manager_;
   id<AccountMenuMediatorDelegate> delegate_mock_;
   id<SyncErrorSettingsCommandHandler> sync_error_settings_mock_;
   id<AccountMenuConsumer> consumer_mock_;
@@ -201,7 +190,7 @@ class AccountMenuMediatorTest : public PlatformTest {
   raw_ptr<signin::IdentityManager> identity_manager_;
   base::UserActionTester user_actions_;
   std::unique_ptr<signin::AvatarProvider> avatar_provider_;
-  std::unique_ptr<TestProfileIOS> profile_;
+  raw_ptr<TestProfileIOS> profile_;
 
  private:
   // Signs in kPrimaryIdentity as primary identity.
@@ -227,12 +216,21 @@ TEST_F(AccountMenuMediatorTest, TestAddSecondaryIdentity) {
   thirdIdentity.userFullName = nil;
   thirdIdentity.userGivenName = nil;
 
+  NSArray<NSString*>* gaiaIDsToKeep = @[
+    kSecondaryIdentity.gaiaId.ToNSString(), thirdIdentity.gaiaId.ToNSString()
+  ];
+  // Adding an identity triggers notifications from both
+  // -[<IdentityManagerObserving> accountsOnDeviceDidChange] and
+  // -[<IdentityManagerObserving> extendedAccountInfoDidUpdate:] .
   OCMExpect([consumer_mock_
       updateAccountListWithGaiaIDsToAdd:@[ thirdIdentity.gaiaId.ToNSString() ]
                         gaiaIDsToRemove:@[]
                           gaiaIDsToKeep:@[
                             kSecondaryIdentity.gaiaId.ToNSString()
                           ]]);
+  OCMExpect([consumer_mock_ updateAccountListWithGaiaIDsToAdd:@[]
+                                              gaiaIDsToRemove:@[]
+                                                gaiaIDsToKeep:gaiaIDsToKeep]);
   fake_system_identity_manager_->AddIdentity(thirdIdentity);
 
   // Simulate that the identity gets updated (e.g. the username became known).
@@ -240,9 +238,6 @@ TEST_F(AccountMenuMediatorTest, TestAddSecondaryIdentity) {
   // identities is unchanged.
   thirdIdentity.userFullName = @"First Last";
   thirdIdentity.userGivenName = @"First";
-  NSArray<NSString*>* gaiaIDsToKeep = @[
-    kSecondaryIdentity.gaiaId.ToNSString(), thirdIdentity.gaiaId.ToNSString()
-  ];
   OCMExpect([consumer_mock_ updateAccountListWithGaiaIDsToAdd:@[]
                                               gaiaIDsToRemove:@[]
                                                 gaiaIDsToKeep:gaiaIDsToKeep]);
@@ -283,8 +278,7 @@ TEST_F(AccountMenuMediatorTest, TestRemovePrimaryIdentity) {
                   signedIdentity:nil
                  userTappedClose:NO]);
   OCMExpect([consumer_mock_ setUserInteractionsEnabled:NO]);
-  authentication_service_->SignOut(signin_metrics::ProfileSignout::kTest, ^(){
-                                   });
+  authentication_service_->SignOut(signin_metrics::ProfileSignout::kTest);
 }
 
 #pragma mark - AccountMenuDataSource
@@ -332,49 +326,8 @@ TEST_F(AccountMenuMediatorTest, TestPrimaryAccountAvatar) {
   EXPECT_NE([mediator_ primaryAccountAvatar], nil);
 }
 
-// Tests the result of primaryAccountAvatarNeedsRing.
-TEST_F(AccountMenuMediatorTest, TestPrimaryAccountAvatarNeedsRing) {
-  OCMStub([consumer_mock_ updatePrimaryAccount]);
-
-  // Feature disabled, even if tier is not-negative.
-  {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndDisableFeature(kAiSubscriptionAvatarRingIOS);
-    profile_->GetPrefs()->SetInteger(
-        subscription_eligibility::prefs::kAiSubscriptionTier, 0);
-    EXPECT_FALSE([mediator_ primaryAccountAvatarNeedsRing]);
-  }
-
-  // Feature enabled, but tier is negative.
-  {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndEnableFeature(kAiSubscriptionAvatarRingIOS);
-    profile_->GetPrefs()->SetInteger(
-        subscription_eligibility::prefs::kAiSubscriptionTier, -1);
-    EXPECT_FALSE([mediator_ primaryAccountAvatarNeedsRing]);
-  }
-
-  // Feature enabled, and tier is 0 (not positive).
-  {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndEnableFeature(kAiSubscriptionAvatarRingIOS);
-    profile_->GetPrefs()->SetInteger(
-        subscription_eligibility::prefs::kAiSubscriptionTier, 0);
-    EXPECT_FALSE([mediator_ primaryAccountAvatarNeedsRing]);
-  }
-
-  // Feature enabled, and tier is positive (1).
-  {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndEnableFeature(kAiSubscriptionAvatarRingIOS);
-    profile_->GetPrefs()->SetInteger(
-        subscription_eligibility::prefs::kAiSubscriptionTier, 1);
-    EXPECT_TRUE([mediator_ primaryAccountAvatarNeedsRing]);
-  }
-}
-
-// Tests the result of primaryAccountAITierFullName.
-TEST_F(AccountMenuMediatorTest, TestPrimaryAccountAITierFullName) {
+// Tests the result of primaryAccountAITier.
+TEST_F(AccountMenuMediatorTest, TestPrimaryAccountAITier) {
   OCMStub([consumer_mock_ updatePrimaryAccount]);
 
   // Feature disabled, even if tier is positive.
@@ -383,16 +336,25 @@ TEST_F(AccountMenuMediatorTest, TestPrimaryAccountAITierFullName) {
     scoped_feature_list.InitAndDisableFeature(kAiSubscriptionAvatarRingIOS);
     profile_->GetPrefs()->SetInteger(
         subscription_eligibility::prefs::kAiSubscriptionTier, 1);
-    EXPECT_NSEQ([mediator_ primaryAccountAITierFullName], nil);
+    EXPECT_EQ([mediator_ primaryAccountAITier], 0);
   }
 
-  // Feature enabled, but tier is non-positive (0).
+  // Feature enabled, but tier is negative.
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndEnableFeature(kAiSubscriptionAvatarRingIOS);
+    profile_->GetPrefs()->SetInteger(
+        subscription_eligibility::prefs::kAiSubscriptionTier, -1);
+    EXPECT_EQ([mediator_ primaryAccountAITier], 0);
+  }
+
+  // Feature enabled, and tier is 0 (not positive).
   {
     base::test::ScopedFeatureList scoped_feature_list;
     scoped_feature_list.InitAndEnableFeature(kAiSubscriptionAvatarRingIOS);
     profile_->GetPrefs()->SetInteger(
         subscription_eligibility::prefs::kAiSubscriptionTier, 0);
-    EXPECT_NSEQ([mediator_ primaryAccountAITierFullName], nil);
+    EXPECT_EQ([mediator_ primaryAccountAITier], 0);
   }
 
   // Feature enabled, and tier is positive (1).
@@ -401,8 +363,7 @@ TEST_F(AccountMenuMediatorTest, TestPrimaryAccountAITierFullName) {
     scoped_feature_list.InitAndEnableFeature(kAiSubscriptionAvatarRingIOS);
     profile_->GetPrefs()->SetInteger(
         subscription_eligibility::prefs::kAiSubscriptionTier, 1);
-    // Under test, GetAITierFullName for tier 1 returns "AI 1".
-    EXPECT_NSEQ([mediator_ primaryAccountAITierFullName], @"AI 1");
+    EXPECT_EQ([mediator_ primaryAccountAITier], 1);
   }
 }
 

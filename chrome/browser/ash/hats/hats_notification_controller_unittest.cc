@@ -15,7 +15,6 @@
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/hats/hats_config.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -158,8 +157,7 @@ class HatsNotificationControllerTest
   void OnUserProfileCreated(const std::string& profile_name,
                             Profile* profile) override {
     BrowserWithTestWindowTest::OnUserProfileCreated(profile_name, profile);
-    user_manager()->SetOwnerId(
-        ProfileHelper::Get()->GetUserByProfile(profile)->GetAccountId());
+    user_manager()->SetOwnerId(GetUser(profile).GetAccountId());
   }
 
   void TearDown() override {
@@ -471,7 +469,7 @@ TEST_P(HatsNotificationControllerTest, ShouldShowSurveyToProfile) {
             GetParam().should_be_selected);
 }
 
-const std::vector<HatsScenario> kHatsScenario{
+constexpr HatsScenario kHatsScenario[] = {
     // Prio HaTS, any other HaTS was shown very long time ago.
     {.prioritized = true,
      .prev_prio_hats =

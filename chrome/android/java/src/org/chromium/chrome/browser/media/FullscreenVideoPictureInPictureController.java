@@ -42,8 +42,11 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 
 /** A controller for entering Picture in Picture mode with fullscreen videos. */
 @NullMarked
@@ -122,10 +125,17 @@ public class FullscreenVideoPictureInPictureController {
     private static final boolean ENABLE_AUTO_ENTER =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU;
 
-    // Components names that won't trigger the pip mode. Use cases like notification clicks won't
-    // trigger pip.
-    private static final Set<String> NO_PIP_COMPONENT_NAMES =
-            Collections.singleton(NotificationIntentInterceptor.TrampolineActivity.class.getName());
+    // Component names that won't trigger the pip mode. Use cases like notification clicks or
+    // launching immersive video playback won't trigger pip.
+    private static final Set<String> sNoPipComponentNames =
+            Collections.synchronizedSet(new HashSet<>());
+
+    static {
+        sNoPipComponentNames.add(NotificationIntentInterceptor.TrampolineActivity.class.getName());
+    }
+
+    private static final Map<Activity, FullscreenVideoPictureInPictureController> sControllers =
+            Collections.synchronizedMap(new WeakHashMap<>());
 
     // If true, then we will use `setSourceRectHint()` to enable fancy transitions into pip.
     // However, since this also causes visible flicker especially when transitioning from landscape
@@ -163,6 +173,9 @@ public class FullscreenVideoPictureInPictureController {
     /** Was pip dismissed while the screen was off? */
     private boolean mDismissPending;
 
+    /** Is a dismiss deferred because pip was entered very recently? */
+    private boolean mIsDismissDeferred;
+
     /** Should media be suspended if the activity stops, i.e. was the pip window closed? */
     private boolean mShouldSuspendMediaOnStop;
 
@@ -174,6 +187,8 @@ public class FullscreenVideoPictureInPictureController {
         mActivityTabProvider = activityTabProvider;
         mFullscreenManager = fullscreenManager;
         mPowerManager = (PowerManager) mActivity.getSystemService(Activity.POWER_SERVICE);
+
+        sControllers.put(mActivity, this);
 
         if (ENABLE_AUTO_ENTER) {
             addObserversIfNeeded();
@@ -207,10 +222,8 @@ public class FullscreenVideoPictureInPictureController {
             return false;
         }
 
-        if (!mActivity
-                .getPackageManager()
-                .hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
-            Log.d(TAG, "Activity does not have PiP feature.");
+        if (!PictureInPicture.isEnabled(mActivity)) {
+            Log.d(TAG, "Picture-in-Picture is not enabled.");
             return false;
         }
 
@@ -243,8 +256,47 @@ public class FullscreenVideoPictureInPictureController {
 
     private boolean canStartPipBasedOnRecentTasks() {
         return AndroidTaskUtils.getRecentAppTasksMatchingComponentNames(
-                        mActivity, NO_PIP_COMPONENT_NAMES)
+                        mActivity, sNoPipComponentNames, /* matchTopAndBaseActivities= */ true)
                 .isEmpty();
+    }
+
+    /**
+     * Register a component class name that should prevent entering Picture-in-Picture mode when
+     * present in recent tasks.
+     *
+     * @param className The fully qualified class name to register.
+     */
+    public static void registerNoPipComponentName(String className) {
+        sNoPipComponentNames.add(className);
+    }
+
+    /**
+     * Disable auto-enter Picture-in-Picture immediately on the given activity (e.g. before
+     * launching an activity that should not trigger PiP).
+     *
+     * @param activity The activity on which to disable auto-PiP.
+     */
+    public static void disableAutoPictureInPicture(@Nullable Activity activity) {
+        if (!ENABLE_AUTO_ENTER || activity == null) {
+            return;
+        }
+
+        FullscreenVideoPictureInPictureController controller = sControllers.get(activity);
+        if (controller != null) {
+            controller.mIsAutoEnterAllowed = false;
+        }
+
+        if (!activity.getPackageManager()
+                .hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+            return;
+        }
+
+        try {
+            activity.setPictureInPictureParams(
+                    new PictureInPictureParams.Builder().setAutoEnterEnabled(false).build());
+        } catch (IllegalStateException e) {
+            Log.e(TAG, "Error disabling auto PiP", e);
+        }
     }
 
     /**
@@ -392,6 +444,7 @@ public class FullscreenVideoPictureInPictureController {
      * later, when the activity is restarted.
      */
     public void onDestroy() {
+        sControllers.remove(mActivity);
         removeObserversIfNeeded();
     }
 
@@ -625,6 +678,11 @@ public class FullscreenVideoPictureInPictureController {
             return;
         }
 
+        // If a dismiss is already deferred, then let it close PiP.  Otherwise, a later request that
+        // arrives before it runs, such as the WebContents reporting that it left fullscreen right
+        // after we were told that the tab left fullscreen, would record its own reason instead.
+        if (mIsDismissDeferred) return;
+
         // If we just entered PiP, then re-post this.  There are corner cases where we exit PiP via
         // some other way, then re-enter it that might go wrong if we don't cancel this, but all of
         // these cases are very questionable.  The important thing is that, once
@@ -633,9 +691,13 @@ public class FullscreenVideoPictureInPictureController {
         // try to pro-rate the exit delay; it's short and arbitrary anyway.
         if (SystemClock.elapsedRealtime() - mLastOnEnteredTimeMillis < MIN_EXIT_DELAY_MILLIS) {
             Log.i(TAG, "Posting deferred callback to dismiss activity.");
+            mIsDismissDeferred = true;
             PostTask.postDelayedTask(
                     TaskTraits.UI_USER_BLOCKING,
-                    () -> dismissActivityIfNeeded(activity, reason),
+                    () -> {
+                        mIsDismissDeferred = false;
+                        dismissActivityIfNeeded(activity, reason);
+                    },
                     MIN_EXIT_DELAY_MILLIS);
             return;
         }

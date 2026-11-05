@@ -7,7 +7,6 @@
 
 #import <memory>
 
-#import "base/memory/raw_ptr.h"
 #import "base/types/expected.h"
 #import "components/optimization_guide/proto/features/actions_data.pb.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool.h"
@@ -37,6 +36,10 @@ class ActorToolFactory {
   // Returns the list of supported capabilities by this tool factory.
   virtual std::vector<optimization_guide::proto::Action::ActionCase>
   GetSupportedCapabilities() const;
+
+  const ProfileContextResolver& profile_context_resolver() const {
+    return profile_context_resolver_;
+  }
 
  private:
   // A utility class to let tools get data associated with the `ProfileIOS`.

@@ -10,22 +10,30 @@
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/gmock_expected_support.h"
+#include "base/test/gmock_move_support.h"
+#include "base/test/gtest_util.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
+#include "base/values.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance_test_api.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
+#include "components/autofill/core/browser/payments/test_legal_message_line.h"
 #include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #include "components/autofill/core/browser/webdata/autofill_ai/entity_table.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service_test_helper.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/consent_auditor/consent_auditor.h"
 #include "components/wallet/core/browser/network/wallet_http_client.h"
+#include "components/wallet/core/browser/proto/common.pb.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -33,12 +41,18 @@ namespace autofill {
 
 namespace {
 
+using ::base::Bucket;
+using ::base::test::ErrorIs;
 using ::base::test::RunOnceCallback;
 using ::base::test::RunOnceCallbackRepeatedly;
+using ::base::test::ValueIs;
 using ::testing::_;
+using ::testing::Field;
+using ::testing::Optional;
 using ::testing::Truly;
 using GetUnmaskedPassCallback =
     ::wallet::WalletHttpClient::GetUnmaskedPassCallback;
+using ::wallet::LegalMessage;
 using ::wallet::PrivatePass;
 using WalletRequestError = ::wallet::WalletHttpClient::WalletRequestError;
 
@@ -61,6 +75,12 @@ class MockWalletHttpClient : public wallet::WalletHttpClient {
               GetUnmaskedPass,
               (std::string_view pass_id, GetUnmaskedPassCallback callback),
               (override));
+  MOCK_METHOD(
+      void,
+      GetDetailsForUpsertPass,
+      (wallet::WalletHttpClient::PassType pass_type,
+       wallet::WalletHttpClient::GetDetailsForUpsertPassCallback callback),
+      (override));
 };
 
 EntityInstance GetUnmaskedServerEntityInstance(
@@ -133,6 +153,36 @@ AttributeType GetPassNumberAttribute(EntityTypeName entity_type) {
     default:
       NOTREACHED();
   }
+}
+
+wallet::WalletHttpClient::PassUpsertDetails CreateTestPassUpsertDetails() {
+  LegalMessage legal_message;
+  LegalMessage::Line* line = legal_message.add_line();
+  line->set_template_("The terms are {0} and {1}.");
+  LegalMessage::Link* link1 = line->add_template_parameter();
+  link1->set_display_text("Terms");
+  link1->set_url("https://example.com/terms");
+  LegalMessage::Link* link2 = line->add_template_parameter();
+  link2->set_display_text("Privacy");
+  link2->set_url("https://example.com/privacy");
+  legal_message.set_token("test_legal_message_token");
+
+  return wallet::WalletHttpClient::PassUpsertDetails{
+      .legal_message = std::move(legal_message),
+      .user_eligibility = wallet::WalletHttpClient::UserEligibility::kEligible,
+  };
+}
+
+WalletPassAccessManager::GetDetailsForUpsertPassResponse
+CreateExpectedUpsertPassResponse() {
+  return WalletPassAccessManager::GetDetailsForUpsertPassResponse{
+      .legal_message_lines = {TestLegalMessageLine(
+          "The terms are Terms and Privacy.",
+          {LegalMessageLine::Link(14, 19, "https://example.com/terms"),
+           LegalMessageLine::Link(24, 31, "https://example.com/privacy")})},
+      .legal_message_token = "test_legal_message_token",
+      .user_eligibility = WalletPassAccessManager::UserEligibility::kEligible,
+  };
 }
 
 class WalletPassAccessManagerImplTest
@@ -432,7 +482,7 @@ TEST_P(WalletPassAccessManagerImplTest, SaveWalletEntityInstance) {
               UpsertPrivatePass(Truly([](const PrivatePass& pass) {
                                   return !pass.has_pass_id();
                                 }),
-                                testing::Optional(session_id), _))
+                                Optional(session_id), _))
       .WillOnce(RunOnceCallback<2>(std::move(masked_pass)));
   base::test::TestFuture<std::optional<EntityInstance>> save_result;
   access_manager().SaveWalletEntityInstance(unmasked_entity, session_id,
@@ -553,13 +603,497 @@ TEST_P(WalletPassAccessManagerImplTest,
   EXPECT_FALSE(update_result.Get().has_value());
 }
 
+// Tests that `GetDetailsForUpsertPass` successfully fetches legal message lines
+// and binary context token from `LegalMessage::token`.
+TEST_P(WalletPassAccessManagerImplTest, GetDetailsForUpsertPass_Success) {
+  // Include non-UTF-8 bytes (`\xff\xfe`) to verify binary `bytes` handling.
+  const std::string raw_token = "test_token_\xff\xfe";
+  LegalMessage legal_message;
+  LegalMessage::Line* line = legal_message.add_line();
+  line->set_template_("The terms are {0} and {1}.");
+  LegalMessage::Link* link1 = line->add_template_parameter();
+  link1->set_display_text("Terms");
+  link1->set_url("https://example.com/terms");
+  LegalMessage::Link* link2 = line->add_template_parameter();
+  link2->set_display_text("Privacy");
+  link2->set_url("https://example.com/privacy");
+  legal_message.set_token(raw_token);
+
+  wallet::WalletHttpClient::PassUpsertDetails details{
+      .legal_message = std::move(legal_message),
+      .user_eligibility = wallet::WalletHttpClient::UserEligibility::kEligible,
+  };
+
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .WillOnce(RunOnceCallback<1>(std::move(details)));
+
+  base::test::TestFuture<
+      base::expected<WalletPassAccessManager::GetDetailsForUpsertPassResponse,
+                     WalletRequestError>>
+      future;
+  access_manager().GetDetailsForUpsertPass(EntityType(EntityTypeName::kVehicle),
+                                           future.GetCallback());
+
+  const WalletPassAccessManager::GetDetailsForUpsertPassResponse
+      expected_response{
+          .legal_message_lines = {TestLegalMessageLine(
+              "The terms are Terms and Privacy.",
+              {LegalMessageLine::Link(14, 19, "https://example.com/terms"),
+               LegalMessageLine::Link(24, 31, "https://example.com/privacy")})},
+          .legal_message_token = raw_token,
+          .user_eligibility =
+              WalletPassAccessManager::UserEligibility::kEligible,
+      };
+  EXPECT_THAT(future.Get(), ValueIs(expected_response));
+}
+
+// Tests that `GetDetailsForUpsertPass` handles responses without legal
+// messages.
+TEST_P(WalletPassAccessManagerImplTest,
+       GetDetailsForUpsertPass_NoLegalMessage) {
+  wallet::WalletHttpClient::PassUpsertDetails details{
+      .legal_message = std::nullopt,
+      .user_eligibility = wallet::WalletHttpClient::UserEligibility::kEligible,
+  };
+
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .WillOnce(RunOnceCallback<1>(std::move(details)));
+
+  base::test::TestFuture<
+      base::expected<WalletPassAccessManager::GetDetailsForUpsertPassResponse,
+                     WalletRequestError>>
+      future;
+  access_manager().GetDetailsForUpsertPass(EntityType(EntityTypeName::kVehicle),
+                                           future.GetCallback());
+
+  const WalletPassAccessManager::GetDetailsForUpsertPassResponse
+      expected_response{
+          .legal_message_lines = {},
+          .legal_message_token = "",
+          .user_eligibility =
+              WalletPassAccessManager::UserEligibility::kEligible,
+      };
+  EXPECT_THAT(future.Get(), ValueIs(expected_response));
+}
+
+// Tests that `GetDetailsForUpsertPass` handles a `LegalMessage` without a
+// `token`.
+TEST_P(WalletPassAccessManagerImplTest,
+       GetDetailsForUpsertPass_NoLegalMessageToken) {
+  wallet::WalletHttpClient::PassUpsertDetails details =
+      CreateTestPassUpsertDetails();
+  details.legal_message->clear_token();
+
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .WillOnce(RunOnceCallback<1>(std::move(details)));
+
+  base::test::TestFuture<
+      base::expected<WalletPassAccessManager::GetDetailsForUpsertPassResponse,
+                     WalletRequestError>>
+      future;
+  access_manager().GetDetailsForUpsertPass(EntityType(EntityTypeName::kVehicle),
+                                           future.GetCallback());
+
+  WalletPassAccessManager::GetDetailsForUpsertPassResponse expected_response =
+      CreateExpectedUpsertPassResponse();
+  expected_response.legal_message_token = "";
+  EXPECT_THAT(future.Get(), ValueIs(expected_response));
+}
+
+// Tests that `GetDetailsForUpsertPass` returns error on network error.
+TEST_P(WalletPassAccessManagerImplTest, GetDetailsForUpsertPass_NetworkError) {
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .WillOnce(RunOnceCallback<1>(
+          base::unexpected(WalletRequestError::kGenericError)));
+
+  base::test::TestFuture<
+      base::expected<WalletPassAccessManager::GetDetailsForUpsertPassResponse,
+                     WalletRequestError>>
+      future;
+  access_manager().GetDetailsForUpsertPass(EntityType(EntityTypeName::kVehicle),
+                                           future.GetCallback());
+
+  EXPECT_THAT(future.Get(), ErrorIs(WalletRequestError::kGenericError));
+}
+
+// Tests that calling `PreloadDetailsForUpsertPass` deduplicates requests while
+// in-flight or when a valid entry is already cached.
+TEST_P(WalletPassAccessManagerImplTest,
+       PreloadDetailsForUpsertPass_Deduplicates) {
+  base::HistogramTester histogram_tester;
+  wallet::WalletHttpClient::GetDetailsForUpsertPassCallback http_callback;
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .WillOnce(MoveArg<1>(&http_callback));
+
+  // 1st preload initiates fetch.
+  access_manager().PreloadDetailsForUpsertPass(
+      EntityType(EntityTypeName::kVehicle));
+  ASSERT_FALSE(http_callback.is_null());
+
+  // 2nd preload while in flight is deduplicated (no duplicate network call).
+  access_manager().PreloadDetailsForUpsertPass(
+      EntityType(EntityTypeName::kVehicle));
+
+  // Completing the network call populates the cache.
+  std::move(http_callback).Run(CreateTestPassUpsertDetails());
+
+  // 3rd preload while already cached is ignored.
+  access_manager().PreloadDetailsForUpsertPass(
+      EntityType(EntityTypeName::kVehicle));
+
+  histogram_tester.ExpectBucketCount(
+      "Autofill.Ai.WalletNotice.Settings.Funnel",
+      AutofillAiWalletNoticeFunnelEvents::kFetchingUpsertDetails, 1);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.Ai.WalletNotice.Settings.Funnel",
+      AutofillAiWalletNoticeFunnelEvents::kUpsertDetailsFetchSuccess, 1);
+  histogram_tester.ExpectTotalCount("Autofill.Ai.WalletNotice.Settings.Funnel",
+                                    2);
+}
+
+// Tests that `PreloadDetailsForUpsertPass` logs success when the user is
+// ineligible for the legal message notice (even with empty legal message and
+// legal message token).
+TEST_P(WalletPassAccessManagerImplTest,
+       PreloadDetailsForUpsertPass_IneligibleUser_LogsFetchSuccess) {
+  base::HistogramTester histogram_tester;
+  wallet::WalletHttpClient::PassUpsertDetails details{
+      .legal_message = std::nullopt,
+      .user_eligibility =
+          wallet::WalletHttpClient::UserEligibility::kIneligible,
+  };
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .WillOnce(RunOnceCallback<1>(std::move(details)));
+
+  access_manager().PreloadDetailsForUpsertPass(
+      EntityType(EntityTypeName::kVehicle));
+
+  histogram_tester.ExpectBucketCount(
+      "Autofill.Ai.WalletNotice.Settings.Funnel",
+      AutofillAiWalletNoticeFunnelEvents::kFetchingUpsertDetails, 1);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.Ai.WalletNotice.Settings.Funnel",
+      AutofillAiWalletNoticeFunnelEvents::kUpsertDetailsFetchSuccess, 1);
+  histogram_tester.ExpectTotalCount("Autofill.Ai.WalletNotice.Settings.Funnel",
+                                    2);
+}
+
+// Tests that `PreloadDetailsForUpsertPass` logs an error and does not cache the
+// response when the user is eligible for the legal message notice but the legal
+// message is empty.
+TEST_P(WalletPassAccessManagerImplTest,
+       PreloadDetailsForUpsertPass_EligibleUserEmptyLegalMessage_LogsError) {
+  base::HistogramTester histogram_tester;
+  wallet::WalletHttpClient::PassUpsertDetails details{
+      .legal_message = std::nullopt,
+      .user_eligibility = wallet::WalletHttpClient::UserEligibility::kEligible,
+  };
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .WillOnce(RunOnceCallback<1>(std::move(details)));
+
+  access_manager().PreloadDetailsForUpsertPass(
+      EntityType(EntityTypeName::kVehicle));
+
+  EXPECT_EQ(access_manager().ExtractPreloadedDetailsForUpsertPass(
+                EntityType(EntityTypeName::kVehicle)),
+            std::nullopt);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.Ai.WalletNotice.Settings.Funnel",
+      AutofillAiWalletNoticeFunnelEvents::kFetchingUpsertDetails, 1);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.Ai.WalletNotice.Settings.Funnel",
+      AutofillAiWalletNoticeFunnelEvents::kUpsertDetailsFetchError, 1);
+  histogram_tester.ExpectTotalCount("Autofill.Ai.WalletNotice.Settings.Funnel",
+                                    2);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.Ai.WalletNotice.Settings.CacheStatus",
+      AutofillAiUpsertDetailsCacheStatus::kMissNoRequestInFlight, 1);
+}
+
+// Tests that `PreloadDetailsForUpsertPass` logs an error and does not cache the
+// response when the user is eligible for the legal message notice but the
+// legal message token is empty.
+TEST_P(
+    WalletPassAccessManagerImplTest,
+    PreloadDetailsForUpsertPass_EligibleUserEmptyLegalMessageToken_LogsError) {
+  base::HistogramTester histogram_tester;
+  wallet::WalletHttpClient::PassUpsertDetails details =
+      CreateTestPassUpsertDetails();
+  details.legal_message->clear_token();
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .WillOnce(RunOnceCallback<1>(std::move(details)));
+
+  access_manager().PreloadDetailsForUpsertPass(
+      EntityType(EntityTypeName::kVehicle));
+
+  EXPECT_EQ(access_manager().ExtractPreloadedDetailsForUpsertPass(
+                EntityType(EntityTypeName::kVehicle)),
+            std::nullopt);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.Ai.WalletNotice.Settings.Funnel",
+      AutofillAiWalletNoticeFunnelEvents::kFetchingUpsertDetails, 1);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.Ai.WalletNotice.Settings.Funnel",
+      AutofillAiWalletNoticeFunnelEvents::kUpsertDetailsFetchError, 1);
+  histogram_tester.ExpectTotalCount("Autofill.Ai.WalletNotice.Settings.Funnel",
+                                    2);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.Ai.WalletNotice.Settings.CacheStatus",
+      AutofillAiUpsertDetailsCacheStatus::kMissNoRequestInFlight, 1);
+}
+
+// Tests that `PreloadDetailsForUpsertPass` logs an error when the network
+// request fails.
+TEST_P(WalletPassAccessManagerImplTest,
+       PreloadDetailsForUpsertPass_NetworkError_LogsError) {
+  base::HistogramTester histogram_tester;
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .WillOnce(RunOnceCallback<1>(
+          base::unexpected(WalletRequestError::kGenericError)));
+
+  access_manager().PreloadDetailsForUpsertPass(
+      EntityType(EntityTypeName::kVehicle));
+
+  histogram_tester.ExpectBucketCount(
+      "Autofill.Ai.WalletNotice.Settings.Funnel",
+      AutofillAiWalletNoticeFunnelEvents::kFetchingUpsertDetails, 1);
+  histogram_tester.ExpectBucketCount(
+      "Autofill.Ai.WalletNotice.Settings.Funnel",
+      AutofillAiWalletNoticeFunnelEvents::kUpsertDetailsFetchError, 1);
+  histogram_tester.ExpectTotalCount("Autofill.Ai.WalletNotice.Settings.Funnel",
+                                    2);
+}
+
+// Tests that reading a preloaded response consumes it and refills the cache,
+// so that a subsequent read is served a fresh single-use token from the cache.
+TEST_P(WalletPassAccessManagerImplTest,
+       GetDetailsForUpsertPass_ConsumesCachedResponseOnRead) {
+  // 1 preload plus 1 refill after each of the 2 cache hits.
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .Times(3)
+      .WillRepeatedly(
+          RunOnceCallbackRepeatedly<1>(CreateTestPassUpsertDetails()));
+
+  // Preload details into cache (triggers 1st network call).
+  access_manager().PreloadDetailsForUpsertPass(
+      EntityType(EntityTypeName::kVehicle));
+
+  // 1st read consumes the cached response and refills the cache (triggers 2nd
+  // network call).
+  base::test::TestFuture<
+      base::expected<WalletPassAccessManager::GetDetailsForUpsertPassResponse,
+                     WalletRequestError>>
+      future1;
+  access_manager().GetDetailsForUpsertPass(EntityType(EntityTypeName::kVehicle),
+                                           future1.GetCallback());
+  EXPECT_THAT(future1.Get(), ValueIs(CreateExpectedUpsertPassResponse()));
+
+  // 2nd read consumes the refilled response and refills again (triggers 3rd
+  // network call).
+  base::test::TestFuture<
+      base::expected<WalletPassAccessManager::GetDetailsForUpsertPassResponse,
+                     WalletRequestError>>
+      future2;
+  access_manager().GetDetailsForUpsertPass(EntityType(EntityTypeName::kVehicle),
+                                           future2.GetCallback());
+  EXPECT_THAT(future2.Get(), ValueIs(CreateExpectedUpsertPassResponse()));
+}
+
+// Tests that a direct call to `GetDetailsForUpsertPass` while a background
+// preload is in flight runs concurrently without blocking or coalescing, each
+// receiving its own dedicated token.
+TEST_P(WalletPassAccessManagerImplTest,
+       GetDetailsForUpsertPass_RunsConcurrentlyWithInFlightPreload) {
+  wallet::WalletHttpClient::GetDetailsForUpsertPassCallback preload_cb;
+  wallet::WalletHttpClient::GetDetailsForUpsertPassCallback direct_cb;
+  wallet::WalletHttpClient::GetDetailsForUpsertPassCallback refill_cb;
+
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .Times(3)
+      .WillOnce(MoveArg<1>(&preload_cb))
+      .WillOnce(MoveArg<1>(&direct_cb))
+      .WillOnce(MoveArg<1>(&refill_cb));
+
+  // Start background preload.
+  access_manager().PreloadDetailsForUpsertPass(
+      EntityType(EntityTypeName::kVehicle));
+  ASSERT_FALSE(preload_cb.is_null());
+
+  // Direct consumer calls GetDetailsForUpsertPass while preload is in flight.
+  base::test::TestFuture<
+      base::expected<WalletPassAccessManager::GetDetailsForUpsertPassResponse,
+                     WalletRequestError>>
+      direct_future;
+  access_manager().GetDetailsForUpsertPass(EntityType(EntityTypeName::kVehicle),
+                                           direct_future.GetCallback());
+  ASSERT_FALSE(direct_cb.is_null());
+
+  // Direct fetch completes: direct caller receives unique token.
+  wallet::WalletHttpClient::PassUpsertDetails direct_details =
+      CreateTestPassUpsertDetails();
+  direct_details.legal_message->set_token("direct_token");
+  std::move(direct_cb).Run(std::move(direct_details));
+  EXPECT_THAT(
+      direct_future.Get(),
+      ValueIs(Field(&WalletPassAccessManager::GetDetailsForUpsertPassResponse::
+                        legal_message_token,
+                    "direct_token")));
+
+  // Preload completes: response is cached.
+  wallet::WalletHttpClient::PassUpsertDetails preload_details =
+      CreateTestPassUpsertDetails();
+  preload_details.legal_message->set_token("preload_token");
+  std::move(preload_cb).Run(std::move(preload_details));
+
+  // Subsequent read hits the cache populated by the preload and refills it.
+  base::test::TestFuture<
+      base::expected<WalletPassAccessManager::GetDetailsForUpsertPassResponse,
+                     WalletRequestError>>
+      cached_future;
+  access_manager().GetDetailsForUpsertPass(EntityType(EntityTypeName::kVehicle),
+                                           cached_future.GetCallback());
+  EXPECT_THAT(
+      cached_future.Get(),
+      ValueIs(Field(&WalletPassAccessManager::GetDetailsForUpsertPassResponse::
+                        legal_message_token,
+                    "preload_token")));
+  EXPECT_FALSE(refill_cb.is_null());
+}
+
+// Tests that `ExtractPreloadedDetailsForUpsertPass` returns `std::nullopt`
+// without issuing a network request when nothing was preloaded.
+TEST_P(WalletPassAccessManagerImplTest,
+       ExtractPreloadedDetailsForUpsertPass_NothingPreloaded_ReturnsNullopt) {
+  base::HistogramTester histogram_tester;
+  EXPECT_CALL(mock_http_client(), GetDetailsForUpsertPass).Times(0);
+
+  EXPECT_EQ(access_manager().ExtractPreloadedDetailsForUpsertPass(
+                EntityType(EntityTypeName::kVehicle)),
+            std::nullopt);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.Ai.WalletNotice.Settings.CacheStatus",
+      AutofillAiUpsertDetailsCacheStatus::kMissNoRequestInFlight, 1);
+}
+
+// Tests that `ExtractPreloadedDetailsForUpsertPass` synchronously returns a
+// completed preload, consumes it, and starts a refill. While the refill is in
+// flight, a second read returns `std::nullopt`.
+TEST_P(WalletPassAccessManagerImplTest,
+       ExtractPreloadedDetailsForUpsertPass_ConsumesCachedResponseAndRefills) {
+  base::HistogramTester histogram_tester;
+  wallet::WalletHttpClient::GetDetailsForUpsertPassCallback refill_callback;
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .WillOnce(RunOnceCallback<1>(CreateTestPassUpsertDetails()))
+      .WillOnce(MoveArg<1>(&refill_callback));
+
+  access_manager().PreloadDetailsForUpsertPass(
+      EntityType(EntityTypeName::kVehicle));
+
+  EXPECT_THAT(access_manager().ExtractPreloadedDetailsForUpsertPass(
+                  EntityType(EntityTypeName::kVehicle)),
+              Optional(CreateExpectedUpsertPassResponse()));
+  EXPECT_FALSE(refill_callback.is_null());
+  EXPECT_EQ(access_manager().ExtractPreloadedDetailsForUpsertPass(
+                EntityType(EntityTypeName::kVehicle)),
+            std::nullopt);
+  EXPECT_THAT(
+      histogram_tester.GetAllSamples(
+          "Autofill.Ai.WalletNotice.Settings.CacheStatus"),
+      BucketsAre(
+          Bucket(AutofillAiUpsertDetailsCacheStatus::kHit, 1),
+          Bucket(AutofillAiUpsertDetailsCacheStatus::kMissRequestInFlight, 1)));
+}
+
+// Tests that `ExtractPreloadedDetailsForUpsertPass` returns `std::nullopt`
+// without a refill while a preload is in flight, and returns the response once
+// the preload completes.
+TEST_P(WalletPassAccessManagerImplTest,
+       ExtractPreloadedDetailsForUpsertPass_PreloadInFlight_ReturnsNullopt) {
+  base::HistogramTester histogram_tester;
+  wallet::WalletHttpClient::GetDetailsForUpsertPassCallback http_callback;
+  wallet::WalletHttpClient::GetDetailsForUpsertPassCallback refill_callback;
+  EXPECT_CALL(mock_http_client(),
+              GetDetailsForUpsertPass(
+                  wallet::WalletHttpClient::PassType::kVehicleRegistration, _))
+      .WillOnce(MoveArg<1>(&http_callback))
+      .WillOnce(MoveArg<1>(&refill_callback));
+
+  access_manager().PreloadDetailsForUpsertPass(
+      EntityType(EntityTypeName::kVehicle));
+  ASSERT_FALSE(http_callback.is_null());
+
+  EXPECT_EQ(access_manager().ExtractPreloadedDetailsForUpsertPass(
+                EntityType(EntityTypeName::kVehicle)),
+            std::nullopt);
+  EXPECT_TRUE(refill_callback.is_null());
+
+  std::move(http_callback).Run(CreateTestPassUpsertDetails());
+
+  EXPECT_THAT(access_manager().ExtractPreloadedDetailsForUpsertPass(
+                  EntityType(EntityTypeName::kVehicle)),
+              Optional(CreateExpectedUpsertPassResponse()));
+  EXPECT_FALSE(refill_callback.is_null());
+  EXPECT_THAT(
+      histogram_tester.GetAllSamples(
+          "Autofill.Ai.WalletNotice.Settings.CacheStatus"),
+      BucketsAre(
+          Bucket(AutofillAiUpsertDetailsCacheStatus::kHit, 1),
+          Bucket(AutofillAiUpsertDetailsCacheStatus::kMissRequestInFlight, 1)));
+}
+
+#if GTEST_HAS_DEATH_TEST
+// Tests that `PreloadDetailsForUpsertPass` triggers `NOTREACHED()` for
+// unsupported entity types.
+TEST_P(WalletPassAccessManagerImplTest,
+       PreloadDetailsForUpsertPass_UnsupportedEntityType) {
+  EXPECT_NOTREACHED_DEATH(
+      access_manager().PreloadDetailsForUpsertPass(EntityType(GetParam())));
+}
+
+// Tests that `GetDetailsForUpsertPass` triggers `NOTREACHED()` for unsupported
+// entity types.
+TEST_P(WalletPassAccessManagerImplTest,
+       GetDetailsForUpsertPass_UnsupportedEntityType) {
+  base::test::TestFuture<
+      base::expected<WalletPassAccessManager::GetDetailsForUpsertPassResponse,
+                     WalletRequestError>>
+      future;
+  EXPECT_NOTREACHED_DEATH(access_manager().GetDetailsForUpsertPass(
+      EntityType(GetParam()), future.GetCallback()));
+}
+#endif  // GTEST_HAS_DEATH_TEST
+
 INSTANTIATE_TEST_SUITE_P(,
                          WalletPassAccessManagerImplTest,
                          testing::Values(EntityTypeName::kPassport,
                                          EntityTypeName::kDriversLicense,
                                          EntityTypeName::kNationalIdCard,
                                          EntityTypeName::kRedressNumber,
-                                         EntityTypeName::kNationalIdCard));
+                                         EntityTypeName::kKnownTravelerNumber));
 
 }  // namespace
 

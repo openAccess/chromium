@@ -10,11 +10,8 @@
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/browser_app_launcher.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/ash/system_web_apps/test_support/test_system_web_app_installation.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -23,11 +20,14 @@
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/types_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace ash {
@@ -61,9 +61,10 @@ apps::AppLaunchParams SystemWebAppBrowserTestBase::LaunchParamsForApp(
       GetManager().GetAppIdForSystemApp(system_app_type);
 
   CHECK(app_id.has_value());
-  return apps::AppLaunchParams(
-      *app_id, apps::LaunchContainer::kLaunchContainerWindow,
-      WindowOpenDisposition::CURRENT_TAB, apps::LaunchSource::kFromAppListGrid);
+  return apps::AppLaunchParams(*app_id,
+                               apps::LaunchContainer::kLaunchContainerWindow,
+                               ui::mojom::WindowOpenDisposition::kCurrentTab,
+                               apps::LaunchSource::kFromAppListGrid);
 }
 
 content::WebContents* SystemWebAppBrowserTestBase::LaunchApp(

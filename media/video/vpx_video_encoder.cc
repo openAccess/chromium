@@ -558,7 +558,7 @@ void VpxVideoEncoder::Encode(scoped_refptr<VideoFrame> frame,
     return;
   }
 
-  if (frame->format() == PIXEL_FORMAT_NV12 && frame->HasMappableSharedImage()) {
+  if (frame->HasMappableSharedImage()) {
     frame = ConvertToMemoryMappedFrame(frame);
     if (!frame) {
       std::move(done_cb).Run(EncoderStatus(
@@ -615,15 +615,15 @@ void VpxVideoEncoder::Encode(scoped_refptr<VideoFrame> frame,
 
   // Resizing should have been taken care of above.
   DCHECK_EQ(frame->visible_rect().size(), options_.frame_size);
-  auto planes = base::span(vpx_image_.planes);
-  auto stride = base::span(vpx_image_.stride);
   switch (profile_) {
     case VP8PROFILE_ANY:
     case VP9PROFILE_PROFILE0: {
-      DCHECK(frame->format() == PIXEL_FORMAT_NV12 ||
-             frame->format() == PIXEL_FORMAT_I420);
+      CHECK(frame->format() == PIXEL_FORMAT_NV12 ||
+            frame->format() == PIXEL_FORMAT_I420);
       if (frame->format() == PIXEL_FORMAT_NV12) {
         RecreateVpxImageIfNeeded(VPX_IMG_FMT_NV12, /*needs_memory=*/false);
+        auto planes = base::span(vpx_image_.planes);
+        auto stride = base::span(vpx_image_.stride);
         planes[VPX_PLANE_Y] =
             const_cast<uint8_t*>(frame->visible_data(VideoFrame::Plane::kY));
         planes[VPX_PLANE_U] =
@@ -867,6 +867,13 @@ VideoEncoderOutput VpxVideoEncoder::GetEncoderOutput(
       output.key_frame = (pkt->data.frame.flags & VPX_FRAME_IS_KEY) != 0;
       output.temporal_id = output.key_frame ? 0 : temporal_id;
       output.color_space = color_space;
+      int qp = -1;
+      if (vpx_codec_control(codec_.get(), VP8E_GET_LAST_QUANTIZER_64, &qp) ==
+              VPX_CODEC_OK &&
+          qp >= 0) {
+        constexpr double kMaxVpxQuantizer = 63.0;
+        output.qp = std::clamp(qp / kMaxVpxQuantizer, 0.0, 1.0);
+      }
     }
   }
   return output;

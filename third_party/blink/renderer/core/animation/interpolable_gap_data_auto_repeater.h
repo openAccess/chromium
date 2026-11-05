@@ -9,12 +9,15 @@
 
 #include "third_party/blink/renderer/core/animation/interpolable_length.h"
 #include "third_party/blink/renderer/core/animation/interpolable_value.h"
+#include "third_party/blink/renderer/core/animation/list_interpolation_functions.h"
 #include "third_party/blink/renderer/core/css/css_to_length_conversion_data.h"
 #include "third_party/blink/renderer/core/style/gap_data.h"
+#include "third_party/blink/renderer/platform/wtf/math_extras.h"
 
 namespace blink {
 
 class CSSProperty;
+struct ColorThemeInfo;
 class StyleColor;
 class StyleResolverState;
 
@@ -56,7 +59,13 @@ class CORE_EXPORT InterpolableGapDataAutoRepeater : public InterpolableValue {
 
   void Add(const InterpolableValue& other) final {
     DCHECK(IsCompatibleWith(other));
-    values_->Add(*(To<InterpolableGapDataAutoRepeater>(other).values_));
+    const auto& other_repeater = To<InterpolableGapDataAutoRepeater>(other);
+    const wtf_size_t other_length = other_repeater.values_->length();
+    EnsureLCMInnerLength(other_length);
+    for (wtf_size_t i = 0; i < values_->length(); ++i) {
+      values_->GetMutable(i)->Add(
+          *other_repeater.values_->Get(i % other_length));
+    }
   }
 
   void AssertCanInterpolateWith(const InterpolableValue& other) const override =
@@ -75,6 +84,15 @@ class CORE_EXPORT InterpolableGapDataAutoRepeater : public InterpolableValue {
   InterpolableList* InnerValues() const { return values_; }
 
  protected:
+  void EnsureLCMInnerLength(wtf_size_t other_length) {
+    const wtf_size_t current_length = values_->length();
+    const wtf_size_t final_length =
+        std::min(ListInterpolationFunctions::kRepeatableListMaxLength,
+                 static_cast<wtf_size_t>(
+                     LowestCommonMultiple(current_length, other_length)));
+    values_->RepeatTo(final_length);
+  }
+
   Member<InterpolableList> values_;
   const Member<const ValueRepeater<T>> repeater_;
 };
@@ -151,7 +169,7 @@ class InterpolableGapColorAutoRepeater final
 
   static InterpolableGapColorAutoRepeater* Create(
       const ValueRepeater<StyleColor>* repeater,
-      const ComputedStyle& style);
+      const ColorThemeInfo& theme_info);
 
   bool IsGapColorAutoRepeater() const final { return true; }
 
@@ -164,7 +182,7 @@ class InterpolableGapColorAutoRepeater final
   GapData<StyleColor> CreateGapData(StyleResolverState& state) const;
 
   static InterpolableValue* CreateItem(const StyleColor& value,
-                                       const ComputedStyle& style);
+                                       const ColorThemeInfo& theme_info);
 
   void Composite(const InterpolableGapColorAutoRepeater& other,
                  double fraction);

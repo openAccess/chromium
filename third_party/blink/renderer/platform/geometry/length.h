@@ -24,7 +24,6 @@
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GEOMETRY_LENGTH_H_
 
 #include <cmath>
-#include <cstring>
 #include <optional>
 
 #include "base/check_op.h"
@@ -151,42 +150,72 @@ class PLATFORM_EXPORT Length {
 
   Length(double v, Length::Type t) : type_(t) {
     DCHECK(std::isfinite(v));
+    DCHECK_NE(t, kCalculated);
     value_ = ClampTo<float>(v);
   }
 
   explicit Length(const CalculationValue*);
 
-  Length(const Length& length) {
-    UNSAFE_TODO(memcpy(this, &length, sizeof(Length)));
-    if (IsCalculated())
+  Length(const Length& length) : quirk_(length.quirk_), type_(length.type_) {
+    if (IsCalculated()) [[unlikely]] {
+      calculation_handle_ = length.calculation_handle_;
       IncrementCalculatedCount();
+    } else {
+      value_ = length.value_;
+    }
+  }
+
+  Length(Length&& length) noexcept
+      : calculation_handle_(length.calculation_handle_),
+        quirk_(length.quirk_),
+        type_(length.type_) {
+    length.type_ = kAuto;
+    length.value_ = 0;
+    length.quirk_ = false;
   }
 
   Length& operator=(const Length& length) {
-    if (length.IsCalculated())
-      length.IncrementCalculatedCount();
-    if (IsCalculated())
+    if (type_ != kCalculated && length.type_ != kCalculated) [[likely]] {
+      value_ = length.value_;
+      quirk_ = length.quirk_;
+      type_ = length.type_;
+      return *this;
+    }
+    return AssignSlow(length);
+  }
+
+  Length& operator=(Length&& length) noexcept {
+    if (this == &length) [[unlikely]] {
+      return *this;
+    }
+    if (IsCalculated()) [[unlikely]] {
       DecrementCalculatedCount();
-    UNSAFE_TODO(memcpy(this, &length, sizeof(Length)));
+    }
+    calculation_handle_ = length.calculation_handle_;
+    quirk_ = length.quirk_;
+    type_ = length.type_;
+    length.type_ = kAuto;
+    length.value_ = 0;
+    length.quirk_ = false;
     return *this;
   }
 
   ~Length() {
-    if (IsCalculated())
-      DecrementCalculatedCount();
+    if (IsCalculated()) [[unlikely]] {
+      DeferredDecrementCalculatedCount();
+    }
   }
 
   bool operator==(const Length& o) const {
     if (type_ != o.type_ || quirk_ != o.quirk_) {
       return false;
     }
-    if (type_ == kCalculated) {
+    if (type_ == kCalculated) [[unlikely]] {
       return IsCalculatedEqual(o);
-    } else {
-      // For everything that doesn't use value_, it is defined to be zero,
-      // so we can compare here unconditionally.
-      return value_ == o.value_;
     }
+    // For everything that doesn't use value_, it is defined to be zero,
+    // so we can compare here unconditionally.
+    return value_ == o.value_;
   }
 
   static const Length& Auto() { return g_auto_length; }
@@ -375,7 +404,7 @@ class PLATFORM_EXPORT Length {
 
   String ToString() const;
 
-  unsigned GetHash() const;
+  uint32_t GetHash() const;
 
  private:
   float GetFloatValue() const {
@@ -394,6 +423,8 @@ class PLATFORM_EXPORT Length {
   }
   void IncrementCalculatedCount() const;
   void DecrementCalculatedCount() const;
+  void DeferredDecrementCalculatedCount() const;
+  NOINLINE Length& AssignSlow(const Length& length);
 
   union {
     // If kType == kCalculated.

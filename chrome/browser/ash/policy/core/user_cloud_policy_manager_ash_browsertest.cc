@@ -2,8 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <array>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -15,8 +17,6 @@
 #include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
@@ -165,15 +165,17 @@ IN_PROC_BROWSER_TEST_F(UserCloudPolicyManagerNewManagedUserTest, StartSession) {
             GetProfileRequiresPolicy());
 
   // Set up start-up URLs through a mandatory user policy.
-  const char* const kStartupURLs[] = {"chrome://policy", "chrome://about"};
+  constexpr auto kStartupURLs =
+      std::to_array<std::string_view>({"chrome://policy", "chrome://about"});
   enterprise_management::StringList* startup_urls_proto =
       logged_in_user_mixin_->GetUserPolicyMixin()
           ->RequestPolicyUpdate()
           ->policy_payload()
           ->mutable_restoreonstartupurls()
           ->mutable_value();
-  for (auto* const url : kStartupURLs)
+  for (std::string_view url : kStartupURLs) {
     startup_urls_proto->add_entries(url);
+  }
   logged_in_user_mixin_->GetUserPolicyMixin()
       ->RequestPolicyUpdate()
       ->policy_payload()
@@ -188,11 +190,11 @@ IN_PROC_BROWSER_TEST_F(UserCloudPolicyManagerNewManagedUserTest, StartSession) {
 
   TabStripModel* const tabs = browser()->GetTabStripModel();
   ASSERT_TRUE(tabs);
-  const int expected_tab_count = static_cast<int>(std::size(kStartupURLs));
+  const int expected_tab_count = static_cast<int>(kStartupURLs.size());
   EXPECT_EQ(expected_tab_count, tabs->count());
   for (int i = 0; i < expected_tab_count && i < tabs->count(); ++i) {
-    UNSAFE_TODO(EXPECT_EQ(GURL(kStartupURLs[i]),
-                          tabs->GetWebContentsAt(i)->GetVisibleURL()));
+    EXPECT_EQ(GURL(kStartupURLs[i]),
+              tabs->GetWebContentsAt(i)->GetVisibleURL());
   }
 
   // User should be marked as requiring policy.

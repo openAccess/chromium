@@ -24,7 +24,6 @@
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
 
 namespace safe_browsing {
 
@@ -440,6 +439,7 @@ TEST_F(SBNavigationObserverTest, BasicNavigationAndCommit) {
 TEST_F(SBNavigationObserverTest, ServerRedirect) {
   auto navigation = content::NavigationSimulator::CreateRendererInitiated(
       GURL("http://foo/3"), web_contents()->GetPrimaryMainFrame());
+  navigation->SetHasUserGesture(false);
   auto* nav_list = navigation_event_list();
   SessionID tab_id = sessions::SessionTabHelper::IdForTab(web_contents());
 
@@ -448,12 +448,12 @@ TEST_F(SBNavigationObserverTest, ServerRedirect) {
   NavigationEvent* pending_event =
       nav_list->FindPendingNavigationEvent(GURL("http://foo/3"));
   VerifyNavigationEvent(
-      GURL("http://foo/0"),       // source_url
-      GURL("http://foo/0"),       // source_main_frame_url
-      GURL("http://foo/3"),       // original_request_url
-      GURL("http://foo/3"),       // destination_url
-      tab_id,                     // source_tab_id
-      SessionID::InvalidValue(),  // target_tab_id
+      GURL("http://foo/0"),  // source_url
+      GURL("http://foo/0"),  // source_main_frame_url
+      GURL("http://foo/3"),  // original_request_url
+      GURL("http://foo/3"),  // destination_url
+      tab_id,                // source_tab_id
+      tab_id,                // target_tab_id
       ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
       false,  // has_committed
       false,  // has_server_redirect
@@ -473,7 +473,7 @@ TEST_F(SBNavigationObserverTest, ServerRedirect) {
       GURL("http://foo/3"),       // original_request_url
       GURL("http://redirect/1"),  // destination_url
       tab_id,                     // source_tab_id
-      SessionID::InvalidValue(),  // target_tab_id
+      tab_id,                     // target_tab_id
       ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
       false,  // has_committed
       true,   // has_server_redirect
@@ -1176,6 +1176,196 @@ TEST_F(SBNavigationObserverTest, SanitizesDataUrls) {
   EXPECT_EQ(referrer_chain[1].url(),
             "data://"
             "A2368FB9B5FF3EDDF2860EF4998750024F7E4C6E2697F77269A13ADC84DCAD0E");
+}
+
+TEST_F(SBNavigationObserverTest,
+       MaybeCreateForWebContents_SafeBrowsingDisabledEnterpriseNotNeeded) {
+  pref_service_.SetBoolean(prefs::kSafeBrowsingEnabled, false);
+  std::unique_ptr<content::WebContents> test_web_contents =
+      CreateTestWebContents();
+
+  SafeBrowsingNavigationObserver::MaybeCreateForWebContents(
+      test_web_contents.get(), settings_map_.get(),
+      navigation_observer_manager_.get(), &pref_service_,
+      /*has_safe_browsing_service=*/true,
+      /*is_referrer_chain_needed_for_enterprise=*/false);
+  EXPECT_FALSE(
+      SafeBrowsingNavigationObserver::FromWebContents(test_web_contents.get()));
+}
+
+TEST_F(SBNavigationObserverTest,
+       MaybeCreateForWebContents_SafeBrowsingDisabledEnterpriseNeeded) {
+  pref_service_.SetBoolean(prefs::kSafeBrowsingEnabled, false);
+  std::unique_ptr<content::WebContents> test_web_contents =
+      CreateTestWebContents();
+
+  SafeBrowsingNavigationObserver::MaybeCreateForWebContents(
+      test_web_contents.get(), settings_map_.get(),
+      navigation_observer_manager_.get(), &pref_service_,
+      /*has_safe_browsing_service=*/false,
+      /*is_referrer_chain_needed_for_enterprise=*/true);
+  EXPECT_TRUE(
+      SafeBrowsingNavigationObserver::FromWebContents(test_web_contents.get()));
+}
+
+TEST_F(SBNavigationObserverTest,
+       MaybeCreateForWebContents_NoObserverManagerEnterpriseNeeded) {
+  std::unique_ptr<content::WebContents> test_web_contents =
+      CreateTestWebContents();
+
+  SafeBrowsingNavigationObserver::MaybeCreateForWebContents(
+      test_web_contents.get(), settings_map_.get(),
+      /*observer_manager=*/nullptr, &pref_service_,
+      /*has_safe_browsing_service=*/true,
+      /*is_referrer_chain_needed_for_enterprise=*/true);
+  EXPECT_FALSE(
+      SafeBrowsingNavigationObserver::FromWebContents(test_web_contents.get()));
+}
+
+// Regression test for b/568560137.
+TEST_F(SBNavigationObserverTest,
+       RendererInitiatedNavigationWithHandleUserGesture) {
+  auto navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL("http://foo/1"), web_contents()->GetPrimaryMainFrame());
+  navigation->SetHasUserGesture(true);
+  auto* nav_list = navigation_event_list();
+  SessionID tab_id = sessions::SessionTabHelper::IdForTab(web_contents());
+
+  navigation->Start();
+  ASSERT_EQ(1U, nav_list->PendingNavigationEventsSize());
+  NavigationEvent* pending_event =
+      nav_list->FindPendingNavigationEvent(GURL("http://foo/1"));
+  VerifyNavigationEvent(
+      GURL("http://foo/0"),  // source_url
+      GURL("http://foo/0"),  // source_main_frame_url
+      GURL("http://foo/1"),  // original_request_url
+      GURL("http://foo/1"),  // destination_url
+      tab_id,                // source_tab_id
+      tab_id,                // target_tab_id
+      ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
+      false,  // has_committed
+      false,  // has_server_redirect
+      pending_event);
+
+  navigation->Commit();
+  ASSERT_EQ(0U, nav_list->PendingNavigationEventsSize());
+  ASSERT_EQ(1U, nav_list->NavigationEventsSize());
+  VerifyNavigationEvent(
+      GURL("http://foo/0"),  // source_url
+      GURL("http://foo/0"),  // source_main_frame_url
+      GURL("http://foo/1"),  // original_request_url
+      GURL("http://foo/1"),  // destination_url
+      tab_id,                // source_tab_id
+      tab_id,                // target_tab_id
+      ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
+      true,   // has_committed
+      false,  // has_server_redirect
+      nav_list->GetNavigationEvent(0U));
+}
+
+// Regression test for b/568560137.
+TEST_F(SBNavigationObserverTest,
+       FindNavigationEventPropagatesUserGestureToRetargetingEvent) {
+  base::Time now = base::Time::Now();
+  SessionID source_tab_id = SessionID::FromSerializedValue(1);
+  SessionID target_tab_id = SessionID::FromSerializedValue(2);
+
+  auto retargeting_event = std::make_unique<NavigationEvent>();
+  retargeting_event->source_url = GURL("http://foo/0");
+  retargeting_event->source_main_frame_url = GURL("http://foo/0");
+  retargeting_event->original_request_url = GURL("http://foo/new_tab");
+  retargeting_event->source_tab_id = source_tab_id;
+  retargeting_event->target_tab_id = target_tab_id;
+  retargeting_event->last_updated = now;
+  retargeting_event->navigation_initiation =
+      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE;
+  navigation_event_list()->RecordNavigationEvent(std::move(retargeting_event));
+
+  auto new_tab_event = std::make_unique<NavigationEvent>();
+  new_tab_event->original_request_url = GURL("http://foo/new_tab");
+  new_tab_event->source_tab_id = target_tab_id;
+  new_tab_event->target_tab_id = target_tab_id;
+  new_tab_event->has_committed = true;
+  new_tab_event->last_updated = now;
+  new_tab_event->navigation_initiation =
+      ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE;
+  navigation_event_list()->RecordNavigationEvent(std::move(new_tab_event));
+
+  ReferrerChain referrer_chain;
+  EXPECT_EQ(SafeBrowsingNavigationObserverManager::SUCCESS,
+            navigation_observer_manager_->IdentifyReferrerChainByEventURL(
+                GURL("http://foo/new_tab"), target_tab_id,
+                /*user_gesture_count_limit=*/2, &referrer_chain));
+  ASSERT_EQ(1, referrer_chain.size());
+  EXPECT_EQ(ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
+            referrer_chain.Get(0).navigation_initiation());
+  EXPECT_EQ("http://foo/0", referrer_chain.Get(0).referrer_url());
+  EXPECT_TRUE(referrer_chain.Get(0).is_retargeting());
+}
+
+// Regression test for b/568560137.
+TEST_F(SBNavigationObserverTest,
+       PendingNavigationEventSameTabIsNotRetargeting) {
+  sessions::SessionTabHelper::CreateForWebContents(web_contents(),
+                                                   base::NullCallback());
+  auto navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL("http://foo/1"), web_contents()->GetPrimaryMainFrame());
+  navigation->SetHasUserGesture(true);
+  navigation->Start();
+
+  ReferrerChain referrer_chain;
+  EXPECT_EQ(
+      SafeBrowsingNavigationObserverManager::SUCCESS,
+      navigation_observer_manager_->IdentifyReferrerChainByPendingEventURL(
+          GURL("http://foo/1"), /*user_gesture_count_limit=*/2,
+          &referrer_chain));
+  ASSERT_EQ(1, referrer_chain.size());
+  EXPECT_EQ("http://foo/1", referrer_chain.Get(0).url());
+  EXPECT_EQ("http://foo/0", referrer_chain.Get(0).referrer_url());
+  EXPECT_FALSE(referrer_chain.Get(0).is_retargeting());
+}
+
+// Regression test for b/568560137.
+TEST_F(SBNavigationObserverTest, PendingNavigationEventNewTabIsRetargeting) {
+  sessions::SessionTabHelper::CreateForWebContents(web_contents(),
+                                                   base::NullCallback());
+  std::unique_ptr<content::WebContents> target_web_contents =
+      CreateTestWebContents();
+  sessions::SessionTabHelper::CreateForWebContents(target_web_contents.get(),
+                                                   base::NullCallback());
+  auto target_navigation_observer =
+      std::make_unique<SafeBrowsingNavigationObserver>(
+          target_web_contents.get(), settings_map_.get(),
+          navigation_observer_manager_.get());
+
+  navigation_observer_manager_->RecordNewWebContents(
+      web_contents(), main_rfh(), GURL("http://foo/new_tab"),
+      ui::PAGE_TRANSITION_LINK, target_web_contents.get(),
+      /*renderer_initiated=*/true);
+
+  auto navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL("http://foo/new_tab"), target_web_contents->GetPrimaryMainFrame());
+  navigation->SetHasUserGesture(true);
+  navigation->Start();
+  navigation->Redirect(GURL("http://foo/redirected"));
+
+  ReferrerChain referrer_chain;
+  EXPECT_EQ(
+      SafeBrowsingNavigationObserverManager::SUCCESS,
+      navigation_observer_manager_->IdentifyReferrerChainByPendingEventURL(
+          GURL("http://foo/redirected"), /*user_gesture_count_limit=*/2,
+          &referrer_chain));
+  ASSERT_EQ(1, referrer_chain.size());
+  EXPECT_EQ("http://foo/redirected", referrer_chain.Get(0).url());
+  EXPECT_EQ("http://foo/0", referrer_chain.Get(0).referrer_url());
+  EXPECT_EQ(ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
+            referrer_chain.Get(0).navigation_initiation());
+  EXPECT_TRUE(referrer_chain.Get(0).is_retargeting());
+  ASSERT_EQ(2, referrer_chain.Get(0).server_redirect_chain_size());
+  EXPECT_EQ("http://foo/new_tab",
+            referrer_chain.Get(0).server_redirect_chain(0).url());
+  EXPECT_EQ("http://foo/redirected",
+            referrer_chain.Get(0).server_redirect_chain(1).url());
 }
 
 }  // namespace safe_browsing

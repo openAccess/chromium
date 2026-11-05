@@ -26,6 +26,8 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_HTML_FORMS_HTML_FORM_ELEMENT_H_
 
 #include "base/functional/callback.h"
+#include "base/unguessable_token.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/html/forms/html_form_control_element.h"
@@ -100,7 +102,7 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
   void Disassociate(ListedElement&);
   void Associate(HTMLImageElement&);
   void Disassociate(HTMLImageElement&);
-  void DidAssociateByParser();
+  void DidAssociateNonDescendantByParser();
 
   // For native form controls, pass the submit button as submitter. For custom
   // elements with `HTMLSubmitButtonBehavior`, pass the custom element as
@@ -148,8 +150,6 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
     return CollectAndCacheListedElements(/*collect_for_autofill*/ false);
   }
 
-  void NotifyEmailVerificationTokenFieldChanged();
-
   // Returns the contained form control elements associated with `this`, also
   // including descendants of `this` that are form control elements and inside
   // Shadow DOM. The result will contain the form control elements of <form>s
@@ -178,14 +178,13 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
                                const TextEncoding& encoding);
 
   void InvalidateListedElementsForAutofill();
-  void InvalidateListedElements();
   void UseCountPropertyAccess(v8::Local<v8::Name>&,
                               const v8::PropertyCallbackInfo<v8::Value>&);
 
   bool IsActiveToolSubmitButton(const HTMLFormControlElement* element) const;
   bool MatchesToolFormActivePseudoClass() const;
 
-  std::optional<base::UnguessableToken> GetActiveWebMCPToolInvocationId() const;
+  std::optional<ToolInvocationToken> GetActiveWebMCPToolInvocationId() const;
 
  private:
   friend class HTMLFormMcpToolTest;
@@ -246,6 +245,9 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
   void RemoveFromPastNamesMap(HTMLElement&);
   bool PastNamesEmpty() const;
 
+  // Whether `this`'s document can have declarative WebMCP tools at all,
+  // independent of `this`'s attributes.
+  bool CanDocumentHaveDeclarativeWebMCPTools() const;
   void ScheduleDeclarativeWebMCPToolRegistration();
   void RegisterDeclarativeWebMCPTool();
   void ReportInvalidMCPFormIssueIfNeeded(const String& name,
@@ -290,12 +292,13 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
       CHECK(!tool_name.IsNull() && !tool_description.IsNull());
     }
     String ToolName() const override { return tool_name_; }
+    const ScriptToolToken& ToolId() const override { return tool_id_; }
     String ToolDescription() const override { return tool_description_; }
     String ToolTitle() const override { return tool_title_; }
     String ComputeInputSchema() override;
     Element* FormElement() const override { return form_; }
     void ExecuteTool(
-        const base::UnguessableToken& invocation_id,
+        const ToolInvocationToken& invocation_id,
         String input_arguments,
         base::OnceCallback<void(McpToolCallbackResult)> done_callback) override;
     void CancelTool() override;
@@ -313,7 +316,7 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
     void SetLastComputedSchema(String schema) {
       last_computed_schema_ = schema;
     }
-    std::optional<base::UnguessableToken> InvocationId() const {
+    std::optional<ToolInvocationToken> InvocationId() const {
       return invocation_id_;
     }
     bool CurrentlyRunning() const { return is_currently_running_; }
@@ -333,6 +336,11 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
 
     bool is_currently_running_ = false;
     bool is_handling_submit_ = false;
+
+    // Minted once per `HTMLFormMcpTool`. Every (re-)registration of `form_`
+    // creates a new `HTMLFormMcpTool`, and therefore a new ID.
+    const ScriptToolToken tool_id_;
+
     // Both `tool_name_` and `tool_description_` are guaranteed to be non-null
     // (i.e., `blink::String::IsNull()`), since the `toolname` and
     // `tooldescription` attributes must be present on `form_`, for it to
@@ -348,7 +356,7 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
     Member<HTMLFormElement> form_;
     Member<HTMLFormControlElement> active_submit_button_;
     base::OnceCallback<void(McpToolCallbackResult)> done_callback_;
-    std::optional<base::UnguessableToken> invocation_id_;
+    std::optional<ToolInvocationToken> invocation_id_;
   };
 
   void HandleWebMcpToolResponse(HTMLFormMcpTool* tool,
@@ -356,7 +364,8 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
                                 ScriptState* script_state,
                                 ScriptValue value);
 
-  // Used only for (experimental) declarative WebMCP.
+  // Used only for (experimental) declarative WebMCP. Non-null iff this tool is
+  // registered with the `ModelContext` of `GetDocument()`.
   Member<HTMLFormMcpTool> active_webmcp_tool_;
 
   bool is_submitting_ = false;
@@ -368,8 +377,11 @@ class CORE_EXPORT HTMLFormElement final : public HTMLElement {
   bool image_elements_are_dirty_ : 1;
   bool has_elements_associated_by_parser_ : 1;
   bool has_elements_associated_by_form_attribute_ : 1;
-  bool did_finish_parsing_children_ : 1;
   bool is_in_reset_function_ : 1;
+  // Whether this form is connected and has a <form> ancestor, i.e. is counted
+  // in Document::HasConnectedNestedForms(). Maintained in InsertedInto() and
+  // RemovedFrom().
+  bool is_connected_nested_form_ : 1;
   // Because forms undergo lots of synchronous mutations during construction,
   // each of which affects the declarative WebMCP tool's input JSON schema, we
   // batch all such changes and postpone tool registration behind the task

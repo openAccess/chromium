@@ -7,9 +7,10 @@ assert(!is_android)
 source_set("history") {
   public = [ "history_side_panel_ui.h" ]
   public_deps = [
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/history_clusters",
     "//chrome/browser/ui/webui/top_chrome",
+    "//chrome/common",
+    "//chrome/common:constants",
     "//components/page_image_service",
     "//content/public/browser",
     "//mojo/public/cpp/bindings",
@@ -23,7 +24,6 @@ source_set("impl") {
   deps = [
     "//base",
     "//chrome/app:command_ids",
-    "//chrome/browser/history_embeddings",
     "//chrome/browser/page_image_service",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/side_panel/history:resources",
@@ -33,13 +33,11 @@ source_set("impl") {
     "//chrome/browser/ui/webui:theme_source",
     "//chrome/browser/ui/webui/cr_components/history",
     "//chrome/browser/ui/webui/cr_components/history_clusters",
-    "//chrome/browser/ui/webui/cr_components/history_embeddings",
     "//chrome/browser/ui/webui/history",
     "//chrome/browser/ui/webui/history_clusters",
     "//chrome/common",
     "//components/favicon_base",
     "//components/history_clusters/core",
-    "//components/history_embeddings/core",
     "//components/strings:components_strings",
     "//content/public/common",
     "//ui/webui",

@@ -41,6 +41,7 @@ import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.AccountManagedStatusFinder;
 import org.chromium.components.signin.identitymanager.AccountManagedStatusFinderOutcome;
 import org.chromium.components.signin.identitymanager.IdentityManager;
+import org.chromium.components.signin.identitymanager.IdentityManager.RefreshTokensLoadingState;
 import org.chromium.components.signin.identitymanager.IdentityMutator;
 import org.chromium.components.signin.identitymanager.PrimaryAccountError;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
@@ -80,6 +81,7 @@ class SigninManagerImpl implements SigninManager, AccountsChangeObserver {
     private final List<Runnable> mCallbacksWaitingForPendingOperation = new ArrayList<>();
     private final PrefChangeRegistrar mPrefChangeRegistrar;
     private final PrefService mPrefService;
+    private final SigninChecker mSigninChecker;
 
     /**
      * Will be set during the sign in process, and nulled out when there is not a pending sign in.
@@ -136,6 +138,7 @@ class SigninManagerImpl implements SigninManager, AccountsChangeObserver {
         }
         mPrefChangeRegistrar = new PrefChangeRegistrar(mPrefService);
         mPrefChangeRegistrar.addObserver(Pref.SIGNIN_ALLOWED, this::notifySignInAllowedChanged);
+        mSigninChecker = new SigninChecker(this);
     }
 
     /**
@@ -145,9 +148,14 @@ class SigninManagerImpl implements SigninManager, AccountsChangeObserver {
     @VisibleForTesting
     @CalledByNative
     void destroy() {
+        mSigninChecker.destroy();
         mAccountManagerFacade.removeObserver(this);
         mPrefChangeRegistrar.destroy();
         mNativeSigninManagerAndroid = 0;
+    }
+
+    SigninChecker getSigninCheckerForTesting() {
+        return mSigninChecker;
     }
 
     /** Implements {@link AccountsChangeObserver}. */
@@ -158,7 +166,16 @@ class SigninManagerImpl implements SigninManager, AccountsChangeObserver {
         List<AccountInfo> accounts = accountsPromise.getResult();
         if (!didAccountsFetchSucceed() && accounts.isEmpty()) {
             // If the account fetch did not succeed, the AccountManagerFacade falls back to an empty
-            // list. Do nothing when this is the case.
+            // list.
+            if (SigninFeatureMap.isEnabled(SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS)
+                    && mIdentityManager.getRefreshTokensLoadingState()
+                            == RefreshTokensLoadingState.IN_PROGRESS) {
+                // TODO(crbug.com/572579970): This is a temporary solution to unblock the
+                // launch of the feature. Currently, the failed state is handled by the Java layer.
+                // That logic has to be moved to the native layer. That can affect on how the API
+                // works here.
+                mIdentityMutator.setRefreshTokensLoadingFailed();
+            }
             return;
         }
 

@@ -35,6 +35,7 @@ import org.chromium.chrome.browser.actor.ui.ActorUiTabController.UiTabState;
 import org.chromium.chrome.browser.actor.ui.TabIndicatorStatus;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab_ui.ThumbnailFetcher;
 import org.chromium.chrome.browser.tab_ui.ThumbnailProvider.MultiThumbnailMetadata;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabCardHighlightState;
@@ -70,9 +71,8 @@ public class TabGridViewRenderTest {
 
     private final ThumbnailFetcher mNullThumbnailFetcher =
             new ThumbnailFetcher(
-                    (tabId, thumbnailSize, isSelected, callback) -> callback.onResult(null),
-                    MultiThumbnailMetadata.createMetadataWithoutUrls(
-                            Tab.INVALID_TAB_ID, false, false, null));
+                    (metadata, thumbnailSize, isSelected, callback) -> callback.onResult(null),
+                    MultiThumbnailMetadata.createMetadataForSingleTab(Tab.INVALID_TAB_ID));
 
     @Rule
     public ChromeRenderTestRule mRenderTestRule =

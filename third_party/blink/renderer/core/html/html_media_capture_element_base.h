@@ -38,12 +38,19 @@ class CORE_EXPORT HTMLMediaCaptureElementBase
   void OnEmbeddedPermissionsDecided(
       mojom::blink::EmbeddedPermissionControlResult result) override;
 
-  void DefaultEventHandler(Event& event) override;
+  void RunActivationBehavior(Event&, EventDispatchHandlingState*) override;
+  void DefaultEventHandler(Event&) override;
   mojom::blink::EmbeddedPermissionRequestDescriptorPtr
   CreateEmbeddedPermissionRequestDescriptor() override;
   void OnActivationFailed(const String& error_message) override;
 
   void ResetMediaStreamRequestTime();
+  base::TimeTicks MediaStreamRequestStartTime() const {
+    return media_stream_request_start_time_;
+  }
+  void SetMediaStreamRequestStartTimeForTesting(base::TimeTicks time) {
+    media_stream_request_start_time_ = time;
+  }
 
   void UpdateAppearance() override;
   void UpdateIcon(mojom::blink::PermissionName permission) override;
@@ -65,6 +72,7 @@ class CORE_EXPORT HTMLMediaCaptureElementBase
   virtual bool ShouldShowGrantedAppearance() const { return false; }
 
  private:
+  bool HandleMediaCaptureActivation(Event& event);
   void StartMediaStreamRequest();
 
   base::TimeTicks media_stream_request_start_time_;

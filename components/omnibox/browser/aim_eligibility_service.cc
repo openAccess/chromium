@@ -526,6 +526,14 @@ bool AimEligibilityService::IsFuseboxEligible() const {
   return IsEligibleByServer(GetMostRecentResponse().is_fusebox_eligible());
 }
 
+bool AimEligibilityService::IsCsbEligible() const {
+  if (!GetMostRecentResponse().has_is_contextual_searchbox_eligible()) {
+    return IsFuseboxEligible();
+  }
+  return IsEligibleByServer(
+      GetMostRecentResponse().is_contextual_searchbox_eligible());
+}
+
 bool AimEligibilityService::IsAimUrl(
     const GURL& url,
     std::optional<contextual_tasks::HostOverride> host_override) const {
@@ -533,7 +541,10 @@ bool AimEligibilityService::IsAimUrl(
       << "IsAimUrl: Checking " << url
       << " override: " << (host_override ? host_override->ToString() : "");
   bool is_aim_url =
-      IsAimHost(url, host_override) && IsAimPath(url) && HasAimUrlParams(url);
+      url.is_valid() && url.SchemeIsHTTPOrHTTPS() &&
+      ((url.host() == "g.ai" || url.host() == "www.g.ai") ||
+       (IsAimHost(url, host_override) && IsAimPath(url) &&
+        HasAimUrlParams(url)));
   OMNIBOX_LOG("aim_url_check") << "IsAimUrl: " << (is_aim_url ? "yes" : "no");
   return is_aim_url;
 }
@@ -713,6 +724,14 @@ const omnibox::SearchboxConfig* AimEligibilityService::GetSearchboxConfig()
   return &omnibox::SearchboxConfig::default_instance();
 }
 
+const omnibox::LhsRailConfig* AimEligibilityService::GetLhsRailConfig() const {
+  if (most_recent_response_.has_lhs_rail_config()) {
+    return &most_recent_response_.lhs_rail_config();
+  }
+
+  return nullptr;
+}
+
 AimEligibilityService::AuthenticationMethod
 AimEligibilityService::GetMostRecentResponseAuthMethod() const {
   return most_recent_response_auth_method_;
@@ -770,8 +789,6 @@ std::string AimEligibilityService::RequestSourceToString(RequestSource source) {
       return "RefreshTokenError";
     case RequestSource::kOAuthFallbackCookieChange:
       return "OAuthFallbackCookieChange";
-    case RequestSource::kLocaleChange:
-      return "LocaleChange";
   }
 }
 
@@ -858,9 +875,10 @@ void AimEligibilityService::OnAccountsInCookieUpdated(
       base::FeatureList::IsEnabled(
           omnibox::kAimEligibilityServiceIdentityImprovements) &&
       omnibox::kAimIdentityRefreshOnCookieChanges.Get();
-  // Refresh on cookie changes if the primary account is not valid (i.e. no
-  // OAuth token is available).
-  bool should_refresh_on_cookie_changes = !HasValidPrimaryAccount();
+  // Refresh on cookie changes if OAuth is disabled or the primary account is
+  // not valid (i.e. no OAuth token is available).
+  bool should_refresh_on_cookie_changes =
+      !omnibox::kAimIdentityOauthEnabled.Get() || !HasValidPrimaryAccount();
   if (refresh_on_cookie_changes_enabled && should_refresh_on_cookie_changes) {
     ScheduleServerEligibilityRequestIfNeeded(
         RequestSource::kOAuthFallbackCookieChange);
@@ -1153,6 +1171,14 @@ void AimEligibilityService::StartServerEligibilityRequest(
       !configuration_.full_version_list.empty()) {
     request->headers.SetHeader("Sec-CH-UA-Full-Version-List",
                                configuration_.full_version_list);
+  }
+
+  if (base::FeatureList::IsEnabled(
+          omnibox::kAimServerEligibilitySendSearchCapabilitiesHeaderEnabled) &&
+      !configuration_.search_capabilities_version.empty()) {
+    request->headers.SetHeader(
+        contextual_tasks::kContextualTasksSearchCapabilitiesHeaderName,
+        configuration_.search_capabilities_version);
   }
 
   GaiaId pending_request_account = GetActiveAccount();

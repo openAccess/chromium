@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/functional/callback.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/signin/core/browser/account_preview_data.h"
@@ -49,6 +50,14 @@ struct PreferredDataTypeInfo {
   bool operator==(const PreferredDataTypeInfo&) const = default;
 };
 
+struct PreferredDeviceInfo {
+  sync_pb::SyncEnums_DeviceFormFactor form_factor =
+      sync_pb::SyncEnums_DeviceFormFactor_DEVICE_FORM_FACTOR_UNSPECIFIED;
+  syncer::DataTypeSet enabled_data_types;
+
+  bool operator==(const PreferredDeviceInfo&) const = default;
+};
+
 // A keyed service that provides preview data and usage metrics for the
 // signed-in accounts in the profile.
 class AccountPreviewDataService : public KeyedService {
@@ -56,8 +65,8 @@ class AccountPreviewDataService : public KeyedService {
   struct AccountPreviewPreference {
     GaiaId gaia_id;
     std::vector<PreferredDataTypeInfo> preferred_data_types;
-    sync_pb::SyncEnums_DeviceFormFactor other_device_form_factor =
-        sync_pb::SyncEnums_DeviceFormFactor_DEVICE_FORM_FACTOR_UNSPECIFIED;
+    // Most recently used other device where `gaia_id` is signed in.
+    PreferredDeviceInfo other_device_info;
 
     bool operator==(const AccountPreviewPreference&) const = default;
   };
@@ -71,12 +80,19 @@ class AccountPreviewDataService : public KeyedService {
   // Registers the preferences used by this service.
   static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
-  // From the list of accounts with refresh tokens, get the account that has the
-  // most interesting preview data. If the preview data for accounts are not
-  // fetched yet, the first account is returned by default. Returns std::nullopt
-  // if no signed-in accounts exist.
-  virtual std::optional<AccountPreviewPreference> GetPreferredAccountForPromo()
+  // Returns the account with refresh tokens that has the most interesting
+  // preview data when offering signed-out users to sign in. If preview data
+  // for accounts is not fetched yet, the first account is returned by default.
+  // Returns `std::nullopt` if no accounts with refresh tokens exist.
+  virtual std::optional<AccountPreviewPreference> GetPreferredAccountForSignin()
       const = 0;
+
+  // Returns the secondary account with refresh tokens that has significantly
+  // more sync data than the primary account when offering signed-in users to
+  // switch accounts. Returns `std::nullopt` if no account qualifies, if there
+  // is no primary account, or if preview data is not fetched yet.
+  virtual std::optional<AccountPreviewPreference>
+  GetPreferredAccountForSwitching() const = 0;
 
   // Computes the preview preference for a single account specified by
   // `gaia_id`. If data is already cached or the account is invalid/tokens
@@ -87,6 +103,31 @@ class AccountPreviewDataService : public KeyedService {
       const GaiaId& gaia_id,
       base::OnceCallback<void(std::optional<AccountPreviewPreference>)>
           callback) = 0;
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+  // Asynchronous version of `GetPreferredAccountForSignin()`, which returns the
+  // stored preferred account if available, or triggers a fetch and waits for
+  // the preferred account computation to complete.
+  //
+  // Note: This method is currently FRE-specific (for feature flag gating), but
+  // is ready to be easily reused for other callers if needed.
+  //
+  // `callback` is always run asynchronously once, with the value of
+  // `GetPreferredAccountForSignin()` at the time it is resolved:
+  // - without triggering a fetch, if `GetPreferredAccountForSignin()` already
+  //   has a value,
+  // - once the triggered preferred account fetch and computation complete (or
+  //   are canceled, e.g. when rate-limited or no accounts exist).
+  //
+  // `callback` is run with `std::nullopt` if
+  // `kEnableAccountPreviewPreferredAccountFRE` is disabled, if sign-in is
+  // disallowed, if the computation does not complete within `timeout`, or when
+  // the service shuts down.
+  virtual void GetPreferredAccountForSigninAsync(
+      base::OnceCallback<void(std::optional<AccountPreviewPreference>)>
+          callback,
+      base::TimeDelta timeout) = 0;
+#endif
 
 #if BUILDFLAG(IS_ANDROID)
   // Updates the account currently used by the external 1P app. A null/empty

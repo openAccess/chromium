@@ -93,9 +93,9 @@ TEST_F(HTMLFormControlElementTest, customValidationMessageTextDirection) {
   EXPECT_EQ(TextDirection::kRtl, message_dir);
   EXPECT_EQ(TextDirection::kLtr, sub_message_dir);
 
-  ComputedStyleBuilder rtl_style_builder(input->GetLayoutObject()->StyleRef());
+  ComputedStyleBuilder rtl_style_builder(input->GetLayoutObject()->Style());
   rtl_style_builder.SetDirection(TextDirection::kRtl);
-  input->GetLayoutObject()->SetStyle(rtl_style_builder.TakeStyle());
+  input->GetLayoutObject()->SetStyle(*rtl_style_builder.TakeStyle());
   input->FindCustomValidationMessageTextDirection(message, message_dir,
                                                   sub_message, sub_message_dir);
   EXPECT_EQ(TextDirection::kRtl, message_dir);
@@ -174,8 +174,7 @@ TEST_P(HTMLFormControlElementFormControlTypeTest, FormControlType) {
   SCOPED_TRACE(testing::Message() << html);
   GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(
       html.c_str());
-  auto* form_control = To<HTMLFormControlElement>(
-      GetDocument().getElementById(AtomicString("x")));
+  auto* form_control = To<HTMLFormControlElement>(GetElementById("x"));
   EXPECT_EQ(form_control->FormControlType(), expected_type())
       << form_control->type().Ascii();
 }

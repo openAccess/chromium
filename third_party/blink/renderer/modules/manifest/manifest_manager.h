@@ -6,7 +6,6 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_MANIFEST_MANIFEST_MANAGER_H_
 
 #include "base/functional/callback.h"
-#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom-blink.h"
 #include "third_party/blink/public/mojom/manifest/manifest_manager.mojom-blink.h"
 #include "third_party/blink/public/web/web_manifest_manager.h"
@@ -81,7 +80,7 @@ class MODULES_EXPORT ManifestManager
   // individual member fields makes it easier to cache the result between
   // requests and clear all that needs to be cleared when invalidating the
   // cache. Additionally this makes it more immediately obvious that a result
-  // will never contain a null manifest or debug info, as we can enforce these
+  // will never contain a null debug info, as we can enforce these
   // invariants in the API of this class.
   class Result {
    public:
@@ -93,7 +92,7 @@ class MODULES_EXPORT ManifestManager
 
     mojom::blink::ManifestRequestResult result() const { return result_; }
     const KURL& manifest_url() const { return manifest_url_; }
-    const mojom::blink::Manifest& manifest() const { return *manifest_; }
+    const mojom::blink::ManifestPtr& manifest() const { return manifest_; }
     const mojom::blink::ManifestDebugInfo& debug_info() const {
       return *debug_info_;
     }

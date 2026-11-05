@@ -3,10 +3,6 @@ include_rules = [
   # details.
   "-chrome",
 
-  # This directory is in //chrome, which violates the rule above. Allow this
-  # directory to #include its own files.
-  "+chrome/browser/ash/extended_updates/test",
-
   # Existing dependencies within //chrome. There is an active effort to
   # refactor //chrome/browser/ash to break these dependencies; see b/332804822.
   # Whenever possible, avoid adding new //chrome dependencies to this list.
@@ -15,5 +11,11 @@ include_rules = [
   # individually. Other dependencies within //chrome are listed on a per-
   # directory basis. See //tools/chromeos/gen_deps.sh for details.
   "+chrome/browser/ash/extended_updates",
-  "+chrome/browser/profiles",
 ]
+
+specific_include_rules = {
+  # Only tests need these //chrome dependencies.
+  "scoped_extended_updates_controller_unittest\\.cc": [
+    "+chrome/browser/profiles",
+  ],
+}

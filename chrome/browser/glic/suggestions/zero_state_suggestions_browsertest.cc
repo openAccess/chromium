@@ -14,9 +14,11 @@
 #include "chrome/browser/glic/suggestions/contextual_cueing_service_factory.h"
 #include "chrome/browser/glic/suggestions/zero_state_suggestions_page_data.h"
 #include "chrome/browser/optimization_guide/browser_test_util.h"
+#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
@@ -31,6 +33,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace glic {
 
@@ -546,7 +549,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest,
 
   // Navigate to a new URL in a second tab.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   auto* web_contents2 = browser()->tab_strip_model()->GetActiveWebContents();
 
@@ -588,7 +591,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest,
 
   // Navigate to a new URL in a second tab.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   auto* web_contents2 = browser()->tab_strip_model()->GetActiveWebContents();
 
@@ -658,7 +661,7 @@ IN_PROC_BROWSER_TEST_P(ZeroStateSuggestionsBrowserTest, BasicPinnedTabsFlow) {
 
   // Navigate to a new URL in a second tab.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   auto* web_contents2 = browser()->tab_strip_model()->GetActiveWebContents();
 

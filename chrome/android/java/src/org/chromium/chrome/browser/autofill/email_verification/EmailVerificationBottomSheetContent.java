@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.autofill.email_verification;
 
-import android.content.Context;
 import android.content.res.Resources;
 import android.view.View;
 import android.widget.ScrollView;
@@ -15,10 +14,13 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 
 /** Implements the content for the email verification bottom sheet. */
 @NullMarked
 /*package*/ class EmailVerificationBottomSheetContent implements BottomSheetContent {
+    private static final BottomSheetType SHEET_TYPE = new BottomSheetType.Builder().build();
+
     private final View mContentView;
     private final ScrollView mScrollView;
 
@@ -59,6 +61,11 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
     }
 
     @Override
+    public BottomSheetType getSheetType() {
+        return SHEET_TYPE;
+    }
+
+    @Override
     public int getPriority() {
         return ContentPriority.HIGH;
     }
@@ -76,11 +83,6 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
     @Override
     public boolean hideOnScroll() {
         return true;
-    }
-
-    @Override
-    public String getSheetContentDescription(Context context) {
-        return context.getString(R.string.autofill_email_verifier_prompt_title);
     }
 
     @Override

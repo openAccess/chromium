@@ -34,7 +34,6 @@ class Profile;
 std::unique_ptr<ProfileManagementStepController> CreateIntroStep(
     ProfilePickerWebContentsHost* host,
     base::RepeatingCallback<void(IntroChoice)> choice_callback,
-    bool enable_animations,
     base::RepeatingCallback<bool()> query_effects_callback,
     bool effects_button_shown_by_default);
 
@@ -53,7 +52,7 @@ std::unique_ptr<ProfileManagementStepController> CreateFeatureShowcaseStep(
 
 std::unique_ptr<ProfileManagementStepController> CreateFinishOrContinueStep(
     ProfilePickerWebContentsHost* host,
-    base::OnceCallback<bool()> eligibility_callback,
+    base::RepeatingCallback<bool()> eligibility_callback,
     base::RepeatingCallback<bool()> query_effects_callback,
     base::OnceCallback<void(FinishOrContinueChoice)> step_completed_callback,
     base::OnceClosure play_all_set_sound_callback,

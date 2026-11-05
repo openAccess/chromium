@@ -23,8 +23,12 @@ std::string InvocationSourceToString(
   switch (invocation_source) {
     case LensOverlayInvocationSource::kAppMenu:
       return "AppMenu";
+    case LensOverlayInvocationSource::kAppMenuAskGoogle:
+      return "AppMenuAskGoogle";
     case LensOverlayInvocationSource::kContentAreaContextMenuPage:
       return "ContentAreaContextMenuPage";
+    case LensOverlayInvocationSource::kContentAreaContextMenuPageAskGoogle:
+      return "ContentAreaContextMenuPageAskGoogle";
     case LensOverlayInvocationSource::kContentAreaContextMenuImage:
       return "ContentAreaContextMenuImage";
     case LensOverlayInvocationSource::kToolbar:
@@ -71,6 +75,10 @@ std::string InvocationSourceToString(
       return "OmniboxEverywhereComposebox";
     case LensOverlayInvocationSource::kOmniboxPopupButton:
       return "OmniboxPopupButton";
+    case LensOverlayInvocationSource::kContextualCue:
+      return "ContextualCue";
+    case LensOverlayInvocationSource::kSelectionSuggestion:
+      return "SelectionSuggestion";
   }
 }
 
@@ -503,9 +511,11 @@ void RecordTimeToFirstInteraction(
           time_to_first_interaction.InMilliseconds());
       break;
     case lens::LensOverlayInvocationSource::kContentAreaContextMenuVideo:
-      // Not recorded since the video context menu entry point results in a
-      // search without the user having to interact with the overlay. Time to
-      // first interaction in this case is essentially zero.
+    case lens::LensOverlayInvocationSource::kSelectionSuggestion:
+      // Not recorded since the video context menu and selection suggestion
+      // entry points result in a search without the user having to interact
+      // with the overlay. Time to first interaction in this case is essentially
+      // zero.
       break;
     case lens::LensOverlayInvocationSource::kNtpContextualQuery:
     case lens::LensOverlayInvocationSource::kNtpActionChips:
@@ -513,6 +523,10 @@ void RecordTimeToFirstInteraction(
     case lens::LensOverlayInvocationSource::kCobrowseToolbarButton:
     case lens::LensOverlayInvocationSource::kCobrowsePinnedToolbarButton:
     case lens::LensOverlayInvocationSource::kAppBarAimButton:
+    case lens::LensOverlayInvocationSource::kContextualCue:
+    case lens::LensOverlayInvocationSource::kAppMenuAskGoogle:
+    case lens::LensOverlayInvocationSource::
+        kContentAreaContextMenuPageAskGoogle:
       // Not recorded since the ntp and omnibox contextual query flows and the
       // cobrowse toolbar button flow do not use the Lens Overlay Controller.
       break;
@@ -561,6 +575,15 @@ void RecordUKMSessionEndMetrics(
       .SetSessionDuration(session_duration.InMilliseconds())
       .SetInvocationDocumentType(static_cast<int64_t>(document_content_type))
       .Record(ukm::UkmRecorder::Get());
+}
+
+void RecordClusterInfoFetchStatus(LensOverlayClusterInfoStatus status) {
+  base::UmaHistogramEnumeration("Lens.Overlay.ClusterInfo.Status", status);
+}
+
+void RecordClusterInfoResponseTime(base::TimeDelta response_time) {
+  base::UmaHistogramTimes("Lens.Overlay.ClusterInfo.ResponseTime",
+                          response_time);
 }
 
 void RecordLensResponseTime(base::TimeDelta response_time) {

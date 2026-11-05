@@ -8,11 +8,12 @@
 #import "components/omnibox/browser/omnibox_pref_names.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/app_bar/ui/app_bar_constants.h"
+#import "ios/chrome/browser/location_bar/ui_bundled/location_bar_constants.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_constants.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/toolbar/legacy/ui_bundled/adaptive_toolbar_app_interface.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_constants.h"
+#import "ios/chrome/browser/toolbar/ui/toolbar_constants.h"
 #import "ios/chrome/common/ui/elements/form_input_accessory_view.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
@@ -105,9 +106,17 @@ id<GREYMatcher> NewTabButton() {
                     grey_sufficientlyVisible(), nil);
 }
 
-// Returns a matcher for the legacy share button in the toolbar.
-id<GREYMatcher> LegacyShareButton() {
-  return grey_allOf(grey_accessibilityID(kLegacyToolbarShareButtonIdentifier),
+// Returns a matcher for the share button in the toolbar.
+id<GREYMatcher> ToolbarShareButton() {
+  return grey_allOf(
+      grey_anyOf(grey_accessibilityID(kLegacyToolbarShareButtonIdentifier),
+                 grey_accessibilityID(kToolbarShareButtonIdentifier), nil),
+      grey_sufficientlyVisible(), nil);
+}
+
+// Returns a matcher for the share button in the location bar.
+id<GREYMatcher> LocationBarShareButton() {
+  return grey_allOf(grey_accessibilityID(kOmniboxShareButtonIdentifier),
                     grey_sufficientlyVisible(), nil);
 }
 
@@ -250,7 +259,7 @@ void CheckButtonsVisibilityIPhonePortrait(BOOL omniboxFocused) {
   if (omniboxFocused) {
     CheckVisibilityInToolbar(CancelButton(), ButtonVisibilityPrimary);
 
-    CheckVisibilityInToolbar(LegacyShareButton(), ButtonVisibilityNone);
+    CheckVisibilityInToolbar(ToolbarShareButton(), ButtonVisibilityNone);
     CheckVisibilityInToolbar(ReloadButton(), ButtonVisibilityNone);
 
     // Those buttons are hidden by the keyboard.
@@ -262,7 +271,7 @@ void CheckButtonsVisibilityIPhonePortrait(BOOL omniboxFocused) {
   } else {
     CheckVisibilityInToolbar(CancelButton(), ButtonVisibilityNone);
 
-    CheckVisibilityInToolbar(LegacyShareButton(), ButtonVisibilityNone);
+    CheckVisibilityInToolbar(ToolbarShareButton(), ButtonVisibilityNone);
     CheckVisibilityInToolbar(ReloadButton(), ButtonVisibilityNone);
 
     if ([ChromeEarlGrey isChromeNextEnabled]) {
@@ -296,7 +305,7 @@ void CheckButtonsVisibilityIPhoneLandscape(BOOL omniboxFocused) {
     // Omnibox focused in iPhone landscape.
     CheckVisibilityInToolbar(CancelButton(), ButtonVisibilityPrimary);
 
-    CheckVisibilityInToolbar(TabShareButton(), ButtonVisibilityNone);
+    CheckVisibilityInToolbar(ToolbarShareButton(), ButtonVisibilityNone);
     CheckVisibilityInToolbar(ReloadButton(), ButtonVisibilityNone);
 
     CheckVisibilityInToolbar(BackButton(), ButtonVisibilityNone);
@@ -312,7 +321,7 @@ void CheckButtonsVisibilityIPhoneLandscape(BOOL omniboxFocused) {
       ButtonVisibility mainButtonsVisibility =
           isBottomOmnibox ? ButtonVisibilitySecondary : ButtonVisibilityPrimary;
 
-      CheckVisibilityInToolbar(TabShareButton(), mainButtonsVisibility);
+      CheckVisibilityInToolbar(ToolbarShareButton(), mainButtonsVisibility);
       CheckVisibilityInToolbar(ReloadButton(), mainButtonsVisibility);
       CheckVisibilityInToolbar(BackButton(), mainButtonsVisibility);
       CheckVisibilityInToolbar(ForwardButton(), ButtonVisibilityNone);
@@ -321,7 +330,7 @@ void CheckButtonsVisibilityIPhoneLandscape(BOOL omniboxFocused) {
       CheckVisibilityInAppBar(kAppBarNewTabButtonIdentifier, YES);
       CheckVisibilityInAppBar(kAppBarTabGridButtonIdentifier, YES);
     } else {
-      CheckVisibilityInToolbar(TabShareButton(), ButtonVisibilityPrimary);
+      CheckVisibilityInToolbar(ToolbarShareButton(), ButtonVisibilityPrimary);
       CheckVisibilityInToolbar(ReloadButton(), ButtonVisibilityPrimary);
       CheckVisibilityInToolbar(BackButton(), ButtonVisibilityPrimary);
       CheckVisibilityInToolbar(ForwardButton(), ButtonVisibilityPrimary);
@@ -348,15 +357,13 @@ void CheckButtonsVisibilityIPhoneLandscape(BOOL omniboxFocused) {
 void CheckButtonsVisibilityIPad() {
   CheckVisibilityInToolbar(CancelButton(), ButtonVisibilityNone);
 
-  if ([ChromeEarlGrey isChromeNextEnabled]) {
-    if ([ChromeEarlGrey isChromeNextShareIconVisible]) {
-      CheckVisibilityInToolbar(TabShareButton(), ButtonVisibilityPrimary);
-    } else {
-      CheckVisibilityInToolbar(TabShareButton(), ButtonVisibilityNone);
-    }
+  if ([ChromeEarlGrey isChromeNextEnabled] &&
+      ![ChromeEarlGrey isNextOldDesignEnabled]) {
+    CheckVisibilityInToolbar(ToolbarShareButton(), ButtonVisibilityNone);
+    CheckVisibilityInToolbar(LocationBarShareButton(), ButtonVisibilityPrimary);
     CheckVisibilityInToolbar(ForwardButton(), ButtonVisibilityNone);
   } else {
-    CheckVisibilityInToolbar(TabShareButton(), ButtonVisibilityPrimary);
+    CheckVisibilityInToolbar(ToolbarShareButton(), ButtonVisibilityPrimary);
     CheckVisibilityInToolbar(ForwardButton(), ButtonVisibilityPrimary);
   }
   CheckVisibilityInToolbar(ReloadButton(), ButtonVisibilityPrimary);
@@ -580,7 +587,12 @@ id<GREYMatcher> FormInputAccessoryOmniboxTypingShield() {
   [[EarlGrey selectElementWithMatcher:BackButton()]
       assertWithMatcher:grey_interactable()];
 
-  if ([ChromeEarlGrey isChromeNextEnabled]) {
+  BOOL forwardButtonHiddenWhenDisabled =
+      [ChromeEarlGrey isChromeNextEnabled] &&
+      (![ChromeEarlGrey isNextOldDesignEnabled] ||
+       ![ChromeEarlGrey isIPadIdiom]);
+
+  if (forwardButtonHiddenWhenDisabled) {
     [[EarlGrey selectElementWithMatcher:ForwardButton()]
         assertWithMatcher:grey_notVisible()];
   } else {
@@ -609,7 +621,7 @@ id<GREYMatcher> FormInputAccessoryOmniboxTypingShield() {
   // Check the buttons status.
   [[EarlGrey selectElementWithMatcher:BackButton()]
       assertWithMatcher:grey_interactable()];
-  if ([ChromeEarlGrey isChromeNextEnabled]) {
+  if (forwardButtonHiddenWhenDisabled) {
     [[EarlGrey selectElementWithMatcher:ForwardButton()]
         assertWithMatcher:grey_notVisible()];
   } else {
@@ -628,7 +640,7 @@ id<GREYMatcher> FormInputAccessoryOmniboxTypingShield() {
       performAction:grey_tap()];
 
   // Check the buttons status.
-  if ([ChromeEarlGrey isChromeNextEnabled]) {
+  if (forwardButtonHiddenWhenDisabled) {
     [[EarlGrey selectElementWithMatcher:ForwardButton()]
         assertWithMatcher:grey_notVisible()];
   } else {
@@ -662,7 +674,9 @@ id<GREYMatcher> FormInputAccessoryOmniboxTypingShield() {
 
 // Tests share button is enabled only on pages that can be shared.
 - (void)testShareButton {
-  if ([ChromeEarlGrey isChromeNextEnabled] && [ChromeEarlGrey isIPadIdiom]) {
+  if ([ChromeEarlGrey isChromeNextEnabled] &&
+      ![ChromeEarlGrey isNextOldDesignEnabled] &&
+      [ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(
         @"Share button is hidden on iPad toolbar under Chrome Next.");
   }

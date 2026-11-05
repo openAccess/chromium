@@ -39,9 +39,9 @@
 #include "net/base/url_util.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/webui/web_ui_util.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/image/image_skia_rep_default.h"
 #include "ui/gfx/paint_vector_icon.h"
@@ -181,9 +181,10 @@ void NewTabFooterHandler::OpenUrlInCurrentTabInternal(const GURL& url) {
     return;
   }
 
-  content::OpenURLParams params(url, content::Referrer(),
-                                WindowOpenDisposition::CURRENT_TAB,
-                                ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_LINK);
   web_contents_->OpenURL(params, /*navigation_handle_callback=*/{});
 }
 

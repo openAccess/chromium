@@ -79,8 +79,8 @@ export class SettingsImportDataDialogElement extends
     search: false,
     autofillFormData: false,
   };
-  protected accessor noImportDataTypeSelected_: boolean = false;
-  protected accessor importStatus_: ImportDataStatus = ImportDataStatus.INITIAL;
+  private accessor noImportDataTypeSelected_: boolean = false;
+  private accessor importStatus_: ImportDataStatus = ImportDataStatus.INITIAL;
   private browserProxy_: ImportDataBrowserProxy =
       ImportDataBrowserProxyImpl.getInstance();
 
@@ -89,7 +89,13 @@ export class SettingsImportDataDialogElement extends
 
     this.mirrorPref('import_dialog_bookmarks', 'importDialogBookmarksPref_');
 
-    PrefService.getInstance().whenInitialized().then(() => {
+    PrefService.getInstance().whenInitialized().then(async () => {
+      if (!this.isConnected) {
+        return;
+      }
+      await Promise.all(Array.from(
+          this.shadowRoot.querySelectorAll('settings-checkbox'),
+          c => c.updateComplete));
       if (this.isConnected) {
         this.updateImportDataTypesSelected_();
       }

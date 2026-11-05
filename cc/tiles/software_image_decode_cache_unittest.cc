@@ -4,13 +4,30 @@
 
 #include "cc/tiles/software_image_decode_cache.h"
 
+#include <algorithm>
+#include <memory>
+#include <utility>
+
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/memory/discardable_memory_allocator.h"
+#include "base/run_loop.h"
+#include "base/synchronization/waitable_event.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/task/thread_pool.h"
+#include "base/test/bind.h"
+#include "base/test/test_discardable_memory_allocator.h"
+#include "base/threading/thread_restrictions.h"
 #include "cc/base/features.h"
 #include "cc/paint/draw_image.h"
 #include "cc/paint/paint_image_builder.h"
 #include "cc/test/fake_paint_image_generator.h"
 #include "cc/test/skia_common.h"
 #include "cc/test/test_tile_task_runner.h"
+#include "cc/tiles/image_controller.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkAlphaType.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -1408,6 +1425,77 @@ TEST_F(SoftwareImageDecodeCacheTest, GetDecodedImageForDrawScaleWithGainmap) {
   }
 }
 
+class DirtyDiscardableMemoryAllocator
+    : public base::TestDiscardableMemoryAllocator {
+ public:
+  std::unique_ptr<base::DiscardableMemory> AllocateLockedDiscardableMemory(
+      size_t size) override {
+    auto memory =
+        base::TestDiscardableMemoryAllocator::AllocateLockedDiscardableMemory(
+            size);
+    // SAFETY: `memory` was just allocated with `size` bytes.
+    UNSAFE_BUFFERS(
+        std::ranges::fill(base::span(memory->data_as<uint8_t>(), size), 0xABu));
+    return memory;
+  }
+};
+
+// Verifies that GenerateCacheEntryFromCandidate() the scaled gainmap writes
+// over any existing pixel data.
+TEST_F(SoftwareImageDecodeCacheTest,
+       GenerateCacheEntryFromCandidateOverwritesGainmapMemory) {
+  auto* old_allocator = base::DiscardableMemoryAllocator::GetInstance();
+  base::DiscardableMemoryAllocator::SetInstance(nullptr);
+  DirtyDiscardableMemoryAllocator dirty_allocator;
+  base::DiscardableMemoryAllocator::SetInstance(&dirty_allocator);
+
+  constexpr int kBaseSize = 100;
+  constexpr int kGainSize = 50;
+  PaintImage paint_image = CreatePaintImageWithGainmap(
+      gfx::Size(kBaseSize, kBaseSize), gfx::Size(kGainSize, kGainSize));
+
+  // Decode and lock the original-size entry so it serves as a candidate for the
+  // scaled decode below.
+  DrawImage orig_draw_image(
+      paint_image,
+      /*use_dark_mode=*/false, SkIRect::MakeWH(kBaseSize, kBaseSize),
+      PaintFlags::FilterQuality::kHigh,
+      CreateMatrix(SkSize::Make(1.0f, 1.0f), /*is_decomposable=*/true),
+      PaintImage::kDefaultFrameIndex, DefaultTargetColorParams());
+  DecodedDrawImage orig_decoded =
+      cache_.GetDecodedImageForDraw(orig_draw_image);
+  ASSERT_TRUE(orig_decoded.image());
+  ASSERT_TRUE(orig_decoded.gainmap_image());
+
+  // Request a 0.25x scaled draw image, which scales both the base image and
+  // the gainmap via GenerateCacheEntryFromCandidate() into dirty discardable
+  // memory pre-filled with 0xAB.
+  DrawImage scaled_draw_image(
+      paint_image,
+      /*use_dark_mode=*/false, SkIRect::MakeWH(kBaseSize, kBaseSize),
+      PaintFlags::FilterQuality::kHigh,
+      CreateMatrix(SkSize::Make(0.25f, 0.25f), /*is_decomposable=*/true),
+      PaintImage::kDefaultFrameIndex, DefaultTargetColorParams());
+  DecodedDrawImage scaled_decoded =
+      cache_.GetDecodedImageForDraw(scaled_draw_image);
+  ASSERT_TRUE(scaled_decoded.image());
+  ASSERT_TRUE(scaled_decoded.gainmap_image());
+
+  // All pixels should be zeros and none of the 0xAB pattern should be visible.
+  SkPixmap gainmap_pixmap;
+  ASSERT_TRUE(scaled_decoded.gainmap_image()->peekPixels(&gainmap_pixmap));
+  for (int y = 0; y < gainmap_pixmap.height(); ++y) {
+    for (int x = 0; x < gainmap_pixmap.width(); ++x) {
+      ASSERT_EQ(0u, *gainmap_pixmap.addr32(x, y));
+    }
+  }
+
+  cache_.DrawWithImageFinished(scaled_draw_image, scaled_decoded);
+  cache_.DrawWithImageFinished(orig_draw_image, orig_decoded);
+  base::DiscardableMemoryAllocator::SetInstance(nullptr);
+  base::DiscardableMemoryAllocator::SetInstance(old_allocator);
+}
+
 TEST_F(SoftwareImageDecodeCacheTest,
        GetDecodedImageForDrawWithNonContainedSrcRect) {
   bool is_decomposable = true;
@@ -2382,6 +2470,135 @@ TEST_F(SoftwareImageDecodeCacheTest, ReduceCacheOnUnrefWithDraw) {
 
   EXPECT_EQ(cache_.GetNumCacheEntriesForTesting(),
             cache_.GetMaxNumCacheEntriesForTesting());
+}
+
+class BlockingPaintImageGenerator : public FakePaintImageGenerator {
+ public:
+  explicit BlockingPaintImageGenerator(const SkImageInfo& info)
+      : FakePaintImageGenerator(info),
+        decode_started_(base::WaitableEvent::ResetPolicy::MANUAL,
+                        base::WaitableEvent::InitialState::NOT_SIGNALED),
+        allow_finish_(base::WaitableEvent::ResetPolicy::MANUAL,
+                      base::WaitableEvent::InitialState::NOT_SIGNALED) {}
+
+  bool GetPixels(SkPixmap dst_pixmap,
+                 size_t frame_index,
+                 PaintImage::GeneratorClientId client_id,
+                 uint64_t lazy_pixel_ref) override {
+    base::ScopedAllowBaseSyncPrimitivesForTesting allow_sync;
+    decode_started_.Signal();
+    allow_finish_.Wait();
+    return FakePaintImageGenerator::GetPixels(dst_pixmap, frame_index,
+                                              client_id, lazy_pixel_ref);
+  }
+
+  void WaitUntilDecodeStarted() {
+    base::ScopedAllowBaseSyncPrimitivesForTesting allow_sync;
+    decode_started_.Wait();
+  }
+  void AllowDecodeToFinish() { allow_finish_.Signal(); }
+  void ResetEvents() {
+    decode_started_.Reset();
+    allow_finish_.Reset();
+  }
+
+ private:
+  ~BlockingPaintImageGenerator() override = default;
+
+  base::WaitableEvent decode_started_;
+  base::WaitableEvent allow_finish_;
+};
+
+TEST_F(SoftwareImageDecodeCacheTest,
+       OrphanedRequestStaleCompletionWhileDecoding) {
+  auto origin_task_runner = base::SequencedTaskRunner::GetCurrentDefault();
+  auto worker_task_runner =
+      base::ThreadPool::CreateSequencedTaskRunner(base::TaskTraits());
+
+  ImageController controller(origin_task_runner, worker_task_runner,
+                             base::DoNothing());
+  TestSoftwareImageDecodeCache cache1;
+  controller.SetImageDecodeCache(&cache1);
+
+  auto generator = sk_make_sp<BlockingPaintImageGenerator>(
+      SkImageInfo::MakeN32Premul(100, 100, DefaultSkColorSpace()));
+  PaintImage paint_image = PaintImageBuilder::WithDefault()
+                               .set_id(PaintImage::GetNextId())
+                               .set_paint_image_generator(generator)
+                               .TakePaintImage();
+  DrawImage draw_image(
+      paint_image, false,
+      SkIRect::MakeWH(paint_image.width(), paint_image.height()),
+      PaintFlags::FilterQuality::kLow,
+      CreateMatrix(SkSize::Make(1.f, 1.f), true),
+      PaintImage::kDefaultFrameIndex, DefaultTargetColorParams());
+
+  // Queue an image decode on `cache1` and wait until the worker thread starts
+  // decoding.
+  bool callback_called = false;
+  controller.QueueImageDecode(
+      draw_image,
+      base::BindLambdaForTesting(
+          [&](ImageController::ImageDecodeRequestId id,
+              ImageController::ImageDecodeResult result) {
+            callback_called = true;
+            EXPECT_EQ(result, ImageController::ImageDecodeResult::SUCCESS);
+            controller.UnlockImageDecode(id);
+          }),
+      /*speculative=*/false);
+  generator->WaitUntilDecodeStarted();
+
+  // Allow the first decode on the worker thread to finish. When
+  // `RunOnWorkerThread()` returns, the worker posts a stale
+  // `ImageDecodeCompleted(id)` task to `origin_task_runner`. Before running
+  // `origin_task_runner`, simulate a compositor frame sink loss and recreation,
+  // `SetImageDecodeCache(nullptr)` followed by `SetImageDecodeCache(&cache2)`.
+  // `StopWorkerTasks()` completes the first decode and re-queues the request as
+  // an orphaned request with the same `id`.
+  generator->AllowDecodeToFinish();
+  controller.SetImageDecodeCache(nullptr);
+
+  TestSoftwareImageDecodeCache cache2;
+
+  // Reset the blocking events for the second decode of `draw_image` when the
+  // orphaned request is regenerated on `cache2`.
+  generator->ResetEvents();
+  controller.SetImageDecodeCache(&cache2);
+
+  // Wait until the worker thread picks up the regenerated request (which
+  // reuses the same `id` and is now in `requests_needing_completion[id]`) and
+  // enters `DecodeImageIfNecessary()` with `cache2.lock_` unlocked.
+  generator->WaitUntilDecodeStarted();
+
+  // Run `origin_task_runner`. The stale `ImageDecodeCompleted(id)` task from
+  // previous step must be cancelled by `StopWorkerTasks()` so it does not
+  // prematurely complete and unref the in-progress request on `cache2`.
+  base::RunLoop run_loop;
+  origin_task_runner->PostTask(FROM_HERE, run_loop.QuitWhenIdleClosure());
+  run_loop.Run();
+  EXPECT_FALSE(callback_called);
+
+  // Populate `cache2` with >1000 unlocked entries. Because `draw_image` still
+  // has `ref_count > 0`, `ReduceCacheUsageUntilWithinLimit()` must not evict
+  // or free its `CacheEntry` while `DecodeImageIfNecessary()` is running.
+  for (size_t i = 0; i < cache2.GetMaxNumCacheEntriesForTesting(); ++i) {
+    PaintImage small_image = CreatePaintImage(1, 1);
+    DrawImage small_draw_image(small_image, false, SkIRect::MakeWH(1, 1),
+                               PaintFlags::FilterQuality::kLow,
+                               CreateMatrix(SkSize::Make(1.f, 1.f), true),
+                               PaintImage::kDefaultFrameIndex,
+                               DefaultTargetColorParams());
+    DecodedDrawImage small_decoded =
+        cache2.GetDecodedImageForDraw(small_draw_image);
+    cache2.DrawWithImageFinished(small_draw_image, small_decoded);
+  }
+
+  // Now let the worker thread finish `DoDecodeImage()` on `cache2` and verify
+  // the real completion callback runs cleanly.
+  generator->AllowDecodeToFinish();
+  controller.FlushDecodeTasksForTesting();
+  EXPECT_TRUE(callback_called);
+  controller.SetImageDecodeCache(nullptr);
 }
 
 }  // namespace

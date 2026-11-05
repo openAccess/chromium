@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_GLIC_HOST_CONTEXT_GLIC_SHARING_UTILS_H_
 
 #include "base/callback_list.h"
+#include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "build/build_config.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
@@ -13,8 +14,9 @@
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "components/tabs/public/tab_interface.h"
 
-class BrowserWindowInterface;
 class BrowserCollection;
+class BrowserWindowInterface;
+class GURL;
 class Profile;
 
 namespace content {
@@ -22,6 +24,9 @@ class WebContents;
 }  // namespace content
 
 namespace glic {
+
+// Returns true if `url` is a Context Hub topic page eligible for Glic.
+bool IsContextHubTopicUrl(const GURL& url);
 
 // True if the immutable attributes of `browser` are valid for Glic focus.
 // or pinning. Invalid browsers are never observed.
@@ -39,7 +44,7 @@ bool IsTabValidForSharing(tabs::TabInterface* tab);
 // Returns the most recently active tab from the given list of tabs.
 // The list of tabs must not be empty.
 tabs::TabInterface* GetMostRecentlyActiveTab(
-    const std::vector<tabs::TabInterface*>& tabs);
+    const std::vector<raw_ptr<tabs::TabInterface>>& tabs);
 
 // Returns an empty pin event.
 GlicPinEvent GetEmptyPinEvent();

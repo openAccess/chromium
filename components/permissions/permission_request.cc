@@ -24,6 +24,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "services/device/public/cpp/device_features.h"
 #include "third_party/blink/public/mojom/permissions/permission.mojom.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "ui/base/device_form_factor.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/text_elider.h"
@@ -60,7 +61,9 @@ RequestType PermissionRequest::request_type() const {
 
 bool PermissionRequest::IsDuplicateOf(PermissionRequest* other_request) const {
   return request_type() == other_request->request_type() &&
-         requesting_origin() == other_request->requesting_origin();
+         requesting_origin() == other_request->requesting_origin() &&
+         GetGeolocationPromptType() ==
+             other_request->GetGeolocationPromptType();
 }
 
 base::SafeRef<PermissionRequest> PermissionRequest::GetSafeRef() {
@@ -175,8 +178,6 @@ PermissionRequest::GetDialogAnnotatedMessageText(
                   requesting_origin_string_formatted,
                   embedding_origin_string_formatted)),
           /*bolded_ranges=*/{});
-    case RequestType::kTopLevelStorageAccess:
-      NOTREACHED();
     case RequestType::kVrSession:
       message_id = IDS_VR_INFOBAR_TEXT;
       break;
@@ -242,18 +243,24 @@ bool PermissionRequest::IsConfirmationChipSupported() {
   return permissions::IsConfirmationChipSupported(request_type());
 }
 
-IconId PermissionRequest::GetIconForChip() {
+IconId PermissionRequest::GetIconForChip() const {
   return permissions::GetIconId(request_type());
 }
 
-IconId PermissionRequest::GetBlockedIconForChip() {
+IconId PermissionRequest::GetBlockedIconForChip() const {
   return permissions::GetBlockedIconId(request_type());
+}
+
+bool PermissionRequest::ShouldKeepChipOnBubbleClose() const {
+  return false;
 }
 
 std::optional<std::u16string> PermissionRequest::GetRequestChipText(
     ChipTextType type) const {
   static base::NoDestructor<std::map<RequestType, std::vector<int>>> kMessageIds(
-      {{RequestType::kArSession,
+      {{RequestType::kAmbientLogin,
+        {IDS_AMBIENT_LOGIN_PERMISSION_CHIP, -1, -1, -1, -1, -1, -1, -1}},
+       {RequestType::kArSession,
         {IDS_AR_PERMISSION_CHIP, -1,
          IDS_PERMISSIONS_PERMISSION_ALLOWED_CONFIRMATION,
          IDS_PERMISSIONS_PERMISSION_ALLOWED_ONCE_CONFIRMATION,
@@ -385,6 +392,9 @@ std::optional<std::u16string> PermissionRequest::GetRequestChipText(
 std::u16string PermissionRequest::GetMessageTextFragment() const {
   int message_id = 0;
   switch (request_type()) {
+    case RequestType::kAmbientLogin:
+      // Handled by an override in `AmbientLoginPermissionRequest`.
+      NOTREACHED();
     case RequestType::kArSession:
       message_id = IDS_AR_PERMISSION_FRAGMENT;
       break;
@@ -455,13 +465,12 @@ std::u16string PermissionRequest::GetMessageTextFragment() const {
     case RequestType::kRegisterProtocolHandler:
       // Handled by an override in `RegisterProtocolHandlerPermissionRequest`.
       NOTREACHED();
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     case RequestType::kSmartCard:
       // Handled by an override in `SmartCardPermissionRequest`.
       NOTREACHED();
 #endif
     case RequestType::kStorageAccess:
-    case RequestType::kTopLevelStorageAccess:
       message_id = IDS_STORAGE_ACCESS_PERMISSION_FRAGMENT;
       break;
     case RequestType::kVrSession:
@@ -484,6 +493,10 @@ std::u16string PermissionRequest::GetMessageTextFragment() const {
   }
   DCHECK_NE(0, message_id);
   return l10n_util::GetStringUTF16(message_id);
+}
+
+bool PermissionRequest::ShouldBubbleStartOpen() const {
+  return true;
 }
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 

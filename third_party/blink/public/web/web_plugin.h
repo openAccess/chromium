@@ -58,7 +58,7 @@ class Rect;
 namespace ui {
 class Cursor;
 struct ImeTextSpan;
-}
+}  // namespace ui
 
 namespace blink {
 
@@ -136,6 +136,11 @@ class WebPlugin {
   virtual void UpdateRenderThrottlingStatus(bool is_throttled,
                                             bool subtree_throttled,
                                             bool display_locked) {}
+
+  // Called when a `data-*` attribute on the plugin element is added, modified,
+  // or removed. `new_value` is null if the attribute was removed.
+  virtual void DidChangeDataAttribute(const WebString& name,
+                                      const WebString& new_value) {}
 
   virtual WebInputEventResult HandleInputEvent(const WebCoalescedInputEvent&,
                                                ui::Cursor*) = 0;
@@ -295,6 +300,10 @@ class WebPlugin {
 
   // Returns the current plugin caret bounds in blink/viewport coordinates.
   virtual gfx::Rect GetPluginCaretBounds() { return gfx::Rect(); }
+
+  // Returns the current plugin selection bounding box in blink/viewport
+  // coordinates.
+  virtual gfx::Rect GetPluginSelectionBounds() { return gfx::Rect(); }
 
   // Set the composition in plugin.
   virtual void ImeSetCompositionForPlugin(

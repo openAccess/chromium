@@ -4,6 +4,7 @@
 
 #include "base/metrics/histogram.h"
 #include "base/strings/stringprintf.h"
+#include "build/build_config.h"
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/browser_test.h"
@@ -34,12 +35,26 @@ class HistogramsInternalsUIBrowserTest : public WebUIMochaBrowserTest {
   }
 };
 
-IN_PROC_BROWSER_TEST_F(HistogramsInternalsUIBrowserTest, RefreshHistograms) {
+// TODO(b/543826418): Flaky on Linux.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_RefreshHistograms DISABLED_RefreshHistograms
+#else
+#define MAYBE_RefreshHistograms RefreshHistograms
+#endif
+IN_PROC_BROWSER_TEST_F(HistogramsInternalsUIBrowserTest,
+                       MAYBE_RefreshHistograms) {
   PopulateHistograms();
   RunTestCase("RefreshHistograms");
 }
 
-IN_PROC_BROWSER_TEST_F(HistogramsInternalsUIBrowserTest, NoDummyHistograms) {
+// TODO(crbug.com/544088944): Flaky (times out) on Linux.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_NoDummyHistograms DISABLED_NoDummyHistograms
+#else
+#define MAYBE_NoDummyHistograms NoDummyHistograms
+#endif
+IN_PROC_BROWSER_TEST_F(HistogramsInternalsUIBrowserTest,
+                       MAYBE_NoDummyHistograms) {
   RunTestCase("NoDummyHistograms");
 }
 
@@ -59,7 +74,14 @@ IN_PROC_BROWSER_TEST_F(HistogramsInternalsUIBrowserTest, StopMonitoring) {
   RunTestCase("StopMonitoring");
 }
 
-IN_PROC_BROWSER_TEST_F(HistogramsInternalsUIBrowserTest, SubprocessCheckbox) {
+// TODO(https://crbug.com/544164040): Flaky on Linux.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_SubprocessCheckbox DISABLED_SubprocessCheckbox
+#else
+#define MAYBE_SubprocessCheckbox SubprocessCheckbox
+#endif
+IN_PROC_BROWSER_TEST_F(HistogramsInternalsUIBrowserTest,
+                       MAYBE_SubprocessCheckbox) {
   RunTestCase("SubprocessCheckbox");
 }
 

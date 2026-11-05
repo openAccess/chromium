@@ -36,22 +36,17 @@ BASE_FEATURE(kComputeRasterTranslateForExternalScale,
 BASE_FEATURE(kSizeOopifEffectSurfacesAtExternalScale,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kOptimizeRemoveRenderPasses, base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kDeferImplInvalidation, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // TODO(crbug.com/446920991): Reduce back to 1 frame delay once we have a
 // separate delay for handling latency sensitive input.
-const base::FeatureParam<int> kDeferImplInvalidationFrames{
-    &kDeferImplInvalidation, "frames", 4};
-
-// Note that kUseDMSAAForTiles only controls vulkan launch on android. We will
-// be using a separate flag to control the launch on GL.
-BASE_FEATURE(kUseDMSAAForTiles,
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_ANDROID)
-             base::FEATURE_ENABLED_BY_DEFAULT
-#else
-             base::FEATURE_DISABLED_BY_DEFAULT
-#endif
-);
+BASE_FEATURE_PARAM(int,
+                   kDeferImplInvalidationFrames,
+                   &kDeferImplInvalidation,
+                   "frames",
+                   4);
 
 BASE_FEATURE(kReclaimPrepaintTilesWhenIdle, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -63,13 +58,19 @@ BASE_FEATURE(kReclaimPrepaintTilesWhenIdle, base::FEATURE_DISABLED_BY_DEFAULT);
 // to find a better balance between checkerboarding and memory.
 BASE_FEATURE(kSmallerInterestArea, base::FEATURE_DISABLED_BY_DEFAULT);
 
-const base::FeatureParam<int> kInterestAreaSizeInPixels{
-    &kSmallerInterestArea, "size_in_pixels", kDefaultInterestAreaSizeInPixels};
+BASE_FEATURE_PARAM(int,
+                   kInterestAreaSizeInPixels,
+                   &kSmallerInterestArea,
+                   "size_in_pixels",
+                   kDefaultInterestAreaSizeInPixels);
 
 BASE_FEATURE(kReclaimOldPrepaintTiles, base::FEATURE_DISABLED_BY_DEFAULT);
 
-const base::FeatureParam<int> kReclaimDelayInSeconds{&kSmallerInterestArea,
-                                                     "reclaim_delay_s", 30};
+BASE_FEATURE_PARAM(int,
+                   kReclaimDelayInSeconds,
+                   &kReclaimOldPrepaintTiles,
+                   "reclaim_delay_s",
+                   30);
 
 BASE_FEATURE(kTileOOMFreezeMitigation, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -81,32 +82,35 @@ BASE_FEATURE(kClearCanvasResourcesInBackground,
 
 BASE_FEATURE(kWaitForLateScrollEvents, base::FEATURE_ENABLED_BY_DEFAULT);
 
-const base::FeatureParam<double> kWaitForLateScrollEventsDeadlineRatio{
-    &kWaitForLateScrollEvents, "deadline_ratio", 0.333};
+BASE_FEATURE_PARAM(double,
+                   kWaitForLateScrollEventsDeadlineRatio,
+                   &kWaitForLateScrollEvents,
+                   "deadline_ratio",
+                   0.333);
 
 BASE_FEATURE(kPreserveDiscardableImageMapQuality,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kCCSlimming, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kWebViewMemoryMultiplier,
-             "WebViewMemoryMultiplier",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kWebViewMemoryMultiplier, base::FEATURE_DISABLED_BY_DEFAULT);
 
-const base::FeatureParam<int> kWebViewMemoryMultiplierParam{
-    &kWebViewMemoryMultiplier, "MemoryMultiplier", 20};
+BASE_FEATURE_PARAM(int,
+                   kWebViewMemoryMultiplierParam,
+                   &kWebViewMemoryMultiplier,
+                   "MemoryMultiplier",
+                   20);
 
-const base::FeatureParam<int> kWebViewMemoryMultiplierSoftPercentageParam{
-    &kWebViewMemoryMultiplier, "MemoryMultiplierSoftPercentage", 50};
+BASE_FEATURE_PARAM(int,
+                   kWebViewMemoryMultiplierSoftPercentageParam,
+                   &kWebViewMemoryMultiplier,
+                   "MemoryMultiplierSoftPercentage",
+                   50);
 
 bool IsCCSlimmingEnabled() {
   static const bool enabled = base::FeatureList::IsEnabled(kCCSlimming);
   return enabled;
 }
-
-// When enabled, the scheduler will use SlimSchedulerStateMachine which ensures
-// that each action is returned only once per begin frame.
-BASE_FEATURE(kSlimScheduler, base::FEATURE_DISABLED_BY_DEFAULT);
 
 constexpr const char kScrollEventDispatchModeDispatchScrollEventsImmediately[] =
     "DispatchScrollEventsImmediately";
@@ -117,10 +121,11 @@ constexpr const char kScrollEventDispatchModeUseScrollPredictorForDeadline[] =
 constexpr const char
     kScrollEventDispatchModeDispatchScrollEventsUntilDeadline[] =
         "DispatchScrollEventsUntilDeadline";
-const base::FeatureParam<std::string> kScrollEventDispatchMode(
-    &kWaitForLateScrollEvents,
-    "mode",
-    kScrollEventDispatchModeDispatchScrollEventsUntilDeadline);
+BASE_FEATURE_PARAM(std::string,
+                   kScrollEventDispatchMode,
+                   &kWaitForLateScrollEvents,
+                   "mode",
+                   kScrollEventDispatchModeDispatchScrollEventsUntilDeadline);
 
 BASE_FEATURE(kTreesInViz, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -137,14 +142,21 @@ constexpr const char kNewContentForCheckerboardedScrollsPerScroll[] =
     "per_scroll";
 constexpr const char kNewContentForCheckerboardedScrollsPerFrame[] =
     "per_frame";
-const base::FeatureParam<std::string> kNewContentForCheckerboardedScrollsParam(
-    &kNewContentForCheckerboardedScrolls,
-    "mode",
-    kNewContentForCheckerboardedScrollsPerFrame);
+constexpr base::FeatureParam<NewContentForCheckerboardedScrollsMode>::Option
+    kNewContentForCheckerboardedScrollsModeOptions[] = {
+        {NewContentForCheckerboardedScrollsMode::kPerScroll,
+         kNewContentForCheckerboardedScrollsPerScroll},
+        {NewContentForCheckerboardedScrollsMode::kPerFrame,
+         kNewContentForCheckerboardedScrollsPerFrame},
+};
+BASE_FEATURE_ENUM_PARAM(NewContentForCheckerboardedScrollsMode,
+                        kNewContentForCheckerboardedScrollsParam,
+                        &kNewContentForCheckerboardedScrolls,
+                        "mode",
+                        NewContentForCheckerboardedScrollsMode::kPerFrame,
+                        &kNewContentForCheckerboardedScrollsModeOptions);
 
 BASE_FEATURE(kPreventDuplicateImageDecodes, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kResolveLargeImageDecodes, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kInitImageDecodeLastUseTime, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -155,13 +167,13 @@ BASE_FEATURE_PARAM(int,
                    kThrottleRepeatedNoDamageFramesThreshold1,
                    &kThrottleRepeatedNoDamageFrames,
                    "repeated_no_damage_frame_throttling_threshold1",
-                   90);
+                   360);
 
 BASE_FEATURE_PARAM(int,
                    kThrottleRepeatedNoDamageFramesThreshold2,
                    &kThrottleRepeatedNoDamageFrames,
                    "repeated_no_damage_frame_throttling_threshold2",
-                   90);
+                   60);
 
 BASE_FEATURE_PARAM(int,
                    kThrottleRepeatedNoDamageFramesIntervalFactor1,
@@ -184,16 +196,21 @@ BASE_FEATURE(kThrottleMainFrameTo60Hz,
 #endif
 );
 
+BASE_FEATURE(kThrottleOffscreenCanvasTo60Hz, base::FEATURE_DISABLED_BY_DEFAULT);
+
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kThrottleMainFrameTo60HzWebView,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kThrottleMainFrameTo60HzDesktopAndroid,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDesktopAndroidUnifiedCompositorLimits,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
 BASE_FEATURE(kHighFramerateRequestFromClient,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 void SetIsEligibleForThrottleMainFrameTo60Hz(bool is_eligible) {
   s_is_eligible_for_throttle_main_frame_to_60hz.store(
@@ -205,10 +222,18 @@ bool IsEligibleForThrottleMainFrameTo60Hz() {
       std::memory_order_relaxed);
 }
 
-BASE_FEATURE(kViewTransitionCaptureAndDisplay,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-
+bool IsThrottleMainFrameTo60HzEnabled(bool is_webview) {
+  if (!IsEligibleForThrottleMainFrameTo60Hz()) {
+    return false;
+  }
+#if BUILDFLAG(IS_ANDROID)
+  const base::Feature& feature =
+      is_webview ? kThrottleMainFrameTo60HzWebView : kThrottleMainFrameTo60Hz;
+#else
+  const base::Feature& feature = kThrottleMainFrameTo60Hz;
+#endif
+  return base::FeatureList::IsEnabled(feature);
+}
 
 BASE_FEATURE(kUseLayerListsByDefault, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -275,7 +300,7 @@ BASE_FEATURE_PARAM(double,
                    0.2);
 
 BASE_FEATURE(kScrollJankV4MetricFastScrollContinuityRequiresSameDirection,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kScrollJankV4MetricReportAndroidAppJankStats,
@@ -295,8 +320,6 @@ BASE_FEATURE(kManualBeginFrame, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUnlockDuringGpuImageOperations, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kBrowserControlsSmoothScroll, base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kBrowserControlsHeightChangeCancelAnimations,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -304,7 +327,12 @@ BASE_FEATURE(kBrowserControlsHeightChangeCancelAnimations,
 BASE_FEATURE(kWebviewSchedulerStateMachine, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kBrowserControlsScrollSnapAnimation,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 BASE_FEATURE(kSelectionEdgeVisibilityUsesFullEdge,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -321,6 +349,19 @@ bool SendEarlyFinalBeginMainFrameIsEnabled() {
 
 BASE_FEATURE(kVizHitTestRoundedCorners, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kViewTransitionsNewRoundingChange,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kBrowserControlsExtraHideGestures,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDeferMainFrameBeforeCommitWithPendingTree,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Kill switch for https://crbug.com/569098933.
+BASE_FEATURE(kOmitTransparentSolidQuadsForNoopBlendModes,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kViewTransitionsAvoidDuplicateCaptureRenderPass,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace features

@@ -26,7 +26,6 @@ import org.chromium.chrome.browser.content.WebContentsFactory;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconUtils;
-import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.embedder_support.delegate.WebContentsDelegateAndroid;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.embedder_support.view.ContentView;
@@ -131,8 +130,10 @@ public class MerchantTrustBottomSheetMediator {
                         if (navigation.hasCommitted()) {
                             assumeNonNull(mToolbarModel);
                             mToolbarModel.set(
-                                    BottomSheetToolbarProperties.URL,
-                                    assumeNonNull(getWebContents()).getVisibleUrl());
+                                    BottomSheetToolbarProperties.ORIGIN,
+                                    assumeNonNull(getWebContents())
+                                            .getMainFrame()
+                                            .getLastCommittedOrigin());
                         }
                     }
                 };
@@ -149,7 +150,8 @@ public class MerchantTrustBottomSheetMediator {
                                 BottomSheetToolbarProperties.SECURITY_ICON,
                                 getSecurityIconResource(securityLevel));
                         mToolbarModel.set(
-                                BottomSheetToolbarProperties.URL, mWebContents.getVisibleUrl());
+                                BottomSheetToolbarProperties.ORIGIN,
+                                mWebContents.getMainFrame().getLastCommittedOrigin());
                     }
 
                     @Override

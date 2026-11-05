@@ -7,10 +7,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <map>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <tuple>
 
+#include "base/check.h"
 #include "base/containers/queue.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -41,12 +45,17 @@
 #include "content/public/common/url_constants.h"
 #include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/api/declarative_net_request/test_utils.h"
+#include "extensions/browser/api/declarative_webrequest/request_stage.h"
+#include "extensions/browser/api/declarative_webrequest/webrequest_constants.h"
+#include "extensions/browser/api/declarative_webrequest/webrequest_rules_registry.h"
 #include "extensions/browser/api/web_request/extension_web_request_event_router.h"
 #include "extensions/browser/api/web_request/upload_data_presenter.h"
 #include "extensions/browser/api/web_request/web_request_api_constants.h"
 #include "extensions/browser/api/web_request/web_request_api_helpers.h"
 #include "extensions/browser/api/web_request/web_request_info.h"
 #include "extensions/browser/extension_navigation_registry.h"
+#include "extensions/browser/extension_registry.h"
+#include "extensions/browser/rules_registry_ids.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/declarative_net_request.h"
 #include "extensions/common/api/web_request.h"
@@ -80,6 +89,7 @@ using helpers::ExtraInfoSpec;
 using helpers::InDecreasingExtensionInstallationTimeOrder;
 using helpers::MergeCancelOfResponses;
 using helpers::MergeOnBeforeRequestResponses;
+using helpers::MergeOnHeadersReceivedResponses;
 using helpers::RequestCookieModification;
 using helpers::ResponseCookieModification;
 using helpers::ResponseHeader;
@@ -93,6 +103,10 @@ namespace extensions {
 namespace {
 
 constexpr const char kExampleUrl[] = "http://example.com";
+constexpr auto kGaiaHeaders = std::to_array<std::string_view>({
+    "x-chrome-id-consistency-response",
+    "x-chrome-manage-accounts",
+});
 
 // Returns whether |warnings| contains an extension for |extension_id|.
 bool HasIgnoredAction(const helpers::IgnoredActions& ignored_actions,
@@ -107,6 +121,43 @@ bool HasIgnoredAction(const helpers::IgnoredActions& ignored_actions,
   return false;
 }
 
+scoped_refptr<net::HttpResponseHeaders> MergeOnHeadersReceivedResponses(
+    const GURL& url,
+    scoped_refptr<net::HttpResponseHeaders> base_headers,
+    std::vector<DNRRequestAction> dnr_actions,
+    bool* response_headers_modified,
+    std::vector<const DNRRequestAction*>* matched_actions) {
+  WebRequestInfoInitParams info_params;
+  info_params.url = url;
+  WebRequestInfo info(std::move(info_params));
+  info.dnr_actions = std::move(dnr_actions);
+
+  helpers::IgnoredActions ignored_actions;
+  EventResponseDeltas deltas;
+  GURL preserve_fragment_on_redirect_url;
+  std::optional<ExtensionId> extension_id;
+  scoped_refptr<net::HttpResponseHeaders> new_headers;
+
+  helpers::MergeOnHeadersReceivedResponses(
+      info, deltas, base_headers.get(), &new_headers,
+      &preserve_fragment_on_redirect_url, &extension_id, &ignored_actions,
+      response_headers_modified, matched_actions);
+  return new_headers;
+}
+
+scoped_refptr<net::HttpResponseHeaders> MergeOnHeadersReceivedResponses(
+    const GURL& url,
+    scoped_refptr<net::HttpResponseHeaders> base_headers,
+    DNRRequestAction dnr_action,
+    bool* response_headers_modified,
+    std::vector<const DNRRequestAction*>* matched_actions) {
+  std::vector<DNRRequestAction> dnr_actions;
+  dnr_actions.push_back(std::move(dnr_action));
+  return MergeOnHeadersReceivedResponses(
+      url, base_headers, std::move(dnr_actions), response_headers_modified,
+      matched_actions);
+}
+
 }  // namespace
 
 class ExtensionWebRequestTest : public testing::Test {
@@ -118,6 +169,20 @@ class ExtensionWebRequestTest : public testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(profile_manager_.SetUp());
+  }
+
+  // Creates an off-the-record profile from `profile_` and notifies
+  // `WebRequestEventRouter` of its creation. Because
+  // `ExtensionWebRequestEventRouter` is a singleton, real profiles notify it
+  // via hooks when an OTR profile is created and destroyed; test profiles do
+  // not trigger those hooks automatically, so tests simulate them explicitly.
+  Profile* CreateAndLinkOTRProfile() {
+    Profile* otr_profile = profile_.GetOffTheRecordProfile(
+        Profile::OTRProfileID::CreateUniqueForTesting(),
+        /*create_if_needed=*/true);
+    CHECK(otr_profile);
+    WebRequestEventRouter::OnOTRBrowserContextCreated(&profile_, otr_profile);
+    return otr_profile;
   }
 
   content::BrowserTaskEnvironment task_environment_;
@@ -281,18 +346,7 @@ TEST_F(ExtensionWebRequestTest, BrowserContextShutdown) {
             event_router->GetListenerCountForTesting(&profile_, kEventName));
   EXPECT_TRUE(event_router->HasAnyExtraHeadersListenerForTesting(&profile_));
 
-  // Create an off-the-record profile.
-  auto otr_profile_id = Profile::OTRProfileID::CreateUniqueForTesting();
-  Profile* const otr_profile =
-      profile_.GetOffTheRecordProfile(otr_profile_id,
-                                      /*create_if_needed=*/true);
-  ASSERT_TRUE(otr_profile);
-
-  // Because the ExtensionWebRequestEventRouter is a singleton, there are hooks
-  // in the off-the-record profile for notifying it when an OTR profile is
-  // created and destroyed. Unfortunately, that doesn't work with test profiles,
-  // so the test needs to simulate those calls.
-  WebRequestEventRouter::OnOTRBrowserContextCreated(&profile_, otr_profile);
+  Profile* const otr_profile = CreateAndLinkOTRProfile();
   EXPECT_EQ(0u,
             event_router->GetListenerCountForTesting(otr_profile, kEventName));
   EXPECT_FALSE(event_router->HasAnyExtraHeadersListenerForTesting(otr_profile));
@@ -327,6 +381,194 @@ TEST_F(ExtensionWebRequestTest, BrowserContextShutdown) {
   EXPECT_EQ(0u,
             event_router->GetListenerCountForTesting(&profile_, kEventName));
   EXPECT_FALSE(event_router->HasAnyExtraHeadersListenerForTesting(&profile_));
+}
+
+namespace {
+
+// A WebRequestRulesRegistry that does not touch any global state when rules
+// change.
+class TestWebViewRulesRegistry : public WebRequestRulesRegistry {
+ public:
+  TestWebViewRulesRegistry(content::BrowserContext* context,
+                           int rules_registry_id)
+      : WebRequestRulesRegistry(context,
+                                /*cache_delegate=*/nullptr,
+                                rules_registry_id) {}
+
+ protected:
+  ~TestWebViewRulesRegistry() override = default;
+
+  void ClearCacheOnNavigation() override {}
+};
+
+// Returns a rule that matches every request and cancels it.
+api::events::Rule CreateCancelAllRule() {
+  base::DictValue condition_dict;
+  condition_dict.Set(declarative_webrequest_constants::kInstanceTypeKey,
+                     declarative_webrequest_constants::kRequestMatcherType);
+
+  base::DictValue action_dict;
+  action_dict.Set(declarative_webrequest_constants::kInstanceTypeKey,
+                  declarative_webrequest_constants::kCancelRequestType);
+
+  api::events::Rule rule;
+  rule.id = "rule1";
+  rule.priority = 100;
+  rule.actions.Append(std::move(action_dict));
+  rule.conditions.Append(std::move(condition_dict));
+  return rule;
+}
+
+}  // namespace
+
+// Tests that <webview> rules registries and event listeners are isolated to a
+// single <webview> instance in a single BrowserContext: they are never
+// consulted across related regular and off-the-record contexts, and <webview>
+// requests with non-positive registry or instance IDs (e.g. unattached guests)
+// do not match default registries or zero-instance-ID listeners.
+TEST_F(ExtensionWebRequestTest, WebViewRulesAndListenersIsolation) {
+  WebRequestEventRouter* const event_router =
+      WebRequestEventRouter::Get(&profile_);
+  ASSERT_TRUE(event_router);
+
+  // Install an extension and create a rules registry for a <webview> hosted in
+  // the regular profile, with a rule that cancels every request.
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("WebView Embedder").Build();
+  ExtensionRegistry::Get(&profile_)->AddEnabled(extension);
+
+  constexpr int kWebViewRulesRegistryId = 1;
+  auto registry = base::MakeRefCounted<TestWebViewRulesRegistry>(
+      &profile_, kWebViewRulesRegistryId);
+  {
+    std::vector<api::events::Rule> rules;
+    rules.push_back(CreateCancelAllRule());
+    std::string error = registry->AddRules(extension->id(), std::move(rules));
+    ASSERT_EQ("", error);
+  }
+  event_router->RegisterRulesRegistry(&profile_, kWebViewRulesRegistryId,
+                                      registry);
+
+  Profile* const otr_profile = CreateAndLinkOTRProfile();
+
+  constexpr int kEmbedderProcessId = 42;
+  constexpr int kWebViewInstanceId = 1;
+  auto make_web_view_request =
+      [&](uint64_t request_id, int instance_id = kWebViewInstanceId,
+          int rules_registry_id = kWebViewRulesRegistryId) {
+        WebRequestInfoInitParams params;
+        params.id = request_id;
+        params.url = GURL("https://www.example.com/");
+        params.is_navigation_request = true;
+        params.web_request_type = WebRequestResourceType::MAIN_FRAME;
+        params.is_web_view = true;
+        params.web_view_instance_id = instance_id;
+        params.web_view_rules_registry_id = rules_registry_id;
+        params.web_view_embedder_process_id =
+            content::ChildProcessId(kEmbedderProcessId);
+        return WebRequestInfo(std::move(params));
+      };
+
+  // The registry's rules apply to <webview> requests from its own context.
+  {
+    WebRequestInfo request = make_web_view_request(/*request_id=*/1);
+    EXPECT_TRUE(event_router->ProcessDeclarativeRules(
+        &profile_, web_request::OnBeforeRequest::kEventName, &request,
+        ON_BEFORE_REQUEST, /*filtered_response_headers=*/nullptr));
+    event_router->OnRequestWillBeDestroyed(&profile_, &request);
+  }
+
+  // The registry's rules must not apply to a <webview> request issued from the
+  // related off-the-record context, even when that request happens to carry
+  // the same rules-registry id.
+  {
+    WebRequestInfo request = make_web_view_request(/*request_id=*/2);
+    EXPECT_FALSE(event_router->ProcessDeclarativeRules(
+        otr_profile, web_request::OnBeforeRequest::kEventName, &request,
+        ON_BEFORE_REQUEST, /*filtered_response_headers=*/nullptr));
+    event_router->OnRequestWillBeDestroyed(otr_profile, &request);
+  }
+
+  // Likewise, an imperative <webview> listener registered in the regular
+  // context must match requests in its own context and never match requests in
+  // the related off-the-record context.
+  const std::string kWebViewEventName = "webViewInternal.onBeforeRequest";
+  const std::string kSubEventName = kWebViewEventName + "/1";
+  ASSERT_TRUE(event_router->AddEventListener(
+      &profile_, extension->id(), extension->name(), kWebViewEventName,
+      kSubEventName, WebRequestEventRouter::RequestFilter(),
+      /*extra_info_spec=*/0, kEmbedderProcessId, kWebViewInstanceId,
+      extensions::kMainThreadId, blink::mojom::kInvalidServiceWorkerVersionId,
+      /*is_lazy=*/false));
+  {
+    WebRequestInfo own_request = make_web_view_request(/*request_id=*/3);
+    int extra_info_spec = 0;
+    EXPECT_EQ(1u, event_router
+                      ->GetMatchingListeners(
+                          &profile_, web_request::OnBeforeRequest::kEventName,
+                          &own_request, &extra_info_spec)
+                      .size());
+
+    // In production an OTR <webview> request would have a different
+    // `web_view_embedder_process_id` than the regular profile's embedder; reuse
+    // the same IDs here to exercise the cross-context skip directly.
+    WebRequestInfo otr_request = make_web_view_request(/*request_id=*/4);
+    EXPECT_TRUE(event_router
+                    ->GetMatchingListeners(
+                        otr_profile, web_request::OnBeforeRequest::kEventName,
+                        &otr_request, &extra_info_spec)
+                    .empty());
+  }
+  event_router->RemoveWebViewEventListeners(
+      &profile_, content::ChildProcessId(kEmbedderProcessId),
+      kWebViewInstanceId);
+
+  // Unattached <webview> requests carry non-positive registry/instance IDs
+  // (`kDefaultRulesRegistryID` / `0`) and must not match the default registry
+  // or a `webViewInternal.*` listener registered with `web_view_instance_id` 0.
+  auto default_registry = base::MakeRefCounted<TestWebViewRulesRegistry>(
+      &profile_, extensions::rules_registry_ids::kDefaultRulesRegistryID);
+  {
+    std::vector<api::events::Rule> rules;
+    rules.push_back(CreateCancelAllRule());
+    ASSERT_EQ("",
+              default_registry->AddRules(extension->id(), std::move(rules)));
+  }
+  event_router->RegisterRulesRegistry(
+      &profile_, extensions::rules_registry_ids::kDefaultRulesRegistryID,
+      default_registry);
+  ASSERT_TRUE(event_router->AddEventListener(
+      &profile_, extension->id(), extension->name(), kWebViewEventName,
+      kWebViewEventName + "/2", WebRequestEventRouter::RequestFilter(),
+      /*extra_info_spec=*/0, kEmbedderProcessId, /*web_view_instance_id=*/0,
+      extensions::kMainThreadId, blink::mojom::kInvalidServiceWorkerVersionId,
+      /*is_lazy=*/false));
+  {
+    WebRequestInfo unattached_request = make_web_view_request(
+        /*request_id=*/5, /*instance_id=*/0,
+        extensions::rules_registry_ids::kDefaultRulesRegistryID);
+    EXPECT_FALSE(event_router->ProcessDeclarativeRules(
+        &profile_, web_request::OnBeforeRequest::kEventName,
+        &unattached_request, ON_BEFORE_REQUEST,
+        /*filtered_response_headers=*/nullptr));
+    int extra_info_spec = 0;
+    EXPECT_TRUE(event_router
+                    ->GetMatchingListeners(
+                        &profile_, web_request::OnBeforeRequest::kEventName,
+                        &unattached_request, &extra_info_spec)
+                    .empty());
+    event_router->OnRequestWillBeDestroyed(&profile_, &unattached_request);
+  }
+  event_router->RemoveWebViewEventListeners(
+      &profile_, content::ChildProcessId(kEmbedderProcessId),
+      /*web_view_instance_id=*/0);
+  event_router->RegisterRulesRegistry(
+      &profile_, extensions::rules_registry_ids::kDefaultRulesRegistryID,
+      /*rules_registry=*/nullptr);
+
+  event_router->RegisterRulesRegistry(&profile_, kWebViewRulesRegistryId,
+                                      /*rules_registry=*/nullptr);
+  event_router->OnOTRBrowserContextDestroyed(&profile_, otr_profile);
 }
 
 // Simulates the state caused by polluted prefs (multiple filters under one
@@ -670,6 +912,7 @@ TEST(ExtensionWebRequestHelpersTest, TestCalculateOnHeadersReceivedDelta) {
       "Key3: Value3\r\n"
       "Key5: Value5, end5\r\n"
       "X-Chrome-ID-Consistency-Response: Value6\r\n"
+      "X-Chrome-Manage-Accounts: Value7\r\n"
       "\r\n";
   auto base_headers = base::MakeRefCounted<net::HttpResponseHeaders>(
       net::HttpUtil::AssembleRawHeaders(base_headers_string));
@@ -678,14 +921,16 @@ TEST(ExtensionWebRequestHelpersTest, TestCalculateOnHeadersReceivedDelta) {
       {"kEy1", "Value1"},  // Unchanged
       {"Key2", "Value1"},  // Modified
       // Key3 is deleted
-      {"Key4", "Value4"},                             // Added
-      {"Key5", "Value5, end5"},                       // Unchanged
-      {"X-Chrome-ID-Consistency-Response", "Value1"}  // Modified
+      {"Key4", "Value4"},                              // Added
+      {"Key5", "Value5, end5"},                        // Unchanged
+      {"X-Chrome-ID-Consistency-Response", "Value1"},  // Modified
+      {"X-Chrome-Manage-Accounts", "Value1"}           // Modified
   };
   GURL url;
 
-  // The X-Chrome-ID-Consistency-Response is a protected header, but only for
-  // Gaia URLs. It should be modifiable when sent from anywhere else.
+  // The X-Chrome-ID-Consistency-Response and X-Chrome-Manage-Accounts headers
+  // are protected headers, but only for Gaia URLs. They should be modifiable
+  // when sent from anywhere else.
   // Non-Gaia URL:
   EventResponseDelta delta = CalculateOnHeadersReceivedDelta(
       "extid", base::Time::Now(), cancel, url, url, base_headers.get(),
@@ -693,14 +938,16 @@ TEST(ExtensionWebRequestHelpersTest, TestCalculateOnHeadersReceivedDelta) {
   EXPECT_TRUE(delta.cancel);
   EXPECT_THAT(
       delta.added_response_headers,
-      ElementsAre(
-          ResponseHeader("Key2", "Value1"), ResponseHeader("Key4", "Value4"),
-          ResponseHeader("X-Chrome-ID-Consistency-Response", "Value1")));
-  EXPECT_THAT(delta.deleted_response_headers,
-              ElementsAre(ResponseHeader("Key2", "Value2, Bar"),
-                          ResponseHeader("Key3", "Value3"),
-                          ResponseHeader("X-Chrome-ID-Consistency-Response",
-                                         "Value6")));
+      ElementsAre(ResponseHeader("Key2", "Value1"),
+                  ResponseHeader("Key4", "Value4"),
+                  ResponseHeader("X-Chrome-ID-Consistency-Response", "Value1"),
+                  ResponseHeader("X-Chrome-Manage-Accounts", "Value1")));
+  EXPECT_THAT(
+      delta.deleted_response_headers,
+      ElementsAre(ResponseHeader("Key2", "Value2, Bar"),
+                  ResponseHeader("Key3", "Value3"),
+                  ResponseHeader("X-Chrome-ID-Consistency-Response", "Value6"),
+                  ResponseHeader("X-Chrome-Manage-Accounts", "Value7")));
 
   // Gaia URL:
   delta = CalculateOnHeadersReceivedDelta(
@@ -808,12 +1055,16 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses) {
   GURL effective_new_url;
   std::optional<ExtensionId> extension_id;
 
+  WebRequestInfoInitParams info_params;
+  info_params.url = GURL(kExampleUrl);
+  WebRequestInfo request_info(std::move(info_params));
+
   // No redirect
   {
     EventResponseDelta d0("extid0", base::Time::FromInternalValue(0));
     deltas.push_back(std::move(d0));
   }
-  MergeOnBeforeRequestResponses(GURL(kExampleUrl), deltas, &effective_new_url,
+  MergeOnBeforeRequestResponses(request_info, deltas, &effective_new_url,
                                 &extension_id, &ignored_actions);
   EXPECT_TRUE(effective_new_url.is_empty());
   EXPECT_FALSE(extension_id.has_value());
@@ -826,7 +1077,7 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses) {
     deltas.push_back(std::move(d1));
   }
   deltas.sort(&InDecreasingExtensionInstallationTimeOrder);
-  MergeOnBeforeRequestResponses(GURL(kExampleUrl), deltas, &effective_new_url,
+  MergeOnBeforeRequestResponses(request_info, deltas, &effective_new_url,
                                 &extension_id, &ignored_actions);
   EXPECT_EQ(new_url_1, effective_new_url);
   EXPECT_EQ("extid1", extension_id.value());
@@ -841,7 +1092,7 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses) {
   }
   deltas.sort(&InDecreasingExtensionInstallationTimeOrder);
   ignored_actions.clear();
-  MergeOnBeforeRequestResponses(GURL(kExampleUrl), deltas, &effective_new_url,
+  MergeOnBeforeRequestResponses(request_info, deltas, &effective_new_url,
                                 &extension_id, &ignored_actions);
   EXPECT_EQ(new_url_1, effective_new_url);
   EXPECT_EQ("extid1", extension_id.value());
@@ -858,7 +1109,7 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses) {
   }
   deltas.sort(&InDecreasingExtensionInstallationTimeOrder);
   ignored_actions.clear();
-  MergeOnBeforeRequestResponses(GURL(kExampleUrl), deltas, &effective_new_url,
+  MergeOnBeforeRequestResponses(request_info, deltas, &effective_new_url,
                                 &extension_id, &ignored_actions);
   EXPECT_EQ(new_url_3, effective_new_url);
   EXPECT_EQ("extid3", extension_id.value());
@@ -876,7 +1127,7 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses) {
   }
   deltas.sort(&InDecreasingExtensionInstallationTimeOrder);
   ignored_actions.clear();
-  MergeOnBeforeRequestResponses(GURL(kExampleUrl), deltas, &effective_new_url,
+  MergeOnBeforeRequestResponses(request_info, deltas, &effective_new_url,
                                 &extension_id, &ignored_actions);
   EXPECT_EQ(new_url_3, effective_new_url);
   EXPECT_EQ("extid3", extension_id.value());
@@ -895,6 +1146,10 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses2) {
   GURL effective_new_url;
   std::optional<ExtensionId> extension_id;
 
+  WebRequestInfoInitParams info_params;
+  info_params.url = GURL(kExampleUrl);
+  WebRequestInfo request_info(std::move(info_params));
+
   // Single redirect.
   GURL new_url_0("http://foo.com");
   {
@@ -902,7 +1157,7 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses2) {
     d0.new_url = GURL(new_url_0);
     deltas.push_back(std::move(d0));
   }
-  MergeOnBeforeRequestResponses(GURL(kExampleUrl), deltas, &effective_new_url,
+  MergeOnBeforeRequestResponses(request_info, deltas, &effective_new_url,
                                 &extension_id, &ignored_actions);
   EXPECT_EQ(new_url_0, effective_new_url);
   EXPECT_EQ("extid0", extension_id.value());
@@ -917,7 +1172,7 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses2) {
   }
   deltas.sort(&InDecreasingExtensionInstallationTimeOrder);
   ignored_actions.clear();
-  MergeOnBeforeRequestResponses(GURL(kExampleUrl), deltas, &effective_new_url,
+  MergeOnBeforeRequestResponses(request_info, deltas, &effective_new_url,
                                 &extension_id, &ignored_actions);
   EXPECT_EQ(new_url_1, effective_new_url);
   EXPECT_EQ("extid1", extension_id.value());
@@ -934,7 +1189,7 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses2) {
   deltas.sort(&InDecreasingExtensionInstallationTimeOrder);
   ignored_actions.clear();
 
-  MergeOnBeforeRequestResponses(GURL(kExampleUrl), deltas, &effective_new_url,
+  MergeOnBeforeRequestResponses(request_info, deltas, &effective_new_url,
                                 &extension_id, &ignored_actions);
   EXPECT_EQ(new_url_2, effective_new_url);
   EXPECT_EQ("extid2", extension_id.value());
@@ -950,7 +1205,7 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses2) {
   }
   deltas.sort(&InDecreasingExtensionInstallationTimeOrder);
   ignored_actions.clear();
-  MergeOnBeforeRequestResponses(GURL(kExampleUrl), deltas, &effective_new_url,
+  MergeOnBeforeRequestResponses(request_info, deltas, &effective_new_url,
                                 &extension_id, &ignored_actions);
   EXPECT_EQ(new_url_1, effective_new_url);
   EXPECT_EQ("extid2", extension_id.value());
@@ -967,6 +1222,10 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses3) {
   GURL effective_new_url;
   std::optional<ExtensionId> extension_id;
 
+  WebRequestInfoInitParams info_params;
+  info_params.url = GURL(kExampleUrl);
+  WebRequestInfo request_info(std::move(info_params));
+
   // Single redirect.
   GURL new_url_0("http://foo.com");
   {
@@ -974,7 +1233,7 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses3) {
     d0.new_url = GURL(new_url_0);
     deltas.push_back(std::move(d0));
   }
-  MergeOnBeforeRequestResponses(GURL(kExampleUrl), deltas, &effective_new_url,
+  MergeOnBeforeRequestResponses(request_info, deltas, &effective_new_url,
                                 &extension_id, &ignored_actions);
   EXPECT_EQ(new_url_0, effective_new_url);
   EXPECT_EQ("extid0", extension_id.value());
@@ -989,14 +1248,14 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses3) {
   }
   deltas.sort(&InDecreasingExtensionInstallationTimeOrder);
   ignored_actions.clear();
-  MergeOnBeforeRequestResponses(GURL(kExampleUrl), deltas, &effective_new_url,
+  MergeOnBeforeRequestResponses(request_info, deltas, &effective_new_url,
                                 &extension_id, &ignored_actions);
   EXPECT_EQ(new_url_1, effective_new_url);
   EXPECT_EQ("extid1", extension_id.value());
   EXPECT_TRUE(ignored_actions.empty());
 }
 
-// This tests that WebSocket requests can not be redirected.
+// This tests that WebSocket and WebTransport requests can not be redirected.
 TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses4) {
   EventResponseDeltas deltas;
   helpers::IgnoredActions ignored_actions;
@@ -1009,9 +1268,21 @@ TEST(ExtensionWebRequestHelpersTest, TestMergeOnBeforeRequestResponses4) {
     delta.new_url = GURL("http://foo.com");
     deltas.push_back(std::move(delta));
   }
-  MergeOnBeforeRequestResponses(GURL("ws://example.com"), deltas,
-                                &effective_new_url, &extension_id,
-                                &ignored_actions);
+
+  WebRequestInfoInitParams ws_params;
+  ws_params.url = GURL("ws://example.com");
+  WebRequestInfo ws_info(std::move(ws_params));
+  MergeOnBeforeRequestResponses(ws_info, deltas, &effective_new_url,
+                                &extension_id, &ignored_actions);
+  EXPECT_EQ(GURL(), effective_new_url);
+  EXPECT_FALSE(extension_id.has_value());
+
+  WebRequestInfoInitParams wt_params;
+  wt_params.url = GURL("https://example.com");
+  wt_params.web_request_type = WebRequestResourceType::WEB_TRANSPORT;
+  WebRequestInfo wt_info(std::move(wt_params));
+  MergeOnBeforeRequestResponses(wt_info, deltas, &effective_new_url,
+                                &extension_id, &ignored_actions);
   EXPECT_EQ(GURL(), effective_new_url);
   EXPECT_FALSE(extension_id.has_value());
 }
@@ -2380,6 +2651,205 @@ TEST(ExtensionWebRequestHelpersTest,
 
   // There should be no entry for the "warning" header because it was not
   // removed.
+}
+
+// Tests that declarative net request actions cannot modify response headers
+// hidden by ExtensionsAPIClient::ShouldHideResponseHeader() (such as
+// x-chrome-id-consistency-response and x-chrome-manage-accounts on Gaia URLs),
+// whether injecting, mutating, or removing the header.
+TEST(ExtensionWebRequestHelpersTest,
+     TestMergeOnHeadersReceivedResponses_DNRCannotModifyHiddenHeaders) {
+  using HeaderInfo = DNRRequestAction::HeaderInfo;
+  const GURL gaia_url = GaiaUrls::GetInstance()->gaia_url();
+  const GURL non_gaia_url = GURL(kExampleUrl);
+
+  for (std::string_view gaia_header : kGaiaHeaders) {
+    SCOPED_TRACE(gaia_header);
+
+    // When the header is initially absent on the server response:
+    {
+      char base_headers_string[] =
+          "HTTP/1.0 200 OK\r\n"
+          "X-Control: server_value\r\n"
+          "\r\n";
+      auto base_headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+          net::HttpUtil::AssembleRawHeaders(base_headers_string));
+
+      auto make_action = [gaia_header] {
+        DNRRequestAction action = CreateRequestActionForTesting(
+            DNRRequestAction::Type::MODIFY_HEADERS);
+        action.extension_id = "ext_1";
+        action.response_headers_to_modify = {
+            HeaderInfo(std::string(gaia_header), dnr_api::HeaderOperation::kSet,
+                       "injected_value")};
+        return action;
+      };
+
+      // Gaia URL: extension cannot inject a new Gaia header.
+      {
+        bool headers_modified = false;
+        std::vector<const DNRRequestAction*> matched_actions;
+        auto new_headers = MergeOnHeadersReceivedResponses(
+            gaia_url, base_headers, make_action(), &headers_modified,
+            &matched_actions);
+        EXPECT_FALSE(headers_modified);
+        EXPECT_FALSE(new_headers);
+        EXPECT_TRUE(matched_actions.empty());
+        EXPECT_FALSE(base_headers->HasHeader(gaia_header));
+      }
+
+      // Control: non-Gaia URL allows injecting the header.
+      {
+        bool headers_modified = false;
+        std::vector<const DNRRequestAction*> matched_actions;
+        auto new_headers = MergeOnHeadersReceivedResponses(
+            non_gaia_url, base_headers, make_action(), &headers_modified,
+            &matched_actions);
+        ASSERT_TRUE(new_headers);
+        EXPECT_TRUE(headers_modified);
+        EXPECT_EQ(1u, matched_actions.size());
+        EXPECT_EQ("injected_value",
+                  new_headers->GetNormalizedHeader(gaia_header));
+      }
+    }
+
+    // When the header is initially present on the server response:
+    {
+      char base_headers_string[] =
+          "HTTP/1.0 200 OK\r\n"
+          "X-Chrome-ID-Consistency-Response: server_value\r\n"
+          "X-Chrome-Manage-Accounts: server_value\r\n"
+          "X-Control: server_control\r\n"
+          "\r\n";
+      auto base_headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+          net::HttpUtil::AssembleRawHeaders(base_headers_string));
+
+      // Gaia URL: cannot overwrite (kSet).
+      {
+        DNRRequestAction action = CreateRequestActionForTesting(
+            DNRRequestAction::Type::MODIFY_HEADERS);
+        action.extension_id = "ext_1";
+        action.response_headers_to_modify = {
+            HeaderInfo(std::string(gaia_header), dnr_api::HeaderOperation::kSet,
+                       "overwrite_value")};
+
+        bool headers_modified = false;
+        std::vector<const DNRRequestAction*> matched_actions;
+        auto new_headers = MergeOnHeadersReceivedResponses(
+            gaia_url, base_headers, std::move(action), &headers_modified,
+            &matched_actions);
+        EXPECT_FALSE(headers_modified);
+        EXPECT_FALSE(new_headers);
+        EXPECT_TRUE(matched_actions.empty());
+        EXPECT_EQ("server_value",
+                  base_headers->GetNormalizedHeader(gaia_header));
+      }
+
+      // Gaia URL: cannot append (kAppend).
+      {
+        DNRRequestAction action = CreateRequestActionForTesting(
+            DNRRequestAction::Type::MODIFY_HEADERS);
+        action.extension_id = "ext_1";
+        action.response_headers_to_modify = {
+            HeaderInfo(std::string(gaia_header),
+                       dnr_api::HeaderOperation::kAppend, "append_value")};
+
+        bool headers_modified = false;
+        std::vector<const DNRRequestAction*> matched_actions;
+        auto new_headers = MergeOnHeadersReceivedResponses(
+            gaia_url, base_headers, std::move(action), &headers_modified,
+            &matched_actions);
+        EXPECT_FALSE(headers_modified);
+        EXPECT_FALSE(new_headers);
+        EXPECT_TRUE(matched_actions.empty());
+        EXPECT_EQ("server_value",
+                  base_headers->GetNormalizedHeader(gaia_header));
+      }
+
+      // Gaia URL: cannot remove (kRemove).
+      {
+        DNRRequestAction action = CreateRequestActionForTesting(
+            DNRRequestAction::Type::MODIFY_HEADERS);
+        action.extension_id = "ext_1";
+        action.response_headers_to_modify = {
+            HeaderInfo(std::string(gaia_header),
+                       dnr_api::HeaderOperation::kRemove, std::nullopt)};
+
+        bool headers_modified = false;
+        std::vector<const DNRRequestAction*> matched_actions;
+        auto new_headers = MergeOnHeadersReceivedResponses(
+            gaia_url, base_headers, std::move(action), &headers_modified,
+            &matched_actions);
+        EXPECT_FALSE(headers_modified);
+        EXPECT_FALSE(new_headers);
+        EXPECT_TRUE(matched_actions.empty());
+        EXPECT_TRUE(base_headers->HasHeader(gaia_header));
+        EXPECT_EQ("server_value",
+                  base_headers->GetNormalizedHeader(gaia_header));
+      }
+
+      // Control: non-Gaia URL allows removal.
+      {
+        DNRRequestAction action = CreateRequestActionForTesting(
+            DNRRequestAction::Type::MODIFY_HEADERS);
+        action.extension_id = "ext_1";
+        action.response_headers_to_modify = {
+            HeaderInfo(std::string(gaia_header),
+                       dnr_api::HeaderOperation::kRemove, std::nullopt)};
+
+        bool headers_modified = false;
+        std::vector<const DNRRequestAction*> matched_actions;
+        auto new_headers = MergeOnHeadersReceivedResponses(
+            non_gaia_url, base_headers, std::move(action), &headers_modified,
+            &matched_actions);
+        ASSERT_TRUE(new_headers);
+        EXPECT_TRUE(headers_modified);
+        EXPECT_EQ(1u, matched_actions.size());
+        EXPECT_FALSE(new_headers->HasHeader(gaia_header));
+      }
+    }
+  }
+}
+
+// Tests that when a declarative net request rule modifies multiple headers,
+// restricted headers are dropped while unrestricted headers are still applied.
+TEST(ExtensionWebRequestHelpersTest,
+     TestMergeOnHeadersReceivedResponses_DNRPartialHeaderModification) {
+  using HeaderInfo = DNRRequestAction::HeaderInfo;
+  const GURL gaia_url = GaiaUrls::GetInstance()->gaia_url();
+
+  for (std::string_view gaia_header : kGaiaHeaders) {
+    SCOPED_TRACE(gaia_header);
+
+    char base_headers_string[] =
+        "HTTP/1.0 200 OK\r\n"
+        "X-Control: server_value\r\n"
+        "\r\n";
+    auto base_headers = base::MakeRefCounted<net::HttpResponseHeaders>(
+        net::HttpUtil::AssembleRawHeaders(base_headers_string));
+
+    DNRRequestAction action =
+        CreateRequestActionForTesting(DNRRequestAction::Type::MODIFY_HEADERS);
+    action.extension_id = "ext_1";
+    action.response_headers_to_modify = {
+        HeaderInfo(std::string(gaia_header), dnr_api::HeaderOperation::kSet,
+                   "bad_val_1"),
+        HeaderInfo(std::string(gaia_header), dnr_api::HeaderOperation::kAppend,
+                   "bad_val_2"),
+        HeaderInfo("x-control", dnr_api::HeaderOperation::kSet, "good_val")};
+
+    // Gaia URL: hidden headers are dropped, but allowed header is applied.
+    bool headers_modified = false;
+    std::vector<const DNRRequestAction*> matched_actions;
+    auto new_headers = MergeOnHeadersReceivedResponses(
+        gaia_url, base_headers, std::move(action), &headers_modified,
+        &matched_actions);
+    ASSERT_TRUE(new_headers);
+    EXPECT_TRUE(headers_modified);
+    EXPECT_EQ(1u, matched_actions.size());
+    EXPECT_FALSE(new_headers->HasHeader(gaia_header));
+    EXPECT_EQ("good_val", new_headers->GetNormalizedHeader("X-Control"));
+  }
 }
 
 TEST(ExtensionWebRequestHelpersTest, TestMergeOnAuthRequiredResponses) {

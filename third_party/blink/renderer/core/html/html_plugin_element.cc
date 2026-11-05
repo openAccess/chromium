@@ -31,10 +31,12 @@
 #include "third_party/blink/public/mojom/loader/request_context_frame_type.mojom-blink.h"
 #include "third_party/blink/public/mojom/permissions_policy/policy_value.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/web_url_request.h"
+#include "third_party/blink/public/web/web_plugin.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
+#include "third_party/blink/renderer/core/css/style_recalc_context.h"
 #include "third_party/blink/renderer/core/display_lock/display_lock_utilities.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
@@ -161,17 +163,18 @@ void HTMLPlugInElement::SetPersistedPlugin(WebPluginContainerImpl* plugin) {
     return;
   if (persisted_plugin_) {
     persisted_plugin_->Hide();
-    DisposePluginSoon(persisted_plugin_.Release());
+    persisted_plugin_.Release()->Dispose();
   }
   persisted_plugin_ = plugin;
 }
 
 void HTMLPlugInElement::SetFocused(bool focused,
-                                   mojom::blink::FocusType focus_type) {
+                                   mojom::blink::FocusType focus_type,
+                                   BlurEventBehavior blur_event_behavior) {
   WebPluginContainerImpl* plugin = OwnedPlugin();
   if (plugin)
     plugin->SetFocused(focused, focus_type);
-  HTMLFrameOwnerElement::SetFocused(focused, focus_type);
+  HTMLFrameOwnerElement::SetFocused(focused, focus_type, blur_event_behavior);
 }
 
 bool HTMLPlugInElement::CanProcessDrag() const {
@@ -214,7 +217,6 @@ void HTMLPlugInElement::AttachLayoutTree(AttachContext& context) {
     // If we don't have a layoutObject we have to dispose of any plugins
     // which we persisted over a reattach.
     if (persisted_plugin_) {
-      HTMLFrameOwnerElement::PluginDisposeSuspendScope suspend_plugin_dispose;
       SetPersistedPlugin(nullptr);
     }
     return;
@@ -518,6 +520,18 @@ WebPluginContainerImpl* HTMLPlugInElement::OwnedPlugin() const {
   if (view && view->IsPluginView())
     return To<WebPluginContainerImpl>(view);
   return nullptr;
+}
+
+void HTMLPlugInElement::ParseAttribute(
+    const AttributeModificationParams& params) {
+  HTMLFrameOwnerElement::ParseAttribute(params);
+  if (!params.name.LocalName().starts_with("data-")) {
+    return;
+  }
+  if (WebPluginContainerImpl* plugin = OwnedPlugin()) {
+    plugin->Plugin()->DidChangeDataAttribute(params.name.LocalName(),
+                                             params.new_value);
+  }
 }
 
 bool HTMLPlugInElement::IsPresentationAttribute(
@@ -936,13 +950,17 @@ const ComputedStyle* HTMLPlugInElement::CustomStyleForLayoutObject(
     const StyleRecalcContext& style_recalc_context) {
   const ComputedStyle* style =
       OriginalStyleForLayoutObject(style_recalc_context);
-  if (IsImageType() && !GetLayoutObject() && style &&
-      LayoutObjectIsNeeded(*style)) {
+  // Don't attempt a load if this computed style is for EnsureComputedStyle().
+  if (!style_recalc_context.is_ensuring_style && IsImageType() &&
+      !GetLayoutObject() && style && LayoutObjectIsNeeded(*style)) {
     if (!image_loader_) {
       image_loader_ = MakeGarbageCollected<HTMLImageLoader>(this);
     }
-    image_loader_->UpdateFromElement(ImageLoader::kUpdateNormal,
-                                     /* force_blocking */ true);
+    image_loader_->UpdateFromElement(
+        RuntimeEnabledFeatures::HTMLPlugInDeferStyleRecalcImageLoadEnabled()
+            ? ImageLoader::kUpdateFromTask
+            : ImageLoader::kUpdateNormal,
+        /* force_blocking */ true);
   }
   return style;
 }

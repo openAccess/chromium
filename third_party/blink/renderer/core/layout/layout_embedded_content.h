@@ -58,14 +58,6 @@ class CORE_EXPORT LayoutEmbeddedContent : public LayoutReplaced {
   WebPluginContainerImpl* Plugin() const;
   EmbeddedContentView* GetEmbeddedContentView() const;
 
-  // Subtracts border/padding, and other offsets if they exist.
-  PhysicalOffset EmbeddedContentFromBorderBox(const PhysicalOffset&) const;
-  gfx::PointF EmbeddedContentFromBorderBox(const gfx::PointF&) const;
-  gfx::Rect EmbeddedContentFromBorderBox(const gfx::Rect&) const;
-  // Adds border/padding, and other offsets if they exist.
-  PhysicalOffset BorderBoxFromEmbeddedContent(const PhysicalOffset&) const;
-  gfx::Rect BorderBoxFromEmbeddedContent(const gfx::Rect&) const;
-
   PhysicalRect ReplacedContentRectFrom(
       const PhysicalRect& base_content_rect) const override;
 
@@ -79,14 +71,6 @@ class CORE_EXPORT LayoutEmbeddedContent : public LayoutReplaced {
 
   bool IsThrottledFrameView() const;
 
-  // The size of the child frame when it should be "frozen"; i.e., it should not
-  // change even when the size of |this| changes.
-  virtual const std::optional<PhysicalSize> FrozenFrameSize() const;
-
-  // A transform mapping from the coordinate space of the embedded content
-  // rendered by this object to the object's border-box.
-  AffineTransform EmbeddedContentTransform() const;
-
   virtual bool ShowsUnavailablePluginIndicator() const;
 
  protected:
@@ -97,7 +81,7 @@ class CORE_EXPORT LayoutEmbeddedContent : public LayoutReplaced {
   void StyleDidChange(StyleDifference,
                       const ComputedStyle* old_style,
                       const ComputedStyle& new_style,
-                      const StyleChangeContext&) final;
+                      const StyleChangeContext&) override;
   void PaintReplaced(const PaintInfo&,
                      const PhysicalOffset& paint_offset) const override;
   CursorDirective GetCursor(const PhysicalOffset&, ui::Cursor&) const final;

@@ -74,9 +74,8 @@ class DownloadController : public DownloadControllerBase {
 
   DownloadCallbackValidator* validator() { return &validator_; }
 
-  // The download item is not dangerous. Shows the DangerousDownloadDialog
-  // (confirmation dialog for safe downloads). Returns whether the dialog was
-  // shown.
+  // Shows or queues the DangerousDownloadDialog for `item`. Returns whether
+  // the dialog was shown or queued.
   bool ShowDangerousDownloadDialog(download::DownloadItem* item);
 
  private:
@@ -125,10 +124,9 @@ class DownloadController : public DownloadControllerBase {
   // Whether or not we should show an app verification prompt for `item`
   bool ShouldShowAppVerificationPrompt(download::DownloadItem* item);
 
-  // Helper function to get the current active window.
+  // Helper function to get the window for a download item.
   ui::WindowAndroid* GetWindowHelper(download::DownloadItem* item,
-                                     bool should_schedule_removal,
-                                     bool fallback_to_current_window);
+                                     bool should_schedule_removal);
 
   std::string default_file_name_;
 

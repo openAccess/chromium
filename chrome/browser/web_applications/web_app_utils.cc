@@ -129,7 +129,7 @@ class AppIconFetcherTask : public content::WebContentsObserver {
                      WebAppProvider* web_app_provider,
                      const webapps::AppId& app_id)
       : WebContentsObserver(web_contents) {
-    DCHECK(web_contents);
+    CHECK(web_contents, base::NotFatalUntil::M162);
     // For best results, this should be of equal (or slightly higher) value than
     // the width and height of the presented icon on the default offline error
     // page (see webapp_default_offline.[html|css] for icon details).
@@ -159,12 +159,13 @@ class AppIconFetcherTask : public content::WebContentsObserver {
   }
 
   void OnIconFetched(int fetched_size, OrderedSizeToBitmap icon_bitmaps) {
-    DCHECK_EQ(icon_bitmaps.size(), 1ul);
-    DCHECK_EQ(icon_bitmaps.begin()->first, fetched_size);
     if (icon_bitmaps.empty()) {
       delete this;
       return;
     }
+    CHECK_EQ(icon_bitmaps.size(), 1ul, base::NotFatalUntil::M162);
+    CHECK_EQ(icon_bitmaps.begin()->first, fetched_size,
+             base::NotFatalUntil::M162);
     icon_url_ = EncodeIconAsUrl(icon_bitmaps.begin()->second);
     MaybeSendImageAndSelfDestruct();
   }
@@ -179,8 +180,8 @@ class AppIconFetcherTask : public content::WebContentsObserver {
     if (!document_ready_ || icon_url_.is_empty()) {
       return;
     }
-    DCHECK(web_contents());
-    DCHECK(icon_url_.is_valid());
+    CHECK(web_contents(), base::NotFatalUntil::M162);
+    CHECK(icon_url_.is_valid(), base::NotFatalUntil::M162);
 
     std::u16string app_icon_inline =
         std::u16string(u"var icon = document.getElementById('icon');") +
@@ -188,7 +189,7 @@ class AppIconFetcherTask : public content::WebContentsObserver {
 
     content::RenderFrameHost* host = web_contents()->GetPrimaryMainFrame();
     host->ExecuteJavaScriptInIsolatedWorld(app_icon_inline, base::DoNothing(),
-                                           ISOLATED_WORLD_ID_EXTENSIONS);
+                                           ISOLATED_WORLD_ID_CHROME_INTERNAL);
 
     delete this;
   }
@@ -597,7 +598,6 @@ content::mojom::AlternativeErrorPageOverrideInfoPtr ConstructWebAppErrorPage(
 bool IsValidScopeForLinkCapturing(const GURL& scope) {
   return scope.is_valid() && scope.has_scheme() && scope.SchemeIsHTTPOrHTTPS();
 }
-
 
 // TODO(crbug.com/331208955): Remove after migration.
 bool WillBeSystemWebApp(const webapps::AppId& app_id,

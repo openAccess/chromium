@@ -5,7 +5,7 @@
 #include "components/memory_pressure/memory_pressure_level_reporter.h"
 
 #include "base/functional/bind.h"
-#include "base/memory/memory_pressure_listener.h"
+#include "base/memory/memory_pressure_level.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
@@ -30,8 +30,12 @@ MemoryPressureLevelReporter::~MemoryPressureLevelReporter() {
 }
 
 void MemoryPressureLevelReporter::OnMemoryPressureLevelChanged(
-    base::MemoryPressureLevel new_level) {
+    base::MemoryPressureLevel new_level,
+    bool new_disk_only_critical) {
+  DCHECK(!new_disk_only_critical ||
+         new_level == base::MEMORY_PRESSURE_LEVEL_CRITICAL);
   const base::TimeTicks now = base::TimeTicks::Now();
+  // Attributes the elapsed interval to the previous level and disk state.
   ReportHistogram(now);
 
   // Records the duration of the latest pressure session, there are 4
@@ -40,13 +44,9 @@ void MemoryPressureLevelReporter::OnMemoryPressureLevelChanged(
   //   - Moderate -> Critical
   //   - Critical -> Moderate
   //   - Critical -> None
-  // |new_level| can be equal to |periodic_reporting_timer_| if this gets called
-  // by the one shot reporting timer, do nothing in this case.
   if (transition_prefix_.has_value() &&
       (new_level != current_pressure_level_) &&
-      (current_pressure_level_ != base::MEMORY_PRESSURE_LEVEL_NONE) &&
-      !(is_disk_pressure_ &&
-        os_pressure_level_ != base::MEMORY_PRESSURE_LEVEL_CRITICAL)) {
+      (current_pressure_level_ != base::MEMORY_PRESSURE_LEVEL_NONE)) {
     std::string histogram_name;
 
     DCHECK(!current_pressure_level_begin_.is_null());
@@ -82,34 +82,31 @@ void MemoryPressureLevelReporter::OnMemoryPressureLevelChanged(
 
     base::UmaHistogramCustomTimes(histogram_name,
                                   now - current_pressure_level_begin_,
-                                  base::Seconds(1), base::Minutes(10), 50);
+                                  base::Seconds(1), base::Hours(12), 100);
   }
 
-  current_pressure_level_begin_ = now;
-  current_pressure_level_ = new_level;
+  if (new_level != current_pressure_level_) {
+    current_pressure_level_begin_ = now;
+    current_pressure_level_ = new_level;
+  }
+  is_disk_only_critical_ = new_disk_only_critical;
 
   StartPeriodicTimer();
 }
 
-void MemoryPressureLevelReporter::UpdateDiskPressureState(
-    bool new_is_disk_pressure,
-    base::MemoryPressureLevel new_os_pressure_level) {
-  // Update the OS pressure level even if disk pressure state hasn't changed,
-  // because the OS level may have transitioned while disk pressure was active.
-  if (is_disk_pressure_ == new_is_disk_pressure &&
-      os_pressure_level_ == new_os_pressure_level) {
+void MemoryPressureLevelReporter::SetDiskOnlyCritical(
+    bool new_disk_only_critical) {
+  if (is_disk_only_critical_ == new_disk_only_critical) {
     return;
   }
-  // Make sure that the data about the last interval gets reported before we
-  // change the disk pressure state.
-  ReportHistogram(base::TimeTicks::Now());
-  is_disk_pressure_ = new_is_disk_pressure;
-  os_pressure_level_ = new_os_pressure_level;
-  current_pressure_level_begin_ = base::TimeTicks::Now();
+  const base::TimeTicks now = base::TimeTicks::Now();
+  ReportHistogram(now);
+  is_disk_only_critical_ = new_disk_only_critical;
 }
 
 void MemoryPressureLevelReporter::ReportHistogram(base::TimeTicks now) {
-  auto duration = now - current_pressure_level_begin_;
+  auto duration = now - last_report_time_;
+  last_report_time_ = now;
   auto duration_s = duration.InSeconds();
 
   MemoryPressureHistogramBuckets bucket;
@@ -121,11 +118,7 @@ void MemoryPressureLevelReporter::ReportHistogram(base::TimeTicks now) {
       bucket = MemoryPressureHistogramBuckets::kModerate;
       break;
     case base::MEMORY_PRESSURE_LEVEL_CRITICAL:
-      // Only attribute time to the disk bucket when the OS is not also
-      // critical. If both are critical, attribute to the standard critical
-      // bucket so the OS signal is not masked.
-      bucket = (is_disk_pressure_ &&
-                os_pressure_level_ != base::MEMORY_PRESSURE_LEVEL_CRITICAL)
+      bucket = is_disk_only_critical_
                    ? MemoryPressureHistogramBuckets::kDisk
                    : MemoryPressureHistogramBuckets::kCritical;
       break;
@@ -159,9 +152,14 @@ void MemoryPressureLevelReporter::StartPeriodicTimer() {
   }
   periodic_reporting_timer_.Start(
       FROM_HERE, base::Minutes(5),
-      base::BindOnce(&MemoryPressureLevelReporter::OnMemoryPressureLevelChanged,
+      base::BindOnce(&MemoryPressureLevelReporter::OnPeriodicReportingTimer,
                      // Unretained is safe because |this| owns this timer.
-                     base::Unretained(this), current_pressure_level_));
+                     base::Unretained(this)));
+}
+
+void MemoryPressureLevelReporter::OnPeriodicReportingTimer() {
+  ReportHistogram(base::TimeTicks::Now());
+  StartPeriodicTimer();
 }
 
 }  // namespace memory_pressure

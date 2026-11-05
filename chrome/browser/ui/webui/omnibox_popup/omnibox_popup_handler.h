@@ -7,8 +7,11 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/ui/webui/omnibox_popup/mojom/omnibox_popup.mojom.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
+#include "components/search_engines/template_url_service.h"
+#include "components/search_engines/template_url_service_observer.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -21,7 +24,13 @@ class WebContents;
 
 class OmniboxController;
 
-class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler {
+// Returns the WebUI resource path or favicon URL for the default search
+// provider.
+std::string GetDefaultSearchProviderIcon(
+    const TemplateURLService* template_url_service);
+
+class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
+                            public TemplateURLServiceObserver {
  public:
   OmniboxPopupHandler(
       mojo::PendingReceiver<omnibox_popup::mojom::PageHandler> receiver,
@@ -38,6 +47,15 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler {
       base::WeakPtr<TopChromeWebUIController::Embedder> embedder) {
     embedder_ = embedder;
   }
+
+  // Stops using the omnibox of the browser window that embeds the popup and
+  // drops the text state the page reported there. Called before the popup's
+  // WebContents moves to another browser window.
+  void DetachFromOmniboxController();
+
+  // Uses `controller`, the omnibox of the browser window that now embeds the
+  // popup.
+  void AttachToOmniboxController(OmniboxController* controller);
 
   // omnibox_popup::mojom::PageHandler:
   void ShowContextMenu(const gfx::Point& point) override;
@@ -60,6 +78,16 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler {
                    const gfx::Range& selection) override;
   void SetEditHistoryState(bool can_undo, bool can_redo) override;
   void OpenDevTools() override;
+  void OpenDogfoodFeedback() override;
+  void AdvanceFocus(bool reverse) override;
+
+  // Computes URL emphasis metadata for the given text.
+  // This implementation is based on `OmniboxViewViews::UpdateTextStyle()`
+  // (for URL component parsing and deemphasis mode determination) and
+  // `OmniboxViewViews::UpdateSchemeStyle()` (for security-related scheme
+  // styling).
+  searchbox::mojom::UrlEmphasisPtr ComputeUrlEmphasis(
+      const std::string& text) const;
 
   // omnibox_popup::mojom::Page:
   void OnShow();
@@ -71,11 +99,20 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler {
                      bool is_focused,
                      const std::string& permanent_display_text,
                      bool show_full_url,
-                     bool query_zps,
-                     searchbox::mojom::InputKeywordModelPtr keyword_model);
-  void SetFocus(bool is_focused);
+                     omnibox_popup::mojom::MatchesUpdate matches_update,
+                     searchbox::mojom::InputKeywordModelPtr keyword_model,
+                     bool is_tab_switch);
+  void SetFocus(bool is_focused,
+                bool query_zps = false,
+                bool select_all = false,
+                bool show_full_url = false);
+  void FocusSearchWithDefaultSearchEngineKeywordMode();
   void ClearAutocompleteMatches();
   void ClearPopup(base::OnceClosure callback);
+
+  // TemplateURLServiceObserver:
+  void OnTemplateURLServiceChanged() override;
+  void OnTemplateURLServiceShuttingDown() override;
 
   const gfx::Range& latest_selection() const { return latest_selection_; }
   bool show_full_url() const { return show_full_url_; }
@@ -83,11 +120,15 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler {
   bool can_redo() const { return can_redo_; }
 
  private:
+  void NotifyDefaultSearchProviderChanged();
+
   mojo::Receiver<omnibox_popup::mojom::PageHandler> receiver_;
   mojo::Remote<omnibox_popup::mojom::Page> page_;
   base::WeakPtr<TopChromeWebUIController::Embedder> embedder_;
   raw_ptr<content::WebContents> web_contents_;
   raw_ptr<OmniboxController> controller_;
+  base::ScopedObservation<TemplateURLService, TemplateURLServiceObserver>
+      template_url_service_observation_{this};
   // Caches the latest selection range reported by the WebUI to allow
   // synchronous access on tab switches.
   gfx::Range latest_selection_;

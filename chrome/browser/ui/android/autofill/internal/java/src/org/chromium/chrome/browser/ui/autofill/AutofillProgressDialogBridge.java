@@ -16,6 +16,10 @@ import android.widget.TextView;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
@@ -36,11 +40,15 @@ import org.chromium.ui.modelutil.PropertyModel;
 @JNINamespace("autofill")
 @NullMarked
 public class AutofillProgressDialogBridge {
+    @JniType("::autofill::AutofillProgressDialogViewAndroid")
+    interface NativeAutofillProgressDialogViewAndroid extends JniTypeToken {}
+
     private static final int SUCCESS_VIEW_DURATION_MILLIS = 500;
 
     private final ModalDialogManager mModalDialogManager;
     private final Context mContext;
-    private long mNativeAutofillProgressDialogView;
+    private @Nullable JniRawPtr<NativeAutofillProgressDialogViewAndroid>
+            mNativeAutofillProgressDialogView;
     private @Nullable PropertyModel mDialogModel;
     private @Nullable View mProgressDialogContentView;
 
@@ -54,15 +62,15 @@ public class AutofillProgressDialogBridge {
 
                 @Override
                 public void onDismiss(PropertyModel model, int dismissalCause) {
-                    if (mNativeAutofillProgressDialogView != 0) {
+                    if (mNativeAutofillProgressDialogView != null) {
                         AutofillProgressDialogBridgeJni.get()
                                 .onDismissed(mNativeAutofillProgressDialogView);
                     }
                 }
             };
 
-    public AutofillProgressDialogBridge(
-            long nativeAutofillProgressDialogView,
+    AutofillProgressDialogBridge(
+            JniRawPtr<NativeAutofillProgressDialogViewAndroid> nativeAutofillProgressDialogView,
             ModalDialogManager modalDialogManager,
             Context context) {
         this.mNativeAutofillProgressDialogView = nativeAutofillProgressDialogView;
@@ -71,8 +79,9 @@ public class AutofillProgressDialogBridge {
     }
 
     @CalledByNative
-    public static AutofillProgressDialogBridge create(
-            long nativeAutofillProgressDialogView, WindowAndroid windowAndroid) {
+    static AutofillProgressDialogBridge create(
+            JniRawPtr<NativeAutofillProgressDialogViewAndroid> nativeAutofillProgressDialogView,
+            @JniType("ui::WindowAndroid*") WindowAndroid windowAndroid) {
         return new AutofillProgressDialogBridge(
                 nativeAutofillProgressDialogView,
                 assertNonNull(windowAndroid.getModalDialogManager()),
@@ -85,7 +94,10 @@ public class AutofillProgressDialogBridge {
      * @param loadingMessage Message to show below the progress bar.
      */
     @CalledByNative
-    public void showDialog(String title, String loadingMessage, String buttonLabel) {
+    public void showDialog(
+            @JniType("std::u16string") String title,
+            @JniType("std::u16string") String loadingMessage,
+            @JniType("std::u16string") String buttonLabel) {
         mProgressDialogContentView =
                 LayoutInflater.from(mContext).inflate(R.layout.autofill_progress_dialog, null);
         ((TextView) mProgressDialogContentView.findViewById(R.id.message)).setText(loadingMessage);
@@ -117,7 +129,7 @@ public class AutofillProgressDialogBridge {
      * @param confirmationMessage Message to show below the confirmation icon
      */
     @CalledByNative
-    public void showConfirmation(String confirmationMessage) {
+    public void showConfirmation(@JniType("std::u16string") String confirmationMessage) {
         if (mProgressDialogContentView != null) {
             mProgressDialogContentView.findViewById(R.id.progress_bar).setVisibility(View.GONE);
             mProgressDialogContentView
@@ -143,11 +155,14 @@ public class AutofillProgressDialogBridge {
 
     @CalledByNative
     public void destroy() {
-        mNativeAutofillProgressDialogView = 0;
+        if (mNativeAutofillProgressDialogView != null) {
+            mNativeAutofillProgressDialogView.release();
+            mNativeAutofillProgressDialogView = null;
+        }
     }
 
     @NativeMethods
     interface Natives {
-        void onDismissed(long nativeAutofillProgressDialogViewAndroid);
+        void onDismissed(JniPtr<NativeAutofillProgressDialogViewAndroid> self);
     }
 }

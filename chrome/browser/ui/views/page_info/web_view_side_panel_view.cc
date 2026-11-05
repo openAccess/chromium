@@ -18,6 +18,7 @@
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/render_frame_host.h"
@@ -26,7 +27,8 @@
 #include "content/public/common/referrer.h"
 #include "net/base/url_util.h"
 #include "third_party/blink/public/common/loader/loader_constants.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/flex_layout_types.h"
@@ -100,7 +102,7 @@ WebViewSidePanelView::WebViewSidePanelView(
 }
 
 WebViewSidePanelView::~WebViewSidePanelView() {
-  DCHECK(web_view_);
+  CHECK(web_view_, base::NotFatalUntil::M162);
   if (content::WebContents* web_contents = web_view_->GetWebContents()) {
     if (auto* manager =
             web_modal::WebContentsModalDialogManager::FromWebContents(
@@ -138,16 +140,23 @@ void WebViewSidePanelView::DidOpenRequestedURL(
     content::RenderFrameHost* source_render_frame_host,
     const GURL& url,
     const content::Referrer& referrer,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
     bool started_from_context_menu,
     bool renderer_initiated) {
-  content::OpenURLParams params(url, referrer, disposition, transition,
-                                renderer_initiated);
+  // Renderer-initiated navigations have a 'source_renderframe_host'.
+  CHECK(!renderer_initiated || source_render_frame_host);
+  content::OpenURLParams params =
+      renderer_initiated
+          ? content::OpenURLParams::CreateRendererInitiated(
+                url, disposition, transition, referrer,
+                source_render_frame_host->GetCurrentInitiatorNavigationState())
+          : content::OpenURLParams::CreateBrowserInitiated(
+                url, disposition, transition, referrer);
 
   // If the navigation is initiated by the renderer process, we must set an
   // initiator origin.
-  if (renderer_initiated && source_render_frame_host) {
+  if (renderer_initiated) {
     params.initiator_origin =
         source_render_frame_host->GetLastCommittedOrigin();
     params.initiator_frame_token = source_render_frame_host->GetFrameToken();
@@ -211,7 +220,7 @@ content::WebContentsDelegate* WebViewSidePanelView::outer_delegate() {
 
 void WebViewSidePanelView::OpenUrlInBrowser(
     const content::OpenURLParams& params) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (auto* browser_view = outer_browser_view()) {
     content::OpenURLParams new_params(params);
     new_params.url = CleanUpQueryParams(params.url);
@@ -239,7 +248,8 @@ void WebViewSidePanelView::SetContentVisible(bool visible) {
 web_modal::WebContentsModalDialogHost*
 WebViewSidePanelView::GetWebContentsModalDialogHost(
     content::WebContents* web_contents) {
-  DCHECK_EQ(web_view_->GetWebContents(), web_contents);
+  CHECK_EQ(web_view_->GetWebContents(), web_contents,
+           base::NotFatalUntil::M162);
   if (auto* browser_view = outer_browser_view()) {
     return browser_view->GetWebContentsModalDialogHost();
   }
@@ -248,6 +258,7 @@ WebViewSidePanelView::GetWebContentsModalDialogHost(
 
 bool WebViewSidePanelView::IsWebContentsVisible(
     content::WebContents* web_contents) {
-  DCHECK_EQ(web_view_->GetWebContents(), web_contents);
+  CHECK_EQ(web_view_->GetWebContents(), web_contents,
+           base::NotFatalUntil::M162);
   return web_view_->IsDrawn();
 }

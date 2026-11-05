@@ -36,6 +36,7 @@
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/style/clip_path_operation.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
+#include "third_party/blink/renderer/core/style/scoped_css_name.h"
 #include "third_party/blink/renderer/core/style/shape_clip_path_operation.h"
 #include "third_party/blink/renderer/core/style/shape_value.h"
 #include "third_party/blink/renderer/core/style/style_difference.h"
@@ -146,6 +147,83 @@ TEST_F(ComputedStyleTest, ClipPathEqual) {
   builder1.SetClipPath(path1);
   builder2.SetClipPath(path2);
   EXPECT_EQ(*builder1.TakeStyle(), *builder2.TakeStyle());
+}
+
+TEST_F(ComputedStyleTest, ScrollMarkerGroupDifference) {
+  auto create_style = [this](ScrollMarkerGroup::ScrollMarkerPosition position,
+                             ScrollMarkerGroup::ScrollMarkerMode mode) {
+    ComputedStyleBuilder builder = CreateComputedStyleBuilder();
+    builder.SetScrollMarkerGroup(
+        MakeGarbageCollected<ScrollMarkerGroup>(position, mode));
+    return builder.TakeStyle();
+  };
+
+  const ComputedStyle* initial = InitialComputedStyle();
+  const ComputedStyle* before_links =
+      create_style(ScrollMarkerGroup::ScrollMarkerPosition::kBefore,
+                   ScrollMarkerGroup::ScrollMarkerMode::kLinks);
+  const ComputedStyle* after_links =
+      create_style(ScrollMarkerGroup::ScrollMarkerPosition::kAfter,
+                   ScrollMarkerGroup::ScrollMarkerMode::kLinks);
+  const ComputedStyle* before_tabs =
+      create_style(ScrollMarkerGroup::ScrollMarkerPosition::kBefore,
+                   ScrollMarkerGroup::ScrollMarkerMode::kTabs);
+
+  // Adding or removing scroll-marker-group affects descendant ::scroll-markers.
+  EXPECT_EQ(ComputedStyle::Difference::kDescendantAffecting,
+            ComputedStyle::ComputeDifference(initial, before_links));
+  EXPECT_EQ(ComputedStyle::Difference::kDescendantAffecting,
+            ComputedStyle::ComputeDifference(before_links, initial));
+
+  // Switching between 'before' and 'after' changes which ::scroll-marker-group
+  // pseudo-element is generated.
+  EXPECT_EQ(ComputedStyle::Difference::kPseudoElementStyle,
+            ComputedStyle::ComputeDifference(before_links, after_links));
+  EXPECT_EQ(ComputedStyle::Difference::kPseudoElementStyle,
+            ComputedStyle::ComputeDifference(after_links, before_links));
+
+  // Changing only the mode keeps the same pseudo-element node, but still
+  // reattaches its layout tree.
+  EXPECT_EQ(ComputedStyle::Difference::kNonInherited,
+            ComputedStyle::ComputeDifference(before_links, before_tabs));
+}
+
+TEST_F(ComputedStyleTest, ScrollMarkerGroupScrollContainerDifference) {
+  auto create_style = [this](EOverflow overflow, bool has_group) {
+    ComputedStyleBuilder builder = CreateComputedStyleBuilder();
+    if (has_group) {
+      builder.SetScrollMarkerGroup(MakeGarbageCollected<ScrollMarkerGroup>(
+          ScrollMarkerGroup::ScrollMarkerPosition::kBefore));
+    }
+    builder.SetOverflowX(overflow);
+    builder.SetOverflowY(overflow);
+    return builder.TakeStyle();
+  };
+
+  const ComputedStyle* visible_with_group =
+      create_style(EOverflow::kVisible, /*has_group=*/true);
+  const ComputedStyle* auto_with_group =
+      create_style(EOverflow::kAuto, /*has_group=*/true);
+
+  // Becoming or ceasing to be a scroll container affects descendant
+  // ::scroll-markers.
+  EXPECT_EQ(
+      ComputedStyle::Difference::kDescendantAffecting,
+      ComputedStyle::ComputeDifference(visible_with_group, auto_with_group));
+  EXPECT_EQ(
+      ComputedStyle::Difference::kDescendantAffecting,
+      ComputedStyle::ComputeDifference(auto_with_group, visible_with_group));
+
+  // Without scroll-marker-group, the overflow change does not affect
+  // descendants.
+  const ComputedStyle* visible_no_group =
+      create_style(EOverflow::kVisible, /*has_group=*/false);
+  const ComputedStyle* auto_no_group =
+      create_style(EOverflow::kAuto, /*has_group=*/false);
+  EXPECT_EQ(ComputedStyle::Difference::kNonInherited,
+            ComputedStyle::ComputeDifference(visible_no_group, auto_no_group));
+  EXPECT_EQ(ComputedStyle::Difference::kNonInherited,
+            ComputedStyle::ComputeDifference(auto_no_group, visible_no_group));
 }
 
 TEST_F(ComputedStyleTest, ForcesStackingContext) {
@@ -535,9 +613,11 @@ TEST_F(ComputedStyleTest, CursorList) {
       nullptr, nullptr, nullptr, nullptr, nullptr, cssvalue::kRepeating);
 
   auto* image_value = MakeGarbageCollected<StyleGeneratedImage>(
-      *gradient, StyleGeneratedImage::ContainerSizes());
+      *gradient, StyleGeneratedImage::ContainerSizes(),
+      StyleGeneratedImage::ViewportSize());
   auto* other_image_value = MakeGarbageCollected<StyleGeneratedImage>(
-      *gradient, StyleGeneratedImage::ContainerSizes());
+      *gradient, StyleGeneratedImage::ContainerSizes(),
+      StyleGeneratedImage::ViewportSize());
 
   EXPECT_TRUE(base::ValuesEquivalent(image_value, other_image_value));
 
@@ -680,6 +760,9 @@ TEST_F(ComputedStyleTest, AnimationFlags) {
                     ComputedStyle::Difference::kNonInherited,
                     kCompositingReasonsChanged);
   TestAnimationFlag(FLAG_PARAMS(HasCurrentBackdropFilterAnimation),
+                    ComputedStyle::Difference::kNonInherited,
+                    kCompositingReasonsChanged);
+  TestAnimationFlag(FLAG_PARAMS(HasCurrentDynamicBackdropFilterAnimation),
                     ComputedStyle::Difference::kNonInherited,
                     kCompositingReasonsChanged);
   TestAnimationFlag(FLAG_PARAMS(HasCurrentClipPathAnimation),
@@ -925,7 +1008,7 @@ TEST_F(ComputedStyleTest, CustomPropertiesInheritance_StyleRecalc) {
 
 TEST_F(ComputedStyleTest, ApplyColorSchemeLightOnDark) {
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   ColorSchemeHelper color_scheme_helper(document);
@@ -933,9 +1016,9 @@ TEST_F(ComputedStyleTest, ApplyColorSchemeLightOnDark) {
       mojom::blink::PreferredColorScheme::kDark);
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
 
   AtomicString property_name("color-scheme");
   CSSPropertyRef ref(&property_name, state.GetDocument());
@@ -965,7 +1048,7 @@ TEST_F(ComputedStyleTest, ApplyLightDarkColor) {
   using css_test_helpers::ParseDeclarationBlock;
 
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   ColorSchemeHelper color_scheme_helper(document);
@@ -973,9 +1056,9 @@ TEST_F(ComputedStyleTest, ApplyLightDarkColor) {
       mojom::blink::PreferredColorScheme::kDark);
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
 
   CSSValueList* dark_value = CSSValueList::CreateSpaceSeparated();
   dark_value->Append(*CSSIdentifierValue::Create(CSSValueID::kDark));
@@ -1017,7 +1100,7 @@ TEST_F(ComputedStyleTest, ApplyLightDarkBackgroundImage) {
   using css_test_helpers::ParseDeclarationBlock;
 
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   ColorSchemeHelper color_scheme_helper(document);
@@ -1025,9 +1108,9 @@ TEST_F(ComputedStyleTest, ApplyLightDarkBackgroundImage) {
       mojom::blink::PreferredColorScheme::kDark);
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
 
   auto* bgimage_declaration = ParseDeclarationBlock(
       "background-image:light-dark(none, url(dummy.png))", kUASheetMode);
@@ -1045,7 +1128,7 @@ TEST_F(ComputedStyleTest, ApplyLightDarkBackgroundImage) {
   cascade1.Apply();
   EXPECT_TRUE(state.TakeStyle()->HasBackgroundImage());
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
 
   StyleCascade cascade2(state);
   cascade2.MutableMatchResult().BeginAddingAuthorRulesForTreeScope(document);
@@ -1064,14 +1147,14 @@ TEST_F(ComputedStyleTest, ApplyLightDarkBackgroundImage) {
 
 TEST_F(ComputedStyleTest, StrokeWidthZoomAndCalc) {
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
   state.StyleBuilder().SetEffectiveZoom(1.5);
 
   auto* calc_value = CSSMathFunctionValue::Create(
@@ -1645,14 +1728,14 @@ TEST_F(ComputedStyleTest, ClonedStyleTransitionsAreIndependent) {
 
 TEST_F(ComputedStyleTest, ApplyInitialAnimationNameAndTransitionProperty) {
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
   EXPECT_FALSE(state.StyleBuilder().Animations());
   EXPECT_FALSE(state.StyleBuilder().Transitions());
 
@@ -1745,9 +1828,9 @@ TEST_F(ComputedStyleTest, ShouldApplyAnyContainment) {
           EXPECT_TRUE(!html->GetComputedStyle());
           continue;
         }
-        EXPECT_EQ(html->GetLayoutObject()->ShouldApplyAnyContainment(),
-                  html->GetLayoutObject()->StyleRef().ShouldApplyAnyContainment(
-                      *html))
+        EXPECT_EQ(
+            html->GetLayoutObject()->ShouldApplyAnyContainment(),
+            html->GetLayoutObject()->Style().ShouldApplyAnyContainment(*html))
             << "html contain:" << GetCSSValueName(contain)
             << " display:" << GetCSSValueName(html_display);
         if (!body->GetLayoutObject()) {
@@ -1758,9 +1841,9 @@ TEST_F(ComputedStyleTest, ShouldApplyAnyContainment) {
           }
           continue;
         }
-        EXPECT_EQ(body->GetLayoutObject()->ShouldApplyAnyContainment(),
-                  body->GetLayoutObject()->StyleRef().ShouldApplyAnyContainment(
-                      *body))
+        EXPECT_EQ(
+            body->GetLayoutObject()->ShouldApplyAnyContainment(),
+            body->GetLayoutObject()->Style().ShouldApplyAnyContainment(*body))
             << "body contain:" << GetCSSValueName(contain)
             << " display:" << GetCSSValueName(body_display);
       }
@@ -1960,10 +2043,17 @@ TEST_F(ComputedStyleTest, ScrollTimelineNameNoDiff) {
   ComputedStyleBuilder builder1(*InitialComputedStyle());
   ComputedStyleBuilder builder2(*InitialComputedStyle());
 
+  HeapVector<Member<const ScopedCSSName>> names1;
+  names1.push_back(
+      MakeGarbageCollected<ScopedCSSName>(AtomicString("test"), nullptr));
+  HeapVector<Member<const ScopedCSSName>> names2;
+  names2.push_back(
+      MakeGarbageCollected<ScopedCSSName>(AtomicString("test"), nullptr));
+
   builder1.SetScrollTimelineName(
-      Vector<AtomicString>(1u, AtomicString("test")));
+      MakeGarbageCollected<ScopedCSSNameList>(std::move(names1)));
   builder2.SetScrollTimelineName(
-      Vector<AtomicString>(1u, AtomicString("test")));
+      MakeGarbageCollected<ScopedCSSNameList>(std::move(names2)));
 
   const ComputedStyle* style1 = builder1.TakeStyle();
   const ComputedStyle* style2 = builder2.TakeStyle();
@@ -1990,10 +2080,17 @@ TEST_F(ComputedStyleTest, ViewTimelineNameNoDiff) {
   ComputedStyleBuilder builder1(*InitialComputedStyle());
   ComputedStyleBuilder builder2(*InitialComputedStyle());
 
-  builder1.SetScrollTimelineName(
-      Vector<AtomicString>(1u, AtomicString("test")));
-  builder2.SetScrollTimelineName(
-      Vector<AtomicString>(1u, AtomicString("test")));
+  HeapVector<Member<const ScopedCSSName>> names1;
+  names1.push_back(
+      MakeGarbageCollected<ScopedCSSName>(AtomicString("test"), nullptr));
+  HeapVector<Member<const ScopedCSSName>> names2;
+  names2.push_back(
+      MakeGarbageCollected<ScopedCSSName>(AtomicString("test"), nullptr));
+
+  builder1.SetViewTimelineName(
+      MakeGarbageCollected<ScopedCSSNameList>(std::move(names1)));
+  builder2.SetViewTimelineName(
+      MakeGarbageCollected<ScopedCSSNameList>(std::move(names2)));
 
   const ComputedStyle* style1 = builder1.TakeStyle();
   const ComputedStyle* style2 = builder2.TakeStyle();
@@ -2050,14 +2147,14 @@ TEST_F(ComputedStyleTest, ContainerNameNoDiff) {
 
 TEST_F(ComputedStyleTest, BackgroundRepeat) {
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
 
   auto* repeat_style_value = MakeGarbageCollected<CSSRepeatStyleValue>(
       CSSIdentifierValue::Create(CSSValueID::kRepeatX));
@@ -2077,14 +2174,14 @@ TEST_F(ComputedStyleTest, BackgroundRepeat) {
 
 TEST_F(ComputedStyleTest, MaskRepeat) {
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
 
   auto* repeat_style_value = MakeGarbageCollected<CSSRepeatStyleValue>(
       CSSIdentifierValue::Create(CSSValueID::kRepeatY));
@@ -2104,14 +2201,14 @@ TEST_F(ComputedStyleTest, MaskRepeat) {
 
 TEST_F(ComputedStyleTest, MaskMode) {
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
 
   auto* mode_style_value = CSSIdentifierValue::Create(CSSValueID::kAlpha);
 
@@ -2142,14 +2239,14 @@ TEST_F(ComputedStyleTest, DynamicRangeLimitMixStandardToConstrainedHigh) {
             "dynamic-range-limit-mix(standard 30%, constrained 70%)");
 
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
 
   GetCSSPropertyDynamicRangeLimit().ApplyValue(
       state, *dynamic_range_limit_mix_value,
@@ -2178,14 +2275,14 @@ TEST_F(ComputedStyleTest, DynamicRangeLimitMixStandardToHigh) {
             "dynamic-range-limit-mix(standard 40%, no-limit 60%)");
 
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
 
   GetCSSPropertyDynamicRangeLimit().ApplyValue(
       state, *dynamic_range_limit_mix_value,
@@ -2214,14 +2311,14 @@ TEST_F(ComputedStyleTest, DynamicRangeLimitMixConstrainedHighToHigh) {
             "dynamic-range-limit-mix(constrained 55%, no-limit 45%)");
 
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
 
   GetCSSPropertyDynamicRangeLimit().ApplyValue(
       state, *dynamic_range_limit_mix_value,
@@ -2251,14 +2348,14 @@ TEST_F(ComputedStyleTest, DynamicRangeLimitMixAllThree) {
       "dynamic-range-limit-mix(standard 20%, constrained 60%, no-limit 20%)");
 
   Document& document = GetDocument();
-  const ComputedStyle* initial =
+  const ComputedStyle& initial =
       document.GetStyleResolver().InitialStyleForElement();
 
   StyleResolverState state(document, *document.documentElement(),
                            nullptr /* StyleRecalcContext */,
-                           StyleRequest(initial));
+                           StyleRequest(&initial));
 
-  state.CreateNewClonedStyle(*initial);
+  state.CreateNewClonedStyle(initial);
 
   GetCSSPropertyDynamicRangeLimit().ApplyValue(
       state, *dynamic_range_limit_mix_value,
@@ -2605,6 +2702,23 @@ TEST_F(ComputedStyleTest, SingleAxisIsOverflowVisibleOrClip) {
   builder.SetOverflowX(EOverflow::kScroll);
   builder.SetOverflowY(EOverflow::kScroll);
   EXPECT_FALSE(builder.TakeStyle()->IsOverflowVisibleOrClip());
+}
+
+// TODO(crbug.com/40127672): Remove this test with the
+// CSSTextTransformGeorgianUppercase kill switch once rollback is no longer
+// needed.
+TEST_F(ComputedStyleTest, ApplyTextTransformGeorgianUppercaseFeature) {
+  ComputedStyleBuilder builder = CreateComputedStyleBuilder();
+  builder.SetTextTransform(ETextTransform::kUppercase);
+  const ComputedStyle* style = builder.TakeStyle();
+
+  for (bool enabled : {false, true}) {
+    SCOPED_TRACE(enabled);
+    ScopedCSSTextTransformGeorgianUppercaseForTest scoped_feature(enabled);
+    // Rollback also lowercases Mtavruli capitals already present in the input.
+    EXPECT_EQ(String(enabled ? u"\u1C90\u1CBD" : u"\u10D0\u10FD"),
+              style->ApplyTextTransform(String(u"\u10D0\u1CBD")));
+  }
 }
 
 TEST_F(ComputedStyleTest, ApplyTextTransformUpdateOffsetMap) {

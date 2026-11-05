@@ -52,15 +52,12 @@ struct GPU_COMMAND_BUFFER_COMMON_EXPORT Capabilities {
   bool msaa_is_slow = false;
   bool avoid_stencil_buffers = false;
 
-  bool supports_rgb_to_yuv_conversion = false;
   bool supports_yuv_readback = false;
 
   bool mesa_framebuffer_flip_y = false;
 
   // Used by GPU raster.
   bool context_supports_distance_field_text = true;
-
-  bool using_vulkan_context = false;
 
   bool use_deferred_graphite_submit = false;
 

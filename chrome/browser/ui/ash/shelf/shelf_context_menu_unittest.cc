@@ -8,6 +8,7 @@
 #include <optional>
 #include <utility>
 
+#include "ash/constants/chrome_switches.h"
 #include "ash/public/cpp/app_menu_constants.h"
 #include "ash/public/cpp/shelf_item.h"
 #include "ash/public/cpp/shelf_model.h"
@@ -46,7 +47,6 @@
 #include "chrome/browser/ui/ash/shelf/shelf_controller_helper.h"
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
@@ -65,10 +65,8 @@
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/user_manager/fake_user_manager_delegate.h"
-#include "components/user_manager/scoped_user_manager.h"
-#include "components/user_manager/test_helper.h"
-#include "components/user_manager/user_manager_impl.h"
+#include "components/session_manager/test/user_session_test_environment.h"
+#include "components/user_manager/user_manager.h"
 #include "components/viz/test/test_gpu_service_holder.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -119,39 +117,40 @@ class ShelfContextMenuTest : public ChromeAshTestBase {
  protected:
   ShelfContextMenuTest() {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        switches::kDisableDefaultApps);
+        ash::chrome_switches::kDisableDefaultApps);
   }
   ~ShelfContextMenuTest() override = default;
 
+  void SetUpInitParams(ash::AshTestHelper::InitParams& init_params) override {
+    ChromeAshTestBase::SetUpInitParams(init_params);
+    init_params.users.clear();
+  }
+
   void SetUp() override {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        switches::kDisableDefaultApps);
+        ash::chrome_switches::kDisableDefaultApps);
 
     ash::ChunneldClient::InitializeFake();
     ash::CiceroneClient::InitializeFake();
     ash::ConciergeClient::InitializeFake();
     ash::SeneschalClient::InitializeFake();
 
-    user_manager_.Reset(std::make_unique<user_manager::UserManagerImpl>(
-        std::make_unique<user_manager::FakeUserManagerDelegate>(),
-        TestingBrowserProcess::GetGlobal()->GetTestingLocalState()));
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
+            TestingBrowserProcess::GetGlobal()->local_state());
     profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(profile_manager_->SetUp());
 
-    ASSERT_TRUE(user_manager::TestHelper(user_manager_.Get())
-                    .AddRegularUser(kPrimaryUserId));
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(kPrimaryUserId));
 
-    set_start_session(false);
     ChromeAshTestBase::SetUp();
     browser_controller_.emplace();
 
     arc_app_test_.PreProfileSetUp();
 
     SimulateUserLogin(kPrimaryUserId);
-    user_manager_->UserLoggedIn(
-        kPrimaryUserId,
-        user_manager::TestHelper::GetFakeUsernameHash(kPrimaryUserId));
+    user_session_test_environment_->LogIn(kPrimaryUserId);
 
     {
       ash::ScopedAccountIdAnnotator account_id_annotator(
@@ -160,7 +159,9 @@ class ShelfContextMenuTest : public ChromeAshTestBase {
           std::string(kPrimaryUserId.GetUserEmail()));
     }
 
-    user_manager_->OnUserProfileCreated(kPrimaryUserId, profile_->GetPrefs());
+    // TODO(crbug.com/40225390): Use ProfileUserManagerController.
+    user_manager::UserManager::Get()->OnUserProfileCreated(
+        kPrimaryUserId, profile_->GetPrefs());
 
     extensions::TestExtensionSystem* extension_system(
         static_cast<extensions::TestExtensionSystem*>(
@@ -247,7 +248,9 @@ class ShelfContextMenuTest : public ChromeAshTestBase {
     arc_app_test_.PreProfileTearDown();
     crostini_helper_.reset();
 
-    user_manager_->OnUserProfileWillBeDestroyed(kPrimaryUserId);
+    user_manager::UserManager::Get()->OnUserProfileWillBeDestroyed(
+        kPrimaryUserId);
+    extension_service_ = nullptr;
     profile_ = nullptr;
     profile_manager_->DeleteAllTestingProfiles();
 
@@ -256,7 +259,7 @@ class ShelfContextMenuTest : public ChromeAshTestBase {
     browser_controller_.reset();
     ChromeAshTestBase::TearDown();
     profile_manager_.reset();
-    user_manager_.Reset();
+    user_session_test_environment_.reset();
 
     ash::SeneschalClient::Shutdown();
     ash::ConciergeClient::Shutdown();
@@ -296,7 +299,8 @@ class ShelfContextMenuTest : public ChromeAshTestBase {
   viz::TestGpuServiceHolder::ScopedAllowRacyFeatureListOverrides
       gpu_thread_allow_racy_overrides_;
   base::test::ScopedCommandLine scoped_command_line_;
-  user_manager::ScopedUserManager user_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
   std::optional<ash::BrowserControllerImpl> browser_controller_;
   raw_ptr<TestingProfile> profile_;
@@ -305,8 +309,7 @@ class ShelfContextMenuTest : public ChromeAshTestBase {
   apps::AppServiceTest app_service_test_;
   std::unique_ptr<ash::ShelfModel> model_;
   std::unique_ptr<ChromeShelfController> shelf_controller_;
-  raw_ptr<extensions::ExtensionService, DanglingUntriaged> extension_service_ =
-      nullptr;
+  raw_ptr<extensions::ExtensionService> extension_service_ = nullptr;
 };
 
 // Verifies that "New Incognito window" menu item in the launcher context

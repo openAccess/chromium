@@ -17,8 +17,8 @@
 #include <utility>
 #include <vector>
 
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -90,7 +90,7 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
 
   class NET_EXPORT_PRIVATE Request {
     // TODO(crbug.com/422046500): Remove this macro once the bug gets fixed.
-    ADVANCED_MEMORY_SAFETY_CHECKS();
+    SANITIZED_OBJECT();
 
    public:
     // If |proxy_auth_callback| is null, proxy auth challenges will
@@ -391,7 +391,7 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
     bool TryToUseNeverAssignedConnectJob();
 
     void AddJob(std::unique_ptr<ConnectJob> job, bool is_preconnect);
-    // Remove |job| from this group, which must already own |job|. Returns the
+    // Remove `job` from this group, which must already own `job`. Returns the
     // removed ConnectJob.
     std::unique_ptr<ConnectJob> RemoveUnboundJob(ConnectJob* job);
     void RemoveAllUnboundJobs();
@@ -436,12 +436,12 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
     // callback, returns nullptr.
     const Request* BindRequestToConnectJob(ConnectJob* connect_job);
 
-    // Finds the request, if any, bound to |connect_job|, and returns the
+    // Finds the request, if any, bound to `connect_job`, and returns the
     // BoundRequest or std::nullopt if there was none.
     std::optional<BoundRequest> FindAndRemoveBoundRequestForConnectJob(
         ConnectJob* connect_job);
 
-    // Finds the bound request, if any, corresponding to |client_socket_handle|
+    // Finds the bound request, if any, corresponding to `client_socket_handle`
     // and returns it. Destroys the ConnectJob bound to the request, if there
     // was one.
     std::unique_ptr<Request> FindAndRemoveBoundRequest(
@@ -763,6 +763,13 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
                                   const base::TimeTicks& now,
                                   const char* net_log_reason_utf8);
 
+  // Destroys |socket| immediately for direct connections, or queues it for
+  // asynchronous destruction when using a proxy, where destroying a tunneled
+  // socket can synchronously drain a shared session and reentrantly complete
+  // ConnectJobs in |this|.
+  void QueueDestroySocket(std::unique_ptr<StreamSocket> socket);
+  void DestroyQueuedSockets();
+
   // Called when a preconnect connect job completes.
   void OnPreconnectConnectJobComplete(
       PreconnectCompletionCallback callback,
@@ -805,6 +812,8 @@ class NET_EXPORT_PRIVATE TransportClientSocketPool
   std::set<raw_ptr<HigherLayeredPool, SetExperimental>> higher_pools_;
 
   const raw_ptr<SSLClientContext> ssl_client_context_;
+
+  std::vector<std::unique_ptr<StreamSocket>> sockets_queued_for_destruction_;
 
 #if DCHECK_IS_ON()
   // Reentrancy guard for RequestSocketInternal().

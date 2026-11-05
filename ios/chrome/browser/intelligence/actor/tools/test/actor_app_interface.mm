@@ -8,6 +8,7 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/time/time.h"
+#import "components/actor/core/task_source_info.h"
 #import "components/autofill/core/browser/foundations/autofill_manager.h"
 #import "components/autofill/core/common/unique_ids.h"
 #import "components/autofill/ios/browser/autofill_driver_ios.h"
@@ -17,6 +18,9 @@
 #import "ios/chrome/browser/intelligence/actor/model/actor_service.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_service_factory.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_control_state.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_task_intervention_delegate.h"
+#import "ios/chrome/browser/intelligence/actor/test/fake_actor_task_intervention_delegate.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_request.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/page_stability_java_script_feature.h"
 #import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
@@ -30,6 +34,9 @@
 #import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
 #import "ios/web/public/web_state.h"
+#import "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#import "url/gurl.h"
+#import "url/origin.h"
 
 NSString* const kActorAppInterfaceErrorDomain = @"ActorAppInterfaceErrorDomain";
 
@@ -38,6 +45,20 @@ namespace {
 constexpr base::TimeDelta kApcFetchingTimeout = base::Seconds(10);
 
 constexpr autofill::FormRendererId kSimulatedFormRendererId(12345);
+
+// Returns the intervention delegate for tests. Retained statically because
+// both `ActorTask` and `ActorTaskFormFillingHandler` hold a weak reference
+// to the delegate.
+id<ActorTaskInterventionDelegate> GetTestInterventionDelegate() {
+  static FakeActorTaskInterventionDelegate* delegate = []() {
+    FakeActorTaskInterventionDelegate* d =
+        [[FakeActorTaskInterventionDelegate alloc] init];
+    d.autoConfirmInterventions = YES;
+    d.autoSelectFirstSuggestion = YES;
+    return d;
+  }();
+  return delegate;
+}
 
 // Returns the active WebState's main frame AutofillDriverIOS, or nullptr if
 // unavailable.
@@ -94,8 +115,12 @@ autofill::AutofillDriverIOS* GetMainFrameAutofillDriver() {
     return;
   }
 
-  actor::ActorTaskId task_id =
-      service->CreateTask("EG Test Task", /*allow_incognito_web_states=*/false);
+  actor::ActorTaskId task_id = service->CreateTask(
+      "EG Test Task",
+      actor::TaskSourceInfo(actor::TaskSourceInfo::Client::kTest,
+                            /*id=*/std::nullopt),
+      /*allow_incognito_web_states=*/false);
+  service->SetTaskInterventionDelegate(task_id, GetTestInterventionDelegate());
 
   std::vector<optimization_guide::proto::Action> actions = {action};
 
@@ -105,7 +130,9 @@ autofill::AutofillDriverIOS* GetMainFrameAutofillDriver() {
                                     completion:completion];
       });
 
-  service->PerformActions(task_id, actions, "Executing EG Test action",
+  service->PerformActions(task_id, std::move(actions),
+                          "Executing EG Test action",
+                          /*added_writable_mainframe_origins=*/{},
                           std::move(action_performed_callback));
 }
 
@@ -141,7 +168,11 @@ autofill::AutofillDriverIOS* GetMainFrameAutofillDriver() {
   }
 
   actor::ActorTaskId task_id = service->CreateTask(
-      "EG Test Tasks", /*allow_incognito_web_states=*/false);
+      "EG Test Tasks",
+      actor::TaskSourceInfo(actor::TaskSourceInfo::Client::kTest,
+                            /*id=*/std::nullopt),
+      /*allow_incognito_web_states=*/false);
+  service->SetTaskInterventionDelegate(task_id, GetTestInterventionDelegate());
 
   std::vector<optimization_guide::proto::Action> actions;
   actions.reserve(actions_proto.actions_size());
@@ -155,7 +186,23 @@ autofill::AutofillDriverIOS* GetMainFrameAutofillDriver() {
                                     completion:completion];
       });
 
-  service->PerformActions(task_id, actions, "Executing EG Test actions",
+  absl::flat_hash_set<url::Origin> addedOrigins;
+  for (const std::string& originString :
+       actions_proto.task_metadata()
+           .security()
+           .added_writable_mainframe_origins()) {
+    GURL URL(originString);
+    if (!URL.is_valid()) {
+      continue;
+    }
+    url::Origin origin = url::Origin::Create(URL);
+    if (!origin.opaque()) {
+      addedOrigins.insert(std::move(origin));
+    }
+  }
+
+  service->PerformActions(task_id, std::move(actions),
+                          "Executing EG Test actions", std::move(addedOrigins),
                           std::move(action_performed_callback));
 }
 
@@ -269,7 +316,8 @@ autofill::AutofillDriverIOS* GetMainFrameAutofillDriver() {
       main_frame->AsWeakPtr(), std::move(callback));
 }
 
-+ (void)setActuating:(BOOL)actuating forWebStateAtIndex:(int)index {
++ (void)setControlState:(actor::ActorControlState)controlState
+     forWebStateAtIndex:(int)index {
   Browser* browser = chrome_test_util::GetMainBrowser();
   if (!browser || !browser->GetWebStateList()) {
     return;
@@ -283,7 +331,7 @@ autofill::AutofillDriverIOS* GetMainFrameAutofillDriver() {
     return;
   }
   if (ActorTabHelper* tabHelper = ActorTabHelper::FromWebState(webState)) {
-    tabHelper->SetActuating(actuating);
+    tabHelper->SetControlState(controlState);
   }
 }
 
@@ -309,6 +357,17 @@ autofill::AutofillDriverIOS* GetMainFrameAutofillDriver() {
   driver->GetAutofillManager().NotifyObservers(
       &autofill::AutofillManager::Observer::OnAfterLoadedServerPredictions,
       forms);
+}
+
++ (void)stopAllTasks {
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  if (!profile) {
+    return;
+  }
+  if (actor::ActorService* service =
+          actor::ActorServiceFactory::GetForProfile(profile)) {
+    service->StopAllTasks();
+  }
 }
 
 + (int32_t)currentWindowID {

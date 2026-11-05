@@ -60,6 +60,11 @@ const CGFloat kTasksCellHeight = 350.0;
   NSArray<LevelUpTask*>* _tasks;
   // The active level.
   NSInteger _level;
+  // How many tasks the user must complete to get to the next level.
+  NSInteger _remainingTasksForNextLevel;
+  // How many tasks the user has already completed on their path to the next
+  // level.
+  NSInteger _totalTasksForNextLevel;
   // User's full name.
   NSString* _userFullName;
   // User's avatar image.
@@ -73,6 +78,8 @@ const CGFloat kTasksCellHeight = 350.0;
   UIButton* _menuButton;
   // Whether progress updates are enabled.
   BOOL _progressUpdatesEnabled;
+  // Whether notifications for new tasks are enabled.
+  BOOL _newTasksNotificationEnabled;
 }
 
 @synthesize delegate = _delegate;
@@ -85,18 +92,33 @@ const CGFloat kTasksCellHeight = 350.0;
 
 #pragma mark - LevelUpConsumer
 
-- (void)setLevel:(NSInteger)level tasksForLevel:(NSArray<LevelUpTask*>*)tasks {
+- (void)setLevel:(NSInteger)level
+    remainingTasksForNextLevel:(NSInteger)remainingTasksForNextLevel
+        totalTasksForNextLevel:(NSInteger)totalTasksForNextLevel {
   _level = level;
+  _remainingTasksForNextLevel = remainingTasksForNextLevel;
+  _totalTasksForNextLevel = totalTasksForNextLevel;
+  [self reconfigureItemWithIdentifier:kProgressItemIdentifier];
+}
+
+- (void)setRecommendedTasks:(NSArray<LevelUpTask*>*)tasks {
   _tasks = [tasks copy];
+  [self reconfigureItemWithIdentifier:kTasksItemIdentifier];
 }
 
 - (void)setStats:(NSArray<LevelUpStat*>*)stats {
   _stats = [stats copy];
+  [self updateStatSection];
 }
 
 - (void)setProgressUpdatesEnabled:(BOOL)enabled {
   _progressUpdatesEnabled = enabled;
   [self updateMenuButtonMenu];
+}
+
+- (void)setNewTasksNotificationEnabled:(BOOL)enabled {
+  _newTasksNotificationEnabled = enabled;
+  [self reconfigureItemWithIdentifier:kProgressItemIdentifier];
 }
 
 #pragma mark - LevelUpProfileConsumer
@@ -105,7 +127,7 @@ const CGFloat kTasksCellHeight = 350.0;
              userAvatar:(UIImage*)userAvatar {
   _userFullName = userFullName;
   _userAvatar = userAvatar;
-  [self applyDataSnapshotAnimated:YES];
+  [self reconfigureItemWithIdentifier:kWelcomeItemIdentifier];
 }
 
 #pragma mark - LevelUpTaskCollectionViewCellDelegate
@@ -133,7 +155,11 @@ const CGFloat kTasksCellHeight = 350.0;
 
 // Configures the progress cell.
 - (void)configureProgressCell:(LevelUpProgressView*)cell {
-  [cell setLevel:_level tasksForLevel:_tasks];
+  cell.delegate = self.delegate;
+  [cell setLevel:_level
+      remainingTasksForNextLevel:_remainingTasksForNextLevel
+          totalTasksForNextLevel:_totalTasksForNextLevel];
+  [cell setNewTasksNotificationEnabled:_newTasksNotificationEnabled];
 }
 
 // Configures the tasks checklist cell.
@@ -153,7 +179,8 @@ const CGFloat kTasksCellHeight = 350.0;
     if ([statIdentifier isEqualToString:itemIdentifier]) {
       [cell setStatTitle:stat.title
                  subtitle:stat.subtitle
-          imageLottieName:stat.imageLottieName];
+          imageLottieName:stat.imageLottieName
+                 statType:stat.type];
       break;
     }
   }
@@ -214,9 +241,6 @@ const CGFloat kTasksCellHeight = 350.0;
                                                 image:turnOffImage
                                            identifier:nil
                                               handler:^(UIAction* action) {
-                                                // TODO(crbug.com/544808224):
-                                                // Use full new design with
-                                                // secondary confirmation sheet.
                                                 [weakSelf turnOffLevelUp];
                                               }];
   turnOffAction.attributes = UIMenuElementAttributesDestructive;
@@ -383,9 +407,42 @@ const CGFloat kTasksCellHeight = 350.0;
   [snapshot appendItemsWithIdentifiers:@[ kTasksItemIdentifier ]
              intoSectionWithIdentifier:kTasksSectionIdentifier];
 
-  [snapshot reconfigureItemsWithIdentifiers:@[ kWelcomeItemIdentifier ]];
-
   [_diffableDataSource applySnapshot:snapshot animatingDifferences:animated];
+}
+
+// Updates a single cell in the collection view diffable snapshot specified by
+// the item identifier.
+- (void)reconfigureItemWithIdentifier:(NSString*)identifier {
+  if (!_diffableDataSource) {
+    return;
+  }
+  NSDiffableDataSourceSnapshot<NSString*, NSString*>* snapshot =
+      [_diffableDataSource snapshot];
+  [snapshot reconfigureItemsWithIdentifiers:@[ identifier ]];
+  [_diffableDataSource applySnapshot:snapshot animatingDifferences:YES];
+}
+
+// Rebuilds the stats cell in the diffable data source snapshot.
+- (void)updateStatSection {
+  if (!_diffableDataSource) {
+    return;
+  }
+  NSDiffableDataSourceSnapshot<NSString*, NSString*>* snapshot =
+      [_diffableDataSource snapshot];
+  NSArray<NSString*>* existingStatIdentifiers =
+      [snapshot itemIdentifiersInSectionWithIdentifier:kStatSectionIdentifier];
+  [snapshot deleteItemsWithIdentifiers:existingStatIdentifiers];
+
+  NSMutableArray<NSString*>* statIdentifiers = [[NSMutableArray alloc] init];
+  for (LevelUpStat* stat in _stats) {
+    NSString* statIdentifier =
+        [NSString stringWithFormat:@"StatCardItem_%d", stat.type];
+    [statIdentifiers addObject:statIdentifier];
+  }
+  [snapshot appendItemsWithIdentifiers:statIdentifiers
+             intoSectionWithIdentifier:kStatSectionIdentifier];
+  [snapshot reconfigureItemsWithIdentifiers:statIdentifiers];
+  [_diffableDataSource applySnapshot:snapshot animatingDifferences:YES];
 }
 
 // Returns the collection layout section configuration for a given index path.

@@ -233,14 +233,13 @@ class SafetyCheckMediator {
                                     SafetyCheckInteractions.SAFE_BROWSING_MANAGE,
                                     SafetyCheckInteractions.MAX_VALUE + 1);
                             // Open the Safe Browsing settings.
-                            Intent intent =
-                                    SettingsNavigationFactory.createSettingsNavigation()
-                                            .createSettingsIntent(
-                                                    p.getContext(),
-                                                    SafeBrowsingSettingsFragment.class,
-                                                    SafeBrowsingSettingsFragment.createArguments(
-                                                            SettingsAccessPoint.SAFETY_CHECK));
-                            p.getContext().startActivity(intent);
+                            SettingsNavigationFactory.createSettingsNavigation(p.getContext())
+                                    .startSettings(
+                                            p.getContext(),
+                                            SafeBrowsingSettingsFragment.class,
+                                            SafeBrowsingSettingsFragment.createArguments(
+                                                    SettingsAccessPoint.SAFETY_CHECK),
+                                            /* addToBackStack= */ true);
                             return true;
                         });
         // Set the listener for clicking the passwords element.
@@ -320,8 +319,6 @@ class SafetyCheckMediator {
         mSafetyCheckModel.set(SafetyCheckProperties.LAST_RUN_TIMESTAMP, currentTime);
         mPreferenceManager.writeLong(
                 ChromePreferenceKeys.SETTINGS_SAFETY_CHECK_LAST_RUN_TIMESTAMP, currentTime);
-        // Increment the stored number of Safety check starts.
-        mPreferenceManager.incrementInt(ChromePreferenceKeys.SETTINGS_SAFETY_CHECK_RUN_COUNTER);
         // Set the checking state for all elements.
         setPasswordsState(mPasswordsCheckAccountStorageModel, PasswordsState.CHECKING);
         setPasswordsState(mPasswordsCheckLocalStorageModel, PasswordsState.CHECKING);

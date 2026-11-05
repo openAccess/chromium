@@ -6,13 +6,13 @@
 
 #include <stddef.h>
 
-#include "ash/constants/ash_features.h"
+#include <algorithm>
+
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/public/cpp/new_window_delegate.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
-#include "base/path_service.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
@@ -23,10 +23,6 @@
 #include "chrome/browser/ash/file_manager/office_file_tasks.h"
 #include "chrome/browser/ash/fileapi/external_file_url_util.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
-#include "chrome/browser/ui/webui/ash/cloud_upload/hats_office_trigger.h"
-#include "chrome/common/chrome_content_client.h"
-#include "chrome/common/chrome_paths.h"
-#include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/drivefs/drivefs_util.h"
 #include "chromeos/ash/components/drivefs/mojom/drivefs.mojom.h"
 #include "components/drive/drive_api_util.h"
@@ -74,7 +70,7 @@ bool IsViewableInBrowser(const base::FilePath& file_path) {
 }
 
 bool OpenNewTab(const GURL& url) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (!ash::NewWindowDelegate::GetInstance()) {
     return false;
@@ -93,13 +89,16 @@ std::optional<std::string> GetAppIdFromFilePath(
   }
   const std::string& file_extension = file_path.FinalExtension();
   if (file_extension == ".gdoc" ||
-      file_tasks::WordGroupExtensions().contains(file_extension)) {
+      std::ranges::contains(file_tasks::WordGroupExtensions(),
+                            file_extension)) {
     return ash::kGoogleDocsAppId;
   } else if (file_extension == ".gsheet" ||
-             file_tasks::ExcelGroupExtensions().contains(file_extension)) {
+             std::ranges::contains(file_tasks::ExcelGroupExtensions(),
+                                   file_extension)) {
     return ash::kGoogleSheetsAppId;
   } else if (file_extension == ".gslides" ||
-             file_tasks::PowerPointGroupExtensions().contains(file_extension)) {
+             std::ranges::contains(file_tasks::PowerPointGroupExtensions(),
+                                   file_extension)) {
     return ash::kGoogleSlidesAppId;
   }
   return std::nullopt;
@@ -163,6 +162,11 @@ void OpenEncryptedDriveFsFile(const base::FilePath& file_path,
     return;
   }
 
+  if (!hosted_url.SchemeIsHTTPOrHTTPS()) {
+    LOG(WARNING) << "Rejecting URI with scheme: " << hosted_url.scheme();
+    return;
+  }
+
   OpenNewTab(hosted_url);
 }
 
@@ -172,7 +176,7 @@ bool OpenHostedFileInNewTabOrApp(Profile* profile,
                                  const base::FilePath& file_path,
                                  LaunchAppCallback callback,
                                  const GURL& hosted_url) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (!hosted_url.SchemeIsHTTPOrHTTPS() && !hosted_url.SchemeIsFile()) {
     LOG(WARNING) << "Rejecting URI with scheme: " << hosted_url.scheme();
@@ -185,15 +189,10 @@ bool OpenHostedFileInNewTabOrApp(Profile* profile,
   if (!app_id.has_value()) {
     std::move(callback).Run(std::nullopt);
     return OpenNewTab(hosted_url);
-  } else if (base::FeatureList::IsEnabled(
-                 ash::features::kHappinessTrackingOffice) &&
-             file_tasks::IsOfficeFile(file_path)) {
-    ash::cloud_upload::HatsOfficeTrigger::Get().ShowSurveyAfterAppInactive(
-        app_id.value(), ash::cloud_upload::HatsOfficeLaunchingApp::kDrive);
   }
   apps::AppServiceProxy* app_service =
       apps::AppServiceProxyFactory::GetForProfile(profile);
-  DCHECK(app_service);
+  CHECK(app_service, base::NotFatalUntil::M160);
   const apps::AppRegistryCache& cache = app_service->AppRegistryCache();
   bool is_app_available = false;
   cache.ForOneApp(
@@ -224,8 +223,8 @@ bool OpenFileWithAppOrBrowser(Profile* profile,
                               const storage::FileSystemURL& file_system_url,
                               const std::string& action_id,
                               LaunchAppCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(profile);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(profile, base::NotFatalUntil::M160);
 
   const base::FilePath file_path = file_system_url.path();
 
@@ -254,7 +253,7 @@ bool OpenFileWithAppOrBrowser(Profile* profile,
       // drive's web interface. Otherwise (e.g. MTP, FSP), the file is just
       // downloaded in a browser tab.
       const GURL url = ash::FileSystemURLToExternalFileURL(file_system_url);
-      DCHECK(!url.is_empty());
+      CHECK(!url.is_empty(), base::NotFatalUntil::M160);
       OpenNewTab(url);
     } else {
       drive::DriveIntegrationService* integration_service =

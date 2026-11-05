@@ -4,11 +4,13 @@
 
 #include "chrome/browser/metrics/variations/chrome_variations_service_client.h"
 
+#include "base/check.h"
 #include "base/feature_list.h"
 #include "base/path_service.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/google/google_brand.h"
+#include "chrome/browser/metrics/chrome_feature_list_creator.h"
 #include "chrome/browser/metrics/variations/google_groups_manager_factory.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
@@ -16,6 +18,7 @@
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
+#include "components/metrics/metrics_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/variations/pref_names.h"
 #include "components/variations/seed_response.h"
@@ -27,10 +30,6 @@
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/upgrade_detector/build_state.h"
-#endif
-
-#if BUILDFLAG(IS_ANDROID)
-#include "components/variations/android/variations_seed_bridge.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -88,14 +87,7 @@ base::FilePath ChromeVariationsServiceClient::GetVariationsSeedFileDir() {
 
 std::unique_ptr<variations::SeedResponse>
 ChromeVariationsServiceClient::TakeSeedFromNativeVariationsSeedStore() {
-#if BUILDFLAG(IS_ANDROID)
-  std::unique_ptr<variations::SeedResponse> seed =
-      variations::android::GetVariationsFirstRunSeed();
-  variations::android::ClearJavaFirstRunPrefs();
-  return seed;
-#else
-  return nullptr;
-#endif
+  return ChromeFeatureListCreator::GetInstance()->TakeInitialSeed();
 }
 
 bool ChromeVariationsServiceClient::IsEnterprise() {
@@ -119,6 +111,23 @@ bool ChromeVariationsServiceClient::IsChromeEnterpriseCoreSupported() {
 #else
   return true;
 #endif
+}
+
+metrics::MetricsService::RotateUmaLogResult
+ChromeVariationsServiceClient::RotateUmaLogForRuntimeMutability(
+    metrics::MetricsService::RuntimeMutabilityPassKey passkey) {
+  metrics::MetricsService* metrics_service =
+      g_browser_process->metrics_service();
+  CHECK(metrics_service);
+  return metrics_service->RotateUmaLogForRuntimeMutability(passkey);
+}
+
+bool ChromeVariationsServiceClient::ShouldDelayRuntimeMutability(
+    metrics::MetricsService::RuntimeMutabilityPassKey passkey) {
+  metrics::MetricsService* metrics_service =
+      g_browser_process->metrics_service();
+  CHECK(metrics_service);
+  return metrics_service->ShouldDelayRuntimeMutability(passkey);
 }
 
 version_info::Channel ChromeVariationsServiceClient::GetChannel() {

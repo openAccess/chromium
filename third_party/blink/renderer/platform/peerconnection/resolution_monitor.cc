@@ -2,24 +2,36 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-
 #include "third_party/blink/renderer/platform/peerconnection/resolution_monitor.h"
 
+#include <algorithm>
 #include <bitset>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <new>
+#include <optional>
+#include <vector>
 
+#include "base/check_op.h"
 #include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "media/base/decoder_buffer.h"
+#include "media/base/video_codecs.h"
 #include "media/parsers/vp8_parser.h"
 #include "media/parsers/vp9_parser.h"
 #include "third_party/libgav1/src/src/buffer_pool.h"
 #include "third_party/libgav1/src/src/decoder_state.h"
+#include "third_party/libgav1/src/src/gav1/status_code.h"
 #include "third_party/libgav1/src/src/obu_parser.h"
+#include "third_party/libgav1/src/src/utils/constants.h"
+#include "third_party/libgav1/src/src/utils/types.h"
 #include "third_party/webrtc/common_video/h264/h264_common.h"
 #include "third_party/webrtc/common_video/h264/sps_parser.h"
+#include "ui/gfx/geometry/size.h"
 
 namespace blink {
 
@@ -122,6 +134,11 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
 
   std::optional<gfx::Size> GetResolution(
       const media::DecoderBuffer& buffer) override {
+    if (buffer.side_data() && buffer.side_data()->spatial_layers.size() > 1) {
+      DVLOG(1) << "Spatial layer decoding is not supported";
+      return std::nullopt;
+    }
+
     auto buffer_span = base::span(buffer);
     auto parser = base::WrapUnique(new (std::nothrow) libgav1::ObuParser(
         buffer_span.data(), buffer_span.size(), kDefaultOperatingPoint,
@@ -133,7 +150,7 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
     std::optional<gfx::Size> max_resolution;
     while (parser->HasData()) {
       libgav1::RefCountedBufferPtr current_frame;
-      libgav1::StatusCode status_code = parser->ParseOneFrame(&current_frame);
+      libgav1::StatusCode status_code = ParseOneFrame(*parser, &current_frame);
       if (status_code != libgav1::kStatusOk) {
         DLOG(ERROR) << "Failed parsing av1 frame: "
                     << static_cast<int>(status_code);
@@ -149,8 +166,18 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
         return std::nullopt;
       }
 
+      if (HasSpatialLayerObu(parser->obu_headers())) {
+        DVLOG(1) << "Spatial layer decoding is not supported";
+        return std::nullopt;
+      }
+
+      const libgav1::ObuFrameHeader& frame_header = parser->frame_header();
+      if (!frame_header.show_existing_frame && parser->tile_buffers().empty()) {
+        continue;
+      }
+
       std::optional<gfx::Size> frame_size =
-          GetFrameSizeFromHeader(parser->frame_header());
+          GetFrameSizeFromHeader(frame_header);
       if (!frame_size) {
         return std::nullopt;
       }
@@ -161,7 +188,7 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
 
       decoder_state_.UpdateReferenceFrames(
           current_frame,
-          base::strict_cast<int>(parser->frame_header().refresh_frame_flags));
+          base::strict_cast<int>(frame_header.refresh_frame_flags));
     }
 
     return max_resolution;
@@ -170,10 +197,50 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
   media::VideoCodec codec() const override { return media::VideoCodec::kAV1; }
 
  private:
-  // Returns true iff the current decode sequence has multiple spatial layers.
-  bool IsSpatialLayerDecoding(int operating_point_idc) const {
+  // Returns true if the sequence header uses the AV1 RTP payload format
+  // wildcard operating point (AV1 RTP Specification Section 5):
+  // "A sender MAY produce a sequence header with operating_points_cnt_minus_1 =
+  // 0 and operating_point_idc[0] = 0xFFF and seq_level_idx[0] = 0. In such
+  // case, seq_level_idx[0] does not reflect the level of the operating point."
+  bool IsRtpWildcardOperatingPoint(
+      const libgav1::ObuSequenceHeader& sequence_header) const {
+    constexpr int kRtpWildcardOperatingPointIdc = 0b1111'1111'1111;  // 0xfff
+    return sequence_header.operating_points == 1 &&
+           sequence_header.operating_point_idc[kDefaultOperatingPoint] ==
+               kRtpWildcardOperatingPointIdc;
+  }
+
+  libgav1::StatusCode ParseOneFrame(
+      libgav1::ObuParser& parser,
+      libgav1::RefCountedBufferPtr* current_frame) const {
+    libgav1::StatusCode status_code = parser.ParseOneFrame(current_frame);
+    if (status_code == libgav1::kStatusBitstreamError && *current_frame &&
+        IsRtpWildcardOperatingPoint(parser.sequence_header()) &&
+        parser.sequence_header().level[kDefaultOperatingPoint].major == 2 &&
+        parser.sequence_header().level[kDefaultOperatingPoint].minor == 0) {
+      return libgav1::kStatusOk;
+    }
+    return status_code;
+  }
+
+  bool HasSpatialLayerObu(
+      const libgav1::Vector<libgav1::ObuHeader>& obu_headers) const {
+    return std::ranges::any_of(
+        obu_headers,
+        [](const libgav1::ObuHeader& header) { return header.spatial_id > 0; });
+  }
+
+  // Returns true iff the sequence header explicitly specifies multiple spatial
+  // layers for the default operating point.
+  bool IsSpatialLayerDecoding(
+      const libgav1::ObuSequenceHeader& sequence_header) const {
+    if (IsRtpWildcardOperatingPoint(sequence_header)) {
+      return false;
+    }
     // Spec 6.4.1.
     constexpr int kTemporalLayerBitMaskBits = 8;
+    const int operating_point_idc =
+        sequence_header.operating_point_idc[kDefaultOperatingPoint];
     const int kUsedSpatialLayerBitMask =
         (operating_point_idc >> kTemporalLayerBitMaskBits) & 0b1111;
     // In case of an only temporal layer encoding e.g. L1T3, spatial layer#0 bit
@@ -183,13 +250,13 @@ class Av1ResolutionMonitor : public ResolutionMonitor {
 
   bool UpdateCurrentSequenceHeader(
       const libgav1::ObuSequenceHeader& sequence_header) {
-    int operating_point_idc =
-        sequence_header.operating_point_idc[kDefaultOperatingPoint];
-    if (IsSpatialLayerDecoding(operating_point_idc)) {
+    if (IsSpatialLayerDecoding(sequence_header)) {
       constexpr size_t kOperatingPointIdcBits = 12;
-      DVLOG(1) << "Spatial layer decoding is not supported: "
-               << "operating_point_idc="
-               << std::bitset<kOperatingPointIdcBits>(operating_point_idc);
+      DVLOG(1)
+          << "Spatial layer decoding is not supported: "
+          << "operating_point_idc="
+          << std::bitset<kOperatingPointIdcBits>(
+                 sequence_header.operating_point_idc[kDefaultOperatingPoint]);
       return false;
     }
 

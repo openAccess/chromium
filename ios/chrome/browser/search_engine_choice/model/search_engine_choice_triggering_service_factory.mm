@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/search_engine_choice/model/search_engine_choice_triggering_service_factory.h"
 
+#import <utility>
+
 #import "base/check_deref.h"
 #import "components/keyed_service/core/keyed_service.h"
 #import "components/prefs/pref_service.h"
@@ -18,44 +20,26 @@
 
 namespace ios {
 
-// static
-SearchEngineChoiceTriggeringServiceFactory*
-SearchEngineChoiceTriggeringServiceFactory::GetInstance() {
-  static base::NoDestructor<SearchEngineChoiceTriggeringServiceFactory>
-      instance;
-  return instance.get();
-}
-
-// static
-SearchEngineChoiceTriggeringService*
-SearchEngineChoiceTriggeringServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()
-      ->GetServiceForProfileAs<SearchEngineChoiceTriggeringService>(
-          profile,
-          /*create=*/true);
-}
-
 SearchEngineChoiceTriggeringServiceFactory::
-    SearchEngineChoiceTriggeringServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("SearchEngineChoiceTriggeringService",
-                                    ProfileSelection::kRedirectedInIncognito) {
+    SearchEngineChoiceTriggeringServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "SearchEngineChoiceTriggeringService",
+          ProfileSelection::kRedirectedInIncognito) {
   DependsOn(ios::SearchEngineChoiceServiceFactory::GetInstance());
   DependsOn(ios::TemplateURLServiceFactory::GetInstance());
 }
 
-SearchEngineChoiceTriggeringServiceFactory::
-    ~SearchEngineChoiceTriggeringServiceFactory() = default;
-
 std::unique_ptr<KeyedService>
 SearchEngineChoiceTriggeringServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
-  CHECK_EQ(profile, profile->GetOriginalProfile());
+    ProfileIOS& profile) const {
+  CHECK(!profile.IsOffTheRecord());
 
   search_engines::SearchEngineChoiceService& search_engine_choice_service =
       CHECK_DEREF(
           ios::SearchEngineChoiceServiceFactory::GetForProfile(profile));
   const policy::PolicyService& policy_service =
-      CHECK_DEREF(profile->GetPolicyConnector()->GetPolicyService());
+      CHECK_DEREF(profile.GetPolicyConnector()->GetPolicyService());
   const TemplateURLService& template_url_service =
       CHECK_DEREF(ios::TemplateURLServiceFactory::GetForProfile(profile));
   auto condition = search_engine_choice_service.GetStaticChoiceScreenConditions(
@@ -66,7 +50,7 @@ SearchEngineChoiceTriggeringServiceFactory::BuildServiceInstanceFor(
   }
 
   return std::make_unique<SearchEngineChoiceTriggeringService>(
-      CHECK_DEREF(profile->GetPrefs()), policy_service,
+      CHECK_DEREF(profile.GetPrefs()), policy_service,
       search_engine_choice_service, template_url_service);
 }
 

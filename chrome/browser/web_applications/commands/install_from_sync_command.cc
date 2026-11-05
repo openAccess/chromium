@@ -41,6 +41,7 @@
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/browser/web_contents/web_app_url_loader.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 
 namespace web_app {
 
@@ -130,9 +131,9 @@ InstallFromSyncCommand::InstallFromSyncCommand(
       profile_(profile),
       params_(params) {
 #if BUILDFLAG(IS_CHROMEOS)
-  DCHECK(AreAppsLocallyInstalledBySync());
+  CHECK(AreAppsLocallyInstalledBySync(), base::NotFatalUntil::M162);
 #endif
-  DCHECK(params_.start_url.is_valid());
+  CHECK(params_.start_url.is_valid(), base::NotFatalUntil::M162);
   if (params_.migrated_from_manifest_id) {
     source_app_id_ =
         GenerateAppIdFromManifestId(*params_.migrated_from_manifest_id);
@@ -240,7 +241,7 @@ void InstallFromSyncCommand::OnGetWebAppInstallInfo(
 
 void InstallFromSyncCommand::OnDidPerformInstallableCheck(
     std::unique_ptr<WebAppInstallInfo> page_info,
-    blink::mojom::ManifestPtr opt_manifest,
+    std::optional<blink::Manifest> opt_manifest,
     bool valid_manifest_for_web_app,
     webapps::InstallableStatusCode error_code) {
   if (!opt_manifest) {
@@ -400,9 +401,11 @@ void InstallFromSyncCommand::OnInstallFinalized(
 }
 
 void InstallFromSyncCommand::InstallFallback(webapps::InstallResultCode code) {
-  DCHECK(!IsSuccess(code));
-  DCHECK(code != webapps::InstallResultCode::kWebContentsDestroyed);
-  DCHECK(code != webapps::InstallResultCode::kInstallTaskDestroyed);
+  CHECK(!IsSuccess(code), base::NotFatalUntil::M162);
+  CHECK(code != webapps::InstallResultCode::kWebContentsDestroyed,
+        base::NotFatalUntil::M162);
+  CHECK(code != webapps::InstallResultCode::kInstallTaskDestroyed,
+        base::NotFatalUntil::M162);
   GetMutableDebugValue().Set("fallback_install", true);
   GetMutableDebugValue().Set("fallback_install_reason", base::ToString(code));
 
@@ -442,8 +445,9 @@ void InstallFromSyncCommand::ReportResultAndDestroy(
   // The install event is NOT reported on purpose (e.g.
   // `webapps::InstallableMetrics::TrackInstallEvent(source)` is not called), as
   // a sync install is not a recordable install source.
-  DCHECK(!webapps::InstallableMetrics::IsReportableInstallSource(
-      webapps::WebappInstallSource::SYNC));
+  CHECK(!webapps::InstallableMetrics::IsReportableInstallSource(
+            webapps::WebappInstallSource::SYNC),
+        base::NotFatalUntil::M162);
 
   base::UmaHistogramEnumeration("Webapp.InstallResult.Sync", code);
   CompleteAndSelfDestruct(

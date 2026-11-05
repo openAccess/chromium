@@ -12,6 +12,7 @@
 #include "chrome/browser/ui/views/profiles/profile_picker_test_base.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_view.h"
 #include "chrome/browser/ui/views/profiles/profiles_pixel_test_utils.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "content/public/test/browser_test.h"
@@ -76,41 +77,6 @@ std::vector<ProfilePickerSignInTestParam> GetTestParams() {
                                {switches::kFirstRunDesktopRevampSound, {}}},
       },
       {
-          .pixel_test_param =
-              {.test_suffix = "RegularFirstRunDontSignInOnGaiaPageEnabled"},
-          .entry_point = ProfilePicker::EntryPoint::kFirstRun,
-          .enabled_features =
-              {{switches::kFirstRunDesktopRevamp, {}},
-               {switches::kFirstRunDesktopRevampSound, {}},
-               {switches::kFirstRunDesktopRefresh,
-                {{switches::kFirstRunDesktopSignInPromoVariation.name,
-                  "dont-sign-in-on-gaia-page"}}}},
-      },
-      {
-          .pixel_test_param =
-              {.test_suffix = "DarkThemeFirstRunDontSignInOnGaiaPageEnabled",
-               .use_dark_theme = true},
-          .entry_point = ProfilePicker::EntryPoint::kFirstRun,
-          .enabled_features =
-              {{switches::kFirstRunDesktopRevamp, {}},
-               {switches::kFirstRunDesktopRevampSound, {}},
-               {switches::kFirstRunDesktopRefresh,
-                {{switches::kFirstRunDesktopSignInPromoVariation.name,
-                  "dont-sign-in-on-gaia-page"}}}},
-      },
-      {
-          .pixel_test_param = {.test_suffix =
-                                   "RTLFirstRunDontSignInOnGaiaPageEnabled",
-                               .use_right_to_left_language = true},
-          .entry_point = ProfilePicker::EntryPoint::kFirstRun,
-          .enabled_features =
-              {{switches::kFirstRunDesktopRevamp, {}},
-               {switches::kFirstRunDesktopRevampSound, {}},
-               {switches::kFirstRunDesktopRefresh,
-                {{switches::kFirstRunDesktopSignInPromoVariation.name,
-                  "dont-sign-in-on-gaia-page"}}}},
-      },
-      {
           .pixel_test_param = {.test_suffix =
                                    "RegularAddNewProfileRevampEnabled"},
           .entry_point = ProfilePicker::EntryPoint::kProfileMenuAddNewProfile,
@@ -146,19 +112,12 @@ std::vector<ProfilePickerSignInTestParam> GetTestParams() {
               },
           .disabled_features = {switches::kFirstRunDesktopRevampSound},
       },
-      {
-          .pixel_test_param =
-              {.test_suffix =
-                   "RegularFirstRunDontSignInOnGaiaPageEnabledSoundDisabled"},
-          .entry_point = ProfilePicker::EntryPoint::kFirstRun,
-          .enabled_features =
-              {{switches::kFirstRunDesktopRevamp, {}},
-               {switches::kFirstRunDesktopRefresh,
-                {{switches::kFirstRunDesktopSignInPromoVariation.name,
-                  "dont-sign-in-on-gaia-page"}}}},
-          .disabled_features = {switches::kFirstRunDesktopRevampSound},
-      },
   };
+}
+
+std::string_view GetClickWelcomeAcceptButtonJsString() {
+  return "document.querySelector('welcome-app')"
+         ".shadowRoot.querySelector('#acceptButton').click()";
 }
 
 std::string_view GetClickSignInButtonJsString(bool is_first_run) {
@@ -263,6 +222,16 @@ class ProfilePickerSigninToolbarUIPixelTest
                   browser()->GetProfile()->GetPath(), base::DoNothing())
             : ProfilePicker::Params::FromEntryPoint(GetParam().entry_point);
     ProfilePicker::Show(std::move(params));
+
+    if (is_first_run && switches::IsPreFirstRunDesktopRefreshEnabled()) {
+      profiles::testing::WaitForPickerUrl(
+          GURL(chrome::kChromeUIIntroURL)
+              .Resolve(chrome::kChromeUIIntroWelcomeSubPage));
+      CHECK(content::ExecJs(
+          ProfilePicker::GetWebViewForTesting()->GetWebContents(),
+          GetClickWelcomeAcceptButtonJsString()));
+    }
+
     profiles::testing::WaitForPickerUrl(GetInitialUrl(is_first_run));
 
     content::WebContents* web_contents =
@@ -285,8 +254,9 @@ class ProfilePickerSigninToolbarUIPixelTest
     views::Widget* widget = GetWidgetForScreenshot();
 
     auto* test_info = testing::UnitTest::GetInstance()->current_test_info();
-    const std::string screenshot_name =
-        base::StrCat({test_info->test_suite_name(), "_", test_info->name()});
+    const std::string baseline = "8481376";
+    const std::string screenshot_name = base::StrCat(
+        {test_info->test_suite_name(), "_", test_info->name(), "_", baseline});
 
     return VerifyPixelUi(widget, "ProfilePickerSigninToolbarUIPixelTest",
                          screenshot_name) != ui::test::ActionResult::kFailed;

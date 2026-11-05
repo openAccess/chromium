@@ -18,6 +18,10 @@
 #include "device/vr/public/cpp/features.h"
 #endif
 
+#if BUILDFLAG(ENABLE_CARDBOARD)
+#include "device/vr/android/cardboard/cardboard_device_params.h"
+#endif
+
 using testing::_;
 
 namespace vr {
@@ -132,6 +136,10 @@ WebXrVrOpenXrBrowserTestBase::WebXrVrOpenXrBrowserTestBase() {
   forced_runtime_ = switches::kWebXrRuntimeOpenXr;
   enable_features_.push_back(device::features::kOpenXR);
   enable_features_.push_back(blink::features::kWebXRVisibilityMask);
+#if BUILDFLAG(IS_LINUX)
+  // Without a GPU-backed X server, as under Xvfb, WebGL and frame sharing fail.
+  runtime_requirements_.push_back(XrTestRequirement::DRI3);
+#endif
 }
 
 WebXrVrOpenXrBrowserTestBase::~WebXrVrOpenXrBrowserTestBase() = default;
@@ -151,5 +159,15 @@ WebXrVrOpenXrBrowserTestWebXrDisabled::WebXrVrOpenXrBrowserTestWebXrDisabled() {
   disable_features_.push_back(features::kWebXr);
 }
 #endif  // BUIDFLAG(ENABLE_OPENXR)
+
+#if BUILDFLAG(ENABLE_CARDBOARD)
+WebXrVrCardboardBrowserTest::WebXrVrCardboardBrowserTest() {
+  forced_runtime_ = switches::kWebXrRuntimeCardboard;
+  device::CardboardDeviceParams::set_use_cardboard_v1_device_params_for_testing(
+      true);
+}
+
+WebXrVrCardboardBrowserTest::~WebXrVrCardboardBrowserTest() = default;
+#endif  // BUILDFLAG(ENABLE_CARDBOARD)
 
 }  // namespace vr

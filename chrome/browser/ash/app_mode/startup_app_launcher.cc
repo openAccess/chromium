@@ -13,12 +13,12 @@
 #include "base/functional/bind.h"
 #include "base/notreached.h"
 #include "base/syslog_logging.h"
+#include "chrome/browser/ash/app_mode/chrome_kiosk_app_installer.h"
+#include "chrome/browser/ash/app_mode/chrome_kiosk_app_launcher.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launcher.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
-#include "chrome/browser/chromeos/app_mode/chrome_kiosk_app_installer.h"
-#include "chrome/browser/chromeos/app_mode/chrome_kiosk_app_launcher.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/crx_file/id_util.h"
 #include "net/base/backoff_entry.h"
@@ -55,7 +55,7 @@ StartupAppLauncher::StartupAppLauncher(
       app_id_(app_id),
       should_skip_install_(should_skip_install) {
   CHECK(profile_);
-  DCHECK(crx_file::id_util::IdIsValid(app_id_));
+  CHECK(crx_file::id_util::IdIsValid(app_id_), base::NotFatalUntil::M160);
 
   // Reduce extension downloader retry backoff to avoid waiting on splash screen
   // for a long time.

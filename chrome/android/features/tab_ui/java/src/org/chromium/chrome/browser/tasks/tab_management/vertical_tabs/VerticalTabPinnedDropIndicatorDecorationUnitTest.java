@@ -9,7 +9,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.graphics.Canvas;
@@ -20,7 +19,6 @@ import android.view.View;
 import android.view.ViewGroup;
 
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -33,10 +31,8 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalExternalViewDragDropReorderStrategy.DropTargetResult;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
@@ -44,21 +40,17 @@ import org.chromium.ui.base.LocalizationUtils;
 
 /** Unit tests for {@link VerticalTabPinnedDropIndicatorDecoration}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        instrumentedPackages = {
-            "androidx.recyclerview.widget.RecyclerView" // required to mock final.
-        })
 public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private Canvas mCanvas;
-    @Mock private RecyclerView mPinnedTabsRecyclerView;
     @Mock private RecyclerView.State mState;
 
     @Captor private ArgumentCaptor<RectF> mRectCaptor;
     @Captor private ArgumentCaptor<Paint> mPaintCaptor;
 
     private Activity mActivity;
+    private RecyclerView mPinnedTabsRecyclerView;
     private VerticalTabPinnedDropIndicatorDecoration mDecoration;
     private int mThickness;
     private int mItemGap;
@@ -81,13 +73,9 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
                         .getResources()
                         .getDimensionPixelSize(R.dimen.vertical_tab_pinned_item_height);
 
-        when(mPinnedTabsRecyclerView.getContext()).thenReturn(mActivity);
-        when(mPinnedTabsRecyclerView.getWidth()).thenReturn(300);
-        when(mPinnedTabsRecyclerView.getHeight()).thenReturn(200);
-        when(mPinnedTabsRecyclerView.getPaddingLeft()).thenReturn(12);
-        when(mPinnedTabsRecyclerView.getPaddingRight()).thenReturn(12);
-        when(mPinnedTabsRecyclerView.getPaddingTop()).thenReturn(8);
-        when(mPinnedTabsRecyclerView.getPaddingBottom()).thenReturn(8);
+        mPinnedTabsRecyclerView = new RecyclerView(mActivity);
+        mPinnedTabsRecyclerView.setPadding(12, 8, 12, 8);
+        mPinnedTabsRecyclerView.layout(0, 0, 300, 200);
 
         mDecoration = new VerticalTabPinnedDropIndicatorDecoration(mActivity);
     }
@@ -109,13 +97,12 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_MainListTarget_DoesNotDraw() {
         DropTargetResult mainListResult =
                 new DropTargetResult(
                         DropTargetResult.TargetType.MAIN_LIST,
                         /* destTabIndex= */ 1,
-                        /* destGroupTabId= */ TabList.INVALID_TAB_INDEX,
+                        /* destGroupId= */ null,
                         /* isPinned= */ false,
                         /* isZeroPinnedState= */ false,
                         /* isZeroNormalTabsState= */ false,
@@ -132,13 +119,12 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_ZeroPinnedState_DoesNotDraw() {
         DropTargetResult zeroPinnedResult =
                 new DropTargetResult(
                         DropTargetResult.TargetType.MAIN_LIST,
                         /* destTabIndex= */ 0,
-                        /* destGroupTabId= */ TabList.INVALID_TAB_INDEX,
+                        /* destGroupId= */ null,
                         /* isPinned= */ true,
                         /* isZeroPinnedState= */ true,
                         /* isZeroNormalTabsState= */ false,
@@ -155,7 +141,6 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_InsertBefore_LTR_DrawsVerticalBarToLeftOfItem() {
         View childView = createChildView(100, 20, 142, 52);
         RecyclerView.ViewHolder vh = new RecyclerView.ViewHolder(childView) {};
@@ -164,7 +149,7 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
                 new DropTargetResult(
                         DropTargetResult.TargetType.PINNED_GRID,
                         /* destTabIndex= */ 1,
-                        /* destGroupTabId= */ TabList.INVALID_TAB_INDEX,
+                        /* destGroupId= */ null,
                         /* isPinned= */ true,
                         /* isZeroPinnedState= */ false,
                         /* isZeroNormalTabsState= */ false,
@@ -199,7 +184,6 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_InsertAfter_LTR_DrawsVerticalBarToRightOfItem() {
         View childView = createChildView(100, 20, 142, 52);
         RecyclerView.ViewHolder vh = new RecyclerView.ViewHolder(childView) {};
@@ -208,7 +192,7 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
                 new DropTargetResult(
                         DropTargetResult.TargetType.PINNED_GRID,
                         /* destTabIndex= */ 2,
-                        /* destGroupTabId= */ TabList.INVALID_TAB_INDEX,
+                        /* destGroupId= */ null,
                         /* isPinned= */ true,
                         /* isZeroPinnedState= */ false,
                         /* isZeroNormalTabsState= */ false,
@@ -240,7 +224,6 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_InsertBefore_RTL_DrawsVerticalBarToRightOfItem() {
         LocalizationUtils.setRtlForTesting(true);
 
@@ -251,7 +234,7 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
                 new DropTargetResult(
                         DropTargetResult.TargetType.PINNED_GRID,
                         /* destTabIndex= */ 1,
-                        /* destGroupTabId= */ TabList.INVALID_TAB_INDEX,
+                        /* destGroupId= */ null,
                         /* isPinned= */ true,
                         /* isZeroPinnedState= */ false,
                         /* isZeroNormalTabsState= */ false,
@@ -283,7 +266,6 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_InsertAfter_RTL_DrawsVerticalBarToLeftOfItem() {
         LocalizationUtils.setRtlForTesting(true);
 
@@ -294,7 +276,7 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
                 new DropTargetResult(
                         DropTargetResult.TargetType.PINNED_GRID,
                         /* destTabIndex= */ 2,
-                        /* destGroupTabId= */ TabList.INVALID_TAB_INDEX,
+                        /* destGroupId= */ null,
                         /* isPinned= */ true,
                         /* isZeroPinnedState= */ false,
                         /* isZeroNormalTabsState= */ false,
@@ -326,13 +308,12 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_FallbackToAnchorBounds_WhenViewHolderUnattached() {
         DropTargetResult result =
                 new DropTargetResult(
                         DropTargetResult.TargetType.PINNED_GRID,
                         /* destTabIndex= */ 0,
-                        /* destGroupTabId= */ TabList.INVALID_TAB_INDEX,
+                        /* destGroupId= */ null,
                         /* isPinned= */ true,
                         /* isZeroPinnedState= */ false,
                         /* isZeroNormalTabsState= */ false,
@@ -367,13 +348,12 @@ public class VerticalTabPinnedDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_ZeroNormalTabsState_DrawsHorizontalBarAtBottomOfPinnedGrid() {
         DropTargetResult result =
                 new DropTargetResult(
                         DropTargetResult.TargetType.MAIN_LIST,
                         /* destTabIndex= */ 2,
-                        /* destGroupTabId= */ TabList.INVALID_TAB_INDEX,
+                        /* destGroupId= */ null,
                         /* isPinned= */ false,
                         /* isZeroPinnedState= */ false,
                         /* isZeroNormalTabsState= */ true,

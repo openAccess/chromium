@@ -5,8 +5,10 @@
 #ifndef COMPONENTS_PRIVATE_AI_PRIVATE_AI_NETWORK_DRIVER_H_
 #define COMPONENTS_PRIVATE_AI_PRIVATE_AI_NETWORK_DRIVER_H_
 
+#include <optional>
+
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/mojom/network_context.mojom-forward.h"
 
 namespace private_ai {
 
@@ -24,6 +26,12 @@ class PrivateAiNetworkDriver {
   virtual void CreateNetworkContext(
       mojo::PendingReceiver<network::mojom::NetworkContext> receiver,
       network::mojom::NetworkContextParamsPtr params) = 0;
+
+  // Returns whether an explicit proxy (manual proxy rules, PAC script URL,
+  // proxy override rules, or dynamic routing rules) is configured for Chrome's
+  // profile, false if direct (or only WPAD auto-detect), or std::nullopt if
+  // unknown/unsupported on the current platform.
+  virtual std::optional<bool> IsProxyConfigured() const = 0;
 };
 
 }  // namespace private_ai

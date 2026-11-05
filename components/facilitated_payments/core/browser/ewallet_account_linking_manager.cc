@@ -6,7 +6,10 @@
 
 #include <utility>
 
+#include "base/check_op.h"
+#include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/strings/utf_string_conversions.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/facilitated_payments/core/browser/account_linking_params.h"
 #include "components/facilitated_payments/core/browser/facilitated_payments_client.h"
@@ -51,9 +54,7 @@ void EwalletAccountLinkingManager::DismissAndCancel() {
   // callbacks triggered by DismissPrompt(), preventing tear-down crashes.
   weak_ptr_factory_.InvalidateWeakPtrs();
 
-  if (is_prompt_showing_) {
-    DismissPrompt();
-  }
+  DismissPrompt();
 }
 
 void EwalletAccountLinkingManager::DoOnClientTokenReceived(
@@ -65,7 +66,7 @@ void EwalletAccountLinkingManager::DoOnClientTokenReceived(
 std::optional<AccountLinkingParams>
 EwalletAccountLinkingManager::CreateAccountLinkingParams() {
   AccountLinkingParams params(FacilitatedPaymentsType::kEwallet);
-  params.fop_display_name = ewallet_creation_option_.ewallet_name();
+  params.fop_display_name = ewallet_creation_option_.account_display_name();
   params.strike_count =
       GetStrikeDatabase() ? GetStrikeDatabase()->GetStrikes() : 0;
   return params;
@@ -97,12 +98,39 @@ EwalletAccountLinkingManager::GetOrCreateStrikeDatabase() {
 void EwalletAccountLinkingManager::
     DoOnGetDetailsForCreatePaymentInstrumentResponse(bool is_eligible) {
   if (is_eligible) {
+    is_prompt_accepted_ = false;
+    client()->SetUiEventListener(
+        base::BindRepeating(&EwalletAccountLinkingManager::OnUiScreenEvent,
+                            weak_ptr_factory_.GetWeakPtr()));
     ShowAccountLinkingPrompt();
   }
 }
 
+void EwalletAccountLinkingManager::DoOnAccepted() {
+  is_prompt_accepted_ = true;
+}
+
 void EwalletAccountLinkingManager::DoOnAccountLinkingResult(
     AccountLinkingResult result) {
+  // If the user accepted the prompt, any failure to invoke GMSCore (e.g.,
+  // missing action token, logged-out user, or unavailable API client) is a
+  // hard failure that should surface the Error Screen rather than silently
+  // resetting. Note that kResultCanceled (user canceled inside GMSCore) is
+  // intentionally preserved as a soft cancellation.
+  if (is_prompt_accepted_ &&
+      result.error_code == AccountLinkingResultCode::kCouldNotInvoke) {
+    result.error_code = AccountLinkingResultCode::kResultError;
+  }
+
+  // Only dismiss when the sheet is closing; kResultOk and kResultError reuse
+  // the open sheet.
+  if (result.error_code == AccountLinkingResultCode::kResultCanceled ||
+      result.error_code == AccountLinkingResultCode::kCouldNotInvoke) {
+    DismissPrompt();
+  } else {
+    ui_state_ = UiState::kHidden;
+  }
+
   // Skip logging early exits to avoid artificially lowering the success rate.
   if (result.error_code != AccountLinkingResultCode::kCouldNotInvoke) {
     LogAccountLinkingResult(GetHistogramSuffix(), result.is_successful);
@@ -114,11 +142,51 @@ void EwalletAccountLinkingManager::DoOnAccountLinkingResult(
   }
 }
 
+void EwalletAccountLinkingManager::OnUiScreenEvent(UiEvent ui_event_type) {
+  switch (ui_event_type) {
+    case UiEvent::kNewScreenShown: {
+      CHECK_NE(ui_state_, UiState::kHidden);
+      break;
+    }
+    case UiEvent::kScreenCouldNotBeShown: {
+      ResetUiStateOnScreenClosed(
+          AccountLinkingFlowExitedReason::kScreenNotShown);
+      break;
+    }
+    case UiEvent::kScreenClosedNotByUser: {
+      ResetUiStateOnScreenClosed(
+          AccountLinkingFlowExitedReason::kScreenClosedNotByUser);
+      break;
+    }
+    case UiEvent::kScreenClosedByUser: {
+      ResetUiStateOnScreenClosed(
+          AccountLinkingFlowExitedReason::kScreenClosedByUser);
+      break;
+    }
+  }
+}
+
+void EwalletAccountLinkingManager::ResetUiStateOnScreenClosed(
+    AccountLinkingFlowExitedReason exit_reason) {
+  // Only log prompt exit metrics and cancel the flow if the prompt closed.
+  if (ui_state_ == UiState::kPrompt) {
+    ui_state_ = UiState::kHidden;
+    LogAccountLinkingFlowExitedReason(GetHistogramSuffix(), exit_reason);
+    OnAccountLinkingResult(AccountLinkingResult{});
+  } else {
+    // Mark hidden since the bottom sheet is now closed, including when closing
+    // from `UiState::kProgressScreen`.
+    ui_state_ = UiState::kHidden;
+  }
+}
+
 base::DictValue EwalletAccountLinkingManager::
     GetPayloadForGetDetailsForCreatePaymentInstrument() {
-  // TODO(b:505507305): Populate the payload when the generic network interface
-  // supports it.
-  return base::DictValue();
+  return base::DictValue().Set(
+      "ewallet_account_linking_info",
+      base::DictValue().Set(
+          "issuer_id",
+          base::UTF16ToUTF8(ewallet_creation_option_.ewallet_name())));
 }
 
 std::string_view EwalletAccountLinkingManager::GetHistogramSuffix() const {

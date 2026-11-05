@@ -7,11 +7,11 @@
 <translation id="1046742265332833834">Tema azul</translation>
 <translation id="1070329623210597193">Arquivos que este site pode ver ou editar</translation>
 <translation id="1074758928858737435">Você pode pedir para ver a versão para computador dos sites</translation>
+<translation id="1089791933924803646">Receber sugestões do Chrome em outros apps</translation>
 <translation id="1109482864356262001">Recursos que precisam de sensores de movimento ou de luz não vão funcionar</translation>
 <translation id="1126523729897810826">Para aproveitar o Chrome ao máximo, use as configurações sugeridas abaixo.</translation>
 <translation id="113098737392899175">Acessar páginas com um cursor de texto quando um teclado está conectado</translation>
 <translation id="1148624853678088576">Está tudo pronto!</translation>
-<translation id="1149644372535087155">Salvar senhas no Chrome</translation>
 <translation id="1178015372320901893">Página inferior "Meus atalhos"</translation>
 <translation id="1178581264944972037">Pausar</translation>
 <translation id="1181037720776840403">Remover</translation>
@@ -46,12 +46,14 @@
 <translation id="1464044141348608623">Não permitir que sites saibam quando você está usando o dispositivo ativamente</translation>
 <translation id="146867109637325312">{COUNT,plural, =1{<ph name="SITE_COUNT" /> site}one{<ph name="SITE_COUNT" /> site}other{<ph name="SITE_COUNT" /> sites}}</translation>
 <translation id="1476700086976862423">Cor do tema: Sépia</translation>
+<translation id="1497214680865404175">Imagem enviada pelo usuário</translation>
 <translation id="1500473259453106018">Ocultar nas guias o card de redução no preço</translation>
 <translation id="1508931164824684991">Os sites podem usar JavaScript</translation>
 <translation id="1510341833810331442">Os sites não podem salvar dados no seu dispositivo</translation>
 <translation id="1532175480576580256">A página inferior "Meus atalhos" está aberta no tamanho máximo</translation>
 <translation id="1538031354170655462">Os sites geralmente usam a comunicação a curta distância (NFC) para trabalhar com tags ou dispositivos nas proximidades, como a leitura de crachás ou o pagamento por aproximação</translation>
 <translation id="1547123415014299762">Cookies de terceiros são permitidos</translation>
+<translation id="1565353932454306569"><ph name="ORIGIN" />: arraste pela parte lateral da tela para sair do modo de tela cheia.</translation>
 <translation id="1569054338208717605">Tornar os sites mais rápidos com o mecanismo V8 do Chrome, mas deixar o navegador um pouco menos resistente a ataques</translation>
 <translation id="1593426485665524382">Novas ações disponíveis perto da parte de cima da tela</translation>
 <translation id="1594521731409209842">Faça o gesto de pinça na tela para redimensionar a foto</translation>
@@ -136,6 +138,7 @@
 <translation id="2315043854645842844">A seleção de certificado do cliente não é compatível com o sistema operacional.</translation>
 <translation id="2347601491101454548">A página inferior "Meus atalhos" está aberta na metade da altura</translation>
 <translation id="2359808026110333948">Continuar</translation>
+<translation id="2364212713469273030"><ph name="ORIGIN" />: arraste pela parte de cima da tela e deslize a borda esquerda ou direita para sair da tela cheia.</translation>
 <translation id="2379925928934107488">Aplicar o tema escuro para sites, quando possível, ao usar o tema escuro no Chrome</translation>
 <translation id="2390272837142897736">Aumentar zoom</translation>
 <translation id="2397689164757137845">Ativada • Exata</translation>
@@ -159,7 +162,7 @@
 <translation id="2536779053640817375">Permitido desta vez • Exato</translation>
 <translation id="2544997614631598250">Cor do tema: Escuro</translation>
 <translation id="2546283357679194313">Cookies e dados de sites</translation>
-<translation id="2553552004849639664">Tenha a blindagem mais potente do Chrome contra ameaças on-line</translation>
+<translation id="2553552004849639664">Tenha a melhor defesa do Chrome contra ameaças on-line</translation>
 <translation id="2570922361219980984">O acesso ao local também está desativado para este dispositivo. Ative-o nas <ph name="BEGIN_LINK" />Configurações do Android<ph name="END_LINK" />.</translation>
 <translation id="2586657967955657006">Área de transferência</translation>
 <translation id="2588271083332682494">Aproveite os grupos de guias</translation>
@@ -178,9 +181,7 @@
 <translation id="2710883118091822664">Faça login para continuar de onde parou em todos os seus dispositivos</translation>
 <translation id="2713106313042589954">Desativar câmera</translation>
 <translation id="2717722538473713889">Endereços de e-mail</translation>
-<translation id="2726059656860238749">Inicie o Chrome com a omnibox em foco, o que reduz o tempo de inicialização em dispositivos mais simples.</translation>
 <translation id="2750481671343847896">Sites podem exibir solicitações de login de serviços de identificação.</translation>
-<translation id="2787357173144933081">Iniciar com a omnibox</translation>
 <translation id="2789132527330338807">Os sites podem pedir para criar um mapa 3D do ambiente ao seu redor ou acompanhar a posição da câmera</translation>
 <translation id="2790501146643349491">Quando essa configuração está ativada, os sites fechados recentemente podem terminar de enviar e receber dados. Quando está desativada, os sites fechados recentemente não conseguem terminar de enviar ou receber dados.</translation>
 <translation id="2795716239552913152">Os sites geralmente usam sua localização para recursos ou informações relevantes, como notícias locais ou lojas por perto</translation>
@@ -188,7 +189,7 @@
 <translation id="2802908157808345702">Não permitir que os sites exibam pop-ups e usem redirecionamentos</translation>
 <translation id="2814830417943086299">Agora, o Chrome mostra suas guias recentes na lista de apps e nos resultados da pesquisa do dispositivo. É possível desativar essa opção a qualquer momento nas configurações do Chrome.</translation>
 <translation id="2822354292072154809">Tem certeza de que quer redefinir todas as permissões de site para <ph name="CHOSEN_OBJECT_NAME" />?</translation>
-<translation id="2848335882304088250">Você já pode aproveitar tudo o que o Chrome tem a oferecer no seu dispositivo.</translation>
+<translation id="2848335882304088250">Aproveite o que o Chrome tem a oferecer.</translation>
 <translation id="2850913818900871965">Solicitar versão para dispositivos móveis</translation>
 <translation id="2870560284913253234">Site</translation>
 <translation id="2874939134665556319">Faixa anterior</translation>
@@ -225,7 +226,6 @@
 <translation id="3167868116600277716">Feed do Discover</translation>
 <translation id="3198916472715691905"><ph name="STORAGE_AMOUNT" /> de dados armazenados</translation>
 <translation id="3199078925536734975">Permitido desta vez • Aproximado</translation>
-<translation id="3208584281581115441">Confirmar agora</translation>
 <translation id="321187648315454507">Para permitir que o app <ph name="APP_NAME" /> envie notificações, também é necessário ativá-las nas <ph name="BEGIN_LINK" />configurações do Android<ph name="END_LINK" />.</translation>
 <translation id="3223425961342298674">Acesso à localização não permitido</translation>
 <translation id="3227137524299004712">Microfone</translation>
@@ -284,7 +284,6 @@
 <translation id="381841723434055211">Números de telefone</translation>
 <translation id="3823453485268218808">Fonte Mono</translation>
 <translation id="3826050100957962900">Login de terceiros</translation>
-<translation id="3831065134033923230">Verificar as senhas salvas</translation>
 <translation id="3835233591525155343">Uso do seu dispositivo</translation>
 <translation id="3843916486309149084">O Chrome vai bloquear os cookies novamente hoje</translation>
 <translation id="385051799172605136">Voltar</translation>
@@ -292,8 +291,6 @@
 <translation id="3870711497942672548">Deixe o Chrome do seu jeito com cores e imagens personalizadas na sua página inicial</translation>
 <translation id="389521680295183045">Os sites podem pedir para saber quando você está usando o dispositivo ativamente</translation>
 <translation id="3895926599014793903">Forçar zoom</translation>
-<translation id="3903738175795615004">Para sair da tela cheia, arraste a parte de cima da tela ou pressione a tecla Esc.</translation>
-<translation id="3905475044299942653">Parar muitas notificações</translation>
 <translation id="3922092564198021702">No smartphone, acesse as Configurações.</translation>
 <translation id="3924858949939391676">Mostrar links quando o Modo de Leitura estiver ativado</translation>
 <translation id="3933121352599513978">Fechar solicitações indesejadas (recomendado)</translation>
@@ -353,7 +350,6 @@
 <translation id="4479647676395637221">Perguntar antes de permitir que sites usem sua câmera (recomendado)</translation>
 <translation id="4505788138578415521">URL expandido</translation>
 <translation id="4522570452068850558">Saiba mais</translation>
-<translation id="4523472416386354622">Fazer login para começar</translation>
 <translation id="4529207923544043455">A página inferior está mostrando as tarefas concluídas e pendentes na lista de configurações</translation>
 <translation id="4534723447064627427">Para permitir que o app <ph name="APP_NAME" /> acesse seu microfone, também é preciso ativá-lo nas <ph name="BEGIN_LINK" />configurações do Android<ph name="END_LINK" />.</translation>
 <translation id="4545694195887112015">A página de configurações foi fechada</translation>
@@ -366,7 +362,6 @@
 <translation id="4645575059429386691">Gerenciado pelos seus pais</translation>
 <translation id="4651224148644053314">Mais cores e opções</translation>
 <translation id="4652266463001779298">Sem permissão</translation>
-<translation id="4655846733459137112">Toque em Sim para facilitar o uso dessa senha na próxima vez que você fizer login</translation>
 <translation id="4663373278480897665">Câmera permitida</translation>
 <translation id="4670064810192446073">Realidade virtual</translation>
 <translation id="4672315773691449562">Toque em "App de navegação" e em "Chrome"</translation>
@@ -389,7 +384,6 @@
 <translation id="4936863036653376783">Seus grupos vão aparecer na seção de grupos de guias em todos os seus dispositivos</translation>
 <translation id="4945443401464700059"><ph name="SITE" /> não pode usar suas informações em</translation>
 <translation id="4953688446973710931">Quando essa configuração está ativada, os sites podem pedir o download automático de vários arquivos. Quando está desativada, os sites não podem fazer o download automático de vários arquivos.</translation>
-<translation id="4962975101802056554">Revogar todas as permissões para o dispositivo</translation>
 <translation id="4972737347717125191">Os sites podem pedir para usar dispositivos e dados de realidade virtual</translation>
 <translation id="4973805849704516244">Painel de cores do Chrome</translation>
 <translation id="497421865427891073">Avançar</translation>
@@ -413,7 +407,6 @@
 <translation id="512938610812707830">A página inferior de coleções de temas para a página "Nova guia" está aberta no tamanho máximo</translation>
 <translation id="5137460097045297858">A página inferior do feed do Discover está aberta na metade da altura</translation>
 <translation id="5139253256813381453">{PRICE_DROP_COUNT,plural, =1{Redução no preço nas guias abertas}one{Redução no preço nas guias abertas}other{Reduções nos preços nas guias abertas}}</translation>
-<translation id="5150048675001754041">Faça login em sites e apps com rapidez e facilidade</translation>
 <translation id="5186036860380548585">Opção disponível perto da parte superior da tela</translation>
 <translation id="5197729504361054390">Os contatos selecionados serão compartilhados com <ph name="BEGIN_BOLD" /><ph name="SITE" /><ph name="END_BOLD" />.</translation>
 <translation id="5198930230016462977">A página inferior "Personalizar 'Nova guia'" está aberta</translation>
@@ -423,7 +416,6 @@
 <translation id="5239623327352565343">Acesso à localização permitido</translation>
 <translation id="5246825184569358663">Essa ação vai excluir todos os dados locais, incluindo cookies, e redefinir todas as permissões de <ph name="DOMAIN" /> e sites relacionados</translation>
 <translation id="5264323282659631142">Remover "<ph name="CHIP_LABEL" />"</translation>
-<translation id="528192093759286357">Arraste a partir da parte superior e toque no botão "Voltar" para sair da tela cheia.</translation>
 <translation id="5286194356314741248">Verificando</translation>
 <translation id="5300589172476337783">Mostrar</translation>
 <translation id="5301954838959518834">Ok, entendi</translation>
@@ -453,6 +445,7 @@
 <translation id="5668404140385795438">Aplica zoom mesmo que o site tente impedir</translation>
 <translation id="5668843533782548925">Os sites ficam mais lentos, mas mais seguros</translation>
 <translation id="5677928146339483299">Bloqueado</translation>
+<translation id="5679089750838794164">Agora, o Chrome pode mostrar sugestões em outros apps com base nos seus dados de navegação, como o histórico recente. O tratamento desses dados ocorre de forma segura no dispositivo. É possível desativar essa opção a qualquer momento nas configurações do Chrome.</translation>
 <translation id="5689516760719285838">Local</translation>
 <translation id="5690795753582697420">A câmera está desativada nas configurações do Android</translation>
 <translation id="5700761515355162635">Cookies de terceiros permitidos</translation>
@@ -470,7 +463,6 @@
 <translation id="5804241973901381774">Permissões</translation>
 <translation id="5817042798620209981">Caixa de diálogo de informações do site</translation>
 <translation id="5822675474983796325">A página inferior "Personalizar 'Nova guia'" está aberta no tamanho máximo</translation>
-<translation id="5826403277762134844">Página inferior com instruções para salvar senhas no Chrome</translation>
 <translation id="5833899990800318936">Não permitir que os sites usem JavaScript</translation>
 <translation id="583673505367439042">Os sites podem pedir para editar arquivos e pastas no dispositivo</translation>
 <translation id="5844448279347999754">Quando essa configuração está ativada, os sites podem pedir para acessar texto e imagens na sua área de transferência. Quando está desativada, os sites não podem acessar texto e imagens na sua área de transferência.</translation>
@@ -507,7 +499,7 @@
 <translation id="6085954183010297841">Excluir a permissão de edição do arquivo? <ph name="FILE" /></translation>
 <translation id="6104860901391833523">Quando essa opção está ativada, os sites podem entrar no modo picture-in-picture automaticamente. Quando está desativada, os sites não podem entrar no modo picture-in-picture automaticamente.</translation>
 <translation id="6120483543004435978">Quando essa configuração está ativada, os sites podem pedir para saber quando você está usando o dispositivo ativamente. Quando está desativada, os sites não conseguem saber quando você está usando o dispositivo ativamente.</translation>
-<translation id="6132075343662013154">O Chrome vai oferecer a opção de salvar sua senha</translation>
+<translation id="612871598708395517">Ocultar sugestões do Chrome em outros apps</translation>
 <translation id="615886654739818377">Não permitir que os sites gerenciem janelas em todas as telas</translation>
 <translation id="6165508094623778733">Saiba mais</translation>
 <translation id="6171020522141473435">Quando essa configuração está ativada, os sites podem pedir para usar dispositivos Bluetooth. Quando está desativada, os sites não podem usar dispositivos Bluetooth.</translation>
@@ -533,6 +525,7 @@
 <translation id="6439114592976064011">Impedir que sites usem seus dispositivos e dados de realidade virtual</translation>
 <translation id="6447842834002726250">Cookies</translation>
 <translation id="6452138246455930388">Redução no preço na sua guia aberta: <ph name="PRODUCT_NAME" /> de <ph name="OLD_PRICE" /> por <ph name="NEW_PRICE" /> em <ph name="DOMAIN_NAME" /></translation>
+<translation id="6495608040096939405">Revogar permissão do dispositivo para <ph name="NAME" /></translation>
 <translation id="6500423977866688905">Quando a janela estiver estreita, solicitar a visualização para dispositivos móveis</translation>
 <translation id="6527303717912515753">Compartilhar</translation>
 <translation id="6530703012083415527">Quando essa configuração está ativada, os sites podem usar pop-ups e redirecionamentos. Quando está desativada, os sites não podem usar pop-ups e redirecionamentos.</translation>
@@ -566,7 +559,7 @@
 <translation id="6787751205395685251">Selecione uma opção para <ph name="SITE_NAME" /></translation>
 <translation id="6790428901817661496">Reproduzir</translation>
 <translation id="6818926723028410516">Selecionar itens</translation>
-<translation id="6838525730752203626">Usar o Chrome por padrão</translation>
+<translation id="6838525730752203626">Use o Chrome por padrão</translation>
 <translation id="6840760312327750441">Para agrupar guias, toque em uma delas e a mantenha pressionada. Depois disso, arraste-a para outra guia.</translation>
 <translation id="6842868554183332230">Geralmente, os sites detectam quando você está usando o dispositivo ativamente para definir sua disponibilidade nos apps de chat</translation>
 <translation id="6864395892908308021">Este dispositivo não consegue ler NFC</translation>
@@ -583,7 +576,6 @@
 <translation id="6980861169612950611">Excluir dados do site? <ph name="SITE_NAME" /></translation>
 <translation id="6981982820502123353">Acessibilidade</translation>
 <translation id="6991142177939282156">Permitida • Usando aproximada</translation>
-<translation id="6992014788289743568">Verifique as senhas para aumentar a segurança e proteger seus dados</translation>
 <translation id="6992289844737586249">Perguntar antes de permitir que sites usem o microfone (recomendado)</translation>
 <translation id="7000754031042624318">Desativada nas configurações do Android</translation>
 <translation id="7036823721811529709">Ouvir em segundo plano</translation>
@@ -591,7 +583,7 @@
 <translation id="7053983685419859001">Bloquear</translation>
 <translation id="7055552182600664515">Para abrir conteúdo protegido por direitos autorais, os sites podem precisar usar um serviço de proteção de conteúdo. <ph name="BEGIN_LINK" />Saiba mais<ph name="END_LINK" /></translation>
 <translation id="7066151586745993502">{NUM_SELECTED,plural, =1{1 selecionado}one{# selecionado}other{# selecionados}}</translation>
-<translation id="7084115944294706056">Escolha a posição da barra de endereço</translation>
+<translation id="7084115944294706056">Posição da barra de endereço</translation>
 <translation id="7087918508125750058"><ph name="ITEM_COUNT" /> itens selecionados. Opções disponíveis perto da parte superior da tela</translation>
 <translation id="7141896414559753902">Impedir pop-ups e redirecionamento dos sites (recomendado)</translation>
 <translation id="7176368934862295254"><ph name="KILOBYTES" /> KB</translation>
@@ -599,6 +591,7 @@
 <translation id="7188508872042490670">Dados do site no dispositivo</translation>
 <translation id="7201549776650881587">Essa ação vai excluir todos os dados e cookies armazenados por todos os sites relacionados a <ph name="ORIGIN" /> ou pelo app na sua tela inicial</translation>
 <translation id="7219254577985949841">Excluir dados do site?</translation>
+<translation id="7225256190577194089">Revogar todas as permissões do dispositivo <ph name="DEVICE_NAME" /></translation>
 <translation id="723171743924126238">Selecionar imagens</translation>
 <translation id="7243246278722455312">A página inferior "Personalizar 'Nova guia'" está aberta</translation>
 <translation id="7243308994586599757">Opções disponíveis perto da parte inferior da tela</translation>
@@ -650,7 +643,6 @@ A Proteção Avançada controla estas configurações do Chrome:</translation>
 <translation id="775043444390799886">Revogar permissão</translation>
 <translation id="7758789811447313947">Tema violeta</translation>
 <translation id="7759147511335618829">Controle e reprogramação de dispositivos MIDI</translation>
-<translation id="7771089277295008211">A página inferior com instruções para salvar senhas foi fechada</translation>
 <translation id="7781829728241885113">Ontem</translation>
 <translation id="7791543448312431591">Adicionar</translation>
 <translation id="780301667611848630">Agora não</translation>
@@ -667,7 +659,6 @@ A Proteção Avançada controla estas configurações do Chrome:</translation>
 <translation id="7940722705963108451">Lembrar</translation>
 <translation id="7948081750384205628">Saiba mais sobre <ph name="SETTING_TITLE" /></translation>
 <translation id="7952708427581814389">Os sites podem pedir para acessar texto e imagens na sua área de transferência</translation>
-<translation id="7958779728312669715">A página inferior com instruções para salvar senhas foi aberta por completo</translation>
 <translation id="798299424881500862">Tema laranja</translation>
 <translation id="7986741934819883144">Selecione um contato</translation>
 <translation id="7990211076305263060">Quando essa configuração está ativada, os sites podem pedir para usar o microfone. Quando está desativada, os sites não podem usar o microfone.</translation>
@@ -713,7 +704,6 @@ A Proteção Avançada controla estas configurações do Chrome:</translation>
 <translation id="8428213095426709021">Configurações</translation>
 <translation id="8441146129660941386">Voltar</translation>
 <translation id="8444433999583714703">Para permitir que o app <ph name="APP_NAME" /> acesse seu local, ative-o também nas <ph name="BEGIN_LINK" />configurações do Android<ph name="END_LINK" />.</translation>
-<translation id="8447861592752582886">Revogar permissão do dispositivo</translation>
 <translation id="8463843545738141778">Essa configuração está desativada porque você ativou a Proteção Avançada nas configurações do Android.</translation>
 <translation id="8467359479529706065">A página inferior de aparência da página "Nova guia" está aberta na metade da altura</translation>
 <translation id="8471525937465764768">Os sites geralmente se conectam a dispositivos USB para recursos como imprimir um documento ou salvar em um dispositivo de armazenamento</translation>
@@ -730,7 +720,7 @@ A Proteção Avançada controla estas configurações do Chrome:</translation>
 <translation id="8525306231823319788">Tela cheia</translation>
 <translation id="854876774113449365">Os sites que você visita podem incorporar conteúdo de outros sites, como imagens, anúncios e texto. Esses outros sites podem pedir permissão para usar informações que salvaram sobre você durante a navegação. <ph name="BEGIN_LINK" />Saiba mais sobre conteúdo incorporado<ph name="END_LINK" /></translation>
 <translation id="8549127125482561383">Como mostrar solicitações</translation>
-<translation id="8558480467877843976">Agora você pode usar o Chrome sempre que navegar ou tocar em links em mensagens, documentos e outros apps.</translation>
+<translation id="8558480467877843976">Agora você pode usar o Chrome sempre que navegar ou abrir links em mensagens, documentos e outros apps.</translation>
 <translation id="857943718398505171">Permitido (recomendado)</translation>
 <translation id="8593422116412089302">Quando essa configuração está ativada, os sites podem pedir para usar informações que salvaram sobre você. Quando está desativada, os sites não podem pedir para usar as informações que salvaram sobre você.</translation>
 <translation id="8609465669617005112">Mover para cima</translation>
@@ -762,7 +752,6 @@ A Proteção Avançada controla estas configurações do Chrome:</translation>
 <translation id="8889294078294184559">Conforme você navega, eles podem verificar com o navegador e o site visitado anteriormente que você é uma pessoa real</translation>
 <translation id="8899807382908246773">Anúncios invasivos</translation>
 <translation id="8903921497873541725">Aumentar zoom</translation>
-<translation id="8919911527569629802">Faça login em qualquer site</translation>
 <translation id="8921772741368021346"><ph name="POSITION" /> / <ph name="DURATION" /></translation>
 <translation id="8926389886865778422">Não perguntar novamente</translation>
 <translation id="8926666909099850184">A NFC está desativada neste dispositivo. Ative-a nas <ph name="BEGIN_LINK" />configurações do Android<ph name="END_LINK" />.</translation>
@@ -786,6 +775,7 @@ A Proteção Avançada controla estas configurações do Chrome:</translation>
 <translation id="9138217887606523162">O zoom atual está em <ph name="ZOOM_LEVEL" />%%</translation>
 <translation id="9156722768168878035">Permita que o Chrome mostre suas guias recentes na lista de apps e nos resultados da pesquisa do dispositivo. É possível desativar essa opção a qualquer momento nas configurações do Chrome.</translation>
 <translation id="9162462602695099906">Esta página é perigosa</translation>
+<translation id="9172068157980844189">Você pode ativar a barra de favoritos em Configurações &gt; Aparência</translation>
 <translation id="9182556968660520230">Não permitir que os sites reproduzam conteúdo protegido</translation>
 <translation id="927148002081263046">Compartilhar um contato</translation>
 <translation id="947156494302904893">Os sites que você visita podem verificar que você é uma pessoa real, e não um bot</translation>

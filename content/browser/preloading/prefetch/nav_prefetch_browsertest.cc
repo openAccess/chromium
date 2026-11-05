@@ -7,6 +7,7 @@
 #include "base/location.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
@@ -22,6 +23,7 @@
 #include "content/browser/preloading/prefetch/prefetch_features.h"
 #include "content/browser/preloading/prefetch/prefetch_service.h"
 #include "content/browser/preloading/preload_activation_report_manager.h"
+#include "content/browser/preloading/preload_activation_report_utils.h"
 #include "content/browser/preloading/preloading.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -30,9 +32,11 @@
 #include "content/public/browser/pre_prefetch_handle.h"
 #include "content/public/browser/pre_prefetch_service.h"
 #include "content/public/browser/prerender_handle.h"
+#include "content/public/browser/restore_type.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/common/content_features.h"
+#include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
@@ -47,6 +51,7 @@
 #include "content/shell/browser/shell.h"
 #include "net/cookies/canonical_cookie_test_helpers.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/mojom/loader/referrer.mojom.h"
@@ -764,7 +769,54 @@ class PrePrefetchBrowserTest : public NavPrefetchBrowserTest {
     feature_list_.InitAndEnableFeature(features::kPrefetchOffTheMainThread);
   }
 
+  void SetUpOnMainThread() override {
+    NavPrefetchBrowserTest::SetUpOnMainThread();
+    pre_prefetch_service_ = PrePrefetchService::Create(
+        shell()->web_contents()->GetBrowserContext(),
+        /*embedder_non_ui_thread_update_headers_callbacks=*/{},
+        /*initial_origin_hint=*/url::Origin::Create(GetUrl("a.test", "/")),
+        /*initial_javascript_enabled_hint=*/true,
+        /*initial_should_append_variations_header_hint=*/false);
+    ASSERT_NE(pre_prefetch_service_, nullptr);
+  }
+
+  void TearDownOnMainThread() override {
+    pre_prefetch_service_.reset();
+    NavPrefetchBrowserTest::TearDownOnMainThread();
+  }
+
+ protected:
+  // Creates a `PrePrefetchContainer` for `url` on a non-UI thread, which starts
+  // the PrePrefetch network request, and returns its handle. `url` should be
+  // same-origin with `GetUrl("a.test", "/")`, i.e. the origin hint of
+  // `pre_prefetch_service_`; otherwise this may return nullptr.
+  [[nodiscard]] std::unique_ptr<PrePrefetchHandle> StartPrePrefetch(
+      const GURL& url) {
+    base::test::TestFuture<std::unique_ptr<PrePrefetchHandle>> handle_future;
+    base::ThreadPool::PostTaskAndReplyWithResult(
+        FROM_HERE, {base::MayBlock()},
+        base::BindOnce(
+            [](PrePrefetchService* service_ptr, const GURL& url) {
+              base::ScopedAllowBaseSyncPrimitivesForTesting allow_blocking;
+              return service_ptr->StartPrePrefetchRequest(
+                  url, test::kPreloadingEmbedderHistogramSuffixForTesting,
+                  /*javascript_enabled=*/true,
+                  /*no_vary_search_hint=*/std::nullopt,
+                  /*priority=*/content::PrefetchPriority::kHighest,
+                  /*additional_headers=*/{},
+                  /*request_status_listener=*/nullptr,
+                  /*ttl=*/base::Seconds(60),
+                  /*should_append_variations_header=*/false,
+                  /*should_disable_block_until_head_timeout=*/true,
+                  /*should_bypass_http_cache=*/false);
+            },
+            pre_prefetch_service_.get(), url),
+        handle_future.GetCallback());
+    return handle_future.Take();
+  }
+
  private:
+  std::unique_ptr<PrePrefetchService> pre_prefetch_service_;
   base::test::ScopedFeatureList feature_list_;
 };
 
@@ -778,39 +830,7 @@ IN_PROC_BROWSER_TEST_F(PrePrefetchBrowserTest, PrePrefetchConsumption) {
 
   test::TestPrefetchWatcher test_prefetch_watcher;
 
-  // Create `PrePrefetchServiceImpl`.
-  auto pre_prefetch_service = PrePrefetchService::Create(
-      shell()->web_contents()->GetBrowserContext(),
-      /*embedder_non_ui_thread_update_headers_callbacks=*/{},
-      url::Origin::Create(prefetch_url),
-      /*initial_javascript_enabled_hint=*/true,
-      /*initial_should_append_variations_header_hint=*/false);
-  ASSERT_NE(pre_prefetch_service, nullptr);
-
-  // Create `PrePrefetchContainer` on non UI, creating PrePrefetch network
-  // request.
-  base::test::TestFuture<std::unique_ptr<PrePrefetchHandle>> handle_future;
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock()},
-      base::BindOnce(
-          [](PrePrefetchService* service_ptr, const GURL& url) {
-            base::ScopedAllowBaseSyncPrimitivesForTesting allow_blocking;
-            return service_ptr->StartPrePrefetchRequest(
-                url, test::kPreloadingEmbedderHistogramSuffixForTesting,
-                /*javascript_enabled=*/true,
-                /*no_vary_search_hint=*/std::nullopt,
-                /*priority=*/content::PrefetchPriority::kHighest,
-                /*additional_headers=*/{},
-                /*request_status_listener=*/nullptr,
-                base::TimeDelta(base::Seconds(60)),
-                /*should_append_variations_header=*/false,
-                /*should_disable_block_until_head_timeout=*/false,
-                /*should_bypass_http_cache=*/false);
-          },
-          pre_prefetch_service.get(), prefetch_url),
-      handle_future.GetCallback());
-
-  std::unique_ptr<PrePrefetchHandle> handle = handle_future.Take();
+  std::unique_ptr<PrePrefetchHandle> handle = StartPrePrefetch(prefetch_url);
   EXPECT_NE(handle, nullptr);
 
   // Wait for PrePrefetch network request.
@@ -835,23 +855,145 @@ IN_PROC_BROWSER_TEST_F(PrePrefetchBrowserTest, PrePrefetchConsumption) {
   EXPECT_EQ(GetRequestCount(prefetch_url), 1);
 }
 
+class PrePrefetchServiceWorkerBrowserTest : public PrePrefetchBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    hold_activation_response_ =
+        RegisterControllableHttpResponse("/service_worker/hold_activation");
+    PrePrefetchBrowserTest::SetUpOnMainThread();
+  }
+
+ protected:
+  // Requested by `hold_activation_worker.js` during its activation. The
+  // activation is held until this is responded to.
+  std::unique_ptr<ControllableHttpResponse> hold_activation_response_;
+};
+
+// Tests that a prefetch constructed from a PrePrefetch fails without crashing
+// when it finds a controlling ServiceWorker while a navigation is already
+// waiting for it with its `PrefetchServiceWorkerState` still `kAllowed`.
+// Regression test for crbug.com/561909563.
+IN_PROC_BROWSER_TEST_F(PrePrefetchServiceWorkerBrowserTest,
+                       ControllingServiceWorkerFoundDuringMatching) {
+  GURL initiator_url =
+      GetUrl("a.test", "/service_worker/create_service_worker.html");
+  GURL prefetch_url = GetUrl("a.test", "/service_worker/empty.html");
+
+  ASSERT_TRUE(NavigateToURL(shell(), initiator_url));
+
+  // Register a ServiceWorker whose scope covers `prefetch_url`, and keep it in
+  // the `activating` state. While the ServiceWorker is `activating`, the
+  // controlling ServiceWorker check of the prefetch below is blocked, and thus
+  // its `PrefetchServiceWorkerState` remains `kAllowed`.
+  ASSERT_EQ("DONE",
+            EvalJs(shell(), JsReplace("registerWithoutAwaitingReady($1)",
+                                      "hold_activation_worker.js")));
+  hold_activation_response_->WaitForRequest();
+
+  test::TestPrefetchWatcher test_prefetch_watcher;
+
+  // Start a PrePrefetch. Its network request doesn't go through the
+  // ServiceWorker.
+  std::unique_ptr<PrePrefetchHandle> handle = StartPrePrefetch(prefetch_url);
+  ASSERT_NE(handle, nullptr);
+
+  // Wait for PrePrefetch network request.
+  WaitForRequest(prefetch_url);
+  EXPECT_EQ(GetRequestCount(prefetch_url), 1);
+
+  // `PrePrefetchContainer` consumption.
+  std::unique_ptr<PrefetchHandle> prefetch_handle =
+      prefetch_service().AddPrefetchRequestFromPrePrefetch(std::move(handle));
+  ASSERT_NE(prefetch_handle, nullptr);
+
+  // Start a navigation to `prefetch_url`. Right after `DidStartNavigation()`,
+  // in the same task, the navigation starts matching and speculatively waits
+  // for the prefetch, whose `PrefetchServiceWorkerState` is still `kAllowed`.
+  TestNavigationObserver nav_observer(shell()->web_contents());
+  DidStartNavigationObserver start_observer(shell()->web_contents());
+  shell()->LoadURL(prefetch_url);
+  start_observer.Wait();
+
+  // Complete the ServiceWorker activation. Then the prefetch finds the
+  // controlling ServiceWorker and fails.
+  hold_activation_response_->Send(net::HTTP_OK, "text/plain");
+  hold_activation_response_->Done();
+
+  // The navigation doesn't use the prefetch (and doesn't crash), and is loaded
+  // via a new network request.
+  nav_observer.Wait();
+  EXPECT_TRUE(nav_observer.last_navigation_succeeded());
+  EXPECT_FALSE(test_prefetch_watcher.PrefetchUsedInLastNavigation());
+  EXPECT_EQ(GetRequestCount(prefetch_url), 2);
+
+  // The navigation actually waited for the prefetch.
+  histogram_tester().ExpectUniqueSample(
+      "Prefetch.PrefetchMatchingBlockedNavigation.PerMatchingCandidate."
+      "Embedder_EmbedderHistogramSuffixForTesting",
+      true, 1);
+}
+
+// Tests that a prefetch constructed from a PrePrefetch fails without crashing
+// when its URL is controlled by an already activated ServiceWorker, e.g. after
+// a navigation to a page in the ServiceWorker's scope.
+IN_PROC_BROWSER_TEST_F(PrePrefetchServiceWorkerBrowserTest,
+                       ControllingServiceWorkerAlreadyActivated) {
+  GURL initiator_url =
+      GetUrl("a.test", "/service_worker/create_service_worker.html");
+  GURL controlled_url = GetUrl("a.test", "/service_worker/empty.html");
+  GURL prefetch_url = GetUrl("a.test", "/service_worker/empty2.html");
+
+  ASSERT_TRUE(NavigateToURL(shell(), initiator_url));
+  ASSERT_EQ("DONE",
+            EvalJs(shell(), JsReplace("register($1)",
+                                      "fetch_event_respond_with_fetch.js")));
+
+  // Load a page that the ServiceWorker controls before the prefetch.
+  ASSERT_TRUE(NavigateToURL(shell(), controlled_url));
+  ASSERT_EQ(true, EvalJs(shell(), "!!navigator.serviceWorker.controller"));
+
+  test::TestPrefetchWatcher test_prefetch_watcher;
+
+  // Start a PrePrefetch. Its network request doesn't go through the
+  // ServiceWorker.
+  std::unique_ptr<PrePrefetchHandle> handle = StartPrePrefetch(prefetch_url);
+  ASSERT_NE(handle, nullptr);
+  WaitForRequest(prefetch_url);
+  EXPECT_EQ(GetRequestCount(prefetch_url), 1);
+
+  // `PrePrefetchContainer` consumption. The prefetch finds the controlling
+  // ServiceWorker and fails.
+  std::unique_ptr<PrefetchHandle> prefetch_handle =
+      prefetch_service().AddPrefetchRequestFromPrePrefetch(std::move(handle));
+  ASSERT_NE(prefetch_handle, nullptr);
+
+  // The navigation doesn't use the prefetch (and doesn't crash), and is loaded
+  // via the ServiceWorker with a new network request.
+  ASSERT_TRUE(NavigateToURL(shell(), prefetch_url));
+  EXPECT_FALSE(test_prefetch_watcher.PrefetchUsedInLastNavigation());
+  EXPECT_EQ(GetRequestCount(prefetch_url), 2);
+}
+
 class PrefetchActivationBeaconBrowserTest
     : public NavPrefetchBrowserTest,
       public ::testing::WithParamInterface<bool> {
  public:
   PrefetchActivationBeaconBrowserTest() {
-    std::vector<base::test::FeatureRef> enabled_features = {
-        features::kPrefetchActivationBeacon};
-    std::vector<base::test::FeatureRef> disabled_features;
+    std::vector<base::test::FeatureRefAndParams> enabled_features =
+        GetDefaultEnabledBackForwardCacheFeaturesForTesting(
+            {{features::kPrefetchActivationBeacon, {}}});
+    std::vector<base::test::FeatureRef> disabled_features =
+        GetDefaultDisabledBackForwardCacheFeaturesForTesting();
 
     if (GetParam()) {
       enabled_features.push_back(
-          features::kPreloadActivationReportWithExtensionInterception);
+          {features::kPreloadActivationReportWithExtensionInterception, {}});
     } else {
       disabled_features.push_back(
           features::kPreloadActivationReportWithExtensionInterception);
     }
-    feature_list_.InitWithFeatures(enabled_features, disabled_features);
+    feature_list_.InitWithFeaturesAndParameters(enabled_features,
+                                                disabled_features);
   }
 
  private:
@@ -919,6 +1061,225 @@ IN_PROC_BROWSER_TEST_P(PrefetchActivationBeaconBrowserTest,
   EXPECT_TRUE(std::ranges::contains(
       mock_client.logged_features(),
       blink::mojom::WebFeature::kPrefetchAndPrerenderActivationBeacon));
+  histogram_tester().ExpectUniqueSample(
+      "Preloading.ActivationBeacon.StatusOnResponseStarted",
+      PreloadActivationBeaconStatus::kHandledByPrefetch, 1);
+  histogram_tester().ExpectTotalCount(
+      "Preloading.ActivationBeacon.NonPreloadNavigationType", 0);
+}
+
+IN_PROC_BROWSER_TEST_P(
+    PrefetchActivationBeaconBrowserTest,
+    BackForwardCacheRestorePrefetchedPageDoesNotResendBeacon) {
+  GURL referrer_url = GetUrl("a.test", "/empty.html");
+  GURL prefetch_url = GetUrl("a.test", "/prefetch");
+  GURL other_url = GetUrl("a.test", "/other");
+  GURL beacon_url = GetUrl("a.test", "/beacon");
+
+  int beacon_count = 0;
+  base::RunLoop prefetch_run_loop;
+  base::RunLoop beacon_run_loop;
+
+  URLLoaderInterceptor interceptor(base::BindLambdaForTesting(
+      [&](URLLoaderInterceptor::RequestParams* params) {
+        if (params->url_request.url == prefetch_url &&
+            params->url_request.headers.HasHeader("Sec-Purpose")) {
+          std::string headers =
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: text/html\r\n"
+              "on-prefetch-activation: /beacon\r\n\r\n";
+          URLLoaderInterceptor::WriteResponse(headers, "content",
+                                              params->client.get(),
+                                              std::nullopt, prefetch_url);
+          prefetch_run_loop.Quit();
+          return true;
+        }
+        if (params->url_request.url == other_url) {
+          URLLoaderInterceptor::WriteResponse(
+              "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n", "other",
+              params->client.get(), std::nullopt, other_url);
+          return true;
+        }
+        if (params->url_request.url == beacon_url) {
+          beacon_count++;
+          URLLoaderInterceptor::WriteResponse("", "", params->client.get());
+          beacon_run_loop.Quit();
+          return true;
+        }
+        return false;
+      }));
+
+  ASSERT_TRUE(NavigateToURL(shell(), referrer_url));
+
+  // Prefetch the page.
+  StartPrefetch(prefetch_url);
+  prefetch_run_loop.Run();
+
+  // Navigate to the prefetched page.
+  RenderFrameHostImpl* rfh = &GetPrimaryMainFrameHost();
+  TestFrameNavigationObserver nav_observer(rfh);
+  ASSERT_TRUE(BeginNavigateToURLFromRenderer(rfh, prefetch_url));
+
+  // Wait for the beacon request.
+  beacon_run_loop.Run();
+  nav_observer.Wait();
+  EXPECT_EQ(nav_observer.last_committed_url(), prefetch_url);
+  EXPECT_EQ(beacon_count, 1);
+  histogram_tester().ExpectUniqueSample(
+      "Preloading.ActivationBeacon.StatusOnResponseStarted",
+      PreloadActivationBeaconStatus::kHandledByPrefetch, 1);
+
+  RenderFrameHostWrapper rfh_wrapper(
+      shell()->web_contents()->GetPrimaryMainFrame());
+
+  // Navigate away to another page.
+  ASSERT_TRUE(NavigateToURL(shell(), other_url));
+  ASSERT_TRUE(static_cast<RenderFrameHostImpl*>(rfh_wrapper.get())
+                  ->IsInBackForwardCache());
+
+  // Navigate back to restore the prefetched page from BFCache.
+  ASSERT_TRUE(HistoryGoBack(shell()->web_contents()));
+  EXPECT_EQ(shell()->web_contents()->GetPrimaryMainFrame(), rfh_wrapper.get());
+
+  // The activation beacon should NOT be sent again upon BFCache restore.
+  EXPECT_EQ(beacon_count, 1);
+  histogram_tester().ExpectBucketCount(
+      "Preloading.ActivationBeacon.StatusOnResponseStarted",
+      PreloadActivationBeaconStatus::kNotInPreloadContext, 1);
+  histogram_tester().ExpectBucketCount(
+      "Preloading.ActivationBeacon.NonPreloadNavigationType",
+      PreloadActivationBeaconNonPreloadNavigationType::kBackForward, 1);
+}
+
+IN_PROC_BROWSER_TEST_P(PrefetchActivationBeaconBrowserTest,
+                       SubframeActivationBeaconHeaderDoesNotRecordHistogram) {
+  GURL main_page_url = GetUrl("a.test", "/main_page");
+  GURL subframe_url = GetUrl("a.test", "/subframe_page");
+
+  URLLoaderInterceptor interceptor(base::BindLambdaForTesting(
+      [&](URLLoaderInterceptor::RequestParams* params) {
+        if (params->url_request.url == main_page_url) {
+          std::string headers =
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: text/html\r\n\r\n";
+          std::string body = base::StringPrintf(
+              "<html><body><iframe id='test_iframe' "
+              "src='%s'></iframe></body></html>",
+              subframe_url.spec().c_str());
+          URLLoaderInterceptor::WriteResponse(
+              headers, body, params->client.get(), std::nullopt, main_page_url);
+          return true;
+        }
+        if (params->url_request.url == subframe_url) {
+          std::string headers =
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: text/html\r\n"
+              "on-prefetch-activation: /beacon\r\n\r\n";
+          URLLoaderInterceptor::WriteResponse(headers, "subframe content",
+                                              params->client.get(),
+                                              std::nullopt, subframe_url);
+          return true;
+        }
+        return false;
+      }));
+
+  ASSERT_TRUE(NavigateToURL(shell(), main_page_url));
+  histogram_tester().ExpectTotalCount(
+      "Preloading.ActivationBeacon.StatusOnResponseStarted", 0);
+  histogram_tester().ExpectTotalCount(
+      "Preloading.ActivationBeacon.NonPreloadNavigationType", 0);
+}
+
+IN_PROC_BROWSER_TEST_P(PrefetchActivationBeaconBrowserTest,
+                       NonPreloadNavigationRecordsHistogram) {
+  GURL page_url = GetUrl("a.test", "/page_with_beacon");
+  GURL other_url = GetUrl("a.test", "/other_page");
+  GURL beacon_url = GetUrl("a.test", "/beacon");
+  bool beacon_seen = false;
+
+  URLLoaderInterceptor interceptor(base::BindLambdaForTesting(
+      [&](URLLoaderInterceptor::RequestParams* params) {
+        if (params->url_request.url == page_url) {
+          std::string headers =
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: text/html\r\n"
+              "on-prefetch-activation: /beacon\r\n\r\n";
+          URLLoaderInterceptor::WriteResponse(
+              headers, "content", params->client.get(), std::nullopt, page_url);
+          return true;
+        }
+        if (params->url_request.url == other_url) {
+          URLLoaderInterceptor::WriteResponse(
+              "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n", "other",
+              params->client.get(), std::nullopt, other_url);
+          return true;
+        }
+        if (params->url_request.url == beacon_url) {
+          beacon_seen = true;
+          return true;
+        }
+        return false;
+      }));
+
+  // 1. Common navigation (not prefetched) with activation beacon header.
+  ASSERT_TRUE(NavigateToURL(shell(), page_url));
+  EXPECT_FALSE(beacon_seen);
+  histogram_tester().ExpectUniqueSample(
+      "Preloading.ActivationBeacon.StatusOnResponseStarted",
+      PreloadActivationBeaconStatus::kNotInPreloadContext, 1);
+  histogram_tester().ExpectUniqueSample(
+      "Preloading.ActivationBeacon.NonPreloadNavigationType",
+      PreloadActivationBeaconNonPreloadNavigationType::kCommonNavigation, 1);
+
+  // 2. Reload navigation with activation beacon header.
+  TestNavigationObserver reload_observer(shell()->web_contents());
+  shell()->Reload();
+  reload_observer.Wait();
+  EXPECT_FALSE(beacon_seen);
+  histogram_tester().ExpectUniqueSample(
+      "Preloading.ActivationBeacon.StatusOnResponseStarted",
+      PreloadActivationBeaconStatus::kNotInPreloadContext, 2);
+  histogram_tester().ExpectBucketCount(
+      "Preloading.ActivationBeacon.NonPreloadNavigationType",
+      PreloadActivationBeaconNonPreloadNavigationType::kRefresh, 1);
+
+  // 3. Back/forward navigation with activation beacon header.
+  ASSERT_TRUE(NavigateToURL(shell(), other_url));
+  ASSERT_TRUE(HistoryGoBack(shell()->web_contents()));
+  EXPECT_FALSE(beacon_seen);
+  histogram_tester().ExpectUniqueSample(
+      "Preloading.ActivationBeacon.StatusOnResponseStarted",
+      PreloadActivationBeaconStatus::kNotInPreloadContext, 3);
+  histogram_tester().ExpectBucketCount(
+      "Preloading.ActivationBeacon.NonPreloadNavigationType",
+      PreloadActivationBeaconNonPreloadNavigationType::kBackForward, 1);
+
+  // 4. Tab restore navigation with activation beacon header.
+  Shell* restored_shell =
+      Shell::CreateNewWindow(shell()->web_contents()->GetBrowserContext(),
+                             GURL(), nullptr, gfx::Size());
+  std::unique_ptr<NavigationEntry> restored_entry =
+      NavigationController::CreateNavigationEntry(
+          page_url, Referrer(), /*initiator_origin=*/std::nullopt,
+          /*initiator_base_url=*/std::nullopt, ui::PAGE_TRANSITION_RELOAD,
+          /*is_renderer_initiated=*/false, std::string(),
+          restored_shell->web_contents()->GetBrowserContext(),
+          /*blob_url_loader_factory=*/nullptr);
+  std::vector<std::unique_ptr<NavigationEntry>> entries;
+  entries.push_back(std::move(restored_entry));
+  NavigationController& restore_controller =
+      restored_shell->web_contents()->GetController();
+  restore_controller.Restore(0, RestoreType::kRestored, &entries);
+  TestNavigationObserver restore_observer(restored_shell->web_contents());
+  restore_controller.LoadIfNecessary();
+  restore_observer.Wait();
+  EXPECT_FALSE(beacon_seen);
+  histogram_tester().ExpectUniqueSample(
+      "Preloading.ActivationBeacon.StatusOnResponseStarted",
+      PreloadActivationBeaconStatus::kNotInPreloadContext, 4);
+  histogram_tester().ExpectBucketCount(
+      "Preloading.ActivationBeacon.NonPreloadNavigationType",
+      PreloadActivationBeaconNonPreloadNavigationType::kTabRestore, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(PrefetchActivationBeaconBrowserTest,
@@ -967,6 +1328,90 @@ IN_PROC_BROWSER_TEST_P(PrefetchActivationBeaconBrowserTest,
   // The navigation should now succeed.
   nav_observer.Wait();
   EXPECT_FALSE(beacon_seen);
+  histogram_tester().ExpectUniqueSample(
+      "Preloading.ActivationBeacon.StatusOnResponseStarted",
+      PreloadActivationBeaconStatus::kCrossOrigin, 1);
+}
+
+class PrefetchActivationBeaconOriginTrialBrowserTest
+    : public NavPrefetchBrowserTest {
+ public:
+  PrefetchActivationBeaconOriginTrialBrowserTest() {
+    feature_list_.InitWithEmptyFeatureAndFieldTrialLists();
+  }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    NavPrefetchBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch("disable-field-trial-config");
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(PrefetchActivationBeaconOriginTrialBrowserTest,
+                       NoOriginTrialTokenRecordsHistogram) {
+  base::HistogramTester histogram_tester;
+  GURL page_url = GetUrl("a.test", "/page_with_beacon");
+
+  URLLoaderInterceptor interceptor(base::BindLambdaForTesting(
+      [&](URLLoaderInterceptor::RequestParams* params) {
+        if (params->url_request.url == page_url) {
+          std::string headers =
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: text/html\r\n"
+              "on-prefetch-activation: /beacon\r\n\r\n";
+          URLLoaderInterceptor::WriteResponse(
+              headers, "content", params->client.get(), std::nullopt, page_url);
+          return true;
+        }
+        return false;
+      }));
+
+  ASSERT_TRUE(NavigateToURL(shell(), page_url));
+  histogram_tester.ExpectUniqueSample(
+      "Preloading.ActivationBeacon.StatusOnResponseStarted",
+      PreloadActivationBeaconStatus::kNoOriginTrialToken, 1);
+  histogram_tester.ExpectTotalCount(
+      "Preloading.ActivationBeacon.NonPreloadNavigationType", 0);
+}
+
+class PrefetchActivationBeaconDisabledBrowserTest
+    : public NavPrefetchBrowserTest {
+ public:
+  PrefetchActivationBeaconDisabledBrowserTest() {
+    feature_list_.InitAndDisableFeature(features::kPrefetchActivationBeacon);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(PrefetchActivationBeaconDisabledBrowserTest,
+                       DisabledByFeatureFlagRecordsHistogram) {
+  base::HistogramTester histogram_tester;
+  GURL page_url = GetUrl("a.test", "/page_with_beacon");
+
+  URLLoaderInterceptor interceptor(base::BindLambdaForTesting(
+      [&](URLLoaderInterceptor::RequestParams* params) {
+        if (params->url_request.url == page_url) {
+          std::string headers =
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: text/html\r\n"
+              "on-prefetch-activation: /beacon\r\n\r\n";
+          URLLoaderInterceptor::WriteResponse(
+              headers, "content", params->client.get(), std::nullopt, page_url);
+          return true;
+        }
+        return false;
+      }));
+
+  ASSERT_TRUE(NavigateToURL(shell(), page_url));
+  histogram_tester.ExpectUniqueSample(
+      "Preloading.ActivationBeacon.StatusOnResponseStarted",
+      PreloadActivationBeaconStatus::kDisabledByFeatureFlag, 1);
+  histogram_tester.ExpectTotalCount(
+      "Preloading.ActivationBeacon.NonPreloadNavigationType", 0);
 }
 
 // `StartPrefetch()` triggers prefetch by calling
@@ -1017,10 +1462,13 @@ IN_PROC_BROWSER_TEST_F(NavPrefetchBrowserTest_CancelUnrelatedPrefetchEnabled,
   GURL url_cancelled =
       embedded_test_server()->GetURL("/title1.html?cancelled=1");
 
-  auto& rfhi = render_frame_host_impl();
-
   ASSERT_TRUE(
       NavigateToURL(shell(), embedded_test_server()->GetURL("/empty.html")));
+
+  // Lifetime: Available until cross-document navigation happens, especially
+  // BFCache disabled case.
+  auto& rfhi = render_frame_host_impl();
+  const blink::DocumentToken document_token = rfhi.GetDocumentToken();
 
   StartPrefetch(url_cancelled);
 
@@ -1031,7 +1479,7 @@ IN_PROC_BROWSER_TEST_F(NavPrefetchBrowserTest_CancelUnrelatedPrefetchEnabled,
   ASSERT_TRUE(nav_observer.last_navigation_succeeded());
 
   // The navigation cancelled A.
-  PrefetchKey key(rfhi.GetDocumentToken(), url_cancelled);
+  PrefetchKey key(document_token, url_cancelled);
   const auto* prefetch_container =
       prefetch_service().GetPrefetchContainerForTesting(key);
   ASSERT_FALSE(prefetch_container);
@@ -1234,10 +1682,13 @@ IN_PROC_BROWSER_TEST_F(NavPrefetchBrowserTest_CancelUnrelatedPrefetchEnabled,
   GURL url_redirect_to =
       embedded_test_server()->GetURL("/title1.html?cancelled=1");
 
-  auto& rfhi = render_frame_host_impl();
-
   ASSERT_TRUE(
       NavigateToURL(shell(), embedded_test_server()->GetURL("/empty.html")));
+
+  // Lifetime: Available until cross-document navigation happens, especially
+  // BFCache disabled case.
+  auto& rfhi = render_frame_host_impl();
+  const blink::DocumentToken document_token = rfhi.GetDocumentToken();
 
   {
     StartPrefetch(url_redirect_to);
@@ -1257,7 +1708,7 @@ IN_PROC_BROWSER_TEST_F(NavPrefetchBrowserTest_CancelUnrelatedPrefetchEnabled,
   ASSERT_TRUE(nav_observer.last_navigation_succeeded());
 
   // The navigation cancelled A.
-  PrefetchKey key(rfhi.GetDocumentToken(), url_redirect_to);
+  PrefetchKey key(document_token, url_redirect_to);
   const auto* prefetch_container =
       prefetch_service().GetPrefetchContainerForTesting(key);
   ASSERT_FALSE(prefetch_container);
@@ -1344,10 +1795,13 @@ IN_PROC_BROWSER_TEST_F(
   GURL url_cancelled =
       embedded_test_server()->GetURL("/title1.html?cancelled=1");
 
-  auto& rfhi = render_frame_host_impl();
-
   ASSERT_TRUE(
       NavigateToURL(shell(), embedded_test_server()->GetURL("/empty.html")));
+
+  // Lifetime: Available until cross-document navigation happens, especially
+  // BFCache disabled case.
+  auto& rfhi = render_frame_host_impl();
+  const blink::DocumentToken document_token = rfhi.GetDocumentToken();
 
   StartPrefetch(url_cancelled);
 
@@ -1359,7 +1813,7 @@ IN_PROC_BROWSER_TEST_F(
 
   // The navigation cancelled the prefetch because they share the same
   // initiator.
-  PrefetchKey key(rfhi.GetDocumentToken(), url_cancelled);
+  PrefetchKey key(document_token, url_cancelled);
   const auto* prefetch_container =
       prefetch_service().GetPrefetchContainerForTesting(key);
   ASSERT_FALSE(prefetch_container);

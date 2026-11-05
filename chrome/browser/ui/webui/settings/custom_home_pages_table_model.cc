@@ -63,7 +63,7 @@ void CustomHomePagesTableModel::SetURLs(const std::vector<GURL>& urls) {
 
 void CustomHomePagesTableModel::AddWithoutNotification(size_t index,
                                                        const GURL& url) {
-  DCHECK(index <= RowCount());
+  CHECK(index <= RowCount(), base::NotFatalUntil::M162);
   entries_.insert(entries_.begin() + index, Entry());
   entries_[index].url = url;
 }
@@ -77,7 +77,7 @@ void CustomHomePagesTableModel::Add(size_t index, const GURL& url) {
 }
 
 void CustomHomePagesTableModel::RemoveWithoutNotification(size_t index) {
-  DCHECK(index < RowCount());
+  CHECK(index < RowCount(), base::NotFatalUntil::M162);
   Entry* entry = &(entries_[index]);
   // Cancel any pending load requests now so we don't deref a bogus pointer when
   // we get the loaded notification.
@@ -135,17 +135,18 @@ std::vector<GURL> CustomHomePagesTableModel::GetURLs() {
   return urls;
 }
 
-size_t CustomHomePagesTableModel::RowCount() {
+size_t CustomHomePagesTableModel::RowCount() const {
   return entries_.size();
 }
 
-std::u16string CustomHomePagesTableModel::GetText(size_t row, int column_id) {
-  DCHECK(column_id == 0);
-  DCHECK(row < RowCount());
+std::u16string CustomHomePagesTableModel::GetText(size_t row,
+                                                  int column_id) const {
+  CHECK(column_id == 0, base::NotFatalUntil::M162);
+  CHECK(row < RowCount(), base::NotFatalUntil::M162);
   return entries_[row].title.empty() ? FormattedURL(row) : entries_[row].title;
 }
 
-std::u16string CustomHomePagesTableModel::GetTooltip(size_t row) {
+std::u16string CustomHomePagesTableModel::GetTooltip(size_t row) const {
   return entries_[row].title.empty()
              ? std::u16string()
              : l10n_util::GetStringFUTF16(IDS_SETTINGS_ON_STARTUP_PAGE_TOOLTIP,
@@ -212,7 +213,7 @@ void CustomHomePagesTableModel::OnGotOneOfManyTitles(
     const GURL& entry_url,
     history::QueryURLResult result) {
   OnGotTitle(entry_url, false, std::move(result));
-  DCHECK_GE(num_outstanding_title_lookups_, 1);
+  CHECK_GE(num_outstanding_title_lookups_, 1, base::NotFatalUntil::M162);
   if (--num_outstanding_title_lookups_ == 0 && observer_) {
     observer_->OnModelChanged();
   }

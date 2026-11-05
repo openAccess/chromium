@@ -4,12 +4,15 @@
 
 #include "ui/native_theme/caption_style.h"
 
-#include <string>
+#include <memory>
+#include <string_view>
 
+#include "base/functional/callback_helpers.h"
 #include "base/test/test_reg_util_win.h"
 #include "base/win/registry.h"
 #include "base/win/scoped_com_initializer.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/native_theme/caption_style_win.h"
 
 namespace ui {
 
@@ -62,7 +65,20 @@ void SetCurrentSelectedTheme(const wchar_t* guid) {
   ASSERT_EQ(key.WriteValue(L"CurrentSelectedTheme", guid), ERROR_SUCCESS);
 }
 
-class CaptionStyleWinTest : public ::testing::Test {
+struct CaptionThemeTestCase {
+  const wchar_t* guid;
+  bool expect_important;
+};
+
+constexpr CaptionThemeTestCase kCaptionThemeTestCases[] = {
+    // The Default theme should allow page styles to override caption styles.
+    {kDefaultThemeGuid, false},
+    // A non-Default theme is a user preference that should override page
+    // styles with !important.
+    {kCustomThemeGuid, true},
+};
+
+class CaptionStyleWinTestBase : public ::testing::Test {
  protected:
   void SetUp() override {
     // Redirect HKCU to a scratch hive so the test never touches the real user
@@ -78,63 +94,141 @@ class CaptionStyleWinTest : public ::testing::Test {
   base::win::ScopedCOMInitializer com_initializer_;
 };
 
+class CaptionStyleWinTest
+    : public CaptionStyleWinTestBase,
+      public ::testing::WithParamInterface<CaptionThemeTestCase> {};
+
+using CaptionStyleWinCacheTest = CaptionStyleWinTestBase;
+
 }  // namespace
 
-// When the Windows Default caption theme is selected, FromSystemSettings()
-// should return a CaptionStyle whose populated fields do NOT contain
-// !important. The OS-reported defaults serve as UA styles that HTML author
-// ::cue rules can override.
-TEST_F(CaptionStyleWinTest, TestWinCaptionStyleDefault) {
+TEST_P(CaptionStyleWinTest, TestWinCaptionStyle) {
+  const CaptionThemeTestCase& test_case = GetParam();
+
+  ASSERT_NO_FATAL_FAILURE(SeedCaptionPropertyRegistryValues());
+  ASSERT_NO_FATAL_FAILURE(SetCurrentSelectedTheme(test_case.guid));
+
+  std::optional<ui::CaptionStyle> caption_style =
+      ui::CaptionStyle::FromSystemSettings();
+  ASSERT_TRUE(caption_style.has_value());
+
+  auto check_property = [&test_case](std::string_view property_name,
+                                     std::string_view value) {
+    SCOPED_TRACE(property_name);
+    EXPECT_FALSE(value.empty());
+    EXPECT_EQ(value.find("!important") != std::string_view::npos,
+              test_case.expect_important)
+        << "Value: " << value;
+  };
+
+  check_property("background_color", caption_style->background_color);
+  check_property("font_family", caption_style->font_family);
+  check_property("font_variant", caption_style->font_variant);
+  check_property("text_color", caption_style->text_color);
+  check_property("text_shadow", caption_style->text_shadow);
+  check_property("text_size", caption_style->text_size);
+  check_property("window_color", caption_style->window_color);
+}
+
+// Verifies that the style read from the OS is reused until the cache is
+// invalidated, which is what keeps FromSystemSettings() cheap on the UI
+// thread.
+TEST_F(CaptionStyleWinCacheTest, StyleIsCachedUntilInvalidated) {
+  // Caching is only enabled once something observes OS caption setting
+  // changes; NativeThemeWin does this in production.
+  base::ScopedClosureRunner runner = ui::EnableCaptionStyleCaching();
+
   ASSERT_NO_FATAL_FAILURE(SeedCaptionPropertyRegistryValues());
   ASSERT_NO_FATAL_FAILURE(SetCurrentSelectedTheme(kDefaultThemeGuid));
 
   std::optional<ui::CaptionStyle> caption_style =
       ui::CaptionStyle::FromSystemSettings();
   ASSERT_TRUE(caption_style.has_value());
+  ASSERT_EQ(caption_style->text_color.find("!important"), std::string::npos);
 
-  // No field may carry !important under the Default theme — author ::cue
-  // styles must remain free to override the UA defaults.
-  EXPECT_EQ(caption_style->background_color.find("!important"),
-            std::string::npos)
-      << "Value: " << caption_style->background_color;
-  EXPECT_EQ(caption_style->font_family.find("!important"), std::string::npos)
-      << "Value: " << caption_style->font_family;
-  EXPECT_EQ(caption_style->font_variant.find("!important"), std::string::npos)
-      << "Value: " << caption_style->font_variant;
-  EXPECT_EQ(caption_style->text_color.find("!important"), std::string::npos)
-      << "Value: " << caption_style->text_color;
-  EXPECT_EQ(caption_style->text_shadow.find("!important"), std::string::npos)
-      << "Value: " << caption_style->text_shadow;
-  EXPECT_EQ(caption_style->text_size.find("!important"), std::string::npos)
-      << "Value: " << caption_style->text_size;
-  EXPECT_EQ(caption_style->window_color.find("!important"), std::string::npos)
-      << "Value: " << caption_style->window_color;
-}
-
-// When a non-default caption theme is selected, FromSystemSettings() should
-// return a CaptionStyle whose populated fields contain !important so the
-// user's accessibility preference overrides author ::cue styles.
-TEST_F(CaptionStyleWinTest, TestWinCaptionStyleNonDefault) {
-  ASSERT_NO_FATAL_FAILURE(SeedCaptionPropertyRegistryValues());
+  // Selecting a non-default theme makes the style !important, but the cached
+  // value is returned until it is invalidated.
   ASSERT_NO_FATAL_FAILURE(SetCurrentSelectedTheme(kCustomThemeGuid));
-
-  std::optional<ui::CaptionStyle> caption_style =
+  std::optional<ui::CaptionStyle> cached_style =
       ui::CaptionStyle::FromSystemSettings();
-  ASSERT_TRUE(caption_style.has_value());
+  ASSERT_TRUE(cached_style.has_value());
+  EXPECT_EQ(cached_style->text_color, caption_style->text_color);
 
-  EXPECT_NE(caption_style->background_color.find("!important"),
-            std::string::npos)
-      << "Value: " << caption_style->background_color;
-  EXPECT_NE(caption_style->font_family.find("!important"), std::string::npos)
-      << "Value: " << caption_style->font_family;
-  EXPECT_NE(caption_style->text_color.find("!important"), std::string::npos)
-      << "Value: " << caption_style->text_color;
-  EXPECT_NE(caption_style->text_shadow.find("!important"), std::string::npos)
-      << "Value: " << caption_style->text_shadow;
-  EXPECT_NE(caption_style->text_size.find("!important"), std::string::npos)
-      << "Value: " << caption_style->text_size;
-  EXPECT_NE(caption_style->window_color.find("!important"), std::string::npos)
-      << "Value: " << caption_style->window_color;
+  ui::InvalidateCaptionStyleCache();
+
+  std::optional<ui::CaptionStyle> updated_style =
+      ui::CaptionStyle::FromSystemSettings();
+  ASSERT_TRUE(updated_style.has_value());
+  EXPECT_NE(updated_style->text_color.find("!important"), std::string::npos);
 }
+
+// Verifies that releasing the runner disables caching and drops any cached
+// style.
+TEST_F(CaptionStyleWinCacheTest, ReleasingRunnerDisablesCaching) {
+  ASSERT_NO_FATAL_FAILURE(SeedCaptionPropertyRegistryValues());
+  ASSERT_NO_FATAL_FAILURE(SetCurrentSelectedTheme(kDefaultThemeGuid));
+
+  {
+    base::ScopedClosureRunner runner = ui::EnableCaptionStyleCaching();
+    std::optional<ui::CaptionStyle> initial_style =
+        ui::CaptionStyle::FromSystemSettings();
+    ASSERT_TRUE(initial_style.has_value());
+
+    // Selecting a non-default theme while runner is active returns the cached
+    // style.
+    ASSERT_NO_FATAL_FAILURE(SetCurrentSelectedTheme(kCustomThemeGuid));
+    std::optional<ui::CaptionStyle> cached_style =
+        ui::CaptionStyle::FromSystemSettings();
+    ASSERT_TRUE(cached_style.has_value());
+    EXPECT_EQ(cached_style->text_color, initial_style->text_color);
+  }
+
+  // Once the runner is released, caching is disabled so the updated theme is
+  // re-read from the OS immediately without needing
+  // InvalidateCaptionStyleCache().
+  std::optional<ui::CaptionStyle> updated_style =
+      ui::CaptionStyle::FromSystemSettings();
+  ASSERT_TRUE(updated_style.has_value());
+  EXPECT_NE(updated_style->text_color.find("!important"), std::string::npos);
+}
+
+// Verifies that moving a runner transfers ownership.
+TEST_F(CaptionStyleWinCacheTest, MoveRunnerTransfersOwnership) {
+  ASSERT_NO_FATAL_FAILURE(SeedCaptionPropertyRegistryValues());
+  ASSERT_NO_FATAL_FAILURE(SetCurrentSelectedTheme(kDefaultThemeGuid));
+
+  base::ScopedClosureRunner runner = ui::EnableCaptionStyleCaching();
+  std::optional<ui::CaptionStyle> initial_style =
+      ui::CaptionStyle::FromSystemSettings();
+  ASSERT_TRUE(initial_style.has_value());
+
+  base::ScopedClosureRunner moved_runner = std::move(runner);
+
+  // Caching remains enabled because moved_runner holds ownership.
+  ASSERT_NO_FATAL_FAILURE(SetCurrentSelectedTheme(kCustomThemeGuid));
+  EXPECT_EQ(ui::CaptionStyle::FromSystemSettings()->text_color,
+            initial_style->text_color);
+
+  ui::InvalidateCaptionStyleCache();
+  EXPECT_NE(ui::CaptionStyle::FromSystemSettings()->text_color,
+            initial_style->text_color);
+}
+
+#if GTEST_HAS_DEATH_TEST
+// Verifies that at most one runner may exist at a time in a process.
+TEST_F(CaptionStyleWinCacheTest, MultipleRunnersNotAllowed) {
+  base::ScopedClosureRunner runner = ui::EnableCaptionStyleCaching();
+  EXPECT_DEATH_IF_SUPPORTED(
+      { base::ScopedClosureRunner r = ui::EnableCaptionStyleCaching(); }, "");
+}
+#endif
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    CaptionStyleWinTest,
+    ::testing::ValuesIn(kCaptionThemeTestCases),
+    [](const ::testing::TestParamInfo<CaptionThemeTestCase>& info) {
+      return info.param.expect_important ? "NonDefault" : "Default";
+    });
 
 }  // namespace ui

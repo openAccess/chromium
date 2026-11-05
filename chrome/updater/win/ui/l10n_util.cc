@@ -6,20 +6,26 @@
 
 #include <windows.h>
 
+#include <stddef.h>
+
+#include <algorithm>
+#include <iterator>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/debug/alias.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
+#include "base/i18n/win/embedded_i18n/language_selector.h"
+#include "base/i18n/win/preferred_languages.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/current_module.h"
-#include "base/win/embedded_i18n/language_selector.h"
-#include "base/win/i18n.h"
 #include "chrome/updater/util/util.h"
 #include "chrome/updater/util/win_util.h"
 #include "chrome/updater/win/installer/exit_code.h"
@@ -28,27 +34,26 @@
 namespace updater {
 namespace {
 
-constexpr base::win::i18n::LanguageSelector::LangToOffset
-    kLanguageOffsetPairs[] = {
+constexpr base::i18n::LanguageSelector::LangToOffset kLanguageOffsetPairs[] = {
 #define HANDLE_LANGUAGE(l_, o_) {L## #l_, o_},
-        DO_LANGUAGES
+    DO_LANGUAGES
 #undef HANDLE_LANGUAGE
 };
 
 size_t GetLanguageOffset(const std::wstring& lang) {
-  return base::win::i18n::LanguageSelector(lang, kLanguageOffsetPairs).offset();
+  return base::i18n::LanguageSelector(lang, kLanguageOffsetPairs).offset();
 }
 
 }  // namespace
 
 std::wstring GetPreferredLanguage() {
-  std::vector<std::wstring> languages;
-  if (!base::win::i18n::GetUserPreferredUILanguageList(&languages) ||
-      languages.size() == 0) {
+  const std::vector<base::i18n::LanguageTag> languages =
+      base::i18n::GetUserPreferredUILanguageList();
+  if (languages.empty()) {
     return L"en-us";
   }
 
-  return languages[0];
+  return base::ASCIIToWide(languages[0].tag_string());
 }
 
 std::wstring GetLocalizedString(unsigned int base_message_id,
@@ -84,6 +89,24 @@ std::wstring GetLocalizedString(unsigned int base_message_id,
   SCOPED_CRASH_KEY_STRING32("l10_util", "lang", dbg_lang);
   base::debug::DumpWithoutCrashing();
   return std::wstring();
+}
+
+LanguageInfo GetLanguageInfo(const std::wstring& lang) {
+  const base::i18n::LanguageSelector selector(
+      lang.empty() ? GetPreferredLanguage() : lang, kLanguageOffsetPairs);
+  // `LanguageTag` canonicalizes aliases such as `iw` to `he`. Keep the embedded
+  // key for resource lookup/direction and the canonical tag for HTML.
+  const auto mapping =
+      std::ranges::find(kLanguageOffsetPairs, selector.offset(),
+                        [](const auto& entry) { return entry.second; });
+  CHECK(mapping != std::ranges::end(kLanguageOffsetPairs));
+  const std::wstring translation(mapping->first);
+  // Keep this list in sync when adding embedded RTL translations.
+  static constexpr std::wstring_view kRtlTranslations[] = {L"ar", L"fa", L"iw",
+                                                           L"ur"};
+  return {translation,
+          std::string(selector.selected_translation().tag_string()),
+          std::ranges::contains(kRtlTranslations, translation)};
 }
 
 std::wstring GetLocalizedStringF(unsigned int base_message_id,

@@ -4,8 +4,13 @@
 
 package org.chromium.components.search_engines;
 
+import android.text.TextUtils;
+
+import androidx.annotation.VisibleForTesting;
+
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ObserverList;
@@ -52,7 +57,8 @@ public class TemplateUrlService {
     }
 
     @CalledByNative
-    private static TemplateUrlService create(long nativeTemplateUrlServiceAndroid) {
+    @VisibleForTesting
+    static TemplateUrlService create(long nativeTemplateUrlServiceAndroid) {
         return new TemplateUrlService(nativeTemplateUrlServiceAndroid);
     }
 
@@ -106,14 +112,21 @@ public class TemplateUrlService {
     }
 
     /**
-     * Returns two lists: The first including prepopulated and policy enforced engines and the
-     * default engine, the second one recently visited sites.
+     * Creates a {@link SearchEngineSettingsDataProvider} instance to prepare data for settings
+     * screens. The caller is responsible for calling {@link
+     * SearchEngineSettingsDataProvider#close()} when done.
+     *
+     * <p>Create at most one per settings screen and share it across the screen's sections: the
+     * provider records its page load metrics at most once per instance, so a screen backed by
+     * several providers would over-report.
      */
-    public PrepopulatedAndRecentlyVisitedTemplateURLs
-            getPrepopulatedAndRecentlyVisitedTemplateURLs() {
+    public SearchEngineSettingsDataProvider createSettingsDataProvider() {
         ThreadUtils.assertOnUiThread();
-        return TemplateUrlServiceJni.get()
-                .getPrepopulatedAndRecentlyVisitedTemplateURLs(mNativeTemplateUrlServiceAndroid);
+        JniUniquePtr<SearchEngineSettingsDataProvider.NativeSearchEngineSettingsDataProvider>
+                nativeProvider =
+                        TemplateUrlServiceJni.get()
+                                .createSettingsDataProvider(mNativeTemplateUrlServiceAndroid);
+        return new SearchEngineSettingsDataProvider(nativeProvider);
     }
 
     /**
@@ -323,6 +336,22 @@ public class TemplateUrlService {
     }
 
     /**
+     * Expands the {@code urlTemplate} by substituting {@code query} for {searchTerms}.
+     *
+     * @param urlTemplate The URL template containing search terms placeholders.
+     * @param query The search query to substitute into the template.
+     * @return The expanded GURL, or null if the service is not loaded, the template is empty, or
+     *     the URL is invalid.
+     */
+    public @Nullable GURL expandUrlTemplate(String urlTemplate, String query) {
+        if (!isLoaded() || TextUtils.isEmpty(urlTemplate)) return null;
+        GURL url =
+                TemplateUrlServiceJni.get()
+                        .expandUrlTemplate(mNativeTemplateUrlServiceAndroid, urlTemplate, query);
+        return url.isValid() ? url : null;
+    }
+
+    /**
      * Finds the default search engine for the default provider and returns the url query {@link
      * String} for {@code query} with voice input source param set.
      *
@@ -406,18 +435,6 @@ public class TemplateUrlService {
                 TemplateUrlServiceJni.get()
                         .getFullNameFromTemplateUrl(mNativeTemplateUrlServiceAndroid, keyword);
         return fullName.isEmpty() ? null : fullName;
-    }
-
-    /**
-     * Returns a list of template URLs filtered by the specified category.
-     *
-     * @param category The category of template URLs to retrieve.
-     */
-    public List<TemplateUrl> getTemplateUrlsByCategory(
-            @JniType("TemplateUrlServiceAndroid::TemplateUrlCategory") int category) {
-        ThreadUtils.assertOnUiThread();
-        return TemplateUrlServiceJni.get()
-                .getTemplateUrlsByCategory(mNativeTemplateUrlServiceAndroid, category);
     }
 
     /**
@@ -687,6 +704,12 @@ public class TemplateUrlService {
 
         GURL getComposeplateUrl(long nativeTemplateUrlServiceAndroid, TemplateUrlService caller);
 
+        @JniType("GURL")
+        GURL expandUrlTemplate(
+                long nativeTemplateUrlServiceAndroid,
+                @JniType("std::string") String urlTemplate,
+                @JniType("std::u16string") String query);
+
         GURL getUrlForContextualSearchQuery(
                 long nativeTemplateUrlServiceAndroid,
                 @Nullable String query,
@@ -726,13 +749,8 @@ public class TemplateUrlService {
 
         void getTemplateUrls(long nativeTemplateUrlServiceAndroid, List<TemplateUrl> templateUrls);
 
-        PrepopulatedAndRecentlyVisitedTemplateURLs getPrepopulatedAndRecentlyVisitedTemplateURLs(
-                long nativeTemplateUrlServiceAndroid);
-
-        @JniType("std::vector<const TemplateURL*>")
-        List<TemplateUrl> getTemplateUrlsByCategory(
-                long nativeTemplateUrlServiceAndroid,
-                @JniType("TemplateUrlServiceAndroid::TemplateUrlCategory") int category);
+        JniUniquePtr<SearchEngineSettingsDataProvider.NativeSearchEngineSettingsDataProvider>
+                createSettingsDataProvider(long nativeTemplateUrlServiceAndroid);
 
         TemplateUrl getDefaultSearchEngine(long nativeTemplateUrlServiceAndroid);
 

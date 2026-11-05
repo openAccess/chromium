@@ -78,7 +78,6 @@ public class NtpThemeMediatorUnitTest {
     @Mock private Profile mProfile;
     @Mock private NtpCustomizationUtils.OnImageLoadedCallback mOnImageSelectedCallback;
     @Mock private BottomSheetDelegate mBottomSheetDelegate;
-    @Mock private View mView;
     @Mock private NtpCustomizationConfigManager mNtpCustomizationConfigManager;
     @Mock private Uri mUri;
     @Mock private NtpThemeDelegate mNtpThemeDelegate;
@@ -89,6 +88,7 @@ public class NtpThemeMediatorUnitTest {
     private PropertyModel mThemePropertyModel;
     private NtpThemeMediator mMediator;
     private Context mContext;
+    private View mView;
 
     @Before
     public void setUp() {
@@ -96,7 +96,7 @@ public class NtpThemeMediatorUnitTest {
                 new ContextThemeWrapper(
                         ApplicationProvider.getApplicationContext(),
                         R.style.Theme_BrowserUI_DayNight);
-        when(mView.getContext()).thenReturn(mContext);
+        mView = new View(mContext);
         NtpCustomizationUtils.setImageFetcherForTesting(mImageFetcher);
 
         mBottomSheetPropertyModel =
@@ -154,7 +154,7 @@ public class NtpThemeMediatorUnitTest {
 
         mMediator.handleChromeDefaultSectionClick(mView);
         verify(mNtpCustomizationConfigManager).onBackgroundDataChanged(eq(mContext), eq(null));
-        verify(mNtpThemeCollectionManager).resetCustomBackground();
+        verify(mNtpThemeCollectionManager).cancelPendingSelection();
         histogramWatcher.assertExpected();
     }
 
@@ -268,7 +268,7 @@ public class NtpThemeMediatorUnitTest {
 
         mMediator.onUploadImageResult(null);
         histogramWatcher.assertExpected();
-        verify(mNtpThemeCollectionManager, never()).selectLocalBackgroundImage();
+        verify(mNtpThemeCollectionManager, never()).cancelPendingSelection();
     }
 
     @Test
@@ -281,7 +281,7 @@ public class NtpThemeMediatorUnitTest {
 
         mMediator.onUploadImageResult(mUri);
         histogramWatcher.assertExpected();
-        verify(mNtpThemeCollectionManager).selectLocalBackgroundImage();
+        verify(mNtpThemeCollectionManager).cancelPendingSelection();
     }
 
     private void createMediator(boolean shouldShowAlone) {
@@ -301,11 +301,11 @@ public class NtpThemeMediatorUnitTest {
     }
 
     @Test
-    public void testUpdateForChoosingDefaultOrChromeColorOption() {
+    public void testOnChromeColorSelected() {
         createMediator(true);
         reset(mThemePropertyModel);
 
-        mMediator.updateForChoosingDefaultOrChromeColorOption(CHROME_COLOR);
+        mMediator.onChromeColorSelected();
 
         verify(mThemePropertyModel)
                 .set(eq(IS_SECTION_SELECTED), eq(new Pair<>(CHROME_COLOR, true)));
@@ -315,7 +315,25 @@ public class NtpThemeMediatorUnitTest {
         verify(mThemePropertyModel)
                 .set(eq(IS_SECTION_SELECTED), eq(new Pair<>(THEME_COLLECTION, false)));
 
-        verify(mNtpThemeCollectionManager).resetCustomBackground();
+        verify(mNtpThemeCollectionManager).cancelPendingSelection();
+    }
+
+    @Test
+    public void testResetCustomizedTheme() {
+        createMediator(true);
+        reset(mThemePropertyModel);
+
+        mMediator.resetCustomizedTheme();
+
+        verify(mThemePropertyModel).set(eq(IS_SECTION_SELECTED), eq(new Pair<>(DEFAULT, true)));
+        verify(mThemePropertyModel)
+                .set(eq(IS_SECTION_SELECTED), eq(new Pair<>(CHROME_COLOR, false)));
+        verify(mThemePropertyModel)
+                .set(eq(IS_SECTION_SELECTED), eq(new Pair<>(IMAGE_FROM_DISK, false)));
+        verify(mThemePropertyModel)
+                .set(eq(IS_SECTION_SELECTED), eq(new Pair<>(THEME_COLLECTION, false)));
+
+        verify(mNtpThemeCollectionManager).cancelPendingSelection();
     }
 
     @Test

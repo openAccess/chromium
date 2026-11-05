@@ -50,10 +50,10 @@ class MockVideoEncoderDelegate : public D3D12VideoEncodeDelegate {
       : D3D12VideoEncodeDelegate(video_device, gpu_workarounds) {}
 
   MOCK_METHOD1(Initialize, EncoderStatus(VideoEncodeAccelerator::Config));
-  MOCK_METHOD(size_t, GetMaxNumOfRefFrames, (), (const override));
-  MOCK_METHOD(size_t, GetMaxNumOfManualRefBuffers, (), (const override));
-  MOCK_METHOD(bool, SupportsRateControlReconfiguration, (), (const override));
-  MOCK_METHOD(EncoderStatus::Or<EncodeResult>,
+  MOCK_METHOD(size_t, GetMaxNumOfRefFrames, (), (const, override));
+  MOCK_METHOD(size_t, GetMaxNumOfManualRefBuffers, (), (const, override));
+  MOCK_METHOD(bool, SupportsRateControlReconfiguration, (), (const, override));
+  MOCK_METHOD((base::expected<EncodeResult, EncoderStatus>),
               Encode,
               (D3D12PictureBuffer,
                const gfx::Rect&,
@@ -100,8 +100,10 @@ class MockVideoEncoderDelegateFactory
             [](D3D12PictureBuffer, const gfx::Rect&, const gfx::ColorSpace&,
                const BitstreamBuffer& bitstream_buffer,
                const VideoEncoder::EncodeOptions&, const gfx::HDRMetadata&)
-                -> D3D12VideoEncodeDelegate::EncodeResult {
-              return {bitstream_buffer.id()};
+                -> base::expected<D3D12VideoEncodeDelegate::EncodeResult,
+                                  EncoderStatus> {
+              return D3D12VideoEncodeDelegate::EncodeResult{
+                  bitstream_buffer.id()};
             });
     return std::move(encoder_delegate);
   }
@@ -524,12 +526,13 @@ TEST_F(D3D12VideoEncodeAcceleratorTest, EncodeErrorStopsProcessingNextFrames) {
                   D3D12PictureBuffer, const gfx::Rect&, const gfx::ColorSpace&,
                   const BitstreamBuffer& bitstream_buffer,
                   const VideoEncoder::EncodeOptions&, const gfx::HDRMetadata&)
-                  -> EncoderStatus::Or<D3D12VideoEncodeDelegate::EncodeResult> {
+                  -> base::expected<D3D12VideoEncodeDelegate::EncodeResult,
+                                    EncoderStatus> {
                 ++encode_call_count_;
                 if (encode_call_count_ == 1) {
-                  return EncoderStatus(
-                      EncoderStatus::Codes::kBadReferenceBuffer,
-                      "Simulated encode failure");
+                  return base::unexpected(
+                      EncoderStatus(EncoderStatus::Codes::kBadReferenceBuffer,
+                                    "Simulated encode failure"));
                 }
                 return D3D12VideoEncodeDelegate::EncodeResult{
                     bitstream_buffer.id()};
@@ -618,16 +621,18 @@ TEST_F(D3D12VideoEncodeAcceleratorTest, ForwardsVisibleRectToDelegate) {
               video_device, profile);
       ON_CALL(*static_cast<MockVideoEncoderDelegate*>(encoder_delegate.get()),
               Encode(_, _, _, _, _, _))
-          .WillByDefault([this](D3D12PictureBuffer,
-                                const gfx::Rect& input_visible_rect,
-                                const gfx::ColorSpace&,
-                                const BitstreamBuffer& bitstream_buffer,
-                                const VideoEncoder::EncodeOptions&,
-                                const gfx::HDRMetadata&)
-                             -> D3D12VideoEncodeDelegate::EncodeResult {
-            visible_rects_.push_back(input_visible_rect);
-            return {bitstream_buffer.id()};
-          });
+          .WillByDefault(
+              [this](D3D12PictureBuffer, const gfx::Rect& input_visible_rect,
+                     const gfx::ColorSpace&,
+                     const BitstreamBuffer& bitstream_buffer,
+                     const VideoEncoder::EncodeOptions&,
+                     const gfx::HDRMetadata&)
+                  -> base::expected<D3D12VideoEncodeDelegate::EncodeResult,
+                                    EncoderStatus> {
+                visible_rects_.push_back(input_visible_rect);
+                return D3D12VideoEncodeDelegate::EncodeResult{
+                    bitstream_buffer.id()};
+              });
       return encoder_delegate;
     }
   };
@@ -666,6 +671,33 @@ TEST_F(D3D12VideoEncodeAcceleratorTest, ForwardsVisibleRectToDelegate) {
 
   ASSERT_EQ(factory_ptr->visible_rects_.size(), 1u);
   EXPECT_EQ(factory_ptr->visible_rects_[0], gfx::Rect(kSupportedSize));
+}
+
+// The upload layout must be computed in bytes: a 10-bit plane holds two bytes
+// per sample, so computing offsets from PlaneSize() samples would place the UV
+// plane inside the Y plane and under-size the buffer.
+TEST_F(D3D12VideoEncodeAcceleratorTest, BiPlanarUploadLayoutInBytes) {
+  // NV12: one byte per sample; the 1920-byte rows align up to 2048.
+  auto nv12 = GetBiPlanarUploadLayout(PIXEL_FORMAT_NV12, {1920, 1080});
+  EXPECT_EQ(nv12.y_pitch, 2048u);
+  EXPECT_EQ(nv12.uv_pitch, 2048u);
+  EXPECT_EQ(nv12.uv_offset, 2048u * 1080u);
+  EXPECT_EQ(nv12.buffer_size, 2048u * 1080u + 2048u * 540u);
+
+  // P010LE: two bytes per sample; the 3840-byte rows are already aligned.
+  auto p010 = GetBiPlanarUploadLayout(PIXEL_FORMAT_P010LE, {1920, 1080});
+  EXPECT_EQ(p010.y_pitch, 3840u);
+  EXPECT_EQ(p010.uv_pitch, 3840u);
+  EXPECT_EQ(p010.uv_offset, 3840u * 1080u);
+  EXPECT_EQ(p010.buffer_size, 3840u * 1080u + 3840u * 540u);
+
+  // P010LE at an odd height: 3840 * 1081 is not a multiple of the 512-byte
+  // footprint placement alignment, so the UV offset is rounded up.
+  auto p010_odd = GetBiPlanarUploadLayout(PIXEL_FORMAT_P010LE, {1920, 1081});
+  EXPECT_EQ(p010_odd.y_pitch, 3840u);
+  EXPECT_EQ(p010_odd.uv_pitch, 3840u);
+  EXPECT_EQ(p010_odd.uv_offset, 4151296u);
+  EXPECT_EQ(p010_odd.buffer_size, 4151296u + 3840u * 541u);
 }
 
 }  // namespace media

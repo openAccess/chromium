@@ -152,6 +152,7 @@ source_set("unit_tests") {
     "//chrome/browser/policy:test_support",
     "//chrome/browser/profiles:profile",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//components/enterprise/data_controls/core/browser:unit_tests",
   ]
 
@@ -163,10 +164,26 @@ source_set("unit_tests") {
       "//components/user_manager",
     ]
   }
+}
 
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+if (!is_android) {
+  source_set("browser_tests") {
+    testonly = true
+    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+    configs += [ "//components/enterprise:extra_warnings" ]
+
+    sources = [ "desktop_data_controls_dialog_browsertest.cc" ]
+
+    deps = [
+      ":data_controls",
+      ":test_support",
+      "//base",
+      "//chrome/browser/ui/webui:chrome_web_contents_handler",
+      "//chrome/test:test_support",
+      "//content/test:test_support",
+      "//ui/web_dialogs:test_support",
+    ]
+  }
 }
 
 if (is_android) {
@@ -181,6 +198,7 @@ if (is_android) {
       ":data_controls",
       "//base",
       "//chrome/test:test_support",
+      "//chrome/test/base:chrome_test_utils",
       "//content/test:test_support",
       "//testing/gmock",
     ]

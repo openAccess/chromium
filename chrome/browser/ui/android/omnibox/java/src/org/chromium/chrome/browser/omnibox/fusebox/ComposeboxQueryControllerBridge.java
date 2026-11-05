@@ -4,8 +4,13 @@
 
 package org.chromium.chrome.browser.omnibox.fusebox;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
@@ -22,7 +27,8 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.contextual_search.ContextUploadErrorType;
 import org.chromium.components.contextual_search.ContextUploadStatus;
 import org.chromium.components.contextual_search.InputState;
-import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.components.omnibox.AimModelsProtoIntDef.ModelMode;
+import org.chromium.components.omnibox.ToolModeProtoIntDef.ToolMode;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.url.GURL;
 
@@ -32,11 +38,14 @@ import java.util.Optional;
 
 /**
  * Bridge for native Composebox query controller functionality, allowing for management of a
- * Composebox session
+ * Composebox session.
  */
 @SuppressWarnings("unused")
 @NullMarked
 public class ComposeboxQueryControllerBridge {
+    @JniType("::ComposeboxQueryControllerBridge")
+    public interface NativeComposeboxQueryControllerBridge extends JniTypeToken {}
+
     /** Instance to be used for testing - null value permitted to signify no controller. */
     @SuppressWarnings("NullableOptional")
     private static @Nullable Optional<ComposeboxQueryControllerBridge> sInstanceForTesting;
@@ -54,12 +63,12 @@ public class ComposeboxQueryControllerBridge {
                 @ContextUploadErrorType int errorType);
     }
 
-    private long mNativeInstance;
-    private @Nullable ContextUploadObserver mContextUploadObserver;
     private final SettableMonotonicObservableSupplier<InputState> mInputStateSupplier =
             ObservableSuppliers.createMonotonic();
     private final SettableNonNullObservableSupplier<List<SuggestedTabInfo>> mSuggestedTabsSupplier =
             ObservableSuppliers.createNonNull(List.of());
+    private @Nullable JniUniquePtr<NativeComposeboxQueryControllerBridge> mNativeInstance;
+    private @Nullable ContextUploadObserver mContextUploadObserver;
 
     private ComposeboxQueryControllerBridge() {}
 
@@ -75,28 +84,31 @@ public class ComposeboxQueryControllerBridge {
         if (sInstanceForTesting != null) return sInstanceForTesting.orElse(null);
 
         ComposeboxQueryControllerBridge javaInstance = new ComposeboxQueryControllerBridge();
-        long nativeInstance =
+        JniUniquePtr<NativeComposeboxQueryControllerBridge> nativeInstance =
                 ComposeboxQueryControllerBridgeJni.get().init(javaInstance, profile, webContents);
-        if (nativeInstance == 0L) return null;
+        if (nativeInstance == null) return null;
         javaInstance.mNativeInstance = nativeInstance;
         return javaInstance;
     }
 
     public void destroy() {
-        ComposeboxQueryControllerBridgeJni.get().destroy(mNativeInstance);
-        mNativeInstance = 0;
+        if (mNativeInstance != null) {
+            mNativeInstance.destroy();
+            mNativeInstance = null;
+        }
         mContextUploadObserver = null;
     }
 
-    public long getNativeInstance() {
+    public @Nullable JniPtr<NativeComposeboxQueryControllerBridge> getNativeInstance() {
         return mNativeInstance;
     }
 
     /**
      * Set the current context upload observer. If non-null, the observer will be notified of
      * context upload status changes for all contexts, identified by token. Note that there are
-     * intermediate statuses (neither success nor failure), there is no guarantee of ordering
-     * between contexts, but a context upload will either succeed/fail at most once.
+     * intermediate statuses (neither success nor failure) and no guarantee of ordering between
+     * contexts. A context reports success at most once, but may later report UPLOAD_EXPIRED when
+     * the session's uploaded contexts are discarded.
      */
     void setContextUploadObserver(@Nullable ContextUploadObserver observer) {
         mContextUploadObserver = observer;
@@ -115,14 +127,16 @@ public class ComposeboxQueryControllerBridge {
 
     /** Start a new Composebox session. An active session is required to upload files. */
     void notifySessionStarted() {
-        ComposeboxQueryControllerBridgeJni.get().notifySessionStarted(mNativeInstance);
+        ComposeboxQueryControllerBridgeJni.get()
+                .notifySessionStarted(assumeNonNull(mNativeInstance));
     }
 
     /**
      * End the current Composebox session. This will drop all the files associated with the session.
      */
     void notifySessionAbandoned() {
-        ComposeboxQueryControllerBridgeJni.get().notifySessionAbandoned(mNativeInstance);
+        ComposeboxQueryControllerBridgeJni.get()
+                .notifySessionAbandoned(assumeNonNull(mNativeInstance));
     }
 
     /**
@@ -137,7 +151,23 @@ public class ComposeboxQueryControllerBridge {
         ByteBuffer byteBuffer = ByteBuffer.allocateDirect(fileData.length);
         byteBuffer.put(fileData);
         return ComposeboxQueryControllerBridgeJni.get()
-                .addFile(mNativeInstance, fileName, fileType, byteBuffer);
+                .addFile(assumeNonNull(mNativeInstance), fileName, fileType, byteBuffer);
+    }
+
+    /**
+     * Add the given Drive file to the current session.
+     *
+     * @param driveId Unique ID of the Drive file.
+     * @param resourceKey Optional resource key for link-shared Drive files.
+     * @param fileName Name/title of the Drive file.
+     * @param mimeType MIME type of the Drive file.
+     * @return Unique token representing the Drive file, used to manipulate added Drive files.
+     */
+    public @Nullable String addDriveFile(
+            String driveId, @Nullable String resourceKey, String fileName, String mimeType) {
+        return ComposeboxQueryControllerBridgeJni.get()
+                .addDriveFile(
+                        assumeNonNull(mNativeInstance), driveId, resourceKey, fileName, mimeType);
     }
 
     /**
@@ -147,7 +177,8 @@ public class ComposeboxQueryControllerBridge {
     @Nullable String addTabContext(Tab tab, boolean isSuggestedTab) {
         if (tab.getWebContents() == null) return null;
         return ComposeboxQueryControllerBridgeJni.get()
-                .addTabContext(mNativeInstance, tab.getWebContents(), isSuggestedTab);
+                .addTabContext(
+                        assumeNonNull(mNativeInstance), tab.getWebContents(), isSuggestedTab);
     }
 
     /**
@@ -156,32 +187,24 @@ public class ComposeboxQueryControllerBridge {
      */
     @Nullable String addTabContextFromCache(long tabId, boolean isSuggestedTab) {
         return ComposeboxQueryControllerBridgeJni.get()
-                .addTabContextFromCache(mNativeInstance, tabId, isSuggestedTab);
-    }
-
-    public void getAimUrl(GURL url, Callback<GURL> callback) {
-        ComposeboxQueryControllerBridgeJni.get().getAimUrl(mNativeInstance, url, callback);
-    }
-
-    public void getImageGenerationUrl(GURL url, Callback<GURL> callback) {
-        ComposeboxQueryControllerBridgeJni.get()
-                .getImageGenerationUrl(mNativeInstance, url, callback);
+                .addTabContextFromCache(assumeNonNull(mNativeInstance), tabId, isSuggestedTab);
     }
 
     public void getAimUrlFromInputState(GURL url, Callback<GURL> callback) {
-        assert OmniboxFeatures.sShowModelPicker.getValue();
         ComposeboxQueryControllerBridgeJni.get()
-                .getAimUrlFromInputState(mNativeInstance, url, callback);
+                .getAimUrlFromInputState(assumeNonNull(mNativeInstance), url, callback);
     }
 
     /** Remove the given file from the current session. */
     void removeAttachment(String token) {
-        ComposeboxQueryControllerBridgeJni.get().removeAttachment(mNativeInstance, token);
+        ComposeboxQueryControllerBridgeJni.get()
+                .removeAttachment(assumeNonNull(mNativeInstance), token);
     }
 
     /** Returns whether client is Fusebox eligible. */
     public boolean isFuseboxEligible() {
-        return ComposeboxQueryControllerBridgeJni.get().isFuseboxEligible(mNativeInstance);
+        return ComposeboxQueryControllerBridgeJni.get()
+                .isFuseboxEligible(assumeNonNull(mNativeInstance));
     }
 
     /**
@@ -197,26 +220,24 @@ public class ComposeboxQueryControllerBridge {
 
     /** Returns whether the user is eligible for PDF uploads. */
     boolean isPdfUploadEligible() {
-        return ComposeboxQueryControllerBridgeJni.get().isPdfUploadEligible(mNativeInstance);
-    }
-
-    /** Returns whether the user is eligible for creating images. */
-    boolean isCreateImagesEligible() {
-        return ComposeboxQueryControllerBridgeJni.get().isCreateImagesEligible(mNativeInstance);
+        return ComposeboxQueryControllerBridgeJni.get()
+                .isPdfUploadEligible(assumeNonNull(mNativeInstance));
     }
 
     /**
      * @param toolMode The active tool to set.
      */
-    public void setActiveTool(int toolMode) {
-        ComposeboxQueryControllerBridgeJni.get().setActiveTool(mNativeInstance, toolMode);
+    public void setActiveTool(@ToolMode int toolMode) {
+        ComposeboxQueryControllerBridgeJni.get()
+                .setActiveTool(assumeNonNull(mNativeInstance), toolMode);
     }
 
     /**
      * @param modelMode The active model to set.
      */
-    public void setActiveModel(int modelMode) {
-        ComposeboxQueryControllerBridgeJni.get().setActiveModel(mNativeInstance, modelMode);
+    public void setActiveModel(@ModelMode int modelMode) {
+        ComposeboxQueryControllerBridgeJni.get()
+                .setActiveModel(assumeNonNull(mNativeInstance), modelMode);
     }
 
     /**
@@ -234,16 +255,6 @@ public class ComposeboxQueryControllerBridge {
         return mSuggestedTabsSupplier;
     }
 
-    public static void setInstanceForTesting(@Nullable ComposeboxQueryControllerBridge instance) {
-        sInstanceForTesting = Optional.ofNullable(instance);
-        ResettersForTesting.register(ComposeboxQueryControllerBridge::resetInstanceForTesting);
-    }
-
-    public static void resetInstanceForTesting() {
-        sInstanceForTesting = null;
-    }
-
-
     @CalledByNative
     private void onInputStateChanged(InputState inputState) {
         mInputStateSupplier.set(inputState);
@@ -255,68 +266,74 @@ public class ComposeboxQueryControllerBridge {
         mSuggestedTabsSupplier.set(suggestedTabs);
     }
 
+    public static void setInstanceForTesting(@Nullable ComposeboxQueryControllerBridge instance) {
+        sInstanceForTesting = Optional.ofNullable(instance);
+        ResettersForTesting.register(ComposeboxQueryControllerBridge::resetInstanceForTesting);
+    }
+
+    public static void resetInstanceForTesting() {
+        sInstanceForTesting = null;
+    }
+
     @NativeMethods
     public interface Natives {
-        long init(
+        @Nullable JniUniquePtr<NativeComposeboxQueryControllerBridge> init(
                 ComposeboxQueryControllerBridge javaInstance,
                 @JniType("Profile*") Profile profile,
                 @JniType("content::WebContents*") @Nullable WebContents webContents);
 
-        void destroy(long nativeComposeboxQueryControllerBridge);
+        void notifySessionStarted(JniPtr<NativeComposeboxQueryControllerBridge> self);
 
-        void notifySessionStarted(long nativeComposeboxQueryControllerBridge);
-
-        void notifySessionAbandoned(long nativeComposeboxQueryControllerBridge);
+        void notifySessionAbandoned(JniPtr<NativeComposeboxQueryControllerBridge> self);
 
         @JniType("std::string")
         @Nullable String addFile(
-                long nativeComposeboxQueryControllerBridge,
+                JniPtr<NativeComposeboxQueryControllerBridge> self,
                 @JniType("std::string") String fileName,
                 @JniType("std::string") String fileType,
                 ByteBuffer fileData);
 
         @JniType("std::string")
+        @Nullable String addDriveFile(
+                JniPtr<NativeComposeboxQueryControllerBridge> self,
+                @JniType("std::string") String driveId,
+                @JniType("std::optional<std::string>") @Nullable String resourceKey,
+                @JniType("std::string") String fileName,
+                @JniType("std::string") String mimeType);
+
+        @JniType("std::string")
         @Nullable String addTabContext(
-                long nativeComposeboxQueryControllerBridge,
+                JniPtr<NativeComposeboxQueryControllerBridge> self,
                 @JniType("content::WebContents*") WebContents webContents,
                 boolean isSuggestedTab);
 
         @JniType("std::string")
         @Nullable String addTabContextFromCache(
-                long nativeComposeboxQueryControllerBridge, long tabId, boolean isSuggestedTab);
-
-        void getAimUrl(
-                long nativeComposeboxQueryControllerBridge,
-                @JniType("GURL") GURL url,
-                @JniType("base::OnceCallback<void(GURL)>&&") Callback<GURL> callback);
-
-        void getImageGenerationUrl(
-                long nativeComposeboxQueryControllerBridge,
-                @JniType("GURL") GURL url,
-                @JniType("base::OnceCallback<void(GURL)>&&") Callback<GURL> callback);
+                JniPtr<NativeComposeboxQueryControllerBridge> self,
+                long tabId,
+                boolean isSuggestedTab);
 
         void getAimUrlFromInputState(
-                long nativeComposeboxQueryControllerBridge,
+                JniPtr<NativeComposeboxQueryControllerBridge> self,
                 @JniType("GURL") GURL url,
                 @JniType("base::OnceCallback<void(GURL)>&&") Callback<GURL> callback);
 
         void removeAttachment(
-                long nativeComposeboxQueryControllerBridge, @JniType("std::string") String token);
+                JniPtr<NativeComposeboxQueryControllerBridge> self,
+                @JniType("std::string") String token);
 
-        boolean isFuseboxEligible(long nativeComposeboxQueryControllerBridge);
+        boolean isFuseboxEligible(JniPtr<NativeComposeboxQueryControllerBridge> self);
 
         boolean isFuseboxEligibleForProfile(@JniType("Profile*") Profile profile);
 
-        boolean isPdfUploadEligible(long nativeComposeboxQueryControllerBridge);
-
-        boolean isCreateImagesEligible(long nativeComposeboxQueryControllerBridge);
+        boolean isPdfUploadEligible(JniPtr<NativeComposeboxQueryControllerBridge> self);
 
         void setActiveTool(
-                long nativeComposeboxQueryControllerBridge,
-                @JniType("omnibox::ToolMode") int toolMode);
+                JniPtr<NativeComposeboxQueryControllerBridge> self,
+                @ToolMode @JniType("omnibox::ToolMode") int toolMode);
 
         void setActiveModel(
-                long nativeComposeboxQueryControllerBridge,
-                @JniType("omnibox::ModelMode") int modelMode);
+                JniPtr<NativeComposeboxQueryControllerBridge> self,
+                @ModelMode @JniType("omnibox::ModelMode") int modelMode);
     }
 }

@@ -34,7 +34,6 @@ export class IframeElement extends CrLitElement {
         reflect: true,
         type: String,
       },
-
       src: {
         reflect: true,
         type: String,

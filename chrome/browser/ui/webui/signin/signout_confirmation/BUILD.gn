@@ -44,8 +44,6 @@ source_set("signout_confirmation_impl") {
   if (enable_extensions) {
     deps += [ "//chrome/browser/extensions" ]
   }
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 static_library("test_support") {
@@ -55,6 +53,27 @@ static_library("test_support") {
   ]
 
   deps = [ ":signout_confirmation" ]
+}
+
+source_set("browser_tests") {
+  testonly = true
+
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  sources = [ "signout_confirmation_browsertest.cc" ]
+
+  deps = [
+    ":signout_confirmation",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/common",
+    "//chrome/test:test_support_ui",
+    "//content/public/browser",
+    "//content/test:test_support",
+    "//testing/gtest",
+    "//url",
+  ]
 }
 
 mojom("mojo_bindings") {

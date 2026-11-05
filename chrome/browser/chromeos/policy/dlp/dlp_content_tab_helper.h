@@ -5,18 +5,27 @@
 #ifndef CHROME_BROWSER_CHROMEOS_POLICY_DLP_DLP_CONTENT_TAB_HELPER_H_
 #define CHROME_BROWSER_CHROMEOS_POLICY_DLP_DLP_CONTENT_TAB_HELPER_H_
 
+#include <memory>
+#include <optional>
+#include <vector>
+
 #include "base/auto_reset.h"
 #include "base/containers/flat_map.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_content_restriction_set.h"
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 namespace content {
 class NavigationHandle;
 class RenderFrameHost;
 class WebContents;
 }  // namespace content
+
+namespace tabs {
+class TabInterface;
+}  // namespace tabs
 
 namespace policy {
 
@@ -32,9 +41,26 @@ class DlpContentTabHelper
     : public content::WebContentsUserData<DlpContentTabHelper>,
       public content::WebContentsObserver {
  public:
-  // Creates DlpContentTabHelper and attaches it the |web_contents| if the user
-  // is managed and it's not an incognito profile.
+  DECLARE_USER_DATA(DlpContentTabHelper);
+
+  // Creates DlpContentTabHelper for |web_contents| if the user is managed and
+  // it's not an incognito profile. The TabInterface overload registers the
+  // helper on |tab|'s UnownedUserDataHost; the WebContents-only overload is
+  // used for non-tab WebContents such as Chrome App windows.
+  [[nodiscard]] static std::unique_ptr<DlpContentTabHelper> MaybeCreate(
+      tabs::TabInterface& tab,
+      content::WebContents* web_contents);
+  [[nodiscard]] static std::unique_ptr<DlpContentTabHelper> MaybeCreate(
+      content::WebContents* web_contents);
+
+  // Creates DlpContentTabHelper and attaches it to |web_contents| if the user
+  // is managed and it's not an incognito profile. Used for non-tab WebContents
+  // that do not have an external owner (such as extension guest WebContents).
   static void MaybeCreateForWebContents(content::WebContents* web_contents);
+
+  static DlpContentTabHelper* FromTab(tabs::TabInterface* tab);
+  static DlpContentTabHelper* FromWebContents(
+      content::WebContents* web_contents);
 
   // Allows to create DlpContentTabHelper even if the user is not managed and
   // without the need to initialize DlpRulesManager in tests.
@@ -54,6 +80,9 @@ class DlpContentTabHelper
       content::NavigationHandle* navigation_handle) override;
   void WebContentsDestroyed() override;
   void OnVisibilityChanged(content::Visibility visibility) override;
+  void InnerWebContentsAttached(
+      content::WebContents* inner_web_contents,
+      content::RenderFrameHost* render_frame_host) override;
 
   using RfhInfo =
       std::pair<content::RenderFrameHost*, DlpContentRestrictionSet>;
@@ -64,6 +93,8 @@ class DlpContentTabHelper
   friend class content::WebContentsUserData<DlpContentTabHelper>;
 
   explicit DlpContentTabHelper(content::WebContents* web_contents);
+  DlpContentTabHelper(tabs::TabInterface* tab,
+                      content::WebContents* web_contents);
   DlpContentTabHelper(const DlpContentTabHelper&) = delete;
   DlpContentTabHelper& operator=(const DlpContentTabHelper&) = delete;
 
@@ -79,10 +110,19 @@ class DlpContentTabHelper
   // needed.
   void RemoveFrame(content::RenderFrameHost* render_frame_host);
 
+  // Re-notifies DlpContentObserver with the current confidential restriction
+  // set if non-empty. Called when this WebContents is attached as an inner
+  // WebContents so that native window observation and on-screen restrictions
+  // are updated once the guest WebContents gains a native view.
+  void MaybeNotifyConfidentialityOnAttachment();
+
   // Map from the currently known confidential frames to the corresponding
   // restriction set.
   base::flat_map<content::RenderFrameHost*, DlpContentRestrictionSet>
       confidential_frames_;
+
+  std::optional<ui::ScopedUnownedUserData<DlpContentTabHelper>>
+      scoped_unowned_user_data_;
 
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 };

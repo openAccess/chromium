@@ -4,6 +4,7 @@
 
 #include "components/autofill/core/browser/webdata/valuables/valuable_sync_bridge.h"
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -27,14 +28,18 @@
 #include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
 #include "components/autofill/core/browser/data_model/valuables/valuable_types.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_import_util.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_wallet_util.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
 #include "components/autofill/core/browser/webdata/autofill_ai/entity_sync_util.h"
 #include "components/autofill/core/browser/webdata/autofill_change.h"
+#include "components/autofill/core/browser/webdata/autofill_sync_bridge_util.h"
 #include "components/autofill/core/browser/webdata/autofill_sync_metadata_table.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
+#include "components/autofill/core/browser/webdata/payments/payments_autofill_table.h"
 #include "components/autofill/core/browser/webdata/valuables/valuables_sync_util.h"
 #include "components/autofill/core/browser/webdata/valuables/valuables_table.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/features.h"
@@ -58,21 +63,13 @@
 namespace autofill {
 namespace {
 
+using AutofillAiWalletManagementUrlSyncStatus =
+    ValuableSyncBridge::AutofillAiWalletManagementUrlSyncStatus;
 using ValuableDatabaseOperationResult =
     ValuableSyncBridge::ValuableDatabaseOperationResult;
 
 // The address of this variable is used as the user data key.
 static const int kAutofillValuableSyncBridgeUserDataKey = 0;
-
-template <class Item>
-bool AreAnyItemsDifferent(const std::vector<Item>& old_data,
-                          const std::vector<Item>& new_data) {
-  if (old_data.size() != new_data.size()) {
-    return true;
-  }
-
-  return base::MakeFlatSet<Item>(old_data) != base::MakeFlatSet<Item>(new_data);
-}
 
 constexpr bool IsLoyaltyCardSyncEnabled() {
 #if BUILDFLAG(IS_IOS)
@@ -99,14 +96,56 @@ bool AreAutofillLoyaltyCardSpecificsValid(
          HasEmptyOrValidProgramLogo(specifics);
 }
 
-// Tests whether the `EntityInstance` represented by the `specifics` meets the
-// AutofillAi import constraints.
-bool AreAutofillAiSpecificsValid(
+// Tests if the valuable `specifics` are valid and can be converted into an
+// AutofillOfferData instance using `CreateOfferDataFromValuableSpecifics()`.
+bool AreAutofillOfferSpecificsValid(
     const sync_pb::AutofillValuableSpecifics& specifics) {
+  CHECK(specifics.has_offer());
+  const sync_pb::Offer& offer = specifics.offer();
+  const bool has_valid_issuer_domains =
+      !offer.issuer_domains().empty() &&
+      std::ranges::all_of(offer.issuer_domains(),
+                          [](const std::string& domain) {
+                            return !domain.empty() && GURL(domain).is_valid();
+                          });
+  return !specifics.id().empty() && !offer.offer_code().empty() &&
+         !offer.offer_short_title().empty() &&
+         offer.expiration_time_unix_epoch_micros() > 0 &&
+         GURL(specifics.pass_view_url()).is_valid() && has_valid_issuer_domains;
+}
+
+// Tests whether `specifics` has an empty or valid Wallet management URL and
+// logs the validation status to UMA.
+bool HasEmptyOrValidManagementUrl(
+    const sync_pb::AutofillValuableSpecifics& specifics,
+    EntityType entity_type) {
+  const auto status =
+      specifics.pass_view_url().empty()
+          ? AutofillAiWalletManagementUrlSyncStatus::kMissingOrEmpty
+      : IsValidWalletManagementUrl(GURL(specifics.pass_view_url()))
+          ? AutofillAiWalletManagementUrlSyncStatus::kValid
+          : AutofillAiWalletManagementUrlSyncStatus::kInvalid;
+  constexpr std::string_view kHistogramPrefix =
+      "Autofill.Ai.ValuableSync.ManagementUrlStatus";
+  base::UmaHistogramEnumeration(kHistogramPrefix, status);
+  base::UmaHistogramEnumeration(
+      base::StrCat(
+          {kHistogramPrefix, ".", EntityTypeToMetricsString(entity_type)}),
+      status);
+
   if (!base::FeatureList::IsEnabled(
-          features::kAutofillAiImportConstraintsForSync)) {
+          features::kAutofillAiWalletServerProvidedDeepLink)) {
+    // Tolerate invalid management URLs if the feature is not enabled.
     return true;
   }
+
+  return status != AutofillAiWalletManagementUrlSyncStatus::kInvalid;
+}
+
+// Tests whether the `EntityInstance` represented by the `specifics` meets the
+// AutofillAi import constraints and has an empty or valid management URL.
+bool AreAutofillAiSpecificsValid(
+    const sync_pb::AutofillValuableSpecifics& specifics) {
   std::optional<EntityInstance> entity =
       CreateEntityInstanceFromSpecifics(specifics);
   if (!entity) {
@@ -118,7 +157,9 @@ bool AreAutofillAiSpecificsValid(
       base::StrCat({"Autofill.Ai.ImportConstraintsMet.WalletSync.",
                     EntityTypeToMetricsString(entity->type())}),
       meets_import_constraints);
-  return meets_import_constraints;
+  const bool has_valid_management_url =
+      HasEmptyOrValidManagementUrl(specifics, entity->type());
+  return meets_import_constraints && has_valid_management_url;
 }
 
 bool IsSyncWalletFlightReservationsEnabled() {
@@ -144,6 +185,34 @@ bool IsSyncWalletPrivatePassesEnabled() {
 
 bool IsSyncWalletShoppingEnabled() {
   return base::FeatureList::IsEnabled(features::kAutofillAiWalletShopping);
+}
+
+bool IsWalletDisclosureNoticePublicPassEnabled() {
+  return base::FeatureList::IsEnabled(
+      features::kAutofillEnableWalletDisclosureNoticePublicPass);
+}
+
+std::optional<std::string> GetLegalMessageToken(
+    const EntityTable& entity_table,
+    const EntityInstance::EntityId& guid) {
+  if (!IsWalletDisclosureNoticePublicPassEnabled()) {
+    return std::nullopt;
+  }
+  return entity_table.GetLegalMessageToken(guid);
+}
+
+bool IsSyncWalletDirectOffersEnabled(std::string_view app_locale) {
+  if (!base::FeatureList::IsEnabled(
+          features::kAutofillEnableWalletDirectOffers)) {
+    return false;
+  }
+  if (base::FeatureList::IsEnabled(
+          features::
+              kAutofillDisableWalletDirectOffersLocaleCountryCheckForTesting)) {
+    return true;
+  }
+  return app_locale == "en-US" || app_locale == "en-CA" ||
+         app_locale == "en-GB";
 }
 
 // Returns if the entity `change` should be uploaded to AUTOFILL_VALUABLE.
@@ -233,11 +302,14 @@ LoyaltyCard CreateLoyaltyCardFromSpecificsAndLoadMetadata(
 
 ValuableSyncBridge::ValuableSyncBridge(
     std::unique_ptr<syncer::DataTypeLocalChangeProcessor> change_processor,
+    const std::string& app_locale,
     AutofillWebDataBackend* backend)
     : DataTypeSyncBridge(std::move(change_processor)),
+      app_locale_(app_locale),
       web_data_backend_(backend) {
   if (!web_data_backend_ || !web_data_backend_->GetDatabase() ||
-      !GetValuablesTable()) {
+      !GetValuablesTable() || !GetEntityTable() ||
+      !GetPaymentsAutofillTable()) {
     DataTypeSyncBridge::change_processor()->ReportError(
         {FROM_HERE,
          syncer::ModelError::Type::kAutofillValuableFailedToLoadDatabase});
@@ -256,6 +328,7 @@ ValuableSyncBridge::~ValuableSyncBridge() = default;
 
 // static
 void ValuableSyncBridge::CreateForWebDataServiceAndBackend(
+    const std::string& app_locale,
     AutofillWebDataBackend* web_data_backend,
     AutofillWebDataService* web_data_service) {
   web_data_service->GetDBUserData().SetUserData(
@@ -264,7 +337,7 @@ void ValuableSyncBridge::CreateForWebDataServiceAndBackend(
           std::make_unique<syncer::ClientTagBasedDataTypeProcessor>(
               syncer::AUTOFILL_VALUABLE,
               /*dump_stack=*/base::DoNothing()),
-          web_data_backend));
+          app_locale, web_data_backend));
 }
 
 // static
@@ -322,32 +395,41 @@ ValuableDatabaseOperationResult ValuableSyncBridge::HandleDeleteRequest(
     return ValuableDatabaseOperationResult::kDataChanged;
   }
 
-  if (!IsSyncWalletFlightReservationsEnabled() &&
-      !IsSyncWalletVehicleRegistrationsEnabled() &&
-      !IsSyncWalletPrivatePassesEnabled() && !IsSyncWalletShoppingEnabled()) {
-    return ValuableDatabaseOperationResult::kNoChange;
-  }
-  EntityInstance::EntityId entity_id(storage_key);
-  if (GetEntityTable()->EntityInstanceExists(entity_id)) {
-    // Requesting the associated metadata before the entity removed.
-    std::optional<EntityInstance::EntityMetadata> metadata =
-        GetEntityTable()->GetEntityMetadata(entity_id);
-    if (!GetEntityTable()->RemoveEntityInstance(entity_id)) {
-      return ValuableDatabaseOperationResult::kDatabaseError;
-    }
+  if (IsSyncWalletFlightReservationsEnabled() ||
+      IsSyncWalletVehicleRegistrationsEnabled() ||
+      IsSyncWalletPrivatePassesEnabled() || IsSyncWalletShoppingEnabled()) {
+    EntityInstance::EntityId entity_id(storage_key);
+    if (GetEntityTable()->EntityInstanceExists(entity_id)) {
+      // Requesting the associated metadata before the entity removed.
+      std::optional<EntityInstance::EntityMetadata> metadata =
+          GetEntityTable()->GetEntityMetadata(entity_id);
+      if (!GetEntityTable()->RemoveEntityInstance(entity_id)) {
+        return ValuableDatabaseOperationResult::kDatabaseError;
+      }
 
-    // Server entities can not be removed directly by the user in the client.
-    // They are only removed via a ACTION_DELETE directive received through the
-    // valuables bridge. When the bridge removes an entity instance and its
-    // associated metadata directly from the local table, server metadata
-    // observers (e.g. ValuableMetadataSyncBridge) must be manually notified of
-    // the deletion so it can be committed to the server.
-    if (IsSyncAutofillValuableMetadataEnabled() && metadata) {
-      web_data_backend_->NotifyOnServerEntityMetadataChanged(
-          EntityInstanceMetadataChange(EntityInstanceMetadataChange::REMOVE,
-                                       entity_id, std::move(*metadata)));
+      // Server entities can not be removed directly by the user in the client.
+      // They are only removed via a ACTION_DELETE directive received through
+      // the valuables bridge. When the bridge removes an entity instance and
+      // its associated metadata directly from the local table, server metadata
+      // observers (e.g. ValuableMetadataSyncBridge) must be manually notified
+      // of the deletion so it can be committed to the server.
+      if (IsSyncAutofillValuableMetadataEnabled() && metadata) {
+        web_data_backend_->NotifyOnServerEntityMetadataChanged(
+            EntityInstanceMetadataChange(EntityInstanceMetadataChange::REMOVE,
+                                         entity_id, std::move(*metadata)));
+      }
+      return ValuableDatabaseOperationResult::kDataChanged;
     }
-    return ValuableDatabaseOperationResult::kDataChanged;
+  }
+
+  if (IsSyncWalletDirectOffersEnabled(app_locale_)) {
+    PaymentsAutofillTable* payments_table = GetPaymentsAutofillTable();
+    if (payments_table->AutofillOfferExists(storage_key)) {
+      if (!payments_table->RemoveAutofillOffer(storage_key)) {
+        return ValuableDatabaseOperationResult::kDatabaseError;
+      }
+      return ValuableDatabaseOperationResult::kDataChanged;
+    }
   }
 
   return ValuableDatabaseOperationResult::kNoChange;
@@ -411,16 +493,24 @@ ValuableSyncBridge::ApplyIncrementalSyncChanges(
             if (std::optional<EntityInstance> entity =
                     CreateEntityInstanceFromSpecificsAndLoadMetadata(
                         specifics, *GetEntityTable())) {
-              if (!GetEntityTable()->AddOrUpdateEntityInstance(*entity)) {
+              if (!GetEntityTable()->AddOrUpdateEntityInstance(
+                      *entity, /*legal_message_token=*/"")) {
                 db_operation_result =
                     ValuableDatabaseOperationResult::kDatabaseError;
               }
             }
             break;
-          // Event ticket, transit pass and offer are not supported by Chrome.
+          case sync_pb::AutofillValuableSpecifics::kOffer: {
+            if (!GetPaymentsAutofillTable()->AddOrUpdateAutofillOffer(
+                    CreateOfferDataFromValuableSpecifics(specifics))) {
+              db_operation_result =
+                  ValuableDatabaseOperationResult::kDatabaseError;
+            }
+            break;
+          }
+          // Event ticket and transit pass are not supported by Chrome.
           case sync_pb::AutofillValuableSpecifics::kEventTicket:
           case sync_pb::AutofillValuableSpecifics::kTransitPass:
-          case sync_pb::AutofillValuableSpecifics::kOffer:
           // Ignore new entry types that the client doesn't know about.
           case sync_pb::AutofillValuableSpecifics::VALUABLE_DATA_NOT_SET:
             break;
@@ -432,8 +522,24 @@ ValuableSyncBridge::ApplyIncrementalSyncChanges(
             ValuableDatabaseOperationResult::kDatabaseError) {
           db_operation_result = ValuableDatabaseOperationResult::kDatabaseError;
         }
-
         break;
+    }
+  }
+
+  // When Sync finishes uploading local changes to the server
+  // (`ClientTagBasedDataTypeProcessor::OnCommitCompleted`), it marks those
+  // entities as synced and calls `ApplyIncrementalSyncChanges()` with an empty
+  // `entity_changes` list. Clear any non-empty `legal_message_token` whose
+  // entity is no longer unsynced so the single-use creation token is not
+  // retained after commit.
+  if (IsWalletDisclosureNoticePublicPassEnabled()) {
+    std::vector<EntityInstance::EntityId> guids_to_clear =
+        GetEntityTable()->GetEntityGuidsWithLegalMessageToken();
+    std::erase_if(guids_to_clear, [this](const EntityInstance::EntityId& guid) {
+      return change_processor()->IsEntityUnsynced(guid.value());
+    });
+    if (!GetEntityTable()->ClearLegalMessageTokens(guids_to_clear)) {
+      db_operation_result = ValuableDatabaseOperationResult::kDatabaseError;
     }
   }
 
@@ -472,10 +578,20 @@ std::unique_ptr<syncer::MutableDataBatch> ValuableSyncBridge::GetData() {
     if (IsPassTypeEnabled(instance.type().name())) {
       const std::string& id = instance.guid().value();
       batch->Put(id, CreateEntityDataFromEntityInstance(
-                         instance, GetPossiblyTrimmedValuableSpecifics(id)));
+                         instance, GetPossiblyTrimmedValuableSpecifics(id),
+                         /*legal_message_token=*/{}));
     }
   }
 
+  if (IsSyncWalletDirectOffersEnabled(app_locale_)) {
+    std::vector<std::unique_ptr<AutofillOfferData>> offers;
+    GetPaymentsAutofillTable()->GetAutofillOffers(&offers);
+    for (const std::unique_ptr<AutofillOfferData>& offer : offers) {
+      const std::string& id = offer->GetOfferId();
+      batch->Put(id, CreateEntityDataFromOfferData(
+                         *offer, GetPossiblyTrimmedValuableSpecifics(id)));
+    }
+  }
   return batch;
 }
 
@@ -496,6 +612,11 @@ std::unique_ptr<syncer::DataBatch> ValuableSyncBridge::GetDataForCommit(
   while (all_data->HasNext()) {
     syncer::KeyAndData item = all_data->Next();
     if (keys_set.contains(item.first)) {
+      if (std::optional<std::string> legal_message_token = GetLegalMessageToken(
+              *GetEntityTable(), EntityInstance::EntityId(item.first))) {
+        item.second->specifics.mutable_autofill_valuable()
+            ->set_legal_message_token(std::move(*legal_message_token));
+      }
       batch->Put(item.first, std::move(item.second));
     }
   }
@@ -540,9 +661,11 @@ bool ValuableSyncBridge::IsEntityDataValid(
     case sync_pb::AutofillValuableSpecifics::kShipment:
       return IsSyncWalletShoppingEnabled() &&
              AreAutofillAiSpecificsValid(autofill_valuable);
+    case sync_pb::AutofillValuableSpecifics::kOffer:
+      return IsSyncWalletDirectOffersEnabled(app_locale_) &&
+             AreAutofillOfferSpecificsValid(autofill_valuable);
     case sync_pb::AutofillValuableSpecifics::kEventTicket:
     case sync_pb::AutofillValuableSpecifics::kTransitPass:
-    case sync_pb::AutofillValuableSpecifics::kOffer:
     // Ignore new entry types that the client doesn't know about.
     case sync_pb::AutofillValuableSpecifics::VALUABLE_DATA_NOT_SET:
       return false;
@@ -664,11 +787,33 @@ ValuableDatabaseOperationResult ValuableSyncBridge::SetEntities(
       EntityInstance::RecordType::kServerWallet);
 
   for (const EntityInstance& entity : entities) {
-    success &= entity_table->AddOrUpdateEntityInstance(entity);
+    success &= entity_table->AddOrUpdateEntityInstance(
+        entity, /*legal_message_token=*/"");
   }
 
   return success ? ValuableDatabaseOperationResult::kDataChanged
                  : ValuableDatabaseOperationResult::kDatabaseError;
+}
+
+ValuableDatabaseOperationResult ValuableSyncBridge::SetWalletDirectOffers(
+    std::vector<AutofillOfferData> wallet_direct_offers) {
+  PaymentsAutofillTable* table = GetPaymentsAutofillTable();
+
+  std::vector<std::unique_ptr<AutofillOfferData>> existing_offers;
+  table->GetAutofillOffers(&existing_offers);
+
+  if (!AreAnyItemsDifferent(
+          existing_offers, wallet_direct_offers,
+          [](const AutofillOfferData& a, const AutofillOfferData& b) {
+            return a.Compare(b) < 0;
+          },
+          [](const std::unique_ptr<AutofillOfferData>& offer)
+              -> const AutofillOfferData& { return *offer; })) {
+    return ValuableDatabaseOperationResult::kNoChange;
+  }
+
+  table->SetAutofillOffers(wallet_direct_offers);
+  return ValuableDatabaseOperationResult::kDataChanged;
 }
 
 std::optional<syncer::ModelError> ValuableSyncBridge::SetSyncData(
@@ -678,6 +823,7 @@ std::optional<syncer::ModelError> ValuableSyncBridge::SetSyncData(
 
   std::vector<LoyaltyCard> loyalty_cards;
   std::vector<EntityInstance> entities;
+  std::vector<AutofillOfferData> wallet_direct_offers;
   for (const std::unique_ptr<syncer::EntityChange>& change : entity_data) {
     switch (change->type()) {
       case syncer::EntityChange::ACTION_ADD: {
@@ -709,10 +855,14 @@ std::optional<syncer::ModelError> ValuableSyncBridge::SetSyncData(
               entities.push_back(std::move(*entity));
             }
             break;
-          // Event ticket, transit pass and offer are not supported by Chrome.
+          case sync_pb::AutofillValuableSpecifics::kOffer: {
+            wallet_direct_offers.push_back(
+                CreateOfferDataFromValuableSpecifics(autofill_valuable));
+            break;
+          }
+          // Event ticket and transit pass are not supported by Chrome.
           case sync_pb::AutofillValuableSpecifics::kEventTicket:
           case sync_pb::AutofillValuableSpecifics::kTransitPass:
-          case sync_pb::AutofillValuableSpecifics::kOffer:
           // Ignore new entry types that the client doesn't know about.
           case sync_pb::AutofillValuableSpecifics::VALUABLE_DATA_NOT_SET:
             break;
@@ -734,11 +884,15 @@ std::optional<syncer::ModelError> ValuableSyncBridge::SetSyncData(
       SetLoyaltyCards(std::move(loyalty_cards));
   const ValuableDatabaseOperationResult set_entities_result =
       SetEntities(std::move(entities));
+  const ValuableDatabaseOperationResult set_wallet_direct_offers_result =
+      SetWalletDirectOffers(std::move(wallet_direct_offers));
 
   const bool set_valuables_error =
       set_loyalty_cards_result ==
           ValuableDatabaseOperationResult::kDatabaseError ||
-      set_entities_result == ValuableDatabaseOperationResult::kDatabaseError;
+      set_entities_result == ValuableDatabaseOperationResult::kDatabaseError ||
+      set_wallet_direct_offers_result ==
+          ValuableDatabaseOperationResult::kDatabaseError;
 
   if (set_valuables_error) {
     return syncer::ModelError(
@@ -757,7 +911,9 @@ std::optional<syncer::ModelError> ValuableSyncBridge::SetSyncData(
   const bool valuables_data_changed =
       set_loyalty_cards_result ==
           ValuableDatabaseOperationResult::kDataChanged ||
-      set_entities_result == ValuableDatabaseOperationResult::kDataChanged;
+      set_entities_result == ValuableDatabaseOperationResult::kDataChanged ||
+      set_wallet_direct_offers_result ==
+          ValuableDatabaseOperationResult::kDataChanged;
 
   if (valuables_data_changed) {
     web_data_backend_->NotifyOnAutofillChangedBySync(syncer::AUTOFILL_VALUABLE);
@@ -766,7 +922,8 @@ std::optional<syncer::ModelError> ValuableSyncBridge::SetSyncData(
 }
 
 void ValuableSyncBridge::EntityInstanceChanged(
-    const EntityInstanceChange& change) {
+    const EntityInstanceChange& change,
+    std::optional<std::string_view> legal_message_token) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!IsSyncWalletFlightReservationsEnabled() &&
       !IsSyncWalletVehicleRegistrationsEnabled()) {
@@ -788,12 +945,27 @@ void ValuableSyncBridge::EntityInstanceChanged(
 
   switch (change.type()) {
     case EntityInstanceChange::ADD:
-    case EntityInstanceChange::UPDATE:
       change_processor()->Put(
           *change.key(),
           CreateEntityDataFromEntityInstance(
               change.data_model(),
-              GetPossiblyTrimmedValuableSpecifics(*change.key())),
+              GetPossiblyTrimmedValuableSpecifics(*change.key()),
+              legal_message_token.value_or("")),
+          metadata_change_list.get());
+      break;
+    case EntityInstanceChange::UPDATE:
+      CHECK(!legal_message_token.has_value());
+      // If the entity is updated locally before its initial creation commit has
+      // synced, preserve the pending creation `legal_message_token` from
+      // `EntityTable`. Once synced, `GetLegalMessageToken()` returns
+      // `std::nullopt`.
+      change_processor()->Put(
+          *change.key(),
+          CreateEntityDataFromEntityInstance(
+              change.data_model(),
+              GetPossiblyTrimmedValuableSpecifics(*change.key()),
+              GetLegalMessageToken(*GetEntityTable(), change.key())
+                  .value_or("")),
           metadata_change_list.get());
       break;
     case EntityInstanceChange::REMOVE:
@@ -809,6 +981,11 @@ ValuablesTable* ValuableSyncBridge::GetValuablesTable() {
 
 EntityTable* ValuableSyncBridge::GetEntityTable() {
   return EntityTable::FromWebDatabase(web_data_backend_->GetDatabase());
+}
+
+PaymentsAutofillTable* ValuableSyncBridge::GetPaymentsAutofillTable() {
+  return PaymentsAutofillTable::FromWebDatabase(
+      web_data_backend_->GetDatabase());
 }
 
 }  // namespace autofill

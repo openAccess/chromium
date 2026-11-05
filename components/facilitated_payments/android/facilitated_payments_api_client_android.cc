@@ -17,6 +17,8 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "components/facilitated_payments/android/java/jni_headers/AccountLinkingResult_jni.h"
@@ -35,6 +37,16 @@ LazyInitFacilitatedPaymentsApiClient(
              : nullptr;
 }
 
+std::unique_ptr<FacilitatedPaymentsApiClient>
+LazyInitFacilitatedPaymentsApiClientForWebContents(
+    base::WeakPtr<content::WebContents> web_contents) {
+  if (!web_contents || !web_contents->GetPrimaryMainFrame()) {
+    return nullptr;
+  }
+  return std::make_unique<FacilitatedPaymentsApiClientAndroid>(
+      web_contents->GetPrimaryMainFrame());
+}
+
 // Declared in the cross-platform header
 // `facilitated_payments_api_client_factory.h`.
 FacilitatedPaymentsApiClientCreator GetFacilitatedPaymentsApiClientCreator(
@@ -43,11 +55,20 @@ FacilitatedPaymentsApiClientCreator GetFacilitatedPaymentsApiClientCreator(
                              render_frame_host_id);
 }
 
+FacilitatedPaymentsApiClientCreator GetFacilitatedPaymentsApiClientCreator(
+    base::WeakPtr<content::WebContents> web_contents) {
+  return base::BindRepeating(
+      &LazyInitFacilitatedPaymentsApiClientForWebContents, web_contents);
+}
+
 FacilitatedPaymentsApiClientAndroid::FacilitatedPaymentsApiClientAndroid(
     content::RenderFrameHost* render_frame_host)
-    : java_bridge_(Java_FacilitatedPaymentsApiClientBridge_Constructor(
+    : web_contents_(content::WebContents::FromRenderFrameHost(render_frame_host)
+                        ->GetWeakPtr()),
+      render_frame_host_id_(render_frame_host->GetGlobalId()),
+      java_bridge_(Java_FacilitatedPaymentsApiClientBridge_Constructor(
           base::android::AttachCurrentThread(),
-          reinterpret_cast<intptr_t>(this),
+          jni_zero::MakeRaw(this),
           render_frame_host->GetJavaRenderFrameHost())) {}
 
 FacilitatedPaymentsApiClientAndroid::~FacilitatedPaymentsApiClientAndroid() {
@@ -99,6 +120,20 @@ void FacilitatedPaymentsApiClientAndroid::InvokeInstrumentManager(
 
   invoke_instrument_manager_callback_ = std::move(callback);
   JNIEnv* env = base::android::AttachCurrentThread();
+  // If the user navigated to another page on the same merchant origin in the
+  // same tab after the API client was created (e.g. during `GetClientToken()`),
+  // recreate `java_bridge_` with the new active primary main frame.
+  if (web_contents_ && web_contents_->GetPrimaryMainFrame() &&
+      web_contents_->GetPrimaryMainFrame()->GetGlobalId() !=
+          render_frame_host_id_) {
+    content::RenderFrameHost* current_rfh =
+        web_contents_->GetPrimaryMainFrame();
+    Java_FacilitatedPaymentsApiClientBridge_resetNativePointer(env,
+                                                               java_bridge_);
+    render_frame_host_id_ = current_rfh->GetGlobalId();
+    java_bridge_ = Java_FacilitatedPaymentsApiClientBridge_Constructor(
+        env, jni_zero::MakeRaw(this), current_rfh->GetJavaRenderFrameHost());
+  }
   Java_FacilitatedPaymentsApiClientBridge_invokeInstrumentManager(
       env, java_bridge_, primary_account,
       base::android::ToJavaByteArray(env, action_token));
@@ -152,6 +187,9 @@ void FacilitatedPaymentsApiClientAndroid::OnInvokeInstrumentManagerResult(
       Java_AccountLinkingResult_getInstrumentId(env, jaccount_linking_result);
   int error_code =
       Java_AccountLinkingResult_getErrorCode(env, jaccount_linking_result);
+  int64_t billing_customer_number =
+      Java_AccountLinkingResult_getBillingCustomerNumber(
+          env, jaccount_linking_result);
 
   if (error_code <
           static_cast<int>(AccountLinkingResultCode::kCouldNotInvoke) ||
@@ -162,7 +200,8 @@ void FacilitatedPaymentsApiClientAndroid::OnInvokeInstrumentManagerResult(
   std::move(invoke_instrument_manager_callback_)
       .Run(AccountLinkingResult{
           is_successful, instrument_id,
-          static_cast<AccountLinkingResultCode>(error_code)});
+          static_cast<AccountLinkingResultCode>(error_code),
+          billing_customer_number});
 }
 
 bool FacilitatedPaymentsApiClientAndroid::IsAnyCallbackPending() const {

@@ -422,6 +422,7 @@ bool InteractiveTestApi::RunTestSequenceImpl(
   builder.SetAbortedCallback(
       base::BindOnce(&internal::InteractiveTestPrivate::OnSequenceAborted,
                      base::Unretained(private_test_impl_.get())));
+  builder.SetDelegateForTesting(private_test_impl_.get());
   auto sequence = builder.Build();
 
   {
@@ -466,6 +467,7 @@ bool InteractiveTestApi::RunTestSequenceImpl(
                     oss << "\n * " << ctx;
                   }
                 }
+                oss << "\n";
                 impl->DebugDumpElements(context).PrintTo(oss);
                 if (!impl->deferred_failures_.empty()) {
                   oss << "\nSome previous steps failed:";
@@ -473,6 +475,7 @@ bool InteractiveTestApi::RunTestSequenceImpl(
                     oss << "\n" << failure;
                   }
                 }
+                impl->set_timed_out(true);
               }
               return oss.str();
             },
@@ -635,8 +638,56 @@ void InteractiveTestApi::AddStep(MultiStep& dest, StepBuilder src) {
 
 // static
 void InteractiveTestApi::AddStep(MultiStep& dest, MultiStep src) {
-  for (auto& step : src)
+  for (auto& step : src) {
     dest.emplace_back(std::move(step));
+  }
+}
+
+// static
+void InteractiveTestApi::AddStep(MultiStep& dest,
+                                 StepBuilder step,
+                                 int step_number) {
+  step.AddStepFrame(InteractionSequence::StepFrame("", step_number));
+  dest.emplace_back(std::move(step));
+}
+
+// static
+void InteractiveTestApi::AddStep(MultiStep& dest,
+                                 MultiStep steps,
+                                 int step_number) {
+  for (auto& step : steps) {
+    step.AddStepFrame(InteractionSequence::StepFrame("", step_number));
+    dest.emplace_back(std::move(step));
+  }
+}
+
+// static
+void InteractiveTestApi::AddStep(InteractionSequence::Builder& builder,
+                                 StepBuilder step,
+                                 int step_number) {
+  step.AddStepFrame(InteractionSequence::StepFrame("test", step_number));
+  builder.AddStep(std::move(step));
+}
+
+// static
+void InteractiveTestApi::AddStep(InteractionSequence::Builder& builder,
+                                 MultiStep steps,
+                                 int step_number) {
+  for (auto& step : steps) {
+    step.AddStepFrame(InteractionSequence::StepFrame("test", step_number));
+    builder.AddStep(std::move(step));
+  }
+}
+
+// static
+void InteractiveTestApi::AddStep(
+    InteractionSequence::Builder& builder,
+    std::unique_ptr<InteractionSequence::Step> step,
+    int step_number) {
+  if (step) {
+    step->step_stack.emplace_back("test", step_number);
+  }
+  builder.AddStep(std::move(step));
 }
 
 // static

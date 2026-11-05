@@ -21,7 +21,6 @@
 #include "components/password_manager/core/browser/password_manager_driver.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/render_widget_host.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
@@ -56,21 +55,26 @@ class ContentPasswordManagerDriver final
           pending_receiver);
   void DidNavigate();
 
+  // Called when a navigation commits a new document in the frame (i.e. not for
+  // BFCache restores or prerendered page activations). Such a navigation may
+  // reuse the RenderFrameHost, and hence this driver, of the previous document
+  // (e.g. the first navigation away from the initial empty document). Discards
+  // all state that belongs to the previous document.
+  void ResetForNewDocument();
+
   // PasswordManagerDriver implementation.
   DriverId GetId() const override;
-  gfx::RectF TransformToRootCoordinates(
-      const gfx::RectF& bounds_in_frame_coordinates) override;
   void PropagateFillDataOnParsingCompletion(
       const autofill::PasswordFormFillData& form_data) override;
   void InformNoSavedCredentials(
       bool should_show_popup_without_passwords) override;
   void FormEligibleForGenerationFound(
       const autofill::PasswordFormGenerationData& form) override;
-  void GeneratedPasswordAccepted(const std::u16string& password) override;
+  void GeneratedPasswordAccepted(const PasswordString& password) override;
   void GeneratedPasswordAccepted(
       const autofill::FormData& form_data,
       autofill::FieldRendererId generation_element_id,
-      const std::u16string& password) override;
+      const PasswordString& password) override;
   void GeneratedPasswordRejected() override;
   void FocusNextFieldAfterPasswords() override;
   void FillField(autofill::FieldRendererId triggering_field_id,
@@ -83,8 +87,8 @@ class ContentPasswordManagerDriver final
       autofill::FieldRendererId password_element_id,
       autofill::FieldRendererId new_password_element_id,
       autofill::FieldRendererId confirm_password_element_id,
-      const std::u16string& old_password,
-      const std::u16string& new_password,
+      const PasswordString& old_password,
+      const PasswordString& new_password,
       base::OnceCallback<void(const std::optional<autofill::FormData>&)>
           form_data_callback) override;
   void FillSuggestion(const std::u16string& username,
@@ -109,7 +113,7 @@ class ContentPasswordManagerDriver final
                              autofill::FieldRendererId password_element_id,
                              const std::u16string& username,
                              const std::u16string& password) override;
-  void PreviewGenerationSuggestion(const std::u16string& password) override;
+  void PreviewGenerationSuggestion(const PasswordString& password) override;
   void ClearPreviewedForm() override;
   void SetSuggestionAvailability(autofill::FieldRendererId element_id,
                                  autofill::mojom::AutofillSuggestionAvailability

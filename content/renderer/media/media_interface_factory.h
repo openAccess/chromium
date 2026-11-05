@@ -29,8 +29,9 @@ namespace content {
 // The Create* methods can be called on any thread.
 class MediaInterfaceFactory final : public media::mojom::InterfaceFactory {
  public:
-  explicit MediaInterfaceFactory(
-      const blink::BrowserInterfaceBrokerProxy* interface_broker);
+  MediaInterfaceFactory(
+      const blink::BrowserInterfaceBrokerProxy* interface_broker,
+      scoped_refptr<base::SingleThreadTaskRunner> task_runner);
   // This ctor is intended for use by the RenderThread, which doesn't have an
   // interface broker.  This is only necessary for WebRTC, and should be avoided
   // if we can restructure WebRTC to create factories per-frame rather than
@@ -50,11 +51,11 @@ class MediaInterfaceFactory final : public media::mojom::InterfaceFactory {
   void CreateVideoDecoder(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
       mojo::PendingRemote<media::mojom::VideoDecoder> dst_video_decoder) final;
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   void CreateVideoDecoderWithTracker(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
       mojo::PendingRemote<media::mojom::VideoDecoderTracker> tracker) final;
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   void CreateAudioEncoder(
       mojo::PendingReceiver<media::mojom::AudioEncoder> receiver) final;
   void CreateDefaultRenderer(

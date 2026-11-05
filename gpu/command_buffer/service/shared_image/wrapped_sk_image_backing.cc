@@ -4,8 +4,10 @@
 
 #include "gpu/command_buffer/service/shared_image/wrapped_sk_image_backing.h"
 
+#include <optional>
 #include <utility>
 
+#include "base/feature.h"
 #include "base/logging.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/single_thread_task_runner.h"
@@ -13,8 +15,10 @@
 #include "gpu/command_buffer/common/shared_image_info.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
+#include "gpu/command_buffer/service/shared_image/compound_image_backing.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
 #include "gpu/command_buffer/service/skia_utils.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "gpu/ipc/common/gpu_client_ids.h"
 #include "third_party/skia/include/core/SkAlphaType.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -31,6 +35,9 @@
 #include "third_party/skia/include/gpu/ganesh/SkImageGanesh.h"
 #include "third_party/skia/include/gpu/ganesh/SkSurfaceGanesh.h"
 #include "third_party/skia/include/private/chromium/GrPromiseImageTexture.h"
+#include "ui/gl/gl_context.h"
+#include "ui/gl/gl_surface.h"
+#include "ui/gl/scoped_make_current.h"
 
 namespace gpu {
 
@@ -41,6 +48,43 @@ namespace {
 std::string GetLabel(const std::string& debug_label) {
   return std::string("WrappedSkImage_" + debug_label);
 }
+
+// Saves the GL context and surface that are current on construction, and
+// makes them current again on destruction if a different context or surface
+// was made current in between. Backings in this file make the
+// SharedContextState current, and may be created or destroyed while another
+// client's context (e.g. a command decoder's) is current. That client expects
+// its context to still be current afterwards.
+class ScopedRestoreCurrentGLContext {
+ public:
+  ScopedRestoreCurrentGLContext()
+      : context_(gl::GLContext::GetCurrent()),
+        surface_(gl::GLSurface::GetCurrent()) {}
+
+  ScopedRestoreCurrentGLContext(const ScopedRestoreCurrentGLContext&) = delete;
+  ScopedRestoreCurrentGLContext& operator=(
+      const ScopedRestoreCurrentGLContext&) = delete;
+
+  ~ScopedRestoreCurrentGLContext() {
+    if (!context_ || (gl::GLContext::GetCurrent() == context_.get() &&
+                      gl::GLSurface::GetCurrent() == surface_.get())) {
+      return;
+    }
+    if (!context_->MakeCurrent(surface_.get())) {
+      LOG(ERROR) << "Failed to restore the previously current GL context.";
+      // MakeCurrent can fail without changing the current context. Release
+      // whatever is current so the caller does not continue on the wrong
+      // context; it will instead fail to find its context current.
+      if (gl::GLContext* current = gl::GLContext::GetCurrent()) {
+        current->ReleaseCurrent(nullptr);
+      }
+    }
+  }
+
+ private:
+  scoped_refptr<gl::GLContext> context_;
+  scoped_refptr<gl::GLSurface> surface_;
+};
 
 }  // namespace
 
@@ -66,8 +110,15 @@ class WrappedSkImageBacking::SkiaImageRepresentationImpl
       std::vector<GrBackendSemaphore>* begin_semaphores,
       std::vector<GrBackendSemaphore>* end_semaphores,
       std::unique_ptr<skgpu::MutableTextureState>* end_state) override {
+    if (!wrapped_sk_image()->BeginAccess(/*readonly=*/false)) {
+      return {};
+    }
     write_surfaces_ = wrapped_sk_image()->GetSkSurfaces(
         final_msaa_count, surface_props, context_state_);
+    if (write_surfaces_.empty()) {
+      wrapped_sk_image()->EndAccess(/*readonly=*/false);
+      return {};
+    }
     for (auto& surface : write_surfaces_) {
       [[maybe_unused]] int save_count = surface->getCanvas()->save();
       DCHECK_EQ(1, save_count);
@@ -79,6 +130,9 @@ class WrappedSkImageBacking::SkiaImageRepresentationImpl
       std::vector<GrBackendSemaphore>* begin_semaphores,
       std::vector<GrBackendSemaphore>* end_semaphores,
       std::unique_ptr<skgpu::MutableTextureState>* end_state) override {
+    if (!wrapped_sk_image()->BeginAccess(/*readonly=*/false)) {
+      return {};
+    }
     return wrapped_sk_image()->GetPromiseTextures();
   }
 
@@ -93,17 +147,22 @@ class WrappedSkImageBacking::SkiaImageRepresentationImpl
       DCHECK(context_state_->CachedSkSurfaceIsUnique(promise_texture.get()));
     }
 #endif
+    wrapped_sk_image()->EndAccess(/*readonly=*/false);
   }
 
   std::vector<sk_sp<GrPromiseImageTexture>> BeginReadAccess(
       std::vector<GrBackendSemaphore>* begin_semaphores,
       std::vector<GrBackendSemaphore>* end_semaphores,
       std::unique_ptr<skgpu::MutableTextureState>* end_state) override {
-    DCHECK(write_surfaces_.empty());
+    if (!wrapped_sk_image()->BeginAccess(/*readonly=*/true)) {
+      return {};
+    }
     return wrapped_sk_image()->GetPromiseTextures();
   }
 
-  void EndReadAccess() override { DCHECK(write_surfaces_.empty()); }
+  void EndReadAccess() override {
+    wrapped_sk_image()->EndAccess(/*readonly=*/true);
+  }
 
   bool SupportsMultipleConcurrentReadAccess() override { return true; }
 
@@ -127,7 +186,9 @@ WrappedSkImageBacking::WrappedSkImageBacking(
           si_info,
           si_info.format.EstimatedSizeInBytes(si_info.size),
           thread_safe),
-      context_state_(std::move(context_state)) {
+      context_state_(std::move(context_state)),
+      enforce_exclusive_access_(base::FeatureList::IsEnabled(
+          features::kWrappedSkiaBackingExclusiveAccess)) {
   DCHECK(!!context_state_);
 
   // If the backing is meant to be thread safe, then grab the task runner to
@@ -147,8 +208,12 @@ WrappedSkImageBacking::WrappedSkImageBacking(
 }
 
 WrappedSkImageBacking::~WrappedSkImageBacking() {
+  DCHECK(!is_write_in_progress_);
+  DCHECK_EQ(reads_in_progress_, 0u);
+
   auto destroy_resources = [](scoped_refptr<SharedContextState> context_state,
                               std::vector<TextureHolder> textures) {
+    ScopedRestoreCurrentGLContext restore_context;
     context_state->MakeCurrent(nullptr);
 
     for (auto& texture : textures) {
@@ -189,6 +254,7 @@ bool WrappedSkImageBacking::Initialize(const std::string& debug_label) {
 
   // MakeCurrent to avoid destroying another client's state because Skia may
   // change GL state to create and upload textures (crbug.com/1095679).
+  ScopedRestoreCurrentGLContext restore_context;
   if (!context_state_->MakeCurrent(nullptr)) {
     return false;
   }
@@ -258,6 +324,7 @@ bool WrappedSkImageBacking::InitializeWithData(
 
   // MakeCurrent to avoid destroying another client's state because Skia may
   // change GL state to create and upload textures (crbug.com/1095679).
+  ScopedRestoreCurrentGLContext restore_context;
   if (!context_state_->MakeCurrent(nullptr)) {
     return false;
   }
@@ -325,7 +392,7 @@ SharedImageBackingType WrappedSkImageBacking::GetType() const {
   return SharedImageBackingType::kWrappedSkImage;
 }
 
-void WrappedSkImageBacking::Update(std::unique_ptr<gfx::GpuFence> in_fence) {
+void WrappedSkImageBacking::Update(gfx::GpuFenceHandle in_fence) {
   NOTREACHED();
 }
 
@@ -333,17 +400,30 @@ bool WrappedSkImageBacking::UploadFromMemory(
     const std::vector<SkPixmap>& pixmaps) {
   DCHECK_EQ(pixmaps.size(), textures_.size());
 
-  if (context_state_->context_lost()) {
+  SharedContextState* context_state = GetContextStateForCurrentThread();
+  if (!context_state || context_state->context_lost()) {
     return false;
   }
 
-  DCHECK(context_state_->IsCurrent(nullptr));
+  std::optional<ui::ScopedMakeCurrent> scoped_make_current;
+  if (!context_state->IsCurrent(nullptr)) {
+    scoped_make_current.emplace(context_state->context(),
+                                context_state->surface());
+    if (!scoped_make_current->IsContextCurrent()) {
+      return false;
+    }
+  }
+  context_state->set_need_context_state_reset(true);
 
   bool updated = true;
   for (size_t i = 0; i < textures_.size(); ++i) {
-    updated = updated && context_state_->gr_context()->updateBackendTexture(
+    updated = updated && context_state->gr_context()->updateBackendTexture(
                              textures_[i].backend_texture, &pixmaps[i],
                              /*numLevels=*/1, nullptr, nullptr);
+  }
+
+  if (is_thread_safe()) {
+    context_state->gr_context()->submit();
   }
 
   return updated;
@@ -353,29 +433,88 @@ bool WrappedSkImageBacking::ReadbackToMemory(
     const std::vector<SkPixmap>& pixmaps) {
   DCHECK_EQ(pixmaps.size(), textures_.size());
 
-  if (context_state_->context_lost()) {
+  SharedContextState* context_state = GetContextStateForCurrentThread();
+  if (!context_state || context_state->context_lost()) {
     return false;
   }
 
-  DCHECK(context_state_->IsCurrent(nullptr));
+  std::optional<ui::ScopedMakeCurrent> scoped_make_current;
+  if (!context_state->IsCurrent(nullptr)) {
+    scoped_make_current.emplace(context_state->context(),
+                                context_state->surface());
+    if (!scoped_make_current->IsContextCurrent()) {
+      return false;
+    }
+  }
+  context_state->set_need_context_state_reset(true);
 
   bool read = true;
   for (size_t i = 0; i < textures_.size(); ++i) {
     auto sk_image = SkImages::BorrowTextureFrom(
-        context_state_->gr_context(), textures_[i].backend_texture,
+        context_state->gr_context(), textures_[i].backend_texture,
         surface_origin(), GetSkColorType(i), alpha_type(),
         color_space().ToSkColorSpace());
     if (!sk_image) {
       read = false;
       break;
     }
-    if (!sk_image->readPixels(context_state_->gr_context(), pixmaps[i], 0, 0)) {
+    if (!sk_image->readPixels(context_state->gr_context(), pixmaps[i], 0, 0)) {
       read = false;
       break;
     }
   }
 
   return read;
+}
+
+bool WrappedSkImageBacking::CheckSupportForAccessStream(
+    SharedImageAccessStream stream,
+    const AccessParams& params) {
+  if (base::FeatureList::IsEnabled(features::kUseDynamicBackingAllocations)) {
+    // WrappedSkImageBacking only produces SkiaGaneshImageRepresentation.
+    // Reject non-Skia streams and non-Ganesh contexts so
+    // CompoundImageBacking allocates a compatible backing instead.
+    if (stream != SharedImageAccessStream::kSkia) {
+      return false;
+    }
+    if (params.context_state && !params.context_state->gr_context()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool WrappedSkImageBacking::SupportsAccess(SharedImageAccessStream stream,
+                                           const AccessParams& params) const {
+  return CheckSupportForAccessStream(stream, params);
+}
+
+SharedContextState* WrappedSkImageBacking::GetContextStateForCurrentThread()
+    const {
+  // `task_runner_` is only set when `is_thread_safe()` is true. On WebView,
+  // the render thread doesn't have a task runner or a thread-local
+  // SharedContextState, but `is_thread_safe()` is never true on WebView (since
+  // DrDC is disabled and WrappedSkImageBacking is only used on a single
+  // thread), so `!task_runner_` safely returns `context_state_`.
+  if (!task_runner_ || task_runner_->BelongsToCurrentThread()) {
+    return context_state_.get();
+  }
+
+  // A thread-safe backing can be accessed on a thread other than the one it was
+  // created on, e.g. the DrDC CompositorGpuThread, where `context_state_` and
+  // its GrDirectContext can't be used. Use the SharedContextState registered
+  // for the current thread instead.
+  if (SharedContextState* current_context_state =
+          SharedContextState::GetForCurrentThread()) {
+    if (!current_context_state->gr_context()) {
+      LOG(ERROR) << "SharedContextState for current thread is not Ganesh";
+      return nullptr;
+    }
+    return current_context_state;
+  }
+
+  LOG(ERROR) << "No SharedContextState registered for current thread";
+  return nullptr;
 }
 
 std::vector<sk_sp<GrPromiseImageTexture>>
@@ -387,6 +526,45 @@ WrappedSkImageBacking::GetPromiseTextures() {
     promise_textures.push_back(texture.promise_texture);
   }
   return promise_textures;
+}
+
+bool WrappedSkImageBacking::BeginAccess(bool readonly) {
+  if (!enforce_exclusive_access_) {
+    return true;
+  }
+
+  AutoLock auto_lock(this);
+  if (is_write_in_progress_) {
+    LOG(ERROR) << "Unable to begin " << (readonly ? "read" : "write")
+               << " access because another write access is in progress";
+    return false;
+  }
+  if (reads_in_progress_ && !readonly) {
+    LOG(ERROR) << "Unable to begin write access because a read access is in "
+                  "progress";
+    return false;
+  }
+  if (readonly) {
+    ++reads_in_progress_;
+  } else {
+    is_write_in_progress_ = true;
+  }
+  return true;
+}
+
+void WrappedSkImageBacking::EndAccess(bool readonly) {
+  if (!enforce_exclusive_access_) {
+    return;
+  }
+
+  AutoLock auto_lock(this);
+  if (readonly) {
+    CHECK_GT(reads_in_progress_, 0u);
+    --reads_in_progress_;
+  } else {
+    CHECK(is_write_in_progress_);
+    is_write_in_progress_ = false;
+  }
 }
 
 SkColorType WrappedSkImageBacking::GetSkColorType(int plane_index) {

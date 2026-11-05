@@ -30,6 +30,7 @@
 #include "components/sync_device_info/device_info_tracker.h"
 #include "components/sync_device_info/local_device_info_provider.h"
 #include "components/tab_groups/tab_group_color.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -37,8 +38,6 @@
 namespace {
 
 constexpr size_t kMaxFavicons = 4;
-constexpr char kTabGroupsLastDismissedTimePrefName[] =
-    "NewTabPage.TabGroups.LastDimissedTime";
 
 enum class TimeDimension {
   kDay = 0,
@@ -94,21 +93,15 @@ std::u16string GetElapsedTimeText(base::Time update_time) {
 
 }  // namespace
 
-// static
-void TabGroupsPageHandler::RegisterProfilePrefs(PrefRegistrySimple* registry) {
-  registry->RegisterTimePref(kTabGroupsLastDismissedTimePrefName, base::Time());
-}
-
 TabGroupsPageHandler::TabGroupsPageHandler(
     mojo::PendingReceiver<ntp::tab_groups::mojom::PageHandler>
         pending_page_handler,
     content::WebContents* web_contents)
     : web_contents_(web_contents),
       profile_(Profile::FromBrowserContext(web_contents->GetBrowserContext())),
-      pref_service_(profile_->GetPrefs()),
       page_handler_(this, std::move(pending_page_handler)) {
-  DCHECK(web_contents_);
-  DCHECK(profile_);
+  CHECK(web_contents_, base::NotFatalUntil::M161);
+  CHECK(profile_, base::NotFatalUntil::M161);
   tab_group_service_ =
       tab_groups::TabGroupSyncServiceFactory::GetForProfile(profile_);
   CHECK(tab_group_service_);
@@ -202,7 +195,7 @@ std::optional<std::string> TabGroupsPageHandler::GetDeviceName(
   }
 
   const syncer::DeviceInfo* device_info =
-      device_info_tracker->GetDeviceInfo(cache_guid.value());
+      device_info_tracker->GetChromeDeviceInfo(cache_guid.value());
   if (!device_info) {
     return std::nullopt;
   }
@@ -259,18 +252,6 @@ TabGroupsPageHandler::GetSavedTabGroups() {
 }
 
 void TabGroupsPageHandler::GetTabGroups(GetTabGroupsCallback callback) {
-  callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(callback),
-                                                         std::nullopt, false);
-
-  base::Time dismiss_time =
-      pref_service_->GetTime(kTabGroupsLastDismissedTimePrefName);
-  if (dismiss_time != base::Time() &&
-      base::Time::Now() - dismiss_time <
-          ntp_features::kNtpTabGroupsModuleWindowEndDeltaParam.Get()) {
-    // Callback wrapper will be invoked with std::nullopt on destruction.
-    return;
-  }
-
   const std::string data_type_param = base::GetFieldTrialParamValueByFeature(
       ntp_features::kNtpTabGroupsModule,
       ntp_features::kNtpTabGroupsModuleDataParam);
@@ -319,16 +300,6 @@ void TabGroupsPageHandler::GetTabGroups(GetTabGroupsCallback callback) {
   }
 
   std::move(callback).Run(std::move(tab_groups_mojom), should_show_zero_state);
-}
-
-void TabGroupsPageHandler::DismissModule() {
-  pref_service_->SetTime(kTabGroupsLastDismissedTimePrefName,
-                         base::Time::Now());
-}
-
-void TabGroupsPageHandler::RestoreModule() {
-  // Clear the module's last dimissed time.
-  pref_service_->SetTime(kTabGroupsLastDismissedTimePrefName, base::Time());
 }
 
 void TabGroupsPageHandler::OpenTabGroup(const std::string& id) {

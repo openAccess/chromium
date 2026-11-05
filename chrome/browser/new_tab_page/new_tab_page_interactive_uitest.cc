@@ -32,6 +32,7 @@
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
@@ -191,8 +192,8 @@ class NewTabPageTest : public InProcessBrowserTest,
     if (base::CommandLine::ForCurrentProcess()->HasSwitch(
             switches::kVerifyPixels)) {
       views::ViewSkiaGoldPixelDiff pixel_diff(screenshot_prefix);
-      return pixel_diff.CompareViewScreenshot(
-          screenshot_name, browser_view_->contents_web_view());
+      return pixel_diff.CompareViewScreenshot(screenshot_name,
+                                              browser_view_->GetContentsView());
     }
 #endif
     return true;

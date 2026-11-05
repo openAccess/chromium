@@ -8,12 +8,12 @@
 #include "ash/public/cpp/window_properties.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/new_window/chrome_new_window_client.h"
 #include "content/public/browser/focused_node_details.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/media_session.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
@@ -24,6 +24,7 @@
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/aura/window.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/controls/webview/web_contents_set_background_color.h"
 #include "ui/views/controls/webview/webview.h"
@@ -55,7 +56,7 @@ gfx::NativeView AshWebViewImpl::GetNativeView() {
 }
 
 void AshWebViewImpl::ChildPreferredSizeChanged(views::View* child) {
-  DCHECK_EQ(web_view_, child);
+  CHECK_EQ(web_view_, child, base::NotFatalUntil::M162);
   SetPreferredSize(web_view_->GetPreferredSize());
 }
 
@@ -125,9 +126,9 @@ bool AshWebViewImpl::IsWebContentsCreationOverridden(
     const std::string& frame_name,
     const GURL& target_url) {
   if (params_.suppress_navigation) {
-    NotifyDidSuppressNavigation(target_url,
-                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                /*from_user_gesture=*/true);
+    NotifyDidSuppressNavigation(
+        target_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+        /*from_user_gesture=*/true);
     return true;
   }
   return content::WebContentsDelegate::IsWebContentsCreationOverridden(
@@ -169,13 +170,13 @@ void AshWebViewImpl::ActivateContents(content::WebContents* contents) {
 
 void AshWebViewImpl::ResizeDueToAutoResize(content::WebContents* web_contents,
                                            const gfx::Size& new_size) {
-  DCHECK_EQ(web_contents_.get(), web_contents);
+  CHECK_EQ(web_contents_.get(), web_contents, base::NotFatalUntil::M162);
   web_view_->SetPreferredSize(new_size);
 }
 
 bool AshWebViewImpl::TakeFocus(content::WebContents* web_contents,
                                bool reverse) {
-  DCHECK_EQ(web_contents_.get(), web_contents);
+  CHECK_EQ(web_contents_.get(), web_contents, base::NotFatalUntil::M162);
   auto* focus_manager = GetFocusManager();
   if (focus_manager) {
     focus_manager->ClearNativeFocus();
@@ -186,7 +187,7 @@ bool AshWebViewImpl::TakeFocus(content::WebContents* web_contents,
 void AshWebViewImpl::NavigationStateChanged(
     content::WebContents* web_contents,
     content::InvalidateTypes changed_flags) {
-  DCHECK_EQ(web_contents_.get(), web_contents);
+  CHECK_EQ(web_contents_.get(), web_contents, base::NotFatalUntil::M162);
   UpdateCanGoBack();
 }
 
@@ -258,7 +259,8 @@ void AshWebViewImpl::RenderFrameHostChanged(
 }
 
 void AshWebViewImpl::PrimaryPageChanged(content::Page& page) {
-  DCHECK_EQ(&page.GetMainDocument(), web_contents_->GetPrimaryMainFrame());
+  CHECK_EQ(&page.GetMainDocument(), web_contents_->GetPrimaryMainFrame(),
+           base::NotFatalUntil::M162);
   if (!web_contents_->GetRenderWidgetHostView()) {
     return;
   }
@@ -318,7 +320,7 @@ void AshWebViewImpl::InitLayout(Profile* profile) {
 
 void AshWebViewImpl::NotifyDidSuppressNavigation(
     const GURL& url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     bool from_user_gesture) {
   // Note that we post notification to |observers_| as an observer may cause
   // |this| to be deleted during handling of the event which is unsafe to do
@@ -327,7 +329,8 @@ void AshWebViewImpl::NotifyDidSuppressNavigation(
       FROM_HERE,
       base::BindOnce(
           [](const base::WeakPtr<AshWebViewImpl>& self, GURL url,
-             WindowOpenDisposition disposition, bool from_user_gesture) {
+             ui::mojom::WindowOpenDisposition disposition,
+             bool from_user_gesture) {
             if (self) {
               for (auto& observer : self->observers_) {
                 observer.DidSuppressNavigation(url, disposition,

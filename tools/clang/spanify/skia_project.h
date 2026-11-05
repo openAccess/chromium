@@ -35,17 +35,17 @@ class SkiaProject : public Project {
   std::string_view GetSpanFromRefRelativePath(
       const clang::ast_matchers::MatchFinder::MatchResult& result)
       const override {
-    return "SPAN_FROM_REF_NOT_AVAILABLE";
+    return "SkSpanFromRef";
   }
   std::string_view GetAsByteSpanRelativePath(
       const clang::ast_matchers::MatchFinder::MatchResult& result)
       const override {
-    return "AS_BYTE_SPAN_NOT_AVAILABLE";
+    return "SkAsByteSpan";
   }
   std::string_view GetAsWritableByteSpanRelativePath(
       const clang::ast_matchers::MatchFinder::MatchResult& result)
       const override {
-    return "AS_WRITABLE_BYTE_SPAN_NOT_AVAILABLE";
+    return "SkAsWritableByteSpan";
   }
   std::string_view GetSafeConversionsIncludePath() const override {
     return "include/private/SkTo.h";
@@ -62,12 +62,6 @@ class SkiaProject : public Project {
   std::string_view GetAutoSpanificationHelperIncludePath() const override {
     return "include/core/SkSpan.h";
   }
-  std::string_view GetPreIncrementSpanName() const override {
-    return "SkPreIncrementSpan";
-  }
-  std::string_view GetPostIncrementSpanName() const override {
-    return "SkPostIncrementSpan";
-  }
   const std::vector<FuncMapping>& GetFuncMappingTable() const override {
     static const std::vector<FuncMapping> kFuncMappingTable = {};
     return kFuncMappingTable;
@@ -80,15 +74,9 @@ class SkiaProject : public Project {
         source_manager, raw_ptr_plugin::getRepresentativeLocation(Node),
         raw_ptr_plugin::FilenameLocationType::kSpellingLoc);
 
-    // Running in-place inside Chromium: absolute path contains
-    // "third_party/skia". We only want to spanify Skia sources, excluding its
-    // own internal third_party.
-    llvm::StringRef file(filename);
-    return (file.contains("third_party/") &&
-            !file.contains("third_party/skia/")) ||
-           file.contains("third_party/skia/third_party/");
+    return IsExcludedFromSubmodule(filename, "third_party/skia/",
+                                   "tools/clang/spanify/tests/skia/");
   }
-  bool SupportsStaticExtent() const override { return false; }
 };
 
 #endif  // TOOLS_CLANG_SPANIFY_SKIA_PROJECT_H_

@@ -60,8 +60,7 @@ TEST_F(FrameSchedulerTest, BackForwardCacheOptOut_FrameNavigated) {
 
   // Click on the anchor element. This will cause a synchronous same-document
   // navigation. Same document navigations don't affect anything.
-  auto* anchor = To<HTMLAnchorElement>(
-      GetDocument().getElementById(AtomicString("anchorlink")));
+  auto* anchor = To<HTMLAnchorElement>(GetElementById("anchorlink"));
   anchor->click();
 
   EXPECT_TRUE(bf_cache_metrics_contains(SchedulingPolicy::Feature::kWebSocket));
@@ -138,39 +137,6 @@ TEST_F(FrameSchedulerFrameTypeTest, GetFrameType) {
   Frame* child = MainFrame().GetFrame()->Tree().FirstChild();
   EXPECT_EQ(FrameScheduler::FrameType::kSubframe,
             To<LocalFrame>(child)->GetFrameScheduler()->GetFrameType());
-}
-
-class FencedFrameFrameSchedulerTest
-    : private ScopedFencedFramesForTest,
-      public testing::WithParamInterface<const char*>,
-      public SimTest {
- public:
-  FencedFrameFrameSchedulerTest() : ScopedFencedFramesForTest(true) {
-    scoped_feature_list_.InitAndEnableFeatureWithParameters(
-        features::kFencedFrames, {{"implementation_type", "mparch"}});
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(FencedFrameFrameSchedulerTest, GetFrameType) {
-  InitializeFencedFrameRoot(
-      blink::FencedFrame::DeprecatedFencedFrameMode::kDefault);
-  SimRequest main_resource("https://example.com/", "text/html");
-  LoadURL("https://example.com/");
-  main_resource.Complete(R"HTML(
-    <!DOCTYPE HTML>
-    <body>
-    </body>
-  )HTML");
-
-  // A fenced frame root will should be treated as a main frame but
-  // marked in an embedded frame tree.
-  EXPECT_EQ(FrameScheduler::FrameType::kMainFrame,
-            MainFrame().GetFrame()->GetFrameScheduler()->GetFrameType());
-  EXPECT_TRUE(
-      MainFrame().GetFrame()->GetFrameScheduler()->IsInEmbeddedFrameTree());
 }
 
 }  // namespace blink

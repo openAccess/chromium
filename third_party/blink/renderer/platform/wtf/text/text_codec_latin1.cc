@@ -133,7 +133,7 @@ String TextCodecLatin1::Decode(base::span<const uint8_t> bytes,
       if (IsAlignedToMachineWord(source.data())) {
         while (source.data() < aligned_end) {
           MachineWord chunk =
-              *reinterpret_cast_ptr<const MachineWord*>(source.data());
+              *reinterpret_cast<const MachineWord*>(source.data());
 
           if (!IsAllAscii<LChar>(chunk)) {
             goto useLookupTable;
@@ -191,7 +191,7 @@ upConvertTo16Bit:
       if (IsAlignedToMachineWord(source.data())) {
         while (source.data() < aligned_end) {
           MachineWord chunk =
-              *reinterpret_cast_ptr<const MachineWord*>(source.data());
+              *reinterpret_cast<const MachineWord*>(source.data());
 
           if (!IsAllAscii<LChar>(chunk)) {
             goto useLookupTable16;
@@ -240,7 +240,7 @@ static std::string EncodeComplexWindowsLatin1(
     // the length.
     if (c > 0xffff)
       --target_length;
-    unsigned char b = static_cast<unsigned char>(c);
+    uint8_t b = static_cast<uint8_t>(c);
     // Do an efficient check to detect characters other than 00-7F and A0-FF.
     if (b != c || (c & 0xE0) == 0x80) {
       // Look for a way to encode this with Windows Latin-1.

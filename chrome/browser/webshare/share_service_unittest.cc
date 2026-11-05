@@ -20,6 +20,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/test_renderer_host.h"
 #include "storage/browser/blob/blob_data_builder.h"
 #include "storage/browser/blob/blob_impl.h"
@@ -79,6 +80,12 @@ class ShareServiceUnitTest : public ChromeRenderViewHostTestHarness {
               base::StrCat({"share", base::NumberToString(index), extension})),
           content_type, file_length));
     }
+
+    // Web Share requires transient user activation, which
+    // ShareServiceImpl::Share() consumes on each call. Re-activate before
+    // every share so that repeated calls in a single test still represent
+    // legitimate, separately-gestured shares.
+    content::RenderFrameHostTester::For(main_rfh())->SimulateUserActivation();
 
     ShareError result;
     base::RunLoop run_loop;
@@ -240,6 +247,41 @@ TEST_F(ShareServiceUnitTest, ShareInvalidURLScheme) {
 
 TEST_F(ShareServiceUnitTest, PortableDocumentFormat) {
   EXPECT_EQ(ShareError::OK, ShareGeneratedFileData(".pdf", "application/pdf"));
+}
+
+TEST_F(ShareServiceUnitTest, HiddenWebContentsBlocked) {
+  web_contents()->WasHidden();
+  EXPECT_EQ(ShareError::PERMISSION_DENIED,
+            ShareGeneratedFileData(".txt", "text/plain"));
+
+  web_contents()->WasShown();
+  EXPECT_EQ(ShareError::OK, ShareGeneratedFileData(".txt", "text/plain"));
+}
+
+TEST_F(ShareServiceUnitTest, OccludedWebContentsBlocked) {
+  web_contents()->WasOccluded();
+  EXPECT_EQ(ShareError::PERMISSION_DENIED,
+            ShareGeneratedFileData(".txt", "text/plain"));
+
+  web_contents()->WasShown();
+  EXPECT_EQ(ShareError::OK, ShareGeneratedFileData(".txt", "text/plain"));
+}
+
+TEST_F(ShareServiceUnitTest, WithoutUserActivation) {
+  const std::string kTitle = "Title";
+  const std::string kText = "Text";
+  const GURL kUrl("https://example.com");
+  std::vector<blink::mojom::SharedFilePtr> files;
+  ShareError result;
+  base::RunLoop run_loop;
+  share_service_remote_->Share(
+      kTitle, kText, kUrl, std::move(files),
+      base::BindLambdaForTesting([&result, &run_loop](ShareError error) {
+        result = error;
+        run_loop.Quit();
+      }));
+  run_loop.Run();
+  EXPECT_EQ(result, ShareError::PERMISSION_DENIED);
 }
 
 #if BUILDFLAG(IS_WIN)

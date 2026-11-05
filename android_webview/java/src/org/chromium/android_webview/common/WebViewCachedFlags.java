@@ -124,7 +124,7 @@ public class WebViewCachedFlags {
                             DefaultState.DISABLED),
                     Map.entry(
                             AwFeatures.WEBVIEW_MULTI_PROFILE_SKIP_DEFAULT_PROFILE,
-                            DefaultState.DISABLED),
+                            DefaultState.ENABLED),
                     Map.entry(
                             AwFeatures.WEBVIEW_OPT_IN_TO_GMS_BIND_SERVICE_OPTIMIZATION,
                             DefaultState.DISABLED),
@@ -154,8 +154,12 @@ public class WebViewCachedFlags {
                     Map.entry(
                             AwFeatures.WEBVIEW_COOKIE_MANAGER_SIMPLER_URL_FIXUPS,
                             DefaultState.DISABLED),
+                    Map.entry(
+                            AwFeatures.WEBVIEW_NONEMBEDDED_LOW_ENTROPY_SOURCE_KILL_SWITCH,
+                            DefaultState.DISABLED),
                     Map.entry(AwFeatures.WEBVIEW_CROSS_ORIGIN_ALLOWLIST_API, DefaultState.ENABLED),
-                    Map.entry(AwFeatures.WEBVIEW_INIT_IN_CONSTRUCTOR, DefaultState.DISABLED));
+                    Map.entry(AwFeatures.WEBVIEW_INIT_IN_CONSTRUCTOR, DefaultState.DISABLED),
+                    Map.entry(AwFeatures.WEBVIEW_RELAX_DATA_DIR_LOCKING, DefaultState.DISABLED));
 
     private static final Map<String, String> PARAM_DEFINITIONS = Map.of();
 
@@ -177,7 +181,7 @@ public class WebViewCachedFlags {
      *
      * @param prefs the SharedPreferences which will be cleared during initialization.
      */
-    public static void initForSafeMode(SharedPreferences prefs) {
+    public static void initWithDefaults(SharedPreferences prefs) {
         synchronized (sLock) {
             assert sInstance == null : "Cannot call WebViewCachedFlags.init more than once.";
             initInternal(prefs, true);

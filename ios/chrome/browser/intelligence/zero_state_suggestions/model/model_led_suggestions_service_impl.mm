@@ -6,10 +6,13 @@
 
 #import "base/functional/bind.h"
 #import "components/application_locale_storage/application_locale_storage.h"
-#import "components/optimization_guide/core/model_execution/feature_keys.h"
+#import "components/optimization_guide/core/feature_registry/feature_keys.h"
+#import "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #import "components/optimization_guide/core/optimization_guide_util.h"
 #import "components/optimization_guide/proto/features/zero_state_suggestions.pb.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/default_page_context_wrapper_factory.h"
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper_factory.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -58,8 +61,13 @@ namespace ai {
 
 ModelLedSuggestionsServiceImpl::ModelLedSuggestionsServiceImpl(
     mojo::PendingReceiver<mojom::ModelLedSuggestionsService> receiver,
-    web::WebState* web_state)
-    : receiver_(this, std::move(receiver)) {
+    web::WebState* web_state,
+    PageContextWrapperFactory* page_context_wrapper_factory)
+    : receiver_(this, std::move(receiver)),
+      page_context_wrapper_factory_(
+          page_context_wrapper_factory
+              ? *page_context_wrapper_factory
+              : DefaultPageContextWrapperFactory::GetInstance()) {
   web_state_ = web_state->GetWeakPtr();
   service_ = OptimizationGuideServiceFactory::GetForProfile(
       ProfileIOS::FromBrowserState(web_state->GetBrowserState()));
@@ -104,9 +112,9 @@ void ModelLedSuggestionsServiceImpl::FetchModelLedSuggestions(
                      weak_ptr_factory_.GetWeakPtr(), std::move(request));
 
   // Populate the PageContext proto and then execute the query.
-  page_context_wrapper_ = [[PageContextWrapper alloc]
-        initWithWebState:web_state_.get()
-      completionCallback:std::move(page_context_completion_callback)];
+  page_context_wrapper_ = page_context_wrapper_factory_->Create(
+      web_state_.get(), PageContextWrapperConfigBuilder().Build(),
+      std::move(page_context_completion_callback));
   [page_context_wrapper_ setShouldGetInnerText:YES];
   [page_context_wrapper_ populatePageContextFieldsAsync];
 }
@@ -126,8 +134,10 @@ void ModelLedSuggestionsServiceImpl::OnPageContextGenerated(
   }
 
   request.set_allocated_page_context(response.value().release());
-  request.set_locale(
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get());
+  request.set_locale(GetApplicationContext()
+                         ->GetApplicationLocaleStorage()
+                         ->GetTag()
+                         .tag_string());
 
   optimization_guide::OptimizationGuideModelExecutionResultCallback
       result_callback = base::BindOnce(

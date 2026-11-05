@@ -13,6 +13,7 @@
 #include "base/time/time.h"
 #include "content/browser/media/session/media_session_impl.h"
 #include "content/browser/media/session/mock_media_session_service_impl.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/browser/media_session_player_observer.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_media_session_client.h"
@@ -350,6 +351,9 @@ TEST_F(MediaSessionImplServiceRoutingTest,
   ASSERT_EQ(services_[sub_frame_].get(), ComputeServiceForRouting());
 }
 
+// Ensures that an embedded cross-origin subframe (e.g. an ad or third-party
+// widget) without active playback cannot hijack MediaSession control when the
+// main frame is playing media without registering its own MediaSessionService.
 TEST_F(MediaSessionImplServiceRoutingTest,
        MainFrameProducesAudio_CrossOriginSubFrameHasService_NotRouted) {
   auto* cross_origin_sub_frame = static_cast<TestRenderFrameHost*>(
@@ -369,6 +373,45 @@ TEST_F(MediaSessionImplServiceRoutingTest,
   CreateServiceForFrame(sub_frame_);
 
   EXPECT_EQ(services_[sub_frame_].get(), ComputeServiceForRouting());
+}
+
+// Preserves the use case where a top-level web app manages its own
+// `navigator.mediaSession` action handlers/metadata (e.g. for playlist/queue
+// management) while delegating actual audio playback to an embedded
+// cross-origin player SDK iframe that does not register its own
+// MediaSessionService.
+TEST_F(MediaSessionImplServiceRoutingTest,
+       CrossOriginSubFrameProducesAudio_MainFrameHasService_Routed) {
+  auto* cross_origin_sub_frame = static_cast<TestRenderFrameHost*>(
+      NavigationSimulator::NavigateAndCommitFromDocument(
+          GURL("http://www.cross-origin.com"),
+          main_frame_->AppendChild("cross_origin_sub_frame")));
+
+  StartPlayerForFrame(cross_origin_sub_frame);
+  CreateServiceForFrame(main_frame_);
+
+  EXPECT_EQ(services_[main_frame_].get(), ComputeServiceForRouting());
+}
+
+// Ensures that an unrelated cross-origin sibling iframe cannot hijack
+// MediaSession control when another subframe is playing media without
+// registering its own MediaSessionService.
+TEST_F(
+    MediaSessionImplServiceRoutingTest,
+    CrossOriginSubFrameProducesAudio_CrossOriginSiblingHasService_NotRouted) {
+  auto* cross_origin_sub_frame_1 = static_cast<TestRenderFrameHost*>(
+      NavigationSimulator::NavigateAndCommitFromDocument(
+          GURL("http://www.cross-origin-1.com"),
+          main_frame_->AppendChild("cross_origin_sub_frame_1")));
+  auto* cross_origin_sub_frame_2 = static_cast<TestRenderFrameHost*>(
+      NavigationSimulator::NavigateAndCommitFromDocument(
+          GURL("http://www.cross-origin-2.com"),
+          main_frame_->AppendChild("cross_origin_sub_frame_2")));
+
+  StartPlayerForFrame(cross_origin_sub_frame_1);
+  CreateServiceForFrame(cross_origin_sub_frame_2);
+
+  EXPECT_EQ(nullptr, ComputeServiceForRouting());
 }
 
 TEST_F(MediaSessionImplServiceRoutingTest,
@@ -1506,6 +1549,63 @@ TEST_F(MediaSessionImplServiceRoutingThrottleTest,
 
     observer.WaitForExpectedPosition(expected_position);
   }
+}
+
+TEST_F(MediaSessionImplServiceRoutingTest, InactiveFrameIgnoredForRouting) {
+  CreateServiceForFrame(main_frame_);
+  CreateServiceForFrame(sub_frame_);
+  StartPlayerForFrame(sub_frame_);
+
+  ASSERT_EQ(services_[sub_frame_].get(), ComputeServiceForRouting());
+
+  // Make sub_frame inactive.
+  static_cast<RenderFrameHostImpl*>(sub_frame_.get())
+      ->SetLifecycleState(
+          RenderFrameHostLifecycleStateImpl::kRunningUnloadHandlers);
+  ASSERT_FALSE(sub_frame_->IsActive());
+
+  // sub_frame must not be routed. main_frame (which is active) should be
+  // routed.
+  ASSERT_EQ(services_[main_frame_].get(), ComputeServiceForRouting());
+}
+
+TEST_F(MediaSessionImplServiceRoutingTest, CannotAddPlayerForInactiveFrame) {
+  static_cast<RenderFrameHostImpl*>(sub_frame_.get())
+      ->SetLifecycleState(
+          RenderFrameHostLifecycleStateImpl::kRunningUnloadHandlers);
+  ASSERT_FALSE(sub_frame_->IsActive());
+
+  auto observer = std::make_unique<NiceMock<MockMediaSessionPlayerObserver>>(
+      sub_frame_, MediaAudioVideoState::kAudioOnly,
+      media::MediaContentType::kPersistent);
+  EXPECT_FALSE(GetMediaSession()->AddPlayer(observer.get(), 0));
+}
+
+// Regression test for crbug.com/575048405.
+TEST_F(MediaSessionImplServiceRoutingTest,
+       SubFrameDoesNotExposeOrRouteEnterAutoPictureInPicture) {
+  StartPlayerForFrame(sub_frame_);
+  CreateServiceForFrame(sub_frame_);
+  ASSERT_EQ(services_[sub_frame_].get(), ComputeServiceForRouting());
+
+  media_session::test::MockMediaSessionMojoObserver observer(
+      *GetMediaSession());
+  services_[sub_frame_]->EnableAction(
+      MediaSessionAction::kEnterPictureInPicture);
+  services_[sub_frame_]->FlushForTesting();
+
+  std::set<MediaSessionAction> expected_actions = default_actions();
+  expected_actions.insert(MediaSessionAction::kEnterPictureInPicture);
+  expected_actions.insert(MediaSessionAction::kExitPictureInPicture);
+  EXPECT_EQ(expected_actions, observer.actions());
+  EXPECT_FALSE(observer.actions().contains(
+      MediaSessionAction::kEnterAutoPictureInPicture));
+
+  EXPECT_CALL(*GetClientForFrame(sub_frame_),
+              DidReceiveAction(MediaSessionAction::kEnterPictureInPicture, _))
+      .Times(0);
+  GetMediaSession()->EnterAutoPictureInPicture();
+  services_[sub_frame_]->FlushForTesting();
 }
 
 class MediaSessionImplServiceRoutingFencedFrameTest

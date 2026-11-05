@@ -56,7 +56,7 @@
 #include "components/webapps/browser/web_contents/web_app_url_loader.h"
 #include "components/webapps/common/web_app_id.h"
 #include "components/webapps/isolated_web_apps/error/uma_logging.h"
-#include "components/webapps/isolated_web_apps/public/iwa_runtime_data_provider.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
@@ -374,6 +374,11 @@ void InstallIsolatedWebAppCommand::ProcessInstallInfoResultAndProceed(
             iwa_error = InstallIwaError::kCantValidateManifest;
             web_app_error =
                 webapps::InstallResultCode::kNotValidManifestForWebApp;
+            break;
+          case PrepareInstallInfoJob::Error::kProfileWillBeDestroyed:
+            iwa_error = InstallIwaError::kCantLoadInstallUrl;
+            web_app_error = webapps::InstallResultCode::
+                kCancelledOnWebAppProviderShuttingDown;
             break;
         }
         ReportFailure(iwa_error, web_app_error, failure.message);

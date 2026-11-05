@@ -27,8 +27,9 @@ namespace content {
 
 RTCLoggingDispatcherImpl::RTCLoggingDispatcherImpl(
     RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<blink::mojom::RTCLoggingDispatcher> receiver)
-    : DocumentService(render_frame_host, std::move(receiver)) {}
+    mojo::PendingReceiver<blink::mojom::RTCLoggingDispatcher> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key) {}
 
 RTCLoggingDispatcherImpl::~RTCLoggingDispatcherImpl() = default;
 
@@ -36,10 +37,12 @@ void RTCLoggingDispatcherImpl::Create(
     RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<blink::mojom::RTCLoggingDispatcher> receiver) {
   CHECK(render_frame_host);
-  new RTCLoggingDispatcherImpl(*render_frame_host, std::move(receiver));
+  base::MakeSelfDeleting<RTCLoggingDispatcherImpl>(*render_frame_host,
+                                                   std::move(receiver));
 }
 
 void RTCLoggingDispatcherImpl::StartDiagnosticLogging(
+    const base::Uuid& session_id,
     bool upload,
     const base::flat_map<std::string, std::string>& metadata,
     StartDiagnosticLoggingCallback callback) {
@@ -52,7 +55,7 @@ void RTCLoggingDispatcherImpl::StartDiagnosticLogging(
   // valid input. Validation is also performed by Mojo traits.
 
   GetContentClient()->browser()->StartRtcDiagnosticLogging(
-      render_frame_host(), upload, metadata, std::move(callback));
+      render_frame_host(), session_id, upload, metadata, std::move(callback));
 }
 
 void RTCLoggingDispatcherImpl::FinishDiagnosticLogging(

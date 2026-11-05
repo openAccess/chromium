@@ -335,9 +335,7 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
                     @Override
                     public void onBottomControlsHeightAnimationStarted() {
                         mCurrentlyAnimating = true;
-                        if (getControlsPosition() == ControlsPosition.BOTTOM) {
-                            mModel.set(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG, null);
-                        }
+                        updateOffsetTag(mBrowserControlsOffsetTagsInfo);
                     }
 
                     @Override
@@ -352,16 +350,12 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
                 new ProgressBarObserver() {
                     @Override
                     public void onVisibleProgressUpdated() {
-                        if (ChromeFeatureList.sAndroidAnimatedProgressBarInBrowser.isEnabled()) {
-                            updateProgress();
-                        }
+                        updateProgress();
                     }
 
                     @Override
                     public void onCompositedLayersVisibilityChanged() {
-                        if (ChromeFeatureList.sAndroidAnimatedProgressBarInBrowser.isEnabled()) {
-                            updateProgress();
-                        }
+                        updateProgress();
                     }
                 };
         if (progressBar != null) {
@@ -409,7 +403,15 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
 
     void updateOffsetTag(@Nullable BrowserControlsOffsetTagsInfo offsetTagsInfo) {
         mBrowserControlsOffsetTagsInfo = offsetTagsInfo;
-        if (mCurrentlyAnimating) return;
+        // During a bottom controls height animation, BottomControlsStacker drops the bottom offset
+        // tags and positions bottom layers itself from the renderer's per-frame offsets, which a
+        // bottom-anchored toolbar follows via LEGACY_CONTENT_OFFSET. A top-anchored toolbar isn't
+        // part of that animation and is still moved by viz with the top tag, so keep applying it
+        // (e.g. as soon as an animated swap moves the toolbar to the top).
+        if (mCurrentlyAnimating && getControlsPosition() == ControlsPosition.BOTTOM) {
+            mModel.set(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG, null);
+            return;
+        }
 
         if (offsetTagsInfo == null) {
             mModel.set(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG, null);
@@ -593,7 +595,9 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
         Tab tab = mTabSupplier.get();
         if (mSuppressToolbarSceneLayerSupplier.get()
                 || (tab != null && tab.isNativePage() && tab.isDisplayingBackForwardAnimation())
-                || (ChromeFeatureList.sBrowserControlsHidingToken.isEnabled()
+                || (tab != null
+                        && tab.isTrustedWebActivity()
+                        && ChromeFeatureList.sBrowserControlsHidingToken.isEnabled()
                         && mBrowserControlsVisibilityManager.hasHidingTokens())) {
             // TODO(crbug.com/365818512): Add a screenshot capture test to cover this case.
             mModel.set(TopToolbarOverlayProperties.VISIBLE, false);
@@ -693,6 +697,16 @@ public class TopToolbarOverlayMediator implements ThemeColorObserver {
 
         if (getControlsPosition() == ControlsPosition.BOTTOM) {
             contentOffset = (int) (mBottomToolbarControlsOffsetSupplier.get() + mViewportHeight);
+            // The native ToolbarLayer places the capture at |contentOffset - (captureHeight -
+            // hairlineHeight)|, i.e. it assumes the hairline is the bottom-most part of the
+            // capture, as it is for a top-anchored toolbar. When the toolbar is bottom-anchored
+            // the hairline is captured *above* the toolbar instead, so the toolbar rows would be
+            // drawn one hairline height lower than the Android view (visible as a vertical jump
+            // when switching between the view and the composited layer, e.g. at the start of a
+            // toolbar swipe). Shift the offset up by the hairline height to compensate.
+            // TODO(https://crbug.com/454338286): Remove once positioning no longer relies on
+            // LEGACY_CONTENT_OFFSET.
+            contentOffset -= mBrowserControlsVisibilityManager.getTopControlsHairlineHeight();
             applyContentOffsetToModel(contentOffset);
             return;
         }

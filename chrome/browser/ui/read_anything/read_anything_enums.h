@@ -5,8 +5,6 @@
 #ifndef CHROME_BROWSER_UI_READ_ANYTHING_READ_ANYTHING_ENUMS_H_
 #define CHROME_BROWSER_UI_READ_ANYTHING_READ_ANYTHING_ENUMS_H_
 
-#include <optional>
-
 #include "base/notreached.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/common/read_anything/read_anything.mojom.h"
@@ -22,7 +20,9 @@ enum class ReadAnythingCloseReason {
   kControllerDestroyed = 5,
   kPageChangedSoftNavigation = 6,  // When Single Page Application "soft
                                    // navigation" page change is detected
-  kMaxValue = kPageChangedSoftNavigation,
+  kClosedByPdfTranslation = 7,     // When PDF translation closes Reading Mode
+                                   // that it opened
+  kMaxValue = kClosedByPdfTranslation,
 };
 
 // These values are persisted to logs. Entries should not be renumbered and
@@ -67,6 +67,8 @@ inline SidePanelOpenTrigger ReadAnythingToSidePanelOpenTrigger(
       return SidePanelOpenTrigger::kReadAnythingListenToThisPageContextMenu;
     case ReadAnythingOpenTrigger::kUnknown:
       return SidePanelOpenTrigger::kReadAnythingUnknown;
+    case ReadAnythingOpenTrigger::kPdfTranslation:
+      return SidePanelOpenTrigger::kPdfTranslation;
   }
 }
 
@@ -93,6 +95,8 @@ inline ReadAnythingOpenTrigger SidePanelToReadAnythingOpenTrigger(
       return ReadAnythingOpenTrigger::kKeyboardShortcut;
     case SidePanelOpenTrigger::kReadAnythingListenToThisPageContextMenu:
       return ReadAnythingOpenTrigger::kListenToThisPageContextMenu;
+    case SidePanelOpenTrigger::kPdfTranslation:
+      return ReadAnythingOpenTrigger::kPdfTranslation;
     case SidePanelOpenTrigger::kReadAnythingUnknown:
     case SidePanelOpenTrigger::kSideSearchPageAction:
     case SidePanelOpenTrigger::kNotesInPageContextMenu:
@@ -114,7 +118,6 @@ inline ReadAnythingOpenTrigger SidePanelToReadAnythingOpenTrigger(
 #endif
     case SidePanelOpenTrigger::kGlicOpened:
     case SidePanelOpenTrigger::kContextualTasks:
-    case SidePanelOpenTrigger::kPdfTranslation:
     case SidePanelOpenTrigger::kUnknown:
       return ReadAnythingOpenTrigger::kUnknown;
   }

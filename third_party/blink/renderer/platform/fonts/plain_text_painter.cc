@@ -15,6 +15,7 @@
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_bloberizer.h"
 #include "third_party/blink/renderer/platform/instrumentation/memory_pressure_listener.h"
 #include "third_party/blink/renderer/platform/text/text_run.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
@@ -23,8 +24,8 @@ namespace {
 constexpr base::MemoryConsumerTraits kPlainTextPainterTraits{
     // Shape caches are capped; complex pages up to tens of MBs.
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
-    // Clearing maps requires traversing and dropping nested references.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    // Clearing the maps reads the nested entries being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     // Shape results can be recalculated.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Map clearing is synchronous.
@@ -89,7 +90,7 @@ void PlainTextPainter::DrawWithoutBidi(const TextRun& run,
   const PlainTextNode& node = CreateNode(run, font, /* supports_bidi */ false);
   gfx::PointF point = location;
   for (const auto& item : node.ItemList()) {
-    ShapeResultBloberizer::FillGlyphsNG bloberizer(
+    ShapeResultBloberizer bloberizer = ShapeResultBloberizer::FillGlyphs(
         font.GetFontDescription(), item.Text(), 0, item.Length(),
         item.EnsureView(),
         draw_type == Font::DrawType::kGlyphsOnly
@@ -102,8 +103,8 @@ void PlainTextPainter::DrawWithoutBidi(const TextRun& run,
 
 bool PlainTextPainter::DrawWithBidiReorder(
     const TextRun& run,
-    unsigned from_index,
-    unsigned to_index,
+    wtf_size_t from_index,
+    wtf_size_t to_index,
     const Font& font,
     Font::CustomFontNotReadyAction action,
     cc::PaintCanvas& canvas,
@@ -132,8 +133,8 @@ bool PlainTextPainter::DrawWithBidiReorder(
   const FontDescription& font_desc = font.GetFontDescription();
 
   if (!is_sub_run && !node.ContainsRtlItems()) [[likely]] {
-    STACK_UNINITIALIZED ShapeResultBloberizer::FillGlyphs bloberizer(
-        font_desc, node, blob_type);
+    STACK_UNINITIALIZED ShapeResultBloberizer bloberizer =
+        ShapeResultBloberizer::FillGlyphs(font_desc, node, blob_type);
     DrawTextBlobs(bloberizer.Blobs(), canvas, curr_point, flags);
     return true;
   }
@@ -147,7 +148,8 @@ bool PlainTextPainter::DrawWithBidiReorder(
     CharacterRange range(0, 0, 0, 0);
     if (is_sub_run) [[unlikely]] {
       // Calculate the required indexes for this specific run.
-      subrun_from = std::max(0u, from_index - item.StartOffset());
+      subrun_from =
+          from_index > item.StartOffset() ? from_index - item.StartOffset() : 0;
       subrun_to = std::min(item.Length(), to_index - item.StartOffset());
       TextRun subrun(item.Text(), item.Direction());
       const PlainTextNode& sub_node =
@@ -158,20 +160,20 @@ bool PlainTextPainter::DrawWithBidiReorder(
 
     // STACK_UNINITIALIZED fixes regression with
     // -ftrivial-auto-var-init=pattern. See crbug.com/1055652.
-    STACK_UNINITIALIZED ShapeResultBloberizer::FillGlyphsNG bloberizer(
-        font_desc, item.Text(), subrun_from, subrun_to, item.EnsureView(),
-        blob_type);
+    STACK_UNINITIALIZED ShapeResultBloberizer bloberizer =
+        ShapeResultBloberizer::FillGlyphs(font_desc, item.Text(), subrun_from,
+                                          subrun_to, item.EnsureView(),
+                                          blob_type);
+
+    gfx::PointF draw_pos = curr_point;
     if (is_sub_run) [[unlikely]] {
       // Align the subrun with the point given.
-      curr_point.Offset(-range.start, 0);
-    }
-    DrawTextBlobs(bloberizer.Blobs(), canvas, curr_point, flags);
-
-    if (is_sub_run) [[unlikely]] {
+      draw_pos.Offset(-range.start, 0);
       curr_point.Offset(range.Width(), 0);
     } else {
       curr_point.Offset(bloberizer.Advance(), 0);
     }
+    DrawTextBlobs(bloberizer.Blobs(), canvas, draw_pos, flags);
   }
   return true;
 }
@@ -183,8 +185,8 @@ float PlainTextPainter::ComputeInlineSize(const TextRun& run,
 }
 
 float PlainTextPainter::ComputeSubInlineSize(const TextRun& run,
-                                             unsigned from_index,
-                                             unsigned to_index,
+                                             wtf_size_t from_index,
+                                             wtf_size_t to_index,
                                              const Font& font,
                                              gfx::RectF* glyph_bounds) {
   if (run.length() == 0) {
@@ -199,8 +201,9 @@ float PlainTextPainter::ComputeSubInlineSize(const TextRun& run,
       continue;
     }
     // Calculate the required indexes for this specific run.
-    unsigned run_from = std::max(0u, from_index - start_offset);
-    unsigned run_to = std::min(item.Length(), to_index - start_offset);
+    wtf_size_t run_from =
+        from_index > start_offset ? from_index - start_offset : 0;
+    wtf_size_t run_to = std::min(item.Length(), to_index - start_offset);
     // Measure the subrun.
     StringView sub_text(node.TextContent(), start_offset, item.Length());
     TextRun text_run(sub_text, item.Direction());

@@ -24,6 +24,7 @@
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/site_instance.h"
+#include "content/public/browser/web_contents.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -33,14 +34,12 @@
 
 NavigationMetricsRecorder::NavigationMetricsRecorder(
     content::WebContents* web_contents)
-    : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<NavigationMetricsRecorder>(*web_contents) {
+    : content::WebContentsObserver(web_contents) {
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
   site_engagement_service_ =
       site_engagement::SiteEngagementService::Get(profile);
   cookie_settings_ = CookieSettingsFactory::GetForProfile(profile);
-
 }
 
 NavigationMetricsRecorder::~NavigationMetricsRecorder() = default;
@@ -59,7 +58,7 @@ NavigationMetricsRecorder::GetThirdPartyCookieBlockState(const GURL& url) {
 
 void NavigationMetricsRecorder::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!navigation_handle->HasCommitted() ||
       !navigation_handle->IsInPrimaryMainFrame()) {
     return;
@@ -89,5 +88,3 @@ void NavigationMetricsRecorder::DidFinishNavigation(
         GetThirdPartyCookieBlockState(url));
   }
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(NavigationMetricsRecorder);

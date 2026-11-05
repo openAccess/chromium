@@ -44,7 +44,9 @@ class TestOmniboxPopupViewViews : public OmniboxPopupViewViews {
       : OmniboxPopupViewViews(/*omnibox_view=*/nullptr,
                               controller,
                               /*location_bar_view=*/nullptr),
-        selection_(OmniboxPopupSelection(0, OmniboxPopupSelection::NORMAL)) {}
+        selection_(
+            OmniboxPopupSelection(0,
+                                  OmniboxPopupSelection::LineState::kNormal)) {}
 
   TestOmniboxPopupViewViews(const TestOmniboxPopupViewViews&) = delete;
   TestOmniboxPopupViewViews& operator=(const TestOmniboxPopupViewViews&) =
@@ -273,7 +275,7 @@ TEST_F(OmniboxResultViewTest, AccessibleProperties) {
   // Check accessibility of result.
   std::u16string match_url = u"https://google.com";
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = match_url;
   match.contents_class.emplace_back(0, ACMatchClassification::URL);
   match.destination_url = GURL(match_url);
@@ -284,6 +286,8 @@ TEST_F(OmniboxResultViewTest, AccessibleProperties) {
   result_view()->GetViewAccessibility().GetAccessibleNodeData(
       &result_node_data);
   EXPECT_EQ(result_node_data.role, ax::mojom::Role::kListBoxOption);
+  EXPECT_EQ(result_node_data.GetDefaultActionVerb(),
+            ax::mojom::DefaultActionVerb::kOpen);
   EXPECT_EQ(
       result_node_data.GetIntAttribute(ax::mojom::IntAttribute::kPosInSet),
       int{kTestResultViewIndex} + 1);
@@ -306,14 +310,15 @@ TEST_F(OmniboxResultViewTest, AccessibleProperties) {
 
 TEST_F(OmniboxResultViewTest, StarterPackMatch) {
   AutocompleteMatch match(nullptr, 1350, false,
-                          AutocompleteMatchType::STARTER_PACK);
+                          omnibox::AutocompleteMatchType::kStarterPack);
   result_view()->SetMatch(match);
   // No assertions necessary; just exercising code paths for starter pack match.
 }
 
 TEST_F(OmniboxResultViewTest, FeaturedEnterpriseSearchMatch) {
-  AutocompleteMatch match(nullptr, 1350, false,
-                          AutocompleteMatchType::FEATURED_ENTERPRISE_SEARCH);
+  AutocompleteMatch match(
+      nullptr, 1350, false,
+      omnibox::AutocompleteMatchType::kFeaturedEnterpriseSearch);
   result_view()->SetMatch(match);
   // No assertions necessary; just exercising code paths for featured Enterprise
   // search match.

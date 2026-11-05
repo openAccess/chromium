@@ -31,7 +31,7 @@
 #include "cc/animation/animation_host.h"
 #include "cc/animation/animation_id_provider.h"
 #include "cc/base/features.h"
-#include "cc/input/browser_controls_offset_manager.h"
+#include "cc/input/browser_controls_offset_manager_interface.h"
 #include "cc/input/input_handler.h"
 #include "cc/input/main_thread_scrolling_reason.h"
 #include "cc/input/page_scale_animation.h"
@@ -67,6 +67,7 @@
 #include "cc/test/mock_latency_info_swap_promise_monitor.h"
 #include "cc/test/skia_common.h"
 #include "cc/test/test_layer_tree_frame_sink.h"
+#include "cc/test/test_paint_worklet_input.h"
 #include "cc/test/test_paint_worklet_layer_painter.h"
 #include "cc/test/test_task_graph_runner.h"
 #include "cc/trees/clip_node.h"
@@ -708,7 +709,7 @@ TEST_P(ClientModeLayerTreeHostImplTest,
 }
 
 TEST_P(ClientModeLayerTreeHostImplTest,
-       CommitScheduledOnAnimatedImageAdvanceWithCanvasChildId) {
+       CommitScheduledOnAnimatedImageAdvanceWithCanvasDrawableId) {
   // Invalidation should never run outside the impl frame.
   auto args = viz::CreateBeginFrameArgsForTesting(BEGINFRAME_FROM_HERE, 0, 1,
                                                   base::TimeTicks::Now());
@@ -728,13 +729,13 @@ TEST_P(ClientModeLayerTreeHostImplTest,
       recording_source->CreateRasterSource();
 
   // 2. Setup tree.
-  ElementId canvas_child_id(0x12345);
+  ElementId canvas_drawable_id(0x12345);
   if (!CommitsToActiveTree()) {
     CreatePendingTree();
   }
   FakePictureLayerImpl* sync_layer = SetupRootLayer<FakePictureLayerImpl>(
       host_impl_->sync_tree(), layer_bounds);
-  sync_layer->SetCanvasChildId(canvas_child_id);
+  sync_layer->SetCanvasDrawableId(canvas_drawable_id);
   sync_layer->SetRasterSource(raster_source, Region());
   UpdateDrawProperties(host_impl_->sync_tree());
   FakePictureLayerImpl* active_layer;
@@ -747,7 +748,7 @@ TEST_P(ClientModeLayerTreeHostImplTest,
     UpdateDrawProperties(host_impl_->active_tree());
   }
 
-  EXPECT_EQ(canvas_child_id, active_layer->canvas_child_id());
+  EXPECT_EQ(canvas_drawable_id, active_layer->canvas_drawable_id());
 
   // 3. Make the image visible so it can animate.
   gfx::Rect visible_rect(0, 0, 100, 100);
@@ -782,7 +783,7 @@ TEST_P(ClientModeLayerTreeHostImplTest,
 
   client_host_impl(host_impl_.get())->InvalidateContentOnImplSide();
 
-  // Now it should have advanced, and since it has canvas_child_id, it should
+  // Now it should have advanced, and since it has canvas_drawable_id, it should
   // have scheduled a commit.
   EXPECT_TRUE(did_request_commit_);
 
@@ -867,58 +868,11 @@ TEST_P(ClientModeLayerTreeHostImplTest, NonCompositedScrollUsesRaster) {
 INSTANTIATE_CLIENT_MODE_TREE_TEST_P(ClientModeLayerTreeHostImplTest);
 
 TEST_P(LayerTreeHostImplTestMultiScrollable,
-       ScrollbarFlashAfterAnyScrollUpdate) {
-  LayerTreeSettings settings = DefaultSettings();
-  settings.scrollbar_fade_delay = base::Milliseconds(500);
-  settings.scrollbar_fade_duration = base::Milliseconds(300);
-  settings.scrollbar_animator = LayerTreeSettings::AURA_OVERLAY;
-  settings.scrollbar_flash_after_any_scroll_update = true;
-  settings.scrollbar_flash_once_after_scroll_update = false;
-
-  SetUpLayers(settings);
-
-  EXPECT_EQ(scrollbar_1_->Opacity(), 0);
-  EXPECT_EQ(scrollbar_2_->Opacity(), 0);
-
-  // Scroll on root should flash all scrollbars.
-  GetInputHandler().RootScrollBegin(
-      BeginState(gfx::Point(20, 20), gfx::Vector2dF(0, 10),
-                 ui::ScrollInputType::kWheel)
-          .get(),
-      ui::ScrollInputType::kWheel);
-  GetInputHandler().ScrollUpdate(UpdateState(
-      gfx::Point(20, 20), gfx::Vector2d(0, 10), ui::ScrollInputType::kWheel));
-  GetInputHandler().ScrollEnd(/*should_snap=*/false, std::nullopt);
-
-  EXPECT_TRUE(scrollbar_1_->Opacity());
-  EXPECT_TRUE(scrollbar_2_->Opacity());
-
-  EXPECT_FALSE(animation_task_.is_null());
-  ResetScrollbars();
-
-  // Scroll on child should flash all scrollbars.
-  GetInputHandler().ScrollBegin(
-      BeginState(gfx::Point(70, 70), gfx::Vector2dF(0, 100),
-                 ui::ScrollInputType::kWheel)
-          .get(),
-      ui::ScrollInputType::kWheel);
-  GetInputHandler().ScrollUpdate(
-      AnimatedUpdateState(gfx::Point(70, 70), gfx::Vector2d(0, 100)));
-  GetInputHandler().ScrollEnd(/*should_snap=*/false, std::nullopt);
-
-  EXPECT_TRUE(scrollbar_1_->Opacity());
-  EXPECT_TRUE(scrollbar_2_->Opacity());
-
-  EXPECT_FALSE(animation_task_.is_null());
-}
-
-TEST_P(LayerTreeHostImplTestMultiScrollable,
        ScrollbarFlashOnceAfterAnyScrollUpdate) {
   LayerTreeSettings settings = DefaultSettings();
   settings.scrollbar_fade_delay = base::Milliseconds(500);
   settings.scrollbar_fade_duration = base::Milliseconds(300);
   settings.scrollbar_animator = LayerTreeSettings::AURA_OVERLAY;
-  settings.scrollbar_flash_after_any_scroll_update = false;
   settings.scrollbar_flash_once_after_scroll_update = true;
 
   SetUpLayers(settings);
@@ -980,7 +934,6 @@ TEST_P(LayerTreeHostImplTestMultiScrollable,
   settings.scrollbar_fade_delay = base::Milliseconds(500);
   settings.scrollbar_fade_duration = base::Milliseconds(300);
   settings.scrollbar_animator = LayerTreeSettings::AURA_OVERLAY;
-  settings.scrollbar_flash_after_any_scroll_update = false;
   settings.scrollbar_flash_once_after_scroll_update = false;
   settings.scrollbar_flash_once_visible_on_viewport = true;
 
@@ -1225,21 +1178,24 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
 
   // Hide the browser controls by a bit, the scrollable size should increase but
   // the actual content bounds shouldn't.
-  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25));
+  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25),
+                                                   /*is_inertial=*/false);
   ExpectViewportGeometries(0.5f);
   EXPECT_EQ(gfx::SizeF(50, 75), active_tree->ScrollableSize());
 
   // Fully hide the browser controls.
-  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25));
+  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25),
+                                                   /*is_inertial=*/false);
   ExpectViewportGeometries(0);
   EXPECT_EQ(gfx::SizeF(50, 100), active_tree->ScrollableSize());
 
   // Scrolling additionally shouldn't have any effect.
-  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25));
+  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25),
+                                                   /*is_inertial=*/false);
   ExpectViewportGeometries(0);
   EXPECT_EQ(gfx::SizeF(50, 100), active_tree->ScrollableSize());
 
-  host_impl_->browser_controls_manager()->ScrollEnd();
+  host_impl_->browser_controls_manager()->ScrollEnd(gfx::Vector2dF());
   GetInputHandler().ScrollEnd(/*should_snap=*/false, std::nullopt);
 }
 
@@ -1298,7 +1254,8 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
 
   // Hide the browser controls by a bit, the scrollable size should increase but
   // the actual content bounds shouldn't.
-  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25));
+  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25),
+                                                   /*is_inertial=*/false);
   EXPECT_EQ(0.5f, active_tree->CurrentTopControlsShownRatio());
   EXPECT_EQ(25, host_impl_->browser_controls_manager()->ContentTopOffset());
   EXPECT_EQ(gfx::Vector2dF(0, 25),
@@ -1311,7 +1268,8 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
   EXPECT_EQ(gfx::RectF(0, 0, 180, 180), original_outer_clip->clip);
 
   // Fully hide the browser controls.
-  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25));
+  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25),
+                                                   /*is_inertial=*/false);
   EXPECT_EQ(0, active_tree->CurrentTopControlsShownRatio());
   EXPECT_EQ(0, host_impl_->browser_controls_manager()->ContentTopOffset());
   EXPECT_EQ(gfx::Vector2dF(0, 50),
@@ -1324,7 +1282,8 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
   EXPECT_EQ(gfx::RectF(0, 0, 180, 200), original_outer_clip->clip);
 
   // Scrolling additionally shouldn't have any effect.
-  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25));
+  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25),
+                                                   /*is_inertial=*/false);
   EXPECT_EQ(0, active_tree->CurrentTopControlsShownRatio());
   EXPECT_EQ(0, host_impl_->browser_controls_manager()->ContentTopOffset());
   EXPECT_EQ(gfx::Vector2dF(0, 50),
@@ -1336,7 +1295,7 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
   EXPECT_EQ(gfx::RectF(0, 0, 160, 200), parent_clip->clip);
   EXPECT_EQ(gfx::RectF(0, 0, 180, 200), original_outer_clip->clip);
 
-  host_impl_->browser_controls_manager()->ScrollEnd();
+  host_impl_->browser_controls_manager()->ScrollEnd(gfx::Vector2dF());
   GetInputHandler().ScrollEnd(/*should_snap=*/false, std::nullopt);
 }
 
@@ -1352,8 +1311,8 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
       ScrollSnapType(false, SnapAxis::kY, SnapStrictness::kMandatory),
       gfx::RectF(0, 0, 100, 100), gfx::PointF(0, 900));
   ScrollSnapAlign start = ScrollSnapAlign(SnapAlignment::kStart);
-  container.AddSnapAreaData(
-      SnapAreaData(start, snap_area_1, false, false, ElementId(10)));
+  container.AddSnapAreaData(SnapAreaData(start, snap_area_1, SnapStop::kNormal,
+                                         false, ElementId(10)));
   host_impl_->OuterViewportScrollNode()->snap_container_data.emplace(container);
 
   DrawFrame();
@@ -1495,7 +1454,8 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
   // Hide the browser controls by a bit, the scrollable size should increase but
   // the actual content bounds shouldn't.
   {
-    host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25));
+    host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25),
+                                                     /*is_inertial=*/false);
     ExpectViewportGeometries(0.5f);
     EXPECT_EQ(gfx::SizeF(50, 75), active_tree->ScrollableSize());
     EXPECT_EQ(gfx::Size(50, 15), scrollbar_layer->bounds());
@@ -1505,7 +1465,8 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
 
   // Fully hide the browser controls.
   {
-    host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25));
+    host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25),
+                                                     /*is_inertial=*/false);
     ExpectViewportGeometries(0);
     EXPECT_EQ(gfx::SizeF(50, 100), active_tree->ScrollableSize());
     EXPECT_EQ(gfx::Size(50, 15), scrollbar_layer->bounds());
@@ -1515,7 +1476,8 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
 
   // Additional scrolling shouldn't have any effect.
   {
-    host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25));
+    host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 25),
+                                                     /*is_inertial=*/false);
     ExpectViewportGeometries(0);
     EXPECT_EQ(gfx::SizeF(50, 100), active_tree->ScrollableSize());
     EXPECT_EQ(gfx::Size(50, 15), scrollbar_layer->bounds());
@@ -1523,7 +1485,7 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
               scrollbar_layer->ComputeThumbQuadRect());
   }
 
-  host_impl_->browser_controls_manager()->ScrollEnd();
+  host_impl_->browser_controls_manager()->ScrollEnd(gfx::Vector2dF());
   GetInputHandler().ScrollEnd(/*should_snap=*/false, std::nullopt);
 }
 
@@ -1546,8 +1508,9 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
   // fixed container size delta is (1) non-zero, and (2) fractional, and
   // (3) matches the movement of the browser controls.
   host_impl_->browser_controls_manager()->ScrollBegin();
-  host_impl_->browser_controls_manager()->ScrollBy(top_controls_scroll_delta);
-  host_impl_->browser_controls_manager()->ScrollEnd();
+  host_impl_->browser_controls_manager()->ScrollBy(top_controls_scroll_delta,
+                                                   /*is_inertial=*/false);
+  host_impl_->browser_controls_manager()->ScrollEnd(gfx::Vector2dF());
 
   GetInputHandler().ScrollEnd(/*should_snap=*/false, std::nullopt);
   auto* property_trees = host_impl_->active_tree()->property_trees();
@@ -1668,7 +1631,8 @@ TEST_P(LayerTreeHostImplBrowserControlsTest, FixedContainerDelta) {
   // Scroll down, the browser controls hiding should expand the viewport size so
   // the delta should be equal to the scroll distance.
   host_impl_->browser_controls_manager()->ScrollBegin();
-  host_impl_->browser_controls_manager()->ScrollBy(top_controls_scroll_delta);
+  host_impl_->browser_controls_manager()->ScrollBy(top_controls_scroll_delta,
+                                                   /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(top_controls_height_ - top_controls_scroll_delta.y(),
                   host_impl_->browser_controls_manager()->ContentTopOffset());
 
@@ -1687,9 +1651,12 @@ TEST_P(LayerTreeHostImplBrowserControlsTest, FixedContainerDelta) {
                              ui::ScrollInputType::kTouchscreen)
                 .thread);
   host_impl_->browser_controls_manager()->ScrollBegin();
-  host_impl_->browser_controls_manager()->ScrollBy(top_controls_scroll_delta);
-  host_impl_->browser_controls_manager()->ScrollBy(top_controls_scroll_delta);
-  host_impl_->browser_controls_manager()->ScrollBy(top_controls_scroll_delta);
+  host_impl_->browser_controls_manager()->ScrollBy(top_controls_scroll_delta,
+                                                   /*is_inertial=*/false);
+  host_impl_->browser_controls_manager()->ScrollBy(top_controls_scroll_delta,
+                                                   /*is_inertial=*/false);
+  host_impl_->browser_controls_manager()->ScrollBy(top_controls_scroll_delta,
+                                                   /*is_inertial=*/false);
   EXPECT_EQ(0, host_impl_->browser_controls_manager()->ContentTopOffset());
   EXPECT_VECTOR2DF_EQ(gfx::Vector2dF(0, top_controls_height_),
                       property_trees->outer_viewport_container_bounds_delta());
@@ -1705,13 +1672,14 @@ TEST_P(LayerTreeHostImplBrowserControlsTest, FixedContainerDelta) {
                        ui::ScrollInputType::kTouchscreen)
           .thread);
   host_impl_->browser_controls_manager()->ScrollBegin();
-  host_impl_->browser_controls_manager()->ScrollBy(-top_controls_scroll_delta);
+  host_impl_->browser_controls_manager()->ScrollBy(-top_controls_scroll_delta,
+                                                   /*is_inertial=*/false);
   EXPECT_EQ(top_controls_scroll_delta.y(),
             host_impl_->browser_controls_manager()->ContentTopOffset());
   EXPECT_VECTOR2DF_EQ(
       gfx::Vector2dF(0, top_controls_height_ - top_controls_scroll_delta.y()),
       property_trees->outer_viewport_container_bounds_delta());
-  host_impl_->browser_controls_manager()->ScrollEnd();
+  host_impl_->browser_controls_manager()->ScrollEnd(gfx::Vector2dF());
   GetInputHandler().ScrollEnd(/*should_snap=*/false, std::nullopt);
 }
 
@@ -1984,7 +1952,8 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
   EXPECT_EQ(1, host_impl_->active_tree()->CurrentTopControlsShownRatio());
 
   // forcefully hide the browser controls by 25px
-  host_impl_->browser_controls_manager()->ScrollBy(scroll_delta);
+  host_impl_->browser_controls_manager()->ScrollBy(scroll_delta,
+                                                   /*is_inertial=*/false);
   GetInputHandler().ScrollEnd(/*should_snap=*/false, std::nullopt);
 
   EXPECT_FLOAT_EQ(
@@ -2171,8 +2140,9 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
                 .thread);
 
   host_impl_->browser_controls_manager()->ScrollBegin();
-  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 50));
-  host_impl_->browser_controls_manager()->ScrollEnd();
+  host_impl_->browser_controls_manager()->ScrollBy(gfx::Vector2dF(0, 50),
+                                                   /*is_inertial=*/false);
+  host_impl_->browser_controls_manager()->ScrollEnd(gfx::Vector2dF());
   EXPECT_EQ(0, host_impl_->browser_controls_manager()->ContentTopOffset());
   // Now that browser controls have moved, expect the clip to resize.
   auto* property_trees = host_impl_->active_tree()->property_trees();
@@ -2192,7 +2162,7 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
   float scroll_increment_y = -25;
   host_impl_->browser_controls_manager()->ScrollBegin();
   host_impl_->browser_controls_manager()->ScrollBy(
-      gfx::Vector2dF(0, scroll_increment_y));
+      gfx::Vector2dF(0, scroll_increment_y), /*is_inertial=*/false);
   EXPECT_FLOAT_EQ(-scroll_increment_y,
                   host_impl_->browser_controls_manager()->ContentTopOffset());
   // Now that browser controls have moved, expect the clip to resize.
@@ -2200,8 +2170,8 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
             property_trees->inner_viewport_container_bounds_delta());
 
   host_impl_->browser_controls_manager()->ScrollBy(
-      gfx::Vector2dF(0, scroll_increment_y));
-  host_impl_->browser_controls_manager()->ScrollEnd();
+      gfx::Vector2dF(0, scroll_increment_y), /*is_inertial=*/false);
+  host_impl_->browser_controls_manager()->ScrollEnd(gfx::Vector2dF());
   EXPECT_FLOAT_EQ(-2 * scroll_increment_y,
                   host_impl_->browser_controls_manager()->ContentTopOffset());
   // Now that browser controls have moved, expect the clip to resize.
@@ -3500,6 +3470,111 @@ TEST_P(PendingTreeLayerTreeHostImplTest, CommitWithNoDirtyPaintWorklets) {
   // TODO(496580137): Move this to ClientLayerTreeHostImpl specific tests.
   client_host_impl(host_impl_.get())->CommitComplete();
   EXPECT_TRUE(did_prepare_tiles_);
+}
+
+TEST_P(PendingTreeLayerTreeHostImplTest,
+       CommitPreservesLastAnimatedPaintWorkletValueAfterFinish) {
+  auto painter_owned = std::make_unique<TestPaintWorkletLayerPainter>();
+  TestPaintWorkletLayerPainter* painter = painter_owned.get();
+  host_impl_->SetPaintWorkletLayerPainter(std::move(painter_owned));
+
+  PaintWorkletInput::PropertyKey key(
+      PaintWorkletInput::NativePropertyType::kBackgroundColor, ElementId(1));
+  gfx::Size bounds(100, 100);
+
+  auto create_raster_source_with_input =
+      [&](scoped_refptr<TestPaintWorkletInput> input) {
+        FakeRecordingSource recording_source(bounds);
+        recording_source.add_draw_image(
+            CreatePaintWorkletPaintImage(std::move(input)), gfx::Point(0, 0));
+        recording_source.Rerecord();
+        return FakeRasterSource::CreateFromRecordingSource(recording_source);
+      };
+
+  auto complete_dispatched_worklet_job =
+      [&](scoped_refptr<const PaintWorkletInput> input) {
+        int worklet_id = input->WorkletId();
+        PaintWorkletJob painted_job(worklet_id, input, {});
+        painted_job.SetOutput(PaintRecord());
+        auto painted_job_vector = base::MakeRefCounted<PaintWorkletJobVector>();
+        painted_job_vector->data.push_back(std::move(painted_job));
+        PaintWorkletJobMap painted_job_map;
+        painted_job_map[worklet_id] = std::move(painted_job_vector);
+        std::move(painter->TakeDoneCallback()).Run(std::move(painted_job_map));
+      };
+
+  // 1. Initial commit before any compositor animation tick: no animated value
+  // should be present so the worklet seeds from the main thread value.
+  client_host_impl(host_impl_.get())->CreatePendingTree();
+  auto* root =
+      SetupRootLayer<PictureLayerImpl>(host_impl_->pending_tree(), bounds);
+  root->SetNeedsPushProperties();
+  auto input1 =
+      base::MakeRefCounted<TestPaintWorkletInput>(key, gfx::SizeF(bounds));
+  root->SetRasterSourceForTesting(create_raster_source_with_input(input1));
+  UpdateDrawProperties(host_impl_->pending_tree());
+
+  client_host_impl(host_impl_.get())->CommitComplete();
+  ASSERT_TRUE(painter->HasOngoingDispatch());
+  {
+    const auto& jobs =
+        painter->last_dispatched_jobs().at(input1->WorkletId())->data;
+    ASSERT_EQ(jobs.size(), 1u);
+    EXPECT_TRUE(jobs[0].GetAnimatedPropertyValues().empty());
+  }
+  complete_dispatched_worklet_job(input1);
+  host_impl_->ActivateSyncTree();
+
+  // 2. Compositor animation mutates the property to its finished value (1.0f).
+  auto args = viz::CreateBeginFrameArgsForTesting(
+      BEGINFRAME_FROM_HERE, viz::BeginFrameArgs::kManualSourceId, 1,
+      base::TimeTicks() + base::Milliseconds(1));
+  host_impl_->WillBeginImplFrame(args);
+  host_impl_->OnCustomPropertyMutated(key,
+                                      PaintWorkletInput::PropertyValue(1.0f));
+  client_host_impl(host_impl_.get())->InvalidateContentOnImplSide();
+  host_impl_->DidFinishImplFrame(args);
+  ASSERT_TRUE(painter->HasOngoingDispatch());
+  {
+    const auto& jobs =
+        painter->last_dispatched_jobs().at(input1->WorkletId())->data;
+    ASSERT_EQ(jobs.size(), 1u);
+    ASSERT_TRUE(jobs[0].GetAnimatedPropertyValues().contains(key));
+    ASSERT_TRUE(
+        jobs[0].GetAnimatedPropertyValues().at(key).float_value.has_value());
+    EXPECT_FLOAT_EQ(*jobs[0].GetAnimatedPropertyValues().at(key).float_value,
+                    1.0f);
+  }
+  complete_dispatched_worklet_job(input1);
+  host_impl_->ActivateSyncTree();
+
+  // 3. A subsequent commit provides a new PaintWorkletInput for the same key
+  // while the compositor animation is no longer mutating it (e.g., during
+  // teardown). The previous animated value (1.0f) must be preserved rather than
+  // falling back to an empty value.
+  client_host_impl(host_impl_.get())->CreatePendingTree();
+  auto* pending_root = static_cast<PictureLayerImpl*>(
+      host_impl_->pending_tree()->LayerById(root->id()));
+  auto input2 =
+      base::MakeRefCounted<TestPaintWorkletInput>(key, gfx::SizeF(bounds));
+  pending_root->SetRasterSourceForTesting(
+      create_raster_source_with_input(input2));
+  UpdateDrawProperties(host_impl_->pending_tree());
+
+  client_host_impl(host_impl_.get())->CommitComplete();
+  ASSERT_TRUE(painter->HasOngoingDispatch());
+  {
+    const auto& jobs =
+        painter->last_dispatched_jobs().at(input2->WorkletId())->data;
+    ASSERT_EQ(jobs.size(), 1u);
+    ASSERT_TRUE(jobs[0].GetAnimatedPropertyValues().contains(key));
+    ASSERT_TRUE(
+        jobs[0].GetAnimatedPropertyValues().at(key).float_value.has_value());
+    EXPECT_FLOAT_EQ(*jobs[0].GetAnimatedPropertyValues().at(key).float_value,
+                    1.0f);
+  }
+  complete_dispatched_worklet_job(input2);
+  host_impl_->ActivateSyncTree();
 }
 
 TEST_P(PendingTreeLayerTreeHostImplTest,

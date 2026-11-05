@@ -33,8 +33,9 @@ import org.chromium.url.GURL;
 
 /**
  * Adapts the AwWebContentsDelegate interface to the AwContentsClient interface.
- * This class also serves a secondary function of routing certain callbacks from the content layer
- * to specific listener interfaces.
+ *
+ * <p>This class also serves a secondary function of routing certain callbacks from the content
+ * layer to specific listener interfaces.
  */
 @Lifetime.WebView
 class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
@@ -93,8 +94,8 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     }
 
     /**
-     * Redispatches unhandled media keys. This allows bluetooth headphones with play/pause or
-     * other buttons to function correctly.
+     * Redispatches unhandled media keys. This allows bluetooth headphones with play/pause or other
+     * buttons to function correctly.
      */
     private void handleMediaKey(KeyEvent e) {
         switch (e.getKeyCode()) {
@@ -125,12 +126,14 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
 
     @Override
     public boolean takeFocus(boolean reverse) {
-        int direction =
+        // Try sequential Tab navigation first (standard Android contract for Tab / Shift+Tab):
+        int direction = reverse ? View.FOCUS_BACKWARD : View.FOCUS_FORWARD;
+        if (tryToMoveFocus(direction)) return true;
+        // Fall back to directional spatial navigation if sequential navigation found no candidates:
+        direction =
                 (reverse == (mContainerView.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL))
                         ? View.FOCUS_RIGHT
                         : View.FOCUS_LEFT;
-        if (tryToMoveFocus(direction)) return true;
-        direction = reverse ? View.FOCUS_BACKWARD : View.FOCUS_FORWARD;
         return tryToMoveFocus(direction);
     }
 
@@ -343,10 +346,10 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
     /**
      * Called to show the web contents in fullscreen mode.
      *
-     * <p>If entering fullscreen on a video element the web contents will contain just
-     * the html5 video controls. {@link #enterFullscreenVideo(View)} will be called later
-     * once the ContentVideoView, which contains the hardware accelerated fullscreen video,
-     * is ready to be shown.
+     * <p>If entering fullscreen on a video element the web contents will contain just the html5
+     * video controls. {@link #enterFullscreenVideo(View)} will be called later once the
+     * ContentVideoView, which contains the hardware accelerated fullscreen video, is ready to be
+     * shown.
      */
     private void enterFullscreen() {
         if (mAwContents.isFullScreen()) {
@@ -419,7 +422,7 @@ class AwWebContentsDelegateAdapter extends AwWebContentsDelegate {
         }
 
         /**
-         * @return the display name of a path if it is a content URI and is present in the database
+         * Returns the display name of a path if it is a content URI and is present in the database
          * or an empty string otherwise.
          */
         private String resolveFileName(String filePath) {

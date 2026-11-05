@@ -4,6 +4,8 @@
 
 #include "content/browser/service_worker/payment_handler_support.h"
 
+#include <optional>
+
 #include "base/functional/bind.h"
 #include "base/task/sequenced_task_runner.h"
 #include "content/browser/service_worker/service_worker_context_core.h"
@@ -43,7 +45,7 @@ class ShowPaymentHandlerWindowReplier {
       : callback_(std::move(callback)),
         fallback_(std::move(fallback)),
         response_callback_(std::move(response_callback)) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   }
 
   ShowPaymentHandlerWindowReplier(const ShowPaymentHandlerWindowReplier&) =
@@ -52,9 +54,9 @@ class ShowPaymentHandlerWindowReplier {
       const ShowPaymentHandlerWindowReplier&) = delete;
 
   ~ShowPaymentHandlerWindowReplier() {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
     if (response_callback_) {
-      DCHECK(fallback_);
+      CHECK(fallback_, base::NotFatalUntil::M159);
       base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
           FROM_HERE,
           base::BindOnce(std::move(fallback_), std::move(response_callback_)));
@@ -62,7 +64,7 @@ class ShowPaymentHandlerWindowReplier {
   }
 
   void Run(bool success, int render_process_id, int render_frame_id) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
     std::move(callback_).Run(std::move(response_callback_), success,
                              render_process_id, render_frame_id);
   }
@@ -79,15 +81,17 @@ class ShowPaymentHandlerWindowReplier {
 // static
 void PaymentHandlerSupport::ShowPaymentHandlerWindow(
     const GURL& url,
+    const std::optional<gfx::Size>& preferred_web_contents_size,
     ServiceWorkerContextCore* context,
     ShowPaymentHandlerWindowCallback callback,
     OpenWindowFallback fallback,
     blink::mojom::ServiceWorkerHost::OpenPaymentHandlerWindowCallback
         response_callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(context);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  CHECK(context, base::NotFatalUntil::M159);
   GetContentClient()->browser()->ShowPaymentHandlerWindow(
       context->wrapper()->storage_partition()->browser_context(), url,
+      preferred_web_contents_size,
       base::BindOnce(&ShowPaymentHandlerWindowReplier::Run,
                      std::make_unique<ShowPaymentHandlerWindowReplier>(
                          std::move(callback), std::move(fallback),

@@ -5,11 +5,15 @@
 #ifndef CHROME_TEST_BASE_ANDROID_ANDROID_BROWSER_TEST_H_
 #define CHROME_TEST_BASE_ANDROID_ANDROID_BROWSER_TEST_H_
 
+#include <optional>
+
+#include "base/auto_reset.h"
 #include "base/callback_list.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "content/public/test/browser_test_base.h"
+#include "extensions/buildflags/buildflags.h"
 
 class BrowserWindowInterface;
 class PrefService;
@@ -67,6 +71,8 @@ class AndroidBrowserTest : public content::BrowserTestBase {
 
   // content::BrowserTestBase implementation.
   void SetUp() override;
+  void TearDown() override;
+  void CreatedBrowserMainParts(content::BrowserMainParts* parts) override;
   void PreRunTestOnMainThread() override;
   void PostRunTestOnMainThread() override;
 
@@ -89,15 +95,29 @@ class AndroidBrowserTest : public content::BrowserTestBase {
   // TabModel associated with GetProfile().
   TabListInterface* GetTabListInterface() const;
 
+  // By default, Android browser tests use a TestNetworkConnectionTracker that
+  // reports an online network. Tests that simulate network changes (e.g. with
+  // content::NetworkConnectionChangeSimulator) need the real tracker. Must be
+  // called from the constructor.
+  void set_use_test_network_connection_tracker(bool use) {
+    use_test_network_connection_tracker_ = use;
+  }
+
  private:
   // Temporary user data directory. Used only when a user data directory is not
   // specified in the command line.
   base::ScopedTempDir temp_user_data_dir_;
 
-  base::test::ScopedFeatureList feature_list_;
-
   // Used to set up test factories for each browser context.
   base::CallbackListSubscription create_services_subscription_;
+
+  base::test::ScopedFeatureList scoped_feature_list_;
+
+  bool use_test_network_connection_tracker_ = true;
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  std::optional<base::AutoReset<bool>> allow_unpacked_without_developer_mode_;
+#endif
 };
 
 #endif  // CHROME_TEST_BASE_ANDROID_ANDROID_BROWSER_TEST_H_

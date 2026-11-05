@@ -4,16 +4,12 @@
 
 package org.chromium.chrome.test.util;
 
-import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.action.ViewActions.click;
-import static androidx.test.espresso.contrib.RecyclerViewActions.actionOnItemAtPosition;
-import static androidx.test.espresso.matcher.ViewMatchers.withId;
+import static org.junit.Assert.assertNotNull;
 
 import static org.chromium.base.test.transit.Triggers.noopTo;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
-import android.app.Instrumentation;
 import android.content.Context;
 import android.os.SystemClock;
 import android.text.Editable;
@@ -24,15 +20,13 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 
-import androidx.activity.ComponentActivity;
-import androidx.annotation.Nullable;
-import androidx.test.espresso.UiController;
-import androidx.test.espresso.ViewAction;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
-import org.junit.Assert;
+import org.jni_zero.CalledByNative;
+import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.transit.ConditionStatus;
@@ -42,17 +36,26 @@ import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.KeyUtils;
 import org.chromium.base.ui.KeyboardUtils;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.app.ChromeActivity;
+import org.chromium.chrome.browser.omnibox.LocationBar;
+import org.chromium.chrome.browser.omnibox.LocationBarCoordinator;
 import org.chromium.chrome.browser.omnibox.LocationBarLayout;
+import org.chromium.chrome.browser.omnibox.LocationBarMediator;
 import org.chromium.chrome.browser.omnibox.UrlBar;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteController.OnSuggestionsReceivedListener;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
 import org.chromium.chrome.browser.omnibox.suggestions.DropdownItemViewInfo;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestionsContainer;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestionsDropdown;
-import org.chromium.chrome.browser.omnibox.suggestions.base.ActionChipsProperties;
 import org.chromium.chrome.browser.searchwidget.SearchActivity;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.toolbar.top.ToolbarLayout;
+import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteResult;
 import org.chromium.components.omnibox.AutocompleteStopReason;
@@ -65,6 +68,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 /** Utility methods and classes for testing the Omnibox. */
+@JNINamespace("chrome::android")
 @NullMarked
 public class OmniboxTestUtils {
     /** Value indicating that the index is not valid. */
@@ -74,49 +78,9 @@ public class OmniboxTestUtils {
     private final LocationBarLayout mLocationBar;
     private final AutocompleteCoordinator mAutocomplete;
     private final UrlBar mUrlBar;
-    private final Instrumentation mInstrumentation;
     private final @Nullable ToolbarLayout mToolbar;
-
-    /**
-     * Invokes a specific ViewAction on an {@link
-     * org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxAction} at specific position.
-     *
-     * <p>This class can be chained with {@link
-     * androidx.test.espresso.contrib.RecyclerViewActions.actionOnItemAtPosition}.
-     */
-    private static class ActionOnOmniboxActionAtPosition implements ViewAction {
-        private final ViewAction mAction;
-
-        public ActionOnOmniboxActionAtPosition(int position, ViewAction action) {
-            mAction = actionOnItemAtPosition(position, action);
-        }
-
-        @Override
-        public Matcher<View> getConstraints() {
-            return withId(R.id.omnibox_actions_carousel);
-        }
-
-        @Override
-        public String getDescription() {
-            return mAction.getDescription();
-        }
-
-        @Override
-        public void perform(UiController uiController, View view) {
-            mAction.perform(uiController, view.findViewById(R.id.omnibox_actions_carousel));
-        }
-    }
-
-    /**
-     * Create a ViewAction that can be executed on a Suggestion with Action Chips.
-     *
-     * @param position the index of an {@link
-     *     org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxAction},
-     * @param action the action to perform.
-     */
-    public static ViewAction actionOnOmniboxActionAtPosition(int position, ViewAction action) {
-        return new ActionOnOmniboxActionAtPosition(position, action);
-    }
+    private final LocationBarCoordinator mLocationBarCoordinator;
+    private final LocationBarMediator mLocationBarMediator;
 
     /**
      * Class describing individual suggestion, delivering access to broad range of information.
@@ -152,16 +116,21 @@ public class OmniboxTestUtils {
      */
     public OmniboxTestUtils(Activity activity) {
         mActivity = activity;
-        if (activity instanceof SearchActivity) {
+        if (activity instanceof SearchActivity searchActivity) {
             mLocationBar = mActivity.findViewById(R.id.search_location_bar);
             mToolbar = null;
-        } else {
+            mLocationBarCoordinator = searchActivity.getLocationBarCoordinatorForTesting();
+        } else if (activity instanceof ChromeActivity chromeActivity) {
             mLocationBar = mActivity.findViewById(R.id.location_bar);
             mToolbar = mActivity.findViewById(R.id.toolbar);
+            var toolbarManager = assumeNonNull(chromeActivity.getToolbarManager());
+            mLocationBarCoordinator = (LocationBarCoordinator) toolbarManager.getLocationBar();
+        } else {
+            throw new RuntimeException("OmniboxTestUtils does not support this setup");
         }
         mAutocomplete = assumeNonNull(mLocationBar.getAutocompleteCoordinator());
         mUrlBar = mActivity.findViewById(R.id.url_bar);
-        mInstrumentation = InstrumentationRegistry.getInstrumentation();
+        mLocationBarMediator = mLocationBarCoordinator.getMediatorForTesting();
     }
 
     /** Disables any live autocompletion, making Omnibox behave like a standard text field. */
@@ -220,6 +189,7 @@ public class OmniboxTestUtils {
                     Criteria.checkThat(
                             "Omnibox is focused.", mUrlBar.hasFocus(), Matchers.is(true));
                 });
+        waitAnimationsComplete();
     }
 
     /**
@@ -227,16 +197,10 @@ public class OmniboxTestUtils {
      * Omnibox is already unfocused.
      */
     public void clearFocus() {
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    if (mUrlBar.hasFocus()) {
-                        ((ComponentActivity) mActivity)
-                                .getOnBackPressedDispatcher()
-                                .onBackPressed();
-                    }
-                });
+        ThreadUtils.runOnUiThreadBlocking(mLocationBarMediator::clearUrlBarFocus);
+        waitAnimationsComplete();
         // Needed to complete scrolling the UrlBar to TLD.
-        mInstrumentation.waitForIdleSync();
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         checkFocus(false);
     }
 
@@ -250,6 +214,7 @@ public class OmniboxTestUtils {
         checkFocus(true);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    mAutocomplete.stopAutocompleteForTest(AutocompleteStopReason.INTERACTION);
                     OnSuggestionsReceivedListener listener =
                             mAutocomplete.getSuggestionsReceivedListenerForTest();
                     listener.onSuggestionsReceived(autocompleteResult, true);
@@ -259,6 +224,21 @@ public class OmniboxTestUtils {
     /** Waits for a non-empty list of omnibox suggestions to be shown. */
     public void checkSuggestionsShown() {
         noopTo().waitFor(new SuggestionsShownCondition(mLocationBar));
+    }
+
+    /**
+     * Check that the suggestion at the specified index is selected.
+     *
+     * @param expectedIndex The expected index of the selected suggestion.
+     */
+    public void checkSuggestionSelected(int expectedIndex) {
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            "Selected suggestion index does not match",
+                            mAutocomplete.getSelectedIndex(),
+                            Matchers.equalTo(expectedIndex));
+                });
     }
 
     /**
@@ -297,19 +277,6 @@ public class OmniboxTestUtils {
     public @Nullable <T extends View> SuggestionInfo<T> findSuggestionWithType(
             @OmniboxSuggestionUiType int type) {
         return findSuggestion(info -> info.type == type);
-    }
-
-    /** Return the first suggestion that features Action Chips. */
-    public @Nullable <T extends View> SuggestionInfo<T> findSuggestionWithActionChips() {
-        return findSuggestion(
-                info -> {
-                    if (!info.model
-                            .getAllSetProperties()
-                            .contains(ActionChipsProperties.ACTION_CHIPS)) {
-                        return false;
-                    }
-                    return info.model.get(ActionChipsProperties.ACTION_CHIPS) != null;
-                });
     }
 
     /**
@@ -361,7 +328,9 @@ public class OmniboxTestUtils {
     public void typeText(String text, boolean execute) {
         checkFocus(true);
         ThreadUtils.runOnUiThreadBlocking(
-                () -> KeyUtils.typeTextIntoView(mInstrumentation, mUrlBar, text));
+                () ->
+                        KeyUtils.typeTextIntoView(
+                                InstrumentationRegistry.getInstrumentation(), mUrlBar, text));
 
         if (execute) sendKey(KeyEvent.KEYCODE_ENTER);
     }
@@ -418,7 +387,7 @@ public class OmniboxTestUtils {
     public void typeTextWithLatency(String text, long latencyMs) {
         KeyCharacterMap characterMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
         KeyEvent[] events = characterMap.getEvents(text.toCharArray());
-        Assert.assertNotNull("Failed to map characters to key events", events);
+        assertNotNull("Failed to map characters to key events", events);
         for (KeyEvent event : events) {
             ThreadUtils.runOnUiThreadBlocking(
                     () -> mUrlBar.dispatchKeyEventPreIme(event) || mUrlBar.dispatchKeyEvent(event));
@@ -443,6 +412,7 @@ public class OmniboxTestUtils {
                     mActivity.dispatchKeyEvent(down);
                     mActivity.dispatchKeyEvent(up);
                 });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
     }
 
     /**
@@ -455,9 +425,10 @@ public class OmniboxTestUtils {
         checkFocus(true);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mUrlBar.setText(userText);
-                    // Push this to the model as well.
-                    mUrlBar.setAutocompleteText(userText, "", null, null);
+                    InputConnection conn = mUrlBar.getInputConnection();
+                    assert conn != null;
+                    conn.setComposingRegion(0, mUrlBar.getText().length());
+                    conn.commitText(userText, 1);
                 });
         checkText(Matchers.equalTo(userText), null);
     }
@@ -698,18 +669,40 @@ public class OmniboxTestUtils {
     }
 
     /**
-     * Click the n-th action.
+     * Loads a URL through the Omnibox on the current tab by typing and submitting.
      *
-     * @param suggestionIndex the index of suggestion to click an action on.
-     * @param actionIndex the index of action to invoke.
+     * @param url The URL to load.
      */
-    public void clickOnAction(int suggestionIndex, int actionIndex) {
-        onView(withId(R.id.omnibox_suggestions_dropdown))
-                .perform(
-                        actionOnItemAtPosition(
-                                suggestionIndex,
-                                OmniboxTestUtils.actionOnOmniboxActionAtPosition(
-                                        actionIndex, click())));
+    public void loadUrl(String url) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    if (mActivity instanceof ChromeTabbedActivity cta
+                            && cta.getToolbarManager() != null) {
+                        LocationBar locationBar = cta.getToolbarManager().getLocationBar();
+                        if (locationBar != null && locationBar.getOmniboxStub() != null) {
+                            locationBar.getOmniboxStub().beginInput(new AutocompleteInput());
+                        }
+                    }
+                    mUrlBar.setText(url);
+                    mAutocomplete.loadTypedOmniboxText(
+                            SystemClock.uptimeMillis(),
+                            AutocompleteCoordinator.NavigationTarget.CURRENT_TAB);
+                });
+    }
+
+    /** Loads a URL through the Omnibox on the given TabModel by typing and submitting. */
+    @CalledByNative
+    public static void loadUrlFromOmnibox(
+            TabModel targetModel, @JniType("std::string") String url) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    Tab tab = TabModelUtils.getCurrentTab(targetModel);
+                    assert tab != null;
+                    assert tab.getWindowAndroid() != null;
+                    Activity activity = tab.getWindowAndroid().getActivity().get();
+                    assert activity != null;
+                    new OmniboxTestUtils(activity).loadUrl(url);
+                });
     }
 
     /** Checks that the suggestions dropdown is shown. */

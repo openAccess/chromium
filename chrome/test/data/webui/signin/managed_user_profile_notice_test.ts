@@ -27,7 +27,6 @@ suite('ManagedUserProfileNoticeTest', function() {
     showEnterpriseBadge: false,
     title: 'title',
     subtitle: 'subtitle',
-    proceedLabel: 'proceed_label',
     accountName: 'account_name',
     continueAs: 'continue_as',
     email: 'email@email.com',
@@ -42,10 +41,6 @@ suite('ManagedUserProfileNoticeTest', function() {
     app = document.createElement('managed-user-profile-notice-app');
     document.body.appendChild(app);
     return browserProxy.whenCalled('initialized');
-  });
-
-  teardown(function() {
-    loadTimeData.overrideValues({'showLinkDataCheckbox': false});
   });
 
   /**
@@ -341,7 +336,6 @@ suite('ManagedUserProfileNoticeTest', function() {
       showEnterpriseBadge: true,
       title: 'new_title',
       subtitle: 'new_subtitle',
-      proceedLabel: 'new_proceed_label',
       accountName: 'new_account_name',
       continueAs: 'new_continue_as',
       email: 'new_email@email.com',
@@ -402,7 +396,6 @@ suite('ManagedUserProfileNoticeTest', function() {
       showEnterpriseBadge: true,
       title: 'new_title',
       subtitle: 'new_subtitle',
-      proceedLabel: 'new_proceed_label',
       accountName: 'new_account_name',
       continueAs: 'new_continue_as',
       email: 'new_email@email.com',

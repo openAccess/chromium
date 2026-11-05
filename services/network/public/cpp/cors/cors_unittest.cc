@@ -12,6 +12,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "services/network/public/cpp/features.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -218,6 +219,25 @@ TEST_F(CorsTest, SafelistedHeader) {
   EXPECT_FALSE(IsCorsSafelistedHeader("user-agent", "foo"));
 }
 
+TEST_F(CorsTest, SafelistedInterventionWithFeatureEnabled) {
+  EXPECT_FALSE(IsCorsSafelistedHeader("intervention", "val"));
+  EXPECT_FALSE(IsCorsSafelistedHeader(
+      "Intervention", "<https://example.com>; level=\"warning\""));
+}
+
+TEST_F(CorsTest, SafelistedInterventionWithKillSwitch) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kDisallowInterventionInCorsSafelistedHeaders);
+
+  EXPECT_TRUE(IsCorsSafelistedHeader("intervention", "val"));
+  EXPECT_TRUE(IsCorsSafelistedHeader(
+      "Intervention", "<https://example.com>; level=\"warning\""));
+  // 128-byte length cap still applies.
+  EXPECT_TRUE(IsCorsSafelistedHeader("intervention", std::string(128, 'a')));
+  EXPECT_FALSE(IsCorsSafelistedHeader("intervention", std::string(129, 'a')));
+}
+
 TEST_F(CorsTest, SafelistedResponseHeaderName) {
   // The seven CORS-safelisted response header names, in mixed case to exercise
   // the case-insensitive match.
@@ -387,13 +407,6 @@ TEST_F(CorsTest, SafelistedContentType) {
                                      "application/x-www-form-urlencoded"));
   EXPECT_TRUE(IsCorsSafelistedHeader("content-type", "multipart/form-data"));
 
-  EXPECT_FALSE(IsCorsSafelistedHeader(
-      "content-type", "message/ad-auction-trusted-signals-request"));
-  EXPECT_TRUE(IsCorsSafelistedHeader(
-      "content-type", "message/ad-auction-trusted-signals-request",
-      /*is_ad_auction_trusted_signals_request=*/
-      true));
-
   EXPECT_TRUE(IsCorsSafelistedHeader("content-type", "Text/plain"));
   EXPECT_TRUE(IsCorsSafelistedHeader("content-type", "tEXT/PLAIN"));
   EXPECT_FALSE(IsCorsSafelistedHeader("content-type", "text/html"));
@@ -562,6 +575,27 @@ TEST_F(CorsTest, CorsUnsafeRequestHeaderNames) {
            {"width", std::string(127, '1')},
            {"hogE", "fuga"}}),
       List({"content-type", "hoge"}));
+}
+
+TEST_F(CorsTest, CorsUnsafeRequestHeaderNamesInterventionWithFeatureEnabled) {
+  EXPECT_THAT(
+      CorsUnsafeRequestHeaderNames(
+          {{"Intervention", "<https://example.com>; level=\"warning\""}}),
+      testing::ElementsAre("intervention"));
+}
+
+TEST_F(CorsTest, CorsUnsafeRequestHeaderNamesInterventionWithKillSwitch) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kDisallowInterventionInCorsSafelistedHeaders);
+
+  EXPECT_THAT(
+      CorsUnsafeRequestHeaderNames(
+          {{"Intervention", "<https://example.com>; level=\"warning\""}}),
+      testing::IsEmpty());
+  EXPECT_THAT(
+      CorsUnsafeRequestHeaderNames({{"Intervention", std::string(129, 'a')}}),
+      testing::ElementsAre("intervention"));
 }
 
 TEST_F(CorsTest, CheckCorsRangeSafelist) {

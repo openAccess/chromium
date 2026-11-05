@@ -16,18 +16,21 @@
 #include "build/build_config.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_ui_util.h"
-#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/profiles/profile_colors_util.h"
 #include "chrome/browser/ui/profiles/profile_view_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "chrome/browser/ui/views/profiles/avatar_badge_view.h"
+#include "chrome/grit/generated_resources.h"
 #include "components/supervised_user/core/browser/family_link_user_capabilities.h"
+#include "components/user_education/common/new_badge/new_badge_controller.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -193,7 +196,7 @@ class AvatarImageView : public views::ImageView {
   // views::ImageView:
   void OnThemeChanged() override {
     ImageView::OnThemeChanged();
-    DCHECK(!avatar_image_.IsEmpty());
+    CHECK(!avatar_image_.IsEmpty(), base::NotFatalUntil::M162);
     ui::ColorProvider* color_provider = GetColorProvider();
     CHECK(color_provider);
 
@@ -274,12 +277,12 @@ class MenuButtonRowView : public HoverButton {
                     std::unique_ptr<views::View> icon_view,
                     const std::u16string& title_text,
                     int icon_offset,
-                    std::unique_ptr<views::View> badge_view = nullptr)
+                    user_education::DisplayNewBadge display_new_badge = {})
       : HoverButton(std::move(callback), [&]() {
           HoverButton::Params params;
           params.icon_view = std::move(icon_view);
           params.title = title_text;
-          params.secondary_view = std::move(badge_view);
+          params.display_new_badge = display_new_badge;
           params.add_vertical_label_spacing = false;
           params.icon_vertical_offset = -icon_offset;
           params.icon_label_spacing -= icon_offset;
@@ -292,16 +295,6 @@ class MenuButtonRowView : public HoverButton {
     views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::OFF);
     title()->SetEnabledColor(ui::kColorMenuItemForeground);
     title()->SetBackgroundColor(kColorProfileMenuBackground);
-
-    if (secondary_view()) {
-      const gfx::Insets* margin =
-          secondary_view()->GetProperty(views::kMarginsKey);
-      if (margin) {
-        secondary_view()->SetProperty(
-            views::kMarginsKey,
-            gfx::Insets::TLBR(0, margin->left(), 0, margin->right()));
-      }
-    }
   }
   ~MenuButtonRowView() override = default;
 
@@ -343,35 +336,20 @@ class MenuButtonRowView : public HoverButton {
 BEGIN_METADATA(MenuButtonRowView)
 END_METADATA
 
-class ProfileMenuNewBadge : public views::View {
-  METADATA_HEADER(ProfileMenuNewBadge, views::View)
-
- public:
-  ProfileMenuNewBadge() {
-    SetLayoutManager(std::make_unique<views::FillLayout>());
-    auto* label = AddChildView(std::make_unique<views::Label>(
-        l10n_util::GetStringUTF16(IDS_NEW_BADGE), views::style::CONTEXT_LABEL,
-        views::style::STYLE_SECONDARY));
-
-    // Use a smaller, lighter font for the badge to match standard app menu
-    // styling.
-    label->SetFontList(label->font_list().Derive(-1, gfx::Font::NORMAL,
-                                                 gfx::Font::Weight::MEDIUM));
-    label->SetLineHeight(label->font_list().GetHeight());
-    label->SetEnabledColor(ui::kColorBadgeForeground);
-    label->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 4)));
-
-    SetBackground(views::CreateRoundedRectBackground(
-        ui::kColorBadgeBackground,
-        views::LayoutProvider::Get()->GetCornerRadiusMetric(
-            views::ShapeContextTokens::kBadgeRadius)));
-  }
-};
-
-BEGIN_METADATA(ProfileMenuNewBadge)
-END_METADATA
-
 }  // namespace
+
+std::u16string ProfileMenuViewBase::GetProfileIdentifier(
+    const ProfileAttributesEntry& entry) {
+  switch (entry.GetNameForm()) {
+    case NameForm::kGaiaName:
+    case NameForm::kLocalName:
+      return entry.GetName();
+    case NameForm::kGaiaAndLocalName:
+      return l10n_util::GetStringFUTF16(
+          IDS_PROFILE_MENU_PROFILE_IDENTIFIER_WITH_SEPARATOR,
+          entry.GetGAIANameToDisplay(), entry.GetLocalProfileName());
+  }
+}
 
 ui::ImageModel ProfileMenuViewBase::GetCircularSizedImage(
     const ui::ImageModel& image_model,
@@ -445,7 +423,7 @@ ProfileMenuViewBase::ProfileMenuViewBase(views::BubbleAnchor anchor_element,
       close_bubble_helper_(this, browser->GetTabStripModel()) {
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   set_margins(gfx::Insets(0));
-  DCHECK(!anchor_element.IsNull());
+  CHECK(!anchor_element.IsNull(), base::NotFatalUntil::M162);
 
   if (ui::TrackedElement* tracked_element = anchor_element.GetIfElement();
       tracked_element && tracked_element->IsA<views::TrackedElementViews>()) {
@@ -681,31 +659,24 @@ void ProfileMenuViewBase::SetProfileIdentityWithCallToAction(
           .Build());
 }
 
-void ProfileMenuViewBase::AddFeatureButton(const std::u16string& text,
-                                           base::RepeatingClosure action,
-                                           const gfx::VectorIcon& icon,
-                                           float icon_to_image_ratio,
-                                           bool is_new) {
+void ProfileMenuViewBase::AddFeatureButton(
+    const std::u16string& text,
+    base::RepeatingClosure action,
+    const gfx::VectorIcon& icon,
+    float icon_to_image_ratio,
+    user_education::DisplayNewBadge display_new_badge) {
   // Initialize layout if this is the first time a button is added.
   if (!features_container_->GetLayoutManager()) {
     features_container_->SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical));
   }
 
-  std::unique_ptr<views::View> secondary_view;
-  if (is_new) {
-    secondary_view = std::make_unique<ProfileMenuNewBadge>();
-  }
-
+  // `HoverButton` renders the "New" badge and appends its screen reader
+  // description to the accessible name.
   std::unique_ptr<HoverButton> button = CreateMenuRowButton(
       std::move(action),
       std::make_unique<FeatureButtonIconView>(icon, icon_to_image_ratio), text,
-      /*icon_offset=*/0, std::move(secondary_view));
-
-  if (is_new) {
-    button->AddExtraAccessibleText(
-        l10n_util::GetStringUTF16(IDS_NEW_BADGE_SCREEN_READER_MESSAGE));
-  }
+      /*icon_offset=*/0, display_new_badge);
 
   features_container_->AddChildView(std::move(button));
 }
@@ -760,7 +731,7 @@ void ProfileMenuViewBase::AddAvailableProfile(
         profile_mgmt_heading_, ax::mojom::NameFrom::kAttribute);
   }
 
-  DCHECK(!image_model.IsEmpty());
+  CHECK(!image_model.IsEmpty(), base::NotFatalUntil::M162);
   const int icon_offset =
       (image_model.Size().width() - kOtherProfileImageSize) / 2;
 
@@ -934,7 +905,7 @@ bool ProfileMenuViewBase::HandleContextMenu(
 }
 
 void ProfileMenuViewBase::ButtonPressed(base::RepeatingClosure action) {
-  DCHECK(action);
+  CHECK(action, base::NotFatalUntil::M162);
   signin_ui_util::RecordProfileMenuClick(profile());
   action.Run();
 }
@@ -948,12 +919,12 @@ std::unique_ptr<HoverButton> ProfileMenuViewBase::CreateMenuRowButton(
     std::unique_ptr<views::View> icon_view,
     const std::u16string& text,
     int icon_offset,
-    std::unique_ptr<views::View> badge_view) {
+    user_education::DisplayNewBadge display_new_badge) {
   CHECK(icon_view);
   return std::make_unique<MenuButtonRowView>(
       base::BindRepeating(&ProfileMenuViewBase::ButtonPressed,
                           base::Unretained(this), std::move(action)),
-      std::move(icon_view), text, icon_offset, std::move(badge_view));
+      std::move(icon_view), text, icon_offset, display_new_badge);
 }
 
 BEGIN_METADATA(ProfileMenuViewBase)

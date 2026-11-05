@@ -18,6 +18,7 @@
 #include "components/contextual_search/contextual_search_types.h"
 #include "components/contextual_search/pref_names.h"
 #include "components/lens/contextual_input.h"
+#include "components/omnibox/common/input_state.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_buildflags.h"
@@ -132,6 +133,10 @@ void MaybePopulateDriveInputTypeRule(omnibox::SearchboxConfig* config) {
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 }
 
+// AI Mode URL params; never sent together (see `GetAdditionalQueryParams()`).
+constexpr char kUdmParamKey[] = "udm";
+constexpr char kNemParamKey[] = "nem";
+
 std::optional<omnibox::ModelMode> GetActiveModelFromUrl(
     const GURL& active_url,
     const std::vector<omnibox::ModelConfig>& model_configs,
@@ -184,6 +189,9 @@ std::optional<omnibox::ToolMode> GetActiveToolFromUrl(
 
   std::optional<omnibox::ToolMode> best_tool = std::nullopt;
   size_t max_matched_params = 0;
+  // `GetAdditionalQueryParams()` drops a tool's `udm` when a model sets `nem`.
+  const bool url_has_nem =
+      net::GetValueForKeyInQuery(active_url, kNemParamKey, nullptr);
 
   for (const auto& tool_config : tool_configs) {
     if (!std::ranges::contains(allowed_tools, tool_config.tool())) {
@@ -195,6 +203,12 @@ std::optional<omnibox::ToolMode> GetActiveToolFromUrl(
     bool all_params_match = true;
     size_t matched_count = tool_config.aim_url_params().size();
     for (const auto& url_param : tool_config.aim_url_params()) {
+      // `nem` replaces `udm` in the URL, so don't require `udm` unless it's
+      // the tool's only param.
+      if (url_has_nem && url_param.param_key() == kUdmParamKey &&
+          matched_count > 1) {
+        continue;
+      }
       std::string value;
       bool found =
           net::GetValueForKeyInQuery(active_url, url_param.param_key(), &value);
@@ -234,6 +248,20 @@ std::optional<std::string> GetThreadId(const GURL& url) {
   return std::nullopt;
 }
 
+// Returns the number of uploaded context tokens without a `FileInfo` yet.
+// These are tab context fetches still in flight or delayed tab snapshots, and
+// count as browser tab inputs so rules are evaluated before the fetch
+// completes.
+size_t GetPendingTabContextCount(
+    const ContextualSearchSessionHandle& session_handle,
+    size_t num_uploaded_files) {
+  const size_t num_uploaded_tokens =
+      session_handle.GetUploadedContextTokens().size();
+  return num_uploaded_tokens > num_uploaded_files
+             ? num_uploaded_tokens - num_uploaded_files
+             : 0;
+}
+
 }  // namespace
 
 InputStateModel::InputStateModel(
@@ -249,75 +277,10 @@ InputStateModel::InputStateModel(
       browser_identity_matches_aim_identity_(
           browser_identity_matches_aim_identity),
       current_url_(active_url) {
-  // Track whether the model was constructed with a valid, non-empty searchbox
-  // configuration. Models created with an empty config can be invalidated once
-  // a populated config becomes available.
-  has_valid_config_ = config.has_rule_set();
-
-  SearchboxConfig mutable_config = config;
-  MaybePopulateBrowserTabInputTypeRule(&mutable_config);
-  MaybePopulateDriveInputTypeRule(&mutable_config);
-
-  if (mutable_config.has_rule_set()) {
-    rule_set_ = mutable_config.rule_set();
-
-    // Initialize allowed tools, models, inputs in `state_`.
-    state_.allowed_tools.reserve(mutable_config.tool_configs().size());
-    for (const auto& tool_config : mutable_config.tool_configs()) {
-      if (tool_config.hide_from_menu()) {
-        continue;
-      }
-      if (tool_config.tool() == omnibox::ToolMode::TOOL_MODE_IMAGE_GEN_UPLOAD) {
-        continue;
-      }
-      if (is_off_the_record_ &&
-          tool_config.tool() == omnibox::ToolMode::TOOL_MODE_IMAGE_GEN) {
-        continue;
-      }
-      state_.allowed_tools.push_back(tool_config.tool());
-    }
-    state_.allowed_models.reserve(mutable_config.model_configs().size());
-    for (const auto& model_config : mutable_config.model_configs()) {
-      state_.allowed_models.push_back(model_config.model());
-    }
-    configured_input_types_.reserve(mutable_config.input_type_configs().size());
-    for (const auto& input_type_config : mutable_config.input_type_configs()) {
-      if (input_type_config.has_input_type()) {
-        configured_input_types_.push_back(input_type_config.input_type());
-      }
-    }
-    state_.tool_configs.reserve(mutable_config.tool_configs_size());
-    for (const auto& tool_config : mutable_config.tool_configs()) {
-      state_.tool_configs.push_back(tool_config);
-    }
-    state_.model_configs.reserve(mutable_config.model_configs_size());
-    for (const auto& model_config : mutable_config.model_configs()) {
-      state_.model_configs.push_back(model_config);
-    }
-    state_.input_type_configs.reserve(mutable_config.input_type_configs_size());
-    for (const auto& input_type_config : mutable_config.input_type_configs()) {
-      state_.input_type_configs.push_back(input_type_config);
-    }
-    if (mutable_config.has_tools_section_config()) {
-      state_.tools_section_config = mutable_config.tools_section_config();
-    }
-    if (mutable_config.has_model_section_config()) {
-      state_.model_section_config = mutable_config.model_section_config();
-    }
-    if (mutable_config.has_hint_text()) {
-      state_.hint_text = mutable_config.hint_text();
-    }
-    if (rule_set_.has_max_total_inputs()) {
-      state_.max_total_inputs = rule_set_.max_total_inputs();
-    }
-    for (const auto& rule : rule_set_.input_type_rules()) {
-      if (rule.has_input_type() && rule.has_max_instance()) {
-        state_.max_inputs_by_type[rule.input_type()] = rule.max_instance();
-      }
-    }
+  if (session_handle_) {
+    session_handle_->set_current_url(current_url_);
   }
-
-
+  PopulateConfig(config);
 
   state_.active_tool = omnibox::ToolMode::TOOL_MODE_UNSPECIFIED;
   state_.is_canvas_query_submitted = false;
@@ -329,7 +292,7 @@ InputStateModel::InputStateModel(
       state_.is_canvas_query_submitted = true;
     }
   }
-  // the initial model should be the first allowed model, but can be
+  // The initial model should be the first allowed model, but can be
   // overridden by parameters in the active web contents URL.
   state_.active_model = state_.GetDefaultModel();
 
@@ -341,7 +304,113 @@ InputStateModel::InputStateModel(
 
   state_.image_gen_upload_active = false;
 
-  updateDisabledState();
+  UpdateDisabledState();
+}
+
+void InputStateModel::PopulateConfig(const SearchboxConfig& config) {
+  has_valid_config_ = IsConfigPopulated(&config);
+  serialized_config_ = config.SerializeAsString();
+
+  SearchboxConfig mutable_config = config;
+  MaybePopulateBrowserTabInputTypeRule(&mutable_config);
+  MaybePopulateDriveInputTypeRule(&mutable_config);
+
+  if (mutable_config.has_rule_set()) {
+    rule_set_ = mutable_config.rule_set();
+
+    state_.allowed_tools = GetAllowedTools(mutable_config, is_off_the_record_);
+    state_.allowed_models.clear();
+    state_.allowed_models.reserve(mutable_config.model_configs().size());
+    for (const auto& model_config : mutable_config.model_configs()) {
+      state_.allowed_models.push_back(model_config.model());
+    }
+    configured_input_types_.clear();
+    configured_input_types_.reserve(mutable_config.input_type_configs().size());
+    for (const auto& input_type_config : mutable_config.input_type_configs()) {
+      if (input_type_config.has_input_type()) {
+        configured_input_types_.push_back(input_type_config.input_type());
+      }
+    }
+    state_.tool_configs.clear();
+    state_.tool_configs.reserve(mutable_config.tool_configs_size());
+    for (const auto& tool_config : mutable_config.tool_configs()) {
+      state_.tool_configs.push_back(tool_config);
+    }
+    state_.model_configs.clear();
+    state_.model_configs.reserve(mutable_config.model_configs_size());
+    for (const auto& model_config : mutable_config.model_configs()) {
+      state_.model_configs.push_back(model_config);
+    }
+    state_.input_type_configs.clear();
+    state_.input_type_configs.reserve(mutable_config.input_type_configs_size());
+    for (const auto& input_type_config : mutable_config.input_type_configs()) {
+      state_.input_type_configs.push_back(input_type_config);
+    }
+    if (mutable_config.has_tools_section_config()) {
+      state_.tools_section_config = mutable_config.tools_section_config();
+    } else {
+      state_.tools_section_config.reset();
+    }
+    if (mutable_config.has_model_section_config()) {
+      state_.model_section_config = mutable_config.model_section_config();
+    } else {
+      state_.model_section_config.reset();
+    }
+    if (mutable_config.has_hint_text()) {
+      state_.hint_text = mutable_config.hint_text();
+    } else {
+      state_.hint_text.clear();
+    }
+    state_.max_inputs_by_type.clear();
+    for (const auto& rule : rule_set_.input_type_rules()) {
+      if (rule.has_input_type() && rule.has_max_instance()) {
+        state_.max_inputs_by_type[rule.input_type()] = rule.max_instance();
+      }
+    }
+  }
+}
+
+void InputStateModel::SetIdentityState(
+    bool is_signed_in,
+    bool browser_identity_matches_aim_identity) {
+  if (is_signed_in_ == is_signed_in &&
+      browser_identity_matches_aim_identity_ ==
+          browser_identity_matches_aim_identity) {
+    return;
+  }
+  is_signed_in_ = is_signed_in;
+  browser_identity_matches_aim_identity_ =
+      browser_identity_matches_aim_identity;
+
+  RebuildAllowedInputTypes();
+  UpdateDisabledState();
+  NotifySubscribers();
+}
+
+bool InputStateModel::UpdateConfig(const SearchboxConfig& config) {
+  if (!IsConfigPopulated(&config)) {
+    return false;
+  }
+  std::string serialized = config.SerializeAsString();
+  if (has_valid_config_ && serialized == serialized_config_) {
+    return false;
+  }
+
+  PopulateConfig(config);
+
+  if (!std::ranges::contains(state_.allowed_models, state_.active_model)) {
+    state_.active_model = state_.GetDefaultModel();
+  }
+  if (state_.active_tool != omnibox::ToolMode::TOOL_MODE_UNSPECIFIED &&
+      !std::ranges::contains(state_.allowed_tools, state_.active_tool)) {
+    state_.active_tool = omnibox::ToolMode::TOOL_MODE_UNSPECIFIED;
+  }
+
+  UpdateDisabledState();
+  RebuildAllowedInputTypes();
+
+  subscribers_.Notify(state_);
+  return true;
 }
 
 InputStateModel::InputStateModel(
@@ -353,8 +422,12 @@ InputStateModel::InputStateModel(
       browser_identity_matches_aim_identity_(
           new_input_state_model.browser_identity_matches_aim_identity_),
       current_url_(new_input_state_model.current_url_) {
+  if (session_handle_) {
+    session_handle_->set_current_url(current_url_);
+  }
   state_ = new_input_state_model.state_;
   rule_set_ = new_input_state_model.rule_set_;
+  serialized_config_ = new_input_state_model.serialized_config_;
   configured_input_types_ = new_input_state_model.configured_input_types_;
   has_valid_config_ = new_input_state_model.has_valid_config_;
   is_smart_tab_sharing_active_ =
@@ -368,9 +441,40 @@ InputStateModel::InputStateModel(
   }
   user_modified_tool_in_thread_ =
       new_input_state_model.user_modified_tool_in_thread_;
+  lens_crop_ = new_input_state_model.lens_crop_;
 }
 
 InputStateModel::~InputStateModel() = default;
+
+// static
+bool InputStateModel::IsConfigPopulated(
+    const omnibox::SearchboxConfig* config) {
+  return config && (config->has_rule_set() || !config->tool_configs().empty() ||
+                    !config->model_configs().empty() ||
+                    !config->input_type_configs().empty());
+}
+
+// static
+std::vector<ToolMode> InputStateModel::GetAllowedTools(
+    const omnibox::SearchboxConfig& config,
+    bool is_off_the_record) {
+  std::vector<ToolMode> allowed_tools;
+  allowed_tools.reserve(config.tool_configs().size());
+  for (const auto& tool_config : config.tool_configs()) {
+    if (tool_config.hide_from_menu()) {
+      continue;
+    }
+    if (tool_config.tool() == omnibox::ToolMode::TOOL_MODE_IMAGE_GEN_UPLOAD) {
+      continue;
+    }
+    if (is_off_the_record &&
+        tool_config.tool() == omnibox::ToolMode::TOOL_MODE_IMAGE_GEN) {
+      continue;
+    }
+    allowed_tools.push_back(tool_config.tool());
+  }
+  return allowed_tools;
+}
 
 // static
 std::vector<omnibox::InputType> InputStateModel::GetCurrentInputTypes(
@@ -380,7 +484,9 @@ std::vector<omnibox::InputType> InputStateModel::GetCurrentInputTypes(
     return input_types;
   }
   const auto& uploaded_files = session_handle->GetUploadedContextFileInfos();
-  input_types.reserve(uploaded_files.size());
+  const size_t num_pending_tabs =
+      GetPendingTabContextCount(*session_handle, uploaded_files.size());
+  input_types.reserve(uploaded_files.size() + num_pending_tabs);
   for (const auto& file_info : uploaded_files) {
     if (file_info.tab_url) {
       input_types.push_back(omnibox::InputType::INPUT_TYPE_BROWSER_TAB);
@@ -402,11 +508,13 @@ std::vector<omnibox::InputType> InputStateModel::GetCurrentInputTypes(
         break;
     }
   }
+  input_types.insert(input_types.end(), num_pending_tabs,
+                     omnibox::InputType::INPUT_TYPE_BROWSER_TAB);
   return input_types;
 }
 
 void InputStateModel::Initialize() {
-  notifySubscribers();
+  NotifySubscribers();
 }
 
 void InputStateModel::SetSmartTabSharingActive(bool active) {
@@ -414,8 +522,8 @@ void InputStateModel::SetSmartTabSharingActive(bool active) {
     return;
   }
   is_smart_tab_sharing_active_ = active;
-  updateDisabledState();
-  notifySubscribers();
+  UpdateDisabledState();
+  NotifySubscribers();
 }
 
 std::vector<omnibox::InputType> InputStateModel::GetEffectiveInputTypes()
@@ -462,7 +570,7 @@ void InputStateModel::SetPrefService(PrefService* pref_service) {
                             base::Unretained(this)));
     OnPrefChanged();
   } else {
-    updateDisabledState();
+    UpdateDisabledState();
   }
 }
 
@@ -471,30 +579,30 @@ void InputStateModel::OnPrefChanged() {
     return;
   }
 
-  updateDisabledState();
-  notifySubscribers();
+  UpdateDisabledState();
+  NotifySubscribers();
 }
 
-base::CallbackListSubscription InputStateModel::subscribe(Subscriber callback) {
+base::CallbackListSubscription InputStateModel::Subscribe(Subscriber callback) {
   return subscribers_.Add(std::move(callback));
 }
 
-void InputStateModel::notifySubscribers() {
+void InputStateModel::NotifySubscribers() {
   subscribers_.Notify(state_);
 }
 
-void InputStateModel::setActiveTool(ToolMode tool) {
+void InputStateModel::SetActiveTool(ToolMode tool) {
   if (tool != state_.active_tool) {
     user_modified_tool_in_thread_ = true;
   }
   if (tool == omnibox::ToolMode::TOOL_MODE_UNSPECIFIED) {
     state_.is_canvas_query_submitted = false;
   }
-  updateSelectedState(tool, state_.active_model);
+  UpdateSelectedState(tool, state_.active_model);
 }
 
-void InputStateModel::setActiveModel(ModelMode model) {
-  updateSelectedState(state_.active_tool, model);
+void InputStateModel::SetActiveModel(ModelMode model) {
+  UpdateSelectedState(state_.active_tool, model);
 }
 
 void InputStateModel::UpdateStateFromUrl(const GURL& url) {
@@ -507,6 +615,9 @@ void InputStateModel::UpdateStateFromUrl(const GURL& url) {
   bool thread_changed = prev_thread_id != new_thread_id;
 
   current_url_ = url;
+  if (session_handle_) {
+    session_handle_->set_current_url(url);
+  }
   // If thread changes, be prepared to listen to any subsequent URL changes that
   // could include changes in the tool param (due to thread change).
   if (thread_changed) {
@@ -533,13 +644,13 @@ void InputStateModel::UpdateStateFromUrl(const GURL& url) {
 
   if (thread_changed || new_model != state_.active_model ||
       new_tool != state_.active_tool) {
-    updateSelectedState(new_tool, new_model);
+    UpdateSelectedState(new_tool, new_model);
   }
 }
 
 void InputStateModel::OnContextChanged() {
   // Update the disabled state based on the new inputs uploaded.
-  updateDisabledState();
+  UpdateDisabledState();
 
   if (state_.active_tool == omnibox::ToolMode::TOOL_MODE_IMAGE_GEN) {
     const auto current_inputs = GetCurrentInputTypes(session_handle_.get());
@@ -553,37 +664,41 @@ void InputStateModel::OnContextChanged() {
   }
 
   // Notify subscribers once `state_` is updated.
-  notifySubscribers();
+  NotifySubscribers();
 }
 
 void InputStateModel::SetPermanentlyDisabledTools(
     const std::vector<ToolMode>& tools) {
   permanently_disabled_tools_ = tools;
-  updateDisabledState();
-  notifySubscribers();
+  UpdateDisabledState();
+  NotifySubscribers();
 }
 
 void InputStateModel::SetPermanentlyDisabledInputTypes(
     const std::vector<InputType>& input_types) {
   permanently_disabled_input_types_ = input_types;
-  updateDisabledState();
-  notifySubscribers();
+  UpdateDisabledState();
+  NotifySubscribers();
 }
 
 void InputStateModel::TogglePermanentlyDisabledInputType(InputType input_type,
                                                          bool disabled) {
+  bool changed = false;
   if (disabled) {
     if (!std::ranges::contains(permanently_disabled_input_types_, input_type)) {
       permanently_disabled_input_types_.push_back(input_type);
+      changed = true;
     }
   } else {
-    std::erase(permanently_disabled_input_types_, input_type);
+    changed = std::erase(permanently_disabled_input_types_, input_type) > 0;
   }
-  updateDisabledState();
-  notifySubscribers();
+  if (changed) {
+    UpdateDisabledState();
+    NotifySubscribers();
+  }
 }
 
-void InputStateModel::updateSelectedState(ToolMode tool, ModelMode model) {
+void InputStateModel::UpdateSelectedState(ToolMode tool, ModelMode model) {
   state_.active_model = model;
   state_.image_gen_upload_active = false;
 
@@ -601,10 +716,10 @@ void InputStateModel::updateSelectedState(ToolMode tool, ModelMode model) {
 
   // Update the disabled state based on the active model, tool, and current
   // input types.
-  updateDisabledState();
+  UpdateDisabledState();
 
   // Notify subscribers once `state_` is updated.
-  notifySubscribers();
+  NotifySubscribers();
 }
 
 bool InputStateModel::IsDriveSupported() const {
@@ -808,7 +923,7 @@ void InputStateModel::UpdateDisabledInputTypes() {
   }
 }
 
-void InputStateModel::updateDisabledState() {
+void InputStateModel::UpdateDisabledState() {
   RebuildAllowedInputTypes();
   UpdateDisabledTools();
   UpdateDisabledModels();
@@ -847,11 +962,19 @@ void InputStateModel::RebuildAllowedInputTypes() {
   }
 
   // Fallback for drive if not already present in SearchboxConfig and drive is
-  // supported. This option is available even on signout when the signin promo
+  // supported. This option is available on signout when the signin promo
   // feature flag is enabled, which will prompt the signin promo when clicked.
-  if (!contains(omnibox::INPUT_TYPE_DRIVE) && IsDriveSupported() &&
-      sharing_enabled) {
+  if (!contains(omnibox::INPUT_TYPE_DRIVE) && !is_signed_in_ &&
+      IsDriveSupported() && sharing_enabled) {
     state_.allowed_input_types.push_back(omnibox::INPUT_TYPE_DRIVE);
+  }
+
+  if (rule_set_.has_max_total_inputs()) {
+    state_.max_total_inputs = rule_set_.max_total_inputs();
+  } else if (state_.allowed_input_types.empty()) {
+    state_.max_total_inputs = 0;
+  } else {
+    state_.max_total_inputs = omnibox::kDefaultMaxTotalInputs;
   }
 }
 
@@ -883,13 +1006,38 @@ std::map<std::string, std::string> InputStateModel::GetAdditionalQueryParams() {
   } else {
     // If no model is selected, add a default param to indicate that the query
     // is an AIM query.
-    additional_params["udm"] = "50";
+    additional_params[kUdmParamKey] = "50";
+  }
+  // `nem` (from a model) takes priority over `udm` (e.g. from a tool).
+  if (additional_params.contains(kNemParamKey)) {
+    additional_params.erase(kUdmParamKey);
   }
   return additional_params;
 }
 
 const InputState& InputStateModel::GetInputState() const {
   return state_;
+}
+
+void InputStateModel::SetLensCrop(const std::string& data_uri) {
+  // There is only ever one region crop; setting a crop replaces any existing
+  // crop.
+  lens_crop_ = LensCrop{data_uri};
+  NotifySubscribers();
+}
+
+std::optional<std::string> InputStateModel::GetLensCrop() const {
+  if (lens_crop_.has_value()) {
+    return lens_crop_->data_uri;
+  }
+  return std::nullopt;
+}
+
+void InputStateModel::RemoveLensCrop() {
+  if (lens_crop_.has_value()) {
+    lens_crop_.reset();
+    NotifySubscribers();
+  }
 }
 
 }  // namespace contextual_search

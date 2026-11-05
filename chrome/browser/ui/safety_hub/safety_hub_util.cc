@@ -9,8 +9,12 @@
 #include "components/safety_check/safety_check.h"
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "base/metrics/histogram_functions.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/safety_hub/safety_hub_hats_service.h"
+#include "chrome/browser/ui/safety_hub/safety_hub_hats_service_factory.h"
 #include "chrome/browser/ui/webui/version/version_ui.h"
 #include "chrome/browser/upgrade_detector/build_state.h"
 #include "chrome/grit/branded_strings.h"
@@ -33,7 +37,7 @@ base::TimeDelta GetCleanUpThreshold() {
 // TODO(crbug/342210522): Refactor this to be cleaner.
 bool IsUrlRevokedAbusiveNotification(HostContentSettingsMap* hcsm,
                                      const GURL& url) {
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M162);
   content_settings::SettingInfo info;
   base::Value stored_value(hcsm->GetWebsiteSetting(
       url, url, ContentSettingsType::REVOKED_ABUSIVE_NOTIFICATION_PERMISSIONS,
@@ -41,19 +45,19 @@ bool IsUrlRevokedAbusiveNotification(HostContentSettingsMap* hcsm,
   if (stored_value.is_none()) {
     return false;
   }
-  DCHECK(stored_value.is_dict());
+  CHECK(stored_value.is_dict(), base::NotFatalUntil::M162);
   std::string setting_val = stored_value.GetDict()
                                 .Find(safety_hub::kRevokedStatusDictKeyStr)
                                 ->GetString();
   if (setting_val == safety_hub::kRevokeStr) {
     return true;
   }
-  DCHECK(setting_val == safety_hub::kIgnoreStr);
+  CHECK(setting_val == safety_hub::kIgnoreStr, base::NotFatalUntil::M162);
   return false;
 }
 
 bool IsUrlRevokedUnusedSite(HostContentSettingsMap* hcsm, const GURL& url) {
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M162);
   content_settings::SettingInfo info;
   base::Value stored_value(hcsm->GetWebsiteSetting(
       url, url, ContentSettingsType::REVOKED_UNUSED_SITE_PERMISSIONS, &info));
@@ -85,7 +89,7 @@ ContentSettingsForOneType GetRevokedAbusiveNotificationPermissions(
 base::Value GetRevokedAbusiveNotificationPermissionsSettingValue(
     HostContentSettingsMap* hcsm,
     GURL setting_url) {
-  DCHECK(setting_url.is_valid());
+  CHECK(setting_url.is_valid(), base::NotFatalUntil::M162);
   content_settings::SettingInfo info;
   base::Value stored_value(hcsm->GetWebsiteSetting(
       setting_url, setting_url,
@@ -96,7 +100,7 @@ base::Value GetRevokedAbusiveNotificationPermissionsSettingValue(
 // TODO(crbug/342210522): Refactor this to be cleaner.
 bool IsAbusiveNotificationRevocationIgnored(HostContentSettingsMap* hcsm,
                                             GURL setting_url) {
-  DCHECK(setting_url.is_valid());
+  CHECK(setting_url.is_valid(), base::NotFatalUntil::M162);
   base::Value stored_value =
       GetRevokedAbusiveNotificationPermissionsSettingValue(hcsm, setting_url);
   if (stored_value.is_none()) {
@@ -105,14 +109,15 @@ bool IsAbusiveNotificationRevocationIgnored(HostContentSettingsMap* hcsm,
   // If the REVOKED_ABUSIVE_NOTIFICATION_PERMISSIONS dictionary value is
   // set to `safety_hub::kIgnoreStr`, then the user has chosen to ignore
   // revocations for the origin.
-  DCHECK(stored_value.GetDict().contains(safety_hub::kRevokedStatusDictKeyStr));
+  CHECK(stored_value.GetDict().contains(safety_hub::kRevokedStatusDictKeyStr),
+        base::NotFatalUntil::M162);
   std::string setting_val = stored_value.GetDict()
                                 .Find(safety_hub::kRevokedStatusDictKeyStr)
                                 ->GetString();
   if (setting_val == safety_hub::kIgnoreStr) {
     return true;
   }
-  DCHECK(setting_val == safety_hub::kRevokeStr);
+  CHECK(setting_val == safety_hub::kRevokeStr, base::NotFatalUntil::M162);
   return false;
 }
 
@@ -144,6 +149,43 @@ base::DictValue GetVersionCardData() {
                  static_cast<int>(safety_hub::SafetyHubCardState::kWarning));
   }
   return result;
+}
+
+void LogMenuNotificationImpression(safety_hub::SafetyHubModuleType sh_module) {
+  base::UmaHistogramEnumeration("Settings.SafetyHub.Impression",
+                                safety_hub::SafetyHubSurfaces::kThreeDotMenu);
+  base::UmaHistogramEnumeration(
+      "Settings.SafetyHub.EntryPointImpression",
+      safety_hub::SafetyHubEntryPoint::kMenuNotifications);
+  base::UmaHistogramEnumeration("Settings.SafetyHub.MenuNotificationImpression",
+                                sh_module);
+}
+
+void LogMenuNotificationClicked(Profile* profile,
+                                safety_hub::SafetyHubModuleType sh_module) {
+  base::UmaHistogramEnumeration("Settings.SafetyHub.Interaction",
+                                safety_hub::SafetyHubSurfaces::kThreeDotMenu);
+  base::UmaHistogramEnumeration(
+      "Settings.SafetyHub.EntryPointInteraction",
+      safety_hub::SafetyHubEntryPoint::kMenuNotifications);
+  base::UmaHistogramEnumeration("Settings.SafetyHub.MenuNotificationClicked",
+                                sh_module);
+
+  if (SafetyHubHatsService* hats_service =
+          SafetyHubHatsServiceFactory::GetForProfile(profile)) {
+    hats_service->SafetyHubNotificationClicked(sh_module);
+  }
+}
+
+void MaybeNotifyMenuNotificationSeen(Profile* profile,
+                                     base::TimeDelta time_shown) {
+  if (time_shown < base::Seconds(5)) {
+    return;
+  }
+  if (SafetyHubHatsService* hats_service =
+          SafetyHubHatsServiceFactory::GetForProfile(profile)) {
+    hats_service->SafetyHubNotificationSeen();
+  }
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 

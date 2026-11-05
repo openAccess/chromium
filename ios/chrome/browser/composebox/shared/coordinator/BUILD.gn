@@ -16,6 +16,7 @@ source_set("coordinator") {
     "//components/lens",
     "//components/omnibox/common",
     "//components/prefs",
+    "//ios/chrome/browser/composebox/public:attachment_selection",
     "//ios/chrome/browser/composebox/public:input_item_source",
     "//ios/chrome/browser/composebox/shared/metrics",
     "//ios/chrome/browser/composebox/shared/ui",
@@ -28,6 +29,7 @@ source_set("coordinator") {
     "//ios/chrome/browser/tab_switcher/ui_bundled:utils",
     "//ios/chrome/browser/tabs/model",
     "//ios/public/provider/chrome/browser/privacy_primitive:privacy_primitive_api",
+    "//net",
   ]
   public_deps = [ "//ios/web/public" ]
 }
@@ -42,6 +44,7 @@ source_set("unit_tests") {
     "//components/contextual_search:public",
     "//components/omnibox/common",
     "//components/prefs",
+    "//ios/chrome/browser/composebox/public:attachment_selection",
     "//ios/chrome/browser/composebox/public:entrypoint",
     "//ios/chrome/browser/composebox/shared/metrics",
     "//ios/chrome/browser/shared/model/application_context",
@@ -57,8 +60,11 @@ source_set("unit_tests") {
     "//ios/chrome/browser/sync/model",
     "//ios/chrome/browser/sync/model:test_support",
     "//ios/chrome/test:test_support",
+    "//ios/chrome/test/providers/privacy_primitive",
+    "//ios/public/provider/chrome/browser/privacy_primitive:privacy_primitive_api",
     "//ios/web/public/test",
     "//testing/gtest",
     "//third_party/ocmock",
+    "//url",
   ]
 }

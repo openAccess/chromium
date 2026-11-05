@@ -26,13 +26,19 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_message_port.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_post_message_options.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_trustedscripturl_usvstring.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_worker_options.h"
+#include "third_party/blink/renderer/bindings/core/v8/worker_or_worklet_script_controller.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
+#include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
+#include "third_party/blink/renderer/core/event_interface_names.h"
 #include "third_party/blink/renderer/core/event_type_names.h"
+#include "third_party/blink/renderer/core/events/error_event.h"
 #include "third_party/blink/renderer/core/events/message_event.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/inspector/thread_debugger_common_impl.h"
 #include "third_party/blink/renderer/core/loader/empty_clients.h"
 #include "third_party/blink/renderer/core/loader/worker_fetch_context.h"
@@ -41,6 +47,7 @@
 #include "third_party/blink/renderer/core/messaging/message_channel.h"
 #include "third_party/blink/renderer/core/messaging/message_port.h"
 #include "third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.h"
+#include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/script/script.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/core/testing/wait_for_event.h"
@@ -53,10 +60,16 @@
 #include "third_party/blink/renderer/core/workers/global_scope_creation_params.h"
 #include "third_party/blink/renderer/core/workers/parent_execution_context_task_runners.h"
 #include "third_party/blink/renderer/core/workers/worker_backing_thread_startup_data.h"
+#include "third_party/blink/renderer/core/workers/worker_global_scope.h"
 #include "third_party/blink/renderer/core/workers/worker_or_worklet_global_scope.h"
 #include "third_party/blink/renderer/core/workers/worker_thread.h"
 #include "third_party/blink/renderer/core/workers/worker_thread_test_helper.h"
+#include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/bindings/script_state.h"
+#include "third_party/blink/renderer/platform/bindings/source_location.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_client_settings_object_snapshot.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_request.h"
@@ -232,15 +245,6 @@ class DedicatedWorkerThreadForTest final : public DedicatedWorkerThread {
     PostCrossThreadTask(*GetParentTaskRunnerForTesting(), FROM_HERE,
                         CrossThreadBindOnce(std::move(quit_closure)));
   }
-
-  void InitializeGlobalScope(KURL script_url) {
-    EXPECT_TRUE(IsCurrentThread());
-    To<DedicatedWorkerGlobalScope>(GlobalScope())
-        ->Initialize(script_url, network::mojom::ReferrerPolicy::kDefault,
-                     Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-                     DocumentPolicy::DocumentPolicyBundle{},
-                     nullptr /* response_origin_trial_tokens */);
-  }
 };
 
 class DedicatedWorkerObjectProxyForTest final
@@ -267,11 +271,23 @@ class DedicatedWorkerObjectProxyForTest final
     DedicatedWorkerObjectProxy::CountWebDXFeature(feature);
   }
 
+  void WaitUntilDidEvaluateTopLevelScript() {
+    did_evaluate_top_level_script_.Run();
+  }
+
+  void DidEvaluateTopLevelScript(
+      bool success,
+      const JavaScriptFrameworkDetectionResult& result) override {
+    did_evaluate_top_level_script_.Quit();
+    DedicatedWorkerObjectProxy::DidEvaluateTopLevelScript(success, result);
+  }
+
  private:
   std::bitset<static_cast<size_t>(WebFeature::kMaxValue) + 1>
       reported_features_;
   std::bitset<static_cast<size_t>(WebDXFeature::kMaxValue) + 1>
       reported_webdx_features_;
+  base::RunLoop did_evaluate_top_level_script_;
 };
 
 class DedicatedWorkerMessagingProxyForTest
@@ -324,10 +340,11 @@ class DedicatedWorkerMessagingProxyForTest
     SetScriptURLForTesting(script_url);
     auto params = CreateGlobalScopeCreationParamsForTest();
     params->creator_document_policy.policy = std::move(creator_policy);
-    StartWorker(std::move(params));
+    StartWorker(/*source_code=*/"", std::move(params));
   }
 
   void StartWorker(
+      const String& source_code,
       std::unique_ptr<GlobalScopeCreationParams> params = nullptr) {
     if (!params) {
       params = CreateGlobalScopeCreationParamsForTest();
@@ -339,18 +356,11 @@ class DedicatedWorkerMessagingProxyForTest
             WorkerBackingThreadStartupData::AtomicsWaitMode::kAllow),
         WorkerObjectProxy().token());
 
-    PostCrossThreadTask(
-        *GetDedicatedWorkerThread()->GetTaskRunner(TaskType::kInternalTest),
-        FROM_HERE,
-        CrossThreadBindOnce(
-            &DedicatedWorkerThreadForTest::InitializeGlobalScope,
-            CrossThreadUnretained(GetDedicatedWorkerThread()), script_url_));
-  }
-
-  void EvaluateClassicScript(const String& source) {
-    GetWorkerThread()->EvaluateClassicScript(script_url_, source,
-                                             nullptr /* cached_meta_data */,
-                                             v8_inspector::V8StackTraceId());
+    // `DedicatedWorkerGlobalScope::Initialize()` is called upon worker
+    // top-level script evaluation.
+    RunWorkerToplevelScriptForTesting(*GetWorkerThread(),
+                                      SecurityOrigin::Create(script_url_).get(),
+                                      source_code, script_url_);
   }
 
   DedicatedWorkerThreadForTest* GetDedicatedWorkerThread() {
@@ -382,8 +392,7 @@ class FakeWebDedicatedWorkerHostFactoryClient
       network::mojom::CredentialsMode credentials_mode,
       const WebFetchClientSettingsObject& fetch_client_settings_object,
       CrossVariantMojoRemote<blink::mojom::BlobURLTokenInterfaceBase>
-          blob_url_token,
-      net::StorageAccessApiStatus storage_access_api_status) override {}
+          blob_url_token) override {}
   scoped_refptr<blink::WebWorkerFetchContext> CloneWorkerFetchContext(
       WebWorkerFetchContext* web_worker_fetch_context,
       scoped_refptr<base::SingleThreadTaskRunner> task_runner) override {
@@ -416,6 +425,7 @@ void DedicatedWorkerTest::SetUp() {
         return proxy;
       });
   worker_object_->UpdateStateIfNeeded();
+  worker_object_->EmulateStartForTesting();
 }
 
 void DedicatedWorkerTest::TearDown() {
@@ -449,33 +459,17 @@ void DedicatedWorkerTest::RunOnWorkerThread(
 }
 
 void DedicatedWorkerTest::StartWorker(
+    const String& source_code,
     std::unique_ptr<GlobalScopeCreationParams> params) {
-  WorkerMessagingProxy()->StartWorker(std::move(params));
+  WorkerMessagingProxy()->StartWorker(source_code, std::move(params));
 }
-
-void DedicatedWorkerTest::EvaluateClassicScript(const String& source_code) {
-  WorkerMessagingProxy()->EvaluateClassicScript(source_code);
-}
-
-namespace {
-
-void PostExitRunLoopTaskOnParent(WorkerThread* worker_thread,
-                                 CrossThreadOnceClosure quit_closure) {
-  PostCrossThreadTask(*worker_thread->GetParentTaskRunnerForTesting(),
-                      FROM_HERE, CrossThreadBindOnce(std::move(quit_closure)));
-}
-
-}  // anonymous namespace
 
 void DedicatedWorkerTest::WaitUntilWorkerIsRunning() {
-  base::RunLoop loop;
-  PostCrossThreadTask(
-      *GetWorkerThread()->GetTaskRunner(TaskType::kInternalTest), FROM_HERE,
-      CrossThreadBindOnce(&PostExitRunLoopTaskOnParent,
-                          CrossThreadUnretained(GetWorkerThread()),
-                          CrossThreadBindOnce(loop.QuitClosure())));
-
-  loop.Run();
+  // Wait for the top-level script evaluation and
+  // `DedicatedWorkerGlobalScope::Initialize()`, to avoid race conditions.
+  static_cast<DedicatedWorkerObjectProxyForTest&>(
+      WorkerMessagingProxy()->WorkerObjectProxy())
+      .WaitUntilDidEvaluateTopLevelScript();
 }
 
 TEST_F(DedicatedWorkerTest, PendingActivity_NoActivityAfterContextDestroyed) {
@@ -490,9 +484,8 @@ TEST_F(DedicatedWorkerTest, PendingActivity_NoActivityAfterContextDestroyed) {
 
 TEST_F(DedicatedWorkerTest, UseCounter) {
   Page::InsertOrdinaryPageForTesting(&GetPage());
-  const String source_code = "// Do nothing";
   StartWorker();
-  EvaluateClassicScript(source_code);
+  WaitUntilWorkerIsRunning();
 
   // This feature is randomly selected.
   const WebFeature kFeature1 = WebFeature::kRequestFileSystem;
@@ -678,10 +671,7 @@ TEST_F(DedicatedWorkerTest,
 }
 
 TEST_F(DedicatedWorkerTest, DispatchMessageEventOnWorkerGlobalScope) {
-  // Script must run for the worker global scope to dispatch messages.
-  const String source_code = "// Do nothing";
   StartWorker();
-  EvaluateClassicScript(source_code);
 
   AtomicString event_type;
   base::RunLoop run_loop_1;
@@ -736,11 +726,9 @@ TEST_F(DedicatedWorkerTest, TopLevelFrameSecurityOrigin) {
       ->GetExecutionContext()
       ->GetSecurityContext()
       .SetSecurityOriginForTesting(security_origin);
-  StartWorker(WorkerObject()->CreateGlobalScopeCreationParams(
-      script_url, network::mojom::ReferrerPolicy::kDefault,
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-      DocumentPolicy::DocumentPolicyBundle{}, mojo::NullReceiver(),
-      mojo::NullReceiver()));
+  StartWorker("", WorkerObject()->CreateGlobalScopeCreationParams(
+                      script_url, mojo::NullReceiver(), mojo::NullReceiver()));
+  WaitUntilWorkerIsRunning();
   base::RunLoop run_loop;
 
   PostCrossThreadTask(
@@ -766,10 +754,7 @@ TEST_F(DedicatedWorkerTest, TopLevelFrameSecurityOrigin) {
 
               auto nested_worker_params =
                   nested_worker_object->CreateGlobalScopeCreationParams(
-                      script_url, network::mojom::ReferrerPolicy::kDefault,
-                      Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-                      DocumentPolicy::DocumentPolicyBundle{},
-                      mojo::NullReceiver(), mojo::NullReceiver());
+                      script_url, mojo::NullReceiver(), mojo::NullReceiver());
               ASSERT_TRUE(
                   nested_worker_params->top_level_frame_security_origin);
               EXPECT_TRUE(nested_worker_params->top_level_frame_security_origin
@@ -789,10 +774,7 @@ TEST_F(DedicatedWorkerTest, TopLevelFrameSecurityOrigin) {
 
 TEST_F(DedicatedWorkerTest,
        DispatchMessageEventOnWorkerGlobalScope_CannotDeserialize) {
-  // Script must run for the worker global scope to dispatch messages.
-  const String source_code = "// Do nothing";
   StartWorker();
-  EvaluateClassicScript(source_code);
 
   AtomicString event_type;
   base::RunLoop run_loop_1;
@@ -851,7 +833,6 @@ TEST_F(DedicatedWorkerTest, PostCustomEventWithString) {
   ScriptState* script_state = v8_scope.GetScriptState();
 
   StartWorker();
-  EvaluateClassicScript("");
   WaitUntilWorkerIsRunning();
 
   base::RunLoop run_loop;
@@ -881,7 +862,6 @@ TEST_F(DedicatedWorkerTest, PostCustomEventWithNumber) {
   ScriptState* script_state = v8_scope.GetScriptState();
 
   StartWorker();
-  EvaluateClassicScript("");
   WaitUntilWorkerIsRunning();
 
   base::RunLoop run_loop;
@@ -929,7 +909,6 @@ TEST_F(DedicatedWorkerTest, PostCustomEventBeforeWorkerStarts) {
       v8_scope.GetExceptionState());
 
   StartWorker();
-  EvaluateClassicScript("");
   WaitUntilWorkerIsRunning();
   run_loop.Run();
   ASSERT_NE(event, nullptr);
@@ -948,7 +927,6 @@ TEST_F(DedicatedWorkerTest, PostCustomEventWithPort) {
   ScriptState* script_state = v8_scope.GetScriptState();
 
   StartWorker();
-  EvaluateClassicScript("");
   WaitUntilWorkerIsRunning();
 
   MessageChannel* channel =
@@ -977,7 +955,6 @@ TEST_F(DedicatedWorkerTest, PostCustomEventCannotDeserialize) {
   ScriptState* script_state = v8_scope.GetScriptState();
 
   StartWorker();
-  EvaluateClassicScript("");
   WaitUntilWorkerIsRunning();
 
   auto* worker_thread = GetWorkerThread();
@@ -1008,7 +985,6 @@ TEST_F(DedicatedWorkerTest, PostCustomEventNoMessage) {
   ScriptState* script_state = v8_scope.GetScriptState();
 
   StartWorker();
-  EvaluateClassicScript("");
   WaitUntilWorkerIsRunning();
 
   base::RunLoop run_loop;
@@ -1214,6 +1190,456 @@ TEST_F(DedicatedWorkerTest, DocumentPolicyInheritedForLocalSchemeWorker) {
   // The worker inherited the creator's `force-load-at-top` policy rather than
   // falling back to the feature's default (false).
   EXPECT_TRUE(force_load_at_top_enabled);
+}
+
+class DedicatedWorkersDisabledLocalFrameClient : public EmptyLocalFrameClient {
+ public:
+  bool AreDedicatedWorkersDisabled() const override { return true; }
+};
+
+class DedicatedWorkerDisabledTest : public PageTestBase {
+ public:
+  void SetUp() override {
+    client_ = MakeGarbageCollected<DedicatedWorkersDisabledLocalFrameClient>();
+    PageTestBase::SetupPageWithClients(nullptr, client_);
+  }
+
+ private:
+  Persistent<DedicatedWorkersDisabledLocalFrameClient> client_;
+};
+
+TEST_F(DedicatedWorkerDisabledTest, DedicatedWorkerDisabledInFrame) {
+  NavigateTo(KURL("https://example.com/"));
+  DummyExceptionStateForTesting exception_state;
+  DedicatedWorker* worker = DedicatedWorker::Create(
+      GetFrame().DomWindow(),
+      MakeGarbageCollected<V8UnionTrustedScriptURLOrUSVString>(
+          "https://example.com/worker.js"),
+      WorkerOptions::Create(), exception_state);
+  EXPECT_FALSE(worker);
+  EXPECT_TRUE(exception_state.HadException());
+  EXPECT_EQ(exception_state.Code(),
+            ToExceptionCode(DOMExceptionCode::kSecurityError));
+}
+
+namespace {
+
+// Counts how many times it has been invoked.
+class CountingEventListener final : public NativeEventListener {
+ public:
+  void Invoke(ExecutionContext*, Event*) override { ++count_; }
+  int count() const { return count_; }
+
+ private:
+  int count_ = 0;
+};
+
+}  // namespace
+
+class DedicatedWorkerConstructorTest
+    : public PageTestBase,
+      public testing::WithParamInterface<bool> {
+ public:
+  DedicatedWorkerConstructorTest() : scoped_feature_(IsFeatureEnabled()) {}
+
+ protected:
+  bool IsFeatureEnabled() { return GetParam(); }
+
+  void SetUp() override {
+    PageTestBase::SetUp(gfx::Size());
+    Page::InsertOrdinaryPageForTesting(&GetPage());
+    NavigateTo(KURL("https://example.test/"));
+  }
+
+  DedicatedWorker* CreateWorker(const String& url,
+                                ExceptionState& exception_state) {
+    return DedicatedWorker::Create(
+        GetFrame().DomWindow(),
+        MakeGarbageCollected<V8UnionTrustedScriptURLOrUSVString>(url),
+        WorkerOptions::Create(), exception_state);
+  }
+
+  bool IsCrossOriginBlockedUseCounted() {
+    return GetDocument().IsUseCounted(
+        WebFeature::kWorkerScriptURLFetchBlockedByCrossOrigin);
+  }
+
+  bool IsCSPBlockedUseCounted() {
+    return GetDocument().IsUseCounted(WebFeature::kCSPBlockedWorkerCreation);
+  }
+
+ private:
+  ScopedNoSynchronousThrowForCrossOriginBlockedWorkerForTest scoped_feature_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All, DedicatedWorkerConstructorTest, testing::Bool());
+
+TEST_P(DedicatedWorkerConstructorTest, CrossOriginScriptURL) {
+  ScopedTestingPlatformSupport<
+      FakeWebDedicatedWorkerHostFactoryClientPlatformSupport>
+      platform;
+
+  DummyExceptionStateForTesting exception_state;
+  DedicatedWorker* worker =
+      CreateWorker("https://cross-origin.test/worker.js", exception_state);
+
+  EXPECT_TRUE(IsCrossOriginBlockedUseCounted());
+
+  if (!IsFeatureEnabled()) {
+    // With the feature disabled, the worker construction is blocked by a
+    // security exception from cross-origin violation.
+    EXPECT_TRUE(exception_state.HadException());
+    EXPECT_EQ(DOMExceptionCode::kSecurityError,
+              exception_state.CodeAs<DOMExceptionCode>());
+    EXPECT_FALSE(worker);
+    return;
+  }
+
+  // With the feature enabled, the cross-origin violation does not throw
+  // a security exception. Instead, it dispatches an error event.
+  EXPECT_FALSE(exception_state.HadException());
+  ASSERT_TRUE(worker);
+
+  auto* counter = MakeGarbageCollected<CountingEventListener>();
+  worker->addEventListener(event_type_names::kError, counter);
+
+  // Wait until the cross-origin violation event is dispatched.
+  auto* waiter =
+      MakeGarbageCollected<WaitForEvent>(worker, event_type_names::kError);
+  Event* cross_origin_violation_event = waiter->GetLastEvent();
+  ASSERT_TRUE(cross_origin_violation_event);
+  EXPECT_TRUE(cross_origin_violation_event->HasInterface(
+      event_interface_names::kEvent));
+
+  // Flush any remaining tasks to make sure no more error event is dispatched.
+  test::RunPendingTasks();
+  EXPECT_EQ(1, counter->count());
+}
+
+TEST_P(DedicatedWorkerConstructorTest, CountsCrossOriginBlockedOverCSP) {
+  ScopedTestingPlatformSupport<
+      FakeWebDedicatedWorkerHostFactoryClientPlatformSupport>
+      platform;
+
+  // CSP blocks worker script fetching.
+  NavigateTo(KURL("https://example.test/"),
+             {{"Content-Security-Policy", "worker-src 'none'"}});
+
+  {
+    // Check a CSP violation dispatches an error event.
+    DummyExceptionStateForTesting exception_state;
+    DedicatedWorker* worker =
+        CreateWorker("https://example.test/worker.js", exception_state);
+
+    EXPECT_FALSE(IsCrossOriginBlockedUseCounted());
+    EXPECT_TRUE(IsCSPBlockedUseCounted());
+
+    // CSP violation does not throw exception during worker creation.
+    EXPECT_FALSE(exception_state.HadException());
+    ASSERT_TRUE(worker);
+
+    auto* counter = MakeGarbageCollected<CountingEventListener>();
+    worker->addEventListener(event_type_names::kError, counter);
+
+    // Wait until the CSP violation event is dispatched.
+    auto* waiter =
+        MakeGarbageCollected<WaitForEvent>(worker, event_type_names::kError);
+    Event* csp_violation_event = waiter->GetLastEvent();
+    ASSERT_TRUE(csp_violation_event);
+    EXPECT_TRUE(
+        csp_violation_event->HasInterface(event_interface_names::kEvent));
+
+    // Flush any remaining tasks to make sure no more error event is dispatched.
+    test::RunPendingTasks();
+    EXPECT_EQ(1, counter->count());
+  }
+
+  GetDocument().ClearUseCounterForTesting(
+      WebFeature::kWorkerScriptURLFetchBlockedByCrossOrigin);
+  GetDocument().ClearUseCounterForTesting(
+      WebFeature::kCSPBlockedWorkerCreation);
+
+  {
+    // Check cross-origin violation takes precedence over CSP violation.
+    DummyExceptionStateForTesting exception_state;
+    DedicatedWorker* worker =
+        CreateWorker("https://cross-origin.test/worker.js", exception_state);
+
+    EXPECT_TRUE(IsCrossOriginBlockedUseCounted());
+    EXPECT_FALSE(IsCSPBlockedUseCounted());
+
+    if (!IsFeatureEnabled()) {
+      // With the feature disabled, the worker construction is blocked
+      // by a security exception from cross-origin violation.
+      EXPECT_TRUE(exception_state.HadException());
+      EXPECT_EQ(DOMExceptionCode::kSecurityError,
+                exception_state.CodeAs<DOMExceptionCode>());
+      EXPECT_FALSE(worker);
+      return;
+    }
+
+    // With the feature enabled, the cross-origin violation does not throw
+    // a security exception. Instead, it dispatches an error event.
+    EXPECT_FALSE(exception_state.HadException());
+    ASSERT_TRUE(worker);
+
+    auto* counter = MakeGarbageCollected<CountingEventListener>();
+    worker->addEventListener(event_type_names::kError, counter);
+
+    // Wait until the cross-origin violation event is dispatched.
+    auto* waiter =
+        MakeGarbageCollected<WaitForEvent>(worker, event_type_names::kError);
+    Event* cross_origin_violation_event = waiter->GetLastEvent();
+    ASSERT_TRUE(cross_origin_violation_event);
+    EXPECT_TRUE(cross_origin_violation_event->HasInterface(
+        event_interface_names::kEvent));
+
+    // Flush any remaining tasks to make sure no more error event is dispatched.
+    test::RunPendingTasks();
+    EXPECT_EQ(1, counter->count());
+  }
+}
+
+TEST_P(DedicatedWorkerConstructorTest, DataURLScriptURLDoesNotThrow) {
+  ScopedTestingPlatformSupport<
+      FakeWebDedicatedWorkerHostFactoryClientPlatformSupport>
+      platform;
+
+  DummyExceptionStateForTesting exception_state;
+  DedicatedWorker* worker = CreateWorker(
+      "data:application/javascript,// Do nothing", exception_state);
+
+  EXPECT_FALSE(exception_state.HadException());
+  EXPECT_TRUE(worker);
+  EXPECT_FALSE(IsCrossOriginBlockedUseCounted());
+}
+
+TEST_P(DedicatedWorkerConstructorTest, UnparsableScriptURLThrowsSyntaxError) {
+  ScopedTestingPlatformSupport<
+      FakeWebDedicatedWorkerHostFactoryClientPlatformSupport>
+      platform;
+
+  DummyExceptionStateForTesting exception_state;
+  DedicatedWorker* worker =
+      CreateWorker("http://invalid:123$", exception_state);
+
+  EXPECT_TRUE(exception_state.HadException());
+  EXPECT_EQ(DOMExceptionCode::kSyntaxError,
+            exception_state.CodeAs<DOMExceptionCode>());
+  EXPECT_FALSE(worker);
+  EXPECT_FALSE(IsCrossOriginBlockedUseCounted());
+}
+
+namespace {
+
+constexpr char kErrorEventMessage[] = "Uncaught Error: exception message";
+constexpr char kErrorEventUrl[] = "http://another.origin/script.js";
+constexpr unsigned kErrorEventLine = 7;
+constexpr unsigned kErrorEventColumn = 13;
+
+// Collects "error" events fired at a target and runs the given closure once
+// the expected number of events has been observed.
+class ErrorEventCollector final : public NativeEventListener {
+ public:
+  ErrorEventCollector(wtf_size_t expected_event_count,
+                      base::OnceClosure quit_closure,
+                      bool prevent_default = true)
+      : expected_event_count_(expected_event_count),
+        quit_closure_(std::move(quit_closure)),
+        prevent_default_(prevent_default) {}
+
+  void Invoke(ExecutionContext*, Event* event) override {
+    auto* error_event = To<ErrorEvent>(event);
+    if (prevent_default_) {
+      error_event->preventDefault();
+    }
+    events_.push_back(error_event);
+    if (events_.size() == expected_event_count_) {
+      std::move(quit_closure_).Run();
+    }
+  }
+
+  const HeapVector<Member<ErrorEvent>>& Events() const { return events_; }
+
+  void Trace(Visitor* visitor) const override {
+    visitor->Trace(events_);
+    NativeEventListener::Trace(visitor);
+  }
+
+ private:
+  const wtf_size_t expected_event_count_;
+  base::OnceClosure quit_closure_;
+  const bool prevent_default_;
+  HeapVector<Member<ErrorEvent>> events_;
+};
+
+ErrorEvent* CreateErrorEventWithLocation(ScriptState* script_state) {
+  auto* location = MakeGarbageCollected<SourceLocation>(
+      kErrorEventUrl, String(), kErrorEventLine, kErrorEventColumn, nullptr);
+  return ErrorEvent::Create(kErrorEventMessage, location,
+                            &script_state->World());
+}
+
+void DispatchErrorEventOnWorkerGlobalScope(
+    SanitizeScriptErrors sanitize_script_errors,
+    ExecutionContext* execution_context) {
+  auto* global_scope = To<WorkerGlobalScope>(execution_context);
+  ScriptState* script_state =
+      global_scope->ScriptController()->GetScriptState();
+  ScriptState::Scope scope(script_state);
+  global_scope->DispatchErrorEvent(CreateErrorEventWithLocation(script_state),
+                                   sanitize_script_errors);
+}
+
+// Dispatches a second error event on the worker global scope while the first
+// one is being dispatched, so that the second event goes through the pending
+// exception queue.
+class DispatchNestedErrorEventListener final : public NativeEventListener {
+ public:
+  void Invoke(ExecutionContext* execution_context, Event*) override {
+    DispatchErrorEventOnWorkerGlobalScope(SanitizeScriptErrors::kSanitize,
+                                          execution_context);
+  }
+};
+
+void DispatchNestedErrorEventOnWorkerGlobalScope(
+    ExecutionContext* execution_context) {
+  auto* global_scope = To<WorkerGlobalScope>(execution_context);
+  global_scope->addEventListener(
+      event_type_names::kError,
+      MakeGarbageCollected<DispatchNestedErrorEventListener>());
+  DispatchErrorEventOnWorkerGlobalScope(SanitizeScriptErrors::kDoNotSanitize,
+                                        execution_context);
+}
+
+void ExpectSanitizedErrorEvent(const ErrorEvent* event,
+                               ScriptState* script_state) {
+  ScriptState::Scope scope(script_state);
+  EXPECT_EQ(event->message(), "Script error.");
+  EXPECT_TRUE(event->filename().empty());
+  EXPECT_EQ(event->lineno(), 0u);
+  EXPECT_EQ(event->colno(), 0u);
+  EXPECT_TRUE(event->error(script_state).IsNull());
+}
+
+void ExpectUnsanitizedErrorEvent(const ErrorEvent* event) {
+  EXPECT_EQ(event->message(), kErrorEventMessage);
+  EXPECT_EQ(event->filename(), kErrorEventUrl);
+  EXPECT_EQ(event->lineno(), kErrorEventLine);
+  EXPECT_EQ(event->colno(), kErrorEventColumn);
+}
+
+}  // namespace
+
+TEST_F(DedicatedWorkerTest, ErrorEventFromMutedScriptSanitizedOnWorkerObject) {
+  // Script must run for the worker global scope to dispatch events.
+  StartWorker();
+  WaitUntilWorkerIsRunning();
+
+  base::RunLoop run_loop;
+  auto* collector =
+      MakeGarbageCollected<ErrorEventCollector>(1u, run_loop.QuitClosure());
+  WorkerObject()->addEventListener(event_type_names::kError, collector);
+
+  RunOnWorkerThread(CrossThreadBindOnce(&DispatchErrorEventOnWorkerGlobalScope,
+                                        SanitizeScriptErrors::kSanitize));
+  run_loop.Run();
+
+  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+  const auto& events = collector->Events();
+  ASSERT_EQ(events.size(), 1u);
+  ExpectSanitizedErrorEvent(events[0], script_state);
+}
+
+TEST_F(DedicatedWorkerTest,
+       ErrorEventFromMutedScriptPropagatesSanitizedToParentWindow) {
+  StartWorker();
+  WaitUntilWorkerIsRunning();
+
+  base::RunLoop run_loop;
+  auto* worker_collector = MakeGarbageCollected<ErrorEventCollector>(
+      1u, base::DoNothing(), /*prevent_default=*/false);
+  WorkerObject()->addEventListener(event_type_names::kError, worker_collector);
+
+  auto* window_collector =
+      MakeGarbageCollected<ErrorEventCollector>(1u, run_loop.QuitClosure());
+  GetFrame().DomWindow()->addEventListener(event_type_names::kError,
+                                           window_collector);
+
+  RunOnWorkerThread(CrossThreadBindOnce(&DispatchErrorEventOnWorkerGlobalScope,
+                                        SanitizeScriptErrors::kSanitize));
+  run_loop.Run();
+
+  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+  const auto& worker_events = worker_collector->Events();
+  ASSERT_EQ(worker_events.size(), 1u);
+  ExpectSanitizedErrorEvent(worker_events[0], script_state);
+
+  const auto& window_events = window_collector->Events();
+  ASSERT_EQ(window_events.size(), 1u);
+  ExpectSanitizedErrorEvent(window_events[0], script_state);
+}
+
+TEST_F(DedicatedWorkerTest,
+       ErrorEventFromMutedScriptUnsanitizedWhenFeatureDisabled) {
+  ScopedSanitizeWorkerErrorPropagationForTest scoped_feature(false);
+
+  StartWorker();
+  WaitUntilWorkerIsRunning();
+
+  base::RunLoop run_loop;
+  auto* collector =
+      MakeGarbageCollected<ErrorEventCollector>(1u, run_loop.QuitClosure());
+  WorkerObject()->addEventListener(event_type_names::kError, collector);
+
+  RunOnWorkerThread(CrossThreadBindOnce(&DispatchErrorEventOnWorkerGlobalScope,
+                                        SanitizeScriptErrors::kSanitize));
+  run_loop.Run();
+
+  const auto& events = collector->Events();
+  ASSERT_EQ(events.size(), 1u);
+  ExpectUnsanitizedErrorEvent(events[0]);
+}
+
+TEST_F(DedicatedWorkerTest, ErrorEventFromUnmutedScriptReportedToWorkerObject) {
+  // Script must run for the worker global scope to dispatch events.
+  StartWorker();
+  WaitUntilWorkerIsRunning();
+
+  base::RunLoop run_loop;
+  auto* collector =
+      MakeGarbageCollected<ErrorEventCollector>(1u, run_loop.QuitClosure());
+  WorkerObject()->addEventListener(event_type_names::kError, collector);
+
+  RunOnWorkerThread(CrossThreadBindOnce(&DispatchErrorEventOnWorkerGlobalScope,
+                                        SanitizeScriptErrors::kDoNotSanitize));
+  run_loop.Run();
+
+  const auto& events = collector->Events();
+  ASSERT_EQ(events.size(), 1u);
+  ExpectUnsanitizedErrorEvent(events[0]);
+}
+
+TEST_F(DedicatedWorkerTest,
+       NestedErrorEventFromMutedScriptSanitizedOnWorkerObject) {
+  // Script must run for the worker global scope to dispatch events.
+  StartWorker();
+  WaitUntilWorkerIsRunning();
+
+  base::RunLoop run_loop;
+  auto* collector =
+      MakeGarbageCollected<ErrorEventCollector>(2u, run_loop.QuitClosure());
+  WorkerObject()->addEventListener(event_type_names::kError, collector);
+
+  RunOnWorkerThread(
+      CrossThreadBindOnce(&DispatchNestedErrorEventOnWorkerGlobalScope));
+  run_loop.Run();
+
+  ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+  const auto& events = collector->Events();
+  ASSERT_EQ(events.size(), 2u);
+  ExpectUnsanitizedErrorEvent(events[0]);
+  ExpectSanitizedErrorEvent(events[1], script_state);
 }
 
 }  // namespace blink

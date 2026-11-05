@@ -23,6 +23,10 @@ const char kUnknown[] = "unknown";
 const char kTimeout[] = "timeout";
 const char kFailedToParseChallenge[] = "failed_to_parse_challenge";
 const char kFailedToCreateResponse[] = "failed_to_create_response";
+const char kTooManyRequests[] = "too_many_requests";
+const char kUrlNotAllowed[] = "url_not_allowed";
+const char kServiceUnavailable[] = "service_unavailable";
+const char kInvalidOrigin[] = "invalid_origin";
 
 }  // namespace errors
 

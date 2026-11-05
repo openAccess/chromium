@@ -12,6 +12,7 @@
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_storage_type.h"
 #import "ios/chrome/browser/bookmarks/public/bookmarks_ui_constants.h"
+#import "ios/chrome/browser/bookmarks/test/bookmark_earl_grey_app_interface.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_constants.h"
@@ -215,10 +216,9 @@ id<GREYMatcher> SearchIconButton() {
 - (void)addFolderWithName:(NSString*)name
                 inStorage:(BookmarkStorageType)storageType {
   // Wait for folder picker to appear.
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)];
 
   // Tap on "Create New Folder."
   NSString* accessibilityId =
@@ -229,16 +229,17 @@ id<GREYMatcher> SearchIconButton() {
       performAction:grey_tap()];
 
   // Verify the folder creator is displayed.
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kBookmarkFolderCreateViewContainerIdentifier)]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:
+          grey_accessibilityID(kBookmarkFolderCreateViewContainerIdentifier)];
 
   // Change the name of the folder.
   if (name.length > 0) {
-    [[EarlGrey
-        selectElementWithMatcher:[self
-                                     textFieldMatcherForID:@"Title_textField"]]
+    id<GREYMatcher> textFieldMatcher =
+        [self textFieldMatcherForID:@"Title_textField"];
+    [ChromeEarlGrey
+        waitForSufficientlyVisibleElementWithMatcher:textFieldMatcher];
+    [[EarlGrey selectElementWithMatcher:textFieldMatcher]
         performAction:grey_replaceText(name)];
   }
 
@@ -263,28 +264,21 @@ id<GREYMatcher> SearchIconButton() {
 
 - (void)closeUndoSnackbarAndWait {
   id<GREYMatcher> snackbar_matcher = chrome_test_util::SnackbarViewMatcher();
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:snackbar_matcher];
   [[EarlGrey selectElementWithMatcher:snackbar_matcher]
       performAction:grey_tap()];
-  // Wait until it's gone.
-  ConditionBlock condition = ^{
-    NSError* error = nil;
-    [[EarlGrey
-        selectElementWithMatcher:
-            grey_allOf(grey_accessibilityID(kSnackbarButtonAccessibilityId),
-                       grey_accessibilityLabel(l10n_util::GetNSString(
-                           IDS_IOS_BOOKMARK_NEW_UNDO_BUTTON_TITLE)),
-                       nil)] assertWithMatcher:grey_notVisible() error:&error];
-    return error == nil;
-  };
-  EG_TEST_HELPER_ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
-                                 base::Seconds(10), condition),
-                             @"Waiting for undo toast to go away");
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:snackbar_matcher
+                                                 timeout:base::Seconds(10)];
 }
 
 - (void)renameBookmarkFolderWithFolderTitle:(NSString*)folderTitle {
   NSString* titleIdentifier = @"Title_textField";
-  [[EarlGrey
-      selectElementWithMatcher:[self textFieldMatcherForID:titleIdentifier]]
+  id<GREYMatcher> textFieldMatcher =
+      [self textFieldMatcherForID:titleIdentifier];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:textFieldMatcher];
+  [[EarlGrey selectElementWithMatcher:textFieldMatcher]
       performAction:grey_replaceText(folderTitle)];
 }
 
@@ -292,13 +286,14 @@ id<GREYMatcher> SearchIconButton() {
   id<GREYMatcher> contextBarDoneButtonMatcher =
       ContextBarTrailingButtonWithLabel(
           [BookmarkEarlGreyUI contextBarCancelString]);
-  [[EarlGrey
-      selectElementWithMatcher:grey_anyOf(
-                                   grey_allOf(contextBarDoneButtonMatcher,
-                                              grey_notNil(), nil),
-                                   grey_allOf(BookmarksHomeDoneButton(),
-                                              grey_notNil(), nil),
-                                   nil)] performAction:grey_tap()];
+  id<GREYMatcher> doneButtonMatcher = grey_anyOf(
+      grey_allOf(contextBarDoneButtonMatcher, grey_notNil(), nil),
+      grey_allOf(BookmarksHomeDoneButton(), grey_notNil(), nil), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:doneButtonMatcher];
+  [[EarlGrey selectElementWithMatcher:doneButtonMatcher]
+      performAction:grey_tap()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:contextBarDoneButtonMatcher];
 }
 
 - (void)selectUrlsAndTapOnContextBarButtonWithLabelId:(int)buttonLabelId {
@@ -362,10 +357,18 @@ id<GREYMatcher> SearchIconButton() {
 }
 
 - (void)dismissContextMenu {
-  // Since there are is no cancel action on the iOS 13 context menus, dismiss
-  // by tapping elsewhere (on the key window).
-  [[EarlGrey selectElementWithMatcher:grey_keyWindow()]
-      performAction:grey_tap()];
+  // When EarlGrey injects a long press to present a UITableView context menu,
+  // presenting `_UIContextMenuContainerView` can detach the cell before
+  // `GREYTouchInjector` delivers `UITouchPhaseEnded`, leaving UITableView's
+  // pending selection index path set to the long-pressed row. Clear any
+  // lingering pending selection before and after dismissing the context menu
+  // so neither the dismissal tap nor a subsequent tap selects the long-pressed
+  // row.
+  [BookmarkEarlGreyAppInterface cancelBookmarksTableViewTouches];
+  [ChromeEarlGreyUI dismissContextMenuIfPresent];
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
+                      grey_kindOfClassName(@"_UIContextMenuContainerView")];
+  [BookmarkEarlGreyAppInterface cancelBookmarksTableViewTouches];
 }
 
 - (void)verifyActionSheetsForSingleURLWithEditEnabled:(BOOL)editEnabled {
@@ -402,110 +405,64 @@ id<GREYMatcher> SearchIconButton() {
       assertWithMatcher:grey_sufficientlyVisible()];
 }
 
-- (void)verifyActionSheetsForSingleFolderWithEditEnabled:(BOOL)editEnabled {
-  // Verify it shows the action sheets.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                          kBookmarksHomeContextMenuIdentifier)]
-      assertWithMatcher:grey_sufficientlyVisible()];
-
-  // Verify options on the action sheets.
-  // Verify that the edit menu option is enabled/disabled according to
-  // `editEnabled`.
-  id<GREYMatcher> matcher =
-      editEnabled ? grey_sufficientlyVisible()
-                  : grey_accessibilityTrait(UIAccessibilityTraitNotEnabled);
-  [[EarlGrey
-      selectElementWithMatcher:ButtonWithAccessibilityLabelId(
-                                   IDS_IOS_BOOKMARK_CONTEXT_MENU_EDIT_FOLDER)]
-      assertWithMatcher:matcher];
-
-  [[EarlGrey selectElementWithMatcher:ButtonWithAccessibilityLabelId(
-                                          IDS_IOS_BOOKMARK_CONTEXT_MENU_MOVE)]
-      assertWithMatcher:matcher];
-}
-
-- (void)dismissActionSheets {
-  // Verify it shows the context menu.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                          kBookmarksHomeContextMenuIdentifier)]
-      assertWithMatcher:grey_sufficientlyVisible()];
-
-  // Dismiss the context menu. On non compact width tap the Bookmarks TableView
-  // to dismiss, since there might not be a cancel button.
-  if ([ChromeEarlGrey isCompactWidth]) {
-    [[EarlGrey
-        selectElementWithMatcher:ButtonWithAccessibilityLabelId(IDS_CANCEL)]
-        performAction:grey_tap()];
-  } else {
-    [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                            kBookmarksHomeTableViewIdentifier)]
-        performAction:grey_tap()];
-  }
-}
-
 - (void)verifyContextBarInDefaultStateWithSelectEnabled:(BOOL)selectEnabled
                                        newFolderEnabled:(BOOL)newFolderEnabled {
   if (!iOS26_OR_ABOVE()) {
     // Verify the context bar is shown.
-    [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                            kBookmarksHomeUIToolbarIdentifier)]
-        assertWithMatcher:grey_notNil()];
+    [ChromeEarlGrey
+        waitForUIElementToAppearWithMatcher:
+            grey_accessibilityID(kBookmarksHomeUIToolbarIdentifier)];
   }
 
   // Verify context bar shows enabled "New Folder" and enabled "Select".
-  [[EarlGrey selectElementWithMatcher:ContextBarLeadingButtonWithLabel(
-                                          [BookmarkEarlGreyUI
-                                              contextBarNewFolderString])]
-      assertWithMatcher:grey_allOf(grey_notNil(),
-                                   newFolderEnabled
-                                       ? grey_enabled()
-                                       : grey_accessibilityTrait(
-                                             UIAccessibilityTraitNotEnabled),
-                                   nil)];
-  [[EarlGrey
-      selectElementWithMatcher:ContextBarCenterButtonWithLabel(
-                                   [BookmarkEarlGreyUI contextBarMoreString])]
-      assertWithMatcher:grey_nil()];
-  [[EarlGrey
-      selectElementWithMatcher:ContextBarTrailingButtonWithLabel(
-                                   [BookmarkEarlGreyUI contextBarSelectString])]
-      assertWithMatcher:grey_allOf(grey_notNil(),
-                                   selectEnabled
-                                       ? grey_enabled()
-                                       : grey_accessibilityTrait(
-                                             UIAccessibilityTraitNotEnabled),
-                                   nil)];
+  id<GREYMatcher> leadingButtonMatcher =
+      grey_allOf(ContextBarLeadingButtonWithLabel(
+                     [BookmarkEarlGreyUI contextBarNewFolderString]),
+                 newFolderEnabled
+                     ? grey_enabled()
+                     : grey_accessibilityTrait(UIAccessibilityTraitNotEnabled),
+                 nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:leadingButtonMatcher];
+
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:ContextBarCenterButtonWithLabel(
+                                                 [BookmarkEarlGreyUI
+                                                     contextBarMoreString])];
+
+  id<GREYMatcher> trailingButtonMatcher = grey_allOf(
+      ContextBarTrailingButtonWithLabel(
+          [BookmarkEarlGreyUI contextBarSelectString]),
+      selectEnabled ? grey_enabled()
+                    : grey_accessibilityTrait(UIAccessibilityTraitNotEnabled),
+      nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:trailingButtonMatcher];
 }
 
 - (void)verifyContextBarInEditMode {
   if (!iOS26_OR_ABOVE()) {
     // Verify the context bar is shown.
-    [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                            kBookmarksHomeUIToolbarIdentifier)]
-        assertWithMatcher:grey_notNil()];
+    [ChromeEarlGrey
+        waitForUIElementToAppearWithMatcher:
+            grey_accessibilityID(kBookmarksHomeUIToolbarIdentifier)];
   }
 
-  [[EarlGrey
-      selectElementWithMatcher:ContextBarCenterButtonWithLabel(
-                                   [BookmarkEarlGreyUI contextBarMoreString])]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:ContextBarCenterButtonWithLabel(
+                                              [BookmarkEarlGreyUI
+                                                  contextBarMoreString])];
 }
 
 - (void)verifyFolderFlowIsClosed {
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kBookmarkFolderCreateViewContainerIdentifier)]
-      assertWithMatcher:grey_notVisible()];
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)]
-      assertWithMatcher:grey_notVisible()];
-  [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   kBookmarkFolderEditViewContainerIdentifier)]
-      assertWithMatcher:grey_notVisible()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderCreateViewContainerIdentifier)];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderEditViewContainerIdentifier)];
 }
-
 - (void)verifyEmptyBackgroundAppears {
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
                       grey_accessibilityID(kTableViewIllustratedEmptyViewID)];
@@ -586,23 +543,25 @@ id<GREYMatcher> SearchIconButton() {
 }
 
 - (void)openFolderPicker {
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(
-                                   grey_accessibilityID(@"Change Folder"),
-                                   grey_sufficientlyVisible(), nil)]
+  id<GREYMatcher> changeFolderMatcher = grey_allOf(
+      grey_accessibilityID(@"Change Folder"), grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:changeFolderMatcher];
+  [[EarlGrey selectElementWithMatcher:changeFolderMatcher]
       performAction:grey_tap()];
 }
 
 - (void)assertChangeFolderIsCorrectlySet:(NSString*)parentName
                               kindOfTest:
                                   (chrome_test_util::KindOfTest)kindOfTest {
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(
-                                   grey_accessibilityID(@"Change Folder"),
-                                   grey_accessibilityLabel(
-                                       FolderLabel(parentName, kindOfTest)),
-                                   grey_sufficientlyVisible(), nil)]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:grey_allOf(
+                                              grey_accessibilityID(
+                                                  @"Change Folder"),
+                                              grey_accessibilityLabel(
+                                                  FolderLabel(parentName,
+                                                              kindOfTest)),
+                                              grey_sufficientlyVisible(), nil)];
 }
 
 - (void)tapOnContextMenuButton:(int)menuButtonId
@@ -616,13 +575,16 @@ id<GREYMatcher> SearchIconButton() {
                                    [BookmarkEarlGreyUI contextBarMoreString])]
       performAction:grey_tap()];
 
-  [[EarlGrey selectElementWithMatcher:
-                 chrome_test_util::ActionSheetItemWithAccessibilityLabelId(
-                     menuButtonId)] performAction:grey_tap()];
+  id<GREYMatcher> actionSheetItem =
+      chrome_test_util::ActionSheetItemWithAccessibilityLabelId(menuButtonId);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:actionSheetItem];
+  [[EarlGrey selectElementWithMatcher:actionSheetItem]
+      performAction:grey_tap()];
 
   // Verify that the edit page (editor) is present.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(editorId)]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:grey_accessibilityID(
+                                                       editorId)];
 
   // Verify current parent folder for is correct.
   [self assertChangeFolderIsCorrectlySet:sourceFolder kindOfTest:kindOfTest];
@@ -630,25 +592,27 @@ id<GREYMatcher> SearchIconButton() {
   [BookmarkEarlGreyUI openFolderPicker];
 
   // Verify folder picker UI is displayed.
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)]
-      assertWithMatcher:grey_sufficientlyVisible()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)];
 
   // Select the new destination folder. Use grey_ancestor since
   // BookmarksHomeTableView might be visible on the background on non-compact
   // widthts, and there might be a "destinationFolder" node there as well.
-  [[EarlGrey selectElementWithMatcher:
-                 grey_allOf(TappableBookmarkNodeWithLabel(destinationFolder),
-                            grey_ancestor(grey_accessibilityID(
-                                kBookmarkFolderPickerViewContainerIdentifier)),
-                            nil)] performAction:grey_tap()];
+  id<GREYMatcher> destinationFolderMatcher = grey_allOf(
+      TappableBookmarkNodeWithLabel(destinationFolder),
+      grey_ancestor(
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)),
+      nil);
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:destinationFolderMatcher];
+  [[EarlGrey selectElementWithMatcher:destinationFolderMatcher]
+      performAction:grey_tap()];
 
   // Verify folder picker is dismissed.
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)]
-      assertWithMatcher:grey_notVisible()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:
+          grey_accessibilityID(kBookmarkFolderPickerViewContainerIdentifier)];
 
   // Verify parent folder has been changed in edit page.
   [self assertChangeFolderIsCorrectlySet:destinationFolder
@@ -661,15 +625,15 @@ id<GREYMatcher> SearchIconButton() {
   if ([editorId isEqualToString:kBookmarkFolderEditViewContainerIdentifier]) {
     dismissMatcher = BookmarksSaveEditFolderButton();
   }
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:dismissMatcher];
   [[EarlGrey selectElementWithMatcher:dismissMatcher] performAction:grey_tap()];
 
   // Verify the Editor was dismissed.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(editorId)]
-      assertWithMatcher:grey_notVisible()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:grey_accessibilityID(editorId)];
 
   [BookmarkEarlGreyUI closeUndoSnackbarAndWait];
 }
-
 - (void)tapOnLongPressContextMenuButton:(id<GREYMatcher>)actionMatcher
                                  onItem:(id<GREYMatcher>)item
                              openEditor:(NSString*)editorId
@@ -679,21 +643,28 @@ id<GREYMatcher> SearchIconButton() {
   // Invoke Edit through item context menu.
   [[EarlGrey selectElementWithMatcher:item] performAction:grey_longPress()];
 
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:actionMatcher];
   [[EarlGrey selectElementWithMatcher:actionMatcher] performAction:grey_tap()];
 
   // Verify that the editor is present.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(editorId)]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:grey_accessibilityID(
+                                                       editorId)];
 
   // Edit textfield.
-  [[EarlGrey selectElementWithMatcher:[self textFieldMatcherForID:textFieldId]]
+  id<GREYMatcher> textFieldMatcher = [self textFieldMatcherForID:textFieldId];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:textFieldMatcher];
+  [[EarlGrey selectElementWithMatcher:textFieldMatcher]
       performAction:grey_replaceText(newName)];
 
   // Dismiss editor.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(dismissButtonId)]
+  id<GREYMatcher> dismissButtonMatcher = grey_accessibilityID(dismissButtonId);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:dismissButtonMatcher];
+  [[EarlGrey selectElementWithMatcher:dismissButtonMatcher]
       performAction:grey_tap()];
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(editorId)]
-      assertWithMatcher:grey_notVisible()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:grey_accessibilityID(editorId)];
 }
 
 - (void)tapOnContextMenuButton:(int)menuButtonId
@@ -707,23 +678,31 @@ id<GREYMatcher> SearchIconButton() {
                                    [BookmarkEarlGreyUI contextBarMoreString])]
       performAction:grey_tap()];
 
-  [[EarlGrey selectElementWithMatcher:
-                 chrome_test_util::ActionSheetItemWithAccessibilityLabelId(
-                     menuButtonId)] performAction:grey_tap()];
+  id<GREYMatcher> actionSheetItem =
+      chrome_test_util::ActionSheetItemWithAccessibilityLabelId(menuButtonId);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:actionSheetItem];
+  [[EarlGrey selectElementWithMatcher:actionSheetItem]
+      performAction:grey_tap()];
 
   // Verify that the editor is present.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(editorId)]
-      assertWithMatcher:grey_notNil()];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:grey_accessibilityID(
+                                                       editorId)];
 
   // Edit textfield.
-  [[EarlGrey selectElementWithMatcher:[self textFieldMatcherForID:textFieldId]]
+  id<GREYMatcher> textFieldMatcher = [self textFieldMatcherForID:textFieldId];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:textFieldMatcher];
+  [[EarlGrey selectElementWithMatcher:textFieldMatcher]
       performAction:grey_replaceText(newName)];
 
   // Dismiss editor.
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(dismissButtonId)]
+  id<GREYMatcher> dismissButtonMatcher = grey_accessibilityID(dismissButtonId);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:dismissButtonMatcher];
+  [[EarlGrey selectElementWithMatcher:dismissButtonMatcher]
       performAction:grey_tap()];
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(editorId)]
-      assertWithMatcher:grey_notVisible()];
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:grey_accessibilityID(editorId)];
   [ChromeEarlGreyUI waitForAppToIdle];
 }
 
@@ -750,20 +729,23 @@ id<GREYMatcher> SearchIconButton() {
 - (void)createNewBookmarkFolderWithFolderTitle:(NSString*)folderTitle
                                    pressReturn:(BOOL)pressReturn {
   // Click on "New Folder".
-  [[EarlGrey
-      selectElementWithMatcher:grey_accessibilityID(
-                                   kBookmarksHomeLeadingButtonIdentifier)]
+  id<GREYMatcher> newFolderButtonMatcher =
+      grey_accessibilityID(kBookmarksHomeLeadingButtonIdentifier);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:newFolderButtonMatcher];
+  [[EarlGrey selectElementWithMatcher:newFolderButtonMatcher]
       performAction:grey_tap()];
 
   NSString* titleIdentifier = @"bookmark_editing_text";
+  id<GREYMatcher> textFieldMatcher =
+      [self textFieldMatcherForID:titleIdentifier];
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:textFieldMatcher];
 
   // Type the folder title, tapping to provide focus first so that we can \n
   // later.
-  [[EarlGrey
-      selectElementWithMatcher:[self textFieldMatcherForID:titleIdentifier]]
+  [[EarlGrey selectElementWithMatcher:textFieldMatcher]
       performAction:grey_tap()];
-  [[EarlGrey
-      selectElementWithMatcher:[self textFieldMatcherForID:titleIdentifier]]
+  [[EarlGrey selectElementWithMatcher:textFieldMatcher]
       performAction:grey_replaceText(folderTitle)];
 
   // Press the keyboard return key.
@@ -773,17 +755,9 @@ id<GREYMatcher> SearchIconButton() {
     [ChromeEarlGrey simulatePhysicalKeyboardEvent:@"\n" flags:0];
 
     // Wait until the editing textfield is gone.
-    ConditionBlock condition = ^{
-      NSError* error = nil;
-      [[EarlGrey
-          selectElementWithMatcher:[self textFieldMatcherForID:titleIdentifier]]
-          assertWithMatcher:grey_notVisible()
-                      error:&error];
-      return error == nil;
-    };
-    GREYAssert(base::test::ios::WaitUntilConditionOrTimeout(base::Seconds(10),
-                                                            condition),
-               @"Waiting for textfield to go away");
+    [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
+                        [self textFieldMatcherForID:titleIdentifier]
+                                                   timeout:base::Seconds(10)];
   }
 }
 

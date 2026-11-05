@@ -21,8 +21,12 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "content/browser/embedder_isolation_info.h"
+#include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/site_instance_impl.h"
+#include "content/browser/url_info.h"
 #include "content/browser/worker_host/mock_shared_worker.h"
 #include "content/browser/worker_host/shared_worker_connector_impl.h"
 #include "content/common/features.h"
@@ -40,9 +44,13 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "services/network/public/cpp/features.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy_features_bitset.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/messaging/message_port_channel.h"
 #include "third_party/blink/public/mojom/worker/shared_worker_info.mojom.h"
 #include "url/origin.h"
@@ -62,7 +70,8 @@ void ConnectToSharedWorkerWithContextType(
     const std::string& name,
     blink::mojom::SharedWorkerCreationContextType creation_context_type,
     MockSharedWorkerClient* client,
-    MessagePortChannel* local_port) {
+    MessagePortChannel* local_port,
+    bool flush_connector = true) {
   auto options = blink::mojom::WorkerOptions::New();
   options->name = name;
   blink::mojom::SharedWorkerInfoPtr info(blink::mojom::SharedWorkerInfo::New(
@@ -77,7 +86,7 @@ void ConnectToSharedWorkerWithContextType(
           }(),
           GURL(), blink::mojom::InsecureRequestsPolicy::kDoNotUpgrade),
       blink::mojom::SharedWorkerSameSiteCookies::kAll,
-      /*extended_lifetime=*/false));
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset()));
 
   blink::MessagePortDescriptorPair pipe;
   *local_port = MessagePortChannel(pipe.TakePort0());
@@ -88,6 +97,9 @@ void ConnectToSharedWorkerWithContextType(
   connector->Connect(std::move(info), std::move(client_proxy),
                      creation_context_type, pipe.TakePort1(),
                      mojo::NullRemote());
+  if (flush_connector) {
+    connector.FlushForTesting();
+  }
 }
 
 void ConnectToSharedWorker(
@@ -95,11 +107,12 @@ void ConnectToSharedWorker(
     const GURL& url,
     const std::string& name,
     MockSharedWorkerClient* client,
-    MessagePortChannel* local_port) {
+    MessagePortChannel* local_port,
+    bool flush_connector = true) {
   ConnectToSharedWorkerWithContextType(
       std::move(connector), url, name,
       blink::mojom::SharedWorkerCreationContextType::kSecure, client,
-      local_port);
+      local_port, flush_connector);
 }
 
 }  // namespace
@@ -380,7 +393,7 @@ TEST_F(SharedWorkerServiceImplTest, WebContentsDestroyed) {
   const GURL kUrl("http://example.com/w.js");
   ConnectToSharedWorker(
       MakeSharedWorkerConnector(render_frame_host->GetGlobalId()), kUrl, "name",
-      &client, &local_port);
+      &client, &local_port, /*flush_connector=*/false);
 
   // Now asynchronously destroy |web_contents| so that the startup sequence at
   // least reaches SharedWorkerServiceImpl::StartWorker().
@@ -1629,11 +1642,11 @@ TEST_F(SharedWorkerServiceImplTest, FreezeAndResumeOnBFCache) {
   RenderFrameHostImpl* rfh_impl =
       static_cast<RenderFrameHostImpl*>(render_frame_host);
   rfh_impl->SetLifecycleState(
-      RenderFrameHostImpl::LifecycleStateImpl::kInBackForwardCache);
+      RenderFrameHostLifecycleStateImpl::kInBackForwardCache);
   // The worker is frozen when the frame is in BackForwardCache.
   EXPECT_TRUE(base::test::RunUntil([&]() { return worker.IsFrozen(); }));
 
-  rfh_impl->SetLifecycleState(RenderFrameHostImpl::LifecycleStateImpl::kActive);
+  rfh_impl->SetLifecycleState(RenderFrameHostLifecycleStateImpl::kActive);
   // The worker is resumed when the frame is active.
   EXPECT_TRUE(base::test::RunUntil([&]() { return !worker.IsFrozen(); }));
 }
@@ -1685,7 +1698,7 @@ TEST_F(SharedWorkerServiceImplTest, FreezeAndResumeOnAddClient) {
 
   RenderFrameHostImpl* rfh_impl1 = static_cast<RenderFrameHostImpl*>(rfh1);
   rfh_impl1->SetLifecycleState(
-      RenderFrameHostImpl::LifecycleStateImpl::kInBackForwardCache);
+      RenderFrameHostLifecycleStateImpl::kInBackForwardCache);
   // The worker is frozen when the frame is in BackForwardCache.
   EXPECT_TRUE(base::test::RunUntil([&]() { return worker.IsFrozen(); }));
 
@@ -1732,9 +1745,9 @@ TEST_P(SharedWorkerServiceImplCreationContextTest,
     case ContextTypeTestCase::kMismatchRendererSecure: {
       auto policies = rfh->policy_container_host()->policies().Clone();
       policies.is_web_secure_context = false;
-      rfh->SetPolicyContainerHost(
+      rfh->SetPolicyContainerHostForTesting(
           base::MakeRefCounted<PolicyContainerHost>(std::move(policies)),
-          base::UnguessableToken::Create());
+          blink::InitiatorStateToken());
     }
       renderer_type = blink::mojom::SharedWorkerCreationContextType::kSecure;
       expected_uma_bucket =
@@ -1805,9 +1818,9 @@ TEST_P(SharedWorkerServiceImplCreationContextTest, SpoofingProtection) {
   {
     auto policies = rfh_a->policy_container_host()->policies().Clone();
     policies.is_web_secure_context = false;
-    rfh_a->SetPolicyContainerHost(
+    rfh_a->SetPolicyContainerHostForTesting(
         base::MakeRefCounted<PolicyContainerHost>(std::move(policies)),
-        base::UnguessableToken::Create());
+        blink::InitiatorStateToken());
   }
 
   MockSharedWorkerClient client_a;
@@ -1882,7 +1895,7 @@ TEST_F(SharedWorkerServiceImplTest, ExtensionCrossOriginSameOriginCheck) {
           }(),
           GURL(), blink::mojom::InsecureRequestsPolicy::kDoNotUpgrade),
       blink::mojom::SharedWorkerSameSiteCookies::kAll,
-      /*extended_lifetime=*/false));
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset()));
 
   blink::MessagePortDescriptorPair pipe;
   mojo::PendingRemote<blink::mojom::SharedWorkerClient> client_proxy;
@@ -1941,7 +1954,7 @@ TEST_F(SharedWorkerServiceImplTest, IwaCrossOriginSameOriginCheck) {
           }(),
           GURL(), blink::mojom::InsecureRequestsPolicy::kDoNotUpgrade),
       blink::mojom::SharedWorkerSameSiteCookies::kAll,
-      /*extended_lifetime=*/false));
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset()));
 
   blink::MessagePortDescriptorPair pipe;
   mojo::PendingRemote<blink::mojom::SharedWorkerClient> client_proxy;
@@ -1998,7 +2011,7 @@ TEST_F(SharedWorkerServiceImplTest, ExtensionSameOriginCheckFlagOff) {
           }(),
           GURL(), blink::mojom::InsecureRequestsPolicy::kDoNotUpgrade),
       blink::mojom::SharedWorkerSameSiteCookies::kAll,
-      /*extended_lifetime=*/false));
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset()));
 
   blink::MessagePortDescriptorPair pipe;
   mojo::PendingRemote<blink::mojom::SharedWorkerClient> client_proxy;
@@ -2027,6 +2040,361 @@ TEST_F(SharedWorkerServiceImplTest, ExtensionSameOriginCheckFlagOff) {
            renderer_host->bad_msg_count() > initial_bad_msg_count;
   }));
   EXPECT_EQ(initial_bad_msg_count, renderer_host->bad_msg_count());
+}
+
+TEST_F(SharedWorkerServiceImplTest, EvictBFCachedClientsIfLastActive) {
+  std::unique_ptr<TestWebContents> web_contents1 =
+      CreateWebContents(GURL("http://example.com/"));
+  TestRenderFrameHost* rfh1 = web_contents1->GetPrimaryMainFrame();
+  MockRenderProcessHost* renderer_host1 = rfh1->GetProcess();
+  const int process_id1 = renderer_host1->GetDeprecatedID();
+  renderer_host1->OverrideBinderForTesting(
+      blink::mojom::SharedWorkerFactory::Name_,
+      base::BindRepeating(&SharedWorkerServiceImplTest::BindSharedWorkerFactory,
+                          base::Unretained(this), process_id1));
+
+  std::unique_ptr<TestWebContents> web_contents2 =
+      CreateWebContents(GURL("http://example.com/"));
+  TestRenderFrameHost* rfh2 = web_contents2->GetPrimaryMainFrame();
+
+  MockSharedWorkerClient client1;
+  MessagePortChannel local_port1;
+  const GURL kUrl("http://example.com/w.js");
+  ConnectToSharedWorker(MakeSharedWorkerConnector(rfh1->GetGlobalId()), kUrl,
+                        "name", &client1, &local_port1);
+
+  MockSharedWorkerClient client2;
+  MessagePortChannel local_port2;
+  ConnectToSharedWorker(MakeSharedWorkerConnector(rfh2->GetGlobalId()), kUrl,
+                        "name", &client2, &local_port2);
+
+  RenderFrameHostImpl* rfh_impl1 = static_cast<RenderFrameHostImpl*>(rfh1);
+  RenderFrameHostImpl* rfh_impl2 = static_cast<RenderFrameHostImpl*>(rfh2);
+
+  SharedWorkerServiceImpl* service = static_cast<SharedWorkerServiceImpl*>(
+      browser_context_->GetDefaultStoragePartition()->GetSharedWorkerService());
+
+  // 1. When rfh2 is Active:
+  // EvictBFCachedClientsIfLastActive returns false because rfh2 is active.
+  EXPECT_FALSE(service->EvictBFCachedClientsIfLastActive(rfh_impl1));
+  EXPECT_FALSE(rfh_impl2->is_evicted_from_back_forward_cache());
+
+  // 2. When rfh2 is in BackForwardCache:
+  rfh_impl2->SetLifecycleState(
+      RenderFrameHostImpl::LifecycleStateImpl::kInBackForwardCache);
+  // EvictBFCachedClientsIfLastActive returns true (rfh1 is last active client)
+  // and evicts rfh2 from BFCache.
+  EXPECT_TRUE(service->EvictBFCachedClientsIfLastActive(rfh_impl1));
+  EXPECT_TRUE(rfh_impl2->is_evicted_from_back_forward_cache());
+
+  // 3. When a client (rfh3) is pending deletion (neither active nor in
+  // BFCache):
+  std::unique_ptr<TestWebContents> web_contents3 =
+      CreateWebContents(GURL("http://example.com/"));
+  TestRenderFrameHost* rfh3 = web_contents3->GetPrimaryMainFrame();
+  MockSharedWorkerClient client3;
+  MessagePortChannel local_port3;
+  ConnectToSharedWorker(MakeSharedWorkerConnector(rfh3->GetGlobalId()), kUrl,
+                        "name", &client3, &local_port3);
+  RenderFrameHostImpl* rfh_impl3 = static_cast<RenderFrameHostImpl*>(rfh3);
+
+  rfh_impl3->SetLifecycleState(
+      RenderFrameHostImpl::LifecycleStateImpl::kRunningUnloadHandlers);
+  // EvictBFCachedClientsIfLastActive returns true because rfh1 is the last
+  // active client (rfh3 is pending deletion, so not active), but rfh3 is not
+  // evicted from BFCache because it is not in BFCache.
+  EXPECT_TRUE(service->EvictBFCachedClientsIfLastActive(rfh_impl1));
+  EXPECT_FALSE(rfh_impl3->is_evicted_from_back_forward_cache());
+}
+
+// Verifies that ConnectToWorker fails with OnScriptLoadFailed when the
+// requesting process does not have data access permission for the origin.
+TEST_F(SharedWorkerServiceImplTest, CanAccessDataForOriginDenied) {
+  const GURL kUrl("https://example.com/");
+  const GURL kWorkerUrl("https://example.com/worker.js");
+
+  std::unique_ptr<TestWebContents> web_contents = CreateWebContents(kUrl);
+  TestRenderFrameHost* render_frame_host = web_contents->GetPrimaryMainFrame();
+  MockRenderProcessHost* renderer_host = render_frame_host->GetProcess();
+
+  UrlInfo pdf_url_info(UrlInfoInit(kUrl).WithEmbedderIsolationInfo(
+      EmbedderIsolationInfo::CreateForPdf()));
+  scoped_refptr<SiteInstanceImpl> pdf_site_instance =
+      SiteInstanceImpl::CreateForUrlInfo(browser_context_.get(), pdf_url_info,
+                                         /*is_guest=*/false,
+                                         /*is_fenced=*/false,
+                                         /*is_fixed_storage_partition=*/false);
+  auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
+  policy->Remove(renderer_host->GetID());
+  policy->AddForTesting(renderer_host->GetID(), browser_context_.get());
+  policy->LockProcess(
+      pdf_site_instance->GetIsolationContext(), renderer_host->GetID(),
+      ProcessLock::FromSiteInfo(pdf_site_instance->GetSiteInfo()));
+
+  ASSERT_FALSE(policy->CanAccessDataForOrigin(
+      renderer_host->GetID().value(),
+      render_frame_host->GetStorageKey().origin()));
+
+  auto options = blink::mojom::WorkerOptions::New();
+  options->name = "name";
+  blink::mojom::SharedWorkerInfoPtr info(blink::mojom::SharedWorkerInfo::New(
+      kWorkerUrl, std::move(options),
+      std::vector<network::mojom::ContentSecurityPolicyPtr>(),
+      blink::mojom::FetchClientSettingsObject::New(
+          []() {
+            auto policies = blink::mojom::PolicyContainerPolicies::New();
+            policies->referrer_policy =
+                network::mojom::ReferrerPolicy::kDefault;
+            return policies;
+          }(),
+          GURL(), blink::mojom::InsecureRequestsPolicy::kDoNotUpgrade),
+      blink::mojom::SharedWorkerSameSiteCookies::kAll,
+      /*extended_lifetime=*/false, network::PermissionsPolicyFeaturesBitset()));
+
+  blink::MessagePortDescriptorPair pipe;
+  mojo::PendingRemote<blink::mojom::SharedWorkerClient> client_proxy;
+  MockSharedWorkerClient client;
+  client.Bind(client_proxy.InitWithNewPipeAndPassReceiver());
+
+  SharedWorkerServiceImpl* service = static_cast<SharedWorkerServiceImpl*>(
+      browser_context_->GetDefaultStoragePartition()->GetSharedWorkerService());
+
+  service->ConnectToWorker(
+      render_frame_host->GetGlobalId(), std::move(info),
+      std::move(client_proxy),
+      blink::mojom::SharedWorkerCreationContextType::kSecure,
+      blink::MessagePortChannel(pipe.TakePort1()), nullptr, std::nullopt);
+
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return client.CheckReceivedOnScriptLoadFailed(); }));
+}
+
+TEST_F(SharedWorkerServiceImplTest,
+       InvalidPermissionsPolicyTriggersBadMessage) {
+  base::test::ScopedFeatureList feature_list(
+      blink::features::kPermissionsPolicyForSharedWorkers);
+
+  const GURL kUrl("https://example.com/");
+  const GURL kWorkerUrl("https://example.com/w.js");
+
+  std::unique_ptr<TestWebContents> web_contents = CreateWebContents(kUrl);
+  TestRenderFrameHost* render_frame_host = web_contents->GetPrimaryMainFrame();
+
+  // Navigate with a Permissions-Policy header that disables kUsb and restricts
+  // kHid to 'self', while leaving kSerial without a declared policy (enabled
+  // for 'self' by default).
+  network::ParsedPermissionsPolicy header_policy(2);
+  header_policy[0].feature = network::mojom::PermissionsPolicyFeature::kUsb;
+  header_policy[1].feature = network::mojom::PermissionsPolicyFeature::kHid;
+  header_policy[1].self_if_matches = url::Origin::Create(kUrl);
+  auto navigation_simulator =
+      NavigationSimulator::CreateRendererInitiated(kUrl, render_frame_host);
+  navigation_simulator->SetPermissionsPolicyHeader(header_policy);
+  navigation_simulator->Commit();
+  render_frame_host = web_contents->GetPrimaryMainFrame();
+
+  auto connect_with_policy =
+      [&](mojo::Remote<blink::mojom::SharedWorkerConnector>& connector,
+          const GURL& worker_url,
+          const network::PermissionsPolicyFeaturesBitset& worker_policy) {
+        auto options = blink::mojom::WorkerOptions::New();
+        options->name = "name";
+        blink::mojom::SharedWorkerInfoPtr info(
+            blink::mojom::SharedWorkerInfo::New(
+                worker_url, std::move(options),
+                std::vector<network::mojom::ContentSecurityPolicyPtr>(),
+                blink::mojom::FetchClientSettingsObject::New(
+                    []() {
+                      auto policies =
+                          blink::mojom::PolicyContainerPolicies::New();
+                      policies->referrer_policy =
+                          network::mojom::ReferrerPolicy::kDefault;
+                      return policies;
+                    }(),
+                    GURL(),
+                    blink::mojom::InsecureRequestsPolicy::kDoNotUpgrade),
+                blink::mojom::SharedWorkerSameSiteCookies::kAll,
+                /*extended_lifetime=*/false, worker_policy));
+
+        blink::MessagePortDescriptorPair pipe;
+        mojo::PendingRemote<blink::mojom::SharedWorkerClient> client_proxy;
+        std::ignore = client_proxy.InitWithNewPipeAndPassReceiver();
+
+        connector->Connect(
+            std::move(info), std::move(client_proxy),
+            blink::mojom::SharedWorkerCreationContextType::kSecure,
+            pipe.TakePort1(), mojo::NullRemote());
+        connector.FlushForTesting();
+      };
+
+  // 1. Requesting an allowed feature (kSerial) should NOT trigger a bad
+  // message.
+  {
+    mojo::Remote<blink::mojom::SharedWorkerConnector> connector =
+        MakeSharedWorkerConnector(render_frame_host->GetGlobalId());
+
+    network::PermissionsPolicyFeaturesBitset valid_policy;
+    valid_policy.Add(network::mojom::PermissionsPolicyFeature::kSerial);
+
+    mojo::test::BadMessageObserver bad_message_observer;
+    connect_with_policy(connector, kWorkerUrl, valid_policy);
+    EXPECT_FALSE(bad_message_observer.got_bad_message());
+  }
+
+  // 2. Requesting a feature disabled in the creator context (kUsb) MUST trigger
+  // SWH_INVALID_PERMISSIONS_POLICY, since the renderer should always check
+  // whether the policy is allowed in the parent context.
+  {
+    mojo::Remote<blink::mojom::SharedWorkerConnector> connector =
+        MakeSharedWorkerConnector(render_frame_host->GetGlobalId());
+
+    network::PermissionsPolicyFeaturesBitset disallowed_policy;
+    disallowed_policy.Add(network::mojom::PermissionsPolicyFeature::kUsb);
+
+    mojo::test::BadMessageObserver bad_message_observer;
+    connect_with_policy(connector, kWorkerUrl, disallowed_policy);
+    EXPECT_EQ("SWH_INVALID_PERMISSIONS_POLICY",
+              bad_message_observer.WaitForBadMessage());
+  }
+
+  // 3. Requesting a feature with a default allowlist of 'self' (kSerial) and no
+  // declared policy in the creator context for a data: URL worker (which has an
+  // opaque origin) should NOT trigger a bad message.
+  {
+    mojo::Remote<blink::mojom::SharedWorkerConnector> connector =
+        MakeSharedWorkerConnector(render_frame_host->GetGlobalId());
+
+    network::PermissionsPolicyFeaturesBitset valid_policy;
+    valid_policy.Add(network::mojom::PermissionsPolicyFeature::kSerial);
+
+    mojo::test::BadMessageObserver bad_message_observer;
+    connect_with_policy(connector, GURL("data:text/javascript,"), valid_policy);
+    EXPECT_FALSE(bad_message_observer.got_bad_message());
+  }
+
+  // 4. Requesting a feature with a declared policy of 'self' (kHid) for a
+  // same-origin worker should NOT trigger a bad message.
+  {
+    mojo::Remote<blink::mojom::SharedWorkerConnector> connector =
+        MakeSharedWorkerConnector(render_frame_host->GetGlobalId());
+
+    network::PermissionsPolicyFeaturesBitset valid_policy;
+    valid_policy.Add(network::mojom::PermissionsPolicyFeature::kHid);
+
+    mojo::test::BadMessageObserver bad_message_observer;
+    connect_with_policy(connector, kWorkerUrl, valid_policy);
+    EXPECT_FALSE(bad_message_observer.got_bad_message());
+  }
+
+  // 5. Requesting a feature with a declared policy of 'self' (kHid) for a
+  // data: URL worker (which has an opaque origin) MUST trigger
+  // SWH_INVALID_PERMISSIONS_POLICY.
+  {
+    mojo::Remote<blink::mojom::SharedWorkerConnector> connector =
+        MakeSharedWorkerConnector(render_frame_host->GetGlobalId());
+
+    network::PermissionsPolicyFeaturesBitset disallowed_policy;
+    disallowed_policy.Add(network::mojom::PermissionsPolicyFeature::kHid);
+
+    mojo::test::BadMessageObserver bad_message_observer;
+    connect_with_policy(connector, GURL("data:text/javascript,"),
+                        disallowed_policy);
+    EXPECT_EQ("SWH_INVALID_PERMISSIONS_POLICY",
+              bad_message_observer.WaitForBadMessage());
+  }
+
+  // 6. Requesting a feature which is not in the creator context's feature list
+  // (kNotFound) MUST trigger SWH_INVALID_PERMISSIONS_POLICY.
+  {
+    mojo::Remote<blink::mojom::SharedWorkerConnector> connector =
+        MakeSharedWorkerConnector(render_frame_host->GetGlobalId());
+
+    ASSERT_FALSE(
+        render_frame_host->GetPermissionsPolicy()->GetFeatureList().contains(
+            network::mojom::PermissionsPolicyFeature::kNotFound));
+    network::PermissionsPolicyFeaturesBitset unknown_policy;
+    unknown_policy.Add(network::mojom::PermissionsPolicyFeature::kNotFound);
+
+    mojo::test::BadMessageObserver bad_message_observer;
+    connect_with_policy(connector, kWorkerUrl, unknown_policy);
+    EXPECT_EQ("SWH_INVALID_PERMISSIONS_POLICY",
+              bad_message_observer.WaitForBadMessage());
+  }
+}
+
+TEST_F(SharedWorkerServiceImplTest,
+       PermissionsPolicyMismatchOnExistingSharedWorker) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      blink::features::kPermissionsPolicyForSharedWorkers);
+
+  const GURL kUrl("https://example.com/");
+  const GURL kWorkerUrl("https://example.com/worker.js");
+
+  std::unique_ptr<TestWebContents> web_contents = CreateWebContents(kUrl);
+  TestRenderFrameHost* render_frame_host = web_contents->GetPrimaryMainFrame();
+
+  auto make_info = [&](const network::PermissionsPolicyFeaturesBitset& policy) {
+    auto options = blink::mojom::WorkerOptions::New();
+    options->name = "name";
+    auto policies = blink::mojom::PolicyContainerPolicies::New();
+    policies->referrer_policy = network::mojom::ReferrerPolicy::kDefault;
+    return blink::mojom::SharedWorkerInfo::New(
+        kWorkerUrl, std::move(options),
+        std::vector<network::mojom::ContentSecurityPolicyPtr>(),
+        blink::mojom::FetchClientSettingsObject::New(
+            std::move(policies), GURL(),
+            blink::mojom::InsecureRequestsPolicy::kDoNotUpgrade),
+        blink::mojom::SharedWorkerSameSiteCookies::kAll,
+        /*extended_lifetime=*/false, policy);
+  };
+
+  network::PermissionsPolicyFeaturesBitset policy;
+  policy.Add(network::mojom::PermissionsPolicyFeature::kSerial);
+  policy.Add(network::mojom::PermissionsPolicyFeature::kUsb);
+
+  SharedWorkerServiceImpl* service = static_cast<SharedWorkerServiceImpl*>(
+      browser_context_->GetDefaultStoragePartition()->GetSharedWorkerService());
+
+  // First client creates the SharedWorker with `{serial, usb}`.
+  blink::MessagePortDescriptorPair pipe1;
+  mojo::PendingRemote<blink::mojom::SharedWorkerClient> client_proxy1;
+  MockSharedWorkerClient client1;
+  client1.Bind(client_proxy1.InitWithNewPipeAndPassReceiver());
+  service->ConnectToWorker(
+      render_frame_host->GetGlobalId(), make_info(policy),
+      std::move(client_proxy1),
+      blink::mojom::SharedWorkerCreationContextType::kSecure,
+      blink::MessagePortChannel(pipe1.TakePort1()), nullptr, std::nullopt);
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return client1.CheckReceivedOnCreated(); }));
+
+  // Second client connects with a mismatched permissions policy (empty).
+  blink::MessagePortDescriptorPair pipe2;
+  mojo::PendingRemote<blink::mojom::SharedWorkerClient> client_proxy2;
+  MockSharedWorkerClient client2;
+  client2.Bind(client_proxy2.InitWithNewPipeAndPassReceiver());
+  service->ConnectToWorker(
+      render_frame_host->GetGlobalId(),
+      make_info(network::PermissionsPolicyFeaturesBitset()),
+      std::move(client_proxy2),
+      blink::mojom::SharedWorkerCreationContextType::kSecure,
+      blink::MessagePortChannel(pipe2.TakePort1()), nullptr, std::nullopt);
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return client2.CheckReceivedOnScriptLoadFailed(); }));
+
+  // Third client connects with a matching permissions policy (`{serial, usb}`).
+  blink::MessagePortDescriptorPair pipe3;
+  mojo::PendingRemote<blink::mojom::SharedWorkerClient> client_proxy3;
+  MockSharedWorkerClient client3;
+  client3.Bind(client_proxy3.InitWithNewPipeAndPassReceiver());
+  service->ConnectToWorker(
+      render_frame_host->GetGlobalId(), make_info(policy),
+      std::move(client_proxy3),
+      blink::mojom::SharedWorkerCreationContextType::kSecure,
+      blink::MessagePortChannel(pipe3.TakePort1()), nullptr, std::nullopt);
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return client3.CheckReceivedOnCreated(); }));
+  EXPECT_FALSE(client3.CheckReceivedOnScriptLoadFailed());
 }
 
 }  // namespace content

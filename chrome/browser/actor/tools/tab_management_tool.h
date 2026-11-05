@@ -8,13 +8,15 @@
 #include "base/callback_list.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/tools/tool.h"
 #include "chrome/browser/actor/tools/tool_callbacks.h"
 #include "chrome/browser/actor/tools/tool_request.h"
-#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
-#include "ui/base/window_open_disposition.h"
+#include "chrome/browser/tab_list/tab_list_interface_observer.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 class BrowserWindowInterface;
+class TabListInterface;
 
 namespace actor {
 
@@ -22,7 +24,7 @@ class ObservationDelayController;
 
 // A tool to manage the tabs in a browser window, e.g. create, close,
 // activate, etc.
-class TabManagementTool : public Tool, public TabStripModelObserver {
+class TabManagementTool : public Tool, public TabListInterfaceObserver {
  public:
   enum Action { kCreate, kActivate, kClose };
 
@@ -30,7 +32,7 @@ class TabManagementTool : public Tool, public TabStripModelObserver {
   TabManagementTool(TaskId task_id,
                     ToolDelegate& tool_delegate,
                     int32_t window,
-                    WindowOpenDisposition create_disposition);
+                    ::ui::mojom::WindowOpenDisposition create_disposition);
   // Activate|Close constructor.
   TabManagementTool(TaskId task_id,
                     ToolDelegate& tool_delegate,
@@ -52,16 +54,22 @@ class TabManagementTool : public Tool, public TabStripModelObserver {
   void UpdateTaskAfterInvoke(ActorTask& task,
                              mojom::ActionResultPtr result,
                              ToolCallback callback) const override;
-  tabs::TabHandle GetTargetTab() const override;
+  ActorSurfaceHandle GetTargetActorSurface() const override;
 
-  // TabStripModelObserver
-  void OnTabStripModelChanged(TabStripModel* tab_strip_model,
-                              const TabStripModelChange& change,
-                              const TabStripSelectionChange& selection) final;
+  // TabListInterfaceObserver:
+  void OnTabAdded(TabListInterface& tab_list,
+                  tabs::TabInterface* tab,
+                  int index) final;
+  void OnActiveTabChanged(TabListInterface& tab_list,
+                          tabs::TabInterface* tab) final;
+  void OnTabRemoved(TabListInterface& tab_list,
+                    tabs::TabInterface* tab,
+                    TabRemovedReason removed_reason) final;
+  void OnTabListDestroyed(TabListInterface& tab_list) final;
 
  private:
-  void CreateTab(BrowserWindowInterface* browser_window_interface);
-  void ActivateTab(BrowserWindowInterface* browser_window_interface);
+  void CreateTab(TabListInterface* tab_list);
+  void ActivateTab(TabListInterface* tab_list);
   void CloseTab();
 
   // Called when the browser with `window_id_` has closed.
@@ -76,7 +84,7 @@ class TabManagementTool : public Tool, public TabStripModelObserver {
   std::optional<tabs::TabHandle> target_tab_;
 
   // If creating a tab, whether to create in the foreground.
-  std::optional<WindowOpenDisposition> create_disposition_;
+  std::optional<::ui::mojom::WindowOpenDisposition> create_disposition_;
 
   // If creating a tab, the window in which to create the tab.
   std::optional<int32_t> window_id_;
@@ -84,6 +92,9 @@ class TabManagementTool : public Tool, public TabStripModelObserver {
   // Subscription to the close event for the BrowserWindowInterface
   // corresponding to `window_id_`.
   base::CallbackListSubscription browser_did_close_subscription_;
+
+  base::ScopedObservation<TabListInterface, TabListInterfaceObserver>
+      tab_list_observation_{this};
 
   base::WeakPtrFactory<TabManagementTool> weak_ptr_factory_{this};
 };

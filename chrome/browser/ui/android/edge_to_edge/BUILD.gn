@@ -13,6 +13,7 @@ android_library("java") {
     "java/src/org/chromium/chrome/browser/ui/edge_to_edge/EdgeToEdgeController.java",
     "java/src/org/chromium/chrome/browser/ui/edge_to_edge/EdgeToEdgeControllerCreator.java",
     "java/src/org/chromium/chrome/browser/ui/edge_to_edge/EdgeToEdgeFieldTrialImpl.java",
+    "java/src/org/chromium/chrome/browser/ui/edge_to_edge/EdgeToEdgeTopScalpSceneLayer.java",
     "java/src/org/chromium/chrome/browser/ui/edge_to_edge/EdgeToEdgeUtils.java",
     "java/src/org/chromium/chrome/browser/ui/edge_to_edge/NavigationBarColorProvider.java",
     "java/src/org/chromium/chrome/browser/ui/edge_to_edge/NoOpTopInsetProvider.java",
@@ -23,7 +24,6 @@ android_library("java") {
   deps = [
     "//base:base_java",
     "//cc:cc_java",
-    "//chrome/browser/android/lifecycle:java",
     "//chrome/browser/browser_controls/android:java",
     "//chrome/browser/flags:java",
     "//chrome/browser/tab:java",
@@ -36,7 +36,7 @@ android_library("java") {
     "//third_party/androidx:androidx_annotation_annotation_experimental_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/androidx:androidx_core_core_java",
-    "//third_party/blink/public/mojom:mojom_core_java",
+    "//third_party/blink/public/mojom:android_mojo_bindings_java",
     "//third_party/jni_zero:jni_zero_java",
     "//ui/android:ui_java",
     "//ui/edge_to_edge:java",
@@ -45,7 +45,10 @@ android_library("java") {
 }
 
 generate_jni("jni_headers") {
-  sources = [ "java/src/org/chromium/chrome/browser/ui/edge_to_edge/EdgeToEdgeBottomChinSceneLayer.java" ]
+  sources = [
+    "java/src/org/chromium/chrome/browser/ui/edge_to_edge/EdgeToEdgeBottomChinSceneLayer.java",
+    "java/src/org/chromium/chrome/browser/ui/edge_to_edge/EdgeToEdgeTopScalpSceneLayer.java",
+  ]
 }
 
 android_library_factory("factory_java") {
@@ -57,6 +60,7 @@ android_library_factory("factory_java") {
     "//chrome/browser/fullscreen/android:java",
     "//chrome/browser/tab:java",
     "//chrome/browser/ui/android/layouts:java",
+    "//chrome/browser/ui/android/theme:java",
     "//third_party/androidx:androidx_appcompat_appcompat_java",
     "//ui/android:ui_no_recycler_view_java",
     "//ui/android:ui_utils_java",

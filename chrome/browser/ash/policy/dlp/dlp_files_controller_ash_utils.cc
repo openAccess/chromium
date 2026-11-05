@@ -10,7 +10,6 @@
 #include "chrome/browser/ash/policy/dlp/files_policy_notification_manager_factory.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_files_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 
 namespace policy::files_controller_ash_utils {
 
@@ -18,7 +17,7 @@ void ShowDlpBlockedFiles(Profile* profile,
                          std::optional<file_manager::io_task::IOTaskId> task_id,
                          std::vector<base::FilePath> blocked_files,
                          dlp::FileAction action) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
 
   auto* fpnm =
       FilesPolicyNotificationManagerFactory::GetForBrowserContext(profile);

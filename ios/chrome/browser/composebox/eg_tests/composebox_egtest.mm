@@ -16,7 +16,9 @@
 #import "ios/chrome/browser/assistant/ui/assistant_container_constants.h"
 #import "ios/chrome/browser/composebox/coordinator/composebox_constants.h"
 #import "ios/chrome/browser/composebox/eg_tests/composebox_app_interface.h"
+#import "ios/chrome/browser/composebox/shared/metrics/composebox_metrics_constants.h"
 #import "ios/chrome/browser/composebox/shared/ui/composebox_ui_constants.h"
+#import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/tab_picker/ui/tab_picker_ui_constants.h"
@@ -50,6 +52,10 @@ id<GREYMatcher> ComposeboxClearButtonMatcher() {
       grey_accessibilityID(kOmniboxClearButtonAccessibilityIdentifier),
       grey_sufficientlyVisible(), nil);
 }
+
+// A short prefix that completes autocomplete synchronously to populate the
+// initial match before typing a longer query.
+NSString* const kShortPrefix = @"foo:bar";
 
 // A long text used to ensure the composebox is expanded when it is on a compact
 // mode.
@@ -203,10 +209,8 @@ void RemoveAttachmentWithTitle(NSString* title) {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.features_enabled.push_back(kComposeboxIpad);
   config.features_enabled.push_back(kAssistantContainer);
   config.features_enabled.push_back(kAimCobrowse);
-  config.features_disabled.push_back(kComposeboxAIMDisabled);
   // Only rely on local conditions for AIM eligibility, so disable the
   // server-side checks.
   config.features_disabled.push_back(omnibox::kAimServerEligibilityEnabled);
@@ -375,6 +379,58 @@ void RemoveAttachmentWithTitle(NSString* title) {
       selectElementWithMatcher:grey_accessibilityID(
                                    kComposeboxAIMButtonAccessibilityIdentifier)]
       assertWithMatcher:grey_notVisible()];
+}
+
+// Tests that typing a long text and tapping the Send button in AI mode accepts
+// the full text without truncation.
+- (void)testComposeboxAIModeSendLongText {
+  [ComposeboxAppInterface setFuseboxEligible:YES];
+
+  [ChromeEarlGrey
+      loadURL:self.testServer->GetURL(base::StringPrintf(kPageURL, 1))];
+  [ChromeEarlGreyUI focusOmnibox];
+
+  // Wait for the composebox to be visible and clear the omnibox.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:ComposeboxMatcher()];
+  [[EarlGrey selectElementWithMatcher:ComposeboxClearButtonMatcher()]
+      performAction:grey_tap()];
+
+  // Enable AI mode from the plus menu.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kComposeboxPlusButtonAccessibilityIdentifier)]
+      performAction:grey_tap()];
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kComposeboxAIMActionAccessibilityIdentifier)]
+      performAction:grey_tap()];
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:
+          grey_accessibilityID(kComposeboxAIMButtonAccessibilityIdentifier)];
+
+  // Enter a short prefix that completes synchronously to populate
+  // `current_match`, then update to a long query while `SearchProvider` is
+  // pending.
+  [ChromeEarlGreyUI replaceTextInOmnibox:kShortPrefix];
+  [ChromeEarlGreyUI replaceTextInOmnibox:kLongText];
+
+  // Tap the Send button.
+  id<GREYMatcher> sendButtonMatcher = grey_allOf(
+      grey_accessibilityID(kComposeboxSendButtonAccessibilityIdentifier),
+      grey_enabled(), grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:sendButtonMatcher];
+  [[EarlGrey selectElementWithMatcher:sendButtonMatcher]
+      performAction:grey_tap()];
+
+  // Verify that the full long text was accepted and sent for the AIM query.
+  ConditionBlock querySentCondition = ^{
+    return [[ComposeboxAppInterface lastSentAIMQueryText]
+        isEqualToString:kLongText];
+  };
+  GREYAssert(base::test::ios::WaitUntilConditionOrTimeout(
+                 base::test::ios::kWaitForUIElementTimeout, querySentCondition),
+             @"Expected full long text '%@' to be sent, but got '%@'.",
+             kLongText, [ComposeboxAppInterface lastSentAIMQueryText]);
 }
 
 // Tests that all buttons in the plus menu are enabled.
@@ -702,6 +758,42 @@ void RemoveAttachmentWithTitle(NSString* title) {
   VerifyTabIsAttachedWithTitle(firstPageTitle);
 }
 
+// Tests that cancelling the tab picker records the manual user exit outcome
+// metric.
+- (void)testTabPickerCancelOutcomeMetric {
+  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Skipped when kComposeboxServerSideState is enabled.");
+  }
+
+  GREYAssertNil([MetricsAppInterface setupHistogramTester],
+                @"Failed to setup histogram tester.");
+
+  [ComposeboxAppInterface setFuseboxEligible:YES];
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/")];
+  OpenTabPicker();
+
+  // Tap the cancel button in the navigation bar.
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::NavigationBarCancelButton()]
+      performAction:grey_tap()];
+
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:ComposeboxMatcher()];
+
+  GREYAssertNil(
+      [MetricsAppInterface
+          expectUniqueSampleWithCount:1
+                            forBucket:
+                                static_cast<int>(
+                                    MobileFuseboxPickerOutcome::kManualUserExit)
+                         forHistogram:
+                             @"Omnibox.MobileFusebox.PickerOutcome.Tabs"],
+      @"Failed to record manual user exit metric for tab picker cancellation.");
+
+  GREYAssertNil([MetricsAppInterface releaseHistogramTester],
+                @"Failed to release histogram tester.");
+}
+
 @end
 
 #pragma mark - ComposeboxEligiblityTestCase
@@ -720,10 +812,8 @@ void RemoveAttachmentWithTitle(NSString* title) {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  config.features_enabled.push_back(kComposeboxIpad);
   config.features_enabled.push_back(kAssistantContainer);
   config.features_enabled.push_back(kAimCobrowse);
-  config.features_disabled.push_back(kComposeboxAIMDisabled);
   // Only rely on local conditions for AIM eligibility, so disable the
   // server-side checks.
   config.features_disabled.push_back(omnibox::kAimServerEligibilityEnabled);

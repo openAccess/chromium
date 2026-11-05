@@ -8,29 +8,82 @@
  * #css_wrapper_metadata_end */
 
 :host {
+  --profile-icon-background: var(--color-sys-surface);
   display: inline-block;
-  pointer-events: none;
+  inset-inline-end: 16px;
+  pointer-events: auto;
   position: absolute;
-  right: 16px;
-  top: var(--omnibox-everywhere-top-actions-top, 12px);
+  top: var(--omnibox-everywhere-top-actions-top, 16px);
   z-index: 100;
+}
+
+#profileContainer {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  box-sizing: border-box;
+  display: flex;
+  height: 28px;
+  justify-content: center;
+  outline: none;
+  padding: 0;
+  pointer-events: auto;
+  width: 28px;
+}
+
+#profileContainer:focus-visible {
+  box-shadow: 0 0 0 2px var(--cr-focus-outline-color);
+}
+
+#profileContainer.clickable {
+  cursor: pointer;
+  pointer-events: auto;
 }
 
 #profileIcon {
   border-radius: 50%;
-  height: 36px;
+  height: 20px;
+  object-fit: cover;
   pointer-events: none;
-  width: 36px;
+  width: 20px;
   -webkit-user-drag: none;
 }
 
-#profileIcon.clickable {
-  cursor: pointer;
-  pointer-events: auto;
+:host([is-enterprise-profile]) #profileContainer {
+  background-color: var(--color-sys-surface-container-high, #f2f2f2);
+  border-radius: 20px;
+  gap: 4px;
+  height: 28px;
+  margin-top: 0;
+  padding-inline-end: 4px;
+  padding-inline-start: 4px;
+  width: auto;
+}
+
+:host([is-enterprise-profile]) #enterpriseBadge {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+
+:host([is-enterprise-profile]) #enterpriseBadge cr-icon {
+  color: var(--color-sys-on-surface-subtle);
+  height: 16px;
+  padding: 2px;
+  width: 16px;
+}
+
+:host([is-enterprise-profile]) #profileIcon {
+  height: 20px;
+  width: 20px;
+}
+
+#profileContainer.clickable #profileIcon {
   transition: opacity 150ms ease-in-out;
 }
 
-#profileIcon.clickable:hover {
+#profileContainer.clickable:hover #profileIcon {
   opacity: 0.85;
 }
 
@@ -45,10 +98,12 @@
 }
 
 #profileMenu::part(dialog) {
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--color-sys-neutral-outline, rgba(0, 0, 0, 0.08));
   border-radius: 20px;
   margin-top: 8px;
+  max-height: none;
   overflow: hidden;
+  position: fixed;
 }
 
 .profile-card {
@@ -116,7 +171,7 @@
   cursor: pointer;
   display: flex;
   padding: 10px 14px;
-  text-align: left;
+  text-align: start;
   transition: background-color 150ms ease;
   width: 100%;
 }

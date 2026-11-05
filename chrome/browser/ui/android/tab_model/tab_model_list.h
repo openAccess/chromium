@@ -7,11 +7,13 @@
 
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "base/observer_list.h"
 #include "components/sessions/core/session_id.h"
 
+class Profile;
 class TabAndroid;
 class TabModel;
 class TabModelListObserver;
@@ -26,8 +28,6 @@ class WebContents;
 class TabModelList {
  public:
   using TabModelVector = std::vector<raw_ptr<TabModel, VectorExperimental>>;
-  using iterator = TabModelVector::iterator;
-  using const_iterator = TabModelVector::const_iterator;
 
   TabModelList(const TabModelList& other) = delete;
   TabModelList& operator=(const TabModelList& other) = delete;
@@ -49,7 +49,8 @@ class TabModelList {
   static const TabModelVector& models();
 
   static void SetArchivedTabModel(TabModel* archived_tab_model);
-  static TabModel* GetArchivedTabModel();
+  static void RemoveArchivedTabModel(TabModel* archived_tab_model);
+  static TabModel* GetArchivedTabModel(Profile* profile);
 
  private:
   TabModelList();
@@ -58,7 +59,7 @@ class TabModelList {
   // removal across all TabModelLists.
   base::ObserverList<TabModelListObserver>::Unchecked observers_;
   TabModelVector models_;
-  raw_ptr<TabModel> archived_tab_model_ = nullptr;
+  base::flat_map<raw_ptr<Profile>, raw_ptr<TabModel>> archived_tab_models_;
 
   friend base::NoDestructor<TabModelList>;
 };

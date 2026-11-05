@@ -103,7 +103,7 @@ void OpenReplayTab(BrowserWindowInterface* browser,
                                     std::string());
 
   NavigateParams params(browser, std::move(contents));
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = WindowOpenDisposition::kNewForegroundTab;
   Navigate(&params);
 }
 

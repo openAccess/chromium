@@ -8,6 +8,7 @@
 
 #include <array>
 #include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -572,7 +573,7 @@ TEST(FileTest, Length) {
 }
 
 // Flakily fails: http://crbug.com/86494
-#if BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 TEST(FileTest, TouchGetInfo) {
 #else
 TEST(FileTest, DISABLED_TouchGetInfo) {
@@ -636,6 +637,41 @@ TEST(FileTest, DISABLED_TouchGetInfo) {
   EXPECT_EQ(info.creation_time.ToInternalValue(),
             creation_time.ToInternalValue());
 }
+
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+TEST(FileTest, FromStatWithUnixEpochTimestamps) {
+  stat_wrapper_t stat_info = {};
+  File::Info info;
+  info.FromStat(stat_info);
+
+  EXPECT_EQ(Time::UnixEpoch(), info.last_modified);
+  EXPECT_EQ(Time::UnixEpoch(), info.last_accessed);
+  EXPECT_EQ(Time::UnixEpoch(), info.creation_time);
+}
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA) || \
+    BUILDFLAG(IS_APPLE)
+TEST(FileTest, FromStatWithTimestampsInFirstUnixSecond) {
+  stat_wrapper_t stat_info = {};
+#if BUILDFLAG(IS_APPLE)
+  stat_info.st_mtimespec.tv_nsec = 123456000;
+  stat_info.st_atimespec.tv_nsec = 234567000;
+  stat_info.st_birthtimespec.tv_nsec = 345678000;
+#else
+  stat_info.st_mtim.tv_nsec = 123456000;
+  stat_info.st_atim.tv_nsec = 234567000;
+  stat_info.st_ctim.tv_nsec = 345678000;
+#endif
+  File::Info info;
+  info.FromStat(stat_info);
+
+  EXPECT_EQ(Time::UnixEpoch() + Microseconds(123456), info.last_modified);
+  EXPECT_EQ(Time::UnixEpoch() + Microseconds(234567), info.last_accessed);
+  EXPECT_EQ(Time::UnixEpoch() + Microseconds(345678), info.creation_time);
+}
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
+        // BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_APPLE)
 
 // Test we can retrieve the file's creation time through File::GetInfo().
 TEST(FileTest, GetInfoForCreationTime) {
@@ -790,12 +826,11 @@ TEST(FileTest, ReadWriteDataToLargeOffset) {
                         File::FLAG_DELETE_ON_CLOSE));
   ASSERT_TRUE(file.IsValid());
 
-  const char kData[] = "this file is sparse.";
-  constexpr size_t kDataLen = sizeof(kData) - 1;
+  constexpr std::string_view kData = "this file is sparse.";
   const int64_t kLargeFileOffset = (1LL << 31);
 
-  std::optional<size_t> bytes_written = file.Write(
-      kLargeFileOffset - kDataLen - 1, as_byte_span(kData).first(kDataLen));
+  std::optional<size_t> bytes_written =
+      file.Write(kLargeFileOffset - kData.size() - 1, as_byte_span(kData));
 
   // If the file fails to write, it is probably we are running out of disk space
   // and the file system doesn't support sparse file.
@@ -803,17 +838,15 @@ TEST(FileTest, ReadWriteDataToLargeOffset) {
     return;
   }
 
-  ASSERT_EQ(kDataLen, *bytes_written);
+  ASSERT_EQ(kData.size(), *bytes_written);
 
   // Now, try reading the content.
-  char data_read[kDataLen];
+  std::array<char, kData.size()> data_read;
   std::optional<size_t> bytes_read = file.Read(
-      kLargeFileOffset - kDataLen - 1, as_writable_byte_span(data_read));
+      kLargeFileOffset - kData.size() - 1, as_writable_byte_span(data_read));
 
-  ASSERT_EQ(kDataLen, bytes_read);
-  for (int i = 0; i < bytes_read; i++) {
-    EXPECT_EQ(UNSAFE_TODO(kData[i]), UNSAFE_TODO(data_read[i]));
-  }
+  ASSERT_EQ(kData.size(), bytes_read);
+  EXPECT_EQ(std::string_view(data_read), kData);
 }
 #endif  // !BUILDFLAG(IS_WIN)
 

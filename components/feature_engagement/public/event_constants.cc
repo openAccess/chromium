@@ -48,6 +48,8 @@ const char kExtensionsRequestAccessButtonClicked[] =
 
 const char kGlicOnboardingCompleted[] = "glic_onboarding_completed";
 
+const char kDictationInvoked[] = "dictation_invoked";
+
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_FUCHSIA)
 
@@ -110,6 +112,7 @@ const char kHistoryOnOverflowMenuUsed[] = "history_on_overflow_menu_used";
 const char kSettingsOnOverflowMenuUsed[] = "settings_on_overflow_menu_used";
 const char kLensButtonKeyboardUsed[] = "lens_keyboard_used";
 const char kIOSLensButtonComposeboxUsed[] = "lens_compose_box_used";
+const char kIOSLevelUpPromoUsed[] = "ios_level_up_promo_used";
 const char kIOSMultiGestureRefreshUsed[] = "multi_gesture_refresh_used";
 const char kIOSPullToRefreshUsed[] = "pull_to_refresh_feature_used";
 const char kIOSPullToRefreshIPHDismissButtonTapped[] =
@@ -162,6 +165,7 @@ const char kIOSContextualPanelPriceInsightsEntrypointExplicitlyDismissed[] =
 const char kHomeCustomizationMenuUsed[] = "home_customization_menu_used";
 const char kHomeBackgroundCustomizationMenuUsed[] =
     "home_customization_background_menu_used";
+const char kEphemeralThemePromoUsed[] = "ephemeral_theme_promo_used";
 const char kHomeCustomizationPromoTriggered[] =
     "home_customization_menu_iph_triggered";
 const char kNTPCustomBackgroundLoaded[] = "ntp_custom_background_loaded";
@@ -178,8 +182,6 @@ const char kIOSDownloadAutoDeletionIPHCriterionMet[] =
     "ios_download_auto_deletion_iph_criterion_met";
 const char kIOSScrolledOnFeed[] = "ios_scrolled_on_feed";
 const char kIOSActionOnFeed[] = "ios_action_on_feed";
-const char kIOSWelcomeBackPromoTrigger[] = "welcome_back_promo_trigger";
-const char kIOSWelcomeBackPromoUsed[] = "welcome_back_promo_used";
 const char kIOSBWGPromoTrigger[] = "bwg_half_screen_promo_trigger";
 const char kIOSBWGPromoUsed[] = "bwg_half_screen_promo_used";
 const char kIOSSafariImportRemindMeLater[] =
@@ -232,6 +234,16 @@ const char kDefaultBrowserPromoOverflowMenuDestinationUsed[] =
     "default_browser_promo_overflow_menu_destination_used";
 const char kDefaultBrowserPromoOverflowMenuShortcutsUsed[] =
     "default_browser_promo_overflow_menu_shortcuts_used";
+const char kDefaultBrowserPromoContextualGeminiUsed[] =
+    "default_browser_promo_contextual_gemini_used";
+const char kGeminiSessionTerminated[] = "gemini_session_terminated";
+const char kIOSBottomOmniboxUsed[] = "ios_bottom_omnibox_used";
+const char kIOSAccountSwitchingPromoIgnored[] =
+    "ios_account_switching_promo_ignored";
+const char kIOSAccountSwitchingPromoExplicitlyDismissed[] =
+    "ios_account_switching_promo_explicitly_dismissed";
+const char kIOSAccountSwitchingPrimaryAccountChanged[] =
+    "ios_account_switching_primary_account_changed";
 #endif  // BUILDFLAG(IS_IOS)
 
 #if BUILDFLAG(IS_ANDROID)
@@ -239,8 +251,6 @@ const char kPwaInstallMenuSelected[] = "pwa_install_menu_clicked";
 #endif  // BUILDFLAG(IS_ANDROID)
 
 const char kSendTabToSelfOmniboxUsed[] = "send_tab_to_self_omnibox_used";
-
-const char kTabSearchComboButtonUsed[] = "tab_search_combo_button_used";
 
 }  // namespace events
 

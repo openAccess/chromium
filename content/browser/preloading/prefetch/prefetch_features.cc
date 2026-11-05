@@ -17,11 +17,12 @@ BASE_FEATURE(kPrefetchTesting, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<int> kPrefetchReusableBodySizeLimit{
     &kPrefetchTesting, "kPrefetchReusableBodySizeLimit", 4194304};
 
-BASE_FEATURE(kPrefetchUseContentRefactor, base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kPrefetchNIKScope, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPrefetchClientHints, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPrefetchRedirectRemoveEmbedderAdditionalHeaders,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 constexpr base::FeatureParam<PrefetchClientHintsCrossSiteBehavior>::Option
     kPrefetchClientHintsCrossSiteBehaviorOptions[] = {
@@ -69,6 +70,15 @@ const base::FeatureParam<size_t>
 
 BASE_FEATURE(kPrefetchCanaryCheckerParams, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kPrefetchSchedulerBurstQueryParam,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+const base::FeatureParam<std::string> kPrefetchSchedulerBurstQueryParamKey{
+    &kPrefetchSchedulerBurstQueryParam, "key", ""};
+const base::FeatureParam<std::string> kPrefetchSchedulerBurstQueryParamValue{
+    &kPrefetchSchedulerBurstQueryParam, "value", ""};
+const base::FeatureParam<size_t> kPrefetchSchedulerBurstQueryParamExtraLimit{
+    &kPrefetchSchedulerBurstQueryParam, "extra_limit", 1u};
+
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kPrefetchMultipleActiveSetSizeLimitForBase,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -85,13 +95,18 @@ const base::FeatureParam<size_t>
         "prefetch_multiple_active_set_size_limit_for_base_value", 3};
 #endif
 
-BASE_FEATURE(kPrefetchEagerLimit, base::FEATURE_DISABLED_BY_DEFAULT);
-const base::FeatureParam<size_t> kMaxNumberOfEagerPrefetchesPerPage{
-    &kPrefetchEagerLimit, "max_number_of_eager_prefetches_per_page", 2};
+BASE_FEATURE(kPrefetchSchedulerBurstLimitPerPriority,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kPrefetchModerateLimit, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kPrefetchEagerLimit, base::FEATURE_ENABLED_BY_DEFAULT);
+const base::FeatureParam<size_t> kMaxNumberOfEagerPrefetchesPerPage{
+    &kPrefetchEagerLimit, "max_number_of_eager_prefetches_per_page",
+    BUILDFLAG(IS_ANDROID) ? 6 : 2};
+
+BASE_FEATURE(kPrefetchModerateLimit, base::FEATURE_ENABLED_BY_DEFAULT);
 const base::FeatureParam<size_t> kMaxNumberOfModeratePrefetchesPerPage{
-    &kPrefetchModerateLimit, "max_number_of_moderate_prefetches_per_page", 2};
+    &kPrefetchModerateLimit, "max_number_of_moderate_prefetches_per_page",
+    BUILDFLAG(IS_ANDROID) ? 6 : 2};
 
 BASE_FEATURE(kPrefetchOffTheMainThreadForceForTesting,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -133,7 +148,6 @@ BASE_FEATURE(kPrefetchAsyncPrefetchHandleCallback,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPrefetchMatchResolverUnblockAsync,
-             "PrefetchMatchResolverUnblockAsync",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPrefetchRevampAcceptHeader, base::FEATURE_ENABLED_BY_DEFAULT);

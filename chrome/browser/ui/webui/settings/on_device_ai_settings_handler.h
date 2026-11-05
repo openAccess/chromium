@@ -10,7 +10,7 @@
 #include "components/prefs/pref_member.h"
 
 namespace features {
-BASE_DECLARE_FEATURE(kShowOnDeviceAiSettings);
+BASE_DECLARE_FEATURE(kOnDeviceModelAdvancedSettings);
 }
 
 namespace settings {

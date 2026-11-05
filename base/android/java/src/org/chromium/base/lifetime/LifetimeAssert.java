@@ -8,6 +8,8 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.jni_zero.JniZero;
+
 import org.chromium.base.task.PostTask;
 import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.CheckDiscard;
@@ -40,6 +42,18 @@ import java.util.Set;
 @NullMarked
 @CheckDiscard("Lifetime assertions aren't used when DCHECK is off.")
 public class LifetimeAssert {
+    public static void registerSafePointersTrackerFactory() {
+        if (!BuildConfig.ENABLE_ASSERTS) {
+            return;
+        }
+        JniZero.setSafePointersTrackerFactory(
+                (target, creationContext) -> {
+                    LifetimeAssert assertInstance =
+                            assumeNonNull(LifetimeAssert.create(target, creationContext));
+                    return () -> LifetimeAssert.destroy(assertInstance);
+                });
+    }
+
     interface TestHook {
         void onCleaned(WrappedReference ref, @Nullable String msg);
     }
@@ -68,15 +82,20 @@ public class LifetimeAssert {
     @VisibleForTesting
     static class WrappedReference extends PhantomReference<Object> {
         private boolean mSafeToGc;
-        private final Class<?> mTargetClass;
+        private final String mTargetDescription;
         private final CreationException mCreationException;
 
         private WrappedReference(
-                Object target, CreationException creationException, boolean safeToGc) {
+                Object target,
+                CreationException creationException,
+                boolean safeToGc,
+                @Nullable String creationContext) {
             super(target, sReferenceQueue);
             mCreationException = PostTask.maybeAddTaskOrigin(creationException);
             mSafeToGc = safeToGc;
-            mTargetClass = target.getClass();
+            String className = target.getClass().getName();
+            mTargetDescription =
+                    creationContext == null ? className : className + " (" + creationContext + ")";
             sActiveWrappers.add(this);
         }
 
@@ -108,7 +127,7 @@ public class LifetimeAssert {
                                                 "Object of type %s was GC'ed without cleanup. Refer"
                                                         + " to \"Caused by\" for where object was"
                                                         + " created.",
-                                                wrapper.mTargetClass.getName());
+                                                wrapper.mTargetDescription);
                                 if (sTestHook != null) {
                                     sTestHook.onCleaned(wrapper, msg);
                                 } else {
@@ -137,7 +156,25 @@ public class LifetimeAssert {
             return null;
         }
         return new LifetimeAssert(
-                new WrappedReference(target, new CreationException(), /* safeToGc= */ false),
+                new WrappedReference(
+                        target,
+                        new CreationException(),
+                        /* safeToGc= */ false,
+                        /* creationContext= */ null),
+                target);
+    }
+
+    /**
+     * Like {@link #create(Object)}, but failure messages also show {@code creationContext}. Used
+     * when the creation stack does not identify the code that owns {@code target}.
+     */
+    static @Nullable LifetimeAssert create(Object target, @Nullable String creationContext) {
+        if (!BuildConfig.ENABLE_ASSERTS) {
+            return null;
+        }
+        return new LifetimeAssert(
+                new WrappedReference(
+                        target, new CreationException(), /* safeToGc= */ false, creationContext),
                 target);
     }
 
@@ -146,7 +183,9 @@ public class LifetimeAssert {
             return null;
         }
         return new LifetimeAssert(
-                new WrappedReference(target, new CreationException(), safeToGc), target);
+                new WrappedReference(
+                        target, new CreationException(), safeToGc, /* creationContext= */ null),
+                target);
     }
 
     /** Most clients should probably use destroy() to ensure exactly 1 call. */
@@ -198,7 +237,7 @@ public class LifetimeAssert {
                                         "Object of type %s was not destroyed after test completed."
                                                 + " Refer to \"Caused by\" for where object was"
                                                 + " created.",
-                                        ref.mTargetClass.getName());
+                                        ref.mTargetDescription);
                         throw new LifetimeAssertException(msg, ref.mCreationException);
                     }
                 }

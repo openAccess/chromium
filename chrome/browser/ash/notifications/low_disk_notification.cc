@@ -15,6 +15,7 @@
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/dbus/cryptohome/UserDataAuth.pb.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
@@ -42,12 +43,12 @@ namespace ash {
 
 LowDiskNotification::LowDiskNotification()
     : notification_interval_(kNotificationInterval) {
-  DCHECK(UserDataAuthClient::Get());
+  CHECK(UserDataAuthClient::Get(), base::NotFatalUntil::M160);
   UserDataAuthClient::Get()->AddObserver(this);
 }
 
 LowDiskNotification::~LowDiskNotification() {
-  DCHECK(UserDataAuthClient::Get());
+  CHECK(UserDataAuthClient::Get(), base::NotFatalUntil::M160);
   if (auto* message_center = message_center::MessageCenter::Get()) {
     message_center->RemoveNotification(kLowDiskId, /*by_user=*/false);
   } else {
@@ -59,7 +60,7 @@ LowDiskNotification::~LowDiskNotification() {
 
 void LowDiskNotification::LowDiskSpace(
     const ::user_data_auth::LowDiskSpace& status) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M160);
 
   bool show_low_disk_space_notification = true;
   if (!CrosSettings::Get()->GetBoolean(kDeviceShowLowDiskSpaceNotification,
@@ -124,7 +125,7 @@ LowDiskNotification::CreateNotification(Severity severity) {
 
   auto on_click = base::BindRepeating([](std::optional<int> button_index) {
     if (button_index) {
-      DCHECK_EQ(0, *button_index);
+      CHECK_EQ(0, *button_index, base::NotFatalUntil::M160);
       if (auto* session =
               session_manager::SessionManager::Get()->GetActiveSession()) {
         // TODO(crbug.com/447287122): Revisit here to check if there's a case
@@ -139,7 +140,7 @@ LowDiskNotification::CreateNotification(Severity severity) {
   std::unique_ptr<message_center::Notification> notification =
       ash::CreateSystemNotificationPtr(
           message_center::NOTIFICATION_TYPE_SIMPLE, kLowDiskId, title, message,
-          std::u16string(), GURL(), notifier_id, optional_fields,
+          std::u16string(), notifier_id, optional_fields,
           new message_center::HandleNotificationClickDelegate(on_click),
           ash::kNotificationStorageFullIcon, warning_level);
 

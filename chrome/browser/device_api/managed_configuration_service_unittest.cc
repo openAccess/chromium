@@ -9,10 +9,14 @@
 #include <tuple>
 
 #include "base/check_deref.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
+#include "components/enterprise/isolated_mode/prefs.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/web_contents_tester.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -153,6 +157,38 @@ TEST_F(ManagedConfigurationServiceGuestTest, IsNotBoundInGuestProfile) {
           /*instance=*/nullptr);
 
   auto [service, remote] = MaybeCreateService(guest_web_contents.get());
+  ASSERT_EQ(service, nullptr);
+
+  remote.FlushForTesting();
+  ASSERT_FALSE(remote.is_connected());
+}
+
+class ManagedConfigurationServiceEnterpriseIsolatedModeTest
+    : public ManagedConfigurationServiceTest {
+ public:
+  void SetUp() override {
+    scoped_feature_list_.InitAndEnableFeature(
+        enterprise_isolated_mode::kEnableEnterpriseIsolatedMode);
+    ManagedConfigurationServiceTest::SetUp();
+    profile()->GetPrefs()->SetInteger(
+        enterprise_isolated_mode::kEnterpriseIsolatedModeSettings,
+        static_cast<int>(
+            enterprise_isolated_mode::IsolatedModeSetting::kEnabled));
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(ManagedConfigurationServiceEnterpriseIsolatedModeTest, IsNotBound) {
+  std::unique_ptr<content::WebContents> eim_web_contents =
+      content::WebContentsTester::CreateTestWebContents(
+          profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true), nullptr);
+
+  ASSERT_TRUE(Profile::FromBrowserContext(eim_web_contents->GetBrowserContext())
+                  ->IsEnterpriseIsolatedModeProfile());
+
+  auto [service, remote] = MaybeCreateService(eim_web_contents.get());
   ASSERT_EQ(service, nullptr);
 
   remote.FlushForTesting();

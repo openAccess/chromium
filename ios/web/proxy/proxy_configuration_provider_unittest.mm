@@ -108,10 +108,28 @@ ProxyRule ProxyRuleFor(
 class ProxyConfigurationProviderTest : public PlatformTest {
  public:
   ProxyConfigurationProviderTest()
-      : web_client_(std::make_unique<FakeWebClient>()) {
-    browser_state_.SetWebKitStorageID(base::Uuid::GenerateRandomV4());
-  }
+      : web_client_(std::make_unique<FakeWebClient>()) {}
   ~ProxyConfigurationProviderTest() override = default;
+
+  void SetUp() override {
+    PlatformTest::SetUp();
+    if (!@available(iOS 17.0, *)) {
+      GTEST_SKIP() << "ProxyConfigurationProvider requires iOS 17.0+";
+    }
+  }
+
+  void TearDown() override {
+    // Ensure no proxyConfigurations outlive these tests to avoid flake of
+    // unrelated tests.
+    if (@available(iOS 17.0, *)) {
+      WKWebViewConfigurationProvider& config_provider =
+          WKWebViewConfigurationProvider::FromBrowserState(&browser_state_);
+      WKWebsiteDataStore* data_store = config_provider.GetWebsiteDataStore();
+      data_store.proxyConfigurations = @[];
+    }
+
+    PlatformTest::TearDown();
+  }
 
  protected:
   base::test::TaskEnvironment task_environment_;
@@ -123,20 +141,22 @@ class ProxyConfigurationProviderTest : public PlatformTest {
 // rules generate native configuration objects with bypass exclusions, and
 // configs are applied to the active `WKWebsiteDataStore`.
 TEST_F(ProxyConfigurationProviderTest, MappingAndBypassPrecedence) {
-  ProxyConfigurationProvider& provider =
-      ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
 
-  provider.UpdateProxyConfiguration({
-      DirectRule({"direct.example.com", "internal.corp"}),
-      ProxyRuleFor("proxy.example.com", 8080, {"*.example.com"}),
-  });
+    provider.UpdateProxyConfiguration({
+        DirectRule({"direct.example.com", "internal.corp"}),
+        ProxyRuleFor("proxy.example.com", 8080, {"*.example.com"}),
+    });
 
-  VerifyNativeProxyConfigurations(
-      &browser_state_,
-      {
-          {.match_domains = {"*.example.com"},
-           .excluded_domains = {"direct.example.com", "internal.corp"}},
-      });
+    VerifyNativeProxyConfigurations(
+        &browser_state_,
+        {
+            {.match_domains = {"*.example.com"},
+             .excluded_domains = {"direct.example.com", "internal.corp"}},
+        });
+  }
 }
 
 // Tests a complex scenario with multiple direct connection rules interspersed
@@ -144,67 +164,73 @@ TEST_F(ProxyConfigurationProviderTest, MappingAndBypassPrecedence) {
 // native configs, while subsequent proxy rules inherit all accumulated bypass
 // domains as exclusions.
 TEST_F(ProxyConfigurationProviderTest, MultipleBypassDomainsAccumulation) {
-  ProxyConfigurationProvider& provider =
-      ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
 
-  provider.UpdateProxyConfiguration({
-      DirectRule({"bypass1.example.com", "internal.corp"}),
-      ProxyRuleFor("proxy1.example.com", 8080, {"*.example.com"}),
-      DirectRule({"bypass2.example.com", "secure.local"}),
-      ProxyRuleFor("proxy2.example.com", 8443, {"*.partner.com"}),
-      DirectRule({"trailing.bypass.com"}),
-  });
+    provider.UpdateProxyConfiguration({
+        DirectRule({"bypass1.example.com", "internal.corp"}),
+        ProxyRuleFor("proxy1.example.com", 8080, {"*.example.com"}),
+        DirectRule({"bypass2.example.com", "secure.local"}),
+        ProxyRuleFor("proxy2.example.com", 8443, {"*.partner.com"}),
+        DirectRule({"trailing.bypass.com"}),
+    });
 
-  VerifyNativeProxyConfigurations(
-      &browser_state_,
-      {
-          {.match_domains = {"*.example.com"},
-           .excluded_domains = {"bypass1.example.com", "internal.corp"}},
-          {.match_domains = {"*.partner.com"},
-           .excluded_domains = {"bypass1.example.com", "internal.corp",
-                                "bypass2.example.com", "secure.local"}},
-      });
+    VerifyNativeProxyConfigurations(
+        &browser_state_,
+        {
+            {.match_domains = {"*.example.com"},
+             .excluded_domains = {"bypass1.example.com", "internal.corp"}},
+            {.match_domains = {"*.partner.com"},
+             .excluded_domains = {"bypass1.example.com", "internal.corp",
+                                  "bypass2.example.com", "secure.local"}},
+        });
+  }
 }
 
 // Tests that rapid updates to proxy configurations cancel ongoing background
 // mapping tasks and apply only the latest configuration generation.
 TEST_F(ProxyConfigurationProviderTest, CancellationOnSubsequentUpdate) {
-  ProxyConfigurationProvider& provider =
-      ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
 
-  // Update with initial rules, then immediately supersede before
-  // background tasks complete.
-  provider.UpdateProxyConfiguration({
-      ProxyRuleFor("initial-proxy.example.com", 8081, {"*.initial.com"}),
-  });
-  provider.UpdateProxyConfiguration({
-      ProxyRuleFor("primary-proxy.example.com", 8082, {"*.primary.com"}),
-      ProxyRuleFor("secondary-proxy.example.com", 8083, {"*.secondary.com"}),
-  });
+    // Update with initial rules, then immediately supersede before
+    // background tasks complete.
+    provider.UpdateProxyConfiguration({
+        ProxyRuleFor("initial-proxy.example.com", 8081, {"*.initial.com"}),
+    });
+    provider.UpdateProxyConfiguration({
+        ProxyRuleFor("primary-proxy.example.com", 8082, {"*.primary.com"}),
+        ProxyRuleFor("secondary-proxy.example.com", 8083, {"*.secondary.com"}),
+    });
 
-  VerifyNativeProxyConfigurations(&browser_state_,
-                                  {
-                                      {.match_domains = {"*.primary.com"}},
-                                      {.match_domains = {"*.secondary.com"}},
-                                  });
+    VerifyNativeProxyConfigurations(&browser_state_,
+                                    {
+                                        {.match_domains = {"*.primary.com"}},
+                                        {.match_domains = {"*.secondary.com"}},
+                                    });
+  }
 }
 
 // Tests that updating with empty proxy rules clears existing
 // native proxy configurations from the `WKWebsiteDataStore`.
 TEST_F(ProxyConfigurationProviderTest, EmptyConfigurationClearsNativeConfigs) {
-  ProxyConfigurationProvider& provider =
-      ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
 
-  // Initial non-empty configuration.
-  provider.UpdateProxyConfiguration({
-      ProxyRuleFor("proxy.example.com", 8080, {"*.example.com"}),
-  });
-  VerifyNativeProxyConfigurations(&browser_state_,
-                                  {{.match_domains = {"*.example.com"}}});
+    // Initial non-empty configuration.
+    provider.UpdateProxyConfiguration({
+        ProxyRuleFor("proxy.example.com", 8080, {"*.example.com"}),
+    });
+    VerifyNativeProxyConfigurations(&browser_state_,
+                                    {{.match_domains = {"*.example.com"}}});
 
-  // Update with empty configuration.
-  provider.UpdateProxyConfiguration({});
-  VerifyNativeProxyConfigurations(&browser_state_, {});
+    // Update with empty configuration.
+    provider.UpdateProxyConfiguration({});
+    VerifyNativeProxyConfigurations(&browser_state_, {});
+  }
 }
 
 // Tests that unsupported proxy schemes (e.g. SOCKS5) are skipped.
@@ -212,33 +238,71 @@ TEST_F(ProxyConfigurationProviderTest, EmptyConfigurationClearsNativeConfigs) {
 // diagnostic `chrome://` pages (e.g. `chrome://net-export` or
 // `chrome://policy`).
 TEST_F(ProxyConfigurationProviderTest, UnsupportedProxySchemeIsSkipped) {
-  ProxyConfigurationProvider& provider =
-      ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
 
-  provider.UpdateProxyConfiguration({
-      ProxyRuleFor("socks.example.com", 1080, {"*.socks.com"},
-                   net::ProxyServer::SCHEME_SOCKS5),
-      ProxyRuleFor("http.example.com", 8080, {"*.http.com"},
-                   net::ProxyServer::SCHEME_HTTP),
-  });
+    provider.UpdateProxyConfiguration({
+        ProxyRuleFor("socks.example.com", 1080, {"*.socks.com"},
+                     net::ProxyServer::SCHEME_SOCKS5),
+        ProxyRuleFor("http.example.com", 8080, {"*.http.com"},
+                     net::ProxyServer::SCHEME_HTTP),
+    });
 
-  // Only the HTTP rule should produce a native proxy configuration.
-  VerifyNativeProxyConfigurations(&browser_state_,
-                                  {{.match_domains = {"*.http.com"}}});
+    // Only the HTTP rule should produce a native proxy configuration.
+    VerifyNativeProxyConfigurations(&browser_state_,
+                                    {{.match_domains = {"*.http.com"}}});
+  }
 }
 
 // Tests that HTTPS proxy configurations are supported.
 TEST_F(ProxyConfigurationProviderTest, HttpsProxyConfigurationSupported) {
-  ProxyConfigurationProvider& provider =
-      ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
 
-  provider.UpdateProxyConfiguration({
-      ProxyRuleFor("secure-proxy.example.com", 8443, {"*.secure.com"},
-                   net::ProxyServer::SCHEME_HTTPS),
-  });
+    provider.UpdateProxyConfiguration({
+        ProxyRuleFor("secure-proxy.example.com", 8443, {"*.secure.com"},
+                     net::ProxyServer::SCHEME_HTTPS),
+    });
 
-  VerifyNativeProxyConfigurations(&browser_state_,
-                                  {{.match_domains = {"*.secure.com"}}});
+    VerifyNativeProxyConfigurations(&browser_state_,
+                                    {{.match_domains = {"*.secure.com"}}});
+  }
+}
+
+// Tests that Apple's native `Network.framework` proxy configuration APIs
+// correctly accept and retain wildcards (e.g., `*.apple.com`), domain
+// suffixes (e.g., `apple.com`), IPv4 literals, and IPv6 literals without
+// crash or string corruption.
+//
+// Undocumented Apple behavior rationale:
+// Apple's `Network.framework` API (`nw_proxy_config_add_match_domain`) does
+// not explicitly document wildcard prefix or IP literal support, but the
+// underlying WebKit proxy subsystem relies on this behavior to steer traffic
+// to HTTP CONNECT proxies.
+//
+// Meaning of test failure:
+// If this test fails in a future iOS release, Apple has changed the native
+// parsing or acceptance of wildcard/IP matchers in `nw_proxy_config_t`. This
+// will break traffic steering for Enterprise Secure Gateway, causing
+// corporate requests to bypass the gateway or fail to connect.
+TEST_F(ProxyConfigurationProviderTest, UndocumentedNativeMatcherBehaviors) {
+  if (@available(iOS 17.0, *)) {
+    ProxyConfigurationProvider& provider =
+        ProxyConfigurationProvider::FromBrowserState(&browser_state_);
+
+    provider.UpdateProxyConfiguration({
+        ProxyRuleFor(
+            "secure-proxy.corp.com", 443,
+            {"*.apple.com", "apple.com", "192.168.1.1", "[2001:db8::1]"},
+            net::ProxyServer::SCHEME_HTTPS),
+    });
+
+    VerifyNativeProxyConfigurations(
+        &browser_state_, {{.match_domains = {"*.apple.com", "apple.com",
+                                             "192.168.1.1", "[2001:db8::1]"}}});
+  }
 }
 
 }  // namespace web

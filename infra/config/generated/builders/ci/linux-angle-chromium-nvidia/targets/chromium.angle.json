@@ -18,8 +18,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
@@ -49,8 +49,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
@@ -90,8 +90,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -126,8 +126,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -164,8 +164,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -183,7 +183,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_linux_runtimes.json",
           "--jobs=4"
@@ -193,7 +193,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test",
         "module_scheme": "flat",
-        "name": "webgl_conformance_gl_passthrough_tests",
+        "name": "webgl_conformance_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -202,8 +202,8 @@
           "containment_type": "AUTO",
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,

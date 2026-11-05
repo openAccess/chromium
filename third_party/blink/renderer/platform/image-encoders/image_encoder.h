@@ -55,6 +55,10 @@ class PLATFORM_EXPORT ImageEncoder {
 
   static bool Encode(Vector<unsigned char>* dst,
                      const SkPixmap& src,
+                     const SkPngRustEncoder::Options&);
+
+  static bool Encode(Vector<unsigned char>* dst,
+                     const SkPixmap& src,
                      SkPngRustEncoder::CompressionLevel);
 
   static bool Encode(Vector<unsigned char>* dst,
@@ -63,6 +67,7 @@ class PLATFORM_EXPORT ImageEncoder {
 
   static bool Encode(Vector<unsigned char>* dst,
                      const SkPixmap& src,
+                     const skhdr::Metadata* hdr_metadata,
                      ImageEncodingMimeType mime_type,
                      double quality);
 
@@ -72,12 +77,11 @@ class PLATFORM_EXPORT ImageEncoder {
                                               const SkPixmap& src,
                                               const SkJpegEncoder::Options&);
 
-  static std::unique_ptr<ImageEncoder> Create(
-      Vector<unsigned char>* dst,
-      const SkPixmap& src,
-      SkPngRustEncoder::CompressionLevel);
+  static std::unique_ptr<ImageEncoder> Create(Vector<unsigned char>* dst,
+                                              const SkPixmap& src,
+                                              const SkPngRustEncoder::Options&);
 
-  bool encodeRows(int numRows) { return encoder_->encodeRows(numRows); }
+  bool encodeRows(int num_rows) { return encoder_->encodeRows(num_rows); }
 
   /**
    *  If quality is in [0, 1], this will simply convert to a [0, 100]

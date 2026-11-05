@@ -4,6 +4,9 @@
 
 #import "ios/chrome/browser/toolbar/ui/toolbar_view_controller.h"
 
+#import <algorithm>
+#import <optional>
+
 #import "base/apple/foundation_util.h"
 #import "base/cancelable_callback.h"
 #import "base/metrics/user_metrics.h"
@@ -15,6 +18,10 @@
 #import "ios/chrome/browser/composebox/public/composebox_entrypoint.h"
 #import "ios/chrome/browser/intents/model/intents_donation_helper.h"
 #import "ios/chrome/browser/ntp/shared/metrics/home_metrics.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_color_palette.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_image_background_trait.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_trait.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/public/commands/activity_service_commands.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
@@ -22,6 +29,7 @@
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
+#import "ios/chrome/browser/shared/ui/util/rtl_geometry.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/banner_promo_view.h"
@@ -35,6 +43,7 @@
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_button_factory.h"
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_button_visibility.h"
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_buttons_utils.h"
+#import "ios/chrome/browser/toolbar/ui/buttons/toolbar_element_with_background.h"
 #import "ios/chrome/browser/toolbar/ui/buttons/toolbar_tab_grid_badge_button.h"
 #import "ios/chrome/browser/toolbar/ui/toolbar_constants.h"
 #import "ios/chrome/browser/toolbar/ui/toolbar_height_delegate.h"
@@ -49,6 +58,9 @@
 #import "ui/base/l10n/l10n_util.h"
 
 namespace {
+
+// The name of the default NTP background color asset.
+NSString* const kNTPBackgroundColor = @"ntp_background_color";
 
 // Spacing between buttons in the toolbar's horizontal stack view.
 constexpr CGFloat kStackViewSpacing = 9;
@@ -68,6 +80,10 @@ constexpr CGFloat kButtonMinScale = 0.37;
 // Duration of standard toolbar transition animations (fade, scale).
 constexpr CGFloat kAnimationDuration = 0.2;
 
+// Duration of the toolbar slide-in animation.
+const base::TimeDelta kToolbarSlideInAnimationDuration =
+    base::Milliseconds(500);
+
 // Margin between the location bar and the tab group indicator view.
 constexpr CGFloat kLocationBarToTabGroupMargin = 6;
 
@@ -83,6 +99,7 @@ constexpr CGFloat kGlassStackViewMarginPortrait = 10;
 // The margin between the stack views and the location bar.
 // Regular-Regular (iPad) size class margin.
 constexpr CGFloat kLocationBarStackViewMarginRegularRegular = 40;
+constexpr CGFloat kLegacyLocationBarStackViewMarginRegularRegular = 15;
 // iPhone portrait margin.
 constexpr CGFloat kLocationBarStackViewMarginPortrait = 9;
 constexpr CGFloat kGlassLocationBarStackViewMarginPortrait = 8;
@@ -98,6 +115,29 @@ constexpr CGFloat kFullscreenCollapsedThreshold = 0.05;
 // The threshold for fullscreen progress above which buttons are fully visible
 // and unscaled.
 constexpr CGFloat kFullscreenProgressThreshold = 0.99;
+
+// The progress threshold for the fullscreen transition when expanding (progress
+// above this value is fully normal).
+constexpr CGFloat kGlassFullscreenExpandedThreshold = 0.8;
+
+// The progress threshold for the fullscreen transition when collapsing
+// (progress below this value is fully fullscreen).
+constexpr CGFloat kGlassFullscreenCollapsedThreshold = 0.2;
+
+// The progress threshold below which glass toolbar buttons stop moving.
+constexpr CGFloat kGlassButtonStillProgressThreshold = 0.8;
+
+// The progress threshold above which glass toolbar buttons move linearly with
+// the background.
+constexpr CGFloat kGlassButtonLinearProgressThreshold = 0.9;
+
+// The progress threshold below which glass toolbar buttons background alpha is
+// 0.
+constexpr CGFloat kGlassButtonBackgroundMinProgressThreshold = 0.5;
+
+// The progress thresholds between which glass toolbar buttons fade in.
+constexpr CGFloat kGlassButtonMinAlphaProgressThreshold = 0.4;
+constexpr CGFloat kGlassButtonMaxAlphaProgressThreshold = 0.7;
 
 // Timing to finish the animation of the progress bar before hiding it.
 const base::TimeDelta kProgressBarEndAnimationDuration =
@@ -121,6 +161,35 @@ constexpr CGFloat kGlassContainerDarkBackgroundAlpha = 0.25;
 // The scale factor for the glass effect container when in fullscreen.
 constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
 
+// The maximum width of the collapsed location bar in fullscreen.
+constexpr CGFloat kMaxCollapsedLocationBarWidth = 350.0;
+
+// The minimum width of the collapsed location bar in fullscreen. Guards against
+// the collapsed pill degenerating when the text-only location bar reports no
+// content.
+constexpr CGFloat kMinCollapsedLocationBarWidth = 50.0;
+
+// The background alpha is linear between
+// kGlassButtonBackgroundMinProgressThreshold and 1, 0 below.
+CGFloat ButtonBackgroundAlphaForProgress(CGFloat progress) {
+  return progress > kFullscreenProgressThreshold
+             ? 1
+             : std::clamp<CGFloat>(
+                   (progress - kGlassButtonBackgroundMinProgressThreshold) /
+                       (1.0 - kGlassButtonBackgroundMinProgressThreshold),
+                   0.0, 1.0);
+}
+
+// The button alpha is linear between kGlassButtonMinAlphaProgressThreshold and
+// kGlassButtonMaxAlphaProgressThreshold, 0 below and 1 above.
+CGFloat ButtonAlphaForProgress(CGFloat progress) {
+  return std::clamp<CGFloat>(
+      (progress - kGlassButtonMinAlphaProgressThreshold) /
+          (kGlassButtonMaxAlphaProgressThreshold -
+           kGlassButtonMinAlphaProgressThreshold),
+      0.0, 1.0);
+}
+
 }  // namespace
 
 @interface ToolbarViewController () <TabGroupIndicatorViewDelegate,
@@ -135,7 +204,8 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   UIMenu* _forwardButtonMenu;
   ToolbarButton* _reloadButton;
   ToolbarButton* _stopButton;
-  ToolbarButton* _shareButton;
+  ToolbarButton* _leadingShareButton;
+  ToolbarButton* _trailingShareButton;
   ToolbarButton* _assistantButton;
   UIMenu* _assistantButtonMenu;
   ToolbarTabGridBadgeButton* _tabGridButton;
@@ -175,7 +245,7 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
 
   // Dynamic container for the `_backButton` and `_forwardButton` Toolbar
   // navigation buttons in the `_leadingStackView`.
-  UIView* _navigationButtonsContainer;
+  UIView<ToolbarElementWithBackground>* _navigationButtonsContainer;
   // The stack views that hold the buttons on the leading side.
   UIStackView* _leadingStackView;
   // The container for the location bar, which is transparent.
@@ -185,11 +255,20 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   // Content view for the location bar that clips subviews to the pill shape
   // without clipping the shadow on `_locationBarBackground`.
   UIView* _locationBarContentView;
+  // The location bar.
+  UIViewController* _locationBarViewController;
+  // The layout guide constrained to the steady view of the location bar.
+  UILayoutGuide* _steadyViewLayoutGuide;
+  // The text-only location bar in this toolbar (used for fullscreen animation).
+  UIViewController* _textOnlyLocationBarViewController;
   // The target for the fake omnibox, which replaces the location bar when the
   // location bar is not visible.
   UIView* _fakeOmniboxTarget;
   // The stack views that hold the buttons on the trailing side.
   UIStackView* _trailingStackView;
+
+  // Array containing all the buttons in the toolbar.
+  NSArray<UIView<ToolbarElementWithBackground>*>* _allButtons;
 
   // Container view with shadow for the glass effect. Adding a shadow on the
   // VisualEffectView containing the glass effect directly doesn't work, so add
@@ -200,8 +279,15 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   // is enabled.
   UIVisualEffectView* _glassBackgroundView;
 
+  // A overlay on top of the glass effect, below any other subview.
+  UIView* _glassBackgroundOverlay;
+
   // Height constraint for the glass effect view container.
   NSLayoutConstraint* _glassBackgroundHeightConstraint;
+  // Leading constraint for the glass effect view container.
+  NSLayoutConstraint* _glassBackgroundLeadingConstraint;
+  // Trailing constraint for the glass effect view container.
+  NSLayoutConstraint* _glassBackgroundTrailingConstraint;
   // Constraint the glass background by its bottom anchor.
   NSLayoutConstraint* _glassBackgroundBottomConstraint;
   // Constraint the glass background by its top anchor.
@@ -249,6 +335,9 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   // Whether the visible page is loading.
   BOOL _isLoading;
 
+  // Whether the share button in this toolbar is enabled.
+  BOOL _shareEnabled;
+
   // Used to record the latest fullscreen progress.
   CGFloat _fullscreenProgress;
 
@@ -275,6 +364,19 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   // Constraints for the banner promo in non-split toolbar mode (where the
   // banner is below the toolbar).
   NSArray<NSLayoutConstraint*>* _bannerPromoBelowConstraints;
+
+  // Constraints for the text-only location bar relative to the glass background
+  // view.
+  NSLayoutConstraint* _textOnlyLeadingConstraint;
+  NSLayoutConstraint* _textOnlyTrailingConstraint;
+  NSLayoutConstraint* _textOnlyTopConstraint;
+  NSLayoutConstraint* _textOnlyBottomConstraint;
+
+  // Compressed width of the text-only location bar, see
+  // `-locationBarCollapsedWidth`. Measuring it runs an Auto Layout pass, while
+  // the fullscreen progress is updated on every frame of a transition, so the
+  // result is memoized for the duration of a layout cycle.
+  std::optional<CGFloat> _locationBarCollapsedWidth;
 }
 
 - (instancetype)initInIncognito:(BOOL)incognito topPosition:(BOOL)topPosition {
@@ -282,6 +384,7 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   if (self) {
     _incognito = incognito;
     _topPosition = topPosition;
+    _fullscreenProgress = 1.0;
   }
   return self;
 }
@@ -364,10 +467,13 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
 #pragma mark - Properties
 
 - (void)setLocationBarViewController:
-    (UIViewController*)locationBarViewController {
-  if (_locationBarViewController == locationBarViewController) {
+            (UIViewController*)locationBarViewController
+            andSteadyViewLayoutGuide:(UILayoutGuide*)steadyViewLayoutGuide {
+  if (_locationBarViewController == locationBarViewController &&
+      _steadyViewLayoutGuide == steadyViewLayoutGuide) {
     return;
   }
+  _steadyViewLayoutGuide = steadyViewLayoutGuide;
   [self loadViewIfNeeded];
 
   if (_locationBarViewController &&
@@ -378,6 +484,9 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   }
 
   _locationBarViewController = locationBarViewController;
+  if (!_locationBarViewController) {
+    return;
+  }
 
   UIView* locationBarView = locationBarViewController.view;
   locationBarView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -393,6 +502,42 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
     AddSameConstraints(locationBarView, _locationBarContainer);
   }
   [_locationBarViewController didMoveToParentViewController:self];
+  [self updateTextOnlyLocationBarViewConstraints];
+}
+
+- (void)setTextOnlyLocationBarViewController:
+    (UIViewController*)textOnlyLocationBarViewController {
+  if (!IsGlassToolbarEnabled()) {
+    return;
+  }
+  if (_textOnlyLocationBarViewController == textOnlyLocationBarViewController) {
+    return;
+  }
+  [self loadViewIfNeeded];
+
+  if (_textOnlyLocationBarViewController &&
+      [_textOnlyLocationBarViewController.view isDescendantOfView:self.view]) {
+    [_textOnlyLocationBarViewController willMoveToParentViewController:nil];
+    [_textOnlyLocationBarViewController.view removeFromSuperview];
+    [_textOnlyLocationBarViewController removeFromParentViewController];
+  }
+
+  _textOnlyLocationBarViewController = textOnlyLocationBarViewController;
+  _locationBarCollapsedWidth.reset();
+  if (!_textOnlyLocationBarViewController) {
+    return;
+  }
+
+  UIView* textOnlyView = _textOnlyLocationBarViewController.view;
+  textOnlyView.translatesAutoresizingMaskIntoConstraints = NO;
+  textOnlyView.alpha = 1;
+  textOnlyView.hidden = YES;
+
+  [self addChildViewController:_textOnlyLocationBarViewController];
+  [_glassBackgroundView.contentView addSubview:textOnlyView];
+  [_textOnlyLocationBarViewController didMoveToParentViewController:self];
+
+  [self updateTextOnlyLocationBarViewConstraints];
 }
 
 - (void)setBannerPromoDelegate:
@@ -412,11 +557,7 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.view.translatesAutoresizingMaskIntoConstraints = NO;
-  if (IsGlassToolbarEnabled()) {
-    self.view.backgroundColor = [UIColor clearColor];
-  } else {
-    self.view.backgroundColor = [UIColor colorNamed:kBackgroundColor];
-  }
+  self.view.backgroundColor = [self toolbarBackgroundColor];
   self.view.accessibilityIdentifier = _topPosition
                                           ? kPrimaryToolbarViewIdentifier
                                           : kSecondaryToolbarViewIdentifier;
@@ -443,14 +584,33 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
           @[ UITraitVerticalSizeClass.class, UITraitHorizontalSizeClass.class ]
                    withAction:@selector(sizeClassDidChange)];
 
-  [self registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
-                     withAction:@selector(userInterfaceStyleDidChange)];
+  [self registerForTraitChanges:
+            @[ NewTabPageTrait.class, NewTabPageImageBackgroundTrait.class ]
+                     withAction:@selector(updateBackgroundColors)];
 }
 
 - (void)viewSafeAreaInsetsDidChange {
   [super viewSafeAreaInsetsDidChange];
   _bannerPromoBackgroundHeightConstraint.constant = [self
       bannerPromoBackgroundHeightForFullscreenProgress:_fullscreenProgress];
+}
+
+- (void)viewWillLayoutSubviews {
+  [super viewWillLayoutSubviews];
+  if (!IsGlassToolbarEnabled()) {
+    return;
+  }
+
+  // The collapsed pill is sized from the text-only location bar. Its content
+  // can change with no fullscreen progress update at all (navigation, badge or
+  // reader mode chip appearing); in that case the measurement was dropped in
+  // `-locationBarContentSizeDidChange`, which also requested this layout pass.
+  // Re-apply the interpolation so the new content is taken into account. The
+  // setters below ignore unchanged values, so this cannot loop.
+  if (_fullscreenProgress < kFullscreenProgressThreshold) {
+    [self updateGlassBackgroundInsetsForFullscreenProgress:_fullscreenProgress];
+    [self updateStackViewMarginsForFullscreenProgress:_fullscreenProgress];
+  }
 }
 
 #pragma mark - UIContentContainer
@@ -496,8 +656,6 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   _assistantButton.forceHidden = !visible;
   _assistantButton.enabled = enabled;
   if (self.isViewLoaded) {
-    [self updateButtons:@[ _assistantButton ]
-        forFullscreenProgress:_fullscreenProgress];
     [self updateLayoutGuides];
   }
 }
@@ -511,15 +669,16 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
     return;
   }
 
-  if (IsNextOldDesignEnabled()) {
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    _forwardButton.enabled = canGoForward;
+    return;
+  } else if (IsNextOldDesignEnabled()) {
     _forwardButton.enabled = canGoForward;
     if (IsRegularXRegularSizeClass(self)) {
       _forwardButton.hidden = NO;
     } else {
       _forwardButton.hidden = !canGoForward;
     }
-    [self updateButtons:@[ _forwardButton ]
-        forFullscreenProgress:_fullscreenProgress];
     return;
   }
 
@@ -552,10 +711,14 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
 }
 
 - (void)setShareEnabled:(BOOL)enabled {
-  if (enabled == _shareButton.isEnabled) {
+  if (enabled == _shareEnabled) {
     return;
   }
-  _shareButton.enabled = enabled;
+  _shareEnabled = enabled;
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    _leadingShareButton.enabled = enabled;
+  }
+  _trailingShareButton.enabled = enabled;
 }
 
 - (void)setHasOmnibox:(BOOL)hasOmnibox {
@@ -563,6 +726,13 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
     return;
   }
   _hasOmnibox = hasOmnibox;
+  if (!_hasOmnibox) {
+    _hideProgressBarClosure.Cancel();
+    _progressBar.hidden = YES;
+    if (_locationIndicatorActive) {
+      [self setLocationIndicatorVisible:NO forNotification:nil];
+    }
+  }
   [self loadViewIfNeeded];
   [self updateToolbarElementsVisibility];
   [self updateTabGroupIndicatorAvailability];
@@ -581,6 +751,7 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   if (loadingStateChanged || ntpVisibilityChanged) {
     if (ntpVisibilityChanged) {
       _NTPVisible = NTPVisible;
+      [self updateBackgroundColors];
       [self updateToolbarVisibility];
     }
 
@@ -589,18 +760,14 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
     _isLoading = !mustHideLoadingUI;
     _reloadButton.forceHidden = !mustHideLoadingUI;
     _stopButton.forceHidden = mustHideLoadingUI;
-    if (self.isViewLoaded) {
-      [self updateButtons:@[ _reloadButton, _stopButton ]
-          forFullscreenProgress:_fullscreenProgress];
-    }
 
-    if (loadingStateChanged && isLoading) {
+    if (_hasOmnibox && loadingStateChanged && isLoading) {
       [_progressBar setProgress:0.0 animated:NO];
     }
     [self updateProgressBarVisibility];
   }
 
-  if (progress != _progressBar.progress) {
+  if (_hasOmnibox && progress != _progressBar.progress) {
     BOOL isGoingBackward = progress < _progressBar.progress;
     [_progressBar setProgress:progress
                      animated:!_progressBar.isHidden && !isGoingBackward];
@@ -750,6 +917,32 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
       }];
 }
 
+- (void)triggerToolbarSlideInAnimation {
+  // Toolbar slide-in animations are disabled when the tab strip is visible.
+  if (CanShowTabStrip(self)) {
+    return;
+  }
+
+  UIView* view = self.view;
+  CGFloat toolbarHeight = view.frame.size.height;
+  view.transform = CGAffineTransformMakeTranslation(
+      0, _topPosition ? -toolbarHeight : toolbarHeight);
+  auto animations = ^{
+    [UIView addKeyframeWithRelativeStartTime:0
+                            relativeDuration:1
+                                  animations:^{
+                                    view.transform = CGAffineTransformIdentity;
+                                  }];
+  };
+
+  [UIView
+      animateKeyframesWithDuration:kToolbarSlideInAnimationDuration.InSecondsF()
+                             delay:0
+                           options:UIViewAnimationCurveEaseInOut
+                        animations:animations
+                        completion:nil];
+}
+
 - (void)hideBannerPromo {
   if (!_bannerPromoVisible) {
     return;
@@ -786,7 +979,7 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
     locationBarExpandedHeight = kTopLocationBarIPhonePortraitHeight;
   }
   CGFloat collapsedLocationBarHeight = kLocationBarHeightFullscreen;
-  if (IsAppBarHiddenInFullscreen() && !_topPosition) {
+  if (!_topPosition) {
     collapsedLocationBarHeight = ToolbarCollapsedHeight(
         self.traitCollection.preferredContentSizeCategory);
   }
@@ -795,30 +988,38 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   _locationBarHeightConstraint.constant = locationBarHeight;
   _locationBarBackground.layer.cornerRadius = locationBarHeight / 2.0;
   _locationBarContainer.layer.cornerRadius = locationBarHeight / 2.0;
-  _locationBarContentView.layer.cornerRadius = locationBarHeight / 2.0;
 
   if (IsGlassToolbarEnabled()) {
-    CGFloat scaleValue = [self glassBackgroundScaleValueForProgress:progress];
-    _glassBackgroundContainer.transform =
-        CGAffineTransformMakeScale(scaleValue, scaleValue);
+    [self updateGlassBackgroundScaleForProgress:progress];
     CGFloat glassHeight = progress * kGlassExpandedHeight +
                           (1 - progress) * kGlassCollapsedHeight;
     _glassBackgroundHeightConstraint.constant = glassHeight;
     _glassBackgroundContainer.layer.cornerRadius = glassHeight / 2.0;
     _glassBackgroundView.layer.cornerRadius = glassHeight / 2.0;
+    _glassBackgroundOverlay.layer.cornerRadius = glassHeight / 2.0;
+
+    [self updateGlassBackgroundInsetsForFullscreenProgress:progress];
   }
 
-  _locationBarBackground.alpha = progress;
+  [self updateStackViewMarginsForFullscreenProgress:progress];
+
+  if (IsGlassToolbarEnabled()) {
+    _locationBarBackground.alpha = ButtonBackgroundAlphaForProgress(progress);
+  } else {
+    _locationBarBackground.alpha = progress;
+  }
 
   [self updateVerticalPositionForFullscreenProgress:progress];
 
   _bannerPromoBackgroundHeightConstraint.constant =
       [self bannerPromoBackgroundHeightForFullscreenProgress:progress];
 
-  [self updateButtons:_leadingStackView.arrangedSubviews
-      forFullscreenProgress:progress];
-  [self updateButtons:_trailingStackView.arrangedSubviews
-      forFullscreenProgress:progress];
+  [self updateButtonsForFullscreenProgress:progress];
+
+  if (IsGlassToolbarEnabled()) {
+    _glassBackgroundOverlay.backgroundColor =
+        ToolbarElementBackgroundColor(_incognito, 1 - progress);
+  }
 
   CGFloat alphaValue = fmax(progress * 2 - 1, 0);
   _tabGroupIndicatorView.alpha = alphaValue;
@@ -836,18 +1037,86 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
               _trailingStackView.bounds.size.width) /
              2.0;
   }
-  CGFloat translation = (progress - 1) * offset;
 
-  CGAffineTransform translationTransform =
-      CGAffineTransformMakeTranslation(translation, 0);
-  _locationBarContainer.transform = translationTransform;
-  _leadingStackView.transform = translationTransform;
-  _trailingStackView.transform = translationTransform;
+  if (!IsGlassToolbarEnabled()) {
+    CGFloat translation = (progress - 1) * offset;
+
+    CGAffineTransform translationTransform =
+        CGAffineTransformMakeTranslation(translation, 0);
+    _locationBarContainer.transform = translationTransform;
+    _leadingStackView.transform = translationTransform;
+    _trailingStackView.transform = translationTransform;
+  }
+
+  if (_textOnlyLocationBarViewController && IsGlassToolbarEnabled()) {
+    [self updateTextOnlyLocationBarForFullscreenProgress:progress];
+  }
 
   _collapsedToolbarButton.hidden = progress > kFullscreenCollapsedThreshold;
 }
 
+#pragma mark - LocationBarContentSizeDelegate
+
+- (void)locationBarContentSizeDidChange {
+  _locationBarCollapsedWidth.reset();
+  // Deliberately no measurement here: this is called from the middle of the
+  // location bar's own constraint updates. Only request a layout pass, which
+  // re-applies the interpolation with the new content, and only while
+  // collapsed, as the pill geometry is otherwise unaffected.
+  if (_fullscreenProgress < kFullscreenProgressThreshold) {
+    [self.view setNeedsLayout];
+  }
+}
+
 #pragma mark - Fullscreen private helpers
+
+// Returns the width of the glass pill when fully collapsed: the compressed
+// width of the text-only location bar, bounded so that a missing measurement
+// cannot produce a zero-width or overflowing pill.
+- (CGFloat)locationBarCollapsedWidth {
+  CHECK(IsGlassToolbarEnabled());
+  CGFloat maxWidth = self.view.bounds.size.width - 2 * kGlassToolbarMargin;
+  if (!_textOnlyLocationBarViewController) {
+    // Nothing to collapse to, so keep the pill expanded and let the
+    // interpolation be a no-op.
+    return maxWidth;
+  }
+  if (!_locationBarCollapsedWidth) {
+    _locationBarCollapsedWidth =
+        [_textOnlyLocationBarViewController.view
+            systemLayoutSizeFittingSize:UILayoutFittingCompressedSize]
+            .width;
+  }
+  return std::clamp<CGFloat>(
+      *_locationBarCollapsedWidth,
+      std::min<CGFloat>(kMinCollapsedLocationBarWidth, maxWidth),
+      std::min<CGFloat>(kMaxCollapsedLocationBarWidth, maxWidth));
+}
+
+// Updates all the buttons according to the fullscreen `progress`.
+- (void)updateButtonsForFullscreenProgress:(CGFloat)progress {
+  CGFloat backgroundAlpha = ButtonBackgroundAlphaForProgress(progress);
+  CGFloat buttonAlpha = ButtonAlphaForProgress(progress);
+
+  for (UIView<ToolbarElementWithBackground>* button in _allButtons) {
+    if (progress > kFullscreenProgressThreshold) {
+      button.alpha = 1;
+      button.transform = CGAffineTransformIdentity;
+    } else {
+      if (IsGlassToolbarEnabled()) {
+        button.alpha = buttonAlpha;
+      } else {
+        button.alpha = progress;
+        // Linearly interpolates the scale between kButtonMinScale and 1.0.
+        CGFloat scale = progress + (1.0 - progress) * kButtonMinScale;
+        button.transform = CGAffineTransformMakeScale(scale, scale);
+      }
+    }
+    if (IsGlassToolbarEnabled()) {
+      [button setBackgroundAlpha:backgroundAlpha];
+    }
+  }
+}
 
 // Returns the height of the promo banner for `progress`.
 - (CGFloat)bannerPromoBackgroundHeightForFullscreenProgress:(CGFloat)progress {
@@ -933,43 +1202,160 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
          (1 - progress) * kGlassFullscreenMargin;
 }
 
-// Returns the scale value of the glass background for `progress`.
-- (CGFloat)glassBackgroundScaleValueForProgress:(CGFloat)progress {
+// Returns the eased progress value for the glass toolbar given `progress`.
+- (CGFloat)glassToolbarProgressForFullscreenProgress:(CGFloat)progress {
   CHECK(IsGlassToolbarEnabled());
-  CGFloat easedProgress;
+  CGFloat linearProgress;
   if (_isFullscreen) {
-    // Scales fully to 1.0 by progress = 0.8 with ease-out.
-    CGFloat linearProgress = std::clamp<CGFloat>(progress / 0.8, 0.0, 1.0);
-    easedProgress = 1.0 - (1.0 - linearProgress) * (1.0 - linearProgress);
-  } else {
-    // Scales fully to 0.0 by progress = 0.2 with ease-in.
-    CGFloat linearProgress =
-        std::clamp<CGFloat>((progress - 0.2) / 0.8, 0.0, 1.0);
-    easedProgress = linearProgress * linearProgress;
+    linearProgress = std::clamp<CGFloat>(
+        progress / kGlassFullscreenExpandedThreshold, 0.0, 1.0);
+    return 1.0 - (1.0 - linearProgress) * (1.0 - linearProgress);
   }
-  CGFloat scaleDelta = 1.0 - kGlassFullscreenScaleFactor;
-  return kGlassFullscreenScaleFactor + scaleDelta * easedProgress;
+  linearProgress =
+      std::clamp<CGFloat>((progress - kGlassFullscreenCollapsedThreshold) /
+                              (1.0 - kGlassFullscreenCollapsedThreshold),
+                          0.0, 1.0);
+  return linearProgress * linearProgress;
 }
 
-// Updates all the `buttons` according to the fullscreen `progress`.
-- (void)updateButtons:(NSArray<UIView*>*)buttons
-    forFullscreenProgress:(CGFloat)progress {
-  for (UIView* button in buttons) {
-    if (button.hidden) {
-      button.alpha = 0;
-      button.transform = CGAffineTransformMakeScale(0.01, 0.01);
-      continue;
-    }
-    if (progress > kFullscreenProgressThreshold) {
-      button.alpha = 1;
-      button.transform = CGAffineTransformIdentity;
-    } else {
-      button.alpha = progress;
-      // Linearly interpolates the scale between kButtonMinScale and 1.0.
-      CGFloat scale = progress + (1.0 - progress) * kButtonMinScale;
-      button.transform = CGAffineTransformMakeScale(scale, scale);
-    }
+// Returns the button position progress factor for fullscreen `progress`.
+- (CGFloat)buttonProgressForFullscreenProgress:(CGFloat)progress {
+  if (!IsGlassToolbarEnabled()) {
+    return progress;
   }
+  if (progress <= kGlassButtonStillProgressThreshold) {
+    return kGlassButtonStillProgressThreshold;
+  }
+  if (progress >= kGlassButtonLinearProgressThreshold) {
+    return progress;
+  }
+  // This is an interpolation between the linear and non-linear parts.
+  CGFloat delta =
+      kGlassButtonLinearProgressThreshold - kGlassButtonStillProgressThreshold;
+  CGFloat t = (progress - kGlassButtonStillProgressThreshold) / delta;
+  return kGlassButtonStillProgressThreshold + delta * t * t * (2.0 - t);
+}
+
+// Updates the scale of the glass background for `progress`.
+- (void)updateGlassBackgroundScaleForProgress:(CGFloat)progress {
+  CHECK(IsGlassToolbarEnabled());
+  CGFloat easedProgress =
+      [self glassToolbarProgressForFullscreenProgress:progress];
+  CGFloat scaleValue =
+      kGlassFullscreenScaleFactor * (1 - easedProgress) + easedProgress;
+  _glassBackgroundContainer.transform =
+      CGAffineTransformMakeScale(scaleValue, scaleValue);
+}
+
+// Returns the distance between a toolbar edge and the fully collapsed glass
+// pill, which is centered horizontally.
+- (CGFloat)glassCollapsedInset {
+  CHECK(IsGlassToolbarEnabled());
+  return (self.view.bounds.size.width - [self locationBarCollapsedWidth]) / 2.0;
+}
+
+// Returns the base leading and trailing margin of the button stack views for
+// the current layout, without any fullscreen collapse offset.
+- (CGFloat)stackViewBaseMargin {
+  if (IsNextOldDesignEnabled()) {
+    return kLegacyOutsideMargin;
+  }
+  if (IsRegularXRegularSizeClass(self)) {
+    return kStackViewMarginRegularRegular;
+  }
+  if (IsIPhoneLandscape(self)) {
+    return kStackViewMarginLandscape;
+  }
+  return IsGlassToolbarEnabled()
+             ? kGlassStackViewMarginPortrait + kGlassToolbarMargin
+             : kStackViewMarginPortrait;
+}
+
+// Sole writer of the glass pill's horizontal insets. Interpolates between the
+// expanded margin and the centered collapsed pill for `progress`.
+- (void)updateGlassBackgroundInsetsForFullscreenProgress:(CGFloat)progress {
+  CHECK(IsGlassToolbarEnabled());
+  CGFloat collapsedInset = [self glassCollapsedInset];
+  CGFloat leading =
+      progress * kGlassToolbarMargin + (1.0 - progress) * collapsedInset;
+  // Setting an unchanged constant still invalidates layout, which would make
+  // the re-apply in `-viewDidLayoutSubviews` loop.
+  if (_glassBackgroundLeadingConstraint.constant != leading) {
+    _glassBackgroundLeadingConstraint.constant = leading;
+  }
+  if (_glassBackgroundTrailingConstraint.constant != -leading) {
+    _glassBackgroundTrailingConstraint.constant = -leading;
+  }
+}
+
+// Sole writer of the button stack view margins. In glass mode the stacks slide
+// inwards with the collapsing pill, so the base margin is offset by the pill's
+// collapsed inset.
+- (void)updateStackViewMarginsForFullscreenProgress:(CGFloat)progress {
+  CGFloat margin = [self stackViewBaseMargin];
+  if (IsGlassToolbarEnabled()) {
+    CGFloat buttonProgress =
+        [self buttonProgressForFullscreenProgress:progress];
+    margin += (1.0 - buttonProgress) * [self glassCollapsedInset];
+  }
+  if (_leadingStackLeadingConstraint.constant != margin) {
+    _leadingStackLeadingConstraint.constant = margin;
+  }
+  if (_trailingStackTrailingConstraint.constant != margin) {
+    _trailingStackTrailingConstraint.constant = margin;
+  }
+}
+
+// Updates the text-only location bar view for fullscreen `progress`.
+- (void)updateTextOnlyLocationBarForFullscreenProgress:(CGFloat)progress {
+  CHECK(IsGlassToolbarEnabled());
+  if (!_textOnlyLocationBarViewController || !_locationBarViewController ||
+      !_glassBackgroundView || !_steadyViewLayoutGuide) {
+    return;
+  }
+
+  CGFloat easedProgress =
+      [self glassToolbarProgressForFullscreenProgress:progress];
+  UIView* textOnlyView = _textOnlyLocationBarViewController.view;
+  UIView* locationBarView = _locationBarViewController.view;
+
+  BOOL showNormalLocationBar = easedProgress >= 1.0;
+  textOnlyView.hidden = showNormalLocationBar;
+  locationBarView.hidden = !showNormalLocationBar;
+
+  [self updateTextOnlyLocationBarConstraintsForProgress:easedProgress];
+}
+
+// Updates the text-only location bar constraints for the eased progress.
+- (void)updateTextOnlyLocationBarConstraintsForProgress:(CGFloat)easedProgress {
+  CHECK(IsGlassToolbarEnabled());
+  if (!_textOnlyLeadingConstraint) {
+    return;
+  }
+
+  UIView* owningView = _steadyViewLayoutGuide.owningView;
+  if (!owningView || _glassBackgroundView.bounds.size.width == 0) {
+    return;
+  }
+
+  CGRect steadyFrame =
+      [_glassBackgroundView convertRect:_steadyViewLayoutGuide.layoutFrame
+                               fromView:owningView];
+  CGFloat glassWidth = _glassBackgroundView.bounds.size.width;
+  CGFloat targetLeading = UseRTLLayout()
+                              ? glassWidth - CGRectGetMaxX(steadyFrame)
+                              : steadyFrame.origin.x;
+  CGFloat targetTrailing = UseRTLLayout()
+                               ? -steadyFrame.origin.x
+                               : CGRectGetMaxX(steadyFrame) - glassWidth;
+  CGFloat targetTop = steadyFrame.origin.y;
+  CGFloat targetBottom =
+      CGRectGetMaxY(steadyFrame) - _glassBackgroundView.bounds.size.height;
+
+  _textOnlyLeadingConstraint.constant = easedProgress * targetLeading;
+  _textOnlyTrailingConstraint.constant = easedProgress * targetTrailing;
+  _textOnlyTopConstraint.constant = easedProgress * targetTop;
+  _textOnlyBottomConstraint.constant = easedProgress * targetBottom;
 }
 
 #pragma mark - TabGroupIndicatorViewDelegate
@@ -1022,6 +1408,63 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
 }
 
 #pragma mark - Private
+
+// Updates the background colors of the toolbar view and location bar.
+- (void)updateBackgroundColors {
+  _locationBarBackground.backgroundColor = [self locationBarBackgroundColor];
+  self.view.backgroundColor = [self toolbarBackgroundColor];
+}
+
+// Returns the background color for the location bar based on current state.
+- (UIColor*)locationBarBackgroundColor {
+  // On iPhone, the location bar matches the fakebox color (white or custom
+  // palette) when `kNewTabPageUICleanup` is enabled. Otherwise, fallback to the
+  // standard location bar background color.
+  if (!CanShowTabStrip(self) && _NTPVisible &&
+      ShouldApplyFakeboxBackgroundAndShadow()) {
+    NewTabPageColorPalette* colorPalette =
+        [self.traitCollection objectForNewTabPageTrait];
+    return colorPalette ? colorPalette.omniboxColor
+                        : [UIColor colorNamed:kSolidWhiteColor];
+  }
+  if (IsNextOldDesignEnabled() && !IsGlassToolbarEnabled()) {
+    return _incognito ? [UIColor colorNamed:kStaticGrey900Color]
+                      : [UIColor colorNamed:kTextfieldBackgroundColor];
+  }
+  return ToolbarElementBackgroundColor(_incognito);
+}
+
+// Returns the background color for the toolbar view based on current state.
+- (UIColor*)toolbarBackgroundColor {
+  if (IsGlassToolbarEnabled()) {
+    return [UIColor clearColor];
+  }
+
+  if (!CanShowTabStrip(self) && _NTPVisible) {
+    NewTabPageColorPalette* colorPalette =
+        [self.traitCollection objectForNewTabPageTrait];
+    if (colorPalette) {
+      return colorPalette.primaryColor;
+    } else if ([self.traitCollection boolForNewTabPageImageBackgroundTrait]) {
+      return [UIColor colorNamed:kBackgroundColor];
+    } else if (IsNewTabPageUICleanupEnabled()) {
+      // Matches the updated NTP UI cleanup background color.
+      return [UIColor colorNamed:kNewTabPageBackgroundColor];
+    } else if (ShouldApplyFakeboxBackgroundAndShadow()) {
+      // In light mode, matches the default light blue NTP background
+      // color to prevent the white pinned omnibox from blending into a white
+      // toolbar. In dark mode, matches standard `kBackgroundColor`.
+      return [UIColor colorWithDynamicProvider:^UIColor*(
+                          UITraitCollection* traitCollection) {
+        if (traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark) {
+          return [UIColor colorNamed:kBackgroundColor];
+        }
+        return [UIColor colorNamed:kNTPBackgroundColor];
+      }];
+    }
+  }
+  return [UIColor colorNamed:kBackgroundColor];
+}
 
 // Creates and configures a separator line for the toolbar.
 - (UIView*)createSeparator {
@@ -1108,6 +1551,42 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
     [NSLayoutConstraint activateConstraints:_bannerPromoAboveConstraints];
     [NSLayoutConstraint deactivateConstraints:_bannerPromoBelowConstraints];
   }
+}
+
+// Updates the constraints for the text-only location bar.
+- (void)updateTextOnlyLocationBarViewConstraints {
+  if (_textOnlyLeadingConstraint) {
+    [NSLayoutConstraint deactivateConstraints:@[
+      _textOnlyLeadingConstraint, _textOnlyTrailingConstraint,
+      _textOnlyTopConstraint, _textOnlyBottomConstraint
+    ]];
+    _textOnlyLeadingConstraint = nil;
+    _textOnlyTrailingConstraint = nil;
+    _textOnlyTopConstraint = nil;
+    _textOnlyBottomConstraint = nil;
+  }
+
+  if (!_textOnlyLocationBarViewController || !_steadyViewLayoutGuide ||
+      !IsGlassToolbarEnabled()) {
+    return;
+  }
+
+  UIView* textOnlyView = _textOnlyLocationBarViewController.view;
+  _textOnlyLeadingConstraint = [textOnlyView.leadingAnchor
+      constraintEqualToAnchor:_glassBackgroundView.leadingAnchor];
+  _textOnlyTrailingConstraint = [textOnlyView.trailingAnchor
+      constraintEqualToAnchor:_glassBackgroundView.trailingAnchor];
+  _textOnlyTopConstraint = [textOnlyView.topAnchor
+      constraintEqualToAnchor:_glassBackgroundView.topAnchor];
+  _textOnlyBottomConstraint = [textOnlyView.bottomAnchor
+      constraintEqualToAnchor:_glassBackgroundView.bottomAnchor];
+
+  [NSLayoutConstraint activateConstraints:@[
+    _textOnlyLeadingConstraint, _textOnlyTrailingConstraint,
+    _textOnlyTopConstraint, _textOnlyBottomConstraint
+  ]];
+
+  [self updateTextOnlyLocationBarForFullscreenProgress:_fullscreenProgress];
 }
 
 // Updates the availability of the tab group indicator and its constraints.
@@ -1198,11 +1677,16 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   UIView* locationBarBackground = [[UIView alloc] init];
   locationBarBackground.translatesAutoresizingMaskIntoConstraints = NO;
   locationBarBackground.layer.cornerRadius = kLocationBarHeight / 2.0;
-
-  locationBarBackground.backgroundColor =
-      ToolbarElementBackgroundColor(_incognito);
-
+  locationBarBackground.backgroundColor = [self locationBarBackgroundColor];
   ConfigureShadowForToolbarElement(locationBarBackground);
+
+  __weak UIView* weakLocationBarBackground = locationBarBackground;
+  [locationBarBackground
+      registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
+                  withHandler:^(id<UITraitEnvironment> traitEnvironment,
+                                UITraitCollection* previousCollection) {
+                    ConfigureShadowForToolbarElement(weakLocationBarBackground);
+                  }];
 
   return locationBarBackground;
 }
@@ -1283,8 +1767,7 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   _locationBarContainer =
       [self createLocationBarContainerWithBackground:_locationBarBackground];
 
-  if (_topPosition &&
-      ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET) {
+  if (_topPosition) {
     _fakeOmniboxTarget = [self createFakeOmniboxTarget];
   }
   _progressBar = [self createProgressBar];
@@ -1329,10 +1812,19 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   [_stopButton addTarget:self
                   action:@selector(stopButtonTapped)
         forControlEvents:UIControlEventTouchUpInside];
-  _shareButton = [self.buttonFactory makeShareButton];
-  [_shareButton addTarget:self
-                   action:@selector(shareButtonTapped:)
-         forControlEvents:UIControlEventTouchUpInside];
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    _leadingShareButton = [self.buttonFactory makeShareButton];
+    _leadingShareButton.visibilityMask = ToolbarButtonVisibility::kCompactWidth;
+    _leadingShareButton.enabled = _shareEnabled;
+    [_leadingShareButton addTarget:self
+                            action:@selector(shareButtonTapped:)
+                  forControlEvents:UIControlEventTouchUpInside];
+  }
+  _trailingShareButton = [self.buttonFactory makeShareButton];
+  _trailingShareButton.enabled = _shareEnabled;
+  [_trailingShareButton addTarget:self
+                           action:@selector(shareButtonTapped:)
+                 forControlEvents:UIControlEventTouchUpInside];
   _assistantButton = [self.buttonFactory makeAssistantButton];
   [_assistantButton addTarget:self
                        action:@selector(assistantButtonTapped)
@@ -1460,8 +1952,14 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
         [[UIVisualEffectView alloc] initWithEffect:glassEffect];
     _glassBackgroundView.translatesAutoresizingMaskIntoConstraints = NO;
     _glassBackgroundView.layer.cornerRadius = kGlassExpandedHeight / 2.0;
+    _glassBackgroundView.clipsToBounds = YES;
     [_glassBackgroundContainer addSubview:_glassBackgroundView];
     AddSameConstraints(_glassBackgroundContainer, _glassBackgroundView);
+
+    _glassBackgroundOverlay = [[UIView alloc] init];
+    _glassBackgroundOverlay.translatesAutoresizingMaskIntoConstraints = NO;
+    [_glassBackgroundView.contentView addSubview:_glassBackgroundOverlay];
+    AddSameConstraints(_glassBackgroundView, _glassBackgroundOverlay);
 
     _glassBackgroundHeightConstraint = [_glassBackgroundContainer.heightAnchor
         constraintEqualToConstant:kGlassExpandedHeight];
@@ -1479,21 +1977,30 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
       _glassBackgroundTopConstraint.active = YES;
     }
 
+    _glassBackgroundLeadingConstraint = [_glassBackgroundContainer.leadingAnchor
+        constraintEqualToAnchor:self.view.leadingAnchor
+                       constant:kGlassToolbarMargin];
+    _glassBackgroundTrailingConstraint =
+        [_glassBackgroundContainer.trailingAnchor
+            constraintEqualToAnchor:self.view.trailingAnchor
+                           constant:-kGlassToolbarMargin];
+
     [NSLayoutConstraint activateConstraints:@[
       _glassBackgroundHeightConstraint,
-      [_glassBackgroundContainer.leadingAnchor
-          constraintEqualToAnchor:self.view.leadingAnchor
-                         constant:kGlassToolbarMargin],
-      [_glassBackgroundContainer.trailingAnchor
-          constraintEqualToAnchor:self.view.trailingAnchor
-                         constant:-kGlassToolbarMargin],
+      _glassBackgroundLeadingConstraint,
+      _glassBackgroundTrailingConstraint,
     ]];
   }
 }
 
 // Sets up the hierarchy of the buttons.
 - (void)setUpHierarchy {
-  if (IsNextOldDesignEnabled()) {
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    _leadingStackView = [self makeStackViewWithButtons:@[
+      _backButton, _forwardButton, _reloadButton, _stopButton,
+      _leadingShareButton
+    ]];
+  } else if (IsNextOldDesignEnabled()) {
     _leadingStackView = [self makeStackViewWithButtons:@[
       _backButton,
       _forwardButton,
@@ -1508,8 +2015,26 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
     ]];
   }
   _trailingStackView = [self makeStackViewWithButtons:@[
-    _shareButton, _assistantButton, _tabGridButton, _toolsMenuButton
+    _assistantButton, _trailingShareButton, _tabGridButton, _toolsMenuButton
   ]];
+
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    _allButtons = @[
+      _backButton, _forwardButton, _reloadButton, _stopButton,
+      _leadingShareButton, _trailingShareButton, _assistantButton,
+      _tabGridButton, _toolsMenuButton
+    ];
+  } else if (IsNextOldDesignEnabled()) {
+    _allButtons = @[
+      _backButton, _forwardButton, _reloadButton, _stopButton,
+      _trailingShareButton, _assistantButton, _tabGridButton, _toolsMenuButton
+    ];
+  } else {
+    _allButtons = @[
+      _navigationButtonsContainer, _reloadButton, _stopButton,
+      _trailingShareButton, _assistantButton, _tabGridButton, _toolsMenuButton
+    ];
+  }
 
   [self setUpGlassEffectHierarchy];
 
@@ -1627,9 +2152,11 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
       constraintEqualToAnchor:self.view.widthAnchor];
   widthConstraint.priority = UILayoutPriorityRequired - 1;
 
-  [_locationBarContainer.widthAnchor
-      constraintLessThanOrEqualToConstant:kLocationBarMaxWidth]
-      .active = YES;
+  if (!IsNextOldDesignEnabled()) {
+    [_locationBarContainer.widthAnchor
+        constraintLessThanOrEqualToConstant:kLocationBarMaxWidth]
+        .active = YES;
+  }
 
   if (IsNextOldDesignEnabled()) {
     _leadingStackLeadingConstraint = [_leadingStackView.leadingAnchor
@@ -1658,7 +2185,9 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
                        constant:-locationBarMargin],
   ];
 
-  CGFloat regularMargin = kLocationBarStackViewMarginRegularRegular;
+  CGFloat regularMargin = IsNextOldDesignEnabled()
+                              ? kLegacyLocationBarStackViewMarginRegularRegular
+                              : kLocationBarStackViewMarginRegularRegular;
   _regularRegularConstraints = @[
     [_locationBarContainer.leadingAnchor
         constraintGreaterThanOrEqualToAnchor:_leadingStackView.trailingAnchor
@@ -1694,7 +2223,7 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
                                     constant:
                                         kLocationBarStackViewMarginLandscape],
     [_locationBarContainer.centerXAnchor
-        constraintEqualToAnchor:self.view.centerXAnchor],
+        constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerXAnchor],
 
     widthConstraint,
   ];
@@ -1711,9 +2240,15 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   [NSLayoutConstraint deactivateConstraints:_landscapeOrientationConstraints];
   [NSLayoutConstraint deactivateConstraints:_regularRegularConstraints];
 
-  if (IsNextOldDesignEnabled()) {
-    _leadingStackLeadingConstraint.constant = kLegacyOutsideMargin;
-    _trailingStackTrailingConstraint.constant = kLegacyOutsideMargin;
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    if (IsRegularXRegularSizeClass(self)) {
+      [NSLayoutConstraint activateConstraints:_regularRegularConstraints];
+    } else if (IsIPhoneLandscape(self)) {
+      [NSLayoutConstraint activateConstraints:_landscapeOrientationConstraints];
+    } else {
+      [NSLayoutConstraint activateConstraints:_portraitOrientationConstraints];
+    }
+  } else if (IsNextOldDesignEnabled()) {
     if (IsRegularXRegularSizeClass(self)) {
       _forwardButton.hidden = NO;
       [NSLayoutConstraint activateConstraints:_regularRegularConstraints];
@@ -1725,21 +2260,18 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
       [NSLayoutConstraint activateConstraints:_portraitOrientationConstraints];
     }
   } else if (IsRegularXRegularSizeClass(self)) {
-    _leadingStackLeadingConstraint.constant = kStackViewMarginRegularRegular;
-    _trailingStackTrailingConstraint.constant = kStackViewMarginRegularRegular;
     [NSLayoutConstraint activateConstraints:_regularRegularConstraints];
   } else if (IsIPhoneLandscape(self)) {
-    _leadingStackLeadingConstraint.constant = kStackViewMarginLandscape;
-    _trailingStackTrailingConstraint.constant = kStackViewMarginLandscape;
     [NSLayoutConstraint activateConstraints:_landscapeOrientationConstraints];
   } else {
-    CGFloat margin = IsGlassToolbarEnabled()
-                         ? kGlassStackViewMarginPortrait + kGlassToolbarMargin
-                         : kStackViewMarginPortrait;
-    _leadingStackLeadingConstraint.constant = margin;
-    _trailingStackTrailingConstraint.constant = margin;
     [NSLayoutConstraint activateConstraints:_portraitOrientationConstraints];
   }
+
+  // The margins themselves are owned by
+  // `-updateStackViewMarginsForFullscreenProgress:`, which folds the fullscreen
+  // collapse offset into them. Writing them here too would drop that offset
+  // until the next fullscreen progress update.
+  [self updateStackViewMarginsForFullscreenProgress:_fullscreenProgress];
 }
 
 // Creates a fake omnibox target to activate when the location bar is not
@@ -1928,10 +2460,6 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   _leadingStackView.hidden = !_hasOmnibox;
   _locationBarContainer.hidden = !_hasOmnibox;
   _trailingStackView.hidden = !_hasOmnibox;
-  [self updateButtons:_leadingStackView.arrangedSubviews
-      forFullscreenProgress:_fullscreenProgress];
-  [self updateButtons:_trailingStackView.arrangedSubviews
-      forFullscreenProgress:_fullscreenProgress];
   _progressBarContainer.hidden = !_hasOmnibox || CanShowTabStrip(self);
   if (IsGlassToolbarEnabled()) {
     _glassBackgroundContainer.hidden = !_hasOmnibox;
@@ -1943,10 +2471,9 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
 
 // Starts or stops the loading progress bar.
 - (void)updateProgressBarVisibility {
-  if (!_progressBar) {
+  if (!_progressBar || !_hasOmnibox) {
     return;
   }
-  [self.view layoutIfNeeded];
 
   // Cancel any pending task to hide the progress bar.
   _hideProgressBarClosure.Cancel();
@@ -1982,23 +2509,20 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
 
 // Called when the size class is updated.
 - (void)sizeClassDidChange {
+  if ((!_hasOmnibox || !IsSplitToolbarMode(self)) && _locationIndicatorActive) {
+    [self setLocationIndicatorVisible:NO forNotification:nil];
+  }
   [self updateForFullscreenProgress:_fullscreenProgress];
   [self updateLayoutConstraints];
   [self updateToolbarElementsVisibility];
   [self updateToolbarVisibility];
   [self updateTabGroupIndicatorAvailability];
   [self updateTabSwitcherGuide];
+  [self updateBackgroundColors];
   if (_topPosition) {
     [self updateBannerConstraints];
     _bannerPromoBackgroundHeightConstraint.constant = [self
         bannerPromoBackgroundHeightForFullscreenProgress:_fullscreenProgress];
-  }
-}
-
-// Handles user interface style trait collection changes.
-- (void)userInterfaceStyleDidChange {
-  if (_locationBarBackground) {
-    ConfigureShadowForToolbarElement(_locationBarBackground);
   }
 }
 
@@ -2024,11 +2548,37 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   BOOL hideToolbar = [self shouldHideToolbar];
 
   [self updateGuide:kToolsMenuGuide withView:_toolsMenuButton hide:hideToolbar];
-  [self updateGuide:kBackButtonGuide withView:_backButton hide:hideToolbar];
+
+  [self updateGuide:kBackButtonGuide
+           withView:_backButton
+               hide:hideToolbar || _backButton.isHidden];
   [self updateGuide:kForwardButtonGuide
            withView:_forwardButton
-               hide:hideToolbar];
-  [self updateGuide:kShareButtonGuide withView:_shareButton hide:hideToolbar];
+               hide:hideToolbar || _forwardButton.isHidden];
+
+  if (IsFiveButtonAppBarLayoutEnabled()) {
+    // The leading share button in the toolbar is visible in a window with
+    // compact width and regular height).
+    BOOL isLeadingShareVisibleInLayout =
+        !IsCompactHeight(self) && IsCompactWidth(self);
+    BOOL hideLeadingShare = hideToolbar || !isLeadingShareVisibleInLayout ||
+                            _leadingShareButton.forceHidden;
+    [self updateGuide:kShareButtonGuide
+             withView:_leadingShareButton
+                 hide:hideLeadingShare];
+  }
+
+  // The toolbar share button is only visible in compact height (or in
+  // Regular-Regular when NextOldDesign is enabled); otherwise, the location bar
+  // steady view owns `kShareButtonGuide`.
+  BOOL isTrailingShareVisibleInLayout =
+      IsCompactHeight(self) ||
+      (IsNextOldDesignEnabled() && IsRegularXRegularSizeClass(self));
+  BOOL hideShare = hideToolbar || !isTrailingShareVisibleInLayout ||
+                   _trailingShareButton.forceHidden;
+  [self updateGuide:kShareButtonGuide
+           withView:_trailingShareButton
+               hide:hideShare];
 
   // The assistant button is hidden in non Regular-Regular size classes, but the
   // toolbar button's visibility handler may run after this, so
@@ -2048,10 +2598,13 @@ constexpr CGFloat kGlassFullscreenScaleFactor = 0.8;
   if (!_hasOmnibox || !self.view.window) {
     return;
   }
-  if (self.layoutState.appBarPosition == AppBarPosition::kNone) {
-    [self.layoutGuideCenter referenceView:_tabGridButton
-                                underName:kTabSwitcherGuide];
-  }
+  BOOL hideTabSwitcher =
+      [self shouldHideToolbar] ||
+      self.layoutState.appBarPosition != AppBarPosition::kNone ||
+      !IsRegularXRegularSizeClass(self) || _tabGridButton.forceHidden;
+  [self updateGuide:kTabSwitcherGuide
+           withView:_tabGridButton
+               hide:hideTabSwitcher];
 }
 
 @end

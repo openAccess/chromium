@@ -12,15 +12,16 @@
 #include <variant>
 
 #include "base/callback_list.h"
+#include "base/check.h"
 #include "base/memory/raw_ptr.h"
-#include "base/timer/timer.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/background/glic/glic_launcher_configuration.h"
 #include "chrome/browser/glic/browser_ui/glic_vector_icon_manager.h"
 #include "chrome/browser/glic/glic_pref_names.h"
-#include "chrome/browser/glic/suggestions/contextual_cueing_features.h"
-#include "chrome/browser/private_ai/private_ai_service_factory.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
+#include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
@@ -34,9 +35,6 @@
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
-#include "components/private_ai/client.h"
-#include "components/private_ai/features.h"
-#include "components/private_ai/private_ai_service.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -79,23 +77,6 @@ inline constexpr ui::ColorId kForegroundOnAltBackground =
 inline constexpr int kCollapsedWidth = 41;
 inline constexpr int kSplitFlatEdgetRadius = 2;
 inline constexpr int kSplitRoundedEdgeRadius = 10;
-inline void EstablishPrivateAiConnection(Profile* profile) {
-  if (!profile) {
-    return;
-  }
-  if (base::FeatureList::IsEnabled(private_ai::kPrivateAi) &&
-      base::FeatureList::IsEnabled(glic::kZeroStateSuggestionsUsePrivateAi)) {
-    private_ai::PrivateAiService* private_ai_service =
-        private_ai::PrivateAiServiceFactory::GetForProfile(profile);
-    if (private_ai_service) {
-      private_ai::Client* client = private_ai_service->GetClient();
-      if (client) {
-        client->EstablishConnection(
-            private_ai::proto::FEATURE_NAME_CHROME_ZERO_STATE_SUGGESTION);
-      }
-    }
-  }
-}
 
 template <typename T>
   requires std::derived_from<T, views::LabelButton>
@@ -121,7 +102,7 @@ class GlicButton : public GlicBaseShim<T>,
           animation_done_callback_(std::move(animation_done_callback)) {}
 
     void Start(WidthState old_state, WidthState new_state) {
-      DCHECK(old_state != new_state);
+      CHECK(old_state != new_state, base::NotFatalUntil::M162);
 
       const bool to_or_from_nudge =
           old_state == WidthState::kNudge || new_state == WidthState::kNudge;
@@ -219,12 +200,6 @@ class GlicButton : public GlicBaseShim<T>,
   ~GlicButton() override = default;
 
   bool ShouldApplyCustomThemeFallback() const {
-    if (!base::FeatureList::IsEnabled(features::kGlicButtonPressedState)) {
-      return false;
-    }
-    if (!features::kGlicButtonCustomThemeFallback.Get()) {
-      return false;
-    }
     if (!profile_) {
       return false;
     }
@@ -383,17 +358,6 @@ class GlicButton : public GlicBaseShim<T>,
   void StateChanged(views::Button::ButtonState old_state) override {
     T::StateChanged(old_state);
 
-    if (this->GetState() == views::Button::ButtonState::STATE_HOVERED) {
-      if (old_state == views::Button::ButtonState::STATE_NORMAL) {
-        prewarm_timer_.Start(FROM_HERE,
-                             kZeroStateSuggestionsPrivateAiPrewarmDelay.Get(),
-                             base::BindOnce(&GlicButton::OnPrewarmTimerFired,
-                                            weak_ptr_factory_.GetWeakPtr()));
-      }
-    } else if (this->GetState() != views::Button::ButtonState::STATE_PRESSED) {
-      prewarm_timer_.Stop();
-    }
-
     UpdateTextAndBackgroundColors();
     UpdateIcon();
   }
@@ -494,10 +458,6 @@ class GlicButton : public GlicBaseShim<T>,
 
   bool GetLabelEnabledForTesting() const { return this->label()->GetEnabled(); }
 
-  bool IsPrewarmTimerRunningForTesting() const {
-    return prewarm_timer_.IsRunning();
-  }
-
   // Updates the background painter to match the current border insets.
   void RefreshBackground() { UpdateColors(); }
 
@@ -581,10 +541,7 @@ class GlicButton : public GlicBaseShim<T>,
   }
 
   void UpdateIcon() override {
-    const bool solid_icon_for_pressed_state =
-        base::FeatureList::IsEnabled(features::kGlicButtonPressedState) &&
-        features::kGlicButtonPressedForceSolidIcon.Get() && glic_panel_is_open_;
-    const ui::ImageModel model = solid_icon_for_pressed_state
+    const ui::ImageModel model = glic_panel_is_open_
                                      ? GetIconForHighlight(icon_size_)
                                      : GetNormalIcon(icon_size_);
 
@@ -686,20 +643,17 @@ class GlicButton : public GlicBaseShim<T>,
     T::SetText(text);
     // Setting label text seems to clear the margin. Set it again.
     SetLabelMargins();
+    if (ShouldApplyCustomThemeFallback()) {
+      UpdateColors();
+    }
   }
 
-  void OnPrewarmTimerFired() { EstablishPrivateAiConnection(profile_); }
-
   void NotifyClick(const ui::Event& event) override {
-    if (base::FeatureList::IsEnabled(features::kGlicButtonPressedState)) {
-      // T likely manipulates the ink drop in its NotifyClick(), so
-      // if we're using the ink drop to show the button's pressed state, skip
-      // T::NotifyClick() and just call the base
-      // NotifyClick().
-      views::LabelButton::NotifyClick(event);
-    } else {
-      T::NotifyClick(event);
-    }
+    // T likely manipulates the ink drop in its NotifyClick(), so
+    // if we're using the ink drop to show the button's pressed state, skip
+    // T::NotifyClick() and just call the base
+    // NotifyClick().
+    views::LabelButton::NotifyClick(event);
   }
 
   // Creates the model for the context menu.
@@ -749,8 +703,7 @@ class GlicButton : public GlicBaseShim<T>,
     }
     this->SetTextColor(views::Button::STATE_DISABLED, kTextDisabled);
 
-    if (base::FeatureList::IsEnabled(features::kGlicButtonPressedState) &&
-        this->GetWidget()) {
+    if (this->GetWidget()) {
       this->SetHighlighted(glic_panel_is_open_);
     }
 
@@ -905,9 +858,9 @@ class GlicButton : public GlicBaseShim<T>,
   }
 
   ui::ImageModel GetNormalIcon(const int icon_size) {
+    const int icon_id = GetGlicProviderSpec(profile_).GetEntryPointIconId();
     return ui::ImageModel::FromImageSkia(
-        *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
-            IDR_GLIC_BUTTON_ALT_ICON));
+        *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(icon_id));
   }
 
   ui::ImageModel GetIconForHighlight(const int icon_size) {
@@ -945,8 +898,6 @@ class GlicButton : public GlicBaseShim<T>,
   // Window active and inactive subscriptions for changing the hover color.
   base::CallbackListSubscription window_did_become_active_subscription_;
   base::CallbackListSubscription window_did_become_inactive_subscription_;
-
-  base::OneShotTimer prewarm_timer_;
 
   base::WeakPtrFactory<GlicButton> weak_ptr_factory_{this};
 };

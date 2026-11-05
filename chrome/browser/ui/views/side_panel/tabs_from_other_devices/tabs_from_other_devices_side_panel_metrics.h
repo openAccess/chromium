@@ -28,7 +28,7 @@ class TabsFromOtherDevicesSidePanelMetrics : public SidePanelEntryObserver {
     kTabOpened = 3,
     kMaxValue = kTabOpened,
   };
-  // LINT.ThenChange(//tools/metrics/histograms/metadata/sync/enums.xml:TabsFromOtherDevicesSidePanelEvent)
+  // LINT.ThenChange(//tools/metrics/histograms/enums.xml:TabsFromOtherDevicesSidePanelEvent)
 
   TabsFromOtherDevicesSidePanelMetrics();
   TabsFromOtherDevicesSidePanelMetrics(

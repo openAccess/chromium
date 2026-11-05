@@ -36,7 +36,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 using content::BrowserThread;
 
@@ -48,14 +48,7 @@ const char* kHostC = "c.test";
 const char* kHostD = "d.test";
 const char* kEchoCookiesWithCorsPath = "/echocookieswithcors";
 
-bool ThirdPartyPartitionedStorageAllowedByDefault() {
-  return base::FeatureList::IsEnabled(
-             net::features::kThirdPartyPartitionedStorageAllowedByDefault) &&
-         base::FeatureList::IsEnabled(
-             net::features::kThirdPartyStoragePartitioning);
-}
-
-bool ThirdPartyPartitionedStorageAllowedByStorageAccessAPI() {
+bool IsThirdPartyStoragePartitioningEnabled() {
   return base::FeatureList::IsEnabled(
       net::features::kThirdPartyStoragePartitioning);
 }
@@ -107,7 +100,8 @@ class CookiePolicyBrowserTest : public InProcessBrowserTest {
   void NavigateToNewTabWithFrame(const std::string& host) {
     GURL main_url(https_server_.GetURL(host, "/iframe.html"));
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), main_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        browser(), main_url,
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   }
 
@@ -487,7 +481,7 @@ IN_PROC_BROWSER_TEST_F(CookiePolicyBrowserTest, MultiTabTest) {
   NavigateToPageWithFrame(kHostA);
   NavigateFrameTo(kHostB, "/browsing_data/site_data.html");
   storage::test::ExpectCrossTabInfoForFrame(
-      GetFrame(), ThirdPartyPartitionedStorageAllowedByDefault());
+      GetFrame(), IsThirdPartyStoragePartitioningEnabled());
 
   // Allow all requests to b.test to access cookies.
   GURL a_url = https_server_.GetURL(kHostA, "/");
@@ -505,7 +499,7 @@ IN_PROC_BROWSER_TEST_F(CookiePolicyBrowserTest, MultiTabTest) {
   NavigateToPageWithFrame(kHostA);
   NavigateFrameTo(kHostB, "/browsing_data/site_data.html");
   storage::test::ExpectCrossTabInfoForFrame(
-      GetFrame(), ThirdPartyPartitionedStorageAllowedByDefault());
+      GetFrame(), IsThirdPartyStoragePartitioningEnabled());
 
   // Allow all third-parties on a.test to access cookies.
   cookie_settings()->SetThirdPartyCookieSetting(
@@ -539,9 +533,7 @@ IN_PROC_BROWSER_TEST_F(CookiePolicyBrowserTest, MultiTabNestedTest) {
   NavigateToPageWithFrame(kHostA);
   NavigateFrameTo(kHostB, "/iframe.html");
   NavigateNestedFrameTo(kHostA, "/browsing_data/site_data.html");
-  bool expected_storage =
-      ThirdPartyPartitionedStorageAllowedByDefault() ||
-      ThirdPartyPartitionedStorageAllowedByStorageAccessAPI();
+  bool expected_storage = IsThirdPartyStoragePartitioningEnabled();
 
   storage::test::ExpectCrossTabInfoForFrame(GetNestedFrame(), expected_storage);
 
@@ -634,7 +626,7 @@ IN_PROC_BROWSER_TEST_P(CookiePolicyStorageBrowserTest,
   SetBlockThirdPartyCookies();
 
   ReloadFrame(GetFrame());
-  ExpectStorage(GetFrame(), ThirdPartyPartitionedStorageAllowedByDefault(),
+  ExpectStorage(GetFrame(), IsThirdPartyStoragePartitioningEnabled(),
                 /*expected_cookie=*/false);
 }
 
@@ -669,7 +661,7 @@ IN_PROC_BROWSER_TEST_P(CookiePolicyStorageBrowserTest,
 
   SetBlockThirdPartyCookies();
 
-  ExpectStorage(GetFrame(), ThirdPartyPartitionedStorageAllowedByDefault(),
+  ExpectStorage(GetFrame(), IsThirdPartyStoragePartitioningEnabled(),
                 /*expected_cookie=*/false);
 
   // Allow all third-parties on a.test to access storage.
@@ -704,8 +696,7 @@ IN_PROC_BROWSER_TEST_P(CookiePolicyStorageBrowserTest,
   SetBlockThirdPartyCookies();
 
   ReloadFrame(GetNestedFrame());
-  ExpectStorage(GetNestedFrame(),
-                ThirdPartyPartitionedStorageAllowedByDefault(),
+  ExpectStorage(GetNestedFrame(), IsThirdPartyStoragePartitioningEnabled(),
                 /*expected_cookie=*/false);
 }
 
@@ -894,33 +885,6 @@ IN_PROC_BROWSER_TEST_P(
   storage::test::ExpectCrossTabInfoForFrame(GetFrame(), false);
 }
 
-class ThirdPartyPartitionedStorageAccessibilityCanBeDisabledTest
-    : public ThirdPartyPartitionedStorageAccessibilityTest {
- protected:
-  std::vector<base::test::FeatureRef> DisabledFeatures() override {
-    return {net::features::kThirdPartyPartitionedStorageAllowedByDefault};
-  }
-};
-
-// Tests that even if partitioned third-party storage would otherwise be
-// accessible, we can disable it with
-// kThirdPartyPartitionedStorageAllowedByDefault.
-IN_PROC_BROWSER_TEST_P(
-    ThirdPartyPartitionedStorageAccessibilityCanBeDisabledTest,
-    Basic) {
-  NavigateToPageWithFrame(kHostA);
-  NavigateFrameTo(kHostB, "/browsing_data/site_data.html");
-  SetStorage(GetFrame());
-  ExpectStorage(GetFrame(), true);
-
-  SetBlockThirdPartyCookies();
-  NavigateToPageWithFrame(kHostA);
-  NavigateFrameTo(kHostB, "/browsing_data/site_data.html");
-
-  // Third-party storage is now always inaccessible.
-  ExpectStorage(GetFrame(), false);
-}
-
 IN_PROC_BROWSER_TEST_P(CookiePolicyStorageBrowserTest,
                        NestedFirstPartyIFrameStorage) {
   NavigateToPageWithFrame(kHostA);
@@ -948,9 +912,7 @@ IN_PROC_BROWSER_TEST_P(CookiePolicyStorageBrowserTest,
 
   ReloadFrame(GetNestedFrame());
 
-  const bool expected_storage =
-      ThirdPartyPartitionedStorageAllowedByDefault() ||
-      ThirdPartyPartitionedStorageAllowedByStorageAccessAPI();
+  const bool expected_storage = IsThirdPartyStoragePartitioningEnabled();
 
   ExpectStorage(GetNestedFrame(), expected_storage,
                 /*expected_cookie=*/false);
@@ -1114,10 +1076,5 @@ INSTANTIATE_TEST_SUITE_P(
     ThirdPartyPartitionedStorageAccessibilitySharedWorkerTest,
     testing::Combine(testing::Values(ContextType::kFrame), testing::Bool()));
 
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    ThirdPartyPartitionedStorageAccessibilityCanBeDisabledTest,
-    testing::Combine(testing::Values(ContextType::kFrame, ContextType::kWorker),
-                     testing::Values(true)));
 
 }  // namespace

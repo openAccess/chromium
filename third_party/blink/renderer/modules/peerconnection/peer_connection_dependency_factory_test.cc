@@ -5,8 +5,10 @@
 #include "third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.h"
 
 #include <memory>
+#include <string>
+#include <tuple>
+#include <utility>
 
-#include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/to_string.h"
 #include "base/task/current_thread.h"
@@ -14,6 +16,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
 #include "services/network/public/cpp/features.h"
+#include "services/network/public/mojom/ip_address_space.mojom-shared.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/frame/policy_container.mojom-blink.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
@@ -22,12 +25,15 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/policy_container.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
-#include "third_party/blink/renderer/modules/peerconnection/mock_peer_connection_dependency_factory.h"
 #include "third_party/blink/renderer/modules/peerconnection/mock_rtc_peer_connection_handler_client.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_peer_connection_handler.h"
+#include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
+#include "third_party/webrtc/api/peer_connection_interface.h"
+#include "third_party/webrtc/rtc_base/socket_address.h"
 
 namespace blink {
 
@@ -88,6 +94,36 @@ TEST_F(PeerConnectionDependencyFactoryTest, CreateRTCPeerConnectionHandler) {
   std::unique_ptr<RTCPeerConnectionHandler> pc_handler =
       CreateRTCPeerConnectionHandler();
   EXPECT_TRUE(pc_handler);
+}
+
+TEST_F(PeerConnectionDependencyFactoryTest,
+       InitializePeerConnectionWithDefaultConfiguration) {
+  V8TestingScope scope;
+  EnsureDependencyFactory(*scope.GetExecutionContext());
+
+  std::unique_ptr<RTCPeerConnectionHandler> pc_handler =
+      CreateRTCPeerConnectionHandler();
+  ASSERT_TRUE(pc_handler);
+
+  // Verify native PeerConnection was successfully created and has valid
+  // signaling thread.
+  webrtc::PeerConnectionInterface* native_pc =
+      pc_handler->NativePeerConnection();
+  ASSERT_TRUE(native_pc);
+  EXPECT_TRUE(native_pc->signaling_thread());
+
+  // Verify network and signaling task runners are running.
+  scoped_refptr<base::SingleThreadTaskRunner> network_task_runner =
+      dependency_factory_->GetWebRtcNetworkTaskRunner();
+  EXPECT_TRUE(network_task_runner);
+  scoped_refptr<base::SingleThreadTaskRunner> signaling_task_runner =
+      dependency_factory_->GetWebRtcSignalingTaskRunner();
+  EXPECT_TRUE(signaling_task_runner);
+
+  // Verify basic operations like DataChannel creation succeed.
+  webrtc::DataChannelInit init;
+  auto data_channel = pc_handler->CreateDataChannel("test-channel", init);
+  EXPECT_TRUE(data_channel);
 }
 
 struct ShouldRequestPermissionTestCase {
@@ -249,6 +285,51 @@ TEST_P(LocalNetworkAccessPeerConnectionDependencyFactoryTest,
 
   histogram_tester_.ExpectUniqueSample(
       "WebRTC.PeerConnection.LocalNetworkAccess.RequestType", request_type, 1);
+  TestUseCounters(scope.GetDocument(), request_type);
+}
+
+// Sending to the unspecified address (0.0.0.0 or ::, including the IPv4-mapped
+// ::ffff:0.0.0.0) reaches the local host on some platforms, so it must be
+// treated like a loopback address.
+TEST_P(LocalNetworkAccessPeerConnectionDependencyFactoryTest,
+       ShouldRequestPermission_UnspecifiedAddress) {
+  const auto [originator_address_space, candidate_address_space, result,
+              result_with_loopback_only, request_type] =
+      std::get<1>(GetParam());
+  if (candidate_address_space != IPAddressSpace::kLoopback) {
+    GTEST_SKIP() << "Only applies to loopback candidates.";
+  }
+
+  WebRuntimeFeatures::EnableLocalNetworkAccessWebRTC(true);
+
+  V8TestingScope scope;
+  auto& dependency_factory =
+      PeerConnectionDependencyFactory::From(*scope.GetExecutionContext());
+
+  auto policies = mojom::blink::PolicyContainerPolicies::New();
+  policies->ip_address_space = originator_address_space;
+  auto policy_container = std::make_unique<PolicyContainer>(
+      mojo::NullAssociatedRemote(), std::move(policies));
+
+  scope.GetExecutionContext()->SetPolicyContainer(std::move(policy_container));
+
+  auto lna_permission_factory =
+      dependency_factory.CreateLocalNetworkAccessPermissionFactoryForTesting();
+  auto lna_permission = lna_permission_factory->Create();
+
+  const bool loopback_only_enabled = std::get<0>(GetParam());
+  const bool expected =
+      loopback_only_enabled ? result_with_loopback_only : result;
+
+  EXPECT_EQ(expected, lna_permission->ShouldRequestPermission(
+                          webrtc::SocketAddress("0.0.0.0", 1234)));
+  EXPECT_EQ(expected, lna_permission->ShouldRequestPermission(
+                          webrtc::SocketAddress("::", 1234)));
+  EXPECT_EQ(expected, lna_permission->ShouldRequestPermission(
+                          webrtc::SocketAddress("::ffff:0.0.0.0", 1234)));
+
+  histogram_tester_.ExpectUniqueSample(
+      "WebRTC.PeerConnection.LocalNetworkAccess.RequestType", request_type, 3);
   TestUseCounters(scope.GetDocument(), request_type);
 }
 

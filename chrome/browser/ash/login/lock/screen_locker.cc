@@ -42,11 +42,9 @@
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_utils.h"
 #include "chrome/browser/ash/login/session/user_session_manager.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/login_screen_client_impl.h"
 #include "chrome/browser/ui/ash/login/user_adding_screen.h"
 #include "chrome/browser/ui/ash/session/session_controller_client_impl.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/grit/browser_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/biod/constants.pb.h"
@@ -98,7 +96,7 @@ const base::TickClock* g_tick_clock_for_testing_ = nullptr;
 chromeos::CertificateProviderService* GetLoginScreenCertProviderService() {
   auto* browser_context =
       BrowserContextHelper::Get()->GetSigninBrowserContext();
-  DCHECK(browser_context);
+  CHECK(browser_context, base::NotFatalUntil::M160);
   return chromeos::CertificateProviderServiceFactory::GetForBrowserContext(
       browser_context);
 }
@@ -113,11 +111,17 @@ ScreenLocker::ScreenLocker(
     const ApplicationLocaleStorage* application_locale_storage,
     scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    const user_manager::MultiUserSignInPolicyController*
+        multi_user_sign_in_policy_controller,
+    system::SystemClock* system_clock,
     const user_manager::UserList& users)
     : local_state_(CHECK_DEREF(local_state)),
       application_locale_storage_(CHECK_DEREF(application_locale_storage)),
       shared_url_loader_factory_(std::move(shared_url_loader_factory)),
       browser_policy_connector_ash_(CHECK_DEREF(browser_policy_connector_ash)),
+      multi_user_sign_in_policy_controller_(
+          CHECK_DEREF(multi_user_sign_in_policy_controller)),
+      system_clock_(CHECK_DEREF(system_clock)),
       users_(users),
       challenge_response_auth_keys_loader_(&local_state_.get()) {
   CHECK(shared_url_loader_factory_);
@@ -158,7 +162,8 @@ void ScreenLocker::Init() {
   // mojo.
   views_screen_locker_ = std::make_unique<ViewsScreenLocker>(
       &local_state_.get(), &application_locale_storage_.get(),
-      shared_url_loader_factory_, &browser_policy_connector_ash_.get());
+      shared_url_loader_factory_, &browser_policy_connector_ash_.get(),
+      &multi_user_sign_in_policy_controller_.get(), &system_clock_.get());
 
   // Create and display lock screen.
   CHECK(LoginScreenClientImpl::HasInstance());
@@ -316,7 +321,7 @@ void ScreenLocker::Authenticate(std::unique_ptr<UserContext> user_context,
     return;
   }
 
-  DCHECK(!pending_auth_state_);
+  CHECK(!pending_auth_state_, base::NotFatalUntil::M160);
   pending_auth_state_ = std::make_unique<AuthState>(
       user_context->GetAccountId(), std::move(callback));
   unlock_attempt_type_ = AUTH_PASSWORD;
@@ -372,7 +377,7 @@ void ScreenLocker::AuthenticateWithChallengeResponse(
     return;
   }
 
-  DCHECK(!pending_auth_state_);
+  CHECK(!pending_auth_state_, base::NotFatalUntil::M160);
   pending_auth_state_ =
       std::make_unique<AuthState>(account_id, std::move(callback));
 
@@ -397,7 +402,7 @@ void ScreenLocker::OnChallengeResponseKeysPrepared(
 
   const user_manager::User* const user =
       user_manager::UserManager::Get()->FindUser(account_id);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M160);
   auto user_context = std::make_unique<UserContext>(*user);
   *user_context->GetMutableChallengeResponseKeys() =
       std::move(challenge_response_keys);
@@ -421,7 +426,7 @@ void ScreenLocker::OnPinAttemptDone(std::unique_ptr<UserContext> user_context,
 
 void ScreenLocker::ContinueAuthenticate(
     std::unique_ptr<UserContext> user_context) {
-  DCHECK(!user_context->IsUsingPin());
+  CHECK(!user_context->IsUsingPin(), base::NotFatalUntil::M160);
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(&ScreenLocker::AttemptUnlock, weak_factory_.GetWeakPtr(),
@@ -429,7 +434,7 @@ void ScreenLocker::ContinueAuthenticate(
 }
 
 void ScreenLocker::AttemptUnlock(std::unique_ptr<UserContext> user_context) {
-  DCHECK(user_context);
+  CHECK(user_context, base::NotFatalUntil::M160);
   // Retrieve accountId before std::move(user_context).
   const AccountId accountId = user_context->GetAccountId();
 

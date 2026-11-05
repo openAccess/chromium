@@ -18,6 +18,7 @@
 #include "components/saved_tab_groups/public/types.h"
 #include "components/saved_tab_groups/test_support/saved_tab_group_test_utils.h"
 #include "components/sync/base/collaboration_id.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -32,12 +33,8 @@ class TwoClientSharedTabGroupDataSyncTest
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
   TwoClientSharedTabGroupDataSyncTest() : SyncTest(TWO_CLIENT) {
-    std::vector<base::test::FeatureRef> enabled_features = {
-        data_sharing::features::kDataSharingFeature};
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      enabled_features.push_back(syncer::kReplaceSyncPromosWithSignInPromos);
-    }
-    feature_overrides_.InitWithFeatures(enabled_features, {});
+    feature_overrides_.InitAndEnableFeature(
+        data_sharing::features::kDataSharingFeature);
   }
 
   ~TwoClientSharedTabGroupDataSyncTest() override = default;

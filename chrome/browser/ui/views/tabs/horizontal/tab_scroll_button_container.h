@@ -60,9 +60,8 @@ class TabScrollButtonContainer : public views::View,
   class TabScrollButtonIPHController;
 
   struct AnimationParams {
-    bool scroll_to_start;
-    int amount_to_scroll;
-    float last_progress = 0;
+    float start_offset;
+    float target_offset;
   };
 
   void BeginScrollAnimation(bool scroll_to_start);
@@ -87,6 +86,8 @@ class TabScrollButtonContainer : public views::View,
   std::unique_ptr<ui::SimpleMenuModel> context_menu_model_;
   std::unique_ptr<views::MenuRunner> context_menu_runner_;
   std::unique_ptr<TabScrollButtonIPHController> iph_controller_;
+  std::unique_ptr<views::ScrollView::ScopedScrollSynchronizer>
+      scroll_synchronizer_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_HORIZONTAL_TAB_SCROLL_BUTTON_CONTAINER_H_

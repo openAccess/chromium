@@ -21,14 +21,16 @@
 #include "crypto/sha2.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/blink/public/mojom/image_replacement/image_replacement.mojom.h"
 #include "ui/gfx/geometry/quad_f.h"
 #include "ui/gfx/geometry/rect.h"
 #include "url/gurl.h"
 
+class SkBitmap;
+
 namespace content {
 class Page;
+class RenderFrameHost;
 }  // namespace content
 
 namespace indigo {
@@ -70,6 +72,14 @@ class IndigoImageReplacementManager
       bool is_primary);
   IndigoImageReplacement* GetImageReplacementForFrame(
       const content::RenderFrameHost& rfh);
+
+  // Produces an SkBitmap suitable for export (e.g. copying to clipboard) from
+  // the replacement image hosted in `rfh`. Decodes the replacement image
+  // asynchronously in an isolated utility process. Runs `callback` with the
+  // decoded bitmap, or an empty SkBitmap on error.
+  void GetReplacementImageForExport(
+      const content::RenderFrameHost& rfh,
+      base::OnceCallback<void(const SkBitmap&)> callback);
   // Resets all image replacements owned and managed by this class.
   void ResetAllReplacements(base::PassKey<IndigoPageActionController>);
   // Returns true if a new generate request is sent, false otherwise.

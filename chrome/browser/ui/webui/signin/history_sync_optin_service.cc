@@ -47,10 +47,8 @@ void HistorySyncOptinServiceDefaultDelegate::ShowHistorySyncOptinScreen(
         .Run(HistorySyncOptinHelper::ScreenChoiceResult::kScreenSkipped);
     return;
   }
-  browser->GetFeatures()
-      .signin_view_controller()
-      ->ShowModalHistorySyncOptInDialog(/*should_close_modal_dialog=*/true,
-                                        std::move(callback));
+  SigninViewController::From(browser)->ShowModalHistorySyncOptInDialog(
+      /*should_close_modal_dialog=*/true, std::move(callback));
 }
 
 void HistorySyncOptinServiceDefaultDelegate::ShowAccountManagementScreen(
@@ -203,13 +201,17 @@ void HistorySyncOptinService::OnPrimaryAccountChanged(
       required_types = {syncer::UserSelectableType::kTabs};
       error_message_id = IDS_TABS_DISABLED_ERROR_DESCRIPTION;
       break;
+    case signin_metrics::AccessPoint::kHistoryPage:
+      required_types = {syncer::UserSelectableType::kHistory};
+      error_message_id = IDS_HISTORY_DISABLED_ERROR_DESCRIPTION;
+      break;
     case signin_metrics::AccessPoint::kCollaborationJoinTabGroup:
     case signin_metrics::AccessPoint::kCollaborationShareTabGroup:
       required_types = {syncer::UserSelectableType::kSavedTabGroups};
       error_message_id = IDS_COLLABORATION_ENTREPRISE_TABS_SYNC_DISABLED_BODY;
       break;
     // All other access points should not trigger an error.
-    case signin_metrics::AccessPoint::kAvatarBubbleSignInWithSyncPromo:
+    case signin_metrics::AccessPoint::kProfileMenuPrimaryButton:
     case signin_metrics::AccessPoint::kPasswordBubble:
     case signin_metrics::AccessPoint::kAddressBubble:
     case signin_metrics::AccessPoint::kStartPage:
@@ -221,7 +223,6 @@ void HistorySyncOptinService::OnPrimaryAccountChanged(
     case signin_metrics::AccessPoint::kExtensions:
     case signin_metrics::AccessPoint::kBookmarkBubble:
     case signin_metrics::AccessPoint::kBookmarkManager:
-    case signin_metrics::AccessPoint::kAvatarBubbleSignIn:
     case signin_metrics::AccessPoint::kUserManager:
     case signin_metrics::AccessPoint::kFullscreenSigninPromo:
     case signin_metrics::AccessPoint::kAutofillDropdown:
@@ -263,8 +264,9 @@ void HistorySyncOptinService::OnPrimaryAccountChanged(
     case signin_metrics::AccessPoint::kCctAccountMismatchNotification:
     case signin_metrics::AccessPoint::kDriveFilePickerIos:
     case signin_metrics::AccessPoint::kGlicLaunchButton:
+    case signin_metrics::AccessPoint::kSkills:
+    case signin_metrics::AccessPoint::kAccountMenuSignedOutState:
     case signin_metrics::AccessPoint::kIndigo:
-    case signin_metrics::AccessPoint::kHistoryPage:
     case signin_metrics::AccessPoint::kHistorySyncOptinExpansionPillOnStartup:
     case signin_metrics::AccessPoint::kWidget:
     case signin_metrics::AccessPoint::kCollaborationLeaveOrDeleteTabGroup:
@@ -296,6 +298,10 @@ void HistorySyncOptinService::OnPrimaryAccountChanged(
     case signin_metrics::AccessPoint::kLevelUp:
     case signin_metrics::AccessPoint::kSignoutUndoSnackbar:
     case signin_metrics::AccessPoint::kComposeboxDriveContextMenuOptionBubble:
+    case signin_metrics::AccessPoint::kAppSwitcherAISummarization:
+    case signin_metrics::AccessPoint::kGeminiExternalAppStoreEvent:
+    case signin_metrics::AccessPoint::kPasswordManagerCard:
+    case signin_metrics::AccessPoint::kEnterpriseProxy:
       return;
   }
 

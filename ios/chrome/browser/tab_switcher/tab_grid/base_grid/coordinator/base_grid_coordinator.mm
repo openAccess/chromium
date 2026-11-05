@@ -312,15 +312,11 @@ using collaboration::CollaborationControllerDelegate;
 }
 
 - (void)showTabGroupEditionForGroup:(base::WeakPtr<const TabGroup>)tabGroup {
-  if (IsOpenEditGroupViewByTappingTitleEnabled() && _tabGroupCreator) {
+  if (_tabGroupCreator) {
     // Gracefully exit if the user double-taps the title button too quickly,
     // which can trigger this flow twice before the UI has time to disable
     // the entry point.
     return;
-  } else {
-    CHECK(!_tabGroupCreator)
-        << "There is an attempt to edit a tab group when a "
-           "creation process is still running.";
   }
 
   if (!tabGroup) {
@@ -433,6 +429,9 @@ using collaboration::CollaborationControllerDelegate;
 }
 
 - (void)showRecentActivityForGroup:(base::WeakPtr<const TabGroup>)tabGroup {
+  if (!tabGroup) {
+    return;
+  }
   _tabGroupRecentActivityCoordinator = [[RecentActivityCoordinator alloc]
       initWithBaseViewController:self.baseViewController
                          browser:self.browser

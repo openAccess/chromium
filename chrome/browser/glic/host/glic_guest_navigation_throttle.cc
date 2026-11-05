@@ -5,13 +5,14 @@
 #include "chrome/browser/glic/host/glic_guest_navigation_throttle.h"
 
 #include "base/feature_list.h"
-#include "chrome/browser/glic/host/glic_ui.h"
 #include "chrome/browser/glic/host/glic_web_client_manager.h"
+#include "chrome/browser/glic/host/glic_web_contents_manager.h"
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/host/guest_util_internal.h"
 #include "chrome/browser/glic/public/features.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_throttle_registry.h"
+#include "content/public/browser/web_contents.h"
 
 namespace glic {
 
@@ -22,10 +23,13 @@ void GlicGuestNavigationThrottle::MaybeCreateAndAdd(
     return;
   }
   content::NavigationHandle& handle = registry.GetNavigationHandle();
-  if (handle.IsInMainFrame() && IsGlicGuest(handle.GetWebContents())) {
-    registry.AddThrottle(
-        std::make_unique<GlicGuestNavigationThrottle>(registry));
+  if (!handle.IsInPrimaryMainFrame() && !handle.IsInPrerenderedMainFrame()) {
+    return;
   }
+  if (!IsGlicGuest(handle.GetWebContents())) {
+    return;
+  }
+  registry.AddThrottle(std::make_unique<GlicGuestNavigationThrottle>(registry));
 }
 
 GlicGuestNavigationThrottle::GlicGuestNavigationThrottle(
@@ -36,12 +40,17 @@ GlicGuestNavigationThrottle::~GlicGuestNavigationThrottle() = default;
 
 content::NavigationThrottle::ThrottleCheckResult
 GlicGuestNavigationThrottle::WillStartRequest() {
-  return HandleRequest();
+  return CheckUrl();
 }
 
 content::NavigationThrottle::ThrottleCheckResult
 GlicGuestNavigationThrottle::WillRedirectRequest() {
-  return HandleRequest();
+  return CheckUrl();
+}
+
+content::NavigationThrottle::ThrottleCheckResult
+GlicGuestNavigationThrottle::WillCommitWithoutUrlLoader() {
+  return CheckUrl();
 }
 
 const char* GlicGuestNavigationThrottle::GetNameForLogging() {
@@ -49,29 +58,34 @@ const char* GlicGuestNavigationThrottle::GetNameForLogging() {
 }
 
 content::NavigationThrottle::ThrottleCheckResult
-GlicGuestNavigationThrottle::HandleRequest() {
-  content::WebContents* guest_contents = navigation_handle()->GetWebContents();
-  GlicUI* glic_ui = GetGlicUiForGuest(guest_contents);
-  if (!glic_ui || !glic_ui->web_client_manager()) {
-    return PROCEED;
-  }
-
+GlicGuestNavigationThrottle::CheckUrl() {
   const GURL& url = navigation_handle()->GetURL();
 
-  if (url.IsAboutBlank()) {
-    return PROCEED;
-  }
+  // `MaybeCreateAndAdd` attaches this throttle to both the primary main frame
+  // and speculative prerendered main frames (`IsInPrerenderedMainFrame()`). If
+  // a background prerender navigation is blocked, cancel the prerender silently
+  // without notifying `GlicWebClientManager` (which would otherwise transition
+  // the active primary page to an error state).
+  GlicWebClientManager* manager =
+      navigation_handle()->IsInPrimaryMainFrame()
+          ? GetWebClientManagerForWebContents(
+                navigation_handle()->GetWebContents())
+          : nullptr;
 
   if (IsAdminBlockedUrl(url)) {
-    glic_ui->web_client_manager()->OnGuestNavigationBlocked(
-        mojom::GuestPageType::kDisabledByAdmin);
-    return CANCEL;
+    if (manager) {
+      manager->OnGuestNavigationBlocked(mojom::GuestPageType::kDisabledByAdmin);
+    }
+    return CANCEL_AND_IGNORE;
   }
 
-  if (!IsGuestOriginAllowed(url::Origin::Create(url))) {
-    glic_ui->web_client_manager()->OnGuestNavigationBlocked(
-        mojom::GuestPageType::kLoadError);
-    return CANCEL;
+  if (!IsGuestOriginAllowed(
+          url::Origin::Create(url),
+          navigation_handle()->GetWebContents()->GetBrowserContext())) {
+    if (manager) {
+      manager->OnGuestNavigationBlocked(mojom::GuestPageType::kOriginBlocked);
+    }
+    return CANCEL_AND_IGNORE;
   }
 
   return PROCEED;

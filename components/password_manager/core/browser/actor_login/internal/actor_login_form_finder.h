@@ -15,7 +15,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "components/optimization_guide/proto/features/actor_login.pb.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 class GURL;
 
@@ -39,7 +38,8 @@ namespace actor_login {
 struct FormFinderResult {
   FormFinderResult();
   FormFinderResult(
-      std::vector<password_manager::PasswordFormManager*> eligible_managers,
+      std::vector<raw_ptr<password_manager::PasswordFormManager>>
+          eligible_managers,
       std::vector<
           optimization_guide::proto::ActorLoginQuality_ParsedFormDetails>
           parsed_forms_details);
@@ -51,7 +51,7 @@ struct FormFinderResult {
   FormFinderResult(FormFinderResult&&);
   FormFinderResult& operator=(FormFinderResult&&);
 
-  std::vector<password_manager::PasswordFormManager*> eligible_managers;
+  std::vector<raw_ptr<password_manager::PasswordFormManager>> eligible_managers;
   std::vector<optimization_guide::proto::ActorLoginQuality_ParsedFormDetails>
       parsed_forms_details;
 };
@@ -93,9 +93,8 @@ class ActorLoginFormFinder {
   // Finds the most suitable `PasswordFormManager` from the list.
   // It prioritizes forms in the primary main frame.
   static password_manager::PasswordFormManager* GetSigninFormManager(
-      const std::vector<password_manager::PasswordFormManager*>&
+      const std::vector<raw_ptr<password_manager::PasswordFormManager>>&
           eligible_managers);
-
 
   // Asynchronously finds all `PasswordFormManager`s that are associated with
   // `origin` and have a valid parsed login form. Invokes `callback` with the

@@ -10,6 +10,8 @@
 #include "base/test/test_future.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/signin/chrome_signin_client_factory.h"
+#include "chrome/browser/signin/chrome_signin_client_test_util.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -39,8 +41,14 @@ void FakeContextualTasksEligibilityManager::SetIsEligible(bool eligible) {
   MaybeNotifyEligibilityChanged();
 }
 
+void FakeContextualTasksEligibilityManager::SetIsEligibleWithoutIdentity(
+    bool eligible) {
+  is_eligible_without_identity_ = eligible;
+  MaybeNotifyEligibilityChanged();
+}
+
 bool FakeContextualTasksEligibilityManager::IsEligibleWithoutIdentity() const {
-  return is_eligible_;
+  return is_eligible_without_identity_.value_or(is_eligible_);
 }
 
 bool FakeContextualTasksEligibilityManager::CalculateEligibility() const {
@@ -101,7 +109,12 @@ void ContextualTasksUiServiceTestBase::SetUp() {
   // IdentityTestEnvironment must be created after the TaskEnvironment.
   identity_test_env_ = std::make_unique<signin::IdentityTestEnvironment>();
 
-  profile_ = std::make_unique<TestingProfile>();
+  TestingProfile::Builder builder;
+  builder.AddTestingFactory(
+      ChromeSigninClientFactory::GetInstance(),
+      base::BindRepeating(&BuildChromeSigninClientWithURLLoader,
+                          &test_url_loader_factory_));
+  profile_ = builder.Build();
   contextual_tasks_service_ = std::make_unique<MockContextualTasksService>();
   aim_eligibility_service_ = std::make_unique<MockAimEligibilityService>(
       prefs_, nullptr, nullptr, nullptr);
@@ -133,6 +146,8 @@ void ContextualTasksUiServiceTestBase::SetUp() {
                     .WillByDefault(Return(true));
                 ON_CALL(*mock_service,
                         IsSignedInToBrowserWithValidCredentials())
+                    .WillByDefault(Return(true));
+                ON_CALL(*mock_service, IsSignedInForWebContentsOnInit(_))
                     .WillByDefault(Return(true));
                 return mock_service;
               },
@@ -194,7 +209,12 @@ void ContextualTasksUiServiceTestBase::TearDown() {
 
 std::unique_ptr<content::BrowserContext>
 ContextualTasksUiServiceTestBase::CreateBrowserContext() {
-  return std::make_unique<TestingProfile>();
+  TestingProfile::Builder builder;
+  builder.AddTestingFactory(
+      ChromeSigninClientFactory::GetInstance(),
+      base::BindRepeating(&BuildChromeSigninClientWithURLLoader,
+                          &test_url_loader_factory_));
+  return builder.Build();
 }
 
 }  // namespace contextual_tasks

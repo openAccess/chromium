@@ -15,6 +15,7 @@
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/search/omnibox_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -28,6 +29,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 using metrics::OmniboxEventProto;
 using ui_test_utils::WaitForAutocompleteDone;
@@ -80,13 +82,13 @@ IN_PROC_BROWSER_TEST_F(OmniboxMetricsTest, LogSearchEngineUsed) {
   const AutocompleteMatch& match = result.match_at(0);
   EXPECT_EQ(u"google.com", match.keyword);
   EXPECT_EQ(u"z", match.fill_into_edit);
-  EXPECT_EQ(AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED,
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
             result.match_at(0).type);
 
   base::HistogramTester histogram_tester;
   model()->SetPopupSelection(OmniboxPopupSelection(0));
   model()->OpenCurrentSelection(base::TimeTicks(),
-                                WindowOpenDisposition::CURRENT_TAB);
+                                ui::mojom::WindowOpenDisposition::kCurrentTab);
   WaitForAutocompleteDone(browser());
   EXPECT_TRUE(controller()->done());
 
@@ -124,7 +126,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxMetricsTest, LogSearchEngineUsed_PostNavigation) {
   base::HistogramTester histogram_tester;
   model()->SetPopupSelection(OmniboxPopupSelection(0));
   model()->OpenCurrentSelection(base::TimeTicks(),
-                                WindowOpenDisposition::CURRENT_TAB);
+                                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   content::WaitForLoadStop(
       browser()->GetTabStripModel()->GetActiveWebContents());

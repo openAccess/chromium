@@ -25,8 +25,20 @@ public interface PdfCoordinatorInterface {
     /** Reloads the pdf document. */
     void reload();
 
-    /** Returns whether there are any unsaved or applied changes. */
+    /**
+     * Returns whether the document has any changes at all, i.e. edits that have already been
+     * applied to the file, edits that are still unsaved, or an active edit session. Used to decide
+     * whether the original document can be reused (e.g. on reload or download).
+     */
     boolean hasChanges();
+
+    /**
+     * Returns whether the document holds edits that have not been written to the file yet and would
+     * be lost if the page were destroyed or frozen.
+     *
+     * <p>Unlike {@link #hasChanges()} this excludes edits that were already applied to the file.
+     */
+    boolean hasUnsavedChanges();
 
     /** Shows the reload confirmation dialog and runs onConfirm if confirmed. */
     void showReloadConfirmationDialog(Runnable onConfirm);
@@ -42,6 +54,19 @@ public interface PdfCoordinatorInterface {
 
     /** Reset PDF load state so that the page can be reloaded/refreshed. */
     void resetLoadState();
+
+    /** Discards all unsaved or applied changes. */
+    void discardChanges();
+
+    /** Returns whether the PDF document is currently loaded. */
+    boolean isPdfLoaded();
+
+    /**
+     * Updates the URL associated with the PDF page.
+     *
+     * @param url The new URL.
+     */
+    void onUrlChanged(String url);
 
     /** Build structured data including content uri and grant permission. */
     @Nullable String requestAssistContent(String filename, boolean isWorkProfile);

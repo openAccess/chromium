@@ -8,6 +8,9 @@ import static org.chromium.build.NullUtil.assertNonNull;
 
 import org.chromium.base.Callback;
 import org.chromium.base.DeviceInfo;
+import org.chromium.base.FeatureOverrides;
+import org.chromium.base.Token;
+import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -16,6 +19,7 @@ import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserv
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabSelectionType;
+import org.chromium.chrome.browser.tabmodel.TabGroupUtils;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
@@ -29,10 +33,25 @@ public class TabSwitcherUtils {
      * Returns whether the Grid Tab Switcher should be disabled. True when the
      * DisableGridTabSwitcher feature flag is enabled on Desktop Android.
      *
+     * <p>In test environments, this defaults to false unless explicitly overridden via
+     * {@code @EnableFeatures} or {@link FeatureOverrides}.
+     *
      * TODO(crbug.com/545634112): This may also be considered for tablets behind a different flag.
      */
     public static boolean isGridTabSwitcherDisabled() {
-        return ChromeFeatureList.sDisableGridTabSwitcher.isEnabled() && DeviceInfo.isDesktop();
+        if (!DeviceInfo.isDesktop()) {
+            return false;
+        }
+        if (BuildConfig.IS_FOR_TEST) {
+            Boolean testValue =
+                    FeatureOverrides.getTestValueForFeature(
+                            ChromeFeatureList.DISABLE_GRID_TAB_SWITCHER);
+            if (testValue == null) {
+                return false;
+            }
+            return testValue;
+        }
+        return ChromeFeatureList.sDisableGridTabSwitcher.isEnabled();
     }
 
     /**
@@ -74,17 +93,17 @@ public class TabSwitcherUtils {
      * TabGroupUiActionHandler}.
      *
      * <p>When the Grid Tab Switcher / Hub is disabled (e.g., on Desktop Android), this selects the
-     * last shown tab of the group in the {@link TabModel} to focus the group on the tab strip.
-     * Otherwise, it invokes {@code requestOpenTabGroupDialog} to present the tab group dialog
-     * inside the tab switcher.
+     * group's currently selected or first tab in the {@link TabModel} to focus the group on the tab
+     * strip. Otherwise, it invokes {@code requestOpenTabGroupDialog} to present the tab group
+     * dialog inside the tab switcher.
      *
      * @param syncId The sync ID of the tab group, which may or may not correspond to an open group.
      * @param tabGroupSyncService Service used to retrieve sync group metadata and convert sync IDs
      *     to local IDs.
      * @param tabGroupUiActionHandler Handler used to open closed tab groups.
-     * @param tabModel The tab model used to resolve the group's last shown tab and update tab
-     *     selection when the tab switcher is disabled.
-     * @param requestOpenTabGroupDialog Callback invoked with the root tab ID to display the tab
+     * @param tabModel The tab model used to resolve the group's selected or first tab and update
+     *     tab selection when the tab switcher is disabled.
+     * @param requestOpenTabGroupDialog Callback invoked with the tab group ID to display the tab
      *     group dialog when the tab switcher is enabled.
      */
     public static void focusTabGroup(
@@ -92,7 +111,7 @@ public class TabSwitcherUtils {
             TabGroupSyncService tabGroupSyncService,
             TabGroupUiActionHandler tabGroupUiActionHandler,
             TabModel tabModel,
-            Callback<Integer> requestOpenTabGroupDialog) {
+            Callback<Token> requestOpenTabGroupDialog) {
         SavedTabGroup syncGroup = tabGroupSyncService.getGroup(syncId);
         if (syncGroup == null) return;
 
@@ -103,16 +122,16 @@ public class TabSwitcherUtils {
             assert syncGroup.localId != null;
         }
 
-        int tabId = tabModel.getGroupLastShownTabId(syncGroup.localId.tabGroupId);
-        if (tabId == Tab.INVALID_TAB_ID) return;
+        Token tabGroupId = syncGroup.localId.tabGroupId;
+        if (!tabModel.containsTabGroup(tabGroupId)) return;
         if (isGridTabSwitcherDisabled()) {
-            Tab tab = tabModel.getTabById(tabId);
+            Tab tab = TabGroupUtils.getSelectedOrFirstTabInGroup(tabModel, tabGroupId);
             if (tab != null) {
                 tabModel.setIndex(tabModel.indexOf(tab), TabSelectionType.FROM_USER);
             }
             return;
         }
-        requestOpenTabGroupDialog.onResult(tabId);
+        requestOpenTabGroupDialog.onResult(tabGroupId);
     }
 
     /**

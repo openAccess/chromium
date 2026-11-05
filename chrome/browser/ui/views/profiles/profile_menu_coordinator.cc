@@ -14,12 +14,10 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
-#include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
 #include "chrome/browser/ui/views/profiles/incognito_menu_view.h"
+#include "chrome/browser/ui/views/profiles/isolated_mode_menu_view.h"
 #include "chrome/browser/ui/views/profiles/profile_menu_view_base.h"
-#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
@@ -38,8 +36,10 @@ ProfileMenuCoordinator::~ProfileMenuCoordinator() {
   }
 }
 
-void ProfileMenuCoordinator::Show(bool is_source_accelerator,
-                                  bool from_avatar_promo) {
+void ProfileMenuCoordinator::Show(
+    bool is_source_accelerator,
+    bool from_avatar_promo,
+    base::ScopedClosureRunner keep_anchor_visible) {
   // TODO(crbug.com/425953501): Update this code.
   auto avatar_toolbar_button = GetAvatarToolbarButton();
 
@@ -50,19 +50,33 @@ void ProfileMenuCoordinator::Show(bool is_source_accelerator,
   }
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  // Batch upload promos in the profile menu identity header are only shown
+  // if the user opened the menu via the avatar promo pill. Outside of pill
+  // expansions, batch upload promos are suppressed so they don't overshadow
+  // other promos (such as History Sync), while still fetching local data count
+  // to show the batch upload row item in the menu.
+  const bool allow_batch_upload_promos = from_avatar_promo;
+
+  // `keep_anchor_visible` is bound to the callback, so that the avatar button
+  // stays visible while waiting for the results. If the callback is dropped,
+  // `keep_anchor_visible` will be destroyed, allowing the button to be hidden
+  // again.
   signin::ComputeProfileMenuAvatarButtonPromoInfo(
       *GetProfile(),
       base::BindOnce(&ProfileMenuCoordinator::ShowWithPromoResults,
                      weak_pointer_factory_.GetWeakPtr(), is_source_accelerator,
-                     from_avatar_promo));
+                     from_avatar_promo, std::move(keep_anchor_visible)),
+      allow_batch_upload_promos);
 #else
-  ShowWithPromoResults(is_source_accelerator, from_avatar_promo);
+  ShowWithPromoResults(is_source_accelerator, from_avatar_promo,
+                       std::move(keep_anchor_visible));
 #endif
 }
 
 void ProfileMenuCoordinator::ShowWithPromoResults(
     bool is_source_accelerator,
-    bool from_avatar_promo
+    bool from_avatar_promo,
+    base::ScopedClosureRunner keep_anchor_visible
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
     ,
     signin::ProfileMenuAvatarButtonPromoInfo promo_info
@@ -94,6 +108,9 @@ void ProfileMenuCoordinator::ShowWithPromoResults(
   if (is_incognito) {
     bubble = std::make_unique<IncognitoMenuView>(avatar_toolbar_button,
                                                  &browser_.get());
+  } else if (GetProfile()->IsEnterpriseIsolatedModeProfile()) {
+    bubble = std::make_unique<IsolatedModeMenuView>(avatar_toolbar_button,
+                                                    &browser_.get());
   } else {
 #if BUILDFLAG(IS_CHROMEOS)
     // Note: on Ash, only incognito windows have a profile menu.
@@ -107,8 +124,11 @@ void ProfileMenuCoordinator::ShowWithPromoResults(
                       kToolbarAvatarBubbleElementId);
 
   auto* bubble_ptr = bubble.get();
-  DCHECK_EQ(nullptr, bubble_tracker_.view());
+  CHECK_EQ(nullptr, bubble_tracker_.view(), base::NotFatalUntil::M162);
   bubble_tracker_.SetView(bubble_ptr);
+  // Keep the avatar button from being hidden until the bubble is destroyed.
+  bubble_tracker_.SetIsDeletingCallback(
+      base::DoNothingWithBoundArgs(std::move(keep_anchor_visible)));
 
   views::Widget* widget =
       views::BubbleDialogDelegateView::CreateBubble(std::move(bubble));
@@ -139,15 +159,7 @@ Profile* ProfileMenuCoordinator::GetProfile() {
 }
 
 views::BubbleAnchor ProfileMenuCoordinator::GetAvatarToolbarButton() {
-  if (auto* avatar_toolbar_button =
-          BrowserElements::From(GetBrowser())
-              ->GetElement(kToolbarAvatarButtonElementId)) {
-    return views::BubbleAnchor(avatar_toolbar_button);
-  }
-
-  return views::BubbleAnchor(BrowserView::GetBrowserViewForBrowser(GetBrowser())
-                                 ->toolbar()
-                                 ->avatar_toolbar_button());
+  return AvatarToolbarButtonInterface::GetBubbleAnchor(*GetBrowser());
 }
 
 DEFINE_USER_DATA(ProfileMenuCoordinator);

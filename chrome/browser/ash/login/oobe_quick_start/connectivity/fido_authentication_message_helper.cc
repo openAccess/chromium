@@ -4,6 +4,8 @@
 
 #include "fido_authentication_message_helper.h"
 
+#include <utility>
+
 #include "components/cbor/values.h"
 #include "components/cbor/writer.h"
 
@@ -17,17 +19,17 @@ std::vector<uint8_t> BuildEncodedResponseData(
     uint8_t status) {
   cbor::Value::MapValue cbor_map;
   cbor::Value::MapValue credential_map;
-  credential_map[cbor::Value(kCredentialIdKey)] = cbor::Value(credential_id);
+  credential_map.emplace(kCredentialIdKey, std::move(credential_id));
 
-  cbor_map[cbor::Value(kCborTypeInt)] = cbor::Value(credential_map);
-  cbor_map[cbor::Value(kCborTypeByteString)] = cbor::Value(auth_data);
-  cbor_map[cbor::Value(kCborTypeString)] = cbor::Value(signature);
+  cbor_map.emplace(kCborTypeInt, std::move(credential_map));
+  cbor_map.emplace(kCborTypeByteString, std::move(auth_data));
+  cbor_map.emplace(kCborTypeString, std::move(signature));
   cbor::Value::MapValue user_map;
-  user_map[cbor::Value(kEntitiyIdMapKey)] = cbor::Value(user_id);
-  cbor_map[cbor::Value(kCborTypeArray)] = cbor::Value(user_map);
+  user_map.emplace(kEntitiyIdMapKey, std::move(user_id));
+  cbor_map.emplace(kCborTypeArray, std::move(user_map));
   std::optional<std::vector<uint8_t>> cbor_bytes =
-      cbor::Writer::Write(cbor::Value(std::move(cbor_map)));
-  DCHECK(cbor_bytes);
+      cbor::Writer::Write(cbor_map);
+  CHECK(cbor_bytes, base::NotFatalUntil::M161);
   std::vector<uint8_t> response_bytes = std::move(*cbor_bytes);
   // Add the status byte to the beginning of this now fully encoded cbor bytes
   // vector.

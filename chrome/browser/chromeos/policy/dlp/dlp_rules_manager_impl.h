@@ -5,20 +5,25 @@
 #ifndef CHROME_BROWSER_CHROMEOS_POLICY_DLP_DLP_RULES_MANAGER_IMPL_H_
 #define CHROME_BROWSER_CHROMEOS_POLICY_DLP_DLP_RULES_MANAGER_IMPL_H_
 
-#include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager.h"
-
 #include <map>
 #include <memory>
 #include <set>
 
+#include "base/memory/raw_ref.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
+#include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/dbus/dlp/dlp_client.h"
+#include "chromeos/dbus/dlp/dlp_service.pb.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/url_matcher/url_matcher.h"
 
 class GURL;
 class PrefRegistrySimple;
+class PrefService;
 
 namespace data_controls {
 class DlpReportingManager;
@@ -34,7 +39,8 @@ class DlpRulesManagerImpl : public DlpRulesManager,
   using RuleId = int;
   using UrlConditionId = base::MatcherStringPattern::ID;
 
-  explicit DlpRulesManagerImpl(PrefService* local_state, Profile* profile);
+  // `local_state` must be non-null and must outlive `this`.
+  DlpRulesManagerImpl(PrefService* local_state, Profile* profile);
   ~DlpRulesManagerImpl() override;
 
   // Registers the policy pref.
@@ -66,7 +72,16 @@ class DlpRulesManagerImpl : public DlpRulesManager,
   friend class DlpRulesManagerFactory;
 
  private:
+  static constexpr base::TimeDelta kInitialSetFilesPolicyRetryDelay =
+      base::Seconds(1);
+
   void OnDataLeakPreventionRulesUpdate() override;
+
+  // Handles the response of forwarding the Files policy to the DLP daemon and
+  // schedules a retry with backoff on failure.
+  void OnSetDlpFilesPolicy(const ::dlp::SetDlpFilesPolicyResponse response);
+
+  const raw_ref<PrefService> local_state_;
 
   // Used to track kDlpRulesList local state pref.
   PrefChangeRegistrar pref_change_registrar_;
@@ -89,6 +104,13 @@ class DlpRulesManagerImpl : public DlpRulesManager,
   // Observe to re-notify DLP daemon in case of restart.
   base::ScopedObservation<chromeos::DlpClient, chromeos::DlpClient::Observer>
       dlp_client_observation_{this};
+
+  // Used to retry forwarding the Files policy to the DLP daemon if it fails.
+  base::TimeDelta set_files_policy_retry_delay_ =
+      kInitialSetFilesPolicyRetryDelay;
+  base::OneShotTimer set_files_policy_retry_timer_;
+
+  base::WeakPtrFactory<DlpRulesManagerImpl> weak_ptr_factory_{this};
 };
 
 }  // namespace policy

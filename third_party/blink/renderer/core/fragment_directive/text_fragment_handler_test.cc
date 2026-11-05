@@ -33,6 +33,7 @@
 #include "third_party/blink/renderer/core/html/html_frame_owner_element.h"
 #include "third_party/blink/renderer/core/layout/layout_text.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
+#include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread_scheduler.h"
@@ -399,8 +400,7 @@ TEST_F(TextFragmentHandlerTest, ExtractFirstTextFragmentRect) {
 
   EXPECT_EQ(1u, GetDocument().Markers().Markers().size());
 
-  Node* first_paragraph =
-      GetDocument().getElementById(AtomicString("first"))->firstChild();
+  Node* first_paragraph = GetElementById("first")->firstChild();
   const auto& start = Position(first_paragraph, 0);
   const auto& end = Position(first_paragraph, 19);
   ASSERT_EQ("This is a test page", PlainText(EphemeralRange(start, end)));
@@ -449,8 +449,7 @@ TEST_F(TextFragmentHandlerTest, ExtractFirstTextFragmentRectScroll) {
 
   EXPECT_EQ(1u, GetDocument().Markers().Markers().size());
 
-  Node* first_paragraph =
-      GetDocument().getElementById(AtomicString("first"))->firstChild();
+  Node* first_paragraph = GetElementById("first")->firstChild();
   const auto& start = Position(first_paragraph, 10);
   const auto& end = Position(first_paragraph, 19);
   ASSERT_EQ("test page", PlainText(EphemeralRange(start, end)));
@@ -498,8 +497,7 @@ TEST_F(TextFragmentHandlerTest, ExtractFirstTextFragmentRectMultipleHighlight) {
 
   EXPECT_EQ(2u, GetDocument().Markers().Markers().size());
 
-  Node* first_paragraph =
-      GetDocument().getElementById(AtomicString("first"))->firstChild();
+  Node* first_paragraph = GetElementById("first")->firstChild();
   const auto& start = Position(first_paragraph, 10);
   const auto& end = Position(first_paragraph, 19);
   ASSERT_EQ("test page", PlainText(EphemeralRange(start, end)));
@@ -548,8 +546,7 @@ TEST_F(TextFragmentHandlerTest,
 
   EXPECT_EQ(1u, GetDocument().Markers().Markers().size());
 
-  Node* first_paragraph =
-      GetDocument().getElementById(AtomicString("first"))->firstChild();
+  Node* first_paragraph = GetElementById("first")->firstChild();
   const auto& start = Position(first_paragraph, 10);
   const auto& end = Position(first_paragraph, 19);
   ASSERT_EQ("test page", PlainText(EphemeralRange(start, end)));
@@ -612,8 +609,7 @@ TEST_F(TextFragmentHandlerTest, CheckPreemptiveGeneration) {
     <p id='first'>First paragraph</p>
     )HTML");
 
-  Node* first_paragraph =
-      GetDocument().getElementById(AtomicString("first"))->firstChild();
+  Node* first_paragraph = GetElementById("first")->firstChild();
   const auto& selected_start = Position(first_paragraph, 0);
   const auto& selected_end = Position(first_paragraph, 5);
   ASSERT_EQ("First", PlainText(EphemeralRange(selected_start, selected_end)));
@@ -636,8 +632,7 @@ TEST_F(TextFragmentHandlerTest, CheckNoPreemptiveGenerationBlocklist) {
     <p id='first'>First paragraph</p>
     )HTML");
 
-  Node* first_paragraph =
-      GetDocument().getElementById(AtomicString("first"))->firstChild();
+  Node* first_paragraph = GetElementById("first")->firstChild();
   const auto& selected_start = Position(first_paragraph, 0);
   const auto& selected_end = Position(first_paragraph, 5);
   ASSERT_EQ("First", PlainText(EphemeralRange(selected_start, selected_end)));
@@ -660,9 +655,8 @@ TEST_F(TextFragmentHandlerTest, CheckNoPreemptiveGenerationEditable) {
     <input type="text" id="input" value="default text in input">
     )HTML");
 
-  Node* input_text = FlatTreeTraversal::Next(
-                         *GetDocument().getElementById(AtomicString("input")))
-                         ->firstChild();
+  Node* input_text =
+      FlatTreeTraversal::Next(*GetElementById("input"))->firstChild();
   const auto& selected_start = Position(input_text, 0);
   const auto& selected_end = Position(input_text, 12);
   ASSERT_EQ("default text",
@@ -688,7 +682,7 @@ TEST_F(TextFragmentHandlerTest, SecondGenerationCrash) {
   <p id='p'>First paragraph text</p>
   )HTML");
   GetDocument().UpdateStyleAndLayoutTree();
-  Node* p = GetDocument().getElementById(AtomicString("p"));
+  Node* p = GetElementById("p");
   const auto& start = Position(p->lastChild(), 0);
   const auto& end = Position(p->lastChild(), 15);
   ASSERT_EQ("First paragraph", PlainText(EphemeralRange(start, end)));
@@ -718,8 +712,7 @@ TEST_F(TextFragmentHandlerTest, CheckMetrics_Success) {
     <p id='first'>First paragraph text that is longer than 20 chars</p>
     <p id='second'>Second paragraph text</p>
   )HTML");
-  Node* first_paragraph =
-      GetDocument().getElementById(AtomicString("first"))->firstChild();
+  Node* first_paragraph = GetElementById("first")->firstChild();
   const auto& selected_start = Position(first_paragraph, 0);
   const auto& selected_end = Position(first_paragraph, 28);
   ASSERT_EQ("First paragraph text that is",
@@ -742,8 +735,7 @@ TEST_F(TextFragmentHandlerTest, CheckMetrics_Failure) {
     <p id='second'>Second paragraph prefix one two three four five six seven
      eight nine ten to not unique snippet of text followed by suffix</p>
   )HTML");
-  Node* first_paragraph =
-      GetDocument().getElementById(AtomicString("first"))->firstChild();
+  Node* first_paragraph = GetElementById("first")->firstChild();
   const auto& selected_start = Position(first_paragraph, 80);
   const auto& selected_end = Position(first_paragraph, 106);
   ASSERT_EQ("not unique snippet of text",
@@ -780,7 +772,7 @@ TEST_F(TextFragmentHandlerTest,
 
   Compositor().BeginFrame();
 
-  Element* iframe = GetDocument().getElementById(AtomicString("iframe"));
+  Element* iframe = GetElementById("iframe");
   auto* child_frame =
       To<LocalFrame>(To<HTMLFrameOwnerElement>(iframe)->ContentFrame());
 
@@ -913,8 +905,7 @@ TEST_F(TextFragmentHandlerTest,
     <p id='second'>Second paragraph text</p>
   )HTML");
 
-  Node* first_paragraph =
-      GetDocument().getElementById(AtomicString("first"))->firstChild();
+  Node* first_paragraph = GetElementById("first")->firstChild();
   const auto& selected_start = Position(first_paragraph, 0);
   const auto& selected_end = Position(first_paragraph, 28);
   ASSERT_EQ("First paragraph text that is",
@@ -987,7 +978,7 @@ TEST_F(TextFragmentHandlerTest,
   // Render two frames to handle the async step added by the beforematch event.
   Compositor().BeginFrame();
 
-  Element* iframe = GetDocument().getElementById(AtomicString("iframe"));
+  Element* iframe = GetElementById("iframe");
   auto* child_frame =
       To<LocalFrame>(To<HTMLFrameOwnerElement>(iframe)->ContentFrame());
   auto* main_frame = GetDocument().GetFrame();
@@ -1045,8 +1036,7 @@ TEST_F(TextFragmentHandlerTest, IfGeneratorResetShouldRecordCorrectError) {
     <p id='second'>Second paragraph text</p>
   )HTML");
 
-  Node* first_paragraph =
-      GetDocument().getElementById(AtomicString("first"))->firstChild();
+  Node* first_paragraph = GetElementById("first")->firstChild();
   const auto& selected_start = Position(first_paragraph, 5);
   const auto& selected_end = Position(first_paragraph, 6);
   ASSERT_EQ(" ", PlainText(EphemeralRange(selected_start, selected_end)));
@@ -1076,8 +1066,7 @@ TEST_F(TextFragmentHandlerTest, NotGenerated) {
     <p id='second'>Second paragraph text</p>
   )HTML");
 
-  Node* first_paragraph =
-      GetDocument().getElementById(AtomicString("first"))->firstChild();
+  Node* first_paragraph = GetElementById("first")->firstChild();
   const auto& selected_start = Position(first_paragraph, 5);
   const auto& selected_end = Position(first_paragraph, 6);
   ASSERT_EQ(" ", PlainText(EphemeralRange(selected_start, selected_end)));
@@ -1140,8 +1129,7 @@ TEST_F(TextFragmentHandlerTest, InvalidateOverflowOnRemoval) {
   Compositor().BeginFrame();
 
   EXPECT_EQ(1u, GetDocument().Markers().Markers().size());
-  Text* first_paragraph = To<Text>(
-      GetDocument().getElementById(AtomicString("first"))->firstChild());
+  Text* first_paragraph = To<Text>(GetElementById("first")->firstChild());
   LayoutText* layout_text = first_paragraph->GetLayoutObject();
   PhysicalRect marker_rect = layout_text->VisualOverflowRect();
 
@@ -1157,6 +1145,86 @@ TEST_F(TextFragmentHandlerTest, InvalidateOverflowOnRemoval) {
   EXPECT_GT(removed_rect.Y(), marker_rect.Y());
   EXPECT_EQ(removed_rect.Width(), marker_rect.Width());
   EXPECT_GT(marker_rect.Height(), removed_rect.Height());
+}
+
+TEST_F(TextFragmentHandlerTest,
+       RequestSelectorForViewportCenterUnscrolledPageReturnsEmpty) {
+  SimRequest request("https://example.com/test.html", "text/html");
+  LoadURL("https://example.com/test.html");
+  request.Complete(R"HTML(
+    <!DOCTYPE html>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      p {
+        margin: 0;
+        padding: 0;
+        font-size: 120px;
+        line-height: 1;
+      }
+    </style>
+    <p>Block 1</p>
+    <p>Block 2</p>
+    <p>Block 3</p>
+    <p>Block 4</p>
+    <p>Block 5</p>
+    <p>Block 6</p>
+  )HTML");
+  Compositor().BeginFrame();
+
+  // The page has not been scrolled (scroll offset is 0).
+  GenerationResult result = RequestSelectorForViewportCenterFull();
+  EXPECT_TRUE(result.selector.empty());
+  EXPECT_EQ(shared_highlighting::LinkGenerationError::kNotScrolled,
+            result.error);
+}
+
+TEST_F(TextFragmentHandlerTest,
+       RequestSelectorForViewportCenterScrolledAndReturnedToTopReturnsEmpty) {
+  SimRequest request("https://example.com/test.html", "text/html");
+  LoadURL("https://example.com/test.html");
+  request.Complete(R"HTML(
+    <!DOCTYPE html>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      p {
+        margin: 0;
+        padding: 0;
+        font-size: 120px;
+        line-height: 1;
+      }
+    </style>
+    <p>Block 1</p>
+    <p>Block 2</p>
+    <p>Block 3</p>
+    <p>Block 4</p>
+    <p>Block 5</p>
+    <p>Block 6</p>
+  )HTML");
+  Compositor().BeginFrame();
+
+  // Scroll down by 200px.
+  GetDocument().View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 200), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
+  Compositor().BeginFrame();
+
+  // Scroll back to the top (0px).
+  GetDocument().View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 0), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
+  Compositor().BeginFrame();
+
+  // The scroll offset is back at 0, so no selector should be generated.
+  GenerationResult result = RequestSelectorForViewportCenterFull();
+  EXPECT_TRUE(result.selector.empty());
+  EXPECT_EQ(shared_highlighting::LinkGenerationError::kNotScrolled,
+            result.error);
 }
 
 TEST_F(TextFragmentHandlerTest, RequestSelectorForViewportCenter) {
@@ -1185,14 +1253,17 @@ TEST_F(TextFragmentHandlerTest, RequestSelectorForViewportCenter) {
   )HTML");
   Compositor().BeginFrame();
 
+  // Scroll the page so that the scroll offset is greater than 0.
+  GetDocument().View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 10), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
+
   String selector = RequestSelectorForViewportCenter();
   // The selector is chosen at ~1/3 of the viewport height (210px), which hits
   // "Block 2".
   EXPECT_EQ("Block-,2,-Block%203", selector);
 }
 
-// Verifies that selector generation ignores an existing selection on the page
-// and generates a selector for the reading position (~1/3 of viewport height).
 TEST_F(TextFragmentHandlerTest,
        RequestSelectorForViewportCenterIgnoresSelection) {
   SimRequest request("https://example.com/test.html", "text/html");
@@ -1215,8 +1286,15 @@ TEST_F(TextFragmentHandlerTest,
     <p>Block 2</p>
     <p>Block 3</p>
     <p>Block 4</p>
+    <p>Block 5</p>
+    <p>Block 6</p>
   )HTML");
   Compositor().BeginFrame();
+
+  // Scroll the page so that the scroll offset is greater than 0.
+  GetDocument().View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 10), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
 
   // Select "Block 1"
   Node* text_node =
@@ -1245,7 +1323,7 @@ TEST_F(TextFragmentHandlerTest, RequestSelectorForViewportCenterEmptyDocument) {
 
   GenerationResult result = RequestSelectorForViewportCenterFull();
   EXPECT_TRUE(result.selector.empty());
-  EXPECT_EQ(shared_highlighting::LinkGenerationError::kEmptySelection,
+  EXPECT_EQ(shared_highlighting::LinkGenerationError::kNotScrolled,
             result.error);
 }
 
@@ -1359,11 +1437,16 @@ TEST_F(TextFragmentHandlerTest, RequestSelectorForViewportCenterNonText) {
     <!DOCTYPE html>
     <style>
       body { margin: 0; }
-      div { width: 800px; height: 600px; background: blue; }
+      div { width: 800px; height: 2000px; background: blue; }
     </style>
     <div></div>
   )HTML");
   Compositor().BeginFrame();
+
+  // Scroll the page so that selector generation proceeds to hit-testing.
+  GetDocument().View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 10), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
 
   GenerationResult result = RequestSelectorForViewportCenterFull();
   EXPECT_TRUE(result.selector.empty());
@@ -1378,11 +1461,16 @@ TEST_F(TextFragmentHandlerTest, RequestSelectorForViewportCenterLargeImage) {
     <!DOCTYPE html>
     <style>
       body { margin: 0; }
-      img { width: 800px; height: 600px; }
+      img { width: 800px; height: 2000px; }
     </style>
     <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==">
   )HTML");
   Compositor().BeginFrame();
+
+  // Scroll the page so that selector generation proceeds to hit-testing.
+  GetDocument().View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 10), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
 
   GenerationResult result = RequestSelectorForViewportCenterFull();
   EXPECT_TRUE(result.selector.empty());
@@ -1449,8 +1537,15 @@ TEST_F(TextFragmentHandlerTest, RequestSelectorForViewportCenterWithDPR) {
     <p>Block 2</p>
     <p>Block 3</p>
     <p>Block 4</p>
+    <p>Block 5</p>
+    <p>Block 6</p>
   )HTML");
   Compositor().BeginFrame();
+
+  // Scroll the page so that selector generation proceeds.
+  GetDocument().View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 10), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
 
   // Change device pixel ratio. This shouldn't affect the selector.
   WebView().MainFrameViewWidget()->SetDeviceScaleFactorForTesting(2.0);
@@ -1462,6 +1557,8 @@ TEST_F(TextFragmentHandlerTest, RequestSelectorForViewportCenterWithDPR) {
   EXPECT_EQ("Block-,2,-Block%203", selector);
 }
 
+// Verifies that selector generation in a subframe returns `kNotScrolled` when
+// unscrolled, and generates a selector when the child frame is scrolled.
 TEST_F(TextFragmentHandlerTest, RequestSelectorForViewportCenterInSubframe) {
   SimRequest main_request("https://example.com/main.html", "text/html");
   SimRequest child_request("https://example.com/child.html", "text/html");
@@ -1471,18 +1568,39 @@ TEST_F(TextFragmentHandlerTest, RequestSelectorForViewportCenterInSubframe) {
     <style>
       body { margin: 0; }
       iframe { width: 800px; height: 600px; border: none; }
+      .spacer { height: 2000px; }
     </style>
     <iframe id="iframe" src="child.html"></iframe>
+    <div class="spacer"></div>
   )HTML");
   child_request.Complete(R"HTML(
     <!DOCTYPE html>
     <style>
-      p { margin: 0; font-size: 120px; }
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      p {
+        margin: 0;
+        padding: 0;
+        font-size: 120px;
+        line-height: 1;
+      }
     </style>
-    <p>Subframe block</p>
+    <p>Block 1</p>
+    <p>Block 2</p>
+    <p>Block 3</p>
+    <p>Block 4</p>
+    <p>Block 5</p>
+    <p>Block 6</p>
   )HTML");
   RunAsyncMatchingTasks();
   Compositor().BeginFrame();
+
+  // Scroll the main frame so selector generation proceeds to hit-testing.
+  GetDocument().View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 10), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
 
   // Center of main frame hits the iframe.
   GenerationResult result = RequestSelectorForViewportCenterFull();
@@ -1490,13 +1608,27 @@ TEST_F(TextFragmentHandlerTest, RequestSelectorForViewportCenterInSubframe) {
   EXPECT_EQ(shared_highlighting::LinkGenerationError::kEmptySelection,
             result.error);
 
-  // But calling it on the child frame should work.
-  Element* iframe = GetDocument().getElementById(AtomicString("iframe"));
+  // Calling it on the child frame before scrolling should return kNotScrolled.
+  Element* iframe = GetElementById("iframe");
   LocalFrame* child_frame =
       To<LocalFrame>(To<HTMLFrameOwnerElement>(iframe)->ContentFrame());
+  GenerationResult unscrolled_child_result =
+      RequestSelectorForViewportCenterFull(child_frame);
+  EXPECT_TRUE(unscrolled_child_result.selector.empty());
+  EXPECT_EQ(shared_highlighting::LinkGenerationError::kNotScrolled,
+            unscrolled_child_result.error);
 
-  String child_selector = RequestSelectorForViewportCenter(child_frame);
-  EXPECT_EQ("Subframe-,block", child_selector);
+  // But calling it on the child frame after scrolling should work.
+  child_frame->View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 10), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
+
+  GenerationResult scrolled_child_result =
+      RequestSelectorForViewportCenterFull(child_frame);
+  EXPECT_FALSE(scrolled_child_result.selector.empty());
+  EXPECT_TRUE(scrolled_child_result.selector.starts_with("Block-"));
+  EXPECT_EQ(shared_highlighting::LinkGenerationError::kNone,
+            scrolled_child_result.error);
 }
 
 TEST_F(TextFragmentHandlerTest, ScrollDirectiveParsing) {

@@ -11,10 +11,12 @@
 #include <variant>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_switches.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
+#include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
@@ -31,6 +33,10 @@
 #include "chrome/browser/ash/apps/apk_web_app_service.h"
 #include "chrome/browser/ash/arc/fileapi/arc_file_system_bridge.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
+#include "chrome/browser/ash/guest_os/guest_id.h"
+#include "chrome/browser/ash/guest_os/guest_os_session_tracker.h"
+#include "chrome/browser/ash/guest_os/guest_os_session_tracker_factory.h"
+#include "chrome/browser/ash/guest_os/public/types.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/policy/system_features_disable_list_policy_handler.h"
 #include "chrome/browser/web_applications/policy/web_app_policy_manager.h"
@@ -38,6 +44,7 @@
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chromeos/ash/components/dbus/seneschal/seneschal_client.h"
 #include "chromeos/ash/components/login/session/session_termination_manager.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
@@ -73,8 +80,6 @@
 namespace {
 
 const char kTestPackageName[] = "com.example.this";
-const apps::PackageId kTestPackageId(apps::PackageType::kArc,
-                                     "com.example.this");
 
 std::vector<arc::IntentFilter> CreateFilterList(
     const std::string& package_name,
@@ -145,6 +150,23 @@ GURL FileInDownloads(Profile* profile, base::FilePath file) {
   return mount_points
       ->CreateExternalFileSystemURL(blink::StorageKey::CreateFirstParty(origin),
                                     mount_point_name, file)
+      .ToGURL();
+}
+
+// Returns a FileSystemURL, encoded as a GURL, that points to a file in an
+// archive mount directory.
+GURL FileInArchive(base::FilePath file) {
+  url::Origin origin = file_manager::util::GetFilesAppOrigin();
+  constexpr char kArchiveMountPointName[] = "archive_mount";
+  storage::ExternalMountPoints* mount_points =
+      storage::ExternalMountPoints::GetSystemInstance();
+  mount_points->RegisterFileSystem(
+      kArchiveMountPointName, storage::kFileSystemTypeLocal,
+      storage::FileSystemMountOption(),
+      base::FilePath(file_manager::util::kArchiveMountPath));
+  return mount_points
+      ->CreateExternalFileSystemURL(blink::StorageKey::CreateFirstParty(origin),
+                                    kArchiveMountPointName, file)
       .ToGURL();
 }
 
@@ -272,6 +294,10 @@ class ArcAppsPublisherTest : public testing::Test {
 
     return result;
   }
+
+ protected:
+  const apps::PackageId test_package_id_{apps::PackageType::kArc,
+                                         kTestPackageName};
 
  private:
   content::BrowserTaskEnvironment task_environment_;
@@ -752,6 +778,72 @@ TEST_F(ArcAppsPublisherTest,
   ASSERT_EQ(apps::LaunchResult::kFailed, result.Get());
 }
 
+TEST_F(ArcAppsPublisherTest,
+       LaunchAppWithIntent_SharePathSucceeded_SendsOpenUrlRequest) {
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitch(
+      ash::switches::kEnableArcVm);
+  // Initialize SeneschalClient and register the ARCVM guest session so that
+  // SharePathIfRequired succeeds in sharing the archive path with ARCVM.
+  ash::SeneschalClient::InitializeFake();
+  guest_os::GuestOsSessionTrackerFactory::GetForProfile(profile())
+      ->AddGuestForTesting(guest_os::GuestId(
+          guest_os::VmType::ARCVM, arc::kArcVmName, /*container_name=*/""));
+  SetUpFileSystemInstance();
+
+  auto intent = apps_util::MakeEditIntent(
+      FileInArchive(base::FilePath("test.txt")), "text/plain");
+
+  const auto& fake_apps = arc_app_test()->fake_apps();
+  std::string app_id = ArcAppListPrefs::GetAppId(fake_apps[0]->package_name,
+                                                 fake_apps[0]->activity);
+  arc_app_test()->app_instance()->SendRefreshAppList(fake_apps);
+
+  base::test::TestFuture<apps::LaunchResult> result;
+  app_service_proxy()->LaunchAppWithIntent(
+      app_id, 0, std::move(intent), apps::LaunchSource::kFromFileManager,
+      /*window_info=*/nullptr, result.GetCallback());
+
+  EXPECT_EQ(apps::LaunchResult::kSuccess, result.Get());
+  ASSERT_EQ(file_system_instance()->handledUrlRequests().size(), 1u);
+  auto& url_request = file_system_instance()->handledUrlRequests()[0];
+  EXPECT_EQ(url_request->action_type, arc::mojom::ActionType::EDIT);
+  ASSERT_EQ(url_request->urls.size(), 1u);
+  EXPECT_EQ(url_request->urls[0]->mime_type, "text/plain");
+  EXPECT_EQ(url_request->urls[0]->content_url,
+            GURL("content://org.chromium.arc.volumeprovider/archive/test.txt"));
+
+  ash::SeneschalClient::Shutdown();
+}
+
+TEST_F(ArcAppsPublisherTest, LaunchAppWithIntent_SharePathFailed_ReturnsFalse) {
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitch(
+      ash::switches::kEnableArcVm);
+  // Unlike LaunchAppWithIntent_SharePathSucceeded_SendsOpenUrlRequest above, do
+  // not initialize SeneschalClient or register the ARCVM guest in
+  // GuestOsSessionTracker, so SharePathIfRequired fails and resolves to an
+  // empty content_urls list.
+  SetUpFileSystemInstance();
+
+  auto intent = apps_util::MakeEditIntent(
+      FileInArchive(base::FilePath("test.txt")), "text/plain");
+
+  const auto& fake_apps = arc_app_test()->fake_apps();
+  std::string app_id = ArcAppListPrefs::GetAppId(fake_apps[0]->package_name,
+                                                 fake_apps[0]->activity);
+  arc_app_test()->app_instance()->SendRefreshAppList(fake_apps);
+
+  base::test::TestFuture<apps::LaunchResult> result;
+  app_service_proxy()->LaunchAppWithIntent(
+      app_id, 0, std::move(intent), apps::LaunchSource::kFromFileManager,
+      /*window_info=*/nullptr, result.GetCallback());
+
+  ASSERT_TRUE(result.IsReady());
+  EXPECT_EQ(apps::LaunchResult::kFailed, result.Get());
+  EXPECT_TRUE(file_system_instance()->handledUrlRequests().empty());
+}
+
 TEST_F(
     ArcAppsPublisherTest,
     LaunchAppWithIntent_ViewFileIntent_SendsOpenUrlRequestWithIndividualFileMimeTypes) {
@@ -917,12 +1009,12 @@ class ArcAppsPublisherPromiseAppTest : public ArcAppsPublisherTest {
 TEST_F(ArcAppsPublisherPromiseAppTest,
        StartingInstallationRegistersPromiseApp) {
   // Verify that the promise app is not yet registered.
-  EXPECT_FALSE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_FALSE(cache()->HasPromiseApp(test_package_id_));
 
   arc_app_test()->app_instance()->SendInstallationStarted(kTestPackageName);
 
   // Verify that the promise app is now registered.
-  EXPECT_TRUE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_TRUE(cache()->HasPromiseApp(test_package_id_));
 }
 
 TEST_F(ArcAppsPublisherPromiseAppTest,
@@ -932,13 +1024,13 @@ TEST_F(ArcAppsPublisherPromiseAppTest,
 
   // Add a promise app for testing.
   std::unique_ptr<apps::PromiseApp> promise_app =
-      std::make_unique<apps::PromiseApp>(kTestPackageId);
+      std::make_unique<apps::PromiseApp>(test_package_id_);
   promise_app->progress = progress_initial;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Check that the initial progress value is correct.
   const apps::PromiseApp* promise_app_result =
-      cache()->GetPromiseApp(kTestPackageId);
+      cache()->GetPromiseApp(test_package_id_);
   EXPECT_TRUE(promise_app_result);
   EXPECT_TRUE(promise_app_result->progress.has_value());
   EXPECT_EQ(promise_app_result->progress.value(), progress_initial);
@@ -946,7 +1038,7 @@ TEST_F(ArcAppsPublisherPromiseAppTest,
   // Send an update and check the progress value.
   arc_app_test()->app_instance()->SendInstallationProgressChanged(
       kTestPackageName, progress_next);
-  promise_app_result = cache()->GetPromiseApp(kTestPackageId);
+  promise_app_result = cache()->GetPromiseApp(test_package_id_);
   EXPECT_TRUE(promise_app_result);
   EXPECT_TRUE(promise_app_result->progress.has_value());
   EXPECT_EQ(promise_app_result->progress.value(), progress_next);
@@ -955,20 +1047,20 @@ TEST_F(ArcAppsPublisherPromiseAppTest,
 TEST_F(ArcAppsPublisherPromiseAppTest, ProgressUpdateChangesPromiseStatus) {
   // Add a promise app for testing.
   std::unique_ptr<apps::PromiseApp> promise_app =
-      std::make_unique<apps::PromiseApp>(kTestPackageId);
+      std::make_unique<apps::PromiseApp>(test_package_id_);
   promise_app->status = apps::PromiseStatus::kPending;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Check that the initial status is kPending.
   const apps::PromiseApp* promise_app_result =
-      cache()->GetPromiseApp(kTestPackageId);
+      cache()->GetPromiseApp(test_package_id_);
   EXPECT_TRUE(promise_app_result);
   EXPECT_EQ(promise_app_result->status, apps::PromiseStatus::kPending);
 
   // Send a progress update and check the status.
   arc_app_test()->app_instance()->SendInstallationProgressChanged(
       kTestPackageName, 0.2);
-  promise_app_result = cache()->GetPromiseApp(kTestPackageId);
+  promise_app_result = cache()->GetPromiseApp(test_package_id_);
   EXPECT_TRUE(promise_app_result);
   EXPECT_EQ(promise_app_result->status, apps::PromiseStatus::kInstalling);
 }
@@ -976,49 +1068,49 @@ TEST_F(ArcAppsPublisherPromiseAppTest, ProgressUpdateChangesPromiseStatus) {
 TEST_F(ArcAppsPublisherPromiseAppTest, CancelledInstallationRemovesPromiseApp) {
   // Add a promise app to the cache.
   std::unique_ptr<apps::PromiseApp> promise_app =
-      std::make_unique<apps::PromiseApp>(kTestPackageId);
+      std::make_unique<apps::PromiseApp>(test_package_id_);
   promise_app->status = apps::PromiseStatus::kPending;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Check that the promise app exists.
-  EXPECT_TRUE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_TRUE(cache()->HasPromiseApp(test_package_id_));
 
   // Confirm that the promise app gets removed after a cancelled/ failed
   // installation update.
   arc_app_test()->app_instance()->SendInstallationFinished(kTestPackageName,
                                                            false);
-  EXPECT_FALSE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_FALSE(cache()->HasPromiseApp(test_package_id_));
 }
 
 TEST_F(ArcAppsPublisherPromiseAppTest,
        SuccessfulInstallationOfNonLaunchablePackageRemovesPromiseApp) {
   // Add a promise app to the cache.
   std::unique_ptr<apps::PromiseApp> promise_app =
-      std::make_unique<apps::PromiseApp>(kTestPackageId);
+      std::make_unique<apps::PromiseApp>(test_package_id_);
   promise_app->status = apps::PromiseStatus::kPending;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Check that the promise app exists.
-  EXPECT_TRUE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_TRUE(cache()->HasPromiseApp(test_package_id_));
 
   // Confirm that the promise app gets removed after successful installation of
   // a non-launchable package.
   arc_app_test()->app_instance()->SendInstallationFinished(
       kTestPackageName, /*success=*/true,
       /*is_launchable_app=*/false);
-  EXPECT_FALSE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_FALSE(cache()->HasPromiseApp(test_package_id_));
 }
 
 TEST_F(ArcAppsPublisherPromiseAppTest,
        SuccessfulInstallationRemovesPromiseApp) {
   // Add a promise app to the cache.
   std::unique_ptr<apps::PromiseApp> promise_app =
-      std::make_unique<apps::PromiseApp>(kTestPackageId);
+      std::make_unique<apps::PromiseApp>(test_package_id_);
   promise_app->status = apps::PromiseStatus::kPending;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Check that the promise app exists.
-  EXPECT_TRUE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_TRUE(cache()->HasPromiseApp(test_package_id_));
 
   // Confirm that the promise app gets removed after a successfully completed
   // installation.
@@ -1030,7 +1122,7 @@ TEST_F(ArcAppsPublisherPromiseAppTest,
 
   // Confirm that the promise app gets removed after the installed app gets
   // registered.
-  EXPECT_FALSE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_FALSE(cache()->HasPromiseApp(test_package_id_));
 }
 
 TEST_F(ArcAppsPublisherPromiseAppTest, PromiseAppsAreSuppressedForPiArc) {
@@ -1038,13 +1130,13 @@ TEST_F(ArcAppsPublisherPromiseAppTest, PromiseAppsAreSuppressedForPiArc) {
   apps::ArcApps::SetArcVersionForTesting(arc::kArcVersionP);
 
   // Verify that the promise app is not registered to begin with.
-  EXPECT_FALSE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_FALSE(cache()->HasPromiseApp(test_package_id_));
 
   // Trigger an installation event notification.
   arc_app_test()->app_instance()->SendInstallationStarted(kTestPackageName);
 
   // Verify that the promise app still isn't registered.
-  EXPECT_FALSE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_FALSE(cache()->HasPromiseApp(test_package_id_));
 }
 
 TEST_F(ArcAppsPublisherPromiseAppTest, PromiseAppsAreCreatedForRvcArc) {
@@ -1052,13 +1144,13 @@ TEST_F(ArcAppsPublisherPromiseAppTest, PromiseAppsAreCreatedForRvcArc) {
   apps::ArcApps::SetArcVersionForTesting(arc::kArcVersionR);
 
   // Verify that the promise app is not registered to begin with.
-  EXPECT_FALSE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_FALSE(cache()->HasPromiseApp(test_package_id_));
 
   // Trigger an installation event notification.
   arc_app_test()->app_instance()->SendInstallationStarted(kTestPackageName);
 
   // Verify that the promise app is registered.
-  EXPECT_TRUE(cache()->HasPromiseApp(kTestPackageId));
+  EXPECT_TRUE(cache()->HasPromiseApp(test_package_id_));
 }
 
 // Verifies that only valid intent filters will be published from ARC.

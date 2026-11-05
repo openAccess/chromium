@@ -39,6 +39,7 @@
 #include "third_party/blink/renderer/core/origin_trials/origin_trial_context.h"
 #include "third_party/blink/renderer/core/permissions_policy/document_policy_parser.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
+#include "third_party/blink/renderer/core/workers/dedicated_worker_global_scope.h"
 #include "third_party/blink/renderer/core/workers/worker_global_scope.h"
 #include "third_party/blink/renderer/platform/loader/fetch/detachable_use_counter.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_client_settings_object.h"
@@ -174,6 +175,11 @@ void WorkerClassicScriptLoader::LoadTopLevelScriptAsynchronously(
     FetchParameters fetch_params(
         std::move(request),
         ResourceLoaderOptions(execution_context.GetCurrentWorld()));
+    if (auto* dedicated_worker_global_scope =
+            DynamicTo<DedicatedWorkerGlobalScope>(execution_context)) {
+      fetch_params.MutableOptions().initiator_info.initiator_url =
+          dedicated_worker_global_scope->WorkerScriptInitiatorUrl();
+    }
     worker_main_script_loader_ = MakeGarbageCollected<WorkerMainScriptLoader>();
     worker_main_script_loader_->Start(
         fetch_params, std::move(worker_main_script_load_params),
@@ -202,6 +208,22 @@ void WorkerClassicScriptLoader::LoadTopLevelScriptAsynchronously(
 const KURL& WorkerClassicScriptLoader::ResponseURL() const {
   DCHECK(!Failed());
   return response_url_;
+}
+
+TextEncoding WorkerClassicScriptLoader::GetScriptEncoding() const {
+  // If `decoder_` is available, return its encoding so that any BOM-detected
+  // encoding override is reflected.
+  if (decoder_) {
+    return decoder_->Encoding();
+  }
+  // Otherwise, resolve `response_encoding_` with the same fallback rules as
+  // `TextResourceDecoder::DefaultEncoding` (UTF-8 when unspecified, or Latin-1
+  // when invalid).
+  if (response_encoding_.empty()) {
+    return Utf8Encoding();
+  }
+  TextEncoding encoding(response_encoding_);
+  return encoding.IsValid() ? encoding : Latin1Encoding();
 }
 
 void WorkerClassicScriptLoader::DidReceiveResponse(
@@ -252,9 +274,7 @@ void WorkerClassicScriptLoader::DidReceiveData(base::span<const char> data) {
 
   if (!decoder_) {
     decoder_ = std::make_unique<TextResourceDecoder>(TextResourceDecoderOptions(
-        TextResourceDecoderOptions::kPlainTextContent,
-        response_encoding_.empty() ? Utf8Encoding()
-                                   : TextEncoding(response_encoding_)));
+        TextResourceDecoderOptions::kPlainTextContent, GetScriptEncoding()));
   }
 
   if (data.empty()) {

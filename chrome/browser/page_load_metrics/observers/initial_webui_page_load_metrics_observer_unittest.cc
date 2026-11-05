@@ -34,6 +34,7 @@
 #include "services/metrics/public/cpp/ukm_source.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
+#include "ui/views/test/test_layout_provider.h"
 
 using content::NavigationSimulator;
 using page_load_metrics::PageLoadMetricsObserverTester;
@@ -78,6 +79,7 @@ class InitialWebUIPageLoadMetricsObserverTest
   }
 
   void SetUp() override {
+    InitialWebUIWindowMetricsManager::ResetForTesting();
     ChromeRenderViewHostTestHarness::SetUp();
     SetContents(CreateTestWebContents());
     ukm::InitializeSourceUrlRecorderForWebContents(web_contents());
@@ -104,6 +106,7 @@ class InitialWebUIPageLoadMetricsObserverTest
   ukm::TestAutoSetUkmRecorder test_ukm_recorder_;
 
  private:
+  views::test::TestLayoutProvider layout_provider_;
   base::test::ScopedFeatureList scoped_feature_list_;
   variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
       variations::VariationsIdsProvider::Mode::kUseSignedInState};
@@ -266,8 +269,6 @@ TEST_F(InitialWebUIPageLoadMetricsObserverTest, WasCached) {
   EXPECT_THAT(entries, Contains(HasMetricWithValue("WasCached", 1)));
 }
 
-
-
 TEST_F(InitialWebUIPageLoadMetricsObserverTest,
        NavigationTiming_StartEarlierThanRequest) {
   NavigateAndCommit(GURL(kTestWebUIUrl));
@@ -367,8 +368,8 @@ TEST_F(InitialWebUIPageLoadMetricsObserverTest,
 }
 
 // Verifies that when a WebContents is already associated with a
-// BrowserWindowInterface prior to first paint, FCP is forwarded immediately
-// to the InitialWebUIWindowMetricsManager.
+// BrowserWindowInterface prior to navigation and first paint, FCP is forwarded
+// immediately to the InitialWebUIWindowMetricsManager.
 TEST_F(InitialWebUIPageLoadMetricsObserverTest,
        ForwardMonotonicFCPWithBrowserWindowInterface) {
   base::HistogramTester histograms;
@@ -382,11 +383,9 @@ TEST_F(InitialWebUIPageLoadMetricsObserverTest,
 
   InitialWebUIWindowMetricsManager manager(&mock_browser);
   manager.SkipStartupForTesting();
-  manager.SetWindowCreationInfo(
-      waap::NewWindowCreationSource::kBrowserInitiated, base::TimeTicks::Now());
-
-  // Associate the WebContents with the BrowserWindowInterface before FCP
   webui::SetBrowserWindowInterface(web_contents(), &mock_browser);
+  manager.SetWindowCreationInfo(waap::NewWindowCreationSource::kNewEmptyWindow,
+                                base::TimeTicks::Now());
 
   NavigateAndCommit(GURL(kTestWebUIUrl));
 
@@ -407,25 +406,13 @@ TEST_F(InitialWebUIPageLoadMetricsObserverTest,
       "InitialWebUI.NewWindow.AllSources.WithoutExistingWindow."
       "ReloadButton.FirstContentfulPaint.FromConstructor2",
       1);
-
-  DeleteContents();
-
-  histograms.ExpectUniqueSample(
-      "InitialWebUI.Toolbar.WindowMetricsManagerBindingStatus",
-      InitialWebUIPageLoadMetricsObserver::WindowMetricsManagerBindingStatus::
-          kBoundAtStart,
-      1);
-  histograms.ExpectTotalCount(
-      "InitialWebUI.Toolbar.TimeToWindowMetricsManagerBound", 0);
-  histograms.ExpectTotalCount(
-      "InitialWebUI.Toolbar.TimeWithoutWindowMetricsManagerOnDestruction", 0);
 }
 
-// Verifies that when a WebContents is prewarmed without an associated
-// BrowserWindowInterface, FCP is buffered and only flushed to the
-// InitialWebUIWindowMetricsManager once BrowserWindowInterface is attached.
+// Verifies that when a WebContents is prewarmed and commits without an
+// associated BrowserWindowInterface, attaching BrowserWindowInterface before
+// first paint forwards FCP to the InitialWebUIWindowMetricsManager.
 TEST_F(InitialWebUIPageLoadMetricsObserverTest,
-       DeferredMonotonicFCPForPrewarmedWebContents) {
+       MonotonicFCPForPrewarmedWebContents) {
   base::HistogramTester histograms;
   MockBrowserWindowInterface mock_browser;
   ui::UnownedUserDataHost user_data_host;
@@ -437,11 +424,15 @@ TEST_F(InitialWebUIPageLoadMetricsObserverTest,
 
   InitialWebUIWindowMetricsManager manager(&mock_browser);
   manager.SkipStartupForTesting();
-  manager.SetWindowCreationInfo(
-      waap::NewWindowCreationSource::kBrowserInitiated, base::TimeTicks::Now());
 
-  // Navigate and emit FCP while prewarmed (no BrowserWindowInterface yet)
+  // Navigate and commit while prewarmed (no BrowserWindowInterface yet).
   NavigateAndCommit(GURL(kTestWebUIUrl));
+
+  // Simulate window creation consuming the prewarmed WebContents prior to show
+  // and first paint.
+  webui::SetBrowserWindowInterface(web_contents(), &mock_browser);
+  manager.SetWindowCreationInfo(waap::NewWindowCreationSource::kNewEmptyWindow,
+                                base::TimeTicks::Now());
 
   page_load_metrics::mojom::PageLoadTiming timing;
   page_load_metrics::InitPageLoadTimingForTest(&timing);
@@ -456,55 +447,10 @@ TEST_F(InitialWebUIPageLoadMetricsObserverTest,
 
   tester()->SimulateTimingUpdate(timing);
 
-  // Still 0 before being attached to a browser window
-  histograms.ExpectTotalCount(
-      "InitialWebUI.NewWindow.AllSources.WithoutExistingWindow."
-      "ReloadButton.FirstContentfulPaint.FromConstructor2",
-      0);
-
-  // Simulate window creation consuming the prewarmed WebContents
-  webui::SetBrowserWindowInterface(web_contents(), &mock_browser);
-
-  // Now the deferred FCP should be flushed to the manager
   histograms.ExpectTotalCount(
       "InitialWebUI.NewWindow.AllSources.WithoutExistingWindow."
       "ReloadButton.FirstContentfulPaint.FromConstructor2",
       1);
-
-  DeleteContents();
-
-  histograms.ExpectUniqueSample(
-      "InitialWebUI.Toolbar.WindowMetricsManagerBindingStatus",
-      InitialWebUIPageLoadMetricsObserver::WindowMetricsManagerBindingStatus::
-          kBoundDeferred,
-      1);
-  histograms.ExpectTotalCount(
-      "InitialWebUI.Toolbar.TimeToWindowMetricsManagerBound", 1);
-  histograms.ExpectTotalCount(
-      "InitialWebUI.Toolbar.TimeWithoutWindowMetricsManagerOnDestruction", 0);
-}
-
-// Verifies that when a WebContents is prewarmed but destroyed before ever
-// being attached to a BrowserWindowInterface, WindowMetricsManagerBindingStatus
-// is recorded as NeverBound in the destructor.
-TEST_F(InitialWebUIPageLoadMetricsObserverTest,
-       WindowMetricsManagerNeverBoundWhenNeverAttached) {
-  base::HistogramTester histograms;
-
-  NavigateAndCommit(GURL(kTestWebUIUrl));
-
-  // Destroy WebContents without ever setting BrowserWindowInterface
-  DeleteContents();
-
-  histograms.ExpectUniqueSample(
-      "InitialWebUI.Toolbar.WindowMetricsManagerBindingStatus",
-      InitialWebUIPageLoadMetricsObserver::WindowMetricsManagerBindingStatus::
-          kNeverBound,
-      1);
-  histograms.ExpectTotalCount(
-      "InitialWebUI.Toolbar.TimeToWindowMetricsManagerBound", 0);
-  histograms.ExpectTotalCount(
-      "InitialWebUI.Toolbar.TimeWithoutWindowMetricsManagerOnDestruction", 1);
 }
 
 }  // namespace

@@ -5,15 +5,10 @@
 package org.chromium.chrome.browser.read_later;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
-import android.content.Context;
-import android.content.res.Resources;
 import android.view.View;
-
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -24,7 +19,9 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
@@ -36,20 +33,18 @@ import org.chromium.chrome.browser.user_education.UserEducationHelper;
 public class ReadLaterIphControllerUnitTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
-    @Mock Activity mActivity;
-    @Mock View mToolbarMenuButton;
     @Mock AppMenuHandler mAppMenuHandler;
     @Mock UserEducationHelper mUserEducationHelper;
-    @Mock Context mContext;
-    @Mock Resources mResources;
     @Captor ArgumentCaptor<IphCommand> mIphCommandCaptor;
 
+    Activity mActivity;
+    View mToolbarMenuButton;
     ReadLaterIphController mController;
 
     @Before
     public void setUp() {
-        doReturn(mResources).when(mContext).getResources();
-        doReturn(mContext).when(mToolbarMenuButton).getContext();
+        mActivity = Robolectric.buildActivity(Activity.class).get();
+        mToolbarMenuButton = new View(ContextUtils.getApplicationContext());
 
         mController =
                 new ReadLaterIphController(
@@ -57,14 +52,12 @@ public class ReadLaterIphControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void onCopyContextMenuItemClicked() {
         mController.onCopyContextMenuItemClicked();
         verify(mUserEducationHelper).requestShowIph(any());
     }
 
     @Test
-    @SmallTest
     public void showColdStartIph() {
         mController.showColdStartIph();
         verify(mUserEducationHelper).requestShowIph(mIphCommandCaptor.capture());

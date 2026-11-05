@@ -6,7 +6,6 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/ios/block_types.h"
-#import "base/ios/ios_util.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
@@ -34,6 +33,8 @@
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/signin/public/identity_manager/primary_account_change_event.h"
+#import "components/subscription_eligibility/objc/subscription_eligibility_observer_bridge.h"
+#import "components/subscription_eligibility/subscription_eligibility_service.h"
 #import "components/supervised_user/core/common/features.h"
 #import "components/supervised_user/core/common/supervised_user_constants.h"
 #import "components/sync/service/sync_service.h"
@@ -80,13 +81,14 @@
 #import "ios/chrome/browser/popup_menu/overflow_menu/ui/ui_swift.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
 #import "ios/chrome/browser/reader_mode/model/constants.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_web_state_utils.h"
 #import "ios/chrome/browser/reading_list/ui_bundled/reading_list_utils.h"
 #import "ios/chrome/browser/search_engines/model/search_engine_observer_bridge.h"
 #import "ios/chrome/browser/search_engines/model/search_engines_util.h"
 #import "ios/chrome/browser/settings/model/sync/utils/identity_error_util.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state_observer.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -128,7 +130,9 @@
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/supervised_user/model/supervised_user_capabilities.h"
+#import "ios/chrome/browser/sync/model/sync_observer_bridge.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_utils.h"
 #import "ios/chrome/browser/translate/model/chrome_ios_translate_client.h"
 #import "ios/chrome/browser/web/model/font_size/font_size_tab_helper.h"
@@ -151,6 +155,7 @@
 #import "skia/ext/skia_utils_ios.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/l10n/l10n_util_mac.h"
+#import "ui/gfx/image/image.h"
 
 using base::RecordAction;
 using base::UmaHistogramEnumeration;
@@ -158,6 +163,52 @@ using base::UserMetricsAction;
 using experimental_flags::IsSpotlightDebuggingEnabled;
 
 namespace {
+
+#if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
+NSString* const kGeminiBrandedLogoSymbol = @"gemini_logo";
+#else
+NSString* const kGeminiNonBrandedLogoSymbol = @"sparkle";
+#endif  // BUILDFLAG(IOS_USE_BRANDED_ASSETS)
+
+// Custom symbol names.
+NSString* const kArrowClockWiseSymbol = @"arrow_clockwise";
+NSString* const kCameraLensSymbol = @"camera_lens";
+NSString* const kChromeProductSymbol = @"chrome_product";
+NSString* const kDownTrendSymbol = @"line_downtrend";
+NSString* const kIncognitoSymbol = @"incognito";
+NSString* const kPasswordSymbol = @"password";
+NSString* const kReadingListSymbol = @"square_bullet_square";
+NSString* const kRecentTabsSymbol = @"laptopcomputer_and_phone";
+NSString* const kTranslateSymbol = @"translate";
+NSString* const kTunerSymbol = @"tuner";
+
+// Default symbol names.
+NSString* const kAddBookmarkActionSymbol = @"star";
+NSString* const kBellBadgeSymbol = @"bell.badge";
+NSString* const kBookmarksSymbol = @"star";
+NSString* const kCheckmarkSealSymbol = @"checkmark.seal";
+NSString* const kChevronForwardSymbol = @"chevron.forward";
+NSString* const kDesktopSymbol = @"desktopcomputer";
+NSString* const kDownloadSymbol = @"arrow.down.circle";
+NSString* const kEditActionSymbol = @"pencil";
+NSString* const kExpandSymbol = @"arrow.up.left.and.arrow.down.right";
+NSString* const kFindInPageActionSymbol = @"doc.text.magnifyingglass";
+NSString* const kHelpSymbol = @"questionmark.circle";
+NSString* const kHideActionSymbol = @"eye.slash";
+NSString* const kHistorySymbol = @"clock.arrow.circlepath";
+NSString* const kIPhoneSymbol = @"iphone";
+NSString* const kMagicStackSymbol = @"wand.and.stars.inverse";
+NSString* const kNewWindowActionSymbol = @"square.split.2x1";
+NSString* const kPersonCropCircleSymbol = @"person.crop.circle";
+NSString* const kPlusInCircleSymbol = @"plus.circle";
+NSString* const kReaderModeSymbol = @"text.page";
+NSString* const kReadLaterActionSymbol = @"text.badge.plus";
+NSString* const kSettingsSymbol = @"gearshape";
+NSString* const kShareSymbol = @"square.and.arrow.up";
+NSString* const kTrashSymbol = @"trash";
+NSString* const kWarningSymbol = @"exclamationmark.triangle";
+NSString* const kXMarkSymbol = @"xmark";
+NSString* const kZoomTextActionSymbol = @"plus.magnifyingglass";
 
 // Approximate number of visible page actions by default.
 const unsigned int kDefaultVisiblePageActionCount = 3u;
@@ -233,16 +284,15 @@ void GetPresetNTPBackgroundPreview(
 
   image_fetcher::ImageFetcherParams params(NO_TRAFFIC_ANNOTATION_YET,
                                            kImageFetcherUmaClient);
+  params.set_transcode_format(
+      image_fetcher::ImageFetcherParams::TranscodeFormat::kJpeg);
 
-  image_fetcher->FetchImageData(
+  image_fetcher->FetchImage(
       thumbnail_url,
       base::BindOnce(
           [](base::OnceCallback<void(UIImage*)> callback,
-             const std::string& image_data,
-             const image_fetcher::RequestMetadata&) {
-            NSData* data = [NSData dataWithBytes:image_data.data()
-                                          length:image_data.length()];
-            std::move(callback).Run([UIImage imageWithData:data]);
+             const gfx::Image& image, const image_fetcher::RequestMetadata&) {
+            std::move(callback).Run(image.IsEmpty() ? nil : image.ToUIImage());
           },
           std::move(custom_background_fetcher_callback)),
       params);
@@ -259,7 +309,10 @@ void GetPresetNTPBackgroundPreview(
                                     OverlayPresenterObserving,
                                     PrefObserverDelegate,
                                     ReadingListModelBridgeObserver,
+                                    SceneStateObserver,
                                     SearchEngineObserving,
+                                    SubscriptionEligibilityServiceObserving,
+                                    SyncObserverModelBridge,
                                     WebStateListObserving> {
   std::unique_ptr<web::WebStateObserverBridge> _webStateObserver;
   std::unique_ptr<WebStateListObserverBridge> _webStateListObserver;
@@ -294,6 +347,14 @@ void GetPresetNTPBackgroundPreview(
   // Bridge to register for IdentityManager changes.
   std::unique_ptr<signin::IdentityManagerObserverBridge>
       _identityManagerObserverBridge;
+
+  // Bridge to register for SubscriptionEligibilityService changes.
+  std::unique_ptr<
+      subscription_eligibility::SubscriptionEligibilityObserverBridge>
+      _subscriptionEligibilityObserverBridge;
+
+  // Bridge to register for SyncService changes.
+  std::unique_ptr<SyncObserverBridge> _syncObserverBridge;
 
   // Whether an action (tap) was taken on the default browser promo shortcut.
   BOOL _defaultBrowserShortcutActionTaken;
@@ -377,15 +438,13 @@ void GetPresetNTPBackgroundPreview(
 
 @property(nonatomic, strong) OverflowMenuAction* askBWGAction;
 
-@property(nonatomic, strong) OverflowMenuAction* hideToolbarsAction;
-
 @property(nonatomic, strong) OverflowMenuAction* customizeHomepageAction;
-
-@property(nonatomic, strong) OverflowMenuAction* shareAction;
 
 @end
 
 @implementation OverflowMenuMediator
+
+@synthesize shouldShowLevelUpWalkthroughIPH = _shouldShowLevelUpWalkthroughIPH;
 
 - (instancetype)init {
   self = [super init];
@@ -457,6 +516,7 @@ void GetPresetNTPBackgroundPreview(
 
   self.webState = nullptr;
   self.webStateList = nullptr;
+  self.sceneState = nil;
 
   self.bookmarkModel = nullptr;
   self.readingListModel = nullptr;
@@ -471,6 +531,9 @@ void GetPresetNTPBackgroundPreview(
   _authServiceObserverBridge.reset();
   _identityManager = nullptr;
   _identityManagerObserverBridge.reset();
+  _subscriptionEligibilityService = nullptr;
+  _subscriptionEligibilityObserverBridge.reset();
+  _syncObserverBridge.reset();
 
   self.navigationAgent = nullptr;
   self.browserPolicyConnector = nullptr;
@@ -625,6 +688,16 @@ void GetPresetNTPBackgroundPreview(
   }
 }
 
+- (void)setSceneState:(SceneState*)sceneState {
+  if (_sceneState == sceneState) {
+    return;
+  }
+  [_sceneState removeObserver:self];
+  _sceneState = sceneState;
+  [_sceneState addObserver:self];
+  [self updateModel];
+}
+
 - (void)setBookmarkModel:(bookmarks::BookmarkModel*)bookmarkModel {
   _bookmarkModelBridge.reset();
 
@@ -703,12 +776,15 @@ void GetPresetNTPBackgroundPreview(
 }
 
 - (void)setSyncService:(syncer::SyncService*)syncService {
+  _syncObserverBridge.reset();
   _syncService = syncService;
 
   if (!syncService) {
     return;
   }
 
+  _syncObserverBridge =
+      std::make_unique<SyncObserverBridge>(self, _syncService);
   [self updateModel];
 }
 
@@ -730,6 +806,19 @@ void GetPresetNTPBackgroundPreview(
     _authServiceObserverBridge =
         std::make_unique<AuthenticationServiceObserverBridge>(
             _authenticationService, self);
+  }
+  [self updateModel];
+}
+
+- (void)setSubscriptionEligibilityService:
+    (subscription_eligibility::SubscriptionEligibilityService*)
+        subscriptionEligibilityService {
+  _subscriptionEligibilityObserverBridge.reset();
+  _subscriptionEligibilityService = subscriptionEligibilityService;
+  if (_subscriptionEligibilityService) {
+    _subscriptionEligibilityObserverBridge = std::make_unique<
+        subscription_eligibility::SubscriptionEligibilityObserverBridge>(
+        _subscriptionEligibilityService, self);
   }
   [self updateModel];
 }
@@ -891,8 +980,6 @@ void GetPresetNTPBackgroundPreview(
 
   self.requestDesktopAction = [self newRequestDesktopAction];
 
-  self.shareAction = [self newShareAction];
-
   NSString* requestMobileHideItemText =
       l10n_util::GetNSString(IDS_IOS_OVERFLOW_MENU_HIDE_ACTION_MOBILE_SITE);
   self.requestMobileAction = [self
@@ -968,10 +1055,6 @@ void GetPresetNTPBackgroundPreview(
 
   if (experimental_flags::EnableAIPrototypingMenu()) {
     self.AIPrototypeAction = [self openAIPrototypeAction];
-  }
-
-  if (IsHideToolbarEnabled()) {
-    self.hideToolbarsAction = [self collapseToolbars];
   }
 
   if ([self isGeminiAvailable]) {
@@ -1146,24 +1229,6 @@ void GetPresetNTPBackgroundPreview(
                                      }];
 }
 
-- (OverflowMenuAction*)collapseToolbars {
-  __weak __typeof(self) weakSelf = self;
-  return [self
-      createOverflowMenuActionWithName:l10n_util::GetNSString(
-                                           IDS_IOS_OVERFLOW_MENU_HIDE_TOOLBARS)
-                            actionType:overflow_menu::ActionType::HideToolbars
-                            symbolName:kExpandSymbol
-                          systemSymbol:YES
-                      monochromeSymbol:NO
-                       accessibilityID:kToolsMenuHideToolbars
-                          hideItemText:
-                              l10n_util::GetNSString(
-                                  IDS_IOS_OVERFLOW_MENU_HIDE_ACTION_HIDE_TOOLBARS)
-                               handler:^{
-                                 [weakSelf startCollapseToolbars];
-                               }];
-}
-
 - (OverflowMenuAction*)newReadLaterAction {
   __weak __typeof(self) weakSelf = self;
   NSString* hideItemText =
@@ -1296,22 +1361,6 @@ void GetPresetNTPBackgroundPreview(
                             hideItemText:hideItemText
                                  handler:^{
                                    [weakSelf requestDesktopSite];
-                                 }];
-}
-
-- (OverflowMenuAction*)newShareAction {
-  __weak __typeof(self) weakSelf = self;
-  return [self
-      createOverflowMenuActionWithNameID:IDS_IOS_TOOLS_MENU_SHARE_THIS_PAGE
-                              actionType:overflow_menu::ActionType::
-                                             ShareThisPage
-                              symbolName:kShareSymbol
-                            systemSymbol:YES
-                        monochromeSymbol:YES
-                         accessibilityID:kToolsMenuShareId
-                            hideItemText:nil
-                                 handler:^{
-                                   [weakSelf shareThisPage];
                                  }];
 }
 
@@ -1864,14 +1913,6 @@ void GetPresetNTPBackgroundPreview(
       return self.readerModeAction;
     case overflow_menu::ActionType::AskBWG:
       return self.askBWGAction;
-    case overflow_menu::ActionType::HideToolbars:
-      return self.hideToolbarsAction;
-    case overflow_menu::ActionType::TabGroupDeprecated:
-      NOTREACHED();
-    case overflow_menu::ActionType::ShareThisPage:
-      return self.shareAction;
-    case overflow_menu::ActionType::SigninDeprecated:
-      NOTREACHED();
     case overflow_menu::ActionType::Identity:
       return self.identityAction;
     case overflow_menu::ActionType::CustomizeHomePage:
@@ -1982,9 +2023,6 @@ void GetPresetNTPBackgroundPreview(
 
   self.askBWGAction.enabled = [self isGeminiAvailable];
 
-  if (IsHideToolbarEnabled()) {
-    self.hideToolbarsAction.enabled = ![self isCurrentWebPageNTP];
-  }
 }
 
 // Updates the order of the items in each section or group.
@@ -1998,13 +2036,6 @@ void GetPresetNTPBackgroundPreview(
 
   NSMutableArray<OverflowMenuAction*>* appActions =
       [[NSMutableArray alloc] init];
-
-  if (IsChromeNextIaEnabled() && !IsChromeNextIaShareIconVisible() &&
-      [self isCurrentURLWebURL]) {
-    base::UmaHistogramEnumeration("Mobile.ShareThisPage.Shown",
-                                  ShareThisPageLocation::kOverflowMenu);
-    [appActions addObject:self.shareAction];
-  }
 
   BOOL showReloadStopAction;
   if (IsChromeNextIaEnabled()) {
@@ -2024,7 +2055,7 @@ void GetPresetNTPBackgroundPreview(
   [appActions
       addObjectsFromArray:@[ self.openTabAction, self.openIncognitoTabAction ]];
 
-  if (base::ios::IsMultipleScenesSupported()) {
+  if (self.sceneState.multipleScenesAvailable) {
     [appActions addObject:self.openNewWindowAction];
   }
 
@@ -2059,7 +2090,8 @@ void GetPresetNTPBackgroundPreview(
       !self.incognito) {
     NSMutableArray<OverflowMenuAction*>* identityActions =
         [NSMutableArray array];
-    if (self.authenticationService->GetPrimaryIdentity()) {
+    if (self.authenticationService->SigninEnabled() &&
+        self.authenticationService->GetPrimaryIdentity()) {
       [self updateIdentityAction];
       [identityActions addObject:self.identityAction];
     }
@@ -2169,6 +2201,7 @@ void GetPresetNTPBackgroundPreview(
 
 - (void)updateIdentityAction {
   if (self.incognito || !self.identityAction || !self.authenticationService ||
+      !self.authenticationService->SigninEnabled() ||
       !self.authenticationService->HasPrimaryIdentity()) {
     return;
   }
@@ -2181,6 +2214,11 @@ void GetPresetNTPBackgroundPreview(
     self.identityAction.image = self.identityAvatarProvider->GetIdentityAvatar(
         primaryIdentity, IdentityAvatarSize::Regular);
   }
+  self.identityAction.showsAITierRing =
+      ![self shouldIndicateIdentityError] &&
+      self.subscriptionEligibilityService &&
+      self.subscriptionEligibilityService->GetAiSubscriptionTier() > 0 &&
+      IsAiSubscriptionAvatarRingFollowupIOSEnabled();
 }
 
 // Returns whether the page can be manually translated. If `forceMenuLogging` is
@@ -2741,10 +2779,6 @@ void GetPresetNTPBackgroundPreview(
   }
 
   actions.push_back(overflow_menu::ActionType::ReaderMode);
-  if (IsHideToolbarEnabled()) {
-    actions.push_back(overflow_menu::ActionType::HideToolbars);
-  }
-
   return actions;
 }
 
@@ -2777,8 +2811,6 @@ void GetPresetNTPBackgroundPreview(
     case overflow_menu::ActionType::ShareChrome:
     case overflow_menu::ActionType::DefaultBrowser:
     case overflow_menu::ActionType::EditActions:
-    case overflow_menu::ActionType::ShareThisPage:
-    case overflow_menu::ActionType::SigninDeprecated:
     case overflow_menu::ActionType::Identity:
     case overflow_menu::ActionType::CustomizeHomePage:
       NOTREACHED();
@@ -2806,10 +2838,6 @@ void GetPresetNTPBackgroundPreview(
       return [self toggleReaderModeAction];
     case overflow_menu::ActionType::AskBWG:
       return [self openAskBWGAction];
-    case overflow_menu::ActionType::TabGroupDeprecated:
-      NOTREACHED();
-    case overflow_menu::ActionType::HideToolbars:
-      return [self hideToolbarsAction];
   }
 }
 
@@ -2935,17 +2963,6 @@ void GetPresetNTPBackgroundPreview(
       presentInProductHelpWithType:InProductHelpType::kDefaultSiteView];
 }
 
-- (void)shareThisPage {
-  base::UmaHistogramEnumeration("Mobile.ShareThisPage.Used",
-                                ShareThisPageLocation::kOverflowMenu);
-  [self dismissMenu];
-
-  UIView* toolMenuView =
-      [_layoutGuideCenter referencedViewUnderName:kToolsMenuGuide];
-
-  [self.activityServiceHandler showShareSheetFromShareButton:toolMenuView];
-}
-
 // Dismisses the menu and requests the mobile version of the current page
 - (void)requestMobileSite {
   RecordAction(UserMetricsAction("MobileMenuRequestMobileSite"));
@@ -2967,6 +2984,13 @@ void GetPresetNTPBackgroundPreview(
 
 // Dismisses the menu and opens the account menu.
 - (void)showAccountMenu {
+  // The tap is handled asynchronously, so the user could have signed out or
+  // sign-in could have been disabled while the menu was open.
+  if (!self.authenticationService ||
+      !self.authenticationService->SigninEnabled() ||
+      !self.authenticationService->HasPrimaryIdentity()) {
+    return;
+  }
   RecordAction(UserMetricsAction("MobileMenuIdentityMenu"));
   [self dismissMenu];
   [self.sceneHandler
@@ -3102,18 +3126,6 @@ void GetPresetNTPBackgroundPreview(
   }];
 }
 
-- (void)startCollapseToolbars {
-  [self dismissMenu];
-  if (IsFullscreenRefactoringEnabled()) {
-    [self.fullscreenHandler
-        forceFullscreen:YES
-                feature:ForceFullscreenFeature::kHideToolbars];
-    return;
-  }
-  [self.browserCoordinatorHandler
-      forceFullscreenMode:FullscreenModeTransitionTrigger::kForcedByUser];
-}
-
 // Opens the "Set a reminder" screen for the user's current tab.
 - (void)showSetTabReminderUI {
   CHECK(send_tab_to_self::AreIOSTabRemindersEnabled());
@@ -3200,7 +3212,9 @@ void GetPresetNTPBackgroundPreview(
       password_manager::ManagePasswordsReferrer::kChromeMenuItem);
   [self dismissMenu];
   [self.settingsHandler
-      showSavedPasswordsSettingsFromViewController:self.baseViewController];
+      showSavedPasswordsSettingsFromViewController:self.baseViewController
+                   shouldShowLevelUpWalkthroughIPH:
+                       self.shouldShowLevelUpWalkthroughIPH];
 }
 
 // Dismisses the menu and opens Cobalt.
@@ -3262,9 +3276,10 @@ void GetPresetNTPBackgroundPreview(
                      : profile_metrics::BrowserProfileType::kRegular;
   UmaHistogramEnumeration("Settings.OpenSettingsFromMenu.PerProfileType", type);
   [self.sceneHandler
-      showSettingsFromViewController:self.baseViewController
-            hasDefaultBrowserBlueDot:(self.settingsDestination.badge ==
-                                      BadgeTypePromo)];
+       showSettingsFromViewController:self.baseViewController
+             hasDefaultBrowserBlueDot:(self.settingsDestination.badge ==
+                                       BadgeTypePromo)
+      shouldShowLevelUpWalkthroughIPH:self.shouldShowLevelUpWalkthroughIPH];
 }
 
 // Dismisses the menu and opens default browser settings.
@@ -3377,6 +3392,25 @@ void GetPresetNTPBackgroundPreview(
 }
 
 - (void)extendedAccountInfoDidUpdate:(const AccountInfo&)info {
+  [self updateModel];
+}
+
+#pragma mark - SubscriptionEligibilityServiceObserving
+
+- (void)aiSubscriptionTierDidUpdate:(int32_t)newSubscriptionTier {
+  [self updateModel];
+}
+
+#pragma mark - SyncObserverModelBridge
+
+- (void)onSyncStateChanged {
+  [self updateModel];
+}
+
+#pragma mark - SceneStateObserver
+
+- (void)sceneState:(SceneState*)sceneState
+    multipleScenesAvailabilityDidChange:(BOOL)multipleScenesAvailable {
   [self updateModel];
 }
 

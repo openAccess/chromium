@@ -72,6 +72,11 @@ reviewer.
   <variant name="Succeeded" summary="a successful InitiatePurchaseAction call"/>
 </variants>
 
+<variants name="QrCodeDetectionOutcome">
+  <variant name="QrFound" summary="decoded at least one QR code"/>
+  <variant name="QrNotFound" summary="decoded no QR code"/>
+</variants>
+
 <histogram
     name="FacilitatedPayments.A2A.InvokePaymentApp.{Result}.LatencyAfterDetectingPaymentLink"
     units="ms" expires_after="2027-04-30">
@@ -464,19 +469,6 @@ reviewer.
   <token key="Scheme" variants="PaymentLinkScheme"/>
 </histogram>
 
-<histogram name="FacilitatedPayments.Pix.AccountLinking.PromptAccepted"
-    enum="BooleanAccepted" expires_after="2027-04-30">
-  <owner>longsheng@google.com</owner>
-  <owner>siashah@google.com</owner>
-  <owner>payments-autofill-team@google.com</owner>
-  <summary>
-    The count for the number of times user accepted the Pix account linking
-    prompt. 'Accepted' is logged when the prompt is accpeted and `Not accepted`
-    is not logged. [Frequency] Logged once per Pix account linking flow.
-    [Trigger] User clicks the Accept button on Pix account linking prompt.
-  </summary>
-</histogram>
-
 <histogram name="FacilitatedPayments.Pix.AccountLinking.PromptShown"
     enum="BooleanShown" expires_after="2027-04-30">
   <owner>longsheng@google.com</owner>
@@ -488,6 +480,20 @@ reviewer.
     [Frequency] Logged once per Pix account linking flow. [Trigger] The
     histogram is logged when the prompt appears after user completes the payment
     on their bank/payment app and return back to Chrome.
+  </summary>
+</histogram>
+
+<histogram name="FacilitatedPayments.Pix.AccountLinking.VideoLinkClicked"
+    enum="Boolean" expires_after="2027-04-30">
+  <owner>longsheng@google.com</owner>
+  <owner>siashah@google.com</owner>
+  <owner>payments-autofill-team@google.com</owner>
+  <summary>
+    The count for the number of times the user clicked the &quot;See how it
+    works&quot; video link on the Pix account linking prompt. Emits true when
+    the link is clicked and never emits false. [Frequency] Logged each time the
+    user clicks the link. [Trigger] User clicks the &quot;See how it works&quot;
+    link on the Pix account linking prompt.
   </summary>
 </histogram>
 
@@ -582,19 +588,6 @@ reviewer.
   </summary>
 </histogram>
 
-<histogram name="FacilitatedPayments.Pix.PaymentCodeValidation.Result"
-    enum="FacilitatedPayments.PixCodeValidationResult"
-    expires_after="2027-04-30">
-  <owner>siashah@google.com</owner>
-  <owner>payments-autofill-team@google.com</owner>
-  <summary>
-    A Pix-specific histogram. Emits the result of validating a Pix payment code.
-    [Trigger] User copies a Pix payment code to their clipboard, either manually
-    for via a merchant's copy button. [Frequency] Logged once per Pix payflow.
-    Pix payflow is triggered at most once per page load.
-  </summary>
-</histogram>
-
 <histogram name="FacilitatedPayments.Pix.PaymentCodeValidation.RustResult"
     enum="FacilitatedPayments.Pix.PaymentCodeValidation.RustResult"
     expires_after="2027-02-07">
@@ -608,54 +601,6 @@ reviewer.
     or via a merchant's copy button. [Frequency] Logged once per Pix payflow.
     Pix payflow is triggered at most once per page load.
   </summary>
-</histogram>
-
-<histogram
-    name="FacilitatedPayments.Pix.PaymentCodeValidation.{PaymentCodeValidationResult}.Latency"
-    units="ms" expires_after="2027-04-30">
-  <owner>siashah@google.com</owner>
-  <owner>payments-autofill-team@google.com</owner>
-  <summary>
-    Latency for the Pix payment code validation with
-    {PaymentCodeValidationResult} as result. The validation is done in a
-    sandboxed utility process to safely process strings from the renderer
-    without compromising the browser process. The string would have already been
-    verified to contain the Pix identifier prefix (0014br.gov.bcb.pix).
-    [Frequency] As the Pix payflow is only allowed to be triggered once per page
-    load, this metric similarly can only be logged at most once per page load.
-    [Trigger] The user copies a Pix payment code to their clipboard, either
-    manually for via a merchant's copy button.
-  </summary>
-  <token key="PaymentCodeValidationResult">
-    <variant name="DynamicCode" summary="valid dynamic code"/>
-    <variant name="InvalidCode" summary="invalid code"/>
-    <variant name="StaticCode" summary="valid static code"/>
-    <variant name="ValidatorFailed" summary="failed validator"/>
-  </token>
-</histogram>
-
-<histogram
-    name="FacilitatedPayments.Pix.PaymentCodeValidation.{PaymentCodeValidationResult}.ResultVsRust"
-    enum="FacilitatedPayments.PixCodeValidationResult"
-    expires_after="2027-02-07">
-  <owner>dcheng@chromium.org</owner>
-  <owner>payments-autofill-team@google.com</owner>
-  <summary>
-    Compares the C++ Pix code validation result against the Rust Pix code
-    validation result. The C++ result is {PaymentCodeValidationResult}. The Rust
-    result is translated into the C++ enumeration space for an apples-to-apples
-    comparison.
-
-    [Trigger] User copies a Pix payment code to their clipboard, either manually
-    or via a merchant's copy button. [Frequency] Logged once per Pix payflow.
-    Pix payflow is triggered at most once per page load.
-  </summary>
-  <token key="PaymentCodeValidationResult">
-    <variant name="DynamicCode" summary="C++: valid dynamic code"/>
-    <variant name="InvalidCode" summary="C++: invalid code"/>
-    <variant name="StaticCode" summary="C++: valid static code"/>
-    <variant name="ValidatorFailed" summary="C++: failed validator"/>
-  </token>
 </histogram>
 
 <histogram name="FacilitatedPayments.Pix.PixCodeCopied" enum="Boolean"
@@ -729,6 +674,78 @@ reviewer.
     response was received.
   </summary>
   <token key="Result" variants="PurchaseActionResult"/>
+</histogram>
+
+<histogram name="FacilitatedPayments.QrCode.Heuristics.Latency"
+    units="microseconds" expires_after="2027-04-30">
+  <owner>qihuizhao@google.com</owner>
+  <owner>siashah@google.com</owner>
+  <owner>payments-autofill-team@google.com</owner>
+  <summary>
+    Records how long the renderer takes to scan a page for the heuristic signals
+    of a payment QR code (a square image candidate, a payment link marker, and
+    keywords in the URL, title or meta description). The scan runs synchronously
+    on the main thread. [Trigger] A debounced scan runs after layout, scroll,
+    load or navigation activity settles on a page where the browser has enabled
+    QR code detection. [Frequency] Logged once per scan; scans stop once the
+    browser disables QR code detection for the page. Only logged on clients with
+    high-resolution clocks.
+  </summary>
+</histogram>
+
+<histogram
+    name="FacilitatedPayments.QrCode.HeuristicSignals.{DetectionOutcome}"
+    enum="FacilitatedPayments.QrCode.HeuristicSignals"
+    expires_after="2027-04-30">
+  <owner>qihuizhao@google.com</owner>
+  <owner>siashah@google.com</owner>
+  <owner>payments-autofill-team@google.com</owner>
+  <summary>
+    Records the combination of renderer heuristic signals that started a payment
+    QR code decoding pass that {DetectionOutcome}. Each signal is a bit of the
+    sample. Only combinations that pass the detection rule (no facilitated
+    payment link, a square image, and a URL or text keyword) start a pass,
+    unless the require_keyword_match Finch parameter is false, in which case any
+    square image without a facilitated payment link does. [Trigger] The browser
+    finishes decoding the images of a page that the renderer reported as a
+    likely payment QR code page. [Frequency] Logged once per decoding pass whose
+    detector was available, at most 3 times per page.
+  </summary>
+  <token key="DetectionOutcome" variants="QrCodeDetectionOutcome"/>
+</histogram>
+
+<histogram name="FacilitatedPayments.QrCode.Result"
+    enum="FacilitatedPayments.QrCode.DetectionResult"
+    expires_after="2027-04-30">
+  <owner>qihuizhao@google.com</owner>
+  <owner>siashah@google.com</owner>
+  <owner>payments-autofill-team@google.com</owner>
+  <summary>
+    Records the outcome of one payment QR code decoding pass: whether the page
+    had qualifying images, whether the detector could run, and how many QR codes
+    it decoded. Used to measure how well the heuristics and image extraction
+    work. [Trigger] The browser finishes decoding the images of a page that the
+    renderer reported as a likely payment QR code page. [Frequency] Logged once
+    per decoding pass, at most 3 times per page. A pass that finds no QR code,
+    for any of the reasons above, leaves detection on for the page, because
+    payment QR codes are often rendered later, e.g. after the user selects a
+    payment method. A later layout, scroll or navigation change that still
+    matches the heuristics then starts another pass. Detection stops for the
+    page once a pass finds a QR code or after the 3rd pass.
+  </summary>
+</histogram>
+
+<histogram name="FacilitatedPayments.QrCode.SuccessfulAttemptIndex"
+    units="attempts" expires_after="2027-04-30">
+  <owner>qihuizhao@google.com</owner>
+  <owner>siashah@google.com</owner>
+  <owner>payments-autofill-team@google.com</owner>
+  <summary>
+    Records the 1-based index of the decoding pass that first decoded a QR code
+    on a page, out of at most 3 passes per page. [Trigger] A payment QR code
+    decoding pass decodes at least one QR code. [Frequency] Logged at most once
+    per page, since detection stops for the page once a QR code is found.
+  </summary>
 </histogram>
 
 <histogram

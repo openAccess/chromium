@@ -19,13 +19,14 @@
 #include "base/unguessable_token.h"
 #include "components/autofill/core/browser/foundations/scoped_autofill_managers_observation.h"
 #include "components/permissions/permission_request_manager.h"
-#include "components/safe_browsing/content/browser/async_check_tracker.h"
+#include "components/safe_browsing/content/browser/url_checker/async_check_tracker.h"
 #include "components/safe_browsing/content/common/safe_browsing.mojom.h"
 #include "components/safe_browsing/core/browser/client_side_detection_host_base.h"
 #include "components/safe_browsing/core/browser/credit_card_form_event.h"
 #include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/common/visual_utils.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "mojo/public/cpp/base/proto_wrapper.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
@@ -73,6 +74,7 @@ class ClientSideDetectionHost
   ChromeUserPopulation GetUserPopulation() override;
   bool IsAccountSignedIn() override;
   bool IsErrorDocument() override;
+  std::optional<double> GetSiteEngagementScore(const GURL& url) const override;
   void GetInnerText(HostInnerTextCallback callback) override;
   void MaybeStartImageEmbedding(
       std::unique_ptr<ClientPhishingRequest> verdict,
@@ -94,6 +96,20 @@ class ClientSideDetectionHost
     kDidFirstVisuallyNonEmptyPaint = 1,
     kMaxValue = kDidFirstVisuallyNonEmptyPaint,
   };
+
+  // Visibility of the WebContents when a classification is dispatched. Mirrors
+  // `content::Visibility`, which cannot be recorded to UMA directly. These
+  // values are persisted to logs. Entries should not be renumbered and numeric
+  // values should never be reused.
+  //
+  // LINT.IfChange(ClassificationVisibility)
+  enum class ClassificationVisibility {
+    kHidden = 0,
+    kOccluded = 1,
+    kVisible = 2,
+    kMaxValue = kVisible,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/sb_client/enums.xml:SBClientPhishingClassificationVisibility)
 
   // A callback via which the client of this component indicates whether the
   // primary account is signed in.
@@ -349,10 +365,19 @@ class ClientSideDetectionHost
 
   // ClientSideDetectionHostBase overrides:
   void CancelPendingRequests() override;
+  // Browser-side capture is not implemented for content platforms yet; runs
+  // `callback` with an empty image.
+  void CaptureScreenshot(ScreenshotCallback callback) override;
+  // Determines visual features extraction capabilities.
+  // `can_extract_visual_features_result` will be used to handle visual features
+  // in ClientPhishingRequest after.
+  visual_utils::CanExtractVisualFeaturesResult
+  DetermineVisualFeaturesExtraction() override;
   void ShowBlockingPage(
       GURL phishing_url,
       ClientSideDetectionType request_type,
       std::optional<IntelligentScanVerdict> intelligent_scan_verdict,
+      bool is_phishing,
       bool should_show_scam_warning) override;
   void UpdateDebuggingMetadataWithNetworkResult(
       GURL phishing_url,
@@ -362,6 +387,35 @@ class ClientSideDetectionHost
   void AddMiscellaneousMetadataToClientPhishingRequest(
       ClientPhishingRequest* verdict,
       bool is_invalid_ip) override;
+  void MaybeCaptureScreenshotAndStartIntelligentScan(
+      std::unique_ptr<ClientPhishingRequest> verdict,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
+      std::string inner_text) override;
+
+  // Returns true if the observed WebContents is currently visible and its
+  // committed URL matches `url`.
+  bool IsTabVisibleAndOnUrl(const GURL& url) const;
+
+  // Called when the viewport screenshot capture completes. Validates that the
+  // tab is still visible and on the same URL, then posts a background task to
+  // encode the bitmap as PNG bytes before starting the intelligent scan.
+  void OnScreenshotTaken(
+      std::unique_ptr<ClientPhishingRequest> verdict,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
+      std::string inner_text,
+      const content::CopyFromSurfaceResult& result);
+
+  // Called when the captured screenshot has been encoded into PNG bytes on a
+  // background thread. Validates that the tab is still visible and on the same
+  // URL before passing the PNG bytes to `StartIntelligentScan`.
+  void OnScreenshotEncoded(
+      std::unique_ptr<ClientPhishingRequest> verdict,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
+      std::string inner_text,
+      std::string png_bytes);
 
   // Called when pre-classification checks are done for the phishing
   // classifiers. |request_type| is passed in to specify the process that
@@ -376,6 +430,13 @@ class ClientSideDetectionHost
       std::optional<bool> did_match_high_confidence_allowlist,
       bool is_invalid_ip);
 
+  // Records whether the primary page's compositing surface could be copied
+  // right now, and the WebContents' visibility, for a classification of
+  // `request_type`. Used to size the coverage of capturing page pixels in the
+  // browser process instead of the renderer (crbug.com/454896977).
+  void RecordSurfaceAvailabilityForCopy(
+      ClientSideDetectionType request_type) const;
+
   // Note: This method has the same name as the one in the base class but
   // different parameter types (Mojo types). It converts them and calls the
   // base class method.
@@ -387,12 +448,6 @@ class ClientSideDetectionHost
       base::TimeTicks start_time,
       mojom::PhishingDetectorResult result,
       std::optional<mojo_base::ProtoWrapper> verdict);
-
-  // Determines visual features extraction capabilities.
-  // `can_extract_visual_features_result` will be used to handle visual features
-  // in ClientPhishingRequest after.
-  visual_utils::CanExtractVisualFeaturesResult
-  DetermineVisualFeaturesExtraction();
 
   // |verdict| is an encoded ClientPhishingRequest protocol message, |result| is
   // the outcome of the renderer image embedding. The verdict is passed into

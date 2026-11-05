@@ -4,27 +4,19 @@
 
 #include "chrome/browser/ash/file_system_provider/operations/open_file.h"
 
-#include "chrome/common/extensions/api/file_system_provider.h"
-#include "chrome/common/extensions/api/file_system_provider_internal.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider_internal.h"
 
 namespace ash::file_system_provider::operations {
 
 namespace {
 
-// Extracts out the `cloud_file_info` and `size` from the `OpenFile` success
-// params. Currently only the downstream `CloudFileSystem` cares about the
-// `cloud_file_info` and `size` so only extract that information in (if it
-// exists).
+// Extracts out the `size` from the `OpenFile` success params.
 std::unique_ptr<EntryMetadata> GetEntryMetadataFromParams(
     const extensions::api::file_system_provider_internal::
         OpenFileRequestedSuccess::Params* params) {
   std::unique_ptr<EntryMetadata> metadata = std::make_unique<EntryMetadata>();
   if (params && params->metadata.has_value()) {
-    if (params->metadata->cloud_file_info.has_value() &&
-        params->metadata->cloud_file_info->version_tag.has_value()) {
-      metadata->cloud_file_info = std::make_unique<CloudFileInfo>(
-          params->metadata->cloud_file_info->version_tag.value());
-    }
     if (params->metadata->size.has_value()) {
       metadata->size = std::make_unique<int64_t>(
           static_cast<int64_t>(*params->metadata->size));
@@ -69,19 +61,21 @@ bool OpenFile::Execute(int request_id) {
       break;
   }
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      extensions::api::file_system_provider::OnOpenFileRequested::Create(
+          options));
   return SendEvent(
       request_id,
       extensions::events::FILE_SYSTEM_PROVIDER_ON_OPEN_FILE_REQUESTED,
       extensions::api::file_system_provider::OnOpenFileRequested::kEventName,
-      extensions::api::file_system_provider::OnOpenFileRequested::Create(
-          options));
+      std::move(event_args));
 }
 
 void OpenFile::OnSuccess(int request_id,
                          const RequestValue& result,
                          bool has_more) {
   // File handle is the same as request id of the OpenFile operation.
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
 
   std::move(callback_).Run(
       request_id, base::File::FILE_OK,
@@ -91,9 +85,9 @@ void OpenFile::OnSuccess(int request_id,
 void OpenFile::OnError(/*request_id=*/int,
                        /*result=*/const RequestValue&,
                        base::File::Error error) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
   std::move(callback_).Run(/*file_handle=*/0, error,
-                           /*cloud_file_info=*/nullptr);
+                           /*metadata=*/nullptr);
 }
 
 }  // namespace ash::file_system_provider::operations

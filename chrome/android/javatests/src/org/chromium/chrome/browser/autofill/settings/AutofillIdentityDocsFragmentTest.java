@@ -55,6 +55,7 @@ import androidx.test.filters.SmallTest;
 import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
 import org.junit.After;
+import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -73,7 +74,6 @@ import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.AndroidAutofillAvailabilityStatus;
@@ -84,13 +84,14 @@ import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManager.Entity
 import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManagerFactory;
 import org.chromium.chrome.browser.autofill.settings.personal_context.AutofillPersonalContextFragment;
 import org.chromium.chrome.browser.device_reauth.BiometricStatus;
+import org.chromium.chrome.browser.device_reauth.DeviceAuthAvailabilityCheckerBridge;
 import org.chromium.chrome.browser.device_reauth.ReauthenticatorBridge;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncher;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.preferences.Pref;
-import org.chromium.chrome.browser.settings.SettingsActivityInterface;
+import org.chromium.chrome.browser.settings.SettingsInTab;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.settings.SettingsTestRule;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
@@ -107,7 +108,6 @@ import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.components.user_prefs.UserPrefs;
-import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.MockitoHelper;
 
 import java.util.Arrays;
@@ -120,7 +120,6 @@ import java.util.List;
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures({
-    ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
     ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
     ChromeFeatureList.AUTOFILL_AI_AVAILABLE_BY_DEFAULT,
 })
@@ -165,9 +164,11 @@ public class AutofillIdentityDocsFragmentTest {
 
     @Test
     @SmallTest
-    @Restriction(DeviceFormFactor.PHONE) // Tablets and desktops don't have a help button or menu.
     public void testHelpMenuTriggersAutofillHelp() {
-        SettingsActivityInterface settingsActivity = mSettingsTestRule.startSettingsActivity();
+        // Settings in a tab doesn't have a help button or menu.
+        Assume.assumeTrue(!SettingsInTab.shouldOpenSettingsInTab());
+
+        mSettingsTestRule.startSettingsActivity();
 
         onView(withId(R.id.menu_id_targeted_help)).perform(click());
 
@@ -637,6 +638,7 @@ public class AutofillIdentityDocsFragmentTest {
 
     @Test
     @MediumTest
+    @DisableFeatures(ChromeFeatureList.DEVICE_REAUTH_REFACTOR)
     public void testAutofillAiEntities_opensEditorOnSuccessfulReauth() {
         EntityType passportType = getPassportEntityType();
         LinkedHashMap<EntityType, List<EntityInstanceWithLabels>> instancesMap =
@@ -674,6 +676,7 @@ public class AutofillIdentityDocsFragmentTest {
 
     @Test
     @MediumTest
+    @DisableFeatures(ChromeFeatureList.DEVICE_REAUTH_REFACTOR)
     public void testAutofillAiEntities_doesNotOpenEditorOnFailedReauth() {
         EntityType passportType = getPassportEntityType();
         LinkedHashMap<EntityType, List<EntityInstanceWithLabels>> instancesMap =
@@ -709,6 +712,128 @@ public class AutofillIdentityDocsFragmentTest {
 
         // Editor should NOT be open.
         onView(withText("Edit passport")).check(doesNotExist());
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.DEVICE_REAUTH_REFACTOR)
+    public void testAutofillAiEntities_refactorFlagEnabled_opensEditorOnSuccessfulReauth() {
+        EntityType passportType = getPassportEntityType();
+        LinkedHashMap<EntityType, List<EntityInstanceWithLabels>> instancesMap =
+                new LinkedHashMap<>();
+        instancesMap.put(
+                passportType, Arrays.asList(TestUtils.buildGermanyPassportWithLabels("guid1")));
+        when(mEntityDataManager.getInstancesToList()).thenReturn(instancesMap);
+
+        EntityInstance entityInstance =
+                new EntityInstance.Builder(passportType)
+                        .setGuid("guid1")
+                        .setRecordType(RecordType.LOCAL)
+                        .setUseCount(0)
+                        .setRequiresReauthToSee(true)
+                        .build();
+
+        when(mEntityDataManager.getEntityInstance("guid1")).thenReturn(entityInstance);
+        DeviceAuthAvailabilityCheckerBridge.setBiometricAvailabilityStatusForTesting(
+                BiometricStatus.BIOMETRICS_AVAILABLE);
+
+        mSettingsTestRule.startSettingsActivity();
+
+        Preference passportEntity =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> mSettingsTestRule.getFragment().findPreference("guid1"));
+
+        // Click entity and capture reauth callback.
+        ThreadUtils.runOnUiThreadBlocking(passportEntity::performClick);
+        ArgumentCaptor<Callback<Boolean>> callbackCaptor = MockitoHelper.callbackCaptor();
+        verify(mMockReauthenticatorBridge).reauthenticate(callbackCaptor.capture());
+        verify(mMockReauthenticatorBridge, never()).getBiometricAvailabilityStatus();
+
+        // Simulate successful reauth.
+        ThreadUtils.runOnUiThreadBlocking(() -> callbackCaptor.getValue().onResult(true));
+
+        onView(withText("Edit passport")).inRoot(isDialog()).check(matches(isDisplayed()));
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.DEVICE_REAUTH_REFACTOR)
+    public void testAutofillAiEntities_refactorFlagEnabled_doesNotOpenEditorOnFailedReauth() {
+        EntityType passportType = getPassportEntityType();
+        LinkedHashMap<EntityType, List<EntityInstanceWithLabels>> instancesMap =
+                new LinkedHashMap<>();
+        instancesMap.put(
+                passportType, Arrays.asList(TestUtils.buildGermanyPassportWithLabels("guid1")));
+        when(mEntityDataManager.getInstancesToList()).thenReturn(instancesMap);
+
+        EntityInstance entityInstance =
+                new EntityInstance.Builder(passportType)
+                        .setGuid("guid1")
+                        .setRecordType(
+                                org.chromium.components.autofill.autofill_ai.RecordType.LOCAL)
+                        .setUseCount(0)
+                        .setRequiresReauthToSee(true)
+                        .build();
+
+        when(mEntityDataManager.getEntityInstance("guid1")).thenReturn(entityInstance);
+        DeviceAuthAvailabilityCheckerBridge.setBiometricAvailabilityStatusForTesting(
+                BiometricStatus.BIOMETRICS_AVAILABLE);
+
+        mSettingsTestRule.startSettingsActivity();
+
+        Preference passportEntity =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> mSettingsTestRule.getFragment().findPreference("guid1"));
+
+        // Click entity and capture reauth callback.
+        ThreadUtils.runOnUiThreadBlocking(passportEntity::performClick);
+        ArgumentCaptor<Callback<Boolean>> callbackCaptor = MockitoHelper.callbackCaptor();
+        verify(mMockReauthenticatorBridge).reauthenticate(callbackCaptor.capture());
+        verify(mMockReauthenticatorBridge, never()).getBiometricAvailabilityStatus();
+
+        // Simulate failed reauth.
+        ThreadUtils.runOnUiThreadBlocking(() -> callbackCaptor.getValue().onResult(false));
+
+        // Editor should NOT be open.
+        onView(withText("Edit passport")).check(doesNotExist());
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.DEVICE_REAUTH_REFACTOR)
+    public void
+            testAutofillAiEntities_refactorFlagEnabled_biometricsUnavailable_opensEditorWithoutReauth() {
+        EntityType passportType = getPassportEntityType();
+        LinkedHashMap<EntityType, List<EntityInstanceWithLabels>> instancesMap =
+                new LinkedHashMap<>();
+        instancesMap.put(
+                passportType, Arrays.asList(TestUtils.buildGermanyPassportWithLabels("guid1")));
+        when(mEntityDataManager.getInstancesToList()).thenReturn(instancesMap);
+
+        EntityInstance entityInstance =
+                new EntityInstance.Builder(passportType)
+                        .setGuid("guid1")
+                        .setRecordType(RecordType.LOCAL)
+                        .setUseCount(0)
+                        .setRequiresReauthToSee(true)
+                        .build();
+
+        when(mEntityDataManager.getEntityInstance("guid1")).thenReturn(entityInstance);
+        DeviceAuthAvailabilityCheckerBridge.setBiometricAvailabilityStatusForTesting(
+                BiometricStatus.UNAVAILABLE);
+
+        mSettingsTestRule.startSettingsActivity();
+
+        Preference passportEntity =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> mSettingsTestRule.getFragment().findPreference("guid1"));
+
+        // Click entity - reauth should not be triggered since biometrics are unavailable.
+        ThreadUtils.runOnUiThreadBlocking(passportEntity::performClick);
+        verify(mMockReauthenticatorBridge, never()).getBiometricAvailabilityStatus();
+        verify(mMockReauthenticatorBridge, never()).reauthenticate(any());
+
+        onView(withText("Edit passport")).inRoot(isDialog()).check(matches(isDisplayed()));
     }
 
     @Test
@@ -900,8 +1025,7 @@ public class AutofillIdentityDocsFragmentTest {
         Context context = mSettingsTestRule.getFragment().getContext();
         String walletTitle = context.getString(R.string.autofill_google_wallet_title);
         String expectedNoticeText =
-                context.getString(
-                                R.string.autofill_ai_save_or_update_entity_in_wallet_source_notice)
+                context.getString(R.string.autofill_ai_save_entity_in_wallet_source_notice)
                         .replace("$1", walletTitle)
                         .replace("$2", walletTitle)
                         .replace("$3", TestAccounts.ACCOUNT1.getEmail())
@@ -912,7 +1036,6 @@ public class AutofillIdentityDocsFragmentTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(ChromeFeatureList.AUTOFILL_AI_WALLET_PRIVATE_PASSES_DEEP_LINK)
     public void testAutofillAiEntities_opensWalletDefaultPage_whenUrlIsNull() throws Exception {
         EntityType passportType = TestUtils.getPassportEntityType();
 
@@ -950,7 +1073,6 @@ public class AutofillIdentityDocsFragmentTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(ChromeFeatureList.AUTOFILL_AI_WALLET_PRIVATE_PASSES_DEEP_LINK)
     public void testAutofillAiEntities_opensWalletPrivatePassPageOnClick() throws Exception {
         EntityType passportType = TestUtils.getPassportEntityType();
 
@@ -977,47 +1099,6 @@ public class AutofillIdentityDocsFragmentTest {
         Instrumentation.ActivityResult result =
                 new Instrumentation.ActivityResult(Activity.RESULT_OK, null);
         var intentMatcher = allOf(hasAction(Intent.ACTION_VIEW), hasData(Uri.parse(expectedUrl)));
-        intending(intentMatcher).respondWith(result);
-
-        ThreadUtils.runOnUiThreadBlocking(passportEntity::performClick);
-
-        intended(intentMatcher);
-    }
-
-    @Test
-    @MediumTest
-    @DisableFeatures(ChromeFeatureList.AUTOFILL_AI_WALLET_PRIVATE_PASSES_DEEP_LINK)
-    public void testAutofillAiEntities_opensWalletPrivatePassPageOnClick_featureDisabled()
-            throws Exception {
-        EntityType passportType = TestUtils.getPassportEntityType();
-
-        EntityInstanceWithLabels entity1 =
-                TestUtils.buildGermanyPassportWithLabels(
-                        "guid1",
-                        /* storedInWallet= */ true,
-                        /* walletEntityUrl= */ "https://wallet.com/private");
-
-        LinkedHashMap<EntityType, List<EntityInstanceWithLabels>> instancesMap =
-                new LinkedHashMap<>();
-        instancesMap.put(passportType, Arrays.asList(entity1));
-
-        when(mEntityDataManager.getInstancesToList()).thenReturn(instancesMap);
-
-        mSettingsTestRule.startSettingsActivity();
-
-        Preference passportEntity =
-                ThreadUtils.runOnUiThreadBlocking(
-                        () -> mSettingsTestRule.getFragment().findPreference("guid1"));
-        assertNotNull(passportEntity);
-
-        // Mock the intent that should be fired.
-        Instrumentation.ActivityResult result =
-                new Instrumentation.ActivityResult(Activity.RESULT_OK, null);
-        // Since the deep link feature is disabled, it should fallback to the general passes page.
-        var intentMatcher =
-                allOf(
-                        hasAction(Intent.ACTION_VIEW),
-                        hasData(Uri.parse(GoogleWalletLauncher.GOOGLE_WALLET_PASSES_URL)));
         intending(intentMatcher).respondWith(result);
 
         ThreadUtils.runOnUiThreadBlocking(passportEntity::performClick);

@@ -27,6 +27,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_feedback.h"
+#include "chromeos/ash/components/dbus/cryptohome/UserDataAuth.pb.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "chromeos/dbus/power/power_policy_controller.h"
@@ -217,7 +218,7 @@ EncryptionMigrationScreen::EncryptionMigrationScreen(
                  OobeScreenPriority::DEFAULT),
       OobeMojoBinder(this),
       view_(std::move(view)) {
-  DCHECK(view_);
+  CHECK(view_, base::NotFatalUntil::M161);
 }
 
 EncryptionMigrationScreen::~EncryptionMigrationScreen() {
@@ -495,7 +496,7 @@ device::mojom::WakeLock* EncryptionMigrationScreen::GetWakeLock() {
   mojo::PendingReceiver<device::mojom::WakeLock> receiver =
       wake_lock_.BindNewPipeAndPassReceiver();
 
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   mojo::Remote<device::mojom::WakeLockProvider> wake_lock_provider;
   content::GetDeviceService().BindWakeLockProvider(
@@ -604,9 +605,7 @@ void EncryptionMigrationScreen::OnDelayedRecordVisibleScreen(
 
   // If |current_ui_state_| is not changed for a second, record the current
   // screen as a "visible" screen.
-  UMA_HISTOGRAM_ENUMERATION(
-      kUmaNameVisibleScreen, ui_state,
-      screens_login::mojom::EncryptionMigrationPage::UIState::kMaxValue);
+  UMA_HISTOGRAM_ENUMERATION(kUmaNameVisibleScreen, ui_state);
 }
 
 bool EncryptionMigrationScreen::IsResumingIncompleteMigration() const {

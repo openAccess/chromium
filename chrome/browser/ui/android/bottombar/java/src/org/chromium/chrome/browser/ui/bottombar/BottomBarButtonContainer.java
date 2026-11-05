@@ -13,6 +13,8 @@ import android.view.ViewStub;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
+import androidx.annotation.Px;
+
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.theme.ThemeColorProvider.TintObserver;
@@ -34,6 +36,9 @@ public class BottomBarButtonContainer extends FrameLayout
     private @Nullable View mTargetView;
     private @Nullable Drawable mTargetBackground;
     private @Nullable @BrandedColorScheme Integer mColorScheme;
+    private @Px int mTargetPaddingHorizontal = -1;
+    private @Px int mTargetPaddingTop = -1;
+    private @Px int mTargetPaddingBottom = -1;
 
     public BottomBarButtonContainer(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -82,6 +87,7 @@ public class BottomBarButtonContainer extends FrameLayout
             }
             applyColorScheme(mIconTint, oldTint);
             applyTargetBackground();
+            applyTargetPaddings();
         }
         assert mTargetView != null : "Stub inflation failed.";
     }
@@ -131,10 +137,39 @@ public class BottomBarButtonContainer extends FrameLayout
     /*package*/ void setTargetBackground(Drawable drawable) {
         mTargetBackground = drawable;
         applyTargetBackground();
+        applyTargetPaddings();
     }
 
     private void applyTargetBackground() {
         if (mTargetView == null || mTargetBackground == null) return;
         mTargetView.setBackground(mTargetBackground);
+    }
+
+    /**
+     * Sets target paddings to apply to the target child view once inflated or immediately.
+     *
+     * @param hPad The horizontal padding in pixels.
+     * @param topPad The top vertical padding in pixels.
+     * @param bottomPad The bottom vertical padding in pixels.
+     */
+    /*package*/ void setTargetPaddings(@Px int hPad, @Px int topPad, @Px int bottomPad) {
+        mTargetPaddingHorizontal = hPad;
+        mTargetPaddingTop = topPad;
+        mTargetPaddingBottom = bottomPad;
+        applyTargetPaddings();
+    }
+
+    private void applyTargetPaddings() {
+        if (mTargetView == null
+                || mTargetPaddingHorizontal < 0
+                || mTargetPaddingTop < 0
+                || mTargetPaddingBottom < 0) {
+            return;
+        }
+        mTargetView.setPaddingRelative(
+                mTargetPaddingHorizontal,
+                mTargetPaddingTop,
+                mTargetPaddingHorizontal,
+                mTargetPaddingBottom);
     }
 }

@@ -4,7 +4,7 @@
 
 import("//remoting/remoting_options.gni")
 
-source_set("encoder") {
+static_library("encoder") {
   sources = [
     "encoder_bitrate_filter.cc",
     "encoder_bitrate_filter.h",
@@ -19,15 +19,11 @@ source_set("encoder") {
     "webrtc_video_encoder_vpx.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [ "//third_party/libaom" ]
 
   deps = [
     ":vpx_codec",
-    "//remoting/base",
-    "//remoting/proto",
-    "//remoting/signaling",
+    "//remoting/base:codec_utils",
     "//third_party/libvpx",
     "//third_party/libyuv",
     "//third_party/webrtc_overrides:webrtc_component",
@@ -50,19 +46,16 @@ source_set("encoder") {
   }
 }
 
-source_set("vpx_codec") {
+static_library("vpx_codec") {
   sources = [
     "scoped_vpx_codec.cc",
     "scoped_vpx_codec.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [ "//third_party/libvpx" ]
 
   deps = [
     "//base",
-    "//remoting/proto",
     "//third_party/libyuv",
     "//third_party/webrtc_overrides:webrtc_component",
   ]
@@ -87,14 +80,17 @@ if (!is_component_build && (is_win || is_linux)) {
 source_set("unit_tests") {
   testonly = true
 
-  sources = [ "encoder_bitrate_filter_unittest.cc" ]
+  sources = [
+    "encoder_bitrate_filter_unittest.cc",
+    "utils_unittest.cc",
+  ]
 
   deps = [
     ":encoder",
     "//base",
-    "//remoting/base",
-    "//remoting/proto",
+    "//remoting/base:codec_utils",
     "//testing/gtest",
+    "//third_party/libyuv",
     "//third_party/webrtc_overrides:webrtc_component",
     "//ui/gfx:color_space",
   ]

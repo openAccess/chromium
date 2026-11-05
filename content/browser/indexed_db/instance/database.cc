@@ -30,7 +30,6 @@
 #include "build/build_config.h"
 #include "components/services/storage/indexed_db/locks/partitioned_lock_id.h"
 #include "components/services/storage/indexed_db/locks/partitioned_lock_manager.h"
-#include "components/services/storage/privileged/mojom/indexed_db_client_state_checker.mojom.h"
 #include "components/services/storage/privileged/mojom/indexed_db_internals_types.mojom.h"
 #include "content/browser/indexed_db/file_path_util.h"
 #include "content/browser/indexed_db/indexed_db_external_object.h"
@@ -291,8 +290,7 @@ void Database::RequireBlockingTransactionClientsToBeActive(
     // lock IDs, require that client to be active.
     if (connection->IsHoldingLocks(blocked_lock_ids)) {
       connection->DisallowInactiveClient(
-          storage::mojom::DisallowInactiveClientReason::
-              kTransactionIsAcquiringLocks,
+          DisallowInactiveClientReason::kTransactionIsAcquiringLocks,
           base::DoNothing());
     }
   }
@@ -432,58 +430,41 @@ Status Database::GetOperation(int64_t object_store_id,
   TRACE_EVENT1("IndexedDB", "Database::GetOperation", "txn.id",
                transaction->id());
 
+  if (!key_range.IsOnlyKey()) {
+    return GetRecords(
+        object_store_id, index_id, std::move(key_range),
+        key_only ? blink::mojom::IDBGetAllResultType::Keys
+                 : blink::mojom::IDBGetAllResultType::Values,
+        /*max_count=*/1, blink::mojom::IDBCursorDirection::Next,
+        /*intermediate_callback=*/
+        [](std::vector<blink::mojom::IDBRecordPtr>) { NOTREACHED(); },
+        /*final_callback=*/
+        [&callback, key_only](GetRecordsResult result) {
+          blink::mojom::IDBDatabaseGetResultPtr response;
+          if (!result.has_value()) {
+            response = blink::mojom::IDBDatabaseGetResult::NewErrorResult(
+                std::move(result.error()));
+          } else if (result->empty()) {
+            response = blink::mojom::IDBDatabaseGetResult::NewEmpty(true);
+          } else {
+            CHECK_EQ(result->size(), 1U);
+            blink::mojom::IDBRecordPtr& record = result->front();
+            if (key_only) {
+              response = blink::mojom::IDBDatabaseGetResult::NewKey(
+                  std::move(*record->primary_key));
+            } else {
+              response = blink::mojom::IDBDatabaseGetResult::NewValue(
+                  std::move(record->return_value));
+            }
+          }
+          std::move(callback).Run(std::move(response));
+        },
+        transaction);
+  }
+
   const IndexedDBObjectStoreMetadata& object_store_metadata =
       GetObjectStoreMetadata(object_store_id);
-
-  IndexedDBKey key;
-  if (key_range.IsOnlyKey()) {
-    key = std::move(key_range).TakeOnlyKey();
-  } else {
-    StatusOr<std::unique_ptr<BackingStore::Cursor>> backing_store_cursor;
-    if (index_id == IndexedDBIndexMetadata::kInvalidId) {
-      // ObjectStore Retrieval Operation
-      if (key_only) {
-        backing_store_cursor =
-            transaction->BackingStoreTransaction()->OpenObjectStoreKeyCursor(
-                object_store_id, key_range,
-                blink::mojom::IDBCursorDirection::Next);
-      } else {
-        backing_store_cursor =
-            transaction->BackingStoreTransaction()->OpenObjectStoreCursor(
-                object_store_id, key_range,
-                blink::mojom::IDBCursorDirection::Next);
-      }
-    } else if (key_only) {
-      // Index Value Retrieval Operation
-      backing_store_cursor =
-          transaction->BackingStoreTransaction()->OpenIndexKeyCursor(
-              object_store_id, index_id, key_range,
-              blink::mojom::IDBCursorDirection::Next);
-    } else {
-      // Index Referenced Value Retrieval Operation
-      backing_store_cursor =
-          transaction->BackingStoreTransaction()->OpenIndexCursor(
-              object_store_id, index_id, key_range,
-              blink::mojom::IDBCursorDirection::Next);
-    }
-
-    if (!backing_store_cursor.has_value()) {
-      std::move(callback).Run(
-          blink::mojom::IDBDatabaseGetResult::NewErrorResult(CreateIDBErrorPtr(
-              blink::mojom::IDBException::kUnknownError,
-              "Corruption detected, unable to continue", transaction)));
-      return backing_store_cursor.error();
-    }
-
-    if (!*backing_store_cursor) {
-      // This means we've run out of data.
-      std::move(callback).Run(
-          blink::mojom::IDBDatabaseGetResult::NewEmpty(true));
-      return Status::OK();
-    }
-
-    key = std::move(**backing_store_cursor).TakeKey();
-  }
+  IndexedDBKey key = std::move(key_range).TakeOnlyKey();
 
   if (index_id == IndexedDBIndexMetadata::kInvalidId) {
     // Object Store Retrieval Operation
@@ -685,6 +666,33 @@ Status Database::GetAllOperation(
   TRACE_EVENT1("IndexedDB", "Database::GetAllOperation", "txn.id",
                transaction->id());
 
+  return GetRecords(
+      object_store_id, index_id, std::move(key_range), result_type, max_count,
+      direction,
+      [&result_sink](std::vector<blink::mojom::IDBRecordPtr> records) {
+        result_sink->SendResults(std::move(records), /*done=*/false);
+      },
+      [&result_sink](GetRecordsResult result) {
+        if (!result.has_value()) {
+          result_sink->SendError(std::move(result.error()));
+        } else {
+          result_sink->SendResults(std::move(*result), /*done=*/true);
+        }
+      },
+      transaction);
+}
+
+Status Database::GetRecords(
+    int64_t object_store_id,
+    int64_t index_id,
+    IndexedDBKeyRange key_range,
+    blink::mojom::IDBGetAllResultType result_type,
+    uint32_t max_count,
+    blink::mojom::IDBCursorDirection direction,
+    base::FunctionRef<void(std::vector<blink::mojom::IDBRecordPtr>)>
+        intermediate_callback,
+    base::FunctionRef<void(GetRecordsResult)> final_callback,
+    Transaction* transaction) {
   CHECK_GT(max_count, 0U);
 
   const IndexedDBObjectStoreMetadata& object_store_metadata =
@@ -717,9 +725,9 @@ Status Database::GetAllOperation(
   }
 
   if (!cursor.has_value()) {
-    result_sink->SendError(CreateIDBErrorPtr(
+    final_callback(base::unexpected(CreateIDBErrorPtr(
         blink::mojom::IDBException::kUnknownError,
-        "Corruption detected, unable to continue", transaction));
+        "Corruption detected, unable to continue", transaction)));
     return cursor.error();
   }
 
@@ -727,7 +735,7 @@ Status Database::GetAllOperation(
 
   // No records found.
   if (!*cursor) {
-    result_sink->SendResults(std::move(found_records), /*done=*/true);
+    final_callback(std::move(found_records));
     return Status::OK();
   }
 
@@ -751,33 +759,26 @@ Status Database::GetAllOperation(
 
   const size_t kMaxValuesBeforeSending = blink::mojom::kIDBGetAllChunkSize;
 
-  // Mojo limits the number of handles/file descriptors in a single message on
-  // certain platforms. Since SQLite does not wrap large values in blobs, the
-  // `mojo_base::BigBuffer` holding the value may be backed by shared memory
-  // (which uses handles/file descriptors - see
-  // `mojo::core::ipcz_driver::SharedBuffer::Serialize()`), and hence need a
-  // separate cap.
+  // Apply a limit to the number of shared memory handles sent over a single
+  // Mojo message on both Apple and non-Apple POSIX, for different reasons.
+  //
+  // Since SQLite does not wrap large values in blobs, the
+  // `mojo_base::BigBuffer` holding the value may be backed by shared memory. On
+  // POSIX save Apple, this uses FDs, which are capped by per-process system
+  // limits. To avoid holding too many at once and exhausting this resource,
+  // this code limits the number of shared memory handles sent in a single
+  // message and hopes the receiving side drains the queue promptly. On Apple,
+  // shared memory doesn't use FDs, but on the other hand the Mach Mojo channel
+  // has trouble holding too many handles in a single message (see
+  // crbug.com/553026855).
   std::optional<uint32_t> max_shared_memory_values_in_chunk;
   uint32_t shared_memory_values_in_chunk = 0;
 
+#if BUILDFLAG(IS_POSIX)
   if (bucket_context_->IsUsingSqlite()) {
-#if BUILDFLAG(IS_POSIX) && !BUILDFLAG(MOJO_USE_APPLE_CHANNEL)
-    // channel_posix limits the number of file descriptors per message to 128:
-    // crbug.com/439305148.
-#if BUILDFLAG(IS_ANDROID)
-    // 1 file descriptor is used per shared memory buffer.
-    max_shared_memory_values_in_chunk = 128;
-#else
-    // 2 file descriptors are used per shared memory buffer.
-    max_shared_memory_values_in_chunk = 64;
-#endif
-#elif BUILDFLAG(IS_FUCHSIA)
-    // channel_fuchsia.cc limits the number of handles per message to 64
-    // (ZX_CHANNEL_MAX_MSG_HANDLES): crbug.com/508116627.
-    // 1 platform handle is used per shared memory buffer.
-    max_shared_memory_values_in_chunk = 64;
-#endif
+    max_shared_memory_values_in_chunk = 125;
   }
+#endif
 
   for (uint32_t i = 0; i < max_count; ++i) {
     // Periodically stream records if we have too many.
@@ -785,7 +786,7 @@ Status Database::GetAllOperation(
         (max_shared_memory_values_in_chunk.has_value() &&
          shared_memory_values_in_chunk >=
              max_shared_memory_values_in_chunk.value())) {
-      result_sink->SendResults(std::move(found_records), /*done=*/false);
+      intermediate_callback(std::move(found_records));
       found_records.clear();
       shared_memory_values_in_chunk = 0;
     }
@@ -795,9 +796,9 @@ Status Database::GetAllOperation(
     if (i != 0) {
       StatusOr<bool> cursor_valid = (*cursor)->Continue();
       if (!cursor_valid.has_value()) {
-        result_sink->SendError(
-            CreateIDBErrorPtr(blink::mojom::IDBException::kUnknownError,
-                              "Seek failure, unable to continue", transaction));
+        final_callback(base::unexpected(CreateIDBErrorPtr(
+            blink::mojom::IDBException::kUnknownError,
+            "Seek failure, unable to continue", transaction)));
         return cursor_valid.error();
       }
 
@@ -847,7 +848,7 @@ Status Database::GetAllOperation(
     found_records.emplace_back(std::move(return_record));
   }
 
-  result_sink->SendResults(std::move(found_records), /*done=*/true);
+  final_callback(std::move(found_records));
   return Status::OK();
 }
 
@@ -1076,9 +1077,7 @@ const IndexedDBDataLossInfo& Database::GetDataLossInfo() const {
 
 std::unique_ptr<Connection> Database::CreateConnection(
     std::unique_ptr<DatabaseCallbacks> database_callbacks,
-    mojo::Remote<storage::mojom::IndexedDBClientStateChecker>
-        client_state_checker,
-    base::UnguessableToken client_token,
+    const storage::BucketClientInfo& client_info,
     int scheduling_priority,
     base::OnceClosure on_connection_closed) {
   auto connection = std::make_unique<Connection>(
@@ -1087,8 +1086,7 @@ std::unique_ptr<Connection> Database::CreateConnection(
                           weak_factory_.GetWeakPtr()),
       base::BindOnce(&Database::ConnectionClosed, weak_factory_.GetWeakPtr(),
                      std::move(on_connection_closed)),
-      std::move(database_callbacks), std::move(client_state_checker),
-      client_token, scheduling_priority);
+      std::move(database_callbacks), client_info, scheduling_priority);
   connections_.push_back(connection.get());
   return connection;
 }
@@ -1125,7 +1123,7 @@ void Database::SendVersionChangeToAllConnections(int64_t old_version,
     // matter which path it follows, the `SendVersionChangeToAllConnections`
     // method is executed asynchronously.
     connection->DisallowInactiveClient(
-        storage::mojom::DisallowInactiveClientReason::kVersionChangeEvent,
+        DisallowInactiveClientReason::kVersionChangeEvent,
         base::BindOnce(
             [](base::WeakPtr<Connection> connection, int64_t old_version,
                int64_t new_version, bool was_client_active) {

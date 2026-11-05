@@ -9,6 +9,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
+#include "base/feature_list.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/format_macros.h"
@@ -23,12 +24,12 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "components/download/public/common/download_features.h"
 #include "components/download/public/common/download_interrupt_reasons_utils.h"
 #include "components/download/public/common/download_item.h"
 #include "components/download/public/common/download_stats.h"
 #include "components/services/quarantine/quarantine.h"
 #include "crypto/hash.h"
-#include "crypto/secure_hash.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/content_uri_utils.h"
@@ -125,7 +126,7 @@ DownloadInterruptReason BaseFile::Initialize(
     base::File file,
     int64_t bytes_so_far,
     const std::string& hash_so_far,
-    std::unique_ptr<crypto::SecureHash> hash_state,
+    std::optional<crypto::hash::Hasher> hash_state,
     bool is_sparse_file,
     int64_t* const bytes_wasted) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -348,7 +349,9 @@ void BaseFile::Cancel() {
   Detach();
 }
 
-std::unique_ptr<crypto::SecureHash> BaseFile::Finish(int64_t expected_size) {
+std::optional<crypto::hash::Hasher> BaseFile::Finish(
+    int64_t expected_size,
+    const std::string& last_modified) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // TODO(qinmin): verify that all the holes have been filled.
@@ -366,8 +369,18 @@ std::unique_ptr<crypto::SecureHash> BaseFile::Finish(int64_t expected_size) {
       file_.SetLength(target_size);
     }
   }
+
+  if (file_.IsValid() && !last_modified.empty() &&
+      base::FeatureList::IsEnabled(features::kPreserveDownloadLastModified)) {
+    base::Time mtime;
+    if (base::Time::FromString(last_modified.c_str(), &mtime)) {
+      file_.Flush();
+      file_.SetTimes(base::Time::Now(), mtime);
+    }
+  }
+
   Close();
-  return std::move(secure_hash_);
+  return std::exchange(secure_hash_, std::nullopt);
 }
 
 std::string BaseFile::DebugString() const {
@@ -381,7 +394,7 @@ std::string BaseFile::DebugString() const {
 
 DownloadInterruptReason BaseFile::CalculatePartialHash(
     const std::string& hash_to_expect) {
-  secure_hash_ = crypto::SecureHash::Create(crypto::SecureHash::SHA256);
+  secure_hash_ = crypto::hash::Hasher(crypto::hash::kSha256);
 
   if (bytes_so_far_ == 0)
     return DOWNLOAD_INTERRUPT_REASON_NONE;
@@ -390,16 +403,16 @@ DownloadInterruptReason BaseFile::CalculatePartialHash(
     return LogSystemError("Seek partial file",
                           logging::GetLastSystemErrorCode());
 
-  const size_t kMinBufferSize = secure_hash_->GetHashLength();
+  const size_t kMinBufferSize = crypto::hash::kSha256Size;
   const size_t kMaxBufferSize = 1024 * 512;
   static_assert(kMaxBufferSize <= std::numeric_limits<int>::max(),
                 "kMaxBufferSize must fit on an int");
 
   // The size of the buffer is:
-  // - at least kMinBufferSize so that we can use it to hold the hash as well.
+  // - at least kMinBufferSize.
   // - at most kMaxBufferSize so that there's a reasonable bound.
-  // - not larger than |bytes_so_far_| unless bytes_so_far_ is less than the
-  //   hash size.
+  // - not larger than |bytes_so_far_| unless bytes_so_far_ is smaller than
+  //   kMinBufferSize.
   std::vector<uint8_t> buffer(std::max<int64_t>(
       kMinBufferSize, std::min<int64_t>(kMaxBufferSize, bytes_so_far_)));
 
@@ -436,9 +449,8 @@ DownloadInterruptReason BaseFile::CalculatePartialHash(
 
   if (!hash_to_expect.empty()) {
     std::array<uint8_t, crypto::hash::kSha256Size> result;
-    CHECK_EQ(secure_hash_->GetHashLength(), result.size());
-    std::unique_ptr<crypto::SecureHash> partial_hash(secure_hash_->Clone());
-    partial_hash->Finish(result);
+    crypto::hash::Hasher partial_hash(*secure_hash_);
+    partial_hash.Finish(result);
 
     if (base::span(result) != base::as_byte_span(hash_to_expect)) {
       return LogInterruptReason("Verifying prefix hash", 0,
@@ -509,7 +521,7 @@ DownloadInterruptReason BaseFile::Open(const std::string& hash_so_far,
     // If the file was truncated to the beginning, the hash state is no longer
     // valid.
     if (bytes_so_far_ == 0) {
-      secure_hash_ = crypto::SecureHash::Create(crypto::SecureHash::SHA256);
+      secure_hash_ = crypto::hash::Hasher(crypto::hash::kSha256);
     }
   } else if (file_size < bytes_so_far_) {
     // The file is shorter than we expected.  Our hashes won't be valid.

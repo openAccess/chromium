@@ -21,11 +21,32 @@ class GURL;
 // Opens the Home Customization menu at the Magic Stack page.
 - (void)openMagicStackCustomizationMenu;
 
-// Opens the Home Customization menu at the Main page.
-- (void)openMainCustomizationMenu;
+// Opens the Home Customization menu at the Main page, optionally presenting an
+// IPH bubble on the customization button when dismissed if
+// `withIconBubbleOnDismiss` is YES, and scrolling to the bottom of the sheet if
+// `scrollToBottom` is YES.
+- (void)openMainCustomizationMenuWithIconBubbleOnDismiss:
+            (BOOL)withIconBubbleOnDismiss
+                                          scrollToBottom:(BOOL)scrollToBottom;
 
 // Opens the Safari Data import instructions.
 - (void)openSafariDataImport;
+
+// Opens the photo picker for selecting a custom NTP background from the
+// device's photo library.
+- (void)openNTPBackgroundPhotoPicker;
+
+// Presents the IPH bubble pointing to the Home customization menu button.
+- (void)presentCustomizationButtonBubble;
+
+// Returns `YES` if the NTP is bypassed because the omnibox is focused or
+// scheduled to be shown, or because a post-opening startup action is pending
+// (for example, when selecting "Search" from the app icon long-press menu).
+- (BOOL)isNTPBypassed;
+
+// Triggers the radial wipe animation to hide the Magic Stack and Discover feed,
+// disables both modules, and shows an undo snackbar.
+- (void)applyFocusedNTPWithUndoSnackbar;
 
 @end
 

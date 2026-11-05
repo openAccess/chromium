@@ -42,7 +42,10 @@ source_set("browser_switcher") {
 
 source_set("impl") {
   sources = []
-  deps = [ ":browser_switcher" ]
+  deps = [
+    ":browser_switcher",
+    "//chrome/browser/policy",
+  ]
 
   if (is_win) {
     sources += [
@@ -84,14 +87,12 @@ source_set("impl") {
   if (is_mac || is_linux) {
     sources += [ "alternative_browser_driver_posix.cc" ]
   }
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("unit_tests") {
   testonly = true
   sources = []
-  deps = []
+  deps = [ "//chrome/test/base:chrome_render_view_host_test_harness" ]
 
   if (is_linux || is_mac || is_win) {
     sources += [
@@ -137,8 +138,9 @@ if (!is_android) {
       deps += [
         ":browser_switcher",
         "//base/test:test_config",
-        "//chrome/browser/ui",
-        "//chrome/test:test_support_ui",
+        "//chrome/browser/profiles:profile",
+        "//chrome/test/base:in_process_browser_test",
+        "//chrome/test/base:ui_test_utils",
         "//components/policy:generated",
         "//components/policy:policy_code_generate",
         "//components/policy/core/browser",

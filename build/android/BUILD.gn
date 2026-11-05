@@ -21,6 +21,7 @@ if (enable_java_templates) {
 
   generate_build_config_srcjar("build_config_for_robolectric_srcjar") {
     testonly = true
+    is_robolectric = true
   }
 
   write_native_libraries_java("native_libraries_gen") {
@@ -84,22 +85,20 @@ if (enable_java_templates) {
       # We just need any file here, so use the test itself.
       sources = [ "junit/src/org/chromium/build/AndroidAssetsTest.java" ]
     }
+
     android_resources("junit_test_resources") {
       testonly = true
       sources = [ "junit/res/values/strings.xml" ]
       mergeable_android_manifests = [ "junit/AndroidManifest_mergetest.xml" ]
     }
+
     robolectric_binary("build_junit_tests") {
       # Test has no JNI, so skip JNI Generator step.
       resources_package = "org.chromium.build"
-      sources = [
-        "junit/src/org/chromium/build/AndroidAssetsTest.java",
-        "junit/src/org/chromium/build/IncrementalJavacTest.java",
-      ]
+      sources = [ "junit/src/org/chromium/build/AndroidAssetsTest.java" ]
       deps = [
         ":junit_test_assets",
         ":junit_test_resources",
-        "//build/android/test/incremental_javac_gn:no_signature_change_prebuilt_java",
         "//third_party/junit",
       ]
     }
@@ -232,6 +231,9 @@ group("test_runner_device_support") {
     }
     if (use_full_mte) {
       data_deps += [ "//tools/android/mte:mte_device_setup" ]
+    }
+    if (checkout_fuchsia) {
+      data_deps += [ "//build/fuchsia/starview:run_cuttlefish" ]
     }
   }
 

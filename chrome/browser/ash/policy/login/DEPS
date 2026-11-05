@@ -19,25 +19,36 @@ include_rules = [
   "+chrome/browser/ash/policy/core",
   "+chrome/browser/ash/policy/test_support",
   "+chrome/browser/ash/profiles",
-  "+chrome/browser/browser_process.h",
-  "+chrome/browser/extensions/install_tracker_factory.h",
-  "+chrome/browser/extensions/policy_test_utils.h",
-  "+chrome/browser/net",
-  "+chrome/browser/policy",
-  "+chrome/browser/profiles",
   "+chrome/browser/ui/ash/keyboard",
   "+chrome/browser/ui/ash/login",
-  "+chrome/browser/ui/browser.h",
-  "+chrome/browser/ui/browser_window.h",
-  "+chrome/browser/ui/browser_window/public",
   "+chrome/browser/ui/webui/ash/login",
   "+chrome/common/chrome_paths.h",
-  "+chrome/common/chrome_switches.h",
   "+chrome/test/base",
 ]
 
 specific_include_rules = {
+  # Only tests need //chrome/browser/policy.
+  "signin_profile_extensions_policy_browsertest\\.cc": [
+    "+chrome/browser/policy/extension_force_install_mixin.h",
+  ],
+  ".*(unittest|browsertest)\\.cc": [
+    "+chrome/browser/browser_process.h",
+    "+chrome/browser/extensions/install_tracker_factory.h",
+    "+chrome/browser/profiles",
+    "+chrome/browser/ui/browser_window.h",
+    "+chrome/browser/ui/browser_window/public",
+  ],
+  "login_policy_test_base\\.cc": [
+    "+chrome/browser/profiles",
+  ],
   "login_screen_default_policy_browsertest\\.cc": [
     "+chrome/common/pref_names.h",
+  ],
+  "signin_profile_extensions_policy_test_base\\.cc": [
+    "+chrome/browser/extensions/policy_test_utils.h",
+    "+chrome/browser/profiles",
+  ],
+  "signin_profile_extensions_policy_test_base\\.h": [
+    "+chrome/browser/profiles",
   ],
 }

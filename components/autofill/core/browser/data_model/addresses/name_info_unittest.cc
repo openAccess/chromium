@@ -4,13 +4,16 @@
 
 #include "components/autofill/core/browser/data_model/addresses/name_info.h"
 
+#include <array>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/types/expected.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
@@ -26,8 +29,11 @@ using base::UTF8ToUTF16;
 namespace autofill {
 namespace {
 
+using base::test::ErrorIs;
+using base::test::HasValue;
 using i18n_model_definition::kLegacyHierarchyCountryCode;
 using ::testing::IsEmpty;
+using ::testing::Message;
 using ::testing::Test;
 using ::testing::TestWithParam;
 using ::testing::Values;
@@ -35,6 +41,7 @@ using ::testing::ValuesIn;
 using ::testing::WithParamInterface;
 
 constexpr char kLocale[] = "en-US";
+constexpr char kJapaneseLocale[] = "ja";
 
 struct FullNameTestCase {
   std::string full_name_input;
@@ -48,20 +55,6 @@ struct FullAlternativeNameTestCase {
   std::u16string given_name_output;
   std::u16string family_name_output;
 };
-
-// Profiles are considered migrated if the regular name fields are empty and the
-// alternative name fields are populated with regular name original values.
-MATCHER_P(NameIsMigrated, original_profile, "") {
-  return arg.record_type() == original_profile.record_type() &&
-         original_profile.GetRawInfo(NAME_FULL) ==
-             arg.GetRawInfo(ALTERNATIVE_FULL_NAME) &&
-         original_profile.GetRawInfo(NAME_LAST) ==
-             arg.GetRawInfo(ALTERNATIVE_FAMILY_NAME) &&
-         original_profile.GetRawInfo(NAME_FIRST) ==
-             arg.GetRawInfo(ALTERNATIVE_GIVEN_NAME) &&
-         arg.GetRawInfo(NAME_FULL).empty() &&
-         arg.GetNameInfo().GetRootForType(NAME_FULL)->AllDescendantsAreEmpty();
-}
 
 class SetFullNameTest : public TestWithParam<FullNameTestCase> {};
 
@@ -116,10 +109,12 @@ class NameInfoTest : public Test {
   void MergeNamesAndExpect(const NameInfo& a,
                            const NameInfo& b,
                            const NameInfo& expected) {
-    NameInfo actual(/*alternative_names_supported=*/false);
-    ASSERT_TRUE(NameInfo::MergeNames(
-        a, kLegacyHierarchyCountryCode, b, kLegacyHierarchyCountryCode,
-        /*newer_was_more_recently_used=*/true, actual));
+    base::expected<NameInfo, NameInfo::MergeFailureReason> merge_result =
+        NameInfo::MergeNames(a, kLegacyHierarchyCountryCode, b,
+                             kLegacyHierarchyCountryCode,
+                             /*newer_was_more_recently_used=*/true);
+    ASSERT_THAT(merge_result, HasValue());
+    const NameInfo& actual = *merge_result;
 
     // Is the "processed" data correct?
     EXPECT_EQ(expected.GetInfo(NAME_FULL, kLocale),
@@ -488,8 +483,244 @@ TEST_F(NameInfoTest, FinalizeAfterImportWithIncompleteNameAndAlternativeName) {
   EXPECT_EQ(matching_types, FieldTypeSet({ALTERNATIVE_FULL_NAME}));
 }
 
-// Tests the scenario in which the structured name is merged.
-TEST_F(NameInfoTest, MergeStructuredName) {
+// Tests that `FinalizeAfterImport` wipes invalid name and alternative name
+// subcomponents and re-parses the full names even when the root nodes are not
+// user-verified.
+TEST_F(NameInfoTest, FinalizeAfterImportWipeInvalidNameStructure) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillWipeInvalidNameStructure};
+
+  NameInfo name(/*alternative_names_supported=*/true);
+  test::FormGroupValues name_values = {
+      {.type = NAME_FULL,
+       .value = "Peter Pan",
+       .verification_status = VerificationStatus::kObserved},
+      {.type = NAME_FIRST,
+       .value = "Peter",
+       .verification_status = VerificationStatus::kParsed},
+      {.type = NAME_LAST,
+       .value = "A Pan",
+       .verification_status = VerificationStatus::kParsed},
+      {.type = NAME_LAST_SECOND,
+       .value = "A Pan",
+       .verification_status = VerificationStatus::kParsed},
+      {.type = ALTERNATIVE_FULL_NAME,
+       .value = "やまもと あおい",
+       .verification_status = VerificationStatus::kObserved},
+      {.type = ALTERNATIVE_GIVEN_NAME,
+       .value = "あおい",
+       .verification_status = VerificationStatus::kParsed},
+      {.type = ALTERNATIVE_FAMILY_NAME,
+       .value = "さとう",
+       .verification_status = VerificationStatus::kParsed}};
+  test::SetFormGroupValues(name, name_values);
+
+  EXPECT_TRUE(name.FinalizeAfterImport());
+
+  test::FormGroupValues expectation = {
+      {.type = NAME_FULL,
+       .value = "Peter Pan",
+       .verification_status = VerificationStatus::kObserved},
+      {.type = NAME_FIRST,
+       .value = "Peter",
+       .verification_status = VerificationStatus::kParsed},
+      {.type = NAME_MIDDLE,
+       .value = "",
+       .verification_status = VerificationStatus::kParsed},
+      {.type = NAME_LAST,
+       .value = "Pan",
+       .verification_status = VerificationStatus::kParsed},
+      {.type = NAME_LAST_FIRST,
+       .value = "",
+       .verification_status = VerificationStatus::kParsed},
+      {.type = NAME_LAST_SECOND,
+       .value = "Pan",
+       .verification_status = VerificationStatus::kParsed},
+      {.type = NAME_LAST_CONJUNCTION,
+       .value = "",
+       .verification_status = VerificationStatus::kParsed},
+      {.type = ALTERNATIVE_FULL_NAME,
+       .value = "やまもと あおい",
+       .verification_status = VerificationStatus::kObserved},
+      {.type = ALTERNATIVE_GIVEN_NAME,
+       .value = "あおい",
+       .verification_status = VerificationStatus::kParsed},
+      {.type = ALTERNATIVE_FAMILY_NAME,
+       .value = "やまもと",
+       .verification_status = VerificationStatus::kParsed}};
+  test::VerifyFormGroupValues(name, expectation);
+}
+
+// Tests that structured name and alternative name subcomponents are preserved
+// when `NAME_FULL` or `ALTERNATIVE_FULL_NAME` is updated via
+// `SetRawInfoWithVerificationStatus` to a token-equivalent value, and wiped
+// when updated to a non-token-equivalent value.
+TEST_F(NameInfoTest, ResetStructuredNameTokens) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillWipeInvalidNameStructure};
+
+  NameInfo name(/*alternative_names_supported=*/true);
+  name.SetRawInfoWithVerificationStatus(NAME_FULL, u"Peter Pan",
+                                        VerificationStatus::kUserVerified);
+  name.SetRawInfoWithVerificationStatus(ALTERNATIVE_FULL_NAME,
+                                        u"やまもと あおい",
+                                        VerificationStatus::kUserVerified);
+  EXPECT_TRUE(name.FinalizeAfterImport());
+
+  EXPECT_EQ(name.GetRawInfo(NAME_FIRST), u"Peter");
+  EXPECT_EQ(name.GetVerificationStatus(NAME_FIRST),
+            VerificationStatus::kParsed);
+  EXPECT_EQ(name.GetRawInfo(NAME_LAST), u"Pan");
+  EXPECT_EQ(name.GetVerificationStatus(NAME_LAST), VerificationStatus::kParsed);
+  EXPECT_EQ(name.GetRawInfo(ALTERNATIVE_GIVEN_NAME), u"あおい");
+  EXPECT_EQ(name.GetVerificationStatus(ALTERNATIVE_GIVEN_NAME),
+            VerificationStatus::kParsed);
+  EXPECT_EQ(name.GetRawInfo(ALTERNATIVE_FAMILY_NAME), u"やまもと");
+  EXPECT_EQ(name.GetVerificationStatus(ALTERNATIVE_FAMILY_NAME),
+            VerificationStatus::kParsed);
+
+  // Lift the verification status of the last/family names to `kObserved`.
+  name.SetRawInfoWithVerificationStatus(NAME_LAST, u"Pan",
+                                        VerificationStatus::kObserved);
+  name.SetRawInfoWithVerificationStatus(ALTERNATIVE_FAMILY_NAME, u"やまもと",
+                                        VerificationStatus::kObserved);
+
+  // Set new full names that have the same tokens in a different order.
+  name.SetRawInfoWithVerificationStatus(NAME_FULL, u"Pan, Peter",
+                                        VerificationStatus::kUserVerified);
+  name.SetRawInfoWithVerificationStatus(ALTERNATIVE_FULL_NAME,
+                                        u"あおい やまもと",
+                                        VerificationStatus::kUserVerified);
+
+  // After this operation, the structure should be maintained including the
+  // observed status of the last/family names.
+  EXPECT_EQ(name.GetRawInfo(NAME_FIRST), u"Peter");
+  EXPECT_EQ(name.GetVerificationStatus(NAME_FIRST),
+            VerificationStatus::kParsed);
+  EXPECT_EQ(name.GetRawInfo(NAME_LAST), u"Pan");
+  EXPECT_EQ(name.GetVerificationStatus(NAME_LAST),
+            VerificationStatus::kObserved);
+  EXPECT_EQ(name.GetRawInfo(ALTERNATIVE_GIVEN_NAME), u"あおい");
+  EXPECT_EQ(name.GetVerificationStatus(ALTERNATIVE_GIVEN_NAME),
+            VerificationStatus::kParsed);
+  EXPECT_EQ(name.GetRawInfo(ALTERNATIVE_FAMILY_NAME), u"やまもと");
+  EXPECT_EQ(name.GetVerificationStatus(ALTERNATIVE_FAMILY_NAME),
+            VerificationStatus::kObserved);
+
+  // Now set different full names.
+  name.SetRawInfoWithVerificationStatus(NAME_FULL, u"Hook",
+                                        VerificationStatus::kUserVerified);
+  name.SetRawInfoWithVerificationStatus(ALTERNATIVE_FULL_NAME, u"さとう さくら",
+                                        VerificationStatus::kUserVerified);
+
+  // Setting non-equivalent full names should unset the child tokens.
+  EXPECT_EQ(name.GetRawInfo(NAME_FIRST), u"");
+  EXPECT_EQ(name.GetVerificationStatus(NAME_FIRST),
+            VerificationStatus::kNoStatus);
+  EXPECT_EQ(name.GetRawInfo(NAME_LAST), u"");
+  EXPECT_EQ(name.GetVerificationStatus(NAME_LAST),
+            VerificationStatus::kNoStatus);
+  EXPECT_EQ(name.GetRawInfo(NAME_LAST_FIRST), u"");
+  EXPECT_EQ(name.GetVerificationStatus(NAME_LAST_FIRST),
+            VerificationStatus::kNoStatus);
+  EXPECT_EQ(name.GetRawInfo(NAME_LAST_SECOND), u"");
+  EXPECT_EQ(name.GetVerificationStatus(NAME_LAST_SECOND),
+            VerificationStatus::kNoStatus);
+  EXPECT_EQ(name.GetRawInfo(ALTERNATIVE_GIVEN_NAME), u"");
+  EXPECT_EQ(name.GetVerificationStatus(ALTERNATIVE_GIVEN_NAME),
+            VerificationStatus::kNoStatus);
+  EXPECT_EQ(name.GetRawInfo(ALTERNATIVE_FAMILY_NAME), u"");
+  EXPECT_EQ(name.GetVerificationStatus(ALTERNATIVE_FAMILY_NAME),
+            VerificationStatus::kNoStatus);
+}
+
+// Tests that `MergeStructuredName` returns false when alternative name support
+// does not match between profiles.
+TEST_F(NameInfoTest, MergeStructuredName_DissimilarAlternativeNameSupport) {
+  NameInfo name1(/*alternative_names_supported=*/false);
+  test::SetFormGroupValues(name1, {{.type = NAME_FULL, .value = "John Doe"}});
+
+  NameInfo name2(/*alternative_names_supported=*/true);
+  test::SetFormGroupValues(name2, {{.type = NAME_FULL, .value = "John Doe"}});
+
+  EXPECT_FALSE(
+      name1.MergeStructuredName(name2, /*newer_was_more_recently_used=*/true));
+  EXPECT_FALSE(
+      name2.MergeStructuredName(name1, /*newer_was_more_recently_used=*/true));
+}
+
+// Tests that `MergeStructuredName` returns false when the full names are not
+// mergeable.
+TEST_F(NameInfoTest, MergeStructuredName_FullNameNotMergeable) {
+  NameInfo name1(/*alternative_names_supported=*/false);
+  test::SetFormGroupValues(name1, {{.type = NAME_FULL, .value = "John Doe"}});
+
+  NameInfo name2(/*alternative_names_supported=*/false);
+  test::SetFormGroupValues(name2, {{.type = NAME_FULL, .value = "Jane Smith"}});
+
+  EXPECT_FALSE(
+      name1.MergeStructuredName(name2, /*newer_was_more_recently_used=*/true));
+}
+
+// Tests that `MergeStructuredName` returns false when both profiles support
+// alternative names and their full names are mergeable, but their alternative
+// names are not mergeable.
+TEST_F(NameInfoTest, MergeStructuredName_AlternativeNamesNotMergeable) {
+  NameInfo stored_profile(/*alternative_names_supported=*/true);
+  test::SetFormGroupValues(
+      stored_profile,
+      {{.type = NAME_FULL, .value = "John Doe"},
+       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
+
+  NameInfo submitted_data(/*alternative_names_supported=*/true);
+  test::SetFormGroupValues(
+      submitted_data,
+      {{.type = NAME_FULL, .value = "John Doe"},
+       {.type = ALTERNATIVE_FULL_NAME, .value = "さとう さくら"}});
+
+  EXPECT_FALSE(stored_profile.MergeStructuredName(
+      submitted_data, /*newer_was_more_recently_used=*/true));
+}
+
+// Tests that `MergeStructuredName` returns true and merges both full and
+// alternative names when both profiles support alternative names and their
+// components are mergeable.
+TEST_F(NameInfoTest,
+       MergeStructuredName_AlternativeNamesSupportedAndMergeable) {
+  NameInfo stored_profile(/*alternative_names_supported=*/true);
+  test::SetFormGroupValues(
+      stored_profile,
+      {{.type = NAME_FULL, .value = "John Doe"},
+       {.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
+       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
+
+  NameInfo submitted_data(/*alternative_names_supported=*/true);
+  test::SetFormGroupValues(
+      submitted_data,
+      {{.type = NAME_LAST, .value = "Doe"},
+       {.type = NAME_FIRST, .value = "John"},
+       {.type = NAME_FULL, .value = "John Doe"},
+       {.type = ALTERNATIVE_GIVEN_NAME, .value = "あおい"},
+       {.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
+       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
+
+  EXPECT_TRUE(stored_profile.MergeStructuredName(
+      submitted_data, /*newer_was_more_recently_used=*/true));
+
+  test::VerifyFormGroupValues(
+      stored_profile,
+      {{.type = NAME_LAST, .value = "Doe"},
+       {.type = NAME_FIRST, .value = "John"},
+       {.type = NAME_FULL, .value = "John Doe"},
+       {.type = ALTERNATIVE_GIVEN_NAME, .value = "あおい"},
+       {.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
+       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
+}
+
+// Tests that `MergeStructuredName` returns true and merges full names when
+// alternative names are not supported and full names are mergeable.
+TEST_F(NameInfoTest,
+       MergeStructuredName_AlternativeNamesNotSupportedAndFullNameMergeable) {
   NameInfo name1(/*alternative_names_supported=*/false);
   test::SetFormGroupValues(name1, {{.type = NAME_FULL, .value = "John Doe"}});
 
@@ -504,63 +735,6 @@ TEST_F(NameInfoTest, MergeStructuredName) {
   test::VerifyFormGroupValues(name1, {{.type = NAME_FULL, .value = "John Doe"},
                                       {.type = NAME_FIRST, .value = "John"},
                                       {.type = NAME_LAST, .value = "Doe"}});
-}
-
-// Tests the scenario in which the alternative name is merged.
-TEST_F(NameInfoTest, MergeStructuredAlternativeName) {
-  NameInfo stored_profile(
-      /*alternative_names_supported=*/true);
-  test::SetFormGroupValues(
-      stored_profile,
-      {{.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
-       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
-
-  NameInfo submitted_data(
-      /*alternative_names_supported=*/true);
-  test::SetFormGroupValues(
-      submitted_data,
-      {{.type = ALTERNATIVE_GIVEN_NAME, .value = "あおい"},
-       {.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
-       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
-
-  EXPECT_TRUE(stored_profile.MergeStructuredName(
-      submitted_data, /*newer_was_more_recently_used=*/true));
-
-  test::VerifyFormGroupValues(
-      stored_profile,
-      {{.type = ALTERNATIVE_GIVEN_NAME, .value = "あおい"},
-       {.type = ALTERNATIVE_FAMILY_NAME, .value = "やまもと"},
-       {.type = ALTERNATIVE_FULL_NAME, .value = "やまもと あおい"}});
-}
-
-// Tests the scenario in which both the structured name and the alternative
-// name are merged.
-TEST_F(NameInfoTest, MergeStructuredNameMergingBoth) {
-  NameInfo stored_profile(
-      /*alternative_names_supported=*/true);
-  test::SetFormGroupValues(
-      stored_profile, {{.type = NAME_FULL, .value = "John Doe"},
-                       {.type = ALTERNATIVE_FULL_NAME, .value = "John Doe"}});
-
-  NameInfo submitted_data(
-      /*alternative_names_supported=*/true);
-  test::SetFormGroupValues(
-      submitted_data, {{.type = NAME_LAST, .value = "Doe"},
-                       {.type = NAME_FIRST, .value = "John"},
-                       {.type = NAME_FULL, .value = "John Doe"},
-                       {.type = ALTERNATIVE_GIVEN_NAME, .value = "John"},
-                       {.type = ALTERNATIVE_FAMILY_NAME, .value = "Doe"},
-                       {.type = ALTERNATIVE_FULL_NAME, .value = "John Doe"}});
-
-  EXPECT_TRUE(stored_profile.MergeStructuredName(
-      submitted_data, /*newer_was_more_recently_used=*/true));
-
-  test::VerifyFormGroupValues(
-      stored_profile, {{.type = NAME_LAST, .value = "Doe"},
-                       {.type = NAME_FIRST, .value = "John"},
-                       {.type = NAME_FULL, .value = "John Doe"},
-                       {.type = ALTERNATIVE_GIVEN_NAME, .value = "John"},
-                       {.type = ALTERNATIVE_FAMILY_NAME, .value = "Doe"}});
 }
 
 TEST_F(NameInfoTest, MergeNames_WithPermutation) {
@@ -584,11 +758,12 @@ TEST_F(NameInfoTest, MergeNames_WithPermutation) {
                                          VerificationStatus::kObserved);
   name2.FinalizeAfterImport();
 
-  NameInfo merged_name(/*alternative_names_supported=*/false);
-  NameInfo::MergeNames(name1, kLegacyHierarchyCountryCode, name2,
-                       kLegacyHierarchyCountryCode,
-                       /*newer_was_more_recently_used=*/true, merged_name);
-
+  base::expected<NameInfo, NameInfo::MergeFailureReason> merge_result =
+      NameInfo::MergeNames(name1, kLegacyHierarchyCountryCode, name2,
+                           kLegacyHierarchyCountryCode,
+                           /*newer_was_more_recently_used=*/true);
+  ASSERT_THAT(merge_result, HasValue());
+  const NameInfo& merged_name = *merge_result;
   // The merged name should maintain the structure but use the observation of
   // the custom-formatted full name.
   EXPECT_EQ(merged_name.GetRawInfo(NAME_FULL), u"Anderson, Thomas A.");
@@ -852,158 +1027,95 @@ TEST_F(NameInfoTest, HaveMergeableAlternativeNames) {
   NameInfo name7_katakana = CreateNameInfo(u"葵", u"", u"山本", u"山本・葵",
                                            u"", u"", u"サクラ レイ", true);
 
-  // Base cases for latin characters.
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name1, AddressCountryCode("JP"), empty, AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name1, AddressCountryCode("JP"), name1, AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      empty, AddressCountryCode("JP"), name1, AddressCountryCode("JP")));
+  auto are_alternative_names_mergeable =
+      [](const NameInfo& name1, const NameInfo& name2, bool expect) {
+        SCOPED_TRACE(Message()
+                     << "name1: " << name1.GetInfo(NAME_FULL, kJapaneseLocale)
+                     << " ("
+                     << name1.GetInfo(ALTERNATIVE_FULL_NAME, kJapaneseLocale)
+                     << ")"
+                     << ", name2: " << name2.GetInfo(NAME_FULL, kJapaneseLocale)
+                     << " ("
+                     << name2.GetInfo(ALTERNATIVE_FULL_NAME, kJapaneseLocale)
+                     << ")"
+                     << ", expect: " << expect);
 
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name1, AddressCountryCode("JP"), name1_mergeable,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name1_mergeable, AddressCountryCode("JP"), name1,
-      AddressCountryCode("JP")));
+        // Test both merge orders.
+        const base::expected<NameInfo, NameInfo::MergeFailureReason> result1 =
+            NameInfo::MergeNames(name1, AddressCountryCode("JP"), name2,
+                                 AddressCountryCode("JP"),
+                                 /*newer_was_more_recently_used=*/true);
+        const base::expected<NameInfo, NameInfo::MergeFailureReason> result2 =
+            NameInfo::MergeNames(name2, AddressCountryCode("JP"), name1,
+                                 AddressCountryCode("JP"),
+                                 /*newer_was_more_recently_used=*/true);
+
+        if (expect) {
+          EXPECT_THAT(result1, HasValue());
+          EXPECT_THAT(result2, HasValue());
+        } else {
+          EXPECT_THAT(
+              result1,
+              ErrorIs(NameInfo::MergeFailureReason::kAlternativeNameFailed));
+          EXPECT_THAT(
+              result2,
+              ErrorIs(NameInfo::MergeFailureReason::kAlternativeNameFailed));
+        }
+      };
+
+  // Base cases for latin characters.
+  are_alternative_names_mergeable(name1, empty, /*expect=*/true);
+  are_alternative_names_mergeable(name1, name1, /*expect=*/true);
+
+  are_alternative_names_mergeable(name1, name1_mergeable, /*expect=*/true);
 
   // CJK characters with empty profile.
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2, AddressCountryCode("JP"), empty, AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name3, AddressCountryCode("JP"), empty, AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2_katakana, AddressCountryCode("JP"), empty,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name3_katakana, AddressCountryCode("JP"), empty,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      empty, AddressCountryCode("JP"), name2, AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      empty, AddressCountryCode("JP"), name3, AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      empty, AddressCountryCode("JP"), name2_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      empty, AddressCountryCode("JP"), name3_katakana,
-      AddressCountryCode("JP")));
+  are_alternative_names_mergeable(name2, empty, /*expect=*/true);
+  are_alternative_names_mergeable(name3, empty, /*expect=*/true);
+  are_alternative_names_mergeable(name2_katakana, empty, /*expect=*/true);
+  are_alternative_names_mergeable(name3_katakana, empty, /*expect=*/true);
 
   // Mergeable profiles using Hiragana.
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2, AddressCountryCode("JP"), name2, AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name3, AddressCountryCode("JP"), name3, AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name4, AddressCountryCode("JP"), name4, AddressCountryCode("JP")));
+  are_alternative_names_mergeable(name2, name2, /*expect=*/true);
+  are_alternative_names_mergeable(name3, name3, /*expect=*/true);
+  are_alternative_names_mergeable(name4, name4, /*expect=*/true);
 
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2, AddressCountryCode("JP"), name3, AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name3, AddressCountryCode("JP"), name2, AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2, AddressCountryCode("JP"), name4, AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name4, AddressCountryCode("JP"), name2, AddressCountryCode("JP")));
+  are_alternative_names_mergeable(name2, name3, /*expect=*/true);
+  are_alternative_names_mergeable(name2, name4, /*expect=*/true);
 
   // Mergeable profiles using Katakana.
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2_katakana, AddressCountryCode("JP"), name2_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2_katakana, AddressCountryCode("JP"), name3_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name4_katakana, AddressCountryCode("JP"), name4_katakana,
-      AddressCountryCode("JP")));
+  are_alternative_names_mergeable(name2_katakana, name2_katakana,
+                                  /*expect=*/true);
+  are_alternative_names_mergeable(name3_katakana, name3_katakana,
+                                  /*expect=*/true);
+  are_alternative_names_mergeable(name4_katakana, name4_katakana,
+                                  /*expect=*/true);
 
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2_katakana, AddressCountryCode("JP"), name3_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name3_katakana, AddressCountryCode("JP"), name2_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2_katakana, AddressCountryCode("JP"), name4_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name4_katakana, AddressCountryCode("JP"), name2_katakana,
-      AddressCountryCode("JP")));
+  are_alternative_names_mergeable(name2_katakana, name3_katakana,
+                                  /*expect=*/true);
+  are_alternative_names_mergeable(name2_katakana, name4_katakana,
+                                  /*expect=*/true);
 
   // Mergeable profiles where one is using Katakana and the other Hiragana.
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2, AddressCountryCode("JP"), name3_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name3_katakana, AddressCountryCode("JP"), name2,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2_katakana, AddressCountryCode("JP"), name3,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name3, AddressCountryCode("JP"), name2_katakana,
-      AddressCountryCode("JP")));
+  are_alternative_names_mergeable(name2, name3_katakana, /*expect=*/true);
+  are_alternative_names_mergeable(name3, name2_katakana, /*expect=*/true);
 
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2, AddressCountryCode("JP"), name4_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name4_katakana, AddressCountryCode("JP"), name2,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2_katakana, AddressCountryCode("JP"), name4,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name4, AddressCountryCode("JP"), name2_katakana,
-      AddressCountryCode("JP")));
+  are_alternative_names_mergeable(name2, name4_katakana, /*expect=*/true);
+  are_alternative_names_mergeable(name4, name2_katakana, /*expect=*/true);
 
   // Semantically the same profiles one using Katakana the other Hiragana.
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2, AddressCountryCode("JP"), name2_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name2_katakana, AddressCountryCode("JP"), name2,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name3_katakana, AddressCountryCode("JP"), name3,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name3, AddressCountryCode("JP"), name3_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name4_katakana, AddressCountryCode("JP"), name4,
-      AddressCountryCode("JP")));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      name4, AddressCountryCode("JP"), name4_katakana,
-      AddressCountryCode("JP")));
+  are_alternative_names_mergeable(name2, name2_katakana, /*expect=*/true);
+  are_alternative_names_mergeable(name3, name3_katakana, /*expect=*/true);
+  are_alternative_names_mergeable(name4, name4_katakana, /*expect=*/true);
 
   // Non mergeable profiles where one is using Katakana and the other Hiragana.
-  EXPECT_FALSE(NameInfo::AreAlternativeNamesMergeable(
-      name2, AddressCountryCode("JP"), name6_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_FALSE(NameInfo::AreAlternativeNamesMergeable(
-      name6_katakana, AddressCountryCode("JP"), name2,
-      AddressCountryCode("JP")));
-  EXPECT_FALSE(NameInfo::AreAlternativeNamesMergeable(
-      name2, AddressCountryCode("JP"), name7_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_FALSE(NameInfo::AreAlternativeNamesMergeable(
-      name7_katakana, AddressCountryCode("JP"), name2,
-      AddressCountryCode("JP")));
-  EXPECT_FALSE(NameInfo::AreAlternativeNamesMergeable(
-      name7_katakana, AddressCountryCode("JP"), name4,
-      AddressCountryCode("JP")));
-  EXPECT_FALSE(NameInfo::AreAlternativeNamesMergeable(
-      name4, AddressCountryCode("JP"), name7_katakana,
-      AddressCountryCode("JP")));
+  are_alternative_names_mergeable(name2, name6_katakana, /*expect=*/false);
+  are_alternative_names_mergeable(name2, name7_katakana, /*expect=*/false);
+  are_alternative_names_mergeable(name4, name7_katakana, /*expect=*/false);
 
   // Non mergeable profiles where both are using Katakana.
-  EXPECT_FALSE(NameInfo::AreAlternativeNamesMergeable(
-      name2_katakana, AddressCountryCode("JP"), name5_katakana,
-      AddressCountryCode("JP")));
-  EXPECT_FALSE(NameInfo::AreAlternativeNamesMergeable(
-      name5_katakana, AddressCountryCode("JP"), name2_katakana,
-      AddressCountryCode("JP")));
+  are_alternative_names_mergeable(name2_katakana, name5_katakana,
+                                  /*expect=*/false);
 }
 
 struct IsNameVariantOfTestCase {
@@ -1131,8 +1243,22 @@ INSTANTIATE_TEST_SUITE_P(
                          {.full_name = u"ワ・タシ", .other_full_name = u"タシ"},
                          {.full_name = u"이영호", .other_full_name = u"이"},
                          {.full_name = u"이영호", .other_full_name = u"영호"},
+                         {.full_name = u"이영호", .other_full_name = u"이영"},
+                         {.full_name = u"이영호", .other_full_name = u"영"},
+                         {.full_name = u"이영호",
+                          .other_full_name = u"이호",
+                          .are_variant = false},
+                         {.full_name = u"이영호",
+                          .other_full_name = u"호",
+                          .are_variant = false},
                          {.full_name = u"이 영호", .other_full_name = u"영호"},
                          {.full_name = u"이 영호", .other_full_name = u"이"},
+                         {.full_name = u"이 영호",
+                          .other_full_name = u"이호",
+                          .are_variant = false},
+                         {.full_name = u"이 영호",
+                          .other_full_name = u"호",
+                          .are_variant = false},
                          {.full_name = u"王", .other_full_name = u""},
                          {.full_name = u"王", .other_full_name = u"  "},
                          {.full_name = u"王", .other_full_name = u"・  ・"},
@@ -1153,106 +1279,69 @@ TEST_F(NameInfoTest, HaveMergeableNames) {
 
   NameInfo different = CreateNameInfo(u"Joe", u"", u"Larsson", u"");
 
-  // |p1|, |p2|, |p3|, |p4| and |empty| should all be the mergeable with
+  auto are_names_mergeable = [](const NameInfo& name1, const NameInfo& name2,
+                                bool expect) {
+    SCOPED_TRACE(Message() << "name1: " << name1.GetInfo(NAME_FULL, kLocale)
+                           << ", name2: " << name2.GetInfo(NAME_FULL, kLocale)
+                           << ", expect: " << expect);
+
+    // Test both orders.
+    const base::expected<NameInfo, NameInfo::MergeFailureReason> result1 =
+        NameInfo::MergeNames(name1, kLegacyHierarchyCountryCode, name2,
+                             kLegacyHierarchyCountryCode,
+                             /*newer_was_more_recently_used=*/true);
+    const base::expected<NameInfo, NameInfo::MergeFailureReason> result2 =
+        NameInfo::MergeNames(name2, kLegacyHierarchyCountryCode, name1,
+                             kLegacyHierarchyCountryCode,
+                             /*newer_was_more_recently_used=*/true);
+
+    if (expect) {
+      EXPECT_THAT(result1, HasValue());
+      EXPECT_THAT(result2, HasValue());
+    } else {
+      EXPECT_THAT(result1,
+                  ErrorIs(NameInfo::MergeFailureReason::kNameFullFailed));
+      EXPECT_THAT(result2,
+                  ErrorIs(NameInfo::MergeFailureReason::kNameFullFailed));
+    }
+  };
+
+  // `p1`, `p2`, `p3`, `p4` and `empty` should all be the mergeable with
   // one another. The order of the comparands should not matter.
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p1, kLegacyHierarchyCountryCode,
-                                          empty, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p1, kLegacyHierarchyCountryCode, p1,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p1, kLegacyHierarchyCountryCode, p2,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p1, kLegacyHierarchyCountryCode, p3,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p1, kLegacyHierarchyCountryCode, p4,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p2, kLegacyHierarchyCountryCode,
-                                          empty, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p2, kLegacyHierarchyCountryCode, p1,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p2, kLegacyHierarchyCountryCode, p2,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p2, kLegacyHierarchyCountryCode, p3,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p2, kLegacyHierarchyCountryCode, p4,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p3, kLegacyHierarchyCountryCode,
-                                          empty, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p3, kLegacyHierarchyCountryCode, p1,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p3, kLegacyHierarchyCountryCode, p2,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p3, kLegacyHierarchyCountryCode, p3,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p3, kLegacyHierarchyCountryCode, p4,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p4, kLegacyHierarchyCountryCode,
-                                          empty, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p4, kLegacyHierarchyCountryCode, p1,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p4, kLegacyHierarchyCountryCode, p2,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p4, kLegacyHierarchyCountryCode, p3,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p4, kLegacyHierarchyCountryCode, p4,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(empty, kLegacyHierarchyCountryCode,
-                                          empty, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(empty, kLegacyHierarchyCountryCode,
-                                          p1, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(empty, kLegacyHierarchyCountryCode,
-                                          p2, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(empty, kLegacyHierarchyCountryCode,
-                                          p3, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(empty, kLegacyHierarchyCountryCode,
-                                          p4, kLegacyHierarchyCountryCode));
+  {
+    const std::array<const NameInfo*, 5> mergeable_profiles = {&empty, &p1, &p2,
+                                                               &p3, &p4};
+    for (size_t i = 0; i < mergeable_profiles.size(); ++i) {
+      for (size_t j = i; j < mergeable_profiles.size(); ++j) {
+        are_names_mergeable(*mergeable_profiles[i], *mergeable_profiles[j],
+                            /*expect=*/true);
+      }
+    }
+  }
 
-  // |initials| is mergeable with |p1| and |p4| but not |p2| or |p3|.
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(initials, kLegacyHierarchyCountryCode,
-                                          empty, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(initials, kLegacyHierarchyCountryCode,
-                                          p1, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(initials, kLegacyHierarchyCountryCode,
-                                          p4, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(empty, kLegacyHierarchyCountryCode,
-                                          initials,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(
-      p1, kLegacyHierarchyCountryCode, initials, kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(
-      p4, kLegacyHierarchyCountryCode, initials, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      initials, kLegacyHierarchyCountryCode, p2, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      initials, kLegacyHierarchyCountryCode, p3, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      p2, kLegacyHierarchyCountryCode, initials, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      p3, kLegacyHierarchyCountryCode, initials, kLegacyHierarchyCountryCode));
+  // `initials` is mergeable with `empty`, `p1` and `p4` but not `p2` or `p3`.
+  {
+    const std::array<const NameInfo*, 3> mergeable_profiles = {&empty, &p1,
+                                                               &p4};
+    for (const NameInfo* p : mergeable_profiles) {
+      are_names_mergeable(initials, *p, /*expect=*/true);
+    }
 
-  // None of the non-empty profiles should match |different|. The order of the
+    const std::array<const NameInfo*, 2> non_mergeable_profiles = {&p2, &p3};
+    for (const NameInfo* p : non_mergeable_profiles) {
+      are_names_mergeable(initials, *p, /*expect=*/false);
+    }
+  }
+
+  // None of the non-empty profiles should match `different`. The order of the
   // comparands should not matter.
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      p1, kLegacyHierarchyCountryCode, different, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      p2, kLegacyHierarchyCountryCode, different, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      p3, kLegacyHierarchyCountryCode, different, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      p4, kLegacyHierarchyCountryCode, different, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(
-      NameInfo::AreNamesMergeable(initials, kLegacyHierarchyCountryCode,
-                                  different, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      different, kLegacyHierarchyCountryCode, p1, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      different, kLegacyHierarchyCountryCode, p2, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      different, kLegacyHierarchyCountryCode, p3, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(
-      different, kLegacyHierarchyCountryCode, p4, kLegacyHierarchyCountryCode));
-  EXPECT_FALSE(
-      NameInfo::AreNamesMergeable(different, kLegacyHierarchyCountryCode,
-                                  initials, kLegacyHierarchyCountryCode));
+  {
+    const std::array<const NameInfo*, 5> non_empty_profiles = {&p1, &p2, &p3,
+                                                               &p4, &initials};
+    for (const NameInfo* p : non_empty_profiles) {
+      are_names_mergeable(*p, different, /*expect=*/false);
+    }
+  }
 }
 
 TEST_F(NameInfoTest, HaveMergeableNamesWithGermanTransliteration) {
@@ -1264,10 +1353,14 @@ TEST_F(NameInfoTest, HaveMergeableNamesWithGermanTransliteration) {
   NameInfo p1_us = CreateNameInfo(u"Hänsel", u"", u"Köhn", u"", u"", u"");
   NameInfo p2_us = CreateNameInfo(u"Haensel", u"", u"Koehn", u"");
 
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(p1_de, AddressCountryCode("DE"),
-                                          p2_de, AddressCountryCode("AT")));
-  EXPECT_FALSE(NameInfo::AreNamesMergeable(p1_us, AddressCountryCode("US"),
-                                           p2_us, AddressCountryCode("US")));
+  EXPECT_THAT(NameInfo::MergeNames(p1_de, AddressCountryCode("DE"), p2_de,
+                                   AddressCountryCode("AT"),
+                                   /*newer_was_more_recently_used=*/true),
+              HasValue());
+  EXPECT_THAT(NameInfo::MergeNames(p1_us, AddressCountryCode("US"), p2_us,
+                                   AddressCountryCode("US"),
+                                   /*newer_was_more_recently_used=*/true),
+              ErrorIs(NameInfo::MergeFailureReason::kNameFullFailed));
 }
 
 // Tests that name info with additional last name is mergeable with the
@@ -1275,15 +1368,18 @@ TEST_F(NameInfoTest, HaveMergeableNamesWithGermanTransliteration) {
 TEST_F(NameInfoTest, NameInfoWithAdditionalLastNameIsMergeable) {
   NameInfo ni1 = CreateNameInfo(u"John", u"", u"", u"", u"", u"");
   NameInfo ni2 = CreateNameInfo(u"John", u"", u"Doe", u"", u"", u"");
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(ni1, kLegacyHierarchyCountryCode, ni2,
-                                          kLegacyHierarchyCountryCode));
+  EXPECT_THAT(NameInfo::MergeNames(ni1, kLegacyHierarchyCountryCode, ni2,
+                                   kLegacyHierarchyCountryCode,
+                                   /*newer_was_more_recently_used=*/true),
+              HasValue());
 
   NameInfo expected = CreateNameInfo(u"John", u"", u"Doe", u"", u"", u"");
-  NameInfo actual(/*alternative_names_supported=*/false);
-  NameInfo::MergeNames(ni1, kLegacyHierarchyCountryCode, ni2,
-                       kLegacyHierarchyCountryCode,
-                       /*newer_was_more_recently_used=*/true, actual);
-  EXPECT_EQ(expected, actual);
+  base::expected<NameInfo, NameInfo::MergeFailureReason> actual =
+      NameInfo::MergeNames(ni1, kLegacyHierarchyCountryCode, ni2,
+                           kLegacyHierarchyCountryCode,
+                           /*newer_was_more_recently_used=*/true);
+  ASSERT_THAT(actual, HasValue());
+  EXPECT_EQ(expected, *actual);
 }
 
 // Tests that name info with an additional middle name is mergeable with
@@ -1292,16 +1388,19 @@ TEST_F(NameInfoTest, NameInfoWithExtraMiddleNameIsMergeable) {
   NameInfo ni1 = CreateNameInfo(u"John", u"", u"Kennedy", u"", u"", u"");
   NameInfo ni2 =
       CreateNameInfo(u"John", u"Fitzgerald", u"Kennedy", u"", u"", u"");
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(ni1, kLegacyHierarchyCountryCode, ni2,
-                                          kLegacyHierarchyCountryCode));
+  EXPECT_THAT(NameInfo::MergeNames(ni1, kLegacyHierarchyCountryCode, ni2,
+                                   kLegacyHierarchyCountryCode,
+                                   /*newer_was_more_recently_used=*/true),
+              HasValue());
 
   NameInfo expected =
       CreateNameInfo(u"John", u"Fitzgerald", u"Kennedy", u"", u"", u"");
-  NameInfo actual(/*alternative_names_supported=*/false);
-  NameInfo::MergeNames(ni1, kLegacyHierarchyCountryCode, ni2,
-                       kLegacyHierarchyCountryCode,
-                       /*newer_was_more_recently_used=*/true, actual);
-  EXPECT_EQ(expected, actual);
+  base::expected<NameInfo, NameInfo::MergeFailureReason> actual =
+      NameInfo::MergeNames(ni1, kLegacyHierarchyCountryCode, ni2,
+                           kLegacyHierarchyCountryCode,
+                           /*newer_was_more_recently_used=*/true);
+  ASSERT_THAT(actual, HasValue());
+  EXPECT_EQ(expected, *actual);
 }
 
 TEST_F(NameInfoTest, SettingAndGettingNotSupportedAlternativeNames) {
@@ -1339,15 +1438,12 @@ TEST_F(NameInfoTest, MergingNotSupportedAlternativeNames) {
   NameInfo ni2 = CreateNameInfo(u"John", u"H.", u"Doe", u"", u"", u"", u"",
                                 /*should_support_alternative_name=*/false);
 
-  EXPECT_TRUE(NameInfo::AreNamesMergeable(ni1, kLegacyHierarchyCountryCode, ni2,
-                                          kLegacyHierarchyCountryCode));
-  EXPECT_TRUE(NameInfo::AreAlternativeNamesMergeable(
-      ni1, kLegacyHierarchyCountryCode, ni2, kLegacyHierarchyCountryCode));
-
-  NameInfo result(/*alternative_names_supported=*/false);
-  NameInfo::MergeNames(ni1, kLegacyHierarchyCountryCode, ni2,
-                       kLegacyHierarchyCountryCode,
-                       /*newer_was_more_recently_used=*/true, result);
+  base::expected<NameInfo, NameInfo::MergeFailureReason> merge_result =
+      NameInfo::MergeNames(ni1, kLegacyHierarchyCountryCode, ni2,
+                           kLegacyHierarchyCountryCode,
+                           /*newer_was_more_recently_used=*/true);
+  ASSERT_THAT(merge_result, HasValue());
+  const NameInfo& result = *merge_result;
   EXPECT_FALSE(result.GetRawInfo(NAME_FULL).empty());
   EXPECT_THAT(result.GetRawInfo(ALTERNATIVE_GIVEN_NAME), IsEmpty());
   EXPECT_THAT(result.GetRawInfo(ALTERNATIVE_FAMILY_NAME), IsEmpty());
@@ -1381,6 +1477,38 @@ TEST_F(NameInfoTest, AssigningNameInfoWithAlternativeName) {
   EXPECT_EQ(new_profile.GetRawInfo(ALTERNATIVE_GIVEN_NAME), u"alt_given");
   EXPECT_EQ(new_profile.GetRawInfo(ALTERNATIVE_FAMILY_NAME), u"alt_family");
   EXPECT_EQ(new_profile.GetRawInfo(ALTERNATIVE_FULL_NAME),
+            u"alt_familyalt_given");
+}
+
+// Tests that moving a NameInfo object via move constructor and move assignment
+// properly transfers its values and alternative names.
+TEST_F(NameInfoTest, MovingNameInfoWithAlternativeName) {
+  NameInfo jp_profile =
+      CreateNameInfo(u"John", u"", u"Doe", u"", u"alt_given", u"alt_family",
+                     u"alt_familyalt_given",
+                     /*should_support_alternative_name=*/true);
+
+  // Test move construction.
+  NameInfo moved_constructed_profile(std::move(jp_profile));
+  EXPECT_EQ(moved_constructed_profile.GetRawInfo(NAME_FIRST), u"John");
+  EXPECT_EQ(moved_constructed_profile.GetRawInfo(NAME_LAST), u"Doe");
+  EXPECT_EQ(moved_constructed_profile.GetRawInfo(ALTERNATIVE_GIVEN_NAME),
+            u"alt_given");
+  EXPECT_EQ(moved_constructed_profile.GetRawInfo(ALTERNATIVE_FAMILY_NAME),
+            u"alt_family");
+  EXPECT_EQ(moved_constructed_profile.GetRawInfo(ALTERNATIVE_FULL_NAME),
+            u"alt_familyalt_given");
+
+  // Test move assignment.
+  NameInfo moved_assigned_profile(/*alternative_names_supported=*/false);
+  moved_assigned_profile = std::move(moved_constructed_profile);
+  EXPECT_EQ(moved_assigned_profile.GetRawInfo(NAME_FIRST), u"John");
+  EXPECT_EQ(moved_assigned_profile.GetRawInfo(NAME_LAST), u"Doe");
+  EXPECT_EQ(moved_assigned_profile.GetRawInfo(ALTERNATIVE_GIVEN_NAME),
+            u"alt_given");
+  EXPECT_EQ(moved_assigned_profile.GetRawInfo(ALTERNATIVE_FAMILY_NAME),
+            u"alt_family");
+  EXPECT_EQ(moved_assigned_profile.GetRawInfo(ALTERNATIVE_FULL_NAME),
             u"alt_familyalt_given");
 }
 
@@ -1435,74 +1563,6 @@ INSTANTIATE_TEST_SUITE_P(
                             "Ignatius Conan", "Doyle"},
            FullNameTestCase{"Pablo Diego Ruiz y Picasso", "Pablo Diego", "",
                             "Ruiz y Picasso"}));
-
-struct NameMigrationTestCase {
-  std::string name;
-  bool should_migrate;
-  AddressCountryCode country_code = AddressCountryCode("JP");
-};
-
-class NameInfoNameMigrationTest
-    : public NameInfoTest,
-      public WithParamInterface<NameMigrationTestCase> {};
-
-// Profiles that contain phonetic names stored in regular name fields should,
-// migrate them to the alternative name fields. Those that do have other
-// characters than phonetic symbols should not be migrated.
-TEST_P(NameInfoNameMigrationTest, NameMigration) {
-  AutofillProfile profile(GetParam().country_code);
-
-  profile.SetRawInfo(NAME_FULL, base::UTF8ToUTF16(GetParam().name));
-  profile.FinalizeAfterImport();
-  EXPECT_EQ(profile.GetNameInfo().HasNameEligibleForPhoneticNameMigration(),
-            GetParam().should_migrate);
-
-  if (GetParam().should_migrate) {
-    AutofillProfile migrated_profile = profile;
-    migrated_profile.MigrateRegularNameToPhoneticName();
-    EXPECT_THAT(migrated_profile, NameIsMigrated(profile));
-  }
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    NameInfoNameMigrationTest,
-    Values(
-        // Only katakana.
-        NameMigrationTestCase{"メタワ", true},
-        NameMigrationTestCase{"ワ 　タシ", true},
-        NameMigrationTestCase{"メタ-ワ", true},
-        NameMigrationTestCase{"メタ・ ワ", true},
-        // Only hiragana.
-        NameMigrationTestCase{"ねこです", true},
-        NameMigrationTestCase{"ねこ です", true},
-        NameMigrationTestCase{"ねこ-です", true},
-        NameMigrationTestCase{"ねこ・です", true},
-        NameMigrationTestCase{"ねこ・ 　です", true},
-        // The following names should not be migrated
-        // because they contain Latin characters.
-        NameMigrationTestCase{"John Doe", false},
-        NameMigrationTestCase{"John-Doe", false},
-        NameMigrationTestCase{"John・Doe", false},
-        NameMigrationTestCase{"abcメタワ", false},
-        NameMigrationTestCase{"abcワ 　タシ", false},
-        NameMigrationTestCase{"abc-ワ", false},
-        NameMigrationTestCase{"メタ・ ワab", false},
-        NameMigrationTestCase{"abcねこです", false},
-        NameMigrationTestCase{"abcねこ です", false},
-        NameMigrationTestCase{"ねこ-ですabc", false},
-        NameMigrationTestCase{"abcねこ・です", false},
-        NameMigrationTestCase{"ねこ・ 　ですabc", false},
-        // The following names should not be migrated
-        // because they contain Kanji characters.
-        NameMigrationTestCase{"静夢メタワ", false},
-        NameMigrationTestCase{"静夢ワ 　タシ", false},
-        NameMigrationTestCase{"a静夢-ワ", false},
-        NameMigrationTestCase{"メタ・ ワ静夢", false},
-        NameMigrationTestCase{"a静ねこです", false},
-        // Non Japanese profiles shouldn't offer migration.
-        NameMigrationTestCase{"メタワ", false, AddressCountryCode("US")},
-        NameMigrationTestCase{"ねこです", false, AddressCountryCode("US")}));
 
 }  // namespace
 }  // namespace autofill

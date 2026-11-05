@@ -19,10 +19,12 @@ iamf_tools_sources = [
   "src/iamf/cli/codec/lpcm_decoder.cc",
   "src/iamf/cli/codec/opus_decoder.cc",
   "src/iamf/cli/codec/opus_utils.cc",
-  "src/iamf/cli/demixing_module.cc",
+  "src/iamf/cli/demixer.cc",
+  "src/iamf/cli/demixing_manager.cc",
   "src/iamf/cli/descriptor_obu_parser.cc",
   "src/iamf/cli/global_timing_module.cc",
   "src/iamf/cli/labeled_frame.cc",
+  "src/iamf/cli/layout_renderer_factory.cc",
   "src/iamf/cli/loudness_calculator_base.cc",
   "src/iamf/cli/loudness_calculator_factory_base.cc",
   "src/iamf/cli/obu_processor.cc",
@@ -35,9 +37,11 @@ iamf_tools_sources = [
   "src/iamf/cli/renderer/audio_element_renderer_base.cc",
   "src/iamf/cli/renderer/audio_element_renderer_channel_to_channel.cc",
   "src/iamf/cli/renderer/audio_element_renderer_passthrough.cc",
+  "src/iamf/cli/renderer/default_layout_renderer.cc",
   "src/iamf/cli/renderer/gains/get_gains.cc",
   "src/iamf/cli/renderer/gains/precomputed_compressed_gains.cc",
   "src/iamf/cli/renderer/gains/precomputed_compressed_gains_decoder.cc",
+  "src/iamf/cli/renderer/layout_renderer_base.cc",
   "src/iamf/cli/renderer/loudspeakers_renderer.cc",
   "src/iamf/cli/renderer/renderer_utils.cc",
   "src/iamf/cli/renderer_factory.cc",
@@ -64,8 +68,7 @@ iamf_tools_sources = [
   "src/iamf/obu/arbitrary_obu.cc",
   "src/iamf/obu/audio_element.cc",
   "src/iamf/obu/audio_frame.cc",
-  "src/iamf/obu/cart16_parameter_data.cc",
-  "src/iamf/obu/cart8_parameter_data.cc",
+  "src/iamf/obu/cartesian_position_data.cc",
   "src/iamf/obu/codec_config.cc",
   "src/iamf/obu/decoder_config/aac_decoder_config.cc",
   "src/iamf/obu/decoder_config/flac_decoder_config.cc",
@@ -74,9 +77,6 @@ iamf_tools_sources = [
   "src/iamf/obu/decoder_config/lpcm_decoder_config.cc",
   "src/iamf/obu/decoder_config/opus_decoder_config.cc",
   "src/iamf/obu/demixing_info_parameter_data.cc",
-  "src/iamf/obu/dual_cart16_parameter_data.cc",
-  "src/iamf/obu/dual_cart8_parameter_data.cc",
-  "src/iamf/obu/dual_polar_parameter_data.cc",
   "src/iamf/obu/element_gain_offset_config.cc",
   "src/iamf/obu/extension_parameter_data.cc",
   "src/iamf/obu/ia_sequence_header.cc",
@@ -100,7 +100,7 @@ iamf_tools_sources = [
   "src/iamf/obu/param_definitions/recon_gain_param_definition.cc",
   "src/iamf/obu/param_definitions/subblock_schedule.cc",
   "src/iamf/obu/parameter_block.cc",
-  "src/iamf/obu/polar_parameter_data.cc",
+  "src/iamf/obu/polar_position_data.cc",
   "src/iamf/obu/recon_gain_info_parameter_data.cc",
   "src/iamf/obu/rendering_config.cc",
   "src/iamf/obu/substream_channel_count.cc",
@@ -123,8 +123,10 @@ iamf_tools_headers = [
   "src/iamf/cli/audio_frame_with_data.h",
   "src/iamf/cli/channel_label.h",
   "src/iamf/cli/cli_util.h",
-  "src/iamf/cli/demixing_module.h",
+  "src/iamf/cli/demixer.h",
+  "src/iamf/cli/demixing_manager.h",
   "src/iamf/cli/descriptor_obu_parser.h",
+  "src/iamf/cli/descriptor_obus.h",
   "src/iamf/cli/global_timing_module.h",
   "src/iamf/cli/loudness_calculator_base.h",
   "src/iamf/cli/loudness_calculator_factory_base.h",
@@ -133,6 +135,8 @@ iamf_tools_headers = [
   "src/iamf/cli/obu_with_data_generator.h",
   "src/iamf/cli/parameters_manager.h",
   "src/iamf/cli/labeled_frame.h",
+  "src/iamf/cli/layout_renderer_factory.h",
+  "src/iamf/cli/parameter_block_with_data.h",
   "src/iamf/cli/profile_filter.h",
   "src/iamf/cli/recon_gain_generator.h",
   "src/iamf/cli/renderer_factory.h",
@@ -140,6 +144,8 @@ iamf_tools_headers = [
   "src/iamf/cli/renderer/audio_element_renderer_passthrough.h",
   "src/iamf/cli/renderer/audio_element_renderer_channel_to_channel.h",
   "src/iamf/cli/renderer/audio_element_renderer_base.h",
+  "src/iamf/cli/renderer/default_layout_renderer.h",
+  "src/iamf/cli/renderer/layout_renderer_base.h",
   "src/iamf/cli/renderer/renderer_utils.h",
   "src/iamf/cli/renderer/loudspeakers_renderer.h",
   "src/iamf/cli/renderer/gains/compressed_gains_codebook.h",
@@ -160,6 +166,7 @@ iamf_tools_headers = [
 
   ## common headers
   "src/iamf/common/leb_generator.h",
+  "src/iamf/common/q_format_or_floating_point.h",
   "src/iamf/common/read_bit_buffer.h",
   "src/iamf/common/write_bit_buffer.h",
 
@@ -212,17 +219,14 @@ iamf_tools_headers = [
   "src/iamf/obu/param_definitions/polar_param_definition.h",
   "src/iamf/obu/param_definitions/recon_gain_param_definition.h",
   "src/iamf/obu/param_definitions/subblock_schedule.h",
-  "src/iamf/obu/cart16_parameter_data.h",
-  "src/iamf/obu/cart8_parameter_data.h",
-  "src/iamf/obu/dual_cart16_parameter_data.h",
-  "src/iamf/obu/dual_cart8_parameter_data.h",
-  "src/iamf/obu/dual_polar_parameter_data.h",
-  "src/iamf/obu/polar_parameter_data.h",
+  "src/iamf/obu/cartesian_position_data.h",
+  "src/iamf/obu/polar_position_data.h",
 
   # obu/decoder_config headers
   "src/iamf/obu/decoder_config/lpcm_decoder_config.h",
   "src/iamf/obu/decoder_config/opus_decoder_config.h",
 ]
+
 test("iamf_tools_lib_fuzz_tests") {
   sources = [
     "fuzz/get_test_path.cc",
@@ -243,6 +247,7 @@ test("iamf_tools_lib_fuzz_tests") {
     "//third_party/fuzztest:fuzztest_gtest_main",
   ]
 }
+
 config("strip_errors_config") {
   if (is_win) {
     cflags_cc = [

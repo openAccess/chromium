@@ -3,14 +3,13 @@
 // found in the LICENSE file.
 
 import 'chrome://resources/cr_elements/cr_view_manager/cr_view_manager.js';
-import '/shared/settings/prefs/prefs.js';
 import '../safety_hub/safety_hub_entry_point.js';
 import '../settings_page/settings_section.js';
 import '../settings_shared.css.js';
 import './privacy_guide/privacy_guide_promo.js';
 import './privacy_page.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
+import {PrefServiceObserverMixin} from '/shared/settings/prefs2/pref_service_observer_mixin.js';
 import type {CrViewManagerElement} from 'chrome://resources/cr_elements/cr_view_manager/cr_view_manager.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {PromiseResolver} from 'chrome://resources/js/promise_resolver.js';
@@ -45,7 +44,7 @@ export interface SettingsPrivacyPageIndexElement {
 
 const SettingsPrivacyPageIndexElementBase =
     SearchableViewContainerMixin(PrivacyGuideAvailabilityMixin(
-        PrefsMixin(RouteObserverMixin(PolymerElement))));
+        PrefServiceObserverMixin(RouteObserverMixin(PolymerElement))));
 
 export class SettingsPrivacyPageIndexElement extends
     SettingsPrivacyPageIndexElementBase implements SettingsPlugin {
@@ -59,7 +58,7 @@ export class SettingsPrivacyPageIndexElement extends
 
   static get properties() {
     return {
-      prefs: Object,
+      privacyGuideViewedPref_: Object,
 
       pageVisibility_: {
         type: Object,
@@ -76,11 +75,6 @@ export class SettingsPrivacyPageIndexElement extends
       showPrivacyGuidePromo_: {
         type: Boolean,
         value: false,
-      },
-
-      enableBundledSecuritySettings_: {
-        type: Boolean,
-        value: () => loadTimeData.getBoolean('enableBundledSecuritySettings'),
       },
 
       enableCapturedSurfaceControl_: {
@@ -130,7 +124,7 @@ export class SettingsPrivacyPageIndexElement extends
         value: () => loadTimeData.getBoolean('enableSecurityKeysSubpage'),
       },
 
-      // <if expr="is_chromeos">
+      // <if expr="enable_smart_card">
       enableSmartCardReadersContentSetting_: {
         type: Boolean,
         value: () => {
@@ -138,7 +132,9 @@ export class SettingsPrivacyPageIndexElement extends
               'enableSmartCardReadersContentSetting');
         },
       },
+      // </if>
 
+      // <if expr="is_chromeos">
       enableWebPrintingContentSetting_: {
         type: Boolean,
         value: () => loadTimeData.getBoolean('enableWebPrintingContentSetting'),
@@ -177,21 +173,23 @@ export class SettingsPrivacyPageIndexElement extends
 
   static get observers() {
     return [
-      'updatePrivacyGuidePromoVisibility_(isPrivacyGuideAvailable, prefs.privacy_guide.viewed.value)',
+      'updatePrivacyGuidePromoVisibility_(isPrivacyGuideAvailable, privacyGuideViewedPref_)',
     ];
   }
 
-  declare prefs: Record<string, unknown>;
+  declare private privacyGuideViewedPref_:
+      chrome.settingsPrivate.PrefObject<boolean>|undefined;
   declare private pageVisibility_: PageVisibility;
   declare private routes_: SettingsRoutes;
   declare private showPrivacyGuidePromo_: boolean;
-  declare private enableBundledSecuritySettings_: boolean;
   declare private enableCapturedSurfaceControl_: boolean;
   declare private enableFederatedIdentityApiContentSetting_: boolean;
   declare private enableExperimentalWebPlatformFeatures_: boolean;
   declare private enableHandTrackingContentSetting_: boolean;
-  // <if expr="is_chromeos">
+  // <if expr="enable_smart_card">
   declare private enableSmartCardReadersContentSetting_: boolean;
+  // </if>
+  // <if expr="is_chromeos">
   declare private enableWebPrintingContentSetting_: boolean;
   // </if>
   declare private enableSafeBrowsingSubresourceFilter_: boolean;
@@ -207,6 +205,12 @@ export class SettingsPrivacyPageIndexElement extends
   private privacyGuidePromoWasShown_: boolean;
   private privacyGuideBrowserProxy_: PrivacyGuideBrowserProxy =
       PrivacyGuideBrowserProxyImpl.getInstance();
+
+  override connectedCallback() {
+    super.connectedCallback();
+
+    this.mirrorPref('privacy_guide.viewed', 'privacyGuideViewedPref_');
+  }
 
   private beforeNextRenderPromise_(): Promise<void> {
     return new Promise(res => {
@@ -355,8 +359,9 @@ export class SettingsPrivacyPageIndexElement extends
   }
 
   private updatePrivacyGuidePromoVisibility_() {
-    if (!this.isPrivacyGuideAvailable || this.prefs === undefined ||
-        this.getPref('privacy_guide.viewed').value ||
+    if (!this.isPrivacyGuideAvailable ||
+        this.privacyGuideViewedPref_ === undefined ||
+        this.privacyGuideViewedPref_.value ||
         this.privacyGuideBrowserProxy_.getPromoImpressionCount() >=
             MAX_PRIVACY_GUIDE_PROMO_IMPRESSION ||
         this.currentRoute !== routes.PRIVACY) {

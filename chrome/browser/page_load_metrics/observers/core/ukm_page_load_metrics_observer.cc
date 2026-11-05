@@ -68,6 +68,7 @@
 #include "third_party/blink/public/common/performance/largest_contentful_paint_type.h"
 #include "third_party/metrics_proto/system_profile.pb.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/events/blink/blink_features.h"
 
 #if BUILDFLAG(ENABLE_OFFLINE_PAGES)
@@ -353,14 +354,8 @@ UkmPageLoadMetricsObserver::ObservePolicy UkmPageLoadMetricsObserver::OnCommit(
         response_headers->HasHeaderValue("cache-control", "no-store");
   }
 
-  navigation_trigger_type_ =
-      page_load_metrics::NavigationHandleUserData::kInitiatorLocationOther;
-  auto* navigation_userdata =
-      page_load_metrics::NavigationHandleUserData::GetForNavigationHandle(
-          *navigation_handle);
-  if (navigation_userdata) {
-    navigation_trigger_type_ = navigation_userdata->navigation_type();
-  }
+  navigation_initiator_id_ =
+      page_load_metrics::GetNavigationInitiator(*navigation_handle).id();
 
   // The PageTransition for the navigation may be updated on commit.
   page_transition_ = navigation_handle->GetPageTransition();
@@ -1515,8 +1510,7 @@ void UkmPageLoadMetricsObserver::RecordPageEndMetrics(
   // page_transition_ fits in a uint32_t, so we can safely cast to int64_t.
   builder.SetNavigation_PageTransition(static_cast<int64_t>(page_transition_));
 
-  builder.SetNavigation_InitiatorLocation(
-      static_cast<int64_t>(navigation_trigger_type_));
+  builder.SetNavigation_InitiatorLocation(navigation_initiator_id_);
 
   // GetDelegate().GetPageEndReason() fits in a uint32_t, so we can safely cast
   // to int64_t.

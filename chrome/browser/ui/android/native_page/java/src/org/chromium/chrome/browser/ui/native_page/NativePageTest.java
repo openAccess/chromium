@@ -4,22 +4,29 @@
 
 package org.chromium.chrome.browser.ui.native_page;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.annotation.Config;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.history.HistoryFeatures;
 import org.chromium.chrome.browser.ui.native_page.NativePage.NativePageType;
 import org.chromium.components.extensions.ExtensionsBuildflags;
 import org.chromium.url.GURL;
+import org.chromium.url.JUnitTestOrigins;
+import org.chromium.url.Origin;
 
 /** Tests public methods in NativePage. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -71,6 +78,11 @@ public class NativePageTest {
 
     public static boolean isValidInIncognito(UrlCombo urlCombo) {
         return urlCombo.expectedType != NativePageType.RECENT_TABS;
+    }
+
+    @After
+    public void tearDown() {
+        DeviceInfo.resetIsDesktopForTesting();
     }
 
     /** Ensures that NativePage.isNativePageUrl() returns true for native page URLs. */
@@ -130,13 +142,13 @@ public class NativePageTest {
         String url = "chrome://settings";
         GURL gurl = new GURL(url);
         Assert.assertEquals(
-                "Settings page should not be a native page on phone",
-                NativePageType.NONE,
+                "Settings page should be a native page on phone",
+                NativePageType.SETTINGS,
                 NativePage.nativePageType(gurl, null, false, false, false));
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
+    @DisableFeatures({ChromeFeatureList.SETTINGS_IN_TAB, ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP})
     @Config(qualifiers = "sw600dp")
     public void testNativePageType_SettingsDisabled() {
         String url = "chrome://settings";
@@ -191,6 +203,39 @@ public class NativePageTest {
     }
 
     @Test
+    public void testNativePageType_FrozenCandidateIsNeverReused() {
+        // A frozen page has no view, so it must never be returned as CANDIDATE even when its URL or
+        // host matches (crbug.com/568278676).
+        NativePage candidatePage = mock(NativePage.class);
+        doReturn(true).when(candidatePage).isFrozen();
+
+        String pdfUrl = "chrome-native://pdf/link?url=xyz";
+        doReturn(pdfUrl).when(candidatePage).getUrl();
+        doReturn(true).when(candidatePage).isPdf();
+        doReturn(true).when(candidatePage).shouldReusePage(any(), any(), anyBoolean());
+        Assert.assertEquals(
+                "Frozen pdf candidate should not be reused",
+                NativePageType.PDF,
+                NativePage.nativePageType(
+                        new GURL(pdfUrl),
+                        candidatePage,
+                        /* isIncognito= */ false,
+                        /* preferReuse= */ true,
+                        /* hasPdfDownload= */ true));
+
+        doReturn("newtab").when(candidatePage).getHost();
+        Assert.assertEquals(
+                "Frozen chrome-scheme candidate should not be reused",
+                NativePageType.NTP,
+                NativePage.nativePageType(
+                        new GURL("chrome-native://newtab/"),
+                        candidatePage,
+                        /* isIncognito= */ false,
+                        /* preferReuse= */ false,
+                        /* hasPdfDownload= */ false));
+    }
+
+    @Test
     @DisableFeatures({
         ChromeFeatureList.CHROME_NATIVE_URL_OVERRIDING,
         ChromeFeatureList.MIGRATE_MANAGEMENT_TO_WEBUI_ON_MOBILE
@@ -237,5 +282,72 @@ public class NativePageTest {
         Assert.assertFalse(
                 "isNativePageUrl should be false on desktop",
                 NativePage.isNativePageUrl(url, false, false));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_WEB_UI_HISTORY)
+    public void testNativePageType_History_DesktopWebUiEnabled() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        Assert.assertTrue(HistoryFeatures.isAndroidDesktopWebUiHistoryEnabled());
+        GURL url = new GURL("chrome://history/");
+        Assert.assertEquals(
+                "History page should be WebUI on desktop when feature is enabled",
+                NativePageType.NONE,
+                NativePage.nativePageType(
+                        url,
+                        /* candidatePage= */ null,
+                        /* isIncognito= */ false,
+                        /* preferReuse= */ false,
+                        /* hasPdfDownload= */ false));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_WEB_UI_HISTORY)
+    public void testNativePageType_History_DesktopWebUiDisabled_NonDesktop() {
+        DeviceInfo.setIsDesktopForTesting(false);
+        Assert.assertFalse(HistoryFeatures.isAndroidDesktopWebUiHistoryEnabled());
+        GURL url = new GURL("chrome://history/");
+        Assert.assertEquals(
+                "History page should be native on non-desktop even when feature is enabled",
+                NativePageType.HISTORY,
+                NativePage.nativePageType(
+                        url,
+                        /* candidatePage= */ null,
+                        /* isIncognito= */ false,
+                        /* preferReuse= */ false,
+                        /* hasPdfDownload= */ false));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_WEB_UI_HISTORY)
+    public void testNativePageType_History_DesktopWebUiDisabled_FeatureDisabled() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        Assert.assertFalse(HistoryFeatures.isAndroidDesktopWebUiHistoryEnabled());
+        GURL url = new GURL("chrome://history/");
+        Assert.assertEquals(
+                "History page should be native when feature is disabled",
+                NativePageType.HISTORY,
+                NativePage.nativePageType(
+                        url,
+                        /* candidatePage= */ null,
+                        /* isIncognito= */ false,
+                        /* preferReuse= */ false,
+                        /* hasPdfDownload= */ false));
+    }
+
+    @Test
+    public void testFrozenNativePage_PreservesInitiatorOrigin() {
+        NativePage page = mock(NativePage.class);
+        Origin initiatorOrigin = JUnitTestOrigins.createTuple("https", "initiator.example", 443);
+        doReturn("pdf").when(page).getHost();
+        doReturn("chrome-native://pdf/link?url=https%3A%2F%2Fexample.com%2Fdoc.pdf")
+                .when(page)
+                .getUrl();
+        doReturn("doc.pdf").when(page).getTitle();
+        doReturn(true).when(page).isPdf();
+        doReturn(initiatorOrigin).when(page).getInitiatorOrigin();
+
+        FrozenNativePage frozen = FrozenNativePage.freeze(page);
+        Assert.assertEquals(initiatorOrigin, frozen.getInitiatorOrigin());
     }
 }

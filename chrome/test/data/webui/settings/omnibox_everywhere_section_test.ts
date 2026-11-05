@@ -40,6 +40,16 @@ suite('OmniboxEverywhereSectionTest', function() {
         value: 0,
       },
       {
+        key: 'omnibox_everywhere.launch_on_startup',
+        type: chrome.settingsPrivate.PrefType.BOOLEAN,
+        value: false,
+      },
+      {
+        key: 'omnibox_everywhere.background_mode',
+        type: chrome.settingsPrivate.PrefType.BOOLEAN,
+        value: false,
+      },
+      {
         key: 'ntp.shortcust_visible',
         type: chrome.settingsPrivate.PrefType.BOOLEAN,
         value: true,
@@ -60,7 +70,6 @@ suite('OmniboxEverywhereSectionTest', function() {
     const mainToggle = section.shadowRoot.querySelector('#mainToggle');
     const collapse =
         section.shadowRoot.querySelector<CrCollapseElement>('#expandedContent');
-    const shortcutInput = section.shadowRoot.querySelector('#shortcutInput');
     const showShortcutsToggle =
         section.shadowRoot.querySelector<SettingsToggleButtonElement>(
             '#showShortcutsToggle');
@@ -68,7 +77,6 @@ suite('OmniboxEverywhereSectionTest', function() {
     assertTrue(isVisible(mainToggle));
     assertTrue(!!collapse);
     assertFalse(collapse.opened);
-    assertTrue(!!shortcutInput);
     assertTrue(!!showShortcutsToggle);
 
     assertFalse(
@@ -76,6 +84,9 @@ suite('OmniboxEverywhereSectionTest', function() {
     assertEquals(
         0,
         prefService.getPref<number>('omnibox_everywhere.show_shortcuts').value);
+    assertEquals(
+        'synthetic.settings.omnibox_everywhere.show_shortcuts',
+        showShortcutsToggle.pref!.key);
     assertTrue(showShortcutsToggle.checked);
   });
 
@@ -103,13 +114,38 @@ suite('OmniboxEverywhereSectionTest', function() {
     assertTrue(!!mainToggle);
     assertTrue(!!collapse);
     assertFalse(collapse.opened);
+    assertFalse(
+        prefService.getPref<boolean>('omnibox_everywhere.launch_on_startup')
+            .value);
+    assertFalse(
+        prefService.getPref<boolean>('omnibox_everywhere.background_mode')
+            .value);
 
     mainToggle.click();
     await microtasksFinished();
 
     assertTrue(
         prefService.getPref<boolean>('omnibox_everywhere.enabled').value);
+    assertTrue(
+        prefService.getPref<boolean>('omnibox_everywhere.launch_on_startup')
+            .value);
+    assertTrue(
+        prefService.getPref<boolean>('omnibox_everywhere.background_mode')
+            .value);
     assertTrue(collapse.opened);
+
+    mainToggle.click();
+    await microtasksFinished();
+
+    assertFalse(
+        prefService.getPref<boolean>('omnibox_everywhere.enabled').value);
+    assertFalse(
+        prefService.getPref<boolean>('omnibox_everywhere.launch_on_startup')
+            .value);
+    assertFalse(
+        prefService.getPref<boolean>('omnibox_everywhere.background_mode')
+            .value);
+    assertFalse(collapse.opened);
   });
 
   test('ShowShortcutsToggleChange', async function() {
@@ -213,14 +249,9 @@ suite('OmniboxEverywhereSectionTest', function() {
   });
 
   test('ShortcutUpdated', async function() {
-    const shortcutInput = section.shadowRoot.querySelector('#shortcutInput');
-    assertTrue(!!shortcutInput);
+    const shortcutInput = section.$.shortcutInput;
 
-    shortcutInput.dispatchEvent(new CustomEvent('shortcut-updated', {
-      bubbles: true,
-      composed: true,
-      detail: 'Ctrl+Shift+Space',
-    }));
+    shortcutInput.fire('shortcut-updated', 'Ctrl+Shift+Space');
     await microtasksFinished();
 
     const updatedShortcut =
@@ -229,14 +260,9 @@ suite('OmniboxEverywhereSectionTest', function() {
   });
 
   test('InputCaptureChange', async function() {
-    const shortcutInput = section.shadowRoot.querySelector('#shortcutInput');
-    assertTrue(!!shortcutInput);
+    const shortcutInput = section.$.shortcutInput;
 
-    shortcutInput.dispatchEvent(new CustomEvent('input-capture-change', {
-      bubbles: true,
-      composed: true,
-      detail: true,
-    }));
+    shortcutInput.fire('input-capture-change', true);
     await microtasksFinished();
 
     const shouldSuspend = await browserProxy.whenCalled(

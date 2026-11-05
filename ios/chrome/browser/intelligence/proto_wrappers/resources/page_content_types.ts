@@ -181,7 +181,9 @@ export enum PageContentClickabilityReason {
   CLICK_EVENTS = 1,
   MOUSE_EVENTS = 2,  // Deprecated in proto
   MOUSE_CLICK = 12,
-  MOUSE_HOVER = 13,
+  // TODO(crbug.com/576774954): Remove once legacy extractions are no longer
+  // supported.
+  MOUSE_HOVER = 13,  // Deprecated in proto
   KEY_EVENTS = 3,
   EDITABLE = 4,
   CURSOR_POINTER = 5,
@@ -192,6 +194,10 @@ export enum PageContentClickabilityReason {
   TAB_INDEX = 10,
   AUTOCOMPLETE = 11,
   HOVER_PSEUDO_CLASS = 14,
+  ARIA_TOGGLE = 15,
+  ARIA_SELECTABLE = 16,
+  MOUSE_ENTER = 17,
+  MOUSE_OVER = 18,
 }
 
 // The numbers are aligned with the InteractionDisabledReason enum in
@@ -200,6 +206,10 @@ export enum PageContentInteractionDisabledReason {
   DISABLED = 1,
   ARIA_DISABLED = 2,
   CURSOR_NOT_ALLOWED = 3,
+  ARIA_HIDDEN = 4,
+  ARIA_ROLE_PRESENTATIONAL = 5,
+  POINTER_EVENTS_NONE = 6,
+  VISUALLY_UNREACHABLE = 7,
 }
 
 export interface PageContentNodeInteractionInfo {
@@ -389,8 +399,6 @@ export interface PageContentFormControlData {
   isRequired: boolean;
   isReadonly?: boolean;
   redactionDecision: PageContentRedactionDecision;
-  // Node ID assigned by Autofill if the node is handled by Autofill.
-  autofillNodeId?: number;
 }
 
 export interface PageContentAttributes {

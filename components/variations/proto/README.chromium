@@ -2,10 +2,10 @@ Name: Variations Protos
 Short Name: client_variations_proto
 URL: This is the canonical public repository
 Update Mechanism: Manual
-Version: 965948564
-Date: 2026-08-17
+Version: 988301821
+Date: 2026-09-25
 License: BSD-3-Clause
-License File: LICENSE
+License File: //LICENSE
 Shipped: yes
 Security Critical: Yes
 

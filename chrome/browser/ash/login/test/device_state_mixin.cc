@@ -17,7 +17,6 @@
 #include "base/path_service.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ash/login/test/scoped_policy_update.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/common/chrome_paths.h"
 #include "chromeos/ash/components/dbus/session_manager/fake_session_manager_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
@@ -72,7 +71,7 @@ void WriteFile(const base::FilePath& path, const std::string& blob) {
 DeviceStateMixin::DeviceStateMixin(InProcessBrowserTestMixinHost* host,
                                    State initial_state)
     : InProcessBrowserTestMixin(host), state_(initial_state) {
-  DCHECK(!g_instance_created);
+  CHECK(!g_instance_created, base::NotFatalUntil::M161);
   g_instance_created = true;
 }
 
@@ -155,8 +154,9 @@ void DeviceStateMixin::SetState(State state) {
 }
 
 void DeviceStateMixin::SetDeviceState() {
-  DCHECK(!is_setup_);
-  DCHECK(domain_.empty() || state_ == State::OOBE_COMPLETED_CLOUD_ENROLLED);
+  CHECK(!is_setup_, base::NotFatalUntil::M161);
+  CHECK(domain_.empty() || state_ == State::OOBE_COMPLETED_CLOUD_ENROLLED,
+        base::NotFatalUntil::M161);
   is_setup_ = true;
 
   WriteInstallAttrFile(state_);
@@ -250,7 +250,7 @@ void DeviceStateMixin::SetCachedDevicePolicy() {
   if (!session_manager_initialized_)
     return;
 
-  DCHECK(IsEnrolledState());
+  CHECK(IsEnrolledState(), base::NotFatalUntil::M161);
 
   device_policy_.SetDefaultSigningKey();
   device_policy_.Build();
@@ -264,7 +264,7 @@ void DeviceStateMixin::SetCachedDeviceLocalAccountPolicy(
       !device_local_account_policies_.count(account_id))
     return;
 
-  DCHECK(IsEnrolledState());
+  CHECK(IsEnrolledState(), base::NotFatalUntil::M161);
 
   policy::UserPolicyBuilder& builder =
       device_local_account_policies_[account_id];

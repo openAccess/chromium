@@ -10,7 +10,6 @@
 #include "base/containers/fixed_flat_map.h"
 #include "base/notreached.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/extensions/context_menu_matcher.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
@@ -48,8 +47,9 @@ constexpr LockedStateCapabilities kExtensionLockedCapabilities = {
     .context_menu_policy = ContextMenuPolicy::kBlockAll,
 };
 
-// Default baseline capabilities for OnTask. Some fields (like tab strip and
-// immersive mode) will be dynamically updated based on window features.
+// Default baseline capabilities for OnTask. Tab strip support is updated based
+// on window features; immersive mode and toolbar focus are enabled only while
+// pinned (kOnTaskLocked).
 constexpr LockedStateCapabilities kDefaultOnTaskCapabilities = {
     .supports_tab_strip = false,
     .allow_find = true,
@@ -68,9 +68,17 @@ bool IsTrustedPinnedState(LockedState state) {
 
 constexpr auto kCommandMap =
     base::MakeFixedFlatMap<int, LockedStateController::CommandType>({
+        {IDC_CUT, LockedStateController::CommandType::kClipboard},
+        {IDC_COPY, LockedStateController::CommandType::kClipboard},
+        {IDC_PASTE, LockedStateController::CommandType::kClipboard},
         {IDC_BACK, LockedStateController::CommandType::kPageNavigation},
         {IDC_FORWARD, LockedStateController::CommandType::kPageNavigation},
         {IDC_RELOAD, LockedStateController::CommandType::kPageNavigation},
+        {IDC_RELOAD_BYPASSING_CACHE,
+         LockedStateController::CommandType::kPageNavigation},
+        {IDC_RELOAD_CLEARING_CACHE,
+         LockedStateController::CommandType::kPageNavigation},
+        {IDC_STOP, LockedStateController::CommandType::kPageNavigation},
         {IDC_CONTENT_CONTEXT_COPYIMAGE,
          LockedStateController::CommandType::kAllowedContentContext},
         {IDC_CONTENT_CONTEXT_COPYIMAGELOCATION,
@@ -90,14 +98,26 @@ constexpr auto kCommandMap =
         {IDC_FIND, LockedStateController::CommandType::kFindInPage},
         {IDC_FIND_NEXT, LockedStateController::CommandType::kFindInPage},
         {IDC_FIND_PREVIOUS, LockedStateController::CommandType::kFindInPage},
+        {IDC_CLOSE_FIND_OR_STOP,
+         LockedStateController::CommandType::kFindInPage},
     });
+
+// The range of command IDs reserved for extension custom menus.
+constexpr int kMaxExtensionCustomCommands = 1000;
+constexpr int IDC_EXTENSIONS_CONTEXT_CUSTOM_LAST =
+    IDC_EXTENSIONS_CONTEXT_CUSTOM_FIRST + kMaxExtensionCustomCommands;
+
+bool IsExtensionsCustomCommandId(int command_id) {
+  return command_id >= IDC_EXTENSIONS_CONTEXT_CUSTOM_FIRST &&
+         command_id <= IDC_EXTENSIONS_CONTEXT_CUSTOM_LAST;
+}
 
 LockedStateController::CommandType GetCommandType(int command_id) {
   const auto it = kCommandMap.find(command_id);
   if (it != kCommandMap.end()) {
     return it->second;
   }
-  if (extensions::ContextMenuMatcher::IsExtensionsCustomCommandId(command_id)) {
+  if (IsExtensionsCustomCommandId(command_id)) {
     return LockedStateController::CommandType::kExtensionsCustom;
   }
   return LockedStateController::CommandType::kUnknown;
@@ -108,9 +128,7 @@ LockedStateController::CommandType GetCommandType(int command_id) {
 // static
 LockedStateController* LockedStateController::From(
     BrowserWindowInterface* browser_window_interface) {
-  if (!features::IsUseUnifiedLockedStateControllerEnabled()) {
-    return nullptr;
-  }
+  CHECK(features::IsUseUnifiedLockedStateControllerEnabled());
   return Get(browser_window_interface->GetUnownedUserDataHost());
 }
 
@@ -120,7 +138,9 @@ LockedStateController::LockedStateController(
       capabilities_(kUnlockedCapabilities),
       scoped_unowned_user_data_(
           browser_window_interface->GetUnownedUserDataHost(),
-          *this) {}
+          *this) {
+  CHECK(features::IsUseUnifiedLockedStateControllerEnabled());
+}
 
 LockedStateController::~LockedStateController() = default;
 
@@ -131,13 +151,14 @@ bool LockedStateController::Lock(LockedState state) {
     return true;  // No-op
   }
 
-  // Transitions between OnTask locked and OnTask locked paused are allowed.
-  // Also allow transitions from OnTask prepared to OnTask locked/paused.
-  bool is_ontask_transition = (state_ == LockedState::kOnTaskPrepared ||
-                               state_ == LockedState::kOnTaskLocked ||
-                               state_ == LockedState::kOnTaskLockedPaused) &&
-                              (state == LockedState::kOnTaskLocked ||
-                               state == LockedState::kOnTaskLockedPaused);
+  // Once a window enters the OnTask lifecycle (prepared), it cycles between
+  // prepared, locked and locked paused and never leaves that loop while open;
+  // unpinning returns it to prepared rather than unlocked. Hence any transition
+  // between OnTask states is allowed.
+  const bool is_ontask_transition =
+      IsLockedForOnTask() && (state == LockedState::kOnTaskPrepared ||
+                              state == LockedState::kOnTaskLocked ||
+                              state == LockedState::kOnTaskLockedPaused);
 
   if (state_ != LockedState::kUnlocked && !is_ontask_transition) {
     LOG(WARNING)
@@ -166,6 +187,21 @@ bool LockedStateController::Lock(LockedState state) {
         ->LockedFullscreenStateChanged();
   }
 
+  // Must follow LockedFullscreenStateChanged(), which re-initializes the
+  // command state on unpin.
+  // TODO(crbug.com/438540029): Consolidate into a single notification that
+  // re-derives all command state from this controller.
+  auto* const command_controller =
+      chrome::BrowserCommandController::From(browser_window_interface_);
+  command_controller->OnTaskStateChanged();
+  // Tab switching is suspended while paused, matching the legacy
+  // implementation.
+  if (state_ == LockedState::kOnTaskLocked ||
+      state_ == LockedState::kOnTaskLockedPaused) {
+    command_controller->SetTabSwitchCommandsEnabled(state_ ==
+                                                    LockedState::kOnTaskLocked);
+  }
+
   NotifyStateUpdated();
   return true;
 }
@@ -187,16 +223,18 @@ bool LockedStateController::Unlock(LockedState expected_state) {
     return false;
   }
 
-  bool was_pinned = IsTrustedPinnedState(state_);
+  const bool was_pinned = IsTrustedPinnedState(state_);
 
   state_ = LockedState::kUnlocked;
   UpdateCapabilities();
 
+  auto* const command_controller =
+      chrome::BrowserCommandController::From(browser_window_interface_);
   if (was_pinned) {
     ash::UnpinWindow(browser_window_interface_->GetWindow()->GetNativeWindow());
-    chrome::BrowserCommandController::From(browser_window_interface_)
-        ->LockedFullscreenStateChanged();
+    command_controller->LockedFullscreenStateChanged();
   }
+  command_controller->OnTaskStateChanged();
 
   NotifyStateUpdated();
   return true;
@@ -206,7 +244,11 @@ bool LockedStateController::IsLocked() const {
   return IsTrustedPinnedState(state_);
 }
 
-bool LockedStateController::IsLockedForOnTaskForTesting() const {
+bool LockedStateController::IsLockedFullscreen() const {
+  return state_ == LockedState::kExtensionLocked;
+}
+
+bool LockedStateController::IsLockedForOnTask() const {
   return state_ == LockedState::kOnTaskPrepared ||
          state_ == LockedState::kOnTaskLocked ||
          state_ == LockedState::kOnTaskLockedPaused;
@@ -225,19 +267,32 @@ bool LockedStateController::IsCommandIdEnabled(int command_id) const {
     return true;
   }
 
+  CommandType type = GetCommandType(command_id);
+  switch (type) {
+    case CommandType::kClipboard:
+      return true;
+    case CommandType::kTabManagement:
+      return capabilities_.supports_tab_strip;
+    case CommandType::kFindInPage:
+      return capabilities_.allow_find;
+    case CommandType::kPageNavigation:
+      return capabilities_.allow_browser_navigation;
+    case CommandType::kAllowedContentContext:
+    case CommandType::kExtensionsCustom:
+      return capabilities_.context_menu_policy != ContextMenuPolicy::kBlockAll;
+    case CommandType::kUnknown:
+      break;
+  }
+
+  // For other command IDs, follow the context menu policy.
   switch (capabilities_.context_menu_policy) {
     case ContextMenuPolicy::kBlockAll:
       return false;
     case ContextMenuPolicy::kAllowAll:
       return true;
-    case ContextMenuPolicy::kLimited: {
-      CommandType type = GetCommandType(command_id);
-      return type == CommandType::kPageNavigation ||
-             type == CommandType::kAllowedContentContext ||
-             type == CommandType::kExtensionsCustom;
-    }
+    case ContextMenuPolicy::kLimited:
+      return false;
   }
-  return false;
 }
 
 bool LockedStateController::IsCommandUpdateBlocked(int command_id) const {
@@ -248,7 +303,10 @@ bool LockedStateController::IsCommandUpdateBlocked(int command_id) const {
 
   if ((type == CommandType::kTabManagement &&
        capabilities_.supports_tab_strip) ||
-      (type == CommandType::kFindInPage && capabilities_.allow_find)) {
+      (type == CommandType::kFindInPage && capabilities_.allow_find) ||
+      (type == CommandType::kPageNavigation &&
+       capabilities_.allow_browser_navigation) ||
+      type == CommandType::kClipboard) {
     return false;
   }
   return true;
@@ -279,14 +337,13 @@ void LockedStateController::UpdateCapabilities() {
                 WindowFeatureController::WindowFeature::kFeatureTabStrip);
     capabilities_.supports_tab_strip = supports_tabs;
 
-    if (state_ == LockedState::kOnTaskLocked ||
-        state_ == LockedState::kOnTaskPrepared) {
+    // The immersive frame and toolbar are only available while locked
+    // (pinned). kOnTaskPrepared is not pinned, and kOnTaskLockedPaused is more
+    // restrictive (the user must stay on the homepage tab), so both keep the
+    // defaults where they are unavailable.
+    if (state_ == LockedState::kOnTaskLocked) {
       capabilities_.use_immersive_mode = supports_tabs;
       capabilities_.focus_toolbar_on_lock = supports_tabs;
-    } else {
-      // kOnTaskLockedPaused
-      capabilities_.use_immersive_mode = false;
-      capabilities_.focus_toolbar_on_lock = false;
     }
     return;
   }
@@ -299,7 +356,12 @@ void LockedStateController::NotifyStateUpdated() {
       browser_window_interface_->GetWindow()->GetNativeWindow();
   views::Widget* widget =
       views::Widget::GetWidgetForNativeWindow(native_window);
-  bool locked = IsLocked();
+  // Minimize and close are unavailable in locked fullscreen and throughout the
+  // OnTask lifecycle. The prepared state is not pinned, so its frame still
+  // shows caption buttons; they must be hidden too so the user cannot dismiss
+  // the OnTask-managed window. This matches the legacy behavior in
+  // BrowserView::OnLockedForOnTaskUpdated().
+  const bool locked = IsLockedFullscreen() || IsLockedForOnTask();
   widget->widget_delegate()->SetCanMinimize(!locked);
   widget->widget_delegate()->SetShowCloseButton(!locked);
 }

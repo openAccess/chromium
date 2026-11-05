@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">密碼不正確</translation>
 <translation id="5059127710849015030">尼泊爾文 (音譯)</translation>
 <translation id="5068919226082848014">薄餅</translation>
+<translation id="5075336522277785691">「<ph name="EXTENSION_NAME" />」設定 Proxy 覆寫規則</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> 的檔案將被刪除</translation>
 <translation id="508423945471810158">正在將 <ph name="NUMBER_OF_ITEMS" /> 個項目移動到「<ph name="FOLDER_NAME" />」</translation>
 <translation id="509429900233858213">發生錯誤。</translation>
-<translation id="5102922915594634436">管理已同步處理的資料夾</translation>
 <translation id="5109254780565519649">發生錯誤。部分項目可能未還原。</translation>
 <translation id="5110329002213341433">英文 (加拿大)</translation>
 <translation id="5119780910075847424">已暫停同步處理</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">印度文</translation>
 <translation id="7665680517722058469">嘗試搜尋其他字詞</translation>
 <translation id="7689532716264131859"><ph name="NUMBER_OF_ITEMS" /> 個項目已移至垃圾桶</translation>
-<translation id="7693909743393669729">將硬碟格式化會清除其中儲存的所有資料，並移除所有的現有分割區，包括隱藏的分割區。此操作無法復原。</translation>
 <translation id="7695430100978772476">無法格式化「<ph name="DRIVE_NAME" />」</translation>
 <translation id="76959938259365003">無法清空垃圾桶。</translation>
 <translation id="7705251383879779343">已複製 <ph name="FILE_NAME" />。</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">美式 Workman 國際</translation>
 <translation id="7903984238293908205">片假名</translation>
 <translation id="7908378463497120834">很抱歉，您的外部儲存裝置上至少有一個分區無法掛載。</translation>
-<translation id="7908793776359722643">格式化分割將清除其中儲存的所有資料。此操作無法復原。</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">「我的雲端硬碟」中的檔案會自動同步至 Chromebook，這樣您便可在離線的情況下存取檔案。</translation>
 <translation id="7925247922861151263">AAA 檢查失敗</translation>

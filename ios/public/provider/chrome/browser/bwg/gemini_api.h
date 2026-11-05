@@ -26,6 +26,7 @@ using GeminiEligibilityCallback = void (^)(BOOL eligible);
 
 namespace gemini {
 enum class EntryPoint;
+enum class InputType;
 }
 
 namespace ios::provider {
@@ -165,6 +166,13 @@ enum class GeminiViewMode {
   kLive,
 };
 
+// Enum representing the feature mode for Gemini quota checks.
+// This needs to stay in sync with GCRGeminiFeatureMode internally
+enum class GeminiFeatureMode {
+  // Image generation feature (aka Nano Banana).
+  kNanoBanana,
+};
+
 // Configures Gemini with the given startup configuration.
 void ConfigureWithStartupConfiguration(
     GeminiStartupConfiguration* startup_configuration);
@@ -193,6 +201,11 @@ void UpdatePageAttachmentState(
 
 // Updates the prompt action of the floaty if it's invoked.
 void UpdatePromptAction(gemini::EntryPoint entry_point,
+                        NSString* prepopulated_prompt,
+                        bool should_auto_submit = false);
+
+// Updates the prompt action of the floaty with an input type if it's invoked.
+void UpdatePromptAction(gemini::InputType input_type,
                         NSString* prepopulated_prompt,
                         bool should_auto_submit = false);
 
@@ -267,6 +280,10 @@ int GetLiveCaptionsNumberOfLines();
 // Sets whether the suggestion chips should be shown on the floaty.
 void SetShouldShowSuggestionChips(bool should_show);
 
+// Sets whether the input plate should be shown on the floaty. This is a no-op
+// until a floaty view has been created in this session.
+void SetShouldShowInputPlate(bool should_show);
+
 // Sets whether query submission should be blocked while page context is
 // loading.
 void SetBlockQuerySubmissionWhileLoading(bool block_submission);
@@ -281,6 +298,16 @@ void ShowAccountSnackbar();
 // Returns the view controller for the Gemini floaty.
 UIViewController* GetFloatyViewControllerWithConfiguration(
     GeminiConfiguration* gemini_configuration);
+
+// Returns whether the given feature mode is disabled due to quota exhaustion.
+bool IsFeatureModeDisabledByQuota(GeminiFeatureMode feature_mode);
+
+// Returns the date when the quota will be refilled for the given feature mode,
+// or nil if it is not disabled or does not have a refill date.
+NSDate* GetRefillDateForFeatureMode(GeminiFeatureMode feature_mode);
+
+// Forces a refresh of the Gemini quota information.
+void ForceRefreshQuotaInfo();
 
 }  // namespace ios::provider
 

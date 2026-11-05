@@ -35,23 +35,22 @@ import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.bookmarks.BookmarkListEntry.ViewType;
 import org.chromium.chrome.browser.bookmarks.BookmarkUiPrefs.BookmarkRowDisplayPref;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
-import org.chromium.chrome.browser.device_lock.DeviceLockActivityLauncherImpl;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManager;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
-import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
-import org.chromium.chrome.browser.sync.settings.ManageSyncSettings;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.native_page.BasicNativePage;
 import org.chromium.chrome.browser.ui.signin.PersonalizedSigninPromoView;
+import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
 import org.chromium.chrome.browser.ui.signin.signin_promo.BookmarkSigninPromoDelegate;
 import org.chromium.chrome.browser.ui.signin.signin_promo.SigninPromoCoordinator;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.bookmarks.BookmarkItem;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.browser_ui.modaldialog.AppModalPresenter;
+import org.chromium.components.browser_ui.settings.SettingsNavigation.SettingsFragment;
 import org.chromium.components.browser_ui.util.GlobalDiscardableReferencePool;
 import org.chromium.components.browser_ui.widget.dragreorder.DragReorderableRecyclerViewAdapter;
 import org.chromium.components.browser_ui.widget.dragreorder.DragTouchHandler;
@@ -142,7 +141,6 @@ public class BookmarkManagerCoordinator
     private final SnackbarManager mSnackbarManager;
     private final SigninPromoCoordinator mSigninPromoCoordinator;
     private final BookmarkModel mBookmarkModel;
-    private final Profile mProfile;
     private final BookmarkUiPrefs mBookmarkUiPrefs;
     private final ModalDialogManager mModalDialogManager;
     private final ModelList mModelList;
@@ -169,6 +167,8 @@ public class BookmarkManagerCoordinator
      * @param priceDropNotificationManager Manages price drop notifications.
      * @param edgeToEdgePadAdjusterGenerator Generator for the edge to edge pad adjuster.
      * @param backPressManager BackPressManager for processing back press events.
+     * @param signinAndHistorySyncActivityLauncher Launcher for signin and history sync activities.
+     * @param deviceLockActivityLauncher Launcher for device lock activities.
      */
     public BookmarkManagerCoordinator(
             WindowAndroid windowAndroid,
@@ -183,13 +183,17 @@ public class BookmarkManagerCoordinator
             BookmarkManagerOpener bookmarkManagerOpener,
             PriceDropNotificationManager priceDropNotificationManager,
             @Nullable Function<View, EdgeToEdgePadAdjuster> edgeToEdgePadAdjusterGenerator,
-            @Nullable BackPressManager backPressManager) {
+            @Nullable BackPressManager backPressManager,
+            SigninAndHistorySyncActivityLauncher signinAndHistorySyncActivityLauncher,
+            DeviceLockActivityLauncher deviceLockActivityLauncher) {
         mContext = activity;
-        mProfile = profile;
+        // Resolve the original profile eagerly for regular-profile-backed services; an OTR
+        // `profile` may be destroyed while the bookmark manager is still open.
+        Profile originalProfile = profile.getOriginalProfile();
         mImageFetcher =
                 ImageFetcherFactory.createImageFetcher(
                         ImageFetcherConfig.IN_MEMORY_WITH_DISK_CACHE,
-                        profile.getProfileKey(),
+                        originalProfile.getProfileKey(),
                         GlobalDiscardableReferencePool.getReferencePool());
         mSnackbarManager = snackbarManager;
 
@@ -197,9 +201,9 @@ public class BookmarkManagerCoordinator
         int layoutId =
                 isDesktopLayoutEnabled ? R.layout.bookmark_main_desktop : R.layout.bookmark_main;
         mMainView = (ViewGroup) LayoutInflater.from(activity).inflate(layoutId, null);
-        mBookmarkModel = BookmarkModel.getForProfile(profile);
+        mBookmarkModel = BookmarkModel.getForProfile(originalProfile);
         mBookmarkOpener = bookmarkOpener;
-        ShoppingService service = ShoppingServiceFactory.getForProfile(profile);
+        ShoppingService service = ShoppingServiceFactory.getForProfile(originalProfile);
         if (CommerceFeatureUtils.isShoppingListEligible(service)) {
             service.scheduleSavedProductUpdate();
         }
@@ -270,7 +274,7 @@ public class BookmarkManagerCoordinator
         mBookmarkToolbarCoordinator =
                 new BookmarkToolbarCoordinator(
                         activity,
-                        mProfile,
+                        originalProfile,
                         mSelectableListLayout,
                         mSelectionDelegate,
                         /* searchDelegate= */ this,
@@ -282,7 +286,7 @@ public class BookmarkManagerCoordinator
                         mBookmarkUiPrefs,
                         mModalDialogManager,
                         this::onEndSearch,
-                        () -> IncognitoUtils.isIncognitoModeEnabled(profile),
+                        () -> IncognitoUtils.isIncognitoModeEnabled(originalProfile),
                         bookmarkManagerOpener,
                         mSnackbarManager,
                         /* nextFocusableView= */ mMainView.findViewById(R.id.list_content),
@@ -295,7 +299,7 @@ public class BookmarkManagerCoordinator
                 mBookmarkUiPrefs.getBookmarkRowDisplayPref();
         BookmarkImageFetcher bookmarkImageFetcher =
                 new BookmarkImageFetcher(
-                        profile,
+                        originalProfile,
                         activity,
                         mBookmarkModel,
                         mImageFetcher,
@@ -316,13 +320,13 @@ public class BookmarkManagerCoordinator
                         dragTouchHandler,
                         isDialogUi,
                         mBackPressStateSupplier,
-                        mProfile,
+                        profile,
                         bookmarkUndoController,
                         mModelList,
                         mBookmarkUiPrefs,
                         this::hideKeyboard,
                         bookmarkImageFetcher,
-                        ShoppingServiceFactory.getForProfile(mProfile),
+                        service,
                         mSnackbarManager,
                         this::canShowSigninPromo,
                         onScrollListenerConsumer,
@@ -343,17 +347,17 @@ public class BookmarkManagerCoordinator
                 new SigninPromoCoordinator(
                         windowAndroid,
                         activity,
-                        mProfile.getOriginalProfile(),
+                        originalProfile,
                         activityResultTracker,
-                        SigninAndHistorySyncActivityLauncherImpl.get(),
+                        signinAndHistorySyncActivityLauncher,
                         bottomSheetControllerSupplier,
                         mModalDialogManager,
                         snackbarManager,
-                        DeviceLockActivityLauncherImpl.get(),
+                        deviceLockActivityLauncher,
                         new BookmarkSigninPromoDelegate(
                                 activity,
-                                mProfile.getOriginalProfile(),
-                                SigninAndHistorySyncActivityLauncherImpl.get(),
+                                originalProfile,
+                                signinAndHistorySyncActivityLauncher,
                                 mMediator::onPromoVisibilityChange,
                                 this::openSettings));
         dragReorderableRecyclerViewAdapter.registerType(
@@ -377,13 +381,13 @@ public class BookmarkManagerCoordinator
                 BookmarkManagerViewBinder::bindDividerView);
         dragReorderableRecyclerViewAdapter.registerDraggableType(
                 ViewType.IMPROVED_BOOKMARK_VISUAL,
-                BookmarkManagerCoordinator::buildVisualImprovedBookmarkRow,
+                ImprovedBookmarkRow::buildVisualRow,
                 ImprovedBookmarkRowViewBinder::bind,
                 this::bindDragProperties,
                 mMediator.getDraggabilityProvider());
         dragReorderableRecyclerViewAdapter.registerDraggableType(
                 ViewType.IMPROVED_BOOKMARK_COMPACT,
-                BookmarkManagerCoordinator::buildCompactImprovedBookmarkRow,
+                ImprovedBookmarkRow::buildCompactRow,
                 ImprovedBookmarkRowViewBinder::bind,
                 this::bindDragProperties,
                 mMediator.getDraggabilityProvider());
@@ -401,12 +405,7 @@ public class BookmarkManagerCoordinator
             RecordUserAction.record("MobileBookmarkManagerPageOpen");
         }
 
-        if (ChromeFeatureList.isEnabled(
-                ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES)) {
-            mBackPressManager = backPressManager;
-        } else {
-            mBackPressManager = null;
-        }
+        mBackPressManager = backPressManager;
 
         mComponentCallbacks =
                 new ComponentCallbacks() {
@@ -518,8 +517,7 @@ public class BookmarkManagerCoordinator
     @Override
     public boolean invokeBackActionOnEscape() {
         // Back action should NOT be invoked on escape for tablets.
-        return !ChromeFeatureList.isEnabled(
-                ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES);
+        return false;
     }
 
     @Override
@@ -579,16 +577,6 @@ public class BookmarkManagerCoordinator
 
     static @VisibleForTesting View buildDividerView(ViewGroup parent) {
         return inflate(parent, R.layout.list_section_divider);
-    }
-
-    static ImprovedBookmarkRow buildCompactImprovedBookmarkRow(ViewGroup parent) {
-        ImprovedBookmarkRow row = ImprovedBookmarkRow.buildView(parent.getContext(), false);
-        return row;
-    }
-
-    static ImprovedBookmarkRow buildVisualImprovedBookmarkRow(ViewGroup parent) {
-        ImprovedBookmarkRow row = ImprovedBookmarkRow.buildView(parent.getContext(), true);
-        return row;
     }
 
     BookmarkSearchBoxRow buildSearchBoxRow(ViewGroup parent) {
@@ -790,7 +778,7 @@ public class BookmarkManagerCoordinator
 
     private void openSettings() {
         SettingsNavigationFactory.createSettingsNavigation()
-                .startSettings(mContext, ManageSyncSettings.class);
+                .startSettings(mContext, SettingsFragment.MANAGE_SYNC);
     }
 
     @Nullable BackPressManager getBackPressManagerForTesting() {

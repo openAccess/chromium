@@ -89,6 +89,7 @@ cc_library(
         "//absl/random/internal:uniform_helper",
         "//absl/random/internal:wide_multiply",
         "//absl/strings",
+        "//absl/strings:string_view",
     ],
 )
 
@@ -198,6 +199,7 @@ cc_test(
     srcs = ["bernoulli_distribution_test.cc"],
     copts = ABSL_TEST_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    shard_count = 4,
     deps = [
         ":distributions",
         ":random",
@@ -216,6 +218,7 @@ cc_test(
     copts = ABSL_TEST_COPTS,
     flaky = 1,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    shard_count = 4,
     tags = [
         "no_test_wasm",
     ],
@@ -325,6 +328,7 @@ cc_test(
     ],
     copts = ABSL_TEST_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    shard_count = 4,
     tags = [
         # Too Slow.
         "no_test_android_arm",

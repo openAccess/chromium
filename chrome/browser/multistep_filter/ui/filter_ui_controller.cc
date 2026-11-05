@@ -37,8 +37,8 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
@@ -234,10 +234,11 @@ void FilterUiController::NavigateTo(const UrlFilterSuggestion& suggestion) {
   if (!web_contents) {
     return;
   }
-  content::OpenURLParams params(suggestion.navigation_url, content::Referrer(),
-                                WindowOpenDisposition::CURRENT_TAB,
-                                ui::PAGE_TRANSITION_GENERATED,
-                                /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          suggestion.navigation_url,
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_GENERATED);
   web_contents->OpenURL(
       params, base::BindOnce(
                   [](UrlFilterSuggestion suggestion,
@@ -280,11 +281,11 @@ void FilterUiController::OpenSettings() {
   // navigation.
   if (content::WebContents* web_contents = tab().GetContents()) {
     GURL settings_url(chrome::kChromeUISettingsURL);
-    content::OpenURLParams params(
-        settings_url.Resolve(chrome::kSuggestionsSubPage), content::Referrer(),
-        WindowOpenDisposition::NEW_FOREGROUND_TAB,
-        ui::PAGE_TRANSITION_GENERATED,
-        /*is_renderer_initiated=*/false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            settings_url.Resolve(chrome::kSuggestionsSubPage),
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            ui::PAGE_TRANSITION_GENERATED);
     web_contents->OpenURL(params,
                           base::BindOnce([](content::NavigationHandle&) {}));
   }
@@ -296,10 +297,10 @@ void FilterUiController::OpenFeedback() {
     return;
   }
   if (content::WebContents* web_contents = tab().GetContents()) {
-    content::OpenURLParams params(feedback_url, content::Referrer(),
-                                  WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                  ui::PAGE_TRANSITION_LINK,
-                                  /*is_renderer_initiated=*/false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            feedback_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            ui::PAGE_TRANSITION_LINK);
     web_contents->OpenURL(params,
                           base::BindOnce([](content::NavigationHandle&) {}));
   }
@@ -411,7 +412,8 @@ void FilterUiController::ShowSuggestionChip() {
 
 void FilterUiController::OnPageActionAnchoredMessageShown(
     const page_actions::PageActionState& page_action) {
-  DCHECK_EQ(page_action.action_id, kActionMultistepFilter);
+  CHECK_EQ(page_action.action_id, kActionMultistepFilter,
+           base::NotFatalUntil::M162);
   if (!suggestion_state_) {
     return;
   }
@@ -460,7 +462,8 @@ void FilterUiController::OnPageActionAnchoredMessageShown(
 
 void FilterUiController::OnPageActionAnchoredMessageHidden(
     const page_actions::PageActionState& page_action) {
-  DCHECK_EQ(page_action.action_id, kActionMultistepFilter);
+  CHECK_EQ(page_action.action_id, kActionMultistepFilter,
+           base::NotFatalUntil::M162);
   if (!suggestion_state_) {
     return;
   }

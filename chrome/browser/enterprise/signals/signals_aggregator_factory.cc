@@ -8,19 +8,19 @@
 #include <utility>
 #include <vector>
 
+#include "base/functional/bind.h"
 #include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/enterprise/identifiers/profile_id_service_factory.h"
+#include "chrome/browser/enterprise/signals/certificate_signals_collector_delegate_impl.h"
 #include "chrome/browser/enterprise/signals/profile_signals_collector.h"
 #include "chrome/browser/enterprise/signals/user_permission_service_factory.h"
 #include "chrome/browser/net/profile_network_context_service.h"
 #include "chrome/browser/net/profile_network_context_service_factory.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
-#include "components/enterprise/buildflags/buildflags.h"
-
 #include "components/device_signals/core/browser/certificate_signals_collector.h"
 #include "components/device_signals/core/browser/file_system_signals_collector.h"
 #include "components/device_signals/core/browser/settings_signals_collector.h"
@@ -29,11 +29,11 @@
 #include "components/device_signals/core/browser/signals_collector.h"
 #include "components/device_signals/core/browser/user_permission_service.h"
 #include "components/device_signals/core/common/signals_features.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/policy/core/common/cloud/machine_level_user_cloud_policy_manager.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "content/public/browser/browser_context.h"
-#include "net/ssl/client_cert_store.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
@@ -43,7 +43,8 @@
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-#include "components/device_signals/core/browser/android/android_os_signals_collector.h"
+#include "components/device_signals/core/browser/android/android_signals_collector.h"
+#include "components/device_signals/core/browser/android/os_security_info_provider.h"
 #else
 #include "chrome/browser/enterprise/signals/system_signals_service_host_factory.h"
 #include "components/device_signals/core/browser/desktop/desktop_os_signals_collector.h"
@@ -144,18 +145,16 @@ SignalsAggregatorFactory::BuildServiceInstanceForBrowserContext(
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
     BUILDFLAG(IS_CHROMEOS)
-  if (enterprise_signals::features::IsCertificateCollectionEnabled()) {
-    auto* profile_network_service =
-        ProfileNetworkContextServiceFactory::GetForContext(profile);
-    std::unique_ptr<net::ClientCertStore> cert_store =
-        profile_network_service
-            ? profile_network_service->CreateClientCertStore()
-            : nullptr;
-    if (cert_store) {
-      collectors.push_back(
-          std::make_unique<device_signals::CertificateSignalsCollector>(
-              std::move(cert_store)));
-    }
+  if (enterprise_signals::features::IsCertificateCollectionEnabled() &&
+      ProfileNetworkContextServiceFactory::GetForContext(profile)) {
+    // The client certificate store is only created when certificates are
+    // first collected. Creating it here would create the profile's
+    // CertificateProvisioningService during profile initialization, which
+    // is otherwise deferred until after browser startup.
+    collectors.push_back(
+        std::make_unique<device_signals::CertificateSignalsCollector>(
+            std::make_unique<CertificateSignalsCollectorDelegateImpl>(
+                profile)));
   }
 
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
@@ -173,30 +172,35 @@ SignalsAggregatorFactory::BuildServiceInstanceForBrowserContext(
 
   if (management_service->HasManagementAuthority(
           policy::EnterpriseManagementAuthority::CLOUD_DOMAIN)) {
-    auto* browser_policy_connector =
-        g_browser_process->browser_policy_connector();
-
-    if (browser_policy_connector) {
 #if BUILDFLAG(IS_CHROMEOS)
-      // Only fetch the device-level CloudPolicyManager if the user is
-      // affiliated, as we should only expose device-level signals (like
-      // the enrollment domain) to affiliated users.
-      if (enterprise_util::IsProfileAffiliated(profile)) {
-        browser_policy_manager = g_browser_process->platform_part()
-                                     ->browser_policy_connector_ash()
-                                     ->GetDeviceCloudPolicyManager();
-      }
-#else
-      browser_policy_manager =
-          browser_policy_connector->machine_level_user_cloud_policy_manager();
-#endif
+    // Only fetch the device-level CloudPolicyManager if the user is
+    // affiliated, as we should only expose device-level signals (like
+    // the enrollment domain) to affiliated users.
+    if (enterprise_util::IsProfileAffiliated(profile)) {
+      browser_policy_manager = g_browser_process->platform_part()
+                                   ->browser_policy_connector_ash()
+                                   ->GetDeviceCloudPolicyManager();
     }
+#else
+    browser_policy_manager = g_browser_process->browser_policy_connector()
+                                 ->machine_level_user_cloud_policy_manager();
+#endif
   }
 
 #if BUILDFLAG(IS_ANDROID)
+  // Read the device affiliation IDs through the connector each time signals
+  // are collected. `browser_policy_manager` is captured only once, above, and
+  // stays null if the machine-level policy manager is created after this
+  // service is built.
+  // The connector is owned by the browser process, which outlives all
+  // profile-keyed services, so binding it unretained is safe.
   collectors.push_back(
-      std::make_unique<device_signals::AndroidOsSignalsCollector>(
-          browser_policy_manager));
+      std::make_unique<device_signals::AndroidSignalsCollector>(
+          base::BindRepeating(
+              &policy::ChromeBrowserPolicyConnector::device_affiliation_ids,
+              base::Unretained(g_browser_process->browser_policy_connector())),
+          browser_policy_manager,
+          std::make_unique<device_signals::OsSecurityInfoProvider>()));
 #else
   collectors.push_back(
       std::make_unique<device_signals::DesktopOsSignalsCollector>(

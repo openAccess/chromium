@@ -115,11 +115,12 @@ lens::mojom::GeometryPtr CreateGeometryMojomFromProto(
   gfx::SizeF box_size(
       bounding_box_response.width() * width_scale * zoom_scale,
       bounding_box_response.height() * height_scale * zoom_scale);
+
   // TODO(b/333562179): Replace this setting of the origin with just a point and
   // size that is passed to the WebUI.
-  gfx::PointF center_point =
-      gfx::PointF(bounding_box_response.center_x() * width_scale * zoom_scale,
-                  bounding_box_response.center_y() * height_scale * zoom_scale);
+  gfx::PointF center_point(
+      bounding_box_response.center_x() * width_scale * zoom_scale,
+      bounding_box_response.center_y() * height_scale * zoom_scale);
   center_rotated_box->box.set_origin(center_point);
   center_rotated_box->box.set_size(box_size);
   center_rotated_box->coordinate_type =
@@ -375,7 +376,6 @@ lens::mojom::TextPtr CreateTextMojomFromProto(
   lens::mojom::TextPtr text = lens::mojom::Text::New();
   text->content_language = response_text.content_language();
   if (response_text.has_text_layout()) {
-    const lens::TextLayout response_layout = response_text.text_layout();
     lens::mojom::TextLayoutPtr text_layout = lens::mojom::TextLayout::New();
     std::vector<lens::mojom::ParagraphPtr> paragraphs;
 

@@ -7,7 +7,6 @@
  * information.
  */
 
-import '/shared/settings/prefs/prefs.js';
 // <if expr="not is_chromeos">
 import '../relaunch_confirmation_dialog.js';
 // </if>
@@ -93,7 +92,9 @@ export class SettingsAboutPageElement extends SettingsAboutPageElementBase
       showRelaunch_: {type: Boolean},
       // </if>
 
+      // <if expr="_google_chrome">
       feedbackAllowedPref_: {type: Object},
+      // </if>
     };
   }
 
@@ -126,8 +127,10 @@ export class SettingsAboutPageElement extends SettingsAboutPageElementBase
   protected accessor showRelaunch_: boolean = false;
   // </if>
 
+  // <if expr="_google_chrome">
   protected accessor feedbackAllowedPref_:
       chrome.settingsPrivate.PrefObject<boolean>|undefined;
+  // </if>
 
   private aboutBrowserProxy_: AboutPageBrowserProxy =
       AboutPageBrowserProxyImpl.getInstance();

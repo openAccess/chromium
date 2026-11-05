@@ -38,6 +38,8 @@ class TabUnderlineManager::UiDelegateImpl
 
   bool IsShowing() const override { return is_showing_; }
 
+  bool CanShow() const override { return true; }
+
  private:
   raw_ptr<TabUnderlineManager> manager_;
   int tab_id_;
@@ -58,10 +60,6 @@ TabUnderlineManager::TabIndicatorContext::TabIndicatorContext(
     std::unique_ptr<glic::TabUnderlineController> c,
     std::unique_ptr<UiDelegateImpl> d)
     : delegate(std::move(d)), controller(std::move(c)) {}
-
-void TabUnderlineManager::Destroy(JNIEnv* env) {
-  delete this;
-}
 
 void TabUnderlineManager::RegisterTab(JNIEnv* env,
                                       const jni_zero::JavaRef<jobject>& jtab) {
@@ -106,10 +104,10 @@ void TabUnderlineManager::ResetAnimationCycle(int tab_id) {
   Java_TabUnderlineManager_resetAnimationCycle(env, java_obj_, tab_id);
 }
 
-static int64_t JNI_TabUnderlineManager_Init(
+static jni_zero::JniUniquePtr<TabUnderlineManager> JNI_TabUnderlineManager_Init(
     JNIEnv* env,
     const jni_zero::JavaRef<jobject>& obj) {
-  return reinterpret_cast<intptr_t>(new TabUnderlineManager(env, obj));
+  return jni_zero::MakeUnique<TabUnderlineManager>(env, obj);
 }
 
 }  // namespace android

@@ -23,12 +23,12 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_utils.h"
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
 #include "net/dns/mock_host_resolver.h"
+#include "third_party/blink/public/mojom/devtools/inspector_issue.mojom.h"
 
 namespace content {
 
@@ -69,6 +69,17 @@ void ReportDummyIssue(RenderFrameHostImpl* rfh) {
       rfh, std::move(inspector_issue));
 }
 
+void ReportWebInstallIssue(RenderFrameHostImpl* rfh,
+                           const GURL& manifest_url,
+                           blink::mojom::WebInstallIssueReason reason) {
+  auto details = blink::mojom::InspectorIssueDetails::New();
+  details->web_install_issue_details =
+      blink::mojom::WebInstallIssueDetails::New(manifest_url, reason);
+  auto issue_info = blink::mojom::InspectorIssueInfo::New(
+      blink::mojom::InspectorIssueCode::kWebInstallIssue, std::move(details));
+  rfh->ReportInspectorIssue(std::move(issue_info));
+}
+
 }  // namespace
 
 IN_PROC_BROWSER_TEST_F(DevToolsIssueStorageBrowserTest,
@@ -91,6 +102,28 @@ IN_PROC_BROWSER_TEST_F(DevToolsIssueStorageBrowserTest,
   ReportDummyIssue(main_frame_host());
   // Verify we have received the SameSite issue.
   WaitForDummyIssueNotification();
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsIssueStorageBrowserTest,
+                       DevToolsReceivesWebInstallIssueDetails) {
+  EXPECT_TRUE(NavigateToURL(shell(), GURL("about:blank")));
+  Attach();
+  SendCommandSync("Audits.enable");
+
+  const GURL manifest_url("https://example.com/manifest.json");
+  ReportWebInstallIssue(
+      main_frame_host(), manifest_url,
+      blink::mojom::WebInstallIssueReason::kManifestMissingId);
+
+  base::DictValue notification = WaitForNotification("Audits.issueAdded", true);
+  EXPECT_EQ(*notification.FindStringByDottedPath("issue.code"),
+            protocol::Audits::InspectorIssueCodeEnum::WebInstallIssue);
+  EXPECT_EQ(*notification.FindStringByDottedPath(
+                "issue.details.webInstallIssueDetails.manifestUrl"),
+            manifest_url.spec());
+  EXPECT_EQ(*notification.FindStringByDottedPath(
+                "issue.details.webInstallIssueDetails.reason"),
+            protocol::Audits::WebInstallIssueReasonEnum::ManifestMissingId);
 }
 
 IN_PROC_BROWSER_TEST_F(DevToolsIssueStorageBrowserTest,
@@ -315,49 +348,6 @@ IN_PROC_BROWSER_TEST_F(DevToolsIssueStorageWithPrerenderBrowserTest,
 
   // 4) Activate prerendering page.
   prerender_test_helper().NavigatePrimaryPage(prerender_url);
-
-  // 5) Open DevTools and enable Audits domain.
-  Attach();
-  SendCommandSync("Audits.enable");
-
-  // 6) Verify we have received the SameSite issue on the main target.
-  WaitForDummyIssueNotification();
-}
-
-class DevToolsIssueStorageFencedFrameTest
-    : public DevToolsIssueStorageBrowserTest {
- public:
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
- protected:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(DevToolsIssueStorageFencedFrameTest,
-                       DeleteFencedFrameWithIssue) {
-  // 1) Navigate to a page.
-  ASSERT_TRUE(embedded_test_server()->Start());
-  GURL test_url = embedded_test_server()->GetURL("/title1.html");
-  EXPECT_TRUE(NavigateToURL(shell(), test_url));
-
-  // 2) Create a fenced frame.
-  GURL fenced_frame_url =
-      embedded_test_server()->GetURL("/fenced_frames/title1.html");
-  content::RenderFrameHostImpl* fenced_frame_rfh =
-      static_cast<RenderFrameHostImpl*>(
-          fenced_frame_test_helper().CreateFencedFrame(
-              web_contents()->GetPrimaryMainFrame(), fenced_frame_url));
-  EXPECT_NE(nullptr, fenced_frame_rfh);
-
-  // 3) Report an empty SameSite cookie issue in the fenced frame.
-  ReportDummyIssue(fenced_frame_rfh);
-
-  // 4) Delete the fenced frame from the page. This should cause the issue to be
-  // re-assigned to the primary root frame.
-  EXPECT_TRUE(ExecJs(shell()->web_contents(),
-                     "document.querySelector('fencedframe').remove()"));
 
   // 5) Open DevTools and enable Audits domain.
   Attach();

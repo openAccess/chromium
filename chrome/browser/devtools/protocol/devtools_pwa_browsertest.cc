@@ -12,6 +12,7 @@
 
 #include "base/base_paths.h"
 #include "base/check.h"
+#include "base/command_line.h"
 #include "base/functional/function_ref.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
@@ -20,9 +21,15 @@
 #include "chrome/browser/badging/badge_manager.h"
 #include "chrome/browser/badging/badge_manager_factory.h"
 #include "chrome/browser/devtools/protocol/devtools_protocol_test_support.h"
+#include "chrome/common/chrome_switches.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chromeos/dbus/constants/dbus_switches.h"
+#endif
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/web_applications/proto/web_app.pb.h"
 #include "chrome/browser/web_applications/proto/web_app_os_integration_state.pb.h"
@@ -261,6 +268,34 @@ IN_PROC_BROWSER_TEST_F(PWAProtocolTestWithoutApp, GetOsAppState_CannotFindApp) {
       "PWA.getOsAppState",
       base::DictValue{}.Set("manifestId", "ThisIsNotAValidManifestId")));
   // Expect the input manifestId to be carried over by the error message.
+  AssertErrorMessageContains({"ThisIsNotAValidManifestId"});
+}
+
+IN_PROC_BROWSER_TEST_F(PWAProtocolTestWithoutApp,
+                       GetOsAppState_EnableDevToolsPwaHandlerSwitch) {
+  // Without AllowUnsafeOperations or --enable-devtools-pwa-handler, the PWA
+  // domain should not be registered on the session.
+  DetachProtocolClient();
+  SetAllowUnsafeOperations(false);
+  AttachToBrowserTarget();
+  ASSERT_FALSE(SendCommandSync(
+      "PWA.getOsAppState",
+      base::DictValue{}.Set("manifestId", "ThisIsNotAValidManifestId")));
+  AssertErrorMessageContains({"'PWA.getOsAppState' wasn't found"});
+
+  // With --enable-devtools-pwa-handler (and kSystemDevMode on ChromeOS),
+  // PWAHandler is registered even when AllowUnsafeOperations is false.
+  DetachProtocolClient();
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      switches::kEnableDevToolsPwaHandler);
+#if BUILDFLAG(IS_CHROMEOS)
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      chromeos::switches::kSystemDevMode);
+#endif
+  AttachToBrowserTarget();
+  ASSERT_FALSE(SendCommandSync(
+      "PWA.getOsAppState",
+      base::DictValue{}.Set("manifestId", "ThisIsNotAValidManifestId")));
   AssertErrorMessageContains({"ThisIsNotAValidManifestId"});
 }
 
@@ -1060,7 +1095,7 @@ IN_PROC_BROWSER_TEST_F(PWAProtocolTest,
       web_app::AppBrowserController::FindForWebApp(*browser()->GetProfile(),
                                                    app_id);
   auto* web_contents_after =
-      app_browser->GetFeatures().tab_strip_model()->GetActiveWebContents();
+      app_browser->GetTabStripModel()->GetActiveWebContents();
   EXPECT_NE(app_browser, browser());
   EXPECT_EQ(web_contents_before, web_contents_after);
   // Use a page target API to verify the WebContents is still attached.

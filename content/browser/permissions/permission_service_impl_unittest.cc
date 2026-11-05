@@ -36,7 +36,6 @@ namespace content {
 
 namespace {
 using testing::Eq;
-using testing::InvokeWithoutArgs;
 using testing::Not;
 
 constexpr char kTestUrl[] = "https://google.com";
@@ -204,7 +203,7 @@ TEST_F(PermissionServiceImplTest, AddPermissionObserver) {
   base::RepeatingClosure done = run_loop.QuitClosure();
   EXPECT_CALL(observer,
               OnPermissionStatusChange(Eq(std::ref(expected_new_status))))
-      .WillOnce(InvokeWithoutArgs([done]() { done.Run(); }));
+      .WillOnce([done]() { done.Run(); });
   run_loop.Run();
 }
 
@@ -337,6 +336,8 @@ TEST_F(PermissionServiceImplPageEmbeddedTest,
     Tag tag;
     std::vector<blink::mojom::PermissionName> permissions;
   } kCases[] = {
+      {Tag::kGeolocation, {}},
+      {Tag::kGeolocation, {blink::mojom::PermissionName::FULLSCREEN}},
       {Tag::kGeolocation, {blink::mojom::PermissionName::WEB_APP_INSTALLATION}},
       {Tag::kGeolocation, {blink::mojom::PermissionName::AUDIO_CAPTURE}},
       {Tag::kInstall, {blink::mojom::PermissionName::GEOLOCATION}},
@@ -366,6 +367,10 @@ TEST_F(PermissionServiceImplPageEmbeddedTest,
     Tag tag;
     std::vector<blink::mojom::PermissionName> permissions;
   } kCases[] = {
+      {Tag::kGeolocation, {}},
+      {Tag::kInstall, {}},
+      {Tag::kUserMedia, {}},
+      {Tag::kGeolocation, {blink::mojom::PermissionName::FULLSCREEN}},
       {Tag::kGeolocation, {blink::mojom::PermissionName::WEB_APP_INSTALLATION}},
       {Tag::kInstall, {blink::mojom::PermissionName::AUDIO_CAPTURE}},
       {Tag::kUserMedia, {blink::mojom::PermissionName::GEOLOCATION}},

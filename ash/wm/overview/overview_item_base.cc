@@ -112,7 +112,7 @@ void OverviewItemBase::RefreshShadowVisuals(bool shadow_visible) {
 
 void OverviewItemBase::UpdateShadowTypeForDrag(bool is_dragging) {
   if (shadow_) {
-    shadow_->SetType(is_dragging ? kDraggedShadowType : kDefaultShadowType);
+    shadow_->SetShadow(is_dragging ? kDraggedShadowType : kDefaultShadowType);
   }
 }
 
@@ -325,13 +325,13 @@ void OverviewItemBase::DestroyMirrorsForDragging() {
 
 views::Widget::InitParams OverviewItemBase::CreateOverviewItemWidgetParams(
     aura::Window* parent_window,
-    const std::string& widget_name,
+    std::string_view widget_name,
     bool accept_event) const {
   views::Widget::InitParams params(
       views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
       views::Widget::InitParams::TYPE_POPUP);
   params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
-  params.name = widget_name;
+  params.name = std::string(widget_name);
   params.accept_events = accept_event;
   params.parent = parent_window;
   params.init_properties_container.SetProperty(kHideInDeskMiniViewKey, true);
@@ -342,8 +342,7 @@ views::Widget::InitParams OverviewItemBase::CreateOverviewItemWidgetParams(
 }
 
 void OverviewItemBase::CreateShadow() {
-  shadow_ = SystemShadow::CreateShadowOnNinePatchLayer(
-      kDefaultShadowType, SystemShadow::LayerRecreatedCallback());
+  shadow_ = SystemDecoration::Create(kDefaultShadowType);
   auto* shadow_layer = shadow_->GetLayer();
   auto* widget_layer = item_widget_->GetLayer();
   widget_layer->Add(shadow_layer);

@@ -7,7 +7,6 @@
 #include <memory>
 #include <optional>
 
-#include "base/feature_list.h"
 #include "base/i18n/message_formatter.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -16,6 +15,7 @@
 #include "chrome/browser/page_info/page_info_features.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/page_info/about_this_site_icon.h"
 #include "chrome/browser/ui/page_info/chrome_page_info_ui_delegate.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/accessibility/non_accessible_image_view.h"
@@ -62,7 +62,7 @@
 #include "ui/views/widget/widget.h"
 
 #if BUILDFLAG(FULL_SAFE_BROWSING)
-#include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
+#include "chrome/browser/safe_browsing/password_protection/chrome_password_protection_service.h"
 #endif
 
 namespace {
@@ -119,6 +119,10 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoMainView, kMainLayoutElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoMainView, kPermissionsElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoMainView,
                                       kMerchantTrustElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoMainView,
+                                      kSeeExtensionsButtonElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PageInfoMainView,
+                                      kResetPermissionsButtonElementId);
 
 PageInfoMainView::ContainerView::ContainerView(bool set_extra_right_margin) {
   auto box_layout = std::make_unique<views::BoxLayout>(
@@ -142,10 +146,12 @@ PageInfoMainView::PageInfoMainView(
     ChromePageInfoUiDelegate* ui_delegate,
     PageInfoNavigationHandler* navigation_handler,
     base::OnceClosure initialized_callback,
-    bool allow_extended_site_info)
+    bool allow_extended_site_info,
+    base::RepeatingClosure open_extensions_menu_callback)
     : presenter_(presenter),
       ui_delegate_(ui_delegate),
-      navigation_handler_(navigation_handler) {
+      navigation_handler_(navigation_handler),
+      open_extensions_menu_callback_(std::move(open_extensions_menu_callback)) {
   ChromeLayoutProvider* layout_provider = ChromeLayoutProvider::Get();
 
   // In Harmony, the last view is a HoverButton, which overrides the bottom
@@ -158,9 +164,9 @@ PageInfoMainView::PageInfoMainView(
       views::BoxLayout::Orientation::kVertical,
       gfx::Insets::TLBR(0, 0, hover_list_spacing, 0)));
 
-  AddChildView(CreateBubbleHeaderView())
-      ->SetProperty(views::kMarginsKey,
-                    gfx::Insets::TLBR(0, 0, hover_list_spacing, 0));
+  header_view_ = AddChildView(CreateBubbleHeaderView());
+  header_view_->SetProperty(views::kMarginsKey,
+                            gfx::Insets::TLBR(0, 0, hover_list_spacing, 0));
 
 #if BUILDFLAG(IS_WIN) && BUILDFLAG(ENABLE_VR)
   page_feature_info_view_ = AddChildView(std::make_unique<views::View>());
@@ -175,6 +181,28 @@ PageInfoMainView::PageInfoMainView(
   SetProperty(views::kElementIdentifierKey, kMainLayoutElementId);
 
   site_settings_view_ = AddChildView(CreateContainerView());
+
+  if (open_extensions_menu_callback_) {
+    see_extensions_button_ =
+        site_settings_view_->AddChildView(std::make_unique<RichHoverButton>(
+            base::BindRepeating(&PageInfoMainView::OnSeeExtensionsClicked,
+                                base::Unretained(this)),
+            PageInfoViewFactory::GetExtensionIcon(),
+            /*title_text=*/
+            l10n_util::GetStringUTF16(IDS_PAGE_INFO_EXTENSIONS),
+            /*subtitle_text=*/std::u16string(),
+            PageInfoViewFactory::GetOpenSubpageIcon()));
+    see_extensions_button_->SetTooltipText(
+        l10n_util::GetStringUTF16(IDS_PAGE_INFO_EXTENSIONS));
+    see_extensions_button_->SetID(
+        PageInfoViewFactory::VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_SEE_EXTENSIONS);
+    see_extensions_button_->SetProperty(views::kElementIdentifierKey,
+                                        kSeeExtensionsButtonElementId);
+    see_extensions_button_->SetTitleTextStyleAndColor(
+        views::style::STYLE_BODY_3_MEDIUM, kColorPageInfoForeground);
+    see_extensions_button_->SetSubtitleTextStyleAndColor(
+        views::style::STYLE_BODY_4, kColorPageInfoSubtitleForeground);
+  }
 
   int link_text_id = 0;
   int tooltip_text_id = 0;
@@ -231,8 +259,8 @@ void PageInfoMainView::SetCookieInfo(const CookiesInfo& cookie_info) {
     return;
   }
 
-  cookie_button_ =
-      site_settings_view_->AddChildView(std::make_unique<RichHoverButton>(
+  cookie_button_ = site_settings_view_->AddChildViewAt(
+      std::make_unique<RichHoverButton>(
           base::BindRepeating(&PageInfoNavigationHandler::OpenCookiesPage,
                               base::Unretained(navigation_handler_)),
           PageInfoViewFactory::GetImageModel(
@@ -241,7 +269,8 @@ void PageInfoMainView::SetCookieInfo(const CookiesInfo& cookie_info) {
                   : vector_icons::kCookieChromeRefreshOldIcon),
           l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_HEADER),
           /*subtitle_text=*/std::u16string(),
-          PageInfoViewFactory::GetOpenSubpageIcon()));
+          PageInfoViewFactory::GetOpenSubpageIcon()),
+      0);
   cookie_button_->SetTooltipText(
       l10n_util::GetStringUTF16(IDS_PAGE_INFO_COOKIES_TOOLTIP));
   cookie_button_->SetID(
@@ -254,25 +283,35 @@ void PageInfoMainView::SetCookieInfo(const CookiesInfo& cookie_info) {
       views::style::STYLE_BODY_4, kColorPageInfoSubtitleForeground);
 }
 
+void PageInfoMainView::OnSeeExtensionsClicked() {
+  presenter_->RecordPageInfoAction(page_info::PAGE_INFO_EXTENSIONS_MENU_OPENED);
+  base::RepeatingClosure callback = open_extensions_menu_callback_;
+  if (callback) {
+    callback.Run();
+  }
+  if (navigation_handler_) {
+    navigation_handler_->CloseBubble();
+  }
+}
+
 void PageInfoMainView::SetPermissionInfo(
     const PermissionInfoList& permission_info_list,
     ChosenObjectInfoList chosen_object_info_list) {
   if (permission_info_list.empty() && chosen_object_info_list.empty()) {
     toggle_rows_.clear();
     syncable_permission_rows_.clear();
+    chosen_object_rows_.clear();
+    reset_button_ = nullptr;
     permissions_view_->RemoveAllChildViews();
     return;
   }
 
-  // When LHS indicators are enabled, permissions usage in PageInfo should be
-  // updated to reflect activity indicators.
-  if (base::FeatureList::IsEnabled(
-          content_settings::features::kLeftHandSideActivityIndicators)) {
-    for (const auto& permission : permission_info_list) {
-      auto it = syncable_permission_rows_.find(permission.type);
-      if (it != syncable_permission_rows_.end()) {
-        it->second->UpdatePermission(permission);
-      }
+  // Permissions usage in PageInfo should be updated to reflect activity
+  // indicators.
+  for (const auto& permission : permission_info_list) {
+    auto it = syncable_permission_rows_.find(permission.type);
+    if (it != syncable_permission_rows_.end()) {
+      it->second->UpdatePermission(permission);
     }
   }
 
@@ -359,7 +398,7 @@ void PageInfoMainView::SetPermissionInfo(
     auto object_view = std::make_unique<ChosenObjectView>(
         std::move(object),
         presenter_->GetChooserContextFromUIInfo(*object->ui_info)
-            ->GetObjectDisplayName(object->chooser_object->value));
+            ->GetObjectDisplayNameForUI(object->chooser_object->value));
     object_view->AddObserver(this);
     chosen_object_rows_.push_back(
         content_view->AddChildView(std::move(object_view)));
@@ -368,11 +407,15 @@ void PageInfoMainView::SetPermissionInfo(
   reset_button_ = content_view->AddChildView(
       std::make_unique<views::MdTextButton>(base::BindRepeating(
           [=](PageInfoMainView* view) {
-            for (PermissionToggleRowView* toggle_row : view->toggle_rows_) {
-              toggle_row->ResetPermission();
+            // Iterate by index because `ResetPermission()` can synchronously
+            // trigger `SetPermissionInfo()` when the last active permission or
+            // chosen object is revoked, which clears `toggle_rows_` and
+            // `chosen_object_rows_` and destroys all child views.
+            for (size_t i = 0; i < view->toggle_rows_.size(); ++i) {
+              view->toggle_rows_[i]->ResetPermission();
             }
-            for (ChosenObjectView* object_row : view->chosen_object_rows_) {
-              object_row->ResetPermission();
+            for (size_t i = 0; i < view->chosen_object_rows_.size(); ++i) {
+              view->chosen_object_rows_[i]->ResetPermission();
             }
             view->chosen_object_rows_.clear();
             view->PreferredSizeChanged();
@@ -393,6 +436,8 @@ void PageInfoMainView::SetPermissionInfo(
       gfx::Insets::TLBR(controls_spacing, side_offset, controls_spacing, 0));
   reset_button_->SetID(
       PageInfoViewFactory::VIEW_ID_PAGE_INFO_RESET_PERMISSIONS_BUTTON);
+  reset_button_->SetProperty(views::kElementIdentifierKey,
+                             kResetPermissionsButtonElementId);
 
   // If a permission is in a non-default state or chooser object is present,
   // show reset button.
@@ -436,6 +481,8 @@ void PageInfoMainView::SetIdentityInfo(const IdentityInfo& identity_info) {
 
   title_->SetText(presenter_->GetSubjectNameForDisplay());
 
+  connection_button_ = nullptr;
+  security_content_view_ = nullptr;
   security_container_view_->RemoveAllChildViews();
   extended_site_info_section_->SetVisible(false);
   if (identity_info.safe_browsing_status ==
@@ -625,24 +672,23 @@ void PageInfoMainView::OnMerchantTrustDataFetched(
 
 gfx::Size PageInfoMainView::CalculatePreferredSize(
     const views::SizeBounds& available_size) const {
-  if (site_settings_view_ == nullptr && permissions_view_ == nullptr &&
-      security_container_view_ == nullptr) {
+  if (children().empty()) {
     return views::View::CalculatePreferredSize(available_size);
   }
 
   int width = 0;
-  if (site_settings_view_) {
-    width = std::max(width, site_settings_view_->GetPreferredSize().width());
+  if (available_size.width().is_bounded()) {
+    width = available_size.width().value();
+  } else {
+    // Exclude `header_view_` because it contains the site URL/origin, which
+    // can be very long and should not expand the bubble's width.
+    for (views::View* child : children()) {
+      if (child != header_view_ && child->GetVisible()) {
+        width = std::max(width, child->GetPreferredSize({}).width());
+      }
+    }
   }
 
-  if (permissions_view_) {
-    width = std::max(width, permissions_view_->GetPreferredSize().width());
-  }
-
-  if (security_container_view_) {
-    width =
-        std::max(width, security_container_view_->GetPreferredSize().width());
-  }
   return gfx::Size(width,
                    GetLayoutManager()->GetPreferredHeightForWidth(this, width));
 }
@@ -709,8 +755,7 @@ std::unique_ptr<views::View> PageInfoMainView::CreateAboutThisSiteButton(
             view->GetWidget()->Close();
           },
           this, GURL(info.more_about().url()), info.has_description()),
-      PageInfoViewFactory::GetImageModel(
-          PageInfoViewFactory::GetAboutThisSiteVectorIcon()),
+      PageInfoViewFactory::GetImageModel(page_info::GetAboutThisSiteIcon()),
       title, description, PageInfoViewFactory::GetLaunchIcon());
   about_this_site_button->SetID(
       PageInfoViewFactory::VIEW_ID_PAGE_INFO_ABOUT_THIS_SITE_BUTTON);
@@ -872,6 +917,9 @@ std::unique_ptr<views::View> PageInfoMainView::CreateSuspiciousSiteBannerView(
           l10n_util::GetStringUTF16(
               IDS_PAGE_INFO_SUSPICIOUS_SITE_BUTTON_MARK_AS_SAFE)));
   mark_as_safe_btn->SetStyle(ui::ButtonStyle::kTonal);
+  mark_as_safe_btn->SetID(
+      PageInfoViewFactory::
+          VIEW_ID_PAGE_INFO_SUSPICIOUS_SITE_MARK_AS_SAFE_BUTTON);
 
   auto* back_to_safety_btn =
       buttons_row->AddChildView(std::make_unique<views::MdTextButton>(
@@ -886,6 +934,9 @@ std::unique_ptr<views::View> PageInfoMainView::CreateSuspiciousSiteBannerView(
           l10n_util::GetStringUTF16(
               IDS_PAGE_INFO_SUSPICIOUS_SITE_BUTTON_BACK_TO_SAFETY)));
   back_to_safety_btn->SetStyle(ui::ButtonStyle::kProminent);
+  back_to_safety_btn->SetID(
+      PageInfoViewFactory::
+          VIEW_ID_PAGE_INFO_SUSPICIOUS_SITE_BACK_TO_SAFETY_BUTTON);
 
   return banner;
 }

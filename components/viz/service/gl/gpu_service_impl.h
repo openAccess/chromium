@@ -6,8 +6,11 @@
 #define COMPONENTS_VIZ_SERVICE_GL_GPU_SERVICE_IMPL_H_
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
+#include "base/byte_size.h"
 #include "base/clang_profiling_buildflags.h"
 #include "base/compiler_specific.h"
 #include "base/functional/callback.h"
@@ -47,6 +50,7 @@
 #include "services/viz/privileged/mojom/gl/gpu_host.mojom.h"
 #include "services/viz/privileged/mojom/gl/gpu_service.mojom.h"
 #include "services/viz/privileged/mojom/viz_main.mojom.h"
+#include "services/webnn/public/mojom/webnn_browser_host.mojom.h"
 #include "services/webnn/public/mojom/webnn_context_provider.mojom.h"
 #include "services/webnn/public/mojom/webnn_service_introspection.mojom.h"
 #include "skia/buildflags.h"
@@ -58,6 +62,12 @@
 #include "ui/gl/direct_composition_support.h"
 #endif  // BUILDFLAG(IS_WIN)
 
+#if BUILDFLAG(IS_ANDROID)
+namespace base::android {
+class ScudoPurgeCoordinator;
+}  // namespace base::android
+#endif  // BUILDFLAG(IS_ANDROID)
+
 namespace gpu {
 class DawnContextProvider;
 class GpuWatchdogThread;
@@ -66,6 +76,7 @@ class SharedContextState;
 class SharedImageManager;
 class SyncPointManager;
 class VulkanImplementation;
+class VulkanContextProvider;
 }  // namespace gpu
 
 namespace gpu::webgpu {
@@ -81,8 +92,6 @@ class WebNNContextProviderImpl;
 }  // namespace webnn
 
 namespace viz {
-
-class VulkanContextProvider;
 
 // This runs in the GPU process, and communicates with the gpu host (which is
 // the window server) over the mojom APIs. This is responsible for setting up
@@ -104,6 +113,12 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
     std::unique_ptr<gpu::GpuWatchdogThread> watchdog_thread;
     scoped_refptr<base::SingleThreadTaskRunner> io_runner;
     raw_ptr<gpu::VulkanImplementation> vulkan_implementation = nullptr;
+    // Binds a receiver for the interface the WebNN service uses to broker
+    // operations through the browser (see webnn::mojom::WebNNBrowserHost),
+    // invoked on demand when WebNN is first used.
+    base::OnceCallback<void(
+        mojo::PendingReceiver<webnn::mojom::WebNNBrowserHost>)>
+        bind_webnn_browser_host;
 #if BUILDFLAG(SKIA_USE_DAWN)
     std::unique_ptr<gpu::DawnContextProvider> dawn_context_provider;
 #endif
@@ -163,8 +178,7 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
   // mojom::GpuService:
   void EstablishGpuChannel(int32_t client_id,
                            uint64_t client_tracing_id,
-                           bool is_gpu_host,
-                           bool enable_extra_handles_validation,
+                           mojom::GpuClientType client_type,
                            mojo::ScopedMessagePipeHandle channel_handle,
                            EstablishGpuChannelCallback callback) override;
   void SetChannelClientPid(int32_t client_id,
@@ -226,7 +240,6 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
                   const std::string& key,
                   const std::string& data) override;
   void WakeUpGpu() override;
-  void GpuSwitched() override;
   void DisplayAdded() override;
   void DisplayRemoved() override;
   void DisplayMetricsChanged() override;
@@ -356,11 +369,13 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
   }
 
 #if BUILDFLAG(ENABLE_VULKAN)
-  VulkanContextProvider* vulkan_context_provider() const {
+  gpu::VulkanContextProvider* vulkan_context_provider() const {
     return vulkan_context_provider_.get();
   }
 #else
-  VulkanContextProvider* vulkan_context_provider() const { return nullptr; }
+  gpu::VulkanContextProvider* vulkan_context_provider() const {
+    return nullptr;
+  }
 #endif
 
 #if BUILDFLAG(SKIA_USE_DAWN)
@@ -477,6 +492,13 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
   gfx::mojom::DXGIInfoPtr dxgi_info_;
 #endif
 
+  // Dawn info collection is expensive, as it enumerates adapters on every
+  // backend and creates a device on each of them. The results do not change
+  // over the lifetime of the GPU process, so collect them at most once per
+  // mode. Only accessed on the main thread.
+  std::optional<std::vector<std::string>> dawn_info_list_;
+  bool dawn_metrics_collected_ = false;
+
   // What we would have gotten if we haven't fallen back to SwiftShader or
   // pure software (in the viz case).
   std::optional<gpu::GPUInfo> gpu_info_for_hardware_gpu_;
@@ -488,6 +510,12 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
   scoped_refptr<gpu::RefCountedGpuProcessShmCount> use_shader_cache_shm_count_;
 
   mojo::SharedRemote<mojom::GpuHost> gpu_host_;
+
+  // Stored from InitParams and run when the WebNNContextProviderImpl is lazily
+  // created, binding the WebNNBrowserHost pipe on first WebNN use.
+  base::OnceCallback<void(
+      mojo::PendingReceiver<webnn::mojom::WebNNBrowserHost>)>
+      bind_webnn_browser_host_;
   std::unique_ptr<gpu::GpuChannelManager> gpu_channel_manager_;
   std::unique_ptr<media::MediaGpuChannelManager> media_gpu_channel_manager_;
 
@@ -516,7 +544,7 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
 
 #if BUILDFLAG(ENABLE_VULKAN)
   raw_ptr<gpu::VulkanImplementation> vulkan_implementation_;
-  scoped_refptr<VulkanContextProvider> vulkan_context_provider_;
+  scoped_refptr<gpu::VulkanContextProvider> vulkan_context_provider_;
 #endif
 
 #if BUILDFLAG(SKIA_USE_DAWN)
@@ -526,6 +554,10 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
   std::unique_ptr<webnn::WebNNContextProviderImpl> webnn_context_provider_;
 
   gpu::GpuPersistentCacheCollection persistent_caches_;
+
+  // Total size of the persistent cache databases passed to
+  // SetChannelPersistentCachePendingBackend(). Only accessed on the IO thread.
+  base::ByteSize persistent_cache_db_size_;
 
   // An event that will be signalled when we shutdown. On some platforms it
   // comes from external sources.
@@ -559,6 +591,12 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
   // out of the finch experiment as ::LoadedBlob() is not called in the next
   // browser start after the disk cache is cleared.
   const bool clear_shader_cache_;
+
+#if BUILDFLAG(IS_ANDROID)
+  // Owned and accessed exclusively on main_runner_.
+  std::unique_ptr<base::android::ScudoPurgeCoordinator>
+      scudo_purge_coordinator_;
+#endif
 
   base::WeakPtr<GpuServiceImpl> weak_ptr_;
   base::WeakPtrFactory<GpuServiceImpl> weak_ptr_factory_{this};

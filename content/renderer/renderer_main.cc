@@ -13,7 +13,9 @@
 #include "base/debug/debugger.h"
 #include "base/debug/leak_annotations.h"
 #include "base/feature_list.h"
-#include "base/i18n/rtl.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/message_loop/message_pump.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/message_loop/message_pump_wakeup_counter.h"
@@ -167,7 +169,11 @@ int RendererMain(MainFunctionParams parameters) {
   if (command_line.HasSwitch(switches::kLang)) {
     const std::string locale =
         command_line.GetSwitchValueASCII(switches::kLang);
-    base::i18n::SetICUDefaultLocale(locale);
+    std::optional<base::i18n::LanguageTag> lang_tag =
+        base::i18n::GetLanguageTagFromString(locale);
+    CHECK(lang_tag.has_value()) << "Invalid language tag: " << locale;
+    base::i18n::SetDefaultIcuLocale(base::i18n::DefaultIcuLocaleSetterKey(),
+                                    *lang_tag);
   }
 
   // When we start the renderer on ChromeOS if the system has core scheduling
@@ -220,7 +226,7 @@ int RendererMain(MainFunctionParams parameters) {
   // zygote_main_linux.cc.  However, calling multiple times from the same thread
   // is OK.
   InitializeWebRtcModuleBeforeSandbox();
-  webnn::PreSandboxWebNNInitialization();
+  webnn::PreSandboxWebNNInitialization(/*is_gpu_process=*/false);
 
   std::optional<LastResortGCPolicy> last_resort_gc_policy;
   if (base::FeatureList::IsEnabled(kMemoryCoordinatorLastResortGC)) {
@@ -281,12 +287,9 @@ int RendererMain(MainFunctionParams parameters) {
 
 #if BUILDFLAG(IS_WIN)
     // Now that Mojo is initialized, but before the sandbox is enabled, set up
-    // DirectReceiver.
-    if (base::FeatureList::IsEnabled(
-            blink::features::kDirectCompositorThreadIpc)) {
-      // Pre-initialize a transport since a feature that will use it is enabled.
-      mojo::CreateDirectReceiverTransportBeforeSandbox();
-    }
+    // DirectReceiver. Pre-initialize a transport since DirectReceiver is
+    // supported.
+    mojo::CreateDirectReceiverTransportBeforeSandbox();
 #endif  // BUILDFLAG(IS_WIN)
 
     if (need_sandbox) {

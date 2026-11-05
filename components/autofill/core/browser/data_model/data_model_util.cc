@@ -23,7 +23,6 @@
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "components/autofill/core/common/autofill_clock.h"
@@ -33,7 +32,6 @@
 #include "third_party/icu/source/common/unicode/unistr.h"
 #include "third_party/icu/source/common/unicode/utypes.h"
 #include "third_party/icu/source/i18n/unicode/dtfmtsym.h"
-#include "third_party/icu/source/i18n/unicode/dtptngen.h"
 
 namespace autofill::data_util {
 
@@ -374,39 +372,26 @@ bool ParseExpirationDate(std::u16string_view text,
     return false;
   }
 
-  std::u16string month_local;
-  std::u16string year_local;
-
-  // Check for a separator.
-  std::u16string found_separator;
-  const std::vector<std::u16string> kSeparators{u"-", u"/", u"|"};
-  for (const std::u16string& separator : kSeparators) {
-    if (text.find(separator) != std::u16string::npos) {
-      found_separator = separator;
-      break;
-    }
-  }
-
-  if (!found_separator.empty()) {
-    std::vector<std::u16string> month_year = base::SplitString(
-        text, found_separator, base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
-    if (month_year.size() != 2) {
-      return false;
-    }
-    month_local = month_year[0];
-    year_local = month_year[1];
+  const size_t separator_pos = text.find_first_of(u"-/|");
+  std::u16string_view month_result;
+  std::u16string_view year_result;
+  if (separator_pos != std::u16string_view::npos) {
+    month_result =
+        base::TrimWhitespace(text.substr(0, separator_pos), base::TRIM_ALL);
+    year_result =
+        base::TrimWhitespace(text.substr(separator_pos + 1), base::TRIM_ALL);
   } else if (text.size() % 2 == 0) {
-    month_local = text.substr(0, 2);
-    year_local = text.substr(2);
+    month_result = text.substr(0, 2);
+    year_result = text.substr(2);
   } else {
     return false;
   }
 
   if (month) {
-    *month = std::move(month_local);
+    *month = month_result;
   }
   if (year) {
-    *year = std::move(year_local);
+    *year = year_result;
   }
   return true;
 }
@@ -444,26 +429,6 @@ std::u16string FindPossiblePhoneCountryCode(std::u16string_view text) {
   }
 
   return std::u16string();
-}
-
-std::optional<std::u16string> LocalizePattern(std::u16string_view pattern,
-                                              std::string_view locale) {
-  UErrorCode status = U_ZERO_ERROR;
-  icu::Locale icu_locale(std::string(locale).c_str());
-  if (icu_locale.isBogus()) {
-    return std::nullopt;
-  }
-  std::unique_ptr<icu::DateTimePatternGenerator> generator(
-      icu::DateTimePatternGenerator::createInstance(icu_locale, status));
-  if (U_FAILURE(status)) {
-    return std::nullopt;
-  }
-  icu::UnicodeString generated_pattern =
-      generator->getBestPattern(pattern, status);
-  if (U_FAILURE(status)) {
-    return std::nullopt;
-  }
-  return base::i18n::UnicodeStringToString16(generated_pattern);
 }
 
 }  // namespace autofill::data_util

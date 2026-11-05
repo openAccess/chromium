@@ -3,8 +3,6 @@
 # found in the LICENSE file.
 
 import unittest
-import sys
-import os
 
 
 # Mocking the mojom objects for testing _GetQualifiedName
@@ -31,7 +29,7 @@ class MockKind:
 
 
 # Import the functions to test
-from generators import mojom_rust_generator
+from generators import mojom_rust_generator  # noqa: E402
 
 
 class TestGetQualifiedName(unittest.TestCase):
@@ -110,6 +108,64 @@ class TestGetQualifiedName(unittest.TestCase):
       ty, self.mod_a, self.source_to_target_map
     )
     self.assertEqual(name, 'b_b::b::MyStruct_MyEnum')
+
+
+class TestMojomTypeToRustTypeUniversalBoxing(unittest.TestCase):
+  def setUp(self):
+    self.source_to_target_map = {
+      'a.mojom': '//a:a',
+    }
+    self.mojom = mojom_rust_generator.mojom
+    self.mod_a = self.mojom.Module('a.mojom', 'a')
+
+  def test_nullable_struct_boxed(self):
+    s = self.mojom.Struct('Foo', module=self.mod_a)
+    s.name = 'Foo'
+    rust_ty = mojom_rust_generator._MojomTypeToRustType(
+      s.MakeNullableKind(), self.mod_a, self.source_to_target_map, {}
+    )
+    self.assertEqual(rust_ty, 'Option<Box<Foo>>')
+
+  def test_non_nullable_struct_not_boxed(self):
+    s = self.mojom.Struct('Foo', module=self.mod_a)
+    s.name = 'Foo'
+    rust_ty = mojom_rust_generator._MojomTypeToRustType(
+      s, self.mod_a, self.source_to_target_map, {}
+    )
+    self.assertEqual(rust_ty, 'Foo')
+
+  def test_nullable_union_boxed(self):
+    u = self.mojom.Union('MyUnion', module=self.mod_a)
+    u.name = 'MyUnion'
+    rust_ty = mojom_rust_generator._MojomTypeToRustType(
+      u.MakeNullableKind(), self.mod_a, self.source_to_target_map, {}
+    )
+    self.assertEqual(rust_ty, 'Option<Box<MyUnion>>')
+
+  def test_nullable_primitive_not_boxed(self):
+    rust_ty = mojom_rust_generator._MojomTypeToRustType(
+      self.mojom.INT32.MakeNullableKind(),
+      self.mod_a,
+      self.source_to_target_map,
+      {},
+    )
+    self.assertEqual(rust_ty, 'Option<i32>')
+
+  def test_nullable_array_not_boxed(self):
+    arr = self.mojom.Array(self.mojom.INT32)
+    rust_ty = mojom_rust_generator._MojomTypeToRustType(
+      arr.MakeNullableKind(), self.mod_a, self.source_to_target_map, {}
+    )
+    self.assertEqual(rust_ty, 'Option<Vec<i32>>')
+
+  def test_array_of_nullable_struct_elements_boxed(self):
+    s = self.mojom.Struct('Foo', module=self.mod_a)
+    s.name = 'Foo'
+    arr = self.mojom.Array(s.MakeNullableKind())
+    rust_ty = mojom_rust_generator._MojomTypeToRustType(
+      arr, self.mod_a, self.source_to_target_map, {}
+    )
+    self.assertEqual(rust_ty, 'Vec<Option<Box<Foo>>>')
 
 
 if __name__ == '__main__':

@@ -58,6 +58,7 @@ cc_library(
         "//absl/base",
         "//absl/base:config",
         "//absl/base:core_headers",
+        "//absl/base:cycleclock_internal",
         "//absl/base:raw_logging_internal",
         "//absl/numeric:int128",
         "//absl/strings",
@@ -87,6 +88,23 @@ cc_library(
         "//absl/base:nullability",
         "//absl/base:raw_logging_internal",
         "//absl/synchronization",
+    ],
+)
+
+cc_library(
+    name = "mock_clock",
+    testonly = True,
+    hdrs = ["mock_clock.h"],
+    copts = ABSL_DEFAULT_COPTS,
+    linkopts = ABSL_DEFAULT_LINKOPTS,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":clock_interface",
+        ":time",
+        "//absl/base:config",
+        "//absl/base:core_headers",
+        "//absl/synchronization",
+        "@googletest//:gtest",
     ],
 )
 
@@ -174,12 +192,31 @@ cc_test(
 )
 
 cc_test(
+    name = "mock_clock_test",
+    srcs = [
+        "mock_clock_test.cc",
+    ],
+    copts = ABSL_TEST_COPTS,
+    linkopts = ABSL_DEFAULT_LINKOPTS,
+    deps = [
+        ":clock_interface",
+        ":mock_clock",
+        ":time",
+        "//absl/base:core_headers",
+        "//absl/synchronization",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "simulated_clock_test",
     srcs = [
         "simulated_clock_test.cc",
     ],
     copts = ABSL_TEST_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
+    shard_count = 4,
     deps = [
         ":clock_interface",
         ":simulated_clock",
@@ -215,6 +252,7 @@ cc_test(
         ":time",
         "//absl/flags:flag",
         "//absl/flags:reflection",
+        "//absl/strings:string_view",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],

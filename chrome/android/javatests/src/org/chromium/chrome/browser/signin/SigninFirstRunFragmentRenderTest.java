@@ -41,15 +41,16 @@ import org.chromium.base.test.params.ParameterProvider;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.ApplicationTestUtils;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.firstrun.FirstRunPageDelegate;
+import org.chromium.chrome.browser.firstrun.FirstRunStatus;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.prefs.LocalStatePrefs;
@@ -57,7 +58,6 @@ import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManagerImp
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.signin.SigninFirstRunFragmentTest.CustomSigninFirstRunFragment;
-import org.chromium.chrome.browser.signin.services.SigninChecker;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.util.ActivityTestUtils;
@@ -86,7 +86,7 @@ import java.util.List;
 @ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
-@DoNotBatch(reason = "Relies on global state")
+@Batch(Batch.PER_CLASS)
 @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511287860
 public class SigninFirstRunFragmentRenderTest {
     /** Parameter provider for night mode state and device orientation. */
@@ -114,25 +114,25 @@ public class SigninFirstRunFragmentRenderTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Rule
+    @Rule(order = 0)
+    public final SigninTestRule mSigninTestRule = SigninTestRule.createWithCleanups();
+
+    @Rule(order = 1)
     public BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
     @Rule
     public final RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(5)
+                    .setRevision(6)
                     .setBugComponent(RenderTestRule.Component.UI_BROWSER_FIRST_RUN)
                     .build();
-
-    @Rule public final SigninTestRule mSigninTestRule = new SigninTestRule();
 
     @Mock private ProfileProvider mProfileProviderMock;
     @Mock private ExternalAuthUtils mExternalAuthUtilsMock;
     @Mock private FirstRunPageDelegate mFirstRunPageDelegateMock;
     @Mock private PolicyLoadListener mPolicyLoadListenerMock;
     @Mock private SyncService mSyncService;
-    @Mock private SigninChecker mSigninCheckerMock;
     @Mock private PrivacyPreferencesManagerImpl mPrivacyPreferencesManagerMock;
     @Mock private UserPrefs.Natives mUserPrefsJni;
     @Mock private PrefService mPrefService;
@@ -155,6 +155,7 @@ public class SigninFirstRunFragmentRenderTest {
 
     @Before
     public void setUp() {
+        FirstRunStatus.setFirstRunTriggeredForTesting(true);
         NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
         mActivityTestRule.launchActivity(null);
         OneshotSupplierImpl<ProfileProvider> profileSupplier =
@@ -172,7 +173,6 @@ public class SigninFirstRunFragmentRenderTest {
         when(mExternalAuthUtilsMock.canUseGooglePlayServices()).thenReturn(true);
         ExternalAuthUtils.setInstanceForTesting(mExternalAuthUtilsMock);
         SyncServiceFactory.setInstanceForTesting(mSyncService);
-        SigninCheckerProvider.setForTests(mSigninCheckerMock);
         when(mPolicyLoadListenerMock.get()).thenReturn(false);
         when(mFirstRunPageDelegateMock.getPolicyLoadListener()).thenReturn(mPolicyLoadListenerMock);
         UserPrefsJni.setInstanceForTesting(mUserPrefsJni);
@@ -197,6 +197,10 @@ public class SigninFirstRunFragmentRenderTest {
 
     @After
     public void tearDown() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    LocalStatePrefs.get().clearPref(Pref.FORCE_BROWSER_SIGNIN);
+                });
         ActivityTestUtils.clearActivityOrientation(mActivityTestRule.getActivity());
     }
 

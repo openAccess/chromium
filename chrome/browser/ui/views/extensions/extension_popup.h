@@ -12,7 +12,8 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/extensions/extension_view_views.h"
-#include "content/public/browser/devtools_agent_host_observer.h"
+#include "chrome/browser/ui/views/extensions/security_dialog_tracker.h"
+#include "components/performance_manager/public/decorators/page_live_state_decorator.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/extension_registry.h"
@@ -26,7 +27,6 @@ class ExtensionViewViews;
 
 namespace content {
 class BrowserContext;
-class DevToolsAgentHost;
 }  // namespace content
 
 namespace extensions {
@@ -42,15 +42,15 @@ class ExtensionPopup : public views::BubbleDialogDelegateView,
                        public extensions::ExtensionRegistryObserver,
                        public content::WebContentsObserver,
                        public TabStripModelObserver,
-                       public content::DevToolsAgentHostObserver {
+                       public extensions::SecurityDialogTracker::Observer {
   METADATA_HEADER(ExtensionPopup, views::BubbleDialogDelegateView)
 
  public:
   // The min/max height of popups.
   // The minimum is just a little larger than the size of the button itself.
   // The maximum is an arbitrary number and should be smaller than most screens.
-  static constexpr gfx::Size kMinSize = {25, 25};
-  static constexpr gfx::Size kMaxSize = {800, 600};
+  static constexpr gfx::Size kMinSize = extensions::kExtensionPopupMinSize;
+  static constexpr gfx::Size kMaxSize = extensions::kExtensionPopupMaxSize;
 
   // Creates and shows a popup with the given |host| positioned adjacent to
   // |anchor|.
@@ -102,11 +102,8 @@ class ExtensionPopup : public views::BubbleDialogDelegateView,
       const TabStripModelChange& change,
       const TabStripSelectionChange& selection) override;
 
-  // content::DevToolsAgentHostObserver:
-  void DevToolsAgentHostAttached(
-      content::DevToolsAgentHost* agent_host) override;
-  void DevToolsAgentHostDetached(
-      content::DevToolsAgentHost* agent_host) override;
+  // extensions::SecurityDialogTracker::Observer:
+  void OnSecurityDialogAdded(views::Widget* widget) override;
 
   // Closes the popup immediately, if possible. On Mac, if a nested
   // run loop is running, schedule a deferred close for after the
@@ -118,8 +115,6 @@ class ExtensionPopup : public views::BubbleDialogDelegateView,
   static ExtensionPopup* last_popup_for_testing();
 
  private:
-  class ScopedDevToolsAgentHostObservation;
-
   ExtensionPopup(BrowserWindowInterface* browser,
                  std::unique_ptr<extensions::ExtensionViewHost> host,
                  views::BubbleAnchor anchor,
@@ -135,6 +130,10 @@ class ExtensionPopup : public views::BubbleDialogDelegateView,
   //   2. an open web dialog, e.g. JS alert.
   void CloseUnlessBlockedByInspectionOrJSDialog();
 
+  // Closes the bubble if there is a security dialog present in the browser
+  // window.
+  void CloseIfSecurityDialogPresent();
+
   // Handles a signal from the extension host to close.
   void HandleCloseExtensionHost(extensions::ExtensionHost* host);
 
@@ -143,27 +142,28 @@ class ExtensionPopup : public views::BubbleDialogDelegateView,
   // The contained host for the view.
   std::unique_ptr<extensions::ExtensionViewHost> host_;
 
+  // Boosts the page's priority while it loads before the popup is shown.
+  std::unique_ptr<
+      performance_manager::PageLiveStateDecorator::ScopedWithheldFromView>
+      withheld_from_view_;
+
   raw_ptr<ExtensionViewViews> extension_view_;
 
   base::ScopedObservation<extensions::ExtensionRegistry,
                           extensions::ExtensionRegistryObserver>
       extension_registry_observation_{this};
 
+  base::ScopedObservation<extensions::SecurityDialogTracker,
+                          extensions::SecurityDialogTracker::Observer>
+      security_dialog_tracker_observation_{this};
+
   // Action (as requested by the caller) to be done when the popup gets shown.
   const PopupShowAction show_action_;
-
-  // Whether DevTools is currently inspecting the popup contents.
-  bool inspected_ = false;
 
   ShowPopupCallback shown_callback_;
 
   base::ScopedObservation<views::Widget, views::WidgetObserver>
       anchor_widget_observation_{this};
-
-  // Note: This must be reset *before* `host_`. See note in
-  // OnExtensionUnloaded().
-  std::unique_ptr<ScopedDevToolsAgentHostObservation>
-      scoped_devtools_observation_;
 
   base::WeakPtrFactory<ExtensionPopup> deferred_close_weak_ptr_factory_;
 };

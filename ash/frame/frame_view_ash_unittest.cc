@@ -12,7 +12,6 @@
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/style/dark_light_mode_controller_impl.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/desks/desks_util.h"
@@ -870,7 +869,7 @@ TEST_F(FrameViewAshTest, WideFrameButton) {
                  test_api.size_button()->icon_definition_for_test()->name);
   }
   {
-    WMEvent event(WM_EVENT_LOCKED_FULLSCREEN);
+    WMEvent event(WM_EVENT_TRUSTED_PIN);
     WindowState::Get(widget->GetNativeWindow())->OnWMEvent(&event);
     views::test::RunScheduledLayout(header_view);
     EXPECT_STREQ(::features::IsRoundedIconsEnabled()

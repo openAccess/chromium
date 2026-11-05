@@ -167,7 +167,7 @@ bool CreateIconFile(const gfx::ImageSkia& image_skia,
 bool UpdateTaskCategory(
     JumpListUpdater* jumplist_updater,
     policy::IncognitoModeAvailability incognito_availability,
-    bool isolated_mode_enabled,
+    IncognitoModePrefs::IncognitoModeType incognito_type,
     const base::FilePath& cmd_line_profile_dir) {
   base::FilePath chrome_path;
   if (!base::PathService::Get(base::FILE_EXE, &chrome_path))
@@ -193,7 +193,7 @@ bool UpdateTaskCategory(
 
   // Create an IShellLink object which launches Chrome in isolated mode or
   // incognito mode, and add it to the collection.
-  if (isolated_mode_enabled) {
+  if (incognito_type == IncognitoModePrefs::IncognitoModeType::kEnterprise) {
     scoped_refptr<ShellLinkItem> isolated =
         CreateShellLink(cmd_line_profile_dir);
     isolated->GetCommandLine()->AppendSwitch(switches::kIncognito);
@@ -204,8 +204,8 @@ bool UpdateTaskCategory(
     isolated->set_title(isolated_title);
     isolated->set_icon(chrome_path, icon_resources::kIsolatedIndex);
     items.push_back(isolated);
-  } else if (incognito_availability !=
-             policy::IncognitoModeAvailability::kDisabled) {
+  } else if (incognito_type ==
+             IncognitoModePrefs::IncognitoModeType::kStandard) {
     scoped_refptr<ShellLinkItem> incognito =
         CreateShellLink(cmd_line_profile_dir);
     incognito->GetCommandLine()->AppendSwitch(switches::kIncognito);
@@ -256,7 +256,7 @@ JumpList::JumpList(Profile* profile)
           base::ThreadPool::CreateSequencedTaskRunner(
               {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
                base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN})) {
-  DCHECK(Enabled());
+  CHECK(Enabled(), base::NotFatalUntil::M163);
   // To update JumpList when a tab is added or removed, we add this object to
   // the observer list of the TabRestoreService class.
   // When we add this object to the observer list, we save the pointer to this
@@ -533,7 +533,7 @@ void JumpList::AddWindow(const sessions::tab_restore::Window& window,
                          const base::FilePath& cmd_line_profile_dir,
                          size_t max_items) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!window.tabs.empty());
+  CHECK(!window.tabs.empty(), base::NotFatalUntil::M163);
 
   for (const auto& tab : window.tabs) {
     if (!AddTab(*tab, cmd_line_profile_dir, max_items))
@@ -545,7 +545,7 @@ void JumpList::AddGroup(const sessions::tab_restore::Group& group,
                         const base::FilePath& cmd_line_profile_dir,
                         size_t max_items) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!group.tabs.empty());
+  CHECK(!group.tabs.empty(), base::NotFatalUntil::M163);
 
   for (const auto& tab : group.tabs) {
     if (!AddTab(*tab, cmd_line_profile_dir, max_items))
@@ -557,7 +557,7 @@ void JumpList::AddSplit(const sessions::tab_restore::Split& split,
                         const base::FilePath& cmd_line_profile_dir,
                         size_t max_items) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!split.tabs.empty());
+  CHECK(!split.tabs.empty(), base::NotFatalUntil::M163);
 
   for (const auto& tab : split.tabs) {
     if (!AddTab(*tab, cmd_line_profile_dir, max_items)) {
@@ -624,10 +624,9 @@ void JumpList::PostRunUpdate() {
 
   // Check if incognito windows (or normal windows) are disabled by policy.
   policy::IncognitoModeAvailability incognito_availability =
-      IncognitoModePrefs::GetAvailability(profile_->GetPrefs());
+      IncognitoModePrefs::GetAvailability(profile_);
 
-  bool isolated_mode_enabled =
-      enterprise_isolated_mode::IsolatedModeReplacesIncognito(profile_);
+  auto incognito_type = IncognitoModePrefs::GetIncognitoModeType(profile_);
 
   auto update_transaction = std::make_unique<UpdateTransaction>();
   if (most_visited_should_update_)
@@ -644,7 +643,7 @@ void JumpList::PostRunUpdate() {
       &JumpList::RunUpdateJumpList, app_id_, profile_dir, most_visited_pages_,
       recently_closed_pages_, GetCmdLineProfileDir(),
       most_visited_should_update_, recently_closed_should_update_,
-      incognito_availability, isolated_mode_enabled, update_transaction.get());
+      incognito_availability, incognito_type, update_transaction.get());
 
   // Post a task to update the JumpList, which consists of 1) create new icons,
   // 2) notify the OS, 3) delete old icons.
@@ -746,9 +745,9 @@ void JumpList::RunUpdateJumpList(
     bool most_visited_should_update,
     bool recently_closed_should_update,
     policy::IncognitoModeAvailability incognito_availability,
-    bool isolated_mode_enabled,
+    IncognitoModePrefs::IncognitoModeType incognito_type,
     UpdateTransaction* update_transaction) {
-  DCHECK(update_transaction);
+  CHECK(update_transaction, base::NotFatalUntil::M163);
 
   base::FilePath most_visited_icon_dir = GenerateJumplistIconDirName(
       profile_dir, FILE_PATH_LITERAL("MostVisited"));
@@ -759,7 +758,7 @@ void JumpList::RunUpdateJumpList(
       app_id, most_visited_icon_dir, recently_closed_icon_dir,
       most_visited_pages, recently_closed_pages, cmd_line_profile_dir,
       most_visited_should_update, recently_closed_should_update,
-      incognito_availability, isolated_mode_enabled, update_transaction);
+      incognito_availability, incognito_type, update_transaction);
 
   // Delete any obsolete icon files.
   if (most_visited_should_update) {
@@ -783,9 +782,9 @@ void JumpList::CreateNewJumpListAndNotifyOS(
     bool most_visited_should_update,
     bool recently_closed_should_update,
     policy::IncognitoModeAvailability incognito_availability,
-    bool isolated_mode_enabled,
+    IncognitoModePrefs::IncognitoModeType incognito_type,
     UpdateTransaction* update_transaction) {
-  DCHECK(update_transaction);
+  CHECK(update_transaction, base::NotFatalUntil::M163);
 
   JumpListUpdater jumplist_updater(app_id);
 
@@ -864,7 +863,7 @@ void JumpList::CreateNewJumpListAndNotifyOS(
 
   // Update the "Tasks" category of the JumpList.
   if (!UpdateTaskCategory(&jumplist_updater, incognito_availability,
-                          isolated_mode_enabled, cmd_line_profile_dir)) {
+                          incognito_type, cmd_line_profile_dir)) {
     return;
   }
 
@@ -900,8 +899,8 @@ int JumpList::UpdateIconFiles(const base::FilePath& icon_dir,
                               size_t max_items,
                               URLIconCache* icon_cur,
                               URLIconCache* icon_next) {
-  DCHECK(icon_cur);
-  DCHECK(icon_next);
+  CHECK(icon_cur, base::NotFatalUntil::M163);
+  CHECK(icon_next, base::NotFatalUntil::M163);
 
   // Clear the JumpList icon folder at |icon_dir| and the caches when
   // 1) |icon_cur| is empty. This happens when "Most visited" or "Recently
@@ -927,7 +926,7 @@ int JumpList::CreateIconFiles(const base::FilePath& icon_dir,
                               size_t max_items,
                               const URLIconCache& icon_cur,
                               URLIconCache* icon_next) {
-  DCHECK(icon_next);
+  CHECK(icon_next, base::NotFatalUntil::M163);
 
   int icons_created = 0;
 

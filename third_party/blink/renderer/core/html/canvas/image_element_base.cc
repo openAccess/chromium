@@ -48,10 +48,6 @@ mojom::blink::PreferredColorScheme ImageElementBase::PreferredColorScheme()
       style);
 }
 
-bool ImageElementBase::IsImageElement() const {
-  return CachedImage() && !IsA<SVGImage>(CachedImage()->GetImage());
-}
-
 scoped_refptr<Image> ImageElementBase::GetSourceImageForCanvas(
     SourceImageStatus* status,
     const gfx::SizeF& default_object_size) {
@@ -105,8 +101,8 @@ gfx::SizeF ImageElementBase::ElementSize(
   ImageResourceContent* image_content = CachedImage();
   if (!image_content || !image_content->HasImage())
     return gfx::SizeF();
-  Image* image = image_content->GetImage();
-  if (auto* svg_image = DynamicTo<SVGImage>(image)) {
+  scoped_refptr<Image> image = image_content->GetImage();
+  if (auto* svg_image = DynamicTo<SVGImage>(image.get())) {
     const SVGImageViewInfo* view_info =
         SVGImageForContainer::CreateViewInfo(*svg_image, GetElement());
     return SVGImageForContainer::ConcreteObjectSize(*svg_image, view_info,

@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/android/config.gni")
 import("//build/config/features.gni")
 import("//build/config/ui.gni")
 import("//media/media_options.gni")
@@ -175,6 +174,7 @@ component("midi") {
 }
 
 mojom("mojo") {
+  generate_blink = true
   sources = [ "midi_service.mojom" ]
 
   deps = [ "//mojo/public/mojom/base" ]
@@ -210,12 +210,6 @@ test("midi_unittests") {
   if (is_apple && target_platform != "tvos") {
     sources += [ "midi_manager_mac_unittest.cc" ]
     frameworks = [ "CoreMIDI.framework" ]
-  }
-
-  if (is_ios && use_blink) {
-    bundle_deps = [
-      "//testing/buildbot/filters:midi_unittests_use_blink_filters_bundle_data",
-    ]
   }
 
   if (use_alsa && use_udev) {

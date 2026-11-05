@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "base/memory/weak_ptr.h"
@@ -44,6 +45,8 @@ struct RenderPassQuadParams {
   bool needs_blending = true;
   bool force_anti_aliasing_off = false;
   bool intersects_damage_under = true;
+  cc::FilterOperations filters;
+  cc::FilterOperations backdrop_filters;
 };
 
 struct TextureQuadParams {
@@ -166,8 +169,6 @@ class RenderPassBuilder : public internal::AddQuads<RenderPassBuilder> {
   RenderPassBuilder& SetDamageRect(const gfx::Rect& damage_rect);
   RenderPassBuilder& SetCacheRenderPass(bool val);
   RenderPassBuilder& SetHasDamageFromContributingContent(bool val);
-  RenderPassBuilder& AddFilter(const cc::FilterOperation& filter);
-  RenderPassBuilder& AddBackdropFilter(const cc::FilterOperation& filter);
   RenderPassBuilder& SetTransformToRootTarget(const gfx::Transform& transform);
 
   // Creates a new stub CopyOutputRequest and adds it to the render pass. If
@@ -287,8 +288,12 @@ class CompositorFrameBuilder {
       std::vector<ui::LatencyInfo> latency_info);
   CompositorFrameBuilder& SetReferencedSurfaces(
       std::vector<SurfaceRange> referenced_surfaces);
+  // TODO(crbug.com/540877772): Remove this overload once all callers are
+  // migrated to SetActivationDependencies(std::vector<SurfaceIdAndDeadline>).
   CompositorFrameBuilder& SetActivationDependencies(
       std::vector<SurfaceId> activation_dependencies);
+  CompositorFrameBuilder& SetActivationDependencies(
+      std::vector<SurfaceIdAndDeadline> activation_dependencies);
   CompositorFrameBuilder& SetDeadline(const FrameDeadline& deadline);
   CompositorFrameBuilder& SetSendFrameTokenToEmbedder(bool send);
   CompositorFrameBuilder& SetIsHandlingInteraction(
@@ -298,6 +303,7 @@ class CompositorFrameBuilder {
       const gfx::DelegatedInkMetadata& metadata);
   CompositorFrameBuilder& AddOffsetTagDefinition(
       const OffsetTagDefinition& definition);
+  CompositorFrameBuilder& AddOffsetTagValue(const OffsetTagValue& value);
   CompositorFrameBuilder& AddContentFrameIntervalInfo(
       const ContentFrameIntervalInfo& content_frame_interval_info);
 

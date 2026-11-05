@@ -18,7 +18,7 @@ import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {getCss} from './omnibox_extension_entry.css.js';
 import {getHtml} from './omnibox_extension_entry.html.js';
-import type {SearchEngine} from './search_engines_browser_proxy.js';
+import type {SearchEngine, SearchEngineId} from './search_engines_browser_proxy.js';
 
 export interface SettingsOmniboxExtensionEntryElement {
   $: {
@@ -30,6 +30,10 @@ export interface SettingsOmniboxExtensionEntryElement {
 export class SettingsOmniboxExtensionEntryElement extends CrLitElement {
   static get is() {
     return 'settings-omnibox-extension-entry';
+  }
+
+  static override get shadowRootOptions() {
+    return {...super.shadowRootOptions, delegatesFocus: true};
   }
 
   static override get styles() {
@@ -55,7 +59,7 @@ export class SettingsOmniboxExtensionEntryElement extends CrLitElement {
     default: false,
     displayName: '',
     iconPath: '',
-    id: -1,
+    id: '' as SearchEngineId,
     isManaged: false,
     isRecommendedFromPolicy: false,
     isOmniboxExtension: false,

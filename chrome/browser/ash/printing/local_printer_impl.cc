@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "ash/constants/ash_features.h"
+#include "base/check.h"
 #include "base/check_deref.h"
 #include "base/logging.h"
 #include "chrome/browser/ash/printing/cups_printers_manager.h"
@@ -21,6 +22,7 @@
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/printing/ppd_provider.h"
 #include "components/account_id/account_id.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
 
 namespace ash {
@@ -29,10 +31,9 @@ namespace {
 
 // Generates and returns a url for a PPD license which is empty if
 // an error occurs e.g. the ppd provider callback failed.
-// When bound to a ppd provider scoped refptr, the reference count
-// will be decremented once the callback is done executing and the
-// ppd provider destroyed if it hits zero.
-GURL GenerateEulaUrl(scoped_refptr<chromeos::PpdProvider>,
+// When bound to a ppd provider unique_ptr, the ppd provider will be
+// destroyed once the callback is done executing.
+GURL GenerateEulaUrl(std::unique_ptr<chromeos::PpdProvider>,
                      chromeos::PpdProvider::CallbackResultCode result,
                      const std::string& license) {
   if (result != chromeos::PpdProvider::CallbackResultCode::SUCCESS ||
@@ -186,8 +187,12 @@ void OnOAuthAccessTokenObtained(
 }  // namespace
 
 LocalPrinterImpl::LocalPrinterImpl(
-    const ApplicationLocaleStorage* application_locale_storage)
-    : application_locale_storage_(CHECK_DEREF(application_locale_storage)) {}
+    const ApplicationLocaleStorage* application_locale_storage,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+    : application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      url_loader_factory_(std::move(url_loader_factory)) {
+  CHECK(url_loader_factory_);
+}
 
 LocalPrinterImpl::~LocalPrinterImpl() = default;
 
@@ -260,11 +265,13 @@ void LocalPrinterImpl::GetEulaUrl(const AccountId& accountId,
     std::move(callback).Run(GURL());
     return;
   }
-  scoped_refptr<chromeos::PpdProvider> ppd_provider =
+  std::unique_ptr<chromeos::PpdProvider> ppd_provider =
       CreatePpdProvider(profile);
-  ppd_provider->ResolvePpdLicense(
+  chromeos::PpdProvider& ppd_provider_ref = *ppd_provider;
+  ppd_provider_ref.ResolvePpdLicense(
       printer->ppd_reference().effective_make_and_model,
-      base::BindOnce(GenerateEulaUrl, ppd_provider).Then(std::move(callback)));
+      base::BindOnce(GenerateEulaUrl, std::move(ppd_provider))
+          .Then(std::move(callback)));
 }
 
 void LocalPrinterImpl::GetStatus(const AccountId& accountId,
@@ -311,9 +318,9 @@ void LocalPrinterImpl::GetOAuthAccessToken(
                      std::move(callback)));
 }
 
-scoped_refptr<chromeos::PpdProvider> LocalPrinterImpl::CreatePpdProvider(
+std::unique_ptr<chromeos::PpdProvider> LocalPrinterImpl::CreatePpdProvider(
     Profile* profile) {
-  return ash::CreatePpdProvider(profile);
+  return ash::CreatePpdProvider(url_loader_factory_, profile);
 }
 
 }  // namespace ash

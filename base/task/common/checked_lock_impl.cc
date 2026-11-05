@@ -148,8 +148,11 @@ SafeAcquisitionTracker& GetSafeAcquisitionTracker() {
 CheckedLockImpl::CheckedLockImpl() : CheckedLockImpl(nullptr) {}
 
 CheckedLockImpl::CheckedLockImpl(const CheckedLockImpl* predecessor) {
-  DCHECK(predecessor == nullptr || !predecessor->is_universal_successor_);
+  // Register first, since that verifies that `predecessor` was registered (and
+  // thus constructed) before it's dereferenced below. Otherwise, the read of
+  // `predecessor->is_universal_successor_` could be of uninitialized memory.
   GetSafeAcquisitionTracker().RegisterLock(this, predecessor);
+  DCHECK(predecessor == nullptr || !predecessor->is_universal_successor_);
 }
 
 CheckedLockImpl::CheckedLockImpl(UniversalPredecessor)

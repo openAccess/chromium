@@ -4,19 +4,28 @@
 
 #include "components/webapps/browser/web_contents/web_app_url_loader.h"
 
+#include <stdint.h>
+
 #include <memory>
+#include <optional>
 #include <utility>
 
+#include "base/auto_reset.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/timer/timer.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/navigation_handle_user_data.h"
+#include "content/public/browser/navigation_throttle.h"
+#include "content/public/browser/navigation_throttle_registry.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -25,11 +34,14 @@
 #include "net/http/http_status_code.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 #include "url/url_constants.h"
 
 namespace webapps {
 namespace {
 using UrlComparison = WebAppUrlLoader::UrlComparison;
+
+class LoaderTask;
 
 bool EqualsWithComparison(const GURL& a,
                           const GURL& b,
@@ -54,6 +66,98 @@ bool EqualsWithComparison(const GURL& a,
   return a.ReplaceComponents(replace) == b.ReplaceComponents(replace);
 }
 
+// User data attached to a NavigationHandle during WebAppUrlLoader operations to
+// enforce URL constraints during navigation and redirect handling.
+class WebAppUrlLoaderNavigationHandleData
+    : public content::NavigationHandleUserData<
+          WebAppUrlLoaderNavigationHandleData> {
+ public:
+  ~WebAppUrlLoaderNavigationHandleData() override = default;
+
+  static void SetOrCreateForNavigationHandle(
+      content::NavigationHandle& navigation_handle,
+      base::WeakPtr<const LoaderTask> loader_task,
+      const GURL& desired_url,
+      UrlComparison url_comparison) {
+    if (auto* existing = GetForNavigationHandle(navigation_handle)) {
+      existing->loader_task_ = std::move(loader_task);
+      existing->desired_url_ = desired_url;
+      existing->url_comparison_ = url_comparison;
+      existing->is_redirect_blocked_ = false;
+      return;
+    }
+    CreateForNavigationHandle(navigation_handle, std::move(loader_task),
+                              desired_url, url_comparison);
+  }
+
+  bool IsForLoaderTask(const LoaderTask* loader_task) const {
+    return loader_task_.get() == loader_task;
+  }
+  const GURL& desired_url() const { return desired_url_; }
+  UrlComparison url_comparison() const { return url_comparison_; }
+  bool is_redirect_blocked() const { return is_redirect_blocked_; }
+  void set_redirect_blocked(bool blocked) { is_redirect_blocked_ = blocked; }
+
+ private:
+  friend class content::NavigationHandleUserData<
+      WebAppUrlLoaderNavigationHandleData>;
+  NAVIGATION_HANDLE_USER_DATA_KEY_DECL();
+
+  WebAppUrlLoaderNavigationHandleData(
+      content::NavigationHandle& navigation_handle,
+      base::WeakPtr<const LoaderTask> loader_task,
+      const GURL& desired_url,
+      UrlComparison url_comparison)
+      : loader_task_(std::move(loader_task)),
+        desired_url_(desired_url),
+        url_comparison_(url_comparison) {}
+
+  base::WeakPtr<const LoaderTask> loader_task_;
+  GURL desired_url_;
+  UrlComparison url_comparison_;
+  bool is_redirect_blocked_ = false;
+};
+
+NAVIGATION_HANDLE_USER_DATA_KEY_IMPL(WebAppUrlLoaderNavigationHandleData);
+
+// Navigation throttle that enforces UrlComparison rules before following
+// redirects, preventing out-of-scope background navigations.
+class WebAppUrlLoaderNavigationThrottle : public content::NavigationThrottle {
+ public:
+  explicit WebAppUrlLoaderNavigationThrottle(
+      content::NavigationThrottleRegistry& registry,
+      WebAppUrlLoaderNavigationHandleData& data)
+      : content::NavigationThrottle(registry), data_(data) {}
+  ~WebAppUrlLoaderNavigationThrottle() override = default;
+
+  ThrottleCheckResult WillStartRequest() override {
+    return WillStartOrRedirectRequest();
+  }
+
+  ThrottleCheckResult WillRedirectRequest() override {
+    return WillStartOrRedirectRequest();
+  }
+
+  const char* GetNameForLogging() override {
+    return "WebAppUrlLoaderNavigationThrottle";
+  }
+
+ private:
+  ThrottleCheckResult WillStartOrRedirectRequest() {
+    const GURL& target_url = navigation_handle()->GetURL();
+    if (!target_url.is_valid() || !data_->desired_url().is_valid() ||
+        !EqualsWithComparison(target_url, data_->desired_url(),
+                              data_->url_comparison())) {
+      data_->set_redirect_blocked(true);
+      return content::NavigationThrottle::CANCEL;
+    }
+
+    return content::NavigationThrottle::PROCEED;
+  }
+
+  const raw_ref<WebAppUrlLoaderNavigationHandleData> data_;
+};
+
 // TODO(b/302531937): Make this a utility that can be used through out the
 // web_applications/ system.
 bool WebContentsShuttingDown(content::WebContents* web_contents) {
@@ -70,7 +174,7 @@ class LoaderTask : public content::WebContentsObserver {
   LoaderTask& operator=(LoaderTask&&) = delete;
   ~LoaderTask() override = default;
 
-  void LoadUrl(const content::NavigationController::LoadURLParams& load_params,
+  void LoadUrl(content::NavigationController::LoadURLParams load_params,
                content::WebContents* web_contents,
                UrlComparison url_comparison,
                WebAppUrlLoader::ResultCallback callback) {
@@ -84,7 +188,15 @@ class LoaderTask : public content::WebContentsObserver {
       return;
     }
 
-    web_contents->GetController().LoadURLWithParams(load_params);
+    base::WeakPtr<content::NavigationHandle> navigation_handle;
+    {
+      base::AutoReset<bool> in_load_url(&in_load_url_with_params_, true);
+      navigation_handle = web_contents->GetController().LoadURLWithParams(
+          std::move(load_params));
+    }
+    if (navigation_handle && !navigation_id_.has_value()) {
+      navigation_id_ = navigation_handle->GetNavigationId();
+    }
 
     timer_.Start(FROM_HERE, WebAppUrlLoader::kSecondsToWaitForWebContentsLoad,
                  base::BindOnce(&LoaderTask::OnLoadUrlTimeout,
@@ -95,6 +207,93 @@ class LoaderTask : public content::WebContentsObserver {
   }
 
   // WebContentsObserver
+  void DidStartNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    if (WebContentsShuttingDown(web_contents())) {
+      PostResultTask(WebAppUrlLoader::Result::kFailedWebContentsDestroyed);
+      return;
+    }
+
+    if (navigation_handle->IsInPrimaryMainFrame()) {
+      if (in_load_url_with_params_ && !navigation_id_.has_value()) {
+        navigation_id_ = navigation_handle->GetNavigationId();
+      }
+      WebAppUrlLoaderNavigationHandleData::SetOrCreateForNavigationHandle(
+          *navigation_handle, weak_ptr_factory_.GetWeakPtr(), url_,
+          url_comparison_);
+    }
+  }
+
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    if (WebContentsShuttingDown(web_contents())) {
+      PostResultTask(WebAppUrlLoader::Result::kFailedWebContentsDestroyed);
+      return;
+    }
+
+    if (!navigation_handle->IsInPrimaryMainFrame()) {
+      return;
+    }
+
+    const bool is_navigation_for_this_task =
+        navigation_id_.has_value() &&
+        *navigation_id_ == navigation_handle->GetNavigationId();
+    auto* data = WebAppUrlLoaderNavigationHandleData::GetForNavigationHandle(
+        *navigation_handle);
+    const bool data_is_for_current_loader_task =
+        data && data->IsForLoaderTask(this);
+    if (!is_navigation_for_this_task && !data_is_for_current_loader_task) {
+      return;
+    }
+
+    if (!navigation_handle->HasCommitted()) {
+      if (data && data->is_redirect_blocked()) {
+        LOG(ERROR) << "Error loading " << url_
+                   << "  page redirected to unexpected destination.";
+        PostResultTask(WebAppUrlLoader::Result::kRedirectedUrlLoaded);
+        return;
+      }
+      // If this task's cross-document target navigation aborts before
+      // committing (e.g. cancelled by the renderer, HTTP 204/205, or download),
+      // fail immediately rather than stalling the queue until
+      // `kSecondsToWaitForWebContentsLoad`. `about:blank` is exempt because
+      // `PrepareForLoad` acts as a barrier flushing prior page state.
+      if (is_navigation_for_this_task && !navigation_handle->IsSameDocument() &&
+          !has_committed_navigation_ && !url_.IsAboutBlank()) {
+        LOG(ERROR) << "Error loading " << url_
+                   << "  navigation failed to commit.";
+        PostResultTask(WebAppUrlLoader::Result::kFailedUnknownReason);
+      }
+      return;
+    }
+
+    if (navigation_handle->IsSameDocument()) {
+      return;
+    }
+
+    if (!EqualsWithComparison(navigation_handle->GetURL(), url_,
+                              url_comparison_)) {
+      // Ignore mismatches involving `about:blank`: `PrepareForLoad` loads
+      // `about:blank` as a barrier to flush leftover navigations from the
+      // prior document, and a late or synchronous `about:blank` commit must
+      // not abort the subsequent target URL load. This exemption also accepts
+      // a renderer-initiated `about:blank` navigation after the target commit
+      // (`about:blank` has no URL loader, so the throttle does not see it);
+      // only the later `GetLastCommittedURL()` check in `DidFinishLoad` keeps
+      // that case safe. Any other mismatched cross-document commit is treated
+      // as an unexpected redirect.
+      if (!url_.IsAboutBlank() && !navigation_handle->GetURL().IsAboutBlank()) {
+        LOG(ERROR) << "Error loading " << url_
+                   << "  page redirected to unexpected destination.";
+        PostResultTask(WebAppUrlLoader::Result::kRedirectedUrlLoaded);
+      }
+      return;
+    }
+
+    if (is_navigation_for_this_task) {
+      has_committed_navigation_ = true;
+    }
+  }
   // DidFinishLoad doesn't always get called after the page has fully loaded.
   // TODO(ortuno): Use DidStopLoading instead.
   void DidFinishLoad(content::RenderFrameHost* render_frame_host,
@@ -108,15 +307,18 @@ class LoaderTask : public content::WebContentsObserver {
       return;
     }
 
+    if (!has_committed_navigation_) {
+      return;
+    }
+
     // Flush all DidFinishLoad events until about:blank loaded.
     if ((url_.IsAboutBlank() && !validated_url.IsAboutBlank()) ||
         (!url_.IsAboutBlank() && validated_url.IsAboutBlank())) {
       return;
     }
 
-    timer_.Stop();
-
-    if (validated_url == content::kUnreachableWebDataURL) {
+    if (validated_url == content::kUnreachableWebDataURL ||
+        render_frame_host->IsErrorDocument()) {
       // Navigation ends up in an error page. For example, network errors and
       // policy blocked URLs.
       PostResultTask(WebAppUrlLoader::Result::kFailedErrorPageLoaded);
@@ -133,13 +335,20 @@ class LoaderTask : public content::WebContentsObserver {
       return;
     }
 
-    if (EqualsWithComparison(validated_url, url_, url_comparison_)) {
-      PostResultTask(WebAppUrlLoader::Result::kUrlLoaded);
+    const GURL& last_committed_url = render_frame_host->GetLastCommittedURL();
+    if (!last_committed_url.is_valid() ||
+        !EqualsWithComparison(last_committed_url, url_, url_comparison_)) {
+      LOG(ERROR) << "Error loading " << url_ << "  page redirected to "
+                 << last_committed_url;
+      PostResultTask(WebAppUrlLoader::Result::kRedirectedUrlLoaded);
       return;
     }
-    LOG(ERROR) << "Error loading " << url_ << "  page redirected to "
-               << validated_url;
-    PostResultTask(WebAppUrlLoader::Result::kRedirectedUrlLoaded);
+
+    if (validated_url != last_committed_url) {
+      return;
+    }
+
+    PostResultTask(WebAppUrlLoader::Result::kUrlLoaded);
   }
 
   bool IsSubframeLoad(content::RenderFrameHost* render_frame_host) const {
@@ -158,30 +367,33 @@ class LoaderTask : public content::WebContentsObserver {
       return;
     }
 
+    if (!has_committed_navigation_) {
+      return;
+    }
+
     // Flush all DidFailLoad events until about:blank loaded.
     if (url_.IsAboutBlank()) {
       return;
     }
-
-    timer_.Stop();
 
     LOG(ERROR) << "Error loading " << url_ << "  page failed to load.";
     PostResultTask(WebAppUrlLoader::Result::kFailedUnknownReason);
   }
 
   void WebContentsDestroyed() override {
-    timer_.Stop();
     PostResultTask(WebAppUrlLoader::Result::kFailedWebContentsDestroyed);
   }
 
  private:
   void OnLoadUrlTimeout() {
-    web_contents()->Stop();
+    content::WebContents* contents = web_contents();
     LOG(ERROR) << "Error loading " << url_ << " page took too long to load.";
     PostResultTask(WebAppUrlLoader::Result::kFailedPageTookTooLong);
+    contents->Stop();
   }
 
   void PostResultTask(WebAppUrlLoader::Result result) {
+    timer_.Stop();
     Observe(nullptr);
     // Post a task to avoid reentrancy issues e.g. adding a WebContentsObserver
     // while a previous observer call is being executed.
@@ -191,6 +403,9 @@ class LoaderTask : public content::WebContentsObserver {
 
   GURL url_;
   UrlComparison url_comparison_;
+  bool in_load_url_with_params_ = false;
+  std::optional<int64_t> navigation_id_;
+  bool has_committed_navigation_ = false;
   WebAppUrlLoader::ResultCallback callback_;
 
   base::OneShotTimer timer_;
@@ -220,6 +435,20 @@ std::ostream& operator<<(std::ostream& os, WebAppUrlLoaderResult result) {
 WebAppUrlLoader::WebAppUrlLoader() = default;
 
 WebAppUrlLoader::~WebAppUrlLoader() = default;
+
+// static
+void WebAppUrlLoader::MaybeCreateAndAddNavigationThrottle(
+    content::NavigationThrottleRegistry& registry) {
+  content::NavigationHandle& handle = registry.GetNavigationHandle();
+  if (!handle.IsInPrimaryMainFrame()) {
+    return;
+  }
+  if (auto* data =
+          WebAppUrlLoaderNavigationHandleData::GetForNavigationHandle(handle)) {
+    registry.AddThrottle(
+        std::make_unique<WebAppUrlLoaderNavigationThrottle>(registry, *data));
+  }
+}
 
 void WebAppUrlLoader::LoadUrl(
     content::NavigationController::LoadURLParams load_url_params,
@@ -261,14 +490,14 @@ void WebAppUrlLoader::PrepareForLoad(content::WebContents* web_contents,
       GURL(url::kAboutBlankURL)};
   load_params.transition_type = ui::PAGE_TRANSITION_GENERATED;
   LoadUrlInternal(
-      load_params, web_contents->GetWeakPtr(), UrlComparison::kExact,
+      std::move(load_params), web_contents->GetWeakPtr(), UrlComparison::kExact,
       base::BindOnce(&WebAppUrlLoader::OnUrlLoaded, weak_factory_.GetWeakPtr(),
                      "Webapp.WebAppUrlLoaderPrepareForLoadResult",
                      base::IgnoreArgs<Result>(std::move(complete))));
 }
 
 void WebAppUrlLoader::LoadUrlInternal(
-    const content::NavigationController::LoadURLParams& load_url_params,
+    content::NavigationController::LoadURLParams load_url_params,
     base::WeakPtr<content::WebContents> web_contents,
     UrlComparison url_comparison,
     ResultCallback callback) {
@@ -279,10 +508,14 @@ void WebAppUrlLoader::LoadUrlInternal(
                        WebAppUrlLoader::Result::kFailedWebContentsDestroyed));
     return;
   }
+  if (!load_url_params.initiator_origin.has_value() &&
+      load_url_params.url.is_valid() && !load_url_params.url.IsAboutBlank()) {
+    load_url_params.initiator_origin = url::Origin::Create(load_url_params.url);
+  }
   auto loader_task = std::make_unique<LoaderTask>();
   auto* loader_task_ptr = loader_task.get();
   loader_task_ptr->LoadUrl(
-      load_url_params, web_contents.get(), url_comparison,
+      std::move(load_url_params), web_contents.get(), url_comparison,
       base::BindOnce(
           [](std::unique_ptr<LoaderTask> task, Result result) {
             task.reset();

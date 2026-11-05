@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/extensions/extensions_menu_view.h"
+
 #include <algorithm>
 #include <optional>
 
@@ -16,18 +18,19 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/extensions/extension_install_ui.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "chrome/browser/ui/views/controls/hover_button_controller.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_item_view.h"
-#include "chrome/browser/ui/views/extensions/extensions_menu_view.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_interactive_uitest.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -43,6 +46,7 @@
 #include "extensions/test/permissions_manager_waiter.h"
 #include "extensions/test/test_extension_dir.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/layout/animating_layout_manager_test_util.h"
 #include "ui/views/test/widget_test.h"
@@ -61,7 +65,8 @@ class ExtensionsMenuViewInteractiveUITest : public ExtensionsToolbarUITest {
     // kExtensionsMenuAccessControl is fully enabled.
     scoped_feature_list_.InitWithFeatures(
         {}, {extensions_features::kExtensionsMenuAccessControl,
-             features::kExtensionsPinnedByDefault});
+             features::kExtensionsPinnedByDefault,
+             features::kWebUIExtensionsContainer});
   }
 
   static base::flat_set<raw_ptr<ExtensionMenuItemView, CtnExperimental>>
@@ -302,7 +307,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewInteractiveUITest,
   ExtensionsContainerViews* const extensions_container =
       BrowserView::GetBrowserViewForBrowser(browser())
           ->toolbar()
-          ->extensions_container();
+          ->extensions_container_for_testing();
   std::optional<extensions::ExtensionId> action_id =
       extensions_container->GetPoppedOutActionId();
   ASSERT_NE(std::nullopt, action_id);
@@ -328,7 +333,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewInteractiveUITest,
   ExtensionsContainerViews* const extensions_container =
       BrowserView::GetBrowserViewForBrowser(browser())
           ->toolbar()
-          ->extensions_container();
+          ->extensions_container_for_testing();
   ASSERT_NE(std::nullopt, extensions_container->GetPoppedOutActionId());
 
   auto* extension_registrar =
@@ -358,7 +363,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewInteractiveUITest,
   ExtensionsContainerViews* const extensions_container =
       BrowserView::GetBrowserViewForBrowser(browser())
           ->toolbar()
-          ->extensions_container();
+          ->extensions_container_for_testing();
 
   // This test should not use a popped-out action, as we want to make sure that
   // the menu closes on its own and not because a popup dialog replaces it.
@@ -715,7 +720,7 @@ IN_PROC_BROWSER_TEST_P(ActivateWithReloadExtensionsMenuInteractiveUITest,
   auto* const action_bubble =
       BrowserView::GetBrowserViewForBrowser(browser())
           ->toolbar()
-          ->extensions_container()
+          ->extensions_container_for_testing()
           ->GetAnchoredWidgetForExtensionForTesting(extensions()[0]->id())
           ->widget_delegate()
           ->AsDialogDelegate();
@@ -750,7 +755,7 @@ IN_PROC_BROWSER_TEST_P(ActivateWithReloadExtensionsMenuInteractiveUITest,
     EXPECT_TRUE(action_runner->WantsToRun(extension.get()));
     // Manual reload should then allow for script inject and blocked actions to
     // run.
-    chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+    chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
     ASSERT_TRUE(content::WaitForLoadStop(web_contents));
     EXPECT_TRUE(DidInjectScript(web_contents));
     EXPECT_FALSE(action_runner->WantsToRun(extension.get()));

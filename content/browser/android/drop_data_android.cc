@@ -14,6 +14,8 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "content/browser/web_contents/web_contents_view_drag_security_info.h"
+#include "ui/base/clipboard/file_info.h"
 #include "ui/events/android/drag_event_android.h"
 #include "url/android/gurl_android.h"
 #include "url/gurl.h"
@@ -92,9 +94,14 @@ ScopedJavaLocalRef<jobject> ToJavaDropData(const DropData& drop_data) {
         ConvertUTF16ToJavaString(env, *drop_data.source_effect_allowed);
   }
 
-  return ui::Java_DropDataAndroid_create(env, jtext, jgurl, jimage_bytes,
-                                         jimage_extension, jimage_filename,
-                                         jcustom_data, jeffect_allowed);
+  ScopedJavaLocalRef<jstring> jdrag_id;
+  if (drop_data.drag_id) {
+    jdrag_id = ConvertUTF8ToJavaString(env, drop_data.drag_id->ToString());
+  }
+
+  return ui::Java_DropDataAndroid_create(
+      env, jtext, jgurl, jimage_bytes, jimage_extension, jimage_filename,
+      jcustom_data, jeffect_allowed, jdrag_id);
 }  // ToJavaDropData
 
 std::optional<base::Value> ParseCustomDataFromEvent(
@@ -118,6 +125,16 @@ std::optional<base::Value> ParseCustomDataFromEvent(
   return value;
 }
 
+std::optional<base::UnguessableToken> ParseDragIdFromEvent(
+    const ui::DragEventAndroid& event) {
+  base::android::ScopedJavaLocalRef<jstring> j_drag_id = event.GetJavaDragId();
+  if (j_drag_id.is_null()) {
+    return std::nullopt;
+  }
+  return base::UnguessableToken::DeserializeFromString(
+      base::android::ConvertJavaStringToUTF8(AttachCurrentThread(), j_drag_id));
+}
+
 namespace {
 void PopulateCustomDataFromEvent(const ui::DragEventAndroid& event,
                                  DropData* drop_data) {
@@ -135,19 +152,50 @@ void PopulateCustomDataFromEvent(const ui::DragEventAndroid& event,
 }
 }  // namespace
 
-void PopulateDropDataFromEvent(const ui::DragEventAndroid& event,
-                               DropData* drop_data) {
+void PopulateDropDataFromEvent(
+    const ui::DragEventAndroid& event,
+    const WebContentsViewDragSecurityInfo& drag_security_info,
+    DropData* drop_data) {
   JNIEnv* env = AttachCurrentThread();
 
-  std::vector<std::vector<std::string>> filenames;
-  if (!event.GetJavaFilenames().is_null()) {
-    base::android::Java2dStringArrayTo2dStringVector(
-        env, event.GetJavaFilenames(), &filenames);
-  }
-  for (const auto& info : filenames) {
-    CHECK_EQ(info.size(), 2u);
-    drop_data->filenames.emplace_back(base::FilePath(info[0]),
-                                      base::FilePath(info[1]));
+  // If the image is not accessible from the frame, it means the drag contains a
+  // cross-origin image or otherwise restricted file data. To prevent this data
+  // from leaking to the renderer, we must not populate `filenames` or any
+  // future file-related fields.
+  if (drag_security_info.IsImageAccessibleFromFrame()) {
+    std::vector<std::vector<std::string>> filenames;
+    if (!event.GetJavaFilenames().is_null()) {
+      base::android::Java2dStringArrayTo2dStringVector(
+          env, event.GetJavaFilenames(), &filenames);
+    }
+    for (const auto& info : filenames) {
+      CHECK_EQ(info.size(), 2u);
+      drop_data->filenames.emplace_back(base::FilePath(info[0]),
+                                        base::FilePath(info[1]));
+    }
+
+    // An image dragged out of this browser's own web contents arrives as bytes
+    // rather than as a file. Mirror WebContentsViewAura::PrepareDropData():
+    // only add file contents when there are no filenames, and describe the
+    // image by its filename extension and a file URL of its filename.
+    ScopedJavaLocalRef<jbyteArray> image_bytes = event.GetJavaImageBytes();
+    if (drop_data->filenames.empty() && !image_bytes.is_null()) {
+      base::android::JavaByteArrayToByteVector(env, image_bytes,
+                                               &drop_data->file_contents);
+      drop_data->file_contents_image_accessible = true;
+      ScopedJavaLocalRef<jstring> image_extension =
+          event.GetJavaImageExtension();
+      if (!image_extension.is_null()) {
+        drop_data->file_contents_filename_extension =
+            base::android::ConvertJavaStringToUTF8(env, image_extension);
+      }
+      ScopedJavaLocalRef<jstring> image_filename = event.GetJavaImageFilename();
+      if (!image_filename.is_null()) {
+        drop_data->file_contents_source_url =
+            GURL(ui::FilePathToFileURL(base::FilePath(
+                base::android::ConvertJavaStringToUTF8(env, image_filename))));
+      }
+    }
   }
 
   if (!event.GetJavaText().is_null()) {
@@ -171,6 +219,8 @@ void PopulateDropDataFromEvent(const ui::DragEventAndroid& event,
     drop_data->source_effect_allowed = base::android::ConvertJavaStringToUTF16(
         env, event.GetJavaEffectAllowed());
   }
+
+  drop_data->drag_id = ParseDragIdFromEvent(event);
 }
 
 }  // namespace content

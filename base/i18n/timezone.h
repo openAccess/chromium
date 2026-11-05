@@ -5,16 +5,18 @@
 #ifndef BASE_I18N_TIMEZONE_H_
 #define BASE_I18N_TIMEZONE_H_
 
+#include <compare>
 #include <memory>
 #include <string>
 #include <string_view>
 
 #include "base/i18n/base_i18n_export.h"
-#include "base/i18n/language_tag.h"
 #include "base/time/time.h"
 
 namespace base {
 namespace i18n {
+
+class LanguageTag;
 
 // A value-type wrapper for icu::TimeZone.
 // This class provides a more idiomatic Chromium API for time zone operations,
@@ -107,9 +109,9 @@ class BASE_I18N_EXPORT TimeZone {
   // `time` determines the point of time to check.
   bool InDaylightTime(base::Time time) const;
 
-  // Equality operators.
+  // Comparison operators.
   bool operator==(const TimeZone& other) const;
-  bool operator!=(const TimeZone& other) const;
+  std::strong_ordering operator<=>(const TimeZone& other) const;
 
  private:
   struct Impl;

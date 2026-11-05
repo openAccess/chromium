@@ -96,6 +96,14 @@ constexpr std::array kZoomResetAccelerators = {
     ui::Accelerator{ui::VKEY_NUMPAD0, kZoomModifier},
     ui::Accelerator{ui::VKEY_NUMPAD0, kZoomModifier | ui::EF_SHIFT_DOWN}};
 
+constexpr std::array kPrintAccelerators = {
+#if BUILDFLAG(IS_MAC)
+    ui::Accelerator{ui::VKEY_P, ui::EF_COMMAND_DOWN}
+#else
+    ui::Accelerator{ui::VKEY_P, ui::EF_CONTROL_DOWN}
+#endif
+};
+
 constexpr auto kCommandToStaticAcceleratorsMap =
     base::MakeFixedFlatMap<LocalHotkeyManager::Command,
                            base::span<const ui::Accelerator>>({
@@ -107,6 +115,7 @@ constexpr auto kCommandToStaticAcceleratorsMap =
         {LocalHotkeyManager::Command::kTitleBarContextMenu,
          kTitleBarContextMenuAccelerators},
 #endif
+        {LocalHotkeyManager::Command::kPrint, kPrintAccelerators},
     });
 
 // Compile-time helper to check if the keys in two maps are disjoint.
@@ -205,9 +214,11 @@ ui::Accelerator LocalHotkeyManager::GetConfigurableAccelerator(
   return accelerator;
 }
 
-LocalHotkeyManager::Command LocalHotkeyManager::GetCommand(
-    ui::Accelerator accelerator) {
-  CHECK(event_handler_);
+std::optional<LocalHotkeyManager::Command> LocalHotkeyManager::GetCommand(
+    const ui::Accelerator& accelerator) const {
+  if (!event_handler_ || accelerator.IsEmpty()) {
+    return std::nullopt;
+  }
 
   for (Command command : supported_commands_) {
     if (auto iter = kCommandToStaticAcceleratorsMap.find(command);
@@ -222,7 +233,7 @@ LocalHotkeyManager::Command LocalHotkeyManager::GetCommand(
     }
   }
 
-  NOTREACHED() << accelerator.GetShortcutText() << " isn't a supported command";
+  return std::nullopt;
 }
 
 void LocalHotkeyManager::InitializeAccelerators() {
@@ -237,8 +248,11 @@ bool LocalHotkeyManager::AcceleratorPressed(
   if (!event_handler_) {
     return false;
   }
-  auto command = GetCommand(accelerator);
-  return event_handler_->AcceleratorPressed(command, accelerator);
+  std::optional<Command> command = GetCommand(accelerator);
+  if (!command.has_value()) {
+    return false;
+  }
+  return event_handler_->AcceleratorPressed(*command, accelerator);
 }
 
 bool LocalHotkeyManager::EventHandler::AcceleratorPressed(
@@ -256,14 +270,7 @@ bool LocalHotkeyManager::CanHandleAccelerators() const {
 
 bool LocalHotkeyManager::IsRegisteredAccelerator(
     const ui::Accelerator& accelerator) const {
-  for (Command command : supported_commands_) {
-    for (const ui::Accelerator& registered_accel : GetAccelerators(command)) {
-      if (registered_accel == accelerator) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return GetCommand(accelerator).has_value();
 }
 
 std::vector<ui::Accelerator> LocalHotkeyManager::GetAccelerators(
@@ -308,6 +315,10 @@ void LocalHotkeyManager::RegisterCommand(Command command) {
   if (!new_registrations.empty()) {
     command_registrations_.emplace(command, std::move(new_registrations));
   }
+}
+
+bool LocalHotkeyManager::Panel::Print() {
+  return false;
 }
 
 BrowserWindowInterface* LocalHotkeyManager::Panel::GetBrowserWindowInterface() {

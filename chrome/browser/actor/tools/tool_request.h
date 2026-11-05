@@ -12,10 +12,11 @@
 
 #include "base/types/expected.h"
 #include "base/types/pass_key.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/tools/observation_delay_controller.h"
+#include "chrome/browser/actor/tools/registry/tool_definition.h"
 #include "chrome/common/actor.mojom.h"
 #include "components/actor/core/task_id.h"
-#include "components/tabs/public/tab_interface.h"
 #include "ui/gfx/geometry/point.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -38,6 +39,14 @@ class ToolRequest {
   ToolRequest(const ToolRequest& other);
   ToolRequest& operator=(const ToolRequest& other);
 
+  // Returns the model-facing tool schema definition for this request class, or
+  // std::nullopt if this request class does not expose a tool schema.
+  // Subclasses shadow this method to register their tool schema in
+  // ToolRegistry. Unmigrated subclasses inherit this fallback, which returns
+  // std::nullopt. In DCHECK-enabled builds it also logs NOTIMPLEMENTED(); the
+  // log names ToolRequest::GetToolDefinition(), not the subclass.
+  static std::optional<ToolDefinition> GetToolDefinition();
+
   bool IsTabScoped() const;
 
   // Returns true if this action will add a tab to the set of observed tasks.
@@ -48,9 +57,9 @@ class ToolRequest {
   // if the scoped object no longer exists.
   virtual GURL GetURLForJournal() const;
 
-  // Returns a handle to the tab being targeted by this request. The default
-  // (non-tab, non-page scoped tool requests) returns a null handle.
-  virtual tabs::TabHandle GetTabHandle() const;
+  // Returns a handle to the actor surface targeted by this request. Defaults to
+  // a null handle.
+  virtual ActorSurfaceHandle GetActorSurfaceHandle() const;
 
   // Returns true if this tool takes action within the page of the current tab
   // and thus requires checking the current tab's URL for safety checks.
@@ -58,9 +67,10 @@ class ToolRequest {
   // navigate tool is tab scoped but navigates *away* from the current URL.
   virtual bool RequiresUrlCheckInCurrentTab() const;
 
-  // Returns the tab handle that should be used for safety checks, if any.
-  // By default, this is the target tab of the request (GetTabHandle()).
-  virtual tabs::TabHandle GetTabForValidation() const;
+  // Returns the surface handle that should be used for safety checks, if any.
+  // By default, this is the target actor surface of the request
+  // (GetActorSurfaceHandle()).
+  virtual ActorSurfaceHandle GetActorSurfaceForValidation() const;
 
   // Returns the name to use for the journal when recording entries for this
   // request. This should only be overridden if Name() isn't descriptive enough.
@@ -102,6 +112,12 @@ class ToolRequest {
   virtual ObservationDelayController::PageStabilityConfig
   GetObservationPageStabilityConfig() const;
 
+  // Returns true if the tool should complete as soon as it finishes invoking,
+  // without waiting for the page to settle (i.e. without an
+  // `ObservationDelayController`).
+  bool ShouldSkipObservationDelay() const;
+  void SetSkipObservationDelay(bool skip_observation_delay);
+
   // While acting, navigations are generally forced to happen in the same tab,
   // as we do not currently support multiple tabs (see
   // https://crbug.com/420669167 ). Individual tools that cannot function with
@@ -112,13 +128,14 @@ class ToolRequest {
 
  private:
   bool is_followup_ = false;
+  bool skip_observation_delay_ = false;
 };
 
 // Tool requests targeting a specific, existing tab should inherit from this
 // subclass.
 class TabToolRequest : public ToolRequest {
  public:
-  explicit TabToolRequest(const tabs::TabHandle tab_handle);
+  explicit TabToolRequest(ActorSurfaceHandle actor_surface_handle);
   ~TabToolRequest() override;
   TabToolRequest(const TabToolRequest& other);
   TabToolRequest& operator=(const TabToolRequest& other);
@@ -126,13 +143,12 @@ class TabToolRequest : public ToolRequest {
   // ToolRequest
   GURL GetURLForJournal() const override;
 
-  // Returns a handle to the tab being targeted by this request. For tab scoped
-  // requests this handle will never be a null value but it may point to a tab
-  // that is no longer available.
-  tabs::TabHandle GetTabHandle() const override;
+  // Returns a handle to the actor surface targeted by this request. It is never
+  // null, but it may point to an actor surface that no longer exists.
+  ActorSurfaceHandle GetActorSurfaceHandle() const override;
 
  private:
-  tabs::TabHandle tab_handle_;
+  ActorSurfaceHandle actor_surface_handle_;
 };
 
 }  // namespace actor

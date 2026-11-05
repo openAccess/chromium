@@ -9,12 +9,16 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
-#include "base/time/time.h"
 #include "chrome/browser/ui/autofill/payments/credit_card_scanner_view.h"
 #include "chrome/browser/ui/autofill/payments/credit_card_scanner_view_delegate.h"
+#include "components/autofill/content/browser/content_autofill_client.h"
+#include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
+#include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 
 namespace autofill {
 
@@ -29,14 +33,19 @@ class Controller final : public CreditCardScannerViewDelegate {
       : callback_(std::move(callback)) {
     view_ = CreditCardScannerView::Create(weak_ptr_factory_.GetWeakPtr(),
                                           web_contents);
-    DCHECK(view_);
+    CHECK(view_, base::NotFatalUntil::M162);
+    if (auto* client = ContentAutofillClient::FromWebContents(web_contents)) {
+      user_has_cards = !client->GetPersonalDataManager()
+                         .payments_data_manager()
+                         .GetCreditCards()
+                         .empty();
+    }
   }
   Controller(const Controller&) = delete;
   Controller& operator=(const Controller&) = delete;
 
   // Shows the UI to scan the credit card.
   void Show() {
-    show_time_ = base::TimeTicks::Now();
     view_->Show();
   }
 
@@ -45,15 +54,15 @@ class Controller final : public CreditCardScannerViewDelegate {
 
   // CreditCardScannerViewDelegate implementation.
   void ScanCancelled() override {
-    AutofillMetrics::LogScanCreditCardCompleted(
-        base::TimeTicks::Now() - show_time_, false);
+    AutofillMetrics::LogScanCreditCardCompleted(false);
     delete this;
   }
 
   // CreditCardScannerViewDelegate implementation.
   void ScanCompleted(const CreditCard& card) override {
-    AutofillMetrics::LogScanCreditCardCompleted(
-        base::TimeTicks::Now() - show_time_, true);
+    AutofillMetrics::LogScanCreditCardCompleted(true);
+    AutofillMetrics::LogScanCreditCardCompletedNewUser(
+        /*is_new_user=*/!user_has_cards);
     std::move(callback_).Run(card);
     delete this;
   }
@@ -64,8 +73,8 @@ class Controller final : public CreditCardScannerViewDelegate {
   // The callback to be invoked when scanning completes successfully.
   payments::PaymentsAutofillClient::CreditCardScanCallback callback_;
 
-  // The time when the UI was shown.
-  base::TimeTicks show_time_;
+  // Whether the user has any saved credit cards.
+  bool user_has_cards = false;
 
   base::WeakPtrFactory<Controller> weak_ptr_factory_{this};
 };
@@ -74,6 +83,9 @@ class Controller final : public CreditCardScannerViewDelegate {
 
 // static
 bool CreditCardScannerController::HasCreditCardScanFeature() {
+  if (base::FeatureList::IsEnabled(features::kAutofillCardScanningBugfixes)) {
+    return CreditCardScannerView::CanShow();
+  }
   static const bool kCanShow = CreditCardScannerView::CanShow();
   return kCanShow;
 }

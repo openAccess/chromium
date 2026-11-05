@@ -13,7 +13,6 @@
 #include "base/notimplemented.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/single_thread_task_runner.h"
-#include "components/viz/common/gpu/vulkan_context_provider.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/ahardwarebuffer_utils.h"
 #include "gpu/command_buffer/service/dawn_context_provider.h"
@@ -26,6 +25,7 @@
 #include "gpu/command_buffer/service/skia_utils.h"
 #include "gpu/command_buffer/service/texture_manager.h"
 #include "gpu/command_buffer/service/texture_owner.h"
+#include "gpu/command_buffer/service/vulkan_context_provider.h"
 #include "gpu/vulkan/vulkan_device_queue.h"
 #include "gpu/vulkan/vulkan_fence_helper.h"
 #include "gpu/vulkan/vulkan_function_pointers.h"
@@ -44,6 +44,10 @@
 
 #if BUILDFLAG(SKIA_USE_DAWN)
 #include "third_party/skia/include/gpu/graphite/dawn/DawnTypes.h"
+#endif
+
+#if BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
+#include "gpu/command_buffer/service/shared_image/skia_graphite_vk_android_image_representation.h"
 #endif
 
 namespace gpu {
@@ -134,21 +138,11 @@ class VideoImage : public base::RefCounted<VideoImage> {
 
 VideoImageReaderImageBacking::VideoImageReaderImageBacking(
     const Mailbox& mailbox,
-    const gfx::Size& size,
-    const gfx::ColorSpace color_space,
-    GrSurfaceOrigin surface_origin,
-    SkAlphaType alpha_type,
-    std::string debug_label,
+    const SharedImageInfo& si_info,
     scoped_refptr<StreamTextureSharedImageInterface> stream_texture_sii,
     scoped_refptr<SharedContextState> context_state,
     scoped_refptr<RefCountedLock> drdc_lock)
-    : AndroidVideoImageBacking(mailbox,
-                               size,
-                               color_space,
-                               surface_origin,
-                               alpha_type,
-                               std::move(debug_label),
-                               !!drdc_lock),
+    : AndroidVideoImageBacking(mailbox, si_info, !!drdc_lock),
       RefCountedLockHelperDrDc(std::move(drdc_lock)),
       stream_texture_sii_(std::move(stream_texture_sii)),
       gpu_main_task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()) {
@@ -344,20 +338,22 @@ class VideoImageReaderImageBacking::SkiaGraphiteDawnImageRepresentation
 
   std::vector<sk_sp<SkSurface>> BeginWriteAccess(
       const SkSurfaceProps& surface_props,
-      const gfx::Rect& update_rect) override {
+      const gfx::Rect& update_rect,
+      EndAccessState& end_access_state) override {
     // Writes are not intended to be used with video backed representations.
     NOTIMPLEMENTED();
     return {};
   }
-  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginWriteAccess()
-      override {
+  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginWriteAccess(
+      EndAccessState& end_access_state) override {
     // Writes are not intended to be used with video backed representations.
     NOTIMPLEMENTED();
     return {};
   }
   void EndWriteAccess() override { NOTIMPLEMENTED(); }
 
-  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginReadAccess() override {
+  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginReadAccess(
+      EndAccessState& end_access_state) override {
     DCHECK(!scoped_hardware_buffer_);
 
     // Obtain the AHB for the current video frame.
@@ -631,6 +627,92 @@ class VideoImageReaderImageBacking::SkiaVkVideoImageRepresentation
       scoped_hardware_buffer_;
 };
 
+#if BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
+class VideoImageReaderImageBacking::SkiaGraphiteVkVideoImageRepresentation
+    : public SkiaGraphiteVkAndroidImageRepresentation,
+      public RefCountedLockHelperDrDc {
+ public:
+  SkiaGraphiteVkVideoImageRepresentation(
+      SharedImageManager* manager,
+      AndroidImageBacking* backing,
+      scoped_refptr<SharedContextState> context_state,
+      MemoryTypeTracker* tracker,
+      scoped_refptr<RefCountedLock> drdc_lock)
+      : SkiaGraphiteVkAndroidImageRepresentation(manager,
+                                                 backing,
+                                                 std::move(context_state),
+                                                 tracker),
+        RefCountedLockHelperDrDc(std::move(drdc_lock)) {}
+
+  std::vector<sk_sp<SkSurface>> BeginWriteAccess(
+      const SkSurfaceProps& surface_props,
+      const gfx::Rect& update_rect,
+      EndAccessState& end_access_state) override {
+    NOTIMPLEMENTED();
+    return {};
+  }
+
+  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginWriteAccess(
+      EndAccessState& end_access_state) override {
+    NOTIMPLEMENTED();
+    return {};
+  }
+
+  void EndWriteAccess() override { NOTIMPLEMENTED(); }
+
+  std::vector<scoped_refptr<GraphiteTextureHolder>> BeginReadAccess(
+      EndAccessState& end_access_state) override {
+    base::AutoLockMaybe auto_lock(GetDrDcLockPtr());
+
+    DCHECK(!scoped_hardware_buffer_);
+    auto* video_backing = static_cast<VideoImageReaderImageBacking*>(backing());
+    DCHECK(video_backing);
+    auto* stream_texture_sii = video_backing->stream_texture_sii_.get();
+
+    // GetAHardwareBuffer() renders the latest image and gets AHardwareBuffer
+    // from it.
+    scoped_hardware_buffer_ = stream_texture_sii->GetAHardwareBuffer();
+    if (!scoped_hardware_buffer_) {
+      LOG(ERROR) << "Failed to get the hardware buffer.";
+      return {};
+    }
+    DCHECK(scoped_hardware_buffer_->buffer());
+
+    SetInitialFence(scoped_hardware_buffer_->TakeFence());
+
+    if (!vulkan_image()) {
+      auto vulkan_image = CreateVkImageFromAhbHandle(
+          scoped_hardware_buffer_->TakeBuffer(), context_state(), size(),
+          format(), VK_QUEUE_FAMILY_FOREIGN_EXT);
+      if (!vulkan_image) {
+        return {};
+      }
+      SetVulkanImage(std::move(vulkan_image));
+    }
+
+    return SkiaGraphiteVkAndroidImageRepresentation::BeginReadAccess(
+        end_access_state);
+  }
+
+  void EndReadAccess() override {
+    base::AutoLockMaybe auto_lock(GetDrDcLockPtr());
+    DCHECK(scoped_hardware_buffer_);
+
+    SkiaGraphiteVkAndroidImageRepresentation::EndReadAccess();
+
+    // Pass the end read access sync fd to the scoped hardware buffer. This
+    // will make sure that the AImage associated with the hardware buffer will
+    // be deleted only when the read access is ending.
+    scoped_hardware_buffer_->SetReadFence(android_backing()->TakeReadFence());
+    scoped_hardware_buffer_ = nullptr;
+  }
+
+ private:
+  std::unique_ptr<base::android::ScopedHardwareBufferFenceSync>
+      scoped_hardware_buffer_;
+};
+#endif
+
 template <typename T>
 std::unique_ptr<T> VideoImageReaderImageBacking::ProduceGLTextureInternal(
     SharedImageManager* manager,
@@ -703,7 +785,7 @@ VideoImageReaderImageBacking::ProduceSkiaGanesh(
                                            this, tracker);
 }
 
-#if BUILDFLAG(SKIA_USE_DAWN)
+#if BUILDFLAG(SKIA_USE_DAWN) || BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
 std::unique_ptr<SkiaGraphiteImageRepresentation>
 VideoImageReaderImageBacking::ProduceSkiaGraphite(
     SharedImageManager* manager,
@@ -718,10 +800,21 @@ VideoImageReaderImageBacking::ProduceSkiaGraphite(
     return nullptr;
   }
 
-  return std::make_unique<SkiaGraphiteDawnImageRepresentation>(
-      manager, this, tracker, context_state, GetDrDcLock());
-}
+  if (context_state->IsGraphiteDawn()) {
+#if BUILDFLAG(SKIA_USE_DAWN)
+    return std::make_unique<SkiaGraphiteDawnImageRepresentation>(
+        manager, this, tracker, context_state, GetDrDcLock());
 #endif
+  } else if (context_state->IsGraphiteVulkan()) {
+#if BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
+    return std::make_unique<SkiaGraphiteVkVideoImageRepresentation>(
+        manager, this, std::move(context_state), tracker, GetDrDcLock());
+#endif
+  }
+
+  NOTREACHED();
+}
+#endif  // BUILDFLAG(SKIA_USE_DAWN) || BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
 
 // Representation of VideoImageReaderImageBacking as an overlay plane.
 class VideoImageReaderImageBacking::OverlayVideoImageRepresentation
@@ -919,9 +1012,12 @@ class VideoImageReaderImageBacking::VideoRepresentation
       // No sync wait is happening here.
       gfx::GpuFenceHandle handle;
       handle.Adopt(std::move(fence_fd));
-      gfx::GpuFence gpu_fence(std::move(handle));
       std::unique_ptr<gl::GLFence> gl_fence =
-          gl::GLFence::CreateFromGpuFence(gpu_fence);
+          gl::GLFence::CreateFromGpuFenceHandle(std::move(handle));
+
+      // Adding a CHECK instead of returning false since we can not gracefully
+      // recover in these cases.
+      CHECK(gl_fence);
       gl_fence->ServerWait();
     }
     return true;

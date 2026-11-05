@@ -2,10 +2,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import io
 import unittest
 import xml.dom.minidom
 
 import setup_modules  # pylint: disable=unused-import
+
 
 import chromium_src.tools.metrics.histograms.expand_owners as expand_owners
 import chromium_src.tools.metrics.histograms.histogram_paths as histogram_paths
@@ -26,7 +28,6 @@ class MergeXmlTest(unittest.TestCase):
         histogram_paths.TEST_ENUMS_XML,  # Defines Enum_A and Enum_X.
         histogram_paths.TEST_ENUMS2_XML,  # Defines Enum_B.
         histogram_paths.TEST_HISTOGRAMS_XML,
-        histogram_paths.TEST_SUFFIXES_XML,
       ]
     )
     # If ukm.xml is not provided, there is no need to populate the
@@ -93,21 +94,6 @@ class MergeXmlTest(unittest.TestCase):
 </histogram>
 
 </histograms>
-
-<histogram_suffixes_list>
-
-<histogram_suffixes name="Test.EnumHistogramSuffixes" separator="."
-    ordering="prefix,2">
-  <suffix name="TestEnumSuffix" label="The enum histogram_suffixes"/>
-  <affected-histogram name="Test.EnumHistogram"/>
-</histogram_suffixes>
-
-<histogram_suffixes name="Test.HistogramSuffixes" separator=".">
-  <suffix name="TestSuffix" label="A histogram_suffixes"/>
-  <affected-histogram name="Test.Histogram"/>
-</histogram_suffixes>
-
-</histogram_suffixes_list>
 
 </histogram-configuration>
 """
@@ -189,27 +175,12 @@ class MergeXmlTest(unittest.TestCase):
 
 </histograms>
 
-<histogram_suffixes_list>
-
-<histogram_suffixes name="Test.EnumHistogramSuffixes" separator="."
-    ordering="prefix,2">
-  <suffix name="TestEnumSuffix" label="The enum histogram_suffixes"/>
-  <affected-histogram name="Test.EnumHistogram"/>
-</histogram_suffixes>
-
-<histogram_suffixes name="Test.HistogramSuffixes" separator=".">
-  <suffix name="TestSuffix" label="A histogram_suffixes"/>
-  <affected-histogram name="Test.Histogram"/>
-</histogram_suffixes>
-
-</histogram_suffixes_list>
-
 </histogram-configuration>
 """
     self.assertMultiLineEqual(expected_merged_xml.strip(), merged.strip())
 
   def testMergeFiles_InvalidPrimaryOwner(self):
-    histograms_without_valid_first_owner = xml.dom.minidom.parseString("""
+    xml_content = """
 <histogram-configuration>
 <histograms>
 
@@ -220,7 +191,7 @@ class MergeXmlTest(unittest.TestCase):
 
 </histograms>
 </histogram-configuration>
-""")
+"""
 
     with self.assertRaisesRegex(
       expand_owners.Error,
@@ -228,8 +199,9 @@ class MergeXmlTest(unittest.TestCase):
       'Googler with an @google.com or @chromium.org email address. Please '
       'manually update the histogram with a valid primary owner.',
     ):
-      merge_xml.MergeTrees(
-        [histograms_without_valid_first_owner], should_expand_owners=True
+      merge_xml.MergeFiles(
+        files=[io.StringIO(xml_content)],
+        expand_owners_and_extract_components=True,
       )
 
   def testMergeFiles_WithComponentMetadata(self):
@@ -260,8 +232,6 @@ class MergeXmlTest(unittest.TestCase):
 </histogram>
 
 </histograms>
-
-<histogram_suffixes_list/>
 
 </histogram-configuration>
 """

@@ -10,7 +10,6 @@
 #include "chrome/browser/extensions/extension_view_host.h"
 #include "chrome/browser/extensions/extension_view_host_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_window/internal/android/android_browser_window.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/render_widget_host_view.h"
@@ -18,6 +17,7 @@
 #include "extensions/browser/extension_action.h"
 #include "extensions/browser/extension_action_manager.h"
 #include "extensions/browser/extension_registry.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/browser/ui/android/extensions/jni_headers/ExtensionActionPopupContents_jni.h"
@@ -39,13 +39,40 @@ constexpr gfx::Size kMaxSize = {800, 600};
 
 }  // namespace
 
+// static
+ScopedJavaLocalRef<jobject> ExtensionActionPopupContents::Create(
+    std::unique_ptr<ExtensionViewHost> host,
+    bool inspect_with_devtools,
+    ShowPopupCallback callback) {
+  WebContents* web_contents = host->host_contents();
+  auto contents = jni_zero::MakeUnique<ExtensionActionPopupContents>(
+      std::move(host), inspect_with_devtools, std::move(callback));
+  // Borrowed: the Java constructor only stores the JniUniquePtr, so the object
+  // outlives this function.
+  ExtensionActionPopupContents* self = contents.get();
+  ScopedJavaLocalRef<jobject> java_object =
+      Java_ExtensionActionPopupContents_Constructor(
+          AttachCurrentThread(), std::move(contents), web_contents);
+  self->java_object_.Reset(java_object);
+  self->AttachToHost();
+  return java_object;
+}
+
 ExtensionActionPopupContents::ExtensionActionPopupContents(
     std::unique_ptr<ExtensionViewHost> host,
-    bool inspect_with_devtools)
-    : host_(std::move(host)), inspect_with_devtools_(inspect_with_devtools) {
-  java_object_ = Java_ExtensionActionPopupContents_Constructor(
-      AttachCurrentThread(), reinterpret_cast<int64_t>(this),
-      host_->host_contents());
+    bool inspect_with_devtools,
+    ShowPopupCallback callback)
+    : host_(std::move(host)),
+      inspect_with_devtools_(inspect_with_devtools),
+      shown_callback_(std::move(callback)) {}
+
+ExtensionActionPopupContents::~ExtensionActionPopupContents() {
+  if (shown_callback_) {
+    std::move(shown_callback_).Run(nullptr);
+  }
+}
+
+void ExtensionActionPopupContents::AttachToHost() {
   host_->set_view(this);
   // Handle the containing view calling window.close();
   // The base::Unretained() below is safe because this object owns `host_`, so
@@ -58,12 +85,6 @@ ExtensionActionPopupContents::ExtensionActionPopupContents(
   if (primary_main_frame->IsRenderFrameLive()) {
     SetUpNewMainFrame(primary_main_frame);
   }
-}
-
-ExtensionActionPopupContents::~ExtensionActionPopupContents() = default;
-
-ScopedJavaLocalRef<jobject> ExtensionActionPopupContents::GetJavaObject() {
-  return java_object_.AsLocalRef(AttachCurrentThread());
 }
 
 void ExtensionActionPopupContents::RenderFrameHostChanged(
@@ -79,7 +100,7 @@ void ExtensionActionPopupContents::RenderFrameHostChanged(
   // yet. If the DCHECK fires, then we would need to handle the initial main
   // frame when it its renderer frame is created.
   if (!old_host) {
-    DCHECK(!new_host->IsRenderFrameLive());
+    CHECK(!new_host->IsRenderFrameLive(), base::NotFatalUntil::M162);
     return;
   }
 
@@ -114,6 +135,9 @@ bool ExtensionActionPopupContents::HandleKeyboardEvent(
 }
 
 void ExtensionActionPopupContents::OnLoaded() {
+  if (shown_callback_) {
+    std::move(shown_callback_).Run(host_.get());
+  }
   if (inspect_with_devtools_) {
     DevToolsWindow::OpenDevToolsWindow(
         host_->host_contents(), DevToolsToggleAction::ShowConsolePanel(),
@@ -123,11 +147,7 @@ void ExtensionActionPopupContents::OnLoaded() {
                                              java_object_);
 }
 
-void ExtensionActionPopupContents::Destroy(JNIEnv* env) {
-  delete this;
-}
-
-void ExtensionActionPopupContents::LoadInitialPage(JNIEnv* env) {
+void ExtensionActionPopupContents::LoadInitialPage() {
   host_->CreateRendererSoon();
 }
 
@@ -138,34 +158,11 @@ void ExtensionActionPopupContents::SetUpNewMainFrame(
 
 void ExtensionActionPopupContents::HandleCloseExtensionHost(
     ExtensionHost* host) {
-  DCHECK_EQ(host, host_.get());
+  CHECK_EQ(host, host_.get(), base::NotFatalUntil::M162);
   Java_ExtensionActionPopupContents_onClose(AttachCurrentThread(),
                                             java_object_);
 }
 
-// JNI method to create an ExtensionActionPopupContents instance.
-// This is called from the Java side to initiate the display of an extension
-// popup.
-static ScopedJavaLocalRef<jobject> JNI_ExtensionActionPopupContents_Create(
-    JNIEnv* env,
-    int64_t extension_view_host_ptr,
-    bool inspect_with_devtools) {
-  std::unique_ptr<ExtensionViewHost> host(
-      reinterpret_cast<extensions::ExtensionViewHost*>(
-          extension_view_host_ptr));
-  DCHECK(host);
-
-  // The ExtensionActionPopupContents C++ object's lifetime is managed by its
-  // Java counterpart. The Java object holds a pointer to this C++ instance.
-  // When the Java side is finished with the popup, it will explicitly call
-  // a 'destroy()' method on its Java object, which in turn calls the native
-  // ExtensionActionPopupContents::Destroy() method, leading to the deletion
-  // of this C++ object. Therefore, 'new' is used here, and ownership is
-  // effectively passed to the Java-controlled lifecycle.
-  ExtensionActionPopupContents* popup =
-      new ExtensionActionPopupContents(std::move(host), inspect_with_devtools);
-  return popup->GetJavaObject();
-}
 
 }  // namespace extensions
 

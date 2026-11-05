@@ -8,15 +8,12 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.DiscardableReferencePool;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -24,7 +21,6 @@ import org.chromium.components.embedder_support.simple_factory_key.SimpleFactory
 
 /** Test for ImageFetcherFactory. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ImageFetcherFactoryTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock ImageFetcherBridge mImageFetcherBridge;
@@ -32,7 +28,6 @@ public class ImageFetcherFactoryTest {
     @Mock SimpleFactoryKeyHandle mSimpleFactoryKeyHandle;
 
     @Test
-    @SmallTest
     public void testGetImageFetcher() {
         assertEquals(
                 ImageFetcherConfig.NETWORK_ONLY,
@@ -69,7 +64,6 @@ public class ImageFetcherFactoryTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateImageFetcher() {
         int config = ImageFetcherConfig.NETWORK_ONLY;
 

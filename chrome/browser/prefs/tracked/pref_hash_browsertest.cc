@@ -24,6 +24,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
@@ -35,7 +36,6 @@
 #include "chrome/browser/search_engines/template_url_prepopulate_data_resolver_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
@@ -1553,9 +1553,11 @@ PREF_HASH_BROWSER_TEST(PrefHashBrowserTestEncryptedTampered, EncryptedTampered);
 
 // Tests that the SuperEncryptedHash is written to the Secure Preferences file.
 class PrefHashBrowserTestSuperEncryptedHashWritten
-    : public PrefHashBrowserTestBase {
+    : public PrefHashBrowserTestEncryptedBase {
  public:
-  PrefHashBrowserTestSuperEncryptedHashWritten() = default;
+  PrefHashBrowserTestSuperEncryptedHashWritten() {
+    feature_list_.InitAndEnableFeature(tracked::kEncryptedPrefHashing);
+  }
 
   void SetupPreferences() override {
     // Set a tracked preference to ensure the store is used.
@@ -1588,6 +1590,7 @@ class PrefHashBrowserTestSuperEncryptedHashWritten
   }
 
  private:
+  base::test::ScopedFeatureList feature_list_;
   bool super_encrypted_hash_found_ = false;
 };
 
@@ -2273,7 +2276,8 @@ class PrefHashBrowserTestEnterpriseFeatureDisabled
  public:
   PrefHashBrowserTestEnterpriseFeatureDisabled() {
     feature_list_.InitWithFeatures(
-        {}, {tracked::kEnableEncryptedTrackedPrefOnEnterprise});
+        {tracked::kEncryptedPrefHashing},
+        {tracked::kEnableEncryptedTrackedPrefOnEnterprise});
   }
 
  protected:

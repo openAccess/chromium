@@ -20,6 +20,7 @@
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -30,6 +31,7 @@
 
 #include "base/clang_profiling_buildflags.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/scoped_file.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/synchronization/lock_impl.h"
@@ -42,6 +44,7 @@
 #include "sandbox/linux/services/syscall_wrappers.h"
 #include "sandbox/linux/services/thread_helpers.h"
 #include "sandbox/linux/system_headers/linux_futex.h"
+#include "sandbox/linux/system_headers/linux_prctl.h"
 #include "sandbox/linux/system_headers/linux_syscalls.h"
 #include "sandbox/linux/system_headers/linux_time.h"
 #include "sandbox/linux/tests/test_utils.h"
@@ -312,6 +315,44 @@ BPF_TEST_C(BaselinePolicy, EPERM_getcwd, BaselinePolicy) {
   BPF_ASSERT_EQ(EPERM, errno);
 }
 
+BPF_TEST_C(BaselinePolicy, EPERM_socket, BaselinePolicy) {
+  errno = 0;
+  int sys_ret = socket(AF_UNIX, SOCK_STREAM, 0);
+  BPF_ASSERT_EQ(-1, sys_ret);
+  BPF_ASSERT_EQ(EPERM, errno);
+}
+
+BPF_TEST_C(BaselinePolicy, EPERM_connect, BaselinePolicy) {
+  errno = 0;
+  struct sockaddr_un addr = {};
+  addr.sun_family = AF_UNIX;
+  base::span(addr.sun_path)
+      .copy_prefix_from(std::string_view("/run/dbus/system_bus_socket"));
+  int sys_ret =
+      connect(-1, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+  BPF_ASSERT_EQ(-1, sys_ret);
+  BPF_ASSERT_EQ(EPERM, errno);
+}
+
+BPF_TEST_C(BaselinePolicy, EPERM_bind, BaselinePolicy) {
+  errno = 0;
+  struct sockaddr_un addr = {};
+  addr.sun_family = AF_UNIX;
+  base::span(addr.sun_path)
+      .copy_prefix_from(std::string_view("/tmp/sample_socket"));
+  int sys_ret =
+      bind(-1, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+  BPF_ASSERT_EQ(-1, sys_ret);
+  BPF_ASSERT_EQ(EPERM, errno);
+}
+
+BPF_TEST_C(BaselinePolicy, EPERM_listen, BaselinePolicy) {
+  errno = 0;
+  int sys_ret = listen(-1, 5);
+  BPF_ASSERT_EQ(-1, sys_ret);
+  BPF_ASSERT_EQ(EPERM, errno);
+}
+
 BPF_DEATH_TEST_C(BaselinePolicy,
                  SIGSYS_InvalidSyscall,
                  DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
@@ -392,6 +433,36 @@ BPF_DEATH_TEST_C(BaselinePolicy,
   _exit(1);
 }
 #endif
+
+#if defined(__x86_64__)
+BPF_TEST_C(BaselinePolicy, ArchPrctlUntagMask, BaselinePolicy) {
+  errno = 0;
+  uint64_t untag_mask;
+  const int ret = syscall(__NR_arch_prctl, ARCH_GET_UNTAG_MASK, &untag_mask);
+  // Kernels older than 6.4 do not recognize ARCH_GET_UNTAG_MASK and return
+  // EINVAL.
+  BPF_ASSERT(ret == 0 || (ret == -1 && errno == EINVAL));
+}
+
+#if !BUILDFLAG(CLANG_PROFILING_INSIDE_SANDBOX)
+BPF_DEATH_TEST_C(BaselinePolicy,
+                 ArchPrctlSigsys,
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
+                 BaselinePolicy) {
+  uint64_t fs;
+  syscall(__NR_arch_prctl, ARCH_GET_FS, &fs);
+  _exit(1);
+}
+
+BPF_DEATH_TEST_C(BaselinePolicy,
+                 ArchPrctlEnableTaggedAddrSigsys,
+                 DEATH_SEGV_MESSAGE(GetErrorMessageContentForTests()),
+                 BaselinePolicy) {
+  syscall(__NR_arch_prctl, ARCH_ENABLE_TAGGED_ADDR, 6);
+  _exit(1);
+}
+#endif
+#endif  // defined(__x86_64__)
 
 BPF_TEST_C(BaselinePolicy, GetOrSetPriority, BaselinePolicy) {
   errno = 0;
@@ -590,6 +661,34 @@ BPF_DEATH_TEST_C(BaselinePolicy,
       syscall(__NR_memfd_create, "should_never_be_allocated",
               MFD_CLOEXEC | MFD_HUGETLB);
 }
+
+#if defined(__i386__)
+// On i386, __NR_mmap is the legacy sys_old_mmap, which takes a single pointer
+// to an argument struct whose contents cannot be filtered. The policy rejects
+// the syscall with ENOSYS so callers use __NR_mmap2 instead.
+BPF_TEST_C(BaselinePolicy, OldMmapEnosys, BaselinePolicy) {
+  struct {
+    unsigned long addr;
+    unsigned long len;
+    unsigned long prot;
+    unsigned long flags;
+    unsigned long fd;
+    unsigned long offset;
+  } args = {0,
+            4096,
+            PROT_READ | PROT_WRITE,
+            MAP_ANONYMOUS | MAP_PRIVATE | MAP_POPULATE,
+            static_cast<unsigned long>(-1),
+            0};
+  errno = 0;
+  // The fourth register is not part of this syscall's ABI; load it with a
+  // value that RestrictMmapFlags() would accept to ensure the rejection is
+  // unconditional.
+  long ret = syscall(__NR_mmap, &args, 0, 0, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
+  BPF_ASSERT_EQ(-1, ret);
+  BPF_ASSERT_EQ(ENOSYS, errno);
+}
+#endif  // defined(__i386__)
 
 }  // namespace
 

@@ -84,8 +84,8 @@ cc_library(
         "//absl/base:cpu_detect",
         "//absl/base:endian",
         "//absl/base:prefetch",
-        "//absl/strings",
         "//absl/strings:str_format",
+        "//absl/strings:string_view",
     ],
 )
 
@@ -99,6 +99,7 @@ cc_test(
         ":crc32c",
         "//absl/strings",
         "//absl/strings:str_format",
+        "//absl/strings:string_view",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -109,9 +110,6 @@ cc_library(
     hdrs = ["internal/non_temporal_arm_intrinsics.h"],
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
-    visibility = [
-        ":__pkg__",
-    ],
     deps = [
         "//absl/base:config",
     ],
@@ -123,7 +121,6 @@ cc_library(
     copts = ABSL_DEFAULT_COPTS,
     linkopts = ABSL_DEFAULT_LINKOPTS,
     visibility = [
-        ":__pkg__",
     ],
     deps = [
         ":non_temporal_arm_intrinsics",
@@ -142,10 +139,14 @@ cc_test(
     visibility = ["//visibility:private"],
     deps = [
         ":crc32c",
+        ":crc_internal",
+        "//absl/base:config",
+        "//absl/base:core_headers",
         "//absl/memory",
         "//absl/random",
         "//absl/random:distributions",
         "//absl/strings",
+        "//absl/strings:string_view",
         "@googletest//:gtest",
         "@googletest//:gtest_main",
     ],
@@ -205,8 +206,7 @@ cc_binary(
     visibility = ["//visibility:private"],
     deps = [
         ":crc32c",
-        "//absl/memory",
-        "//absl/strings",
+        "//absl/strings:string_view",
         "@google_benchmark//:benchmark_main",
     ],
 )

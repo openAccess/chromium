@@ -17,7 +17,6 @@ import org.mockito.Mockito;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.Shadows;
-import org.robolectric.annotation.Config;
 
 import org.chromium.webapk.lib.common.WebApkCommonUtils;
 
@@ -28,7 +27,6 @@ import java.io.InputStream;
 
 /** Tests HostBrowserClassLoader. */
 @RunWith(RobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class HostBrowserClassLoaderTest {
     /** Mock package name for the remote host browser. */
     private static final String REMOTE_PACKAGE_NAME = "remote_package";
@@ -49,7 +47,7 @@ public class HostBrowserClassLoaderTest {
 
     @Before
     public void setUp() throws Exception {
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
         mPackageManager = mContext.getPackageManager();
         setRemoteVersionCode(REMOTE_VERSION_CODE);
 
@@ -133,7 +131,7 @@ public class HostBrowserClassLoaderTest {
         PackageInfo packageInfo = new PackageInfo();
         packageInfo.packageName = REMOTE_PACKAGE_NAME;
         packageInfo.versionCode = versionCode;
-        Shadows.shadowOf(mPackageManager).addPackage(packageInfo);
+        Shadows.shadowOf(mPackageManager).installPackage(packageInfo);
     }
 
     /**

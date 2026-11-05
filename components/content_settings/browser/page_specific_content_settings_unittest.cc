@@ -39,6 +39,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
+#include "third_party/blink/public/public_buildflags.h"
 
 namespace content_settings {
 
@@ -890,7 +891,7 @@ TEST_F(PageSpecificContentSettingsTest, BrowsingDataModelStorageAccess) {
       BrowsingDataModel::StorageType::kLocalStorage, blocked_by_policy);
   content_settings->OnBrowsingDataAccessed(
       CreateUnpartitionedStorageKey(GURL("https://www.youtube.com")),
-      BrowsingDataModel::StorageType::kSharedStorage, blocked_by_policy);
+      BrowsingDataModel::StorageType::kLocalStorage, blocked_by_policy);
 
   const auto* allowed_browsing_data_model =
       content_settings->allowed_browsing_data_model();
@@ -1165,10 +1166,6 @@ TEST_F(PageSpecificContentSettingsWithFencedFrameTest,
 
 TEST_F(PageSpecificContentSettingsTest,
        MediaIndicatorsBlockedDoNotOverrideInUse) {
-  base::test::ScopedFeatureList scoped_feature_list_;
-  scoped_feature_list_.InitAndEnableFeature(
-      content_settings::features::kLeftHandSideActivityIndicators);
-
   NavigateAndCommit(GURL("http://google.com"));
 
   PageSpecificContentSettings* pscs = PageSpecificContentSettings::GetForFrame(
@@ -1215,7 +1212,7 @@ TEST_F(PageSpecificContentSettingsTest, MediaIndicatorsMinHoldDurationDelay) {
   EXPECT_TRUE(pscs->GetMicrophoneCameraState().Has(
       PageSpecificContentSettings::kCameraAccessed));
 
-  // Min hold duration equals to 5 seconds.
+  // Min hold duration equals to 4 seconds.
   task_environment()->AdvanceClock(base::Seconds(2));
   base::RunLoop().RunUntilIdle();
 
@@ -1244,7 +1241,7 @@ TEST_F(PageSpecificContentSettingsTest, AlmostExpiredMinHoldDurationDelay) {
 
   pscs->OnCapturingStateChanged(ContentSettingsType::MEDIASTREAM_CAMERA, true);
 
-  task_environment()->AdvanceClock(base::Milliseconds(4800));
+  task_environment()->AdvanceClock(base::Milliseconds(3800));
   base::RunLoop().RunUntilIdle();
 
   EXPECT_TRUE(pscs->GetMicrophoneCameraState().Has(
@@ -1288,7 +1285,7 @@ TEST_F(PageSpecificContentSettingsTest,
   EXPECT_TRUE(pscs->GetMicrophoneCameraState().Has(
       PageSpecificContentSettings::kCameraAccessed));
 
-  // Min hold duration equals to 5 seconds.
+  // Min hold duration equals to 4 seconds.
   task_environment()->AdvanceClock(base::Seconds(6));
   base::RunLoop().RunUntilIdle();
 
@@ -1399,12 +1396,8 @@ TEST_F(PageSpecificContentSettingsTest, GetLastUsedReturnCorrectTimeTest) {
             pscs->GetLastUsedTime(ContentSettingsType::MEDIASTREAM_CAMERA));
 }
 
-// Tests that a permission blocked indicator is visible only for 60 seconds.
+// Tests that a permission blocked indicator is visible only for 4 seconds.
 TEST_F(PageSpecificContentSettingsTest, MediaBlockedIndicatorsDismissDelay) {
-  base::test::ScopedFeatureList scoped_feature_list_;
-  scoped_feature_list_.InitWithFeatures(
-      {}, {content_settings::features::kLeftHandSideActivityIndicators});
-
   NavigateAndCommit(GURL("http://google.com"));
 
   PageSpecificContentSettings* pscs = PageSpecificContentSettings::GetForFrame(
@@ -1424,14 +1417,14 @@ TEST_F(PageSpecificContentSettingsTest, MediaBlockedIndicatorsDismissDelay) {
   EXPECT_TRUE(pscs->get_media_blocked_indicator_timer_for_testing().contains(
       ContentSettingsType::MEDIASTREAM_MIC));
 
-  task_environment()->AdvanceClock(base::Seconds(57));
+  task_environment()->AdvanceClock(base::Seconds(2));
   base::RunLoop().RunUntilIdle();
 
-  // The timer is still there because a delay is 60 seconds.
+  // The timer is still there because the delay is 4 seconds.
   EXPECT_TRUE(pscs->get_media_blocked_indicator_timer_for_testing().contains(
       ContentSettingsType::MEDIASTREAM_MIC));
 
-  task_environment()->AdvanceClock(base::Seconds(4));
+  task_environment()->AdvanceClock(base::Seconds(3));
   base::RunLoop().RunUntilIdle();
 
   EXPECT_FALSE(pscs->get_media_blocked_indicator_timer_for_testing().contains(
@@ -1442,7 +1435,6 @@ TEST_F(PageSpecificContentSettingsTest, MediaBlockedIndicatorsDismissDelay) {
 // opened.
 TEST_F(PageSpecificContentSettingsTest,
        MediaIndicatorsDoNotDismissIfOpenedDelay) {
-  base::test::ScopedFeatureList scoped_feature_list_;
   NavigateAndCommit(GURL("http://google.com"));
 
   PageSpecificContentSettings* pscs = PageSpecificContentSettings::GetForFrame(
@@ -1458,7 +1450,7 @@ TEST_F(PageSpecificContentSettingsTest,
 
   EXPECT_TRUE(pscs->get_media_blocked_indicator_timer_for_testing().contains(
       ContentSettingsType::MEDIASTREAM_MIC));
-  // 60 secodns timer is on.
+  // 4 seconds timer is on.
   EXPECT_TRUE(pscs->get_media_blocked_indicator_timer_for_testing()
                   [ContentSettingsType::MEDIASTREAM_MIC]
                       .IsRunning());
@@ -1474,7 +1466,7 @@ TEST_F(PageSpecificContentSettingsTest,
 
   // A blockage indicator timer was stopped because an activity indicator popup
   // bubble was opened.
-  task_environment()->AdvanceClock(base::Seconds(65));
+  task_environment()->AdvanceClock(base::Seconds(5));
   base::RunLoop().RunUntilIdle();
 
   EXPECT_TRUE(pscs->get_media_blocked_indicator_timer_for_testing().contains(
@@ -1492,7 +1484,7 @@ TEST_F(PageSpecificContentSettingsTest,
                   [ContentSettingsType::MEDIASTREAM_MIC]
                       .IsRunning());
 
-  task_environment()->AdvanceClock(base::Seconds(61));
+  task_environment()->AdvanceClock(base::Seconds(5));
   base::RunLoop().RunUntilIdle();
 
   EXPECT_FALSE(pscs->get_media_blocked_indicator_timer_for_testing().contains(
@@ -1506,10 +1498,6 @@ TEST_F(PageSpecificContentSettingsTest,
 // Tests that a permission blocked state is reset after media started to be
 // used.
 TEST_F(PageSpecificContentSettingsTest, MediaBlockedStateIsResetIfMediaUsed) {
-  base::test::ScopedFeatureList scoped_feature_list_;
-  scoped_feature_list_.InitAndEnableFeature(
-      content_settings::features::kLeftHandSideActivityIndicators);
-
   NavigateAndCommit(GURL("http://google.com"));
 
   PageSpecificContentSettings* pscs = PageSpecificContentSettings::GetForFrame(
@@ -1533,8 +1521,7 @@ TEST_F(PageSpecificContentSettingsTest, MediaBlockedStateIsResetIfMediaUsed) {
       PageSpecificContentSettings::kMicrophoneBlocked));
 }
 
-// The only currently implemented object-based type is for now ChromeOS only
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 TEST_F(PageSpecificContentSettingsTest, ObjectBasedInUseIndicator) {
   NavigateAndCommit(GURL("http://google.com"));
 

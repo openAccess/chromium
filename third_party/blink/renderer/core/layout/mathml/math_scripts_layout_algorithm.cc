@@ -270,8 +270,7 @@ MathScriptsLayoutAlgorithm::LayoutAndGetMetrics(BlockNode child) const {
   ChildAndMetrics child_and_metrics;
   auto constraint_space = CreateConstraintSpaceForMathChild(
       Node(), ChildAvailableSize(), GetConstraintSpace(), child);
-  child_and_metrics.result =
-      child.Layout(constraint_space, nullptr /*break_token*/);
+  child_and_metrics.result = child.Layout(constraint_space);
   LogicalBoxFragment fragment(
       GetConstraintSpace().GetWritingDirection(),
       To<PhysicalBoxFragment>(child_and_metrics.result->GetPhysicalFragment()));
@@ -415,7 +414,7 @@ const LayoutResult* MathScriptsLayoutAlgorithm::Layout() {
 }
 
 MinMaxSizesResult MathScriptsLayoutAlgorithm::ComputeMinMaxSizes(
-    const MinMaxSizesFloatInput&) {
+    const MinMaxSizesInput& input) {
   if (auto result = CalculateMinMaxSizesIgnoringChildren(
           Node(), BorderScrollbarPadding()))
     return *result;
@@ -437,7 +436,8 @@ MinMaxSizesResult MathScriptsLayoutAlgorithm::ComputeMinMaxSizes(
   // within ComputeMinMaxSizes, (or setup in an interoperable constraint-space).
   LayoutUnit base_italic_correction;
   const auto base_result = ComputeMinAndMaxContentContributionForMathChild(
-      Style(), GetConstraintSpace(), base, ChildAvailableSize().block_size);
+      Style(), GetConstraintSpace(), base, ChildAvailableSize().block_size,
+      MinMaxSizesInput::UnconstrainedUntriaged());
 
   sizes = base_result.sizes;
   depends_on_block_constraints |= base_result.depends_on_block_constraints;
@@ -454,7 +454,8 @@ MinMaxSizesResult MathScriptsLayoutAlgorithm::ComputeMinMaxSizes(
       const auto first_post_script_result =
           ComputeMinAndMaxContentContributionForMathChild(
               Style(), GetConstraintSpace(), first_post_script,
-              ChildAvailableSize().block_size);
+              ChildAvailableSize().block_size,
+              MinMaxSizesInput::UnconstrainedUntriaged());
 
       sizes += first_post_script_result.sizes;
       if (sub)
@@ -474,8 +475,8 @@ MinMaxSizesResult MathScriptsLayoutAlgorithm::ComputeMinMaxSizes(
         if (!sub)
           continue;
         auto sub_result = ComputeMinAndMaxContentContributionForMathChild(
-            Style(), GetConstraintSpace(), sub,
-            ChildAvailableSize().block_size);
+            Style(), GetConstraintSpace(), sub, ChildAvailableSize().block_size,
+            MinMaxSizesInput::UnconstrainedUntriaged());
         sub_result.sizes -= base_italic_correction;
         sub_sup_pair_size.Encompass(sub_result.sizes);
 
@@ -483,8 +484,8 @@ MinMaxSizesResult MathScriptsLayoutAlgorithm::ComputeMinMaxSizes(
         if (!sup)
           continue;
         const auto sup_result = ComputeMinAndMaxContentContributionForMathChild(
-            Style(), GetConstraintSpace(), sup,
-            ChildAvailableSize().block_size);
+            Style(), GetConstraintSpace(), sup, ChildAvailableSize().block_size,
+            MinMaxSizesInput::UnconstrainedUntriaged());
         sub_sup_pair_size.Encompass(sup_result.sizes);
 
         sizes += sub_sup_pair_size;

@@ -6,6 +6,7 @@
 #define CC_TREES_LAYER_TREE_HOST_IMPL_TEST_BASE_H_
 
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -22,12 +23,14 @@
 #include "cc/test/fake_rendering_stats_instrumentation.h"
 #include "cc/test/layer_test_common.h"
 #include "cc/test/property_tree_test_utils.h"
+#include "cc/test/scoped_browser_controls_linear_animation.h"
 #include "cc/test/test_task_graph_runner.h"
 #include "cc/trees/frame_data.h"
 #include "cc/trees/layer_tree_host_impl.h"
 #include "cc/trees/layer_tree_host_impl_delegate.h"
 #include "cc/trees/layer_tree_impl.h"
 #include "components/viz/common/quads/compositor_render_pass.h"
+#include "components/viz/common/quads/frame_interval_inputs.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace cc {
@@ -148,6 +151,16 @@ class TestVizLayerTreeHostImpl : public LayerTreeHostImpl {
   void set_is_handling_interaction_from_client(bool is_handling_interaction) {
     is_handling_interaction_from_client_ = is_handling_interaction;
   }
+
+  void set_frame_interval_inputs_from_client(
+      std::optional<viz::FrameIntervalInputs> frame_interval_inputs) {
+    frame_interval_inputs_from_client_ = std::move(frame_interval_inputs);
+  }
+
+  const std::optional<viz::FrameIntervalInputs>&
+  frame_interval_inputs_from_client_for_testing() const {
+    return frame_interval_inputs_from_client_;
+  }
 };
 
 class LayerTreeHostImplTestBase : public testing::Test,
@@ -180,6 +193,7 @@ class LayerTreeHostImplTestBase : public testing::Test,
   void NotifyReadyToDraw() override;
   void SetNeedsRedrawOnImplThread() override;
   void SetNeedsOneBeginImplFrameOnImplThread() override;
+  void NotifyInputEvent() override;
   void SetNeedsPrepareTilesOnImplThread() override;
   void SetNeedsCommitOnImplThread(BeginMainFrameReason,
                                   bool urgent,
@@ -385,6 +399,7 @@ class LayerTreeHostImplTestBase : public testing::Test,
   bool did_request_commit_;
   bool did_request_redraw_;
   bool did_request_next_frame_;
+  bool did_notify_input_event_;
   bool did_request_prepare_tiles_;
   bool did_prepare_tiles_;
   bool did_complete_page_scale_animation_;
@@ -400,8 +415,11 @@ class LayerTreeHostImplTestBase : public testing::Test,
   int first_scroll_observed = 0;
 };
 
+// TODO(crbug.com/489060623): Fix unit tests when running with snap animation
+// and remove ScopedBrowserControlsLinearAnimation.
 class LayerTreeHostImplTest
-    : public LayerTreeHostImplTestBase,
+    : private test::ScopedBrowserControlsLinearAnimation,
+      public LayerTreeHostImplTestBase,
       public testing::WithParamInterface<LayerTreeImplTestMode> {
  public:
   LayerTreeHostImplTest();

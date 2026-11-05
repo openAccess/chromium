@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
@@ -23,6 +24,7 @@
 #include "media/capture/video/chromeos/camera_buffer_factory.h"
 #include "media/capture/video/chromeos/camera_device_context.h"
 #include "media/capture/video/chromeos/camera_hal_delegate.h"
+#include "media/capture/video/chromeos/camera_metadata_utils.h"
 #include "media/capture/video/chromeos/mock_camera_module.h"
 #include "media/capture/video/chromeos/mock_vendor_tag_ops.h"
 #include "media/capture/video/chromeos/mock_video_capture_client.h"
@@ -39,7 +41,6 @@ using testing::A;
 using testing::AtLeast;
 using testing::AtMost;
 using testing::Invoke;
-using testing::InvokeWithoutArgs;
 
 namespace media {
 
@@ -89,15 +90,15 @@ class MockCameraDevice : public cros::mojom::Camera3DeviceOps {
                void(cros::mojom::Camera3CaptureRequestPtr& request,
                     ProcessCaptureRequestCallback& callback));
 
-  void Dump(mojo::ScopedHandle fd) override { DoDump(fd); }
-  MOCK_METHOD1(DoDump, void(mojo::ScopedHandle& fd));
+  void Dump(mojo::PlatformHandle fd) override { DoDump(fd); }
+  MOCK_METHOD1(DoDump, void(mojo::PlatformHandle& fd));
 
   void Flush(FlushCallback callback) override { DoFlush(callback); }
   MOCK_METHOD1(DoFlush, void(FlushCallback& callback));
 
   void RegisterBuffer(uint64_t buffer_id,
                       cros::mojom::Camera3DeviceOps::BufferType type,
-                      std::vector<mojo::ScopedHandle> fds,
+                      std::vector<mojo::PlatformHandle> fds,
                       uint32_t drm_format,
                       cros::mojom::HalPixelFormat hal_pixel_format,
                       uint32_t width,
@@ -254,9 +255,12 @@ class CameraDeviceDelegateTest : public ::testing::Test {
     stream_configurations[10] = kDefaultHeight;
     stream_configurations[11] = static_cast<int32_t>(
         cros::mojom::Camera3StreamType::CAMERA3_STREAM_OUTPUT);
-    uint8_t* as_int8 = reinterpret_cast<uint8_t*>(stream_configurations.data());
-    entry->data.assign(as_int8,
-                       UNSAFE_TODO(as_int8 + entry->count * sizeof(int32_t)));
+    base::span<const uint8_t> bytes = base::as_byte_span(stream_configurations);
+    entry->data.assign(bytes.begin(), bytes.end());
+    if (malformed_stream_configuration_count_) {
+      // Claim one more four-int32 tuple than the Mojo byte vector contains.
+      entry->count += 4;
+    }
     static_metadata->entries->push_back(std::move(entry));
 
     entry = cros::mojom::CameraMetadataEntry::New();
@@ -273,7 +277,7 @@ class CameraDeviceDelegateTest : public ::testing::Test {
     entry->type = cros::mojom::EntryType::TYPE_INT32;
     entry->count = 1;
     int32_t jpeg_max_size = kJpegMaxBufferSize;
-    as_int8 = reinterpret_cast<uint8_t*>(&jpeg_max_size);
+    uint8_t* as_int8 = reinterpret_cast<uint8_t*>(&jpeg_max_size);
     entry->data.assign(as_int8,
                        UNSAFE_TODO(as_int8 + entry->count * sizeof(int32_t)));
     static_metadata->entries->push_back(std::move(entry));
@@ -519,6 +523,24 @@ class CameraDeviceDelegateTest : public ::testing::Test {
     run_loop_->Run();
   }
 
+  void DoGetPhotoStateNow(VideoCaptureDevice::GetPhotoStateCallback callback) {
+    device_delegate_thread_.task_runner()->PostTask(
+        FROM_HERE, base::BindOnce(&CameraDeviceDelegate::DoGetPhotoState,
+                                  camera_device_delegate_->GetWeakPtr(),
+                                  std::move(callback)));
+  }
+
+  uint32_t GetStoredStreamConfigurationCount() {
+    auto info = camera_hal_delegate_->GetCameraInfoFromDeviceId(
+        camera_device_delegate_->device_descriptor_.device_id);
+    auto* entry =
+        GetMetadataEntry(info->static_camera_characteristics,
+                         cros::mojom::CameraMetadataTag::
+                             ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS);
+    CHECK(entry);
+    return (*entry)->count;
+  }
+
   void QuitRunLoop() {
     VLOG(2) << "quit!";
     if (run_loop_) {
@@ -555,6 +577,7 @@ class CameraDeviceDelegateTest : public ::testing::Test {
 
   std::unique_ptr<CameraDeviceContext> device_context_;
   ClientType client_type_;
+  bool malformed_stream_configuration_count_ = false;
 
  private:
   std::unique_ptr<base::RunLoop> run_loop_;
@@ -588,6 +611,78 @@ TEST_F(CameraDeviceDelegateTest, AllocateCaptureAndStop) {
 
   WaitForDeviceToClose();
 
+  ResetDevice();
+}
+
+TEST_F(CameraDeviceDelegateTest, WellFormedStreamConfigurationPhotoState) {
+  auto* mock_client = ResetDeviceContext();
+  mock_client->SetFrameCb(base::BindPostTaskToCurrentDefault(base::BindOnce(
+      &CameraDeviceDelegateTest::QuitRunLoop, base::Unretained(this))));
+  mock_client->SetQuitCb(base::BindPostTaskToCurrentDefault(base::BindOnce(
+      &CameraDeviceDelegateTest::QuitRunLoop, base::Unretained(this))));
+  SetUpExpectationUntilCapturing(mock_client);
+  SetUpExpectationForCaptureLoop();
+
+  AllocateDevice();
+  device_delegate_thread_.task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(&CameraDeviceDelegate::AllocateAndStart,
+                                camera_device_delegate_->GetWeakPtr(),
+                                GetDefaultCaptureParams(),
+                                base::Unretained(device_context_.get())));
+  DoLoop();
+  ASSERT_EQ(CameraDeviceContext::State::kCapturing, GetState());
+
+  auto photo_state_callback = base::BindPostTaskToCurrentDefault(base::BindOnce(
+      [](CameraDeviceDelegateTest* test, mojom::PhotoStatePtr photo_state) {
+        EXPECT_TRUE(photo_state);
+        test->QuitRunLoop();
+      },
+      base::Unretained(this)));
+  DoGetPhotoStateNow(std::move(photo_state_callback));
+  DoLoop();
+
+  SetUpExpectationForClose();
+  WaitForDeviceToClose();
+  ResetDevice();
+}
+
+// CameraMetadataEntry.count is independently controlled by CameraModule.
+// GetStreamResolutions() must not use it to walk beyond the Mojo byte vector.
+TEST_F(CameraDeviceDelegateTest, OutOfRangeStreamConfigurationCount) {
+  malformed_stream_configuration_count_ = true;
+  auto* mock_client = ResetDeviceContext();
+  mock_client->SetFrameCb(base::BindPostTaskToCurrentDefault(base::BindOnce(
+      &CameraDeviceDelegateTest::QuitRunLoop, base::Unretained(this))));
+  mock_client->SetQuitCb(base::BindPostTaskToCurrentDefault(base::BindOnce(
+      &CameraDeviceDelegateTest::QuitRunLoop, base::Unretained(this))));
+  SetUpExpectationUntilCapturing(mock_client);
+  SetUpExpectationForCaptureLoop();
+
+  AllocateDevice();
+  ASSERT_EQ(16u, GetStoredStreamConfigurationCount());
+  device_delegate_thread_.task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(&CameraDeviceDelegate::AllocateAndStart,
+                                camera_device_delegate_->GetWeakPtr(),
+                                GetDefaultCaptureParams(),
+                                base::Unretained(device_context_.get())));
+
+  DoLoop();
+  ASSERT_EQ(CameraDeviceContext::State::kCapturing, GetState());
+  auto photo_state_callback = base::BindPostTaskToCurrentDefault(base::BindOnce(
+      [](CameraDeviceDelegateTest* test, mojom::PhotoStatePtr photo_state) {
+        ASSERT_TRUE(photo_state);
+        EXPECT_EQ(0.0, photo_state->width->min);
+        EXPECT_EQ(0.0, photo_state->width->max);
+        EXPECT_EQ(0.0, photo_state->height->min);
+        EXPECT_EQ(0.0, photo_state->height->max);
+        test->QuitRunLoop();
+      },
+      base::Unretained(this)));
+  DoGetPhotoStateNow(std::move(photo_state_callback));
+  DoLoop();
+
+  SetUpExpectationForClose();
+  WaitForDeviceToClose();
   ResetDevice();
 }
 
@@ -743,7 +838,7 @@ TEST_F(CameraDeviceDelegateTest, FailToOpenDevice) {
   };
   EXPECT_CALL(*mock_client, OnError(_, _, _))
       .Times(AtLeast(1))
-      .WillRepeatedly(InvokeWithoutArgs(stop_on_error));
+      .WillRepeatedly(stop_on_error);
 
   // Hold the |device_ops_receiver| to make the behavior of CameraDeviceDelegate
   // deterministic. Otherwise the connection error handler would race with the
@@ -814,6 +909,56 @@ TEST_F(CameraDeviceDelegateTest, DoubleStopAndDeAllocate) {
   DoLoop();
 
   ResetDevice();
+}
+
+// Tests that GetStreamResolutions only parses stream configurations backed by
+// actual data when the entry's element count disagrees with its data buffer
+// size, and safely ignores trailing incomplete tuples.
+TEST_F(CameraDeviceDelegateTest,
+       GetStreamResolutionsWithInconsistentCountAndTrailingData) {
+  auto metadata = cros::mojom::CameraMetadata::New();
+  metadata->entries = std::vector<cros::mojom::CameraMetadataEntryPtr>();
+
+  auto entry = cros::mojom::CameraMetadataEntry::New();
+  entry->tag = cros::mojom::CameraMetadataTag::
+      ANDROID_SCALER_AVAILABLE_STREAM_CONFIGURATIONS;
+  entry->type = cros::mojom::EntryType::TYPE_INT32;
+  // Claim far more elements than actually present in the data buffer.
+  entry->count = 100000;
+
+  // Provide only one valid BLOB configuration (4 int32s = 16 bytes) plus an
+  // incomplete trailing tuple (1 int32) to verify both bounds and partial-tuple
+  // handling.
+  constexpr int32_t kValidWidth = 1280;
+  constexpr int32_t kValidHeight = 720;
+  std::vector<int32_t> data = {
+      static_cast<int32_t>(cros::mojom::HalPixelFormat::HAL_PIXEL_FORMAT_BLOB),
+      kValidWidth,
+      kValidHeight,
+      static_cast<int32_t>(
+          cros::mojom::Camera3StreamType::CAMERA3_STREAM_OUTPUT),
+      // Incomplete tuple (only 1 int32 instead of 4):
+      static_cast<int32_t>(cros::mojom::HalPixelFormat::HAL_PIXEL_FORMAT_BLOB),
+  };
+  entry->data = base::ToVector(base::as_byte_span(data));
+  metadata->entries->push_back(std::move(entry));
+
+  // Mismatched count (100000 vs 5 elements) is rejected by
+  // GetMetadataEntryAsSpan.
+  std::vector<gfx::Size> resolutions =
+      CameraDeviceDelegate::GetStreamResolutions(
+          metadata, cros::mojom::Camera3StreamType::CAMERA3_STREAM_OUTPUT,
+          cros::mojom::HalPixelFormat::HAL_PIXEL_FORMAT_BLOB);
+  EXPECT_TRUE(resolutions.empty());
+
+  // When count matches the 5 elements in the buffer, the complete tuple is
+  // parsed and the trailing incomplete tuple is ignored.
+  metadata->entries->at(0)->count = data.size();
+  resolutions = CameraDeviceDelegate::GetStreamResolutions(
+      metadata, cros::mojom::Camera3StreamType::CAMERA3_STREAM_OUTPUT,
+      cros::mojom::HalPixelFormat::HAL_PIXEL_FORMAT_BLOB);
+  EXPECT_THAT(resolutions,
+              testing::ElementsAre(gfx::Size(kValidWidth, kValidHeight)));
 }
 
 }  // namespace media

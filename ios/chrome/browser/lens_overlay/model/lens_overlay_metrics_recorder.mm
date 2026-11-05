@@ -177,16 +177,16 @@ lens::MimeType MimeTypeFromWebState(web::WebState* web_state) {
   // Dismissal metric.
   lens::RecordDismissal(dismissalSource);
 
+  // Session duration metrics.
+  base::TimeTicks now;
+  base::TimeDelta sessionDuration = _invocationTime.Elapsed(&now);
+  lens::RecordSessionDuration(_invocationSource, sessionDuration);
+
   // Session foreground duration metrics.
   if (_foregroundTime != base::TimeTicks()) {
-    _foregroundDuration =
-        _foregroundDuration + (base::TimeTicks::Now() - _foregroundTime);
+    _foregroundDuration = _foregroundDuration + (now - _foregroundTime);
   }
   lens::RecordSessionForegroundDuration(_invocationSource, _foregroundDuration);
-
-  // Session duration metrics.
-  base::TimeDelta sessionDuration = _invocationTime.Elapsed();
-  lens::RecordSessionDuration(_invocationSource, sessionDuration);
 
   // Records number of tabs opened by the lens overlay during session.
   lens::RecordGeneratedTabCount(_generatedTabCount);
@@ -212,6 +212,10 @@ lens::MimeType MimeTypeFromWebState(web::WebState* web_state) {
 
 - (void)recordNewLensResultGenerated {
   RecordAction(base::UserMetricsAction("Mobile.LensOverlay.NewResult"));
+  if (!lens::IsLVFEntrypoint(_entrypoint)) {
+    RecordAction(
+        base::UserMetricsAction("Mobile.LensOverlay.WebsiteSearch.Performed"));
+  }
 }
 
 - (void)recordNewTabGeneratedWithSource:

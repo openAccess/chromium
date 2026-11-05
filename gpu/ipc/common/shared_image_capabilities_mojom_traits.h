@@ -5,10 +5,14 @@
 #ifndef GPU_IPC_COMMON_SHARED_IMAGE_CAPABILITIES_MOJOM_TRAITS_H_
 #define GPU_IPC_COMMON_SHARED_IMAGE_CAPABILITIES_MOJOM_TRAITS_H_
 
+#include <vector>
+
 #include "build/build_config.h"
+#include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/command_buffer/common/shared_image_capabilities.h"
 #include "gpu/ipc/common/gpu_ipc_common_export.h"
 #include "gpu/ipc/common/shared_image_capabilities.mojom.h"
+#include "services/viz/public/cpp/compositing/shared_image_format_mojom_traits.h"
 
 namespace mojo {
 
@@ -46,6 +50,11 @@ struct GPU_IPC_COMMON_EXPORT StructTraits<
     return input.supports_ycbcr_p010_sampling;
   }
 
+  static const std::vector<viz::SharedImageFormat>& skia_writable_yuv_formats(
+      const gpu::SharedImageCapabilities& input) {
+    return input.skia_writable_yuv_formats;
+  }
+
   static bool is_r16f_supported(const gpu::SharedImageCapabilities& input) {
     return input.is_r16f_supported;
   }
@@ -68,13 +77,6 @@ struct GPU_IPC_COMMON_EXPORT StructTraits<
   static bool shared_image_swap_chain(
       const gpu::SharedImageCapabilities& input) {
     return input.shared_image_swap_chain;
-  }
-#endif
-
-#if BUILDFLAG(IS_MAC)
-  static uint32_t texture_target_for_io_surfaces(
-      const gpu::SharedImageCapabilities& input) {
-    return input.texture_target_for_io_surfaces;
   }
 #endif
 };

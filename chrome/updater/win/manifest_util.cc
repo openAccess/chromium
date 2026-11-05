@@ -4,8 +4,9 @@
 
 #include "chrome/updater/win/manifest_util.h"
 
+#include <stdint.h>
+
 #include <algorithm>
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -71,8 +72,8 @@ std::optional<ProtocolParserXML::Results> ParseOfflineManifest(
   }
 
   std::string contents(file_size.value(), '\0');
-  if (base::ReadFile(manifest_path.value(), &contents[0], file_size.value()) ==
-      -1) {
+  if (base::ReadFile(manifest_path.value(), contents.data(),
+                     file_size.value()) == -1) {
     VLOG(2) << "Failed to load manifest file: " << manifest_path.value();
     return std::nullopt;
   }

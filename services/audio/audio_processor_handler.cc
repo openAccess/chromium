@@ -53,6 +53,7 @@ AudioProcessorHandler::AudioProcessorHandler(
     const media::AudioParameters& output_format,
     LogCallback log_callback,
     DeliverProcessedAudioCallback deliver_processed_audio_callback,
+    VolumeAdjustmentCallback volume_adjustment_callback,
     ReferenceStreamErrorCallback reference_stream_error_callback,
     mojo::PendingReceiver<media::mojom::AudioProcessorControls>
         controls_receiver,
@@ -73,6 +74,7 @@ AudioProcessorHandler::AudioProcessorHandler(
                                                settings.echo_cancellation))),
       deliver_processed_audio_callback_(
           std::move(deliver_processed_audio_callback)),
+      volume_adjustment_callback_(std::move(volume_adjustment_callback)),
       reference_stream_error_callback_(
           std::move(reference_stream_error_callback)),
       receiver_(this, std::move(controls_receiver)),
@@ -89,8 +91,11 @@ AudioProcessorHandler::AudioProcessorHandler(
   }
 
   // We need to offload work to another thread for heavy processing, ex: echo
-  // cancellation.
-  if (needs_playout_reference()) {
+  // cancellation or voice isolation.
+  const bool needs_fifo = needs_playout_reference() ||
+                          (voice_isolation_handler_ &&
+                           !voice_isolation_handler_->HasProcessingThread());
+  if (needs_fifo) {
     processing_fifo_ = std::make_unique<ProcessingAudioFifo>(
         input_format, kProcessingFifoSize,
         base::BindRepeating(
@@ -102,6 +107,7 @@ AudioProcessorHandler::AudioProcessorHandler(
 
 AudioProcessorHandler::~AudioProcessorHandler() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
+  StopProcessing();
   if (aecdump_recording_manager_) {
     // If an aecdump is currently ongoing, this will trigger a StopAecdump()
     // call.
@@ -111,6 +117,11 @@ AudioProcessorHandler::~AudioProcessorHandler() {
 
 void AudioProcessorHandler::StartProcessing() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
+  // `voice_isolation_handler_` must be started before `processing_fifo_` to
+  // prepare it before any calls to it are made.
+  if (voice_isolation_handler_) {
+    voice_isolation_handler_->StartProcessing();
+  }
   // This is safe because the caller is required to call StartProcessing()
   // before the capture stream is started, ensuring no concurrent calls to
   // ProcessCapturedAudio() can occur.
@@ -124,7 +135,15 @@ void AudioProcessorHandler::StopProcessing() {
   // This is safe because the caller is required to synchronously stop the
   // capture stream before calling StopProcessing(), guaranteeing that no
   // concurrent calls to ProcessCapturedAudio() can occur.
+  //
+  // `processing_fifo_` must be stopped and destroyed before stopping
+  // `voice_isolation_handler_` to ensure that any audio currently in the FIFO
+  // finishes processing and no further calls will be made to
+  // `voice_isolation_handler_`.
   processing_fifo_.reset();
+  if (voice_isolation_handler_) {
+    voice_isolation_handler_->StopProcessing();
+  }
 }
 
 void AudioProcessorHandler::ProcessCapturedAudio(
@@ -214,6 +233,10 @@ void AudioProcessorHandler::OnAudioProcessorOutput(
     base::TimeTicks audio_capture_time,
     std::optional<double> new_volume) {
   TRACE_EVENT("audio", "AudioProcessorHandler::OnAudioProcessorOutput");
+  if (new_volume && volume_adjustment_callback_) {
+    volume_adjustment_callback_.Run(*new_volume);
+  }
+
   // Retrieve and reset the accumulated glitch info to ensure it is attached
   // to the processed frame.
   const media::AudioGlitchInfo glitch_info =
@@ -222,11 +245,11 @@ void AudioProcessorHandler::OnAudioProcessorOutput(
   if (voice_isolation_handler_) {
     // Route the processed audio and its metadata through voice isolation.
     voice_isolation_handler_->ProcessCapturedAudio(
-        audio_bus, audio_capture_time, new_volume, glitch_info);
-  } else {
+        audio_bus, audio_capture_time, glitch_info);
+  } else if (deliver_processed_audio_callback_) {
     // Deliver directly to the final destination callback.
     deliver_processed_audio_callback_.Run(audio_bus, audio_capture_time,
-                                          new_volume, glitch_info);
+                                          glitch_info);
   }
 }
 }  // namespace audio

@@ -183,7 +183,6 @@ class CORE_EXPORT ScrollableArea : public GarbageCollectedMixin {
   }
   virtual bool SnapContainerDataNeedsUpdate() const { return false; }
   virtual void SetSnapContainerDataNeedsUpdate(bool) {}
-  void SnapAfterScrollbarScrolling(ScrollbarOrientation, cc::ScrollSourceType);
   virtual void UpdateFocusDataForSnapAreas() {}
 
   // SnapAtCurrentPosition(), SnapForEndPosition(), SnapForDirection(), and
@@ -200,11 +199,11 @@ class CORE_EXPORT ScrollableArea : public GarbageCollectedMixin {
                           bool scrolled_x,
                           bool scrolled_y,
                           cc::ScrollSourceType source_type);
-  bool SnapForDirection(ScrollDirectionPhysical direction);
-  bool SnapForPageScroll(ScrollDirectionPhysical direction);
-  bool SnapForDocumentScroll(ScrollDirectionPhysical direction);
+  bool SnapForDirection(mojom::blink::ScrollDirectionPhysical direction);
+  bool SnapForPageScroll(mojom::blink::ScrollDirectionPhysical direction);
+  bool SnapForDocumentScroll(mojom::blink::ScrollDirectionPhysical direction);
   std::unique_ptr<cc::SnapSelectionStrategy> PageScrollSnapStrategy(
-      ScrollDirectionPhysical direction) const;
+      mojom::blink::ScrollDirectionPhysical direction) const;
   void SnapAfterLayout();
 
   // Tries to find a target snap position. If found, returns the target
@@ -355,11 +354,23 @@ class CORE_EXPORT ScrollableArea : public GarbageCollectedMixin {
       const gfx::PointF& position) const {
     return position.OffsetFromOrigin();
   }
-  virtual gfx::Vector2d ScrollOffsetInt() const = 0;
   virtual ScrollOffset GetScrollOffset() const = 0;
-  // Returns a floored version of the scroll offset as the web-exposed scroll
-  // offset to ensure web compatibility in DOM APIs.
-  virtual ScrollOffset GetWebExposedScrollOffset() const;
+  gfx::Vector2d PixelSnappedScrollOffset() const {
+    return SnapScrollOffsetToPhysicalPixels(GetScrollOffset());
+  }
+  // Returns the scroll offset for DOM API. The caller should convert the
+  // returned value from physical pixels to DIPs for DOM API.
+  ScrollOffset GetWebExposedScrollOffset() const {
+    if (RuntimeEnabledFeatures::FractionalScrollOffsetsForWebAPIEnabled()) {
+      return GetScrollOffset();
+    }
+    // Returns the scroll offset snapped to physical pixels as the web-exposed
+    // scroll offset to ensure web compatibility in DOM APIs. Note that when
+    // this is converted to DIPs for DOM API, the result can still be fractional
+    // at a physical pixel granularity (1.0 / device_pixel_ratio in most cases).
+    // TODO(crbug.com/40384509): Enable full fractional scroll offsets.
+    return ScrollOffset(PixelSnappedScrollOffset());
+  }
   ScrollOffset GetScrollOffsetForScrollMarkerUpdate();
   virtual gfx::Vector2d MinimumScrollOffsetInt() const = 0;
   virtual ScrollOffset MinimumScrollOffset() const {
@@ -546,8 +557,6 @@ class CORE_EXPORT ScrollableArea : public GarbageCollectedMixin {
   void OnScrollFinished(bool enqueue_scrollend);
 
   float ScrollStep(ui::ScrollGranularity, ScrollbarOrientation) const;
-  std::unique_ptr<cc::SnapSelectionStrategy> PageSnap(
-      ScrollbarOrientation) const;
 
   // Injects a gesture scroll event based on the given parameters for mouse
   // events on a scrollbar of this scrollable area.
@@ -642,9 +651,6 @@ class CORE_EXPORT ScrollableArea : public GarbageCollectedMixin {
   explicit ScrollableArea(
       scoped_refptr<base::SingleThreadTaskRunner> compositor_task_runner);
 
-  ScrollbarOrientation ScrollbarOrientationFromDirection(
-      ScrollDirectionPhysical) const;
-
   // Needed to let the animators call scrollOffsetChanged.
   friend class ScrollAnimatorCompositorCoordinator;
   void ScrollOffsetChanged(const ScrollOffset&,
@@ -668,6 +674,7 @@ class CORE_EXPORT ScrollableArea : public GarbageCollectedMixin {
   bool HasBeenDisposed() const { return has_been_disposed_; }
 
   virtual const Document* GetDocument() const;
+  bool IsLatchedForGestureScroll() const;
 
   // Resolves into un-zoomed physical pixels a scroll |delta| based on its
   // ScrollGranularity units.

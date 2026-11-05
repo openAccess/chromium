@@ -19,7 +19,7 @@ using WKContentRuleListUtilTest = PlatformTest;
 // Tests that the JSON created for block mode contains the correct keys.
 TEST_F(WKContentRuleListUtilTest, LocalResourceJSONBlock) {
   ScopedTestingWebClient web_client(std::make_unique<FakeWebClient>());
-  NSString* rules_string = CreateLocalBlockingJsonRuleList();
+  NSString* rules_string = CreateAppSpecificURLsJsonRuleList();
   NSData* rules_data = [rules_string dataUsingEncoding:NSUTF8StringEncoding];
   id json = [NSJSONSerialization JSONObjectWithData:rules_data
                                             options:0
@@ -31,7 +31,6 @@ TEST_F(WKContentRuleListUtilTest, LocalResourceJSONBlock) {
   id block_rule = json[0];
   ASSERT_TRUE([block_rule isKindOfClass:[NSDictionary class]]);
   NSArray* filtered_schemes = @[
-    @"^file://.*",
     [@"^" stringByAppendingString:[@(kTestWebUIScheme)
                                       stringByAppendingString:@"://.*"]],
     [@"^" stringByAppendingString:[@(kTestAppSpecificScheme)
@@ -41,10 +40,19 @@ TEST_F(WKContentRuleListUtilTest, LocalResourceJSONBlock) {
   ASSERT_NSEQ(@"^https?://.*", block_rule[@"trigger"][@"url-filter"]);
   NSArray* filtered_types = @[
     @"image", @"style-sheet", @"script", @"font", @"raw", @"svg-document",
-    @"media", @"popup", @"ping"
+    @"media", @"popup", @"ping", @"document"
   ];
   ASSERT_NSEQ(filtered_types, block_rule[@"trigger"][@"resource-type"]);
   ASSERT_NSEQ(@"block", block_rule[@"action"][@"type"]);
+
+  id websocket_block_rule = json[1];
+  ASSERT_TRUE([websocket_block_rule isKindOfClass:[NSDictionary class]]);
+  ASSERT_NSEQ(filtered_schemes,
+              websocket_block_rule[@"trigger"][@"if-top-url"]);
+  ASSERT_NSEQ(@"^wss?://.*", websocket_block_rule[@"trigger"][@"url-filter"]);
+  ASSERT_NSEQ(@[ @"websocket" ],
+              websocket_block_rule[@"trigger"][@"resource-type"]);
+  ASSERT_NSEQ(@"block", websocket_block_rule[@"action"][@"type"]);
 }
 
 // Tests that the JSON created for mixed content auto-upgrading contains the

@@ -25,6 +25,7 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
@@ -44,6 +45,7 @@ import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.UiUpdateRequest;
 import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -65,8 +67,8 @@ public class ActorOverlayViewRenderTest {
     public ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(ChromeRenderTestRule.Component.UI_BROWSER_GLIC)
-                    .setRevision(6)
-                    .setDescription("Custom blue glow shadow for take over button")
+                    .setRevision(8)
+                    .setDescription("Align take over button to line of death using top margin")
                     .build();
 
     @Mock private TabModelSelector mTabModelSelector;
@@ -83,6 +85,7 @@ public class ActorOverlayViewRenderTest {
     private ActorOverlayCoordinator mCoordinator;
     private SettableNullableObservableSupplier<Tab> mCurrentTabSupplier;
     private SettableMonotonicObservableSupplier<LayoutManager> mLayoutManagerSupplier;
+    private SettableNonNullObservableSupplier<Boolean> mOmniboxFocusStateSupplier;
     private SettableMonotonicObservableSupplier<Profile> mProfileSupplier;
     private FrameLayout mParentView;
 
@@ -105,6 +108,8 @@ public class ActorOverlayViewRenderTest {
                     mLayoutManagerSupplier.set(mLayoutManager);
                     when(mLayoutManager.getActiveLayoutType()).thenReturn(LayoutType.BROWSING);
 
+                    mOmniboxFocusStateSupplier = ObservableSuppliers.createNonNull(false);
+
                     mProfileSupplier = ObservableSuppliers.createMonotonic();
                     mProfileSupplier.set(mProfile);
                     ActorKeyedServiceFactory.setForTesting(mActorKeyedService);
@@ -126,6 +131,7 @@ public class ActorOverlayViewRenderTest {
                                     mBackPressHandlerRegistry,
                                     mLayoutManagerSupplier,
                                     mProfileSupplier,
+                                    mOmniboxFocusStateSupplier,
                                     mSideUiStateProvider);
                 });
     }
@@ -155,7 +161,12 @@ public class ActorOverlayViewRenderTest {
                 new SideUiSpecs(/* leftContainerWidth= */ 50, /* rightContainerWidth= */ 250);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    sideUiObserverCaptor.getValue().onSideUiSpecsChanged(sideUiSpecs);
+                    sideUiObserverCaptor
+                            .getValue()
+                            .onSideUiSpecsChangeStarted(
+                                    sideUiSpecs,
+                                    UiUpdateRequest.getRequestForTesting(
+                                            /* suppressAnimations= */ true));
                     mCoordinator.getMediator().setOverlayVisible(true);
                 });
 
@@ -173,7 +184,7 @@ public class ActorOverlayViewRenderTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mCoordinator.getMediator().setOverlayVisible(true);
-                    mParentView.findViewById(R.id.actor_overlay).setHovered(true);
+                    mParentView.findViewById(R.id.actor_overlay_scrim).setHovered(true);
                 });
 
         CriteriaHelper.pollUiThread(

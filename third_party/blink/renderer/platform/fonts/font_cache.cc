@@ -66,6 +66,7 @@
 #include "third_party/blink/renderer/platform/instrumentation/tracing/web_process_memory_dump.h"
 #include "third_party/blink/renderer/platform/json/json_parser.h"
 #include "third_party/blink/renderer/platform/json/json_values.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/code_point_iterator.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
@@ -159,7 +160,7 @@ const FontPlatformData* FontCache::GetFontPlatformData(
   TRACE_EVENT0("fonts", "FontCache::GetFontPlatformData");
 
 #if !BUILDFLAG(IS_MAC)
-  if (creation_params.CreationType() == kCreateFontByFamily &&
+  if (creation_params.CreationType() == FontFaceCreationType::kFamily &&
       creation_params.Family() == font_family_names::kSystemUi) {
     return SystemFontPlatformData(font_description);
   }
@@ -239,9 +240,10 @@ const SimpleFontData* FontCache::FallbackFontForCharacter(
   // http://www.unicode.org/faq/private_use.html#nonchar1 - See also
   // crbug.com/862352 where performing fallback for U+FFFE causes a memory
   // regression.
-  if (Character::IsPrivateUse(lookup_char) ||
-      Character::IsNonCharacter(lookup_char))
+  if (unicode::IsPrivateUse(lookup_char) ||
+      unicode::IsNonCharacter(lookup_char)) {
     return nullptr;
+  }
   base::ElapsedTimer timer;
   const SimpleFontData* result = PlatformFallbackFontForCharacter(
       description, lookup_char, font_data_to_substitute, fallback_priority);
@@ -266,7 +268,9 @@ void FontCache::Invalidate() {
   TRACE_EVENT0("fonts,ui", "FontCache::Invalidate");
   font_platform_data_cache_.Clear();
   font_data_cache_.Clear();
+  unique_name_typeface_cache_.clear();
 #if BUILDFLAG(IS_MAC)
+  character_fallback_cache_.clear();
   unavailable_font_families_.clear();
 #endif
 
@@ -298,15 +302,44 @@ void FontCache::CrashWithFontInfo(const FontDescription* font_description) {
 
 sk_sp<SkTypeface> FontCache::CreateTypefaceFromUniqueName(
     const FontFaceCreationParams& creation_params) {
+  const AtomicString& unique_name = creation_params.Family();
+  // A null or empty name cannot match a font unique name, and must not be used
+  // as a cache key either: `DeprecatedCaseFoldingHashTraits` does not support
+  // null strings.
+  const bool use_cache =
+      RuntimeEnabledFeatures::FontUniqueNameTypefaceCacheEnabled() &&
+      !unique_name.empty();
+
+  if (use_cache) {
+    auto it = unique_name_typeface_cache_.find(unique_name);
+    if (it != unique_name_typeface_cache_.end()) {
+      return it->value;
+    }
+  }
+
   FontUniqueNameLookup* unique_name_lookup =
       FontGlobalContext::Get().GetFontUniqueNameLookup();
   DCHECK(unique_name_lookup);
   sk_sp<SkTypeface> uniquely_identified_font =
-      unique_name_lookup->MatchUniqueName(creation_params.Family());
-  if (uniquely_identified_font) {
-    return uniquely_identified_font;
+      unique_name_lookup->MatchUniqueName(unique_name);
+  if (!uniquely_identified_font) {
+    // Do not cache misses: where the lookup table is populated asynchronously,
+    // a name that does not match yet may match once the table is ready.
+    return nullptr;
   }
-  return nullptr;
+
+  if (use_cache) {
+    // Every entry keeps a mapping of the matched font file alive, and a
+    // document can reference an unbounded number of local() names, so drop the
+    // cache wholesale once it grows past this bound. Pages realistically use a
+    // handful of local() faces, well below it.
+    constexpr wtf_size_t kMaxUniqueNameTypefaces = 16;
+    if (unique_name_typeface_cache_.size() >= kMaxUniqueNameTypefaces) {
+      unique_name_typeface_cache_.clear();
+    }
+    unique_name_typeface_cache_.Set(unique_name, uniquely_identified_font);
+  }
+  return uniquely_identified_font;
 }
 
 // static

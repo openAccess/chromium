@@ -55,9 +55,21 @@ class UserDelegate {
   // logged-in to the browser.
   virtual bool IsSameUser(const GaiaId& gaia_id) const = 0;
 
+#if BUILDFLAG(IS_ANDROID)
+  // Returns the Gaia ID of the primary account of the user currently logged-in
+  // to the browser, or an empty `GaiaId` if there is no primary account.
+  virtual GaiaId GetPrimaryAccountGaiaId() const = 0;
+#endif  // BUILDFLAG(IS_ANDROID)
+
   // Returns the currently enabled Scopes for policies known to require signals.
   virtual std::set<policy::PolicyScope> GetPolicyScopesNeedingSignals()
       const = 0;
+
+  // TODO(crbug.com/463390232): Remove this method (and its implementations)
+  // once the explicit consent preference is wired for Android managed
+  // profiles. It only exists to support a temporary consent bypass in
+  // `UserPermissionServiceImpl::CanCollectSignals()`.
+  virtual bool IsCollectSignalsConsentRequired() const = 0;
 };
 
 }  // namespace device_signals

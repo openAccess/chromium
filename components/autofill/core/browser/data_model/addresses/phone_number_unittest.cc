@@ -275,6 +275,24 @@ TEST(PhoneNumberTest, UpdateCachedPhoneNumber) {
   EXPECT_EQ(phone.GetInfo(PHONE_HOME_CITY_CODE, "US"), u"70");
 }
 
+// Tests that adding a country to the profile re-parses the cached number, even
+// though the region used for parsing stays the same.
+TEST(PhoneNumberTest, ReparsesWhenProfileCountryIsAdded) {
+  AutofillProfile profile(i18n_model_definition::kLegacyHierarchyCountryCode);
+  PhoneNumber phone(&profile);
+  phone.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, u"6502345678");
+
+  // Without a profile country, the region "US" comes from `kLocale` and no
+  // calling code is inferred.
+  EXPECT_TRUE(phone.GetInfo(PHONE_HOME_COUNTRY_CODE, kLocale).empty());
+  EXPECT_EQ(phone.GetInfo(PHONE_HOME_WHOLE_NUMBER, kLocale), u"6502345678");
+
+  // Adding the country "US" keeps the region, but enables the inference.
+  profile.SetRawInfo(ADDRESS_HOME_COUNTRY, u"US");
+  EXPECT_EQ(phone.GetInfo(PHONE_HOME_COUNTRY_CODE, kLocale), u"1");
+  EXPECT_EQ(phone.GetInfo(PHONE_HOME_WHOLE_NUMBER, kLocale), u"16502345678");
+}
+
 // Tests that `PhoneCombineHelper` can construct a valid phone number from its
 // collected phone components.
 TEST(PhoneCombineHelperTest, SetInfoAndParseNumber) {
@@ -376,6 +394,24 @@ TEST(PhoneCombineHelperTest, GetRegionCodeNationalWholeNumber) {
   const PhoneNumber::PhoneCombineHelper helper =
       PhoneNumber::PhoneCombineHelper::FromObservedValues(observed_values);
 
+  EXPECT_FALSE(helper.GetRegionCode());
+}
+
+// Tests that invalid region codes are handled correctly in `GetRegionCode()`.
+TEST(PhoneCombineHelperTest, GetRegionCodeInvalidRegionCodes) {
+  PhoneNumber::PhoneCombineHelper helper;
+
+  helper.SetInfo(PHONE_HOME_WHOLE_NUMBER, u"");
+  EXPECT_FALSE(helper.GetRegionCode());
+
+  // Invalid region code means the number is not valid, leading to an empty
+  // region code.
+  helper.SetInfo(PHONE_HOME_WHOLE_NUMBER, u"+99 123456789");
+  EXPECT_FALSE(helper.GetRegionCode());
+
+  // Area code 123 does not exist in NANP. Thus, region cannot be resolved
+  // for an otherwise possible number, leading to region code "ZZ".
+  helper.SetInfo(PHONE_HOME_WHOLE_NUMBER, u"+1 123 4567890");
   EXPECT_FALSE(helper.GetRegionCode());
 }
 

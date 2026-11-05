@@ -200,6 +200,7 @@ base::DictValue GetPdfViewerStrings() {
       {"ink2BrushSizeThin", IDS_PDF_INK2_ANNOTATION_SIZE_THIN},
       {"ink2Color", IDS_PDF_INK2_ANNOTATION_COLOR},
       {"ink2Draw", IDS_PDF_INK2_DRAW},
+      {"ink2Signature", IDS_PDF_INK2_SIGNATURE},
       {"ink2Size", IDS_PDF_INK2_ANNOTATION_SIZE},
       {"ink2TextAnnotationsAxLabel", IDS_PDF_INK2_TEXT_ANNOTATIONS_AX_LABEL},
       {"ink2TextAlignCenter", IDS_PDF_INK2_TEXT_ALIGN_CENTER},
@@ -226,6 +227,7 @@ base::DictValue GetPdfViewerStrings() {
       {"ink2TextStyleBold", IDS_PDF_INK2_TEXT_STYLE_BOLD},
       {"ink2TextStyleItalic", IDS_PDF_INK2_TEXT_STYLE_ITALIC},
       {"ink2TextStyleStrikethrough", IDS_PDF_INK2_TEXT_STYLE_STRIKETHROUGH},
+      {"ink2TextStyleUnderline", IDS_PDF_INK2_TEXT_STYLE_UNDERLINE},
       {"ink2TextStyles", IDS_PDF_INK2_TEXT_STYLES},
       {"ink2Tool", IDS_PDF_INK2_ANNOTATION_TOOL},
 #endif  // BUILDFLAG(ENABLE_PDF_INK2)
@@ -330,6 +332,34 @@ bool IsPdfSaveToDriveEnabled(content::BrowserContext* context) {
 }
 #endif  // BUILDFLAG(ENABLE_PDF_SAVE_TO_DRIVE)
 
+// Returns the `StreamContainer` for the PDF viewer embedded in
+// `embedder_host`, or null if there is none.
+base::WeakPtr<extensions::StreamContainer> GetStreamContainerForEmbedder(
+    content::RenderFrameHost* embedder_host) {
+  if (chrome_pdf::features::IsOopifPdfEnabled()) {
+    auto* mime_handler_stream_manager =
+        extensions::mime_handler::MimeHandlerStreamManager::
+            FromRenderFrameHost(embedder_host);
+    return mime_handler_stream_manager
+               ? mime_handler_stream_manager->GetStreamContainer(embedder_host)
+               : nullptr;
+  }
+
+  // For GuestView, the stream is owned by the `MimeHandlerViewGuest` that
+  // `embedder_host` embeds.
+  content::WebContents* embedder_contents =
+      content::WebContents::FromRenderFrameHost(embedder_host);
+  for (content::WebContents* inner_contents :
+       embedder_contents->GetInnerWebContents()) {
+    auto* guest = extensions::MimeHandlerViewGuest::FromWebContents(
+        inner_contents);
+    if (guest && guest->GetEmbedderFrame() == embedder_host) {
+      return guest->GetStreamWeakPtr();
+    }
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 std::string GetManifest() {
@@ -342,6 +372,8 @@ std::string GetManifest() {
   std::string manifest_contents(
       ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(
           IDR_PDF_MANIFEST));
+  // TODO(crbug.com/580493958): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(manifest_contents.find(kNameTag) != std::string::npos);
   base::ReplaceFirstSubstringAfterOffset(&manifest_contents, 0, kNameTag,
                                          kExtensionName);
@@ -383,9 +415,11 @@ base::DictValue GetAdditionalData(content::WebContents* web_contents) {
 
 #if BUILDFLAG(ENABLE_PDF_INK2)
   const bool use_ink2 = IsPdfInk2AnnotationsEnabled(context);
+  dict.Set("pdfInk2Enabled", use_ink2);
+  dict.Set("pdfSignaturesEnabled",
+           use_ink2 && chrome_pdf::features::kPdfInk2Signatures.Get());
   const bool text_annotations_enabled =
       use_ink2 && chrome_pdf::features::kPdfInk2TextAnnotations.Get();
-  dict.Set("pdfInk2Enabled", use_ink2);
   dict.Set("pdfTextAnnotationsEnabled", text_annotations_enabled);
   dict.Set("pdfTextAnnotationsExtraStylesEnabled",
            text_annotations_enabled &&
@@ -457,8 +491,8 @@ bool MaybeDispatchSaveEvent(content::RenderFrameHost* embedder_host) {
   base::WeakPtr<extensions::StreamContainer> stream =
       mime_handler_stream_manager->GetStreamContainer(embedder_host);
 
-  base::ListValue args;
-  args.Append(stream->stream_url().spec());
+  auto args = base::MakeRefCounted<extensions::EventArgs>();
+  args->data.Append(stream->stream_url().spec());
 
   content::BrowserContext* context = embedder_host->GetBrowserContext();
   auto event = std::make_unique<extensions::Event>(
@@ -473,8 +507,17 @@ bool MaybeDispatchSaveEvent(content::RenderFrameHost* embedder_host) {
 
 void DispatchShouldUpdateViewportEvent(content::RenderFrameHost* embedder_host,
                                        const GURL& new_pdf_url) {
-  base::ListValue args;
-  args.Append(new_pdf_url.spec());
+  // The event is delivered to every PDF viewer in the profile, so include the
+  // stream URL, which uniquely identifies the target viewer instance.
+  base::WeakPtr<extensions::StreamContainer> stream =
+      GetStreamContainerForEmbedder(embedder_host);
+  if (!stream) {
+    return;
+  }
+
+  auto args = base::MakeRefCounted<extensions::EventArgs>();
+  args->data.Append(stream->stream_url().spec());
+  args->data.Append(new_pdf_url.spec());
 
   content::BrowserContext* context = embedder_host->GetBrowserContext();
   auto event = std::make_unique<extensions::Event>(

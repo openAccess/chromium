@@ -4,6 +4,7 @@
 
 #include "content/browser/file_system/file_system_manager_impl.h"
 
+#include <string>
 #include <utility>
 
 #include "base/check_op.h"
@@ -11,6 +12,8 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
+#include "base/strings/escape.h"
+#include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
@@ -24,6 +27,7 @@
 #include "content/public/common/child_process_id.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
+#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "storage/browser/blob/blob_data_builder.h"
 #include "storage/browser/blob/blob_impl.h"
 #include "storage/browser/blob/blob_storage_context.h"
@@ -41,6 +45,7 @@
 #include "storage/common/file_system/file_system_util.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/blob/blob.mojom.h"
+#include "third_party/blink/public/mojom/blob/file_backed_blob_factory.mojom.h"
 #include "third_party/blink/public/mojom/blob/serialized_blob.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -56,6 +61,18 @@ namespace content {
 
 namespace {
 
+class SnapshotPermissionTokenImpl
+    : public blink::mojom::SnapshotPermissionToken {
+ public:
+  explicit SnapshotPermissionTokenImpl(
+      scoped_refptr<storage::ShareableFileReference> file_ref)
+      : file_ref_(std::move(file_ref)) {}
+  ~SnapshotPermissionTokenImpl() override = default;
+
+ private:
+  const scoped_refptr<storage::ShareableFileReference> file_ref_;
+};
+
 void RevokeFilePermission(ChildProcessId child_id, const base::FilePath& path) {
   // This call happens on the IO thread, where there is no guarantee that the
   // corresponding ProcessState is still modifiable, because the
@@ -63,6 +80,87 @@ void RevokeFilePermission(ChildProcessId child_id, const base::FilePath& path) {
   // effect.
   ChildProcessSecurityPolicyImpl::GetInstance()->RevokeAllPermissionsForFile(
       child_id, path);
+}
+
+bool IsUncrackedTopLevelSiblingInIsolatedFileSystem(
+    const FileSystemURL& source,
+    const GURL& destination,
+    const blink::StorageKey& storage_key) {
+  if (source.mount_type() != storage::kFileSystemTypeIsolated ||
+      source.virtual_path().GetComponents().size() != 2) {
+    return false;
+  }
+
+  // A new top-level entry in an isolated file system cannot be cracked until
+  // it is registered, so it appears to have an invalid URL before the write
+  // permission check. Check the uncracked URL to distinguish this from a
+  // malformed destination URL.
+  GURL origin;
+  storage::FileSystemType type;
+  base::FilePath virtual_path;
+  if (!storage::ParseFileSystemSchemeURL(destination, &origin, &type,
+                                         &virtual_path) ||
+      !storage_key.origin().IsSameOriginWith(origin) ||
+      type != storage::kFileSystemTypeIsolated ||
+      virtual_path.GetComponents().size() != 2 ||
+      virtual_path.DirName() != source.virtual_path().DirName()) {
+    return false;
+  }
+
+  // The parsed path can hide encoded separators or a NUL (which FilePath
+  // truncates). Require a valid single sibling name in the same mount.
+  // GURL keeps the mount type ("/isolated") in destination.inner_url()->path();
+  // destination.path() contains only "/<filesystem_id>/<name>".
+  const std::string path(destination.path());
+  const std::string mount_prefix = "/" + source.mount_filesystem_id() + "/";
+  if (!base::StartsWith(path, mount_prefix, base::CompareCase::SENSITIVE)) {
+    return false;
+  }
+  const std::string name =
+      base::UnescapeBinaryURLComponent(path.substr(mount_prefix.size()));
+  return !name.empty() && base::IsStringUTF8(name) &&
+         name.find('/') == std::string::npos &&
+         name.find('\0') == std::string::npos &&
+         name.find('\\') == std::string::npos;
+}
+
+using CopyOrMovePermissionCheck =
+    bool (ChildProcessSecurityPolicyImpl::Handle::*)(const FileSystemURL&,
+                                                     const FileSystemURL&);
+
+void ReplyToInvalidCopyOrMoveDestination(
+    const FileSystemURL& source_url,
+    const FileSystemURL& destination_url,
+    const GURL& destination_path,
+    const blink::StorageKey& storage_key,
+    ChildProcessSecurityPolicyImpl::Handle& security_policy_handle,
+    CopyOrMovePermissionCheck permission_check,
+    base::File::Error error,
+    base::OnceCallback<void(base::File::Error)> callback) {
+  if (destination_url.is_valid() ||
+      !IsUncrackedTopLevelSiblingInIsolatedFileSystem(
+          source_url, destination_path, storage_key)) {
+    std::move(callback).Run(error);
+    return;
+  }
+
+  // Isolated file system permissions are granted per file system. Check the
+  // source URL as the destination so an uncrackable sibling can still use the
+  // same write grant.
+  GetUIThreadTaskRunner({})->PostTaskAndReplyWithResult(
+      FROM_HERE,
+      base::BindOnce(permission_check,
+                     std::make_unique<ChildProcessSecurityPolicyImpl::Handle>(
+                         security_policy_handle.Duplicate()),
+                     source_url, source_url),
+      base::BindOnce(
+          [](base::OnceCallback<void(base::File::Error)> callback,
+             bool has_permission) {
+            std::move(callback).Run(has_permission
+                                        ? base::File::FILE_ERROR_INVALID_URL
+                                        : base::File::FILE_ERROR_SECURITY);
+          },
+          std::move(callback)));
 }
 
 storage::FileSystemType ToStorageFileSystemType(
@@ -102,7 +200,6 @@ blink::mojom::FileSystemType ToMojoFileSystemType(
     case storage::FileSystemType::kFileSystemTypeSyncable:
     case storage::FileSystemType::kFileSystemTypeSyncableForInternalSync:
     case storage::FileSystemType::kFileSystemTypeLocalForPlatformApp:
-    case storage::FileSystemType::kFileSystemTypeForTransientFile:
     case storage::FileSystemType::kFileSystemTypeProvided:
     case storage::FileSystemType::kFileSystemTypeDeviceMediaAsFileStorage:
     case storage::FileSystemType::kFileSystemTypeArcContent:
@@ -110,6 +207,7 @@ blink::mojom::FileSystemType ToMojoFileSystemType(
     case storage::FileSystemType::kFileSystemTypeDriveFs:
     case storage::FileSystemType::kFileSystemTypeSmbFs:
     case storage::FileSystemType::kFileSystemTypeFuseBox:
+    case storage::FileSystemType::kFileSystemTypeInMemory:
     case storage::FileSystemType::kFileSystemInternalTypeEnumEnd:
       NOTREACHED();
   }
@@ -145,25 +243,6 @@ class FileSystemManagerImpl::FileSystemCancellableOperationImpl
   const raw_ptr<FileSystemManagerImpl> file_system_manager_impl_;
 };
 
-class FileSystemManagerImpl::ReceivedSnapshotListenerImpl
-    : public blink::mojom::ReceivedSnapshotListener {
- public:
-  ReceivedSnapshotListenerImpl(int snapshot_id,
-                               FileSystemManagerImpl* file_system_manager_impl)
-      : snapshot_id_(snapshot_id),
-        file_system_manager_impl_(file_system_manager_impl) {}
-  ~ReceivedSnapshotListenerImpl() override = default;
-
- private:
-  void DidReceiveSnapshotFile() override {
-    file_system_manager_impl_->DidReceiveSnapshotFile(snapshot_id_);
-  }
-
-  const int snapshot_id_;
-  // |file_system_manager_impl| owns |this| through a UniqueReceiverSet.
-  const raw_ptr<FileSystemManagerImpl> file_system_manager_impl_;
-};
-
 struct FileSystemManagerImpl::WriteSyncCallbackEntry {
   WriteSyncCallback callback;
   int64_t bytes;
@@ -187,27 +266,27 @@ FileSystemManagerImpl::FileSystemManagerImpl(
     : context_(std::move(file_system_context)),
       blob_storage_context_(std::move(blob_storage_context)),
       security_policy_handle_(std::move(security_policy_handle)) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   CHECK(!security_policy_handle_.child_id().is_null());
-  DCHECK(context_);
-  DCHECK(blob_storage_context_);
+  CHECK(context_, base::NotFatalUntil::M159);
+  CHECK(blob_storage_context_, base::NotFatalUntil::M159);
   receivers_.set_disconnect_handler(base::BindRepeating(
       &FileSystemManagerImpl::OnConnectionError, base::Unretained(this)));
 }
 
 FileSystemManagerImpl::~FileSystemManagerImpl() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 }
 
 base::WeakPtr<FileSystemManagerImpl> FileSystemManagerImpl::GetWeakPtr() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   return weak_factory_.GetWeakPtr();
 }
 
 void FileSystemManagerImpl::BindReceiver(
     const blink::StorageKey& storage_key,
     mojo::PendingReceiver<blink::mojom::FileSystemManager> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!operation_runner_)
     operation_runner_ = context_->CreateFileSystemOperationRunner();
   receivers_.Add(this, std::move(receiver), storage_key);
@@ -215,7 +294,7 @@ void FileSystemManagerImpl::BindReceiver(
 
 void FileSystemManagerImpl::Open(blink::mojom::FileSystemType file_system_type,
                                  OpenCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   // Run the access check on the UI thread using a duplicated
   // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
@@ -239,7 +318,7 @@ void FileSystemManagerImpl::ContinueOpen(
     OpenCallback callback,
     const blink::StorageKey& storage_key,
     bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   if (!security_check_success) {
     std::move(bad_message_callback).Run("FSMI_OPEN_INVALID_ORIGIN");
@@ -256,7 +335,7 @@ void FileSystemManagerImpl::ContinueOpen(
 
 void FileSystemManagerImpl::ResolveURL(const GURL& filesystem_url,
                                        ResolveURLCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL url(
       context_->CrackURL(filesystem_url, receivers_.current_context()));
   std::optional<base::File::Error> opt_error = ValidateFileSystemURL(url);
@@ -284,7 +363,7 @@ void FileSystemManagerImpl::ContinueResolveURL(
     const storage::FileSystemURL& url,
     ResolveURLCallback callback,
     bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!security_check_success) {
     std::move(callback).Run(blink::mojom::FileSystemInfo::New(),
                             base::FilePath(), false,
@@ -300,16 +379,21 @@ void FileSystemManagerImpl::ContinueResolveURL(
 void FileSystemManagerImpl::Move(const GURL& src_path,
                                  const GURL& dest_path,
                                  MoveCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL src_url(
       context_->CrackURL(src_path, receivers_.current_context()));
   FileSystemURL dest_url(
       context_->CrackURL(dest_path, receivers_.current_context()));
-  std::optional<base::File::Error> opt_error = ValidateFileSystemURL(src_url);
-  if (!opt_error)
-    opt_error = ValidateFileSystemURL(dest_url);
-  if (opt_error) {
-    std::move(callback).Run(opt_error.value());
+  if (auto error = ValidateFileSystemURL(src_url)) {
+    std::move(callback).Run(*error);
+    return;
+  }
+  if (auto error = ValidateFileSystemURL(dest_url)) {
+    ReplyToInvalidCopyOrMoveDestination(
+        src_url, dest_url, dest_path, receivers_.current_context(),
+        security_policy_handle_,
+        &ChildProcessSecurityPolicyImpl::Handle::CanMoveFileSystemFile, *error,
+        std::move(callback));
     return;
   }
   // Run the access check on the UI thread using a duplicated
@@ -331,7 +415,7 @@ void FileSystemManagerImpl::ContinueMove(const storage::FileSystemURL& src_url,
                                          const storage::FileSystemURL& dest_url,
                                          MoveCallback callback,
                                          bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!security_check_success) {
     std::move(callback).Run(base::File::FILE_ERROR_SECURITY);
     return;
@@ -356,16 +440,21 @@ void FileSystemManagerImpl::ContinueMove(const storage::FileSystemURL& src_url,
 void FileSystemManagerImpl::Copy(const GURL& src_path,
                                  const GURL& dest_path,
                                  CopyCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL src_url(
       context_->CrackURL(src_path, receivers_.current_context()));
   FileSystemURL dest_url(
       context_->CrackURL(dest_path, receivers_.current_context()));
-  std::optional<base::File::Error> opt_error = ValidateFileSystemURL(src_url);
-  if (!opt_error)
-    opt_error = ValidateFileSystemURL(dest_url);
-  if (opt_error) {
-    std::move(callback).Run(opt_error.value());
+  if (auto error = ValidateFileSystemURL(src_url)) {
+    std::move(callback).Run(*error);
+    return;
+  }
+  if (auto error = ValidateFileSystemURL(dest_url)) {
+    ReplyToInvalidCopyOrMoveDestination(
+        src_url, dest_url, dest_path, receivers_.current_context(),
+        security_policy_handle_,
+        &ChildProcessSecurityPolicyImpl::Handle::CanCopyFileSystemFile, *error,
+        std::move(callback));
     return;
   }
 
@@ -388,7 +477,7 @@ void FileSystemManagerImpl::ContinueCopy(const storage::FileSystemURL& src_url,
                                          const storage::FileSystemURL& dest_url,
                                          CopyCallback callback,
                                          bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!security_check_success) {
     std::move(callback).Run(base::File::FILE_ERROR_SECURITY);
     return;
@@ -413,7 +502,7 @@ void FileSystemManagerImpl::ContinueCopy(const storage::FileSystemURL& src_url,
 void FileSystemManagerImpl::Remove(const GURL& path,
                                    bool recursive,
                                    RemoveCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL url(context_->CrackURL(path, receivers_.current_context()));
   std::optional<base::File::Error> opt_error = ValidateFileSystemURL(url);
   if (opt_error) {
@@ -440,7 +529,7 @@ void FileSystemManagerImpl::ContinueRemove(const storage::FileSystemURL& url,
                                            bool recursive,
                                            RemoveCallback callback,
                                            bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!security_check_success) {
     std::move(callback).Run(base::File::FILE_ERROR_SECURITY);
     return;
@@ -461,7 +550,7 @@ void FileSystemManagerImpl::ContinueRemove(const storage::FileSystemURL& url,
 
 void FileSystemManagerImpl::ReadMetadata(const GURL& path,
                                          ReadMetadataCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL url(context_->CrackURL(path, receivers_.current_context()));
   std::optional<base::File::Error> opt_error = ValidateFileSystemURL(url);
   if (opt_error) {
@@ -487,7 +576,7 @@ void FileSystemManagerImpl::ContinueReadMetadata(
     const storage::FileSystemURL& url,
     ReadMetadataCallback callback,
     bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   if (!security_check_success) {
     std::move(callback).Run(base::File::Info(),
@@ -517,7 +606,7 @@ void FileSystemManagerImpl::Create(const GURL& path,
                                    bool is_directory,
                                    bool recursive,
                                    CreateCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL url(context_->CrackURL(path, receivers_.current_context()));
   std::optional<base::File::Error> opt_error = ValidateFileSystemURL(url);
   if (opt_error) {
@@ -546,7 +635,7 @@ void FileSystemManagerImpl::ContinueCreate(const storage::FileSystemURL& url,
                                            bool recursive,
                                            CreateCallback callback,
                                            bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!security_check_success) {
     std::move(callback).Run(base::File::FILE_ERROR_SECURITY);
     return;
@@ -575,7 +664,7 @@ void FileSystemManagerImpl::ContinueCreate(const storage::FileSystemURL& url,
 void FileSystemManagerImpl::Exists(const GURL& path,
                                    bool is_directory,
                                    ExistsCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL url(context_->CrackURL(path, receivers_.current_context()));
   std::optional<base::File::Error> opt_error = ValidateFileSystemURL(url);
   if (opt_error) {
@@ -602,7 +691,7 @@ void FileSystemManagerImpl::ContinueExists(const storage::FileSystemURL& url,
                                            bool is_directory,
                                            ExistsCallback callback,
                                            bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!security_check_success) {
     std::move(callback).Run(base::File::FILE_ERROR_SECURITY);
     return;
@@ -631,7 +720,7 @@ void FileSystemManagerImpl::ReadDirectory(
     const GURL& path,
     mojo::PendingRemote<blink::mojom::FileSystemOperationListener>
         pending_listener) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL url(context_->CrackURL(path, receivers_.current_context()));
   std::optional<base::File::Error> opt_error = ValidateFileSystemURL(url);
   mojo::Remote<blink::mojom::FileSystemOperationListener> listener(
@@ -659,7 +748,7 @@ void FileSystemManagerImpl::ContinueReadDirectory(
     const storage::FileSystemURL& url,
     mojo::Remote<blink::mojom::FileSystemOperationListener> listener,
     bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   if (!security_check_success) {
     listener->ErrorOccurred(base::File::FILE_ERROR_SECURITY);
@@ -683,7 +772,7 @@ void FileSystemManagerImpl::ContinueReadDirectory(
 void FileSystemManagerImpl::ReadDirectorySync(
     const GURL& path,
     ReadDirectorySyncCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL url(context_->CrackURL(path, receivers_.current_context()));
   std::optional<base::File::Error> opt_error = ValidateFileSystemURL(url);
   if (opt_error) {
@@ -709,7 +798,7 @@ void FileSystemManagerImpl::ContinueReadDirectorySync(
     const storage::FileSystemURL& url,
     ReadDirectorySyncCallback callback,
     bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!security_check_success) {
     std::move(callback).Run(std::vector<filesystem::mojom::DirectoryEntryPtr>(),
                             base::File::FILE_ERROR_SECURITY);
@@ -739,7 +828,7 @@ void FileSystemManagerImpl::Write(
         op_receiver,
     mojo::PendingRemote<blink::mojom::FileSystemOperationListener>
         pending_listener) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL url(
       context_->CrackURL(file_path, receivers_.current_context()));
   std::optional<base::File::Error> opt_error = ValidateFileSystemURL(url);
@@ -771,7 +860,7 @@ void FileSystemManagerImpl::ResolveBlobForWrite(
     mojo::PendingRemote<blink::mojom::Blob> blob,
     base::OnceCallback<void(std::unique_ptr<storage::BlobDataHandle>)> callback,
     bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!security_check_success) {
     std::move(callback).Run(nullptr);
     return;
@@ -788,7 +877,7 @@ void FileSystemManagerImpl::ContinueWrite(
         op_receiver,
     mojo::Remote<blink::mojom::FileSystemOperationListener> listener,
     std::unique_ptr<storage::BlobDataHandle> blob) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!blob) {
     listener->ErrorOccurred(base::File::FILE_ERROR_SECURITY);
     return;
@@ -818,7 +907,7 @@ void FileSystemManagerImpl::WriteSync(
     mojo::PendingRemote<blink::mojom::Blob> blob,
     int64_t position,
     WriteSyncCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL url(
       context_->CrackURL(file_path, receivers_.current_context()));
   std::optional<base::File::Error> opt_error = ValidateFileSystemURL(url);
@@ -848,7 +937,7 @@ void FileSystemManagerImpl::ContinueWriteSync(
     int64_t position,
     WriteSyncCallback callback,
     std::unique_ptr<storage::BlobDataHandle> blob) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!blob) {
     std::move(callback).Run(0, base::File::FILE_ERROR_SECURITY);
     return;
@@ -875,7 +964,7 @@ void FileSystemManagerImpl::Truncate(
     mojo::PendingReceiver<blink::mojom::FileSystemCancellableOperation>
         op_receiver,
     TruncateCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL url(
       context_->CrackURL(file_path, receivers_.current_context()));
   std::optional<base::File::Error> opt_error = ValidateFileSystemURL(url);
@@ -905,7 +994,7 @@ void FileSystemManagerImpl::ContinueTruncate(
         op_receiver,
     TruncateCallback callback,
     bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!security_check_success) {
     std::move(callback).Run(base::File::FILE_ERROR_SECURITY);
     return;
@@ -931,7 +1020,7 @@ void FileSystemManagerImpl::ContinueTruncate(
 void FileSystemManagerImpl::TruncateSync(const GURL& file_path,
                                          int64_t length,
                                          TruncateSyncCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   FileSystemURL url(
       context_->CrackURL(file_path, receivers_.current_context()));
   std::optional<base::File::Error> opt_error = ValidateFileSystemURL(url);
@@ -960,7 +1049,7 @@ void FileSystemManagerImpl::ContinueTruncateSync(
     int64_t length,
     TruncateSyncCallback callback,
     bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   if (!security_check_success) {
     std::move(callback).Run(base::File::FILE_ERROR_SECURITY);
@@ -983,7 +1072,7 @@ void FileSystemManagerImpl::ContinueTruncateSync(
 void FileSystemManagerImpl::CreateSnapshotFile(
     const GURL& file_path,
     CreateSnapshotFileCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   FileSystemURL url(
       context_->CrackURL(file_path, receivers_.current_context()));
@@ -1015,7 +1104,7 @@ void FileSystemManagerImpl::ContinueCreateSnapshotFile(
     const storage::FileSystemURL& url,
     CreateSnapshotFileCallback callback,
     bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   if (!security_check_success) {
     std::move(callback).Run(base::File::Info(), base::FilePath(),
@@ -1050,7 +1139,7 @@ void FileSystemManagerImpl::ContinueCreateSnapshotFile(
 
 void FileSystemManagerImpl::GetPlatformPath(const GURL& path,
                                             GetPlatformPathCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   base::FilePath platform_path;
   // The access check for `path` runs on the UI thread using a duplicated
   // ChildProcessSecurityPolicy::Handle, ensuring the ProcessState exists when
@@ -1097,7 +1186,7 @@ void FileSystemManagerImpl::ContinueRegisterBlob(
     RegisterBlobCallback callback,
     storage::FileSystemURL crack_url,
     bool security_check_success) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   std::string uuid = base::Uuid::GenerateRandomV4().AsLowercaseString();
   mojo::PendingRemote<blink::mojom::Blob> blob_remote;
   mojo::PendingReceiver<blink::mojom::Blob> blob_receiver =
@@ -1112,7 +1201,7 @@ void FileSystemManagerImpl::ContinueRegisterBlob(
   } else {
     std::unique_ptr<storage::BlobDataHandle> handle =
         blob_storage_context_->context()->AddBrokenBlob(
-            uuid, content_type, "",
+            uuid, content_type,
             storage::BlobStatus::ERR_REFERENCED_FILE_UNAVAILABLE);
     storage::BlobImpl::Create(std::move(handle), std::move(blob_receiver));
   }
@@ -1124,21 +1213,15 @@ void FileSystemManagerImpl::ContinueRegisterBlob(
 void FileSystemManagerImpl::Cancel(
     OperationID op_id,
     FileSystemCancellableOperationImpl::CancelCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   operation_runner()->Cancel(
       op_id, base::BindOnce(&FileSystemManagerImpl::DidFinish, GetWeakPtr(),
                             std::move(callback)));
 }
 
-void FileSystemManagerImpl::DidReceiveSnapshotFile(int snapshot_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  in_transit_snapshot_files_.Remove(snapshot_id);
-}
-
 void FileSystemManagerImpl::OnConnectionError() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (receivers_.empty()) {
-    in_transit_snapshot_files_.Clear();
     operation_runner_.reset();
     cancellable_operations_.Clear();
   }
@@ -1147,14 +1230,14 @@ void FileSystemManagerImpl::OnConnectionError() {
 void FileSystemManagerImpl::DidFinish(
     base::OnceCallback<void(base::File::Error)> callback,
     base::File::Error error_code) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   std::move(callback).Run(error_code);
 }
 
 void FileSystemManagerImpl::DidGetMetadata(ReadMetadataCallback callback,
                                            base::File::Error result,
                                            const base::File::Info& info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   std::move(callback).Run(info, result);
 }
 
@@ -1164,7 +1247,7 @@ void FileSystemManagerImpl::DidGetMetadataForStreaming(
     const base::File::Info& info) {
   // For now, streaming Blobs are implemented as a successful snapshot file
   // creation with an empty path.
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   std::move(callback).Run(info, base::FilePath(), result, mojo::NullRemote());
 }
 
@@ -1173,13 +1256,13 @@ void FileSystemManagerImpl::DidReadDirectory(
     base::File::Error result,
     std::vector<filesystem::mojom::DirectoryEntry> entries,
     bool has_more) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   blink::mojom::FileSystemOperationListener* listener =
       GetOpListener(listener_id);
   if (!listener)
     return;
   if (result != base::File::FILE_OK) {
-    DCHECK(!has_more);
+    CHECK(!has_more, base::NotFatalUntil::M159);
     listener->ErrorOccurred(result);
     RemoveOpListener(listener_id);
     return;
@@ -1199,7 +1282,7 @@ void FileSystemManagerImpl::DidReadDirectorySync(
     base::File::Error result,
     std::vector<filesystem::mojom::DirectoryEntry> entries,
     bool has_more) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   for (const auto& entry : entries) {
     callback_entry->entries.emplace_back(
         filesystem::mojom::DirectoryEntry::New(std::move(entry)));
@@ -1214,7 +1297,7 @@ void FileSystemManagerImpl::DidWrite(OperationListenerID listener_id,
                                      base::File::Error result,
                                      int64_t bytes,
                                      bool complete) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   blink::mojom::FileSystemOperationListener* listener =
       GetOpListener(listener_id);
   if (!listener)
@@ -1243,8 +1326,9 @@ void FileSystemManagerImpl::DidOpenFileSystem(
     const FileSystemURL& root,
     const std::string& filesystem_name,
     base::File::Error result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(root.is_valid() || result != base::File::FILE_OK);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
+  CHECK(root.is_valid() || result != base::File::FILE_OK,
+        base::NotFatalUntil::M159);
   std::move(callback).Run(filesystem_name, root.ToGURL(), result);
   // For OpenFileSystem we do not create a new operation, so no unregister here.
 }
@@ -1255,7 +1339,7 @@ void FileSystemManagerImpl::DidResolveURL(
     const storage::FileSystemInfo& info,
     const base::FilePath& file_path,
     storage::FileSystemContext::ResolvedEntryType type) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (result == base::File::FILE_OK &&
       type == storage::FileSystemContext::RESOLVED_ENTRY_NOT_FOUND)
     result = base::File::FILE_ERROR_NOT_FOUND;
@@ -1275,7 +1359,7 @@ void FileSystemManagerImpl::DidCreateSnapshot(
     const base::File::Info& info,
     const base::FilePath& platform_path,
     scoped_refptr<storage::ShareableFileReference> /* unused */) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (result != base::File::FILE_OK) {
     std::move(callback).Run(base::File::Info(), base::FilePath(), result,
                             mojo::NullRemote());
@@ -1345,14 +1429,11 @@ void FileSystemManagerImpl::ContinueDidCreateSnapshot(
   }
 
   if (file_ref.get()) {
-    // This ref is held until DidReceiveSnapshotFile is called.
-    int request_id = in_transit_snapshot_files_.Add(file_ref);
-    mojo::PendingRemote<blink::mojom::ReceivedSnapshotListener> listener;
-    snapshot_listeners_.Add(
-        std::make_unique<ReceivedSnapshotListenerImpl>(request_id, this),
-        listener.InitWithNewPipeAndPassReceiver());
-    // Return the file info and platform_path.
-    std::move(callback).Run(info, platform_path, result, std::move(listener));
+    mojo::PendingRemote<blink::mojom::SnapshotPermissionToken> token;
+    mojo::MakeSelfOwnedReceiver(
+        std::make_unique<SnapshotPermissionTokenImpl>(std::move(file_ref)),
+        token.InitWithNewPipeAndPassReceiver());
+    std::move(callback).Run(info, platform_path, result, std::move(token));
     return;
   }
 
@@ -1364,7 +1445,7 @@ void FileSystemManagerImpl::DidGetPlatformPath(
     scoped_refptr<storage::FileSystemContext> /*context*/,
     GetPlatformPathCallback callback,
     base::FilePath platform_path) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   std::move(callback).Run(platform_path);
 }
 
@@ -1377,7 +1458,8 @@ void FileSystemManagerImpl::GetPlatformPathOnFileThread(
     base::WeakPtr<FileSystemManagerImpl> file_system_manager,
     const blink::StorageKey& storage_key,
     GetPlatformPathCallback callback) {
-  DCHECK(context->default_file_task_runner()->RunsTasksInCurrentSequence());
+  CHECK(context->default_file_task_runner()->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M159);
 
   // Bind `context` to the callback to ensure it stays alive.
   DoGetPlatformPath(
@@ -1399,7 +1481,7 @@ void FileSystemManagerImpl::GetPlatformPathOnFileThread(
 
 std::optional<base::File::Error> FileSystemManagerImpl::ValidateFileSystemURL(
     const storage::FileSystemURL& url) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!FileSystemURLIsValid(context_.get(), url))
     return base::File::FILE_ERROR_INVALID_URL;
 
@@ -1408,7 +1490,7 @@ std::optional<base::File::Error> FileSystemManagerImpl::ValidateFileSystemURL(
 
 FileSystemManagerImpl::OperationListenerID FileSystemManagerImpl::AddOpListener(
     mojo::Remote<blink::mojom::FileSystemOperationListener> listener) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   int op_id = next_operation_listener_id_++;
   listener.set_disconnect_handler(
       base::BindOnce(&FileSystemManagerImpl::OnConnectionErrorForOpListeners,
@@ -1418,14 +1500,15 @@ FileSystemManagerImpl::OperationListenerID FileSystemManagerImpl::AddOpListener(
 }
 
 void FileSystemManagerImpl::RemoveOpListener(OperationListenerID listener_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(op_listeners_.find(listener_id) != op_listeners_.end());
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
+  CHECK(op_listeners_.find(listener_id) != op_listeners_.end(),
+        base::NotFatalUntil::M159);
   op_listeners_.erase(listener_id);
 }
 
 blink::mojom::FileSystemOperationListener* FileSystemManagerImpl::GetOpListener(
     OperationListenerID listener_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (op_listeners_.find(listener_id) == op_listeners_.end())
     return nullptr;
   return &*op_listeners_[listener_id];

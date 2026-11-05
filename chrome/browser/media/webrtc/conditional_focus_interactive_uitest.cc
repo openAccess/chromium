@@ -11,10 +11,11 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/webrtc/webrtc_browsertest_base.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
@@ -73,6 +74,7 @@ class ConditionalFocusInteractiveUiTest : public WebRtcTestBase {
 
   void SetUpOnMainThread() override {
     WebRtcTestBase::SetUpOnMainThread();
+    ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
 
     base::RunLoop run_loop;
     content::GetIOThreadTaskRunner({})->PostTaskAndReply(
@@ -367,9 +369,10 @@ IN_PROC_BROWSER_TEST_F(ConditionalFocusInteractiveUiTest,
 }
 
 // TODO(crbug.com/40913269): Flaky on TSan, MSan, and mac bots.
+// TODO(crbug.com/570576679): Flaky on Linux ChromiumOS MSan bots.
 #if (BUILDFLAG(IS_LINUX) &&                                       \
      (defined(THREAD_SANITIZER) || defined(MEMORY_SANITIZER))) || \
-    BUILDFLAG(IS_MAC)
+    (BUILDFLAG(IS_CHROMEOS) && defined(MEMORY_SANITIZER)) || BUILDFLAG(IS_MAC)
 #define MAYBE_NoFocusBeforeCapture DISABLED_NoFocusBeforeCapture
 #else
 #define MAYBE_NoFocusBeforeCapture NoFocusBeforeCapture
@@ -388,7 +391,7 @@ IN_PROC_BROWSER_TEST_P(
 }
 
 // TODO(crbug.com/40913269): Flaky on TSan and MSan bots.
-#if BUILDFLAG(IS_LINUX) && \
+#if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) && \
     (defined(THREAD_SANITIZER) || defined(MEMORY_SANITIZER))
 #define MAYBE_NoFocusAfterCaptureOverrideFocusBeforeCapture \
   DISABLED_NoFocusAfterCaptureOverrideFocusBeforeCapture
@@ -411,7 +414,7 @@ IN_PROC_BROWSER_TEST_P(
 }
 
 // TODO(crbug.com/40913269): Flaky on a TSan and MSan bot.
-#if BUILDFLAG(IS_LINUX) && \
+#if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) && \
     (defined(THREAD_SANITIZER) || defined(MEMORY_SANITIZER))
 #define MAYBE_FocusAfterCaptureOverrideNoFocusBeforeCapture \
   DISABLED_FocusAfterCaptureOverrideNoFocusBeforeCapture

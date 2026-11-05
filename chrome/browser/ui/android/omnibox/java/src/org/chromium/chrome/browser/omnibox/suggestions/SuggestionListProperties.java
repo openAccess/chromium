@@ -6,7 +6,7 @@ package org.chromium.chrome.browser.omnibox.suggestions;
 
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.SelectionController.TraversalMode;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
@@ -106,8 +106,8 @@ import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
             new WritableObjectPropertyKey<>(/* skipEquality= */ true);
 
     /** The resource provider for omnibox suggestions. */
-    WritableObjectPropertyKey<OmniboxResourceProvider> RESOURCE_PROVIDER =
-            new WritableObjectPropertyKey<>();
+    ReadableObjectPropertyKey<OmniboxResourceProvider> RESOURCE_PROVIDER =
+            new ReadableObjectPropertyKey<>();
 
     WritableBooleanPropertyKey ROUND_TOP_CORNERS = new WritableBooleanPropertyKey();
 

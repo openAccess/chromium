@@ -5,25 +5,37 @@
 #include "chrome/browser/ui/webui/omnibox_everywhere/omnibox_everywhere_ui.h"
 
 #include "base/feature_list.h"
+#include "base/i18n/rtl.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/values.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/contextual_search/contextual_search_service_factory.h"
+#include "chrome/browser/enterprise/browser_management/management_service_factory.h"
+#include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_fre_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_prefs.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere_service.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere_service_factory.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/search/most_visited_metrics_logger.h"
+#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
+#include "chrome/browser/ui/views/location_bar/omnibox_popup_file_selector.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_context_menu.h"
 #include "chrome/browser/ui/views/user_education/browser_help_bubble.h"
 #include "chrome/browser/ui/webui/cr_components/most_visited/most_visited_handler.h"
 #include "chrome/browser/ui/webui/cr_components/most_visited/most_visited_pref_observer.h"
+#include "chrome/browser/ui/webui/cr_components/searchbox/plural_string_provider.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.h"
 #include "chrome/browser/ui/webui/favicon_source.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter_service.h"
@@ -31,9 +43,11 @@
 #include "chrome/browser/ui/webui/omnibox_everywhere/composebox_everywhere_handler.h"
 #include "chrome/browser/ui/webui/omnibox_everywhere/debug/omnibox_everywhere_debug_page_handler.h"
 #include "chrome/browser/ui/webui/omnibox_everywhere/omnibox_everywhere_handler.h"
-#include "chrome/browser/ui/webui/plural_string_handler.h"
+#include "chrome/browser/ui/webui/omnibox_everywhere/omnibox_everywhere_page_handler.h"
 #include "chrome/browser/ui/webui/sanitized_image/sanitized_image_source.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chrome/grit/branded_strings.h"
+#include "chrome/grit/chrome_unscaled_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/omnibox_everywhere_resources.h"
 #include "chrome/grit/omnibox_everywhere_resources_map.h"
@@ -44,68 +58,91 @@
 #include "components/omnibox/browser/aim_eligibility_service.h"
 #include "components/omnibox/browser/omnibox_pref_names.h"
 #include "components/omnibox/common/composebox_features.h"
+#include "components/omnibox/common/input_state.h"
 #include "components/omnibox/common/omnibox_features.h"
+#include "components/prefs/pref_service.h"
 #include "components/search/ntp_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/user_education/webui/help_bubble_handler.h"
 #include "components/vector_icons/vector_icons.h"
+#include "content/public/browser/render_widget_host.h"
+#include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
+#include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "ui/base/accelerators/accelerator.h"
+#include "ui/base/accelerators/command.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
+#include "ui/display/screen.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/views/controls/menu/menu_item_view.h"
+#include "ui/views/controls/menu/menu_model_adapter.h"
+#include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/menu/submenu_view.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
+#include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
 #include "ui/webui/tracked_element/tracked_element_handler_document_singleton.h"
 #include "ui/webui/webui_util.h"
 
 namespace {
 
-enum ScreenshotMenuCommand {
-  kScreenshotEntireScreen = 1,
-  kScreenshotWindow,
-  kScreenshotRegion,
-};
-
+bool IsScreenshotCommand(int command_id) {
+  switch (command_id) {
+    case OmniboxEverywhereUI::kScreenshotEntireScreen:
+    case OmniboxEverywhereUI::kScreenshotWindow:
+    case OmniboxEverywhereUI::kScreenshotRegion:
+      return true;
+    default:
+      return false;
+  }
+}
 // Minimum preferred width for the screenshot Views menu, matching UX specs
 // and the previous dropdown implementation (320px).
 constexpr int kScreenshotMenuWidth = 320;
-bool IsAimEligible(Profile* profile) {
-  auto* aim_eligibility_service =
-      AimEligibilityServiceFactory::GetForProfile(profile);
-  return aim_eligibility_service && aim_eligibility_service->IsAimEligible();
-}
 
-bool IsFuseboxEligible(Profile* profile) {
-  return IsAimEligible(profile) &&
-         AimEligibilityServiceFactory::GetForProfile(profile)
-             ->IsFuseboxEligible();
-}
+class OmniboxEverywhereMostVisitedPrefObserver
+    : public MostVisitedPrefObserver {
+ public:
+  OmniboxEverywhereMostVisitedPrefObserver(Profile* profile,
+                                           MostVisitedHandler* handler)
+      : MostVisitedPrefObserver(profile, handler) {
+    if (profile_ && profile_->GetPrefs()) {
+      pref_change_registrar_.Add(
+          omnibox_everywhere::prefs::kOmniboxEverywhereShowShortcuts,
+          base::BindRepeating(&OmniboxEverywhereMostVisitedPrefObserver::
+                                  OnTilesVisibilityPrefChanged,
+                              base::Unretained(this)));
+    }
+    OnTilesVisibilityPrefChanged();
+  }
 
-bool IsFuseboxEnabled(Profile* profile) {
-  const bool show_ai_mode =
-      !profile || !profile->GetPrefs() ||
-      profile->GetPrefs()->GetBoolean(
-          omnibox_everywhere::prefs::kOmniboxEverywhereShowAiMode);
-  return IsFuseboxEligible(profile) && show_ai_mode;
-}
+ protected:
+  bool IsShortcutsVisible() const override {
+    return omnibox_everywhere::prefs::IsOmniboxEverywhereShortcutsVisible(
+        profile_);
+  }
 
-void AddMostVisitedSourceStrings(content::WebUIDataSource* source,
-                                 Profile* profile) {
+  void OnTileTypesChanged() override {
+    MostVisitedPrefObserver::OnTileTypesChanged();
+    OnTilesVisibilityPrefChanged();
+  }
+};
+
+void AddMostVisitedSourceStrings(content::WebUIDataSource* source) {
   source->AddBoolean("omniboxEverywhereMostVisitedEnabled",
                      omnibox::kOmniboxEverywhereMostVisitedParam.Get());
   source->AddBoolean(
-      "omniboxEverywhereShowShortcuts",
-      omnibox_everywhere::prefs::IsOmniboxEverywhereShortcutsVisible(
-          profile, g_browser_process->local_state()));
+      "omniboxEverywhereMostVisitedHideTitle",
+      !omnibox::kOmniboxEverywhereMostVisitedShowTitleParam.Get());
 
   static constexpr webui::LocalizedString kMostVisitedStrings[] = {
       {"addLinkTitle", IDS_NTP_CUSTOM_LINKS_ADD_SHORTCUT_TITLE},
+      {"close", IDS_ACCNAME_CLOSE},
       {"editLinkTitle", IDS_NTP_CUSTOM_LINKS_EDIT_SHORTCUT},
       {"viewLinkTitle", IDS_NTP_CUSTOM_LINKS_SHORTCUT_DETAILS_TITLE},
       {"invalidUrl", IDS_NTP_CUSTOM_LINKS_INVALID_URL},
@@ -181,9 +218,14 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
 
   webui::SetupWebUIDataSource(source, kOmniboxEverywhereResources,
                               IDR_OMNIBOX_EVERYWHERE_OMNIBOX_EVERYWHERE_HTML);
+  source->AddResourcePath("images/product-logo.svg", IDR_PRODUCT_LOGO_SVG);
   source->OverrideContentSecurityPolicy(
       network::mojom::CSPDirectiveName::MediaSrc,
       "media-src blob: data: 'self';");
+  source->OverrideContentSecurityPolicy(
+      network::mojom::CSPDirectiveName::TrustedTypes,
+      base::StrCat(
+          {webui::kDefaultTrustedTypesPolicies, " composebox-input;"}));
   source->OverrideContentSecurityPolicy(
       network::mojom::CSPDirectiveName::ImgSrc,
       "img-src 'self' chrome://resources chrome://theme chrome://favicon/ "
@@ -197,15 +239,19 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
             ->GetProfileAttributesStorage()
             .GetProfileAttributesWithPath(profile_->GetPath());
     if (entry) {
-      gfx::Image icon =
-          profiles::GetSizedAvatarIcon(entry->GetAvatarIcon(), 48, 48);
+      gfx::Image icon = profiles::GetSizedAvatarIcon(
+          entry->GetAvatarIcon(kProfileAvatarSizePx), kProfileAvatarSizePx,
+          kProfileAvatarSizePx);
       profile_avatar_url = webui::GetBitmapDataUrl(icon.AsBitmap());
 
-      std::u16string gaia_name = entry->GetGAIAName();
-      std::u16string profile_name = entry->GetName();
-      std::u16string display_name = profile_name;
-      if (!gaia_name.empty() && gaia_name != profile_name) {
-        display_name = gaia_name + u" • " + profile_name;
+      std::u16string gaia_name = entry->GetGAIANameToDisplay();
+      std::u16string local_name = entry->GetLocalProfileName();
+      std::u16string display_name;
+      if (!gaia_name.empty() && !local_name.empty() &&
+          gaia_name != local_name) {
+        display_name = gaia_name + u" (" + local_name + u")";
+      } else {
+        display_name = entry->GetName();
       }
       source->AddString("profileName", base::UTF16ToUTF8(display_name));
       source->AddString("profileEmail",
@@ -218,36 +264,66 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
   source->AddString("profileAvatarUrl", profile_avatar_url);
   source->AddBoolean("omniboxEverywhereProfilePickerEnabled",
                      omnibox::kOmniboxEverywhereProfilePickerParam.Get());
+  bool is_enterprise_profile =
+      enterprise_util::CanShowEnterpriseBadgingForAvatar(profile_);
+  source->AddBoolean("isEnterpriseProfile", is_enterprise_profile);
   static constexpr webui::LocalizedString kStrings[] = {
-      {"loomniboxFreAcceptHotkey", IDS_LOOMNIBOX_FRE_ACCEPT_HOTKEY},
+      {"loomniboxFreChangeShortcutIn", IDS_LOOMNIBOX_FRE_CHANGE_SHORTCUT_IN},
       {"loomniboxFreCloseButtonAria", IDS_LOOMNIBOX_FRE_CLOSE_BUTTON_ARIA},
-      {"loomniboxFreEditOwn", IDS_LOOMNIBOX_FRE_KEYBOARD_OPTION_EDIT_OWN},
-      {"loomniboxFreKeyboardBadgeOption",
-       IDS_LOOMNIBOX_FRE_KEYBOARD_BADGE_OPTION},
-      {"loomniboxFreKeyboardBadgeSpace",
-       IDS_LOOMNIBOX_FRE_KEYBOARD_BADGE_SPACE},
-      {"loomniboxFreKeyboardPrimary", IDS_LOOMNIBOX_FRE_KEYBOARD_PRIMARY},
       {"loomniboxFreLensPrimary", IDS_LOOMNIBOX_FRE_LENS_PRIMARY},
       {"loomniboxFreLensSecondary", IDS_LOOMNIBOX_FRE_LENS_SECONDARY},
-      {"loomniboxFreOr", IDS_LOOMNIBOX_FRE_OR},
+      {"loomniboxFreReminderToSearch", IDS_LOOMNIBOX_FRE_REMINDER_TO_SEARCH},
+      {"loomniboxFreSelectKeyboardShortcut",
+       IDS_LOOMNIBOX_FRE_SELECT_KEYBOARD_SHORTCUT},
+      {"loomniboxFreSelectShortcut", IDS_LOOMNIBOX_FRE_SELECT_SHORTCUT},
       {"loomniboxFreTitle", IDS_LOOMNIBOX_FRE_TITLE},
+      {"loomniboxFreToSearchOrCustomize",
+       IDS_LOOMNIBOX_FRE_TO_SEARCH_OR_CUSTOMIZE},
+      {"loomniboxFreWhereToFindPrimary",
+       IDS_LOOMNIBOX_FRE_WHERE_TO_FIND_PRIMARY},
+      {"managedByYourOrganization", IDS_MANAGED},
+      // Reuses the standard "More options" accessible label for the overflow
+      // (three-dot) button.
+      {"overflowMenuButtonLabel", IDS_FUSEBOX_MORE_OPTIONS},
       {"profileButtonLabel", IDS_OVERFLOW_MENU_ITEM_TEXT_PROFILE},
+      {"profileTooltipHeader", IDS_OMNIBOX_EVERYWHERE_PROFILE_TOOLTIP},
       {"screenshotEntireScreenLabel", IDS_OMNIBOX_EVERYWHERE_ENTIRE_SCREEN},
       {"screenshotRegionLabel", IDS_OMNIBOX_EVERYWHERE_REGION},
       {"screenshotWindowLabel", IDS_OMNIBOX_EVERYWHERE_WINDOW},
       {"searchBoxHintAskOrType", IDS_NTP_SEARCH_BOX_PLACEHOLDER_ASK_OR_TYPE},
+      {"searchBoxHintDragAndDrop",
+       IDS_OMNIBOX_EVERYWHERE_PLACEHOLDER_DRAG_AND_DROP},
+      {"searchBoxHintFileOrImage",
+       IDS_OMNIBOX_EVERYWHERE_PLACEHOLDER_FILE_OR_IMAGE},
+      {"searchBoxHintLens", IDS_OMNIBOX_EVERYWHERE_PLACEHOLDER_LENS},
       {"shareScreenshotLabel", IDS_OMNIBOX_EVERYWHERE_SHARE_SCREENSHOT},
+      {"switchProfileLabel", IDS_OMNIBOX_EVERYWHERE_SWITCH_PROFILE},
   };
   source->AddLocalizedStrings(kStrings);
 
-  bool initial_show_fre =
-      base::FeatureList::IsEnabled(omnibox::kOmniboxEverywhereFre) &&
-      !profile_->GetPrefs()->GetBoolean(
-          omnibox_everywhere::prefs::kFreDismissed) &&
-      (profile_->GetPrefs()->GetInteger(
-           omnibox_everywhere::prefs::kFreImpressionCount) <
-       omnibox_everywhere::prefs::kMaxFreImpressions);
-  source->AddBoolean("initialShowFre", initial_show_fre);
+  auto* service = OmniboxEverywhereServiceFactory::GetForProfile(profile_);
+  omnibox_everywhere::FreStage current_stage =
+      (service && service->fre_controller())
+          ? service->fre_controller()->GetCurrentStage()
+          : omnibox_everywhere::FreStage::kNone;
+  source->AddInteger("initialFreStage", static_cast<int>(current_stage));
+
+  base::ListValue initial_tokens;
+  if (g_browser_process && g_browser_process->local_state() &&
+      omnibox_everywhere::prefs::HasOmniboxEverywhereHotkey(
+          g_browser_process->local_state())) {
+    ui::Accelerator hotkey =
+        omnibox_everywhere::prefs::GetOmniboxEverywhereHotkey(
+            g_browser_process->local_state());
+    std::vector<std::string> tokens =
+        omnibox_everywhere::prefs::GetOmniboxEverywhereHotkeyTokens(hotkey);
+    for (const auto& token : tokens) {
+      initial_tokens.Append(token);
+    }
+  }
+  base::DictValue initial_dict;
+  initial_dict.Set("initialHotkeyTokens", std::move(initial_tokens));
+  source->AddLocalizedStrings(initial_dict);
 
   // Sanitized image and favicon source initialization
   content::URLDataSource::Add(profile_,
@@ -273,6 +349,11 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
   source->AddBoolean(
       "omniboxPopupDebugEnabled",
       base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxPopupDebug));
+  source->AddBoolean("searchboxMultiline",
+                     omnibox::kOmniboxEverywhereMultilineParam.Get());
+  source->AddBoolean(
+      "singleLineOnInlineAutocomplete",
+      omnibox::kOmniboxEverywhereSingleLineOnInlineAutocompleteParam.Get());
 
   source->AddBoolean("reportMetrics", true);
   source->AddString("charTypedToPaintMetricName",
@@ -310,11 +391,23 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
   source->AddBoolean("composeboxShowImageSuggest",
                      omnibox::kShowComposeboxImageSuggestions.Get());
 
-  AddMostVisitedSourceStrings(source, profile_);
+  AddMostVisitedSourceStrings(source);
+  source->AddBoolean("smallLoomnibox",
+                     omnibox::kOmniboxEverywhereSmallLoomniboxParam.Get());
+  source->AddBoolean("dynamicSizing",
+                     omnibox::kOmniboxEverywhereDynamicSizingParam.Get());
+  source->AddInteger("dynamicSizingWidth",
+                     omnibox::kOmniboxEverywhereDynamicSizingWidthParam.Get());
+  source->AddBoolean("smallFont",
+                     omnibox::kOmniboxEverywhereSmallFontParam.Get());
+
+  source->AddBoolean("isPersistentMode",
+                     !omnibox_everywhere::prefs::IsEphemeralModelEnabled());
 
   const bool is_fusebox_enabled = IsFuseboxEnabled(profile_);
   source->AddBoolean("searchboxShowComposeEntrypoint", is_fusebox_enabled);
   source->AddBoolean("isFuseboxEnabled", is_fusebox_enabled);
+  source->AddBoolean("isFuseboxEligible", IsFuseboxEligible(profile_));
   source->AddBoolean(
       "ntpRealboxDynamicAiModeButton",
       is_fusebox_enabled && base::FeatureList::IsEnabled(
@@ -339,6 +432,8 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
   source->AddBoolean(
       "composeboxSkillsEnabled",
       base::FeatureList::IsEnabled(omnibox::kComposeboxSkillsOmniboxEverywhere));
+  source->AddBoolean("composeboxContextMenuTooltipsEnabled",
+                     omnibox::IsContextMenuTooltipsInComposeboxEnabled());
 
   source->AddString("searchboxLayoutMode", "TallBottomContext");
   source->AddString(
@@ -352,21 +447,15 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
   source->AddBoolean("composeboxAnimationDisabled",
                      base::FeatureList::IsEnabled(
                          omnibox::kWebUIOmniboxAimPopupDisableAnimation));
-  // Disable the energy effect for the searchbox in Omnibox Everywhere so the
-  // AIM compose button renders the outer conic rainbow glow animation instead
-  // of the energy effect. The composebox explicitly enables energy effect for
-  // its own expanding glow animation.
-  source->AddBoolean("energyEffectEnabled", false);
-  source->AddBoolean("energyEffectAnimationEnabled", false);
+  source->AddBoolean(
+      "energyEffectEnabled",
+      base::FeatureList::IsEnabled(omnibox::kEnergyEffectInOmnibox));
+  source->AddBoolean(
+      "energyEffectAnimationEnabled",
+      base::FeatureList::IsEnabled(omnibox::kEnergyEffectInOmnibox));
   source->AddBoolean("composeboxEnergyEffectAnimationEnabled", true);
   source->AddBoolean("contextButtonShapeIsOblong",
                      omnibox::kContextButtonShapeIsOblong.Get());
-
-  // Add a handler to provide pluralized strings.
-  auto plural_string_handler = std::make_unique<PluralStringHandler>();
-  plural_string_handler->AddLocalizedString("sharingTabs",
-                                            IDS_COMPOSE_SHARING_TABS);
-  web_ui->AddMessageHandler(std::move(plural_string_handler));
 
   ui::TrackedElementHandlerDocumentSingleton::Register(
       this, {kOmniboxEverywhereLensButtonElementId});
@@ -379,6 +468,31 @@ OmniboxEverywhereUI::OmniboxEverywhereUI(content::WebUI* web_ui)
 }
 
 OmniboxEverywhereUI::~OmniboxEverywhereUI() = default;
+
+// static
+bool OmniboxEverywhereUI::IsFuseboxEligible(Profile* profile) {
+  if (!profile) {
+    return false;
+  }
+  auto* aim_eligibility_service =
+      AimEligibilityServiceFactory::GetForProfile(profile);
+  return aim_eligibility_service &&
+         aim_eligibility_service->IsFuseboxEligible();
+}
+
+// static
+bool OmniboxEverywhereUI::IsFuseboxEnabled(Profile* profile) {
+  return IsFuseboxEligible(profile) && profile->GetPrefs() &&
+         profile->GetPrefs()->GetBoolean(
+             omnibox_everywhere::prefs::kOmniboxEverywhereShowAiMode);
+}
+
+void OmniboxEverywhereUI::BindInterface(
+    mojo::PendingReceiver<plural_string::mojom::PluralStringProvider>
+        receiver) {
+  PluralStringProvider::Create(std::move(receiver),
+                               GetSearchboxPluralStringIds());
+}
 
 void OmniboxEverywhereUI::BindInterface(
     mojo::PendingReceiver<composebox::mojom::PageHandlerFactory> receiver) {
@@ -407,6 +521,20 @@ void OmniboxEverywhereUI::CreatePageHandler(
       base::BindRepeating(&OmniboxEverywhereUI::ClearContextualSessionHandle,
                           base::Unretained(this)),
       this);
+  composebox_handler_->set_disconnect_handler(
+      base::BindOnce(&OmniboxEverywhereUI::OnComposeboxHandlerDisconnected,
+                     weak_factory_.GetWeakPtr()));
+
+  for (const auto& pending : pending_upload_statuses_) {
+    composebox_handler_->OnContextualInputStatusChanged(
+        pending.token, pending.status, pending.error_type);
+  }
+  pending_upload_statuses_.clear();
+
+  for (const auto& token : pending_screenshot_tokens_) {
+    composebox_handler_->AddScreenshotContextToken(token);
+  }
+  pending_screenshot_tokens_.clear();
 }
 
 void OmniboxEverywhereUI::BindInterface(
@@ -439,6 +567,26 @@ void OmniboxEverywhereUI::CreatePageHandler(
       this);
 }
 
+void OmniboxEverywhereUI::BindInterface(
+    mojo::PendingReceiver<omnibox_everywhere::mojom::PageHandlerFactory>
+        receiver) {
+  if (!omnibox::IsOmniboxEverywhereEnabled(profile_)) {
+    return;
+  }
+  if (page_factory_receiver_.is_bound()) {
+    page_factory_receiver_.reset();
+  }
+  page_factory_receiver_.Bind(std::move(receiver));
+}
+
+void OmniboxEverywhereUI::CreatePageHandler(
+    mojo::PendingRemote<omnibox_everywhere::mojom::Page> pending_page,
+    mojo::PendingReceiver<omnibox_everywhere::mojom::PageHandler>
+        pending_page_handler) {
+  page_handler_ = std::make_unique<OmniboxEverywherePageHandler>(
+      std::move(pending_page_handler), std::move(pending_page), this);
+}
+
 void OmniboxEverywhereUI::OnScreensharePickerOpened() {
   if (auto* service =
           OmniboxEverywhereServiceFactory::GetForProfile(profile_)) {
@@ -465,9 +613,31 @@ void OmniboxEverywhereUI::ShowRegionSelectOverlay(
   std::move(callback).Run(SkBitmap());
 }
 
+bool OmniboxEverywhereUI::CancelChromeDefaultPicker() {
+  // Screensharing can be initiated from either the Omnibox searchbox or
+  // Composebox. Because pre-warming switches `is_composebox_mode_` immediately,
+  // check both handlers rather than relying on
+  // `GetContextualSearchboxHandler()`.
+  if (omnibox_handler_ && omnibox_handler_->CancelChromeDefaultPicker()) {
+    return true;
+  }
+  if (composebox_handler_ && composebox_handler_->CancelChromeDefaultPicker()) {
+    return true;
+  }
+  return false;
+}
+
 void OmniboxEverywhereUI::BindInterface(
     mojo::PendingReceiver<omnibox_everywhere_debug::mojom::PageHandlerFactory>
         receiver) {
+  // The debug page is only meant to be opened in a browser tab, never inside
+  // the floating Omnibox Everywhere popup's WebContents.
+  if (!omnibox::IsOmniboxEverywhereEnabled(profile_) ||
+      !web_ui()->GetWebContents() ||
+      !BrowserUserEducationInterface::MaybeGetForWebContentsInTab(
+          web_ui()->GetWebContents())) {
+    return;
+  }
   if (debug_page_factory_receiver_.is_bound()) {
     debug_page_factory_receiver_.reset();
   }
@@ -480,7 +650,7 @@ void OmniboxEverywhereUI::CreatePageHandler(
         handler) {
   debug_page_handler_ = std::make_unique<
       omnibox_everywhere_debug::OmniboxEverywhereDebugPageHandler>(
-      profile_, std::move(page), std::move(handler));
+      web_ui(), profile_, std::move(page), std::move(handler));
 }
 
 void OmniboxEverywhereUI::BindInterface(
@@ -503,8 +673,9 @@ void OmniboxEverywhereUI::CreatePageHandler(
       std::move(pending_page_handler), std::move(pending_page), profile_,
       web_ui()->GetWebContents(),
       std::make_unique<MostVisitedMetricsLogger>("Omnibox"));
-  most_visited_pref_observer_ = std::make_unique<MostVisitedPrefObserver>(
-      profile_, most_visited_handler_.get());
+  most_visited_pref_observer_ =
+      std::make_unique<OmniboxEverywhereMostVisitedPrefObserver>(
+          profile_, most_visited_handler_.get());
 }
 
 void OmniboxEverywhereUI::BindInterface(
@@ -525,9 +696,9 @@ void OmniboxEverywhereUI::CreateHelpBubbleHandler(
           web_ui()->GetRenderFrameHost()));
 }
 
-ContextualSearchboxHandler*
-OmniboxEverywhereUI::GetContextualSearchboxHandler() {
-  if (composebox_handler_) {
+ContextualSearchboxHandler* OmniboxEverywhereUI::GetContextualSearchboxHandler()
+    const {
+  if (is_composebox_mode_ && composebox_handler_) {
     return composebox_handler_.get();
   }
   return omnibox_handler_.get();
@@ -550,8 +721,48 @@ OmniboxEverywhereUI::GetOrCreateContextualSessionHandle() {
   return shared_session_handle_.get();
 }
 
+void OmniboxEverywhereUI::SetIsComposebox(bool is_composebox) {
+  if (is_composebox_mode_ == is_composebox) {
+    return;
+  }
+  if (is_composebox) {
+    is_composebox_mode_ = true;
+  } else {
+    ClearContextualSessionHandle();
+  }
+}
+
+void OmniboxEverywhereUI::OnDismissMostVisited() {
+  if (profile_ && profile_->GetPrefs()) {
+    profile_->GetPrefs()->SetInteger(
+        omnibox_everywhere::prefs::kOmniboxEverywhereShowShortcuts,
+        static_cast<int>(
+            omnibox_everywhere::prefs::ShowShortcutsPrefValue::kDisabled));
+  }
+}
+
 void OmniboxEverywhereUI::ClearContextualSessionHandle() {
   shared_session_handle_.reset();
+  pending_upload_statuses_.clear();
+  pending_screenshot_tokens_.clear();
+  is_composebox_mode_ = false;
+  screenshot_origin_was_searchbox_ = false;
+
+  // OmniboxEverywhereUI concurrently hosts both `omnibox_handler_` and
+  // `composebox_handler_` across a persistent WebContents.
+  // Because `selected_tabs` and `input_state_model_` are owned directly by each
+  // ContextualSearchboxHandler rather than the shared session handle, we must
+  // explicitly reset both handlers to prevent stale tab mappings or input
+  // models from leaking across subsequent queries and mode switches.
+  if (omnibox_handler_) {
+    omnibox_handler_->selected_tabs.clear();
+    omnibox_handler_->ResetInputStateModel();
+  }
+  if (composebox_handler_) {
+    composebox_handler_->selected_tabs.clear();
+    composebox_handler_->ResetInputStateModel();
+    composebox_handler_->ClearScreenshotContextTokens();
+  }
 }
 
 // Shows a native Views menu rather than a WebUI <cr-action-menu> so that the
@@ -562,30 +773,41 @@ void OmniboxEverywhereUI::ClearContextualSessionHandle() {
 //    traversal.
 void OmniboxEverywhereUI::ShowScreenshotMenu(
     const gfx::Rect& anchor_rect,
-    base::WeakPtr<ContextualSearchboxHandler> source_handler) {
+    base::WeakPtr<ContextualSearchboxScreenshareController> controller) {
   if (screenshot_menu_runner_ && screenshot_menu_runner_->IsRunning()) {
-    if (source_handler) {
-      source_handler->OnScreenshotMenuClosed();
+    screenshot_menu_runner_->Cancel();
+    if (controller) {
+      controller->OnScreenshotMenuClosed();
     }
     return;
   }
   content::WebContents* web_contents = web_ui()->GetWebContents();
   if (!web_contents) {
-    if (source_handler) {
-      source_handler->OnScreenshotMenuClosed();
+    if (controller) {
+      controller->OnScreenshotMenuClosed();
     }
     return;
   }
   views::Widget* widget = views::Widget::GetWidgetForNativeWindow(
       web_contents->GetTopLevelNativeWindow());
   if (!widget || !widget->GetContentsView()) {
-    if (source_handler) {
-      source_handler->OnScreenshotMenuClosed();
+    if (controller) {
+      controller->OnScreenshotMenuClosed();
     }
     return;
   }
 
-  active_screenshot_handler_ = std::move(source_handler);
+  // Ensure any previous menu runner and its MenuModelAdapter are
+  // torn down in the proper order (runner before adapter) before
+  // re-creating them, avoiding dangling pointers.
+  ResetScreenshotMenu();
+
+  if (auto* service =
+          OmniboxEverywhereServiceFactory::GetForProfile(profile_)) {
+    service->OnLensSearchClicked();
+  }
+
+  active_screenshot_controller_ = std::move(controller);
 
   screenshot_menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
   screenshot_menu_model_->AddTitle(
@@ -627,42 +849,386 @@ void OmniboxEverywhereUI::ShowScreenshotMenu(
                                      ui::mojom::MenuSourceType::kNone);
 }
 
-void OmniboxEverywhereUI::OnScreenshotMenuClosed() {
-  if (active_screenshot_handler_) {
-    active_screenshot_handler_->OnScreenshotMenuClosed();
+void OmniboxEverywhereUI::ResetScreenshotMenu() {
+  if (screenshot_menu_runner_ && screenshot_menu_runner_->IsRunning()) {
+    return;
+  }
+  screenshot_menu_runner_.reset();
+  menu_model_adapter_.reset();
+  screenshot_menu_model_.reset();
+}
+
+// These buttons are WebUI elements styled via CSS :hover (unlike native Views
+// with an InkDrop). Because native modal menus capture pointer tracking,
+// dismissing them without subsequent cursor movement leaves Blink with a stale
+// hover target. Synthesizing a mouse event forces Blink to recalculate and
+// clear the stale :hover state immediately.
+void OmniboxEverywhereUI::SynthesizeMouseMoveEvent() {
+  content::WebContents* web_contents = web_ui()->GetWebContents();
+  if (!web_contents || web_contents->IsBeingDestroyed()) {
+    return;
+  }
+
+  if (views::Widget* widget = views::Widget::GetWidgetForNativeWindow(
+          web_contents->GetTopLevelNativeWindow())) {
+    widget->SynthesizeMouseMoveEvent();
+  }
+
+  content::RenderWidgetHostView* rwhv = web_contents->GetRenderWidgetHostView();
+  if (!rwhv || !rwhv->GetRenderWidgetHost()) {
+    return;
+  }
+  display::Screen* screen = display::Screen::Get();
+  if (!screen) {
+    return;
+  }
+
+  gfx::Point screen_point = screen->GetCursorScreenPoint();
+  gfx::Rect view_bounds = rwhv->GetViewBounds();
+
+  if (view_bounds.Contains(screen_point)) {
+    gfx::Point point_in_view = screen_point - view_bounds.OffsetFromOrigin();
+    blink::WebMouseEvent mouse_event(
+        blink::WebInputEvent::Type::kMouseMove, gfx::PointF(point_in_view),
+        gfx::PointF(screen_point),
+        blink::WebPointerProperties::Button::kNoButton,
+        /*click_count_param=*/0, blink::WebInputEvent::kNoModifiers,
+        base::TimeTicks::Now());
+    rwhv->GetRenderWidgetHost()->ForwardMouseEvent(mouse_event);
+  } else {
+    blink::WebMouseEvent mouse_event(blink::WebInputEvent::Type::kMouseLeave,
+                                     blink::WebInputEvent::kNoModifiers,
+                                     base::TimeTicks::Now());
+    rwhv->GetRenderWidgetHost()->ForwardMouseEvent(mouse_event);
   }
 }
 
+void OmniboxEverywhereUI::OnScreenshotMenuClosed() {
+  if (active_screenshot_controller_) {
+    auto controller = std::move(active_screenshot_controller_);
+    controller->OnScreenshotMenuClosed();
+  }
+  // Clear stale hover state on the Lens search button after the menu closes.
+  SynthesizeMouseMoveEvent();
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&OmniboxEverywhereUI::ResetScreenshotMenu,
+                                weak_factory_.GetWeakPtr()));
+}
+
 void OmniboxEverywhereUI::ExecuteCommand(int command_id, int event_flags) {
-  if (!active_screenshot_handler_) {
+  if (!IsScreenshotCommand(command_id) || !active_screenshot_controller_ ||
+      !IsCommandIdEnabled(command_id)) {
     return;
   }
-  auto handler = std::move(active_screenshot_handler_);
+
+  auto controller = std::move(active_screenshot_controller_);
+  controller->OnScreenshotMenuClosed();
+
+  if (screenshot_menu_runner_ && screenshot_menu_runner_->IsRunning()) {
+    screenshot_menu_runner_->Cancel();
+  }
+
+  if (!omnibox_everywhere::prefs::IsScreenshotDisclosureAccepted(profile_)) {
+    if (auto* service =
+            OmniboxEverywhereServiceFactory::GetForProfile(profile_)) {
+      // If the user cancels the disclosure prompt, the screenshot command is
+      // aborted.
+      service->ShowScreenshotDisclosureDialog(
+          base::BindOnce(&OmniboxEverywhereUI::ExecuteScreenshotCommand,
+                         weak_factory_.GetWeakPtr(), command_id, controller),
+          /*on_cancelled=*/base::NullCallback());
+    }
+    return;
+  }
+
+  ExecuteScreenshotCommand(command_id, controller);
+}
+
+void OmniboxEverywhereUI::ExecuteScreenshotCommand(
+    int command_id,
+    base::WeakPtr<ContextualSearchboxScreenshareController> controller) {
+  if (!controller) {
+    return;
+  }
+
+  // Re-check AI Mode availability: this may run after the asynchronous
+  // screenshot disclosure dialog, during which eligibility can change. Reset
+  // the page as for a cancelled capture.
+  if (!IsFuseboxEnabled(profile_)) {
+    OnScreenshotCaptureDone(std::nullopt);
+    return;
+  }
+
+  screenshot_origin_was_searchbox_ = !is_composebox_mode_;
+
+  // Open Composebox immediately from the Lens entry point with a pending
+  // screenshot state so that when the capture/picker UI dismisses, the view
+  // transitions directly into Composebox without briefly rendering the
+  // Loomnibox omnibox or flashing zero-prefix suggestions.
+  auto initial_state = omnibox_everywhere::mojom::ComposeboxInitialState::New();
+  initial_state->is_pending_screenshot = true;
+  OpenComposebox(std::move(initial_state));
+
+  auto on_capture_done =
+      base::BindOnce(&OmniboxEverywhereUI::OnScreenshotCaptureDone,
+                     weak_factory_.GetWeakPtr());
+
   switch (command_id) {
     case kScreenshotEntireScreen:
-      handler->StartScreenshare(
-          /*prefer_entire_screen=*/true, base::DoNothing());
+      base::UmaHistogramEnumeration(
+          "OmniboxEverywhere.Screenshare.OptionSelected",
+          ScreenshareOption::kEntireScreen);
+      controller->StartScreenshare(
+          /*prefer_entire_screen=*/true, std::move(on_capture_done));
       break;
     case kScreenshotWindow:
-      handler->StartScreenshare(
-          /*prefer_entire_screen=*/false, base::DoNothing());
+      base::UmaHistogramEnumeration(
+          "OmniboxEverywhere.Screenshare.OptionSelected",
+          ScreenshareOption::kWindow);
+      controller->StartScreenshare(
+          /*prefer_entire_screen=*/false, std::move(on_capture_done));
       break;
     case kScreenshotRegion:
-      handler->CaptureRegionScreenshot(base::DoNothing());
+      base::UmaHistogramEnumeration(
+          "OmniboxEverywhere.Screenshare.OptionSelected",
+          ScreenshareOption::kRegion);
+      controller->CaptureRegionScreenshot(std::move(on_capture_done));
       break;
+    default:
+      NOTREACHED();
   }
+}
+
+void OmniboxEverywhereUI::OnScreenshotCaptureDone(
+    const std::optional<base::UnguessableToken>& token) {
+  if (!token.has_value()) {
+    if (screenshot_origin_was_searchbox_) {
+      SetIsComposebox(false);
+    }
+    if (page_handler_) {
+      page_handler_->OnScreenshotCaptureCancelled();
+    }
+  }
+  screenshot_origin_was_searchbox_ = false;
 }
 
 bool OmniboxEverywhereUI::IsCommandIdChecked(int command_id) const {
   return false;
 }
 
+// static
+bool OmniboxEverywhereUI::IsScreenshotCommandEnabled(
+    ContextualSearchboxHandler* contextual_searchbox_handler) {
+  if (!contextual_searchbox_handler) {
+    return false;
+  }
+  const auto& composebox_config =
+      ntp_composebox::FeatureConfig::Get().config.composebox();
+  size_t max_files = composebox_config.max_num_files() > 0
+                         ? composebox_config.max_num_files()
+                         : omnibox::kDefaultMaxTotalInputs;
+
+  auto* input_state_model = contextual_searchbox_handler->input_state_model();
+  if (input_state_model) {
+    const auto& input_state = input_state_model->GetInputState();
+    if (std::ranges::contains(input_state.disabled_input_types,
+                              omnibox::InputType::INPUT_TYPE_LENS_IMAGE)) {
+      return false;
+    }
+    if (input_state.max_total_inputs > 0) {
+      max_files = input_state.max_total_inputs;
+    }
+  }
+
+  return contextual_searchbox_handler->GetUploadedContextTokens().size() <
+         max_files;
+}
+
 bool OmniboxEverywhereUI::IsCommandIdEnabled(int command_id) const {
+  switch (command_id) {
+    case kScreenshotEntireScreen:
+    case kScreenshotWindow:
+    case kScreenshotRegion:
+      // Screenshots are shared with AI Mode, so refuse them when AI Mode is
+      // unavailable. `ExecuteCommand()` checks this before showing the
+      // screenshot disclosure dialog.
+      return IsFuseboxEnabled(profile_) &&
+             IsScreenshotCommandEnabled(GetContextualSearchboxHandler());
+  }
   return true;
 }
 
 bool OmniboxEverywhereUI::IsCommandIdVisible(int command_id) const {
   return true;
+}
+
+void OmniboxEverywhereUI::OpenComposebox(
+    omnibox_everywhere::mojom::ComposeboxInitialStatePtr initial_state) {
+  // AI Mode eligibility can change while a native menu or file chooser is open.
+  if (!IsFuseboxEnabled(profile_)) {
+    return;
+  }
+  // Clear any active autocomplete suggestions on the omnibox searchbox before
+  // transitioning into Composebox mode so that stale searchbox results do not
+  // linger or flash during the mode switch.
+  if (omnibox_handler_) {
+    omnibox_handler_->StopAutocomplete(/*clear_result=*/true);
+  }
+  SetIsComposebox(true);
+  if (page_handler_) {
+    page_handler_->OpenComposebox(std::move(initial_state));
+  }
+}
+
+void OmniboxEverywhereUI::OnComposeboxHandlerDisconnected() {
+  composebox_handler_.reset();
+  ClearContextualSessionHandle();
+}
+
+void OmniboxEverywhereUI::AddFileContext(
+    const base::UnguessableToken& token,
+    searchbox::mojom::SelectedFileInfoPtr file_info) {
+  screenshot_origin_was_searchbox_ = false;
+  if (is_composebox_mode_ && composebox_handler_) {
+    composebox_handler_->AddFileContextFromBrowser(token, std::move(file_info));
+  } else {
+    auto initial_state =
+        omnibox_everywhere::mojom::ComposeboxInitialState::New();
+    initial_state->file_token = token;
+    initial_state->file_info = std::move(file_info);
+    OpenComposebox(std::move(initial_state));
+  }
+}
+
+void OmniboxEverywhereUI::AddScreenshotContextToken(
+    const base::UnguessableToken& token) {
+  if (is_composebox_mode_ && composebox_handler_) {
+    composebox_handler_->AddScreenshotContextToken(token);
+  } else {
+    pending_screenshot_tokens_.push_back(token);
+  }
+}
+
+void OmniboxEverywhereUI::OnContextualInputStatusChanged(
+    const base::UnguessableToken& token,
+    contextual_search::ContextUploadStatus status,
+    std::optional<contextual_search::ContextUploadErrorType> error_type) {
+  if (is_composebox_mode_ && composebox_handler_) {
+    composebox_handler_->OnContextualInputStatusChanged(token, status,
+                                                        error_type);
+  } else {
+    pending_upload_statuses_.push_back({token, status, error_type});
+  }
+}
+
+void OmniboxEverywhereUI::OnContextMenuClosed() {
+  if (page_handler_) {
+    page_handler_->OnContextMenuClosed();
+  }
+  // Clear stale hover state on the '+' entrypoint button.
+  SynthesizeMouseMoveEvent();
+}
+
+void OmniboxEverywhereUI::OnOverflowMenuClosed() {
+  if (page_handler_) {
+    page_handler_->OnOverflowMenuClosed();
+  }
+  // Clear stale hover state on the overflow button after the menu closes.
+  SynthesizeMouseMoveEvent();
+}
+
+void OmniboxEverywhereUI::OnFileChooserOpened() {
+  if (auto* service =
+          OmniboxEverywhereServiceFactory::GetForProfile(profile_)) {
+    service->OnFileChooserOpened();
+  }
+}
+
+void OmniboxEverywhereUI::OnFileChooserClosed() {
+  if (auto* service =
+          OmniboxEverywhereServiceFactory::GetForProfile(profile_)) {
+    service->OnFileChooserClosed();
+  }
+}
+
+void OmniboxEverywhereUI::ShowContextActionMenu(const gfx::Rect& anchor_rect) {
+  // The "+" menu's actions all open the AI Mode composebox, so don't show the
+  // menu when AI Mode is unavailable.
+  if (!IsFuseboxEnabled(profile_)) {
+    OnContextMenuClosed();
+    return;
+  }
+  if (context_menu_) {
+    context_menu_->Cancel();
+  }
+  content::WebContents* web_contents = web_ui()->GetWebContents();
+  if (!web_contents) {
+    OnContextMenuClosed();
+    return;
+  }
+  views::Widget* widget = views::Widget::GetWidgetForNativeWindow(
+      web_contents->GetTopLevelNativeWindow());
+  if (!widget || !widget->GetContentsView()) {
+    OnContextMenuClosed();
+    return;
+  }
+
+  if (!file_selector_) {
+    file_selector_ = std::make_unique<OmniboxPopupFileSelector>(
+        web_contents->GetTopLevelNativeWindow());
+    file_selector_->set_open_ai_mode_callback(base::BindRepeating(
+        &OmniboxEverywhereUI::OpenComposebox, weak_factory_.GetWeakPtr(),
+        /*initial_state=*/nullptr));
+    file_selector_->set_file_chooser_opened_callback(base::BindRepeating(
+        &OmniboxEverywhereUI::OnFileChooserOpened, weak_factory_.GetWeakPtr()));
+    file_selector_->set_file_chooser_closed_callback(base::BindRepeating(
+        &OmniboxEverywhereUI::OnFileChooserClosed, weak_factory_.GetWeakPtr()));
+  }
+
+  gfx::Point screen_point = CalculateContextMenuAnchorPoint(
+      anchor_rect, web_contents->GetContainerBounds());
+
+  context_menu_ = std::make_unique<OmniboxContextMenu>(
+      widget, file_selector_.get(), web_contents,
+      base::BindRepeating(&OmniboxEverywhereUI::OnContextMenuClosed,
+                          weak_factory_.GetWeakPtr()));
+  context_menu_->RunMenuAt(screen_point, ui::mojom::MenuSourceType::kNone);
+}
+
+// The overflow menu is hosted by `OmniboxEverywhereUIManager` (via the service)
+// so it shares the right-click menu's model, command handling, and dismissal
+// suppression (the popup must stay open while the native menu has activation).
+void OmniboxEverywhereUI::ShowOverflowMenu(
+    const gfx::Rect& anchor_rect,
+    ui::mojom::MenuSourceType source_type) {
+  content::WebContents* web_contents = web_ui()->GetWebContents();
+  auto* service = OmniboxEverywhereServiceFactory::GetForProfile(profile_);
+  if (!web_contents || !service) {
+    OnOverflowMenuClosed();
+    return;
+  }
+  // `anchor_rect` is in WebUI viewport coordinates; offset it by the
+  // WebContents' screen position to get screen DIP coordinates.
+  service->ShowOverflowMenu(
+      anchor_rect + web_contents->GetContainerBounds().OffsetFromOrigin(),
+      source_type,
+      base::BindOnce(&OmniboxEverywhereUI::OnOverflowMenuClosed,
+                     weak_factory_.GetWeakPtr()));
+}
+
+// static
+gfx::Point OmniboxEverywhereUI::CalculateContextMenuAnchorPoint(
+    const gfx::Rect& anchor_rect,
+    const gfx::Rect& container_bounds) {
+  // `anchor_rect` is the bounding box of the '+' entrypoint button in WebUI
+  // viewport coordinates (CSS DIPs relative to the top-left of the
+  // WebContents). We offset it by `container_bounds.OffsetFromOrigin()`
+  // (the screen position of the WebContents) to convert `anchor_rect`
+  // (bottom_right in RTL, bottom_left in LTR) into desktop screen DIP
+  // coordinates expected by Views MenuRunner.
+  return (base::i18n::IsRTL() ? anchor_rect.bottom_right()
+                              : anchor_rect.bottom_left()) +
+         container_bounds.OffsetFromOrigin();
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(OmniboxEverywhereUI)

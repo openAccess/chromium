@@ -6,6 +6,7 @@
 
 #include "components/sync/base/extensions_activity.h"
 #include "content/public/browser/browser_thread.h"
+#include "extensions/buildflags/buildflags.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/api/bookmarks/bookmarks_api_watcher.h"  // nogncheck
@@ -15,12 +16,10 @@
 
 using content::BrowserThread;
 
-namespace browser_sync {
-
 ExtensionsActivityMonitor::ExtensionsActivityMonitor(
     content::BrowserContext* context)
     : extensions_activity_(base::MakeRefCounted<syncer::ExtensionsActivity>()) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M163);
   // It would be nice if we could specify a Source for each specific function
   // we wanted to observe, but the actual function objects are allocated on
   // the fly so there is no reliable object to point to (same problem if we
@@ -33,13 +32,13 @@ ExtensionsActivityMonitor::ExtensionsActivityMonitor(
 }
 
 ExtensionsActivityMonitor::~ExtensionsActivityMonitor() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M163);
 }
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 void ExtensionsActivityMonitor::OnBookmarksApiInvoked(
     const ExtensionFunction* func) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M163);
   if (!func->extension()) {
     return;
   }
@@ -62,5 +61,3 @@ const scoped_refptr<syncer::ExtensionsActivity>&
 ExtensionsActivityMonitor::GetExtensionsActivity() {
   return extensions_activity_;
 }
-
-}  // namespace browser_sync

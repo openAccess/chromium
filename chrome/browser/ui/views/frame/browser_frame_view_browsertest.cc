@@ -15,9 +15,13 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/location_bar/custom_tab_bar_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
+#include "chrome/browser/ui/views/page_action/page_action_view.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
@@ -430,14 +434,18 @@ IN_PROC_BROWSER_TEST_F(BrowserFrameViewBrowserTest, DISABLED_SaveCardIcon) {
   nav_observer.Wait();
   offer_observer.Wait();
 
-  page_actions::PageActionViewInterface* page_action_interface =
-      app_browser_view_->toolbar_button_provider()->GetPageActionViewInterface(
-          kActionShowPaymentsBubbleOrPage);
-  ASSERT_TRUE(page_action_interface);
-  views::View* icon =
-      page_action_interface->GetIconLabelBubbleViewNotMigrated();
-  EXPECT_TRUE(GetAppFrameView()->Contains(icon));
-  EXPECT_TRUE(icon->GetVisible());
+  page_actions::PageActionTestAccessor page_action_accessor(
+      app_browser_view_->browser(), kActionShowPaymentsBubbleOrPage);
+  // TODO(crbug.com/562475756): In WebUI, the page action is rendered in the
+  // WebUI DOM rather than as a views::View descendant of BrowserFrameView.
+  if (!features::IsWebUILocationBarEnabled()) {
+    auto* icon = static_cast<page_actions::PageActionView*>(
+        app_browser_view_->toolbar_button_provider()
+            ->GetPageActionViewInterface(kActionShowPaymentsBubbleOrPage));
+    ASSERT_TRUE(icon);
+    EXPECT_TRUE(GetAppFrameView()->Contains(icon));
+  }
+  EXPECT_TRUE(page_action_accessor.GetVisible());
 }
 
 #if BUILDFLAG(IS_CHROMEOS)

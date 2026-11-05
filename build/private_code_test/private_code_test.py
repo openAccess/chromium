@@ -66,9 +66,9 @@ def _find_private_paths(linker_inputs, private_paths, root_out_dir):
 
 
 def _read_private_paths(path):
-    text = pathlib.Path(path).read_text()
+    text = pathlib.Path(path).read_text(encoding='utf-8')
 
-    # Check if .gclient_entries was not valid.  https://crbug.com/1427829
+    # Check if DEPS was not valid.  https://crbug.com/1427829
     if text.startswith('# ERROR: '):
         sys.stderr.write(text)
         sys.exit(1)
@@ -79,8 +79,8 @@ def _read_private_paths(path):
     ret = [p[4:] for p in text.splitlines() if p.startswith('src/')]
     if not ret:
         sys.stderr.write(f'No src/ paths found in {path}\n')
-        sys.stderr.write(f'This test should not be run on public bots.\n')
-        sys.stderr.write(f'File contents:\n')
+        sys.stderr.write('This test should not be run on public bots.\n')
+        sys.stderr.write('File contents:\n')
         sys.stderr.write(text)
         sys.exit(1)
 

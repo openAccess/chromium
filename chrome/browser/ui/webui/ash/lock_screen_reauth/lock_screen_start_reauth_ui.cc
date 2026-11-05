@@ -10,10 +10,9 @@
 #include "ash/constants/webui_url_constants.h"
 #include "ash/login/resources/grit/ash_login_strings.h"
 #include "ash/webui/common/trusted_types_util.h"
+#include "base/check_deref.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/webui/ash/lock_screen_reauth/lock_screen_reauth_handler.h"
 #include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
 #include "chrome/browser/ui/webui/metrics_handler.h"
@@ -25,7 +24,10 @@
 #include "chrome/grit/lock_screen_reauth_resources.h"
 #include "chrome/grit/lock_screen_reauth_resources_map.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
-#include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -34,31 +36,55 @@
 
 namespace ash {
 
+LockScreenStartReauthUIConfig::LockScreenStartReauthUIConfig(
+    PrefService* local_state,
+    const ApplicationLocaleStorage* application_locale_storage,
+    const policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash)
+    : WebUIConfig(content::kChromeUIScheme,
+                  ash::kChromeUILockScreenStartReauthHost),
+      local_state_(CHECK_DEREF(local_state)),
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      browser_policy_connector_ash_(CHECK_DEREF(browser_policy_connector_ash)) {
+}
+
+LockScreenStartReauthUIConfig::~LockScreenStartReauthUIConfig() = default;
+
 bool LockScreenStartReauthUIConfig::IsWebUIEnabled(
     content::BrowserContext* browser_context) {
   return IsLockScreenBrowserContext(browser_context);
 }
 
-LockScreenStartReauthUI::LockScreenStartReauthUI(content::WebUI* web_ui)
+std::unique_ptr<content::WebUIController>
+LockScreenStartReauthUIConfig::CreateWebUIController(content::WebUI* web_ui,
+                                                     const GURL& url) {
+  return std::make_unique<LockScreenStartReauthUI>(
+      &local_state_.get(), &application_locale_storage_.get(),
+      &browser_policy_connector_ash_.get(), web_ui);
+}
+
+LockScreenStartReauthUI::LockScreenStartReauthUI(
+    PrefService* local_state,
+    const ApplicationLocaleStorage* application_locale_storage,
+    const policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    content::WebUI* web_ui)
     : ui::WebDialogUI(web_ui) {
   Profile* profile = Profile::FromWebUI(web_ui);
   content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
-  const user_manager::User* user =
-      user_manager::UserManager::Get()->GetPrimaryUser();
   std::string email;
-  if (user) {
-    email = user->GetDisplayEmail();
+  if (const session_manager::Session* primary_session =
+          session_manager::SessionManager::Get()->GetPrimarySession()) {
+    const user_manager::User* user = user_manager::UserManager::Get()->FindUser(
+        primary_session->account_id());
+    email = CHECK_DEREF(user).GetDisplayEmail();
   }
 
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
       profile, ash::kChromeUILockScreenStartReauthHost);
   ash::EnableTrustedTypesCSP(source);
 
-  // TODO(crbug.com/489931062): Avoid using g_browser_process.
-  PrefService* local_state = g_browser_process->local_state();
-
-  auto main_handler =
-      std::make_unique<LockScreenReauthHandler>(local_state, email);
+  auto main_handler = std::make_unique<LockScreenReauthHandler>(
+      local_state, application_locale_storage, browser_policy_connector_ash,
+      email);
   main_handler_ = main_handler.get();
   web_ui->AddMessageHandler(std::move(main_handler));
   web_ui->AddMessageHandler(std::make_unique<MetricsHandler>());
@@ -133,7 +159,7 @@ LockScreenStartReauthUI::LockScreenStartReauthUI(content::WebUI* web_ui)
       IDR_LOCK_SCREEN_REAUTH_LOCK_SCREEN_REAUTH_APP_HTML);
 
   // Add OOBE and Gaia Authenticator resources
-  OobeUI::AddOobeComponents(source);
+  OobeUI::AddOobeComponents(CHECK_DEREF(local_state), source);
 }
 
 LockScreenStartReauthUI::~LockScreenStartReauthUI() = default;

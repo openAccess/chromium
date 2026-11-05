@@ -12,11 +12,11 @@
 #include "chrome/browser/ash/app_list/app_list_client_impl.h"
 #include "chrome/browser/ash/app_list/app_list_syncable_service_factory.h"
 #include "chrome/browser/ash/app_list/app_service/app_service_promise_app_item.h"
-#include "chrome/browser/ash/app_list/apps_collections_util.h"
 #include "chrome/browser/ash/app_list/chrome_app_list_model_updater.h"
 #include "chrome/browser/ash/app_list/reorder/app_list_reorder_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/app_icon_color_cache/app_icon_color_cache.h"
+#include "content/public/browser/navigation_controller.h"
 #include "extensions/browser/app_sorting.h"
 #include "extensions/browser/extension_system.h"
 #include "ui/display/screen.h"
@@ -103,23 +103,6 @@ ChromeAppListItem::CalculateDefaultPositionIfApplicable() {
   return syncer::StringOrdinal();
 }
 
-syncer::StringOrdinal
-ChromeAppListItem::CalculateDefaultPositionForModifiedOrder() {
-  TRACE_EVENT0("ui",
-               "ChromeAppListItem::CalculateDefaultPositionForModifiedOrder");
-  syncer::StringOrdinal page_ordinal =
-      syncer::StringOrdinal::CreateInitialOrdinal();
-  syncer::StringOrdinal launch_ordinal;
-  if (apps_util::GetModifiedOrdinals(id(), &launch_ordinal) &&
-      page_ordinal.IsValid() && launch_ordinal.IsValid()) {
-    // Set the default modified position if it exists.
-    return syncer::StringOrdinal(page_ordinal.ToInternalValue() +
-                                 launch_ordinal.ToInternalValue());
-  }
-
-  return syncer::StringOrdinal();
-}
-
 void ChromeAppListItem::Activate(int event_flags) {}
 
 const char* ChromeAppListItem::GetItemType() const {
@@ -164,7 +147,8 @@ AppListControllerDelegate* ChromeAppListItem::GetController() {
 
 void ChromeAppListItem::InitFromSync(
     const app_list::AppListSyncableService::SyncItem* sync_item) {
-  DCHECK(sync_item && sync_item->item_ordinal.IsValid());
+  CHECK(sync_item && sync_item->item_ordinal.IsValid(),
+        base::NotFatalUntil::M160);
   // An existing synced position exists, use that.
   SetPosition(sync_item->item_ordinal);
   // Only set the name from the sync item if it is empty.

@@ -71,18 +71,13 @@ android_resources("java_resources") {
 android_library("javatests") {
   testonly = true
 
-  sources = [
-    "java/src/org/chromium/components/browser_ui/share/ClipboardImageFileProviderUnitTest.java",
-    "java/src/org/chromium/components/browser_ui/share/ShareImageFileUtilsTest.java",
-  ]
+  sources = [ "java/src/org/chromium/components/browser_ui/share/ShareImageFileUtilsTest.java" ]
   deps = [
     ":constants_java",
     ":java",
     "//base:base_java",
     "//base:base_java_test_support",
     "//chrome/android:chrome_java",
-    "//components/browser_ui/notifications/android:utils_java",
-    "//content/public/test/android:content_java_test_support",
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/androidx:androidx_appcompat_appcompat_java",
     "//third_party/androidx:androidx_core_core_java",
@@ -92,5 +87,18 @@ android_library("javatests") {
     "//third_party/mockito:mockito_java",
     "//ui/android:ui_java",
     "//ui/android:ui_java_test_support",
+  ]
+}
+
+robolectric_library("junit") {
+  sources = [ "java/src/org/chromium/components/browser_ui/share/ClipboardImageFileProviderUnitTest.java" ]
+  deps = [
+    ":constants_java",
+    ":java",
+    "//base:base_java",
+    "//base:base_java_test_support",
+    "//base:base_junit_test_support",
+    "//third_party/junit",
+    "//ui/android:ui_java",
   ]
 }

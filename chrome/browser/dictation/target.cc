@@ -10,9 +10,11 @@
 #include "base/location.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/dictation/features.h"
+#include "chrome/browser/dictation/format_transcription.h"
 #include "content/public/browser/focused_node_details.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
 #include "ui/base/ime/ime_text_span.h"
 
 namespace dictation {
@@ -77,11 +79,23 @@ content::RenderWidgetHost* Target::GetRenderWidgetHost() const {
   return rfh ? rfh->GetRenderWidgetHost() : nullptr;
 }
 
+blink::mojom::DictationAgent* Target::GetDictationAgent() {
+  content::RenderFrameHost* rfh = GetRenderFrameHost();
+  if (!rfh) {
+    return nullptr;
+  }
+  if (!dictation_agent_.is_bound()) {
+    rfh->GetRemoteInterfaces()->GetInterface(
+        dictation_agent_.BindNewPipeAndPassReceiver());
+  }
+  return dictation_agent_.get();
+}
+
 void Target::SetComposition(const std::u16string& text, bool is_final) {
   QueuedOperation op{
       .type = is_final ? QueuedOperation::Type::kSetFinalComposition
                        : QueuedOperation::Type::kSetPartialComposition,
-      .text = text,
+      .text = FormatTextForInsertion(text),
   };
   if (is_waiting_on_operation_completion_) {
     // Intentionally overwrites any other pending operation.
@@ -97,7 +111,7 @@ void Target::CommitComposition(const std::u16string& text,
                                base::OnceClosure on_commit_complete) {
   QueuedOperation op{
       .type = QueuedOperation::Type::kCommitComposition,
-      .text = text,
+      .text = FormatTextForInsertion(text),
       .on_commit_complete = std::move(on_commit_complete),
   };
   if (is_waiting_on_operation_completion_) {
@@ -136,6 +150,14 @@ void Target::ExecuteSetComposition(const std::u16string& text,
     // composition, if any, but we'll need to handle this more robustly if we
     // want to show partial transcripts.
     paste_fallback_required_ = true;
+    if (last_sent_composition_.empty()) {
+      // Nothing has been composed yet, so there is no composition to cancel.
+      // Committing empty text here would delete any selected content as a
+      // separate edit, splitting the eventual paste across two undo steps.
+      // Instead, leave the selection intact so the paste replaces it in a
+      // single edit.
+      return;
+    }
     last_sent_composition_ = u"";
     CommitExternallySourcedComposition(u"",
                                        scoped_operation_complete.Release());
@@ -245,6 +267,27 @@ void Target::PasteIntoNode(const std::u16string& text) {
   if (content::RenderWidgetHost* rwh = GetRenderWidgetHost()) {
     rwh->PasteIntoNode(text, global_dom_node_id());
   }
+}
+
+std::optional<std::u16string_view> Target::GetTextPrecedingSelection() {
+  if (content::RenderWidgetHost* rwh = GetRenderWidgetHost()) {
+    return rwh->GetTextPrecedingSelection(global_dom_node_id());
+  }
+  return std::nullopt;
+}
+
+std::u16string Target::FormatTextForInsertion(const std::u16string& text) {
+  if (text.empty()) {
+    return text;
+  }
+
+  // Snapshot the preceding text before the first composition replaces the
+  // selection.
+  if (!preceding_text_.has_value()) {
+    preceding_text_ = std::u16string(GetTextPrecedingSelection().value_or(u""));
+  }
+
+  return FormatTranscription(text, *preceding_text_, selected_text_);
 }
 
 }  // namespace dictation

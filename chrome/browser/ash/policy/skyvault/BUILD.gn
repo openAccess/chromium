@@ -41,23 +41,20 @@ static_library("skyvault") {
     "waitable_scoped_temp_dir.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash/constants",
     "//ash/public/cpp",
     "//ash/resources/vector_icons",
     "//ash/strings",
     "//base",
+    "//chrome/app:generated_resources",
     "//chrome/browser:browser_process",
+    "//chrome/browser/ash/cloud_upload",
     "//chrome/browser/ash/drive",
     "//chrome/browser/ash/file_manager",
     "//chrome/browser/ash/guest_os/public",
     "//chrome/browser/ash/policy/core",
     "//chrome/browser/chromeos/extensions/login_screen/login/cleanup",
-    "//chrome/browser/chromeos/upload_office_to_cloud",
-    "//chrome/browser/notifications",
-    "//chrome/browser/notifications:system_notification_helper",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/profiles:profile_manager",
     "//chrome/common:chrome_features",
@@ -77,11 +74,13 @@ static_library("skyvault") {
     "//components/keyed_service/core",
     "//components/prefs",
     "//components/strings:components_strings",
+    "//components/user_manager",
     "//components/vector_icons",
     "//content/public/browser",
     "//storage/browser",
     "//ui/base",
     "//ui/chromeos/styles:cros_tokens_color_mappings",
+    "//ui/message_center",
     "//ui/message_center/public/cpp",
   ]
 
@@ -90,10 +89,6 @@ static_library("skyvault") {
     "//chrome/browser/ash/guest_os/public",
     "//chrome/browser/ash/policy/core",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("unit_tests") {
@@ -101,6 +96,7 @@ source_set("unit_tests") {
 
   sources = [
     "local_files_migration_manager_unittest.cc",
+    "odfs_file_deleter_unittest.cc",
     "signin_notification_helper_unittest.cc",
     "skyvault_capture_upload_notification_unittest.cc",
     "skyvault_rename_handler_unittest.cc",
@@ -110,19 +106,23 @@ source_set("unit_tests") {
     ":skyvault",
     "//base/test:test_support",
     "//chrome/browser/ash/file_manager",
+    "//chrome/browser/ash/login/users:test_support",
     "//chrome/browser/ash/policy/skyvault/test:test_support",
-    "//chrome/browser/notifications:system_notification_helper",
     "//chrome/browser/profiles:profile",
     "//chrome/test:test_support",
+    "//chrome/test/base:browser_with_test_window_test",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/dbus/userdataauth",
     "//chromeos/ash/components/dbus/userdataauth:test_support",
     "//chromeos/ash/components/disks:test_support",
     "//chromeos/ash/components/system",
     "//components/download/public/common:test_support",
+    "//components/user_manager",
     "//content/test:test_support",
     "//storage/browser",
     "//testing/gtest",
+    "//ui/message_center",
   ]
 }
 
@@ -159,7 +159,6 @@ source_set("browser_tests") {
     "//chrome/browser/chromeos/extensions/login_screen/login/cleanup",
     "//chrome/browser/policy:test_support",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/webui/ash/cloud_upload",
     "//chrome/browser/ui/webui/ash/skyvault",
     "//chrome/common",
@@ -167,6 +166,7 @@ source_set("browser_tests") {
     "//chrome/common:constants",
     "//chrome/test:test_support",
     "//chrome/test:test_support_ui",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/dbus/userdataauth",
     "//chromeos/ash/components/dbus/userdataauth:test_support",
     "//chromeos/ash/components/drivefs/mojom",
@@ -176,6 +176,7 @@ source_set("browser_tests") {
     "//components/policy:generated",
     "//components/policy/core/common",
     "//components/prefs",
+    "//components/user_manager",
     "//content/public/browser",
     "//content/test:test_support",
     "//mojo/public/cpp/bindings",
@@ -183,6 +184,8 @@ source_set("browser_tests") {
     "//storage/browser",
     "//testing/gmock",
     "//testing/gtest",
+    "//ui/message_center",
+    "//ui/message_center:test_support",
     "//ui/message_center/public/cpp",
   ]
 }

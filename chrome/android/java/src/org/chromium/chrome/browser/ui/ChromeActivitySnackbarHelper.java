@@ -25,6 +25,7 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetUtils;
 import org.chromium.ui.edge_to_edge.EdgeToEdgeSupplier.ChangeObserver;
 
 import java.util.function.Supplier;
@@ -44,7 +45,7 @@ public class ChromeActivitySnackbarHelper implements ChangeObserver {
             this::onEdgeToEdgeControllerChanged;
     private final Activity mActivity;
     private final BottomSheetController mBottomSheetController;
-    private final Supplier<BottomControlsLayer> mBottomControlsLayerSupplier;
+    private final Supplier<@Nullable BottomControlsLayer> mBottomControlsLayerSupplier;
     private final BottomSheetObserver mBottomSheetObserver =
             new BottomSheetObserver() {
                 @Override
@@ -72,7 +73,7 @@ public class ChromeActivitySnackbarHelper implements ChangeObserver {
                             content != null && content.allowInSheetContentSnackbars();
                     assert content == null
                                     || content.allowInSheetContentSnackbars()
-                                    || content.hasCustomScrimLifecycle()
+                                    || BottomSheetUtils.isSheetNonModal(content)
                             : "BottomSheetContent can only prevent out-of-sheet snackbars if it has"
                                     + " a custom scrim lifecycle.";
 
@@ -128,7 +129,7 @@ public class ChromeActivitySnackbarHelper implements ChangeObserver {
             Activity activity,
             MonotonicObservableSupplier<EdgeToEdgeController> edgeToEdgeControllerSupplier,
             BottomSheetController bottomSheetController,
-            Supplier<BottomControlsLayer> bottomControlsLayerSupplier) {
+            Supplier<@Nullable BottomControlsLayer> bottomControlsLayerSupplier) {
         mActivity = activity;
         mEdgeToEdgeControllerSupplier = edgeToEdgeControllerSupplier;
         mBottomSheetController = bottomSheetController;

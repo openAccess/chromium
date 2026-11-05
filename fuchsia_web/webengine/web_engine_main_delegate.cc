@@ -11,6 +11,7 @@
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/fuchsia/intl_profile_watcher.h"
+#include "base/fuchsia/scheduler.h"
 #include "base/i18n/icubridge/default_icu_locale.h"
 #include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
@@ -48,7 +49,7 @@ void InitializeResources() {
   // Initialize the process-global ResourceBundle, and manually load the
   // WebEngine locale-agnostic resources.
   const std::string locale = ui::ResourceBundle::InitSharedInstanceWithLocale(
-      base::i18n::GetConfiguredLocale(), nullptr,
+      std::string(base::i18n::GetDefaultIcuLocale().tag_string()), nullptr,
       ui::ResourceBundle::DO_NOT_LOAD_COMMON_RESOURCES);
   ui::SetSupportedResourceScaleFactors({ui::k100Percent});
   ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
@@ -88,6 +89,25 @@ std::optional<int> WebEngineMainDelegate::BasicStartupComplete() {
       base::CommandLine::ForCurrentProcess()->GetSwitchValueNative(
           switches::kCorsExemptHeaders),
       ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY));
+
+  if (command_line->HasSwitch(switches::kUseSchedulerRoles)) {
+    const std::string mode =
+        command_line->GetSwitchValueASCII(switches::kUseSchedulerRoles);
+    if (mode == "unused") {
+      base::SetSchedulerRoles(base::SchedulerRoles::kUnused);
+    } else if (mode == "ignore-missing") {
+      base::SetSchedulerRoles(base::SchedulerRoles::kIgnoreMissing);
+    } else if (mode == "error-missing") {
+      base::SetSchedulerRoles(base::SchedulerRoles::kErrorMissing);
+    } else if (mode == "require") {
+      base::SetSchedulerRoles(base::SchedulerRoles::kRequire);
+    } else {
+      LOG(FATAL) << "Invalid --" << switches::kUseSchedulerRoles
+                 << " value: " << mode;
+    }
+  } else {
+    base::SetSchedulerRoles(base::SchedulerRoles::kErrorMissing);
+  }
 
   return std::nullopt;
 }

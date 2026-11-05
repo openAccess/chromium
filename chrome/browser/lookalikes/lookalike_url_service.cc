@@ -52,9 +52,10 @@ std::vector<DomainInfo> UpdateEngagedSitesOnWorkerThread(
   std::vector<DomainInfo> new_engaged_sites;
   new_engaged_sites.reserve(details.size());
   for (const site_engagement::mojom::SiteEngagementDetails& detail : details) {
-    DCHECK(detail.origin.SchemeIsHTTPOrHTTPS());
-    DCHECK(site_engagement::SiteEngagementService::IsEngagementAtLeast(
-        detail.total_score, blink::mojom::EngagementLevel::MEDIUM));
+    CHECK(detail.origin.SchemeIsHTTPOrHTTPS(), base::NotFatalUntil::M161);
+    CHECK(site_engagement::SiteEngagementService::IsEngagementAtLeast(
+              detail.total_score, blink::mojom::EngagementLevel::MEDIUM),
+          base::NotFatalUntil::M161);
     const DomainInfo domain_info = lookalikes::GetDomainInfo(detail.origin);
     if (domain_info.domain_and_registry.empty()) {
       continue;
@@ -117,7 +118,7 @@ void LookalikeUrlService::ForceUpdateEngagedSites(
 void LookalikeUrlService::OnUpdateEngagedSitesCompleted(
     std::vector<DomainInfo> new_engaged_sites) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(update_in_progress_);
+  CHECK(update_in_progress_, base::NotFatalUntil::M161);
   TRACE_EVENT0("navigation",
                "LookalikeUrlService::OnUpdateEngagedSitesCompleted");
   engaged_sites_.swap(new_engaged_sites);
@@ -142,6 +143,54 @@ void LookalikeUrlService::SetClockForTesting(base::Clock* clock) {
   clock_ = clock;
 }
 
+bool LookalikeUrlService::NeedsEngagedSitesForCheck(const GURL& url) const {
+  return !ShouldStopCheckingBeforeEngagedSites(
+      url, /*stop_checking_on_allowlist_or_ignore=*/true, /*result=*/nullptr);
+}
+
+bool LookalikeUrlService::ShouldStopCheckingBeforeEngagedSites(
+    const GURL& url,
+    bool stop_checking_on_allowlist_or_ignore,
+    LookalikeUrlCheckResult* result) const {
+  // Don't warn on non-HTTP(s) sites or non-public domains.
+  if (!url.SchemeIsHTTPOrHTTPS() || net::HostStringIsLocalhost(url.GetHost()) ||
+      net::IsHostnameNonUnique(url.GetHost()) ||
+      lookalikes::GetETLDPlusOne(url.GetHost()).empty() ||
+      lookalikes::IsSafeTLD(url.GetHost())) {
+    return true;
+  }
+
+  if (IsIgnored(url)) {
+    if (result) {
+      result->is_warning_previously_dismissed = true;
+    }
+    if (stop_checking_on_allowlist_or_ignore) {
+      return true;
+    }
+  }
+
+  // When there's no proto (like at browser start), fail-safe and don't block.
+  if (!lookalikes::GetSafetyTipsRemoteConfigProto()) {
+    return true;
+  }
+
+  // If the host is allowlisted by policy, don't show any warning.
+  if (lookalikes::IsAllowedByEnterprisePolicy(pref_service_, url)) {
+    if (result) {
+      result->is_allowlisted = true;
+    }
+    if (stop_checking_on_allowlist_or_ignore) {
+      return true;
+    }
+  }
+
+  if (url_formatter::IsTopDomain(url)) {
+    return true;
+  }
+
+  return false;
+}
+
 LookalikeUrlService::LookalikeUrlCheckResult
 LookalikeUrlService::CheckUrlForLookalikes(
     const GURL& url,
@@ -149,38 +198,12 @@ LookalikeUrlService::CheckUrlForLookalikes(
     bool stop_checking_on_allowlist_or_ignore) const {
   LookalikeUrlCheckResult result;
 
-  // Don't warn on non-HTTP(s) sites or non-public domains.
-  if (!url.SchemeIsHTTPOrHTTPS() || net::HostStringIsLocalhost(url.GetHost()) ||
-      net::IsHostnameNonUnique(url.GetHost()) ||
-      lookalikes::GetETLDPlusOne(url.GetHost()).empty() ||
-      lookalikes::IsSafeTLD(url.GetHost())) {
+  if (ShouldStopCheckingBeforeEngagedSites(
+          url, stop_checking_on_allowlist_or_ignore, &result)) {
     return result;
   }
 
-  if (IsIgnored(url)) {
-    result.is_warning_previously_dismissed = true;
-    if (stop_checking_on_allowlist_or_ignore) {
-      return result;
-    }
-  }
-
-  // When there's no proto (like at browser start), fail-safe and don't block.
   const auto* proto = lookalikes::GetSafetyTipsRemoteConfigProto();
-  if (!proto) {
-    return result;
-  }
-
-  // If the host is allowlisted by policy, don't show any warning.
-  if (lookalikes::IsAllowedByEnterprisePolicy(pref_service_, url)) {
-    result.is_allowlisted = true;
-    if (stop_checking_on_allowlist_or_ignore) {
-      return result;
-    }
-  }
-
-  if (url_formatter::IsTopDomain(url)) {
-    return result;
-  }
 
   // GetDomainInfo() is expensive, so do possible early-abort checks first.
   base::TimeTicks get_domain_info_start = base::TimeTicks::Now();
@@ -206,7 +229,7 @@ LookalikeUrlService::CheckUrlForLookalikes(
   std::string matched_domain;
   if (GetMatchingDomain(navigated_domain, engaged_sites, in_target_allowlist,
                         proto, &matched_domain, &result.match_type)) {
-    DCHECK(!matched_domain.empty());
+    CHECK(!matched_domain.empty(), base::NotFatalUntil::M161);
     result.suggested_url =
         GetSuggestedURL(result.match_type, url, matched_domain);
 
@@ -245,7 +268,7 @@ void LookalikeUrlService::CheckSafetyTipStatus(
     const GURL& url,
     content::WebContents* web_contents,
     SafetyTipCheckCallback callback) {
-  DCHECK(url.SchemeIsHTTPOrHTTPS());
+  CHECK(url.SchemeIsHTTPOrHTTPS(), base::NotFatalUntil::M161);
   if (EngagedSitesNeedUpdating()) {
     ForceUpdateEngagedSites(base::BindOnce(
         &LookalikeUrlService::CheckSafetyTipStatusWithEngagedSites,

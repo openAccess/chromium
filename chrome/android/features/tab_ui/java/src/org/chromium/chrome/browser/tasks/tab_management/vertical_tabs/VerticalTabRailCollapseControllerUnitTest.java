@@ -7,11 +7,12 @@ package org.chromium.chrome.browser.tasks.tab_management.vertical_tabs;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -25,97 +26,69 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
-import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
-import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabListProperties.RailCollapseState;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
+import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils.WindowWidthBoundary;
+import org.chromium.ui.base.WindowAndroid;
 
 /** Unit tests for {@link VerticalTabRailCollapseController}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class VerticalTabRailCollapseControllerUnitTest {
+    private static final String COLLAPSED_HISTOGRAM = "Android.VerticalTabs.RailCollapsed";
+
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private VerticalTabRailCollapseController.RailCollapseListener mMockListener;
-    @Mock private Callback<@RailCollapseState Integer> mMockFallbackCallback;
+    @Mock private VerticalTabRailCollapseController.RailStateChangeDelegate mMockDelegate;
+    @Mock private Callback<@RailCollapseState Integer> mMockSetRailStateCallback;
+    @Mock private Callback<Boolean> mMockCollapseButtonEnabledCallback;
+    @Mock private WindowAndroid mMockWindowAndroid;
 
     private VerticalTabRailCollapseController mController;
 
     @Before
     public void setUp() {
-        mController = new VerticalTabRailCollapseController(mMockFallbackCallback);
+        mController = createController();
+    }
+
+    private VerticalTabRailCollapseController createController() {
+        return new VerticalTabRailCollapseController(
+                mMockSetRailStateCallback, mMockCollapseButtonEnabledCallback, mMockWindowAndroid);
+    }
+
+    private void hoverInsideRail() {
+        mController.setHovering(true);
+    }
+
+    private void hoverOutsideRail() {
+        mController.setHovering(false);
     }
 
     @After
     public void tearDown() {
-        ChromeSharedPreferences.getInstance()
-                .removeKey(ChromePreferenceKeys.VERTICAL_TABS_COLLAPSED);
+        VerticalTabUtils.resetSharedPrefsForTesting();
     }
 
     @Test
-    @SmallTest
     public void testInitialState() {
-        assertEquals(RailCollapseState.EXPANDED, mController.getRailCollapseStateByUser());
+        assertFalse(mController.isCollapsedByUserForTesting());
         assertEquals(
                 RailCollapseState.EXPANDED, (int) mController.getRailCollapseStateSupplier().get());
-        assertTrue(mController.isCollapseButtonEnabled());
+        assertEquals(RailCollapseState.EXPANDED, mController.getEffectiveRailCollapseState());
+        assertFalse(mController.isForcedCollapsed());
     }
 
     @Test
-    @SmallTest
     public void testInitialState_RestoredFromSharedPreferences() {
         VerticalTabUtils.setRailCollapsedInSharedPref(true);
-        VerticalTabRailCollapseController controller =
-                new VerticalTabRailCollapseController(mMockFallbackCallback);
-        assertEquals(RailCollapseState.COLLAPSED, controller.getRailCollapseStateByUser());
+        VerticalTabRailCollapseController controller = createController();
+        assertTrue(controller.isCollapsedByUserForTesting());
         assertEquals(
                 RailCollapseState.COLLAPSED, (int) controller.getRailCollapseStateSupplier().get());
+        assertEquals(RailCollapseState.COLLAPSED, controller.getEffectiveRailCollapseState());
+        assertFalse(controller.isForcedCollapsed());
     }
 
     @Test
-    @SmallTest
-    public void testDispatchRailCollapseStateUpdateSupplierValue() {
-        assertEquals(
-                RailCollapseState.EXPANDED, (int) mController.getRailCollapseStateSupplier().get());
-
-        mController.setRailCollapseStateSupplierValue(RailCollapseState.COLLAPSED);
-        assertEquals(
-                RailCollapseState.COLLAPSED,
-                (int) mController.getRailCollapseStateSupplier().get());
-
-        mController.setRailCollapseStateSupplierValue(RailCollapseState.EXPANDED);
-        assertEquals(
-                RailCollapseState.EXPANDED, (int) mController.getRailCollapseStateSupplier().get());
-    }
-
-    @Test
-    @SmallTest
-    public void testDispatchRailCollapseState_Update_CallsCallback() {
-        mController.dispatchRailCollapseStateUpdate(RailCollapseState.COLLAPSED);
-        verify(mMockFallbackCallback).onResult(RailCollapseState.COLLAPSED);
-    }
-
-    @Test
-    @SmallTest
-    public void testGetEffectiveRailCollapseState_NarrowVsWide() {
-        mController.setRailCollapseStateByUser(RailCollapseState.EXPANDED);
-        assertEquals(
-                RailCollapseState.COLLAPSED,
-                mController.getEffectiveRailCollapseState(/* isNarrow= */ true));
-        assertEquals(
-                RailCollapseState.EXPANDED,
-                mController.getEffectiveRailCollapseState(/* isNarrow= */ false));
-
-        mController.setRailCollapseStateByUser(RailCollapseState.COLLAPSED);
-        assertEquals(
-                RailCollapseState.COLLAPSED,
-                mController.getEffectiveRailCollapseState(/* isNarrow= */ true));
-        assertEquals(
-                RailCollapseState.COLLAPSED,
-                mController.getEffectiveRailCollapseState(/* isNarrow= */ false));
-    }
-
-    @Test
-    @SmallTest
     public void testToggleCollapseState_PersistsToSharedPreferences() {
         mController.toggleCollapseState();
         assertTrue(VerticalTabUtils.isRailCollapsedFromSharedPref());
@@ -125,122 +98,492 @@ public class VerticalTabRailCollapseControllerUnitTest {
     }
 
     @Test
-    @SmallTest
-    public void testToggleCollapseState_WithListener() {
-        mController.setRailCollapseListener(mMockListener);
+    public void testToggleCollapseState_WithDelegate() {
+        mController.setRailStateChangeDelegate(mMockDelegate);
 
         HistogramWatcher watcher =
-                HistogramWatcher.newSingleRecordWatcher("Android.VerticalTabs.RailCollapsed", true);
+                HistogramWatcher.newSingleRecordWatcher(COLLAPSED_HISTOGRAM, true);
         mController.toggleCollapseState();
         watcher.assertExpected();
 
-        verify(mMockListener)
-                .onRailCollapseStateChangeRequestedByUser(
-                        RailCollapseState.EXPANDED, RailCollapseState.COLLAPSED);
-        verify(mMockFallbackCallback, never()).onResult(anyInt());
+        verify(mMockDelegate).handleUserRequestedStateChange();
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
     }
 
     @Test
-    @SmallTest
-    public void testToggleCollapseState_WithoutListener_Fallback() {
+    public void testToggleCollapseState_WithoutDelegate_Fallback() {
         HistogramWatcher watcher =
-                HistogramWatcher.newSingleRecordWatcher("Android.VerticalTabs.RailCollapsed", true);
+                HistogramWatcher.newSingleRecordWatcher(COLLAPSED_HISTOGRAM, true);
         mController.toggleCollapseState();
         watcher.assertExpected();
 
-        verify(mMockFallbackCallback).onResult(RailCollapseState.COLLAPSED);
+        verify(mMockSetRailStateCallback).onResult(RailCollapseState.COLLAPSED);
     }
 
     @Test
-    @SmallTest
-    public void testToggleCollapseState_Disabled() {
-        mController.setRailCollapseListener(mMockListener);
-        mController.setCollapseButtonEnabled(false);
+    public void testToggleCollapseState_NotifiesDelegateOnEachToggle() {
+        mController.setRailStateChangeDelegate(mMockDelegate);
+
+        mController.toggleCollapseState();
+        assertTrue(mController.isCollapsedByUserForTesting());
+        verify(mMockDelegate).handleUserRequestedStateChange();
+
+        mController.toggleCollapseState();
+        assertFalse(mController.isCollapsedByUserForTesting());
+        verify(mMockDelegate, times(2)).handleUserRequestedStateChange();
+    }
+
+    @Test
+    public void testToggleCollapseState_DefersPublishUntilApplied() {
+        mController.setRailStateChangeDelegate(mMockDelegate);
 
         mController.toggleCollapseState();
 
-        verify(mMockListener, never()).onRailCollapseStateChangeRequestedByUser(anyInt(), anyInt());
-        verify(mMockFallbackCallback, never()).onResult(anyInt());
-    }
+        // The delegate drives the Side UI transition, so the applied state is unchanged so far.
+        assertEquals(
+                RailCollapseState.EXPANDED, (int) mController.getRailCollapseStateSupplier().get());
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
 
-    @Test
-    @SmallTest
-    public void testExpandOrCollapseOnHover_ValidTransitions() {
-        mController.setRailCollapseListener(mMockListener);
-        mController.setRailCollapseStateByUser(RailCollapseState.COLLAPSED);
-        mController.setRailCollapseStateSupplierValue(RailCollapseState.COLLAPSED);
-
-        // Hover enter: COLLAPSED -> EXPANDED_FOR_HOVERING
-        mController.expandOrCollapseOnHover(RailCollapseState.EXPANDED_FOR_HOVERING);
-        verify(mMockListener)
-                .onRailCollapseStateChangeRequestedByUser(
-                        RailCollapseState.COLLAPSED, RailCollapseState.EXPANDED_FOR_HOVERING);
-
-        // Hover exit: EXPANDED_FOR_HOVERING -> COLLAPSED
-        mController.setRailCollapseStateSupplierValue(RailCollapseState.EXPANDED_FOR_HOVERING);
-        mController.expandOrCollapseOnHover(RailCollapseState.COLLAPSED);
-        verify(mMockListener)
-                .onRailCollapseStateChangeRequestedByUser(
-                        RailCollapseState.EXPANDED_FOR_HOVERING, RailCollapseState.COLLAPSED);
-    }
-
-    @Test
-    @SmallTest
-    public void testExpandOrCollapseOnHover_InvalidTransitions() {
-        mController.setRailCollapseListener(mMockListener);
-        mController.setRailCollapseStateByUser(RailCollapseState.EXPANDED);
-
-        // Hover request when user preference is EXPANDED should be ignored
-        mController.expandOrCollapseOnHover(RailCollapseState.EXPANDED_FOR_HOVERING);
-        verify(mMockListener, never()).onRailCollapseStateChangeRequestedByUser(anyInt(), anyInt());
-    }
-
-    @Test
-    @SmallTest
-    public void testRequestRailCollapseStateChange_NoOpIfSameState() {
-        mController.setRailCollapseListener(mMockListener);
-        mController.requestRailCollapseStateChangeByUser(
-                RailCollapseState.EXPANDED, RailCollapseState.EXPANDED);
-
-        verify(mMockListener, never()).onRailCollapseStateChangeRequestedByUser(anyInt(), anyInt());
-        verify(mMockFallbackCallback, never()).onResult(anyInt());
-    }
-
-    @Test
-    @SmallTest
-    public void testRequestRailCollapseStateChange_UpdateStateByUser() {
-        mController.setRailCollapseListener(mMockListener);
-        mController.requestRailCollapseStateChangeByUser(
-                RailCollapseState.EXPANDED, RailCollapseState.COLLAPSED);
-        assertEquals(RailCollapseState.COLLAPSED, mController.getRailCollapseStateByUser());
-        verify(mMockListener)
-                .onRailCollapseStateChangeRequestedByUser(
-                        RailCollapseState.EXPANDED, RailCollapseState.COLLAPSED);
-
-        mController.requestRailCollapseStateChangeByUser(
-                RailCollapseState.COLLAPSED, RailCollapseState.EXPANDED_FOR_HOVERING);
+        mController.applyEffectiveState();
 
         assertEquals(
-                RailCollapseState.EXPANDED_FOR_HOVERING, mController.getRailCollapseStateByUser());
-        verify(mMockListener)
-                .onRailCollapseStateChangeRequestedByUser(
-                        RailCollapseState.COLLAPSED, RailCollapseState.EXPANDED_FOR_HOVERING);
-
-        mController.requestRailCollapseStateChangeByUser(
-                RailCollapseState.COLLAPSED, RailCollapseState.EXPANDED);
-        assertEquals(RailCollapseState.EXPANDED, mController.getRailCollapseStateByUser());
-        verify(mMockListener)
-                .onRailCollapseStateChangeRequestedByUser(
-                        RailCollapseState.COLLAPSED, RailCollapseState.EXPANDED);
+                RailCollapseState.COLLAPSED,
+                (int) mController.getRailCollapseStateSupplier().get());
+        verify(mMockSetRailStateCallback).onResult(RailCollapseState.COLLAPSED);
     }
 
     @Test
-    @SmallTest
-    public void testIsExpanded() {
-        assertTrue(VerticalTabRailCollapseController.isExpanded(RailCollapseState.EXPANDED));
-        assertTrue(
-                VerticalTabRailCollapseController.isExpanded(
-                        RailCollapseState.EXPANDED_FOR_HOVERING));
-        assertFalse(VerticalTabRailCollapseController.isExpanded(RailCollapseState.COLLAPSED));
+    public void testToggleCollapseState_ClearsHover() {
+        mController.toggleCollapseState();
+        hoverInsideRail();
+        assertEquals(
+                RailCollapseState.EXPANDED_FOR_HOVERING,
+                mController.getEffectiveRailCollapseState());
+
+        // Pinning the hover-expanded rail expands it for real.
+        mController.toggleCollapseState();
+        assertFalse(mController.isCollapsedByUserForTesting());
+        assertEquals(RailCollapseState.EXPANDED, mController.getEffectiveRailCollapseState());
+
+        // Collapsing again ignores the still-hovering pointer.
+        mController.toggleCollapseState();
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+    }
+
+    @Test
+    public void testToggleCollapseState_Disabled() {
+        mController.setRailStateChangeDelegate(mMockDelegate);
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
+        // The forced-collapse transition itself applies state; only the toggle is under test here.
+        clearInvocations(
+                (Callback<?>) mMockSetRailStateCallback,
+                (Callback<?>) mMockCollapseButtonEnabledCallback);
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder().expectNoRecords(COLLAPSED_HISTOGRAM).build();
+        mController.toggleCollapseState();
+        watcher.assertExpected();
+
+        verify(mMockDelegate, never()).handleUserRequestedStateChange();
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
+    }
+
+    @Test
+    public void testHover_ValidTransitions() {
+        // No delegate yet, so this applies the effective state (supplier becomes COLLAPSED).
+        mController.toggleCollapseState();
+        mController.setRailStateChangeDelegate(mMockDelegate);
+
+        // Hover enter: COLLAPSED -> EXPANDED_FOR_HOVERING
+        hoverInsideRail();
+        assertEquals(
+                RailCollapseState.EXPANDED_FOR_HOVERING,
+                mController.getEffectiveRailCollapseState());
+        verify(mMockDelegate).handleUserRequestedStateChange();
+
+        // Hover exit: EXPANDED_FOR_HOVERING -> COLLAPSED
+        hoverOutsideRail();
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+        verify(mMockDelegate, times(2)).handleUserRequestedStateChange();
+    }
+
+    @Test
+    public void testHover_InvalidTransitions() {
+        mController.setRailStateChangeDelegate(mMockDelegate);
+        // User preference defaults to EXPANDED.
+
+        // Hover request when user preference is EXPANDED should be ignored
+        hoverInsideRail();
+        verify(mMockDelegate, never()).handleUserRequestedStateChange();
+    }
+
+    @Test
+    public void testExpandOnHoverSettingChanged_RequestsUpdateWhenStateUnchanged() {
+        mController.toggleCollapseState();
+        mController.setRailStateChangeDelegate(mMockDelegate);
+
+        // The collapsed rail stays collapsed, but Side UI is still updated, as the setting changes
+        // whether the rail can be manually resized.
+        mController.onExpandOnHoverSettingChanged();
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+        verify(mMockDelegate).handleUserRequestedStateChange();
+    }
+
+    @Test
+    public void testExpandOnHoverSettingChanged_ClearsHover() {
+        mController.toggleCollapseState();
+        hoverInsideRail();
+        assertEquals(
+                RailCollapseState.EXPANDED_FOR_HOVERING,
+                mController.getEffectiveRailCollapseState());
+        mController.setRailStateChangeDelegate(mMockDelegate);
+
+        mController.onExpandOnHoverSettingChanged();
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+        verify(mMockDelegate).handleUserRequestedStateChange();
+    }
+
+    @Test
+    public void testHover_HoverEnterTrackedWhileForcedCollapsed() {
+        mController.toggleCollapseState();
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
+        mController.setRailStateChangeDelegate(mMockDelegate);
+        clearInvocations(
+                (Callback<?>) mMockSetRailStateCallback,
+                (Callback<?>) mMockCollapseButtonEnabledCallback);
+
+        // The rail cannot expand in a narrow window, so the hover enter changes nothing yet.
+        hoverInsideRail();
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+        verify(mMockDelegate, never()).handleUserRequestedStateChange();
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
+
+        // The hover was still recorded: widening the window expands the rail for hovering.
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FULLY_EXPANDABLE);
+        assertEquals(
+                RailCollapseState.EXPANDED_FOR_HOVERING,
+                mController.getEffectiveRailCollapseState());
+    }
+
+    @Test
+    public void testHover_HoverExitTrackedWhileForcedCollapsed() {
+        mController.toggleCollapseState();
+        hoverInsideRail();
+        assertEquals(
+                RailCollapseState.EXPANDED_FOR_HOVERING,
+                mController.getEffectiveRailCollapseState());
+
+        // The window narrows: the rail is forced collapsed, and the pointer leaves the rail.
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
+        hoverOutsideRail();
+
+        // The hover exit must not be dropped: widening the window keeps the rail collapsed.
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FULLY_EXPANDABLE);
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+    }
+
+    @Test
+    public void testSetWindowWidthBoundary_AppliesEffectiveStateOnChangeOnly() {
+        // No-op: already not forced collapsed.
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FULLY_EXPANDABLE);
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
+
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+        assertTrue(mController.isForcedCollapsed());
+        verify(mMockSetRailStateCallback).onResult(RailCollapseState.COLLAPSED);
+        verify(mMockCollapseButtonEnabledCallback).onResult(false);
+
+        mController.setWindowWidthBoundary(WindowWidthBoundary.DYNAMIC_EXPANDABLE);
+        assertEquals(RailCollapseState.EXPANDED, mController.getEffectiveRailCollapseState());
+        assertFalse(mController.isForcedCollapsed());
+        verify(mMockSetRailStateCallback).onResult(RailCollapseState.EXPANDED);
+        verify(mMockCollapseButtonEnabledCallback).onResult(true);
+    }
+
+    @Test
+    public void testSetWindowWidthBoundary_NotShowableAlsoForcesCollapse() {
+        mController.setWindowWidthBoundary(WindowWidthBoundary.NOT_SHOWABLE);
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+        assertTrue(mController.isForcedCollapsed());
+    }
+
+    @Test
+    public void testGetEffectiveRailCollapseState_NarrowVsWide() {
+        // User preference EXPANDED.
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FULLY_EXPANDABLE);
+        assertEquals(RailCollapseState.EXPANDED, mController.getEffectiveRailCollapseState());
+
+        // User preference COLLAPSED.
+        mController.toggleCollapseState();
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FULLY_EXPANDABLE);
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+    }
+
+    @Test
+    public void testApplyEffectiveState_CallsCallbacksAndPublishesSupplier() {
+        mController.applyEffectiveState();
+        verify(mMockSetRailStateCallback).onResult(RailCollapseState.EXPANDED);
+        verify(mMockCollapseButtonEnabledCallback).onResult(true);
+        assertEquals(
+                RailCollapseState.EXPANDED, (int) mController.getRailCollapseStateSupplier().get());
+
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
+        assertEquals(
+                RailCollapseState.COLLAPSED,
+                (int) mController.getRailCollapseStateSupplier().get());
+    }
+
+    @Test
+    public void testDestroy_ClearsDelegateAndFallsBackToApplying() {
+        mController.setRailStateChangeDelegate(mMockDelegate);
+        mController.destroy();
+
+        mController.toggleCollapseState();
+
+        verify(mMockDelegate, never()).handleUserRequestedStateChange();
+        verify(mMockSetRailStateCallback).onResult(RailCollapseState.COLLAPSED);
+    }
+
+    @Test
+    public void testObservesWindowUntilDestroyed() {
+        verify(mMockWindowAndroid).addActivityStateObserver(mController);
+        mController.destroy();
+        verify(mMockWindowAndroid).removeActivityStateObserver(mController);
+    }
+
+    @Test
+    public void testTopResumed_WritesThisWindowPreferenceToSharedPrefs() {
+        mController.toggleCollapseState();
+
+        // Another window becomes active and persists its own preference.
+        VerticalTabUtils.setRailCollapsedInSharedPref(false);
+        // This window keeps its own preference in memory.
+        assertTrue(mController.isCollapsedByUserForTesting());
+
+        // Losing top resumed does not write.
+        mController.onActivityTopResumedChanged(false);
+        assertFalse(VerticalTabUtils.isRailCollapsedFromSharedPref());
+
+        // Becoming top resumed writes this window's preference, so a new window inherits it.
+        mController.onActivityTopResumedChanged(true);
+        assertTrue(VerticalTabUtils.isRailCollapsedFromSharedPref());
+    }
+
+    @Test
+    public void testResize_LiveCollapsesWithoutPersistingUntilCommitted() {
+        mController.onResizeLive(/* proposedWidthDp= */ 40);
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+        assertFalse(VerticalTabUtils.isRailCollapsedFromSharedPref());
+
+        assertTrue(mController.onResizeCommitted(/* finalWidthDp= */ 40));
+        assertTrue(VerticalTabUtils.isRailCollapsedFromSharedPref());
+    }
+
+    @Test
+    public void testResize_LiveExpandsAgainWithinSameDrag() {
+        mController.onResizeLive(/* proposedWidthDp= */ 40);
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+
+        mController.onResizeLive(/* proposedWidthDp= */ 200);
+        assertEquals(RailCollapseState.EXPANDED, mController.getEffectiveRailCollapseState());
+
+        assertFalse(mController.onResizeCommitted(/* finalWidthDp= */ 200));
+        assertFalse(VerticalTabUtils.isRailCollapsedFromSharedPref());
+    }
+
+    @Test
+    public void testResize_CollapseThreshold() {
+        int thresholdDp = VerticalTabUtils.MIN_EXPANDED_WIDTH_DP;
+
+        mController.onResizeLive(thresholdDp);
+        assertEquals(RailCollapseState.EXPANDED, mController.getEffectiveRailCollapseState());
+
+        mController.onResizeLive(thresholdDp - 1);
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+
+        mController.onResizeLive(thresholdDp);
+        assertEquals(RailCollapseState.EXPANDED, mController.getEffectiveRailCollapseState());
+    }
+
+    @Test
+    public void testResize_ClearsHover() {
+        mController.toggleCollapseState();
+        hoverInsideRail();
+        assertEquals(
+                RailCollapseState.EXPANDED_FOR_HOVERING,
+                mController.getEffectiveRailCollapseState());
+
+        mController.onResizeLive(/* proposedWidthDp= */ 200);
+        mController.onResizeLive(/* proposedWidthDp= */ 40);
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+    }
+
+    @Test
+    public void testSetApplyDeferred_DefersForcedCollapseUntilDeferralEnds() {
+        mController.setApplyDeferred(true);
+
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
+
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
+        verify(mMockCollapseButtonEnabledCallback, never()).onResult(anyBoolean());
+        assertEquals(
+                RailCollapseState.EXPANDED, (int) mController.getRailCollapseStateSupplier().get());
+
+        mController.setApplyDeferred(false);
+
+        verify(mMockSetRailStateCallback).onResult(RailCollapseState.COLLAPSED);
+        verify(mMockCollapseButtonEnabledCallback).onResult(false);
+        assertEquals(
+                RailCollapseState.COLLAPSED,
+                (int) mController.getRailCollapseStateSupplier().get());
+    }
+
+    @Test
+    public void testSetApplyDeferred_AppliesLatestStateOnce() {
+        mController.setApplyDeferred(true);
+
+        // Several apply requests while deferred, ending back on a state that is not forced.
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FULLY_EXPANDABLE);
+        mController.applyEffectiveState();
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
+
+        mController.setApplyDeferred(false);
+
+        verify(mMockSetRailStateCallback).onResult(RailCollapseState.EXPANDED);
+        verify(mMockSetRailStateCallback, times(1)).onResult(anyInt());
+        verify(mMockCollapseButtonEnabledCallback, times(1)).onResult(true);
+    }
+
+    @Test
+    public void testSetApplyDeferred_NothingPending_DoesNotApply() {
+        VerticalTabUtils.setRailCollapsedInSharedPref(true);
+        mController = createController();
+        mController.setRailStateChangeDelegate(mMockDelegate);
+        mController.setApplyDeferred(true);
+
+        // The effective state moves and comes back, without any apply request.
+        mController.setHovering(true);
+        mController.setHovering(false);
+
+        mController.setApplyDeferred(false);
+
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
+        verify(mMockCollapseButtonEnabledCallback, never()).onResult(anyBoolean());
+    }
+
+    @Test
+    public void testSetApplyDeferred_AppliesStateMovedWithoutApplyRequest() {
+        VerticalTabUtils.setRailCollapsedInSharedPref(true);
+        mController = createController();
+        mController.setRailStateChangeDelegate(mMockDelegate);
+        mController.setApplyDeferred(true);
+
+        // The delegate is notified, but nothing calls applyEffectiveState(), e.g. because the
+        // resulting Side UI update was dropped.
+        mController.setHovering(true);
+        verify(mMockDelegate).handleUserRequestedStateChange();
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
+
+        // Ending deferral re-syncs the applied state anyway.
+        mController.setApplyDeferred(false);
+
+        verify(mMockSetRailStateCallback, times(1)).onResult(anyInt());
+        verify(mMockSetRailStateCallback).onResult(RailCollapseState.EXPANDED_FOR_HOVERING);
+        assertEquals(
+                RailCollapseState.EXPANDED_FOR_HOVERING,
+                (int) mController.getRailCollapseStateSupplier().get());
+    }
+
+    @Test
+    public void testSetApplyDeferred_StillNotifiesDelegate() {
+        mController.setRailStateChangeDelegate(mMockDelegate);
+        mController.setApplyDeferred(true);
+
+        mController.toggleCollapseState();
+        verify(mMockDelegate).handleUserRequestedStateChange();
+
+        mController.setHovering(true);
+        verify(mMockDelegate, times(2)).handleUserRequestedStateChange();
+
+        // The delegate's Side UI update applying the state only marks it as pending.
+        mController.applyEffectiveState();
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
+        assertEquals(
+                RailCollapseState.EXPANDED, (int) mController.getRailCollapseStateSupplier().get());
+
+        mController.setApplyDeferred(false);
+
+        verify(mMockSetRailStateCallback, times(1)).onResult(anyInt());
+        verify(mMockSetRailStateCallback).onResult(RailCollapseState.EXPANDED_FOR_HOVERING);
+    }
+
+    @Test
+    public void testSetApplyDeferred_RepeatedCallsAreNoOps() {
+        mController.setApplyDeferred(true);
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
+
+        // Deferring again neither applies nor drops the pending request.
+        mController.setApplyDeferred(true);
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
+
+        mController.setApplyDeferred(false);
+        verify(mMockSetRailStateCallback, times(1)).onResult(RailCollapseState.COLLAPSED);
+
+        // Ending deferral again does not re-apply.
+        mController.setApplyDeferred(false);
+        verify(mMockSetRailStateCallback, times(1)).onResult(anyInt());
+    }
+
+    @Test
+    public void testSetApplyDeferred_DefersToggleFallback() {
+        mController.setApplyDeferred(true);
+
+        mController.toggleCollapseState();
+
+        // The preference changes immediately, but the fallback apply is deferred.
+        assertTrue(mController.isCollapsedByUserForTesting());
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
+        assertEquals(
+                RailCollapseState.EXPANDED, (int) mController.getRailCollapseStateSupplier().get());
+
+        mController.setApplyDeferred(false);
+
+        verify(mMockSetRailStateCallback).onResult(RailCollapseState.COLLAPSED);
+        assertEquals(
+                RailCollapseState.COLLAPSED,
+                (int) mController.getRailCollapseStateSupplier().get());
+    }
+
+    @Test
+    public void testSetApplyDeferred_InputsStillRecorded() {
+        VerticalTabUtils.setRailCollapsedInSharedPref(true);
+        mController = createController();
+        mController.setApplyDeferred(true);
+
+        mController.setHovering(true);
+        assertEquals(
+                RailCollapseState.EXPANDED_FOR_HOVERING,
+                mController.getEffectiveRailCollapseState());
+
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
+        assertTrue(mController.isForcedCollapsed());
+        assertEquals(RailCollapseState.COLLAPSED, mController.getEffectiveRailCollapseState());
+
+        mController.onResizeCommitted(/* finalWidthDp= */ 200);
+        mController.setWindowWidthBoundary(WindowWidthBoundary.FULLY_EXPANDABLE);
+        assertFalse(mController.isForcedCollapsed());
+        assertEquals(RailCollapseState.EXPANDED, mController.getEffectiveRailCollapseState());
+
+        verify(mMockSetRailStateCallback, never()).onResult(anyInt());
+        assertEquals(
+                RailCollapseState.COLLAPSED,
+                (int) mController.getRailCollapseStateSupplier().get());
     }
 }

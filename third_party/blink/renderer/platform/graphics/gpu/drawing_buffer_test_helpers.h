@@ -5,6 +5,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_GPU_DRAWING_BUFFER_TEST_HELPERS_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_GPU_DRAWING_BUFFER_TEST_HELPERS_H_
 
+#include <array>
+
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 #include "cc/test/stub_decode_cache.h"
@@ -33,6 +37,31 @@ enum UseMultisampling {
   kEnableMultisampling,
 };
 
+class SharedImageInterfaceForTests : public gpu::TestSharedImageInterface {
+ public:
+  using gpu::TestSharedImageInterface::CreateSharedImage;
+
+  scoped_refptr<gpu::ClientSharedImage> CreateSharedImage(
+      const gpu::SharedImageInfo& si_info,
+      gpu::SurfaceHandle surface_handle,
+      std::optional<gpu::SharedImagePoolId> pool_id) override {
+    if (fail_shared_image_creation_) {
+      return nullptr;
+    }
+    return gpu::TestSharedImageInterface::CreateSharedImage(
+        si_info, surface_handle, pool_id);
+  }
+
+  void SetFailSharedImageCreation(bool fail) {
+    fail_shared_image_creation_ = fail;
+  }
+
+ private:
+  ~SharedImageInterfaceForTests() override = default;
+
+  bool fail_shared_image_creation_ = false;
+};
+
 class WebGraphicsContext3DProviderForTests
     : public WebGraphicsContext3DProvider {
  public:
@@ -40,12 +69,15 @@ class WebGraphicsContext3DProviderForTests
       std::unique_ptr<gpu::gles2::GLES2Interface> gl)
       : gl_(std::move(gl)),
         test_shared_image_interface_(
-            base::MakeRefCounted<gpu::TestSharedImageInterface>()) {}
+            base::MakeRefCounted<SharedImageInterfaceForTests>()) {
+    webgl_preferences_.max_active_webgl_contexts = 16;
+    webgl_preferences_.max_active_webgl_contexts_on_worker = 16;
+  }
   WebGraphicsContext3DProviderForTests(
       std::unique_ptr<gpu::webgpu::WebGPUInterface> webgpu)
       : webgpu_(std::move(webgpu)),
         test_shared_image_interface_(
-            base::MakeRefCounted<gpu::TestSharedImageInterface>()) {}
+            base::MakeRefCounted<SharedImageInterfaceForTests>()) {}
 
   gpu::InterfaceBase* InterfaceBase() override { return gl_.get(); }
   gpu::gles2::GLES2Interface* ContextGL() override { return gl_.get(); }
@@ -56,7 +88,7 @@ class WebGraphicsContext3DProviderForTests
   }
   gpu::ContextSupport* ContextSupport() override { return nullptr; }
 
-  bool BindToCurrentSequence() override { return false; }
+  bool BindToCurrentSequence() override { return true; }
   const gpu::Capabilities& GetCapabilities() const override {
     return capabilities_;
   }
@@ -72,7 +104,7 @@ class WebGraphicsContext3DProviderForTests
   cc::ImageDecodeCache* ImageDecodeCache(SkColorType color_type) override {
     return &image_decode_cache_;
   }
-  gpu::TestSharedImageInterface* SharedImageInterface() override {
+  SharedImageInterfaceForTests* SharedImageInterface() override {
     return test_shared_image_interface_.get();
   }
   viz::RasterContextProvider* RasterContextProvider() const override {
@@ -88,7 +120,7 @@ class WebGraphicsContext3DProviderForTests
   gpu::Capabilities capabilities_;
   gpu::GpuFeatureInfo gpu_feature_info_;
   WebglPreferences webgl_preferences_;
-  scoped_refptr<gpu::TestSharedImageInterface> test_shared_image_interface_;
+  scoped_refptr<SharedImageInterfaceForTests> test_shared_image_interface_;
 };
 
 class GLES2InterfaceForTests : public gpu::gles2::GLES2InterfaceStub,
@@ -189,7 +221,35 @@ class GLES2InterfaceForTests : public gpu::gles2::GLES2InterfaceStub,
   }
 
   GLenum CheckFramebufferStatus(GLenum target) override {
-    return GL_FRAMEBUFFER_COMPLETE;
+    ++check_framebuffer_status_call_count_;
+    if (fail_check_framebuffer_status_on_call_ > 0 &&
+        check_framebuffer_status_call_count_ !=
+            fail_check_framebuffer_status_on_call_) {
+      return GL_FRAMEBUFFER_COMPLETE;
+    }
+    return framebuffer_status_;
+  }
+
+  GLenum GetError() override {
+    GLenum err = next_gl_error_;
+    next_gl_error_ = GL_NO_ERROR;
+    return err;
+  }
+
+  // If `fail_on_nth_call` is 0, all CheckFramebufferStatus calls return
+  // `status`. Otherwise, only the Nth call (1-indexed) returns `status` and
+  // all other calls return GL_FRAMEBUFFER_COMPLETE.
+  void SetFramebufferStatus(GLenum status, int fail_on_nth_call = 0) {
+    framebuffer_status_ = status;
+    fail_check_framebuffer_status_on_call_ = fail_on_nth_call;
+    check_framebuffer_status_call_count_ = 0;
+  }
+
+  void SetNextGLError(GLenum error) { next_gl_error_ = error; }
+
+  const GLubyte* GetString(GLenum name) override {
+    return reinterpret_cast<const GLubyte*>(
+        name == GL_EXTENSIONS ? "GL_OES_packed_depth_stencil" : "");
   }
 
   void GetIntegerv(GLenum pname, GLint* value) override {
@@ -200,7 +260,17 @@ class GLES2InterfaceForTests : public gpu::gles2::GLES2InterfaceStub,
       case GL_READ_FRAMEBUFFER_BINDING:
         *value = state_.read_framebuffer_binding;
         break;
+      case GL_MAX_VIEWPORT_DIMS:
+        value[0] = 4096;
+        // SAFETY: OpenGL ES 2.0 specifies that GL_MAX_VIEWPORT_DIMS writes two
+        // GLint values into `value`.
+        UNSAFE_BUFFERS(value[1] = 4096);
+        break;
+      case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
+        *value = 8;
+        break;
       case GL_MAX_TEXTURE_SIZE:
+      case GL_MAX_RENDERBUFFER_SIZE:
         *value = 1024;
         break;
       default:
@@ -224,6 +294,8 @@ class GLES2InterfaceForTests : public gpu::gles2::GLES2InterfaceStub,
   }
 
   void GenTextures(GLsizei n, GLuint* textures) override;
+  void GenRenderbuffers(GLsizei n, GLuint* renderbuffers) override;
+  void GenFramebuffers(GLsizei n, GLuint* framebuffers) override;
 
   // ImplementationBase implementation
   void GenSyncTokenCHROMIUM(GLbyte* sync_token) override;
@@ -248,8 +320,15 @@ class GLES2InterfaceForTests : public gpu::gles2::GLES2InterfaceStub,
 
   MOCK_METHOD1(WaitSyncTokenCHROMIUMMock, void(const GLbyte* sync_token));
   void WaitSyncTokenCHROMIUM(const GLbyte* sync_token) override {
-    UNSAFE_TODO(memcpy(&most_recently_waited_sync_token_, sync_token,
-                       sizeof(most_recently_waited_sync_token_)));
+    // SAFETY: The CHROMIUM_sync_point GL API requires `sync_token` to point to
+    // a GL_SYNC_TOKEN_SIZE_CHROMIUM-byte sync token, and sync_token.h
+    // static_asserts that gpu::SyncToken fits in it. In these tests, callers
+    // (e.g. gpu::ClientSharedImage on behalf of DrawingBuffer) pass a
+    // gpu::SyncToken's data.
+    base::byte_span_from_ref(base::allow_nonunique_obj,
+                             most_recently_waited_sync_token_)
+        .copy_from(base::as_bytes(
+            UNSAFE_BUFFERS(base::span(sync_token, sizeof(gpu::SyncToken)))));
     WaitSyncTokenCHROMIUMMock(sync_token);
   }
 
@@ -262,13 +341,11 @@ class GLES2InterfaceForTests : public gpu::gles2::GLES2InterfaceStub,
   }
   void DrawingBufferClientRestoreRasterizerDiscard() override {}
   void DrawingBufferClientRestoreMaskAndClearValues() override {
-    UNSAFE_TODO(memcpy(state_.color_mask, saved_state_.color_mask,
-                       sizeof(state_.color_mask)));
+    state_.color_mask = saved_state_.color_mask;
     state_.clear_depth = saved_state_.clear_depth;
     state_.clear_stencil = saved_state_.clear_stencil;
 
-    UNSAFE_TODO(memcpy(state_.clear_color, saved_state_.clear_color,
-                       sizeof(state_.clear_color)));
+    state_.clear_color = saved_state_.clear_color;
     state_.depth_mask = saved_state_.depth_mask;
     state_.stencil_mask = saved_state_.stencil_mask;
   }
@@ -307,8 +384,9 @@ class GLES2InterfaceForTests : public gpu::gles2::GLES2InterfaceStub,
   }
   void DrawingBufferClientForceLostContextWithAutoRecovery(
       const char* reason) override {
-    // Not unit tested yet. Tested with end-to-end tests.
+    ++force_lost_context_count_;
   }
+  int ForceLostContextCount() const { return force_lost_context_count_; }
   void DrawingBufferClientInterruptPixelLocalStorage() override {
     // Not unit tested yet. Tested with end-to-end tests.
   }
@@ -331,10 +409,8 @@ class GLES2InterfaceForTests : public gpu::gles2::GLES2InterfaceStub,
   // Saves current GL state for later verification.
   void SaveState() { saved_state_ = state_; }
   void VerifyStateHasNotChangedSinceSave() const {
-    for (size_t i = 0; i < 4; ++i) {
-      EXPECT_EQ(state_.clear_color[0], saved_state_.clear_color[0]);
-      EXPECT_EQ(state_.color_mask[0], saved_state_.color_mask[0]);
-    }
+    EXPECT_EQ(state_.clear_color, saved_state_.clear_color);
+    EXPECT_EQ(state_.color_mask, saved_state_.color_mask);
     EXPECT_EQ(state_.clear_depth, saved_state_.clear_depth);
     EXPECT_EQ(state_.clear_stencil, saved_state_.clear_stencil);
     EXPECT_EQ(state_.depth_mask, saved_state_.depth_mask);
@@ -375,11 +451,11 @@ class GLES2InterfaceForTests : public gpu::gles2::GLES2InterfaceStub,
   struct State {
     bool scissor_enabled = false;
 
-    GLfloat clear_color[4] = {0, 0, 0, 0};
+    std::array<GLfloat, 4> clear_color = {0, 0, 0, 0};
     GLfloat clear_depth = 0;
     GLint clear_stencil = 0;
 
-    GLboolean color_mask[4] = {0, 0, 0, 0};
+    std::array<GLboolean, 4> color_mask = {0, 0, 0, 0};
     GLboolean depth_mask = 0;
     GLuint stencil_mask = 0;
 
@@ -408,6 +484,11 @@ class GLES2InterfaceForTests : public gpu::gles2::GLES2InterfaceStub,
   HashMap<GLuint, GLuint> image_to_texture_map_;
   gpu::Mailbox last_imported_shared_image_;
   bool context_lost_ = false;
+  GLenum framebuffer_status_ = GL_FRAMEBUFFER_COMPLETE;
+  int fail_check_framebuffer_status_on_call_ = 0;
+  int check_framebuffer_status_call_count_ = 0;
+  GLenum next_gl_error_ = GL_NO_ERROR;
+  int force_lost_context_count_ = 0;
 };
 
 class DrawingBufferForTests : public DrawingBuffer {
@@ -421,13 +502,15 @@ class DrawingBufferForTests : public DrawingBuffer {
       const gfx::Size& size,
       PreserveDrawingBuffer preserve,
       UseMultisampling use_multisampling,
-      bool desynchronized = false) {
+      bool desynchronized = false,
+      bool want_depth = false,
+      bool want_stencil = false) {
     std::unique_ptr<Extensions3DUtil> extensions_util =
         Extensions3DUtil::Create(context_provider->ContextGL());
-    scoped_refptr<DrawingBufferForTests> drawing_buffer =
-        base::AdoptRef(new DrawingBufferForTests(
-            std::move(context_provider), context_info,
-            std::move(extensions_util), client, preserve, desynchronized));
+    scoped_refptr<DrawingBufferForTests> drawing_buffer = base::AdoptRef(
+        new DrawingBufferForTests(std::move(context_provider), context_info,
+                                  std::move(extensions_util), client, preserve,
+                                  desynchronized, want_depth, want_stencil));
     if (!drawing_buffer->Initialize(
             size, use_multisampling != kDisableMultisampling)) {
       drawing_buffer->BeginDestruction();
@@ -445,7 +528,9 @@ class DrawingBufferForTests : public DrawingBuffer {
       std::unique_ptr<Extensions3DUtil> extensions_util,
       DrawingBuffer::Client* client,
       PreserveDrawingBuffer preserve,
-      bool desynchronized)
+      bool desynchronized,
+      bool want_depth,
+      bool want_stencil)
       : DrawingBuffer(std::move(context_provider),
                       context_info,
                       desynchronized,
@@ -457,9 +542,10 @@ class DrawingBufferForTests : public DrawingBuffer {
                       true /* premultipliedAlpha */,
                       preserve,
                       Platform::kWebGL1ContextType,
-                      false /* wantDepth */,
-                      false /* wantStencil */,
+                      want_depth,
+                      want_stencil,
                       PredefinedColorSpace::kSRGB,
+                      gfx::HDRMetadata(),
                       gl::GpuPreference::kHighPerformance),
         live_(nullptr) {}
 
@@ -472,19 +558,33 @@ class DrawingBufferForTests : public DrawingBuffer {
     return static_cast<GLES2InterfaceForTests*>(ContextGL());
   }
 
-  gpu::TestSharedImageInterface* SharedImageInterfaceForTests() {
-    return static_cast<gpu::TestSharedImageInterface*>(
+  blink::SharedImageInterfaceForTests* SharedImageInterfaceForTests() {
+    return static_cast<blink::SharedImageInterfaceForTests*>(
         ContextProvider()->SharedImageInterface());
   }
 
   raw_ptr<bool> live_;
 
-  int RecycledSoftwareResourceCount() {
-    return recycled_software_resources_.size();
+  void SetSharedImageInterfaceProviderForSoftwareRenderingTest(
+      std::unique_ptr<WebGraphicsSharedImageInterfaceProvider> sii_provider) {
+    DrawingBuffer::SetSharedImageInterfaceProviderForSoftwareRenderingTest(
+        std::move(sii_provider));
+  }
+
+  int RecycledSoftwareResourceCount() const {
+    return DrawingBuffer::RecycledSoftwareResourceCountForTesting();
   }
 
   bool HasBackColorBufferForTesting() const {
     return DrawingBuffer::HasBackColorBufferForTesting();
+  }
+
+  bool HasMultisampleRenderbufferForTesting() const {
+    return DrawingBuffer::HasMultisampleRenderbufferForTesting();
+  }
+
+  bool HasDepthStencilBufferForTesting() const {
+    return DrawingBuffer::HasDepthStencilBufferForTesting();
   }
 };
 

@@ -40,10 +40,8 @@
 #include "chrome/browser/resource_coordinator/tab_manager_resource_coordinator_signal_observer.h"
 #include "chrome/browser/resource_coordinator/time.h"
 #include "chrome/browser/sessions/session_restore.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tab_contents/tab_contents_iterator.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/url_constants.h"
 #include "components/performance_manager/public/features.h"
@@ -100,7 +98,7 @@ WebContents* TabManager::DiscardTabByExtension(content::WebContents* contents) {
   if (contents) {
     TabLifecycleUnitExternal* tab_lifecycle_unit_external =
         TabLifecycleUnitExternal::FromWebContents(contents);
-    DCHECK(tab_lifecycle_unit_external);
+    CHECK(tab_lifecycle_unit_external, base::NotFatalUntil::M163);
     if (tab_lifecycle_unit_external->DiscardTab(
             LifecycleUnitDiscardReason::EXTERNAL)) {
       return tab_lifecycle_unit_external->GetWebContents();
@@ -136,7 +134,7 @@ bool TabManager::IsInternalPage(const GURL& url) {
 content::WebContents* TabManager::DiscardTabImpl(
     LifecycleUnitDiscardReason reason,
     bool ignore_recent_visibility) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M163);
 
   performance_manager::Graph* graph =
       performance_manager::PerformanceManager::GetGraph();

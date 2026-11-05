@@ -4,6 +4,7 @@
 
 #include "components/sync/service/device_statistics_scheduler.h"
 
+#include <optional>
 #include <utility>
 
 #include "base/feature_list.h"
@@ -22,6 +23,8 @@ namespace {
 
 constexpr char kLastAttemptedToRecordPref[] =
     "sync.device_statistics_timestamp";
+
+std::optional<base::TimeDelta> g_startup_delay_override_for_testing;
 
 }  // namespace
 
@@ -56,6 +59,17 @@ void DeviceStatisticsScheduler::RegisterProfilePrefs(
   registry->RegisterTimePref(kLastAttemptedToRecordPref, base::Time());
 }
 
+// static
+void DeviceStatisticsScheduler::SetStartupDelayForTesting(
+    base::TimeDelta delay) {
+  g_startup_delay_override_for_testing = delay;
+}
+
+// static
+void DeviceStatisticsScheduler::ResetStartupDelayForTesting() {
+  g_startup_delay_override_for_testing.reset();
+}
+
 void DeviceStatisticsScheduler::OnRefreshTokensLoaded() {
   identity_manager_observation_.Reset();
 
@@ -69,15 +83,10 @@ base::Time DeviceStatisticsScheduler::ComputeEarliestAllowedTimeToRun() const {
   const base::Time last_recorded_at =
       std::min(pref_service_->GetTime(kLastAttemptedToRecordPref), now);
 
-  // The metrics should be recorded once per N calendar days (determined by a
-  // feature param), so the next possible time is midnight, N days after the
-  // last recording.
+  // The metrics should be recorded once per calendar day, so the next possible
+  // time is midnight on the following day.
   base::Time earliest_allowed =
-      last_recorded_at.is_null()
-          ? now
-          : (last_recorded_at +
-             base::Days(kSyncRecordDeviceStatisticsMetricsPeriodDays.Get()))
-                .LocalMidnight();
+      last_recorded_at.is_null() ? now : last_recorded_at.NextLocalMidnight();
 
   if (earliest_allowed > now) {
     // Recording has already happened today. Wait (somewhat arbitrarily) until
@@ -87,6 +96,13 @@ base::Time DeviceStatisticsScheduler::ComputeEarliestAllowedTimeToRun() const {
     earliest_allowed += base::Hours(12);
   }
 
+  // Defense-in-depth against clock/timezone changes: never run again within
+  // 12 hours of the last attempt.
+  if (!last_recorded_at.is_null()) {
+    earliest_allowed =
+        std::max(earliest_allowed, last_recorded_at + base::Hours(12));
+  }
+
   // If metrics reporting is disabled, try again one day from now at the
   // earliest.
   if (!delegate_->IsDeviceStatisticsMetricReportingEnabled()) {
@@ -94,9 +110,9 @@ base::Time DeviceStatisticsScheduler::ComputeEarliestAllowedTimeToRun() const {
   }
 
   // At browser startup, wait some time before recording for the first time.
-  earliest_allowed =
-      std::max(earliest_allowed,
-               creation_time_ + kSyncRecordDeviceStatisticsMetricsDelay.Get());
+  const base::TimeDelta startup_delay =
+      g_startup_delay_override_for_testing.value_or(kStartupDelay);
+  earliest_allowed = std::max(earliest_allowed, creation_time_ + startup_delay);
 
   return earliest_allowed;
 }

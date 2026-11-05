@@ -7,8 +7,11 @@ import '//resources/cr_elements/cr_icon/cr_icon.js';
 import './icons.js';
 import '//resources/cr_elements/icons.html.js';
 
+import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import {TimerHelper} from '/shared/timer_helper.js';
+import {BUTTON_LEFT, getClickSourceType, getContextMenuPosition, HelpBubbleAnchorMixin} from '/shared/toolbar_button.js';
 import {AppMenuIconType, AppMenuSeverity, ContextMenuType, FocusRequestTarget} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 import type {AppMenuControlState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 
@@ -16,10 +19,14 @@ import {getCss} from './app_menu_button.css.js';
 import {getHtml} from './app_menu_button.html.js';
 import {BrowserProxyImpl, INVALID_FOCUS_REQUEST_HANDLE} from './browser_proxy.js';
 import type {FocusRequestHandle} from './browser_proxy.js';
-import {BUTTON_LEFT, getClickSourceType, getContextMenuPosition, HelpBubbleAnchorMixin, setHasHelpBubble} from './toolbar_button.js';
+import {CollapsibleLabelButtonMixin} from './collapsible_label_button.js';
 import type {ToolbarChipButtonElement} from './toolbar_chip_button.js';
 
-const AppMenuButtonElementBase = HelpBubbleAnchorMixin(CrLitElement);
+// Matches the 250ms animation in icons.ts and Views BrowserAppMenuButton.
+const APP_MENU_GLOW_UP_DURATION_MS = 250;
+
+const AppMenuButtonElementBase =
+    HelpBubbleAnchorMixin(CollapsibleLabelButtonMixin(CrLitElement));
 
 export interface AppMenuButtonElement {
   $: {
@@ -42,7 +49,15 @@ export class AppMenuButtonElement extends AppMenuButtonElementBase {
 
   static override get properties() {
     return {
+      ...super.properties,
       state: {type: Object},
+      glowUpEnabled: {type: Boolean},
+      glowUpActive: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'glow-up-active',
+      },
+      isAnimating_: {type: Boolean, state: true},
     };
   }
 
@@ -58,28 +73,39 @@ export class AppMenuButtonElement extends AppMenuButtonElementBase {
     windowIsMaximizedOrFullscreen: false,
   };
 
+  accessor glowUpEnabled: boolean = loadTimeData.getBoolean('enableGlowUp');
+
+  accessor glowUpActive: boolean = false;
+
+  get isAnimating(): boolean {
+    return this.isAnimating_;
+  }
+
   private browserProxy_ = BrowserProxyImpl.getInstance();
   private focusRequestHandle_: FocusRequestHandle =
       INVALID_FOCUS_REQUEST_HANDLE;
+  private accessor isAnimating_: boolean = false;
+  private animationTimer_: TimerHelper = new TimerHelper();
 
   // Manage the lifecycle of the focus listener.
   override connectedCallback() {
     super.connectedCallback();
-    this.registerHelpBubble('kToolbarAppMenuButtonElementId', this.$.button, {
-      onHighlightChanged: (highlighted: boolean) => {
-        this.classList.toggle('anchor-highlight', highlighted);
-      },
-      onHelpBubbleShown: () => setHasHelpBubble(this, true),
-      onHelpBubbleHidden: () => setHasHelpBubble(this, false),
-    });
     this.focusRequestHandle_ = this.browserProxy_.addFocusRequestListener(
         this.onFocusRequest_.bind(this));
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    this.unregisterHelpBubble('kToolbarAppMenuButtonElementId');
     this.browserProxy_.removeFocusRequestListener(this.focusRequestHandle_);
+    this.finishAnimation_();
+  }
+
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
+    if (changedProperties.has('glowUpEnabled') && !this.glowUpEnabled) {
+      this.finishAnimation_();
+    }
+    this.glowUpActive = this.computeGlowUpActive_(changedProperties);
   }
 
   override updated(changedProperties: PropertyValues<this>) {
@@ -88,7 +114,61 @@ export class AppMenuButtonElement extends AppMenuButtonElementBase {
       this.toggleAttribute(
           'window-is-maximized-or-fullscreen',
           this.state.windowIsMaximizedOrFullscreen);
+
+      const oldState = changedProperties.get('state');
+      if (!oldState || oldState.labelText !== this.state.labelText) {
+        this.fire('request-layout');
+      }
+      const oldShowing = oldState ? oldState.isContextMenuVisible : false;
+      const newShowing = this.state.isContextMenuVisible;
+      if (oldShowing !== newShowing) {
+        this.onContextMenuVisibleChanged_();
+      }
     }
+  }
+
+  protected override hasLabel_(): boolean {
+    return !!this.state.labelText;
+  }
+
+  private computeGlowUpActive_(changedProperties: PropertyValues<this>):
+      boolean {
+    if (!this.glowUpEnabled) {
+      return false;
+    }
+
+    const oldState = changedProperties.get('state');
+    const wasContextMenuVisible =
+        oldState ? oldState.isContextMenuVisible : false;
+    const isContextMenuClosing =
+        wasContextMenuVisible && !this.state.isContextMenuVisible;
+
+    return this.state.isContextMenuVisible || this.isAnimating_ ||
+        isContextMenuClosing;
+  }
+
+  private onContextMenuVisibleChanged_() {
+    if (!this.glowUpEnabled) {
+      return;
+    }
+
+    this.animationTimer_.clearTimeout();
+    this.isAnimating_ = true;
+
+    this.animationTimer_.setTimeout(() => {
+      this.finishAnimation_();
+    }, APP_MENU_GLOW_UP_DURATION_MS);
+  }
+
+  private finishAnimation_() {
+    this.animationTimer_.clearTimeout();
+    this.isAnimating_ = false;
+  }
+
+  protected getAnimatedIcon_(): string {
+    return this.state.isContextMenuVisible ?
+        'webui-toolbar:app_menu_glow_up' :
+        'webui-toolbar:app_menu_glow_up_end';
   }
 
   override focus() {
@@ -126,7 +206,17 @@ export class AppMenuButtonElement extends AppMenuButtonElementBase {
     // Handle keyboard (detail === 0) and touch clicks (tap/release) here.
     // Mouse clicks (detail > 0) are ignored here because they were already
     // handled immediately on pointerdown to match Views' behavior.
-    if (e.detail === 0 || e.pointerType !== 'mouse') {
+    if (e.detail === 0 || (e.pointerType && e.pointerType !== 'mouse')) {
+      this.handleMenuClick_(e);
+    }
+  }
+
+  protected onKeydown_(e: KeyboardEvent) {
+    // To match Views' MenuButtonController::OnKeyPressed behavior, Up and Down
+    // arrow keys open the menu on keydown. (Enter and Space already synthesize
+    // a click event with detail === 0 on the inner <button>.)
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
       this.handleMenuClick_(e);
     }
   }
@@ -134,7 +224,7 @@ export class AppMenuButtonElement extends AppMenuButtonElementBase {
   private handleMenuClick_(e: Event) {
     this.browserProxy_.toolbarUIHandler.showContextMenu(
         ContextMenuType.kAppMenu, getContextMenuPosition(this),
-        getClickSourceType(e));
+        getClickSourceType(e), /*showMenuToken=*/ null);
   }
 
   protected getTooltip_(): string {

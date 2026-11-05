@@ -12,6 +12,7 @@
 
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "base/check.h"
 #include "base/check_deref.h"
 #include "base/i18n/rtl.h"
 #include "base/i18n/unicodestring.h"
@@ -31,6 +32,8 @@
 #include "chromeos/ash/components/timezone/timezone_util.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "third_party/icu/source/common/unicode/ures.h"
@@ -113,7 +116,7 @@ std::u16string GetTimezoneName(const icu::TimeZone& timezone) {
   UDate now = icu::Calendar::getNow();
   UErrorCode status = U_ZERO_ERROR;
   timezone.getOffset(now, false, raw_offset, dst_offset, status);
-  DCHECK(U_SUCCESS(status));
+  CHECK(U_SUCCESS(status), base::NotFatalUntil::M160);
   int offset = raw_offset + dst_offset;
   // |offset| is in msec.
   int minute_offset = std::abs(offset) / 60000;
@@ -224,7 +227,10 @@ void UpdateSystemTimezone(PrefService& local_state, Profile* profile) {
     local_state.SetString(ash::prefs::kSigninScreenTimezone, value);
   }
 
-  if (user_manager->GetPrimaryUser() == user &&
+  const session_manager::Session* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  CHECK(primary_session);
+  if (user->GetAccountId() == primary_session->account_id() &&
       ash::switches::IsPerUserTimezoneEnabled()) {
     SetSystemTimezone(local_state, user, value);
   }

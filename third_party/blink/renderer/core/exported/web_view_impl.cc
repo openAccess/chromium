@@ -120,7 +120,7 @@
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
-#include "third_party/blink/renderer/core/frame/local_frame_ukm_aggregator.h"
+#include "third_party/blink/renderer/core/frame/local_frame_metrics_aggregator.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/page_scale_constraints_set.h"
 #include "third_party/blink/renderer/core/frame/remote_frame.h"
@@ -134,6 +134,7 @@
 #include "third_party/blink/renderer/core/frame/web_remote_frame_impl.h"
 #include "third_party/blink/renderer/core/fullscreen/fullscreen.h"
 #include "third_party/blink/renderer/core/html/forms/html_text_area_element.h"
+#include "third_party/blink/renderer/core/html/html_image_element.h"
 #include "third_party/blink/renderer/core/html/html_plugin_element.h"
 #include "third_party/blink/renderer/core/html/plugin_document.h"
 #include "third_party/blink/renderer/core/html_names.h"
@@ -265,52 +266,6 @@ class EmptyEventListener final : public NativeEventListener {
   void Invoke(ExecutionContext* execution_context, Event*) override {}
 };
 
-typedef void (*SetFontFamilyWrapper)(blink::WebSettings*,
-                                     const std::u16string&,
-                                     UScriptCode);
-
-void SetStandardFontFamilyWrapper(WebSettings* settings,
-                                  const std::u16string& font,
-                                  UScriptCode script) {
-  settings->SetStandardFontFamily(WebString::FromUtf16(font), script);
-}
-
-void SetFixedFontFamilyWrapper(WebSettings* settings,
-                               const std::u16string& font,
-                               UScriptCode script) {
-  settings->SetFixedFontFamily(WebString::FromUtf16(font), script);
-}
-
-void SetSerifFontFamilyWrapper(WebSettings* settings,
-                               const std::u16string& font,
-                               UScriptCode script) {
-  settings->SetSerifFontFamily(WebString::FromUtf16(font), script);
-}
-
-void SetSansSerifFontFamilyWrapper(WebSettings* settings,
-                                   const std::u16string& font,
-                                   UScriptCode script) {
-  settings->SetSansSerifFontFamily(WebString::FromUtf16(font), script);
-}
-
-void SetCursiveFontFamilyWrapper(WebSettings* settings,
-                                 const std::u16string& font,
-                                 UScriptCode script) {
-  settings->SetCursiveFontFamily(WebString::FromUtf16(font), script);
-}
-
-void SetFantasyFontFamilyWrapper(WebSettings* settings,
-                                 const std::u16string& font,
-                                 UScriptCode script) {
-  settings->SetFantasyFontFamily(WebString::FromUtf16(font), script);
-}
-
-void SetMathFontFamilyWrapper(WebSettings* settings,
-                              const std::u16string& font,
-                              UScriptCode script) {
-  settings->SetMathFontFamily(WebString::FromUtf16(font), script);
-}
-
 // If |scriptCode| is a member of a family of "similar" script codes, returns
 // the script code in that family that is used by WebKit for font selection
 // purposes.  For example, USCRIPT_KATAKANA_OR_HIRAGANA and USCRIPT_JAPANESE are
@@ -334,13 +289,14 @@ UScriptCode GetScriptForWebSettings(UScriptCode scriptCode) {
 }
 
 void ApplyFontsFromMap(const web_pref::ScriptFontFamilyMap& map,
-                       SetFontFamilyWrapper setter,
+                       GenericFontFamily family,
                        WebSettings* settings) {
   for (auto& it : map) {
     int32_t script = u_getPropertyValueEnum(UCHAR_SCRIPT, (it.first).c_str());
     if (script >= 0 && script < USCRIPT_CODE_LIMIT) {
       UScriptCode code = static_cast<UScriptCode>(script);
-      (*setter)(settings, it.second, GetScriptForWebSettings(code));
+      settings->SetGenericFontFamily(family, WebString::FromUtf16(it.second),
+                                     GetScriptForWebSettings(code));
     }
   }
 }
@@ -660,6 +616,7 @@ WebViewImpl::WebViewImpl(
 
 WebViewImpl::~WebViewImpl() {
   DCHECK(!page_);
+  DCHECK(!page_popup_);
 }
 
 void WebViewImpl::SetTabKeyCyclesThroughElements(bool value) {
@@ -897,6 +854,17 @@ void WebViewImpl::ComputeScaleAndScrollForBlockRect(
       GetPage()->GetVisualViewport().ClampDocumentOffsetAtScale(scroll, scale);
 }
 
+// For <img usemap="...">, Chromium treats the whole image as a link because
+// HTMLImageElement::IsLink() returns true whenever the usemap attribute is
+// present. HitTestResult::SetInnerNode already resolves a tap inside a map
+// area to the HTMLAreaElement, so an HTMLImageElement with usemap reaching
+// link-highlight code here means the tap missed every area and should not
+// trigger a highlight.
+static bool IsImageUsemapWithoutAreaHit(const Node* node) {
+  const auto* image = DynamicTo<HTMLImageElement>(node);
+  return image && image->FastHasAttribute(html_names::kUsemapAttr);
+}
+
 static Node* FindLinkHighlightAncestor(Node* node) {
   // Go up the tree to find the node that defines a mouse cursor style
   while (node) {
@@ -932,6 +900,19 @@ Node* WebViewImpl::BestTapNode(
   // Walk up the tree until we have a node with an attached layoutObject
   while (!best_touch_node->GetLayoutObject()) {
     best_touch_node = LayoutTreeBuilderTraversal::Parent(*best_touch_node);
+    if (!best_touch_node) {
+      return nullptr;
+    }
+  }
+
+  // An <img usemap=""> tap that landed outside every <area> must not light up
+  // the image itself. Step past it so an enclosing anchor can still be the
+  // highlight target.
+  if (IsImageUsemapWithoutAreaHit(best_touch_node)) {
+    best_touch_node = LayoutTreeBuilderTraversal::Parent(*best_touch_node);
+    while (best_touch_node && !best_touch_node->GetLayoutObject()) {
+      best_touch_node = LayoutTreeBuilderTraversal::Parent(*best_touch_node);
+    }
     if (!best_touch_node) {
       return nullptr;
     }
@@ -1079,16 +1060,15 @@ WebInputEventResult WebViewImpl::SendContextMenuEvent() {
 WebPagePopupImpl* WebViewImpl::OpenPagePopup(PagePopupClient* client) {
   CHECK(client);
 
-  // This guarantees there is never more than 1 PagePopup active at a time.
-  // CancelPagePopup may fire a synchronous change event when a select element
-  // is closed, but that event handler shouldn't be able to open another picker
-  // because it would require multiple user activations to be created and
-  // consumed within the same task.
+  // Make sure there is never more than one page popup active at a time.
   CancelPagePopup();
-  if (RuntimeEnabledFeatures::FileColorPickerConsumeActivationEnabled()) {
-    CHECK(!page_popup_);
-  } else {
-    DCHECK(!page_popup_);
+  // CancelPagePopup may fire a synchronous change event when a select element
+  // is closed, which may then try to open another page popup. We prevent this
+  // through this early return. Note that `WebPagePopupImpl::Create` call below
+  // asynchronously prevents multiple popups with a single user activation
+  // anyway.
+  if (page_popup_) {
+    return nullptr;
   }
 
   LocalFrame* opener_frame = client->OwnerElement().GetDocument().GetFrame();
@@ -1129,6 +1109,10 @@ WebPagePopupImpl* WebViewImpl::OpenPagePopup(PagePopupClient* client) {
 
 void WebViewImpl::CancelPagePopup() {
   if (page_popup_) {
+    // Ensure page_popup_ lifetime lasts through the call even if the member
+    // variable is cleared by a callback during it.
+    scoped_refptr<WebPagePopupImpl> owning_reference(page_popup_);
+
     page_popup_->Cancel();
   }
 }
@@ -1140,16 +1124,28 @@ void WebViewImpl::ClosePagePopup(PagePopup* popup) {
   if (page_popup_.get() != popup_impl) {
     return;
   }
+
+  // Ensure page_popup_ lifetime lasts through the call even if the member
+  // variable is cleared by a callback during it.
+  scoped_refptr<WebPagePopupImpl> owning_reference(page_popup_);
+
   page_popup_->ClosePopup();
 }
 
 void WebViewImpl::CleanupPagePopup() {
-  page_popup_ = nullptr;
-  DisablePopupMouseWheelEventListener();
+  if (page_popup_) {
+    page_popup_->ClearOpenerWebView();
+    page_popup_ = nullptr;
+    DisablePopupMouseWheelEventListener();
+  }
 }
 
 void WebViewImpl::UpdatePagePopup() {
   if (page_popup_) {
+    // Ensure page_popup_ lifetime lasts through the call even if the member
+    // variable is cleared by a callback during it.
+    scoped_refptr<WebPagePopupImpl> owning_reference(page_popup_);
+
     page_popup_->Update();
   }
 }
@@ -1172,13 +1168,13 @@ void WebViewImpl::DisablePopupMouseWheelEventListener() {
   // TODO(kenrb): Concerns the same as in enablePopupMouseWheelEventListener.
   // See https://crbug.com/566130
   DCHECK(popup_mouse_wheel_event_listener_);
+  EventListener* listener = popup_mouse_wheel_event_listener_.Release();
   Document* document =
       local_root_with_empty_mouse_wheel_listener_->GetDocument();
   if (document) {
     // Document may have already removed the event listener, for instance, due
     // to a navigation, but remove it anyway.
-    document->removeEventListener(event_type_names::kMousewheel,
-                                  popup_mouse_wheel_event_listener_.Release(),
+    document->removeEventListener(event_type_names::kMousewheel, listener,
                                   false);
   }
   local_root_with_empty_mouse_wheel_listener_ = nullptr;
@@ -1347,7 +1343,8 @@ void WebViewImpl::DidUpdateBrowserControls() {
     ResizeViewportAnchor::ResizeScope resize_scope(*resize_viewport_anchor_);
 
     visual_viewport.SetBrowserControlsAdjustment(
-        GetBrowserControls().UnreportedSizeAdjustment());
+        GetBrowserControls().UnreportedSizeAdjustment() +
+        GetBrowserControls().UnreportedBottomSizeAdjustment());
   }
 }
 
@@ -1539,6 +1536,10 @@ void WebViewImpl::DidEnterFullscreen() {
   fullscreen_controller_->DidEnterFullscreen();
 }
 
+void WebViewImpl::DidFailToEnterFullscreen() {
+  fullscreen_controller_->DidFailToEnterFullscreen();
+}
+
 void WebViewImpl::DidExitFullscreen() {
   fullscreen_controller_->DidExitFullscreen();
 }
@@ -1601,18 +1602,18 @@ void WebView::ApplyWebPreferences(const web_pref::WebPreferences& prefs,
   WebViewImpl* web_view_impl = To<WebViewImpl>(web_view);
   WebSettings* settings = web_view->GetSettings();
   ApplyFontsFromMap(prefs.standard_font_family_map,
-                    SetStandardFontFamilyWrapper, settings);
-  ApplyFontsFromMap(prefs.fixed_font_family_map, SetFixedFontFamilyWrapper,
+                    GenericFontFamily::kStandard, settings);
+  ApplyFontsFromMap(prefs.fixed_font_family_map, GenericFontFamily::kFixed,
                     settings);
-  ApplyFontsFromMap(prefs.serif_font_family_map, SetSerifFontFamilyWrapper,
+  ApplyFontsFromMap(prefs.serif_font_family_map, GenericFontFamily::kSerif,
                     settings);
   ApplyFontsFromMap(prefs.sans_serif_font_family_map,
-                    SetSansSerifFontFamilyWrapper, settings);
-  ApplyFontsFromMap(prefs.cursive_font_family_map, SetCursiveFontFamilyWrapper,
+                    GenericFontFamily::kSansSerif, settings);
+  ApplyFontsFromMap(prefs.cursive_font_family_map, GenericFontFamily::kCursive,
                     settings);
-  ApplyFontsFromMap(prefs.fantasy_font_family_map, SetFantasyFontFamilyWrapper,
+  ApplyFontsFromMap(prefs.fantasy_font_family_map, GenericFontFamily::kFantasy,
                     settings);
-  ApplyFontsFromMap(prefs.math_font_family_map, SetMathFontFamilyWrapper,
+  ApplyFontsFromMap(prefs.math_font_family_map, GenericFontFamily::kMath,
                     settings);
   settings->SetDefaultFontSize(prefs.default_font_size);
   settings->SetDefaultFixedFontSize(prefs.default_fixed_font_size);
@@ -1630,6 +1631,7 @@ void WebView::ApplyWebPreferences(const web_pref::WebPreferences& prefs,
   settings->SetAllowScriptsToCloseWindows(prefs.allow_scripts_to_close_windows);
   settings->SetAllowUnrestrictedWindowFocus(
       prefs.allow_unrestricted_window_focus);
+  settings->SetClipboardFocusExempt(prefs.clipboard_focus_exempt);
   settings->SetDownloadableBinaryFontsEnabled(prefs.remote_fonts_enabled);
   settings->SetJavaScriptCanAccessClipboard(
       prefs.javascript_can_access_clipboard);
@@ -1793,6 +1795,8 @@ void WebView::ApplyWebPreferences(const web_pref::WebPreferences& prefs,
   settings->SetDontSendKeyEventsToJavascript(
       prefs.dont_send_key_events_to_javascript);
   settings->SetWebAppScope(WebString::FromAscii(prefs.web_app_scope.spec()));
+  settings->SetWebAppCustomManifestUrl(
+      WebURL(KURL(prefs.web_app_custom_manifest_url)));
   settings->SetIsInitialProfile(prefs.is_initial_profile);
 
 #if BUILDFLAG(IS_ANDROID)
@@ -1940,9 +1944,17 @@ void WebView::ApplyWebPreferences(const web_pref::WebPreferences& prefs,
       // trigger the expensive SkFontMgr initialization (parsing fonts.xml).
       // Pre-warming additional families is redundant.
 #if !BUILDFLAG(IS_ANDROID)
-      prewarmer->PrewarmFamily(font_settings.Serif());
+      if (const AtomicString& serif =
+              font_settings.Get(GenericFontFamily::kSerif);
+          !serif.empty()) {
+        prewarmer->PrewarmFamily(serif);
+      }
 #endif
-      prewarmer->PrewarmFamily(font_settings.SansSerif());
+      if (const AtomicString& sans_serif =
+              font_settings.Get(GenericFontFamily::kSansSerif);
+          !sans_serif.empty()) {
+        prewarmer->PrewarmFamily(sans_serif);
+      }
     }
   }
 #endif
@@ -1963,6 +1975,11 @@ void WebView::ApplyWebPreferences(const web_pref::WebPreferences& prefs,
     RuntimeEnabledFeatures::SetAIRewriterAPIEnabled(true);
     RuntimeEnabledFeatures::SetAIWriterAPIEnabled(true);
   }
+
+  // Set on the core Settings directly: this is Blink-internal, and does not
+  // need to be part of the public WebSettings API.
+  web_view_impl->GetPage()->GetSettings().SetXSLTDeprecationBannerSuppressed(
+      prefs.is_xslt_deprecation_banner_suppressed);
 
 #if BUILDFLAG(IS_MAC) && BUILDFLAG(USE_EXTERNAL_POPUP_MENU)
   const bool use_external_popups = !prefs.should_disable_external_popups;
@@ -2483,7 +2500,7 @@ void WebViewImpl::SetPageScaleFactorAndLocation(float scale_factor,
 
   GetPage()->GetVisualViewport().SetScaleAndLocation(
       ClampPageScaleFactorToLimits(scale_factor), is_pinch_gesture_active,
-      location);
+      location, mojom::blink::ScrollType::kCompositor);
 }
 
 void WebViewImpl::SetPageScaleFactor(float scale_factor) {
@@ -2944,7 +2961,7 @@ void ValidatePausedStateConsistency() {
       }
       const bool microtasks_are_paused =
           window->GetAgent()->event_loop()->AreMicrotasksPaused();
-      CHECK(!microtasks_are_paused, base::NotFatalUntil::M156) << window->Url();
+      CHECK(!microtasks_are_paused, base::NotFatalUntil::M162) << window->Url();
     }
   }
 }
@@ -2978,6 +2995,7 @@ void WebViewImpl::EnableAutoResizeMode(const gfx::Size& min_size,
 
 void WebViewImpl::DisableAutoResizeMode() {
   should_auto_resize_ = false;
+  size_before_suppressed_autosize_.reset();
   ConfigureAutoResizeMode();
 }
 
@@ -3438,6 +3456,7 @@ void WebViewImpl::ResetScaleStateImmediately() {
 void WebViewImpl::ResetScrollAndScaleState() {
   // Skip scroll restoration when restoring from back-forward cache.
   if (last_page_lifecycle_state_update_restored_from_bfcache_) {
+    last_page_lifecycle_state_update_restored_from_bfcache_ = false;
     return;
   }
   GetPage()->GetVisualViewport().Reset();
@@ -3494,7 +3513,7 @@ void WebViewImpl::ConfigureAutoResizeMode() {
   }
 
   PageScaleConstraints constraints =
-      GetPageScaleConstraintsSet().UserAgentConstraints();
+      GetPageScaleConstraintsSet().AutoResizeConstraints();
   if (should_auto_resize_) {
     MainFrameImpl()->GetFrame()->View()->EnableAutoSizeMode(min_auto_size_,
                                                             max_auto_size_);
@@ -3504,7 +3523,7 @@ void WebViewImpl::ConfigureAutoResizeMode() {
     constraints.minimum_scale = -1.0f;
   }
   GetPageScaleConstraintsSet().SetNeedsReset(true);
-  GetPage()->SetUserAgentPageScaleConstraints(constraints);
+  GetPageScaleConstraintsSet().SetAutoResizeConstraints(constraints);
 }
 
 void WebViewImpl::SetCompositorDeviceScaleFactorOverride(
@@ -3611,7 +3630,12 @@ void WebViewImpl::UpdateColorProviders(
   bool color_providers_did_change =
       page_->UpdateColorProviders(color_provider_colors);
   if (color_providers_did_change) {
-    Page::ForcedColorsChanged();
+    if (::features::IsThemeChangeOptimizationV2Enabled()) {
+      page_->InvalidatePlatformColors();
+      page_->InvalidateColorScheme();
+    } else {
+      Page::ForcedColorsChanged();
+    }
   }
 }
 
@@ -3986,7 +4010,6 @@ void WebViewImpl::DidCommitLoad(bool is_new_navigation,
     }
   }
 
-  last_page_lifecycle_state_update_restored_from_bfcache_ = false;
   // Give the visual viewport's scroll layer its initial size.
   GetPage()->GetVisualViewport().MainFrameDidChangeSize();
 }
@@ -4007,15 +4030,41 @@ void WebViewImpl::ResizeAfterLayout() {
   if (should_auto_resize_) {
     LocalFrameView* view = MainFrameImpl()->GetFrame()->View();
     gfx::Size frame_size = view->Size();
+    const bool should_suppress_notifications =
+        view->IsBeingAutoSized() &&
+        RuntimeEnabledFeatures::AutoSizeUsesScrollWidthForOverflowEnabled();
+    if (should_suppress_notifications && !size_before_suppressed_autosize_) {
+      size_before_suppressed_autosize_ = size_;
+    }
+    const bool had_suppressed_autosize_measurements =
+        size_before_suppressed_autosize_.has_value();
+    const gfx::Size previously_reported_size =
+        size_before_suppressed_autosize_.value_or(size_);
+    bool visual_viewport_size_changed = false;
     if (frame_size != size_) {
       size_ = frame_size;
 
-      GetPage()->GetVisualViewport().SetSize(size_);
+      GetPage()->GetVisualViewport().SetSize(size_,
+                                             should_suppress_notifications);
+      visual_viewport_size_changed = true;
       GetPageScaleConstraintsSet().DidChangeInitialContainingBlockSize(size_);
+    }
 
+    if (!should_suppress_notifications) {
+      size_before_suppressed_autosize_.reset();
+    }
+    if (!should_suppress_notifications &&
+        frame_size != previously_reported_size) {
       web_view_client_->DidAutoResize(size_);
       web_widget_->DidAutoResize(size_);
       SendResizeEventForMainFrame();
+      if (!visual_viewport_size_changed) {
+        view->GetFrame().GetDocument()->EnqueueVisualViewportResizeEvent();
+      }
+      if (had_suppressed_autosize_measurements &&
+          !view->GetFrame().GetDocument()->Printing()) {
+        probe::DidResizeMainFrame(&view->GetFrame());
+      }
     }
   }
 
@@ -4032,9 +4081,11 @@ void WebViewImpl::MainFrameLayoutUpdated() {
     return;
   }
 
-  for (auto& observer : observers_) {
-    observer.DidUpdateMainFrameLayout();
-  }
+  // Allow reentrancy because `OnPageVisibilityChanged` observers (e.g.
+  // `media::RendererWebMediaPlayerDelegate`) can synchronously run script that
+  // forces a main-frame layout update while `SetVisibilityState()` is iterating
+  // `observers_`.
+  observers_.NotifyAllowReentrancy(&WebViewObserver::DidUpdateMainFrameLayout);
   needs_preferred_size_update_ = true;
 }
 

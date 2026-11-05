@@ -30,9 +30,8 @@ if SOURCE_DIR:
         os.path.abspath(os.path.join(SOURCE_DIR, 'mojo/public/tools/mojom'))
     )
 
-from mojom.parse import parser  # type: ignore
-from mojom.parse import ast  # type: ignore
-from mojom.generate import generator  # type: ignore
+from mojom.parse import parser  # type: ignore  # noqa: E402
+from mojom.parse import ast  # type: ignore  # noqa: E402
 
 MOJOM_PRIMITIVE_TYPES = {
     'int8',
@@ -51,6 +50,7 @@ MOJOM_PRIMITIVE_TYPES = {
 }
 
 INPUT_MOJOM_FILES = [
+    'chrome/browser/glic/gemini_enterprise/gemini_enterprise.mojom',
     'chrome/browser/glic/host/glic.mojom',
     'chrome/common/actor_webui.mojom',
     'chrome/common/glic_enums.mojom',
@@ -188,7 +188,6 @@ def _ConvertModule(mojom_node, filename: str) -> dict:
     enums = []
     structs = []
     unions = []
-    interfaces: list[dict] = []
 
     for defn in mojom_node.definition_list:
         if isinstance(defn, ast.Enum):
@@ -204,7 +203,6 @@ def _ConvertModule(mojom_node, filename: str) -> dict:
         'enums': enums,
         'structs': structs,
         'unions': unions,
-        'interfaces': interfaces,
     }
 
 

@@ -12,7 +12,6 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/process/process_handle.h"
-#include "base/synchronization/waitable_event.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/thread.h"
@@ -23,8 +22,8 @@
 #include "services/tracing/public/cpp/perfetto/common_data_sources.h"
 #include "services/tracing/public/cpp/perfetto/custom_event_recorder.h"
 #include "services/tracing/public/cpp/perfetto/perfetto_tracing_backend.h"
-#include "services/tracing/public/cpp/perfetto/track_name_recorder.h"
 #include "services/tracing/public/cpp/trace_startup.h"
+#include "services/tracing/public/cpp/trace_startup_config.h"
 #include "services/tracing/public/cpp/traced_process_impl.h"
 #include "services/tracing/public/cpp/tracing_features.h"
 #include "services/tracing/public/mojom/tracing_service.mojom.h"
@@ -48,12 +47,6 @@ namespace {
 
 PerfettoTracedProcess* g_instance = nullptr;
 bool g_system_consumer_enabled_for_testing = false;
-
-static scoped_refptr<base::SequencedTaskRunner>& GetDataSourceTaskRunner() {
-  static base::NoDestructor<scoped_refptr<base::SequencedTaskRunner>>
-      task_runner;
-  return *task_runner;
-}
 
 void OnPerfettoLogMessage(perfetto::base::LogMessageCallbackArgs args) {
   // Perfetto levels start at 0, base's at -1.
@@ -164,12 +157,7 @@ void PerfettoTracedProcess::DataSourceBase::Flush(
 
 base::SequencedTaskRunner*
 PerfettoTracedProcess::DataSourceBase::GetTaskRunner() {
-  return GetDataSourceTaskRunner().get();
-}
-
-void PerfettoTracedProcess::DataSourceBase::ResetTaskRunner(
-    scoped_refptr<base::SequencedTaskRunner> task_runner) {
-  GetDataSourceTaskRunner() = task_runner;
+  return base::tracing::PerfettoPlatform::Get().task_runner().get();
 }
 
 void PerfettoTracedProcess::RestartThreadInSandbox() {
@@ -177,8 +165,8 @@ void PerfettoTracedProcess::RestartThreadInSandbox() {
       base::Thread::Options(base::MessagePumpType::IO, 0)));
   DETACH_FROM_SEQUENCE(sequence_checker_);
   task_runner_ = trace_process_thread_->task_runner();
-  platform_->ResetTaskRunner(trace_process_thread_->task_runner());
-  DataSourceBase::ResetTaskRunner(trace_process_thread_->task_runner());
+  base::tracing::PerfettoPlatform::Get().ResetTaskRunner(
+      trace_process_thread_->task_runner());
   tracing_backend_->DetachFromMuxerSequence();
   CustomEventRecorder::GetInstance()->DetachFromSequence();
   will_trace_thread_restart_ = false;
@@ -204,27 +192,27 @@ PerfettoTracedProcess& PerfettoTracedProcess::MaybeCreateInstance(
 }
 
 // static
-PerfettoTracedProcess& PerfettoTracedProcess::MaybeCreateInstanceForTesting() {
-  static base::NoDestructor<PerfettoTracedProcess> traced_process(nullptr);
-  return *traced_process;
-}
-
-// static
 PerfettoTracedProcess& PerfettoTracedProcess::Get() {
   CHECK_NE(g_instance, nullptr);
   return *g_instance;
 }
 
+// static
+bool PerfettoTracedProcess::HasInstance() {
+  return g_instance != nullptr;
+}
+
 PerfettoTracedProcess::PerfettoTracedProcess(bool will_trace_thread_restart)
-    : trace_process_thread_(
+    : tracing_backend_(std::make_unique<PerfettoTracingBackend>()),
+      trace_process_thread_(
           std::make_unique<base::Thread>("PerfettoTrace",
                                          base::Thread::Restartable{})),
-      task_runner_(trace_process_thread_->StartWithOptions(
-                       base::Thread::Options(base::MessagePumpType::IO, 0))
-                       ? trace_process_thread_->task_runner()
-                       : nullptr),
-      will_trace_thread_restart_(will_trace_thread_restart),
-      tracing_backend_(std::make_unique<PerfettoTracingBackend>()) {
+      will_trace_thread_restart_(will_trace_thread_restart) {
+  if (trace_process_thread_->StartWithOptions(
+          base::Thread::Options(base::MessagePumpType::IO, 0))) {
+    task_runner_ = trace_process_thread_->task_runner();
+  }
+
   base::ProcessId real_pid = base::GetUniqueIdForProcess().GetUnsafeValue();
   if (real_pid != base::GetCurrentProcId()) {
     perfetto::Platform::SetCurrentProcessId(real_pid);
@@ -233,34 +221,34 @@ PerfettoTracedProcess::PerfettoTracedProcess(bool will_trace_thread_restart)
   base::tracing::PerfettoPlatform::Options options{
       .defer_delayed_tasks = will_trace_thread_restart_,
       .real_process_id = real_pid};
-  platform_ =
-      std::make_unique<base::tracing::PerfettoPlatform>(task_runner_, options);
+  base::tracing::PerfettoPlatform::MaybeCreateInstance(task_runner_, options);
   DETACH_FROM_SEQUENCE(sequence_checker_);
   CHECK_EQ(g_instance, nullptr);
   CHECK(task_runner_);
   g_instance = this;
-  GetDataSourceTaskRunner() = task_runner_;
 }
 
 PerfettoTracedProcess::PerfettoTracedProcess(
     scoped_refptr<base::SequencedTaskRunner> task_runner)
     : task_runner_(task_runner),
       tracing_backend_(std::make_unique<PerfettoTracingBackend>()) {
+  CHECK(task_runner_);
   base::ProcessId real_pid = base::GetUniqueIdForProcess().GetUnsafeValue();
   if (real_pid != base::GetCurrentProcId()) {
     perfetto::Platform::SetCurrentProcessId(real_pid);
   }
 
   base::tracing::PerfettoPlatform::Options options{.real_process_id = real_pid};
-  platform_ =
-      std::make_unique<base::tracing::PerfettoPlatform>(task_runner_, options);
+  base::tracing::PerfettoPlatform::MaybeCreateInstance(task_runner_, options);
   DETACH_FROM_SEQUENCE(sequence_checker_);
   CHECK_EQ(g_instance, nullptr);
   g_instance = this;
-  GetDataSourceTaskRunner() = task_runner_;
 }
 
-PerfettoTracedProcess::~PerfettoTracedProcess() = default;
+PerfettoTracedProcess::~PerfettoTracedProcess() {
+  CHECK_EQ(g_instance, this);
+  g_instance = nullptr;
+}
 
 void PerfettoTracedProcess::SetConsumerConnectionFactory(
     ConsumerConnectionFactory factory,
@@ -281,51 +269,6 @@ base::SequencedTaskRunner* PerfettoTracedProcess::GetTaskRunner() {
   return PerfettoTracedProcess::Get().task_runner_.get();
 }
 
-void PerfettoTracedProcess::SetupForTesting(
-    scoped_refptr<base::SequencedTaskRunner> task_runner) {
-  // Make sure Perfetto was properly torn down in any prior tests.
-  DCHECK(!perfetto::Tracing::IsInitialized());
-
-  task_runner_ = std::move(task_runner);
-  platform_->ResetTaskRunner(task_runner_);
-  DataSourceBase::ResetTaskRunner(task_runner_);
-
-  tracing_backend_ = std::make_unique<PerfettoTracingBackend>();
-  SetupClientLibrary(/*enable_consumer=*/true, ShouldSetupSystemTracing());
-  // Disassociate the PerfettoTracedProcess from any prior task runner.
-  DETACH_FROM_SEQUENCE(sequence_checker_);
-
-  TrackNameRecorder::GetInstance()->StartRecording();
-}
-
-void PerfettoTracedProcess::ResetForTesting() {
-  TrackNameRecorder::GetInstance()->StopRecording();
-  base::WaitableEvent on_reset_done;
-  // The tracing backend is used internally in Perfetto on the |task_runner_|
-  // sequence. Reset and destroy the backend on the task runner to avoid racing
-  // in resetting Perfetto.
-  auto reset_task = base::BindOnce(
-      [](decltype(tracing_backend_) tracing_backend,
-         base::WaitableEvent* on_reset_done) {
-        tracing_backend.reset();
-        // TODO(skyostil): We only uninitialize Perfetto
-        // for now, but there may also be other
-        // tracing-related state which should not leak
-        // between tests.
-        perfetto::Tracing::ResetForTesting();
-        on_reset_done->Signal();
-      },
-      std::move(tracing_backend_), &on_reset_done);
-  if (task_runner_->RunsTasksInCurrentSequence()) {
-    std::move(reset_task).Run();
-  } else {
-    task_runner_->PostTask(FROM_HERE, std::move(reset_task));
-
-    on_reset_done.Wait();
-  }
-  task_runner_ = nullptr;
-}
-
 #if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_ANDROID)
 void PerfettoTracedProcess::DeferOrConnectProducerSocket(
     perfetto::CreateSocketCallback cb) {
@@ -340,30 +283,29 @@ void PerfettoTracedProcess::DeferOrConnectProducerSocket(
 }
 #endif  // BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_ANDROID)
 
-void PerfettoTracedProcess::SetupClientLibrary(
-    bool enable_consumer,
-    bool enable_system_backend,
-    std::optional<uint64_t> process_track_uuid) {
+void PerfettoTracedProcess::SetupClientLibrary(bool enable_consumer,
+                                               bool enable_system_backend) {
   perfetto::TracingInitArgs init_args;
-  init_args.platform = platform_.get();
+  init_args.platform = &base::tracing::PerfettoPlatform::Get();
   init_args.custom_backend = tracing_backend_.get();
   init_args.backends |= perfetto::kCustomBackend;
   init_args.shmem_batch_commits_duration_ms = 1000;
   init_args.shmem_size_hint_kb =
-      features::kPerfettoSharedMemorySizeBytes.Get() / 1024;
+      (enable_consumer ? features::kPerfettoBrowserSharedMemorySizeBytes.Get()
+                       : features::kPerfettoSharedMemorySizeBytes.Get()) /
+      1024;
   init_args.shmem_direct_patching_enabled = true;
   init_args.use_monotonic_clock = true;
   init_args.disallow_merging_with_system_tracks = true;
-  init_args.process_uuid = process_track_uuid;
+  init_args.process_uuid =
+      TraceStartupConfig::GetInstance().GetProcessTrackUuid();
 #if BUILDFLAG(IS_POSIX)
   if (enable_system_backend) {
     init_args.backends |= perfetto::kSystemBackend;
     init_args.tracing_policy = this;
 #if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_ANDROID)
-    auto type =
-        base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("type");
-    if (!type.empty()) {  // Sandboxed. Need to delegate to the browser process
-                          // using Mojo.
+    if (!TraceStartupConfig::GetInstance().GetProcessType().empty()) {
+      // Sandboxed. Need to delegate to the browser process using Mojo.
       init_args.create_socket_async = ConnectProducerSocketAsync;
     }
 #endif
@@ -399,9 +341,7 @@ void PerfettoTracedProcess::SetAllowSystemTracingConsumerForTesting(
 void PerfettoTracedProcess::ShouldAllowConsumerSession(
     const perfetto::TracingPolicy::ShouldAllowConsumerSessionArgs& args) {
   // Consumer connections should only be attempted in the browser process.
-  CHECK(base::CommandLine::ForCurrentProcess()
-            ->GetSwitchValueASCII("type")
-            .empty());
+  CHECK(TraceStartupConfig::GetInstance().GetProcessType().empty());
 
   // Integrated tracing backends are always allowed.
   if (args.backend_type != perfetto::BackendType::kSystemBackend) {

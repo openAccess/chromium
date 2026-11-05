@@ -13,6 +13,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/script/script_type.mojom-blink.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/loader/empty_clients.h"
 #include "third_party/blink/renderer/platform/network/content_security_policy_parsers.h"
 
 namespace blink {
@@ -26,10 +27,7 @@ GlobalScopeCreationParams::GlobalScopeCreationParams(
     scoped_refptr<WebWorkerFetchContext> web_worker_fetch_context,
     Vector<network::mojom::blink::ContentSecurityPolicyPtr>
         outside_content_security_policies,
-    Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-        response_content_security_policies,
     network::mojom::ReferrerPolicy referrer_policy,
-    DocumentPolicy::DocumentPolicyBundle document_policy,
     const SecurityOrigin* starter_origin,
     bool starter_secure_context,
     HttpsState starter_https_state,
@@ -71,10 +69,7 @@ GlobalScopeCreationParams::GlobalScopeCreationParams(
       web_worker_fetch_context(std::move(web_worker_fetch_context)),
       outside_content_security_policies(
           std::move(outside_content_security_policies)),
-      response_content_security_policies(
-          std::move(response_content_security_policies)),
       referrer_policy(referrer_policy),
-      document_policy(std::move(document_policy)),
       starter_origin(starter_origin ? starter_origin->IsolatedCopy() : nullptr),
       origin_to_use(std::move(origin_to_use)),
       starter_secure_context(starter_secure_context),
@@ -140,11 +135,9 @@ GlobalScopeCreationParams::CreateForWorkerForTesting(
   return std::make_unique<GlobalScopeCreationParams>(
       script_url, mojom::blink::ScriptType::kClassic, "fake global scope name",
       "fake user agent", UserAgentMetadata(),
-      /*web_worker_fetch_context=*/nullptr,
+      base::MakeRefCounted<EmptyWebWorkerFetchContext>(),
       Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-      network::mojom::ReferrerPolicy::kDefault,
-      DocumentPolicy::DocumentPolicyBundle{}, starter_origin,
+      network::mojom::ReferrerPolicy::kDefault, starter_origin,
       /*starter_secure_context=*/false, CalculateHttpsState(starter_origin),
       MakeGarbageCollected<WorkerClients>(),
       /*content_settings_client=*/nullptr,

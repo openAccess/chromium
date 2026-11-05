@@ -13,14 +13,11 @@
 #include "third_party/blink/renderer/platform/heap/member.h"
 
 namespace blink {
-class AtomicString;
 struct DOMPaintTimingInfo;
-class Element;
 class LocalDOMWindow;
 class ImageRecord;
 class LayoutObject;
 class MediaTiming;
-class String;
 class TextRecord;
 
 // `LargestContentfulPaintManager` is responsible for computing Largest
@@ -35,27 +32,21 @@ class CORE_EXPORT LargestContentfulPaintManager
 
   // LargestContentfulPaintCalculator::Delegate:
   void EmitLcpPerformanceEntry(const DOMPaintTimingInfo& paint_timing_info,
-                               uint64_t paint_size,
-                               base::TimeTicks load_time,
-                               const AtomicString& id,
-                               const String& url,
-                               Element* element) override;
+                               LargestContentfulPaint* lcp_entry) override;
   void OnLcpMetricsForReportingChanged() override;
   bool IsHardNavigation() const override { return true; }
   void Trace(Visitor* visitor) const override;
 
   // PaintTimingClient:
+  Type GetType() const override;
   void OnElementFirstContentfulPaint(ImageRecord*) override;
-  void OnElementLastContentfulPaint(ImageRecord*) override;
-  void OnElementLastContentfulPaint(TextRecord*,
-                                    bool was_previously_reported) override;
+  OptionalPaintTimingCallback OnPaintFinished(
+      const HeapVector<Member<ImageRecord>>&,
+      const HeapVector<Member<TextRecord>>&) override;
   void OnFramePresented(const HeapVector<Member<ImageRecord>>&,
                         const HeapVector<Member<TextRecord>>&,
-                        const GCedHeapVector<Member<ElementTimingInfo>>*,
                         const DOMPaintTimingInfo&) override;
-  void OnImageRemoved(ImageRecord*,
-                      const LayoutObject&,
-                      const MediaTiming*) override;
+  void OnImageRemoved(const LayoutObject&, const MediaTiming*) override;
   // Shuts down the manager and stops recording LCP. The last value pushed to
   // PerformanceTimingForReporting will be the final value.
   void OnInputOrScroll() override;
@@ -75,6 +66,10 @@ class CORE_EXPORT LargestContentfulPaintManager
 
   LargestContentfulPaintCalculator* LargestContentfulPaintCalculatorForTest() {
     return largest_contentful_paint_calculator_;
+  }
+
+  bool MaybeHasIgnoredContent() const {
+    return largest_ignored_image_ || largest_ignored_text_.value;
   }
 
   bool HasLargestIgnoredTextForTest() {

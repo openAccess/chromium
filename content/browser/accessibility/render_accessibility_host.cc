@@ -4,7 +4,6 @@
 
 #include "content/browser/accessibility/render_accessibility_host.h"
 
-#include <atomic>
 #include <memory>
 
 #include "base/functional/bind.h"
@@ -13,19 +12,10 @@
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/browser/browser_thread.h"
 #include "mojo/public/cpp/bindings/message.h"
+#include "ui/accessibility/ax_location_and_scroll_updates.h"
+#include "ui/accessibility/ax_updates_and_events.h"
 
 namespace content {
-namespace {
-
-// True if inbound accessibility calls are to be ignored.
-std::atomic_bool g_renderer_serialization_experiment_enabled{false};
-
-base::RepeatingClosure& GetOnAccessibilityDataDiscardedCallback() {
-  static base::NoDestructor<base::RepeatingClosure> test_callback;
-  return *test_callback;
-}
-
-}  // namespace
 
 RenderAccessibilityHost::RenderAccessibilityHost(
     base::WeakPtr<RenderFrameHostImpl> render_frame_host_impl,
@@ -34,19 +24,6 @@ RenderAccessibilityHost::RenderAccessibilityHost(
       tree_id_(tree_id) {}
 
 RenderAccessibilityHost::~RenderAccessibilityHost() = default;
-
-// static
-void RenderAccessibilityHost::SetRendererSerializationExperimentEnabled(
-    bool enabled) {
-  g_renderer_serialization_experiment_enabled.store(enabled,
-                                                    std::memory_order_relaxed);
-}
-
-// static
-void RenderAccessibilityHost::SetAccessibilityDataDiscardedCallbackForTesting(
-    base::RepeatingClosure closure) {
-  GetOnAccessibilityDataDiscardedCallback() = std::move(closure);
-}
 
 void RenderAccessibilityHost::HandleAXEvents(
     const ui::AXUpdatesAndEvents& updates_and_events,
@@ -62,12 +39,10 @@ void RenderAccessibilityHost::HandleAXEvents(
     ui::AXLocationAndScrollUpdates& location_and_scroll_updates,
     uint32_t reset_token,
     HandleAXEventsCallback callback) {
-  if (g_renderer_serialization_experiment_enabled.load(
-          std::memory_order_relaxed)) {
+  if (!updates_and_events.HasValidAXNodeIDsFromRenderer() ||
+      !location_and_scroll_updates.HasValidAXNodeIDsFromRenderer()) {
+    mojo::ReportBadMessage("Invalid AXNodeID from renderer.");
     std::move(callback).Run();
-    if (GetOnAccessibilityDataDiscardedCallback()) {
-      GetOnAccessibilityDataDiscardedCallback().Run();
-    }
     return;
   }
   // Post the HandleAXEvents task onto the UI thread, and then when that
@@ -93,8 +68,8 @@ void RenderAccessibilityHost::HandleAXLocationChanges(
 void RenderAccessibilityHost::HandleAXLocationChanges(
     ui::AXLocationAndScrollUpdates& changes,
     uint32_t reset_token) {
-  if (g_renderer_serialization_experiment_enabled.load(
-          std::memory_order_relaxed)) {
+  if (!changes.HasValidAXNodeIDsFromRenderer()) {
+    mojo::ReportBadMessage("Invalid AXNodeID from renderer.");
     return;
   }
   GetUIThreadTaskRunner({})->PostTask(

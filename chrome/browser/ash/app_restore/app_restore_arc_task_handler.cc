@@ -32,7 +32,7 @@ constexpr LauncherTag kFullRestoreLaunchHandlerTag = {
 
 AppRestoreArcTaskHandler::AppRestoreArcTaskHandler(
     Profile* profile,
-    SchedulerConfigurationManager* scheduler_configuration_manager)
+    SchedulerConfigurationManagerBase* scheduler_configuration_manager)
     : scheduler_configuration_manager_(scheduler_configuration_manager) {
   if (!scheduler_configuration_manager_) {
     CHECK_IS_TEST();
@@ -59,7 +59,7 @@ AppRestoreArcTaskHandler::AppRestoreArcTaskHandler(
 ArcAppQueueRestoreHandler*
 AppRestoreArcTaskHandler::GetDeskTemplateArcAppQueueRestoreHandler(
     int32_t launch_id) {
-  DCHECK_GT(launch_id, 0);
+  CHECK_GT(launch_id, 0, base::NotFatalUntil::M160);
 
   return CreateOrGetArcAppQueueRestoreHandler(
       {LauncherType::kDeskTemplate, launch_id}, /*call_init_callback=*/true);
@@ -67,7 +67,7 @@ AppRestoreArcTaskHandler::GetDeskTemplateArcAppQueueRestoreHandler(
 
 void AppRestoreArcTaskHandler::ClearDeskTemplateArcAppQueueRestoreHandler(
     int32_t launch_id) {
-  DCHECK_GT(launch_id, 0);
+  CHECK_GT(launch_id, 0, base::NotFatalUntil::M160);
   arc_app_queue_restore_handlers_.erase(
       {LauncherType::kDeskTemplate, launch_id});
 }

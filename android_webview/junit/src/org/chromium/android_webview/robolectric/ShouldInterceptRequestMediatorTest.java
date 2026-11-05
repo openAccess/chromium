@@ -12,28 +12,23 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 import androidx.annotation.Nullable;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ShouldInterceptRequestMediatorTest {
     @Test
-    @SmallTest
     @Feature({"WebView"})
     public void overridesWebViewClient_noOverride() throws NoSuchMethodException {
         Assert.assertFalse(overridesShouldInterceptRequest(new WebViewClient()));
     }
 
     @Test
-    @SmallTest
     @Feature({"WebView"})
     public void overridesWebViewClient_overridesStringOverload() throws NoSuchMethodException {
         Assert.assertTrue(
@@ -49,7 +44,6 @@ public class ShouldInterceptRequestMediatorTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"WebView"})
     public void overridesWebViewClient_overridesWebResourceRequestOverload()
             throws NoSuchMethodException {

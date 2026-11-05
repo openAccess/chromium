@@ -16,7 +16,11 @@
 #include "ash/system/unified/unified_system_tray_bubble.h"
 #include "ash/system/unified/user_chooser_view.h"
 #include "ash/test/ash_test_base.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
+#include "base/i18n/tag_converters.h"
+#include "base/i18n/test/scoped_icu_locale.h"
+#include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "components/user_manager/user_type.h"
@@ -293,7 +297,8 @@ TEST_F(PowerButtonTest, ButtonStatesGuestMode) {
 }
 
 TEST_F(PowerButtonTest, EmailIsShownForRegularAccount) {
-  SimulateUserLogin({"user@gmail.com", user_manager::UserType::kRegular});
+  SimulateUserLogin({.account_id = AccountId::FromUserEmail("user@gmail.com"),
+                     .user_type = user_manager::UserType::kRegular});
   SimulatePowerButtonPress();
   EXPECT_TRUE(GetEmailButton()->GetVisible());
   EXPECT_TRUE(GetEmailButton()->GetEnabled());
@@ -301,7 +306,8 @@ TEST_F(PowerButtonTest, EmailIsShownForRegularAccount) {
 }
 
 TEST_F(PowerButtonTest, EmailIsShownForChildAccount) {
-  SimulateUserLogin({"child@gmail.com", user_manager::UserType::kChild});
+  SimulateUserLogin({.account_id = AccountId::FromUserEmail("child@gmail.com"),
+                     .user_type = user_manager::UserType::kChild});
   SimulatePowerButtonPress();
   EXPECT_TRUE(GetEmailButton()->GetVisible());
   // The multi-profile user chooser is disabled for child accounts.
@@ -310,7 +316,8 @@ TEST_F(PowerButtonTest, EmailIsShownForChildAccount) {
 }
 
 TEST_F(PowerButtonTest, EmailIsNotShownForPublicAccount) {
-  SimulateUserLogin({"test@test.com", user_manager::UserType::kPublicAccount});
+  SimulateUserLogin({.account_id = AccountId::FromUserEmail("test@test.com"),
+                     .user_type = user_manager::UserType::kPublicAccount});
   SimulatePowerButtonPress();
   EXPECT_EQ(nullptr, GetEmailButton());
 }
@@ -319,7 +326,8 @@ TEST_F(PowerButtonTest, EmailIsNotShownForPublicAccount) {
 // accessed in kiosk mode.
 
 TEST_F(PowerButtonTest, ClickingEmailShowsUserChooserView) {
-  SimulateUserLogin({"user@gmail.com", user_manager::UserType::kRegular});
+  SimulateUserLogin({.account_id = AccountId::FromUserEmail("user@gmail.com"),
+                     .user_type = user_manager::UserType::kRegular});
   SimulatePowerButtonPress();
   LeftClickOn(GetEmailButton());
 
@@ -330,7 +338,8 @@ TEST_F(PowerButtonTest, ClickingEmailShowsUserChooserView) {
 }
 
 TEST_F(PowerButtonTest, UserItemButtonTooltipText) {
-  SimulateUserLogin({"user@gmail.com", user_manager::UserType::kRegular});
+  SimulateUserLogin({.account_id = AccountId::FromUserEmail("user@gmail.com"),
+                     .user_type = user_manager::UserType::kRegular});
   SimulatePowerButtonPress();
   LeftClickOn(GetEmailButton());
 
@@ -375,33 +384,36 @@ TEST_F(PowerButtonTest, ButtonRoundedRadii) {
   SimulateUserLogin(kRegularUserLoginInfo);
 
   // Sets a LTR locale.
-  base::i18n::SetICUDefaultLocale("en_US");
+  {
+    base::i18n::ScopedRTLForTesting scoped_rtl(false);
 
-  EXPECT_TRUE(GetPowerButton()->GetVisible());
+    EXPECT_TRUE(GetPowerButton()->GetVisible());
 
-  EXPECT_EQ(gfx::RoundedCornersF(16, 16, 16, 16),
-            GetBackgroundLayer()->rounded_corner_radii());
+    EXPECT_EQ(gfx::RoundedCornersF(16, 16, 16, 16),
+              GetBackgroundLayer()->rounded_corner_radii());
 
-  // Clicks on the power button.
-  SimulatePowerButtonPress();
+    // Clicks on the power button.
+    SimulatePowerButtonPress();
 
-  EXPECT_EQ(gfx::RoundedCornersF(4, 16, 16, 16),
-            GetBackgroundLayer()->rounded_corner_radii());
+    EXPECT_EQ(gfx::RoundedCornersF(4, 16, 16, 16),
+              GetBackgroundLayer()->rounded_corner_radii());
 
-  // Click the power button again to close the menu.
-  SimulatePowerButtonPress();
+    // Click the power button again to close the menu.
+    SimulatePowerButtonPress();
+  }
 
   // Sets a RTL locale.
-  base::i18n::SetICUDefaultLocale("ar");
+  {
+    base::i18n::ScopedRTLForTesting scoped_rtl(true);
+    EXPECT_EQ(gfx::RoundedCornersF(16, 16, 16, 16),
+              GetBackgroundLayer()->rounded_corner_radii());
 
-  EXPECT_EQ(gfx::RoundedCornersF(16, 16, 16, 16),
-            GetBackgroundLayer()->rounded_corner_radii());
+    // Clicks on the power button.
+    SimulatePowerButtonPress();
 
-  // Clicks on the power button.
-  SimulatePowerButtonPress();
-
-  EXPECT_EQ(gfx::RoundedCornersF(16, 4, 16, 16),
-            GetBackgroundLayer()->rounded_corner_radii());
+    EXPECT_EQ(gfx::RoundedCornersF(16, 4, 16, 16),
+              GetBackgroundLayer()->rounded_corner_radii());
+  }
 }
 
 TEST_F(PowerButtonTest, DeviceRebootOnShutdownPolicyHidesPowerOffButton) {

@@ -15,12 +15,11 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test.pb.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
+#include "components/optimization_guide/core/model_quality/model_quality_prefs.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/optimization_guide_buildflags.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
@@ -77,7 +76,7 @@ class ModelQualityLogsUploaderServiceTest : public testing::Test {
         shared_url_loader_factory_(
             base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
                 &test_url_loader_factory_)) {
-    model_execution::prefs::RegisterLocalStatePrefs(pref_service_.registry());
+    RegisterModelQualityLocalStatePrefs(pref_service_.registry());
     model_quality_logs_uploader_service_ =
         std::make_unique<ModelQualityLogsUploaderService>(
             shared_url_loader_factory_, &pref_service_);
@@ -93,9 +92,7 @@ class ModelQualityLogsUploaderServiceTest : public testing::Test {
 
   ~ModelQualityLogsUploaderServiceTest() override = default;
 
-  void SetUp() override {
-    model_execution::prefs::RegisterProfilePrefs(pref_service_.registry());
-  }
+  void SetUp() override { RegisterGenAiFeatures(pref_service_.registry()); }
 
   void UploadModelQualityLogs(
       std::unique_ptr<proto::LogAiDataRequest> log_ai_data_request) {
@@ -131,9 +128,6 @@ class ModelQualityLogsUploaderServiceTest : public testing::Test {
             ->mutable_wallpaper_search()
             ->mutable_quality()
             ->set_user_feedback(feedback);
-        break;
-      case UserVisibleFeatureKey::kHistorySearch:
-        // TODO(crbug.com/345308285): Add user feedback for history searches.
         break;
       case UserVisibleFeatureKey::kPasswordChangeSubmission:
         // TODO(crbug.com/375569995): Add user feedback for password change

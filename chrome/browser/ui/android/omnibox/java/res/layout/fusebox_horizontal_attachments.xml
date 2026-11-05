@@ -10,28 +10,41 @@ found in the LICENSE file.
     android:layout_height="wrap_content"
     android:orientation="horizontal"
     android:baselineAligned="false"
-    android:paddingHorizontal="@dimen/fusebox_carousel_padding_horizontal"
+    android:paddingHorizontal="@dimen/fusebox_carousel_container_padding_horizontal"
     android:paddingTop="@dimen/fusebox_carousel_padding_top"
     android:paddingBottom="@dimen/fusebox_carousel_padding_bottom"
     android:importantForAccessibility="no">
 
     <include
         layout="@layout/fusebox_horizontal_attachment_item"
-        android:id="@+id/fusebox_add_current_tab"/>
+        style="@style/Fusebox.CarouselItem.Weighted"
+        android:id="@+id/fusebox_add_current_tab"
+        android:visibility="gone"/>
 
     <include
         layout="@layout/fusebox_horizontal_attachment_item"
-        android:id="@+id/fusebox_pick_tabs_button"/>
-
-    <include
-        layout="@layout/fusebox_horizontal_attachment_item"
+        style="@style/Fusebox.CarouselItem.Weighted"
         android:id="@+id/fusebox_pick_picture_button"/>
 
     <include
         layout="@layout/fusebox_horizontal_attachment_item"
+        style="@style/Fusebox.CarouselItem.Weighted"
         android:id="@+id/fusebox_camera_button"/>
 
     <include
         layout="@layout/fusebox_horizontal_attachment_item"
-        android:id="@+id/fusebox_pick_file_button"/>
+        style="@style/Fusebox.CarouselItem.Weighted"
+        android:id="@+id/fusebox_pick_tabs_button"/>
+
+    <include
+        layout="@layout/fusebox_horizontal_attachment_item"
+        style="@style/Fusebox.CarouselItem.Weighted"
+        android:id="@+id/fusebox_pick_file_button"
+        android:visibility="gone"/>
+
+    <include
+        layout="@layout/fusebox_horizontal_attachment_item"
+        style="@style/Fusebox.CarouselItem.Weighted"
+        android:id="@+id/fusebox_pick_drive_button"
+        android:visibility="gone"/>
 </LinearLayout>

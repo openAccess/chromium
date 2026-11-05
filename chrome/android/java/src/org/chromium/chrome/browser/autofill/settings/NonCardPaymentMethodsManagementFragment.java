@@ -35,6 +35,7 @@ import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
 import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.components.autofill.ImageSize;
 import org.chromium.components.autofill.payments.Ewallet;
+import org.chromium.components.browser_ui.settings.ChromeBasePreference;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
 import org.chromium.components.browser_ui.settings.SettingsFragment;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
@@ -133,6 +134,7 @@ public class NonCardPaymentMethodsManagementFragment extends ChromeBaseSettingsF
             ChromeSwitchPreference ewalletSwitch = new ChromeSwitchPreference(getStyledContext());
             ewalletSwitch.setChecked(isFacilitatedPaymentsEwalletEnabled);
             ewalletSwitch.setKey(PREFERENCE_KEY_EWALLET);
+            ewalletSwitch.setPersistent(false);
             ewalletSwitch.setTitle(R.string.settings_manage_other_financial_accounts_ewallet);
             ewalletSwitch.setOnPreferenceChangeListener(this);
             getPreferenceScreen().addPreference(ewalletSwitch);
@@ -148,6 +150,7 @@ public class NonCardPaymentMethodsManagementFragment extends ChromeBaseSettingsF
             ChromeSwitchPreference a2aSwitch = new ChromeSwitchPreference(getStyledContext());
             a2aSwitch.setChecked(mPersonalDataManager.getFacilitatedPaymentsA2AEnabledPref());
             a2aSwitch.setKey(PREFERENCE_KEY_A2A);
+            a2aSwitch.setPersistent(false);
             a2aSwitch.setTitle(R.string.settings_manage_non_card_payment_methods_a2a_title);
             a2aSwitch.setSummary(R.string.settings_manage_non_card_payment_methods_a2a_description);
             a2aSwitch.setOnPreferenceChangeListener(this);
@@ -159,7 +162,7 @@ public class NonCardPaymentMethodsManagementFragment extends ChromeBaseSettingsF
     }
 
     private Preference getEwalletRowItem(Ewallet ewallet) {
-        Preference ewalletPref = new Preference(getStyledContext());
+        Preference ewalletPref = new ChromeBasePreference(getStyledContext());
         ewalletPref.setTitle(ewallet.getEwalletName());
         ewalletPref.setKey(
                 String.format(PREFERENCE_KEY_EWALLET_ACCOUNT, ewallet.getInstrumentId()));

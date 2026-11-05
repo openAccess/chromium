@@ -46,10 +46,8 @@ import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
-import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.ScalableTimeout;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.password_manager.GetLoginMatchType;
 import org.chromium.chrome.browser.touch_to_fill.common.BottomSheetFocusHelper;
@@ -65,6 +63,7 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.Shee
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
 import org.chromium.content_public.browser.test.util.TouchCommon;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.url.GURL;
 
 import java.util.Arrays;
@@ -77,6 +76,7 @@ import java.util.Collections;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562626839
 public class TouchToFillPasswordManagerIntegrationTest {
     private static GURL sExampleUrl;
     private static final String MOBILE_URL = "https://m.example.xyz";
@@ -313,7 +313,6 @@ public class TouchToFillPasswordManagerIntegrationTest {
     @Test
     @MediumTest
     @SuppressLint("SetTextI18n")
-    @Features.EnableFeatures(ChromeFeatureList.PASSWORD_FORM_GROUPED_AFFILIATIONS)
     @DisabledTest(message = "crbug.com/515482528")
     public void testShowsAfterPreviousSheetDismissal() throws Exception {
         BottomSheetContent otherBottomSheetContent =

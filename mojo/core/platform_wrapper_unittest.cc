@@ -95,7 +95,7 @@ TEST_F(PlatformWrapperTest, MAYBE_WrapPlatformHandle) {
     EXPECT_EQ(MOJO_RESULT_OK,
               MojoWrapPlatformHandle(&os_file, nullptr, &wrapped_handle));
 
-    WriteMessageWithHandles(h, kMessage, &wrapped_handle, 1);
+    WriteMessageWithHandle(h, kMessage, wrapped_handle);
   });
 
   base::DeleteFile(temp_file_path);
@@ -104,7 +104,7 @@ TEST_F(PlatformWrapperTest, MAYBE_WrapPlatformHandle) {
 DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReadPlatformFile, PlatformWrapperTest, h) {
   // Read a message and a wrapped file handle; unwrap the handle.
   MojoHandle wrapped_handle;
-  std::string message = ReadMessageWithHandles(h, &wrapped_handle, 1);
+  std::string message = ReadMessageWithHandle(h, &wrapped_handle);
 
   MojoPlatformHandle platform_handle;
   platform_handle.struct_size = sizeof(MojoPlatformHandle);
@@ -168,7 +168,7 @@ TEST_F(PlatformWrapperTest, MAYBE_WrapPlatformSharedMemoryRegion) {
                   &os_buffer, 1, kMessage.size(), &mojo_guid,
                   MOJO_PLATFORM_SHARED_MEMORY_REGION_ACCESS_MODE_UNSAFE,
                   nullptr, &wrapped_handle));
-    WriteMessageWithHandles(h, kMessage, &wrapped_handle, 1);
+    WriteMessageWithHandle(h, kMessage, wrapped_handle);
 
     // As a sanity check, send the GUID explicitly in a second message. We'll
     // verify that the deserialized buffer handle holds the same GUID on the
@@ -183,7 +183,7 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReadPlatformSharedBuffer,
                                   h) {
   // Read a message and a wrapped shared buffer handle.
   MojoHandle wrapped_handle;
-  std::string message = ReadMessageWithHandles(h, &wrapped_handle, 1);
+  std::string message = ReadMessageWithHandle(h, &wrapped_handle);
 
   // Check the message in the buffer
   ExpectBufferContents(wrapped_handle, 0, message);
@@ -269,6 +269,22 @@ TEST_F(PlatformWrapperTest, InvalidArgument) {
             MojoWrapPlatformHandle(&platform_handle, nullptr, &wrapped_handle));
 }
 
+// Tests that attempting to unwrap a non-platform Mojo handle fails with
+// MOJO_RESULT_INVALID_ARGUMENT and closes the input handle.
+TEST_F(PlatformWrapperTest, UnwrapNonPlatformHandleClosesHandle) {
+  MojoHandle p0, p1;
+  CreateMessagePipe(&p0, &p1);
+
+  MojoPlatformHandle platform_handle;
+  platform_handle.struct_size = sizeof(MojoPlatformHandle);
+  EXPECT_EQ(MOJO_RESULT_INVALID_ARGUMENT,
+            MojoUnwrapPlatformHandle(p0, nullptr, &platform_handle));
+
+  // Verify that `p0` was closed by checking that `p1` observes peer closure.
+  EXPECT_EQ(MOJO_RESULT_OK, WaitForSignals(p1, MOJO_HANDLE_SIGNAL_PEER_CLOSED));
+  EXPECT_EQ(MOJO_RESULT_OK, MojoClose(p1));
+}
+
 // Tests invalid argument validation when wrapping a platform shared memory
 // region.
 TEST_F(PlatformWrapperTest, WrapPlatformSharedMemoryRegionInvalidArgument) {
@@ -342,6 +358,28 @@ TEST_F(PlatformWrapperTest, WrapPlatformSharedMemoryRegionInvalidArgument) {
                 &os_buffer, 1, 128, &valid_guid,
                 static_cast<MojoPlatformSharedMemoryRegionAccessMode>(999),
                 nullptr, &wrapped_handle));
+}
+
+// Tests that attempting to unwrap a non-shared-buffer Mojo handle fails with
+// MOJO_RESULT_INVALID_ARGUMENT and closes the input handle.
+TEST_F(PlatformWrapperTest, UnwrapNonSharedBufferClosesHandle) {
+  MojoHandle p0, p1;
+  CreateMessagePipe(&p0, &p1);
+
+  MojoPlatformHandle os_buffer;
+  os_buffer.struct_size = sizeof(MojoPlatformHandle);
+  uint32_t num_handles = 1;
+  uint64_t size = 0;
+  MojoSharedBufferGuid mojo_guid;
+  MojoPlatformSharedMemoryRegionAccessMode access_mode;
+  EXPECT_EQ(MOJO_RESULT_INVALID_ARGUMENT,
+            MojoUnwrapPlatformSharedMemoryRegion(p0, nullptr, &os_buffer,
+                                                 &num_handles, &size,
+                                                 &mojo_guid, &access_mode));
+
+  // Verify that `p0` was closed by checking that `p1` observes peer closure.
+  EXPECT_EQ(MOJO_RESULT_OK, WaitForSignals(p1, MOJO_HANDLE_SIGNAL_PEER_CLOSED));
+  EXPECT_EQ(MOJO_RESULT_OK, MojoClose(p1));
 }
 
 }  // namespace

@@ -14,6 +14,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/types/expected.h"
+#include "base/types/optional_ref.h"
 #include "base/types/pass_key.h"
 #include "components/webapps/browser/banners/install_banner_config.h"
 #include "components/webapps/browser/banners/installable_web_app_check_result.h"
@@ -24,12 +25,9 @@
 #include "components/webapps/common/web_page_metadata.mojom.h"
 #include "content/public/browser/media_player_id.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/mojom/app_banner/app_banner.mojom.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom-forward.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -67,7 +65,7 @@ class AppBannerManager final : public content::WebContentsObserver {
    public:
     virtual void OnInstallableWebAppStatusUpdated(
         InstallableWebAppCheckResult result,
-        const std::optional<WebAppBannerData>& data) = 0;
+        base::optional_ref<const WebAppBannerData> data) = 0;
 
     virtual void WillFetchManifest() {}
 
@@ -115,7 +113,7 @@ class AppBannerManager final : public content::WebContentsObserver {
     // Returns if `DoNativeAppInstallableCheck` should be called given the
     // manifest. Only can return `true` on Android.
     virtual bool ShouldDoNativeAppCheck(
-        const blink::mojom::Manifest& manifest) const = 0;
+        const blink::Manifest& manifest) const = 0;
 
     using NativeCheckCallback = base::OnceCallback<void(
         base::expected<NativeAppBannerData, InstallableStatusCode>)>;
@@ -124,17 +122,16 @@ class AppBannerManager final : public content::WebContentsObserver {
     // of the public interface to keep all control flow in this class.
     // Note: the `callback` can be called synchronously on errors and in
     // tests.
-    virtual void DoNativeAppInstallableCheck(
-        content::WebContents* web_contents,
-        const GURL& validated_url,
-        const blink::mojom::Manifest& manifest,
-        NativeCheckCallback callback) = 0;
+    virtual void DoNativeAppInstallableCheck(content::WebContents* web_contents,
+                                             const GURL& validated_url,
+                                             const blink::Manifest& manifest,
+                                             NativeCheckCallback callback) = 0;
 
     virtual void OnWebAppInstallableCheckedNoErrors(
         const ManifestId& manifest_id) = 0;
 
     virtual base::expected<void, InstallableStatusCode>
-    CanRunWebAppInstallableChecks(const blink::mojom::Manifest& manifest) = 0;
+    CanRunWebAppInstallableChecks(const blink::Manifest& manifest) = 0;
 
     // Returns whether installation of apps from |platform| is supported on the
     // current device and the platform delivers apps considered replacements for
@@ -348,8 +345,7 @@ class AppBannerManager final : public content::WebContentsObserver {
 
   // Returns whether the site would prefer a related non-web app be installed
   // instead of the PWA or a related non-web app is already installed.
-  bool ShouldDeferToRelatedNonWebApp(
-      const blink::mojom::Manifest& manifest) const;
+  bool ShouldDeferToRelatedNonWebApp(const blink::Manifest& manifest) const;
 
   // Return a string identifying this app for metrics. If no page data is
   // available then std::nullopt is returned.
@@ -361,8 +357,7 @@ class AppBannerManager final : public content::WebContentsObserver {
 
   // Returns the URL type, allowing the banner logic to ignore urls that aren't
   // the primary frame or aren't a valid URL.
-  UrlType GetUrlType(content::RenderFrameHost* render_frame_host,
-                     const GURL& url);
+  UrlType GetUrlType(content::RenderFrameHost& render_frame_host);
 
   // Callback invoked by the InstallableManager once it has fetched the page's
   // manifest.
@@ -459,12 +454,10 @@ class AppBannerManager final : public content::WebContentsObserver {
   State state_ = State::INACTIVE;
 
   AppBannerMode mode_ = AppBannerMode::kWebApp;
-  std::optional<WebAppBannerData> web_app_data_;
+  // Heap-allocated rather than inline std::optional so pages without
+  // banner data do not reserve ~2.7 KiB per tab.
+  std::unique_ptr<WebAppBannerData> web_app_data_;
   std::optional<NativeAppBannerData> native_app_data_;
-
-  // If a banner is requested before the page has finished loading, defer
-  // triggering the pipeline until the load is complete.
-  bool load_finished_ = false;
 
   std::unique_ptr<BeforeInstallPromptEvent> before_install_prompt_event_;
 

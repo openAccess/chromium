@@ -8,6 +8,7 @@ import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
@@ -17,6 +18,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.OmniboxMetrics;
 import org.chromium.chrome.browser.omnibox.fusebox.ComposeboxQueryControllerBridge;
+import org.chromium.chrome.browser.omnibox.fusebox.ComposeboxQueryControllerBridge.NativeComposeboxQueryControllerBridge;
 import org.chromium.chrome.browser.omnibox.voice.VoiceRecognitionIntentHandler.VoiceResult;
 import org.chromium.chrome.browser.preloading.PreloadingFeatureMap;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -26,6 +28,7 @@ import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteResult;
 import org.chromium.components.omnibox.AutocompleteResult.VerificationPoint;
 import org.chromium.components.omnibox.AutocompleteStopReason;
+import org.chromium.components.omnibox.ToolModeProtoIntDef.ToolMode;
 import org.chromium.components.omnibox.action.OmniboxAction;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.content_public.browser.NavigationHandle;
@@ -328,7 +331,7 @@ public class AutocompleteController {
     }
 
     /**
-     * Create a native navigation observser on native side.
+     * Create a native navigation observer on native side.
      *
      * @param navigationHandle The NavigationHandle for the current navigation.
      * @param match AutocompleteMatch that was selected by the user
@@ -368,7 +371,7 @@ public class AutocompleteController {
         if (mNativeController == 0) return;
         AutocompleteControllerJni.get()
                 .setComposeboxQueryControllerBridge(
-                        mNativeController, bridge == null ? 0L : bridge.getNativeInstance());
+                        mNativeController, bridge == null ? null : bridge.getNativeInstance());
     }
 
     /**
@@ -468,7 +471,7 @@ public class AutocompleteController {
                 @JniType("GURL") GURL currentUrl,
                 @PageClassification @JniType("metrics::OmniboxEventProto::PageClassification")
                         int pageClassification,
-                @JniType("omnibox::ToolMode") int toolMode,
+                @ToolMode @JniType("omnibox::ToolMode") int toolMode,
                 boolean preventInlineAutocomplete,
                 boolean inKeywordMode,
                 boolean allowExactKeywordMatch,
@@ -509,7 +512,7 @@ public class AutocompleteController {
                 @JniType("GURL") GURL currentUrl,
                 @PageClassification @JniType("metrics::OmniboxEventProto::PageClassification")
                         int pageClassification,
-                @JniType("omnibox::ToolMode") int toolMode,
+                @ToolMode @JniType("omnibox::ToolMode") int toolMode,
                 @JniType("std::u16string") String currentTitle);
 
         void deleteMatchElement(
@@ -527,7 +530,8 @@ public class AutocompleteController {
 
         void setComposeboxQueryControllerBridge(
                 long nativeAutocompleteControllerAndroid,
-                long nativeComposeboxQueryControllerBridge);
+                @Nullable JniPtr<NativeComposeboxQueryControllerBridge>
+                        composeboxQueryControllerBridge);
 
         void setVoiceMatches(
                 long nativeAutocompleteControllerAndroid,
@@ -542,7 +546,7 @@ public class AutocompleteController {
                 @PageClassification @JniType("metrics::OmniboxEventProto::PageClassification")
                         int pageClassification);
 
-        // Create a navigation observser.
+        // Create a navigation observer.
         void createNavigationObserver(
                 long nativeAutocompleteControllerAndroid,
                 long mNativeNavigationHandle,

@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <iosfwd>
 #include <memory>
 #include <string>
 #include <vector>
@@ -33,7 +34,18 @@ namespace update_client {
 class CrxDownloader : public base::RefCountedThreadSafe<CrxDownloader> {
  public:
   struct DownloadMetrics {
-    enum Downloader { kNone = 0, kUrlFetcher, kBits, kBackgroundMac };
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused.
+    // LINT.IfChange(CrxDownloaderType)
+    enum Downloader {
+      kNone = 0,
+      kUrlFetcher = 1,
+      kBits = 2,
+      kBackgroundMac = 3,
+      kDeliveryOptimization = 4,
+      kMaxValue = kDeliveryOptimization,
+    };
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/others/enums.xml:CrxDownloaderType)
 
     GURL url;
 
@@ -85,12 +97,12 @@ class CrxDownloader : public base::RefCountedThreadSafe<CrxDownloader> {
   // callback that can be run to cancel the download.
   base::OnceClosure StartDownloadFromUrl(const GURL& url,
                                          const std::string& expected_hash,
+                                         ProgressCallback progress_callback,
                                          DownloadCallback download_callback);
   base::OnceClosure StartDownload(const std::vector<GURL>& urls,
                                   const std::string& expected_hash,
+                                  ProgressCallback progress_callback,
                                   DownloadCallback download_callback);
-
-  void set_progress_callback(const ProgressCallback& progress_callback);
 
   const std::vector<DownloadMetrics> download_metrics() const;
 
@@ -147,6 +159,11 @@ class CrxDownloader : public base::RefCountedThreadSafe<CrxDownloader> {
 
   std::vector<DownloadMetrics> download_metrics_;
 };
+
+std::ostream& operator<<(std::ostream& os,
+                         CrxDownloader::DownloadMetrics::Downloader downloader);
+std::ostream& operator<<(std::ostream& os,
+                         const CrxDownloader::DownloadMetrics& metrics);
 
 }  // namespace update_client
 

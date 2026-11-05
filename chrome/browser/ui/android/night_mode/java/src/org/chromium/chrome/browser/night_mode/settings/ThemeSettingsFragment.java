@@ -4,26 +4,20 @@
 
 package org.chromium.chrome.browser.night_mode.settings;
 
-import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.UI_THEME_SETTING;
-
 import android.content.Context;
 import android.os.Bundle;
 
-import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.night_mode.NightModeMetrics;
-import org.chromium.chrome.browser.night_mode.NightModeMetrics.ThemeSettingsEntry;
 import org.chromium.chrome.browser.night_mode.NightModeUtils;
 import org.chromium.chrome.browser.night_mode.R;
 import org.chromium.chrome.browser.night_mode.ThemeType;
 import org.chromium.chrome.browser.night_mode.WebContentsDarkModeController;
 import org.chromium.chrome.browser.night_mode.WebContentsDarkModeMessageController;
-import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
 import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.components.browser_ui.settings.CustomDividerFragment;
@@ -38,8 +32,6 @@ public class ThemeSettingsFragment extends ChromeBaseSettingsFragment
     private static final String PREF_UI_THEME_PREF_LIGHT = "ui_theme_pref_light";
     private static final String PREF_UI_THEME_PREF_DARK = "ui_theme_pref_dark";
 
-    public static final String KEY_THEME_SETTINGS_ENTRY = "theme_settings_entry";
-
     private boolean mWebContentsDarkModeEnabled;
 
     private final SettableMonotonicObservableSupplier<String> mPageTitle =
@@ -50,7 +42,6 @@ public class ThemeSettingsFragment extends ChromeBaseSettingsFragment
         SettingsUtils.addPreferencesFromResource(this, R.xml.theme_preferences);
         mPageTitle.set(getString(R.string.theme_settings));
 
-        SharedPreferencesManager sharedPreferencesManager = ChromeSharedPreferences.getInstance();
         RadioButtonGroupThemePreference radioButtonGroupThemePreference =
                 (RadioButtonGroupThemePreference) findPreference(PREF_UI_THEME_PREF);
         mWebContentsDarkModeEnabled =
@@ -70,19 +61,9 @@ public class ThemeSettingsFragment extends ChromeBaseSettingsFragment
                                     getProfile(), mWebContentsDarkModeEnabled);
                         }
                     }
-                    int theme = (int) newValue;
-                    sharedPreferencesManager.writeInt(UI_THEME_SETTING, theme);
+                    NightModeUtils.setThemeSetting((int) newValue);
                     return true;
                 });
-
-        // TODO(crbug.com/40198953): Notify feature engagement system that settings were opened.
-        // Record entry point metrics if this fragment is freshly created.
-        if (savedInstanceState == null) {
-            assert getArguments() != null && getArguments().containsKey(KEY_THEME_SETTINGS_ENTRY)
-                    : "<theme_settings_entry> is missing in args.";
-            NightModeMetrics.recordThemeSettingsEntry(
-                    getArguments().getInt(KEY_THEME_SETTINGS_ENTRY));
-        }
 
         if (ChromeFeatureList.isEnabled(
                 ChromeFeatureList.DARKEN_WEBSITES_CHECKBOX_IN_THEMES_SETTING)) {
@@ -112,14 +93,6 @@ public class ThemeSettingsFragment extends ChromeBaseSettingsFragment
 
     public static final ChromeBaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
             new ChromeBaseSearchIndexProvider(ThemeSettingsFragment.class.getName(), 0) {
-                private final Bundle mExtras = new Bundle();
-
-                {
-                    mExtras.putInt(
-                            ThemeSettingsFragment.KEY_THEME_SETTINGS_ENTRY,
-                            ThemeSettingsEntry.SETTINGS);
-                }
-
                 @Override
                 public void updateDynamicPreferences(Context context, SettingsIndexData indexData) {
                     String prefFragment = ThemeSettingsFragment.class.getName();
@@ -134,8 +107,7 @@ public class ThemeSettingsFragment extends ChromeBaseSettingsFragment
                             PREF_UI_THEME_PREF,
                             0,
                             defaultTitle,
-                            defaultSummary,
-                            mExtras);
+                            defaultSummary);
 
                     String lightTitle =
                             NightModeUtils.getThemeSettingTitle(context, ThemeType.LIGHT);
@@ -146,8 +118,7 @@ public class ThemeSettingsFragment extends ChromeBaseSettingsFragment
                             PREF_UI_THEME_PREF,
                             1,
                             lightTitle,
-                            null,
-                            mExtras);
+                            null);
                     String darkTitle = NightModeUtils.getThemeSettingTitle(context, ThemeType.DARK);
                     addEntryForKey(
                             indexData,
@@ -156,8 +127,7 @@ public class ThemeSettingsFragment extends ChromeBaseSettingsFragment
                             PREF_UI_THEME_PREF,
                             2,
                             darkTitle,
-                            null,
-                            mExtras);
+                            null);
                 }
 
                 private void addEntryForKey(
@@ -167,8 +137,7 @@ public class ThemeSettingsFragment extends ChromeBaseSettingsFragment
                         String highlightKey,
                         int subViewPos,
                         String title,
-                        @Nullable String summary,
-                        Bundle extras) {
+                        @Nullable String summary) {
                     String id = getUniqueId(key);
                     indexData.addEntry(
                             id,
@@ -176,13 +145,7 @@ public class ThemeSettingsFragment extends ChromeBaseSettingsFragment
                                     .setSummary(summary)
                                     .setHighlightKey(highlightKey)
                                     .setSubViewPos(subViewPos)
-                                    .setArguments(extras)
                                     .build());
-                }
-
-                @Override
-                public Bundle getExtras() {
-                    return mExtras;
                 }
             };
 }

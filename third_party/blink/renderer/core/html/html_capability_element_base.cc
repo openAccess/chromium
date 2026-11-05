@@ -17,6 +17,7 @@
 #include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "third_party/blink/public/strings/grit/permission_element_strings.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_permission_state.h"
+#include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/css/css_selector.h"
 #include "third_party/blink/renderer/core/css/font_size_functions.h"
 #include "third_party/blink/renderer/core/css/properties/css_property_instances.h"
@@ -38,7 +39,7 @@
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
-#include "third_party/blink/renderer/core/frame/local_frame_ukm_aggregator.h"
+#include "third_party/blink/renderer/core/frame/local_frame_metrics_aggregator.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
@@ -117,8 +118,15 @@ constexpr float kDefaultMaxPercentRadiusHeight = 50;
 // with the layout in unsupported ways. Additionally, all "table" styles are
 // also not allowed.
 constexpr EDisplay kInvalidDisplayStyles[] = {
-    EDisplay::kContents, EDisplay::kInline,   EDisplay::kListItem,
-    EDisplay::kRuby,     EDisplay::kRubyText,
+    EDisplay::kContents,
+    EDisplay::kInline,
+    EDisplay::kListItem,
+    EDisplay::kInlineListItem,
+    EDisplay::kFlowRootListItem,
+    EDisplay::kInlineFlowRootListItem,
+    EDisplay::kRuby,
+    EDisplay::kBlockRuby,
+    EDisplay::kRubyText,
 };
 
 // Helper to get `PermissionsPolicyFeature` from permission name
@@ -341,7 +349,7 @@ void HTMLCapabilityElementBase::AttachLayoutTree(AttachContext& context) {
         GetDocument(),
         BindRepeating(&HTMLCapabilityElementBase::OnIntersectionChanged,
                       WrapWeakPersistent(this)),
-        LocalFrameUkmAggregator::kPermissionElementIntersectionObserver,
+        LocalFrameMetricsAggregator::kPermissionElementIntersectionObserver,
         IntersectionObserver::Params{
             .margin = {Length::Fixed(kMarginVisibleContent)},
             .margin_target = IntersectionObserver::kApplyMarginToTarget,
@@ -389,10 +397,12 @@ void HTMLCapabilityElementBase::Focus(const FocusParams& params) {
   if (fallback_mode_) {
     return HTMLElement::Focus(params);
   }
-  // This will only apply to `focus` and `blur` JS API. Other focus types (like
+  // This will only apply to script-initiated focusing. Other focus types (like
   // accessibility focusing and manual user focus), will still be permitted as
-  // usual.
-  if (params.type == mojom::blink::FocusType::kScript &&
+  // usual. `FocusTrigger` (rather than `FocusType`) is used because internal
+  // script-driven paths such as dialog.showModal() / popover autofocus reach
+  // this with FocusType::kNone.
+  if (params.focus_trigger == FocusTrigger::kScript &&
       !LocalFrame::HasTransientUserActivation(GetDocument().GetFrame())) {
     return;
   }
@@ -424,6 +434,7 @@ bool HTMLCapabilityElementBase::CanGeneratePseudoElement(PseudoId id) const {
   switch (id) {
     case PseudoId::kPseudoIdAfter:
     case PseudoId::kPseudoIdBefore:
+    case PseudoId::kPseudoIdMarker:
     case PseudoId::kPseudoIdCheckMark:
     case PseudoId::kPseudoIdPickerIcon:
     case PseudoId::kPseudoIdExpandIcon:
@@ -486,6 +497,40 @@ void HTMLCapabilityElementBase::SetPreciseLocation(bool is_precise_location) {
                              kDefaultDisableTimeout);
   is_precise_location_ = is_precise_location;
   UpdateAppearance();
+}
+
+bool HTMLCapabilityElementBase::IsIconOnly() const {
+  if (IsHTMLInstallElement() || IsHTMLUserMediaElement() ||
+      !RuntimeEnabledFeatures::CapabilityElementIconOnlyModeEnabled(
+          GetDocument().GetExecutionContext())) {
+    return false;
+  }
+  return EqualIgnoringAsciiCase(FastGetAttribute(html_names::kDisplaymodeAttr),
+                                "icon-only");
+}
+
+const String& HTMLCapabilityElementBase::AccessibleLabel() const {
+  return accessible_label_;
+}
+
+void HTMLCapabilityElementBase::SetPermissionText(const String& text) {
+  bool label_changed = accessible_label_ != text;
+  accessible_label_ = text;
+  String displayed_text = IsIconOnly() ? g_empty_string : text;
+  if (permission_text_span_ &&
+      permission_text_span_->textContent() != displayed_text) {
+    permission_text_span_->setInnerText(displayed_text);
+    label_changed = true;
+  }
+  if (label_changed) {
+    if (AXObjectCache* cache = GetDocument().ExistingAXObjectCache()) {
+      if (LayoutObject* layout_object = GetLayoutObject()) {
+        cache->TextChanged(layout_object);
+      } else {
+        cache->MarkElementDirty(this);
+      }
+    }
+  }
 }
 
 void HTMLCapabilityElementBase::UpdatePermissionStatus() {
@@ -626,7 +671,7 @@ bool HTMLCapabilityElementBase::MaybeRegisterPageEmbeddedPermissionControl() {
   // disallow in sandboxed documents. If we
   // continue to block it in all subframes, we should likely create a new issue
   // type.
-  if (TagQName() == html_names::kInstallTag &&
+  if (HasTagName(html_names::kInstallTag) &&
       GetExecutionContext()->GetSandboxFlags() !=
           network::mojom::blink::WebSandboxFlags::kNone) {
     return false;
@@ -635,7 +680,7 @@ bool HTMLCapabilityElementBase::MaybeRegisterPageEmbeddedPermissionControl() {
   // TODO(crbug.com/490139152): Evaluate <install> support in subframes. If we
   // continue to block it in all subframes, we should likely create a new issue
   // type.
-  if (TagQName() == html_names::kInstallTag && !frame->IsMainFrame()) {
+  if (HasTagName(html_names::kInstallTag) && !frame->IsMainFrame()) {
     return false;
   }
 
@@ -656,13 +701,25 @@ bool HTMLCapabilityElementBase::MaybeRegisterPageEmbeddedPermissionControl() {
     return false;
   }
 
+  // `CreateEmbeddedPermissionRequestDescriptor()` computes `BoundsInWidget()`,
+  // which forces a synchronous style and layout update. That update can
+  // re-entrantly register this control, detach the frame, or change whether
+  // the element is rendered, so re-verify these conditions afterwards.
+  auto descriptor = CreateEmbeddedPermissionRequestDescriptor();
+  if (embedded_permission_control_receiver_.is_bound()) {
+    return true;
+  }
+  if (!GetDocument().GetFrame() || !IsRendered()) {
+    return false;
+  }
+
   mojo::PendingRemote<EmbeddedPermissionControlClient> client;
   embedded_permission_control_receiver_.Bind(
       client.InitWithNewPipeAndPassReceiver(), GetTaskRunner());
   CHECK(embedded_permission_control_receiver_.is_bound());
   GetPermissionService()->RegisterPageEmbeddedPermissionControl(
-      mojo::Clone(permission_descriptors_),
-      CreateEmbeddedPermissionRequestDescriptor(), std::move(client));
+      mojo::Clone(permission_descriptors_), std::move(descriptor),
+      std::move(client));
   return true;
 }
 
@@ -686,6 +743,14 @@ void HTMLCapabilityElementBase::ParseAttribute(
 
   if (params.name == html_names::kPreciselocationAttr) {
     SetPreciseLocation(params.new_value != nullptr);
+  } else if (params.name == html_names::kDisplaymodeAttr) {
+    if (!IsHTMLInstallElement() && !IsHTMLUserMediaElement() &&
+        RuntimeEnabledFeatures::CapabilityElementIconOnlyModeEnabled(
+            GetDocument().GetExecutionContext()) &&
+        EqualIgnoringAsciiCase(params.old_value, "icon-only") !=
+            EqualIgnoringAsciiCase(params.new_value, "icon-only")) {
+      UpdateAppearance();
+    }
   }
 
   HTMLElement::ParseAttribute(params);
@@ -919,14 +984,25 @@ void HTMLCapabilityElementBase::AdjustStyle(ComputedStyleBuilder& builder) {
     }
   }
 
-  // These webkit-prefixed properties are not supported by the permission
-  // element. But since they are inherited by default, they are passed through
-  // to the internal permission text span, even if they're not on the list of
-  // allowed CSS properties.
+  // These properties are not supported by the permission element. But since
+  // they are inherited by default, they are passed through to the internal
+  // permission text span, even if they're not on the list of allowed CSS
+  // properties.
   // Reset them here to avoid any side effects.
   builder.ResetTextStrokeWidth();
   builder.ResetTextFillColor();
   builder.ResetTextStrokeColor();
+  // TODO(crbug.com/560222073): Handle vertical writing mode properly.
+  builder.ResetWritingMode();
+  builder.ResetTextOrientation();
+  builder.ResetTextCombine();
+  builder.UpdateFontOrientation();
+
+  // Reset inherited SVG marker properties so ancestors cannot attach arbitrary
+  // <marker> graphics onto the internal permission icon's SVG path vertices.
+  builder.SetMarkerStartResource(nullptr);
+  builder.SetMarkerMidResource(nullptr);
+  builder.SetMarkerEndResource(nullptr);
 
   // To prevent CSS :visited history leaks and ensure the button remains
   // fully legible and active in all states, we force the element to pretend
@@ -949,14 +1025,7 @@ void HTMLCapabilityElementBase::DidRecalcStyle(const StyleRecalcChange change) {
   }
   EnableClickingAfterDelay(DisableReason::kInvalidStyle,
                            kDefaultDisableTimeout);
-  gfx::Rect intersection_rect =
-      ComputeIntersectionRectWithViewport(GetDocument().GetPage());
-  if (intersection_rect_.has_value() &&
-      intersection_rect_.value() != intersection_rect) {
-    DisableClickingTemporarily(DisableReason::kIntersectionWithViewportChanged,
-                               kDefaultDisableTimeout);
-  }
-  intersection_rect_ = intersection_rect;
+  RefreshCachedIntersectionWithViewport();
 }
 
 void HTMLCapabilityElementBase::HandleActivation(Event& event,
@@ -1035,13 +1104,42 @@ String HTMLCapabilityElementBase::GetActivationErrorMessage() const {
   return error_message;
 }
 
+bool HTMLCapabilityElementBase::HasActivationBehavior() const {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    return false;
+  }
+  return !fallback_mode_;
+}
+
+void HTMLCapabilityElementBase::RunActivationBehavior(
+    Event& event,
+    EventDispatchHandlingState* handling_state) {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    HTMLElement::RunActivationBehavior(event, handling_state);
+    return;
+  }
+  if (event.defaultPrevented() || event.DefaultHandled()) {
+    return;
+  }
+  if (fallback_mode_) {
+    HTMLElement::RunActivationBehavior(event, handling_state);
+    return;
+  }
+
+  HandleActivation(
+      event,
+      blink::BindOnce(&HTMLCapabilityElementBase::RequestPageEmbededPermissions,
+                      WrapWeakPersistent(this)));
+}
+
 void HTMLCapabilityElementBase::DefaultEventHandler(Event& event) {
   if (fallback_mode_) {
     HTMLElement::DefaultEventHandler(event);
     return;
   }
 
-  if (event.type() == event_type_names::kDOMActivate) {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled() &&
+      event.type() == event_type_names::kDOMActivate) {
     HandleActivation(
         event, blink::BindOnce(
                    &HTMLCapabilityElementBase::RequestPageEmbededPermissions,
@@ -1061,9 +1159,15 @@ void HTMLCapabilityElementBase::RequestPageEmbededPermissions() {
   CHECK_LE(permission_descriptors_.size(), 2U);
   pending_request_created_ = base::TimeTicks::Now();
 
+  // `CreateEmbeddedPermissionRequestDescriptor()` forces a synchronous layout
+  // update, which may detach the frame or make the element unrendered.
+  auto descriptor = CreateEmbeddedPermissionRequestDescriptor();
+  if (!GetDocument().GetFrame() || !IsRendered()) {
+    return;
+  }
+
   GetPermissionService()->RequestPageEmbeddedPermission(
-      mojo::Clone(permission_descriptors_),
-      CreateEmbeddedPermissionRequestDescriptor(),
+      mojo::Clone(permission_descriptors_), std::move(descriptor),
       BindOnce(&HTMLCapabilityElementBase::OnEmbeddedPermissionsDecided,
                WrapWeakPersistent(this)));
 }
@@ -1181,7 +1285,7 @@ bool HTMLCapabilityElementBase::IsClickingEnabled() {
   // contexts. For now, check this before `is_registered_in_browser_process_`
   // so we don't fall through to SecurityChecksFailed, which DevTools
   // maps to a misleading "quota exceeded" message.
-  if (TagQName() == html_names::kInstallTag &&
+  if (HasTagName(html_names::kInstallTag) &&
       GetExecutionContext()->GetSandboxFlags() !=
           network::mojom::blink::WebSandboxFlags::kNone) {
     RecordPermissionElementUserInteractionDeniedReason(
@@ -1194,7 +1298,7 @@ bool HTMLCapabilityElementBase::IsClickingEnabled() {
     // For now, check this before `is_registered_in_browser_process_`
     // so we don't fall through to SecurityChecksFailed, which DevTools
     // maps to a misleading "quota exceeded" message.
-    if (TagQName() == html_names::kInstallTag && !frame->IsMainFrame()) {
+    if (HasTagName(html_names::kInstallTag) && !frame->IsMainFrame()) {
       RecordPermissionElementUserInteractionDeniedReason(
           TagQName(),
           UserInteractionDeniedReason::kFailedOrHasNotBeenRegistered);
@@ -1302,14 +1406,14 @@ HTMLCapabilityElementBase::GetClickingEnabledState() const {
 
     // TODO(crbug.com/493534965): Evaluate <install> support in sandboxed
     // contexts.
-    if (TagQName() == html_names::kInstallTag &&
+    if (HasTagName(html_names::kInstallTag) &&
         GetExecutionContext()->GetSandboxFlags() !=
             network::mojom::blink::WebSandboxFlags::kNone) {
       return {false, AtomicString("illegal_sandbox")};
     }
 
     // TODO(crbug.com/490139152): Evaluate <install> support in subframes.
-    if (TagQName() == html_names::kInstallTag && !frame->IsMainFrame()) {
+    if (HasTagName(html_names::kInstallTag) && !frame->IsMainFrame()) {
       return {false, AtomicString("illegal_subframe")};
     }
   }
@@ -1340,27 +1444,23 @@ HTMLCapabilityElementBase::GetClickingEnabledState() const {
 
 void HTMLCapabilityElementBase::RefreshDisableReasonsAndUpdateTimer() {
   base::TimeTicks now = base::TimeTicks::Now();
+  clicking_disabled_reasons_.erase_if(
+      [&now](const auto& it) { return it.value <= now; });
+
   base::TimeTicks max_time_ticks = base::TimeTicks::Min();
   DisableReason reason = DisableReason::kUnknown;
-  HashMap<DisableReason, base::TimeTicks> swap_clicking_disabled_reasons;
-  for (auto it = clicking_disabled_reasons_.begin();
-       it != clicking_disabled_reasons_.end(); ++it) {
-    if (it->value == base::TimeTicks::Max()) {
-      StopTimerDueToIndefiniteReason(it->key);
+  for (const auto& it : clicking_disabled_reasons_) {
+    if (it.value == base::TimeTicks::Max()) {
+      StopTimerDueToIndefiniteReason(it.key);
       return;
     }
 
-    if (it->value < now) {
+    if (it.value <= max_time_ticks) {
       continue;
     }
 
-    swap_clicking_disabled_reasons.Set(it->key, it->value);
-    if (it->value <= max_time_ticks) {
-      continue;
-    }
-
-    max_time_ticks = it->value;
-    reason = it->key;
+    max_time_ticks = it.value;
+    reason = it.key;
   }
   // Restart the timer to match with  "longest alive, not indefinitely disabling
   // reason". That's the one has the max timeticks on
@@ -1370,7 +1470,6 @@ void HTMLCapabilityElementBase::RefreshDisableReasonsAndUpdateTimer() {
                                                           max_time_ticks - now);
   }
 
-  clicking_disabled_reasons_.swap(swap_clicking_disabled_reasons);
   MaybeDispatchValidationChangeEvent();
 }
 
@@ -1386,10 +1485,7 @@ void HTMLCapabilityElementBase::OnIntersectionChanged(
   // bound is clipped by the viewport or styling effects). In this case, the
   // `isVisible` false means the element is occluded by something else or has
   // distorted visual effect applied.
-  // Note: It's unlikely we'll encounter an empty target rectangle (height or
-  // width is 0), but if it happens, we can consider the element as visible.
-  if (!latest_observation->isVisible() &&
-      !latest_observation->GetGeometry().TargetRect().IsEmpty()) {
+  if (!latest_observation->isVisible()) {
     new_intersection_visibility =
         latest_observation->intersectionRatio() >= kIntersectionThreshold
             ? IntersectionVisibility::kOccludedOrDistorted
@@ -1586,21 +1682,19 @@ LengthSize HTMLCapabilityElementBase::AdjustedPercentBoundedRadius(
   return adjusted_length_size;
 }
 
+void HTMLCapabilityElementBase::DidFinishLayout() {
+  // Runs after the layout phase of every lifecycle update beyond LayoutClean,
+  // including those that only target PrePaintClean (e.g. for input hit-testing)
+  // where DidFinishLifecycleUpdate is not dispatched.
+  RefreshCachedIntersectionWithViewport();
+}
+
 void HTMLCapabilityElementBase::DidFinishLifecycleUpdate(
     const LocalFrameView& local_frame_view) {
-  // This code monitors the stability of the HTMLCapabilityElementBase and
-  // temporarily disables the element if it detects an unstable state.
-  // "Unstable state" in this context occurs when the intersection rectangle
-  // between the viewport and the element's layout box changes, indicating that
-  // the element has been moved or resized.
-  gfx::Rect intersection_rect = ComputeIntersectionRectWithViewport(
-      local_frame_view.GetFrame().GetPage());
-  if (intersection_rect_.has_value() &&
-      intersection_rect_.value() != intersection_rect) {
-    DisableClickingTemporarily(DisableReason::kIntersectionWithViewportChanged,
-                               kDefaultDisableTimeout);
-  }
-  intersection_rect_ = intersection_rect;
+  // Re-check after all lifecycle phases have completed, since the intersection
+  // rect may also depend on state that changes after layout (e.g. scroll
+  // offsets adjusted during pre-paint).
+  RefreshCachedIntersectionWithViewport();
 
   if (IsRendered()) {
     MaybeRegisterPageEmbeddedPermissionControl();
@@ -1631,12 +1725,28 @@ gfx::Rect HTMLCapabilityElementBase::ComputeIntersectionRectWithViewport(
   return IntersectRects(viewport_in_root_frame, ToEnclosingRect(rect));
 }
 
+void HTMLCapabilityElementBase::RefreshCachedIntersectionWithViewport() {
+  // This code monitors the stability of the HTMLCapabilityElementBase and
+  // temporarily disables the element if it detects an unstable state.
+  // "Unstable state" in this context occurs when the intersection rectangle
+  // between the viewport and the element's layout box changes, indicating that
+  // the element has been moved or resized.
+  gfx::Rect intersection_rect =
+      ComputeIntersectionRectWithViewport(GetDocument().GetPage());
+  if (intersection_rect_.has_value() &&
+      intersection_rect_.value() != intersection_rect) {
+    DisableClickingTemporarily(DisableReason::kIntersectionWithViewportChanged,
+                               kDefaultDisableTimeout);
+  }
+  intersection_rect_ = intersection_rect;
+}
+
 std::optional<base::TimeDelta>
 HTMLCapabilityElementBase::GetRecentlyAttachedTimeoutRemaining() const {
   base::TimeTicks now = base::TimeTicks::Now();
   auto it = clicking_disabled_reasons_.find(
       DisableReason::kRecentlyAttachedToLayoutTree);
-  if (it == clicking_disabled_reasons_.end()) {
+  if (it == clicking_disabled_reasons_.end() || it->value <= now) {
     return std::nullopt;
   }
 

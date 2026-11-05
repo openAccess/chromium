@@ -5,11 +5,9 @@
 #include "components/safe_browsing/core/browser/db/v5_store.h"
 
 #include <optional>
-#include <set>
 #include <utility>
 
 #include "base/containers/span.h"
-#include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -126,31 +124,6 @@ void RecordMigrationTime(base::TimeDelta elapsed,
 
 void RecordStoreWriteResult(V5StoreWriteResult result) {
   base::UmaHistogramEnumeration("SafeBrowsing.V5StoreWrite.Result", result);
-}
-
-// Cleans up files that are no longer needed after a successful write.
-// TODO(crbug.com/362791941): This implementation is copied over from the v4
-// implementation, but it has a bug where if there are mmap-ed files, they are
-// not able to be deleted on Windows until the subsequent update. This cleanup
-// should be moved to after the mmap-ed files are released.
-void CleanupExtraFiles(const base::FilePath& store_path,
-                       const V5StoreFileFormat& file_format) {
-  std::set<base::FilePath> paths_in_use{store_path};
-  if (file_format.list_details().has_hash_file()) {
-    paths_in_use.insert(HashPrefixContainer::GetPath(
-        store_path, file_format.list_details().hash_file().extension()));
-  }
-
-  // Iterate through all files that start with the store path name. All hash
-  // files will be the store path plus an extension.
-  base::FileEnumerator e(
-      store_path.DirName(), false, base::FileEnumerator::FILES,
-      store_path.BaseName().value() + FILE_PATH_LITERAL(".*"));
-  for (base::FilePath name = e.Next(); !name.empty(); name = e.Next()) {
-    if (paths_in_use.find(name) == paths_in_use.end()) {
-      base::DeleteFile(name);
-    }
-  }
 }
 
 // Used for displaying on debugging page.
@@ -302,7 +275,7 @@ V5StoreReadResult V5Store::ReadFromDiskInternal() {
     expected_checksum_ = file_format.list_details().checksum().sha256();
   }
 
-  // Update |file_size_| now because we parsed the file correctly.
+  // Update `file_size_` now because we parsed the file correctly.
   file_size_ = file_size;
   if (file_format.list_details().has_hash_file()) {
     file_size_ += file_format.list_details().hash_file().file_size();
@@ -429,8 +402,6 @@ V4ToV5MigrationResult V5Store::MigrateFromV4(
   if (!v5_ext.empty()) {
     V5HashFile* v5_hash_file = list_details->mutable_hash_file();
     v5_hash_file->set_extension(v5_ext);
-    // TODO(crbug.com/362791941): ensure this is the same as what V5 WriteToDisk
-    // eventually does
     v5_hash_file->set_file_size(file_size);
   }
 
@@ -540,6 +511,14 @@ void V5Store::Reset() {
   version_.clear();
   has_valid_data_ = false;
   file_size_ = 0;
+}
+
+std::vector<base::FilePath> V5Store::GetPathsInUse() const {
+  std::vector<base::FilePath> paths{store_path_};
+  for (const auto& path : hash_prefix_list_->GetPaths()) {
+    paths.push_back(path);
+  }
+  return paths;
 }
 
 bool V5Store::VerifyChecksum() {
@@ -689,6 +668,7 @@ base::expected<SBStorePtr, V5ApplyUpdateResult> V5Store::ApplyUpdateInternal(
   new_store->has_valid_data_ = true;
   new_store->last_apply_update_result_ = apply_update_result;
   new_store->last_apply_update_time_millis_ = base::Time::Now();
+  new_store->checks_attempted_ = checks_attempted_;
 
   return std::move(new_store);
 }
@@ -789,10 +769,6 @@ V5StoreWriteResult V5Store::WriteToDisk() {
             return file_format.list_details().has_hash_file()
                        ? file_format.list_details().hash_file().file_size()
                        : 0;
-          },
-          /*cleanup_extra_files=*/
-          [this, &file_format] {
-            CleanupExtraFiles(store_path_, file_format);
           });
 
   if (file_size_or_error.has_value()) {

@@ -38,6 +38,7 @@
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
 #include "chrome/common/chrome_descriptors_android.h"
 #endif
 
@@ -48,6 +49,7 @@
 
 namespace {
 
+#if !BUILDFLAG(IS_ANDROID)
 constexpr const char* UpdaterVersion() {
 #if BUILDFLAG(IS_CHROMEOS) && CHROMIUM_COMMIT_POSITION_IS_MAIN
   // Adds the revision number as a suffix to the version number if the chrome
@@ -57,6 +59,7 @@ constexpr const char* UpdaterVersion() {
   return PRODUCT_VERSION;
 #endif
 }
+#endif
 
 }  // namespace
 
@@ -132,27 +135,41 @@ bool ChromeCrashReporterClient::GetCrashDumpLocation(
 void ChromeCrashReporterClient::GetProductInfo(ProductInfo* product_info) {
   CHECK(product_info);
 
+  const char* product_name = "";
 #if BUILDFLAG(IS_ANDROID)
-  product_info->product_name = "Chrome_Android";
+  // LINT.IfChange(AndroidCrashProductName)
+  product_name = base::android::device_info::is_desktop()
+                     ? "Chrome_Android_Desktop"
+                     : "Chrome_Android";
+  // LINT.ThenChange(
+  //   //chrome/android/java/src/org/chromium/chrome/browser/crash/ChromePureJavaExceptionReporter.java:AndroidCrashProductName,
+  //   //components/minidump_uploader/rewrite_minidumps_as_mimes.cc:AndroidCrashProductName
+  // )
 #elif BUILDFLAG(IS_CHROMEOS)
-  product_info->product_name = "Chrome_ChromeOS";
+  product_name = "Chrome_ChromeOS";
 #elif BUILDFLAG(IS_LINUX)
 #if defined(ADDRESS_SANITIZER)
-  product_info->product_name = "Chrome_Linux_ASan";
+  product_name = "Chrome_Linux_ASan";
 #else
-  product_info->product_name = "Chrome_Linux";
+  product_name = "Chrome_Linux";
 #endif  // defined(ADDRESS_SANITIZER)
 #elif BUILDFLAG(IS_MAC)
-  product_info->product_name = "Chrome_Mac";
+  product_name = "Chrome_Mac";
 #elif BUILDFLAG(IS_WIN)
-  product_info->product_name = "Chrome";
+  product_name = "Chrome";
 #else
   NOTREACHED();
 #endif
 
-  product_info->version = UpdaterVersion();
-  product_info->channel =
-      chrome::GetChannelName(chrome::WithExtendedStable(true));
+#if BUILDFLAG(IS_ANDROID)
+  std::string_view version = version_info::GetVersionNumber();
+#else
+  std::string_view version = UpdaterVersion();
+#endif
+
+  *product_info =
+      ProductInfo(product_name, version,
+                  chrome::GetChannelName(chrome::WithExtendedStable(true)));
 }
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -230,19 +247,11 @@ std::vector<base::ReadOnlySharedMemoryRegion>
 ChromeCrashReporterClient::GetUserStreamSharedMemoryRegions() {
   std::vector<base::ReadOnlySharedMemoryRegion> streams;
 
-  // Early-initialize the singleton before Crashpad spawns.
-  // This guarantees the memory region exists for Crashpad to inherit.
-  metrics::SystemProfileUserStream& stream =
-      metrics::SystemProfileUserStream::Get();
-  stream.Initialize();
-
   base::ReadOnlySharedMemoryRegion region =
-      stream.DuplicateSharedMemoryRegion();
-  // An OOM or initial allocation failure inside Initialize() would have
-  // already triggered a CHECK and crashed the browser. However,
-  // DuplicateSharedMemoryRegion() can still fail if the OS exhausts its
+      metrics::SystemProfileUserStream::Get().DuplicateSharedMemoryRegion();
+  // `DuplicateSharedMemoryRegion()` can still fail if the OS exhausts its
   // file descriptors (or Mach ports on Mac). In that case, gracefully degrade
-  // by dropping the telemetry stream rather than causing an unnecessary crash.
+  // by dropping the user stream rather than causing an unnecessary crash.
   if (region.IsValid()) {
     streams.push_back(std::move(region));
   }

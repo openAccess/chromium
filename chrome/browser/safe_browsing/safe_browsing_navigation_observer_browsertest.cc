@@ -30,19 +30,22 @@
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
+#include "content/public/test/hit_test_region_observer.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 #include "url/url_canon.h"
 
@@ -313,20 +316,6 @@ class SBNavigationObserverBrowserTest : public InProcessBrowserTest {
       }
       ASSERT_TRUE(content::ExecJs(script_executing_frame, script));
     }
-
-    // Since this test uses javascript to mimic clicking on a link (no actual
-    // user gesture), and DidGetUserInteraction() does not respond to
-    // ExecJs(), navigation_transition field in resulting
-    // NavigationEvents will always be RENDERER_INITIATED_WITHOUT_USER_GESTURE.
-    // Therefore, we need to make some adjustment to relevant
-    // PendingNavigationEvent.
-    for (auto& it : navigation_event_list()->pending_navigation_events()) {
-      if (it.second->source_url == page_url) {
-        it.second->navigation_initiation =
-            ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE;
-        return;
-      }
-    }
   }
 
   void TriggerDownloadViaHtml5FileApi() {
@@ -437,6 +426,102 @@ class SBNavigationObserverBrowserTest : public InProcessBrowserTest {
     }
   }
 
+  void TriggerCrossOriginSubFrameDownload(const GURL& main_frame_url,
+                                          const GURL& iframe_url,
+                                          bool target_top,
+                                          bool open_in_new_tab,
+                                          bool push_state_on_click,
+                                          ReferrerChain* out_referrer_chain) {
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_frame_url));
+    ASSERT_TRUE(
+        content::NavigateIframeToURL(web_contents(), "test", iframe_url));
+
+    content::RenderFrameHost* subframe =
+        content::ChildFrameAt(web_contents()->GetPrimaryMainFrame(), 0);
+    ASSERT_TRUE(subframe);
+    ASSERT_TRUE(subframe->IsCrossProcessSubframe());
+
+    // Use EXECUTE_SCRIPT_NO_USER_GESTURE so script execution does not grant a
+    // synthetic user gesture before the simulated mouse click.
+    if (push_state_on_click) {
+      // Simulate a click handler that first performs a same-document state
+      // update (e.g. analytics/routing pushState), which triggers
+      // DidStartNavigation and consumes the single WebContents-level user
+      // gesture in SafeBrowsingNavigationObserverManager while Blink's
+      // transient user activation remains active.
+      ASSERT_TRUE(content::ExecJs(
+          subframe,
+          "const link = document.getElementById('iframe_direct_download');"
+          "link.addEventListener('click', () => {"
+          "  history.pushState({}, '', '#clicked');"
+          "});",
+          content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+    }
+    if (target_top) {
+      ASSERT_TRUE(content::ExecJs(
+          subframe,
+          "document.getElementById('iframe_direct_download').target = '_top';",
+          content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+    } else if (open_in_new_tab) {
+      ASSERT_TRUE(content::ExecJs(
+          subframe,
+          "const link = document.getElementById('iframe_direct_download');"
+          "link.onclick = () => {"
+          "  const w = window.open('javascript:void(0)');"
+          "  w.location.href = link.href;"
+          "  return false;"
+          "};",
+          content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+    }
+    int iframe_x =
+        content::EvalJs(web_contents(),
+                        "const iframe = document.getElementById('test');"
+                        "Math.floor(iframe.getBoundingClientRect().left + "
+                        "iframe.clientLeft)",
+                        content::EXECUTE_SCRIPT_NO_USER_GESTURE)
+            .ExtractInt();
+    int iframe_y =
+        content::EvalJs(
+            web_contents(),
+            "const iframe = document.getElementById('test');"
+            "Math.floor(iframe.getBoundingClientRect().top + iframe.clientTop)",
+            content::EXECUTE_SCRIPT_NO_USER_GESTURE)
+            .ExtractInt();
+    int link_x =
+        content::EvalJs(
+            subframe,
+            "const bounds = document.getElementById('iframe_direct_download')"
+            ".getBoundingClientRect();"
+            "Math.floor(bounds.left + bounds.width / 2)",
+            content::EXECUTE_SCRIPT_NO_USER_GESTURE)
+            .ExtractInt();
+    int link_y =
+        content::EvalJs(
+            subframe,
+            "const bounds = document.getElementById('iframe_direct_download')"
+            ".getBoundingClientRect();"
+            "Math.floor(bounds.top + bounds.height / 2)",
+            content::EXECUTE_SCRIPT_NO_USER_GESTURE)
+            .ExtractInt();
+
+    content::WaitForHitTestData(subframe);
+    content::TestNavigationObserver navigation_observer(
+        web_contents(),
+        /*expected_number_of_navigations=*/push_state_on_click ? 2 : 1);
+    if (open_in_new_tab) {
+      navigation_observer.StartWatchingNewWebContents();
+    }
+    content::SimulateMouseClickAt(
+        web_contents(), /*modifiers=*/0, blink::WebMouseEvent::Button::kLeft,
+        gfx::Point(iframe_x + link_x, iframe_y + link_y));
+    navigation_observer.Wait();
+    if (open_in_new_tab) {
+      navigation_observer.StopWatchingNewWebContents();
+    }
+
+    IdentifyReferrerChainForDownload(GetDownload(), out_referrer_chain);
+  }
+
   void IdentifyReferrerChainForWebContents(content::WebContents* web_contents,
                                            ReferrerChain* referrer_chain) {
     observer_manager_->IdentifyReferrerChainByRenderFrameHost(
@@ -541,13 +626,8 @@ class SBNavigationObserverBrowserTest : public InProcessBrowserTest {
     return prerender_helper_;
   }
 
-  content::test::FencedFrameTestHelper& fenced_frame_helper() {
-    return fenced_frame_helper_;
-  }
-
  private:
   content::test::PrerenderTestHelper prerender_helper_;
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
 };
 
 // Type download URL into address bar and start download on the same page.
@@ -743,7 +823,7 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
                         GURL(),        // source_main_frame_url
                         download_url,  // original_request_url
                         download_url,  // destination_url
-                        false,         // is_user_initiated,
+                        true,          // is_user_initiated,
                         false,         // has_committed
                         false,         // has_server_redirect
                         nav_list->GetNavigationEvent(2));
@@ -888,7 +968,7 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
                         GURL(),        // source_main_frame_url
                         redirect_url,  // original_request_url
                         redirect_url,  // destination_url
-                        false,         // is_user_initiated,
+                        true,          // is_user_initiated,
                         true,          // has_committed
                         false,         // has_server_redirect
                         nav_list->GetNavigationEvent(2));
@@ -1206,7 +1286,7 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest, NewTabDownload) {
                         GURL(),     // source_main_frame_url
                         blank_url,  // original_request_url
                         blank_url,  // destination_url
-                        false,      // is_user_initiated,
+                        true,       // is_user_initiated,
                         true,       // has_committed
                         false,      // has_server_redirect
                         nav_list->GetNavigationEvent(2));
@@ -1299,7 +1379,7 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
                         GURL(),     // source_main_frame_url
                         blank_url,  // original_request_url
                         blank_url,  // destination_url
-                        false,      // is_user_initiated,
+                        true,       // is_user_initiated,
                         true,       // has_committed
                         false,      // has_server_redirect
                         nav_list->GetNavigationEvent(2));
@@ -1567,7 +1647,7 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
                         GURL(),     // source_main_frame_url
                         blank_url,  // original_request_url
                         blank_url,  // destination_url
-                        false,      // is_user_initiated,
+                        true,       // is_user_initiated,
                         true,       // has_committed
                         false,      // has_server_redirect
                         nav_list->GetNavigationEvent(5));
@@ -1970,7 +2050,7 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
                         GURL(),        // source_main_frame_url
                         request_url,   // original_request_url
                         download_url,  // destination_url
-                        false,         // is_user_initiated,
+                        true,          // is_user_initiated,
                         false,         // has_committed
                         true,          // has_server_redirect
                         nav_list->GetNavigationEvent(2));
@@ -2332,6 +2412,14 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
   auto* initial_web_contents = web_contents();
 
   ui_test_utils::UrlLoadObserver url_observer(new_window_url);
+  // ExecJs grants transient user activation by default, so the new window's
+  // navigation request has a user gesture. Although the retargeting event in
+  // RecordNewWebContents is initially recorded as
+  // RENDERER_INITIATED_WITHOUT_USER_GESTURE (because ExecJs does not dispatch a
+  // WebInputEvent to the opener's WebContents), FindNavigationEvent propagates
+  // RENDERER_INITIATED_WITH_USER_GESTURE from the new window's navigation to
+  // the retargeting event (causing `main_frame_url` to be recorded as
+  // LANDING_PAGE).
   ASSERT_TRUE(
       ExecJs(web_contents()->GetPrimaryMainFrame(),
              content::JsReplace("var w = window.open($1, 'New Window');",
@@ -2344,7 +2432,8 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
   ASSERT_TRUE(
       ExecJs(initial_web_contents->GetPrimaryMainFrame(),
              content::JsReplace("w.document.querySelector('IFRAME').src = $1;",
-                                new_window_subframe_url)));
+                                new_window_subframe_url),
+             content::EXECUTE_SCRIPT_NO_USER_GESTURE));
   navigation_observer.Wait();
   EXPECT_EQ(new_window_subframe_url, navigation_observer.last_navigation_url());
 
@@ -2406,14 +2495,14 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
       GURL(),                               // referrer_main_frame_url
       true,                                 // is_retargeting
       std::vector<GURL>(),                  // server redirects
-      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
+      ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
       referrer_chain.Get(2));
 
-  VerifyReferrerChainEntry(main_frame_url,  // url
-                           GURL(),          // main_frame_url
-                           ReferrerChainEntry::CLIENT_REDIRECT,  // type
-                           test_server_ip,                       // ip_address
-                           GURL(),                               // referrer_url
+  VerifyReferrerChainEntry(main_frame_url,                    // url
+                           GURL(),                            // main_frame_url
+                           ReferrerChainEntry::LANDING_PAGE,  // type
+                           test_server_ip,                    // ip_address
+                           GURL(),                            // referrer_url
                            GURL(),               // referrer_main_frame_url
                            false,                // is_retargeting
                            std::vector<GURL>(),  // server redirects
@@ -2444,6 +2533,9 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
 
   auto next_url = embedded_test_server()->GetURL(kSubFrameTestURL);
   content::TestNavigationObserver observer(web_contents(), 1);
+  // ExecJs runs with a user gesture by default, so this navigation is recorded
+  // as RENDERER_INITIATED_WITH_USER_GESTURE (and `main_frame_url` as
+  // LANDING_PAGE).
   ASSERT_TRUE(ExecJs(web_contents(),
                      content::JsReplace("window.location = $1;", next_url)));
   observer.Wait();
@@ -2464,14 +2556,14 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
       GURL(),                         // referrer_main_frame_url
       false,                          // is_retargeting
       std::vector<GURL>(),            // server redirects
-      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
+      ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
       referrer_chain.Get(0));
 
-  VerifyReferrerChainEntry(main_frame_url,  // url
-                           GURL(),          // main_frame_url
-                           ReferrerChainEntry::CLIENT_REDIRECT,  // type
-                           test_server_ip,                       // ip_address
-                           GURL(),                               // referrer_url
+  VerifyReferrerChainEntry(main_frame_url,                    // url
+                           GURL(),                            // main_frame_url
+                           ReferrerChainEntry::LANDING_PAGE,  // type
+                           test_server_ip,                    // ip_address
+                           GURL(),                            // referrer_url
                            GURL(),               // referrer_main_frame_url
                            false,                // is_retargeting
                            std::vector<GURL>(),  // server redirects
@@ -2554,6 +2646,10 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
                            referrer_chain.Get(1));
 
   content::test::PrerenderHostObserver host_observer(*web_contents(), host_id);
+  // NavigatePrimaryPage internally calls ExecJs(..., "location = $1") with a
+  // user gesture by default, so the activation navigation is recorded as
+  // RENDERER_INITIATED_WITH_USER_GESTURE (and `main_frame_url` as
+  // LANDING_PAGE).
   prerender_helper().NavigatePrimaryPage(prerendered_url);
   host_observer.WaitForActivation();
 
@@ -2574,14 +2670,14 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
       GURL(),                         // referrer_main_frame_url
       false,                          // is_retargeting
       std::vector<GURL>(),            // server redirects
-      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
+      ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
       referrer_chain.Get(0));
 
-  VerifyReferrerChainEntry(main_frame_url,  // url
-                           GURL(),          // main_frame_url
-                           ReferrerChainEntry::CLIENT_REDIRECT,  // type
-                           test_server_ip,                       // ip_address
-                           GURL(),                               // referrer_url
+  VerifyReferrerChainEntry(main_frame_url,                    // url
+                           GURL(),                            // main_frame_url
+                           ReferrerChainEntry::LANDING_PAGE,  // type
+                           test_server_ip,                    // ip_address
+                           GURL(),                            // referrer_url
                            GURL(),               // referrer_main_frame_url
                            false,                // is_retargeting
                            std::vector<GURL>(),  // server redirects
@@ -2589,177 +2685,7 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
                            referrer_chain.Get(1));
 }
 
-IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
-                       FencedFrameNavigationEventsAndReferrerChain) {
-  const auto test_server_ip(embedded_test_server()->host_port_pair().host());
-  const auto main_frame_url =
-      embedded_test_server()->GetURL("a.test", "/title1.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_frame_url));
-  const auto outermost_rfh_id =
-      web_contents()->GetPrimaryMainFrame()->GetGlobalId();
 
-  const auto fenced_frame_gurl =
-      embedded_test_server()->GetURL("b.test", "/fenced_frames/title1.html");
-  auto* ff_rfh = fenced_frame_helper().CreateFencedFrame(
-      web_contents()->GetPrimaryMainFrame(), fenced_frame_gurl);
-  ASSERT_TRUE(ff_rfh);
-
-  // Expects the same non-null index.
-  auto index_a = FindNavigationEventIndex(main_frame_url,
-                                          content::GlobalRenderFrameHostId());
-  auto index_b = FindNavigationEventIndex(main_frame_url, outermost_rfh_id);
-  ASSERT_TRUE(index_a.has_value());
-  ASSERT_EQ(index_a, index_b);
-
-  // Expects the same non-null index.
-  auto index_c = FindNavigationEventIndex(fenced_frame_gurl,
-                                          content::GlobalRenderFrameHostId());
-  auto index_d = FindNavigationEventIndex(fenced_frame_gurl, outermost_rfh_id);
-  ASSERT_TRUE(index_c.has_value());
-  ASSERT_EQ(index_c, index_d);
-
-  // Main frame initial navigation and fenced frame initial navigation.
-  ASSERT_EQ(navigation_event_list()->NavigationEventsSize(), 2U);
-  // Main frame.
-  VerifyNavigationEvent(GURL(),          // source_url
-                        GURL(),          // source_main_frame_url
-                        main_frame_url,  // original_request_url
-                        main_frame_url,  // destination_url
-                        true,            // is_user_initiated,
-                        true,            // has_committed
-                        false,           // has_server_redirect
-                        navigation_event_list()->GetNavigationEvent(0));
-  // Fenced frame initial navigation. The FencedFrame navigation is not
-  // user-initiated by setting the `src` attribute.
-  VerifyNavigationEvent(GURL(),             // source_url
-                        main_frame_url,     // source_main_frame_url
-                        fenced_frame_gurl,  // original_request_url
-                        fenced_frame_gurl,  // destination_url
-                        false,              // is_user_initiated,
-                        true,               // has_committed
-                        false,              // has_server_redirect
-                        navigation_event_list()->GetNavigationEvent(1));
-
-  ReferrerChain referrer_chain;
-  IdentifyReferrerChainByEventURL(
-      fenced_frame_gurl, sessions::SessionTabHelper::IdForTab(web_contents()),
-      outermost_rfh_id, &referrer_chain);
-  ASSERT_EQ(2, referrer_chain.size());
-
-  // The fenced frame's `NavigationEvent` will not have `source_url` because the
-  // last committed URL is empty (coming from `about:blank`), thus the entry's
-  // `referrer_url` is empty.
-  // The `source_main_frame_url` of the event is retrieved from the embedder
-  // page, and since it is different from the `source_url` of the event, it is
-  // stored at the entry's `referrer_main_frame_url`.
-  VerifyReferrerChainEntry(
-      fenced_frame_gurl,              // url
-      GURL(),                         // main_frame_url
-      ReferrerChainEntry::EVENT_URL,  // type
-      test_server_ip,                 // ip_address
-      GURL(),                         // referrer_url
-      main_frame_url,                 // referrer_main_frame_url
-      false,                          // is_retargeting
-      std::vector<GURL>(),            // server redirects
-      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
-      referrer_chain.Get(0));
-
-  VerifyReferrerChainEntry(main_frame_url,  // url
-                           GURL(),          // main_frame_url
-                           ReferrerChainEntry::CLIENT_REDIRECT,  // type
-                           test_server_ip,                       // ip_address
-                           GURL(),                               // referrer_url
-                           GURL(),               // referrer_main_frame_url
-                           false,                // is_retargeting
-                           std::vector<GURL>(),  // server redirects
-                           ReferrerChainEntry::BROWSER_INITIATED,
-                           referrer_chain.Get(1));
-
-  // Navigates the fenced frame.
-  const auto fenced_frame_gurl2 =
-      embedded_test_server()->GetURL("c.test", "/fenced_frames/title1.html");
-  ff_rfh = fenced_frame_helper().NavigateFrameInFencedFrameTree(
-      ff_rfh, fenced_frame_gurl2);
-  ASSERT_TRUE(ff_rfh);
-
-  // Main frame initial navigation, fenced frame initial navigation and fenced
-  // frame second navigation.
-  ASSERT_EQ(navigation_event_list()->NavigationEventsSize(), 3U);
-  // Main frame.
-  VerifyNavigationEvent(GURL(),          // source_url
-                        GURL(),          // source_main_frame_url
-                        main_frame_url,  // original_request_url
-                        main_frame_url,  // destination_url
-                        true,            // is_user_initiated,
-                        true,            // has_committed
-                        false,           // has_server_redirect
-                        navigation_event_list()->GetNavigationEvent(0));
-  // Fenced frame initial navigation.
-  VerifyNavigationEvent(GURL(),             // source_url
-                        main_frame_url,     // source_main_frame_url
-                        fenced_frame_gurl,  // original_request_url
-                        fenced_frame_gurl,  // destination_url
-                        false,              // is_user_initiated,
-                        true,               // has_committed
-                        false,              // has_server_redirect
-                        navigation_event_list()->GetNavigationEvent(1));
-  // Fenced frame second navigation.
-  VerifyNavigationEvent(fenced_frame_gurl,   // source_url
-                        main_frame_url,      // source_main_frame_url
-                        fenced_frame_gurl2,  // original_request_url
-                        fenced_frame_gurl2,  // destination_url
-                        false,               // is_user_initiated,
-                        true,                // has_committed
-                        false,               // has_server_redirect
-                        navigation_event_list()->GetNavigationEvent(2));
-
-  // Three entries.
-  referrer_chain.Clear();
-  IdentifyReferrerChainByEventURL(
-      fenced_frame_gurl2, sessions::SessionTabHelper::IdForTab(web_contents()),
-      outermost_rfh_id, &referrer_chain);
-  ASSERT_EQ(3, referrer_chain.size());
-
-  // For the second fenced frame navigation, we have a valid `referrer_url`.
-  VerifyReferrerChainEntry(
-      fenced_frame_gurl2,             // url
-      GURL(),                         // main_frame_url
-      ReferrerChainEntry::EVENT_URL,  // type
-      test_server_ip,                 // ip_address
-      fenced_frame_gurl,              // referrer_url
-      main_frame_url,                 // referrer_main_frame_url
-      false,                          // is_retargeting
-      std::vector<GURL>(),            // server redirects
-      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
-      referrer_chain.Get(0));
-
-  // Almost identical to the initial fenced frame navigation entry, except for
-  // that the `type` is `CLIENT_REDIRECT` instead of `EVENT_URL`. Because of the
-  // new `type` we also have a non-empty `main_frame_url`.
-  VerifyReferrerChainEntry(
-      fenced_frame_gurl,                    // url
-      main_frame_url,                       // main_frame_url
-      ReferrerChainEntry::CLIENT_REDIRECT,  // type
-      test_server_ip,                       // ip_address
-      GURL(),                               // referrer_url
-      main_frame_url,                       // referrer_main_frame_url
-      false,                                // is_retargeting
-      std::vector<GURL>(),                  // server redirects
-      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
-      referrer_chain.Get(1));
-
-  // Same as the main frame entry prior to the second fenced frame navigation.
-  VerifyReferrerChainEntry(main_frame_url,  // url
-                           GURL(),          // main_frame_url
-                           ReferrerChainEntry::CLIENT_REDIRECT,  // type
-                           test_server_ip,                       // ip_address
-                           GURL(),                               // referrer_url
-                           GURL(),               // referrer_main_frame_url
-                           false,                // is_retargeting
-                           std::vector<GURL>(),  // server redirects
-                           ReferrerChainEntry::BROWSER_INITIATED,
-                           referrer_chain.Get(2));
-}
 
 IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
                        NavigateBackwardForward) {
@@ -2867,7 +2793,8 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
   landing_nav_observer.WatchExistingWebContents();
   ASSERT_TRUE(content::ExecJs(
       opener_contents,
-      content::JsReplace("window.newWindow.location = $1;", landing_url)));
+      content::JsReplace("window.newWindow.location = $1;", landing_url),
+      content::EXECUTE_SCRIPT_NO_USER_GESTURE));
   landing_nav_observer.Wait();
 
   ClickTestLink("download_on_landing_page", 1, landing_url);
@@ -2896,7 +2823,7 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
                         GURL(),             // source_main_frame_url
                         initial_popup_url,  // original_request_url
                         initial_popup_url,  // destination_url
-                        false,              // is_user_initiated,
+                        true,               // is_user_initiated,
                         true,               // has_committed
                         false,              // has_server_redirect
                         nav_list->GetNavigationEvent(2));
@@ -3009,7 +2936,7 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
       test_server_ip,                 // ip_address
       landing_referrer_url,           // referrer_url
       GURL(),                         // referrer_main_frame_url
-      true,                           // is_retargeting
+      false,                          // is_retargeting
       std::vector<GURL>(),            // server redirects
       ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
       referrer_chain.Get(0));
@@ -3088,7 +3015,7 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
                            test_server_ip,                 // ip_address
                            GURL(),                         // referrer_url
                            GURL(),  // referrer_main_frame_url
-                           true,    // is_retargeting
+                           false,   // is_retargeting
                            {request_url, landing_url},  // server redirects
                            ReferrerChainEntry::BROWSER_INITIATED,
                            referrer_chain.Get(0));
@@ -3096,6 +3023,90 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
   navigation_manager.ResumeNavigation();
   ASSERT_TRUE(navigation_manager.WaitForNavigationFinished());
   ASSERT_EQ(0U, nav_list->PendingNavigationEventsSize());
+}
+
+// Regression test for b/568560137.
+// Ctrl+clicking (Cmd+clicking on Mac) a link without target="_blank" opens the
+// link in a new tab via WebContentsImpl::OpenURL -> Navigate(), which starts
+// the navigation (DidStartNavigation) before firing DidOpenRequestedURL
+// (RecordNewWebContents). Verify that IdentifyReferrerChainByPendingEventURL
+// still attributes the pending new-tab navigation to the source tab.
+IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
+                       IdentifyReferrerChainByPendingEventURL_NewTabCtrlClick) {
+  GURL initial_url = embedded_test_server()->GetURL(kSingleFrameTestURL);
+  GURL target_url = embedded_test_server()->GetURL("/hung");
+  std::string test_server_ip(embedded_test_server()->host_port_pair().host());
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initial_url));
+
+  // Point a normal link (without target="_blank") to /hung so the navigation in
+  // the new tab stays in a pending state.
+  ASSERT_TRUE(content::ExecJs(
+      web_contents(),
+      "document.getElementById('attribution_within_two_user_gestures').href = "
+      "'/hung';",
+      content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  int link_x = content::EvalJs(web_contents(),
+                               "const bounds = document.getElementById("
+                               "'attribution_within_two_user_gestures')"
+                               ".getBoundingClientRect();"
+                               "Math.floor(bounds.left + bounds.width / 2)",
+                               content::EXECUTE_SCRIPT_NO_USER_GESTURE)
+                   .ExtractInt();
+  int link_y = content::EvalJs(web_contents(),
+                               "const bounds = document.getElementById("
+                               "'attribution_within_two_user_gestures')"
+                               ".getBoundingClientRect();"
+                               "Math.floor(bounds.top + bounds.height / 2)",
+                               content::EXECUTE_SCRIPT_NO_USER_GESTURE)
+                   .ExtractInt();
+
+  content::WaitForHitTestData(web_contents()->GetPrimaryMainFrame());
+  content::WebContentsAddedObserver new_tab_observer;
+#if BUILDFLAG(IS_MAC)
+  constexpr int kNewTabModifier = blink::WebInputEvent::kMetaKey;
+#else
+  constexpr int kNewTabModifier = blink::WebInputEvent::kControlKey;
+#endif
+  content::SimulateMouseClickAt(web_contents(), kNewTabModifier,
+                                blink::WebMouseEvent::Button::kLeft,
+                                gfx::Point(link_x, link_y));
+  content::WebContents* new_tab_contents = new_tab_observer.GetWebContents();
+  ASSERT_TRUE(new_tab_contents);
+  EXPECT_NE(web_contents(), new_tab_contents);
+
+  auto* nav_list = navigation_event_list();
+  ASSERT_TRUE(nav_list);
+  ASSERT_EQ(1U, nav_list->PendingNavigationEventsSize());
+
+  ReferrerChain referrer_chain;
+  auto result = observer_manager_->IdentifyReferrerChainByPendingEventURL(
+      target_url,
+      /*user_gesture_count_limit=*/2, &referrer_chain);
+  ASSERT_EQ(SafeBrowsingNavigationObserverManager::SUCCESS_LANDING_PAGE,
+            result);
+  ASSERT_EQ(2, referrer_chain.size());
+  VerifyReferrerChainEntry(
+      target_url,                     // url
+      GURL(),                         // main_frame_url
+      ReferrerChainEntry::EVENT_URL,  // type
+      test_server_ip,                 // ip_address
+      initial_url,                    // referrer_url
+      GURL(),                         // referrer_main_frame_url
+      true,                           // is_retargeting
+      std::vector<GURL>(),            // server redirects
+      ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
+      referrer_chain.Get(0));
+  VerifyReferrerChainEntry(initial_url,                       // url
+                           GURL(),                            // main_frame_url
+                           ReferrerChainEntry::LANDING_PAGE,  // type
+                           test_server_ip,                    // ip_address
+                           GURL(),                            // referrer_url
+                           GURL(),               // referrer_main_frame_url
+                           false,                // is_retargeting
+                           std::vector<GURL>(),  // server redirects
+                           ReferrerChainEntry::BROWSER_INITIATED,
+                           referrer_chain.Get(1));
 }
 
 // Verify URLs that match the Safe Browsing allowlist domains (a.k.a
@@ -3323,6 +3334,264 @@ IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
                            ReferrerChainEntry::RECENT_NAVIGATION,  // type
                            test_server_ip,                         // ip_address
                            GURL(),               // referrer_url
+                           GURL(),               // referrer_main_frame_url
+                           false,                // is_retargeting
+                           std::vector<GURL>(),  // server redirects
+                           ReferrerChainEntry::BROWSER_INITIATED,
+                           referrer_chain.Get(3));
+}
+
+// Regression test for b/568560137.
+// Click a link in a cross-origin subframe (OOPIF) and start download. Set
+// push_state_on_click=true so the click handler first performs a same-document
+// history.pushState navigation that consumes the WebContents's
+// user_gesture_map_ entry (making HasUnexpiredUserGesture() false), isolating
+// NavigationHandle::HasUserGesture() on the subsequent download navigation.
+IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
+                       CrossOriginSubFrameDirectDownload) {
+  GURL main_frame_url =
+      embedded_test_server()->GetURL("a.com", kBasicIframeURL);
+  GURL initial_subframe_url =
+      embedded_test_server()->GetURL("a.com", kInitialSubframeUrl);
+  GURL iframe_url =
+      embedded_test_server()->GetURL("b.com", kIframeDirectDownloadURL);
+  GURL download_url = embedded_test_server()->GetURL("b.com", kDownloadItemURL);
+  std::string test_server_ip(embedded_test_server()->host_port_pair().host());
+
+  ReferrerChain referrer_chain;
+  TriggerCrossOriginSubFrameDownload(main_frame_url, iframe_url,
+                                     /*target_top=*/false,
+                                     /*open_in_new_tab=*/false,
+                                     /*push_state_on_click=*/true,
+                                     &referrer_chain);
+  ASSERT_EQ(4, referrer_chain.size());
+  VerifyReferrerChainEntry(
+      download_url,                   // url
+      GURL(),                         // main_frame_url
+      ReferrerChainEntry::EVENT_URL,  // type
+      test_server_ip,                 // ip_address
+      iframe_url,                     // referrer_url
+      main_frame_url,                 // referrer_main_frame_url
+      false,                          // is_retargeting
+      std::vector<GURL>(),            // server redirects
+      ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
+      referrer_chain.Get(0));
+  VerifyReferrerChainEntry(
+      iframe_url,                        // url
+      main_frame_url,                    // main_frame_url
+      ReferrerChainEntry::LANDING_PAGE,  // type
+      test_server_ip,                    // ip_address
+      initial_subframe_url,              // referrer_url
+      main_frame_url,                    // referrer_main_frame_url
+      false,                             // is_retargeting
+      std::vector<GURL>(),               // server redirects
+      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
+      referrer_chain.Get(1));
+  VerifyReferrerChainEntry(
+      initial_subframe_url,                 // url
+      main_frame_url,                       // main_frame_url
+      ReferrerChainEntry::CLIENT_REDIRECT,  // type
+      test_server_ip,                       // ip_address
+      GURL(),                               // referrer_url
+      main_frame_url,                       // referrer_main_frame_url
+      false,                                // is_retargeting
+      std::vector<GURL>(),                  // server redirects
+      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
+      referrer_chain.Get(2));
+  VerifyReferrerChainEntry(main_frame_url,  // url
+                           GURL(),          // main_frame_url
+                           ReferrerChainEntry::CLIENT_REDIRECT,  // type
+                           test_server_ip,                       // ip_address
+                           GURL(),                               // referrer_url
+                           GURL(),               // referrer_main_frame_url
+                           false,                // is_retargeting
+                           std::vector<GURL>(),  // server redirects
+                           ReferrerChainEntry::BROWSER_INITIATED,
+                           referrer_chain.Get(3));
+}
+
+// Regression test for b/568560137.
+// Click a target="_top" link in a cross-origin subframe (OOPIF) and start
+// download. Set push_state_on_click=true so the click handler first performs a
+// same-document history.pushState navigation that consumes the opener
+// WebContents's user_gesture_map_ entry (making HasUnexpiredUserGesture()
+// false). Because navigating a cross-origin top frame then goes through
+// NavigateFromFrameProxy, NavigationHandle::HasUserGesture() is also filtered
+// out to false, isolating NavigationHandle::StartedWithTransientActivation().
+IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
+                       CrossOriginSubFrameTargetTopDownload) {
+  GURL main_frame_url =
+      embedded_test_server()->GetURL("a.com", kBasicIframeURL);
+  GURL iframe_url =
+      embedded_test_server()->GetURL("b.com", kIframeDirectDownloadURL);
+  GURL download_url = embedded_test_server()->GetURL("b.com", kDownloadItemURL);
+  std::string test_server_ip(embedded_test_server()->host_port_pair().host());
+
+  ReferrerChain referrer_chain;
+  TriggerCrossOriginSubFrameDownload(main_frame_url, iframe_url,
+                                     /*target_top=*/true,
+                                     /*open_in_new_tab=*/false,
+                                     /*push_state_on_click=*/true,
+                                     &referrer_chain);
+  ASSERT_EQ(2, referrer_chain.size());
+  VerifyReferrerChainEntry(
+      download_url,                   // url
+      GURL(),                         // main_frame_url
+      ReferrerChainEntry::EVENT_URL,  // type
+      test_server_ip,                 // ip_address
+      main_frame_url,                 // referrer_url
+      GURL(),                         // referrer_main_frame_url
+      false,                          // is_retargeting
+      std::vector<GURL>(),            // server redirects
+      ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
+      referrer_chain.Get(0));
+  VerifyReferrerChainEntry(main_frame_url,                    // url
+                           GURL(),                            // main_frame_url
+                           ReferrerChainEntry::LANDING_PAGE,  // type
+                           test_server_ip,                    // ip_address
+                           GURL(),                            // referrer_url
+                           GURL(),               // referrer_main_frame_url
+                           false,                // is_retargeting
+                           std::vector<GURL>(),  // server redirects
+                           ReferrerChainEntry::BROWSER_INITIATED,
+                           referrer_chain.Get(1));
+}
+
+// Open a new tab from a cross-origin subframe (OOPIF) via
+// window.open('javascript:void(0)') and synchronously navigate the new tab to a
+// download URL via script. Even though RenderFrameHostImpl::CreateNewWindow
+// consumes the subframe's transient user activation before RecordNewWebContents
+// runs, WebContentsImpl::DidReceiveInputEvent forwards the subframe's mouse
+// click to SafeBrowsingNavigationObserver::DidGetUserInteraction(), which
+// records the user gesture in user_gesture_map_ for the opener WebContents so
+// HasUnexpiredUserGesture() returns true in RecordNewWebContents.
+IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
+                       CrossOriginSubFrameNewTabDownload) {
+  GURL main_frame_url =
+      embedded_test_server()->GetURL("a.com", kBasicIframeURL);
+  GURL initial_subframe_url =
+      embedded_test_server()->GetURL("a.com", kInitialSubframeUrl);
+  GURL iframe_url =
+      embedded_test_server()->GetURL("b.com", kIframeDirectDownloadURL);
+  GURL download_url = embedded_test_server()->GetURL("b.com", kDownloadItemURL);
+  std::string test_server_ip(embedded_test_server()->host_port_pair().host());
+
+  ReferrerChain referrer_chain;
+  TriggerCrossOriginSubFrameDownload(main_frame_url, iframe_url,
+                                     /*target_top=*/false,
+                                     /*open_in_new_tab=*/true,
+                                     /*push_state_on_click=*/false,
+                                     &referrer_chain);
+  ASSERT_EQ(4, referrer_chain.size());
+  VerifyReferrerChainEntry(
+      download_url,                   // url
+      GURL(),                         // main_frame_url
+      ReferrerChainEntry::EVENT_URL,  // type
+      test_server_ip,                 // ip_address
+      iframe_url,                     // referrer_url
+      main_frame_url,                 // referrer_main_frame_url
+      true,                           // is_retargeting
+      std::vector<GURL>(),            // server redirects
+      ReferrerChainEntry::RENDERER_INITIATED_WITH_USER_GESTURE,
+      referrer_chain.Get(0));
+  VerifyReferrerChainEntry(
+      iframe_url,                        // url
+      main_frame_url,                    // main_frame_url
+      ReferrerChainEntry::LANDING_PAGE,  // type
+      test_server_ip,                    // ip_address
+      initial_subframe_url,              // referrer_url
+      main_frame_url,                    // referrer_main_frame_url
+      false,                             // is_retargeting
+      std::vector<GURL>(),               // server redirects
+      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
+      referrer_chain.Get(1));
+  VerifyReferrerChainEntry(
+      initial_subframe_url,                 // url
+      main_frame_url,                       // main_frame_url
+      ReferrerChainEntry::CLIENT_REDIRECT,  // type
+      test_server_ip,                       // ip_address
+      GURL(),                               // referrer_url
+      main_frame_url,                       // referrer_main_frame_url
+      false,                                // is_retargeting
+      std::vector<GURL>(),                  // server redirects
+      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
+      referrer_chain.Get(2));
+  VerifyReferrerChainEntry(main_frame_url,  // url
+                           GURL(),          // main_frame_url
+                           ReferrerChainEntry::CLIENT_REDIRECT,  // type
+                           test_server_ip,                       // ip_address
+                           GURL(),                               // referrer_url
+                           GURL(),               // referrer_main_frame_url
+                           false,                // is_retargeting
+                           std::vector<GURL>(),  // server redirects
+                           ReferrerChainEntry::BROWSER_INITIATED,
+                           referrer_chain.Get(3));
+}
+
+// TODO(b/568560137): Attribute the user gesture when a click in a cross-origin
+// subframe (OOPIF) first triggers a same-document navigation (e.g.
+// history.pushState) before opening a new tab via
+// window.open('javascript:void(0)'). Currently, DidStartNavigation for the
+// pushState navigation consumes the WebContents user_gesture_map_ entry
+// recorded by DidGetUserInteraction(), leaving HasUnexpiredUserGesture() false
+// when RecordNewWebContents runs. As a result, the download navigation in the
+// new tab is recorded as RENDERER_INITIATED_WITHOUT_USER_GESTURE.
+IN_PROC_BROWSER_TEST_F(SBNavigationObserverBrowserTest,
+                       CrossOriginSubFrameNewTabWithPushStateDownload) {
+  GURL main_frame_url =
+      embedded_test_server()->GetURL("a.com", kBasicIframeURL);
+  GURL initial_subframe_url =
+      embedded_test_server()->GetURL("a.com", kInitialSubframeUrl);
+  GURL iframe_url =
+      embedded_test_server()->GetURL("b.com", kIframeDirectDownloadURL);
+  GURL download_url = embedded_test_server()->GetURL("b.com", kDownloadItemURL);
+  std::string test_server_ip(embedded_test_server()->host_port_pair().host());
+
+  ReferrerChain referrer_chain;
+  TriggerCrossOriginSubFrameDownload(main_frame_url, iframe_url,
+                                     /*target_top=*/false,
+                                     /*open_in_new_tab=*/true,
+                                     /*push_state_on_click=*/true,
+                                     &referrer_chain);
+  ASSERT_EQ(4, referrer_chain.size());
+  VerifyReferrerChainEntry(
+      download_url,                   // url
+      GURL(),                         // main_frame_url
+      ReferrerChainEntry::EVENT_URL,  // type
+      test_server_ip,                 // ip_address
+      iframe_url,                     // referrer_url
+      main_frame_url,                 // referrer_main_frame_url
+      true,                           // is_retargeting
+      std::vector<GURL>(),            // server redirects
+      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
+      referrer_chain.Get(0));
+  VerifyReferrerChainEntry(
+      iframe_url,                           // url
+      main_frame_url,                       // main_frame_url
+      ReferrerChainEntry::CLIENT_REDIRECT,  // type
+      test_server_ip,                       // ip_address
+      initial_subframe_url,                 // referrer_url
+      main_frame_url,                       // referrer_main_frame_url
+      false,                                // is_retargeting
+      std::vector<GURL>(),                  // server redirects
+      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
+      referrer_chain.Get(1));
+  VerifyReferrerChainEntry(
+      initial_subframe_url,                 // url
+      main_frame_url,                       // main_frame_url
+      ReferrerChainEntry::CLIENT_REDIRECT,  // type
+      test_server_ip,                       // ip_address
+      GURL(),                               // referrer_url
+      main_frame_url,                       // referrer_main_frame_url
+      false,                                // is_retargeting
+      std::vector<GURL>(),                  // server redirects
+      ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE,
+      referrer_chain.Get(2));
+  VerifyReferrerChainEntry(main_frame_url,  // url
+                           GURL(),          // main_frame_url
+                           ReferrerChainEntry::CLIENT_REDIRECT,  // type
+                           test_server_ip,                       // ip_address
+                           GURL(),                               // referrer_url
                            GURL(),               // referrer_main_frame_url
                            false,                // is_retargeting
                            std::vector<GURL>(),  // server redirects

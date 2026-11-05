@@ -10,6 +10,7 @@
 #include "base/system/sys_info.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/command_updater.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
 #include "chrome/browser/lens/region_search/lens_region_search_controller.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
@@ -21,6 +22,7 @@
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
@@ -46,6 +48,7 @@
 #include "components/omnibox/browser/omnibox_prefs.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 
 namespace {
@@ -213,6 +216,8 @@ void LensOverlayEntryPointController::UpdateEntryPointsState(
   // Update the 3 dot menu entry point.
   command_updater_->UpdateCommandEnabled(IDC_CONTENT_CONTEXT_LENS_OVERLAY,
                                          visible);
+  command_updater_->UpdateCommandEnabled(IDC_ASK_GOOGLE_ABOUT_THIS_PAGE,
+                                         visible);
 
   // Update the pinnable toolbar entry point. Toolbar entry point is always
   // present, therefore, ignore the visibility check.
@@ -304,7 +309,10 @@ void LensOverlayEntryPointController::InvokeAction(
         lens::LensOverlayDismissalSource::kToolbar);
   } else {
     search_controller->OpenLensOverlay(
-        lens::LensOverlayInvocationSource::kToolbar);
+        lens::LensOverlayInvocationSource::kToolbar,
+        /*should_show_csb=*/!contextual_tasks::
+            AreContextualTasksUpdatedEntryPointsEnabled(
+                active_tab->GetBrowserWindowInterface()->GetProfile()));
   }
 }
 

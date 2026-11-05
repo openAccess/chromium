@@ -146,12 +146,13 @@ bool IsValidShortcutItem(ShortcutItemType shortcut_item_type) {
     _shortcutItem = shortcutItem;
     _shortcutHandler = handler;
     _shortcutItemType = ShortcutItemTypeOf(shortcutItem);
-    RecordMetrics(_shortcutItemType, shortcutItem.type);
   }
   return self;
 }
 
 - (void)execute {
+  RecordMetrics(_shortcutItemType, _shortcutItem.type);
+
   // Don't handle the intent if it's not recognised.
   if (!IsValidShortcutItem(_shortcutItemType)) {
     if (_shortcutHandler) {
@@ -160,7 +161,7 @@ bool IsValidShortcutItem(ShortcutItemType shortcut_item_type) {
     return;
   }
 
-  SceneState* sceneState = [self sceneStateFromSessionID];
+  SceneState* sceneState = self.sceneState;
   CHECK(sceneState);
   Browser* browser =
       sceneState.browserProviderInterface.currentBrowserProvider.browser;

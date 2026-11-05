@@ -12,6 +12,8 @@
 #ifndef OBU_PARAMETER_DATA_H_
 #define OBU_PARAMETER_DATA_H_
 
+#include <string>
+
 #include "absl/status/status.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/write_bit_buffer.h"
@@ -27,13 +29,6 @@ struct ParameterData {
   /*!\brief Destructor.*/
   virtual ~ParameterData() = default;
 
-  /*!\brief Reads and validates the parameter data.
-   *
-   * \param rb Buffer to read from.
-   * \return `absl::OkStatus()`. Or a specific error code on failure.
-   */
-  virtual absl::Status ReadAndValidate(ReadBitBuffer& rb) = 0;
-
   /*!\brief Validates and writes to a buffer.
    *
    * \param wb Buffer to write to.
@@ -41,9 +36,17 @@ struct ParameterData {
    */
   virtual absl::Status Write(WriteBitBuffer& wb) const = 0;
 
-  /*!\brief Prints the parameter data.
+  /*!\brief Returns a string representation of the parameter data.
+   *
+   * \return String representation of the parameter data.
    */
-  virtual void Print() const = 0;
+  virtual std::string ToString() const { return ""; }
+
+  /*!\brief Supports Abseil stringification. */
+  template <typename Sink>
+  friend void AbslStringify(Sink& sink, const ParameterData& data) {
+    sink.Append(data.ToString());
+  }
 
   bool friend operator==(const ParameterData& lhs,
                          const ParameterData& rhs) = default;

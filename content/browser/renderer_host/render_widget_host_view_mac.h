@@ -168,14 +168,16 @@ class CONTENT_EXPORT RenderWidgetHostViewMac
   void SetIsLoading(bool is_loading) override;
   void RenderProcessGone() override;
   void ShowWithVisibility(PageVisibilityState page_visibility) final;
-  void Destroy() override;
+  void DestroyImpl() override;
+  void OnDestroyOrDefer() override;
   void UpdateTooltipUnderCursor(const std::u16string& tooltip_text) override;
   void UpdateTooltip(const std::u16string& tooltip_text) override;
   gfx::Size GetRequestedRendererSize() override;
   bool IsSurfaceAvailableForCopy() override;
-  void CopyFromSurface(
+  void CopyFromSurfaceImpl(
       const gfx::Rect& src_rect,
       const gfx::Size& output_size,
+      bool is_copy_request_secure,
       base::TimeDelta timeout,
       base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
       override;
@@ -204,10 +206,7 @@ class CONTENT_EXPORT RenderWidgetHostViewMac
   void DidNavigate() override;
 
   void CreateUnboundedSurface(
-      mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-      mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient>
-          client,
-      const gfx::Rect& bounds_in_dips,
+      const gfx::Rect& bounds_in_screen,
       base::WeakPtr<RenderWidgetHostViewBase> subframe_view) override;
 
   blink::mojom::PointerLockResult LockPointer(bool) override;
@@ -433,6 +432,8 @@ class CONTENT_EXPORT RenderWidgetHostViewMac
                                 gfx::Rect* out_rect,
                                 gfx::Range* out_actual_range,
                                 bool* out_success) override;
+  void GetFirstRectForRange(const gfx::Range& requested_range,
+                            GetFirstRectForRangeCallback callback) override;
   void ExecuteEditCommand(const std::string& command) override;
   void Undo() override;
   void Redo() override;
@@ -554,6 +555,8 @@ class CONTENT_EXPORT RenderWidgetHostViewMac
   // Shuts down the render_widget_host_.  This is a separate function so we can
   // invoke it from the message loop.
   void ShutdownHost();
+  void CleanUpHostObservers() override;
+  void ShutdownAndDisconnect();
 
   // Send updated vsync parameters to the top level display.
   void UpdateDisplayVSyncParameters();
@@ -620,6 +623,13 @@ class CONTENT_EXPORT RenderWidgetHostViewMac
       const TextInputManager::TextSelection* selection,
       gfx::Rect* rect,
       gfx::Range* actual_range);
+
+  // Completes GetFirstRectForRange() with `blink_rect`, the renderer's bounds
+  // for `requested_range` in physical pixels.
+  void OnGotFirstRectForRange(const gfx::Range& requested_range,
+                              float device_scale_factor,
+                              GetFirstRectForRangeCallback callback,
+                              gfx::Rect blink_rect);
 
   // Interface through which the NSView is to be manipulated. This points either
   // to |in_process_ns_view_bridge_| or to |remote_ns_view_|.
@@ -756,6 +766,8 @@ class CONTENT_EXPORT RenderWidgetHostViewMac
   // See description of `kDelayUpdateWindowsAfterTextInputStateChanged` for
   // details.
   base::OneShotTimer update_windows_timer_;
+
+  bool disconnected_ = false;
 
   // Factory used to safely scope delayed calls to ShutdownHost().
   base::WeakPtrFactory<RenderWidgetHostViewMac> weak_factory_;

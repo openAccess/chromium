@@ -14,6 +14,7 @@
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "base/timer/elapsed_timer.h"
+#include "build/build_config.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window.h"
 #include "chrome/browser/ui/views/picture_in_picture/pip_child_dialog_observer_helper.h"
 #include "components/web_modal/modal_dialog_host.h"
@@ -22,16 +23,32 @@
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
+#include "extensions/buildflags/buildflags.h"
 #include "third_party/blink/public/mojom/picture_in_picture_window_options/picture_in_picture_window_options.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
 
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "components/sessions/core/session_id.h"
+
+namespace extensions {
+class DocumentPipWindowController;
+}
+#endif
+
 class DocumentPipWidgetDelegate;
+class ExclusiveAccessManager;
 class PictureInPictureTucker;
 class Profile;
 
+#if !BUILDFLAG(IS_WIN)
+class PictureInPictureWidgetFadeAnimator;
+#endif
+
 namespace content {
+class NavigationEntry;
 class WebContents;
 }  // namespace content
 
@@ -40,8 +57,9 @@ class WebContents;
 //   - Owns the child WebContents for the PiP window.
 //   - Owns the floating views::Widget that renders that child.
 //   - Acts as WebContentsDelegate for the child WebContents.
-//   - Observes the opener WebContents to close the PiP window when the opener
-//     is destroyed or navigates to a new primary page.
+//   - Observes the opener WebContents to update the window title and close the
+//     PiP window when the opener is destroyed or navigates to a new primary
+//     page.
 //   - Implements PictureInPictureWindow for tucking and Mac fullscreen.
 class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
                         public content::WebContentsObserver,
@@ -87,6 +105,17 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   views::Widget* GetWidget();
   const blink::mojom::PictureInPictureWindowOptions& GetPipOptions() const;
 
+  // Test-only accessor for the current PiP window's ExclusiveAccessManager;
+  // null when no window is open. Mirrors GetExclusiveAccessManager(), which is
+  // private since production callers only need it from within this class.
+  ExclusiveAccessManager* GetExclusiveAccessManagerForTesting() {
+    return GetExclusiveAccessManager();
+  }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  SessionID GetSessionId() const { return session_id_; }
+#endif
+
   // Looks up the DocumentPipHost that owns `child_web_contents` (the
   // WebContents rendered inside a Document PiP window), or nullptr if it is not
   // a Document PiP child. Used by the content-settings refresh path, which is
@@ -103,6 +132,7 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   // WebContentsDelegate::BeforeUnloadFired() override below does not hide it.
   using content::WebContentsObserver::BeforeUnloadFired;
   void PrimaryPageChanged(content::Page& page) override;
+  void TitleWasSet(content::NavigationEntry* entry) override;
 
   // content::WebContentsDelegate - Navigation & State:
   blink::mojom::DisplayMode GetDisplayMode(
@@ -130,13 +160,20 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   bool HandleKeyboardEvent(content::WebContents* source,
                            const input::NativeWebKeyboardEvent& event) override;
   bool TakeFocus(content::WebContents* source, bool reverse) override;
+  void RequestPointerLock(content::WebContents* web_contents,
+                          bool user_gesture,
+                          bool last_unlocked_by_target) override;
+  void LostPointerLock() override;
+  void RequestKeyboardLock(content::WebContents* web_contents,
+                           bool esc_key_locked) override;
+  void CancelKeyboardLockRequest(content::WebContents* web_contents) override;
 
   // content::WebContentsDelegate - New Windows & Popups:
   content::WebContents* AddNewContents(
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
@@ -224,6 +261,7 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   void NotifyPositionRequiresUpdate() override;
 
   // views::WidgetObserver:
+  void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
   void OnWidgetBoundsChanged(views::Widget* widget,
                              const gfx::Rect& new_bounds) override;
   void OnWidgetDestroying(views::Widget* widget) override;
@@ -233,7 +271,10 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   void OnViewIsDeleting(views::View* observed_view) override;
 
  private:
+  class ExclusiveAccessContextImpl;
+
   friend class content::WebContentsUserData<DocumentPipHost>;
+  friend class DocumentPipHostTestApi;
   // Grant the child-dialog resize tests access to the private test-only hooks
   // below (RunPendingChildResizeForTesting/IsChildResizePendingForTesting), so
   // they can drive the pending resize deterministically without a public API.
@@ -258,9 +299,23 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   // multiple times; subsequent calls are no-ops.
   void ClosePipWindow();
 
+  // Disconnects observers and delegates before widget teardown. May also run
+  // during an externally initiated native close, without deleting the widget.
+  void PrepareForWidgetDestruction();
+
   // Callback for Widget::MakeCloseSynchronous(). Invoked when external code
   // (e.g. DialogDelegate, OS close button) requests the widget to close.
   void OnWidgetCloseRequested(views::Widget::ClosedReason reason);
+
+  // Gives keyboard focus to the child WebContents hosted by the PiP widget.
+  void FocusChildWebContents();
+
+  // Owned by the current PiP window; null when no window is open. Only used
+  // from within this class; tests reach it via
+  // GetExclusiveAccessManagerForTesting().
+  ExclusiveAccessManager* GetExclusiveAccessManager();
+
+  gfx::Size GetMaximumDialogSize() const;
 
   // Test-only hooks for the child-dialog resize path, reached by the friended
   // tests above. Private (not a public API); defined in the .cc where
@@ -276,6 +331,10 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   // helper after it resizes the window for a child dialog, so a forced-tucked
   // window stays tucked at its new bounds.
   void EnforceTucking() override;
+  // Updates the bounds cache so a subsequently reopened PiP window reuses the
+  // user's most recent size and position. Mirrors
+  // PictureInPictureBrowserFrameView::OnUserDesiredBoundsChanged().
+  void OnUserDesiredBoundsChanged(const gfx::Rect& bounds) override;
 
   // The delegate for the floating Widget. Owned by this host (not by the
   // Widget): `CLIENT_OWNS_WIDGET` + not `SetOwnedByWidget()` means the Widget
@@ -289,6 +348,13 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   // destroyed in reverse declaration order.
   std::unique_ptr<views::Widget> widget_;
 
+  std::unique_ptr<ExclusiveAccessContextImpl> exclusive_access_context_;
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  SessionID session_id_ = SessionID::InvalidValue();
+  std::unique_ptr<extensions::DocumentPipWindowController> window_controller_;
+#endif
+
   // Initial options from the requestWindow() call.
   blink::mojom::PictureInPictureWindowOptions pip_options_;
 
@@ -300,6 +366,7 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   // SetForcedTucking() call.
   std::unique_ptr<PictureInPictureTucker> tucker_;
   bool is_tucking_forced_ = false;
+  bool restore_focus_on_activation_ = false;
 
   base::ScopedObservation<views::Widget, views::WidgetObserver>
       widget_observation_{this};
@@ -314,6 +381,11 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   // destroyed (it observes the widget). Declared after `widget_` so it is
   // destroyed before the widget it observes.
   std::unique_ptr<PipChildDialogObserverHelper> child_dialog_observer_helper_;
+
+#if !BUILDFLAG(IS_WIN)
+  // Destroyed before the widget whose opacity it animates.
+  std::unique_ptr<PictureInPictureWidgetFadeAnimator> fade_animator_;
+#endif
 
   base::WeakPtrFactory<DocumentPipHost> weak_factory_{this};
 

@@ -100,8 +100,10 @@ import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 import org.chromium.components.browser_ui.widget.tile.TileView;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.omnibox.AutocompleteRequestType;
+import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.components.omnibox.OmniboxFocusReason;
 import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.signin.SigninFeatureMap;
@@ -137,6 +139,8 @@ import java.util.concurrent.TimeUnit;
 @EnableFeatures(
         ChromeFeatureList.HOME_BUTTON_REMOVAL
                 + ":set_default_to_false_on_homepage_on_desktop/false")
+// Tests the Java native NTP, which is not used on desktop (it uses the WebUI NTP).
+@Restriction(DeviceFormFactor.PHONE_OR_TABLET)
 public class NewTabPageTest {
     private static final int RENDER_TEST_REVISION = 9;
 
@@ -186,6 +190,7 @@ public class NewTabPageTest {
         ComposeboxQueryControllerBridgeJni.setInstanceForTesting(mComposeboxBridgeJni);
         when(mComposeboxBridgeJni.isFuseboxEligibleForProfile(any())).thenReturn(true);
         mActivityTestRule.startOnBlankPage();
+        NewTabPageTestUtils.fakeGoogleAiModeButtonUiConfig();
         TemplateUrlService originalService =
                 ThreadUtils.runOnUiThreadBlocking(
                         () ->
@@ -196,11 +201,7 @@ public class NewTabPageTest {
 
         mOmnibox = new OmniboxTestUtils(mActivityTestRule.getActivity());
 
-        mTestServer =
-                EmbeddedTestServer.createAndStartServer(
-                        ApplicationProvider.getApplicationContext());
-
-        mSiteSuggestions = NewTabPageTestUtils.createFakeSiteSuggestions(mTestServer);
+        mSiteSuggestions = NewTabPageTestUtils.createFakeSiteSuggestions();
         mMostVisitedSites = new FakeMostVisitedSites();
         mMostVisitedSites.setTileSuggestions(mSiteSuggestions);
         mSuggestionsDeps.getFactory().mostVisitedSites = mMostVisitedSites;
@@ -214,6 +215,24 @@ public class NewTabPageTest {
         mFakebox = mNtp.getView().findViewById(R.id.search_box);
         mMvTilesLayout = mNtp.getView().findViewById(R.id.mv_tiles_layout);
         Assert.assertEquals(mSiteSuggestions.size(), mMvTilesLayout.getTileCount());
+    }
+
+    private void ensureTestServerStarted() {
+        if (mTestServer != null) return;
+        mTestServer =
+                EmbeddedTestServer.createAndStartServer(
+                        ApplicationProvider.getApplicationContext());
+        mSiteSuggestions = NewTabPageTestUtils.createFakeSiteSuggestions(mTestServer);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> mMostVisitedSites.setTileSuggestions(mSiteSuggestions));
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    TileView firstTile = mMvTilesLayout.getTileAt(0);
+                    return firstTile != null
+                            && firstTile.getWidth() > 0
+                            && firstTile.getHeight() > 0
+                            && !mMvTilesLayout.isLayoutRequested();
+                });
     }
 
     @Test
@@ -286,10 +305,12 @@ public class NewTabPageTest {
     @Test
     @SmallTest
     @Feature({"NewTabPage", "FeedNewTabPage"})
-    @DisableIf.Build(sdk_equals = Build.VERSION_CODES.R, message = "http://crbug.com/40664848")
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // Failing on desktop http://crbug.com/40664848
-    @DisabledTest(message = "b/524422264")
     public void testFocusFakebox() {
+        CriteriaHelper.pollUiThread(
+                () ->
+                        !mNtp.getView().isLayoutRequested()
+                                && !mFakebox.isLayoutRequested()
+                                && mFakebox.getHeight() > 0);
         int initialFakeboxTop = getFakeboxTop(mNtp);
 
         TouchCommon.singleClickView(mFakebox);
@@ -301,8 +322,8 @@ public class NewTabPageTest {
             Assert.assertTrue(afterFocusFakeboxTop < initialFakeboxTop);
         }
 
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         mOmnibox.clearFocus();
+        waitForUrlFocusPercent(mNtp, 0f);
         waitForFakeboxTopPosition(mNtp, initialFakeboxTop);
     }
 
@@ -341,37 +362,20 @@ public class NewTabPageTest {
     @SmallTest
     @Feature({"NewTabPage", "FeedNewTabPage"})
     public void testClickMostVisitedItem() {
+        ensureTestServerStarted();
         Assert.assertNotNull(mMvTilesLayout);
         HistogramWatcher histogramWatcher = expectMostVisitedTilesRecordForNtpModuleClick();
 
         ChromeTabUtils.waitForTabPageLoaded(
                 mTab,
                 mSiteSuggestions.get(0).url.getSpec(),
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        TileView mostVisitedItem = mMvTilesLayout.getTileAt(0);
-                        TouchCommon.singleClickView(mostVisitedItem);
-                    }
+                () -> {
+                    TileView mostVisitedItem = mMvTilesLayout.getTileAt(0);
+                    TouchCommon.singleClickView(mostVisitedItem);
                 });
 
         Assert.assertEquals(mSiteSuggestions.get(0).url, ChromeTabUtils.getUrlOnUiThread(mTab));
         histogramWatcher.assertExpected();
-    }
-
-    /** Tests opening a most visited item in a new tab. */
-    @Test
-    @SmallTest
-    @Feature({"NewTabPage", "FeedNewTabPage"})
-    @DisabledTest(message = "Flaky - crbug.com/40440132")
-    public void testOpenMostVisitedItemInNewTab() throws ExecutionException {
-        Assert.assertNotNull(mMvTilesLayout);
-        ChromeTabUtils.invokeContextMenuAndOpenInANewTab(
-                mActivityTestRule.getActivity(),
-                mMvTilesLayout.getTileAt(0),
-                ContextMenuManager.ContextMenuItemId.OPEN_IN_NEW_TAB,
-                false,
-                mSiteSuggestions.get(0).url.getSpec());
     }
 
     /** Tests deleting a most visited item. */
@@ -403,24 +407,22 @@ public class NewTabPageTest {
     @MediumTest
     @Feature({"NewTabPage", "FeedNewTabPage"})
     public void testUrlFocusAnimationsDisabledOnLoad() {
+        ensureTestServerStarted();
         Assert.assertFalse(getUrlFocusAnimationsDisabled());
         ChromeTabUtils.waitForTabPageLoaded(
                 mTab,
                 mTestServer.getURL(TEST_PAGE),
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        ThreadUtils.runOnUiThreadBlocking(
-                                () -> {
-                                    int pageTransition =
-                                            PageTransition.TYPED | PageTransition.FROM_ADDRESS_BAR;
-                                    mTab.loadUrl(
-                                            new LoadUrlParams(
-                                                    mTestServer.getURL(TEST_PAGE), pageTransition));
-                                    // It should be disabled as soon as a load URL is triggered.
-                                    Assert.assertTrue(getUrlFocusAnimationsDisabled());
-                                });
-                    }
+                () -> {
+                    ThreadUtils.runOnUiThreadBlocking(
+                            () -> {
+                                int pageTransition =
+                                        PageTransition.TYPED | PageTransition.FROM_ADDRESS_BAR;
+                                mTab.loadUrl(
+                                        new LoadUrlParams(
+                                                mTestServer.getURL(TEST_PAGE), pageTransition));
+                                // It should be disabled as soon as a load URL is triggered.
+                                Assert.assertTrue(getUrlFocusAnimationsDisabled());
+                            });
                 });
         // Ensure it is still marked as disabled once the new page is fully loaded.
         Assert.assertTrue(getUrlFocusAnimationsDisabled());
@@ -430,7 +432,7 @@ public class NewTabPageTest {
     @SmallTest
     @Feature({"NewTabPage"})
     @Restriction(DeviceFormFactor.PHONE)
-    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR + ":disable_on_ntp/false")
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testNtpScrollListenerAttached() {
         Assert.assertNotNull(mNtp.getScrollListenerForTesting());
     }
@@ -444,14 +446,11 @@ public class NewTabPageTest {
         try {
             final Semaphore delaySemaphore = new Semaphore(0);
             Runnable delayAction =
-                    new Runnable() {
-                        @Override
-                        public void run() {
-                            try {
-                                Assert.assertTrue(delaySemaphore.tryAcquire(10, TimeUnit.SECONDS));
-                            } catch (InterruptedException e) {
-                                e.printStackTrace();
-                            }
+                    () -> {
+                        try {
+                            Assert.assertTrue(delaySemaphore.tryAcquire(10, TimeUnit.SECONDS));
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
                         }
                     };
             final String testPageUrl =
@@ -501,35 +500,29 @@ public class NewTabPageTest {
     @Feature({"NewTabPage", "FeedNewTabPage"})
     public void testSetSearchProviderInfo() throws Throwable {
         ThreadUtils.runOnUiThreadBlocking(
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        NewTabPageCoordinator ntpCoordinator = mNtp.getNewTabPageCoordinator();
-                        View logoContainerView =
-                                mNtp.getLayout().findViewById(R.id.logo_container_view);
-                        Assert.assertEquals(View.VISIBLE, logoContainerView.getVisibility());
+                () -> {
+                    NewTabPageCoordinator ntpCoordinator = mNtp.getNewTabPageCoordinator();
+                    View logoContainerView =
+                            mNtp.getLayout().findViewById(R.id.logo_container_view);
+                    Assert.assertEquals(View.VISIBLE, logoContainerView.getVisibility());
 
-                        ntpCoordinator.setSearchProviderInfo(
-                                /* hasLogo= */ false, /* isGoogle= */ true);
-                        // Mock to notify the template URL service observer.
-                        when(mTemplateUrlService.doesDefaultSearchEngineHaveLogo())
-                                .thenReturn(false);
-                        when(mTemplateUrlService.isDefaultSearchEngineGoogle()).thenReturn(true);
-                        ntpCoordinator
-                                .getLogoCoordinatorForTesting()
-                                .onTemplateURLServiceChangedForTesting();
-                        Assert.assertEquals(View.GONE, logoContainerView.getVisibility());
+                    ntpCoordinator.setSearchProviderInfo(
+                            /* hasLogo= */ false, /* isGoogle= */ true);
+                    // Mock to notify the template URL service observer.
+                    when(mTemplateUrlService.doesDefaultSearchEngineHaveLogo()).thenReturn(false);
+                    when(mTemplateUrlService.isDefaultSearchEngineGoogle()).thenReturn(true);
+                    ntpCoordinator
+                            .getLogoCoordinatorForTesting()
+                            .onTemplateURLServiceChangedForTesting();
+                    Assert.assertEquals(View.GONE, logoContainerView.getVisibility());
 
-                        ntpCoordinator.setSearchProviderInfo(
-                                /* hasLogo= */ true, /* isGoogle= */ true);
-                        // Mock to notify the template URL service observer.
-                        when(mTemplateUrlService.doesDefaultSearchEngineHaveLogo())
-                                .thenReturn(true);
-                        ntpCoordinator
-                                .getLogoCoordinatorForTesting()
-                                .onTemplateURLServiceChangedForTesting();
-                        Assert.assertEquals(View.VISIBLE, logoContainerView.getVisibility());
-                    }
+                    ntpCoordinator.setSearchProviderInfo(/* hasLogo= */ true, /* isGoogle= */ true);
+                    // Mock to notify the template URL service observer.
+                    when(mTemplateUrlService.doesDefaultSearchEngineHaveLogo()).thenReturn(true);
+                    ntpCoordinator
+                            .getLogoCoordinatorForTesting()
+                            .onTemplateURLServiceChangedForTesting();
+                    Assert.assertEquals(View.VISIBLE, logoContainerView.getVisibility());
                 });
     }
 
@@ -602,7 +595,7 @@ public class NewTabPageTest {
                             .focusSearchBox(
                                     /* beginVoiceSearch= */ false,
                                     AutocompleteRequestType.SEARCH,
-                                    /* showFuseboxPopup= */ false,
+                                    OmniboxFocusReason.FAKE_BOX_LONG_PRESS,
                                     /* pastedText= */ "");
                 });
     }
@@ -619,7 +612,7 @@ public class NewTabPageTest {
                             .focusSearchBox(
                                     /* beginVoiceSearch= */ true,
                                     AutocompleteRequestType.SEARCH,
-                                    /* showFuseboxPopup= */ false,
+                                    OmniboxFocusReason.FAKE_BOX_LONG_PRESS,
                                     /* pastedText= */ "");
                 });
     }
@@ -647,6 +640,7 @@ public class NewTabPageTest {
     @SmallTest
     @DisabledTest(message = "https://crbug.com/40904417")
     public void testRecordHistogramMostVisitedItemClick_Ntp() {
+        ensureTestServerStarted();
         Tile tileForTest = new Tile(mSiteSuggestions.get(0), 0);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -915,15 +909,30 @@ public class NewTabPageTest {
     @Test
     @SmallTest
     @Feature({"NewTabPage"})
-    @DisableFeatures({OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT})
+    @DisableFeatures({OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT, ChromeFeatureList.NTP_AURORA_V2})
     @DisableIf.Device(DeviceFormFactor.DESKTOP)
     public void testAiModeButton() {
-        View ntpLayout = mNtp.getLayout();
-        TouchCommon.singleClickView(
-                ntpLayout
-                        .findViewById(R.id.composeplate_view)
-                        .findViewById(R.id.composeplate_button));
+        clickAiModeButton();
         verifyComposeplateUrlNavigation();
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"NewTabPage"})
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA_V2 + ":action_chips/1"})
+    @DisableFeatures({OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT})
+    @DisableIf.Device(DeviceFormFactor.DESKTOP)
+    public void testAiModeButton_auroraV2Redirect() {
+        mActivityTestRule.skipWindowAndTabStateCleanup();
+
+        clickAiModeButton();
+        if (OmniboxCapabilities.isFuseboxSupportedDeviceType()) {
+            mOmnibox.checkFocus(true);
+        } else {
+            // Devices that don't support the fusebox (e.g. automotive) navigate to the AI Mode SRP
+            // instead of focusing the omnibox.
+            verifyComposeplateUrlNavigation();
+        }
     }
 
     @Test
@@ -937,11 +946,7 @@ public class NewTabPageTest {
         OmniboxFeatures.sRedirectComposeplateButton.setForTesting(true);
         mActivityTestRule.skipWindowAndTabStateCleanup();
 
-        View ntpLayout = mNtp.getLayout();
-        TouchCommon.singleClickView(
-                ntpLayout
-                        .findViewById(R.id.composeplate_view)
-                        .findViewById(R.id.composeplate_button));
+        clickAiModeButton();
         mOmnibox.checkFocus(true);
     }
 
@@ -949,18 +954,23 @@ public class NewTabPageTest {
     @SmallTest
     @Feature({"NewTabPage"})
     @EnableFeatures({OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT})
+    @DisableFeatures({ChromeFeatureList.NTP_AURORA_V2})
     @DisableIf.Device(DeviceFormFactor.DESKTOP)
     public void testAiModeButton_fuseboxWithoutRedirect() {
         if (mActivityTestRule.getActivity().isTablet()) return;
 
         mActivityTestRule.skipWindowAndTabStateCleanup();
 
+        clickAiModeButton();
+        verifyComposeplateUrlNavigation();
+    }
+
+    private void clickAiModeButton() {
         View ntpLayout = mNtp.getLayout();
         TouchCommon.singleClickView(
                 ntpLayout
                         .findViewById(R.id.composeplate_view)
                         .findViewById(R.id.composeplate_button));
-        verifyComposeplateUrlNavigation();
     }
 
     private void verifyComposeplateUrlNavigation() {
@@ -984,8 +994,20 @@ public class NewTabPageTest {
         View ntpLayout = mNtp.getLayout();
         View mvTilesContainer = ntpLayout.findViewById(R.id.mv_tiles_container);
 
-        int expectedMvtLateralMargin =
-                res.getDimensionPixelSize(R.dimen.mvt_container_lateral_margin);
+        boolean isTablet = mActivityTestRule.getActivity().isTablet();
+        int expectedMvtLateralMargin;
+        if (isTablet) {
+            expectedMvtLateralMargin =
+                    mNtp.getNewTabPageCoordinator().getLateralMarginToMatchFeeds();
+        } else {
+            int searchBoxTwoSideMargin =
+                    mNtp.getNewTabPageCoordinator().getSearchBoxTwoSideMarginForTesting();
+            int maxSearchBoxWidth = res.getDimensionPixelSize(R.dimen.ntp_search_box_max_width);
+            int searchBoxWidth =
+                    Math.min(ntpLayout.getWidth() - searchBoxTwoSideMargin, maxSearchBoxWidth);
+            expectedMvtLateralMargin = (ntpLayout.getWidth() - searchBoxWidth) / 2;
+        }
+
         Assert.assertEquals(
                 "The left margin of the most visited tiles container is wrong.",
                 expectedMvtLateralMargin,
@@ -997,20 +1019,10 @@ public class NewTabPageTest {
 
         CriteriaHelper.pollUiThread(
                 () -> {
-                    // Fetch the true layout-derived lateral margins requested by the fake search
-                    // box.
-                    int searchBoxTwoSideMargin =
-                            mNtp.getNewTabPageCoordinator().getSearchBoxTwoSideMarginForTesting();
-                    int maxSearchBoxWidth =
-                            res.getDimensionPixelSize(R.dimen.ntp_search_box_max_width);
-
-                    // The MVT container inherits the Fakebox's exact width constraint logic.
+                    // The MVT container matches the Feed/FSB's exact width constraint logic.
                     // This mathematically resolves what the container slack should be for ANY
                     // form factor or rotation state.
-                    int expectedContainerSlack =
-                            Math.max(
-                                    searchBoxTwoSideMargin,
-                                    ntpLayout.getWidth() - maxSearchBoxWidth);
+                    int expectedContainerSlack = expectedMvtLateralMargin * 2;
 
                     Criteria.checkThat(
                             "The width of the most visited tiles container is wrong.",
@@ -1083,13 +1095,15 @@ public class NewTabPageTest {
     }
 
     private void waitForFakeboxFocusAnimationComplete(NewTabPage ntp) {
-        // Tablet doesn't animate fakebox but simply focuses Omnibox upon click.
-        // Skip the check on animation.
-        if (mActivityTestRule.getActivity().isTablet()) return;
         waitForUrlFocusPercent(ntp, 1f);
     }
 
     private void waitForUrlFocusPercent(final NewTabPage ntp, float percent) {
+        // Tablet doesn't animate fakebox but simply focuses Omnibox upon click.
+        // Skip the check on animation.
+        if (mActivityTestRule.getActivity().isTablet()) {
+            return;
+        }
         CriteriaHelper.pollUiThread(
                 () -> {
                     Criteria.checkThat(

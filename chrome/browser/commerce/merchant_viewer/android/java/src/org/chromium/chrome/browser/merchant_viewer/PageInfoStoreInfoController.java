@@ -14,7 +14,6 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.merchant_viewer.MerchantTrustMessageViewModel.MessageDescriptionUi;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.commerce.core.ShoppingService.MerchantInfo;
 import org.chromium.components.page_info.PageInfoAction;
 import org.chromium.components.page_info.PageInfoMainController;
@@ -79,7 +78,7 @@ public class PageInfoStoreInfoController implements PageInfoSubpageController {
             rowParams.title = mContext.getString(R.string.page_info_store_info_title);
             rowParams.subtitle = getRowSubtitle(merchantInfo);
             // The icons in PageInfo are tinted automatically.
-            rowParams.iconResId = R.drawable.ic_storefront_blue;
+            rowParams.iconResId = R.drawable.ic_storefront_accent1;
             // If user enters page info via the store icon in omnibox, highlight the "Store info"
             // row.
             if (mPageInfoOpenedFromStoreIcon) {

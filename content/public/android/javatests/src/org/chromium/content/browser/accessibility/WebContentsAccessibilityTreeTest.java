@@ -23,6 +23,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -30,7 +31,6 @@ import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.TestAnimations;
 import org.chromium.content.common.ContentInternalFeatures;
-import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.content_public.browser.test.ContentJUnit4ClassRunner;
 import org.chromium.ui.accessibility.AccessibilityFeatures;
 import org.chromium.ui.test.util.DeviceRestriction;
@@ -40,12 +40,6 @@ import org.chromium.ui.test.util.DeviceRestriction;
 @SuppressLint("VisibleForTests")
 @Batch(Batch.PER_CLASS)
 @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
-@DisableFeatures({ContentFeatureList.ACCESSIBILITY_UNIFIED_SNAPSHOTS})
-@EnableFeatures({
-    ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE,
-    ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION,
-    ContentFeatureList.ACCESSIBILITY_SET_SELECTABLE_ON_ALL_NODES_WITH_TEXT
-})
 @TestAnimations.EnableAnimations
 public class WebContentsAccessibilityTreeTest {
     // File path that holds all the relevant tests.
@@ -703,36 +697,14 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    @DisableFeatures({
-        ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE,
-        ContentFeatureList.ACCESSIBILITY_IMPROVE_LIVE_REGION_ANNOUNCE
-    })
     public void test_ariaLive() {
         performAriaTest("aria-live.html");
     }
 
     @Test
     @SmallTest
-    @EnableFeatures(ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE)
-    public void test_ariaLive_exp() {
-        performAriaTest("aria-live.html", "aria-live-exp");
-    }
-
-    @Test
-    @SmallTest
-    @DisableFeatures({
-        ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE,
-        ContentFeatureList.ACCESSIBILITY_IMPROVE_LIVE_REGION_ANNOUNCE
-    })
     public void test_ariaLiveWithContent() {
         performAriaTest("aria-live-with-content.html");
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures(ContentFeatureList.ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE)
-    public void test_ariaLiveWithContent_exp() {
-        performAriaTest("aria-live-with-content.html", "aria-live-with-content-exp");
     }
 
     @Test
@@ -818,6 +790,12 @@ public class WebContentsAccessibilityTreeTest {
     @DisabledTest(message = "https://crbug.com/517959931")
     public void test_ariaModal() {
         performAriaTest("aria-modal.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_ariaModalWithAriaOwns() {
+        performAriaTest("aria-modal-with-aria-owns.html");
     }
 
     @Test
@@ -948,6 +926,24 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void test_radiosInRadiogroupsWithInterveningNonGenerics() {
+        performAriaTest("radios-in-radiogroups-with-intervening-non-generics.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_radioGroupCalculationWithIgnoredRadios() {
+        performAriaTest("radio-group-calculation-with-ignored-radios.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_radioGroupPosinsetSetsizeOverrides() {
+        performAriaTest("radio-group-posinset-setsize-overrides.html");
+    }
+
+    @Test
+    @SmallTest
     public void test_ariaReadonly() {
         performAriaTest("aria-readonly.html");
     }
@@ -1049,6 +1045,9 @@ public class WebContentsAccessibilityTreeTest {
     @Test
     @SmallTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
+    @DisableIf.Build(
+            sdk_is_greater_than = Build.VERSION_CODES.BAKLAVA,
+            message = "https://crbug.com/579553983")
     public void test_ariaSortHtmlTable() {
         Assume.assumeTrue(
                 "Requires Android 16 QPR2 (36.1) or higher",
@@ -1125,6 +1124,9 @@ public class WebContentsAccessibilityTreeTest {
     @Test
     @SmallTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
+    @DisableIf.Build(
+            sdk_is_greater_than = Build.VERSION_CODES.BAKLAVA,
+            message = "https://crbug.com/579553983")
     public void test_ariaTabpanel() {
         Assume.assumeTrue(
                 "Requires Android 16 QPR2 (36.1) or higher",
@@ -1244,6 +1246,12 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_graphicsRoles() {
         performAriaTest("graphics-roles.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_headingWithAriaLabel() {
+        performAriaTest("heading-with-aria-label.html");
     }
 
     @Test
@@ -1422,10 +1430,8 @@ public class WebContentsAccessibilityTreeTest {
         performApgPatternThirdPartyTest("alert/examples/alert.html");
     }
 
-    // TODO(crbug.com/545647752): disabled due to flakiness
     @Test
     @SmallTest
-    @DisabledTest(message = "b/545647752")
     public void test_ariaApgPatternThirdPartyAlertdialog() {
         performApgPatternThirdPartyTest("alertdialog/examples/alertdialog.html");
     }
@@ -1504,6 +1510,9 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @DisableIf.Build(
+            sdk_is_greater_than = Build.VERSION_CODES.BAKLAVA,
+            message = "https://crbug.com/579553983")
     public void test_ariaApgPatternThirdPartyDataGrids() {
         performApgPatternThirdPartyTest("grid/examples/data-grids.html");
     }
@@ -1526,10 +1535,8 @@ public class WebContentsAccessibilityTreeTest {
         performApgPatternThirdPartyTest("dialog-modal/examples/dialog.html");
     }
 
-    // TODO(crbug.com/545647752): disabled due to flakiness
     @Test
     @SmallTest
-    @DisabledTest(message = "b/545647752")
     public void test_ariaApgPatternThirdPartyDisclosureCard() {
         performApgPatternThirdPartyTest("disclosure/examples/disclosure-card.html");
     }
@@ -1723,6 +1730,9 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @DisableIf.Build(
+            sdk_is_greater_than = Build.VERSION_CODES.BAKLAVA,
+            message = "https://crbug.com/579553983")
     public void test_ariaApgPatternThirdPartySortableTable() {
         performApgPatternThirdPartyTest("table/examples/sortable-table.html");
     }
@@ -2073,6 +2083,7 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @EnableFeatures(AccessibilityFeatures.ACCESSIBILITY_CANVAS)
     @CommandLineFlags.Add({"enable-blink-features=CanvasDrawElement"})
     public void test_canvas() {
         performHtmlTest("canvas.html");
@@ -2180,6 +2191,12 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    public void test_containerWithGenericDescendantsAndName() {
+        performHtmlTest("container-with-generic-descendants-and-name.html");
+    }
+
+    @Test
+    @SmallTest
     @DisableFeatures(ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN)
     public void test_contenteditableDescendants_ExposeNonAtomicTextFieldChildrenFeatureDisabled() {
         performHtmlTest("contenteditable-descendants.html");
@@ -2225,10 +2242,7 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
-    @EnableFeatures({
-        ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN,
-        ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION
-    })
+    @EnableFeatures({ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN})
     public void test_selectionInContenteditable() {
         performHtmlTest("selection-in-contenteditable.html");
     }

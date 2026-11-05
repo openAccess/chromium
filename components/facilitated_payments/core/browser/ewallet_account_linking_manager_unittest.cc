@@ -43,8 +43,8 @@ class EwalletAccountLinkingManagerTest : public testing::Test {
             }),
         autofill::Ewallet(/*instrument_id=*/0, /*nickname=*/u"",
                           /*display_icon_url=*/GURL(),
-                          /*ewallet_name=*/u"eWallet",
-                          /*account_display_name=*/u"",
+                          /*ewallet_name=*/u"shopeepay",
+                          /*account_display_name=*/u"eWallet",
                           /*supported_payment_link_uris=*/{},
                           /*is_fido_enrolled=*/false));
 
@@ -86,9 +86,14 @@ TEST_F(EwalletAccountLinkingManagerTest, GetHistogramSuffix) {
 
 TEST_F(EwalletAccountLinkingManagerTest,
        GetPayloadForGetDetailsForCreatePaymentInstrument) {
-  EXPECT_TRUE(test_api(*manager_)
-                  .GetPayloadForGetDetailsForCreatePaymentInstrument()
-                  .empty());
+  base::DictValue payload =
+      test_api(*manager_).GetPayloadForGetDetailsForCreatePaymentInstrument();
+  const base::DictValue* ewallet_info =
+      payload.FindDict("ewallet_account_linking_info");
+  ASSERT_TRUE(ewallet_info);
+  const std::string* issuer_id = ewallet_info->FindString("issuer_id");
+  ASSERT_TRUE(issuer_id);
+  EXPECT_EQ(*issuer_id, "shopeepay");
 }
 
 TEST_F(EwalletAccountLinkingManagerTest,
@@ -110,6 +115,27 @@ TEST_F(EwalletAccountLinkingManagerTest,
       /*expected_bucket_count=*/1);
 }
 
+// Verify that the billing customer number carried in the result is passed
+// through to the callback unchanged.
+TEST_F(EwalletAccountLinkingManagerTest,
+       DoOnAccountLinkingResult_PassesThroughBillingCustomerNumber) {
+  base::HistogramTester histogram_tester;
+  base::MockCallback<base::OnceCallback<void(AccountLinkingResult)>> result_cb;
+
+  AccountLinkingResult expected{true, 12345,
+                                AccountLinkingResultCode::kResultOk, 987};
+  EXPECT_CALL(result_cb, Run(expected));
+
+  manager_->TriggerAccountLinking(result_cb.Get());
+
+  test_api(*manager_).DoOnAccountLinkingResult(expected);
+
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.Ewallet.AccountLinking.Result",
+      /*sample=*/true,
+      /*expected_bucket_count=*/1);
+}
+
 TEST_F(EwalletAccountLinkingManagerTest, DoOnAccountLinkingResult_Canceled) {
   base::HistogramTester histogram_tester;
   test_api(*manager_).DoOnAccountLinkingResult(AccountLinkingResult{
@@ -122,8 +148,14 @@ TEST_F(EwalletAccountLinkingManagerTest, DoOnAccountLinkingResult_Canceled) {
 
 TEST_F(EwalletAccountLinkingManagerTest, DoOnAccountLinkingResult_Success) {
   base::HistogramTester histogram_tester;
+  test_api(*manager_).DoOnGetDetailsForCreatePaymentInstrumentResponse(true);
+  test_api(*manager_).ShowAccountLinkingLoadingScreen();
+  ASSERT_TRUE(test_api(*manager_).is_progress_screen_showing());
+
+  EXPECT_CALL(client_, DismissPrompt()).Times(0);
   test_api(*manager_).DoOnAccountLinkingResult(
       AccountLinkingResult{true, 12345, AccountLinkingResultCode::kResultOk});
+  EXPECT_TRUE(test_api(*manager_).is_hidden());
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Ewallet.AccountLinking.Result",
       /*sample=*/true,
@@ -157,10 +189,19 @@ TEST_F(EwalletAccountLinkingManagerTest, DismissAndCancelClearsState) {
 
 TEST_F(EwalletAccountLinkingManagerTest, DoOnClientTokenReceived) {
   std::vector<uint8_t> client_token = {'t', 'o', 'k', 'e', 'n'};
+  base::DictValue expected_payload =
+      test_api(*manager_).GetPayloadForGetDetailsForCreatePaymentInstrument();
 
   EXPECT_CALL(
       *payments_network_interface_,
-      GetDetailsForCreatePaymentInstrument(0, client_token, _, "en-US"));
+      GetDetailsForCreatePaymentInstrument(0, client_token, _, _, "en-US"))
+      .WillOnce([&expected_payload](long, const std::vector<uint8_t>&,
+                                    base::DictValue payload, auto,
+                                    const std::string&) {
+        EXPECT_EQ(payload, expected_payload);
+        return base::StrongAlias<autofill::payments::RequestIdTag,
+                                 std::string>();
+      });
   test_api(*manager_).DoOnClientTokenReceived(client_token);
 }
 
@@ -212,10 +253,12 @@ TEST_F(EwalletAccountLinkingManagerTest,
 
   ASSERT_TRUE(on_accepted);
 
-  EXPECT_CALL(client_, DismissPrompt());
-  // Since action_token_ is empty, it should exit with AccountLinkingResult{}
-  // which has kCouldNotInvoke.
+  // Since action_token_ is empty after acceptance, kCouldNotInvoke is upgraded
+  // to kResultError so PaymentLinkManager can swap in-place to the Error
+  // Screen without dismissing the bottom sheet first.
+  EXPECT_CALL(client_, DismissPrompt()).Times(0);
   std::move(on_accepted).Run();
+  EXPECT_TRUE(test_api(*manager_).is_hidden());
 }
 
 TEST_F(EwalletAccountLinkingManagerTest,
@@ -402,6 +445,9 @@ TEST_F(EwalletAccountLinkingManagerTest, OnDismissed_DoesNotRecordStrike) {
   auto* strike_db = test_api(*manager_).GetStrikeDatabase();
   ASSERT_EQ(strike_db->GetStrikes(), 0);
 
+  EXPECT_CALL(client_, ShowAccountLinkingPrompt(_, _, _, _));
+  test_api(*manager_).DoOnGetDetailsForCreatePaymentInstrumentResponse(true);
+
   manager_->OnDismissed();
   EXPECT_EQ(strike_db->GetStrikes(), 0);
   histogram_tester_.ExpectUniqueSample(
@@ -453,8 +499,8 @@ TEST_F(EwalletAccountLinkingManagerTest,
           }),
       autofill::Ewallet(/*instrument_id=*/0, /*nickname=*/u"",
                         /*display_icon_url=*/GURL(),
-                        /*ewallet_name=*/u"eWallet",
-                        /*account_display_name=*/u"",
+                        /*ewallet_name=*/u"shopeepay",
+                        /*account_display_name=*/u"eWallet",
                         /*supported_payment_link_uris=*/{},
                         /*is_fido_enrolled=*/false));
 
@@ -483,8 +529,8 @@ TEST_F(EwalletAccountLinkingManagerTest,
           }),
       autofill::Ewallet(/*instrument_id=*/0, /*nickname=*/u"",
                         /*display_icon_url=*/GURL(),
-                        /*ewallet_name=*/u"eWallet",
-                        /*account_display_name=*/u"",
+                        /*ewallet_name=*/u"shopeepay",
+                        /*account_display_name=*/u"eWallet",
                         /*supported_payment_link_uris=*/{},
                         /*is_fido_enrolled=*/false));
 
@@ -497,6 +543,189 @@ TEST_F(EwalletAccountLinkingManagerTest,
   EXPECT_TRUE(get_api_client_called);
   histogram_tester_.ExpectTotalCount(
       "FacilitatedPayments.Ewallet.AccountLinking.FlowExitedReason", 0);
+}
+
+TEST_F(EwalletAccountLinkingManagerTest,
+       DismissAndCancel_WhenPromptHidden_DoesNotCrash) {
+  // Client is already hidden.
+  EXPECT_CALL(client_, DismissPrompt()).Times(0);
+
+  // Calling it should safely ignore the call (returns early in base class)
+  manager_->DismissAndCancel();
+}
+
+TEST_F(
+    EwalletAccountLinkingManagerTest,
+    DoOnGetDetailsForCreatePaymentInstrumentResponse_Eligible_SetsAndRoutesUiEventListener) {
+  base::HistogramTester histogram_tester;
+  base::RepeatingCallback<void(UiEvent)> captured_listener;
+  EXPECT_CALL(client_, SetUiEventListener(testing::_))
+      .WillOnce(testing::SaveArg<0>(&captured_listener));
+  EXPECT_CALL(client_, ShowAccountLinkingPrompt(testing::_, testing::_,
+                                                testing::_, testing::_))
+      .Times(1);
+
+  test_api(*manager_).DoOnGetDetailsForCreatePaymentInstrumentResponse(
+      /*is_eligible=*/true);
+  EXPECT_TRUE(test_api(*manager_).is_prompt_showing());
+  ASSERT_TRUE(captured_listener);
+
+  // Firing kNewScreenShown through the captured listener should succeed
+  // without crashing and keep ui_state_ in kPrompt.
+  captured_listener.Run(UiEvent::kNewScreenShown);
+  EXPECT_TRUE(test_api(*manager_).is_prompt_showing());
+  histogram_tester.ExpectTotalCount(
+      "FacilitatedPayments.Ewallet.AccountLinking.FlowExitedReason", 0);
+}
+
+TEST_F(EwalletAccountLinkingManagerTest,
+       OnUiScreenEvent_PromptState_LogsExitReasonAndNotifiesResult) {
+  struct TestCase {
+    UiEvent event;
+    AccountLinkingFlowExitedReason expected_reason;
+  };
+  const TestCase kTestCases[] = {
+      {UiEvent::kScreenCouldNotBeShown,
+       AccountLinkingFlowExitedReason::kScreenNotShown},
+      {UiEvent::kScreenClosedNotByUser,
+       AccountLinkingFlowExitedReason::kScreenClosedNotByUser},
+      {UiEvent::kScreenClosedByUser,
+       AccountLinkingFlowExitedReason::kScreenClosedByUser},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    base::HistogramTester histogram_tester;
+    base::MockCallback<base::OnceCallback<void(AccountLinkingResult)>>
+        result_callback;
+    EXPECT_CALL(client_, HasScreenlockOrBiometricSetup())
+        .WillRepeatedly(Return(true));
+    manager_->TriggerAccountLinking(result_callback.Get());
+
+    test_api(*manager_).DoOnGetDetailsForCreatePaymentInstrumentResponse(
+        /*is_eligible=*/true);
+    ASSERT_TRUE(test_api(*manager_).is_prompt_showing());
+
+    EXPECT_CALL(client_, DismissPrompt()).Times(0);
+    EXPECT_CALL(
+        result_callback,
+        Run(AccountLinkingResult{/*is_successful=*/false, /*instrument_id=*/0,
+                                 AccountLinkingResultCode::kCouldNotInvoke}))
+        .Times(1);
+
+    test_api(*manager_).OnUiScreenEvent(test_case.event);
+
+    EXPECT_TRUE(test_api(*manager_).is_hidden());
+    histogram_tester.ExpectUniqueSample(
+        "FacilitatedPayments.Ewallet.AccountLinking.FlowExitedReason",
+        test_case.expected_reason, 1);
+  }
+}
+
+TEST_F(
+    EwalletAccountLinkingManagerTest,
+    OnUiScreenEvent_ProgressScreenState_TransitionsToHiddenWithoutLoggingPromptExitReason) {
+  base::HistogramTester histogram_tester;
+  const UiEvent kCloseEvents[] = {
+      UiEvent::kScreenCouldNotBeShown,
+      UiEvent::kScreenClosedNotByUser,
+      UiEvent::kScreenClosedByUser,
+  };
+
+  for (UiEvent close_event : kCloseEvents) {
+    test_api(*manager_).DoOnGetDetailsForCreatePaymentInstrumentResponse(
+        /*is_eligible=*/true);
+    test_api(*manager_).ShowAccountLinkingLoadingScreen();
+    ASSERT_TRUE(test_api(*manager_).is_progress_screen_showing());
+
+    // kNewScreenShown in progress screen state should keep progress screen
+    // state.
+    test_api(*manager_).OnUiScreenEvent(UiEvent::kNewScreenShown);
+    EXPECT_TRUE(test_api(*manager_).is_progress_screen_showing());
+
+    // Close events while in progress screen state should unconditionally reset
+    // ui_state_ to kHidden without calling DismissPrompt() or logging prompt
+    // exit reasons.
+    EXPECT_CALL(client_, DismissPrompt()).Times(0);
+    test_api(*manager_).OnUiScreenEvent(close_event);
+    EXPECT_TRUE(test_api(*manager_).is_hidden());
+    histogram_tester.ExpectTotalCount(
+        "FacilitatedPayments.Ewallet.AccountLinking.FlowExitedReason", 0);
+  }
+}
+
+TEST_F(EwalletAccountLinkingManagerTest,
+       OnAccepted_FailureUpgradesCouldNotInvokeToErrorAndLogsMetrics) {
+  base::HistogramTester histogram_tester;
+  EXPECT_CALL(client_, HasScreenlockOrBiometricSetup())
+      .WillRepeatedly(Return(true));
+
+  base::MockCallback<base::OnceCallback<void(AccountLinkingResult)>>
+      result_callback;
+  manager_->TriggerAccountLinking(result_callback.Get());
+
+  EXPECT_CALL(result_callback, Run(AccountLinkingResult{
+                                   /*is_successful=*/false, /*instrument_id=*/0,
+                                   AccountLinkingResultCode::kResultError}))
+      .Times(1);
+
+  // Calling OnAccepted with empty action_token fails post-acceptance and
+  // upgrades kCouldNotInvoke to kResultError.
+  manager_->OnAccepted();
+
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.Ewallet.AccountLinking.FlowExitedReason",
+      AccountLinkingFlowExitedReason::kActionTokenNotAvailable, 1);
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.Ewallet.AccountLinking.Result", false, 1);
+}
+
+TEST_F(EwalletAccountLinkingManagerTest,
+       OnAccepted_GmsCoreCanceled_PreservesResultCanceled) {
+  base::HistogramTester histogram_tester;
+  EXPECT_CALL(client_, HasScreenlockOrBiometricSetup())
+      .WillRepeatedly(Return(true));
+
+  base::MockCallback<base::OnceCallback<void(AccountLinkingResult)>>
+      result_callback;
+  manager_->TriggerAccountLinking(result_callback.Get());
+
+  // Simulate user accepting prompt, then cancelling inside GMSCore.
+  test_api(*manager_).DoOnGetDetailsForCreatePaymentInstrumentResponse(true);
+  test_api(*manager_).ShowAccountLinkingLoadingScreen();
+  test_api(*manager_).DoOnAccepted();
+
+  EXPECT_CALL(client_, DismissPrompt()).Times(1);
+  EXPECT_CALL(result_callback, Run(AccountLinkingResult{
+                                   /*is_successful=*/false, /*instrument_id=*/0,
+                                   AccountLinkingResultCode::kResultCanceled}))
+      .Times(1);
+
+  test_api(*manager_).DoOnAccountLinkingResult(
+      AccountLinkingResult{/*is_successful=*/false, /*instrument_id=*/0,
+                           AccountLinkingResultCode::kResultCanceled});
+
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.Ewallet.AccountLinking.Result", false, 1);
+}
+
+TEST_F(EwalletAccountLinkingManagerTest,
+       PreAcceptanceExits_Declined_KeepCouldNotInvoke) {
+  base::HistogramTester histogram_tester;
+  EXPECT_CALL(client_, HasScreenlockOrBiometricSetup())
+      .WillRepeatedly(Return(true));
+
+  base::MockCallback<base::OnceCallback<void(AccountLinkingResult)>>
+      result_callback;
+  manager_->TriggerAccountLinking(result_callback.Get());
+
+  EXPECT_CALL(result_callback, Run(AccountLinkingResult{
+                                   /*is_successful=*/false, /*instrument_id=*/0,
+                                   AccountLinkingResultCode::kCouldNotInvoke}))
+      .Times(1);
+
+  manager_->OnDeclined();
+  histogram_tester.ExpectTotalCount(
+      "FacilitatedPayments.Ewallet.AccountLinking.Result", 0);
 }
 
 }  // namespace

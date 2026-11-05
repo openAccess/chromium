@@ -27,6 +27,7 @@
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/switches.h"
 #include "third_party/blink/public/common/chrome_debug_urls.h"
@@ -68,7 +69,7 @@ ChromeExtensionWebContentsObserver::CreateExtensionFrameHost(
 
 void ChromeExtensionWebContentsObserver::RenderFrameCreated(
     content::RenderFrameHost* render_frame_host) {
-  DCHECK(initialized());
+  CHECK(initialized(), base::NotFatalUntil::M161);
   ReloadIfTerminated(render_frame_host);
   ExtensionWebContentsObserver::RenderFrameCreated(render_frame_host);
 }
@@ -130,7 +131,7 @@ void ChromeExtensionWebContentsObserver::OnExtensionJsError(
 
 void ChromeExtensionWebContentsObserver::InitializeRenderFrame(
     content::RenderFrameHost* render_frame_host) {
-  DCHECK(initialized());
+  CHECK(initialized(), base::NotFatalUntil::M161);
   ExtensionWebContentsObserver::InitializeRenderFrame(render_frame_host);
   WindowController* controller = dispatcher()->GetExtensionWindowController();
   if (controller) {
@@ -141,7 +142,7 @@ void ChromeExtensionWebContentsObserver::InitializeRenderFrame(
 
 void ChromeExtensionWebContentsObserver::ReloadIfTerminated(
     content::RenderFrameHost* render_frame_host) {
-  DCHECK(initialized());
+  CHECK(initialized(), base::NotFatalUntil::M161);
   std::string extension_id = util::GetExtensionIdFromFrame(render_frame_host);
   if (extension_id.empty()) {
     return;

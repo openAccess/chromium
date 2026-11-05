@@ -9,7 +9,6 @@
 #include <optional>
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/ui/qrcode_generator/qrcode_generator_bubble_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "components/qr_code_generator/bitmap_generator.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -35,8 +34,7 @@ class View;
 namespace qrcode_generator {
 
 // Dialog that displays a QR code used to share a page or image.
-class QRCodeGeneratorBubble : public QRCodeGeneratorBubbleView,
-                              public LocationBarBubbleDelegateView,
+class QRCodeGeneratorBubble : public LocationBarBubbleDelegateView,
                               public views::TextfieldController {
   METADATA_HEADER(QRCodeGeneratorBubble, LocationBarBubbleDelegateView)
 
@@ -44,17 +42,13 @@ class QRCodeGeneratorBubble : public QRCodeGeneratorBubbleView,
   QRCodeGeneratorBubble(views::BubbleAnchor anchor,
                         base::WeakPtr<content::WebContents> web_contents,
                         base::OnceClosure on_closing,
-                        base::OnceClosure on_back_button_pressed,
                         const GURL& url);
   QRCodeGeneratorBubble(const QRCodeGeneratorBubble&) = delete;
   QRCodeGeneratorBubble& operator=(const QRCodeGeneratorBubble&) = delete;
   ~QRCodeGeneratorBubble() override;
 
   void Show();
-
-  // QRCodeGeneratorBubbleView:
-  void Hide() override;
-  void OnThemeChanged() override;
+  void Hide();
 
   // Returns a suggested download filename for a given URL.
   // e.g.: www.foo.com may suggest qrcode_foo.png.
@@ -93,7 +87,6 @@ class QRCodeGeneratorBubble : public QRCodeGeneratorBubbleView,
 
   // views::BubbleDialogDelegateView:
   void Init() override;
-  void AddedToWidget() override;
 
   // TextfieldController:
   void ContentsChanged(views::Textfield* sender,
@@ -108,8 +101,6 @@ class QRCodeGeneratorBubble : public QRCodeGeneratorBubbleView,
   void CopyButtonPressed();
 
   void DownloadButtonPressed();
-
-  void BackButtonPressed();
 
   // Unit tests can set `qr_code_error_override_` to inject QR code
   // generation errors.
@@ -132,7 +123,6 @@ class QRCodeGeneratorBubble : public QRCodeGeneratorBubbleView,
   raw_ptr<views::Label> bottom_error_label_ = nullptr;
 
   base::OnceClosure on_closing_;
-  base::OnceClosure on_back_button_pressed_;
   base::WeakPtr<content::WebContents> web_contents_;
 };
 

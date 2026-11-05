@@ -10,7 +10,6 @@
 #include <memory>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include "base/check.h"
@@ -43,6 +42,7 @@
 #include "components/autofill/core/common/password_form_fill_data.h"
 #include "components/autofill/core/common/password_generation_util.h"
 #include "components/autofill/core/common/unique_ids.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
 #include "components/device_reauth/device_authenticator.h"
 #include "components/favicon/core/favicon_util.h"
 #include "components/favicon_base/favicon_types.h"
@@ -73,6 +73,7 @@ namespace password_manager {
 
 namespace {
 
+using autofill::IsPasswordsAutofillManuallyTriggered;
 using autofill::Suggestion;
 using autofill::SuggestionType;
 using autofill::password_generation::PasswordGenerationType;
@@ -83,6 +84,7 @@ bool IsSuggestionHandledInPasswordManager(SuggestionType type) {
   switch (type) {
     case SuggestionType::kWebauthnSignInWithAnotherDevice:
     case SuggestionType::kWebauthnPasskeyQrCode:
+    case SuggestionType::kPendingStateTrustedVaultError:
       return true;
     case SuggestionType::kAddressEntry:
     case SuggestionType::kAddressFieldByFieldFilling:
@@ -92,7 +94,6 @@ bool IsSuggestionHandledInPasswordManager(SuggestionType type) {
     case SuggestionType::kIbanEntry:
     case SuggestionType::kMerchantPromoCodeEntry:
     case SuggestionType::kSaveAndFillCreditCardEntry:
-    case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kScanCreditCard:
     case SuggestionType::kBnplEntry:
     case SuggestionType::kManageAddress:
@@ -124,11 +125,14 @@ bool IsSuggestionHandledInPasswordManager(SuggestionType type) {
     case SuggestionType::kAtMemoryFetching:
     case SuggestionType::kAtMemoryGenericError:
     case SuggestionType::kAtMemorySearchAffordance:
+    case SuggestionType::kAtMemoryShortcutSettingsPromo:
     case SuggestionType::kAtMemorySourceAttribution:
     case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kIdentityCredential:
     case SuggestionType::kLoyaltyCardEntry:
+    case SuggestionType::kGmailOneTimePasswordEntry:
     case SuggestionType::kOneTimePasswordEntry:
+    case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kTitle:
     case SuggestionType::kSeparator:
     case SuggestionType::kPasswordEntry:
@@ -155,6 +159,7 @@ bool IsSuggestionHandledInPasswordManager(SuggestionType type) {
     case SuggestionType::kRemoveAutofillAi:
     case SuggestionType::kBnplFootnote:
     case SuggestionType::kAutocompleteAtMemoryButton:
+    case SuggestionType::kManageOffers:
     case SuggestionType::kMaximizeCreditCardBenefitsEntry:
       return false;
   }
@@ -224,16 +229,23 @@ PasswordAutofillManager::PasswordAutofillManager(
                             autofill_client),
       password_manager_driver_(password_manager_driver),
       autofill_client_(autofill_client),
-      password_client_(password_client),
+      password_client_(password_client)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+      ,
       manual_fallback_metrics_recorder_(
-          std::make_unique<PasswordManualFallbackMetricsRecorder>()) {}
+          std::make_unique<PasswordManualFallbackMetricsRecorder>())
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+{
+}
 
 PasswordAutofillManager::~PasswordAutofillManager() {
   CancelBiometricReauthIfOngoing();
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   // `manual_fallback_flow_` holds a raw pointer to
   // `manual_fallback_metrics_recorder_`, so the flow should be reset first.
   manual_fallback_flow_.reset();
   manual_fallback_metrics_recorder_.reset();
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -254,14 +266,31 @@ PasswordAutofillManager::GetWebauthnInlineQrCodeSuggestion() const {
   return suggestion_generator_.GetWebauthnInlineQrCodeSuggestion();
 }
 
-std::variant<autofill::AutofillDriver*, PasswordManagerDriver*>
-PasswordAutofillManager::GetDriver_DoNotUse() {
-  return password_manager_driver_.get();
+void PasswordAutofillManager::OnWebauthnInlineQrCodeSuggestionShown() {
+  if (WebAuthnCredentialsDelegate* credentials_delegate =
+          password_client_->GetWebAuthnCredentialsDelegateForDriver(
+              password_manager_driver_)) {
+    credentials_delegate->OnPasskeyQrCodeSuggestionShown();
+  }
+}
+
+std::optional<autofill::Suggestion>
+PasswordAutofillManager::GetTrustedVaultUnlockSuggestion() const {
+  return std::nullopt;
 }
 
 void PasswordAutofillManager::OnSuggestionsShown(
     base::span<const Suggestion> suggestions,
-    base::optional_ref<const SuggestionMetadata> parent_suggestion_metadata) {}
+    const SuggestionUiMetadata& metadata) {
+  const bool shows_passkey_qr_code =
+      std::ranges::any_of(suggestions, [](const Suggestion& suggestion) {
+        return suggestion.type ==
+               autofill::SuggestionType::kWebauthnPasskeyQrCode;
+      });
+  if (shows_passkey_qr_code) {
+    OnWebauthnInlineQrCodeSuggestionShown();
+  }
+}
 
 void PasswordAutofillManager::OnSuggestionsHidden(
     autofill::SuggestionHidingReason reason) {
@@ -278,6 +307,13 @@ bool PasswordAutofillManager::OnSearchSubmitted(const std::u16string& filter) {
 }
 
 void PasswordAutofillManager::DidSelectSuggestion(
+    const Suggestion& suggestion,
+    const autofill::FormGlobalId& form_id,
+    const autofill::FieldGlobalId& field_id) {
+  DidSelectSuggestion(suggestion);
+}
+
+void PasswordAutofillManager::DidSelectSuggestion(
     const Suggestion& suggestion) {
   ClearPreviewedForm();
   if (suggestion.type == autofill::SuggestionType::kAllSavedPasswordsEntry ||
@@ -285,7 +321,9 @@ void PasswordAutofillManager::DidSelectSuggestion(
       suggestion.type ==
           autofill::SuggestionType::kWebauthnSignInWithAnotherDevice ||
       suggestion.type == autofill::SuggestionType::kWebauthnPasskeyQrCode ||
-      suggestion.type == autofill::SuggestionType::kTroubleSigningInEntry) {
+      suggestion.type == autofill::SuggestionType::kTroubleSigningInEntry ||
+      suggestion.type ==
+          autofill::SuggestionType::kPendingStateTrustedVaultError) {
     return;
   }
   if (suggestion.type == autofill::SuggestionType::kBackupPasswordEntry) {
@@ -309,6 +347,14 @@ void PasswordAutofillManager::DidSelectSuggestion(
   }
   PreviewSuggestion(GetUsernameFromSuggestion(suggestion.main_text.value),
                     suggestion.type);
+}
+
+void PasswordAutofillManager::DidAcceptSuggestion(
+    const Suggestion& suggestion,
+    const SuggestionMetadata& metadata,
+    const autofill::FormGlobalId& form_id,
+    const autofill::FieldGlobalId& field_id) {
+  DidAcceptSuggestion(suggestion, metadata);
 }
 
 void PasswordAutofillManager::DidAcceptSuggestion(
@@ -371,6 +417,10 @@ void PasswordAutofillManager::DidAcceptSuggestion(
     case autofill::SuggestionType::kPendingStateSignin:
       password_client_->TriggerSignIn(
           signin_metrics::AccessPoint::kAutofillDropdown);
+      break;
+    case autofill::SuggestionType::kPendingStateTrustedVaultError:
+      // Interaction logic is implemented in a follow-up CL once
+      // PasswordManagerClient::StartTrustedVaultKeyRetrieval is introduced.
       break;
     case autofill::SuggestionType::kIdentityCredential: {
       if (const autofill::IdentityCredentialDelegate*
@@ -575,32 +625,11 @@ void PasswordAutofillManager::ShowSuggestions(
     return;
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
-  if (autofill::IsPasswordsAutofillManuallyTriggered(field.trigger_source)) {
-    if (base::FeatureList::IsEnabled(
-            features::kPasswordManualFallbackSecurityChecks)) {
-      const bool manual_fallback_allowed_for_frame =
-          password_manager_driver_->HasValidURL(/*may_kill_renderer=*/true) &&
-          password_manager_driver_->IsRenderFrameHostSupported();
-      if (!manual_fallback_allowed_for_frame) {
-        // Do not show manual fallback suggestions if the current frame doesn't
-        // meet security criteria, see crbug.com/521502218.
-        return;
-      }
-    }
-    if (!manual_fallback_flow_) {
-      manual_fallback_flow_ = std::make_unique<PasswordManualFallbackFlow>(
-          password_manager_driver_, autofill_client_, password_client_,
-          manual_fallback_metrics_recorder_.get(),
-          password_client_->GetPasswordManager()->GetPasswordFormCache(),
-          std::make_unique<SavedPasswordsPresenter>(
-              password_client_->GetAffiliationService(),
-              password_client_->GetProfilePasswordStore(),
-              password_client_->GetAccountPasswordStore()));
-    }
-    manual_fallback_flow_->RunFlow(field.element_id, field.bounds,
-                                   field.text_direction);
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+  if (MaybeTriggerPasswordManualFallback(field)) {
     return;
   }
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
   if (ShouldWaitForPasskeys(field)) {
     WaitForPasskeys(field);
@@ -718,26 +747,35 @@ bool PasswordAutofillManager::MaybeShowPasswordSuggestionsWithGeneration(
       /*is_for_webauthn_request=*/false);
 }
 
-void PasswordAutofillManager::DidNavigateMainFrame() {
+void PasswordAutofillManager::DidNavigateFrame() {
+  // Hide the suggestions shown for the previous document, but only if they were
+  // shown by `this`, so that suggestions of other frames are not affected.
+  if (autofill_client_ && last_session_id_ &&
+      last_session_id_ ==
+          autofill_client_->GetSessionIdForCurrentAutofillSuggestions()) {
+    autofill_client_->HideSuggestions(
+        autofill::SuggestionHidingReason::kStaleData, GetMainFillingProduct());
+  }
   fill_data_.reset();
   CancelBiometricReauthIfOngoing();
   favicon_tracker_.TryCancelAll();
   page_favicon_ = gfx::Image();
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   // `manual_fallback_flow_` holds a raw pointer to
   // `manual_fallback_metrics_recorder_`, so the flow should be reset first.
   manual_fallback_flow_.reset();
   manual_fallback_metrics_recorder_ =
       std::make_unique<PasswordManualFallbackMetricsRecorder>();
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || \
     BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_ANDROID)
   cross_domain_confirmation_controller_.reset();
 #endif
   wait_for_passkeys_timer_.Stop();
-}
-
-void PasswordAutofillManager::SetManualFallbackFlowForTest(
-    std::unique_ptr<PasswordSuggestionFlow> manual_fallback_flow) {
-  manual_fallback_flow_.swap(manual_fallback_flow);
+  // Drop the callbacks created for the previous document, e.g. a pending
+  // `OnAddPasswordFillData()` call or filling a credential after the user
+  // re-authenticated.
+  weak_ptr_factory_.InvalidateWeakPtrs();
 }
 
 base::WeakPtr<PasswordAutofillManager> PasswordAutofillManager::GetWeakPtr() {
@@ -778,8 +816,9 @@ bool PasswordAutofillManager::ShowPopup(
     metrics_util::MaybeLogMetricsForPasswordAndWebauthnCounts(
         suggestions, is_for_webauthn_request);
     // TODO(crbug.com/41474723): Set the right `form_control_ax_id`.
+    // TODO(crbug.com/563089510): Set the right FormGlobalId.
     last_popup_open_args_ = autofill::AutofillClient::PopupOpenArgs(
-        field_id.frame_token, bounds, text_direction, suggestions,
+        autofill::FormGlobalId(), field_id, bounds, text_direction, suggestions,
         autofill::AutofillSuggestionTriggerSource::kPasswordManager,
         /*form_control_ax_id=*/0, autofill::PopupAnchorType::kField);
   }
@@ -818,11 +857,12 @@ void PasswordAutofillManager::FillSuggestion(
           .IsValidAndroidFacetURI();
   metrics_util::LogFilledPasswordFromAndroidApp(is_android_credential);
   // Emit UMA if grouped affiliation match was available for the user.
-  if (fill_data_->preferred_login.is_grouped_affiliation ||
-      std::ranges::find_if(fill_data_->additional_logins,
-                           [](const autofill::PasswordAndMetadata& login) {
-                             return login.is_grouped_affiliation;
-                           }) != fill_data_->additional_logins.end()) {
+  if (fill_data_ &&
+      (fill_data_->preferred_login.is_grouped_affiliation ||
+       std::ranges::find_if(fill_data_->additional_logins,
+                            [](const autofill::PasswordAndMetadata& login) {
+                              return login.is_grouped_affiliation;
+                            }) != fill_data_->additional_logins.end())) {
     metrics_util::LogFillSuggestionGroupedMatchAccepted(
         password_and_metadata.is_grouped_affiliation);
   }
@@ -943,14 +983,28 @@ void PasswordAutofillManager::OnBiometricReauthCompleted(
 void PasswordAutofillManager::OnPasswordCredentialSuggestionAccepted(
     base::OnceClosure fill_suggestion_callback) {
   CancelBiometricReauthIfOngoing();
-  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
-      password_client_->GetDeviceAuthenticator();
-  // Note: this is currently only implemented on Android, Mac and Windows.
-  // For other platforms, the `authenticator` will be null.
-  if (!password_client_->IsReauthBeforeFillingRequired(authenticator.get())) {
+  bool should_reauth = false;
+  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator;
+  if (!base::FeatureList::IsEnabled(features::kDeviceReauthRefactor)) {
+    authenticator = password_client_->GetDeviceAuthenticator();
+    should_reauth = password_client_->IsReauthBeforeFillingRequiredLegacy(
+        authenticator.get());
+  } else {
+    std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker> checker =
+        password_client_->GetDeviceAuthAvailabilityChecker();
+    should_reauth =
+        password_client_->IsReauthBeforeFillingRequired(checker.get());
+    if (should_reauth) {
+      authenticator = password_client_->GetDeviceAuthenticator();
+    }
+  }
+
+  if (!should_reauth) {
     std::move(fill_suggestion_callback).Run();
     return;
   }
+
+  CHECK(authenticator);
   authenticator_ = std::move(authenticator);
 
   std::u16string message;
@@ -1015,5 +1069,54 @@ std::vector<autofill::Suggestion> PasswordAutofillManager::GetSuggestions(
       show_password_suggestions, show_webauthn_credentials,
       show_identity_credentials);
 }
+
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+void PasswordAutofillManager::SetManualFallbackFlowForTest(
+    std::unique_ptr<PasswordSuggestionFlow> manual_fallback_flow) {
+  manual_fallback_flow_.swap(manual_fallback_flow);
+}
+
+bool PasswordAutofillManager::MaybeTriggerPasswordManualFallback(
+    const autofill::TriggeringField& field) {
+  if (!IsPasswordsAutofillManuallyTriggered(field.trigger_source)) {
+    return false;
+  }
+
+  if (base::FeatureList::IsEnabled(
+          features::kPasswordManualFallbackSecurityChecks)) {
+    const bool manual_fallback_allowed_for_frame =
+        password_manager_driver_->HasValidURL(/*may_kill_renderer=*/true) &&
+        password_manager_driver_->IsRenderFrameHostSupported();
+    if (!manual_fallback_allowed_for_frame) {
+      // Do not show manual fallback suggestions if the current frame doesn't
+      // meet security criteria, see crbug.com/521502218.
+      return true;
+    }
+  }
+
+  if (base::FeatureList::IsEnabled(
+          features::kPasswordManualFallbackSkipOpaqueOrigins)) {
+    if (!password_client_->IsFillingEnabled(
+            password_manager_driver_->GetLastCommittedOrigin(),
+            password_manager_driver_->GetLastCommittedURL())) {
+      // Skip manual filling for opaque origins.
+      return true;
+    }
+  }
+  if (!manual_fallback_flow_) {
+    manual_fallback_flow_ = std::make_unique<PasswordManualFallbackFlow>(
+        password_manager_driver_, autofill_client_, password_client_,
+        manual_fallback_metrics_recorder_.get(),
+        password_client_->GetPasswordManager()->GetPasswordFormCache(),
+        std::make_unique<SavedPasswordsPresenter>(
+            password_client_->GetAffiliationService(),
+            password_client_->GetProfilePasswordStore(),
+            password_client_->GetAccountPasswordStore()));
+  }
+  manual_fallback_flow_->RunFlow(field.element_id, field.bounds,
+                                 field.text_direction);
+  return true;
+}
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 }  //  namespace password_manager

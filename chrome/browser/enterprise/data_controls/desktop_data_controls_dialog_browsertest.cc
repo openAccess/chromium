@@ -17,8 +17,12 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "ui/base/accelerators/accelerator.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/controls/webview/web_dialog_view.h"
+#include "ui/views/widget/widget.h"
+#include "ui/views/window/dialog_client_view.h"
 #include "ui/web_dialogs/test/test_web_dialog_delegate.h"
 
 namespace data_controls {
@@ -62,6 +66,7 @@ class DesktopDataControlsDialogTest : public InProcessBrowserTest,
 
     ASSERT_EQ(delegate->GetDefaultDialogButton(),
               static_cast<int>(ui::mojom::DialogButton::kOk));
+    ASSERT_FALSE(delegate->EscShouldCancelDialog());
 
     ASSERT_FALSE(delegates_.contains(dialog));
     ASSERT_FALSE(dialog_close_loops_.contains(dialog));
@@ -103,9 +108,6 @@ class DesktopDataControlsDialogTest : public InProcessBrowserTest,
 
  protected:
   size_t constructor_called_count_ = 0;
-  // ensure NoWebContentsModalDialogManager test's bool observer outlives its
-  // objects destruction.
-  bool test_dialog_destructor_called_unused_ = false;
 
   std::map<DesktopDataControlsDialog*, views::DialogDelegate*> delegates_;
   std::map<DesktopDataControlsDialog*, base::OnceClosure>
@@ -218,12 +220,10 @@ IN_PROC_BROWSER_TEST_F(DesktopDataControlsDialogTest,
 
 IN_PROC_BROWSER_TEST_F(DesktopDataControlsDialogTest,
                        NoWebContentsModalDialogManager) {
-  ui::test::TestWebDialogDelegate* delegate =
-      new ui::test::TestWebDialogDelegate(GURL(url::kAboutBlankURL));
-  delegate->SetDeleteOnClosedAndObserve(&test_dialog_destructor_called_unused_);
+  ui::test::TestWebDialogDelegate delegate{GURL(url::kAboutBlankURL)};
 
   auto view = std::make_unique<views::WebDialogView>(
-      browser()->GetProfile(), delegate,
+      browser()->GetProfile(), &delegate,
       std::make_unique<ChromeWebContentsHandler>());
   auto view_ptr = view.get();
   gfx::NativeView parent_view =
@@ -243,6 +243,8 @@ IN_PROC_BROWSER_TEST_F(DesktopDataControlsDialogTest,
   }
   ASSERT_TRUE(was_bypassed.IsReady());
   ASSERT_FALSE(was_bypassed.Get());
+
+  widget->CloseNow();
 }
 
 IN_PROC_BROWSER_TEST_F(DesktopDataControlsDialogTest,
@@ -252,6 +254,76 @@ IN_PROC_BROWSER_TEST_F(DesktopDataControlsDialogTest,
       DataControlsDialog::Type::kClipboardDragBlock);
   ASSERT_EQ(constructor_called_count_, 1u);
   CloseDialogsAndWait();
+}
+
+class DesktopDataControlsDialogDismissTest
+    : public DesktopDataControlsDialogTest,
+      public testing::WithParamInterface<DataControlsDialog::Type> {};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    DesktopDataControlsDialogDismissTest,
+    testing::Values(DataControlsDialog::Type::kClipboardPasteWarn,
+                    DataControlsDialog::Type::kClipboardCopyWarn,
+                    DataControlsDialog::Type::kClipboardPasteBlock,
+                    DataControlsDialog::Type::kClipboardCopyBlock,
+                    DataControlsDialog::Type::kClipboardDragBlock));
+
+IN_PROC_BROWSER_TEST_P(DesktopDataControlsDialogDismissTest, EscDoesNotBypass) {
+  base::test::TestFuture<bool> was_bypassed;
+  DesktopDataControlsDialogFactory::GetInstance()->ShowDialogIfNeeded(
+      browser()->GetTabStripModel()->GetActiveWebContents(), GetParam(),
+      was_bypassed.GetCallback());
+
+  ASSERT_EQ(constructor_called_count_, 1u);
+  auto* dialog = delegates_.begin()->first;
+  auto* delegate = delegates_.begin()->second;
+
+  // Closing the dialog with ESC should never bypass the warning or block.
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](views::DialogDelegate* delegate) {
+                       views::DialogClientView* dialog_client_view =
+                           delegate->GetDialogClientView();
+                       ASSERT_TRUE(dialog_client_view);
+                       dialog_client_view->AcceleratorPressed(
+                           ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE));
+                     },
+                     base::Unretained(delegate)));
+
+  dialog_close_loops_[dialog]->Run();
+
+  ASSERT_TRUE(was_bypassed.IsReady());
+  EXPECT_FALSE(was_bypassed.Get());
+}
+
+IN_PROC_BROWSER_TEST_P(DesktopDataControlsDialogDismissTest,
+                       CloseWithDialogButton) {
+  base::test::TestFuture<bool> was_bypassed;
+  DesktopDataControlsDialogFactory::GetInstance()->ShowDialogIfNeeded(
+      browser()->GetTabStripModel()->GetActiveWebContents(), GetParam(),
+      was_bypassed.GetCallback());
+
+  ASSERT_EQ(constructor_called_count_, 1u);
+  auto* dialog = delegates_.begin()->first;
+  auto* delegate = delegates_.begin()->second;
+
+  const bool can_bypass =
+      GetParam() == DataControlsDialog::Type::kClipboardPasteWarn ||
+      GetParam() == DataControlsDialog::Type::kClipboardCopyWarn;
+
+  // For warning dialogs, clicking the "cancel" button bypasses the warning.
+  // For block dialogs, clicking the "OK" button acknowledges the block.
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(can_bypass ? &views::DialogDelegate::CancelDialog
+                                : &views::DialogDelegate::AcceptDialog,
+                     base::Unretained(delegate)));
+
+  dialog_close_loops_[dialog]->Run();
+
+  ASSERT_TRUE(was_bypassed.IsReady());
+  EXPECT_EQ(was_bypassed.Get(), can_bypass);
 }
 
 }  // namespace data_controls

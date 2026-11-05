@@ -2,14 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/time/time.h"
-#include "chromeos/ash/components/audio/audio_device_selection_test_base.h"
-
 #include "ash/constants/ash_features.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/time/time.h"
 #include "chromeos/ash/components/audio/audio_device_encoding.h"
 #include "chromeos/ash/components/audio/audio_device_metrics_handler.h"
+#include "chromeos/ash/components/audio/audio_device_selection_test_base.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
 #include "testing/gtest/include/gtest/gtest.h"
 

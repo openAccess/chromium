@@ -14,12 +14,15 @@
 #import <vector>
 
 #import "base/apple/foundation_util.h"
+#import "base/barrier_callback.h"
 #import "base/check_deref.h"
 #import "base/check_op.h"
 #import "base/containers/to_vector.h"
 #import "base/debug/crash_logging.h"
 #import "base/feature_list.h"
 #import "base/functional/bind.h"
+#import "base/functional/callback_helpers.h"
+#import "base/ios/block_types.h"
 #import "base/memory/raw_ptr.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/histogram_macros.h"
@@ -57,6 +60,7 @@
 #import "components/password_manager/core/browser/password_generation_frame_helper.h"
 #import "components/password_manager/core/browser/password_manager_client.h"
 #import "components/password_manager/core/browser/password_manager_metrics_util.h"
+#import "components/password_manager/core/browser/password_string.h"
 #import "components/password_manager/core/common/password_manager_features.h"
 #import "components/password_manager/ios/account_select_fill_data.h"
 #import "components/password_manager/ios/constants.h"
@@ -77,6 +81,7 @@
 #import "services/network/public/cpp/shared_url_loader_factory.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "url/gurl.h"
+#import "url/origin.h"
 
 using autofill::AutofillManager;
 using autofill::AutofillManagerObserverBridge;
@@ -182,11 +187,19 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
 // Tracks field when current password was generated.
 @property(nonatomic) FieldGlobalId passwordGeneratedIdentifier;
 
-- (BOOL)IsOffTheRecord;
-
 // Tracks whether the potential generated password has been proactively shown
 // or through the keyboard accessory
 @property(nonatomic) BOOL proactivePasswordGeneration;
+
+- (BOOL)IsOffTheRecord;
+
+- (void)findPasswordFormsAndSendToPasswordStoreForFormChange:
+            (BOOL)triggeredByFormChange
+                                                     inFrame:
+                                                         (web::WebFrame*)frame
+                                           completionHandler:
+                                               (void (^)(BOOL formsFound))
+                                                   completionHandler;
 
 @end
 
@@ -232,7 +245,7 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
   FieldRendererId _lastFocusedFieldIdentifier;
 
   // Last focused frame.
-  raw_ptr<web::WebFrame, DanglingUntriaged> _lastFocusedFrame;
+  base::WeakPtr<web::WebFrame> _lastFocusedFrame;
 
   // A refcounted object is stored here, because otherwise the driver can
   // be deleted with the frame, and the driver needs to be alive after the
@@ -307,6 +320,64 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
   return _delegate.passwordManagerClient->IsOffTheRecord();
 }
 
+#pragma mark - ActorLoginToolDelegate
+
+- (void)actorLoginToolRescansFormsInWebState:(web::WebState*)webState
+                         noFormsFoundHandler:
+                             (ProceduralBlock)noFormsFoundHandler {
+  CHECK_EQ(webState, _webState);
+
+  // Early return for cases when a form would not be found.
+  web::WebFramesManager* framesManager = [self webFramesManager];
+  if (!_webState->ContentIsHTML() || !framesManager ||
+      !framesManager->GetMainWebFrame()) {
+    if (noFormsFoundHandler) {
+      noFormsFoundHandler();
+    }
+    return;
+  }
+
+  web::WebFrame* mainFrame = framesManager->GetMainWebFrame();
+  CHECK(mainFrame);
+
+  const url::Origin mainOrigin = mainFrame->GetSecurityOrigin();
+  std::vector<base::WeakPtr<web::WebFrame>> framesToQuery;
+  for (web::WebFrame* frame : framesManager->GetAllWebFrames()) {
+    if (frame->GetSecurityOrigin().IsSameOriginWith(mainOrigin)) {
+      framesToQuery.push_back(frame->AsWeakPtr());
+    }
+  }
+
+  if (framesToQuery.empty()) {
+    if (noFormsFoundHandler) {
+      noFormsFoundHandler();
+    }
+    return;
+  }
+
+  // Forms that are found are reported to the password manager by
+  // -didFinishPasswordFormExtraction:..., which surfaces them to observers of
+  // `PasswordFormCache`. `noFormsFoundHandler` therefore only needs to fire
+  // for the negative case, once every frame has reported back.
+  auto allFramesQueriedCallback = base::BindOnce(
+      [](ProceduralBlock handler, const std::vector<BOOL>& results) {
+        if (handler && !std::ranges::contains(results, YES)) {
+          handler();
+        }
+      },
+      noFormsFoundHandler);
+
+  base::RepeatingCallback<void(BOOL)> barrier = base::BarrierCallback<BOOL>(
+      framesToQuery.size(), std::move(allFramesQueriedCallback));
+
+  void (^barrierBlock)(BOOL) = base::CallbackToBlock(barrier);
+  for (const auto& weakFrame : framesToQuery) {
+    [self findPasswordFormsAndSendToPasswordStoreForFormChange:NO
+                                                       inFrame:weakFrame.get()
+                                             completionHandler:barrierBlock];
+  }
+}
+
 #pragma mark - PasswordGenerationProvider
 
 - (void)triggerPasswordGeneration {
@@ -320,9 +391,10 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
 
 - (void)triggerPasswordGenerationForFormId:(FormRendererId)formIdentifier
                            fieldIdentifier:(FieldRendererId)fieldIdentifier
-                                   inFrame:(web::WebFrame*)frame
+                                   inFrame:
+                                       (base::WeakPtr<web::WebFrame>)weakFrame
                                  proactive:(BOOL)proactivePasswordGeneration {
-  if (!fieldIdentifier) {
+  if (!fieldIdentifier || !weakFrame) {
     return;
   }
   _proactivePasswordGeneration = proactivePasswordGeneration;
@@ -341,7 +413,7 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
   // call.
   [self generatePasswordForFormId:formIdentifier
                   fieldIdentifier:fieldIdentifier
-                          inFrame:frame
+                          inFrame:weakFrame
               isManuallyTriggered:!_proactivePasswordGeneration];
 }
 
@@ -438,7 +510,7 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
   }
 
   // Avoid keeping a pointer to a destroyed frame.
-  if (webFrame == _lastFocusedFrame) {
+  if (webFrame == _lastFocusedFrame.get()) {
     _lastFocusedFrame = nullptr;
   }
 
@@ -713,7 +785,7 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
       _proactivePasswordGeneration = NO;
       [self generatePasswordForFormId:formRendererID
                       fieldIdentifier:fieldRendererID
-                              inFrame:frame
+                              inFrame:frame->AsWeakPtr()
                   isManuallyTriggered:NO];
       password_manager::metrics_util::LogPasswordSuggestionSelected(
           password_manager::metrics_util::PasswordDropdownSelectedOption::
@@ -797,11 +869,7 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
   return autofill::FillingProduct::kPassword;
 }
 
-#pragma mark - PasswordManagerDriverDelegate
-
-- (const GURL&)lastCommittedURL {
-  return _webState ? _webState->GetLastCommittedURL() : GURL::EmptyGURL();
-}
+#pragma mark - PasswordManagerDriverBridge
 
 - (void)processPasswordFormFillData:
             (const autofill::PasswordFormFillData&)formData
@@ -944,17 +1012,42 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
             (BOOL)triggeredByFormChange
                                                      inFrame:
                                                          (web::WebFrame*)frame {
+  [self
+      findPasswordFormsAndSendToPasswordStoreForFormChange:triggeredByFormChange
+                                                   inFrame:frame
+                                         completionHandler:nil];
+}
+
+- (void)findPasswordFormsAndSendToPasswordStoreForFormChange:
+            (BOOL)triggeredByFormChange
+                                                     inFrame:
+                                                         (web::WebFrame*)frame
+                                           completionHandler:
+                                               (void (^)(BOOL formsFound))
+                                                   completionHandler {
+  if (!frame) {
+    if (completionHandler) {
+      completionHandler(NO);
+    }
+    return;
+  }
+
   // Read all password forms from the page and send them to the password
   // manager.
   __weak SharedPasswordController* weakSelf = self;
-  auto completionHandler = ^(const std::vector<FormData>& forms) {
-    [weakSelf didFinishPasswordFormExtraction:forms
-                        triggeredByFormChange:triggeredByFormChange
-                                      inFrame:frame];
+  base::WeakPtr<web::WebFrame> weakFrame = frame->AsWeakPtr();
+  auto callback = ^(const std::vector<FormData>& forms) {
+    if (weakSelf && weakFrame) {
+      [weakSelf didFinishPasswordFormExtraction:forms
+                          triggeredByFormChange:triggeredByFormChange
+                                        inFrame:weakFrame.get()];
+    }
+    if (completionHandler) {
+      completionHandler(weakSelf && weakFrame && !forms.empty());
+    }
   };
 
-  [self.formHelper findPasswordFormsInFrame:frame
-                          completionHandler:completionHandler];
+  [self.formHelper findPasswordFormsInFrame:frame completionHandler:callback];
 }
 
 - (BOOL)canGeneratePasswordForForm:(FormRendererId)formIdentifier
@@ -1025,7 +1118,7 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
     }
   }
 
-  std::u16string generatedPassword =
+  password_manager::PasswordString generatedPassword =
       [_driverHelper PasswordGenerationHelper:frame]->GeneratePassword(
           frame->GetSecurityOrigin().GetURL(),
           isManuallyTriggered ? PasswordGenerationType::kManual
@@ -1036,7 +1129,8 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
       "PasswordGeneration.iOS.GeneratedPasswordIsEmpty.BeforeParsing",
       generatedPassword.empty());
 
-  NSString* generatedPotentialPassword = SysUTF16ToNSString(generatedPassword);
+  NSString* generatedPotentialPassword =
+      SysUTF16ToNSString(generatedPassword.secure_value());
 
   __weak SharedPasswordController* weakSelf = self;
   [self.delegate sharedPasswordController:self
@@ -1102,8 +1196,12 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
 
 - (void)generatePasswordForFormId:(FormRendererId)formIdentifier
                   fieldIdentifier:(FieldRendererId)fieldIdentifier
-                          inFrame:(web::WebFrame*)frame
+                          inFrame:(base::WeakPtr<web::WebFrame>)weakFrame
               isManuallyTriggered:(BOOL)isManuallyTriggered {
+  web::WebFrame* frame = weakFrame.get();
+  if (!frame) {
+    return;
+  }
   const autofill::PasswordFormGenerationData* generationData =
       [self formForGenerationFromFormID:formIdentifier];
   if (!isManuallyTriggered && !generationData) {
@@ -1122,7 +1220,6 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
   }
 
   __weak SharedPasswordController* weakSelf = self;
-  base::WeakPtr<web::WebFrame> weakFrame = frame->AsWeakPtr();
   [self.formHelper
       extractPasswordFormData:formIdentifier
                       inFrame:frame
@@ -1370,7 +1467,7 @@ autofill::LocalFrameToken GetLocalFrameToken(web::WebFrame* frame) {
   if (params.type == ActivityType::kFocus) {
     _lastFocusedFormIdentifier = params.form_renderer_id;
     _lastFocusedFieldIdentifier = params.field_renderer_id;
-    _lastFocusedFrame = frame;
+    _lastFocusedFrame = frame->AsWeakPtr();
   }
 
   // If there's a change in password forms on a page, they should be parsed

@@ -4,6 +4,8 @@
 
 #include "ash/public/cpp/app_list/app_list_metrics.h"
 
+#include <string_view>
+
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
@@ -71,7 +73,7 @@ constexpr char kAppListSortDiscoveryDurationAfterNudgeTablet[] =
     "Apps.AppList.SortDiscoveryDurationAfterEducationNudgeV2.TabletMode";
 
 // LINT.IfChange(SearchSessionConclusion)
-std::string SearchSessionConclusionToString(
+std::string_view SearchSessionConclusionToString(
     SearchSessionConclusion conclusion) {
   switch (conclusion) {
     case SearchSessionConclusion::kQuit:
@@ -138,11 +140,10 @@ void RecordSearchResultOpenTypeHistogram(AppListLaunchedFrom launch_location,
     case AppListLaunchedFrom::kLaunchedFromRecentApps:
     case AppListLaunchedFrom::DEPRECATED_kLaunchedFromSuggestionChip:
     case AppListLaunchedFrom::kLaunchedFromQuickAppAccess:
-    case AppListLaunchedFrom::kLaunchedFromAppsCollections:
+    case AppListLaunchedFrom::DEPRECATED_kLaunchedFromAppsCollections:
     case AppListLaunchedFrom::kLaunchedFromDiscoveryChip:
     case AppListLaunchedFrom::kLaunchedFromSearchBoxIcon:
-      // Search results don't live in the shelf, the app grid, apps collections
-      // or recent apps.
+      // Search results don't live in the shelf, the app grid, or recent apps.
       NOTREACHED();
   }
 }

@@ -44,18 +44,22 @@ void BrowserAccessibilityWin::UpdatePlatformNode() {
 }
 
 void BrowserAccessibilityWin::UpdatePlatformAttributes() {
-  if (!GetCOM()) {
+  // Safe to use a raw pointer because Steps 1 and 2 do not pump synchronous
+  // events, and Step 3 holds a self-reference around `FireNativeEvent()`.
+  BrowserAccessibilityComWin* com_win = GetCOM();
+  if (!com_win || com_win->update_state_) {
     return;
   }
   BrowserAccessibilityComWin::UpdateState update_state;
-  GetCOM()->UpdateStep1ComputeWinAttributes(&update_state);
-  GetCOM()->UpdateStep2ComputeHypertext();
-  GetCOM()->UpdateStep3FireEvents();
+  com_win->UpdateStep1ComputeWinAttributes(&update_state);
+  com_win->UpdateStep2ComputeHypertext();
+  com_win->UpdateStep3FireEvents();
 }
 
 std::wstring BrowserAccessibilityWin::ComputeListItemNameFromContent() const {
-  DCHECK_EQ(GetRole(), ax::mojom::Role::kListItem);
-  DCHECK(!HasStringAttribute(ax::mojom::StringAttribute::kName));
+  CHECK_EQ(GetRole(), ax::mojom::Role::kListItem, base::NotFatalUntil::M163);
+  CHECK(!HasStringAttribute(ax::mojom::StringAttribute::kName),
+        base::NotFatalUntil::M163);
 
   std::wstring str;
   int offset = 0;
@@ -134,9 +138,9 @@ BrowserAccessibilityWin::GetUIADirectChildrenInRange(
 
   if (!IsIgnored() && !ShouldHideChildrenForUIA() && PlatformChildCount() > 0) {
     BrowserAccessibility* start_wrapper = FromAXPlatformNodeDelegate(start);
-    DCHECK(start_wrapper);
+    CHECK(start_wrapper, base::NotFatalUntil::M163);
     BrowserAccessibility* end_wrapper = FromAXPlatformNodeDelegate(end);
-    DCHECK(end_wrapper);
+    CHECK(end_wrapper, base::NotFatalUntil::M163);
 
     // When either (or both) of the start/end node is the same as the common
     // anchor, make them null. A null start node means that all UIA embedded
@@ -155,7 +159,7 @@ BrowserAccessibilityWin::GetUIADirectChildrenInRange(
 
     for (auto it = PlatformChildrenBegin(); it != PlatformChildrenEnd(); ++it) {
       BrowserAccessibility* child = it.get();
-      DCHECK(child);
+      CHECK(child, base::NotFatalUntil::M163);
 
       if (!in_range &&
           (start_wrapper &&
@@ -187,7 +191,8 @@ gfx::NativeViewAccessible BrowserAccessibilityWin::GetNativeViewAccessible() {
 BrowserAccessibilityComWin* BrowserAccessibilityWin::GetCOM() const {
   // It's OK to not have a browser_accessibility_com_ if this shouldn't
   // expose a platform node.
-  DCHECK(!ShouldHavePlatformNode() || browser_accessibility_com_);
+  CHECK(!ShouldHavePlatformNode() || browser_accessibility_com_,
+        base::NotFatalUntil::M163);
   return static_cast<BrowserAccessibilityComWin*>(
       browser_accessibility_com_.get());
 }

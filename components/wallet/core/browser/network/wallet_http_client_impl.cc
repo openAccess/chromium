@@ -17,6 +17,7 @@
 #include "components/signin/public/identity_manager/primary_account_access_token_fetcher.h"
 #include "components/wallet/core/browser/data_models/wallet_pass.h"
 #include "components/wallet/core/browser/metrics/wallet_metrics.h"
+#include "components/wallet/core/browser/network/get_details_for_upsert_pass_request.h"
 #include "components/wallet/core/browser/network/get_unmasked_pass_request.h"
 #include "components/wallet/core/browser/network/upsert_private_pass_request.h"
 #include "components/wallet/core/browser/network/upsert_public_pass_request.h"
@@ -44,9 +45,11 @@ bool IsHttpSuccess(int response_code) {
 
 WalletHttpClientImpl::WalletHttpClientImpl(
     signin::IdentityManager* identity_manager,
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    std::string app_locale)
     : identity_manager_(CHECK_DEREF(identity_manager)),
-      url_loader_factory_(std::move(url_loader_factory)) {}
+      url_loader_factory_(std::move(url_loader_factory)),
+      app_locale_(std::move(app_locale)) {}
 
 WalletHttpClientImpl::~WalletHttpClientImpl() = default;
 
@@ -79,6 +82,14 @@ void WalletHttpClientImpl::GetUnmaskedPass(std::string_view pass_id,
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   SendRequest(std::make_unique<GetUnmaskedPassRequest>(std::string(pass_id),
                                                        std::move(callback)));
+}
+
+void WalletHttpClientImpl::GetDetailsForUpsertPass(
+    PassType pass_type,
+    GetDetailsForUpsertPassCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  SendRequest(std::make_unique<GetDetailsForUpsertPassRequest>(
+      pass_type, std::move(callback)));
 }
 
 void WalletHttpClientImpl::SendRequest(std::unique_ptr<WalletRequest> request) {
@@ -145,6 +156,8 @@ void WalletHttpClientImpl::SendRequestInternal(
   resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   resource_request->headers.SetHeader(net::HttpRequestHeaders::kAuthorization,
                                       base::StrCat({"Bearer ", *access_token}));
+  resource_request->headers.SetHeader(net::HttpRequestHeaders::kAcceptLanguage,
+                                      app_locale_);
   resource_request->headers.MergeFrom(request->GetRequestHeaders());
 
   net::NetworkTrafficAnnotationTag traffic_annotation =

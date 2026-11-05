@@ -30,9 +30,9 @@
 #include "chrome/browser/ui/webui_browser/webui_browser_side_panel_ui.h"
 #include "chrome/browser/ui/webui_browser/webui_browser_ui.h"
 #include "components/browser_apis/tab_strip/types/node_id.h"
-#include "components/guest_contents/browser/guest_contents_handle.h"
 #include "components/omnibox/browser/location_bar_model.h"
 #include "components/omnibox/browser/vector_icons.h"
+#include "components/surface_embed/browser/surface_embed_handle.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/navigation_controller.h"
@@ -52,17 +52,20 @@ class WebUIBrowserGuestHandler
       content::RenderFrameHost& render_frame_host,
       mojo::PendingReceiver<webui_browser::mojom::GuestHandler> receiver,
       content::WebContents* web_contents,
-      WebUIBrowserWindow* window)
+      WebUIBrowserWindow* window,
+      base::SelfDeletingPassKey key)
       : content::DocumentService<webui_browser::mojom::GuestHandler>(
             render_frame_host,
-            std::move(receiver)),
+            std::move(receiver),
+            key),
         window_(window),
         web_contents_(web_contents->GetWeakPtr()) {}
   WebUIBrowserGuestHandler(const WebUIBrowserGuestHandler&) = delete;
   WebUIBrowserGuestHandler& operator=(const WebUIBrowserGuestHandler&) = delete;
-  ~WebUIBrowserGuestHandler() override = default;
 
  private:
+  ~WebUIBrowserGuestHandler() override = default;
+
   // webui_browser::mojom::GuestHandler
   void Navigate(const GURL& src) override {
     content::NavigationController::LoadURLParams load_url_params(src);
@@ -117,10 +120,7 @@ class WebUIBrowserGuestHandler
   }
 
   void GetSecurityIcon(GetSecurityIconCallback callback) override {
-    auto* icon = &window_->browser()
-                      ->GetFeatures()
-                      .location_bar_model()
-                      ->GetVectorIcon();
+    auto* icon = &LocationBarModel::From(window_->browser())->GetVectorIcon();
     webui_browser::mojom::SecurityIcon icon_type;
     if (icon == &(features::IsRoundedIconsEnabled()
                       ? omnibox::kInfoIcon
@@ -184,8 +184,8 @@ void WebUIBrowserPageHandler::CreateForRenderFrameHost(
     mojo::PendingReceiver<webui_browser::mojom::PageHandler> receiver,
     WebUIBrowserUI* controller) {
   // The RenderFrameHost takes ownership of this object via the DocumentService.
-  new WebUIBrowserPageHandler(render_frame_host, std::move(receiver),
-                              controller);
+  base::MakeSelfDeleting<WebUIBrowserPageHandler>(
+      render_frame_host, std::move(receiver), controller);
 }
 
 void WebUIBrowserPageHandler::GetGuestIdForTabId(
@@ -209,13 +209,14 @@ void WebUIBrowserPageHandler::GetGuestIdForTabId(
   }
 
   // The RenderFrameHost takes ownership of this object via the DocumentService.
-  new WebUIBrowserGuestHandler(render_frame_host(), std::move(receiver),
-                               tab_contents, GetBrowserWindow());
+  base::MakeSelfDeleting<WebUIBrowserGuestHandler>(
+      render_frame_host(), std::move(receiver), tab_contents,
+      GetBrowserWindow());
 
-  guest_contents::GuestContentsHandle::CreateForWebContents(tab_contents);
-  auto* guest_handle =
-      guest_contents::GuestContentsHandle::FromWebContents(tab_contents);
-  std::move(callback).Run(guest_handle->id());
+  surface_embed::SurfaceEmbedHandle::CreateForWebContents(tab_contents);
+  auto* embedded_handle =
+      surface_embed::SurfaceEmbedHandle::FromWebContents(tab_contents);
+  std::move(callback).Run(embedded_handle->id());
 }
 
 void WebUIBrowserPageHandler::LoadTabSearch(LoadTabSearchCallback callback) {
@@ -225,11 +226,11 @@ void WebUIBrowserPageHandler::LoadTabSearch(LoadTabSearchCallback callback) {
   content::NavigationController::LoadURLParams url_params{
       GURL(chrome::kChromeUITabSearchURL)};
   tab_search_contents_->GetController().LoadURLWithParams(url_params);
-  guest_contents::GuestContentsHandle::CreateForWebContents(
+  surface_embed::SurfaceEmbedHandle::CreateForWebContents(
       tab_search_contents_.get());
-  auto* guest_handle = guest_contents::GuestContentsHandle::FromWebContents(
+  auto* embedded_handle = surface_embed::SurfaceEmbedHandle::FromWebContents(
       tab_search_contents_.get());
-  std::move(callback).Run(guest_handle->id());
+  std::move(callback).Run(embedded_handle->id());
 }
 
 void WebUIBrowserPageHandler::ShowTabSearchBubble(
@@ -340,10 +341,12 @@ void WebUIBrowserPageHandler::GetTabStripInset(
 WebUIBrowserPageHandler::WebUIBrowserPageHandler(
     content::RenderFrameHost& render_frame_host,
     mojo::PendingReceiver<webui_browser::mojom::PageHandler> receiver,
-    WebUIBrowserUI* controller)
+    WebUIBrowserUI* controller,
+    base::SelfDeletingPassKey key)
     : content::DocumentService<webui_browser::mojom::PageHandler>(
           render_frame_host,
-          std::move(receiver)),
+          std::move(receiver),
+          key),
       controller_(controller->GetWeakPtr()) {}
 
 BrowserWindowInterface* WebUIBrowserPageHandler::GetBrowser() {

@@ -13,6 +13,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
@@ -266,7 +267,7 @@ void WebAppFrameToolbarTestHelper::TestDraggableRegions() {
   // region is defined in the kTestHTML of WebAppFrameToolbarTestHelper's
   // LoadWindowControlsOverlayTestPageWithDataAndGetURL.
   gfx::Point draggable_point(100, 100);
-  views::View::ConvertPointToTarget(browser_view()->contents_web_view(),
+  views::View::ConvertPointToTarget(browser_view()->GetContentsView(),
                                     frame_view, &draggable_point);
 
   EXPECT_EQ(frame_view->NonClientHitTest(draggable_point), HTCAPTION);
@@ -277,7 +278,7 @@ void WebAppFrameToolbarTestHelper::TestDraggableRegions() {
   // Validate that a point marked "app-region: no-drag" within a draggable
   // region is not draggable.
   gfx::Point non_draggable_point(106, 106);
-  views::View::ConvertPointToTarget(browser_view()->contents_web_view(),
+  views::View::ConvertPointToTarget(browser_view()->GetContentsView(),
                                     frame_view, &non_draggable_point);
 
   EXPECT_EQ(frame_view->NonClientHitTest(non_draggable_point), HTCLIENT);

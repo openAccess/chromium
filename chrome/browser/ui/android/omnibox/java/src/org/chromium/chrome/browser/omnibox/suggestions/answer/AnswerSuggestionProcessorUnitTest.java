@@ -22,17 +22,21 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 import org.robolectric.Robolectric;
 
 import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.UrlBarEditingTextStateProvider;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxDrawableState;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteUIContext;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionHost;
 import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewProperties;
 import org.chromium.chrome.browser.share.ShareDelegate;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatchBuilder;
@@ -46,18 +50,20 @@ import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 import java.util.function.Supplier;
 
 /** Tests for {@link AnswerSuggestionProcessor}. */
-@RunWith(org.chromium.base.test.BaseRobolectricTestRunner.class)
+@RunWith(BaseRobolectricTestRunner.class)
 public class AnswerSuggestionProcessorUnitTest {
-    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
-    @Mock SuggestionHost mSuggestionHost;
-    @Mock UrlBarEditingTextStateProvider mUrlStateProvider;
-    @Mock Supplier<ShareDelegate> mShareDelegateSupplier;
-    @Mock OmniboxActionDelegate mActionDelegate;
+    @Mock private SuggestionHost mSuggestionHost;
+    @Mock private UrlBarEditingTextStateProvider mUrlStateProvider;
+    @Mock private Supplier<ShareDelegate> mShareDelegateSupplier;
+    @Mock private OmniboxActionDelegate mActionDelegate;
 
     private Activity mContext;
     private AnswerSuggestionProcessor mProcessor;
     private AutocompleteInput mInput;
+    private OmniboxResourceProvider mResourceProvider;
 
     /**
      * Base Suggestion class that can be used for testing. Holds all mechanisms that are required to
@@ -141,9 +147,11 @@ public class AnswerSuggestionProcessorUnitTest {
     public void setUp() {
         mContext = Robolectric.buildActivity(Activity.class).setup().get();
         mContext.setTheme(R.style.Theme_BrowserUI_DayNight);
+        mResourceProvider = new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
         AutocompleteUIContext uiContext =
                 new AutocompleteUIContext(
                         mContext,
+                        mResourceProvider,
                         mSuggestionHost,
                         mUrlStateProvider,
                         /* imageSupplier= */ null,

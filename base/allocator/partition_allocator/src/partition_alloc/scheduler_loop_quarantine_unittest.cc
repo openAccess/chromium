@@ -104,7 +104,14 @@ class SchedulerLoopQuarantineTest : public testing::Test {
     return entry_slot_span->bucket->slot_size;
   }
 
-  SchedulerLoopQuarantineStats GetStats() const {
+  // Returns up-to-date stats.
+  SchedulerLoopQuarantineStats GetStats() {
+    branch_->PublishStatsForTesting();
+    return GetPublishedStats();
+  }
+
+  // Returns the stats as currently published by the branch.
+  SchedulerLoopQuarantineStats GetPublishedStats() const {
     SchedulerLoopQuarantineStats stats{};
     root_->AccumulateStats(stats);
     return stats;
@@ -122,7 +129,6 @@ struct SchedulerLoopQuarantineTestParamSmall {
   constexpr static QuarantineConfig kConfig = {
       .branch_capacity_in_bytes = 256,
       .enable_quarantine = true,
-      .enable_zapping = true,
       .max_quarantine_size = 1024,
   };
 };
@@ -131,7 +137,6 @@ struct SchedulerLoopQuarantineTestParamLarge {
   constexpr static QuarantineConfig kConfig = {
       .branch_capacity_in_bytes = 2048,
       .enable_quarantine = true,
-      .enable_zapping = true,
       .max_quarantine_size = 1024,
   };
 };
@@ -140,7 +145,6 @@ struct SchedulerLoopQuarantineTestParamSmallThreadBound {
   constexpr static QuarantineConfig kConfig = {
       .branch_capacity_in_bytes = 256,
       .enable_quarantine = true,
-      .enable_zapping = true,
       .max_quarantine_size = 1024,
   };
 };
@@ -149,7 +153,6 @@ struct SchedulerLoopQuarantineTestParamLargeThreadBound {
   constexpr static QuarantineConfig kConfig = {
       .branch_capacity_in_bytes = 2048,
       .enable_quarantine = true,
-      .enable_zapping = true,
       .max_quarantine_size = 1024,
   };
 };
@@ -196,6 +199,76 @@ TYPED_TEST(SchedulerLoopQuarantineTest, Basic) {
   }
 }
 
+TYPED_TEST(SchedulerLoopQuarantineTest, PurgeHeadroom) {
+  constexpr size_t kHeadroomPercent = 40;
+  QuarantineConfig config = this->GetConfig();
+  config.purge_headroom_percent = kHeadroomPercent;
+  this->GetQuarantineBranch()->Configure(*this->GetQuarantineRoot(), config);
+
+  const size_t capacity_in_bytes =
+      this->GetQuarantineBranch()->GetCapacityInBytes();
+  const size_t headroom_in_bytes = capacity_in_bytes / 100 * kHeadroomPercent;
+
+  void* object = this->GetPartitionRoot()->Alloc(1);
+  const size_t size = this->GetObjectSize(object);
+  ASSERT_GT(headroom_in_bytes, 2 * size);
+
+  // Fill the branch, without purging.
+  const size_t max_count = capacity_in_bytes / size;
+  for (size_t i = 0; i < max_count; i++) {
+    this->Quarantine(object);
+    object = this->GetPartitionRoot()->Alloc(1);
+  }
+  EXPECT_EQ(max_count, this->GetStats().count);
+
+  // The branch is full: quarantining another entry dequarantines enough
+  // entries to make room for `headroom_in_bytes` more bytes.
+  this->Quarantine(object);
+  auto stats = this->GetStats();
+  EXPECT_LE(stats.size_in_bytes, capacity_in_bytes - headroom_in_bytes);
+  EXPECT_GT(stats.size_in_bytes, capacity_in_bytes - headroom_in_bytes - size);
+
+  // Subsequent entries fit without dequarantining anything.
+  const size_t count_after_purge = stats.count;
+  const size_t room_count = (capacity_in_bytes - stats.size_in_bytes) / size;
+  for (size_t i = 1; i <= room_count; i++) {
+    this->Quarantine(this->GetPartitionRoot()->Alloc(1));
+    EXPECT_EQ(count_after_purge + i, this->GetStats().count);
+  }
+}
+
+TYPED_TEST(SchedulerLoopQuarantineTest, StatsArePublishedOnPurge) {
+  constexpr size_t kCount = 10;
+  size_t total_size = 0;
+  for (size_t i = 0; i < kCount; i++) {
+    void* object = this->GetPartitionRoot()->Alloc(1);
+    total_size += this->GetObjectSize(object);
+    this->Quarantine(object);
+  }
+
+  this->GetQuarantineBranch()->Purge();
+
+  auto stats = this->GetPublishedStats();
+  EXPECT_EQ(0u, stats.size_in_bytes);
+  EXPECT_EQ(0u, stats.count);
+  EXPECT_EQ(total_size, stats.cumulative_size_in_bytes);
+  EXPECT_EQ(kCount, stats.cumulative_count);
+}
+
+TYPED_TEST(SchedulerLoopQuarantineTest, StatsArePublishedPeriodically) {
+  constexpr size_t kCount = 1000;
+  for (size_t i = 0; i < kCount; i++) {
+    this->Quarantine(this->GetPartitionRoot()->Alloc(1));
+  }
+
+  // Without a purge, the published stats lag behind by a bounded number of
+  // entries.
+  constexpr size_t kMaxLag = 64;
+  auto stats = this->GetPublishedStats();
+  EXPECT_LE(stats.cumulative_count, kCount);
+  EXPECT_GE(stats.cumulative_count, kCount - kMaxLag);
+}
+
 TYPED_TEST(SchedulerLoopQuarantineTest, TooLargeAllocation) {
   const size_t kThreshold =
       std::min(this->GetConfig().max_quarantine_size,
@@ -225,6 +298,31 @@ TYPED_TEST(SchedulerLoopQuarantineTest, TooLargeAllocation) {
   ASSERT_TRUE(this->GetQuarantineBranch()->IsQuarantinedForTesting(object));
 }
 
+TYPED_TEST(SchedulerLoopQuarantineTest, ZapMax) {
+  constexpr size_t kZapMax = 8;
+  constexpr size_t kObjectSize = 64;
+  constexpr unsigned char kInitialByte = 0xab;
+  static_assert(kInitialByte != internal::kFreedByte);
+
+  QuarantineConfig config = this->GetConfig();
+  config.zap_max = kZapMax;
+  this->GetQuarantineBranch()->Configure(*this->GetQuarantineRoot(), config);
+
+  auto& object = *static_cast<std::array<unsigned char, kObjectSize>*>(
+      this->GetPartitionRoot()->Alloc(kObjectSize));
+  object.fill(kInitialByte);
+
+  this->Quarantine(&object);
+  ASSERT_TRUE(this->GetQuarantineBranch()->IsQuarantinedForTesting(&object));
+
+  for (size_t i = 0; i < kZapMax; ++i) {
+    EXPECT_EQ(internal::kFreedByte, object[i]);
+  }
+  for (size_t i = kZapMax; i < kObjectSize; ++i) {
+    EXPECT_EQ(kInitialByte, object[i]);
+  }
+}
+
 TYPED_TEST(SchedulerLoopQuarantineTest, ScopedOptOut) {
   if (!this->GetQuarantineBranch()->kThreadBound) {
     // Supported only on lock-less mode.
@@ -249,10 +347,8 @@ TYPED_TEST(SchedulerLoopQuarantineTest, ScopedOptOut) {
 // Test if partition 0 is Invalid that the exclusion still works
 // on the other partitions.
 TEST(SchedulerLoopQuarantineTest, ExclusionWithInvalidFirstPartition) {
-  if (kNumPartitions < 2) {
-    GTEST_SKIP() << "Test requires kNumPartitions >= 2";
-  }
-#if PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
+#if PA_BUILDFLAG(USE_ALLOCATOR_SHIM) && PA_BUILDFLAG(ENABLE_AUTO_PARTITIONING)
+  static_assert(kNumPartitions >= 2);
   auto* root1 = allocator_shim::internal::PartitionAllocMalloc::Allocator(1);
   if (!root1) {
     GTEST_SKIP() << "Partition 1 is not initialized";
@@ -286,7 +382,11 @@ TEST(SchedulerLoopQuarantineTest, ExclusionWithInvalidFirstPartition) {
     }
   });
   worker.join();
-#endif  // PA_BUILDFLAG(USE_ALLOCATOR_SHIM)
+#else
+  GTEST_SKIP()
+      << "Test requires USE_ALLOCATOR_SHIM and ENABLE_AUTO_PARTITIONING";
+#endif  // PA_BUILDFLAG(USE_ALLOCATOR_SHIM) &&
+        // PA_BUILDFLAG(ENABLE_AUTO_PARTITIONING)
 }
 
 TYPED_TEST(ThreadBoundSchedulerLoopQuarantineTest,
@@ -363,6 +463,56 @@ TYPED_TEST(ThreadBoundSchedulerLoopQuarantineTest,
   branch->OnTaskFinish();
   // Should become paused (1) after task.
   EXPECT_EQ(1, branch->PausedCountForTesting());
+}
+
+TYPED_TEST(ThreadBoundSchedulerLoopQuarantineTest,
+           BulkPurgeAvoidsThreadCacheOverflow) {
+  auto* branch = this->GetQuarantineBranch();
+  auto* root = this->GetQuarantineRoot();
+  auto* allocator_root = this->GetPartitionRoot();
+  auto* tcache = allocator_root->thread_cache_for_testing();
+  ASSERT_TRUE(internal::ThreadCache::IsValid(tcache));
+
+  QuarantineConfig config = this->GetConfig();
+  config.branch_capacity_in_bytes = 1024 * 1024;
+  config.enable_quarantine = true;
+  config.enable_task_controlled_purge = true;
+  config.pause_in_between_tasks = true;
+  branch->Configure(*root, config);
+
+  tcache->Purge();
+  branch->OnTaskStart();
+
+  constexpr size_t kAllocSize = 32;
+  constexpr size_t kCount = 128;
+  std::vector<void*> ptrs;
+  ptrs.reserve(kCount);
+  for (size_t i = 0; i < kCount; ++i) {
+    ptrs.push_back(allocator_root->Alloc(kAllocSize));
+  }
+  auto* slot_span = internal::SlotSpanMetadata::FromSlotStart(
+      SlotStart::Unchecked(ptrs[0]).Untag(), allocator_root);
+  const size_t bucket_index =
+      allocator_root->SlotSpanToBucketSizeDetails(slot_span).bucket_index();
+  const uint8_t limit = tcache->bucket_for_testing(bucket_index)
+                            .limit.load(std::memory_order_relaxed);
+  ASSERT_GT(limit, 1u);
+
+  tcache->Purge();
+  ASSERT_EQ(0u, tcache->bucket_count_for_testing(bucket_index));
+
+  for (void* ptr : ptrs) {
+    this->Quarantine(ptr);
+  }
+  EXPECT_EQ(kCount, this->GetStats().count);
+
+  // Full task-end purge should replenish the bucket up to its post-clearing
+  // target (`(limit + 1) / 2`) and batch-free the remaining slots directly to
+  // the root without overflowing `limit`.
+  branch->OnTaskFinish();
+  EXPECT_EQ(0u, this->GetStats().count);
+  EXPECT_EQ(static_cast<size_t>((limit + 1) / 2),
+            tcache->bucket_count_for_testing(bucket_index));
 }
 
 }  // namespace

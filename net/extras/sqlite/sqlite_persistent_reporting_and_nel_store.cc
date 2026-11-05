@@ -17,7 +17,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_string_value_serializer.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/thread_annotations.h"
@@ -46,16 +45,6 @@ namespace {
 // existing entries get an empty NetworkAnonymizationKey value.
 const int kCurrentVersionNumber = 2;
 const int kCompatibleVersionNumber = 2;
-
-// Histogram names
-const char kNumberOfLoadedNelPoliciesHistogramName[] =
-    "ReportingAndNEL.NumberOfLoadedNELPolicies";
-const char kNumberOfLoadedNelPolicies2HistogramName[] =
-    "ReportingAndNEL.NumberOfLoadedNELPolicies2";
-const char kNumberOfLoadedReportingEndpoints2HistogramName[] =
-    "ReportingAndNEL.NumberOfLoadedReportingEndpoints2";
-const char kNumberOfLoadedReportingEndpointGroups2HistogramName[] =
-    "ReportingAndNEL.NumberOfLoadedReportingEndpointGroups2";
 }  // namespace
 
 base::TaskPriority GetReportingAndNelStoreBackgroundSequencePriority() {
@@ -237,7 +226,7 @@ class SQLitePersistentReportingAndNelStore::Backend
       NelPoliciesLoadedCallback loaded_callback);
 
   // Calls |loaded_callback| with the loaded NEL policies (which may be empty if
-  // loading was unsuccessful). If loading was successful, also report metrics.
+  // loading was unsuccessful).
   void CompleteLoadNelPoliciesAndNotifyInForeground(
       NelPoliciesLoadedCallback loaded_callback,
       std::vector<NetworkErrorLoggingService::NelPolicy> loaded_policies,
@@ -250,17 +239,12 @@ class SQLitePersistentReportingAndNelStore::Backend
       ReportingClientsLoadedCallback loaded_callback);
 
   // Calls |loaded_callback| with the loaded endpoints and endpoint groups
-  // (which may be empty if loading was unsuccessful). If loading was
-  // successful, also report metrics.
+  // (which may be empty if loading was unsuccessful).
   void CompleteLoadReportingClientsAndNotifyInForeground(
       ReportingClientsLoadedCallback loaded_callback,
       std::vector<ReportingEndpoint> loaded_endpoints,
       std::vector<CachedReportingEndpointGroup> loaded_endpoint_groups,
       bool load_success);
-
-  void RecordNumberOfLoadedNelPolicies(size_t count);
-  void RecordNumberOfLoadedReportingEndpoints(size_t count);
-  void RecordNumberOfLoadedReportingEndpointGroups(size_t count);
 
   // Total number of pending operations (may not match the sum of the number of
   // elements in the pending operations queues, due to operation coalescing).
@@ -379,13 +363,11 @@ struct SQLitePersistentReportingAndNelStore::Backend::NelPolicyInfo {
         origin_port(nel_policy.key.origin.port()),
         received_ip_address(nel_policy.received_ip_address.ToString()),
         report_to(nel_policy.report_to),
-        expires_us_since_epoch(
-            nel_policy.expires.ToDeltaSinceWindowsEpoch().InMicroseconds()),
+        expires(nel_policy.expires),
         success_fraction(nel_policy.success_fraction),
         failure_fraction(nel_policy.failure_fraction),
         is_include_subdomains(nel_policy.include_subdomains),
-        last_access_us_since_epoch(
-            nel_policy.last_used.ToDeltaSinceWindowsEpoch().InMicroseconds()) {}
+        last_access(nel_policy.last_used) {}
 
   // Creates the specified operation for the given policy. Returns nullptr for
   // endpoints with transient NetworkAnonymizationKeys.
@@ -418,16 +400,15 @@ struct SQLitePersistentReportingAndNelStore::Backend::NelPolicyInfo {
   std::string received_ip_address;
   // The Reporting group which the policy specifies.
   std::string report_to;
-  // When the policy expires, in microseconds since the Windows epoch.
-  int64_t expires_us_since_epoch = 0;
+  // When the policy expires.
+  base::Time expires;
   // Sampling fractions.
   double success_fraction = 0.0;
   double failure_fraction = 1.0;
   // Whether the policy applies to subdomains of the origin.
   bool is_include_subdomains = false;
-  // Last time the policy was updated or used, in microseconds since the
-  // Windows epoch.
-  int64_t last_access_us_since_epoch = 0;
+  // Last time the policy was updated or used.
+  base::Time last_access;
 };
 
 // Makes a copy of the relevant information about a ReportingEndpoint, stored in
@@ -494,10 +475,8 @@ struct SQLitePersistentReportingAndNelStore::Backend::
         group_name(group.group_key.group_name),
         is_include_subdomains(group.include_subdomains ==
                               OriginSubdomains::INCLUDE),
-        expires_us_since_epoch(
-            group.expires.ToDeltaSinceWindowsEpoch().InMicroseconds()),
-        last_access_us_since_epoch(
-            group.last_used.ToDeltaSinceWindowsEpoch().InMicroseconds()) {
+        expires(group.expires),
+        last_access(group.last_used) {
     // The group key should have an origin.
     DCHECK(group.group_key.origin.has_value());
     origin_scheme = group.group_key.origin.value().scheme();
@@ -535,11 +514,10 @@ struct SQLitePersistentReportingAndNelStore::Backend::
   std::string group_name;
   // Whether the group applies to subdomains of the origin.
   bool is_include_subdomains = false;
-  // When the group expires, in microseconds since the Windows epoch.
-  int64_t expires_us_since_epoch = 0;
-  // Last time the group was updated or used, in microseconds since the Windows
-  // epoch.
-  int64_t last_access_us_since_epoch = 0;
+  // When the group expires.
+  base::Time expires;
+  // Last time the group was updated or used.
+  base::Time last_access;
 };
 
 void SQLitePersistentReportingAndNelStore::Backend::LoadNelPolicies(
@@ -900,11 +878,11 @@ bool SQLitePersistentReportingAndNelStore::Backend::CommitNelPolicyOperation(
       add_statement.BindInt(3, nel_policy_info.origin_port);
       add_statement.BindString(4, nel_policy_info.received_ip_address);
       add_statement.BindString(5, nel_policy_info.report_to);
-      add_statement.BindInt64(6, nel_policy_info.expires_us_since_epoch);
+      add_statement.BindTime(6, nel_policy_info.expires);
       add_statement.BindDouble(7, nel_policy_info.success_fraction);
       add_statement.BindDouble(8, nel_policy_info.failure_fraction);
       add_statement.BindBool(9, nel_policy_info.is_include_subdomains);
-      add_statement.BindInt64(10, nel_policy_info.last_access_us_since_epoch);
+      add_statement.BindTime(10, nel_policy_info.last_access);
       if (!add_statement.Run()) {
         DLOG(WARNING) << "Could not add a NEL policy to the DB.";
         return false;
@@ -913,8 +891,7 @@ bool SQLitePersistentReportingAndNelStore::Backend::CommitNelPolicyOperation(
 
     case PendingOperationType::UPDATE_ACCESS_TIME:
       update_access_statement.Reset(true);
-      update_access_statement.BindInt64(
-          0, nel_policy_info.last_access_us_since_epoch);
+      update_access_statement.BindTime(0, nel_policy_info.last_access);
       update_access_statement.BindString(
           1, nel_policy_info.network_anonymization_key_string);
       update_access_statement.BindString(2, nel_policy_info.origin_scheme);
@@ -1095,10 +1072,8 @@ bool SQLitePersistentReportingAndNelStore::Backend::
       add_statement.BindString(4, reporting_endpoint_group_info.group_name);
       add_statement.BindBool(
           5, reporting_endpoint_group_info.is_include_subdomains);
-      add_statement.BindInt64(
-          6, reporting_endpoint_group_info.expires_us_since_epoch);
-      add_statement.BindInt64(
-          7, reporting_endpoint_group_info.last_access_us_since_epoch);
+      add_statement.BindTime(6, reporting_endpoint_group_info.expires);
+      add_statement.BindTime(7, reporting_endpoint_group_info.last_access);
       if (!add_statement.Run()) {
         DLOG(WARNING) << "Could not add a Reporting endpoint group to the DB.";
         return false;
@@ -1107,8 +1082,8 @@ bool SQLitePersistentReportingAndNelStore::Backend::
 
     case PendingOperationType::UPDATE_ACCESS_TIME:
       update_access_statement.Reset(true);
-      update_access_statement.BindInt64(
-          0, reporting_endpoint_group_info.last_access_us_since_epoch);
+      update_access_statement.BindTime(
+          0, reporting_endpoint_group_info.last_access);
       update_access_statement.BindString(
           1, reporting_endpoint_group_info.network_anonymization_key_string);
       update_access_statement.BindString(
@@ -1131,10 +1106,10 @@ bool SQLitePersistentReportingAndNelStore::Backend::
       update_details_statement.Reset(true);
       update_details_statement.BindBool(
           0, reporting_endpoint_group_info.is_include_subdomains);
-      update_details_statement.BindInt64(
-          1, reporting_endpoint_group_info.expires_us_since_epoch);
-      update_details_statement.BindInt64(
-          2, reporting_endpoint_group_info.last_access_us_since_epoch);
+      update_details_statement.BindTime(1,
+                                        reporting_endpoint_group_info.expires);
+      update_details_statement.BindTime(
+          2, reporting_endpoint_group_info.last_access);
       update_details_statement.BindString(
           3, reporting_endpoint_group_info.network_anonymization_key_string);
       update_details_statement.BindString(
@@ -1317,13 +1292,11 @@ void SQLitePersistentReportingAndNelStore::Backend::
       policy.received_ip_address = IPAddress();
     }
     policy.report_to = smt.ColumnString(5);
-    policy.expires = base::Time::FromDeltaSinceWindowsEpoch(
-        base::Microseconds(smt.ColumnInt64(6)));
+    policy.expires = smt.ColumnTime(6);
     policy.success_fraction = smt.ColumnDouble(7);
     policy.failure_fraction = smt.ColumnDouble(8);
     policy.include_subdomains = smt.ColumnBool(9);
-    policy.last_used = base::Time::FromDeltaSinceWindowsEpoch(
-        base::Microseconds(smt.ColumnInt64(10)));
+    policy.last_used = smt.ColumnTime(10);
 
     loaded_policies.push_back(std::move(policy));
   }
@@ -1342,11 +1315,7 @@ void SQLitePersistentReportingAndNelStore::Backend::
         bool load_success) {
   DCHECK(client_task_runner()->RunsTasksInCurrentSequence());
 
-  if (load_success) {
-    RecordNumberOfLoadedNelPolicies(loaded_policies.size());
-  } else {
-    DCHECK(loaded_policies.empty());
-  }
+  DCHECK(load_success || loaded_policies.empty());
 
   std::move(loaded_callback).Run(std::move(loaded_policies));
 }
@@ -1439,10 +1408,8 @@ void SQLitePersistentReportingAndNelStore::Backend::
     OriginSubdomains include_subdomains =
         endpoint_groups_statement.ColumnBool(5) ? OriginSubdomains::INCLUDE
                                                 : OriginSubdomains::EXCLUDE;
-    base::Time expires = base::Time::FromDeltaSinceWindowsEpoch(
-        base::Microseconds(endpoint_groups_statement.ColumnInt64(6)));
-    base::Time last_used = base::Time::FromDeltaSinceWindowsEpoch(
-        base::Microseconds(endpoint_groups_statement.ColumnInt64(7)));
+    base::Time expires = endpoint_groups_statement.ColumnTime(6);
+    base::Time last_used = endpoint_groups_statement.ColumnTime(7);
 
     loaded_endpoint_groups.emplace_back(std::move(group_key),
                                         include_subdomains, expires, last_used);
@@ -1464,41 +1431,11 @@ void SQLitePersistentReportingAndNelStore::Backend::
         bool load_success) {
   DCHECK(client_task_runner()->RunsTasksInCurrentSequence());
 
-  if (load_success) {
-    RecordNumberOfLoadedReportingEndpoints(loaded_endpoints.size());
-    RecordNumberOfLoadedReportingEndpointGroups(loaded_endpoint_groups.size());
-  } else {
-    DCHECK(loaded_endpoints.empty());
-    DCHECK(loaded_endpoint_groups.empty());
-  }
+  DCHECK(load_success || loaded_endpoints.empty());
+  DCHECK(load_success || loaded_endpoint_groups.empty());
 
   std::move(loaded_callback)
       .Run(std::move(loaded_endpoints), std::move(loaded_endpoint_groups));
-}
-
-void SQLitePersistentReportingAndNelStore::Backend::
-    RecordNumberOfLoadedNelPolicies(size_t count) {
-  // The NetworkErrorLoggingService stores up to 1000 policies.
-  UMA_HISTOGRAM_COUNTS_1000(kNumberOfLoadedNelPoliciesHistogramName, count);
-  // TODO(crbug.com/40054414): Remove this metric once the investigation is
-  // done.
-  UMA_HISTOGRAM_COUNTS_10000(kNumberOfLoadedNelPolicies2HistogramName, count);
-}
-
-void SQLitePersistentReportingAndNelStore::Backend::
-    RecordNumberOfLoadedReportingEndpoints(size_t count) {
-  // TODO(crbug.com/40054414): Remove this metric once the investigation is
-  // done.
-  UMA_HISTOGRAM_COUNTS_10000(kNumberOfLoadedReportingEndpoints2HistogramName,
-                             count);
-}
-
-void SQLitePersistentReportingAndNelStore::Backend::
-    RecordNumberOfLoadedReportingEndpointGroups(size_t count) {
-  // TODO(crbug.com/40054414): Remove this metric once the investigation is
-  // done.
-  UMA_HISTOGRAM_COUNTS_10000(
-      kNumberOfLoadedReportingEndpointGroups2HistogramName, count);
 }
 
 SQLitePersistentReportingAndNelStore::SQLitePersistentReportingAndNelStore(

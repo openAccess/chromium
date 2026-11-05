@@ -17,7 +17,6 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
-#include "chrome/common/extensions/api/accessibility_private.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
@@ -28,6 +27,7 @@
 #include "chromeos/ash/experiences/arc/message_center/mock_arc_notification_item.h"
 #include "chromeos/ash/experiences/arc/message_center/mock_arc_notification_surface.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
+#include "chromeos/ash/experiences/extensions/common/api/accessibility_private.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
 #include "extensions/browser/event_router.h"
@@ -84,7 +84,7 @@ class ArcAccessibilityHelperBridgeTest : public ChromeViewsTestBase {
 
     // TestEventRouter::EventObserver overrides:
     void OnBroadcastEvent(const extensions::Event& event) override {
-      last_event = event.DeepCopy();
+      last_event = event.Clone();
     }
     void OnDispatchEventToExtension(const std::string& extension_id,
                                     const extensions::Event& event) override {}
@@ -230,8 +230,7 @@ TEST_F(ArcAccessibilityHelperBridgeTest, AnnouncementEvent) {
 
   ASSERT_EQ(1, helper_bridge->GetEventCount(event_name));
   ASSERT_EQ(event_name, helper_bridge->last_event->event_name);
-  const base::ListValue& arg =
-      helper_bridge->last_event->event_args[0].GetList();
+  const base::ListValue& arg = helper_bridge->last_event->args()[0].GetList();
   ASSERT_EQ(1U, arg.size());
   ASSERT_EQ(announce_text, arg[0].GetString());
 }
@@ -260,8 +259,7 @@ TEST_F(ArcAccessibilityHelperBridgeTest, NotificationStateChangedEvent) {
 
   ASSERT_EQ(1, helper_bridge->GetEventCount(event_name));
   ASSERT_EQ(event_name, helper_bridge->last_event->event_name);
-  const base::ListValue& arg =
-      helper_bridge->last_event->event_args[0].GetList();
+  const base::ListValue& arg = helper_bridge->last_event->args()[0].GetList();
   ASSERT_EQ(1U, arg.size());
   ASSERT_EQ(toast_text, arg[0].GetString());
 

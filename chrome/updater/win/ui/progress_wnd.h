@@ -7,6 +7,8 @@
 
 #include <windows.h>
 
+#include <stddef.h>
+
 #include <array>
 #include <memory>
 #include <optional>
@@ -47,7 +49,14 @@ class ProgressWndEvents : public CompleteWndEvents {
   virtual void DoCancel() = 0;
 };
 
+// Application messages posted to the progress windows. Keep them together so
+// that new messages don't collide.
+//
+// Carries the app logo bitmaps to the progress window. See `LoadLogo`.
 inline constexpr UINT WM_SET_APP_LOGO = WM_APP + 10;
+// Posted by `WebView2ProgressWnd` to itself when the WebView2 creation could
+// not be started. `WPARAM` carries the failure `HRESULT`.
+inline constexpr UINT WM_WEBVIEW2_CREATE_FAILED = WM_APP + 11;
 
 // Implements the UI progress window.
 class ProgressWnd : public CompleteWnd, public AppInstallProgress {
@@ -64,9 +73,6 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
     CR_MESSAGE_HANDLER_EX(WM_INITDIALOG, OnInitDialog)
     CR_MESSAGE_HANDLER_EX(WM_SIZE, OnSize)
     CR_MESSAGE_HANDLER_EX(WM_ERASEBKGND, OnEraseBkgnd)
-    CR_MESSAGE_HANDLER_EX(WM_SYSCOLORCHANGE, OnThemeChanged)
-    CR_MESSAGE_HANDLER_EX(WM_SETTINGCHANGE, OnSettingChange)
-    CR_MESSAGE_HANDLER_EX(WM_THEMECHANGED, OnThemeChanged)
     CR_MSG_WM_CTLCOLORSTATIC(OnCtlColorStatic)
     CR_COMMAND_HANDLER_EX(IDC_BUTTON1, BN_CLICKED, OnClickedButton)
     CR_COMMAND_HANDLER_EX(IDC_BUTTON2, BN_CLICKED, OnClickedButton)
@@ -78,7 +84,6 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, ClickedButton);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, OnInstallStopped);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, MaybeCloseWindow);
-  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, GetBundleCompletionCode);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, DeterminePostInstallUrls);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, OnCheckingForUpdate);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, OnWaitingToDownload);
@@ -90,6 +95,21 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, FlatButtonSubclass);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, SetAppLogoDynamicSizing);
   FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, SetAppLogoThemeSwitching);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, ErrorIllustrationThemeSwitching);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, ApplyDpiScalingIconMetrics);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, WindowIconsPersistAcrossCompletion);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, SetAppLogoHybridTheme);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest, SetAppLogoIdenticalBitmapHandles);
+  FRIEND_TEST_ALL_PREFIXES(
+      ProgressWndTest,
+      ResetWindowIconCachePreventsGdiHandleRecyclingStaleCacheHit);
+  FRIEND_TEST_ALL_PREFIXES(
+      ProgressWndTest,
+      GetCurrentAppLogoBitmapDarkModeSingleLightBitmapFallback);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest,
+                           SettingChangeWithoutTransitionDoesNotRefresh);
+  FRIEND_TEST_ALL_PREFIXES(ProgressWndTest,
+                           ThemeChangedRefreshesWithoutTransition);
 
   enum class States {
     STATE_INIT = 0,
@@ -106,11 +126,6 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
     STATE_COMPLETE_REBOOT,
     STATE_END,
   };
-
-  static CompletionCodes GetBundleCompletionCode(
-      const ObserverCompletionInfo& info);
-  static std::wstring GetBundleCompletionErrorMessages(
-      const ObserverCompletionInfo& info);
 
   // Overrides for AppInstallProgress.
   // These functions are called on the thread which owns this window.
@@ -141,14 +156,24 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
   LRESULT OnSize(UINT msg, WPARAM wparam, LPARAM lparam);
   void OnClickedButton(UINT notify_code, int id, HWND wnd_ctl);
   LRESULT OnEraseBkgnd(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnSettingChange(UINT msg, WPARAM wparam, LPARAM lparam);
-  LRESULT OnThemeChanged(UINT msg, WPARAM wparam, LPARAM lparam);
   HBRUSH OnCtlColorStatic(HDC dc, HWND ctl_hwnd);
 
   void SetControlText(int id, const std::wstring& text);
-  void SetAppLogo(HBITMAP light_bitmap, HBITMAP dark_bitmap);
-  void UpdateAppLogo();
+  // Sets the application logos for light and dark modes. `dark_bitmap` is
+  // optional because applications or update servers may only provide a single
+  // standard (unthemed) logo. When `dark_bitmap` is null or omitted,
+  // `light_bitmap` is used for both themes. `light_bitmap` and `dark_bitmap`
+  // must not refer to the same non-null handle.
+  void SetAppLogo(base::win::ScopedGDIObject<HBITMAP> light_bitmap,
+                  base::win::ScopedGDIObject<HBITMAP> dark_bitmap = {});
+  void UpdateAppLogo(UINT target_dpi = 0);
   HBITMAP GetCurrentAppLogoBitmap() const;
+  HBITMAP SelectLogoForTheme(bool is_dark) const;
+  void UpdateErrorIllustration() override;
+  // Returns the cached error illustration bitmap for the specified theme,
+  // loading it from resources on first request.
+  HBITMAP GetErrorIllustrationBitmap(bool is_dark_mode);
+  void OnThemeStateChanged() override;
 
   // Returns true if this window is closed.
   bool MaybeCloseWindow() override;
@@ -158,7 +183,7 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
 
   void HandleCancelRequest();
   void UpdateWindowRgn();
-  void ApplyDpiScaling(int dpi);
+  void ApplyDpiScaling(UINT dpi) override;
   int GetScaledCornerRadius() const;
 
   void DeterminePostInstallUrls(const ObserverCompletionInfo& info);
@@ -187,6 +212,14 @@ class ProgressWnd : public CompleteWnd, public AppInstallProgress {
   // Background image cache for both light and dark themes.
   base::win::ScopedGDIObject<HBITMAP> light_bg_bmp_;
   base::win::ScopedGDIObject<HBITMAP> dark_bg_bmp_;
+
+  // Error illustration image cache for both light and dark themes.
+  base::win::ScopedGDIObject<HBITMAP> light_error_illustration_bmp_;
+  base::win::ScopedGDIObject<HBITMAP> dark_error_illustration_bmp_;
+
+  // Number of `OnThemeStateChanged()` calls, so a test can tell a suppressed
+  // refresh from one that ran and changed nothing visible.
+  int theme_refresh_count_for_testing_ = 0;
 
   // Cached original app logo bitmaps for light and dark themes received via
   // WM_SET_APP_LOGO.

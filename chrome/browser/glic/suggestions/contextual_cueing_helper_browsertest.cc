@@ -32,6 +32,7 @@
 #include "components/optimization_guide/proto/icon_view_metadata.pb.h"
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
 #include "components/ukm/test_ukm_recorder.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -146,7 +147,8 @@ class ContextualCueingHelperBrowserTest
          {page_content_annotations::features::kAnnotatedPageContentExtraction,
           {}},
          {contextual_tasks::kContextualTasks, {}}},
-        {contextual_cueing::kContextualCueingV2});
+        {contextual_cueing::kContextualCueingV2,
+         features::kGlicHorizontalTabToolbarButton});
   }
 };
 

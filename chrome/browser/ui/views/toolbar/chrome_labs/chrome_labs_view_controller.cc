@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/callback_list.h"
+#include "base/containers/span.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
@@ -128,7 +129,7 @@ int ChromeLabsViewController::GetIndexOfEnabledLabState(
 
 void ChromeLabsViewController::ParseModelDataAndAddLabs() {
   // Create each lab item.
-  const std::vector<LabInfo>& all_labs =
+  base::span<const LabInfo> all_labs =
       ChromeLabsModel::GetInstance()->GetLabInfo();
   for (const auto& lab : all_labs) {
     const flags_ui::FeatureEntry* entry =
@@ -137,7 +138,7 @@ void ChromeLabsViewController::ParseModelDataAndAddLabs() {
       bool valid_entry_type =
           entry->type == flags_ui::FeatureEntry::FEATURE_VALUE ||
           entry->type == flags_ui::FeatureEntry::FEATURE_WITH_PARAMS_VALUE;
-      DCHECK(valid_entry_type);
+      CHECK(valid_entry_type, base::NotFatalUntil::M162);
       int default_index =
           GetIndexOfEnabledLabState(entry, flags_state_, flags_storage_);
       ChromeLabsItemView* lab_item = chrome_labs_bubble_view_->AddLabItem(
@@ -204,7 +205,7 @@ user_education::DisplayNewBadge ChromeLabsViewController::ShouldLabShowNewBadge(
 
   base::DictValue& new_badge_prefs = update.Get();
   std::optional<int> start_day = new_badge_prefs.FindInt(lab.internal_name);
-  DCHECK(start_day);
+  CHECK(start_day, base::NotFatalUntil::M162);
   uint32_t current_day = GetCurrentDay();
   if (*start_day == chrome_labs_prefs::kChromeLabsNewExperimentPrefValue) {
     // Set the dictionary value of this experiment to the number of days since

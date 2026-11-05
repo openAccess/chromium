@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_GLIC_HOST_GLIC_UI_H_
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 #include "chrome/browser/glic/host/glic_internals.mojom.h"
 #include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "content/public/browser/web_ui_controller.h"
@@ -26,7 +26,6 @@ namespace glic {
 class GlicPreloadHandler;
 class GlicPageHandler;
 class GlicInternalsPageHandler;
-class GlicWebClientManager;
 class GlicUI;
 class Host;
 
@@ -81,15 +80,6 @@ class GlicUI : public ui::MojoWebUIController,
   // Returns the host. This is null before the host is attached.
   Host* host() const { return host_; }
 
-  GlicWebClientManager* web_client_manager() {
-    return web_client_manager_.get();
-  }
-  const GlicWebClientManager* web_client_manager() const {
-    return web_client_manager_.get();
-  }
-
-  void SetPendingWebClientReceiver(
-      mojo::PendingReceiver<glic::mojom::WebClientHandler> receiver);
 
  private:
 #if !BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -111,7 +101,6 @@ class GlicUI : public ui::MojoWebUIController,
       mojo::PendingReceiver<glic::mojom::GlicPreloadHandler> receiver,
       mojo::PendingRemote<glic::mojom::PreloadPage> page) override;
 
-  std::unique_ptr<GlicWebClientManager> web_client_manager_;
   std::unique_ptr<GlicPreloadHandler> preload_handler_;
   std::unique_ptr<GlicPageHandler> page_handler_;
   std::unique_ptr<GlicInternalsPageHandler> internals_page_handler_;
@@ -130,8 +119,6 @@ class GlicUI : public ui::MojoWebUIController,
   mojo::PendingReceiver<glic::mojom::PageHandler> pending_receiver_;
   mojo::PendingRemote<glic::mojom::Page> pending_page_;
   CreatePageHandlerCallback pending_callback_;
-  mojo::PendingReceiver<glic::mojom::WebClientHandler>
-      pending_web_client_receiver_;
 
   static bool simulate_no_connection_;
 

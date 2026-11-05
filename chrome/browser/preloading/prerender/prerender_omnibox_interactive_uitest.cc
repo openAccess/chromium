@@ -7,7 +7,6 @@
 #include <string>
 #include <string_view>
 
-#include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
@@ -17,8 +16,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "build/build_config.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
-#include "chrome/browser/browser_features.h"
-#include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
+#include "chrome/browser/page_load_metrics/chrome_navigation_initiator.h"
 #include "chrome/browser/predictors/autocomplete_action_predictor.h"
 #include "chrome/browser/predictors/autocomplete_action_predictor_factory.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
@@ -38,6 +36,8 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_tab_helper.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -45,15 +45,14 @@
 #include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/omnibox/browser/base_search_provider.h"
-#include "components/page_load_metrics/browser/navigation_handle_user_data.h"
 #include "components/performance_manager/public/features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_service.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/navigation_handle_observer.h"
@@ -66,6 +65,8 @@
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
@@ -117,17 +118,12 @@ class TestOmniboxNavigationObserver : public content::WebContentsObserver {
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override {
     if (navigation_handle->HasCommitted()) {
-      auto* user_data =
-          page_load_metrics::NavigationHandleUserData::GetForNavigationHandle(
-              *navigation_handle);
-      if (user_data) {
-        navigation_type_ =
-            GetChromeInitiatorLocation(user_data->navigation_type());
-      }
+      navigation_initiator_ =
+          page_load_metrics::GetNavigationInitiator(*navigation_handle);
     }
   }
 
-  std::optional<ChromeInitiatorLocation> navigation_type_;
+  std::optional<page_load_metrics::NavigationInitiator> navigation_initiator_;
 };
 
 // This is a browser test for Omnibox triggered prerendering. This is
@@ -264,14 +260,13 @@ class PrerenderOmniboxUIBrowserTest : public InProcessBrowserTest,
   }
 
   void PressEnter() {
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE,
-        base::BindOnce(
-            [](const BrowserWindowInterface* browser, bool ctrl_key) {
-              EXPECT_TRUE(ui_test_utils::SendKeyPressSync(
-                  browser, ui::VKEY_RETURN, ctrl_key, false, false, false));
-            },
-            browser(), false));
+    BrowserWindow::FromBrowser(browser())
+        ->GetLocationBar()
+        ->GetOmniboxController()
+        ->edit_model()
+        ->OpenCurrentSelection(base::TimeTicks::Now(),
+                               ui::mojom::WindowOpenDisposition::kCurrentTab,
+                               /*via_keyboard=*/true);
   }
 
   // Presses enter and waits for Activation
@@ -332,9 +327,8 @@ IN_PROC_BROWSER_TEST_F(PrerenderOmniboxUIBrowserTest,
   EXPECT_TRUE(IsPrerenderingNavigation());
   EXPECT_EQ(GetActiveWebContents()->GetLastCommittedURL(), kPrerenderingUrl);
 
-  EXPECT_TRUE(omnibox_observer.navigation_type_.has_value());
-  EXPECT_EQ(omnibox_observer.navigation_type_.value(),
-            ChromeInitiatorLocation::kOmniboxDirectUrlInput);
+  EXPECT_EQ(omnibox_observer.navigation_initiator_,
+            chrome_navigation_initiator::kOmniboxDirectUrlInput);
 
   histogram_tester.ExpectUniqueSample(
       internal::kHistogramPrerenderPredictionStatusDirectUrlInput,
@@ -1112,7 +1106,14 @@ class PrewarmOmniboxUIBrowserTest
 
 // Basic scenario for the interactive_ui_tests to trigger the prewarm feature
 // from the omnibox.
-IN_PROC_BROWSER_TEST_P(PrewarmOmniboxUIBrowserTest, StartPrewarmOnTrigger) {
+// TODO(crbug.com/570295407): Flaky on Mac.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_StartPrewarmOnTrigger DISABLED_StartPrewarmOnTrigger
+#else
+#define MAYBE_StartPrewarmOnTrigger StartPrewarmOnTrigger
+#endif
+IN_PROC_BROWSER_TEST_P(PrewarmOmniboxUIBrowserTest,
+                       MAYBE_StartPrewarmOnTrigger) {
   // Add a new tab to make it possible to close the tab to flush metrics.
   ASSERT_EQ(0, browser()->tab_strip_model()->active_index());
   ASSERT_TRUE(AddTabAtIndex(0, embedded_test_server()->GetURL("/empty.html"),

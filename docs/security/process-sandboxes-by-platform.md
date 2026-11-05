@@ -23,17 +23,26 @@ Last updated for M128.
 |---|---|---|
 | Browser | all | **unsandboxed** |
 | Network | Android, Windows, Linux | **unsandboxed** |
-| GPU | Android | **unsandboxed** |
+| GPU | Android, Linux (X11) | **unsandboxed** |
 | On Device Model Execution | Android, non-ChromeOS Linux | **unsandboxed** |
 | Video Capture | non-Fuchsia | **unsandboxed** |
 | kNoSandbox | all | **unsandboxed** |
 | kNoSandboxAndElevatedPrivileges | Windows | **Elevated** |
 
+Note: On Linux, the GPU process is sandboxed except when using X11, since X11
+does not isolate clients. See the [X11 threat model](x11-threat-model.md).
+
 # Sandboxed on specific platforms
 
 * kNetwork (Fuchsia, Mac)
-* kGpu (Fuchsia, Mac, Windows, ChromeOS)
+* kGpu (Fuchsia, Mac, Windows, ChromeOS, Linux (non-X11))
 * kVideoCapture (Fuchsia)
+
+Note: On macOS, until `kTriggerNetworkDataMigration` is enabled by default on
+Stable ([crbug.com/40214277](https://crbug.com/40214277),
+[crbug.com/567101748](https://crbug.com/567101748)), the `kNetwork` sandbox
+permits full `file*` access to the user data directory (`DIR_USER_DATA`) and is
+not a security boundary for files inside `DIR_USER_DATA`.
 
 # Sandboxed
 

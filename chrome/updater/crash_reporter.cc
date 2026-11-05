@@ -4,16 +4,15 @@
 
 #include "chrome/updater/crash_reporter.h"
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <map>
-#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "base/check.h"
 #include "base/command_line.h"
-#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
@@ -98,7 +97,6 @@ void StartCrashReporter(UpdaterScope updater_scope,
                                                 kIndirectMemoryLimit);
   crashpad::CrashpadClient& client = GetCrashpadClient();
   std::vector<base::FilePath> attachments;
-#if !BUILDFLAG(IS_MAC)  // Crashpad does not support attachments on macOS.
   if (std::optional<base::FilePath> log_file = GetLogFilePath(updater_scope);
       log_file) {
     attachments.push_back(*std::move(log_file));
@@ -109,7 +107,6 @@ void StartCrashReporter(UpdaterScope updater_scope,
     attachments.push_back(*std::move(history_log_path));
   }
 
-#endif
   if (!client.StartHandler(
           handler_path, *database_path,
           /*metrics_dir=*/base::FilePath(),
@@ -140,15 +137,16 @@ int CrashReporterMain() {
   // |storage| must be declared before |argv_as_utf8|, to ensure it outlives
   // |argv_as_utf8|, which will hold pointers into |storage|.
   std::vector<std::string> storage;
-  auto argv_as_utf8 = std::make_unique<char*[]>(argv.size() + 1);
+  std::vector<char*> argv_as_utf8;
   storage.reserve(argv.size());
-  for (size_t i = 0; i < argv.size(); ++i) {
-    storage.push_back(update_client::StringTypeToUTF8(argv[i]));
-    UNSAFE_TODO(argv_as_utf8[i]) = &storage[i][0];
+  argv_as_utf8.reserve(argv.size() + 1);
+  for (const auto& arg : argv) {
+    storage.push_back(update_client::StringTypeToUTF8(arg));
+    argv_as_utf8.push_back(storage.back().data());
   }
-  UNSAFE_TODO(argv_as_utf8[argv.size()]) = nullptr;
+  argv_as_utf8.push_back(nullptr);
 
-  return crashpad::HandlerMain(argv.size(), argv_as_utf8.get(),
+  return crashpad::HandlerMain(argv.size(), argv_as_utf8.data(),
                                /*user_stream_sources=*/nullptr);
 }
 

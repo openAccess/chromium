@@ -30,7 +30,6 @@
 #include "ash/controls/rounded_scroll_bar.h"
 #include "ash/controls/scroll_view_gradient_helper.h"
 #include "ash/public/cpp/metrics_util.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/icon_button.h"
@@ -168,6 +167,7 @@ AppListBubbleAppsPage::AppListBubbleAppsPage(
   DCHECK(a11y_announcer);
   DCHECK(folder_controller);
 
+  search_box_->AddObserver(this);
   AppListModelProvider::Get()->AddObserver(this);
 
   SetUseDefaultFillLayout(true);
@@ -650,6 +650,13 @@ void AppListBubbleAppsPage::OnViewVisibilityChanged(views::View* observed_view,
   }
 }
 
+void AppListBubbleAppsPage::OnViewIsDeleting(views::View* observed_view) {
+  if (observed_view == search_box_) {
+    search_box_->RemoveObserver(this);
+    search_box_ = nullptr;
+  }
+}
+
 void AppListBubbleAppsPage::OnNudgeRemoved() {
   const gfx::Rect current_grid_bounds = scrollable_apps_grid_view_->bounds();
 
@@ -1012,9 +1019,8 @@ void AppListBubbleAppsPage::RecordAboveTheFoldMetrics() {
       apps_below_the_fold.push_back(child_view->item()->id());
     }
   }
-  view_delegate_->RecordAppsDefaultVisibility(
-      std::move(apps_above_the_fold), std::move(apps_below_the_fold),
-      /*is_apps_collections_page=*/false);
+  view_delegate_->RecordAppsDefaultVisibility(std::move(apps_above_the_fold),
+                                              std::move(apps_below_the_fold));
 }
 
 BEGIN_METADATA(AppListBubbleAppsPage)

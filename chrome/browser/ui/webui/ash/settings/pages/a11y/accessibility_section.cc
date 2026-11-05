@@ -17,6 +17,7 @@
 #include "ash/constants/url_constants.h"
 #include "ash/public/cpp/accessibility_controller_enums.h"
 #include "ash/public/cpp/tablet_mode.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
@@ -564,6 +565,23 @@ base::span<const SearchConcept> GetA11yDisableTouchpadSearchConcepts() {
   return tags;
 }
 
+base::span<const SearchConcept> GetA11yShakeToLocateSearchConcepts() {
+  static constexpr auto tags = std::to_array<SearchConcept>(
+      {{IDS_OS_SETTINGS_TAG_A11Y_SHAKE_TO_LOCATE_CURSOR,
+        mojom::kCursorAndTouchpadSubpagePath,
+        mojom::SearchResultIcon::kCursorClick,
+        mojom::SearchResultDefaultRank::kMedium,
+        mojom::SearchResultType::kSetting,
+        {.setting = mojom::Setting::kShakeToLocateCursor},
+        {
+            IDS_OS_SETTINGS_TAG_A11Y_SHAKE_TO_LOCATE_CURSOR_ALT1,
+            IDS_OS_SETTINGS_TAG_A11Y_SHAKE_TO_LOCATE_CURSOR_ALT2,
+            IDS_OS_SETTINGS_TAG_A11Y_SHAKE_TO_LOCATE_CURSOR_ALT3,
+            SearchConcept::kAltTagEnd,
+        }}});
+  return tags;
+}
+
 base::span<const SearchConcept> GetA11yBounceKeysSearchConcepts() {
   static constexpr auto tags = std::to_array<SearchConcept>({
       {IDS_OS_SETTINGS_TAG_A11Y_BOUNCE_KEYS,
@@ -606,33 +624,15 @@ int GetDisplayAndMangificationLinkDescriptionResourceId() {
   return IDS_SETTINGS_ACCESSIBILITY_DISPLAY_AND_MAGNIFICATION_LINK_NEW_DESCRIPTION;
 }
 
-bool IsAccessibilityReducedAnimationsEnabled() {
-  return ::features::IsAccessibilityReducedAnimationsEnabled();
-}
-
-bool IsAccessibilityMagnifierFollowsChromeVoxEnabled() {
-  return ::features::IsAccessibilityMagnifierFollowsChromeVoxEnabled();
-}
-
-bool IsAccessibilityMouseKeysEnabled() {
-  return ::features::IsAccessibilityMouseKeysEnabled();
-}
-
-bool IsAccessibilityDisableTouchpadEnabled() {
-  return ::features::IsAccessibilityDisableTouchpadEnabled();
-}
-
-bool IsAccessibilityFlashNotificationFeatureEnabled() {
-  return ::features::IsAccessibilityFlashScreenFeatureEnabled();
-}
-
 }  // namespace
 
 AccessibilitySection::AccessibilitySection(
+    const ApplicationLocaleStorage* application_locale_storage,
     Profile* profile,
     SearchTagRegistry* search_tag_registry,
     PrefService* pref_service)
     : OsSettingsSection(profile, search_tag_registry),
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)),
       pref_service_(pref_service) {
   SearchTagRegistry::ScopedTagUpdater updater = registry()->StartUpdate();
   updater.AddSearchTags(GetA11ySearchConcepts());
@@ -1256,6 +1256,8 @@ void AccessibilitySection::AddLoadTimeData(
       {"keyboardSettingsTitle",
        IDS_SETTINGS_ACCESSIBILITY_KEYBOARD_SETTINGS_TITLE},
       {"largeMouseCursorLabel", IDS_SETTINGS_LARGE_MOUSE_CURSOR_LABEL},
+      {"shakeToLocateLabel",
+       IDS_OS_SETTINGS_ACCESSIBILITY_SHAKE_TO_LOCATE_LABEL},
       {"largeMouseCursorSizeDefaultLabel",
        IDS_SETTINGS_LARGE_MOUSE_CURSOR_SIZE_DEFAULT_LABEL},
       {"largeMouseCursorSizeLabel", IDS_SETTINGS_LARGE_MOUSE_CURSOR_SIZE_LABEL},
@@ -1587,30 +1589,14 @@ void AccessibilitySection::AddLoadTimeData(
   html_source->AddBoolean("showTabletModeShelfNavigationButtonsSettings",
                           AreTabletNavigationButtonsAllowed());
 
+  html_source->AddBoolean("isAccessibilityShakeToLocateEnabled",
+                          ::features::IsAccessibilityShakeToLocateEnabled());
+
   html_source->AddString("tabletModeShelfNavigationButtonsLearnMoreUrl",
                          ash::external_urls::kTabletModeGesturesLearnMoreURL);
 
-  html_source->AddBoolean("isAccessibilityReducedAnimationsEnabled",
-                          IsAccessibilityReducedAnimationsEnabled());
-
-  html_source->AddBoolean("isAccessibilityMagnifierFollowsChromeVoxEnabled",
-                          IsAccessibilityMagnifierFollowsChromeVoxEnabled());
-
   html_source->AddString("faceGazeLearnMoreUrl",
                          ash::external_urls::kFaceGazeLearnMoreURL);
-
-  html_source->AddBoolean("isAccessibilityDisableTouchpadEnabled",
-                          IsAccessibilityDisableTouchpadEnabled());
-
-  html_source->AddBoolean("isAccessibilityMouseKeysEnabled",
-                          IsAccessibilityMouseKeysEnabled());
-
-  html_source->AddBoolean("isAccessibilityFlashNotificationFeatureEnabled",
-                          IsAccessibilityFlashNotificationFeatureEnabled());
-
-  html_source->AddBoolean(
-      "isAccessibilityInvertedMouseCursorEnabled",
-      ::features::IsAccessibilityInvertedMouseCursorEnabled());
 
   html_source->AddInteger(
       "defaultBounceKeysDelayMillis",
@@ -1626,11 +1612,14 @@ void AccessibilitySection::AddLoadTimeData(
 void AccessibilitySection::AddHandlers(content::WebUI* web_ui) {
   web_ui->AddMessageHandler(
       std::make_unique<::settings::AccessibilityMainHandler>());
-  web_ui->AddMessageHandler(std::make_unique<AccessibilityHandler>(profile()));
+  web_ui->AddMessageHandler(std::make_unique<AccessibilityHandler>(
+      &application_locale_storage_.get(), profile()));
   web_ui->AddMessageHandler(
       std::make_unique<SwitchAccessHandler>(profile()->GetPrefs()));
-  web_ui->AddMessageHandler(std::make_unique<TtsHandler>());
-  web_ui->AddMessageHandler(std::make_unique<SelectToSpeakHandler>());
+  web_ui->AddMessageHandler(
+      std::make_unique<TtsHandler>(&application_locale_storage_.get()));
+  web_ui->AddMessageHandler(std::make_unique<SelectToSpeakHandler>(
+      &application_locale_storage_.get()));
   web_ui->AddMessageHandler(
       std::make_unique<::settings::FontHandler>(profile()));
   web_ui->AddMessageHandler(
@@ -1935,6 +1924,7 @@ void AccessibilitySection::RegisterHierarchy(
       mojom::Setting::kBounceKeys,
       mojom::Setting::kSlowKeys,
       mojom::Setting::kDisableTouchpad,
+      mojom::Setting::kShakeToLocateCursor,
   };
   RegisterNestedSettingBulk(mojom::Subpage::kManageAccessibility,
                             kManageAccessibilitySettings, generator);
@@ -2052,34 +2042,27 @@ void AccessibilitySection::UpdateSearchTags() {
         GetA11yFullscreenMagnifierFocusFollowingSearchConcepts());
   }
 
-  if (IsAccessibilityMagnifierFollowsChromeVoxEnabled()) {
-    updater.AddSearchTags(
-        GetA11yMagnifierChromeVoxFocusFollowingSearchConcepts());
-  } else {
-    updater.RemoveSearchTags(
-        GetA11yMagnifierChromeVoxFocusFollowingSearchConcepts());
-  }
+  updater.AddSearchTags(
+      GetA11yMagnifierChromeVoxFocusFollowingSearchConcepts());
 
   updater.AddSearchTags(
       GetA11yFullscreenMagnifierSelectToSpeakFocusFollowingSearchConcepts());
   updater.AddSearchTags(GetA11yColorCorrectionSearchConcepts());
   updater.AddSearchTags(GetA11yOverscrollSettingSearchConcepts());
 
-  if (IsAccessibilityFlashNotificationFeatureEnabled()) {
-    updater.AddSearchTags(GetA11yFlashNotificationsSearchConcepts());
-  }
+  updater.AddSearchTags(GetA11yFlashNotificationsSearchConcepts());
 
   updater.AddSearchTags(GetA11yFaceGazeSearchConcepts());
 
   updater.AddSearchTags(GetA11yBounceKeysSearchConcepts());
   updater.AddSearchTags(GetA11ySlowKeysSearchConcepts());
 
-  if (IsAccessibilityMouseKeysEnabled()) {
-    updater.AddSearchTags(GetA11yMouseKeysSearchConcepts());
-  }
+  updater.AddSearchTags(GetA11yMouseKeysSearchConcepts());
 
-  if (IsAccessibilityDisableTouchpadEnabled()) {
-    updater.AddSearchTags(GetA11yDisableTouchpadSearchConcepts());
+  updater.AddSearchTags(GetA11yDisableTouchpadSearchConcepts());
+
+  if (::features::IsAccessibilityShakeToLocateEnabled()) {
+    updater.AddSearchTags(GetA11yShakeToLocateSearchConcepts());
   }
 
   if (!pref_service_->GetBoolean(prefs::kAccessibilitySwitchAccessEnabled)) {

@@ -120,9 +120,7 @@ class WTF_EXPORT SegmentedBuffer {
   bool empty() const { return !size(); }
 
   void Append(base::span<const char> data);
-  void Append(base::span<const unsigned char> data) {
-    Append(base::as_chars(data));
-  }
+  void Append(base::span<const uint8_t> data) { Append(base::as_chars(data)); }
   void Append(Vector<char>&& vector);
 
   void Clear();
@@ -139,6 +137,15 @@ class WTF_EXPORT SegmentedBuffer {
   T CopyAs() const;
 
   Vector<Vector<char>> TakeData() &&;
+
+  // Returns the number of segments in the buffer.
+  wtf_size_t GetSegmentCount() const { return segments_.size(); }
+
+  // Returns the data of the segment at the given index.
+  base::span<const char> GetSegment(wtf_size_t index) const {
+    CHECK_LT(index, segments_.size());
+    return segments_[index].data();
+  }
 
   // Returns an iterator for the given position of bytes. Returns |cend()| if
   // |position| is greater than or equal to |size()|.
@@ -253,8 +260,7 @@ class WTF_EXPORT SharedBuffer : public SegmentedBuffer,
     return base::AdoptRef(new SharedBuffer(data));
   }
 
-  static scoped_refptr<SharedBuffer> Create(
-      base::span<const unsigned char> data) {
+  static scoped_refptr<SharedBuffer> Create(base::span<const uint8_t> data) {
     return base::AdoptRef(new SharedBuffer(data));
   }
 
@@ -271,7 +277,7 @@ class WTF_EXPORT SharedBuffer : public SegmentedBuffer,
   SharedBuffer();
   explicit SharedBuffer(wtf_size_t);
   explicit SharedBuffer(base::span<const char>);
-  explicit SharedBuffer(base::span<const unsigned char>);
+  explicit SharedBuffer(base::span<const uint8_t>);
   explicit SharedBuffer(SegmentedBuffer&&);
 };
 

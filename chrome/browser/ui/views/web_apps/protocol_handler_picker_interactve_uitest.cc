@@ -11,6 +11,7 @@
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/web_apps/protocol_handler_picker_dialog.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
@@ -20,7 +21,7 @@
 #include "chromeos/constants/chromeos_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace web_app {
 
@@ -50,7 +51,8 @@ class ProtocolHandlerPickerUITest
 
   void NavigateCurrentTabToAboutBlank() {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), GURL("about:blank"), WindowOpenDisposition::CURRENT_TAB,
+        browser(), GURL("about:blank"),
+        ui::mojom::WindowOpenDisposition::kCurrentTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   }
 

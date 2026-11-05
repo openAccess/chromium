@@ -26,7 +26,6 @@
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
 namespace blink {
@@ -53,9 +52,13 @@ PaintWorkletProxyClient* PaintWorkletProxyClient::Create(LocalDOMWindow* window,
               &compositor_host_queue);
     }
   }
+  // Use TaskType::kInternalLoading to match `outside_settings_task_runner` in
+  // Worklet::FetchAndInvokeScript(), so
+  // PaintWorklet::RegisterMainThreadDocumentPaintDefinition() runs in FIFO
+  // order before WorkletPendingTasks::DecrementCounter() resolves addModule().
   return MakeGarbageCollected<PaintWorkletProxyClient>(
       worklet_id, paint_worklet,
-      window->GetTaskRunner(TaskType::kInternalDefault),
+      window->GetTaskRunner(TaskType::kInternalLoading),
       std::move(compositor_paint_dispatcher), std::move(compositor_host_queue));
 }
 

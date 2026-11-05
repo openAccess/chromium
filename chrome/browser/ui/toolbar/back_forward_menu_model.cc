@@ -38,9 +38,9 @@
 #include "ui/base/accelerators/menu_label_accelerator_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
@@ -209,7 +209,7 @@ void BackForwardMenuModel::ActivatedAt(size_t index) {
 }
 
 void BackForwardMenuModel::ActivatedAt(size_t index, int event_flags) {
-  DCHECK(!IsSeparator(index));
+  CHECK(!IsSeparator(index), base::NotFatalUntil::M162);
 
   std::optional<MenuSection> section = GetSectionForIndex(index);
   if (!section.has_value()) {
@@ -257,9 +257,9 @@ void BackForwardMenuModel::ActivatedAt(size_t index, int event_flags) {
       time);
 
   std::optional<size_t> controller_index = MenuIndexToNavEntryIndex(index);
-  DCHECK(controller_index.has_value());
+  CHECK(controller_index.has_value(), base::NotFatalUntil::M162);
 
-  WindowOpenDisposition disposition =
+  ui::mojom::WindowOpenDisposition disposition =
       ui::DispositionFromEventFlags(event_flags);
   if (browser_window_interface_) {
     chrome::NavigateToIndexWithDisposition(
@@ -708,9 +708,10 @@ NavigationEntry* BackForwardMenuModel::GetNavigationEntry(size_t index) const {
   std::optional<size_t> controller_index = MenuIndexToNavEntryIndex(index);
   NavigationController& controller = GetWebContents()->GetController();
 
-  DCHECK(controller_index.has_value());
-  DCHECK_LT(controller_index.value(),
-            static_cast<size_t>(controller.GetEntryCount()));
+  CHECK(controller_index.has_value(), base::NotFatalUntil::M162);
+  CHECK_LT(controller_index.value(),
+           static_cast<size_t>(controller.GetEntryCount()),
+           base::NotFatalUntil::M162);
 
   return controller.GetEntryAtIndex(controller_index.value());
 }
@@ -718,7 +719,7 @@ NavigationEntry* BackForwardMenuModel::GetNavigationEntry(size_t index) const {
 std::string BackForwardMenuModel::BuildActionName(
     const std::string& action,
     std::optional<size_t> index) const {
-  DCHECK(!action.empty());
+  CHECK(!action.empty(), base::NotFatalUntil::M162);
   std::string metric_string;
   if (model_type_ == ModelType::kForward) {
     metric_string += "ForwardMenu_";

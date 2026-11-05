@@ -21,8 +21,8 @@
 #include "base/timer/elapsed_timer.h"
 #include "components/safe_browsing/android/real_time_url_checks_allowlist.h"
 #include "components/safe_browsing/android/safe_browsing_api_handler_bridge.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/v4_get_hash_protocol_manager.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -165,7 +165,8 @@ bool RemoteSafeBrowsingDatabaseManager::CheckBrowseUrl(
   switch (check_type) {
     case CheckBrowseUrlType::kHashDatabase:
       SafeBrowsingApiHandlerBridge::GetInstance().StartHashDatabaseUrlCheck(
-          std::move(callback), url, threat_types);
+          std::move(callback), url, threat_types,
+          client->GetCustomCallbackTaskRunner());
       break;
     case CheckBrowseUrlType::kHashRealTime:
       SafeBrowsingApiHandlerBridge::GetInstance().StartHashRealTimeUrlCheck(
@@ -233,7 +234,8 @@ bool RemoteSafeBrowsingDatabaseManager::CheckUrlForSubresourceFilter(
   SafeBrowsingApiHandlerBridge::GetInstance().StartHashDatabaseUrlCheck(
       std::move(callback), url,
       CreateSBThreatTypeSet({SBThreatType::SB_THREAT_TYPE_SUBRESOURCE_FILTER,
-                             SBThreatType::SB_THREAT_TYPE_URL_PHISHING}));
+                             SBThreatType::SB_THREAT_TYPE_URL_PHISHING}),
+      /*custom_callback_task_runner=*/nullptr);
 
   current_requests_.push_back(std::move(req));
 
@@ -292,7 +294,7 @@ RemoteSafeBrowsingDatabaseManager::GetNonBrowseUrlThreatSource() const {
 
 void RemoteSafeBrowsingDatabaseManager::StartOnUIThread(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    const V4ProtocolConfig& config) {
+    const SBProtocolConfig& config) {
   VLOG(1) << "RemoteSafeBrowsingDatabaseManager starting";
   SafeBrowsingDatabaseManager::StartOnUIThread(url_loader_factory, config);
   SafeBrowsingApiHandlerBridge::GetInstance().PopulateArtificialDatabase();

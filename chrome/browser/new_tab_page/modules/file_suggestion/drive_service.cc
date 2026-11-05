@@ -36,6 +36,7 @@
 #include "mojo/public/cpp/bindings/clone_traits.h"
 #include "net/base/load_flags.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace {
 #if BUILDFLAG(IS_LINUX)
@@ -82,6 +83,7 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
         data:
           "OAuth2 access token."
         destination: GOOGLE_OWNED_SERVICE
+        api_service_name: "appsitemsuggest-pa.googleapis.com"
       }
       policy {
         cookies_allowed: NO
@@ -191,13 +193,6 @@ const char kBaseFileIconUrl[] =
     "https://drive-thirdparty.googleusercontent.com/32/type/";
 }  // namespace
 
-// static
-const char DriveService::kLastDismissedTimePrefName[] =
-    "NewTabPage.Drive.LastDimissedTime";
-
-// static
-const base::TimeDelta DriveService::kDismissDuration = base::Hours(12);
-
 DriveService::~DriveService() = default;
 
 DriveService::DriveService(
@@ -205,18 +200,11 @@ DriveService::DriveService(
     signin::IdentityManager* identity_manager,
     segmentation_platform::SegmentationPlatformService*
         segmentation_platform_service,
-    const std::string& application_locale,
-    PrefService* pref_service)
+    const std::string& application_locale)
     : url_loader_factory_(std::move(url_loader_factory)),
       identity_manager_(identity_manager),
       segmentation_platform_service_(segmentation_platform_service),
-      application_locale_(application_locale),
-      pref_service_(pref_service) {}
-
-// static
-void DriveService::RegisterProfilePrefs(PrefRegistrySimple* registry) {
-  registry->RegisterTimePref(kLastDismissedTimePrefName, base::Time());
-}
+      application_locale_(application_locale) {}
 
 void DriveService::GetDriveFiles(GetFilesCallback get_files_callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -244,27 +232,6 @@ bool DriveService::GetDriveModuleSegmentationData() {
 }
 
 void DriveService::GetDriveFilesInternal() {
-  const base::Time last_dismissed_time =
-      pref_service_->GetTime(kLastDismissedTimePrefName);
-  // Bail if module is still dismissed.
-  if (!last_dismissed_time.is_null()) {
-    base::TimeDelta elapsed_time = base::Time::Now() - last_dismissed_time;
-    if (elapsed_time < kDismissDuration) {
-      const std::string remaining_hours =
-          base::NumberToString((kDismissDuration - elapsed_time).InHours());
-      LogModuleDismissed(ntp_features::kNtpDriveModule, true, remaining_hours);
-
-      for (auto& callback : callbacks_) {
-        std::move(callback).Run(std::vector<file_suggestion::mojom::FilePtr>());
-      }
-      callbacks_.clear();
-      return;
-    }
-  }
-
-  LogModuleDismissed(ntp_features::kNtpDriveModule, false,
-                     /*remaining_hours=*/"0");
-
   // Skip fetch and jump straight to data parsing when serving fake data.
   if (base::GetFieldTrialParamValueByFeature(
           ntp_features::kNtpDriveModule,
@@ -283,14 +250,6 @@ void DriveService::GetDriveFilesInternal() {
           ntp_features::kNtpDriveModuleHistorySyncRequirement)
           ? signin::ConsentLevel::kSignin
           : signin::ConsentLevel::kSync);
-}
-
-void DriveService::DismissModule() {
-  pref_service_->SetTime(kLastDismissedTimePrefName, base::Time::Now());
-}
-
-void DriveService::RestoreModule() {
-  pref_service_->SetTime(kLastDismissedTimePrefName, base::Time());
 }
 
 void DriveService::OnTokenReceived(GoogleServiceAuthError error,
@@ -336,7 +295,7 @@ void DriveService::OnTokenReceived(GoogleServiceAuthError error,
   resource_request->headers.SetHeader(net::HttpRequestHeaders::kAuthorization,
                                       "Bearer " + token_info.token);
 
-  DCHECK(!url_loader_);
+  CHECK(!url_loader_, base::NotFatalUntil::M161);
   url_loader_ = network::SimpleURLLoader::Create(std::move(resource_request),
                                                  kTrafficAnnotation);
   url_loader_->SetRetryOptions(0, network::SimpleURLLoader::RETRY_NEVER);

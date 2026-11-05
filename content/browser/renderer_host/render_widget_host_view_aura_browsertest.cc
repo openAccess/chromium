@@ -32,6 +32,7 @@
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/hit_test_region_observer.h"
+#include "content/public/test/popup_test_utils.h"
 #include "content/shell/browser/shell.h"
 #include "content/shell/common/shell_switches.h"
 #include "net/dns/mock_host_resolver.h"
@@ -859,7 +860,7 @@ class ViewDestroyingPreTargetHandler : public ui::EventHandler {
     if (event->type() == ui::EventType::kGestureTapDown && view_) {
       RenderWidgetHostViewAura* view_to_destroy = view_;
       view_ = nullptr;
-      view_to_destroy->Destroy();
+      view_to_destroy->DestroyOrDefer();
       gesture_tap_down_seen_ = true;
       root_window_->RemovePreTargetHandler(this);
       root_window_ = nullptr;

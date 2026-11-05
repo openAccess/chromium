@@ -25,6 +25,8 @@ source_set("model") {
     "form_input_suggestions_provider.h",
     "form_suggestion_controller.h",
     "form_suggestion_controller.mm",
+    "form_suggestion_default_icons.h",
+    "form_suggestion_default_icons.mm",
     "form_suggestion_tab_helper.h",
     "form_suggestion_tab_helper.mm",
     "ios_autofill_ai_model_cache_factory.h",
@@ -37,8 +39,6 @@ source_set("model") {
     "ios_autofill_entity_data_manager_factory.mm",
     "ios_autofill_entity_data_manager_observer_bridge.h",
     "ios_autofill_entity_data_manager_observer_bridge.mm",
-    "ios_autofill_entity_suppression_manager_factory.h",
-    "ios_autofill_entity_suppression_manager_factory.mm",
     "ios_autofill_field_classification_model_handler_factory.h",
     "ios_autofill_field_classification_model_handler_factory.mm",
     "ios_wallet_pass_access_manager_factory.h",
@@ -113,9 +113,29 @@ source_set("model") {
   ]
   public_deps = [
     ":constants",
+    ":personal_context_entity_metadata_manager_factory",
     "//components/keyed_service/ios",
   ]
   frameworks = [ "QuartzCore.framework" ]
+}
+
+source_set("personal_context_entity_metadata_manager_factory") {
+  sources = [
+    "ios_autofill_personal_context_entity_metadata_manager_factory.h",
+    "ios_autofill_personal_context_entity_metadata_manager_factory.mm",
+  ]
+  deps = [
+    "//base",
+    "//components/autofill/core/browser",
+    "//components/autofill/core/common",
+    "//components/sync/base",
+    "//components/sync/model",
+    "//ios/chrome/browser/shared/model/application_context",
+    "//ios/chrome/browser/shared/model/profile",
+    "//ios/chrome/browser/shared/model/profile:profile_keyed_service_factory",
+    "//ios/chrome/browser/sync/model:data_type_store_service_factory",
+    "//ios/chrome/common",
+  ]
 }
 
 source_set("autofill_agent_delegate") {
@@ -223,6 +243,7 @@ source_set("unit_tests") {
     "form_input_accessory_view_handler_unittest.mm",
     "form_structure_browsertest.mm",
     "form_suggestion_controller_unittest.mm",
+    "form_suggestion_default_icons_unittest.mm",
     "ios_autofill_ai_personal_context_access_manager_factory_unittest.mm",
     "manual_fill_virtual_card_cache_unittest.mm",
     "suggestion_controller_java_script_feature_unittest.mm",
@@ -274,6 +295,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/autofill/ui_bundled:coordinator",
     "//ios/chrome/browser/infobars/model",
     "//ios/chrome/browser/passwords/model",
+    "//ios/chrome/browser/personal_context/model",
     "//ios/chrome/browser/settings/ui_bundled:test_support",
     "//ios/chrome/browser/shared/coordinator/chrome_coordinator",
     "//ios/chrome/browser/shared/model/application_context",

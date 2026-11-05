@@ -8,7 +8,6 @@
 #include <string>
 
 #include "base/functional/bind.h"
-#include "base/not_fatal_until.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
 #include "components/signin/internal/identity_manager/account_fetcher_service.h"
@@ -96,9 +95,12 @@ IdentityManager::IdentityManager(IdentityManager::InitParameters&& parameters)
                           base::Unretained(this)));
 
 #if BUILDFLAG(IS_ANDROID)
+  // TODO(crbug.com/572579970): Remove passing IdentityMutator Java object once
+  // refresh tokens loading state is moved to native IdentityManager.
   java_identity_manager_ = Java_IdentityManagerImpl_create(
       base::android::AttachCurrentThread(), reinterpret_cast<intptr_t>(this),
-      token_service_->GetDelegate()->GetJavaObject());
+      token_service_->GetDelegate()->GetJavaObject(),
+      identity_mutator_->GetJavaObject());
 #endif
 }
 
@@ -132,12 +134,12 @@ void IdentityManager::Shutdown() {
 }
 
 #if BUILDFLAG(IS_IOS)
+bool IdentityManager::IsBatchOfPrimaryAccountChangesInProgress() const {
+  return primary_account_manager_->IsBatchOfPrimaryAccountChangesInProgress();
+}
+
 base::ScopedClosureRunner IdentityManager::StartBatchOfPrimaryAccountChanges() {
-  CHECK(!batch_of_primary_account_changes_in_progress_,
-        base::NotFatalUntil::M140);
-  batch_of_primary_account_changes_in_progress_ = true;
-  return base::ScopedClosureRunner(base::BindOnce(
-      &IdentityManager::BatchOfPrimaryAccountChangesDone, GetWeakPtr()));
+  return primary_account_manager_->StartBatchOfPrimaryAccountChanges();
 }
 #endif  // BUILDFLAG(IS_IOS)
 
@@ -229,7 +231,8 @@ std::vector<CoreAccountInfo> IdentityManager::GetAccountsWithRefreshTokens()
   accounts.reserve(account_ids_with_tokens.size());
 
   for (const CoreAccountId& account_id : account_ids_with_tokens) {
-    accounts.push_back(GetAccountInfoForAccountWithRefreshToken(account_id));
+    accounts.push_back(GetAccountInfoForAccountWithRefreshToken(account_id)
+                           .GetCoreAccountInfo());
   }
 
   return accounts;
@@ -278,8 +281,7 @@ bool IdentityManager::HasAccountWithRefreshTokenInPersistentErrorState(
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 bool IdentityManager::GenerateBindingKeyRegistrationToken(
-    base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-        supported_algorithms,
+    base::span<const crypto::sign::SignatureKind> supported_algorithms,
     std::string_view auth_code,
     base::OnceCallback<void(
         std::optional<signin::BindingKeyRegistrationTokenResult>)> callback) {
@@ -364,8 +366,9 @@ AccountInfo IdentityManager::FindExtendedAccountInfoByEmailAddress(
   // AccountTrackerService always returns an AccountInfo, even on failure. In
   // case of failure, the AccountInfo will be unpopulated, thus we should not
   // be able to find a valid refresh token.
-  return HasAccountWithRefreshToken(account_info.account_id) ? account_info
-                                                             : AccountInfo();
+  return HasAccountWithRefreshToken(account_info.GetAccountId())
+             ? account_info
+             : AccountInfo();
 }
 
 AccountInfo IdentityManager::FindExtendedAccountInfoByGaiaId(
@@ -381,8 +384,9 @@ AccountInfo IdentityManager::FindExtendedAccountInfoByGaiaId(
   // AccountTrackerService always returns an AccountInfo, even on failure. In
   // case of failure, the AccountInfo will be unpopulated, thus we should not
   // be able to find a valid refresh token.
-  return HasAccountWithRefreshToken(account_info.account_id) ? account_info
-                                                             : AccountInfo();
+  return HasAccountWithRefreshToken(account_info.GetAccountId())
+             ? account_info
+             : AccountInfo();
 }
 
 AccountsInCookieJarInfo IdentityManager::GetAccountsInCookieJar() const {
@@ -651,16 +655,19 @@ void IdentityManager::OnPrimaryAccountChanged(
     }
   }
 #endif
-#if BUILDFLAG(IS_IOS)
-  if (!batch_of_primary_account_changes_in_progress_) {
-    FireOnEndBatchOfPrimaryAccountChanges();
-  }
-#endif  // BUILDFLAG(IS_IOS)
 }
+
+#if BUILDFLAG(IS_IOS)
+void IdentityManager::OnEndBatchOfPrimaryAccountChanges() {
+  for (auto& observer : observer_list_) {
+    observer.OnEndBatchOfPrimaryAccountChanges();
+  }
+}
+#endif  // BUILDFLAG(IS_IOS)
 
 void IdentityManager::OnRefreshTokenAvailable(const CoreAccountId& account_id) {
   CoreAccountInfo account_info =
-      GetAccountInfoForAccountWithRefreshToken(account_id);
+      GetAccountInfoForAccountWithRefreshToken(account_id).GetCoreAccountInfo();
 
   for (auto& observer : observer_list_) {
     observer.OnRefreshTokenUpdatedForAccount(account_info);
@@ -712,7 +719,7 @@ void IdentityManager::OnAuthErrorChanged(
     const GoogleServiceAuthError& auth_error,
     signin_metrics::SourceForRefreshTokenOperation token_operation_source) {
   CoreAccountInfo account_info =
-      GetAccountInfoForAccountWithRefreshToken(account_id);
+      GetAccountInfoForAccountWithRefreshToken(account_id).GetCoreAccountInfo();
 
   for (auto& observer : observer_list_) {
     observer.OnErrorStateOfRefreshTokenUpdatedForAccount(
@@ -811,7 +818,7 @@ void IdentityManager::OnAccountUpdated(const AccountInfo& info) {
   if (HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
     const CoreAccountId primary_account_id =
         GetPrimaryAccountId(ConsentLevel::kSignin);
-    if (primary_account_id == info.account_id) {
+    if (primary_account_id == info.GetAccountId()) {
       primary_account_manager_->UpdatePrimaryAccountInfo();
     }
   }
@@ -830,33 +837,13 @@ void IdentityManager::OnAccountUpdated(const AccountInfo& info) {
 
 void IdentityManager::OnAccountRemoved(const AccountInfo& info) {
 #if (BUILDFLAG(IS_ANDROID))
-  account_fetcher_service_->DestroyFetchers(info.account_id);
+  account_fetcher_service_->DestroyFetchers(info.GetAccountId());
 #endif
   for (auto& observer : observer_list_) {
     observer.OnExtendedAccountInfoRemoved(info);
   }
 }
 
-#if BUILDFLAG(IS_IOS)
-bool IdentityManager::IsBatchOfPrimaryAccountChangesInProgress() {
-  return batch_of_primary_account_changes_in_progress_;
-}
-
-void IdentityManager::BatchOfPrimaryAccountChangesDone() {
-  CHECK(batch_of_primary_account_changes_in_progress_,
-        base::NotFatalUntil::M140);
-  batch_of_primary_account_changes_in_progress_ = false;
-  FireOnEndBatchOfPrimaryAccountChanges();
-}
-
-void IdentityManager::FireOnEndBatchOfPrimaryAccountChanges() {
-  CHECK(!batch_of_primary_account_changes_in_progress_,
-        base::NotFatalUntil::M140);
-  for (auto& observer : observer_list_) {
-    observer.OnEndBatchOfPrimaryAccountChanges();
-  }
-}
-#endif  // BUILDFLAG(IS_IOS)
 }  // namespace signin
 
 #if BUILDFLAG(IS_ANDROID)

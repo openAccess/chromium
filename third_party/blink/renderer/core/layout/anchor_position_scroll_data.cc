@@ -21,19 +21,7 @@ namespace {
 
 // Finds the LayoutObject of the anchor element given by position-anchor.
 const LayoutObject* PositionAnchorObject(const LayoutBox& box) {
-  const DefaultAnchorData default_anchor_data =
-      box.StyleRef().GetDefaultAnchorData();
-  using Type = StylePositionAnchor::Type;
-  switch (default_anchor_data.GetType()) {
-    case Type::kNone:
-      return nullptr;
-    case Type::kAuto:
-      return box.AcceptableImplicitAnchor();
-    case Type::kName:
-      return box.FindTargetAnchor(default_anchor_data.GetName());
-    case Type::kNormal:
-      NOTREACHED();
-  }
+  return box.FindDefaultAnchor();
 }
 
 const GCedHeapVector<NonOverflowingScrollRange>* GetNonOverflowingScrollRanges(
@@ -146,7 +134,7 @@ AnchorPositionScrollData::ComputeAdjustmentContainersData(
     const ScrollableArea* scrollable_area =
         To<LayoutBox>(bounding_container)->GetScrollableArea();
     result.anchored_element_container_scroll_offset =
-        PhysicalOffset::FromVector2dFFloor(scrollable_area->GetScrollOffset());
+        PhysicalOffset(scrollable_area->PixelSnappedScrollOffset());
   }
 
   auto get_transformed_offset = [&](PhysicalOffset offset,
@@ -172,8 +160,8 @@ AnchorPositionScrollData::ComputeAdjustmentContainersData(
           may_need_scroll_adjustment(To<LayoutBox>(container))) {
         result.adjustment_container_ids.push_back(
             scrollable_area->GetScrollElementId());
-        PhysicalOffset scroll_offset = PhysicalOffset::FromVector2dFFloor(
-            scrollable_area->GetScrollOffset());
+        PhysicalOffset scroll_offset(
+            scrollable_area->PixelSnappedScrollOffset());
         result.accumulated_adjustment +=
             get_transformed_offset(scroll_offset, container);
         result.accumulated_adjustment_scroll_origin +=
@@ -272,7 +260,8 @@ AnchorPositionScrollData::TakeAndCompareSnapshot(bool update) {
   AdjustmentData new_adjustment_data = ComputeDefaultAnchorAdjustmentData();
 
   SnapshotDiff diff = SnapshotDiff::kNone;
-  if (default_anchor_adjustment_data_.anchor_element !=
+  if (needs_scroll_end_relayout_ ||
+      default_anchor_adjustment_data_.anchor_element !=
           new_adjustment_data.anchor_element ||
       AdjustmentContainerIds() !=
           new_adjustment_data.adjustment_container_ids ||
@@ -294,6 +283,7 @@ AnchorPositionScrollData::TakeAndCompareSnapshot(bool update) {
 
   if (update && diff != SnapshotDiff::kNone) {
     default_anchor_adjustment_data_ = std::move(new_adjustment_data);
+    needs_scroll_end_relayout_ = false;
   }
 
   return diff;
@@ -358,6 +348,18 @@ bool AnchorPositionScrollData::UpdateSnapshot() {
 bool AnchorPositionScrollData::ShouldScheduleNextService() {
   return IsActive() &&
          TakeAndCompareSnapshot(false /*update*/) != SnapshotDiff::kNone;
+}
+
+void AnchorPositionScrollData::NotifyScrollEnd(
+    CompositorElementId scroll_element_id) {
+  // Once scrolling stops, relayout the anchored element if it is being
+  // scroll-adjusted by the scroller, so that its layout is consistent with a
+  // full layout at the current scroll position. The relayout itself happens at
+  // the next snapshot update.
+  if (IsActive() && scroll_element_id &&
+      AdjustmentContainerIds().Contains(scroll_element_id)) {
+    needs_scroll_end_relayout_ = true;
+  }
 }
 
 AnchorPositionVisibilityObserver&

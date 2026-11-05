@@ -12,7 +12,6 @@
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -27,6 +26,7 @@
 #include "components/zoom/zoom_observer.h"
 #include "content/public/browser/disallow_activation_reason.h"
 #include "content/public/browser/host_zoom_map.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -39,6 +39,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 using zoom::ZoomChangedWatcher;
 using zoom::ZoomController;
@@ -168,7 +169,7 @@ IN_PROC_BROWSER_TEST_F(ZoomControllerBrowserTest,
   ASSERT_TRUE(tab_strip);
 
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   {
     content::WebContents* web_contents = tab_strip->GetActiveWebContents();
@@ -346,7 +347,7 @@ IN_PROC_BROWSER_TEST_F(ZoomControllerBrowserTest,
   // When we navigate away from the NTP, the HostZoomMap changes, and we need to
   // test that the ZoomController correctly detects this.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();

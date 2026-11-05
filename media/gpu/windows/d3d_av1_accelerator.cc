@@ -4,6 +4,7 @@
 
 #include "media/gpu/windows/d3d_av1_accelerator.h"
 
+#include <array>
 #include <numeric>
 #include <tuple>
 #include <utility>
@@ -14,7 +15,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "media/gpu/av1_picture.h"
 #include "media/gpu/codec_picture.h"
-#include "media/gpu/windows/d3d11_picture_buffer.h"
+#include "media/gpu/windows/d3d_picture_buffer.h"
 #include "third_party/libgav1/src/src/utils/common.h"
 
 namespace media {
@@ -23,18 +24,18 @@ using DecodeStatus = AV1Decoder::AV1Accelerator::Status;
 
 class D3D11AV1Picture : public AV1Picture {
  public:
-  explicit D3D11AV1Picture(D3D11PictureBuffer* d3d11_picture,
+  explicit D3D11AV1Picture(D3DPictureBuffer* picture_buffer,
                            D3DVideoDecoderClient* client,
                            bool apply_grain)
-      : picture_buffer_(d3d11_picture),
+      : picture_buffer_(picture_buffer),
         client_(client),
         apply_grain_(apply_grain),
-        picture_index_(d3d11_picture->picture_index()) {
+        picture_index_(picture_buffer->picture_index()) {
     picture_buffer_->set_in_picture_use(true);
   }
 
   bool apply_grain() const { return apply_grain_; }
-  D3D11PictureBuffer* picture_buffer() const { return picture_buffer_; }
+  D3DPictureBuffer* picture_buffer() const { return picture_buffer_; }
 
  protected:
   ~D3D11AV1Picture() override { picture_buffer_->set_in_picture_use(false); }
@@ -47,7 +48,7 @@ class D3D11AV1Picture : public AV1Picture {
     return this;
   }
 
-  const raw_ptr<D3D11PictureBuffer> picture_buffer_;
+  const raw_ptr<D3DPictureBuffer> picture_buffer_;
   const raw_ptr<D3DVideoDecoderClient> client_;
   const bool apply_grain_;
   const size_t picture_index_;
@@ -66,7 +67,7 @@ D3DAV1Accelerator::~D3DAV1Accelerator() {}
 
 scoped_refptr<AV1Picture> D3DAV1Accelerator::CreateAV1Picture(
     bool apply_grain) {
-  D3D11PictureBuffer* picture_buffer = client_->GetPicture();
+  D3DPictureBuffer* picture_buffer = client_->GetPicture();
   return picture_buffer ? base::MakeRefCounted<D3D11AV1Picture>(
                               picture_buffer, client_, apply_grain)
                         : nullptr;
@@ -377,12 +378,12 @@ bool D3DAV1Accelerator::FillPicParams(
   pp->loop_filter.delta_lf_res = frame_header.delta_lf.scale;
 
   for (size_t i = 0; i < libgav1::kMaxPlanes; ++i) {
-    constexpr uint8_t kD3D11LoopRestorationMapping[4] = {
+    constexpr auto kD3D11LoopRestorationMapping = std::to_array<uint8_t>({
         0,  // libgav1::kLoopRestorationTypeNone,
         3,  // libgav1::kLoopRestorationTypeSwitchable,
         1,  // libgav1::kLoopRestorationTypeWiener,
         2,  // libgav1::kLoopRestorationTypeSgrProj
-    };
+    });
 
     UNSAFE_TODO({
       pp->loop_filter.frame_restoration_type[i] =

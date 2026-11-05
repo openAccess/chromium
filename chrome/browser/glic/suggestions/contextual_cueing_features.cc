@@ -16,10 +16,13 @@ BASE_FEATURE(kContextualCueing, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicZeroStateSuggestions, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kZeroStateSuggestionsUsePrivateAi,
+BASE_FEATURE(kGlicZeroStateSuggestionsPreconnectWithoutCredentials,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEnableAutoOpenGlicSidePanel, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGlicBrowsingHistoryZeroStateSuggestions,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool IsContextualCueingEnabled() {
   // If the feature is overridden (e.g. via server-side config or command-line),
@@ -153,10 +156,26 @@ const base::FeatureParam<int> kMaxPinnedPagesForTriggeringSuggestions(
     "ZSSMaxPinnedPagesForTriggeringSuggestions",
     10);
 
-const base::FeatureParam<base::TimeDelta>
-    kZeroStateSuggestionsPrivateAiPrewarmDelay(
-        &kZeroStateSuggestionsUsePrivateAi,
-        "ZSSPrivateAiPrewarmDelay",
-        base::Milliseconds(150));
+const base::FeatureParam<int> kMaxRecentPages(
+    &kGlicBrowsingHistoryZeroStateSuggestions,
+    "ZSSMaxRecentPages",
+    15);
+
+const base::FeatureParam<base::TimeDelta> kMaxRecentDuration(
+    &kGlicBrowsingHistoryZeroStateSuggestions,
+    "ZSSMaxRecentDuration",
+    base::Minutes(30));
+
+constexpr base::FeatureParam<RecentPagesSource>::Option
+    kRecentPagesSourceOptions[] = {
+        {RecentPagesSource::kAllRecentVisits, "all_recent_visits"},
+        {RecentPagesSource::kOpenTabsOnly, "open_tabs_only"},
+};
+
+const base::FeatureParam<RecentPagesSource> kRecentPagesSource(
+    &kGlicBrowsingHistoryZeroStateSuggestions,
+    "ZSSRecentPagesSource",
+    RecentPagesSource::kAllRecentVisits,
+    &kRecentPagesSourceOptions);
 
 }  // namespace glic

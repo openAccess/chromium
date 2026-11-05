@@ -5,23 +5,23 @@
 // clang-format off
 import 'chrome://resources/cr_elements/icons.html.js';
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
-import 'chrome://resources/cr_elements/cr_shared_style.css.js';
 import '../settings_page/settings_section.js';
 import './safety_hub_module.js';
 
-import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
-import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {routes} from '../route.js';
-import {Router, RouteObserverMixin} from '../router.js';
+import {Router} from '../router.js';
 import type {Route} from '../router.js';
 import type {MetricsBrowserProxy} from '../metrics_browser_proxy.js';
 import {MetricsBrowserProxyImpl, SafetyHubEntryPoint} from '../metrics_browser_proxy.js';
-import {SettingsViewMixin} from '../settings_page/settings_view_mixin.js';
+import {SettingsViewMixinLit} from '../settings_page/settings_view_mixin_lit.js';
 
 import type {EntryPointInfo, SafetyHubBrowserProxy} from './safety_hub_browser_proxy.js';
 import {SafetyHubBrowserProxyImpl} from './safety_hub_browser_proxy.js';
-import {getTemplate} from './safety_hub_entry_point.html.js';
+import {getCss} from './safety_hub_entry_point.css.js';
+import {getHtml} from './safety_hub_entry_point.html.js';
 import type {SettingsSafetyHubModuleElement} from './safety_hub_module.js';
 // clang-format on
 
@@ -33,7 +33,7 @@ export interface SettingsSafetyHubEntryPointElement {
 }
 
 const SettingsSafetyHubEntryPointElementBase =
-    SettingsViewMixin(RouteObserverMixin(I18nMixin(PolymerElement)));
+    SettingsViewMixinLit(I18nMixinLit(CrLitElement));
 
 export class SettingsSafetyHubEntryPointElement extends
     SettingsSafetyHubEntryPointElementBase {
@@ -41,59 +41,52 @@ export class SettingsSafetyHubEntryPointElement extends
     return 'settings-safety-hub-entry-point';
   }
 
-  static get template() {
-    return getTemplate();
+  static override get styles() {
+    return getCss();
   }
 
+  override render() {
+    return getHtml.bind(this)();
+  }
 
-  static get properties() {
+  static override get properties() {
     return {
-      buttonClass_: {
-        type: Boolean,
-        computed: 'computeButtonClass_(hasRecommendations_)',
-      },
-
-      hasRecommendations_: {
-        type: Boolean,
-        value: false,
-      },
-
-      headerString_: String,
-
-      subheaderString_: String,
-
-      headerIconColor_: {
-        type: String,
-        computed: 'computeHeaderIconColor_(hasRecommendations_)',
-      },
+      hasRecommendations_: {type: Boolean},
+      headerString_: {type: String},
+      subheaderString_: {type: String},
     };
   }
 
-  declare private buttonClass_: string;
-  declare private hasRecommendations_: boolean;
-  declare private headerString_: string;
-  declare private subheaderString_: string;
-  declare private headerIconColor_: string;
+  private accessor hasRecommendations_: boolean = false;
+  protected accessor headerString_: string = '';
+  protected accessor subheaderString_: string = '';
   private safetyHubBrowserProxy_: SafetyHubBrowserProxy =
       SafetyHubBrowserProxyImpl.getInstance();
   private metricsBrowserProxy_: MetricsBrowserProxy =
       MetricsBrowserProxyImpl.getInstance();
+  private entryPointDataFetched_: Promise<void> = Promise.resolve();
 
   override connectedCallback() {
-    this.safetyHubBrowserProxy_.getSafetyHubEntryPointData().then(
-        (entryPoint: EntryPointInfo) => {
-          this.hasRecommendations_ = entryPoint.hasRecommendations;
-          this.headerString_ = entryPoint.header;
-          this.subheaderString_ = entryPoint.subheader;
-        });
-    // This should be called after the data for modules are retrieved so that
-    // currentRouteChanged is called afterwards.
+    this.entryPointDataFetched_ =
+        this.safetyHubBrowserProxy_.getSafetyHubEntryPointData().then(
+            (entryPoint: EntryPointInfo) => {
+              this.hasRecommendations_ = entryPoint.hasRecommendations;
+              this.headerString_ = entryPoint.header;
+              this.subheaderString_ = entryPoint.subheader;
+            });
     super.connectedCallback();
   }
 
-  override currentRouteChanged(newRoute: Route, oldRoute?: Route) {
+  override async currentRouteChanged(newRoute: Route, oldRoute?: Route) {
     super.currentRouteChanged(newRoute, oldRoute);
 
+    if (Router.getInstance().getCurrentRoute() !== routes.PRIVACY) {
+      return;
+    }
+    // super.connectedCallback() calls this synchronously, so wait for the
+    // entry point data to avoid recording a stale `hasRecommendations_`.
+    await this.entryPointDataFetched_;
+    // The user may have navigated away while waiting.
     if (Router.getInstance().getCurrentRoute() !== routes.PRIVACY) {
       return;
     }
@@ -108,15 +101,15 @@ export class SettingsSafetyHubEntryPointElement extends
     }
   }
 
-  private computeButtonClass_() {
+  protected computeButtonClass_() {
     return this.hasRecommendations_ ? 'action-button' : '';
   }
 
-  private computeHeaderIconColor_() {
+  protected computeHeaderIconColor_() {
     return this.hasRecommendations_ ? 'blue' : '';
   }
 
-  private onClick_() {
+  protected onClick_() {
     if (this.hasRecommendations_) {
       this.metricsBrowserProxy_.recordSafetyHubEntryPointClicked(
           SafetyHubEntryPoint.PRIVACY_WARNING);
@@ -127,7 +120,7 @@ export class SettingsSafetyHubEntryPointElement extends
     Router.getInstance().navigateTo(routes.SAFETY_HUB);
   }
 
-  // SettingsViewMixin implementation.
+  // SettingsViewMixinLit implementation.
   override getFocusConfig() {
     return new Map([
       [routes.SAFETY_HUB.path, '#button'],

@@ -34,14 +34,14 @@ namespace extensions {
 
 namespace {
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if !BUILDFLAG(IS_ANDROID)
 
 // Delegate for ExtensionViewHost attached to a specific browser window.
 class ExtensionViewHostBrowserDelegate : public ExtensionViewHost::Delegate {
  public:
   explicit ExtensionViewHostBrowserDelegate(BrowserWindowInterface* browser)
       : browser_(browser) {
-    DCHECK(browser_);
+    CHECK(browser_, base::NotFatalUntil::M161);
   }
   ExtensionViewHostBrowserDelegate(const ExtensionViewHostBrowserDelegate&) =
       delete;
@@ -83,7 +83,7 @@ class ExtensionViewHostTabDelegate : public ExtensionViewHost::Delegate {
  public:
   explicit ExtensionViewHostTabDelegate(content::WebContents* web_contents)
       : web_contents_(web_contents) {
-    DCHECK(web_contents_);
+    CHECK(web_contents_, base::NotFatalUntil::M161);
   }
   ExtensionViewHostTabDelegate(const ExtensionViewHostTabDelegate&) = delete;
   ExtensionViewHostTabDelegate& operator=(const ExtensionViewHostTabDelegate&) =
@@ -141,7 +141,7 @@ class ExtensionViewHostTabDelegate : public ExtensionViewHost::Delegate {
   raw_ptr<content::WebContents> web_contents_;
 };
 
-#else  // BUILDFLAG(ENABLE_EXTENSIONS)
+#else  // !BUILDFLAG(IS_ANDROID)
 
 // Delegate for ExtensionViewHost on Android.
 class ExtensionViewHostDelegateAndroid : public ExtensionViewHost::Delegate {
@@ -200,21 +200,31 @@ std::unique_ptr<ExtensionViewHost> CreateViewHostForExtension(
     Profile* profile,
     mojom::ViewType view_type,
     std::unique_ptr<ExtensionViewHost::Delegate> delegate) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
   return std::make_unique<ExtensionViewHost>(extension, profile, url, view_type,
                                              std::move(delegate));
 }
 
-// Creates a view host for an extension in an incognito window. Returns NULL
-// if the extension is not allowed to run in incognito.
+// Creates a view host for an extension in an incognito window. This must only
+// be called for an incognito profile and for an extension that has been granted
+// incognito access.
 std::unique_ptr<ExtensionViewHost> CreateViewHostForIncognito(
     const Extension* extension,
     const GURL& url,
     Profile* profile,
     mojom::ViewType view_type,
     std::unique_ptr<ExtensionViewHost::Delegate> delegate) {
-  DCHECK(extension);
-  DCHECK(profile->IsOffTheRecord());
+  CHECK(extension, base::NotFatalUntil::M161);
+  CHECK(profile->IsOffTheRecord(), base::NotFatalUntil::M161);
+
+  // Callers must ensure the extension is allowed to run in incognito before
+  // attempting to create a host. Note that even in spanning mode (!IsSplitMode)
+  // where the host process belongs to the original profile, `delegate` is bound
+  // to the incognito browser window or tab. Creating a host would allow the
+  // regular-profile extension to access and manipulate incognito state (e.g.
+  // via APIs that resolve kCurrentWindowId through the host's delegate) without
+  // incognito permission.
+  CHECK(util::IsIncognitoEnabled(extension->id(), profile));
 
   if (!IncognitoInfo::IsSplitMode(extension)) {
     // If it's not split-mode the host is associated with the original profile.
@@ -223,13 +233,8 @@ std::unique_ptr<ExtensionViewHost> CreateViewHostForIncognito(
                                       view_type, std::move(delegate));
   }
 
-  // Create the host if the extension can run in incognito.
-  if (util::IsIncognitoEnabled(extension->id(), profile)) {
-    return CreateViewHostForExtension(extension, url, profile, view_type,
-                                      std::move(delegate));
-  }
-  NOTREACHED() << "We shouldn't be trying to create an incognito extension "
-                  "view unless it has been enabled for incognito.";
+  return CreateViewHostForExtension(extension, url, profile, view_type,
+                                    std::move(delegate));
 }
 
 std::unique_ptr<ExtensionViewHost> CreateExtensionViewHost(
@@ -256,20 +261,18 @@ std::unique_ptr<ExtensionViewHost> ExtensionViewHostFactory::CreatePopupHost(
     const Extension& extension,
     const GURL& url,
     BrowserWindowInterface* browser) {
-  DCHECK(browser);
+  CHECK(browser, base::NotFatalUntil::M161);
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if !BUILDFLAG(IS_ANDROID)
   auto delegate = std::make_unique<ExtensionViewHostBrowserDelegate>(browser);
-#else   // BUILDFLAG(ENABLE_EXTENSIONS)
+#else
   auto delegate = std::make_unique<ExtensionViewHostDelegateAndroid>();
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif
 
   return CreateExtensionViewHost(extension, url, browser->GetProfile(),
                                  mojom::ViewType::kExtensionPopup,
                                  std::move(delegate));
 }
-
-#if BUILDFLAG(ENABLE_EXTENSIONS)
 
 // static
 std::unique_ptr<ExtensionViewHost>
@@ -278,23 +281,27 @@ ExtensionViewHostFactory::CreateSidePanelHost(
     const GURL& url,
     BrowserWindowInterface* browser,
     tabs::TabInterface* tab_interface) {
-  DCHECK(browser == nullptr ^ tab_interface == nullptr);
+  CHECK(browser == nullptr ^ tab_interface == nullptr,
+        base::NotFatalUntil::M161);
 
   Profile* profile =
       browser ? browser->GetProfile()
               : tab_interface->GetBrowserWindowInterface()->GetProfile();
 
+#if !BUILDFLAG(IS_ANDROID)
   std::unique_ptr<ExtensionViewHost::Delegate> delegate =
       browser ? static_cast<std::unique_ptr<ExtensionViewHost::Delegate>>(
                     std::make_unique<ExtensionViewHostBrowserDelegate>(browser))
               : std::make_unique<ExtensionViewHostTabDelegate>(
                     tab_interface->GetContents());
+#else
+  std::unique_ptr<ExtensionViewHost::Delegate> delegate =
+      std::make_unique<ExtensionViewHostDelegateAndroid>();
+#endif
 
   return CreateExtensionViewHost(extension, url, profile,
                                  mojom::ViewType::kExtensionSidePanel,
                                  std::move(delegate));
 }
-
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 }  // namespace extensions

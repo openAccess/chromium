@@ -13,6 +13,7 @@ source_set("metrics_recorder") {
     "//components/favicon_base",
     "//components/ntp_tiles",
     "//components/prefs",
+    "//ios/chrome/browser/content_suggestions/most_visited_tiles/public",
     "//ios/chrome/browser/content_suggestions/most_visited_tiles/ui",
     "//ios/chrome/browser/content_suggestions/public:constants",
     "//ios/chrome/browser/content_suggestions/public:ntp_home_constants",
@@ -23,6 +24,7 @@ source_set("metrics_recorder") {
     "//ios/chrome/browser/metrics/model:metrics_internal",
     "//ios/chrome/browser/ntp/model:set_up_list_item_type",
     "//ios/chrome/browser/ntp/model:set_up_list_metrics",
+    "//ios/chrome/browser/ntp/ui_bundled:feature_flags",
     "//ios/chrome/browser/shared/model/prefs:pref_names",
     "//ios/chrome/browser/shared/public/features",
   ]

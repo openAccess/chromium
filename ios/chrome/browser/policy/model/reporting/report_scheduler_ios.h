@@ -30,13 +30,13 @@ class ReportSchedulerIOS : public ReportScheduler::Delegate,
 
   // ReportScheduler::Delegate implementation.
   PrefService* GetPrefService() override;
-  void OnInitializationCompleted() override;
   void StartWatchingUpdatesIfNeeded(base::Time last_upload,
                                     base::TimeDelta upload_interval) override;
   void StopWatchingUpdates() override;
   void OnBrowserVersionUploaded() override;
   policy::DMToken GetProfileDMToken() override;
   std::string GetProfileClientId() override;
+  bool IsIsolatedProfile() const override;
 
   // UserSecuritySignalsService::Delegate implementation.
   void OnReportEventTriggered(SecurityReportTrigger trigger) override;

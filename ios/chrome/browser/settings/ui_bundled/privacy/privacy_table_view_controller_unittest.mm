@@ -9,9 +9,11 @@
 #import <memory>
 
 #import "base/apple/foundation_util.h"
+#import "base/ios/ios_util.h"
 #import "base/memory/ptr_util.h"
 #import "base/memory/raw_ptr.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/content_settings/core/common/features.h"
 #import "components/feature_engagement/public/event_constants.h"
@@ -19,7 +21,6 @@
 #import "components/handoff/pref_names_ios.h"
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/prefs/pref_service.h"
-#import "components/safe_browsing/core/common/features.h"
 #import "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/strings/grit/components_strings.h"
@@ -27,8 +28,11 @@
 #import "components/sync_preferences/pref_service_mock_factory.h"
 #import "components/sync_preferences/pref_service_syncable.h"
 #import "components/sync_preferences/testing_pref_service_syncable.h"
+#import "components/universal_optout/features.h"
+#import "components/universal_optout/prefs.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
+#import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
@@ -36,9 +40,12 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
+#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_icon_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_controller_test.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
+#import "ios/chrome/browser/web_extension/model/extension_service_factory.h"
+#import "ios/chrome/browser/web_extension/model/fake_extension_service.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -46,6 +53,7 @@
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gmock/include/gmock/gmock.h"
 #import "testing/gtest/include/gtest/gtest.h"
+#import "testing/gtest_mac.h"
 #import "ui/base/l10n/l10n_util.h"
 
 using ::testing::Return;
@@ -68,8 +76,7 @@ std::unique_ptr<KeyedService> BuildFeatureEngagementMockTracker(
 
 class PrivacyTableViewControllerTest
     : public LegacyChromeTableViewControllerTest,
-      public testing::WithParamInterface<
-          std::tuple<IncognitoModePrefs, bool, bool>> {
+      public testing::WithParamInterface<std::tuple<IncognitoModePrefs, bool>> {
  protected:
   PrivacyTableViewControllerTest() {}
 
@@ -82,6 +89,12 @@ class PrivacyTableViewControllerTest
     builder.AddTestingFactory(
         feature_engagement::TrackerFactory::GetInstance(),
         base::BindOnce(&BuildFeatureEngagementMockTracker));
+    builder.AddTestingFactory(
+        ExtensionServiceFactory::GetInstance(),
+        base::BindRepeating(
+            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
+              return std::make_unique<FakeExtensionService>();
+            }));
     profile_ = std::move(builder).Build();
 
     test_sync_service()->SetSignedOut();
@@ -99,10 +112,7 @@ class PrivacyTableViewControllerTest
         std::make_unique<base::Value>(
             static_cast<int>(IncognitoModeAvailability())));
 
-    feature_list_.InitWithFeatureStates(
-        {{kIOSSoftLock, SoftLockEnabled()},
-         {safe_browsing::kMovePasswordLeakDetectionToggleIos,
-          PasswordLeakCheckMoveEnabled()}});
+    feature_list_.InitWithFeatureStates({{kIOSSoftLock, SoftLockEnabled()}});
   }
 
   void TearDown() override {
@@ -150,7 +160,39 @@ class PrivacyTableViewControllerTest
 
   bool SoftLockEnabled() { return std::get<1>(GetParam()); }
 
-  bool PasswordLeakCheckMoveEnabled() { return std::get<2>(GetParam()); }
+  bool HasUniversalOptOutItem() {
+    TableViewModel* model = [controller() tableViewModel];
+    for (NSInteger section = 0; section < [model numberOfSections]; ++section) {
+      for (NSInteger item = 0; item < [model numberOfItemsInSection:section];
+           ++item) {
+        TableViewItem* table_item =
+            [model itemAtIndexPath:[NSIndexPath indexPathForItem:item
+                                                       inSection:section]];
+        if ([table_item.accessibilityIdentifier
+                isEqualToString:kSettingsUniversalOptOutCellId]) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  TableViewDetailIconItem* GetUniversalOptOutItem() {
+    TableViewModel* model = [controller() tableViewModel];
+    for (NSInteger section = 0; section < [model numberOfSections]; ++section) {
+      for (NSInteger item = 0; item < [model numberOfItemsInSection:section];
+           ++item) {
+        TableViewItem* table_item =
+            [model itemAtIndexPath:[NSIndexPath indexPathForItem:item
+                                                       inSection:section]];
+        if ([table_item.accessibilityIdentifier
+                isEqualToString:kSettingsUniversalOptOutCellId]) {
+          return base::apple::ObjCCast<TableViewDetailIconItem>(table_item);
+        }
+      }
+    }
+    return nil;
+  }
 
   web::WebTaskEnvironment task_environment_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
@@ -167,11 +209,7 @@ TEST_P(PrivacyTableViewControllerTest, TestModel) {
   CreateController();
   CheckController();
 
-  int expectedNumberOfSections = 7;
-  if (PasswordLeakCheckMoveEnabled()) {
-    expectedNumberOfSections += 1;
-  }
-  EXPECT_EQ(expectedNumberOfSections, NumberOfSections());
+  EXPECT_EQ(8, NumberOfSections());
 
   int currentSection = 0;
   // PrivacyContent section.
@@ -194,13 +232,11 @@ TEST_P(PrivacyTableViewControllerTest, TestModel) {
                                     currentSection, 0);
 
   // Password leak check section.
-  if (PasswordLeakCheckMoveEnabled()) {
-    currentSection++;
-    EXPECT_EQ(1, NumberOfItemsInSection(currentSection));
-    CheckSwitchCellStateAndTextWithId(
-        YES, IDS_IOS_SAFE_BROWSING_STANDARD_PROTECTION_LEAK_CHECK_TITLE,
-        currentSection, 0);
-  }
+  currentSection++;
+  EXPECT_EQ(1, NumberOfItemsInSection(currentSection));
+  CheckSwitchCellStateAndTextWithId(
+      YES, IDS_IOS_SAFE_BROWSING_STANDARD_PROTECTION_LEAK_CHECK_TITLE,
+      currentSection, 0);
 
   // WebServices section.
   currentSection++;
@@ -274,11 +310,7 @@ TEST_P(PrivacyTableViewControllerTest, TestModelFooterSignedOut) {
   CreateController();
   CheckController();
 
-  int expectedNumberOfSections = 7;
-  if (PasswordLeakCheckMoveEnabled()) {
-    expectedNumberOfSections += 1;
-  }
-  EXPECT_EQ(expectedNumberOfSections, NumberOfSections());
+  EXPECT_EQ(8, NumberOfSections());
 
   // Testing section index and text of the privacy footer.
   CheckSectionFooter(l10n_util::GetNSString(IDS_IOS_PRIVACY_SIGNED_OUT_FOOTER),
@@ -310,6 +342,282 @@ TEST_P(PrivacyTableViewControllerTest,
       prefs::kBrowserLockdownModeEnabled, base::Value(true));
 }
 
+// Tests that Universal Opt Out setting is visible only when eligible and
+// feature flags are enabled.
+TEST_P(PrivacyTableViewControllerTest, TestUniversalOptOutVisibility) {
+  // Hidden when features are enabled but user is ineligible.
+  profile_->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEligible, false);
+  profile_->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEnabled, false);
+  {
+    base::HistogramTester histogram_tester;
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        /*enabled_features=*/
+        {universal_optout::features::kUniversalOptOut,
+         universal_optout::features::kUniversalOptOutExtension,
+         universal_optout::features::kUniversalOptOutSettings},
+        /*disabled_features=*/{});
+
+    CreateController();
+    CheckController();
+    EXPECT_FALSE(HasUniversalOptOutItem());
+    histogram_tester.ExpectUniqueSample(
+        "Privacy.UniversalOptOut.SettingsVisibility", false, 1);
+  }
+
+  // Hidden when user is eligible but features are disabled.
+  ResetController();
+  profile_->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEligible, true);
+  {
+    base::HistogramTester histogram_tester;
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            universal_optout::features::kUniversalOptOut,
+            universal_optout::features::kUniversalOptOutExtension,
+            universal_optout::features::kUniversalOptOutSettings});
+
+    CreateController();
+    CheckController();
+    EXPECT_FALSE(HasUniversalOptOutItem());
+    histogram_tester.ExpectUniqueSample(
+        "Privacy.UniversalOptOut.SettingsVisibility", false, 1);
+  }
+
+  // When user is eligible and kUniversalOptOut is enabled, but
+  // kUniversalOptOutExtension is disabled.
+  ResetController();
+  {
+    base::HistogramTester histogram_tester;
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        /*enabled_features=*/{universal_optout::features::kUniversalOptOut,
+                              universal_optout::features::
+                                  kUniversalOptOutSettings},
+        /*disabled_features=*/{
+            universal_optout::features::kUniversalOptOutExtension});
+
+    CreateController();
+    CheckController();
+    if (base::ios::IsRunningOnIOS27OrLater()) {
+      EXPECT_TRUE(HasUniversalOptOutItem());
+    } else {
+      EXPECT_FALSE(HasUniversalOptOutItem());
+    }
+  }
+
+  // Visible when user is eligible and features are enabled (on iOS 18.4+).
+  ResetController();
+  {
+    base::HistogramTester histogram_tester;
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        /*enabled_features=*/
+        {universal_optout::features::kUniversalOptOut,
+         universal_optout::features::kUniversalOptOutExtension,
+         universal_optout::features::kUniversalOptOutSettings},
+        /*disabled_features=*/{});
+
+    CreateController();
+    CheckController();
+    if (base::ios::IsRunningOnOrLater(18, 4, 0)) {
+      EXPECT_TRUE(HasUniversalOptOutItem());
+      histogram_tester.ExpectUniqueSample(
+          "Privacy.UniversalOptOut.SettingsVisibility", true, 1);
+    } else {
+      EXPECT_FALSE(HasUniversalOptOutItem());
+      histogram_tester.ExpectUniqueSample(
+          "Privacy.UniversalOptOut.SettingsVisibility", false, 1);
+    }
+  }
+
+  // Hidden when eligible and features enabled, but eligibility is forced off.
+  ResetController();
+  {
+    [[NSUserDefaults standardUserDefaults]
+        setInteger:static_cast<NSInteger>(
+                       experimental_flags::UniversalOptOutEligibilityOverride::
+                           kForcedOff)
+            forKey:@"UniversalOptOutEligibilityOverride"];
+    base::HistogramTester histogram_tester;
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        /*enabled_features=*/
+        {universal_optout::features::kUniversalOptOut,
+         universal_optout::features::kUniversalOptOutExtension,
+         universal_optout::features::kUniversalOptOutSettings},
+        /*disabled_features=*/{});
+
+    CreateController();
+    CheckController();
+    EXPECT_FALSE(HasUniversalOptOutItem());
+    histogram_tester.ExpectUniqueSample(
+        "Privacy.UniversalOptOut.SettingsVisibility", false, 1);
+    [[NSUserDefaults standardUserDefaults]
+        removeObjectForKey:@"UniversalOptOutEligibilityOverride"];
+  }
+
+  // Visible when ineligible and features enabled, but eligibility is forced on
+  // (on iOS 18.4+).
+  ResetController();
+  profile_->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEligible, false);
+  {
+    [[NSUserDefaults standardUserDefaults]
+        setInteger:static_cast<NSInteger>(
+                       experimental_flags::UniversalOptOutEligibilityOverride::
+                           kForcedOn)
+            forKey:@"UniversalOptOutEligibilityOverride"];
+    base::HistogramTester histogram_tester;
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        /*enabled_features=*/
+        {universal_optout::features::kUniversalOptOut,
+         universal_optout::features::kUniversalOptOutExtension,
+         universal_optout::features::kUniversalOptOutSettings},
+        /*disabled_features=*/{});
+
+    CreateController();
+    CheckController();
+    if (base::ios::IsRunningOnOrLater(18, 4, 0)) {
+      EXPECT_TRUE(HasUniversalOptOutItem());
+      histogram_tester.ExpectUniqueSample(
+          "Privacy.UniversalOptOut.SettingsVisibility", true, 1);
+    } else {
+      EXPECT_FALSE(HasUniversalOptOutItem());
+      histogram_tester.ExpectUniqueSample(
+          "Privacy.UniversalOptOut.SettingsVisibility", false, 1);
+    }
+    [[NSUserDefaults standardUserDefaults]
+        removeObjectForKey:@"UniversalOptOutEligibilityOverride"];
+  }
+}
+
+// Tests that the Universal Opt-Out item displays an error badge when
+// ExtensionService reports a load error.
+TEST_P(PrivacyTableViewControllerTest, TestUniversalOptOutErrorBadge) {
+  if (!base::ios::IsRunningOnOrLater(18, 4, 0)) {
+    return;
+  }
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {universal_optout::features::kUniversalOptOut,
+       universal_optout::features::kUniversalOptOutExtension,
+       universal_optout::features::kUniversalOptOutSettings},
+      /*disabled_features=*/{});
+
+  profile_->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEligible, true);
+  profile_->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEnabled, true);
+
+  CreateController();
+  CheckController();
+
+  FakeExtensionService* fake_service = static_cast<FakeExtensionService*>(
+      ExtensionServiceFactory::GetForProfile(profile_.get()));
+  ASSERT_TRUE(fake_service != nullptr);
+
+  TableViewDetailIconItem* item = GetUniversalOptOutItem();
+  ASSERT_TRUE(item != nil);
+  EXPECT_TRUE(item.badgeType == BadgeType::kNone);
+  EXPECT_NSEQ(item.detailText, l10n_util::GetNSString(IDS_IOS_SETTING_ON));
+
+  // Simulate load error.
+  fake_service->SetHasGPCLoadError(true);
+  EXPECT_TRUE(item.badgeType == BadgeType::kWarning);
+  EXPECT_EQ(item.detailText, nil);
+
+  // Simulate load success / resolved error.
+  fake_service->SetHasGPCLoadError(false);
+  EXPECT_TRUE(item.badgeType == BadgeType::kNone);
+  EXPECT_NSEQ(item.detailText, l10n_util::GetNSString(IDS_IOS_SETTING_ON));
+
+  // Pref change to disabled when there is no error updates detail text to
+  // "Off".
+  profile_->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEnabled, false);
+  EXPECT_TRUE(item.badgeType == BadgeType::kNone);
+  EXPECT_NSEQ(item.detailText, l10n_util::GetNSString(IDS_IOS_SETTING_OFF));
+}
+
+// Tests that the Universal Opt-Out item is not displayed when the extension
+// service is in silent mode even if it reports a load error.
+TEST_P(PrivacyTableViewControllerTest,
+       TestUniversalOptOutSilentModeNoErrorBadge) {
+  if (!base::ios::IsRunningOnOrLater(18, 4, 0)) {
+    return;
+  }
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {universal_optout::features::kUniversalOptOut,
+       universal_optout::features::kUniversalOptOutExtension,
+       universal_optout::features::kUniversalOptOutExtensionSilent},
+      /*disabled_features=*/
+      {universal_optout::features::kUniversalOptOutSettings});
+
+  profile_->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEligible, true);
+  profile_->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEnabled, true);
+
+  CreateController();
+  CheckController();
+
+  FakeExtensionService* fake_service = static_cast<FakeExtensionService*>(
+      ExtensionServiceFactory::GetForProfile(profile_.get()));
+  ASSERT_TRUE(fake_service != nullptr);
+
+  EXPECT_FALSE(HasUniversalOptOutItem());
+
+  // Simulate load error in silent mode.
+  fake_service->SetHasGPCLoadError(true);
+  EXPECT_FALSE(HasUniversalOptOutItem());
+}
+
+// Tests that the Universal Opt-Out item is not displayed and does not show an
+// error badge when kUniversalOptOutSettings is disabled.
+TEST_P(PrivacyTableViewControllerTest,
+       TestUniversalOptOutSettingsDisabledNoErrorBadge) {
+  if (!base::ios::IsRunningOnOrLater(18, 4, 0)) {
+    return;
+  }
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {universal_optout::features::kUniversalOptOut,
+       universal_optout::features::kUniversalOptOutExtension},
+      /*disabled_features=*/
+      {universal_optout::features::kUniversalOptOutSettings});
+
+  profile_->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEligible, true);
+  profile_->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEnabled, true);
+
+  CreateController();
+  CheckController();
+
+  FakeExtensionService* fake_service = static_cast<FakeExtensionService*>(
+      ExtensionServiceFactory::GetForProfile(profile_.get()));
+  ASSERT_TRUE(fake_service != nullptr);
+
+  EXPECT_FALSE(HasUniversalOptOutItem());
+
+  // Simulate load error when settings feature is disabled.
+  fake_service->SetHasGPCLoadError(true);
+  EXPECT_FALSE(HasUniversalOptOutItem());
+}
+
 INSTANTIATE_TEST_SUITE_P(
     PrivacyTableViewControllerTestAllConfigs,
     PrivacyTableViewControllerTest,
@@ -317,6 +625,5 @@ INSTANTIATE_TEST_SUITE_P(
                          IncognitoModePrefs::kEnabled,
                          IncognitoModePrefs::kDisabled,
                          IncognitoModePrefs::kForced),
-                     /*softLockEnabled*/ testing::Bool(),
-                     /*passwordLeakCheckMoveEnabled*/ testing::Bool()));
+                     /*softLockEnabled*/ testing::Bool()));
 }  // namespace

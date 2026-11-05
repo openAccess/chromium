@@ -53,7 +53,12 @@ class PLATFORM_EXPORT LayoutLocale : public RefCounted<LayoutLocale> {
     return harfbuzz_language_;
   }
   const char* LocaleForSkFontMgr() const;
+
   UScriptCode GetScript() const { return script_; }
+  // A variant of `GetScript()` without normalizing stylish variants.
+  // For example, `GetScript()` normalizes `USCRIPT_ARABIC_NASTALIQ` to
+  // `USCRIPT_ARABIC`. See `NormalizeStylishVariants()`.
+  UScriptCode GetScriptForFont() const { return script_for_font_; }
 
   // Disambiguation of the Unified Han Ideographs.
   UScriptCode GetScriptForHan() const;
@@ -105,15 +110,16 @@ class PLATFORM_EXPORT LayoutLocale : public RefCounted<LayoutLocale> {
   // hb_language_t is defined in hb.h, which not all files can include.
   raw_ptr<const hb_language_impl_t> harfbuzz_language_;
 
+  UScriptCode script_for_font_;
   UScriptCode script_;
   mutable UScriptCode script_for_han_ = USCRIPT_COMMON;
 
-  mutable unsigned has_script_for_han_ : 1 = false;
-  mutable unsigned hyphenation_computed_ : 1 = false;
-  mutable unsigned quotes_data_computed_ : 1 = false;
-  mutable unsigned case_map_computed_ : 1 = false;
-  mutable unsigned is_macrolanguage_chinese_computed_ : 1 = false;
-  mutable unsigned is_macrolanguage_chinese_ : 1 = false;
+  mutable uint32_t has_script_for_han_ : 1 = false;
+  mutable uint32_t hyphenation_computed_ : 1 = false;
+  mutable uint32_t quotes_data_computed_ : 1 = false;
+  mutable uint32_t case_map_computed_ : 1 = false;
+  mutable uint32_t is_macrolanguage_chinese_computed_ : 1 = false;
+  mutable uint32_t is_macrolanguage_chinese_ : 1 = false;
 };
 
 }  // namespace blink

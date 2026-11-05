@@ -30,8 +30,9 @@ struct StructTraits<content::mojom::MemoryConsumerTraitsDataView,
       const base::MemoryConsumerTraits& input) {
     return std::to_underlying(input.estimated_memory_usage);
   }
-  static uint8_t release_memory_cost(const base::MemoryConsumerTraits& input) {
-    return std::to_underlying(input.release_memory_cost);
+  static uint8_t release_memory_data_access(
+      const base::MemoryConsumerTraits& input) {
+    return std::to_underlying(input.release_memory_data_access);
   }
   static uint8_t information_retention(
       const base::MemoryConsumerTraits& input) {
@@ -61,6 +62,13 @@ struct StructTraits<content::mojom::MemoryConsumerTraitsDataView,
   static uint8_t is_stateful(const base::MemoryConsumerTraits& input) {
     return std::to_underlying(input.is_stateful);
   }
+  static uint8_t recovery_behavior(const base::MemoryConsumerTraits& input) {
+    return std::to_underlying(input.recovery_behavior);
+  }
+  static uint8_t release_memory_cpu_cost(
+      const base::MemoryConsumerTraits& input) {
+    return std::to_underlying(input.release_memory_cpu_cost);
+  }
   static uint8_t consumer_type(const base::MemoryConsumerTraits& input) {
     return std::to_underlying(input.consumer_type);
   }
@@ -70,8 +78,8 @@ struct StructTraits<content::mojom::MemoryConsumerTraitsDataView,
     return ConvertToEnum(input.consumer_type(), &output->consumer_type) &&
            ConvertToEnum(input.estimated_memory_usage(),
                          &output->estimated_memory_usage) &&
-           ConvertToEnum(input.release_memory_cost(),
-                         &output->release_memory_cost) &&
+           ConvertToEnum(input.release_memory_data_access(),
+                         &output->release_memory_data_access) &&
            ConvertToEnum(input.information_retention(),
                          &output->information_retention) &&
            ConvertToEnum(input.execution_type(), &output->execution_type) &&
@@ -84,7 +92,11 @@ struct StructTraits<content::mojom::MemoryConsumerTraitsDataView,
                          &output->release_gc_references) &&
            ConvertToEnum(input.garbage_collects_v8_heap(),
                          &output->garbage_collects_v8_heap) &&
-           ConvertToEnum(input.is_stateful(), &output->is_stateful);
+           ConvertToEnum(input.is_stateful(), &output->is_stateful) &&
+           ConvertToEnum(input.recovery_behavior(),
+                         &output->recovery_behavior) &&
+           ConvertToEnum(input.release_memory_cpu_cost(),
+                         &output->release_memory_cpu_cost);
   }
 };
 

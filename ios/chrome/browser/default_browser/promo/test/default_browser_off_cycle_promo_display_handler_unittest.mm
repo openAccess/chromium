@@ -52,13 +52,14 @@
 - (void)showFullscreenSigninPromo {
 }
 
-- (void)showWelcomeBackPromo {
-}
-
 - (void)showHomeBackgroundCustomizationPromo {
 }
 
 - (void)showDockingPromo {
+}
+
+- (void)showCredentialProviderPromoWithTrigger:
+    (CredentialProviderPromoTrigger)trigger {
 }
 
 @end

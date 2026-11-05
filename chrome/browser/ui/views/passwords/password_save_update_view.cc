@@ -34,6 +34,7 @@
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/password_string.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -300,9 +301,10 @@ PasswordSaveUpdateView::PasswordSaveUpdateView(
               : PasswordBubbleControllerBase::DisplayReason::kUserAction),
       is_update_bubble_(controller_.state() ==
                         password_manager::ui::PENDING_PASSWORD_UPDATE_STATE) {
-  DCHECK(controller_.state() == password_manager::ui::PENDING_PASSWORD_STATE ||
-         controller_.state() ==
-             password_manager::ui::PENDING_PASSWORD_UPDATE_STATE);
+  CHECK(controller_.state() == password_manager::ui::PENDING_PASSWORD_STATE ||
+            controller_.state() ==
+                password_manager::ui::PENDING_PASSWORD_UPDATE_STATE,
+        base::NotFatalUntil::M162);
 
   const password_manager::PasswordForm& password_form =
       controller_.pending_password();
@@ -798,7 +800,7 @@ void PasswordSaveUpdateView::OnContentChanged() {
 }
 
 void PasswordSaveUpdateView::UpdateFootnote() {
-  DCHECK(GetBubbleFrameView());
+  CHECK(GetBubbleFrameView(), base::NotFatalUntil::M162);
   GetBubbleFrameView()->SetFootnoteView(CreateFooterView());
 }
 

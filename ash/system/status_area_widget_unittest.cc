@@ -259,14 +259,14 @@ TEST_F(StatusAreaWidgetTest, DateTrayRoundedCornerBehavior) {
             TrayBackgroundView::RoundedCornerBehavior::kStartRounded);
 }
 
-class LockedFullscreenStatusAreaWidgetTest
+class TrustedPinnedStatusAreaWidgetTest
     : public AshTestBase,
       public testing::WithParamInterface<bool> {
  protected:
-  bool IsLocked() const { return GetParam(); }
+  bool IsTrustedPinned() const { return GetParam(); }
 };
 
-TEST_P(LockedFullscreenStatusAreaWidgetTest,
+TEST_P(TrustedPinnedStatusAreaWidgetTest,
        TrayBubbleVisibilityWithPinnedWindow) {
   // Create a window for testing purposes.
   const std::unique_ptr<aura::Window> window = CreateWindowWithAppType();
@@ -280,12 +280,12 @@ TEST_P(LockedFullscreenStatusAreaWidgetTest,
   ASSERT_TRUE(unified_system_tray->IsBubbleShown());
 
   // Pin the window and verify tray bubble visibility.
-  PinWindow(window.get(), IsLocked());
-  EXPECT_EQ(unified_system_tray->IsBubbleShown(), !IsLocked());
+  PinWindow(window.get(), IsTrustedPinned());
+  EXPECT_EQ(unified_system_tray->IsBubbleShown(), !IsTrustedPinned());
 }
 
-INSTANTIATE_TEST_SUITE_P(LockedFullscreenStatusAreaWidgetTests,
-                         LockedFullscreenStatusAreaWidgetTest,
+INSTANTIATE_TEST_SUITE_P(TrustedPinnedStatusAreaWidgetTests,
+                         TrustedPinnedStatusAreaWidgetTest,
                          testing::Bool());
 
 class SystemTrayFocusTestObserver : public SystemTrayObserver {
@@ -765,15 +765,11 @@ TEST_F(StatusAreaWidgetCollapseStateTest,
 class StatusAreaWidgetEcheTest : public AshTestBase {
  protected:
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kEcheSWA},
-        /*disabled_features=*/{});
     DCHECK(test_web_view_factory_.get());
     AshTestBase::SetUp();
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
   // Calling the factory constructor is enough to set it up.
   std::unique_ptr<TestAshWebViewFactory> test_web_view_factory_ =
       std::make_unique<TestAshWebViewFactory>();

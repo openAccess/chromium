@@ -122,6 +122,7 @@ NFCNDEFPayload* MojoNDEFRecordToCoreNFC(device::mojom::NDEFRecordPtr& record) {
 
 - (instancetype)initWithHost:(base::WeakPtr<content::NFCHost>)host
                   withRunner:(scoped_refptr<base::SequencedTaskRunner>)runner;
+- (void)invalidate;
 
 @end
 
@@ -139,6 +140,16 @@ NFCNDEFPayload* MojoNDEFRecordToCoreNFC(device::mojom::NDEFRecordPtr& record) {
     [_session beginSession];
   }
   return self;
+}
+
+- (void)invalidate {
+  _host = nullptr;
+  [_session invalidateSession];
+  _session = nil;
+}
+
+- (void)dealloc {
+  [_session invalidateSession];
 }
 
 - (void)writeTag:(device::mojom::NDEFMessagePtr)message {
@@ -285,6 +296,7 @@ const char* ErrorToString(device::mojom::NDEFErrorType error) {
 
 class NFCSessionHolder {
  public:
+  ~NFCSessionHolder() { [session_ invalidate]; }
   NFCSessionImpl* __strong session_;
 };
 
@@ -298,16 +310,12 @@ NFCHost::PendingPush::~PendingPush() = default;
 
 NFCHost::NFCHost(WebContents* web_contents)
     : WebContentsObserver(web_contents),
+      suspended_(web_contents->GetVisibility() != Visibility::VISIBLE),
       main_task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {
   CHECK(web_contents);
-
-  permission_controller_ =
-      web_contents->GetBrowserContext()->GetPermissionController();
 }
 
-NFCHost::~NFCHost() {
-  Close();
-}
+NFCHost::~NFCHost() = default;
 
 void NFCHost::GetNFC(RenderFrameHost* render_frame_host,
                      mojo::PendingReceiver<device::mojom::NFC> receiver) {
@@ -334,6 +342,10 @@ void NFCHost::GetNFC(RenderFrameHost* render_frame_host,
     return;
   }
 
+  if (render_frame_host->GetLastCommittedOrigin().opaque()) {
+    return;
+  }
+
   if (render_frame_host->GetBrowserContext()
           ->GetPermissionController()
           ->GetPermissionStatusForCurrentDocument(
@@ -344,25 +356,29 @@ void NFCHost::GetNFC(RenderFrameHost* render_frame_host,
     return;
   }
 
-  if (!subscription_id_) {
+  if (!permission_subscription_) {
     // base::Unretained() is safe here because the subscription is canceled when
     // this object is destroyed.
-    subscription_id_ =
-        permission_controller_->SubscribeToPermissionResultChange(
-            content::PermissionDescriptorUtil::
-                CreatePermissionDescriptorForPermissionType(
-                    blink::PermissionType::NFC),
-            /*render_process_host=*/nullptr, render_frame_host,
-            render_frame_host->GetMainFrame()
-                ->GetLastCommittedOrigin()
-                .GetURL(),
-            /*should_include_device_status=*/false,
-            base::BindRepeating(&NFCHost::OnPermissionResultChange,
-                                base::Unretained(this)));
+    permission_subscription_ =
+        web_contents()
+            ->GetBrowserContext()
+            ->GetPermissionController()
+            ->SubscribeToPermissionResultChange(
+                content::PermissionDescriptorUtil::
+                    CreatePermissionDescriptorForPermissionType(
+                        blink::PermissionType::NFC),
+                /*render_process_host=*/nullptr, render_frame_host,
+                render_frame_host->GetMainFrame()
+                    ->GetLastCommittedOrigin()
+                    .GetURL(),
+                /*should_include_device_status=*/false,
+                base::BindRepeating(&NFCHost::OnPermissionResultChange,
+                                    base::Unretained(this)));
   }
 
   // Release any old receiver and rebind to the new primary main frame.
   ClearState();
+  MaybeResumeOrSuspendOperations(web_contents()->GetVisibility());
   receiver_.Bind(std::move(receiver));
 }
 
@@ -382,8 +398,10 @@ void NFCHost::MaybeResumeOrSuspendOperations(Visibility visibility) {
   // NFC operations should be suspended.
   // https://w3c.github.io/web-nfc/#nfc-suspended
   if (visibility == Visibility::VISIBLE) {
+    suspended_ = false;
     EnableSessionIfNecessary();
   } else {
+    suspended_ = true;
     CancelPush();
     CancelMakeReadOnly();
     session_.reset();
@@ -398,9 +416,7 @@ void NFCHost::OnPermissionResultChange(PermissionResult permission_result) {
 }
 
 void NFCHost::Close() {
-  permission_controller_->UnsubscribeFromPermissionResultChange(
-      subscription_id_);
-  subscription_id_ = PermissionController::SubscriptionId();
+  permission_subscription_.reset();
   ClearState();
 }
 
@@ -455,6 +471,13 @@ void NFCHost::CancelPush() {
 }
 
 void NFCHost::MakeReadOnly(device::mojom::NFC::MakeReadOnlyCallback callback) {
+  if (suspended_) {
+    std::move(callback).Run(device::mojom::NDEFError::New(
+        device::mojom::NDEFErrorType::OPERATION_CANCELLED,
+        ErrorToString(device::mojom::NDEFErrorType::OPERATION_CANCELLED)));
+    return;
+  }
+
   // Cancel any old operation.
   CancelMakeReadOnly();
   pending_read_only_ = std::move(callback);
@@ -487,6 +510,12 @@ void NFCHost::Watch(uint32_t watch_id,
     receiver_.ReportBadMessage("WebNFC duplicate watch ID.");
     return;
   }
+  if (suspended_) {
+    std::move(callback).Run(device::mojom::NDEFError::New(
+        device::mojom::NDEFErrorType::OPERATION_CANCELLED,
+        ErrorToString(device::mojom::NDEFErrorType::OPERATION_CANCELLED)));
+    return;
+  }
   watches_.insert(watch_id);
   EnableSessionIfNecessary();
   std::move(callback).Run(nullptr);
@@ -498,7 +527,8 @@ void NFCHost::CancelWatch(uint32_t watch_id) {
 }
 
 void NFCHost::EnableSessionIfNecessary() {
-  if (session_) {
+  if (suspended_ || session_ ||
+      (watches_.empty() && !pending_push_ && !pending_read_only_)) {
     return;
   }
   session_ = std::make_unique<NFCSessionHolder>();
@@ -516,6 +546,9 @@ void NFCHost::DisableSessionIfNecessary() {
 }
 
 void NFCHost::TagQueried(TagStatus status, bool error) {
+  if (!session_) {
+    return;
+  }
   tag_status_ = status;
   tag_has_records_ = false;
   switch (status) {
@@ -535,6 +568,9 @@ void NFCHost::TagQueried(TagStatus status, bool error) {
 
 void NFCHost::TagReadComplete(device::mojom::NDEFRawMessagePtr message,
                               bool error) {
+  if (!session_) {
+    return;
+  }
   if (!message || error || !client_remote_) {
     PendingWatchOperationComplete(device::mojom::NDEFErrorType::IO_ERROR);
     PendingPushOperationComplete(device::mojom::NDEFErrorType::IO_ERROR);
@@ -559,6 +595,9 @@ void NFCHost::TagReadComplete(device::mojom::NDEFRawMessagePtr message,
 }
 
 void NFCHost::TagWriteComplete(bool error) {
+  if (!session_) {
+    return;
+  }
   if (error || !client_remote_ || !pending_push_) {
     PendingPushOperationComplete(device::mojom::NDEFErrorType::IO_ERROR);
     PendingMakeReadOnlyOperationComplete(
@@ -571,6 +610,9 @@ void NFCHost::TagWriteComplete(bool error) {
 }
 
 void NFCHost::TagWriteLockComplete(bool error) {
+  if (!session_) {
+    return;
+  }
   if (error || !client_remote_ || !pending_read_only_) {
     PendingMakeReadOnlyOperationComplete(
         device::mojom::NDEFErrorType::IO_ERROR);
@@ -592,6 +634,9 @@ void NFCHost::PendingWatchOperationComplete(
 }
 
 void NFCHost::ReaderInvalidated(bool error) {
+  if (!session_) {
+    return;
+  }
   PendingWatchOperationComplete(device::mojom::NDEFErrorType::NOT_SUPPORTED);
   PendingPushOperationComplete(device::mojom::NDEFErrorType::NOT_SUPPORTED);
   PendingMakeReadOnlyOperationComplete(

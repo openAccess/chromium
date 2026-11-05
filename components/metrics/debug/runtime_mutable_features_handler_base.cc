@@ -5,6 +5,7 @@
 #include "components/metrics/debug/runtime_mutable_features_handler_base.h"
 
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/feature_list.h"
@@ -45,25 +46,22 @@ void RuntimeMutableFeaturesHandlerBase::HandleFetchRuntimeMutableFeatures(
     const bool enabled =
         (override_state == base::FeatureList::OVERRIDE_ENABLE_FEATURE) ||
         (override_state == base::FeatureList::OVERRIDE_USE_DEFAULT &&
-         feature.default_state == base::FEATURE_ENABLED_BY_DEFAULT);
+         feature.GetDefaultState() == base::FEATURE_ENABLED_BY_DEFAULT);
 
     // Determine which field trial, if any, is controlling the feature's
     // enabled/disabled state, and retrieve its group. Note, that we can
-    // use string_view here because we're referencing strings within the
-    // FeatureList::RuntimeMutableFeatureState object or the FieldTrial
-    // object, both of which are const from the point of view of this
-    // handler.
-    std::string trial_name;
-    std::string group_name;
+    // use string_view for `trial_name` and `group_name` because we're
+    // referencing strings within the FeatureList::RuntimeMutableFeatureState
+    // object or the FieldTrial object, both of which outlive this handler call.
+    std::string_view trial_name;
+    std::string_view group_name;
     bool runtime_override = false;
-    if (!feature_state.field_trial_name.empty()) {
+    if (feature_state.override_info) {
       // The feature is being controlled by a runtime-mutable field trial.
-      trial_name = feature_state.field_trial_name;
-      auto runtime_override_info =
-          base::RuntimeFieldTrialOverrides::GetInstance()->GetRuntimeOverride(
-              feature_state.field_trial_name);
-      CHECK(runtime_override_info.has_value());
-      group_name = runtime_override_info->group_name;
+      CHECK(!feature_state.override_info->trial_name().empty());
+      CHECK(!feature_state.override_info->group_name().empty());
+      trial_name = feature_state.override_info->trial_name();
+      group_name = feature_state.override_info->group_name();
       runtime_override = true;
     } else {
       // The feature is not being controlled by a runtime-mutable field trial.
@@ -138,7 +136,7 @@ void RuntimeMutableFeaturesHandlerBase::HandleUploadSeed(
              << (parsed ? "succeeded" : "failed");
     if (parsed) {
       variations_service_->SimulateAndApplyUploadedSeed(
-          base::PassKey<RuntimeMutableFeaturesHandlerBase>(), seed);
+          base::PassKey<RuntimeMutableFeaturesHandlerBase>(), std::move(seed));
     }
   }
 

@@ -74,6 +74,7 @@
 #include "net/http/http_status_code.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace {
 
@@ -139,6 +140,8 @@ class SyncActiveWithoutPasswordsChecker
 
   // StatusChangeChecker implementation.
   bool IsExitConditionSatisfied(std::ostream* os) override {
+    *os << "Waiting for PASSWORDS to become inactive and Sync to become "
+           "active.";
     // DEVICE_INFO is another arbitrary type supported for signed-in users,
     // just so we rule out no type at all is active.
     return !service()->GetActiveDataTypes().Has(syncer::PASSWORDS) &&
@@ -152,7 +155,7 @@ class SyncActiveWithoutPasswordsChecker
 content::WebContents* GetNewTab(BrowserWindowInterface* browser) {
   ui_test_utils::NavigateToURLWithDisposition(
       browser, GURL("data:text/html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
   return browser->GetTabStripModel()->GetActiveWebContents();
 }
@@ -263,7 +266,7 @@ class PasswordManagerSyncTest : public SyncTest {
   void SetupSyncTransportWithPasswordAccountStorage() {
     SignIn(SyncTestAccount::kDefaultAccount);
 
-    PasswordSyncActiveChecker(GetSyncService(0)).Wait();
+    ASSERT_TRUE(PasswordSyncActiveChecker(GetSyncService(0)).Wait());
     ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PASSWORDS));
   }
 
@@ -799,13 +802,13 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
 
   GetSyncService(0)->GetUserSettings()->SetSelectedType(
       syncer::UserSelectableType::kPasswords, false);
-  PasswordSyncInactiveChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(PasswordSyncInactiveChecker(GetSyncService(0)).Wait());
 
   SignOut();
 
   // The disabling should be remembered.
   SignIn();
-  PasswordSyncInactiveChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(PasswordSyncInactiveChecker(GetSyncService(0)).Wait());
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
@@ -948,7 +951,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTestWithPolicy,
                base::Value(std::move(disabled_types)), nullptr);
   policy_provider()->UpdateChromePolicy(policies);
 
-  SyncActiveWithoutPasswordsChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(SyncActiveWithoutPasswordsChecker(GetSyncService(0)).Wait());
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
@@ -967,7 +970,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
   presenter.Init();
   {
     SavedPasswordsPresenterWaiter waiter(&presenter, 1);
-    waiter.Wait();
+    ASSERT_TRUE(waiter.Wait());
   }
 
   GetSyncService(0)->GetUserSettings()->SetSelectedType(
@@ -975,7 +978,7 @@ IN_PROC_BROWSER_TEST_F(PasswordManagerSyncTest,
 
   {
     SavedPasswordsPresenterWaiter waiter(&presenter, 0);
-    waiter.Wait();
+    ASSERT_TRUE(waiter.Wait());
   }
 }
 

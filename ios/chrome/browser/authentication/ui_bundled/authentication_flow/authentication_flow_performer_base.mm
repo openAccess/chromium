@@ -12,75 +12,63 @@
 #import "base/functional/callback_helpers.h"
 #import "base/ios/block_types.h"
 #import "base/metrics/user_metrics.h"
-#import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
 #import "base/timer/timer.h"
-#import "components/policy/core/common/policy_pref_names.h"
-#import "components/prefs/pref_service.h"
-#import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/strings/grit/components_strings.h"
 #import "components/sync/base/user_selectable_type.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync/service/sync_user_settings.h"
-#import "google_apis/gaia/gaia_auth_util.h"
-#import "google_apis/gaia/gaia_id.h"
-#import "google_apis/gaia/gaia_urls.h"
 #import "ios/chrome/app/change_profile_commands.h"
 #import "ios/chrome/browser/authentication/history_sync/model/history_sync_utils.h"
-#import "ios/chrome/browser/authentication/ui_bundled/authentication_constants.h"
-#import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_performer_base+protected.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_performer_base_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_ui_util.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
-#import "ios/chrome/browser/bubble/model/utils.h"
-#import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
-#import "ios/chrome/browser/policy/model/cloud/user_policy_signin_service.h"
-#import "ios/chrome/browser/policy/model/cloud/user_policy_signin_service_factory.h"
-#import "ios/chrome/browser/policy/model/management_state.h"
-#import "ios/chrome/browser/policy/ui_bundled/management_util.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
-#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
-#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_message_action.h"
 #import "ios/chrome/browser/shared/ui/util/identity_snackbar/identity_snackbar_utils.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/constants.h"
-#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
-#import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/web/public/web_state.h"
-#import "services/network/public/cpp/shared_url_loader_factory.h"
 #import "ui/base/l10n/l10n_util.h"
+
+@interface AuthenticationFlowPerformerBase ()
+
+// Called when the profile switching succeeded.
+- (void)didSwitchToProfileWithNewProfileBrowser:(Browser*)newProfileBrowser
+                                     completion:(base::OnceClosure)completion;
+
+@end
 
 namespace {
 const int64_t kAuthenticationFlowTimeoutSeconds = 10;
 
 // The change profile continuation for the authentication flow.
 void AuthenticationFlowContinuationImpl(
-    id<AuthenticationFlowPerformerBaseDelegate> delegate,
+    AuthenticationFlowPerformerBase* performer,
     SceneState* scene_state,
     base::OnceClosure closure) {
-  CHECK(delegate);
-  [delegate
+  // Once the profile switch has started, the authentication flow cannot be
+  // interrupted and retains itself (and `performer`) until the switch
+  // completes.
+  CHECK(performer, base::NotFatalUntil::M160);
+  [performer
       didSwitchToProfileWithNewProfileBrowser:scene_state
                                                   .browserProviderInterface
                                                   .mainBrowserProvider.browser
@@ -161,9 +149,9 @@ void MaybeShowHistorySyncScreenAfterProfileSwitch(
     view_controller = view_controller.presentedViewController;
   }
 
-  id<SceneCommands> sceneHandler =
-      HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands);
-  [sceneHandler showSignin:command baseViewController:view_controller];
+  id<SceneSignInCommands> sceneSignInHandler =
+      HandlerForProtocol(browser->GetCommandDispatcher(), SceneSignInCommands);
+  [sceneSignInHandler showSignin:command baseViewController:view_controller];
 }
 
 void CompletePostSignInActionsContinuationImpl(
@@ -284,7 +272,6 @@ void CompletePostSignInActions(PostSignInActionSet post_signin_actions,
               postSignInActions:(PostSignInActionSet)postSignInActions
                    withIdentity:(id<SystemIdentity>)identity
                     accessPoint:(signin_metrics::AccessPoint)accessPoint {
-  CHECK(AreSeparateProfilesForManagedAccountsEnabled());
   ChangeProfileContinuation postSignInContinuation =
       CompletePostSigninActionsContinuation(postSignInActions, identity,
                                             accessPoint);
@@ -307,7 +294,7 @@ void CompletePostSignInActions(PostSignInActionSet post_signin_actions,
                  withCompletion:(ProceduralBlock)callback
                  viewController:(UIViewController*)viewController
                         browser:(Browser*)browser {
-  CHECK(browser, base::NotFatalUntil::M150);
+  CHECK(browser);
   // Sign-in related work should be done on regular browser.
   CHECK_EQ(browser->type(), Browser::Type::kRegular);
   [self checkNoDialog];
@@ -338,12 +325,22 @@ void CompletePostSignInActions(PostSignInActionSet post_signin_actions,
 
 #pragma mark - Private
 
-// The change profile continuation for the authentication flow.
-- (ChangeProfileContinuation)authenticationFlowContinuation {
-  return base::BindOnce(&AuthenticationFlowContinuationImpl, _delegate);
+- (void)didSwitchToProfileWithNewProfileBrowser:(Browser*)newProfileBrowser
+                                     completion:(base::OnceClosure)completion {
+  if (!_delegate) {
+    std::move(completion).Run();
+    return;
+  }
+  [_delegate authenticationFlowPerformerBase:self
+      didSwitchToProfileWithNewProfileBrowser:newProfileBrowser
+                                   completion:std::move(completion)];
 }
 
-#pragma mark - Private
+// The change profile continuation for the authentication flow.
+- (ChangeProfileContinuation)authenticationFlowContinuation {
+  __weak __typeof(self) weakSelf = self;
+  return base::BindOnce(&AuthenticationFlowContinuationImpl, weakSelf);
+}
 
 // Callback for when the alert is dismissed.
 - (void)alertControllerDidDisappear:(ChromeCoordinator*)coordinator {

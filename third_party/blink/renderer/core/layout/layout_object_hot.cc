@@ -89,14 +89,15 @@ void LayoutObject::PropagateStyleToAnonymousChildren() {
   // properties.
   for (LayoutObject* child = SlowFirstChild(); child;
        child = child->NextSibling()) {
-    if (!child->IsAnonymous() || child->StyleRef().StyleType() != kPseudoIdNone)
+    if (!child->IsAnonymous() || child->Style().StyleType() != kPseudoIdNone) {
       continue;
+    }
     if (child->AnonymousHasStylePropagationOverride())
       continue;
 
     ComputedStyleBuilder new_style_builder =
         GetDocument().GetStyleResolver().CreateAnonymousStyleBuilderWithDisplay(
-            StyleRef(), child->StyleRef().Display());
+            Style(), child->Style().Display());
 
     if (IsA<LayoutTextCombine>(child)) [[unlikely]] {
       if (!LayoutTextCombine::IsSupportedMode(
@@ -116,17 +117,18 @@ void LayoutObject::PropagateStyleToAnonymousChildren() {
 
     UpdateAnonymousChildStyle(child, new_style_builder);
 
-    child->SetStyle(new_style_builder.TakeStyle());
+    child->SetStyle(*new_style_builder.TakeStyle());
   }
 
-  PseudoId pseudo_id = StyleRef().StyleType();
+  PseudoId pseudo_id = Style().StyleType();
   if (pseudo_id == kPseudoIdNone)
     return;
 
   // Don't propagate style from markers with 'content: normal' because it's not
   // needed and it would be slow.
-  if (pseudo_id == kPseudoIdMarker && StyleRef().ContentBehavesAsNormal())
+  if (pseudo_id == kPseudoIdMarker && Style().ContentBehavesAsNormal()) {
     return;
+  }
 
   // Propagate style from pseudo-elements to generated content. We skip children
   // with pseudo-element StyleType() in the for-loop above and skip over
@@ -198,13 +200,13 @@ void LayoutObject::UpdateImageObservers(const ComputedStyle* old_style,
   UpdateFirstLineImageObservers(new_style);
 }
 
-LayoutBlock* LayoutObject::ContainingBlock(AncestorSkipInfo* skip_info) const {
+LayoutBox* LayoutObject::ContainingBox(AncestorSkipInfo* skip_info) const {
   NOT_DESTROYED();
   if (!IsTextOrSVGChild()) {
     if (style_->GetPosition() == EPosition::kFixed)
-      return ContainingBlockForFixedPosition(skip_info);
+      return ContainingBoxForFixedPosition(skip_info);
     if (style_->GetPosition() == EPosition::kAbsolute)
-      return ContainingBlockForAbsolutePosition(skip_info);
+      return ContainingBoxForAbsolutePosition(skip_info);
   }
 
   if (IsColumnSpanAll()) {
@@ -214,18 +216,17 @@ LayoutBlock* LayoutObject::ContainingBlock(AncestorSkipInfo* skip_info) const {
   LayoutObject* object = Parent();
   if (!object) {
     if (const auto* part = DynamicTo<LayoutCustomScrollbarPart>(this)) {
-      object = part->GetScrollableArea()->GetLayoutBox();
+      return part->GetScrollableArea()->GetLayoutBox();
     }
   }
 
-  while (object && !object->IsLayoutBlock()) {
+  while (object && !object->IsBox()) {
     if (skip_info) {
       skip_info->Update(*object);
     }
     object = object->Parent();
   }
-
-  return DynamicTo<LayoutBlock>(object);
+  return To<LayoutBox>(object);
 }
 
 }  // namespace blink

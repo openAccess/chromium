@@ -14,7 +14,7 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
 #import "components/application_locale_storage/application_locale_storage.h"
-#import "components/optimization_guide/core/model_execution/feature_keys.h"
+#import "components/optimization_guide/core/feature_registry/feature_keys.h"
 #import "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #import "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #import "components/optimization_guide/core/optimization_guide_util.h"
@@ -92,8 +92,10 @@ void EnhancedCalendarServiceImpl::ExecuteEnhancedCalendarRequest(
   request.set_surrounding_text(request_params->surrounding_text);
 
   // Set the user locale.
-  const std::string locale =
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get();
+  const std::string locale(GetApplicationContext()
+                               ->GetApplicationLocaleStorage()
+                               ->GetTag()
+                               .tag_string());
   request.set_user_locale(locale);
 
   // Set the prompt, if it exists.

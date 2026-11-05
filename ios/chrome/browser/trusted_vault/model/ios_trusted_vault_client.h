@@ -52,10 +52,16 @@ class IOSTrustedVaultClient : public trusted_vault::TrustedVaultClient {
   void GetIsRecoverabilityDegraded(
       const CoreAccountInfo& account_info,
       base::OnceCallback<void(bool)> callback) override;
-  void AddTrustedRecoveryMethod(const GaiaId& gaia_id,
-                                const std::vector<uint8_t>& public_key,
-                                int method_type_hint,
-                                base::OnceClosure callback) override;
+  void AddTrustedRecoveryMethod(
+      const GaiaId& gaia_id,
+      const std::vector<uint8_t>& public_key,
+      int method_type_hint,
+      base::OnceCallback<void(bool)> callback) override;
+  void CanEnroll(const CoreAccountInfo& account_info,
+                 base::OnceCallback<void(bool)> callback) override;
+  void Enroll(const CoreAccountInfo& account_info,
+              base::OnceCallback<void(const std::vector<uint8_t>&, int)>
+                  callback) override;
   void ClearLocalDataForAccount(const CoreAccountInfo& account_info) override;
 
   // Not copyable or movable

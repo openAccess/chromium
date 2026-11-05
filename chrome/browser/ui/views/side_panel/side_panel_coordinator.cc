@@ -31,7 +31,6 @@
 #include "chrome/browser/ui/views/side_panel/side_panel.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_header.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_header_controller.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_helper.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_toolbar_pinning_controller.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_web_ui_view.h"
 #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions_container.h"
@@ -41,14 +40,11 @@
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/views/view.h"
 
-DEFINE_USER_DATA(SidePanelCoordinator);
-
 SidePanelCoordinator::SidePanelCoordinator(BrowserWindowInterface* browser)
     : SidePanelUIBase(browser),
       browser_(CHECK_DEREF(browser)),
       side_panel_toolbar_pinning_controller_(
-          std::make_unique<SidePanelToolbarPinningController>(browser)),
-      scoped_unowned_user_data_(browser->GetUnownedUserDataHost(), *this) {
+          std::make_unique<SidePanelToolbarPinningController>(browser)) {
   // SidePanelCoordinator should only be created for the Views implementation of
   // the BrowserWindow.
   SidePanel* side_panel = GetSidePanel();
@@ -58,22 +54,22 @@ SidePanelCoordinator::SidePanelCoordinator(BrowserWindowInterface* browser)
   // the ToolbarView does not create a button for them. This specifically seems
   // to hit web apps. See https://crbug.com/40803038.
   side_panel_observation_.Observe(side_panel);
-  SidePanelHelper::PopulateGlobalEntries(browser,
-                                         SidePanelRegistry::From(browser));
 }
 
 SidePanelCoordinator::~SidePanelCoordinator() = default;
-
-// static:
-SidePanelCoordinator* SidePanelCoordinator::From(
-    BrowserWindowInterface* browser_window_interface) {
-  return Get(browser_window_interface->GetUnownedUserDataHost());
-}
 
 void SidePanelCoordinator::TearDownPreBrowserWindowDestruction() {
   Close(SidePanelEntryHideReason::kSidePanelClosed,
         /*suppress_animations=*/true);
   side_panel_toolbar_pinning_controller_.reset();
+}
+
+void SidePanelCoordinator::OverrideContentsWidth(int width) {
+  GetSidePanel()->OverrideContentsWidth(width);
+}
+
+void SidePanelCoordinator::ResetContentsWidthOverride() {
+  GetSidePanel()->ResetContentsWidthOverride();
 }
 
 void SidePanelCoordinator::Toggle(SidePanelEntryKey key,
@@ -129,10 +125,6 @@ void SidePanelCoordinator::DisableAnimationsForTesting() {
   GetSidePanel()->DisableAnimationsForTesting();  // IN-TEST
 }
 
-SidePanelEntry* SidePanelCoordinator::GetLoadingEntryForTesting() const {
-  return waiter()->loading_entry();
-}
-
 void SidePanelCoordinator::Show(
     const UniqueKey& input,
     std::optional<SidePanelOpenTrigger> open_trigger,
@@ -159,9 +151,6 @@ void SidePanelCoordinator::Show(
     ClosePromoAndMaybeNotifyUsed(
         feature_engagement::kIPHPowerBookmarksSidePanelFeature,
         SidePanelEntryId::kBookmarks, input.key.id());
-    ClosePromoAndMaybeNotifyUsed(
-        feature_engagement::kIPHReadingModeSidePanelFeature,
-        SidePanelEntryId::kReadAnything, input.key.id());
   }
 
   SidePanelMetrics::RecordSidePanelShowOrChangeEntryTrigger(open_trigger);
@@ -282,10 +271,10 @@ void SidePanelCoordinator::PopulateSidePanel(
     side_panel->RemoveHeaderView();
   }
   auto* content_wrapper = side_panel->GetContentParentView();
-  DCHECK(content_wrapper);
+  CHECK(content_wrapper, base::NotFatalUntil::M162);
   // |content_wrapper| should have either no child views or one child view for
   // the currently hosted SidePanelEntry.
-  DCHECK(content_wrapper->children().size() <= 1);
+  CHECK(content_wrapper->children().size() <= 1, base::NotFatalUntil::M162);
 
   content_wrapper->SetVisible(true);
 
@@ -387,7 +376,8 @@ void SidePanelCoordinator::MaybeShowEntryOnTabStripModelChanged(
           current_key()->tab_handle &&
           (*active_entry)->key() == current_key()->key) {
         auto* content_wrapper = side_panel->GetContentParentView();
-        DCHECK(content_wrapper->children().size() == 1);
+        CHECK(content_wrapper->children().size() == 1,
+              base::NotFatalUntil::M162);
         auto current_entry_view = content_wrapper->RemoveChildViewT(
             content_wrapper->children().front());
         (*active_entry)->CacheView(std::move(current_entry_view));

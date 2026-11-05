@@ -6,6 +6,7 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/unguessable_token.h"
 #include "content/browser/devtools/devtools_instrumentation.h"
 #include "content/common/features.h"
@@ -37,7 +38,7 @@ const void* const kPreloadActivationReportManagerKey =
 PreloadActivationReportManager*
 PreloadActivationReportManager::GetOrCreateForBrowserContext(
     BrowserContext* browser_context) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   CHECK(browser_context);
 
   auto* manager = static_cast<PreloadActivationReportManager*>(
@@ -63,10 +64,15 @@ PreloadActivationReportManager::PreloadActivationReportManager() = default;
 
 PreloadActivationReportManager::~PreloadActivationReportManager() = default;
 
-void PreloadActivationReportManager::ReportActivation(const GURL& endpoint,
-                                                      RenderFrameHost* rfh) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+void PreloadActivationReportManager::ReportActivation(
+    const GURL& endpoint,
+    RenderFrameHost* rfh,
+    PreloadActivationReportType report_type) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   CHECK(rfh);
+
+  base::UmaHistogramEnumeration("Preloading.ActivationBeacon.ReportPreloadType",
+                                report_type);
 
   url::Origin original_origin = url::Origin::Create(endpoint);
 
@@ -181,13 +187,15 @@ void PreloadActivationReportManager::OnRedirect(
     const GURL& url_before_redirect,
     const net::RedirectInfo& redirect_info,
     const network::mojom::URLResponseHead& response_head) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   // Enforce that the HTTP method must remain GET.
   if (redirect_info.new_method != net::HttpRequestHeaders::kGetMethod) {
     devtools_instrumentation::OnPrefetchActivationBeaconRequestComplete(
         it->frame_tree_node_id, it->devtools_request_id,
         network::URLLoaderCompletionStatus(net::ERR_ABORTED));
+    base::UmaHistogramBoolean("Preloading.ActivationBeacon.ReportSuccess",
+                              false);
     RemoveLoader(it);
     return;
   }
@@ -197,6 +205,8 @@ void PreloadActivationReportManager::OnRedirect(
     devtools_instrumentation::OnPrefetchActivationBeaconRequestComplete(
         it->frame_tree_node_id, it->devtools_request_id,
         network::URLLoaderCompletionStatus(net::ERR_ABORTED));
+    base::UmaHistogramBoolean("Preloading.ActivationBeacon.ReportSuccess",
+                              false);
     RemoveLoader(it);
     return;
   }
@@ -221,7 +231,7 @@ void PreloadActivationReportManager::OnRedirect(
 void PreloadActivationReportManager::OnComplete(
     UrlLoaderList::iterator it,
     scoped_refptr<net::HttpResponseHeaders> headers) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   if (it->loader->ResponseInfo()) {
     devtools_instrumentation::OnPrefetchActivationBeaconResponseReceived(
@@ -233,11 +243,15 @@ void PreloadActivationReportManager::OnComplete(
   devtools_instrumentation::OnPrefetchActivationBeaconRequestComplete(
       it->frame_tree_node_id, it->devtools_request_id, status);
 
+  base::UmaHistogramBoolean(
+      "Preloading.ActivationBeacon.ReportSuccess",
+      it->loader->NetError() == net::OK && headers != nullptr);
+
   RemoveLoader(it);
 }
 
 void PreloadActivationReportManager::RemoveLoader(UrlLoaderList::iterator it) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   loaders_.erase(it);
 }
 

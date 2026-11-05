@@ -6,6 +6,7 @@
 
 #import "base/apple/foundation_util.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/autofill/atmemory/public/at_memory_constants.h"
 #import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
@@ -36,7 +37,7 @@ constexpr CGFloat kMarginTrailing = 16.0;
   self = [super init];
   if (self) {
     _title = l10n_util::GetNSString(IDS_AT_MEMORY_NOTICE_TITLE);
-    _message = l10n_util::GetNSString(IDS_AT_MEMORY_NOTICE_TEXT_NO_LOGGING);
+    _message = l10n_util::GetNSString(IDS_AT_MEMORY_NOTICE_TEXT);
   }
   return self;
 }
@@ -149,6 +150,7 @@ constexpr CGFloat kMarginTrailing = 16.0;
         [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote],
     NSForegroundColorAttributeName : [UIColor colorNamed:kBlueColor],
     NSLinkAttributeName : @"",
+    NSUnderlineStyleAttributeName : @(NSUnderlineStyleSingle),
   };
   NSString* message = _configuration.message;
   // Convert HTML link tags to BEGIN_LINK/END_LINK delimiters used on iOS.
@@ -227,8 +229,12 @@ constexpr CGFloat kMarginTrailing = 16.0;
 // Helper to create and configure the OK button.
 - (UIButton*)createOKButton {
   UIButton* button = [UIButton buttonWithType:UIButtonTypeSystem];
-  [button setTitle:l10n_util::GetNSString(IDS_OK)
+  [button setTitle:l10n_util::GetNSString(IDS_AT_MEMORY_NOTICE_OK_BUTTON)
           forState:UIControlStateNormal];
+  button.accessibilityIdentifier =
+      kAtMemoryNoticeOkButtonAccessibilityIdentifier;
+  button.accessibilityLabel =
+      l10n_util::GetNSString(IDS_AT_MEMORY_NOTICE_OK_BUTTON_A11Y_LABEL);
   [button.titleLabel
       setFont:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
   button.titleLabel.adjustsFontForContentSizeCategory = YES;

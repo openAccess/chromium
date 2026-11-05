@@ -25,7 +25,6 @@ import './per_device_subsection_header.js';
 import 'chrome://resources/ash/common/cr_elements/cr_slider/cr_slider.js';
 
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.js';
 import type {PolymerElementProperties} from 'chrome://resources/polymer/v3_0/polymer/interfaces.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -36,9 +35,9 @@ import type {SettingsSliderElement} from '../controls/settings_slider.js';
 import type {SettingsToggleButtonElement} from '../controls/settings_toggle_button.js';
 import {KeyboardAmbientLightSensorObserverReceiver, KeyboardBrightnessObserverReceiver, LidStateObserverReceiver} from '../mojom-webui/input_device_settings_provider.mojom-webui.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
+import type {Route} from '../os_settings_routes.js';
 import type {PersonalizationHubBrowserProxy} from '../personalization_page/personalization_hub_browser_proxy.js';
 import {PersonalizationHubBrowserProxyImpl} from '../personalization_page/personalization_hub_browser_proxy.js';
-import type {Route} from '../router.js';
 import {Router, routes} from '../router.js';
 
 import {getInputDeviceSettingsProvider} from './input_device_mojo_interface_provider.js';
@@ -189,61 +188,50 @@ export class SettingsPerDeviceKeyboardSubsectionElement extends
 
   declare protected keyboard: Keyboard;
   declare protected keyboardPolicies: KeyboardPolicies;
-  declare private topRowAreFunctionKeysPref: chrome.settingsPrivate.PrefObject;
-  declare private blockMetaFunctionKeyRewritesPref: chrome.settingsPrivate.PrefObject;
-  declare private keyboardBrightnessPercentPref: chrome.settingsPrivate.PrefObject;
-  declare private keyboardAutoBrightnessPref: chrome.settingsPrivate.PrefObject;
-  declare private remapKeyboardKeysSublabel: string;
-  private isInitialized: boolean = false;
-  private inputDeviceSettingsProvider: InputDeviceSettingsProviderInterface =
+  declare protected topRowAreFunctionKeysPref:
+      chrome.settingsPrivate.PrefObject;
+  declare protected blockMetaFunctionKeyRewritesPref:
+      chrome.settingsPrivate.PrefObject;
+  declare protected keyboardBrightnessPercentPref:
+      chrome.settingsPrivate.PrefObject;
+  declare protected keyboardAutoBrightnessPref:
+      chrome.settingsPrivate.PrefObject;
+  declare protected remapKeyboardKeysSublabel: string;
+  private isInitialized_: boolean = false;
+  private inputDeviceSettingsProvider_: InputDeviceSettingsProviderInterface =
       getInputDeviceSettingsProvider();
-  private personalizationHubBrowserProxy: PersonalizationHubBrowserProxy =
+  private personalizationHubBrowserProxy_: PersonalizationHubBrowserProxy =
       PersonalizationHubBrowserProxyImpl.getInstance();
-  private keyboardBrightnessObserverReceiver:
-      KeyboardBrightnessObserverReceiver;
-  private keyboardAmbientLightSensorObserverReceiver:
-      KeyboardAmbientLightSensorObserverReceiver;
-  private lidStateObserverReceiver: LidStateObserverReceiver;
-  declare private keyboardIndex: number;
-  declare private isLastDevice: boolean;
-  declare private isRgbKeyboardSupported: boolean;
-  declare private hasKeyboardBacklight: boolean;
-  declare private hasAmbientLightSensor: boolean;
-  declare private isLidOpen: boolean;
+  private keyboardBrightnessObserverReceiver_ =
+      new KeyboardBrightnessObserverReceiver(this);
+  private keyboardAmbientLightSensorObserverReceiver_ =
+      new KeyboardAmbientLightSensorObserverReceiver(this);
+  private lidStateObserverReceiver_ = new LidStateObserverReceiver(this);
+  declare protected keyboardIndex: number;
+  declare protected isLastDevice: boolean;
+  declare protected isRgbKeyboardSupported: boolean;
+  declare protected hasKeyboardBacklight: boolean;
+  declare protected hasAmbientLightSensor: boolean;
+  declare protected isLidOpen: boolean;
+
+  constructor() {
+    super();
+    this.observeKeyboardBrightness();
+    this.observeKeyboardAmbientLightSensor();
+    this.observeLidState();
+  }
 
   override async connectedCallback(): Promise<void> {
     super.connectedCallback();
 
-    // Add keyboardBrightnessChange observer.
-    this.keyboardBrightnessObserverReceiver =
-        new KeyboardBrightnessObserverReceiver(this);
-    this.inputDeviceSettingsProvider.observeKeyboardBrightness(
-        this.keyboardBrightnessObserverReceiver.$.bindNewPipeAndPassRemote());
-
-    // Add keyboardAmbientLightSensorChange observer.
-    this.keyboardAmbientLightSensorObserverReceiver =
-        new KeyboardAmbientLightSensorObserverReceiver(this);
-    this.inputDeviceSettingsProvider.observeKeyboardAmbientLightSensor(
-        this.keyboardAmbientLightSensorObserverReceiver.$
-            .bindNewPipeAndPassRemote());
-
-    // Add LidState Observer.
-    this.lidStateObserverReceiver = new LidStateObserverReceiver(this);
-    this.inputDeviceSettingsProvider
-        .observeLidState(
-            this.lidStateObserverReceiver.$.bindNewPipeAndPassRemote())
-        .then(({isLidOpen}: {isLidOpen: boolean}) => {
-          this.onLidStateChanged(isLidOpen);
-        });
-
     this.isRgbKeyboardSupported =
-        (await this.inputDeviceSettingsProvider.isRgbKeyboardSupported())
+        (await this.inputDeviceSettingsProvider_.isRgbKeyboardSupported())
             ?.isRgbKeyboardSupported;
     this.hasKeyboardBacklight =
-        (await this.inputDeviceSettingsProvider.hasKeyboardBacklight())
+        (await this.inputDeviceSettingsProvider_.hasKeyboardBacklight())
             ?.hasKeyboardBacklight;
     this.hasAmbientLightSensor =
-        (await this.inputDeviceSettingsProvider.hasAmbientLightSensor())
+        (await this.inputDeviceSettingsProvider_.hasAmbientLightSensor())
             ?.hasAmbientLightSensor;
 
     if (this.hasKeyboardBacklight && this.isChromeOsKeyboard()) {
@@ -264,15 +252,15 @@ export class SettingsPerDeviceKeyboardSubsectionElement extends
   private updateSettingsToCurrentPrefs(): void {
     // `updateSettingsToCurrentPrefs` gets called when the `keyboard` object
     // gets updated. This subsection element can be reused multiple times so we
-    // need to reset `isInitialized` so we do not make unneeded API calls.
-    this.isInitialized = false;
+    // need to reset `isInitialized_` so we do not make unneeded API calls.
+    this.isInitialized_ = false;
     this.set(
         'topRowAreFunctionKeysPref.value',
         this.keyboard.settings.topRowAreFkeys);
     this.set(
         'blockMetaFunctionKeyRewritesPref.value',
         this.keyboard.settings.suppressMetaFkeyRewrites);
-    this.isInitialized = true;
+    this.isInitialized_ = true;
   }
 
   private onPoliciesChanged(): void {
@@ -300,7 +288,7 @@ export class SettingsPerDeviceKeyboardSubsectionElement extends
   }
 
   private onKeyboardBrightnessSliderChanged(): void {
-    this.inputDeviceSettingsProvider.setKeyboardBrightness(
+    this.inputDeviceSettingsProvider_.setKeyboardBrightness(
         this.getKeyboardBrightnessFromSlider());
   }
 
@@ -308,25 +296,27 @@ export class SettingsPerDeviceKeyboardSubsectionElement extends
     // Record updated brightness if adjusted via arrow keys.
     if (['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(
             event.key)) {
-      this.inputDeviceSettingsProvider.recordKeyboardBrightnessChangeFromSlider(
-          this.getKeyboardBrightnessFromSlider());
+      this.inputDeviceSettingsProvider_
+          .recordKeyboardBrightnessChangeFromSlider(
+              this.getKeyboardBrightnessFromSlider());
     }
   }
 
   private onPointerup(): void {
     // Record brightness after slider adjustment is completed.
-    this.inputDeviceSettingsProvider.recordKeyboardBrightnessChangeFromSlider(
-        this.getKeyboardBrightnessFromSlider());
+    this.inputDeviceSettingsProvider_
+        .recordKeyboardBrightnessChangeFromSlider(
+            this.getKeyboardBrightnessFromSlider());
   }
 
   private onKeyboardAutoBrightnessToggleChanged(e: Event): void {
     const toggle = e.target as SettingsToggleButtonElement;
-    this.inputDeviceSettingsProvider.setKeyboardAmbientLightSensorEnabled(
+    this.inputDeviceSettingsProvider_.setKeyboardAmbientLightSensorEnabled(
         toggle.checked);
   }
 
   private onSettingsChanged(): void {
-    if (!this.isInitialized) {
+    if (!this.isInitialized_) {
       return;
     }
 
@@ -341,7 +331,7 @@ export class SettingsPerDeviceKeyboardSubsectionElement extends
     }
 
     this.keyboard.settings = newSettings;
-    this.inputDeviceSettingsProvider.setKeyboardSettings(
+    this.inputDeviceSettingsProvider_.setKeyboardSettings(
         this.keyboard.id, this.keyboard.settings);
   }
 
@@ -359,14 +349,34 @@ export class SettingsPerDeviceKeyboardSubsectionElement extends
     this.set('keyboardBrightnessPercentPref.value', keyboardBrightnessPercent);
   }
 
-  onKeyboardAmbientLightSensorEnabledChanged(keyboardAmbientLightSensorEnabled:
-                                                 boolean): void {
+  onKeyboardAmbientLightSensorEnabledChanged(
+      keyboardAmbientLightSensorEnabled: boolean): void {
     this.set(
         'keyboardAutoBrightnessPref.value', keyboardAmbientLightSensorEnabled);
   }
 
   onLidStateChanged(isLidOpen: boolean): void {
     this.isLidOpen = isLidOpen;
+  }
+
+  private observeKeyboardBrightness(): void {
+    this.inputDeviceSettingsProvider_.observeKeyboardBrightness(
+        this.keyboardBrightnessObserverReceiver_.$.bindNewPipeAndPassRemote());
+  }
+
+  private observeKeyboardAmbientLightSensor(): void {
+    this.inputDeviceSettingsProvider_.observeKeyboardAmbientLightSensor(
+        this.keyboardAmbientLightSensorObserverReceiver_.$
+            .bindNewPipeAndPassRemote());
+  }
+
+  private observeLidState(): void {
+    this.inputDeviceSettingsProvider_
+        .observeLidState(
+            this.lidStateObserverReceiver_.$.bindNewPipeAndPassRemote())
+        .then(({isLidOpen}: {isLidOpen: boolean}) => {
+          this.onLidStateChanged(isLidOpen);
+        });
   }
 
   private getNumRemappedSixPackKeys(): number {
@@ -382,11 +392,9 @@ export class SettingsPerDeviceKeyboardSubsectionElement extends
   }
 
   private async onKeyboardRemappingsChanged(): Promise<void> {
-    let numRemappedKeys =
-        Object.keys(this.keyboard.settings.modifierRemappings).length;
-    if (loadTimeData.getBoolean('enableAltClickAndSixPackCustomization')) {
-      numRemappedKeys += this.getNumRemappedSixPackKeys();
-    }
+    const numRemappedKeys =
+        Object.keys(this.keyboard.settings.modifierRemappings).length +
+        this.getNumRemappedSixPackKeys();
     this.remapKeyboardKeysSublabel =
         await PluralStringProxyImpl.getInstance().getPluralString(
             'remapKeyboardKeysRowSubLabel', numRemappedKeys);
@@ -418,8 +426,8 @@ export class SettingsPerDeviceKeyboardSubsectionElement extends
   }
 
   private openPersonalizationHub(): void {
-    this.inputDeviceSettingsProvider.recordKeyboardColorLinkClicked();
-    this.personalizationHubBrowserProxy.openPersonalizationHub();
+    this.inputDeviceSettingsProvider_.recordKeyboardColorLinkClicked();
+    this.personalizationHubBrowserProxy_.openPersonalizationHub();
   }
 
   private getKeyboardBrightnessFromSlider(): number {

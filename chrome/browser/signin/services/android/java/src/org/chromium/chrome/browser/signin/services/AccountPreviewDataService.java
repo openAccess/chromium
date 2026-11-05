@@ -15,12 +15,6 @@ import org.jni_zero.NativeMethods;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.components.signin.AccountUtils;
-import org.chromium.components.signin.SigninFeatureMap;
-import org.chromium.components.signin.SigninFeatures;
-import org.chromium.components.signin.base.AccountInfo;
-
-import java.util.List;
 
 /**
  * AccountPreviewDataService provides access to native AccountPreviewDataService's public API to
@@ -38,12 +32,15 @@ public class AccountPreviewDataService {
         mNativeAccountPreviewDataService = nativeAccountPreviewDataService;
     }
 
-    /** Returns the preferred account and preferred data types for promos. */
+    /**
+     * Returns the preferred account and preferred data types when offering signed-out users to sign
+     * in.
+     */
     @MainThread
-    public @Nullable AccountPreviewPreference getPreferredAccountForPromo() {
+    public @Nullable AccountPreviewPreference getPreferredAccountForSignin() {
         ThreadUtils.assertOnUiThread();
         return AccountPreviewDataServiceJni.get()
-                .getPreferredAccountForPromo(mNativeAccountPreviewDataService);
+                .getPreferredAccountForSignin(mNativeAccountPreviewDataService);
     }
 
     /** Updates the account currently used by the external app. */
@@ -54,30 +51,10 @@ public class AccountPreviewDataService {
                 .updateExternalAppAccount(mNativeAccountPreviewDataService, email);
     }
 
-    /**
-     * Returns the preferred account if present among accounts, or the first account as default. The
-     * accounts list must not be empty.
-     *
-     * <p>TODO(crbug.com/553530451): Remove this method once FullscreenSigninMediator is migrated.
-     */
-    @MainThread
-    public AccountInfo getPreferredAccountOrDefault(List<AccountInfo> accounts) {
-        ThreadUtils.assertOnUiThread();
-        assert !accounts.isEmpty();
-        assert SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_ACCOUNT_PREVIEW_PREFERRED_ACCOUNT);
-
-        AccountPreviewPreference preference = getPreferredAccountForPromo();
-        AccountInfo account =
-                preference != null
-                        ? AccountUtils.findAccountByGaiaId(accounts, preference.getGaiaId())
-                        : null;
-        return account != null ? account : accounts.get(0);
-    }
-
     @NativeMethods
     interface Natives {
         @JniType("std::optional<signin::AccountPreviewDataService::AccountPreviewPreference>")
-        @Nullable AccountPreviewPreference getPreferredAccountForPromo(
+        @Nullable AccountPreviewPreference getPreferredAccountForSignin(
                 @JniType("AccountPreviewDataService*") long nativeAccountPreviewDataService);
 
         void updateExternalAppAccount(

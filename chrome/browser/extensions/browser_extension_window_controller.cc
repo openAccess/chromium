@@ -16,6 +16,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/common/extensions/api/tabs.h"
 #include "chrome/common/webui_url_constants.h"
@@ -28,6 +29,8 @@
 #include "extensions/common/manifest_handlers/options_page_info.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 // TODO(http://crbug.com/453008083): Stop including
 // "android/chrome_feature_list.h".
@@ -42,6 +45,11 @@
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"  // nogncheck
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
 #include "chrome/browser/ui/singleton_tabs.h"
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
+#include "chrome/common/chrome_features.h"
 #endif
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
@@ -93,7 +101,7 @@ api::tabs::WindowType GetTabsWindowType(const BrowserWindowInterface* browser) {
     // reach this point).
     case BrowserWindowInterface::TYPE_NORMAL:
 #if !BUILDFLAG(IS_ANDROID)
-    case BrowserWindowInterface::TYPE_PICTURE_IN_PICTURE:
+    case BrowserWindowInterface::TYPE_FLOATING:
 #endif
       return api::tabs::WindowType::kNormal;
   }
@@ -205,7 +213,12 @@ base::DictValue BrowserExtensionWindowController::CreateWindowValueForExtension(
       return kShowStateValueMinimized;
     } else if (window()->IsFullscreen()) {
 #if BUILDFLAG(IS_CHROMEOS)
-      if (platform_util::IsBrowserLockedFullscreen(GetBrowser())) {
+      if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+        if (chromeos::LockedStateController::From(GetBrowser())
+                ->IsLockedFullscreen()) {
+          return kShowStateValueLockedFullscreen;
+        }
+      } else if (platform_util::IsBrowserLockedFullscreen(GetBrowser())) {
         return kShowStateValueLockedFullscreen;
       }
 #endif
@@ -283,15 +296,16 @@ bool BrowserExtensionWindowController::OpenOptionsPage(
     const Extension* extension,
     const GURL& url,
     bool open_in_tab) {
-  DCHECK(OptionsPageInfo::HasOptionsPage(extension));
+  CHECK(OptionsPageInfo::HasOptionsPage(extension), base::NotFatalUntil::M161);
 
 #if BUILDFLAG(IS_ANDROID)
   // On Android, we just open the options page in a new tab.
-  content::OpenURLParams params(
-      url, content::Referrer(),
-      open_in_tab ? WindowOpenDisposition::NEW_FOREGROUND_TAB
-                  : WindowOpenDisposition::CURRENT_TAB,
-      ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          url,
+          open_in_tab ? ui::mojom::WindowOpenDisposition::kNewForegroundTab
+                      : ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_LINK);
   browser_->OpenURL(params, /*navigation_handle_callback=*/{});
 #else
   // Force the options page to open in non-OTR window if the extension is not

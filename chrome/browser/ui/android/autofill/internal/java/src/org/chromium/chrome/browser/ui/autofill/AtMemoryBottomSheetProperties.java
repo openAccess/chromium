@@ -51,6 +51,11 @@ class AtMemoryBottomSheetProperties {
         // Indicates whether the bottom sheet dialog should display a loading state.
         static final WritableBooleanPropertyKey IS_LOADING = new WritableBooleanPropertyKey();
 
+        // Initial value for the search bar. The previous query is preserved for a specific
+        // timeframe after the sheet is closed.
+        static final WritableObjectPropertyKey<String> SEARCH_BAR_INITIAL_VALUE =
+                new WritableObjectPropertyKey<>();
+
         static final ReadableObjectPropertyKey<AtMemorySearchBarView.Delegate> SEARCH_BAR_DELEGATE =
                 new ReadableObjectPropertyKey<>();
 
@@ -58,14 +63,17 @@ class AtMemoryBottomSheetProperties {
         static final ReadableObjectPropertyKey<ModelList> SHEET_ITEMS =
                 new ReadableObjectPropertyKey<>();
 
-        static final PropertyKey[] ALL_KEYS = {IS_LOADING, SEARCH_BAR_DELEGATE, SHEET_ITEMS};
+        static final PropertyKey[] ALL_KEYS = {
+            IS_LOADING, SEARCH_BAR_INITIAL_VALUE, SEARCH_BAR_DELEGATE, SHEET_ITEMS
+        };
 
         @IntDef({
             ItemType.SUGGESTION,
             ItemType.SUGGESTION_WITH_NO_BACKGROUND,
             ItemType.ILLUSTRATION_CARD,
             ItemType.NOTICE,
-            ItemType.TEXT_WITH_CLICKABLE_LINK
+            ItemType.TEXT_WITH_CLICKABLE_LINK,
+            ItemType.TITLE
         })
         @Retention(RetentionPolicy.SOURCE)
         @interface ItemType {
@@ -83,6 +91,9 @@ class AtMemoryBottomSheetProperties {
 
             /** A section containing text with a clickable link. */
             int TEXT_WITH_CLICKABLE_LINK = 4;
+
+            /** A section containing a title. */
+            int TITLE = 5;
         }
 
         /** Delegate to request search UI actions (e.g. hiding keyboard or clearing focus). */
@@ -124,8 +135,12 @@ class AtMemoryBottomSheetProperties {
         // Subtitle to be displayed on the illustration card.
         static final ReadableObjectPropertyKey<@Nullable String> SUBTITLE =
                 new ReadableObjectPropertyKey<>();
+        // Titles that are cycled through in zero state, in order and starting at a random one,
+        // after the default title is shown.
+        static final ReadableObjectPropertyKey<List<String>> ROTATING_PLACEHOLDERS =
+                new ReadableObjectPropertyKey<>();
 
-        static final PropertyKey[] ALL_KEYS = {TITLE, SUBTITLE};
+        static final PropertyKey[] ALL_KEYS = {TITLE, SUBTITLE, ROTATING_PLACEHOLDERS};
 
         private IllustrationCardItemProperties() {}
     }
@@ -174,6 +189,9 @@ class AtMemoryBottomSheetProperties {
                 new ReadableBooleanPropertyKey();
         // Indicates whether the suggestion should show the loading indicator.
         static final ReadableBooleanPropertyKey IS_LOADING = new ReadableBooleanPropertyKey();
+        // Indicates the flyout content description.
+        static final ReadableObjectPropertyKey<String> FLYOUT_CONTENT_DESCRIPTION =
+                new ReadableObjectPropertyKey<>();
 
         static final PropertyKey[] ALL_KEYS = {
             ICON,
@@ -184,10 +202,22 @@ class AtMemoryBottomSheetProperties {
             ON_FLYOUT_CLICKED,
             IS_FLYOUT_VISIBLE,
             APPLY_DEACTIVATED_STYLE,
-            IS_LOADING
+            IS_LOADING,
+            FLYOUT_CONTENT_DESCRIPTION
         };
 
         private SuggestionItemProperties() {}
+    }
+
+    /** Properties for title item displayed within the home screen. */
+    static class TitleItemProperties {
+        // Title to be displayed in the title item.
+        static final ReadableObjectPropertyKey<@Nullable String> TITLE =
+                new ReadableObjectPropertyKey<>();
+
+        static final PropertyKey[] ALL_KEYS = {TITLE};
+
+        private TitleItemProperties() {}
     }
 
     /** Properties for text items with clickable link displayed within the home screen. */

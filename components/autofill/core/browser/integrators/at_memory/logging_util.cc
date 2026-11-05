@@ -234,6 +234,21 @@ LogBuffer& operator<<(LogBuffer& buffer, const EntryMetadata& metadata) {
   return buffer;
 }
 
+}  // namespace
+
+LogBuffer& operator<<(LogBuffer& buffer, const AutofillFetchPlan& plan) {
+  if (plan.fetch_specifications().empty()) {
+    buffer << "(No fetch specifications)";
+    return buffer;
+  }
+  buffer << Tag{"table"} << Attrib{"class", "form"};
+  for (const AutofillFetchSpecification& spec : plan.fetch_specifications()) {
+    buffer << spec;
+  }
+  buffer << CTag{"table"};
+  return buffer;
+}
+
 LogBuffer& operator<<(LogBuffer& buffer, const MemorySearchResult& result) {
   buffer << Tag{"table"} << Attrib{"class", "form"};
   LogBuffer type_buf;
@@ -250,7 +265,6 @@ LogBuffer& operator<<(LogBuffer& buffer, const MemorySearchResult& result) {
     buffer << Tr{} << "Is Obfuscated:" << "true";
   }
   buffer << Tr{} << "Sources:" << (LogBuffer() << result.sources);
-  buffer << Tr{} << "Is locally stored:" << result.is_local;
   if (result.metadata_list.empty()) {
     buffer << Tr{} << "Metadata:" << "(none)";
   } else {
@@ -261,21 +275,6 @@ LogBuffer& operator<<(LogBuffer& buffer, const MemorySearchResult& result) {
     }
     meta_buf << CTag{"table"};
     buffer << Tr{} << "Metadata:" << std::move(meta_buf);
-  }
-  buffer << CTag{"table"};
-  return buffer;
-}
-
-}  // namespace
-
-LogBuffer& operator<<(LogBuffer& buffer, const AutofillFetchPlan& plan) {
-  if (plan.fetch_specifications().empty()) {
-    buffer << "(No fetch specifications)";
-    return buffer;
-  }
-  buffer << Tag{"table"} << Attrib{"class", "form"};
-  for (const AutofillFetchSpecification& spec : plan.fetch_specifications()) {
-    buffer << spec;
   }
   buffer << CTag{"table"};
   return buffer;

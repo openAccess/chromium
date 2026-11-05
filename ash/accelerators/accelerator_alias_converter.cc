@@ -195,8 +195,7 @@ bool ShouldShowExternalTopRowActionKeyAlias(
 ui::mojom::SixPackShortcutModifier GetSixPackShortcutModifier(
     ui::KeyboardCode key_code,
     std::optional<int> device_id) {
-  if (!features::IsAltClickAndSixPackCustomizationEnabled() ||
-      !device_id.has_value()) {
+  if (!device_id.has_value()) {
     return ui::mojom::SixPackShortcutModifier::kSearch;
   }
   CHECK(ui::KeyboardCapability::IsSixPackKey(key_code));
@@ -229,8 +228,7 @@ ui::mojom::SixPackShortcutModifier GetSixPackShortcutModifier(
 ui::mojom::ExtendedFkeysModifier GetExtendedFkeysModifier(
     ui::KeyboardCode key_code,
     std::optional<int> device_id) {
-  if (!::features::AreF11AndF12ShortcutsEnabled() || !device_id.has_value() ||
-      !ui::KeyboardCapability::IsF11OrF12(key_code)) {
+  if (!device_id.has_value() || !ui::KeyboardCapability::IsF11OrF12(key_code)) {
     return ui::mojom::ExtendedFkeysModifier::kDisabled;
   }
 
@@ -456,8 +454,7 @@ AcceleratorAliasConverter::CreateExtendedFKeysAliases(
     const ui::KeyboardDevice& keyboard,
     const ui::Accelerator& accelerator,
     std::optional<int> device_id) const {
-  if (!::features::AreF11AndF12ShortcutsEnabled() ||
-      !ui::KeyboardCapability::IsF11OrF12(accelerator.key_code()) ||
+  if (!ui::KeyboardCapability::IsF11OrF12(accelerator.key_code()) ||
       !device_id.has_value()) {
     return std::nullopt;
   }
@@ -593,8 +590,7 @@ std::vector<ui::Accelerator> AcceleratorAliasConverter::CreateSixPackAliases(
     return std::vector<ui::Accelerator>();
   }
 
-  if (features::IsAltClickAndSixPackCustomizationEnabled() &&
-      !device_id.has_value()) {
+  if (!device_id.has_value()) {
     return std::vector<ui::Accelerator>();
   }
 

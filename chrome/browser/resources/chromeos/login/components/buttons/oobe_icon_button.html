@@ -31,15 +31,17 @@ found in the LICENSE file.
     font-size: var(--oobe-button-font-size);
     font-weight: var(--oobe-button-font-weight);
   }
-  :host-context(body.jelly-enabled):host(.bg-transparent) cr-button {
+  :host(.bg-transparent) cr-button {
     background-color: transparent !important;
   }
-  :host-context(body.jelly-enabled) cr-button {
+  /* The ID raises specificity above the cr-button rule in
+     cros-color-overrides. */
+  cr-button#button {
     --text-color: var(--oobe-icon-button-text-color);
   }
 </style>
 <cr-button id="button" disabled="[[disabled]]"
-    aria-label$="[[labelForAriaText_]]">
+    aria-label$="[[labelForAria_]]">
   <div id="container" class="flex vertical layout center self-stretch">
     <div class="flex layout horizontal center self-stretch center-justified">
       <hd-iron-icon id="icon" icon1x="[[icon1x]]" icon2x="[[icon2x]]"

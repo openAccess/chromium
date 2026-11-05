@@ -20,6 +20,7 @@ import org.chromium.base.supplier.LazyOneshotSupplierImpl;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.KeyboardShortcuts;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuItemProperties;
@@ -91,7 +92,8 @@ public class AppMenuItemUtils {
                         theme.shouldShowBadgeOnMenuItemIcon(id))
                 .with(AppMenuItemProperties.MENU_ICON_AT_START, isMenuIconAtStart)
                 .with(AppMenuItemProperties.TITLE_CONDENSED, theme.getContentDescription(id))
-                .with(AppMenuItemProperties.MANAGED, theme.isMenuItemManaged(id));
+                .with(AppMenuItemProperties.MANAGED, theme.isMenuItemManaged(id))
+                .with(AppMenuItemProperties.SHORTCUT_TEXT, KeyboardShortcuts.getShortcutText(id));
     }
 
     /**
@@ -380,6 +382,22 @@ public class AppMenuItemUtils {
                 showIcon
                         ? AppMenuHandler.AppMenuItemType.STANDARD
                         : AppMenuHandler.AppMenuItemType.STANDARD_NO_ICON,
+                model);
+    }
+
+    /**
+     * Build a list item for a tab group menu item.
+     *
+     * @param model The property model for this item.
+     * @param showIcon Whether the icon should be displayed.
+     * @return The list item for this menu item.
+     */
+    public static MVCListAdapter.ListItem createTabGroupListItem(
+            PropertyModel model, boolean showIcon) {
+        return new MVCListAdapter.ListItem(
+                showIcon
+                        ? AppMenuHandler.AppMenuItemType.TAB_GROUP
+                        : AppMenuHandler.AppMenuItemType.TAB_GROUP_NO_ICON,
                 model);
     }
 

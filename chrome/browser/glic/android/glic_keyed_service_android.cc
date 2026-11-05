@@ -4,19 +4,31 @@
 
 #include "chrome/browser/glic/android/glic_keyed_service_android.h"
 
+#include <vector>
+
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/time/time.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/public/context/glic_sharing_manager.h"
+#include "chrome/browser/glic/public/glic_instance.h"
+#include "chrome/browser/glic/public/glic_instance_id.h"
+#include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_passkeys.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/android/browser_context_handle.h"
+#include "content/public/browser/render_frame_host.h"
 #include "third_party/jni_zero/jni_zero.h"
+#include "url/android/gurl_android.h"
+#include "url/gurl.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/browser/glic/android/jni_headers/GlicKeyedServiceImpl_jni.h"
@@ -68,6 +80,11 @@ GlicKeyedServiceAndroid::GlicKeyedServiceAndroid(GlicKeyedService* service)
           base::BindRepeating(
               &GlicKeyedServiceAndroid::OnUserEnabledActuationOnWebChanged,
               base::Unretained(this)));
+  experimental_triggering_pref_subscription_ =
+      service_->enabling().RegisterOnExperimentalTriggeringEnabledChanged(
+          base::BindRepeating(
+              &GlicKeyedServiceAndroid::OnExperimentalTriggeringEnabledChanged,
+              base::Unretained(this)));
   allowed_changed_subscription_ = service_->enabling().RegisterAllowedChanged(
       base::BindRepeating(&GlicKeyedServiceAndroid::OnAllowedStateChanged,
                           base::Unretained(this)));
@@ -84,14 +101,13 @@ GlicKeyedServiceAndroid::GetJavaObject() {
 }
 
 void GlicKeyedServiceAndroid::ToggleUI(JNIEnv* env,
-                                       int64_t browser_window_ptr,
+                                       BrowserWindowInterface* browser_window,
                                        bool prevent_close,
                                        Profile* profile,
                                        int32_t source) {
-  auto* window = reinterpret_cast<BrowserWindowInterface*>(browser_window_ptr);
-  CHECK(window);
+  CHECK(browser_window);
 
-  service_->ToggleUI(window, prevent_close,
+  service_->ToggleUI(browser_window, prevent_close,
                      static_cast<mojom::InvocationSource>(source));
 }
 
@@ -120,18 +136,26 @@ bool GlicKeyedServiceAndroid::InvokeWithAutoSubmit(JNIEnv* env,
   }
 }
 
-void GlicKeyedServiceAndroid::InvokeWithPrompt(JNIEnv* env,
+bool GlicKeyedServiceAndroid::InvokeWithPrompt(JNIEnv* env,
                                                TabAndroid* tab,
+                                               content::RenderFrameHost* frame,
                                                std::string text,
                                                int32_t source) {
-  if (!tab) {
-    return;
+  // The prompt is page data, so it must pass the same enterprise clipboard
+  // policy checks as a copy/paste into Glic. Those require the source frame
+  // and non-empty text.
+  if (!tab || !frame || text.empty()) {
+    return false;
   }
 
   GlicInvokeOptions options(Target(*tab),
                             static_cast<mojom::InvocationSource>(source));
   options.prompts.push_back(std::move(text));
-  service_->Invoke(std::move(options));
+  options.prompt_policy =
+      PromptPolicy{frame->GetGlobalId(), PolicyCheck::kClipboard};
+  // Invoke() returns a null WeakPtr if the Glic instance could not be created,
+  // which means the prompt was never delivered.
+  return !!service_->Invoke(std::move(options));
 }
 
 void GlicKeyedServiceAndroid::Invoke(JNIEnv* env,
@@ -146,12 +170,48 @@ void GlicKeyedServiceAndroid::Invoke(JNIEnv* env,
   service_->Invoke(std::move(options));
 }
 
+void GlicKeyedServiceAndroid::InvokeWithConversation(
+    JNIEnv* env,
+    TabAndroid* tab,
+    std::string glic_conversation_id,
+    int32_t source) {
+  if (glic_conversation_id.empty()) {
+    return;
+  }
+  Target target =
+      tab ? Target(*tab, ConversationId(std::move(glic_conversation_id)))
+          : Target(ConversationId(std::move(glic_conversation_id)));
+  GlicInvokeOptions options(std::move(target),
+                            static_cast<mojom::InvocationSource>(source));
+  service_->Invoke(std::move(options));
+}
+
+void GlicKeyedServiceAndroid::ShowExperimentalOptInDialogForTesting(
+    JNIEnv* env,
+    TabAndroid* tab) {
+  if (!tab || !tab->GetContents()) {
+    return;
+  }
+  service_->ShowExperimentalOptInDialogForTesting(
+      tab->GetContents());  // IN-TEST
+}
+
+void GlicKeyedServiceAndroid::ShareContextImage(JNIEnv* env,
+                                                TabAndroid* tab,
+                                                content::RenderFrameHost* frame,
+                                                const GURL& src_url) {
+  if (!tab || !frame || !src_url.is_valid()) {
+    return;
+  }
+
+  service_->ShareContextImage(tab, frame, src_url);
+}
+
 bool GlicKeyedServiceAndroid::IsPanelShowingForBrowser(
     JNIEnv* env,
-    int64_t browser_window_ptr) {
-  auto* window = reinterpret_cast<BrowserWindowInterface*>(browser_window_ptr);
-  CHECK(window);
-  return service_->IsPanelShowingForBrowser(*window);
+    BrowserWindowInterface* browser_window) {
+  CHECK(browser_window);
+  return service_->IsPanelShowingForBrowser(*browser_window);
 }
 
 bool GlicKeyedServiceAndroid::GetUserEnabledActuationOnWeb(JNIEnv* env) {
@@ -161,6 +221,98 @@ bool GlicKeyedServiceAndroid::GetUserEnabledActuationOnWeb(JNIEnv* env) {
 void GlicKeyedServiceAndroid::SetUserEnabledActuationOnWeb(JNIEnv* env,
                                                            bool enabled) {
   service_->enabling().SetUserEnabledActuationOnWeb(enabled);
+}
+
+bool GlicKeyedServiceAndroid::GetExperimentalTriggeringEnabled(JNIEnv* env) {
+  return service_->enabling().GetExperimentalTriggeringEnabled();
+}
+
+void GlicKeyedServiceAndroid::SetExperimentalTriggeringEnabled(JNIEnv* env,
+                                                               bool enabled) {
+  service_->enabling().SetExperimentalTriggeringEnabled(enabled);
+}
+
+void GlicKeyedServiceAndroid::ShareTabs(JNIEnv* env,
+                                        std::vector<TabAndroid*> tabs,
+                                        std::string instance_id,
+                                        bool new_conversation,
+                                        int32_t source) {
+  if (tabs.empty() || !tabs[0]) {
+    return;
+  }
+  TabAndroid* target_tab = tabs[0];
+  auto invocation_source = static_cast<mojom::InvocationSource>(source);
+
+  GlicInvokeOptions options =
+      new_conversation
+          ? GlicInvokeOptions(Target(*target_tab, NewConversation()),
+                              invocation_source)
+          : GlicInvokeOptions(Target(*target_tab, InstanceId(instance_id)),
+                              invocation_source);
+
+  std::vector<tabs::TabHandle> tab_handles;
+  tab_handles.reserve(tabs.size());
+  for (TabAndroid* tab : tabs) {
+    if (tab) {
+      tab_handles.push_back(tab->GetHandle());
+    }
+  }
+
+  GlicMetricReporter metric_reporter(service_->profile());
+  if (new_conversation) {
+    metric_reporter.RecordCounts100(
+        "TabContextMenu.PinnedTabsToNewConversation", tab_handles.size());
+  } else {
+    metric_reporter.RecordCounts100(
+        "TabContextMenu.PinnedTabsToExistingConversation", tab_handles.size());
+  }
+
+  options.tab_sharing =
+      TabSharingOptions(std::move(tab_handles), GlicPinTrigger::kContextMenu);
+  service_->instance_coordinator().Invoke(std::move(options));
+}
+
+void GlicKeyedServiceAndroid::UnshareTabs(JNIEnv* env,
+                                          std::vector<TabAndroid*> tabs) {
+  std::vector<tabs::TabHandle> tab_handles;
+  tab_handles.reserve(tabs.size());
+  for (TabAndroid* tab : tabs) {
+    if (tab) {
+      tab_handles.push_back(tab->GetHandle());
+    }
+  }
+  if (tab_handles.empty()) {
+    return;
+  }
+  service_->instance_coordinator().UnpinTabsFromAllInstances(
+      tab_handles, GlicUnpinTrigger::kContextMenu);
+}
+
+bool GlicKeyedServiceAndroid::IsTabPinnedToAnyInstance(
+    JNIEnv* env,
+    std::vector<TabAndroid*> tabs) {
+  for (TabAndroid* tab : tabs) {
+    if (tab && service_->instance_coordinator().IsTabPinnedToAnyInstance(
+                   tab->GetHandle())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<std::string> GlicKeyedServiceAndroid::GetRecentlyActiveInstances(
+    JNIEnv* env,
+    int32_t limit) {
+  std::vector<ConversationInfo> infos =
+      service_->instance_coordinator().GetRecentlyActiveInstances(
+          static_cast<size_t>(limit), base::TimeDelta::Max());
+  std::vector<std::string> flattened;
+  flattened.reserve(infos.size() * 2);
+  for (const ConversationInfo& info : infos) {
+    flattened.push_back(info.instance_id.value());
+    flattened.push_back(info.title);
+  }
+  return flattened;
 }
 
 void GlicKeyedServiceAndroid::OnGlobalShowHide() {
@@ -173,6 +325,13 @@ void GlicKeyedServiceAndroid::OnUserEnabledActuationOnWebChanged() {
   bool enabled = service_->enabling().GetUserEnabledActuationOnWeb();
   Java_GlicKeyedServiceImpl_onUserEnabledActuationOnWebChanged(env, java_obj_,
                                                                enabled);
+}
+
+void GlicKeyedServiceAndroid::OnExperimentalTriggeringEnabledChanged() {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  bool enabled = service_->enabling().GetExperimentalTriggeringEnabled();
+  Java_GlicKeyedServiceImpl_onExperimentalTriggeringEnabledChanged(
+      env, java_obj_, enabled);
 }
 
 void GlicKeyedServiceAndroid::OnAllowedStateChanged() {

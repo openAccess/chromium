@@ -64,6 +64,17 @@ ScrollMarkerPseudoElement* FindScrollMarkerForTargetedScroll(
     }
   }
 
+  // The target may be the scroll container that `group` belongs to, e.g.
+  // when a ::column::scroll-marker is activated the scroller itself is the
+  // box being scrolled. There is no scroll target inside the scroller to map
+  // to a scroll marker in that case. Searching backwards in layout order from
+  // the scroller must also be avoided, since it would walk into the
+  // ::scroll-marker-group box if it is laid out before the scroller and pick
+  // up its last ::scroll-marker.
+  if (target_element == &group->UltimateOriginatingElement()) {
+    return nullptr;
+  }
+
   LayoutObject* target_obj = target_element->GetLayoutObject();
   if (!target_obj) {
     return nullptr;
@@ -211,6 +222,15 @@ bool AllowedToPropagateToParent(
   return !from_frame.GetDocument()->IsVerticalScrollEnforced();
 }
 
+// Anchor-positioned fixed boxes still need to move with the anchor when the
+// frame scrolls (https://www.w3.org/TR/css-anchor-position/#scroll).
+bool IsFixedToFrame(const LayoutBox& box) {
+  return box.Style().GetPosition() == EPosition::kFixed &&
+         box.Container() == box.View() &&
+         !box.NeedsAnchorPositionScrollAdjustmentInX() &&
+         !box.NeedsAnchorPositionScrollAdjustmentInY();
+}
+
 // Helper to return the parent LayoutBox, crossing local frame boundaries, that
 // a scroll should bubble up to or nullptr if the local root has been reached.
 // The return optional will be empty if the scroll is blocked from bubbling to
@@ -218,15 +238,15 @@ bool AllowedToPropagateToParent(
 std::optional<LayoutBox*> GetScrollParent(
     const LayoutBox& box,
     const mojom::blink::ScrollIntoViewParamsPtr& params) {
-  bool is_fixed_to_frame = box.StyleRef().GetPosition() == EPosition::kFixed &&
-                           box.Container() == box.View();
+  bool is_fixed_to_frame = IsFixedToFrame(box);
 
   // Within a document scrolls bubble along the containing block chain but if
   // we're in a position:fixed element, we want to immediately bubble up across
   // the frame boundary since scrolling the frame won't affect the box's
   // position.
-  if (box.ContainingBlock() && !is_fixed_to_frame)
-    return box.ContainingBlock();
+  if (box.ContainingBox() && !is_fixed_to_frame) {
+    return box.ContainingBox();
+  }
 
   // Otherwise, we're bubbling across a frame boundary. We may be
   // prevented from doing so for security or policy reasons. If so, we're
@@ -369,7 +389,7 @@ BubblingScrollResult PerformBubblingScrollIntoViewWithResult(
         }
         if (ScrollMarkerPseudoElement* marker =
                 FindScrollMarkerForTargetedScroll(target_element, group)) {
-          group->PinSelectedMarker(marker);
+          group->PinSelectedMarker(marker, /*apply_snap_alignment=*/true);
         } else {
           group->UnPinSelectedMarker();
         }
@@ -408,9 +428,7 @@ BubblingScrollResult PerformBubblingScrollIntoViewWithResult(
       previous_current_box = current_box;
     }
 
-    bool is_fixed_to_frame =
-        current_box->StyleRef().GetPosition() == EPosition::kFixed &&
-        current_box->Container() == current_box->View();
+    bool is_fixed_to_frame = IsFixedToFrame(*current_box);
 
     VisualViewport& visual_viewport =
         current_box->GetFrame()->GetPage()->GetVisualViewport();
@@ -563,7 +581,7 @@ ScrollableArea* GetScrollableAreaForLayoutBox(
     bool make_visible_in_visual_viewport) {
   if (box.IsScrollContainer() && !box.IsLayoutView()) {
     return box.GetScrollableArea();
-  } else if (!box.ContainingBlock()) {
+  } else if (!box.ContainingBox()) {
     return make_visible_in_visual_viewport
                ? box.GetFrameView()->GetScrollableArea()
                : box.GetFrameView()->LayoutViewport();
@@ -594,7 +612,7 @@ bool ScrollRectToVisible(const LayoutObject& layout_object,
       params->type == mojom::blink::ScrollType::kProgrammatic;
 
   const PhysicalBoxStrut scroll_margin =
-      layout_object.StyleRef().ScrollMarginStrut();
+      layout_object.Style().ScrollMarginStrut();
   BubblingScrollResult result = PerformBubblingScrollIntoViewWithResult(
       *enclosing_box, absolute_rect_to_scroll, params, scroll_margin, container,
       from_remote_frame, include_self, resolver);
@@ -909,11 +927,11 @@ ScrollOffset GetScrollOffsetToExpose(
 mojom::blink::ScrollAlignment PhysicalAlignmentFromSnapAlignStyle(
     const LayoutObject& object,
     PhysicalAxis axis) {
-  cc::ScrollSnapAlign snap = object.StyleRef().GetScrollSnapAlign();
+  cc::ScrollSnapAlign snap = object.Style().GetScrollSnapAlign();
   return ResolveToPhysicalAlignment(
       SnapAlignmentToV8ScrollLogicalPosition(snap.alignment_inline),
       SnapAlignmentToV8ScrollLogicalPosition(snap.alignment_block), axis,
-      object.StyleRef());
+      object.Style());
 }
 
 }  // namespace scroll_into_view_util

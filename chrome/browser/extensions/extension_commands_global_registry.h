@@ -89,6 +89,24 @@ class ExtensionCommandsGlobalRegistry
   void UnregisterAccelerator(const ui::Accelerator& accelerator) override;
   void OnShortcutHandlingSuspended(bool suspended) override;
 
+  // Overridden from ExtensionRegistryObserver:
+  void OnExtensionUninstalled(content::BrowserContext* browser_context,
+                              const Extension* extension,
+                              UninstallReason reason) override;
+
+  // Returns the ID that distinguishes the global shortcuts of this profile
+  // from those of other profiles, creating it if needed.
+  std::string GetOrCreateProfileId();
+
+  // Passes a StateStore to `instance` if this hasn't been done yet. Must be
+  // called before passing commands to `instance`.
+  void EnsureStateStore(ui::GlobalAcceleratorListener* instance);
+
+  // Tells `instance` to forget the shortcuts of `extension_id` in this
+  // profile, e.g. because the extension was uninstalled.
+  void ForgetCommands(ui::GlobalAcceleratorListener* instance,
+                      const ExtensionId& extension_id);
+
   // Called by the GlobalShortcutListener object when a shortcut this class has
   // registered for has been pressed.
   void OnKeyPressed(const ui::Accelerator& accelerator) override;
@@ -103,6 +121,9 @@ class ExtensionCommandsGlobalRegistry
   // (belonging to the currently active window). Only valid for TOOLKIT_VIEWS
   // and NULL otherwise.
   raw_ptr<ExtensionKeybindingRegistry> registry_for_active_window_;
+
+  // Whether a StateStore has been passed to the global accelerator listener.
+  bool state_store_set_ = false;
 
   // Must be last.
   base::WeakPtrFactory<ExtensionCommandsGlobalRegistry> weak_ptr_factory_{this};

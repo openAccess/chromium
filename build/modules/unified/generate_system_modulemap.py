@@ -16,7 +16,7 @@ import shutil
 import sys
 import subprocess
 import tempfile
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import modulemap_config
 
@@ -154,6 +154,9 @@ def _requires_met(require: str, os: str, cpu: str) -> bool:
         met = cpu == 'arm64'
     elif require == 'sve':
         # Assume chrome doesn't use SVE
+        met = False
+    elif require == 'reflection':
+        # Triggered by -freflection. Not used in chromium.
         met = False
     else:
         raise NotImplementedError(f'Unknown require: {require}')
@@ -390,7 +393,7 @@ def calculate_transitive_headers(
             for h in allowlist.includes():
                 f.write(f'#if __has_include(<{h}>)\n')
                 f.write(f'#include <{h}>\n')
-                f.write(f'#endif\n')
+                f.write('#endif\n')
 
         # We only need to preprocess for performance reasons, and don't even
         # care about the preprocessed output.
@@ -561,7 +564,7 @@ def combine_modulemaps(
         for content, source_modulemap in extra_modules:
             prefix = _relpath(source_modulemap.parent, out.parent)
 
-            def rebase_path(p: str) -> str:
+            def rebase_path(p: str) -> str:  # noqa: F811
                 return os.path.normpath(os.path.join(prefix, p)).replace(
                     '\\', '/'
                 )

@@ -48,11 +48,14 @@ defaults.set(
 
 polymorphic.launcher(
     name = "android-launcher",
+    description_html = "Reviver launcher for Android emulators.",
     # To avoid peak hours, we run it at 2 AM, 5 AM, 8 AM, 11AM, 2 PM UTC.
     schedule = "0 2,5,8,11,14 * * *",
     pool = ci_constants.DEFAULT_POOL,
     cores = 8,
     os = os.LINUX_DEFAULT,
+    ssd = None,
+    contact_team_email = "clank-engprod@google.com",
     runner = "reviver/runner",
     target_builders = [
         "ci/android-10-x86-rel",
@@ -70,10 +73,13 @@ polymorphic.launcher(
 
 polymorphic.launcher(
     name = "android-coverage-launcher",
+    description_html = "Reviver launcher for Android code coverage builders.",
     # Match the replicated builders' schedule for comparable data
     schedule = "0 4 * * *",
     pool = ci_constants.DEFAULT_POOL,
     os = os.LINUX_DEFAULT,
+    ssd = None,
+    contact_team_email = "clank-engprod@google.com",
     runner = "reviver/coverage-runner",
     target_builders = [
         "ci/android-code-coverage",
@@ -83,10 +89,13 @@ polymorphic.launcher(
 
 polymorphic.launcher(
     name = "android-device-launcher",
+    description_html = "Reviver launcher for Android devices.",
     # To avoid peak hours, we run it at 5 AM, 8 AM, 11AM UTC.
     schedule = "0 5,8,11 * * *",
     pool = ci_constants.DEFAULT_POOL,
     os = os.LINUX_DEFAULT,
+    ssd = None,
+    contact_team_email = "clank-engprod@google.com",
     runner = "reviver/runner",
     target_builders = [
         "ci/android-14-arm64-rel",
@@ -102,6 +111,7 @@ polymorphic.launcher(
     pool = ci_constants.DEFAULT_POOL,
     cores = 8,
     os = os.LINUX_DEFAULT,
+    ssd = None,
     contact_team_email = "clank-engprod@google.com",
     runner = "reviver/runner",
     target_builders = [
@@ -131,6 +141,7 @@ polymorphic.launcher(
     pool = ci_constants.DEFAULT_POOL,
     cores = 8,
     os = os.LINUX_DEFAULT,
+    ssd = None,
     contact_team_email = "clank-engprod@google.com",
     runner = "reviver/runner",
     target_builders = [
@@ -159,6 +170,7 @@ polymorphic.launcher(
     pool = ci_constants.DEFAULT_POOL,
     cores = 8,
     os = os.LINUX_DEFAULT,
+    ssd = None,
     contact_team_email = "clank-engprod@google.com",
     runner = "reviver/runner",
     target_builders = [
@@ -181,8 +193,11 @@ polymorphic.launcher(
 
 polymorphic.launcher(
     name = "linux-launcher",
+    description_html = "Reviver launcher for Linux.",
     # To avoid peak hours, we run it at 5~11 UTC, 21~27 PST.
     schedule = "0 5-11/3 * * *",
+    ssd = None,
+    contact_team_email = "chrome-desktop-engprod@google.com",
     runner = "reviver/runner",
     target_builders = [
         polymorphic.target_builder(
@@ -196,8 +211,11 @@ polymorphic.launcher(
 
 polymorphic.launcher(
     name = "win-launcher",
+    description_html = "Reviver launcher for Windows.",
     # To avoid peak hours, we run it at 5~11 UTC, 21~27 PST.
     schedule = "0 5-11/3 * * *",
+    ssd = None,
+    contact_team_email = "chrome-desktop-engprod@google.com",
     runner = "reviver/runner",
     target_builders = [
         polymorphic.target_builder(
@@ -217,8 +235,11 @@ polymorphic.launcher(
 
 polymorphic.launcher(
     name = "mac-launcher",
+    description_html = "Reviver launcher for Mac.",
     # To avoid peak hours, we run it at 5~11 UTC, 21~27 PST.
     schedule = "0 5-11/3 * * *",
+    ssd = None,
+    contact_team_email = "chrome-desktop-engprod@google.com",
     runner = "reviver/runner",
     target_builders = [
         polymorphic.target_builder(
@@ -241,10 +262,13 @@ polymorphic.launcher(
 # test bot capacity for fuchsia.
 polymorphic.launcher(
     name = "fuchsia-coordinator",
+    description_html = "Reviver launcher for Fuchsia.",
     # Avoid peak hours.
     schedule = "0 2,4,6,8,10,12,14 * * *",
     pool = ci_constants.DEFAULT_POOL,
     os = os.LINUX_DEFAULT,
+    ssd = None,
+    contact_team_email = "chrome-fuchsia-engprod@google.com",
     runner = "reviver/runner",
     target_builders = [
         "ci/fuchsia-arm64-cast-receiver-rel",
@@ -255,14 +279,16 @@ polymorphic.launcher(
 
 builder(
     name = "runner",
+    description_html = "Runs disabled tests on target builder configurations for Test Reviver.",
     executable = "recipe:reviver/chromium/runner",
     pool = ci_constants.DEFAULT_POOL,
     builderless = 1,
     os = os.LINUX_DEFAULT,
     cpu = cpu.X86_64,
-    ssd = False,
+    ssd = None,
     free_space = free_space.standard,
     auto_builder_dimension = False,
+    contact_team_email = "test-reviver@google.com",
     execution_timeout = 6 * time.hour,
     resultdb_bigquery_exports = [
         resultdb.export_test_results(
@@ -276,6 +302,7 @@ builder(
 
 builder(
     name = "coverage-runner",
+    description_html = "Runs disabled tests on target code coverage builder configurations for Test Reviver.",
     executable = "recipe:reviver/chromium/runner",
     pool = ci_constants.DEFAULT_POOL,
     builderless = 1,
@@ -285,6 +312,7 @@ builder(
     ssd = True,
     free_space = free_space.standard,
     auto_builder_dimension = False,
+    contact_team_email = "test-reviver@google.com",
     execution_timeout = 6 * time.hour,
     resultdb_bigquery_exports = [
         resultdb.export_test_results(

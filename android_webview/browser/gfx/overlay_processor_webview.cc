@@ -595,7 +595,8 @@ class OverlayProcessorWebView::Manager
       transaction.SetScale(surface, scale_x, scale_y);
       transaction.SetCrop(surface, crop_rect);
       transaction.SetColorSpace(surface, resource->color_space(),
-                                gfx::HDRMetadata());
+                                gfx::HDRMetadata(),
+                                /*desired_brightness_ratio=*/1.f);
       transaction.SetBuffer(surface, buffer, resource->TakeBeginReadFence());
 
       if (gfx::SurfaceControl::SupportsSetFrameRate()) {
@@ -847,7 +848,7 @@ void OverlayProcessorWebView::ScheduleOverlays(
           base::BindOnce(&Manager::CreateOverlay,
                          base::Unretained(manager_.get()), overlay->second.id,
                          candidate, std::move(result.unlock_cb)),
-          {result.sync_token}, overlay->second.create_sync_token);
+          std::move(result.sync_tokens), overlay->second.create_sync_token);
     }
   }
 
@@ -879,7 +880,7 @@ OverlayProcessorWebView::LockResult OverlayProcessorWebView::LockResource(
   OverlayResourceLock lock = OverlayResourceLock(
       static_cast<viz::DisplayResourceProviderSkia*>(resource_provider_),
       resource_id);
-  result.sync_token = lock.sync_token();
+  result.sync_tokens = lock.GetSyncTokens();
   result.mailbox = lock.mailbox();
 
   locked_resources_.insert(std::make_pair(resource_id, std::move(lock)));
@@ -912,12 +913,15 @@ void OverlayProcessorWebView::UpdateOverlayResource(
         OverlayProcessorSurfaceControl::GetOverrideColorSpace().value_or(
             resource_provider_->GetColorSpace(new_resource_id));
 
+    if (overlay->second.create_sync_token.HasData()) {
+      result.sync_tokens.push_back(overlay->second.create_sync_token);
+    }
+
     gpu_thread_sequence_->ScheduleTask(
         base::BindOnce(&Manager::UpdateOverlayBuffer, manager_,
                        overlay->second.id, result.mailbox, color_space, uv_rect,
                        frame_rate_, std::move(result.unlock_cb)),
-        {result.sync_token, overlay->second.create_sync_token},
-        gpu::SyncToken());
+        std::move(result.sync_tokens), gpu::SyncToken());
   }
 }
 

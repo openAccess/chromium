@@ -12,7 +12,6 @@
 #include "chrome/browser/web_applications/jobs/parse_manifest_from_string_job.h"
 #include "chrome/browser/web_applications/locks/shared_web_contents_lock.h"
 #include "chrome/browser/web_applications/web_contents/web_contents_manager.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 
 namespace web_app {
 
@@ -20,12 +19,13 @@ ParseManifestFromManifestUrlCommand::ParseManifestFromManifestUrlCommand(
     GURL manifest_url,
     std::string manifest_contents,
     ParseCallback callback)
-    : WebAppCommand<SharedWebContentsLock, blink::mojom::ManifestPtr>(
+    : WebAppCommand<SharedWebContentsLock, ParseManifestResult>(
           "ParseManifestFromManifestUrlCommand",
           SharedWebContentsLockDescription(),
           std::move(callback),
           /*args_for_shutdown=*/
-          std::make_tuple(blink::mojom::ManifestPtr())),
+          std::make_tuple(
+              base::unexpected(ParseManifestError::kInternalError))),
       manifest_url_(std::move(manifest_url)),
       manifest_contents_(std::move(manifest_contents)) {
 #if EXPENSIVE_DCHECKS_ARE_ON()
@@ -56,16 +56,15 @@ void ParseManifestFromManifestUrlCommand::StartWithLock(
 }
 
 void ParseManifestFromManifestUrlCommand::OnJobComplete(
-    blink::mojom::ManifestPtr manifest) {
+    ParseManifestResult parse_result) {
   parse_job_.reset();
 
-  if (!manifest) {
-    CompleteAndSelfDestruct(CommandResult::kFailure,
-                            blink::mojom::ManifestPtr());
+  if (!parse_result.has_value()) {
+    CompleteAndSelfDestruct(CommandResult::kFailure, std::move(parse_result));
     return;
   }
 
-  CompleteAndSelfDestruct(CommandResult::kSuccess, std::move(manifest));
+  CompleteAndSelfDestruct(CommandResult::kSuccess, std::move(parse_result));
 }
 
 }  // namespace web_app

@@ -20,6 +20,7 @@
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -39,6 +40,7 @@
 #include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/geo/alternative_state_name_map.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_import_util.h"
 #include "components/autofill/core/browser/proto/server.pb.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/form_field_data.h"
@@ -339,6 +341,10 @@ void AddPossibleAutofillAiTypesForMaskedValue(
     std::u16string_view masked_value_on_file,
     FieldType field_type,
     PossibleTypes& pt) {
+  // Single digit values are too likely to cause collisions.
+  if (masked_value_on_file.size() == 1) {
+    return;
+  }
   // Since the full value is not available on file, look for a suffix match.
   if (value_in_field.ends_with(masked_value_on_file)) {
     pt.types.insert(field_type);
@@ -371,18 +377,34 @@ void AddPossibleAutofillAiTypes(base::span<const EntityInstance> entities,
     return;
   }
 
+  // Note that `NormalizeForComparison()` replaces punctuation with whitespaces,
+  // meaning that some of the validation logic in
+  // `ShouldImportValueForAttribute()` cannot be applied correctly.
+  // This applies to `value_on_file` as well.
   const std::u16string& value_in_field =
       normalization::NormalizeForComparison(value_u16);
   for (const EntityInstance& entity : entities) {
     for (const AttributeInstance& attribute : entity.attributes()) {
+      // Don't vote for values that AutofillAi wouldn't even import for the
+      // type.
+      if (!ShouldImportValueForAttribute(attribute.type(), value_in_field)) {
+        continue;
+      }
       for (const FieldType field_type : attribute.type().field_subtypes()) {
         const std::u16string& value_on_file =
             normalization::NormalizeForComparison(
                 attribute.GetInfo(field_type, app_locale, std::nullopt));
+        if (value_on_file.empty()) {
+          continue;
+        }
+        // It is necessary to validate the `value_on_file` because
+        // `ShouldImportValueForAttribute()` isn't enforced in settings.
+        // For masked attributes, validation is not possible.
         if (attribute.masked()) {
           AddPossibleAutofillAiTypesForMaskedValue(
               value_in_field, value_on_file, field_type, pt);
-        } else {
+        } else if (ShouldImportValueForAttribute(attribute.type(),
+                                                 value_on_file)) {
           AddPossibleAutofillAiTypesForUnmaskedValue(
               value_in_field, value_on_file, field_type, pt);
         }
@@ -537,9 +559,8 @@ std::set<FieldGlobalId> PreProcessStateMatchingTypes(
       continue;
     }
 
-    const std::u16string& country_code = profile->GetInfo(
-        AutofillType(ADDRESS_HOME_COUNTRY, /*is_country_code=*/true),
-        app_locale);
+    const std::string country_code =
+        base::UTF16ToUTF8(profile->GetRawInfo(ADDRESS_HOME_COUNTRY));
 
     for (auto& field : fields) {
       if (fields_that_match_state.contains(field->global_id())) {
@@ -549,7 +570,7 @@ std::set<FieldGlobalId> PreProcessStateMatchingTypes(
       std::optional<AlternativeStateNameMap::CanonicalStateName>
           canonical_state_name_from_text =
               AlternativeStateNameMap::GetCanonicalStateName(
-                  base::UTF16ToUTF8(country_code), field->value_for_import());
+                  country_code, field->value_for_import());
 
       if (canonical_state_name_from_text &&
           canonical_state_name_from_text.value() ==
@@ -571,6 +592,9 @@ std::vector<PossibleTypes> DeterminePossibleFieldTypesForUpload(
     base::span<const OneTimeToken> recent_otps,
     const std::string& app_locale,
     base::span<const std::unique_ptr<AutofillField>> fields) {
+  SCOPED_UMA_HISTOGRAM_TIMER(
+      "Autofill.Timing.DeterminePossibleFieldTypesForUpload");
+
   std::vector<PossibleTypes> possible_types;
   possible_types.resize(fields.size());
 

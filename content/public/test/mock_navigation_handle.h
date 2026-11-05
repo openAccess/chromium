@@ -9,9 +9,9 @@
 #include <string_view>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/types/optional_util.h"
 #include "base/unguessable_token.h"
@@ -30,7 +30,9 @@
 #include "net/http/http_response_headers.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/network/public/cpp/resource_request_body.h"
+#include "services/network/public/mojom/device_bound_sessions.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/lcp_critical_path_predictor/lcp_critical_path_predictor.mojom.h"
 #include "third_party/blink/public/mojom/loader/referrer.mojom.h"
 #include "third_party/blink/public/mojom/loader/transferrable_url_loader.mojom.h"
@@ -90,11 +92,11 @@ class MockNavigationHandle : public NavigationHandle {
   bool IsInPrimaryMainFrame() const override {
     return is_in_primary_main_frame_;
   }
-  const std::optional<base::UnguessableToken>& GetScriptToolInvocationId()
+  const std::optional<blink::ToolInvocationToken>& GetScriptToolInvocationId()
       const override {
     return script_tool_invocation_id_;
   }
-  void set_script_tool_invocation_id(const base::UnguessableToken& id) {
+  void set_script_tool_invocation_id(const blink::ToolInvocationToken& id) {
     script_tool_invocation_id_ = id;
   }
   bool IsInOutermostMainFrame() const override {
@@ -198,6 +200,14 @@ class MockNavigationHandle : public NavigationHandle {
   const net::HttpResponseHeaders* GetResponseHeaders() override {
     return response_headers_.get();
   }
+  network::mojom::DeviceBoundSessionUsage GetDeviceBoundSessionUsage()
+      const override {
+    return device_bound_session_usage_;
+  }
+  void set_device_bound_session_usage(
+      network::mojom::DeviceBoundSessionUsage usage) {
+    device_bound_session_usage_ = usage;
+  }
   MOCK_METHOD0(GetDeclarativePerformanceObserverPolicy,
                const network::mojom::DeclarativePerformanceObserverPolicy*());
   MOCK_METHOD1(
@@ -234,6 +244,9 @@ class MockNavigationHandle : public NavigationHandle {
   ChildProcessId GetInitiatorProcessId() override {
     return initiator_process_id_;
   }
+  const std::string& GetScriptInjectorHost() const override {
+    return script_injector_host_;
+  }
   const std::optional<url::Origin>& GetInitiatorOrigin() override {
     return initiator_origin_;
   }
@@ -243,11 +256,7 @@ class MockNavigationHandle : public NavigationHandle {
   MOCK_METHOD(scoped_refptr<InitiatorNavigationState>,
               GetInitiatorNavigationState,
               ());
-  const std::vector<std::string>& GetDnsAliases() override {
-    static const base::NoDestructor<std::vector<std::string>>
-        emptyvector_result;
-    return *emptyvector_result;
-  }
+  base::span<const std::string> GetDnsAliases() override { return {}; }
   MOCK_METHOD(void,
               RegisterThrottleForTesting,
               (std::unique_ptr<NavigationThrottle>));
@@ -416,6 +425,11 @@ class MockNavigationHandle : public NavigationHandle {
     post_data_ = std::move(post_data);
   }
 
+  // Sets the script injector host for testing.
+  void set_script_injector_host(std::string script_injector_host) {
+    script_injector_host_ = std::move(script_injector_host);
+  }
+
  private:
   const RenderFrameHost* GetConstParentFrameOrOuterDocument() const {
     return render_frame_host_ ? render_frame_host_->GetParentOrOuterDocument()
@@ -442,13 +456,16 @@ class MockNavigationHandle : public NavigationHandle {
   bool is_renderer_initiated_ = true;
   bool is_in_primary_main_frame_ = true;
   size_t ignored_duplicate_navigation_count_ = 0;
-  std::optional<base::UnguessableToken> script_tool_invocation_id_;
+  std::optional<blink::ToolInvocationToken> script_tool_invocation_id_;
+  std::string script_injector_host_;
   std::vector<GURL> redirect_chain_;
   bool has_committed_ = false;
   bool is_error_page_ = false;
   bool is_blocked_by_connection_allowlist_ = false;
   net::HttpRequestHeaders request_headers_;
   scoped_refptr<net::HttpResponseHeaders> response_headers_;
+  network::mojom::DeviceBoundSessionUsage device_bound_session_usage_ =
+      network::mojom::DeviceBoundSessionUsage::kUnknown;
   scoped_refptr<network::ResourceRequestBody> post_data_;
   std::optional<net::SSLInfo> ssl_info_;
   std::optional<net::AuthChallengeInfo> auth_challenge_info_;

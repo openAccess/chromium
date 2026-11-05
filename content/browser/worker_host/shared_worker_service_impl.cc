@@ -46,7 +46,10 @@
 #include "net/base/isolation_info.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/storage_access_api/status.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy_features_bitset.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
+#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/messaging/message_port_channel.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
@@ -65,11 +68,11 @@ SharedWorkerServiceImpl::SharedWorkerServiceImpl(
     scoped_refptr<ServiceWorkerContextWrapper> service_worker_context)
     : storage_partition_(storage_partition),
       service_worker_context_(std::move(service_worker_context)) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 }
 
 SharedWorkerServiceImpl::~SharedWorkerServiceImpl() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   // Note: This ideally should dchecks that |worker_hosts_| is empty,
   // but some tests do not tear down everything correctly.
@@ -101,7 +104,7 @@ bool SharedWorkerServiceImpl::TerminateWorker(
     const std::string& name,
     const blink::StorageKey& storage_key,
     const blink::mojom::SharedWorkerSameSiteCookies same_site_cookies) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   SharedWorkerHost* worker_host =
       FindMatchingSharedWorkerHost(url, name, storage_key, same_site_cookies);
@@ -111,6 +114,22 @@ bool SharedWorkerServiceImpl::TerminateWorker(
   }
 
   return false;
+}
+
+void SharedWorkerServiceImpl::TerminateWorkersForStorageKey(
+    const blink::StorageKey& storage_key) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI);
+
+  // Collect matching hosts first because DestroyHost() mutates `worker_hosts_`.
+  std::vector<SharedWorkerHost*> hosts_to_destroy;
+  for (const auto& host : worker_hosts_) {
+    if (host->instance().creator_storage_key() == storage_key) {
+      hosts_to_destroy.push_back(host.get());
+    }
+  }
+  for (SharedWorkerHost* host : hosts_to_destroy) {
+    DestroyHost(host);
+  }
 }
 
 void SharedWorkerServiceImpl::Shutdown() {
@@ -131,7 +150,7 @@ void SharedWorkerServiceImpl::ConnectToWorker(
     const blink::MessagePortChannel& message_port,
     scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory,
     const std::optional<blink::StorageKey>& storage_key_override) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   RenderFrameHostImpl* render_frame_host =
       RenderFrameHostImpl::FromID(client_render_frame_host_id);
@@ -184,6 +203,15 @@ void SharedWorkerServiceImpl::ConnectToWorker(
   const blink::StorageKey& storage_key =
       storage_key_override.value_or(render_frame_host->GetStorageKey());
 
+  // Ensure that the requesting process can access data for the storage key's
+  // origin before connecting to or creating a shared worker.
+  if (!ChildProcessSecurityPolicyImpl::GetInstance()->CanAccessDataForOrigin(
+          render_frame_host->GetProcess()->GetID().value(),
+          storage_key.origin())) {
+    ScriptLoadFailed(std::move(client), /*error_message=*/"");
+    return;
+  }
+
   if (base::FeatureList::IsEnabled(
           features::kEnforceSharedWorkerSameOriginCheck) &&
       !info->url.SchemeIs(url::kDataScheme)) {
@@ -218,6 +246,28 @@ void SharedWorkerServiceImpl::ConnectToWorker(
           storage_key.origin().scheme())) {
     ScriptLoadFailed(std::move(client), /*error_message=*/"");
     return;
+  }
+
+  if (base::FeatureList::IsEnabled(
+          blink::features::kPermissionsPolicyForSharedWorkers)) {
+    // The shared worker cannot be delegated any features that the creator
+    // context cannot delegate to the worker script's origin. This check is
+    // already performed in the renderer, so it should never fail for a
+    // well-behaving renderer process.
+    const network::PermissionsPolicy* creator_permissions_policy =
+        render_frame_host->GetPermissionsPolicy();
+    CHECK(creator_permissions_policy);
+    const url::Origin src_origin = url::Origin::Create(info->url);
+    for (size_t i = 0; i < network::kPermissionsPolicyFeaturesBitsetSize; ++i) {
+      const auto feature =
+          static_cast<network::mojom::PermissionsPolicyFeature>(i);
+      if (info->permissions_policy.Contains(feature) &&
+          !creator_permissions_policy->CanDelegateFeatureToOrigin(feature,
+                                                                  src_origin)) {
+        mojo::ReportBadMessage("SWH_INVALID_PERMISSIONS_POLICY");
+        return;
+      }
+    }
   }
 
   RenderFrameHost* main_frame = render_frame_host->frame_tree()->GetMainFrame();
@@ -283,6 +333,17 @@ void SharedWorkerServiceImpl::ConnectToWorker(
           "match the existing shared worker's extendedLifetime.");
       return;
     }
+    if (base::FeatureList::IsEnabled(
+            blink::features::kPermissionsPolicyForSharedWorkers)) {
+      if (host->instance().permissions_policy() != info->permissions_policy) {
+        ScriptLoadFailed(
+            std::move(client),
+            "Failed to connect an existing shared worker because the allow "
+            "given on the SharedWorker constructor doesn't match the existing "
+            "shared worker's allow.");
+        return;
+      }
+    }
     // Step 11.4: "If worker global scope is not null, then check if worker
     // global scope's type and credentials match the options values. If not,
     // queue a task to fire an event named error and abort these steps."
@@ -323,7 +384,8 @@ void SharedWorkerServiceImpl::ConnectToWorker(
   SharedWorkerInstance instance(
       info->url, info->options->type, info->options->credentials,
       info->options->name, storage_key, worker_storage_key, renderer_origin,
-      creation_context_type, info->same_site_cookies, info->extended_lifetime);
+      creation_context_type, info->same_site_cookies, info->extended_lifetime,
+      info->permissions_policy);
   host = CreateWorker(
       *render_frame_host, instance, std::move(info->content_security_policies),
       std::move(info->outside_fetch_client_settings_object), partition_domain,
@@ -337,7 +399,7 @@ void SharedWorkerServiceImpl::ConnectToWorker(
 
 SharedWorkerHost* SharedWorkerServiceImpl::GetSharedWorkerHostFromToken(
     const blink::SharedWorkerToken& worker_token) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   auto it = shared_worker_hosts_.find(worker_token);
   if (it == shared_worker_hosts_.end())
     return nullptr;
@@ -345,8 +407,8 @@ SharedWorkerHost* SharedWorkerServiceImpl::GetSharedWorkerHostFromToken(
 }
 
 void SharedWorkerServiceImpl::DestroyHost(SharedWorkerHost* host) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(host);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(host, base::NotFatalUntil::M160);
   shared_worker_hosts_.erase(host->token());
   worker_hosts_.erase(worker_hosts_.find(host));
 }
@@ -393,7 +455,7 @@ void SharedWorkerServiceImpl::NotifyClientRemoved(
   CHECK(it != shared_worker_client_counts_.end());
 
   int& count = it->second;
-  DCHECK_GT(count, 0);
+  CHECK_GT(count, 0, base::NotFatalUntil::M160);
   --count;
 
   // Only notify if there are no longer any active connections from this frame
@@ -416,8 +478,9 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
     const blink::MessagePortChannel& message_port,
     scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory,
     const std::optional<blink::StorageKey>& storage_key_override) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(!blob_url_loader_factory || instance.url().SchemeIsBlob());
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(!blob_url_loader_factory || instance.url().SchemeIsBlob(),
+        base::NotFatalUntil::M160);
 
   StoragePartitionImpl* partition =
       static_cast<StoragePartitionImpl*>(creator.GetStoragePartition());
@@ -451,8 +514,9 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
 
   RenderProcessHost* worker_process_host = site_instance->GetOrCreateProcess(
       ProcessAllocationContext{ProcessAllocationSource::kSharedWorker});
-  DCHECK(worker_process_host);
-  DCHECK(worker_process_host->InSameStoragePartition(partition));
+  CHECK(worker_process_host, base::NotFatalUntil::M160);
+  CHECK(worker_process_host->InSameStoragePartition(partition),
+        base::NotFatalUntil::M160);
 
   if (!worker_process_host->Init()) {
     DVLOG(1) << "Couldn't start a new process for shared worker.";
@@ -468,7 +532,7 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
           this, instance, std::move(site_instance),
           std::move(content_security_policies),
           creator.policy_container_host()->Clone()));
-  DCHECK(insertion_result.second);
+  CHECK(insertion_result.second, base::NotFatalUntil::M160);
   SharedWorkerHost* host = insertion_result.first->get();
   shared_worker_hosts_[host->token()] = host;
 
@@ -555,7 +619,7 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
 
   // Ensures that WorkerScriptFetcher::CreateAndStart() doesn't synchronously
   // destroy the SharedWorkerHost.
-  DCHECK(weak_host);
+  CHECK(weak_host, base::NotFatalUntil::M160);
 
   return host;
 }
@@ -566,7 +630,7 @@ void SharedWorkerServiceImpl::StartWorker(
     blink::mojom::FetchClientSettingsObjectPtr
         outside_fetch_client_settings_object,
     std::optional<WorkerScriptFetcherResult> result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   // The host may already be gone if something forcibly terminated the worker
   // before it could start (e.g., in tests, a UI action or the renderer process

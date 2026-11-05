@@ -8,6 +8,7 @@
 
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -21,7 +22,9 @@
 #include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/geolocation/geolocation_position_error.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
+#include "third_party/blink/renderer/core/html/html_capability_element_metrics_util.h"
 #include "third_party/blink/renderer/core/html/html_permission_element_test_helper.h"
 #include "third_party/blink/renderer/core/html/html_span_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
@@ -285,6 +288,42 @@ TEST_F(HTMLGeolocationElementTest, GeolocationAccuracyModeCaseInsensitive) {
   CheckInnerText(geolocation_element, kPreciseGeolocationString);
 }
 
+TEST_F(HTMLGeolocationElementTest, GeolocationDisplayModeIconOnly) {
+  ScopedCapabilityElementIconOnlyModeForTest scoped_feature(true);
+  auto* geolocation_element = CreateGeolocationElement();
+  WaitForPermissionElementRegistration(geolocation_element);
+  EXPECT_FALSE(geolocation_element->IsIconOnly());
+  CheckInnerText(geolocation_element, kGeolocationString);
+
+  geolocation_element->setAttribute(html_names::kDisplaymodeAttr,
+                                    AtomicString("icon-only"));
+  EXPECT_TRUE(geolocation_element->IsIconOnly());
+  CheckInnerText(geolocation_element, g_empty_string);
+  EXPECT_EQ(kGeolocationString, geolocation_element->AccessibleLabel());
+  EXPECT_EQ(kGeolocationString, geolocation_element->computedName());
+
+  geolocation_element->removeAttribute(html_names::kDisplaymodeAttr);
+  EXPECT_FALSE(geolocation_element->IsIconOnly());
+  CheckInnerText(geolocation_element, kGeolocationString);
+}
+
+TEST_F(HTMLGeolocationElementTest, GeolocationDisplayModeIconOnlyDisabled) {
+  ScopedCapabilityElementIconOnlyModeForTest scoped_feature(false);
+  auto* geolocation_element = CreateGeolocationElement();
+  WaitForPermissionElementRegistration(geolocation_element);
+  EXPECT_FALSE(geolocation_element->IsIconOnly());
+  CheckInnerText(geolocation_element, kGeolocationString);
+
+  geolocation_element->setAttribute(html_names::kDisplaymodeAttr,
+                                    AtomicString("icon-only"));
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(geolocation_element->IsIconOnly());
+  CheckInnerText(geolocation_element, kGeolocationString);
+  EXPECT_NE(nullptr, geolocation_element->permission_text_span_for_testing()
+                         ->GetComputedStyle());
+  EXPECT_EQ(kGeolocationString, geolocation_element->computedName());
+}
+
 TEST_F(HTMLGeolocationElementTest, GeolocationStatusChange) {
   const struct {
     MojoPermissionStatus status;
@@ -317,15 +356,13 @@ TEST_F(HTMLGeolocationElementTest, GeolocationGrantedClickBehavior) {
   auto* geolocation_element_watch = CreateGeolocationElement();
   geolocation_element_watch->setAttribute(html_names::kWatchAttr,
                                           AtomicString(""));
-  auto* event_watch = Event::Create(event_type_names::kDOMActivate);
-  geolocation_element_watch->DefaultEventHandler(*event_watch);
+  geolocation_element_watch->DispatchSimulatedClick(nullptr);
   CheckAppearance(geolocation_element_watch, kGeolocationString,
                   /*is_in_progress*/ true);
 
   // Test without kWatchAttr
   auto* geolocation_element_get_position = CreateGeolocationElement();
-  auto* event_get_position = Event::Create(event_type_names::kDOMActivate);
-  geolocation_element_get_position->DefaultEventHandler(*event_get_position);
+  geolocation_element_get_position->DispatchSimulatedClick(nullptr);
   CheckAppearance(geolocation_element_get_position, kGeolocationString,
                   /*is_in_progress*/ true);
 }
@@ -397,15 +434,14 @@ TEST_F(HTMLGeolocationElementTest, GeolocationRequestInProgress) {
                                  MojoPermissionStatus::GRANTED}});
 
   auto* geolocation_element = CreateGeolocationElement();
-  auto* event = Event::Create(event_type_names::kDOMActivate);
 
-  geolocation_element->DefaultEventHandler(*event);
+  geolocation_element->DispatchSimulatedClick(nullptr);
   CheckAppearance(geolocation_element, kGeolocationString,
                   /*is_in_progress*/ true);
   auto first_request_time =
       geolocation_element->InProgressApearanceStartedTimeForTesting();
 
-  geolocation_element->DefaultEventHandler(*event);
+  geolocation_element->DispatchSimulatedClick(nullptr);
   CheckAppearance(geolocation_element, kGeolocationString,
                   /*is_in_progress*/ true);
   auto second_request_time =
@@ -450,8 +486,7 @@ TEST_F(HTMLGeolocationElementTest,
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
   // Simulate a click. This should trigger a permission prompt.
-  auto* event = Event::Create(event_type_names::kDOMActivate);
-  geolocation_element->DefaultEventHandler(*event);
+  geolocation_element->DispatchSimulatedClick(nullptr);
 
   // Grant permission.
   permission_service()->NotifyPermissionStatusChange(
@@ -495,6 +530,182 @@ TEST_F(HTMLGeolocationElementTest, PermissionStatusChangeAfterDecided) {
                   /*is_in_progress*/ true);
 }
 
+TEST_F(HTMLGeolocationElementTest, MetricsRequestInitiationFlow) {
+  ScopedBypassPepcSecurityForTestingForTest bypass_pepc(true);
+  base::HistogramTester histogram_tester;
+
+  // 1. User click with permission already granted.
+  CachedPermissionStatus::From(GetDocument().domWindow())
+      ->SetPermissionStatusMap({{blink::mojom::PermissionName::GEOLOCATION,
+                                 MojoPermissionStatus::GRANTED}});
+  auto* element1 = CreateGeolocationElement();
+  element1->DispatchSimulatedClick(nullptr);
+
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Geolocation.RequestInitiationFlow",
+      CapabilityElementGeolocationRequestFlow::
+          kClickWithPermissionAlreadyGranted,
+      1);
+
+  // 2. User click requiring prompt that is granted.
+  CachedPermissionStatus::From(GetDocument().domWindow())
+      ->SetPermissionStatusMap({{blink::mojom::PermissionName::GEOLOCATION,
+                                 MojoPermissionStatus::ASK}});
+  auto* element2 = CreateGeolocationElement();
+  WaitForPermissionElementRegistration(element2);
+  element2->DispatchSimulatedClick(nullptr);
+  permission_service()->NotifyPermissionStatusChange(
+      PermissionName::GEOLOCATION, MojoPermissionStatus::GRANTED);
+
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Geolocation.RequestInitiationFlow",
+      CapabilityElementGeolocationRequestFlow::kClickWithPromptGranted, 1);
+
+  // 3. Autolocate on load.
+  CachedPermissionStatus::From(GetDocument().domWindow())
+      ->SetPermissionStatusMap({{blink::mojom::PermissionName::GEOLOCATION,
+                                 MojoPermissionStatus::GRANTED}});
+  auto* element3 = MakeGarbageCollected<HTMLGeolocationElement>(GetDocument());
+  element3->setAttribute(html_names::kAutolocateAttr, g_empty_atom);
+  GetDocument().body()->AppendChild(element3);
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Geolocation.RequestInitiationFlow",
+      CapabilityElementGeolocationRequestFlow::kAutolocateOnLoad, 1);
+
+  // 4. User click on an autolocate element with permission already granted
+  // should record kClickWithPermissionAlreadyGranted (not
+  // kClickWithPromptGranted).
+  element3->CurrentPositionCallback(base::ok(nullptr));
+  element3->DispatchSimulatedClick(nullptr);
+
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Geolocation.RequestInitiationFlow",
+      CapabilityElementGeolocationRequestFlow::
+          kClickWithPermissionAlreadyGranted,
+      2);
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Geolocation.RequestInitiationFlow",
+      CapabilityElementGeolocationRequestFlow::kClickWithPromptGranted, 1);
+}
+
+TEST_F(HTMLGeolocationElementTest, MetricsAccuracyMode) {
+  ScopedBypassPepcSecurityForTestingForTest bypass_pepc(true);
+  base::HistogramTester histogram_tester;
+
+  // 1. Default accuracy mode.
+  CachedPermissionStatus::From(GetDocument().domWindow())
+      ->SetPermissionStatusMap({{blink::mojom::PermissionName::GEOLOCATION,
+                                 MojoPermissionStatus::GRANTED}});
+  auto* element1 = CreateGeolocationElement();
+  element1->DispatchSimulatedClick(nullptr);
+
+  histogram_tester.ExpectUniqueSample(
+      "Blink.CapabilityElement.Geolocation.AccuracyMode",
+      CapabilityElementGeolocationAccuracyMode::kDefault, 1);
+
+  // 2. Precise accuracy mode.
+  CachedPermissionStatus::From(GetDocument().domWindow())
+      ->SetPermissionStatusMap({{blink::mojom::PermissionName::GEOLOCATION,
+                                 MojoPermissionStatus::ASK}});
+  auto* element2 = CreateGeolocationElement(/*precise_accuracy_mode=*/true);
+  WaitForPermissionElementRegistration(element2);
+  element2->DispatchSimulatedClick(nullptr);
+  permission_service()->NotifyPermissionStatusChange(
+      PermissionName::GEOLOCATION, MojoPermissionStatus::GRANTED);
+
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Geolocation.AccuracyMode",
+      CapabilityElementGeolocationAccuracyMode::kPrecise, 1);
+
+  // 3. Approximate accuracy mode.
+  CachedPermissionStatus::From(GetDocument().domWindow())
+      ->SetPermissionStatusMap({{blink::mojom::PermissionName::GEOLOCATION,
+                                 MojoPermissionStatus::GRANTED}});
+  auto* element3 = MakeGarbageCollected<HTMLGeolocationElement>(GetDocument());
+  element3->setAttribute(html_names::kAccuracymodeAttr,
+                         AtomicString("approximate"));
+  element3->setAttribute(html_names::kAutolocateAttr, g_empty_atom);
+  GetDocument().body()->AppendChild(element3);
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Geolocation.AccuracyMode",
+      CapabilityElementGeolocationAccuracyMode::kApproximate, 1);
+}
+
+TEST_F(HTMLGeolocationElementTest, MetricsResultAndLatency) {
+  ScopedBypassPepcSecurityForTestingForTest bypass_pepc(true);
+  base::HistogramTester histogram_tester;
+
+  CachedPermissionStatus::From(GetDocument().domWindow())
+      ->SetPermissionStatusMap({{blink::mojom::PermissionName::GEOLOCATION,
+                                 MojoPermissionStatus::GRANTED}});
+
+  // Test success result and latency.
+  auto* element_success = CreateGeolocationElement();
+  element_success->DispatchSimulatedClick(nullptr);
+  task_environment().FastForwardBy(base::Milliseconds(120));
+  element_success->CurrentPositionCallback(base::ok(nullptr));
+
+  // Subsequent callback (e.g. from watchPosition) should not emit duplicate
+  // request flow metrics.
+  element_success->CurrentPositionCallback(base::ok(nullptr));
+
+  histogram_tester.ExpectUniqueSample(
+      "Blink.CapabilityElement.Geolocation.RequestResult",
+      CapabilityElementGeolocationResult::kSuccess, 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Blink.CapabilityElement.Geolocation.TimeToPosition",
+      base::Milliseconds(120), 1);
+  histogram_tester.ExpectTotalCount(
+      "Blink.CapabilityElement.Geolocation.TimeToError", 0);
+  histogram_tester.ExpectTotalCount(
+      "Blink.CapabilityElement.Geolocation.PositionError.Reason", 0);
+
+  // Test error result, latency, and reason (kPermissionDenied).
+  auto* element_error = CreateGeolocationElement();
+  element_error->DispatchSimulatedClick(nullptr);
+  task_environment().FastForwardBy(base::Milliseconds(250));
+  element_error->CurrentPositionCallback(
+      base::unexpected(MakeGarbageCollected<GeolocationPositionError>(
+          GeolocationPositionError::kPermissionDenied, "Permission denied")));
+
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Geolocation.RequestResult",
+      CapabilityElementGeolocationResult::kError, 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Blink.CapabilityElement.Geolocation.TimeToError",
+      base::Milliseconds(250), 1);
+  histogram_tester.ExpectUniqueSample(
+      "Blink.CapabilityElement.Geolocation.PositionError.Reason",
+      CapabilityElementGeolocationPositionErrorReason::kPermissionDenied, 1);
+
+  // Test error reason: kPositionUnavailable.
+  auto* element_unavailable = CreateGeolocationElement();
+  element_unavailable->DispatchSimulatedClick(nullptr);
+  element_unavailable->CurrentPositionCallback(
+      base::unexpected(MakeGarbageCollected<GeolocationPositionError>(
+          GeolocationPositionError::kPositionUnavailable,
+          "Position unavailable")));
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Geolocation.PositionError.Reason",
+      CapabilityElementGeolocationPositionErrorReason::kPositionUnavailable, 1);
+
+  // Test error reason: kTimeout.
+  auto* element_timeout = CreateGeolocationElement();
+  element_timeout->DispatchSimulatedClick(nullptr);
+  element_timeout->CurrentPositionCallback(
+      base::unexpected(MakeGarbageCollected<GeolocationPositionError>(
+          GeolocationPositionError::kTimeout, "Timeout")));
+  histogram_tester.ExpectBucketCount(
+      "Blink.CapabilityElement.Geolocation.PositionError.Reason",
+      CapabilityElementGeolocationPositionErrorReason::kTimeout, 1);
+}
+
 class HTMLGeolocationElementSimTest : public SimTest {
  public:
   HTMLGeolocationElementSimTest()
@@ -503,6 +714,7 @@ class HTMLGeolocationElementSimTest : public SimTest {
  protected:
   void SetUp() override {
     SimTest::SetUp();
+    GetDocument().GetSettings()->SetDefaultFontSize(12);
     feature_list_.InitAndEnableFeature(features::kGeolocationElement);
     MainFrame().GetFrame()->GetBrowserInterfaceBroker().SetBinderForTesting(
         PermissionService::Name_,

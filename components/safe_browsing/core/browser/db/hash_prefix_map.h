@@ -11,7 +11,7 @@
 #include <unordered_map>
 
 #include "components/safe_browsing/core/browser/db/hash_prefix_container.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 
 namespace safe_browsing {
 
@@ -110,6 +110,8 @@ class HashPrefixMap : public HashPrefixContainer {
   void GetPrefixInfo(google::protobuf::RepeatedPtrField<
                      DatabaseManagerInfo::DatabaseInfo::StoreInfo::PrefixSet>*
                          prefix_sets) override;
+
+  std::vector<base::FilePath> GetPaths() const override;
 
   const std::string& GetExtensionForTesting(PrefixSize size);
   void ClearAndWaitForTesting();

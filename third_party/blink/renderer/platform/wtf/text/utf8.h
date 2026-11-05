@@ -29,15 +29,16 @@
 #include "base/containers/span.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_uchar.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_export.h"
+#include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
 namespace blink::unicode {
 
-typedef enum {
+enum ConversionStatus {
   kSuccess,          // Conversion successful.
   kSourceExhausted,  // partial character in source, but hit end
   kTargetExhausted,  // insuff. room in target for conversion
   kSourceIllegal     // source sequence is illegal/malformed
-} ConversionStatus;
+};
 
 template <typename CharType>
 struct ConversionResult {
@@ -86,10 +87,10 @@ WTF_EXPORT ConversionResult<uint8_t> ConvertUtf16ToUtf8(
     bool strict = true);
 
 // Returns the number of UTF-16 code points.
-WTF_EXPORT unsigned CalculateStringLengthFromUtf8(
-    base::span<const uint8_t> data,
-    bool& seen_non_ascii,
-    bool& seen_non_latin1);
+WTF_EXPORT wtf_size_t
+CalculateStringLengthFromUtf8(base::span<const uint8_t> data,
+                              bool& seen_non_ascii,
+                              bool& seen_non_latin1);
 
 }  // namespace blink::unicode
 

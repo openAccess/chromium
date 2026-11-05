@@ -8,9 +8,9 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/functional/callback.h"
-#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -39,13 +39,6 @@ struct DMServerJobResult;
 
 // Holds the account management state returned by Device Management Server.
 struct POLICY_EXPORT UserManagementStatus {
-  UserManagementStatus();
-  ~UserManagementStatus();
-  UserManagementStatus(const UserManagementStatus&);
-  UserManagementStatus& operator=(const UserManagementStatus&);
-  UserManagementStatus(UserManagementStatus&&);
-  UserManagementStatus& operator=(UserManagementStatus&&);
-
   bool operator==(const UserManagementStatus& other) const = default;
 
   // Returns true if the account is managed and Chrome profile cloud management
@@ -61,50 +54,92 @@ struct POLICY_EXPORT UserManagementStatus {
   bool is_chrome_profile_management_enabled = false;
 };
 
-// Holds enterprise sign-in interception policies returned by Device Management
-// Server.
-struct POLICY_EXPORT UserInterceptionPolicies {
-  UserInterceptionPolicies();
-  ~UserInterceptionPolicies();
-  UserInterceptionPolicies(const UserInterceptionPolicies&);
-  UserInterceptionPolicies& operator=(const UserInterceptionPolicies&);
-  UserInterceptionPolicies(UserInterceptionPolicies&&);
-  UserInterceptionPolicies& operator=(UserInterceptionPolicies&&);
-
-  bool operator==(const UserInterceptionPolicies& other) const = default;
-
-  // Profile separation policies.
-  ProfileSeparationPolicies profile_separation_policies;
-
-  // Whether sync is disabled for this user by enterprise policy.
-  std::optional<bool> sync_disabled;
-
-  // Organization-managed browser theme color (e.g. "#rrggbb").
-  std::optional<std::string> browser_theme_color;
-
-  // URL of the organization logo image to display in sign-in dialogs.
-  std::optional<std::string> enterprise_logo_url;
-
-  // Custom organization name/label to display in sign-in dialogs.
-  std::optional<std::string> enterprise_custom_label;
-};
-
-// Asynchronously fetches user cloud management status and optional sign-in
-// interception policies from DMServer.
+// Result of a `UserCloudManagementStatusFetcher` fetch. Recorded in
+// "Enterprise.UserCloudManagementStatusFetcher.{Caller}.Result".
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
 //
-// This is a one-shot fetcher that manages its own lifecycle and executes at
-// most one fetch per request. Callers are responsible for storing the returned
-// results as needed.
+// LINT.IfChange(UserCloudManagementStatusFetchResult)
+enum class UserCloudManagementStatusFetchResult {
+  kSuccess = 0,
+  // The OAuth access token could not be fetched.
+  kAccessTokenError = 1,
+  // The DMServer request failed.
+  kDmServerError = 2,
+  // The DMServer request succeeded but the response has no
+  // `user_management_status_and_policies_response`.
+  kMissingResponse = 3,
+  // The fetcher's own timeout expired.
+  kTimeout = 4,
+  // The fetcher was destroyed before completion (e.g. the caller timed out,
+  // was reset or shut down).
+  kCancelled = 5,
+  kMaxValue = kCancelled,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/enums.xml:UserCloudManagementStatusFetchResult)
+
+// Result of parsing the profile separation policies returned by DMServer.
+// Recorded in
+// "Enterprise.UserCloudManagementStatusFetcher.{Caller}.PolicyParseResult".
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(UserCloudPolicyParseResult)
+enum class UserCloudPolicyParseResult {
+  kSuccess = 0,
+  // Policies were requested but the response has no `policy_fetch_response`.
+  kNoPolicyFetchResponse = 1,
+  // The `policy_fetch_response` has an error code or an error message.
+  kResponseError = 2,
+  // The `PolicyData` could not be parsed.
+  kPolicyDataParseError = 3,
+  // The `PolicyData` has no `policy_value`.
+  kMissingPolicyValue = 4,
+  // The `CloudPolicySettings` could not be parsed.
+  kCloudPolicySettingsParseError = 5,
+  kMaxValue = kCloudPolicySettingsParseError,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/enums.xml:UserCloudPolicyParseResult)
+
+// Asynchronously fetches user cloud management status and profile separation
+// policies from DMServer.
+//
+// The result is passed to a `FetchStatusAndPoliciesCallback`:
+// - The `UserManagementStatus` is `std::nullopt` if the fetch failed (access
+//   token error, DMServer error or timeout).
+// - The `ProfileSeparationPolicies` are empty if the fetch failed, if policies
+//   were not requested, or if the server did not return any valid policies.
+//
+// Each instance executes at most one fetch. The fetcher supports two ownership
+// modes:
+// - Caller-owned: the caller creates an instance, calls `Start()` and keeps
+//   the instance alive until the callback runs. Destroying the instance
+//   cancels the fetch and the callback never runs.
+// - Self-managed: `FetchStatusAndPolicies()` creates an internal instance that
+//   lives until the callback runs.
 class POLICY_EXPORT UserCloudManagementStatusFetcher {
  public:
   using FetchStatusAndPoliciesCallback =
       base::OnceCallback<void(std::optional<UserManagementStatus>,
-                              std::optional<UserInterceptionPolicies>)>;
+                              ProfileSeparationPolicies)>;
 
-  // Constructs a fetcher instance. `service` and `url_loader_factory` must not be
-  // null. `should_fetch_policies` specifies whether to request sign-in
-  // experience policies in addition to the management status.
+  // The feature using the fetcher. The fetcher histograms are split by caller,
+  // since callers have different timeout and cancellation behaviors.
+  //
+  // LINT.IfChange(UserCloudManagementStatusFetcherCaller)
+  enum class Caller {
+    // `DiceWebSigninInterceptor`.
+    kSigninInterceptor,
+    // `ProfileManagementDisclaimerService`.
+    kProfileManagementDisclaimer,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/histograms.xml:UserCloudManagementStatusFetcherCaller)
+
+  // Constructs a fetcher instance. `service` and `url_loader_factory` must not
+  // be null. `should_fetch_policies` specifies whether to request profile
+  // separation policies in addition to the management status.
   UserCloudManagementStatusFetcher(
+      Caller caller,
       DeviceManagementService* service,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       bool should_fetch_policies);
@@ -115,16 +150,31 @@ class POLICY_EXPORT UserCloudManagementStatusFetcher {
       const UserCloudManagementStatusFetcher&) = delete;
   ~UserCloudManagementStatusFetcher();
 
-  // Asynchronously fetches user management status and optional interception
-  // policies for `account_id`.
+  // Initiates the fetch workflow for `account_id`. Must be called at most once
+  // per instance. `callback` must not be null.
   //
-  // Lifecycle: Creates an internal `UserCloudManagementStatusFetcher` instance
-  // that manages its own lifecycle. Ownership of the fetcher is bound into the
-  // completion callback closure, keeping it alive until the request succeeds,
-  // encounters an error, or times out, after which it is automatically
-  // destroyed. The caller does not own the fetcher and is responsible for
-  // storing the result provided to `callback`.
+  // RAII Cancellation: Destroying this fetcher instance immediately cancels
+  // any in-flight OAuth token fetch, DMServer network request, and timeout
+  // timer, and `callback` is never run.
+  //
+  // `callback` may destroy this fetcher instance: no member is accessed after
+  // `callback` runs.
+  void Start(signin::IdentityManager* identity_manager,
+             const CoreAccountId& account_id,
+             FetchStatusAndPoliciesCallback callback);
+
+  // Asynchronously fetches user management status and optional profile
+  // separation policies for `account_id`. `callback` must not be null.
+  //
+  // Self-Managed Lifecycle: Creates a one-shot internal
+  // `UserCloudManagementStatusFetcher` instance whose ownership (`unique_ptr`)
+  // is transferred directly into the completion callback closure. This binds
+  // the fetcher's lifetime to the completion of the asynchronous network and
+  // authentication pipeline, destroying it automatically when the fetch
+  // succeeds, encounters an error, or times out. Callers do not need to retain
+  // an instance.
   static void FetchStatusAndPolicies(
+      Caller caller,
       DeviceManagementService* service,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       signin::IdentityManager* identity_manager,
@@ -133,16 +183,6 @@ class POLICY_EXPORT UserCloudManagementStatusFetcher {
       FetchStatusAndPoliciesCallback callback);
 
  private:
-  using InternalFetchCallback =
-      base::OnceCallback<void(std::optional<UserManagementStatus>,
-                              std::optional<UserInterceptionPolicies>)>;
-
-  // Starts the fetch workflow by setting up the timeout timer and initiating
-  // the OAuth access token fetch for `account_id`.
-  void Start(signin::IdentityManager* identity_manager,
-             const CoreAccountId& account_id,
-             InternalFetchCallback callback);
-
   // Called when the OAuth access token request completes. If successful,
   // proceeds to send the DMServer request; otherwise calls Finish() with
   // null parameters.
@@ -150,26 +190,33 @@ class POLICY_EXPORT UserCloudManagementStatusFetcher {
                                   signin::AccessTokenInfo access_token_info);
 
   // Constructs and dispatches the DMServer request for user management status
-  // and sign-in experience policies using the provided `access_token`.
-  void SendDeviceManagementRequest(const std::string& access_token);
+  // and policies using the provided `access_token`.
+  void SendDeviceManagementRequest(std::string access_token);
 
   // Called when the DMServer job finishes. Parses the proto response into
-  // `UserManagementStatus` and `UserInterceptionPolicies` structs and invokes
+  // `UserManagementStatus` and `ProfileSeparationPolicies` structs and invokes
   // Finish().
   void OnJobDone(DMServerJobResult result);
 
   // Called when the overall fetch operation times out before completion.
   void OnTimeout();
 
-  // Cleans up internal state, stops timers, and passes the final results
-  // to `callback_`.
-  void Finish(std::optional<UserManagementStatus> status,
-              std::optional<UserInterceptionPolicies> interception_policies);
+  // Cleans up internal state, stops timers, records metrics for `result` and
+  // passes the final results to `callback_`.
+  void Finish(UserCloudManagementStatusFetchResult result,
+              std::optional<UserManagementStatus> status,
+              ProfileSeparationPolicies profile_separation_policies);
 
+  // Returns the name of the `metric` histogram for `caller_`, i.e.
+  // "Enterprise.UserCloudManagementStatusFetcher.<Caller>.<metric>".
+  std::string GetHistogramName(std::string_view metric) const;
+
+  const Caller caller_;
   raw_ref<DeviceManagementService> service_;
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   const bool should_fetch_policies_;
-  InternalFetchCallback callback_;
+  FetchStatusAndPoliciesCallback callback_;
+  base::TimeTicks start_time_;
 
   std::unique_ptr<signin::AccessTokenFetcher> token_fetcher_;
   std::unique_ptr<DeviceManagementService::Job> fetch_job_;

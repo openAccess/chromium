@@ -61,15 +61,6 @@ suite('<settings-device-page>', () => {
   });
 
 
-  /**
-   * Set enableSpatialAudioToggle feature flag to true for tests.
-   */
-  function setEnableSpatialAudioToggleEnabled(isEnabled: boolean): void {
-    loadTimeData.overrideValues({
-      enableSpatialAudioToggle: isEnabled,
-    });
-  }
-
   test('device page', async () => {
     const provider = new FakeInputDeviceSettingsProvider();
     setInputDeviceSettingsProviderForTesting(provider);
@@ -1425,7 +1416,6 @@ suite('<settings-device-page>', () => {
     };
 
     setup(async () => {
-      setEnableSpatialAudioToggleEnabled(true);
       await init();
 
       // FakeAudioConfig must be set before audio subpage is loaded.
@@ -1548,7 +1538,7 @@ suite('<settings-device-page>', () => {
     setup(async () => {
       await init();
       const row = devicePage.shadowRoot!.querySelector<HTMLButtonElement>(
-          `#main #perDeviceKeyboardRow`);
+          '#main #perDeviceKeyboardRow');
       assertTrue(!!row);
       row.click();
       assertEquals(
@@ -1601,7 +1591,7 @@ suite('<settings-device-page>', () => {
 
     test('per-device mouse subpage visibility', () => {
       const row = devicePage.shadowRoot!.querySelector<HTMLButtonElement>(
-          `#main #perDeviceMouseRow`);
+          '#main #perDeviceMouseRow');
       assertTrue(!!row);
       row.click();
       assertEquals(routes.PER_DEVICE_MOUSE, Router.getInstance().currentRoute);
@@ -1626,7 +1616,7 @@ suite('<settings-device-page>', () => {
 
     test('per-device touchpad subpage visibility', () => {
       const row = devicePage.shadowRoot!.querySelector<HTMLButtonElement>(
-          `#main #perDeviceTouchpadRow`);
+          '#main #perDeviceTouchpadRow');
       assertTrue(!!row);
       row.click();
       assertEquals(
@@ -1652,7 +1642,7 @@ suite('<settings-device-page>', () => {
 
     test('per-device pointing stick subpage visibility', () => {
       const row = devicePage.shadowRoot!.querySelector<HTMLButtonElement>(
-          `#main #perDevicePointingStickRow`);
+          '#main #perDevicePointingStickRow');
       assertTrue(!!row);
       row.click();
       assertEquals(

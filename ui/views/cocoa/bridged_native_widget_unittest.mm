@@ -9,16 +9,20 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #import "base/apple/foundation_util.h"
 #import "base/apple/scoped_objc_class_swizzler.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #import "base/mac/mac_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #import "components/remote_cocoa/app_shim/bridged_content_view.h"
 #import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
@@ -32,11 +36,18 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #import "ui/base/test/cocoa_helper.h"
+#import "ui/base/test/scoped_fake_nswindow_focus.h"
+#include "ui/compositor/test/test_context_factories.h"
 #include "ui/display/screen.h"
 #include "ui/events/test/cocoa_test_event_utils.h"
 #import "ui/gfx/mac/coordinate_conversion.h"
+#include "ui/menus/simple_menu_model.h"
 #import "ui/views/cocoa/native_widget_mac_ns_window_host.h"
 #import "ui/views/cocoa/text_input_host.h"
+#include "ui/views/controls/menu/menu_item_view.h"
+#include "ui/views/controls/menu/menu_model_adapter.h"
+#include "ui/views/controls/menu/menu_runner.h"
+#include "ui/views/controls/menu/submenu_view.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
 #include "ui/views/controls/textfield/textfield_model.h"
@@ -249,6 +260,7 @@ NSTextInputContext* g_fake_current_input_context = nullptr;
 }
 
 @end
+
 @interface CurrentInputContextDonorForNSTextInputContext : NSTextInputContext
 @end
 
@@ -480,6 +492,8 @@ class BridgedNativeWidgetTestBase : public ui::CocoaTest,
   // Overridden from testing::Test:
   void SetUp() override {
     ui::CocoaTest::SetUp();
+    test_views_delegate_.set_context_factory(
+        context_factories_.GetContextFactory());
 
     Widget::InitParams init_params(ownership_);
     init_params.native_widget = native_widget_mac_.get();
@@ -501,7 +515,10 @@ class BridgedNativeWidgetTestBase : public ui::CocoaTest,
     if (widget_) {
       observation_.Reset();
       widget_->CloseNow();
+      widget_.reset();
     }
+    task_environment_.RunUntilIdle();
+    test_views_delegate_.set_context_factory(nullptr);
     ui::CocoaTest::TearDown();
   }
 
@@ -544,10 +561,11 @@ class BridgedNativeWidgetTestBase : public ui::CocoaTest,
   Widget::InitParams::ShadowType shadow_type_ =
       Widget::InitParams::ShadowType::kDefault;
 
-  base::test::SingleThreadTaskEnvironment task_environment_{
-      base::test::SingleThreadTaskEnvironment::MainThreadType::UI};
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::MainThreadType::UI};
 
  private:
+  ui::TestContextFactories context_factories_{false};
   TestViewsDelegate test_views_delegate_;
 
   display::ScopedNativeScreen screen_;
@@ -1101,18 +1119,281 @@ TEST_F(BridgedNativeWidgetTest, InputContext) {
   text_field->SetTextInputFlags(ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD);
   EXPECT_FALSE(ns_view_.inputContext);
 
-  text_field =
-      InstallTextField(test_string, ui::TEXT_INPUT_TYPE_TEXT);
+  text_field = InstallTextField(test_string, ui::TEXT_INPUT_TYPE_TEXT);
   EXPECT_TRUE(ns_view_.inputContext);
 
+  // TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD does not prevent an input context;
+  // https://crbug.com/567321058.
   text_field->SetTextInputFlags(ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD);
-  EXPECT_FALSE(ns_view_.inputContext);
+  EXPECT_TRUE(ns_view_.inputContext);
 
   GetNSWindowHost()->text_input_host()->SetTextInputClient(nullptr);
   EXPECT_FALSE(ns_view_.inputContext);
 
   InstallTextField(test_string, ui::TEXT_INPUT_TYPE_NONE);
   EXPECT_FALSE(ns_view_.inputContext);
+}
+
+// While deferInputContextActivation is set, a focused text field gets no
+// NSTextInputContext, and it gets one again once the deferral ends.
+TEST_F(BridgedNativeWidgetTest, DeferInputContextActivation) {
+  InstallTextField("foo");
+  EXPECT_TRUE(ns_view_.inputContext);
+
+  bridge()->SetDeferInputContextActivation(true);
+  EXPECT_TRUE(ns_view_.deferInputContextActivation);
+  EXPECT_FALSE(ns_view_.inputContext);
+  EXPECT_FALSE(bridge()->NeedsUpdateWindows());
+
+  // Focus changes while deferred still get no input context.
+  InstallTextField("bar");
+  EXPECT_FALSE(ns_view_.inputContext);
+
+  bridge()->SetDeferInputContextActivation(false);
+  EXPECT_FALSE(ns_view_.deferInputContextActivation);
+  EXPECT_TRUE(ns_view_.inputContext);
+}
+
+// A key press ends the deferral before the input method sees the key, so the
+// first key typed into a new window is not lost.
+TEST_F(BridgedNativeWidgetTest, KeyDownEndsInputContextDeferral) {
+  Textfield* textfield = InstallTextField("");
+  object_setClass(ns_view_, [InterpretKeyEventMockedBridgedContentView class]);
+  bridge()->SetDeferInputContextActivation(true);
+
+  bool had_input_context = false;
+  InterpretKeyEventsCallback handle_a = base::BindRepeating(
+      [](bool* had_context, id view) {
+        *had_context = [view inputContext] != nil;
+        [view insertText:@"a" replacementRange:NSMakeRange(NSNotFound, 0)];
+      },
+      &had_input_context);
+  g_fake_interpret_key_events = &handle_a;
+  [ns_view_ keyDown:UnicodeKeyDown(0, @"a")];
+  g_fake_interpret_key_events = nullptr;
+
+  EXPECT_TRUE(had_input_context);
+  EXPECT_FALSE(ns_view_.deferInputContextActivation);
+  EXPECT_EQ(u"a", textfield->GetText());
+}
+
+// A composition started by the first key, as a Japanese input method does,
+// reaches the text field even though the key arrived while deferred.
+TEST_F(BridgedNativeWidgetTest, CompositionEndsInputContextDeferral) {
+  Textfield* textfield = InstallTextField("");
+  object_setClass(ns_view_, [InterpretKeyEventMockedBridgedContentView class]);
+  bridge()->SetDeferInputContextActivation(true);
+
+  InterpretKeyEventsCallback handle_a_in_ime = base::BindRepeating([](id view) {
+    [view setMarkedText:@"あ"
+           selectedRange:NSMakeRange(1, 0)
+        replacementRange:NSMakeRange(NSNotFound, 0)];
+  });
+  g_fake_interpret_key_events = &handle_a_in_ime;
+  [ns_view_ keyDown:UnicodeKeyDown(0, @"a")];
+  g_fake_interpret_key_events = nullptr;
+
+  EXPECT_FALSE(ns_view_.deferInputContextActivation);
+  EXPECT_TRUE([ns_view_ hasMarkedText]);
+  EXPECT_EQ(u"あ", textfield->GetText());
+}
+
+// Ending the deferral calls -[NSApp updateWindows], which activates the input
+// method, only while the view is the first responder of the key window.
+TEST_F(BridgedNativeWidgetTest, EndingInputContextDeferralUpdatesWindows) {
+  InstallTextField("foo");
+  ui::test::ScopedFakeNSWindowFocus fake_focus;
+  base::apple::ScopedObjCClassSwizzler update_windows_swizzler(
+      [NSApplication class], [UpdateWindowsDonorForNSApp class],
+      @selector(updateWindows));
+  int update_windows_count = 0;
+  base::RepeatingClosure count_update_windows =
+      base::BindRepeating([](int* count) { ++*count; }, &update_windows_count);
+  g_update_windows_closure = &count_update_windows;
+
+  // Not the key window.
+  bridge()->SetDeferInputContextActivation(true);
+  update_windows_count = 0;
+  bridge()->SetDeferInputContextActivation(false);
+  EXPECT_EQ(0, update_windows_count);
+
+  // The first responder of the key window.
+  [bridge_window() makeKeyWindow];
+  ASSERT_TRUE(bridge_window().keyWindow);
+  ASSERT_EQ(ns_view_, bridge_window().firstResponder);
+  bridge()->SetDeferInputContextActivation(true);
+  update_windows_count = 0;
+  bridge()->SetDeferInputContextActivation(false);
+  EXPECT_EQ(1, update_windows_count);
+
+  // The key window, but another responder has focus.
+  bridge()->SetDeferInputContextActivation(true);
+  [bridge_window() makeFirstResponder:nil];
+  update_windows_count = 0;
+  bridge()->SetDeferInputContextActivation(false);
+  EXPECT_EQ(0, update_windows_count);
+
+  g_update_windows_closure = nullptr;
+}
+
+// A key press in the key window activates the input method before the key is
+// handed to it, so an input method such as Japanese composes the first key.
+TEST_F(BridgedNativeWidgetTest, KeyDownActivatesInputMethodBeforeKeyIsHandled) {
+  InstallTextField("");
+  ui::test::ScopedFakeNSWindowFocus fake_focus;
+  [bridge_window() makeKeyWindow];
+  ASSERT_TRUE(bridge_window().keyWindow);
+  ASSERT_EQ(ns_view_, bridge_window().firstResponder);
+  object_setClass(ns_view_, [InterpretKeyEventMockedBridgedContentView class]);
+
+  std::vector<std::string> calls;
+  base::apple::ScopedObjCClassSwizzler update_windows_swizzler(
+      [NSApplication class], [UpdateWindowsDonorForNSApp class],
+      @selector(updateWindows));
+  base::RepeatingClosure record_update_windows = base::BindRepeating(
+      [](std::vector<std::string>* calls) {
+        calls->push_back("updateWindows");
+      },
+      &calls);
+  g_update_windows_closure = &record_update_windows;
+  InterpretKeyEventsCallback record_interpret = base::BindRepeating(
+      [](std::vector<std::string>* calls, id view) {
+        calls->push_back("interpretKeyEvents");
+      },
+      &calls);
+  g_fake_interpret_key_events = &record_interpret;
+
+  bridge()->SetDeferInputContextActivation(true);
+  [ns_view_ keyDown:UnicodeKeyDown(0, @"a")];
+  g_fake_interpret_key_events = nullptr;
+  g_update_windows_closure = nullptr;
+
+  EXPECT_FALSE(ns_view_.deferInputContextActivation);
+  EXPECT_EQ((std::vector<std::string>{"updateWindows", "interpretKeyEvents"}),
+            calls);
+}
+
+// Ending the deferral does not call -[NSApp updateWindows] when the focused
+// field has no input context, such as a password field.
+TEST_F(BridgedNativeWidgetTest,
+       EndingDeferralWithoutInputContextDoesNotUpdateWindows) {
+  InstallTextField(u"secret", ui::TEXT_INPUT_TYPE_PASSWORD);
+  ui::test::ScopedFakeNSWindowFocus fake_focus;
+  [bridge_window() makeKeyWindow];
+  ASSERT_TRUE(bridge_window().keyWindow);
+  ASSERT_EQ(ns_view_, bridge_window().firstResponder);
+
+  base::apple::ScopedObjCClassSwizzler update_windows_swizzler(
+      [NSApplication class], [UpdateWindowsDonorForNSApp class],
+      @selector(updateWindows));
+  int update_windows_count = 0;
+  base::RepeatingClosure count_update_windows =
+      base::BindRepeating([](int* count) { ++*count; }, &update_windows_count);
+  g_update_windows_closure = &count_update_windows;
+
+  bridge()->SetDeferInputContextActivation(true);
+  bridge()->SetDeferInputContextActivation(false);
+  EXPECT_EQ(0, update_windows_count);
+  EXPECT_FALSE(ns_view_.inputContext);
+
+  g_update_windows_closure = nullptr;
+}
+
+// Ending the deferral records how long the activation call blocked, but only
+// when it makes that call.
+TEST_F(BridgedNativeWidgetTest, EndingDeferralRecordsActivationDuration) {
+  constexpr char kDuration[] = "InputMethod.Mac.DeferredActivation.Duration";
+  InstallTextField("foo");
+  ui::test::ScopedFakeNSWindowFocus fake_focus;
+  base::apple::ScopedObjCClassSwizzler update_windows_swizzler(
+      [NSApplication class], [UpdateWindowsDonorForNSApp class],
+      @selector(updateWindows));
+  base::RepeatingClosure do_nothing = base::DoNothing();
+  g_update_windows_closure = &do_nothing;
+  base::HistogramTester histograms;
+
+  // Not the key window: no activation call, so nothing is recorded.
+  bridge()->SetDeferInputContextActivation(true);
+  bridge()->SetDeferInputContextActivation(false);
+  histograms.ExpectTotalCount(kDuration, 0);
+
+  // The first responder of the key window.
+  [bridge_window() makeKeyWindow];
+  ASSERT_EQ(ns_view_, bridge_window().firstResponder);
+  bridge()->SetDeferInputContextActivation(true);
+  bridge()->SetDeferInputContextActivation(false);
+  histograms.ExpectTotalCount(kDuration, 1);
+
+  g_update_windows_closure = nullptr;
+}
+
+// A key that ends the deferral waits for the whole activation and records it.
+// A key typed after the activation returned records nothing.
+TEST_F(BridgedNativeWidgetTest, KeysBeforeActivationEndsRecordKeyDelay) {
+  constexpr char kKeyDelay[] = "InputMethod.Mac.DeferredActivation.KeyDelay";
+  InstallTextField("");
+  ui::test::ScopedFakeNSWindowFocus fake_focus;
+  [bridge_window() makeKeyWindow];
+  ASSERT_EQ(ns_view_, bridge_window().firstResponder);
+  object_setClass(ns_view_, [InterpretKeyEventMockedBridgedContentView class]);
+  base::apple::ScopedObjCClassSwizzler update_windows_swizzler(
+      [NSApplication class], [UpdateWindowsDonorForNSApp class],
+      @selector(updateWindows));
+  base::RepeatingClosure do_nothing = base::DoNothing();
+  g_update_windows_closure = &do_nothing;
+  InterpretKeyEventsCallback ignore_key = base::DoNothing();
+  g_fake_interpret_key_events = &ignore_key;
+  base::HistogramTester histograms;
+  // A key event stamped `offset` seconds from now.
+  auto key_at = [&](NSString* chars, NSTimeInterval offset) {
+    return [NSEvent keyEventWithType:NSEventTypeKeyDown
+                            location:NSZeroPoint
+                       modifierFlags:0
+                           timestamp:NSProcessInfo.processInfo.systemUptime +
+                                     offset
+                        windowNumber:bridge_window().windowNumber
+                             context:nil
+                          characters:chars
+         charactersIgnoringModifiers:chars
+                           isARepeat:NO
+                             keyCode:0];
+  };
+
+  // A key typed before the deferral ended waits for the activation.
+  bridge()->SetDeferInputContextActivation(true);
+  [ns_view_ keyDown:key_at(@"a", -1)];
+  histograms.ExpectTotalCount(kKeyDelay, 1);
+
+  // A key whose timestamp is after the activation returned did not wait.
+  [ns_view_ keyDown:key_at(@"b", 60)];
+  histograms.ExpectTotalCount(kKeyDelay, 1);
+
+  // No deferral was armed since, so later keys record nothing either.
+  [ns_view_ keyDown:UnicodeKeyDown(0, @"c")];
+  histograms.ExpectTotalCount(kKeyDelay, 1);
+
+  g_fake_interpret_key_events = nullptr;
+  g_update_windows_closure = nullptr;
+}
+
+// Setting the same deferral state twice changes nothing, and the deferral can
+// be armed again after it ended.
+TEST_F(BridgedNativeWidgetTest, InputContextDeferralCanBeRearmed) {
+  InstallTextField("foo");
+  bridge()->SetDeferInputContextActivation(true);
+  bridge()->SetDeferInputContextActivation(true);
+  EXPECT_FALSE(ns_view_.inputContext);
+
+  bridge()->SetDeferInputContextActivation(false);
+  bridge()->SetDeferInputContextActivation(false);
+  EXPECT_TRUE(ns_view_.inputContext);
+
+  bridge()->SetDeferInputContextActivation(true);
+  EXPECT_TRUE(ns_view_.deferInputContextActivation);
+  EXPECT_FALSE(ns_view_.inputContext);
+
+  bridge()->SetDeferInputContextActivation(false);
+  EXPECT_TRUE(ns_view_.inputContext);
 }
 
 // Test getting complete string using text input protocol.
@@ -2142,6 +2423,161 @@ TEST_F(BridgedNativeWidgetTest, WriteToFindPasteboard) {
   SetSelectionRange(NSMakeRange(0, 0));
   [ns_view_ copyToFindPboard:nil];
   EXPECT_NSEQ(@"bar baz", [[FindPasteboard sharedInstance] findText]);
+}
+
+TEST_F(BridgedNativeWidgetTest,
+       TextInput_MenuKeyEventTargetViewForwardsKeyEventsToInputMethod) {
+  object_setClass(ns_view_, [InterpretKeyEventMockedBridgedContentView class]);
+  base::RepeatingClosure do_nothing = base::DoNothing();
+  InterpretKeyEventsCallback ignore_key = base::DoNothing();
+  base::apple::ScopedObjCClassSwizzler update_windows_swizzler(
+      [NSApplication class], [UpdateWindowsDonorForNSApp class],
+      @selector(updateWindows));
+  g_update_windows_closure = &do_nothing;
+  g_fake_interpret_key_events = &ignore_key;
+
+  {
+    ui::test::ScopedFakeNSWindowFocus fake_focus;
+    [bridge_window() makeKeyWindow];
+
+    Textfield* owner_textfield = InstallTextField("owner");
+    EXPECT_EQ(owner_textfield, [ns_view_ textInputClientForTesting]);
+    EXPECT_EQ(owner_textfield, widget_->GetInputMethod()->GetTextInputClient());
+
+    ui::SimpleMenuModel menu_model(nullptr);
+    menu_model.AddItem(1, u"Item 1");
+    MenuModelAdapter menu_adapter(&menu_model);
+    std::unique_ptr<MenuItemView> root_menu = menu_adapter.CreateMenu();
+    MenuItemView* root_menu_ptr = root_menu.get();
+    MenuRunner menu_runner(std::move(root_menu), MenuRunner::HAS_MNEMONICS);
+    menu_runner.RunMenuAt(widget_.get(), nullptr, gfx::Rect(10, 10, 10, 10),
+                          MenuAnchorPosition::kTopLeft,
+                          ui::mojom::MenuSourceType::kKeyboard);
+
+    ASSERT_TRUE(root_menu_ptr->GetSubmenu());
+    MenuItemView* item = root_menu_ptr->GetSubmenu()->GetMenuItemAt(0);
+    Textfield* menu_textfield =
+        item->AddChildView(std::make_unique<Textfield>());
+    menu_textfield->SetBounds(0, 0, 100, 20);
+    menu_textfield->SetText(u"hello");
+    menu_textfield->RequestFocus();
+
+    EXPECT_TRUE([ns_view_ hasActiveMenuController]);
+    EXPECT_EQ(menu_textfield, [ns_view_ textInputClientForTesting]);
+    EXPECT_NE(nil, [ns_view_ inputContext]);
+
+    // Send keys the way AppKit does: -keyDown: runs -interpretKeyEvents:, which
+    // inserts text or sends an editing command, and -keyUp: follows.
+    InterpretKeyEventsCallback insert_exclamation =
+        base::BindRepeating([](id view) {
+          [view insertText:@"!" replacementRange:NSMakeRange(NSNotFound, 0)];
+        });
+    InterpretKeyEventsCallback insert_question =
+        base::BindRepeating([](id view) {
+          [view insertText:@"?" replacementRange:NSMakeRange(NSNotFound, 0)];
+        });
+    InterpretKeyEventsCallback move_left = base::BindRepeating(
+        [](id view) { [view doCommandBySelector:@selector(moveLeft:)]; });
+    auto press_key = [&](NSEvent* key_down,
+                         InterpretKeyEventsCallback* action) {
+      g_fake_interpret_key_events = action;
+      [ns_view_ keyDown:key_down];
+      g_fake_interpret_key_events = &ignore_key;
+      [ns_view_
+          keyUp:cocoa_test_event_utils::KeyEventWithKeyCode(
+                    key_down.keyCode, [key_down.characters characterAtIndex:0],
+                    NSEventTypeKeyUp, 0)];
+    };
+
+    // 18 and 44 are the macOS virtual key codes for the "1" and "/" keys.
+    press_key(UnicodeKeyDown(18, @"!"), &insert_exclamation);
+    EXPECT_EQ(u"hello!", menu_textfield->GetText());
+
+    press_key(VkeyKeyDown(ui::VKEY_LEFT), &move_left);
+    press_key(UnicodeKeyDown(44, @"?"), &insert_question);
+    EXPECT_EQ(u"hello?!", menu_textfield->GetText());
+
+    // Editing key equivalents (e.g. Cmd+A) are consumed by the focused menu
+    // Textfield, while unhandled global shortcuts (e.g. Cmd+T) return NO so the
+    // window's command dispatcher can route them to the main menu.
+    NSEvent* cmd_a = cocoa_test_event_utils::SynthesizeKeyEvent(
+        bridge_window(), true, ui::VKEY_A, NSEventModifierFlagCommand);
+    EXPECT_TRUE([ns_view_ performMenuKeyEquivalent:cmd_a]);
+    EXPECT_EQ(u"hello?!", menu_textfield->GetSelectedText());
+
+    NSEvent* cmd_t = cocoa_test_event_utils::SynthesizeKeyEvent(
+        bridge_window(), true, ui::VKEY_T, NSEventModifierFlagCommand);
+    EXPECT_FALSE([ns_view_ performMenuKeyEquivalent:cmd_t]);
+
+    menu_runner.Cancel();
+    EXPECT_FALSE([ns_view_ hasActiveMenuController]);
+    EXPECT_EQ(owner_textfield, widget_->GetInputMethod()->GetTextInputClient());
+    EXPECT_EQ(owner_textfield, [ns_view_ textInputClientForTesting]);
+    EXPECT_EQ(u"owner", owner_textfield->GetText());
+
+    GetNSWindowHost()->text_input_host()->SetTextInputClient(nullptr);
+  }
+
+  g_fake_interpret_key_events = nullptr;
+  g_update_windows_closure = nullptr;
+}
+
+// Cmd+Left and Cmd+Backspace in a menu-hosted Textfield use the macOS key
+// bindings (start of line, delete to start of line) via the real
+// -interpretKeyEvents:. The Textfield's own cross-platform mapping would move
+// or delete one word.
+TEST_F(BridgedNativeWidgetTest, TextInput_MenuTextfieldUsesMacKeyBindings) {
+  base::RepeatingClosure do_nothing = base::DoNothing();
+  base::apple::ScopedObjCClassSwizzler update_windows_swizzler(
+      [NSApplication class], [UpdateWindowsDonorForNSApp class],
+      @selector(updateWindows));
+  g_update_windows_closure = &do_nothing;
+
+  {
+    ui::test::ScopedFakeNSWindowFocus fake_focus;
+    [bridge_window() makeKeyWindow];
+    InstallTextField("owner");
+
+    ui::SimpleMenuModel menu_model(nullptr);
+    menu_model.AddItem(1, u"Item 1");
+    MenuModelAdapter menu_adapter(&menu_model);
+    std::unique_ptr<MenuItemView> root_menu = menu_adapter.CreateMenu();
+    MenuItemView* root_menu_ptr = root_menu.get();
+    MenuRunner menu_runner(std::move(root_menu), MenuRunner::HAS_MNEMONICS);
+    menu_runner.RunMenuAt(widget_.get(), nullptr, gfx::Rect(10, 10, 10, 10),
+                          MenuAnchorPosition::kTopLeft,
+                          ui::mojom::MenuSourceType::kKeyboard);
+    ASSERT_TRUE(root_menu_ptr->GetSubmenu());
+    Textfield* menu_textfield =
+        root_menu_ptr->GetSubmenu()->GetMenuItemAt(0)->AddChildView(
+            std::make_unique<Textfield>());
+    menu_textfield->SetBounds(0, 0, 100, 20);
+    menu_textfield->SetText(u"hello world");
+    menu_textfield->RequestFocus();
+    ASSERT_EQ(menu_textfield, [ns_view_ textInputClientForTesting]);
+
+    // Cmd+Left moves to the start of the line (a word move would stop at 6).
+    // 123 and 51 are the macOS virtual key codes for Left Arrow and Delete.
+    NSEvent* cmd_left = cocoa_test_event_utils::KeyEventWithKeyCode(
+        123, NSLeftArrowFunctionKey, NSEventTypeKeyDown,
+        NSEventModifierFlagCommand | NSEventModifierFlagFunction |
+            NSEventModifierFlagNumericPad);
+    EXPECT_TRUE([ns_view_ performMenuKeyEquivalent:cmd_left]);
+    EXPECT_EQ(gfx::Range(0), menu_textfield->GetSelectedRange());
+
+    // Cmd+Backspace deletes to the start of the line (a word delete would keep
+    // "hello ").
+    menu_textfield->SetSelectedRange(gfx::Range(9));
+    NSEvent* cmd_backspace = cocoa_test_event_utils::KeyEventWithKeyCode(
+        51, NSDeleteCharacter, NSEventTypeKeyDown, NSEventModifierFlagCommand);
+    EXPECT_TRUE([ns_view_ performMenuKeyEquivalent:cmd_backspace]);
+    EXPECT_EQ(u"ld", menu_textfield->GetText());
+
+    menu_runner.Cancel();
+    GetNSWindowHost()->text_input_host()->SetTextInputClient(nullptr);
+  }
+
+  g_update_windows_closure = nullptr;
 }
 
 }  // namespace views::test

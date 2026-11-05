@@ -5,6 +5,7 @@
 import("//mojo/public/tools/bindings/mojom.gni")
 
 mojom("mojom") {
+  generate_blink = true
   generate_java = true
   sources = [
     "audio_focus.mojom",
@@ -69,6 +70,7 @@ mojom("mojom") {
       ]
       traits_deps = [
         "//mojo/public/mojom/base",
+        "//ui/gfx:gfx_skia",
         "//ui/gfx/geometry/mojom",
       ]
     },

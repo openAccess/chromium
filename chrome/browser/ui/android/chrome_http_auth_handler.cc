@@ -13,18 +13,14 @@
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/check.h"
-#include "base/strings/utf_string_conversions.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "url/android/gurl_android.h"
 
-// Must come after all headers that specialize FromJniType() / ToJniType().
+// Must come after headers that provide symbols used by @JniType.
 #include "chrome/android/chrome_jni_headers/ChromeHttpAuthHandler_jni.h"
 
-using base::android::AttachCurrentThread;
-using base::android::CheckException;
-using base::android::ConvertJavaStringToUTF16;
-using base::android::ConvertUTF16ToJavaString;
-using base::android::JavaRef;
-using base::android::ScopedJavaLocalRef;
+using jni_zero::AttachCurrentThread;
+using jni_zero::JavaRef;
 
 ChromeHttpAuthHandler::ChromeHttpAuthHandler(
     const std::u16string& authority,
@@ -57,10 +53,10 @@ ChromeHttpAuthHandler::~ChromeHttpAuthHandler() {
 void ChromeHttpAuthHandler::Init(LoginHandler* observer) {
   observer_ = observer;
 
-  DCHECK(java_chrome_http_auth_handler_.is_null());
+  CHECK(java_chrome_http_auth_handler_.is_null(), base::NotFatalUntil::M162);
   JNIEnv* env = AttachCurrentThread();
   java_chrome_http_auth_handler_.Reset(
-      Java_ChromeHttpAuthHandler_create(env, reinterpret_cast<intptr_t>(this)));
+      Java_ChromeHttpAuthHandler_create(env, jni_zero::MakeRaw(this)));
 }
 
 void ChromeHttpAuthHandler::ShowDialog(const JavaRef<jobject>& tab_android,
@@ -79,11 +75,10 @@ void ChromeHttpAuthHandler::CloseDialog() {
 void ChromeHttpAuthHandler::OnAutofillDataAvailable(
     std::u16string_view username,
     std::u16string_view password) {
-  DCHECK(java_chrome_http_auth_handler_.obj());
-  JNIEnv* env = base::android::AttachCurrentThread();
+  CHECK(java_chrome_http_auth_handler_.obj(), base::NotFatalUntil::M162);
+  JNIEnv* env = AttachCurrentThread();
   Java_ChromeHttpAuthHandler_onAutofillDataAvailable(
-      env, java_chrome_http_auth_handler_, std::u16string(username),
-      std::u16string(password));
+      env, java_chrome_http_auth_handler_, username, password);
 }
 
 void ChromeHttpAuthHandler::OnLoginModelDestroying() {
@@ -91,18 +86,17 @@ void ChromeHttpAuthHandler::OnLoginModelDestroying() {
   auth_manager_ = nullptr;
 }
 
-void ChromeHttpAuthHandler::SetAuth(JNIEnv* env,
-                                    const std::u16string& username,
-                                    const std::u16string& password) {
+void ChromeHttpAuthHandler::SetAuth(std::u16string&& username,
+                                    std::u16string&& password) {
   // SetAuthSync can result in destruction of `this`. We post task to make
   // destruction asynchronous and avoid re-entrancy.
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE,
-      base::BindOnce(&ChromeHttpAuthHandler::SetAuthSync,
-                     weak_factory_.GetWeakPtr(), username, password));
+      FROM_HERE, base::BindOnce(&ChromeHttpAuthHandler::SetAuthSync,
+                                weak_factory_.GetWeakPtr(), std::move(username),
+                                std::move(password)));
 }
 
-void ChromeHttpAuthHandler::CancelAuth(JNIEnv* env) {
+void ChromeHttpAuthHandler::CancelAuth() {
   // CancelAuthSync can result in destruction of `this`. We post task to make
   // destruction asynchronous and avoid re-entrancy.
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
@@ -110,7 +104,7 @@ void ChromeHttpAuthHandler::CancelAuth(JNIEnv* env) {
                                 weak_factory_.GetWeakPtr()));
 }
 
-std::u16string ChromeHttpAuthHandler::GetMessageBody(JNIEnv* env) {
+std::u16string ChromeHttpAuthHandler::GetMessageBody() {
   if (explanation_.empty()) {
     return authority_;
   }

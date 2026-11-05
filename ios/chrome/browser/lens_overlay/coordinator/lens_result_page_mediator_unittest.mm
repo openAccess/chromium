@@ -4,8 +4,10 @@
 
 #import "ios/chrome/browser/lens_overlay/coordinator/lens_result_page_mediator.h"
 
+#import "base/functional/callback_helpers.h"
 #import "base/memory/raw_ptr.h"
 #import "base/test/scoped_feature_list.h"
+#import "base/test/test_future.h"
 #import "components/sync/test/test_sync_service.h"
 #import "components/variations/scoped_variations_ids_provider.h"
 #import "components/variations/variations_ids_provider.h"
@@ -17,7 +19,6 @@
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -30,9 +31,12 @@
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/fakes/fake_web_state_delegate.h"
 #import "ios/web/public/test/web_task_environment.h"
+#import "ios/web/public/web_state_delegate_bridge.h"
+#import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #import "url/gurl.h"
 
 @interface FakeLensResultPageMediatorDelegate
@@ -85,8 +89,7 @@ class LensResultPageMediatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
     profile_ = std::move(builder).Build();
@@ -109,6 +112,8 @@ class LensResultPageMediatorTest : public PlatformTest {
   }
 
   ~LensResultPageMediatorTest() override {
+    browser_web_state_delegate_.ClearLastProxyAuthenticationRequest();
+    fake_web_state_ = nullptr;
     [mediator_ disconnect];
     PlatformTest::TearDown();
   }
@@ -184,7 +189,7 @@ class LensResultPageMediatorTest : public PlatformTest {
   FakeLensResultPageMediatorDelegate* fake_delegate_;
 
   // Call `AttachFakeWebState()` to use `fake_web_state_`.
-  raw_ptr<web::FakeWebState, DanglingUntriaged> fake_web_state_;
+  raw_ptr<web::FakeWebState> fake_web_state_ = nullptr;
 };
 
 // Tests that the mediator starts a navigation when loadResultsURL is called.
@@ -273,6 +278,74 @@ TEST_F(LensResultPageMediatorTest, ShouldOpenOtherNavigationInNewTab) {
   EXPECT_TRUE(fake_delegate_.openInNewTabRequested);
 }
 
+// Tests that navigation to non-HTTP/HTTPS URLs (such as chrome://) is not
+// allowed and does not open in a new tab.
+TEST_F(LensResultPageMediatorTest,
+       ShouldNotOpenNonHTTPOrHTTPSNavigationInNewTab) {
+  EXPECT_FALSE(fake_delegate_.openInNewTabRequested);
+  EXPECT_FALSE(TestShouldAllowRequest(@"chrome://policy",
+                                      /*target_frame_is_main=*/true));
+  EXPECT_FALSE(fake_delegate_.openInNewTabRequested);
+
+  EXPECT_FALSE(TestShouldAllowRequest(@"chrome://flags",
+                                      /*target_frame_is_main=*/true));
+  EXPECT_FALSE(fake_delegate_.openInNewTabRequested);
+}
+
+// Tests that opening a new web state for non-HTTP/HTTPS URLs does not request
+// opening in a new tab.
+TEST_F(LensResultPageMediatorTest,
+       ShouldNotOpenNonHTTPOrHTTPSInNewTabFromPopup) {
+  AttachFakeWebState();
+  id<CRWWebStateDelegate> web_state_delegate =
+      static_cast<id<CRWWebStateDelegate>>(mediator_);
+
+  EXPECT_FALSE(fake_delegate_.openInNewTabRequested);
+  web::WebState* new_web_state =
+      [web_state_delegate webState:fake_web_state_
+           createNewWebStateForURL:GURL("chrome://policy")
+                         openerURL:GURL("https://www.google.com")
+                   initiatedByUser:YES];
+  EXPECT_EQ(new_web_state, nullptr);
+  EXPECT_FALSE(fake_delegate_.openInNewTabRequested);
+
+  new_web_state = [web_state_delegate webState:fake_web_state_
+                       createNewWebStateForURL:GURL("https://www.chromium.org")
+                                     openerURL:GURL("https://www.google.com")
+                               initiatedByUser:YES];
+  EXPECT_EQ(new_web_state, nullptr);
+  EXPECT_TRUE(fake_delegate_.openInNewTabRequested);
+}
+
+// Tests that openURLWithParams: with kNewForegroundTab invokes
+// lensResultPageOpenURLInNewTabRequested: on the delegate and does not crash.
+TEST_F(LensResultPageMediatorTest, ShouldOpenURLInNewTabForNewForegroundTab) {
+  AttachFakeWebState();
+  id<CRWWebStateDelegate> web_state_delegate =
+      static_cast<id<CRWWebStateDelegate>>(mediator_);
+
+  EXPECT_FALSE(fake_delegate_.openInNewTabRequested);
+  web::WebState::OpenURLParams params(
+      GURL("https://www.chromium.org"), web::Referrer(),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui::PAGE_TRANSITION_LINK, false);
+  web::WebState* new_web_state = [web_state_delegate webState:fake_web_state_
+                                            openURLWithParams:params];
+  EXPECT_EQ(new_web_state, nullptr);
+  EXPECT_TRUE(fake_delegate_.openInNewTabRequested);
+
+  // Non-HTTP/HTTPS URLs should not open in a new tab.
+  fake_delegate_.openInNewTabRequested = NO;
+  web::WebState::OpenURLParams non_http_params(
+      GURL("chrome://policy"), web::Referrer(),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui::PAGE_TRANSITION_LINK, false);
+  new_web_state = [web_state_delegate webState:fake_web_state_
+                             openURLWithParams:non_http_params];
+  EXPECT_EQ(new_web_state, nullptr);
+  EXPECT_FALSE(fake_delegate_.openInNewTabRequested);
+}
+
 // Tests that any navigation that's not on main frame is allowed.
 TEST_F(LensResultPageMediatorTest, ShouldAllowAnyNavigationNotInMainFrame) {
   EXPECT_TRUE(TestShouldAllowRequest(@"https://www.chromium.com",
@@ -313,6 +386,65 @@ TEST_F(LensResultPageMediatorTest,
 
   fake_web_state_->OnNavigationStarted(&region_search_context);
   [mock_bottom_sheet_commands verify];
+}
+
+// Test that proxy auth challenges are forwarded to the browser
+// `WebStateDelegate`.
+TEST_F(LensResultPageMediatorTest, ForwardsProxyAuthToBrowserWebStateDelegate) {
+  if (@available(iOS 18.1, *)) {
+    static constexpr int kProxyPort = 8080;
+    NSString* const kProxyHost = @"proxy.example.com";
+    NSString* const kProxyRealm = @"proxy_realm";
+    NSString* const kProposedUser = @"proxy_user";
+    NSString* const kProposedPassword = @"proxy_pass";
+    NSString* const kResponseURL = @"https://www.google.com";
+    NSString* const kMimeType = @"text/html";
+    NSString* const kOAuthUser = @"oauth_user";
+    NSString* const kOAuthToken = @"oauth_token";
+
+    AttachFakeWebState();
+    id<CRWWebStateDelegate> delegate = (id<CRWWebStateDelegate>)mediator_;
+    NSURLProtectionSpace* protection_space = [[NSURLProtectionSpace alloc]
+           initWithProxyHost:kProxyHost
+                        port:kProxyPort
+                        type:NSURLProtectionSpaceHTTPSProxy
+                       realm:kProxyRealm
+        authenticationMethod:NSURLAuthenticationMethodDefault];
+    NSURLCredential* credential =
+        [NSURLCredential credentialWithUser:kProposedUser
+                                   password:kProposedPassword
+                                persistence:NSURLCredentialPersistenceNone];
+    NSURLResponse* failure_response =
+        [[NSURLResponse alloc] initWithURL:[NSURL URLWithString:kResponseURL]
+                                  MIMEType:kMimeType
+                     expectedContentLength:0
+                          textEncodingName:nil];
+
+    base::test::TestFuture<NSString*, NSString*, NSError*> future;
+    [delegate webState:fake_web_state_
+        didRequestProxyAuthForProtectionSpace:protection_space
+                           proposedCredential:credential
+                              failureResponse:failure_response
+                            completionHandler:base::CallbackToBlock(
+                                                  future.GetCallback())];
+
+    web::FakeProxyAuthenticationRequest* proxy_request =
+        browser_web_state_delegate_.last_proxy_authentication_request();
+    ASSERT_TRUE(proxy_request);
+    EXPECT_EQ(proxy_request->web_state, fake_web_state_);
+    EXPECT_NSEQ(proxy_request->protection_space, protection_space);
+    EXPECT_NSEQ(proxy_request->proposed_credential, credential);
+    EXPECT_NSEQ(proxy_request->failure_response, failure_response);
+    ASSERT_TRUE(proxy_request->proxy_auth_callback);
+
+    std::move(proxy_request->proxy_auth_callback)
+        .Run(kOAuthUser, kOAuthToken, nil);
+    EXPECT_NSEQ(future.Get<0>(), kOAuthUser);
+    EXPECT_NSEQ(future.Get<1>(), kOAuthToken);
+    EXPECT_EQ(future.Get<2>(), nil);
+  } else {
+    GTEST_SKIP() << "Requires iOS 18.1+";
+  }
 }
 
 }  // namespace

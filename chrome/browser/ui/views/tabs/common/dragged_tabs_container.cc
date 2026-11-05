@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h"
 
+#include <algorithm>
+
+#include "base/auto_reset.h"
 #include "base/callback_list.h"
 #include "base/i18n/rtl.h"
 #include "base/notreached.h"
@@ -15,8 +18,10 @@
 #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
 #include "chrome/browser/ui/views/tabs/common/tab_drag_handler.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_utils.h"
 #include "chrome/browser/ui/views/tabs/dragging/drag_session_data.h"
 #include "chrome/browser/ui/views/tabs/dragging/tab_drag_target.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/vector2d.h"
@@ -34,20 +39,41 @@ gfx::Vector2d GetSourceViewOffsetFromMouse(
     const DragSessionData& session_data) {
   views::View* source_slot_view =
       session_data.source_view_drag_data()->attached_view;
+  CHECK(source_slot_view);
 
   // The view that initiated the drag may not be the same as the view that
-  // is being dragged (e.g. dragging a tab group header).
-  gfx::Vector2d slot_view_offset_to_source =
-      views::View::ConvertPointToTarget(source_slot_view, &source_dragged_view,
-                                        source_slot_view->bounds().origin())
-          .OffsetFromOrigin();
+  // is being dragged (e.g. dragging a tab group header). This is equivalent to
+  // `views::View::ConvertPointToTarget`, but uses target layout bounds instead
+  // of live bounds which may still be animating.
+  const bool is_rtl = base::i18n::IsRTL();
+  gfx::Vector2d slot_view_offset_to_source;
+  for (const views::View* view = source_slot_view;
+       view && view != &source_dragged_view; view = view->parent()) {
+    const gfx::Rect target_bounds = GetTabStripViewTargetBounds(view);
+    int x = target_bounds.x();
+    if (is_rtl && view->parent()) {
+      const int parent_width =
+          GetTabStripViewTargetBounds(view->parent()).width();
+      x = parent_width - target_bounds.right();
+    }
+    slot_view_offset_to_source += gfx::Vector2d(x, target_bounds.y());
+  }
+  gfx::Rect source_slot_bounds = GetTabStripViewTargetBounds(source_slot_view);
+  if (source_slot_bounds.IsEmpty()) {
+    source_slot_bounds = source_slot_view->GetLocalBounds();
+  }
+  int mouse_offset_x =
+      static_cast<int>(session_data.mouse_offset_to_size_ratios.x() *
+                       source_slot_bounds.width());
+  if (is_rtl) {
+    mouse_offset_x = source_slot_bounds.width() - mouse_offset_x;
+  }
   gfx::Vector2d dragged_view_bounds_offset_from_bounds;
   dragged_view_bounds_offset_from_bounds -= slot_view_offset_to_source;
   dragged_view_bounds_offset_from_bounds -=
-      {static_cast<int>(session_data.mouse_offset_to_size_ratios.x() *
-                        source_slot_view->width()),
+      {mouse_offset_x,
        static_cast<int>(session_data.mouse_offset_to_size_ratios.y() *
-                        source_slot_view->height())};
+                        source_slot_bounds.height())};
 
   return dragged_view_bounds_offset_from_bounds;
 }
@@ -101,6 +127,13 @@ TabDragContext* DraggedTabsContainer::OnTabDragUpdated(
 }
 
 void DraggedTabsContainer::ApplyUpdatesForDragPositionChange() {
+  // `on_scrolled_subscription_` can trigger this callback during drag teardown
+  // (e.g. when restoring focus or selection scrolls the tab strip) after the
+  // drag has already stopped.
+  if (!GetDragHandler().IsDragging()) {
+    return;
+  }
+
   gfx::Point point_in_container = views::View::ConvertPointFromScreen(
       base::to_address(host_view_), last_drag_point_in_screen_);
 
@@ -127,6 +160,11 @@ void DraggedTabsContainer::OnTabDragExited(const gfx::Point& point_in_screen) {
 }
 
 void DraggedTabsContainer::OnTabDragEnded() {
+  // By the time `OnTabDragEnded()` is invoked, `TabDragHandler::IsDragging()`
+  // is already false, so explicitly allow layout animations for the dragged
+  // views to animate into their final slots.
+  auto animate_layout =
+      collection_node_->GetController()->ScopedAnimateLayout();
   ResetDragState();
   auto* scroll_view = GetScrollViewForContainer();
   CHECK(scroll_view);
@@ -155,15 +193,23 @@ DraggedTabsContainer::RegisterWillDestroyCallback(base::OnceClosure callback) {
 }
 
 void DraggedTabsContainer::OnViewBoundsChanged(views::View* observed_view) {
-  if (observed_view != base::to_address(host_view_)) {
-    return;
-  }
   // The transformation coordinates are relative to the host view's coordinates,
   // so they must be updated as the bounds change to ensure the dragged tabs
   // remain at the same point in the screen.
-  if (IsHandlingDrag()) {
-    UpdateDraggingViewTransforms(views::View::ConvertPointFromScreen(
-        base::to_address(host_view_), last_drag_point_in_screen_));
+  if (!IsHandlingDrag() || is_resetting_drag_state_) {
+    return;
+  }
+  const gfx::Point point_in_container = views::View::ConvertPointFromScreen(
+      base::to_address(host_view_), last_drag_point_in_screen_);
+  if (observed_view == base::to_address(host_view_)) {
+    UpdateDraggingViewTransforms(point_in_container);
+    return;
+  }
+  if (auto it = dragging_views_.find(observed_view);
+      it != dragging_views_.end()) {
+    UpdateDraggingViewTransform(
+        observed_view, it->second,
+        GetDraggingViewsBoundsAtPointClamped(point_in_container));
   }
 }
 
@@ -206,6 +252,8 @@ void DraggedTabsContainer::InitializeDragState(
   BuildDragLayout(session_data);
 
   InitializeDragStartAnimation(controller);
+  // Recalculate the target layout now that `dragging_views_` is populated.
+  UpdateTargetLayoutForDrag({});
 }
 
 void DraggedTabsContainer::InitializeDragStartAnimation(
@@ -232,7 +280,7 @@ void DraggedTabsContainer::InitializeDragStartAnimation(
   gfx::Rect dragged_bounds_in_container =
       GetDraggingViewsBoundsAtPointClamped(point_in_container);
 
-  const auto* source_dragged_view = drag_handler.ViewFromTabSlot(
+  const auto* source_dragged_view = drag_handler.GetDraggedViewForAttachedView(
       controller.GetSessionData().source_view_drag_data()->attached_view);
 
   const auto source_view_target_position = GetDraggingViewPositionForBounds(
@@ -285,26 +333,31 @@ void DraggedTabsContainer::InitializeDragStartAnimation(
 
 void DraggedTabsContainer::BuildDragLayout(
     const DragSessionData& session_data) {
-  auto* source_dragged_view = GetDragHandler().ViewFromTabSlot(
+  auto* source_dragged_view = GetDragHandler().GetDraggedViewForAttachedView(
       session_data.source_view_drag_data()->attached_view);
   CHECK(source_dragged_view);
 
   dragging_views_bounds_ = gfx::Rect();
   dragging_views_bounds_.Offset(
       GetSourceViewOffsetFromMouse(*source_dragged_view, session_data));
+  extremal_view_bounds_.reset();
 
   const auto& target_layout = GetLayoutForDrag();
-  for (auto* attached_view : session_data.attached_views()) {
-    auto* dragging_view = GetDragHandler().ViewFromTabSlot(attached_view);
+  const std::vector<views::View*> attached_views =
+      session_data.attached_views();
+
+  auto add_view_to_layout = [&](views::View* attached_view) {
+    auto* dragging_view =
+        GetDragHandler().GetDraggedViewForAttachedView(attached_view);
     CHECK(dragging_view);
 
     if (dragging_view->parent() != base::to_address(host_view_)) {
-      continue;
+      return;
     }
     if (dragging_views_.contains(dragging_view)) {
       // It's possible that multiple dragged tabs map to the same dragged view
       // (e.g., split tabs). Skip the duplicates.
-      continue;
+      return;
     }
 
     const bool is_source_view = dragging_view == source_dragged_view;
@@ -329,6 +382,14 @@ void DraggedTabsContainer::BuildDragLayout(
       default:
         NOTREACHED();
     }
+  };
+
+  if (drag_layout_ == DragLayout::kHorizontal && base::i18n::IsRTL()) {
+    std::for_each(attached_views.rbegin(), attached_views.rend(),
+                  add_view_to_layout);
+  } else {
+    std::for_each(attached_views.begin(), attached_views.end(),
+                  add_view_to_layout);
   }
 }
 
@@ -347,7 +408,20 @@ void DraggedTabsContainer::AddViewToDragLayout(views::View* dragging_view,
                                     kDraggedViewVerticalPadding);
 
   if (is_source_dragged_view) {
-    dragging_views_bounds_.Offset({-1 * bounds.x(), -1 * bounds.y()});
+    gfx::Vector2d offset = bounds.OffsetFromOrigin();
+    dragging_views_bounds_ -= offset;
+    if (extremal_view_bounds_.has_value()) {
+      extremal_view_bounds_->first -= offset;
+      extremal_view_bounds_->second -= offset;
+    }
+  }
+
+  const gfx::Rect relative_bounds =
+      bounds + dragging_views_bounds_.OffsetFromOrigin();
+  if (extremal_view_bounds_.has_value()) {
+    extremal_view_bounds_->second = relative_bounds;
+  } else {
+    extremal_view_bounds_ = {relative_bounds, relative_bounds};
   }
 }
 
@@ -356,18 +430,34 @@ void DraggedTabsContainer::AddViewToHorizontalDragLayout(
     const gfx::Rect& view_bounds,
     bool is_source_dragged_view) {
   gfx::Rect bounds = view_bounds;
-  bounds.set_x(dragging_views_bounds_.width());
+  const int tab_overlap = TabStyle::Get()->GetTabOverlap();
+  const int x = dragging_views_.empty()
+                    ? 0
+                    : dragging_views_bounds_.width() - tab_overlap;
+  bounds.set_x(x);
   dragging_views_.insert(
       {dragging_view, {.offset = bounds.OffsetFromOrigin()}});
   dragged_view_observations_.AddObservation(dragging_view);
 
-  dragging_views_bounds_.set_width(dragging_views_bounds_.width() +
-                                   bounds.width());
+  dragging_views_bounds_.set_width(bounds.right());
   dragging_views_bounds_.set_height(
       std::max(dragging_views_bounds_.height(), bounds.height()));
 
   if (is_source_dragged_view) {
-    dragging_views_bounds_.Offset({-1 * bounds.x(), -1 * bounds.y()});
+    gfx::Vector2d offset = bounds.OffsetFromOrigin();
+    dragging_views_bounds_ -= offset;
+    if (extremal_view_bounds_.has_value()) {
+      extremal_view_bounds_->first -= offset;
+      extremal_view_bounds_->second -= offset;
+    }
+  }
+
+  gfx::Rect relative_bounds =
+      bounds + dragging_views_bounds_.OffsetFromOrigin();
+  if (extremal_view_bounds_.has_value()) {
+    extremal_view_bounds_->second = relative_bounds;
+  } else {
+    extremal_view_bounds_ = {relative_bounds, relative_bounds};
   }
 }
 
@@ -381,6 +471,8 @@ void DraggedTabsContainer::AddViewToSquashedDragLayout(
     static constexpr int kDraggedViewHorizontalPadding = 4;
     dragging_views_bounds_.set_width(view_bounds.width() +
                                      kDraggedViewHorizontalPadding);
+
+    extremal_view_bounds_ = {dragging_views_bounds_, dragging_views_bounds_};
   }
   dragging_views_.insert(
       {dragging_view,
@@ -389,6 +481,7 @@ void DraggedTabsContainer::AddViewToSquashedDragLayout(
 }
 
 void DraggedTabsContainer::ResetDragState() {
+  base::AutoReset<bool> reset_drag_state(&is_resetting_drag_state_, true);
   // Don't immediately clear `dragging_views_` so that the host view has a
   // chance to lay the dragged views out at their expected positions rather
   // than relying on `DraggedTabsContainer` to lay them out with
@@ -408,9 +501,13 @@ void DraggedTabsContainer::ResetDragState() {
   animating_views_start_offsets_.clear();
   drag_start_animation_.Reset(0.0);
   dragging_views_bounds_ = gfx::Rect();
+  extremal_view_bounds_.reset();
   last_move_drag_x_ = std::nullopt;
 
   on_scrolled_subscription_.reset();
+  // Invalidate layout after clearing `dragging_views_` so views animate to
+  // their final slots.
+  host_view_->InvalidateLayout();
 }
 
 void DraggedTabsContainer::UpdateDraggingViewTransforms(
@@ -418,17 +515,27 @@ void DraggedTabsContainer::UpdateDraggingViewTransforms(
   const gfx::Rect bounding_box_for_point =
       GetDraggingViewsBoundsAtPointClamped(point_in_container);
   for (auto& [dragged_view, visual_data] : dragging_views_) {
-    if (visual_data.should_hide && !drag_start_animation_.is_animating()) {
-      continue;
-    }
-    // Use a transformation to render the dragged views, offset from the
-    // container's origin.
-    gfx::Transform transform;
-    transform.Translate(GetDraggingViewPositionForBounds(
-        dragged_view, bounding_box_for_point, visual_data.offset));
-
-    dragged_view->SetTransform(transform);
+    UpdateDraggingViewTransform(dragged_view, visual_data,
+                                bounding_box_for_point);
   }
+}
+
+void DraggedTabsContainer::UpdateDraggingViewTransform(
+    views::View* dragged_view,
+    const DraggedViewVisualData& visual_data,
+    const gfx::Rect& bounding_box_for_point) {
+  if (visual_data.should_hide && !drag_start_animation_.is_animating()) {
+    return;
+  }
+  // Use a transformation to render the dragged view, offset from its
+  // layout position.
+  gfx::Transform transform;
+  const gfx::Vector2d position = GetDraggingViewPositionForBounds(
+      dragged_view, bounding_box_for_point, visual_data.offset);
+  transform.Translate(position.x() - dragged_view->GetMirroredX(),
+                      position.y() - dragged_view->y());
+
+  dragged_view->SetTransform(transform);
 }
 
 gfx::Rect DraggedTabsContainer::GetDraggingViewsBoundsAtPoint(
@@ -447,16 +554,25 @@ gfx::Rect DraggedTabsContainer::GetDraggingViewsBounds() const {
   return box_for_point;
 }
 
+std::pair<gfx::Rect, gfx::Rect>
+DraggedTabsContainer::GetExtremalDraggingViewsBoundsAtPoint(
+    const gfx::Point& point_in_container) const {
+  CHECK(extremal_view_bounds_.has_value());
+  gfx::Vector2d offset = point_in_container.OffsetFromOrigin();
+  return {extremal_view_bounds_->first + offset,
+          extremal_view_bounds_->second + offset};
+}
+
 gfx::Vector2d DraggedTabsContainer::GetDraggingViewPositionForBounds(
     const views::View* dragging_view,
     const gfx::Rect& dragging_views_bounding_box,
     const gfx::Vector2d& target_offset) const {
   gfx::Vector2d target(IsHorizontalDragSupported()
                            ? dragging_views_bounding_box.x() + target_offset.x()
-                           : 0,
+                           : dragging_view->GetMirroredX(),
                        IsVerticalDragSupported()
                            ? dragging_views_bounding_box.y() + target_offset.y()
-                           : 0);
+                           : dragging_view->y());
   double value = drag_start_animation_.GetCurrentValue();
   if (drag_start_animation_.is_animating()) {
     if (auto it = animating_views_start_offsets_.find(dragging_view);
@@ -466,14 +582,9 @@ gfx::Vector2d DraggedTabsContainer::GetDraggingViewPositionForBounds(
 
       // If applying an offset for the drag-start animation, ensure we clamp
       // the offsets to the scroll view bounds.
-      const auto* scroll_view = GetScrollViewForContainer();
-      CHECK(scroll_view);
-      gfx::Rect clamping_bounds = views::View::ConvertRectToTarget(
-          scroll_view, base::to_address(host_view_),
-          scroll_view->GetLocalBounds());
       gfx::Rect view_bounds(gfx::PointAtOffsetFromOrigin(target),
                             dragging_view->size());
-      view_bounds.AdjustToFit(clamping_bounds);
+      view_bounds.AdjustToFit(GetDraggingViewsClampingBounds());
       target = view_bounds.OffsetFromOrigin();
     }
   }
@@ -481,20 +592,24 @@ gfx::Vector2d DraggedTabsContainer::GetDraggingViewPositionForBounds(
   return target;
 }
 
-gfx::Rect DraggedTabsContainer::GetDraggingViewsBoundsAtPointClamped(
-    const gfx::Point& point_in_container) const {
-  gfx::Rect bounding_box_for_point =
-      GetDraggingViewsBoundsAtPoint(point_in_container);
-
+gfx::Rect DraggedTabsContainer::GetDraggingViewsClampingBounds() const {
   const auto* scroll_view = GetScrollViewForContainer();
   CHECK(scroll_view);
   gfx::Rect clamping_bounds = views::View::ConvertRectToTarget(
       scroll_view, base::to_address(host_view_), scroll_view->GetLocalBounds());
-  clamping_bounds.set_width(
-      clamping_bounds.width() -
-      GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding));
-  bounding_box_for_point.AdjustToFit(clamping_bounds);
+  if (drag_layout_ != DragLayout::kHorizontal) {
+    clamping_bounds.set_width(
+        clamping_bounds.width() -
+        GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding));
+  }
+  return clamping_bounds;
+}
 
+gfx::Rect DraggedTabsContainer::GetDraggingViewsBoundsAtPointClamped(
+    const gfx::Point& point_in_container) const {
+  gfx::Rect bounding_box_for_point =
+      GetDraggingViewsBoundsAtPoint(point_in_container);
+  bounding_box_for_point.AdjustToFit(GetDraggingViewsClampingBounds());
   return bounding_box_for_point;
 }
 
@@ -513,17 +628,22 @@ DraggedTabsContainer::GetVisualDataForDraggedView(
       it->second.should_hide && !drag_start_animation_.is_animating();
   const bool should_float =
       it->second.should_hide && drag_start_animation_.is_animating();
-  if (view.GetTransform().IsIdentity()) {
+  if (is_resetting_drag_state_) {
     // If a drag recently ended the child will still be in
-    // `dragging_views_` but will not have a transformation, which let's
+    // `dragging_views_` but will not have a transformation, which lets
     // the tab view animate into its correct slot.
     const gfx::Point point_in_container = views::View::ConvertPointFromScreen(
         base::to_address(host_view_), last_drag_point_in_screen_);
     const gfx::Rect bounding_box_for_point =
         GetDraggingViewsBoundsAtPointClamped(point_in_container);
+    gfx::Vector2d position = GetDraggingViewPositionForBounds(
+        &view, bounding_box_for_point, it->second.offset);
+    if (base::i18n::IsRTL()) {
+      position.set_x(host_view_->GetMirroredXForRect(
+          gfx::Rect(position.x(), 0, view.width(), view.height())));
+    }
     return std::make_optional(DraggedViewVisualData{
-        .offset = GetDraggingViewPositionForBounds(
-            &view, bounding_box_for_point, it->second.offset),
+        .offset = position,
         .should_hide = should_hide,
         .should_float = should_float,
     });
@@ -548,8 +668,8 @@ bool DraggedTabsContainer::IsVerticalDragSupported() const {
 bool DraggedTabsContainer::HasMinimumOverlap(
     const gfx::Rect& a,
     const gfx::Rect& b,
-    std::optional<int> min_x_overlap,
-    std::optional<int> min_y_overlap) const {
+    std::optional<float> min_x_overlap,
+    std::optional<float> min_y_overlap) const {
   if (min_y_overlap) {
     gfx::RangeF vertical_overlap =
         gfx::RangeF(a.y(), a.bottom())

@@ -15,7 +15,6 @@
 #include "base/i18n/legacy_language_tag_helpers.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ash/base/locale_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/application_locale_storage/application_locale_storage.h"
@@ -63,8 +62,9 @@ void LocaleChangeGuard::OnLogin() {
     Check();
   } else {
     if (session_observation_.IsObserving()) {
-      DCHECK(session_observation_.IsObservingSource(
-          session_manager::SessionManager::Get()));
+      CHECK(session_observation_.IsObservingSource(
+                session_manager::SessionManager::Get()),
+            base::NotFatalUntil::M160);
       return;
     }
     session_observation_.Observe(session_manager::SessionManager::Get());
@@ -95,7 +95,7 @@ void LocaleChangeGuard::OwnershipStatusChanged() {
   }
 
   PrefService* prefs = profile_->GetPrefs();
-  DCHECK(prefs);
+  CHECK(prefs, base::NotFatalUntil::M160);
   std::string owner_locale =
       prefs->GetString(language::prefs::kApplicationLocale);
   language::ConvertToActualUILocale(&owner_locale);
@@ -105,7 +105,7 @@ void LocaleChangeGuard::OwnershipStatusChanged() {
 }
 
 void LocaleChangeGuard::Check() {
-  std::string cur_locale = application_locale_storage_->Get();
+  std::string cur_locale(application_locale_storage_->GetTag().tag_string());
   if (cur_locale.empty()) {
     NOTREACHED();
   }

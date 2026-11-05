@@ -7,7 +7,7 @@
 
 #include <stdint.h>
 
-#include <string>
+#include "components/password_manager/core/browser/password_string.h"
 
 namespace autofill {
 
@@ -20,8 +20,15 @@ void ConditionallyAddNumericDigitsToAlphabet(PasswordRequirementsSpec* spec);
 
 extern const uint32_t kDefaultPasswordLength;
 
-// Returns a password that follows the |spec| as well as possible. If this is
-// impossible, a password that nearly meets the requirements can be returned.
+// Ensures that `spec` is a valid spec that the crowdsourcing server can
+// produce. If not, replaces it with an empty spec. Intended to be applied to
+// any spec received from the network before it is passed to GeneratePassword().
+PasswordRequirementsSpec SanitizeRequirementsSpec(
+    const PasswordRequirementsSpec& spec);
+
+// Returns a PasswordString containing a password that follows the |spec| as
+// well as possible. If this is impossible, a password that nearly meets the
+// requirements can be returned.
 // In this case the user is asked to fix the password themselves.
 //
 // If |spec| is empty, a password of length |kDefaultPasswordLength| is
@@ -30,7 +37,8 @@ extern const uint32_t kDefaultPasswordLength;
 // - at least 1 upper case latin character
 // - at least 1 number (digit)
 // - no symbols
-std::u16string GeneratePassword(const PasswordRequirementsSpec& spec);
+password_manager::PasswordString GeneratePassword(
+    const PasswordRequirementsSpec& spec);
 
 }  // namespace autofill
 

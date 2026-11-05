@@ -8,6 +8,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.app.PendingIntent;
@@ -21,11 +22,16 @@ import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Looper;
+import android.os.Parcelable;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
@@ -37,9 +43,14 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.DestroyableHolder;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Matchers;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.intents.BrowserIntentUtils;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.browser_ui.share.ShareHelper.TargetChosenReceiver;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.ui.base.ActivityWindowAndroid;
@@ -62,11 +73,14 @@ public class ShareHelperUnitTest {
     private static final ComponentName TEST_COMPONENT_NAME_2 =
             new ComponentName("test.package.two", "test.class.name.two");
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     private final DestroyableHolder<WindowAndroid> mWindowDestroyRef = new DestroyableHolder<>();
 
     private WindowAndroid mWindow;
     private Activity mActivity;
     private Uri mImageUri;
+    @Mock private Profile mProfile;
 
     @Before
     public void setup() {
@@ -189,6 +203,11 @@ public class ShareHelperUnitTest {
                 "Text URL not set correctly.",
                 JUnitTestGURLs.EXAMPLE_URL.getSpec(),
                 nextIntent.getStringExtra(Intent.EXTRA_TEXT));
+        assertEquals(
+                "Intent should include FLAG_ACTIVITY_NEW_DOCUMENT | FLAG_ACTIVITY_MULTIPLE_TASK.",
+                Intent.FLAG_ACTIVITY_NEW_DOCUMENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK,
+                nextIntent.getFlags()
+                        & (Intent.FLAG_ACTIVITY_NEW_DOCUMENT | Intent.FLAG_ACTIVITY_MULTIPLE_TASK));
 
         assertLastComponentNameRecorded(null);
     }
@@ -415,6 +434,91 @@ public class ShareHelperUnitTest {
 
         Intent nextIntent = Shadows.shadowOf(activity).getNextStartedActivity();
         assertNull("Cleanup intent should not be sent when activity is finishing.", nextIntent);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EXCLUDE_CHROME_IN_INCOGNITO_SHARE_SHEET)
+    public void shareWithSystemShareSheetUi_incognitoExcludesIntentDispatcher() {
+        when(mProfile.isOffTheRecord()).thenReturn(true);
+        ShareHelper.shareWithSystemShareSheetUi(emptyShareParams(), mProfile, false);
+
+        Intent nextIntent = Shadows.shadowOf(mActivity).peekNextStartedActivity();
+        assertNotNull("Shared intent is null.", nextIntent);
+        assertEquals(
+                "Intent is not a chooser intent.", Intent.ACTION_CHOOSER, nextIntent.getAction());
+
+        Parcelable[] excluded =
+                nextIntent.getParcelableArrayExtra(Intent.EXTRA_EXCLUDE_COMPONENTS);
+        assertNotNull("Excluded components should not be null.", excluded);
+        assertEquals(1, excluded.length);
+        assertEquals(
+                new ComponentName(
+                        ContextUtils.getApplicationContext(),
+                        BrowserIntentUtils.CHROME_LAUNCHER_ACTIVITY_CLASS_NAME),
+                excluded[0]);
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.EXCLUDE_CHROME_IN_INCOGNITO_SHARE_SHEET)
+    public void shareWithSystemShareSheetUi_incognitoFeatureDisabledDoesNotExcludeIntentDispatcher() {
+        when(mProfile.isOffTheRecord()).thenReturn(true);
+        ShareHelper.shareWithSystemShareSheetUi(emptyShareParams(), mProfile, false);
+
+        Intent nextIntent = Shadows.shadowOf(mActivity).peekNextStartedActivity();
+        assertNotNull("Shared intent is null.", nextIntent);
+        assertEquals(
+                "Intent is not a chooser intent.", Intent.ACTION_CHOOSER, nextIntent.getAction());
+
+        Parcelable[] excluded =
+                nextIntent.getParcelableArrayExtra(Intent.EXTRA_EXCLUDE_COMPONENTS);
+        assertNull("Excluded components should be null when feature is disabled.", excluded);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EXCLUDE_CHROME_IN_INCOGNITO_SHARE_SHEET)
+    public void shareWithSystemShareSheetUi_regularProfileDoesNotExcludeIntentDispatcher() {
+        when(mProfile.isOffTheRecord()).thenReturn(false);
+        ShareHelper.shareWithSystemShareSheetUi(emptyShareParams(), mProfile, false);
+
+        Intent nextIntent = Shadows.shadowOf(mActivity).peekNextStartedActivity();
+        assertNotNull("Shared intent is null.", nextIntent);
+        assertEquals(
+                "Intent is not a chooser intent.", Intent.ACTION_CHOOSER, nextIntent.getAction());
+
+        Parcelable[] excluded =
+                nextIntent.getParcelableArrayExtra(Intent.EXTRA_EXCLUDE_COMPONENTS);
+        assertNull("Excluded components should be null for regular profile.", excluded);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EXCLUDE_CHROME_IN_INCOGNITO_SHARE_SHEET)
+    public void getChooserIntent_incognitoAppendsToExistingExcludedComponents() {
+        when(mProfile.isOffTheRecord()).thenReturn(true);
+        ShareHelper.CustomActionChosenReceiver receiver =
+                new ShareHelper.CustomActionChosenReceiver(
+                        /* callback= */ null, mProfile, /* customActionProvider= */ null) {
+                    @Override
+                    protected Intent createBaseChooserIntent(
+                            WindowAndroid window, Intent sharingIntent) {
+                        Intent intent = super.createBaseChooserIntent(window, sharingIntent);
+                        intent.putExtra(
+                                Intent.EXTRA_EXCLUDE_COMPONENTS,
+                                new ComponentName[] {TEST_COMPONENT_NAME_1});
+                        return intent;
+                    }
+                };
+
+        Intent chooserIntent = receiver.getChooserIntent(mWindow, new Intent(Intent.ACTION_SEND));
+        Parcelable[] excluded =
+                chooserIntent.getParcelableArrayExtra(Intent.EXTRA_EXCLUDE_COMPONENTS);
+        assertNotNull("Excluded components should not be null.", excluded);
+        assertEquals(2, excluded.length);
+        assertEquals(TEST_COMPONENT_NAME_1, excluded[0]);
+        assertEquals(
+                new ComponentName(
+                        ContextUtils.getApplicationContext(),
+                        BrowserIntentUtils.CHROME_LAUNCHER_ACTIVITY_CLASS_NAME),
+                excluded[1]);
     }
 
     private ShareParams emptyShareParams() {

@@ -218,7 +218,7 @@ TEST_F(MahiUiControllerTest, RefreshContentsForElucidation) {
   // Calls `OpenMahiPanel` to set `elucidation_in_use_` to true.
   // This creates a panel widget and implicitly triggers `RefreshContents`
   // and `PanelBoundsChanged` calls, hence the first sequence.
-  // Because `kMahiPanelResizable` is enabled by default, there are two
+  // Because the panel is resizable, there are two
   // `PanelBoundsChanged` calls.
   {
     InSequence s;
@@ -677,7 +677,7 @@ TEST_F(MahiUiControllerWithSessionTest, PanelCloseOnSessionStateChanged) {
 class MahiUiControllerWithNoSessionTest
     : public MahiUiControllerWithSessionTest {
  public:
-  MahiUiControllerWithNoSessionTest() { set_start_session(false); }
+  MahiUiControllerWithNoSessionTest() = default;
 
   MahiUiControllerWithNoSessionTest(const MahiUiControllerWithNoSessionTest&) =
       delete;
@@ -685,6 +685,12 @@ class MahiUiControllerWithNoSessionTest
       const MahiUiControllerWithNoSessionTest&) = delete;
 
   ~MahiUiControllerWithNoSessionTest() override = default;
+
+  // MahiUiControllerWithSessionTest:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    MahiUiControllerWithSessionTest::SetUpInitParams(init_params);
+    init_params.users.clear();
+  }
 };
 
 TEST_F(MahiUiControllerWithNoSessionTest, PanelCloseOnActiveUserChanged) {

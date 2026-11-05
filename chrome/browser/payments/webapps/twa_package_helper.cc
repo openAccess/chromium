@@ -14,7 +14,6 @@
 
 #include "chrome/browser/ash/apps/apk_web_app_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
@@ -35,7 +34,7 @@ std::optional<webapps::AppId> GetWebAppId(content::RenderFrameHost* rfh) {
     return std::nullopt;
   }
 
-  DCHECK(rfh);
+  CHECK(rfh, base::NotFatalUntil::M162);
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
   if (!web_app::AppBrowserController::IsWebApp(browser)) {

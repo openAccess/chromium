@@ -52,8 +52,8 @@ class PackedField:
       (
         mojom.Array,
         mojom.Map,
+        mojom.HashMap,
         mojom.Struct,
-        mojom.Interface,
         mojom.PendingRemote,
         mojom.PendingAssociatedRemote,
       ),
@@ -68,7 +68,7 @@ class PackedField:
     if isinstance(kind, mojom.Enum):
       # TODO(mpcomplete): what about big enums?
       return cls.kind_to_size[mojom.INT32]
-    if not kind in cls.kind_to_size:
+    if kind not in cls.kind_to_size:
       raise Exception(
         "Undefined type: %s. Did you forget to import the file "
         "containing the definition?" % kind.spec
@@ -79,7 +79,7 @@ class PackedField:
   def GetAlignmentForKind(cls, kind):
     if isinstance(
       kind,
-      (mojom.Interface, mojom.PendingRemote, mojom.PendingAssociatedRemote),
+      (mojom.PendingRemote, mojom.PendingAssociatedRemote),
     ):
       return 4
     if isinstance(kind, mojom.Union):

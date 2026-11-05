@@ -13,11 +13,10 @@
 
 #import "base/functional/callback.h"
 #import "base/memory/weak_ptr.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/optimization_guide/mojom/model_led_suggestions_service.mojom.h"
 #import "mojo/public/cpp/bindings/remote.h"
 #import "url/gurl.h"
-
-class GeminiSuggestionHandlerTest;
 
 // Object representing a Gemini suggestion.
 @interface ZeroStateSuggestion : NSObject
@@ -28,8 +27,8 @@ class GeminiSuggestionHandlerTest;
 // Query to be used when the suggestion is used.
 @property(nonatomic, copy) NSString* query;
 
-// Identifier for the icon to be used for the suggestion.
-@property(nonatomic, copy) NSString* iconIdentifier;
+// Type of the suggestion.
+@property(nonatomic, assign) gemini::InputType type;
 
 @end
 
@@ -64,7 +63,6 @@ class ZeroStateSuggestionsService {
 
  private:
   // Adding test classes as friend to facilitate setting state.
-  friend class ::GeminiSuggestionHandlerTest;
   friend class ZeroStateSuggestionsServiceTest;
 
   // Parses the response of a zero-state suggestions execution.

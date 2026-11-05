@@ -28,6 +28,7 @@
 #import "components/omnibox/browser/page_classification_functions.h"
 #import "components/omnibox/browser/verbatim_match.h"
 #import "components/open_from_clipboard/clipboard_recent_content.h"
+#import "components/search_engines/template_url_service.h"
 #import "ios/chrome/browser/omnibox/model/autocomplete_controller_observer_bridge.h"
 #import "ios/chrome/browser/omnibox/model/omnibox_autocomplete_controller_debugger_delegate.h"
 #import "ios/chrome/browser/omnibox/model/omnibox_autocomplete_controller_delegate.h"
@@ -43,6 +44,7 @@
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "third_party/omnibox_proto/groups.pb.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #import "ui/gfx/image/image.h"
 #import "url/gurl.h"
 
@@ -73,6 +75,11 @@ using base::UserMetricsAction;
   metrics::OmniboxEventProto::OmniboxPosition _preferredOmniboxPosition;
   /// Where the omnibox is presented from.
   OmniboxPresentationContext _omniboxPresentationContext;
+  /// Match of the suggestion that was prerendered on touch down.
+  std::optional<AutocompleteMatch> _prerenderedMatch;
+  /// Original URL of the suggestion that was prerendered on touch down before
+  /// modifications.
+  GURL _prerenderedOriginalURL;
 }
 
 - (instancetype)
@@ -116,13 +123,20 @@ using base::UserMetricsAction;
   _autocompleteController = nullptr;
   _omniboxTextModel = nullptr;
   _omniboxClient = nullptr;
+  [self clearPrerenderOnTouchDown];
 }
 
 - (AutocompleteController*)autocompleteController {
   return _autocompleteController;
 }
 
+- (void)clearPrerenderOnTouchDown {
+  _prerenderedMatch.reset();
+  _prerenderedOriginalURL = GURL();
+}
+
 - (void)updatePopupSuggestions {
+  [self clearPrerenderOnTouchDown];
   if (_autocompleteController) {
     BOOL isFocusing = _autocompleteController->input().focus_type() ==
                       metrics::OmniboxFocusType::INTERACTION_FOCUS;
@@ -138,6 +152,7 @@ using base::UserMetricsAction;
 }
 
 - (void)stopAutocompleteWithClearSuggestions:(BOOL)clearSuggestions {
+  [self clearPrerenderOnTouchDown];
   if (_autocompleteController) {
     TRACE_EVENT0("omnibox", "OmniboxAutocompleteController::StopAutocomplete");
     _autocompleteController->Stop(clearSuggestions
@@ -148,7 +163,7 @@ using base::UserMetricsAction;
 
 - (void)openSelection:(OmniboxPopupSelection)selection
             timestamp:(base::TimeTicks)timestamp
-          disposition:(WindowOpenDisposition)disposition {
+          disposition:(ui::mojom::WindowOpenDisposition)disposition {
   if (!_autocompleteController) {
     return;
   }
@@ -174,10 +189,12 @@ using base::UserMetricsAction;
       matchSelectionTimestamp:timestamp];
 }
 
-- (void)openCurrentSelectionWithDisposition:(WindowOpenDisposition)disposition
+- (void)openCurrentSelectionWithDisposition:
+            (ui::mojom::WindowOpenDisposition)disposition
                                   timestamp:(base::TimeTicks)timestamp {
-  [self openSelection:OmniboxPopupSelection(OmniboxPopupSelection::kNoMatch,
-                                            OmniboxPopupSelection::NORMAL)
+  [self openSelection:OmniboxPopupSelection(
+                          OmniboxPopupSelection::kNoMatch,
+                          OmniboxPopupSelection::LineState::kNormal)
             timestamp:timestamp
           disposition:disposition];
 }
@@ -303,7 +320,7 @@ using base::UserMetricsAction;
 - (void)selectMatchForOpening:(AutocompleteMatch&)match
      withCustomDestinationURL:(GURL)destinationURL
                         inRow:(NSUInteger)row
-                       openIn:(WindowOpenDisposition)disposition {
+                       openIn:(ui::mojom::WindowOpenDisposition)disposition {
   const auto matchSelectionTimestamp = base::TimeTicks();
   match.destination_url = destinationURL;
 
@@ -317,11 +334,11 @@ using base::UserMetricsAction;
 
 - (void)selectMatchForOpening:(const AutocompleteMatch&)match
                         inRow:(NSUInteger)row
-                       openIn:(WindowOpenDisposition)disposition {
+                       openIn:(ui::mojom::WindowOpenDisposition)disposition {
   const auto matchSelectionTimestamp = base::TimeTicks();
   base::RecordAction(UserMetricsAction("MobileOmniboxUse"));
 
-  if (match.type == AutocompleteMatchType::CLIPBOARD_URL) {
+  if (match.type == omnibox::AutocompleteMatchType::kClipboardUrl) {
     base::RecordAction(UserMetricsAction("MobileOmniboxClipboardToURL"));
     base::UmaHistogramLongTimes100(
         "MobileOmnibox.PressedClipboardSuggestionAge",
@@ -332,8 +349,17 @@ using base::UserMetricsAction;
     return;
   }
 
+  // Clipboard match handling.
+  if (match.destination_url.is_empty() &&
+      AutocompleteMatch::IsClipboardType(match.type)) {
+    [self openClipboardMatch:match
+                 disposition:disposition
+          selectionTimestamp:matchSelectionTimestamp];
+    return;
+  }
+
   // Sometimes the match provided does not correspond to the autocomplete
-  // result match specified by `index`. Most Visited Tiles, for example,
+  // result match specified by `row`. Most Visited Tiles, for example,
   // provide ad hoc matches that are not in the result at all.
   if (row >= _autocompleteController->result().size() ||
       _autocompleteController->result().match_at(row).destination_url !=
@@ -341,15 +367,6 @@ using base::UserMetricsAction;
     [self openCustomMatch:match
                disposition:disposition
         selectionTimestamp:matchSelectionTimestamp];
-    return;
-  }
-
-  // Clipboard match handling.
-  if (match.destination_url.is_empty() &&
-      AutocompleteMatch::IsClipboardType(match.type)) {
-    [self openClipboardMatch:match
-                 disposition:disposition
-          selectionTimestamp:matchSelectionTimestamp];
     return;
   }
 
@@ -377,7 +394,95 @@ using base::UserMetricsAction;
   }
 }
 
+- (BOOL)canPrerenderMatch:(const AutocompleteMatch&)match
+                    inRow:(NSUInteger)row {
+  if (!_autocompleteController || !_omniboxClient ||
+      row >= _autocompleteController->result().size()) {
+    return NO;
+  }
+  if (_autocompleteController->result().match_at(row).destination_url !=
+      match.destination_url) {
+    return NO;
+  }
+  if (match.type == omnibox::AutocompleteMatchType::kNullResultMessage) {
+    return NO;
+  }
+  if ((match.destination_url.is_empty() &&
+       AutocompleteMatch::IsClipboardType(match.type)) ||
+      match.takeover_action) {
+    return NO;
+  }
+  if (!AutocompleteMatch::IsSearchType(match.type) ||
+      AutocompleteMatch::IsClipboardType(match.type) ||
+      match.type == omnibox::AutocompleteMatchType::kSearchOtherEngine) {
+    return NO;
+  }
+  TemplateURLService* templateURLService =
+      _omniboxClient->GetTemplateURLService();
+  if (!templateURLService ||
+      !templateURLService->IsSearchResultsPageFromDefaultSearchProvider(
+          match.destination_url)) {
+    return NO;
+  }
+  return YES;
+}
+
+- (void)updateDestinationURLForMatch:(AutocompleteMatch&)match
+                        isPastedText:(BOOL)isPastedText {
+  if (IsOmniboxPrerenderOnTouchDownEnabled() && _prerenderedMatch.has_value() &&
+      match.destination_url == _prerenderedOriginalURL &&
+      match.provider == _prerenderedMatch->provider &&
+      match.type == _prerenderedMatch->type) {
+    match = _prerenderedMatch.value();
+    [self clearPrerenderOnTouchDown];
+    return;
+  }
+  base::TimeDelta elapsedTimeSinceUserFirstModifiedOmnibox =
+      [self.omniboxMetricsRecorder
+          elapsedTimeSinceUserFirstModifiedOmniboxWithPastedText:isPastedText];
+  _autocompleteController
+      ->UpdateMatchDestinationURLWithAdditionalSearchboxStats(
+          elapsedTimeSinceUserFirstModifiedOmnibox, &match);
+}
+
+- (void)prerenderMatchForOpening:(const AutocompleteMatch&)match
+                           inRow:(NSUInteger)row {
+  if (!IsOmniboxPrerenderOnTouchDownEnabled() ||
+      ![self canPrerenderMatch:match inRow:row]) {
+    return;
+  }
+
+  AutocompleteMatch prerenderMatch =
+      _autocompleteController->result().match_at(row);
+  GURL originalDestinationURL = prerenderMatch.destination_url;
+  [self updateDestinationURLForMatch:prerenderMatch isPastedText:NO];
+
+  GURL destinationURL = prerenderMatch.destination_url;
+  if (!destinationURL.is_valid() || !destinationURL.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
+
+  TemplateURLService* templateURLService =
+      _omniboxClient->GetTemplateURLService();
+  if (!templateURLService ||
+      !templateURLService->IsSearchResultsPageFromDefaultSearchProvider(
+          destinationURL)) {
+    return;
+  }
+
+  _prerenderedMatch = prerenderMatch;
+  _prerenderedOriginalURL = originalDestinationURL;
+  ui::PageTransition transition = ui::PageTransitionFromInt(
+      prerenderMatch.transition | ui::PAGE_TRANSITION_FROM_ADDRESS_BAR);
+  _omniboxClient->StartPrerender(destinationURL, transition);
+}
+
 - (void)onScroll {
+  if (IsOmniboxPrerenderOnTouchDownEnabled() && _prerenderedMatch.has_value() &&
+      _omniboxClient) {
+    _omniboxClient->CancelPrerender();
+    [self clearPrerenderOnTouchDown];
+  }
   [self.omniboxTextController onScroll];
 }
 
@@ -666,20 +771,27 @@ using base::UserMetricsAction;
 
 /// Opens a match created outside of autocomplete controller.
 - (void)openCustomMatch:(std::optional<AutocompleteMatch>)match
-            disposition:(WindowOpenDisposition)disposition
+            disposition:(ui::mojom::WindowOpenDisposition)disposition
      selectionTimestamp:(base::TimeTicks)timestamp {
   AutocompleteController* autocompleteController = self.autocompleteController;
-  if (!autocompleteController || !match) {
+  if (!autocompleteController || !match || !_omniboxTextModel) {
     return;
   }
-  OmniboxPopupSelection selection(
-      autocompleteController->InjectAdHocMatch(match.value()));
-  [self openSelection:selection timestamp:timestamp disposition:disposition];
+  GURL alternate_nav_url = AutocompleteResult::ComputeAlternateNavUrl(
+      _omniboxTextModel->input, match.value(),
+      autocompleteController->autocomplete_provider_client());
+  [self openMatch:match.value()
+               popupSelection:OmniboxPopupSelection(
+                                  OmniboxPopupSelection::kNoMatch)
+        windowOpenDisposition:disposition
+              alternateNavURL:alternate_nav_url
+                   pastedText:u""
+      matchSelectionTimestamp:timestamp];
 }
 
 /// Asks the browser to load the popup's currently selected item, using the
 /// supplied disposition.  This may close the popup.
-- (void)acceptInputWithDisposition:(WindowOpenDisposition)disposition
+- (void)acceptInputWithDisposition:(ui::mojom::WindowOpenDisposition)disposition
                          timestamp:(base::TimeTicks)timestamp {
   // Get the URL and transition type for the selected entry.
   GURL alternate_nav_url;
@@ -691,7 +803,7 @@ using base::UserMetricsAction;
   }
 
   if (_omniboxTextModel->paste_state != OmniboxPasteState::kNone &&
-      match.type == AutocompleteMatchType::URL_WHAT_YOU_TYPED) {
+      match.type == omnibox::AutocompleteMatchType::kUrlWhatYouTyped) {
     // When the user pasted in a URL and hit enter, score it like a link click
     // rather than a normal typed URL, so it doesn't get inline autocompleted
     // as aggressively later.
@@ -727,14 +839,14 @@ using base::UserMetricsAction;
 ///     preserve it past the popup closure.
 - (void)openMatch:(AutocompleteMatch)match
              popupSelection:(OmniboxPopupSelection)selection
-      windowOpenDisposition:(WindowOpenDisposition)disposition
+      windowOpenDisposition:(ui::mojom::WindowOpenDisposition)disposition
             alternateNavURL:(const GURL&)alternateNavURL
                  pastedText:(const std::u16string&)pastedText
     matchSelectionTimestamp:(base::TimeTicks)matchSelectionTimestamp {
   // If the user is executing an action, this will be non-null and some match
   // opening and metrics behavior will be adjusted accordingly.
   OmniboxAction* action = nullptr;
-  if (selection.state == OmniboxPopupSelection::NORMAL &&
+  if (selection.state == OmniboxPopupSelection::LineState::kNormal &&
       match.takeover_action) {
     DCHECK(matchSelectionTimestamp != base::TimeTicks());
     action = match.takeover_action.get();
@@ -751,34 +863,29 @@ using base::UserMetricsAction;
 
   // NULL_RESULT_MESSAGE matches are informational only and cannot be acted
   // upon. Immediately return when attempting to open one.
-  if (match.type == AutocompleteMatchType::NULL_RESULT_MESSAGE) {
+  if (match.type == omnibox::AutocompleteMatchType::kNullResultMessage) {
     return;
   }
 
   // Also switch the window disposition for tab switch actions. The action
-  // itself will already open with SWITCH_TO_TAB disposition, but the change
+  // itself will already open with `kSwitchToTab` disposition, but the change
   // is needed earlier for metrics.
   bool isTabSwitchAction =
       action && action->ActionId() == OmniboxActionId::TAB_SWITCH;
   if (isTabSwitchAction) {
-    disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+    disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
   }
 
   TRACE_EVENT("omnibox", "OmniboxAutocompleteController::OpenMatch", "match",
               match, "disposition", disposition, "altenate_nav_url",
               alternateNavURL, "pasted_text", pastedText);
 
-  // Update the match with the final destination URL.
+  // Update the match with the final destination URL, or reuse the one computed
+  // during touch down prerendering if the selection row matches.
   const BOOL isPastedText = !pastedText.empty();
-  base::TimeDelta elapsedTimeSinceUserFirstModifiedOmnibox =
-      [self.omniboxMetricsRecorder
-          elapsedTimeSinceUserFirstModifiedOmniboxWithPastedText:isPastedText];
-  self.autocompleteController
-      ->UpdateMatchDestinationURLWithAdditionalSearchboxStats(
-          elapsedTimeSinceUserFirstModifiedOmnibox, &match);
+  [self updateDestinationURLForMatch:match isPastedText:isPastedText];
 
   GURL destinationURL = action ? action->getUrl() : match.destination_url;
-
   std::u16string inputText(pastedText);
   if (inputText.empty()) {
     inputText = _omniboxTextModel->user_input_in_progress
@@ -817,12 +924,11 @@ using base::UserMetricsAction;
     action->Execute(context);
   }
 
-  if (disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB) {
+  if (disposition != ui::mojom::WindowOpenDisposition::kNewBackgroundTab) {
     // Skip the revert here to avoid changing the size of the multiline omnibox
     // when accepting input, changes will be reverted at endEditing
     // (crbug.com/458055336).
     BOOL skipRevert =
-        IsComposeboxIOSEnabled() &&
         _omniboxPresentationContext == OmniboxPresentationContext::kComposebox;
     if (!skipRevert) {
       base::AutoReset<bool> tmp(&_omniboxTextModel->in_revert, true);
@@ -845,7 +951,7 @@ using base::UserMetricsAction;
           match.type, matchSelectionTimestamp,
           _omniboxTextModel->input.added_default_scheme_to_typed_url(),
           _omniboxTextModel->input.typed_url_had_http_scheme() &&
-              match.type == AutocompleteMatchType::URL_WHAT_YOU_TYPED,
+              match.type == omnibox::AutocompleteMatchType::kUrlWhatYouTyped,
           inputText, match,
           VerbatimMatchForInput(
               self.autocompleteController->history_url_provider(),
@@ -859,7 +965,7 @@ using base::UserMetricsAction;
 
 /// Creates a match with the clipboard URL and open it.
 - (void)openClipboardURL:(std::optional<GURL>)optionalURL
-             disposition:(WindowOpenDisposition)disposition
+             disposition:(ui::mojom::WindowOpenDisposition)disposition
                timestamp:(base::TimeTicks)timestamp {
   if (!optionalURL || !_autocompleteController) {
     return;
@@ -873,7 +979,7 @@ using base::UserMetricsAction;
 
 /// Creates a match with the clipboard text and open it.
 - (void)openClipboardText:(std::optional<std::u16string>)optionalText
-              disposition:(WindowOpenDisposition)disposition
+              disposition:(ui::mojom::WindowOpenDisposition)disposition
                 timestamp:(base::TimeTicks)timestamp {
   if (!optionalText || !_autocompleteController) {
     return;
@@ -886,7 +992,7 @@ using base::UserMetricsAction;
 
 /// Creates a match with the clipboard image and open it.
 - (void)openClipboardImage:(std::optional<gfx::Image>)optionalImage
-               disposition:(WindowOpenDisposition)disposition
+               disposition:(ui::mojom::WindowOpenDisposition)disposition
                  timestamp:(base::TimeTicks)timestamp {
   if (!optionalImage || !_autocompleteController) {
     return;
@@ -894,22 +1000,22 @@ using base::UserMetricsAction;
 
   __weak __typeof(self) weakSelf = self;
   _autocompleteController->clipboard_provider()->NewClipboardImageMatch(
-      optionalImage,
-      base::BindOnce(
-          [](OmniboxAutocompleteController* controller,
-             WindowOpenDisposition disposition, base::TimeTicks timestamp,
-             std::optional<AutocompleteMatch> optionalMatch) {
-            [controller openCustomMatch:optionalMatch
-                            disposition:disposition
-                     selectionTimestamp:timestamp];
-          },
-          weakSelf, disposition, timestamp));
+      optionalImage, base::BindOnce(
+                         [](OmniboxAutocompleteController* controller,
+                            ui::mojom::WindowOpenDisposition disposition,
+                            base::TimeTicks timestamp,
+                            std::optional<AutocompleteMatch> optionalMatch) {
+                           [controller openCustomMatch:optionalMatch
+                                           disposition:disposition
+                                    selectionTimestamp:timestamp];
+                         },
+                         weakSelf, disposition, timestamp));
 }
 
 /// Opens a clipboard match. Fetches the content of the clipboard and creates a
 /// new match with it.
 - (void)openClipboardMatch:(const AutocompleteMatch&)match
-               disposition:(WindowOpenDisposition)disposition
+               disposition:(ui::mojom::WindowOpenDisposition)disposition
         selectionTimestamp:(base::TimeTicks)timestamp {
   __weak __typeof__(self) weakSelf = self;
   ClipboardRecentContent* clipboardRecentContent =
@@ -917,11 +1023,11 @@ using base::UserMetricsAction;
   CHECK(clipboardRecentContent);
 
   switch (match.type) {
-    case AutocompleteMatchType::CLIPBOARD_URL: {
+    case omnibox::AutocompleteMatchType::kClipboardUrl: {
       clipboardRecentContent->GetRecentURLFromClipboard(base::BindOnce(
           [](OmniboxAutocompleteController* controller,
-             WindowOpenDisposition disposition, base::TimeTicks timestamp,
-             std::optional<GURL> optionalURL) {
+             ui::mojom::WindowOpenDisposition disposition,
+             base::TimeTicks timestamp, std::optional<GURL> optionalURL) {
             [controller openClipboardURL:optionalURL
                              disposition:disposition
                                timestamp:timestamp];
@@ -929,10 +1035,11 @@ using base::UserMetricsAction;
           weakSelf, disposition, timestamp));
       break;
     }
-    case AutocompleteMatchType::CLIPBOARD_TEXT: {
+    case omnibox::AutocompleteMatchType::kClipboardText: {
       clipboardRecentContent->GetRecentTextFromClipboard(base::BindOnce(
           [](OmniboxAutocompleteController* controller,
-             WindowOpenDisposition disposition, base::TimeTicks timestamp,
+             ui::mojom::WindowOpenDisposition disposition,
+             base::TimeTicks timestamp,
              std::optional<std::u16string> optionalText) {
             [controller openClipboardText:optionalText
                               disposition:disposition
@@ -941,13 +1048,14 @@ using base::UserMetricsAction;
           weakSelf, disposition, timestamp));
       break;
     }
-    case AutocompleteMatchType::CLIPBOARD_IMAGE: {
+    case omnibox::AutocompleteMatchType::kClipboardImage: {
       if ([self.lensHander shouldUseLensForCopiedImage]) {
         [self.lensHander lensCopiedImage];
       } else {
         clipboardRecentContent->GetRecentImageFromClipboard(base::BindOnce(
             [](OmniboxAutocompleteController* controller,
-               WindowOpenDisposition disposition, base::TimeTicks timestamp,
+               ui::mojom::WindowOpenDisposition disposition,
+               base::TimeTicks timestamp,
                std::optional<gfx::Image> optionalImage) {
               [controller openClipboardImage:optionalImage
                                  disposition:disposition
@@ -955,7 +1063,6 @@ using base::UserMetricsAction;
             },
             weakSelf, disposition, timestamp));
       }
-
       break;
     }
     default:

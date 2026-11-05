@@ -53,7 +53,7 @@ namespace {
 
 using OpenOutcome = media::AudioInputStream::OpenOutcome;
 
-const int kMaxInputChannels = 3;
+constexpr int kMaxInputChannels = 3;
 constexpr base::TimeDelta kCheckMutedStateInterval = base::Seconds(1);
 constexpr base::TimeDelta kPeriodicLogInterval = base::Seconds(15);
 
@@ -86,7 +86,7 @@ constexpr base::TimeDelta kPowerMonitorLogInterval = base::Seconds(15);
 
 // A warning will be logged when the microphone audio volume is below this
 // threshold.
-const int kLowLevelMicrophoneLevelPercent = 10;
+constexpr int kLowLevelMicrophoneLevelPercent = 10;
 
 // Logs if the user has enabled the microphone mute or not. This is normally
 // done by marking a checkbox in an audio-settings UI which is unique for each
@@ -139,7 +139,7 @@ float AveragePower(const media::AudioBus& buffer) {
 
   // Convert average power level to dBFS units, and pin it down to zero if it
   // is insignificantly small.
-  const float kInsignificantPower = 1.0e-10f;  // -100 dBFS
+  constexpr float kInsignificantPower = 1.0e-10f;  // -100 dBFS
   const float power_dbfs = average_power < kInsignificantPower
                                ? -std::numeric_limits<float>::infinity()
                                : 10.0f * log10f(average_power);
@@ -430,6 +430,10 @@ void InputController::MaybeSetUpAudioProcessing(
   // In case fake audio input is requested.
   processing_input_params->set_format(processing_output_params.format());
 
+  auto volume_adjustment_callback = base::BindPostTask(
+      task_runner_,
+      base::BindRepeating(&InputController::SetVolume, weak_this_));
+
   // Unretained() is safe, since |this| and |event_handler_| outlive
   // |audio_processor_handler_|.
   audio_processor_handler_ = std::make_unique<AudioProcessorHandler>(
@@ -438,6 +442,7 @@ void InputController::MaybeSetUpAudioProcessing(
       base::BindRepeating(&EventHandler::OnLog,
                           base::Unretained(event_handler_)),
       std::move(deliver_processed_audio_callback),
+      std::move(volume_adjustment_callback),
       // AudioProcessorHandler delivers errors on the main thread.
       base::BindRepeating(&InputController::DoReportError, weak_this_,
                           REFERENCE_STREAM_ERROR),
@@ -457,15 +462,25 @@ void InputController::MaybeSetUpAudioProcessing(
 std::unique_ptr<VoiceIsolationHandler>
 InputController::MaybeCreateVoiceIsolationHandler(
     raw_ptr<MlModelManager> ml_model_manager,
+    media::AudioDebugRecordingManager* debug_recording_manager,
     const media::AudioParameters& processing_output_params,
     DeliverProcessedAudioCallback deliver_processed_audio_callback) {
   if (!ml_model_manager) {
     return nullptr;
   }
 
+  // If asynchronous component initialization fails on the background thread,
+  // terminate the stream with STREAM_ERROR rather than delivering unisolated
+  // audio.
+  auto error_cb =
+      base::BindOnce(&InputController::DoReportError, weak_this_, STREAM_ERROR);
+
   return VoiceIsolationHandler::MaybeCreate(
       *ml_model_manager, processing_output_params,
-      std::move(deliver_processed_audio_callback));
+      std::move(deliver_processed_audio_callback), std::move(error_cb),
+      base::BindRepeating(&EventHandler::OnLog,
+                          base::Unretained(event_handler_)),
+      debug_recording_manager);
 }
 
 #endif
@@ -582,11 +597,16 @@ void InputController::Close() {
   DCHECK(task_runner_->BelongsToCurrentThread());
   SCOPED_UMA_HISTOGRAM_TIMER("Media.AudioInputController.CloseTime");
 
+  // Errors arriving during or after teardown are of no interest to the
+  // EventHandler.
+  can_report_error_ = false;
+
   if (!stream_) {
     return;
   }
 
   check_muted_state_timer_.Stop();
+  mute_state_subscription_.reset();
 
   // Allow calling unconditionally and bail if we don't have a stream to close.
   if (audio_callback_) {
@@ -732,9 +752,10 @@ void InputController::DoCreate(
   std::unique_ptr<VoiceIsolationHandler> voice_isolation_handler;
   if (processing_config && processing_config->settings.voice_isolation) {
     voice_isolation_handler = MaybeCreateVoiceIsolationHandler(
-        ml_model_manager, params, std::move(deliver_processed_audio_callback));
+        ml_model_manager, audio_manager->GetAudioDebugRecordingManager(),
+        params, std::move(deliver_processed_audio_callback));
     if (!voice_isolation_handler) {
-      event_handler_->OnError(STREAM_CREATE_ERROR);
+      DoReportError(STREAM_CREATE_ERROR);
       LogCaptureStartupResult(ParamsToStreamType(params),
                               CAPTURE_STARTUP_VOICE_ISOLATION_ERROR);
       return;
@@ -777,7 +798,7 @@ void InputController::DoCreate(
 
   if (!stream) {
     LogCaptureStartupResult(CAPTURE_STARTUP_CREATE_STREAM_FAILED);
-    event_handler_->OnError(STREAM_CREATE_ERROR);
+    DoReportError(STREAM_CREATE_ERROR);
     return;
   }
 
@@ -785,7 +806,7 @@ void InputController::DoCreate(
   if (open_outcome != OpenOutcome::kSuccess) {
     stream->Close();
     LogCaptureStartupResult(CAPTURE_STARTUP_OPEN_STREAM_FAILED);
-    event_handler_->OnError(MapOpenOutcomeToErrorCode(open_outcome));
+    DoReportError(MapOpenOutcomeToErrorCode(open_outcome));
     return;
   }
 
@@ -811,15 +832,30 @@ void InputController::DoCreate(
                                                  base::Unretained(this)));
 
   // Send initial muted state along with OnCreated, to avoid races.
+  mute_state_subscription_ = audio_manager->AddInputMuteStateChangeCallback(
+      base::BindRepeating(&InputController::OnMuteStateChanged, weak_this_));
   is_muted_ = stream_->IsMuted();
   event_handler_->OnCreated(is_muted_);
-  check_muted_state_timer_.Start(FROM_HERE, kCheckMutedStateInterval, this,
-                                 &InputController::CheckMutedState);
-  DCHECK(check_muted_state_timer_.IsRunning());
+  // Fall back to polling when the platform does not support mute state change
+  // notifications.
+  if (!mute_state_subscription_) {
+    check_muted_state_timer_.Start(FROM_HERE, kCheckMutedStateInterval, this,
+                                   &InputController::CheckMutedState);
+    DCHECK(check_muted_state_timer_.IsRunning());
+  }
 }
 
 void InputController::DoReportError(ErrorCode error_code) {
   DCHECK(task_runner_->BelongsToCurrentThread());
+  // At most one error is reported to the EventHandler. Asynchronous errors
+  // arriving after DoCreate() failed or after Close(), as well as repeated
+  // runtime errors before teardown, are ignored.
+  if (!can_report_error_) {
+    SendLogMessage(base::StringPrintf("%s({error_code=%d}) => (ignored)",
+                                      __func__, error_code));
+    return;
+  }
+  can_report_error_ = false;
   event_handler_->OnError(error_code);
 }
 
@@ -841,7 +877,7 @@ void InputController::DoLogAudioLevels(float level_dbfs,
     LogMicrophoneMuteResult(MICROPHONE_IS_NOT_MUTED);
   }
 
-  static const float kSilenceThresholdDBFS = -72.24719896f;
+  constexpr float kSilenceThresholdDBFS = -72.24719896f;
   SendLogMessage(base::StringPrintf(
       "%s => (average audio level=%.2f dBFS%s)", __func__, level_dbfs,
       level_dbfs < kSilenceThresholdDBFS ? " <=> low audio input level" : ""));
@@ -946,13 +982,19 @@ bool InputController::CheckAudioPower(const media::AudioBus* source,
 void InputController::CheckMutedState() {
   DCHECK(task_runner_->BelongsToCurrentThread());
   DCHECK(stream_);
-  const bool new_state = stream_->IsMuted();
-  if (new_state != is_muted_) {
-    is_muted_ = new_state;
-    event_handler_->OnMuted(is_muted_);
-    SendLogMessage(base::StringPrintf("%s => (is_muted=%s)", __func__,
-                                      is_muted_ ? "true" : "false"));
+  OnMuteStateChanged(stream_->IsMuted());
+}
+
+void InputController::OnMuteStateChanged(bool is_muted) {
+  DCHECK(task_runner_->BelongsToCurrentThread());
+  if (is_muted == is_muted_) {
+    return;
   }
+
+  is_muted_ = is_muted;
+  event_handler_->OnMuted(is_muted_);
+  SendLogMessage(base::StringPrintf("%s => (is_muted=%s)", __func__,
+                                    is_muted_ ? "true" : "false"));
 }
 
 void InputController::ReportIsAlive() {
@@ -999,18 +1041,14 @@ void InputController::OnData(const media::AudioBus* source,
 void InputController::DeliverProcessedAudio(
     const media::AudioBus& audio_bus,
     base::TimeTicks audio_capture_time,
-    std::optional<double> new_volume,
     const media::AudioGlitchInfo& glitch_info) {
+  TRACE_EVENT("audio", "InputController::DeliverProcessedAudio", "frames",
+              audio_bus.frames(), "channels", audio_bus.channels());
   stats_reporter_->ReportDelayAndGlitches(audio_capture_time, glitch_info);
   // When processing is performed in the audio service, the consumer is not
   // expected to use the input volume and keypress information.
   sync_writer_->Write(&audio_bus, /*volume=*/1.0, audio_capture_time,
                       glitch_info);
-  if (new_volume) {
-    task_runner_->PostTask(
-        FROM_HERE,
-        base::BindOnce(&InputController::SetVolume, weak_this_, *new_volume));
-  }
 }
 #endif
 

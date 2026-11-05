@@ -69,7 +69,6 @@ import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerFactory;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.native_page.TouchEnabledDelegate;
-import org.chromium.chrome.browser.ui.signin.PersonalizedSigninPromoView;
 import org.chromium.chrome.browser.ui.theme.ChromeSemanticColorUtils;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.chrome.browser.xsurface.HybridListRenderer;
@@ -86,6 +85,7 @@ import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.third_party.android.swiperefresh.SwipeRefreshLayout;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.base.DeviceInput;
 import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
@@ -137,7 +137,6 @@ public class FeedSurfaceCoordinator
     // Used when Feed is enabled.
     private final Profile mProfile;
     private @Nullable FeedSurfaceLifecycleManager mFeedSurfaceLifecycleManager;
-    private @Nullable View mSigninPromoView;
     // Feed RecyclerView/xSurface fields.
     private FeedListContentManager mContentManager;
     private final RecyclerView mRecyclerView;
@@ -170,6 +169,7 @@ public class FeedSurfaceCoordinator
     private @Nullable HomepageStateListener mHomepageStateListener;
     private @Nullable ItemDecoration mItemDecoration;
     private @Nullable OnScrollListener mOnScrollListener;
+    private boolean mHasDrawnFrame;
 
     /** Provides the additional capabilities needed for the container view. */
     private class RootView extends FrameLayout {
@@ -178,6 +178,14 @@ public class FeedSurfaceCoordinator
          */
         RootView(Context context) {
             super(context);
+            setFocusable(true);
+            setFocusableInTouchMode(true);
+        }
+
+        @Override
+        protected void dispatchDraw(Canvas canvas) {
+            super.dispatchDraw(canvas);
+            mHasDrawnFrame = true;
         }
 
         @Override
@@ -208,6 +216,11 @@ public class FeedSurfaceCoordinator
             // event. Placing this call later in the method would mean at least a subset of events
             // would be missed.
             mDelegate.sendMotionEventForInputTracking(ev);
+            // Defocus any other view (such as the Omnibox / UrlBar) when tapping on the empty
+            // background surface.
+            if (ev.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                requestFocus();
+            }
 
             if (super.onInterceptTouchEvent(ev)) return true;
             if (mMediator != null && !mMediator.getTouchEnabled()) return true;
@@ -760,6 +773,11 @@ public class FeedSurfaceCoordinator
     }
 
     @Override
+    public boolean hasDrawnFrame() {
+        return mHasDrawnFrame;
+    }
+
+    @Override
     public void reload() {
         manualRefresh();
     }
@@ -935,7 +953,9 @@ public class FeedSurfaceCoordinator
                             (resId) -> {
                                 return AppCompatResources.getDrawable(mActivity, resId);
                             },
-                            gutterPadding);
+                            gutterPadding,
+                            ChromeFeatureList.isEnabled(
+                                    ChromeFeatureList.FEED_CONTAINMENT_CLIP_FIRST_CARD));
             view.addItemDecoration(mItemDecoration);
         }
 
@@ -1042,8 +1062,9 @@ public class FeedSurfaceCoordinator
         setHeaders(headerList);
 
         // Explicitly request focus on the scroll container to avoid UrlBar being focused after
-        // mRootView containers are refreshed.
-        mRecyclerView.requestFocus();
+        // mRootView containers are refreshed, unless a physical keyboard is attached and UrlBar
+        // is expected to remain focused.
+        if (!DeviceInput.supportsAlphabeticKeyboard()) mRecyclerView.requestFocus();
     }
 
     /**
@@ -1069,7 +1090,6 @@ public class FeedSurfaceCoordinator
     private void setHeaders(List<View> headerViews) {
         // Build the list of headers we want, and then replace existing headers.
         List<FeedListContentManager.FeedContent> headerList = new ArrayList<>();
-        boolean hasSigninPromoView = false;
         for (View header : headerViews) {
             // Feed header view in multi does not need padding added.
             int lateralPaddingsPx = getLateralPaddingsPx();
@@ -1081,32 +1101,6 @@ public class FeedSurfaceCoordinator
                 if (!ChromeFeatureList.isEnabled(ChromeFeatureList.FEED_CONTAINMENT)) {
                     mHeaderView.setBackgroundColor(mDefaultBackgroundColor);
                 }
-            } else if (header == mSigninPromoView) {
-                hasSigninPromoView = true;
-                lateralPaddingsPx =
-                        mActivity
-                                .getResources()
-                                .getDimensionPixelSize(
-                                        ChromeFeatureList.isEnabled(
-                                                        ChromeFeatureList.FEED_CONTAINMENT)
-                                                ? R.dimen
-                                                        .feed_containment_signin_promo_lateral_paddings
-                                                : R.dimen.signin_promo_lateral_paddings);
-                ((PersonalizedSigninPromoView) mSigninPromoView)
-                        .setCardBackgroundResource(
-                                ChromeFeatureList.isEnabled(ChromeFeatureList.FEED_CONTAINMENT)
-                                        ? R.drawable.home_surface_background_rounded
-                                        : R.drawable.home_surface_ui_background);
-
-                int topPadding =
-                        mActivity
-                                .getResources()
-                                .getDimensionPixelSize(R.dimen.feed_header_top_padding);
-                mSigninPromoView.setPadding(
-                        mSigninPromoView.getPaddingLeft(),
-                        topPadding,
-                        mSigninPromoView.getPaddingRight(),
-                        mSigninPromoView.getPaddingBottom());
             }
 
             FeedListContentManager.NativeViewContent content =
@@ -1118,13 +1112,12 @@ public class FeedSurfaceCoordinator
             mHeaderCount = headerList.size();
             mMediator.notifyHeadersChanged(mHeaderCount);
         }
-        // The section header is the last header to be added, excluding sign-in promo, save its
-        // index.
-        mHeaderIndex = headerViews.size() - (hasSigninPromoView ? 2 : 1);
+        // The section header is the last header to be added, save its index.
+        mHeaderIndex = headerViews.size() - 1;
     }
 
     /** Update header views in the Feed. */
-    void updateHeaderViews(@Nullable View signinPromoView) {
+    void updateHeaderViews() {
         if (!mMediator.hasStreams()) return;
 
         List<View> headers = new ArrayList<>();
@@ -1134,11 +1127,6 @@ public class FeedSurfaceCoordinator
 
         if (mMediator.isFeedEnabled()) {
             headers.add(mHeaderView);
-
-            if (signinPromoView != null) {
-                mSigninPromoView = signinPromoView;
-                headers.add(signinPromoView);
-            }
         }
 
         setHeaders(headers);

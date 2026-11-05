@@ -27,7 +27,7 @@ source_set("test_utils") {
   ]
 
   public_deps = [
-    "//chrome/browser",
+    "//chrome/browser/enterprise",
     "//chrome/browser/enterprise/platform_auth:features",
     "//net",
     "//testing/gmock",
@@ -51,6 +51,7 @@ source_set("unit_tests") {
     "//base",
     "//chrome/browser/enterprise:impl",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//testing/gtest",
   ]
 
@@ -81,14 +82,17 @@ source_set("unit_tests") {
   if (is_mac) {
     sources += [
       "extensible_enterprise_sso_entra_unittest.mm",
+      "extensible_enterprise_sso_metadata_unittest.cc",
       "extensible_enterprise_sso_prefs_handler_unittest.cc",
       "platform_auth_proxying_url_loader_factory_unittest.cc",
       "scoped_cf_prefs_observer_override.cc",
       "scoped_cf_prefs_observer_override.h",
     ]
     deps += [
+      "//chrome/test/base:testing_browser_process",
       "//components/enterprise/platform_auth:enterprise_platform_auth",
       "//third_party/ocmock",
+      "//url",
     ]
   }
 }
@@ -105,7 +109,6 @@ if (!is_android) {
       "//chrome/browser/enterprise:impl",
       "//chrome/browser/ui/browser_window",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//content/test:test_support",
       "//testing/gmock",
     ]
@@ -115,7 +118,10 @@ if (!is_android) {
         "platform_auth_policy_observer_browsertest.cc",
         "platform_auth_provider_manager_browsertest.cc",
       ]
-      deps += [ ":test_utils" ]
+      deps += [
+        ":test_utils",
+        "//chrome/browser/ui:browser_tabstrip",
+      ]
     }
 
     if (is_mac) {
@@ -145,12 +151,12 @@ if (is_android) {
     ]
 
     deps = [
-      ":features",
       ":test_utils",
       "//base",
       "//chrome/android:chrome_jni_headers",
       "//chrome/browser/enterprise:impl",
       "//chrome/test:test_support",
+      "//chrome/test/base:chrome_test_utils",
       "//content/test:test_support",
       "//testing/gmock",
     ]

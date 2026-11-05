@@ -35,6 +35,7 @@
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/trace_event/trace_event.h"
 #include "base/version.h"
 #include "build/build_config.h"
@@ -53,7 +54,6 @@
 #include "chrome/browser/content_index/content_index_provider_impl.h"
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
-#include "chrome/browser/dom_distiller/profile_utils.h"
 #include "chrome/browser/download/chrome_download_manager_delegate.h"
 #include "chrome/browser/download/download_core_service.h"
 #include "chrome/browser/download/download_core_service_factory.h"
@@ -89,8 +89,10 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_metrics.h"
 #include "chrome/browser/profiles/profile_selections.h"
+#include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/push_messaging/push_messaging_service_factory.h"
 #include "chrome/browser/push_messaging/push_messaging_service_impl.h"
+#include "chrome/browser/reader_mode/profile_utils.h"
 #include "chrome/browser/reading_list/reading_list_model_factory.h"
 #include "chrome/browser/reduce_accept_language/reduce_accept_language_factory.h"
 #include "chrome/browser/sessions/exit_type_service.h"
@@ -118,6 +120,7 @@
 #include "chrome/common/buildflags.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_constants.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_paths_internal.h"
 #include "chrome/common/chrome_switches.h"
@@ -140,7 +143,6 @@
 #include "components/language/core/browser/pref_names.h"
 #include "components/language/core/common/locale_util.h"
 #include "components/metrics/metrics_service.h"
-#include "components/omnibox/browser/autocomplete_classifier.h"
 #include "components/payments/core/payment_request_metrics.h"
 #include "components/permissions/permission_manager.h"
 #include "components/policy/core/common/cloud/cloud_policy_manager.h"
@@ -186,6 +188,7 @@
 #include "pdf/buildflags.h"
 #include "printing/buildflags/buildflags.h"
 #include "services/data_decoder/public/cpp/data_decoder.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/preferences/public/mojom/preferences.mojom.h"
 #include "services/preferences/public/mojom/tracked_preference_validation_delegate.mojom.h"
 #include "services/service_manager/public/cpp/service.h"
@@ -223,6 +226,7 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/android/profile_key_startup_accessor.h"
 #include "chrome/browser/password_manager/factories/password_manager_settings_service_factory.h"
+#include "components/leveldb_proto/public/proto_database_provider.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 #else
 #include "chrome/browser/accessibility/ax_main_node_annotator_controller_factory.h"
@@ -372,7 +376,7 @@ std::unique_ptr<Profile> Profile::CreateProfile(const base::FilePath& path,
   base::Time creation_time = base::Time::Now();
   switch (create_mode) {
     case CreateMode::kAsynchronous:
-      DCHECK(delegate);
+      CHECK(delegate, base::NotFatalUntil::M162);
       creation_time = CreateProfileDirectory(io_task_runner.get(), path, true);
       break;
     case CreateMode::kSynchronous:
@@ -489,12 +493,9 @@ ProfileImpl::ProfileImpl(
   // In ChromeOS Guest Mode, there can be only three profiles, main guest
   // profile, otr guest profile and sign in profile, and only main and otr ,
   // which are 'user profile', should be the guest
-  bool is_guest_session = path == ProfileManager::GetGuestProfilePath();
-  if (new_guest_profile_impl_) {
-    is_guest_session = base::CommandLine::ForCurrentProcess()->HasSwitch(
-                           ash::switches::kGuestSession) &&
-                       ash::IsUserBrowserContextBaseName(path_.BaseName());
-  }
+  bool is_guest_session = base::CommandLine::ForCurrentProcess()->HasSwitch(
+                              ash::switches::kGuestSession) &&
+                          ash::IsUserBrowserContextBaseName(path_.BaseName());
 #else
   bool is_guest_session = path == ProfileManager::GetGuestProfilePath();
 #endif
@@ -527,9 +528,17 @@ ProfileImpl::ProfileImpl(
 
 #if BUILDFLAG(IS_ANDROID)
   auto* startup_data = g_browser_process->startup_data();
-  DCHECK(startup_data && startup_data->GetProfileKey());
-  TakePrefsFromStartupData();
-  async_prefs = false;
+  if (profiles::IsAndroidMultiprofileStartupDataEnabled() && startup_data &&
+      !startup_data->GetProfileKey()) {
+    // StartupData pre-creates objects only for the first profile, which has
+    // already taken them over.
+    LoadPrefsForNormalStartup(async_prefs);
+  } else {
+    CHECK(startup_data && startup_data->GetProfileKey(),
+          base::NotFatalUntil::M162);
+    TakePrefsFromStartupData();
+    async_prefs = false;
+  }
 #else
   LoadPrefsForNormalStartup(async_prefs);
 #endif
@@ -579,7 +588,7 @@ ProfileImpl::ProfileImpl(
 #if !BUILDFLAG(IS_ANDROID)
   if (IsGuestSession()) {
     PrefService* local_state = g_browser_process->local_state();
-    DCHECK(local_state);
+    CHECK(local_state, base::NotFatalUntil::M162);
     base::UmaHistogramBoolean(
         "Profile.Guest.ForcedByPolicy",
         local_state->GetBoolean(prefs::kBrowserGuestModeEnforced));
@@ -590,6 +599,12 @@ ProfileImpl::ProfileImpl(
 #if BUILDFLAG(IS_ANDROID)
 void ProfileImpl::TakePrefsFromStartupData() {
   auto* startup_data = g_browser_process->startup_data();
+  if (profiles::IsAndroidMultiprofileStartupDataEnabled()) {
+    // StartupData's prefs, policy cache and proto databases live in its
+    // profile directory, so only the profile at that path may take them over.
+    // The first profile created must therefore be the startup profile.
+    CHECK_EQ(startup_data->GetProfileKey()->GetPath(), GetPath());
+  }
 
   // On Android, it is possible that the ProfileKey has been build before the
   // ProfileImpl is created. The ownership of all these pre-created objects
@@ -612,6 +627,21 @@ void ProfileImpl::TakePrefsFromStartupData() {
 
 void ProfileImpl::LoadPrefsForNormalStartup(bool async_prefs) {
   key_ = std::make_unique<ProfileKey>(GetPath());
+#if BUILDFLAG(IS_ANDROID)
+  // On Android this is only called when
+  // profiles::IsAndroidMultiprofileStartupDataEnabled() is true (see the
+  // constructor), so the flag doesn't need to be checked again here.
+  //
+  // Some SimpleKeyedServices created with the browser context services (e.g.
+  // the image fetcher) need the key's ProtoDatabaseProvider before the default
+  // StoragePartition exists. StartupData provides it for the startup profile;
+  // create it here for any other profile. The StoragePartition takes it over in
+  // TakeDefaultProtoDatabaseProvider().
+  default_proto_db_provider_ =
+      std::make_unique<leveldb_proto::ProtoDatabaseProvider>(
+          GetPath(), /*is_in_memory=*/false);
+  key_->SetProtoDatabaseProvider(default_proto_db_provider_.get());
+#endif
   pref_registry_ = base::MakeRefCounted<user_prefs::PrefRegistrySyncable>();
 
   policy::ChromeBrowserPolicyConnector* connector =
@@ -832,7 +862,7 @@ void ProfileImpl::DoFinalInit(CreateMode create_mode) {
 
   // The DomDistillerViewerSource is not a normal WebUI so it must be registered
   // as a URLDataSource early.
-  dom_distiller::RegisterViewerSource(this);
+  reader_mode::RegisterViewerSource(this);
 
 #if BUILDFLAG(IS_CHROMEOS)
   MigrateSigninScopedDeviceId(this);
@@ -945,6 +975,12 @@ void ProfileImpl::DoFinalInit(CreateMode create_mode) {
   // as it depends on the default StoragePartition being initialized.
   GetOriginTrialsControllerDelegate();
 
+  // Create the `KeyedService`s that opted into post-startup creation once
+  // browser startup is complete, so that they stay off the startup critical
+  // path. This runs after profile initialization so that those services
+  // observe a fully initialized profile.
+  ScheduleCreateServicesAfterStartup();
+
   // third-party cookie deprecation must be created with the profile, but after
   // the initialization of the OriginTrialsControllerDelegate, as it depends on
   // it.
@@ -996,7 +1032,7 @@ ProfileImpl::~ProfileImpl() {
           AreExtensionsDisabledForProfile(this)) {
     ExtensionPrefValueMap* pref_value_map =
         ExtensionPrefValueMapFactory::GetForBrowserContext(this);
-    DCHECK(pref_value_map);
+    CHECK(pref_value_map, base::NotFatalUntil::M162);
     pref_value_map->ClearAllIncognitoSessionOnlyPreferences();
   }
 #endif
@@ -1095,7 +1131,7 @@ std::vector<Profile*> ProfileImpl::GetAllOffTheRecordProfiles() {
 void ProfileImpl::DestroyOffTheRecordProfile(Profile* otr_profile) {
   CHECK(otr_profile);
   OTRProfileID profile_id = otr_profile->GetOTRProfileID();
-  DCHECK(HasOffTheRecordProfile(profile_id));
+  CHECK(HasOffTheRecordProfile(profile_id), base::NotFatalUntil::M162);
   otr_profiles_.erase(profile_id);
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // Extensions are only supported on primary OTR profile.
@@ -1104,7 +1140,7 @@ void ProfileImpl::DestroyOffTheRecordProfile(Profile* otr_profile) {
           AreExtensionsDisabledForProfile(this)) {
     ExtensionPrefValueMap* pref_value_map =
         ExtensionPrefValueMapFactory::GetForBrowserContext(this);
-    DCHECK(pref_value_map);
+    CHECK(pref_value_map, base::NotFatalUntil::M162);
     pref_value_map->ClearAllIncognitoSessionOnlyPreferences();
   }
 #endif
@@ -1158,7 +1194,7 @@ void ProfileImpl::OnLocaleReady(CreateMode create_mode) {
           AreExtensionsDisabledForProfile(this)) {
     extensions::ExtensionPrefs* extension_prefs =
         extensions::ExtensionPrefs::Get(this);
-    DCHECK(extension_prefs);
+    CHECK(extension_prefs, base::NotFatalUntil::M162);
     extension_prefs->MigrateObsoleteExtensionPrefs();
   }
 #endif
@@ -1316,7 +1352,8 @@ PrefService* ProfileImpl::GetPrefs() {
 }
 
 const PrefService* ProfileImpl::GetPrefs() const {
-  DCHECK(prefs_);  // Should explicitly be initialized.
+  CHECK(prefs_,
+        base::NotFatalUntil::M162);  // Should explicitly be initialized.
   return prefs_.get();
 }
 
@@ -1413,7 +1450,7 @@ storage::SpecialStoragePolicy* ProfileImpl::GetSpecialStoragePolicy() {
 
 content::PlatformNotificationService*
 ProfileImpl::GetPlatformNotificationService() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   return PlatformNotificationServiceFactory::GetForProfile(this);
 }
 
@@ -1492,8 +1529,13 @@ ProfileImpl::GetOriginTrialsControllerDelegate() {
 std::unique_ptr<leveldb_proto::ProtoDatabaseProvider>
 ProfileImpl::TakeDefaultProtoDatabaseProvider() {
 #if BUILDFLAG(IS_ANDROID)
-  // On Android StartupData creates proto database provider for the profile
-  // before profile is created, so move ownership to storage partition.
+  // On Android the proto database provider is created before the profile's
+  // StoragePartition, by StartupData for the startup profile or by
+  // LoadPrefsForNormalStartup() for any other profile, so move ownership to
+  // the storage partition.
+  if (default_proto_db_provider_) {
+    return std::move(default_proto_db_provider_);
+  }
   return g_browser_process->startup_data()->TakeProtoDatabaseProvider();
 #else
   return nullptr;
@@ -1519,7 +1561,7 @@ base::Time ProfileImpl::GetStartTime() const {
 }
 
 ProfileKey* ProfileImpl::GetProfileKey() const {
-  DCHECK(key_);
+  CHECK(key_, base::NotFatalUntil::M162);
   return key_.get();
 }
 
@@ -1540,7 +1582,7 @@ void ProfileImpl::ChangeAppLocale(const std::string& new_locale,
     NOTREACHED();
   }
   PrefService* local_state = g_browser_process->local_state();
-  DCHECK(local_state);
+  CHECK(local_state, base::NotFatalUntil::M162);
   if (local_state->IsManagedPreference(language::prefs::kApplicationLocale))
     return;
   std::string pref_locale =
@@ -1564,7 +1606,8 @@ void ProfileImpl::ChangeAppLocale(const std::string& new_locale,
     case APP_LOCALE_CHANGED_VIA_LOGIN:
     case APP_LOCALE_CHANGED_VIA_PUBLIC_SESSION_LOGIN: {
       if (!pref_locale.empty()) {
-        DCHECK(LocaleNotChanged(pref_locale, new_locale));
+        CHECK(LocaleNotChanged(pref_locale, new_locale),
+              base::NotFatalUntil::M162);
 
         if (!locale_change_guard_) {
           locale_change_guard_ = std::make_unique<ash::LocaleChangeGuard>(
@@ -1649,8 +1692,8 @@ void ProfileImpl::InitChromeOSPreferences() {
       g_browser_process->local_state(),
       g_browser_process->GetFeatures()->application_locale_storage(),
       g_browser_process->platform_part()->GetTimezoneResolverManager());
-  chromeos_preferences_->Init(
-      this, ash::ProfileHelper::Get()->GetUserByProfile(this));
+  chromeos_preferences_->Init(ash::ProfileHelper::Get()->GetUserByProfile(this),
+                              this, PrefServiceSyncableFromProfile(this));
 }
 
 #endif  // BUILDFLAG(IS_CHROMEOS)

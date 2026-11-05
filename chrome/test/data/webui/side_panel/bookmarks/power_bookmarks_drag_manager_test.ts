@@ -15,6 +15,7 @@ import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://
 import {FakeChromeEvent} from 'chrome://webui-test/fake_chrome_event.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
+import {getActiveList} from './power_bookmarks_app_test_util.js';
 import {TestBookmarksApiProxy} from './test_bookmarks_api_proxy.js';
 
 suite('SidePanelPowerBookmarkDragManagerTest', () => {
@@ -132,7 +133,7 @@ suite('SidePanelPowerBookmarkDragManagerTest', () => {
   ];
 
   function getBookmarkRow(id: string) {
-    const listEl = delegate.list;
+    const listEl = getActiveList(delegate);
     const rows = delegate.shadowRoot.querySelectorAll(
         `#${listEl.id} power-bookmark-row`);
     for (const row of rows) {
@@ -227,6 +228,20 @@ suite('SidePanelPowerBookmarkDragManagerTest', () => {
 
     // startDrag should NOT have been called
     assertEquals(undefined, calledIds);
+  });
+
+  test('DragStartOnNonDraggableDoesNotThrow', () => {
+    let calledIds;
+    chrome.bookmarkManagerPrivate.startDrag = (ids: string[]) => {
+      calledIds = ids;
+    };
+
+    delegate.$.heading.dispatchEvent(new DragEvent(
+        'dragstart',
+        {bubbles: true, composed: true, clientX: 100, clientY: 200}));
+
+    assertEquals(undefined, calledIds);
+    assertFalse(delegate.getDragManagerForTesting().hasActiveDrag());
   });
 
   test('DragOverUpdatesAttributes', () => {

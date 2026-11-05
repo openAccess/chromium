@@ -7,9 +7,11 @@ package org.chromium.chrome.browser.ui.browser_window;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskUnitTestSupport.FAKE_NATIVE_ANDROID_BROWSER_WINDOW_PTR;
 
@@ -21,7 +23,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -30,7 +31,6 @@ import org.chromium.ui.base.ActivityWindowAndroid;
 
 /** Unit tests for {@link GlobalBrowserCollectionPlatformDelegate}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class GlobalBrowserCollectionPlatformDelegateUnitTest {
     private static final long DELEGATE_PTR = 78787878L;
 
@@ -77,7 +77,29 @@ public class GlobalBrowserCollectionPlatformDelegateUnitTest {
                 new GlobalBrowserCollectionPlatformDelegate(DELEGATE_PTR);
 
         verify(mNativeMock).onBrowserCreated(DELEGATE_PTR, FAKE_NATIVE_ANDROID_BROWSER_WINDOW_PTR);
+        verify(mNativeMock, never()).onBrowserActivated(anyLong(), anyLong());
         assertTrue(chromeAndroidTask.hasAndroidBrowserWindowObserver(delegate));
+
+        delegate.destroy();
+    }
+
+    @Test
+    public void testExistingTaskWithActiveWindow() {
+        int taskId = 1;
+        var activityScopedObjects =
+                ChromeAndroidTaskUnitTestSupport.createMockActivityScopedObjects(taskId);
+        when(activityScopedObjects.mActivityWindowAndroid.isTopResumedActivity()).thenReturn(true);
+        mTaskTracker.obtainTask(
+                BrowserWindowType.NORMAL, activityScopedObjects, /* pendingId= */ null);
+
+        GlobalBrowserCollectionPlatformDelegate delegate =
+                new GlobalBrowserCollectionPlatformDelegate(DELEGATE_PTR);
+
+        var inOrder = inOrder(mNativeMock);
+        inOrder.verify(mNativeMock)
+                .onBrowserCreated(DELEGATE_PTR, FAKE_NATIVE_ANDROID_BROWSER_WINDOW_PTR);
+        inOrder.verify(mNativeMock)
+                .onBrowserActivated(DELEGATE_PTR, FAKE_NATIVE_ANDROID_BROWSER_WINDOW_PTR);
 
         delegate.destroy();
     }

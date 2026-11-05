@@ -55,6 +55,7 @@
 #include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/base_i18n_switches.h"
 #include "base/json/json_reader.h"
 #include "base/json/values_util.h"
@@ -77,10 +78,9 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "base/types/optional_ref.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ash/arc/arc_util.h"
@@ -91,7 +91,6 @@
 #include "chrome/browser/ash/borealis/borealis_service.h"
 #include "chrome/browser/ash/borealis/borealis_service_factory.h"
 #include "chrome/browser/ash/borealis/borealis_types.mojom.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/bruschetta/bruschetta_installer.h"
 #include "chrome/browser/ash/bruschetta/bruschetta_service.h"
 #include "chrome/browser/ash/bruschetta/bruschetta_service_factory.h"
@@ -120,6 +119,7 @@
 #include "chrome/browser/ash/printing/cups_printers_manager.h"
 #include "chrome/browser/ash/printing/cups_printers_manager_factory.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/ash/settings/device_settings_service.h"
 #include "chrome/browser/ash/settings/stats_reporting_controller.h"
 #include "chrome/browser/ash/system/input_device_settings.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
@@ -145,10 +145,9 @@
 #include "chrome/browser/ui/webui/ash/crostini_installer/crostini_installer_dialog.h"
 #include "chrome/browser/ui/webui/ash/crostini_installer/crostini_installer_ui.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
-#include "chrome/browser/web_applications/web_app_registrar.h"
-#include "chrome/common/extensions/api/autotest_private.h"
 #include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/default_pinned_apps/default_pinned_apps.h"
@@ -163,6 +162,7 @@
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
 #include "chromeos/ash/experiences/arc/system_ui/arc_system_ui_bridge.h"
+#include "chromeos/ash/experiences/extensions/common/api/autotest_private.h"
 #include "chromeos/components/quick_answers/public/cpp/quick_answers_prefs.h"
 #include "chromeos/printing/printer_configuration.h"
 #include "chromeos/services/machine_learning/public/cpp/service_connection.h"
@@ -183,7 +183,11 @@
 #include "components/policy/core/common/remote_commands/remote_commands_fetch_reason.h"
 #include "components/policy/core/common/remote_commands/remote_commands_service.h"
 #include "components/prefs/pref_service.h"
+#include "components/services/app_service/public/cpp/app_registry_cache.h"
+#include "components/services/app_service/public/cpp/app_service.h"
+#include "components/services/app_service/public/cpp/app_service_registry.h"
 #include "components/services/app_service/public/cpp/app_types.h"
+#include "components/services/app_service/public/cpp/app_update.h"
 #include "components/services/app_service/public/cpp/types_util.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
@@ -217,6 +221,7 @@
 #include "extensions/common/permissions/permissions_data.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "net/base/filename_util.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/viz/public/mojom/compositing/compositor_frame_sink.mojom-shared.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/env.h"
@@ -520,55 +525,56 @@ api::autotest_private::WakefulnessMode GetWakefulnessMode(
 
 // Helper function to set allowed user pref based on |pref_name| with any
 // specific pref validations. Returns error messages if any.
-std::string SetAllowedPref(Profile* profile,
+std::string SetAllowedPref(PrefService& local_state,
+                           Profile* profile,
                            const std::string& pref_name,
                            const base::Value& value) {
   // Special case for the preference that is stored in the "Local State"
   // profile.
   if (pref_name == arc::prefs::kEnableAdbSideloadingRequested) {
-    DCHECK(value.is_bool());
-    g_browser_process->local_state()->Set(pref_name, value);
+    CHECK(value.is_bool(), base::NotFatalUntil::M160);
+    local_state.Set(pref_name, value);
     return std::string();
   }
   if (pref_name == variations::prefs::kVariationsCompressedSeed ||
       pref_name == variations::prefs::kVariationsSeedSignature) {
-    DCHECK(value.is_string());
-    g_browser_process->local_state()->Set(pref_name, value);
+    CHECK(value.is_string(), base::NotFatalUntil::M160);
+    local_state.Set(pref_name, value);
     return std::string();
   }
   if (pref_name == chrome_urls::kInternalOnlyUisEnabled) {
-    DCHECK(value.is_bool());
-    g_browser_process->local_state()->Set(pref_name, value);
+    CHECK(value.is_bool(), base::NotFatalUntil::M160);
+    local_state.Set(pref_name, value);
     return std::string();
   }
 
   if (pref_name == ash::prefs::kAccessibilitySpokenFeedbackEnabled) {
-    DCHECK(value.is_bool());
+    CHECK(value.is_bool(), base::NotFatalUntil::M160);
   } else if (pref_name == ash::prefs::kAccessibilityVirtualKeyboardEnabled) {
-    DCHECK(value.is_bool());
+    CHECK(value.is_bool(), base::NotFatalUntil::M160);
   } else if (pref_name == ash::prefs::kDocumentScanAPITrustedExtensions) {
-    DCHECK(value.is_list());
+    CHECK(value.is_list(), base::NotFatalUntil::M160);
   } else if (pref_name == ash::prefs::kEnableAutoScreenLock) {
-    DCHECK(value.is_bool());
+    CHECK(value.is_bool(), base::NotFatalUntil::M160);
   } else if (pref_name == ash::prefs::kLanguagePreloadEngines) {
-    DCHECK(value.is_string());
+    CHECK(value.is_string(), base::NotFatalUntil::M160);
   } else if (pref_name == prefs::kPrintingAPIExtensionsAllowlist) {
-    DCHECK(value.is_list());
+    CHECK(value.is_list(), base::NotFatalUntil::M160);
   } else if (pref_name == quick_answers::prefs::kQuickAnswersEnabled) {
-    DCHECK(value.is_bool());
+    CHECK(value.is_bool(), base::NotFatalUntil::M160);
   } else if (pref_name ==
              quick_answers::prefs::kQuickAnswersDefinitionEnabled) {
-    DCHECK(value.is_bool());
+    CHECK(value.is_bool(), base::NotFatalUntil::M160);
   } else if (pref_name ==
              quick_answers::prefs::kQuickAnswersTranslationEnabled) {
-    DCHECK(value.is_bool());
+    CHECK(value.is_bool(), base::NotFatalUntil::M160);
   } else if (pref_name ==
              quick_answers::prefs::kQuickAnswersUnitConversionEnabled) {
-    DCHECK(value.is_bool());
+    CHECK(value.is_bool(), base::NotFatalUntil::M160);
   } else if (pref_name == quick_answers::prefs::kQuickAnswersConsentStatus) {
-    DCHECK(value.is_int());
+    CHECK(value.is_int(), base::NotFatalUntil::M160);
   } else if (pref_name == arc::prefs::kArcShowResizeLockSplashScreenLimits) {
-    DCHECK(value.is_int());
+    CHECK(value.is_int(), base::NotFatalUntil::M160);
   } else {
     return "The pref " + pref_name + " is not allowed.";
   }
@@ -665,9 +671,7 @@ api::autotest_private::WindowStateType ToWindowStateType(
       return api::autotest_private::WindowStateType::kSecondarySnapped;
     case chromeos::WindowStateType::kPinned:
       return api::autotest_private::WindowStateType::kPinned;
-    case chromeos::WindowStateType::kLockedFullscreen:
-      // TODO(crbug.com/429215055): Rename to 'LockedFullscreen'. Update the IDL
-      // as well.
+    case chromeos::WindowStateType::kTrustedPinned:
       return api::autotest_private::WindowStateType::kTrustedPinned;
     case chromeos::WindowStateType::kPip:
       return api::autotest_private::WindowStateType::kPip;
@@ -812,7 +816,7 @@ ui::KeyboardCode StringToKeyCode(const std::string& str) {
       {"search", ui::VKEY_LWIN},
       {"assistant", ui::VKEY_ASSISTANT},
   };
-  DCHECK(base::IsStringASCII(str));
+  CHECK(base::IsStringASCII(str), base::NotFatalUntil::M160);
   if (str.length() == 1) {
     char c = str[0];
     if (c >= 'a' && c <= 'z') {
@@ -906,7 +910,7 @@ class DisplaySmoothnessTracker {
 
     start_time_ = base::TimeTicks::Now();
 
-    DCHECK(root_window_tracker_.windows().empty());
+    CHECK(root_window_tracker_.windows().empty(), base::NotFatalUntil::M160);
     root_window_tracker_.Add(root_window);
 
     tracker_ = root_window->layer()
@@ -950,7 +954,7 @@ class DisplaySmoothnessTracker {
       return;
     }
 
-    DCHECK_EQ(windows.size(), 1u);
+    CHECK_EQ(windows.size(), 1u, base::NotFatalUntil::M160);
     auto* root_window = windows[0].get();
     throughput_.push_back(
         root_window->GetHost()->compositor()->GetAverageThroughput());
@@ -980,7 +984,7 @@ void ForwardFrameRateDataAndReset(
     const cc::FrameSequenceMetrics::CustomReportData& frame_data) {
   auto* trackers = GetDisplaySmoothnessTrackers();
   auto it = trackers->find(display_id);
-  DCHECK(it != trackers->end());
+  CHECK(it != trackers->end(), base::NotFatalUntil::M160);
 
   auto throughput = it->second->TakeThroughput();
 
@@ -988,7 +992,7 @@ void ForwardFrameRateDataAndReset(
   // for |display_id| to start before |callback| run returns.
   // See https://crbug.com/40702167.
   auto callback = it->second->TakeCallback();
-  DCHECK(callback);
+  CHECK(callback, base::NotFatalUntil::M160);
   trackers->erase(it);
   std::move(callback).Run(frame_data, std::move(throughput));
 }
@@ -1004,8 +1008,8 @@ class WindowStateChangeObserver : public aura::WindowObserver {
                             chromeos::WindowStateType expected_type,
                             base::OnceCallback<void(bool)> callback)
       : expected_type_(expected_type), callback_(std::move(callback)) {
-    DCHECK_NE(window->GetProperty(chromeos::kWindowStateTypeKey),
-              expected_type_);
+    CHECK_NE(window->GetProperty(chromeos::kWindowStateTypeKey), expected_type_,
+             base::NotFatalUntil::M160);
     scoped_observation_.Observe(window);
   }
 
@@ -1019,7 +1023,8 @@ class WindowStateChangeObserver : public aura::WindowObserver {
   void OnWindowPropertyChanged(aura::Window* window,
                                const void* key,
                                intptr_t old) override {
-    DCHECK(scoped_observation_.IsObservingSource(window));
+    CHECK(scoped_observation_.IsObservingSource(window),
+          base::NotFatalUntil::M160);
     if (key == chromeos::kWindowStateTypeKey &&
         window->GetProperty(chromeos::kWindowStateTypeKey) == expected_type_) {
       scoped_observation_.Reset();
@@ -1028,7 +1033,8 @@ class WindowStateChangeObserver : public aura::WindowObserver {
   }
 
   void OnWindowDestroying(aura::Window* window) override {
-    DCHECK(scoped_observation_.IsObservingSource(window));
+    CHECK(scoped_observation_.IsObservingSource(window),
+          base::NotFatalUntil::M160);
     scoped_observation_.Reset();
     std::move(callback_).Run(/*success=*/false);
   }
@@ -1049,10 +1055,11 @@ class WindowBoundsChangeObserver : public aura::WindowObserver {
       base::OnceCallback<void(const gfx::Rect&, int64_t, bool)> callback)
       : callback_(std::move(callback)) {
     auto* state = ash::WindowState::Get(window);
-    DCHECK(state);
+    CHECK(state, base::NotFatalUntil::M160);
     wait_for_bounds_change_ = window->GetBoundsInRootWindow() != to_bounds;
     wait_for_display_change_ = state->GetDisplay().id() != display_id;
-    DCHECK(wait_for_bounds_change_ || wait_for_display_change_);
+    CHECK(wait_for_bounds_change_ || wait_for_display_change_,
+          base::NotFatalUntil::M160);
     scoped_observation_.Observe(window);
   }
   ~WindowBoundsChangeObserver() override = default;
@@ -1083,7 +1090,8 @@ class WindowBoundsChangeObserver : public aura::WindowObserver {
 
  private:
   void MaybeFinishObserving(aura::Window* window, bool success) {
-    DCHECK(scoped_observation_.IsObservingSource(window));
+    CHECK(scoped_observation_.IsObservingSource(window),
+          base::NotFatalUntil::M160);
     if (!wait_for_bounds_change_ && !wait_for_display_change_) {
       scoped_observation_.Reset();
       std::move(callback_).Run(window->GetBoundsInRootWindow(),
@@ -1155,7 +1163,7 @@ class EventGenerator {
       return;
     }
     Task* task = &tasks_.front();
-    DCHECK_EQ(task->status, Task::kNotScheduled);
+    CHECK_EQ(task->status, Task::kNotScheduled, base::NotFatalUntil::M160);
     // A task can be processed asynchronously; the next task will be scheduled
     // after the control returns to the message pump, assuming that implies the
     // processing of the current task has finished.
@@ -1231,7 +1239,8 @@ class EventGenerator {
       return;
     }
 
-    DCHECK_EQ(tasks_.front().status, Task::kScheduled);
+    CHECK_EQ(tasks_.front().status, Task::kScheduled,
+             base::NotFatalUntil::M160);
     tasks_.pop_front();
     const auto& runner = base::SequencedTaskRunner::GetCurrentDefault();
     auto closure = base::BindOnce(&EventGenerator::SendEvent,
@@ -2853,19 +2862,20 @@ AutotestPrivateGetPrinterListFunction::AutotestPrivateGetPrinterListFunction() =
 
 AutotestPrivateGetPrinterListFunction::
     ~AutotestPrivateGetPrinterListFunction() {
-  DCHECK(!printers_manager_);
+  CHECK(!printers_manager_, base::NotFatalUntil::M160);
 }
 
 ExtensionFunction::ResponseAction AutotestPrivateGetPrinterListFunction::Run() {
   // |printers_manager_| should be created on UI thread.
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   DVLOG(1) << "AutotestPrivateGetPrinterListFunction";
 
   Profile* profile = Profile::FromBrowserContext(browser_context());
   printers_manager_ = ash::CupsPrintersManager::Create(
       CHECK_DEREF(g_browser_process->local_state()),
-      g_browser_process->GetFeatures()->application_locale_storage(), profile);
+      g_browser_process->GetFeatures()->application_locale_storage(),
+      g_browser_process->shared_url_loader_factory(), profile);
   printers_manager_->AddObserver(this);
 
   // Set up a timer to finish waiting after 10 seconds
@@ -2880,7 +2890,7 @@ ExtensionFunction::ResponseAction AutotestPrivateGetPrinterListFunction::Run() {
 
 void AutotestPrivateGetPrinterListFunction::DestroyPrintersManager() {
   // |printers_manager_| should be destroyed on UI thread.
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (!printers_manager_) {
     return;
@@ -2891,7 +2901,7 @@ void AutotestPrivateGetPrinterListFunction::DestroyPrintersManager() {
 }
 
 void AutotestPrivateGetPrinterListFunction::RespondWithTimeoutError() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (did_respond()) {
     return;
@@ -2903,7 +2913,7 @@ void AutotestPrivateGetPrinterListFunction::RespondWithTimeoutError() {
 }
 
 void AutotestPrivateGetPrinterListFunction::RespondWithSuccess() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (did_respond()) {
     return;
@@ -2916,7 +2926,7 @@ void AutotestPrivateGetPrinterListFunction::RespondWithSuccess() {
 
 void AutotestPrivateGetPrinterListFunction::OnEnterprisePrintersInitialized() {
   // |printers_manager_| should call this on UI thread.
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   constexpr PrinterClass kClassesToFetch[] = {
       PrinterClass::kEnterprise,
@@ -3107,7 +3117,8 @@ ExtensionFunction::ResponseAction AutotestPrivateSetAllowedPrefFunction::Run() {
   const base::Value& value = params->value;
 
   Profile* profile = Profile::FromBrowserContext(browser_context());
-  const std::string& err_msg = SetAllowedPref(profile, pref_name, value);
+  const std::string& err_msg = SetAllowedPref(
+      CHECK_DEREF(g_browser_process->local_state()), profile, pref_name, value);
 
   if (!err_msg.empty()) {
     return RespondNow(Error(err_msg));
@@ -3155,7 +3166,8 @@ AutotestPrivateSetWhitelistedPrefFunction::Run() {
   const base::Value& value = params->value;
 
   Profile* profile = Profile::FromBrowserContext(browser_context());
-  const std::string& err_msg = SetAllowedPref(profile, pref_name, value);
+  const std::string& err_msg = SetAllowedPref(
+      CHECK_DEREF(g_browser_process->local_state()), profile, pref_name, value);
 
   if (!err_msg.empty()) {
     return RespondNow(Error(err_msg));
@@ -3266,43 +3278,48 @@ AutotestPrivateGetAllInstalledAppsFunction::Run() {
   DVLOG(1) << "AutotestPrivateGetAllInstalledAppsFunction";
 
   Profile* const profile = Profile::FromBrowserContext(browser_context());
-  apps::AppServiceProxy* proxy =
-      apps::AppServiceProxyFactory::GetForProfile(profile);
+  const AccountId* account_id =
+      ash::AnnotatedAccountId::Get(profile->GetOriginalProfile());
+  apps::AppService* app_service =
+      account_id ? apps::AppServiceRegistry::Get()->Find(*account_id) : nullptr;
 
   std::vector<api::autotest_private::App> installed_apps;
-  proxy->AppRegistryCache().ForEachApp(
-      [&installed_apps](const apps::AppUpdate& update) {
-        if (!apps_util::IsInstalled(update.Readiness())) {
-          return;
-        }
+  if (app_service) {
+    app_service->AppRegistryCache().ForEachApp(
+        [&installed_apps](const apps::AppUpdate& update) {
+          if (!apps_util::IsInstalled(update.Readiness())) {
+            return;
+          }
 
-        api::autotest_private::App app;
-        app.app_id = update.AppId();
+          api::autotest_private::App app;
+          app.app_id = update.AppId();
 
-        // Assume that when `switches::kForceDirectionRTL` is enabled, the
-        // system language still follows the left-to-right fashion. Because the
-        // app names carried by `update` are adapted to RTL by inserting extra
-        // characters that indicate the text direction, we should recover the
-        // original app names before returning them as the result.
-        if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-                switches::kForceUIDirection) == switches::kForceDirectionRTL) {
-          std::u16string name = base::UTF8ToUTF16(update.Name());
-          base::i18n::UnadjustStringForLocaleDirection(&name);
-          app.name = base::UTF16ToUTF8(name);
-        } else {
-          app.name = update.Name();
-        }
+          // Assume that when `switches::kForceDirectionRTL` is enabled, the
+          // system language still follows the left-to-right fashion. Because
+          // the app names carried by `update` are adapted to RTL by inserting
+          // extra characters that indicate the text direction, we should
+          // recover the original app names before returning them as the result.
+          if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+                  switches::kForceUIDirection) ==
+              switches::kForceDirectionRTL) {
+            std::u16string name = base::UTF8ToUTF16(update.Name());
+            base::i18n::UnadjustStringForLocaleDirection(&name);
+            app.name = base::UTF16ToUTF8(name);
+          } else {
+            app.name = update.Name();
+          }
 
-        app.short_name = update.ShortName();
-        app.publisher_id = update.PublisherId();
-        app.additional_search_terms = update.AdditionalSearchTerms();
-        app.type = GetAppType(update.AppType());
-        app.install_source = GetAppInstallSource(update.InstallReason());
-        app.readiness = GetAppReadiness(update.Readiness());
-        app.show_in_launcher = update.ShowInLauncher();
-        app.show_in_search = update.ShowInSearch();
-        installed_apps.emplace_back(std::move(app));
-      });
+          app.short_name = update.ShortName();
+          app.publisher_id = update.PublisherId();
+          app.additional_search_terms = update.AdditionalSearchTerms();
+          app.type = GetAppType(update.AppType());
+          app.install_source = GetAppInstallSource(update.InstallReason());
+          app.readiness = GetAppReadiness(update.Readiness());
+          app.show_in_launcher = update.ShowInLauncher();
+          app.show_in_search = update.ShowInSearch();
+          installed_apps.emplace_back(std::move(app));
+        });
+  }
 
   return RespondNow(
       ArgumentList(api::autotest_private::GetAllInstalledApps::Results::Create(
@@ -3811,7 +3828,7 @@ AutotestPrivateWaitForDisplayRotationFunction::Run() {
       return RespondNow(Error(base::StrCat(
           {"Display is not found for display_id ", params->display_id})));
     }
-    DCHECK(display.is_valid());
+    CHECK(display.is_valid(), base::NotFatalUntil::M160);
     if (!display.IsInternal()) {
       return RespondNow(
           Error("RotateAny is valid only for the internal display"));
@@ -3882,7 +3899,7 @@ AutotestPrivateWaitForDisplayRotationFunction::CheckScreenRotationAnimation() {
     display::Display display;
     display::Screen::Get()->GetDisplayWithDisplayId(display_id_, &display);
     // This should never fail.
-    DCHECK(display.is_valid());
+    CHECK(display.is_valid(), base::NotFatalUntil::M160);
     return WithArguments(!target_rotation_.has_value() ||
                          display.rotation() == *target_rotation_);
   }
@@ -4032,9 +4049,10 @@ AutotestPrivateGetAppWindowListFunction::Run() {
           views::Widget::GetWidgetForNativeWindow(window);
       // All widgets for app windows in chromeos should have a frame. Non app
       // windows may not have a frame and frame mode will be NONE.
-      DCHECK(!no_frame_header_widget ||
-             no_frame_header_widget->GetNativeWindow()->GetType() !=
-                 aura::client::WINDOW_TYPE_NORMAL);
+      CHECK(!no_frame_header_widget ||
+                no_frame_header_widget->GetNativeWindow()->GetType() !=
+                    aura::client::WINDOW_TYPE_NORMAL,
+            base::NotFatalUntil::M160);
       window_info.frame_mode = api::autotest_private::FrameMode::kNone;
       window_info.is_frame_visible = false;
     }
@@ -4192,7 +4210,7 @@ class AutotestPrivateInstallPWAForCurrentURLFunction::PWABannerObserver
                     content::WebContents* web_contents,
                     base::OnceCallback<void()> callback)
       : callback_(std::move(callback)), app_banner_manager_(manager) {
-    DCHECK(manager);
+    CHECK(manager, base::NotFatalUntil::M160);
     observation_.Observe(manager);
     // The manager's lifetime is tied to the tab, which can be destroyed (or
     // its contents discarded) while this observer waits; detach then to
@@ -4226,7 +4244,7 @@ class AutotestPrivateInstallPWAForCurrentURLFunction::PWABannerObserver
 
   void OnInstallableWebAppStatusUpdated(
       webapps::InstallableWebAppCheckResult result,
-      const std::optional<webapps::WebAppBannerData>& data) override {
+      base::optional_ref<const webapps::WebAppBannerData> data) override {
     switch (result) {
       case Installable::kNo:
         [[fallthrough]];
@@ -4825,25 +4843,45 @@ AutotestPrivateSetMetricsEnabledFunction::Run() {
 
   target_value_ = params->enabled;
 
-  Profile* profile = Profile::FromBrowserContext(browser_context());
+  // Wait until ownership status is loaded (`kOwnershipNone` or
+  // `kOwnershipTaken`) before reading or updating `StatsReportingController`.
+  ash::DeviceSettingsService::Get()->GetOwnershipStatusAsync(
+      base::IgnoreArgs<ash::DeviceSettingsService::OwnershipStatus>(
+          base::BindOnce(
+              &AutotestPrivateSetMetricsEnabledFunction::OnOwnershipStatusKnown,
+              this)));
 
-  bool value;
-  if (ash::CrosSettings::Get()->GetBoolean(ash::kStatsReportingPref, &value) &&
-      value == target_value_) {
-    VLOG(1) << "Value at target; returning early";
-    return RespondNow(NoArguments());
-  }
+  return RespondLater();
+}
+
+void AutotestPrivateSetMetricsEnabledFunction::OnOwnershipStatusKnown() {
+  Profile* profile = Profile::FromBrowserContext(browser_context());
 
   ash::StatsReportingController* stats_reporting_controller =
       ash::StatsReportingController::Get();
+
+  // Unlike `kStatsReportingPref`, `IsEnabled()` also reflects a pending value
+  // that is not persisted yet, e.g. one set in OOBE before ownership is taken.
+  if (stats_reporting_controller->IsEnabled() == target_value_) {
+    VLOG(1) << "Value at target; returning early";
+    Respond(NoArguments());
+    return;
+  }
+
+  // Before ownership is taken, `SetEnabled()` only stores a pending value that
+  // is persisted once ownership is taken, so don't wait for the store.
+  if (ash::DeviceSettingsService::Get()->GetOwnershipStatus() ==
+      ash::DeviceSettingsService::OwnershipStatus::kOwnershipNone) {
+    stats_reporting_controller->SetEnabled(profile, target_value_);
+    Respond(NoArguments());
+    return;
+  }
 
   stats_reporting_controller->SetOnDeviceSettingsStoredCallBack(base::BindOnce(
       &AutotestPrivateSetMetricsEnabledFunction::OnDeviceSettingsStored, this));
 
   // Set the preference to indicate metrics are enabled/disabled.
   stats_reporting_controller->SetEnabled(profile, target_value_);
-
-  return RespondLater();
 }
 
 void AutotestPrivateSetMetricsEnabledFunction::OnDeviceSettingsStored() {
@@ -5736,7 +5774,7 @@ AutotestPrivateForceAutoThemeModeFunction::Run() {
 
   ash::DarkLightModeControllerImpl* dark_light_mode_controller =
       ash::Shell::Get()->dark_light_mode_controller();
-  DCHECK(dark_light_mode_controller);
+  CHECK(dark_light_mode_controller, base::NotFatalUntil::M160);
 
   dark_light_mode_controller->SetAutoScheduleEnabled(false);
   dark_light_mode_controller->SetDarkModeEnabledForTest(
@@ -5787,7 +5825,7 @@ ExtensionFunction::ResponseAction AutotestPrivateGetAccessTokenFunction::Run() {
           identity_manager
               ->FindExtendedAccountInfoByEmailAddress(
                   params->access_token_params.email)
-              .account_id,
+              .GetAccountId(),
           signin::OAuthConsumerId::kAshAutotestPrivateApi, scopes,
           base::BindOnce(&AutotestPrivateGetAccessTokenFunction::OnAccessToken,
                          this),
@@ -6622,10 +6660,9 @@ void AutotestPrivateAPI::OnClipboardDataChanged() {
     return;
   }
 
-  std::unique_ptr<Event> event(
-      new Event(events::AUTOTESTPRIVATE_ON_CLIPBOARD_DATA_CHANGED,
-                api::autotest_private::OnClipboardDataChanged::kEventName,
-                base::ListValue()));
+  auto event = std::make_unique<Event>(
+      events::AUTOTESTPRIVATE_ON_CLIPBOARD_DATA_CHANGED,
+      api::autotest_private::OnClipboardDataChanged::kEventName, nullptr);
   event_router->BroadcastEvent(std::move(event));
 }
 

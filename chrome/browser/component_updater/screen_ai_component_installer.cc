@@ -4,7 +4,8 @@
 
 #include "chrome/browser/component_updater/screen_ai_component_installer.h"
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,7 +21,7 @@
 #include "components/crx_file/id_util.h"
 #include "components/update_client/update_client_errors.h"
 #include "content/public/browser/browser_thread.h"
-#include "crypto/sha2.h"
+#include "crypto/hash.h"
 #include "services/screen_ai/public/cpp/utilities.h"
 
 namespace {
@@ -34,7 +35,7 @@ constexpr uint8_t kScreenAIPublicKeySHA256[32] = {
     0x77, 0xab, 0x55, 0x0d, 0x0e, 0x5a, 0xed, 0x04, 0x7b, 0x1e, 0x16,
     0x86, 0x7c, 0xf0, 0x42, 0x71, 0x85, 0xe4, 0x31, 0x2d, 0xc5};
 
-static_assert(std::size(kScreenAIPublicKeySHA256) == crypto::kSHA256Length);
+static_assert(std::size(kScreenAIPublicKeySHA256) == crypto::hash::kSha256Size);
 
 constexpr char kScreenAIManifestName[] = "ScreenAI Library";
 
@@ -83,7 +84,7 @@ bool ScreenAIComponentInstallerPolicy::VerifyInstallation(
   VLOG(1) << "Verifying Screen AI component in " << install_dir.value();
 
   base::Version version;
-  DCHECK(!version.IsValid());
+  CHECK(!version.IsValid(), base::NotFatalUntil::M161);
 
   const base::Value* version_value = manifest.Find("version");
   if (version_value && version_value->is_string()) {
@@ -135,15 +136,15 @@ void ManageScreenAIComponentRegistration(ComponentUpdateService* cus,
 }
 
 void RegisterScreenAIComponent(ComponentUpdateService* cus) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
-  // Only register once.
-  if (screen_ai::ScreenAIInstallState::GetInstance()->get_state() !=
-      screen_ai::ScreenAIInstallState::State::kNotDownloaded) {
+  // Only register if eligible for download (not downloaded or previously
+  // failed). Setting state to downloading prevents duplicate registrations.
+  auto* install_state = screen_ai::ScreenAIInstallState::GetInstance();
+  if (!install_state->MayTryDownload()) {
     return;
   }
-  screen_ai::ScreenAIInstallState::GetInstance()->SetState(
-      screen_ai::ScreenAIInstallState::State::kDownloading);
+  install_state->SetState(screen_ai::ScreenAIInstallState::State::kDownloading);
 
   auto installer = base::MakeRefCounted<ComponentInstaller>(
       std::make_unique<ScreenAIComponentInstallerPolicy>());

@@ -7,12 +7,14 @@
 #include <array>
 
 #import "base/apple/foundation_util.h"
+#include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/notimplemented.h"
+#include "base/task/sequenced_task_runner.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/app_controller_mac.h"
 #include "chrome/browser/apps/app_shim/app_shim_host_mac.h"
@@ -35,14 +37,15 @@
 #include "chrome/browser/ui/lens/lens_overlay_entry_point_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_metrics.h"
+#include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/glass_frame_service.h"
-#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_utils.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/common/pref_names.h"
@@ -60,14 +63,17 @@
 #include "components/remote_cocoa/common/application.mojom.h"
 #include "components/remote_cocoa/common/native_widget_ns_window.mojom.h"
 #include "components/remote_cocoa/common/native_widget_ns_window_host.mojom.h"
+#include "components/viz/common/frame_timing_details.h"
 #include "components/web_modal/web_contents_modal_dialog_host.h"
 #include "ui/accessibility/platform/ax_platform_node.h"
 #include "ui/actions/actions.h"
 #include "ui/base/accelerators/global_accelerator_listener/global_accelerator_listener.h"
 #import "ui/base/cocoa/window_size_constants.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/compositor/compositor.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/native_theme/native_theme.h"
 #import "ui/views/cocoa/native_widget_mac_ns_window_host.h"
@@ -105,7 +111,9 @@ bool ShouldHandleKeyboardEvent(const input::NativeWebKeyboardEvent& event) {
   return event.os_event && event.os_event.Get().type == NSEventTypeKeyDown;
 }
 
-double GetGlassFrameTintOpacity(bool is_dark_mode, bool is_vertical_tabs) {
+double GetGlassFrameTintOpacity(bool is_dark_mode,
+                                bool is_vertical_tabs,
+                                bool are_multiple_profiles_open) {
   // Default opacities mapped by [is_vertical_tabs][is_dark_mode]:
   // Values updated after discussion with UX.
   static constexpr std::array<std::array<double, 2>, 2> kDefaultOpacities = {{
@@ -113,7 +121,11 @@ double GetGlassFrameTintOpacity(bool is_dark_mode, bool is_vertical_tabs) {
       {0.65, 0.80},  // Vertical: light, dark
   }};
 
-  const double opacity = kDefaultOpacities[is_vertical_tabs][is_dark_mode];
+  double opacity = kDefaultOpacities[is_vertical_tabs][is_dark_mode];
+  if (are_multiple_profiles_open) {
+    const double multiple_open_profiles_opacity_increase = 0.05;
+    opacity += multiple_open_profiles_opacity_increase;
+  }
   return std::clamp(opacity, 0.0, 1.0);
 }
 
@@ -315,7 +327,7 @@ std::optional<int> BrowserNativeWidgetMac::GetGlassFrameWidth() const {
 
   const int corner_padding = GetGlassCornerPadding();
   const int max_width =
-      VerticalTabStripRegionView::kUncollapsedMaxWidth + corner_padding;
+      tabs::kVerticalTabStripUncollapsedMaxWidth + corner_padding;
 
   auto* const controller =
       tabs::VerticalTabStripStateController::From(browser_view_->browser());
@@ -325,12 +337,12 @@ std::optional<int> BrowserNativeWidgetMac::GetGlassFrameWidth() const {
   // vertical tab strip resize handle, expand the glass view to cover the
   // maximum possible vertical tab strip width to avoid continuous resizing on
   // every mouse movement.
-  if (is_window_live_resizing_ || controller->is_resizing()) {
+  if (is_window_live_resizing_ || controller->IsResizing()) {
     return max_width;
   }
 
   const int width =
-      (controller->IsCollapsed() ? VerticalTabStripRegionView::kCollapsedWidth
+      (controller->IsCollapsed() ? tabs::kVerticalTabStripCollapsedWidth
                                  : controller->GetUncollapsedWidth()) +
       corner_padding;
   return std::min(width, max_width);
@@ -389,8 +401,10 @@ void BrowserNativeWidgetMac::OnWidgetDestroyed(views::Widget* widget) {
   browser_view_ = nullptr;
   last_theme_color_.reset();
   last_is_vertical_tabs_.reset();
-  last_is_glass_eligible_.reset();
-  glass_frame_service_subscription_ = {};
+  has_multiple_profiles_open_ = false;
+  last_is_glass_eligible_ = false;
+  glass_eligibility_subscription_ = {};
+  multiple_open_profiles_subscription_ = {};
   NativeWidgetMac::OnWidgetDestroyed(widget);
 }
 
@@ -582,21 +596,31 @@ void BrowserNativeWidgetMac::ValidateUserInterfaceItem(
       // Menu items may be validated during browser startup, before the
       // TabStripModel has been populated. Short-circuit to false in that case.
       result->new_toggle_state =
-          !model->empty() && model->active_index() != TabStripModel::kNoTab &&
-          !model->WillContextMenuMuteSites(model->active_index());
+          !model->empty() && model->GetActiveTab() &&
+          !model->WillContextMenuMuteSites(model->GetActiveTab()->GetHandle());
       break;
     }
     case IDC_WINDOW_PIN_TAB: {
       TabStripModel* model = browser->tab_strip_model();
       result->new_toggle_state =
-          !model->empty() && !model->WillContextMenuPin(model->active_index());
+          !model->empty() && model->GetActiveTab() &&
+          !model->WillContextMenuPin(model->GetActiveTab()->GetHandle());
       break;
     }
     case IDC_WINDOW_GROUP_TAB: {
       TabStripModel* model = browser->tab_strip_model();
       result->new_toggle_state =
-          !model->empty() &&
-          !model->WillContextMenuGroup(model->active_index());
+          !model->empty() && model->GetActiveTab() &&
+          !model->WillContextMenuGroup(model->GetActiveTab()->GetHandle());
+      break;
+    }
+    case IDC_GROUP_TARGET_TAB: {
+      TabStripModel* model = browser->tab_strip_model();
+      std::optional<int> index = chrome::GetKeyboardFocusedTabIndex(browser);
+      result->new_toggle_state =
+          index.has_value() &&
+          !model->WillContextMenuGroup(
+              model->GetTabAtIndex(index.value())->GetHandle());
       break;
     }
   }
@@ -604,7 +628,7 @@ void BrowserNativeWidgetMac::ValidateUserInterfaceItem(
 
 bool BrowserNativeWidgetMac::WillExecuteCommand(
     int32_t command,
-    WindowOpenDisposition window_open_disposition,
+    ui::mojom::WindowOpenDisposition window_open_disposition,
     bool is_before_first_responder) {
   if (!browser_view_) {
     return false;
@@ -641,7 +665,7 @@ bool BrowserNativeWidgetMac::WillExecuteCommand(
 
 bool BrowserNativeWidgetMac::ExecuteCommand(
     int32_t command,
-    WindowOpenDisposition window_open_disposition,
+    ui::mojom::WindowOpenDisposition window_open_disposition,
     bool is_before_first_responder) {
   if (!WillExecuteCommand(command, window_open_disposition,
                           is_before_first_responder)) {
@@ -713,10 +737,11 @@ void BrowserNativeWidgetMac::PopulateCreateWindowParams(
                        NSWindowStyleMaskMiniaturizable |
                        NSWindowStyleMaskResizable;
   CHECK(browser_view_);
-  if (browser_view_->GetIsPictureInPictureType()) {
-    // Picture in Picture windows, even if they are part of a web app, draw
-    // their own title bar and decorations.  Note that `GetIsWebAppType()` might
-    // also be true here, so it's important that this check is first.
+  if (browser_view_->GetIsFloatingType()) {
+    // Picture in Picture and floating windows, even if they are part of a web
+    // app, draw their own title bar and decorations.  Note that
+    // `GetIsWebAppType()` might also be true here, so it's important that this
+    // check is first.
     params->window_class = remote_cocoa::mojom::WindowClass::kFrameless;
     params->style_mask = NSWindowStyleMaskFullSizeContentView |
                          NSWindowStyleMaskTitled | NSWindowStyleMaskResizable;
@@ -782,13 +807,58 @@ void BrowserNativeWidgetMac::OnWidgetInitDone() {
                               base::Unretained(this)));
   // GlassFrameService is only available if glass frame is enabled.
   if (auto* const glass_frame_service = GlassFrameService::GetInstance()) {
-    glass_frame_service_subscription_ =
+    glass_eligibility_subscription_ =
         glass_frame_service->RegisterGlassFrameEligibilityChangedCallback(
             browser_view_->browser(),
             base::BindRepeating(&BrowserNativeWidgetMac::UpdateGlassEligibility,
                                 base::Unretained(this)));
-    UpdateGlassEligibility(
-        glass_frame_service->IsBrowserWindowEligible(browser_view_->browser()));
+    multiple_open_profiles_subscription_ =
+        glass_frame_service->RegisterMultipleOpenProfilesChangedCallback(
+            base::BindRepeating(&BrowserNativeWidgetMac::UpdateBackgroundColor,
+                                base::Unretained(this)));
+    if (glass_frame_service->IsBrowserWindowEligible(
+            browser_view_->browser())) {
+      UpdateGlassEligibility(true);
+    }
+  }
+
+  // The location bar takes focus inside Widget::Show(), and with an input
+  // method such as Japanese, AppKit then activates that input method for the
+  // window, which blocks the main thread before the first frame. Hold the
+  // activation back until the first frame is on screen.
+  //
+  // This runs at widget init because the compositor exists by now and focus
+  // comes later, in Show(). Only in-process windows are deferred: the setter
+  // is not part of the remote_cocoa mojo interface, so windows hosted in an
+  // app shim keep today's behavior.
+  if (base::FeatureList::IsEnabled(
+          features::kMacDeferInputContextUntilFirstPaint)) {
+    auto* const bridge = GetInProcessNSWindowBridge();
+    auto* const compositor = GetWidget()->GetCompositor();
+    if (bridge && compositor) {
+      bridge->SetDeferInputContextActivation(true);
+      compositor->RequestSuccessfulPresentationTimeForNextFrame(
+          base::BindOnce(&BrowserNativeWidgetMac::OnFirstFramePresented,
+                         input_context_weak_ptr_factory_.GetWeakPtr()));
+    }
+  }
+}
+
+void BrowserNativeWidgetMac::OnFirstFramePresented(
+    const viz::FrameTimingDetails& frame_timing_details) {
+  // Presentation feedback can arrive inside the compositor's begin-frame
+  // handling, and ending the deferral runs the input method activation
+  // synchronously. Post it, so the activation does not hold back the frame
+  // being produced, and does not run inside the compositor's callback loop.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&BrowserNativeWidgetMac::EndInputContextDeferral,
+                     input_context_weak_ptr_factory_.GetWeakPtr()));
+}
+
+void BrowserNativeWidgetMac::EndInputContextDeferral() {
+  if (auto* const bridge = GetInProcessNSWindowBridge()) {
+    bridge->SetDeferInputContextActivation(false);
   }
 }
 
@@ -799,6 +869,10 @@ void BrowserNativeWidgetMac::OnWidgetThemeChanged(views::Widget* widget) {
 
 void BrowserNativeWidgetMac::OnWindowDestroying(
     gfx::NativeWindow native_window) {
+  weak_ptr_factory_.InvalidateWeakPtrs();
+  // Drop a pending end of the input-context deferral, so it does not run on a
+  // closing window.
+  input_context_weak_ptr_factory_.InvalidateWeakPtrs();
   // Clear delegates set in CreateNSWindow() to prevent objects with a reference
   // to |window| attempting to validate commands by looking for a Browser*.
   NativeWidgetMacNSWindow* ns_window =
@@ -838,7 +912,7 @@ views::Widget::InitParams BrowserNativeWidgetMac::GetWidgetParams(
 }
 
 bool BrowserNativeWidgetMac::UseCustomFrame() const {
-  return browser_view_ && browser_view_->GetIsPictureInPictureType();
+  return browser_view_ && browser_view_->GetIsFloatingType();
 }
 
 bool BrowserNativeWidgetMac::UsesNativeSystemMenu() const {
@@ -928,6 +1002,41 @@ void BrowserNativeWidgetMac::OnVerticalTabStripResizingChanged(
   UpdateBackgroundGeometry();
 }
 
+void BrowserNativeWidgetMac::RemoveGlassBackground(
+    const viz::FrameTimingDetails& frame_timing_details) {
+  if (last_is_glass_eligible_) {
+    return;
+  }
+
+  if (!GetNSWindowHost()) {
+    return;
+  }
+
+  NSWindow* const ns_window = GetNSWindowHost()->GetInProcessNSWindow();
+  if (!ns_window) {
+    return;
+  }
+
+  GetNSWindowHost()->SetLayerAndCompositorOpaque(true);
+  [ns_window setBackgroundColor:[NSColor windowBackgroundColor]];
+  [ns_window setOpaque:YES];
+  if (glass_background_view_) {
+    [glass_background_view_ removeFromSuperview];
+    glass_background_view_ = nil;
+  }
+  if (tint_view_) {
+    [tint_view_ removeFromSuperview];
+    tint_view_ = nil;
+  }
+  if (opaque_background_view_) {
+    [opaque_background_view_ removeFromSuperview];
+    opaque_background_view_ = nil;
+  }
+  last_theme_color_.reset();
+  last_is_vertical_tabs_.reset();
+  has_multiple_profiles_open_ = false;
+}
+
 bool BrowserNativeWidgetMac::IsGlassEligible() const {
   if (auto* const glass_frame_service = GlassFrameService::GetInstance()) {
     if (auto* const browser = browser_view_->browser()) {
@@ -947,35 +1056,29 @@ void BrowserNativeWidgetMac::UpdateGlassEligibility(bool is_glass_eligible) {
     return;
   }
 
-  if (last_is_glass_eligible_ == is_glass_eligible) {
-    return;
-  }
+  CHECK_NE(last_is_glass_eligible_, is_glass_eligible);
 
   last_is_glass_eligible_ = is_glass_eligible;
-
-  GetNSWindowHost()->SetLayerAndCompositorOpaque(!is_glass_eligible);
+  weak_ptr_factory_.InvalidateWeakPtrs();
 
   if (!is_glass_eligible) {
-    [ns_window setBackgroundColor:[NSColor windowBackgroundColor]];
-    [ns_window setOpaque:YES];
-    if (glass_background_view_) {
-      [glass_background_view_ removeFromSuperview];
-      glass_background_view_ = nil;
-    }
-    if (tint_view_) {
-      [tint_view_ removeFromSuperview];
-      tint_view_ = nil;
-    }
-    if (opaque_background_view_) {
-      [opaque_background_view_ removeFromSuperview];
-      opaque_background_view_ = nil;
-    }
-    last_theme_color_.reset();
-    last_is_vertical_tabs_.reset();
+    // While waiting for the opaque frame to present, update the underlying view
+    // background to the inactive theme color.
+    UpdateBackgroundColor();
+
+    // Defer tearing down the glass views and switching the window/compositor
+    // to opaque until the compositor presents the newly-painted opaque frame.
+    // This avoids a white flash during the transition.
+    auto* const compositor = GetWidget()->GetCompositor();
+    CHECK(compositor);
+    compositor->RequestSuccessfulPresentationTimeForNextFrame(
+        base::BindOnce(&BrowserNativeWidgetMac::RemoveGlassBackground,
+                       weak_ptr_factory_.GetWeakPtr()));
     return;
   }
 
   if (@available(macOS 26.0, *)) {
+    GetNSWindowHost()->SetLayerAndCompositorOpaque(false);
     [ns_window setOpaque:NO];
 
     // A completely transparent background ([NSColor clearColor]) causes AppKit
@@ -1111,26 +1214,34 @@ void BrowserNativeWidgetMac::UpdateBackgroundColor() {
   const SkColor theme_color = browser_view_->GetColorProvider()->GetColor(
       is_active ? ui::kColorFrameActive : ui::kColorFrameInactive);
 
-  bool is_vertical_tabs = browser_view_->ShouldDrawVerticalTabStrip();
+  const bool is_vertical_tabs = browser_view_->ShouldDrawVerticalTabStrip();
 
-  // Avoid updating the background view if the theme colors and the tab strip
-  // orientation have not changed.
+  auto* const glass_frame_service = GlassFrameService::GetInstance();
+  const bool are_multiple_profiles_open =
+      glass_frame_service && glass_frame_service->HasMultipleOpenProfiles();
+
+  // Avoid updating the background view if the theme colors, tab strip
+  // orientation, and multiple open profiles state haven't changed.
   if (last_theme_color_ == theme_color &&
-      last_is_vertical_tabs_ == is_vertical_tabs) {
+      last_is_vertical_tabs_ == is_vertical_tabs &&
+      has_multiple_profiles_open_ == are_multiple_profiles_open) {
     return;
   }
 
   last_theme_color_ = theme_color;
   last_is_vertical_tabs_ = is_vertical_tabs;
+  has_multiple_profiles_open_ = are_multiple_profiles_open;
+
+  const double tint_opacity =
+      GetGlassFrameTintOpacity(color_utils::IsDark(theme_color),
+                               is_vertical_tabs, has_multiple_profiles_open_);
 
   const CGFloat r = SkColorGetR(theme_color) / 255.0;
   const CGFloat g = SkColorGetG(theme_color) / 255.0;
   const CGFloat b = SkColorGetB(theme_color) / 255.0;
-  const CGFloat a = GetGlassFrameTintOpacity(color_utils::IsDark(theme_color),
-                                             is_vertical_tabs);
 
   tint_view_.layer.backgroundColor =
-      [NSColor colorWithSRGBRed:r green:g blue:b alpha:a].CGColor;
+      [NSColor colorWithSRGBRed:r green:g blue:b alpha:tint_opacity].CGColor;
 
   if (opaque_background_view_) {
     opaque_background_view_.layer.backgroundColor =

@@ -24,6 +24,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/buildflags/buildflags.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/window_controller.h"
@@ -84,7 +85,8 @@ void QueryTabsForCurrentWindowAndCheckResults(
       content::EvalJs(contents, "chrome.tabs.query({currentWindow: true})")
           .ExtractList()
           .Clone());
-  EXPECT_EQ(list.size(), browser->GetTabStripModel()->count());
+  EXPECT_EQ(list.size(),
+            static_cast<size_t>(browser->GetTabStripModel()->count()));
   EXPECT_TRUE(list[0].is_dict());
   EXPECT_TRUE(list[1].is_dict());
   {
@@ -113,7 +115,7 @@ class SidePanelWebUIViewTest : public InProcessBrowserTest {
   // InProcessBrowserTest:
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
-    SidePanelUI* const side_panel_ui = browser()->GetFeatures().side_panel_ui();
+    SidePanelUI* const side_panel_ui = SidePanelUI::From(browser());
     side_panel_ui->SetNoDelaysForTesting(true);
     side_panel_ui->DisableAnimationsForTesting();
   }
@@ -158,7 +160,7 @@ IN_PROC_BROWSER_TEST_F(SidePanelWebUIViewTest,
                        BrowserInterfaceSetForWindowSidePanels) {
   // Register and show a window scoped side panel.
   RegisterBrowserSidePanelEntry();
-  SidePanelUI* const side_panel_ui = browser()->GetFeatures().side_panel_ui();
+  SidePanelUI* const side_panel_ui = SidePanelUI::From(browser());
   side_panel_ui->Show(kTestGlobalEntryId);
   EXPECT_TRUE(side_panel_ui->IsSidePanelEntryShowing(
       SidePanelEntryKey(kTestGlobalEntryId)));
@@ -177,7 +179,7 @@ IN_PROC_BROWSER_TEST_F(SidePanelWebUIViewTest,
                        SidePanelVerifyWindowController) {
   // Register and show a window scoped side panel.
   RegisterBrowserSidePanelEntry();
-  SidePanelUI* const side_panel_ui = browser()->GetFeatures().side_panel_ui();
+  SidePanelUI* const side_panel_ui = SidePanelUI::From(browser());
   side_panel_ui->Show(kTestGlobalEntryId);
   EXPECT_TRUE(side_panel_ui->IsSidePanelEntryShowing(
       SidePanelEntryKey(kTestGlobalEntryId)));
@@ -217,7 +219,7 @@ IN_PROC_BROWSER_TEST_F(SidePanelWebUIViewTest,
   constexpr char kTestUrl2ForThisBrowser[] = "chrome://settings/";
   constexpr char kTestUrl1ForNewBrowser[] = "chrome://history/";
   constexpr char kTestUrl2ForNewBrowser[] = "chrome://downloads/";
-  SidePanelUI* const side_panel_ui = browser()->GetFeatures().side_panel_ui();
+  SidePanelUI* const side_panel_ui = SidePanelUI::From(browser());
   side_panel_ui->Show(kTestGlobalEntryId);
   EXPECT_TRUE(side_panel_ui->IsSidePanelEntryShowing(
       SidePanelEntryKey(kTestGlobalEntryId)));
@@ -236,9 +238,9 @@ IN_PROC_BROWSER_TEST_F(SidePanelWebUIViewTest,
 
   // Create tabs, and new window for testing.
   browser()->OpenGURL(GURL(kTestUrl1ForThisBrowser),
-                      WindowOpenDisposition::CURRENT_TAB);
+                      ui::mojom::WindowOpenDisposition::kCurrentTab);
   browser()->OpenGURL(GURL(kTestUrl2ForThisBrowser),
-                      WindowOpenDisposition::NEW_BACKGROUND_TAB);
+                      ui::mojom::WindowOpenDisposition::kNewBackgroundTab);
   EXPECT_EQ(browser()->GetTabStripModel()->count(), 2);
   EXPECT_EQ(browser()->GetTabStripModel()->active_index(), 0);
   content::WaitForLoadStop(
@@ -265,9 +267,9 @@ IN_PROC_BROWSER_TEST_F(SidePanelWebUIViewTest,
   BrowserWindowInterface* new_browser = CreateBrowser(browser()->GetProfile());
   EXPECT_TRUE(new_browser);
   new_browser->OpenGURL(GURL(kTestUrl1ForNewBrowser),
-                        WindowOpenDisposition::CURRENT_TAB);
+                        ui::mojom::WindowOpenDisposition::kCurrentTab);
   new_browser->OpenGURL(GURL(kTestUrl2ForNewBrowser),
-                        WindowOpenDisposition::NEW_BACKGROUND_TAB);
+                        ui::mojom::WindowOpenDisposition::kNewBackgroundTab);
   EXPECT_EQ(new_browser->GetTabStripModel()->count(), 2);
   EXPECT_EQ(new_browser->GetTabStripModel()->active_index(), 0);
   content::WaitForLoadStop(
@@ -292,7 +294,7 @@ IN_PROC_BROWSER_TEST_F(SidePanelWebUIViewTest,
                        TabScopedSidePanel_WebUIContextSetCorrectlyOnShow) {
   // Register and show a tab scoped side panel.
   RegisterTabSidePanelEntry();
-  SidePanelUI* const side_panel_ui = browser()->GetFeatures().side_panel_ui();
+  SidePanelUI* const side_panel_ui = SidePanelUI::From(browser());
   side_panel_ui->Show(kTestTabEntryId);
   EXPECT_TRUE(side_panel_ui->IsSidePanelEntryShowing(
       SidePanelEntryKey(kTestTabEntryId)));
@@ -322,7 +324,7 @@ IN_PROC_BROWSER_TEST_F(
 
   // Register and show a tab scoped side panel.
   RegisterTabSidePanelEntry();
-  SidePanelUI* const side_panel_ui = browser()->GetFeatures().side_panel_ui();
+  SidePanelUI* const side_panel_ui = SidePanelUI::From(browser());
   side_panel_ui->Show(kTestTabEntryId);
   EXPECT_TRUE(side_panel_ui->IsSidePanelEntryShowing(
       SidePanelEntryKey(kTestTabEntryId)));

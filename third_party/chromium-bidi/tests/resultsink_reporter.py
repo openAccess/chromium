@@ -13,11 +13,192 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
+import fnmatch
 import html
 import json
 import os
 import re
+import sys
 import urllib.request
+
+import pytest
+
+sys.path.insert(
+    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "tools"))
+)
+from test_runner_utils import parse_filter_file, parse_filter_tokens
+
+_REPEAT_PARAMETER = "__pytest_repeat_step_number"
+_REPEAT_IDENTITIES = pytest.StashKey[dict[str, str]]()
+_NODE_ID_PROPERTY = "chromium-bidi:nodeid"
+
+# ResultSink rejects the whole test result if `summaryHtml` is larger than
+# this. The full failure text goes into an artifact instead.
+# https://source.chromium.org/chromium/infra/infra/+/main:go/src/go.chromium.org/luci/resultdb/pbutil/test_result.go
+_MAX_SUMMARY_HTML_BYTES = 4096
+# ResultSink rejects `failureReason.primaryErrorMessage` above this size.
+_MAX_PRIMARY_ERROR_MESSAGE_BYTES = 1024
+_FAILURE_ARTIFACT_ID = "failure_details"
+
+
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    """Truncates `text` so that its UTF-8 encoding fits in `max_bytes`."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    marker = "..."
+    budget = max_bytes - len(marker)
+    return encoded[:budget].decode("utf-8", errors="ignore") + marker
+
+
+def primary_error_message(longreprtext: str) -> str:
+    """Returns a short error message from a pytest failure representation.
+
+    Prefers the first line of the last block of pytest assertion lines
+    (prefixed with `E`). For `assert x, "message"` the first line holds the
+    exception message and the next lines hold the assertion introspection.
+    Falls back to the last non-empty line.
+    """
+    lines = [line.rstrip() for line in longreprtext.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    message = lines[-1]
+    for index in range(len(lines) - 1, -1, -1):
+        if not re.match(r"^E\s", lines[index]):
+            continue
+        # Walk up to the start of this block of `E` lines.
+        while index > 0 and re.match(r"^E\s", lines[index - 1]):
+            index -= 1
+        message = lines[index]
+        break
+    message = re.sub(r"^E\s+", "", message).strip()
+    return _truncate_utf8(message, _MAX_PRIMARY_ERROR_MESSAGE_BYTES)
+
+
+def build_failure_fields(longreprtext: str) -> dict:
+    """Returns the ResultSink fields that describe a test failure.
+
+    The full failure text is attached as an artifact. `summaryHtml` contains
+    only a short message and a reference to the artifact, so it stays below
+    the ResultSink size limit.
+    """
+    message = primary_error_message(longreprtext)
+    summary_html = (
+        f"<pre>{html.escape(message)}</pre>"
+        f'<p><text-artifact artifact-id="{_FAILURE_ARTIFACT_ID}"></text-artifact></p>'
+    )
+    assert len(summary_html.encode("utf-8")) <= _MAX_SUMMARY_HTML_BYTES
+    return {
+        "summaryHtml": summary_html,
+        "failureReason": {"primaryErrorMessage": message},
+        "artifacts": {
+            _FAILURE_ARTIFACT_ID: {
+                "contents": base64.b64encode(longreprtext.encode("utf-8")).decode(
+                    "ascii"
+                ),
+            },
+        },
+    }
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_generate_tests(metafunc):
+    outcome = yield
+    if outcome.excinfo is not None:
+        return
+
+    # pytest-repeat adds an ID component through parametrize(). Inspect the
+    # complete Cartesian product here: later pytest versions/fixture processing
+    # may change callspec indices, and later generators can append parameters.
+    # _calls and _idlist are pinned pytest internals, covered by real-plugin
+    # tests. Do not infer a repeat dimension from a numeric-looking user ID.
+    calls = metafunc._calls
+    if not any(_REPEAT_PARAMETER in call.params for call in calls):
+        return
+
+    def incompatible():
+        outcome.force_exception(
+            pytest.UsageError(
+                "Cannot determine pytest-repeat identity for "
+                f"{metafunc.definition.nodeid}; incompatible parametrization metadata"
+            )
+        )
+
+    steps = [call.params.get(_REPEAT_PARAMETER) for call in calls]
+    if any(type(step) is not int for step in steps):
+        incompatible()
+        return
+    repeat_steps = set(steps)
+    count = len(repeat_steps)
+    dimensions = len(calls[0]._idlist)
+    if (
+        count < 2
+        or repeat_steps != set(range(count))
+        or any(len(call._idlist) != dimensions for call in calls)
+    ):
+        incompatible()
+        return
+    parameter_groups = {}
+    for call, step in zip(calls, steps):
+        parameters = tuple(
+            (name, index)
+            for name, index in call.indices.items()
+            if name != _REPEAT_PARAMETER
+        )
+        parameter_groups.setdefault(parameters, set()).add(step)
+    if any(group != repeat_steps for group in parameter_groups.values()):
+        incompatible()
+        return
+    positions = [
+        position
+        for position in range(dimensions)
+        if all(
+            call._idlist[position] == f"{step + 1}-{count}"
+            for call, step in zip(calls, steps)
+        )
+    ]
+    # Across the full Cartesian product, a user parameter cannot track every
+    # repeat step. A missing or non-unique dimension must not silently alias
+    # separate tests or produce a successful zero-test flakiness run.
+    if len(positions) != 1:
+        incompatible()
+        return
+    position = positions[0]
+    identities = metafunc.config.stash.setdefault(_REPEAT_IDENTITIES, {})
+    for call in calls:
+        raw_nodeid = f"{metafunc.definition.nodeid}[{call.id}]"
+        parameter_ids = call._idlist[:position] + call._idlist[position + 1 :]
+        nodeid = metafunc.definition.nodeid
+        if parameter_ids:
+            nodeid += f"[{'-'.join(parameter_ids)}]"
+        if identities.setdefault(raw_nodeid, nodeid) != nodeid:
+            incompatible()
+            return
+
+
+def repeat_free_name(item: pytest.Item) -> str:
+    """Returns the name of `item` without its pytest-repeat step."""
+    nodeid = item.config.stash.get(_REPEAT_IDENTITIES, {}).get(item.nodeid)
+    if nodeid is None:
+        return item.name
+    # A parameter ID itself may contain "::"; it is not a node boundary.
+    return nodeid.removeprefix(f"{item.parent.nodeid}::")
+
+
+@pytest.fixture
+def snapshot(snapshot, request):
+    """Overrides syrupy's `snapshot` to ignore the pytest-repeat step.
+
+    syrupy names snapshots after the test, and pytest-repeat adds the repeat
+    step to the test name (e.g. `test_foo[1-20]`), so repeated tests would look
+    up snapshots that don't exist. `pytest_plugins` registers this module after
+    the syrupy plugin, so this fixture takes precedence.
+    """
+    name = repeat_free_name(request.node)
+    snapshot.test_location.nodename = name
+    snapshot.test_location.testname = name
+    return snapshot
 
 
 def format_test_id(nodeid: str):
@@ -52,36 +233,6 @@ def format_test_id(nodeid: str):
     return test_id, test_id_structured
 
 
-def parse_filter_tokens(filter_str: str) -> list[str]:
-    """Parses a filter string into individual filter patterns.
-
-    Handles :: separation as well as legacy joined nodeids (file.py::func_name).
-    """
-    raw_tokens = [t.strip() for t in filter_str.split("::") if t.strip()]
-    patterns = []
-    i = 0
-    while i < len(raw_tokens):
-        token = raw_tokens[i]
-        # Check if this token is a file path and next token is a test function name (legacy nodeid joined by ::)
-        if (
-            (
-                token.endswith(".py")
-                or ".py:" in token
-                or (token.startswith("-") and token[1:].endswith(".py"))
-            )
-            and i + 1 < len(raw_tokens)
-            and not raw_tokens[i + 1].endswith(".py")
-            and not raw_tokens[i + 1].startswith(":")
-            and not raw_tokens[i + 1].startswith("tests/")
-        ):
-            patterns.append(f"{token}::{raw_tokens[i + 1]}")
-            i += 2
-        else:
-            patterns.append(token)
-            i += 1
-    return patterns
-
-
 class TestFilter:
     """Represents a single test filter rule."""
 
@@ -91,21 +242,28 @@ class TestFilter:
         self.is_exclusion = filter_text.startswith("-")
         if self.is_exclusion:
             filter_text = filter_text[1:]
-        self.is_prefix = filter_text.endswith("*")
-        if self.is_prefix:
-            filter_text = filter_text[:-1]
         self.filter_text = filter_text
 
     def matches_string(self, s: str) -> bool:
-        if self.is_prefix:
-            return s.startswith(self.filter_text)
-        return s == self.filter_text
+        if not s:
+            return False
+        # Canonical/parameterized IDs can contain literal glob punctuation.
+        if s == self.filter_text:
+            return True
+        if "*" in self.filter_text or "?" in self.filter_text:
+            return fnmatch.fnmatchcase(s, self.filter_text)
+        return False
 
     def is_match(
         self, structured_id: str, nodeid: str, file_path: str, func_name: str
     ) -> bool:
+        clean_filter = re.sub(r"^ninja://\S+?:[^\s/]+/", "", self.filter_text)
         return (
             self.matches_string(structured_id)
+            or self.matches_string(
+                f"ninja://third_party/chromium-bidi:webdriver_bidi_e2e_tests/{structured_id}"
+            )
+            or TestFilter(clean_filter).matches_string(structured_id)
             or self.matches_string(nodeid)
             or self.matches_string(file_path)
             or self.matches_string(func_name)
@@ -127,32 +285,23 @@ class TestFilterGroup:
 
     @classmethod
     def from_filter_file(cls, filepath: str):
-        filters = []
-        tag_regex = re.compile(
-            r"\[[^\]]*\]|Bug\([^)]*\)|crbug\.com/\S*|skbug\.com/\S*|webkit\.org/\S*",
-            re.VERBOSE,
-        )
-        with open(filepath, encoding="utf-8") as f:
-            for line in f:
-                raw_line = re.split(r"(?:\s|^)#", line)[0].strip()
-                if not raw_line:
-                    continue
-                is_skip = "[ Skip ]" in raw_line or "[ Failure ]" in raw_line
-                cleaned_line = tag_regex.sub("", raw_line).strip()
-                if cleaned_line:
-                    for token in parse_filter_tokens(cleaned_line):
-                        if is_skip and not token.startswith("-"):
-                            token = "-" + token
-                        filters.append(TestFilter(token))
-        return cls(filters)
+        return cls([TestFilter(token) for token in parse_filter_file(filepath)])
 
     def is_test_included(
-        self, structured_id: str, nodeid: str, file_path: str, func_name: str
+        self,
+        structured_id: str,
+        nodeid: str,
+        file_path: str,
+        func_name: str,
+        *aliases: tuple[str, str, str, str],
     ) -> bool:
         if not self.filters:
             return True
+        identifiers = ((structured_id, nodeid, file_path, func_name), *aliases)
         for f in self.filters:
-            if f.is_match(structured_id, nodeid, file_path, func_name):
+            # Decide once per ordered rule, across all aliases. Otherwise a
+            # wildcard matching the raw repeat can override a base-ID exclusion.
+            if any(f.is_match(*identifier) for identifier in identifiers):
                 return not f.is_exclusion
         return False
 
@@ -227,7 +376,8 @@ class ResultSinkReporter:
         else:
             return
 
-        test_id, test_id_structured = format_test_id(report.nodeid)
+        nodeid = dict(report.user_properties).get(_NODE_ID_PROPERTY, report.nodeid)
+        test_id, test_id_structured = format_test_id(nodeid)
         test_result = {
             "testId": test_id,
             "testIdStructured": test_id_structured,
@@ -237,9 +387,10 @@ class ResultSinkReporter:
         }
 
         if status == "FAIL" and report.longrepr:
-            # report.longreprtext contains the string representation of the failure
-            error_info = html.escape(report.longreprtext)
-            test_result["summaryHtml"] = f"<pre>{error_info}</pre>"
+            # report.longreprtext contains the string representation of the
+            # failure. It is often larger than the ResultSink `summaryHtml`
+            # limit, so it goes into an artifact.
+            test_result.update(build_failure_fields(report.longreprtext))
 
         self.pending_results.append(test_result)
 
@@ -258,10 +409,12 @@ def pytest_addoption(parser):
     group.addoption(
         "--test-filter",
         "--isolated-script-test-filter",
+        "--gtest_filter",
+        "--gtest-filter",
         action="append",
         default=[],
         dest="test_filters",
-        help="Double-colon separated test filters",
+        help="Test filters",
     )
     group.addoption(
         "--test-filter-file",
@@ -274,11 +427,31 @@ def pytest_addoption(parser):
 
 
 def pytest_collection_modifyitems(session, config, items):
+    identities = config.stash.get(_REPEAT_IDENTITIES, {})
+    for item in items:
+        callspec = getattr(item, "callspec", None)
+        if (
+            callspec is not None
+            and _REPEAT_PARAMETER in callspec.params
+            and item.nodeid not in identities
+        ):
+            raise pytest.UsageError(
+                f"Cannot determine pytest-repeat identity for {item.nodeid}; "
+                "collected ID differs from parametrization metadata"
+            )
+        # Public pytest properties travel into setup/call reports, including
+        # serialized reports. Keep raw node IDs unchanged for pytest consumers.
+        item.user_properties.append(
+            (_NODE_ID_PROPERTY, identities.get(item.nodeid, item.nodeid))
+        )
+
     test_filters = list(config.getoption("test_filters") or [])
     test_filter_files = list(config.getoption("test_filter_files") or [])
 
-    env_filter = os.environ.get("ISOLATED_SCRIPT_TEST_FILTER") or os.environ.get(
-        "TEST_FILTER"
+    env_filter = (
+        os.environ.get("ISOLATED_SCRIPT_TEST_FILTER")
+        or os.environ.get("TEST_FILTER")
+        or os.environ.get("GTEST_FILTER")
     )
     if env_filter:
         test_filters.append(env_filter)
@@ -299,22 +472,34 @@ def pytest_collection_modifyitems(session, config, items):
             filter_groups.append(TestFilterGroup([TestFilter(t) for t in tokens]))
 
     for f_path in test_filter_files:
-        if os.path.exists(f_path):
+        try:
             group = TestFilterGroup.from_filter_file(f_path)
-            if group.filters:
-                filter_groups.append(group)
+        except (OSError, UnicodeError) as error:
+            raise pytest.UsageError(
+                f"Could not read test filter file {f_path!r}: {error}"
+            ) from error
+        if group.filters:
+            filter_groups.append(group)
 
     if not filter_groups:
         return
 
     kept_items = []
     for item in items:
-        structured_id, _ = format_test_id(item.nodeid)
-        file_path = item.nodeid.split("::")[0]
-        func_name = item.name
+        clean_nodeid = identities.get(item.nodeid, item.nodeid)
+        structured_id, _ = format_test_id(clean_nodeid)
+        raw_structured_id, _ = format_test_id(item.nodeid)
+        file_path = clean_nodeid.split("::")[0]
+        func_name = repeat_free_name(item)
 
         included = all(
-            group.is_test_included(structured_id, item.nodeid, file_path, func_name)
+            group.is_test_included(
+                structured_id,
+                clean_nodeid,
+                file_path,
+                func_name,
+                (raw_structured_id, item.nodeid, file_path, item.name),
+            )
             for group in filter_groups
         )
         if included:

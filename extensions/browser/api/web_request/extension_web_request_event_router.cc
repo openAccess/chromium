@@ -15,6 +15,7 @@
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/no_destructor.h"
@@ -50,6 +51,7 @@
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_navigation_registry.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/process_map.h"
 #include "extensions/browser/rules_registry_ids.h"
@@ -59,6 +61,7 @@
 #include "extensions/common/api/web_request/web_request_constants.h"
 #include "extensions/common/api/web_request/web_request_filter.h"
 #include "extensions/common/api/web_request/web_request_resource_type.h"
+#include "extensions/common/event_args.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/event_dispatcher.mojom.h"
@@ -276,13 +279,12 @@ void SendOnMessageEventOnUI(
     return;
   }
 
-  base::ListValue event_args;
-  event_args.Append(event_details->GetAndClearDict());
+  auto event_args = base::MakeRefCounted<EventArgs>();
+  event_args->data.Append(event_details->GetAndClearDict());
 
   EventRouter* event_router = EventRouter::Get(browser_context);
 
-  mojom::EventFilteringInfoPtr event_filtering_info =
-      mojom::EventFilteringInfo::New();
+  auto event_filtering_info = mojom::EventFilteringInfo::New();
 
   events::HistogramValue histogram_value = events::UNKNOWN;
   std::string event_name;
@@ -325,10 +327,12 @@ void NotifyIgnoredActionsOnUI(
               ignored_action.action_type);
 
     details.action = ignored_action.action_type;
-    auto event = std::make_unique<Event>(
-        events::WEB_REQUEST_ON_ACTION_IGNORED,
-        web_request::OnActionIgnored::kEventName,
-        web_request::OnActionIgnored::Create(details), browser_context);
+    auto event_args = base::MakeRefCounted<EventArgs>(
+        web_request::OnActionIgnored::Create(details));
+    auto event =
+        std::make_unique<Event>(events::WEB_REQUEST_ON_ACTION_IGNORED,
+                                web_request::OnActionIgnored::kEventName,
+                                std::move(event_args), browser_context);
     event_router->DispatchEventToExtension(ignored_action.extension_id,
                                            std::move(event));
   }
@@ -427,10 +431,11 @@ void OnDNRActionMatched(content::BrowserContext* browser_context,
 // The `use_dynamic_url` feature for web accessible resources requires that the
 // requested url be a dynamic url. A dynamic url is one where a session GUID is
 // used for the host instead of the static extension id.
-GURL GetNewUrl(const GURL& redirect_url,
+GURL GetNewUrl(const ExtensionId& extension_id,
+               const GURL& redirect_url,
                content::BrowserContext* browser_context) {
-  auto dynamic_url =
-      TransformToDynamicURLIfNecessary(redirect_url, browser_context);
+  auto dynamic_url = TransformToDynamicURLIfNecessary(
+      extension_id, redirect_url, browser_context);
   return dynamic_url.value_or(redirect_url);
 }
 
@@ -1069,7 +1074,8 @@ int WebRequestEventRouter::OnBeforeRequest(
           DCHECK_EQ(1u, actions.size());
           DCHECK(action.redirect_url);
           OnDNRActionMatched(browser_context, *request, action);
-          *new_url = GetNewUrl(action.redirect_url.value(), browser_context);
+          *new_url = GetNewUrl(action.extension_id, action.redirect_url.value(),
+                               browser_context);
           // Collect redirect action data for the Extension Telemetry Service.
           if (action.type == DNRRequestAction::Type::REDIRECT) {
             ExtensionsBrowserClient::Get()
@@ -1303,7 +1309,8 @@ int WebRequestEventRouter::OnHeadersReceived(
 
           extension_web_request_api_helpers::
               RedirectRequestAfterHeadersReceived(
-                  GetNewUrl(action.redirect_url.value(), browser_context),
+                  GetNewUrl(action.extension_id, action.redirect_url.value(),
+                            browser_context),
                   **override_response_headers,
                   preserve_fragment_on_redirect_url);
           return net::OK;
@@ -1718,9 +1725,9 @@ void WebRequestEventRouter::DispatchEventToListeners(
     }
 
     // Filter out the optional keys that this listener didn't request.
-    base::ListValue args_filtered;
+    scoped_refptr<EventArgs> args_filtered = base::MakeRefCounted<EventArgs>();
 
-    args_filtered.Append(event_details->GetFilteredDict(
+    args_filtered->data.Append(event_details->GetFilteredDict(
         listener->extra_info_spec, PermissionHelper::Get(browser_context),
         listener->id.extension_id, crosses_incognito));
 
@@ -1872,8 +1879,8 @@ int WebRequestEventRouter::DispatchEventToTargets(
     // The renderer matches its listeners itself and filters the details per
     // listener, so the dispatched details carry the union of the group's
     // options.
-    base::ListValue args;
-    args.Append(event_details.GetFilteredDict(
+    scoped_refptr<EventArgs> args = base::MakeRefCounted<EventArgs>();
+    args->data.Append(event_details.GetFilteredDict(
         union_spec_all, PermissionHelper::Get(browser_context),
         key.extension_id, crosses_incognito));
     // An additional payload provides what the renderer needs to do the
@@ -1882,7 +1889,7 @@ int WebRequestEventRouter::DispatchEventToTargets(
     payload.Set(kContextDispatchWindowIdKey, request->frame_data.window_id);
     payload.Set(kContextDispatchInstanceIdKey, key.web_view_instance_id);
     payload.Set(kContextDispatchAwaitResponseKey, await_response);
-    args.Append(std::move(payload));
+    args->data.Append(std::move(payload));
 
     if (await_response) {
       BlockedRequest& blocked_request =
@@ -2198,6 +2205,13 @@ void WebRequestEventRouter::AppendResponseDelta(
     const std::string& event_name,
     EventResponse& response,
     int extra_info_spec) {
+  // Extensions may not redirect to a file:// URL without explicit local file
+  // access.
+  if (response.new_url.SchemeIsFile() &&
+      !util::AllowFileAccess(extension_id, blocked_request.browser_context)) {
+    response.new_url = GURL();
+  }
+
   helpers::EventResponseDelta delta =
       CalculateDelta(&blocked_request, &response, extra_info_spec);
 
@@ -3035,8 +3049,11 @@ WebRequestEventRouter::RawListeners WebRequestEventRouter::GetMatchingListeners(
       *browser_context, is_request_from_extension,
       /*crosses_incognito=*/false, &matching_listeners, extra_info_spec);
 
+  // <webview> event listeners are scoped to a single <webview> instance in a
+  // single BrowserContext and never span across regular and off-the-record
+  // contexts.
   content::BrowserContext* cross_browser_context =
-      GetCrossBrowserContext(browser_context);
+      request->is_web_view ? nullptr : GetCrossBrowserContext(browser_context);
   if (cross_browser_context) {
     auto& cross_context_data =
         data_[GetBrowserContextID(cross_browser_context)];
@@ -3068,7 +3085,8 @@ bool WebRequestEventRouter::ListenerMatchesRequest(
   }
 
   if (request.is_web_view) {
-    if (listener.id.render_process_id != request.web_view_embedder_process_id ||
+    if (crosses_incognito || request.web_view_instance_id <= 0 ||
+        listener.id.render_process_id != request.web_view_embedder_process_id ||
         listener.id.web_view_instance_id != request.web_view_instance_id) {
       return false;
     }
@@ -3251,7 +3269,7 @@ int WebRequestEventRouter::ExecuteDeltas(
   if (blocked_request.event == EventTypes::kOnBeforeRequest) {
     CHECK(!blocked_request.callback.is_null());
     helpers::MergeOnBeforeRequestResponses(
-        request->url, blocked_request.response_deltas, blocked_request.new_url,
+        *request, blocked_request.response_deltas, blocked_request.new_url,
         &extension_id, &ignored_actions);
   } else if (blocked_request.event == EventTypes::kOnBeforeSendHeaders) {
     CHECK(!blocked_request.before_send_headers_callback.is_null());
@@ -3377,6 +3395,15 @@ bool WebRequestEventRouter::ProcessDeclarativeRules(
   // extensions/browser/api/declarative_webrequest/request_stage.h.
   DCHECK(request_stage & kActiveStages);
 
+  // `<webview>` rules registries always have IDs > `kDefaultRulesRegistryID`
+  // (0). Ignore `<webview>` requests with non-positive IDs (such as
+  // `kInvalidRulesRegistryID` (-1) for unattached popup guests or guest worker
+  // requests) and ensure `0` can never match the default extension registry.
+  if (request->is_web_view && request->web_view_rules_registry_id <=
+                                  rules_registry_ids::kDefaultRulesRegistryID) {
+    return false;
+  }
+
   int rules_registry_id = request->is_web_view
                               ? request->web_view_rules_registry_id
                               : rules_registry_ids::kDefaultRulesRegistryID;
@@ -3395,11 +3422,14 @@ bool WebRequestEventRouter::ProcessDeclarativeRules(
     }
   }
 
-  // Rules of the current `browser_context` may apply but we need to check also
-  // whether there are applicable rules from extensions whose background page
-  // spans from regular to incognito mode.
+  // Rules of the current `browser_context` may apply, and for regular web
+  // requests we also need to check whether there are applicable rules from
+  // extensions whose background page spans from regular to incognito mode.
+  // <webview> rules registries are scoped to a single <webview> instance in a
+  // single BrowserContext and never span across contexts, so the cross-context
+  // registry is never relevant for <webview> requests.
   content::BrowserContext* cross_browser_context =
-      GetCrossBrowserContext(browser_context);
+      request->is_web_view ? nullptr : GetCrossBrowserContext(browser_context);
   if (cross_browser_context) {
     BrowserContextData& cross_context_data =
         data_[GetBrowserContextID(cross_browser_context)];

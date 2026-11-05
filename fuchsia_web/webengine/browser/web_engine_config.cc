@@ -111,6 +111,7 @@ bool AddCommandLineArgsFromConfig(const base::DictValue& config,
       switches::kWebglAntialiasingMode,
       switches::kWebglMSAASampleCount,
       switches::kProtectedServiceWorkers,
+      switches::kUseSchedulerRoles,
   };
 
   for (const auto arg : *args) {
@@ -192,6 +193,12 @@ bool UpdateCommandLineFromConfigFile(const base::DictValue& config,
     return false;
   }
 
+  if (const std::string* use_scheduler_roles =
+          config.FindString(switches::kUseSchedulerRoles)) {
+    command_line->AppendSwitchASCII(switches::kUseSchedulerRoles,
+                                    *use_scheduler_roles);
+  }
+
   // The following two args are set by calling component. They are used to set
   // other flags below.
   const bool playready_enabled =
@@ -243,8 +250,7 @@ bool UpdateCommandLineFromConfigFile(const base::DictValue& config,
 }
 
 bool IsProtectedServiceWorker(const GURL& scope) {
-  static const auto protected_service_workers = GetProtectedServiceWorkers();
-  for (const auto& pattern : protected_service_workers) {
+  for (const auto& pattern : GetProtectedServiceWorkers()) {
     if (pattern.Matches(scope)) {
       return true;
     }

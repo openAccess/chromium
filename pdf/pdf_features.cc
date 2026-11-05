@@ -15,16 +15,11 @@ namespace {
 bool g_is_oopif_pdf_policy_enabled = true;
 }  // namespace
 
-BASE_FEATURE(kAccessiblePDFForm, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables PDFium to support the experimental PDF 2.0 /BrotliDecode filter
 // allowing for PDFs encoded with Brotli to be viewable by Chrome's PDF
-// viewer. This flag would be enabled by default when the spec for
-// /BrotliDecode is finalized and support for the feature becomes official.
-BASE_FEATURE(kPdfBrotliDecode, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Reuse buffers in PaintManager.
-BASE_FEATURE(kPdfBufferedPaintManager, base::FEATURE_DISABLED_BY_DEFAULT);
+// viewer.
+BASE_FEATURE(kPdfBrotliDecode, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // "Incremental loading" refers to loading the PDF as it arrives.
 // TODO(crbug.com/40123601): Remove this once incremental loading is fixed.
@@ -75,9 +70,13 @@ BASE_FEATURE(kPdfiumPerRequestFontMatchingWin,
 #if BUILDFLAG(ENABLE_PDF_INK2)
 BASE_FEATURE(kPdfInk2, base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Enables signatures.
+const base::FeatureParam<bool> kPdfInk2Signatures{&kPdfInk2, "signatures",
+                                                  false};
+
 // Enables text annotations.
 const base::FeatureParam<bool> kPdfInk2TextAnnotations{
-    &kPdfInk2, "text-annotations", false};
+    &kPdfInk2, "text-annotations", true};
 
 // Enables extra text styling (e.g. strikethrough, underline).
 const base::FeatureParam<bool> kPdfInk2TextAnnotationsExtraStyles{

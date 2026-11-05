@@ -5,21 +5,22 @@
 #ifndef CHROME_BROWSER_GLIC_ACTOR_GLIC_ACTOR_POLICY_CHECKER_H_
 #define CHROME_BROWSER_GLIC_ACTOR_GLIC_ACTOR_POLICY_CHECKER_H_
 
+#include <string>
+
 #include "base/callback_list.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/safe_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
-#include "chrome/browser/actor/enterprise_policy_checker.h"
+#include "chrome/browser/actor/actor_enterprise_policy_checker.h"
 #include "chrome/browser/glic/glic_enums.h"
 #include "chrome/common/buildflags.h"
 #include "components/actor/core/aggregated_journal.h"
-#include "components/policy/core/browser/url_list/url_blocklist_manager.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/subscription_eligibility/subscription_eligibility_service.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "url/origin.h"
 
 class GURL;
@@ -40,7 +41,7 @@ namespace glic {
 // enabling state and validate content sent to the renderer. This class blends
 // various signals from account, preferences, managed policies, etc. to make a
 // determination.
-class GlicActorPolicyChecker : public actor::EnterprisePolicyChecker,
+class GlicActorPolicyChecker : public actor::ActorEnterprisePolicyChecker,
                                public signin::IdentityManager::Observer,
                                public subscription_eligibility::
                                    SubscriptionEligibilityService::Observer {
@@ -75,6 +76,8 @@ class GlicActorPolicyChecker : public actor::EnterprisePolicyChecker,
 
   // `subscription_eligibility::SubscriptionEligibilityService::Observer`:
   void OnAiSubscriptionTierUpdated(int32_t new_subscription_tier) override;
+  void OnSubscriptionBenefitsUpdated(
+      const base::flat_set<std::string>& subscription_benefits) override;
 
   // Allows tests to synchronize on allow/blocklist updates.
   base::CallbackListSubscription AddUrlListsUpdateObserverForTesting(
@@ -93,12 +96,8 @@ class GlicActorPolicyChecker : public actor::EnterprisePolicyChecker,
   bool GlicApiCanActOnWeb() const;
   CannotActReason GlicApiCannotActOnWebReason() const;
 
-  // EnterprisePolicyChecker interface
+  // actor::ActorEnterprisePolicyChecker:
   UrlBlockReason Evaluate(const GURL& url) const override;
-  void ValidateContentSentToRenderer(
-      content::RenderFrameHost* frame,
-      const std::string& content,
-      ContentValidationCallback callback) const override;
 
  private:
   void OnPrefOrAccountChanged();
@@ -129,8 +128,6 @@ class GlicActorPolicyChecker : public actor::EnterprisePolicyChecker,
   CanActOutcome glic_api_can_act_on_web_ = CanActOutcome::kYes;
   CannotActReason glic_api_cannot_act_on_web_reason_;
 
-  // Stores enterprise allowlist/blocklist policies for specific URLs.
-  policy::URLBlocklistManager url_blocklist_manager_;
   base::CallbackListSubscription url_blocklist_subscription_;
 
   base::SafeRef<actor::AggregatedJournal> journal_;

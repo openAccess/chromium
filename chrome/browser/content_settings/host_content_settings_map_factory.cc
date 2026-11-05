@@ -39,7 +39,7 @@
 #include "chrome/browser/content_settings/javascript_optimizer_provider_android.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/notifications/notification_channels_provider_android.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager_factory.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager_factory.h"
 #include "chrome/browser/webapps/installable/installed_webapp_provider.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -92,7 +92,8 @@ HostContentSettingsMapFactory::~HostContentSettingsMapFactory() = default;
 // static
 HostContentSettingsMap* HostContentSettingsMapFactory::GetForProfile(
     content::BrowserContext* browser_context) {
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M161);
 
   return static_cast<HostContentSettingsMap*>(
       GetInstance()->GetServiceForBrowserContext(browser_context, true).get());
@@ -107,7 +108,7 @@ HostContentSettingsMapFactory* HostContentSettingsMapFactory::GetInstance() {
 scoped_refptr<RefcountedKeyedService>
     HostContentSettingsMapFactory::BuildServiceInstanceFor(
     content::BrowserContext* context) const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   Profile* profile = static_cast<Profile*>(context);
   // extensions::ContentSettingsService::Get() needs the original profile.

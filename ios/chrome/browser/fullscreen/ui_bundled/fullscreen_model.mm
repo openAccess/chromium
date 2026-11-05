@@ -12,7 +12,6 @@
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
-#import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_constants.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_model_observer.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/fullscreen/toolbars_size.h"
@@ -98,6 +97,9 @@ void FullscreenModel::DecrementDisabledCounter() {
 
 void FullscreenModel::ForceEnterFullscreen() {
   SetProgress(0.0);
+  if (ios::provider::IsFullscreenSmoothScrollingSupported()) {
+    UpdateBaseOffset();
+  }
 }
 
 void FullscreenModel::ResetForNavigation() {
@@ -111,8 +113,16 @@ void FullscreenModel::ResetForNavigation() {
     set_manually_forced(false);
     DecrementDisabledCounter();
   }
-  base::UmaHistogramEnumeration(kExitFullscreenModeTransitionTriggerHistogram,
-                                FullscreenModeTransitionTrigger::kForcedByCode);
+  // Only record an exit transition if the toolbars were actually collapsed
+  // (`progress_ < 1.0`). If toolbars are already fully visible
+  // (`progress_ == 1.0`), routine navigations and tab changes should not log a
+  // false `kForcedByCode` exit event. This also avoids double-counting exit
+  // transitions when `ForceExitFullscreen` explicitly logs its own trigger.
+  if (progress_ < 1.0) {
+    base::UmaHistogramEnumeration(
+        kExitFullscreenModeTransitionTriggerHistogram,
+        FullscreenModeTransitionTrigger::kForcedByCode);
+  }
   progress_ = 1.0;
   scrolling_ = false;
   start_scrolling_time_ = std::nullopt;
@@ -521,9 +531,11 @@ void FullscreenModel::SetProgress(CGFloat progress) {
   }
 
   if (progress == 0.0 && progress_ > 0.0) {
-    base::UmaHistogramEnumeration(
-        kEnterFullscreenModeTransitionTriggerHistogram,
-        FullscreenModeTransitionTrigger::kUserControlled);
+    if (!IsForceFullscreenMode()) {
+      base::UmaHistogramEnumeration(
+          kEnterFullscreenModeTransitionTriggerHistogram,
+          FullscreenModeTransitionTrigger::kUserControlled);
+    }
     time_entered_fullscreen_ = base::TimeTicks::Now();
     if (time_exited_fullscreen_.has_value()) {
       base::UmaHistogramLongTimes(
@@ -531,9 +543,11 @@ void FullscreenModel::SetProgress(CGFloat progress) {
           base::TimeTicks::Now() - time_exited_fullscreen_.value());
     }
   } else if (progress == 1.0 && progress_ < 1.0) {
-    base::UmaHistogramEnumeration(
-        kExitFullscreenModeTransitionTriggerHistogram,
-        FullscreenModeTransitionTrigger::kUserControlled);
+    if (!IsForceFullscreenMode()) {
+      base::UmaHistogramEnumeration(
+          kExitFullscreenModeTransitionTriggerHistogram,
+          FullscreenModeTransitionTrigger::kUserControlled);
+    }
     time_exited_fullscreen_ = base::TimeTicks::Now();
     if (time_entered_fullscreen_.has_value()) {
       base::UmaHistogramLongTimes(

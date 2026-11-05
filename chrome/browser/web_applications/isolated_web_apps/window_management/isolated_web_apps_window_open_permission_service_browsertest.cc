@@ -19,6 +19,7 @@
 #include "chrome/browser/notifications/stub_notification_display_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
@@ -44,8 +45,9 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "url/origin.h"
-
 
 namespace web_app {
 namespace {
@@ -582,10 +584,13 @@ IN_PROC_BROWSER_TEST_F(
 
   // Open a new background tab from the scope-extension page, as the renderer
   // does for e.g. a middle-click on a link.
-  content::OpenURLParams params(
-      GURL("https://example.com/destination"), content::Referrer(),
-      WindowOpenDisposition::NEW_BACKGROUND_TAB, ui::PAGE_TRANSITION_LINK,
-      /*is_renderer_initiated=*/true);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateRendererInitiated(
+          GURL("https://example.com/destination"),
+          ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
+          ui::PAGE_TRANSITION_LINK, content::Referrer(),
+          opener_contents->GetPrimaryMainFrame()
+              ->GetCurrentInitiatorNavigationState());
   params.initiator_origin = scope_extension_origin;
   params.source_site_instance =
       opener_contents->GetPrimaryMainFrame()->GetSiteInstance();

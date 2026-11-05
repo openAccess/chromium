@@ -19,7 +19,9 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
-#include "base/i18n/rtl.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/immediate_crash.h"
 #include "base/lazy_instance.h"
 #include "base/metrics/histogram_macros.h"
@@ -47,6 +49,7 @@
 #include "chrome/common/chrome_paths_internal.h"
 #include "chrome/common/chrome_result_codes.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/common/chrome_version.h"
 #include "chrome/common/crash_keys.h"
 #include "chrome/common/logging_chrome.h"
 #include "chrome/common/profiler/chrome_thread_group_profiler_client.h"
@@ -70,7 +73,6 @@
 #include "components/variations/service/variations_network_clock.h"
 #include "components/variations/variations_ids_provider.h"
 #include "components/version_info/channel.h"
-#include "components/version_info/version_info.h"
 #include "content/public/app/initialize_mojo_core.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_constants.h"
@@ -90,7 +92,7 @@
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/resource/scoped_startup_resource_bundle.h"
 #include "ui/base/ui_base_switches.h"
-
+#include "ui/webui/buildflags.h"
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || \
     BUILDFLAG(IS_MAC)
@@ -104,16 +106,17 @@
 
 #include "base/base_switches.h"
 #include "base/files/important_file_writer_cleaner.h"
+#include "base/process/launch.h"
 #include "base/process/process_handle.h"
 #include "base/win/current_module.h"
 #include "base/win/dark_mode_support.h"
+#include "base/win/elevation_util.h"
 #include "base/win/resource_exhaustion.h"
+#include "base/win/win_util.h"
 #include "chrome/child/v8_crashpad_support_win.h"
-#include "chrome/common/chrome_version.h"
 #include "sandbox/win/src/sandbox.h"
 #include "sandbox/win/src/sandbox_factory.h"
 #include "ui/base/resource/resource_bundle_win.h"
-
 #endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_MAC)
@@ -146,7 +149,6 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/java_exception_reporter.h"
 #include "base/android/library_loader/library_loader_hooks.h"
-#include "chrome/browser/android/flags/chrome_cached_flags.h"
 #include "chrome/browser/android/initialize_feature_list_android.h"
 #include "chrome/browser/android/metrics/uma_session_stats.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
@@ -171,6 +173,7 @@
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) || \
     BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#include "components/metrics/system_profile_user_stream.h"
 #include "components/crash/core/app/crashpad.h"
 #endif
 
@@ -197,6 +200,7 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "chrome/browser/chrome_browser_main_win.h"  // nogncheck
+#include "chrome/browser/first_run/upgrade_util.h"   // nogncheck
 #include "chrome/browser/win/browser_util.h"  // nogncheck
 #include "chrome/browser/win/isolated_browser/isolated_browser_support.h"  // nogncheck
 #include "chrome/chrome_elf/chrome_elf_main.h"
@@ -235,6 +239,7 @@
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/startup_helper.h"  // nogncheck
+#include "chrome/common/scoped_chrome_extensions_client.h"
 #endif
 
 #if BUILDFLAG(ENABLE_PROCESS_SINGLETON)
@@ -289,6 +294,56 @@ bool HasDeprecatedArguments(const std::wstring& command_line) {
   std::wstring command_line_lower = base::ToLowerASCII(command_line);
   // We are only searching for ASCII characters so this is OK.
   return (command_line_lower.find(kChromeHtml) != std::wstring::npos);
+}
+
+// Check if the browser process is launching elevated, and attempt to
+// automatically de-elevate before process isolation or browser startup.
+std::optional<int> MaybeAutoDeElevate(const base::CommandLine& command_line) {
+  const char* const kNoRestartSwitches[] = {
+      // Do not interfere with automation scenarios, which might want to launch
+      // Chrome elevated.
+      switches::kEnableAutomation,
+      // Never attempt to de-elevate a second time.
+      switches::kDoNotDeElevateOnLaunch,
+      // Do not de-elevate in an isolated child browser process. If de-elevation
+      // failed in the stub process, the isolated child must not attempt to
+      // de-elevate.
+      switches::kIsolated,
+      // Do not de-elevate in a test.
+      switches::kTestType,
+  };
+  for (const char* no_restart_switch : kNoRestartSwitches) {
+    if (command_line.HasSwitch(no_restart_switch)) {
+      return std::nullopt;
+    }
+  }
+
+  // Do not attempt to de-elevate when UAC is disabled because it will not work.
+  if (!base::win::UserAccountIsUnnecessarilyElevated()) {
+    return std::nullopt;
+  }
+
+  base::CommandLine new_command_line(command_line);
+  // Give a fully qualified .exe name.
+  base::FilePath full_exe_name;
+  if (base::PathService::Get(base::FILE_EXE, &full_exe_name)) {
+    new_command_line.SetProgram(full_exe_name);
+  }
+  new_command_line.AppendSwitch(switches::kDoNotDeElevateOnLaunch);
+
+  auto process_or_error = base::win::RunDeElevated(new_command_line);
+
+  // The currently running browser can terminate safely if the new de-elevated
+  // one has launched to replace it. Note, the
+  // CHROME_RESULT_CODE_NORMAL_EXIT_AUTO_DE_ELEVATED error code ends up being
+  // re-written to RESULT_CODE_NORMAL_EXIT in ChromeMain.
+  if (process_or_error.has_value()) {
+    return CHROME_RESULT_CODE_NORMAL_EXIT_AUTO_DE_ELEVATED;
+  }
+
+  // If re-launch fails, then proceed with the normal launch of the current
+  // browser.
+  return std::nullopt;
 }
 #endif  // !defined(BUILDING_CHROME_RENDERER)
 
@@ -359,7 +414,39 @@ bool SubprocessNeedsResourceBundle(const std::string& process_type) {
       process_type == switches::kUtilityProcess;
 }
 
-#if BUILDFLAG(IS_POSIX) && !defined(BUILDING_CHROME_RENDERER)
+#if !defined(BUILDING_CHROME_RENDERER)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_WIN)
+// Check for --version and --product-version; return true if we encountered
+// one of these switches and should exit now.
+bool HandleVersionSwitches(const base::CommandLine& command_line) {
+#if BUILDFLAG(IS_MAC)
+  const bool print_product_version = false;
+#else
+  const bool print_product_version =
+      command_line.HasSwitch(switches::kProductVersion);
+#endif
+  if (!print_product_version && !command_line.HasSwitch(switches::kVersion)) {
+    return false;
+  }
+
+#if BUILDFLAG(IS_WIN)
+  // chrome.exe is a GUI-subsystem binary, so its stdout is not connected to
+  // the launching console unless the caller redirected it (e.g., to a pipe).
+  base::RouteStdioToConsole(/*create_console_if_not_found=*/false);
+#endif
+
+  if (print_product_version) {
+    printf("%s\n", CHROME_VERSION_STRING);
+  } else {
+    printf("%s %s %s\n", PRODUCT_FULLNAME_STRING, CHROME_VERSION_STRING,
+           chrome::GetChannelName(chrome::WithExtendedStable(true)).c_str());
+  }
+  fflush(stdout);
+  return true;
+}
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_POSIX)
 bool HandleCreditsSwitch(const base::CommandLine& command_line) {
   if (!command_line.HasSwitch(switches::kCredits)) {
     return false;
@@ -407,27 +494,6 @@ bool HandleCreditsSwitch(const base::CommandLine& command_line) {
   return true;
 }
 
-// Check for --version and --product-version; return true if we encountered
-// one of these switches and should exit now.
-bool HandleVersionSwitches(const base::CommandLine& command_line) {
-#if !BUILDFLAG(IS_MAC)
-  if (command_line.HasSwitch(switches::kProductVersion)) {
-    UNSAFE_TODO(printf("%s\n", version_info::GetVersionNumber().data()));
-    return true;
-  }
-#endif
-
-  if (command_line.HasSwitch(switches::kVersion)) {
-    UNSAFE_TODO(printf(
-        "%s %s %s\n", version_info::GetProductName().data(),
-        version_info::GetVersionNumber().data(),
-        chrome::GetChannelName(chrome::WithExtendedStable(true)).c_str()));
-    return true;
-  }
-
-  return false;
-}
-
 #if BUILDFLAG(IS_LINUX)
 // Show the man page if --help or -h is on the command line.
 void HandleHelpSwitches(const base::CommandLine& command_line) {
@@ -460,6 +526,7 @@ void SetUpProfilingShutdownHandler() {
 #endif  // !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_ANDROID)
 
 #endif  // BUILDFLAG(IS_POSIX)
+#endif  // !defined(BUILDING_CHROME_RENDERER)
 
 // Returns true if the browser will exit before feature list initialization
 // happens in the browser process.
@@ -501,6 +568,12 @@ std::optional<int> HandlePackExtensionSwitches(
   // localized string resource accesses.
   ui::ScopedStartupResourceBundle ensure_startup_resource_bundle;
 
+  // Packing an extension requires an ExtensionsClient to validate and parse
+  // extension manifests. In production, --pack-extension runs as a standalone
+  // command-line action that exits immediately afterwards, so this
+  // ScopedChromeExtensionsClient is scoped to this function and will not
+  // coexist with or be recreated before BrowserProcessImpl.
+  extensions::ScopedChromeExtensionsClient scoped_extensions_client;
   extensions::StartupHelper extension_startup_helper;
   std::u16string error_message;
   if (!extension_startup_helper.PackExtension(command_line, &error_message)) {
@@ -584,16 +657,20 @@ void InitializeUserDataDir(base::CommandLine* command_line) {
   // Reach out to chrome_elf for the truth on the user data directory.
   // Note that in tests, this links to chrome_elf_test_stubs.
   wchar_t user_data_dir_buf[MAX_PATH], invalid_user_data_dir_buf[MAX_PATH];
+  bool policy_set = false;
 
   // In tests this may return false, implying the user data dir should be unset.
   if (GetUserDataDirectoryThunk(user_data_dir_buf, std::size(user_data_dir_buf),
                                 invalid_user_data_dir_buf,
-                                std::size(invalid_user_data_dir_buf))) {
+                                std::size(invalid_user_data_dir_buf),
+                                &policy_set)) {
     base::FilePath user_data_dir(user_data_dir_buf);
     if (invalid_user_data_dir_buf[0] != 0) {
       chrome::SetInvalidSpecifiedUserDataDir(
           base::FilePath(invalid_user_data_dir_buf));
       command_line->AppendSwitchPath(switches::kUserDataDir, user_data_dir);
+    } else if (policy_set) {
+      chrome::SetUserDataDirSetByPolicy();
     }
     CHECK(base::PathService::OverrideAndCreateIfNeeded(
         chrome::DIR_USER_DATA, user_data_dir, false, true));
@@ -620,7 +697,8 @@ void InitializeUserDataDir(base::CommandLine* command_line) {
   }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #if BUILDFLAG(IS_MAC)
-  policy::path_parser::CheckUserDataDirPolicy(&user_data_dir);
+  const bool policy_set =
+      policy::path_parser::CheckUserDataDirPolicy(&user_data_dir);
 #endif  // BUILDFLAG(IS_MAC)
 
   const bool specified_directory_was_invalid =
@@ -631,6 +709,11 @@ void InitializeUserDataDir(base::CommandLine* command_line) {
   if (specified_directory_was_invalid) {
     chrome::SetInvalidSpecifiedUserDataDir(user_data_dir);
   }
+#if BUILDFLAG(IS_MAC)
+  if (policy_set && !specified_directory_was_invalid) {
+    chrome::SetUserDataDirSetByPolicy();
+  }
+#endif  // BUILDFLAG(IS_MAC)
 
   // Warn and fail early if the process fails to get a user data directory.
   if (!base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir)) {
@@ -773,6 +856,8 @@ bool IsHangWatcherCrashReportingEnabled() {
 #if BUILDFLAG(IS_ANDROID)
 ChromeMainDelegate::ChromeMainDelegate()
     : ChromeMainDelegate(StartupTimestamps{}) {}
+#else
+ChromeMainDelegate::ChromeMainDelegate() = default;
 #endif
 
 ChromeMainDelegate::ChromeMainDelegate(const StartupTimestamps& timestamps) {
@@ -781,6 +866,13 @@ ChromeMainDelegate::ChromeMainDelegate(const StartupTimestamps& timestamps) {
   // initialized), so the function below will also be called in renderers.
   // This doesn't matter as it simply sets global variables.
   RecordMainStartupMetrics(timestamps);
+#if BUILDFLAG(IS_WIN)
+  if (IsCanaryDev()) {
+    // Enroll this client into an arm of the
+    // PinUser32AndGdi32InAvailabilityCheck study; see crbug.com/577860802.
+    base::win::InitPinUser32AndGdi32Trial();
+  }
+#endif
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -884,6 +976,12 @@ std::optional<int> ChromeMainDelegate::PostEarlyInitialization(
     // and features are needed for Mojo initialization.
     chrome_feature_list_creator->CreateFeatureList();
   }
+
+#if BUILDFLAG(IS_WIN)
+  // This runs before content::StartBrowserThreadPool().
+  MaybeLoadAllImportsForCoreDlls(
+      features::EagerlyResolveCoreDllsImportsTiming::kBeforeThreadPoolStart);
+#endif
 
   content::InitializeMojoCore();
 
@@ -1099,9 +1197,7 @@ void ChromeMainDelegate::SetupTracing() {
   // If we are the browser process (missing process type), then use the
   // experimental libunwindstack unwinder.
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kProcessType) &&
-      chrome::android::IsJavaDrivenFeatureEnabled(
-          chrome::android::kUseLibunwindstackNativeUnwinderAndroid)) {
+          switches::kProcessType)) {
     tracing_factory = base::BindRepeating(&CreateLibunwindstackUnwinderFactory);
     unwinder_type = tracing::TracingSamplerProfiler::UnwinderType::
         kLibunwindstackUnwinderAndroid;
@@ -1113,6 +1209,8 @@ void ChromeMainDelegate::SetupTracing() {
 }
 
 std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
+  crash_reporter::InitializeCrashKeys();
+
 #if BUILDFLAG(IS_CHROMEOS)
   ash::BootTimesRecorder::Get()->SaveChromeMainStats();
 #endif
@@ -1148,9 +1246,16 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
 #endif  // !defined(BUILDING_CHROME_RENDERER)
 
 #if !defined(BUILDING_CHROME_RENDERER)
+  const bool is_browser = !command_line.HasSwitch(switches::kProcessType);
+#if BUILDFLAG(IS_WIN)
+  if (is_browser) {
+    CHECK(!command_line.HasSwitch(switches::kChildModuleVersion));
+    CHECK(!command_line.HasSwitch(switches::kChildModuleUserPathComponent));
+  }
+#endif
+
   // The DevTools remote debugging pipe file descriptors need to be checked
   // before any other files are opened, see https://crbug.com/40259890.
-  const bool is_browser = !command_line.HasSwitch(switches::kProcessType);
 #if BUILDFLAG(IS_WIN)
   const bool pipes_are_specified_explicitly =
       command_line.HasSwitch(::switches::kRemoteDebuggingIoPipes);
@@ -1190,10 +1295,14 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
   v8_crashpad_support::SetUp();
 #endif
 
-#if BUILDFLAG(IS_POSIX) && !defined(BUILDING_CHROME_RENDERER)
+#if !defined(BUILDING_CHROME_RENDERER)
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_WIN)
   if (HandleVersionSwitches(command_line)) {
     return 0;  // Got a --version switch; exit with a success error code.
   }
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_POSIX)
   if (HandleCreditsSwitch(command_line)) {
     return 0;  // Got a --credits switch; exit with a success error code.
   }
@@ -1202,9 +1311,9 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
   // This will directly exit if the user asked for help.
   HandleHelpSwitches(command_line);
 #endif
-#endif  // BUILDFLAG(IS_POSIX) && !defined(BUILDING_CHROME_RENDERER)
+#endif  // BUILDFLAG(IS_POSIX)
 
-#if BUILDFLAG(IS_WIN) && !defined(BUILDING_CHROME_RENDERER)
+#if BUILDFLAG(IS_WIN)
   // Must do this before any other usage of command line!
   if (HasDeprecatedArguments(command_line.GetCommandLineString())) {
     return 1;
@@ -1216,12 +1325,27 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
   base::win::DisableHandleVerifier();
 #endif
 
+  // Check if the browser process is launching elevated, and attempt to
+  // automatically de-elevate before process isolation or browser startup.
+  if (is_browser) {
+    if (auto deelevate_result = MaybeAutoDeElevate(command_line)) {
+      return *deelevate_result;
+    }
+  }
+
   // Attempt to launch an isolated browser. If this is successful, this browser
   // process becomes the stub, and will terminate after the main browser has
   // terminated, with the exit code from the main browser.
   if (is_browser && chrome::IsIsolationEnabled(&command_line)) {
     const auto isolated_process =
         chrome::IsolatedBrowserProcess::Launch(command_line);
+    // Record the launch result HRESULT so that it can be reported to UMA once
+    // metrics reporting has been initialized. If the launch fails, this process
+    // falls through to run unisolated and reports the failure HRESULT. If the
+    // launch succeeds, this process acts as a stub and exits after WaitForExit
+    // without initializing metrics; the isolated child process will report
+    // S_OK.
+    chrome::SetIsolatedBrowserLaunchResult(isolated_process.error_or(S_OK));
     if (isolated_process.has_value()) {
       // Set the stub process's shutdown priority to a lower value than the
       // default value. The default priority is 0x280, so 0x27E is picked, which
@@ -1237,6 +1361,7 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
       if (!exit_code.has_value()) {
         return CHROME_RESULT_CODE_INVALID_ISOLATED_BROWSER_PROCESS;
       }
+
       // A negative exit code indicates the browser crashed, however
       // `content::RunContentProcess` treats negative return code from
       // `BasicStartupComplete` as indicating that startup should continue, so
@@ -1245,11 +1370,47 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
       if (*exit_code < 0) {
         base::Process::TerminateCurrentProcessImmediately(*exit_code);
       }
+
+      // If the isolated browser requested a relaunch on exit (for instance via
+      // chrome://restart or chrome://flags relaunch button), the stub process
+      // must launch a new stub process to initiate the restart sequence.
+      // Reuses the shared upgrade_util relaunch logic to normalize the
+      // executable path (handling in-use updates and old_chrome vs new_chrome),
+      // strip transient switches and autostart arguments according to the
+      // restart mode, and launch the new stub with force_breakaway_from_job_
+      // enabled so it can break away from the current stub's Job Object.
+      if (IsRelaunchResultCode(*exit_code)) {
+        browser_shutdown::RestartMode restart_mode =
+            browser_shutdown::RestartMode::kRestartLastSession;
+        if (*exit_code == CHROME_RESULT_CODE_NORMAL_EXIT_RELAUNCH_BACKGROUND) {
+          restart_mode = browser_shutdown::RestartMode::kRestartInBackground;
+        } else if (*exit_code == CHROME_RESULT_CODE_DOWNGRADE_AND_RELAUNCH ||
+                   *exit_code ==
+                       CHROME_RESULT_CODE_NORMAL_EXIT_UPGRADE_RELAUNCHED) {
+          restart_mode = browser_shutdown::RestartMode::kRestartThisSession;
+        }
+        base::CommandLine new_cl =
+            upgrade_util::GetRelaunchCommandLine(command_line, restart_mode);
+        // Feature state cannot be queried this early in browser startup, so
+        // hard-code `wait_for_parent` to false. Because the stub already waits
+        // until the isolated browser process has fully terminated before
+        // reaching this code (via `WaitForExit`), and the stub process itself
+        // never opens the user data directory, waiting for the stub's process
+        // handle is not strictly necessary here.
+        // TODO(crbug.com/526636718): Enable `wait_for_parent` by default once
+        // the feature is fully launched.
+        upgrade_util::RelaunchChromeBrowser(new_cl,
+                                            /*force_breakaway_from_job=*/true,
+                                            /*wait_for_parent=*/false);
+        return content::RESULT_CODE_NORMAL_EXIT;
+      }
+
       return *exit_code;
     }
   }
 
-#endif  // BUILDFLAG(IS_WIN) && !defined(BUILDING_CHROME_RENDERER)
+#endif  // BUILDFLAG(IS_WIN)
+#endif  // !defined(BUILDING_CHROME_RENDERER)
 
   if (!IsInitFeatureListEarly()) {
     chrome::RegisterPathProvider();
@@ -1363,9 +1524,10 @@ void ChromeMainDelegate::InitMacCrashReporter(
     const base::CommandLine& command_line,
     const std::string& process_type) {
   // TODO(mark): Right now, InitializeCrashpad() needs to be called after
-  // CommandLine::Init() and chrome::RegisterPathProvider().  Ideally, Crashpad
-  // initialization could occur sooner, preferably even before the framework
-  // dylib is even loaded, to catch potential early crashes.
+  // CommandLine::Init(), chrome::RegisterPathProvider(), and
+  // InitializeUserDataDir().  Ideally, Crashpad initialization could occur
+  // sooner, preferably even before the framework dylib is even loaded, to
+  // catch potential early crashes.
 
   const bool browser_process = process_type.empty();
   const bool install_from_dmg_relauncher_process =
@@ -1425,15 +1587,18 @@ void ChromeMainDelegate::PreSandboxStartup() {
   std::string process_type =
       command_line.GetSwitchValueASCII(switches::kProcessType);
 
-  crash_reporter::InitializeCrashKeys();
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID) || \
+    BUILDFLAG(IS_MAC)
+  if (process_type.empty()) {
+    // Initialize the shared memory that contains the `SystemProfile` only in
+    // the browser process. This must happen before Crashpad initialization
+    // since Crashpad inherits a handle to the shared memory.
+    metrics::SystemProfileUserStream::Get().Initialize();
+  }
+#endif
 
 #if BUILDFLAG(IS_POSIX)
   ChromeCrashReporterClient::Create();
-#endif
-
-#if BUILDFLAG(IS_MAC)
-  InitMacCrashReporter(command_line, process_type);
-  SetUpInstallerPreferences(command_line);
 #endif
 
 #if !defined(BUILDING_CHROME_RENDERER)
@@ -1450,6 +1615,15 @@ void ChromeMainDelegate::PreSandboxStartup() {
   // Renderers on Windows never require a profile directory.
   CHECK(!chrome::ProcessNeedsProfileDir(process_type));
 #endif  // !defined(BUILDING_CHROME_RENDERER)
+
+#if BUILDFLAG(IS_MAC)
+  // Must run after InitializeUserDataDir() because InitializeCrashpad()
+  // resolves chrome::DIR_USER_DATA via GetCrashMetricsLocation() and
+  // GetCollectStatsConsent(), and SetUpInstallerPreferences() may also update
+  // upload consent in chrome::DIR_USER_DATA.
+  InitMacCrashReporter(command_line, process_type);
+  SetUpInstallerPreferences(command_line);
+#endif
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_WIN)
   // Android does InitLogging when library is loaded. Skip here.
@@ -1538,7 +1712,10 @@ void ChromeMainDelegate::PreSandboxStartup() {
     // process. Their file descriptors and memory mapped file region are not
     // passed to child processes, and are therefore not loaded here.
 
-    base::i18n::SetICUDefaultLocale(locale);
+    base::i18n::SetDefaultIcuLocale(
+        base::i18n::DefaultIcuLocaleSetterKey(),
+        base::i18n::GetLanguageTagFromString(locale).value_or(
+            base::i18n::GetKnownLanguageTag("en-US")));
     const std::string loaded_locale = locale;
 #else
     const std::string loaded_locale =
@@ -1549,6 +1726,18 @@ void ChromeMainDelegate::PreSandboxStartup() {
     base::PathService::Get(chrome::FILE_RESOURCES_PACK, &resources_pack_path);
     ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
         resources_pack_path, ui::kScaleFactorNone);
+#if BUILDFLAG(IS_MAC) && BUILDFLAG(ENABLE_WEBUI_GENERATE_CODE_CACHE)
+    // Only renderers read the bundled WebUI code cache. The browser maps URLs
+    // to resource IDs and never reads the bytes. See
+    // tools/code_cache_generator/README.md.
+    base::FilePath code_cache_pack_path;
+    if (process_type == switches::kRendererProcess &&
+        base::PathService::Get(chrome::FILE_WEBUI_CODE_CACHE_PACK,
+                               &code_cache_pack_path)) {
+      ui::ResourceBundle::GetSharedInstance().AddOptionalDataPackFromPath(
+          code_cache_pack_path, ui::kScaleFactorNone);
+    }
+#endif  // BUILDFLAG(IS_MAC) && BUILDFLAG(ENABLE_WEBUI_GENERATE_CODE_CACHE)
 #endif  // BUILDFLAG(IS_ANDROID)
     CHECK(!loaded_locale.empty()) << "Locale could not be found for " << locale;
   }
@@ -1859,12 +2048,20 @@ void ChromeMainDelegate::InitializeMemorySystem() {
                              : memory_system::DispatcherParameters::
                                    AllocationTraceRecorderInclusion::kIgnore;
 
-  memory_system::Initializer()
-      .SetGwpAsanParameters(gwp_asan_boost_sampling, process_type)
+  memory_system::Initializer initializer;
+  if (EXPENSIVE_TEST_LOGIC_IS_ON()) {
+    initializer.SetGwpAsanParameters(gwp_asan_boost_sampling, process_type);
+  }
+  const auto poisson_sampler_inclusion =
+      EXPENSIVE_TEST_LOGIC_IS_ON()
+          ? memory_system::DispatcherParameters::
+                PoissonAllocationSamplerInclusion::kEnforce
+          : memory_system::DispatcherParameters::
+                PoissonAllocationSamplerInclusion::kDynamic;
+  initializer
       .SetProfilingClientParameters(chrome::GetChannel(),
                                     GetProfilerProcessType(*command_line))
-      .SetDispatcherParameters(memory_system::DispatcherParameters::
-                                   PoissonAllocationSamplerInclusion::kEnforce,
+      .SetDispatcherParameters(poisson_sampler_inclusion,
                                allocation_recorder_inclusion, process_type)
       .Initialize(memory_system_);
 }

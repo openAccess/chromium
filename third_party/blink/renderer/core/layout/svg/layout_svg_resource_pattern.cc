@@ -24,7 +24,6 @@
 #include <memory>
 
 #include "base/memory/ptr_util.h"
-#include "third_party/blink/renderer/core/display_lock/display_lock_utilities.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_layout_support.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_resources.h"
 #include "third_party/blink/renderer/core/paint/svg_object_painter.h"
@@ -97,6 +96,14 @@ bool LayoutSVGResourcePattern::RemoveClientFromCache(
   }
   pattern_map_.erase(entry);
   return true;
+}
+
+void LayoutSVGResourcePattern::LastClientRemoved() {
+  NOT_DESTROYED();
+  // Reset cached attributes so a collected `LocalSVGResource` cannot leave
+  // stale `href` attributes cached across a display-lock change.
+  should_collect_pattern_attributes_ = true;
+  attributes_ = PatternAttributes();
 }
 
 const PatternAttributes& LayoutSVGResourcePattern::EnsureAttributes() const {
@@ -192,14 +199,18 @@ bool LayoutSVGResourcePattern::ApplyShader(
   NOT_DESTROYED();
   ClearInvalidationMask();
 
-  std::unique_ptr<PatternData>& pattern_data =
-      pattern_map_.insert(&client, nullptr).stored_value->value;
+  auto iter = pattern_map_.find(&client);
+  PatternData* pattern_data =
+      (iter == pattern_map_.end() ? nullptr : iter->value.get());
   if (pattern_data && pattern_data->paint_flags != paint_flags) {
-    pattern_data.reset();
+    pattern_data = nullptr;
   }
 
   if (!pattern_data) {
-    pattern_data = BuildPatternData(reference_box, paint_flags);
+    auto new_pattern_data = BuildPatternData(reference_box, paint_flags);
+    pattern_data = new_pattern_data.get();
+    CHECK(pattern_data);
+    pattern_map_.Set(&client, std::move(new_pattern_data));
     pattern_data->paint_flags = paint_flags;
   }
 
@@ -225,13 +236,6 @@ PaintRecord LayoutSVGResourcePattern::AsPaintRecord(
 
   auto* pattern_content_element = attributes_.PatternContentElement();
   DCHECK(pattern_content_element);
-  // If the element or some of its ancestor prevents us from doing paint, we can
-  // early out. Note that any locked ancestor would prevent paint.
-  if (DisplayLockUtilities::LockedInclusiveAncestorPreventingPaint(
-          *pattern_content_element)) {
-    return paint_recorder.finishRecordingAsPicture();
-  }
-
   const auto* pattern_layout_object = To<LayoutSVGResourceContainer>(
       pattern_content_element->GetLayoutObject());
   DCHECK(pattern_layout_object);

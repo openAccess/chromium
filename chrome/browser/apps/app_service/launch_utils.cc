@@ -39,6 +39,7 @@
 #include "mojo/public/cpp/bindings/struct_ptr.h"
 #include "storage/browser/file_system/file_system_url.h"
 #include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/events/event_constants.h"
@@ -100,7 +101,7 @@ BrowserWindowInterface* CreateBrowserWithNewTabPage(Profile* profile) {
 
   NavigateParams params(browser, chrome::ChromeUINewTabURLAsGURL(),
                         ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.tabstrip_add_types = AddTabTypes::ADD_ACTIVE;
   Navigate(&params);
 
@@ -114,23 +115,23 @@ AppLaunchParams CreateAppIdLaunchParamsWithEventFlags(
     LaunchSource launch_source,
     int64_t display_id,
     LaunchContainer fallback_container) {
-  WindowOpenDisposition raw_disposition =
+  ui::mojom::WindowOpenDisposition raw_disposition =
       ui::DispositionFromEventFlags(event_flags);
 
   LaunchContainer container;
-  WindowOpenDisposition disposition;
-  if (raw_disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
-      raw_disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB) {
+  ui::mojom::WindowOpenDisposition disposition;
+  if (raw_disposition == ui::mojom::WindowOpenDisposition::kNewForegroundTab ||
+      raw_disposition == ui::mojom::WindowOpenDisposition::kNewBackgroundTab) {
     container = LaunchContainer::kLaunchContainerTab;
     disposition = raw_disposition;
-  } else if (raw_disposition == WindowOpenDisposition::NEW_WINDOW) {
+  } else if (raw_disposition == ui::mojom::WindowOpenDisposition::kNewWindow) {
     container = LaunchContainer::kLaunchContainerWindow;
     disposition = raw_disposition;
   } else {
     // Look at preference to find the right launch container.  If no preference
     // is set, launch as a regular tab.
     container = fallback_container;
-    disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   }
   return AppLaunchParams(app_id, container, disposition, launch_source,
                          display_id);
@@ -156,7 +157,7 @@ AppLaunchParams CreateAppLaunchParamsForIntent(
     std::vector<GURL> file_urls;
     for (const auto& intent_file : intent->files) {
       if (intent_file->url.SchemeIsFile()) {
-        DCHECK(file_urls.empty());
+        CHECK(file_urls.empty(), base::NotFatalUntil::M161);
         break;
       }
       file_urls.push_back(intent_file->url);
@@ -249,17 +250,18 @@ extensions::AppLaunchSource GetAppLaunchSource(LaunchSource launch_source) {
   }
 }
 
-int GetEventFlags(WindowOpenDisposition disposition, bool prefer_container) {
+int GetEventFlags(ui::mojom::WindowOpenDisposition disposition,
+                  bool prefer_container) {
   if (prefer_container) {
     return ui::EF_NONE;
   }
 
   switch (disposition) {
-    case WindowOpenDisposition::NEW_WINDOW:
+    case ui::mojom::WindowOpenDisposition::kNewWindow:
       return ui::EF_SHIFT_DOWN;
-    case WindowOpenDisposition::NEW_BACKGROUND_TAB:
+    case ui::mojom::WindowOpenDisposition::kNewBackgroundTab:
       return ui::EF_MIDDLE_MOUSE_BUTTON;
-    case WindowOpenDisposition::NEW_FOREGROUND_TAB:
+    case ui::mojom::WindowOpenDisposition::kNewForegroundTab:
       return ui::EF_MIDDLE_MOUSE_BUTTON | ui::EF_SHIFT_DOWN;
     default:
       NOTREACHED();

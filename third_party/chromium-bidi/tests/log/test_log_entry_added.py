@@ -20,6 +20,7 @@ from anys import ANY_STR
 from test_helpers import (
     ANY_TIMESTAMP,
     ANY_UUID,
+    execute_command,
     read_JSON_message,
     send_JSON_command,
     subscribe,
@@ -101,7 +102,11 @@ async def test_consoleLog_textAndArgs(websocket, context_id):
         "params": {
             # BaseLogEntry
             "level": "info",
-            "source": {"realm": ANY_STR, "context": context_id},
+            "source": {
+                "realm": ANY_STR,
+                "context": context_id,
+                "userContext": "default",
+            },
             "text": "window "
             "undefined "
             "null "
@@ -313,7 +318,11 @@ async def test_exceptionThrown_logEntryAddedEventEmitted(websocket, context_id, 
         "params": {
             # BaseLogEntry
             "level": "error",
-            "source": {"realm": ANY_STR, "context": context_id},
+            "source": {
+                "realm": ANY_STR,
+                "context": context_id,
+                "userContext": "default",
+            },
             "text": "Error: some error",
             "timestamp": ANY_TIMESTAMP,
             "stackTrace": {
@@ -379,6 +388,79 @@ async def test_buffer_bufferedEventsReturned(websocket, context_id):
 
 
 @pytest.mark.asyncio
+async def test_buffer_lazySerialization(websocket, context_id):
+    # Log an object with a getter to track when CDP deep serialization happens.
+    await execute_command(
+        websocket,
+        {
+            "method": "script.evaluate",
+            "params": {
+                "expression": """
+                    window.serializedCount = 0;
+                    console.info({
+                        get foo() {
+                            window.serializedCount++;
+                            return 'VALUE';
+                        },
+                    });
+                """,
+                "target": {"context": context_id},
+                "awaitPromise": True,
+            },
+        },
+    )
+
+    # Verify that the argument is not serialized while unsubscribed.
+    result = await execute_command(
+        websocket,
+        {
+            "method": "script.evaluate",
+            "params": {
+                "expression": "window.serializedCount",
+                "target": {"context": context_id},
+                "awaitPromise": True,
+            },
+        },
+    )
+    assert result["result"] == {"type": "number", "value": 0}
+
+    # Subscribe to `log.entryAdded` to trigger lazy serialization of buffered events.
+    subscribe_id = await send_JSON_command(
+        websocket,
+        {
+            "method": "session.subscribe",
+            "params": {"events": ["log.entryAdded"]},
+        },
+    )
+
+    resp = await read_JSON_message(websocket)
+    assert {"type": "event", "method": "log.entryAdded", "params": ANY} == resp
+    assert resp["params"]["args"] == [
+        {
+            "type": "object",
+            "value": [["foo", {"type": "string", "value": "VALUE"}]],
+        }
+    ]
+
+    resp = await read_JSON_message(websocket)
+    assert resp["id"] == subscribe_id
+
+    # Verify that the argument was serialized exactly once upon subscription.
+    result = await execute_command(
+        websocket,
+        {
+            "method": "script.evaluate",
+            "params": {
+                "expression": "window.serializedCount",
+                "target": {"context": context_id},
+                "awaitPromise": True,
+            },
+        },
+    )
+    assert result["result"] == {"type": "number", "value": 1}
+
+
+@pytest.mark.asyncio
 async def test_runtimeException_emitted(websocket, context_id):
     error_message = "SOME_ERROR_MESSAGE"
 
@@ -409,7 +491,7 @@ async def test_runtimeException_emitted(websocket, context_id):
         "method": "log.entryAdded",
         "params": {
             "level": "error",
-            "source": {"realm": ANY_STR, "context": ANY_STR},
+            "source": {"realm": ANY_STR, "context": ANY_STR, "userContext": "default"},
             "text": f"Error: {error_message}",
             "timestamp": ANY_TIMESTAMP,
             "stackTrace": ANY,
@@ -464,7 +546,7 @@ async def test_runtimeException_buffered(websocket, context_id):
         "method": "log.entryAdded",
         "params": {
             "level": "error",
-            "source": {"realm": ANY_STR, "context": ANY_STR},
+            "source": {"realm": ANY_STR, "context": ANY_STR, "userContext": "default"},
             "text": f"Error: {error_message}",
             "timestamp": ANY_TIMESTAMP,
             "stackTrace": ANY,

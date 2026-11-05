@@ -18,6 +18,7 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
@@ -247,7 +248,7 @@ void ExitTypeService::CheckUserAckedCrash() {
 
 void ExitTypeService::CrashedLockDestroyed() {
   --crashed_lock_count_;
-  DCHECK_GE(crashed_lock_count_, 0);
+  CHECK_GE(crashed_lock_count_, 0, base::NotFatalUntil::M163);
   if (crashed_lock_count_ == 0) {
     CheckUserAckedCrash();
   }

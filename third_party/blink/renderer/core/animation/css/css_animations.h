@@ -38,6 +38,7 @@
 #include "third_party/blink/renderer/core/animation/css/css_transition_data.h"
 #include "third_party/blink/renderer/core/animation/inert_effect.h"
 #include "third_party/blink/renderer/core/animation/interpolation.h"
+#include "third_party/blink/renderer/core/animation/keyframe_effect.h"
 #include "third_party/blink/renderer/core/animation/timeline_offset.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/css_property_value_set.h"
@@ -59,6 +60,7 @@ class StyleRuleKeyframes;
 class StyleTimeline;
 class WritingDirectionMode;
 class TimelineTrigger;
+class ScopedCSSName;
 
 class CORE_EXPORT CSSAnimations final {
   DISALLOW_NEW();
@@ -95,6 +97,7 @@ class CORE_EXPORT CSSAnimations final {
                                        Element& animating_element,
                                        Element&,
                                        const ComputedStyleBuilder&,
+                                       const ComputedStyle* old_style,
                                        const ComputedStyle* parent_style,
                                        StyleResolver*,
                                        bool can_trigger_animations);
@@ -103,6 +106,7 @@ class CORE_EXPORT CSSAnimations final {
       Element& animating_element,
       Element&,
       const ComputedStyle&,
+      const ComputedStyle* old_style,
       const ComputedStyle* parent_style,
       bool was_viewport_changed,
       bool force_update);
@@ -116,6 +120,18 @@ class CORE_EXPORT CSSAnimations final {
       Element* element,
       const AtomicString& animation_name,
       const AnimationEffect::EventDelegate* old_event_delegate);
+
+  // Returns true if `old_style` can be used as the before-change style to start
+  // transitions. Style updates can be forced while render-blocking resources
+  // are still loading (e.g. from DevTools or getComputedStyle() queries),
+  // populating ComputedStyle on elements before rendering has begun. We must
+  // not start transitions from such styles on the first rendered frame unless
+  // @starting-style is used.
+  static bool CanStartTransitionsForStyle(const ComputedStyle* old_style,
+                                          const Document& document) {
+    return old_style && (old_style->IsStartingStyle() ||
+                         document.RenderingHadBegunForLastStyleUpdate());
+  }
 
   static void CalculateTransitionUpdate(
       CSSAnimationUpdate&,
@@ -411,11 +427,12 @@ class CORE_EXPORT CSSAnimations final {
 
   static const TimelineData* GetTimelineData(const Element&);
 
-  static ScrollSnapshotTimeline* FindTimelineForNode(const AtomicString& name,
+  static ScrollSnapshotTimeline* FindTimelineForNode(const ScopedCSSName* name,
                                                      Node*,
                                                      const CSSAnimationUpdate*);
   template <typename TimelineType>
-  static TimelineType* FindTimelineForElement(const AtomicString& name,
+  static TimelineType* FindTimelineForElement(Document&,
+                                              const ScopedCSSName* name,
                                               const TimelineData*,
                                               const CSSAnimationUpdate*);
 
@@ -426,14 +443,15 @@ class CORE_EXPORT CSSAnimations final {
       const CSSAnimationUpdate*);
 
   static ScrollSnapshotTimeline* FindAncestorTimeline(
-      const AtomicString& name,
+      const ScopedCSSName* name,
       Node*,
       const CSSAnimationUpdate*);
 
   static DeferredTimeline* FindAncestorDeferredTimeline(
       const AtomicString& name,
       Element*,
-      const CSSAnimationUpdate*);
+      const CSSAnimationUpdate*,
+      const TreeScope*);
 
   static AnimationTimeline* ComputeTimeline(
       Element*,

@@ -22,6 +22,7 @@
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/common/widget/device_emulation_params.h"
 #include "third_party/blink/public/mojom/page/widget.mojom-shared.h"
+#include "url/gurl.h"
 
 namespace net {
 class HttpRequestHeaders;
@@ -34,6 +35,7 @@ class DownloadUrlParameters;
 namespace content {
 
 class DevToolsAgentHostImpl;
+class DevToolsAgentHostClient;
 class RenderFrameHostImpl;
 class RenderWidgetHostImpl;
 class ScopedVirtualSensorForDevTools;
@@ -45,7 +47,7 @@ namespace protocol {
 class EmulationHandler : public DevToolsDomainHandler,
                          public Emulation::Backend {
  public:
-  EmulationHandler();
+  explicit EmulationHandler(DevToolsAgentHostClient* client);
 
   EmulationHandler(const EmulationHandler&) = delete;
   EmulationHandler& operator=(const EmulationHandler&) = delete;
@@ -55,6 +57,7 @@ class EmulationHandler : public DevToolsDomainHandler,
   static std::vector<EmulationHandler*> ForAgentHost(
       DevToolsAgentHostImpl* host);
 
+  bool MayApplyOverridesTo(const GURL& url) const;
   void Wire(UberDispatcher* dispatcher) override;
   void SetRenderer(int process_host_id,
                    RenderFrameHostImpl* frame_host) override;
@@ -114,7 +117,9 @@ class EmulationHandler : public DevToolsDomainHandler,
       std::unique_ptr<protocol::Emulation::DisplayFeature> display_feature,
       std::unique_ptr<protocol::Emulation::DevicePosture> device_posture,
       std::optional<std::string> scrollbar_type,
-      std::optional<bool> screen_orientation_lock_emulation) override;
+      std::optional<bool> screen_orientation_lock_emulation,
+      std::optional<std::string> viewport_meta,
+      std::optional<std::string> text_layout_mode) override;
 
   Response ClearDeviceMetricsOverride() override;
 
@@ -147,6 +152,7 @@ class EmulationHandler : public DevToolsDomainHandler,
  private:
   WebContentsImpl* GetWebContents();
 
+  void ResetWebContentsEmulation();
   void UpdateTouchEventEmulationState();
   void UpdateDeviceEmulationState(
       const blink::mojom::DeviceEmulationCacheBehavior& cache_behavior =
@@ -223,6 +229,7 @@ class EmulationHandler : public DevToolsDomainHandler,
   // True when SetGeolocationOverride() has been called.
   bool geolocation_overridden_ = false;
 
+  raw_ptr<DevToolsAgentHostClient> client_;
   raw_ptr<RenderFrameHostImpl> host_;
 
   std::unique_ptr<Emulation::Frontend> frontend_;

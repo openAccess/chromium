@@ -4,33 +4,40 @@
 
 #include "third_party/blink/renderer/core/html/html_menu_list_element.h"
 
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/popover_data.h"
-#include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/events/ui_event.h"
+#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/html_menu_item_element.h"
+#include "third_party/blink/renderer/core/html/html_menu_item_element_base.h"
 #include "third_party/blink/renderer/core/html_names.h"
-#include "third_party/blink/renderer/core/input/event_handler.h"
+#include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 
 namespace blink {
 
 HTMLMenuListElement::HTMLMenuListElement(Document& document)
     : HTMLMenuOwnerElement(html_names::kMenulistTag, document) {
+  UseCounter::Count(document, WebFeature::kHTMLMenuListElement);
   // <menulist> is always a popover and should have popover data with type auto.
   DCHECK(RuntimeEnabledFeatures::MenuElementsEnabled());
   EnsurePopoverData().setType(PopoverValueType::kAuto);
 }
 
 bool HTMLMenuListElement::HandleCommandInternal(HTMLElement& invoker,
-                                                CommandEventType command) {
+                                                CommandEventType command,
+                                                UIEvent* activate_event) {
   DCHECK(RuntimeEnabledFeatures::MenuElementsEnabled());
-  bool result = HTMLElement::HandleCommandInternal(invoker, command);
+  bool result =
+      HTMLElement::HandleCommandInternal(invoker, command, activate_event);
   if (result &&
       (command == CommandEventType::kShowPopover ||
        command == CommandEventType::kTogglePopover) &&
       popoverOpen()) {
-    if (LocalFrame* frame = GetDocument().GetFrame()) {
-      if (frame->GetEventHandler().IsHandlingKeyEvent()) {
-        FocusFirstItem();
-      }
+    if (HTMLMenuItemElementBase::IsActivationFromKeyboard(activate_event)) {
+      FocusTrigger trigger = activate_event->IsFullyTrusted()
+                                 ? FocusTrigger::kUserGesture
+                                 : FocusTrigger::kScript;
+      FocusFirstItem(trigger);
     }
   }
   return result;
@@ -43,19 +50,19 @@ HTMLMenuItemElement* HTMLMenuListElement::InvokingMenuItem() {
   return DynamicTo<HTMLMenuItemElement>(GetPopoverData()->invoker());
 }
 
-bool HTMLMenuListElement::FocusFirstItem() {
+bool HTMLMenuListElement::FocusFirstItem(FocusTrigger focus_trigger) {
   if (auto* first = ItemList().NextFocusableElement(*ItemList().begin(),
                                                     /*inclusive=*/true)) {
-    first->Focus(FocusParams(FocusTrigger::kUserGesture));
+    first->Focus(FocusParams(focus_trigger));
     return true;
   }
   return false;
 }
 
-bool HTMLMenuListElement::FocusLastItem() {
+bool HTMLMenuListElement::FocusLastItem(FocusTrigger focus_trigger) {
   if (auto* last = ItemList().PreviousFocusableElement(*ItemList().last(),
                                                        /*inclusive=*/true)) {
-    last->Focus(FocusParams(FocusTrigger::kUserGesture));
+    last->Focus(FocusParams(focus_trigger));
     return true;
   }
   return false;

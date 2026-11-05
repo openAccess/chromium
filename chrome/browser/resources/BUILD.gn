@@ -35,15 +35,26 @@ group("resources") {
       "new_tab_page_instant:resources",
       "new_tab_page_third_party:resources",
       "new_tab_shared:resources",
+      "side_panel/customize_chrome:resources",
     ]
+  }
+
+  # Unlike the targets above, side_panel/shared is not NTP-specific: it is also
+  # used by the bookmarks, reading list, history and other side panels, which
+  # are gated on !is_android. This matches the assert() in its BUILD.gn.
+  if (!is_android || enable_webui_ntp) {
+    public_deps += [ "side_panel/shared:resources" ]
   }
 
   if (enable_extensions_core) {
     public_deps += [
       ":component_extension_resources",
       "contextual_tasks/extension:resources",
-      "omnibox/aim_eligibility_extension:resources",
+      "omnibox_internals/aim_eligibility_extension:resources",
     ]
+    if (enable_webui_ntp) {
+      public_deps += [ "new_tab_page_extension:resources" ]
+    }
   }
 
   if (!is_android) {
@@ -59,15 +70,14 @@ group("resources") {
       "certificate_manager:resources",
       "content_settings:resources",
       "contextual_cueing/internals:resources",
+      "craft:resources",
       "data_sharing:resources",
       "downloads:resources",
       "drive_picker_host:resources",
       "drive_picker_host/untrusted:resources",
       "feedback:resources",
       "gaia_auth_host:resources",
-      "geic:resources",
       "glic/selection_overlay:resources",
-      "history:resources",
       "indigo:resources",
       "inspect:resources",
       "iwa_dev:resources",
@@ -86,16 +96,15 @@ group("resources") {
       "side_panel/bookmarks:resources",
       "side_panel/comments:resources",
       "side_panel/commerce:resources",
-      "side_panel/customize_chrome:resources",
       "side_panel/history:resources",
       "side_panel/history_clusters:resources",
       "side_panel/read_anything:resources",
       "side_panel/reading_list:resources",
-      "side_panel/shared:resources",
       "side_panel/tabs_from_other_devices:resources",
       "signin:resources",
       "support_tool:resources",
       "tab_group_home:resources",
+      "tab_group_shared:resources",
       "tab_search:resources",
       "web_app_internals:resources",
       "webnn_internals:resources",
@@ -104,7 +113,6 @@ group("resources") {
       "webui_toolbar:resources",
       "webui_toolbar_shared:resources",
       "whats_new:resources",
-      "//components/browser_apis/tab_strip/resources",
     ]
     if (is_chrome_branded) {
       public_deps += [
@@ -135,7 +143,6 @@ group("resources") {
     public_deps += [
       "unexportable_keys_internals:resources",
       "//chrome/browser/resources/media/mei_preload:component",
-      "//components/privacy_sandbox/privacy_sandbox_attestations/preload:component",
     ]
   }
 
@@ -207,6 +214,18 @@ group("resources") {
 
   if (enable_webui_certificate_viewer) {
     public_deps += [ "certificate_viewer:resources" ]
+  }
+
+  if (enable_webui_history) {
+    public_deps += [ "history:resources" ]
+  }
+
+  if (enable_webui_tabstrip_ntb) {
+    public_deps += [ "tabstrip_ntb:resources" ]
+  }
+
+  if (!is_android || enable_webui_tabstrip_ntb) {
+    public_deps += [ "//components/browser_apis/tab_strip/resources" ]
   }
 
   if (enable_compose) {
@@ -408,7 +427,7 @@ group("dev_ui_resources") {
   public_deps = [
     "accessibility:resources",
     "bluetooth_internals:resources",
-    "chrome_finds_internals:resources",
+    "browser_actuator_internals:resources",
     "components:resources",
     "content_settings:resources",
     "context_hub:resources",
@@ -418,7 +437,7 @@ group("dev_ui_resources") {
     "location_internals:resources",
     "media:resources",
     "net_internals:resources",
-    "omnibox:resources",
+    "omnibox_internals:resources",
     "predictors:resources",
     "segmentation_internals:resources",
     "subresource_filter:resources",
@@ -461,6 +480,7 @@ group("dev_ui_resources") {
 
   if (is_android) {
     public_deps += [
+      "//chrome/browser/resources/chrome_finds_internals:resources",
       "//chrome/browser/resources/feed_internals:resources",
       "//chrome/browser/resources/notifications_internals:resources",
       "//chrome/browser/resources/webapks:resources",
@@ -468,6 +488,7 @@ group("dev_ui_resources") {
   } else {
     public_deps += [
       "color_pipeline_internals:resources",
+      "critical_actions:resources",
       "indigo_internals:resources",
       "infobar_internals:resources",
       "media_router/internals:resources",
@@ -499,7 +520,7 @@ repack("dev_ui_paks") {
   sources = [
     "$root_gen_dir/chrome/accessibility_resources.pak",
     "$root_gen_dir/chrome/bluetooth_internals_resources.pak",
-    "$root_gen_dir/chrome/chrome_finds_internals_resources.pak",
+    "$root_gen_dir/chrome/browser_actuator_internals_resources.pak",
     "$root_gen_dir/chrome/components_resources.pak",
     "$root_gen_dir/chrome/content_settings_resources.pak",
     "$root_gen_dir/chrome/context_hub_resources.pak",
@@ -509,7 +530,7 @@ repack("dev_ui_paks") {
     "$root_gen_dir/chrome/location_internals_resources.pak",
     "$root_gen_dir/chrome/media_resources.pak",
     "$root_gen_dir/chrome/net_internals_resources.pak",
-    "$root_gen_dir/chrome/omnibox_resources.pak",
+    "$root_gen_dir/chrome/omnibox_internals_resources.pak",
     "$root_gen_dir/chrome/predictors_resources.pak",
     "$root_gen_dir/chrome/segmentation_internals_resources.pak",
     "$root_gen_dir/chrome/subresource_filter_internals_resources.pak",
@@ -552,6 +573,7 @@ repack("dev_ui_paks") {
 
   if (is_android) {
     sources += [
+      "$root_gen_dir/chrome/chrome_finds_internals_resources.pak",
       "$root_gen_dir/chrome/feed_internals_resources.pak",
       "$root_gen_dir/chrome/notifications_internals_resources.pak",
       "$root_gen_dir/chrome/webapks_resources.pak",
@@ -559,6 +581,7 @@ repack("dev_ui_paks") {
   } else {
     sources += [
       "$root_gen_dir/chrome/color_pipeline_internals_resources.pak",
+      "$root_gen_dir/chrome/critical_actions_resources.pak",
       "$root_gen_dir/chrome/indigo_internals_resources.pak",
       "$root_gen_dir/chrome/infobar_internals_resources.pak",
       "$root_gen_dir/chrome/media_router_internals_resources.pak",

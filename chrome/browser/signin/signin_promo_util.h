@@ -7,6 +7,7 @@
 
 #include "base/memory/raw_ref.h"
 #include "base/scoped_observation.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/signin/signin_promo.h"
 #include "components/signin/public/base/signin_buildflags.h"
@@ -15,6 +16,7 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "extensions/buildflags/buildflags.h"
 
+class BatchUploadService;
 class Profile;
 
 namespace signin_metrics {
@@ -92,7 +94,7 @@ struct ProfileMenuAvatarButtonPromoInfo {
     kBatchUploadPromo = 1,
     kBatchUploadBookmarksPromo = 2,
     kBatchUploadWindows10DepreciationPromo = 3,
-    kSyncPromo = 4,
+    // kSyncPromo = 4,  // Deprecated, not used anymore.
     kSigninPromo = 5,
 
     kMaxValue = kSigninPromo,
@@ -106,11 +108,6 @@ struct ProfileMenuAvatarButtonPromoInfo {
                          const ProfileMenuAvatarButtonPromoInfo& info2) =
       default;
 };
-
-// Returns true if the sign-in promo for `promo_type` should use the legacy
-// global Autofill sign-in promo limits. This is true when the limits
-// experiment is disabled and the promo type is not Search AI Mode.
-bool ShouldUseAutofillSignInPromoLimits(signin::SignInPromoType promo_type);
 
 // Records the show count at which the AvatarButton was showing `promo_type`
 // for `gaia_id` that lead to the promo being accepted. `gaia_id` may be empty
@@ -126,12 +123,21 @@ inline constexpr signin_metrics::AccessPoint
     kHistoryOptinAvatarPromoAccessPoint =
         signin_metrics::AccessPoint::kHistorySyncOptinExpansionPillOnStartup;
 
+// Returns whether a sign in can be offered to `profile`, for the account that
+// would be used in promos. Returns `false` if signing in is not possible, e.g.
+// when sign in is disallowed by the `BrowserSignin` enterprise policy.
+bool CanOfferSignInForPromos(Profile& profile);
+
 // Based on the `profile` current state, compute the data to be shown for the
 // promos, if any, based on the promo priority and the profile state. The promo
 // between the ProfileMenu and the AvatarButton should always be aligned.
+// If `allow_batch_upload_promos` is false, batch upload promos will not be
+// considered for `ProfileMenuAvatarButtonPromoInfo::type` (though
+// `local_data_count` is still computed).
 void ComputeProfileMenuAvatarButtonPromoInfo(
     Profile& profile,
-    base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)> result_callback);
+    base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)> result_callback,
+    bool allow_batch_upload_promos);
 
 // This class manages the Signin State and Used/Shown count for the AvatarButton
 // promos based on the `ProfileMenuAvatarButtonPromoInfo::Type` that is
@@ -140,14 +146,19 @@ void ComputeProfileMenuAvatarButtonPromoInfo(
 // via `ComputeProfileMenuAvatarButtonPromoInfo()`.
 class AvatarButtonPromoManager : public signin::IdentityManager::Observer {
  public:
+  static constexpr base::TimeDelta kSigninPromoMinimumDelayForNextPromoAllowed =
+      base::Days(7);
+
   AvatarButtonPromoManager(
       signin::IdentityManager* identity_manager,
       signin::AccountPreviewDataService* account_preview_data_service,
+      BatchUploadService* batch_upload_service,
       PrefService* pref_service);
   // Used only for testing.
   AvatarButtonPromoManager(
       signin::IdentityManager* identity_manager,
       signin::AccountPreviewDataService* account_preview_data_service,
+      BatchUploadService* batch_upload_service,
       PrefService* pref_service,
       int max_shown_count,
       int max_used_count);
@@ -182,6 +193,7 @@ class AvatarButtonPromoManager : public signin::IdentityManager::Observer {
   raw_ptr<PrefService> pref_service_;
   raw_ptr<signin::AccountPreviewDataService> account_preview_data_service_ =
       nullptr;
+  raw_ptr<BatchUploadService> batch_upload_service_ = nullptr;
 
   const int max_shown_count_ = 0;
   const int max_used_count_ = 0;

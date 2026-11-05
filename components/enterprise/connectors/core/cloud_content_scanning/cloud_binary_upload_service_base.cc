@@ -4,8 +4,12 @@
 
 #include "components/enterprise/connectors/core/cloud_content_scanning/cloud_binary_upload_service_base.h"
 
+#include <string_view>
+
 #include "base/base64.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/thread_pool.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
@@ -186,6 +190,22 @@ bool ValidateDataUploadRequest::IsAuthRequest() const {
 
 }  // namespace
 
+CloudBinaryUploadServiceBase::ActiveRequest::ActiveRequest() = default;
+CloudBinaryUploadServiceBase::ActiveRequest::ActiveRequest(ActiveRequest&&) =
+    default;
+CloudBinaryUploadServiceBase::ActiveRequest&
+CloudBinaryUploadServiceBase::ActiveRequest::operator=(ActiveRequest&&) =
+    default;
+CloudBinaryUploadServiceBase::ActiveRequest::~ActiveRequest() = default;
+
+CloudBinaryUploadServiceBase::AuthorizationData::AuthorizationData() = default;
+CloudBinaryUploadServiceBase::AuthorizationData::AuthorizationData(
+    AuthorizationData&&) = default;
+CloudBinaryUploadServiceBase::AuthorizationData&
+CloudBinaryUploadServiceBase::AuthorizationData::operator=(
+    AuthorizationData&&) = default;
+CloudBinaryUploadServiceBase::AuthorizationData::~AuthorizationData() = default;
+
 CloudBinaryUploadServiceBase::CloudBinaryUploadServiceBase(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     std::unique_ptr<Delegate> delegate)
@@ -262,9 +282,10 @@ void CloudBinaryUploadServiceBase::MaybeCancelRequests(
 
   // Also cancel active requests.
   std::vector<BinaryUploadRequest::Id> ids_to_cancel;
-  for (const auto& it : active_requests_) {
-    if (it.second->user_action_id() == cancel->get_user_action_id()) {
-      ids_to_cancel.push_back(it.first);
+  for (const auto& [id, active_request] : active_requests_) {
+    if (active_request.request->user_action_id() ==
+        cancel->get_user_action_id()) {
+      ids_to_cancel.push_back(id);
     }
   }
 
@@ -290,9 +311,11 @@ void CloudBinaryUploadServiceBase::SetAuthForTesting(
 #if BUILDFLAG(IS_CHROMEOS)
            AnalysisConnector::FILE_TRANSFER,
 #endif
+           AnalysisConnector::DATA_COPIED,
+           AnalysisConnector::NETWORK_REQUEST,
        }) {
     TokenAndConnector token_and_connector = {dm_token, connector};
-    can_upload_enterprise_data_[token_and_connector] = auth_check_result;
+    authorization_data_[token_and_connector].can_upload = auth_check_result;
   }
 }
 
@@ -307,17 +330,18 @@ GURL CloudBinaryUploadServiceBase::GetUploadUrl(
 
 bool CloudBinaryUploadServiceBase::ResponseIsComplete(
     BinaryUploadRequest::Id request_id) {
-  BinaryUploadRequest* request = GetRequest(request_id);
-  if (!request) {
+  auto it = active_requests_.find(request_id);
+  if (it == active_requests_.end() || !it->second.request) {
     return false;
   }
+  BinaryUploadRequest* request = it->second.request.get();
 
   for (const std::string& tag : request->content_analysis_request().tags()) {
     if (tag == kMalwareTag && request->should_skip_malware_scan()) {
       // If the content is too large, we don't do a malware scan.
       continue;
     }
-    if (received_connector_results_[request_id].count(tag) == 0) {
+    if (it->second.received_connector_results.count(tag) == 0) {
       return false;
     }
   }
@@ -329,7 +353,7 @@ BinaryUploadRequest* CloudBinaryUploadServiceBase::GetRequest(
     BinaryUploadRequest::Id request_id) {
   auto it = active_requests_.find(request_id);
   if (it != active_requests_.end()) {
-    return it->second.get();
+    return it->second.request.get();
   }
 
   return nullptr;
@@ -338,39 +362,53 @@ BinaryUploadRequest* CloudBinaryUploadServiceBase::GetRequest(
 void CloudBinaryUploadServiceBase::MaybeRunAuthorizationCallbacks(
     const std::string& dm_token,
     AnalysisConnector connector) {
-  TokenAndConnector token_and_connector = {dm_token, connector};
-  if (!can_upload_enterprise_data_.contains(token_and_connector)) {
+  auto it = authorization_data_.find({dm_token, connector});
+  if (it == authorization_data_.end() || !it->second.can_upload.has_value() ||
+      !it->second.callbacks) {
     return;
   }
 
   // TODO(crbug.com/402435358): Add test coverage to catch this regression
   // after FCM service is completely removed.
-  auto it = authorization_callbacks_.find(token_and_connector);
-  if (it == authorization_callbacks_.end()) {
-    return;
-  }
-  // To avoid race condition, save the callback and erase it from the map
-  // before running it.
+  // To avoid race condition, save the callback and clear it before running it.
   std::unique_ptr<base::OnceCallbackList<void(ScanRequestUploadResult)>>
-      callbacks = std::move(it->second);
-  authorization_callbacks_.erase(it);
-  callbacks->Notify(can_upload_enterprise_data_[token_and_connector]);
+      callbacks = std::move(it->second.callbacks);
+  ScanRequestUploadResult can_upload = *it->second.can_upload;
+  callbacks->Notify(can_upload);
 }
 
 void CloudBinaryUploadServiceBase::LogResponseDebugInfo(
     const std::string& upload_info,
     ScanRequestUploadResult result,
     BinaryUploadRequest* request,
-    const ContentAnalysisResponse& response) {
+    const ContentAnalysisResponse& response,
+    int http_status,
+    const std::string& response_data) {
 #if !BUILDFLAG(IS_IOS)
   safe_browsing::WebUIContentInfoSingleton::GetInstance()
       ->AddToDeepScanRequests(request->per_profile_request(),
                               request->access_token(), upload_info,
                               request->GetUrlWithParams().spec(),
                               request->content_analysis_request());
+  std::string status = ScanRequestUploadResultToString(result);
+  bool upload_failed = result != ScanRequestUploadResult::kSuccess;
+  bool has_http_activity = http_status != 0 || !response_data.empty();
+  // On kSuccess, `response_data` contains raw binary protobuf bytes which are
+  // already parsed into `response` and serialized to JSON. Only append raw
+  // `response_data` on failure, where the server/proxy returns text/HTML.
+  if (upload_failed && has_http_activity) {
+    // Maximum number of characters of the raw response body appended to the
+    // deep scan status shown on chrome://safe-browsing.
+    constexpr size_t kMaxResponseDataLength = 1024;
+    status = base::StrCat(
+        {status, " (HTTP ", base::NumberToString(http_status), "): ",
+         response_data.empty() ? std::string_view("No response to show")
+                               : std::string_view(response_data)
+                                     .substr(0, kMaxResponseDataLength)});
+  }
+  BinaryUploadRequest::Id request_id = request->id();
   safe_browsing::WebUIContentInfoSingleton::GetInstance()
-      ->AddToDeepScanResponses(active_tokens_[request->id()],
-                               ScanRequestUploadResultToString(result),
+      ->AddToDeepScanResponses(active_requests_[request_id].token, status,
                                response);
 #endif
 }
@@ -390,20 +428,19 @@ void CloudBinaryUploadServiceBase::IsAuthorized(const GURL& url,
   }
 
   TokenAndConnector token_and_connector = {dm_token, connector};
+  AuthorizationData& auth_data = authorization_data_[token_and_connector];
   // Validate if `token_and_connector` is authorized to upload data if this is
   // the first time or the previous check failed.
-  if (!can_upload_enterprise_data_.contains(token_and_connector) ||
-      can_upload_enterprise_data_[token_and_connector] !=
-          ScanRequestUploadResult::kSuccess) {
+  if (auth_data.can_upload != ScanRequestUploadResult::kSuccess) {
     // Send a request to check if the browser can upload data.
-    auto [iter, inserted] = authorization_callbacks_.try_emplace(
-        token_and_connector,
-        std::make_unique<
-            base::OnceCallbackList<void(ScanRequestUploadResult)>>());
-    iter->second->AddUnsafe(std::move(callback));
+    if (!auth_data.callbacks) {
+      auth_data.callbacks = std::make_unique<
+          base::OnceCallbackList<void(ScanRequestUploadResult)>>();
+    }
+    auth_data.callbacks->AddUnsafe(std::move(callback));
 
-    if (!pending_validate_data_upload_request_.contains(token_and_connector)) {
-      pending_validate_data_upload_request_.insert(token_and_connector);
+    if (!auth_data.pending_validation) {
+      auth_data.pending_validation = true;
       CloudAnalysisSettings settings;
       settings.analysis_url = url;
       settings.dm_token = dm_token;
@@ -430,38 +467,42 @@ void CloudBinaryUploadServiceBase::IsAuthorized(const GURL& url,
     }
     return;
   }
-  std::move(callback).Run(can_upload_enterprise_data_[token_and_connector]);
+  std::move(callback).Run(*auth_data.can_upload);
 }
 
 void CloudBinaryUploadServiceBase::ResetAuthorizationData(const GURL& url) {
-  // Clearing |can_upload_enterprise_data_| will make the next
-  // call to IsAuthorized send out a request to validate data uploads.
-  auto it = can_upload_enterprise_data_.begin();
-  while (it != can_upload_enterprise_data_.end()) {
-    std::string dm_token = it->first.first;
-    AnalysisConnector connector = it->first.second;
-    it = can_upload_enterprise_data_.erase(it);
-    IsAuthorized(url, /*per_profile_request*/ false, base::DoNothing(),
-                 dm_token, connector);
+  // Clearing `can_upload` will make the next call to IsAuthorized send out a
+  // request to validate data uploads.
+  for (auto& [token_and_connector, auth_data] : authorization_data_) {
+    if (auth_data.can_upload.has_value()) {
+      auth_data.can_upload.reset();
+      std::string dm_token = token_and_connector.first;
+      AnalysisConnector connector = token_and_connector.second;
+      IsAuthorized(url, /*per_profile_request*/ false, base::DoNothing(),
+                   dm_token, connector);
+    }
   }
 }
 
 void CloudBinaryUploadServiceBase::FinishRequest(
     BinaryUploadRequest* request,
     ScanRequestUploadResult result,
-    ContentAnalysisResponse response) {
+    ContentAnalysisResponse response,
+    int http_status,
+    const std::string& response_data) {
   RecordRequestMetrics(request->id(), result, response);
   std::string upload_info = "None";
   if (!request->IsAuthRequest()) {
-    if (const auto it = active_uploads_.find(request->id());
-        it != active_uploads_.end()) {
-      upload_info = it->second->GetUploadInfo();
+    if (const auto it = active_requests_.find(request->id());
+        it != active_requests_.end() && it->second.upload) {
+      upload_info = it->second.upload->GetUploadInfo();
     }
   }
 
   // Always record deep scan request here to ensure it is invoked after http
   // headers are attached.
-  LogResponseDebugInfo(upload_info, result, request, response);
+  LogResponseDebugInfo(upload_info, result, request, response, http_status,
+                       response_data);
 
   request->FinishRequest(result, response);
 }
@@ -469,8 +510,10 @@ void CloudBinaryUploadServiceBase::FinishRequest(
 void CloudBinaryUploadServiceBase::FinishAndCleanupRequest(
     BinaryUploadRequest* request,
     ScanRequestUploadResult result,
-    ContentAnalysisResponse response) {
-  FinishRequest(request, result, response);
+    ContentAnalysisResponse response,
+    int http_status,
+    const std::string& response_data) {
+  FinishRequest(request, result, response, http_status, response_data);
   CleanupRequest(request);
 }
 
@@ -480,7 +523,8 @@ void CloudBinaryUploadServiceBase::RecordRequestMetrics(
   base::UmaHistogramEnumeration("SafeBrowsingBinaryUploadRequest.Result",
                                 result);
 
-  auto duration = base::TimeTicks::Now() - start_times_[request_id];
+  auto duration =
+      base::TimeTicks::Now() - active_requests_[request_id].start_time;
   base::UmaHistogramCustomTimes("SafeBrowsingBinaryUploadRequest.Duration",
                                 duration, base::Milliseconds(1),
                                 base::Minutes(6), 50);
@@ -568,11 +612,6 @@ void CloudBinaryUploadServiceBase::CleanupRequest(
   auto connector = request->analysis_connector();
   std::string action_id = request->user_action_id();
   active_requests_.erase(request_id);
-  active_timers_.erase(request_id);
-  active_uploads_.erase(request_id);
-  received_connector_results_.erase(request_id);
-  active_tokens_.erase(request_id);
-  start_times_.erase(request_id);
 
   MaybeRunAuthorizationCallbacks(dm_token, connector);
   MaybeTrackUploadUserCancellation(action_id);
@@ -605,8 +644,8 @@ bool CloudBinaryUploadServiceBase::CheckForUserActionDone(
       return false;
     }
   }
-  for (const auto& it : active_requests_) {
-    if (it.second->user_action_id() == action_id) {
+  for (const auto& [id, active_request] : active_requests_) {
+    if (active_request.request->user_action_id() == action_id) {
       return false;
     }
   }
@@ -655,26 +694,26 @@ void CloudBinaryUploadServiceBase::OnGetContentAnalysisResponse(
 
   if (http_status == net::HTTP_UNAUTHORIZED) {
     FinishRequest(request, ScanRequestUploadResult::kUnauthorized,
-                  ContentAnalysisResponse());
+                  ContentAnalysisResponse(), http_status, response_data);
     return;
   }
 
   if (http_status == net::HTTP_TOO_MANY_REQUESTS) {
     FinishRequest(request, ScanRequestUploadResult::kTooManyRequests,
-                  ContentAnalysisResponse());
+                  ContentAnalysisResponse(), http_status, response_data);
     return;
   }
 
   if (!success) {
     FinishRequest(request, ScanRequestUploadResult::kUploadFailure,
-                  ContentAnalysisResponse());
+                  ContentAnalysisResponse(), http_status, response_data);
     return;
   }
 
   ContentAnalysisResponse response;
   if (!response.ParseFromString(response_data)) {
     FinishRequest(request, ScanRequestUploadResult::kUploadFailure,
-                  ContentAnalysisResponse());
+                  ContentAnalysisResponse(), http_status, response_data);
     return;
   }
 
@@ -702,7 +741,8 @@ void CloudBinaryUploadServiceBase::OnGetResponse(
     if (result.has_tag() && !result.tag().empty()) {
       DVLOG(1) << "BinaryUploadRequest " << request->request_token()
                << " finished scanning tag <" << result.tag() << ">";
-      received_connector_results_[request_id][result.tag()] = result;
+      active_requests_[request_id].received_connector_results[result.tag()] =
+          result;
     }
   }
 
@@ -719,7 +759,8 @@ void CloudBinaryUploadServiceBase::MaybeFinishRequest(
   // It's OK to move here since the map entry is about to be removed.
   ContentAnalysisResponse response;
   response.set_request_token(request->request_token());
-  for (auto& tag_and_result : received_connector_results_[request_id]) {
+  for (auto& tag_and_result :
+       active_requests_[request_id].received_connector_results) {
     *response.add_results() = std::move(tag_and_result.second);
   }
 
@@ -748,7 +789,7 @@ CloudBinaryUploadServiceBase::CreateUploadRequest(
     net::NetworkTrafficAnnotationTag traffic_annotation,
     BinaryUploadRequest::Data data,
     ScanRequestUploadResult result,
-    ResumableUploadRequestBase::OnceRegisterOnGotHashCallback
+    ResumableUploadRequest::OnceRegisterOnGotHashCallback
         register_on_got_hash_callback) {
   auto callback =
       base::BindOnce(&CloudBinaryUploadServiceBase::OnUploadComplete,
@@ -770,7 +811,7 @@ CloudBinaryUploadServiceBase::CreateUploadRequest(
     upload_request =
         (IsResumableUpload(*request) &&
          base::FeatureList::IsEnabled(kDlpScanPastedImages))
-            ? safe_browsing::ResumableUploadRequest::CreateStringRequest(
+            ? ResumableUploadRequest::CreateStringRequest(
                   url_loader_factory_, url, metadata, data.contents,
                   request->image_paste() ? ConnectorUploadRequest::IMAGE
                                          : ConnectorUploadRequest::STRING,
@@ -785,7 +826,7 @@ CloudBinaryUploadServiceBase::CreateUploadRequest(
   } else if (!data.path.empty()) {
     upload_request =
         IsResumableUpload(*request)
-            ? safe_browsing::ResumableUploadRequest::CreateFileRequest(
+            ? ResumableUploadRequest::CreateFileRequest(
                   url_loader_factory_, url, metadata, result, data.path,
                   data.size, data.is_obfuscated, histogram_suffix,
                   std::move(traffic_annotation),
@@ -801,7 +842,7 @@ CloudBinaryUploadServiceBase::CreateUploadRequest(
   } else if (data.page.IsValid()) {
     upload_request =
         IsResumableUpload(*request)
-            ? safe_browsing::ResumableUploadRequest::CreatePageRequest(
+            ? ResumableUploadRequest::CreatePageRequest(
                   url_loader_factory_, url, metadata, result,
                   std::move(data.page), histogram_suffix,
                   std::move(traffic_annotation),
@@ -812,6 +853,13 @@ CloudBinaryUploadServiceBase::CreateUploadRequest(
                   url_loader_factory_, url, metadata, std::move(data.page),
                   histogram_suffix, std::move(traffic_annotation),
                   std::move(callback), ui_task_runner_);
+  } else if (data.request_body) {
+    upload_request = ResumableUploadRequest::CreateNetworkRequest(
+        url_loader_factory_, url, metadata, result,
+        std::move(data.request_body), histogram_suffix,
+        std::move(traffic_annotation), std::move(verdict_received_callback),
+        std::move(content_uploaded_callback), force_sync_upload,
+        ui_task_runner_);
   } else {
     NOTREACHED();
   }
@@ -855,11 +903,10 @@ void CloudBinaryUploadServiceBase::UploadForDeepScanning(
   BinaryUploadRequest::Id id = request_id_generator_.GenerateNextId();
   request->set_id(id);
   request->StartRequest();
-  active_requests_[id] = std::move(request);
-  start_times_[id] = base::TimeTicks::Now();
-
-  std::string token = raw_request->SetRandomRequestToken();
-  active_tokens_[id] = token;
+  ActiveRequest& active_request = active_requests_[id];
+  active_request.request = std::move(request);
+  active_request.start_time = base::TimeTicks::Now();
+  active_request.token = raw_request->SetRandomRequestToken();
 
   PrepareRequestForUpload(id);
 }
@@ -893,8 +940,9 @@ void CloudBinaryUploadServiceBase::PrepareRequestForUpload(
     return;
   }
 
-  active_timers_[request_id] = std::make_unique<base::OneShotTimer>();
-  active_timers_[request_id]->Start(
+  auto& timer = active_requests_[request_id].timer;
+  timer = std::make_unique<base::OneShotTimer>();
+  timer->Start(
       FROM_HERE, request->IsAuthRequest() ? kAuthTimeout : kScanningTimeout,
       base::BindOnce(&CloudBinaryUploadServiceBase::FinishIfActive,
                      weakptr_factory_.GetWeakPtr(), request_id,
@@ -966,7 +1014,7 @@ void CloudBinaryUploadServiceBase::OnGetRequestData(
   request->set_should_skip_malware_scan(
       data.size > BinaryUploadService::kMaxUploadSizeBytes);
 
-  ResumableUploadRequestBase::OnceRegisterOnGotHashCallback
+  ResumableUploadRequest::OnceRegisterOnGotHashCallback
       register_on_got_hash_callback = base::NullCallback();
   if (request->digest().empty() && request->register_on_got_hash_callback_) {
     // The hash is being computed. Let the server know the hash will be
@@ -1005,9 +1053,15 @@ void CloudBinaryUploadServiceBase::OnGetRequestData(
       request->content_analysis_request().request_token());
 
   // |request| might have been deleted by the call to Start() in tests, so don't
-  // dereference it afterwards.
+  // dereference it afterwards. Because a synchronous completion in Start() also
+  // erases |request_id| from |active_requests_| via FinishRequest(), only store
+  // |upload_request| if the request is still active (using operator[] here
+  // would re-insert an entry with a null |request|).
   upload_request->Start();
-  active_uploads_[request_id] = std::move(upload_request);
+  if (auto it = active_requests_.find(request_id);
+      it != active_requests_.end()) {
+    it->second.upload = std::move(upload_request);
+  }
 }
 
 bool CloudBinaryUploadServiceBase::ShouldTerminateRequestEarly(
@@ -1021,10 +1075,15 @@ bool CloudBinaryUploadServiceBase::ShouldTerminateRequestEarly(
     return true;
   }
 
-  if (!request->IsAuthRequest() && data_size == 0) {
+  if (!request->IsAuthRequest() &&
+      get_data_result == ScanRequestUploadResult::kSuccess && data_size == 0) {
     // A size of 0 implies an edge case like an empty file being uploaded. In
     // such a case, the file doesn't need to scan so the request can simply
     // finish early.
+    // Note that it's possible for `get_data_result` to be set to
+    // `kFileTooLarge` while `data_size` is 0 for network request scans of
+    // chunked data where the total size is unknown, so `kSuccess` is checked to
+    // account for this.
     FinishAndCleanupRequest(request, ScanRequestUploadResult::kSuccess,
                             ContentAnalysisResponse());
     return true;
@@ -1038,19 +1097,17 @@ CloudBinaryUploadServiceBase::MaybeGetEnterpriseAuthResult(
     const BinaryUploadRequest& request) {
   auto connector = request.analysis_connector();
   std::string dm_token = request.device_token();
-  TokenAndConnector token_and_connector = {dm_token, connector};
-
   if (dm_token.empty()) {
     return ScanRequestUploadResult::kUnauthorized;
   }
 
-  if (!can_upload_enterprise_data_.contains(token_and_connector) ||
-      can_upload_enterprise_data_[token_and_connector] !=
-          ScanRequestUploadResult::kSuccess) {
+  auto it = authorization_data_.find({dm_token, connector});
+  if (it == authorization_data_.end() ||
+      it->second.can_upload != ScanRequestUploadResult::kSuccess) {
     return std::nullopt;
   }
 
-  return can_upload_enterprise_data_[token_and_connector];
+  return *it->second.can_upload;
 }
 
 ScanRequestUploadResult CloudBinaryUploadServiceBase::GetConsumerAuthResult(
@@ -1068,8 +1125,9 @@ void CloudBinaryUploadServiceBase::ValidateDataUploadRequestConnectorCallback(
     ScanRequestUploadResult result,
     ContentAnalysisResponse response) {
   TokenAndConnector token_and_connector = {dm_token, connector};
-  pending_validate_data_upload_request_.erase(token_and_connector);
-  can_upload_enterprise_data_[token_and_connector] = result;
+  AuthorizationData& auth_data = authorization_data_[token_and_connector];
+  auth_data.pending_validation = false;
+  auth_data.can_upload = result;
 }
 
 }  // namespace enterprise_connectors

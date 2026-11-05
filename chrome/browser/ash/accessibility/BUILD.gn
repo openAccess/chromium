@@ -16,8 +16,6 @@ static_library("accessibility") {
     "accessibility_extension_loader.h",
     "accessibility_manager.cc",
     "accessibility_manager.h",
-    "accessibility_panel.cc",
-    "accessibility_panel.h",
     "chromevox_panel.cc",
     "chromevox_panel.h",
     "dictation.cc",
@@ -43,10 +41,10 @@ static_library("accessibility") {
     "//chrome/browser/ash/profiles",
     "//chrome/browser/extensions/api/braille_display_private:controller",
     "//chrome/browser/profiles:profile_manager",
+    "//chrome/browser/ui:singleton_tabs",
     "//chrome/browser/ui/ash/keyboard",
     "//chrome/browser/ui/aura/accessibility",
     "//chrome/common",
-    "//chrome/common:constants",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/dbus/upstart",
     "//chromeos/ash/components/language_packs",
@@ -65,7 +63,6 @@ static_library("accessibility") {
     "//extensions/browser/api/virtual_keyboard_private",
     "//extensions/browser/api/virtual_keyboard_private:virtual_keyboard_delegate",
     "//extensions/common:mojom",
-    "//services/accessibility:buildflags",
     "//services/audio/public/cpp",
     "//ui/base/interaction",
     "//ui/content_accelerators",
@@ -75,11 +72,10 @@ static_library("accessibility") {
 
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
-    "//chrome/common/extensions/api",
     "//chromeos/ash/components/audio",
     "//chromeos/ash/components/dbus/dlcservice",
+    "//chromeos/ash/experiences/extensions/common/api",
     "//components/session_manager/core",
     "//components/soda",
     "//content/public/browser",
@@ -130,9 +126,9 @@ static_library("test_support") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/speech",
     "//chrome/browser/speech:test_support",
-    "//chrome/browser/ui",
     "//chrome/common",
     "//chrome/common:constants",
+    "//chromeos/ash/experiences/extensions/browser/speech:speech_recognition_constants",
     "//components/prefs",
     "//components/privacy_sandbox:features",
     "//content/public/browser",
@@ -185,6 +181,7 @@ source_set("browser_tests") {
     # "facegaze_browsertest.cc",
     "facegaze_bubble_test_helper.cc",
     "facegaze_bubble_test_helper.h",
+    "facegaze_pref_validation_browsertest.cc",
     "magnification_controller_browsertest.cc",
     "magnification_manager_browsertest.cc",
     "select_to_speak_browsertest.cc",
@@ -218,6 +215,8 @@ source_set("browser_tests") {
     "//chrome/browser/extensions/api/braille_display_private:controller",
     "//chrome/browser/speech",
     "//chrome/browser/speech:test_support",
+    "//chrome/browser/ui:browser_window_header",
+    "//chrome/browser/ui:settings_window_manager_chromeos",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui:view_ids",
     "//chrome/browser/ui/ash/input_method",
@@ -227,6 +226,7 @@ source_set("browser_tests") {
     "//chrome/browser/ui/browser_window",
     "//chrome/test:test_support",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/experiences/extensions/browser/speech:speech_recognition_constants",
     "//components/live_caption",
     "//components/live_caption:constants",
     "//components/sync_preferences",
@@ -234,10 +234,34 @@ source_set("browser_tests") {
     "//ui/base/mojom:ui_base_types",
     "//ui/events:test_support",
   ]
+}
 
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+# These tests are only meant to run on an FYI bot because they test against
+# live sites, as a way to catch potential regressions.
+source_set("live_site_tests") {
+  testonly = true
+
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  sources = [ "accessibility_live_site_browsertest.cc" ]
+
+  deps = [
+    ":accessibility",
+    ":test_support",
+    "//chrome/browser",
+    "//chrome/browser/devtools",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui:browser_window_header",
+    "//chrome/renderer",
+    "//chrome/test:test_support",
+    "//content/public/browser",
+    "//content/test:test_support",
+    "//extensions/browser",
+    "//net:test_support",
+    "//testing/gtest",
+    "//ui/accessibility",
+    "//ui/events:test_support",
+  ]
 }
 
 if (is_chromeos_device) {
@@ -255,8 +279,8 @@ if (is_chromeos_device) {
       "//base",
       "//chrome/browser/speech",
       "//chrome/common",
-      "//chrome/test:ash_integration_test_support",
       "//chrome/test:test_support",
+      "//chrome/test/base/chromeos/crosier:ash_test_support",
       "//chrome/test/base/chromeos/crosier:test_support",
       "//extensions/browser",
       "//ui/base:test_support",

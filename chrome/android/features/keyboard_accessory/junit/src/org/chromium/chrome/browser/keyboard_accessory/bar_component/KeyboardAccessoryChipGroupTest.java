@@ -28,7 +28,7 @@ import org.chromium.components.browser_ui.widget.chips.ChipView;
  * that maps 1dp to exactly 1 pixel. The screen resolution is 360x640.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, qualifiers = "w360dp-h640dp-mdpi")
+@Config(qualifiers = "w360dp-h640dp-mdpi")
 public class KeyboardAccessoryChipGroupTest {
     private static final int SCREEN_WIDTH = 360;
     // Use fixed height because the tests don't verify it.
@@ -63,7 +63,8 @@ public class KeyboardAccessoryChipGroupTest {
         // Set the context theme so that ChipView attributes and macros can be resolved.
         getContext().getTheme().applyStyle(R.style.Theme_BrowserUI_DayNight, true);
         // Make sure that 1dp is mapped to 1 pixel on the screen by converting 100dp to pixels.
-        DisplayMetrics metrics = RuntimeEnvironment.application.getResources().getDisplayMetrics();
+        DisplayMetrics metrics =
+                RuntimeEnvironment.getApplication().getResources().getDisplayMetrics();
         assertEquals(
                 100, (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 100, metrics));
 
@@ -278,6 +279,6 @@ public class KeyboardAccessoryChipGroupTest {
     }
 
     private Context getContext() {
-        return RuntimeEnvironment.application;
+        return RuntimeEnvironment.getApplication();
     }
 }

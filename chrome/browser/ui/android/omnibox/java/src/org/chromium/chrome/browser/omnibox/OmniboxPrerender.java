@@ -4,7 +4,10 @@
 
 package org.chromium.chrome.browser.omnibox;
 
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
@@ -22,16 +25,24 @@ import org.chromium.chrome.browser.tab.Tab;
  */
 @NullMarked
 public class OmniboxPrerender {
-    private final long mNativeOmniboxPrerender;
+    @JniType("::OmniboxPrerender")
+    interface NativeOmniboxPrerender extends JniTypeToken {}
 
-    /** Constructor for creating a OmniboxPrerender instanace. */
+    private final JniUniquePtr<NativeOmniboxPrerender> mNativeOmniboxPrerender;
+
+    /** Constructor for creating an OmniboxPrerender instance. */
     public OmniboxPrerender() {
-        mNativeOmniboxPrerender = OmniboxPrerenderJni.get().init(OmniboxPrerender.this);
+        mNativeOmniboxPrerender = OmniboxPrerenderJni.get().init();
+    }
+
+    /** Destroys the native OmniboxPrerender instance. Safe to call more than once. */
+    public void destroy() {
+        mNativeOmniboxPrerender.destroy();
     }
 
     /**
      * Clears the transitional matches. This should be called when the user stops typing into the
-     * omnibox (e.g. when navigating away, closing the keyboard or changing tabs)
+     * omnibox (e.g. when navigating away, closing the keyboard or changing tabs).
      *
      * @param profile profile instance corresponding to the active profile.
      */
@@ -53,7 +64,8 @@ public class OmniboxPrerender {
     /**
      * Potentially invokes a pre-render or pre-connect given the url typed into the omnibox and a
      * corresponding autocomplete result. This should be invoked every time the omnibox changes
-     * (e.g. As the user types characters this method should be invoked at least once per character)
+     * (e.g. As the user types characters this method should be invoked at least once per
+     * character).
      *
      * @param url url in the omnibox.
      * @param currentUrl url the current tab is displaying.
@@ -79,15 +91,15 @@ public class OmniboxPrerender {
 
     @NativeMethods
     interface Natives {
-        long init(OmniboxPrerender self);
+        JniUniquePtr<NativeOmniboxPrerender> init();
 
-        void clear(long nativeOmniboxPrerender, @JniType("Profile*") Profile profile);
+        void clear(JniPtr<NativeOmniboxPrerender> self, @JniType("Profile*") Profile profile);
 
         void initializeForProfile(
-                long nativeOmniboxPrerender, @JniType("Profile*") Profile profile);
+                JniPtr<NativeOmniboxPrerender> self, @JniType("Profile*") Profile profile);
 
         void prerenderMaybe(
-                long nativeOmniboxPrerender,
+                JniPtr<NativeOmniboxPrerender> self,
                 @JniType("std::u16string") String url,
                 @JniType("std::u16string") String currentUrl,
                 long nativeAutocompleteResult,

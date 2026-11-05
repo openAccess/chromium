@@ -88,6 +88,7 @@
 #include "net/base/backoff_entry.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_request_headers.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
@@ -314,7 +315,7 @@ class TestDownloaderFactory {
     return identity_test_env_.get();
   }
 
-  const CoreAccountId& account_id() { return account_info_.account_id; }
+  const CoreAccountId& account_id() { return account_info_.GetAccountId(); }
 
   ExtensionDownloader::Factory GetDownloaderFactory() {
     return base::BindRepeating(
@@ -715,9 +716,10 @@ class ExtensionUpdaterTest : public testing::Test {
     // option to appear in the x= parameter.
     std::unique_ptr<ManifestFetchData> fetch_data(
         CreateManifestFetchData(GURL("http://localhost/foo")));
-    fetch_data->AddExtension(id, version,
-                             ExtensionDownloaderTestHelper::GetTestPingData(),
-                             "bar", std::string(), ManifestLocation::kInternal,
+    const DownloadPingData ping_data =
+        ExtensionDownloaderTestHelper::GetTestPingData();
+    fetch_data->AddExtension(id, version, &ping_data, "bar", std::string(),
+                             ManifestLocation::kInternal,
                              DownloadFetchPriority::kBackground);
     std::map<std::string, std::string> params;
     VerifyQueryAndExtractParameters(fetch_data->full_url().GetQuery(), &params);
@@ -734,10 +736,11 @@ class ExtensionUpdaterTest : public testing::Test {
     // option to appear in the x= parameter.
     std::unique_ptr<ManifestFetchData> fetch_data(
         CreateManifestFetchData(GURL("http://localhost/foo")));
-    fetch_data->AddExtension(
-        id, version, ExtensionDownloaderTestHelper::GetTestPingData(),
-        "a=1&b=2&c", std::string(), ManifestLocation::kInternal,
-        DownloadFetchPriority::kBackground);
+    const DownloadPingData ping_data =
+        ExtensionDownloaderTestHelper::GetTestPingData();
+    fetch_data->AddExtension(id, version, &ping_data, "a=1&b=2&c",
+                             std::string(), ManifestLocation::kInternal,
+                             DownloadFetchPriority::kBackground);
     std::map<std::string, std::string> params;
     VerifyQueryAndExtractParameters(fetch_data->full_url().GetQuery(), &params);
     EXPECT_EQ(id, params["id"]);
@@ -843,10 +846,12 @@ class ExtensionUpdaterTest : public testing::Test {
     // Make sure that an installsource= appears in the x= parameter.
     std::unique_ptr<ManifestFetchData> fetch_data(
         CreateManifestFetchData(GURL("http://localhost/foo")));
-    fetch_data->AddExtension(
-        id, version, ExtensionDownloaderTestHelper::GetTestPingData(),
-        ExtensionDownloaderTestHelper::kEmptyUpdateUrlData, install_source,
-        ManifestLocation::kInternal, DownloadFetchPriority::kBackground);
+    const DownloadPingData ping_data =
+        ExtensionDownloaderTestHelper::GetTestPingData();
+    fetch_data->AddExtension(id, version, &ping_data,
+                             ExtensionDownloaderTestHelper::kEmptyUpdateUrlData,
+                             install_source, ManifestLocation::kInternal,
+                             DownloadFetchPriority::kBackground);
     std::map<std::string, std::string> params;
     VerifyQueryAndExtractParameters(fetch_data->full_url().GetQuery(), &params);
     EXPECT_EQ(id, params["id"]);
@@ -862,11 +867,13 @@ class ExtensionUpdaterTest : public testing::Test {
     // Make sure that installedby= appears in the x= parameter.
     std::unique_ptr<ManifestFetchData> fetch_data(
         CreateManifestFetchData(GURL("http://localhost/foo")));
-    fetch_data->AddExtension(
-        id, version, ExtensionDownloaderTestHelper::GetTestPingData(),
-        ExtensionDownloaderTestHelper::kEmptyUpdateUrlData, std::string(),
-        ManifestLocation::kExternalPrefDownload,
-        DownloadFetchPriority::kBackground);
+    const DownloadPingData ping_data =
+        ExtensionDownloaderTestHelper::GetTestPingData();
+    fetch_data->AddExtension(id, version, &ping_data,
+                             ExtensionDownloaderTestHelper::kEmptyUpdateUrlData,
+                             std::string(),
+                             ManifestLocation::kExternalPrefDownload,
+                             DownloadFetchPriority::kBackground);
     std::map<std::string, std::string> params;
     VerifyQueryAndExtractParameters(fetch_data->full_url().GetQuery(), &params);
     EXPECT_EQ(id, params["id"]);
@@ -1616,9 +1623,7 @@ class ExtensionUpdaterTest : public testing::Test {
     TestingProfile profile;
     // TODO(crbug.com/396722906): Delete this when CrxInstaller no longer has
     // dependencies on ExtensionService.
-    static_cast<TestExtensionSystem*>(ExtensionSystem::Get(&profile))
-        ->CreateExtensionService(base::CommandLine::ForCurrentProcess(),
-                                 base::FilePath(), false);
+    static_cast<TestExtensionSystem*>(ExtensionSystem::Get(&profile))->Init();
     scoped_refptr<MockCrxInstaller> mock_installer =
         base::MakeRefCounted<MockCrxInstaller>(&profile);
 
@@ -2324,10 +2329,11 @@ class ExtensionUpdaterTest : public testing::Test {
 
     std::unique_ptr<ManifestFetchData> fetch_data(
         CreateManifestFetchData(GURL("http://localhost/foo"), data_priority));
+    const DownloadPingData ping_data =
+        ExtensionDownloaderTestHelper::GetTestPingData();
     ASSERT_TRUE(fetch_data->AddExtension(
-        id, version, ExtensionDownloaderTestHelper::GetTestPingData(),
-        std::string(), std::string(), ManifestLocation::kInternal,
-        extension_priority));
+        id, version, &ping_data, std::string(), std::string(),
+        ManifestLocation::kInternal, extension_priority));
     ASSERT_EQ(expected_priority, fetch_data->fetch_priority());
   }
 

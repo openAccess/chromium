@@ -85,4 +85,15 @@ void FakeToolDelegate::SetWebStateListForWindowId(
       web_state_list ? web_state_list->AsWeakPtr() : nullptr;
 }
 
+void FakeToolDelegate::IsAcceptableNavigationDestination(
+    const GURL& url,
+    ToolExecutionCallback callback) {
+  if (!navigation_destination_allowed_) {
+    std::move(callback).Run(ToolExecutionResult(
+        mojom::ActionResultCode::kTriggeredNavigationBlocked));
+    return;
+  }
+  std::move(callback).Run(ToolExecutionResult::Ok());
+}
+
 }  // namespace actor

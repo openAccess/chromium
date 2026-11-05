@@ -4,29 +4,50 @@
 
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_video_frame.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
 #include <utility>
+#include <vector>
 
+#include "base/check.h"
+#include "base/containers/span.h"
+#include "base/feature_list.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
+#include "base/types/expected.h"
 #include "base/unguessable_token.h"
 #include "media/media_buildflags.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_codec_specifics_vp_8.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_video_frame_init.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_video_frame_metadata.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_video_frame_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_video_frame_type.h"
+#include "third_party/blink/renderer/core/dom/dom_high_res_time_stamp.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/typed_arrays/array_buffer/array_buffer_contents.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/modules/peerconnection/peer_connection_util.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_video_frame_delegate.h"
+#include "third_party/blink/renderer/platform/bindings/exception_code.h"
+#include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/webrtc/api/frame_transformer_factory.h"
 #include "third_party/webrtc/api/frame_transformer_interface.h"
 #include "third_party/webrtc/api/units/timestamp.h"
+#include "third_party/webrtc/api/video/video_codec_type.h"
 #include "third_party/webrtc/api/video/video_frame_metadata.h"
 #include "third_party/webrtc/api/video/video_frame_type.h"
-#include "third_party/webrtc/api/video_codecs/video_codec.h"
+#include "v8/include/v8-isolate.h"
+#include "v8/include/v8-local-handle.h"
+#include "v8/include/v8-value.h"
 
 namespace blink {
 
@@ -181,7 +202,8 @@ RTCEncodedVideoFrame* RTCEncodedVideoFrame::Create(
              V8RTCEncodedVideoFrameType::Enum::kDelta) {
     frame_type = webrtc::VideoFrameType::kVideoFrameDelta;
   } else {
-    NOTREACHED();
+    exception_state.ThrowTypeError("Invalid frame type");
+    return nullptr;
   }
 
   uint8_t payload_type = init->payloadType();
@@ -189,9 +211,17 @@ RTCEncodedVideoFrame* RTCEncodedVideoFrame::Create(
 
   std::optional<int64_t> absolute_capture_timestamp_ms;
   if (init->hasCaptureTime()) {
-    base::TimeDelta capture_time = RTCEncodedFrameTimestampToCaptureTime(
-        context, init->captureTime(), CaptureTimeInfo::ClockType::kTimeTicks);
-    absolute_capture_timestamp_ms = capture_time.InMilliseconds();
+    DOMHighResTimeStamp dom_capture_time = init->captureTime();
+    DOMHighResTimeStamp dom_now =
+        RTCTimeStampFromTimeTicks(context, base::TimeTicks::Now());
+    if (dom_capture_time > dom_now) {
+      exception_state.ThrowRangeError("captureTime cannot be in the future.");
+      return nullptr;
+    }
+    base::TimeDelta absolute_capture_timestamp =
+        RTCEncodedFrameTimestampToCaptureTime(
+            context, dom_capture_time, CaptureTimeInfo::ClockType::kTimeTicks);
+    absolute_capture_timestamp_ms = absolute_capture_timestamp.InMilliseconds();
   }
 
   std::vector<uint32_t> csrcs(init->contributingSources().begin(),
@@ -204,11 +234,22 @@ RTCEncodedVideoFrame* RTCEncodedVideoFrame::Create(
     presentation_timestamp = webrtc::Timestamp::Micros(init->timestamp());
   }
 
+  uint16_t width = init->width();
+  if (width == 0) {
+    exception_state.ThrowRangeError("width must be greater than 0.");
+    return nullptr;
+  }
+  uint16_t height = init->height();
+  if (height == 0) {
+    exception_state.ThrowRangeError("height must be greater than 0.");
+    return nullptr;
+  }
+
   return MakeGarbageCollected<RTCEncodedVideoFrame>(
       webrtc::CreateOutgoingVideoFrame(
           frame_type, payload_type, rtp_timestamp_without_offset, buffer_span,
           absolute_capture_timestamp_ms, csrcs, codec_type,
-          presentation_timestamp));
+          presentation_timestamp, width, height));
 }
 
 RTCEncodedVideoFrame::RTCEncodedVideoFrame(
@@ -238,9 +279,9 @@ uint32_t RTCEncodedVideoFrame::timestamp() const {
   return delegate_->RtpTimestamp().value_or(0);
 }
 
-DOMArrayBuffer* RTCEncodedVideoFrame::data(ExecutionContext* context) const {
+DOMArrayBuffer* RTCEncodedVideoFrame::data() const {
   if (!frame_data_) {
-    frame_data_ = delegate_->CreateDataBuffer(context->GetIsolate());
+    frame_data_ = delegate_->CreateDataBuffer();
   }
   return frame_data_.Get();
 }
@@ -389,11 +430,11 @@ void RTCEncodedVideoFrame::setMetadata(ExecutionContext* context,
   }
 }
 
-void RTCEncodedVideoFrame::setData(ExecutionContext*, DOMArrayBuffer* data) {
+void RTCEncodedVideoFrame::setData(DOMArrayBuffer* data) {
   frame_data_ = data;
 }
 
-String RTCEncodedVideoFrame::toString(ExecutionContext* context) const {
+String RTCEncodedVideoFrame::toString() const {
   if (!delegate_) {
     return "empty";
   }
@@ -406,7 +447,7 @@ String RTCEncodedVideoFrame::toString(ExecutionContext* context) const {
     sb.Append(", ");
   }
   sb.Append("size: ");
-  sb.AppendNumber(data(context)->ByteLength());
+  sb.AppendNumber(data()->ByteLength());
   sb.Append(" bytes, type: ");
   sb.Append(type().AsCStr());
   sb.Append("}");

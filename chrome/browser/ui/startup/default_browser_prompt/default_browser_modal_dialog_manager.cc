@@ -7,6 +7,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "chrome/browser/default_browser/default_browser_controller.h"
+#include "chrome/browser/default_browser/default_browser_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -69,27 +70,20 @@ void DefaultBrowserModalDialogManager::CloseAllPromptInstances() {
   }
 }
 
-void DefaultBrowserModalDialogManager::OnDialogWidgetCloseRequested(
-    BrowserWindowInterface* browser,
-    views::Widget::ClosedReason reason) {
-  // Note: On Mac, the ESC dismissal is resolved as kUnspecified.
-  const bool is_dismiss_action =
-      reason == views::Widget::ClosedReason::kEscKeyPressed ||
-      reason == views::Widget::ClosedReason::kCloseButtonClicked ||
-      reason == views::Widget::ClosedReason::kCancelButtonClicked ||
-      reason == views::Widget::ClosedReason::kUnspecified;
-  if (is_dismiss_action) {
-    HandleDismiss();
-    DefaultBrowserPromptManager::GetInstance()->CloseAllPrompts(
-        DefaultBrowserPromptManager::CloseReason::kDismiss);
-    return;
-  }
-
+void DefaultBrowserModalDialogManager::RemoveWidget(
+    BrowserWindowInterface* browser) {
   dialog_widgets_.erase(browser);
 }
 
 default_browser::DefaultBrowserEntrypointType
 DefaultBrowserModalDialogManager::GetEntrypointType() const {
+  if (IsDefaultBrowserModalSticky()) {
+    return use_settings_illustration_
+               ? default_browser::DefaultBrowserEntrypointType::
+                     kStickyModalDialogWithSettingsIllustration
+               : default_browser::DefaultBrowserEntrypointType::
+                     kStickyModalDialogWithoutSettingsIllustration;
+  }
   return use_settings_illustration_
              ? default_browser::DefaultBrowserEntrypointType::
                    kModalDialogWithSettingsIllustration

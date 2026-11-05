@@ -24,15 +24,14 @@
 #include "chrome/browser/extensions/cws_info_service_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/password_manager/password_manager_test_util.h"
-#include "chrome/browser/permissions/notifications_engagement_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
 #include "chrome/browser/ui/desktop_to_mobile_promos/ios_promo_trigger_service.h"
 #include "chrome/browser/ui/desktop_to_mobile_promos/ios_promo_trigger_service_factory.h"
 #include "chrome/browser/ui/safety_hub/mock_safe_browsing_database_manager.h"
-#include "chrome/browser/ui/safety_hub/notification_permission_review_service_factory.h"
 #include "chrome/browser/ui/safety_hub/password_status_check_service.h"
 #include "chrome/browser/ui/safety_hub/password_status_check_service_factory.h"
+#include "chrome/browser/ui/safety_hub/revoked_permissions_result.h"
 #include "chrome/browser/ui/safety_hub/safety_hub_constants.h"
 #include "chrome/browser/ui/safety_hub/safety_hub_test_util.h"
 #include "chrome/browser/ui/safety_hub/safety_hub_util.h"
@@ -59,6 +58,7 @@
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
 #include "components/password_manager/core/browser/password_string.h"
 #include "components/permissions/constants.h"
+#include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/sync_preferences/features.h"
@@ -143,13 +143,14 @@ class SafetyHubHandlerTest : public testing::Test {
     clock_.SetNow(time);
 
     safety_hub_test_util::CreateRevokedPermissionsService(profile());
-    safety_hub_test_util::CreateNotificationPermissionsReviewService(profile());
 
     hcsm_ = HostContentSettingsMapFactory::GetForProfile(profile());
     hcsm_->SetClockForTesting(&clock_);
 
-    // Set up safe browsing service.
+    // Set up Safe Browsing when it is available.
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     SetUpSafeBrowsingService();
+#endif
 
     handler_ = std::make_unique<SafetyHubHandler>(profile());
     handler()->set_web_ui(web_ui());
@@ -165,25 +166,9 @@ class SafetyHubHandlerTest : public testing::Test {
     if (partition) {
       partition->WaitForDeletionTasksForTesting();
     }
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     TestingBrowserProcess::GetGlobal()->SetSafeBrowsingService(nullptr);
-  }
-
-  void AddNotificationPermissionsForReview() {
-    // Set a host to have large number of notifications and keep engagement as
-    // NONE.
-    GURL url = GURL("https://example0.org:443");
-    hcsm()->SetContentSettingDefaultScope(
-        url, GURL(), ContentSettingsType::NOTIFICATIONS, CONTENT_SETTING_ALLOW);
-    auto* notifications_engagement_service =
-        NotificationsEngagementServiceFactory::GetForProfile(profile());
-    notifications_engagement_service->RecordNotificationDisplayed(url, 35);
-
-    // Trigger the update for changes to be seen.
-    NotificationPermissionsReviewService* service =
-        NotificationPermissionsReviewServiceFactory::GetForProfile(profile());
-    CHECK(service);
-    service->UpdateAsync();
-    RunUntilIdle();
+#endif
   }
 
   void AddRevokedPermission() {
@@ -300,17 +285,6 @@ class SafetyHubHandlerTest : public testing::Test {
                                         ContentSettingsType::NOTIFICATIONS));
   }
 
-  void ValidateNotificationPermissionUpdate() {
-    const content::TestWebUI::CallData& data = *web_ui()->call_data().back();
-    EXPECT_EQ("cr.webUIListenerCallback", data.function_name());
-
-    ASSERT_TRUE(data.arg1()->is_string());
-    EXPECT_EQ("notification-permission-review-list-maybe-changed",
-              data.arg1()->GetString());
-
-    ASSERT_TRUE(data.arg2()->is_list());
-  }
-
   void SetPrefsForSafeBrowsing(bool is_enabled,
                                bool is_enhanced,
                                SettingManager managed_by) {
@@ -420,14 +394,6 @@ class SafetyHubHandlerTest : public testing::Test {
       case SafetyHubHandler::SafetyHubModule::kExtensions:
         isModuleRecommended ? AddTriggeringExtension()
                             : ClearTriggeringExtensions();
-        break;
-      case SafetyHubHandler::SafetyHubModule::kNotifications:
-        hcsm()->ClearSettingsForOneType(
-            ContentSettingsType::NOTIFICATION_PERMISSION_REVIEW);
-        isModuleRecommended
-            ? AddNotificationPermissionsForReview()
-            : handler()->HandleIgnoreOriginsForNotificationPermissionReview(
-                  base::ListValue().Append(GetOriginList(1)));
         break;
       case SafetyHubHandler::SafetyHubModule::kUnusedSitePermissions:
         isModuleRecommended
@@ -545,6 +511,7 @@ class SafetyHubHandlerTest : public testing::Test {
   }
 
  private:
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   void SetUpSafeBrowsingService() {
     mock_database_manager_ =
         base::MakeRefCounted<MockSafeBrowsingDatabaseManager>();
@@ -555,6 +522,7 @@ class SafetyHubHandlerTest : public testing::Test {
     TestingBrowserProcess::GetGlobal()->SetSafeBrowsingService(
         safe_browsing_factory_->CreateSafeBrowsingService());
   }
+#endif
 
   base::test::ScopedFeatureList feature_list_;
   content::BrowserTaskEnvironment task_environment_;
@@ -567,9 +535,11 @@ class SafetyHubHandlerTest : public testing::Test {
   scoped_refptr<password_manager::TestPasswordStore> account_store_ =
       CreateAndUseTestAccountPasswordStore(&profile_);
   std::unique_ptr<SafetyHubHandler> handler_;
-  scoped_refptr<MockSafeBrowsingDatabaseManager> mock_database_manager_;
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   std::unique_ptr<safe_browsing::TestSafeBrowsingServiceFactory>
       safe_browsing_factory_;
+#endif
+  scoped_refptr<MockSafeBrowsingDatabaseManager> mock_database_manager_;
 };
 
 TEST_F(SafetyHubHandlerTest, PopulateUnusedSitePermissionsData) {
@@ -659,6 +629,8 @@ TEST_F(SafetyHubHandlerTest,
             handler()->PopulateUnusedSitePermissionsData());
 }
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+
 TEST_F(SafetyHubHandlerTest, PopulateAbusiveAndUnusedSitePermissionsData) {
   AddAbusiveNotificationPermission();
   AddRevokedPermission();
@@ -706,6 +678,17 @@ TEST_F(SafetyHubHandlerTest, PopulateAbusiveAndUnusedSitePermissionsData) {
   EXPECT_EQ(*(*revoked_permission_list_abusive)[0].GetDict().FindString(
                 site_settings::kType),
             "notifications");
+
+  // Each entry should expose its revocation type under the key read by the
+  // WebUI (`UnusedSitePermissions.revocationType`).
+  EXPECT_EQ(revoked_permissions[0].GetDict().FindInt("revocationType"),
+            static_cast<int>(PermissionsRevocationType::kUnusedPermissions));
+  EXPECT_EQ(revoked_permissions[1].GetDict().FindInt("revocationType"),
+            static_cast<int>(PermissionsRevocationType::
+                                 kUnusedPermissionsAndAbusiveNotifications));
+  EXPECT_EQ(revoked_permissions[2].GetDict().FindInt("revocationType"),
+            static_cast<int>(
+                PermissionsRevocationType::kAbusiveNotificationPermissions));
 
   // Notifications should not be allowed.
   ExpectRevokedAbusiveNotificationPermission(kAbusiveAndUnusedTestSite);
@@ -833,116 +816,7 @@ TEST_F(SafetyHubHandlerTest,
       2U);
 }
 
-TEST_F(SafetyHubHandlerTest,
-       HandleIgnoreOriginsForNotificationPermissionReview) {
-  HostContentSettingsMap* content_settings =
-      HostContentSettingsMapFactory::GetForProfile(profile());
-  ContentSettingsForOneType ignored_patterns =
-      content_settings->GetSettingsForOneType(
-          ContentSettingsType::NOTIFICATION_PERMISSION_REVIEW);
-  ASSERT_EQ(0U, ignored_patterns.size());
-
-  base::ListValue args;
-  args.Append(GetOriginList(1));
-  handler()->HandleIgnoreOriginsForNotificationPermissionReview(args);
-
-  // Check there is 1 origin in ignore list.
-  ignored_patterns = content_settings->GetSettingsForOneType(
-      ContentSettingsType::NOTIFICATION_PERMISSION_REVIEW);
-  ASSERT_EQ(1U, ignored_patterns.size());
-
-  ValidateNotificationPermissionUpdate();
-}
-
-TEST_F(SafetyHubHandlerTest,
-       HandleUndoIgnoreOriginsForNotificationPermissionReview) {
-  base::ListValue args;
-  args.Append(GetOriginList(1));
-  handler()->HandleIgnoreOriginsForNotificationPermissionReview(args);
-
-  // Check there is 1 origin in ignore list.
-  HostContentSettingsMap* content_settings =
-      HostContentSettingsMapFactory::GetForProfile(profile());
-  ContentSettingsForOneType ignored_patterns =
-      content_settings->GetSettingsForOneType(
-          ContentSettingsType::NOTIFICATION_PERMISSION_REVIEW);
-  ASSERT_EQ(1U, ignored_patterns.size());
-
-  // Check there are no origins in ignore list.
-  handler()->HandleUndoIgnoreOriginsForNotificationPermissionReview(args);
-  ignored_patterns = content_settings->GetSettingsForOneType(
-      ContentSettingsType::NOTIFICATION_PERMISSION_REVIEW);
-  ASSERT_EQ(0U, ignored_patterns.size());
-}
-
-TEST_F(SafetyHubHandlerTest, HandleAllowNotificationPermissionForOrigins) {
-  base::ListValue args;
-  base::ListValue origins = GetOriginList(2);
-  args.Append(origins.Clone());
-  handler()->HandleAllowNotificationPermissionForOrigins(args);
-
-  // Check the permission for the two origins is allow.
-  HostContentSettingsMap* content_settings =
-      HostContentSettingsMapFactory::GetForProfile(profile());
-  ContentSettingsForOneType notification_permissions =
-      content_settings->GetSettingsForOneType(
-          ContentSettingsType::NOTIFICATIONS);
-  auto type = content_settings->GetContentSetting(
-      GURL(origins[0].GetString()), GURL(), ContentSettingsType::NOTIFICATIONS);
-  ASSERT_EQ(CONTENT_SETTING_ALLOW, type);
-
-  type = content_settings->GetContentSetting(
-      GURL(origins[1].GetString()), GURL(), ContentSettingsType::NOTIFICATIONS);
-  ASSERT_EQ(CONTENT_SETTING_ALLOW, type);
-
-  ValidateNotificationPermissionUpdate();
-}
-
-TEST_F(SafetyHubHandlerTest, HandleBlockNotificationPermissionForOrigins) {
-  base::ListValue args;
-  base::ListValue origins = GetOriginList(2);
-  args.Append(origins.Clone());
-
-  handler()->HandleBlockNotificationPermissionForOrigins(args);
-
-  // Check the permission for the two origins is block.
-  HostContentSettingsMap* content_settings =
-      HostContentSettingsMapFactory::GetForProfile(profile());
-  ContentSettingsForOneType notification_permissions =
-      content_settings->GetSettingsForOneType(
-          ContentSettingsType::NOTIFICATIONS);
-  auto type = content_settings->GetContentSetting(
-      GURL(origins[0].GetString()), GURL(), ContentSettingsType::NOTIFICATIONS);
-  ASSERT_EQ(CONTENT_SETTING_BLOCK, type);
-
-  type = content_settings->GetContentSetting(
-      GURL(origins[1].GetString()), GURL(), ContentSettingsType::NOTIFICATIONS);
-  ASSERT_EQ(CONTENT_SETTING_BLOCK, type);
-
-  ValidateNotificationPermissionUpdate();
-}
-
-TEST_F(SafetyHubHandlerTest, HandleResetNotificationPermissionForOrigins) {
-  HostContentSettingsMap* content_settings =
-      HostContentSettingsMapFactory::GetForProfile(profile());
-  base::ListValue args;
-  base::ListValue origins = GetOriginList(1);
-  args.Append(origins.Clone());
-
-  content_settings->SetContentSettingCustomScope(
-      ContentSettingsPattern::FromString(origins[0].GetString()),
-      ContentSettingsPattern::Wildcard(), ContentSettingsType::NOTIFICATIONS,
-      CONTENT_SETTING_ALLOW);
-
-  handler()->HandleResetNotificationPermissionForOrigins(args);
-
-  // Check the permission for the origin is reset.
-  auto type = content_settings->GetContentSetting(
-      GURL(origins[0].GetString()), GURL(), ContentSettingsType::NOTIFICATIONS);
-  ASSERT_EQ(CONTENT_SETTING_ASK, type);
-
-  ValidateNotificationPermissionUpdate();
-}
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 TEST_F(SafetyHubHandlerTest, HandleGetSafeBrowsingCardData_EnabledEnhanced) {
   SetPrefsForSafeBrowsing(true, true, SettingManager::USER);
@@ -1141,10 +1015,6 @@ TEST_F(SafetyHubHandlerTest, VersionCardOutOfDate) {
 
 TEST_F(SafetyHubHandlerTest,
        HandleGetSafetyHubEntryPointData_HasRecommendationsAndHeader) {
-  base::test::ScopedFeatureList disable_notification_autorevocation;
-  disable_notification_autorevocation.InitAndDisableFeature(
-      features::kSafetyHubDisruptiveNotificationRevocation);
-
 #if BUILDFLAG(IS_LINUX)
   // TODO(crbug.com/490024783): This is one of several tests failing on Linux
   // builders with Ozone Wayland. Diagnose, fix, and unskip this test.
@@ -1158,7 +1028,6 @@ TEST_F(SafetyHubHandlerTest,
   modules.push_back(SafetyHubHandler::SafetyHubModule::kVersion);
   modules.push_back(SafetyHubHandler::SafetyHubModule::kSafeBrowsing);
   modules.push_back(SafetyHubHandler::SafetyHubModule::kExtensions);
-  modules.push_back(SafetyHubHandler::SafetyHubModule::kNotifications);
   modules.push_back(SafetyHubHandler::SafetyHubModule::kUnusedSitePermissions);
 
   std::vector<int> masks;
@@ -1280,13 +1149,6 @@ TEST_F(SafetyHubHandlerTest,
 
 TEST_F(SafetyHubHandlerTest,
        HandleGetSafetyHubEntryPointData_Subheader_AllModules) {
-  // Disruptive notification revocation disables the notification review module.
-  // TODO(https://crbug.com/496616827): Adapt this test when removing the
-  // notification review module logic.
-  base::test::ScopedFeatureList disable_notification_autorevocation;
-  disable_notification_autorevocation.InitAndDisableFeature(
-      features::kSafetyHubDisruptiveNotificationRevocation);
-
   AddUnusedPermission();
   SetupTestToShowOrHideRecommendationForModule(
       SafetyHubHandler::SafetyHubModule::kPasswords, true);
@@ -1296,11 +1158,9 @@ TEST_F(SafetyHubHandlerTest,
       SafetyHubHandler::SafetyHubModule::kSafeBrowsing, true);
   SetupTestToShowOrHideRecommendationForModule(
       SafetyHubHandler::SafetyHubModule::kExtensions, true);
-  SetupTestToShowOrHideRecommendationForModule(
-      SafetyHubHandler::SafetyHubModule::kNotifications, true);
 
   // The expected subheader should be "Passwords, Chrome update, Safe Browsing,
-  // extensions, notifications, permissions"
+  // extensions, permissions"
   std::string expected_subheader =
       l10n_util::GetStringUTF8(IDS_SETTINGS_SAFETY_HUB_PASSWORDS_MODULE_NAME) +
       l10n_util::GetStringUTF8(IDS_SETTINGS_SAFETY_HUB_MODULE_NAME_SEPARATOR) +
@@ -1315,10 +1175,6 @@ TEST_F(SafetyHubHandlerTest,
       " " +
       l10n_util::GetStringUTF8(
           IDS_SETTINGS_SAFETY_HUB_EXTENSIONS_MODULE_LOWERCASE_NAME) +
-      l10n_util::GetStringUTF8(IDS_SETTINGS_SAFETY_HUB_MODULE_NAME_SEPARATOR) +
-      " " +
-      l10n_util::GetStringUTF8(
-          IDS_SETTINGS_SAFETY_HUB_NOTIFICATIONS_MODULE_LOWERCASE_NAME) +
       l10n_util::GetStringUTF8(IDS_SETTINGS_SAFETY_HUB_MODULE_NAME_SEPARATOR) +
       " " +
       l10n_util::GetStringUTF8(
@@ -1393,28 +1249,33 @@ class SafetyHubHandlerUnusedPermissionRevocationDisabledTest
     clock_.SetNow(time);
 
     safety_hub_test_util::CreateRevokedPermissionsService(profile());
-    safety_hub_test_util::CreateNotificationPermissionsReviewService(profile());
 
     hcsm_ = HostContentSettingsMapFactory::GetForProfile(profile());
     hcsm_->SetClockForTesting(&clock_);
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     if (IsSafeBrowsingEnabled()) {
       SetUpSafeBrowsingService();
     }
+#endif
 
     handler_ = std::make_unique<SafetyHubHandler>(profile());
     handler()->set_web_ui(web_ui());
     handler()->AllowJavascript();
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     if (IsSafeBrowsingEnabled()) {
       AddAbusiveNotificationPermission();
     }
+#endif
   }
 
   void TearDown() override {
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     if (IsSafeBrowsingEnabled()) {
       TestingBrowserProcess::GetGlobal()->SetSafeBrowsingService(nullptr);
     }
+#endif
   }
 
   TestingProfile* profile() { return &profile_; }
@@ -1444,6 +1305,7 @@ class SafetyHubHandlerUnusedPermissionRevocationDisabledTest
   }
 
  private:
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   void SetUpSafeBrowsingService() {
     mock_database_manager_ =
         base::MakeRefCounted<MockSafeBrowsingDatabaseManager>();
@@ -1454,6 +1316,7 @@ class SafetyHubHandlerUnusedPermissionRevocationDisabledTest
     TestingBrowserProcess::GetGlobal()->SetSafeBrowsingService(
         safe_browsing_factory_->CreateSafeBrowsingService());
   }
+#endif
 
   base::test::ScopedFeatureList feature_list_;
   content::BrowserTaskEnvironment task_environment_;
@@ -1462,9 +1325,11 @@ class SafetyHubHandlerUnusedPermissionRevocationDisabledTest
   scoped_refptr<HostContentSettingsMap> hcsm_;
   base::SimpleTestClock clock_;
   std::unique_ptr<SafetyHubHandler> handler_;
-  scoped_refptr<MockSafeBrowsingDatabaseManager> mock_database_manager_;
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   std::unique_ptr<safe_browsing::TestSafeBrowsingServiceFactory>
       safe_browsing_factory_;
+#endif
+  scoped_refptr<MockSafeBrowsingDatabaseManager> mock_database_manager_;
 };
 
 TEST_P(SafetyHubHandlerUnusedPermissionRevocationDisabledTest,
@@ -1594,4 +1459,8 @@ TEST_P(SafetyHubHandlerUnusedPermissionRevocationDisabledTest,
 
 INSTANTIATE_TEST_SUITE_P(All,
                          SafetyHubHandlerUnusedPermissionRevocationDisabledTest,
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
                          testing::Bool());
+#else
+                         testing::Values(false));
+#endif

@@ -15,6 +15,7 @@
 #import "base/memory/scoped_refptr.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/scoped_feature_list.h"
+#import "base/test/test_future.h"
 #import "base/time/default_clock.h"
 #import "components/policy/core/browser/url_list/policy_blocklist_service.h"
 #import "components/policy/policy_constants.h"
@@ -30,6 +31,7 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/url_util.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/testing/scoped_block_swizzler.h"
 #import "ios/web/common/features.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -161,6 +163,13 @@ class AppLauncherTabHelperTest : public PlatformTest {
  protected:
   void SetUp() override {
     PlatformTest::SetUp();
+    // Ensure RequestToLaunchApp() treats the application as active on device
+    // bots.
+    application_state_swizzler_ = std::make_unique<ScopedBlockSwizzler>(
+        [UIApplication class], @selector(applicationState), ^{
+          return UIApplicationStateActive;
+        });
+
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         ReadingListModelFactory::GetInstance(),
@@ -182,6 +191,11 @@ class AppLauncherTabHelperTest : public PlatformTest {
     tab_helper_ = AppLauncherTabHelper::FromWebState(&web_state_);
     tab_helper_->SetDelegate(&delegate_);
     tab_helper_->SetBrowserPresentationProvider(browser_presentation_provider_);
+  }
+
+  void TearDown() override {
+    application_state_swizzler_.reset();
+    PlatformTest::TearDown();
   }
 
   [[nodiscard]] bool TestShouldAllowRequest(
@@ -263,6 +277,7 @@ class AppLauncherTabHelperTest : public PlatformTest {
   }
 
   web::WebTaskEnvironment task_environment;
+  std::unique_ptr<ScopedBlockSwizzler> application_state_swizzler_;
   std::unique_ptr<TestProfileIOS> profile_;
   web::FakeWebState web_state_;
   bool incognito_ = false;
@@ -275,15 +290,7 @@ class AppLauncherTabHelperTest : public PlatformTest {
 };
 
 // Tests that a valid URL launches app.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_AbuseDetectorPolicyAllowedForValidUrl \
-  AbuseDetectorPolicyAllowedForValidUrl
-#else
-#define MAYBE_AbuseDetectorPolicyAllowedForValidUrl \
-  DISABLED_AbuseDetectorPolicyAllowedForValidUrl
-#endif
-TEST_F(AppLauncherTabHelperTest, MAYBE_AbuseDetectorPolicyAllowedForValidUrl) {
+TEST_F(AppLauncherTabHelperTest, AbuseDetectorPolicyAllowedForValidUrl) {
   abuse_detector_.policy = ExternalAppLaunchPolicyAllow;
   EXPECT_FALSE(TestShouldAllowRequest(@"valid://1234",
                                       /*target_frame_is_main=*/true,
@@ -298,16 +305,7 @@ TEST_F(AppLauncherTabHelperTest, MAYBE_AbuseDetectorPolicyAllowedForValidUrl) {
 // Tests that AppLauncherTabHelper waits for any pending app launch completion
 // and scene activation before calling policy decision callbacks for
 // subsequent navigation requests.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_ShouldAllowRequestWhileAppLaunchPending \
-  ShouldAllowRequestWhileAppLaunchPending
-#else
-#define MAYBE_ShouldAllowRequestWhileAppLaunchPending \
-  DISABLED_ShouldAllowRequestWhileAppLaunchPending
-#endif
-TEST_F(AppLauncherTabHelperTest,
-       MAYBE_ShouldAllowRequestWhileAppLaunchPending) {
+TEST_F(AppLauncherTabHelperTest, ShouldAllowRequestWhileAppLaunchPending) {
   delegate_.SetShouldCompleteAppLaunchImmediately(false);
 
   // Should not allow navigation request with App-URL.
@@ -365,16 +363,7 @@ TEST_F(AppLauncherTabHelperTest,
 // Tests that AppLauncherTabHelper waits for any pending app launch completion
 // but not scene activation before calling policy decision callbacks for
 // subsequent navigation requests if kill switch is on.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_ShouldAllowRequestWhileAppLaunchPendingKS \
-  ShouldAllowRequestWhileAppLaunchPendingKS
-#else
-#define MAYBE_ShouldAllowRequestWhileAppLaunchPendingKS \
-  DISABLED_ShouldAllowRequestWhileAppLaunchPendingKS
-#endif
-TEST_F(AppLauncherTabHelperTest,
-       MAYBE_ShouldAllowRequestWhileAppLaunchPendingKS) {
+TEST_F(AppLauncherTabHelperTest, ShouldAllowRequestWhileAppLaunchPendingKS) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(
       kInactiveNavigationAfterAppLaunchKillSwitch);
@@ -430,16 +419,8 @@ TEST_F(AppLauncherTabHelperTest,
 // Tests that AppLauncherTabHelper waits for any pending app launch completion
 // before calling policy decision callbacks for subsequent navigation requests
 // when app launching failed.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_ShouldAllowRequestWhileFailingAppLaunchPending \
-  ShouldAllowRequestWhileFailingAppLaunchPending
-#else
-#define MAYBE_ShouldAllowRequestWhileFailingAppLaunchPending \
-  DISABLED_ShouldAllowRequestWhileFailingAppLaunchPending
-#endif
 TEST_F(AppLauncherTabHelperTest,
-       MAYBE_ShouldAllowRequestWhileFailingAppLaunchPending) {
+       ShouldAllowRequestWhileFailingAppLaunchPending) {
   delegate_.SetShouldCompleteAppLaunchImmediately(false);
   delegate_.SetAppLaunchShouldFail(true);
 
@@ -492,6 +473,90 @@ TEST_F(AppLauncherTabHelperTest,
   EXPECT_TRUE(policy_decision.ShouldAllowNavigation());
 }
 
+// Test that IsCallPromptLaunchPending() returns true only while a call-prompt
+// URL launch (e.g. facetime-audio:) is pending completion.
+TEST_F(AppLauncherTabHelperTest, IsCallPromptLaunchPending) {
+  delegate_.SetShouldCompleteAppLaunchImmediately(false);
+  EXPECT_FALSE(tab_helper_->IsCallPromptLaunchPending());
+
+  // Non-call app schemes do not set IsCallPromptLaunchPending().
+  EXPECT_FALSE(TestShouldAllowRequest(@"valid://1234",
+                                      /*target_frame_is_main=*/true,
+                                      /*target_frame_is_cross_origin=*/false,
+                                      /*target_window_is_cross_origin=*/false,
+                                      /*is_user_initiated=*/true,
+                                      /*user_tapped_recently=*/true));
+  EXPECT_FALSE(tab_helper_->IsCallPromptLaunchPending());
+  delegate_.CompleteAppLaunch();
+  delegate_.CompleteBackToApp();
+
+  // Call schemes (such as facetime-audio:) set IsCallPromptLaunchPending()
+  // until the scene becomes active again.
+  EXPECT_FALSE(TestShouldAllowRequest(@"facetime-audio://+12345551212",
+                                      /*target_frame_is_main=*/true,
+                                      /*target_frame_is_cross_origin=*/false,
+                                      /*target_window_is_cross_origin=*/false,
+                                      /*is_user_initiated=*/true,
+                                      /*user_tapped_recently=*/true));
+  EXPECT_TRUE(tab_helper_->IsCallPromptLaunchPending());
+
+  delegate_.CompleteAppLaunch();
+  EXPECT_TRUE(tab_helper_->IsCallPromptLaunchPending());
+
+  delegate_.CompleteBackToApp();
+  EXPECT_FALSE(tab_helper_->IsCallPromptLaunchPending());
+}
+
+// Test that ShouldAllowResponse() allows navigation response immediately when
+// no app launch is pending.
+TEST_F(AppLauncherTabHelperTest, ShouldAllowResponseWhenNoAppLaunchPending) {
+  NSURL* url = [NSURL URLWithString:@"https://example.com"];
+  NSURLResponse* response = [[NSURLResponse alloc] initWithURL:url
+                                                      MIMEType:@"text/html"
+                                         expectedContentLength:0
+                                              textEncodingName:nil];
+  base::test::TestFuture<web::WebStatePolicyDecider::PolicyDecision> future;
+  tab_helper_->ShouldAllowResponse(
+      response,
+      web::WebStatePolicyDecider::ResponseInfo(/*for_main_frame=*/true),
+      future.GetCallback());
+  EXPECT_TRUE(future.IsReady());
+  EXPECT_TRUE(future.Get().ShouldAllowNavigation());
+}
+
+// Test that ShouldAllowResponse() waits for any pending app launch and scene
+// activation before allowing a navigation response to commit.
+TEST_F(AppLauncherTabHelperTest, ShouldAllowResponseWhileAppLaunchPending) {
+  delegate_.SetShouldCompleteAppLaunchImmediately(false);
+
+  EXPECT_FALSE(TestShouldAllowRequest(@"valid://1234",
+                                      /*target_frame_is_main=*/true,
+                                      /*target_frame_is_cross_origin=*/false,
+                                      /*target_window_is_cross_origin=*/false,
+                                      /*is_user_initiated=*/true,
+                                      /*user_tapped_recently=*/true));
+  ASSERT_TRUE(delegate_.IsAppLaunchCompletionPending());
+
+  NSURL* url = [NSURL URLWithString:@"https://example.com"];
+  NSURLResponse* response = [[NSURLResponse alloc] initWithURL:url
+                                                      MIMEType:@"text/html"
+                                         expectedContentLength:0
+                                              textEncodingName:nil];
+  base::test::TestFuture<web::WebStatePolicyDecider::PolicyDecision> future;
+  tab_helper_->ShouldAllowResponse(
+      response,
+      web::WebStatePolicyDecider::ResponseInfo(/*for_main_frame=*/true),
+      future.GetCallback());
+  EXPECT_FALSE(future.IsReady());
+
+  delegate_.CompleteAppLaunch();
+  EXPECT_FALSE(future.IsReady());
+
+  delegate_.CompleteBackToApp();
+  ASSERT_TRUE(future.Wait());
+  EXPECT_TRUE(future.Get().ShouldAllowNavigation());
+}
+
 // Tests that a valid URL does not launch app when launch policy is to block.
 TEST_F(AppLauncherTabHelperTest, AbuseDetectorPolicyBlockedForValidUrl) {
   abuse_detector_.policy = ExternalAppLaunchPolicyBlock;
@@ -524,15 +589,7 @@ TEST_F(AppLauncherTabHelperTest, AppLaunchingFails) {
 
 // Tests that an extra alert is shown on app launch failure without user
 // gesture.
-// TODO(crbug.com/40287450): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_AppLaunchingFailsWithoutUserGesture \
-  AppLaunchingFailsWithoutUserGesture
-#else
-#define MAYBE_AppLaunchingFailsWithoutUserGesture \
-  DISABLED_AppLaunchingFailsWithoutUserGesture
-#endif
-TEST_F(AppLauncherTabHelperTest, MAYBE_AppLaunchingFailsWithoutUserGesture) {
+TEST_F(AppLauncherTabHelperTest, AppLaunchingFailsWithoutUserGesture) {
   delegate_.SetAppLaunchShouldFail(true);
   delegate_.SetShouldAcceptPrompt(true);
 
@@ -562,13 +619,7 @@ TEST_F(AppLauncherTabHelperTest, MAYBE_AppLaunchingFailsWithoutUserGesture) {
 
 // Tests that a valid URL shows an alert and launches app when launch policy is
 // to prompt and user accepts.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_ValidUrlPromptUserAccepts ValidUrlPromptUserAccepts
-#else
-#define MAYBE_ValidUrlPromptUserAccepts DISABLED_ValidUrlPromptUserAccepts
-#endif
-TEST_F(AppLauncherTabHelperTest, MAYBE_ValidUrlPromptUserAccepts) {
+TEST_F(AppLauncherTabHelperTest, ValidUrlPromptUserAccepts) {
   abuse_detector_.policy = ExternalAppLaunchPolicyPrompt;
   delegate_.SetShouldAcceptPrompt(true);
   EXPECT_FALSE(TestShouldAllowRequest(@"valid://1234",
@@ -597,13 +648,7 @@ TEST_F(AppLauncherTabHelperTest, ValidUrlPromptUserRejects) {
 }
 
 // Tests that a valid URL triggers a prompt if transition is not link.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_ValidUrlNotLinkTransition ValidUrlNotLinkTransition
-#else
-#define MAYBE_ValidUrlNotLinkTransition DISABLED_ValidUrlNotLinkTransition
-#endif
-// TODO(crbug.com/40287450): The test fails on device.
-TEST_F(AppLauncherTabHelperTest, MAYBE_ValidUrlNotLinkTransition) {
+TEST_F(AppLauncherTabHelperTest, ValidUrlNotLinkTransition) {
   delegate_.SetShouldAcceptPrompt(true);
   EXPECT_FALSE(TestShouldAllowRequest(
       @"valid://1234",
@@ -617,13 +662,7 @@ TEST_F(AppLauncherTabHelperTest, MAYBE_ValidUrlNotLinkTransition) {
 }
 
 // Tests that iTunes Urls are blocked with a prompt.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_iTunesURL iTunesURL
-#else
-#define MAYBE_iTunesURL DISABLED_iTunesURL
-#endif
-// TODO(crbug.com/40287450): The test fails on device.
-TEST_F(AppLauncherTabHelperTest, MAYBE_iTunesURL) {
+TEST_F(AppLauncherTabHelperTest, iTunesURL) {
   NSString* url_string = @"itms-apps://itunes.apple.com/us/app/appname/id123";
   delegate_.SetShouldAcceptPrompt(true);
   EXPECT_FALSE(TestShouldAllowRequest(/*url_string=*/url_string,
@@ -638,13 +677,7 @@ TEST_F(AppLauncherTabHelperTest, MAYBE_iTunesURL) {
 
 // Tests that ShouldAllowRequest only launches apps for App Urls in main frame,
 // or iframe when there was a recent user interaction.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_ShouldAllowRequestWithAppUrl ShouldAllowRequestWithAppUrl
-#else
-#define MAYBE_ShouldAllowRequestWithAppUrl DISABLED_ShouldAllowRequestWithAppUrl
-#endif
-TEST_F(AppLauncherTabHelperTest, MAYBE_ShouldAllowRequestWithAppUrl) {
+TEST_F(AppLauncherTabHelperTest, ShouldAllowRequestWithAppUrl) {
   NSString* url_string = @"valid://1234";
   EXPECT_FALSE(TestShouldAllowRequest(url_string, /*target_frame_is_main=*/true,
                                       /*target_frame_is_cross_origin=*/false,
@@ -737,13 +770,7 @@ TEST_F(AppLauncherTabHelperTest, InvalidUrls) {
 
 // Tests that if web_state is not shown or if there is a UI on top of it, no
 // request is triggered.
-// TODO(crbug.com/40287450): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_WebStateNotShown WebStateNotShown
-#else
-#define MAYBE_WebStateNotShown DISABLED_WebStateNotShown
-#endif
-TEST_F(AppLauncherTabHelperTest, MAYBE_WebStateNotShown) {
+TEST_F(AppLauncherTabHelperTest, WebStateNotShown) {
   // Base case.
   NSString* url_string = @"valid://1234";
   EXPECT_FALSE(TestShouldAllowRequest(url_string, /*target_frame_is_main=*/true,
@@ -784,13 +811,7 @@ TEST_F(AppLauncherTabHelperTest, MAYBE_WebStateNotShown) {
 
 // Tests that when the last committed URL is invalid, the URL is only opened
 // when the last committed item is nil.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_ValidUrlInvalidCommittedURL ValidUrlInvalidCommittedURL
-#else
-#define MAYBE_ValidUrlInvalidCommittedURL DISABLED_ValidUrlInvalidCommittedURL
-#endif
-TEST_F(AppLauncherTabHelperTest, MAYBE_ValidUrlInvalidCommittedURL) {
+TEST_F(AppLauncherTabHelperTest, ValidUrlInvalidCommittedURL) {
   NSString* url_string = @"valid://1234";
   web_state_.SetCurrentURL(GURL());
 
@@ -829,13 +850,7 @@ TEST_F(AppLauncherTabHelperTest, InsecureUrls) {
 
 // Tests that tel: URLs are blocked when the target frame is cross-origin
 // with respect to the source origin.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_TelUrls TelUrls
-#else
-#define MAYBE_TelUrls DISABLED_TelUrls
-#endif
-TEST_F(AppLauncherTabHelperTest, MAYBE_TelUrls) {
+TEST_F(AppLauncherTabHelperTest, TelUrls) {
   EXPECT_FALSE(TestShouldAllowRequest(@"tel:+12345551212",
                                       /*target_frame_is_main=*/true,
                                       /*target_frame_is_cross_origin=*/true,
@@ -881,13 +896,7 @@ TEST_F(AppLauncherTabHelperTest, MAYBE_TelUrls) {
 // facetime-audio-prompt: and telprompt: URLs are blocked when the target frame
 // is cross-origin with respect to the source origin, and allowed when
 // same-origin.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_CallWithPromptUrls CallWithPromptUrls
-#else
-#define MAYBE_CallWithPromptUrls DISABLED_CallWithPromptUrls
-#endif
-TEST_F(AppLauncherTabHelperTest, MAYBE_CallWithPromptUrls) {
+TEST_F(AppLauncherTabHelperTest, CallWithPromptUrls) {
   NSArray<NSString*>* url_strings = @[
     @"tel:+12345551212",
     @"facetime://+12345551212",
@@ -932,13 +941,7 @@ TEST_F(AppLauncherTabHelperTest, MAYBE_CallWithPromptUrls) {
 
 // Tests that URLs with Chrome Bundle schemes are blocked on main frames and
 // iframes.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_ChromeBundleUrlScheme ChromeBundleUrlScheme
-#else
-#define MAYBE_ChromeBundleUrlScheme DISABLED_ChromeBundleUrlScheme
-#endif
-TEST_F(AppLauncherTabHelperTest, MAYBE_ChromeBundleUrlScheme) {
+TEST_F(AppLauncherTabHelperTest, ChromeBundleUrlScheme) {
   // Get the test bundle URL Scheme.
   NSString* scheme = [[ChromeAppConstants sharedInstance] bundleURLScheme];
   NSString* url = [NSString stringWithFormat:@"%@://www.google.com", scheme];
@@ -973,13 +976,7 @@ TEST_F(AppLauncherTabHelperTest, MAYBE_ChromeBundleUrlScheme) {
 // Tests that ShouldAllowRequest updates the reading list correctly for non-link
 // transitions regardless of the app launching success when AppLauncherRefresh
 // flag is enabled.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_UpdatingTheReadingList UpdatingTheReadingList
-#else
-#define MAYBE_UpdatingTheReadingList DISABLED_UpdatingTheReadingList
-#endif
-TEST_F(AppLauncherTabHelperTest, MAYBE_UpdatingTheReadingList) {
+TEST_F(AppLauncherTabHelperTest, UpdatingTheReadingList) {
   delegate_.SetShouldAcceptPrompt(false);
   // Update reading list if the transition is not a link transition.
   EXPECT_TRUE(TestReadingListUpdate(/*is_app_blocked=*/true,
@@ -1010,14 +1007,7 @@ TEST_F(AppLauncherTabHelperTest, MAYBE_UpdatingTheReadingList) {
 
 // Tests that launching a SMS URL via a JavaScript redirect in the main frame
 // is allowed. Covers the scenario for crbug.com/1058388
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_LaunchSmsApp_JavaScriptRedirect LaunchSmsApp_JavaScriptRedirect
-#else
-#define MAYBE_LaunchSmsApp_JavaScriptRedirect \
-  DISABLED_LaunchSmsApp_JavaScriptRedirect
-#endif
-TEST_F(AppLauncherTabHelperTest, MAYBE_LaunchSmsApp_JavaScriptRedirect) {
+TEST_F(AppLauncherTabHelperTest, LaunchSmsApp_JavaScriptRedirect) {
   NSString* sms_url_string = @"sms:?&body=Hello%20World";
   ui::PageTransition page_transition = ui::PageTransitionFromInt(
       ui::PageTransition::PAGE_TRANSITION_LINK |
@@ -1081,13 +1071,7 @@ TEST_F(BlockedUrlPolicyAppLauncherTabHelperTest, BlockedUrl) {
 
 // Tests that URLs to non-blocked domains are able to open native apps when
 // policy is blocking other domains.
-// TODO(crbug.com/40166678): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_AllowedUrl AllowedUrl
-#else
-#define MAYBE_AllowedUrl DISABLED_AllowedUrl
-#endif
-TEST_F(BlockedUrlPolicyAppLauncherTabHelperTest, MAYBE_AllowedUrl) {
+TEST_F(BlockedUrlPolicyAppLauncherTabHelperTest, AllowedUrl) {
   EXPECT_FALSE(TestShouldAllowRequest(@"valid://1234",
                                       /*target_frame_is_main=*/true,
                                       /*target_frame_is_cross_origin=*/false,
@@ -1109,13 +1093,7 @@ class IncognitoAppLauncherTabHelperTest : public AppLauncherTabHelperTest {
 
 // Tests that opening an external App from incognito tab always triggers a
 // prompt.
-// TODO(crbug.com/40287450): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_ValidUrlPromptUserAccepts ValidUrlPromptUserAccepts
-#else
-#define MAYBE_ValidUrlPromptUserAccepts DISABLED_ValidUrlPromptUserAccepts
-#endif
-TEST_F(IncognitoAppLauncherTabHelperTest, MAYBE_ValidUrlPromptUserAccepts) {
+TEST_F(IncognitoAppLauncherTabHelperTest, ValidUrlPromptUserAccepts) {
   delegate_.SetShouldAcceptPrompt(true);
   EXPECT_FALSE(TestShouldAllowRequest(@"valid://1234",
                                       /*target_frame_is_main=*/true,
@@ -1130,13 +1108,7 @@ TEST_F(IncognitoAppLauncherTabHelperTest, MAYBE_ValidUrlPromptUserAccepts) {
 
 // Tests that a second prompt is triggered when failing to open an external app
 // from incognito.
-// TODO(crbug.com/40287450): The test fails on device.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_AppLaunchFails AppLaunchFails
-#else
-#define MAYBE_AppLaunchFails DISABLED_AppLaunchFails
-#endif
-TEST_F(IncognitoAppLauncherTabHelperTest, MAYBE_AppLaunchFails) {
+TEST_F(IncognitoAppLauncherTabHelperTest, AppLaunchFails) {
   delegate_.SetShouldAcceptPrompt(true);
   delegate_.SetAppLaunchShouldFail(true);
   EXPECT_FALSE(TestShouldAllowRequest(@"valid://1234",

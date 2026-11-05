@@ -16,6 +16,7 @@
 #include "content/browser/preloading/prefetch/prefetch_streaming_url_loader.h"
 #include "content/browser/preloading/preloading.h"
 #include "content/browser/preloading/preloading_data_impl.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/frame_accept_header.h"
 #include "content/public/common/content_client.h"
@@ -69,6 +70,7 @@ class TestPrefetchContainerObserver final : public PrefetchContainerObserver {
       const PrefetchContainer& prefetch_container) override {
     on_complete_loop_.Quit();
   }
+  void OnPrefetchStale(const PrefetchContainer& prefetch_container) override {}
 
   base::WeakPtr<PrefetchContainer> prefetch_container_;
   base::RunLoop on_complete_loop_;
@@ -742,7 +744,7 @@ void PrefetchingMetricsTestBase::ExpectCorrectUkmLogs(
   const auto source_id = ForceLogsUploadAndGetUkmId(std::move(navigate_url));
   auto actual_attempts = test_ukm_recorder()->GetEntries(
       ukm::builders::Preloading_Attempt::kEntryName,
-      test::kPreloadingAttemptUkmMetrics);
+      test::GetPreloadingAttemptUkmMetrics());
   EXPECT_EQ(actual_attempts.size(), 1u);
 
   std::optional<base::TimeDelta> ready_time = std::nullopt;

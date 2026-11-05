@@ -186,9 +186,11 @@ SessionAccessor::Ptr SessionAccessor::Create(
     ChromeMLModel model,
     on_device_model::mojom::SessionParamsPtr params,
     on_device_model::mojom::LoadAdaptationParamsPtr adaptation_params,
-    std::optional<uint32_t> adaptation_id) {
-  Ptr handle(new SessionAccessor(chrome_ml, task_runner, model),
-             base::OnTaskRunnerDeleter(task_runner));
+    std::optional<uint32_t> adaptation_id,
+    ChromeMLModel postprocessor_model) {
+  Ptr handle(
+      new SessionAccessor(chrome_ml, task_runner, model, postprocessor_model),
+      base::OnTaskRunnerDeleter(task_runner));
   // SessionAccessor is deleted on `task_runner_` so base::Unretained is safe.
   task_runner->PostTask(
       FROM_HERE,
@@ -209,14 +211,17 @@ SessionAccessor::~SessionAccessor() {
 SessionAccessor::SessionAccessor(
     const ChromeML& chrome_ml,
     scoped_refptr<base::SequencedTaskRunner> task_runner,
-    ChromeMLModel model)
+    ChromeMLModel model,
+    ChromeMLModel postprocessor_model)
     : chrome_ml_(chrome_ml),
       task_runner_(std::move(task_runner)),
-      model_(model) {}
+      model_(model),
+      postprocessor_model_(postprocessor_model) {}
 
 SessionAccessor::Ptr SessionAccessor::Clone() {
   TRACE_EVENT("optimization_guide", "SessionAccessor::Clone");
-  Ptr handle(new SessionAccessor(chrome_ml_.get(), task_runner_, model_),
+  Ptr handle(new SessionAccessor(chrome_ml_.get(), task_runner_, model_,
+                                 postprocessor_model_),
              base::OnTaskRunnerDeleter(task_runner_));
   // SessionAccessor is deleted on `task_runner_` so base::Unretained is safe.
   task_runner_->PostTask(
@@ -361,11 +366,15 @@ void SessionAccessor::CreateInternal(
           on_device_model::CapabilityFlags::kImageInput),
       .enable_audio_input = params->capabilities.Has(
           on_device_model::CapabilityFlags::kAudioInput),
+      .allow_speculative_decoding = base::FeatureList::IsEnabled(
+          on_device_model::features::kOnDeviceModelSpeculativeDecoding),
   };
   VLOG(1) << __func__ << " starting session with: "
           << "max_tokens=" << descriptor.max_tokens << ", "
           << "top_k=" << descriptor.top_k << ", "
           << "temperature=" << descriptor.temperature << ", "
+          << "allow_speculative_decoding="
+          << descriptor.allow_speculative_decoding << ", "
           << "enable_image_input=" << descriptor.enable_image_input << ", "
           << "enable_audio_input=" << descriptor.enable_audio_input;
   ChromeMLModelData data;
@@ -460,6 +469,8 @@ void SessionAccessor::GenerateInternal(
       .max_output_tokens = generate_options->max_output_tokens,
       .constraint = constraint,
       .output_fn = &output_fn,
+      .enable_thinking = generate_options->enable_thinking,
+      .thinking_token_budget = generate_options->thinking_token_budget,
   };
   chrome_ml_->SessionGenerate(session_, &options, canceler->get());
 }
@@ -525,11 +536,27 @@ std::optional<odmm::AsrError> SessionAccessor::CreateAsrStreamInternal(
       .decoder_prefill_backoff = -1,
       .language =
           asr_options->language ? asr_options->language->c_str() : nullptr,
+      .polisher_model = postprocessor_model_,
+      .enable_token_stability = false,
+      .interim_token_holdback = -1,
+      .interim_release_silence_ms = -1,
+      .interim_stability_steps = -1,
   };
   if (base::FeatureList::IsEnabled(
           on_device_model::features::kOnDeviceModelAsrDecoderPrefill)) {
     options.decoder_prefill_backoff =
         on_device_model::features::kOnDeviceModelAsrDecoderPrefillBackoff.Get();
+  }
+  if (base::FeatureList::IsEnabled(
+          on_device_model::features::kOnDeviceModelAsrTokenStability)) {
+    options.enable_token_stability = true;
+    options.interim_token_holdback =
+        on_device_model::features::kOnDeviceModelAsrInterimTokenHoldback.Get();
+    options.interim_release_silence_ms =
+        on_device_model::features::kOnDeviceModelAsrInterimReleaseSilenceMs
+            .Get();
+    options.interim_stability_steps =
+        on_device_model::features::kOnDeviceModelAsrInterimStabilitySteps.Get();
   }
   asr_stream_ = chrome_ml_->ASRCreateStream(session_, &options);
   if (asr_stream_ == 0) {

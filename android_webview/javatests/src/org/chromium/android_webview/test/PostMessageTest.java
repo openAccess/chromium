@@ -7,6 +7,7 @@ package org.chromium.android_webview.test;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
+import android.util.Pair;
 import android.webkit.JavascriptInterface;
 
 import androidx.test.filters.SmallTest;
@@ -33,12 +34,16 @@ import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.content_public.browser.MessagePayload;
 import org.chromium.content_public.browser.MessagePort;
+import org.chromium.content_public.browser.SharedArrayBuffer;
 import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnPageFinishedHelper;
 import org.chromium.net.test.util.TestWebServer;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Locale;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -92,10 +97,12 @@ public class PostMessageTest extends AwParameterizedTest {
         public static class Data {
             public final MessagePayload mMessagePayload;
             public final Looper mLastLooper;
+            public final String mSenderOrigin;
 
-            public Data(MessagePayload messagePayload, Looper looper) {
+            public Data(MessagePayload messagePayload, Looper looper, String senderOrigin) {
                 mMessagePayload = messagePayload;
                 mLastLooper = looper;
+                mSenderOrigin = senderOrigin;
             }
 
             public String getStringValue() {
@@ -116,8 +123,13 @@ public class PostMessageTest extends AwParameterizedTest {
         }
 
         public void notifyCalled(MessagePayload messagePayload) {
+            notifyCalled(messagePayload, null);
+        }
+
+        public void notifyCalled(MessagePayload messagePayload, String senderOrigin) {
             try {
-                mQueue.add(new ChannelContainer.Data(messagePayload, Looper.myLooper()));
+                mQueue.add(
+                        new ChannelContainer.Data(messagePayload, Looper.myLooper(), senderOrigin));
             } catch (IllegalStateException e) {
                 // We expect this add operation will always succeed since the default capacity of
                 // the queue is Integer.MAX_VALUE.
@@ -159,6 +171,7 @@ public class PostMessageTest extends AwParameterizedTest {
     @After
     public void tearDown() {
         mWebServer.shutdown();
+        mActivityTestRule.getAwBrowserContext().setCrossOriginIsolatedAllowList(Set.of());
     }
 
     private static final String WEBVIEW_MESSAGE = "from_webview";
@@ -210,6 +223,96 @@ public class PostMessageTest extends AwParameterizedTest {
                </script>
             </body></html>
             """;
+    // Concats all the data fields of the received message and makes it
+    // available as page title.
+    private static final String TITLE_FROM_POSTMESSAGE_TO_FRAME_SHARED_ARRAY_BUFFER =
+            """
+            <!DOCTYPE html><html><body>
+                <script>
+                    onmessage = function (e) {
+                        if (e.data instanceof SharedArrayBuffer) {
+                            const view = new Int32Array(e.data);
+                            document.title = view[0];
+                        } else {
+                            document.title = 'Error: Not a SharedArrayBuffer';
+                        }
+                    };
+                    onmessageerror = function(e) {
+                        document.title = 'Error: messageerror fired';
+                    };
+                </script>
+            </body></html>
+            """;
+    // Replies over the transferred port with the value it read out of the
+    // SharedArrayBuffer, so the reply can only arrive if the buffer and the port
+    // both made the trip in the same message.
+    private static final String TITLE_FROM_POSTMESSAGE_TO_FRAME_SHARED_ARRAY_BUFFER_AND_PORT =
+            """
+            <!DOCTYPE html><html><body>
+                <script>
+                    onmessage = function (e) {
+                        if (!e.ports || e.ports.length !== 1) {
+                            document.title = 'Error: Expected exactly one port';
+                            return;
+                        }
+                        if (!(e.data instanceof SharedArrayBuffer)) {
+                            e.ports[0].postMessage('Error: Not a SharedArrayBuffer');
+                            return;
+                        }
+                        const view = new Int32Array(e.data);
+                        e.ports[0].postMessage('sab:' + view[0]);
+                    };
+                    onmessageerror = function(e) {
+                        document.title = 'Error: messageerror fired';
+                    };
+                </script>
+            </body></html>
+            """;
+    // As TITLE_FROM_POSTMESSAGE_TO_FRAME_SHARED_ARRAY_BUFFER, but also reports how
+    // many messages have been delivered, so that a message which should have been
+    // dropped is distinguishable from one that merely arrived later.
+    private static final String TITLE_FROM_POSTMESSAGE_TO_FRAME_SHARED_ARRAY_BUFFER_COUNTED =
+            """
+            <!DOCTYPE html><html><body>
+                <script>
+                    var received = 0;
+                    onmessage = function (e) {
+                        received++;
+                        if (e.data instanceof SharedArrayBuffer) {
+                            const view = new Int32Array(e.data);
+                            document.title = view[0] + '/' + received;
+                        } else {
+                            document.title = 'Error: Not a SharedArrayBuffer/' + received;
+                        }
+                    };
+                    onmessageerror = function(e) {
+                        document.title = 'Error: messageerror fired';
+                    };
+                </script>
+            </body></html>
+            """;
+    private static final String TEST_PAGE_POST_SHARED_ARRAY_BUFFER_TO_APP =
+            String.format(
+                    Locale.ROOT,
+                    """
+                    <!DOCTYPE html><html><body>
+                        <script>
+                            onmessage = function (e) {
+                                if (!e.ports || e.ports.length === 0) return;
+                                try {
+                                    const sab = new SharedArrayBuffer(4);
+                                    e.ports[0].postMessage(sab);
+                                    e.ports[0].postMessage("%s");
+                                } catch (err) {
+                                    if (e.ports && e.ports.length > 0) {
+                                        e.ports[0].postMessage("Error: " + err.name);
+                                    }
+                                }
+                            };
+                       </script>
+                    </body></html>
+                    """,
+                    JS_MESSAGE);
 
     // Concats all the data fields of the received messages to the transferred channel
     // and makes it available as page title.
@@ -311,6 +414,290 @@ public class PostMessageTest extends AwParameterizedTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView", "Android-PostMessage"})
+    @SkipMutations(
+            reason = "This test depends on AwSettings.setAllowUniversalAccessFromFileURLs(false)")
+    public void testPostSharedArrayBuffer() throws Throwable {
+        mAwContents.getSettings().setAllowUniversalAccessFromFileUrls(false);
+        mActivityTestRule.getAwBrowserContext().setCrossOriginIsolatedAllowList(Set.of("*"));
+
+        List<Pair<String, String>> requestHeaders =
+                List.of(new Pair<>("Document-Isolation-Policy", "isolate-and-credentialless"));
+        final String url =
+                mWebServer.setResponse(
+                        "/test.html",
+                        TITLE_FROM_POSTMESSAGE_TO_FRAME_SHARED_ARRAY_BUFFER,
+                        requestHeaders);
+        OnPageFinishedHelper onPageFinishedHelper = mContentsClient.getOnPageFinishedHelper();
+        int currentCallCount = onPageFinishedHelper.getCallCount();
+        mActivityTestRule.loadUrlSync(mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+        onPageFinishedHelper.waitForCallback(currentCallCount);
+
+        SharedArrayBuffer sab = SharedArrayBuffer.allocate(null, 4);
+
+        ByteBuffer buffer = sab.mapAndCreateByteBuffer();
+        buffer.putInt(0, 42);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    MessagePayload payload = new MessagePayload(sab);
+
+                    mAwContents.postMessageToMainFrame(payload, "*", null);
+                });
+
+        CriteriaHelper.pollUiThread(
+                () -> "42".equals(mAwContents.getTitle()),
+                "JS failed to receive or read the SharedArrayBuffer. Current title: "
+                        + mAwContents.getTitle());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Android-PostMessage"})
+    @SkipMutations(
+            reason = "This test depends on AwSettings.setAllowUniversalAccessFromFileURLs(false)")
+    public void testPostSharedArrayBufferWithoutAllowlist() throws Throwable {
+        mAwContents.getSettings().setAllowUniversalAccessFromFileUrls(false);
+        List<Pair<String, String>> responseHeaders =
+                List.of(new Pair<>("Document-Isolation-Policy", "isolate-and-credentialless"));
+        final String url =
+                mWebServer.setResponse(
+                        "/test.html",
+                        TITLE_FROM_POSTMESSAGE_TO_FRAME_SHARED_ARRAY_BUFFER,
+                        responseHeaders);
+        OnPageFinishedHelper onPageFinishedHelper = mContentsClient.getOnPageFinishedHelper();
+        int currentCallCount = onPageFinishedHelper.getCallCount();
+        mActivityTestRule.loadUrlSync(mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+        onPageFinishedHelper.waitForCallback(currentCallCount);
+
+        SharedArrayBuffer sab = SharedArrayBuffer.allocate(null, 4);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    MessagePayload payload = new MessagePayload(sab);
+
+                    Assert.assertThrows(
+                            IllegalStateException.class,
+                            () -> mAwContents.postMessageToMainFrame(payload, "*", null));
+                });
+    }
+
+    // SharedArrayBuffer can only be sent from Java to JS, not from JS to the app.
+    // Verify that attempting to send a SharedArrayBuffer from JS to the app over a
+    // MessagePort is handled gracefully and ignored.
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Android-PostMessage"})
+    @SkipMutations(
+            reason = "This test depends on AwSettings.setAllowUniversalAccessFromFileURLs(false)")
+    public void testPostSharedArrayBufferToApp() throws Throwable {
+        mAwContents.getSettings().setAllowUniversalAccessFromFileUrls(false);
+        mActivityTestRule.getAwBrowserContext().setCrossOriginIsolatedAllowList(Set.of("*"));
+
+        List<Pair<String, String>> requestHeaders =
+                List.of(new Pair<>("Document-Isolation-Policy", "isolate-and-credentialless"));
+        final String url =
+                mWebServer.setResponse(
+                        "/test.html", TEST_PAGE_POST_SHARED_ARRAY_BUFFER_TO_APP, requestHeaders);
+        OnPageFinishedHelper onPageFinishedHelper = mContentsClient.getOnPageFinishedHelper();
+        int currentCallCount = onPageFinishedHelper.getCallCount();
+        mActivityTestRule.loadUrlSync(mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+        onPageFinishedHelper.waitForCallback(currentCallCount);
+
+        final ChannelContainer channelContainer = new ChannelContainer();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    MessagePort[] channel = mAwContents.createMessageChannel();
+                    channel[0].setMessageCallback(
+                            (message, _, _) -> channelContainer.notifyCalled(message), null);
+                    mAwContents.postMessageToMainFrame(
+                            new MessagePayload(WEBVIEW_MESSAGE),
+                            mWebServer.getBaseUrl(),
+                            new MessagePort[] {channel[1]});
+                });
+
+        ChannelContainer.Data data = channelContainer.waitForMessageCallback();
+        Assert.assertEquals(JS_MESSAGE, data.getStringValue());
+        // Assert that onMessage was called only for the valid string message,
+        // and the SharedArrayBuffer was ignored.
+        Assert.assertTrue(channelContainer.isQueueEmpty());
+    }
+
+    // A SharedArrayBuffer takes a WebView-specific route to the renderer rather than
+    // the content-layer postMessage path, so transferring ports alongside one
+    // exercises plumbing that the other postMessage tests never reach.
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Android-PostMessage"})
+    @SkipMutations(
+            reason = "This test depends on AwSettings.setAllowUniversalAccessFromFileURLs(false)")
+    public void testPostSharedArrayBufferWithMessagePort() throws Throwable {
+        mAwContents.getSettings().setAllowUniversalAccessFromFileUrls(false);
+        mActivityTestRule.getAwBrowserContext().setCrossOriginIsolatedAllowList(Set.of("*"));
+
+        List<Pair<String, String>> requestHeaders =
+                List.of(new Pair<>("Document-Isolation-Policy", "isolate-and-credentialless"));
+        final String url =
+                mWebServer.setResponse(
+                        "/test.html",
+                        TITLE_FROM_POSTMESSAGE_TO_FRAME_SHARED_ARRAY_BUFFER_AND_PORT,
+                        requestHeaders);
+        OnPageFinishedHelper onPageFinishedHelper = mContentsClient.getOnPageFinishedHelper();
+        int currentCallCount = onPageFinishedHelper.getCallCount();
+        mActivityTestRule.loadUrlSync(mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+        onPageFinishedHelper.waitForCallback(currentCallCount);
+
+        SharedArrayBuffer sab = SharedArrayBuffer.allocate(null, 4);
+        ByteBuffer buffer = sab.mapAndCreateByteBuffer();
+        buffer.putInt(0, 42);
+
+        final ChannelContainer channelContainer = new ChannelContainer();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    MessagePort[] channel = mAwContents.createMessageChannel();
+                    channel[0].setMessageCallback(
+                            (message, _, _) -> channelContainer.notifyCalled(message), null);
+                    mAwContents.postMessageToMainFrame(
+                            new MessagePayload(sab), "*", new MessagePort[] {channel[1]});
+                });
+
+        // The page only replies once it has both the buffer and the port, and the
+        // value proves the buffer it got is the one that was sent.
+        ChannelContainer.Data data = channelContainer.waitForMessageCallback();
+        Assert.assertEquals("sab:42", data.getStringValue());
+    }
+
+    // The target origin is honoured for SharedArrayBuffers too. Every other test
+    // here uses the "*" wildcard, so nothing else would notice this check going
+    // missing on the WebView-specific route.
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Android-PostMessage"})
+    @SkipMutations(
+            reason = "This test depends on AwSettings.setAllowUniversalAccessFromFileURLs(false)")
+    public void testPostSharedArrayBufferToWrongOrigin() throws Throwable {
+        mAwContents.getSettings().setAllowUniversalAccessFromFileUrls(false);
+        mActivityTestRule.getAwBrowserContext().setCrossOriginIsolatedAllowList(Set.of("*"));
+
+        List<Pair<String, String>> requestHeaders =
+                List.of(new Pair<>("Document-Isolation-Policy", "isolate-and-credentialless"));
+        final String url =
+                mWebServer.setResponse(
+                        "/test.html",
+                        TITLE_FROM_POSTMESSAGE_TO_FRAME_SHARED_ARRAY_BUFFER_COUNTED,
+                        requestHeaders);
+        OnPageFinishedHelper onPageFinishedHelper = mContentsClient.getOnPageFinishedHelper();
+        int currentCallCount = onPageFinishedHelper.getCallCount();
+        mActivityTestRule.loadUrlSync(mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+        onPageFinishedHelper.waitForCallback(currentCallCount);
+
+        SharedArrayBuffer rejected = SharedArrayBuffer.allocate(null, 4);
+        rejected.mapAndCreateByteBuffer().putInt(0, 1);
+        SharedArrayBuffer accepted = SharedArrayBuffer.allocate(null, 4);
+        accepted.mapAndCreateByteBuffer().putInt(0, 42);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mAwContents.postMessageToMainFrame(
+                            new MessagePayload(rejected), "http://not-the-test-server.test", null);
+                    // Sent second over the same pipe, so it cannot overtake the first.
+                    mAwContents.postMessageToMainFrame(
+                            new MessagePayload(accepted), mWebServer.getBaseUrl(), null);
+                });
+
+        // "42/1": the page has seen exactly one message, and it is the second one.
+        // Had the mismatched message been delivered the count would read 2.
+        CriteriaHelper.pollUiThread(
+                () -> "42/1".equals(mAwContents.getTitle()),
+                "Expected only the correctly targeted message to arrive. Current title: "
+                        + mAwContents.getTitle());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Android-PostMessage"})
+    public void testPostSharedArrayBufferOverMessagePortThrows() throws Throwable {
+        SharedArrayBuffer sab = SharedArrayBuffer.allocate(null, 4);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    MessagePort[] channel = mAwContents.createMessageChannel();
+                    Assert.assertThrows(
+                            UnsupportedOperationException.class,
+                            () -> channel[0].postMessage(new MessagePayload(sab), null));
+                });
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Android-PostMessage"})
+    @SkipMutations(
+            reason = "This test depends on AwSettings.setAllowUniversalAccessFromFileURLs(false)")
+    public void testPostClosedSharedArrayBufferIsDropped() throws Throwable {
+        mAwContents.getSettings().setAllowUniversalAccessFromFileUrls(false);
+        mActivityTestRule.getAwBrowserContext().setCrossOriginIsolatedAllowList(Set.of("*"));
+
+        List<Pair<String, String>> requestHeaders =
+                List.of(new Pair<>("Document-Isolation-Policy", "isolate-and-credentialless"));
+        final String url =
+                mWebServer.setResponse(
+                        "/test.html",
+                        TITLE_FROM_POSTMESSAGE_TO_FRAME_SHARED_ARRAY_BUFFER_COUNTED,
+                        requestHeaders);
+        OnPageFinishedHelper onPageFinishedHelper = mContentsClient.getOnPageFinishedHelper();
+        int currentCallCount = onPageFinishedHelper.getCallCount();
+        mActivityTestRule.loadUrlSync(mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+        onPageFinishedHelper.waitForCallback(currentCallCount);
+
+        SharedArrayBuffer closedSab = SharedArrayBuffer.allocate(null, 4);
+        closedSab.close();
+        SharedArrayBuffer validSab = SharedArrayBuffer.allocate(null, 4);
+        validSab.mapAndCreateByteBuffer().putInt(0, 42);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mAwContents.postMessageToMainFrame(new MessagePayload(closedSab), "*", null);
+                    mAwContents.postMessageToMainFrame(new MessagePayload(validSab), "*", null);
+                });
+
+        CriteriaHelper.pollUiThread(
+                () -> "42/1".equals(mAwContents.getTitle()),
+                "Expected closed SharedArrayBuffer to be dropped and valid one delivered. Title: "
+                        + mAwContents.getTitle());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Android-PostMessage"})
+    @SkipMutations(
+            reason = "This test depends on AwSettings.setAllowUniversalAccessFromFileURLs(false)")
+    public void testPostSharedArrayBufferWithoutResponseHeaders() throws Throwable {
+        mAwContents.getSettings().setAllowUniversalAccessFromFileUrls(false);
+        mActivityTestRule.getAwBrowserContext().setCrossOriginIsolatedAllowList(Set.of("*"));
+        final String url =
+                mWebServer.setResponse(
+                        "/test.html",
+                        TITLE_FROM_POSTMESSAGE_TO_FRAME_SHARED_ARRAY_BUFFER,
+                        null);
+        OnPageFinishedHelper onPageFinishedHelper = mContentsClient.getOnPageFinishedHelper();
+        int currentCallCount = onPageFinishedHelper.getCallCount();
+        mActivityTestRule.loadUrlSync(mAwContents, mContentsClient.getOnPageFinishedHelper(), url);
+        onPageFinishedHelper.waitForCallback(currentCallCount);
+
+        SharedArrayBuffer sab = SharedArrayBuffer.allocate(null, 4);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    MessagePayload payload = new MessagePayload(sab);
+
+                    Assert.assertThrows(
+                            IllegalStateException.class,
+                            () -> mAwContents.postMessageToMainFrame(payload, "*", null));
+                });
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Android-PostMessage"})
     public void testPostArrayBufferOnMessagePort() throws Throwable {
         loadPage(TITLE_FROM_POSTMESSAGE_TO_CHANNEL_ARRAYBUFFER);
         final String testString = "TestString";
@@ -388,7 +775,7 @@ public class PostMessageTest extends AwParameterizedTest {
                 () -> {
                     MessagePort[] channel = mAwContents.createMessageChannel();
                     // set a web event handler, this puts the port in a started state.
-                    channel[1].setMessageCallback((_, _) -> {}, null);
+                    channel[1].setMessageCallback((_, _, _) -> {}, null);
                     Assert.assertThrows(
                             IllegalStateException.class,
                             () ->
@@ -429,7 +816,7 @@ public class PostMessageTest extends AwParameterizedTest {
                 () -> {
                     MessagePort[] channel1 = mAwContents.createMessageChannel();
                     // set a web event handler, this puts the port in a started state.
-                    channel1[1].setMessageCallback((_, _) -> {}, null);
+                    channel1[1].setMessageCallback((_, _, _) -> {}, null);
                     MessagePort[] channel2 = mAwContents.createMessageChannel();
                     Assert.assertThrows(
                             IllegalStateException.class,
@@ -658,7 +1045,9 @@ public class PostMessageTest extends AwParameterizedTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer.notifyCalled(message), null);
+                            (message, _, senderOrigin) ->
+                                    channelContainer.notifyCalled(message, senderOrigin),
+                            null);
                     mAwContents.postMessageToMainFrame(
                             new MessagePayload(WEBVIEW_MESSAGE),
                             mWebServer.getBaseUrl(),
@@ -668,6 +1057,10 @@ public class PostMessageTest extends AwParameterizedTest {
         // wait for the asynchronous response from JS
         ChannelContainer.Data data = channelContainer.waitForMessageCallback();
         Assert.assertEquals(HELLO + JS_MESSAGE, data.getStringValue());
+        // getResponseUrl("") is intentionally used instead of getBaseUrl() because
+        // getResponseUrl("") omits the trailing slash to match the RFC 6454 serialized
+        // origin format (scheme://host:port).
+        Assert.assertEquals(mWebServer.getResponseUrl(""), data.mSenderOrigin);
     }
 
     // Verify that a message port can be used immediately (even if it is in
@@ -685,7 +1078,7 @@ public class PostMessageTest extends AwParameterizedTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer.notifyCalled(message), null);
+                            (message, _, _) -> channelContainer.notifyCalled(message), null);
                     mAwContents.postMessageToMainFrame(
                             new MessagePayload(WEBVIEW_MESSAGE),
                             mWebServer.getBaseUrl(),
@@ -713,7 +1106,7 @@ public class PostMessageTest extends AwParameterizedTest {
                 () -> {
                     MessagePort[] channel = mAwContents.createMessageChannel();
                     channel[1].setMessageCallback(
-                            (message, _) -> channelContainer.notifyCalled(message), null);
+                            (message, _, _) -> channelContainer.notifyCalled(message), null);
                     channel[0].postMessage(new MessagePayload(HELLO), null);
                 });
         // Wait for the asynchronous response from JS.
@@ -764,7 +1157,7 @@ public class PostMessageTest extends AwParameterizedTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer.notifyCalled(message), null);
+                            (message, _, _) -> channelContainer.notifyCalled(message), null);
                     mAwContents.postMessageToMainFrame(
                             new MessagePayload(WEBVIEW_MESSAGE),
                             mWebServer.getBaseUrl(),
@@ -836,7 +1229,7 @@ public class PostMessageTest extends AwParameterizedTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer.notifyCalled(message), null);
+                            (message, _, _) -> channelContainer.notifyCalled(message), null);
                     mAwContents.postMessageToMainFrame(
                             new MessagePayload(WEBVIEW_MESSAGE),
                             mWebServer.getBaseUrl(),
@@ -889,9 +1282,9 @@ public class PostMessageTest extends AwParameterizedTest {
                             mWebServer.getBaseUrl(),
                             new MessagePort[] {channel[1]});
                     channel[0].setMessageCallback(
-                            (_, ports) -> {
+                            (_, ports, _) -> {
                                 ports[0].setMessageCallback(
-                                        (message, _) -> {
+                                        (message, _, _) -> {
                                             Assert.assertEquals("3", message.getAsString());
                                             ports[0].postMessage(new MessagePayload("4"), null);
                                         },
@@ -1023,7 +1416,7 @@ public class PostMessageTest extends AwParameterizedTest {
                 () -> {
                     MessagePort[] channel = mAwContents.createMessageChannel();
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer.notifyCalled(message), null);
+                            (message, _, _) -> channelContainer.notifyCalled(message), null);
                     mAwContents.postMessageToMainFrame(
                             new MessagePayload(WEBVIEW_MESSAGE),
                             mWebServer.getBaseUrl(),
@@ -1055,7 +1448,7 @@ public class PostMessageTest extends AwParameterizedTest {
                 () -> {
                     MessagePort[] channel = mAwContents.createMessageChannel();
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer.notifyCalled(message), null);
+                            (message, _, _) -> channelContainer.notifyCalled(message), null);
                     mAwContents.postMessageToMainFrame(
                             new MessagePayload(WEBVIEW_MESSAGE),
                             mWebServer.getBaseUrl(),
@@ -1098,7 +1491,7 @@ public class PostMessageTest extends AwParameterizedTest {
                 () -> {
                     MessagePort[] channel = mAwContents.createMessageChannel();
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer.notifyCalled(message), null);
+                            (message, _, _) -> channelContainer.notifyCalled(message), null);
                     mAwContents.postMessageToMainFrame(
                             new MessagePayload(WEBVIEW_MESSAGE),
                             mWebServer.getBaseUrl(),
@@ -1133,7 +1526,7 @@ public class PostMessageTest extends AwParameterizedTest {
                 () -> {
                     MessagePort[] channel = mAwContents.createMessageChannel();
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer.notifyCalled(message), null);
+                            (message, _, _) -> channelContainer.notifyCalled(message), null);
                     mAwContents.postMessageToMainFrame(
                             new MessagePayload(WEBVIEW_MESSAGE),
                             mWebServer.getBaseUrl(),
@@ -1170,7 +1563,7 @@ public class PostMessageTest extends AwParameterizedTest {
                 () -> {
                     MessagePort[] channel = mAwContents.createMessageChannel();
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer.notifyCalled(message), null);
+                            (message, _, _) -> channelContainer.notifyCalled(message), null);
                     mAwContents.postMessageToMainFrame(
                             new MessagePayload(WEBVIEW_MESSAGE),
                             mWebServer.getBaseUrl(),
@@ -1194,9 +1587,9 @@ public class PostMessageTest extends AwParameterizedTest {
                 () -> {
                     MessagePort[] channel = mAwContents.createMessageChannel();
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer1.notifyCalled(message), null);
+                            (message, _, _) -> channelContainer1.notifyCalled(message), null);
                     channel[1].setMessageCallback(
-                            (message, _) -> channelContainer2.notifyCalled(message),
+                            (message, _, _) -> channelContainer2.notifyCalled(message),
                             new Handler(thread.getLooper()));
                     channel[0].postMessage(new MessagePayload("foo"), null);
                     channel[1].postMessage(new MessagePayload("bar"), null);
@@ -1222,7 +1615,7 @@ public class PostMessageTest extends AwParameterizedTest {
                     MessagePort[] channel = mAwContents.createMessageChannel();
                     channelContainer.set(channel);
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer.notifyCalled(message),
+                            (message, _, _) -> channelContainer.notifyCalled(message),
                             new Handler(thread.getLooper()));
                     channel[1].postMessage(new MessagePayload("foo"), null);
                 });
@@ -1234,7 +1627,7 @@ public class PostMessageTest extends AwParameterizedTest {
                 () -> {
                     MessagePort[] channel = channelContainer.get();
                     channel[0].setMessageCallback(
-                            (message, _) -> channelContainer2.notifyCalled(message), null);
+                            (message, _, _) -> channelContainer2.notifyCalled(message), null);
                     channel[1].postMessage(new MessagePayload("bar"), null);
                 });
         ChannelContainer.Data data2 = channelContainer2.waitForMessageCallback();
@@ -1335,7 +1728,7 @@ public class PostMessageTest extends AwParameterizedTest {
 
         final MessagePort[] ports2 = createChannelOnUiThread();
         ports2[0].setMessageCallback(
-                (messagePayload, _) -> {
+                (messagePayload, _, _) -> {
                     ThreadUtils.checkUiThread();
                     container.notifyCalled(messagePayload);
                 },
@@ -1389,7 +1782,7 @@ public class PostMessageTest extends AwParameterizedTest {
                         () -> {
                             MessagePort[] ports = mAwContents.createMessageChannel();
                             // Move message port into |receiving| state.
-                            ports[0].setMessageCallback((_, _) -> {}, null);
+                            ports[0].setMessageCallback((_, _, _) -> {}, null);
                             return ports;
                         });
         // Close message channel on another thread, simulate the case where the "finalize" is called
@@ -1417,7 +1810,7 @@ public class PostMessageTest extends AwParameterizedTest {
         Assert.assertThrows(
                 "Port transferred, should not able to listen on",
                 IllegalStateException.class,
-                () -> portsToTransfer[0].setMessageCallback((_, _) -> {}, null));
+                () -> portsToTransfer[0].setMessageCallback((_, _, _) -> {}, null));
     }
 
     @Test
@@ -1435,7 +1828,7 @@ public class PostMessageTest extends AwParameterizedTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> ports[0].postMessage(new MessagePayload("msg1"), null));
         ports[1].setMessageCallback(
-                (messagePayload, _) -> container.notifyCalled(messagePayload), handler);
+                (messagePayload, _, _) -> container.notifyCalled(messagePayload), handler);
         Assert.assertEquals("msg1", container.waitForMessageCallback().getStringValue());
     }
 
@@ -1463,7 +1856,7 @@ public class PostMessageTest extends AwParameterizedTest {
                 () -> {
                     MessagePort[] ports = mAwContents.createMessageChannel();
                     ports[0].setMessageCallback(
-                            (message, _) -> container.notifyCalled(message), null);
+                            (message, _, _) -> container.notifyCalled(message), null);
                     mAwContents.postMessageToMainFrame(
                             new MessagePayload("*"), "*", new MessagePort[] {ports[1]});
                     ports = null;

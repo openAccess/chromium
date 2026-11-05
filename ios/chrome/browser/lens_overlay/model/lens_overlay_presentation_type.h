@@ -30,7 +30,7 @@ enum class ResultPagePresentationType {
 ContainerPresentationType ContainerPresentationFor(
     id<UITraitEnvironment> environment);
 
-// Deducts the required result age presentation for the `UITraitEnvironment`
+// Deducts the required result page presentation for the `UITraitEnvironment`
 // conforming entity.
 ResultPagePresentationType ResultPagePresentationFor(
     id<UITraitEnvironment> environment);

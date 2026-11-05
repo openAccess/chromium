@@ -22,7 +22,6 @@ import androidx.mediarouter.media.MediaRouter;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
@@ -32,7 +31,6 @@ import java.util.List;
 
 /** Robolectric tests for DiscoveryCallback. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class DiscoveryCallbackTest extends BrowserMediaRouterTestBase {
     protected DiscoveryDelegate mDiscoveryDelegate;
 
@@ -57,7 +55,7 @@ public class DiscoveryCallbackTest extends BrowserMediaRouterTestBase {
     @Feature({"MediaRouter"})
     public void testInitCallbackWithNonemptyKnownSinks() {
         List<MediaSink> knownSinks = new ArrayList<>();
-        new MediaSink(SINK_ID1, SINK_NAME1, null);
+        new MediaSink(SINK_ID1, SINK_NAME1);
         new DiscoveryCallback(SOURCE_ID1, knownSinks, mDiscoveryDelegate, null);
 
         verify(mDiscoveryDelegate).onSinksReceived(eq(SOURCE_ID1), eq(knownSinks));
@@ -72,7 +70,7 @@ public class DiscoveryCallbackTest extends BrowserMediaRouterTestBase {
 
         callback.onRouteAdded(null, createMockRouteInfo(SINK_ID1, SINK_NAME1));
         List<MediaSink> expectedSinks = new ArrayList<>();
-        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1, null));
+        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1));
         verify(mDiscoveryDelegate).onSinksReceived(eq(SOURCE_ID1), eq(expectedSinks));
     }
 
@@ -86,8 +84,8 @@ public class DiscoveryCallbackTest extends BrowserMediaRouterTestBase {
         callback.onRouteAdded(null, createMockRouteInfo(SINK_ID1, SINK_NAME1));
         callback.onRouteAdded(null, createMockRouteInfo(SINK_ID2, SINK_NAME2));
         List<MediaSink> expectedSinks = new ArrayList<>();
-        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1, null));
-        expectedSinks.add(new MediaSink(SINK_ID2, SINK_NAME2, null));
+        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1));
+        expectedSinks.add(new MediaSink(SINK_ID2, SINK_NAME2));
         verify(mDiscoveryDelegate).onSinksReceived(eq(SOURCE_ID1), eq(expectedSinks));
     }
 
@@ -101,7 +99,7 @@ public class DiscoveryCallbackTest extends BrowserMediaRouterTestBase {
         callback.onRouteAdded(null, createMockRouteInfo(SINK_ID1, SINK_NAME1));
         callback.onRouteAdded(null, createMockRouteInfo(SINK_ID1, SINK_NAME1));
         List<MediaSink> expectedSinks = new ArrayList<>();
-        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1, null));
+        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1));
         // Only expect one time. The duplicate add will not be notified.
         verify(mDiscoveryDelegate).onSinksReceived(eq(SOURCE_ID1), eq(expectedSinks));
     }
@@ -145,7 +143,7 @@ public class DiscoveryCallbackTest extends BrowserMediaRouterTestBase {
 
         callback.onRouteChanged(null, createMockRouteInfo(SINK_ID1, SINK_NAME1));
         List<MediaSink> expectedSinks = new ArrayList<>();
-        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1, null));
+        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1));
         verify(mDiscoveryDelegate).onSinksReceived(eq(SOURCE_ID1), eq(expectedSinks));
     }
 
@@ -178,7 +176,7 @@ public class DiscoveryCallbackTest extends BrowserMediaRouterTestBase {
         callback.addSourceUrn(SOURCE_ID2);
 
         List<MediaSink> expectedSinks = new ArrayList<>();
-        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1, null));
+        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1));
         verify(mDiscoveryDelegate).onSinksReceived(eq(SOURCE_ID2), eq(expectedSinks));
     }
 
@@ -193,7 +191,7 @@ public class DiscoveryCallbackTest extends BrowserMediaRouterTestBase {
         callback.addSourceUrn(SOURCE_ID1);
 
         List<MediaSink> expectedSinks = new ArrayList<>();
-        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1, null));
+        expectedSinks.add(new MediaSink(SINK_ID1, SINK_NAME1));
         // Only the one time after onRouteAdded().
         verify(mDiscoveryDelegate).onSinksReceived(eq(SOURCE_ID1), eq(expectedSinks));
     }

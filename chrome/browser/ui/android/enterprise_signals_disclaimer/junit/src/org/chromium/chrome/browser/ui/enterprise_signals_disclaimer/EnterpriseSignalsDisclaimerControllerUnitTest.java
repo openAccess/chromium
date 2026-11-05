@@ -5,249 +5,337 @@
 package org.chromium.chrome.browser.ui.enterprise_signals_disclaimer;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import androidx.appcompat.app.AppCompatActivity;
+import android.content.Context;
 
-import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.RuntimeEnvironment;
+import org.robolectric.annotation.Config;
 
-import org.chromium.base.CommandLine;
+import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtils;
-import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtilsJni;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
-import org.chromium.chrome.browser.signin.services.SigninManager;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.ui.enterprise_signals_disclaimer.EnterpriseSignalsDisclaimerController.CoordinatorFactory;
-import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
-import org.chromium.components.signin.SigninFeatures;
-import org.chromium.components.signin.test.util.FakeIdentityManager;
+import org.chromium.chrome.browser.ui.enterprise_signals_disclaimer.EnterpriseSignalsDisclaimerController.HostFactory;
+import org.chromium.chrome.browser.ui.enterprise_signals_disclaimer.EnterpriseSignalsDisclaimerController.ShownOn;
+import org.chromium.chrome.browser.ui.enterprise_signals_disclaimer.EnterpriseSignalsDisclaimerCoordinator.PresentationMode;
+import org.chromium.chrome.browser.ui.enterprise_signals_disclaimer.EnterpriseSignalsDisclaimerHost.DismissalCause;
+import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.test.util.TestAccounts;
-import org.chromium.ui.modaldialog.ModalDialogManager;
+
+import java.util.function.Consumer;
 
 /** Unit tests for {@link EnterpriseSignalsDisclaimerController}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@EnableFeatures(SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS)
 public class EnterpriseSignalsDisclaimerControllerUnitTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private Profile mProfile;
-    @Mock private SigninManager mSigninManager;
-    @Mock private BottomSheetController mBottomSheetController;
-    @Mock private ModalDialogManager mModalDialogManager;
-    @Mock private AppCompatActivity mActivity;
+    @Mock private IdentityManager mIdentityManager;
     @Mock private EnterpriseSignalsDisclaimerCoordinator mCoordinator;
     @Mock private CoordinatorFactory mCoordinatorFactory;
-    @Mock private EnterpriseSignalsDisclaimerCoordinator.Delegate mDelegate;
-    @Mock private ManagedBrowserUtils.Natives mManagedBrowserUtilsJniMock;
+    @Mock private EnterpriseSignalsDisclaimerHost mHost;
+    @Mock private HostFactory mHostFactory;
+    @Mock private Callback<String> mShowInfoPageCallback;
+    @Mock private EnterpriseSignalsDisclaimerController.Listener mListener;
 
-    private final FakeIdentityManager mIdentityManager = new FakeIdentityManager();
+    @Captor private ArgumentCaptor<Consumer<Integer>> mDismissalCallbackCaptor;
+    @Captor private ArgumentCaptor<EnterpriseSignalsDisclaimerCoordinator.Delegate> mDelegateCaptor;
+
+    private final Context mContext = RuntimeEnvironment.getApplication();
+    private EnterpriseSignalsDisclaimerController mController;
 
     @Before
     public void setUp() {
-        ManagedBrowserUtilsJni.setInstanceForTesting(mManagedBrowserUtilsJniMock);
-        IdentityServicesProvider.setSigninManagerForTesting(mSigninManager);
-
-        when(mSigninManager.getIdentityManager()).thenReturn(mIdentityManager);
-        when(mCoordinatorFactory.create(any(), any(), any(), any(), any()))
+        // Shared defaults which are unused by tests that never create a disclaimer.
+        lenient()
+                .when(mCoordinatorFactory.create(any(), any(), any(), anyInt(), any()))
                 .thenReturn(mCoordinator);
+        lenient().when(mHostFactory.create(anyInt(), any(), any())).thenReturn(mHost);
 
-        mIdentityManager.setPrimaryAccount(TestAccounts.ACCOUNT1);
+        mController =
+                new EnterpriseSignalsDisclaimerController(
+                        mContext, mShowInfoPageCallback, mCoordinatorFactory, mHostFactory);
     }
 
-    @After
-    public void tearDown() {
-        CommandLine.getInstance().removeSwitch(ChromeSwitches.NO_FIRST_RUN);
+    private boolean show() {
+        return mController.show(
+                mIdentityManager, TestAccounts.MANAGED_ACCOUNT, ShownOn.STARTUP, mListener);
     }
 
-    private EnterpriseSignalsDisclaimerController createController() {
-        return EnterpriseSignalsDisclaimerController.maybeCreateForProfile(
-                mProfile,
-                mBottomSheetController,
-                mModalDialogManager,
-                mActivity,
-                mDelegate,
-                mCoordinatorFactory);
+    private void simulateHostDismissed(@DismissalCause int dismissalCause) {
+        verify(mHostFactory).create(anyInt(), any(), mDismissalCallbackCaptor.capture());
+        mDismissalCallbackCaptor.getValue().accept(dismissalCause);
     }
 
-    @Test
-    public void maybeCreateForProfile_offTheRecordProfile_returnsNull() {
-        when(mProfile.isOffTheRecord()).thenReturn(true);
-
-        EnterpriseSignalsDisclaimerController controller = createController();
-
-        Assert.assertNull(controller);
+    private EnterpriseSignalsDisclaimerCoordinator.Delegate captureDelegate() {
+        verify(mCoordinatorFactory)
+                .create(any(), any(), any(), anyInt(), mDelegateCaptor.capture());
+        return mDelegateCaptor.getValue();
     }
 
     @Test
-    public void maybeCreateForProfile_hasNoFirstRunSwitch_returnsNull() {
-        CommandLine.getInstance().appendSwitch(ChromeSwitches.NO_FIRST_RUN);
-        when(mProfile.isOffTheRecord()).thenReturn(false);
+    public void show_createsCoordinatorAndShowsHost() {
+        when(mHost.isActive()).thenReturn(true);
+        Assert.assertTrue(show());
 
-        EnterpriseSignalsDisclaimerController controller = createController();
-
-        Assert.assertNull(controller);
-    }
-
-    @Test
-    public void maybeCreateForProfile_validProfile_returnsInstance() {
-        when(mProfile.isOffTheRecord()).thenReturn(false);
-
-        EnterpriseSignalsDisclaimerController controller = createController();
-
-        Assert.assertNotNull(controller);
-    }
-
-    @Test
-    public void maybeCreateForProfile_validProfileNoPrimaryAccount_returnsInstance() {
-        when(mProfile.isOffTheRecord()).thenReturn(false);
-        mIdentityManager.setPrimaryAccount(null);
-
-        EnterpriseSignalsDisclaimerController controller = createController();
-
-        Assert.assertNotNull(controller);
-    }
-
-    @Test
-    public void maybeShow_destroyed_returnsFalse() {
-        when(mProfile.isOffTheRecord()).thenReturn(false);
-
-        EnterpriseSignalsDisclaimerController controller = createController();
-        Assert.assertNotNull(controller);
-
-        controller.destroy();
-
-        Assert.assertFalse(controller.maybeShow());
-        verify(mCoordinatorFactory, never()).create(any(), any(), any(), any(), any());
-    }
-
-    @Test
-    public void maybeShow_noPrimaryAccount_returnsFalse() {
-        when(mProfile.isOffTheRecord()).thenReturn(false);
-
-        EnterpriseSignalsDisclaimerController controller = createController();
-        Assert.assertNotNull(controller);
-
-        mIdentityManager.setPrimaryAccount(null);
-
-        Assert.assertFalse(controller.maybeShow());
-        verify(mCoordinatorFactory, never()).create(any(), any(), any(), any(), any());
-        verify(mCoordinator, never()).show();
-    }
-
-    @Test
-    public void maybeShow_profileNotManaged_returnsFalse() {
-        when(mProfile.isOffTheRecord()).thenReturn(false);
-        when(mManagedBrowserUtilsJniMock.isProfileManaged(mProfile)).thenReturn(false);
-
-        EnterpriseSignalsDisclaimerController controller = createController();
-        Assert.assertNotNull(controller);
-
-        Assert.assertFalse(controller.maybeShow());
-        verify(mCoordinatorFactory, never()).create(any(), any(), any(), any(), any());
-        verify(mCoordinator, never()).show();
-    }
-
-    @Test
-    public void maybeShow_accountIsManaged_showsDisclaimerAndReturnsTrue() {
-        when(mProfile.isOffTheRecord()).thenReturn(false);
-        when(mManagedBrowserUtilsJniMock.isProfileManaged(mProfile)).thenReturn(true);
-
-        EnterpriseSignalsDisclaimerController controller = createController();
-
-        Assert.assertNotNull(controller);
-        Assert.assertTrue(controller.maybeShow());
         verify(mCoordinatorFactory)
                 .create(
-                        eq(mActivity),
-                        eq(mBottomSheetController),
-                        eq(mModalDialogManager),
-                        eq(mSigninManager),
-                        eq(mDelegate));
-        verify(mCoordinator).show();
+                        eq(mContext),
+                        eq(mIdentityManager),
+                        eq(TestAccounts.MANAGED_ACCOUNT),
+                        anyInt(),
+                        any());
+        verify(mHostFactory).create(anyInt(), eq(mCoordinator), any());
+        verify(mHost).show();
+        Assert.assertTrue(mController.isDisclaimerActive());
     }
 
     @Test
-    public void maybeShow_alreadyShowing_returnsFalse() {
-        when(mProfile.isOffTheRecord()).thenReturn(false);
-        when(mManagedBrowserUtilsJniMock.isProfileManaged(mProfile)).thenReturn(true);
+    @Config(qualifiers = "sw320dp")
+    public void show_onPhone_usesBottomSheet() {
+        show();
 
-        EnterpriseSignalsDisclaimerController controller = createController();
-        Assert.assertNotNull(controller);
-        Assert.assertTrue(controller.maybeShow());
-
-        when(mCoordinator.isActive()).thenReturn(true);
-        Assert.assertFalse(controller.maybeShow());
-
-        verify(mCoordinator).isActive();
+        verify(mCoordinatorFactory)
+                .create(any(), any(), any(), eq(PresentationMode.BOTTOM_SHEET), any());
+        verify(mHostFactory).create(eq(PresentationMode.BOTTOM_SHEET), any(), any());
     }
 
     @Test
-    public void destroy_withActiveCoordinator_destroysCoordinator() {
-        when(mProfile.isOffTheRecord()).thenReturn(false);
-        when(mManagedBrowserUtilsJniMock.isProfileManaged(mProfile)).thenReturn(true);
+    @Config(qualifiers = "sw600dp")
+    public void show_onTablet_usesModalDialog() {
+        show();
 
-        EnterpriseSignalsDisclaimerController controller = createController();
-        Assert.assertNotNull(controller);
-        Assert.assertTrue(controller.maybeShow());
+        verify(mCoordinatorFactory)
+                .create(any(), any(), any(), eq(PresentationMode.MODAL_DIALOG), any());
+        verify(mHostFactory).create(eq(PresentationMode.MODAL_DIALOG), any(), any());
+    }
 
-        controller.destroy();
+    @Test
+    public void show_alreadyActive_returnsFalse() {
+        when(mHost.isActive()).thenReturn(true);
+        show();
 
+        Assert.assertFalse(show());
+        verify(mHost).show();
+    }
+
+    @Test
+    public void show_destroyed_returnsFalse() {
+        mController.destroy();
+
+        Assert.assertFalse(show());
+        verifyNoInteractions(mCoordinatorFactory, mHostFactory);
+    }
+
+    @Test
+    public void delegate_onAcceptAndOnDecline_dismissHost() {
+        show();
+        EnterpriseSignalsDisclaimerCoordinator.Delegate delegate = captureDelegate();
+
+        delegate.onAccept();
+        verify(mHost).dismiss(DismissalCause.TAPPED_ACCEPT);
+
+        delegate.onDecline();
+        verify(mHost).dismiss(DismissalCause.TAPPED_SIGN_OUT);
+    }
+
+    @Test
+    public void delegate_showInfoPage_forwardsUrl() {
+        show();
+
+        captureDelegate().showInfoPage("https://example.com");
+
+        verify(mShowInfoPageCallback).onResult("https://example.com");
+    }
+
+    @Test
+    public void dismissed_accept_notifiesAcceptedAndTearsDown() {
+        show();
+
+        simulateHostDismissed(DismissalCause.TAPPED_ACCEPT);
+
+        verify(mListener).onAccepted();
+        verify(mListener, never()).onDeclined();
+        verify(mHost).destroy();
+        verify(mCoordinator).destroy();
+        Assert.assertFalse(mController.isDisclaimerActive());
+    }
+
+    @Test
+    public void dismissed_signOut_notifiesDeclined() {
+        show();
+        simulateHostDismissed(DismissalCause.TAPPED_SIGN_OUT);
+        verify(mListener).onDeclined();
+    }
+
+    @Test
+    public void dismissed_backPress_notifiesDeclined() {
+        show();
+        simulateHostDismissed(DismissalCause.DISMISSED_BY_BACK_PRESS);
+        verify(mListener).onDeclined();
+    }
+
+    @Test
+    public void dismissed_swipeDown_notifiesDeclined() {
+        show();
+        simulateHostDismissed(DismissalCause.DISMISSED_BY_SWIPE_DOWN);
+        verify(mListener).onDeclined();
+    }
+
+    @Test
+    public void dismissed_tapOutside_notifiesDeclined() {
+        show();
+        simulateHostDismissed(DismissalCause.DISMISSED_BY_TAP_OUTSIDE);
+        verify(mListener).onDeclined();
+    }
+
+    @Test
+    public void dismissed_closeButton_notifiesDeclined() {
+        show();
+        simulateHostDismissed(DismissalCause.DISMISSED_BY_CLOSE_BUTTON);
+        verify(mListener).onDeclined();
+    }
+
+    @Test
+    public void dismissed_withoutExplicitUserAction_doesNotNotify() {
+        show();
+
+        simulateHostDismissed(DismissalCause.DISMISSED_WITHOUT_EXPLICIT_USER_ACTION);
+
+        verifyNoInteractions(mListener);
+        verify(mHost).destroy();
         verify(mCoordinator).destroy();
     }
 
     @Test
-    public void maybeShow_destroysPreviousCoordinator() {
-        when(mProfile.isOffTheRecord()).thenReturn(false);
-        when(mManagedBrowserUtilsJniMock.isProfileManaged(mProfile)).thenReturn(true);
+    public void destroy_whileShowing_tearsDownWithoutNotifying() {
+        show();
 
-        EnterpriseSignalsDisclaimerCoordinator coordinator1 =
-                mock(EnterpriseSignalsDisclaimerCoordinator.class);
-        EnterpriseSignalsDisclaimerCoordinator coordinator2 =
-                mock(EnterpriseSignalsDisclaimerCoordinator.class);
-        when(mCoordinatorFactory.create(any(), any(), any(), any(), any()))
-                .thenReturn(coordinator1)
-                .thenReturn(coordinator2);
-        when(coordinator1.isActive()).thenReturn(false);
+        mController.destroy();
 
-        EnterpriseSignalsDisclaimerController controller = createController();
-        Assert.assertNotNull(controller);
+        verify(mHost).destroy();
+        verify(mCoordinator).destroy();
+        verifyNoInteractions(mListener);
+    }
 
-        // First call creates coordinator1.
-        Assert.assertTrue(controller.maybeShow());
-        verify(mCoordinatorFactory)
-                .create(
-                        eq(mActivity),
-                        eq(mBottomSheetController),
-                        eq(mModalDialogManager),
-                        eq(mSigninManager),
-                        eq(mDelegate));
+    @Test
+    public void show_recordsShowRequested() {
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        MetricsHelper.HISTOGRAM_SHOWN_REQUESTED, ShownOn.SIGN_IN);
 
-        // Second call should destroy coordinator1 and create coordinator2.
-        Assert.assertTrue(controller.maybeShow());
-        verify(coordinator1).destroy();
-        verify(mCoordinatorFactory, times(2))
-                .create(
-                        eq(mActivity),
-                        eq(mBottomSheetController),
-                        eq(mModalDialogManager),
-                        eq(mSigninManager),
-                        eq(mDelegate));
-        verify(coordinator2).show();
+        mController.show(
+                mIdentityManager, TestAccounts.MANAGED_ACCOUNT, ShownOn.SIGN_IN, mListener);
+
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void show_alreadyActive_doesNotRecordShowRequested() {
+        when(mHost.isActive()).thenReturn(true);
+        show();
+
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords(MetricsHelper.HISTOGRAM_SHOWN_REQUESTED)
+                        .build();
+
+        Assert.assertFalse(show());
+
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void delegate_onShown_recordsShown() {
+        mController.show(
+                mIdentityManager, TestAccounts.MANAGED_ACCOUNT, ShownOn.SIGN_IN, mListener);
+
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        MetricsHelper.HISTOGRAM_SHOWN, ShownOn.SIGN_IN);
+
+        captureDelegate().onShown();
+
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void dismissal_afterShown_recordsResultAndTimeToUserAction() {
+        show();
+        captureDelegate().onShown();
+
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                MetricsHelper.HISTOGRAM_RESULT, DismissalCause.TAPPED_ACCEPT)
+                        .expectAnyRecord(MetricsHelper.HISTOGRAM_TIME_TO_USER_ACTION)
+                        .build();
+
+        simulateHostDismissed(DismissalCause.TAPPED_ACCEPT);
+
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void dismissal_beforeShown_doesNotRecordTimeToUserAction() {
+        show();
+
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                MetricsHelper.HISTOGRAM_RESULT,
+                                DismissalCause.DISMISSED_WITHOUT_EXPLICIT_USER_ACTION)
+                        .expectNoRecords(MetricsHelper.HISTOGRAM_TIME_TO_USER_ACTION)
+                        .build();
+
+        simulateHostDismissed(DismissalCause.DISMISSED_WITHOUT_EXPLICIT_USER_ACTION);
+
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void metricsHelper_isSharedAcrossDisclaimers() {
+        EnterpriseSignalsDisclaimerHost host1 = mock(EnterpriseSignalsDisclaimerHost.class);
+        EnterpriseSignalsDisclaimerHost host2 = mock(EnterpriseSignalsDisclaimerHost.class);
+        when(mHostFactory.create(anyInt(), any(), any())).thenReturn(host1).thenReturn(host2);
+
+        // The first disclaimer is implicitly dismissed.
+        Assert.assertTrue(show());
+        simulateLatestHostDismissed(DismissalCause.DISMISSED_BY_SWIPE_DOWN);
+
+        // The second disclaimer is accepted, which should account for the earlier implicit
+        // dismissal. This only works if the same MetricsHelper instance is used for both.
+        Assert.assertTrue(show());
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        MetricsHelper.HISTOGRAM_IMPLICIT_DISMISSALS_BEFORE_ACCEPTANCE, 1);
+        simulateLatestHostDismissed(DismissalCause.TAPPED_ACCEPT);
+
+        histogramWatcher.assertExpected();
+    }
+
+    /** Simulates the most recently created host reporting that it was dismissed. */
+    private void simulateLatestHostDismissed(@DismissalCause int dismissalCause) {
+        verify(mHostFactory, atLeastOnce())
+                .create(anyInt(), any(), mDismissalCallbackCaptor.capture());
+        mDismissalCallbackCaptor.getValue().accept(dismissalCause);
     }
 }

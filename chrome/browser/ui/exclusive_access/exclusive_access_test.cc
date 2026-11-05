@@ -19,7 +19,9 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_bubble.h"
+#include "chrome/browser/ui/exclusive_access/exclusive_access_bubble_type.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
+#include "chrome/browser/ui/exclusive_access/exclusive_access_controller_base.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/exclusive_access/keyboard_lock_controller.h"
@@ -40,6 +42,7 @@
 #include "exclusive_access_test.h"
 #include "extensions/common/extension.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/keycodes/dom/dom_code.h"
@@ -219,14 +222,14 @@ bool ExclusiveAccessTest::IsWindowFullscreenForTabOrPending() {
 void ExclusiveAccessTest::GoBack() {
   content::TestNavigationObserver observer(
       browser()->GetTabStripModel()->GetActiveWebContents(), 1);
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   observer.Wait();
 }
 
 void ExclusiveAccessTest::Reload() {
   content::TestNavigationObserver observer(
       browser()->GetTabStripModel()->GetActiveWebContents(), 1);
-  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   observer.Wait();
 }
 

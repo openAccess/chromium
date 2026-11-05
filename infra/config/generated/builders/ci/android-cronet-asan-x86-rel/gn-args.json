@@ -2,7 +2,7 @@
   "gn_args": {
     "android_static_analysis": "on",
     "dcheck_always_on": false,
-    "debuggable_apks": false,
+    "debuggable_apks": true,
     "ffmpeg_branding": "Chrome",
     "is_asan": true,
     "is_clang": true,
@@ -14,7 +14,6 @@
     "symbol_level": 1,
     "target_cpu": "x86",
     "target_os": "android",
-    "use_reclient": false,
     "use_remoteexec": true,
     "use_siso": true
   }

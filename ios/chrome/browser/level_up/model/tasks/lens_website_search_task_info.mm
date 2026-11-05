@@ -3,9 +3,7 @@
 // found in the LICENSE file.
 
 #import "base/functional/bind.h"
-#import "base/functional/callback_helpers.h"
 #import "base/memory/raw_ptr.h"
-#import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/lens_overlay/public/lens_overlay_entrypoint.h"
 #import "ios/chrome/browser/level_up/model/task_info.h"
 #import "ios/chrome/browser/level_up/model/tasks/task_factories.h"
@@ -25,7 +23,8 @@
 
 namespace {
 
-constexpr char kTaskURL[] = "https://artsandculture.google.com/color?col=RED";
+constexpr char kTaskURL[] =
+    "https://commons.wikimedia.org/wiki/Commons:Explore/Colors/Purple";
 
 }  // namespace
 
@@ -69,10 +68,9 @@ class LensWebsiteSearchTaskTabHelper
     if (dispatcher_) {
       id<LensOverlayCommands> lensOverlayHandler =
           HandlerForProtocol(dispatcher_, LensOverlayCommands);
-      [lensOverlayHandler
-          createAndShowLensUI:YES
-                   entrypoint:LensOverlayEntrypoint::kLocationBar
-                   completion:nil];
+      [lensOverlayHandler createAndShowLensUI:YES
+                                   entrypoint:LensOverlayEntrypoint::kLevelUp
+                                   completion:nil];
     }
   }
 
@@ -94,18 +92,21 @@ class LensWebsiteSearchTaskInfo : public TaskInfo {
   // TaskInfo implementation.
   TaskType GetTaskType() const override { return TaskType::kLensWebsiteSearch; }
   std::string GetTitle() const override {
-    return l10n_util::GetStringUTF8(IDS_IOS_LEVEL_UP_FEATURE_GOOGLE_LENS);
+    return l10n_util::GetStringUTF8(
+        IDS_IOS_LEVEL_UP_FEATURE_LENS_WEBSITE_SEARCH);
   }
   std::string GetTaskDescription() const override {
-    return "Draw, highlight, or tap to search and get results without leaving "
-           "your tab";
+    return l10n_util::GetStringUTF8(
+        IDS_IOS_LEVEL_UP_FEATURE_LENS_WEBSITE_SEARCH_DESCRIPTION);
   }
   Symbol GetIconSymbol() const override { return SymbolCameraLens; }
   bool IsMulticolorIcon() const override { return true; }
   LevelUpTaskCategory GetCategory() const override {
     return LevelUpTaskCategory::kSearch;
   }
-  std::string GetTriggerUserAction() const override { return ""; }
+  std::vector<std::string> GetTriggerUserActions() const override {
+    return {"Mobile.LensOverlay.WebsiteSearch.Performed"};
+  }
   std::string GetCompletionSnackbarMessage() const override {
     return l10n_util::GetStringUTF8(
         IDS_IOS_LEVEL_UP_TASK_COMPLETED_LENS_WEBSITE_SEARCH);

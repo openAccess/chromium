@@ -20,7 +20,7 @@ namespace syncer {
 class KeyDerivationParams;
 class Nigori;
 
-// A set of Nigori keys, aka keybag. Note that there is no notion of default
+// A set of Nigori keys, aka keybag. Note that there is no notion of primary
 // key.
 class NigoriKeyBag {
  public:
@@ -47,12 +47,12 @@ class NigoriKeyBag {
   sync_pb::NigoriKey ExportKey(const std::string& key_name) const;
 
   // Adds a new key to the keybag by deriving Nigori keys. Returns the name of
-  // the key or an empty string in case of failure.
+  // the key (never empty).
   std::string AddKey(const KeyDerivationParams& key_derivation_params,
                      const std::string& password);
 
-  // Similar to AddKey(), but reads the key material from a proto. The
-  // `name` field is ignored since it's redundant.
+  // Similar to AddKey(), but reads the key material from a proto. Returns the
+  // name of the key or an empty string in case of failure.
   std::string AddKeyFromProto(const sync_pb::NigoriKey& key);
 
   // Merges all keys from another keybag, which means adding all keys that we

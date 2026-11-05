@@ -570,6 +570,11 @@ New bookmarks can’t be saved in your account until you delete some. If you sig
                     To get future Chromium updates, you'll need Windows 10 or later. This computer is using Windows 8.1.
         </message>
       </if>
+      <if expr="is_win">
+        <message name="IDS_WIN_10_PRE_1809_OBSOLETE" desc="A message displayed on an at-launch infobar and about:help warning the user that the computer they are using will soon be or is already unsupported.">
+          To get future Chromium updates, you'll need Windows 10 version 1809 or later. This computer is using an older version of Windows 10.
+        </message>
+      </if>
       <if expr="is_linux">
         <message name="IDS_LINUX_OBSOLETE" desc="A message displayed on an at-launch infobar and about:help warning the user that the OS version they are using is no longer supported.">
           Chromium may not function correctly because it is no longer supported on this Linux distribution
@@ -732,7 +737,7 @@ Chromium is unable to recover your settings.
           Can not install the same Chromium version that is currently running. Please close Chromium and try again.
         </message>
         <message name="IDS_INSTALL_OS_NOT_SUPPORTED" desc="Error displayed if OS is not supported">
-          Chromium requires Windows 10 or higher.
+          Chromium requires Windows 10 version 1809 or higher.
         </message>
         <message name="IDS_INSTALL_OS_ERROR" desc="Error displayed when any Windows API call fails and we do not have more specific information.">
           An operating system error occurred during installation. Please download Chromium again.
@@ -1097,6 +1102,9 @@ Chromium is unable to recover your settings.
       <message name="IDS_EXTENSIONS_INCOGNITO_WARNING" desc="Warns the user that Chromium cannot prevent extensions from recording history in Incognito mode. Displayed in extensions management UI after an extension is selected to be run in Incognito mode.">
         Warning: Chromium cannot prevent extensions from recording your browsing history. To disable this extension in Incognito mode, unselect this option.
       </message>
+      <message name="IDS_EXTENSIONS_ISOLATED_MODE_WARNING" desc="Warns the user that Chromium cannot prevent extensions from recording history in Isolated mode. Displayed in extensions management UI after an extension is selected to be run in Isolated mode.">
+        Warning: Chromium cannot prevent extensions from recording your browsing history. To disable this extension in Isolated mode, unselect this option.
+      </message>
       <message name="IDS_EXTENSIONS_UNINSTALL" desc="The label for a control that triggers an extension uninstall.">
         Remove from Chromium
       </message>
@@ -1432,6 +1440,12 @@ Chromium is unable to recover your settings.
         <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_SAVED_INFO_WITH_DEVICE" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access saved info (such as autofill data, addresses, and payment methods) from their other device.">
           <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your saved info and more from <ph name="DEVICE">$3<ex>your phone</ex></ph>.
         </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_READING_LIST_WITH_DEVICE" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access reading list from their other device.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your reading list and more from <ph name="DEVICE">$3<ex>your phone</ex></ph>.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_EXTENSIONS_WITH_DEVICE" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access extensions from their computer. Only desktop/computer DEVICE are supported for extensions.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your extensions and more from <ph name="DEVICE">$3<ex>your computer</ex></ph>.
+        </message>
         <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_PASSWORDS" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access passwords on all their devices.">
           <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your passwords and more on all your devices.
         </message>
@@ -1440,6 +1454,43 @@ Chromium is unable to recover your settings.
         </message>
         <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_SAVED_INFO" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access saved info (such as autofill data, addresses, and payment methods) on all their devices.">
           <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your saved info and more on all your devices.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_READING_LIST" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access reading list on all their devices.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your reading list and more on all your devices.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_EXTENSIONS" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access extensions on all their devices.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your extensions and more on all your devices.
+        </message>
+        <!-- Account Preview Settings Signin Promo Subtitles -->
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_PASSWORDS_WITH_DEVICE" desc="Subtitle of a sign-in promo in Settings informing the user they can access their passwords from their other device.">
+          To get your passwords and more from <ph name="DEVICE">$1<ex>your phone</ex></ph>, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_BOOKMARKS_WITH_DEVICE" desc="Subtitle of a sign-in promo in Settings informing the user they can access their bookmarks from their other device.">
+          To get your bookmarks and more from <ph name="DEVICE">$1<ex>your phone</ex></ph>, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_SAVED_INFO_WITH_DEVICE" desc="Subtitle of a sign-in promo in Settings informing the user they can access their saved info (such as autofill data, addresses, and payment methods) from their other device.">
+          To get your saved info and more from <ph name="DEVICE">$1<ex>your phone</ex></ph>, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_READING_LIST_WITH_DEVICE" desc="Subtitle of a sign-in promo in Settings informing the user they can access their reading list from their other device.">
+          To get your reading list and more from <ph name="DEVICE">$1<ex>your phone</ex></ph>, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_EXTENSIONS_WITH_DEVICE" desc="Subtitle of a sign-in promo in Settings informing the user they can access their extensions from their computer. Only desktop/computer DEVICE are supported for extensions.">
+          To get your extensions and more from <ph name="DEVICE">$1<ex>your computer</ex></ph>, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_PASSWORDS" desc="Subtitle of a sign-in promo in Settings informing the user they can access their passwords on all their devices.">
+          To get your passwords and more on all your devices, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_BOOKMARKS" desc="Subtitle of a sign-in promo in Settings informing the user they can access their bookmarks on all their devices.">
+          To get your bookmarks and more on all your devices, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_SAVED_INFO" desc="Subtitle of a sign-in promo in Settings informing the user they can access their saved info (such as autofill data, addresses, and payment methods) on all their devices.">
+          To get your saved info and more on all your devices, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_READING_LIST" desc="Subtitle of a sign-in promo in Settings informing the user they can access their reading list on all their devices.">
+          To get your reading list and more on all your devices, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_EXTENSIONS" desc="Subtitle of a sign-in promo in Settings informing the user they can access their extensions on all their devices.">
+          To get your extensions and more on all your devices, sign in to Chromium
         </message>
         <message name="IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE" desc="Subtitle of the Chromium Signin Bubble intercept that is shown when a signed out user signs in on the web with it's first account.">
           To get your passwords and more on all your devices, sign in to Chromium
@@ -1828,6 +1879,16 @@ Chromium is unable to recover your settings.
           =1 {A new update for Chromium is available and will be applied as soon as you relaunch. Your Incognito window won't reopen.}
           other {A new update for Chromium is available and will be applied as soon as you relaunch. Your # Incognito windows won't reopen.}}
         </message>
+        <message name="IDS_UPDATE_RECOMMENDED_ISOLATED" desc="The main text of the Update Recommended dialog variant with a count of open Isolated windows.">
+          {COUNT, plural,
+          =1 {A new update for Chromium is available and will be applied as soon as you relaunch. Your Isolated window won't reopen.}
+          other {A new update for Chromium is available and will be applied as soon as you relaunch. Your # Isolated windows won't reopen.}}
+        </message>
+        <message name="IDS_UPDATE_RECOMMENDED_INCOGNITO_AND_ISOLATED" desc="The main text of the Update Recommended dialog variant with a count of open Incognito and Isolated windows.">
+          {COUNT, plural,
+          =1 {A new update for Chromium is available and will be applied as soon as you relaunch. There is Incognito or Isolated window open. It won't reopen after you relaunch.}
+          other {A new update for Chromium is available and will be applied as soon as you relaunch. There are # Incognito and Isolated windows open across profiles. They won't reopen after you relaunch.}}
+        </message>
         <message name="IDS_RELAUNCH_AND_UPDATE" desc="The button in the Update Recommended dialog which updates and relaunches Chrome.">
           Relaunch
         </message>
@@ -1849,6 +1910,12 @@ Chromium is unable to recover your settings.
           Not used in Chromium. Placeholder to keep resource maps in sync.
         </message>
         <message name="IDS_UPDATE_RECOMMENDED_ALT" desc="Alternate main text of the Update Recommended dialog with a count of open Incognito windows." translateable="false">
+          Not used in Chromium. Placeholder to keep resource maps in sync.
+        </message>
+        <message name="IDS_UPDATE_RECOMMENDED_ALT_ISOLATED" desc="Alternate main text of the Update Recommended dialog variant with a count of open Isolated windows." translateable="false">
+          Not used in Chromium. Placeholder to keep resource maps in sync.
+        </message>
+        <message name="IDS_UPDATE_RECOMMENDED_ALT_INCOGNITO_AND_ISOLATED" desc="Alternate main text of the Update Recommended dialog variant with a count of open Incognito and Isolated windows." translateable="false">
           Not used in Chromium. Placeholder to keep resource maps in sync.
         </message>
       </if>
@@ -1980,7 +2047,7 @@ Chromium is unable to recover your settings.
           Chromium needs location permission for this site
         </message>
         <message name="IDS_MESSAGE_MISSING_LOCAL_NETWORK_PERMISSION_TEXT" desc="Text shown in a prompt ui when a website has requested access to the local network capabilities, but Chrome is missing the Android local network permission.">
-          Chromium needs local network permission for this site
+          Chromium needs access to your local network to discover and use nearby devices
         </message>
         <message name="IDS_MESSAGE_STORAGE_ACCESS_PERMISSION_TEXT" desc="Text shown educating the user that Chrome is missing the Android storage permission, which is required to download files.">
           Chromium needs storage access permission to download files
@@ -2043,13 +2110,100 @@ Chromium is unable to recover your settings.
         <message name="IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH" desc="The body text of the IPH describing that the Contextual Tasks side panel is pinnable.">
           You can pin Contextual Tasks to ask questions as you browse
         </message>
+        <message name="IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH_SIDE_PANEL" desc="The body text of the IPH describing that the Contextual Tasks side panel is pinnable.">
+          You can pin Google Search side panel to ask questions as you browse
+        </message>
+        <message name="IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH_IN_SIDE_PANEL" desc="The body text of the IPH describing that the Contextual Tasks side panel is pinnable.">
+          You can pin Google Search in side panel to ask questions as you browse
+        </message>
+        <message name="IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH_IN_CHROME" desc="The body text of the IPH describing that the Contextual Tasks side panel is pinnable.">
+          You can pin Google Search in Chrome to ask questions as you browse
+        </message>
+        <message name="IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH_PANEL" desc="The body text of the IPH describing that the Contextual Tasks side panel is pinnable.">
+          You can pin Google Search panel to ask questions as you browse
+        </message>
+        <message name="IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH_PIN_SHORTCUT" desc="The text on the button to pin the Contextual Tasks shortcut in the pinnable IPH.">
+          Pin Shortcut
+        </message>
         <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH" desc="The body text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Contextual Tasks.">
           You can reopen Contextual Tasks to ask questions while you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_SIDE_PANEL" desc="The body text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Google Search side panel.">
+          You can reopen Google Search side panel to ask questions while you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_IN_SIDE_PANEL" desc="The body text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Google Search in side panel.">
+          You can reopen Google Search in side panel to ask questions while you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_IN_CHROME" desc="The body text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Google Search in Chrome.">
+          You can reopen Google Search in Chrome to ask questions while you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_PANEL" desc="The body text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Google Search panel.">
+          You can reopen Google Search panel to ask questions while you browse
         </message>
         <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_SCREENREADER"
           desc="The screen reader text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Contextual Tasks."
           is_accessibility_with_no_ui="true">
           From the "Contextual Tasks" button on the toolbar, you can reopen Contextual Tasks to ask questions while you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_SCREENREADER_SIDE_PANEL"
+          desc="The screen reader text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Google Search side panel."
+          is_accessibility_with_no_ui="true">
+          From the "Google Search side panel" button on the toolbar, you can reopen Google Search side panel to ask questions while you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_SCREENREADER_IN_SIDE_PANEL"
+          desc="The screen reader text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Google Search in side panel."
+          is_accessibility_with_no_ui="true">
+          From the "Google Search in side panel" button on the toolbar, you can reopen Google Search in side panel to ask questions while you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_SCREENREADER_IN_CHROME"
+          desc="The screen reader text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Google Search in Chrome."
+          is_accessibility_with_no_ui="true">
+          From the "Google Search in Chrome" button on the toolbar, you can reopen Google Search in Chrome to ask questions while you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_SCREENREADER_PANEL"
+          desc="The screen reader text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Google Search panel."
+          is_accessibility_with_no_ui="true">
+          From the "Google Search panel" button on the toolbar, you can reopen Google Search panel to ask questions while you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_PINNED_ICON_CHANGED_IPH" desc="The body text of the one-time toast IPH informing users who previously pinned the Contextual Tasks shortcut that its toolbar icon has been updated.">
+          New icon, same shortcut: Click to ask questions as you browse with Contextual Tasks.
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_PINNED_ICON_CHANGED_IPH_SIDE_PANEL" desc="The body text of the one-time toast IPH informing users who previously pinned the Google Search side panel shortcut that its toolbar icon has been updated.">
+          New icon, same shortcut: Click to ask questions as you browse with Google Search side panel.
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_PINNED_ICON_CHANGED_IPH_IN_SIDE_PANEL" desc="The body text of the one-time toast IPH informing users who previously pinned the Google Search in side panel shortcut that its toolbar icon has been updated.">
+          New icon, same shortcut: Click to ask questions as you browse with Google Search in side panel.
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_PINNED_ICON_CHANGED_IPH_IN_CHROME" desc="The body text of the one-time toast IPH informing users who previously pinned the Google Search in Chrome shortcut that its toolbar icon has been updated.">
+          New icon, same shortcut: Click to ask questions as you browse with Google Search in Chrome.
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_PINNED_ICON_CHANGED_IPH_PANEL" desc="The body text of the one-time toast IPH informing users who previously pinned the Google Search panel shortcut that its toolbar icon has been updated.">
+          New icon, same shortcut: Click to ask questions as you browse with Google Search panel.
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_PINNED_ICON_CHANGED_IPH_SCREENREADER"
+          desc="The screen reader text of the one-time toast IPH informing users who previously pinned the Contextual Tasks shortcut that its toolbar icon has been updated."
+          is_accessibility_with_no_ui="true">
+          The "Contextual Tasks" button on the toolbar has a new icon. Click it to ask questions as you browse with Contextual Tasks.
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_PINNED_ICON_CHANGED_IPH_SCREENREADER_SIDE_PANEL"
+          desc="The screen reader text of the one-time toast IPH informing users who previously pinned the Google Search side panel shortcut that its toolbar icon has been updated."
+          is_accessibility_with_no_ui="true">
+          The "Google Search side panel" button on the toolbar has a new icon. Click it to ask questions as you browse with Google Search side panel.
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_PINNED_ICON_CHANGED_IPH_SCREENREADER_IN_SIDE_PANEL"
+          desc="The screen reader text of the one-time toast IPH informing users who previously pinned the Google Search in side panel shortcut that its toolbar icon has been updated."
+          is_accessibility_with_no_ui="true">
+          The "Google Search in side panel" button on the toolbar has a new icon. Click it to ask questions as you browse with Google Search in side panel.
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_PINNED_ICON_CHANGED_IPH_SCREENREADER_IN_CHROME"
+          desc="The screen reader text of the one-time toast IPH informing users who previously pinned the Google Search in Chrome shortcut that its toolbar icon has been updated."
+          is_accessibility_with_no_ui="true">
+          The "Google Search in Chrome" button on the toolbar has a new icon. Click it to ask questions as you browse with Google Search in Chrome.
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_PINNED_ICON_CHANGED_IPH_SCREENREADER_PANEL"
+          desc="The screen reader text of the one-time toast IPH informing users who previously pinned the Google Search panel shortcut that its toolbar icon has been updated."
+          is_accessibility_with_no_ui="true">
+          The "Google Search panel" button on the toolbar has a new icon. Click it to ask questions as you browse with Google Search panel.
         </message>
         <message name="IDS_TUTORIAL_CONTEXTUAL_TASKS_STEP1" desc="The body text of the first step of the Contextual Tasks tutorial.">
           Open the overflow menu
@@ -2058,7 +2212,19 @@ Chromium is unable to recover your settings.
           Select "Pin to toolbar"
         </message>
         <message name="IDS_TUTORIAL_CONTEXTUAL_TASKS_STEP3" desc="The body text of the third step of the Contextual Tasks tutorial.">
-          Pinned! Use Contextual Tasks again from the toolbar
+          Success! You can now easily ask questions as you browse with Google Search AI Mode
+        </message>
+        <message name="IDS_TUTORIAL_CONTEXTUAL_TASKS_STEP3_SIDE_PANEL" desc="The body text of the third step of the Contextual Tasks tutorial.">
+          Success! You can now easily ask questions as you browse with Google Search side panel
+        </message>
+        <message name="IDS_TUTORIAL_CONTEXTUAL_TASKS_STEP3_IN_SIDE_PANEL" desc="The body text of the third step of the Contextual Tasks tutorial.">
+          Success! You can now easily ask questions as you browse with Google Search in side panel
+        </message>
+        <message name="IDS_TUTORIAL_CONTEXTUAL_TASKS_STEP3_IN_CHROME" desc="The body text of the third step of the Contextual Tasks tutorial.">
+          Success! You can now easily ask questions as you browse with Google Search in Chrome
+        </message>
+        <message name="IDS_TUTORIAL_CONTEXTUAL_TASKS_STEP3_PANEL" desc="The body text of the third step of the Contextual Tasks tutorial.">
+          Success! You can now easily ask questions as you browse with Google Search panel
         </message>
         <!-- Overlay WebUI Strings -->
         <message name="IDS_LENS_OVERLAY_COPY"
@@ -2260,16 +2426,6 @@ Chromium is unable to recover your settings.
           Search this screenshot
         </message>
 
-        <!-- IPH Strings -->
-        <message name="IDS_LENS_OVERLAY_TRANSLATE_BUTTON_IPH"
-          desc="Text that appears in the IPH toast informing the user about the availability of the new translate screen chip in the Lens Overlay that adds functionality to translate the entire screen.">
-          New! You can translate both text and images on your screen
-        </message>
-        <message name="IDS_LENS_OVERLAY_TRANSLATE_BUTTON_IPH_SCREENREADER"
-          is_accessibility_with_no_ui="true"
-          desc="Text that appears in the IPH toast informing the user about the availability of the new translate screen chip in the Lens Overlay that adds functionality to translate the entire screen.">
-          New! You can translate both text and images on your screen by selecting the "translate screen" button
-        </message>
 
         <message name="IDS_CONTENT_CONTEXT_LENS_OVERLAY"
           desc="The name of the Lens overlay command in the content area context menu">
@@ -2494,6 +2650,25 @@ Chromium is unable to recover your settings.
               =1 {Your administrator asks that you relaunch Chromium to apply this update. Your Incognito window won't reopen.}
               other {Your administrator asks that you relaunch Chromium to apply this update. Your # Incognito windows won't reopen.}}
           </message>
+          <message name="IDS_RELAUNCH_RECOMMENDED_BODY_ISOLATED" desc="The body text of a dialog variant that tells users that a browser relaunch is recommended for an update with Isolated counter.">
+             {COUNT, plural,
+              =1 {Your administrator asks that you relaunch Chromium to apply this update. Your Isolated window won't reopen.}
+              other {Your administrator asks that you relaunch Chromium to apply this update. Your # Isolated windows won't reopen.}}
+          </message>
+          <message name="IDS_RELAUNCH_RECOMMENDED_BODY_INCOGNITO_AND_ISOLATED" desc="The body text of a dialog variant that tells users that a browser relaunch is recommended for an update with Incognito and Isolated counter.">
+             {COUNT, plural,
+              =1 {Your administrator asks that you relaunch Chromium to apply this update. There is Incognito or Isolated window open. It won't reopen after you relaunch.}
+              other {Your administrator asks that you relaunch Chromium to apply this update. There are # Incognito and Isolated windows open across profiles. They won't reopen after you relaunch.}}
+          </message>
+          <message name="IDS_RELAUNCH_RECOMMENDED_SCHEDULED_IDLE_TOAST" desc="Toast notification message shown after scheduling an idle restart.">
+            Chromium will update when your screen is unused
+          </message>
+          <message name="IDS_RELAUNCH_RECOMMENDED_SCHEDULED_TITLE" desc="The title of a bubble dialog that tells users that Chromium wants to update.">
+            Update Chromium to stay secure
+          </message>
+          <message name="IDS_RELAUNCH_RECOMMENDED_BODY_SCHEDULE" desc="The first body paragraph for the scheduled restart reminder bubble dialog.">
+            An <ph name="IMPORTANT_UPDATE">$1<ex>important security update</ex></ph> is ready. You can relaunch now, or set Chromium to update the next time your screen remains on and unused for <ph name="IDLE_DURATION">$2<ex>5 minutes</ex></ph>.
+          </message>
           <message name="IDS_RELAUNCH_REQUIRED_TITLE_DAYS" desc="The title of a dialog that tells users the browser must be relaunched within two or more days.">
             {0, plural,
               =1 {Relaunch Chromium within a day}
@@ -2521,11 +2696,31 @@ Chromium is unable to recover your settings.
               =1 {Your administrator requires that you relaunch Chromium to apply an update. Your Incognito window won't reopen.}
               other {Your administrator requires that you relaunch Chromium to apply an update. Your # Incognito windows won't reopen.}}
           </message>
-             <message name="IDS_ADVANCED_PROTECTION_RELAUNCH_REQUIRED_BODY" desc="The body text of a dialog that tells Advanced Protection users the browser must be relaunched with Incognito counter">
+          <message name="IDS_RELAUNCH_REQUIRED_BODY_ISOLATED" desc="The body text of a dialog variant that tells users the browser must be relaunched with Isolated counter.">
+             {COUNT, plural,
+              =1 {Your administrator requires that you relaunch Chromium to apply an update. Your Isolated window won't reopen.}
+              other {Your administrator requires that you relaunch Chromium to apply an update. Your # Isolated windows won't reopen.}}
+          </message>
+          <message name="IDS_RELAUNCH_REQUIRED_BODY_INCOGNITO_AND_ISOLATED" desc="The body text of a dialog variant that tells users the browser must be relaunched with Incognito and Isolated counter.">
+             {COUNT, plural,
+              =1 {Your administrator requires that you relaunch Chromium to apply an update. There is Incognito or Isolated window open. It won't reopen after you relaunch.}
+              other {Your administrator requires that you relaunch Chromium to apply an update. There are # Incognito and Isolated windows open across profiles. They won't reopen after you relaunch.}}
+          </message>
+          <message name="IDS_ADVANCED_PROTECTION_RELAUNCH_REQUIRED_BODY" desc="The body text of a dialog that tells Advanced Protection users the browser must be relaunched with Incognito counter">
              {COUNT, plural,
               =0 {Advanced Protection requires that you relaunch Chromium to apply an update}
               =1 {Advanced Protection requires that you relaunch Chromium to apply an update. Your Incognito window won't reopen.}
               other {Advanced Protection requires that you relaunch Chromium to apply an update. Your # Incognito windows won't reopen.}}
+          </message>
+          <message name="IDS_ADVANCED_PROTECTION_RELAUNCH_REQUIRED_BODY_ISOLATED" desc="The body text of a dialog variant that tells Advanced Protection users the browser must be relaunched with Isolated counter">
+             {COUNT, plural,
+              =1 {Advanced Protection requires that you relaunch Chromium to apply an update. Your Isolated window won't reopen.}
+              other {Advanced Protection requires that you relaunch Chromium to apply an update. Your # Isolated windows won't reopen.}}
+          </message>
+          <message name="IDS_ADVANCED_PROTECTION_RELAUNCH_REQUIRED_BODY_INCOGNITO_AND_ISOLATED" desc="The body text of a dialog variant that tells Advanced Protection users the browser must be relaunched with Incognito and Isolated counter">
+             {COUNT, plural,
+              =1 {Advanced Protection requires that you relaunch Chromium to apply an update. There is Incognito or Isolated window open. It won't reopen after you relaunch.}
+              other {Advanced Protection requires that you relaunch Chromium to apply an update. There are # Incognito and Isolated windows open across profiles. They won't reopen after you relaunch.}}
           </message>
         </if>
       </if>
@@ -2652,9 +2847,6 @@ Chromium is unable to recover your settings.
         <message name="IDS_FRE_SIGN_IN_TITLE_0" meaning="Title"
           desc="This string appears as a heading on a full-page screen that asks the user to sign in to Chromium with their Google Account. It appears when the user launches Chromium for the first time. When they sign in, they can personalize and customize Chromium and remember their settings in their Google Account. The tone should be inviting and alluring.">
           Sign in to Chromium
-        </message>
-        <message name="IDS_FRE_GET_YOUR_BROWSER_READY_TITLE" meaning="Title" desc="It appears when the user launches Chromium for the first time on the page that is displayed before the sign in page. When they sign in, they can personalize and customize Chromium and remember their settings in their Google Account. The tone should be inviting and alluring.">
-          Let's get your Chromium ready
         </message>
 
         <!-- Default Browser Promo -->
@@ -3219,6 +3411,12 @@ Chromium is unable to recover your settings.
           Show Gemini in Chromium in system tray
         </message>
       </if>
+
+      <!-- GEiC (Gemini Enterprise in Chrome) settings -->
+      <message name="IDS_SETTINGS_GEIC_SECTION_TITLE" desc="Text of the Gemini Enterprise section header on the AI settings page. Also used as the label of the row button leading to the Gemini Enterprise subpage, and as the title of that subpage.">
+        Gemini Enterprise in Chromium
+      </message>
+
       <if expr="is_macosx">
         <message name="IDS_OMNIBOX_EVERYWHERE_STATUS_ICON_MENU_TOGGLE" desc="In Title Case: Label for the toggle item in the Search in Chromium status tray context menu.">
           Open Search with Chromium
@@ -3229,11 +3427,28 @@ Chromium is unable to recover your settings.
           Open search with Chromium
         </message>
       </if>
-      <message name="IDS_OMNIBOX_EVERYWHERE_STATUS_ICON_TOOLTIP" desc="Tooltip text for the Search in Chromium status tray icon.">
-        Search in Chromium
-      </message>
-      <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_TITLE" desc="Title of the Omnibox Everywhere section on the search settings page.">
+      <message name="IDS_OMNIBOX_EVERYWHERE_STATUS_ICON_TOOLTIP" desc="Tooltip text for the Search with Chromium status tray icon.">
         Search with Chromium
+      </message>
+      <message name="IDS_OMNIBOX_EVERYWHERE_PROFILE_TOOLTIP" desc="Tooltip header for the profile icon in Omnibox Everywhere.">
+        Chromium profile
+      </message>
+      <message name="IDS_OMNIBOX_EVERYWHERE_NAME" desc="Name of the desktop search feature (Omnibox Everywhere) used for window titles and shortcuts.">
+        Search with Chromium
+      </message>
+      <if expr="is_win">
+        <message name="IDS_OMNIBOX_EVERYWHERE_NAME_BETA" desc="Unused; Chromium has no side-by-side channels." translateable="false">
+          Search with Chromium Beta
+        </message>
+        <message name="IDS_OMNIBOX_EVERYWHERE_NAME_DEV" desc="Unused; Chromium has no side-by-side channels." translateable="false">
+          Search with Chromium Dev
+        </message>
+        <message name="IDS_OMNIBOX_EVERYWHERE_NAME_CANARY" desc="Unused; Chromium has no side-by-side channels." translateable="false">
+          Search with Chromium Canary
+        </message>
+      </if>
+      <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_TITLE" desc="Title of the Omnibox Everywhere section on the search settings page.">
+        Search from desktop
       </message>
       <if expr="is_macosx">
         <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_TOGGLE" desc="Name of the toggle that controls whether Search with Chromium is shown in the Mac menu bar (on Mac only).">
@@ -3246,7 +3461,7 @@ Chromium is unable to recover your settings.
         </message>
       </if>
       <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_TOGGLE_SUBLABEL" desc="Sublabel of the toggle that controls whether Omnibox Everywhere is shown across the device even if Chromium is minimized.">
-        Search and ask questions from anywhere, even if Chromium is minimized
+        Search and ask questions from anywhere, even if Chromium is minimized. Allows Chromium to run in the background.
       </message>
       <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_SHORTCUT_SUBLABEL" desc="Description for the global keyboard shortcut setting to invoke Omnibox Everywhere.">
         Search with a keyboard shortcut.
@@ -3256,6 +3471,18 @@ Chromium is unable to recover your settings.
       </message>
       <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_SHOW_SHORTCUTS_SUBLABEL" desc="Description for the toggle to show shortcuts in Omnibox Everywhere.">
         Easy access to websites below the address bar
+      </message>
+      <message name="IDS_LOOMNIBOX_FRE_TITLE" desc="Title of the First Run Experience (FRE) modal for Loomnibox.">
+        Search with Chromium from anywhere
+      </message>
+      <message name="IDS_LOOMNIBOX_FRE_LENS_SECONDARY" desc="Secondary description detailing Google Lens functionality in Loomnibox.">
+        Ask about content outside of Chromium, like other apps or files
+      </message>
+      <message name="IDS_LOOMNIBOX_FRE_TO_SEARCH_OR_CUSTOMIZE" desc="Text in the Stage 2 FRE chin following the shortcut dropdown indicating it searches with Chromium or customizes in settings.">
+        to search with Chromium or customize in <ph name="BEGIN_LINK">&lt;a href="#" class="settings-link"&gt;</ph>Settings<ph name="END_LINK">&lt;/a&gt;</ph>
+      </message>
+      <message name="IDS_LOOMNIBOX_FRE_REMINDER_TO_SEARCH" desc="Label in the Stage 3 reminder FRE chin showing the active shortcut to search with Chromium.">
+        to search with Chromium.
       </message>
       <message name="IDS_SETTINGS_GLIC_OS_WIDGET_TOGGLE_SUBLABEL" desc="Sublabel of the toggle that controls whether the Gemini icon is shown in the menu bar (on Mac) / system tray (on Windows and Linux)." formatter_data="android_java">
         Easy access to use Gemini in Chromium across your device, even if Chromium is minimized.
@@ -3271,9 +3498,6 @@ Chromium is unable to recover your settings.
       </message>
       <message name="IDS_SETTINGS_GLIC_SELECTION_SHORTCUT_SUBLABEL" desc="Sublabel describing the selection shortcut triggering in Gemini.">
         To select part of the screen in Gemini in Chromium, use keyboard shortcut.
-      </message>
-      <message name="IDS_SETTINGS_GLIC_HOTKEY_SCOPE_CHROME" desc="Label for the 'In Chromium' option in the shortcut invocation scope dropdown.">
-        In Chromium
       </message>
 
       <!-- Profile Picker Glic version-->
@@ -3345,6 +3569,9 @@ Chromium is unable to recover your settings.
 
         <message name="IDS_DICTATION_ONBOARDING_TITLE" desc="The title string in the onboarding dialog for the dictation feature." translateable="false">
           Turn your spoken thoughts into polished text with Chromium
+        </message>
+        <message name="IDS_DICTATION_ONBOARDING_BULLET_DATA_SHARING" desc="The second paragraph in the onboarding dialog describing data sharing with Google servers." translateable="false">
+          The content and URL of the page you're on and your spoken audio will be sent to Google to generate text based on what you say and the page context
         </message>
         <message name="IDS_DICTATION_ONBOARDING_BULLET_MICROPHONE" desc="The first paragraph in the onboarding dialog describing how the microphone is used." translateable="false">
           Chromium will use your microphone to capture your voice and fill in text fields with cleaned up text.
@@ -3539,6 +3766,93 @@ If this page isn’t working as expected, try allowing optimization.
       <message name="IDS_SEND_TAB_TO_SELF_SIGN_IN_PROMO_BUTTON_LABEL" desc="Label of the sign-in button in the send-tab-to-self sign-in promo bubble.">
         Sign in to Chromium
       </message>
+      <message name="IDS_SEND_TAB_TO_SELF_NO_TARGET_DEVICE_LABEL" desc="Text shown when a user with no available target devices attempts to use send-tab-to-self.">
+        To send this tab to another device, sign in to Chromium there
+      </message>
+      <if expr="not use_titlecase">
+        <message name="IDS_CONTEXT_MENU_SEND_TAB_TO_SELF_SIGN_IN" desc="The label for a menu item to sign in to Chromium in the Send Tab to Self context menu when signed out.">
+          Sign in to Chromium
+        </message>
+      </if>
+      <if expr="use_titlecase">
+        <message name="IDS_CONTEXT_MENU_SEND_TAB_TO_SELF_SIGN_IN" desc="In Title Case: The label for a menu item to sign in to Chromium in the Send Tab to Self context menu when signed out.">
+          Sign In to Chromium
+        </message>
+      </if>
+
+      <!-- Contextual Tasks -->
+      <message name="IDS_CONTEXTUAL_TASKS_PINNING_LABEL_AI_MODE" desc="The label shown in the Customize Chrome settings menu and toolbar to pin Contextual Tasks to the toolbar.">
+        Google Search AI Mode
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_PINNING_LABEL_SIDE_PANEL" desc="The label shown in the Customize Chrome settings menu and toolbar to pin Contextual Tasks to the toolbar.">
+        Google Search side panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_PINNING_LABEL_IN_SIDE_PANEL" desc="The label shown in the Customize Chrome settings menu and toolbar to pin Contextual Tasks to the toolbar.">
+        Google Search in side panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_PINNING_LABEL_IN_CHROME" desc="The label shown in the Customize Chrome settings menu and toolbar to pin Contextual Tasks to the toolbar.">
+        Google Search in Chrome
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_PINNING_LABEL_PANEL" desc="The label shown in the Customize Chrome settings menu and toolbar to pin Contextual Tasks to the toolbar.">
+        Google Search panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CLOSE_TOOL_TIP" desc="The tooltip text used for the contextual task ephemeral toolbar button when the side panel is open.">
+        Close Google Search AI Mode
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CLOSE_TOOL_TIP_SIDE_PANEL" desc="The tooltip text used for the contextual task ephemeral toolbar button when the side panel is open.">
+        Close Google Search side panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CLOSE_TOOL_TIP_IN_SIDE_PANEL" desc="The tooltip text used for the contextual task ephemeral toolbar button when the side panel is open.">
+        Close Google Search in side panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CLOSE_TOOL_TIP_IN_CHROME" desc="The tooltip text used for the contextual task ephemeral toolbar button when the side panel is open.">
+        Close Google Search in Chrome
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CLOSE_TOOL_TIP_PANEL" desc="The tooltip text used for the contextual task ephemeral toolbar button when the side panel is open.">
+        Close Google Search panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_SIDE_PANEL_REOPEN_TOOL_TIP" desc="The tooltip text used for contextual task toolbar button">
+        Reopen Google Search AI Mode
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_SIDE_PANEL_REOPEN_TOOL_TIP_SIDE_PANEL" desc="The tooltip text used for contextual task toolbar button">
+        Reopen Google Search side panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_SIDE_PANEL_REOPEN_TOOL_TIP_IN_SIDE_PANEL" desc="The tooltip text used for contextual task toolbar button">
+        Reopen Google Search in side panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_SIDE_PANEL_REOPEN_TOOL_TIP_IN_CHROME" desc="The tooltip text used for contextual task toolbar button">
+        Reopen Google Search in Chrome
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_SIDE_PANEL_REOPEN_TOOL_TIP_PANEL" desc="The tooltip text used for contextual task toolbar button">
+        Reopen Google Search panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CONTEXT_MENU_REMOVE" desc="The label of the context menu item for removing the contextual tasks ephemeral toolbar button and hiding the side panel.">
+        Hide side panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CONTEXT_MENU_CLOSE" desc="The label of the context menu item for removing the contextual tasks ephemeral toolbar button and closing the side panel.">
+        Close side panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CONTEXT_MENU_CLOSE_AI_MODE" desc="The label of the context menu item for removing the contextual tasks ephemeral toolbar button and closing the side panel.">
+        Close Google Search AI Mode
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CONTEXT_MENU_CLOSE_SIDE_PANEL" desc="The label of the context menu item for removing the contextual tasks ephemeral toolbar button and closing the side panel.">
+        Close Google Search side panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CONTEXT_MENU_CLOSE_IN_SIDE_PANEL" desc="The label of the context menu item for removing the contextual tasks ephemeral toolbar button and closing the side panel.">
+        Close Google Search in side panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CONTEXT_MENU_CLOSE_IN_CHROME" desc="The label of the context menu item for removing the contextual tasks ephemeral toolbar button and closing the side panel.">
+        Close Google Search in Chrome
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CONTEXT_MENU_CLOSE_PANEL" desc="The label of the context menu item for removing the contextual tasks ephemeral toolbar button and closing the side panel.">
+        Close Google Search panel
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CONTEXT_MENU_DISMISS_ACTIVE_SEARCH" desc="The label of the context menu item for dismissing the active search and removing the contextual tasks ephemeral toolbar button when the side panel is closed.">
+        Dismiss active search
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CONTEXT_MENU_DISMISS_ACTIVE_SEARCH_IN_TAB" desc="The label of the context menu item for dismissing the active search in the current tab and removing the contextual tasks ephemeral toolbar button when the side panel is closed.">
+        Dismiss active search in this tab
+      </message>
 
       <!-- Enterprise device signals disclaimer -->
       <message name="IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_TITLE" desc="Title of an enterprise device signals collection disclaimer modal dialog. The dialog is shown on Chrome startup to managed Chrome users who have not previously acknowledged device signals collection.">
@@ -3546,6 +3860,9 @@ If this page isn’t working as expected, try allowing optimization.
       </message>
       <message name="IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_SUBTITLE" desc="Subtitle of an enterprise device signals collection disclaimer modal dialog. The dialog is shown on Chrome startup to managed Chrome users who have not previously acknowledged device signals collection.">
         To secure your work on Chromium, your organization will be able to view or manage certain information when you’re signed-in to Chromium.
+      </message>
+      <message name="IDS_CONTEXTUAL_TASKS_MENU_SIGN_IN_TO_CHROME" desc="The 'Sign in to Chromium' option in the Contextual Tasks 3-dot overflow menu shown when the user is signed out.">
+        Sign in to Chromium
       </message>
     </messages>
   </release>

@@ -31,6 +31,7 @@ import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabWebContentsUserData;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.AnchorSide;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.UiUpdateRequest;
 import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
@@ -117,11 +118,16 @@ public class SwipeRefreshHandler extends TabWebContentsUserData
     private final SideUiObserver mSideUiObserver =
             new SideUiObserver() {
                 @Override
-                public void onSideUiSpecsChanged(SideUiSpecs sideUiSpecs) {
+                public void onSideUiSpecsChangeStarted(
+                        SideUiSpecs sideUiSpecs, UiUpdateRequest request) {
                     updateSideUiWidths(
-                            sideUiSpecs.getWidth(AnchorSide.LEFT),
-                            sideUiSpecs.getWidth(AnchorSide.RIGHT));
+                            sideUiSpecs.getReservedWidth(AnchorSide.LEFT),
+                            sideUiSpecs.getReservedWidth(AnchorSide.RIGHT));
                 }
+
+                @Override
+                public void onSideUiSpecsChangeCompleted(
+                        SideUiSpecs sideUiSpecs, UiUpdateRequest request) {}
             };
 
     /**
@@ -281,9 +287,8 @@ public class SwipeRefreshHandler extends TabWebContentsUserData
     }
 
     /**
-     * Notify the SwipeRefreshLayout that a refresh action has completed.
-     * Defer the notification by a reasonable minimum to ensure sufficient
-     * visiblity of the animation.
+     * Notify the SwipeRefreshLayout that a refresh action has completed. Defer the notification by
+     * a reasonable minimum to ensure sufficient visiblity of the animation.
      */
     public void didStopRefreshing() {
         if (mSwipeRefreshLayout == null || !mSwipeRefreshLayout.isRefreshing()) return;
@@ -340,8 +345,8 @@ public class SwipeRefreshHandler extends TabWebContentsUserData
             SideUiSpecs currentSpecs = mSideUiStateProvider.getCurrentSideUiSpecs();
             if (currentSpecs != null) {
                 updateSideUiWidths(
-                        currentSpecs.getWidth(AnchorSide.LEFT),
-                        currentSpecs.getWidth(AnchorSide.RIGHT));
+                        currentSpecs.getReservedWidth(AnchorSide.LEFT),
+                        currentSpecs.getReservedWidth(AnchorSide.RIGHT));
             } else {
                 updateSideUiWidths(0, 0);
             }

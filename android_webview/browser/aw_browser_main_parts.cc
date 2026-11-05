@@ -5,7 +5,6 @@
 #include "android_webview/browser/aw_browser_main_parts.h"
 
 #include <memory>
-#include <set>
 #include <string>
 #include <utility>
 
@@ -16,7 +15,6 @@
 #include "android_webview/browser/metrics/aw_metrics_service_accessor.h"
 #include "android_webview/browser/metrics/aw_metrics_service_client.h"
 #include "android_webview/browser/metrics/memory_metrics_logger.h"
-#include "android_webview/browser/metrics/system_state_util.h"
 #include "android_webview/browser/network_service/aw_network_change_notifier_factory.h"
 #include "android_webview/common/aw_cached_flags.h"
 #include "android_webview/common/aw_descriptors.h"
@@ -26,7 +24,6 @@
 #include "android_webview/common/aw_switches.h"
 #include "android_webview/common/crash_reporter/aw_crash_reporter_client.h"
 #include "base/android/apk_assets.h"
-#include "base/android/apk_info.h"
 #include "base/android/bundle_utils.h"
 #include "base/android/memory_pressure_listener_android.h"
 #include "base/android/path_utils.h"
@@ -43,7 +40,6 @@
 #include "base/path_service.h"
 #include "base/task/current_thread.h"
 #include "base/task/thread_pool.h"
-#include "base/trace_event/named_trigger.h"
 #include "components/crash/content/browser/child_exit_observer_android.h"
 #include "components/crash/core/common/crash_key.h"
 #include "components/embedder_support/origin_trials/component_updater_utils.h"
@@ -51,18 +47,15 @@
 #include "components/heap_profiling/in_process/browser_process_snapshot_controller.h"
 #include "components/heap_profiling/in_process/heap_profiler_controller.h"
 #include "components/heap_profiling/in_process/mojom/snapshot_controller.mojom.h"
-#include "components/metrics/android_metrics_helper.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/metrics/metrics_service.h"
 #include "components/performance_manager/embedder/graph_features.h"
 #include "components/performance_manager/embedder/performance_manager_lifetime.h"
-#include "components/tracing/common/background_tracing_utils.h"
 #include "components/user_prefs/user_prefs.h"
 #include "components/variations/synthetic_trials.h"
 #include "components/variations/synthetic_trials_active_group_id_provider.h"
 #include "components/variations/variations_crash_keys.h"
 #include "components/variations/variations_ids_provider.h"
-#include "components/version_info/version_info_values.h"
 #include "content/public/browser/android/synchronous_compositor.h"
 #include "content/public/browser/browser_child_process_host.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -83,7 +76,6 @@
 #include "ui/gl/gl_surface.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
-#include "android_webview/browser_jni_headers/AwBrowserMainParts_jni.h"
 #include "android_webview/browser_jni_headers/AwInterfaceRegistrar_jni.h"
 
 namespace {
@@ -103,78 +95,6 @@ void BindHeapSnapshotControllerToProcessHost(
 }  // namespace
 
 namespace android_webview {
-
-namespace {
-
-// Return true if the version code indicates the bundle is primarily 64-bit
-// (even if it may have 32-bit bits).
-bool Is64bitAccordingToVersionCode(const std::string& version_code) {
-  // Primary bitness of the bundle is encoded in the last digit of the version
-  // code.
-  //
-  // From build/util/android_chrome_version.py:
-  //       'arm': {
-  //          '32': 0,
-  //          '32_64': 1,
-  //          '64_32': 2,
-  //          '64_32_high': 3,
-  //          '64': 4,
-  //      },
-  //      'intel': {
-  //          '32': 6,
-  //          '32_64': 7,
-  //          '64_32': 8,
-  //          '64': 9,
-  //      },
-  std::set<char> arch_codes_64bit = {'2', '3', '4', '8', '9'};
-  char arch_code = version_code.back();
-  return arch_codes_64bit.count(arch_code) > 0;
-}
-
-bool IsBundleInterestingAccordingToVersionCode(
-    const std::string& version_code) {
-  // Primary bitness of the bundle is encoded in the last digit of the version
-  // code. And the variant (package name) is encoded in the second to last.
-  //
-  // From build/util/android_chrome_version.py:
-  //       'arm': {
-  //          '32': 0,
-  //          '32_64': 1,
-  //          '64_32': 2,
-  //          '64_32_high': 3,
-  //          '64': 4,
-  //      },
-  //      'intel': {
-  //          '32': 6,
-  //          '32_64': 7,
-  //          '64_32': 8,
-  //          '64': 9,
-  //      },
-  //
-  //      _PACKAGE_NAMES = {
-  //          'CHROME': 0,
-  //          'CHROME_MODERN': 10,
-  //          'MONOCHROME': 20,
-  //          'TRICHROME': 30,
-  //          [...]
-
-  if (version_code.length() != 9) {  // Our scheme has exactly 9 digits.
-    return false;
-  }
-
-  // '32' and '64' bundles go on 32bit-only and 64bit-only devices, so exclude
-  // them.
-  std::set<char> arch_codes_mixed = {'1', '2', '3', '7', '8'};
-  char arch_code = version_code.back();
-
-  // Only 'TRICHROME' supports 64-bit.
-  constexpr char kTriChromeVariant = '3';
-  char variant = version_code[version_code.length() - 2];
-
-  return arch_codes_mixed.count(arch_code) > 0 && variant == kTriChromeVariant;
-}
-
-}  // namespace
 
 AwBrowserMainParts::AwBrowserMainParts(AwContentBrowserClient* browser_client)
     : browser_client_(browser_client) {
@@ -282,24 +202,6 @@ void AwBrowserMainParts::RegisterSyntheticTrials() {
   synthetic_trial_syncer_ = content::SyntheticTrialSyncer::Create(
       metrics->GetSyntheticTrialRegistry());
 
-  static constexpr char kWebViewApkTypeTrial[] = "WebViewApkType";
-  ApkType apk_type = AwBrowserProcess::GetApkType();
-  std::string apk_type_string;
-  switch (apk_type) {
-    case ApkType::TRICHROME:
-      apk_type_string = "Trichrome";
-      break;
-    case ApkType::STANDALONE:
-      apk_type_string = "Standalone";
-      break;
-    case ApkType::UNKNOWN:
-      apk_type_string = "Unknown";
-      break;
-  }
-  AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
-      metrics, kWebViewApkTypeTrial, apk_type_string,
-      variations::SyntheticTrialAnnotationMode::kCurrentLog);
-
   // We use 3393823 as an id reported for all WebView traffic to help analyse data on the
   // server-side for WebView embedders.
   std::vector<std::string> forced_variation_ids = {"3393823"};
@@ -321,67 +223,7 @@ void AwBrowserMainParts::RegisterSyntheticTrials() {
       base::PassKey<AwBrowserMainParts>(), forced_variation_ids,
       /*command_line_variation_ids=*/"");
 
-  // Set up experiment for 64-bit WebView.
-  //
-  // We are specifically interested in devices that meet all of these criteria:
-  // 1) Devices with 4&6GB RAM, as we're launching the feature only for those
-  //    (using (3.2;6.5) range to match RAM targeting in Play).
-  // 2) Devices with only one Android profile (work versus personal), as having
-  //    multiple profiles is a source of a population bias (so is having
-  //    multiple users, but that bias is known to be small, and they're hard to
-  //    filter out).
-  // 3) Mixed 32-/64-bit devices, as non-mixed devices are forced to use
-  //    a particular bitness, thus don't participate in the experiment.
-  // 4) Version code ends with 31/32/33/37/38. 3x represents Trichrome and the
-  //    last digit represents mixed device (which streghtens the filter #3). In
-  //    reality Stable is mostly represented by 31 and 33.
-  //    (TMI, but Beta is a tad more complicated. What UMA sees as Beta
-  //    includes, as expected, Chrome Beta channel and, less expected, Chrome
-  //    Stable channel distributed via the Play Beta track. The latter is
-  //    represented mainly by version codes ending with 41 and 42, which
-  //    dominate, but we want to filter them out nonetheless because it's harder
-  //    to set up experiment for them.)
-  std::string version_code = base::android::apk_info::package_version_code();
-  size_t ram_mb = base::SysInfo::AmountOfTotalPhysicalMemory().InMiB();
-  auto cpu_abi_bitness_support =
-      metrics::AndroidMetricsHelper::GetInstance()->cpu_abi_bitness_support();
-  bool is_device_of_interest =
-      (3.2 * 1024 < ram_mb && ram_mb < 6.5 * 1024) &&
-      (GetMultipleUserProfilesState() ==
-       MultipleUserProfilesState::kSingleProfile) &&
-      (cpu_abi_bitness_support == metrics::CpuAbiBitnessSupport::k32And64bit) &&
-      IsBundleInterestingAccordingToVersionCode(version_code);
-  if (is_device_of_interest) {
-    std::string trial_group;
-    // We can't use defined(ARCH_CPU_64_BITS) on WebView, because bitness of
-    // Browser doesn't have to match the bitness of the bundle. Browser always
-    // follows bitness of the app, whereas Renderer follows bitness of the
-    // bundle.
-    if (Is64bitAccordingToVersionCode(version_code)) {
-      trial_group = "64bit";
-    } else {
-      trial_group = "32bit";
-    }
-    AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
-        metrics, "BitnessForMidRangeRAM", trial_group,
-        variations::SyntheticTrialAnnotationMode::kCurrentLog);
-    AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
-        metrics, "BitnessForMidRangeRAM_wVersion",
-        std::string(PRODUCT_VERSION) + "_" + trial_group,
-        variations::SyntheticTrialAnnotationMode::kCurrentLog);
-  }
-  JNIEnv* env = base::android::AttachCurrentThread();
-  bool use_webview_context = Java_AwBrowserMainParts_getUseWebViewContext(env);
-  bool partitioned_cookies_enablement_state =
-      Java_AwBrowserMainParts_getPartitionedCookiesDefaultState(env);
-  AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
-      metrics, "WebViewSeparateResourceContextMetrics",
-      use_webview_context ? "Enabled" : "Control",
-      variations::SyntheticTrialAnnotationMode::kCurrentLog);
-  AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
-      metrics, "WebViewPartitionedCookiesMetrics",
-      partitioned_cookies_enablement_state ? "Control" : "Disabled",
-      variations::SyntheticTrialAnnotationMode::kCurrentLog);
+  AwMetricsServiceClient::GetInstance()->FlushPendingSyntheticTrialsFromJava();
 
   bool in_seed_experiment =
       android_webview::CachedFlags::IsCachedFeatureOverridden(
@@ -410,11 +252,8 @@ void AwBrowserMainParts::RegisterSyntheticTrials() {
       variations::SyntheticTrialAnnotationMode::kCurrentLog);
 
   std::string trial_name, group_name;
-  if (const auto* heap_profiler_controller =
-          heap_profiling::HeapProfilerController::GetInstance();
-      heap_profiler_controller &&
-      heap_profiler_controller->GetSyntheticFieldTrial(trial_name,
-                                                       group_name)) {
+  if (heap_profiling::HeapProfilerController::GetSyntheticFieldTrial(
+          trial_name, group_name)) {
     AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
         metrics, trial_name, group_name,
         variations::SyntheticTrialAnnotationMode::kCurrentLog);
@@ -454,7 +293,7 @@ void AwBrowserMainParts::WillRunMainMessageLoop(
   NOTREACHED();
 }
 
-void AwBrowserMainParts::PostCreateThreads() {
+int AwBrowserMainParts::PostCreateThreads() {
   if (base::FeatureList::IsEnabled(features::kWebViewMemoryProfilingClient)) {
     if (auto* snapshot_controller =
             heap_profiling::BrowserProcessSnapshotController::GetInstance()) {
@@ -467,15 +306,9 @@ void AwBrowserMainParts::PostCreateThreads() {
   performance_manager_lifetime_ =
       std::make_unique<performance_manager::PerformanceManagerLifetime>(
           performance_manager::GraphFeatures::WithNone(), base::DoNothing());
-
-  tracing::SetupSystemTracingFromFieldTrial();
-  tracing::SetupBackgroundTracingFromCommandLine();
-  tracing::SetupPresetTracingFromFieldTrial();
-  base::trace_event::EmitNamedTrigger(
-      base::trace_event::kStartupTracingTriggerName);
+  return content::RESULT_CODE_NORMAL_EXIT;
 }
 
 }  // namespace android_webview
 
-DEFINE_JNI(AwBrowserMainParts)
 DEFINE_JNI(AwInterfaceRegistrar)

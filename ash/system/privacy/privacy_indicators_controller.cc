@@ -78,20 +78,15 @@ CreatePrivacyIndicatorsNotification(
 
   if (delegate->launch_settings_callback()) {
     optional_fields.buttons.emplace_back(
-        features::AreOngoingProcessesEnabled()
-            ? message_center::ButtonInfo(
-                  /*vector_icon=*/&kSettingsIcon,
-                  /*accessible_name=*/l10n_util::GetStringUTF16(
-                      IDS_PRIVACY_NOTIFICATION_BUTTON_APP_SETTINGS))
-            : message_center::ButtonInfo(l10n_util::GetStringUTF16(
-                  IDS_PRIVACY_NOTIFICATION_BUTTON_APP_SETTINGS)));
+        /*vector_icon=*/&kSettingsIcon,
+        /*accessible_name=*/l10n_util::GetStringUTF16(
+            IDS_PRIVACY_NOTIFICATION_BUTTON_APP_SETTINGS));
   }
 
   auto notification = CreateSystemNotificationPtr(
       message_center::NotificationType::NOTIFICATION_TYPE_SIMPLE,
       GetPrivacyIndicatorsNotificationId(app_id), title, std::u16string(),
       /*display_source=*/std::u16string(),
-      /*origin_url=*/GURL(),
       message_center::NotifierId(message_center::NotifierType::SYSTEM_COMPONENT,
                                  kPrivacyIndicatorsNotifierId,
                                  NotificationCatalogName::kPrivacyIndicators),

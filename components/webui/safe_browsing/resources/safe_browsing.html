@@ -23,6 +23,7 @@
       <div slot="tab" id="db-manager">Database Manager</div>
       <div slot="tab" id="hash-cache">Hash Cache</div>
 </if>
+      <div slot="tab" id="db-manager-search-hashes-lookups">Database Manager SearchHashes Lookups</div>
       <div slot="tab" id="download-protection">Download Protection</div>
       <div slot="tab" id="deep-scan">Deep Scans</div>
 <if expr="not is_android">
@@ -31,25 +32,25 @@
       <div slot="panel">
         <h2>Experiments</h2>
         <div class="content">
-          <p id="experiments-list" class="result-container"></p>
+          <p id="experiments-list" class="key-value-list"></p>
         </div>
         <h2>Preferences</h2>
         <div class="content">
-          <p id="preferences-list" class="result-container"></p>
+          <p id="preferences-list" class="key-value-list"></p>
         </div>
         <h2>Policies</h2>
         <div class="content">
-          <p id="policies-list" class="result-container"></p>
+          <p id="policies-list" class="key-value-list"></p>
         </div>
         <h2>Safe Browsing Cookie</h2>
         <div class="content">
-          <p id="cookie-panel" class="result-container"></p>
+          <p id="cookie-panel" class="key-value-list"></p>
         </div>
       </div>
       <div slot="panel">
         <h2>CSBRRs (ClientSafeBrowsingReportRequest) sent</h2>
         <div class="content">
-          <p id="sent-csbrrs-list" class="result-container"></p>
+          <p id="sent-csbrrs-list"></p>
         </div>
       </div>
       <div slot="panel">
@@ -93,7 +94,7 @@
         </div>
 <if expr="is_android">
         <h2>Most Recent Referring App Info (Android)</h2>
-        <p id="referring-app-info" class="result-container"></p>
+        <p id="referring-app-info"></p>
 </if>
       </div>
       <div slot="panel">
@@ -142,16 +143,30 @@
       <div slot="panel">
         <h2>Database Manager</h2>
         <div class="content">
-          <p id="database-info-list" class="result-container"></p>
+          <p id="database-info-list" class="key-value-list"></p>
         </div>
       </div>
-      <div slot="panel">
+      <div slot="panel" id="hash-cache-panel">
         <h2>Full Hash Cache</h2>
         <div class="content">
           <p id="full-hash-cache-info"></p>
         </div>
       </div>
 </if>
+      <div slot="panel" id="db-manager-search-hashes-lookups-panel">
+        <h2>Database Manager SearchHashes Lookups</h2>
+        <p id="db-manager-search-hashes-lookups-empty-text">No Database Manager SearchHashes lookups logged yet.</p>
+        <table id="db-manager-search-hashes-lookups-table" class="request-response" hidden>
+          <thead>
+            <tr>
+              <th>Request Details</th>
+              <th>Response Details</th>
+            </tr>
+          </thead>
+          <tbody>
+          </tbody>
+        </table>
+      </div>
       <div slot="panel">
         <h2>Download URLs checked</h2>
         <div class="content">

@@ -81,16 +81,6 @@ class DeviceAuthenticatorAndroidTest : public testing::Test {
   raw_ptr<MockDeviceAuthenticatorBridge> bridge_ = nullptr;
 };
 
-TEST_F(DeviceAuthenticatorAndroidTest, AuthenticateRecordsSource) {
-  base::HistogramTester histogram_tester;
-
-  authenticator()->AuthenticateWithMessage(u"", base::DoNothing());
-
-  histogram_tester.ExpectUniqueSample(
-      "Android.DeviceAuthenticator.AuthSource",
-      device_reauth::DeviceAuthSource::kPasswordManager, 1);
-}
-
 TEST_F(DeviceAuthenticatorAndroidTest, DoesntTriggerAuthIfWithin60Seconds) {
   // Simulate a previous successful authentication
   base::HistogramTester histogram_tester;
@@ -187,6 +177,19 @@ TEST_F(DeviceAuthenticatorAndroidTest,
       .WillOnce(Return(false));
   EXPECT_EQ(device_reauth::BiometricStatus::kUnavailable,
             authenticator()->GetBiometricAvailabilityStatus());
+}
+
+TEST_F(DeviceAuthenticatorAndroidTest, FailedNoActivity) {
+  base::HistogramTester histogram_tester;
+  EXPECT_CALL(bridge(), Authenticate)
+      .WillOnce(RunOnceCallback<0>(DeviceAuthUIResult::kFailedNoActivity));
+  base::MockCallback<DeviceAuthenticator::AuthenticateCallback> result_callback;
+  EXPECT_CALL(result_callback, Run(/*auth_succeeded=*/false));
+  authenticator()->AuthenticateWithMessage(u"", result_callback.Get());
+
+  histogram_tester.ExpectUniqueSample(
+      "PasswordManager.BiometricAuthPwdFill.AuthResult",
+      DeviceAuthFinalResult::kFailedNoActivity, 1);
 }
 
 TEST_F(DeviceAuthenticatorAndroidTest, DestroySignalingInCancel) {

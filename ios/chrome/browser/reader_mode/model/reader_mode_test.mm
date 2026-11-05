@@ -10,14 +10,13 @@
 #import "base/notreached.h"
 #import "base/strings/utf_string_conversions.h"
 #import "base/test/ios/wait_util.h"
+#import "components/dom_distiller/core/distiller_options.h"
 #import "components/dom_distiller/core/extraction_utils.h"
 #import "components/feature_engagement/test/mock_tracker.h"
 #import "components/language/ios/browser/language_detection_java_script_feature.h"
 #import "components/optimization_guide/proto/hints.pb.h"
 #import "components/sync/test/test_sync_service.h"
 #import "components/translate/core/browser/translate_pref_names.h"
-#import "ios/chrome/browser/dom_distiller/model/constants.h"
-#import "ios/chrome/browser/dom_distiller/model/distiller_service_factory.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
 #import "ios/chrome/browser/infobars/model/overlays/fake_infobar_overlay_request_factory.h"
@@ -26,7 +25,6 @@
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_request_queue.h"
 #import "ios/chrome/browser/reader_mode/model/constants.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_java_script_feature.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_scroll_anchor_java_script_feature.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
@@ -35,6 +33,8 @@
 #import "ios/chrome/browser/snapshots/model/snapshot_source_tab_helper.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
+#import "ios/chrome/browser/web_distiller/model/constants.h"
+#import "ios/chrome/browser/web_distiller/model/distiller_service_factory.h"
 #import "ios/components/security_interstitials/safe_browsing/fake_safe_browsing_client.h"
 #import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
@@ -43,8 +43,6 @@
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/js_test_util.h"
 #import "ios/web/public/web_state.h"
-#import "third_party/dom_distiller_js/dom_distiller.pb.h"
-#import "third_party/dom_distiller_js/dom_distiller_json_converter.h"
 
 namespace {
 
@@ -160,21 +158,23 @@ void ReaderModeTest::SetReaderModeState(web::FakeWebState* web_state,
       web_state, /*url_language_histogram=*/nullptr, &language_detection_model_,
       profile_->GetPrefs());
 
-  AddReadabilityHeuristicResultToFrame(result, web_frame);
+  AddHeuristicResultToFrame(result, web_frame);
 
   // Set up the fake web frame to return a custom result after executing
-  // the Readability Javascript.
-  dom_distiller::ReadabilityOptions options;
-  options.allowed_video_regex = kReadabilityAllowedVideoRegex;
-  std::u16string readability_script =
-      base::UTF8ToUTF16(dom_distiller::GetReadabilityDistillerScript(options));
-  base::DictValue readability_result;
-  readability_result.Set("content", distilled_content);
-  readability_result.Set("title", "fake title");
+  // the distiller JavaScript.
+  dom_distiller::DistillerOptions options;
+  options.allowed_video_regex = kAllowedVideoRegex;
+  std::u16string distiller_script =
+      base::UTF8ToUTF16(dom_distiller::GetDistillerScript(options));
+  base::DictValue distiller_result;
+  distiller_result.Set(dom_distiller::kDistilledContentKey, distilled_content);
+  distiller_result.Set(dom_distiller::kDistilledTitleKey, "fake title");
+  distiller_result.Set(dom_distiller::kDistilledTextContentKey,
+                       distilled_content);
   distiller_result_values_.push_back(
-      std::make_unique<base::Value>(std::move(readability_result)));
+      std::make_unique<base::Value>(std::move(distiller_result)));
   web_frame->AddResultForExecutedJs(distiller_result_values_.back().get(),
-                                    readability_script);
+                                    distiller_script);
 
   web_frame->SetJavaScriptFunctionCallback(
       "readerMode.retrieveDOMFeatures",
@@ -236,31 +236,29 @@ void ReaderModeTest::OnDomFeaturesRetrieved(
   tab_helper->HandleReaderModeHeuristicResult(result);
 }
 
-void ReaderModeTest::AddReadabilityHeuristicResultToFrame(
-    ReaderModeHeuristicResult result,
-    web::FakeWebFrame* web_frame) {
-  std::u16string readability_heuristic_script =
-      base::UTF8ToUTF16(dom_distiller::GetReadabilityTriggeringScript());
+void ReaderModeTest::AddHeuristicResultToFrame(ReaderModeHeuristicResult result,
+                                               web::FakeWebFrame* web_frame) {
+  std::u16string heuristic_script =
+      base::UTF8ToUTF16(dom_distiller::GetDistillerTriggeringScript());
   switch (result) {
     case ReaderModeHeuristicResult::kReaderModeEligible:
     case ReaderModeHeuristicResult::
         kReaderModeNotEligibleOptimizationGuideIneligible:
     case ReaderModeHeuristicResult::
         kReaderModeNotEligibleOptimizationGuideUnknown:
-      readability_heuristic_value_ = std::make_unique<base::Value>(true);
+      heuristic_value_ = std::make_unique<base::Value>(true);
       break;
     case ReaderModeHeuristicResult::kMalformedResponse:
-      readability_heuristic_value_ = std::make_unique<base::Value>();
+      heuristic_value_ = std::make_unique<base::Value>();
       break;
     case ReaderModeHeuristicResult::kReaderModeNotEligibleContentAndLength:
-      readability_heuristic_value_ = std::make_unique<base::Value>(false);
+      heuristic_value_ = std::make_unique<base::Value>(false);
       break;
     case ReaderModeHeuristicResult::kReaderModeNotEligibleContentOnly:
     case ReaderModeHeuristicResult::kReaderModeNotEligibleContentLength:
       NOTREACHED();
   }
-  web_frame->AddResultForExecutedJs(readability_heuristic_value_.get(),
-                                    readability_heuristic_script);
+  web_frame->AddResultForExecutedJs(heuristic_value_.get(), heuristic_script);
 }
 
 // static

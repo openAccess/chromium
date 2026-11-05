@@ -97,6 +97,16 @@ Sanitizer* Sanitizer::CreateEmpty() {
   return sanitizer;
 }
 
+bool Sanitizer::IsEmpty(const SanitizerConfig* config) {
+  return !config ||
+         (!config->hasElements() && !config->hasRemoveElements() &&
+          !config->hasReplaceWithChildrenElements() &&
+          !config->hasProcessingInstructions() &&
+          !config->hasRemoveProcessingInstructions() &&
+          !config->hasAttributes() && !config->hasRemoveAttributes() &&
+          !config->hasComments() && !config->hasDataAttributes());
+}
+
 Sanitizer* Sanitizer::Clone() const {
   Sanitizer* clone = MakeGarbageCollected<Sanitizer>();
   clone->setFrom(*this);
@@ -199,17 +209,21 @@ bool Sanitizer::removeAttribute(
   return RemoveAttribute(getFrom(attribute));
 }
 
-void Sanitizer::setComments(bool comments) {
+bool Sanitizer::setComments(bool comments) {
+  const SanitizerBoolWithAbsence old_comments = comments_;
   comments_ = comments ? SanitizerBoolWithAbsence::kTrue
                        : SanitizerBoolWithAbsence::kFalse;
+  return comments_ != old_comments;
 }
 
-void Sanitizer::setDataAttributes(bool data_attributes) {
+bool Sanitizer::setDataAttributes(bool data_attributes) {
+  const SanitizerBoolWithAbsence old_data_attrs = data_attrs_;
   data_attrs_ = data_attributes ? SanitizerBoolWithAbsence::kTrue
                                 : SanitizerBoolWithAbsence::kFalse;
+  return data_attrs_ != old_data_attrs;
 }
 
-void Sanitizer::removeUnsafe() {
+bool Sanitizer::removeUnsafe() {
   DCHECK(isValid());
   const Sanitizer* baseline = SanitizerBuiltins::GetBaseline();
 
@@ -226,13 +240,19 @@ void Sanitizer::removeUnsafe() {
   CHECK(!baseline->allow_processing_instructions_);
   CHECK(baseline->remove_processing_instructions_->empty());
 
+  bool changed = false;
   for (const QualifiedName& name : *(baseline->remove_elements_)) {
-    RemoveElement(name);
+    if (RemoveElement(name)) {
+      changed = true;
+    }
   }
   for (const QualifiedName& name : *(baseline->remove_attrs_)) {
-    RemoveAttribute(name);
+    if (RemoveAttribute(name)) {
+      changed = true;
+    }
   }
   DCHECK(isValid());
+  return changed;
 }
 
 bool SanitizerAtomicStringLessThan(const AtomicString& a,
@@ -948,40 +968,7 @@ void Sanitizer::SanitizeJavascriptNavigationAttributes(Element* element,
   }
 }
 
-void Sanitizer::SanitizeTemplate(Node* node, Mode safe) const {
-  // https://wicg.github.io/sanitizer-api/#sanitize-core,
-  // Step 1.5.5: Recurse into template content.
-  if (IsA<HTMLTemplateElement>(node)) {
-    Node* content = To<HTMLTemplateElement>(node)->content();
-    if (content) {
-      Sanitize(content, safe);
-    }
-  }
-  // Step 1.5.6: Recurse into shadow.
-  if (node->GetShadowRoot()) {
-    Node* shadow_root = &node->GetShadowRoot()->RootNode();
-    CHECK(shadow_root);
-    Sanitize(shadow_root, safe);
-  }
-}
-
-void Sanitizer::SanitizeSafe(Node* root) const {
-  // TODO(vogelheim): This is hideously inefficient, but very easy to implement.
-  // We'll use this for now, so we can fully build out tests & other
-  // infrastructure, and worry about efficiency later.
-  CHECK(!root->GetDocument().IsActive());
-  Sanitizer* safe = MakeGarbageCollected<Sanitizer>();
-  safe->setFrom(*this);
-  safe->removeUnsafe();
-  safe->Sanitize(root, Mode::kSafe);
-}
-
-void Sanitizer::SanitizeUnsafe(Node* root) const {
-  CHECK(!root->GetDocument().IsActive());
-  Sanitize(root, Mode::kUnsafe);
-}
-
-Sanitizer::Action Sanitizer::ActionForNode(Node* node, Node* root) const {
+Sanitizer::Action Sanitizer::ActionForNode(Node* node) const {
   switch (node->getNodeType()) {
     case Node::NodeType::kElementNode: {
       // Step 5: Child implements Element.
@@ -1034,7 +1021,6 @@ Sanitizer::Action Sanitizer::ActionForNode(Node* node, Node* root) const {
     case Node::NodeType::kDocumentTypeNode:
       // Step 2: If child implement DocumentType, then continue.
       // Should only happen when parsing full documents w/ parseHTML.
-      DCHECK(root->IsDocumentNode());
       return Action::kKeep;
     default:
       // Step 1: Assert: child implements Text, Comment, Element, DocType.
@@ -1058,51 +1044,8 @@ void ReplaceWithChildren(Node& node) {
 }
 }  // namespace
 
-void Sanitizer::Sanitize(Node* root, Mode safe) const {
-  // https://wicg.github.io/sanitizer-api/#sanitize-core
-  // This is structured a little differently than the spec, for better
-  // readability. For step 1.5, we may call into helper methods.
-
-  SanitizeTemplate(root, safe);
-  Node* node = NodeTraversal::Next(*root);
-  while (node) {
-    switch (ActionForNode(node, root)) {
-      case Action::kKeepElement: {
-        // This performs Steps 5.5 - 5.9:
-        CHECK_EQ(node->getNodeType(), Node::NodeType::kElementNode);
-        ProcessElement(To<Element>(node), safe);
-        SanitizeTemplate(node, safe);
-        node = NodeTraversal::Next(*node);
-        break;
-      }
-      case Action::kKeep: {
-        CHECK_NE(node->getNodeType(), Node::NodeType::kElementNode);
-        node = NodeTraversal::Next(*node);
-        break;
-      }
-      case Action::kReplaceWithChildren: {
-        // Steps 5.2.*:
-        CHECK_EQ(node->getNodeType(), Node::NodeType::kElementNode);
-        Node* next_node = node->firstChild();
-        if (!next_node) {
-          next_node = NodeTraversal::Next(*node);
-        }
-        ReplaceWithChildren(*node);
-        node = next_node;
-        break;
-      }
-      case Action::kDrop: {
-        Node* next_node = NodeTraversal::NextSkippingChildren(*node);
-        node->parentNode()->removeChild(node);
-        node = next_node;
-        break;
-      }
-    }
-  }
-}
-
 Sanitizer::Action Sanitizer::SanitizeSingleNode(Node* node, Mode safe) const {
-  Action action = ActionForNode(node, node);
+  Action action = ActionForNode(node);
   if (action == Action::kKeepElement) {
     ProcessElement(To<Element>(node), safe);
     return Action::kKeep;
@@ -1112,10 +1055,10 @@ Sanitizer::Action Sanitizer::SanitizeSingleNode(Node* node, Mode safe) const {
 }
 
 bool Sanitizer::setFrom(const SanitizerConfig* config,
-                        bool allowCommentsAndDataAttributes) {
+                        bool allowCommentsPIsAndDataAttributes) {
   // https://wicg.github.io/sanitizer-api/#configuration-set
   //
-  // Since out internal representation is quite different from the external
+  // Since our internal representation is quite different from the external
   // one, the structure here is quite different from the spec text.
 
   // This method assumes a newly constructed instance.
@@ -1219,10 +1162,10 @@ bool Sanitizer::setFrom(const SanitizerConfig* config,
           remove_processing_instructions_->insert(target).is_new_entry;
     }
   }
-  setComments(config->getCommentsOr(allowCommentsAndDataAttributes));
+  setComments(config->getCommentsOr(allowCommentsPIsAndDataAttributes));
   if (allow_attrs_ || config->hasDataAttributes()) {
     setDataAttributes(
-        config->getDataAttributesOr(allowCommentsAndDataAttributes));
+        config->getDataAttributesOr(allowCommentsPIsAndDataAttributes));
   }
 
   // https://wicg.github.io/sanitizer-api/#sanitizer-canonicalize-the-configuration,
@@ -1233,8 +1176,15 @@ bool Sanitizer::setFrom(const SanitizerConfig* config,
   if (!config->hasAttributes() && !config->hasRemoveAttributes()) {
     remove_attrs_ = std::make_unique<SanitizerNameSet>();
   }
+  // step 3:
   if (!allow_processing_instructions_ && !remove_processing_instructions_) {
-    remove_processing_instructions_ = std::make_unique<HashSet<AtomicString>>();
+    if (allowCommentsPIsAndDataAttributes) {
+      remove_processing_instructions_ =
+          std::make_unique<HashSet<AtomicString>>();
+    } else {
+      allow_processing_instructions_ =
+          std::make_unique<HashSet<AtomicString>>();
+    }
   }
 
   return all_new_entries && isValid();
@@ -1479,6 +1429,9 @@ bool Sanitizer::isValid() const {
 }
 
 bool Sanitizer::AllowIsAttribute(const QualifiedName& element_name) const {
+  if (!IsElementAllowed(element_name)) {
+    return false;
+  }
   const auto allow_per_element_iter =
       allow_attrs_per_element_.find(element_name);
   const SanitizerNameSet* allow_per_element =
@@ -1498,7 +1451,7 @@ bool Sanitizer::AllowIsAttribute(const QualifiedName& element_name) const {
 void StreamingSanitizer::DidParseDocument(Document* document) {
   Element* root = document->documentElement();
   CHECK(root);
-  switch (sanitizer_->ActionForNode(root, root)) {
+  switch (sanitizer_->ActionForNode(root)) {
     case Sanitizer::Action::kKeepElement:
       sanitizer_->ProcessElement(root, mode_);
       break;

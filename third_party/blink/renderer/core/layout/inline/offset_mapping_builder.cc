@@ -4,11 +4,12 @@
 
 #include "third_party/blink/renderer/core/layout/inline/offset_mapping_builder.h"
 
+#include <ranges>
 #include <utility>
-#include "base/containers/adapters.h"
+
+#include "third_party/blink/renderer/core/layout/inline/offset_mapping.h"
 #include "third_party/blink/renderer/core/layout/layout_text.h"
 #include "third_party/blink/renderer/core/layout/layout_text_fragment.h"
-#include "third_party/blink/renderer/core/layout/inline/offset_mapping.h"
 
 namespace blink {
 
@@ -208,7 +209,7 @@ void OffsetMappingBuilder::RestoreTrailingCollapsibleSpace(
     const LayoutText& layout_text,
     unsigned offset) {
   ++destination_length_;
-  for (auto& unit : base::Reversed(mapping_units_)) {
+  for (auto& unit : std::views::reverse(mapping_units_)) {
     if (unit.text_content_end_ < offset) {
       // There are no collapsed unit.
       NOTREACHED();
@@ -252,6 +253,10 @@ bool OffsetMappingBuilder::SetDestinationString(const String& string) {
 }
 
 OffsetMapping* OffsetMappingBuilder::Build() {
+  // `ReserveCapacity` deliberately over-reserves. Now that it's built, we can
+  // shrink to reclaim the memory.
+  mapping_units_.shrink_to_fit();
+
   // All mapping units are already built. Scan them to build mapping ranges.
   for (unsigned range_start = 0; range_start < mapping_units_.size();) {
     const LayoutObject& layout_object =

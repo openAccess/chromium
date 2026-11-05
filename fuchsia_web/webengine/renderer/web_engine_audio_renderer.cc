@@ -6,8 +6,12 @@
 
 #include <lib/sys/cpp/component_context.h>
 
-#include "base/compiler_specific.h"
+#include <utility>
+
+#include "base/containers/heap_array.h"
 #include "base/containers/span.h"
+#include "base/containers/span_reader.h"
+#include "base/containers/span_writer.h"
 #include "base/fuchsia/fuchsia_logging.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -88,24 +92,27 @@ scoped_refptr<media::DecoderBuffer> PreparePcm24Buffer(
 
   auto buffer_span = base::span(*buffer);
   size_t samples = buffer_span.size() / 3;
-  scoped_refptr<media::DecoderBuffer> result =
-      base::MakeRefCounted<media::DecoderBuffer>(samples * 4);
-  for (size_t i = 0; i < samples - 1; ++i) {
-    UNSAFE_TODO(reinterpret_cast<uint32_t*>(result->writable_data())[i]) =
-        *reinterpret_cast<const uint32_t*>(buffer_span.subspan(i * 3).data()) &
-        0x00ffffff;
-  }
-  size_t last_sample = samples - 1;
-  UNSAFE_TODO(
-      reinterpret_cast<uint32_t*>(result->writable_data())[last_sample]) =
-      buffer_span[last_sample * 3] | (buffer_span[last_sample * 3 + 1] << 8) |
-      (buffer_span[last_sample * 3 + 2] << 16);
+  auto output_data = base::HeapArray<uint8_t>::Uninit(samples * 4);
 
+  base::SpanReader reader(buffer_span);
+  auto result_writer = base::SpanWriter(output_data.as_span());
+
+  for (size_t i = 0; i < samples; ++i) {
+    auto sample = reader.Read<3u>();
+    CHECK(sample);
+    uint32_t val = static_cast<uint32_t>((*sample)[0]) |
+                   (static_cast<uint32_t>((*sample)[1]) << 8) |
+                   (static_cast<uint32_t>((*sample)[2]) << 16);
+    CHECK(result_writer.WriteU32LittleEndian(val));
+  }
+
+  auto result = media::DecoderBuffer::FromArray(std::move(output_data));
   result->set_timestamp(buffer->timestamp());
   result->set_duration(buffer->duration());
 
-  if (buffer->decrypt_config())
+  if (buffer->decrypt_config()) {
     result->set_decrypt_config(buffer->decrypt_config()->Clone());
+  }
 
   return result;
 }
@@ -231,6 +238,10 @@ void WebEngineAudioRenderer::OnBuffersAcquired(
     has_delayed_end_of_stream_ = false;
     OnSysmemBufferStreamEndOfStream();
   }
+
+  if (GetPlaybackState() == PlaybackState::kStartPending) {
+    StartAudioConsumer();
+  }
 }
 
 void WebEngineAudioRenderer::InitializeStreamSink() {
@@ -276,9 +287,6 @@ void WebEngineAudioRenderer::InitializeStreamSink() {
   audio_consumer_->CreateStreamSink(
       std::move(vmos_for_stream_sink), std::move(stream_type),
       std::move(compression).value(), stream_sink_.NewRequest());
-
-  if (GetPlaybackState() == PlaybackState::kStartPending)
-    StartAudioConsumer();
 
   ScheduleBufferTimers();
 }

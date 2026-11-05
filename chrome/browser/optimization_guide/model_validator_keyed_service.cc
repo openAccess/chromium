@@ -16,11 +16,12 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/inference/model_validator.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/on_device_features.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_execution_proto_descriptors.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
+#include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/optimization_guide/proto/model_validation.pb.h"
@@ -50,7 +51,7 @@ void WriteResponseToFile(
     return;
   }
   bool write_file_success = base::WriteFile(path, serialized_output);
-  DCHECK(write_file_success);
+  CHECK(write_file_success, base::NotFatalUntil::M161);
 }
 
 bool ShouldValidateModel() {
@@ -91,7 +92,7 @@ namespace optimization_guide {
 ModelValidatorKeyedService::ModelValidatorKeyedService(Profile* profile)
     : profile_(profile) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(ShouldStartModelValidator());
+  CHECK(ShouldStartModelValidator(), base::NotFatalUntil::M161);
   auto* opt_guide_service =
       OptimizationGuideKeyedServiceFactory::GetForProfile(profile);
   if (!opt_guide_service) {
@@ -229,9 +230,9 @@ void ModelValidatorKeyedService::PerformOnDeviceModelExecutionValidation(
 
 void ModelValidatorKeyedService::ExecuteModel(
     std::unique_ptr<optimization_guide::proto::ExecuteRequest> request) {
-  DCHECK(on_device_validation_session_);
+  CHECK(on_device_validation_session_, base::NotFatalUntil::M161);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(request);
+  CHECK(request, base::NotFatalUntil::M161);
 
   auto metadata = GetProtoFromAny(request->request_metadata());
   on_device_validation_session_->ExecuteModel(

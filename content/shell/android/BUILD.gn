@@ -151,10 +151,8 @@ android_library("content_shell_apk_java") {
     "//base:base_java",
     "//base:process_launcher_java",
     "//build/android:build_java",
-    "//components/cached_flags:java",
     "//components/embedder_support/android:view_java",
     "//content/public/android:content_java",
-    "//media/capture/video/android:capture_java",
     "//net/android:net_java",
     "//third_party/android_deps:com_google_code_findbugs_jsr305_java",
     "//ui/android:ui_java",
@@ -190,6 +188,7 @@ android_assets("content_shell_assets") {
 
 template("content_shell_apk_tmpl") {
   _target_type = invoker.target_type
+
   target(_target_type, target_name) {
     forward_variables_from(invoker, "*")
     testonly = true
@@ -263,7 +262,6 @@ android_library("content_shell_test_java") {
     "//content/public/android:content_java",
     "//content/public/test/android:content_java_test_support",
     "//content/shell/android:content_shell_java",
-    "//mojo/public/java/system:test_support_java",
     "//net/android:net_java",
     "//third_party/androidx:androidx_test_monitor_java",
     "//third_party/androidx:androidx_test_runner_java",
@@ -286,6 +284,7 @@ android_library("content_shell_browsertests_java") {
   deps = [
     ":content_shell_java",
     "//base:base_java",
+    "//components/embedder_support/android:view_java",
     "//content/public/android:content_java",
     "//testing/android/native_test:native_browser_test_java",
     "//third_party/androidx:androidx_core_core_java",

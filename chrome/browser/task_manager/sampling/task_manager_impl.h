@@ -24,6 +24,7 @@
 #include "chrome/browser/task_manager/sampling/task_group.h"
 #include "chrome/browser/task_manager/task_manager_interface.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/common/child_process_id.h"
 #include "gpu/ipc/common/memory_stats.h"
 #include "services/resource_coordinator/public/cpp/memory_instrumentation/global_memory_dump.h"
 
@@ -73,13 +74,15 @@ class TaskManagerImpl : public TaskManagerInterface,
   const std::u16string& GetTitle(TaskId task_id) const override;
   std::u16string GetProfileName(TaskId task_id) const override;
   const gfx::ImageSkia& GetIcon(TaskId task_id) const override;
+  bool ShouldThemifyIcon(TaskId task_id) const override;
   const base::ProcessHandle& GetProcessHandle(TaskId task_id) const override;
   const base::ProcessId& GetProcessId(TaskId task_id) const override;
   TaskId GetRootTaskId(TaskId task_id) const override;
   Task::Type GetType(TaskId task_id) const override;
   Task::SubType GetSubType(TaskId task_id) const override;
   SessionID GetTabId(TaskId task_id) const override;
-  int GetChildProcessUniqueId(TaskId task_id) const override;
+  content::ChildProcessId GetChildProcessUniqueId(
+      TaskId task_id) const override;
   void GetTerminationStatus(TaskId task_id,
                             base::TerminationStatus* out_status,
                             int* out_error_code) const override;
@@ -92,6 +95,9 @@ class TaskManagerImpl : public TaskManagerInterface,
   bool GetV8Memory(TaskId task_id,
                    base::ByteSize* allocated,
                    base::ByteSize* used) const override;
+  bool GetCppGCMemory(TaskId task_id,
+                      base::ByteSize* allocated,
+                      base::ByteSize* used) const override;
   bool GetWebCacheStats(TaskId task_id,
                         blink::WebCacheResourceTypeStats* stats) const override;
   int GetKeepaliveCount(TaskId task_id) const override;

@@ -9,17 +9,19 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/prefs/prefs_tab_helper.h"
 #include "chrome/browser/ui/views/drive_picker_host/drive_picker_result_handler.mojom.h"
 #include "chrome/browser/ui/webui/drive_picker_host/drive_picker_host_ui.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/compositor/layer.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
@@ -54,9 +56,18 @@ DrivePickerHostView::DrivePickerHostView(
   // `GetWebContents()` is guaranteed to return a valid pointer. We use a
   // `CHECK` here to assert this state and remove redundant defensive checks.
   CHECK(web_view->GetWebContents());
-  web_view->GetWebContents()->SetDelegate(this);
-  web_view->GetWebContents()->SetPageBaseBackgroundColor(SK_ColorTRANSPARENT);
 
+  // Apply Chrome's renderer preferences (focus ring color, fonts, etc.) to the
+  // hosted `WebContents`. Without this, Blink falls back to its built-in
+  // default focus ring color (orange), which shows up around the Drive Picker
+  // while it loads and takes focus.
+  PrefsTabHelper::CreateForWebContents(web_view->GetWebContents());
+
+  web_view->GetWebContents()->SetDelegate(this);
+  SetAcceleratorHandling(views::WebContentsAcceleratorHandling::kEnabled);
+  SetOnEscCloseWidget();
+
+  web_view->GetWebContents()->SetPageBaseBackgroundColor(SK_ColorTRANSPARENT);
   web_view->LoadInitialURL(GURL(chrome::kChromeUIDrivePickerHostURL));
 
   AddAccelerator(ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE));
@@ -111,6 +122,19 @@ void DrivePickerHostView::OnTransitionToPicker() {
 void DrivePickerHostView::OnTransitionToError() {
   current_ui_type_ =
       drive_picker_host::DrivePickerHostRequest::RequestType::kErrorDialog;
+  PreferredSizeChanged();
+  if (GetWidget()) {
+    GetWidget()->CenterWindow(GetPreferredSize());
+  }
+}
+
+void DrivePickerHostView::OnTransitionToConsent() {
+  if (current_ui_type_ !=
+      drive_picker_host::DrivePickerHostRequest::RequestType::kErrorDialog) {
+    return;
+  }
+  current_ui_type_ =
+      drive_picker_host::DrivePickerHostRequest::RequestType::kConsentDialog;
   PreferredSizeChanged();
   if (GetWidget()) {
     GetWidget()->CenterWindow(GetPreferredSize());
@@ -225,9 +249,10 @@ content::WebContents* DrivePickerHostView::OpenURLFromTab(
     return nullptr;
   }
   content::OpenURLParams new_params(params);
-  if (new_params.disposition == WindowOpenDisposition::CURRENT_TAB ||
-      new_params.disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB) {
-    new_params.disposition = WindowOpenDisposition::NEW_WINDOW;
+  if (new_params.disposition == ui::mojom::WindowOpenDisposition::kCurrentTab ||
+      new_params.disposition ==
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab) {
+    new_params.disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
   }
   return browser_window_interface_->OpenURL(
       new_params, std::move(navigation_handle_callback));
@@ -237,7 +262,7 @@ content::WebContents* DrivePickerHostView::AddNewContents(
     content::WebContents* source,
     std::unique_ptr<content::WebContents> new_contents,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture,
     bool* was_blocked) {
@@ -253,39 +278,15 @@ content::WebContents* DrivePickerHostView::AddNewContents(
     }
     return nullptr;
   }
-  WindowOpenDisposition new_disposition = disposition;
-  if (new_disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
-      new_disposition == WindowOpenDisposition::CURRENT_TAB) {
-    new_disposition = WindowOpenDisposition::NEW_WINDOW;
+  ui::mojom::WindowOpenDisposition new_disposition = disposition;
+  if (new_disposition == ui::mojom::WindowOpenDisposition::kNewForegroundTab ||
+      new_disposition == ui::mojom::WindowOpenDisposition::kCurrentTab) {
+    new_disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
   }
   chrome::AddWebContents(browser_window_interface_, source,
                          std::move(new_contents), target_url, new_disposition,
                          window_features);
   return nullptr;
-}
-
-content::KeyboardEventProcessingResult
-DrivePickerHostView::PreHandleKeyboardEvent(
-    content::WebContents* source,
-    const input::NativeWebKeyboardEvent& event) {
-  if (event.windows_key_code == ui::VKEY_ESCAPE &&
-      event.GetType() == blink::WebInputEvent::Type::kRawKeyDown) {
-    views::Widget* widget = GetWidget();
-    if (widget) {
-      widget->CloseWithReason(views::Widget::ClosedReason::kEscKeyPressed);
-    }
-    return content::KeyboardEventProcessingResult::HANDLED;
-  }
-  return content::KeyboardEventProcessingResult::NOT_HANDLED;
-}
-bool DrivePickerHostView::HandleKeyboardEvent(
-    content::WebContents* source,
-    const input::NativeWebKeyboardEvent& event) {
-  if (!event.os_event) {
-    return false;
-  }
-  return unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-      event, GetFocusManager());
 }
 
 BEGIN_METADATA(DrivePickerHostView)

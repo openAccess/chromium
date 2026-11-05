@@ -7,6 +7,7 @@
 #import <memory>
 
 #import "base/functional/bind.h"
+#import "base/functional/callback_helpers.h"
 #import "base/memory/raw_ptr.h"
 #import "base/strings/string_number_conversions.h"
 #import "base/strings/stringprintf.h"
@@ -15,6 +16,7 @@
 #import "base/test/ios/wait_util.h"
 #import "base/test/test_future.h"
 #import "base/values.h"
+#import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/fakes/fake_web_frame.h"
 #import "ios/web/public/test/fakes/fake_web_frames_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -189,7 +191,10 @@ TEST_F(MojoFacadeTest, BindInterface) {
   connect.Set("args", std::move(args));
 
   std::string handle_as_string = HandleMessage(connect);
-  EXPECT_TRUE(handle_as_string.empty());
+  // MOJO_RESULT_INVALID_ARGUMENT 3
+  unsigned result = 3u;
+  EXPECT_TRUE(base::StringToUint(handle_as_string, &result));
+  EXPECT_EQ(static_cast<unsigned>(MOJO_RESULT_OK), result);
 
   CloseHandle(handle1);
 }
@@ -300,9 +305,7 @@ TEST_F(MojoFacadeTest, HasRegisteredInterfaces) {
   EXPECT_FALSE(binder->HasRegisteredInterfaces());
 
   binder->AddInterface("FakeInterface",
-                       base::BindRepeating([](mojo::GenericPendingReceiver*) {
-                         // Do nothing.
-                       }));
+                       /*callback=*/base::DoNothing());
   EXPECT_TRUE(binder->HasRegisteredInterfaces());
 
   binder->RemoveInterface("FakeInterface");
@@ -342,6 +345,67 @@ TEST_F(MojoFacadeTest, AwaitNextMessagePreventsConcurrentPolls) {
 
   facade()->AwaitNextMessage();
   EXPECT_EQ(1u, main_frame()->GetJavaScriptCallHistory().size());
+}
+
+// Tests that writing to an invalid pipe handle is safely handled.
+TEST_F(MojoFacadeTest, WriteMessageWithInvalidPipe) {
+  base::DictValue write;
+  write.Set("name", "MojoHandle.writeMessage");
+  base::DictValue args;
+  args.Set("handle", 999999);
+  args.Set("handles", base::ListValue());
+  args.Set("buffer", "test");
+  write.Set("args", std::move(args));
+
+  std::string result_as_string = HandleMessage(write);
+  unsigned result = 0u;
+  EXPECT_TRUE(base::StringToUint(result_as_string, &result));
+  EXPECT_EQ(static_cast<unsigned>(MOJO_RESULT_INVALID_ARGUMENT), result);
+}
+
+// Tests that binding an interface with an invalid requestHandle argument is
+// safely handled and returns MOJO_RESULT_INVALID_ARGUMENT.
+TEST_F(MojoFacadeTest, BindInterfaceWithInvalidHandle) {
+  base::DictValue bind;
+  bind.Set("name", "Mojo.bindInterface");
+  base::DictValue args;
+  args.Set("interfaceName", "FakeInterface");
+  args.Set("requestHandle", 999999);
+  bind.Set("args", std::move(args));
+
+  std::string response = HandleMessage(bind);
+  unsigned result = 0u;
+  EXPECT_TRUE(base::StringToUint(response, &result));
+  EXPECT_EQ(static_cast<unsigned>(MOJO_RESULT_INVALID_ARGUMENT), result);
+}
+
+// Tests that a same-document navigation (such as a location hash change)
+// preserves existing Mojo pipes.
+TEST_F(MojoFacadeTest, SameDocumentNavigationPreservesPipesAndWatchers) {
+  WebState::InterfaceBinder* binder =
+      web_state().GetInterfaceBinderForMainFrame();
+  binder->AddInterface("FakeInterface", /*callback=*/base::DoNothing());
+
+  uint32_t handle0, handle1;
+  CreateMessagePipe(&handle0, &handle1);
+  const int kCallbackId = 99;
+  WatchHandle(handle0, kCallbackId);
+
+  // Simulate a same-document navigation (e.g. changing window.location.hash),
+  // which triggers DidFinishNavigation followed by PageLoaded.
+  FakeNavigationContext context;
+  context.SetHasCommitted(true);
+  context.SetIsSameDocument(true);
+  web_state().OnNavigationFinished(&context);
+  web_state().OnPageLoaded(PageLoadCompletionStatus::SUCCESS);
+  EXPECT_EQ("return await Mojo.internal.fetchNextMessageFromJS();",
+            WaitForLastJavaScriptCall());
+
+  // Existing pipes must remain active and accept messages.
+  WriteMessage(handle1, "QUJDRA==");  // "ABCD" in base-64
+
+  CloseHandle(handle0);
+  CloseHandle(handle1);
 }
 
 }  // namespace web

@@ -61,7 +61,7 @@ void WebContentsVideoCaptureDevice::ApplySubCaptureTarget(
     base::OnceCallback<void(media::mojom::ApplySubCaptureTargetResult)>
         callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(callback);
+  CHECK(callback, base::NotFatalUntil::M160);
 
   tracker_.AsyncCall(&WebContentsFrameTracker::ApplySubCaptureTarget)
       .WithArgs(type, target, sub_capture_target_version,
@@ -77,8 +77,8 @@ void WebContentsVideoCaptureDevice::OnFrameCaptured(
     mojo::PendingRemote<viz::mojom::FrameSinkVideoConsumerFrameCallbacks>
         callbacks) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (info->metadata.source_size.has_value()) {
-    const gfx::Size new_size = *info->metadata.source_size;
+  if (info->metadata.capture.source_size.has_value()) {
+    const gfx::Size new_size = *info->metadata.capture.source_size;
     // Only update the captured content size when the size changes. See also
     // the comment in WebContentsFrameTracker::SetCapturedContentSize which
     // expects that behavior.

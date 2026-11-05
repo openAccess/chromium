@@ -13,6 +13,10 @@ DEFINE_TYPED_IDENTIFIER_VALUE(ui::ElementIdentifier,
                               views::WebView,
                               kActiveContentsWebViewRetrievalId);
 
+DEFINE_TYPED_IDENTIFIER_VALUE(ui::ElementIdentifier,
+                              views::View,
+                              kVerticalTabStripRegionRetrievalId);
+
 DEFINE_SAFE_CAST_TARGET(BrowserElementsViews)
 
 BrowserElementsViews::BrowserElementsViews(BrowserWindowInterface& browser)
@@ -22,10 +26,9 @@ BrowserElementsViews::~BrowserElementsViews() = default;
 
 views::Widget* BrowserElementsViews::GetPrimaryWindowWidget() {
   const auto context = GetContext();
-  return context
-             ? views::ElementTrackerViews::GetInstance()->GetWidgetForContext(
-                   context)
-             : nullptr;
+  return context ? views::ElementTrackerViews::GetInstance()
+                       ->GetPrimaryWindowWidgetForContext(context)
+                 : nullptr;
 }
 
 void BrowserElementsViews::TearDown() {

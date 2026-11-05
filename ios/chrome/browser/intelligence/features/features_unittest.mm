@@ -7,6 +7,7 @@
 #import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
 #import "components/application_locale_storage/application_locale_storage.h"
+#import "ios/chrome/app/background_task/features.h"
 #import "ios/chrome/browser/intelligence/actor/tools/utils/actor_tool_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_variations_service.h"
@@ -53,6 +54,42 @@ TEST_F(ActorFeaturesTest, IsToolDisabled_ToolNotSet) {
       IsToolDisabled(optimization_guide::proto::Action::ACTION_NOT_SET));
 }
 
+// Tests that the tab observation PageContext timeout honors the feature
+// parameter override.
+TEST_F(ActorFeaturesTest, TabObservationPageContextTimeout_ParamOverride) {
+  base::test::ScopedFeatureList scoped_feature_list;
+
+  base::FieldTrialParams params;
+  params["ActorTabObservationPageContextTimeout"] = "7s";
+  scoped_feature_list.InitAndEnableFeatureWithParameters(kGeminiActor, params);
+  EXPECT_EQ(base::Seconds(7), GetActorTabObservationPageContextTimeout());
+}
+
+// Tests that `ActorDisablesInputDuringActuation()` returns false when
+// `kActorTools` is disabled.
+TEST_F(ActorFeaturesTest, ActorDisablesInputDuringActuation_ActorDisabled) {
+  EXPECT_FALSE(ActorDisablesInputDuringActuation());
+}
+
+// Tests that `ActorDisablesInputDuringActuation()` returns true by default when
+// `kActorTools` is enabled.
+TEST_F(ActorFeaturesTest, ActorDisablesInputDuringActuation_Default) {
+  base::test::ScopedFeatureList scoped_feature_list;
+
+  scoped_feature_list.InitAndEnableFeature(kActorTools);
+  EXPECT_TRUE(ActorDisablesInputDuringActuation());
+}
+
+// Tests that `ActorDisablesInputDuringActuation()` returns false when
+// `kActorToolsDisableInputDuringActuationParam` is set to "false".
+TEST_F(ActorFeaturesTest, ActorDisablesInputDuringActuation_DisabledViaParam) {
+  base::test::ScopedFeatureList scoped_feature_list;
+
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      kActorTools, {{kActorToolsDisableInputDuringActuationParam, "false"}});
+  EXPECT_FALSE(ActorDisablesInputDuringActuation());
+}
+
 TEST_F(ActorFeaturesTest, IsPageActionMenuEnabled_Default) {
   EXPECT_FALSE(IsPageActionMenuEnabled());
 }
@@ -76,7 +113,7 @@ TEST_F(ActorFeaturesTest, IsPageActionMenuEnabled_EnabledLocale) {
 
   ApplicationLocaleStorage* locale_storage =
       TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage();
-  std::string original_locale = locale_storage->Get();
+  std::string original_locale(locale_storage->GetTag().tag_string());
   locale_storage->Set("zh_TW");
 
   EXPECT_TRUE(IsPageActionMenuEnabled());
@@ -91,7 +128,7 @@ TEST_F(ActorFeaturesTest, IsPageActionMenuEnabled_DisabledLocale) {
 
   ApplicationLocaleStorage* locale_storage =
       TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage();
-  std::string original_locale = locale_storage->Get();
+  std::string original_locale(locale_storage->GetTag().tag_string());
   locale_storage->Set("xx-XX");
 
   EXPECT_FALSE(IsPageActionMenuEnabled());
@@ -100,137 +137,27 @@ TEST_F(ActorFeaturesTest, IsPageActionMenuEnabled_DisabledLocale) {
   locale_storage->Set(original_locale);
 }
 
+// Test that zero-state suggestions are disabled by default when PageActionMenu
+// is disabled.
 TEST_F(ActorFeaturesTest, IsZeroStateSuggestionsEnabled_Default) {
   EXPECT_FALSE(IsZeroStateSuggestionsEnabled());
 }
 
-// US + en-US users should have the feature enabled even without the
-// kZeroStateSuggestions feature flag.
-TEST_F(ActorFeaturesTest,
-       IsZeroStateSuggestionsEnabled_US_enUS_WithoutFeatureFlag) {
+// Test that zero-state suggestions are enabled by default when PageActionMenu
+// is enabled.
+TEST_F(ActorFeaturesTest, IsZeroStateSuggestionsEnabled_WithPageActionMenu) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kPageActionMenu);
-
-  IOSChromeScopedTestingVariationsService scoped_variations_service;
-  scoped_variations_service.Get()->OverrideStoredPermanentCountry("US");
-
-  ApplicationLocaleStorage* locale_storage =
-      TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage();
-  std::string original_locale = locale_storage->Get();
-  locale_storage->Set("en-US");
-
   EXPECT_TRUE(IsZeroStateSuggestionsEnabled());
-
-  // Restore locale.
-  locale_storage->Set(original_locale);
 }
 
-// US + en-US users should have the feature enabled with the
-// kZeroStateSuggestions feature flag.
-TEST_F(ActorFeaturesTest,
-       IsZeroStateSuggestionsEnabled_US_enUS_WithFeatureFlag) {
+// Test that zero-state suggestions are disabled when the feature flag is
+// explicitly disabled.
+TEST_F(ActorFeaturesTest, IsZeroStateSuggestionsEnabled_FeatureFlagDisabled) {
   base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures({kPageActionMenu, kZeroStateSuggestions},
-                                       {});
-
-  IOSChromeScopedTestingVariationsService scoped_variations_service;
-  scoped_variations_service.Get()->OverrideStoredPermanentCountry("us");
-
-  ApplicationLocaleStorage* locale_storage =
-      TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage();
-  std::string original_locale = locale_storage->Get();
-  locale_storage->Set("en-US");
-
-  EXPECT_TRUE(IsZeroStateSuggestionsEnabled());
-
-  // Restore locale.
-  locale_storage->Set(original_locale);
-}
-
-// Other countries (e.g., CA) should NOT have the feature enabled without the
-// kZeroStateSuggestions feature flag.
-TEST_F(ActorFeaturesTest,
-       IsZeroStateSuggestionsEnabled_CA_enUS_WithoutFeatureFlag) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(kPageActionMenu);
-
-  IOSChromeScopedTestingVariationsService scoped_variations_service;
-  scoped_variations_service.Get()->OverrideStoredPermanentCountry("ca");
-
-  ApplicationLocaleStorage* locale_storage =
-      TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage();
-  std::string original_locale = locale_storage->Get();
-  locale_storage->Set("en-US");
-
+  scoped_feature_list.InitWithFeatures({kPageActionMenu},
+                                       {kZeroStateSuggestions});
   EXPECT_FALSE(IsZeroStateSuggestionsEnabled());
-
-  // Restore locale.
-  locale_storage->Set(original_locale);
-}
-
-// Other countries (e.g., CA) should have the feature enabled with the
-// kZeroStateSuggestions feature flag.
-TEST_F(ActorFeaturesTest,
-       IsZeroStateSuggestionsEnabled_CA_enUS_WithFeatureFlag) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures({kPageActionMenu, kZeroStateSuggestions},
-                                       {});
-
-  IOSChromeScopedTestingVariationsService scoped_variations_service;
-  scoped_variations_service.Get()->OverrideStoredPermanentCountry("ca");
-
-  ApplicationLocaleStorage* locale_storage =
-      TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage();
-  std::string original_locale = locale_storage->Get();
-  locale_storage->Set("en-US");
-
-  EXPECT_TRUE(IsZeroStateSuggestionsEnabled());
-
-  // Restore locale.
-  locale_storage->Set(original_locale);
-}
-
-// Other locales (e.g., fr-FR) in US should NOT have the feature enabled without
-// the kZeroStateSuggestions feature flag.
-TEST_F(ActorFeaturesTest,
-       IsZeroStateSuggestionsEnabled_US_frFR_WithoutFeatureFlag) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(kPageActionMenu);
-
-  IOSChromeScopedTestingVariationsService scoped_variations_service;
-  scoped_variations_service.Get()->OverrideStoredPermanentCountry("us");
-
-  ApplicationLocaleStorage* locale_storage =
-      TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage();
-  std::string original_locale = locale_storage->Get();
-  locale_storage->Set("fr-FR");
-
-  EXPECT_FALSE(IsZeroStateSuggestionsEnabled());
-
-  // Restore locale.
-  locale_storage->Set(original_locale);
-}
-
-// Other locales (e.g., fr-FR) in US should have the feature enabled with the
-// kZeroStateSuggestions feature flag.
-TEST_F(ActorFeaturesTest,
-       IsZeroStateSuggestionsEnabled_US_frFR_WithFeatureFlag) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures({kPageActionMenu, kZeroStateSuggestions},
-                                       {});
-
-  IOSChromeScopedTestingVariationsService scoped_variations_service;
-  scoped_variations_service.Get()->OverrideStoredPermanentCountry("us");
-
-  ApplicationLocaleStorage* locale_storage =
-      TestingApplicationContext::GetGlobal()->GetApplicationLocaleStorage();
-  std::string original_locale = locale_storage->Get();
-  locale_storage->Set("fr-FR");
-
-  EXPECT_TRUE(IsZeroStateSuggestionsEnabled());
-
-  // Restore locale.
-  locale_storage->Set(original_locale);
 }
 
 TEST_F(ActorFeaturesTest, IsGeminiLuminousEnabled_DefaultWithoutPAM) {
@@ -249,65 +176,32 @@ TEST_F(ActorFeaturesTest, IsGeminiLuminousEnabled_FeatureFlagDisabled) {
   EXPECT_FALSE(IsGeminiLuminousEnabled());
 }
 
-TEST_F(ActorFeaturesTest,
-       IsGeminiContextualSuggestionsCuesOnDeviceClassifierEnabled) {
-  base::FieldTrialParams params;
-  params[kGeminiContextualSuggestionsCuesOnDeviceClassifierParam] = "true";
-
-  // Disabled without PageActionMenu dependency.
-  {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndEnableFeatureWithParameters(
-        kGeminiContextualSuggestionsCues, params);
-    EXPECT_FALSE(IsGeminiContextualSuggestionsCuesOnDeviceClassifierEnabled());
-  }
-
-  // Enabled when PageActionMenu and feature with param are enabled.
-  {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitWithFeaturesAndParameters(
-        {{kPageActionMenu, {}}, {kGeminiContextualSuggestionsCues, params}},
-        {});
-    EXPECT_TRUE(IsGeminiContextualSuggestionsCuesOnDeviceClassifierEnabled());
-  }
-}
-
-TEST_F(ActorFeaturesTest,
-       IsGeminiContextualSuggestionsCuesAllowGpuExecutionEnabled) {
-  base::FieldTrialParams params;
-  params[kGeminiContextualSuggestionsCuesAllowGpuExecutionParam] = "true";
-
-  // Disabled without PageActionMenu dependency.
-  {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndEnableFeatureWithParameters(
-        kGeminiContextualSuggestionsCues, params);
-    EXPECT_FALSE(IsGeminiContextualSuggestionsCuesAllowGpuExecutionEnabled());
-  }
-
-  // Enabled when PageActionMenu and feature with param are enabled.
-  {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitWithFeaturesAndParameters(
-        {{kPageActionMenu, {}}, {kGeminiContextualSuggestionsCues, params}},
-        {});
-    EXPECT_TRUE(IsGeminiContextualSuggestionsCuesAllowGpuExecutionEnabled());
-  }
-}
-
 TEST_F(ActorFeaturesTest, GeminiFREExperimentVariants) {
-  // Disabled by default.
-  EXPECT_FALSE(IsGeminiFREExperimentEnabled());
+  // Enabled by default with Lightweight Convenience.
+  EXPECT_TRUE(IsGeminiFREExperimentEnabled());
   EXPECT_FALSE(IsGeminiVisualRichFREEnabled());
-  EXPECT_FALSE(IsGeminiLightweightFREEnabled());
+  EXPECT_TRUE(IsGeminiLightweightFREEnabled());
+  EXPECT_EQ(GetGeminiLightweightFREVariant(),
+            GeminiLightweightFREVariant::kConvenience);
 
-  // Enabled with no parameters defaults to Visual Rich.
+  // Explicitly disabled.
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndDisableFeature(kGeminiFREExperiment);
+    EXPECT_FALSE(IsGeminiFREExperimentEnabled());
+    EXPECT_FALSE(IsGeminiVisualRichFREEnabled());
+    EXPECT_FALSE(IsGeminiLightweightFREEnabled());
+  }
+
+  // Enabled with no parameters defaults to Lightweight Convenience.
   {
     base::test::ScopedFeatureList scoped_feature_list;
     scoped_feature_list.InitAndEnableFeature(kGeminiFREExperiment);
     EXPECT_TRUE(IsGeminiFREExperimentEnabled());
-    EXPECT_TRUE(IsGeminiVisualRichFREEnabled());
-    EXPECT_FALSE(IsGeminiLightweightFREEnabled());
+    EXPECT_FALSE(IsGeminiVisualRichFREEnabled());
+    EXPECT_TRUE(IsGeminiLightweightFREEnabled());
+    EXPECT_EQ(GetGeminiLightweightFREVariant(),
+              GeminiLightweightFREVariant::kConvenience);
   }
 
   // Enabled with explicit "visual-rich" parameter.
@@ -402,4 +296,65 @@ TEST_F(ActorFeaturesTest, IsGeminiExperimentalGuidedOnboardingEnabled) {
     EXPECT_TRUE(IsGeminiExperimentalGuidedOnboardingEnabled());
     EXPECT_TRUE(ShouldForceGeminiExperimentalGuidedOnboarding());
   }
+}
+
+// Tests Gemini Actor backgrounding when Gemini Actor and its prerequisites are
+// enabled with default parameter values (which defaults to true).
+TEST_F(ActorFeaturesTest, TestGeminiActorBackgroundingEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kPageActionMenu, kActorTools, kGeminiActor,
+       kEnableBackgroundContinuedProcessing},
+      {});
+
+  EXPECT_EQ(IsBackgroundContinuedProcessingEnabled(),
+            IsGeminiActorBackgroundingEnabled());
+}
+
+// Tests that Gemini Actor backgrounding returns false when explicitly disabled
+// via parameter.
+TEST_F(ActorFeaturesTest, TestGeminiActorBackgroundingDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  base::FieldTrialParams params;
+  params[kGeminiActorBackgroundingParam] = "false";
+  scoped_feature_list.InitWithFeaturesAndParameters(
+      {{kPageActionMenu, {}},
+       {kActorTools, {}},
+       {kEnableBackgroundContinuedProcessing, {}},
+       {kGeminiActor, params}},
+      {});
+  EXPECT_FALSE(IsGeminiActorBackgroundingEnabled());
+}
+
+// Tests that Gemini Actor backgrounding returns false when
+// `kEnableBackgroundContinuedProcessing` is disabled.
+TEST_F(ActorFeaturesTest, TestGeminiActorBackgroundingFeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kPageActionMenu, kActorTools, kGeminiActor},
+      {kEnableBackgroundContinuedProcessing});
+  EXPECT_FALSE(IsGeminiActorBackgroundingEnabled());
+}
+
+// Tests that page stability is disabled by default when `kActorTools` is
+// disabled.
+TEST_F(ActorFeaturesTest, IsPageStabilityEnabled_Default) {
+  EXPECT_FALSE(IsPageStabilityEnabled());
+}
+
+// Tests that page stability is enabled by default when `kActorTools` is
+// enabled.
+TEST_F(ActorFeaturesTest, IsPageStabilityEnabled_WithActorTools) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kActorTools);
+  EXPECT_TRUE(IsPageStabilityEnabled());
+}
+
+// Tests that page stability can be disabled via feature parameter when
+// `kActorTools` is enabled.
+TEST_F(ActorFeaturesTest, IsPageStabilityEnabled_FeatureParamDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      kActorTools, {{kActorToolsPageStabilityParam, "false"}});
+  EXPECT_FALSE(IsPageStabilityEnabled());
 }

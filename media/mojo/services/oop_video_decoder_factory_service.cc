@@ -81,9 +81,9 @@ class MojoMediaClientImpl : public MojoMediaClient {
       mojo::PendingRemote<mojom::VideoDecoder> oop_video_decoder) final {
     // For out-of-process video decoding, |command_buffer_id| is not used and
     // should not be supplied.
-    DCHECK(!command_buffer_id);
+    CHECK(!command_buffer_id, base::NotFatalUntil::M163);
 
-    DCHECK(!oop_video_decoder);
+    CHECK(!oop_video_decoder, base::NotFatalUntil::M163);
 
     std::unique_ptr<MediaLog> log =
         media_log ? media_log->Clone()
@@ -139,12 +139,12 @@ void OOPVideoDecoderFactoryService::BindReceiver(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // The browser process should guarantee that BindReceiver() is only called
   // once.
-  DCHECK(!receiver_.is_bound());
+  CHECK(!receiver_.is_bound(), base::NotFatalUntil::M163);
   receiver_.Bind(std::move(receiver));
   receiver_.set_disconnect_handler(std::move(disconnect_cb));
 }
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 void OOPVideoDecoderFactoryService::CreateVideoDecoderWithTracker(
     mojo::PendingReceiver<mojom::VideoDecoder> receiver,
     mojo::PendingRemote<mojom::VideoDecoderTracker> tracker) {
@@ -164,7 +164,7 @@ void OOPVideoDecoderFactoryService::CreateVideoDecoderWithTracker(
                           &cdm_service_context_),
                       std::move(receiver));
 }
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 // The client of the OOPVideoDecoderFactoryService is the browser process which
 // is up the trust gradient. The browser process should never use this service

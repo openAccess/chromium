@@ -1,11 +1,11 @@
 extension ILType {
 {%- for array in arrays %}
     fileprivate static let {{array|format_il_type}}: ILType =
-        .createJsArrayType(ofElementType: .{{array.kind|format_il_type(primitive_with_suffix=True)}})
+        .createJsArrayType(ofElementType: .{{array.kind|format_il_type}})
 {%- endfor %}
 }
 
-{%- for array in arrays %}
+{%- for array in js_arrays %}
     {%- if loop.first %}
 
 /// As Fuzzilli runs, the OperationMutator and VariadicInputReducer will modify
@@ -41,11 +41,6 @@ private let Mojo{{array|format_unique_name}}Generator = CodeGenerator(
        }
     }
 {%- endif %}
-    b.createArray(
-        with: elements,
-        elementGroupName:
-            ObjectGroup.
-                {{- array.kind|format_unique_name(primitive_with_suffix=True)|to_camel(True) -}}
-                .name)
+    b.createArray(with: elements)
 }
 {%- endfor %}

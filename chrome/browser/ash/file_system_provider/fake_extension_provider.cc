@@ -30,9 +30,8 @@ std::unique_ptr<ProviderInterface> FakeExtensionProvider::Create(
 std::unique_ptr<ProvidedFileSystemInterface>
 FakeExtensionProvider::CreateProvidedFileSystem(
     Profile* profile,
-    const ProvidedFileSystemInfo& file_system_info,
-    CacheManager* cache_manager) {
-  DCHECK(profile);
+    const ProvidedFileSystemInfo& file_system_info) {
+  CHECK(profile, base::NotFatalUntil::M160);
   return std::make_unique<FakeProvidedFileSystem>(file_system_info);
 }
 

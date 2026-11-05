@@ -28,7 +28,6 @@ android_library("java") {
     "//base:flagged_apis_java",
     "//base:tristate_java",
     "//base/version_info/android:version_constants_java",
-    "//build/android:build_java",
     "//components/autofill/android:autofill_java",
     "//components/autofill/android:autofill_java_resources",
     "//components/autofill/core/common/mojom:mojo_types_java",
@@ -50,6 +49,7 @@ android_library("java") {
     "java/src/org/chromium/components/autofill/FormData.java",
     "java/src/org/chromium/components/autofill/FormFieldData.java",
     "java/src/org/chromium/components/autofill/PrefillRequest.java",
+    "java/src/org/chromium/components/autofill/SelectOption.java",
     "java/src/org/chromium/components/autofill/SparseArrayWithWorkaround.java",
     "java/src/org/chromium/components/autofill_public/ViewType.java",
   ]
@@ -60,6 +60,7 @@ generate_jni("jni_headers") {
     "java/src/org/chromium/components/autofill/AutofillProvider.java",
     "java/src/org/chromium/components/autofill/FormData.java",
     "java/src/org/chromium/components/autofill/FormFieldData.java",
+    "java/src/org/chromium/components/autofill/SelectOption.java",
   ]
 }
 
@@ -71,7 +72,6 @@ android_library("features_java") {
 
   deps = [
     "//base:base_java",
-    "//build/android:build_java",
     "//third_party/jni_zero:jni_zero_java",
   ]
 }
@@ -115,6 +115,7 @@ static_library("android") {
     "form_field_data_android_bridge.h",
     "form_field_data_android_bridge_impl.cc",
     "form_field_data_android_bridge_impl.h",
+    "select_option_android.h",
   ]
   public_deps = [ ":browser" ]
   deps = [
@@ -125,6 +126,7 @@ static_library("android") {
     "//components/credential_management:browser",
     "//components/credential_management/android:browser_sources",
     "//components/credential_management/android:features",
+    "//components/device_reauth",
     "//components/password_manager/core/browser/form_parsing",
     "//components/prefs",
     "//components/security_state/content",
@@ -147,11 +149,17 @@ static_library("browser") {
     "autofill_provider.h",
     "autofill_type_util.cc",
     "autofill_type_util.h",
+    "card_value_validation.cc",
+    "card_value_validation.h",
   ]
   public_deps = [ "//components/autofill/core/browser" ]
   deps = [
+    ":features",
+    "//base",
     "//components/autofill/content/browser",
+    "//components/password_manager/core/browser/form_parsing",
     "//content/public/browser",
+    "//url",
   ]
 }
 
@@ -160,6 +168,7 @@ source_set("unit_tests") {
   sources = [
     "android_autofill_client_unittest.cc",
     "android_autofill_provider_unittest.cc",
+    "card_value_validation_unittest.cc",
     "form_data_android_unittest.cc",
     "form_event_logger_android_unittest.cc",
     "form_field_data_android_unittest.cc",
@@ -169,6 +178,7 @@ source_set("unit_tests") {
     ":browser",
     ":features",
     ":test_support",
+    "//base/test:test_support",
     "//components/autofill/android:keyboard_suppressor",
     "//components/autofill/content/browser:test_support",
     "//components/credential_management/android:features",
@@ -177,6 +187,7 @@ source_set("unit_tests") {
     "//content/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//url",
   ]
 }
 

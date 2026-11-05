@@ -114,13 +114,6 @@ enum class TrustedVaultUserActionTriggerForUMA;
 // a scene, `stopAllVoiceSearch` from `SceneCommands` can be used.
 - (void)stopVoiceSearch;
 
-// Dismiss the password suggestions.
-// TODO(crbug.com/543354673): Remove this.
-- (void)dismissPasswordSuggestions;
-
-// Dismiss the payments suggestions.
-- (void)dismissPaymentSuggestions;
-
 // Dismiss the card unmask authentication prompt.
 // Deprecated: use AutofillCommands instead.
 - (void)legacyDismissCardUnmaskAuthentication;
@@ -128,9 +121,6 @@ enum class TrustedVaultUserActionTriggerForUMA;
 // Dismiss the virtual card enrollment bottom sheet.
 // Deprecated: use AutofillCommands instead.
 - (void)legacyDismissVirtualCardEnrollmentBottomSheet;
-
-// Command to reset the autofill suggestions loading states.
-- (void)resetAutofillSuggestionsLoadingStates;
 
 // Shows the omnibox position choice screen.
 - (void)showOmniboxPositionChoice;
@@ -171,8 +161,7 @@ enum class TrustedVaultUserActionTriggerForUMA;
 - (void)showAddAccountWithAccessPoint:(signin_metrics::AccessPoint)accessPoint
                        prefilledEmail:(NSString*)email;
 
-// Shows and dismisses the multimodal actions menu.
-- (void)showMultimodalActionsMenu;
+// Dismisses the multimodal actions menu.
 - (void)dismissMultimodalActionsMenu;
 
 // Forces fullscreen mode which means that toolbars are collapsed.

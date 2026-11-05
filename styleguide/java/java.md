@@ -182,7 +182,8 @@ record Rectangle(float length, float width) {}
     `toString()`, which `R8` is unable to remove when unused.
   - When these methods are required, implement them explicitly so that the
     intention is clear.
-- Also - supporting `record` requires build system work ([crbug/1493366]).
+- Records are desugared on all supported Android versions, so third-party
+  libraries that use them do build ([crbug.com/1493366]).
 
 Example with `equals()` and `hashCode()`:
 
@@ -453,6 +454,20 @@ In summary:
   - [`@Batch(PER_CLASS)`] for integration tests
   - [`@DoNotBatch`] for when each test method requires an app restart
 
+### Style and Conventions
+
+- **Mocks and Captors**: Tests should prefer `@Mock Foo mFoo` over
+  `Mockito.mock(Foo.class)`, and `@Captor ArgumentCaptor<Foo> mFooCaptor` over
+  `ArgumentCaptor.forClass(Foo.class)`. The annotations make it easy to see
+  which objects are mocks or captors, and encourage reusing them between test
+  cases. Inline mock creation (e.g. `Mockito.mock(Foo.class)`) should only be
+  used when a variable number of mocks are needed.
+- **Static Imports**: Tests should typically use static imports for functions
+  from `org.junit.Assert`, `org.mockito.Mockito`, and
+  `org.mockito.ArgumentMatchers` as this helps keep code terse and more
+  readable. There is not much ambiguity about which classes these commonly used
+  functions come from.
+
 ### Test-only Code
 
 Functions and fields used only for testing should have `ForTesting` as a suffix
@@ -514,8 +529,8 @@ Chromium also makes use of several [static analysis] tools.
 - Use UTF-8 file encodings and LF line endings.
 
 [android's java style guide]: https://source.android.com/docs/setup/contribute/code-style#dont-use-finalizers
+[crbug.com/1493366]: https://crbug.com/1493366
 [crbug.com/344943957]: https://crbug.com/344943957
-[crbug/1493366]: https://crbug.com/1493366
 [directly backported by d8]: https://source.chromium.org/chromium/chromium/src/+/main:third_party/r8/backported_methods.txt
 [ensure they are removed]: /docs/speed/binary_size/android_binary_size_trybot.md#Added-Symbols-named-ForTest
 [google's java style guide]: https://google.github.io/styleguide/javaguide.html#s6.4-finalizers

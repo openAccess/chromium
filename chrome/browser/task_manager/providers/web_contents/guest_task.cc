@@ -11,8 +11,10 @@ namespace task_manager {
 
 GuestTask::GuestTask(content::WebContents* web_contents)
     : RendererTask(GetCurrentTitle(web_contents),
-                   GetFaviconFromWebContents(web_contents).get(),
-                   web_contents) {}
+                   /*icon=*/nullptr,
+                   web_contents) {
+  DefaultUpdateFaviconImpl();
+}
 
 GuestTask::~GuestTask() = default;
 
@@ -30,7 +32,7 @@ Task::Type GuestTask::GetType() const {
 
 std::u16string GuestTask::GetCurrentTitle(
     content::WebContents* web_contents) const {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
 
   auto* guest = guest_view::GuestViewBase::FromWebContents(web_contents);
   if (!guest) {

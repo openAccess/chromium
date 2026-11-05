@@ -11,24 +11,36 @@
 
 namespace payments::facilitated {
 
-BASE_DECLARE_FEATURE(kEnablePixPaymentsInLandscapeMode);
-BASE_DECLARE_FEATURE(kUseRustPixCodeValidator);
-#if BUILDFLAG(IS_ANDROID)
 BASE_DECLARE_FEATURE(kDisableFacilitatedPaymentsMerchantAllowlist);
-BASE_DECLARE_FEATURE(kEnablePixAccountLinking);
+BASE_DECLARE_FEATURE(kEnableDesktopQrCodeDetection);
+// Comma-separated keywords matched against the URL, the document title and the
+// `<meta name="description">` content.
+extern const base::FeatureParam<std::string> kQrCodeDetectionKeywords;
+// Minimum length, in CSS pixels, of the shorter edge of a QR candidate
+// `<img>` or `<canvas>`.
+extern const base::FeatureParam<int> kQrCodeDetectionMinImageSize;
+// Maximum ratio of the longer edge to the shorter edge of a QR candidate.
+extern const base::FeatureParam<double> kQrCodeDetectionMaxAspectRatio;
+// Whether a URL or text keyword match is required, in addition to a square
+// candidate, to extract images for QR code decoding.
+extern const base::FeatureParam<bool> kQrCodeDetectionRequireKeywordMatch;
+BASE_DECLARE_FEATURE(kEnableEwalletNewAccountLinking);
+BASE_DECLARE_FEATURE(kEnableIframeForPix);
 BASE_DECLARE_FEATURE(kEnablePixAccountLinkingNative);
-extern const base::FeatureParam<std::string>
-    kPixAccountLinkingNativePromptVariant;
 extern const base::FeatureParam<int>
     kPixAccountLinkingNativeTriggerDelaySeconds;
+#if BUILDFLAG(IS_ANDROID)
+extern const base::FeatureParam<std::string>
+    kPixAccountLinkingNativePromptVariant;
 extern const base::FeatureParam<std::string> kVideoUrlOnPrompt;
-BASE_DECLARE_FEATURE(kEnableStaticQrCodeForPix);
-BASE_DECLARE_FEATURE(kEnableIframeForPix);
-BASE_DECLARE_FEATURE(kEnablePixInCct);
-BASE_DECLARE_FEATURE(kEwalletPayments);
-BASE_DECLARE_FEATURE(kFacilitatedPaymentsEnableA2APayment);
-BASE_DECLARE_FEATURE(kEnableEwalletNewAccountLinking);
 #endif  // BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kEnablePixInCct);
+BASE_DECLARE_FEATURE(kEnablePixPaymentsInLandscapeMode);
+BASE_DECLARE_FEATURE(kEnableStaticQrCodeForPix);
+#if BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kEwalletPayments);
+#endif  // BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kFacilitatedPaymentsEnableA2APayment);
 
 }  // namespace payments::facilitated
 

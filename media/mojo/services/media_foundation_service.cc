@@ -227,7 +227,8 @@ std::string GetTypeString(VideoCodec video_codec,
   auto feature_string = GetExtProfile(video_codec) + kDefaultFeatures;
   DCHECK(!feature_string.empty()) << "default feature cannot be empty";
   for (const auto& feature : extra_features) {
-    DCHECK(!feature.first.empty() && !feature.second.empty());
+    CHECK(!feature.first.empty() && !feature.second.empty(),
+          base::NotFatalUntil::M163);
     feature_string += "," + feature.first + "=" + feature.second;
   }
 
@@ -285,7 +286,6 @@ HRESULT CreateDummyMediaFoundationCdm(
   // Create the dummy CDM.
   Microsoft::WRL::ComPtr<IMFContentDecryptionModule> mf_cdm;
   auto hr = CreateMediaFoundationCdm(cdm_factory, cdm_config, cdm_origin_id,
-                                     /*cdm_client_token=*/std::nullopt,
                                      dummy_cdm_store_path_root, mf_cdm);
   DLOG_IF(ERROR, FAILED(hr)) << __func__ << ": Failed for " << key_system;
   mf_cdm.Reset();

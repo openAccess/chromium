@@ -4,15 +4,22 @@
 
 package org.chromium.chrome.browser;
 
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.os.SystemClock;
 import android.view.KeyEvent;
+
+import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -23,7 +30,9 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.blink_public.common.BlinkFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
@@ -32,8 +41,8 @@ import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
+import org.chromium.device.gamepad.GamepadList;
 
 /** Unit tests for {@link KeyboardShortcuts} redirection. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -43,7 +52,6 @@ public class KeyboardShortcutsUnitTest {
     @Mock private MenuOrKeyboardActionController mController;
     @Mock private TabModelSelector mTabModelSelector;
     @Mock private TabModel mTabModel;
-    @Mock private ToolbarManager mToolbarManager;
     @Mock private Profile mProfile;
     @Mock private IncognitoUtils.Natives mIncognitoUtilsJniMock;
 
@@ -60,18 +68,7 @@ public class KeyboardShortcutsUnitTest {
     public void testOpenNewWindow_RedirectsToIncognito_WhenForced() {
         doReturn(true).when(mIncognitoUtilsJniMock).getIncognitoModeForced(any());
 
-        KeyEvent event =
-                new KeyEvent(
-                        SystemClock.uptimeMillis(),
-                        SystemClock.uptimeMillis(),
-                        KeyEvent.ACTION_DOWN,
-                        KeyEvent.KEYCODE_N,
-                        0,
-                        KeyEvent.META_CTRL_ON);
-
-        assertTrue(
-                KeyboardShortcuts.onKeyDown(
-                        event, true, true, mTabModelSelector, mController, mToolbarManager));
+        assertTrue(onKeyDown(KeyEvent.KEYCODE_N, KeyEvent.META_CTRL_ON));
 
         verify(mController)
                 .onMenuOrKeyboardAction(eq(R.id.new_incognito_window_menu_id), eq(false));
@@ -83,19 +80,209 @@ public class KeyboardShortcutsUnitTest {
         doReturn(true).when(mIncognitoUtilsJniMock).getIncognitoModeForced(any());
         when(mTabModel.isIncognito()).thenReturn(false);
 
+        assertTrue(onKeyDown(KeyEvent.KEYCODE_T, KeyEvent.META_CTRL_ON));
+
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.new_incognito_tab_menu_id), eq(false));
+    }
+
+    @Test
+    public void testQuitChrome_TriggersMenuOrKeyboardAction() {
+        doReturn(true).when(mController).onMenuOrKeyboardAction(eq(R.id.quit_chrome), eq(false));
+
+        assertTrue(onKeyDown(KeyEvent.KEYCODE_Q, KeyEvent.META_CTRL_ON));
+
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.quit_chrome), eq(false));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_KEYBOARD_SHORTCUT_OPEN_FILE)
+    public void testOpenFile_CtrlO_TriggersOpenFileDialog() {
         KeyEvent event =
                 new KeyEvent(
                         SystemClock.uptimeMillis(),
                         SystemClock.uptimeMillis(),
                         KeyEvent.ACTION_DOWN,
-                        KeyEvent.KEYCODE_T,
+                        KeyEvent.KEYCODE_O,
                         0,
                         KeyEvent.META_CTRL_ON);
 
-        assertTrue(
-                KeyboardShortcuts.onKeyDown(
-                        event, true, true, mTabModelSelector, mController, mToolbarManager));
+        assertTrue(KeyboardShortcuts.onKeyDown(event, true, true, mTabModelSelector, mController));
 
-        verify(mController).onMenuOrKeyboardAction(eq(R.id.new_incognito_tab_menu_id), eq(false));
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.open_file_id), eq(false));
+    }
+
+    @Test
+    public void testGamepadR1_WhenGamepadApiActive_DoesNotMoveTab() {
+        GamepadList.setGamepadApiActiveForTesting(true);
+
+        assertNull(dispatchKeyEvent(KeyEvent.KEYCODE_BUTTON_R1));
+        verify(mController, never()).onMenuOrKeyboardAction(anyInt(), anyBoolean());
+    }
+
+    @Test
+    public void testGamepadL1_WhenGamepadApiActive_DoesNotMoveTab() {
+        GamepadList.setGamepadApiActiveForTesting(true);
+
+        assertNull(dispatchKeyEvent(KeyEvent.KEYCODE_BUTTON_L1));
+        verify(mController, never()).onMenuOrKeyboardAction(anyInt(), anyBoolean());
+    }
+
+    @Test
+    public void testGamepadR1_WhenGamepadApiInactive_MovesToNextTab() {
+        GamepadList.setGamepadApiActiveForTesting(false);
+
+        assertTrue(dispatchKeyEvent(KeyEvent.KEYCODE_BUTTON_R1));
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.select_next_tab), eq(false));
+    }
+
+    @Test
+    public void testGamepadL1_WhenGamepadApiInactive_MovesToPreviousTab() {
+        GamepadList.setGamepadApiActiveForTesting(false);
+
+        assertTrue(dispatchKeyEvent(KeyEvent.KEYCODE_BUTTON_L1));
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.select_previous_tab), eq(false));
+    }
+
+    @Test
+    public void testGamepadButtonB_OnKeyDown_WhenGamepadApiActive_ReturnsFalse() {
+        GamepadList.setGamepadApiActiveForTesting(true);
+
+        assertFalse(onKeyDown(KeyEvent.KEYCODE_BUTTON_B));
+        verify(mController, never()).onMenuOrKeyboardAction(anyInt(), anyBoolean());
+    }
+
+    @Test
+    public void testGamepadButtonB_OnKeyDown_WhenGamepadApiInactive_ClosesTab() {
+        GamepadList.setGamepadApiActiveForTesting(false);
+
+        assertTrue(onKeyDown(KeyEvent.KEYCODE_BUTTON_B));
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.close_tab), eq(false));
+    }
+
+    @Test
+    @EnableFeatures(BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU)
+    public void testKeycodeMenu_DispatchKeyEvent_DeferredWhenFeatureEnabled() {
+        assertNull(dispatchKeyEvent(KeyEvent.KEYCODE_MENU));
+        verify(mController, never()).onMenuOrKeyboardAction(anyInt(), anyBoolean());
+    }
+
+    @Test
+    @DisableFeatures(BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU)
+    public void testKeycodeMenu_DispatchKeyEvent_HandledWhenFeatureDisabled() {
+        assertTrue(dispatchKeyEvent(KeyEvent.KEYCODE_MENU));
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.show_menu), eq(false));
+    }
+
+    @Test
+    @EnableFeatures(BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU)
+    public void testKeycodeMenu_OnKeyDown_OpensTabStripContextMenuWhenFocused() {
+        doReturn(true)
+                .when(mController)
+                .onMenuOrKeyboardAction(eq(R.id.open_tab_strip_context_menu), eq(false));
+
+        assertTrue(onKeyDown(KeyEvent.KEYCODE_MENU));
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.open_tab_strip_context_menu), eq(false));
+        verify(mController, never()).onMenuOrKeyboardAction(eq(R.id.show_menu), eq(false));
+    }
+
+    @Test
+    @EnableFeatures(BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU)
+    public void testKeycodeMenu_OnKeyDown_OpensAppMenu() {
+        assertTrue(onKeyDown(KeyEvent.KEYCODE_MENU));
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.show_menu), eq(false));
+    }
+
+    @Test
+    public void testReloadTab_F5_TriggersReload() {
+        // Setup.
+        KeyEvent event = createKeyEvent(KeyEvent.KEYCODE_F5, /* metaState= */ 0);
+
+        // Act.
+        boolean handled = onKeyDown(event);
+
+        // Verify.
+        assertTrue(handled);
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.reload_menu_id), eq(false));
+    }
+
+    @Test
+    public void testReloadTab_ShiftF5_TriggersReloadBypassingCache() {
+        // Setup.
+        KeyEvent event = createKeyEvent(KeyEvent.KEYCODE_F5, KeyEvent.META_SHIFT_ON);
+
+        // Act.
+        boolean handled = onKeyDown(event);
+
+        // Verify.
+        assertTrue(handled);
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.reload_ignoring_cache), eq(false));
+        verify(mController, never()).onMenuOrKeyboardAction(eq(R.id.reload_menu_id), eq(false));
+    }
+
+    @Test
+    public void testClearBrowsingData_CtrlShiftBackspace_TriggersQuickDelete() {
+        // Setup.
+        KeyEvent event =
+                createKeyEvent(
+                        KeyEvent.KEYCODE_DEL, KeyEvent.META_CTRL_ON | KeyEvent.META_SHIFT_ON);
+
+        // Act.
+        boolean handled = onKeyDown(event);
+
+        // Verify.
+        assertTrue(handled);
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.quick_delete_menu_id), eq(false));
+    }
+
+    @Test
+    public void testClearBrowsingData_CtrlShiftForwardDelete_TriggersQuickDelete() {
+        // Setup.
+        KeyEvent event =
+                createKeyEvent(
+                        KeyEvent.KEYCODE_FORWARD_DEL,
+                        KeyEvent.META_CTRL_ON | KeyEvent.META_SHIFT_ON);
+
+        // Act.
+        boolean handled = onKeyDown(event);
+
+        // Verify.
+        assertTrue(handled);
+        verify(mController).onMenuOrKeyboardAction(eq(R.id.quick_delete_menu_id), eq(false));
+    }
+
+    private static KeyEvent createKeyEvent(int keyCode, int metaState) {
+        return new KeyEvent(
+                SystemClock.uptimeMillis(),
+                SystemClock.uptimeMillis(),
+                KeyEvent.ACTION_DOWN,
+                keyCode,
+                /* repeat= */ 0,
+                metaState);
+    }
+
+    private Boolean dispatchKeyEvent(int keyCode) {
+        return KeyboardShortcuts.dispatchKeyEvent(
+                createKeyEvent(keyCode, /* metaState= */ 0),
+                /* uiInitialized= */ true,
+                /* fullscreenManager= */ null,
+                mController,
+                ApplicationProvider.getApplicationContext());
+    }
+
+    private boolean onKeyDown(int keyCode) {
+        return onKeyDown(keyCode, /* metaState= */ 0);
+    }
+
+    private boolean onKeyDown(int keyCode, int metaState) {
+        return onKeyDown(createKeyEvent(keyCode, metaState));
+    }
+
+    private boolean onKeyDown(KeyEvent event) {
+        return KeyboardShortcuts.onKeyDown(
+                event,
+                /* isCurrentTabVisible= */ true,
+                /* tabSwitchingEnabled= */ true,
+                mTabModelSelector,
+                mController);
     }
 }

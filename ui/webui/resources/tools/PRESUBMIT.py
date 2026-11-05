@@ -6,6 +6,7 @@ webui_sources = set(
   [
     'bundle_js.py',
     'generate_grd.py',
+    'generate_zip.py',
     'minify_js.py',
     'rollup_plugin.mjs',
     'stylelint.py',
@@ -23,6 +24,7 @@ webui_tests = set(
   [
     'bundle_js_test.py',
     'generate_grd_test.py',
+    'generate_zip_test.py',
     'lit_template_formatter_test.py',
     'minify_js_test.py',
     'stylelint_test.py',
@@ -31,13 +33,11 @@ webui_tests = set(
 
 
 def _CheckChangeOnUploadOrCommit(input_api, output_api):
-  results = []
-  affected = input_api.AffectedFiles()
-  affected_files = [input_api.os_path.basename(f.LocalPath()) for f in affected]
-  sources = webui_sources | webui_tests
-  if sources.intersection(set(affected_files)):
-    results += RunPresubmitTests(input_api, output_api)
-  return results
+  if not input_api.HasAffectedFiles(
+    path=list(webui_sources | webui_tests) + ['tests']
+  ):
+    return []
+  return RunPresubmitTests(input_api, output_api)
 
 
 def RunPresubmitTests(input_api, output_api):

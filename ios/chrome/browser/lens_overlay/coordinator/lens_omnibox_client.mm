@@ -36,6 +36,7 @@
 #import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/web_state.h"
 #import "ui/base/l10n/l10n_util.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #import "ui/gfx/vector_icon_types.h"
 #import "url/gurl.h"
 
@@ -189,7 +190,7 @@ void LensOmniboxClient::ProcessExtensionMatch(
     const std::u16string& text,
     const TemplateURL* template_url,
     const AutocompleteMatch& match,
-    WindowOpenDisposition disposition) {
+    ui::mojom::WindowOpenDisposition disposition) {
   // Extensions are not supported on iOS.
 }
 
@@ -233,9 +234,9 @@ void LensOmniboxClient::OnFocusChanged(OmniboxFocusState state,
 void LensOmniboxClient::OnAutocompleteAccept(
     const GURL& destination_url,
     TemplateURLRef::PostContent* post_content,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
-    AutocompleteMatchType::Type match_type,
+    omnibox::AutocompleteMatchType match_type,
     base::TimeTicks match_selection_timestamp,
     bool destination_url_entered_without_scheme,
     bool destination_url_entered_with_http_scheme,

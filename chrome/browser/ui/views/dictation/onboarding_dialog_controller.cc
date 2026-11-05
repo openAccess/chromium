@@ -9,7 +9,6 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "build/branding_buildflags.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/dictation/metrics.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -23,9 +22,13 @@
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
+#include "ui/views/border.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/image_view.h"
@@ -33,8 +36,10 @@
 #include "ui/views/controls/link.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/controls/styled_label.h"
+#include "ui/views/controls/theme_tracking_image_view.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/layout_provider.h"
+#include "ui/views/style/typography.h"
 #include "ui/views/style/typography_provider.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget_delegate.h"
@@ -47,13 +52,31 @@ DEFINE_ELEMENT_IDENTIFIER_VALUE(kDictationOnboardingCancelButtonElementId);
 
 namespace {
 inline constexpr char kOnboardingDialogName[] = "DictationOnboardingDialog";
+// Padding between the top of the dialog and the banner image, per the mocks.
+inline constexpr int kBannerTopPadding = 20;
+// Extra padding between the banner image and the title, per the mocks.
+inline constexpr int kBannerBottomPadding = 8;
+
+inline constexpr char kGoogleSans[] = "Google Sans";
+inline constexpr char kGoogleSansText[] = "Google Sans Text";
+
+// Returns the font for `text_style`, with its size and weight, in
+// `font_family` (Google Sans by default) to match the mocks. Falls back to the
+// system font if it isn't installed.
+gfx::FontList GetGoogleSansFont(int text_style,
+                                const char* font_family = kGoogleSans) {
+  const gfx::FontList base = views::TypographyProvider::Get().GetFont(
+      views::style::CONTEXT_LABEL, text_style);
+  return gfx::FontList({font_family}, base.GetFontStyle(), base.GetFontSize(),
+                       base.GetFontWeight());
+}
 
 // TODO(crbug.com/530962875): Update typography font styles once PM & UX
 // reach alignment.
 std::unique_ptr<views::View> CreateOnboardingCardView() {
   return views::Builder<views::BoxLayoutView>()
       .SetOrientation(views::BoxLayout::Orientation::kVertical)
-      .SetBetweenChildSpacing(1)
+      .SetBetweenChildSpacing(2)
       .SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kStretch)
       .AddChildren(
           // Row 1 (Sparkles) - Top tile with 12px top corners & 0px bottom
@@ -64,23 +87,21 @@ std::unique_ptr<views::View> CreateOnboardingCardView() {
               .SetCrossAxisAlignment(
                   views::BoxLayout::CrossAxisAlignment::kStart)
               .SetBackground(views::CreateRoundedRectBackground(
-                  ui::kColorSysNeutralContainer,
+                  ui::kColorSysSurface2,
                   gfx::RoundedCornersF(12.0f, 12.0f, 0.0f, 0.0f)))
-              .SetInsideBorderInsets(gfx::Insets(16))
+              .SetInsideBorderInsets(gfx::Insets::VH(12, 16))
               .AddChildren(
                   views::Builder<views::ImageView>()
                       .SetImage(ui::ImageModel::FromVectorIcon(
-                          kScreensaverAutoIcon, ui::kColorSysPrimary, 20))
+                          kScreensaverAutoIcon, ui::kColorSysPrimary, 16))
                       .SetProperty(views::kMarginsKey,
-                                   gfx::Insets::TLBR(2, 0, 0, 0)),
+                                   gfx::Insets::TLBR(1, 0, 0, 0)),
                   views::Builder<views::Label>()
                       .SetText(l10n_util::GetStringUTF16(
                           IDS_DICTATION_ONBOARDING_BULLET_DATA_SHARING))
-                      .SetFontList(views::TypographyProvider::Get()
-                                       .GetFont(views::style::CONTEXT_LABEL,
-                                                views::style::STYLE_BODY_5)
-                                       .DeriveWithSizeDelta(-1))
-                      .SetLineHeight(18)
+                      .SetTextStyle(views::style::STYLE_BODY_4)
+                      .SetFontList(GetGoogleSansFont(views::style::STYLE_BODY_4,
+                                                     kGoogleSansText))
                       .SetMultiLine(true)
                       .SetHorizontalAlignment(gfx::ALIGN_LEFT)
                       .SetEnabledColor(ui::kColorSysOnSurface)
@@ -93,23 +114,21 @@ std::unique_ptr<views::View> CreateOnboardingCardView() {
               .SetCrossAxisAlignment(
                   views::BoxLayout::CrossAxisAlignment::kStart)
               .SetBackground(views::CreateRoundedRectBackground(
-                  ui::kColorSysNeutralContainer,
+                  ui::kColorSysSurface2,
                   gfx::RoundedCornersF(0.0f, 0.0f, 12.0f, 12.0f)))
-              .SetInsideBorderInsets(gfx::Insets(16))
+              .SetInsideBorderInsets(gfx::Insets::VH(12, 16))
               .AddChildren(
                   views::Builder<views::ImageView>()
                       .SetImage(ui::ImageModel::FromVectorIcon(
-                          vector_icons::kMicIcon, ui::kColorSysPrimary, 20))
+                          vector_icons::kMicIcon, ui::kColorSysPrimary, 16))
                       .SetProperty(views::kMarginsKey,
-                                   gfx::Insets::TLBR(2, 0, 0, 0)),
+                                   gfx::Insets::TLBR(1, 0, 0, 0)),
                   views::Builder<views::Label>()
                       .SetText(l10n_util::GetStringUTF16(
                           IDS_DICTATION_ONBOARDING_BULLET_MICROPHONE))
-                      .SetFontList(views::TypographyProvider::Get()
-                                       .GetFont(views::style::CONTEXT_LABEL,
-                                                views::style::STYLE_BODY_5)
-                                       .DeriveWithSizeDelta(-1))
-                      .SetLineHeight(18)
+                      .SetTextStyle(views::style::STYLE_BODY_4)
+                      .SetFontList(GetGoogleSansFont(views::style::STYLE_BODY_4,
+                                                     kGoogleSansText))
                       .SetMultiLine(true)
                       .SetHorizontalAlignment(gfx::ALIGN_LEFT)
                       .SetEnabledColor(ui::kColorSysOnSurface)
@@ -137,22 +156,37 @@ std::unique_ptr<views::View> CreateBodyView(
       IDS_DICTATION_ONBOARDING_BULLET_DISCLAIMER, replacements, &offsets);
   size_t link_offset = offsets.empty() ? 0 : offsets[0];
 
+  const gfx::FontList disclaimer_font =
+      GetGoogleSansFont(views::style::STYLE_BODY_5, kGoogleSansText);
+
   auto disclaimer_label = std::make_unique<views::StyledLabel>();
   disclaimer_label->SetText(disclaimer_text);
   disclaimer_label->SetHorizontalAlignment(gfx::ALIGN_CENTER);
-  disclaimer_label->SetDefaultTextStyle(views::style::STYLE_CAPTION);
-  disclaimer_label->SetDefaultEnabledColorId(ui::kColorSysOnSurfaceSubtle);
+  disclaimer_label->SetDefaultTextStyle(views::style::STYLE_BODY_5);
+  disclaimer_label->SetDefaultEnabledColorId(ui::kColorSysOnSurfaceVariant);
 
   auto link_view = std::make_unique<views::Link>(
-      link_text, views::style::CONTEXT_LABEL, views::style::STYLE_CAPTION);
+      link_text, views::style::CONTEXT_LABEL, views::style::STYLE_BODY_5);
+  link_view->SetFontList(disclaimer_font);
   link_view->SetCallback(std::move(learn_more_callback));
 
   views::StyledLabel::RangeStyleInfo link_style;
   link_style.custom_view = link_view.get();
   disclaimer_label->AddCustomView(std::move(link_view));
 
-  disclaimer_label->AddStyleRange(
-      gfx::Range(link_offset, link_offset + link_text.length()), link_style);
+  // StyledLabel has no default font setter, so style the text around the link.
+  views::StyledLabel::RangeStyleInfo text_style;
+  text_style.custom_font = disclaimer_font;
+  auto add_text_range = [&](size_t start, size_t end) {
+    if (start < end) {
+      disclaimer_label->AddStyleRange(gfx::Range(start, end), text_style);
+    }
+  };
+  const size_t link_end = link_offset + link_text.length();
+  add_text_range(0, link_offset);
+  disclaimer_label->AddStyleRange(gfx::Range(link_offset, link_end),
+                                  link_style);
+  add_text_range(link_end, disclaimer_text.length());
 
   container->AddChildView(std::move(disclaimer_label));
 
@@ -185,21 +219,21 @@ void OnboardingDialogController::Show(base::OnceClosure complete_callback,
           CreateDialogModel(std::move(complete_callback)),
           ui::mojom::ModalType::kChild)
           .release();
-  const int dialog_width =
-      views::LayoutProvider::Get()->GetDistanceMetric(
-          views::DISTANCE_LARGE_MODAL_DIALOG_PREFERRED_WIDTH) +
-      views::LayoutProvider::Get()
-          ->GetInsetsMetric(views::INSETS_DIALOG)
-          .width();
-  model_host->set_fixed_width(dialog_width);
+  model_host->set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
+      views::DISTANCE_LARGE_MODAL_DIALOG_PREFERRED_WIDTH));
   const gfx::Insets dialog_insets =
       views::LayoutProvider::Get()->GetInsetsMetric(views::INSETS_DIALOG);
   const int related_control_gap =
       views::LayoutProvider::Get()->GetDistanceMetric(
           views::DISTANCE_RELATED_CONTROL_VERTICAL);
+  // The title is left-aligned, so its trailing margin isn't visible. Trim it
+  // so the first line fits as in the mocks; including the trailing space that
+  // line wrapping counts, it is ~476px, wider than the 472px default.
+  constexpr int kTitleTrailingMarginReduction = 8;
   model_host->set_frame_margins(
-      {.title = gfx::Insets::TLBR(related_control_gap, dialog_insets.left(),
-                                  related_control_gap, dialog_insets.right())});
+      {.title = gfx::Insets::TLBR(
+           related_control_gap, dialog_insets.left(), 0,
+           dialog_insets.right() - kTitleTrailingMarginReduction)});
   model_host->SetOwnershipOfNewWidget(
       views::Widget::InitParams::CLIENT_OWNS_WIDGET);
 
@@ -208,12 +242,32 @@ void OnboardingDialogController::Show(base::OnceClosure complete_callback,
 
   if (auto* frame = model_host->GetBubbleFrameView()) {
     if (auto* title_label = views::AsViewClass<views::Label>(frame->title())) {
-      title_label->SetTextStyle(views::style::STYLE_HEADLINE_5);
+      title_label->SetTextStyle(views::style::STYLE_HEADLINE_4);
+      title_label->SetFontList(
+          GetGoogleSansFont(views::style::STYLE_HEADLINE_4));
     }
+
+    // The frame places the header flush with the top of the dialog, so add the
+    // banner here (instead of via DialogModel::SetBannerImage()) to give it
+    // top padding.
+    auto banner_view = std::make_unique<views::ThemeTrackingImageView>(
+        ui::ImageModel::FromResourceId(IDR_DICTATION_ONBOARDING_BANNER),
+        ui::ImageModel::FromResourceId(IDR_DICTATION_ONBOARDING_BANNER_DARK),
+        model_host->background_color());
+    banner_view->SetBorder(views::CreateEmptyBorder(
+        gfx::Insets::TLBR(kBannerTopPadding, 0, kBannerBottomPadding, 0)));
+    // The banner is purely decorative.
+    banner_view->GetViewAccessibility().SetIsIgnored(true);
+    frame->SetHeaderView(std::move(banner_view));
+    model_host->SizeToContents();
   }
 
   widget_->MakeCloseSynchronous(base::BindOnce(
       &OnboardingDialogController::Close, base::Unretained(this)));
+
+  views::View* initially_focused_view = model_host->GetInitiallyFocusedView();
+  CHECK(initially_focused_view);
+  initially_focused_view->RequestFocus();
 }
 
 bool OnboardingDialogController::IsShowing() const {
@@ -226,9 +280,6 @@ std::unique_ptr<ui::DialogModel> OnboardingDialogController::CreateDialogModel(
       .SetInternalName(kOnboardingDialogName)
       .SetTitle(l10n_util::GetStringUTF16(IDS_DICTATION_ONBOARDING_TITLE))
       .SetElementIdentifier(kDictationOnboardingDialogElementId)
-      .SetBannerImage(
-          ui::ImageModel::FromResourceId(IDR_DICTATION_ONBOARDING_BANNER),
-          ui::ImageModel::FromResourceId(IDR_DICTATION_ONBOARDING_BANNER_DARK))
       .AddCustomField(
           std::make_unique<views::BubbleDialogModelHost::CustomView>(
               CreateBodyView(base::BindRepeating(
@@ -249,13 +300,15 @@ std::unique_ptr<ui::DialogModel> OnboardingDialogController::CreateDialogModel(
                                IDS_DICTATION_ONBOARDING_BUTTON_CANCEL))
                            .SetId(kDictationOnboardingCancelButtonElementId)
                            .SetStyle(ui::ButtonStyle::kTonal))
+      .SetInitiallyFocusedField(kDictationOnboardingOkButtonElementId)
+      .SetIsAlertDialog()
       .Build();
 }
 
 void OnboardingDialogController::OnLearnMoreLinkClicked() {
   tab_->GetBrowserWindowInterface()->OpenGURL(
       GURL("https://support.google.com/chrome?p=voice_typing"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB);
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab);
 }
 
 void OnboardingDialogController::OnDialogAccepted(

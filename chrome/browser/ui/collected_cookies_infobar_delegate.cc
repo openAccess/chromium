@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "base/check_op.h"
+#include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/infobars/confirm_infobar_creator.h"
 #include "chrome/grit/generated_resources.h"
@@ -21,8 +22,9 @@
 // static
 void CollectedCookiesInfoBarDelegate::Create(
     infobars::ContentInfoBarManager* infobar_manager) {
-  infobar_manager->AddInfoBar(
-      CreateConfirmInfoBar(std::unique_ptr<ConfirmInfoBarDelegate>(
+  infobar_manager->AddInfoBar(CreateConfirmInfoBar(
+      ConfirmInfoBarCreationAllowlist::GetPassKeyForMigration(),
+      base::WrapUnique<ConfirmInfoBarDelegate>(
           new CollectedCookiesInfoBarDelegate())));
 }
 
@@ -51,7 +53,7 @@ int CollectedCookiesInfoBarDelegate::GetButtons() const {
 
 std::u16string CollectedCookiesInfoBarDelegate::GetButtonLabel(
     InfoBarButton button) const {
-  DCHECK_EQ(BUTTON_OK, button);
+  CHECK_EQ(BUTTON_OK, button, base::NotFatalUntil::M162);
   return l10n_util::GetStringUTF16(IDS_COLLECTED_COOKIES_INFOBAR_BUTTON);
 }
 

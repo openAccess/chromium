@@ -41,7 +41,6 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/prefinalizer.h"
 #include "third_party/blink/renderer/platform/loader/fetch/data_pipe_bytes_consumer.h"
-#include "third_party/blink/renderer/platform/loader/fetch/fetch_context.h"
 #include "third_party/blink/renderer/platform/loader/fetch/loader_freeze_mode.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_load_scheduler.h"
@@ -63,6 +62,7 @@ class UnguessableToken;
 
 namespace blink {
 
+class FetchContext;
 class ResourceError;
 class ResourceFetcher;
 class ResponseBodyLoader;
@@ -168,10 +168,6 @@ class PLATFORM_EXPORT ResourceLoader final
   void CancelIfWebBundleTokenMatches(
       const base::UnguessableToken& web_bundle_token);
 
-  const FeatureContext* GetFeatureContext() const {
-    return Context().GetFeatureContext();
-  }
-
  private:
   friend class SubresourceIntegrityTest;
   friend class ResourceLoaderIsolatedCodeCacheTest;
@@ -188,6 +184,9 @@ class PLATFORM_EXPORT ResourceLoader final
   void DidFinishLoadingBody() override;
   void DidFailLoadingBody() override;
   void DidCancelLoadingBody() override;
+  void WillCreateBlobFromDrainedDataPipe() override;
+  void DidCreateBlobFromDrainedDataPipe(
+      const scoped_refptr<BlobDataHandle>&) override;
 
   void DidReceiveDataImpl(
       std::variant<SegmentedBuffer, base::span<const char>> data);
@@ -224,6 +223,7 @@ class PLATFORM_EXPORT ResourceLoader final
 
   void OnProgress(uint64_t delta) override;
   void FinishedCreatingBlob(const scoped_refptr<BlobDataHandle>&);
+  void MarkBlobFinished();
 
   std::optional<ResourceRequestBlockedReason> CheckResponseNosniff(
       mojom::blink::RequestContextType,
@@ -243,10 +243,6 @@ class PLATFORM_EXPORT ResourceLoader final
       const ResourceRequestHead& initial_request,
       const ResourceLoaderOptions& options,
       const ResourceRequest::RedirectInfo redirect_info);
-
-  // Increments the right UseCounter for the given PNA preflight result, if any.
-  void CountPrivateNetworkAccessPreflightResult(
-      network::mojom::PrivateNetworkAccessPreflightResult result);
 
   // The request object which will be passed to URLLoader. This is not used when
   // the request URL is a data URL.
@@ -276,10 +272,10 @@ class PLATFORM_EXPORT ResourceLoader final
   bool blob_finished_ = false;
   bool blob_response_started_ = false;
   bool has_seen_end_of_body_ = false;
-  // If DidFinishLoading is called while downloading to a blob before the blob
-  // is finished, we might have to defer actually handling the event. This
-  // struct is used to store the information needed to refire DidFinishLoading
-  // when the blob is finished too.
+  // If DidFinishLoading is called before the blob for the body is finished, we
+  // might have to defer actually handling the event. This struct is used to
+  // store the information needed to refire DidFinishLoading when the blob is
+  // finished too.
   struct DeferredFinishLoadingInfo {
     base::TimeTicks response_end_time;
   };

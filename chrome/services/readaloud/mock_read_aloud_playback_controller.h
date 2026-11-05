@@ -58,8 +58,17 @@ class MockReadAloudPlaybackController
                const media::AudioParameters& params),
               (override));
   MOCK_METHOD(void,
+              SetPlaybackMode,
+              (read_aloud::mojom::PlaybackMode mode),
+              (override));
+  MOCK_METHOD(void,
               SetTextContent,
               (std::vector<read_aloud::mojom::TextSegmentPtr> segments),
+              (override));
+  MOCK_METHOD(void,
+              SetOverviewContent,
+              (mojo_base::BigBuffer response_bytes,
+               SetOverviewContentCallback callback),
               (override));
   MOCK_METHOD(void, Play, (), (override));
   MOCK_METHOD(void, Pause, (), (override));
@@ -68,6 +77,7 @@ class MockReadAloudPlaybackController
               (uint32_t segment_index, uint32_t character_offset),
               (override));
   MOCK_METHOD(void, SeekToTime, (base::TimeDelta position), (override));
+  MOCK_METHOD(void, SeekRelative, (base::TimeDelta offset), (override));
   MOCK_METHOD(void, SetVoice, (const std::string& voice_id), (override));
   MOCK_METHOD(void, SetPlaybackRate, (float rate), (override));
   MOCK_METHOD(void, FlushBuffers, (), (override));
@@ -75,10 +85,13 @@ class MockReadAloudPlaybackController
   // Default fake implementation methods invoked by ON_CALL:
   void DefaultSetTextContent(
       std::vector<read_aloud::mojom::TextSegmentPtr> segments);
+  void DefaultSetOverviewContent(mojo_base::BigBuffer response_bytes,
+                                 SetOverviewContentCallback callback);
   void DefaultPlay();
   void DefaultPause();
   void DefaultSeekToWord(uint32_t segment_index, uint32_t character_offset);
   void DefaultSeekToTime(base::TimeDelta position);
+  void DefaultSeekRelative(base::TimeDelta offset);
   void DefaultSetPlaybackRate(float rate);
 
   void set_simulated_latency(base::TimeDelta latency) {
@@ -91,6 +104,8 @@ class MockReadAloudPlaybackController
   struct WordBoundary {
     uint32_t segment_index;
     uint32_t character_offset;
+    // Exclusive end of the word.
+    uint32_t end_character_offset;
     base::TimeDelta audio_timestamp;
   };
 

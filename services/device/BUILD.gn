@@ -34,13 +34,12 @@ source_set("lib") {
     "device_service.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   deps = [
     ":binder_overrides",
     "//services/device/fingerprint",
     "//services/device/generic_sensor",
     "//services/device/geolocation",
+    "//services/device/haptics",
     "//services/device/hid",
     "//services/device/power_monitor",
     "//services/device/public/cpp:device_features",
@@ -98,7 +97,6 @@ component("binder_overrides") {
     "binder_overrides.cc",
     "binder_overrides.h",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
   public_deps = [
     "//base",
     "//mojo/public/cpp/bindings",
@@ -155,6 +153,7 @@ source_set("tests") {
     "geolocation/public_ip_address_location_notifier_unittest.cc",
     "geolocation/wifi_data_provider_common_unittest.cc",
     "geolocation/wifi_polling_policy_unittest.cc",
+    "haptics/haptics_manager_impl_unittest.cc",
     "power_monitor/power_monitor_message_broadcaster_unittest.cc",
     "public/cpp/power_monitor/power_monitor_broadcast_source_unittest.cc",
     "vibration/vibration_manager_impl_unittest.cc",
@@ -171,11 +170,13 @@ source_set("tests") {
     "//components/variations",
     "//device/base/synchronization",
     "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/test_support:test_utils",
     "//net",
     "//net:test_support",
     "//services/device/generic_sensor",
     "//services/device/geolocation",
     "//services/device/geolocation:test_support",
+    "//services/device/haptics",
     "//services/device/power_monitor",
     "//services/device/public/cpp:device_features",
     "//services/device/public/cpp/power_monitor",
@@ -239,10 +240,15 @@ source_set("tests") {
       "battery/battery_status_manager_linux_unittest.cc",
       "geolocation/location_provider_linux_portal_unittest.cc",
       "geolocation/wifi_data_provider_linux_unittest.cc",
+      "wake_lock/power_save_blocker/power_save_blocker_linux_unittest.cc",
     ]
     deps += [
       "//components/dbus",
       "//dbus:test_support",
+      "//services/device/wake_lock/power_save_blocker",
+      "//ui/display",
+      "//ui/display:test_support",
+      "//ui/gfx",
     ]
   }
 
@@ -389,6 +395,10 @@ source_set("tests") {
 
     if (is_android || is_linux) {
       sources += [ "usb/usb_interface_detach_allowlist_unittest.cc" ]
+    }
+
+    if (is_win) {
+      sources += [ "usb/usb_device_handle_win_unittest.cc" ]
     }
   }
 

@@ -147,14 +147,23 @@
 // When enabled, -[CWVGlobalState setDumpWithoutCrashingHandler:] is made available.
 #define CWV_DUMP_WITHOUT_CRASHING_HANDLER_AVAILABLE 1
 
-// Supports -[CWVPreferences autofillSafeLifecycleEnabled].
-#define IOS_WEB_VIEW_SUPPORTS_AUTOFILL_SAFE_LIFECYCLE 1
-
 // Supports -[CWVUIDelegate webView:buildMenuWithBuilder:].
 #define CWV_SUPPORTS_BUILD_MENU_WITH_BUILDER 1
 
 // Supports -[CWVWebViewConfiguration configurationWithIdentifier:] and related
 // profile-scoped sandboxing APIs. These APIs require iOS 17.0+ at runtime.
 #define IOS_WEB_VIEW_SUPPORTS_PROFILE_SCOPED_CONFIGURATIONS 1
+
+// Supports -[CWVWebVIewConfiguration hasActiveWebViews].
+#define IOS_WEB_VIEW_SUPPORTS_HAS_ACTIVE_WEB_VIEWS 1
+
+// Supports -[CWVPreferences autofillScopedFormActivityEnabled].
+#define IOS_WEB_VIEW_SUPPORTS_AUTOFILL_SCOPED_FORM_ACTIVITY 1
+
+// Supports mandatory re-auth delegate methods on CWVAutofillControllerDelegate.
+#define IOS_WEB_VIEW_SUPPORTS_MANDATORY_REAUTH 1
+
+// Supports CWVAutofillErrorDialogContext and showErrorDialogWithContext.
+#define IOS_WEB_VIEW_SUPPORTS_AUTOFILL_ERROR_DIALOG 1
 
 #endif  // IOS_WEB_VIEW_PUBLIC_CWV_DEFINES_H_

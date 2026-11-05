@@ -7,6 +7,7 @@
 
 #include <string>
 
+#include "build/build_config.h"
 #include "components/safe_browsing/core/common/proto/client_model.pb.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -60,12 +61,26 @@ CanExtractVisualFeaturesResult CanExtractVisualFeatures(bool is_user_opted_in,
                                                         double zoom_level);
 #endif
 
-// Extract a VisualFeatures proto from the given `image`.
-std::unique_ptr<VisualFeatures> ExtractVisualFeatures(const gfx::Image& image);
+// Converts and prepares a `gfx::Image` into an `SkBitmap` for visual feature
+// extraction. Must be called on the sequence that owns `image`.
+// On iOS, this uses platform-native hardware downscaling before bitmap
+// conversion to avoid allocating full-resolution intermediate bitmaps. On other
+// platforms, this returns the image's `SkBitmap` representation directly
+// without performing any downscaling.
+SkBitmap GetBitmapForVisualFeatures(const gfx::Image& image);
 
-// Extract a VisualFeatures proto from the given `bitmap` (used by password
-// protection).
+// Extracts a `VisualFeatures` proto from the given `bitmap` (used by password
+// protection and client-side phishing detection).
 std::unique_ptr<VisualFeatures> ExtractVisualFeatures(const SkBitmap& bitmap);
+
+#if BUILDFLAG(IS_IOS)
+// Resizes `image` to `size` (in pixels) using CoreGraphics and returns the
+// result directly as an `SkBitmap` without routing through `Image::AsBitmap()`
+// (which upsamples by the maximum supported resource scale factor).
+// Must be called on the main UI thread.
+SkBitmap GetResizedImageAsSkBitmap(const gfx::Image& image,
+                                   const gfx::Size& size);
+#endif  // BUILDFLAG(IS_IOS)
 
 }  // namespace safe_browsing::visual_utils
 

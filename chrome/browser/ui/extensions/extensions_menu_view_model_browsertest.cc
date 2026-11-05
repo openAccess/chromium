@@ -9,6 +9,7 @@
 
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/test/allow_check_is_test_for_testing.h"
 #include "base/test/metrics/user_action_tester.h"
@@ -34,6 +35,7 @@
 #include "extensions/browser/permissions/scripting_permissions_modifier.h"
 #include "extensions/browser/permissions/site_permissions_helper.h"
 #include "extensions/browser/permissions_manager.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/manifest_constants.h"
@@ -79,7 +81,15 @@ class TestExtensionsMenuDelegate : public ExtensionsMenuViewModel::Delegate {
       : browser_(browser) {}
   ~TestExtensionsMenuDelegate() override = default;
 
+  void SetActiveWebContents(content::WebContents* web_contents) {
+    web_contents_ = web_contents;
+  }
+
   // ExtensionsMenuViewModel::Delegate:
+  content::WebContents* GetActiveWebContents() const override {
+    return web_contents_;
+  }
+
   std::unique_ptr<ExtensionActionViewModel> CreateActionViewModel(
       const extensions::ExtensionId& extension_id) override {
     return ExtensionActionViewModel::Create(
@@ -89,6 +99,7 @@ class TestExtensionsMenuDelegate : public ExtensionsMenuViewModel::Delegate {
 
  private:
   raw_ptr<BrowserWindowInterface> browser_;
+  raw_ptr<content::WebContents> web_contents_ = nullptr;
 };
 
 }  // namespace
@@ -412,6 +423,47 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewModelBrowserTest,
             PermissionsManager::UserSiteAccess::kOnClick);
 }
 
+// Tests that the extensions menu view model fails to update site access if the
+// origin changes.
+IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewModelBrowserTest,
+                       UpdateSiteAccess_FailsIfOriginChanges) {
+  // Add extension that requests host permissions and withheld site access.
+  scoped_refptr<const extensions::Extension> extension =
+      AddExtensionWithHostPermission("Extension", "*://example.com/*");
+  extensions::ScriptingPermissionsModifier modifier(profile(), extension);
+  modifier.SetWithholdHostPermissions(true);
+
+  // Navigate to a site the extension requested access to.
+  const GURL urlA =
+      embedded_test_server()->GetURL("example.com", "/simple.html");
+  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), urlA));
+  content::WebContents* web_contents = GetActiveWebContents();
+  auto originA = web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+
+  // Verify site interaction and site access are withheld.
+  EXPECT_EQ(permissions_helper()->GetSiteInteraction(*extension, web_contents),
+            SitePermissionsHelper::SiteInteraction::kWithheld);
+  EXPECT_EQ(permissions_manager()->GetUserSiteAccess(
+                *extension, web_contents->GetLastCommittedURL()),
+            PermissionsManager::UserSiteAccess::kOnClick);
+
+  // Simulate navigation to another site before user clicks.
+  const GURL urlB = embedded_test_server()->GetURL("other.com", "/simple.html");
+  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), urlB));
+
+  // Try to update site access using the previous origin.
+  menu_model()->UpdateSiteAccess(extension->id(), originA,
+                                 PermissionsManager::UserSiteAccess::kOnSite);
+
+  // Verify that site access was NOT granted because the origin changed.
+  EXPECT_EQ(permissions_helper()->GetSiteInteraction(*extension, web_contents),
+            SitePermissionsHelper::SiteInteraction::kNone);
+
+  // And site access for example.com should still be kOnClick (withheld).
+  EXPECT_EQ(permissions_manager()->GetUserSiteAccess(*extension, urlA),
+            PermissionsManager::UserSiteAccess::kOnClick);
+}
+
 // Tests that the extensions menu view model correctly revokes site access to an
 // extension that requests hosts permissions and access is currently granted.
 IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewModelBrowserTest,
@@ -463,7 +515,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewModelBrowserTest,
   extensions::ExtensionActionRunner* action_runner =
       extensions::ExtensionActionRunner::GetForWebContents(web_contents);
   ASSERT_TRUE(action_runner);
-  action_runner->GrantTabPermissions({extension.get()});
+  action_runner->GrantTabPermissions({extension.get()}, base::DoNothing());
   EXPECT_EQ(permissions_helper()->GetSiteInteraction(*extension, web_contents),
             SitePermissionsHelper::SiteInteraction::kGranted);
   EXPECT_EQ(permissions_manager()->GetUserSiteAccess(
@@ -1738,4 +1790,49 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewModelBrowserTest,
   permissions_manager()->RemoveHostAccessRequest(tab2_id, extension_A->id());
   EXPECT_THAT(menu_model()->host_access_requests(),
               testing::ElementsAre(extension_A->id()));
+}
+
+// Tests that an ExtensionsMenuViewModel can be explicitly scoped to a custom
+// WebContents instead of defaulting to the active tab.
+IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewModelBrowserTest,
+                       ScopedToCustomWebContents) {
+  auto extension = AddExtensionWithHostPermission("Extension", "<all_urls>");
+  extensions::ScriptingPermissionsModifier(profile(), extension)
+      .SetWithholdHostPermissions(true);
+
+  NavigateTo("active-tab.com");
+  content::WebContents* active_tab = GetActiveWebContents();
+
+  std::unique_ptr<content::WebContents> custom_contents =
+      content::WebContents::Create(
+          content::WebContents::CreateParams(profile()));
+  const GURL custom_url =
+      embedded_test_server()->GetURL("custom-site.com", "/simple.html");
+  ASSERT_TRUE(NavigateToURL(custom_contents.get(), custom_url));
+
+  TestExtensionsMenuDelegate custom_menu_delegate(browser_window_interface());
+  custom_menu_delegate.SetActiveWebContents(custom_contents.get());
+  auto custom_menu_model = std::make_unique<ExtensionsMenuViewModel>(
+      browser_window_interface(), &custom_menu_delegate);
+
+  EXPECT_EQ(custom_menu_model->GetActiveWebContents(), custom_contents.get());
+  EXPECT_EQ(menu_model()->GetActiveWebContents(), active_tab);
+
+  // Check that site permissions state reflects the custom web contents origin.
+  auto custom_permissions_state =
+      custom_menu_model->GetExtensionSitePermissionsState(extension->id(),
+                                                          gfx::Size(20, 20));
+  EXPECT_EQ(custom_permissions_state.origin,
+            custom_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin());
+  EXPECT_NE(custom_permissions_state.origin,
+            active_tab->GetPrimaryMainFrame()->GetLastCommittedOrigin());
+
+  // Navigating the active tab should not affect the custom_menu_model.
+  NavigateTo("another-active-tab.com");
+  EXPECT_EQ(custom_menu_model->GetActiveWebContents(), custom_contents.get());
+  EXPECT_EQ(
+      custom_menu_model
+          ->GetExtensionSitePermissionsState(extension->id(), gfx::Size(20, 20))
+          .origin,
+      custom_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin());
 }

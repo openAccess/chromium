@@ -57,7 +57,8 @@ public class AutofillPersonalContextSettingsRenderTest {
     @Rule
     public final ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(2)
+                    .setRevision(4)
+                    .setDescription("Vectorize expand_more and expand_less icons")
                     .setBugComponent(ChromeRenderTestRule.Component.UI_BROWSER_AUTOFILL)
                     .build();
 

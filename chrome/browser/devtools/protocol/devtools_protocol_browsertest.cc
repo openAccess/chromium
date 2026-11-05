@@ -2,15 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "base/base64.h"
 #include "base/check_deref.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
+#include "base/process/process.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -18,6 +22,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/test/test_switches.h"
 #include "base/test/values_test_util.h"
 #include "base/threading/thread_restrictions.h"
@@ -32,10 +37,13 @@
 #include "chrome/browser/devtools/protocol/devtools_protocol_test_support.h"
 #include "chrome/browser/preloading/preloading_prefs.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations_mixin.h"
+#include "chrome/browser/private_verification_tokens/private_verification_tokens_service.h"
+#include "chrome/browser/private_verification_tokens/private_verification_tokens_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/https_upgrades_util.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/chrome_paths.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -47,16 +55,21 @@
 #include "components/infobars/core/infobar_delegate.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations.h"
+#include "components/private_verification_tokens/common/private_verification_tokens_token.h"
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "content/public/browser/btm_redirect.h"
 #include "content/public/browser/btm_service.h"
 #include "content/public/browser/cookie_access_details.h"
 #include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/page_navigator.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/ssl_status.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/common/referrer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -64,6 +77,8 @@
 #include "content/public/test/download_test_observer.h"
 #include "content/public/test/preloading_test_util.h"
 #include "content/public/test/prerender_test_util.h"
+#include "extensions/buildflags/buildflags.h"
+#include "net/base/features.h"
 #include "net/base/ip_address.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/ssl/ssl_cipher_suite_names.h"
@@ -71,12 +86,11 @@
 #include "net/ssl/ssl_connection_status_flags.h"
 #include "net/ssl/ssl_server_config.h"
 #include "printing/buildflags/buildflags.h"
-#include "services/network/public/cpp/network_switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/boringssl/src/include/openssl/ssl.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "url/origin.h"
 
@@ -92,16 +106,21 @@
 #endif
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "base/functional/callback_helpers.h"
 #include "base/task/sequenced_task_runner.h"
+#include "chrome/browser/devtools/chrome_devtools_manager_delegate.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
+#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_window.h"
+#include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/resource_coordinator/tab_manager.h"
 #include "chrome/browser/sessions/session_restore_test_helper.h"
 #include "chrome/browser/sessions/session_service_test_helper.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
@@ -115,6 +134,7 @@
 #include "components/permissions/permission_request_manager.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "content/public/browser/devtools_agent_host_client.h"
+#include "content/public/browser/devtools_manager_delegate.h"
 #include "content/public/test/browser_test_utils.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -361,7 +381,8 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
       chrome_test_utils::GetActiveWebContents(this);
 
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL("about:blank"), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL("about:blank"),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   content::WebContents* other_web_contents =
       chrome_test_utils::GetActiveWebContents(this);
@@ -470,6 +491,66 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, CreateTargetWithFocus) {
   EXPECT_EQ(4, browser()->tab_strip_model()->count());
 }
 
+#if !BUILDFLAG(IS_CHROMEOS)
+// `ProfileManager::GetLastUsedProfile()` returns nullptr if the last used
+// profile can't be loaded, in which case Chrome's UI falls back to the profile
+// picker. The Target domain must report an error rather than crash in this
+// situation (https://crbug.com/576322189). Not applicable to ChromeOS, where
+// `GetLastUsedProfile()` returns the active user's profile instead.
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       TargetDomainHandlesUnloadableLastUsedProfile) {
+  AttachToBrowserTarget();
+  Profile* const profile = browser()->GetProfile();
+  const std::string default_context_id = profile->UniqueId();
+  EXPECT_EQ(1, browser()->tab_strip_model()->count());
+
+  // The `ProfileManager` refuses to load profiles that aren't direct children
+  // of the user data directory, so this makes the last used profile
+  // unloadable.
+  profiles::SetLastUsedProfile(base::FilePath(FILE_PATH_LITERAL("unloadable"))
+                                   .Append(FILE_PATH_LITERAL("profile")));
+  base::ScopedClosureRunner restore_last_used_profile(
+      base::BindOnce(&profiles::SetLastUsedProfile, profile->GetBaseName()));
+  ASSERT_FALSE(ProfileManager::GetLastUsedProfile());
+
+  SendCommandSync("Target.createTarget",
+                  base::DictValue().Set("url", "about:blank"));
+  ASSERT_TRUE(error());
+  EXPECT_EQ("Failed to load default browser context",
+            *error()->FindString("message"));
+
+  SendCommandSync("Target.createTarget",
+                  base::DictValue()
+                      .Set("url", "about:blank")
+                      .Set("browserContextId", default_context_id));
+  ASSERT_TRUE(error());
+  EXPECT_EQ("Failed to find browser context with id " + default_context_id,
+            *error()->FindString("message"));
+
+  SendCommandSync("Target.createBrowserContext");
+  ASSERT_TRUE(error());
+  EXPECT_EQ("Failed to create browser context.",
+            *error()->FindString("message"));
+
+  // Used to handle `/json/new` requests.
+  content::DevToolsManagerDelegate* const delegate =
+      ChromeDevToolsManagerDelegate::GetInstance();
+  ASSERT_TRUE(delegate);
+  EXPECT_FALSE(delegate->CreateNewTarget(
+      GURL("about:blank"), content::DevToolsManagerDelegate::kFrame,
+      /*new_window=*/false));
+
+  EXPECT_EQ(1, browser()->tab_strip_model()->count());
+
+  // Creating targets works again once the last used profile can be loaded.
+  restore_last_used_profile.RunAndReset();
+  SendCommandSync("Target.createTarget",
+                  base::DictValue().Set("url", "about:blank"));
+  EXPECT_FALSE(error());
+  EXPECT_EQ(2, browser()->tab_strip_model()->count());
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
 // On ChromeOS and MacOS, the tabs are not backgrounded and unloaded in the same way as
 // on other platforms.
@@ -486,7 +567,7 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, MAYBE_AutoAttachToUnloadedTab) {
   // 1. Create two tabs.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url1));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ASSERT_EQ(2, browser()->tab_strip_model()->count());
   ASSERT_EQ(1, browser()->tab_strip_model()->active_index());
@@ -812,9 +893,11 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
   EXPECT_FALSE(agent_host->GetWebContents());
 }
 
+// TODO(https://crbug.com/580985658): Re-enable after fixing OwningTestTabModel
+// outliving the disposed OTR Profile.
 IN_PROC_BROWSER_TEST_F(
     DevToolsProtocolTest,
-    DisposeBrowserContextClosesFrozenTabsAcrossTabModelRemoval) {
+    DISABLED_DisposeBrowserContextClosesFrozenTabsAcrossTabModelRemoval) {
   AttachToBrowserTarget();
 
   const base::DictValue* result =
@@ -1116,9 +1199,9 @@ IN_PROC_BROWSER_TEST_F(
   ui_test_utils::AllBrowserTabAddedWaiter tab_added_waiter;
 
   content::WebContents* web_contents = browser()->OpenURL(
-      content::OpenURLParams(url, content::Referrer(),
-                             WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                             ui::PAGE_TRANSITION_TYPED, false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_TYPED),
       /*navigation_handle_callback=*/{});
   tab_added_waiter.Wait();
   ASSERT_TRUE(WaitForLoadStop(web_contents));
@@ -1264,23 +1347,20 @@ class DevToolsProtocolTest_BounceTrackingMitigations
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-testing::AssertionResult SimulateBtmBounce(content::WebContents* web_contents,
+testing::AssertionResult SimulateBtmBounce(BrowserWindowInterface* browser,
                                            const GURL& initial_url,
                                            const GURL& bounce_url,
                                            const GURL& final_url) {
-  web_contents = web_contents->OpenURL(
-      content::OpenURLParams(initial_url, content::Referrer(),
-                             WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                             ui::PageTransition::PAGE_TRANSITION_TYPED,
-                             /*is_renderer_initiated=*/false),
-      {});
-  if (!web_contents) {
-    return testing::AssertionFailure() << "OpenURL() returned nullptr";
+  if (!ui_test_utils::NavigateToURLWithDisposition(
+          browser, initial_url,
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB |
+              ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP)) {
+    return testing::AssertionFailure()
+           << "Failed to navigate to " << initial_url;
   }
-
-  if (!content::WaitForLoadStop(web_contents)) {
-    return testing::AssertionFailure() << "Failed to wait for loading to stop";
-  }
+  content::WebContents* web_contents =
+      browser->GetTabStripModel()->GetActiveWebContents();
 
   content::BtmService* btm_service =
       content::BtmService::Get(web_contents->GetBrowserContext());
@@ -1348,7 +1428,7 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest_BounceTrackingMitigations,
 
   // Record a stateful bounce for `bouncer`.
   ASSERT_TRUE(SimulateBtmBounce(
-      web_contents(), embedded_test_server()->GetURL("a.test", "/empty.html"),
+      browser(), embedded_test_server()->GetURL("a.test", "/empty.html"),
       bouncer, embedded_test_server()->GetURL("b.test", "/empty.html")));
 
   SendCommandSync("Storage.runBounceTrackingMitigations");
@@ -1703,7 +1783,51 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, UntrustedClient) {
   EXPECT_FALSE(SendCommandSync(
       "Memory.prepareForLeakDetection"));        // Implemented in content
   EXPECT_FALSE(SendCommandSync("Cast.enable"));  // Implemented in content
+  EXPECT_FALSE(SendCommandSync(
+      "Target.setRemoteLocations",
+      base::DictValue().Set("locations",
+                            base::ListValue())));  // Implemented in chrome
   EXPECT_TRUE(SendCommandSync("Accessibility.enable"));
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, SetRemoteLocations) {
+  base::test::TestFuture<void> version_request_received;
+  base::RepeatingClosure on_version_request =
+      version_request_received.GetSequenceBoundRepeatingCallback();
+  embedded_test_server()->RegisterRequestMonitor(base::BindLambdaForTesting(
+      [on_version_request](const net::test_server::HttpRequest& request) {
+        if (request.relative_url == "/json/version") {
+          on_version_request.Run();
+        }
+      }));
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  base::DictValue params;
+  params.Set("locations",
+             base::ListValue().Append(
+                 base::DictValue()
+                     .Set("host", "127.0.0.1")
+                     .Set("port", embedded_test_server()->port())));
+
+  SetIsTrusted(false);
+  Attach();
+  EXPECT_FALSE(SendCommandSync("Target.setRemoteLocations", params.Clone()));
+  ASSERT_TRUE(error());
+  EXPECT_THAT(error()->FindString("message"),
+              testing::Pointee(testing::Eq(
+                  "Cannot set remote locations from untrusted client")));
+  EXPECT_FALSE(version_request_received.IsReady());
+
+  DetachProtocolClient();
+  SetIsTrusted(true);
+  Attach();
+  EXPECT_TRUE(SendCommandSync("Target.setRemoteLocations", std::move(params)));
+#if !BUILDFLAG(IS_ANDROID)
+  EXPECT_TRUE(version_request_received.Wait());
+#endif  // !BUILDFLAG(IS_ANDROID)
+  EXPECT_TRUE(
+      SendCommandSync("Target.setRemoteLocations",
+                      base::DictValue().Set("locations", base::ListValue())));
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -1800,9 +1924,10 @@ class ExtensionProtocolTest : public DevToolsProtocolTest {
 #if !BUILDFLAG(IS_ANDROID)
   // Android does not support Chrome Apps.
   void LaunchApp(const std::string& app_id) {
-    apps::AppLaunchParams params(
-        app_id, apps::LaunchContainer::kLaunchContainerNone,
-        WindowOpenDisposition::NEW_WINDOW, apps::LaunchSource::kFromTest);
+    apps::AppLaunchParams params(app_id,
+                                 apps::LaunchContainer::kLaunchContainerNone,
+                                 ui::mojom::WindowOpenDisposition::kNewWindow,
+                                 apps::LaunchSource::kFromTest);
     apps::AppServiceProxyFactory::GetForProfile(
         chrome_test_utils::GetProfile(this))
         ->BrowserAppLauncher()
@@ -2323,56 +2448,330 @@ IN_PROC_BROWSER_TEST_F(PrivacySandboxAttestationsOverrideTest,
           net::SchemefulSite(GURL(attestation_url))));
 }
 
-class DevToolsProtocolTest_RelatedWebsiteSets : public DevToolsProtocolTest {
- protected:
-  const char* kPrimarySite = "https://a.test";
-  const char* kAssociatedSite = "https://b.test";
-  const char* kServiceSite = "https://c.test";
-  const char* kPrimaryCcTLD = "https://a.cctld";
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    DevToolsProtocolTest::SetUpCommandLine(command_line);
-    command_line->AppendSwitchASCII(
-        network::switches::kUseRelatedWebsiteSet,
-        base::StringPrintf(R"({"primary": "%s",)"
-                           R"("associatedSites": ["%s"],)"
-                           R"("serviceSites": ["%s"],)"
-                           R"("ccTLDs": {"%s": ["%s"]}})",
-                           kPrimarySite, kAssociatedSite, kServiceSite,
-                           kPrimarySite, kPrimaryCcTLD));
+class DevToolsProtocolTest_PrivateVerificationTokens
+    : public DevToolsProtocolTest {
+ public:
+  DevToolsProtocolTest_PrivateVerificationTokens() {
+    scoped_feature_list_.InitAndEnableFeature(
+        net::features::kEnablePrivateVerificationTokens);
   }
+
+  void SetUpOnMainThread() override {
+    DevToolsProtocolTest::SetUpOnMainThread();
+    pvt_service_ = PrivateVerificationTokensServiceFactory::GetForProfile(
+        browser()->GetProfile());
+    ASSERT_NE(pvt_service_, nullptr);
+    if (!pvt_service_->is_initialized()) {
+      base::test::TestFuture<void> init_future;
+      class Waiter : public PrivateVerificationTokensService::Observer {
+       public:
+        explicit Waiter(base::OnceClosure callback)
+            : callback_(std::move(callback)) {}
+        void OnInitializationComplete() override { std::move(callback_).Run(); }
+
+       private:
+        base::OnceClosure callback_;
+      };
+      Waiter waiter(init_future.GetCallback());
+      base::ScopedObservation<PrivateVerificationTokensService,
+                              PrivateVerificationTokensService::Observer>
+          observation(&waiter);
+      observation.Observe(pvt_service_);
+      ASSERT_TRUE(init_future.Wait());
+    }
+  }
+
+  void TearDownOnMainThread() override {
+    pvt_service_ = nullptr;
+    DevToolsProtocolTest::TearDownOnMainThread();
+  }
+
+  void StoreTestTokens(const url::Origin& issuer, size_t count) {
+    std::vector<private_verification_tokens::PrivateVerificationTokensToken>
+        tokens;
+    for (size_t i = 0; i < count; ++i) {
+      tokens.emplace_back(issuer, std::vector<uint8_t>{1, 2, 3}, /*key_id=*/10,
+                          base::Time::Now() + base::Days(1), /*version=*/1);
+    }
+    base::test::TestFuture<void> store_future;
+    pvt_service_->StoreTokens(std::move(tokens), store_future.GetCallback());
+    ASSERT_TRUE(store_future.Wait());
+  }
+
+ protected:
+  raw_ptr<PrivateVerificationTokensService> pvt_service_;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest_RelatedWebsiteSets,
-                       GetRelatedWebsiteSets) {
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest_PrivateVerificationTokens,
+                       ManagePrivateVerificationTokens) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const GURL url(embedded_test_server()->GetURL("/empty.html"));
   ASSERT_TRUE(content::NavigateToURL(
       chrome_test_utils::GetActiveWebContents(this), url));
   Attach();
 
-  SendCommandSync("Storage.getRelatedWebsiteSets");
+  const url::Origin issuer_origin =
+      url::Origin::Create(GURL("https://issuer.example.com"));
 
-  if (result()) {
-    const base::ListValue* set_list = result()->FindList("sets");
-    ASSERT_TRUE(set_list);
-
-    base::ListValue expected =
-        base::ListValue()  //
-            .Append(base::DictValue()
-                        .Set("associatedSites",
-                             base::ListValue().Append(kAssociatedSite))
-                        .Set("primarySites", base::ListValue()
-                                                 .Append(kPrimaryCcTLD)
-                                                 .Append(kPrimarySite))
-                        .Set("serviceSites",
-                             base::ListValue().Append(kServiceSite)));
-
-    EXPECT_EQ(*set_list, expected);
-  } else if (error()) {
-    EXPECT_EQ(*error()->FindString("message"),
-              "Failed fetching RelatedWebsiteSets");
+  // 1. Initial state: no tokens.
+  {
+    SendCommandSync("Storage.getPrivateVerificationTokens");
+    ASSERT_TRUE(result());
+    EXPECT_THAT(result()->FindList("tokens"),
+                testing::Pointee(testing::IsEmpty()));
   }
+
+  // 2. Store tokens and verify getPrivateVerificationTokens.
+  StoreTestTokens(issuer_origin, 3);
+  std::string first_token_id;
+  {
+    SendCommandSync("Storage.getPrivateVerificationTokens");
+    ASSERT_TRUE(result());
+    const base::ListValue* tokens_list = result()->FindList("tokens");
+    ASSERT_THAT(tokens_list, testing::Pointee(testing::SizeIs(3)));
+
+    const base::DictValue* first_token = tokens_list->front().GetIfDict();
+    ASSERT_TRUE(first_token);
+    const std::string* id = first_token->FindString("id");
+    ASSERT_TRUE(id);
+    EXPECT_FALSE(id->empty());
+    first_token_id = *id;
+
+    EXPECT_THAT(first_token->FindString("issuerOrigin"),
+                testing::Pointee(testing::Eq(issuer_origin.Serialize())));
+    EXPECT_THAT(first_token->FindInt("keyId"), testing::Optional(10));
+    EXPECT_THAT(first_token->FindInt("version"), testing::Optional(1));
+    const std::string* token_b64 = first_token->FindString("token");
+    ASSERT_TRUE(token_b64);
+    EXPECT_THAT(base::Base64Decode(*token_b64),
+                testing::Optional(testing::ElementsAre(1, 2, 3)));
+    EXPECT_TRUE(first_token->FindDouble("expiration").has_value());
+    EXPECT_TRUE(first_token->FindDouble("creationTime").has_value());
+  }
+
+  // 3. Verify getPrivateVerificationTokensIssuerConfigs.
+  {
+    SendCommandSync("Storage.getPrivateVerificationTokensIssuerConfigs");
+    ASSERT_TRUE(result());
+    EXPECT_THAT(result()->FindList("configs"),
+                testing::Pointee(testing::IsEmpty()));
+
+    base::DictValue custom_issuer;
+    custom_issuer.Set("issuerRequestUrl", "https://issuer.example.com/issue");
+    custom_issuer.Set("version", 1);
+    custom_issuer.Set("publicKey",
+                      base::Base64Encode(std::vector<uint8_t>{1, 2, 3, 4}));
+    custom_issuer.Set("publicKeyProof",
+                      base::Base64Encode(std::vector<uint8_t>{5, 6, 7}));
+    custom_issuer.Set("batchSize", 7);
+    custom_issuer.Set("expiration", "2147483647");
+    base::ListValue redeemers;
+    redeemers.Append("https://redeemer1.example.com");
+    redeemers.Append("https://redeemer2.example.com");
+    custom_issuer.Set("redeemers", std::move(redeemers));
+    custom_issuer.Set("deploymentId", "test-deployment-id");
+
+    pvt_service_->SetIssuerConfig(
+        private_verification_tokens::PrivateVerificationTokensIssuerConfig::
+            CreateWithCustomIssuer(/*base_config=*/nullptr,
+                                   std::move(custom_issuer)));
+
+    SendCommandSync("Storage.getPrivateVerificationTokensIssuerConfigs");
+    ASSERT_TRUE(result());
+    const base::ListValue* configs_list = result()->FindList("configs");
+    ASSERT_THAT(configs_list, testing::Pointee(testing::SizeIs(1)));
+
+    const base::DictValue* first_config = configs_list->front().GetIfDict();
+    ASSERT_TRUE(first_config);
+    EXPECT_THAT(first_config->FindString("issuerOrigin"),
+                testing::Pointee(testing::Eq(issuer_origin.Serialize())));
+    const base::ListValue* redeemer_origins =
+        first_config->FindList("redeemerOrigins");
+    ASSERT_TRUE(redeemer_origins);
+    EXPECT_EQ(*redeemer_origins, base::ListValue()
+                                     .Append("https://redeemer1.example.com")
+                                     .Append("https://redeemer2.example.com"));
+  }
+
+  // 4. Delete one token by ID.
+  {
+    base::DictValue params;
+    params.Set("tokenId", first_token_id);
+    SendCommandSync("Storage.deletePrivateVerificationToken",
+                    std::move(params));
+    ASSERT_TRUE(result());
+
+    // Verify count is now 2.
+    SendCommandSync("Storage.getPrivateVerificationTokens");
+    ASSERT_TRUE(result());
+    EXPECT_THAT(result()->FindList("tokens"),
+                testing::Pointee(testing::SizeIs(2)));
+  }
+
+  // 5. Clear all tokens for the issuer.
+  {
+    base::DictValue params;
+    params.Set("issuerOrigin", issuer_origin.Serialize());
+    SendCommandSync("Storage.clearPrivateVerificationTokens",
+                    std::move(params));
+    ASSERT_TRUE(result());
+
+    // Verify tokens are cleared.
+    SendCommandSync("Storage.getPrivateVerificationTokens");
+    ASSERT_TRUE(result());
+    EXPECT_THAT(result()->FindList("tokens"),
+                testing::Pointee(testing::IsEmpty()));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest_PrivateVerificationTokens,
+                       TrackPrivateVerificationTokens) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL url(embedded_test_server()->GetURL("/empty.html"));
+  ASSERT_TRUE(content::NavigateToURL(
+      chrome_test_utils::GetActiveWebContents(this), url));
+  Attach();
+
+  const url::Origin issuer_origin =
+      url::Origin::Create(GURL("https://issuer.example.com"));
+
+  // Enable tracking.
+  {
+    base::DictValue params;
+    params.Set("enable", true);
+    SendCommandSync("Storage.setPrivateVerificationTokensTracking",
+                    std::move(params));
+    ASSERT_TRUE(result());
+  }
+
+  // 1. Storing tokens emits Storage.privateVerificationTokensUpdated.
+  StoreTestTokens(issuer_origin, 2);
+  WaitForNotification("Storage.privateVerificationTokensUpdated",
+                      /*allow_existing=*/true);
+
+  SendCommandSync("Storage.getPrivateVerificationTokens");
+  ASSERT_TRUE(result());
+  const base::ListValue* tokens_list = result()->FindList("tokens");
+  ASSERT_THAT(tokens_list, testing::Pointee(testing::SizeIs(2)));
+  const std::string* first_token_id =
+      tokens_list->front().GetIfDict()->FindString("id");
+  ASSERT_TRUE(first_token_id);
+
+  // 2. Deleting a single token emits Storage.privateVerificationTokensUpdated.
+  {
+    base::DictValue params;
+    params.Set("tokenId", *first_token_id);
+    SendCommandSync("Storage.deletePrivateVerificationToken",
+                    std::move(params));
+    ASSERT_TRUE(result());
+    WaitForNotification("Storage.privateVerificationTokensUpdated",
+                        /*allow_existing=*/true);
+  }
+
+  // 3. Clearing tokens emits Storage.privateVerificationTokensUpdated.
+  {
+    base::DictValue params;
+    params.Set("issuerOrigin", issuer_origin.Serialize());
+    SendCommandSync("Storage.clearPrivateVerificationTokens",
+                    std::move(params));
+    ASSERT_TRUE(result());
+    WaitForNotification("Storage.privateVerificationTokensUpdated",
+                        /*allow_existing=*/true);
+  }
+
+  // 4. Disabling tracking stops emitting events.
+  {
+    base::DictValue params;
+    params.Set("enable", false);
+    SendCommandSync("Storage.setPrivateVerificationTokensTracking",
+                    std::move(params));
+    ASSERT_TRUE(result());
+  }
+
+  StoreTestTokens(issuer_origin, 1);
+  EXPECT_FALSE(
+      HasExistingNotification("Storage.privateVerificationTokensUpdated"));
+}
+
+class DevToolsProtocolTest_PrivateVerificationTokensDisabled
+    : public DevToolsProtocolTest {
+ public:
+  DevToolsProtocolTest_PrivateVerificationTokensDisabled() {
+    scoped_feature_list_.InitAndDisableFeature(
+        net::features::kEnablePrivateVerificationTokens);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest_PrivateVerificationTokensDisabled,
+                       ServiceNotCreatedWhenFeatureDisabled) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL url(embedded_test_server()->GetURL("/empty.html"));
+  ASSERT_TRUE(content::NavigateToURL(
+      chrome_test_utils::GetActiveWebContents(this), url));
+  Attach();
+
+  EXPECT_EQ(PrivateVerificationTokensServiceFactory::GetForProfile(
+                browser()->GetProfile()),
+            nullptr);
+
+  // 1. Storage.getPrivateVerificationTokens
+  {
+    SendCommandSync("Storage.getPrivateVerificationTokens");
+    EXPECT_FALSE(result());
+    ASSERT_TRUE(error());
+    EXPECT_THAT(error()->FindString("message"),
+                testing::Pointee(testing::Eq(
+                    "Private Verification Tokens service is not available")));
+  }
+
+  // 2. Storage.clearPrivateVerificationTokens
+  {
+    base::DictValue params;
+    params.Set("issuerOrigin", "https://issuer.example.com");
+    SendCommandSync("Storage.clearPrivateVerificationTokens",
+                    std::move(params));
+    EXPECT_FALSE(result());
+    ASSERT_TRUE(error());
+    EXPECT_THAT(error()->FindString("message"),
+                testing::Pointee(testing::Eq(
+                    "Private Verification Tokens service is not available")));
+  }
+
+  // 3. Storage.deletePrivateVerificationToken
+  {
+    base::DictValue params;
+    params.Set("tokenId", "1");
+    SendCommandSync("Storage.deletePrivateVerificationToken",
+                    std::move(params));
+    EXPECT_FALSE(result());
+    ASSERT_TRUE(error());
+    EXPECT_THAT(error()->FindString("message"),
+                testing::Pointee(testing::Eq(
+                    "Private Verification Tokens service is not available")));
+  }
+
+  // 4. Storage.setPrivateVerificationTokensTracking
+  {
+    base::DictValue params;
+    params.Set("enable", true);
+    SendCommandSync("Storage.setPrivateVerificationTokensTracking",
+                    std::move(params));
+    EXPECT_FALSE(result());
+    ASSERT_TRUE(error());
+    EXPECT_THAT(error()->FindString("message"),
+                testing::Pointee(testing::Eq(
+                    "Private Verification Tokens service is not available")));
+  }
+
+  EXPECT_EQ(PrivateVerificationTokensServiceFactory::GetForProfileIfExists(
+                browser()->GetProfile()),
+            nullptr);
 }
 
 IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
@@ -2436,6 +2835,65 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
   // CDP `Target.getTargets` result should contain the new target.
   SendCommandSync("Target.getTargets");
   EXPECT_EQ(initial_count + 1, result()->FindList("targetInfos")->size());
+}
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
+                       HiddenTargetRunsAtForegroundPriority) {
+  // Ensure that background timer throttling is not globally disabled by a
+  // command-line flag, which would invalidate the premise of this test
+  // (that hidden targets bypass standard background throttling).
+  ASSERT_FALSE(base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kDisableBackgroundTimerThrottling));
+
+  // Attach to the browser-level DevTools target to send commands.
+  AttachToBrowserTarget();
+
+  // Create a new target via CDP `Target.createTarget` with `hidden: true`.
+  // This explicitly creates a headless/hidden WebContents.
+  base::DictValue params;
+  params.Set("url", "data:text/html,hidden");
+  params.Set("hidden", true);
+  SendCommandSync("Target.createTarget", std::move(params));
+  const std::string* target_id = result()->FindString("targetId");
+  ASSERT_TRUE(target_id);
+
+  // Retrieve the DevToolsAgentHost and the underlying WebContents for the
+  // created target.
+  scoped_refptr<content::DevToolsAgentHost> target_host =
+      content::DevToolsAgentHost::GetForId(*target_id);
+  ASSERT_TRUE(target_host);
+
+  content::WebContents* hidden_contents = target_host->GetWebContents();
+  ASSERT_TRUE(hidden_contents);
+
+  // When `Target.createTarget` is called, the WebContents is created immediately,
+  // but the underlying renderer process might not be fully spawned and initialized
+  // until the navigation to the initial URL completes.
+  // We wait for the load to finish to ensure the renderer process is fully up
+  // and its OS priority has settled.
+  ASSERT_TRUE(content::WaitForLoadStop(hidden_contents));
+
+  // Ensure the hidden target runs in its own renderer process separate from the
+  // visible browser window. If they shared a process, the foreground priority
+  // of the visible window might mask the priority we're trying to test.
+  ASSERT_NE(hidden_contents->GetPrimaryMainFrame()->GetProcess(),
+            // Get the WebContents of the currently active, visible tab in the
+            // normal browser window.
+            browser()
+                ->tab_strip_model()
+                ->GetActiveWebContents()
+                ->GetPrimaryMainFrame()
+                ->GetProcess());
+
+  // Verify two key properties of the hidden target:
+  // 1. It remains visually hidden (Visibility::HIDDEN), avoiding unnecessary
+  //    rendering/compositing work.
+  // 2. Its underlying renderer process runs at foreground (kUserBlocking) OS
+  //    scheduling priority, bypassing the aggressive background throttling that
+  //    PerformanceManager normally applies to hidden WebContents.
+  EXPECT_EQ(hidden_contents->GetVisibility(), content::Visibility::HIDDEN);
+  EXPECT_EQ(hidden_contents->GetPrimaryMainFrame()->GetProcess()->GetPriority(),
+            base::Process::Priority::kUserBlocking);
 }
 
 IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest,
@@ -3064,6 +3522,118 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, GetAnnotatedPageContent) {
   optimization_guide::proto::AnnotatedPageContent apc;
   ASSERT_TRUE(apc.ParseFromString(decoded_proto));
   EXPECT_TRUE(apc.has_root_node());
+}
+
+class DevToolsProtocolPrerenderTest : public DevToolsProtocolTest {
+ public:
+  DevToolsProtocolPrerenderTest()
+      : prerender_helper_(base::BindRepeating(
+            &DevToolsProtocolPrerenderTest::GetActiveWebContents,
+            base::Unretained(this))) {}
+
+ protected:
+  void SetUp() override {
+    prerender_helper_.RegisterServerRequestMonitor(embedded_test_server());
+    DevToolsProtocolTest::SetUp();
+  }
+
+  content::test::PrerenderTestHelper* prerender_helper() {
+    return &prerender_helper_;
+  }
+
+  content::WebContents* GetActiveWebContents() {
+    return chrome_test_utils::GetActiveWebContents(this);
+  }
+
+ private:
+  content::test::PrerenderTestHelper prerender_helper_;
+};
+
+// Page.getAnnotatedPageContent must not return the primary page's content
+// when the session is attached to a prerendered page.
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolPrerenderTest,
+                       GetAnnotatedPageContentFailsForPrerenderedPage) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL initial_url = embedded_test_server()->GetURL("/empty.html");
+  const GURL prerendering_url =
+      embedded_test_server()->GetURL("/empty.html?prerender");
+
+  ASSERT_TRUE(content::NavigateToURL(GetActiveWebContents(), initial_url));
+  content::PrerenderHostId host_id =
+      prerender_helper()->AddPrerender(prerendering_url);
+  content::RenderFrameHost* prerender_rfh =
+      prerender_helper()->GetPrerenderedMainFrameHost(host_id);
+  ASSERT_TRUE(prerender_rfh);
+
+  AttachToFrameTreeHost(prerender_rfh);
+  const base::DictValue* result =
+      SendCommandSync("Page.getAnnotatedPageContent");
+  EXPECT_FALSE(result);
+  ASSERT_TRUE(error());
+  EXPECT_EQ(*error()->FindString("message"), "Not attached to an active page");
+}
+
+class DevToolsProtocolWebMCPTest : public DevToolsProtocolTest {
+ public:
+  DevToolsProtocolWebMCPTest() {
+    feature_list_.InitAndEnableFeature(blink::features::kWebMCP);
+  }
+
+ protected:
+  // Calls Page.getAnnotatedPageContent and returns the names of the main
+  // frame's script tools.
+  std::vector<std::string> GetScriptToolNames() {
+    const base::DictValue* result =
+        SendCommandSync("Page.getAnnotatedPageContent");
+    if (!result) {
+      ADD_FAILURE() << "Page.getAnnotatedPageContent failed";
+      return {};
+    }
+    const std::string* content_base64 = result->FindString("content");
+    std::string decoded_proto;
+    optimization_guide::proto::AnnotatedPageContent apc;
+    if (!content_base64 ||
+        !base::Base64Decode(*content_base64, &decoded_proto) ||
+        !apc.ParseFromString(decoded_proto)) {
+      ADD_FAILURE() << "Failed to decode AnnotatedPageContent";
+      return {};
+    }
+    std::vector<std::string> names;
+    for (const auto& tool : apc.main_frame_data().script_tools()) {
+      names.push_back(tool.name());
+    }
+    return names;
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(DevToolsProtocolWebMCPTest,
+                       GetAnnotatedPageContentExcludesDebuggingTools) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(content::NavigateToURL(
+      web_contents(), embedded_test_server()->GetURL("/empty.html")));
+  ASSERT_TRUE(content::ExecJs(web_contents(), R"JS(
+    (async () => {
+      await document.modelContext.registerTool({
+        name: "regular_tool",
+        description: "A regular tool",
+        execute: () => {},
+      });
+      await document.modelContext.registerTool({
+        name: "debugging_tool",
+        description: "A tool for developer debugging",
+        annotations: {debugging: true},
+        execute: () => {},
+      });
+    })()
+  )JS"));
+
+  Attach();
+
+  // Debugging tools are only exposed through the WebMCP domain.
+  EXPECT_THAT(GetScriptToolNames(), testing::ElementsAre("regular_tool"));
 }
 
 #endif  // !BUILDFLAG(IS_ANDROID)

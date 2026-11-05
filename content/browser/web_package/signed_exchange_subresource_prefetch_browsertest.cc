@@ -11,6 +11,7 @@
 #include "base/format_macros.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
@@ -53,6 +54,7 @@
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "services/network/public/cpp/features.h"
 #include "storage/browser/blob/blob_storage_context.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/switches.h"
 
 namespace content {
@@ -93,7 +95,7 @@ PrefetchBrowserTestBase::ResponseEntry CreateSignedExchangeResponseEntry(
   // We mock the SignedExchangeHandler, so just return the content as
   // "application/signed-exchange;v=b3".
   return PrefetchBrowserTestBase::ResponseEntry(
-      MockSignedExchangeHandler::kMockSxgPrefix + content,
+      base::StrCat({MockSignedExchangeHandler::kMockSxgPrefix, content}),
       "application/signed-exchange;v=b3", headers);
 }
 
@@ -731,8 +733,12 @@ class SignedExchangeSubresourcePrefetchBrowserTest
     // should be created while single-threaded.
     MockClock::Get();
 
-    feature_list_.InitAndEnableFeature(
-        net::features::kPartitionConnectionsByNetworkIsolationKey);
+    feature_list_.InitWithFeaturesAndParameters(
+        /*enabled_features=*/
+        {{net::features::kPartitionConnectionsByNetworkIsolationKey, {}},
+         {blink::features::kRestrictLinkHeaderOnSubresource,
+          {{"disable_resource_load", "false"}}}},
+        /*disabled_features=*/{});
   }
 
   SignedExchangeSubresourcePrefetchBrowserTest(
@@ -1094,7 +1100,8 @@ IN_PROC_BROWSER_TEST_F(SignedExchangeSubresourcePrefetchBrowserTest,
 }
 
 // Flaky. See https://crbug.com/1415204 and https://crbug.com/1494880.
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID) || \
+    (BUILDFLAG(IS_LINUX) && defined(ADDRESS_SANITIZER))
 #define MAYBE_MainResourceSXGAndScriptSXG_CrossOrigin_AsDocument \
   DISABLED_MainResourceSXGAndScriptSXG_CrossOrigin_AsDocument
 #else

@@ -14,7 +14,6 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/trace_event/trace_event.h"
 #include "media/base/decoder_status.h"
-#include "media/base/media_switches.h"
 #include "media/base/media_util.h"
 #include "media/media_buildflags.h"
 #include "media/video/gpu_video_accelerator_factories.h"
@@ -131,6 +130,9 @@ template <typename Traits>
 void DecoderTemplate<Traits>::OnActiveConfigChanged(const MediaConfigType&) {}
 
 template <typename Traits>
+void DecoderTemplate<Traits>::OnReset() {}
+
+template <typename Traits>
 void DecoderTemplate<Traits>::configure(const ConfigType* config,
                                         ExceptionState& exception_state) {
   DVLOG(1) << __func__;
@@ -208,6 +210,7 @@ void DecoderTemplate<Traits>::decode(const InputType* chunk,
 
 template <typename Traits>
 ScriptPromise<IDLUndefined> DecoderTemplate<Traits>::flush(
+    ScriptState* script_state,
     ExceptionState& exception_state) {
   DVLOG(3) << __func__;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -224,7 +227,7 @@ ScriptPromise<IDLUndefined> DecoderTemplate<Traits>::flush(
   Request* request = MakeGarbageCollected<Request>();
   request->type = Request::Type::kFlush;
   auto* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state_);
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
   request->resolver = resolver;
   request->reset_generation = reset_generation_;
   requests_.push_back(request);
@@ -387,9 +390,7 @@ void DecoderTemplate<Traits>::ContinueConfigureWithGpuFactories(
   // some platforms, providing the next config may allow the decoder to elide
   // costly reinitialization work.
   auto eos_buffer =
-      base::FeatureList::IsEnabled(media::kWebCodecsDecoderFlushOptimizations)
-          ? media::DecoderBuffer::CreateEOSBuffer(*request->media_config)
-          : media::DecoderBuffer::CreateEOSBuffer();
+      media::DecoderBuffer::CreateEOSBuffer(*request->media_config);
 
   // Processing continues in OnFlushDone().
   decoder()->Decode(
@@ -597,6 +598,7 @@ void DecoderTemplate<Traits>::ResetAlgorithm() {
   // configuration.
   active_config_.reset();
   active_preference_.reset();
+  OnReset();
 
   Request* request = MakeGarbageCollected<Request>();
   request->type = Request::Type::kReset;
@@ -685,8 +687,9 @@ void DecoderTemplate<Traits>::OnInitializeDone(media::DecoderStatus status) {
     } else if (status.code() ==
                media::DecoderStatus::Codes::kUnsupportedConfig) {
       error_message =
-          "Unsupported configuration. Check isConfigSupported() prior to "
-          "calling configure().";
+          "Unsupported configuration. Check isConfigSupported() and "
+          "separately verify the description (if required) prior to calling "
+          "configure().";
     } else {
       error_message = "Decoder initialization error.";
     }

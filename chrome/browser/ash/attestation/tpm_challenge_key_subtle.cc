@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "base/check_is_test.h"
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
@@ -21,12 +22,12 @@
 #include "chrome/browser/ash/platform_keys/key_permissions/key_permissions_manager_impl.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_manager_ash.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part_ash.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/attestation/attestation_flow_adaptive.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/attestation/attestation_client.h"
 #include "chromeos/ash/components/dbus/attestation/interface.pb.h"
@@ -49,15 +50,34 @@ using ResultCode = TpmChallengeKeyResultCode;
 
 //==================== TpmChallengeKeySubtleFactory ============================
 
-TpmChallengeKeySubtle* TpmChallengeKeySubtleFactory::next_result_for_testing_ =
-    nullptr;
+namespace {
+
+// The `ScopedOneshotOverrideForTesting` that is alive, if any.
+TpmChallengeKeySubtleFactory::ScopedOneshotOverrideForTesting*
+    g_oneshot_override = nullptr;
+
+}  // namespace
+
+TpmChallengeKeySubtleFactory::ScopedOneshotOverrideForTesting::
+    ScopedOneshotOverrideForTesting(
+        std::unique_ptr<TpmChallengeKeySubtle> instance)
+    : instance_(std::move(instance)) {
+  CHECK_IS_TEST();
+  CHECK(instance_);
+  CHECK(!g_oneshot_override) << "Only one override allowed";
+  g_oneshot_override = this;
+}
+
+TpmChallengeKeySubtleFactory::ScopedOneshotOverrideForTesting::
+    ~ScopedOneshotOverrideForTesting() {
+  g_oneshot_override = nullptr;
+}
 
 // static
 std::unique_ptr<TpmChallengeKeySubtle> TpmChallengeKeySubtleFactory::Create() {
-  if (next_result_for_testing_) [[unlikely]] {
-    std::unique_ptr<TpmChallengeKeySubtle> result(next_result_for_testing_);
-    next_result_for_testing_ = nullptr;
-    return result;
+  if (g_oneshot_override) [[unlikely]] {
+    CHECK(g_oneshot_override->instance_) << "Create() can be called only once";
+    return std::move(g_oneshot_override->instance_);
   }
 
   return std::make_unique<TpmChallengeKeySubtleImpl>();
@@ -76,20 +96,6 @@ TpmChallengeKeySubtleFactory::CreateForPreparedKey(
   result->RestorePreparedKeyState(flow_type, will_register_key, key_crypto_type,
                                   key_name, public_key, profile);
   return result;
-}
-
-// static
-void TpmChallengeKeySubtleFactory::SetForTesting(
-    std::unique_ptr<TpmChallengeKeySubtle> next_result) {
-  DCHECK(next_result_for_testing_ == nullptr);
-  // unique_ptr itself cannot be stored in a static variable because of its
-  // complex destructor.
-  next_result_for_testing_ = next_result.release();
-}
-
-// static
-bool TpmChallengeKeySubtleFactory::WillReturnTestingInstance() {
-  return (next_result_for_testing_ != nullptr);
 }
 
 //===================== TpmChallengeKeySubtleImpl ==============================
@@ -197,14 +203,15 @@ void TpmChallengeKeySubtleImpl::RestorePreparedKeyState(
     const std::string& public_key,
     Profile* profile) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!will_register_key || !public_key.empty());
+  CHECK(!will_register_key || !public_key.empty(), base::NotFatalUntil::M161);
 
   // Ensure that the selected flow type is supported
   CHECK(flow_type == VerifiedAccessFlow::ENTERPRISE_MACHINE ||
         flow_type == VerifiedAccessFlow::ENTERPRISE_USER);
 
   // For the ENTERPRISE_USER flow, a |profile| is strictly necessary.
-  DCHECK(flow_type != VerifiedAccessFlow::ENTERPRISE_USER || profile);
+  CHECK(flow_type != VerifiedAccessFlow::ENTERPRISE_USER || profile,
+        base::NotFatalUntil::M161);
 
   // For DEVICE_TRUST_CONNECTOR, a key name is required and registering a key is
   // not allowed.
@@ -230,7 +237,7 @@ void TpmChallengeKeySubtleImpl::StartPrepareKeyStep(
     TpmChallengeKeyCallback callback,
     const std::optional<std::string>& signals) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(callback_.is_null());
+  CHECK(callback_.is_null(), base::NotFatalUntil::M161);
 
   // For ENTERPRISE_MACHINE: if |will_register_key| is true, |key_name| should
   // not be empty, if |register_key| is false, |key_name| will not be used.
@@ -239,7 +246,8 @@ void TpmChallengeKeySubtleImpl::StartPrepareKeyStep(
       << "Invalid arguments: " << will_register_key << " " << !key_name.empty();
 
   // For ENTERPRISE_USER, a |profile| is strictly necessary.
-  DCHECK(flow_type != VerifiedAccessFlow::ENTERPRISE_USER || profile);
+  CHECK(flow_type != VerifiedAccessFlow::ENTERPRISE_USER || profile,
+        base::NotFatalUntil::M161);
 
   // For DEVICE_TRUST_CONNECTOR, a key name is required and registering a key is
   // not allowed.
@@ -409,7 +417,7 @@ const user_manager::User* TpmChallengeKeySubtleImpl::GetUser() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!profile_)
     return nullptr;
-  return ProfileHelper::Get()->GetUserByProfile(profile_);
+  return BrowserContextHelper::Get()->GetUserByBrowserContext(profile_);
 }
 
 AccountId TpmChallengeKeySubtleImpl::GetAccountId() const {
@@ -650,7 +658,7 @@ void TpmChallengeKeySubtleImpl::StartSignChallengeStep(
     const std::string& challenge,
     TpmChallengeKeyCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(callback_.is_null());
+  CHECK(callback_.is_null(), base::NotFatalUntil::M161);
 
   callback_ = std::move(callback);
 
@@ -708,8 +716,8 @@ void TpmChallengeKeySubtleImpl::SignChallengeCallback(
 void TpmChallengeKeySubtleImpl::StartRegisterKeyStep(
     TpmChallengeKeyCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(callback_.is_null());
-  DCHECK(will_register_key_);
+  CHECK(callback_.is_null(), base::NotFatalUntil::M161);
+  CHECK(will_register_key_, base::NotFatalUntil::M161);
 
   callback_ = std::move(callback);
 
@@ -735,7 +743,8 @@ void TpmChallengeKeySubtleImpl::RegisterKeyCallback(
     return;
   }
 
-  DCHECK(flow_type_ == VerifiedAccessFlow::ENTERPRISE_MACHINE || profile_);
+  CHECK(flow_type_ == VerifiedAccessFlow::ENTERPRISE_MACHINE || profile_,
+        base::NotFatalUntil::M161);
 
   platform_keys::KeyPermissionsManager* key_permissions_manager = nullptr;
   switch (flow_type_) {
@@ -751,7 +760,7 @@ void TpmChallengeKeySubtleImpl::RegisterKeyCallback(
       NOTREACHED();
   }
 
-  DCHECK(!public_key_.empty());
+  CHECK(!public_key_.empty(), base::NotFatalUntil::M161);
   key_permissions_manager->AllowKeyForUsage(
       base::BindOnce(&TpmChallengeKeySubtleImpl::MarkCorporateKeyCallback,
                      weak_factory_.GetWeakPtr()),

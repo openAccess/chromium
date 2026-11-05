@@ -9,6 +9,7 @@
 
 #include <list>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -19,6 +20,8 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_multi_source_observation.h"
+#include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
@@ -33,6 +36,7 @@
 #include "ui/views/controls/button/menu_button_controller.h"
 #include "ui/views/controls/menu/menu_config.h"
 #include "ui/views/controls/menu/menu_delegate.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/views/view_tracker.h"
 #include "ui/views/widget/widget_observer.h"
 
@@ -59,6 +63,7 @@ class MenuHostRootView;
 class MenuItemView;
 class MenuPreTargetHandler;
 class SubmenuView;
+class Textfield;
 class View;
 class ViewTracker;
 
@@ -77,7 +82,8 @@ class MenuControllerUITest;
 // showing, selecting and drag/drop for menus. All relevant events are
 // forwarded to the MenuController from SubmenuView and MenuHost.
 class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
-                                          public WidgetObserver {
+                                          public WidgetObserver,
+                                          public FocusChangeListener {
  public:
   // Enumeration of how the menu should exit.
   enum class ExitType {
@@ -165,8 +171,6 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
       gfx::NativeView native_view_for_gestures = gfx::NativeView());
 
   bool for_drop() const { return for_drop_; }
-
-  bool in_nested_run() const { return !menu_stack_.empty(); }
 
   // Whether or not drag operation is in progress.
   bool drag_in_progress() const { return drag_in_progress_; }
@@ -264,12 +268,23 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Returns ui::POST_DISPATCH_NONE if the event was swallowed by the menu.
   ui::PostDispatchAction OnWillDispatchKeyEvent(ui::KeyEvent* event);
 
+  // Returns true if a Textfield hosted inside the active menu stack currently
+  // has focus and receives key events. Public so platform pre-target and IME
+  // handlers (e.g. MenuPreTargetHandlerMac, TextInputHost) can query it.
+  bool HasFocusedTextfield() const;
+
   // Update the submenu's selection based on the current mouse location
   void UpdateSubmenuSelection(SubmenuView* source);
 
   // WidgetObserver overrides:
   void OnWidgetDestroying(Widget* widget) override;
   void OnWidgetShowStateChanged(Widget* widget) override;
+
+  // FocusChangeListener overrides, observing each submenu widget's
+  // FocusManager:
+  void OnWillChangeFocus(View* focused_before, View* focused_now) override;
+  void OnDidChangeFocus(View* focused_before, View* focused_now) override;
+  void OnFocusManagerDestroying(FocusManager* focus_manager) override;
 
   // Only used for testing.
   bool IsCancelAllTimerRunningForTest();
@@ -296,6 +311,9 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Returns whether this menu can handle input events right now. This method
   // can return false while running animations.
   bool CanProcessInputEvents() const;
+
+  // Returns whether the menu is currently running its dismissal animation.
+  bool IsDismissAnimationRunning() const;
 
   // Gets the animation used for menu item alerts. The returned pointer lives as
   // long as the MenuController.
@@ -324,8 +342,32 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
     return value;
   }
 
+  // Returns true if the controller is currently executing code on the call
+  // stack (e.g. inside OpenMenuImpl).
+  bool IsStackActive() const { return stack_depth_ > 0; }
+
+  // Returns whether the menu is currently in the showing state.
+  bool showing_for_testing() const { return showing_; }
+
+  // Defers closing the given widget until the current call stack unwinds.
+  void DeferWidgetDestruction(base::WeakPtr<Widget> widget);
+
+  // Defers destroying the given MenuRunnerImpl until the current call stack
+  // unwinds.
+  void DeferMenuRunnerDestruction(
+      std::unique_ptr<internal::MenuRunnerImpl> runner);
+
+  // Destroys this MenuController, or marks destruction pending if the call
+  // stack is currently active.
+  void Destroy();
+
   base::WeakPtr<MenuController> AsWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
+  }
+
+  // Deletes the given MenuController directly for tests.
+  static void DeleteForTesting(MenuController* controller) {
+    delete controller;
   }
 
  private:
@@ -333,8 +375,33 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   friend class MenuControllerTest;
   friend class MenuHostRootView;
   friend class MenuItemView;
+  friend class MenuModelAdapter;
   friend class SubmenuView;
   friend class test::MenuControllerUITest;
+
+  // RAII helper that tracks active call stack frames on MenuController to
+  // prevent premature destruction during re-entrant calls. While active
+  // (stack_depth_ > 0), deletion of the MenuController itself is blocked (which
+  // sets `destroy_pending_ = true`). Additionally, closing of associated
+  // MenuHost Widgets and destruction of released MenuRunnerImpl instances are
+  // deferred. Upon unwinding the outermost guard (stack_depth_ == 0), the
+  // MenuController is deleted if destruction was requested, or
+  // `ProcessDeferredDestructions()` is called to clean up deferred widgets and
+  // runners.
+  class ScopedDeletionGuard {
+   public:
+    explicit ScopedDeletionGuard(base::WeakPtr<MenuController> controller);
+    ScopedDeletionGuard(const ScopedDeletionGuard&) = delete;
+    ScopedDeletionGuard& operator=(const ScopedDeletionGuard&) = delete;
+    ~ScopedDeletionGuard();
+
+   private:
+    base::WeakPtr<MenuController> controller_;
+  };
+
+  // Closes deferred widgets and releases deferred menu runners once the stack
+  // has unwound.
+  void ProcessDeferredDestructions();
 
   struct MenuPart;
 
@@ -412,6 +479,33 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Returns true if OnKeyPressed handled the key |event|.
   bool OnKeyPressed(const ui::KeyEvent& event);
 
+  // Returns the Textfield focused inside the active menu stack, if any. Kept
+  // up to date by OnDidChangeFocus().
+  Textfield* GetFocusedTextfield();
+
+  // Clears any hot-tracked button and focuses `text_input`. Selection and
+  // accessibility state follow in OnWillChangeFocus() and OnDidChangeFocus().
+  void FocusTextfield(Textfield* text_input);
+
+  // Clears focus from any focused Textfield inside the menu.
+  void ClearFocusedTextfield();
+
+  // Routes a key press the menu did not handle to the focused `text_input`.
+  // Returns the dispatch action if routing finished the key, or std::nullopt
+  // to continue with menu accelerator handling. A key ends one of two ways:
+  // - Consumed: StopPropagation() and POST_DISPATCH_NONE, when the Textfield
+  //   or the menu used it, including character events, which are typed into
+  //   `text_input` here. Nothing else sees the key, and the Aura InputMethods
+  //   reset any composition, so this is avoided while composing.
+  //   (SetSkipped(), used for keys the menu swallows, also consumes.)
+  // - Handled: SetHandled() and POST_DISPATCH_PERFORM_DEFAULT, when a key
+  //   press belongs to the Textfield but the InputMethod still has work to do
+  //   (InsertChar(), composition). Aura stops routing it to the owner widget,
+  //   while propagation continues for the InputMethod.
+  std::optional<ui::PostDispatchAction> RouteKeyEventToTextfield(
+      Textfield* text_input,
+      ui::KeyEvent* event);
+
   // Creates a MenuController. See |for_drop_| member for details on |for_drop|.
   MenuController(bool for_drop, internal::MenuControllerDelegate* delegate);
 
@@ -431,8 +525,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   static MenuAnchorPosition AdjustAnchorPositionForRtl(
       MenuAnchorPosition position);
 
-  // Invoked when the user accepts the selected item. This is only used
-  // when blocking. This schedules the loop to quit.
+  // Invoked when the user accepts the selected item.
   void Accept(MenuItemView* item, int event_flags);
   void ReallyAccept();
 
@@ -630,7 +723,7 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // it to null.
   void SendMouseCaptureLostToActiveView();
 
-  // Sets exit type. Calling this can terminate the active nested message-loop.
+  // Sets exit type.
   void SetExitType(ExitType type);
 
   // Sets showing_ state and updates owner_'s kMenuControllerKey property.
@@ -706,8 +799,8 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Indicates what to exit.
   ExitType exit_type_ = ExitType::kNone;
 
-  // Whether we did a capture. We do a capture only if we're blocking and
-  // the mouse was down when Run.
+  // Whether we already grabbed mouse capture for this run. Capture is taken
+  // when the first menu is opened, and is not re-taken for later submenus.
   bool did_capture_ = false;
 
   // As the user drags the mouse around pending_state_ changes immediately.
@@ -769,6 +862,19 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // Owner of child windows.
   // WARNING: this may be NULL.
   raw_ptr<Widget> owner_ = nullptr;
+
+  // Observes `owner_` while a menu is running. Declared after `owner_` so it
+  // is destroyed first.
+  base::ScopedObservation<Widget, WidgetObserver> owner_observation_{this};
+
+  // Observes the FocusManager of each submenu widget shown by this controller,
+  // so menu-hosted Textfields keep accessibility focus and selection however
+  // they gain or lose FocusManager focus.
+  base::ScopedMultiSourceObservation<FocusManager, FocusChangeListener>
+      submenu_focus_manager_observations_{this};
+
+  // The Textfield focused in one of those FocusManagers, if any.
+  ViewTracker focused_textfield_;
 
   // An optional NativeView to which gestures will be forwarded to if
   // RunType::SEND_GESTURE_EVENTS_TO_OWNER is set.
@@ -873,6 +979,18 @@ class VIEWS_EXPORT MenuController final : public gfx::AnimationDelegate,
   // its successful presentation
   std::optional<std::string> show_menu_host_duration_histogram_;
 
+  // True if destruction was requested while the call stack was active.
+  bool destroy_pending_ = false;
+
+  // Depth of active re-entrant stack frames managed by ScopedDeletionGuard.
+  int stack_depth_ = 0;
+
+  // Widgets whose Close() is deferred until the call stack unwinds.
+  std::vector<base::WeakPtr<Widget>> deferred_destroy_widgets_;
+
+  // Menu runners whose destruction is deferred until the call stack unwinds.
+  std::vector<std::unique_ptr<internal::MenuRunnerImpl>>
+      deferred_destroy_runners_;
   base::WeakPtrFactory<MenuController> weak_ptr_factory_{this};
 };
 

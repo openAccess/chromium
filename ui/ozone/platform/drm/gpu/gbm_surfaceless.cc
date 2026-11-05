@@ -58,7 +58,7 @@ void GbmSurfaceless::QueueOverlayPlane(DrmOverlayPlane plane) {
 
 bool GbmSurfaceless::ScheduleOverlayPlane(
     gl::OverlayImage image,
-    std::unique_ptr<gfx::GpuFence> gpu_fence,
+    gfx::GpuFenceHandle gpu_fence,
     const gfx::OverlayPlaneData& overlay_plane_data) {
   unsubmitted_frames_.back()->overlays.emplace_back(
       std::move(image), std::move(gpu_fence), overlay_plane_data);
@@ -159,13 +159,13 @@ bool GbmSurfaceless::PendingFrame::ScheduleOverlayPlanes(
 }
 
 void GbmSurfaceless::SubmitFrame() {
-  DCHECK(!unsubmitted_frames_.empty());
+  CHECK(!unsubmitted_frames_.empty(), base::NotFatalUntil::M163);
 
   if (unsubmitted_frames_.front()->ready && !submitted_frame_) {
     for (auto& overlay : unsubmitted_frames_.front()->overlays) {
-      if (overlay.z_order() == 0 && overlay.gpu_fence()) {
-        submitted_frame_gpu_fence_ = std::make_unique<gfx::GpuFence>(
-            overlay.gpu_fence()->GetGpuFenceHandle().Clone());
+      if (overlay.z_order() == 0 && !overlay.gpu_fence().is_null()) {
+        submitted_frame_gpu_fence_ =
+            std::make_unique<gfx::GpuFence>(overlay.gpu_fence().Clone());
       }
     }
     submitted_frame_ = std::move(unsubmitted_frames_.front());
@@ -222,7 +222,7 @@ void GbmSurfaceless::FenceRetired(uint32_t frame_id) {
   uint32_t index = frame_id - first_frame_id;
   if (index < unsubmitted_frames_.size()) {
     auto& frame = unsubmitted_frames_[index];
-    DCHECK_EQ(frame->frame_id, frame_id);
+    CHECK_EQ(frame->frame_id, frame_id, base::NotFatalUntil::M163);
     // If the frame doesn't have a completion callback yet, it means it hasn't
     // been presented yet (it's the sentinel frame at the back).
     if (!frame->completion_callback) {

@@ -17,9 +17,6 @@ namespace omnibox {
 // instead of in the co-browse tool bar and RHS dropdown.
 BASE_DECLARE_FEATURE(kContextManagementInComposebox);
 
-// If enabled, this feature will show tooltips in the composebox context menu.
-BASE_DECLARE_FEATURE(kContextMenuToolTips);
-
 // If enabled, this feature will gate the functionality of removing the existing
 // tab chips from the composebox and instead add favicon coins next to the "+"
 // button.
@@ -44,11 +41,58 @@ BASE_DECLARE_FEATURE(kComposeboxSkillsOmniboxEverywhere);
 BASE_DECLARE_FEATURE(kComposeboxSkillsOmniboxPopup);
 
 // If enabled, richer suggestions (e.g. image grids) for tools such as Create
-// Image will be shown in the Composebox.
-BASE_DECLARE_FEATURE(kComposeboxRichImageSuggestions);
+// Image will be shown in the Realbox Composebox.
+BASE_DECLARE_FEATURE(kComposeboxRichImageSuggestionsRealbox);
+
+// If enabled, richer suggestions (e.g. image grids) for tools such as Create
+// Image will be shown in the Omnibox Composebox.
+BASE_DECLARE_FEATURE(kComposeboxRichImageSuggestionsOmnibox);
+
+// If enabled, persists the AIM button in the Realbox Composebox.
+BASE_DECLARE_FEATURE(kComposeboxPersistentAimButtonRealbox);
+// If enabled, persists the AIM button in the Omnibox Composebox.
+BASE_DECLARE_FEATURE(kComposeboxPersistentAimButtonOmnibox);
+// If enabled, shows an X icon on the persistent AIM button. Only effective if
+// the persistent AIM button is also enabled for the surface.
+BASE_DECLARE_FEATURE(kComposeboxPersistentAimButtonWithX);
+
+// If enabled, dynamically routes Realbox Composebox queries between SRP and AIM
+// based on active tools, models, and inputs.
+BASE_DECLARE_FEATURE(kDynamicAimFulfillmentRealbox);
+// If enabled, dynamically routes Omnibox Composebox queries between SRP and AIM
+// based on active tools, models, and inputs.
+BASE_DECLARE_FEATURE(kDynamicAimFulfillmentOmnibox);
+// Main switch for dynamic AIM fulfillment, and the settings both surfaces
+// share. A surface uses dynamic AIM fulfillment only if this feature and that
+// surface's feature above are both enabled; with this feature disabled, every
+// composebox query routes to AIM as before.
+BASE_DECLARE_FEATURE(kDynamicAimFulfillment);
+// Which attached inputs may go to the Search results page: "none",
+// "single_image", "multi_image" or "any_combination".
+extern const base::FeatureParam<std::string> kDynamicAimFulfillmentSrpInputMode;
+// Whether to use the mode sent by the server, when present, instead of
+// `srp_input_mode`.
+extern const base::FeatureParam<bool> kDynamicAimFulfillmentUseServerInputRules;
+// Whether dynamic AIM fulfillment is enabled for the Realbox / Omnibox
+// Composebox: `kDynamicAimFulfillment` and the surface's feature are both
+// enabled.
+bool IsDynamicAimFulfillmentEnabledForRealbox();
+bool IsDynamicAimFulfillmentEnabledForOmnibox();
+
+// If enabled, clicking outside the Realbox Composebox closes the suggestions
+// dropdown and restores page interaction while keeping the Composebox open.
+BASE_DECLARE_FEATURE(kComposeboxRealboxOutsideClick);
 
 // If enabled, suggest requests for multifile inputs will include the cinpts CGI param.
 BASE_DECLARE_FEATURE(kSuggestRequestSendsMultifileCgiParam);
+
+// If enabled, unselects the active suggestion match when Tab navigation moves
+// focus out of the composebox dropdown.
+BASE_DECLARE_FEATURE(kComposeboxUnselectMatchOnTabExit);
+
+// If enabled, personalizes the composebox placeholder hint text with the user's
+// given name when browser and AIM identities match.
+BASE_DECLARE_FEATURE(kComposeboxPersonalizedHintText);
 
 // Parameter determining the daily limit for the context menu animation.
 extern const base::FeatureParam<int> kContextMenuAnimationDailyLimit;
@@ -69,6 +113,34 @@ extern const base::FeatureParam<bool>
 // feature kContextManagementInComposebox to be enabled and the param to be
 // true.
 bool IsTabDeselectionInComposeboxEnabled();
+
+// If enabled, tooltips will be shown in the composebox context menu.
+extern const base::FeatureParam<bool> kContextManagementInComposeboxTooltips;
+
+// Helper to check if context menu tooltips are enabled in the composebox.
+bool IsContextMenuTooltipsInComposeboxEnabled();
+
+// If enabled, the current/recent tab is shown as a standalone menu item at the
+// top of the composebox context menu, above the "Add tabs" flyout entry on
+// Realbox, Omnibox, and SiC Side Panel.
+extern const base::FeatureParam<bool>
+    kContextManagementInComposeboxSingleTabMenuItem;
+
+// Helper to check if the single tab menu item is enabled, which requires the
+// parent feature kContextManagementInComposebox to be enabled and the param to
+// be true.
+bool IsSingleTabMenuItemInComposeboxEnabled();
+
+// If enabled, tab context state in the composebox is driven by the backend
+// session handle (`OnTabContextUpdated`) rather than tracked separately on the
+// frontend.
+extern const base::FeatureParam<bool>
+    kContextManagementInComposeboxTabStateUnification;
+
+// Helper to check if tab state unification is enabled, which requires the
+// parent feature kContextManagementInComposebox to be enabled and the param to
+// be true.
+bool IsTabStateUnificationInComposeboxEnabled();
 
 }  // namespace omnibox
 

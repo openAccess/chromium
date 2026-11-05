@@ -41,6 +41,7 @@
 #include "components/unexportable_keys/fake_unexportable_key_service.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/test/test_storage_partition.h"
+#include "crypto/sign.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -403,10 +404,9 @@ class BoundSessionCookieRefreshServiceImplTestBase : public testing::Test {
     BoundSessionParamsStorage::RegisterProfilePrefs(prefs_.registry());
     test_storage_ =
         BoundSessionParamsStorage::CreatePrefsStorageForTesting(prefs_);
-    EXPECT_CALL(*this, CreateBoundSessionDebugReportFetcher)
-        .WillRepeatedly(testing::InvokeWithoutArgs([] {
-          return std::make_unique<FakeBoundSessionDebugReportFetcher>();
-        }));
+    EXPECT_CALL(*this, CreateBoundSessionDebugReportFetcher).WillRepeatedly([] {
+      return std::make_unique<FakeBoundSessionDebugReportFetcher>();
+    });
   }
 
   ~BoundSessionCookieRefreshServiceImplTestBase() override = default;
@@ -503,8 +503,7 @@ class BoundSessionCookieRefreshServiceImplTestBase : public testing::Test {
   BoundSessionRegistrationFetcherParam CreateTestRegistrationFetcherParams(
       std::string_view registration_path) {
     return BoundSessionRegistrationFetcherParam::CreateInstanceForTesting(
-        kTestGoogleURL.Resolve(registration_path),
-        {crypto::SignatureVerifier::SignatureAlgorithm::ECDSA_SHA256},
+        kTestGoogleURL.Resolve(registration_path), {crypto::sign::ECDSA_SHA256},
         "test_challenge");
   }
 
@@ -807,11 +806,10 @@ TEST_F(BoundSessionCookieRefreshServiceImplTest,
   EXPECT_CALL(*this, CreateBoundSessionDebugReportFetcher(
                          kTestSessionId, kTestGoogleURL.Resolve("/rotate"),
                          /*is_off_the_record_profile=*/false, testing::_))
-      .WillOnce(testing::DoAll(
-          testing::SaveArg<3>(&sent_rotation_debug_info),
-          testing::InvokeWithoutArgs([] {
+      .WillOnce(
+          testing::DoAll(testing::SaveArg<3>(&sent_rotation_debug_info), [] {
             return std::make_unique<FakeBoundSessionDebugReportFetcher>();
-          })));
+          }));
   SimulateTerminateSession(
       SessionTerminationTrigger::kCookieRotationPersistentError,
       BoundSessionRefreshCookieFetcher::Result::kSignChallengeFailed);

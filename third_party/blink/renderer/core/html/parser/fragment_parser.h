@@ -21,9 +21,9 @@ class ParseHTMLUnsafeOptions;
 class SetHTMLOptions;
 class SetHTMLUnsafeOptions;
 class String;
-class TrustedParserOptions;
+class TrustedHTMLParserOptions;
 class V8UnionSanitizerOrSanitizerConfigOrSanitizerPresets;
-class V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions;
+class V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions;
 
 class CORE_EXPORT FragmentParserConfig {
   STACK_ALLOCATED();
@@ -41,9 +41,7 @@ class CORE_EXPORT FragmentParserConfig {
   };
 
   static FragmentParserConfig ForContainer(ContainerNode* context,
-                                           Sanitizer::Mode mode,
-                                           const AtomicString& interface_name,
-                                           const AtomicString& property_name);
+                                           Sanitizer::Mode mode);
 
   Sanitizer::Mode sanitizer_mode = Sanitizer::Mode::kUnsafe;
   ParseDeclarativeShadowRoots parse_declarative_shadows =
@@ -67,18 +65,23 @@ class CORE_EXPORT FragmentParserOptions {
       : run_scripts_(run_scripts) {}
   FragmentParserOptions(const FragmentParserOptions&) = default;
   FragmentParserOptions& operator=(const FragmentParserOptions&) = default;
-  explicit FragmentParserOptions(TrustedParserOptions* options);
+  explicit FragmentParserOptions(TrustedHTMLParserOptions* options);
   explicit FragmentParserOptions(SetHTMLUnsafeOptions* options);
   explicit FragmentParserOptions(ParseHTMLUnsafeOptions* options);
   explicit FragmentParserOptions(SetHTMLOptions* options);
 
   static FragmentParserOptions From(
-      const V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions* options);
+      const V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions* options);
 
   TrustMode trust_mode() const { return trust_mode_; }
   bool IsTrusted() const { return trust_mode_ == TrustMode::kTrusted; }
   RunScripts run_scripts() const { return run_scripts_; }
   bool WillSanitize() const { return sanitizer_init_ != nullptr; }
+  // Returns true if untrusted parser options specify non-default behavior
+  // (`runScripts: true` or a non-empty `sanitizer`) that must be vetted by the
+  // default Trusted Types policy's `createParserOptions` callback when Trusted
+  // Types are enforced, even if the input markup is already a `TrustedHTML`.
+  bool RequiresDefaultPolicy() const { return requires_default_policy_; }
   V8UnionSanitizerOrSanitizerConfigOrSanitizerPresets* sanitizer_init() const {
     return sanitizer_init_;
   }
@@ -88,6 +91,7 @@ class CORE_EXPORT FragmentParserOptions {
   RunScripts run_scripts_ = RunScripts::kDontRunScripts;
   V8UnionSanitizerOrSanitizerConfigOrSanitizerPresets* sanitizer_init_ =
       nullptr;
+  bool requires_default_policy_ = false;
 };
 
 DocumentFragment* ParseHTMLFragment(const String& html,

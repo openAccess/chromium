@@ -9,6 +9,7 @@
 
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "services/strings/grit/services_strings.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_enum_util.h"
 #include "ui/accessibility/ax_role_properties.h"
@@ -19,6 +20,11 @@ namespace a11y {
 bool IsSuperscript(const ui::AXNode* ax_node) {
   return ax_node->data().GetTextPosition() ==
          ax::mojom::TextPosition::kSuperscript;
+}
+
+bool IsSubscript(const ui::AXNode* ax_node) {
+  return ax_node->data().GetTextPosition() ==
+         ax::mojom::TextPosition::kSubscript;
 }
 
 bool IsTextForReadAnything(const ui::AXNode* node, bool is_pdf, bool is_docs) {
@@ -39,6 +45,11 @@ bool IsTextForReadAnything(const ui::AXNode* node, bool is_pdf, bool is_docs) {
   return (GetHtmlTag(node, is_pdf, is_docs).length() == 0) || is_list_marker;
 }
 
+bool IsHeaderFooterRole(ax::mojom::Role role) {
+  return role == ax::mojom::Role::kSectionHeader ||
+         role == ax::mojom::Role::kSectionFooter;
+}
+
 bool IsIgnored(const ui::AXNode* const ax_node, bool is_pdf) {
   if (ax_node->IsIgnored()) {
     return true;
@@ -55,14 +66,15 @@ bool IsIgnored(const ui::AXNode* const ax_node, bool is_pdf) {
     // The text content of the aforementioned `kBanner` or `kContentInfo` node
     // is the same as the text content of its child static text node.
     const ui::AXNode* const parent = ax_node->GetParent();
-    if (const std::string_view text = ax_node->GetTextContentUTF8();
-        text == l10n_util::GetStringUTF8(IDS_PDF_OCR_RESULT_BEGIN)) {
-      if (role == ax::mojom::Role::kBanner ||
-          (parent && parent->GetRole() == ax::mojom::Role::kBanner)) {
-        return true;
-      }
-    } else if (text == l10n_util::GetStringUTF8(IDS_PDF_OCR_RESULT_END) &&
-               parent && parent->GetRole() == ax::mojom::Role::kContentInfo) {
+    if ((role == ax::mojom::Role::kBanner ||
+         (parent && parent->GetRole() == ax::mojom::Role::kBanner)) &&
+        ax_node->GetTextContentUTF8() ==
+            l10n_util::GetStringUTF8(IDS_PDF_OCR_RESULT_BEGIN)) {
+      return true;
+    }
+    if (parent && parent->GetRole() == ax::mojom::Role::kContentInfo &&
+        ax_node->GetTextContentUTF8() ==
+            l10n_util::GetStringUTF8(IDS_PDF_OCR_RESULT_END)) {
       return true;
     }
   }
@@ -70,6 +82,19 @@ bool IsIgnored(const ui::AXNode* const ax_node, bool is_pdf) {
   // Ignore interactive elements, except for text fields and aria-related
   // support fields.
   return (ui::IsControl(role) && !ui::IsTextField(role)) || ui::IsSelect(role);
+}
+
+bool IsPdfArtifact(const ui::AXNode* const ax_node) {
+  if (!features::IsPdfAccessibilityHeuristicEnhancementsEnabled()) {
+    return false;
+  }
+
+  for (const ui::AXNode* node = ax_node; node; node = node->GetParent()) {
+    if (IsHeaderFooterRole(node->GetRole())) {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::string GetHtmlTag(const ui::AXNode* ax_node, bool is_pdf, bool is_docs) {
@@ -191,6 +216,11 @@ std::string GetAltText(const ui::AXNode* ax_node) {
 std::u16string GetTextContent(const ui::AXNode* ax_node,
                               bool is_pdf,
                               bool is_docs) {
+  if (ax_node->GetRole() == ax::mojom::Role::kListMarker &&
+      ax_node->HasStringAttribute(ax::mojom::StringAttribute::kName)) {
+    return ax_node->GetString16Attribute(ax::mojom::StringAttribute::kName);
+  }
+
   // For Google Docs, because the content is rendered in canvas, we distill
   // text from the "Annotated Canvas"
   // (https://sites.google.com/corp/google.com/docs-canvas-migration/home)
@@ -243,7 +273,15 @@ std::u16string GetTextContent(const ui::AXNode* ax_node,
     return filtered_string;
   }
 
-  return ax_node->GetTextContentUTF16();
+  std::u16string text(ax_node->GetTextContentUTF16());
+  // Whitespace only characters should be treated as spaces to prevent
+  // reading mode from displaying paragraphs as a single block of text with
+  // no spaces. This is necessary for selection matching to work properly
+  // on a Readability distillation.
+  if (!text.empty() && base::ContainsOnlyChars(text, base::kWhitespaceUTF16)) {
+    std::ranges::replace(text, u'\u00A0', u' ');
+  }
+  return text;
 }
 
 std::u16string GetPrefixText(const ui::AXNode* ax_node,

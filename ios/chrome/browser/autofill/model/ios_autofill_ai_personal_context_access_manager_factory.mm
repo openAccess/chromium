@@ -4,53 +4,35 @@
 
 #import "ios/chrome/browser/autofill/model/ios_autofill_ai_personal_context_access_manager_factory.h"
 
+#import <utility>
+
 #import "base/feature_list.h"
 #import "components/autofill/core/browser/network/autofill_ai/autofill_ai_personal_context_access_manager_impl.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/personal_context/core/personal_context_eligibility_service.h"
 #import "components/personal_context/core/personal_context_service.h"
-#import "components/subscription_eligibility/subscription_eligibility_service.h"
-#import "ios/chrome/browser/autofill/model/ios_autofill_entity_suppression_manager_factory.h"
+#import "ios/chrome/browser/autofill/model/ios_autofill_personal_context_entity_metadata_manager_factory.h"
 #import "ios/chrome/browser/personal_context/model/ios_personal_context_eligibility_service_factory.h"
 #import "ios/chrome/browser/personal_context/model/ios_personal_context_service_factory.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/subscription_eligibility/model/subscription_eligibility_service_factory.h"
 #import "ios/chrome/browser/sync/model/device_info_sync_service_factory.h"
 
-// static
-autofill::AutofillAiPersonalContextAccessManager*
-IOSAutofillAiPersonalContextAccessManagerFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()
-      ->GetServiceForProfileAs<
-          autofill::AutofillAiPersonalContextAccessManager>(profile, true);
-}
-
-// static
-IOSAutofillAiPersonalContextAccessManagerFactory*
-IOSAutofillAiPersonalContextAccessManagerFactory::GetInstance() {
-  static base::NoDestructor<IOSAutofillAiPersonalContextAccessManagerFactory>
-      instance;
-  return instance.get();
-}
-
 IOSAutofillAiPersonalContextAccessManagerFactory::
-    IOSAutofillAiPersonalContextAccessManagerFactory()
-    : ProfileKeyedServiceFactoryIOS("AutofillAiPersonalContextAccessManager",
-                                    ProfileSelection::kNoInstanceInIncognito) {
+    IOSAutofillAiPersonalContextAccessManagerFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "AutofillAiPersonalContextAccessManager",
+          ProfileSelection::kNoInstanceInIncognito) {
   DependsOn(IOSPersonalContextEligibilityServiceFactory::GetInstance());
   DependsOn(IOSPersonalContextServiceFactory::GetInstance());
-  DependsOn(SubscriptionEligibilityServiceFactory::GetInstance());
   DependsOn(DeviceInfoSyncServiceFactory::GetInstance());
-  DependsOn(IOSAutofillEntitySuppressionManagerFactory::GetInstance());
+  DependsOn(
+      IOSAutofillPersonalContextEntityMetadataManagerFactory::GetInstance());
 }
-
-IOSAutofillAiPersonalContextAccessManagerFactory::
-    ~IOSAutofillAiPersonalContextAccessManagerFactory() = default;
 
 std::unique_ptr<KeyedService>
 IOSAutofillAiPersonalContextAccessManagerFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   if (!base::FeatureList::IsEnabled(
           autofill::features::kAutofillAmbientAutofill)) {
     return nullptr;
@@ -61,9 +43,6 @@ IOSAutofillAiPersonalContextAccessManagerFactory::BuildServiceInstanceFor(
   personal_context::PersonalContextEligibilityService*
       personal_context_eligibility_service =
           IOSPersonalContextEligibilityServiceFactory::GetForProfile(profile);
-  subscription_eligibility::SubscriptionEligibilityService*
-      subscription_eligibility_service =
-          SubscriptionEligibilityServiceFactory::GetForProfile(profile);
 
   if (!personal_context_service || !personal_context_eligibility_service) {
     return nullptr;
@@ -71,7 +50,7 @@ IOSAutofillAiPersonalContextAccessManagerFactory::BuildServiceInstanceFor(
 
   return std::make_unique<autofill::AutofillAiPersonalContextAccessManagerImpl>(
       personal_context_service, personal_context_eligibility_service,
-      subscription_eligibility_service, profile->GetPrefs(),
-      DeviceInfoSyncServiceFactory::GetForProfile(profile),
-      IOSAutofillEntitySuppressionManagerFactory::GetForProfile(profile));
+      profile.GetPrefs(), DeviceInfoSyncServiceFactory::GetForProfile(profile),
+      IOSAutofillPersonalContextEntityMetadataManagerFactory::GetForProfile(
+          profile));
 }

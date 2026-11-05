@@ -8,6 +8,7 @@
 #include "base/functional/bind.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "components/fcm/crypto/fcm_decryption_result.h"
 
 namespace gcm {
 
@@ -29,11 +30,9 @@ void FakeGCMDriver::ValidateRegistration(
       FROM_HERE, base::BindOnce(std::move(callback), true /* is_valid */));
 }
 
-void FakeGCMDriver::AddConnectionObserver(GCMConnectionObserver* observer) {
-}
+void FakeGCMDriver::AddConnectionObserver(GCMConnectionObserver* observer) {}
 
-void FakeGCMDriver::RemoveConnectionObserver(GCMConnectionObserver* observer) {
-}
+void FakeGCMDriver::RemoveConnectionObserver(GCMConnectionObserver* observer) {}
 
 GCMClient* FakeGCMDriver::GetGCMClientForTesting() const {
   return nullptr;
@@ -60,46 +59,19 @@ GCMClient::Result FakeGCMDriver::EnsureStarted(
 }
 
 void FakeGCMDriver::RegisterImpl(const std::string& app_id,
-                                 const std::vector<std::string>& sender_ids) {
-}
+                                 const std::vector<std::string>& sender_ids) {}
 
-void FakeGCMDriver::UnregisterImpl(const std::string& app_id) {
-}
+void FakeGCMDriver::UnregisterImpl(const std::string& app_id) {}
 
 void FakeGCMDriver::SendImpl(const std::string& app_id,
                              const std::string& receiver_id,
-                             const OutgoingMessage& message) {
-}
+                             const OutgoingMessage& message) {}
 
 void FakeGCMDriver::RecordDecryptionFailure(const std::string& app_id,
-                                            GCMDecryptionResult result) {}
-
-void FakeGCMDriver::SetAccountTokens(
-    const std::vector<GCMClient::AccountTokenInfo>& account_tokens) {
-}
-
-void FakeGCMDriver::UpdateAccountMapping(
-    const AccountMapping& account_mapping) {
-}
-
-void FakeGCMDriver::RemoveAccountMapping(const CoreAccountId& account_id) {}
-
-base::Time FakeGCMDriver::GetLastTokenFetchTime() {
-  return base::Time();
-}
-
-void FakeGCMDriver::SetLastTokenFetchTime(const base::Time& time) {
-}
+                                            fcm::FcmDecryptionResult result) {}
 
 InstanceIDHandler* FakeGCMDriver::GetInstanceIDHandlerInternal() {
   return nullptr;
-}
-
-void FakeGCMDriver::AddHeartbeatInterval(const std::string& scope,
-                                         int interval_ms) {
-}
-
-void FakeGCMDriver::RemoveHeartbeatInterval(const std::string& scope) {
 }
 
 }  // namespace gcm

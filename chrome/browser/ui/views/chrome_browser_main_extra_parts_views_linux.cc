@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/views/chrome_browser_main_extra_parts_views_linux.h"
 
+#include "base/functional/bind.h"
+#include "base/notreached.h"
+#include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/themes/theme_service_aura_linux.h"
 #include "chrome/browser/ui/views/theme_profile_key.h"
 #include "ui/base/buildflags.h"
@@ -17,7 +20,7 @@
 #include "ui/ozone/public/ozone_platform.h"
 
 #if BUILDFLAG(USE_DBUS)
-#include "ui/linux/dark_mode_manager_linux.h"
+#include "ui/linux/portal_settings_linux.h"
 #endif
 
 #if BUILDFLAG(ENABLE_PRINTING)
@@ -66,8 +69,19 @@ void ChromeBrowserMainExtraPartsViewsLinux::ToolkitInitialized() {
 #endif
 
 #if BUILDFLAG(USE_DBUS)
-  dark_mode_manager_ = std::make_unique<ui::DarkModeManagerLinux>();
+  portal_settings_ = std::make_unique<ui::PortalSettingsLinux>();
 #endif
+}
+
+void ChromeBrowserMainExtraPartsViewsLinux::PostCreateMainMessageLoop() {
+  ChromeBrowserMainExtraPartsViews::PostCreateMainMessageLoop();
+
+  if (auto* linux_ui = ui::LinuxUi::instance()) {
+    linux_ui->SetShutdownCb(base::BindOnce([] {
+      chrome::SessionEnding();
+      NOTREACHED();
+    }));
+  }
 }
 
 void ChromeBrowserMainExtraPartsViewsLinux::PreCreateThreads() {

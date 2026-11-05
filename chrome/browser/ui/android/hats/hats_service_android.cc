@@ -134,8 +134,6 @@ void HatsServiceAndroid::DelayedSurveyTask::DismissCallback(
     case messages::DismissReason::CLOSE_BUTTON:
       reason = ShouldShowSurveyReasonsAndroid::kAndroidCloseButton;
       break;
-    case messages::DismissReason::COUNT:
-      NOTREACHED();
   }
   UMA_HISTOGRAM_ENUMERATION(kHatsShouldShowSurveyReasonAndroidHistogram,
                             reason);
@@ -227,7 +225,7 @@ HatsService::LaunchError HatsServiceAndroid::LaunchDelayedSurveyForWebContents(
     const std::optional<std::string>& supplied_trigger_id,
     const SurveyOptions& survey_options) {
   CHECK(web_contents);
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (survey_configs_by_triggers_.find(trigger) ==
       survey_configs_by_triggers_.end()) {
     // Survey configuration is not available.

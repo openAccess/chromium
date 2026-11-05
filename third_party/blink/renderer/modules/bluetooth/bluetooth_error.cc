@@ -8,14 +8,15 @@
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 
 namespace blink {
 
 namespace {
 
-const char kGATTServerNotConnectedBase[] =
+constexpr char kGATTServerNotConnectedBase[] =
     "GATT Server is disconnected. "
-    "Cannot %s. (Re)connect first with `device.gatt.connect`.";
+    "Cannot {}. (Re)connect first with `device.gatt.connect`.";
 
 }  // namespace
 
@@ -37,8 +38,7 @@ String BluetoothError::CreateNotConnectedExceptionMessage(
       operation_string = "perform GATT operations";
       break;
   }
-  return UNSAFE_TODO(
-      String::Format(kGATTServerNotConnectedBase, operation_string));
+  return Format(kGATTServerNotConnectedBase, operation_string);
 }
 
 // static
@@ -118,6 +118,8 @@ DOMException* BluetoothError::CreateDOMException(
                 "Connection Error: Not connected.");
       MAP_ERROR(CONNECT_NON_AUTH_TIMEOUT, DOMExceptionCode::kInvalidStateError,
                 "Connection Error: Non-authentication timeout.");
+      MAP_ERROR(DOCUMENT_NOT_ACTIVE, DOMExceptionCode::kInvalidStateError,
+                "The document is not active.");
 
       // NetworkErrors:
       MAP_ERROR(CONNECT_ALREADY_IN_PROGRESS, DOMExceptionCode::kNetworkError,
@@ -224,6 +226,9 @@ DOMException* BluetoothError::CreateDOMException(
       MAP_ERROR(PERMISSIONS_POLICY_VIOLATION, DOMExceptionCode::kSecurityError,
                 "Access to the feature \"bluetooth\" is disallowed by "
                 "permissions policy.");
+      MAP_ERROR(
+          USER_ACTIVATION_REQUIRED, DOMExceptionCode::kSecurityError,
+          "Must be handling a user gesture to show a permission request.");
 
       // NotAllowedErrors:
       MAP_ERROR(SCANNING_BLOCKED, DOMExceptionCode::kNotAllowedError,

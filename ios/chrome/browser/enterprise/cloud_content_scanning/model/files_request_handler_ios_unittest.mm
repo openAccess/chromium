@@ -25,11 +25,11 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
-#import "ios/components/enterprise/analysis/features.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gmock/include/gmock/gmock.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
+#import "url/gurl.h"
 
 namespace enterprise_connectors {
 
@@ -66,6 +66,12 @@ class MockContentAnalysisInfoBase : public ContentAnalysisInfoBase {
               (),
               (const, override));
   MOCK_METHOD(std::string, GetContentAreaAccountEmail, (), (const, override));
+  MOCK_METHOD(
+      std::optional<
+          ::safe_browsing::ExtensionTelemetryReportRequest::ExtensionInfo>,
+      extension_initiator,
+      (),
+      (const, override));
 };
 
 // Mock implementation of BinaryUploadService to verify that upload requests
@@ -122,12 +128,21 @@ class FilesRequestHandlerIOSTest : public PlatformTest {
     connectors_service_ =
         ConnectorsServiceFactory::GetForProfile(profile_.get());
 
-    scoped_feature_list_.InitAndEnableFeature(kEnableFileDownloadConnectorIOS);
+    // `FilesRequestHandlerBase`'s destructor reports a cancellation when
+    // `kEnableCancelUploadOnContentAnalysis` is enabled, which reads these
+    // getters. They return references, so without a default action gmock
+    // aborts the test process instead of failing the test.
+    ON_CALL(content_analysis_info_, url())
+        .WillByDefault(testing::ReturnRef(url_));
+    ON_CALL(content_analysis_info_, tab_url())
+        .WillByDefault(testing::ReturnRef(url_));
+    ON_CALL(content_analysis_info_, settings())
+        .WillByDefault(testing::ReturnRef(settings_));
   }
 
   // Enables the file download connector by setting the appropriate pref.
   void EnableConnector() {
-    profile_->GetTestingPrefService()->Set(
+    profile_->GetPrefs()->Set(
         AnalysisConnectorPref(AnalysisConnector::FILE_DOWNLOADED),
         *base::JSONReader::Read(kWildcardAnalysisSettingsPref,
                                 base::JSON_PARSE_RFC));
@@ -142,6 +157,7 @@ class FilesRequestHandlerIOSTest : public PlatformTest {
   MockContentAnalysisInfoBase content_analysis_info_;
   MockBinaryUploadService upload_service_;
   AnalysisSettings settings_;
+  GURL url_{"https://example.com"};
   base::HistogramTester histogram_tester_;
   base::test::ScopedFeatureList scoped_feature_list_;
 };
@@ -158,6 +174,19 @@ TEST_F(FilesRequestHandlerIOSTest, UploadDataImpl_NoPath) {
 
   RequestHandlerResult result = future.Take();
   EXPECT_EQ(result.final_result, FinalContentAnalysisResult::SUCCESS);
+}
+
+// Tests that StopFileWork is a safe no-op: iOS only scans one file at a time,
+// so there is no FileOpeningJob to signal.
+TEST_F(FilesRequestHandlerIOSTest, StopFileWorkIsNoOp) {
+  base::test::TestFuture<RequestHandlerResult> future;
+  auto delegate = std::make_unique<FilesRequestHandlerIOS>(
+      connectors_service_, reporting_router_, base::FilePath(),
+      future.GetCallback());
+
+  delegate->StopFileWork();
+
+  EXPECT_FALSE(future.IsReady());
 }
 
 // Tests that UploadDataImpl returns false and calls the callback when the

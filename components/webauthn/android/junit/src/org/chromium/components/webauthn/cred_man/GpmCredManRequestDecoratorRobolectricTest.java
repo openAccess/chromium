@@ -13,8 +13,6 @@ import android.credentials.CreateCredentialRequest;
 import android.os.Bundle;
 import android.util.Base64;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -28,7 +26,6 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(
-        manifest = Config.NONE,
         shadows = {
             ShadowCreateCredentialRequest.class,
             ShadowCreateCredentialRequest.ShadowBuilder.class,
@@ -48,7 +45,6 @@ public class GpmCredManRequestDecoratorRobolectricTest {
     private final GpmCredManRequestDecorator mDecorator = GpmCredManRequestDecorator.getInstance();
 
     @Test
-    @SmallTest
     public void testUpdateCreateCredentialRequestBundle() {
         when(mCreateHelper.getUserId()).thenReturn(USER_ID);
         Bundle bundle = new Bundle();
@@ -69,7 +65,6 @@ public class GpmCredManRequestDecoratorRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdateCreateCredentialRequestBuilder() {
         when(mCreateHelper.getOrigin()).thenReturn(ORIGIN);
 
@@ -80,7 +75,6 @@ public class GpmCredManRequestDecoratorRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void
             testUpdateGetCredentialRequestBundle_whenIgnoreGpmFalse_thenBundleContainsBranding() {
         when(mGetHelper.getPreferImmediatelyAvailable()).thenReturn(true);
@@ -100,7 +94,6 @@ public class GpmCredManRequestDecoratorRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void
             testUpdateGetCredentialRequestBundle_whenIgnoreGpmTrue_thenBundleDoesNotContainBranding() {
         when(mGetHelper.getPreferImmediatelyAvailable()).thenReturn(true);
@@ -116,7 +109,6 @@ public class GpmCredManRequestDecoratorRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdatePublicKeyCredentialOptionBundle() {
         Bundle bundle = new Bundle();
         when(mGetHelper.getRenderFrameHost()).thenReturn(null);
@@ -130,7 +122,6 @@ public class GpmCredManRequestDecoratorRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdatePasswordCredentialOptionBundle() {
         Bundle bundle = new Bundle();
         when(mGetHelper.getRenderFrameHost()).thenReturn(null);

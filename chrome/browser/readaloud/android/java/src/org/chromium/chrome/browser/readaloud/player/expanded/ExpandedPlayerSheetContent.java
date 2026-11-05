@@ -26,6 +26,7 @@ import org.chromium.base.Log;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.readaloud.ReadAloudFeatures;
 import org.chromium.chrome.browser.readaloud.player.Colors;
 import org.chromium.chrome.browser.readaloud.player.InteractionHandler;
 import org.chromium.chrome.browser.readaloud.player.PlayerProperties;
@@ -37,6 +38,7 @@ import org.chromium.chrome.modules.readaloud.PlaybackArgs.PlaybackModeSelectionE
 import org.chromium.chrome.modules.readaloud.PlaybackListener;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.widget.Toast;
 
@@ -45,6 +47,13 @@ import java.util.List;
 
 @NullMarked
 public class ExpandedPlayerSheetContent implements BottomSheetContent {
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder()
+                    .setUserInitiated(true)
+                    .setModal(false)
+                    .setPersistent(true)
+                    .build();
+
     private static final String TAG = "RAPlayerSheet";
     // Note: if these times need to change, the "back 10" and "forward 10" icons
     // should also be changed.
@@ -305,8 +314,12 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
         mLoadingTextView.setText(mContext.getString(R.string.readaloud_mini_player_loading_ai_playback));
         mLoadingTextView.setContentDescription(mContext.getString(R.string.readaloud_mini_player_loading_ai_playback));
       } else {
-        mLoadingTextView.setText(mContext.getString(R.string.readaloud_playback_loading));
-        mLoadingTextView.setContentDescription(mContext.getString(R.string.readaloud_playback_loading));
+        int loadingStringRes =
+                ReadAloudFeatures.isNativeEnabled()
+                        ? R.string.readaloud_playback_loading_page
+                        : R.string.readaloud_playback_loading;
+        mLoadingTextView.setText(mContext.getString(loadingStringRes));
+        mLoadingTextView.setContentDescription(mContext.getString(loadingStringRes));
       }
     }
 
@@ -557,6 +570,11 @@ public class ExpandedPlayerSheetContent implements BottomSheetContent {
 
     @Override
     public void destroy() {}
+
+    @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
+    }
 
     @Override
     @ContentPriority

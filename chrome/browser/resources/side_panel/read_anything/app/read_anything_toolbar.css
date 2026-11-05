@@ -18,13 +18,12 @@
   color: var(--color-side-panel-entry-icon);
 }
 
-.immersive-toolbar-container #play-pause,
-.immersive-toolbar-container #previousGranularity,
-.immersive-toolbar-container #nextGranularity {
+#toolbarContainer #play-pause,
+#toolbarContainer #previousGranularity,
+#toolbarContainer #nextGranularity {
   --cr-icon-button-focus-outline-color:
     var(--on-audio-player-focus-outline-color);
 }
-
 
 #audio-controls {
   background: var(--audio-player-background-color);
@@ -49,6 +48,7 @@
 }
 
 #line-focus-off {
+  --cr-button-text-color: var(--text-button-text-color);
   background: var(--audio-player-background-color);
   border: none;
   margin-inline-end: auto;
@@ -62,23 +62,10 @@
   align-items: center;
 }
 
-#font-size-increase {
-  --cr-icon-button-fill-color: var(--color-sys-on-surface-subtle);
-}
-
-#font-size-decrease {
-  margin-inline-start: 12px;
-  --cr-icon-button-fill-color: var(--color-sys-on-surface-subtle);
-}
-
-#font-size-reset {
-  margin-inline-end: 4px;
-}
-
-.immersive-toolbar-container {
+#toolbarContainer {
   --cr-icon-button-fill-color-default: var(--toolbar-icon-color);
   --play-pause-icon-color: var(--audio-player-icon-color);
-  --rate-button-text-color: var(--audio-controls-icon-color);
+  --text-button-text-color: var(--audio-controls-icon-color);
   --audio-controls-icon-color-internal: var(--audio-controls-icon-color);
   background-color: var(--background-color);
   display: flex;
@@ -96,26 +83,6 @@
   border: none;
 }
 
-.immersive-toolbar-container cr-icon-button {
-  --cr-icon-button-icon-size: 20px;
-  --cr-icon-button-size: 28px;
-  --cr-icon-button-hover-background-color:
-      var(--toolbar-icon-hover-background-color);
-  --cr-icon-button-focus-outline-color: var(--toolbar-focus-outline-color);
-}
-
-.immersive-toolbar-container cr-button {
-  --cr-focus-outline-color: var(--toolbar-focus-outline-color);
-  --cr-button-text-color: var(--rate-button-text-color);
-}
-
-.announce-block {
-  width:1px;
-  height:1px;
-  overflow:hidden;
-  position: absolute;
-}
-
 /*
  * Based on styling for cr-icon-button.
  * The rate menu needs to use a text-based button instead of an icon-based
@@ -123,6 +90,7 @@
  */
 #rate {
   --cr-focus-outline-color: var(--on-audio-player-focus-outline-color);
+  --cr-button-text-color: var(--text-button-text-color);
   background-color: transparent;
   border: none;
   border-radius: 50%;
@@ -164,14 +132,21 @@
   border-radius: 12px;
 }
 
-.immersive-font-size-menu::part(dialog) {
-  border-radius: var(--cornerRadii-medium-small, 12px);
-}
-
 @media (forced-colors: active) {
   cr-icon-button,
   #audio-controls cr-icon-button,
   #audio-controls #play-pause {
     --cr-icon-button-fill-color: CanvasText;
+  }
+
+  #rate {
+    --cr-button-text-color: CanvasText;
+  }
+
+  #line-focus-off {
+    --cr-button-text-color: CanvasText;
+    background: transparent;
+    border: var(--cr-button-border,
+        1px solid var(--color-button-border, ButtonBorder));
   }
 }

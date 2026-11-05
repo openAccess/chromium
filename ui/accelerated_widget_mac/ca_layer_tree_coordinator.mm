@@ -222,14 +222,10 @@ void CALayerTreeCoordinator::CommitPresentedFrameToCA(
   if (has_resized_since_last_swap_) {
     // Create a new CAContext for the new size. This allows new frame update at
     // the new size to be atomic with things like resizing the NSWindow.
-    if (base::FeatureList::IsEnabled(features::kCATransactionV2) &&
+    if (base::FeatureList::IsEnabled(features::kCAContextFenceOnResize) &&
         allow_remote_layers_) {
       params.ca_context_fence_mach_port.reset([ca_context_ createFencePort]);
       [ca_context_ setFencePort:params.ca_context_fence_mach_port.get()];
-      ca_context_.layer = nil;
-      ca_context_ = nil;
-      root_ca_layer_ = nil;
-      current_tree = nullptr;
     }
     has_resized_since_last_swap_ = false;
   }
@@ -259,7 +255,7 @@ void CALayerTreeCoordinator::CommitPresentedFrameToCA(
     } else {
       IOSurfaceRef io_surface = frame.layer_tree->GetContentIOSurface();
       if (io_surface) {
-        DCHECK(!allow_remote_layers_);
+        CHECK(!allow_remote_layers_, base::NotFatalUntil::M163);
         params.io_surface_mach_port.reset(IOSurfaceCreateMachPort(io_surface));
       }
     }

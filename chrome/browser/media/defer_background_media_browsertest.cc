@@ -5,13 +5,14 @@
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_tab_state.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "media/base/test_data_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 class DeferredMediaBrowserTest : public InProcessBrowserTest {
  public:
@@ -60,7 +61,7 @@ IN_PROC_BROWSER_TEST_F(DeferredMediaBrowserTest, BackgroundMediaIsDeferred) {
       browser(),
       content::GetFileUrlWithQuery(
           media::GetTestDataFilePath("bear-640x360.webm"), ""),
-      WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   ASSERT_EQ(2, browser()->tab_strip_model()->count());
@@ -84,7 +85,7 @@ IN_PROC_BROWSER_TEST_F(
       browser(),
       content::GetFileUrlWithQuery(
           media::GetTestDataFilePath("bear-640x360.webm"), ""),
-      WindowOpenDisposition::CURRENT_TAB,
+      ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetWebContentsAt(0);
@@ -108,7 +109,8 @@ IN_PROC_BROWSER_TEST_F(
 
   // Navigate to a new blank tab.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL("about:blank"), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL("about:blank"),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ASSERT_EQ(2, browser()->tab_strip_model()->count());
 

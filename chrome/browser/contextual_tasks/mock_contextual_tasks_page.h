@@ -5,10 +5,15 @@
 #ifndef CHROME_BROWSER_CONTEXTUAL_TASKS_MOCK_CONTEXTUAL_TASKS_PAGE_H_
 #define CHROME_BROWSER_CONTEXTUAL_TASKS_MOCK_CONTEXTUAL_TASKS_PAGE_H_
 
+#include <cstdint>
+#include <string>
 #include <vector>
 
 #include "chrome/browser/contextual_tasks/contextual_tasks.mojom.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_toolbar.mojom.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_types.h"
+#include "components/omnibox/browser/searchbox.mojom.h"
+#include "mojo/public/cpp/base/proto_wrapper.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -30,6 +35,7 @@ class MockContextualTasksPage : public mojom::Page {
                bool replace_navigation_entry),
               (override));
   MOCK_METHOD(void, OnSidePanelStateChanged, (), (override));
+  MOCK_METHOD(void, FocusComposebox, (), (override));
   MOCK_METHOD(void,
               PostAimMessage,
               (const std::vector<uint8_t>& message),
@@ -40,16 +46,11 @@ class MockContextualTasksPage : public mojom::Page {
               (const std::string& oauth_token),
               (override));
   MOCK_METHOD(void, OnCookieSyncCompleted, (), (override));
-  MOCK_METHOD(void,
-              OnContextUpdated,
-              (std::vector<mojom::ContextInfoPtr> context),
-              (override));
   MOCK_METHOD(void, HideInput, (), (override));
   MOCK_METHOD(void, RestoreInput, (), (override));
   MOCK_METHOD(void, EnterBasicMode, (), (override));
   MOCK_METHOD(void, ExitBasicMode, (), (override));
   MOCK_METHOD(void, OnZeroStateChange, (bool is_zero_state), (override));
-  MOCK_METHOD(void, OnAiPageStatusChanged, (bool is_ai_page), (override));
   MOCK_METHOD(void,
               OnLensOverlayStateChanged,
               (bool is_showing, bool maybe_show_overlay_hint_text),
@@ -63,8 +64,6 @@ class MockContextualTasksPage : public mojom::Page {
               (override));
   MOCK_METHOD(void, LockInput, (), (override));
   MOCK_METHOD(void, UnlockInput, (), (override));
-  MOCK_METHOD(void, SetShowReopenTabs, (bool show), (override));
-  MOCK_METHOD(void, SetExpandButtonEnabled, (bool enabled), (override));
   MOCK_METHOD(void, TurnOnSmartTabSharing, (), (override));
   MOCK_METHOD(void, ShowSmartTabSharingTryItIph, (), (override));
   MOCK_METHOD(void, ShowSmartTabSharingDefaultOnIph, (), (override));
@@ -73,11 +72,14 @@ class MockContextualTasksPage : public mojom::Page {
               RemoveInjectedInput,
               (const base::UnguessableToken& file_token),
               (override));
-  MOCK_METHOD(void, OnSidePanelPinStateChanged, (bool is_pinned), (override));
   MOCK_METHOD(void, SetInNlm, (bool in_nlm), (override));
   MOCK_METHOD(void,
               OnWindowClosed,
               (const ContextualWindowId& window_id),
+              (override));
+  MOCK_METHOD(void,
+              ResetForNewThread,
+              (const base::Uuid& task_id, const GURL& url),
               (override));
 
  private:
@@ -89,21 +91,68 @@ class MockContextualTasksExtensionPage : public mojom::ExtensionPage {
   ~MockContextualTasksExtensionPage() override;
 
   mojo::PendingRemote<mojom::ExtensionPage> BindAndGetRemote();
+  void FlushForTesting() { receiver_.FlushForTesting(); }
 
+  MOCK_METHOD(void, PostSearchMessage, (mojo_base::ProtoWrapper message), ());
   MOCK_METHOD(void,
-              PostAimMessage,
-              (const std::vector<uint8_t>& message),
+              PostSearchMessageWithDocumentId,
+              (mojo_base::ProtoWrapper message,
+               const std::optional<std::string>& document_id),
+              ());
+  void PostSearchMessage(
+      mojo_base::ProtoWrapper message,
+      const std::optional<std::string>& document_id) override {
+    if (document_id.has_value()) {
+      PostSearchMessageWithDocumentId(std::move(message), document_id);
+    } else {
+      PostSearchMessage(std::move(message));
+    }
+  }
+  MOCK_METHOD(void, OnLensOverlayStateChanged, (bool is_showing), (override));
+  MOCK_METHOD(void, OnLensCropUpdated, (const GURL& data_uri), (override));
+  MOCK_METHOD(void,
+              OnTabContextUpdated,
+              (std::vector<searchbox::mojom::TabInfoPtr> tabs,
+               const std::vector<int32_t>& submitted_tab_ids,
+               mojom::SmartTabSharingStatePtr smart_tab_sharing_state),
               (override));
-  MOCK_METHOD(void, OnHandshakeComplete, (), (override));
-  MOCK_METHOD(void, HideInput, (), (override));
-  MOCK_METHOD(void, RestoreInput, (), (override));
-  MOCK_METHOD(void, EnterBasicMode, (), (override));
-  MOCK_METHOD(void, ExitBasicMode, (), (override));
-  MOCK_METHOD(void, LockInput, (), (override));
-  MOCK_METHOD(void, UnlockInput, (), (override));
 
  private:
   mojo::Receiver<mojom::ExtensionPage> receiver_{this};
+};
+
+class MockContextualTasksToolbarPage
+    : public contextual_tasks_toolbar::mojom::Page {
+ public:
+  MockContextualTasksToolbarPage();
+  ~MockContextualTasksToolbarPage() override;
+
+  mojo::PendingRemote<contextual_tasks_toolbar::mojom::Page> BindAndGetRemote();
+  void FlushForTesting() { receiver_.FlushForTesting(); }
+
+  MOCK_METHOD(void, OnSidePanelPinStateChanged, (bool is_pinned), (override));
+  MOCK_METHOD(void,
+              OnPinButtonEligibilityChanged,
+              (bool is_eligible),
+              (override));
+  MOCK_METHOD(void, OnAiPageStatusChanged, (bool is_ai_page), (override));
+  MOCK_METHOD(
+      void,
+      OnContextUpdated,
+      (std::vector<contextual_tasks_toolbar::mojom::ContextInfoPtr> context),
+      (override));
+  MOCK_METHOD(void, SetExpandButtonEnabled, (bool enabled), (override));
+  MOCK_METHOD(void, SetThreadTitle, (const std::string& title), (override));
+  MOCK_METHOD(void, OnSidePanelStateChanged, (), (override));
+  MOCK_METHOD(void, SetProfileAvatarUrl, (const GURL& avatar_url), (override));
+  MOCK_METHOD(void,
+              SetAccountInfo,
+              (const std::string& full_name, const std::string& email),
+              (override));
+  MOCK_METHOD(void, SetSignedInAccountCount, (uint32_t count), (override));
+
+ private:
+  mojo::Receiver<contextual_tasks_toolbar::mojom::Page> receiver_{this};
 };
 
 }  // namespace contextual_tasks

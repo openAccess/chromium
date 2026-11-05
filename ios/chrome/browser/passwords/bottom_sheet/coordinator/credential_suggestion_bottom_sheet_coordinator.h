@@ -16,9 +16,23 @@ namespace autofill {
 struct FormActivityParams;
 }  // namespace autofill
 
-@protocol BrowserCoordinatorCommands;
-@protocol PasswordControllerDelegate;
-@protocol SettingsCommands;
+@class CredentialSuggestionBottomSheetCoordinator;
+@class FormSuggestion;
+
+// Delegate protocol for `CredentialSuggestionBottomSheetCoordinator`.
+@protocol CredentialSuggestionBottomSheetCoordinatorDelegate <NSObject>
+
+// Called when the user selects a suggestion in the bottom sheet.
+- (void)credentialSuggestionBottomSheetCoordinator:
+            (CredentialSuggestionBottomSheetCoordinator*)coordinator
+                               didSelectSuggestion:(FormSuggestion*)suggestion
+                                           atIndex:(NSInteger)index;
+
+// Called when the bottom sheet was dismissed.
+- (void)credentialSuggestionBottomSheetCoordinatorDidDismiss:
+    (CredentialSuggestionBottomSheetCoordinator*)coordinator;
+
+@end
 
 // This coordinator is responsible for creating the bottom sheet's mediator and
 // view controller.
@@ -26,28 +40,40 @@ struct FormActivityParams;
     : ChromeCoordinator <CredentialSuggestionBottomSheetHandler,
                          CredentialSuggestionBottomSheetPresenter>
 
+// Delegate for this coordinator.
+@property(nonatomic, weak)
+    id<CredentialSuggestionBottomSheetCoordinatorDelegate>
+        delegate;
+
 // Initializer for password only bottom sheet and for conditional passkey
 // requests, which can show both password and passkey suggestions.
 // `viewController` is the VC used to present the bottom sheet.
 // `params` comes from the form (in bottom_sheet.ts) and contains
 // the information required to query password suggestions.
-- (instancetype)
-    initWithBaseViewController:(UIViewController*)viewController
-                       browser:(Browser*)browser
-                        params:(const autofill::FormActivityParams&)params
-                      delegate:(id<PasswordControllerDelegate>)delegate
-    NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithBaseViewController:(UIViewController*)viewController
+                                   browser:(Browser*)browser
+                                    params:(const autofill::FormActivityParams&)
+                                               params NS_DESIGNATED_INITIALIZER;
 
 // Initializer for modal passkey requests, which will only show passkey
 // suggestions. `viewController` is the VC used to present the bottom sheet.
 // `requestInfo` comes from the PasskeyTabHelper and contains information on the
 // passkey request which triggered this bottom sheet.
-- (instancetype)
-    initWithBaseViewController:(UIViewController*)viewController
-                       browser:(Browser*)browser
-                   requestInfo:
-                       (webauthn::IOSPasskeyClient::RequestInfo)requestInfo
-                      delegate:(id<PasswordControllerDelegate>)delegate
+- (instancetype)initWithBaseViewController:(UIViewController*)viewController
+                                   browser:(Browser*)browser
+                               requestInfo:
+                                   (webauthn::IOSPasskeyClient::RequestInfo)
+                                       requestInfo NS_DESIGNATED_INITIALIZER;
+
+// Initializer for preset credential suggestions. `viewController` is
+// the view controller used to present the bottom sheet. `suggestions` contains
+// the form suggestions to display. `activeIndex` is the index of the suggestion
+// that should be initially selected.
+- (instancetype)initWithBaseViewController:(UIViewController*)viewController
+                                   browser:(Browser*)browser
+                               suggestions:
+                                   (NSArray<FormSuggestion*>*)suggestions
+                               activeIndex:(NSInteger)activeIndex
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController

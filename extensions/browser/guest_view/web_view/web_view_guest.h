@@ -16,6 +16,8 @@
 #include "base/values.h"
 #include "components/guest_view/browser/guest_view.h"
 #include "content/public/browser/javascript_dialog_manager.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/page_navigator.h"
 #include "content/public/browser/permission_result.h"
 #include "extensions/browser/guest_view/web_view/javascript_dialog_helper.h"
 #include "extensions/browser/guest_view/web_view/web_view_find_helper.h"
@@ -25,6 +27,7 @@
 #include "extensions/browser/script_executor.h"
 #include "net/base/net_errors.h"
 #include "third_party/blink/public/mojom/frame/find_in_page.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 namespace content {
 class NavigationThrottleRegistry;
@@ -164,6 +167,9 @@ class WebViewGuest : public guest_view::GuestView<WebViewGuest> {
   // Returns spatial navigation status.
   bool IsSpatialNavigationEnabled() const;
 
+  const std::optional<content::OpenURLParams>&
+  GetPendingWindowOpenURLParamsForTesting() const;
+
   base::WeakPtr<WebViewGuest> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
   }
@@ -201,12 +207,11 @@ class WebViewGuest : public guest_view::GuestView<WebViewGuest> {
   void MaybeRecreateGuestContents(
       content::RenderFrameHost* outer_contents_frame) final;
   void EmbedderFullscreenToggled(bool entered_fullscreen) final;
-  void FindReply(content::WebContents* source,
-                 int request_id,
-                 int number_of_matches,
-                 const gfx::Rect& selection_rect,
-                 int active_match_ordinal,
-                 bool final_update) final;
+  void DidReceiveFindReply(int request_id,
+                           int number_of_matches,
+                           const gfx::Rect& selection_rect,
+                           int active_match_ordinal,
+                           bool final_update) final;
   bool ZoomPropagatesFromEmbedderToGuest() const final;
   const char* GetAPINamespace() const final;
   int GetTaskPrefix() const final;
@@ -221,12 +226,13 @@ class WebViewGuest : public guest_view::GuestView<WebViewGuest> {
   bool RequiresSslInterstitials() const final;
   bool IsPermissionRequestable(ContentSettingsType type) const final;
   std::optional<content::PermissionResult> OverridePermissionResult(
-      ContentSettingsType type) const final;
+      ContentSettingsType type,
+      const url::Origin& requesting_origin) const final;
   void GuestViewDocumentOnLoadCompleted() final;
   void GuestViewDidChangeLoadProgress(double progress) final;
   void GuestViewMainFrameProcessGone(base::TerminationStatus status) final;
   content::GuestPageHolder* GuestCreateNewWindow(
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const GURL& url,
       const std::string& main_frame_name,
       content::RenderFrameHost* opener,
@@ -279,7 +285,7 @@ class WebViewGuest : public guest_view::GuestView<WebViewGuest> {
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) final;
@@ -308,6 +314,14 @@ class WebViewGuest : public guest_view::GuestView<WebViewGuest> {
   void DidRedirectNavigation(
       content::NavigationHandle* navigation_handle) final;
   void DidFinishNavigation(content::NavigationHandle* navigation_handle) final;
+  void DidOpenRequestedURL(content::WebContents* new_contents,
+                           content::RenderFrameHost* source_render_frame_host,
+                           const GURL& url,
+                           const content::Referrer& referrer,
+                           ui::mojom::WindowOpenDisposition disposition,
+                           ui::PageTransition transition,
+                           bool started_from_context_menu,
+                           bool renderer_initiated) final;
   void UserAgentOverrideSet(const blink::UserAgentOverride& ua_override) final;
   void FrameNameChanged(content::RenderFrameHost* render_frame_host,
                         const std::string& name) final;
@@ -335,21 +349,23 @@ class WebViewGuest : public guest_view::GuestView<WebViewGuest> {
   void ReportFrameNameChange(const std::string& name);
 
   void PushWebViewStateToIOThread(content::RenderFrameHost* guest_host);
+  void ApplyWebViewStateToRenderFrameHost(
+      content::RenderFrameHost* render_frame_host);
 
-  // Loads the `url` provided. `force_navigation` indicates whether to reload
-  // the content if the provided `url` matches the current page of the guest.
-  // If a `navigation_handle_callback` function is provided, it should be called
-  // with the pending navigation (if any) when the navigation handle become
+  // Loads the URL using the parameters provided in `load_url_params`.
+  // `force_navigation` indicates whether to reload the content if the provided
+  // URL matches the current page of the guest. If a
+  // `navigation_handle_callback` function is provided, it should be called
+  // with the pending navigation (if any) when the navigation handle becomes
   // available. This allows callers to observe or attach their specific data.
   // This function may not be called if the navigation fails for any reason.
-  void LoadURLWithParams(const GURL& url,
-                         const content::Referrer& referrer,
-                         ui::PageTransition transition_type,
-                         base::OnceCallback<void(content::NavigationHandle&)>
-                             navigation_handle_callback,
-                         bool force_navigation);
+  void LoadURLWithParams(
+      content::NavigationController::LoadURLParams load_url_params,
+      base::OnceCallback<void(content::NavigationHandle&)>
+          navigation_handle_callback,
+      bool force_navigation);
 
-  void RequestNewWindowPermission(WindowOpenDisposition disposition,
+  void RequestNewWindowPermission(ui::mojom::WindowOpenDisposition disposition,
                                   const gfx::Rect& initial_bounds,
                                   std::unique_ptr<WebViewGuest> new_guest);
 
@@ -363,15 +379,18 @@ class WebViewGuest : public guest_view::GuestView<WebViewGuest> {
   // Creates a new guest window owned by this WebViewGuest.
   void CreateNewGuestWebViewWindow(const content::OpenURLParams& params);
 
-  void NewGuestWebViewCallback(WindowOpenDisposition disposition,
-                               const GURL& url,
-                               const std::string& frame_name,
-                               std::unique_ptr<GuestViewBase> guest);
+  void NewGuestWebViewCallback(
+      ui::mojom::WindowOpenDisposition disposition,
+      const GURL& url,
+      const std::string& frame_name,
+      std::optional<content::OpenURLParams> open_url_params,
+      std::unique_ptr<GuestViewBase> guest);
 
   bool HandleKeyboardShortcuts(const input::NativeWebKeyboardEvent& event);
 
   void ApplyAttributes(const base::DictValue& params);
 
+  void SetFrameName(content::RenderFrameHost* render_frame_host);
   void SetTransparency(content::RenderFrameHost* render_frame_host);
 
   void CreateInnerPageWithStoragePartition(
@@ -410,14 +429,21 @@ class WebViewGuest : public guest_view::GuestView<WebViewGuest> {
 
   std::unique_ptr<WebViewGuestDelegate> web_view_guest_delegate_;
 
-  // Tracks the name, and target URL of the new window. Once the first
-  // navigation commits, we no longer track this information.
+  // Tracks the name, target URL, and pending OpenURL parameters of the new
+  // window. Once the first navigation commits, we no longer track this
+  // information.
   struct NewWindowInfo {
     // Name of the new window.
     std::string name;
 
     // Expected initial URL of the new window.
     GURL url;
+
+    // Referrer for the initial navigation of the new window.
+    content::Referrer referrer;
+
+    // Parameters for the pending navigation, if any.
+    std::optional<content::OpenURLParams> open_url_params;
 
     // Whether OpenURL navigation from the newly created GuestView has changed
     // `url`. The pending OpenURL navigation needs to be applied after attaching
@@ -430,6 +456,8 @@ class WebViewGuest : public guest_view::GuestView<WebViewGuest> {
     bool did_start_navigating_away_from_initial_url = false;
 
     NewWindowInfo(const GURL& url, const std::string& name);
+    NewWindowInfo(const content::OpenURLParams& params,
+                  const std::string& name);
     NewWindowInfo(const NewWindowInfo&);
     ~NewWindowInfo();
   };

@@ -113,7 +113,7 @@ class CORE_EXPORT FragmentBuilder {
   // Return true when the final size of the fragment has been calculated.
   bool HasFinalSize() const { return has_final_size_; }
 
-  void SetIsHiddenForPaint(bool value) { is_hidden_for_paint_ = value; }
+  void SetIsHiddenDueToLayout(bool value) { is_hidden_due_to_layout_ = value; }
   void SetIsOpaque() { is_opaque_ = true; }
 
   void SetHasCollapsedBorders(bool value) { has_collapsed_borders_ = value; }
@@ -196,6 +196,7 @@ class CORE_EXPORT FragmentBuilder {
   bool HasItems() const { return items_builder_; }
   // The |FragmentItemsBuilder| for the inline formatting context of this box.
   FragmentItemsBuilder* ItemsBuilder() { return items_builder_; }
+  const FragmentItemsBuilder* ItemsBuilder() const { return items_builder_; }
   void SetItemsBuilder(FragmentItemsBuilder* builder) {
     items_builder_ = builder;
   }
@@ -243,10 +244,9 @@ class CORE_EXPORT FragmentBuilder {
   //
   // See layout part for builder interaction.
   void AddOutOfFlowChildCandidate(const BlockNode&,
-                                  const LogicalStaticPosition&,
+                                  LogicalStaticPosition,
+                                  const BlockBreakToken* = nullptr,
                                   bool allow_top_layer_nodes = false);
-  void AddOutOfFlowChildCandidate(const BlockNode& child,
-                                  const BlockBreakToken& child_break_token);
 
   // This should only be used for inline-level OOF-positioned nodes.
   // |inline_container_writing_direction| is the current writing mode direction
@@ -508,7 +508,7 @@ class CORE_EXPORT FragmentBuilder {
         writing_direction_(writing_direction),
         style_variant_(StyleVariant::kStandard),
         previous_break_token_(previous_break_token),
-        is_hidden_for_paint_(space.IsHiddenForPaint()) {
+        is_hidden_due_to_layout_(space.IsHiddenDueToLayout()) {
     DCHECK(style_);
     layout_object_ = node.GetLayoutBox();
   }
@@ -530,7 +530,8 @@ class CORE_EXPORT FragmentBuilder {
 
   PhysicalAxes GetScrollSnapAxes() const;
 
-  SnapArea ResolveSnapArea(const SnapArea& snap_area) const;
+  SnapArea ResolveSnapArea(const SnapArea& snap_area,
+                           wtf_size_t parent_snap_area_offset) const;
 
   void PropagateFromFragment(
       const PhysicalFragment& child,
@@ -613,6 +614,7 @@ class CORE_EXPORT FragmentBuilder {
   UnpositionedListMarker unpositioned_list_marker_;
 
   const EarlyBreak* early_break_ = nullptr;
+  const FragmentedOofContainer* fragmented_oof_container_ = nullptr;
 
   // The appeal of breaking inside this container.
   BreakAppeal break_appeal_ = kBreakAppealPerfect;
@@ -642,7 +644,7 @@ class CORE_EXPORT FragmentBuilder {
   bool has_orthogonal_fallback_size_descendant_ = false;
   bool may_have_descendant_above_block_start_ = false;
   bool is_fragmentation_context_root_ = false;
-  bool is_hidden_for_paint_ = false;
+  bool is_hidden_due_to_layout_ = false;
   bool is_opaque_ = false;
   bool has_collapsed_borders_ = false;
   bool requires_content_before_breaking_ = false;

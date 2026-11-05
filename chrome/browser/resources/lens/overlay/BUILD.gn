@@ -58,7 +58,6 @@ build_webui("build_overlay") {
     "region_selection.ts",
     "selection_overlay.ts",
     "side_panel/side_panel_app.ts",
-    "side_panel/side_panel_ghost_loader.ts",
     "text_layer.ts",
     "translate_button.ts",
   ]
@@ -85,9 +84,10 @@ build_webui("build_overlay") {
     "side_panel/feedback_toast.html.ts",
     "side_panel/feedback_toast.ts",
     "side_panel/post_message_communication.ts",
-    "side_panel/side_panel_browser_proxy.ts",
     "side_panel/side_panel_error_page.html.ts",
     "side_panel/side_panel_error_page.ts",
+    "side_panel/side_panel_ghost_loader.html.ts",
+    "side_panel/side_panel_ghost_loader.ts",
     "simplified_text_layer.html.ts",
     "simplified_text_layer.ts",
     "text_highlights.ts",
@@ -101,6 +101,7 @@ build_webui("build_overlay") {
     "overlay_border_glow.css",
     "side_panel/feedback_toast.css",
     "side_panel/side_panel_error_page.css",
+    "side_panel/side_panel_ghost_loader.css",
     "simplified_text_layer.css",
   ]
 
@@ -121,13 +122,8 @@ build_webui("build_overlay") {
 
   ts_definitions = [
     "//tools/typescript/definitions/chrome_event.d.ts",
-    "//tools/typescript/definitions/context_menus.d.ts",
-    "//tools/typescript/definitions/extension_types.d.ts",
     "//tools/typescript/definitions/language_settings_private.d.ts",
     "//tools/typescript/definitions/metrics_private.d.ts",
-    "//tools/typescript/definitions/tabs.d.ts",
-    "//tools/typescript/definitions/web_request.d.ts",
-    "//tools/typescript/definitions/webview_tag.d.ts",
     "paint_api.d.ts",
   ]
 

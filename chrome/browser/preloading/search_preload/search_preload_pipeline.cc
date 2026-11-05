@@ -15,6 +15,7 @@
 #include "content/public/browser/web_contents.h"
 #include "net/http/http_no_vary_search_data.h"
 #include "third_party/blink/public/mojom/loader/referrer.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 SearchPreloadPipeline::SearchPreloadPipeline(GURL canonical_url)
     : pipeline_info_(content::PreloadPipelineInfo::Create(
@@ -23,15 +24,18 @@ SearchPreloadPipeline::SearchPreloadPipeline(GURL canonical_url)
 
 SearchPreloadPipeline::~SearchPreloadPipeline() = default;
 
-void SearchPreloadPipeline::UpdateConfidence(content::WebContents& web_contents,
-                                             int confidence) {
+void SearchPreloadPipeline::UpdateConfidence(
+    content::WebContents& web_contents,
+    content::PreloadingPredictor predictor,
+    int confidence) {
   // Add new prediction when stronger signal arrived.
 
-  if (confidence <= confidence_) {
+  if (auto it = confidences_.find(predictor);
+      it != confidences_.end() && confidence <= it->second) {
     return;
   }
 
-  confidence_ = confidence;
+  confidences_[predictor] = confidence;
 
   auto* preloading_data =
       content::PreloadingData::GetOrCreateForWebContents(&web_contents);
@@ -43,8 +47,7 @@ void SearchPreloadPipeline::UpdateConfidence(content::WebContents& web_contents,
       base::BindRepeating(&IsSearchDestinationMatch, canonical_url_,
                           web_contents.GetBrowserContext());
   preloading_data->AddPreloadingPrediction(
-      chrome_preloading_predictor::kDefaultSearchEngine, confidence,
-      std::move(same_url_matcher),
+      predictor, confidence, std::move(same_url_matcher),
       web_contents.GetPrimaryMainFrame()->GetPageUkmSourceId());
 }
 
@@ -55,18 +58,8 @@ SearchPreloadSignalResult SearchPreloadPipeline::StartPrefetch(
     content::PreloadingPredictor predictor,
     const std::optional<net::HttpNoVarySearchData>& no_vary_search_hint,
     bool is_navigation_likely,
-    bool should_ignore_saver_modes) {
-  // Don't trigger prefetch if already triggered and is alive.
-  //
-  // TODO(crbug.com/394213503): Reconsider the behavior when prefetch is already
-  // triggered but not alive. Currently, the main reason that a triggered
-  // prefetch fails for DSE (embedder trigger, no TTL) is the failure of the
-  // load of the prefetch. (There should be no other timeouts nor expiration.)
-  // In general, retriggering may be useful.
-  if (prefetch_handle_) {
-    return SearchPreloadSignalResult::kNotTriggeredAlreadyTriggered;
-  }
-
+    bool should_ignore_saver_modes,
+    bool is_ahead_of_imminent_navigation) {
   auto* preloading_data =
       content::PreloadingData::GetOrCreateForWebContents(&web_contents);
 
@@ -81,6 +74,27 @@ SearchPreloadSignalResult SearchPreloadPipeline::StartPrefetch(
       std::move(same_url_matcher),
       /*triggering_primary_page_source_id=*/
       web_contents.GetPrimaryMainFrame()->GetPageUkmSourceId());
+
+  // Don't trigger prefetch if already triggered and is alive.
+  //
+  // TODO(crbug.com/394213503): Reconsider the behavior when prefetch is already
+  // triggered but not alive. Currently, the main reason that a triggered
+  // prefetch fails for DSE (embedder trigger, no TTL) is the failure of the
+  // load of the prefetch. (There should be no other timeouts nor expiration.)
+  // In general, retriggering may be useful.
+  if (prefetch_handle_) {
+    // Eligibility and triggering outcome will be handled in
+    // `content::PrefetchService` if the `PrefetchRequest` is triggered. This is
+    // not the case, so handle them ad-hoc here.
+    attempt->SetEligibility(content::PreloadingEligibility::kEligible);
+
+    if (!attempt->ShouldHoldback()) {
+      attempt->SetTriggeringOutcome(
+          content::PreloadingTriggeringOutcome::kDuplicate);
+    }
+
+    return SearchPreloadSignalResult::kNotTriggeredAlreadyTriggered;
+  }
 
   std::optional<content::PrefetchPriority> priority = std::nullopt;
   switch (features::kDsePreload2PrefetchPriorityPolicy.Get()) {
@@ -108,7 +122,7 @@ SearchPreloadSignalResult SearchPreloadPipeline::StartPrefetch(
       /*holdback_status_override=*/
       content::PreloadingHoldbackStatus::kUnspecified,
       /*ttl=*/features::kDsePreload2PrefetchTtl.Get(),
-      should_ignore_saver_modes);
+      should_ignore_saver_modes, is_ahead_of_imminent_navigation);
   CHECK(prefetch_handle_);
   prefetch_handle_->SetOnPrefetchHeadReceivedCallback(base::BindRepeating(
       &SearchPreloadService::OnPrefetchHeadReceived, search_preload_service));

@@ -10,6 +10,7 @@
 #include "base/notreached.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_controller.h"
@@ -74,6 +75,29 @@ TrackedElementHandler::TrackedElementHandler(content::WebContents* web_contents,
   }
 }
 
+TrackedElementHandler::TrackedElementHandler(
+    content::WebContents* web_contents,
+    mojo::PendingReceiver<tracked_element::mojom::TrackedElementHandler>
+        receiver,
+    ui::ElementContext context,
+    const std::vector<ui::ElementIdentifier>& identifiers,
+    content::RenderFrameHost* render_frame_host)
+    : context_(context),
+      receiver_(this, std::move(receiver)),
+      rfh_id_(render_frame_host ? render_frame_host->GetGlobalId()
+                                : content::GlobalRenderFrameHostId()) {
+  ui::ElementHighlighter::GetElementHighlighter()
+      ->MaybeRegisterBackend<ElementHighlighterWebUI>();
+
+  if (web_contents) {
+    Observe(web_contents);
+    is_web_contents_visible_ =
+        web_contents->GetVisibility() == content::Visibility::VISIBLE;
+  }
+
+  RegisterIdentifiers(identifiers);
+}
+
 TrackedElementHandler::~TrackedElementHandler() = default;
 
 void TrackedElementHandler::BindInterface(
@@ -92,13 +116,27 @@ void TrackedElementHandler::OnVisibilityChanged(
   UpdateAllEffectiveVisibilities();
 }
 
-void TrackedElementHandler::UpdateAllEffectiveVisibilities() {
+void TrackedElementHandler::OnRemoteSubframeViewportIntersectionStateChanged(
+    content::RenderFrameHost* rfh,
+    const blink::mojom::ViewportIntersectionState&
+        viewport_intersection_state) {
+  for (content::RenderFrameHost* frame = render_frame_host(); frame;
+       frame = frame->GetParentOrOuterDocument()) {
+    if (frame == rfh) {
+      UpdateAllEffectiveVisibilities(/*bounds_changed=*/true);
+      return;
+    }
+  }
+}
+
+void TrackedElementHandler::UpdateAllEffectiveVisibilities(
+    bool bounds_changed) {
   // This is complicated because it is possible that UpdateEffectiveVisibility
   // could invoke this class's destructor.
   auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
   for (auto& [_, elements] : elements_) {
     for (auto& [_, element] : elements) {
-      element->UpdateEffectiveVisibility();
+      element->UpdateEffectiveVisibility(bounds_changed);
       if (!weak_ptr) {
         return;
       }
@@ -118,11 +156,17 @@ void TrackedElementHandler::SetHighlightState(
   }
 }
 
+content::RenderFrameHost* TrackedElementHandler::render_frame_host() const {
+  return content::RenderFrameHost::FromID(rfh_id_);
+}
+
 void TrackedElementHandler::FlushManagerRemoteForTesting() {
   manager_remote_.FlushForTesting();  // IN-TEST
 }
 
-bool TrackedElementHandler::ClickElement(TrackedElementWebUI& element) {
+bool TrackedElementHandler::ClickElement(
+    TrackedElementWebUI& element,
+    tracked_element::mojom::InputType input_type) {
   CHECK_IS_TEST();
   if (!manager_remote_) {
     return false;
@@ -132,6 +176,7 @@ bool TrackedElementHandler::ClickElement(TrackedElementWebUI& element) {
   manager_remote_->ClickElement(
       tracked_element::mojom::TrackedElementIdentifier::New(
           element.identifier().GetName(), element.GetSecondaryIdentifier()),
+      input_type,
       base::BindOnce(
           [](bool* success_ptr, base::OnceClosure quit_closure, bool result) {
             *success_ptr = result;

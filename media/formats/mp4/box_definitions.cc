@@ -596,8 +596,8 @@ bool MetadataIT35SampleEntry::Parse(BoxReader* reader) {
   std::vector<uint8_t> it35_prefix;
   RCHECK(reader->ReadVec(&it35_prefix, it35_identifier_length));
 
-  if (gfx::HdrMetadataAgtm::IsEnabled() && MatchesAgtmT35(it35_prefix)) {
-    it35_prefix_type = IT35PrefixType::kSmpteSt2094App5;
+  if (MatchesAgtmT35(it35_prefix)) {
+    it35_prefix_type = MetadataTrack::IT35PrefixType::kSmpteSt2094App5;
   }
   return true;
 }
@@ -1284,6 +1284,9 @@ bool VideoSampleEntry::Parse(BoxReader* reader) {
     }
   }
 
+  // HDR metadata from the codec configuration record (e.g, hvcC).
+  gfx::HDRMetadata codec_config_hdr_metadata;
+  // HDR metadata from static metadata boxes (e.g, mdcv and clli).
   gfx::HDRMetadata hdr_static_metadata;
   const FourCC actual_format =
       format == FOURCC_ENCV ? sinf.format.format : format;
@@ -1314,7 +1317,7 @@ bool VideoSampleEntry::Parse(BoxReader* reader) {
       RCHECK(reader->ReadChild(hevc_config.get()));
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
       video_color_space = hevc_config->GetColorSpace();
-      hdr_metadata = hevc_config->GetHDRMetadata();
+      codec_config_hdr_metadata = hevc_config->GetHDRMetadata();
       alpha_mode = hevc_config->GetAlphaMode();
 #endif  // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
       video_info.codec = VideoCodec::kHEVC;
@@ -1349,7 +1352,7 @@ bool VideoSampleEntry::Parse(BoxReader* reader) {
       RCHECK(reader->ReadChild(hevc_config.get()));
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
       video_color_space = hevc_config->GetColorSpace();
-      hdr_metadata = hevc_config->GetHDRMetadata();
+      codec_config_hdr_metadata = hevc_config->GetHDRMetadata();
       alpha_mode = hevc_config->GetAlphaMode();
 #endif  // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
       video_info.codec = VideoCodec::kHEVC;
@@ -1438,9 +1441,10 @@ bool VideoSampleEntry::Parse(BoxReader* reader) {
         /*maxFALL=*/level_information.max_pic_average_light_level));
   }
 
-  if (hdr_static_metadata.IsValid()) {
-    hdr_metadata = hdr_static_metadata;
-  }
+  // Metadata from static metadata boxes takes precedence over metadata from
+  // the codec configuration record.
+  hdr_metadata = codec_config_hdr_metadata;
+  hdr_metadata.MergeMetadataFrom(hdr_static_metadata);
 
   Stereoscopic3DVideo st3d;
   if (reader->HasChild(&st3d)) {
@@ -1790,6 +1794,7 @@ bool IamfSpecificBox::Parse(BoxReader* reader) {
     RCHECK(ReadOBU(&config_reader));
   }
 
+  RCHECK(profile != AudioCodecProfile::kUnknown);
   return true;
 }
 
@@ -1804,15 +1809,27 @@ bool IamfSpecificBox::ReadOBU(BufferReader* reader) {
     case kIamfConfigObuTypeAudioElement:
     case kIamfConfigObuTypeMixPresentation:
       break;
-    case kIamfConfigObuTypeSequenceHeader:
+    case kIamfConfigObuTypeSequenceHeader: {
       uint32_t ia_code;
       RCHECK(reader->Read4(&ia_code));
       RCHECK(ia_code == FOURCC_IAMF);
 
-      RCHECK(reader->Read1(&profile));
-      RCHECK(profile <= 1);
-
+      uint8_t primary_profile;
+      RCHECK(reader->Read1(&primary_profile));
+      switch (primary_profile) {
+        case 0:
+          profile = AudioCodecProfile::kIAMF_SIMPLE;
+          break;
+        case 1:
+          profile = AudioCodecProfile::kIAMF_BASE;
+          break;
+        default:
+          DVLOG(1) << "Unhandled IAMF primary_profile "
+                   << static_cast<int>(primary_profile);
+          return false;
+      }
       break;
+    }
     default:
       DVLOG(1) << "Unhandled IAMF OBU type " << static_cast<int>(obu_type);
       return false;

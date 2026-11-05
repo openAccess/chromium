@@ -16,7 +16,7 @@ void IOSurfaceCaptureDeviceBase::AllocateAndStart(
     const media::VideoCaptureParams& params,
     std::unique_ptr<Client> client) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(client && !client_);
+  CHECK(client && !client_, base::NotFatalUntil::M160);
   client_ = std::move(client);
   capture_params_ = params;
 
@@ -47,7 +47,7 @@ void IOSurfaceCaptureDeviceBase::OnReceivedIOSurfaceFromStream(
   last_received_io_surface_ = std::move(io_surface);
   last_received_capture_format_ = capture_format;
   last_visible_rect_ = visible_rect;
-  last_received_metadata_.source_size = content_size;
+  last_received_metadata_.capture.source_size = content_size;
   last_received_metadata_.device_scale_factor = scale_factor;
 
   // Immediately send the new frame to the client.

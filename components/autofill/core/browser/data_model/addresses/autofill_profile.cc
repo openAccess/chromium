@@ -22,6 +22,7 @@
 #include "base/check_op.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
+#include "base/i18n/language_tag.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
@@ -29,9 +30,9 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "base/types/expected.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
-#include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/addresses/address.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
@@ -78,7 +79,8 @@ namespace autofill {
 
 namespace {
 
-constexpr char kAddressComponentsDefaultLocality[] = "en-US";
+constexpr base::i18n::LanguageTag kAddressComponentsDefaultLocality =
+    base::i18n::GetKnownLanguageTag("en-US");
 
 // Returns `NAME_FULL` for first, middle, and last name field types, and groups
 // phone number types similarly.
@@ -297,24 +299,17 @@ AutofillProfile& AutofillProfile::operator=(const AutofillProfile& profile) {
 }
 
 #if BUILDFLAG(IS_ANDROID)
-base::android::ScopedJavaLocalRef<jobject> AutofillProfile::CreateJavaObject(
-    std::string_view app_locale) const {
+base::android::ScopedJavaLocalRef<jobject> AutofillProfile::CreateJavaObject()
+    const {
   JNIEnv* env = base::android::AttachCurrentThread();
   base::android::ScopedJavaLocalRef<jobject> jprofile =
       Java_AutofillProfile_Constructor(
-          env, guid(), static_cast<int32_t>(record_type()), language_code());
+          env, guid(), std::to_underlying(record_type()), language_code());
 
   for (FieldType type : AutofillProfile::kDatabaseStoredTypes) {
-    auto status = static_cast<int32_t>(GetVerificationStatus(type));
-    // TODO(crbug.com/40278253): Reconcile usage of GetInfo and GetRawInfo
-    // below.
-    if (type == NAME_FULL) {
-      Java_AutofillProfile_setInfo(env, jprofile, static_cast<int32_t>(type),
-                                   GetInfo(type, app_locale), status);
-    } else {
-      Java_AutofillProfile_setInfo(env, jprofile, static_cast<int32_t>(type),
-                                   GetRawInfo(type), status);
-    }
+    auto status = std::to_underlying(GetVerificationStatus(type));
+    Java_AutofillProfile_setInfo(env, jprofile, static_cast<int32_t>(type),
+                                 GetRawInfo(type), status);
   }
   return jprofile;
 }
@@ -342,7 +337,7 @@ AutofillProfile AutofillProfile::CreateFromJavaObject(
     std::u16string value =
         Java_AutofillProfile_getInfo(env, jprofile, field_type);
 
-    if (value != profile.GetInfo(field_type, app_locale) ||
+    if (value != profile.GetRawInfo(field_type) ||
         status != profile.GetVerificationStatus(field_type)) {
       modified_fields.emplace_back(field_type, value, status);
     }
@@ -438,7 +433,8 @@ FieldType AutofillProfile::GetStorableTypeOf(FieldType type) const {
 }
 
 FieldTypeSet AutofillProfile::GetUserVisibleTypes() const {
-  FieldTypeSet visible_types{PHONE_HOME_WHOLE_NUMBER, EMAIL_ADDRESS};
+  FieldTypeSet visible_types{PHONE_HOME_WHOLE_NUMBER, EMAIL_ADDRESS,
+                             ADDRESS_HOME_COUNTRY};
   std::string components_language_code;
   for (const AutofillAddressUIComponent& component : GetAddressComponents(
            GetAddressCountryCode().value(), kAddressComponentsDefaultLocality,
@@ -686,11 +682,8 @@ void AutofillProfile::OverwriteDataFromForLegacySync(
 
   // Structured names should not be simply overwritten but it should be
   // attempted to merge the names.
-  bool is_structured_name_mergeable = false;
   NameInfo name_info = GetNameInfo();
-  is_structured_name_mergeable =
-      name_info.IsStructuredNameMergeable(profile.GetNameInfo());
-  name_info.MergeStructuredName(
+  const bool merge_succeeded = name_info.MergeStructuredName(
       profile.GetNameInfo(),
       usage_history().use_date() < profile.usage_history().use_date());
 
@@ -711,7 +704,7 @@ void AutofillProfile::OverwriteDataFromForLegacySync(
   // structure. Note, this should only happen if the complete name is empty. For
   // the legacy implementation, set the full name if |profile| does not contain
   // a full name.
-  if (is_structured_name_mergeable || !HasRawInfo(NAME_FULL)) {
+  if (merge_succeeded || !HasRawInfo(NAME_FULL)) {
     name_ = std::move(name_info);
   }
 
@@ -721,38 +714,15 @@ void AutofillProfile::OverwriteDataFromForLegacySync(
 AutofillProfile::ProfileMergeResult AutofillProfile::MergeDataFrom(
     const AutofillProfile& profile,
     std::string_view app_locale) {
+  using enum ProfileMergeResult;
   // TODO(crbug.com/453945181) Move this CHECK to a more suitable place.
   CHECK(record_type() != RecordType::kAccountNameEmail ||
         profile.record_type() != RecordType::kAccountNameEmail);
 
   if (!data_util::HaveNonConflictingCountryCodes(
           GetAddressCountryCode(), profile.GetAddressCountryCode())) {
-    return ProfileMergeResult::kMergeFailed;
+    return kMergeFailed;
   }
-
-  // TODO(crbug.com/453945181): Change check and merge logic for `NameInfo` so
-  // it conforms to the other infos. The check logic should be embedded inside
-  // the merge method.
-  if (!NameInfo::AreNamesMergeable(profile.GetNameInfo(),
-                                   profile.GetAddressCountryCode(),
-                                   GetNameInfo(), GetAddressCountryCode()) ||
-      !NameInfo::AreAlternativeNamesMergeable(
-          profile.GetNameInfo(), profile.GetAddressCountryCode(), GetNameInfo(),
-          GetAddressCountryCode())) {
-    return ProfileMergeResult::kMergeFailed;
-  }
-
-  AutofillProfileComparator comparator(app_locale);
-
-  NameInfo name(
-      /*alternative_names_supported=*/profile.GetAddressCountryCode() ==
-      AddressCountryCode("JP"));
-  EmailInfo email;
-  CompanyInfo company;
-  PhoneNumber phone_number(this);
-  Address address(profile.GetAddressCountryCode());
-
-  DVLOG(1) << "Merging profiles:\nSource = " << profile << "\nDest = " << *this;
 
   // The comparator's merge operations are biased to prefer the data in the
   // first profile parameter when the data is the same modulo case. We expect
@@ -760,25 +730,39 @@ AutofillProfile::ProfileMergeResult AutofillProfile::MergeDataFrom(
   // accepting updates instead of preserving the original data. I.e., passing
   // the incoming profile first accepts case and diacritic changes, for example,
   // the other ways does not.
-  // TODO(crbug.com/453945181): Simplify this logic by returning merged
-  // objects instead of passing them by reference.
-  // TODO(crbug.com/453945181): Change check and merge logic for `NameInfo` so
-  // it conforms to the other infos. The check logic should be embedded inside
-  // the merge method.
-  if (!NameInfo::MergeNames(
+  AutofillProfileComparator comparator(app_locale);
+
+  base::expected<NameInfo, NameInfo::MergeFailureReason> merged_name =
+      NameInfo::MergeNames(
           profile.GetNameInfo(), profile.GetAddressCountryCode(), GetNameInfo(),
           GetAddressCountryCode(),
-          usage_history().use_date() < profile.usage_history().use_date(),
-          name) ||
-      comparator.MergeEmailAddresses(profile, *this, email) ==
-          ProfileMergeResult::kMergeFailed ||
-      comparator.MergeCompanyNames(profile, *this, company) ==
-          ProfileMergeResult::kMergeFailed ||
-      comparator.MergePhoneNumbers(profile, *this, phone_number) ==
-          ProfileMergeResult::kMergeFailed ||
-      comparator.MergeAddresses(profile, *this, address) ==
-          ProfileMergeResult::kMergeFailed) {
-    return ProfileMergeResult::kMergeFailed;
+          usage_history().use_date() < profile.usage_history().use_date());
+  if (!merged_name.has_value()) {
+    return kMergeFailed;
+  }
+
+  std::optional<EmailInfo> merged_email =
+      comparator.MergeEmailAddresses(profile, *this);
+  if (!merged_email.has_value()) {
+    return kMergeFailed;
+  }
+
+  std::optional<CompanyInfo> merged_company =
+      comparator.MergeCompanyNames(profile, *this);
+  if (!merged_company.has_value()) {
+    return kMergeFailed;
+  }
+
+  std::optional<PhoneNumber> merged_phone =
+      comparator.MergePhoneNumbers(profile, *this);
+  if (!merged_phone.has_value()) {
+    return kMergeFailed;
+  }
+
+  std::optional<Address> merged_address =
+      comparator.MergeAddresses(profile, *this);
+  if (!merged_address.has_value()) {
+    return kMergeFailed;
   }
 
   set_language_code(profile.language_code());
@@ -791,38 +775,38 @@ AutofillProfile::ProfileMergeResult AutofillProfile::MergeDataFrom(
 
   bool modified = false;
 
-  if (name_ != name) {
-    MergeFormGroupTokenQuality(name, profile);
-    name_ = name;
+  if (name_ != *merged_name) {
+    MergeFormGroupTokenQuality(*merged_name, profile);
+    name_ = std::move(*merged_name);
     modified = true;
   }
 
-  if (email_ != email) {
-    MergeFormGroupTokenQuality(email, profile);
-    email_ = email;
+  if (email_ != merged_email) {
+    MergeFormGroupTokenQuality(*merged_email, profile);
+    email_ = *std::move(merged_email);
     modified = true;
   }
 
-  if (company_ != company) {
-    MergeFormGroupTokenQuality(company, profile);
-    company_ = company;
+  if (company_ != merged_company) {
+    MergeFormGroupTokenQuality(*merged_company, profile);
+    company_ = *std::move(merged_company);
     modified = true;
   }
 
-  if (phone_number_ != phone_number) {
-    MergeFormGroupTokenQuality(phone_number, profile);
-    phone_number_ = phone_number;
+  if (phone_number_ != merged_phone) {
+    MergeFormGroupTokenQuality(*merged_phone, profile);
+    phone_number_ = *std::move(merged_phone);
     modified = true;
   }
 
-  if (address_ != address) {
-    MergeFormGroupTokenQuality(address, profile);
-    address_ = address;
+  if (address_ != merged_address) {
+    MergeFormGroupTokenQuality(*merged_address, profile);
+    address_ = *std::move(merged_address);
     modified = true;
   }
 
-  return modified ? ProfileMergeResult::kMergeSucceededWithModification
-                  : ProfileMergeResult::kMergeSucceededWithoutModification;
+  return modified ? kMergeSucceededWithModification
+                  : kMergeSucceededWithoutModification;
 }
 
 void AutofillProfile::MergeFormGroupTokenQuality(
@@ -952,19 +936,12 @@ std::u16string AutofillProfile::ConstructInferredLabel(
   std::u16string separator =
       l10n_util::GetStringUTF16(IDS_AUTOFILL_ADDRESS_SUMMARY_SEPARATOR);
 
-  const std::u16string& profile_region_code = GetInfo(
-      AutofillType(ADDRESS_HOME_COUNTRY, /*is_country_code=*/true), app_locale);
-  std::string address_region_code = base::UTF16ToUTF8(profile_region_code);
-
   // A copy of |this| pruned down to contain only data for the address fields in
   // |included_fields|.
   AutofillProfile trimmed_profile(guid(), RecordType::kLocalOrSyncable,
                                   GetAddressCountryCode());
-  trimmed_profile.SetInfo(
-      AutofillType(ADDRESS_HOME_COUNTRY, /*is_country_code=*/true),
-      profile_region_code, app_locale);
   trimmed_profile.set_language_code(language_code());
-  AutofillCountry country(address_region_code);
+  AutofillCountry country(GetRawInfo(ADDRESS_HOME_COUNTRY));
 
   std::vector<FieldType> remaining_fields;
   for (size_t i = 0; i < included_fields.size() && num_fields_to_use > 0; ++i) {
@@ -1060,27 +1037,27 @@ VerificationStatus AutofillProfile::GetVerificationStatus(
   return form_group->GetVerificationStatus(type);
 }
 
-std::u16string AutofillProfile::GetInfo(const AutofillType& type,
+std::u16string AutofillProfile::GetInfo(FieldType type,
                                         std::string_view app_locale) const {
-  const FormGroup* form_group = FormGroupForType(type.GetAddressType());
+  const FormGroup* form_group = FormGroupForType(type);
   if (!form_group) {
     return std::u16string();
   }
   return form_group->GetInfo(type, app_locale);
 }
 
-bool AutofillProfile::SetInfoWithVerificationStatus(const AutofillType& type,
+bool AutofillProfile::SetInfoWithVerificationStatus(FieldType type,
                                                     std::u16string_view value,
                                                     std::string_view app_locale,
                                                     VerificationStatus status) {
-  FormGroup* form_group = MutableFormGroupForType(type.GetAddressType());
+  FormGroup* form_group = MutableFormGroupForType(type);
   if (!form_group) {
     return false;
   }
 
   const std::u16string_view trimmed_value =
       base::TrimWhitespace(value, base::TRIM_ALL);
-  if (type.GetAddressType() == ADDRESS_HOME_COUNTRY) {
+  if (type == ADDRESS_HOME_COUNTRY) {
     const AddressCountryCode old_country_code = GetAddressCountryCode();
     const bool response = form_group->SetInfoWithVerificationStatus(
         type, trimmed_value, app_locale, status);
@@ -1090,14 +1067,6 @@ bool AutofillProfile::SetInfoWithVerificationStatus(const AutofillType& type,
 
   return form_group->SetInfoWithVerificationStatus(type, trimmed_value,
                                                    app_locale, status);
-}
-
-bool AutofillProfile::SetInfoWithVerificationStatus(FieldType type,
-                                                    std::u16string_view value,
-                                                    std::string_view app_locale,
-                                                    VerificationStatus status) {
-  return SetInfoWithVerificationStatus(AutofillType(type), value, app_locale,
-                                       status);
 }
 
 // static
@@ -1318,10 +1287,6 @@ void AutofillProfile::ClearFields(const FieldTypeSet& fields) {
     SetRawInfoWithVerificationStatus(field_type, u"",
                                      VerificationStatus::kNoStatus);
   }
-}
-
-void AutofillProfile::MigrateRegularNameToPhoneticName() {
-  name_.MigrateRegularNameToPhoneticName();
 }
 
 UsageHistoryInformation& AutofillProfile::usage_history() {

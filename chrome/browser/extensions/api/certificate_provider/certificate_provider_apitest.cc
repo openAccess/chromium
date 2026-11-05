@@ -28,6 +28,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service_factory.h"
@@ -83,6 +84,7 @@
 #include "third_party/boringssl/src/include/openssl/pool.h"
 #include "third_party/boringssl/src/include/openssl/rsa.h"
 #include "third_party/boringssl/src/include/openssl/ssl.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/textfield/textfield.h"
@@ -390,7 +392,7 @@ class CertificateProviderApiMockedExtensionTest
     // by completion of this request, so we don't wait for navigation to finish.
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), GetHttpsClientCertUrl(),
-        WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_NO_WAIT);
 
     content::WebContents* const https_contents = GetActiveWebContents();
@@ -911,7 +913,7 @@ IN_PROC_BROWSER_TEST_F(CertificateProviderApiTest,
   ASSERT_TRUE(incognito_browser);
   ui_test_utils::NavigateToURLWithDisposition(
       incognito_browser, GetHttpsClientCertUrl(),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   EXPECT_EQ(test_certificate_provider_extension.certificate_request_count(), 1);
   EXPECT_EQ(GetPageTextContent(

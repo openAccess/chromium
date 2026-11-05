@@ -4,6 +4,8 @@
 
 #include "ui/android/resources/nine_patch_resource.h"
 
+#include <algorithm>
+
 #include "base/check_op.h"
 #include "ui/gfx/geometry/point_f.h"
 
@@ -11,7 +13,8 @@ namespace ui {
 
 // static
 NinePatchResource* NinePatchResource::From(Resource* resource) {
-  DCHECK_EQ(Type::NINE_PATCH_BITMAP, resource->type());
+  CHECK_EQ(Type::NINE_PATCH_BITMAP, resource->type(),
+           base::NotFatalUntil::M163);
   return static_cast<NinePatchResource*>(resource);
 }
 
@@ -46,8 +49,10 @@ gfx::Rect NinePatchResource::Border(const gfx::Size& bounds,
                                     const gfx::InsetsF& scale) const {
   // Calculate whether or not we need to scale down the border if the bounds of
   // the layer are going to be smaller than the aperture padding.
-  float x_scale = std::min((float)bounds.width() / size().width(), 1.f);
-  float y_scale = std::min((float)bounds.height() / size().height(), 1.f);
+  float x_scale =
+      std::min(static_cast<float>(bounds.width()) / size().width(), 1.f);
+  float y_scale =
+      std::min(static_cast<float>(bounds.height()) / size().height(), 1.f);
 
   float left_scale = std::min(x_scale * scale.left(), 1.f);
   float right_scale = std::min(x_scale * scale.right(), 1.f);

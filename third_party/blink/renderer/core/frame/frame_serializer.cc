@@ -502,7 +502,7 @@ class SerializerMarkupAccumulator : public MarkupAccumulator {
     }
 
     // The z-index should be greater than the threshold.
-    if (box->StyleRef().EffectiveZIndex() < kPopupOverlayZIndexThreshold) {
+    if (box->Style().EffectiveZIndex() < kPopupOverlayZIndexThreshold) {
       return false;
     }
 
@@ -1353,10 +1353,10 @@ function main(metadata) {
   void RetrieveResourcesForCSSValue(const CSSValue& css_value,
                                     Document& document) {
     if (const auto* image_value = DynamicTo<CSSImageValue>(css_value)) {
-      if (image_value->IsCachePending()) {
+      if (image_value->IsCachePending(document.Fetcher())) {
         return;
       }
-      StyleImage* style_image = image_value->CachedImage();
+      StyleImage* style_image = image_value->CachedImage(document.Fetcher());
       if (!style_image || !style_image->IsImageResource()) {
         return;
       }

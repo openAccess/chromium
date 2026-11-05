@@ -98,19 +98,19 @@ class LocaleWinTest : public testing::Test {
     return locale->FormatDateTime(GetDateComponents(year, month, day));
   }
 
-  unsigned FirstDayOfWeek(LCID lcid) {
+  wtf_size_t FirstDayOfWeek(LCID lcid) {
     std::unique_ptr<LocaleWin> locale =
         LocaleWin::CreateForTesting(lcid, true /* defaultsForLocale */);
     return locale->FirstDayOfWeek();
   }
 
-  String MonthLabel(LCID lcid, unsigned index) {
+  String MonthLabel(LCID lcid, wtf_size_t index) {
     std::unique_ptr<LocaleWin> locale =
         LocaleWin::CreateForTesting(lcid, true /* defaultsForLocale */);
     return locale->MonthLabels()[index];
   }
 
-  String WeekDayShortLabel(LCID lcid, unsigned index) {
+  String WeekDayShortLabel(LCID lcid, wtf_size_t index) {
     std::unique_ptr<LocaleWin> locale =
         LocaleWin::CreateForTesting(lcid, true /* defaultsForLocale */);
     return locale->WeekDayShortLabels()[index];
@@ -140,13 +140,13 @@ class LocaleWinTest : public testing::Test {
     return locale->ShortTimeFormat();
   }
 
-  String ShortMonthLabel(LCID lcid, unsigned index) {
+  String ShortMonthLabel(LCID lcid, wtf_size_t index) {
     std::unique_ptr<LocaleWin> locale =
         LocaleWin::CreateForTesting(lcid, true /* defaultsForLocale */);
     return locale->ShortMonthLabels()[index];
   }
 
-  String TimeAmPmLabel(LCID lcid, unsigned index) {
+  String TimeAmPmLabel(LCID lcid, wtf_size_t index) {
     std::unique_ptr<LocaleWin> locale =
         LocaleWin::CreateForTesting(lcid, true /* defaultsForLocale */);
     return locale->TimeAmPmLabels()[index];
@@ -166,9 +166,9 @@ TEST_F(LocaleWinTest, formatDate) {
 }
 
 TEST_F(LocaleWinTest, firstDayOfWeek) {
-  EXPECT_EQ(static_cast<unsigned>(kSunday), FirstDayOfWeek(kEnglishUS));
-  EXPECT_EQ(static_cast<unsigned>(kMonday), FirstDayOfWeek(kFrenchFR));
-  EXPECT_EQ(static_cast<unsigned>(kSunday), FirstDayOfWeek(kJapaneseJP));
+  EXPECT_EQ(static_cast<wtf_size_t>(kSunday), FirstDayOfWeek(kEnglishUS));
+  EXPECT_EQ(static_cast<wtf_size_t>(kMonday), FirstDayOfWeek(kFrenchFR));
+  EXPECT_EQ(static_cast<wtf_size_t>(kSunday), FirstDayOfWeek(kJapaneseJP));
 }
 
 TEST_F(LocaleWinTest, monthLabels) {
@@ -214,6 +214,27 @@ TEST_F(LocaleWinTest, dateFormat) {
             LocaleWin::DateFormatForTesting("yyyy-''''-MMM''''-dd"));
   EXPECT_EQ("yyyy'-'''''MMMM-dd",
             LocaleWin::DateFormatForTesting("yyyy-''''MMMM-dd"));
+}
+
+// ddd/dddd (day of week) has no field UI; it is dropped together with the
+// literal text around it. crbug.com/574997087
+TEST_F(LocaleWinTest, dateFormatDayOfWeek) {
+  EXPECT_EQ("yyyy/MM/dd",
+            LocaleWin::DateFormatForTesting("yyyy/MM/dd '('ddd')'"));
+  EXPECT_EQ("yyyy/MM/dd",
+            LocaleWin::DateFormatForTesting("yyyy/MM/dd '('dddd')'"));
+  EXPECT_EQ("yyyy/MM/dd", LocaleWin::DateFormatForTesting("yyyy/MM/dd (ddd)"));
+  // Full-width parentheses.
+  EXPECT_EQ("yyyy/MM/dd", LocaleWin::DateFormatForTesting(
+                              String::FromUtf8("yyyy/MM/dd\xEF\xBC\x88"
+                                               "ddd\xEF\xBC\x89")));
+  EXPECT_EQ("yyyy/MM/dd", LocaleWin::DateFormatForTesting("yyyy/MM/dd ddd"));
+  EXPECT_EQ("dd MMMM yyyy",
+            LocaleWin::DateFormatForTesting("dddd, dd MMMM yyyy"));
+  // A literal between the day of week and a following field is kept as the
+  // separator.
+  EXPECT_EQ("yyyy MM", LocaleWin::DateFormatForTesting("yyyy ddd MM"));
+  EXPECT_EQ("", LocaleWin::DateFormatForTesting("ddd"));
 }
 
 TEST_F(LocaleWinTest, monthFormat) {

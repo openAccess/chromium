@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,13 +27,14 @@
 #include "components/services/storage/public/cpp/filesystem/filesystem_proxy.h"
 #include "components/services/storage/public/mojom/session_storage_control.mojom.h"
 #include "content/browser/dom_storage/dom_storage_context_wrapper.h"
-#include "content/browser/dom_storage/session_storage_namespace_impl.h"
+#include "content/browser/dom_storage/session_storage_namespace_handle_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/browsing_data_filter_builder.h"
+#include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/navigation_controller.h"
-#include "content/public/browser/session_storage_namespace.h"
+#include "content/public/browser/session_storage_namespace_handle.h"
 #include "content/public/browser/session_storage_usage_info.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/storage_usage_info.h"
@@ -41,6 +43,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
+#include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/test_launcher.h"
 #include "content/shell/browser/shell.h"
@@ -49,8 +52,10 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/schemeful_site.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/dom_storage/storage_area.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/origin.h"
 
 namespace content {
@@ -97,6 +102,22 @@ class DOMStorageBrowserTest : public base::test::WithFeatureOverride,
         ->web_contents()
         ->GetBrowserContext()
         ->GetDefaultStoragePartition();
+  }
+
+  // Returns the ids of every session storage namespace the storage service
+  // knows about. A namespace only shows up once it has data for a storage key.
+  std::set<std::string> GetSessionStorageNamespaceIds() {
+    base::RunLoop loop;
+    std::set<std::string> namespace_ids;
+    context_wrapper()->GetSessionStorageUsage(base::BindLambdaForTesting(
+        [&](const std::vector<SessionStorageUsageInfo>& usage) {
+          for (const SessionStorageUsageInfo& info : usage) {
+            namespace_ids.insert(info.namespace_id);
+          }
+          loop.Quit();
+        }));
+    loop.Run();
+    return namespace_ids;
   }
 
   std::vector<StorageUsageInfo> GetUsage() {
@@ -173,8 +194,7 @@ class DOMStorageBrowserTest : public base::test::WithFeatureOverride,
   }
 
   std::string CreateSessionStorageNamespace() {
-    std::string namespace_id =
-        base::Uuid::GenerateRandomV4().AsLowercaseString();
+    std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
     context_wrapper()->GetSessionStorageControl()->CreateNamespace(
         namespace_id);
     return namespace_id;
@@ -404,19 +424,8 @@ IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, MAYBE_SanityCheckIncognito) {
 IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, PRE_DataPersists) {
   SimpleTest(GetTestUrl("dom_storage", "store_data.html"), kNotIncognito);
 
-  // Browser shutdown can always race with async work on non-shutdown-blocking
-  // task runners. This includes the local storage implementation. If opening
-  // the database takes too long, by the time it finishes the IO thread may be
-  // shut down and the Local Storage implementation may be unable to commit its
-  // pending operations.
-  //
-  // Since the point of this test is to verify that committed data is actually
-  // retrievable by a subsequent browser session, wait for the database to be
-  // ready.
-  base::RunLoop loop;
-  context_wrapper()->GetLocalStorageUsage(base::BindLambdaForTesting(
-      [&](const std::vector<StorageUsageInfo>&) { loop.Quit(); }));
-  loop.Run();
+  // Wait for the write to commit before shutdown.
+  CommitLocalStorage();
 }
 
 IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, MAYBE_DataPersists) {
@@ -455,7 +464,7 @@ IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, PRE_SessionStorageOnDiskSize) {
   NavigateToTestOrigin();
   WriteLargeValue("sessionStorage");
 
-  SessionStorageNamespace* session_storage_namespace =
+  SessionStorageNamespaceHandle* session_storage_namespace =
       shell()
           ->web_contents()
           ->GetController()
@@ -488,8 +497,14 @@ IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, SessionStorageOnDiskSize) {
 IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, MAYBE_DeletePhysicalStorageKey) {
   EXPECT_EQ(0U, GetUsage().size());
   SimpleTest(GetTestUrl("dom_storage", "store_data.html"), kNotIncognito);
-  std::vector<StorageUsageInfo> usage = GetUsage();
-  ASSERT_EQ(1U, usage.size());
+  // The page's writes reach the storage service asynchronously. An area that
+  // is still loading can appear in the usage list with zero bytes, so wait for
+  // nonzero usage before deleting it.
+  std::vector<StorageUsageInfo> usage;
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    usage = GetUsage();
+    return usage.size() == 1U && usage[0].total_size_bytes > 0;
+  }));
   DeletePhysicalStorageKey(usage[0].storage_key);
   EXPECT_EQ(0U, GetUsage().size());
 }
@@ -522,6 +537,78 @@ IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest, FileUrlWithHost) {
   EXPECT_EQ("bar", EvalJs(shell(), script));
 }
 #endif
+
+// Refuses every window the renderer asks for, the way a popup blocker does.
+class NoWindowsContentBrowserClient
+    : public ContentBrowserTestContentBrowserClient {
+ public:
+  bool CanCreateWindow(RenderFrameHost* opener,
+                       const GURL& opener_url,
+                       const GURL& opener_top_level_frame_url,
+                       const url::Origin& source_origin,
+                       content::mojom::WindowContainerType container_type,
+                       const GURL& target_url,
+                       const Referrer& referrer,
+                       const std::string& frame_name,
+                       ui::mojom::WindowOpenDisposition disposition,
+                       const blink::mojom::WindowFeatures& features,
+                       bool user_gesture,
+                       bool opener_suppressed,
+                       bool* no_javascript_access) override {
+    *no_javascript_access = false;
+    return false;
+  }
+};
+
+// Regression test for https://crbug.com/40761980. The renderer clones its
+// sessionStorage namespace for a new window before the browser has decided
+// whether that window may be created at all, so a window that ends up refused
+// must not leave the clone behind in the storage service.
+IN_PROC_BROWSER_TEST_P(DOMStorageBrowserTest,
+                       BlockedWindowDoesNotLeakSessionStorageNamespace) {
+  NavigateToTestOrigin();
+  ASSERT_TRUE(ExecJs(shell(), "sessionStorage.setItem('key', 'value');"));
+
+  // Only the opener's namespace exists at this point.
+  const std::set<std::string> opener_namespaces =
+      GetSessionStorageNamespaceIds();
+  ASSERT_EQ(1u, opener_namespaces.size());
+
+  // The renderer clones its namespace for the new window before asking for it,
+  // so the clone outlives the refusal below.
+  {
+    NoWindowsContentBrowserClient client;
+    EXPECT_EQ(true, EvalJs(shell(), "window.open('about:blank') === null"));
+  }
+
+  // Now open a window that is allowed. Both clones are requested by the same
+  // renderer on the same pipe, in this order, so the storage service cannot
+  // have processed the allowed window's clone without having processed the
+  // refused window's clone first. Waiting for the allowed window's own
+  // namespace to appear therefore also waits out the refused one, which is
+  // what makes the check below a statement about cleanup rather than about the
+  // refused clone not having arrived yet.
+  ASSERT_EQ(1u, Shell::windows().size());
+  EXPECT_EQ(false, EvalJs(shell(), "window.open('title1.html') === null"));
+  ASSERT_EQ(2u, Shell::windows().size());
+  SessionStorageNamespaceHandle* opened_namespace =
+      Shell::windows()[1]
+          ->web_contents()
+          ->GetController()
+          .GetDefaultSessionStorageNamespace();
+  ASSERT_TRUE(opened_namespace);
+  const std::string opened_namespace_id = opened_namespace->id();
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return GetSessionStorageNamespaceIds().contains(opened_namespace_id);
+  })) << "the allowed window's namespace never appeared";
+
+  // The opener and the allowed window, and nothing else. Before this was fixed
+  // the refused window's clone was a third namespace that stayed for the
+  // lifetime of the storage service.
+  EXPECT_THAT(GetSessionStorageNamespaceIds(),
+              testing::UnorderedElementsAre(*opener_namespaces.begin(),
+                                            opened_namespace_id));
+}
 
 INSTANTIATE_TEST_SUITE_P(
     /*no prefix*/,

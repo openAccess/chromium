@@ -21,7 +21,6 @@
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
@@ -143,7 +142,7 @@ bool SystemMenuModelDelegate::IsItemForCommandIdDynamic(int command_id) const {
 
 std::u16string SystemMenuModelDelegate::GetLabelForCommandId(
     int command_id) const {
-  DCHECK(IsItemForCommandIdDynamic(command_id));
+  CHECK(IsItemForCommandIdDynamic(command_id), base::NotFatalUntil::M162);
 
   int string_id;
   switch (command_id) {
@@ -153,7 +152,7 @@ std::u16string SystemMenuModelDelegate::GetLabelForCommandId(
       if (IsCommandIdEnabled(command_id)) {
         sessions::TabRestoreService* trs =
             TabRestoreServiceFactory::GetForProfile(browser_->GetProfile());
-        DCHECK(trs);
+        CHECK(trs, base::NotFatalUntil::M162);
         trs->LoadTabsFromLastSession();
         if (!trs->entries().empty()) {
           switch (trs->entries().front()->type) {
@@ -176,7 +175,7 @@ std::u16string SystemMenuModelDelegate::GetLabelForCommandId(
       if (IsCommandIdEnabled(command_id)) {
         sessions::TabRestoreService* trs =
             TabRestoreServiceFactory::GetForProfile(browser_->GetProfile());
-        DCHECK(trs);
+        CHECK(trs, base::NotFatalUntil::M162);
         trs->LoadTabsFromLastSession();
         if (!trs->entries().empty()) {
           switch (trs->entries().front()->type) {

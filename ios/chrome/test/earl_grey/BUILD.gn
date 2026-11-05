@@ -19,6 +19,20 @@ source_set("device_check_eg2_tests") {
   frameworks = [ "UIKit.framework" ]
 }
 
+source_set("eg2_tests") {
+  configs += [ "//build/config/ios:xctest_config" ]
+  testonly = true
+  sources = [ "chrome_test_case_egtest.mm" ]
+  deps = [
+    ":eg_test_support+eg2",
+    ":switches",
+    "//ios/testing/earl_grey:eg_test_support+eg2",
+    "//ios/testing/earl_grey:launch_configuration",
+    "//net:test_support",
+  ]
+  frameworks = [ "UIKit.framework" ]
+}
+
 source_set("hooks") {
   testonly = true
   sources = [ "eg_tests_hook.mm" ]
@@ -31,6 +45,8 @@ source_set("hooks") {
     "//components/data_sharing:test_support",
     "//components/data_sharing/public",
     "//components/feature_engagement/public",
+    "//components/gcm_driver:test_support",
+    "//components/gcm_driver/instance_id:test_support",
     "//components/password_manager/core/browser:test_support",
     "//components/password_manager/core/browser/sharing:test_support",
     "//components/password_manager/ios:fake_bulk_leak_check_service",
@@ -40,15 +56,16 @@ source_set("hooks") {
     "//components/saved_tab_groups/internal:service_test_utils",
     "//components/saved_tab_groups/public",
     "//components/saved_tab_groups/test_support",
+    "//components/signin/core/browser:test_support",
     "//components/signin/internal/identity_manager",
     "//components/signin/internal/identity_manager:test_support",
+    "//components/sync:test_support",
     "//components/sync_device_info",
     "//ios/chrome/app:tests_hook",
     "//ios/chrome/app:tests_hook_helper",
     "//ios/chrome/browser/aim/model:test_support",
     "//ios/chrome/browser/authentication/test:eg_app_support+eg2",
     "//ios/chrome/browser/autocomplete/test:eg_app_support+eg2",
-    "//ios/chrome/browser/composebox/eg_tests/inttest:eg_app_support+eg2",
     "//ios/chrome/browser/composebox/model:test_support",
     "//ios/chrome/browser/drive/model:test_support",
     "//ios/chrome/browser/flags:system_flags",
@@ -58,6 +75,7 @@ source_set("hooks") {
     "//ios/chrome/browser/saved_tab_groups/model",
     "//ios/chrome/browser/sessions/model:session_restoration_service_factory",
     "//ios/chrome/browser/share_kit/model:test_support",
+    "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/shared/public/features",
@@ -70,10 +88,18 @@ source_set("hooks") {
     "//ios/chrome/browser/sync/model:data_type_store_service_factory",
     "//ios/chrome/browser/sync/model:device_info_sync_service_factory",
     "//ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups:eg_app_support+eg2",
-    "//ios/chrome/common/ui/reauthentication:mock_reauthentication_module",
+    "//ios/chrome/browser/web_extension/model:test_support",
+    "//ios/chrome/common/intents",
+    "//ios/chrome/common/ui/reauthentication:fake_reauthentication_module",
     "//ios/chrome/test/app:test_support",
     "//ios/chrome/test/providers/signin:trusted_vault",
+    "//ios/public/provider/chrome/browser/lens:lens_api",
+    "//ios/testing:open_url_context",
     "//ui/base:test_support",
+  ]
+  frameworks = [
+    "Intents.framework",
+    "UIKit.framework",
   ]
 }
 
@@ -84,6 +110,8 @@ source_set("eg_app_support+eg2") {
     "CALayer+EGResetInfiniteDuration.mm",
     "accessibility_util.h",
     "accessibility_util.mm",
+    "background_launch_app_interface.h",
+    "background_launch_app_interface.mm",
     "chrome_actions_app_interface.h",
     "chrome_actions_app_interface.mm",
     "chrome_coordinator_app_interface.h",
@@ -94,6 +122,8 @@ source_set("eg_app_support+eg2") {
     "chrome_matchers_app_interface.mm",
     "chrome_test_case_app_interface.h",
     "chrome_test_case_app_interface.mm",
+    "duo_simulator_util.h",
+    "duo_simulator_util.mm",
     "earl_grey_scoped_block_swizzler_app_interface.h",
     "earl_grey_scoped_block_swizzler_app_interface.mm",
     "recording_command_dispatcher.h",
@@ -125,12 +155,15 @@ source_set("eg_app_support+eg2") {
     "//components/variations",
     "//components/variations/service",
     "//ios/chrome/app:app_internal",
+    "//ios/chrome/app:tests_hook",
     "//ios/chrome/app/application_delegate:app_state",
+    "//ios/chrome/app/background_refresh",
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/app_bar/ui",
     "//ios/chrome/browser/app_bar/ui:constants",
     "//ios/chrome/browser/authentication/test:eg_app_support+eg2",
     "//ios/chrome/browser/authentication/ui_bundled/cells",
+    "//ios/chrome/browser/authentication/ui_bundled/signin:constants",
     "//ios/chrome/browser/autocomplete/model",
     "//ios/chrome/browser/autofill/model",
     "//ios/chrome/browser/autofill/model/automation:eg_app_support+eg2",
@@ -183,6 +216,7 @@ source_set("eg_app_support+eg2") {
     "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/intelligence/proto_wrappers:eg_app_support+eg2",
     "//ios/chrome/browser/intents/model:constants",
+    "//ios/chrome/browser/lens_overlay/test:eg_app_support+eg2",
     "//ios/chrome/browser/location_bar/ui_bundled",
     "//ios/chrome/browser/location_bar/ui_bundled:constants",
     "//ios/chrome/browser/main/model",
@@ -198,7 +232,6 @@ source_set("eg_app_support+eg2") {
     "//ios/chrome/browser/omnibox/public:features",
     "//ios/chrome/browser/omnibox/ui:omnibox_internal",
     "//ios/chrome/browser/omnibox/ui:omnibox_popup_shared",
-    "//ios/chrome/browser/omnibox/ui/keyboard_assist",
     "//ios/chrome/browser/optimization_guide/model:eg_app_support+eg2",
     "//ios/chrome/browser/page_info/test:eg_app_support+eg2",
     "//ios/chrome/browser/partial_translate/ui_bundled:eg_app_support+eg2",
@@ -230,6 +263,7 @@ source_set("eg_app_support+eg2") {
     "//ios/chrome/browser/send_tab_to_self/model",
     "//ios/chrome/browser/sessions/model:session_restoration_service",
     "//ios/chrome/browser/sessions/model:session_restoration_service_factory",
+    "//ios/chrome/browser/settings/autofill/autofill_and_passwords/ui:autofill_and_passwords",
     "//ios/chrome/browser/settings/autofill/payments/ui",
     "//ios/chrome/browser/settings/clear_browsing_data/coordinator",
     "//ios/chrome/browser/settings/clear_browsing_data/public:constants",
@@ -266,6 +300,7 @@ source_set("eg_app_support+eg2") {
     "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/browser/test:test_support",
+    "//ios/chrome/browser/shared/model/paths",
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/shared/model/url:constants",
     "//ios/chrome/browser/shared/model/web_state_list",
@@ -293,11 +328,11 @@ source_set("eg_app_support+eg2") {
     "//ios/chrome/browser/tabs/ui_bundled/tests:eg_app_support+eg2",
     "//ios/chrome/browser/tips_notifications/coordinator",
     "//ios/chrome/browser/tips_notifications/model:utils",
-    "//ios/chrome/browser/toolbar/legacy/ui_bundled:eg_app_support+eg2",
     "//ios/chrome/browser/toolbar/legacy/ui_bundled:ui",
     "//ios/chrome/browser/toolbar/legacy/ui_bundled/buttons:constants",
     "//ios/chrome/browser/toolbar/legacy/ui_bundled/public:constants",
     "//ios/chrome/browser/toolbar/ui:constants",
+    "//ios/chrome/browser/tracing",
     "//ios/chrome/browser/translate/model:eg_app_support+eg2",
     "//ios/chrome/browser/unified_consent/model",
     "//ios/chrome/browser/unit_conversion/ui_bundled:eg_app_support+eg2",
@@ -307,6 +342,7 @@ source_set("eg_app_support+eg2") {
     "//ios/chrome/browser/variations/model:eg_app_support+eg2",
     "//ios/chrome/browser/web/model",
     "//ios/chrome/browser/web/model:eg_app_support+eg2",
+    "//ios/chrome/browser/web_extension/test:eg_app_support+eg2",
     "//ios/chrome/browser/webauthn/test/:eg_app_support+eg2",
     "//ios/chrome/common/app_group",
     "//ios/chrome/common/intents",
@@ -314,7 +350,9 @@ source_set("eg_app_support+eg2") {
     "//ios/chrome/common/ui/colors",
     "//ios/chrome/common/ui/confirmation_alert:constants",
     "//ios/chrome/common/ui/promo_style:constants",
+    "//ios/chrome/test:eg_app_support+eg2",
     "//ios/chrome/test/app:test_support",
+    "//ios/chrome/test/perf:eg_app_support+eg2",
     "//ios/chrome/test/variations_smoke_test:eg_app_support+eg2",
     "//ios/public/provider/chrome/browser/fullscreen:fullscreen_api",
     "//ios/public/provider/chrome/browser/lens:lens_api",
@@ -341,6 +379,7 @@ source_set("eg_app_support+eg2") {
     "//services/metrics/public/cpp:metrics_cpp",
     "//third_party/metrics_proto",
     "//third_party/ocmock",
+    "//third_party/perfetto:libperfetto",
     "//ui/base",
     "//ui/base:test_support",
   ]
@@ -356,6 +395,8 @@ source_set("eg_test_support+eg2") {
   sources = [
     "accessibility_util.h",
     "accessibility_util.mm",
+    "background_launch_app_interface.h",
+    "background_launch_app_interface_stub.mm",
     "chrome_actions.h",
     "chrome_actions.mm",
     "chrome_actions_app_interface.h",
@@ -422,11 +463,11 @@ source_set("eg_test_support+eg2") {
     "//ios/chrome/browser/shared/ui/table_view:constants",
     "//ios/chrome/browser/tab_switcher/ui_bundled/tab_grid:tab_grid_ui_constants",
     "//ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid:grid_ui_constants",
-    "//ios/chrome/browser/toolbar/legacy/ui_bundled:eg_test_support+eg2",
     "//ios/chrome/browser/toolbar/legacy/ui_bundled/public:constants",
     "//ios/chrome/test:eg_test_support+eg2",
     "//ios/testing:http_server_bundle_data",
     "//ios/testing:nserror_support",
+    "//ios/testing:test_tag_registry",
     "//ios/testing/earl_grey:eg_test_support+eg2",
     "//ios/testing/earl_grey:launch_configuration",
     "//ios/third_party/edo",

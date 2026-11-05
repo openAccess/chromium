@@ -29,15 +29,13 @@ import {ErrorType} from './error_page.js';
 import type {SkillsSidebarElement} from './sidebar.js';
 import {Page} from './sidebar.js';
 import {SkillsManagementAction, SkillsManagementPage} from './skill_metrics.mojom-webui.js';
-import {SkillsPageBrowserProxy} from './skills_page_browser_proxy.js';
+import {browserProxyFactory} from './skills.mojom-webui.js';
+import type {BrowserProxy} from './skills.mojom-webui.js';
 import type {UserSkillsPageElement} from './user_skills_page.js';
 
 export interface SkillsAppElement {
   $: {
-    menu: SkillsSidebarElement,
     toolbar: CrToolbarElement,
-    userSkillsPage: UserSkillsPageElement,
-    discoverSkillsPage: DiscoverSkillsPageElement,
     drawer: CrDrawerElement,
     drawerMenu: SkillsSidebarElement,
   };
@@ -72,7 +70,7 @@ export class SkillsAppElement extends CrLitElement {
       loadTimeData.getBoolean('isSkillsEnabled');
 
   private eventTracker_: EventTracker = new EventTracker();
-  private proxy_: SkillsPageBrowserProxy = SkillsPageBrowserProxy.getInstance();
+  private proxy_: BrowserProxy = browserProxyFactory.getInstance();
   private listenerIds_: number[] = [];
 
   override connectedCallback() {
@@ -140,8 +138,11 @@ export class SkillsAppElement extends CrLitElement {
   protected onSearchChanged_(e: CustomEvent<string>) {
     const searchTerm = e.detail;
     if (this.getErrorType_() === null) {
-      this.$.userSkillsPage.onSearchChanged(searchTerm);
-      this.$.discoverSkillsPage.onSearchChanged(searchTerm);
+      this.shadowRoot.querySelector<UserSkillsPageElement>(
+                         '#userSkillsPage')!.onSearchChanged(searchTerm);
+      this.shadowRoot
+          .querySelector<DiscoverSkillsPageElement>(
+              '#discoverSkillsPage')!.onSearchChanged(searchTerm);
     }
   }
 
@@ -171,14 +172,14 @@ export class SkillsAppElement extends CrLitElement {
     if (this.getErrorType_() !== null) {
       return;
     }
+    const menu = this.shadowRoot.querySelector<SkillsSidebarElement>('#menu')!;
     const path = newPath.substring(1);
-    let menuItem = this.$.menu.menuItems.find(item => item.page === path);
+    let menuItem = menu.menuItems.find(item => item.page === path);
     // If the menu item isn't found, replace the undefined path with the
     // first menu item.
     if (!menuItem) {
-      window.history.replaceState(
-          undefined, '', '/' + this.$.menu.menuItems[0]!.page);
-      menuItem = this.$.menu.menuItems[0];
+      window.history.replaceState(undefined, '', '/' + menu.menuItems[0]!.page);
+      menuItem = menu.menuItems[0];
     }
     this.selectedPage_ = menuItem!.page;
 

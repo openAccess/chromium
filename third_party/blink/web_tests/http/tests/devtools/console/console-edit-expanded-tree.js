@@ -24,29 +24,35 @@ import * as Console from 'devtools/panels/console/console.js';
     })();
   `);
 
-  ConsoleTestRunner.expandConsoleMessages(onConsoleMessageExpanded);
+  await ConsoleTestRunner.expandConsoleMessagesPromise();
+  if (ConsoleTestRunner.waitForAllPopulations) {
+    await ConsoleTestRunner.waitForAllPopulations();
+  }
 
-  function onConsoleMessageExpanded() {
-    var messages = Console.ConsoleView.ConsoleView.instance().visibleViewMessages;
+  const messages =
+      Console.ConsoleView.ConsoleView.instance().visibleViewMessages;
+  for (let i = 0; i < messages.length; ++i) {
+    const message = messages[i];
 
-    for (var i = 0; i < messages.length; ++i) {
-      var message = messages[i];
-      var node = message.contentElement();
-
-      for (var node = message.contentElement(); node; node = node.traverseNextNode(message.contentElement())) {
-        const treeElement = UIModule.TreeOutline.TreeElement.getTreeElementBylistItemNode(node);
-        if (treeElement) {
-          onTreeElement(treeElement.firstChild());
-          return;
-        }
+    for (let node = message.contentElement(); node;
+         node = node.traverseNextNode(message.contentElement())) {
+      const treeElement =
+          UIModule.TreeOutline.TreeElement.getTreeElementBylistItemNode(node);
+      if (treeElement?.firstChild()) {
+        onTreeElement(treeElement.firstChild());
+        return;
       }
     }
   }
 
   function onTreeElement(treeElement) {
-    treeElement.startEditing();
+    const widget = UIModule.Widget.Widget.get(
+        treeElement.titleElement.querySelector('devtools-widget'));
+    widget.startEditing();
     Console.ConsoleView.ConsoleView.instance().viewport.refresh();
-    TestRunner.addResult('After viewport refresh tree element remains in editing mode: ' + !!treeElement.editing);
+    TestRunner.addResult(
+        'After viewport refresh tree element remains in editing mode: ' +
+        !!widget.editing);
     TestRunner.completeTest();
   }
 })();

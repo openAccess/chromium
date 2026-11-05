@@ -111,7 +111,7 @@
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
-#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "ui/gfx/geometry/size.h"
 
 namespace blink {
@@ -1588,8 +1588,7 @@ void MediaControlsImpl::UpdateOverflowMenuItemCSSClass() const {
       continue;
     }
 
-    AtomicString css_class =
-        AtomicString(StrCat({"animated-", AtomicString::Number(id++)}));
+    AtomicString css_class = AtomicString(Format("animated-{}", id++));
     if (!class_list.contains(css_class))
       class_list.setValue(css_class);
   }
@@ -1659,44 +1658,87 @@ void MediaControlsImpl::OnAccessibleBlur() {
   ResetHideMediaControlsTimer();
 }
 
-void MediaControlsImpl::DefaultEventHandler(Event& event) {
-  HTMLDivElement::DefaultEventHandler(event);
-
-  // Do not handle events to not interfere with the rest of the page if no
-  // controls should be visible.
-  if (!MediaElement().ShouldShowControls())
+void MediaControlsImpl::HandlePointerEventFromMediaElement(Event* event) {
+  if (!MediaElement().ShouldShowControls()) {
     return;
+  }
 
   // Add IgnoreControlsHover to m_hideTimerBehaviorFlags when we see a touch
   // event, to allow the hide-timer to do the right thing when it fires.
   // FIXME: Preferably we would only do this when we're actually handling the
   // event here ourselves.
-  bool is_touch_event = IsTouchEvent(&event);
+  bool is_touch_event = IsTouchEvent(event);
   hide_timer_behavior_flags_ |=
       is_touch_event ? kIgnoreControlsHover : kIgnoreNone;
 
   // Touch events are treated differently to avoid fake mouse events to trigger
   // random behavior. The expect behaviour for touch is that a tap will show the
   // controls and they will hide when the timer to hide fires.
-  if (is_touch_event)
-    HandleTouchEvent(&event);
+  if (is_touch_event) {
+    HandleTouchEvent(event);
+  }
 
   // Reset the touch interaction state if we receive any native mouse/pointer
   // events indicating the user has switched from touch to mouse/pointer
   // interaction.
-  if (IsMouseInteractionEvent(event) && !is_touch_event) {
+  if (IsMouseInteractionEvent(*event) && !is_touch_event) {
     is_touch_interaction_ = false;
   }
 
-  if ((event.type() == event_type_names::kPointerover ||
-       event.type() == event_type_names::kPointermove ||
-       event.type() == event_type_names::kPointerout) &&
+  if ((event->type() == event_type_names::kPointerover ||
+       event->type() == event_type_names::kPointermove ||
+       event->type() == event_type_names::kPointerout) &&
       !is_touch_interaction_) {
-    HandlePointerEvent(&event);
+    HandlePointerEvent(event);
+  }
+}
+
+void MediaControlsImpl::HandleKeyboardEventFromMediaElement(Event* event) {
+  if (!MediaElement().ShouldShowControls()) {
+    return;
   }
 
-  if (event.type() == event_type_names::kClick && !is_touch_interaction_)
+  auto* keyboard_event = DynamicTo<KeyboardEvent>(event);
+  if (keyboard_event && !event->defaultPrevented() &&
+      !IsSpatialNavigationEnabled(GetDocument().GetFrame())) {
+    const AtomicString key(keyboard_event->key());
+    if (key == keywords::kCapitalEnter || keyboard_event->keyCode() == ' ') {
+      if (overlay_play_button_) {
+        overlay_play_button_->OnMediaKeyboardEvent(event);
+      } else {
+        play_button_->OnMediaKeyboardEvent(event);
+      }
+      return;
+    }
+    if (key == keywords::kArrowLeft || key == keywords::kArrowRight ||
+        key == keywords::kHome || key == keywords::kEnd) {
+      timeline_->OnMediaKeyboardEvent(event);
+      return;
+    }
+    if (volume_slider_ &&
+        (key == keywords::kArrowDown || key == keywords::kArrowUp)) {
+      for (int i = 0; i < 5; i++) {
+        volume_slider_->OnMediaKeyboardEvent(event);
+      }
+      return;
+    }
+  }
+}
+
+void MediaControlsImpl::DefaultEventHandler(Event& event) {
+  HTMLDivElement::DefaultEventHandler(event);
+
+  HandlePointerEventFromMediaElement(&event);
+
+  // Do not handle events to not interfere with the rest of the page if no
+  // controls should be visible.
+  if (!MediaElement().ShouldShowControls()) {
+    return;
+  }
+
+  if (event.type() == event_type_names::kClick && !is_touch_interaction_) {
     HandleClickEvent(&event);
+  }
 
   // If the user is interacting with the controls via the keyboard, don't hide
   // the controls. This will fire when the user tabs between controls (focusin)
@@ -1706,30 +1748,7 @@ void MediaControlsImpl::DefaultEventHandler(Event& event) {
     ResetHideMediaControlsTimer();
   }
 
-  auto* keyboard_event = DynamicTo<KeyboardEvent>(event);
-  if (keyboard_event && !event.defaultPrevented() &&
-      !IsSpatialNavigationEnabled(GetDocument().GetFrame())) {
-    const AtomicString key(keyboard_event->key());
-    if (key == keywords::kCapitalEnter || keyboard_event->keyCode() == ' ') {
-      if (overlay_play_button_) {
-        overlay_play_button_->OnMediaKeyboardEvent(&event);
-      } else {
-        play_button_->OnMediaKeyboardEvent(&event);
-      }
-      return;
-    }
-    if (key == keywords::kArrowLeft || key == keywords::kArrowRight ||
-        key == keywords::kHome || key == keywords::kEnd) {
-      timeline_->OnMediaKeyboardEvent(&event);
-      return;
-    }
-    if (volume_slider_ &&
-        (key == keywords::kArrowDown || key == keywords::kArrowUp)) {
-      for (int i = 0; i < 5; i++)
-        volume_slider_->OnMediaKeyboardEvent(&event);
-      return;
-    }
-  }
+  HandleKeyboardEventFromMediaElement(&event);
 }
 
 void MediaControlsImpl::HandlePointerEvent(Event* event) {
@@ -1831,6 +1850,9 @@ void MediaControlsImpl::MaybeJump(int seconds) {
   // Update the current time.
   double new_time = std::max(0.0, MediaElement().currentTime() + seconds);
   new_time = std::min(new_time, MediaElement().duration());
+  if (!MediaElement().CanSeekTo(new_time)) {
+    return;
+  }
   MediaElement().setCurrentTime(new_time);
 
   // Show the arrow animation.
@@ -2068,6 +2090,28 @@ void MediaControlsImpl::OnTextTracksAddedOrRemoved() {
 
 void MediaControlsImpl::OnTextTracksChanged() {
   toggle_closed_captions_button_->UpdateDisplayType();
+}
+
+void MediaControlsImpl::OnAudioOrVideoTracksChanged() {
+  const bool show_video_button = ShouldShowTrackSelectionButton(
+      WebMediaPlayer::TrackType::kVideoTrack, MediaElement());
+  video_track_selector_button_->SetIsWanted(show_video_button);
+  if (show_video_button) {
+    video_track_selector_list_->RefreshTrackList();
+  } else {
+    video_track_selector_list_->SetIsWanted(false);
+  }
+
+  const bool show_audio_button = ShouldShowTrackSelectionButton(
+      WebMediaPlayer::TrackType::kAudioTrack, MediaElement());
+  audio_track_selector_button_->SetIsWanted(show_audio_button);
+  if (show_audio_button) {
+    audio_track_selector_list_->RefreshTrackList();
+  } else {
+    audio_track_selector_list_->SetIsWanted(false);
+  }
+
+  BatchedControlUpdate batch(this);
 }
 
 void MediaControlsImpl::OnError() {

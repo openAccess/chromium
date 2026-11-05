@@ -21,6 +21,7 @@
 #include "base/time/time.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_proto_conversion.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/actor_tab_close_skip_beforeunload_user_data.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/tools/load_and_extract_content_tool_request.h"
@@ -91,7 +92,7 @@ class ActorLoadAndExtractContentToolBrowserTest : public ActorToolsTest {
       ]
     })json",
         net::GetHostAndPort(embedded_test_server()->base_url()));
-    ParseSafetyListsForTesting(SafetyListManager::GetInstance(), json);
+    SetSafetyListsForTesting(SafetyListManager::GetInstance(), json);
   }
 
  protected:
@@ -554,6 +555,9 @@ IN_PROC_BROWSER_TEST_F(ActorLoadAndExtractContentToolBrowserTest,
   observer.WaitForAddedTabs(1);
 
   // Close the newly added tab. The initial tab is at index 0.
+  const ActorSurfaceHandle closed_tab = ActorSurfaceHandle::From(
+      browser()->tab_strip_model()->GetTabAtIndex(1)->GetHandle());
+  ASSERT_TRUE(actor_task().HasActorSurface(closed_tab));
   actor::ActorTabCloseSkipBeforeUnloadUserData::CreateForWebContents(
       browser()->tab_strip_model()->GetWebContentsAt(1));
   browser()->tab_strip_model()->CloseWebContentsAt(1,
@@ -567,6 +571,36 @@ IN_PROC_BROWSER_TEST_F(ActorLoadAndExtractContentToolBrowserTest,
 
   VerifyActionsResult(mojom::ActionResultCode::kOk, result,
                       expected_tab_observations);
+
+  // The task doesn't keep the closed tab. Check by surface handle: the closed
+  // tab no longer maps to its surface, so HasTab() would pass regardless.
+  EXPECT_FALSE(actor_task().HasActorSurface(closed_tab));
+}
+
+// Tests the tool being cancelled because the task is paused while a page is
+// navigating. The task continues, so the tool's tab must be removed from it as
+// well as closed.
+IN_PROC_BROWSER_TEST_F(ActorLoadAndExtractContentToolBrowserTest,
+                       ToolCancelledByPauseRemovesTab) {
+  const GURL url = embedded_test_server()->GetURL("/actor/simple.html");
+  std::unique_ptr<ToolRequest> request =
+      std::make_unique<LoadAndExtractContentToolRequest>(
+          std::vector<GURL>{url});
+
+  TabNavigationObserver observer(browser());
+
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
+  observer.WaitForAddedTabs(1);
+  const ActorSurfaceHandle tool_tab = ActorSurfaceHandle::From(
+      browser()->tab_strip_model()->GetTabAtIndex(1)->GetHandle());
+  ASSERT_TRUE(actor_task().HasActorSurface(tool_tab));
+
+  actor_task().Pause(/*from_actor=*/false);
+
+  ExpectErrorResult(result, mojom::ActionResultCode::kTaskPaused);
+  observer.VerifyTabCountRestored();
+  EXPECT_FALSE(actor_task().HasActorSurface(tool_tab));
 }
 
 IN_PROC_BROWSER_TEST_F(ActorLoadAndExtractContentToolBrowserTest,

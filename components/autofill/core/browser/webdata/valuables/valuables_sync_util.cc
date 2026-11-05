@@ -23,6 +23,7 @@ namespace {
 using sync_pb::AutofillValuableMetadataSpecifics;
 using sync_pb::AutofillValuableSpecifics;
 
+// LINT.IfChange(TrimLoyaltyCard)
 void TrimLoyaltyCard(sync_pb::LoyaltyCard& card) {
   card.clear_merchant_name();
   card.clear_program_name();
@@ -30,7 +31,9 @@ void TrimLoyaltyCard(sync_pb::LoyaltyCard& card) {
   card.clear_loyalty_card_number();
   card.clear_merchant_domains();
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:LoyaltyCard)
 
+// LINT.IfChange(TrimVehicleRegistration)
 void TrimVehicleRegistration(sync_pb::VehicleRegistration& vehicle) {
   vehicle.clear_vehicle_make();
   vehicle.clear_vehicle_model();
@@ -46,7 +49,9 @@ void TrimVehicleRegistration(sync_pb::VehicleRegistration& vehicle) {
   vehicle.clear_logo_url();
   vehicle.clear_owner_address();
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:VehicleRegistration)
 
+// LINT.IfChange(TrimFlightReservation)
 void TrimFlightReservation(sync_pb::FlightReservation& flight_reservation) {
   flight_reservation.clear_flight_number();
   flight_reservation.clear_flight_ticket_number();
@@ -63,7 +68,9 @@ void TrimFlightReservation(sync_pb::FlightReservation& flight_reservation) {
   flight_reservation.clear_issuer_name();
   flight_reservation.clear_issuer_domains();
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:FlightReservation)
 
+// LINT.IfChange(TrimPassport)
 void TrimPassport(sync_pb::Passport& passport) {
   passport.clear_owner_name();
   passport.clear_masked_number();
@@ -71,7 +78,9 @@ void TrimPassport(sync_pb::Passport& passport) {
   passport.clear_issue_date();
   passport.clear_expiration_date();
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:Passport)
 
+// LINT.IfChange(TrimDriverLicense)
 void TrimDriverLicense(sync_pb::DriverLicense& driver_license) {
   driver_license.clear_owner_name();
   driver_license.clear_masked_number();
@@ -80,7 +89,9 @@ void TrimDriverLicense(sync_pb::DriverLicense& driver_license) {
   driver_license.clear_issue_date();
   driver_license.clear_expiration_date();
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:DriverLicense)
 
+// LINT.IfChange(TrimNationalIdCard)
 void TrimNationalIdCard(sync_pb::NationalIdCard& national_id_card) {
   national_id_card.clear_owner_name();
   national_id_card.clear_masked_number();
@@ -88,18 +99,24 @@ void TrimNationalIdCard(sync_pb::NationalIdCard& national_id_card) {
   national_id_card.clear_issue_date();
   national_id_card.clear_expiration_date();
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:NationalIdCard)
 
+// LINT.IfChange(TrimRedressNumber)
 void TrimRedressNumber(sync_pb::RedressNumber& redress_number) {
   redress_number.clear_owner_name();
   redress_number.clear_masked_number();
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:RedressNumber)
 
+// LINT.IfChange(TrimKnownTravelerNumber)
 void TrimKnownTravelerNumber(sync_pb::KnownTravelerNumber& ktn) {
   ktn.clear_owner_name();
   ktn.clear_masked_number();
   ktn.clear_expiration_date();
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:KnownTravelerNumber)
 
+// LINT.IfChange(TrimOrder)
 void TrimOrder(sync_pb::Order& order) {
   order.clear_id();
   order.clear_account();
@@ -108,7 +125,9 @@ void TrimOrder(sync_pb::Order& order) {
   order.clear_merchant_domain();
   order.clear_product_names();
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:Order)
 
+// LINT.IfChange(TrimShipment)
 void TrimShipment(sync_pb::Shipment& shipment) {
   shipment.clear_tracking_number();
   shipment.clear_delivery_zip_code();
@@ -118,7 +137,9 @@ void TrimShipment(sync_pb::Shipment& shipment) {
   shipment.clear_merchant_name();
   shipment.clear_product_names();
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:Shipment)
 
+// LINT.IfChange(TrimOffer)
 void TrimOffer(sync_pb::Offer& offer) {
   offer.clear_issuer_name();
   offer.clear_provider_name();
@@ -128,9 +149,78 @@ void TrimOffer(sync_pb::Offer& offer) {
   offer.clear_offer_title_image_url();
   offer.clear_issuer_domains();
   offer.clear_description();
+  offer.clear_issue_time_unix_epoch_micros();
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:Offer)
 
 }  // namespace
+
+std::unique_ptr<syncer::EntityData> CreateEntityDataFromOfferData(
+    const AutofillOfferData& offer,
+    const sync_pb::AutofillValuableSpecifics& base_specifics) {
+  AutofillValuableSpecifics offer_specifics =
+      CreateSpecificsFromOfferData(offer, base_specifics);
+  std::unique_ptr<syncer::EntityData> entity_data =
+      std::make_unique<syncer::EntityData>();
+  entity_data->name = offer_specifics.id();
+  *entity_data->specifics.mutable_autofill_valuable() =
+      std::move(offer_specifics);
+
+  return entity_data;
+}
+
+AutofillValuableSpecifics CreateSpecificsFromOfferData(
+    const AutofillOfferData& offer,
+    const sync_pb::AutofillValuableSpecifics& base_specifics) {
+  AutofillValuableSpecifics specifics = base_specifics;
+  specifics.set_id(offer.GetOfferId());
+  specifics.set_pass_view_url(
+      offer.GetOfferDetailsUrl().possibly_invalid_spec());
+  sync_pb::Offer* offer_proto = specifics.mutable_offer();
+  offer_proto->set_offer_code(offer.GetPromoCode());
+  offer_proto->set_offer_short_title(offer.GetOfferShortTitle());
+  offer_proto->set_description(offer.GetDisplayStrings().value_prop_text);
+  offer_proto->set_expiration_time_unix_epoch_micros(
+      (offer.GetExpiry() - base::Time::UnixEpoch()).InMicroseconds());
+  offer_proto->set_issue_time_unix_epoch_micros(
+      (offer.GetIssueTime() - base::Time::UnixEpoch()).InMicroseconds());
+  for (const GURL& merchant_origin : offer.GetMerchantOrigins()) {
+    *offer_proto->add_issuer_domains() = merchant_origin.spec();
+  }
+
+  return specifics;
+}
+
+AutofillOfferData CreateOfferDataFromValuableSpecifics(
+    const sync_pb::AutofillValuableSpecifics& specifics) {
+  const sync_pb::Offer& offer_proto = specifics.offer();
+  base::Time expiry =
+      base::Time::UnixEpoch() +
+      base::Microseconds(offer_proto.expiration_time_unix_epoch_micros());
+  // The issue time is optional. If it is missing (or not positive), it is left
+  // null, i.e. unknown.
+  base::Time issue_time;
+  if (offer_proto.issue_time_unix_epoch_micros() > 0) {
+    issue_time = base::Time::UnixEpoch() +
+                 base::Microseconds(offer_proto.issue_time_unix_epoch_micros());
+  }
+  // Offers with issuer domains that don't parse into a URL are rejected by
+  // `ValuableSyncBridge::IsEntityDataValid()`.
+  std::vector<GURL> merchant_origins;
+  merchant_origins.reserve(offer_proto.issuer_domains_size());
+  for (const std::string& domain : offer_proto.issuer_domains()) {
+    merchant_origins.emplace_back(domain);
+  }
+  DisplayStrings display_strings;
+  display_strings.value_prop_text = offer_proto.description();
+
+  return AutofillOfferData(
+      specifics.id(), expiry, std::move(merchant_origins),
+      /*offer_details_url=*/GURL(specifics.pass_view_url()),
+      std::move(display_strings),
+      /*promo_code=*/offer_proto.offer_code(),
+      /*offer_short_title=*/offer_proto.offer_short_title(), issue_time);
+}
 
 std::unique_ptr<syncer::EntityData> CreateEntityDataFromLoyaltyCard(
     const LoyaltyCard& loyalty_card,
@@ -215,14 +305,16 @@ ValuableMetadata CreateValuableMetadataFromSpecifics(
       specifics.use_count());
 }
 
+// LINT.IfChange(TrimAutofillValuableSpecificsDataForCaching)
 AutofillValuableSpecifics TrimAutofillValuableSpecificsDataForCaching(
     const AutofillValuableSpecifics& specifics) {
-  // LINT.IfChange(TrimAutofillValuableSpecificsDataForCaching)
   AutofillValuableSpecifics trimmed_specifics =
       AutofillValuableSpecifics(specifics);
   trimmed_specifics.clear_id();
   trimmed_specifics.clear_is_editable();
   trimmed_specifics.clear_serialized_chrome_valuables_metadata();
+  trimmed_specifics.clear_legal_message_token();
+  trimmed_specifics.clear_pass_view_url();
 
   switch (trimmed_specifics.valuable_data_case()) {
     case AutofillValuableSpecifics::kLoyaltyCard: {
@@ -312,10 +404,9 @@ AutofillValuableSpecifics TrimAutofillValuableSpecificsDataForCaching(
     case AutofillValuableSpecifics::VALUABLE_DATA_NOT_SET:
       break;
   }
-
-  // LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:AutofillValuableSpecifics)
   return trimmed_specifics;
 }
+// LINT.ThenChange(//components/sync/protocol/autofill_valuable_specifics.proto:AutofillValuableSpecifics)
 
 AutofillValuableMetadataSpecifics
 TrimAutofillValuableMetadataSpecificsDataForCaching(

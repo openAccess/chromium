@@ -8,12 +8,13 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 
 HandoffObserver::HandoffObserver(NSObject<HandoffObserverDelegate>* delegate)
     : delegate_(delegate) {
-  DCHECK(delegate_);
+  CHECK(delegate_, base::NotFatalUntil::M162);
   auto* const browser_collection = GlobalBrowserCollection::GetInstance();
   browser_collection_observation_.Observe(browser_collection);
   SetActiveBrowser(browser_collection->GetLastActiveBrowser());
@@ -81,7 +82,7 @@ void HandoffObserver::SetActiveBrowser(BrowserWindowInterface* active_browser) {
 
 void HandoffObserver::StartObservingWebContents(
     content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
   Observe(web_contents);
 }
 

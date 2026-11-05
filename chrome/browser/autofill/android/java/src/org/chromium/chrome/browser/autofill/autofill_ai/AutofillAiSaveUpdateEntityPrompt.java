@@ -7,11 +7,9 @@ package org.chromium.chrome.browser.autofill.autofill_ai;
 import android.app.Activity;
 import android.content.Context;
 import android.graphics.Paint;
+import android.text.SpannableStringBuilder;
 import android.text.TextUtils;
 import android.text.method.LinkMovementMethod;
-import android.text.style.ForegroundColorSpan;
-import android.text.style.RelativeSizeSpan;
-import android.text.style.SuperscriptSpan;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -29,12 +27,15 @@ import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.autofill.AutofillUiUtils;
 import org.chromium.chrome.browser.autofill.R;
 import org.chromium.chrome.browser.autofill.editors.autofill_ai.EntityEditorCoordinator;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.components.autofill.autofill_ai.AutofillAiWalletNoticeFunnelEvents;
 import org.chromium.components.autofill.autofill_ai.EntityInstance;
-import org.chromium.components.browser_ui.styles.SemanticColorUtils;
+import org.chromium.components.autofill.payments.LegalMessageLine;
+import org.chromium.components.browser_ui.styles.NewLabelUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -43,7 +44,6 @@ import org.chromium.ui.modaldialog.SimpleModalDialogController;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.text.ChromeClickableSpan;
 import org.chromium.ui.text.SpanApplier;
-import org.chromium.ui.text.SpanApplier.SpanInfo;
 
 import java.util.List;
 
@@ -53,6 +53,10 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
     @VisibleForTesting
     public static final String ENTITY_EDITOR_OPENED_HISTOGRAM =
             "Autofill.Ai.EntityEditor.OpenedFromSaveUpdatePrompt";
+
+    @VisibleForTesting
+    public static final String WALLET_NOTICE_SAVE_FUNNEL_HISTOGRAM =
+            "Autofill.Ai.WalletNotice.Save.Funnel";
 
     private final AutofillAiSaveUpdateEntityPromptController mController;
     private final ModalDialogManager mModalDialogManager;
@@ -89,7 +93,9 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
                                 ModalDialogProperties.ButtonStyles.PRIMARY_FILLED_NEGATIVE_OUTLINE)
                         .with(ModalDialogProperties.CUSTOM_VIEW, mDialogView);
         mDialogModel = builder.build();
-        mEntityEditor = new EntityEditorCoordinator(activity, this, profile, entityInstance);
+        mEntityEditor =
+                new EntityEditorCoordinator(
+                        activity, this, profile, entityInstance, /* detailsForUpsertPass= */ null);
     }
 
     @Override
@@ -258,18 +264,13 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
 
         TextView attributeValue = attributeInfo.findViewById(R.id.attribute_value);
         attributeValue.setText(
-                SpanApplier.applySpans(
+                NewLabelUtils.withBadge(
+                        mContext,
                         mContext.getString(
                                         R.string
                                                 .autofill_ai_save_or_update_entity_new_attribute_with_badge)
                                 .replace("$1", updateDetails.getAttributeValue()),
-                        new SpanInfo(
-                                "<new>",
-                                "</new>",
-                                new SuperscriptSpan(),
-                                new RelativeSizeSpan(0.6f),
-                                new ForegroundColorSpan(
-                                        SemanticColorUtils.getDefaultTextColorAccent1(mContext)))));
+                        /* relativeTextSize= */ 0.6f));
     }
 
     private void configureUpdatedAttribute(
@@ -295,15 +296,14 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
      * Sets the source notice message in the prompt.
      *
      * @param sourceNotice the full source notice string.
-     * @param insertManageInfoLink whether to insert a link to manage info. This value will be false
-     *     for local entities and true for entities stored in wallet. In the case it is true,
-     *     `sourceNotice` is expected to have a `R.string.autofill_manage_your_info_link` substring,
-     *     which will be turned into a clickable link.
+     * @param insertWalletLink whether to insert a link to Wallet. This value will be false for
+     *     local entities and true for entities stored in wallet. If it is true, `sourceNotice` is
+     *     expected to have a `<link>` and `</link>` tagged substring, which will be turned into a
+     *     clickable link.
      */
     @CalledByNative
     @VisibleForTesting
-    void setSourceNotice(
-            @JniType("std::u16string") String sourceNotice, boolean insertManageInfoLink) {
+    void setSourceNotice(@JniType("std::u16string") String sourceNotice, boolean insertWalletLink) {
         TextView sourceNoticeView = mDialogView.findViewById(R.id.autofill_ai_entity_source_notice);
         if (TextUtils.isEmpty(sourceNotice)) {
             // The source notice can be empty if the C++ controller fails to retrieve the email
@@ -312,7 +312,7 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
             return;
         }
 
-        if (!insertManageInfoLink) {
+        if (!insertWalletLink) {
             // Local entity source notice doesn't need a link.
             sourceNoticeView.setText(sourceNotice);
             return;
@@ -328,6 +328,39 @@ public class AutofillAiSaveUpdateEntityPrompt implements EntityEditorCoordinator
                                         mContext, _ -> mController.onWalletLinkClicked())));
         sourceNoticeView.setText(sourceNoticeWithLink, TextView.BufferType.SPANNABLE);
         sourceNoticeView.setMovementMethod(LinkMovementMethod.getInstance());
+    }
+
+    /**
+     * Sets the legal message in the prompt.
+     *
+     * @param legalMessageLines the list of legal message lines to display.
+     */
+    @CalledByNative
+    @VisibleForTesting
+    void setPublicPassesNotice(
+            @JniType("std::vector<autofill::LegalMessageLine>")
+                    List<LegalMessageLine> legalMessageLines) {
+        TextView legalMessageView = mDialogView.findViewById(R.id.autofill_ai_public_passes_notice);
+        if (legalMessageLines.isEmpty()) {
+            legalMessageView.setVisibility(View.GONE);
+            return;
+        }
+
+        SpannableStringBuilder stringBuilder =
+                AutofillUiUtils.getSpannableStringForLegalMessageLines(
+                        mContext,
+                        legalMessageLines,
+                        /* underlineLinks= */ true,
+                        url -> {
+                            RecordHistogram.recordEnumeratedHistogram(
+                                    WALLET_NOTICE_SAVE_FUNNEL_HISTOGRAM,
+                                    AutofillAiWalletNoticeFunnelEvents.LINK_CLICKED,
+                                    AutofillAiWalletNoticeFunnelEvents.MAX_VALUE + 1);
+                            AutofillUiUtils.openLink(mContext, url);
+                        });
+        legalMessageView.setText(stringBuilder);
+        legalMessageView.setVisibility(View.VISIBLE);
+        legalMessageView.setMovementMethod(LinkMovementMethod.getInstance());
     }
 
     /** Dismisses the prompt without returning any user response. */

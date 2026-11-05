@@ -13,7 +13,6 @@ import android.os.Environment;
 import android.provider.MediaStore;
 
 import androidx.annotation.IntDef;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -21,7 +20,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
-import org.robolectric.annotation.Config;
 import org.robolectric.fakes.BaseCursor;
 
 import org.chromium.base.ThreadUtils;
@@ -40,7 +38,6 @@ import java.util.List;
 
 /** Tests for {@link FileEnumWorkerTaskTest}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumeratedCallback {
     // The Fields the test Cursor represents.
     @IntDef({Fields.ID, Fields.MIME_TYPE, Fields.DATE_ADDED})
@@ -74,11 +71,7 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
 
         @Override
         protected Cursor createImageCursor(
-                Uri contentUri,
-                String[] selectColumns,
-                String whereClause,
-                String[] whereArgs,
-                String orderBy) {
+                Uri contentUri, String[] selectColumns, String[] whereArgs, String orderBy) {
             ArrayList<TestData> list = new ArrayList<>();
             list.add(new TestData("file0", "text/html", 0));
             list.add(new TestData("file1", "image/jpeg", 1));
@@ -191,16 +184,11 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
         mOnWorkerCompleteCallback.notifyCalled();
     }
 
-    /**
-     * Test cursor creation (with the help of a mocked ContentResolver). This calls direct into
-     * {@link FileEnumWorkerTask} (as opposed to {@link TestFileEnumWorkerTask}), to make sure it
-     * calls the {@link ContentResolver} back with the right parameters.
-     */
-    @Test
-    @SmallTest
-    public void testCursorCreation() throws Exception {
+    private void verifyCursorCreation(
+            List<String> mimeTypes, String expectedWhereClause, String... expectedExtraArgs)
+            throws Exception {
         ContentResolver contentResolver = Mockito.mock(ContentResolver.class);
-        List<String> mimeTypes = Collections.singletonList("");
+        int callCount = mOnWorkerCompleteCallback.getCallCount();
         FileEnumWorkerTask task =
                 new FileEnumWorkerTask(
                         /* windowAndroid= */ null,
@@ -210,7 +198,7 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
                         contentResolver);
         task.executeOnExecutor(RobolectricUtil.getPausedExecutor());
         RobolectricUtil.runAllBackgroundAndUi();
-        mOnWorkerCompleteCallback.waitForOnly();
+        mOnWorkerCompleteCallback.waitForCallback(callCount);
 
         Uri contentUri = MediaStore.Files.getContentUri("external");
         String[] selectColumns = {
@@ -220,9 +208,6 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
             MediaStore.Files.FileColumns.MIME_TYPE,
             MediaStore.Files.FileColumns.RELATIVE_PATH,
         };
-        String whereClause =
-                "relative_path LIKE ? OR relative_path LIKE ? OR relative_path LIKE ? OR "
-                        + "relative_path LIKE ? OR relative_path LIKE ? OR relative_path LIKE ?";
         String orderBy = MediaStore.MediaColumns.DATE_ADDED + " DESC";
 
         ArgumentCaptor<String[]> argument = ArgumentCaptor.forClass(String[].class);
@@ -230,11 +215,11 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
                 .query(
                         eq(contentUri),
                         eq(selectColumns),
-                        eq(whereClause),
+                        eq(expectedWhereClause),
                         argument.capture(),
                         eq(orderBy));
         String[] actualWhereArgs = argument.getValue();
-        Assert.assertEquals(6, actualWhereArgs.length);
+        Assert.assertEquals(6 + expectedExtraArgs.length, actualWhereArgs.length);
         Assert.assertTrue(
                 actualWhereArgs[0],
                 actualWhereArgs[0].contains(Environment.DIRECTORY_DCIM + "/Camera"));
@@ -250,10 +235,35 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
         Assert.assertTrue(
                 actualWhereArgs[5],
                 actualWhereArgs[5].contains(Environment.DIRECTORY_DCIM + "/Screenshots"));
+        for (int i = 0; i < expectedExtraArgs.length; i++) {
+            Assert.assertEquals(expectedExtraArgs[i], actualWhereArgs[6 + i]);
+        }
+    }
+
+    /**
+     * Test cursor creation (with the help of a mocked ContentResolver). This calls direct into
+     * {@link FileEnumWorkerTask} (as opposed to {@link TestFileEnumWorkerTask}), to make sure it
+     * calls the {@link ContentResolver} back with the right parameters.
+     */
+    @Test
+    public void testCursorCreation() throws Exception {
+        String baseDirsWhere =
+                "relative_path LIKE ? OR relative_path LIKE ? OR relative_path LIKE ? OR "
+                        + "relative_path LIKE ? OR relative_path LIKE ? OR relative_path LIKE ?";
+        String oneMediaTypeWhere = "(" + baseDirsWhere + ") AND media_type = ?";
+        String twoMediaTypesWhere =
+                "(" + baseDirsWhere + ") AND (media_type = ? OR media_type = ?)";
+        String imageType = Integer.toString(MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE);
+        String videoType = Integer.toString(MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO);
+
+        verifyCursorCreation(Collections.singletonList(""), baseDirsWhere);
+        verifyCursorCreation(Collections.singletonList("image/*"), oneMediaTypeWhere, imageType);
+        verifyCursorCreation(Collections.singletonList("video/*"), oneMediaTypeWhere, videoType);
+        verifyCursorCreation(
+                Arrays.asList("image/*", "video/*"), twoMediaTypesWhere, imageType, videoType);
     }
 
     @Test
-    @SmallTest
     public void testNoMimeTypes() throws Exception {
         List<String> mimeTypes = Collections.singletonList("");
         TestFileEnumWorkerTask task =
@@ -285,7 +295,6 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
     }
 
     @Test
-    @SmallTest
     public void testNoCameraTile() throws Exception {
         List<String> mimeTypes = Collections.singletonList("");
         TestFileEnumWorkerTask task =
@@ -313,7 +322,6 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
     }
 
     @Test
-    @SmallTest
     public void testNoBrowseTile() throws Exception {
         List<String> mimeTypes = Collections.singletonList("");
         TestFileEnumWorkerTask task =
@@ -341,7 +349,6 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
     }
 
     @Test
-    @SmallTest
     public void testImagesOnly() throws Exception {
         List<String> mimeTypes = Collections.singletonList("image/*");
         TestFileEnumWorkerTask task =
@@ -383,7 +390,6 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
     }
 
     @Test
-    @SmallTest
     public void testVideoOnly() throws Exception {
         // Try with just video files (plus camera and gallery tiles).
         List<String> mimeTypes = Collections.singletonList("video/*");
@@ -426,7 +432,6 @@ public class FileEnumWorkerTaskTest implements FileEnumWorkerTask.FilesEnumerate
     }
 
     @Test
-    @SmallTest
     public void testImagesAndVideos() throws Exception {
         List<String> mimeTypes = Arrays.asList("image/*", "video/*");
         TestFileEnumWorkerTask task =

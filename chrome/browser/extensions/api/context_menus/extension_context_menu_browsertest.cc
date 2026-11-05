@@ -18,6 +18,8 @@
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/bind.h"
+#include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/browsertest_util.h"
@@ -28,18 +30,23 @@
 #include "chrome/browser/renderer_context_menu/context_menu_test_util.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/common/channel_info.h"
+#include "chrome/common/extensions/api/context_menus.h"
 #include "components/version_info/channel.h"
+#include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_api_frame_id_map.h"
 #include "extensions/browser/extension_host_test_helper.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/network_permissions_updater.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/state_store.h"
 #include "extensions/browser/state_store_test_observer.h"
+#include "extensions/browser/test_event_router_observer.h"
 #include "extensions/browser/test_management_policy.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_set.h"
@@ -47,15 +54,19 @@
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/result_catcher.h"
+#include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/menus/simple_menu_model.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/wm/window_pin_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
+#include "chrome/common/chrome_features.h"
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
@@ -954,20 +965,44 @@ IN_PROC_BROWSER_TEST_F(ExtensionContextMenuLazyTest, UpdateCheckboxes) {
 #if BUILDFLAG(IS_CHROMEOS)
 // Extension context menu tests with and without locked fullscreen when locked
 // and not locked for OnTask. Only relevant for non-web browser scenarios.
+// TODO(crbug.com/438540029): Rename this test suite to "TrustedPinned" to
+// disambiguate between LockedFullscreen (which is for extension API) and OnTask
+// locked (which is for class tools).
 class ExtensionContextMenuLockedFullscreenTest
     : public ExtensionContextMenuBrowserTest,
-      public testing::WithParamInterface<std::tuple<bool, bool>> {
+      public testing::WithParamInterface<std::tuple<bool, bool, bool>> {
+ public:
+  ExtensionContextMenuLockedFullscreenTest() {
+    scoped_feature_list_.InitWithFeatureState(
+        features::kUseUnifiedLockedStateController, std::get<2>(GetParam()));
+  }
+
  protected:
-  bool IsLockedFullscreen() { return std::get<0>(GetParam()); }
-  bool IsLockedForOnTask() { return std::get<1>(GetParam()); }
+  bool TestLockedFullscreen() { return std::get<0>(GetParam()); }
+  bool TestLockedForOnTask() { return std::get<1>(GetParam()); }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_P(ExtensionContextMenuLockedFullscreenTest,
                        VerifyItemStateForOnTask) {
-  ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
-      IsLockedForOnTask());
-  if (IsLockedFullscreen()) {
-    ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/true);
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    auto* controller = chromeos::LockedStateController::From(browser());
+    if (TestLockedFullscreen()) {
+      controller->Lock(TestLockedForOnTask()
+                           ? chromeos::LockedState::kOnTaskLocked
+                           : chromeos::LockedState::kExtensionLocked);
+    } else if (TestLockedForOnTask()) {
+      controller->Lock(chromeos::LockedState::kOnTaskPrepared);
+    }
+  } else {
+    ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
+        TestLockedForOnTask());
+    if (TestLockedFullscreen()) {
+      ash::PinWindow(browser()->GetWindow()->GetNativeWindow(),
+                     /*trusted=*/true);
+    }
   }
 
   // Load test extension and wait for js test code to create context menu with
@@ -985,16 +1020,102 @@ IN_PROC_BROWSER_TEST_P(ExtensionContextMenuLockedFullscreenTest,
   const std::unique_ptr<TestRenderViewContextMenu> menu(
       TestRenderViewContextMenu::Create(GetActiveWebContents(), page_url));
   int command_id = ContextMenuMatcher::ConvertToExtensionsCustomCommandId(0);
-  bool expect_command_enabled = IsLockedForOnTask() || !IsLockedFullscreen();
+  bool expect_command_enabled =
+      TestLockedForOnTask() || !TestLockedFullscreen();
   ASSERT_EQ(expect_command_enabled, menu->IsCommandIdEnabled(command_id));
 }
 
-INSTANTIATE_TEST_SUITE_P(ExtensionContextMenuLockedFullscreenTests,
-                         ExtensionContextMenuLockedFullscreenTest,
-                         ::testing::Combine(
-                             /*IsLockedFullscreen=*/::testing::Bool(),
-                             /*IsLockedForOnTask=*/::testing::Bool()));
+INSTANTIATE_TEST_SUITE_P(
+    ExtensionContextMenuLockedFullscreenTests,
+    ExtensionContextMenuLockedFullscreenTest,
+    ::testing::Combine(
+        /*TestLockedFullscreen=*/::testing::Bool(),
+        /*TestLockedForOnTask=*/::testing::Bool(),
+        /*IsUseUnifiedLockedStateControllerEnabled=*/::testing::Bool()));
 #endif
 
+class ExtensionContextMenuActiveTabBrowserTest
+    : public ExtensionContextMenuBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    ExtensionContextMenuBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
+  }
+};
+
+// Tests that `contextMenus.onClicked` is not dispatched if the frame navigates
+// away (and is put into the back/forward cache) while the activeTab grant is
+// on its way to the network service.  Otherwise, the `info` argument of the
+// event would describe the old document, but the `tab` argument would describe
+// the new document.
+IN_PROC_BROWSER_TEST_F(ExtensionContextMenuActiveTabBrowserTest,
+                       NoClickEventAfterNavigationToBackForwardCache) {
+  if (!content::BackForwardCache::IsBackForwardCacheFeatureEnabled()) {
+    GTEST_SKIP() << "Test requires BackForwardCache.";
+  }
+  ASSERT_TRUE(embedded_test_server()->Start());
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(R"(
+      {
+        "name": "NoClickEventAfterNavigationToBackForwardCache",
+        "version": "1.0",
+        "manifest_version": 3,
+        "background": {"service_worker": "background.js"},
+        "permissions": ["activeTab", "contextMenus"]
+      } )");
+  test_dir.WriteFile(FILE_PATH_LITERAL("background.js"), R"(
+      chrome.runtime.onInstalled.addListener(() => {
+        chrome.contextMenus.create({id: 'item', title: 'Item'}, () => {
+          chrome.test.sendMessage('created');
+        });
+      });
+      chrome.contextMenus.onClicked.addListener(() => {});
+  )");
+  ExtensionTestMessageListener created_listener("created");
+  const Extension* extension = LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+  ASSERT_TRUE(created_listener.WaitUntilSatisfied());
+
+  WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(content::NavigateToURL(
+      web_contents, embedded_test_server()->GetURL("a.com", "/title1.html")));
+  content::RenderFrameHostWrapper old_frame(
+      web_contents->GetPrimaryMainFrame());
+
+  // Click the menu item, while holding the network service update of the
+  // activeTab grant.
+  base::OnceClosure send_update;
+  NetworkPermissionsUpdater::HoldNextUpdateForTesting(
+      base::BindLambdaForTesting([&](base::OnceClosure held_update) {
+        send_update = std::move(held_update);
+      }));
+  TestEventRouterObserver event_observer(EventRouter::Get(profile()));
+  content::ContextMenuParams params;
+  params.page_url = old_frame->GetLastCommittedURL();
+  std::unique_ptr<PlatformContextMenu> menu =
+      CreateContextMenu(old_frame.get(), params);
+  ExecuteCommand(menu.get(), extension->id(), "item");
+  ASSERT_TRUE(send_update);
+
+  // Navigate cross-site, so that the old frame is put into the back/forward
+  // cache.
+  ASSERT_TRUE(content::NavigateToURL(
+      web_contents, embedded_test_server()->GetURL("b.com", "/title2.html")));
+  ASSERT_TRUE(old_frame->IsInLifecycleState(
+      content::RenderFrameHost::LifecycleState::kInBackForwardCache));
+
+  // Release the held update, and wait until the network service has processed
+  // it (network service updates are processed in FIFO order).
+  std::move(send_update).Run();
+  base::test::TestFuture<void> update_done;
+  NetworkPermissionsUpdater::UpdateExtension(
+      *profile(), *extension,
+      NetworkPermissionsUpdater::ContextSet::kAllRelatedContexts,
+      update_done.GetCallback());
+  ASSERT_TRUE(update_done.Wait());
+
+  EXPECT_FALSE(event_observer.events().contains(
+      api::context_menus::OnClicked::kEventName));
+}
 
 }  // namespace extensions

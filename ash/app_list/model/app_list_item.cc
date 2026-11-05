@@ -139,7 +139,7 @@ const char* AppListItem::GetItemType() const {
   return app_type;
 }
 
-AppListItem* AppListItem::FindChildItem(const std::string& id) {
+AppListItem* AppListItem::FindChildItem(std::string_view id) {
   return nullptr;
 }
 
@@ -190,9 +190,6 @@ void AppListItem::SetAccessibleName(const std::string& accessible_name) {
 
 void AppListItem::SetAppCollectionId(AppCollection collection_id) {
   metadata_->collection_id = collection_id;
-  for (auto& observer : observers_) {
-    observer.ItemAppCollectionIdChanged();
-  }
 }
 
 void AppListItem::UpdateNotificationBadge(bool has_badge) {

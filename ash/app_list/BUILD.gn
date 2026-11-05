@@ -6,8 +6,6 @@ assert(is_chromeos)
 
 source_set("app_list") {
   sources = [
-    "app_collections_constants.cc",
-    "app_collections_constants.h",
     "app_list_badge_controller.cc",
     "app_list_badge_controller.h",
     "app_list_bubble_event_filter.cc",
@@ -36,8 +34,6 @@ source_set("app_list") {
     "app_list_view_provider.h",
     "app_waiter.cc",
     "app_waiter.h",
-    "apps_collections_controller.cc",
-    "apps_collections_controller.h",
     "apps_grid_row_change_animator.cc",
     "apps_grid_row_change_animator.h",
     "grid_index.cc",
@@ -49,8 +45,6 @@ source_set("app_list") {
     "views/app_drag_icon_proxy.h",
     "views/app_list_a11y_announcer.cc",
     "views/app_list_a11y_announcer.h",
-    "views/app_list_bubble_apps_collections_page.cc",
-    "views/app_list_bubble_apps_collections_page.h",
     "views/app_list_bubble_apps_page.cc",
     "views/app_list_bubble_apps_page.h",
     "views/app_list_bubble_search_page.cc",
@@ -83,10 +77,6 @@ source_set("app_list") {
     "views/app_list_view.h",
     "views/app_list_view_util.cc",
     "views/app_list_view_util.h",
-    "views/apps_collection_section_view.cc",
-    "views/apps_collection_section_view.h",
-    "views/apps_collections_dismiss_dialog.cc",
-    "views/apps_collections_dismiss_dialog.h",
     "views/apps_container_view.cc",
     "views/apps_container_view.h",
     "views/apps_grid_context_menu.cc",
@@ -177,7 +167,6 @@ source_set("app_list") {
     "//chromeos/ui/vector_icons",
     "//chromeos/ui/wm",
     "//chromeos/utils",
-    "//components/feature_engagement/public",
     "//components/keyed_service/core",
     "//components/pref_registry",
     "//components/prefs",
@@ -197,7 +186,7 @@ source_set("app_list") {
     "//ui/chromeos/styles:cros_tokens_color_mappings",
     "//ui/color",
     "//ui/compositor",
-    "//ui/compositor_extra",
+    "//ui/decoration",
     "//ui/display",
     "//ui/display/manager",
     "//ui/display/util",
@@ -228,10 +217,6 @@ source_set("app_list") {
     "//ui/wm",
     "//ui/wm/public",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("test_support") {
@@ -279,13 +264,11 @@ source_set("unit_tests") {
     "app_list_presenter_unittest.cc",
     "app_list_unittest.cc",
     "app_waiter_unittest.cc",
-    "apps_collections_controller_unittest.cc",
     "folder_image_unittest.cc",
     "model/app_list_item_list_unittest.cc",
     "model/app_list_item_unittest.cc",
     "model/app_list_model_unittest.cc",
     "views/app_drag_icon_proxy_unittest.cc",
-    "views/app_list_bubble_apps_collections_page_unittest.cc",
     "views/app_list_bubble_apps_page_unittest.cc",
     "views/app_list_bubble_search_page_unittest.cc",
     "views/app_list_bubble_view_unittest.cc",
@@ -297,7 +280,6 @@ source_set("unit_tests") {
     "views/app_list_nudge_controller_unittest.cc",
     "views/app_list_search_view_unittest.cc",
     "views/app_list_view_unittest.cc",
-    "views/apps_collection_section_view_unittest.cc",
     "views/apps_container_view_unittest.cc",
     "views/apps_grid_view_unittest.cc",
     "views/continue_section_view_unittest.cc",
@@ -329,7 +311,6 @@ source_set("unit_tests") {
     "//chromeos/ash/components/feature_usage",
     "//chromeos/ash/services/assistant:test_support",
     "//chromeos/ash/services/assistant/public/cpp",
-    "//components/feature_engagement/public",
     "//mojo/core/embedder",
     "//mojo/public/cpp/bindings",
     "//skia",
@@ -357,8 +338,4 @@ source_set("unit_tests") {
   ]
 
   data_deps = [ "//ui/resources:ui_test_pak_data" ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

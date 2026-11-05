@@ -13,37 +13,38 @@ include_rules = [
   # refactor chromeos codes in //chrome to break these dependencies; see
   # b/332804822. Whenever possible, avoid adding new //chrome dependencies to
   # this list.
-  "+chrome/browser/apps/platform_apps",
-  "+chrome/browser/ash/browser_delegate/browser_controller.h",
-  "+chrome/browser/ash/browser_delegate/browser_delegate.h",
   "+chrome/browser/ash/policy/dlp",
   "+chrome/browser/ash/profiles",
   "+chrome/browser/browser_process.h",
   "+chrome/browser/download",
   "+chrome/browser/enterprise/data_controls",
-  "+chrome/browser/favicon",
-  "+chrome/browser/file_system_access",
-  "+chrome/browser/notifications",
-  "+chrome/browser/policy",
-  "+chrome/browser/printing",
   "+chrome/browser/profiles",
-  "+chrome/browser/ui/browser_window/public/browser_window_interface.h",
-  "+chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h",
-  "+chrome/browser/ui/tabs/tab_strip_model.h",
-  "+chrome/browser/ui/tabs/tab_strip_model_observer.h",
   "+chrome/common",
   "+chrome/grit",
+
+  "+ui/message_center/message_center.h",
+  "+ui/message_center/public/cpp",
 ]
 
 specific_include_rules = {
+  # The keyed service factory is the //chrome seam here.
+  "(data_transfer_dlp_controller_interactive_uitest\\.cc|data_transfer_dlp_controller_unittest\\.cc|dlp_content_manager_interactive_uitest\\.cc|dlp_rules_manager_factory\\.cc)": [
+    "+chrome/browser/policy",
+  ],
+  # Only tests need these //chrome dependencies.
+  ".*_(unittest|browsertest|apitest|uitest)\\.cc": [
+    "+chrome/browser/apps/platform_apps",
+    "+chrome/browser/file_system_access",
+    "+chrome/browser/printing",
+  ],
   ".*_(browser|ui|unit)test\\.cc": [
     "+chrome/browser/extensions/extension_browsertest.h",
-    "+chrome/browser/ui/browser.h",
     "+chrome/browser/ui/browser_commands.h",
     "+chrome/browser/ui/browser_window.h",
     "+chrome/browser/ui/browser_window/public/browser_window_interface.h",
     "+chrome/browser/ui/browser_window/public/create_browser_window.h",
     "+chrome/browser/ui/navigator/browser_navigator.h",
+    "+chrome/browser/ui/navigator/browser_navigator_params.h",
     "+chrome/browser/ui/tabs/tab_activity_simulator.h",
     "+chrome/browser/ui/tabs/tab_strip_model.h",
     "+chrome/browser/ui/views/frame/browser_view.h",

@@ -13,7 +13,6 @@ import static org.mockito.Mockito.when;
 import android.content.Context;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -22,7 +21,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.TimeUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -52,7 +50,6 @@ import org.chromium.components.tab_group_sync.TabGroupSyncService;
 
 /** Unit tests for {@link EducationalTipCardProviderSignalHandler}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class EducationalTipCardProviderSignalHandlerUnitTest {
     private static final String SYNC_ID = "sync_id";
     private static final @TabId int TAB_ID = 1;
@@ -97,7 +94,6 @@ public class EducationalTipCardProviderSignalHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2})
     public void testCreateInputContext_DefaultBrowserPromoCard() {
         InputContext inputContext =
@@ -193,7 +189,6 @@ public class EducationalTipCardProviderSignalHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateInputContext_TabGroupPromoCard_TabGroupExists() {
         when(mTabModelSelector.isTabStateInitialized()).thenReturn(true);
         when(mTabModelSelector.isReparentingInProgress()).thenReturn(false);
@@ -222,7 +217,6 @@ public class EducationalTipCardProviderSignalHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateInputContext_TabGroupPromoCard_NumberOfTabs() {
         InputContext inputContext;
 
@@ -277,7 +271,6 @@ public class EducationalTipCardProviderSignalHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateInputContext_TabGroupSyncPromoCard() {
         when(mMockTabGroupSyncService.getAllGroupIds()).thenReturn(new String[] {});
 
@@ -309,7 +302,6 @@ public class EducationalTipCardProviderSignalHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2})
     public void testCreateInputContext_NtpThemePromoCard() {
         when(mActionDelegate.supportCustomizedNtpTheme()).thenReturn(true);

@@ -19,6 +19,7 @@
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "chrome/test/interaction/webcontents_interaction_test_util.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/network_session_configurator/common/network_switches.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
@@ -33,6 +34,7 @@
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/views_switches.h"
 #include "ui/views/window/dialog_client_view.h"
 
 // These tests are disabled under MSAN. The enclave subprocess is written in
@@ -72,6 +74,12 @@ class WebAuthnImmediateGetTest : public Fixture {
   WebAuthnImmediateGetTest() = default;
 
   ~WebAuthnImmediateGetTest() override = default;
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    Fixture::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(
+        views::switches::kDisableInputEventActivationProtectionForTesting);
+  }
 
  protected:
   GURL GetHttpsURL(const std::string& hostname = kHostname,
@@ -114,7 +122,7 @@ class WebAuthnImmediateGetTest : public Fixture {
         password_manager::PasswordString(base::ASCIIToUTF16(password));
     form.signon_realm = GetHttpsURL().DeprecatedGetOriginAsURL().spec();
     form.url = GetHttpsURL().DeprecatedGetOriginAsURL();
-    form.match_type = password_manager::PasswordForm::MatchType::kExact;
+    form.match_type = affiliations::MatchType::kExact;
 
     scoped_refptr<password_manager::PasswordStoreInterface> password_store =
         ProfilePasswordStoreFactory::GetForProfile(

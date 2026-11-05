@@ -171,14 +171,24 @@ std::vector<std::string> GenerateUpgradeProps(
       base::StringPrintf("%s.skip_tts_cache=%d", prefix.c_str(),
                          upgrade_params.skip_tts_cache),
   };
-  // Conditionally sets more properties based on |upgrade_params|.
+  // Conditionally sets more properties based on |upgrade_params|. Strip
+  // newlines so values cannot inject extra lines when joined by '\n'.
   if (!upgrade_params.locale.empty()) {
-    result.push_back(base::StringPrintf("%s.locale=%s", prefix.c_str(),
-                                        upgrade_params.locale.c_str()));
+    std::string locale;
+    base::RemoveChars(upgrade_params.locale, "\r\n", &locale);
+    result.push_back(
+        base::StringPrintf("%s.locale=%s", prefix.c_str(), locale.c_str()));
     if (!upgrade_params.preferred_languages.empty()) {
+      std::vector<std::string> preferred_languages;
+      preferred_languages.reserve(upgrade_params.preferred_languages.size());
+      for (const std::string& lang : upgrade_params.preferred_languages) {
+        std::string sanitized_lang;
+        base::RemoveChars(lang, "\r\n", &sanitized_lang);
+        preferred_languages.push_back(std::move(sanitized_lang));
+      }
       result.push_back(base::StringPrintf(
           "%s.preferred_languages=%s", prefix.c_str(),
-          base::JoinString(upgrade_params.preferred_languages, ",").c_str()));
+          base::JoinString(preferred_languages, ",").c_str()));
     }
   }
 
@@ -472,10 +482,6 @@ vm_tools::concierge::StartArcVmRequest CreateStartArcVmRequest(
 
   request.set_vm_memory_psi_period(kVmMemoryPsiPeriod.InSeconds());
 
-  request.set_enable_vmm_swap(
-      base::FeatureList::IsEnabled(kVmmSwapPolicy) ||
-      base::FeatureList::IsEnabled(kVmmSwapKeyboardShortcut));
-
 #if defined(ARCH_CPU_X86_64)
   if (base::FeatureList::IsEnabled(kEnableArcS2Idle)) {
     request.set_enable_s2idle(true);
@@ -703,7 +709,11 @@ class ArcVmClientAdapter : public ArcClientAdapter,
     if (user_id_hash_.empty()) {
       LOG(ERROR) << "User ID hash is not set";
       StopArcInstanceInternal();
-      std::move(callback).Run(false);
+      // Post the callback asynchronously so that
+      // ArcSessionRunner::StartArcSession() does not synchronously destroy
+      // |arc_session_| in OnSessionStopped() before calling RequestUpgrade().
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(std::move(callback), false));
       return;
     }
 
@@ -820,8 +830,14 @@ class ArcVmClientAdapter : public ArcClientAdapter,
     DCHECK(arc_service_manager);
     arc_service_manager->arc_bridge_service()->app()->RemoveObserver(this);
 
+    if (user_id_hash_.empty()) {
+      // In browser tests that set up a fake AppInstance without configuring
+      // ARCVM user info, |user_id_hash_| can be empty.
+      LOG(WARNING) << "User ID hash is not set";
+      return;
+    }
+
     vm_tools::concierge::ArcVmCompleteBootRequest request;
-    DCHECK(!user_id_hash_.empty());
     request.set_owner_id(user_id_hash_);
     GetConciergeClient()->ArcVmCompleteBoot(
         request,

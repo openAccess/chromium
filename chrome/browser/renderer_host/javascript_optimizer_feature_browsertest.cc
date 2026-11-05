@@ -2,43 +2,39 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/scoped_refptr.h"
 #include "build/branding_buildflags.h"
+#include "build/build_config.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/content_settings/generated_javascript_optimizer_pref.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/safe_browsing_service.h"
-#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
-#include "chrome/browser/site_protection/site_familiarity_fetcher.h"
-#include "chrome/browser/site_protection/site_familiarity_utils.h"
 #include "chrome/browser/ui/views/infobars/confirm_infobar.h"
 #include "chrome/browser/ui/views/js_optimization/js_optimizations_infobar_delegate.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/policy_constants.h"
+#include "components/safe_browsing/buildflags.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
+#include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/page_action/action_ids.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/js_optimization/js_optimizations_page_action_controller.h"
-#include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
 #include "chrome/browser/ui/views/page_action/test_support/page_action_interactive_test_mixin.h"
 #include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
-#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "ui/actions/actions.h"
 #include "ui/base/interaction/element_tracker.h"
-#include "ui/views/animation/ink_drop.h"
-#include "ui/views/animation/test/ink_drop_host_test_api.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -50,9 +46,6 @@
 #include "components/history/core/browser/history_service.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/core/browser/db/fake_database_manager.h"
-#include "components/safe_browsing/core/common/features.h"
-#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/process_selection_deferring_condition.h"
@@ -74,7 +67,17 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "url/origin.h"
 
-typedef site_protection::SiteFamiliarityFetcher::Verdict FamiliarityVerdict;
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#include "chrome/browser/safe_browsing/safe_browsing_service.h"
+#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
+#include "chrome/browser/site_protection/site_familiarity_fetcher.h"
+#include "chrome/browser/site_protection/site_familiarity_utils.h"
+#include "components/safe_browsing/core/browser/db/fake_database_manager.h"
+#include "components/safe_browsing/core/common/features.h"
+#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
+
+using FamiliarityVerdict = site_protection::SiteFamiliarityFetcher::Verdict;
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 template <typename T>
 class JavascriptOptimizerBrowserTestMixin : public T {
@@ -84,8 +87,11 @@ class JavascriptOptimizerBrowserTestMixin : public T {
     this->host_resolver()->AddRule("*", "127.0.0.1");
     content::SetupCrossSiteRedirector(&this->embedded_https_test_server());
 
+    // c.com is needed by iframe_cross_site.html, which embeds both b.com and
+    // c.com. Without a valid certificate, the c.com subframe would commit an
+    // error page rather than a real document.
     this->embedded_https_test_server().SetCertHostnames(
-        {"a.com", "*.a.com", "b.com", "*.b.com", "unrelated.com"});
+        {"a.com", "*.a.com", "b.com", "*.b.com", "c.com", "unrelated.com"});
     ASSERT_TRUE(this->embedded_https_test_server().Start());
   }
 
@@ -416,12 +422,28 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_FALSE(AreV8OptimizationsDisabledOnActiveWebContents());
 }
 
-// Test that if there's a rule for a.com that differs from the default, then the
-// user can't specify a rule for sub.a.com that contradicts that rule.
-// TODO(crbug.com/413695645): Make it possible for users to specify overrides so
-// that sub.a.com's behavior can differ from a.com's behavior.
+// Tests how non-default rules for a site (e.g., a.com) inherit to sub-sites
+// (e.g., sub.a.com) when the rules contradict each other. Which rule applies
+// depends on the process sub.a.com lands in:
+//
+// - Under full site isolation, or under partial site isolation once a.com has
+//   been dynamically isolated, sub.a.com shares a.com's site-keyed process and
+//   inherits a.com's rule.
+//   TODO(crbug.com/413695645): Make it possible for users to specify overrides
+//   so that sub.a.com's behavior can differ from a.com's even under site
+//   isolation.
+//
+// - Under origin-keyed processes by default, sub.a.com gets its own
+//   origin-keyed process and follows its own rule.
+//
+// - Under partial site isolation before a.com is dynamically isolated,
+//   sub.a.com would share a process with a.com, but that process hosts the
+//   BrowsingInstance's default SiteInstanceGroup rather than being locked to
+//   a.com. Since such a process may host any unisolated site, its policy scope
+//   URL is empty and the global default rule applies instead of either site's
+//   rule.
 IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBrowserTest,
-                       ExceptionForSiteAppliesToSubSiteButCannotBeOverridden) {
+                       SubSiteRuleInheritanceBehavior) {
   auto* policy = content::ChildProcessSecurityPolicy::GetInstance();
   auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
   map->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
@@ -437,7 +459,9 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBrowserTest,
       ContentSettingsType::JAVASCRIPT_OPTIMIZER,
       ContentSetting::CONTENT_SETTING_BLOCK);
 
-  // Since this exception matches the default, it will not be isolated.
+  // First navigation to sub.a.com. Its custom policy (ALLOW) matches the
+  // default, so it is not proactively isolated. Additionally, a.com has not
+  // been visited yet, so a.com is not dynamically isolated either.
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
       embedded_https_test_server().GetURL("sub.a.com", "/simple.html")));
@@ -447,48 +471,50 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBrowserTest,
       content::ChildProcessSecurityPolicy::IsolatedOriginSource::
           USER_TRIGGERED));
 
-  if (content::AreStrictSiteInstancesEnabled() &&
+  if (content::SiteIsolationPolicy::UseDedicatedProcessesForAllSites() &&
       !content::SiteIsolationPolicy::AreOriginKeyedProcessesEnabledByDefault(
           profile())) {
-    // if a.com is isolated already (as is the case with full site isolation)
-    // or if DefaultSiteInstanceGroups are enabled, and origin isolation is not
-    // used, the navigation to sub.a.com will be made in a SiteInstance with a
-    // "a.com" site URL, which will match a.com BLOCK rule.
+    // Full site isolation: sub.a.com is given a dedicated process for site
+    // https://a.com/. The policy scope URL is https://a.com/, which matches
+    // a.com's BLOCK rule.
     EXPECT_TRUE(AreV8OptimizationsDisabledOnActiveWebContents());
   } else {
-    // If nothing is isolated by default (like on Android), we'll navigate in a
-    // default SiteInstance which won't match that rule and will instead
-    // retrieve the default rule. TODO(crbug.com/413695645): make it possible
-    // for users to specify overrides so that sub.a.com's behavior can differ
-    // from a.com's behavior.
+    // Origin-keyed processes by default: sub.a.com gets an origin-keyed
+    // process, matching its own ALLOW rule.
+    //
+    // Partial site isolation: sub.a.com joins the default SiteInstanceGroup,
+    // which an unisolated a.com would share as well. Its scope URL evaluates
+    // to empty, matching the global ALLOW rule.
     EXPECT_FALSE(AreV8OptimizationsDisabledOnActiveWebContents());
   }
 
+  // Unless origin-keyed processes are enabled by default, navigating to a.com
+  // dynamically isolates the origin https://a.com/ for the remainder of the
+  // session due to its non-default BLOCK rule.
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
       embedded_https_test_server().GetURL("a.com", "/simple.html")));
 
   EXPECT_TRUE(AreV8OptimizationsDisabledOnActiveWebContents());
 
-  // Navigate back to sub.a.com, and we would like for js-opt to be enabled, but
-  // they are disabled instead, because url provided to
-  // AreV8OptimizationsDisabledForSite is a.com, which matches the block rule.
-  // Ideally we'd be able to specify rules here, but to do that we need to pass
-  // in the origin instead of the site. Currently, the site is passed because
-  // sub.a.com is not origin isolated. TODO(crbug.com/413695645): Make it
-  // possible for users to specify overrides so that sub.a.com's behavior can
-  // differ from a.com's behavior.
+  // Second navigation to sub.a.com.
   ASSERT_TRUE(content::NavigateToURL(
       web_contents(),
       embedded_https_test_server().GetURL("sub.a.com", "/simple.html")));
+
   if (content::SiteIsolationPolicy::AreOriginKeyedProcessesEnabledByDefault(
           profile())) {
-    // Under origin isolation, the rule won't match sub.a.com, so optimizers
-    // remain enabled.
+    // Origin-keyed processes by default: sub.a.com remains in its own
+    // origin-keyed process, avoiding a.com's restriction and matching its
+    // ALLOW rule.
     EXPECT_FALSE(AreV8OptimizationsDisabledOnActiveWebContents());
   } else {
-    // Under site isolation, sub.a.com will be evaluated as a.com so the rule
-    // will match.
+    // Full site isolation and partial site isolation: Because https://a.com/
+    // is now dynamically isolated, sub.a.com is forced into a dedicated process
+    // for https://a.com/. The policy scope URL evaluates to https://a.com/,
+    // overriding its own ALLOW rule.
+    // TODO(crbug.com/413695645): Make it possible to specify origin-based
+    // overrides so sub.a.com's behavior can differ from a.com's.
     EXPECT_TRUE(AreV8OptimizationsDisabledOnActiveWebContents());
   }
 }
@@ -623,6 +649,12 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBrowserTest, ProcessLimitWorks) {
   content::RenderFrameHost* a_com_frame = web_contents()->GetPrimaryMainFrame();
   content::RenderFrameHost* b_com_frame = content::ChildFrameAt(a_com_frame, 0);
   content::RenderFrameHost* c_com_frame = content::ChildFrameAt(a_com_frame, 1);
+
+  // Both subframes must have committed real documents. An error page would be
+  // placed in the error page process when subframe error page isolation is
+  // enabled, which would defeat the process placement checks below.
+  ASSERT_FALSE(b_com_frame->IsErrorDocument());
+  ASSERT_FALSE(c_com_frame->IsErrorDocument());
 
   if (content::SiteIsolationPolicy::UseDedicatedProcessesForAllSites()) {
     // When all sites are isolated, each frame should be in its own process.
@@ -825,6 +857,7 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBrowserTest_CustomDeferralCondition,
   EXPECT_TRUE(frame->GetProcess()->AreV8OptimizationsDisabled());
 }
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 // Base class for integration tests which enable/disable the "disable JavaScript
 // optimization for unfamiliar sites" feature.
 class JavascriptOptimizerBrowserTest_UseSiteFamiliarityBase
@@ -859,7 +892,7 @@ class JavascriptOptimizerBrowserTest_UseSiteFamiliarityBase
     // Test UI manager and test database manager should be set before
     // the browser is started but after threads are created.
     factory_.SetTestDatabaseManager(
-        new safe_browsing::FakeSafeBrowsingDatabaseManager(
+        base::MakeRefCounted<safe_browsing::FakeSafeBrowsingDatabaseManager>(
             content::GetUIThreadTaskRunner({})));
     safe_browsing::SafeBrowsingService::RegisterFactory(&factory_);
   }
@@ -1290,6 +1323,7 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBrowserTest_DoNotUseSiteFamiliarity,
                                 ContentSetting::CONTENT_SETTING_BLOCK);
   NavigateToUnfamiliarSite(/*expect_v8_optimizations_enabled=*/false);
 }
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 #if !BUILDFLAG(IS_ANDROID)
 
@@ -1471,12 +1505,32 @@ IN_PROC_BROWSER_TEST_F(
 }
 
 class JavascriptOptimizerBubbleBrowserTest
-    : public JavascriptOptimizerOmnibarIconBrowserTest {
+    : public JavascriptOptimizerOmnibarIconBrowserTest,
+      public testing::WithParamInterface<bool> {
  public:
-  JavascriptOptimizerBubbleBrowserTest() = default;
+  JavascriptOptimizerBubbleBrowserTest() {
+    if (GetParam()) {
+      feature_list_.InitAndEnableFeatureWithParameters(
+          infobars::kCentralizedInfoBarFramework,
+          {{"MigratedJsOptimizations", "true"}});
+    } else {
+      feature_list_.InitAndDisableFeature(
+          infobars::kCentralizedInfoBarFramework);
+    }
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest,
+INSTANTIATE_TEST_SUITE_P(All,
+                         JavascriptOptimizerBubbleBrowserTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Migrated" : "Legacy";
+                         });
+
+IN_PROC_BROWSER_TEST_P(JavascriptOptimizerBubbleBrowserTest,
                        BubbleShowsOnClick) {
   auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
   map->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
@@ -1499,7 +1553,7 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest,
   EXPECT_TRUE(IsBubbleButtonVisible());
 }
 
-IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest,
+IN_PROC_BROWSER_TEST_P(JavascriptOptimizerBubbleBrowserTest,
                        AfterEnablingOptimizationsIconIsHidden) {
   auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
   map->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
@@ -1522,11 +1576,12 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest,
   EXPECT_TRUE(IsBubbleButtonVisible());
   // Click on button.
   RunTestSequence(
-      PressButton(JsOptimizationsPageActionController::kBubbleButtonElementId));
+      PressButton(JsOptimizationsPageActionController::kBubbleButtonElementId),
+      WaitForShow(ConfirmInfoBar::kInfoBarElementId));
   // Open new tab and go to the same site.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_https_test_server().GetURL("/simple.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   // TODO: crbug.com/457420369 - Use reload functionality to check settings
   // application instead of opening a new tab
@@ -1538,15 +1593,31 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest,
   ASSERT_FALSE(IsOmnibarIconVisible());
 }
 
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_IconHighlightClearedOnBubbleClose \
-    DISABLED_IconHighlightClearedOnBubbleClose
-#else
-#define MAYBE_IconHighlightClearedOnBubbleClose \
-    IconHighlightClearedOnBubbleClose
-#endif
-IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest,
-                       MAYBE_IconHighlightClearedOnBubbleClose) {
+IN_PROC_BROWSER_TEST_P(JavascriptOptimizerBubbleBrowserTest,
+                       ReloadInfoBarReloadsOnAccept) {
+  auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
+  map->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
+                                ContentSetting::CONTENT_SETTING_BLOCK);
+
+  ASSERT_TRUE(content::NavigateToURL(
+      web_contents(), embedded_https_test_server().GetURL("/simple.html")));
+  ASSERT_TRUE(AreV8OptimizationsDisabledOnActiveWebContents());
+  ASSERT_TRUE(IsOmnibarIconVisible());
+
+  RunTestSequence(
+      PressButton(kJsOptimizationsIconElementId),
+      WaitForShow(JsOptimizationsPageActionController::kBubbleButtonElementId),
+      PressButton(JsOptimizationsPageActionController::kBubbleButtonElementId),
+      WaitForShow(ConfirmInfoBar::kInfoBarElementId));
+
+  content::TestNavigationObserver reload_observer(web_contents());
+  RunTestSequence(PressButton(ConfirmInfoBar::kOkButtonElementId),
+                  WaitForHide(ConfirmInfoBar::kInfoBarElementId));
+  reload_observer.Wait();
+}
+
+IN_PROC_BROWSER_TEST_P(JavascriptOptimizerBubbleBrowserTest,
+                       IconHighlightClearedOnBubbleClose) {
   auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
   map->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
                                 ContentSetting::CONTENT_SETTING_BLOCK);
@@ -1563,49 +1634,28 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest,
       WaitForShow(JsOptimizationsPageActionController::kBubbleBodyElementId));
   EXPECT_TRUE(IsBubbleVisible());
 
-  // TODO(crbug.com/545160323): Test WebUI page action highlight.
-  if (!features::IsWebUILocationBarEnabled()) {
-    // Check icon is highlighted.
-    auto* provider = BrowserView::GetBrowserViewForBrowser(browser())
-                         ->toolbar_button_provider();
-    auto* icon = page_actions::GetIconLabelBubbleViewForTesting(
-        provider->GetPageActionViewInterface(kActionShowJsOptimizationsIcon),
-        kActionShowJsOptimizationsIcon);
-    EXPECT_TRUE(icon);
-    views::test::InkDropHostTestApi ink_drop_test_api(
-        views::InkDrop::Get(icon));
-    ASSERT_EQ(ink_drop_test_api.GetInkDrop()->GetTargetInkDropState(),
-              views::InkDropState::ACTIVATED);
+  // Check icon is highlighted.
+  page_actions::PageActionTestAccessor page_action_test_accessor(
+      browser(), kActionShowJsOptimizationsIcon);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return page_action_test_accessor.HasIconHighlight(); }));
 
-    // Close bubble.
-    RunTestSequence(
-        WithElement(JsOptimizationsPageActionController::kBubbleBodyElementId,
-                    base::BindOnce([](ui::TrackedElement* element) {
-                      auto* view_element =
-                          element->AsA<views::TrackedElementViews>();
-                      view_element->view()->GetWidget()->Close();
-                    })),
-        WaitForHide(JsOptimizationsPageActionController::kBubbleBodyElementId));
+  // Close bubble.
+  RunTestSequence(
+      WithElement(JsOptimizationsPageActionController::kBubbleBodyElementId,
+                  base::BindOnce([](ui::TrackedElement* element) {
+                    auto* view_element =
+                        element->AsA<views::TrackedElementViews>();
+                    view_element->view()->GetWidget()->Close();
+                  })),
+      WaitForHide(JsOptimizationsPageActionController::kBubbleBodyElementId));
 
-    // Check icon is no longer highlighted.
-    ASSERT_TRUE(base::test::RunUntil([&]() {
-      return ink_drop_test_api.GetInkDrop()->GetTargetInkDropState() ==
-             views::InkDropState::HIDDEN;
-    }));
-  } else {
-    // Close bubble.
-    RunTestSequence(
-        WithElement(JsOptimizationsPageActionController::kBubbleBodyElementId,
-                    base::BindOnce([](ui::TrackedElement* element) {
-                      auto* view_element =
-                          element->AsA<views::TrackedElementViews>();
-                      view_element->view()->GetWidget()->Close();
-                    })),
-        WaitForHide(JsOptimizationsPageActionController::kBubbleBodyElementId));
-  }
+  // Check icon is no longer highlighted.
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !page_action_test_accessor.HasIconHighlight(); }));
 }
 
-IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest,
+IN_PROC_BROWSER_TEST_P(JavascriptOptimizerBubbleBrowserTest,
                        BubbleClosesOnNavigation) {
   auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
   map->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
@@ -1648,7 +1698,7 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest,
 
 // JS optimizations disabled by enterprise policy.
 class JavascriptOptimizerBubbleBrowserTest_WithPolicy
-    : public JavascriptOptimizerBubbleBrowserTest {};
+    : public JavascriptOptimizerOmnibarIconBrowserTest {};
 
 IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest_WithPolicy,
                        BubbleShowsOnClick) {
@@ -1674,6 +1724,21 @@ IN_PROC_BROWSER_TEST_F(JavascriptOptimizerBubbleBrowserTest_WithPolicy,
 class JavascriptOptimizerUiTest : public JavascriptOptimizerUiBaseBrowserTest {
  public:
   JavascriptOptimizerUiTest() = default;
+
+  void SetUp() override {
+    // These tests interact with / screenshot Views elements (the omnibox icon
+    // and bubble), which is flaky in parallel browser_tests runs because window
+    // occlusion or activation changes from other tests can make
+    // ElementTrackerViews drop the browser's Views elements; outside pixel
+    // verification runs they would skip at the screenshot step anyway, and
+    // pixel_browser_tests runs them serially. See crbug.com/558994551.
+    if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+            switches::kVerifyPixels)) {
+      GTEST_SKIP() << "A pixel test requires kVerifyPixels flag.";
+    }
+
+    JavascriptOptimizerUiBaseBrowserTest::SetUp();
+  }
 };
 
 IN_PROC_BROWSER_TEST_F(JavascriptOptimizerUiTest, OmniboxIconPixelTest) {

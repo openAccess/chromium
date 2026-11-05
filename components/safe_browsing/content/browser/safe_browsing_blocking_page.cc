@@ -194,12 +194,12 @@ void SafeBrowsingBlockingPage::OnInterstitialClosing() {
   BaseBlockingPage::OnInterstitialClosing();
 }
 
-void SafeBrowsingBlockingPage::SendFallbackReport(
-    const security_interstitials::UnsafeResource resource,
+std::unique_ptr<ClientSafeBrowsingReportRequest>
+SafeBrowsingBlockingPage::CreateFallbackReport(
+    const security_interstitials::UnsafeResource& resource,
     bool did_proceed,
     int num_visits,
-    security_interstitials::InterstitialInteractionMap* interactions,
-    bool is_hats_candidate) {
+    security_interstitials::InterstitialInteractionMap* interactions) {
   auto report = std::make_unique<ClientSafeBrowsingReportRequest>();
   client_report_utils::FillReportBasicResourceDetails(report.get(), resource);
   report->set_did_proceed(did_proceed);
@@ -216,6 +216,17 @@ void SafeBrowsingBlockingPage::SendFallbackReport(
           safe_browsing::kAddWarningShownTSToClientSafeBrowsingReport)) {
     report->set_warning_shown_timestamp_msec(warning_shown_ts_);
   }
+  return report;
+}
+
+void SafeBrowsingBlockingPage::SendFallbackReport(
+    const security_interstitials::UnsafeResource resource,
+    bool did_proceed,
+    int num_visits,
+    security_interstitials::InterstitialInteractionMap* interactions,
+    bool is_hats_candidate) {
+  std::unique_ptr<ClientSafeBrowsingReportRequest> report =
+      CreateFallbackReport(resource, did_proceed, num_visits, interactions);
   ui_manager()->SendThreatDetails(web_contents()->GetBrowserContext(),
                                   std::move(report));
 }
@@ -255,13 +266,32 @@ void SafeBrowsingBlockingPage::FinishThreatDetails(const base::TimeDelta& delay,
 #else
       kRedWarningSurvey;
 #endif
-  if (base::FeatureList::IsEnabled(hats_feature)) {
-    is_hats_candidate =
-        SafeBrowsingHatsDelegate::IsSurveyCandidate(
-            threat_type_, kRedWarningSurveyReportTypeFilter.Get(), proceeded(),
-            kRedWarningSurveyDidProceedFilter.Get()) &&
-        !is_proceed_anyway_disabled_ && is_safe_browsing_surveys_enabled_;
+  if (!is_proceed_anyway_disabled_ && is_safe_browsing_surveys_enabled_ &&
+      base::FeatureList::IsEnabled(hats_feature)) {
+    is_hats_candidate = SafeBrowsingHatsDelegate::IsSurveyCandidate(
+        threat_type_, kRedWarningSurveyReportTypeFilter.Get(), proceeded(),
+        kRedWarningSurveyDidProceedFilter.Get());
   }
+
+#if BUILDFLAG(IS_ANDROID)
+  // On Android, dispatch the HaTS survey report synchronously when the
+  // interstitial closes instead of waiting for TriggerManager's asynchronous
+  // ThreatDetails collection. When the user proceeds, ThreatDetails collection
+  // is delayed by threat_details_proceed_delay() (3s), during which post-
+  // interstitial navigations, redirects, or tab destruction can abort the
+  // survey before it launches.
+  content::WebContents* wc = web_contents();
+  bool is_tab_closed = wc ? wc->IsBeingDestroyed() : false;
+  if (is_hats_candidate && wc) {
+    std::unique_ptr<ClientSafeBrowsingReportRequest> survey_report =
+        CreateFallbackReport(unsafe_resources()[0], did_proceed, num_visits,
+                             &local_interactions);
+    ui_manager()->AttachThreatDetailsAndLaunchSurvey(
+        wc->GetBrowserContext(), std::move(survey_report), is_tab_closed);
+    is_hats_candidate = false;
+  }
+#endif
+
   auto report_sent_result = trigger_manager_->FinishCollectingThreatDetails(
       TriggerType::SECURITY_INTERSTITIAL, GetWebContentsKey(web_contents()),
       delay, did_proceed, num_visits,

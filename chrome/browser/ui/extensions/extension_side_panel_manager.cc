@@ -9,13 +9,17 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/extension_side_panel_coordinator.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_context.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/permissions/api_permission.h"
 #include "extensions/common/permissions/permissions_data.h"
 
 namespace extensions {
+
+DEFINE_USER_DATA(ExtensionSidePanelManager);
 
 ExtensionSidePanelManager::ExtensionSidePanelManager(
     BrowserWindowInterface* browser,
@@ -24,7 +28,8 @@ ExtensionSidePanelManager::ExtensionSidePanelManager(
       browser_(browser),
       tab_interface_(nullptr),
       registry_(registry),
-      for_tab_(false) {
+      for_tab_(false),
+      scoped_unowned_user_data_(browser->GetUnownedUserDataHost(), *this) {
   RegisterExtensionEntries();
 }
 
@@ -36,11 +41,25 @@ ExtensionSidePanelManager::ExtensionSidePanelManager(
       browser_(nullptr),
       tab_interface_(tab_interface),
       registry_(tab_registry),
-      for_tab_(true) {
+      for_tab_(true),
+      scoped_unowned_user_data_(tab_interface->GetUnownedUserDataHost(),
+                                *this) {
   RegisterExtensionEntries();
 }
 
 ExtensionSidePanelManager::~ExtensionSidePanelManager() = default;
+
+// static
+ExtensionSidePanelManager* ExtensionSidePanelManager::From(
+    BrowserWindowInterface* browser) {
+  return Get(browser->GetUnownedUserDataHost());
+}
+
+// static
+ExtensionSidePanelManager* ExtensionSidePanelManager::From(
+    tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
 
 ExtensionSidePanelCoordinator*
 ExtensionSidePanelManager::GetExtensionCoordinatorForTesting(
@@ -77,13 +96,22 @@ void ExtensionSidePanelManager::OnExtensionUnloaded(
 
 void ExtensionSidePanelManager::MaybeCreateExtensionSidePanelCoordinator(
     const Extension* extension) {
-  if (extension->permissions_data()->HasAPIPermission(
+  if (!extension->permissions_data()->HasAPIPermission(
           mojom::APIPermissionID::kSidePanel)) {
-    coordinators_.emplace(extension->id(),
-                          std::make_unique<ExtensionSidePanelCoordinator>(
-                              profile_, browser_, tab_interface_, extension,
-                              registry_, for_tab_));
+    return;
   }
+
+  // In incognito, only create a coordinator for extensions that are allowed to
+  // run in incognito.
+  if (profile_->IsOffTheRecord() &&
+      !util::IsIncognitoEnabled(extension->id(), profile_)) {
+    return;
+  }
+
+  coordinators_.emplace(
+      extension->id(),
+      std::make_unique<ExtensionSidePanelCoordinator>(
+          profile_, browser_, tab_interface_, extension, registry_, for_tab_));
 }
 
 }  // namespace extensions

@@ -4,13 +4,16 @@
 
 #include "components/page_content_annotations/content/page_content_extraction_service.h"
 
+#include <optional>
+
 #include "base/files/scoped_temp_dir.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/task_environment.h"
 #include "components/feature_engagement/test/mock_tracker.h"
+#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/os_crypt/async/browser/test_utils.h"
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
+#include "content/public/test/test_renderer_host.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -19,20 +22,26 @@ namespace page_content_annotations {
 using testing::_;
 using testing::Return;
 
-class PageContentExtractionServiceTest : public testing::Test {
+class PageContentExtractionServiceTest
+    : public content::RenderViewHostTestHarness {
  public:
   PageContentExtractionServiceTest() = default;
   ~PageContentExtractionServiceTest() override = default;
 
   void SetUp() override {
+    content::RenderViewHostTestHarness::SetUp();
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     os_crypt_async_ = os_crypt_async::GetTestOSCryptAsyncForTesting();
+  }
+
+  void TearDown() override {
+    os_crypt_async_.reset();
+    content::RenderViewHostTestHarness::TearDown();
   }
 
  protected:
   base::test::ScopedFeatureList scoped_feature_list_;
   base::ScopedTempDir temp_dir_;
-  base::test::TaskEnvironment task_environment_;
   std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt_async_;
   feature_engagement::test::MockTracker mock_tracker_;
 };
@@ -109,7 +118,8 @@ TEST_F(PageContentExtractionServiceTest, OnNewNavigation_Metrics) {
     scoped_feature_list_.InitAndDisableFeature(
         features::kAnnotatedPageContentExtraction);
 
-    service.OnNewNavigation(std::nullopt, nullptr, /*is_same_document=*/false);
+    service.OnNewNavigation(std::nullopt, web_contents(),
+                            /*is_same_document=*/false);
 
     histogram_tester.ExpectUniqueSample(
         "OptimizationGuide.PageContentExtraction.EnablementSourcePerNavigation",
@@ -126,7 +136,8 @@ TEST_F(PageContentExtractionServiceTest, OnNewNavigation_Metrics) {
     feature_list.InitAndEnableFeature(
         features::kAnnotatedPageContentExtraction);
 
-    service.OnNewNavigation(std::nullopt, nullptr, /*is_same_document=*/false);
+    service.OnNewNavigation(std::nullopt, web_contents(),
+                            /*is_same_document=*/false);
 
     histogram_tester.ExpectUniqueSample(
         "OptimizationGuide.PageContentExtraction.EnablementSourcePerNavigation",
@@ -146,7 +157,8 @@ TEST_F(PageContentExtractionServiceTest, OnNewNavigation_Metrics) {
     TestObserver observer;
     service.AddObserver(&observer);
 
-    service.OnNewNavigation(std::nullopt, nullptr, /*is_same_document=*/false);
+    service.OnNewNavigation(std::nullopt, web_contents(),
+                            /*is_same_document=*/false);
 
     histogram_tester.ExpectUniqueSample(
         "OptimizationGuide.PageContentExtraction.EnablementSourcePerNavigation",
@@ -168,7 +180,8 @@ TEST_F(PageContentExtractionServiceTest, OnNewNavigation_Metrics) {
     TestObserver observer;
     service.AddObserver(&observer);
 
-    service.OnNewNavigation(std::nullopt, nullptr, /*is_same_document=*/false);
+    service.OnNewNavigation(std::nullopt, web_contents(),
+                            /*is_same_document=*/false);
 
     histogram_tester.ExpectUniqueSample(
         "OptimizationGuide.PageContentExtraction.EnablementSourcePerNavigation",
@@ -187,7 +200,8 @@ TEST_F(PageContentExtractionServiceTest, OnNewNavigation_Metrics) {
     feature_list.InitAndEnableFeature(
         features::kAnnotatedPageContentExtraction);
 
-    service.OnNewNavigation(std::nullopt, nullptr, /*is_same_document=*/true);
+    service.OnNewNavigation(std::nullopt, web_contents(),
+                            /*is_same_document=*/true);
 
     histogram_tester.ExpectTotalCount(
         "OptimizationGuide.PageContentExtraction.EnablementSourcePerNavigation",
@@ -211,7 +225,8 @@ TEST_F(PageContentExtractionServiceTest, OnNewNavigation_Metrics) {
     service.AddObserver(&observer2);
     service.AddObserver(&observer3);
 
-    service.OnNewNavigation(std::nullopt, nullptr, /*is_same_document=*/false);
+    service.OnNewNavigation(std::nullopt, web_contents(),
+                            /*is_same_document=*/false);
 
     histogram_tester.ExpectUniqueSample(
         "OptimizationGuide.PageContentExtraction.EnablementSourcePerNavigation",
@@ -223,6 +238,40 @@ TEST_F(PageContentExtractionServiceTest, OnNewNavigation_Metrics) {
     service.RemoveObserver(&observer1);
     service.RemoveObserver(&observer2);
     service.RemoveObserver(&observer3);
+  }
+
+  // Case 7: Subscribers count toward enablement and observer count metrics
+  {
+    base::HistogramTester histogram_tester;
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(
+        features::kAnnotatedPageContentExtraction);
+
+    EXPECT_FALSE(service.ShouldEnablePageContentExtraction(false));
+
+    TestObserver observer;
+    service.AddObserver(&observer);
+    std::optional<base::CallbackListSubscription> sub1 = service.Subscribe(
+        base::BindRepeating([](content::Page&, const PageContent&) {}));
+    std::optional<base::CallbackListSubscription> sub2 = service.Subscribe(
+        base::BindRepeating([](content::Page&, const PageContent&) {}));
+
+    EXPECT_TRUE(service.ShouldEnablePageContentExtraction(false));
+
+    service.OnNewNavigation(std::nullopt, web_contents(),
+                            /*is_same_document=*/false);
+
+    histogram_tester.ExpectUniqueSample(
+        "OptimizationGuide.PageContentExtraction.EnablementSourcePerNavigation",
+        2, 1);  // kObserverPresent
+    histogram_tester.ExpectUniqueSample(
+        "OptimizationGuide.PageContentExtraction.ObserverCountPerNavigation", 3,
+        1);
+
+    sub1.reset();
+    sub2.reset();
+    service.RemoveObserver(&observer);
+    EXPECT_FALSE(service.ShouldEnablePageContentExtraction(false));
   }
 }
 

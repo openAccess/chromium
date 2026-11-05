@@ -51,7 +51,7 @@ FilesRequestHandlerIOS::CreateFileRequest(
 void FilesRequestHandlerIOS::ReportWarningBypass(
     std::optional<std::u16string> user_justification,
     const ContentAnalysisInfoBase& info,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& content_transfer_method) {
   if (!was_warned_) {
     return;
@@ -141,6 +141,12 @@ void FilesRequestHandlerIOS::MaybeCancelAndReport() {
   }
 
   handler_->ReportCanceledFile(/*index=*/0);
+}
+
+void FilesRequestHandlerIOS::StopFileWork() {
+  // No-op on iOS: only single file operations are supported, so there is no
+  // safe_browsing::FileOpeningJob opening files on background threads to
+  // signal.
 }
 
 void FilesRequestHandlerIOS::MarkFileAsReported(size_t index) {

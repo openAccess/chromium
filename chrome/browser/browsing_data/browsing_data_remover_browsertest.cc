@@ -39,6 +39,7 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -88,6 +89,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -380,8 +382,8 @@ class DiceBrowsingDataRemoverBrowserTest
     }
     auto account_info =
         signin::MakeAccountAvailable(identity_manager, account_id);
-    DCHECK(
-        identity_manager->HasAccountWithRefreshToken(account_info.account_id));
+    DCHECK(identity_manager->HasAccountWithRefreshToken(
+        account_info.GetAccountId()));
     return account_info;
   }
 };
@@ -439,6 +441,83 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest, MediaDeviceIdSalt) {
   EXPECT_NE(original_salt, new_salt);
 }
 
+// Test that the salt for media device IDs is not reset when only partitioned
+// cookies are cleared.
+IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
+                       MediaDeviceIdSalt_PartitionedCookiesOnly) {
+  GURL url = embedded_test_server()->GetURL(kExampleHost, "/simple_page.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(GetBrowser(), url));
+
+  content::RenderFrameHost* frame_host = GetBrowser()
+                                             ->tab_strip_model()
+                                             ->GetActiveWebContents()
+                                             ->GetPrimaryMainFrame();
+  url::Origin origin = frame_host->GetLastCommittedOrigin();
+  net::SiteForCookies site_for_cookies =
+      net::SiteForCookies::FromOrigin(origin);
+  blink::StorageKey storage_key = blink::StorageKey::CreateFirstParty(origin);
+
+  base::test::TestFuture<bool, const std::string&> future;
+  content::GetContentClientForTesting()->browser()->GetMediaDeviceIDSalt(
+      frame_host, site_for_cookies, storage_key, future.GetCallback());
+  std::string original_salt = future.Get<1>();
+
+  std::unique_ptr<content::BrowsingDataFilterBuilder> filter_builder =
+      content::BrowsingDataFilterBuilder::Create(
+          content::BrowsingDataFilterBuilder::Mode::kDelete);
+  filter_builder->AddRegisterableDomain(kExampleHost);
+  filter_builder->SetCookiePartitionKeyCollection(
+      net::CookiePartitionKeyCollection(
+          net::CookiePartitionKey::FromURLForTesting(
+              GURL("https://other-site.com"))));
+  filter_builder->SetPartitionedCookiesOnly(true);
+
+  RemoveWithFilterAndWait(content::BrowsingDataRemover::DATA_TYPE_COOKIES,
+                          std::move(filter_builder));
+
+  future.Clear();
+  content::GetContentClientForTesting()->browser()->GetMediaDeviceIDSalt(
+      frame_host, site_for_cookies, storage_key, future.GetCallback());
+  std::string new_salt = future.Get<1>();
+
+  EXPECT_EQ(original_salt, new_salt);
+}
+
+// Test that Clear-Site-Data for partitioned cookies does not reset the
+// first-party salt for media device IDs.
+IN_PROC_BROWSER_TEST_F(
+    BrowsingDataRemoverBrowserTest,
+    ClearSiteDataPartitionedCookiesDoesNotResetMediaDeviceIdSalt) {
+  GURL url = embedded_test_server()->GetURL(kExampleHost, "/simple_page.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(GetBrowser(), url));
+
+  content::RenderFrameHost* frame_host = GetBrowser()
+                                             ->tab_strip_model()
+                                             ->GetActiveWebContents()
+                                             ->GetPrimaryMainFrame();
+  url::Origin origin = frame_host->GetLastCommittedOrigin();
+  net::SiteForCookies site_for_cookies =
+      net::SiteForCookies::FromOrigin(origin);
+  blink::StorageKey storage_key = blink::StorageKey::CreateFirstParty(origin);
+
+  base::test::TestFuture<bool, const std::string&> future;
+  content::GetContentClientForTesting()->browser()->GetMediaDeviceIDSalt(
+      frame_host, site_for_cookies, storage_key, future.GetCallback());
+  std::string original_salt = future.Get<1>();
+
+  net::CookiePartitionKey partition_key =
+      net::CookiePartitionKey::FromURLForTesting(GURL("https://other.example"));
+  ClearSiteDataAndWait(origin, partition_key, /*storage_key=*/std::nullopt,
+                       /*storage_buckets_to_remove=*/{});
+
+  future.Clear();
+  content::GetContentClientForTesting()->browser()->GetMediaDeviceIDSalt(
+      frame_host, site_for_cookies, storage_key, future.GetCallback());
+  std::string new_salt = future.Get<1>();
+
+  EXPECT_EQ(original_salt, new_salt);
+}
+
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 // Test that Sync is not paused when cookies are cleared.
 IN_PROC_BROWSER_TEST_F(DiceBrowsingDataRemoverBrowserTest, SyncToken) {
@@ -457,14 +536,14 @@ IN_PROC_BROWSER_TEST_F(DiceBrowsingDataRemoverBrowserTest, SyncToken) {
   // Check that the primary account was not removed and has valid auth.
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
-  EXPECT_TRUE(
-      identity_manager->HasAccountWithRefreshToken(primary_account.account_id));
+  EXPECT_TRUE(identity_manager->HasAccountWithRefreshToken(
+      primary_account.GetAccountId()));
   EXPECT_FALSE(
       identity_manager->HasAccountWithRefreshTokenInPersistentErrorState(
-          primary_account.account_id));
+          primary_account.GetAccountId()));
   // Check that the secondary token was revoked.
   EXPECT_FALSE(identity_manager->HasAccountWithRefreshToken(
-      secondary_account.account_id));
+      secondary_account.GetAccountId()));
 }
 
 // Test that Sync is not paused when cookies are cleared.
@@ -484,14 +563,14 @@ IN_PROC_BROWSER_TEST_F(DiceBrowsingDataRemoverBrowserTest,
   RemoveAndWait(content::BrowsingDataRemover::DATA_TYPE_COOKIES);
   // Check that the Sync token was not revoked.
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
-  EXPECT_TRUE(
-      identity_manager->HasAccountWithRefreshToken(primary_account.account_id));
+  EXPECT_TRUE(identity_manager->HasAccountWithRefreshToken(
+      primary_account.GetAccountId()));
   EXPECT_FALSE(
       identity_manager->HasAccountWithRefreshTokenInPersistentErrorState(
-          primary_account.account_id));
+          primary_account.GetAccountId()));
   // Check that the secondary token was revoked.
   EXPECT_FALSE(identity_manager->HasAccountWithRefreshToken(
-      secondary_account.account_id));
+      secondary_account.GetAccountId()));
 }
 
 // Test that Sync is left in error when cookies are cleared.
@@ -506,7 +585,7 @@ IN_PROC_BROWSER_TEST_F(DiceBrowsingDataRemoverBrowserTest, SyncTokenError) {
       AddAccountToProfile(kAccountId, profile, /*is_primary=*/true);
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
   signin::UpdatePersistentErrorOfRefreshTokenForAccount(
-      identity_manager, primary_account.account_id,
+      identity_manager, primary_account.GetAccountId(),
       GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
           GoogleServiceAuthError::InvalidGaiaCredentialsReason::
               CREDENTIALS_REJECTED_BY_SERVER));
@@ -514,14 +593,14 @@ IN_PROC_BROWSER_TEST_F(DiceBrowsingDataRemoverBrowserTest, SyncTokenError) {
   // Clear cookies.
   RemoveAndWait(content::BrowsingDataRemover::DATA_TYPE_COOKIES);
   // Check that the account was not removed and Sync was paused.
-  EXPECT_TRUE(
-      identity_manager->HasAccountWithRefreshToken(primary_account.account_id));
-  EXPECT_EQ(
-      GoogleServiceAuthError::InvalidGaiaCredentialsReason::
-          CREDENTIALS_REJECTED_BY_SERVER,
-      identity_manager
-          ->GetErrorStateOfRefreshTokenForAccount(primary_account.account_id)
-          .GetInvalidGaiaCredentialsReason());
+  EXPECT_TRUE(identity_manager->HasAccountWithRefreshToken(
+      primary_account.GetAccountId()));
+  EXPECT_EQ(GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                CREDENTIALS_REJECTED_BY_SERVER,
+            identity_manager
+                ->GetErrorStateOfRefreshTokenForAccount(
+                    primary_account.GetAccountId())
+                .GetInvalidGaiaCredentialsReason());
 }
 
 // Test that the tokens are revoked when cookies are cleared when there is no
@@ -539,7 +618,7 @@ IN_PROC_BROWSER_TEST_F(DiceBrowsingDataRemoverBrowserTest, NoSync) {
   // Check that the account was removed.
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
   EXPECT_FALSE(identity_manager->HasAccountWithRefreshToken(
-      secondary_account.account_id));
+      secondary_account.GetAccountId()));
 }
 #endif
 
@@ -846,7 +925,7 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest, HistoryDeletion) {
   GURL url = embedded_test_server()->GetURL("/browsing_data/site_data.html");
   // Create a new tab to avoid confusion from having a NTP navigation entry.
   ui_test_utils::NavigateToURLWithDisposition(
-      GetBrowser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      GetBrowser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   EXPECT_FALSE(HasDataForType(kType));
   SetDataForType(kType);
@@ -1606,9 +1685,6 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
   ASSERT_THAT(
       settings_map->GetSettingsForOneType(ContentSettingsType::STORAGE_ACCESS),
       UnorderedElementsAre(kExpectedSettingDefault));
-  ASSERT_THAT(settings_map->GetSettingsForOneType(
-                  ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS),
-              UnorderedElementsAre(kExpectedSettingDefault));
 
   // Set RWS grants.
   content_settings::ContentSettingConstraints constraints;
@@ -1616,9 +1692,6 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
   constraints.set_decided_by_related_website_sets(true);
   settings_map->SetContentSettingDefaultScope(
       kPrimaryUrl, kSecondaryUrl, ContentSettingsType::STORAGE_ACCESS,
-      CONTENT_SETTING_ALLOW, constraints);
-  settings_map->SetContentSettingDefaultScope(
-      kPrimaryUrl, kSecondaryUrl, ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS,
       CONTENT_SETTING_ALLOW, constraints);
 
   // Check that the grants were set.
@@ -1637,19 +1710,6 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
               content_settings::ContentSettingToValue(CONTENT_SETTING_ALLOW),
               content_settings::ProviderType::kPrefProvider,
               /*incognito=*/false, expected_metadata.Clone())));
-  EXPECT_THAT(
-      settings_map->GetSettingsForOneType(
-          ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS),
-      UnorderedElementsAre(
-          kExpectedSettingDefault,
-          ContentSettingPatternSource(
-              ContentSettingsPattern::FromURLNoWildcard(
-                  GURL(kPrimaryUrl)),  // https://subdomain.example.com:112
-              ContentSettingsPattern::FromURLToSchemefulSitePattern(
-                  GURL(kSecondaryUrl)),
-              content_settings::ContentSettingToValue(CONTENT_SETTING_ALLOW),
-              content_settings::ProviderType::kPrefProvider,
-              /*incognito=*/false, expected_metadata.Clone())));
 
   // Remove Related Website Sets storage grants.
   std::unique_ptr<BrowsingDataFilterBuilder> filter_builder =
@@ -1664,9 +1724,6 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
   EXPECT_THAT(
       settings_map->GetSettingsForOneType(ContentSettingsType::STORAGE_ACCESS),
       UnorderedElementsAre(kExpectedSettingDefault));
-  EXPECT_THAT(settings_map->GetSettingsForOneType(
-                  ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS),
-              UnorderedElementsAre(kExpectedSettingDefault));
 }
 
 // Some storage backend use a different code path for full deletions and

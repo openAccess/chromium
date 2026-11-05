@@ -52,6 +52,9 @@
 #include "sandbox/policy/linux/bpf_service_policy_linux.h"
 #include "sandbox/policy/linux/bpf_speech_recognition_policy_linux.h"
 #include "sandbox/policy/linux/bpf_utility_policy_linux.h"
+#if BUILDFLAG(IS_LINUX)
+#include "sandbox/policy/linux/bpf_xr_policy_linux.h"
+#endif  // BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "sandbox/policy/features.h"
@@ -63,9 +66,9 @@
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #include "media/gpu/buildflags.h"    // nogncheck
 #include "media/media_buildflags.h"  // nogncheck
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #include "sandbox/policy/linux/bpf_hardware_video_decoding_policy_linux.h"
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -206,19 +209,25 @@ std::unique_ptr<BPFBasePolicy> SandboxSeccompBPF::PolicyForSandboxType(
       return std::make_unique<ServiceProcessPolicy>();
     case sandbox::mojom::Sandbox::kSpeechRecognition:
       return std::make_unique<SpeechRecognitionProcessPolicy>();
+#if BUILDFLAG(IS_LINUX)
+    case sandbox::mojom::Sandbox::kXrCompositing:
+      return std::make_unique<XrProcessPolicy>();
+#endif  // BUILDFLAG(IS_LINUX)
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
     case sandbox::mojom::Sandbox::kOnDeviceTranslation:
       return std::make_unique<OnDeviceTranslationProcessPolicy>();
     case sandbox::mojom::Sandbox::kScreenAI:
       return std::make_unique<ScreenAIProcessPolicy>();
+    case sandbox::mojom::Sandbox::kPlatformRuntime:
+      return std::make_unique<ServiceProcessPolicy>();
     case sandbox::mojom::Sandbox::kShapeDetection:
       return std::make_unique<UtilityProcessPolicy>();
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
     case sandbox::mojom::Sandbox::kHardwareVideoDecoding:
       return std::make_unique<HardwareVideoDecodingProcessPolicy>(
           HardwareVideoDecodingProcessPolicy::ComputePolicyType(
               options.use_amd_specific_policies));
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
     case sandbox::mojom::Sandbox::kHardwareVideoEncoding:
       // TODO(b/255554267): we're using the GPU process sandbox policy for now
@@ -279,9 +288,9 @@ void SandboxSeccompBPF::RunSandboxSanityChecks(
 #endif  // !defined(NDEBUG)
       return;
     }
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
     case sandbox::mojom::Sandbox::kHardwareVideoDecoding:
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
     case sandbox::mojom::Sandbox::kHardwareVideoEncoding:
 #endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
@@ -293,8 +302,12 @@ void SandboxSeccompBPF::RunSandboxSanityChecks(
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
     case sandbox::mojom::Sandbox::kShapeDetection:
     case sandbox::mojom::Sandbox::kScreenAI:
+    case sandbox::mojom::Sandbox::kPlatformRuntime:
     case sandbox::mojom::Sandbox::kOnDeviceTranslation:
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(IS_LINUX)
+    case sandbox::mojom::Sandbox::kXrCompositing:
+#endif  // BUILDFLAG(IS_LINUX)
     case sandbox::mojom::Sandbox::kAudio:
     case sandbox::mojom::Sandbox::kService:
     case sandbox::mojom::Sandbox::kServiceWithJit:

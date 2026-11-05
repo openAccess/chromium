@@ -8,12 +8,15 @@ import android.graphics.Bitmap;
 
 import androidx.annotation.IntDef;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.task_manager.TaskManagerServiceBridge.GpuMemoryUsage;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.ReadableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.ReadableLongPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableFloatPropertyKey;
+import org.chromium.ui.modelutil.PropertyModel.WritableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableLongPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
@@ -24,7 +27,26 @@ import java.lang.annotation.RetentionPolicy;
  * This class contains the keys for retrieving the corresponding value from the model representing
  * the current task manager state.
  */
+@NullMarked
 class TaskManagerProperties {
+    /** Categories for filtering tasks in the Task Manager toolbar. */
+    @IntDef({
+        Category.TABS_AND_EXTENSIONS,
+        Category.BROWSER,
+        Category.ALL_TASKS,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @interface Category {
+        /** Tasks associated with tabs and extensions. */
+        int TABS_AND_EXTENSIONS = 0;
+
+        /** Tasks for browser internal processes (e.g. GPU, utility, browser core). */
+        int BROWSER = 1;
+
+        /** Shows all tasks without category filtering. */
+        int ALL_TASKS = 2;
+    }
+
     @IntDef({
         RowType.TASK,
     })
@@ -45,7 +67,7 @@ class TaskManagerProperties {
         }
 
         @Override
-        public boolean equals(Object other) {
+        public boolean equals(@Nullable Object other) {
             if (this == other) return true;
 
             if (!(other instanceof SortDescriptor)) return false;
@@ -59,11 +81,18 @@ class TaskManagerProperties {
             new WritableObjectPropertyKey<>();
 
     /** Property key for the sort order. If the sort order is unspecified, null is set. */
-    static final WritableObjectPropertyKey<SortDescriptor> SORT_DESCRIPTOR =
+    static final WritableObjectPropertyKey<@Nullable SortDescriptor> SORT_DESCRIPTOR =
             new WritableObjectPropertyKey<>();
 
+    /** Property key for active filter category. */
+    static final WritableIntPropertyKey SELECTED_CATEGORY = new WritableIntPropertyKey();
+
+    /** Property key for search query entered by the user. */
+    static final WritableObjectPropertyKey<String> SEARCH_QUERY = new WritableObjectPropertyKey<>();
+
     /** All the property keys used by the header model. */
-    static final PropertyKey[] HEADER_PROPERTY_KEYS = new PropertyKey[] {COLUMNS, SORT_DESCRIPTOR};
+    static final PropertyKey[] HEADER_PROPERTY_KEYS =
+            new PropertyKey[] {COLUMNS, SORT_DESCRIPTOR, SELECTED_CATEGORY, SEARCH_QUERY};
 
     /** Property key for task id. */
     static final ReadableLongPropertyKey TASK_ID = new ReadableLongPropertyKey();
@@ -73,6 +102,9 @@ class TaskManagerProperties {
 
     /** Property key for whether the task is killable. */
     static final ReadableBooleanPropertyKey IS_KILLABLE = new ReadableBooleanPropertyKey();
+
+    /** Property key for task type. */
+    static final WritableIntPropertyKey TASK_TYPE = new WritableIntPropertyKey();
 
     /** Property key for task name. */
     static final WritableObjectPropertyKey<String> TASK_NAME = new WritableObjectPropertyKey<>();
@@ -94,7 +126,8 @@ class TaskManagerProperties {
             new WritableObjectPropertyKey<>();
 
     /** Property key for task icon. */
-    static final WritableObjectPropertyKey<Bitmap> TASK_ICON = new WritableObjectPropertyKey<>();
+    static final WritableObjectPropertyKey<@Nullable Bitmap> TASK_ICON =
+            new WritableObjectPropertyKey<>();
 
     /**
      * All the property keys that can appear as a column. Sorted in order to appear in the context

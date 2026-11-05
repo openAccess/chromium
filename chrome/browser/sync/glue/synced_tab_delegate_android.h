@@ -13,9 +13,13 @@ namespace content {
 class WebContents;
 }
 
+class SupervisedUserNavigationObserver;
 class TabAndroidDataProvider;
 
-namespace browser_sync {
+namespace tasks {
+class TaskTabHelper;
+}
+
 // On Android a tab can exist even without web contents.
 
 // SyncedTabDelegateAndroid specializes TabContentsSyncedTabDelegate with
@@ -38,8 +42,11 @@ class SyncedTabDelegateAndroid : public TabContentsSyncedTabDelegate {
   std::unique_ptr<SyncedTabDelegate> ReadPlaceholderTabSnapshotIfItShouldSync(
       sync_sessions::SyncSessionsClient* sessions_client) override;
 
-  // Set the web contents for this tab.
-  void SetWebContents(content::WebContents* web_contents);
+  // Set the web contents and associated tab helpers for this tab.
+  void SetWebContents(
+      content::WebContents* web_contents,
+      tasks::TaskTabHelper* task_tab_helper,
+      SupervisedUserNavigationObserver* supervised_user_navigation_observer);
 
   // Set web contents to null.
   void ResetWebContents();
@@ -49,6 +56,5 @@ class SyncedTabDelegateAndroid : public TabContentsSyncedTabDelegate {
  private:
   const raw_ptr<TabAndroidDataProvider> tab_android_data_provider_;
 };
-}  // namespace browser_sync
 
 #endif  // CHROME_BROWSER_SYNC_GLUE_SYNCED_TAB_DELEGATE_ANDROID_H_

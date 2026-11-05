@@ -12,6 +12,7 @@
 #include "build/build_config.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/common/child_process_id.h"
 #include "headless/public/headless_browser.h"
 #include "services/network/network_service.h"
 #include "third_party/blink/public/mojom/badging/badging.mojom.h"
@@ -56,7 +57,7 @@ class HeadlessContentBrowserClient : public content::ContentBrowserClient {
 #endif
   void AppendExtraCommandLineSwitches(base::CommandLine* command_line,
                                       int child_process_id) override;
-  std::string GetApplicationLocale() override;
+  base::i18n::LanguageTag GetApplicationLocale() override;
   std::string GetAcceptLangs(content::BrowserContext* context) override;
   void AllowCertificateError(
       content::WebContents* web_contents,
@@ -69,7 +70,7 @@ class HeadlessContentBrowserClient : public content::ContentBrowserClient {
       override;
   base::OnceClosure SelectClientCertificate(
       content::BrowserContext* browser_context,
-      int process_id,
+      content::ChildProcessId process_id,
       content::WebContents* web_contents,
       net::SSLCertRequestInfo* cert_request_info,
       net::ClientCertIdentityList client_certs,
@@ -83,8 +84,7 @@ class HeadlessContentBrowserClient : public content::ContentBrowserClient {
 
   bool IsPrivacySandboxReportingDestinationAttested(
       content::BrowserContext* browser_context,
-      const url::Origin& destination_origin,
-      content::PrivacySandboxInvokingAPI invoking_api) override;
+      const url::Origin& destination_origin) override;
 
   void ConfigureNetworkContextParams(
       content::BrowserContext* context,
@@ -120,6 +120,9 @@ class HeadlessContentBrowserClient : public content::ContentBrowserClient {
   content::BluetoothDelegate* GetBluetoothDelegate() override;
 
   bool IsRendererProcessPriorityEnabled() override;
+
+  bool IsClipboardPasteAllowed(
+      content::RenderFrameHost* render_frame_host) override;
 
  private:
   class StubBadgeService;

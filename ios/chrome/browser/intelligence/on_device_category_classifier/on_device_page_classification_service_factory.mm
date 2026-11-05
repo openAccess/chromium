@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/intelligence/on_device_category_classifier/on_device_page_classification_service_factory.h"
 
+#import <utility>
+
 #import "base/functional/bind.h"
 #import "ios/chrome/browser/intelligence/on_device_category_classifier/in_process_category_classification_service.h"
 #import "ios/chrome/browser/intelligence/on_device_category_classifier/in_process_category_classification_service_factory.h"
@@ -13,8 +15,8 @@
 namespace {
 
 std::unique_ptr<KeyedService> BuildOnDevicePageClassificationService(
-    ProfileIOS* profile) {
-  CHECK(!profile->IsOffTheRecord());
+    ProfileIOS& profile) {
+  CHECK(!profile.IsOffTheRecord());
   InProcessCategoryClassificationService* in_process_service =
       InProcessCategoryClassificationServiceFactory::GetForProfile(profile);
   if (!in_process_service) {
@@ -28,37 +30,20 @@ std::unique_ptr<KeyedService> BuildOnDevicePageClassificationService(
 }  // namespace
 
 // static
-OnDevicePageClassificationService*
-OnDevicePageClassificationServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()
-      ->GetServiceForProfileAs<OnDevicePageClassificationService>(
-          profile, /*create=*/true);
-}
-
-// static
-OnDevicePageClassificationServiceFactory*
-OnDevicePageClassificationServiceFactory::GetInstance() {
-  static base::NoDestructor<OnDevicePageClassificationServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-ProfileKeyedServiceFactoryIOS::TestingFactory
+OnDevicePageClassificationServiceFactory::TestingFactoryByRef
 OnDevicePageClassificationServiceFactory::GetDefaultFactory() {
-  return base::BindRepeating(&BuildOnDevicePageClassificationService);
+  return base::BindOnce(&BuildOnDevicePageClassificationService);
 }
 
 OnDevicePageClassificationServiceFactory::
-    OnDevicePageClassificationServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("OnDevicePageClassificationService") {
+    OnDevicePageClassificationServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "OnDevicePageClassificationService") {
   DependsOn(InProcessCategoryClassificationServiceFactory::GetInstance());
 }
 
-OnDevicePageClassificationServiceFactory::
-    ~OnDevicePageClassificationServiceFactory() = default;
-
 std::unique_ptr<KeyedService>
 OnDevicePageClassificationServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   return BuildOnDevicePageClassificationService(profile);
 }

@@ -5,7 +5,9 @@
 #ifndef REMOTING_HOST_CHROMOTING_HOST_SERVICES_CLIENT_H_
 #define REMOTING_HOST_CHROMOTING_HOST_SERVICES_CLIENT_H_
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/functional/callback.h"
@@ -15,8 +17,10 @@
 #include "mojo/public/cpp/platform/named_platform_channel.h"
 #include "remoting/host/chromoting_host_services_provider.h"
 #include "remoting/host/mojom/chromoting_host_services.mojom.h"
+#include "remoting/proto/terminal.pb.h"
 
 namespace base {
+class CommandLine;
 class Environment;
 }  // namespace base
 
@@ -29,6 +33,18 @@ namespace remoting {
 class ChromotingHostServicesClient final
     : public ChromotingHostServicesProvider {
  public:
+  // The arguments to a SetAgentStatus() call, as parsed from the command line.
+  struct AgentStatusArgs {
+    int32_t terminal_id;
+    protocol::TerminalControl::AgentInfo status;
+  };
+
+  // Parses `--agent-status`, `--terminal-title`, and `--terminal-id` switches.
+  // Requires `--terminal-id` and at least one of `--agent-status` or
+  // `--terminal-title`. Returns `std::nullopt` if the arguments are invalid.
+  static std::optional<AgentStatusArgs> ParseAgentStatusArgs(
+      const base::CommandLine* command_line);
+
   ChromotingHostServicesClient();
   explicit ChromotingHostServicesClient(
       const mojo::NamedPlatformChannel::ServerName& server_name);

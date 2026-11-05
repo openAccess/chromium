@@ -4,29 +4,26 @@
 
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 
-#import "base/apple/foundation_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/time/time.h"
-#import "ios/chrome/browser/authentication/account_menu/public/account_menu_constants.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_matchers.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
-#import "ios/chrome/browser/authentication/ui_bundled/views/views_constants.h"
 #import "ios/chrome/browser/recent_tabs/public/recent_tabs_constants.h"
 #import "ios/chrome/browser/settings/google_services/public/google_services_settings_constants.h"
-#import "ios/chrome/browser/settings/manage_accounts/public/manage_accounts_table_view_controller_constants.h"
 #import "ios/chrome/browser/settings/manage_sync/public/manage_sync_settings_constants.h"
-#import "ios/chrome/browser/shared/public/snackbar/snackbar_constants.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_navigation_controller_constants.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/test_constants.h"
+#import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers_app_interface.h"
+#import "ios/chrome/test/earl_grey/scoped_disable_timer_tracking.h"
 #import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -46,15 +43,14 @@ namespace {
 // `identifier` is an accessibility identifier. It must be visible when the view
 // is scrolled to the bottom.
 void OpenSyncSettingsSubmenu(NSString* identifier) {
-  // First scroll down so that the button is visible.
+  ScopedDisableTimerTracking disabler;
   id<GREYMatcher> scroll_view_matcher =
       grey_accessibilityID(kManageSyncTableViewAccessibilityIdentifier);
-  // Now tap the button with `identifier`.
   id<GREYMatcher> button_matcher =
       grey_allOf(grey_accessibilityID(identifier), grey_interactable(), nil);
-  [[EarlGrey selectElementWithMatcher:scroll_view_matcher]
-      performAction:grey_scrollToContentEdge(kGREYContentEdgeBottom)];
-  [[EarlGrey selectElementWithMatcher:button_matcher] performAction:grey_tap()];
+  [[[EarlGrey selectElementWithMatcher:button_matcher]
+         usingSearchAction:grey_scrollInDirection(kGREYDirectionDown, 200)
+      onElementWithMatcher:scroll_view_matcher] performAction:grey_tap()];
 }
 
 BOOL IsIdentityPossiblyManaged(id<SystemIdentity> identity) {
@@ -75,18 +71,6 @@ void CloseHistorySyncSheet(BOOL enableHistorySync) {
         selectElementWithMatcher:chrome_test_util::ButtonStackSecondaryButton()]
         performAction:grey_tap()];
   }
-}
-
-// Closes the "Sign out and delete data" dialog. That dialog may be shown when a
-// managed account signs out.
-void CloseManagedAccountSignOutAndDeleteDataDialog() {
-  // Verify whether there is a confirmation dialog and interact with it to
-  // complete the sign-in flow if present.
-  id<GREYMatcher> acceptButton = [ChromeMatchersAppInterface
-      actionSheetItemWithAccessibilityLabelID:
-          IDS_IOS_SIGNOUT_AND_DELETE_DIALOG_SIGN_OUT_BUTTON];
-  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:acceptButton];
-  [[EarlGrey selectElementWithMatcher:acceptButton] performAction:grey_tap()];
 }
 
 // Taps the sign-in sheet confirmation if the user is not signed-in yet, and
@@ -143,8 +127,7 @@ id<GREYMatcher> SignOutSnackbarLabelMatcher() {
     // For convenience, add the identity, if it was not added yet.
     [SigninEarlGrey addFakeIdentity:fakeIdentity];
   }
-  if ([SigninEarlGrey areSeparateProfilesForManagedAccountsEnabled] &&
-      IsIdentityPossiblyManaged(fakeIdentity)) {
+  if (IsIdentityPossiblyManaged(fakeIdentity)) {
     [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
     [ChromeEarlGreyUI waitForAppToIdle];
     CloseHistorySyncSheet(enableHistorySync);
@@ -198,20 +181,13 @@ id<GREYMatcher> SignOutSnackbarLabelMatcher() {
 }
 
 + (void)signOut {
-  [self signOutWithClearDataConfirmation:NO
-                          expectSnackbar:YES
-                           closeSettings:YES];
+  [self signOutWithExpectSnackbar:YES closeSettings:YES];
 }
 
-+ (void)signOutWithClearDataConfirmation:(BOOL)expectClearDataConfirmation
-                          expectSnackbar:(BOOL)expectSnackbar
-                           closeSettings:(BOOL)closeSettings {
++ (void)signOutWithExpectSnackbar:(BOOL)expectSnackbar
+                    closeSettings:(BOOL)closeSettings {
   [SigninEarlGreyUI openSyncSettings];
   [SigninEarlGreyUI tapSignOutFromSyncSettings];
-
-  if (expectClearDataConfirmation) {
-    CloseManagedAccountSignOutAndDeleteDataDialog();
-  }
 
   if (expectSnackbar) {
     // Close the snackbar, so that it can't obstruct other UI items.
@@ -302,30 +278,6 @@ id<GREYMatcher> SignOutSnackbarLabelMatcher() {
       assertWithMatcher:grey_nil()];
 }
 
-+ (void)openRemoveAccountConfirmationDialogWithFakeIdentity:
-    (FakeSystemIdentity*)fakeIdentity {
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(ButtonWithAccessibilityLabel(
-                                              fakeIdentity.userEmail),
-                                          grey_sufficientlyVisible(), nil)]
-      performAction:grey_tap()];
-
-  [[EarlGrey selectElementWithMatcher:
-                 chrome_test_util::ActionSheetItemWithAccessibilityLabelId(
-                     IDS_IOS_REMOVE_GOOGLE_ACCOUNT_TITLE)]
-      performAction:grey_tap()];
-}
-
-+ (void)tapRemoveAccountFromDeviceWithFakeIdentity:
-    (FakeSystemIdentity*)fakeIdentity {
-  [self openRemoveAccountConfirmationDialogWithFakeIdentity:fakeIdentity];
-  [[EarlGrey selectElementWithMatcher:
-                 chrome_test_util::ActionSheetItemWithAccessibilityLabelId(
-                     IDS_IOS_REMOVE_ACCOUNT_LABEL)] performAction:grey_tap()];
-  // Wait until the account is removed.
-  [ChromeEarlGreyUI waitForAppToIdle];
-}
-
 + (void)tapPrimarySignInButtonInRecentTabs {
   [SigninEarlGreyUI openRecentTabsAndTapButton:PrimarySignInButton()];
 }
@@ -410,9 +362,14 @@ id<GREYMatcher> SignOutSnackbarLabelMatcher() {
 + (void)dismissSigninConfirmationSnackbarForIdentity:
             (FakeSystemIdentity*)identity
                                        assertVisible:(BOOL)assertVisible {
+  // Mirrors the title selection in `CreateIdentitySnackbarMessage()`, which
+  // falls back to a generic title for identities without a given name.
   NSString* signedInSnackbarTitle =
-      l10n_util::GetNSStringF(IDS_IOS_ACCOUNT_MENU_SWITCH_CONFIRMATION_TITLE,
-                              base::SysNSStringToUTF16(identity.userGivenName));
+      identity.userGivenName
+          ? l10n_util::GetNSStringF(
+                IDS_IOS_ACCOUNT_MENU_SWITCH_CONFIRMATION_TITLE,
+                base::SysNSStringToUTF16(identity.userGivenName))
+          : l10n_util::GetNSString(IDS_IOS_SIGNIN_ACCOUNT_NOTIFICATION_TITLE);
   [self dismissSigninConfirmationSnackbarWithTitle:signedInSnackbarTitle
                                      assertVisible:assertVisible];
 }
@@ -424,6 +381,8 @@ id<GREYMatcher> SignOutSnackbarLabelMatcher() {
                  grey_descendant(grey_accessibilityLabel(title)), nil);
 
   if (assertVisible) {
+    [ChromeEarlGrey
+        waitForSufficientlyVisibleElementWithMatcher:snackbarMatcher];
     [[EarlGrey selectElementWithMatcher:snackbarMatcher]
         assertWithMatcher:grey_interactable()];
     [[EarlGrey selectElementWithMatcher:snackbarMatcher]

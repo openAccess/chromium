@@ -26,12 +26,7 @@
 #include "chrome/browser/ash/crostini/crostini_test_helper.h"
 #include "chrome/browser/ash/crostini/fake_crostini_features.h"
 #include "chrome/browser/ash/guest_os/guest_id.h"
-#include "chrome/browser/notifications/notification_display_service.h"
-#include "chrome/browser/notifications/notification_display_service_tester.h"
-#include "chrome/browser/notifications/system_notification_helper.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
-#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/dbus/chunneld/chunneld_client.h"
 #include "chromeos/ash/components/dbus/cicerone/cicerone_client.h"
@@ -49,6 +44,7 @@
 #include "services/device/public/mojom/usb_device.mojom.h"
 #include "services/device/public/mojom/usb_manager.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "url/gurl.h"
 
@@ -166,11 +162,6 @@ class CrosUsbDetectorTest : public BrowserWithTestWindowTest {
     cros_usb_detector_ = std::make_unique<CrosUsbDetector>();
     crostini_test_helper_ =
         std::make_unique<crostini::CrostiniTestHelper>(profile());
-
-    TestingBrowserProcess::GetGlobal()->SetSystemNotificationHelper(
-        std::make_unique<SystemNotificationHelper>());
-    display_service_ = std::make_unique<NotificationDisplayServiceTester>(
-        nullptr /* profile */);
 
     // Set a fake USB device manager before ConnectToDeviceManager().
     mojo::PendingRemote<device::mojom::UsbDeviceManager> device_manager;
@@ -291,8 +282,17 @@ class CrosUsbDetectorTest : public BrowserWithTestWindowTest {
 
   std::u16string expected_title() { return u"USB device detected"; }
 
+  std::optional<message_center::Notification> GetNotification(
+      const std::string& notification_id) {
+    if (auto* notification =
+            message_center::MessageCenter::Get()->FindNotificationById(
+                notification_id)) {
+      return *notification;
+    }
+    return std::nullopt;
+  }
+
   device::FakeUsbDeviceManager device_manager_;
-  std::unique_ptr<NotificationDisplayServiceTester> display_service_;
   raw_ptr<disks::MockDiskMountManager> mock_disk_mount_manager_;
   disks::DiskMountManager::Disks disks_;
 
@@ -317,7 +317,7 @@ TEST_F(CrosUsbDetectorTest, UsbDeviceAddedAndRemoved) {
       CrosUsbDetector::MakeNotificationId(device->guid());
 
   std::optional<message_center::Notification> notification =
-      display_service_->GetNotification(notification_id);
+      GetNotification(notification_id);
   ASSERT_TRUE(notification);
 
   EXPECT_EQ(expected_title(), notification->title());
@@ -327,7 +327,7 @@ TEST_F(CrosUsbDetectorTest, UsbDeviceAddedAndRemoved) {
   device_manager_.RemoveDevice(device);
   base::RunLoop().RunUntilIdle();
   // Device is removed, so notification should be removed too.
-  EXPECT_FALSE(display_service_->GetNotification(notification_id));
+  EXPECT_FALSE(GetNotification(notification_id));
 }
 
 TEST_F(CrosUsbDetectorTest, NotificationShown) {
@@ -346,7 +346,7 @@ TEST_F(CrosUsbDetectorTest, NotificationShown) {
   base::RunLoop().RunUntilIdle();
 
   std::optional<message_center::Notification> notification =
-      display_service_->GetNotification(notification_id);
+      GetNotification(notification_id);
   EXPECT_FALSE(notification);
   device_manager_.RemoveDevice(device);
   base::RunLoop().RunUntilIdle();
@@ -355,7 +355,7 @@ TEST_F(CrosUsbDetectorTest, NotificationShown) {
   crostini_features.set_enabled(true);
   device_manager_.AddDevice(device);
   base::RunLoop().RunUntilIdle();
-  notification = display_service_->GetNotification(notification_id);
+  notification = GetNotification(notification_id);
   ASSERT_TRUE(notification);
   EXPECT_EQ(notification->buttons().size(), 1u);
   device_manager_.RemoveDevice(device);
@@ -370,7 +370,7 @@ TEST_F(CrosUsbDetectorTest, NotificationShown) {
   EXPECT_TRUE(arc::IsArcVmEnabled());
   device_manager_.AddDevice(device);
   base::RunLoop().RunUntilIdle();
-  notification = display_service_->GetNotification(notification_id);
+  notification = GetNotification(notification_id);
   ASSERT_TRUE(notification);
   EXPECT_EQ(notification->buttons().size(), 1u);
   device_manager_.RemoveDevice(device);
@@ -381,7 +381,7 @@ TEST_F(CrosUsbDetectorTest, NotificationShown) {
   ASSERT_TRUE(arc::SetArcPlayStoreEnabledForProfile(profile(), true));
   device_manager_.AddDevice(device);
   base::RunLoop().RunUntilIdle();
-  notification = display_service_->GetNotification(notification_id);
+  notification = GetNotification(notification_id);
   ASSERT_TRUE(notification);
   EXPECT_EQ(notification->buttons().size(), 2u);
   device_manager_.RemoveDevice(device);
@@ -391,7 +391,7 @@ TEST_F(CrosUsbDetectorTest, NotificationShown) {
   AddContainerToPrefs(profile(), bruschetta::GetBruschettaAlphaId(), {});
   device_manager_.AddDevice(device);
   base::RunLoop().RunUntilIdle();
-  notification = display_service_->GetNotification(notification_id);
+  notification = GetNotification(notification_id);
   ASSERT_TRUE(notification);
   EXPECT_EQ(notification->buttons().size(), 3u);
   device_manager_.RemoveDevice(device);
@@ -415,7 +415,7 @@ TEST_F(CrosUsbDetectorTest, NotificationNotShownForEthernetInterface) {
   base::RunLoop().RunUntilIdle();
 
   std::optional<message_center::Notification> notification =
-      display_service_->GetNotification(notification_id);
+      GetNotification(notification_id);
   EXPECT_FALSE(notification);
   device_manager_.RemoveDevice(device);
   base::RunLoop().RunUntilIdle();
@@ -424,7 +424,7 @@ TEST_F(CrosUsbDetectorTest, NotificationNotShownForEthernetInterface) {
   crostini_features.set_enabled(true);
   device_manager_.AddDevice(device);
   base::RunLoop().RunUntilIdle();
-  notification = display_service_->GetNotification(notification_id);
+  notification = GetNotification(notification_id);
   ASSERT_FALSE(notification);
 }
 
@@ -445,7 +445,7 @@ TEST_F(CrosUsbDetectorTest, NotificationNotShownForWacomDevices) {
   base::RunLoop().RunUntilIdle();
 
   std::optional<message_center::Notification> notification =
-      display_service_->GetNotification(notification_id);
+      GetNotification(notification_id);
   EXPECT_FALSE(notification);
   device_manager_.RemoveDevice(device);
   base::RunLoop().RunUntilIdle();
@@ -454,7 +454,7 @@ TEST_F(CrosUsbDetectorTest, NotificationNotShownForWacomDevices) {
   crostini_features.set_enabled(true);
   device_manager_.AddDevice(device);
   base::RunLoop().RunUntilIdle();
-  notification = display_service_->GetNotification(notification_id);
+  notification = GetNotification(notification_id);
   ASSERT_FALSE(notification);
 }
 
@@ -474,7 +474,7 @@ TEST_F(CrosUsbDetectorTest, NotificationControlledByPolicy) {
   device_manager_.AddDevice(device);
   base::RunLoop().RunUntilIdle();
   std::optional<message_center::Notification> notification =
-      display_service_->GetNotification(notification_id);
+      GetNotification(notification_id);
   EXPECT_TRUE(notification);
   device_manager_.RemoveDevice(device);
   base::RunLoop().RunUntilIdle();
@@ -485,7 +485,7 @@ TEST_F(CrosUsbDetectorTest, NotificationControlledByPolicy) {
                                     false);
   device_manager_.AddDevice(device);
   base::RunLoop().RunUntilIdle();
-  notification = display_service_->GetNotification(notification_id);
+  notification = GetNotification(notification_id);
   EXPECT_FALSE(notification);
   device_manager_.RemoveDevice(device);
   base::RunLoop().RunUntilIdle();
@@ -496,7 +496,7 @@ TEST_F(CrosUsbDetectorTest, NotificationControlledByPolicy) {
                                     true);
   device_manager_.AddDevice(device);
   base::RunLoop().RunUntilIdle();
-  notification = display_service_->GetNotification(notification_id);
+  notification = GetNotification(notification_id);
   EXPECT_TRUE(notification);
   device_manager_.RemoveDevice(device);
   base::RunLoop().RunUntilIdle();
@@ -515,7 +515,7 @@ TEST_F(CrosUsbDetectorTest, UsbNotificationClicked) {
       CrosUsbDetector::MakeNotificationId(device->guid());
 
   std::optional<message_center::Notification> notification =
-      display_service_->GetNotification(notification_id);
+      GetNotification(notification_id);
   ASSERT_TRUE(notification);
 
   notification->delegate()->Click(0, std::nullopt);
@@ -523,7 +523,7 @@ TEST_F(CrosUsbDetectorTest, UsbNotificationClicked) {
 
   EXPECT_GE(fake_concierge_client_->attach_usb_device_call_count(), 1);
   // Notification should close.
-  EXPECT_FALSE(display_service_->GetNotification(notification_id));
+  EXPECT_FALSE(GetNotification(notification_id));
 }
 
 TEST_F(CrosUsbDetectorTest, UsbDeviceClassAdbAdded) {
@@ -544,7 +544,7 @@ TEST_F(CrosUsbDetectorTest, UsbDeviceClassAdbAdded) {
 
   std::string notification_id =
       CrosUsbDetector::MakeNotificationId(device->guid());
-  ASSERT_TRUE(display_service_->GetNotification(notification_id));
+  ASSERT_TRUE(GetNotification(notification_id));
   // ADB interface wins.
   EXPECT_EQ(1U, cros_usb_detector_->GetShareableDevices().size());
 }
@@ -561,7 +561,7 @@ TEST_F(CrosUsbDetectorTest, UsbDeviceClassWithoutNotificationAdded) {
 
   std::string notification_id =
       CrosUsbDetector::MakeNotificationId(device->guid());
-  ASSERT_FALSE(display_service_->GetNotification(notification_id));
+  ASSERT_FALSE(GetNotification(notification_id));
   EXPECT_EQ(1U, cros_usb_detector_->GetShareableDevices().size());
 }
 
@@ -579,7 +579,7 @@ TEST_F(CrosUsbDetectorTest, UsbDeviceWithoutProductNameAddedAndRemoved) {
       CrosUsbDetector::MakeNotificationId(device->guid());
 
   std::optional<message_center::Notification> notification =
-      display_service_->GetNotification(notification_id);
+      GetNotification(notification_id);
   ASSERT_TRUE(notification);
 
   EXPECT_EQ(expected_title(), notification->title());
@@ -590,7 +590,7 @@ TEST_F(CrosUsbDetectorTest, UsbDeviceWithoutProductNameAddedAndRemoved) {
   device_manager_.RemoveDevice(device);
   base::RunLoop().RunUntilIdle();
   // Device is removed, so notification should be removed too.
-  EXPECT_FALSE(display_service_->GetNotification(notification_id));
+  EXPECT_FALSE(GetNotification(notification_id));
 }
 
 TEST_F(CrosUsbDetectorTest,
@@ -609,7 +609,7 @@ TEST_F(CrosUsbDetectorTest,
       CrosUsbDetector::MakeNotificationId(device->guid());
 
   std::optional<message_center::Notification> notification =
-      display_service_->GetNotification(notification_id);
+      GetNotification(notification_id);
   ASSERT_TRUE(notification);
   EXPECT_EQ(expected_title(), notification->title());
   EXPECT_EQ(connection_message(kUnknownProductName), notification->message());
@@ -618,7 +618,7 @@ TEST_F(CrosUsbDetectorTest,
   device_manager_.RemoveDevice(device);
   base::RunLoop().RunUntilIdle();
   // Device is removed, so notification should be removed too.
-  EXPECT_FALSE(display_service_->GetNotification(notification_id));
+  EXPECT_FALSE(GetNotification(notification_id));
 }
 
 TEST_F(CrosUsbDetectorTest, UsbDeviceWasThereBeforeAndThenRemoved) {
@@ -631,14 +631,14 @@ TEST_F(CrosUsbDetectorTest, UsbDeviceWasThereBeforeAndThenRemoved) {
   std::string notification_id =
       CrosUsbDetector::MakeNotificationId(device->guid());
 
-  EXPECT_FALSE(display_service_->GetNotification(notification_id));
+  EXPECT_FALSE(GetNotification(notification_id));
 
   ConnectToDeviceManager();
   base::RunLoop().RunUntilIdle();
 
   device_manager_.RemoveDevice(device);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id));
+  EXPECT_FALSE(GetNotification(notification_id));
 }
 
 TEST_F(
@@ -663,34 +663,34 @@ TEST_F(
   // created.
   device_manager_.AddDevice(device_1);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_1));
+  EXPECT_FALSE(GetNotification(notification_id_1));
 
   device_manager_.AddDevice(device_2);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_2));
 
   device_manager_.AddDevice(device_3);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_3));
+  EXPECT_FALSE(GetNotification(notification_id_3));
 
   device_manager_.RemoveDevice(device_1);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_1));
+  EXPECT_FALSE(GetNotification(notification_id_1));
 
   device_manager_.RemoveDevice(device_2);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_2));
 
   device_manager_.RemoveDevice(device_3);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_3));
+  EXPECT_FALSE(GetNotification(notification_id_3));
 
   ConnectToDeviceManager();
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_1));
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_3));
+  EXPECT_FALSE(GetNotification(notification_id_1));
+  EXPECT_FALSE(GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_3));
 }
 
 TEST_F(CrosUsbDetectorTest,
@@ -713,34 +713,34 @@ TEST_F(CrosUsbDetectorTest,
   // Three usb devices were added before cros_usb_detector was created.
   device_manager_.AddDevice(device_1);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_1));
+  EXPECT_FALSE(GetNotification(notification_id_1));
 
   device_manager_.AddDevice(device_2);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_2));
 
   device_manager_.AddDevice(device_3);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_3));
+  EXPECT_FALSE(GetNotification(notification_id_3));
 
   ConnectToDeviceManager();
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_1));
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_3));
+  EXPECT_FALSE(GetNotification(notification_id_1));
+  EXPECT_FALSE(GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_3));
 
   device_manager_.RemoveDevice(device_1);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_1));
+  EXPECT_FALSE(GetNotification(notification_id_1));
 
   device_manager_.RemoveDevice(device_2);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_2));
 
   device_manager_.RemoveDevice(device_3);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_3));
+  EXPECT_FALSE(GetNotification(notification_id_3));
 }
 
 TEST_F(CrosUsbDetectorTest,
@@ -759,25 +759,25 @@ TEST_F(CrosUsbDetectorTest,
   device_manager_.AddDevice(device_1);
   device_manager_.AddDevice(device_2);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_1));
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_1));
+  EXPECT_FALSE(GetNotification(notification_id_2));
 
   ConnectToDeviceManager();
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_1));
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_1));
+  EXPECT_FALSE(GetNotification(notification_id_2));
 
   device_manager_.RemoveDevice(device_1);
   device_manager_.RemoveDevice(device_2);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_1));
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_1));
+  EXPECT_FALSE(GetNotification(notification_id_2));
 
   device_manager_.AddDevice(device_2);
   base::RunLoop().RunUntilIdle();
   std::optional<message_center::Notification> notification =
-      display_service_->GetNotification(notification_id_2);
+      GetNotification(notification_id_2);
   ASSERT_TRUE(notification);
 
   EXPECT_EQ(expected_title(), notification->title());
@@ -786,7 +786,7 @@ TEST_F(CrosUsbDetectorTest,
 
   device_manager_.RemoveDevice(device_2);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_2));
 }
 
 TEST_F(CrosUsbDetectorTest, ThreeUsbDevicesAddedAndRemoved) {
@@ -811,7 +811,7 @@ TEST_F(CrosUsbDetectorTest, ThreeUsbDevicesAddedAndRemoved) {
   device_manager_.AddDevice(device_1);
   base::RunLoop().RunUntilIdle();
   std::optional<message_center::Notification> notification_1 =
-      display_service_->GetNotification(notification_id_1);
+      GetNotification(notification_id_1);
   ASSERT_TRUE(notification_1);
 
   EXPECT_EQ(expected_title(), notification_1->title());
@@ -820,12 +820,12 @@ TEST_F(CrosUsbDetectorTest, ThreeUsbDevicesAddedAndRemoved) {
 
   device_manager_.RemoveDevice(device_1);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_1));
+  EXPECT_FALSE(GetNotification(notification_id_1));
 
   device_manager_.AddDevice(device_2);
   base::RunLoop().RunUntilIdle();
   std::optional<message_center::Notification> notification_2 =
-      display_service_->GetNotification(notification_id_2);
+      GetNotification(notification_id_2);
   ASSERT_TRUE(notification_2);
 
   EXPECT_EQ(expected_title(), notification_2->title());
@@ -834,12 +834,12 @@ TEST_F(CrosUsbDetectorTest, ThreeUsbDevicesAddedAndRemoved) {
 
   device_manager_.RemoveDevice(device_2);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_2));
 
   device_manager_.AddDevice(device_3);
   base::RunLoop().RunUntilIdle();
   std::optional<message_center::Notification> notification_3 =
-      display_service_->GetNotification(notification_id_3);
+      GetNotification(notification_id_3);
   ASSERT_TRUE(notification_3);
 
   EXPECT_EQ(expected_title(), notification_3->title());
@@ -848,7 +848,7 @@ TEST_F(CrosUsbDetectorTest, ThreeUsbDevicesAddedAndRemoved) {
 
   device_manager_.RemoveDevice(device_3);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_3));
+  EXPECT_FALSE(GetNotification(notification_id_3));
 }
 
 TEST_F(CrosUsbDetectorTest, ThreeUsbDeviceAddedAndRemovedDifferentOrder) {
@@ -873,7 +873,7 @@ TEST_F(CrosUsbDetectorTest, ThreeUsbDeviceAddedAndRemovedDifferentOrder) {
   device_manager_.AddDevice(device_1);
   base::RunLoop().RunUntilIdle();
   std::optional<message_center::Notification> notification_1 =
-      display_service_->GetNotification(notification_id_1);
+      GetNotification(notification_id_1);
   ASSERT_TRUE(notification_1);
 
   EXPECT_EQ(expected_title(), notification_1->title());
@@ -883,7 +883,7 @@ TEST_F(CrosUsbDetectorTest, ThreeUsbDeviceAddedAndRemovedDifferentOrder) {
   device_manager_.AddDevice(device_2);
   base::RunLoop().RunUntilIdle();
   std::optional<message_center::Notification> notification_2 =
-      display_service_->GetNotification(notification_id_2);
+      GetNotification(notification_id_2);
   ASSERT_TRUE(notification_2);
 
   EXPECT_EQ(expected_title(), notification_2->title());
@@ -892,12 +892,12 @@ TEST_F(CrosUsbDetectorTest, ThreeUsbDeviceAddedAndRemovedDifferentOrder) {
 
   device_manager_.RemoveDevice(device_2);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_2));
+  EXPECT_FALSE(GetNotification(notification_id_2));
 
   device_manager_.AddDevice(device_3);
   base::RunLoop().RunUntilIdle();
   std::optional<message_center::Notification> notification_3 =
-      display_service_->GetNotification(notification_id_3);
+      GetNotification(notification_id_3);
   ASSERT_TRUE(notification_3);
 
   EXPECT_EQ(expected_title(), notification_3->title());
@@ -906,11 +906,11 @@ TEST_F(CrosUsbDetectorTest, ThreeUsbDeviceAddedAndRemovedDifferentOrder) {
 
   device_manager_.RemoveDevice(device_1);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_1));
+  EXPECT_FALSE(GetNotification(notification_id_1));
 
   device_manager_.RemoveDevice(device_3);
   base::RunLoop().RunUntilIdle();
-  EXPECT_FALSE(display_service_->GetNotification(notification_id_3));
+  EXPECT_FALSE(GetNotification(notification_id_3));
 }
 
 TEST_F(CrosUsbDetectorTest, AttachDeviceToVmSetsGuestPort) {

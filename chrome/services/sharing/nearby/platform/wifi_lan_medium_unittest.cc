@@ -33,7 +33,7 @@
 #include "components/prefs/testing_pref_service.h"
 #include "components/proxy_config/pref_proxy_config_tracker_impl.h"
 #include "components/proxy_config/proxy_config_pref_names.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "mojo/public/cpp/bindings/shared_remote.h"
@@ -50,8 +50,6 @@ namespace {
 
 const char kLocalIpString[] = "\xC0\xA8\x56\x4B";
 const int kLocalPort = ash::nearby::TcpServerSocketPort::kMin;
-const net::IPEndPoint kLocalAddress(net::IPAddress(192, 168, 86, 75),
-                                    kLocalPort);
 
 const char kRemoteIpString[] = "\xC0\xA8\x56\x3E";
 const int kRemotePort = ash::nearby::TcpServerSocketPort::kMax;
@@ -118,7 +116,7 @@ class WifiLanMediumTest : public ::testing::Test {
     // Set up TCP socket factory mojo service.
     auto fake_socket_factory =
         std::make_unique<ash::nearby::FakeTcpSocketFactory>(
-            /*default_local_addr=*/kLocalAddress);
+            /*default_local_addr=*/local_address_);
     fake_socket_factory_ = fake_socket_factory.get();
     mojo::MakeSelfOwnedReceiver(
         std::move(fake_socket_factory),
@@ -130,14 +128,14 @@ class WifiLanMediumTest : public ::testing::Test {
     // TODO(b/278643115) Remove LoginState dependency.
     ash::LoginState::Initialize();
 
-    test_user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
             TestingBrowserProcess::GetGlobal()->local_state());
 
     switch (state) {
       case WifiInitState::kComplete:
         InitializeCrosNetworkConfig(/*use_managed_config_handler=*/true);
-        AddWifiService(/*add_ip_configs=*/true, kLocalAddress.address());
+        AddWifiService(/*add_ip_configs=*/true, local_address_.address());
         break;
       case WifiInitState::kIpAddressInvalid:
         InitializeCrosNetworkConfig(/*use_managed_config_handler=*/true);
@@ -146,11 +144,11 @@ class WifiLanMediumTest : public ::testing::Test {
         break;
       case WifiInitState::kNoIpConfigs:
         InitializeCrosNetworkConfig(/*use_managed_config_handler=*/true);
-        AddWifiService(/*add_ip_configs=*/false, kLocalAddress.address());
+        AddWifiService(/*add_ip_configs=*/false, local_address_.address());
         break;
       case WifiInitState::kNoManagedProperties:
         InitializeCrosNetworkConfig(/*use_managed_config_handler=*/false);
-        AddWifiService(/*add_ip_configs=*/true, kLocalAddress.address());
+        AddWifiService(/*add_ip_configs=*/true, local_address_.address());
         break;
       case WifiInitState::kNoWifiService:
         InitializeCrosNetworkConfig(/*use_managed_config_handler=*/false);
@@ -189,7 +187,7 @@ class WifiLanMediumTest : public ::testing::Test {
     ui_proxy_config_service_.reset();
     network_configuration_handler_.reset();
     network_profile_handler_.reset();
-    test_user_session_manager_.reset();
+    user_session_test_environment_.reset();
     found_service_info_.clear();
     lost_service_info_.clear();
     ash::LoginState::Shutdown();
@@ -382,6 +380,9 @@ class WifiLanMediumTest : public ::testing::Test {
     on_service_discovered_callback_ = std::move(callback);
   }
 
+  const net::IPEndPoint local_address_ =
+      net::IPEndPoint(net::IPAddress(192, 168, 86, 75), kLocalPort);
+
   base::test::TaskEnvironment task_environment_;
   size_t num_running_connect_calls_ = 0;
   size_t num_running_listen_calls_ = 0;
@@ -395,7 +396,8 @@ class WifiLanMediumTest : public ::testing::Test {
 
   // Local IP fetching:
   sync_preferences::TestingPrefServiceSyncable user_prefs_;
-  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<ash::NetworkProfileHandler> network_profile_handler_;
   std::unique_ptr<ash::NetworkConfigurationHandler>
       network_configuration_handler_;

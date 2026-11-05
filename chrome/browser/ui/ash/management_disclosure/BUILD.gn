@@ -10,13 +10,10 @@ static_library("management_disclosure") {
     "management_disclosure_client_impl.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash/public/cpp",
     "//base",
     "//chrome/browser/ash/policy/core",
-    "//chrome/browser/profiles:profile",
     "//chrome/browser/ui/webui/management",
   ]
 }
@@ -40,7 +37,6 @@ source_set("browser_tests") {
     "//chrome/browser/ash/login/lock",
     "//chrome/browser/ash/login/lock:test_support",
     "//chrome/browser/ash/login/test:test_support",
-    "//chrome/browser/ui",
     "//content/test:test_support",
     "//testing/gmock",
     "//testing/gtest",

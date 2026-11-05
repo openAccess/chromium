@@ -50,6 +50,15 @@ clang_modules_platform_supported =
     # Use current_os instead of is_win due to winuwp not being supported.
     current_os == "win"
 
+_raw_ptr_plugin_default =
+    build_with_chromium &&
+    # Disabled on official builds because RAW_PTR_EXCLUSION
+    # are stripped by the preprocessor on official build configurations:
+    # See https://crbug.com/40836910.
+    !is_official_build &&
+    # the plugin is enabled by default, except on fuchsia and chromecast.
+    (!is_castos && !is_cast_android && !is_fuchsia)
+
 declare_args() {
   # Indicates if the build should use the Chrome-specific plugins for enforcing
   # coding guidelines, etc. Only used when compiling with Chromium's Clang.
@@ -62,19 +71,12 @@ declare_args() {
   # functionality of the plugin.
   clang_use_raw_ptr_plugin = clang_use_chrome_plugins
 
-  enable_check_raw_ptr_fields =
-      build_with_chromium && !is_official_build &&
-      ((is_linux && !is_castos) || (is_android && !is_cast_android) || is_mac ||
-       is_ios || is_win || is_chromeos)
+  # TODO(crbug.com/40268473): Merge enable_raw_ptr_field and enable_raw_ref
+  # field.
 
-  # TODO(crbug.com/40268473): Merge with enable_check_raw_ptr_fields once both
-  # checks are activated on the same set of platforms.
-  enable_check_raw_ref_fields =
-      build_with_chromium && !is_official_build &&
-      ((is_linux && !is_castos) || (is_android && !is_cast_android) || is_win ||
-       is_mac || is_ios || is_chromeos)
-
-  enable_check_container_fields = true
+  enable_check_raw_ptr_fields = _raw_ptr_plugin_default
+  enable_check_raw_ref_fields = _raw_ptr_plugin_default
+  enable_check_container_fields = _raw_ptr_plugin_default
 
   # Use this instead of clang_use_chrome_plugins to enable just the unsafe
   # buffers functionality of the plugin
@@ -103,31 +105,6 @@ assert(!use_remoteexec || clang_base_path == default_clang_base_path,
 # target.
 lld_emit_indexes_and_imports =
     lld_emit_indexes_and_imports && is_a_target_toolchain
-
-# TODO(crbug.com/326584510): Reclient does not upload `inputs` from C/C++
-# targets. We work around the bug in Reclient by
-# specifying the files here.
-rbe_bug_326584510_missing_input_list = []
-if ((clang_use_chrome_plugins || clang_use_unsafe_buffers_plugin) &&
-    defined(clang_unsafe_buffers_paths) &&
-    "$clang_unsafe_buffers_paths" != "") {
-  rbe_bug_326584510_missing_input_list +=
-      [ rebase_path(clang_unsafe_buffers_paths, rbe_exec_root) ]
-}
-if (defined(clang_warning_suppression_file) &&
-    "$clang_warning_suppression_file" != "") {
-  rbe_bug_326584510_missing_input_list +=
-      [ rebase_path(clang_warning_suppression_file, rbe_exec_root) ]
-}
-if (clang_use_raw_ptr_plugin && defined(clang_raw_ptr_plugin_config_file) &&
-    "$clang_raw_ptr_plugin_config_file" != "") {
-  rbe_bug_326584510_missing_input_list +=
-      [ rebase_path(clang_raw_ptr_plugin_config_file, rbe_exec_root) ]
-}
-
-# The leading space is important, if the string is non-empty.
-rbe_bug_326584510_missing_inputs =
-    " -inputs=" + string_join(",", rbe_bug_326584510_missing_input_list)
 
 if (is_win) {
   clang_arg_prefix = "/clang:"

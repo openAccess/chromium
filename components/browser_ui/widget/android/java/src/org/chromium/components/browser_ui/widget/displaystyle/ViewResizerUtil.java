@@ -11,9 +11,7 @@ import android.view.View;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.ui.base.UiAndroidFeatureList;
 import org.chromium.ui.base.ViewUtils;
-import org.chromium.ui.display.DisplayUtil;
 
 /** Util class for @{@link org.chromium.components.browser_ui.widget.displaystyle.ViewResizer}. */
 @NullMarked
@@ -43,11 +41,9 @@ public class ViewResizerUtil {
         // devices with wide displays show side UI components, which should not be included in the
         // padding calculations. Also, on floating windows, screen width is unlikely to be a good
         // proxy for window or view width.
-        if (view != null
-                && (DisplayUtil.isUiScaled()
-                        || UiAndroidFeatureList.sUpdatePaddingForDisplayCalculation.isEnabled())) {
+        if (view != null) {
             containerWidthDp =
-                    ViewUtils.pxToDp(resources.getDisplayMetrics(), view.getMeasuredWidth());
+                    ViewUtils.pxToDp(resources.getDisplayMetrics(), containerWidthPx(view));
         }
         // TODO(crbug.com/514439044): Clean up direct use of screen width if possible.
         // Use the screen width as a fallback if the container width is inapplicable, or unavailable
@@ -59,6 +55,25 @@ public class ViewResizerUtil {
         int excessWidthDp = containerWidthDp - WIDE_DISPLAY_STYLE_MIN_WIDTH_DP;
         int paddingPx = ViewUtils.dpToPx(resources.getDisplayMetrics(), excessWidthDp / 2.f);
         return Math.max(wideWindowMinPaddingPx, paddingPx);
+    }
+
+    /**
+     * Returns the measured width of {@code view}, or that of its nearest measured ancestor if the
+     * view itself has not been through a layout pass yet.
+     *
+     * <p>Padding is often computed from a view before its first layout pass, for example from a
+     * fragment's root view in {@code onViewCreated}. Falling straight through to the window width
+     * in that case over-pads the content whenever the view does not fill the window, such as when a
+     * vertical tab strip or a side panel is showing, and the content then visibly shifts once a
+     * later layout pass recomputes the padding. An ancestor's width is never wider than the window,
+     * so this is always at least as good an estimate. See crbug.com/565250132.
+     */
+    private static int containerWidthPx(View view) {
+        for (View current = view; current != null; ) {
+            if (current.getMeasuredWidth() > 0) return current.getMeasuredWidth();
+            current = current.getParent() instanceof View parent ? parent : null;
+        }
+        return 0;
     }
 
     /**

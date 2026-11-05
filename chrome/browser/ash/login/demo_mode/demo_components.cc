@@ -61,6 +61,8 @@ DemoComponents::DemoComponents(
       component_manager_ash_(std::move(component_manager_ash)),
       config_(config) {
   CHECK(component_manager_ash_);
+  // TODO(crbug.com/576939732): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK_NE(config_, DemoSession::DemoModeConfig::kNone);
 }
 

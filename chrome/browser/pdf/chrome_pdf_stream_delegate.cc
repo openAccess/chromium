@@ -165,7 +165,8 @@ std::optional<GURL> ChromePdfStreamDelegate::MapToOriginalUrl(
     info.use_skia = ShouldEnableSkiaRenderer(contents);
     info.allow_xfa_forms = ShouldEnableXfaForms(contents);
     if (chrome_pdf::features::IsOopifPdfEnabled()) {
-      net::HttpResponseHeaders* response_headers = stream->response_headers();
+      const net::HttpResponseHeaders* response_headers =
+          stream->response_headers();
       if (response_headers) {
         std::optional<std::string> coep_header =
             response_headers->GetNormalizedHeader(
@@ -189,6 +190,7 @@ std::optional<GURL> ChromePdfStreamDelegate::MapToOriginalUrl(
     info.allow_javascript = false;
     info.use_skia = ShouldEnableSkiaRenderer(contents);
     info.allow_xfa_forms = false;
+    info.is_print_preview = true;
 #endif  // BUILDFLAG(ENABLE_PRINT_PREVIEW)
   } else {
     return std::nullopt;

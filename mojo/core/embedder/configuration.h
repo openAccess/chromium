@@ -5,8 +5,7 @@
 #ifndef MOJO_CORE_EMBEDDER_CONFIGURATION_H_
 #define MOJO_CORE_EMBEDDER_CONFIGURATION_H_
 
-#include <stddef.h>
-#include <stdint.h>
+#include "build/build_config.h"
 
 namespace mojo {
 namespace core {
@@ -31,17 +30,14 @@ struct Configuration {
   // objects.
   bool force_direct_shared_memory_allocation = false;
 
-  // Maximum number of active memory mappings.
-  size_t max_mapping_table_size = 1000000;
-
-  // Maximum data size of messages sent over message pipes, in bytes.
-  size_t max_message_num_bytes = 256 * 1024 * 1024;
-
-  // Maximum size of a single shared memory segment, in bytes.
-  size_t max_shared_memory_num_bytes = 1024 * 1024 * 1024;
-
-  // If true we will not advertise our capabilities to our peer.
-  bool dont_advertise_capabilities = false;
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  // If `true` and this process delegates shared memory allocation to the
+  // broker, unsafe regions (which never need a read-only handle) are still
+  // created directly in this process. That takes memfd_create(), ftruncate()
+  // and fcntl(F_ADD_SEALS), which must be permitted by the process's sandbox
+  // policy; only set this for process types where that is known to hold.
+  bool direct_unsafe_shared_memory_allocation = false;
+#endif
 };
 
 }  // namespace core

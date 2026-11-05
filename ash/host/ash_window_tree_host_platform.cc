@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #include "ash/host/ash_window_tree_host_platform.h"
-#include "base/memory/raw_ptr.h"
 
 #include <utility>
 
@@ -11,6 +10,7 @@
 #include "ash/host/root_window_transformer.h"
 #include "ash/host/transformer_helper.h"
 #include "base/feature_list.h"
+#include "base/memory/raw_ptr.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/aura/null_window_targeter.h"
 #include "ui/aura/window.h"
@@ -28,32 +28,13 @@
 
 namespace ash {
 
-class ScopedEnableUnadjustedMouseEventsOzone
-    : public aura::ScopedEnableUnadjustedMouseEvents {
- public:
-  explicit ScopedEnableUnadjustedMouseEventsOzone(
-      ui::InputController* input_controller)
-      : input_controller_(input_controller) {
-    input_controller_->SuspendMouseAcceleration();
-  }
-
-  ~ScopedEnableUnadjustedMouseEventsOzone() override {
-    input_controller_->EndMouseAccelerationSuspension();
-  }
-
- private:
-  raw_ptr<ui::InputController> input_controller_;
-};
-
 AshWindowTreeHostPlatform::AshWindowTreeHostPlatform(
     ui::PlatformWindowInitProperties properties,
     AshWindowTreeHostDelegate* delegate)
     : aura::WindowTreeHostPlatform(std::move(properties),
                                    std::make_unique<aura::Window>(nullptr)),
       delegate_(delegate),
-      transformer_helper_(this),
-      input_controller_(
-          ui::OzonePlatform::GetInstance()->GetInputController()) {
+      transformer_helper_(this) {
   DCHECK(delegate_);
   CommonInit();
 }
@@ -66,8 +47,7 @@ AshWindowTreeHostPlatform::AshWindowTreeHostPlatform(
       delegate_(delegate),
       transformer_helper_(this) {
   DCHECK(delegate_);
-  CreateCompositor(/* force_software_compositor */ false,
-                   /* use_external_begin_frame_control */ false,
+  CreateCompositor(/* use_external_begin_frame_control */ false,
                    /* enable_compositing_based_throttling */ false,
                    compositor_memory_limit_mb);
   SetPlatformWindow(std::move(platform_window));
@@ -154,6 +134,7 @@ void AshWindowTreeHostPlatform::PrepareForShutdown() {
   // Do anything platform specific necessary before shutdown (eg. stop
   // listening for configuration XEvents).
   platform_window()->PrepareForShutdown();
+  delegate_ = nullptr;
 }
 
 void AshWindowTreeHostPlatform::SetRootTransform(
@@ -197,7 +178,7 @@ void AshWindowTreeHostPlatform::SetTapToClickPaused(bool state) {
 std::unique_ptr<aura::ScopedEnableUnadjustedMouseEvents>
 AshWindowTreeHostPlatform::RequestUnadjustedMovement() {
   return std::make_unique<ScopedEnableUnadjustedMouseEventsOzone>(
-      input_controller_);
+      ui::OzonePlatform::GetInstance()->GetInputController());
 }
 
 void AshWindowTreeHostPlatform::OnDamageRect(const gfx::Rect& damage_rect) {
@@ -212,6 +193,17 @@ void AshWindowTreeHostPlatform::DispatchEvent(ui::Event* event) {
   if (event->IsLocatedEvent())
     TranslateLocatedEvent(event->AsLocatedEvent());
   return aura::WindowTreeHostPlatform::DispatchEvent(event);
+}
+
+ScopedEnableUnadjustedMouseEventsOzone::ScopedEnableUnadjustedMouseEventsOzone(
+    ui::InputController* input_controller)
+    : input_controller_(input_controller) {
+  input_controller_->SuspendMouseAcceleration();
+}
+
+ScopedEnableUnadjustedMouseEventsOzone::
+    ~ScopedEnableUnadjustedMouseEventsOzone() {
+  input_controller_->EndMouseAccelerationSuspension();
 }
 
 }  // namespace ash

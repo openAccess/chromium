@@ -6,6 +6,8 @@
 
 #import <AuthenticationServices/AuthenticationServices.h>
 
+#import <unordered_set>
+
 #import "base/check.h"
 #import "base/check_is_test.h"
 #import "base/metrics/histogram_functions.h"
@@ -316,7 +318,9 @@ void CredentialProviderService::RequestSyncAllCredentials() {
 
 void CredentialProviderService::SyncAllCredentials(
     password_manager::PasswordStoreInterface* store,
-    password_manager::LoginsResultOrError forms_or_error) {
+    base::expected<std::vector<password_manager::StoredCredential>,
+                   password_manager::PasswordStoreBackendError>
+        forms_or_error) {
   std::vector<password_manager::StoredCredential> forms =
       password_manager::GetLoginsOrEmptyListOnFailure(
           std::move(forms_or_error));
@@ -424,7 +428,7 @@ void CredentialProviderService::AddCredentialsLegacy(
     // not take Android facet URI.
     if (form.url.is_valid()) {
       ++fetched_favicon_count;
-      favicon_key = GetFaviconFileKey(form.url);
+      favicon_key = base::SysUTF8ToNSString(GetFaviconFileKey(form.url));
 
       // Fetch the favicon and save it to the storage.
       FetchFaviconForURLToPath(favicon_loader_, form.url, favicon_key,
@@ -451,54 +455,14 @@ void CredentialProviderService::AddCredentialsRefactored(
     MemoryCredentialStore* store,
     std::vector<password_manager::StoredCredential> forms,
     base::OnceClosure completion) {
-  auto reply_callback = base::BindPostTask(
-      base::SequencedTaskRunner::GetCurrentDefault(),
-      base::BindOnce(
-          &CredentialProviderService::ContinueAddCredentialsRefactored,
-          weak_ptr_factory_.GetWeakPtr(), base::Unretained(store),
-          std::move(forms), std::move(completion)));
-
-  base::ThreadPool::PostTask(
-      FROM_HERE,
-      {base::MayBlock(), base::ThreadPolicy::PREFER_BACKGROUND,
-       base::TaskPriority::BEST_EFFORT},
-      base::BindOnce(
-          [](base::OnceCallback<void(NSDictionary<NSString*, NSDate*>*)>
-                 reply) {
-            std::move(reply).Run(GetFaviconsListAndFreshness());
-          },
-          std::move(reply_callback)));
-}
-
-void CredentialProviderService::ContinueAddCredentialsRefactored(
-    MemoryCredentialStore* store,
-    std::vector<password_manager::StoredCredential> forms,
-    base::OnceClosure completion,
-    NSDictionary<NSString*, NSDate*>* favicon_dict) {
-  // Don't rate limit the favicon fetch when adding a single password.
-  const bool should_skip_max_verification = forms.size() == 1;
-  const bool fallback_to_google_server_allowed =
-      CanSendHistoryData(sync_service_);
   NSString* gaia = PrimaryAccountId();
-
-  int fetched_favicon_count = 0;
-  NSMutableSet<NSString*>* fetched_in_batch = [NSMutableSet set];
+  std::vector<GURL> favicon_urls;
 
   for (const auto& form : forms) {
     NSString* favicon_key;
     if (form.url.is_valid()) {
-      favicon_key = GetFaviconFileKey(form.url);
-
-      if (ShouldFetchFavicon(favicon_key, favicon_dict) &&
-          ![fetched_in_batch containsObject:favicon_key]) {
-        ++fetched_favicon_count;
-        [fetched_in_batch addObject:favicon_key];
-
-        // Fetch the favicon and save it to the storage.
-        FetchFaviconForURLToPath(favicon_loader_, form.url, favicon_key,
-                                 should_skip_max_verification,
-                                 fallback_to_google_server_allowed);
-      }
+      favicon_key = base::SysUTF8ToNSString(GetFaviconFileKey(form.url));
+      favicon_urls.push_back(form.url);
     }
 
     // Only store password with valid Android facet URI or valid URL.
@@ -513,8 +477,51 @@ void CredentialProviderService::ContinueAddCredentialsRefactored(
     }
   }
 
-  RecordNumberFaviconsFetched(fetched_favicon_count);
+  // Credential store mutations are applied synchronously, in the same order as
+  // removals, so that a later removal can't be undone by a delayed add. Only
+  // favicon work is deferred: the freshness scan runs on a background thread,
+  // and the resulting fetches write favicon files without touching the
+  // credential stores.
   std::move(completion).Run();
+
+  if (!favicon_urls.empty()) {
+    base::ThreadPool::PostTaskAndReplyWithResult(
+        FROM_HERE,
+        {base::MayBlock(), base::ThreadPolicy::PREFER_BACKGROUND,
+         base::TaskPriority::BEST_EFFORT},
+        base::BindOnce(&GetFaviconsListAndFreshness),
+        base::BindOnce(&CredentialProviderService::FetchStaleFavicons,
+                       weak_ptr_factory_.GetWeakPtr(),
+                       std::move(favicon_urls)));
+  }
+}
+
+void CredentialProviderService::FetchStaleFavicons(
+    std::vector<GURL> favicon_urls,
+    base::flat_map<std::string, base::Time> favicon_map) {
+  // Don't rate limit the favicon fetch when adding a single password.
+  const bool should_skip_max_verification = favicon_urls.size() == 1;
+  const bool fallback_to_google_server_allowed =
+      CanSendHistoryData(sync_service_);
+
+  int fetched_favicon_count = 0;
+  std::unordered_set<std::string> fetched_in_batch;
+
+  for (const GURL& url : favicon_urls) {
+    std::string key = GetFaviconFileKey(url);
+    if (ShouldFetchFavicon(key, favicon_map) &&
+        !fetched_in_batch.contains(key)) {
+      ++fetched_favicon_count;
+      fetched_in_batch.insert(key);
+
+      // Fetch the favicon and save it to the storage.
+      FetchFaviconForURLToPath(
+          favicon_loader_, url, base::SysUTF8ToNSString(key),
+          should_skip_max_verification, fallback_to_google_server_allowed);
+    }
+  }
+
+  RecordNumberFaviconsFetched(fetched_favicon_count);
 }
 
 void CredentialProviderService::AddCredentials(
@@ -531,7 +538,7 @@ void CredentialProviderService::AddCredentials(
     // Only fetch favicon for valid URL.
     NSString* favicon_key;
     if (url.is_valid()) {
-      favicon_key = GetFaviconFileKey(url);
+      favicon_key = base::SysUTF8ToNSString(GetFaviconFileKey(url));
 
       // Fetch the favicon and save it to the storage.
       FetchFaviconForURLToPath(favicon_loader_, url, favicon_key,
@@ -647,10 +654,10 @@ void CredentialProviderService::UpdatePasskeyLargeBlobSetting() {
          forKey:AppGroupUserDefaulsCredentialProviderPasskeyLargeBlobEnabled()];
 }
 
-
 void CredentialProviderService::OnGetPasswordStoreResultsOrErrorFrom(
     password_manager::PasswordStoreInterface* store,
-    password_manager::LoginsResultOrError results) {
+    base::expected<std::vector<password_manager::StoredCredential>,
+                   password_manager::PasswordStoreBackendError> results) {
   auto callback =
       base::BindOnce(&CredentialProviderService::SyncAllCredentials,
                      weak_ptr_factory_.GetWeakPtr(), base::Unretained(store));
@@ -679,7 +686,9 @@ void CredentialProviderService::OnLoginsRetained(
 
 void CredentialProviderService::OnInjectedAffiliationAfterLoginsChanged(
     password_manager::PasswordStoreInterface* store,
-    password_manager::LoginsResultOrError results_or_error) {
+    base::expected<std::vector<password_manager::StoredCredential>,
+                   password_manager::PasswordStoreBackendError>
+        results_or_error) {
   AddCredentials(GetCredentialStore(store),
                  password_manager::GetLoginsOrEmptyListOnFailure(
                      std::move(results_or_error)),

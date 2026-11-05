@@ -12,12 +12,39 @@
 #include <string_view>
 
 #include "base/json/json_reader.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "chrome/test/chromedriver/constants/version.h"
+
+namespace {
+
+FilePathStyle ParseFilePathStyle(std::string_view file_path_style) {
+  if (file_path_style == "windows") {
+    return FilePathStyle::kWindows;
+  }
+  if (file_path_style == "posix") {
+    return FilePathStyle::kPosix;
+  }
+  return FilePathStyle::kUnknown;
+}
+
+Status ParseUserAgent(const base::DictValue& response,
+                      std::string_view key,
+                      std::string* user_agent) {
+  const std::string* value = response.FindString(key);
+  if (!value) {
+    return Status(kUnknownError,
+                  base::StrCat({"version doesn't include '", key, "'"}));
+  }
+  *user_agent = *value;
+  return Status(kOk);
+}
+
+}  // namespace
 
 BrowserInfo::BrowserInfo() = default;
 
@@ -36,6 +63,11 @@ Status BrowserInfo::FillFromBrowserVersionResponse(
   const std::string* browser_string = response.FindString("product");
   if (!browser_string) {
     return Status(kUnknownError, "version doesn't include 'Browser'");
+  }
+
+  Status status = ParseUserAgent(response, "userAgent", &user_agent);
+  if (status.IsError()) {
+    return status;
   }
 
   return ParseBrowserString(false, *browser_string, this);
@@ -75,6 +107,23 @@ Status BrowserInfo::ParseBrowserInfo(std::string_view data,
   if (status.IsError())
     return status;
 
+  // Android-Package predates File-Path-Style and is authoritative when both
+  // are present. Missing, malformed, and unrecognized File-Path-Style values
+  // are intentionally non-fatal for compatibility with older browsers.
+  if (browser_info->is_android) {
+    browser_info->file_path_style = FilePathStyle::kPosix;
+  } else {
+    const std::string* file_path_style = dict->FindString("File-Path-Style");
+    browser_info->file_path_style = file_path_style
+                                        ? ParseFilePathStyle(*file_path_style)
+                                        : FilePathStyle::kUnknown;
+  }
+
+  status = ParseUserAgent(*dict, "User-Agent", &browser_info->user_agent);
+  if (status.IsError()) {
+    return status;
+  }
+
   // "webSocketDebuggerUrl" is only returned on Chrome 62.0.3178 and above,
   // thus it's not an error if it's missing.
   const std::string* web_socket_url_in =
@@ -92,8 +141,10 @@ Status BrowserInfo::ParseBrowserInfo(std::string_view data,
 Status BrowserInfo::ParseBrowserString(bool has_android_package,
                                        std::string_view browser_string,
                                        BrowserInfo* browser_info) {
-  if (has_android_package)
+  if (has_android_package) {
     browser_info->is_android = true;
+    browser_info->file_path_style = FilePathStyle::kPosix;
+  }
 
   if (browser_string.empty()) {
     browser_info->browser_name = "content shell";
@@ -144,6 +195,7 @@ Status BrowserInfo::ParseBrowserString(bool has_android_package,
       browser_info->browser_version =
           std::string(browser_string.substr(pos + kVersionPrefix.length()));
       browser_info->is_android = true;
+      browser_info->file_path_style = FilePathStyle::kPosix;
       return ParseBrowserVersionString(browser_info->browser_version,
                                        &browser_info->major_version, &build_no);
     }

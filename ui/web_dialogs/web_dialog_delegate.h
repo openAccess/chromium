@@ -9,17 +9,18 @@
 #include <string>
 #include <vector>
 
-#include "content/public/browser/web_contents_delegate.h"
+#include "base/memory/weak_ptr.h"
+#include "content/public/browser/media_stream_request.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/ui_base_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/web_dialogs/web_dialogs_export.h"
 
 class GURL;
 
 namespace content {
+class NavigationHandle;
 class RenderFrameHost;
 class WebContents;
 class WebUI;
@@ -136,7 +137,7 @@ class WEB_DIALOGS_EXPORT WebDialogDelegate {
   // Returns true if the dialog should allow accelerators to be processed
   // by the FocusManager.
   bool allow_accelerators() const { return allow_accelerators_; }
-  void set_allow_accelerators(bool allow_accelerators) {
+  void set_allow_accelerators_deprecated(bool allow_accelerators) {
     allow_accelerators_ = allow_accelerators;
   }
 
@@ -186,7 +187,9 @@ class WEB_DIALOGS_EXPORT WebDialogDelegate {
 
   // A callback to notify the delegate that the dialog is being closed in
   // response to a "dialogClose" message from WebUI.
-  virtual void OnDialogCloseFromWebUI(const std::string& json_retval);
+  void OnDialogCloseFromWebUI(const std::string& json_retval);
+  void SetOnDialogCloseFromWebUICallback(
+      base::RepeatingCallback<void(const std::string&)> callback);
 
   // A callback to notify the delegate that the contents are requesting
   // to be closed.  This could be in response to a number of events
@@ -203,6 +206,14 @@ class WEB_DIALOGS_EXPORT WebDialogDelegate {
   void set_close_dialog_on_escape(bool close_dialog_on_escape) {
     close_on_escape_ = close_dialog_on_escape;
   }
+
+  // Returns true if the dialog's WebContents may trigger file downloads.
+  // Web dialogs render no download UI, so downloads complete invisibly;
+  // dialogs that display untrusted web content (e.g. captive portal
+  // sign-in pages on the login/lock screen or in kiosk sessions) must set
+  // this to false.
+  virtual bool CanDialogDownload() const;
+  void set_can_download(bool can_download) { can_download_ = can_download; }
 
   // A callback to allow the delegate to dictate that the window should not
   // have a title bar.  This is useful when presenting branded interfaces.
@@ -298,10 +309,7 @@ class WEB_DIALOGS_EXPORT WebDialogDelegate {
 
   void set_dialog_frame_kind(FrameKind frame_kind) { frame_kind_ = frame_kind; }
 
-  // Returns true if HTTPS upgrades should be disabled for the initial load.
-  // This exception is restricted to captive portals or specific dialogs
-  // with explicit security exemptions.
-  virtual bool ShouldDisableHttpsUpgrades() const;
+  base::WeakPtr<WebDialogDelegate> GetWeakPtr();
 
  private:
   base::flat_map<Accelerator, AcceleratorHandler> accelerators_;
@@ -311,6 +319,7 @@ class WEB_DIALOGS_EXPORT WebDialogDelegate {
   bool allow_web_contents_creation_ = true;
   std::string args_;
   bool can_close_ = false;
+  bool can_download_ = true;
   bool can_maximize_ = false;
   bool can_minimize_ = false;
   bool can_resize_ = true;
@@ -332,12 +341,15 @@ class WEB_DIALOGS_EXPORT WebDialogDelegate {
   ui::ElementIdentifier web_view_element_id_;
 
   OnDialogClosedCallback closed_callback_;
+  base::RepeatingCallback<void(const std::string&)> close_from_webui_callback_;
 
   base::RepeatingCallback<void()> title_changed_callback_;
   base::RepeatingCallback<void()> accessible_title_changed_callback_;
 
   std::vector<std::unique_ptr<content::WebUIMessageHandler>>
       added_message_handlers_;
+
+  base::WeakPtrFactory<WebDialogDelegate> weak_factory_{this};
 };
 
 }  // namespace ui

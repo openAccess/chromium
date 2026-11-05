@@ -30,9 +30,8 @@ import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
 import type {AppearanceElement} from './appearance.js';
 import type {CategoriesElement} from './categories.js';
-import type {BackgroundCollection, ManagementNoticeState} from './customize_chrome.mojom-webui.js';
-import {ChromeWebStoreCategory, ChromeWebStoreCollection, CustomizeChromeSection, NewTabPageType} from './customize_chrome.mojom-webui.js';
-import {CustomizeChromeApiProxy} from './customize_chrome_api_proxy.js';
+import type {BackgroundCollection, BrowserProxy, ManagementNoticeState} from './customize_chrome.mojom-webui.js';
+import {browserProxyFactory, ChromeWebStoreCategory, ChromeWebStoreCollection, CustomizeChromeSection, NewTabPageType} from './customize_chrome.mojom-webui.js';
 import type {ThemesElement} from './themes.js';
 
 const SECTION_TO_SELECTOR = {
@@ -59,8 +58,6 @@ const AppElementBase = HelpBubbleMixinLit(CrLitElement);
 export interface AppElement {
   $: {
     overviewPage: HTMLElement,
-    categoriesPage: CategoriesElement,
-    themesPage: ThemesElement,
     appearanceElement: AppearanceElement,
   };
 }
@@ -94,6 +91,7 @@ export class AppElement extends AppElementBase {
       showEditTheme_: {type: Boolean},
       showFooter_: {type: Boolean},
       showFooterForManagedBrowser_: {type: Boolean},
+      toolbarCustomizationEnabled_: {type: Boolean},
     };
   }
 
@@ -119,10 +117,11 @@ export class AppElement extends AppElementBase {
   protected accessor showEditTheme_: boolean = true;
   protected accessor showFooter_: boolean = false;
   protected accessor showFooterForManagedBrowser_: boolean = false;
+  protected accessor toolbarCustomizationEnabled_: boolean =
+      loadTimeData.getBoolean('toolbarCustomizationEnabled');
 
   private listenerIds_: number[] = [];
-  private apiProxy_: CustomizeChromeApiProxy =
-      CustomizeChromeApiProxy.getInstance();
+  private apiProxy_: BrowserProxy = browserProxyFactory.getInstance();
 
   override connectedCallback() {
     super.connectedCallback();
@@ -272,7 +271,8 @@ export class AppElement extends AppElementBase {
       case CustomizeChromePage.WALLPAPER_SEARCH:
         this.page_ = CustomizeChromePage.CATEGORIES;
         await this.updateComplete;
-        this.$.categoriesPage.focusOnBackButton();
+        this.shadowRoot.querySelector<CategoriesElement>(
+                           '#categoriesPage')!.focusOnBackButton();
         break;
       case CustomizeChromePage.OVERVIEW:
         assertNotReached();
@@ -284,7 +284,8 @@ export class AppElement extends AppElementBase {
   protected async onEditThemeClick_() {
     this.page_ = CustomizeChromePage.CATEGORIES;
     await this.updateComplete;
-    this.$.categoriesPage.focusOnBackButton();
+    this.shadowRoot.querySelector<CategoriesElement>(
+                       '#categoriesPage')!.focusOnBackButton();
   }
 
   protected async onCollectionSelect_(
@@ -292,7 +293,8 @@ export class AppElement extends AppElementBase {
     this.selectedCollection_ = event.detail;
     this.page_ = CustomizeChromePage.THEMES;
     await this.updateComplete;
-    this.$.themesPage.focusOnBackButton();
+    this.shadowRoot.querySelector<ThemesElement>(
+                       '#themesPage')!.focusOnBackButton();
   }
 
   protected async onLocalImageUpload_() {

@@ -13,15 +13,24 @@
 #include "base/observer_list_types.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
-#include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
+#include "components/optimization_guide/proto/model_quality_metadata.pb.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom-shared.h"
+#include "services/network/public/cpp/network_context_getter.h"
 #include "services/on_device_model/public/cpp/capabilities.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
 
+class OptimizationGuideLogger;
+
+namespace signin {
+class IdentityManager;
+}  // namespace signin
+
 namespace optimization_guide {
+
+class ModelQualityLogEntry;
 
 // The model execution service.
 enum class ModelExecutionServiceType {
@@ -108,12 +117,35 @@ class RemoteModelExecutionSession {
     kConnected,
   };
 
+  // Reason why a session transitioned to `ConnectionState::kDisconnected`.
+  enum class DisconnectReason {
+    // Disconnected automatically after `idle_disconnect_timeout` elapsed
+    // without traffic.
+    kIdleTimeout,
+    // Closed cleanly by the remote server.
+    kServerClosed,
+    // Failed during connection setup or dropped due to a network, auth, or
+    // protocol error.
+    kError,
+  };
+
   // Observer interface to monitor WebSocket connection status.
   class Observer : public base::CheckedObserver {
    public:
-    // Called when the connection state changes.
-    virtual void OnConnectionStateChanged(ConnectionState state) = 0;
+    // Called when the connection state changes. `disconnect_reason` is
+    // populated if and only if `state` is `ConnectionState::kDisconnected`.
+    virtual void OnConnectionStateChanged(
+        ConnectionState state,
+        std::optional<DisconnectReason> disconnect_reason) = 0;
   };
+
+  static std::unique_ptr<RemoteModelExecutionSession> Create(
+      ModelBasedCapabilityKey feature,
+      const StreamingModelExecutionOptions& options,
+      OptimizationGuideModelExecutionStreamingCallback callback,
+      network::NetworkContextGetter network_context_getter,
+      signin::IdentityManager* identity_manager,
+      OptimizationGuideLogger* logger = nullptr);
 
   virtual ~RemoteModelExecutionSession() = default;
 
@@ -144,6 +176,10 @@ class RemoteModelExecutor {
       ModelBasedCapabilityKey feature,
       const StreamingModelExecutionOptions& options,
       OptimizationGuideModelExecutionStreamingCallback callback) = 0;
+
+  // Prewarms authentication state (e.g. prefetching the OAuth access token) for
+  // an upcoming `ExecuteModel()` call for `feature`.
+  virtual void PrewarmModelExecution(ModelBasedCapabilityKey feature) = 0;
 };
 
 }  // namespace optimization_guide

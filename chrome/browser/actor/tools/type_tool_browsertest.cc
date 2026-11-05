@@ -12,6 +12,7 @@
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/actor/tools/tools_test_util.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/chrome_features.h"
 #include "components/actor/core/actor_features.h"
@@ -543,7 +544,7 @@ IN_PROC_BROWSER_TEST_F(ActorTypeToolBrowserTest,
   ASSERT_TRUE(
       ExecJs(subframe, "document.getElementById('input').value = 'foo bar'"));
   std::optional<int> input_id =
-      GetDOMNodeIdFromSubframe(*main_frame(), "#iframe", "#input");
+      GetDOMNodeIdFromLocalSubframe(*main_frame(), "#iframe", "#input");
   ASSERT_TRUE(input_id);
 
   std::string typed_string = "abc";
@@ -896,10 +897,11 @@ IN_PROC_BROWSER_TEST_F(ActorTypeToolBrowserTest,
 class ActorTypeToolBrowserTestWithLongDelay : public ActorTypeToolBrowserTest {
  public:
   ActorTypeToolBrowserTestWithLongDelay() {
-    feature_list_.InitAndEnableFeatureWithParameters(
-        ::features::kGlicActor,
-        {{::features::kGlicActorKeyDownDuration.name, "10s"},
-         {features::kGlicActorPolicyControlExemption.name, "true"}});
+    feature_list_.InitWithFeaturesAndParameters(
+        {{::features::kGlicActor,
+          {{::features::kGlicActorKeyDownDuration.name, "10s"}}},
+         {features::kGlicActorPolicyControlExemption, {}}},
+        {});
   }
 
  private:
@@ -975,8 +977,7 @@ IN_PROC_BROWSER_TEST_F(ActorTypeToolBrowserTest, TypeTool_FollowByEnterDelay) {
       base::Milliseconds(enter_key_down_ts - x_key_up_ts);
 
   // Check the delay between keydown and keyup.
-  EXPECT_GE(x_up_to_enter_down_delta,
-            features::kGlicActorTypeToolEnterDelay.Get());
+  EXPECT_GE(x_up_to_enter_down_delta, kActorTypeToolEnterDelayParam.Get());
 }
 
 }  // namespace

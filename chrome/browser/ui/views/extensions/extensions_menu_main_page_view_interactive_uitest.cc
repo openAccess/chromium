@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/extensions/extensions_menu_main_page_view.h"
 
+#include "base/command_line.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/extensions/browsertest_util.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
@@ -21,6 +22,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/reload_page_dialog_controller.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_coordinator.h"
@@ -32,6 +34,7 @@
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_interactive_uitest.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -51,11 +54,15 @@
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/interaction/state_observer.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/controls/button/toggle_button.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/views_switches.h"
 
 namespace {
 
@@ -193,6 +200,7 @@ class ExtensionsMenuMainPageViewInteractiveUITest
 
   // ExtensionsToolbarUITest:
   void ShowUi(const std::string& name) override;
+  void SetUpCommandLine(base::CommandLine* command_line) override;
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -200,14 +208,25 @@ class ExtensionsMenuMainPageViewInteractiveUITest
 
 ExtensionsMenuMainPageViewInteractiveUITest::
     ExtensionsMenuMainPageViewInteractiveUITest() {
-  scoped_feature_list_.InitAndEnableFeature(
-      extensions_features::kExtensionsMenuAccessControl);
+  // This suite tests the Views-specific ExtensionsMenuMainPageView hosted by
+  // the native ExtensionsToolbarDesktop, which is not instantiated when
+  // WebUIExtensionsContainer is enabled.
+  scoped_feature_list_.InitWithFeatures(
+      /*enabled_features=*/{extensions_features::kExtensionsMenuAccessControl},
+      /*disabled_features=*/{features::kWebUIExtensionsContainer});
+}
+
+void ExtensionsMenuMainPageViewInteractiveUITest::SetUpCommandLine(
+    base::CommandLine* command_line) {
+  ExtensionsToolbarUITest::SetUpCommandLine(command_line);
+  command_line->AppendSwitch(
+      views::switches::kDisableInputEventActivationProtectionForTesting);
 }
 
 void ExtensionsMenuMainPageViewInteractiveUITest::ShowMenu() {
   menu_coordinator()->Show(views::BubbleAnchor(extensions_button()),
                            GetExtensionsToolbarDesktop());
-  DCHECK(main_page());
+  CHECK(main_page(), base::NotFatalUntil::M162);
 }
 
 ExtensionsMenuEntryView*
@@ -241,7 +260,7 @@ ExtensionsMenuMainPageViewInteractiveUITest::
 }
 
 void ExtensionsMenuMainPageViewInteractiveUITest::ClickSiteSettingToggle() {
-  DCHECK(main_page());
+  CHECK(main_page(), base::NotFatalUntil::M162);
 
   extensions::PermissionsManagerWaiter waiter(
       PermissionsManager::Get(browser()->GetProfile()));
@@ -255,7 +274,7 @@ ExtensionsMenuMainPageView*
 ExtensionsMenuMainPageViewInteractiveUITest::main_page() {
   ExtensionsMenuDelegateDesktop* menu_delegate =
       menu_coordinator()->GetDelegateForTesting();
-  DCHECK(menu_delegate);
+  CHECK(menu_delegate, base::NotFatalUntil::M162);
   return menu_delegate->GetMainPageViewForTesting();
 }
 
@@ -501,15 +520,28 @@ class ExtensionsMenuMainPageViewInteractiveTest
     : public InteractiveBrowserTestMixin<extensions::ExtensionBrowserTest> {
  public:
   ExtensionsMenuMainPageViewInteractiveTest() {
+    // This suite tests the Views-specific ExtensionsMenuMainPageView hosted by
+    // the native ExtensionsToolbarDesktop, which is not instantiated when
+    // WebUIExtensionsContainer is enabled.
     scoped_feature_list_.InitWithFeatures(
-        {extensions_features::kExtensionsMenuAccessControl,
-         metrics::kCriticalUserJourneyService, metrics::kPinExtensionJourney},
-        {features::kExtensionsPinnedByDefault});
+        /*enabled_features=*/{extensions_features::kExtensionsMenuAccessControl,
+                              metrics::kCriticalUserJourneyService,
+                              metrics::kPinExtensionJourney},
+        /*disabled_features=*/{features::kExtensionsPinnedByDefault,
+                               features::kWebUIExtensionsContainer});
   }
   ExtensionsMenuMainPageViewInteractiveTest(
       const ExtensionsMenuMainPageViewInteractiveTest&) = delete;
   ExtensionsMenuMainPageViewInteractiveTest& operator=(
       const ExtensionsMenuMainPageViewInteractiveTest&) = delete;
+
+  // InteractiveBrowserTestMixin<extensions::ExtensionBrowserTest>:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    InteractiveBrowserTestMixin<
+        extensions::ExtensionBrowserTest>::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(
+        views::switches::kDisableInputEventActivationProtectionForTesting);
+  }
 
   // Installs extension with `name` and `host_permission`.
   scoped_refptr<const extensions::Extension>
@@ -534,7 +566,7 @@ class ExtensionsMenuMainPageViewInteractiveTest
   ExtensionsToolbarDesktop* extensions_container() {
     return BrowserView::GetBrowserViewForBrowser(browser())
         ->toolbar()
-        ->extensions_container();
+        ->extensions_container_for_testing();
   }
 
   content::WebContents* active_web_contents() {
@@ -1108,7 +1140,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
                           BrowserView::GetBrowserViewForBrowser(
                               incognito_browser)
                               ->toolbar()
-                              ->extensions_container()
+                              ->extensions_container_for_testing()
                               ->GetToolbarViewModel()
                               ->GetActionForId(extension->id())
                               ->GetContextMenu(
@@ -1275,7 +1307,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewInteractiveTest,
 
       // Refresh the page manually.
       Do([&]() {
-        chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+        chrome::Reload(browser(),
+                       ui::mojom::WindowOpenDisposition::kCurrentTab);
       }),
       WaitForWebContentsNavigation(kTab),
 

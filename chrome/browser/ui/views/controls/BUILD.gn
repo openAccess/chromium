@@ -30,6 +30,7 @@ source_set("controls") {
     "//chrome/browser/ui/views:layout_provider",
     "//components/content_settings/core/common",
     "//ui/base",
+    "//ui/menus",
     "//ui/views",
   ]
   deps = [
@@ -41,7 +42,46 @@ source_set("controls") {
     "//components/constrained_window",
     "//components/content_settings/browser/ui",
     "//components/strings:components_strings",
+    "//components/user_education/views",
     "//components/web_modal",
     "//content/public/browser",
   ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "rich_hover_button_unittest.cc" ]
+  deps = [
+    ":controls",
+    "//chrome/test:test_support",
+    "//testing/gtest",
+    "//ui/base",
+    "//ui/views",
+    "//ui/views:test_support",
+  ]
+}
+
+if (!is_chromeos) {
+  source_set("browser_tests") {
+    testonly = true
+    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+    sources = [
+      "button/button_dump_accessibility_events_browsertest.cc",
+      "button/checkbox_dump_accessibility_events_browsertest.cc",
+      "label_dump_accessibility_events_browsertest.cc",
+      "slider/slider_dump_accessibility_events_browsertest.cc",
+      "textfield/textfield_dump_accessibility_events_browsertest.cc",
+    ]
+    deps = [
+      "//base",
+      "//base/test:test_support",
+      "//build:buildflag_header_h",
+      "//chrome/browser/ui/views/accessibility:dump_accessibility_events_views_browsertest_base",
+      "//content/test:test_support",
+      "//ui/accessibility",
+      "//ui/events:test_support",
+      "//ui/gfx/range",
+      "//ui/views",
+    ]
+  }
 }

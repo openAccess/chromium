@@ -359,6 +359,11 @@ Display::~Display() {
     damage_tracker_->RunDrawCallbacks();
 }
 
+void Display::SetPendingRendererMainThreadsCallback(
+    PendingRendererMainThreadsCallback callback) {
+  pending_renderer_main_threads_callback_ = std::move(callback);
+}
+
 void Display::Initialize(DisplayClient* client,
                          SurfaceManager* surface_manager) {
   DCHECK(client);
@@ -415,25 +420,45 @@ void Display::SetLocalSurfaceId(const LocalSurfaceId& id,
 }
 
 void Display::SetVisible(bool visible) {
-  TRACE_EVENT1("viz", "Display::SetVisible", "visible", visible);
-  // This may schedule tasks to e.g. destroy buffers when not visible, as in
-  // SkiaRenderer::SetVisible()
-  std::unique_ptr<gpu::ScopedAllowScheduleGpuTask> allow_schedule_gpu_task;
-  if (features::ShouldDiscardVizBufferQueueOnVisibilityChange()) {
-    allow_schedule_gpu_task.reset(new gpu::ScopedAllowScheduleGpuTask());
+  SetVisible(visible ? mojom::DisplayVisibility::kVisible
+                     : mojom::DisplayVisibility::kInvisible);
+}
+
+void Display::SetVisible(mojom::DisplayVisibility visibility) {
+  TRACE_EVENT1("viz", "Display::SetVisible", "visibility", visibility);
+  if (visibility_ == visibility) {
+    return;
+  }
+  const bool had_buffers = visibility_ != mojom::DisplayVisibility::kInvisible;
+  const bool has_buffers = visibility != mojom::DisplayVisibility::kInvisible;
+  visibility_ = visibility;
+
+  if (scheduler_) {
+    scheduler_->SetVisible(visibility_ == mojom::DisplayVisibility::kVisible);
   }
 
-  if (renderer_)
-    renderer_->SetVisible(visible);
-  if (scheduler_)
-    scheduler_->SetVisible(visible);
-  visible_ = visible;
+  if (had_buffers != has_buffers) {
+    // This may schedule tasks to e.g. destroy buffers when back buffers are
+    // released, as in SkiaRenderer::DidChangeHasBackBuffers()
+    std::unique_ptr<gpu::ScopedAllowScheduleGpuTask> allow_schedule_gpu_task;
+    if (!has_buffers) {
+      allow_schedule_gpu_task.reset(new gpu::ScopedAllowScheduleGpuTask());
+    }
 
-  if (!visible) {
-    // Damage tracker needs a full reset as renderer resources are dropped when
-    // not visible.
-    if (aggregator_ && current_surface_id_.is_valid())
-      aggregator_->SetFullDamageForSurface(current_surface_id_);
+    if (renderer_) {
+      renderer_->SetHasBackBuffers(has_buffers);
+    }
+
+    if (!has_buffers && current_surface_id_.is_valid()) {
+      // Damage tracker needs a full reset as renderer resources are dropped
+      // when not visible. Mark the root surface damaged as well so
+      // DisplayScheduler knows to redraw the existing surface when becoming
+      // visible again even if the client does not submit a new CompositorFrame.
+      if (aggregator_) {
+        aggregator_->SetFullDamageForSurface(current_surface_id_);
+      }
+      damage_tracker_->SetRootSurfaceDamaged();
+    }
   }
 }
 
@@ -539,7 +564,8 @@ void Display::InitializeRenderer() {
   }
 
   renderer_->Initialize();
-  renderer_->SetVisible(visible_);
+  renderer_->SetHasBackBuffers(visibility_ !=
+                               mojom::DisplayVisibility::kInvisible);
 
   SurfaceAggregator::ExtraPassForReadbackOption extra_pass_option =
       SurfaceAggregator::ExtraPassForReadbackOption::kNone;
@@ -944,16 +970,18 @@ bool Display::DrawAndSwap(const DrawAndSwapParams& params) {
     base::ElapsedTimer draw_occlusion_timer;
     occlusion_culler_->RemoveOverdrawQuads(&frame);
     DebugDrawFrameVisible(frame);
+    base::TimeTicks draw_occlusion_end_time;
     UMA_HISTOGRAM_COUNTS_1000(
         "Compositing.Display.Draw.Occlusion.Calculation.Time",
-        draw_occlusion_timer.Elapsed().InMicroseconds());
+        draw_occlusion_timer.Elapsed(&draw_occlusion_end_time)
+            .InMicroseconds());
 
     DBG_LOG("renderer.ptr", "renderer = %p%s", this,
             renderer_.get() == software_renderer_ ? " (software)" : "");
 
     if (overdraw_tracker_) {
       overdraw_tracker_->EstimateAndRecordOverdraw(&frame,
-                                                   base::TimeTicks::Now());
+                                                   draw_occlusion_end_time);
     }
 
     OverdrawTracker::EstimateAndRecordOverdrawAsUMAMetric(&frame);
@@ -1034,6 +1062,16 @@ bool Display::DrawAndSwap(const DrawAndSwapParams& params) {
       renderer_main_thread_ids.clear();
     }
 
+    // Added after the scroll exclusion on purpose: a navigation may commit
+    // while the previous page is still being scrolled, and the committing
+    // Renderer's main thread is on the page load critical path.
+    if (pending_renderer_main_threads_callback_) {
+      const base::flat_set<base::PlatformThreadId> pending_threads =
+          pending_renderer_main_threads_callback_.Run();
+      renderer_main_thread_ids.insert(pending_threads.begin(),
+                                      pending_threads.end());
+    }
+
     presentation_group_timing.OnDraw(
         params.begin_frame_args.frame_time, params.begin_frame_args.interval,
         draw_timer->start_time(), std::move(animation_thread_ids),
@@ -1069,18 +1107,18 @@ bool Display::DrawAndSwap(const DrawAndSwapParams& params) {
     IssueDisplayRenderingStatsEvent();
     DirectRenderer::SwapFrameData swap_frame_data;
     swap_frame_data.latency_info = std::move(frame.latency_info);
-    swap_frame_data.seq =
+    swap_frame_data.frame_data.seq =
         current_surface_id_.local_surface_id().parent_sequence_number();
     swap_frame_data.choreographer_vsync_id = params.choreographer_vsync_id;
-    swap_frame_data.swap_trace_id = display_trace_id;
-    swap_frame_data.display_hdr_headroom =
+    swap_frame_data.frame_data.swap_trace_id = display_trace_id;
+    swap_frame_data.frame_data.display_hdr_headroom =
         display_color_spaces_.GetHDRMaxLuminanceRelative();
 
     TRACE_EVENT(
         "viz,benchmark,graphics.pipeline", "Graphics.Pipeline",
-        perfetto::Flow::Global(swap_frame_data.swap_trace_id),
-        [swap_trace_id =
-             swap_frame_data.swap_trace_id](perfetto::EventContext ctx) {
+        perfetto::Flow::Global(swap_frame_data.frame_data.swap_trace_id),
+        [swap_trace_id = swap_frame_data.frame_data.swap_trace_id](
+            perfetto::EventContext ctx) {
           base::TaskAnnotator::EmitTaskTimingDetails(ctx);
           auto* event = ctx.event<perfetto::protos::pbzero::ChromeTrackEvent>();
           auto* data = event->set_chrome_graphics_pipeline();
@@ -1090,11 +1128,14 @@ bool Display::DrawAndSwap(const DrawAndSwapParams& params) {
         });
 
 #if BUILDFLAG(IS_APPLE)
-    swap_frame_data.ca_layer_error_code =
+    swap_frame_data.frame_data.ca_layer_error_code =
         overlay_processor_->GetCALayerErrorCode();
 #endif
-    swap_frame_data.is_handling_interaction = has_interactive_frame;
-    swap_frame_data.is_handling_animation = has_animated_frame;
+
+#if BUILDFLAG(IS_MAC)
+    swap_frame_data.frame_data.is_handling_interaction = has_interactive_frame;
+    swap_frame_data.frame_data.is_handling_animation = has_animated_frame;
+#endif
 
     // We must notify scheduler and increase |pending_swaps_| before calling
     // SwapBuffers() as it can call DidReceiveSwapBuffersAck synchronously.
@@ -1441,7 +1482,7 @@ void Display::SetNeedsOneBeginFrame(const BeginFrameArgs& args) {
 #if BUILDFLAG(IS_ANDROID)
 bool Display::OutputSurfaceSupportsSetFrameRate() {
   return output_surface_ &&
-         output_surface_->capabilities().supports_surfaceless &&
+         output_surface_->capabilities().renderer_allocates_images &&
          gfx::SurfaceControl::SupportsSetFrameRate();
 }
 

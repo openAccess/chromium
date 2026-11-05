@@ -85,8 +85,6 @@ const MockTransaction kSimpleGET_Transaction = {
     base::Time(),
     "<html><body>Google Blah Blah</body></html>",
     {},
-    std::nullopt,
-    std::nullopt,
     TEST_MODE_NORMAL,
     MockTransactionHandler(),
     MockTransactionReadHandler(),
@@ -109,8 +107,6 @@ const MockTransaction kSimplePOST_Transaction = {
     base::Time(),
     "<html><body>Google Blah Blah</body></html>",
     {},
-    std::nullopt,
-    std::nullopt,
     TEST_MODE_NORMAL,
     MockTransactionHandler(),
     MockTransactionReadHandler(),
@@ -134,8 +130,6 @@ const MockTransaction kTypicalGET_Transaction = {
     base::Time(),
     "<html><body>Google Blah Blah</body></html>",
     {},
-    std::nullopt,
-    std::nullopt,
     TEST_MODE_NORMAL,
     MockTransactionHandler(),
     MockTransactionReadHandler(),
@@ -159,8 +153,6 @@ const MockTransaction kETagGET_Transaction = {
     base::Time(),
     "<html><body>Google Blah Blah</body></html>",
     {},
-    std::nullopt,
-    std::nullopt,
     TEST_MODE_NORMAL,
     MockTransactionHandler(),
     MockTransactionReadHandler(),
@@ -183,8 +175,6 @@ const MockTransaction kRangeGET_Transaction = {
     base::Time(),
     "<html><body>Google Blah Blah</body></html>",
     {},
-    std::nullopt,
-    std::nullopt,
     TEST_MODE_NORMAL,
     MockTransactionHandler(),
     MockTransactionReadHandler(),
@@ -246,8 +236,6 @@ MockHttpRequest::MockHttpRequest(const MockTransaction& t) {
   network_isolation_key = NetworkIsolationKey(site, site);
   network_anonymization_key = NetworkAnonymizationKey::CreateSameSite(site);
   frame_origin = url::Origin::Create(url);
-  fps_cache_filter = t.fps_cache_filter;
-  browser_run_id = t.browser_run_id;
   is_shared_resource = t.is_shared_resource;
 }
 
@@ -401,6 +389,10 @@ int MockNetworkTransaction::Read(IOBuffer* buf,
   const MockTransaction* t = FindMockTransaction(current_request_.url);
   DCHECK(t);
 
+  if (test_mode_ & TEST_MODE_STUCK_READ) {
+    return ERR_IO_PENDING;
+  }
+
   CHECK(!done_reading_called_);
   reading_ = true;
 
@@ -529,8 +521,17 @@ int MockNetworkTransaction::StartInternal(HttpRequestInfo request,
   if (t->start_handler) {
     DCHECK_EQ(start_return_code, OK)
         << "set either start_return_code or start_handler, not both";
-    start_return_code = t->start_handler.Run(&current_request_);
+    start_return_code = t->start_handler.Run(
+        &current_request_, base::BindOnce(&MockNetworkTransaction::OnIOComplete,
+                                          weak_factory_.GetWeakPtr()));
+    if (start_return_code == ERR_IO_PENDING) {
+      // The `start_handler` is responsible for resuming us.
+      callback_ = std::move(callback);
+      next_state_ = State::CREATE_STREAM;
+      return ERR_IO_PENDING;
+    }
   }
+
   if (OK != start_return_code) {
     if (test_mode_ & TEST_MODE_SYNC_NET_START) {
       return start_return_code;

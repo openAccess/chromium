@@ -148,11 +148,15 @@ function format(node, depth, placeholderMap, rawHtml = '') {
             recordMetadata(placeholderMap, match, depth);
           }
         }
-        // If the child node has a leading newline and whitespace, replace it
-        // with the appropriate indentation whitespace.
-        if (/^\n[ \t]*/.test(child.value)) {
+        // If the child node has leading newlines and whitespace, replace them
+        // with the appropriate blank lines and indentation whitespace.
+        const leadingWhitespaceMatch = child.value.match(/^(\n[ \t]*)+/);
+        if (leadingWhitespaceMatch) {
+          const newlineCount =
+              (leadingWhitespaceMatch[0].match(/\n/g) || []).length;
+          const indentStr = ' '.repeat(depth * INDENT_SIZE);
           child.value = child.value.replace(
-              /^\n[ \t]*/, getIndentationPrefix(depth * INDENT_SIZE));
+              /^(\n[ \t]*)+/, '\n'.repeat(newlineCount) + indentStr);
         }
         // If the child node has trailing whitespace, initially set it to the
         // parent's indentation (for the closing tag). If it has a subsequent
@@ -261,10 +265,22 @@ function preprocessHtml(html, placeholderMap) {
   const offOnRegex =
       /<!--\s*lit-template-format-off\s*-->([\s\S]*?)<!--\s*lit-template-format-on\s*-->/g;
   substitutedHtml = substitutedHtml.replace(offOnRegex, (match) => {
+    for (const [key, value] of placeholderMap.entries()) {
+      if (match.includes(key)) {
+        value.formatOff = true;
+      }
+    }
     const placeholder = `${FORMAT_OFF_PREFIX}-${placeholderMap.size}`;
     placeholderMap.set(placeholder, {code: match});
     return `<${FORMAT_OFF_PREFIX} id="${placeholder}"></${FORMAT_OFF_PREFIX}>`;
   });
+
+  // Remove invalid closing tags for void elements (e.g. </img>) along with any
+  // preceding newline and indentation when on their own line, so parse5 does
+  // not merge the surrounding newlines into a blank line.
+  const voidCloseRegex =
+      new RegExp(`(?:\\n[ \\t]*)?</(?:${VOID_ELEMENTS.join('|')})>`, 'gi');
+  substitutedHtml = substitutedHtml.replace(voidCloseRegex, '');
 
   // Replace restricted tags so that non-compliant children will not be
   // stripped by parse5.

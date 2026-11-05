@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "base/time/time.h"
-#include "url/gurl.h"
 
 namespace critical_actions {
 
@@ -27,7 +26,8 @@ enum class ActionType {
   kGooglePasswordManager = 5,
   kFederatedLogin = 6,
   kCredentialsOtp = 7,
-  kMaxValue = kCredentialsOtp,
+  kWebMcpTool = 8,
+  kMaxValue = kWebMcpTool,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/enums.xml:CriticalActionType)
 
@@ -41,6 +41,17 @@ enum class ActionSource {
   kMaxValue = kAutofill,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/histograms.xml:ActionSource)
+
+// Result of attempting to open a conversation associated with a critical
+// action.
+// LINT.IfChange(OpenConversationResult)
+enum class OpenConversationResult {
+  kSuccess = 0,
+  kErrorInvalidActionEntry = 1,
+  kErrorInternal = 2,
+  kMaxValue = kErrorInternal,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/critical_actions/enums.xml:OpenConversationResult)
 
 // Represents a memory row copy of a single record in critical_actions database.
 struct CriticalActionEntry {
@@ -66,8 +77,12 @@ struct CriticalActionEntry {
   std::string actor_task_id;    // References agent task
   ActionType action_type = ActionType::kUnknown;
   ActionSource action_source = ActionSource::kUnknown;
-  GURL url;
-  std::string metadata;  // Action-specific details in JSON format
+  // Action-specific details in JSON format. Must NOT contain page-identifying
+  // data (URLs, origins, hostnames, page titles, or anything derived from
+  // them): critical actions deliberately keep no copy of browsing history, and
+  // this field is not covered by History's deletion lifecycle. Use `visit_id`
+  // to refer to the page the action was performed on.
+  std::string metadata;
 
   bool operator==(const CriticalActionEntry& other) const = default;
 };
@@ -85,7 +100,6 @@ class CriticalActionEntry::Builder {
   Builder&& SetTimestamp(base::Time timestamp_val) &&;
   Builder&& SetActionType(ActionType action_type_val) &&;
   Builder&& SetActionSource(ActionSource action_source_val) &&;
-  Builder&& SetUrl(GURL url_val) &&;
   Builder&& SetConversationId(std::string conversation_id_val) &&;
   Builder&& SetActorTaskId(std::string actor_task_id_val) &&;
   Builder&& SetMetadata(std::string metadata_val) &&;

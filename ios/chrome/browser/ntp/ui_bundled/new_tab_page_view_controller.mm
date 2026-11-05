@@ -46,6 +46,7 @@
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_utils.h"
 #import "ios/chrome/common/material_timing.h"
+#import "ios/chrome/common/ui/animations/radial_wipe_animation.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/common/ui/util/ui_util.h"
@@ -179,6 +180,11 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   // The current background image.
   UIImage* _backgroundImage;
   HomeCustomizationFramingCoordinates* _framingCoordinates;
+  // Local path for an animated background, if any.
+  NSString* _animatedBackgroundPath;
+  // Dynamic light and dark mode color providers for the animated background.
+  NSDictionary<NSString*, UIColor*>* _animatedBackgroundLightModeColorProvider;
+  NSDictionary<NSString*, UIColor*>* _animatedBackgroundDarkModeColorProvider;
   // The image view to display the current background image.
   HomeCustomizationImageView* _backgroundImageView;
   // The view controller holding the NTP quick actions buttons.
@@ -190,11 +196,33 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   BOOL _isBottomOmnibox;
   // The bottom inset for the feed.
   CGFloat _feedBottomInset;
+  // The title for the AI Mode button.
+  NSString* _aimTitle;
+  // The icon for the AI Mode button.
+  UIImage* _aimIcon;
+  // The accessibility label for the AI Mode button.
+  NSString* _aimAccessibilityLabel;
+  // Whether AIM image generation is allowed.
+  BOOL _aimImageGenerationAllowed;
+  // Whether attaching images to an AIM search query is allowed.
+  BOOL _aimAttachImagesAllowed;
+  // Tracks whether the NTP was scrolled to the top before a size transition.
+  BOOL _scrolledToTop;
+  // Constraints for the feed top section promo.
+  NSArray<NSLayoutConstraint*>* _feedTopSectionConstraints;
+  // Constraint connecting the top of the collection view to the view above it.
+  NSLayoutConstraint* _collectionViewTopConstraint;
+  // The height of the feed top section before it was closed/removed.
+  CGFloat _lastClosedPromoHeight;
+  // Animation used to hide the Magic Stack and Discover feed.
+  RadialWipeAnimation* _radialWipeAnimation;
 }
 
-// Properties synthesized from NewTabPageConsumer.
+// Properties synthesized from NewTabPageScrollConsumer.
 @synthesize mostVisitedVisible = _mostVisitedVisible;
 @synthesize magicStackVisible = _magicStackVisible;
+@synthesize feedTopSectionVisible = _feedTopSectionVisible;
+@synthesize feedTopSectionViewController = _feedTopSectionViewController;
 
 - (instancetype)init {
   self = [super initWithNibName:nil bundle:nil];
@@ -211,6 +239,7 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
     _inhibitScrollPositionUpdates = NO;
     _shiftTileStartTime = -1;
     _appearing = YES;
+    _scrolledToTop = YES;
   }
   return self;
 }
@@ -228,6 +257,17 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
       [[NewTabPageQuickActionsViewController alloc] init];
   _quickActionsViewController.layoutGuideCenter = self.layoutGuideCenter;
   _quickActionsViewController.NTPShortcutsHandler = self.NTPShortcutsHandler;
+  [_quickActionsViewController setAIMTitle:_aimTitle
+                                      icon:_aimIcon
+                        accessibilityLabel:_aimAccessibilityLabel];
+
+  AimButtonRefactorArm arm = GetAimButtonRefactorArm();
+  if (arm == AimButtonRefactorArm::kImageGenerationQuickAction ||
+      arm == AimButtonRefactorArm::kAttachImageQuickAction) {
+    [_quickActionsViewController
+        setAIMImageGenerationAllowed:_aimImageGenerationAllowed
+                 attachImagesAllowed:_aimAttachImagesAllowed];
+  }
 
   // TODO(crbug.com/40799579): Remove this when bug is fixed.
   [self.feedWrapperViewController loadViewIfNeeded];
@@ -247,7 +287,14 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
 
   _backgroundImageView = [[HomeCustomizationImageView alloc] init];
   _backgroundImageView.translatesAutoresizingMaskIntoConstraints = NO;
-  [self updateBackgroundImageView];
+  if (_animatedBackgroundPath.length > 0) {
+    [_backgroundImageView
+        setAnimatedBackgroundPath:_animatedBackgroundPath
+           lightModeColorProvider:_animatedBackgroundLightModeColorProvider
+            darkModeColorProvider:_animatedBackgroundDarkModeColorProvider];
+  } else {
+    [self updateBackgroundImageView];
+  }
   [self.view addSubview:_backgroundImageView];
   AddSameConstraints(_backgroundImageView, self.view);
 
@@ -384,13 +431,24 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
            (id<UIViewControllerTransitionCoordinator>)coordinator {
   [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
 
+  BOOL wasScrolledToTop = [self wasScrolledToTopBeforeTransition];
+  CGFloat previousYOffset = [self scrollPosition];
+  CGFloat previousHeightAboveFeed = [self heightAboveFeed];
+
   __weak __typeof(self) weakSelf = self;
 
   void (^transitionBlock)(id<UIViewControllerTransitionCoordinatorContext>) =
       ^(id<UIViewControllerTransitionCoordinatorContext> context) {
-        [weakSelf updateLayoutForSize:size
-                      previousYOffset:[self scrollPosition]
-              previousHeightAboveFeed:[self heightAboveFeed]];
+        NewTabPageViewController* strongSelf = weakSelf;
+        if (!strongSelf) {
+          return;
+        }
+        [strongSelf updateLayoutForSize:size
+                        previousYOffset:previousYOffset
+                previousHeightAboveFeed:previousHeightAboveFeed];
+        if (wasScrolledToTop) {
+          [strongSelf setContentOffsetToTop];
+        }
       };
 
   void (^completionBlock)(id<UIViewControllerTransitionCoordinatorContext>) =
@@ -398,8 +456,13 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
         [weakSelf completeLayoutSizeUpdate];
       };
 
-  [coordinator animateAlongsideTransition:transitionBlock
-                               completion:completionBlock];
+  if (coordinator) {
+    [coordinator animateAlongsideTransition:transitionBlock
+                                 completion:completionBlock];
+  } else {
+    transitionBlock(nil);
+    completionBlock(nil);
+  }
 
   if ([self isOrientationLandscapeForSize:size]) {
     [self.mutator notifyNtpDisplayedInLandscape];
@@ -485,8 +548,9 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
                                      kContentSuggestionsReset];
   }
 
-  // Adds the feed top section to the view hierarchy if it exists.
-  if (self.feedTopSectionViewController) {
+  // Adds the feed top section to the view hierarchy if it exists and is
+  // visible.
+  if (self.feedTopSectionVisible && self.feedTopSectionViewController) {
     [self addObjectAboveFeed:self.feedTopSectionViewController];
   }
 
@@ -564,15 +628,28 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
 
 - (void)updateHeightAboveFeed {
   if (self.viewDidFinishLoading) {
+    if (!self.isFakeboxPinned && self.fakeOmniboxConstraints.count == 1) {
+      self.fakeOmniboxConstraints.firstObject.constant =
+          [self headerBottomSpacing];
+    }
     CGFloat oldHeightAboveFeed = self.collectionView.contentInset.top;
     CGFloat oldOffset = self.collectionView.contentOffset.y;
     [self updateFeedInsetsForContentAbove];
     CGFloat newHeightAboveFeed = self.collectionView.contentInset.top;
-    CGFloat change = newHeightAboveFeed - oldHeightAboveFeed;
-    // Offset the change by subtracting it from the content offset, in order to
-    // visually keep the same scroll position, but don't allow an offset that
-    // is lower than the top.
-    [self setContentOffset:MAX(oldOffset - change, -newHeightAboveFeed)];
+    if (self.hasSavedOffsetFromPreviousScrollState) {
+      // A scroll position was restored (e.g. navigating back to the NTP) and
+      // the user has not scrolled since. Async updates to the content above
+      // the feed (e.g. Most Visited Tiles resizing) must not override it, so
+      // re-apply the saved offset instead of shifting the current one, which
+      // may have been clamped by transient layout passes.
+      [self setContentOffset:self.savedScrollOffset];
+    } else {
+      CGFloat change = newHeightAboveFeed - oldHeightAboveFeed;
+      // Offset the change by subtracting it from the content offset, in order
+      // to visually keep the same scroll position, but don't allow an offset
+      // that is lower than the top.
+      [self setContentOffset:MAX(oldOffset - change, -newHeightAboveFeed)];
+    }
     if (!self.feedVisible) {
       [self setMinimumHeight];
     }
@@ -594,6 +671,10 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
     [self removeObjectFromViewHierarchy:obj];
   }
   [self.objectsAboveFeed removeAllObjects];
+  [NSLayoutConstraint deactivateConstraints:_feedTopSectionConstraints];
+  _feedTopSectionConstraints = nil;
+  _collectionViewTopConstraint.active = NO;
+  _collectionViewTopConstraint = nil;
 }
 
 - (void)resetStateUponReload {
@@ -616,6 +697,7 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   if (self.omniboxFocused) {
     return;
   }
+  _scrolledToTop = YES;
   [self setContentOffset:-[self heightAboveFeed]];
   // TODO(crbug.com/40252945): Constraint updating should not be necessary since
   // scrollViewDidScroll: calls this if needed.
@@ -631,29 +713,10 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
 
 - (CGFloat)heightAboveFeed {
   CGFloat heightAboveFeed = 0;
-  for (id obj in self.objectsAboveFeed) {
-    UIView* view = [self viewForAboveFeedObject:obj];
-    heightAboveFeed += view.frame.size.height;
-
-    // If the current object represents a module, account for the
-    // vertical spacing between modules.
-    if (obj == self.magicStackCollectionView ||
-        obj == self.contentSuggestionsViewController ||
-        obj == self.feedHeaderViewController) {
-      heightAboveFeed +=
-          content_suggestions::ReducedModuleSpacing(self.traitCollection);
-    }
-
-    if (obj == _quickActionsViewController) {
-      // First, subtract off the "standard" space that was added in the
-      // previous iteration of the loop because this module uses custom
-      // top and bottom spacing.
-      heightAboveFeed -=
-          content_suggestions::ReducedModuleSpacing(self.traitCollection);
-      // Then add in the custom spacing used for this module.
-      heightAboveFeed += content_suggestions::QuickActionsTopPadding() +
-                         [self quickActionsBottomSpacing];
-    }
+  for (NSUInteger i = 0; i < self.objectsAboveFeed.count; ++i) {
+    UIView* view = [self viewForAboveFeedObject:self.objectsAboveFeed[i]];
+    heightAboveFeed +=
+        view.frame.size.height + [self topSpacingForObjectAtIndex:i];
   }
   return heightAboveFeed;
 }
@@ -689,8 +752,18 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
 
 - (void)updateScrollPositionForFeedTopSectionClosed {
   if (self.isFakeboxPinned) {
-    [self setContentOffset:[self scrollPosition] + [self feedTopSectionHeight]];
+    // Use the stored height or view's frame height directly since
+    // `feedTopSectionVisible` may already have been updated to NO when the
+    // promo was closed.
+    CGFloat promoHeight =
+        _lastClosedPromoHeight > 0
+            ? _lastClosedPromoHeight
+            : (self.feedTopSectionViewController
+                   ? self.feedTopSectionViewController.view.frame.size.height
+                   : 0);
+    [self setContentOffset:[self scrollPosition] + promoHeight];
   }
+  _lastClosedPromoHeight = 0;
 }
 
 - (void)feedLayoutDidEndUpdatesWithType:(FeedLayoutUpdateType)type {
@@ -719,6 +792,10 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   self.feedHeaderViewController = nil;
   self.feedWrapperViewController = nil;
   self.mutator = nil;
+  [NSLayoutConstraint deactivateConstraints:_feedTopSectionConstraints];
+  _feedTopSectionConstraints = nil;
+  _collectionViewTopConstraint.active = NO;
+  _collectionViewTopConstraint = nil;
   [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
@@ -738,7 +815,43 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   return _moduleLayoutGuide;
 }
 
-#pragma mark - NewTabPageConsumer
+- (void)animateHideMagicStackAndFeedWithCompletion:(ProceduralBlock)completion {
+  NSMutableArray<UIView*>* targetViews = [NSMutableArray array];
+  if (self.magicStackVisible && self.magicStackCollectionView.view) {
+    [targetViews addObject:self.magicStackCollectionView.view];
+  }
+  if (self.feedHeaderViewController.view) {
+    [targetViews addObject:self.feedHeaderViewController.view];
+  }
+  if (self.feedTopSectionVisible && self.feedTopSectionViewController.view) {
+    [targetViews addObject:self.feedTopSectionViewController.view];
+  }
+  if (self.feedVisible) {
+    if (_feedContainer) {
+      [targetViews addObject:_feedContainer];
+    }
+    [targetViews addObjectsFromArray:self.collectionView.visibleCells];
+  }
+  if (targetViews.count == 0) {
+    if (completion) {
+      completion();
+    }
+    return;
+  }
+  _radialWipeAnimation =
+      [[RadialWipeAnimation alloc] initWithWindow:self.view
+                                      targetViews:targetViews];
+  _radialWipeAnimation.type = RadialWipeAnimationType::kHideTarget;
+  _radialWipeAnimation.startPoint = CGPointMake(0.5, 0);
+  // Required by CHECK(!_window.userInteractionEnabled) in RadialWipeAnimation.
+  self.view.userInteractionEnabled = NO;
+  __weak __typeof(self) weakSelf = self;
+  [_radialWipeAnimation animateWithCompletion:^{
+    [weakSelf didCompleteRadialWipeWithCompletion:completion];
+  }];
+}
+
+#pragma mark - NewTabPageScrollConsumer
 
 - (void)restoreScrollPosition:(CGFloat)scrollPosition {
   if (self.view.window) {
@@ -800,16 +913,76 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
 - (void)setBackgroundImage:(UIImage*)backgroundImage
         framingCoordinates:
             (HomeCustomizationFramingCoordinates*)framingCoordinates {
+  _animatedBackgroundPath = nil;
+  _animatedBackgroundLightModeColorProvider = nil;
+  _animatedBackgroundDarkModeColorProvider = nil;
   _backgroundImage = backgroundImage;
   _framingCoordinates = framingCoordinates;
 
   [self updateBackgroundImageView];
 }
 
-- (void)setAIMAllowed:(BOOL)allowed {
-  _isAIMAllowed = allowed;
+- (void)setAnimatedBackgroundPath:(NSString*)animatedBackgroundPath
+           lightModeColorProvider:
+               (NSDictionary<NSString*, UIColor*>*)lightModeColorProvider
+            darkModeColorProvider:
+                (NSDictionary<NSString*, UIColor*>*)darkModeColorProvider {
+  _animatedBackgroundPath = animatedBackgroundPath;
+  _animatedBackgroundLightModeColorProvider = [lightModeColorProvider copy];
+  _animatedBackgroundDarkModeColorProvider = [darkModeColorProvider copy];
+  _backgroundImage = nil;
+  _framingCoordinates = nil;
+  [_backgroundImageView
+      setAnimatedBackgroundPath:_animatedBackgroundPath
+         lightModeColorProvider:_animatedBackgroundLightModeColorProvider
+          darkModeColorProvider:_animatedBackgroundDarkModeColorProvider];
 }
 
+- (void)setAIMAllowed:(BOOL)allowed {
+  _isAIMAllowed = allowed;
+  if (GetAimButtonRefactorArm() == AimButtonRefactorArm::kAimAsModule) {
+    [self.contentSuggestionsViewController setAIMAllowed:allowed];
+  }
+}
+
+- (void)setAIMImageGenerationAllowed:(BOOL)imageGenerationAllowed
+                 attachImagesAllowed:(BOOL)attachmentsAllowed {
+  AimButtonRefactorArm arm = GetAimButtonRefactorArm();
+  CHECK(arm == AimButtonRefactorArm::kImageGenerationQuickAction ||
+        arm == AimButtonRefactorArm::kAttachImageQuickAction);
+  _aimImageGenerationAllowed = imageGenerationAllowed;
+  _aimAttachImagesAllowed = attachmentsAllowed;
+  [_quickActionsViewController
+      setAIMImageGenerationAllowed:imageGenerationAllowed
+               attachImagesAllowed:attachmentsAllowed];
+}
+
+- (void)setAIMTitle:(NSString*)title
+                  icon:(UIImage*)icon
+    accessibilityLabel:(NSString*)accessibilityLabel {
+  _aimTitle = [title copy];
+  _aimIcon = icon;
+  _aimAccessibilityLabel = [accessibilityLabel copy];
+  switch (GetAimButtonRefactorArm()) {
+    case AimButtonRefactorArm::kFocusComposeboxAimQuickAction:
+    case AimButtonRefactorArm::kImageGenerationQuickAction:
+    case AimButtonRefactorArm::kAttachImageQuickAction:
+    case AimButtonRefactorArm::kDisabled:
+      [_quickActionsViewController setAIMTitle:_aimTitle
+                                          icon:_aimIcon
+                            accessibilityLabel:_aimAccessibilityLabel];
+      break;
+    case AimButtonRefactorArm::kAimAsModule:
+      [self.contentSuggestionsViewController
+                 setAIMTitle:_aimTitle
+                        icon:_aimIcon
+          accessibilityLabel:_aimAccessibilityLabel];
+      break;
+    case AimButtonRefactorArm::kAimAsMvt:
+    case AimButtonRefactorArm::kNoChips:
+      break;
+  }
+}
 - (void)setOmniboxInBottomPosition:(BOOL)isBottomOmnibox {
   if (_isBottomOmnibox == isBottomOmnibox) {
     return;
@@ -830,6 +1003,40 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   _feedBottomInset = feedBottomInset;
   if (self.feedVisible) {
     [self updateFeedInsetsForMinimumHeight];
+  }
+}
+
+- (UIViewController*)feedTopSectionViewController {
+  return _feedTopSectionViewController;
+}
+
+- (void)setFeedTopSectionViewController:
+    (UIViewController*)feedTopSectionViewController {
+  if (_feedTopSectionViewController == feedTopSectionViewController) {
+    return;
+  }
+  if (self.viewLoaded && _feedTopSectionViewController &&
+      [self.objectsAboveFeed containsObject:_feedTopSectionViewController]) {
+    [self removeObjectFromViewHierarchy:_feedTopSectionViewController];
+    [self.objectsAboveFeed removeObject:_feedTopSectionViewController];
+    [NSLayoutConstraint deactivateConstraints:_feedTopSectionConstraints];
+    _feedTopSectionConstraints = nil;
+  }
+  _feedTopSectionViewController = feedTopSectionViewController;
+  if (self.viewLoaded) {
+    [self updateFeedTopSectionHierarchy];
+    [self updateNTPLayout];
+  }
+}
+
+- (void)setFeedTopSectionVisible:(BOOL)feedTopSectionVisible {
+  if (_feedTopSectionVisible == feedTopSectionVisible) {
+    return;
+  }
+  _feedTopSectionVisible = feedTopSectionVisible;
+  if (self.viewLoaded) {
+    [self updateFeedTopSectionHierarchy];
+    [self updateNTPLayout];
   }
 }
 
@@ -1140,10 +1347,27 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   _feedContainer.backgroundColor = NTPCardBackgroundColor(colorPalette);
 }
 
+- (void)setContentSuggestionsViewController:
+    (ContentSuggestionsViewController*)contentSuggestionsViewController {
+  _contentSuggestionsViewController = contentSuggestionsViewController;
+  if (GetAimButtonRefactorArm() == AimButtonRefactorArm::kAimAsModule) {
+    [_contentSuggestionsViewController setAIMAllowed:_isAIMAllowed];
+    [_contentSuggestionsViewController setAIMTitle:_aimTitle
+                                              icon:_aimIcon
+                                accessibilityLabel:_aimAccessibilityLabel];
+    _contentSuggestionsViewController.NTPShortcutsHandler =
+        self.NTPShortcutsHandler;
+  }
+}
+
 - (void)setNTPShortcutsHandler:
     (id<NewTabPageShortcutsHandler>)NTPShortcutsHandler {
   _NTPShortcutsHandler = NTPShortcutsHandler;
   _quickActionsViewController.NTPShortcutsHandler = NTPShortcutsHandler;
+  if (GetAimButtonRefactorArm() == AimButtonRefactorArm::kAimAsModule) {
+    self.contentSuggestionsViewController.NTPShortcutsHandler =
+        NTPShortcutsHandler;
+  }
 }
 
 - (void)setLayoutGuideCenter:(LayoutGuideCenter*)layoutGuideCenter {
@@ -1156,10 +1380,17 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   if (!_isAIMAllowed || !IsAimEnabledInNtp()) {
     return NO;
   }
-  AimButtonRefactorArm arm = GetAimButtonRefactorArm();
-  return arm != AimButtonRefactorArm::kAimAsModule &&
-         arm != AimButtonRefactorArm::kAimAsMvt &&
-         arm != AimButtonRefactorArm::kNoChips;
+  switch (GetAimButtonRefactorArm()) {
+    case AimButtonRefactorArm::kFocusComposeboxAimQuickAction:
+    case AimButtonRefactorArm::kImageGenerationQuickAction:
+    case AimButtonRefactorArm::kAttachImageQuickAction:
+    case AimButtonRefactorArm::kDisabled:
+      return YES;
+    case AimButtonRefactorArm::kAimAsModule:
+    case AimButtonRefactorArm::kAimAsMvt:
+    case AimButtonRefactorArm::kNoChips:
+      return NO;
+  }
 }
 
 // Applies the horizontal constraints for the quick actions row.
@@ -1417,12 +1648,7 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
       self.fakeOmniboxConstraints = @[
         [viewBelowHeader.topAnchor
             constraintEqualToAnchor:self.headerView.bottomAnchor
-                           constant:self.quickActionsVisible
-                                        ? content_suggestions::
-                                              QuickActionsTopPadding()
-                                        : content_suggestions::
-                                              ReducedModuleSpacing(
-                                                  self.traitCollection)],
+                           constant:[self headerBottomSpacing]],
       ];
     }
   }
@@ -1491,7 +1717,8 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
 // Checks whether the feed top section is visible and updates the
 // `NTPContentDelegate`.
 - (void)updateFeedSigninPromoIsVisible {
-  if (!self.feedTopSectionViewController) {
+  if (!self.feedTopSectionViewController || !self.feedTopSectionVisible) {
+    [self.NTPContentDelegate signinPromoHasChangedVisibility:NO];
     return;
   }
 
@@ -1570,6 +1797,58 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   [NSLayoutConstraint deactivateConstraints:collectionWidthConstraints];
 }
 
+// Updates the feed top section hierarchy and constraints based on visibility.
+- (void)updateFeedTopSectionHierarchy {
+  if (!self.viewLoaded || !self.feedWrapperViewController) {
+    return;
+  }
+
+  if (self.feedTopSectionVisible && self.feedTopSectionViewController) {
+    if (![self.objectsAboveFeed
+            containsObject:self.feedTopSectionViewController]) {
+      [self addObjectAboveFeed:self.feedTopSectionViewController];
+    }
+    if (!_feedTopSectionConstraints.count && self.feedHeaderViewController) {
+      _feedTopSectionConstraints = @[
+        [self.feedTopSectionViewController.view.centerXAnchor
+            constraintEqualToAnchor:self.collectionView.centerXAnchor],
+        [self.feedTopSectionViewController.view.widthAnchor
+            constraintEqualToAnchor:self.moduleLayoutGuide.widthAnchor],
+        [self.feedTopSectionViewController.view.topAnchor
+            constraintEqualToAnchor:self.feedHeaderViewController.view
+                                        .bottomAnchor],
+      ];
+      [NSLayoutConstraint activateConstraints:_feedTopSectionConstraints];
+    }
+  } else {
+    if (self.feedTopSectionViewController &&
+        [self.objectsAboveFeed
+            containsObject:self.feedTopSectionViewController]) {
+      _lastClosedPromoHeight =
+          self.feedTopSectionViewController.view.frame.size.height;
+    }
+    [NSLayoutConstraint deactivateConstraints:_feedTopSectionConstraints];
+    _feedTopSectionConstraints = nil;
+    if (self.feedTopSectionViewController &&
+        [self.objectsAboveFeed
+            containsObject:self.feedTopSectionViewController]) {
+      [self removeObjectFromViewHierarchy:self.feedTopSectionViewController];
+      [self.objectsAboveFeed removeObject:self.feedTopSectionViewController];
+    }
+  }
+
+  _collectionViewTopConstraint.active = NO;
+  UIView* lastView =
+      [self viewForAboveFeedObject:[self.objectsAboveFeed lastObject]];
+  if (lastView) {
+    _collectionViewTopConstraint = [self.collectionView.topAnchor
+        constraintEqualToAnchor:lastView.bottomAnchor];
+    _collectionViewTopConstraint.active = YES;
+  }
+
+  [self updateAccessibilityElementsForSwitchControl];
+}
+
 // Applies constraints to the NTP collection view, along with the constraints
 // for the content suggestions within it.
 - (void)applyCollectionViewConstraints {
@@ -1577,6 +1856,10 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   contentSuggestionsView.translatesAutoresizingMaskIntoConstraints = NO;
   self.magicStackCollectionView.view.translatesAutoresizingMaskIntoConstraints =
       NO;
+
+  [NSLayoutConstraint deactivateConstraints:_feedTopSectionConstraints];
+  _feedTopSectionConstraints = nil;
+  _collectionViewTopConstraint.active = NO;
 
   if (self.feedHeaderViewController) {
     [self cleanUpCollectionViewConstraints];
@@ -1590,8 +1873,8 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
       [self.collectionView.centerXAnchor
           constraintEqualToAnchor:self.moduleLayoutGuide.centerXAnchor],
     ]];
-    if (self.feedTopSectionViewController) {
-      [NSLayoutConstraint activateConstraints:@[
+    if (self.feedTopSectionVisible && self.feedTopSectionViewController) {
+      _feedTopSectionConstraints = @[
         [self.feedTopSectionViewController.view.centerXAnchor
             constraintEqualToAnchor:self.collectionView.centerXAnchor],
         [self.feedTopSectionViewController.view.widthAnchor
@@ -1599,18 +1882,17 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
         [self.feedTopSectionViewController.view.topAnchor
             constraintEqualToAnchor:self.feedHeaderViewController.view
                                         .bottomAnchor],
-        [self.collectionView.topAnchor
-            constraintEqualToAnchor:self.feedTopSectionViewController.view
-                                        .bottomAnchor],
-      ]];
+      ];
+      [NSLayoutConstraint activateConstraints:_feedTopSectionConstraints];
     }
   }
   UIView* lastView =
       [self viewForAboveFeedObject:[self.objectsAboveFeed lastObject]];
-  [NSLayoutConstraint activateConstraints:@[
-    [self.collectionView.topAnchor
-        constraintEqualToAnchor:lastView.bottomAnchor],
-  ]];
+  if (lastView) {
+    _collectionViewTopConstraint = [self.collectionView.topAnchor
+        constraintEqualToAnchor:lastView.bottomAnchor];
+    _collectionViewTopConstraint.active = YES;
+  }
 
   if (_feedContainer) {
     [NSLayoutConstraint activateConstraints:@[
@@ -1670,19 +1952,15 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
         [self.objectsAboveFeed indexOfObject:self.headerView];
     if (headerIndex != NSNotFound && startIndex < self.objectsAboveFeed.count) {
       for (NSUInteger index = startIndex; index > headerIndex + 1; --index) {
-        BOOL isQuickActions =
-            _quickActionsViewController == self.objectsAboveFeed[index - 1];
-        UIView* view = [self viewForAboveFeedObject:self.objectsAboveFeed[index]];
+        UIView* view =
+            [self viewForAboveFeedObject:self.objectsAboveFeed[index]];
         UIView* viewAbove =
             [self viewForAboveFeedObject:self.objectsAboveFeed[index - 1]];
 
-        CGFloat spacingToUse = isQuickActions
-                                   ? [self quickActionsBottomSpacing]
-                                   : content_suggestions::ReducedModuleSpacing(
-                                         self.traitCollection);
         [NSLayoutConstraint activateConstraints:@[
-          [view.topAnchor constraintEqualToAnchor:viewAbove.bottomAnchor
-                                         constant:spacingToUse],
+          [view.topAnchor
+              constraintEqualToAnchor:viewAbove.bottomAnchor
+                             constant:[self topSpacingForObjectAtIndex:index]],
         ]];
       }
     }
@@ -1694,7 +1972,11 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
 // Sets minimum height for the NTP collection view, allowing it to scroll enough
 // to focus the omnibox.
 - (void)setMinimumHeight {
-  CGFloat minimumNTPHeight = [self minimumNTPHeight] - [self heightAboveFeed];
+  // When `heightAboveFeed` exceeds `minimumNTPHeight` (e.g. in landscape),
+  // clamp to 0 so `contentSize.height` does not become negative and lock
+  // scrolling before reaching the bottom of the NTP.
+  CGFloat minimumNTPHeight =
+      std::max<CGFloat>(0, [self minimumNTPHeight] - [self heightAboveFeed]);
   self.collectionView.contentSize =
       CGSizeMake(self.collectionView.frame.size.width, minimumNTPHeight);
 }
@@ -1774,7 +2056,9 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   CGFloat scrollPositionToSave = [self scrollPosition];
   scrollPositionToSave -= self.collectionShiftingOffset;
   self.mutator.scrollPositionToSave = scrollPositionToSave;
-  [self.mutator setIsScrolledToTop:[self isNTPScrolledToTop]];
+  BOOL isScrolledToTop = [self isNTPScrolledToTop];
+  _scrolledToTop = isScrolledToTop;
+  [self.mutator setIsScrolledToTop:isScrolledToTop];
 }
 
 // Updates the feed container's height constraint and z-position.
@@ -1807,10 +2091,8 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   CGFloat oldWidth = _moduleWidth.constant;
   CGFloat width;
   if (IsNewTabPageUICleanupEnabled()) {
-    CGFloat maxWidth = (IsRegularXRegularSizeClass(self))
-                           ? kDiscoverFeedContentMaxWidthUICleanup
-                           : kDiscoverFeedContentMaxWidth;
-    width = MIN(viewWidth - (2 * kNewTabPageHorizontalMargin), maxWidth);
+    width = MIN(viewWidth - (2 * kNewTabPageHorizontalMargin),
+                kDiscoverFeedContentMaxWidth);
   } else {
     CGFloat widthMultiplier = (100 - kHomeModuleMinimumPadding) / 100;
     width = MIN(viewWidth * widthMultiplier, kDiscoverFeedContentMaxWidth);
@@ -1872,14 +2154,72 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
   [self updateFakeOmniboxOnNewWidth:width];
 }
 
+- (void)didCompleteRadialWipeWithCompletion:(ProceduralBlock)completion {
+  _radialWipeAnimation = nil;
+  self.view.userInteractionEnabled = YES;
+  // Reset `hidden` on the Magic Stack view before pref changes remove it from
+  // the hierarchy, so it remains visible if re-enabled via "Undo".
+  self.magicStackCollectionView.view.hidden = NO;
+  if (completion) {
+    completion();
+  }
+}
+
 #pragma mark - Helpers
+
+// Returns YES if the NTP was scrolled to the top before a size transition.
+- (BOOL)wasScrolledToTopBeforeTransition {
+  if (_scrolledToTop) {
+    return YES;
+  }
+  CGFloat currentInsetTop = self.collectionView.contentInset.top;
+  return (currentInsetTop > 0 &&
+          self.collectionView.contentOffset.y <= -currentInsetTop + 1.0);
+}
+
+// Spacing between the header view and the module directly below it.
+- (CGFloat)headerBottomSpacing {
+  if (content_suggestions::ShouldRedistributeHeaderSpace()) {
+    return content_suggestions::RedistributedHeaderBottomSpacing(
+        self.traitCollection);
+  }
+  return self.quickActionsVisible
+             ? content_suggestions::QuickActionsTopPadding(self.traitCollection)
+             : content_suggestions::ReducedModuleSpacing();
+}
+
+// Returns the vertical top spacing for the object at `index` in
+// `self.objectsAboveFeed`, unifying spacing across `-heightAboveFeed` and
+// collection view constraints.
+- (CGFloat)topSpacingForObjectAtIndex:(NSUInteger)index {
+  // Header view is at index 0, so it has no top spacing above it.
+  if (index == 0) {
+    return 0;
+  }
+  // The module directly below the header uses the header's bottom spacing.
+  if (index == 1) {
+    return [self headerBottomSpacing];
+  }
+  // Quick Actions uses its own custom bottom spacing.
+  if (self.objectsAboveFeed[index - 1] == _quickActionsViewController) {
+    return [self quickActionsBottomSpacing];
+  }
+  // Standard inter-module spacing for modules above the feed.
+  id currentObject = self.objectsAboveFeed[index];
+  if (currentObject == self.magicStackCollectionView ||
+      currentObject == self.contentSuggestionsViewController ||
+      currentObject == self.feedHeaderViewController) {
+    return content_suggestions::ReducedModuleSpacing();
+  }
+  return 0;
+}
 
 // Bottom spacing below the Quick Actions module, depending on whether Most
 // Visited is visible.
 - (CGFloat)quickActionsBottomSpacing {
   return self.mostVisitedVisible
-             ? content_suggestions::MostVisitedTopPadding()
-             : content_suggestions::ReducedModuleSpacing(self.traitCollection);
+             ? content_suggestions::MostVisitedTopPadding(self.traitCollection)
+             : content_suggestions::ReducedModuleSpacing();
 }
 
 - (CGFloat)minimumNTPHeight {
@@ -1926,6 +2266,9 @@ const CGFloat kBackgroundImageAnimationDuration = 0.2;
 
 // Height of the feed top section, returns 0 if not visible.
 - (CGFloat)feedTopSectionHeight {
+  if (!self.feedTopSectionVisible) {
+    return 0;
+  }
   return self.feedTopSectionViewController
              ? self.feedTopSectionViewController.view.frame.size.height
              : 0;

@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_CONTEXT_HUB_CONTEXT_HUB_SERVICE_H_
 #define CHROME_BROWSER_CONTEXT_HUB_CONTEXT_HUB_SERVICE_H_
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <queue>
@@ -13,26 +14,34 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/containers/lru_cache.h"
 #include "base/containers/span.h"
+#include "base/functional/callback_forward.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/power_monitor/power_observer.h"
 #include "base/scoped_observation.h"
 #include "base/timer/timer.h"
 #include "base/types/id_type.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
+#include "chrome/browser/context_hub/auto_todos/auto_todo_entry.h"
 #include "chrome/browser/context_hub/auto_todos/auto_todos_store.h"
 #include "chrome/browser/context_hub/memory_bank/memory_bank.h"
+#include "chrome/browser/context_hub/memory_bank/memory_bank_chat_types.h"
 #include "chrome/browser/context_hub/tab_group_store/tab_group_entry.h"
 #include "chrome/browser/ui/webui/context_hub/context_hub.mojom.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/optimization_guide/proto/features/context_hub.pb.h"
+#include "components/passage_embeddings/core/passage_embeddings_types.h"
 #include "components/personal_context/core/personal_context_types.h"
+#include "components/personal_context/proto/features/auto_todos.pb.h"
+#include "components/personal_context/proto/features/smart_search.pb.h"
 #include "components/saved_tab_groups/public/types.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "url/gurl.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/browser_tab_strip_tracker_delegate.h"
@@ -50,8 +59,17 @@ struct TabStripSelectionChange;
 #endif
 
 namespace content {
+class Page;
 class WebContents;
 }  // namespace content
+
+namespace image_fetcher {
+class ImageFetcher;
+}  // namespace image_fetcher
+
+namespace net {
+class BackoffEntry;
+}  // namespace net
 
 namespace optimization_guide {
 class ModelQualityLogEntry;
@@ -61,6 +79,7 @@ struct OptimizationGuideModelExecutionResult;
 
 namespace page_content_annotations {
 class PageContentExtractionService;
+struct ExtractedPageContentResult;
 }  // namespace page_content_annotations
 
 namespace personal_context {
@@ -75,10 +94,14 @@ namespace context_hub {
 
 class TabGroupStore;
 class ContextHubBackend;
+struct FetchedChatImage;
 
 class ContextHubService : public KeyedService,
                           public AutoTodosStore::Observer,
-                          public signin::IdentityManager::Observer
+                          public MemoryBank::Observer,
+                          public passage_embeddings::EmbedderMetadataObserver,
+                          public signin::IdentityManager::Observer,
+                          public base::PowerSuspendObserver
 #if !BUILDFLAG(IS_ANDROID)
     ,
                           public BrowserTabStripTrackerDelegate,
@@ -93,6 +116,13 @@ class ContextHubService : public KeyedService,
         bool is_generating) {}
     virtual void OnThirdPartyAutoTodosGenerationStateChanged(
         bool is_generating) {}
+    virtual void OnMemoryBankEntryAdded(const MemoryBankEntry& entry) {}
+    virtual void OnMemoryBankEntryUpdated(
+        int64_t id,
+        const std::vector<std::string>& tags,
+        const std::optional<std::string>& note,
+        const std::optional<std::string>& collection) {}
+    virtual void OnMemoryBankEntriesDeleted(const std::vector<int64_t>& ids) {}
   };
 
   ContextHubService(
@@ -104,6 +134,8 @@ class ContextHubService : public KeyedService,
       tab_groups::TabGroupSyncService* tab_group_sync_service,
       page_content_annotations::PageContentExtractionService*
           page_content_extraction_service,
+      passage_embeddings::Embedder* embedder,
+      passage_embeddings::EmbedderMetadataProvider* embedder_metadata_provider,
       std::unique_ptr<MemoryBank> memory_bank,
       std::unique_ptr<TabGroupStore> tab_group_store,
       std::unique_ptr<ContextHubBackend> context_hub_backend,
@@ -119,6 +151,19 @@ class ContextHubService : public KeyedService,
   // AutoTodosStore::Observer:
   void OnAutoTodosChanged(base::span<const AutoTodoEntry> entries) override;
 
+  // MemoryBank::Observer:
+  void OnMemoryBankEntryAdded(const MemoryBankEntry& entry) override;
+  void OnMemoryBankEntryUpdated(
+      int64_t id,
+      const std::vector<std::string>& tags,
+      const std::optional<std::string>& note,
+      const std::optional<std::string>& collection) override;
+  void OnMemoryBankEntriesDeleted(const std::vector<int64_t>& ids) override;
+
+  // passage_embeddings::EmbedderMetadataObserver:
+  void EmbedderMetadataUpdated(
+      passage_embeddings::EmbedderMetadata metadata) override;
+
   // signin::IdentityManager::Observer:
   void OnPrimaryAccountChanged(
       const signin::PrimaryAccountChangeEvent& event_details) override;
@@ -128,6 +173,9 @@ class ContextHubService : public KeyedService,
       const GoogleServiceAuthError& error,
       signin_metrics::SourceForRefreshTokenOperation token_operation_source)
       override;
+
+  // base::PowerSuspendObserver:
+  void OnResume() override;
 
 #if !BUILDFLAG(IS_ANDROID)
   // BrowserTabStripTrackerDelegate:
@@ -144,11 +192,13 @@ class ContextHubService : public KeyedService,
   // `callback` on completion indicating whether the generation was successful.
   void GenerateFirstPartyAutoTodos(AutoTodosStore::OperationCallback callback);
 
-  // Returns the timestamp when First Party Auto Todos were last generated.
-  base::Time GetLastFirstPartyGenerationTime() const;
+  // Returns generation metadata (last generation time and error state) for
+  // First Party Auto Todos.
+  AutoTodosGenerationMetadata GetFirstPartyGenerationMetadata() const;
 
-  // Returns the timestamp when Third Party Auto Todos were last generated.
-  base::Time GetLastThirdPartyGenerationTime() const;
+  // Returns generation metadata (last generation time and error state) for
+  // Third Party Auto Todos.
+  AutoTodosGenerationMetadata GetThirdPartyGenerationMetadata() const;
 
   // Generates tab-based todos and saves them in the AutoTodos store. Invokes
   // `callback` on completion indicating whether the generation was successful.
@@ -191,6 +241,24 @@ class ContextHubService : public KeyedService,
   std::vector<browser::context_hub::mojom::AutoTodoItemFeedbackPtr>
   GetTodoFeedbacks() const;
 
+  // Fishfood Topic feedback, persisted in the
+  // prefs::kContextHubTopicsFishfoodFeedback profile pref so ratings survive
+  // tab closure and browser restarts. The pref is cleared on service creation
+  // when features::kTopicsFishfoodFeedback is disabled.
+  //
+  // Stores or replaces the feedback for the Topic identified by `feedback->id`.
+  // Overwrites `feedback->snapshot->time_rated` with the current time.
+  void SetTopicFeedback(browser::context_hub::mojom::TopicFeedbackPtr feedback);
+  // Deletes the feedback for `topic_id`, if any.
+  void DeleteTopicFeedback(const std::string& topic_id);
+  // Deletes all Topic feedback.
+  void ClearTopicFeedbacks();
+  // Returns all stored Topic feedback, ordered by topic id. Entries whose
+  // required fields fail to deserialize are omitted; see
+  // topics/topic_feedback_conversions.h.
+  std::vector<browser::context_hub::mojom::TopicFeedbackPtr> GetTopicFeedbacks()
+      const;
+
   using GroupTabsCallback =
       base::OnceCallback<void(std::vector<TabGroupEntry> groups,
                               std::vector<TabData> ungrouped_tabs,
@@ -211,8 +279,23 @@ class ContextHubService : public KeyedService,
   // Clears all tab group chat history turns from the LRU cache.
   void ClearTabGroupChatHistory();
 
-  // Sets the pending memory bank entry waiting to be saved by the user.
-  void SetPendingMemoryBankEntry(MemoryBankEntry entry);
+  // Adds a memory bank chat history turn to the cache, along with any
+  // citations associated with the turn.
+  void AddMemoryBankChatHistoryTurn(
+      optimization_guide::proto::ChatHistoryTurn::Role role,
+      std::string_view message_content,
+      std::vector<MemoryBankChatCitation> citations = {});
+  // Returns all memory bank chat history turns stored in the LRU cache in
+  // chronological order (oldest to newest).
+  std::vector<MemoryBankChatHistoryTurn> GetMemoryBankChatHistory() const;
+  // Clears all memory bank chat history turns from the LRU cache.
+  void ClearMemoryBankChatHistory();
+
+  // Sets the pending memory bank entry waiting to be saved by the user, along
+  // with an optional weak pointer to the source WebContents for tab entries.
+  void SetPendingMemoryBankEntry(
+      MemoryBankEntry entry,
+      base::WeakPtr<content::WebContents> web_contents = nullptr);
 
   // Retrieves the current pending memory bank entry, if present.
   std::optional<MemoryBankEntry> GetPendingMemoryBankEntry() const;
@@ -226,9 +309,13 @@ class ContextHubService : public KeyedService,
 
   // Memory bank wrappers that forward operations to the underlying storage
   // backend.
-  // Saves an entry in the memory bank.
-  void SaveMemoryBankEntry(MemoryBankEntry entry,
-                           MemoryBank::OperationCompleteCallback callback);
+  // Saves an entry in the memory bank. If the entry is a tab and `web_contents`
+  // matches the entry's URL, page content (APC) is extracted from
+  // `web_contents` and saved in `selected_text`.
+  void SaveMemoryBankEntry(
+      MemoryBankEntry entry,
+      MemoryBank::OperationCompleteCallback callback,
+      base::WeakPtr<content::WebContents> web_contents = nullptr);
   // Updates an entry in the memory bank with new tags, note, and collection.
   void UpdateMemoryBankEntryAnnotations(
       int64_t id,
@@ -256,20 +343,33 @@ class ContextHubService : public KeyedService,
   void GetTabGroups(GetTabGroupsCallback callback) const;
   // Deletes all stored tab groups.
   void DeleteAllTabGroups(base::OnceClosure callback);
+  // Replaces all stored (unconfirmed) tab groups with `groups`.
+  void ReplaceTabGroups(std::vector<TabGroupEntry> groups,
+                        base::OnceClosure callback);
 
   using MemoryBankChatCallback =
-      base::OnceCallback<void(std::optional<std::string> response)>;
+      base::OnceCallback<void(std::optional<std::string> response,
+                              std::vector<MemoryBankChatCitation> citations)>;
   // Executes a memory bank chat request for the specified memory bank entry
-  // IDs.
+  // IDs. If `save_to_history` is true, the request and response are saved to
+  // memory bank chat history.
   void ExecuteMemoryBankChat(base::span<const int64_t> entry_ids,
                              const std::string& user_command,
+                             bool save_to_history,
                              MemoryBankChatCallback callback);
+
+  using SmartSearchCallback = base::OnceCallback<void(
+      const std::vector<personal_context::proto::SmartSearchItem>& results)>;
+  // Executes the provided natural language query to search across Drive
+  // artifacts.
+  void ExecuteSmartSearch(const std::string& query,
+                          SmartSearchCallback callback);
 
   using ConfirmAllTabGroupsCallback =
       base::OnceCallback<void(bool success,
                               std::vector<base::Uuid> added_group_guids)>;
-  // Commits all unconfirmed tab groups to Chrome's native TabGroupSyncService as
-  // confirmed groups and clears in-memory storage.
+  // Commits all unconfirmed tab groups to Chrome's native TabGroupSyncService
+  // as confirmed groups and clears in-memory storage.
   void ConfirmAllTabGroups(ConfirmAllTabGroupsCallback callback);
   // Returns all confirmed tab groups for the current profile.
   std::vector<TabGroupEntry> GetConfirmedTabGroups() const;
@@ -288,6 +388,9 @@ class ContextHubService : public KeyedService,
   // Connects a local tab group to the confirmed tab group with group_guid.
   void ConnectLocalTabGroup(const base::Uuid& group_guid,
                             const tab_groups::LocalTabGroupID& local_id);
+
+  void SetImageFetcherForTesting(
+      std::unique_ptr<image_fetcher::ImageFetcher> image_fetcher);
 
   base::WeakPtr<ContextHubService> GetWeakPtr() {
     return weak_factory_.GetWeakPtr();
@@ -311,6 +414,33 @@ class ContextHubService : public KeyedService,
   std::vector<base::Uuid> AddTabGroupsToSyncService(
       base::span<const TabGroupEntry> entries);
 
+  // Handles the async response when APC is extracted for SaveMemoryBankEntry.
+  void OnPageContentExtractedForSaveMemoryBankEntry(
+      MemoryBankEntry entry,
+      base::WeakPtr<content::Page> page,
+      MemoryBank::OperationCompleteCallback callback,
+      std::optional<page_content_annotations::ExtractedPageContentResult>
+          result);
+
+  // Computes and stores passage embeddings for `entry` if the embedder and the
+  // database backend are available. Replaces any in-flight job for the entry.
+  void ComputeMemoryBankEmbeddings(const MemoryBankEntry& entry);
+
+  // Chain that backfills embeddings for entries that have none, triggered once
+  // the embedder metadata is available.
+  void OnMemoryBankEmbeddingsVersionSet(bool success);
+  void OnMemoryBankEntryIdsWithoutEmbeddingsFetched(std::vector<int64_t> ids);
+  void OnMemoryBankEntriesFetchedForEmbeddings(
+      std::vector<MemoryBankEntry> entries);
+
+  // Handles the async response from the embedder for `entry_id`.
+  void OnMemoryBankEmbeddingsComputed(
+      int64_t entry_id,
+      std::vector<std::string> passages,
+      std::vector<passage_embeddings::Embedding> embeddings,
+      uint64_t job_id,
+      passage_embeddings::ComputeEmbeddingsStatus status);
+
   // Callback invoked when all tab groups are fetched from the store to confirm
   // them into TabGroupSyncService.
   void OnAllTabGroupsFetchedForConfirmation(
@@ -319,8 +449,26 @@ class ContextHubService : public KeyedService,
 
   // Callback invoked when memory bank entries are fetched for a chat request.
   void OnMemoryBankEntriesFetched(const std::string& user_command,
+                                  bool save_to_history,
                                   MemoryBankChatCallback callback,
                                   std::vector<MemoryBankEntry> entries);
+
+  // Attaches the fetched PNG-encoded image bytes to the image memory bank
+  // entries of `request`, then dispatches the chat request.
+  void OnMemoryBankChatImagesFetched(
+      std::vector<MemoryBankEntry> entries,
+      optimization_guide::proto::ContextHubRequest request,
+      bool save_to_history,
+      MemoryBankChatCallback callback,
+      const std::vector<FetchedChatImage>& fetched_images);
+
+  // Dispatches the prepared memory bank chat request to the remote model
+  // executor.
+  void DispatchMemoryBankChatRequest(
+      std::vector<MemoryBankEntry> entries,
+      const optimization_guide::proto::ContextHubRequest& request,
+      bool save_to_history,
+      MemoryBankChatCallback callback);
 
   // Generates tab groups based on the provided `tabs` and invokes `callback`
   // with the resulting groups and any ungrouped tabs.
@@ -333,9 +481,21 @@ class ContextHubService : public KeyedService,
   void OnCachedFirstPartyAutoTodosFetched(
       std::vector<AutoTodoEntry> stored_todos);
 
+  // Dispatches a personal context fetch for 1P AutoTodos with the given request
+  // metadata and exponential backoff retry state.
+  void ExecuteFirstPartyAutoTodosFetch(
+      personal_context::proto::AutoTodosRequest request_metadata,
+      std::unique_ptr<net::BackoffEntry> backoff);
+
   // Handles the async response from the AutoTodos fetch.
   void OnFirstPartyAutoTodosFetched(
+      personal_context::proto::AutoTodosRequest request_metadata,
+      std::unique_ptr<net::BackoffEntry> backoff,
       personal_context::FetchContextResult result);
+
+  // Handles the async response from the SmartSearch fetch.
+  void OnSmartSearchFetched(SmartSearchCallback callback,
+                            personal_context::FetchContextResult result);
 
   // Cleans up First Party Auto Todos generation state, notifies observers, and
   // invokes any pending completion callbacks.
@@ -379,6 +539,9 @@ class ContextHubService : public KeyedService,
 
   // Handles the result of the model execution from `ExecuteMemoryBankChat`.
   void HandleMemoryBankChatModelExecutionResult(
+      const std::vector<MemoryBankEntry>& entries,
+      const std::string& user_command,
+      bool save_to_history,
       MemoryBankChatCallback callback,
       optimization_guide::OptimizationGuideModelExecutionResult result,
       std::unique_ptr<optimization_guide::ModelQualityLogEntry> log_entry);
@@ -392,12 +555,21 @@ class ContextHubService : public KeyedService,
       personal_context_service_;
   const raw_ref<optimization_guide::RemoteModelExecutor>
       optimization_guide_remote_model_executor_;
-  const raw_ref<tab_groups::TabGroupSyncService>
-      tab_group_sync_service_;
+  const raw_ref<tab_groups::TabGroupSyncService> tab_group_sync_service_;
   const raw_ref<page_content_annotations::PageContentExtractionService>
       page_content_extraction_service_;
 
+  // Computes passage embeddings for memory bank entries. May be null if the
+  // passage embedder is unavailable.
+  const raw_ptr<passage_embeddings::Embedder> embedder_;
+
+  // Metadata of the embeddings model. Invalid until the model is available.
+  passage_embeddings::EmbedderMetadata embedder_metadata_{0, 0};
+
   // Indicates if a First Party Auto Todos generation request is in flight.
+  // Remains true while waiting for exponential backoff retries via
+  // `first_party_auto_todos_retry_timer_`, enforcing that only a single
+  // generation flow is active at a time.
   bool is_generating_first_party_auto_todos_ = false;
 
   // Stores client callbacks waiting for completion of an in-flight
@@ -429,9 +601,18 @@ class ContextHubService : public KeyedService,
 
   using TabGroupChatHistoryTurnId =
       base::IdType64<class TabGroupChatHistoryTurnIdTag>;
+  TabGroupChatHistoryTurnId::Generator
+      tab_group_chat_history_turn_id_generator_;
   base::LRUCache<TabGroupChatHistoryTurnId,
                  optimization_guide::proto::ChatHistoryTurn>
       tab_group_chat_history_cache_;
+
+  using MemoryBankChatHistoryTurnId =
+      base::IdType64<class MemoryBankChatHistoryTurnIdTag>;
+  MemoryBankChatHistoryTurnId::Generator
+      memory_bank_chat_history_turn_id_generator_;
+  base::LRUCache<MemoryBankChatHistoryTurnId, MemoryBankChatHistoryTurn>
+      memory_bank_chat_history_cache_;
 
   // In-memory storage for feedback on Auto Todo items. The key is the ID of the
   // Auto Todo item in question and the value is whether the item was liked or
@@ -441,6 +622,7 @@ class ContextHubService : public KeyedService,
   // Single pending memory bank entry waiting to be saved by the active WebUI
   // dialog.
   std::optional<MemoryBankEntry> pending_memory_bank_entry_;
+  base::WeakPtr<content::WebContents> pending_memory_bank_web_contents_;
 
   // Backend storage engine for SQLite operations. May be null if DB storage is
   // disabled.
@@ -449,21 +631,46 @@ class ContextHubService : public KeyedService,
   // Guaranteed to be non-null. If features::kMemoryBanks is disabled, this
   // will be a NoOpMemoryBank.
   std::unique_ptr<MemoryBank> memory_bank_;
+  // Declared after `memory_bank_` so the observation is reset before the
+  // memory bank is destroyed.
+  base::ScopedObservation<MemoryBank, MemoryBank::Observer>
+      memory_bank_observation_{this};
+
+  // In-flight embedding jobs keyed by memory bank entry ID. Destroying a job
+  // cancels it if it has not started yet. Declared after
+  // `context_hub_backend_` since completed jobs write to it.
+  base::flat_map<int64_t, passage_embeddings::Embedder::Job>
+      memory_bank_embedding_jobs_;
+
+  // Declared after `context_hub_backend_` and `memory_bank_embedding_jobs_`
+  // because the provider may notify synchronously when observed.
+  base::ScopedObservation<passage_embeddings::EmbedderMetadataProvider,
+                          passage_embeddings::EmbedderMetadataObserver>
+      embedder_metadata_observation_{this};
 
   std::unique_ptr<TabGroupStore> tab_group_store_;
 
   std::unique_ptr<AutoTodosStore> auto_todos_store_;
 
-  // Timestamp of the most recent successful First Party Auto Todos generation
-  // during the current browser session.
-  base::Time last_first_party_generation_time_;
+  std::unique_ptr<image_fetcher::ImageFetcher> image_fetcher_;
 
-  // Timestamp of the most recent successful Third Party Auto Todos generation
-  // during the current browser session.
-  base::Time last_third_party_generation_time_;
+  // Metadata for the most recent First Party Auto Todos generation during the
+  // current browser session.
+  AutoTodosGenerationMetadata first_party_generation_metadata_;
+
+  // Metadata for the most recent Third Party Auto Todos generation during the
+  // current browser session.
+  AutoTodosGenerationMetadata third_party_generation_metadata_;
 
   // Periodic timer that generates and stores 1P AutoTodos during the session.
   base::RepeatingTimer first_party_auto_todos_timer_;
+
+  // Timer used to delay retry attempts for 1P AutoTodos generation. A single
+  // timer is sufficient because `is_generating_first_party_auto_todos_`
+  // enforces that only one generation request is in flight at a time (and
+  // remains true while waiting for backoff), preventing race conditions with
+  // concurrent requests.
+  base::OneShotTimer first_party_auto_todos_retry_timer_;
 
 #if !BUILDFLAG(IS_ANDROID)
   std::unique_ptr<BrowserTabStripTracker> browser_tab_strip_tracker_;

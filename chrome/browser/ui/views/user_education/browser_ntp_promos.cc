@@ -35,6 +35,8 @@
 #include "extensions/browser/extension_util.h"
 #include "extensions/common/extension_urls.h"
 #include "ui/actions/actions.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 
 using user_education::NtpPromoContent;
 using user_education::NtpPromoSpecification;
@@ -51,10 +53,6 @@ Profile* GetProfile(ContextPtr context) {
 
 NtpPromoSpecification::Eligibility CheckExtensionsPromoEligibility(
     ContextPtr context) {
-  // TODO(webium): add user education context for WebUI browser.
-  if (!context) {
-    return NtpPromoSpecification::Eligibility::kIneligible;
-  }
   return extensions::util::AnyCurrentlyInstalledExtensionIsFromWebstore(
              GetProfile(context))
              ? NtpPromoSpecification::Eligibility::kCompleted
@@ -79,16 +77,12 @@ void InvokeExtensionsPromo(ContextPtr context) {
   NavigateParams params(
       context->AsA<BrowserUserEducationContext>()->GetBrowserView().browser(),
       url_with_utm, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   Navigate(&params);
 }
 
 NtpPromoSpecification::Eligibility CheckCustomizationPromoEligibility(
     ContextPtr context) {
-  // TODO(webium): add user education context for WebUI browser.
-  if (!context) {
-    return NtpPromoSpecification::Eligibility::kIneligible;
-  }
   auto* profile = GetProfile(context);
   auto* background_service =
       NtpCustomBackgroundServiceFactory::GetForProfile(profile);

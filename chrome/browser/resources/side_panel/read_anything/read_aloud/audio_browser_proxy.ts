@@ -18,6 +18,8 @@ export interface AudioBrowserProxy {
 
   languageChanged: ChromeEvent<() => void>;
   onLockScreen: ChromeEvent<() => void>;
+  onPhraseBoundariesReady:
+      ChromeEvent<(requestId: number, boundaries: number[][]) => void>;
   onTabMuteStateChange: ChromeEvent<(muted: boolean) => void>;
   onTtsEngineInstalled: ChromeEvent<() => void>;
   readingModeWillClose: ChromeEvent<() => void>;
@@ -35,6 +37,7 @@ export interface AudioBrowserProxy {
   getSentenceHighlighting(): number;
   getNoHighlighting(): number;
   isPhraseHighlightingEnabled(): boolean;
+  requestPhraseBoundaries(requestId: number, sentences: string[]): void;
   getDisplayNameForLocale(locale: string, displayLocale: string): string;
   getDefaultLanguageForSpeech(): string;
   getBaseLanguageForSpeech(): string;
@@ -50,6 +53,7 @@ export interface AudioBrowserProxy {
   sendUninstallVoiceRequest(lang: string): void;
   onIsSpeechActiveChanged(isSpeechActive: boolean): void;
   onIsAudioCurrentlyPlayingChanged(isAudioCurrentlyPlaying: boolean): void;
+  onAiPlaybackStateChanged(enabled: boolean): void;
   onSpeechEngineFirstStall(): void;
   onSpeechEngineStalled(): void;
   getKeyboardShortcutStopSource(): number;
@@ -63,6 +67,8 @@ export interface AudioBrowserProxy {
 export class AudioBrowserProxyImpl implements AudioBrowserProxy {
   languageChanged = new EventForwarder<() => void>();
   onLockScreen = new EventForwarder<() => void>();
+  onPhraseBoundariesReady =
+      new EventForwarder<(requestId: number, boundaries: number[][]) => void>();
   onTabMuteStateChange = new EventForwarder<(muted: boolean) => void>();
   onTtsEngineInstalled = new EventForwarder<() => void>();
   readingModeWillClose = new EventForwarder<() => void>();
@@ -78,6 +84,11 @@ export class AudioBrowserProxyImpl implements AudioBrowserProxy {
     chrome.readingMode.onLockScreen = () => {
       this.onLockScreen.forward();
     };
+
+    chrome.readingMode.onPhraseBoundariesReady =
+        (requestId: number, boundaries: number[][]) => {
+          this.onPhraseBoundariesReady.forward(requestId, boundaries);
+        };
 
     chrome.readingMode.onTabMuteStateChange = (muted: boolean) => {
       this.onTabMuteStateChange.forward(muted);
@@ -131,6 +142,10 @@ export class AudioBrowserProxyImpl implements AudioBrowserProxy {
 
   isPhraseHighlightingEnabled(): boolean {
     return chrome.readingMode.isPhraseHighlightingEnabled;
+  }
+
+  requestPhraseBoundaries(requestId: number, sentences: string[]): void {
+    chrome.readingMode.requestPhraseBoundaries(requestId, sentences);
   }
 
   getDisplayNameForLocale(locale: string, displayLocale: string): string {
@@ -192,6 +207,10 @@ export class AudioBrowserProxyImpl implements AudioBrowserProxy {
   onIsAudioCurrentlyPlayingChanged(isAudioCurrentlyPlaying: boolean): void {
     chrome.readingMode.onIsAudioCurrentlyPlayingChanged(
         isAudioCurrentlyPlaying);
+  }
+
+  onAiPlaybackStateChanged(enabled: boolean): void {
+    chrome.readingMode.onAiPlaybackStateChanged(enabled);
   }
 
   onSpeechEngineFirstStall(): void {

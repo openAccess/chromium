@@ -14,12 +14,10 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/controls/link.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/view_class_properties.h"
-#include "ui/views/view_utils.h"
 
 namespace {
 using EndpointInfo = ::TabSharingStatusMessageView::EndpointInfo;
@@ -129,7 +127,25 @@ MessageInfo GetMessageInfoCasting(TabRole role,
 
 MessageInfo GetMessageInfoCapturing(TabRole role,
                                     const EndpointInfo& shared_tab_info,
-                                    const EndpointInfo& capturer_info) {
+                                    const EndpointInfo& capturer_info,
+                                    bool is_shared_tab_blocked) {
+  if (is_shared_tab_blocked) {
+    if (role == TabRole::kSelfCapturingTab ||
+        TabSharingInfoBarDelegate::IsCapturedTab(role)) {
+      return MessageInfo(IDS_TAB_SHARING_INFOBAR_BLOCKED_CURRENT_TAB_LABEL,
+                         /*endpoint_infos=*/{}, role);
+    }
+
+    if (shared_tab_info.text.empty()) {
+      return MessageInfo(
+          IDS_TAB_SHARING_INFOBAR_BLOCKED_ANOTHER_UNTITLED_TAB_LABEL,
+          /*endpoint_infos=*/{}, role);
+    }
+
+    return MessageInfo(IDS_TAB_SHARING_INFOBAR_BLOCKED_ANOTHER_TAB_LABEL,
+                       {shared_tab_info}, role);
+  }
+
   if (role == TabRole::kSelfCapturingTab) {
     return MessageInfo(IDS_TAB_SHARING_INFOBAR_SHARING_CURRENT_TAB_LABEL,
                        {EndpointInfo(capturer_info.text,
@@ -158,18 +174,19 @@ MessageInfo GetMessageInfoCapturing(TabRole role,
                      {shared_tab_info, capturer_info}, role);
 }
 
-MessageInfo GetMessageInfo(
-    const EndpointInfo& shared_tab_info,
-    const EndpointInfo& capturer_info,
-    const std::u16string& capturer_name,
-    TabSharingInfoBarDelegate::TabRole role,
-    TabSharingInfoBarDelegate::TabShareType capture_type) {
+MessageInfo GetMessageInfo(const EndpointInfo& shared_tab_info,
+                           const EndpointInfo& capturer_info,
+                           const std::u16string& capturer_name,
+                           TabSharingInfoBarDelegate::TabRole role,
+                           TabSharingInfoBarDelegate::TabShareType capture_type,
+                           bool is_shared_tab_blocked) {
   switch (capture_type) {
     case TabSharingInfoBarDelegate::TabShareType::CAST:
       return GetMessageInfoCasting(role, shared_tab_info, capturer_name);
 
     case TabSharingInfoBarDelegate::TabShareType::CAPTURE:
-      return GetMessageInfoCapturing(role, shared_tab_info, capturer_info);
+      return GetMessageInfoCapturing(role, shared_tab_info, capturer_info,
+                                     is_shared_tab_blocked);
   }
   NOTREACHED();
 }
@@ -217,10 +234,11 @@ std::unique_ptr<views::View> TabSharingStatusMessageView::Create(
     const std::u16string& capturer_name,
     TabSharingInfoBarDelegate::TabRole role,
     TabSharingInfoBarDelegate::TabShareType capture_type,
-    base::WeakPtr<ScreensharingControlsHistogramLogger> uma_logger) {
+    base::WeakPtr<ScreensharingControlsHistogramLogger> uma_logger,
+    bool is_shared_tab_blocked) {
   return std::make_unique<TabSharingStatusMessageView>(
       GetMessageInfo(shared_tab_info, capturer_info, capturer_name, role,
-                     capture_type),
+                     capture_type, is_shared_tab_blocked),
       uma_logger);
 }
 
@@ -229,9 +247,11 @@ std::u16string TabSharingStatusMessageView::GetMessageText(
     const EndpointInfo& capturer_info,
     const std::u16string& capturer_name,
     TabSharingInfoBarDelegate::TabRole role,
-    TabSharingInfoBarDelegate::TabShareType capture_type) {
-  MessageInfo info = GetMessageInfo(shared_tab_info, capturer_info,
-                                    capturer_name, role, capture_type);
+    TabSharingInfoBarDelegate::TabShareType capture_type,
+    bool is_shared_tab_blocked) {
+  MessageInfo info =
+      GetMessageInfo(shared_tab_info, capturer_info, capturer_name, role,
+                     capture_type, is_shared_tab_blocked);
   return l10n_util::FormatString(
       info.format_string, EndpointInfosToStrings(info.endpoint_infos), nullptr);
 }
@@ -257,22 +277,6 @@ TabSharingStatusMessageView::~TabSharingStatusMessageView() = default;
 
 gfx::Size TabSharingStatusMessageView::GetMinimumSize() const {
   return gfx::Size();
-}
-
-void TabSharingStatusMessageView::OnThemeChanged() {
-  views::View::OnThemeChanged();
-  const auto* cp = GetColorProvider();
-  const SkColor text_color = cp->GetColor(kColorInfoBarForeground);
-  const SkColor background_color = cp->GetColor(kColorInfoBarBackground);
-
-  for (views::View* child : children()) {
-    auto* label = views::AsViewClass<views::Label>(child);
-    if (label && !views::IsViewClass<views::Link>(child)) {
-      label->SetEnabledColor(text_color);
-      label->SetBackgroundColor(background_color);
-      label->SetAutoColorReadabilityEnabled(false);
-    }
-  }
 }
 
 void TabSharingStatusMessageView::SetupMessage(MessageInfo info) {
@@ -342,6 +346,9 @@ void TabSharingStatusMessageView::AddLabel(const std::u16string& text,
       views::kFlexBehaviorKey,
       views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero)
           .WithOrder(flex_layout_order));
+  label->SetEnabledColor(kColorInfoBarForeground);
+  label->SetBackgroundColor(kColorInfoBarBackground);
+  label->SetAutoColorReadabilityEnabled(false);
 }
 
 void TabSharingStatusMessageView::AddButton(

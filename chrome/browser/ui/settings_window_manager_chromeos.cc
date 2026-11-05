@@ -17,10 +17,8 @@
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
@@ -29,18 +27,23 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+#include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
+#include "components/sessions/core/session_id.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_tracker.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 namespace chrome {
@@ -138,7 +141,7 @@ void SettingsWindowManager::ShowChromePageForProfile(
   // screen profile) then bail out. Neither the new SWA code path nor the legacy
   // code path can successfully open the window for these profiles.
   if (GetBrowserWindowCreationStatusForProfile(*profile) !=
-      Browser::CreationStatus::kOk) {
+      BrowserWindowInterface::CreationStatus::kOk) {
     LOG(ERROR) << "Unable to open settings for this profile, url "
                << gurl.spec();
     if (callback) {
@@ -163,7 +166,7 @@ void SettingsWindowManager::ShowChromePageForProfile(
   // Look for an existing browser window.
   BrowserWindowInterface* browser = FindBrowserForProfile(profile);
   if (browser) {
-    DCHECK(browser->GetProfile() == profile);
+    CHECK(browser->GetProfile() == profile, base::NotFatalUntil::M162);
     content::WebContents* web_contents =
         browser->GetTabStripModel()->GetWebContentsAt(0);
     if (web_contents && web_contents->GetURL() == gurl) {
@@ -186,7 +189,7 @@ void SettingsWindowManager::ShowChromePageForProfile(
 
   // No existing browser window, create one.
   NavigateParams params(profile, gurl, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-  params.disposition = WindowOpenDisposition::NEW_POPUP;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewPopup;
   params.trusted_source = true;
   params.window_action = NavigateParams::WindowAction::kShowWindow;
   params.user_gesture = true;
@@ -198,7 +201,8 @@ void SettingsWindowManager::ShowChromePageForProfile(
   // operator[] not used because SessionID has no default constructor.
   settings_session_map_.emplace(profile, SessionID::InvalidValue())
       .first->second = browser->GetSessionID();
-  DCHECK(WindowFeatureController::From(browser)->IsTrustedSource());
+  CHECK(WindowFeatureController::From(browser)->IsTrustedSource(),
+        base::NotFatalUntil::M162);
 
   // Configure the created window property.
   auto* window = browser->GetWindow()->GetNativeWindow();
@@ -261,7 +265,7 @@ BrowserWindowInterface* SettingsWindowManager::FindBrowserForProfile(
 
 bool SettingsWindowManager::IsSettingsBrowser(
     BrowserWindowInterface* browser) const {
-  DCHECK(browser);
+  CHECK(browser, base::NotFatalUntil::M162);
 
   Profile* const profile = browser->GetProfile();
   if (!UseDeprecatedSettingsWindow(profile)) {

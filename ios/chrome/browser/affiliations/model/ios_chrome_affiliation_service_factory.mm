@@ -16,43 +16,26 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "services/network/public/cpp/shared_url_loader_factory.h"
 
-// static
-IOSChromeAffiliationServiceFactory*
-IOSChromeAffiliationServiceFactory::GetInstance() {
-  static base::NoDestructor<IOSChromeAffiliationServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-affiliations::AffiliationService*
-IOSChromeAffiliationServiceFactory::GetForProfile(ProfileIOS* profile) {
-  CHECK(profile);
-
-  return GetInstance()
-      ->GetServiceForProfileAs<affiliations::AffiliationService>(
-          profile, /*create=*/true);
-}
-
-IOSChromeAffiliationServiceFactory::IOSChromeAffiliationServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("AffiliationService",
-                                    ProfileSelection::kRedirectedInIncognito) {}
-
-IOSChromeAffiliationServiceFactory::~IOSChromeAffiliationServiceFactory() =
-    default;
+IOSChromeAffiliationServiceFactory::IOSChromeAffiliationServiceFactory(
+    PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "AffiliationService",
+          ProfileSelection::kRedirectedInIncognito) {}
 
 std::unique_ptr<KeyedService>
 IOSChromeAffiliationServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   scoped_refptr<base::SequencedTaskRunner> backend_task_runner =
       base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
            base::TaskShutdownBehavior::BLOCK_SHUTDOWN});
   auto affiliation_service =
       std::make_unique<affiliations::AffiliationServiceImpl>(
-          profile->GetSharedURLLoaderFactory(), backend_task_runner);
+          profile.GetSharedURLLoaderFactory(), backend_task_runner);
   affiliation_service->Init(
       GetApplicationContext()->GetNetworkConnectionTracker(),
-      profile->GetStatePath().Append(
+      profile.GetStatePath().Append(
           affiliations::kAffiliationDatabaseFileName));
 
   return affiliation_service;

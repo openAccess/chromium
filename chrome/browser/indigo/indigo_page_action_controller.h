@@ -13,6 +13,8 @@
 #include "base/scoped_observation.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/indigo/api_client.h"
+#include "chrome/browser/indigo/indigo_metadata_classifier.h"
+#include "chrome/browser/indigo/indigo_metrics.h"
 #include "chrome/browser/indigo/indigo_service.h"
 #include "chrome/browser/ui/page_action/page_action_observer.h"
 #include "chrome/browser/ui/tabs/contents_observing_tab_feature.h"
@@ -20,8 +22,6 @@
 #include "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #include "components/viz/common/surfaces/tracked_element_rects.h"
 #include "content/public/browser/tracked_element_observer.h"
-#include "mojo/public/cpp/bindings/remote.h"
-#include "third_party/blink/public/mojom/document_metadata/document_metadata.mojom.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
 #include "ui/gfx/geometry/rect.h"
@@ -32,6 +32,10 @@ class OptimizationMetadata;
 }  // namespace optimization_guide
 
 #include "chrome/browser/ui/page_action/page_action_controller.h"
+
+namespace gfx {
+struct VectorIcon;
+}  // namespace gfx
 
 namespace tabs {
 class TabInterface;
@@ -45,63 +49,6 @@ class IndigoService;
 
 extern const char kForceIndigoSwitch[];
 
-// LINT.IfChange(IndigoTransformationResult)
-
-// Results of Indigo action invocation.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class IndigoTransformationResult {
-  kUnknown = 0,
-  kSuccess = 1,
-  kNotSignedIn = 2,
-  kMissingCapabilities = 3,
-  kDisabledByPolicy = 4,
-  kMissingScript = 5,
-  kRemoteStatusMissing = 6,
-  kServiceNotSupported = 7,
-  kMissingUserImage = 8,
-  kNotOnboarded = 9,
-  kGenerateImageError = 10,
-  kRefreshTokenInPersistentErrorState = 11,
-  kManagedDomain = 12,
-  kGlicDisabledForProfile = 13,
-  kEnterpriseDisallowed = 14,
-  kPrimaryImageDisconnected = 15,
-  kEmptyPrimaryImageSize = 16,
-  kPrimaryImageTooSmall = 17,
-  kNoPrimaryImageFound = 18,
-  kPrimaryImageReplacementCreationFailed = 19,
-  kMaxValue = kPrimaryImageReplacementCreationFailed,
-};
-
-// LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoTransformationResult)
-
-// Trigger sources for the Indigo page action.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-// LINT.IfChange(IndigoTriggerSource)
-enum class IndigoTriggerSource {
-  kUnknown = 0,
-  kForced = 1,
-  kOptimizationGuide = 2,
-  kLocalProductKeywordHeuristic = 3,
-  kMaxValue = kLocalProductKeywordHeuristic,
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoTriggerSource)
-
-// Entry points / presentation styles for the Indigo page action metrics.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-// LINT.IfChange(IndigoPageActionEntryPoint)
-enum class IndigoPageActionEntryPoint {
-  kSuggestionChip = 0,
-  kProactiveAnchoredMessage = 1,
-  kReactiveAnchoredMessage = 2,
-  kErrorToast = 3,
-  kMaxValue = kErrorToast,
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoPageActionEntryPoint)
-
 enum class ResetType {
   kResetReplacementsAndContentScript,
   kResetReplacementsOnly,
@@ -112,25 +59,6 @@ enum class OnboardingDisposition {
   kDefault,
   // Triggered to replace the existing image.
   kReplacePhoto,
-};
-
-// Represents the UI surface that triggered an Indigo transformation.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-// LINT.IfChange(IndigoTransformationTriggerSource)
-enum class IndigoTransformationTriggerSource {
-  kPageAction = 0,
-  kErrorToastRetry = 1,
-  kRegenerate = 2,
-  kReplacePhoto = 3,
-  kMaxValue = kReplacePhoto,
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/indigo/enums.xml:IndigoTransformationTriggerSource)
-
-enum class EntryPoint {
-  kSuggestionChip = 0,
-  kAnchoredMessage = 1,
-  kErrorToast = 2,
 };
 
 // Manages the Indigo page action and its various entry points, ensuring they
@@ -156,6 +84,18 @@ class IndigoPageActionController : public tabs::ContentsObservingTabFeature,
   // Retrieves an IndigoPageActionController from the given tab, or nullptr if
   // it does not exist.
   static IndigoPageActionController* From(tabs::TabInterface* tab);
+
+  // Returns the vector icon used for Indigo entry points (such as the context
+  // menu and settings page). Handled by the controller so external callers do
+  // not need direct dependencies on branded internal vector icon targets.
+  static const gfx::VectorIcon& GetEntryPointVectorIcon();
+
+  // Returns whether the current page is eligible for Indigo.
+  bool IsPageEligible() const;
+
+  // Records metrics when a context menu containing the Indigo item is shown.
+  // Deduplicated so that it is recorded at most once per page load.
+  void OnContextMenuShown();
 
   void InvokeAction(EntryPoint entry_point);
   void DeleteOriginalPhoto();
@@ -209,6 +149,7 @@ class IndigoPageActionController : public tabs::ContentsObservingTabFeature,
   // content::WebContentsObserver:
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
+  void DOMContentLoaded(content::RenderFrameHost* render_frame_host) override;
   void DocumentOnLoadCompletedInPrimaryMainFrame() override;
   void RenderViewHostChanged(content::RenderViewHost* old_host,
                              content::RenderViewHost* new_host) override;
@@ -241,17 +182,18 @@ class IndigoPageActionController : public tabs::ContentsObservingTabFeature,
     explicit TestApi(IndigoPageActionController* controller)
         : controller_(controller) {}
 
-    void CheckEligibilityForOnboarding(base::TimeTicks start_time,
-                                       bool skip_glic_invoke,
-                                       const CombinedEligibility& eligibility) {
-      controller_->CheckEligibilityForOnboarding(start_time, skip_glic_invoke,
+    void CheckEligibilityForOnboarding(
+        base::TimeTicks start_time,
+        IndigoTransformationTriggerSource trigger_source,
+        const CombinedEligibility& eligibility) {
+      controller_->CheckEligibilityForOnboarding(start_time, trigger_source,
                                                  eligibility);
     }
 
     void CheckOnboardingResult(OnboardingDisposition disposition,
-                               bool skip_glic_invoke,
+                               IndigoTransformationTriggerSource trigger_source,
                                const OnboardingResult& result) {
-      controller_->OnOnboardingDialogClosed(disposition, skip_glic_invoke,
+      controller_->OnOnboardingDialogClosed(disposition, trigger_source,
                                             result);
     }
 
@@ -264,13 +206,12 @@ class IndigoPageActionController : public tabs::ContentsObservingTabFeature,
       controller_->last_anchored_message_priority_ = priority;
     }
 
-    void SetHeuristicResultForTesting(std::optional<bool> result) {
-      controller_->heuristic_result_ = result;
-    }
-
     void SetOptimizationGuideDecisionForTesting(
         optimization_guide::OptimizationGuideDecision decision) {
       controller_->optimization_guide_decision_ = decision;
+      if (decision == optimization_guide::OptimizationGuideDecision::kTrue) {
+        controller_->metadata_classifier_.CancelPendingClassification();
+      }
     }
 
    private:
@@ -278,10 +219,6 @@ class IndigoPageActionController : public tabs::ContentsObservingTabFeature,
   };
 
  private:
-  // Returns the primary main frame if it is live and eligible for
-  // classification.
-  content::RenderFrameHost* GetLiveMainFrameIfEligible();
-
   // Resets the page triggering and classification state.
   void ResetTriggeringState();
 
@@ -297,17 +234,19 @@ class IndigoPageActionController : public tabs::ContentsObservingTabFeature,
   // Evaluates the current trigger state.
   TriggerEvaluation EvaluateTriggerState() const;
 
-  // Shows the onboarding dialog with the appropriate URL based on disposition.
+  // Shows the onboarding dialog with the appropriate URL based on disposition,
+  // and invokes `trigger_source` upon completion.
   void ShowOnboardingDialog(OnboardingDisposition disposition,
-                            bool skip_glic_invoke);
+                            IndigoTransformationTriggerSource trigger_source);
 
   // Called when the eligibility has been fetched.
-  void CheckEligibilityForOnboarding(base::TimeTicks start_time,
-                                     bool skip_glic_invoke,
-                                     const CombinedEligibility& eligibility);
+  void CheckEligibilityForOnboarding(
+      base::TimeTicks start_time,
+      IndigoTransformationTriggerSource trigger_source,
+      const CombinedEligibility& eligibility);
 
   // Called when eligibility is known and onboarding is completed (if needed).
-  void ContinueInvoke(bool skip_glic_invoke,
+  void ContinueInvoke(IndigoTransformationTriggerSource trigger_source,
                       const CombinedEligibility& eligibility);
 
   // Checks whether we should skip Indigo invocation and invoke Glic instead.
@@ -324,9 +263,10 @@ class IndigoPageActionController : public tabs::ContentsObservingTabFeature,
   void TriggerRegeneration(IndigoTransformationTriggerSource source);
 
   // Updates state and handles preference changes when the dialog closes.
-  void OnOnboardingDialogClosed(OnboardingDisposition disposition,
-                                bool skip_glic_invoke,
-                                const OnboardingResult& result);
+  void OnOnboardingDialogClosed(
+      OnboardingDisposition disposition,
+      IndigoTransformationTriggerSource trigger_source,
+      const OnboardingResult& result);
 
   // Called when the delete request completes.
   void OnDeleteOriginalPhotoComplete(base::expected<void, DeleteError> result);
@@ -389,6 +329,11 @@ class IndigoPageActionController : public tabs::ContentsObservingTabFeature,
   std::optional<page_actions::PageActionPriorityCategory>
       last_anchored_message_priority_;
 
+  // The most recent non-retry transformation trigger source on the current
+  // page, preserved across error-toast retries.
+  std::optional<IndigoTransformationTriggerSource>
+      last_non_retry_trigger_source_;
+
   // The latest tracked bounds of the primary image, in DIPs.
   std::optional<gfx::Rect> tracked_bounds_;
 
@@ -407,32 +352,28 @@ class IndigoPageActionController : public tabs::ContentsObservingTabFeature,
   void RegisterObserverWithHost(content::RenderWidgetHost* host);
   void UnregisterObserverFromHost(content::RenderWidgetHost* host);
   void ClearTrackedBoundsAndHideToolbar();
-  void TriggerMetadataClassification();
-  void OnProductClassified(blink::mojom::ProductClassificationResultPtr result);
   void ResolvePendingEligibilityCallbacks(bool eligible);
   void OnEligibilityTimeout();
 
   raw_ptr<content::RenderWidgetHost> current_host_ = nullptr;
 
-  // Result of the metadata classification heuristic.
-  // std::nullopt if classification is pending or not started.
-  // true/false if classification completed with/without finding allowed
-  // keywords.
-  std::optional<bool> heuristic_result_;
+  IndigoMetadataClassifier metadata_classifier_;
 
   // Pending callback for CheckEligibilityForCueing.
   EligibilityCallback pending_eligibility_callback_;
   base::OneShotTimer eligibility_timeout_timer_;
   GURL last_evaluated_url_;
 
-  // Remote to the Blink-side metadata extraction service.
-  mojo::Remote<blink::mojom::DocumentMetadata> metadata_remote_;
-
   // True if a delete original photo request is currently in flight.
   bool delete_photo_in_flight_ = false;
 
   // The trigger source that was evaluated when eligibility was determined.
   std::optional<IndigoTriggerSource> last_trigger_source_;
+
+  // True if a context menu containing the Indigo item has already been shown on
+  // the current page load. Used to deduplicate
+  // `Indigo.PageAction.ShownEntryPoint` impressions per page load.
+  bool context_menu_shown_on_current_page_ = false;
 
   // Weak pointer factory used for the invocation flow. This is invalidated on
   // navigation to ensure that if a user starts an action (like onboarding) and

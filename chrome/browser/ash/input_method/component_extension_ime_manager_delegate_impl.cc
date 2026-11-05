@@ -11,6 +11,7 @@
 #include <string_view>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_paths.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/json/json_string_value_serializer.h"
@@ -24,7 +25,6 @@
 #include "base/trace_event/trace_event.h"
 #include "build/branding_buildflags.h"
 #include "chrome/browser/extensions/component_loader.h"
-#include "chrome/common/chrome_paths.h"
 #include "chrome/grit/browser_resources.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
@@ -108,7 +108,7 @@ void DoLoadExtension(content::BrowserContext* context,
   TRACE_EVENT1("ime", "DoLoadExtension", "ext_id", extension_id);
   extensions::ExtensionRegistry* extension_registry =
       extensions::ExtensionRegistry::Get(context);
-  DCHECK(extension_registry);
+  CHECK(extension_registry, base::NotFatalUntil::M160);
   if (extension_registry->enabled_extensions().GetByID(extension_id)) {
     VLOG(1) << "the IME extension(id=\"" << extension_id
             << "\") is already enabled";
@@ -128,9 +128,9 @@ void DoLoadExtension(content::BrowserContext* context,
                           base::Time(),  // install_time.
                           true,          // is_enabled.
                           true);         // is_incognito_enabled.
-  DCHECK_EQ(loaded_extension_id, extension_id);
+  CHECK_EQ(loaded_extension_id, extension_id, base::NotFatalUntil::M160);
   auto* registrar = extensions::ExtensionRegistrar::Get(context);
-  DCHECK(registrar);
+  CHECK(registrar, base::NotFatalUntil::M160);
   if (!registrar->IsExtensionEnabled(loaded_extension_id)) {
     LOG(ERROR) << "An IME extension(id=\"" << loaded_extension_id
                << "\") is not enabled after loading";
@@ -243,7 +243,7 @@ bool ComponentExtensionIMEManagerDelegateImpl::ReadEngineComponent(
     const ComponentExtensionIME& component_extension,
     const base::DictValue& dict,
     ComponentExtensionEngine* out) {
-  DCHECK(out);
+  CHECK(out, base::NotFatalUntil::M160);
   const std::string* engine_id =
       dict.FindString(extensions::manifest_keys::kId);
   if (!engine_id) {
@@ -276,7 +276,7 @@ bool ComponentExtensionIMEManagerDelegateImpl::ReadEngineComponent(
       }
     }
   }
-  DCHECK(!languages.empty());
+  CHECK(!languages.empty(), base::NotFatalUntil::M160);
   out->language_codes.assign(languages.begin(), languages.end());
 
   // For legacy reasons, multiple physical keyboard XKB layouts can be specified
@@ -392,7 +392,7 @@ bool ComponentExtensionIMEManagerDelegateImpl::ReadExtensionInfo(
 // static
 void ComponentExtensionIMEManagerDelegateImpl::ReadComponentExtensionsInfo(
     std::vector<ComponentExtensionIME>* out_imes) {
-  DCHECK(out_imes);
+  CHECK(out_imes, base::NotFatalUntil::M160);
   for (auto& extension : allowlisted_component_extensions) {
     ComponentExtensionIME component_ime;
     component_ime.manifest =
@@ -422,7 +422,7 @@ void ComponentExtensionIMEManagerDelegateImpl::ReadComponentExtensionsInfo(
 
     if (!component_ime.path.IsAbsolute()) {
       base::FilePath resources_path;
-      if (!base::PathService::Get(chrome::DIR_RESOURCES, &resources_path)) {
+      if (!base::PathService::Get(ash::DIR_RESOURCES, &resources_path)) {
         NOTREACHED();
       }
       component_ime.path = resources_path.Append(component_ime.path);

@@ -48,7 +48,6 @@ group("unit_tests") {
     "//chromeos/ash/components/memory:unit_tests",
     "//chromeos/ash/components/multidevice:unit_tests",
     "//chromeos/ash/components/nearby/common:unit_tests",
-    "//chromeos/ash/components/nearby/presence:unit_tests",
     "//chromeos/ash/components/network:unit_tests",
     "//chromeos/ash/components/osauth/impl:unit_tests",
     "//chromeos/ash/components/osauth/public:unit_tests",
@@ -75,7 +74,6 @@ group("unit_tests") {
     "//chromeos/ash/components/timezone:unit_tests",
     "//chromeos/ash/components/tpm:unit_tests",
     "//chromeos/ash/components/trash_service:unit_tests",
-    "//chromeos/ash/components/trial_group:unit_tests",
     "//chromeos/ash/components/wifi_p2p:unit_tests",
   ]
 }

@@ -14,11 +14,13 @@
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/language_tag.h"
 #include "base/memory/safe_ref.h"
 #include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/supports_user_data.h"
+#include "base/task/responsiveness/responsiveness_calculator_delegate.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/uuid.h"
@@ -49,7 +51,6 @@
 #include "content/public/browser/prerender_web_contents_delegate.h"
 #include "content/public/browser/process_selection_deferring_condition.h"
 #include "content/public/browser/render_frame_host.h"
-#include "content/public/browser/responsiveness_calculator_delegate.h"
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/sms_fetcher.h"
@@ -62,6 +63,7 @@
 #include "content/public/browser/webid/native_idp_fetcher.h"
 #include "content/public/common/alternative_error_page_override_info.mojom.h"
 #include "content/public/common/content_features.h"
+#include "content/public/common/url_constants.h"
 #include "content/public/common/url_utils.h"
 #include "media/audio/audio_manager.h"
 #include "media/capture/content/screen_enumerator.h"
@@ -89,6 +91,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/loader/url_loader_throttle.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_cloud_identifier.mojom.h"
@@ -206,6 +209,11 @@ bool ContentBrowserClient::ShouldUseSpareRenderProcessHost(
   return true;
 }
 
+bool ContentBrowserClient::CanBrowserContextUseSpareRenderProcessHost(
+    BrowserContext* browser_context) {
+  return true;
+}
+
 bool ContentBrowserClient::DoesSiteRequireDedicatedProcess(
     BrowserContext* browser_context,
     const GURL& effective_site_url) {
@@ -240,7 +248,7 @@ bool ContentBrowserClient::ShouldTreatAsFirstPartyWhenTopLevel(
 
 bool ContentBrowserClient::ShouldIgnoreSameSiteCookieRestrictionsWhenTopLevel(
     const url::Origin& top_frame_origin,
-    bool is_embedded_origin_secure) {
+    const GURL& current_url_chain_entry) {
   return false;
 }
 
@@ -482,8 +490,8 @@ ContentBrowserClient::GetQuarantineConnectionCallback() {
   return base::NullCallback();
 }
 
-std::string ContentBrowserClient::GetApplicationLocale() {
-  return "en-US";
+base::i18n::LanguageTag ContentBrowserClient::GetApplicationLocale() {
+  return base::i18n::GetKnownLanguageTag("en-US");
 }
 
 std::string ContentBrowserClient::GetAcceptLangs(BrowserContext* context) {
@@ -589,6 +597,17 @@ bool ContentBrowserClient::WebPreferencesNeedUpdateForColorRelatedStateChanges(
   return false;
 }
 
+ui::ColorProviderKey::ForcedColors
+ContentBrowserClient::GetForcedColorsForWebContents(
+    WebContents& web_contents) const {
+  return ui::ColorProviderKey::ForcedColors::kNone;
+}
+
+bool ContentBrowserClient::
+    ShouldUpdateFontRendererPreferencesFromSystemSettings() const {
+  return true;
+}
+
 bool ContentBrowserClient::IsDataSaverEnabled(BrowserContext* context) {
   DCHECK(context);
   return false;
@@ -653,14 +672,17 @@ bool ContentBrowserClient::AllowWorkerWebLocks(
   return true;
 }
 
-bool ContentBrowserClient::IsPrivacySandboxReportingDestinationAttested(
-    content::BrowserContext* browser_context,
-    const url::Origin& destination_origin,
-    content::PrivacySandboxInvokingAPI invoking_api) {
+bool ContentBrowserClient::AllowWorkerWriteToClipboard(
+    const url::Origin& origin,
+    BrowserContext* browser_context) {
   return false;
 }
 
-
+bool ContentBrowserClient::IsPrivacySandboxReportingDestinationAttested(
+    content::BrowserContext* browser_context,
+    const url::Origin& destination_origin) {
+  return false;
+}
 
 bool ContentBrowserClient::IsFullCookieAccessAllowed(
     content::BrowserContext* browser_context,
@@ -744,7 +766,7 @@ bool ContentBrowserClient::ShouldDenyRequestOnCertificateError(
 
 base::OnceClosure ContentBrowserClient::SelectClientCertificate(
     BrowserContext* browser_context,
-    int process_id,
+    ChildProcessId process_id,
     WebContents* web_contents,
     net::SSLCertRequestInfo* cert_request_info,
     net::ClientCertIdentityList client_certs,
@@ -803,6 +825,23 @@ bool ContentBrowserClient::IsPopupBypassAllowed(
   return false;
 }
 
+bool ContentBrowserClient::IsUnboundedElementAllowed(
+    RenderFrameHost* render_frame_host) {
+  return false;
+}
+
+bool ContentBrowserClient::IsUnboundedElementEscapingAllowed(
+    RenderFrameHost* subframe,
+    RenderFrameHost* outermost_main_frame) {
+  return false;
+}
+
+bool ContentBrowserClient::IsUnboundedElementAllowedForSubframesOf(
+    const url::Origin& origin) {
+  // TODO(crbug.com/571879162): Remove this temporary allowlist.
+  return false;
+}
+
 bool ContentBrowserClient::CanCreateWindow(
     RenderFrameHost* opener,
     const GURL& opener_url,
@@ -844,6 +883,12 @@ TtsControllerDelegate* ContentBrowserClient::GetTtsControllerDelegate() {
   return nullptr;
 }
 #endif
+
+std::optional<blink::Manifest> ContentBrowserClient::MaybeOverrideManifest(
+    RenderFrameHost* render_frame_host,
+    const blink::Manifest& manifest) {
+  return std::nullopt;
+}
 
 TtsPlatform* ContentBrowserClient::GetTtsPlatform() {
   return nullptr;
@@ -988,6 +1033,12 @@ bool ContentBrowserClient::PreSpawnChild(sandbox::TargetConfig* config,
                                          sandbox::mojom::Sandbox sandbox_type,
                                          ChildSpawnFlags flags) {
   return true;
+}
+
+std::optional<ContentBrowserClient::RendererSandboxPolicyExtension>
+ContentBrowserClient::GetRendererSandboxPolicyExtension(
+    ChildProcessId render_process_id) {
+  return std::nullopt;
 }
 
 bool ContentBrowserClient::IsUtilityCetCompatible(
@@ -1198,6 +1249,16 @@ ContentBrowserClient::GetNetworkContextsParentDirectory() {
   return {};
 }
 
+std::optional<base::FilePath>
+ContentBrowserClient::GetNetworkContextsDataDirectory() {
+  return std::nullopt;
+}
+
+std::optional<base::FilePath>
+ContentBrowserClient::GetNetworkContextsCacheDirectory() {
+  return std::nullopt;
+}
+
 base::DictValue ContentBrowserClient::GetNetLogConstants() {
   return base::DictValue();
 }
@@ -1278,7 +1339,7 @@ FontAccessDelegate* ContentBrowserClient::GetFontAccessDelegate() {
   return nullptr;
 }
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 SmartCardDelegate* ContentBrowserClient::GetSmartCardDelegate() {
   return nullptr;
 }
@@ -1287,6 +1348,7 @@ SmartCardDelegate* ContentBrowserClient::GetSmartCardDelegate() {
 bool ContentBrowserClient::ShowPaymentHandlerWindow(
     content::BrowserContext* browser_context,
     const GURL& url,
+    const std::optional<gfx::Size>& preferred_web_contents_size,
     base::OnceCallback<void(bool, int, int)> callback) {
   DCHECK(browser_context);
   return false;
@@ -1327,6 +1389,7 @@ std::unique_ptr<LoginDelegate> ContentBrowserClient::CreateLoginDelegate(
     const GURL& url,
     scoped_refptr<net::HttpResponseHeaders> response_headers,
     bool first_auth_attempt,
+    bool do_not_prompt_for_login,
     GuestPageHolder* guest,
     LoginDelegate::LoginAuthRequiredCallback auth_required_callback) {
   return nullptr;
@@ -1414,6 +1477,10 @@ bool ContentBrowserClient::ShouldRunOutOfProcessSystemDnsResolution() {
 #endif
 }
 
+net::InsecureDnsMode ContentBrowserClient::GetInitialInsecureDnsMode() {
+  return net::InsecureDnsMode::kDisabled;
+}
+
 std::string ContentBrowserClient::GetProduct() {
   return std::string();
 }
@@ -1437,10 +1504,11 @@ bool ContentBrowserClient::IsBuiltinComponent(BrowserContext* browser_context,
 
 void ContentBrowserClient::StartRtcDiagnosticLogging(
     RenderFrameHost& frame_host,
+    const base::Uuid& session_id,
     bool should_upload_on_stop,
     const base::flat_map<std::string, std::string>& metadata,
-    base::OnceCallback<void(const std::string&)> callback) {
-  std::move(callback).Run(base::Uuid::GenerateRandomV4().AsLowercaseString());
+    base::OnceClosure callback) {
+  std::move(callback).Run();
 }
 
 void ContentBrowserClient::FinishRtcDiagnosticLogging(
@@ -1532,9 +1600,19 @@ ContentBrowserClient::MaybeOverrideSourceURLForClipboardAccess(
   return std::nullopt;
 }
 
+BrowserContext* ContentBrowserClient::GetUserBrowserContext(
+    RenderFrameHost& render_frame_host) {
+  return render_frame_host.GetBrowserContext();
+}
+
 bool ContentBrowserClient::IsClipboardPasteAllowed(
     content::RenderFrameHost* render_frame_host) {
   return true;
+}
+
+bool ContentBrowserClient::IsClipboardAllowedForServiceWorker(
+    const url::Origin& origin) {
+  return false;
 }
 
 void ContentBrowserClient::IsClipboardPasteAllowedByPolicy(
@@ -1635,6 +1713,8 @@ void ContentBrowserClient::OnFetchKeepAliveRequestCreated(BrowserContext&) {}
 
 void ContentBrowserClient::OnFetchKeepAliveRequestDestroyed(BrowserContext&) {}
 
+void ContentBrowserClient::SuppressXSLTDeprecationBanner(RenderFrameHost*) {}
+
 #if BUILDFLAG(IS_MAC)
 bool ContentBrowserClient::SetupEmbedderSandboxParameters(
     sandbox::mojom::Sandbox sandbox_type,
@@ -1706,14 +1786,6 @@ bool ContentBrowserClient::ShouldPreconnectNavigation(
   return false;
 }
 
-bool ContentBrowserClient::IsFirstPartySetsEnabled() {
-  return true;
-}
-
-bool ContentBrowserClient::WillProvidePublicFirstPartySets() {
-  return false;
-}
-
 mojom::AlternativeErrorPageOverrideInfoPtr
 ContentBrowserClient::GetAlternativeErrorPageOverrideInfo(
     content::NavigationHandle& navigation_handle,
@@ -1734,12 +1806,19 @@ bool ContentBrowserClient::IsFileSystemURLNavigationAllowed(
   return false;
 }
 
-#if BUILDFLAG(IS_MAC)
-std::string ContentBrowserClient::GetChildProcessSuffix(int child_flags) {
-  NOTIMPLEMENTED();
-  return std::string();
+#if BUILDFLAG(IS_ANDROID)
+bool ContentBrowserClient::IsContentSchemeURLNavigationAllowed(
+    const GURL& url) {
+  return !base::FeatureList::IsEnabled(
+      features::kBlockContentUriNavigationByDefault);
 }
 #endif
+
+base::FilePath ContentBrowserClient::GetChildProcessPath(
+    int flags,
+    ChildProcessId child_process_id) {
+  return base::FilePath();
+}
 
 bool ContentBrowserClient::AreIsolatedWebAppsEnabled(
     BrowserContext* browser_context) {
@@ -1808,7 +1887,7 @@ bool ContentBrowserClient::ShouldSkipBeforeUnloadDialog(
   return false;
 }
 
-std::unique_ptr<ResponsivenessCalculatorDelegate>
+std::unique_ptr<base::ResponsivenessCalculatorDelegate>
 ContentBrowserClient::CreateResponsivenessCalculatorDelegate() {
   return nullptr;
 }
@@ -1833,12 +1912,13 @@ bool ContentBrowserClient::
   return true;
 }
 
-bool ContentBrowserClient::IsBlobUrlPartitioningEnabled(
-    content::BrowserContext* browser_context) {
+bool ContentBrowserClient::IsUrlAllowedForBackForwardCache(
+    content::BrowserContext* browser_context,
+    const GURL& url) {
   return true;
 }
 
-bool ContentBrowserClient::ShouldReduceAcceptLanguage(
+bool ContentBrowserClient::IsBlobUrlPartitioningEnabled(
     content::BrowserContext* browser_context) {
   return true;
 }
@@ -2070,5 +2150,13 @@ bool ContentBrowserClient::ShouldAllowSystemUiPopups(
   return true;
 }
 #endif
+
+bool ContentBrowserClient::IsExemptFromWindowSizeCheck(const GURL& url) {
+  return url.SchemeIs(kChromeUIScheme) || url.SchemeIs(kChromeDevToolsScheme);
+}
+
+bool ContentBrowserClient::IsNoStatePrefetch(WebContents* web_contents) {
+  return false;
+}
 
 }  // namespace content

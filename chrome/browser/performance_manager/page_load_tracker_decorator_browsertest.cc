@@ -7,6 +7,7 @@
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/performance_manager/graph/page_node_impl.h"
@@ -15,6 +16,8 @@
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace performance_manager {
 
@@ -124,11 +127,11 @@ IN_PROC_BROWSER_TEST_F(PageLoadTrackerDecoratorTest, PageNodeLoadingState) {
                                     /* exit_if_already_loaded_idle=*/false);
 
   // Navigate.
-  browser()->OpenURL(
-      content::OpenURLParams(
-          embedded_test_server()->GetURL("/empty.html"), content::Referrer(),
-          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED, false),
-      /*navigation_handle_callback=*/{});
+  browser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                         embedded_test_server()->GetURL("/empty.html"),
+                         ui::mojom::WindowOpenDisposition::kCurrentTab,
+                         ui::PAGE_TRANSITION_TYPED),
+                     /*navigation_handle_callback=*/{});
 
   // Wait until GetLoadingState() transitions to LoadingState::kLoadedIdle.
   observer.Wait();

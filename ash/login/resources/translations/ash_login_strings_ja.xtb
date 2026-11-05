@@ -50,7 +50,6 @@
 <translation id="1347975661240122359">更新は、<ph name="BATTERY_LEVEL" />% まで充電されたときに開始されます。</translation>
 <translation id="1353275871123211385">アプリの許可や利用時間の上限など、保護者による使用制限を設定するには、保護者が管理するお子様用の Google アカウントが必要です。Google Classroom などのツールを使用するための学校用アカウントは、後で追加できます。</translation>
 <translation id="1375557162880614858">ChromeVox を有効にしますか？ChromeVox は ChromeOS Flex に組み込まれているスクリーンリーダーです。</translation>
-<translation id="1375938286942050085">セットアップは完了です。デバイスでゲームをお楽しみください</translation>
 <translation id="1377600615067678409">今回はスキップ</translation>
 <translation id="1399261165075500043">Google Play 利用規約を読み込めません</translation>
 <translation id="1400243387594338234">この PIN を使用してデバイスにログインできます</translation>
@@ -260,7 +259,6 @@
 <translation id="3856470183388031602"><ph name="DEVICE_TYPE" /> で Google アカウントを使用する</translation>
 <translation id="3856800405688283469">タイムゾーンを選択</translation>
 <translation id="3893630138897523026">ChromeVox（音声フィードバック）</translation>
-<translation id="3897746662269329507"><ph name="DEVICE_TYPE" /> はゲームに適した設計となっています。次に表示される「使い方・ヒント」アプリでは、何百種類もの最新ゲームにアクセスでき、ゲームに関する特典やデバイスに付属のゲームをご覧いただけます。</translation>
 <translation id="389901847090970821">キーボードを選択</translation>
 <translation id="3910588685973519483">AI で壁紙を作成</translation>
 <translation id="3924259174674732591">ディスプレイとテキストのサイズ <ph name="DISPLAY_ZOOM" />%</translation>
@@ -412,7 +410,6 @@
 <translation id="542948651837270806">Trusted Platform Module ファームウェアのアップデートをインストールする必要があります。<ph name="TPM_FIRMWARE_UPDATE_LINK" /> をご覧ください。</translation>
 <translation id="5448293924669608770">ログイン エラーが発生しました</translation>
 <translation id="5453829744223920473">お子様は、学校のすべてのアプリ、ブックマーク、リソースを授業と同じように利用できます。基本ルールは学校が設定します。</translation>
-<translation id="5463450804024056231"><ph name="DEVICE_TYPE" /> のメール通知に登録する</translation>
 <translation id="5473099001878321374">続行すると、Google、お子様がご利用の携帯通信会社、デバイス メーカーからアップデートやアプリをこのデバイスが自動的に（場合によってはモバイルデータ接続を使用して）ダウンロードし、インストールする場合があることに同意したことになります。一部のアプリでは、アプリ内購入をご利用いただけます。</translation>
 <translation id="5502915260472117187">お子様</translation>
 <translation id="5511823366942919280">このデバイスを「Shark」として設定してもよろしいですか？</translation>
@@ -581,6 +578,7 @@
 <translation id="7171259390164035663">登録しない</translation>
 <translation id="7189451821249468368">このデバイスの登録に必要なアップグレード ライセンスを持っていません。さらに購入するには、販売担当者にお問い合わせください。このメッセージが間違って表示されていると思われる場合は、サポートにお問い合わせください。</translation>
 <translation id="7202337678781136582">Android スマートフォンで QR コードをスキャンする</translation>
+<translation id="7227254059753088272">タッチ スクリーンの設定</translation>
 <translation id="7228854227189381547">切り替えない</translation>
 <translation id="7230429581553827767"><ph name="BEGIN_PARAGRAPH1" />快適にご利用いただくには、<ph name="DEVICE_OS" /> を内部ディスクにインストールしてください。後でログイン画面からインストールすることもできます。<ph name="END_PARAGRAPH1" />
         <ph name="BEGIN_PARAGRAPH2" />インストールする準備ができていない場合は、USB から実行して試してみることもできます。この場合、既存の OS とデータは残りますが、保存容量やパフォーマンスが制限される可能性があります。<ph name="END_PARAGRAPH2" /></translation>
@@ -754,7 +752,7 @@
 <translation id="8946359700442089734">この <ph name="IDS_SHORT_PRODUCT_NAME" /> デバイスでデバッグ機能が完全に有効になっていませんでした。</translation>
 <translation id="8965037249707889821">古いパスワードを入力</translation>
 <translation id="8968906873893164556">設定に使用するアカウントの選択</translation>
-<translation id="8973596347849323817">このデバイスを必要に応じてカスタマイズできます。このユーザー補助機能は後から [設定] で変更できます。</translation>
+<translation id="8973596347849323817">このデバイスを必要に応じてカスタマイズできます。これらのユーザー補助機能は後から [設定] で変更できます。</translation>
 <translation id="8975396729541388937">配信登録は、このメールのリンクをクリックして、いつでも解除できます。</translation>
 <translation id="8987305927843254629">ユーザーごとに使用環境をカスタマイズして、データのプライバシーを確保できます。</translation>
 <translation id="8993059306046735527"><ph name="DEVICE_TYPE" /> のパスワードを忘れた場合でも、ローカルデータを復元できます。Google アカウントにログインするか、アカウント復元を使用する必要があります。</translation>

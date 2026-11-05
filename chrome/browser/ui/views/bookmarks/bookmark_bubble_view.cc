@@ -51,6 +51,7 @@
 #include "components/commerce/core/shopping_service.h"
 #include "components/desktop_to_mobile_promos/features.h"
 #include "components/desktop_to_mobile_promos/promos_types.h"
+#include "components/favicon/content/content_favicon_util.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/image_fetcher/core/image_fetcher.h"
 #include "components/image_fetcher/core/image_fetcher_service.h"
@@ -115,7 +116,7 @@ void FetchImageForUrl(const GURL& url, Profile* profile) {
 gfx::ImageSkia GetFaviconForWebContents(content::WebContents* web_contents) {
   const auto& color_provider = web_contents->GetColorProvider();
   const gfx::Image url_favicon =
-      favicon::TabFaviconFromWebContents(web_contents);
+      favicon::GetTabFaviconMaybeDesaturatedOnError(web_contents);
   gfx::ImageSkia favicon =
       url_favicon.IsEmpty()
           ? favicon::GetDefaultFaviconModel(ui::kColorBubbleBackground)
@@ -342,17 +343,17 @@ class BookmarkBubbleView::BookmarkBubbleDelegate
   }
 
   void ShowEditor() {
-    DCHECK(dialog_model()->host());
+    CHECK(dialog_model()->host(), base::NotFatalUntil::M162);
 
     Profile* const profile = browser_->GetProfile();
 
     const bookmarks::BookmarkNode* node =
         BookmarkModelFactory::GetForBrowserContext(profile)
             ->GetMostRecentlyAddedUserNodeForURL(url_);
-    DCHECK(bookmark_bubble_->anchor_widget());
+    CHECK(bookmark_bubble_->anchor_widget(), base::NotFatalUntil::M162);
     gfx::NativeWindow native_parent =
         bookmark_bubble_->anchor_widget()->GetNativeWindow();
-    DCHECK(native_parent);
+    CHECK(native_parent, base::NotFatalUntil::M162);
 
     // Note that closing the dialog with |should_apply_edits_| still true will
     // synchronously save any pending changes.
@@ -376,7 +377,7 @@ class BookmarkBubbleView::BookmarkBubbleDelegate
   }
 
   void ApplyEdits() {
-    DCHECK(should_apply_edits_);
+    CHECK(should_apply_edits_, base::NotFatalUntil::M162);
     // Set this to make sure we don't attempt to apply edits again.
     should_apply_edits_ = false;
 
@@ -409,7 +410,7 @@ class BookmarkBubbleView::BookmarkBubbleDelegate
   }
 
   RecentlyUsedFoldersComboModel* GetFolderModel() {
-    DCHECK(dialog_model());
+    CHECK(dialog_model(), base::NotFatalUntil::M162);
     return static_cast<RecentlyUsedFoldersComboModel*>(
         dialog_model()
             ->GetComboboxByUniqueId(kBookmarkFolderFieldId)

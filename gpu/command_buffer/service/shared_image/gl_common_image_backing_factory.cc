@@ -9,10 +9,10 @@
 #include <optional>
 
 #include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
-#include "gpu/command_buffer/service/shared_image/gl_texture_holder.h"
 #include "gpu/config/gpu_preferences.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/size.h"
@@ -24,39 +24,40 @@ namespace gpu {
 // GLCommonImageBackingFactory
 
 namespace {
-std::optional<viz::SharedImageFormat> GetFallbackFormatIfNotSupported(
-    viz::SharedImageFormat plane_format,
+
+// Returns the equivalent SharedImageFormat for plane specified by
+// `plane_index` if supported by `caps`.
+std::optional<viz::SharedImageFormat> GetSupportedPlaneFormat(
+    viz::SharedImageFormat format,
+    int plane_index,
     const GLFormatCaps& caps) {
-  if (plane_format == viz::SinglePlaneFormat::kR_8) {
-    bool fallback = !caps.ext_texture_rg();
-    base::UmaHistogramBoolean("GPU.SharedImage.R8ToAlpha8Fallback", fallback);
-    if (fallback) {
-      // Fallback to ALPHA_8 for R_8 format.
-      return viz::SinglePlaneFormat::kALPHA_8;
-    }
+  DCHECK(format.IsValidPlaneIndex(plane_index));
+  DCHECK(format.is_multi_plane());
+
+  int num_channels = format.NumChannelsInPlane(plane_index);
+  DCHECK_LE(num_channels, 2);
+  switch (format.channel_format()) {
+    case viz::SharedImageFormat::ChannelFormat::k8:
+      if (!caps.ext_texture_rg()) {
+        return std::nullopt;
+      }
+      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_88
+                               : viz::SinglePlaneFormat::kR_8;
+    case viz::SharedImageFormat::ChannelFormat::k10:
+    case viz::SharedImageFormat::ChannelFormat::k16:
+      if (!caps.ext_texture_norm16()) {
+        return std::nullopt;
+      }
+      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_1616
+                               : viz::SinglePlaneFormat::kR_16;
+    case viz::SharedImageFormat::ChannelFormat::k16F:
+      if (num_channels != 1 || (!caps.is_atleast_gles3() &&
+                                !caps.enable_texture_half_float_linear())) {
+        return std::nullopt;
+      }
+      return viz::SinglePlaneFormat::kR_F16;
   }
-  if (plane_format == viz::SinglePlaneFormat::kRG_88 &&
-      !caps.ext_texture_rg()) {
-    // No fallback for RG_88 format.
-    return std::nullopt;
-  }
-  if ((plane_format == viz::SinglePlaneFormat::kR_16 ||
-       plane_format == viz::SinglePlaneFormat::kRG_1616) &&
-      !caps.ext_texture_norm16()) {
-    // No fallback for R_16, RG_1616 format.
-    return std::nullopt;
-  }
-  if (plane_format == viz::SinglePlaneFormat::kR_F16) {
-    bool fallback =
-        !caps.is_atleast_gles3() && !caps.enable_texture_half_float_linear();
-    base::UmaHistogramBoolean("GPU.SharedImage.R16FToLuminanceF16Fallback",
-                              fallback);
-    if (fallback) {
-      // Fallback to LUMINANCE_F16 for R_F16 format.
-      return viz::SinglePlaneFormat::kLUMINANCE_F16;
-    }
-  }
-  return plane_format;
+  NOTREACHED();
 }
 
 // Returns a vector of FormatInfo for multiplanar formats. The returned
@@ -69,16 +70,14 @@ std::vector<GLCommonImageBackingFactory::FormatInfo> GetMultiPlaneFormatInfo(
     viz::SharedImageFormat format) {
   std::vector<viz::SharedImageFormat> plane_formats;
   for (int plane = 0; plane < format.NumberOfPlanes(); plane++) {
-    viz::SharedImageFormat plane_format =
-        GLTextureHolder::GetPlaneFormat(format, plane);
-    auto fallback_format =
-        GetFallbackFormatIfNotSupported(plane_format, gl_format_caps);
-    if (!fallback_format) {
+    std::optional<viz::SharedImageFormat> plane_format =
+        GetSupportedPlaneFormat(format, plane, gl_format_caps);
+    if (!plane_format) {
       // Could not find supported single plane format for the requested
       // multiplane format.
       return {};
     }
-    plane_formats.emplace_back(fallback_format.value());
+    plane_formats.emplace_back(plane_format.value());
   }
 
   std::vector<GLCommonImageBackingFactory::FormatInfo> plane_infos;
@@ -169,13 +168,6 @@ GLCommonImageBackingFactory::GLCommonImageBackingFactory(
     if (enable_texture_storage && !info.is_compressed &&
         validators->texture_internal_format_storage.IsValid(
             info.storage_internal_format)) {
-      // GL_ALPHA8_EXT requires EXT_texture_storage even with ES3. We should not
-      // rely on validating command decoder logic that allows GL_ALPHA8, but
-      // working around here for now until proper fix.
-      if (info.storage_internal_format == GL_ALPHA8_EXT && use_passthrough_) {
-        continue;
-      }
-
       info.supports_storage = true;
       info.adjusted_storage_internal_format =
           gles2::TextureManager::AdjustTexStorageFormat(
@@ -219,62 +211,63 @@ bool GLCommonImageBackingFactory::CanCreateTexture(
     return false;
   }
 
-  // If we have initial data to upload, ensure it is sized appropriately.
-  if (!pixel_data.empty()) {
-    DCHECK_EQ(format_infos.size(), 1u);
+  if (format_infos[0].is_compressed) {
+    CHECK_EQ(format_infos.size(), 1u);
     const FormatInfo& format_info = format_infos[0];
+    const char* error_message = "unspecified";
+    if (!gles2::ValidateCompressedTexDimensions(
+            target, /*level=*/0, size.width(), size.height(), /*depth=*/1,
+            format_info.image_internal_format, &error_message)) {
+      DVLOG(2) << "CreateSharedImage: "
+                  "ValidateCompressedTexDimensionsFailed with error: "
+               << error_message;
+      return false;
+    }
 
-    if (format_info.is_compressed) {
-      const char* error_message = "unspecified";
-      if (!gles2::ValidateCompressedTexDimensions(
-              target, /*level=*/0, size.width(), size.height(), /*depth=*/1,
-              format_info.image_internal_format, &error_message)) {
-        DVLOG(2) << "CreateSharedImage: "
-                    "ValidateCompressedTexDimensionsFailed with error: "
-                 << error_message;
-        return false;
-      }
+    GLsizei bytes_required = 0;
+    if (!gles2::GetCompressedTexSizeInBytes(
+            /*function_name=*/nullptr, size.width(), size.height(),
+            /*depth=*/1, format_info.image_internal_format, &bytes_required,
+            /*error_state=*/nullptr)) {
+      DVLOG(2) << "CreateSharedImage: Unable to compute required size for "
+                  "initial texture upload.";
+      return false;
+    }
 
-      GLsizei bytes_required = 0;
-      if (!gles2::GetCompressedTexSizeInBytes(
-              /*function_name=*/nullptr, size.width(), size.height(),
-              /*depth=*/1, format_info.image_internal_format, &bytes_required,
-              /*error_state=*/nullptr)) {
-        DVLOG(2) << "CreateSharedImage: Unable to compute required size for "
+    // Compressed textures cannot be cleared so they must be created with
+    // initial pixel data of the correct size.
+    if (bytes_required < 0 ||
+        pixel_data.size() != static_cast<size_t>(bytes_required)) {
+      DVLOG(2) << "CreateSharedImage: Initial data does not have expected "
+                  "size.";
+      return false;
+    }
+  } else if (!pixel_data.empty()) {
+    // If we have initial data to upload, ensure it is sized appropriately.
+    CHECK_EQ(format_infos.size(), 1u);
+    const FormatInfo& format_info = format_infos[0];
+    uint32_t bytes_required;
+    uint32_t unpadded_row_size = 0u;
+    uint32_t padded_row_size = 0u;
+    if (!gles2::GLES2Util::ComputeImageDataSizes(
+            size.width(), size.height(), /*depth=*/1, format_info.gl_format,
+            format_info.gl_type, /*alignment=*/4, &bytes_required,
+            &unpadded_row_size, &padded_row_size)) {
+      LOG(ERROR) << "CreateSharedImage: Unable to compute required size for "
                     "initial texture upload.";
-        return false;
-      }
+      return false;
+    }
 
-      if (bytes_required < 0 ||
-          pixel_data.size() != static_cast<size_t>(bytes_required)) {
-        DVLOG(2) << "CreateSharedImage: Initial data does not have expected "
+    // The GL spec, used in the computation for required bytes in the function
+    // above, assumes no padding is required for the last row in the image.
+    // But the client data does include this padding, so we add it for the
+    // data validation check here.
+    uint32_t padding = padded_row_size - unpadded_row_size;
+    bytes_required += padding;
+    if (pixel_data.size() != bytes_required) {
+      LOG(ERROR) << "CreateSharedImage: Initial data does not have expected "
                     "size.";
-        return false;
-      }
-    } else {
-      uint32_t bytes_required;
-      uint32_t unpadded_row_size = 0u;
-      uint32_t padded_row_size = 0u;
-      if (!gles2::GLES2Util::ComputeImageDataSizes(
-              size.width(), size.height(), /*depth=*/1, format_info.gl_format,
-              format_info.gl_type, /*alignment=*/4, &bytes_required,
-              &unpadded_row_size, &padded_row_size)) {
-        LOG(ERROR) << "CreateSharedImage: Unable to compute required size for "
-                      "initial texture upload.";
-        return false;
-      }
-
-      // The GL spec, used in the computation for required bytes in the function
-      // above, assumes no padding is required for the last row in the image.
-      // But the client data does include this padding, so we add it for the
-      // data validation check here.
-      uint32_t padding = padded_row_size - unpadded_row_size;
-      bytes_required += padding;
-      if (pixel_data.size() != bytes_required) {
-        LOG(ERROR) << "CreateSharedImage: Initial data does not have expected "
-                      "size.";
-        return false;
-      }
+      return false;
     }
   }
 

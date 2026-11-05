@@ -25,6 +25,7 @@
 #include "components/webapps/browser/features.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "url/origin.h"
 
 namespace webapps {
@@ -90,7 +91,7 @@ bool CheckNewWebAppConflictsWithExistingInstallation(
   std::optional<AppId> non_diy_primary_scope_app_id =
       provider->registrar_unsafe().FindBestAppWithUrlInScope(
           start_url, web_app::WebAppFilter::IsCraftedApp(),
-          {.exclude_scope_extensions = true});
+          {.scope_score_options = {.exclude_scope_extensions = true}});
   if (non_diy_primary_scope_app_id) {
     return true;
   }
@@ -100,7 +101,7 @@ bool CheckNewWebAppConflictsWithExistingInstallation(
           start_url,
           web_app::WebAppFilter::IsCraftedApp() &
               web_app::WebAppFilter::OpensInDedicatedWindow(),
-          {.exclude_scope_extensions = false});
+          {.include_isolated_web_app_scope_extensions = true});
   if (non_diy_extended_scope_app_id) {
     return true;
   }
@@ -193,7 +194,7 @@ bool WebappsClientDesktop::IsUrlControlledBySeenManifest(
 
 void WebappsClientDesktop::OnManifestSeen(
     content::BrowserContext* browsing_context,
-    const blink::mojom::Manifest& manifest) const {
+    const blink::Manifest& manifest) const {
   auto* provider = web_app::WebAppProvider::GetForWebApps(
       Profile::FromBrowserContext(browsing_context));
   if (provider && provider->is_registry_ready()) {

@@ -31,6 +31,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.hub.HubColorMixer.ColorBlendProgress;
 import org.chromium.chrome.browser.hub.HubPaneHostView.PaneViewProvider;
+import org.chromium.chrome.browser.hub.swipe.HubPaneSwipeAnimationConfig;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
@@ -57,8 +58,11 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
     private final HubLayoutController mHubLayoutController;
     private final SettableNullableObservableSupplier<ColorBlendProgress>
             mSwipeAnimationProgressSupplier;
+    private final SettableNullableObservableSupplier<PaneTransitionProgress>
+            mPaneTransitionProgressSupplier = ObservableSuppliers.createNullable();
     private final SettableNonNullObservableSupplier<Boolean> mHandleBackPressSupplier =
             ObservableSuppliers.createNonNull(false);
+    private final boolean mShouldAnimateSearchBox;
 
     private final HubSearchBoxBackgroundCoordinator mHubSearchBoxBackgroundCoordinator;
 
@@ -114,6 +118,7 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
         Context context = containerView.getContext();
         mBackPressStateChangeCallback = (ignored) -> updateHandleBackPressSupplier();
         mPaneManager = paneManager;
+        mShouldAnimateSearchBox = HubPaneSwipeAnimationConfig.shouldAnimateSearchBox();
         mFocusedPaneHandleBackPressSupplier =
                 paneManager
                         .getFocusedPaneSupplier()
@@ -139,7 +144,8 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
 
         // Get bottom toolbar delegate and visibility supplier
         HubBottomToolbarDelegate bottomToolbarDelegate =
-                HubBottomToolbarDelegateFactory.createDelegate(activity);
+                HubBottomToolbarDelegateFactory.createDelegate(
+                        activity, currentTabSupplier, hubLayoutController.getIsHidingSupplier());
         NonNullObservableSupplier<Boolean> bottomToolbarVisibilitySupplier =
                 bottomToolbarDelegate != null
                         ? bottomToolbarDelegate.getBottomToolbarVisibilitySupplier()
@@ -157,7 +163,8 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
                         userEducationHelper,
                         hubLayoutController.getIsAnimatingSupplier(),
                         bottomToolbarVisibilitySupplier,
-                        this::onToolbarCloseButtonPressed);
+                        this::onToolbarCloseButtonPressed,
+                        mPaneTransitionProgressSupplier);
 
         // Dynamically add bottom toolbar if delegate is available and enabled
         if (bottomToolbarDelegate != null && bottomToolbarDelegate.isBottomToolbarEnabled()) {
@@ -169,7 +176,9 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
                             paneManager,
                             hubColorMixer,
                             bottomToolbarDelegate,
-                            edgeToEdgeSupplier);
+                            edgeToEdgeSupplier,
+                            currentTabSupplier,
+                            hubLayoutController.getIsHidingSupplier());
         } else {
             mHubBottomToolbarCoordinator = null;
         }
@@ -329,6 +338,7 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
 
         Pane nextPane = getAdjacentPane(isSwipeLeft);
         if (nextPane == null) {
+            mPaneTransitionProgressSupplier.set(null);
             return;
         }
 
@@ -341,6 +351,9 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
         }
 
         mPaneManager.focusPane(nextPane.getPaneId());
+        // End the transition only after the focus change so the toolbar settles on the new pane's
+        // search box state without animating it.
+        mPaneTransitionProgressSupplier.set(null);
     }
 
     @Override
@@ -351,6 +364,7 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
         }
         mHubToolbarCoordinator.setBlockTabSelectionCallback(false);
         mSwipeAnimationProgressSupplier.set(null);
+        mPaneTransitionProgressSupplier.set(null);
     }
 
     @Override
@@ -360,6 +374,12 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
         if (currentPane == null || nextPane == null) return;
 
         mHubToolbarCoordinator.setBlockTabSelectionCallback(true);
+
+        if (mShouldAnimateSearchBox) {
+            mPaneTransitionProgressSupplier.set(
+                    new PaneTransitionProgress(
+                            currentPane.getPaneId(), nextPane.getPaneId(), progress, isSwipeLeft));
+        }
 
         List<Integer> activePaneIds = mPaneManager.getActivePaneOrder();
         int currentActiveIndex = activePaneIds.indexOf(currentPane.getPaneId());
@@ -383,6 +403,20 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
             float scrollOffset = absoluteScroll - scrollPosition;
             mHubToolbarCoordinator.setPaneSwitcherScrollPosition(scrollPosition, scrollOffset);
         }
+    }
+
+    @Override
+    public void onSlideTransitionProgress(
+            @PaneId int fromPaneId, @PaneId int toPaneId, float progress, boolean isSwipeLeft) {
+        if (!mShouldAnimateSearchBox) return;
+
+        mPaneTransitionProgressSupplier.set(
+                new PaneTransitionProgress(fromPaneId, toPaneId, progress, isSwipeLeft));
+    }
+
+    @Override
+    public void onSlideTransitionEnd() {
+        mPaneTransitionProgressSupplier.set(null);
     }
 
     private void onToolbarCloseButtonPressed() {
@@ -479,5 +513,10 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
 
     @Nullable HubBottomToolbarCoordinator getHubBottomToolbarCoordinatorForTesting() {
         return mHubBottomToolbarCoordinator;
+    }
+
+    NullableObservableSupplier<PaneTransitionProgress>
+            getPaneTransitionProgressSupplierForTesting() {
+        return mPaneTransitionProgressSupplier;
     }
 }

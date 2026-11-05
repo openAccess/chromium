@@ -18,7 +18,6 @@
 #include "components/autofill/core/browser/single_field_fillers/payments/merchant_promo_code_manager.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/form_field_data.h"
 
 namespace autofill {
@@ -64,18 +63,12 @@ void SingleFieldFillRouter::OnSingleFieldSuggestionSelected(
     const Suggestion& suggestion) {
   SuggestionType type = suggestion.type;
   if (merchant_promo_code_manager_ &&
-      (type == SuggestionType::kMerchantPromoCodeEntry ||
-       type == SuggestionType::kSeePromoCodeDetails)) {
+      type == SuggestionType::kMerchantPromoCodeEntry) {
     merchant_promo_code_manager_->OnSingleFieldSuggestionSelected(suggestion);
   } else if (iban_manager_ && type == SuggestionType::kIbanEntry) {
     iban_manager_->OnSingleFieldSuggestionSelected(suggestion);
   } else if (type == SuggestionType::kAutocompleteEntry) {
-    // TODO(crbug.com/507313423): Reimplement this metric.
-    if (!base::FeatureList::IsEnabled(
-            features::kAutofillLabelSensitiveAutocomplete)) {
-      autocomplete_history_manager_->OnSingleFieldSuggestionSelected(
-          suggestion);
-    }
+    autocomplete_history_manager_->OnSingleFieldSuggestionSelected(suggestion);
   }
 }
 

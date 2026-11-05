@@ -26,12 +26,10 @@ bool ListItemOrdinal::IsListOwner(const Node& node) {
   // values.
   // See https://html.spec.whatwg.org/#the-li-element and
   // https://drafts.csswg.org/css-contain-2/#containment-style for more details.
-  bool is_list_owner_element = IsA<HTMLUListElement>(node) ||
-                               IsA<HTMLOListElement>(node) ||
-                               IsA<HTMLMenuElement>(node);
-  return (is_list_owner_element &&
-          (!RuntimeEnabledFeatures::ListOwnerMustHaveCSSBoxEnabled() ||
-           node.GetLayoutObject())) ||
+  const bool is_list_owner_element = IsA<HTMLUListElement>(node) ||
+                                     IsA<HTMLOListElement>(node) ||
+                                     IsA<HTMLMenuElement>(node);
+  return (is_list_owner_element && node.GetLayoutObject()) ||
          HasStyleContainment(node);
 }
 
@@ -474,11 +472,6 @@ void ListItemOrdinal::ItemUpdated(const LayoutObject* layout_list_item,
 void ListItemOrdinal::ItemInsertedOrRemoved(
     const LayoutObject* layout_list_item) {
   ItemUpdated(layout_list_item, kInsertedOrRemoved);
-}
-
-void ListItemOrdinal::ItemCounterStyleUpdated(
-    const LayoutObject& layout_list_item) {
-  ItemUpdated(&layout_list_item, kCounterStyle);
 }
 
 }  // namespace blink

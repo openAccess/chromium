@@ -12,6 +12,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "services/webnn/public/cpp/context_properties.h"
+#include "services/webnn/public/cpp/in_renderer_context_handle.h"
 #include "services/webnn/public/cpp/ml_tensor_usage.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
 #include "services/webnn/public/cpp/webnn_trace.h"
@@ -26,10 +27,10 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_device_type.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_power_preference.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/core/typed_arrays/array_buffer_view_helpers.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_base.h"
-#include "third_party/blink/renderer/modules/ml/webnn/allow_shared_buffer_source_util.h"
 #include "third_party/blink/renderer/modules/ml/webnn/ml_graph.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
@@ -40,6 +41,7 @@
 
 namespace gpu {
 class ClientSharedImage;
+class WebNNScopedAccess;
 }  // namespace gpu
 
 namespace blink {
@@ -94,12 +96,12 @@ class MODULES_EXPORT MLContext : public ScriptWrappable {
   ScriptPromise<MLTensor> createConstantTensor(
       ScriptState* script_state,
       const MLOperandDescriptor* descriptor,
-      AllowSharedBufferSource* src_data,
+      const V8AllowSharedBufferSource* src_data,
       ExceptionState& exception_state);
 
   void writeTensor(ScriptState* script_state,
                    MLTensor* dst_tensor,
-                   AllowSharedBufferSource* src_data,
+                   const V8AllowSharedBufferSource* src_data,
                    ExceptionState& exception_state);
 
   ScriptPromise<DOMArrayBuffer> readTensor(ScriptState* script_state,
@@ -108,7 +110,7 @@ class MODULES_EXPORT MLContext : public ScriptWrappable {
 
   ScriptPromise<IDLUndefined> readTensor(ScriptState* script_state,
                                          MLTensor* src_tensor,
-                                         AllowSharedBufferSource* dst_data,
+                                         V8AllowSharedBufferSource* dst_data,
                                          ExceptionState& exception_state);
 
   void dispatch(ScriptState* script_state,
@@ -153,13 +155,15 @@ class MODULES_EXPORT MLContext : public ScriptWrappable {
   // reconnect; the next CreateWebNNGraphBuilder() triggers reconnection.
   void OnCompilerContextDisconnected();
 
-  void DidCreateWebNNTensor(webnn::ScopedTrace scoped_trace,
-                            ScriptPromiseResolver<blink::MLTensor>* resolver,
-                            webnn::OperandDescriptor validated_descriptor,
-                            webnn::MLTensorUsage usage,
-                            scoped_refptr<gpu::ClientSharedImage> shared_image,
-                            GPUDevice* gpu_device,
-                            webnn::mojom::blink::CreateTensorResultPtr result);
+  void DidCreateWebNNTensor(
+      webnn::ScopedTrace scoped_trace,
+      ScriptPromiseResolver<blink::MLTensor>* resolver,
+      webnn::OperandDescriptor validated_descriptor,
+      webnn::MLTensorUsage usage,
+      scoped_refptr<gpu::ClientSharedImage> shared_image,
+      std::unique_ptr<gpu::WebNNScopedAccess> webnn_scoped_access,
+      GPUDevice* gpu_device,
+      webnn::mojom::blink::CreateTensorResultPtr result);
 
   V8MLDeviceType device_type_;
   V8MLPowerPreference power_preference_;
@@ -191,6 +195,10 @@ class MODULES_EXPORT MLContext : public ScriptWrappable {
 
   // Identifies this `WebNNContext` mojo instance in the service process.
   const blink::WebNNContextToken webnn_handle_;
+
+  // In-renderer fast-path side channel for dispatch() and graph destruction;
+  // see MLTensor's own fast path for the same pattern.
+  scoped_refptr<webnn::InRendererContextHandle> in_renderer_context_handle_;
 
   // Keep a set of unresolved `ScriptPromiseResolver`s which will be
   // rejected when the Mojo pipe is unexpectedly disconnected.

@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {CalendarAction, CalendarEventElement} from 'chrome://new-tab-page/lazy_load.js';
+import type {CalendarEventElement} from 'chrome://new-tab-page/lazy_load.js';
+import {CalendarAction} from 'chrome://new-tab-page/lazy_load.js';
 import {$$, WindowProxy} from 'chrome://new-tab-page/new_tab_page.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
@@ -28,7 +29,7 @@ suite('NewTabPageModulesCalendarEventTest', () => {
     windowProxy.setResultFor('now', startTime);
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     document.body.style.width = '300px';
-    element = new CalendarEventElement();
+    element = document.createElement('ntp-calendar-event');
     element.event = createEvent(1);
     element.expanded = false;
     document.body.append(element);
@@ -244,6 +245,22 @@ suite('NewTabPageModulesCalendarEventTest', () => {
       const conferenceElement = $$(element, '#conference');
       assertTrue(!!conferenceElement);
       assertFalse(isVisible(conferenceElement));
+    });
+
+    test('conference button aria-label with html in title', async () => {
+      element.expanded = true;
+      element.event = createEvent(1, {
+        title: '<CLOH< Test Meeting',
+        conferenceUrl: 'https://google.com/',
+      });
+      await microtasksFinished();
+
+      const conferenceButton = element.renderRoot.querySelector<HTMLElement>(
+          '#conference cr-button');
+      assertTrue(!!conferenceButton);
+      assertEquals(
+          'Join meeting <CLOH< Test Meeting',
+          conferenceButton.getAttribute('aria-label'));
     });
   });
 

@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.keyboard_accessory;
 
-import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 
@@ -21,7 +20,6 @@ import static org.chromium.chrome.browser.keyboard_accessory.bar_component.Keybo
 import static org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryTestHelper.checkThatAccessoryViewFullyShown;
 import static org.chromium.ui.base.LocalizationUtils.setRtlForTesting;
 import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
-import static org.chromium.ui.test.util.ViewUtils.waitForView;
 
 import android.app.Activity;
 import android.text.method.PasswordTransformationMethod;
@@ -46,7 +44,6 @@ import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
 import org.junit.Assert;
 
-import org.chromium.base.CallbackUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
@@ -66,9 +63,7 @@ import org.chromium.chrome.browser.keyboard_accessory.data.Provider;
 import org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.AddressAccessorySheetCoordinator;
 import org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.CreditCardAccessorySheetCoordinator;
 import org.chromium.chrome.browser.keyboard_accessory.sheet_tabs.PasswordAccessorySheetCoordinator;
-import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.BaseCtaTransitTestRule;
-import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.autofill.AutofillProfile;
 import org.chromium.content_public.browser.ImeAdapter;
@@ -137,14 +132,7 @@ public class ManualFillingTestHelper {
         getOrCreateTestServer();
         ChromeWindow.setKeyboardVisibilityDelegateFactory(keyboardDelegate);
 
-        WebPageStation page;
-        if (mActivityTestRule instanceof AutoResetCtaTransitTestRule autoResetCtaTransitTestRule) {
-            page = autoResetCtaTransitTestRule.startOnWebPage(mEmbeddedTestServer.getURL(url));
-        } else if (mActivityTestRule instanceof FreshCtaTransitTestRule freshCtaTransitTestRule) {
-            page = freshCtaTransitTestRule.startOnUrl(mEmbeddedTestServer.getURL(url));
-        } else {
-            throw new IllegalArgumentException("Unsupported rule: " + mActivityTestRule.getClass());
-        }
+        WebPageStation page = mActivityTestRule.startOnWebPage(mEmbeddedTestServer.getURL(url));
 
         setRtlForTesting(isRtl);
         updateWebContentsDependentState();
@@ -424,7 +412,9 @@ public class ManualFillingTestHelper {
     }
 
     private KeyboardAccessoryCoordinator getKeyboardAccessoryBar() {
-        return getManualFillingCoordinator().getMediatorForTesting().getKeyboardAccessory();
+        return getManualFillingCoordinator()
+                .getMediatorForTesting()
+                .getKeyboardAccessoryForTesting();
     }
 
     private View getFirstAccessorySuggestion() {
@@ -641,17 +631,6 @@ public class ManualFillingTestHelper {
         return onViewWaiting(matcher, ViewElement.displayingAtLeastOption(atLeast));
     }
 
-    public ViewInteraction waitForViewOnRoot(View root, Matcher<View> matcher) {
-        waitForView((ViewGroup) root, allOf(matcher, isDisplayed()));
-        return onView(matcher);
-    }
-
-    public ViewInteraction waitForViewOnActivityRoot(Matcher<View> matcher) {
-        return waitForViewOnRoot(
-                mActivityTestRule.getActivity().findViewById(android.R.id.content).getRootView(),
-                matcher);
-    }
-
     public static void waitToBeHidden(Matcher<View> matcher) {
         waitForNoView(matcher);
     }
@@ -676,7 +655,7 @@ public class ManualFillingTestHelper {
                                 new KeyboardAccessoryData.Action[] {
                                     new KeyboardAccessoryData.Action(
                                             AccessoryAction.GENERATE_PASSWORD_AUTOMATIC,
-                                            CallbackUtils.emptyCallback())
+                                            wasObscured -> {})
                                 }));
     }
 

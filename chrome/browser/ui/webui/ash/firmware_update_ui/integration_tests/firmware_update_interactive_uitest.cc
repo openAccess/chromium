@@ -2,10 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/webui/firmware_update_ui/url_constants.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/test/base/ash/interactive/interactive_ash_test.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "chromeos/ash/components/dbus/fwupd/fake_fwupd_client.h"
@@ -44,7 +42,7 @@ class FirmwareUpdateInteractiveUiTest : public InteractiveAshTest {
 
   auto TriggerFwupdPropertiesChange(uint32_t percentage, FwupdStatus status) {
     return Do([this, percentage, status]() {
-      DCHECK(fwupd_client());
+      CHECK(fwupd_client(), base::NotFatalUntil::M162);
       fwupd_client()->TriggerPropertiesChangeForTesting(
           percentage, static_cast<uint32_t>(status));
     });
@@ -52,14 +50,14 @@ class FirmwareUpdateInteractiveUiTest : public InteractiveAshTest {
 
   auto TriggerSuccessfulUpdate() {
     return Steps(Do([this]() {
-      DCHECK(fwupd_client());
+      CHECK(fwupd_client(), base::NotFatalUntil::M162);
       fwupd_client()->TriggerSuccessfulUpdateForTesting();
     }));
   }
 
   auto TriggerDeviceRequestToUnplugReplug() {
     return Steps(Do([this]() {
-      DCHECK(fwupd_client());
+      CHECK(fwupd_client(), base::NotFatalUntil::M162);
       // A device_request_id of 1 corresponds to FWUPD_REQUEST_ID_REMOVE_REPLUG
       // in firmware_update.mojom.
       fwupd_client()->EmitDeviceRequestForTesting(/*device_request_id=*/1);
@@ -70,7 +68,6 @@ class FirmwareUpdateInteractiveUiTest : public InteractiveAshTest {
 
  protected:
   ui::ElementIdentifier webcontents_id_;
-  base::test::ScopedFeatureList feature_list_;
 };
 
 DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<bool>,
@@ -167,12 +164,11 @@ class FirmwareUpdateInteractiveUiTestWithReboot
 
     base::CommandLine& command_line = *base::CommandLine::ForCurrentProcess();
     command_line.AppendSwitch(switches::kRevenBranding);
-    feature_list_.InitAndEnableFeature(features::kFlexFirmwareUpdate);
   }
 
   auto SetUpdateToRequireReboot() {
     return Steps(Do([this]() {
-      DCHECK(fwupd_client());
+      CHECK(fwupd_client(), base::NotFatalUntil::M162);
       fwupd_client()->set_update_with_reboot(true);
     }));
   }

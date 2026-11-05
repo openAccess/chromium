@@ -14,14 +14,13 @@
 
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list_types.h"
 #include "base/time/time.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "components/contextual_tasks/public/query_contextualizer.h"
-#include "components/omnibox/browser/autocomplete_controller.h"
 #include "components/omnibox/browser/autocomplete_enums.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
@@ -32,14 +31,16 @@
 #include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/gfx/native_ui_types.h"
 #include "url/gurl.h"
 
+class AutocompleteController;
 class OmniboxController;
 class OmniboxPopupView;
-class TemplateURL;
 class Profile;
+class TemplateURL;
+
 namespace contextual_search {
 class ContextualSearchSessionHandle;
 }
@@ -49,7 +50,7 @@ class Image;
 
 class OmniboxEditModel {
   // TODO(crbug.com/392015004): Remove this macro once it gets fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   struct State {
@@ -184,8 +185,14 @@ class OmniboxEditModel {
                          bool* write_url);
 
   bool user_input_in_progress() const { return user_input_in_progress_; }
+  bool has_temporary_text() const { return has_temporary_text_; }
 
   std::u16string user_text() const { return user_text_; }
+
+  // Returns true if the user has an uncommitted draft: non-empty user text, or
+  // keyword mode, even with empty user text. In Full WebUI mode, a draft keeps
+  // the popup open when the omnibox is blurred.
+  bool HasDraft() const;
 
   // Encapsulates all the varied conditions for whether to override the
   // permanent page icon (associated with the currently displayed page),
@@ -292,19 +299,23 @@ class OmniboxEditModel {
   // `via_keyboard` is set to `true` if the selection was opened due to a
   // keyboard event and is set to `false` if the selection was opened due
   // to a mouse / gesture event.
-  void OpenSelection(
-      OmniboxPopupSelection selection,
-      base::TimeTicks timestamp = base::TimeTicks(),
-      WindowOpenDisposition disposition = WindowOpenDisposition::CURRENT_TAB,
-      bool via_keyboard = false);
+  // `snapshot`, if non-null, supplies the specific autocomplete snapshot
+  // (matches and input) to use rather than using the live
+  // `autocomplete_controller()->result()` and input.
+  void OpenSelection(OmniboxPopupSelection selection,
+                     base::TimeTicks timestamp = base::TimeTicks(),
+                     ui::mojom::WindowOpenDisposition disposition =
+                         ui::mojom::WindowOpenDisposition::kCurrentTab,
+                     bool via_keyboard = false,
+                     const searchbox::AutocompleteSnapshot* snapshot = nullptr);
   void OpenSelection(OmniboxPopupSelection selection, bool via_keyboard);
 
   // A simplified version of `OpenSelection()` that opens the model's current
   // selection.
-  void OpenCurrentSelection(
-      base::TimeTicks timestamp = base::TimeTicks(),
-      WindowOpenDisposition disposition = WindowOpenDisposition::CURRENT_TAB,
-      bool via_keyboard = false);
+  void OpenCurrentSelection(base::TimeTicks timestamp = base::TimeTicks(),
+                            ui::mojom::WindowOpenDisposition disposition =
+                                ui::mojom::WindowOpenDisposition::kCurrentTab,
+                            bool via_keyboard = false);
 
   OmniboxFocusState focus_state() const { return focus_state_; }
   bool has_focus() const { return focus_state_ != OMNIBOX_FOCUS_NONE; }
@@ -537,9 +548,9 @@ class OmniboxEditModel {
   void TryDeletingPopupLine(size_t line);
 
   // Returns the popup's accessibility label for current selection. This is an
-  // extended version of AutocompleteMatchType::ToAccessibilityLabel() which
-  // also returns narration about the any focused secondary button.
-  // Never call this when the current selection is kNoMatch.
+  // extended version of omnibox::AutocompleteMatchToAccessibilityLabel()
+  // which also returns narration about the any focused secondary button. Never
+  // call this when the current selection is kNoMatch.
   std::u16string GetPopupAccessibilityLabelForCurrentSelection(
       const std::u16string& match_text,
       bool include_positional_info,
@@ -652,7 +663,7 @@ class OmniboxEditModel {
   // Asks the browser to load the popup's currently selected item, using the
   // supplied disposition.  This may close the popup.
   void AcceptInput(
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       base::TimeTicks match_selection_timestamp = base::TimeTicks());
 
   // Asks the browser to load |match| or execute one of its actions
@@ -675,15 +686,16 @@ class OmniboxEditModel {
   //     preserve it past the popup closure.
   void OpenMatch(OmniboxPopupSelection selection,
                  AutocompleteMatch match,
-                 WindowOpenDisposition disposition,
+                 ui::mojom::WindowOpenDisposition disposition,
                  const GURL& alternate_nav_url,
                  const std::u16string& pasted_text,
-                 base::TimeTicks match_selection_timestamp = base::TimeTicks());
+                 base::TimeTicks match_selection_timestamp = base::TimeTicks(),
+                 const searchbox::AutocompleteSnapshot* snapshot = nullptr);
 
   void OnDefaultSearchExtensionDialogDone(
       OmniboxPopupSelection selection,
       AutocompleteMatch match,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const GURL& alternate_nav_url,
       const std::u16string& pasted_text,
       base::TimeTicks match_selection_timestamp,
@@ -769,7 +781,7 @@ class OmniboxEditModel {
   // Helper for `OpenAiMode()` to determine whether the AIM popup should open or
   // a navigation should occur.
   bool ShouldOpenAimPopup(AimActivation activation,
-                          AutocompleteMatchType::Type current_match_type);
+                          omnibox::AutocompleteMatchType current_match_type);
 
   // Helper for `OpenAiMode()` to initialize `query_contextualizer_`. No-op if
   // called before. `query_contextualizer_` may be null after this is called.
@@ -788,7 +800,7 @@ class OmniboxEditModel {
   // Helper for `OpenAiMode()`...
   void NavigateToAiModeWithContextualizerOnContextualizationComplete(
       const std::u16string& query_text,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       base::WeakPtr<contextual_search::ContextualSearchSessionHandle>
           session_handle);
 
@@ -798,7 +810,7 @@ class OmniboxEditModel {
       base::WeakPtr<contextual_search::ContextualSearchSessionHandle>
           session_handle,
       const std::u16string& query_text,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       GURL url);
 
   // Helper for `OpenAiMode()` to navigate to Google's AI mode page without
@@ -952,7 +964,7 @@ class OmniboxEditModel {
   // The current popup selection; set to normal kNoMatch when there's no popup.
   OmniboxPopupSelection popup_selection_ =
       OmniboxPopupSelection(OmniboxPopupSelection::kNoMatch,
-                            OmniboxPopupSelection::NORMAL);
+                            OmniboxPopupSelection::LineState::kNormal);
 
   // When a result changes, this informs of the URL in the previously selected
   // suggestion whose tab switch button was focused, so that we may compare

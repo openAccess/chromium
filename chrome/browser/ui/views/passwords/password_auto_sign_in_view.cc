@@ -15,6 +15,7 @@
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/passwords/credentials_item_view.h"
 #include "chrome/grit/generated_resources.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -45,7 +46,7 @@ PasswordAutoSignInView::PasswordAutoSignInView(
       AddChildView(std::make_unique<CredentialsItemView>(
           views::Button::PressedCallback(),
           l10n_util::GetStringUTF16(IDS_MANAGE_PASSWORDS_AUTO_SIGNIN_TITLE_MD),
-          form.username_value, &form,
+          GetSingleLineDisplayText(form.username_value), &form,
           GetURLLoaderForMainFrame(web_contents).get(),
           web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin(),
           views::style::STYLE_HINT, views::style::STYLE_PRIMARY));

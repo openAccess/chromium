@@ -59,7 +59,7 @@ namespace bookmark_utils_ios {
 
 namespace {
 
-void RemoveBookmarksRecursive(const std::set<const BookmarkNode*>& bookmarks,
+void RemoveBookmarksRecursive(const NodeSet& bookmarks,
                               bookmarks::BookmarkModel* model,
                               bookmarks::metrics::BookmarkEditSource source,
                               const BookmarkNode* node,
@@ -85,11 +85,10 @@ const BookmarkNode* FindFolderById(const bookmarks::BookmarkModel* model,
   return (node && node->is_folder()) ? node : nullptr;
 }
 
-std::set<raw_ptr<const BookmarkNode>> GetBookmarkNodesByIds(
-    const bookmarks::BookmarkModel* model,
-    const std::set<int64_t>& ids) {
+NodeSet GetBookmarkNodesByIds(const bookmarks::BookmarkModel* model,
+                              const std::set<int64_t>& ids) {
   CHECK(model);
-  std::set<raw_ptr<const BookmarkNode>> nodes;
+  NodeSet nodes;
   for (int64_t id : ids) {
     const BookmarkNode* node = bookmarks::GetBookmarkNodeByID(model, id);
     if (node) {
@@ -99,11 +98,10 @@ std::set<raw_ptr<const BookmarkNode>> GetBookmarkNodesByIds(
   return nodes;
 }
 
-std::vector<raw_ptr<const BookmarkNode>> GetBookmarkNodesByIds(
-    const bookmarks::BookmarkModel* model,
-    const std::vector<int64_t>& ids) {
+NodeVector GetBookmarkNodesByIds(const bookmarks::BookmarkModel* model,
+                                 const std::vector<int64_t>& ids) {
   CHECK(model);
-  std::vector<raw_ptr<const BookmarkNode>> nodes;
+  NodeVector nodes;
   for (int64_t id : ids) {
     const BookmarkNode* node = bookmarks::GetBookmarkNodeByID(model, id);
     if (node) {
@@ -113,8 +111,7 @@ std::vector<raw_ptr<const BookmarkNode>> GetBookmarkNodesByIds(
   return nodes;
 }
 
-std::vector<int64_t> GetBookmarkNodeIds(
-    const std::vector<raw_ptr<const BookmarkNode>>& nodes) {
+std::vector<int64_t> GetBookmarkNodeIds(const NodeVector& nodes) {
   std::vector<int64_t> ids;
   for (const BookmarkNode* node : nodes) {
     ids.push_back(node->id());
@@ -400,7 +397,7 @@ SnackbarMessage* UpdateBookmarkPositionWithUndoSnackbar(
                                     "MobileBookmarkManagerMoveToFolderUndone");
 }
 
-void DeleteBookmarks(const std::set<const BookmarkNode*>& bookmarks,
+void DeleteBookmarks(const NodeSet& bookmarks,
                      bookmarks::BookmarkModel* bookmark_model,
                      const base::Location& location) {
   CHECK(bookmark_model);
@@ -411,7 +408,7 @@ void DeleteBookmarks(const std::set<const BookmarkNode*>& bookmarks,
 }
 
 SnackbarMessage* DeleteBookmarksWithUndoSnackbar(
-    const std::set<const BookmarkNode*>& nodes,
+    const NodeSet& nodes,
     bookmarks::BookmarkModel* bookmark_model,
     ProfileIOS* profile,
     const base::Location& location) {
@@ -434,9 +431,7 @@ SnackbarMessage* DeleteBookmarksWithUndoSnackbar(
       "MobileBookmarkManagerDeletedEntryUndone");
 }
 
-using BookmarkNodeVectorIterator = std::vector<const BookmarkNode*>::iterator;
-
-bool MoveBookmarks(const std::vector<const BookmarkNode*>& bookmarks_to_move,
+bool MoveBookmarks(const NodeVector& bookmarks_to_move,
                    bookmarks::BookmarkModel* model,
                    const BookmarkNode* destination_folder) {
   bool did_perform_move = false;
@@ -459,7 +454,7 @@ bool MoveBookmarks(const std::vector<const BookmarkNode*>& bookmarks_to_move,
 }
 
 SnackbarMessage* MoveBookmarksWithUndoSnackbar(
-    const std::vector<const BookmarkNode*>& bookmarks_to_move,
+    const NodeVector& bookmarks_to_move,
     bookmarks::BookmarkModel* model,
     const BookmarkNode* destination_folder,
     ProfileIOS* profile,
@@ -509,10 +504,9 @@ namespace {
 // Adds all children of `folder` that are not obstructed to `results`. They are
 // placed immediately after `folder`, using a depth-first, then alphabetically
 // ordering. `results` must contain `folder`.
-void UpdateFoldersFromNode(
-    const BookmarkNode* folder,
-    std::vector<raw_ptr<const bookmarks::BookmarkNode>>* results,
-    const NodeSet& obstructions);
+void UpdateFoldersFromNode(const BookmarkNode* folder,
+                           NodeVector* results,
+                           const NodeSet& obstructions);
 
 // Returns whether `folder` has an ancestor in any of the nodes in
 // `bookmarkNodes`.
@@ -567,11 +561,10 @@ bool IsObstructed(const BookmarkNode* node, const NodeSet& obstructions) {
   return false;
 }
 
-void UpdateFoldersFromNode(
-    const BookmarkNode* folder,
-    std::vector<raw_ptr<const bookmarks::BookmarkNode>>* results,
-    const NodeSet& obstructions) {
-  std::vector<const BookmarkNode*> directDescendants;
+void UpdateFoldersFromNode(const BookmarkNode* folder,
+                           NodeVector* results,
+                           const NodeSet& obstructions) {
+  NodeVector directDescendants;
   for (const auto& subfolder : folder->children()) {
     if (!IsObstructed(subfolder.get(), obstructions)) {
       directDescendants.push_back(subfolder.get());
@@ -586,7 +579,7 @@ void UpdateFoldersFromNode(
   results->insert(it, directDescendants.begin(), directDescendants.end());
 
   // Recursively perform the operation on each direct descendant.
-  for (auto* node : directDescendants) {
+  for (const bookmarks::BookmarkNode* node : directDescendants) {
     UpdateFoldersFromNode(node, results, obstructions);
   }
 }
@@ -603,14 +596,15 @@ void SortFolders(NodeVector* vector) {
             FolderNodeComparator(collator.get()));
 }
 
-std::vector<raw_ptr<const bookmarks::BookmarkNode>> VisibleNonDescendantNodes(
+NodeVector VisibleNonDescendantNodes(
     const NodeSet& obstructions,
     const bookmarks::BookmarkModel* model,
     BookmarkStorageType type,
     const std::vector<std::u16string>& search_terms) {
-  NodeVector primary_nodes = PrimaryPermanentNodes(model, type);
-  std::vector<raw_ptr<const bookmarks::BookmarkNode>> filtered_primary_nodes;
-  for (auto* node : primary_nodes) {
+  std::vector<const BookmarkNode*> primary_nodes =
+      PrimaryPermanentNodes(model, type);
+  NodeVector filtered_primary_nodes;
+  for (const bookmarks::BookmarkNode* node : primary_nodes) {
     if (IsObstructed(node, obstructions)) {
       continue;
     }
@@ -619,8 +613,7 @@ std::vector<raw_ptr<const bookmarks::BookmarkNode>> VisibleNonDescendantNodes(
   }
 
   // Copy the results over.
-  std::vector<raw_ptr<const bookmarks::BookmarkNode>> inner_results =
-      filtered_primary_nodes;
+  NodeVector inner_results = filtered_primary_nodes;
 
   // Iterate over a static copy of the filtered, root folders.
   for (raw_ptr<const bookmarks::BookmarkNode> node : filtered_primary_nodes) {
@@ -630,7 +623,7 @@ std::vector<raw_ptr<const bookmarks::BookmarkNode>> VisibleNonDescendantNodes(
   if (search_terms.empty()) {
     return inner_results;
   }
-  std::vector<raw_ptr<const bookmarks::BookmarkNode>> results;
+  NodeVector results;
   std::copy_if(inner_results.begin(), inner_results.end(),
                std::back_inserter(results), [search_terms](auto node) {
                  return bookmarks::DoesBookmarkContainWords(
@@ -638,56 +631,6 @@ std::vector<raw_ptr<const bookmarks::BookmarkNode>> VisibleNonDescendantNodes(
                });
 
   return results;
-}
-
-// Whether `vector1` contains only elements of `vector2` in the same order.
-BOOL IsSubvectorOfNodes(const NodeVector& vector1, const NodeVector& vector2) {
-  NodeVector::const_iterator it = vector2.begin();
-  // Scan the first vector.
-  for (const auto* node : vector1) {
-    // Look for a match in the rest of the second vector. When found, advance
-    // the iterator on vector2 to only focus on the remaining part of vector2,
-    // so that ordering is verified.
-    it = std::find(it, vector2.end(), node);
-    if (it == vector2.end()) {
-      return NO;
-    }
-    // If found in vector2, advance the iterator so that the match is only
-    // matched once.
-    it++;
-  }
-  return YES;
-}
-
-// Returns the indices in `vector2` of the items in `vector2` that are not
-// present in `vector1`.
-// `vector1` MUST be a subvector of `vector2` in the sense of `IsSubvector`.
-std::vector<NodeVector::size_type> MissingNodesIndices(
-    const NodeVector& vector1,
-    const NodeVector& vector2) {
-  CHECK(IsSubvectorOfNodes(vector1, vector2), base::NotFatalUntil::M152)
-      << "Can't compute missing nodes between nodes among which the first is "
-         "not a subvector of the second.";
-
-  std::vector<NodeVector::size_type> missing_nodes_indices;
-  // Keep an iterator on vector1.
-  NodeVector::const_iterator it1 = vector1.begin();
-  // Scan vector2, looking for vector1 elements.
-  for (NodeVector::size_type i2 = 0; i2 != vector2.size(); i2++) {
-    // When vector1 has been fully traversed, all remaining elements of vector2
-    // are to be added to the missing nodes.
-    // Otherwise, while the element of vector2 is not equal to the element the
-    // iterator on vector1 is pointing to, add vector2 elements to the missing
-    // nodes.
-    if (it1 == vector1.end() || vector2[i2] != *it1) {
-      missing_nodes_indices.push_back(i2);
-    } else {
-      // When there is a match between vector2 and vector1, advance the iterator
-      // of vector1.
-      it1++;
-    }
-  }
-  return missing_nodes_indices;
 }
 
 #pragma mark - Cache position in table view.

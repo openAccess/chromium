@@ -49,6 +49,7 @@
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/mojom/frame/user_activation_update_types.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/loader/fetch_later.mojom-blink.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-blink.h"
 #include "third_party/blink/public/platform/cross_variant_mojo_util.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_provider.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_provider_client.h"
@@ -309,9 +310,10 @@ void LocalFrameClientImpl::WillReleaseScriptContext(
   }
 }
 
-void LocalFrameClientImpl::DidChangeScrollOffset() {
+void LocalFrameClientImpl::DidChangeScrollOffset(
+    mojom::blink::ScrollType scroll_type) {
   if (web_frame_->Client()) {
-    web_frame_->Client()->DidChangeScrollOffset();
+    web_frame_->Client()->DidChangeScrollOffset(scroll_type);
   }
 }
 
@@ -627,7 +629,7 @@ void LocalFrameClientImpl::BeginNavigation(
     base::TimeTicks actual_navigation_start,
     const String& href_translate,
     const LocalFrameToken* initiator_frame_token,
-    const base::UnguessableToken& initiator_state_token,
+    const InitiatorStateToken& initiator_state_token,
     const DocumentToken& initiator_document_token,
     SourceLocation* source_location,
     mojo::PendingRemote<mojom::blink::NavigationStateKeepAliveHandle>
@@ -636,7 +638,8 @@ void LocalFrameClientImpl::BeginNavigation(
     bool has_rel_opener,
     mojo::PendingReceiver<mojom::blink::NavigationResumeDeferredCommitListener>
         resume_defer_commit_listener,
-    std::optional<base::UnguessableToken> script_tool_invocation_id) {
+    std::optional<ToolInvocationToken> script_tool_invocation_id,
+    const String& script_injector_host) {
   if (!web_frame_->Client()) {
     return;
   }
@@ -657,11 +660,8 @@ void LocalFrameClientImpl::BeginNavigation(
   navigation_info->is_unfenced_top_navigation = is_unfenced_top_navigation;
   navigation_info->frame_load_type = frame_load_type;
   navigation_info->is_client_redirect = is_client_redirect;
-
-  if (script_tool_invocation_id.has_value()) {
-    navigation_info->script_tool_invocation_id =
-        script_tool_invocation_id.value();
-  }
+  navigation_info->script_injector_host = script_injector_host;
+  navigation_info->script_tool_invocation_id = script_tool_invocation_id;
 
   navigation_info->triggering_event_info = triggering_event_info;
   navigation_info->should_check_main_world_content_security_policy =
@@ -670,7 +670,6 @@ void LocalFrameClientImpl::BeginNavigation(
   navigation_info->input_start = input_start_time;
   navigation_info->actual_navigation_start = actual_navigation_start;
   navigation_info->initiator_state_token = initiator_state_token;
-  CHECK(!navigation_info->initiator_state_token.is_empty());
   navigation_info->initiator_document_token = initiator_document_token;
   navigation_info->initiator_frame_token =
       base::OptionalFromPtr(initiator_frame_token);
@@ -872,9 +871,10 @@ void LocalFrameClientImpl::DidObserveUserInteraction(
   }
 }
 
-void LocalFrameClientImpl::DidChangeCpuTiming(base::TimeDelta time) {
+void LocalFrameClientImpl::DidChangeCpuTiming(base::TimeDelta time,
+                                              base::TimeDelta ad_time) {
   if (web_frame_->Client()) {
-    web_frame_->Client()->DidChangeCpuTiming(time);
+    web_frame_->Client()->DidChangeCpuTiming(time, ad_time);
   }
 }
 
@@ -999,13 +999,6 @@ LocalFrame* LocalFrameClientImpl::CreateFrame(
     const AtomicString& name,
     HTMLFrameOwnerElement* owner_element) {
   return web_frame_->CreateChildFrame(name, owner_element);
-}
-
-RemoteFrame* LocalFrameClientImpl::CreateFencedFrame(
-    HTMLFencedFrameElement* fenced_frame,
-    mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>
-        receiver) {
-  return web_frame_->CreateFencedFrame(fenced_frame, std::move(receiver));
 }
 
 WebPluginContainerImpl* LocalFrameClientImpl::CreatePlugin(
@@ -1287,6 +1280,10 @@ void LocalFrameClientImpl::BindDevToolsAgent(
 
 bool LocalFrameClientImpl::IsDomStorageDisabled() const {
   return web_frame_->Client()->IsDomStorageDisabled();
+}
+
+bool LocalFrameClientImpl::AreDedicatedWorkersDisabled() const {
+  return web_frame_->Client()->AreDedicatedWorkersDisabled();
 }
 
 bool LocalFrameClientImpl::IsForInitialWebUI() const {

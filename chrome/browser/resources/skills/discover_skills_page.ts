@@ -22,17 +22,11 @@ import {getHtml} from './discover_skills_page.html.js';
 import type {Skill, TopicInfo} from './skill.mojom-webui.js';
 import {SkillsDialogType, SkillSource} from './skill.mojom-webui.js';
 import {SkillsManagementAction, SkillsManagementPage} from './skill_metrics.mojom-webui.js';
-import type {BrowseSkillsInitialState} from './skills.mojom-webui.js';
-import {SkillsPageBrowserProxy} from './skills_page_browser_proxy.js';
+import {browserProxyFactory} from './skills.mojom-webui.js';
+import type {BrowserProxy, BrowseSkillsInitialState} from './skills.mojom-webui.js';
 
 // The default category name for all skills.
 const kAllCategoriesString: string = loadTimeData.getString('all');
-
-export interface DiscoverSkillsPageElement {
-  $: {
-    invalidSkillToast: CrToastElement,
-  };
-}
 
 export class DiscoverSkillsPageElement extends CrLitElement {
   static get is() {
@@ -68,7 +62,7 @@ export class DiscoverSkillsPageElement extends CrLitElement {
   protected accessor is1PSkillSaving_: boolean = false;
   protected accessor searchTerm_: string = '';
   private listenerIds_: number[] = [];
-  private proxy_: SkillsPageBrowserProxy = SkillsPageBrowserProxy.getInstance();
+  private proxy_: BrowserProxy = browserProxyFactory.getInstance();
   private eventTracker_: EventTracker = new EventTracker();
 
   override connectedCallback() {
@@ -113,7 +107,8 @@ export class DiscoverSkillsPageElement extends CrLitElement {
       if (success) {
         this.proxy_.handler.openSkillsDialog(SkillsDialogType.kAdd, savedSkill);
       } else {
-        this.$.invalidSkillToast.show();
+        this.shadowRoot.querySelector<CrToastElement>(
+                           '#invalidSkillToast')!.show();
         this.skillsPendingRemoval_ =
             new Set([...this.skillsPendingRemoval_, savedSkill.id]);
       }

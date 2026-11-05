@@ -1,0 +1,55 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#ifndef IOS_CHROME_BROWSER_INTELLIGENCE_ACTOR_COORDINATOR_ACTUATION_WORKLOG_MEDIATOR_H_
+#define IOS_CHROME_BROWSER_INTELLIGENCE_ACTOR_COORDINATOR_ACTUATION_WORKLOG_MEDIATOR_H_
+
+#import <Foundation/Foundation.h>
+
+#import "ios/chrome/browser/intelligence/actor/coordinator/actuation_suggestions_delegate.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_task_intervention_delegate.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
+#import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_mutator.h"
+
+namespace actor {
+class ActorService;
+}  // namespace actor
+
+@protocol ActuationSuggestionsConsumer;
+@protocol ActuationWorklogConsumer;
+@protocol ActuationWorklogDataSource;
+
+// Translates the worklog of an `ActorTask` into displayable timeline items and
+// action chips for an `ActuationWorklogConsumer`.
+@interface ActuationWorklogMediator : NSObject <ActorTaskInterventionDelegate,
+                                                ActuationSuggestionsDelegate,
+                                                ActuationWorklogMutator>
+
+// The consumer that receives formatted worklog updates.
+@property(nonatomic, weak) id<ActuationWorklogConsumer> consumer;
+
+// Consumer handling suggestion coordinator lifecycle.
+@property(nonatomic, weak) id<ActuationSuggestionsConsumer> suggestionsConsumer;
+
+// Designated initializer with the service handling the task interventions.
+- (instancetype)initWithActorService:(actor::ActorService*)actorService
+    NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+// Starts displaying the worklog of the task identified by `taskID`, as
+// published by `dataSource`, replacing any previously observed task.
+- (void)startObservingTaskWithID:(actor::ActorTaskId)taskID
+                      dataSource:(id<ActuationWorklogDataSource>)dataSource;
+
+// Stops observing the current task and resets the worklog. No-op if no task is
+// observed.
+- (void)stopObservingTask;
+
+// Disconnects the mediator and cleans up references.
+- (void)disconnect;
+
+@end
+
+#endif  // IOS_CHROME_BROWSER_INTELLIGENCE_ACTOR_COORDINATOR_ACTUATION_WORKLOG_MEDIATOR_H_

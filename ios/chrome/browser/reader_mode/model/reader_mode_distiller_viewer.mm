@@ -9,13 +9,14 @@
 
 #import "base/base64.h"
 #import "base/functional/bind.h"
+#import "base/rand_util.h"
 #import "base/strings/utf_string_conversions.h"
 #import "components/dom_distiller/core/distilled_page_prefs.h"
 #import "components/dom_distiller/core/distiller.h"
 #import "components/dom_distiller/core/dom_distiller_request_view_base.h"
 #import "components/dom_distiller/core/proto/distilled_article.pb.h"
 #import "components/dom_distiller/core/viewer.h"
-#import "ios/chrome/browser/dom_distiller/model/distiller_service.h"
+#import "ios/chrome/browser/web_distiller/model/distiller_service.h"
 #import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
 
@@ -25,13 +26,14 @@ ReaderModeDistillerViewer::ReaderModeDistillerViewer(
     std::unique_ptr<dom_distiller::DistillerPage> page,
     const GURL& url,
     DistillationFinishedCallback callback)
-    : DistillerViewerInterface(distiller_service->GetDistilledPagePrefs()),
+    : dom_distiller::DomDistillerRequestViewBase(
+          distiller_service->GetDistilledPagePrefs()),
       url_(url),
+      csp_nonce_(base::Base64Encode(base::RandBytesAsVector(16))),
       callback_(std::move(callback)),
       waiting_for_page_ready_(true),
       web_state_(web_state) {
   DCHECK(url.is_valid());
-  DCHECK(!page->ShouldFetchOfflineData());
 
   observation_.Observe(distilled_page_prefs_);
 
@@ -39,16 +41,10 @@ ReaderModeDistillerViewer::ReaderModeDistillerViewer(
   distiller_service->DistillPage(
       url, std::move(page),
       base::BindOnce(&ReaderModeDistillerViewer::OnDistillerFinished,
-                     weak_ptr_factory_.GetWeakPtr()),
-      base::BindRepeating(
-          &ReaderModeDistillerViewer::OnArticleDistillationUpdated,
-          weak_ptr_factory_.GetWeakPtr()));
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 ReaderModeDistillerViewer::~ReaderModeDistillerViewer() {}
-
-void ReaderModeDistillerViewer::OnArticleDistillationUpdated(
-    const dom_distiller::ArticleDistillationUpdate& article_update) {}
 
 void ReaderModeDistillerViewer::OnDistillerFinished(
     std::unique_ptr<dom_distiller::DistilledArticleProto> distilled_article,
@@ -65,17 +61,16 @@ void ReaderModeDistillerViewer::OnArticleReady(
   if (!is_empty) {
     const std::string html = dom_distiller::viewer::GetArticleTemplateHtml(
         distilled_page_prefs_->GetTheme(),
-        distilled_page_prefs_->GetFontFamily(), std::string(),
-        /*use_offline_data=*/false);
+        distilled_page_prefs_->GetFontFamily(), csp_nonce_);
     std::string html_and_script(html);
-    html_and_script += "<script>" + buffer_ + "</script>";
-    std::move(callback_).Run(url_, html_and_script, {}, article_proto->title(),
-                             std::string());
+    html_and_script +=
+        "<script nonce=\"" + csp_nonce_ + "\">" + buffer_ + "</script>";
+    std::move(callback_).Run(url_, html_and_script, article_proto->title(),
+                             csp_nonce_);
     buffer_.clear();
     waiting_for_page_ready_ = false;
   } else {
-    std::move(callback_).Run(url_, std::string(), {}, std::string(),
-                             std::string());
+    std::move(callback_).Run(url_, std::string(), std::string(), std::string());
   }
 }
 

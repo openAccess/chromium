@@ -71,6 +71,8 @@ public class NavigationHandle {
     private @Nullable Page mCommittedPage;
     private boolean mIsSameOrigin;
     private @Nullable Map<String, String> mResponseHeaders;
+    private @Nullable Map<String, String> mRedirectResponseHeaders;
+    private int mRedirectHttpStatusCode;
     private int mIgnoredDuplicateNavigationCount;
 
     private long mNavigationStartMs;
@@ -101,15 +103,45 @@ public class NavigationHandle {
             @PageTransition int transition,
             boolean hasUserGesture,
             boolean isReload) {
+        return createForTesting(
+                url,
+                isInPrimaryMainFrame,
+                isSameDocument,
+                isRendererInitiated,
+                transition,
+                hasUserGesture,
+                isReload,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isForward= */ false,
+                /* navigationId= */ 0);
+    }
+
+    /** Called by NavigationHandleTestBuilder. Tests should use the builder instead. */
+    public static NavigationHandle createForTesting(
+            GURL url,
+            boolean isInPrimaryMainFrame,
+            boolean isSameDocument,
+            boolean isRendererInitiated,
+            @PageTransition int transition,
+            boolean hasUserGesture,
+            boolean isReload,
+            boolean isHistory,
+            boolean isBack,
+            boolean isForward,
+            long navigationId) {
+        assert !(isBack && isForward) : "Navigation cannot be both back and forward";
+        assert (!isBack && !isForward) || isHistory
+                : "Back/forward navigation must be a history navigation";
         NavigationHandle handle =
                 new NavigationHandle(
                         0,
                         url,
                         isRendererInitiated,
                         isReload,
-                        /* isHistory= */ false,
-                        /* isBack= */ false,
-                        /* isForward= */ false,
+                        isHistory,
+                        isBack,
+                        isForward,
                         /* isRestore= */ false);
         handle.didStart(
                 /* referrerUrl= */ GURL.emptyGURL(),
@@ -123,7 +155,7 @@ public class NavigationHandle {
                 hasUserGesture,
                 /* isRedirect= */ false,
                 /* isExternalProtocol= */ false,
-                /* navigationId= */ 0,
+                navigationId,
                 /* isPageActivation= */ false,
                 /* isPdf= */ false,
                 /* mimeType= */ "",
@@ -207,13 +239,26 @@ public class NavigationHandle {
      * The navigation received a redirect. Called once per redirect.
      *
      * @param url The new URL.
+     * @param redirectResponseHeaders The headers of the response that caused this redirect.
+     * @param redirectHttpStatusCode The HTTP status code of the response that caused this redirect.
      */
     @CalledByNative
     @VisibleForTesting
-    public void didRedirect(GURL url, boolean isExternalProtocol) {
+    public void didRedirect(
+            @JniType("GURL") GURL url,
+            boolean isExternalProtocol,
+            @JniType("GURL") GURL referrerUrl,
+            int referrerPolicy,
+            @JniType("base::flat_map<std::string, std::string>")
+                    Map<String, String> redirectResponseHeaders,
+            int redirectHttpStatusCode) {
         mUrl = url;
         mIsRedirect = true;
         mIsExternalProtocol = isExternalProtocol;
+        mReferrerUrl = referrerUrl;
+        mReferrerPolicy = referrerPolicy;
+        mRedirectResponseHeaders = redirectResponseHeaders;
+        mRedirectHttpStatusCode = redirectHttpStatusCode;
 
         takeNavigationStateSnapshot();
     }
@@ -263,27 +308,43 @@ public class NavigationHandle {
         takeNavigationStateSnapshot();
     }
 
+    public void callDidRedirectForTesting(GURL url) {
+        didRedirect(
+                url,
+                /* isExternalProtocol= */ false,
+                /* referrerUrl= */ GURL.emptyGURL(),
+                /* referrerPolicy= */ ReferrerPolicy.DEFAULT,
+                /* redirectResponseHeaders= */ new HashMap<>(),
+                /* redirectHttpStatusCode= */ 302);
+    }
+
     public void callDidFinishForTesting(GURL url) {
         callDidFinishForTesting(url, true);
     }
 
     public void callDidFinishForTesting(GURL url, boolean hasCommitted) {
+        callDidFinishForTesting(
+                url, hasCommitted, /* isSameOrigin= */ true, /* isErrorPage= */ false);
+    }
+
+    public void callDidFinishForTesting(
+            GURL url, boolean hasCommitted, boolean isSameOrigin, boolean isErrorPage) {
         didFinish(
                 url,
-                /* isErrorPage= */ false,
+                isErrorPage,
                 hasCommitted,
                 /* isPrimaryMainFrameFragmentNavigation= */ false,
                 /* isDownload= */ false,
                 /* isValidSearchFormUrl= */ false,
-                /* transition= */ PageTransition.LINK,
-                /* errorCode= */ NetError.OK,
+                /* transition= */ mPageTransition,
+                /* errorCode= */ isErrorPage ? NetError.ERR_FAILED : NetError.OK,
                 /* errorDescription= */ "",
                 /* httpStatuscode= */ 200,
                 /* isExternalProtocol= */ false,
                 /* isPdf= */ false,
                 /* mimeType= */ "",
                 new PageImpl(/* nativePage= */ 0, /* isPrerendering= */ false),
-                /* isSameOrigin= */ true,
+                isSameOrigin,
                 /* responseHeaders= */ new HashMap<>(),
                 /* ignoredDuplicateNavigationCount= */ 0);
     }
@@ -367,10 +428,38 @@ public class NavigationHandle {
     }
 
     /**
+     * The headers of the response the navigation committed, available once the navigation has
+     * finished. The headers of intermediate redirect responses are not included, those are provided
+     * by {@link #getRedirectResponseHeaders()}.
+     *
      * @return The response headers.
      */
     public @Nullable Map<String, String> getResponseHeaders() {
         return mResponseHeaders;
+    }
+
+    /**
+     * The headers of the response that caused the most recent redirect, or null if the navigation
+     * hasn't been redirected. This is intended to be called from within {@link
+     * WebContentsObserver#didRedirectNavigation}, since a subsequent redirect will replace the
+     * value.
+     *
+     * @return The headers of the redirect response.
+     */
+    public @Nullable Map<String, String> getRedirectResponseHeaders() {
+        return mRedirectResponseHeaders;
+    }
+
+    /**
+     * The HTTP status code of the response that caused the most recent redirect, or 0 if the
+     * navigation hasn't been redirected. This is intended to be called from within {@link
+     * WebContentsObserver#didRedirectNavigation}, since a subsequent redirect will replace the
+     * value.
+     *
+     * @return The status code of the redirect response.
+     */
+    public int redirectHttpStatusCode() {
+        return mRedirectHttpStatusCode;
     }
 
     /**
@@ -577,6 +666,9 @@ public class NavigationHandle {
 
     /** Take a snapshot of the current state of NavigationHandle */
     private void takeNavigationStateSnapshot() {
+        PageState committedPageState =
+                mCommittedPage == null ? null : mCommittedPage.getMostRecentPageState();
+
         mMostRecentNavigationState =
                 new NavigationState(
                         mUrl,
@@ -589,11 +681,13 @@ public class NavigationHandle {
                         mIsForward,
                         mHasCommitted,
                         mIsErrorPage,
+                        mNavigationStartMs,
                         mHttpStatusCode,
                         mErrorCode,
                         mErrorDescription,
                         mResponseHeaders,
                         mStarted,
+                        committedPageState,
                         this);
     }
 }

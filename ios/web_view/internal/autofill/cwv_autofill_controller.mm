@@ -4,6 +4,7 @@
 
 #import <algorithm>
 #import <memory>
+#import <optional>
 #import <string>
 #import <vector>
 
@@ -16,11 +17,13 @@
 #import "base/notimplemented.h"
 #import "base/scoped_multi_source_observation.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/task/bind_post_task.h"
 #import "base/values.h"
 #import "components/autofill/core/browser/autofill_field.h"
 #import "components/autofill/core/browser/form_structure.h"
 #import "components/autofill/core/browser/foundations/autofill_manager.h"
 #import "components/autofill/core/browser/foundations/browser_autofill_manager.h"
+#import "components/autofill/core/browser/payments/autofill_error_dialog_context.h"
 #import "components/autofill/core/browser/payments/card_unmask_challenge_option.h"
 #import "components/autofill/core/browser/payments/credit_card_access_manager.h"
 #import "components/autofill/core/browser/payments/legal_message_line.h"
@@ -51,6 +54,7 @@
 #import "ios/web_view/internal/app/application_context.h"
 #import "ios/web_view/internal/autofill/cwv_autofill_controller+testing.h"
 #import "ios/web_view/internal/autofill/cwv_autofill_controller_internal.h"
+#import "ios/web_view/internal/autofill/cwv_autofill_error_dialog_context_internal.h"
 #import "ios/web_view/internal/autofill/cwv_autofill_form_internal.h"
 #import "ios/web_view/internal/autofill/cwv_autofill_prefs.h"
 #import "ios/web_view/internal/autofill/cwv_autofill_profile_internal.h"
@@ -73,6 +77,7 @@
 #import "ios/web_view/public/cwv_autofill_controller_delegate.h"
 #import "ios/web_view/public/cwv_web_view.h"
 #import "net/base/apple/url_conversions.h"
+#import "url/gurl.h"
 
 using autofill::FieldRendererId;
 using autofill::FormData;
@@ -124,6 +129,19 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   }
   return CWVAutofillProgressDialogTypeUnspecified;
 }
+
+// State tracked for the form field that last received focus.
+struct FocusedFieldState {
+  NSString* form_name = nil;
+  NSString* field_identifier = nil;
+  NSString* frame_id = nil;
+  NSString* typed_value = nil;
+  ActivityType activity_type = ActivityType::kUnknown;
+  FormRendererId form_renderer_id;
+  FieldRendererId field_renderer_id;
+  BOOL has_user_gesture = NO;
+};
+
 }  // namespace
 
 @implementation CWVAutofillController {
@@ -153,10 +171,12 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   // The |webState| which this autofill controller should observe.
   web::WebState* _webState;
 
-  // Handles password autofilling related logic.
-  std::unique_ptr<password_manager::PasswordManager> _passwordManager;
+  // Handles password autofilling related logic. `_passwordManagerClient` must
+  // outlive `_passwordManager` because `PasswordManager` holds a `raw_ptr` to
+  // it and C++ ivars are destroyed in reverse declaration order.
   std::unique_ptr<ios_web_view::WebViewPasswordManagerClient>
       _passwordManagerClient;
+  std::unique_ptr<password_manager::PasswordManager> _passwordManager;
   SharedPasswordController* _passwordController;
 
   // The current credit card saver. Can be nil if no save attempt is pending.
@@ -179,18 +199,13 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   std::unique_ptr<autofill::FormActivityObserverBridge>
       _formActivityObserverBridge;
 
-  NSString* _lastFormActivityFormName;
-  NSString* _lastFormActivityFieldIdentifier;
-  NSString* _lastFormActivityFrameID;
-  std::string _lastFormActivityWebFrameID;
-  NSString* _lastFormActivityTypedValue;
-  ActivityType _lastFormActivityType;
-  FormRendererId _lastFormActivityFormRendererID;
-  FieldRendererId _lastFormActivityFieldRendererID;
-  BOOL _lastFormActivityHasUserGesture;
+  // State tracked for the form field that last received focus, or
+  // `std::nullopt` when no field is tracked.
+  std::optional<FocusedFieldState> _focusedField;
 
-  // YES if CWVAutofillController is hardened against WebState destruction.
-  BOOL _safeLifecycleEnabled;
+  // YES if CWVAutofillController scopes cached form activity to the focused
+  // field.
+  BOOL _scopedFormActivityEnabled;
 }
 
 @synthesize delegate = _delegate;
@@ -259,8 +274,8 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   if (self) {
     DCHECK(webState);
     _webState = webState;
-    _safeLifecycleEnabled =
-        ios_web_view::IsAutofillSafeLifecycleEnabled(prefService);
+    _scopedFormActivityEnabled =
+        ios_web_view::IsAutofillScopedFormActivityEnabled(prefService);
 
     _autofillAgent = autofillAgent;
 
@@ -336,7 +351,7 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
                       completionHandler:
                           (void (^)(NSArray<CWVAutofillSuggestion*>* _Nonnull))
                               completionHandler {
-  if ([self isLifecycleStateInvalid]) {
+  if (![self hasValidState]) {
     completionHandler(@[]);
     return;
   }
@@ -351,21 +366,37 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
         }
       };
 
-  BOOL hasUserGesture = NO;
-  if ([formName isEqualToString:_lastFormActivityFormName] &&
-      [fieldIdentifier isEqualToString:_lastFormActivityFieldIdentifier] &&
-      [frameID isEqualToString:_lastFormActivityFrameID]) {
-    hasUserGesture = _lastFormActivityHasUserGesture;
-  }
-
+  // The cached form activity state describes the field that last received
+  // focus. Reusing it for a query aimed at a different field or frame would let
+  // that query inherit the focused field's renderer IDs and redirect the fill,
+  // so fall back to empty values, which match no form.
+  BOOL isFocusedField = [self isFocusedFieldWithFormName:formName
+                                         fieldIdentifier:fieldIdentifier
+                                                 frameID:frameID];
+  BOOL useFocusedFieldState =
+      _scopedFormActivityEnabled ? isFocusedField : _focusedField.has_value();
+  // The gesture has always required an exact match; only the renderer IDs,
+  // activity type and typed value fall back to the legacy unscoped behavior.
+  BOOL hasUserGesture = isFocusedField && _focusedField->has_user_gesture;
   autofill::FormRendererId targetFormRendererID =
-      _lastFormActivityFormRendererID;
+      useFocusedFieldState ? _focusedField->form_renderer_id
+                           : autofill::FormRendererId();
   autofill::FieldRendererId targetFieldRendererID =
-      _lastFormActivityFieldRendererID;
-
-  _lastFormActivityFormName = formName;
-  _lastFormActivityFrameID = frameID;
-  _lastFormActivityFieldIdentifier = fieldIdentifier;
+      useFocusedFieldState ? _focusedField->field_renderer_id
+                           : autofill::FieldRendererId();
+  ActivityType targetActivityType = useFocusedFieldState
+                                        ? _focusedField->activity_type
+                                        : ActivityType::kUnknown;
+  NSString* targetTypedValue =
+      useFocusedFieldState ? _focusedField->typed_value : nil;
+  if (!_scopedFormActivityEnabled) {
+    if (!_focusedField) {
+      _focusedField.emplace();
+    }
+    _focusedField->form_name = formName;
+    _focusedField->frame_id = frameID;
+    _focusedField->field_identifier = fieldIdentifier;
+  }
 
   // Construct query.
   FormSuggestionProviderQuery* formQuery = [[FormSuggestionProviderQuery alloc]
@@ -374,8 +405,8 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
        fieldIdentifier:fieldIdentifier
        fieldRendererID:targetFieldRendererID
              fieldType:(FieldType)fieldType
-                  type:_lastFormActivityType
-            typedValue:_lastFormActivityTypedValue
+                  type:targetActivityType
+            typedValue:targetTypedValue
                frameID:frameID
           onlyPassword:NO];
   // It is necessary to call |checkIfSuggestionsAvailableForForm| before
@@ -395,7 +426,7 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
         resultHandler(@[]);
         return;
       }
-      if ([strongSelf isLifecycleStateInvalid]) {
+      if (![strongSelf hasValidState]) {
         resultHandler(@[]);
         return;
       }
@@ -480,24 +511,27 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
                   payload:autofill::Suggestion::Guid(card.internalCard->guid())
            requiresReauth:NO];
 
-  [_autofillAgent didSelectSuggestion:suggestion
-                              atIndex:index
-                                 form:_lastFormActivityFormName
-                       formRendererID:_lastFormActivityFormRendererID
-                      fieldIdentifier:_lastFormActivityFieldIdentifier
-                      fieldRendererID:_lastFormActivityFieldRendererID
-                              frameID:_lastFormActivityFrameID
-                    completionHandler:^{
-                      if (completionHandler) {
-                        completionHandler();
-                      }
-                    }];
+  [_autofillAgent
+      didSelectSuggestion:suggestion
+                  atIndex:index
+                     form:_focusedField ? _focusedField->form_name : nil
+           formRendererID:_focusedField ? _focusedField->form_renderer_id
+                                        : autofill::FormRendererId()
+          fieldIdentifier:_focusedField ? _focusedField->field_identifier : nil
+          fieldRendererID:_focusedField ? _focusedField->field_renderer_id
+                                        : autofill::FieldRendererId()
+                  frameID:_focusedField ? _focusedField->frame_id : nil
+        completionHandler:^{
+          if (completionHandler) {
+            completionHandler();
+          }
+        }];
 }
 
 - (void)fetchFullCardDetailsForCard:(CWVCreditCard*)card
                   completionHandler:(CWVFetchFullCardDetailsCompletionHandler)
                                         completionHandler {
-  if ([self isLifecycleStateInvalid]) {
+  if (![self hasValidState]) {
     if (completionHandler) {
       NSError* error = [NSError errorWithDomain:CWVAutofillErrorDomain
                                            code:CWVAutofillErrorUnknown
@@ -506,9 +540,7 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
     }
     return;
   }
-  web::WebFrame* frame = autofill::AutofillJavaScriptFeature::GetInstance()
-                             ->GetWebFramesManager(_webState)
-                             ->GetFrameWithId(_lastFormActivityWebFrameID);
+  web::WebFrame* frame = [self frameForFocusedField];
 
   if (!frame) {
     if (completionHandler) {
@@ -537,24 +569,21 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
       manager.GetCreditCardAccessManager();
 
   accessManager->FetchCreditCard(
-      card.internalCard, base::BindOnce(
-                             ^(CWVFetchFullCardDetailsCompletionHandler handler,
-                               const autofill::CreditCard& fetchedCard) {
-                               CWVCreditCard* fullCard = [[CWVCreditCard alloc]
-                                   initWithCreditCard:fetchedCard];
-                               if (handler) {
-                                 handler(fullCard, /*error=*/nil);
-                               }
-                             },
-                             completionHandler));
+      card.internalCard, /*require_user_confirmation=*/false,
+      base::BindOnce(
+          ^(CWVFetchFullCardDetailsCompletionHandler handler,
+            const autofill::CreditCard& fetchedCard) {
+            CWVCreditCard* fullCard =
+                [[CWVCreditCard alloc] initWithCreditCard:fetchedCard];
+            if (handler) {
+              handler(fullCard, /*error=*/nil);
+            }
+          },
+          completionHandler));
 }
 
 - (void)focusPreviousField {
-  web::WebFramesManager* framesManager =
-      autofill::AutofillJavaScriptFeature::GetInstance()->GetWebFramesManager(
-          _webState);
-  web::WebFrame* frame =
-      framesManager->GetFrameWithId(_lastFormActivityWebFrameID);
+  web::WebFrame* frame = [self frameForFocusedField];
 
   if (!frame) {
     return;
@@ -565,11 +594,7 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
 }
 
 - (void)focusNextField {
-  web::WebFramesManager* framesManager =
-      autofill::AutofillJavaScriptFeature::GetInstance()->GetWebFramesManager(
-          _webState);
-  web::WebFrame* frame =
-      framesManager->GetFrameWithId(_lastFormActivityWebFrameID);
+  web::WebFrame* frame = [self frameForFocusedField];
 
   if (!frame) {
     return;
@@ -581,11 +606,11 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
 
 - (void)checkIfPreviousAndNextFieldsAreAvailableForFocusWithCompletionHandler:
     (void (^)(BOOL previous, BOOL next))completionHandler {
-  web::WebFramesManager* framesManager =
-      autofill::AutofillJavaScriptFeature::GetInstance()->GetWebFramesManager(
-          _webState);
-  web::WebFrame* frame =
-      framesManager->GetFrameWithId(_lastFormActivityWebFrameID);
+  web::WebFrame* frame = [self frameForFocusedField];
+
+  if (!frame) {
+    return;
+  }
 
   autofill::SuggestionControllerJavaScriptFeature::GetInstance()
       ->FetchPreviousAndNextElementsPresenceInFrame(
@@ -596,8 +621,9 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
 
 - (void)showAutofillPopup:(const std::vector<autofill::Suggestion>&)suggestions
        suggestionDelegate:
-           (const base::WeakPtr<autofill::AutofillSuggestionDelegate>&)
-               delegate {
+           (const base::WeakPtr<autofill::AutofillSuggestionDelegate>&)delegate
+                   formId:(autofill::FormGlobalId)formId
+                  fieldId:(autofill::FieldGlobalId)fieldId {
   // We only want Autofill suggestions.
   std::vector<autofill::Suggestion> filtered_suggestions;
 
@@ -625,7 +651,9 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
                suggestion.type == autofill::SuggestionType::kCreditCardEntry;
       });
   [_autofillAgent showAutofillPopup:filtered_suggestions
-                 suggestionDelegate:delegate];
+                 suggestionDelegate:delegate
+                             formId:formId
+                            fieldId:fieldId];
 }
 
 - (void)hideAutofillPopup {
@@ -892,6 +920,55 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   [_OTPVerifier didReceiveUnmaskOtpVerificationResult:unmaskResult];
 }
 
+- (BOOL)canAuthenticateUser {
+  return [_delegate
+      respondsToSelector:@selector(
+                             autofillController:authenticateUserWithReason:
+                             completionHandler:)];
+}
+
+- (void)authenticateUserWithReason:(NSString*)reason
+                        completion:(base::OnceCallback<void(bool)>)completion {
+  // Embedders typically complete from a `LocalAuthentication` reply queue, so
+  // hop back to the current sequence. This also guarantees that `completion`
+  // is never run synchronously.
+  base::OnceCallback<void(bool)> postingCompletion =
+      base::BindPostTaskToCurrentDefault(std::move(completion));
+
+  if (![_delegate
+          respondsToSelector:@selector(
+                                 autofillController:authenticateUserWithReason:
+                                 completionHandler:)]) {
+    std::move(postingCompletion).Run(false);
+    return;
+  }
+
+  [_delegate autofillController:self
+      authenticateUserWithReason:reason
+               completionHandler:base::CallbackToBlock(
+                                     std::move(postingCompletion))];
+}
+
+- (BOOL)shouldRequireMandatoryReauth {
+  if (![_delegate
+          respondsToSelector:
+              @selector(autofillControllerShouldRequireMandatoryReauth:)]) {
+    return NO;
+  }
+  return [_delegate autofillControllerShouldRequireMandatoryReauth:self];
+}
+
+- (void)showAutofillErrorDialogWithContext:
+    (const autofill::AutofillErrorDialogContext&)context {
+  if (![_delegate respondsToSelector:@selector(autofillController:
+                                               showErrorDialogWithContext:)]) {
+    return;
+  }
+  CWVAutofillErrorDialogContext* errorContext =
+      [[CWVAutofillErrorDialogContext alloc] initWithContext:context];
+  [_delegate autofillController:self showErrorDialogWithContext:errorContext];
+}
+
 #pragma mark - AutofillDriverIOSBridge
 
 - (void)fillData:(const std::vector<autofill::FormFieldData::FillData>&)fields
@@ -959,25 +1036,87 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
                     inFrame:(web::WebFrame*)frame {
   DCHECK_EQ(_webState, webState);
 
-  std::string frame_id = frame ? frame->GetFrameId() : "";
+  if (_scopedFormActivityEnabled) {
+    // A malformed payload carries no trustworthy target, so it is dropped
+    // without touching the cache. Resetting here instead would let any frame
+    // clear a legitimate focus target just by reporting an incomplete event.
+    if (params.input_missing) {
+      return;
+    }
+
+    // The two guards below do reset, unlike the one above: losing the page
+    // identity or the originating frame means the cached target can no longer
+    // be attributed to anything, so keeping it risks aiming a later suggestion
+    // query or focus traversal at a stale field.
+    std::optional<GURL> pageURL = webState->GetLastCommittedURLIfTrusted();
+    if (!pageURL || !pageURL->is_valid()) {
+      [self resetLastFormActivity];
+      return;
+    }
+
+    if (!frame) {
+      [self resetLastFormActivity];
+      return;
+    }
+  }
 
   NSString* nsFormName = base::SysUTF8ToNSString(params.form_name);
-  _lastFormActivityFormRendererID = params.form_renderer_id;
   NSString* nsFieldIdentifier =
       base::SysUTF8ToNSString(params.field_identifier);
-  _lastFormActivityFieldRendererID = params.field_renderer_id;
   FieldType fieldType = params.field_type;
-  NSString* nsFrameID = base::SysUTF8ToNSString(frame_id);
+  NSString* nsFrameID =
+      frame ? base::SysUTF8ToNSString(frame->GetFrameId()) : @"";
   NSString* nsValue = base::SysUTF8ToNSString(params.value);
   BOOL userInitiated = params.has_user_gesture;
 
-  _lastFormActivityWebFrameID = frame_id;
-  _lastFormActivityTypedValue = nsValue;
-  _lastFormActivityType = params.type;
-  _lastFormActivityHasUserGesture = userInitiated;
-  _lastFormActivityFormName = nsFormName;
-  _lastFormActivityFieldIdentifier = nsFieldIdentifier;
-  _lastFormActivityFrameID = nsFrameID;
+  if (!_scopedFormActivityEnabled || params.type == ActivityType::kFocus) {
+    _focusedField = FocusedFieldState{
+        .form_name = nsFormName,
+        .field_identifier = nsFieldIdentifier,
+        .frame_id = nsFrameID,
+        .typed_value = nsValue,
+        .activity_type = params.type,
+        .form_renderer_id = params.form_renderer_id,
+        .field_renderer_id = params.field_renderer_id,
+        .has_user_gesture = userInitiated,
+    };
+  } else if ([self isFocusedFieldWithFormName:nsFormName
+                              fieldIdentifier:nsFieldIdentifier
+                                      frameID:nsFrameID]) {
+    // Only the field that currently holds focus may refresh the cached value. A
+    // value reported by any other frame or field must not end up attached to
+    // the suggestion query issued for the focused field.
+    switch (params.type) {
+      case ActivityType::kInput:
+      case ActivityType::kKeyUp:
+        _focusedField->typed_value = nsValue;
+        _focusedField->activity_type = params.type;
+        // Editing the focused field is at least as strong a signal of user
+        // intent as focusing it, so a trusted edit may promote the cached
+        // gesture. This matters for a field focused by a script dispatched
+        // event, which reports no gesture even though the user then really
+        // types into it. The value is assigned rather than OR'ed so that a
+        // later script synthesized edit demotes the bit again.
+        _focusedField->has_user_gesture = userInitiated;
+        break;
+      case ActivityType::kChange:
+      case ActivityType::kBlur:
+        // Change and blur events can fire when leaving a field (e.g. when the
+        // user clicks elsewhere on the page), so they refresh the value and
+        // activity type without promoting `has_user_gesture`.
+        _focusedField->typed_value = nsValue;
+        _focusedField->activity_type = params.type;
+        break;
+      case ActivityType::kFocus:
+        NOTREACHED();
+      case ActivityType::kFormChanged:
+      case ActivityType::kUnknown:
+        break;
+    }
+  } else if (_scopedFormActivityEnabled) {
+    return;
+  }
+
   if (params.type == ActivityType::kFocus) {
     if ([_delegate respondsToSelector:@selector
                    (autofillController:
@@ -1047,13 +1186,9 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
                     formData:(const autofill::FormData&)form {
   // Skip immediately if the delegate doesn't handle submission to save
   // computation.
-  if (![_delegate respondsToSelector:@selector
-                  (autofillController:
-                      didSubmitFormWithName:frameID:perfectFilling:)] &&
-      ![_delegate
-          respondsToSelector:@selector
-          (autofillController:
-              didSubmitFormWithName:frameID:userInitiated:perfectFilling:)]) {
+  if (![_delegate
+          respondsToSelector:@selector(autofillController:didSubmitFormWithName:
+                                       frameID:perfectFilling:)]) {
     return;
   }
 
@@ -1066,31 +1201,10 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
 
   BOOL perfectFilling = autofill::IsFormDataPerfectlyFilled(form);
 
-  if ([_delegate respondsToSelector:@selector
-                 (autofillController:
-                     didSubmitFormWithName:frameID:perfectFilling:)]) {
-    [_delegate autofillController:self
-            didSubmitFormWithName:base::SysUTF16ToNSString(form.name())
-                          frameID:nsFrameID
-                   perfectFilling:perfectFilling];
-  }
-
-  // Use YES as a dummy value for `userInitiated` since that bit
-  // isn't supported by the _delegate implementations and we can't get that
-  // information on -onAfterFormSubmitted. Also, a value of YES should cover
-  // most of the submission cases that probably consist of user initiated
-  // submissions, and note that computing that bit is based on a best guess so
-  // it isn't that reliable.
-  if ([_delegate
-          respondsToSelector:@selector
-          (autofillController:
-              didSubmitFormWithName:frameID:userInitiated:perfectFilling:)]) {
-    [_delegate autofillController:self
-            didSubmitFormWithName:base::SysUTF16ToNSString(form.name())
-                          frameID:nsFrameID
-                    userInitiated:YES
-                   perfectFilling:perfectFilling];
-  }
+  [_delegate autofillController:self
+          didSubmitFormWithName:base::SysUTF16ToNSString(form.name())
+                        frameID:nsFrameID
+                 perfectFilling:perfectFilling];
 }
 
 - (void)
@@ -1117,6 +1231,7 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   _webStateObserverBridge.reset();
   _passwordManager.reset();
   _passwordManagerClient.reset();
+  [self resetLastFormActivity];
   _webState = nullptr;
 }
 
@@ -1295,6 +1410,37 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
 
 #pragma mark - Private
 
+// Resets state tracked from the last form activity.
+- (void)resetLastFormActivity {
+  _focusedField.reset();
+}
+
+// Returns the `WebFrame` for the field that last received focus, or `nullptr`
+// if no field is tracked or the frame no longer exists.
+- (web::WebFrame*)frameForFocusedField {
+  if (!_focusedField || !_webState) {
+    return nullptr;
+  }
+  return autofill::AutofillJavaScriptFeature::GetInstance()
+      ->GetWebFramesManager(_webState)
+      ->GetFrameWithId(base::SysNSStringToUTF8(_focusedField->frame_id));
+}
+
+// Returns YES if `formName`, `fieldIdentifier`, and `frameID` identify the
+// currently focused field. State cached for the focused field must never be
+// applied to, or updated from, another field or frame: doing so would let any
+// frame on the page retarget autofill at the field the user is actually
+// interacting with. Returns NO when no field is focused (`_focusedField` is
+// `std::nullopt`).
+- (BOOL)isFocusedFieldWithFormName:(NSString*)formName
+                   fieldIdentifier:(NSString*)fieldIdentifier
+                           frameID:(NSString*)frameID {
+  return _focusedField.has_value() &&
+         [formName isEqualToString:_focusedField->form_name] &&
+         [fieldIdentifier isEqualToString:_focusedField->field_identifier] &&
+         [frameID isEqualToString:_focusedField->frame_id];
+}
+
 - (void)onDecidedSavePolicy:(CWVPasswordUserDecision)decision
             forPasswordForm:(password_manager::PasswordFormManagerForUI*)form {
   // The state may be invalid by the time this is called.
@@ -1329,10 +1475,6 @@ CWVAutofillProgressDialogType ToCWVAutofillProgressDialogType(
   if (decision == CWVPasswordUserDecisionYes) {
     form->Save();
   }
-}
-
-- (BOOL)isLifecycleStateInvalid {
-  return _safeLifecycleEnabled && ![self hasValidState];
 }
 
 - (BOOL)hasValidState {

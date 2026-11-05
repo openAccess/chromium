@@ -7,8 +7,10 @@
 #include <memory>
 #include <string>
 
+#include "base/files/file_util.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/test_future.h"
 #include "components/services/storage/privileged/mojom/indexed_db_internals_types.mojom.h"
@@ -51,9 +53,12 @@ TEST_F(BucketContextTest, CanUseDiskSpaceQueuing) {
   base::test::TestFuture<bool> success_future;
   base::test::TestFuture<bool> success_future2;
   base::test::TestFuture<bool> success_future3;
-  bucket_context_->CheckCanUseDiskSpace(30, success_future.GetCallback());
-  bucket_context_->CheckCanUseDiskSpace(30, success_future2.GetCallback());
-  bucket_context_->CheckCanUseDiskSpace(50, success_future3.GetCallback());
+  bucket_context_->CheckCanUseDiskSpace(base::ByteSizeDelta(30),
+                                        success_future.GetCallback());
+  bucket_context_->CheckCanUseDiskSpace(base::ByteSizeDelta(30),
+                                        success_future2.GetCallback());
+  bucket_context_->CheckCanUseDiskSpace(base::ByteSizeDelta(50),
+                                        success_future3.GetCallback());
   ASSERT_FALSE(success_future.IsReady());
   ASSERT_FALSE(success_future2.IsReady());
   ASSERT_FALSE(success_future3.IsReady());
@@ -71,6 +76,44 @@ TEST_F(BucketContextTest, CanUseDiskSpaceQueuing) {
   tester.ExpectTotalCount("IndexedDB.QuotaCheckTime2.Success", 1);
 }
 
+TEST_F(BucketContextTest, CanUseZeroDiskSpaceWhenOverQuota) {
+  SetQuotaLeft(1);
+  base::test::TestFuture<void> usage_future;
+  quota_manager_proxy_->NotifyBucketModified(
+      storage::QuotaClientType::kIndexedDatabase,
+      bucket_context_->bucket_locator(), /*delta=*/2, base::Time::Now(),
+      base::SequencedTaskRunner::GetCurrentDefault(),
+      usage_future.GetCallback());
+  ASSERT_TRUE(usage_future.Wait());
+
+  base::test::TestFuture<bool> success_future;
+  bucket_context_->CheckCanUseDiskSpace(base::ByteSizeDelta(),
+                                        success_future.GetCallback());
+  EXPECT_TRUE(success_future.Get());
+}
+
+TEST_F(BucketContextTest, CannotRequestNegativeDiskSpace) {
+  EXPECT_CHECK_DEATH(bucket_context_->CheckCanUseDiskSpace(
+      base::ByteSizeDelta(-1), base::DoNothing()));
+}
+
+TEST_F(BucketContextTest, ReadUsageFromDiskRecordsSizeHistograms) {
+  constexpr uint64_t kFileSize = base::MiB(2).InBytes();
+  const storage::BucketLocator& bucket_locator =
+      bucket_context_->bucket_locator();
+  const base::FilePath database_path = GetFilePathForTesting(bucket_locator);
+  ASSERT_TRUE(base::CreateDirectory(database_path));
+  ASSERT_TRUE(base::WriteFile(database_path.AppendASCII("data"),
+                              std::string(kFileSize, 'a')));
+
+  base::HistogramTester histogram_tester;
+  EXPECT_EQ(
+      BucketContext::ReadUsageFromDisk(bucket_locator, database_path.DirName()),
+      kFileSize);
+  histogram_tester.ExpectUniqueSample("IndexedDB.BackingStore.SizeOnDisk",
+                                      kFileSize / 1024, 1);
+}
+
 TEST_F(BucketContextTest, CanUseDiskSpaceCaching) {
   // Verify the limited authority that BucketContext has to approve
   // disk usage without checking the quota manager. First set the quota manager
@@ -80,7 +123,7 @@ TEST_F(BucketContextTest, CanUseDiskSpaceCaching) {
   SetQuotaLeft(kLargeSpace);
   {
     base::test::TestFuture<bool> success_future;
-    bucket_context_->CheckCanUseDiskSpace(kLargeSpace + 1,
+    bucket_context_->CheckCanUseDiskSpace(base::ByteSizeDelta(kLargeSpace + 1),
                                           success_future.GetCallback());
     EXPECT_FALSE(success_future.IsReady());
     EXPECT_FALSE(success_future.Get());
@@ -92,8 +135,8 @@ TEST_F(BucketContextTest, CanUseDiskSpaceCaching) {
   SetQuotaLeft(10);
   {
     base::test::TestFuture<bool> success_future;
-    bucket_context_->CheckCanUseDiskSpace(kLargeSpace / 2 + 1,
-                                          success_future.GetCallback());
+    bucket_context_->CheckCanUseDiskSpace(
+        base::ByteSizeDelta(kLargeSpace / 2 + 1), success_future.GetCallback());
     EXPECT_TRUE(success_future.IsReady());
     EXPECT_TRUE(success_future.Get());
   }
@@ -102,8 +145,8 @@ TEST_F(BucketContextTest, CanUseDiskSpaceCaching) {
   // authority has been exhausted, and hence this usage will not be approved.
   {
     base::test::TestFuture<bool> success_future;
-    bucket_context_->CheckCanUseDiskSpace(kLargeSpace / 2 + 1,
-                                          success_future.GetCallback());
+    bucket_context_->CheckCanUseDiskSpace(
+        base::ByteSizeDelta(kLargeSpace / 2 + 1), success_future.GetCallback());
     EXPECT_FALSE(success_future.IsReady());
     EXPECT_FALSE(success_future.Get());
   }
@@ -112,7 +155,7 @@ TEST_F(BucketContextTest, CanUseDiskSpaceCaching) {
   SetQuotaLeft(kLargeSpace);
   {
     base::test::TestFuture<bool> success_future;
-    bucket_context_->CheckCanUseDiskSpace(kLargeSpace / 4,
+    bucket_context_->CheckCanUseDiskSpace(base::ByteSizeDelta(kLargeSpace / 4),
                                           success_future.GetCallback());
     EXPECT_FALSE(success_future.IsReady());
     EXPECT_TRUE(success_future.Get());
@@ -123,7 +166,7 @@ TEST_F(BucketContextTest, CanUseDiskSpaceCaching) {
                                   2);
   {
     base::test::TestFuture<bool> success_future;
-    bucket_context_->CheckCanUseDiskSpace(kLargeSpace / 4,
+    bucket_context_->CheckCanUseDiskSpace(base::ByteSizeDelta(kLargeSpace / 4),
                                           success_future.GetCallback());
     EXPECT_FALSE(success_future.IsReady());
     EXPECT_TRUE(success_future.Get());
@@ -134,11 +177,12 @@ TEST_F(BucketContextTest, CanUseDiskSpaceWarmUp) {
   constexpr const int64_t kLargeSpace = 120;
   SetQuotaLeft(kLargeSpace);
 
-  bucket_context_->CheckCanUseDiskSpace(120, {});
+  bucket_context_->CheckCanUseDiskSpace(base::ByteSizeDelta(120), {});
   base::RunLoop().RunUntilIdle();
 
   base::test::TestFuture<bool> success_future;
-  bucket_context_->CheckCanUseDiskSpace(120, success_future.GetCallback());
+  bucket_context_->CheckCanUseDiskSpace(base::ByteSizeDelta(120),
+                                        success_future.GetCallback());
   EXPECT_TRUE(success_future.IsReady());
   EXPECT_TRUE(success_future.Get());
 }
@@ -148,7 +192,8 @@ TEST_F(BucketContextTest, BucketSpaceDecay) {
   SetQuotaLeft(kLargeSpace);
 
   base::test::TestFuture<bool> success_future;
-  bucket_context_->CheckCanUseDiskSpace(1, success_future.GetCallback());
+  bucket_context_->CheckCanUseDiskSpace(base::ByteSizeDelta(1),
+                                        success_future.GetCallback());
   EXPECT_TRUE(success_future.Get());
 
   const int64_t can_allot = bucket_context_->GetBucketSpaceToAllot();

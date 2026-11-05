@@ -8,6 +8,12 @@ import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
+import {sweepMaskReady} from './motion_overlay.js';
+
+// If the worklet fails to load, the overlay still shows, just without the blur
+// sweep.
+const sweepMaskLoaded: Promise<void> =
+    sweepMaskReady.catch(e => console.error(e));
 
 type ObjectFit = 'fill'|'contain'|'cover'|'none'|'scale-down';
 
@@ -36,6 +42,8 @@ export class IndigoImageReplacementAppElement extends CrLitElement {
       overlayAnimationState_: {type: String},
       imageSrc_: {type: String},
       objectFit_: {type: String},
+      showWatermark_: {type: Boolean},
+      watermarkEnabledString: {type: String, attribute: 'show-watermark'},
     };
   }
 
@@ -43,6 +51,9 @@ export class IndigoImageReplacementAppElement extends CrLitElement {
   protected accessor overlayAnimationState_: 'entry'|'exit'|'none' = 'none';
   protected accessor imageSrc_: string = '';
   protected accessor objectFit_: ObjectFit = 'contain';
+  protected accessor showWatermark_: boolean = false;
+  protected accessor watermarkEnabledString: string = 'false';
+
   private invocationId_: number|undefined;
   private isGenerating_: boolean = false;
   private entryAnimationResolve_: (() => void)|null = null;
@@ -96,6 +107,9 @@ export class IndigoImageReplacementAppElement extends CrLitElement {
     const entryAnimationPromise = new Promise<void>(resolve => {
       this.entryAnimationResolve_ = resolve;
     });
+    // The entry's sweep mask needs the paint worklet. Without it, the blur
+    // would show unmasked and the sweep couldn't run on the compositor.
+    await sweepMaskLoaded;
     this.startAnimation_();
     try {
       const [imageData] = await Promise.all([
@@ -110,6 +124,7 @@ export class IndigoImageReplacementAppElement extends CrLitElement {
         URL.revokeObjectURL(this.imageSrc_);
         this.imageSrc_ = imageData.value;
         this.objectFit_ = this.computeObjectFitForReplacement_(img);
+        this.showWatermark_ = this.watermarkEnabledString === 'true';
         await this.updateComplete;
       }
     } finally {

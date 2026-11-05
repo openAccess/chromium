@@ -6,7 +6,10 @@
 #define CHROME_BROWSER_UI_AUTOFILL_AUTOFILL_AI_MOCK_AUTOFILL_AI_IMPORT_DATA_CONTROLLER_H_
 
 #include "chrome/browser/ui/autofill/autofill_ai/autofill_ai_import_data_controller.h"
+#include "components/autofill/core/browser/payments/legal_message_line.h"
 #include "testing/gmock/include/gmock/gmock.h"
+
+class GURL;
 
 namespace autofill {
 
@@ -23,42 +26,50 @@ class MockAutofillAiImportDataController
               (EntityInstance,
                std::optional<EntityInstance>,
                bool,
+               LegalMessageLines,
                AutofillClient::EntityImportPromptResultCallback),
               (override));
   MOCK_METHOD(void, ShowLocalSaveNotification, (), (override));
   MOCK_METHOD(base::optional_ref<const EntityInstance>,
               GetAutofillAiData,
               (),
-              (const override));
+              (const, override));
   MOCK_METHOD(void, OnSaveButtonClicked, (), (override));
   MOCK_METHOD(std::u16string,
               GetSaveUpdateDialogPrimaryButtonText,
               (),
-              (const override));
-  MOCK_METHOD(std::u16string, GetSaveUpdateDialogTitle, (), (const override));
+              (const, override));
+  MOCK_METHOD(std::u16string, GetSaveUpdateDialogTitle, (), (const, override));
   MOCK_METHOD((int),
               GetSaveUpdateDialogTitleImagesResourceId,
               (),
-              (const override));
-  MOCK_METHOD(std::u16string, GetPrimaryAccountEmail, (), (const override));
+              (const, override));
+  MOCK_METHOD(std::u16string, GetPrimaryAccountEmail, (), (const, override));
   MOCK_METHOD(std::vector<EntityAttributeUpdateDetails>,
               GetUpdatedAttributesDetails,
               (),
-              (const override));
-  MOCK_METHOD(bool, IsWalletableEntity, (), (const override));
-  MOCK_METHOD(bool, IsSavePrompt, (), (const override));
+              (const, override));
+  MOCK_METHOD(bool, IsWalletableEntity, (), (const, override));
+  MOCK_METHOD(bool, IsBranding2026FeatureEnabled, (), (const, override));
+  MOCK_METHOD(bool, IsSavePrompt, (), (const, override));
   MOCK_METHOD(void, OnGoToWalletLinkClicked, (), (override));
-  MOCK_METHOD(bool, CloseOnAccept, (), (const override));
+  MOCK_METHOD(bool, CloseOnAccept, (), (const, override));
   MOCK_METHOD(void,
               OnBubbleClosed,
               (AutofillClient::AutofillAiBubbleResult),
               (override));
-  MOCK_METHOD(int, GetNoticeStringId, (), (const override));
+  MOCK_METHOD(int, GetNoticeStringId, (), (const, override));
+  MOCK_METHOD(const LegalMessageLines&,
+              GetLegalMessageLines,
+              (),
+              (const, override));
+  MOCK_METHOD(void, OnLegalMessageLinkClicked, (const GURL&), (override));
   base::WeakPtr<AutofillAiImportDataController> GetWeakPtr() override {
     return weak_ptr_factory_.GetWeakPtr();
   }
 
  private:
+  LegalMessageLines legal_message_lines_;
   base::WeakPtrFactory<AutofillAiImportDataController> weak_ptr_factory_{this};
 };
 

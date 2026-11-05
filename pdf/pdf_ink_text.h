@@ -72,6 +72,7 @@ struct InkTextBoxAttributes {
   bool is_bold;
   bool is_italic;
   bool is_strikethrough;
+  bool is_underline;
   std::string text;
 };
 
@@ -113,31 +114,11 @@ struct InkTextInfo {
               bool is_horizontal,
               bool is_synthetic_bold,
               bool is_synthetic_italic,
-              std::u16string text);
+              std::u16string text,
+              bool join_prev_actualtext);
   InkTextInfo(InkTextInfo&&) noexcept;
   InkTextInfo& operator=(InkTextInfo&&) noexcept;
   ~InkTextInfo();
-
-  // Convert <textarea> metrics from blink::WebFormControlElement::GetTextInfo()
-  // into InkTextInfo which contains the necessary information for the glyphs of
-  // each text FPDF_PAGEOBJECT.
-  //
-  // All input numbers are physical pixels. All output numbers are CSS pixels.
-  // `effective_zoom` is the ratio between physical pixels and CSS pixels.
-  //
-  // PDFium requires:
-  //   - The glyph IDs to render in the correct order
-  //   - One typeface per text FPDF_PAGEOBJECT
-  //   - 1D glyph positions
-  //   - The first glyph position must be 0 (so it must be included in the
-  //     rectangle position)
-  //
-  // Blink provides:
-  //   - Harfbuzz glyph positioning data, which is total_advance and 2D offset
-  //   - `text_runs` that contain multiple typefaces for one location rectangle
-  static std::vector<InkTextInfo> BlinkTextInfoToPDFTextInfo(
-      const std::vector<pdf::mojom::InkTextRunPtr>& text_runs,
-      float effective_zoom);
 
   FontId font_id;
   std::vector<uint32_t> glyphs;
@@ -157,6 +138,50 @@ struct InkTextInfo {
   // of `glyphs` and `text` are not the same in general. So it's not possible to
   // take substrings of `text` at this point.
   std::u16string text;
+  // If true, ignore the above `text` field (it should be empty string) and
+  // combine this `InkTextInfo` with the previous one for the purposes of the
+  // /ActualText span.
+  //
+  // Note: PDFiumEngine::DrawText() sometimes ignores this in the case that the
+  // `text` this InkTextInfo was supposed to join with was all ASCII. It does
+  // not insert /ActualText at all in those cases.
+  bool join_prev_actualtext;
+};
+
+// Represents a single line of text within an annotation, containing one or more
+// `InkTextInfo` page objects (e.g. if the line spans multiple typefaces).
+struct InkTextLine {
+  InkTextLine(const gfx::RectF& location, std::vector<InkTextInfo> text_info);
+  explicit InkTextLine(InkTextInfo single_text_info);
+  InkTextLine(InkTextLine&&) noexcept;
+  InkTextLine& operator=(InkTextLine&&) noexcept;
+  ~InkTextLine();
+
+  // Convert <textarea> metrics from blink::WebFormControlElement::GetTextInfo()
+  // into `InkTextLine` objects, each containing one or more `InkTextInfo`s for
+  // the glyphs of each text FPDF_PAGEOBJECT. Runs without glyphs/typeface runs
+  // are skipped.
+  //
+  // All input numbers are physical pixels. All output numbers are CSS pixels.
+  // `effective_zoom` is the ratio between physical pixels and CSS pixels.
+  //
+  // PDFium requires:
+  //   - The glyph IDs to render in the correct order
+  //   - One typeface per text FPDF_PAGEOBJECT
+  //   - 1D glyph positions
+  //   - The first glyph position must be 0 (so it must be included in the
+  //     rectangle position)
+  //
+  // Blink provides:
+  //   - Harfbuzz glyph positioning data, which is total_advance and 2D offset
+  //   - `text_runs` that contain multiple typefaces for one location rectangle
+  static std::vector<InkTextLine> BlinkTextInfoToPDFTextLines(
+      const std::vector<pdf::mojom::InkTextRunPtr>& text_runs,
+      float effective_zoom);
+
+  // In CSS pixels. Based on top left of screen origin.
+  gfx::RectF location;
+  std::vector<InkTextInfo> text_info;
 };
 
 }  // namespace chrome_pdf

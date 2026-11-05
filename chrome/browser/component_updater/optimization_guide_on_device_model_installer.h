@@ -6,37 +6,22 @@
 #define CHROME_BROWSER_COMPONENT_UPDATER_OPTIMIZATION_GUIDE_ON_DEVICE_MODEL_INSTALLER_H_
 
 #include <memory>
-#include <string>
 
-#include "base/files/file_path.h"
-#include "base/values.h"
-#include "base/version.h"
-#include "components/component_updater/component_installer.h"
-#include "components/component_updater/component_updater_service.h"
-#include "components/optimization_guide/core/model_execution/manifest_broker/manifest_asset_manager.h"
+#include "components/optimization_guide/core/model_execution/manifest_broker/manifest_asset_manager_delegate.h"
+
+namespace optimization_guide {
+
+// Overrides the task priority for getting free disk space in the context of the
+// on-device model eligibility check to base::TaskPriority::USER_VISIBLE.
+inline constexpr char kGetFreeDiskSpaceWithUserVisiblePriorityTaskSwitch[] =
+    "optimization-guide-get-free-disk-space-with-user-visible-priority-task";
+
+}  // namespace optimization_guide
 
 namespace component_updater {
 
-// Base class for on-device model installer policies.
-class OptimizationGuideOnDeviceModelInstallerPolicy
-    : public ComponentInstallerPolicy {
- public:
-  // Overrides for ComponentInstallerPolicy.
-  bool SupportsGroupPolicyEnabledComponentUpdates() const final;
-  bool RequiresNetworkEncryption() const final;
-  update_client::CrxInstaller::Result OnCustomInstall(
-      const base::DictValue& manifest,
-      const base::FilePath& install_dir) final;
-  bool AllowCachedCopies() const final;
-  bool AllowUpdatesOnMeteredConnections() const final;
-  update_client::InstallerAttributes GetInstallerAttributes() const override;
-
-  static void UpdateOnDemand(const std::string& id,
-                             OnDemandUpdater::Priority priority);
-};
-
 // Creates a generic delegate for Manifest Component.
-std::unique_ptr<optimization_guide::ManifestAssetManager::Delegate>
+std::unique_ptr<optimization_guide::ManifestAssetManagerDelegate>
 CreateManifestAssetManagerDelegate();
 
 }  // namespace component_updater

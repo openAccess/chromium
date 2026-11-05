@@ -39,7 +39,6 @@
 #import "ios/chrome/browser/popup_menu/public/popup_menu_metrics_handler.h"
 #import "ios/chrome/browser/presenters/ui_bundled/contained_presenter_delegate.h"
 #import "ios/chrome/browser/promos_manager/model/promos_manager_factory.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_browser_agent.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_model_factory.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
@@ -48,6 +47,8 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
+#import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/activity_service_commands.h"
@@ -88,6 +89,7 @@
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/subscription_eligibility/model/subscription_eligibility_service_factory.h"
 #import "ios/chrome/browser/supervised_user/model/supervised_user_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_browser_agent.h"
@@ -326,9 +328,15 @@ NSString* const kPreferredContentSizeKey = @"preferredContentSize";
       HandlerForProtocol(dispatcher, QuickDeleteCommands);
   mediator.whatsNewHandler = HandlerForProtocol(dispatcher, WhatsNewCommands);
   mediator.levelUpHandler = HandlerForProtocol(dispatcher, LevelUpCommands);
-  mediator.pictureInPictureHandler =
-      HandlerForProtocol(dispatcher, PictureInPictureCommands);
+  // Only the main browser may start PiP.
+  Browser* mainBrowser =
+      browser->GetSceneState()
+          .browserProviderInterface.mainBrowserProvider.browser;
+  CHECK(mainBrowser);
+  mediator.pictureInPictureHandler = HandlerForProtocol(
+      mainBrowser->GetCommandDispatcher(), PictureInPictureCommands);
   mediator.webStateList = browser->GetWebStateList();
+  mediator.sceneState = sceneState;
   mediator.navigationAgent = WebNavigationBrowserAgent::FromBrowser(browser);
   mediator.baseViewController = self.baseViewController;
   mediator.bookmarkModel = ios::BookmarkModelFactory::GetForProfile(profile);
@@ -349,7 +357,7 @@ NSString* const kPreferredContentSizeKey = @"preferredContentSize";
     image_fetcher::ImageFetcherService* imageFetcherService =
         ImageFetcherServiceFactory::GetForProfile(profile);
     mediator.imageFetcher = imageFetcherService->GetImageFetcher(
-        image_fetcher::ImageFetcherConfig::kReducedMode);
+        image_fetcher::ImageFetcherConfig::kDiskCacheOnly);
   }
   mediator.templateURLService =
       ios::TemplateURLServiceFactory::GetForProfile(profile);
@@ -366,25 +374,21 @@ NSString* const kPreferredContentSizeKey = @"preferredContentSize";
       IdentityManagerFactory::GetForProfile(profile->GetOriginalProfile());
   mediator.identityAvatarProvider =
       GetApplicationContext()->GetIdentityAvatarProvider();
+  mediator.subscriptionEligibilityService =
+      SubscriptionEligibilityServiceFactory::GetForProfile(profile);
   mediator.tabBasedIPHBrowserAgent =
       TabBasedIPHBrowserAgent::FromBrowser(browser);
   mediator.hasSettingsBlueDot =
       [self.popupMenuHelpCoordinator hasBlueDotForOverflowMenu];
   self.contentBlockerMediator.consumer = mediator;
 
-  NSInteger highlightDestination =
-      [self.popupMenuHelpCoordinator highlightDestination] == nil
-          ? -1
-          : [[self.popupMenuHelpCoordinator highlightDestination] integerValue];
-
   UITraitCollection* traits = self.baseViewController.traitCollection;
-  OverflowMenuUIConfiguration* uiConfiguration = [[OverflowMenuUIConfiguration
-      alloc]
-      initWithPresentingViewControllerHorizontalSizeClass:
-          traits.horizontalSizeClass
-                presentingViewControllerVerticalSizeClass:traits
-                                                              .verticalSizeClass
-                                     highlightDestination:highlightDestination];
+  OverflowMenuUIConfiguration* uiConfiguration =
+      [[OverflowMenuUIConfiguration alloc]
+          initWithPresentingViewControllerHorizontalSizeClass:
+              traits.horizontalSizeClass
+                    presentingViewControllerVerticalSizeClass:
+                        traits.verticalSizeClass];
 
   self.popupMenuHelpCoordinator.uiConfiguration = uiConfiguration;
 
@@ -394,6 +398,7 @@ NSString* const kPreferredContentSizeKey = @"preferredContentSize";
   _overflowMenuOrderer.model = _overflowMenuModel;
   mediator.model = _overflowMenuModel;
   self.popupMenuHelpCoordinator.actionProvider = mediator;
+  [self.popupMenuHelpCoordinator prepareToShowIPHInOverflowMenu];
 
   self.overflowMenuMediator = mediator;
 

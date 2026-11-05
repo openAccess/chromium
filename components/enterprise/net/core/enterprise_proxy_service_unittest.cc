@@ -17,18 +17,24 @@
 #include "base/test/test_future.h"
 #include "base/values.h"
 #include "components/enterprise/browser/identifiers/profile_id_service.h"
+#include "components/enterprise/net/core/auth_scope_metadata.h"
 #include "components/enterprise/net/core/enterprise_network_auth_service.h"
 #include "components/enterprise/net/core/features.h"
 #include "components/enterprise/net/core/prefs.h"
+#include "components/enterprise/net/core/scoped_extra_allowed_domains_for_testing.h"
 #include "components/enterprise/net/core/utils.h"
 #include "components/language/core/browser/pref_names.h"
+#include "components/policy/core/common/policy_logger.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "components/version_info/channel.h"
 #include "net/base/mock_network_change_notifier.h"
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_server.h"
 #include "net/base/proxy_string_util.h"
+#include "net/log/net_log.h"
+#include "net/log/test_net_log.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -157,14 +163,30 @@ base::DictValue CreateDomainPolicyEntry(const std::string& pvd_id,
 class EnterpriseProxyServiceTest : public testing::Test {
  protected:
   EnterpriseProxyServiceTest() {
-    scoped_feature_list_.InitAndEnableFeature(kEnableDynamicRouteFetching);
     RegisterProfilePrefs(pref_service_.registry());
   }
 
   void SetUp() override {
+    policy::PolicyLogger::GetInstance()->ResetLoggerForTesting();
+    scoped_allowed_domains_ =
+        std::make_unique<ScopedExtraAllowedDomainsForTesting>(
+            std::vector<std::string>{"example.com"});
     auth_service_ = std::make_unique<EnterpriseNetworkAuthService>(
         identity_test_env_.identity_manager(), &pref_service_,
-        &profile_id_service_);
+        &profile_id_service_, version_info::Channel::UNKNOWN);
+  }
+
+  void TearDown() override {
+    service_.reset();
+    auth_service_.reset();
+    scoped_allowed_domains_.reset();
+    policy::PolicyLogger::GetInstance()->ResetLoggerForTesting();
+  }
+
+  base::ListValue GetPolicyLogs() {
+    base::test::TestFuture<base::ListValue> future;
+    policy::PolicyLogger::GetInstance()->GetAsList(future.GetCallback());
+    return future.Take();
   }
 
   void SetUpPrimaryAccount(const std::string& email = "user@managed.com") {
@@ -176,10 +198,13 @@ class EnterpriseProxyServiceTest : public testing::Test {
         "en-US", "picture_url");
   }
 
-  void CreateService(
-      enterprise::ProfileIdService* profile_id_service = nullptr) {
+  void CreateService(enterprise::ProfileIdService* profile_id_service = nullptr,
+                     net::NetLog* net_log = nullptr) {
     if (!profile_id_service) {
       profile_id_service = &profile_id_service_;
+    }
+    if (!net_log) {
+      net_log = net::NetLog::Get();
     }
     auto callback = base::BindRepeating(
         [](network::TestURLLoaderFactory* factory)
@@ -189,7 +214,7 @@ class EnterpriseProxyServiceTest : public testing::Test {
         base::Unretained(&test_url_loader_factory_));
     service_ = std::make_unique<EnterpriseProxyService>(
         &pref_service_, auth_service_.get(), std::move(callback),
-        profile_id_service);
+        profile_id_service, net_log);
   }
 
   void SetPolicyDomains(const std::vector<std::string>& domain_ids,
@@ -202,7 +227,7 @@ class EnterpriseProxyServiceTest : public testing::Test {
   }
 
   base::test::TaskEnvironment task_environment_;
-  base::test::ScopedFeatureList scoped_feature_list_;
+  net::RecordingNetLogObserver net_log_observer_;
   std::unique_ptr<net::test::MockNetworkChangeNotifier>
       mock_network_change_notifier_ =
           net::test::MockNetworkChangeNotifier::Create();
@@ -212,6 +237,7 @@ class EnterpriseProxyServiceTest : public testing::Test {
   network::TestURLLoaderFactory test_url_loader_factory_;
   std::unique_ptr<EnterpriseNetworkAuthService> auth_service_;
   std::unique_ptr<EnterpriseProxyService> service_;
+  std::unique_ptr<ScopedExtraAllowedDomainsForTesting> scoped_allowed_domains_;
 };
 
 TEST_F(EnterpriseProxyServiceTest, InitializesAndRegistersPrefs) {
@@ -246,10 +272,13 @@ TEST_F(EnterpriseProxyServiceTest, MultiDomainServiceLifecycle) {
         EXPECT_EQ(2u, service_->GetDynamicRoutingConfig().routing_rules.size());
       });
 
-  // Phase 2 Expectations: Policy update reducing to 1 domain.
+  // Phase 2 Expectations: Policy update reducing to 1 domain immediately drops
+  // domain2's route while keeping domain1's cached route and marking the
+  // refresh as in progress, then completes the refresh.
   EXPECT_CALL(observer, OnDynamicProxyConfigsStatusChanged())
       .WillOnce([&]() {
         EXPECT_TRUE(service_->GetDynamicRoutingConfig().is_update_in_progress);
+        EXPECT_EQ(1u, service_->GetDynamicRoutingConfig().routing_rules.size());
       })
       .WillOnce([&]() {
         EXPECT_FALSE(service_->GetDynamicRoutingConfig().is_update_in_progress);
@@ -260,6 +289,11 @@ TEST_F(EnterpriseProxyServiceTest, MultiDomainServiceLifecycle) {
   SetPolicyDomains({kTestDomain1, kTestDomain2, kTestFailDomain});
   ASSERT_TRUE(
       base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
+
+  auto pause_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_NETWORK_PAUSE);
+  ASSERT_EQ(1u, pause_entries.size());
+  EXPECT_EQ(net::NetLogEventPhase::BEGIN, pause_entries[0].phase);
 
   EXPECT_TRUE(service_->IsRefreshInProgress());
   EXPECT_EQ(3, test_url_loader_factory_.NumPending());
@@ -296,8 +330,14 @@ TEST_F(EnterpriseProxyServiceTest, MultiDomainServiceLifecycle) {
   ASSERT_TRUE(
       base::test::RunUntil([&]() { return !service_->IsRefreshInProgress(); }));
 
-  // All 3 fetches completed -> counter hits 0.
+  // All 3 fetches completed -> counter hits 0 and network pause ends.
   EXPECT_FALSE(service_->IsRefreshInProgress());
+
+  pause_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_NETWORK_PAUSE);
+  ASSERT_EQ(2u, pause_entries.size());
+  EXPECT_EQ(net::NetLogEventPhase::BEGIN, pause_entries[0].phase);
+  EXPECT_EQ(net::NetLogEventPhase::END, pause_entries[1].phase);
 
   base::DictValue debug_info_complete = service_->GetDebugInfo();
   EXPECT_FALSE(*debug_info_complete.FindBool("is_refresh_in_progress"));
@@ -511,6 +551,59 @@ TEST_F(EnterpriseProxyServiceTest, OAuthAuthenticationFetch) {
             service_->GetProvisioningDomainConfigs()[0].state);
 }
 
+TEST_F(EnterpriseProxyServiceTest, PolicyExtraHeadersExpandedInPvdFetch) {
+  pref_service_.registry()->RegisterStringPref(
+      language::prefs::kAcceptLanguages, "en-US,en;q=0.9");
+  SetUpPrimaryAccount();
+  CreateService();
+
+  base::ListValue extra_headers;
+  extra_headers.Append(base::DictValue()
+                           .Set("key", "x-resource-key")
+                           .Set("value", "arbitrary-resource-key-value"));
+  extra_headers.Append(base::DictValue()
+                           .Set("key", "x-profile-id")
+                           .Set("value", "${profile_id}"));
+  extra_headers.Append(base::DictValue()
+                           .Set("key", "accept-language")
+                           .Set("value", "${accept_language}"));
+  extra_headers.Append(base::DictValue()
+                           .Set("key", "x-unknown")
+                           .Set("value", "${unsupported_var}"));
+
+  base::ListValue policy_domains;
+  policy_domains.Append(CreateDomainPolicyEntry(
+      kTestDomain1, "profile_bearer_token", "cloud_secure_gateway",
+      std::move(extra_headers)));
+  pref_service_.SetList(kProxyProvisioningDomains, std::move(policy_domains));
+
+  identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithToken(
+      "bearer_token_abc", base::Time::Max());
+
+  ASSERT_EQ(1, test_url_loader_factory_.NumPending());
+  const network::ResourceRequest& request =
+      test_url_loader_factory_.GetPendingRequest(0)->request;
+  EXPECT_EQ("Bearer bearer_token_abc",
+            request.headers.GetHeader(net::HttpRequestHeaders::kAuthorization)
+                .value_or(""));
+  EXPECT_EQ("arbitrary-resource-key-value",
+            request.headers.GetHeader("x-resource-key").value_or(""));
+  EXPECT_EQ("test_profile_id",
+            request.headers.GetHeader("x-profile-id").value_or(""));
+  EXPECT_EQ("en-US,en;q=0.9",
+            request.headers.GetHeader("accept-language").value_or(""));
+  EXPECT_FALSE(request.headers.HasHeader("x-unknown"));
+
+  test_url_loader_factory_.SimulateResponseForPendingRequest(
+      "https://domain1.example.com/.well-known/pvd", kValidPvdJson1);
+
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !service_->IsRefreshInProgress(); }));
+  ASSERT_EQ(1u, service_->GetProvisioningDomainConfigs().size());
+  EXPECT_EQ(ProvisioningDomainProxyConfig::State::kValid,
+            service_->GetProvisioningDomainConfigs()[0].state);
+}
+
 TEST_F(EnterpriseProxyServiceTest,
        CachesResponsesIncrementallyAndPrunesOnPolicyChange) {
   CreateService();
@@ -597,6 +690,13 @@ TEST_F(EnterpriseProxyServiceTest,
   service_.reset();
   CreateService();
 
+  // Immediately upon startup (before any posted tasks run), the service must
+  // report that a refresh is in progress so network requests wait for fresh
+  // routing rules.
+  EXPECT_TRUE(service_->IsRefreshInProgress());
+  EXPECT_TRUE(service_->GetDynamicRoutingConfig().is_update_in_progress);
+  EXPECT_EQ(1u, service_->GetDynamicRoutingConfig().routing_rules.size());
+
   // Verify active routes are immediately available from cache BEFORE
   // simulating network response.
   const auto endpoint = service_->FindMatchingProxyEndpoint(
@@ -607,6 +707,35 @@ TEST_F(EnterpriseProxyServiceTest,
   EXPECT_EQ(AuthType::kProfileBearerToken, endpoint->auth->type);
   EXPECT_EQ(AuthScope::kCloudSecureGateway, endpoint->auth->scope);
   EXPECT_EQ(2u, endpoint->extra_headers.size());
+}
+
+TEST_F(EnterpriseProxyServiceTest,
+       MarksRefreshInProgressOnStartupWithoutPriorCache) {
+  // Configure a domain in policy before creating the service, with no prior
+  // cached configuration in `kProvisioningDomainProxyConfigs`.
+  base::ListValue policy_domains;
+  policy_domains.Append(CreateDomainPolicyEntry(kTestDomain1));
+  pref_service_.SetList(kProxyProvisioningDomains, std::move(policy_domains));
+  ASSERT_TRUE(pref_service_.GetDict(kProvisioningDomainProxyConfigs).empty());
+
+  CreateService();
+
+  // Immediately upon startup (before any posted tasks run), the service must
+  // report that a refresh is in progress so network requests wait for the
+  // initial PvD fetch.
+  EXPECT_TRUE(service_->IsRefreshInProgress());
+  EXPECT_TRUE(service_->GetDynamicRoutingConfig().is_update_in_progress);
+  EXPECT_TRUE(service_->GetDynamicRoutingConfig().routing_rules.empty());
+  EXPECT_TRUE(test_url_loader_factory_.pending_requests()->empty());
+
+  // Once the posted startup task runs and the fetch completes,
+  // `IsRefreshInProgress()` becomes false and routing rules are populated.
+  ASSERT_EQ(1, test_url_loader_factory_.NumPending());
+  ASSERT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
+      "https://domain1.example.com/.well-known/pvd", kValidPvdJson1));
+  EXPECT_FALSE(service_->IsRefreshInProgress());
+  EXPECT_FALSE(service_->GetDynamicRoutingConfig().is_update_in_progress);
+  EXPECT_EQ(1u, service_->GetDynamicRoutingConfig().routing_rules.size());
 }
 
 TEST_F(EnterpriseProxyServiceTest, NetworkChangeTriggersRefresh) {
@@ -832,9 +961,234 @@ TEST_F(EnterpriseProxyServiceTest, MalformedPolicyDoesNotRefresh) {
   service_->RemoveObserver(&observer);
 }
 
+TEST_F(EnterpriseProxyServiceTest,
+       ForceRefreshAllConfigsRecoversFromHttp4xxErrors) {
+  CreateService();
+  MockObserver observer;
+  service_->AddObserver(&observer);
+
+  // Initial fetch fails with HTTP 404 Not Found -> kFailedBlocked.
+  EXPECT_CALL(observer, OnDynamicProxyConfigsStatusChanged()).Times(2);
+  SetPolicyDomains({kTestDomain1});
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
+  test_url_loader_factory_.SimulateResponseForPendingRequest(
+      "https://domain1.example.com/.well-known/pvd", "", net::HTTP_NOT_FOUND);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !service_->IsRefreshInProgress(); }));
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  ASSERT_EQ(1u, service_->GetProvisioningDomainConfigs().size());
+  EXPECT_EQ(ProvisioningDomainProxyConfig::State::kFailedBlocked,
+            service_->GetProvisioningDomainConfigs()[0].state);
+
+  // ForceRefreshAllConfigs() retries kFailedBlocked and transitions to
+  // kFailedTransient on HTTP 403 Forbidden.
+  EXPECT_CALL(observer, OnDynamicProxyConfigsStatusChanged()).Times(2);
+  service_->ForceRefreshAllConfigs();
+  EXPECT_TRUE(service_->IsRefreshInProgress());
+  ASSERT_EQ(1, test_url_loader_factory_.NumPending());
+  test_url_loader_factory_.SimulateResponseForPendingRequest(
+      "https://domain1.example.com/.well-known/pvd", "", net::HTTP_FORBIDDEN);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !service_->IsRefreshInProgress(); }));
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  ASSERT_EQ(1u, service_->GetProvisioningDomainConfigs().size());
+  EXPECT_EQ(ProvisioningDomainProxyConfig::State::kFailedTransient,
+            service_->GetProvisioningDomainConfigs()[0].state);
+
+  // Another ForceRefreshAllConfigs() retries and recovers to kValid.
+  EXPECT_CALL(observer, OnDynamicProxyConfigsStatusChanged()).Times(2);
+  service_->ForceRefreshAllConfigs();
+  EXPECT_TRUE(service_->IsRefreshInProgress());
+  ASSERT_EQ(1, test_url_loader_factory_.NumPending());
+  test_url_loader_factory_.SimulateResponseForPendingRequest(
+      "https://domain1.example.com/.well-known/pvd", kValidPvdJson1);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !service_->IsRefreshInProgress(); }));
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  ASSERT_EQ(1u, service_->GetProvisioningDomainConfigs().size());
+  EXPECT_EQ(ProvisioningDomainProxyConfig::State::kValid,
+            service_->GetProvisioningDomainConfigs()[0].state);
+  EXPECT_EQ(1u, service_->GetDynamicRoutingConfig().routing_rules.size());
+
+  service_->RemoveObserver(&observer);
+}
+
+TEST_F(EnterpriseProxyServiceTest, NetLogEmittedOnShutdownDuringNetworkPause) {
+  CreateService();
+
+  SetPolicyDomains({kTestDomain1});
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
+
+  auto pause_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_NETWORK_PAUSE);
+  ASSERT_EQ(1u, pause_entries.size());
+  EXPECT_EQ(net::NetLogEventPhase::BEGIN, pause_entries[0].phase);
+
+  service_->Shutdown();
+
+  pause_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_NETWORK_PAUSE);
+  ASSERT_EQ(2u, pause_entries.size());
+  EXPECT_EQ(net::NetLogEventPhase::BEGIN, pause_entries[0].phase);
+  EXPECT_EQ(net::NetLogEventPhase::END, pause_entries[1].phase);
+}
+
+TEST_F(EnterpriseProxyServiceTest, ClearsDynamicRoutingWhenPolicyCleared) {
+  CreateService();
+  MockObserver observer;
+  service_->AddObserver(&observer);
+
+  EXPECT_CALL(observer, OnDynamicProxyConfigsStatusChanged()).Times(2);
+  SetPolicyDomains({kTestDomain1});
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
+  test_url_loader_factory_.SimulateResponseForPendingRequest(
+      "https://domain1.example.com/.well-known/pvd", kValidPvdJson1);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !service_->IsRefreshInProgress(); }));
+  EXPECT_EQ(1u, service_->GetDynamicRoutingConfig().routing_rules.size());
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  // Clearing the policy synchronously clears active dynamic routing rules and
+  // notifies observers.
+  EXPECT_CALL(observer, OnDynamicProxyConfigsStatusChanged()).WillOnce([&]() {
+    net::ProxyConfig::DynamicRoutingConfig config =
+        service_->GetDynamicRoutingConfig();
+    EXPECT_FALSE(config.is_update_in_progress);
+    EXPECT_TRUE(config.routing_rules.empty());
+  });
+  SetPolicyDomains({});
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  service_->RemoveObserver(&observer);
+}
+
+TEST_F(EnterpriseProxyServiceTest,
+       ClearsDynamicRoutingWhenPolicyClearedDuringRefresh) {
+  CreateService();
+  MockObserver observer;
+  service_->AddObserver(&observer);
+
+  EXPECT_CALL(observer, OnDynamicProxyConfigsStatusChanged()).WillOnce([&]() {
+    EXPECT_TRUE(service_->GetDynamicRoutingConfig().is_update_in_progress);
+  });
+  SetPolicyDomains({kTestDomain1});
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  // Clearing the policy while a fetch is in flight closes the network pause and
+  // notifies observers immediately.
+  EXPECT_CALL(observer, OnDynamicProxyConfigsStatusChanged()).WillOnce([&]() {
+    net::ProxyConfig::DynamicRoutingConfig config =
+        service_->GetDynamicRoutingConfig();
+    EXPECT_FALSE(config.is_update_in_progress);
+    EXPECT_TRUE(config.routing_rules.empty());
+  });
+  SetPolicyDomains({});
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  auto pause_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_NETWORK_PAUSE);
+  ASSERT_EQ(2u, pause_entries.size());
+  EXPECT_EQ(net::NetLogEventPhase::BEGIN, pause_entries[0].phase);
+  EXPECT_EQ(net::NetLogEventPhase::END, pause_entries[1].phase);
+
+  service_->RemoveObserver(&observer);
+}
+
+TEST_F(EnterpriseProxyServiceTest,
+       ClearsDynamicRoutingWhenReplacedWithMalformedPolicy) {
+  CreateService();
+  MockObserver observer;
+  service_->AddObserver(&observer);
+
+  EXPECT_CALL(observer, OnDynamicProxyConfigsStatusChanged()).Times(2);
+  SetPolicyDomains({kTestDomain1});
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
+  test_url_loader_factory_.SimulateResponseForPendingRequest(
+      "https://domain1.example.com/.well-known/pvd", kValidPvdJson1);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !service_->IsRefreshInProgress(); }));
+  EXPECT_EQ(1u, service_->GetDynamicRoutingConfig().routing_rules.size());
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  // Replacing with a permanently invalid policy entry synchronously clears
+  // dynamic routing rules without scheduling any fetch.
+  EXPECT_CALL(observer, OnDynamicProxyConfigsStatusChanged()).WillOnce([&]() {
+    net::ProxyConfig::DynamicRoutingConfig config =
+        service_->GetDynamicRoutingConfig();
+    EXPECT_FALSE(config.is_update_in_progress);
+    EXPECT_TRUE(config.routing_rules.empty());
+  });
+  base::ListValue malformed_domains;
+  malformed_domains.Append(base::DictValue().Set("invalid_field", "value"));
+  pref_service_.SetList(kProxyProvisioningDomains,
+                        std::move(malformed_domains));
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  service_->RemoveObserver(&observer);
+}
+
+TEST_F(EnterpriseProxyServiceTest, LogsPolicyAndRoutingConfigChanges) {
+  CreateService();
+
+  // No logs should be emitted on startup when no policy is configured.
+  EXPECT_TRUE(GetPolicyLogs().empty());
+
+  SetPolicyDomains({kTestDomain1});
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
+  test_url_loader_factory_.SimulateResponseForPendingRequest(
+      "https://domain1.example.com/.well-known/pvd", kValidPvdJson1);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !service_->IsRefreshInProgress(); }));
+
+  // Clearing the policy logs the policy update and synchronous routing change.
+  SetPolicyDomains({});
+
+  base::ListValue logs = GetPolicyLogs();
+  std::vector<std::string> messages;
+  for (const auto& entry : logs) {
+    ASSERT_TRUE(entry.is_dict());
+    EXPECT_EQ("Enterprise Proxy", *entry.GetDict().FindString("logSource"));
+    messages.push_back(*entry.GetDict().FindString("message"));
+  }
+
+  EXPECT_THAT(
+      messages,
+      testing::IsSupersetOf({
+          testing::HasSubstr(
+              "ProxyProvisioningDomains policy updated with 1 domain(s)."),
+          testing::HasSubstr(
+              "Enterprise proxy configuration refresh in progress"),
+          testing::HasSubstr(
+              "Successfully fetched configuration for PvD "
+              "'domain1.example.com' (1 proxy endpoint(s), 1 routing "
+              "rule(s))."),
+          testing::HasSubstr(
+              "Enterprise proxy configuration refresh completed (1 active "
+              "routing rule(s))."),
+          testing::HasSubstr(
+              "ProxyProvisioningDomains policy updated with 0 domain(s)."),
+          testing::HasSubstr(
+              "Dynamic proxy routing configuration updated (0 active routing "
+              "rule(s))."),
+      }));
+}
+
 class EnterpriseProxyServiceAuthChallengeTest
     : public EnterpriseProxyServiceTest {
  protected:
+  using Decision = EnterpriseProxyService::ProxyAuthChallengeMatch::Decision;
+  using Outcome = EnterpriseProxyService::CredentialFetchOutcome;
+
   void SetUp() override {
     EnterpriseProxyServiceTest::SetUp();
     SetUpPrimaryAccount();
@@ -867,13 +1221,32 @@ class EnterpriseProxyServiceAuthChallengeTest
     return auth_info;
   }
 
-  void ExpectChallengeResultHistogram(
+  EnterpriseProxyService::ProxyAuthChallengeMatch Classify(
+      const net::AuthChallengeInfo& auth_info,
+      const GURL& destination_url) {
+    return service_->ClassifyProxyAuthChallenge(auth_info, destination_url,
+                                                nullptr);
+  }
+
+  void ExpectDecisionHistogram(
       const base::HistogramTester& histogram_tester,
-      EnterpriseProxyService::ProxyAuthChallengeResult expected_result) {
+      EnterpriseProxyService::ProxyAuthChallengeMatch::Decision expected) {
     histogram_tester.ExpectUniqueSample(
-        "Enterprise.SecureGateway.ProxyAuthChallengeResult", expected_result,
+        "Enterprise.SecureGateway.ProxyAuthChallengeDecision", expected, 1);
+  }
+
+  void ExpectFetchOutcomeHistogram(
+      const base::HistogramTester& histogram_tester,
+      EnterpriseProxyService::CredentialFetchOutcome expected) {
+    histogram_tester.ExpectUniqueSample(
+        "Enterprise.SecureGateway.ProxyAuthCredentialFetchOutcome", expected,
         1);
   }
+
+  using AuthChallengeFuture =
+      base::test::TestFuture<EnterpriseProxyService::CredentialFetchOutcome,
+                             const std::optional<net::AuthCredentials>&,
+                             const net::NetLogWithSource&>;
 };
 
 TEST_F(EnterpriseProxyServiceAuthChallengeTest, NotProxyChallenge) {
@@ -881,90 +1254,132 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest, NotProxyChallenge) {
   net::AuthChallengeInfo auth_info = CreateProxyAuthChallengeInfo();
   auth_info.is_proxy = false;
 
-  base::test::TestFuture<EnterpriseProxyService::ProxyAuthChallengeResult,
-                         const std::optional<net::AuthCredentials>&>
-      future;
-  service_->HandleProxyAuthChallenge(auth_info,
-                                     GURL("https://foo.example.com/test"),
-                                     nullptr, future.GetCallback());
-
-  EXPECT_EQ(EnterpriseProxyService::ProxyAuthChallengeResult::kNotApplicable,
-            future.Get<0>());
-  EXPECT_FALSE(future.Get<1>().has_value());
-  ExpectChallengeResultHistogram(
-      histogram_tester,
-      EnterpriseProxyService::ProxyAuthChallengeResult::kNotApplicable);
+  EXPECT_EQ(Decision::kNotApplicable,
+            Classify(auth_info, GURL("https://foo.example.com/test")).decision);
+  ExpectDecisionHistogram(histogram_tester, Decision::kNotApplicable);
 }
 
 TEST_F(EnterpriseProxyServiceAuthChallengeTest, NotManagedProxy) {
   base::HistogramTester histogram_tester;
-  base::test::TestFuture<EnterpriseProxyService::ProxyAuthChallengeResult,
-                         const std::optional<net::AuthCredentials>&>
-      future;
-  service_->HandleProxyAuthChallenge(
-      CreateProxyAuthChallengeInfo("unmanaged-proxy.com"),
-      GURL("https://foo.example.com/test"), nullptr, future.GetCallback());
 
-  EXPECT_EQ(EnterpriseProxyService::ProxyAuthChallengeResult::kNotApplicable,
-            future.Get<0>());
-  EXPECT_FALSE(future.Get<1>().has_value());
-  ExpectChallengeResultHistogram(
-      histogram_tester,
-      EnterpriseProxyService::ProxyAuthChallengeResult::kNotApplicable);
+  EXPECT_EQ(Decision::kNotApplicable,
+            Classify(CreateProxyAuthChallengeInfo("unmanaged-proxy.com"),
+                     GURL("https://foo.example.com/test"))
+                .decision);
+  ExpectDecisionHistogram(histogram_tester, Decision::kNotApplicable);
 }
 
 TEST_F(EnterpriseProxyServiceAuthChallengeTest, InvalidDestinationUrl) {
   base::HistogramTester histogram_tester;
-  base::test::TestFuture<EnterpriseProxyService::ProxyAuthChallengeResult,
-                         const std::optional<net::AuthCredentials>&>
-      future;
-  service_->HandleProxyAuthChallenge(
-      CreateProxyAuthChallengeInfo("proxy1.example.com"), GURL(), nullptr,
-      future.GetCallback());
 
-  EXPECT_EQ(EnterpriseProxyService::ProxyAuthChallengeResult::kNotApplicable,
-            future.Get<0>());
-  EXPECT_FALSE(future.Get<1>().has_value());
-  ExpectChallengeResultHistogram(
-      histogram_tester,
-      EnterpriseProxyService::ProxyAuthChallengeResult::kNotApplicable);
+  EXPECT_EQ(Decision::kNotApplicable,
+            Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"), GURL())
+                .decision);
+  ExpectDecisionHistogram(histogram_tester, Decision::kNotApplicable);
 }
 
 TEST_F(EnterpriseProxyServiceAuthChallengeTest, NoCredentialsNeeded) {
   base::HistogramTester histogram_tester;
   SetUpDomainAndSimulateResponse(kTestDomain2, kValidPvdJson2);
 
-  base::test::TestFuture<EnterpriseProxyService::ProxyAuthChallengeResult,
-                         const std::optional<net::AuthCredentials>&>
-      future;
-  service_->HandleProxyAuthChallenge(
-      CreateProxyAuthChallengeInfo("proxy2.example.com"),
-      GURL("https://foo.domain2.com/test"), nullptr, future.GetCallback());
+  EXPECT_EQ(Decision::kNoCredentialsNeeded,
+            Classify(CreateProxyAuthChallengeInfo("proxy2.example.com"),
+                     GURL("https://foo.domain2.com/test"))
+                .decision);
+  ExpectDecisionHistogram(histogram_tester, Decision::kNoCredentialsNeeded);
 
-  EXPECT_EQ(
-      EnterpriseProxyService::ProxyAuthChallengeResult::kNoCredentialsNeeded,
-      future.Get<0>());
-  EXPECT_FALSE(future.Get<1>().has_value());
-  ExpectChallengeResultHistogram(
-      histogram_tester,
-      EnterpriseProxyService::ProxyAuthChallengeResult::kNoCredentialsNeeded);
+  // kValidPvdJson2 advertises no `google_chrome.auth` block at all. That is a
+  // different misconfiguration from a route whose auth block asks for
+  // something we cannot supply, and the two share a histogram bucket, so the
+  // NetLog reason is the only way to tell them apart.
+  auto resolved_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
+  ASSERT_EQ(1u, resolved_entries.size());
+  EXPECT_EQ("no_auth_config_advertised",
+            *resolved_entries[0].params.FindString("failure_reason"));
 }
 
 TEST_F(EnterpriseProxyServiceAuthChallengeTest, DisguisedErrorRealm) {
   base::HistogramTester histogram_tester;
-  base::test::TestFuture<EnterpriseProxyService::ProxyAuthChallengeResult,
-                         const std::optional<net::AuthCredentials>&>
-      future;
-  service_->HandleProxyAuthChallenge(
-      CreateProxyAuthChallengeInfo("proxy1.example.com", 443, "403"),
-      GURL("https://foo.example.com/test"), nullptr, future.GetCallback());
 
-  EXPECT_EQ(EnterpriseProxyService::ProxyAuthChallengeResult::kDisguisedError,
-            future.Get<0>());
+  EXPECT_EQ(
+      Decision::kDisguisedError,
+      Classify(CreateProxyAuthChallengeInfo("proxy1.example.com", 443, "403"),
+               GURL("https://foo.example.com/test"))
+          .decision);
+  ExpectDecisionHistogram(histogram_tester, Decision::kDisguisedError);
+}
+
+// The forcing param stands in for the identity layer rejecting the account, so
+// it must surface where a real rejection does: out of the credential fetch,
+// leaving classification untouched.
+TEST_F(EnterpriseProxyServiceAuthChallengeTest, ForcedSignInRequired) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      kEnterpriseProxyErrorHandling, {{kForceSignInRequiredParamName, "true"}});
+
+  base::HistogramTester histogram_tester;
+
+  auto match = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+                        GURL("https://foo.example.com/test"));
+  ASSERT_EQ(Decision::kNeedsCredentials, match.decision);
+
+  AuthChallengeFuture future;
+  service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
+
+  // Resolved without consulting the identity layer at all.
+  EXPECT_FALSE(identity_test_env_.IsAccessTokenRequestPending());
+  ASSERT_TRUE(future.IsReady());
+  EXPECT_EQ(Outcome::kSignInRequired, future.Get<0>());
   EXPECT_FALSE(future.Get<1>().has_value());
-  ExpectChallengeResultHistogram(
-      histogram_tester,
-      EnterpriseProxyService::ProxyAuthChallengeResult::kDisguisedError);
+  ExpectFetchOutcomeHistogram(histogram_tester, Outcome::kSignInRequired);
+
+  auto resolved_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
+  ASSERT_EQ(1u, resolved_entries.size());
+  EXPECT_EQ("forced_sign_in_required",
+            *resolved_entries[0].params.FindString("failure_reason"));
+}
+
+// Classification must be fully synchronous. The original bug reported
+// `kNotApplicable` by writing through a pointer to the caller's stack local,
+// which is only reachable if classification can answer after the caller has
+// returned. Nothing here may start a fetch or queue a task.
+TEST_F(EnterpriseProxyServiceAuthChallengeTest, ClassifyDoesNotStartAsyncWork) {
+  base::HistogramTester histogram_tester;
+  size_t pending_tasks_before =
+      task_environment_.GetPendingMainThreadTaskCount();
+
+  // A terminal decision must be fully resolved, and its result already
+  // recorded, by the time Classify() returns -- with no run loop in between.
+  EXPECT_EQ(Decision::kNotApplicable,
+            Classify(CreateProxyAuthChallengeInfo("unmanaged-proxy.com"),
+                     GURL("https://foo.example.com/test"))
+                .decision);
+  histogram_tester.ExpectBucketCount(
+      "Enterprise.SecureGateway.ProxyAuthChallengeDecision",
+      Decision::kNotApplicable, 1);
+
+  // The non-terminal decision must not start the token fetch either; that
+  // belongs to FetchProxyAuthCredentials(), which this test never calls.
+  EXPECT_EQ(Decision::kNeedsCredentials,
+            Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+                     GURL("https://foo.example.com/test"))
+                .decision);
+  EXPECT_FALSE(identity_test_env_.IsAccessTokenRequestPending());
+  histogram_tester.ExpectBucketCount(
+      "Enterprise.SecureGateway.ProxyAuthChallengeDecision",
+      Decision::kNeedsCredentials, 1);
+
+  // Classification records the decision stage only. The fetch stage belongs to
+  // FetchProxyAuthCredentials(), so its histogram must still be empty.
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchOutcome", 0);
+
+  // Neither classification may have queued anything, so dropping the
+  // `kNeedsCredentials` match above is inert rather than merely survivable.
+  EXPECT_EQ(pending_tasks_before,
+            task_environment_.GetPendingMainThreadTaskCount());
 }
 
 TEST_F(EnterpriseProxyServiceAuthChallengeTest, CredentialFetchSuccess) {
@@ -973,22 +1388,18 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest, CredentialFetchSuccess) {
       language::prefs::kAcceptLanguages, std::string());
   pref_service_.SetString(language::prefs::kAcceptLanguages, "en-US,en;q=0.9");
 
-  base::test::TestFuture<EnterpriseProxyService::ProxyAuthChallengeResult,
-                         const std::optional<net::AuthCredentials>&>
-      future;
-  service_->HandleProxyAuthChallenge(
-      CreateProxyAuthChallengeInfo("proxy1.example.com"),
-      GURL("https://foo.example.com/test"), nullptr, future.GetCallback());
+  auto match = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+                        GURL("https://foo.example.com/test"));
+  ASSERT_EQ(Decision::kNeedsCredentials, match.decision);
+
+  AuthChallengeFuture future;
+  service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
 
   identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithToken(
       "access_token", base::Time::Max());
 
-  EXPECT_EQ(
-      EnterpriseProxyService::ProxyAuthChallengeResult::kCredentialFetchSuccess,
-      future.Get<0>());
-  ExpectChallengeResultHistogram(
-      histogram_tester, EnterpriseProxyService::ProxyAuthChallengeResult::
-                            kCredentialFetchSuccess);
+  EXPECT_EQ(Outcome::kSuccess, future.Get<0>());
+  ExpectFetchOutcomeHistogram(histogram_tester, Outcome::kSuccess);
 
   ASSERT_TRUE(future.Get<1>().has_value());
   EXPECT_EQ(u"access_token", future.Get<1>()->password());
@@ -997,29 +1408,198 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest, CredentialFetchSuccess) {
       "X-Client-ID=test_client"
       "&X-Profile-ID=test_profile_id";
   EXPECT_EQ(base::UTF8ToUTF16(expected_username), future.Get<1>()->username());
+
+  auto received_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RECEIVED);
+  ASSERT_EQ(1u, received_entries.size());
+  EXPECT_EQ("https://foo.example.com/test",
+            *received_entries[0].params.FindString("destination_url"));
+
+  auto resolved_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
+  ASSERT_EQ(1u, resolved_entries.size());
+  EXPECT_EQ("token_acquired",
+            *resolved_entries[0].params.FindString("decision"));
+  EXPECT_FALSE(resolved_entries[0].params.FindString("failure_reason"));
+  // The classification and the terminal result must share a NetLog source.
+  EXPECT_EQ(received_entries[0].source.id, resolved_entries[0].source.id);
 }
 
 TEST_F(EnterpriseProxyServiceAuthChallengeTest, CredentialFetchFailure) {
   base::HistogramTester histogram_tester;
-  base::test::TestFuture<EnterpriseProxyService::ProxyAuthChallengeResult,
-                         const std::optional<net::AuthCredentials>&>
-      future;
-  service_->HandleProxyAuthChallenge(
-      CreateProxyAuthChallengeInfo("proxy1.example.com"),
-      GURL("https://foo.example.com/test"), nullptr, future.GetCallback());
+  auto match = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+                        GURL("https://foo.example.com/test"));
+  ASSERT_EQ(Decision::kNeedsCredentials, match.decision);
+
+  AuthChallengeFuture future;
+  service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
+
+  identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
+      GoogleServiceAuthError::FromServiceUnavailable("error"));
+
+  EXPECT_EQ(Outcome::kFailure, future.Get<0>());
+  EXPECT_FALSE(future.Get<1>().has_value());
+  ExpectFetchOutcomeHistogram(histogram_tester, Outcome::kFailure);
+
+  auto resolved_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
+  ASSERT_EQ(1u, resolved_entries.size());
+  EXPECT_EQ("failed", *resolved_entries[0].params.FindString("decision"));
+  EXPECT_EQ("transient_error",
+            *resolved_entries[0].params.FindString("failure_reason"));
+}
+
+TEST_F(EnterpriseProxyServiceAuthChallengeTest,
+       SignInRequired_InvalidCredentials) {
+  base::HistogramTester histogram_tester;
+  auto match = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+                        GURL("https://foo.example.com/test"));
+  ASSERT_EQ(Decision::kNeedsCredentials, match.decision);
+
+  AuthChallengeFuture future;
+  service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
 
   identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
       GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
           GoogleServiceAuthError::InvalidGaiaCredentialsReason::
               CREDENTIALS_REJECTED_BY_SERVER));
 
-  EXPECT_EQ(
-      EnterpriseProxyService::ProxyAuthChallengeResult::kCredentialFetchFailure,
-      future.Get<0>());
+  EXPECT_EQ(Outcome::kSignInRequired, future.Get<0>());
   EXPECT_FALSE(future.Get<1>().has_value());
-  ExpectChallengeResultHistogram(
-      histogram_tester, EnterpriseProxyService::ProxyAuthChallengeResult::
-                            kCredentialFetchFailure);
+  ExpectFetchOutcomeHistogram(histogram_tester, Outcome::kSignInRequired);
+
+  auto resolved_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
+  ASSERT_EQ(1u, resolved_entries.size());
+  EXPECT_EQ("sign_in_required",
+            *resolved_entries[0].params.FindString("decision"));
+  EXPECT_EQ("invalid_credentials",
+            *resolved_entries[0].params.FindString("failure_reason"));
+}
+
+TEST_F(EnterpriseProxyServiceAuthChallengeTest,
+       ShutdownDuringPendingAuthRequest) {
+  auto match = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+                        GURL("https://foo.example.com/test"));
+  ASSERT_EQ(Decision::kNeedsCredentials, match.decision);
+
+  AuthChallengeFuture future;
+  service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
+
+  service_->Shutdown();
+
+  EXPECT_EQ(Outcome::kFailure, future.Get<0>());
+  EXPECT_FALSE(future.Get<1>().has_value());
+
+  auto resolved_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
+  ASSERT_EQ(1u, resolved_entries.size());
+  EXPECT_EQ("failed", *resolved_entries[0].params.FindString("decision"));
+  EXPECT_EQ("service_shutdown",
+            *resolved_entries[0].params.FindString("failure_reason"));
+}
+
+TEST_F(EnterpriseProxyServiceAuthChallengeTest, InapplicableProxyServer) {
+  base::HistogramTester histogram_tester;
+
+  // Configure a domain with an untrusted proxy server host not in the allowed
+  // domain list.
+  constexpr char kUntrustedProxyPvdJson[] = R"({
+    "identifier": "domain2.example.com",
+    "proxies": [
+      {
+        "protocol": "https-connect",
+        "identity": "untrusted_proxy",
+        "proxy": "https://untrusted-proxy.com:443",
+        "google_chrome": {
+          "auth": {
+            "type": "profile_bearer_token",
+            "scope": "cloud_secure_gateway"
+          }
+        }
+      }
+    ],
+    "proxy-match": [
+      {
+        "proxies": ["untrusted_proxy"],
+        "domains": ["*.untrusted-match.com"]
+      }
+    ]
+  })";
+  SetUpDomainAndSimulateResponse(kTestDomain2, kUntrustedProxyPvdJson);
+
+  auto match = Classify(CreateProxyAuthChallengeInfo("untrusted-proxy.com"),
+                        GURL("https://foo.untrusted-match.com/test"));
+  ASSERT_EQ(Decision::kNeedsCredentials, match.decision);
+
+  AuthChallengeFuture future;
+  service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
+
+  EXPECT_EQ(Outcome::kFailure, future.Get<0>());
+  EXPECT_FALSE(future.Get<1>().has_value());
+  ExpectFetchOutcomeHistogram(histogram_tester, Outcome::kFailure);
+
+  auto resolved_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
+  ASSERT_EQ(1u, resolved_entries.size());
+  EXPECT_EQ("inapplicable_server",
+            *resolved_entries[0].params.FindString("failure_reason"));
+}
+
+// Regression test: destroying the service without calling Shutdown() used to
+// silently drop every pending callback. Callers such as iOS treat a dropped
+// callback as fatal, so the callback must still run.
+TEST_F(EnterpriseProxyServiceAuthChallengeTest,
+       DestructionWithoutShutdownRunsPendingCallbacks) {
+  auto match = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+                        GURL("https://foo.example.com/test"));
+  ASSERT_EQ(Decision::kNeedsCredentials, match.decision);
+
+  AuthChallengeFuture future;
+  service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
+  ASSERT_FALSE(future.IsReady());
+
+  service_.reset();
+
+  ASSERT_TRUE(future.IsReady());
+  EXPECT_EQ(Outcome::kFailure, future.Get<0>());
+  EXPECT_FALSE(future.Get<1>().has_value());
+
+  auto resolved_entries = net_log_observer_.GetEntriesWithType(
+      net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
+  ASSERT_EQ(1u, resolved_entries.size());
+  EXPECT_EQ("request_destroyed",
+            *resolved_entries[0].params.FindString("failure_reason"));
+}
+
+// Coalesced challenges share a single token fetch; every one of their
+// callbacks must still run exactly once when the request is torn down.
+TEST_F(EnterpriseProxyServiceAuthChallengeTest,
+       CoalescedRequestsAllRunOnDestruction) {
+  AuthChallengeFuture first_future;
+  AuthChallengeFuture second_future;
+
+  auto first = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+                        GURL("https://foo.example.com/one"));
+  ASSERT_EQ(Decision::kNeedsCredentials, first.decision);
+  service_->FetchProxyAuthCredentials(std::move(first),
+                                      first_future.GetCallback());
+
+  auto second = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+                         GURL("https://foo.example.com/two"));
+  ASSERT_EQ(Decision::kNeedsCredentials, second.decision);
+  service_->FetchProxyAuthCredentials(std::move(second),
+                                      second_future.GetCallback());
+
+  ASSERT_FALSE(first_future.IsReady());
+  ASSERT_FALSE(second_future.IsReady());
+
+  service_.reset();
+
+  EXPECT_TRUE(first_future.IsReady());
+  EXPECT_TRUE(second_future.IsReady());
+  EXPECT_EQ(Outcome::kFailure, first_future.Get<0>());
+  EXPECT_EQ(Outcome::kFailure, second_future.Get<0>());
 }
 
 }  // namespace

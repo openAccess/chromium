@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_AUTOFILL_MOCK_MANUAL_FILLING_VIEW_H_
 #define CHROME_BROWSER_AUTOFILL_MOCK_MANUAL_FILLING_VIEW_H_
 
+#include <optional>
+
 #include "chrome/browser/autofill/manual_filling_view_interface.h"
 #include "chrome/browser/keyboard_accessory/android/accessory_sheet_data.h"
 #include "chrome/browser/keyboard_accessory/android/accessory_sheet_enums.h"
@@ -31,13 +33,18 @@ class MockManualFillingView : public ManualFillingViewInterface {
   MOCK_METHOD((void), SwapSheetWithKeyboard, (), (override));
   MOCK_METHOD((void),
               Show,
-              (WaitForKeyboard, ShouldShowOnLargeFormFactor, IsContentEditable),
+              (WaitForKeyboard,
+               ShouldShowOnLargeFormFactor,
+               IsUnstructuredField),
               (override));
   MOCK_METHOD((void), Hide, (), (override));
   MOCK_METHOD((void),
               ShowAccessorySheetTab,
               (const autofill::AccessoryTabType&),
               (override));
+  MOCK_METHOD((void), SetSelectedSuggestion, (std::optional<int>), (override));
+  MOCK_METHOD((bool), Navigate, (autofill::NavigationAction), (override));
+  MOCK_METHOD(bool, AcceptFallback, (), (override));
 };
 
 #endif  // CHROME_BROWSER_AUTOFILL_MOCK_MANUAL_FILLING_VIEW_H_

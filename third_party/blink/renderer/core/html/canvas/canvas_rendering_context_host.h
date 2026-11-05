@@ -19,7 +19,7 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/v8_external_memory_accounter.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_child_paint_record.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_drawable_paint_record.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "ui/gfx/geometry/rect.h"
@@ -36,6 +36,7 @@ class CanvasRenderingContext;
 class CanvasResourceDispatcher;
 class ComputedStyle;
 class ElementImage;
+class FloatClipRect;
 class KURL;
 class LayoutLocale;
 class PlainTextPainter;
@@ -47,11 +48,9 @@ enum class RasterModeHint {
   kPreferCPU,
 };
 
-class CORE_EXPORT CanvasRenderingContextHost
-    : public GarbageCollectedMixin,
-      public CanvasResourceProviderDelegate,
-      public CanvasImageSource,
-      public ImageBitmapSource {
+class CORE_EXPORT CanvasRenderingContextHost : public GarbageCollectedMixin,
+                                               public CanvasImageSource,
+                                               public ImageBitmapSource {
  public:
   enum class HostType {
     kNone,
@@ -111,17 +110,11 @@ class CORE_EXPORT CanvasRenderingContextHost
   bool IsPaintable() const;
 
   virtual bool LowLatencyEnabled() const { return false; }
-
+  virtual bool IsPrinting() const { return false; }
 
   // Required by template functions in WebGLRenderingContextBase
   int width() const { return Size().width(); }
   int height() const { return Size().height(); }
-
-  // Partial CanvasResourceProvider::Delegate implementation
-  void InitializeForRecording(cc::PaintCanvas*) const final;
-  scoped_refptr<const cc::AnimatedImageFrameIndexMap>
-  GetAnimatedImageFrameIndexes(uint32_t id) const override;
-  void DidFlush() override;
 
   virtual void PageVisibilityChanged();
 
@@ -136,6 +129,7 @@ class CORE_EXPORT CanvasRenderingContextHost
   RasterMode GetRasterModeForCanvas2D() const;
 
   virtual bool IsPageVisible() const = 0;
+  virtual void NotifyGpuContextLost() = 0;
   virtual void SetNeedsCompositingUpdate() = 0;
   virtual void ClearCanvas2DLayerTexture() {}
 
@@ -144,9 +138,7 @@ class CORE_EXPORT CanvasRenderingContextHost
                                   float font_height) {}
   virtual void ClearRenderedText(const gfx::RectF& rect) {}
   virtual void ClearRenderedText() {}
-  virtual bool ShouldCaptureRenderedText() {
-    return should_capture_rendered_text_;
-  }
+  virtual bool ShouldCaptureRenderedText() = 0;
 
   // blink::CanvasImageSource
   bool IsOffscreenCanvas() const override;
@@ -161,18 +153,21 @@ class CORE_EXPORT CanvasRenderingContextHost
   void SetPreferred2DRasterMode(RasterModeHint);
 
   virtual void DiscardResources() = 0;
+  virtual void ClearDirtyRect() { NOTREACHED(); }
 
-  virtual std::optional<CanvasChildPaintRecord> GetCanvasChildPaintRecord(
-      DOMNodeId child_id) const {
+  virtual std::optional<CanvasDrawablePaintRecord> GetCanvasDrawablePaintRecord(
+      DOMNodeId drawable_id) const {
     return std::nullopt;
   }
 
   enum UpdateGeometryBehavior { kUpdateHitTestOrder, kPreserveHitTestOrder };
   virtual void UpdateDrawnElementGeometry(Element&,
                                           const gfx::Transform*,
+                                          const FloatClipRect*,
                                           bool update_hit_test_order) = 0;
   virtual void UpdateDrawnElementGeometry(ElementImage&,
                                           const gfx::Transform*,
+                                          const FloatClipRect*,
                                           bool update_hit_test_order) = 0;
   virtual void ClearDrawnElementGeometry(Element&) = 0;
   virtual void ClearDrawnElementGeometry(ElementImage&) = 0;
@@ -187,7 +182,6 @@ class CORE_EXPORT CanvasRenderingContextHost
   Member<PlainTextPainter> plain_text_painter_;
   Member<UniqueFontSelector> unique_font_selector_;
   gfx::Size size_;
-  bool should_capture_rendered_text_ = false;
 
  private:
 

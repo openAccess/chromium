@@ -23,7 +23,7 @@ const char kNotificationPrefix[] = "NOTIFICATION_";
 
 // Create the key that will be used for the service worker database.
 std::string CreateDataKey(const std::string& notification_id) {
-  DCHECK(!notification_id.empty());
+  CHECK(!notification_id.empty(), base::NotFatalUntil::M159);
   return kNotificationPrefix + notification_id;
 }
 
@@ -47,7 +47,12 @@ NotificationStorage::~NotificationStorage() = default;
 void NotificationStorage::WriteNotificationData(
     const NotificationDatabaseData& data,
     PlatformNotificationContext::WriteResultCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  if (data.notification_id.empty()) {
+    std::move(callback).Run(/* success= */ false, std::string());
+    return;
+  }
+
   std::string serialized_data;
   if (!SerializeNotificationDatabaseData(data, &serialized_data)) {
     DLOG(ERROR) << "Unable to serialize data for a notification belonging "
@@ -84,7 +89,12 @@ void NotificationStorage::ReadNotificationDataAndRecordInteraction(
     const std::string& notification_id,
     PlatformNotificationContext::Interaction interaction,
     PlatformNotificationContext::ReadResultCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  if (notification_id.empty()) {
+    std::move(callback).Run(/* success= */ false, NotificationDatabaseData());
+    return;
+  }
+
   service_worker_context_->GetRegistrationUserData(
       service_worker_registration_id, {CreateDataKey(notification_id)},
       base::BindOnce(&NotificationStorage::OnReadCompleteUpdateInteraction,
@@ -105,7 +115,8 @@ void NotificationStorage::OnReadCompleteUpdateInteraction(
   }
 
   auto data = std::make_unique<NotificationDatabaseData>();
-  if (!DeserializeNotificationDatabaseData(database_data[0], data.get())) {
+  if (!DeserializeNotificationDatabaseData(database_data[0], data.get()) ||
+      data->notification_id.empty()) {
     DLOG(ERROR) << "Unable to deserialize data for a notification belonging "
                 << "to: " << data->origin;
     std::move(callback).Run(/* success= */ false, NotificationDatabaseData());
@@ -151,7 +162,7 @@ void NotificationStorage::OnInteractionUpdateComplete(
     std::unique_ptr<NotificationDatabaseData> data,
     PlatformNotificationContext::ReadResultCallback callback,
     blink::ServiceWorkerStatusCode status) {
-  DCHECK(data);
+  CHECK(data, base::NotFatalUntil::M159);
   if (status == blink::ServiceWorkerStatusCode::kOk)
     std::move(callback).Run(/* success= */ true, *data);
   else

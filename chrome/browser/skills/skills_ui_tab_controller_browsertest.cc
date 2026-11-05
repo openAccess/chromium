@@ -26,10 +26,12 @@
 #include "components/skills/public/skill.mojom.h"
 #include "components/skills/public/skills_metrics.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/test/widget_test.h"
@@ -318,13 +320,8 @@ IN_PROC_BROWSER_TEST_F(SkillsUiTabControllerBrowserTest,
 
 // Verify that the Skill data passed to ShowDialog correctly populates the
 // HTML input fields in the WebUI.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_SkillPopulatesUIFields DISABLED_SkillPopulatesUIFields
-#else
-#define MAYBE_SkillPopulatesUIFields SkillPopulatesUIFields
-#endif
 IN_PROC_BROWSER_TEST_F(SkillsUiTabControllerBrowserTest,
-                       MAYBE_SkillPopulatesUIFields) {
+                       SkillPopulatesUIFields) {
   glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
 
   // Setup a specific test skill.
@@ -346,12 +343,15 @@ IN_PROC_BROWSER_TEST_F(SkillsUiTabControllerBrowserTest,
   ASSERT_TRUE(content::WaitForLoadStop(web_contents));
 
   // Script to check values inside the shadow DOM of the custom element.
+  // Poll until the asynchronous `getInitialState()` Mojo call resolves and Lit
+  // renders the populated skill fields.
   static constexpr char kCheckFieldsScript[] = R"(
     (async function() {
-      const getApp = () => document.querySelector('skills-dialog-app');
+      await customElements.whenDefined('skills-dialog-app');
+      let lastResult = {name: '', prompt: '', icon: ''};
 
-      for (let i = 0; i < 20; i++) {
-        const app = getApp();
+      for (let i = 0; i < 100; i++) {
+        const app = document.querySelector('skills-dialog-app');
         // Wait for the app and its internal Lit rendering to be ready.
         if (app && app.shadowRoot) {
           await app.updateComplete;
@@ -360,15 +360,18 @@ IN_PROC_BROWSER_TEST_F(SkillsUiTabControllerBrowserTest,
           const instructionText = app.$['instructionsText'];
           const emojiInput = app.shadowRoot.querySelector('.emoji-trigger');
 
-          return {
+          lastResult = {
             name: nameInput ? nameInput.value : '',
             prompt: instructionText ? instructionText.value : '',
             icon: emojiInput ? emojiInput.value : ''
           };
+          if (lastResult.name && lastResult.prompt && lastResult.icon) {
+            return lastResult;
+          }
         }
         await new Promise(r => setTimeout(r, 50));
       }
-      return {error: 'app not found'};
+      return lastResult;
     })();
   )";
 
@@ -463,7 +466,7 @@ IN_PROC_BROWSER_TEST_F(SkillsUiTabControllerBrowserTest,
 IN_PROC_BROWSER_TEST_F(SkillsUiTabControllerBrowserTest,
                        OnSkillDeletedTriggersToast) {
   // Ensure no toast is initially showing.
-  const auto* toast_controller = browser()->GetFeatures().toast_controller();
+  const auto* toast_controller = ToastController::From(browser());
   EXPECT_FALSE(toast_controller->IsShowingToast());
 
   // Trigger the deletion notification on the Tab Controller.

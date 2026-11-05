@@ -20,6 +20,7 @@
 #include "components/sync/base/features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/views/widget/any_widget_observer.h"
 
@@ -32,6 +33,7 @@
 #include "chrome/common/chrome_paths.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "extensions/browser/install_verifier.h"
 #include "extensions/common/extension.h"
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
@@ -56,7 +58,7 @@ class ChromeSignoutConfirmationPromptPixelTest
         views::test::AnyWidgetTestPasskey{},
         "SigninViewControllerDelegateViews");
 
-    auto* controller = browser()->GetFeatures().signin_view_controller();
+    auto* controller = SigninViewController::From(browser());
     controller->ShowSignoutConfirmationPrompt(
         GetVariant(), GetUnsyncedDataCount(),
         base::BindOnce([](ChromeSignoutConfirmationChoice choice,
@@ -102,6 +104,7 @@ class ChromeSignoutConfirmationPromptPixelTest
 
 IN_PROC_BROWSER_TEST_P(ChromeSignoutConfirmationPromptPixelTest,
                        InvokeUi_Default) {
+  set_baseline("8481376");
   ShowAndVerifyUi();
 }
 
@@ -149,6 +152,7 @@ class ChromeSignoutConfirmationPromptWithExtensionsPixelTest
   base::FilePath extension_data_dir() { return extension_data_dir_; }
 
  private:
+  extensions::ScopedInstallVerifierBypassForTest install_verifier_bypass_;
   // chrome/test/data/extensions/
   base::FilePath extension_data_dir_;
 };
@@ -172,6 +176,7 @@ IN_PROC_BROWSER_TEST_P(ChromeSignoutConfirmationPromptWithExtensionsPixelTest,
           extensions::AccountExtensionTracker::AccountExtensionType::
               kAccountInstalledSignedIn);
 
+  set_baseline("8481376");
   ShowAndVerifyUi();
 }
 

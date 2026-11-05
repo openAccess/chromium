@@ -4,9 +4,11 @@
 
 #include "net/quic/web_transport_client.h"
 
+#include <ostream>
 #include <string_view>
 
 #include "base/memory/raw_ptr.h"
+#include "base/notreached.h"
 #include "net/quic/dedicated_web_transport_http3_client.h"
 
 namespace net {
@@ -29,8 +31,24 @@ class FailedWebTransportClient : public WebTransportClient {
   void CloseIfNonceMatches(base::UnguessableToken nonce) override {
     NOTREACHED();
   }
+  std::optional<std::vector<uint8_t>> ExportKeyingMaterial(
+      base::span<const uint8_t> label,
+      base::span<const uint8_t> context,
+      size_t result_length) override {
+    return std::nullopt;
+  }
 
   quic::WebTransportSession* session() override { return nullptr; }
+  std::optional<quic::QuicByteCount> GetMaxDatagramSize() const override {
+    return std::nullopt;
+  }
+
+  void RegisterSendStream(uint32_t stream_id) override { NOTREACHED(); }
+  void UnregisterSendStream(uint32_t stream_id) override { NOTREACHED(); }
+  std::optional<WebTransportSendStreamStats> GetSendStreamStats(
+      uint32_t stream_id) const override {
+    return std::nullopt;
+  }
 
  private:
   WebTransportError error_;
@@ -41,6 +59,12 @@ class FailedWebTransportClient : public WebTransportClient {
 std::ostream& operator<<(std::ostream& os, WebTransportState state) {
   os << WebTransportStateString(state);
   return os;
+}
+
+std::ostream& operator<<(std::ostream& os,
+                         const WebTransportSendStreamStats& stats) {
+  return os << "{bytes_sent: " << stats.bytes_sent
+            << ", bytes_acknowledged: " << stats.bytes_acknowledged << "}";
 }
 
 const char* WebTransportStateString(WebTransportState state) {

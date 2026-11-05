@@ -17,6 +17,7 @@ import("//build/config/mac/mac_sdk_overrides.gni")
 
 import("//build/config/pch.gni")
 import("//build/config/rust.gni")
+import("//build/config/sanitizers/alloc_token.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//build/config/ui.gni")
 if (is_android) {
@@ -218,6 +219,7 @@ config("default_libs") {
 
 _toolchain_marker_name =
     "toolchain_marker_" + get_label_info(current_toolchain, "name")
+
 group(_toolchain_marker_name) {
   # Can be used as an assert_no_deps target (assert_no_deps ignores toolchains).
 }
@@ -291,6 +293,15 @@ group("common_deps") {
     # support library, which is not shipped with compiler-rt by default. See
     # crbug.com/402171653 for context.
     public_deps += [ "//third_party/compiler-rt:atomic" ]
+  }
+}
+
+group("alloc_token_aliases") {
+  if (use_alloc_token) {
+    public_deps = [
+      "//build/config/sanitizers:alloc_token_aliases",
+      "//build/config/sanitizers:alloc_token_aliases_cxx",
+    ]
   }
 }
 

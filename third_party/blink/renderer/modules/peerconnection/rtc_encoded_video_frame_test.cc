@@ -4,7 +4,11 @@
 
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_video_frame.h"
 
+#include <cstdint>
 #include <cstdlib>
+#include <memory>
+#include <utility>
+#include <vector>
 
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
@@ -12,20 +16,29 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_codec_specifics_vp_8.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_video_frame_init.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_video_frame_metadata.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_video_frame_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_video_frame_type.h"
+#include "third_party/blink/renderer/core/dom/dom_high_res_time_stamp.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/timing/dom_window_performance.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_video_frame_delegate.h"
-#include "third_party/blink/renderer/platform/peerconnection/webrtc_util.h"
-#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
+#include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "third_party/webrtc/api/frame_transformer_interface.h"
 #include "third_party/webrtc/api/test/mock_transformable_video_frame.h"
+#include "third_party/webrtc/api/transport/rtp/dependency_descriptor.h"
 #include "third_party/webrtc/api/units/time_delta.h"
+#include "third_party/webrtc/api/units/timestamp.h"
+#include "third_party/webrtc/api/video/video_codec_type.h"
+#include "third_party/webrtc/api/video/video_frame_metadata.h"
+#include "third_party/webrtc/api/video/video_frame_type.h"
+#include "third_party/webrtc/modules/video_coding/codecs/vp8/include/vp8_globals.h"
+#include "third_party/webrtc/modules/video_coding/codecs/vp9/include/vp9_globals.h"
 
 using testing::_;
 using testing::Eq;
@@ -855,7 +868,7 @@ TEST_F(RTCEncodedVideoFrameTest, ReadingDataOnEmptyFrameGivesDetachedFrame) {
   encoded_frame->PassWebRtcFrame(v8_scope.GetIsolate(),
                                  /*detach_frame_data=*/false);
 
-  DOMArrayBuffer* data = encoded_frame->data(v8_scope.GetExecutionContext());
+  DOMArrayBuffer* data = encoded_frame->data();
   EXPECT_NE(data, nullptr);
   EXPECT_TRUE(data->IsDetached());
 }
@@ -894,7 +907,7 @@ TEST_F(RTCEncodedVideoFrameTest, PassWebRTCDetachesFrameData) {
   RTCEncodedVideoFrame* encoded_frame =
       MakeGarbageCollected<RTCEncodedVideoFrame>(std::move(frame));
 
-  DOMArrayBuffer* data = encoded_frame->data(v8_scope.GetExecutionContext());
+  DOMArrayBuffer* data = encoded_frame->data();
   encoded_frame->PassWebRtcFrame(v8_scope.GetIsolate(),
                                  /*detach_frame_data=*/true);
   EXPECT_NE(data, nullptr);
@@ -959,11 +972,13 @@ TEST_F(RTCEncodedVideoFrameTest, ConstructorFromInitDictionary) {
   init->setRtpTimestampWithoutOffset(123456u);
   init->setData(buffer);
 
-  double capture_time_ms = GetTimeOriginNtp(v8_scope) + 5000.0;
+  double capture_time_ms = 0.0;
   init->setCaptureTime(capture_time_ms);
   init->setContributingSources({11u, 22u});
   init->setMimeType("video/VP8");
   init->setTimestamp(9876);
+  init->setWidth(1280);
+  init->setHeight(720);
 
   DummyExceptionStateForTesting exception_state;
   RTCEncodedVideoFrame* new_frame = RTCEncodedVideoFrame::Create(
@@ -977,7 +992,7 @@ TEST_F(RTCEncodedVideoFrameTest, ConstructorFromInitDictionary) {
   // for RtpTimestamp.
   EXPECT_EQ(new_frame->timestamp(), 0u);
 
-  DOMArrayBuffer* frame_data = new_frame->data(v8_scope.GetExecutionContext());
+  DOMArrayBuffer* frame_data = new_frame->data();
   ASSERT_NE(frame_data, nullptr);
   EXPECT_EQ(frame_data->ByteLength(), 10u);
 
@@ -993,9 +1008,16 @@ TEST_F(RTCEncodedVideoFrameTest, ConstructorFromInitDictionary) {
   EXPECT_TRUE(metadata->hasTimestamp());
   EXPECT_EQ(metadata->timestamp(), 9876);
 
+  EXPECT_TRUE(metadata->hasWidth());
+  EXPECT_EQ(metadata->width(), 1280);
+
+  EXPECT_TRUE(metadata->hasHeight());
+  EXPECT_EQ(metadata->height(), 720);
+
   EXPECT_TRUE(metadata->hasContributingSources());
   EXPECT_THAT(metadata->contributingSources(), testing::ElementsAre(11u, 22u));
 
+  // Only exposed on the receiving side.
   EXPECT_FALSE(metadata->hasCaptureTime());
 }
 
@@ -1013,6 +1035,8 @@ TEST_F(RTCEncodedVideoFrameTest,
   init->setRtpTimestampWithoutOffset(101010u);
   init->setData(buffer);
   init->setMimeType("video/VP8");
+  init->setWidth(640);
+  init->setHeight(480);
 
   DummyExceptionStateForTesting exception_state;
   RTCEncodedVideoFrame* new_frame = RTCEncodedVideoFrame::Create(
@@ -1025,7 +1049,7 @@ TEST_F(RTCEncodedVideoFrameTest,
             V8RTCEncodedVideoFrameType::Enum::kDelta);
   EXPECT_EQ(new_frame->timestamp(), 0u);
 
-  DOMArrayBuffer* frame_data = new_frame->data(v8_scope.GetExecutionContext());
+  DOMArrayBuffer* frame_data = new_frame->data();
   ASSERT_NE(frame_data, nullptr);
   EXPECT_EQ(frame_data->ByteLength(), 5u);
 
@@ -1038,9 +1062,106 @@ TEST_F(RTCEncodedVideoFrameTest,
   EXPECT_TRUE(metadata->hasMimeType());
   EXPECT_EQ(metadata->mimeType(), "video/VP8");
   EXPECT_FALSE(metadata->hasTimestamp());
+  EXPECT_TRUE(metadata->hasWidth());
+  EXPECT_EQ(metadata->width(), 640);
+  EXPECT_TRUE(metadata->hasHeight());
+  EXPECT_EQ(metadata->height(), 480);
   EXPECT_TRUE(metadata->hasContributingSources());
   EXPECT_TRUE(metadata->contributingSources().empty());
   EXPECT_FALSE(metadata->hasCaptureTime());
+}
+
+TEST_F(RTCEncodedVideoFrameTest, ConstructorInvalidDimensionsFail) {
+  V8TestingScope v8_scope;
+
+  DOMArrayBuffer* buffer =
+      DOMArrayBuffer::Create(/*num_elements=*/5, /*element_byte_size=*/1);
+
+  // 1. width == 0 fails
+  {
+    auto* init = RTCEncodedVideoFrameInit::Create();
+    init->setType(
+        V8RTCEncodedVideoFrameType(V8RTCEncodedVideoFrameType::Enum::kKey));
+    init->setPayloadType(96);
+    init->setRtpTimestampWithoutOffset(101010u);
+    init->setData(buffer);
+    init->setMimeType("video/VP8");
+    init->setWidth(0);
+    init->setHeight(480);
+
+    DummyExceptionStateForTesting exception_state;
+    RTCEncodedVideoFrame* new_frame = RTCEncodedVideoFrame::Create(
+        v8_scope.GetExecutionContext(), init, exception_state);
+
+    EXPECT_TRUE(exception_state.HadException());
+    EXPECT_EQ(new_frame, nullptr);
+  }
+
+  // 2. height == 0 fails
+  {
+    auto* init = RTCEncodedVideoFrameInit::Create();
+    init->setType(
+        V8RTCEncodedVideoFrameType(V8RTCEncodedVideoFrameType::Enum::kKey));
+    init->setPayloadType(96);
+    init->setRtpTimestampWithoutOffset(101010u);
+    init->setData(buffer);
+    init->setMimeType("video/VP8");
+    init->setWidth(640);
+    init->setHeight(0);
+
+    DummyExceptionStateForTesting exception_state;
+    RTCEncodedVideoFrame* new_frame = RTCEncodedVideoFrame::Create(
+        v8_scope.GetExecutionContext(), init, exception_state);
+
+    EXPECT_TRUE(exception_state.HadException());
+    EXPECT_EQ(new_frame, nullptr);
+  }
+}
+
+TEST_F(RTCEncodedVideoFrameTest, ConstructorFutureCaptureTimeFails) {
+  V8TestingScope v8_scope;
+
+  DOMArrayBuffer* buffer =
+      DOMArrayBuffer::Create(/*num_elements=*/5, /*element_byte_size=*/1);
+
+  auto* init = RTCEncodedVideoFrameInit::Create();
+  init->setType(
+      V8RTCEncodedVideoFrameType(V8RTCEncodedVideoFrameType::Enum::kKey));
+  init->setPayloadType(96);
+  init->setRtpTimestampWithoutOffset(101010u);
+  init->setData(buffer);
+  init->setMimeType("video/VP8");
+  init->setCaptureTime(
+      DOMWindowPerformance::performance(v8_scope.GetWindow())->now() + 10000.0);
+
+  DummyExceptionStateForTesting exception_state;
+  RTCEncodedVideoFrame* new_frame = RTCEncodedVideoFrame::Create(
+      v8_scope.GetExecutionContext(), init, exception_state);
+
+  EXPECT_TRUE(exception_state.HadException());
+  EXPECT_EQ(new_frame, nullptr);
+}
+
+TEST_F(RTCEncodedVideoFrameTest, ConstructorEmptyTypeFails) {
+  V8TestingScope v8_scope;
+
+  DOMArrayBuffer* buffer =
+      DOMArrayBuffer::Create(/*num_elements=*/5, /*element_byte_size=*/1);
+
+  auto* init = RTCEncodedVideoFrameInit::Create();
+  init->setType(
+      V8RTCEncodedVideoFrameType(V8RTCEncodedVideoFrameType::Enum::kEmpty));
+  init->setPayloadType(96);
+  init->setRtpTimestampWithoutOffset(101010u);
+  init->setData(buffer);
+  init->setMimeType("video/VP8");
+
+  DummyExceptionStateForTesting exception_state;
+  RTCEncodedVideoFrame* new_frame = RTCEncodedVideoFrame::Create(
+      v8_scope.GetExecutionContext(), init, exception_state);
+
+  EXPECT_TRUE(exception_state.HadException());
+  EXPECT_EQ(new_frame, nullptr);
 }
 
 TEST_F(RTCEncodedVideoFrameTest, StringToVideoCodecType) {

@@ -23,6 +23,7 @@
 #include "components/services/app_service/public/cpp/types_util.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace ash {
 
@@ -108,8 +109,8 @@ void AppLaunchHandler::LaunchApps() {
     return;
 
   // Observe AppRegistryCache to get the notification when the app is ready.
-  DCHECK(
-      apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(profile_));
+  CHECK(apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(profile_),
+        base::NotFatalUntil::M160);
   auto* cache = &apps::AppServiceProxyFactory::GetForProfile(profile_)
                      ->AppRegistryCache();
   ObserveCache(cache);
@@ -145,8 +146,8 @@ bool AppLaunchHandler::ShouldLaunchSystemWebAppOrChromeApp(
 
 void AppLaunchHandler::LaunchApp(apps::AppType app_type,
                                  const std::string& app_id) {
-  DCHECK(restore_data_);
-  DCHECK_NE(app_id, app_constants::kChromeAppId);
+  CHECK(restore_data_, base::NotFatalUntil::M160);
+  CHECK_NE(app_id, app_constants::kChromeAppId, base::NotFatalUntil::M160);
 
   const auto it = restore_data_->app_id_to_launch_list().find(app_id);
   if (it == restore_data_->app_id_to_launch_list().end() ||
@@ -180,7 +181,7 @@ void AppLaunchHandler::LaunchApp(apps::AppType app_type,
 }
 
 void AppLaunchHandler::ObserveCache(apps::AppRegistryCache* source) {
-  DCHECK(source);
+  CHECK(source, base::NotFatalUntil::M160);
   if (!app_registry_cache_observer_.IsObservingSource(source)) {
     app_registry_cache_observer_.Reset();
     app_registry_cache_observer_.Observe(source);
@@ -192,7 +193,7 @@ void AppLaunchHandler::LaunchSystemWebAppOrChromeApp(
     const std::string& app_id,
     const app_restore::RestoreData::LaunchList& launch_list) {
   auto* proxy = apps::AppServiceProxyFactory::GetForProfile(profile_);
-  DCHECK(proxy);
+  CHECK(proxy, base::NotFatalUntil::M160);
 
   if (app_type == apps::AppType::kChromeApp) {
     OnExtensionLaunching(app_id);
@@ -206,7 +207,7 @@ void AppLaunchHandler::LaunchSystemWebAppOrChromeApp(
           extensions::ExtensionRegistry::Get(profile_)->GetInstalledExtension(
               app_id);
       if (extension) {
-        DCHECK(!it.second->file_paths.empty());
+        CHECK(!it.second->file_paths.empty(), base::NotFatalUntil::M160);
         apps::LaunchPlatformAppWithFileHandler(profile_, extension,
                                                it.second->handler_id.value(),
                                                it.second->file_paths);
@@ -224,7 +225,8 @@ void AppLaunchHandler::LaunchSystemWebAppOrChromeApp(
     apps::AppLaunchParams params(
         app_id,
         static_cast<apps::LaunchContainer>(it.second->container.value()),
-        static_cast<WindowOpenDisposition>(it.second->disposition.value()),
+        static_cast<ui::mojom::WindowOpenDisposition>(
+            it.second->disposition.value()),
         it.second->override_url.value_or(GURL()),
         apps::LaunchSource::kFromFullRestore, it.second->display_id.value(),
         it.second->file_paths,

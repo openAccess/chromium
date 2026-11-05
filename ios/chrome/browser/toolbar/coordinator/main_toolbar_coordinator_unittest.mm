@@ -6,6 +6,7 @@
 
 #import "base/memory/raw_ptr.h"
 #import "base/notreached.h"
+#import "base/test/metrics/user_action_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/omnibox/browser/omnibox_pref_names.h"
 #import "ios/chrome/browser/autocomplete/model/autocomplete_browser_agent.h"
@@ -21,6 +22,7 @@
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_scene_agent.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/layout_state_test_passkey_factory.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -42,18 +44,26 @@
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_commands.h"
 #import "ios/chrome/browser/shared/public/commands/page_action_menu_commands.h"
+#import "ios/chrome/browser/shared/public/commands/page_info_commands.h"
 #import "ios/chrome/browser/shared/public/commands/popup_menu_commands.h"
 #import "ios/chrome/browser/shared/public/commands/qr_scanner_commands.h"
 #import "ios/chrome/browser/shared/public/commands/quick_delete_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
+#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
+#import "ios/chrome/browser/shared/public/commands/tab_picker_commands.h"
 #import "ios/chrome/browser/shared/public/commands/text_zoom_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
+#import "ios/chrome/browser/toolbar/coordinator/toolbar_mediator.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/fullscreen/toolbars_size_browser_agent.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/legacy_toolbar_mediator.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_type.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_utils.h"
+#import "ios/chrome/browser/toolbar/ui/toolbar_constants.h"
+#import "ios/chrome/browser/web/model/web_navigation_browser_agent.h"
 #import "ios/chrome/browser/web/model/web_view_proxy/web_view_proxy_tab_helper.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/app/uikit_test_util.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
@@ -62,12 +72,27 @@
 #import "ios/web/public/web_state.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
+#import "ui/base/l10n/l10n_util.h"
+#import "url/gurl.h"
 
-// Exposes `ToolbarMediatorDelegate` in order to invoke
-// `transitionOmniboxToToolbarType:`.
-@interface MainToolbarCoordinator (Testing) <ToolbarMediatorDelegate>
+// Exposes `LegacyToolbarMediatorDelegate` and `ToolbarMediatorDelegate` in
+// order to invoke delegate methods in tests.
+@interface MainToolbarCoordinator (Testing) <LegacyToolbarMediatorDelegate,
+                                             ToolbarMediatorDelegate>
 @property(nonatomic, strong, readonly)
     LegacyToolbarMediator* legacyToolbarMediator;
+@end
+
+// Window subclass that returns configurable `safeAreaInsets` for testing.
+@interface MainToolbarCoordinatorTestSafeAreaWindow : UIWindow
+@property(nonatomic, assign) UIEdgeInsets fakeSafeAreaInsets;
+@end
+
+@implementation MainToolbarCoordinatorTestSafeAreaWindow
+- (UIEdgeInsets)safeAreaInsets {
+  return _fakeSafeAreaInsets;
+}
 @end
 
 @interface TestBrowserLayoutStateObserver
@@ -132,9 +157,9 @@ class MainToolbarCoordinatorTest : public PlatformTest {
         startDispatchingToTarget:mock_lens_handler
                      forProtocol:@protocol(LensCommands)];
 
-    id mock_application_handler = OCMProtocolMock(@protocol(SceneCommands));
+    mock_scene_handler_ = OCMProtocolMock(@protocol(SceneCommands));
     [browser->GetCommandDispatcher()
-        startDispatchingToTarget:mock_application_handler
+        startDispatchingToTarget:mock_scene_handler_
                      forProtocol:@protocol(SceneCommands)];
 
     id mock_QR_scanner_handler = OCMProtocolMock(@protocol(QRScannerCommands));
@@ -158,6 +183,11 @@ class MainToolbarCoordinatorTest : public PlatformTest {
     [browser->GetCommandDispatcher()
         startDispatchingToTarget:mock_page_action_menu_commands
                      forProtocol:@protocol(PageActionMenuCommands)];
+
+    id mock_page_info_commands = OCMProtocolMock(@protocol(PageInfoCommands));
+    [browser->GetCommandDispatcher()
+        startDispatchingToTarget:mock_page_info_commands
+                     forProtocol:@protocol(PageInfoCommands)];
 
     id mock_gemini_commands = OCMProtocolMock(@protocol(GeminiCommands));
     [browser->GetCommandDispatcher()
@@ -200,8 +230,15 @@ class MainToolbarCoordinatorTest : public PlatformTest {
         startDispatchingToTarget:mock_fullscreen_commands
                      forProtocol:@protocol(FullscreenCommands)];
 
+    id tab_picker_commands_handler =
+        OCMProtocolMock(@protocol(TabPickerCommands));
+    [browser->GetCommandDispatcher()
+        startDispatchingToTarget:tab_picker_commands_handler
+                     forProtocol:@protocol(TabPickerCommands)];
+
     OmniboxFocusBrowserAgent::CreateForBrowser(browser);
     AutocompleteBrowserAgent::CreateForBrowser(browser);
+    WebNavigationBrowserAgent::CreateForBrowser(browser);
     // FullscreenController depends on ToolbarsSizeBrowserAgent, so the agent
     ToolbarsSizeBrowserAgent::CreateForBrowser(browser);
     FullscreenController::CreateForBrowser(browser);
@@ -257,6 +294,7 @@ class MainToolbarCoordinatorTest : public PlatformTest {
   std::unique_ptr<TestProfileIOS> profile_;
   MainToolbarCoordinator* coordinator_;
   FakeSceneState* scene_state_;
+  id mock_scene_handler_ = nil;
   base::test::ScopedFeatureList feature_list_;
 };
 
@@ -338,4 +376,180 @@ TEST_F(MainToolbarCoordinatorTest, SideSwipeSnapshotForToolbarNotInHierarchy) {
 
   // The snapshot should be nil because the view is not in the hierarchy.
   EXPECT_EQ(snapshot, nil);
+}
+
+// Tests that tapping the assistant button in incognito displays the
+// incognito snackbar and switches to regular mode when tapped.
+TEST_F(MainToolbarCoordinatorTest, TestAssistantButtonTappedInIncognito) {
+  coordinator_ = [[MainToolbarCoordinator alloc] initWithBrowser:browser()];
+  [coordinator_ start];
+
+  id mock_snackbar_handler = OCMProtocolMock(@protocol(SnackbarCommands));
+  [browser()->GetCommandDispatcher()
+      startDispatchingToTarget:mock_snackbar_handler
+                   forProtocol:@protocol(SnackbarCommands)];
+
+  base::UserActionTester user_action_tester;
+  __block void (^snackbar_action)(void) = nil;
+  OCMExpect([mock_snackbar_handler
+      showSnackbarWithMessage:
+          l10n_util::GetNSString(IDS_IOS_APP_BAR_GEMINI_NOT_AVAILABLE_INCOGNITO)
+                   buttonText:l10n_util::GetNSString(
+                                  IDS_IOS_APP_BAR_SWITCH_MODES)
+                messageAction:[OCMArg checkWithBlock:^BOOL(id value) {
+                  snackbar_action = [value copy];
+                  return YES;
+                }]
+             completionAction:[OCMArg any]]);
+
+  [coordinator_ toolbarMediatorDidTapAssistantInIncognito:nil];
+
+  EXPECT_EQ(user_action_tester.GetActionCount(
+                "MobileToolbarAssistantIncognitoTapped"),
+            1);
+  EXPECT_OCMOCK_VERIFY(mock_snackbar_handler);
+
+  ASSERT_NE(snackbar_action, nil);
+  OCMExpect(
+      [mock_scene_handler_ displayTabGridInMode:TabGridOpeningMode::kRegular]);
+  snackbar_action();
+  EXPECT_EQ(user_action_tester.GetActionCount(
+                "MobileToolbarAssistantIncognitoSwitchModesTapped"),
+            1);
+  EXPECT_OCMOCK_VERIFY(mock_scene_handler_);
+}
+
+// Tests that during page navigation or transitions where the primary toolbar
+// view is temporarily hidden, expanded heights remain non-zero and collapsed
+// heights never exceed expanded heights.
+TEST_F(MainToolbarCoordinatorTest,
+       TestPrimaryToolbarHeightsWhenViewHiddenDuringNavigation) {
+  feature_list_.InitAndEnableFeature(kChromeNextIa);
+  coordinator_ = [[MainToolbarCoordinator alloc] initWithBrowser:browser()];
+  [coordinator_ start];
+
+  // 1. Add an active WebState loading a webpage.
+  auto test_web_state = std::make_unique<web::FakeWebState>();
+  test_web_state->SetBrowserState(profile_.get());
+  test_web_state->SetNavigationManager(
+      std::make_unique<web::FakeNavigationManager>());
+  WebViewProxyTabHelper::CreateForWebState(test_web_state.get());
+  InfoBarManagerImpl::CreateForWebState(test_web_state.get());
+  InfobarBadgeTabHelper::CreateForWebState(test_web_state.get());
+  test_web_state->SetCurrentURL(GURL("https://chromium.org"));
+  test_web_state->SetLoading(true);
+  browser()->GetWebStateList()->InsertWebState(
+      std::move(test_web_state),
+      WebStateList::InsertionParams::AtIndex(0).Activate());
+
+  // 2. Simulate the primary toolbar view being hidden during transition.
+  coordinator_.primaryToolbarViewController.view.hidden = YES;
+
+  // Verify the expanded height is non-zero even while the view is hidden.
+  EXPECT_GT([coordinator_ expandedPrimaryToolbarHeight], 0.0);
+  EXPECT_LE([coordinator_ collapsedPrimaryToolbarHeight],
+            [coordinator_ expandedPrimaryToolbarHeight]);
+  EXPECT_LE([coordinator_ collapsedSecondaryToolbarHeight],
+            [coordinator_ expandedSecondaryToolbarHeight]);
+}
+
+// Tests that during page navigation or transitions where the secondary toolbar
+// view is temporarily hidden, expanded heights remain non-zero and collapsed
+// heights never exceed expanded heights when bottom omnibox is available.
+TEST_F(MainToolbarCoordinatorTest,
+       TestSecondaryToolbarHeightsWhenViewHiddenDuringNavigation) {
+  // Bottom omnibox is not supported on all devices (e.g. iPad).
+  if (!IsBottomOmniboxAvailable()) {
+    return;
+  }
+
+  feature_list_.InitAndEnableFeature(kChromeNextIa);
+  coordinator_ = [[MainToolbarCoordinator alloc] initWithBrowser:browser()];
+  [coordinator_ start];
+
+  // 1. Add an active WebState loading a webpage.
+  auto test_web_state = std::make_unique<web::FakeWebState>();
+  test_web_state->SetBrowserState(profile_.get());
+  test_web_state->SetNavigationManager(
+      std::make_unique<web::FakeNavigationManager>());
+  WebViewProxyTabHelper::CreateForWebState(test_web_state.get());
+  InfoBarManagerImpl::CreateForWebState(test_web_state.get());
+  InfobarBadgeTabHelper::CreateForWebState(test_web_state.get());
+  test_web_state->SetCurrentURL(GURL("https://chromium.org"));
+  test_web_state->SetLoading(true);
+  browser()->GetWebStateList()->InsertWebState(
+      std::move(test_web_state),
+      WebStateList::InsertionParams::AtIndex(0).Activate());
+
+  // 2. Set omnibox to bottom position and simulate secondary view hidden.
+  GetApplicationContext()->GetLocalState()->SetBoolean(
+      omnibox::kIsOmniboxInBottomPosition, true);
+  coordinator_.secondaryToolbarViewController.view.hidden = YES;
+
+  EXPECT_GT([coordinator_ expandedSecondaryToolbarHeight], 0.0);
+  EXPECT_LE([coordinator_ collapsedSecondaryToolbarHeight],
+            [coordinator_ expandedSecondaryToolbarHeight]);
+}
+
+// Tests that `collapsedSecondaryToolbarHeight` excludes the bottom safe area
+// inset in portrait when `ChromeNextIa` is enabled, ensuring collapsed height
+// never exceeds expanded height even at the largest accessibility Dynamic Type
+// size.
+TEST_F(MainToolbarCoordinatorTest,
+       TestSecondaryToolbarHeightsExcludeSafeAreaInPortrait_ChromeNextIa) {
+  if (!IsBottomOmniboxAvailable()) {
+    return;
+  }
+
+  static constexpr CGFloat kSafeAreaTop = 59.0;
+  static constexpr CGFloat kSafeAreaBottom = 34.0;
+
+  feature_list_.InitAndEnableFeature(kChromeNextIa);
+  [scene_state_.layoutState
+      setAppBarPosition:AppBarPosition::kBottom
+                passKey:layout_state::LayoutStateTestPassKeyFactory::
+                            CreateSceneKey()];
+
+  coordinator_ = [[MainToolbarCoordinator alloc] initWithBrowser:browser()];
+  [coordinator_ start];
+
+  auto test_web_state = std::make_unique<web::FakeWebState>();
+  test_web_state->SetBrowserState(profile_.get());
+  test_web_state->SetNavigationManager(
+      std::make_unique<web::FakeNavigationManager>());
+  WebViewProxyTabHelper::CreateForWebState(test_web_state.get());
+  InfoBarManagerImpl::CreateForWebState(test_web_state.get());
+  InfobarBadgeTabHelper::CreateForWebState(test_web_state.get());
+  test_web_state->SetCurrentURL(GURL("https://chromium.org"));
+  test_web_state->SetLoading(true);
+  browser()->GetWebStateList()->InsertWebState(
+      std::move(test_web_state),
+      WebStateList::InsertionParams::AtIndex(0).Activate());
+
+  GetApplicationContext()->GetLocalState()->SetBoolean(
+      omnibox::kIsOmniboxInBottomPosition, true);
+
+  MainToolbarCoordinatorTestSafeAreaWindow* window =
+      [[MainToolbarCoordinatorTestSafeAreaWindow alloc]
+          initWithWindowScene:chrome_test_util::GetAnyWindowScene()];
+  window.fakeSafeAreaInsets =
+      UIEdgeInsetsMake(kSafeAreaTop, 0.0, kSafeAreaBottom, 0.0);
+  window.traitOverrides.preferredContentSizeCategory =
+      UIContentSizeCategoryAccessibilityExtraExtraExtraLarge;
+  [window addSubview:coordinator_.primaryToolbarViewController.view];
+  [window addSubview:coordinator_.secondaryToolbarViewController.view];
+
+  EXPECT_EQ([coordinator_ collapsedSecondaryToolbarHeight],
+            ToolbarCollapsedHeight(
+                UIContentSizeCategoryAccessibilityExtraExtraExtraLarge));
+  EXPECT_EQ([coordinator_ expandedSecondaryToolbarHeight], kToolbarHeight);
+  EXPECT_LE([coordinator_ collapsedSecondaryToolbarHeight],
+            [coordinator_ expandedSecondaryToolbarHeight]);
+
+  FullscreenBrowserAgent* fullscreen_agent =
+      FullscreenBrowserAgent::FromBrowser(browser());
+  ASSERT_TRUE(fullscreen_agent);
+  fullscreen_agent->InvalidateInsetRange();
+  EXPECT_LE(fullscreen_agent->min_insets().bottom,
+            fullscreen_agent->max_insets().bottom);
 }

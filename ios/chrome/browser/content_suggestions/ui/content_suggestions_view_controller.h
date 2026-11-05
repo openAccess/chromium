@@ -10,6 +10,7 @@
 #import "ios/chrome/browser/content_suggestions/ui/content_suggestions_consumer.h"
 
 @protocol ContentSuggestionsViewControllerAudience;
+@protocol NewTabPageShortcutsHandler;
 class UrlLoadingBrowserAgent;
 
 // CollectionViewController to display the suggestions items.
@@ -19,6 +20,9 @@ class UrlLoadingBrowserAgent;
 @property(nonatomic, weak) id<ContentSuggestionsViewControllerAudience>
     audience;
 
+// Handler for NTP shortcuts commands.
+@property(nonatomic, weak) id<NewTabPageShortcutsHandler> NTPShortcutsHandler;
+
 // Provider of menu configurations for the contentSuggestions component.
 @property(nonatomic, assign) UrlLoadingBrowserAgent* urlLoadingBrowserAgent;
 
@@ -27,6 +31,15 @@ class UrlLoadingBrowserAgent;
 - (instancetype)initWithNibName:(NSString*)name
                          bundle:(NSBundle*)bundle NS_UNAVAILABLE;
 - (instancetype)initWithCoder:(NSCoder*)coder NS_UNAVAILABLE;
+
+// Sets whether AI Mode is allowed.
+- (void)setAIMAllowed:(BOOL)isAIMAllowed;
+
+// Sets the title, icon, and accessibility label for the standalone AI Mode
+// module.
+- (void)setAIMTitle:(NSString*)title
+                  icon:(UIImage*)icon
+    accessibilityLabel:(NSString*)accessibilityLabel;
 
 @end
 

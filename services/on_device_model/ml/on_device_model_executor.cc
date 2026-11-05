@@ -201,6 +201,7 @@ class Responder final {
             task_runner = base::SequencedTaskRunner::GetCurrentDefault()](
                const ChromeMLExecutionOutput* output) {
       std::optional<std::string> text;
+      std::optional<std::string> thought;
       switch (output->status) {
         case ChromeMLExecutionStatus::kInProgress:
           if (output->tool_calls_size > 0) {
@@ -208,8 +209,20 @@ class Responder final {
             HandleToolCallOutput(weak_ptr, task_runner.get(), output);
             return;
           }
-          CHECK(output->text);
-          text.emplace(output->text);
+          if (output->thought) {
+            thought.emplace(output->thought);
+          }
+          if (output->text) {
+            text.emplace(output->text);
+          }
+          if (!text && !thought) {
+            // Notification for non-text output (e.g. the 2nd token of a tool
+            // call streamed via the tool call channel) to record TTFT.
+            task_runner->PostTask(
+                FROM_HERE,
+                base::BindOnce(&Responder::RecordFirstToken, weak_ptr));
+            return;
+          }
           break;
         case ChromeMLExecutionStatus::kComplete:
           DCHECK(!output->text);
@@ -225,8 +238,9 @@ class Responder final {
       }
 
       task_runner->PostTask(
-          FROM_HERE, base::BindOnce(&Responder::OnOutput, weak_ptr,
-                                    std::move(text), output->tokens_decoded));
+          FROM_HERE,
+          base::BindOnce(&Responder::OnOutput, weak_ptr, std::move(text),
+                         std::move(thought), output->tokens_decoded));
     };
   }
 
@@ -240,6 +254,14 @@ class Responder final {
   }
 
  private:
+  void RecordFirstToken() {
+    if (first_token_time_ == base::TimeTicks()) {
+      // Ends the `TTFT` trace.
+      TRACE_EVENT_END("optimization_guide", perfetto_id());
+      first_token_time_ = base::TimeTicks::Now();
+    }
+  }
+
   // Forwards tool calls and notifies that tool responses are now expected.
   void OnToolCalls(
       std::vector<on_device_model::mojom::ToolCallPtr> tool_calls) {
@@ -248,24 +270,32 @@ class Responder final {
       Cancel();
       return;
     }
+    RecordFirstToken();
     responder_->OnToolCalls(std::move(tool_calls));
     on_tool_calls_emitted_.Run();
   }
 
-  void OnOutput(std::optional<std::string> text, int tokens_decoded) {
-    if (text) {
-      num_output_tokens_++;
-      output_so_far_ += *text;
-      if (first_token_time_ == base::TimeTicks()) {
-        // Ends the `TTFT` trace.
-        TRACE_EVENT_END("optimization_guide", perfetto_id());
-        first_token_time_ = base::TimeTicks::Now();
-      }
-
+  void OnOutput(std::optional<std::string> text,
+                std::optional<std::string> thought,
+                int tokens_decoded) {
+    if (text || thought) {
       auto chunk = on_device_model::mojom::ResponseChunk::New();
-      chunk->text = *text;
+      if (text) {
+        RecordFirstToken();
+        num_output_tokens_++;
+        output_so_far_ += *text;
+        chunk->text = *text;
+      }
+      if (thought) {
+        chunk->thought = *thought;
+      }
       responder_->OnResponse(std::move(chunk));
     } else if (session_) {
+      if (first_token_time_ == base::TimeTicks()) {
+        // Ends the `TTFT` trace if no visible text or tool call token was ever
+        // emitted.
+        TRACE_EVENT_END("optimization_guide", perfetto_id());
+      }
       // Ends the `Decode` trace.
       TRACE_EVENT_END("optimization_guide", perfetto_id());
 
@@ -290,7 +320,8 @@ class Responder final {
 
       base::UmaHistogramCounts10000("OnDeviceModel.TokenCount.Output",
                                     summary->output_token_count);
-      if (summary->output_token_count > 1) {
+      if (summary->output_token_count > 1 &&
+          first_token_time_ != base::TimeTicks()) {
         // Time starts at the first token to avoid counting input processing
         // time, so calculate using summary->output_token_count - 1.
         base::UmaHistogramCounts1000(
@@ -358,8 +389,12 @@ class AsrStreamResponder final {
       std::vector<odmm::SpeechRecognitionResultPtr> result;
       result.reserve(output.size());
       for (const auto& t : output) {
-        result.push_back(
-            odmm::SpeechRecognitionResult::New(t.transcript, t.is_final));
+        auto r = odmm::SpeechRecognitionResult::New();
+        r->transcript = t.transcript;
+        r->is_final = t.is_final;
+        r->audio_start_time = base::Microseconds(t.from_timestamp_micros);
+        r->audio_end_time = base::Microseconds(t.to_timestamp_micros);
+        result.push_back(std::move(r));
       }
       task_runner->PostTask(
           FROM_HERE, base::BindOnce(&AsrStreamResponder::OnOutput, weak_ptr,
@@ -698,6 +733,14 @@ OnDeviceModelExecutor::OnDeviceModelExecutor(
 OnDeviceModelExecutor::~OnDeviceModelExecutor() {
   TRACE_EVENT("optimization_guide",
               "OnDeviceModelExecutor::~OnDeviceModelExecutor");
+  // Destroy the postprocessor model alongside the base model rather than when
+  // its `OnDeviceModel` receiver disconnects, ensuring all active sessions and
+  // ASR streams are destroyed before the postprocessor model.
+  if (postprocessor_model_ != 0) {
+    model_task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(&DestroyModel, &chrome_ml_.get(), postprocessor_model_));
+  }
   if (model_ != 0) {
     model_task_runner_->PostTask(
         FROM_HERE, base::BindOnce(&DestroyModel, &chrome_ml_.get(), model_));
@@ -725,6 +768,7 @@ OnDeviceModelExecutor::CreateWithResult(
 std::unique_ptr<on_device_model::BackendSession>
 OnDeviceModelExecutor::CreateSession(
     const ScopedAdaptation* adaptation,
+    bool has_post_processor,
     on_device_model::mojom::SessionParamsPtr params) {
   TRACE_EVENT("optimization_guide", "OnDeviceModelExecutor::CreateSession");
   std::optional<uint32_t> adaptation_id;
@@ -735,9 +779,11 @@ OnDeviceModelExecutor::CreateSession(
     CHECK(it != adaptation_params_.end());
     adaptation_params = it->second->Clone();
   }
+  ChromeMLModel postprocessor_model =
+      has_post_processor ? postprocessor_model_ : 0;
   auto session = SessionAccessor::Create(
       *chrome_ml_, model_task_runner_, model_, std::move(params),
-      std::move(adaptation_params), adaptation_id);
+      std::move(adaptation_params), adaptation_id, postprocessor_model);
   return std::make_unique<SessionImpl>(*this, std::move(session),
                                        max_tokens_ - kReserveTokensForSafety,
                                        adaptation_id);
@@ -755,6 +801,36 @@ OnDeviceModelExecutor::LoadAdaptation(
 void OnDeviceModelExecutor::UnloadAdaptation(uint32_t adaptation_id) {
   TRACE_EVENT("optimization_guide", "OnDeviceModelExecutor::UnloadAdaptation");
   adaptation_params_.erase(adaptation_id);
+}
+
+LoadModelResult OnDeviceModelExecutor::LoadPostProcessor(
+    on_device_model::mojom::LoadPostProcessorParamsPtr params) {
+  TRACE_EVENT("optimization_guide", "OnDeviceModelExecutor::LoadPostProcessor");
+  if (!params || !params->weights.IsValid()) {
+    LOG(ERROR) << "Invalid LoadPostProcessorParams.";
+    return LoadModelResult::kFailedToLoadLibrary;
+  }
+  if (postprocessor_model_ != 0) {
+    return LoadModelResult::kSuccess;
+  }
+  ChromeMLModelData data;
+  data.weights_file = params->weights.TakePlatformFile();
+  data.cache_file = params->cache.IsValid() ? params->cache.TakePlatformFile()
+                                            : base::kInvalidPlatformFile;
+  ChromeMLModelDescriptor descriptor = {
+      .backend_type = ml::ModelBackendType::kCpuBackend,
+      .model_data = &data,
+      .max_tokens = params->max_tokens,
+  };
+  base::HangWatcher::InvalidateActiveExpectations();
+  postprocessor_model_ = chrome_ml_->SessionCreateModel(
+      &descriptor, reinterpret_cast<uintptr_t>(this),
+      OnDeviceModelExecutor::Schedule);
+  if (postprocessor_model_ == 0) {
+    LOG(ERROR) << "SessionCreateModel for postprocessor failed.";
+    return LoadModelResult::kFailedToLoadLibrary;
+  }
+  return LoadModelResult::kSuccess;
 }
 
 LoadModelResult OnDeviceModelExecutor::Init(
@@ -819,8 +895,6 @@ LoadModelResult OnDeviceModelExecutor::Init(
       .enable_host_mapped_pointer = kEnableHostMappedPointer.Get(),
       .use_low_power = kUseLowPower.Get(),
       .allow_fp16 = kAllowFp16.Get(),
-      .enable_speculative_decoding = base::FeatureList::IsEnabled(
-          on_device_model::features::kOnDeviceModelSpeculativeDecoding),
       .performance_hint = params->performance_hint,
       .vram_mb = params->vram_mb,
   };

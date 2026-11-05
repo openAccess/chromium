@@ -44,8 +44,7 @@
     }
   },
   "$build/flakiness": {
-    "check_for_flakiness": true,
-    "check_for_flakiness_with_resultdb": true
+    "check_for_flakiness": true
   },
   "$build/siso": {
     "configs": [
@@ -69,5 +68,5 @@
   "builder_group": "tryserver.chromium.mac",
   "cq": "path-based",
   "recipe": "chromium_trybot",
-  "xcode_build_version": "27a5252f"
+  "xcode_build_version": "27a266a"
 }

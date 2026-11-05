@@ -8,7 +8,6 @@
 #include "base/test/gtest_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/private_ai/private_ai_service_factory.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -19,9 +18,8 @@
 #include "components/private_ai/private_ai_service.h"
 #include "components/private_ai/testing/fake_private_ai_network_driver.h"
 #include "components/private_ai/testing/fake_private_ai_oak_session_driver.h"
-#include "content/public/browser/storage_partition.h"
 #include "content/public/test/browser_test.h"
-#include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/cpp/network_context_getter.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -44,10 +42,9 @@ class ConnectionFactoryImplBrowserTest : public PlatformBrowserTest {
   ~ConnectionFactoryImplBrowserTest() override = default;
 
  protected:
-  network::mojom::NetworkContext* GetNetworkContext() {
-    return chrome_test_utils::GetProfile(this)
-        ->GetDefaultStoragePartition()
-        ->GetNetworkContext();
+  network::NetworkContextGetter GetNetworkContextGetter() {
+    return PrivateAiServiceFactory::CreateNetworkContextGetter(
+        chrome_test_utils::GetProfile(this));
   }
 
   phosphor::TokenManager* GetTokenManager() {
@@ -77,7 +74,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionFactoryImplBrowserTest,
                        CreateConnectionWithoutToken) {
   GURL url("wss://private-ai.googleapis.com?key=test_api_key");
 
-  ConnectionFactoryImpl factory(url, GetNetworkContext(), GetLogger(),
+  ConnectionFactoryImpl factory(url, GetNetworkContextGetter(), GetLogger(),
                                 GetOakSessionDriver(), GetNetworkDriver(),
                                 chrome::GetChannel());
 
@@ -87,18 +84,11 @@ IN_PROC_BROWSER_TEST_F(ConnectionFactoryImplBrowserTest,
   EXPECT_TRUE(connection);
 }
 
-// TODO(crbug.com/542347163): Re-enable test.
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-#define MAYBE_FactoryCtorFailsWithoutApiKey \
-  DISABLED_FactoryCtorFailsWithoutApiKey
-#else
-#define MAYBE_FactoryCtorFailsWithoutApiKey FactoryCtorFailsWithoutApiKey
-#endif
 IN_PROC_BROWSER_TEST_F(ConnectionFactoryImplBrowserTest,
-                       MAYBE_FactoryCtorFailsWithoutApiKey) {
+                       FactoryCtorFailsWithoutApiKey) {
   GURL url("wss://private-ai.googleapis.com");
   EXPECT_CHECK_DEATH(ConnectionFactoryImpl(
-      url, GetNetworkContext(), GetLogger(), GetOakSessionDriver(),
+      url, GetNetworkContextGetter(), GetLogger(), GetOakSessionDriver(),
       GetNetworkDriver(), chrome::GetChannel()));
 }
 
@@ -106,7 +96,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionFactoryImplBrowserTest,
                        CreateConnectionWithToken) {
   GURL url("wss://private-ai.googleapis.com?key=test_api_key");
 
-  ConnectionFactoryImpl factory(url, GetNetworkContext(), GetLogger(),
+  ConnectionFactoryImpl factory(url, GetNetworkContextGetter(), GetLogger(),
                                 GetOakSessionDriver(), GetNetworkDriver(),
                                 chrome::GetChannel());
   factory.EnableTokenAttestation(GetTokenManager());
@@ -121,7 +111,7 @@ IN_PROC_BROWSER_TEST_F(ConnectionFactoryImplBrowserTest,
                        CreateConnectionWithProxyAndToken) {
   GURL url("wss://private-ai.googleapis.com?key=test_api_key");
 
-  ConnectionFactoryImpl factory(url, GetNetworkContext(), GetLogger(),
+  ConnectionFactoryImpl factory(url, GetNetworkContextGetter(), GetLogger(),
                                 GetOakSessionDriver(), GetNetworkDriver(),
                                 chrome::GetChannel());
   factory.EnableTokenAttestation(GetTokenManager());

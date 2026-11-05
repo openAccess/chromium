@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -78,6 +79,35 @@ struct Floating {
   Floating() = default;
 };
 
+// Specifies what an invocation should do when it resolves to an instance that
+// is already showing in live (audio) mode. Live mode runs in the floating
+// panel, so an invocation that targets a tab would otherwise pull the
+// conversation out of it and into that tab's side panel.
+//
+// This supersedes `GlicInvokeOptions::preserve_active_surface`, which only
+// applies to instances that are not in live mode. Apart from `kFail`, these
+// options work by choosing which surface the conversation is shown on, so they
+// require a `Target::surface` they can steer; combining one with a surface it
+// can't steer fails the invocation with
+// `GlicInvokeError::kInvalidConfiguration`. Leaving live mode is ultimately up
+// to the web client; the browser only chooses the surface and requests a mode.
+enum class LiveModeBehavior {
+  // Carry on in live mode: leave the conversation in the floating panel.
+  kProceedInLiveMode,
+  // Show the conversation in the targeted tab's side panel, even if it is
+  // currently in the floating panel. The side panel doesn't host live mode, so
+  // this leaves it. Requires a surface that resolves to a tab
+  // (`DefaultSurface`, `NewTab` or `TabHandle`).
+  kForceSidePanelTextMode,
+  // Keep the conversation in the floating panel and request that it be shown
+  // in text mode. Unlike `kProceedInLiveMode`, this moves a conversation that
+  // is showing elsewhere into the floating panel. Requires a surface that
+  // resolves to a tab or `Floating`.
+  kForceFloatingTextMode,
+  // Fail the invocation with `GlicInvokeError::kLiveModeActive`.
+  kFail,
+};
+
 // The target for the invocation.
 struct Target {
   using Surface = std::variant<DefaultSurface,
@@ -114,6 +144,10 @@ struct Target {
   // - LastActiveOrNew: Uses the last active embedder for the instance, or falls
   //   back to creating a new tab.
   Surface surface = DefaultSurface();
+
+  // What to do if this invocation resolves to an instance that is already
+  // showing in live (audio) mode. Defaults to leaving it in live mode.
+  LiveModeBehavior live_mode_behavior = LiveModeBehavior::kProceedInLiveMode;
 
   // Specifies which conversation to use or create.
   // - DefaultConversation: Uses the conversation already bound to the target
@@ -167,6 +201,18 @@ struct AdditionalTabContext {
   PolicyCheck policy_check = PolicyCheck::kClipboard;
 };
 
+// Policy checks to apply to `GlicInvokeOptions::prompts` when they carry page
+// data (e.g. selected text pre-filled into the editable prompt input on
+// Android, rather than attached as `AdditionalTabContext`) instead of
+// Chrome-generated text.
+struct PromptPolicy {
+  // The frame the prompt text was taken from.
+  content::GlobalRenderFrameHostId source_rfh_id;
+
+  // Specifies the policy check to perform, if any.
+  PolicyCheck policy_check = PolicyCheck::kClipboard;
+};
+
 // LINT.IfChange(GlicInvokeError)
 // Possible errors that can occur during a Glic invocation.
 enum class GlicInvokeError {
@@ -180,17 +226,18 @@ enum class GlicInvokeError {
   kInvalidTab = 4,
   // The tab was closed before the invocation could complete.
   kTabClosed = 5,
-  // The instance was destroyed before the invocation could complete.
-  kInstanceDestroyed = 6,
+  // Deprecated: split by removal reason into the kInstanceDestroyed* values
+  // below.
+  // kInstanceDestroyed = 6,
   // The instance is already handling an invocation.
   kInvokeInProgress = 7,
   // The provided invocation configuration is invalid.
   kInvalidConfiguration = 8,
   // Observed a navigation before the policy checks completed.
   kAdditionalContextSawNavigation = 9,
-  // The clipboard copy policy check failed for the given additional context.
+  // The clipboard copy policy check failed for additional context or prompts.
   kAdditionalContextFailedCopyPolicy = 10,
-  // The clipboard paste policy check failed for the given additional context.
+  // The clipboard paste policy check failed for additional context or prompts.
   kAdditionalContextFailedPastePolicy = 11,
   // Could not find the source frame instance for the policy checks.
   kAdditionalContextNoSourceFrame = 12,
@@ -207,9 +254,38 @@ enum class GlicInvokeError {
   kCancelled = 17,
   // The invocation handler was superseded by another invocation.
   kSuperseded = 18,
-  kMaxValue = kSuperseded,
+  // The invocation targeted an instance that is in live mode, and
+  // `Target::live_mode_behavior` asked for it to fail.
+  kLiveModeActive = 19,
+  // The Glic client failed to load or reach a ready state.
+  kClientLoadError = 20,
+  // The instance was destroyed before the invocation could complete. The
+  // suffix says why the instance was removed (see InstanceRemovalReason).
+  kInstanceDestroyedBlankInstanceClosed = 21,
+  kInstanceDestroyedUnbound = 22,
+  kInstanceDestroyedArchived = 23,
+  kInstanceDestroyedSignedOut = 24,
+  kInstanceDestroyedShutdown = 25,
+  // The user explicitly closed the panel the invocation was showing before
+  // the client became usable (see Host::client_load_state()). Invocations
+  // that already have a usable client are not affected by a close.
+  kPanelClosed = 26,
+  // The invocation needed the client, the client stopped on the sign-in panel
+  // (ClientLoadErrorReason::kSignIn), and the user had not signed in when the
+  // invocation timed out. Not a failure of the client, and not a kTimeout
+  // either: nothing the product did ran late. (An invocation that only shows
+  // the panel succeeds at that point instead; see SignInBehavior.) Counted as
+  // ABANDONED, which is what CUI 1 recorded for the sign-in panel before it
+  // was resolved from the invocation.
+  kSignInRequired = 27,
+  kMaxValue = kSignInRequired,
 };
-// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicInvokeResult,//chrome/browser/glic/host/glic_internals_page_handler.cc:GlicInvokeError)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicInvokeResult,//chrome/browser/glic/public/glic_invoke_options.cc:GlicInvokeErrorToString)
+
+// Returns a human-readable, non-localized description of `error`. Intended for
+// logging and developer-facing surfaces (e.g. chrome://glic-internals); not for
+// display to end users.
+std::string_view GlicInvokeErrorToString(GlicInvokeError error);
 
 // Details for invoking Glic with tabs shared. See
 // GlicSharingManagerInternal::PinTabs().
@@ -231,10 +307,12 @@ struct TabSharingOptions {
 
 // Specifies how to wait for the First Run Experience (FRE) to complete.
 enum class FreCompletionWaitMode {
-  // Whether or not we wait depends on the FRE override.
+  // Whether or not we wait depends on the FRE override and context.
   kDefault,
   // We do not wait for the FRE to complete, regardless of the FRE override.
   kNever,
+  // Always wait for the FRE to complete before proceeding.
+  kAlways,
 };
 
 // Configuration options for invoking Glic.
@@ -252,6 +330,13 @@ struct GlicInvokeOptions {
   // or a payload.
   glic::mojom::InvocationSource GetInvocationSource() const;
 
+  // Returns whether `additional_context` requests the clipboard policy checks.
+  bool RequiresContextClipboardPolicyCheck() const;
+
+  // Returns whether `prompts` need the clipboard policy checks requested by
+  // `prompt_policy`. `prompts` must not be empty when `prompt_policy` is set.
+  bool RequiresPromptClipboardPolicyCheck() const;
+
   // The invocation source or a specific payload.
   std::variant<glic::mojom::InvocationSource, glic::mojom::InvocationPayloadPtr>
       source_or_payload;
@@ -259,6 +344,12 @@ struct GlicInvokeOptions {
   // One or more pre-determined prompts to offer or submit. Providing multiple
   // prompts can facilitate a chip-style UI on the client.
   std::vector<std::string> prompts;
+
+  // Policy checks for `prompts` that contain page data. If a check fails, the
+  // invocation fails. Requesting checks on both `prompts` and
+  // `additional_context` fails the invocation with
+  // `GlicInvokeError::kInvalidConfiguration`.
+  std::optional<PromptPolicy> prompt_policy;
 
   // Additional context (e.g., image data, Annotated Page Content) to be
   // included with the invocation.
@@ -269,8 +360,21 @@ struct GlicInvokeOptions {
   // Tabs to pin as part of invocation.
   TabSharingOptions tab_sharing;
 
+  // Whether to automatically pin the target tab when the side panel is bound
+  // to it. Defaults to true.
+  bool pin_on_bind = true;
+
   // Defines the target for the invocation (surface and conversation).
   Target target;
+
+  // Whether an invocation that targets a tab should leave the conversation on
+  // the surface it is already showing on, rather than moving it into that
+  // tab's side panel. Currently only applies to the floating panel.
+  //
+  // Targeting a specific conversation (`ConversationId`/`InstanceId`) also
+  // binds the tab to it. `DefaultConversation` does not: an unbound tab still
+  // gets its own conversation in its own side panel.
+  bool preserve_active_surface = false;
 
   // The feature mode to use for the invocation, triggering specific client
   // behaviours like actuation or image generation.

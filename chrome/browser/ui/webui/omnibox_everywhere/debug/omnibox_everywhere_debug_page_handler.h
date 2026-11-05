@@ -5,19 +5,28 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_OMNIBOX_EVERYWHERE_DEBUG_OMNIBOX_EVERYWHERE_DEBUG_PAGE_HANDLER_H_
 #define CHROME_BROWSER_UI_WEBUI_OMNIBOX_EVERYWHERE_DEBUG_OMNIBOX_EVERYWHERE_DEBUG_PAGE_HANDLER_H_
 
+#include <memory>
+#include <string>
+
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/webui/omnibox_everywhere/debug/omnibox_everywhere_debug.mojom.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
+namespace content {
+class WebUI;
+}
+
 class Profile;
+class UserEducationInternalsPageHandlerImpl;
 
 namespace omnibox_everywhere_debug {
 
 class OmniboxEverywhereDebugPageHandler : public mojom::PageHandler {
  public:
   OmniboxEverywhereDebugPageHandler(
+      content::WebUI* web_ui,
       Profile* profile,
       mojo::PendingRemote<mojom::Page> page,
       mojo::PendingReceiver<mojom::PageHandler> receiver);
@@ -46,17 +55,26 @@ class OmniboxEverywhereDebugPageHandler : public mojom::PageHandler {
 
   void InvokeOmniboxEverywhere(mojom::InvocationSource source) override;
 
+  void ShowLensIph() override;
+
   void CreateStartMenuShortcut(
       CreateStartMenuShortcutCallback callback) override;
 
   void PinToTaskbar(PinToTaskbarCallback callback) override;
 
+  void ResetProfilePrefs(ResetProfilePrefsCallback callback) override;
+  void ResetAllPrefs(ResetAllPrefsCallback callback) override;
+
  private:
   void OnPrefChanged(const std::string& pref_name);
 
+  raw_ptr<content::WebUI> web_ui_;
   raw_ptr<Profile> profile_;
   mojo::Remote<mojom::Page> page_;
   mojo::Receiver<mojom::PageHandler> receiver_;
+
+  std::unique_ptr<UserEducationInternalsPageHandlerImpl>
+      user_education_internals_page_handler_;
 
   PrefChangeRegistrar pref_change_registrar_;
 };

@@ -9,7 +9,7 @@
 #include "ash/style/ash_color_id.h"
 #include "ash/style/icon_button.h"
 #include "ash/style/style_util.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/system_decoration.h"
 #include "ash/system/toast/system_toast_view.h"
 #include "ash/wm/wm_constants.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -17,7 +17,6 @@
 #include "ui/compositor/layer.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/views/controls/button/label_button.h"
-#include "ui/views/highlight_border.h"
 
 namespace ash {
 
@@ -42,19 +41,17 @@ class SplitViewSetupViewSettingsButton : public IconButton {
                    IconButton::Type::kLarge,
                    &kOverviewSettingsIcon,
                    IDS_ASH_OVERVIEW_SETTINGS_BUTTON_LABEL),
-        shadow_(SystemShadow::CreateShadowOnNinePatchLayerForView(
+        decoration_(SystemDecoration::CreateForView(
             this,
-            SystemShadow::Type::kElevation4)) {
+            SystemDecoration::ShadowType::kElevation4,
+            SystemDecoration::HighlightBorderMode::kHighlightBorder)) {
     SetPaintToLayer();
     layer()->SetFillsBoundsOpaquely(false);
     SetBackgroundColor(kColorAshShieldAndBase80);
 
     const float settings_button_corner_radius =
         GetPreferredSize().height() / 2.0f;
-    SetBorder(std::make_unique<views::HighlightBorder>(
-        settings_button_corner_radius,
-        views::HighlightBorder::Type::kHighlightBorderOnShadow));
-    shadow_->SetRoundedCorners(
+    decoration_->SetRoundedCorners(
         gfx::RoundedCornersF(settings_button_corner_radius));
 
     StyleUtil::SetUpFocusRingForView(this, kWindowMiniViewFocusRingHaloInset);
@@ -66,7 +63,7 @@ class SplitViewSetupViewSettingsButton : public IconButton {
   ~SplitViewSetupViewSettingsButton() override = default;
 
  private:
-  std::unique_ptr<SystemShadow> shadow_;
+  std::unique_ptr<SystemDecoration> decoration_;
 };
 
 BEGIN_METADATA(SplitViewSetupViewSettingsButton)

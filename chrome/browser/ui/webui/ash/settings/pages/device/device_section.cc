@@ -30,7 +30,6 @@
 #include "chrome/browser/ui/webui/ash/settings/pages/device/inputs_section.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/printing/printing_section.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/constants/chromeos_features.h"
@@ -39,12 +38,14 @@
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "media/base/media_switches.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/display/display_features.h"
 #include "ui/display/display_switches.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/manager/touch_device_manager.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/events/ash/keyboard_capability.h"
 #include "ui/events/ash/keyboard_layout_util.h"
 #include "ui/events/devices/device_data_manager.h"
@@ -485,10 +486,6 @@ bool IsUnifiedDesktopAvailable() {
       ::switches::kEnableUnifiedDesktop);
 }
 
-bool IsDisplayPerformanceSupported() {
-  return ash::features::IsDisplayPerformanceModeEnabled();
-}
-
 bool DoesDeviceSupportAmbientColor() {
   return ash::features::IsAllowAmbientEQEnabled();
 }
@@ -516,10 +513,6 @@ bool IsShowForceRespectUiGainsToggleEnabled() {
     return false;
   }
   return base::FeatureList::IsEnabled(media::kShowForceRespectUiGainsToggle);
-}
-
-bool IsShowSpatialAudioToggleEnabled() {
-  return base::FeatureList::IsEnabled(ash::features::kShowSpatialAudioToggle);
 }
 
 void AddDeviceKeyboardStrings(content::WebUIDataSource* html_source) {
@@ -638,93 +631,67 @@ void AddDeviceKeyboardStrings(content::WebUIDataSource* html_source) {
       {"deviceNameLabel", IDS_SETTINGS_PER_DEVICE_NAME},
       {"deviceBatteryLabel",
        IDS_SETTINGS_PER_DEVICE_BATTERY_PERCENTAGE_A11Y_LABEL},
+      {"perDeviceKeyboardKeyQuickInsert", IDS_KEYBOARD_QUICK_INSERT_LABEL},
   };
   html_source->AddLocalizedStrings(keyboard_strings);
 
-  html_source->AddLocalizedString("perDeviceKeyboardKeyQuickInsert",
-                                  IDS_KEYBOARD_QUICK_INSERT_LABEL);
-
   if (Shell::Get()->keyboard_capability()->HasLauncherButtonOnAnyKeyboard()) {
-    html_source->AddLocalizedString(
-        "keyboardBlockMetaFunctionKeyRewrites",
-        IDS_SETTINGS_KEYBOARD_BLOCK_META_FUNCTION_KEY_REWRITES_LAUNCHER);
-    html_source->AddLocalizedString(
-        "keyboardBlockMetaFunctionKeyRewritesDescription",
-        IDS_SETTINGS_KEYBOARD_BLOCK_META_FUNCTION_KEY_REWRITES_DESCRIPTION_LAUNCHER);
-    html_source->AddLocalizedString(
-        "perDeviceKeyboardKeySearch",
-        IDS_SETTINGS_PER_DEVICE_KEYBOARD_KEY_LAUNCHER);
-    html_source->AddLocalizedString("keyboardKeySearch",
-                                    IDS_SETTINGS_KEYBOARD_KEY_LAUNCHER);
-    html_source->AddLocalizedString(
-        "keyboardSendFunctionKeysDescription",
-        IDS_SETTINGS_KEYBOARD_SEND_FUNCTION_KEYS_LAYOUT2_DESCRIPTION);
-    html_source->AddLocalizedString(
-        "splitModifierKeyboardSendFunctionKeysDescription",
-        IDS_SETTINGS_SPLIT_MODIFIER_KEYBOARD_SEND_FUNCTION_KEYS_LAYOUT_DESCRIPTION);
-    html_source->AddLocalizedString("sixPackKeyDeleteSearch",
-                                    IDS_SETTINGS_SIX_PACK_KEY_DELETE_LAUNCHER);
-    html_source->AddLocalizedString("sixPackKeyHomeSearch",
-                                    IDS_SETTINGS_SIX_PACK_KEY_HOME_LAUNCHER);
-    html_source->AddLocalizedString("sixPackKeyEndSearch",
-                                    IDS_SETTINGS_SIX_PACK_KEY_END_LAUNCHER);
-    html_source->AddLocalizedString("sixPackKeyPageUpSearch",
-                                    IDS_SETTINGS_SIX_PACK_KEY_PAGE_UP_LAUNCHER);
-    html_source->AddLocalizedString(
-        "sixPackKeyPageDownSearch",
-        IDS_SETTINGS_SIX_PACK_KEY_PAGE_DOWN_LAUNCHER);
-    html_source->AddLocalizedString("sixPackKeyInsertSearch",
-                                    IDS_SETTINGS_SIX_PACK_KEY_INSERT_LAUNCHER);
-    html_source->AddLocalizedString(
-        "touchpadSimulateRightClickOptionSearch",
-        IDS_SETTINGS_TOUCHPAD_SIMULATE_RIGHT_CLICK_OPTION_LAUNCHER);
-    html_source->AddLocalizedString(
-        "fKeyShiftOptionSearch",
-        IDS_SETTINGS_F_KEY_SHIFT_DROPDOWN_OPTION_LAUNCHER);
-    html_source->AddLocalizedString(
-        "fKeyCtrlShiftOptionSearch",
-        IDS_SETTINGS_F_KEY_CTRL_SHIFT_DROPDOWN_OPTION_LAUNCHER);
-    html_source->AddLocalizedString(
-        "fKeyAltOptionSearch", IDS_SETTINGS_F_KEY_ALT_DROPDOWN_OPTION_LAUNCHER);
-
+    static constexpr webui::LocalizedString kLauncherStrings[] = {
+        {"keyboardBlockMetaFunctionKeyRewrites",
+         IDS_SETTINGS_KEYBOARD_BLOCK_META_FUNCTION_KEY_REWRITES_LAUNCHER},
+        {"keyboardBlockMetaFunctionKeyRewritesDescription",
+         IDS_SETTINGS_KEYBOARD_BLOCK_META_FUNCTION_KEY_REWRITES_DESCRIPTION_LAUNCHER},
+        {"perDeviceKeyboardKeySearch",
+         IDS_SETTINGS_PER_DEVICE_KEYBOARD_KEY_LAUNCHER},
+        {"keyboardKeySearch", IDS_SETTINGS_KEYBOARD_KEY_LAUNCHER},
+        {"keyboardSendFunctionKeysDescription",
+         IDS_SETTINGS_KEYBOARD_SEND_FUNCTION_KEYS_LAYOUT2_DESCRIPTION},
+        {"splitModifierKeyboardSendFunctionKeysDescription",
+         IDS_SETTINGS_SPLIT_MODIFIER_KEYBOARD_SEND_FUNCTION_KEYS_LAYOUT_DESCRIPTION},
+        {"sixPackKeyDeleteSearch", IDS_SETTINGS_SIX_PACK_KEY_DELETE_LAUNCHER},
+        {"sixPackKeyHomeSearch", IDS_SETTINGS_SIX_PACK_KEY_HOME_LAUNCHER},
+        {"sixPackKeyEndSearch", IDS_SETTINGS_SIX_PACK_KEY_END_LAUNCHER},
+        {"sixPackKeyPageUpSearch", IDS_SETTINGS_SIX_PACK_KEY_PAGE_UP_LAUNCHER},
+        {"sixPackKeyPageDownSearch",
+         IDS_SETTINGS_SIX_PACK_KEY_PAGE_DOWN_LAUNCHER},
+        {"sixPackKeyInsertSearch", IDS_SETTINGS_SIX_PACK_KEY_INSERT_LAUNCHER},
+        {"touchpadSimulateRightClickOptionSearch",
+         IDS_SETTINGS_TOUCHPAD_SIMULATE_RIGHT_CLICK_OPTION_LAUNCHER},
+        {"fKeyShiftOptionSearch",
+         IDS_SETTINGS_F_KEY_SHIFT_DROPDOWN_OPTION_LAUNCHER},
+        {"fKeyCtrlShiftOptionSearch",
+         IDS_SETTINGS_F_KEY_CTRL_SHIFT_DROPDOWN_OPTION_LAUNCHER},
+        {"fKeyAltOptionSearch",
+         IDS_SETTINGS_F_KEY_ALT_DROPDOWN_OPTION_LAUNCHER},
+    };
+    html_source->AddLocalizedStrings(kLauncherStrings);
   } else {
-    html_source->AddLocalizedString(
-        "keyboardBlockMetaFunctionKeyRewrites",
-        IDS_SETTINGS_KEYBOARD_BLOCK_META_FUNCTION_KEY_REWRITES_SEARCH);
-    html_source->AddLocalizedString(
-        "keyboardBlockMetaFunctionKeyRewritesDescription",
-        IDS_SETTINGS_KEYBOARD_BLOCK_META_FUNCTION_KEY_REWRITES_DESCRIPTION_SEARCH);
-    html_source->AddLocalizedString(
-        "perDeviceKeyboardKeySearch",
-        IDS_SETTINGS_PER_DEVICE_KEYBOARD_KEY_SEARCH);
-    html_source->AddLocalizedString("keyboardKeySearch",
-                                    IDS_SETTINGS_KEYBOARD_KEY_SEARCH);
-    html_source->AddLocalizedString(
-        "keyboardSendFunctionKeysDescription",
-        IDS_SETTINGS_KEYBOARD_SEND_FUNCTION_KEYS_DESCRIPTION);
-    html_source->AddLocalizedString("sixPackKeyDeleteSearch",
-                                    IDS_SETTINGS_SIX_PACK_KEY_DELETE_SEARCH);
-    html_source->AddLocalizedString("sixPackKeyHomeSearch",
-                                    IDS_SETTINGS_SIX_PACK_KEY_HOME_SEARCH);
-    html_source->AddLocalizedString("sixPackKeyEndSearch",
-                                    IDS_SETTINGS_SIX_PACK_KEY_END_SEARCH);
-    html_source->AddLocalizedString("sixPackKeyPageUpSearch",
-                                    IDS_SETTINGS_SIX_PACK_KEY_PAGE_UP_SEARCH);
-    html_source->AddLocalizedString("sixPackKeyPageDownSearch",
-                                    IDS_SETTINGS_SIX_PACK_KEY_PAGE_DOWN_SEARCH);
-    html_source->AddLocalizedString("sixPackKeyInsertSearch",
-                                    IDS_SETTINGS_SIX_PACK_KEY_INSERT_SEARCH);
-    html_source->AddLocalizedString(
-        "touchpadSimulateRightClickOptionSearch",
-        IDS_SETTINGS_TOUCHPAD_SIMULATE_RIGHT_CLICK_OPTION_SEARCH);
-    html_source->AddLocalizedString(
-        "fKeyShiftOptionSearch",
-        IDS_SETTINGS_F_KEY_SHIFT_DROPDOWN_OPTION_SEARCH);
-    html_source->AddLocalizedString(
-        "fKeyCtrlShiftOptionSearch",
-        IDS_SETTINGS_F_KEY_CTRL_SHIFT_DROPDOWN_OPTION_SEARCH);
-    html_source->AddLocalizedString(
-        "fKeyAltOptionSearch", IDS_SETTINGS_F_KEY_ALT_DROPDOWN_OPTION_SEARCH);
+    static constexpr webui::LocalizedString kSearchStrings[] = {
+        {"keyboardBlockMetaFunctionKeyRewrites",
+         IDS_SETTINGS_KEYBOARD_BLOCK_META_FUNCTION_KEY_REWRITES_SEARCH},
+        {"keyboardBlockMetaFunctionKeyRewritesDescription",
+         IDS_SETTINGS_KEYBOARD_BLOCK_META_FUNCTION_KEY_REWRITES_DESCRIPTION_SEARCH},
+        {"perDeviceKeyboardKeySearch",
+         IDS_SETTINGS_PER_DEVICE_KEYBOARD_KEY_SEARCH},
+        {"keyboardKeySearch", IDS_SETTINGS_KEYBOARD_KEY_SEARCH},
+        {"keyboardSendFunctionKeysDescription",
+         IDS_SETTINGS_KEYBOARD_SEND_FUNCTION_KEYS_DESCRIPTION},
+        {"sixPackKeyDeleteSearch", IDS_SETTINGS_SIX_PACK_KEY_DELETE_SEARCH},
+        {"sixPackKeyHomeSearch", IDS_SETTINGS_SIX_PACK_KEY_HOME_SEARCH},
+        {"sixPackKeyEndSearch", IDS_SETTINGS_SIX_PACK_KEY_END_SEARCH},
+        {"sixPackKeyPageUpSearch", IDS_SETTINGS_SIX_PACK_KEY_PAGE_UP_SEARCH},
+        {"sixPackKeyPageDownSearch",
+         IDS_SETTINGS_SIX_PACK_KEY_PAGE_DOWN_SEARCH},
+        {"sixPackKeyInsertSearch", IDS_SETTINGS_SIX_PACK_KEY_INSERT_SEARCH},
+        {"touchpadSimulateRightClickOptionSearch",
+         IDS_SETTINGS_TOUCHPAD_SIMULATE_RIGHT_CLICK_OPTION_SEARCH},
+        {"fKeyShiftOptionSearch",
+         IDS_SETTINGS_F_KEY_SHIFT_DROPDOWN_OPTION_SEARCH},
+        {"fKeyCtrlShiftOptionSearch",
+         IDS_SETTINGS_F_KEY_CTRL_SHIFT_DROPDOWN_OPTION_SEARCH},
+        {"fKeyAltOptionSearch", IDS_SETTINGS_F_KEY_ALT_DROPDOWN_OPTION_SEARCH},
+    };
+    html_source->AddLocalizedStrings(kSearchStrings);
   }
 }
 
@@ -836,10 +803,12 @@ enum class TouchpadSensitivity {
 
 }  // namespace
 
-DeviceSection::DeviceSection(Profile* profile,
-                             SearchTagRegistry* search_tag_registry,
-                             CupsPrintersManager* printers_manager,
-                             PrefService* pref_service)
+DeviceSection::DeviceSection(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    Profile* profile,
+    SearchTagRegistry* search_tag_registry,
+    CupsPrintersManager* printers_manager,
+    PrefService* pref_service)
     : OsSettingsSection(profile, search_tag_registry),
       inputs_subsection_(
           profile,
@@ -849,7 +818,10 @@ DeviceSection::DeviceSection(Profile* profile,
               ? input_method::EditorMediatorFactory::GetInstance()
                     ->GetForProfile(profile)
               : nullptr),
-      printing_subsection_(profile, search_tag_registry, printers_manager) {
+      printing_subsection_(std::move(url_loader_factory),
+                           profile,
+                           search_tag_registry,
+                           printers_manager) {
   CHECK(profile);
   CHECK(search_tag_registry);
   CHECK(pref_service);
@@ -927,11 +899,6 @@ void DeviceSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
 
   html_source->AddBoolean("isDemoSession",
                           ash::demo_mode::IsDeviceInDemoMode());
-
-
-  html_source->AddBoolean(
-      "enableAltClickAndSixPackCustomization",
-      ash::features::IsAltClickAndSixPackCustomizationEnabled());
 
   AddDevicePointersStrings(html_source);
   AddDeviceGraphicsTabletStrings(html_source);
@@ -1028,10 +995,8 @@ void DeviceSection::RegisterHierarchy(HierarchyGenerator* generator) const {
   };
   RegisterNestedSettingBulk(mojom::Subpage::kPointers, kPointersSettings,
                             generator);
-  if (ash::features::IsAltClickAndSixPackCustomizationEnabled()) {
-    generator->RegisterNestedSetting(
-        mojom::Setting::kTouchpadSimulateRightClick, mojom::Subpage::kPointers);
-  }
+  generator->RegisterNestedSetting(mojom::Setting::kTouchpadSimulateRightClick,
+                                   mojom::Subpage::kPointers);
 
   const int kKeyboardTitleStringID = IDS_OS_SETTINGS_KEYBOARD_AND_INPUTS_TITLE;
   // Per-device Keyboard.
@@ -1590,8 +1555,6 @@ void DeviceSection::AddDeviceDisplayStrings(
       {"displayScreenExtended", IDS_SETTINGS_DISPLAY_SCREEN_EXTENDED},
       {"displayScreenPrimary", IDS_SETTINGS_DISPLAY_SCREEN_PRIMARY},
       {"displayScreenTitle", IDS_SETTINGS_DISPLAY_SCREEN},
-      {"displayShinyPerformanceLabel",
-       IDS_SETTINGS_DISPLAY_SHINY_PERFORMANCE_LABEL},
       {"displaySizeSliderMaxLabel", IDS_SETTINGS_DISPLAY_ZOOM_SLIDER_MAXIMUM},
       {"displaySizeSliderMinLabel", IDS_SETTINGS_DISPLAY_ZOOM_SLIDER_MINIMUM},
       {"displayTitle", IDS_OS_SETTINGS_DISPLAY_TITLE},
@@ -1613,12 +1576,10 @@ void DeviceSection::AddDeviceDisplayStrings(
       {"displayZoomLabel", IDS_OS_SETTINGS_DISPLAY_ZOOM_LABEL},
       {"displayZoomDescription", IDS_OS_SETTINGS_DISPLAY_ZOOM_DESCRIPTION},
       {"displayZoomValue", IDS_SETTINGS_DISPLAY_ZOOM_VALUE},
+      {"displayArrangementText",
+       IDS_SETTINGS_DISPLAY_ARRANGEMENT_WITH_KEYBOARD_TEXT},
   };
   html_source->AddLocalizedStrings(kDisplayStrings);
-
-  html_source->AddLocalizedString(
-      "displayArrangementText",
-      IDS_SETTINGS_DISPLAY_ARRANGEMENT_WITH_KEYBOARD_TEXT);
 
   html_source->AddBoolean(
       "isCryptohomeDataEphemeral",
@@ -1632,9 +1593,6 @@ void DeviceSection::AddDeviceDisplayStrings(
 
   html_source->AddBoolean("enableForceRespectUiGainsToggle",
                           IsShowForceRespectUiGainsToggleEnabled());
-
-  html_source->AddBoolean("enableSpatialAudioToggle",
-                          IsShowSpatialAudioToggleEnabled());
 
   html_source->AddBoolean(
       "enableAudioFocusSetting",
@@ -1652,16 +1610,6 @@ void DeviceSection::AddDeviceDisplayStrings(
   html_source->AddBoolean(
       "enableDriveFsBulkPinning",
       drive::util::IsDriveFsBulkPinningAvailable(profile()));
-
-  html_source->AddBoolean(
-      "allowDisplayAlignmentApi",
-      base::FeatureList::IsEnabled(ash::features::kDisplayAlignAssist));
-
-  html_source->AddBoolean("isDisplayPerformanceSupported",
-                          IsDisplayPerformanceSupported());
-
-  html_source->AddBoolean("enableDisplayBrightnessControlInSettings",
-                          features::IsBrightnessControlInSettingsEnabled());
 
   html_source->AddBoolean("opsDisplayScaleFactorEnabled",
                           IsOpsDisplayScaleFactorEnabled());

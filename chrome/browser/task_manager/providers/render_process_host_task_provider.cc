@@ -11,14 +11,10 @@
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/task_manager/providers/child_process_task.h"
 #include "chrome/common/buildflags.h"
-#include "content/public/browser/browser_child_process_host_iterator.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/child_process_data.h"
 #include "content/public/browser/render_process_host.h"
-#include "content/public/common/process_type.h"
 
 using content::BrowserThread;
-using content::ChildProcessData;
 using content::RenderProcessHost;
 
 namespace task_manager {
@@ -29,14 +25,14 @@ RenderProcessHostTaskProvider::~RenderProcessHostTaskProvider() = default;
 
 Task* RenderProcessHostTaskProvider::GetTaskOfUrlRequest(int child_id,
                                                          int route_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   auto itr = tasks_by_rph_id_.find(content::ChildProcessId(child_id));
   return itr != tasks_by_rph_id_.end() ? itr->second.get() : nullptr;
 }
 
 void RenderProcessHostTaskProvider::StartUpdating() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(tasks_by_rph_id_.empty());
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(tasks_by_rph_id_.empty(), base::NotFatalUntil::M162);
   for (RenderProcessHost::iterator it(RenderProcessHost::AllHostsIterator());
        !it.IsAtEnd(); it.Advance()) {
     RenderProcessHost* host = it.GetCurrentValue();
@@ -53,7 +49,7 @@ void RenderProcessHostTaskProvider::StartUpdating() {
 }
 
 void RenderProcessHostTaskProvider::StopUpdating() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 
   // Then delete all tasks (if any).
   host_observation_.RemoveAllObservations();
@@ -71,16 +67,13 @@ void RenderProcessHostTaskProvider::CreateTask(
 
   // TODO(cburn): plumb out something from RPH so the title can be set here.
   // Create the task and notify the observer.
-  ChildProcessData data(content::PROCESS_TYPE_RENDERER, host->GetID());
-  data.SetProcess(host->GetProcess().Duplicate());
-
   auto subtype = ChildProcessTask::ProcessSubtype::kUnknownRenderProcess;
   if (glic::IsProcessHostForGlic(host)) {
     subtype = ChildProcessTask::ProcessSubtype::kGlicRenderProcess;
   }
   std::unique_ptr<ChildProcessTask>& task =
       tasks_by_rph_id_[render_process_host_id];
-  task = std::make_unique<ChildProcessTask>(data, subtype);
+  task = std::make_unique<ChildProcessTask>(*host, subtype);
   NotifyObserverTaskAdded(task.get());
 }
 

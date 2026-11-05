@@ -5,14 +5,17 @@
 #include "ui/views/controls/menu/menu_item_view.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/gtest_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/accessibility/ax_action_data.h"
+#include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -25,8 +28,11 @@
 #include "ui/gfx/geometry/insets.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/actions/action_view_controller.h"
 #include "ui/views/controls/image_view.h"
+#include "ui/views/controls/menu/menu_config.h"
 #include "ui/views/controls/menu/menu_runner.h"
+#include "ui/views/controls/menu/menu_separator.h"
 #include "ui/views/controls/menu/submenu_view.h"
 #include "ui/views/controls/menu/test_menu_item_view.h"
 #include "ui/views/style/platform_style.h"
@@ -55,6 +61,48 @@ TEST_F(MenuItemViewUnitTest, AddAndRemoveChildren) {
   root_menu.RemoveMenuItem(item);
 
   EXPECT_TRUE(submenu->GetMenuItems().empty());
+}
+
+using MenuItemViewDeathTest = MenuItemViewUnitTest;
+
+// Only the root item may hold the controller; other items reach it through
+// GetMenuController().
+TEST_F(MenuItemViewDeathTest, SetControllerOnNonRootItem) {
+  views::TestMenuItemView root_menu;
+  MenuItemView* item = root_menu.AppendMenuItem(0);
+  EXPECT_CHECK_DEATH(item->SetController(nullptr));
+}
+
+// Cancel() acts on the root's controller, so it must be called on the root.
+TEST_F(MenuItemViewDeathTest, CancelOnNonRootItem) {
+  views::TestMenuItemView root_menu;
+  MenuItemView* item = root_menu.AppendMenuItem(0);
+  EXPECT_CHECK_DEATH(item->Cancel());
+}
+
+TEST_F(MenuItemViewUnitTest, AppendMenuItemSeparator) {
+  views::TestMenuItemView root_menu;
+  auto* item1 = root_menu.AppendMenuItem(1, u"Item 1");
+  auto* separator =
+      root_menu.AppendSeparator(ui::MenuSeparatorType::MENU_ITEM_SEPARATOR);
+  separator->SetColorId(ui::kColorMenuBackground);
+  auto* item2 = root_menu.AppendMenuItem(2, u"Item 2");
+
+  ASSERT_NE(separator, nullptr);
+  EXPECT_EQ(separator->GetType(), ui::MenuSeparatorType::MENU_ITEM_SEPARATOR);
+  EXPECT_EQ(separator->GetColorId(), ui::kColorMenuBackground);
+
+  auto* submenu = root_menu.GetSubmenu();
+  ASSERT_NE(submenu, nullptr);
+  EXPECT_EQ(submenu->children().size(), 3u);
+  EXPECT_EQ(submenu->children()[0], item1);
+  EXPECT_EQ(submenu->children()[1], separator);
+  EXPECT_EQ(submenu->children()[2], item2);
+
+  // Separators should not be counted in GetMenuItems().
+  EXPECT_EQ(submenu->GetMenuItems().size(), 2u);
+  EXPECT_EQ(submenu->GetMenuItems()[0], item1);
+  EXPECT_EQ(submenu->GetMenuItems()[1], item2);
 }
 
 namespace {
@@ -156,6 +204,88 @@ TEST_F(MenuItemViewUnitTest, UseMnemonicOnPlatform) {
     EXPECT_EQ('t', item2->GetMnemonic());
   } else {
     EXPECT_EQ(0, item1->GetMnemonic());
+    EXPECT_EQ(0, item2->GetMnemonic());
+  }
+}
+
+namespace {
+
+// Returns the SHOW_PREFIX / HIDE_PREFIX of the flags used to draw
+// the item's title. 0 means that '&' is drawn as is.
+int GetMnemonicPrefixFlags(const MenuItemView* item) {
+  return TestMenuItemView::GetDrawStringFlagsFor(item) &
+         (gfx::Canvas::SHOW_PREFIX | gfx::Canvas::HIDE_PREFIX);
+}
+
+}  // namespace
+
+// A menu asked to show its mnemonics (when opened with the keyboard) underlines
+// them.
+TEST_F(MenuItemViewUnitTest, ShowsMnemonicsWhenRequested) {
+  views::TestMenuItemView root_menu;
+  views::MenuItemView* submenu_item = root_menu.AppendSubMenu(1, u"&Submenu");
+  views::MenuItemView* nested_item =
+      submenu_item->AppendMenuItem(2, u"&Nested");
+  views::MenuItemView* literal_item = root_menu.AppendMenuItem(3, u"A&B");
+  literal_item->set_may_have_mnemonics(false);
+
+  root_menu.PrepareForRun(/*has_mnemonics=*/true, /*show_mnemonics=*/true);
+
+  // Every item reports the root menu item's state.
+  EXPECT_TRUE(root_menu.ShouldShowMnemonics());
+  EXPECT_TRUE(submenu_item->ShouldShowMnemonics());
+  EXPECT_TRUE(nested_item->ShouldShowMnemonics());
+
+  // Titles underline their mnemonic, unless the item can't have one.
+  EXPECT_EQ(gfx::Canvas::SHOW_PREFIX, GetMnemonicPrefixFlags(nested_item));
+  EXPECT_EQ(0, GetMnemonicPrefixFlags(literal_item));
+}
+
+// A menu not asked to show its mnemonics (when opened with the mouse)
+// hides them.
+TEST_F(MenuItemViewUnitTest, HidesMnemonicsWhenNotRequested) {
+  // Windows can be set to always underline mnemonics ("Underline access
+  // keys"), which this test can't override.
+  if (MenuConfig::instance().show_mnemonics) {
+    GTEST_SKIP() << "The OS is set to always show mnemonics";
+  }
+
+  views::TestMenuItemView root_menu;
+  views::MenuItemView* item = root_menu.AppendMenuItem(1, u"&Item");
+
+  root_menu.PrepareForRun(/*has_mnemonics=*/true, /*show_mnemonics=*/false);
+
+  EXPECT_FALSE(root_menu.ShouldShowMnemonics());
+  EXPECT_FALSE(item->ShouldShowMnemonics());
+  EXPECT_EQ(gfx::Canvas::HIDE_PREFIX, GetMnemonicPrefixFlags(item));
+}
+
+// A menu without mnemonics never shows them, even if asked to. Its titles
+// draw '&' as is.
+TEST_F(MenuItemViewUnitTest, IgnoresMnemonicsWhenMenuHasNone) {
+  views::TestMenuItemView root_menu;
+  views::MenuItemView* item = root_menu.AppendMenuItem(1, u"A&B");
+
+  root_menu.PrepareForRun(/*has_mnemonics=*/false, /*show_mnemonics=*/true);
+
+  EXPECT_FALSE(root_menu.ShouldShowMnemonics());
+  EXPECT_FALSE(item->ShouldShowMnemonics());
+  EXPECT_EQ(0, GetMnemonicPrefixFlags(item));
+}
+
+// "&&" shows a literal "&", so it isn't a mnemonic marker. A single "&" after
+// it still is.
+TEST_F(MenuItemViewUnitTest, EscapedAmpersandIsNotMnemonic) {
+  views::TestMenuItemView root_menu;
+  views::MenuItemView* item1 = root_menu.AppendMenuItem(1, u"AT&&T");
+  views::MenuItemView* item2 = root_menu.AppendMenuItem(2, u"Q&&&A");
+
+  root_menu.set_has_mnemonics(true);
+
+  EXPECT_EQ(0, item1->GetMnemonic());
+  if (MenuConfig::instance().use_mnemonics) {
+    EXPECT_EQ('a', item2->GetMnemonic());
+  } else {
     EXPECT_EQ(0, item2->GetMnemonic());
   }
 }
@@ -377,8 +507,11 @@ class MenuItemViewLayoutTest : public ViewsTestBase {
 
  protected:
   MenuItemView* test_item() { return test_item_; }
+  TestMenuItemView* root_menu() { return root_menu_.get(); }
 
   void PerformLayout() {
+    root_menu_->UpdateEmptyMenusAndMetrics();
+
     // SubmenuView does not lay out its children unless it is contained in a
     // view, so make a simple container for it.
     SubmenuView* submenu = root_menu_->GetSubmenu();
@@ -427,6 +560,212 @@ TEST_F(MenuItemViewLayoutTest, ContainerLayoutRespectsMarginsAndPreferredSize) {
   EXPECT_GE(actual_margins.bottom(), child_margins.bottom());
   EXPECT_EQ(child_bounds.width(), child_size.width());
   EXPECT_EQ(child_bounds.height(), child_size.height());
+}
+
+// Tests that MenuItemView takes into account both its border and child margins
+// when laying out in container mode.
+TEST_F(MenuItemViewLayoutTest, ContainerLayoutRespectsBorderAndMargins) {
+  test_item()->set_vertical_margin(0);
+  View* child_view = test_item()->AddChildView(std::make_unique<View>());
+
+  const gfx::Insets border_insets = gfx::Insets::TLBR(4, 8, 6, 12);
+  test_item()->SetBorder(views::CreateEmptyBorder(border_insets));
+
+  const gfx::Size child_size(200, 50);
+  const auto child_margins = gfx::Insets::VH(5, 10);
+  child_view->SetPreferredSize(child_size);
+  child_view->SetProperty(kMarginsKey, child_margins);
+
+  PerformLayout();
+
+  // In container mode, child view bounds are positioned within
+  // GetContentsBounds(), which accounts for the border insets.
+  const gfx::Rect child_bounds = child_view->bounds();
+  const gfx::Insets actual_margins =
+      test_item()->GetContentsBounds().InsetsFrom(child_bounds);
+  EXPECT_GE(actual_margins.left(), child_margins.left());
+  EXPECT_GE(actual_margins.right(), child_margins.right());
+  EXPECT_GE(actual_margins.top(), child_margins.top());
+  EXPECT_GE(actual_margins.bottom(), child_margins.bottom());
+  EXPECT_EQ(child_bounds.width(),
+            test_item()->GetContentsBounds().width() - child_margins.width());
+  EXPECT_EQ(child_bounds.height(),
+            test_item()->GetContentsBounds().height() - child_margins.height());
+
+  // Check that the total offset from the MenuItemView bounds includes both
+  // the border insets and the child margins.
+  const gfx::Insets total_insets =
+      test_item()->GetLocalBounds().InsetsFrom(child_bounds);
+  EXPECT_EQ(total_insets.left(), border_insets.left() + child_margins.left());
+  EXPECT_EQ(total_insets.right(),
+            border_insets.right() + child_margins.right());
+  EXPECT_EQ(total_insets.top(), border_insets.top() + child_margins.top());
+  EXPECT_EQ(total_insets.bottom(),
+            border_insets.bottom() + child_margins.bottom());
+
+  // Also verify GetContentStart and GetTrailingPadding reflect the border.
+  EXPECT_EQ(border_insets.left(), test_item()->GetContentStart());
+  EXPECT_EQ(border_insets.right(), test_item()->GetTrailingPadding());
+}
+
+// Tests that CalculateProposedLayout accurately computes child bounds for a
+// container MenuItemView with a border.
+TEST_F(MenuItemViewLayoutTest, ContainerCalculateProposedLayoutWithBorder) {
+  const gfx::Insets border_insets = gfx::Insets::TLBR(3, 7, 5, 11);
+  test_item()->SetBorder(views::CreateEmptyBorder(border_insets));
+  test_item()->set_vertical_margin(0);
+
+  View* child_view = test_item()->AddChildView(std::make_unique<View>());
+  const gfx::Insets child_margins = gfx::Insets::TLBR(2, 4, 6, 8);
+  child_view->SetProperty(kMarginsKey, child_margins);
+
+  const gfx::Size test_size(200, 60);
+  test_item()->SetSize(test_size);
+
+  views::ProposedLayout layout =
+      test_item()->CalculateProposedLayout(views::SizeBounds(test_size));
+  EXPECT_EQ(test_size, layout.host_size);
+
+  const auto child_layout = std::ranges::find(layout.child_layouts, child_view,
+                                              &views::ChildLayout::child_view);
+  ASSERT_NE(child_layout, layout.child_layouts.end());
+
+  const gfx::Rect expected_bounds(
+      border_insets.left() + child_margins.left(),
+      border_insets.top() + child_margins.top(),
+      test_size.width() - border_insets.width() - child_margins.width(),
+      test_size.height() - border_insets.height() - child_margins.height());
+  EXPECT_EQ(expected_bounds, child_layout->bounds);
+}
+
+// Tests that a border on the root menu item correctly updates SubmenuView
+// metrics and propagates to the layout of submenu items (arrow, checkbox icon,
+// and trailing child views).
+TEST_F(MenuItemViewLayoutTest, RootMenuBorderAffectsSubmenuMetricsAndLayout) {
+  const gfx::Insets border_insets = gfx::Insets::TLBR(2, 16, 2, 20);
+  root_menu()->SetBorder(views::CreateEmptyBorder(border_insets));
+
+  EXPECT_EQ(border_insets.left(), root_menu()->GetContentStart());
+  const MenuConfig& config = MenuConfig::instance();
+  EXPECT_EQ(border_insets.right(), root_menu()->GetTrailingPadding());
+
+  // Append a submenu item with an arrow.
+  MenuItemView* submenu_item = root_menu()->AppendSubMenu(2, u"Submenu");
+  submenu_item->AppendMenuItem(3, u"Submenu Item");
+
+  // Append a checkbox item.
+  MenuItemView* check_item = root_menu()->AppendMenuItemImpl(
+      4, u"Checkbox", ui::ImageModel(), MenuItemView::Type::kCheckbox);
+
+  // Append an item with a trailing child view.
+  MenuItemView* item_with_child =
+      root_menu()->AppendMenuItem(5, u"Item with child");
+  const gfx::Size child_size(30, 20);
+  View* trailing_child =
+      item_with_child->AddChildView(std::make_unique<View>());
+  trailing_child->SetPreferredSize(child_size);
+
+  PerformLayout();
+
+  SubmenuView* submenu = root_menu()->GetSubmenu();
+  ASSERT_TRUE(submenu);
+
+  // Submenu metrics should reflect the root menu's border.
+  EXPECT_EQ(border_insets.left(), submenu->content_start());
+  EXPECT_EQ(border_insets.right(), submenu->trailing_padding());
+
+  // 1. Verify submenu arrow layout in `submenu_item`.
+  ImageView* arrow_view =
+      TestMenuItemView::submenu_arrow_image_view(submenu_item);
+  ASSERT_TRUE(arrow_view);
+  const int expected_right_border = submenu->trailing_padding() -
+                                    config.item_horizontal_padding +
+                                    config.arrow_to_edge_padding;
+  const int expected_arrow_x =
+      submenu_item->width() - expected_right_border - config.arrow_size;
+  EXPECT_EQ(expected_arrow_x, arrow_view->x());
+
+  // 2. Verify check icon layout in `check_item`.
+  ImageView* check_icon = TestMenuItemView::radio_check_image_view(check_item);
+  ASSERT_TRUE(check_icon);
+  EXPECT_EQ(submenu->content_start(), check_icon->x());
+
+  // 3. Verify trailing child view layout in `item_with_child`.
+  // By default, children_use_full_width is false, so it should align with
+  // trailing_padding.
+  EXPECT_EQ(item_with_child->width() - submenu->trailing_padding(),
+            trailing_child->bounds().right());
+
+  // When children_use_full_width is true, it should align to the edge of the
+  // item.
+  item_with_child->set_children_use_full_width(true);
+  item_with_child->InvalidateLayout();
+  item_with_child->DeprecatedLayoutImmediately();
+  EXPECT_EQ(item_with_child->width(), trailing_child->bounds().right());
+}
+
+// Tests that a MenuItemView of type kTitle with a custom border correctly
+// uses the border's left inset for content start and positioning.
+TEST_F(MenuItemViewLayoutTest, TitleItemWithBorder) {
+  MenuItemView* title_item = root_menu()->AppendTitle(u"Header Title");
+
+  const gfx::Insets border_insets = gfx::Insets::TLBR(6, 24, 6, 28);
+  title_item->SetBorder(views::CreateEmptyBorder(border_insets));
+
+  EXPECT_EQ(border_insets.left(), title_item->GetContentStart());
+  const MenuConfig& config = MenuConfig::instance();
+  EXPECT_EQ(border_insets.right(), title_item->GetTrailingPadding());
+
+  PerformLayout();
+
+  // Verify that an item without a border uses the default content start.
+  MenuItemView* title_without_border =
+      root_menu()->AppendTitle(u"No Border Title");
+  EXPECT_EQ(title_without_border->GetItemHorizontalBorder() +
+                config.item_horizontal_padding,
+            title_without_border->GetContentStart());
+}
+
+// Tests that background padding is added to the item's height, and that the
+// content keeps its place in the row, which starts below the top padding.
+TEST_F(MenuItemViewLayoutTest, BackgroundPaddingSurroundsRow) {
+  MenuItemView* item = root_menu()->AppendSubMenu(2, u"Submenu");
+  item->AppendMenuItem(3, u"Submenu Item");
+  MenuItemView* padded_item = root_menu()->AppendSubMenu(4, u"Submenu");
+  padded_item->AppendMenuItem(5, u"Submenu Item");
+  MenuItemView::MenuItemBackground background(ui::kColorMenuBackground,
+                                              /*corner_radius=*/0);
+  background.top_padding = 6;
+  background.bottom_padding = 4;
+  padded_item->SetMenuItemBackground(background);
+
+  PerformLayout();
+
+  EXPECT_EQ(item->height() + 10, padded_item->height());
+  ImageView* arrow = TestMenuItemView::submenu_arrow_image_view(item);
+  ImageView* padded_arrow =
+      TestMenuItemView::submenu_arrow_image_view(padded_item);
+  ASSERT_TRUE(arrow);
+  ASSERT_TRUE(padded_arrow);
+  EXPECT_EQ(arrow->y() + 6, padded_arrow->y());
+}
+
+// Tests that a container item lays out its child in the row, inside the
+// background's padding.
+TEST_F(MenuItemViewLayoutTest, ContainerLayoutRespectsBackgroundPadding) {
+  test_item()->set_vertical_margin(0);
+  View* child_view = test_item()->AddChildView(std::make_unique<View>());
+  child_view->SetPreferredSize(gfx::Size(200, 50));
+  MenuItemView::MenuItemBackground background(ui::kColorMenuBackground,
+                                              /*corner_radius=*/0);
+  background.top_padding = 6;
+  background.bottom_padding = 4;
+  test_item()->SetMenuItemBackground(background);
+
+  PerformLayout();
+
+  EXPECT_EQ(gfx::Insets::TLBR(6, 0, 4, 0),
+            test_item()->GetLocalBounds().InsetsFrom(child_view->bounds()));
 }
 
 class MenuItemViewPaintUnitTest : public ViewsTestBase {
@@ -587,6 +926,27 @@ TEST_F(MenuItemViewPaintUnitTest, CustomColorAssertionCoverage) {
       PaintInfo::CreateRootPaintInfo(canvas_painter.context(), size));
 }
 
+// Makes sure no internal DCHECK assertions or crashes are triggered when
+// painting a menu containing a MENU_ITEM_SEPARATOR.
+TEST_F(MenuItemViewPaintUnitTest, MenuItemSeparatorAssertionCoverage) {
+  menu_item_view()->AppendMenuItem(1, u"Item 1");
+  auto* separator = menu_item_view()->AppendSeparator(
+      ui::MenuSeparatorType::MENU_ITEM_SEPARATOR);
+  separator->SetColorId(ui::kColorMenuBackground);
+  menu_item_view()->AppendMenuItem(2, u"Item 2");
+
+  menu_runner()->RunMenuAt(widget(), nullptr, gfx::Rect(),
+                           MenuAnchorPosition::kTopLeft,
+                           ui::mojom::MenuSourceType::kKeyboard);
+
+  SkBitmap bitmap;
+  gfx::Size size = menu_item_view()->GetMirroredBounds().size();
+  ui::CanvasPainter canvas_painter(&bitmap, size, 1.f, SK_ColorTRANSPARENT,
+                                   false);
+  menu_item_view()->GetSubmenu()->Paint(
+      PaintInfo::CreateRootPaintInfo(canvas_painter.context(), size));
+}
+
 // Verifies a call to MenuItemView::OnPaint() doesn't trigger a call to
 // MenuItemView::submenu_arrow_image_view_::SchedulePaint(). This is a
 // regression test for https://crbug.com/1245854.
@@ -609,6 +969,45 @@ TEST_F(MenuItemViewPaintUnitTest, DontSchedulePaintFromOnPaint) {
   gfx::Canvas canvas(submenu_item->size(), 1.f, false /* opaque */);
   submenu_item->OnPaint(&canvas);
   EXPECT_FALSE(ViewTestApi(submenu_arrow_image_view).needs_paint());
+}
+
+// Tests that the selection highlight doesn't cover the background's padding,
+// and is clipped to the background's rounded corner next to the padding.
+TEST_F(MenuItemViewPaintUnitTest, HighlightSkipsBackgroundPadding) {
+  constexpr int kPadding = 6;
+  MenuItemView* item = menu_item_view()->AppendMenuItem(1);
+  MenuItemView::MenuItemBackground background(
+      ui::kColorMenuBackground, /*top_radius=*/12, /*bottom_radius=*/0,
+      /*horizontal_margin=*/0);
+  background.top_padding = kPadding;
+  item->SetMenuItemBackground(background);
+  item->SetSelectedColorId(ui::kColorMenuItemBackgroundSelected);
+
+  menu_runner()->RunMenuAt(widget(), nullptr, gfx::Rect(),
+                           MenuAnchorPosition::kTopLeft,
+                           ui::mojom::MenuSourceType::kKeyboard);
+
+  auto paint = [item](bool selected) {
+    item->SetSelected(selected);
+    gfx::Canvas canvas(item->size(), 1.f, /*is_opaque=*/false);
+    item->OnPaint(&canvas);
+    return canvas.GetBitmap();
+  };
+  const SkBitmap unselected = paint(false);
+  const SkBitmap selected = paint(true);
+  auto is_highlighted = [&](int x, int y) {
+    return unselected.getColor(x, y) != selected.getColor(x, y);
+  };
+
+  // The padding isn't highlighted, but the row below it is.
+  const int center_x = item->width() / 2;
+  EXPECT_FALSE(is_highlighted(center_x, kPadding / 2));
+  EXPECT_TRUE(is_highlighted(center_x, (kPadding + item->height()) / 2));
+
+  // At the top of the row, the highlight follows the background's curve: the
+  // corner pixel is outside the curve, and a pixel just inside is highlighted.
+  EXPECT_FALSE(is_highlighted(0, kPadding));
+  EXPECT_TRUE(is_highlighted(2, kPadding));
 }
 
 TEST_F(MenuItemViewPaintUnitTest, SelectionIconColors) {
@@ -961,14 +1360,56 @@ TEST_F(MenuItemViewA11yTest, HandlesExpandCollapseActions) {
   // Send an expand action to the menu item.
   ui::AXActionData expand_action_data;
   expand_action_data.action = ax::mojom::Action::kExpand;
-  submenu->HandleAccessibleAction(expand_action_data);
+  EXPECT_TRUE(submenu->HandleAccessibleAction(expand_action_data));
   EXPECT_TRUE(submenu->SubmenuIsShowing());
 
   // Send a collapse action to the menu item.
   ui::AXActionData collapse_action_data;
   collapse_action_data.action = ax::mojom::Action::kCollapse;
-  submenu->HandleAccessibleAction(collapse_action_data);
+  EXPECT_TRUE(submenu->HandleAccessibleAction(collapse_action_data));
   EXPECT_FALSE(submenu->SubmenuIsShowing());
+}
+
+TEST_F(MenuItemViewA11yTest, AccessibleDefaultActionVerbs) {
+  MenuItemView* normal = menu_item_view()->AppendMenuItem(1, u"Normal");
+  MenuItemView* submenu = menu_item_view()->AppendSubMenu(2, u"Submenu");
+  MenuItemView* title = menu_item_view()->AppendTitle(u"Title");
+
+  ui::AXNodeData data;
+  normal->GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(data.GetDefaultActionVerb(), ax::mojom::DefaultActionVerb::kSelect);
+
+  data = ui::AXNodeData();
+  submenu->GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(data.GetDefaultActionVerb(), ax::mojom::DefaultActionVerb::kOpen);
+
+  data = ui::AXNodeData();
+  title->GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(data.GetDefaultActionVerb(), ax::mojom::DefaultActionVerb::kNone);
+
+  normal->SetEnabled(false);
+  data = ui::AXNodeData();
+  normal->GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(data.GetDefaultActionVerb(), ax::mojom::DefaultActionVerb::kNone);
+
+  normal->SetEnabled(true);
+  data = ui::AXNodeData();
+  normal->GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(data.GetDefaultActionVerb(), ax::mojom::DefaultActionVerb::kSelect);
+}
+
+TEST_F(MenuItemViewA11yTest, DefaultActionOpensSubmenu) {
+  menu_item_view()->AppendMenuItem(1, u"Menu Item");
+  MenuItemView* submenu = menu_item_view()->AppendSubMenu(2, u"SubMenu");
+  menu_runner()->RunMenuAt(widget(), nullptr, gfx::Rect(),
+                           MenuAnchorPosition::kTopLeft,
+                           ui::mojom::MenuSourceType::kKeyboard);
+  ASSERT_FALSE(submenu->SubmenuIsShowing());
+
+  ui::AXActionData action_data;
+  action_data.action = ax::mojom::Action::kDoDefault;
+  EXPECT_TRUE(submenu->HandleAccessibleAction(action_data));
+  EXPECT_TRUE(submenu->SubmenuIsShowing());
 }
 
 TEST_F(MenuItemViewA11yTest, AccessibleSelectedTest) {
@@ -1099,4 +1540,68 @@ TEST_F(MenuItemViewA11yTest, ActionViewInterfaceTest) {
   EXPECT_FALSE(item->GetEnabled());
   EXPECT_FALSE(item->GetVisible());
 }
+
+// An item bound to an ActionItem shows the action's text with its mnemonic
+// marker, so the mnemonic works. The accessible name doesn't contain the
+// marker.
+TEST_F(MenuItemViewUnitTest, TitleIsActionItemTextWithMnemonic) {
+  views::TestMenuItemView root_menu;
+  MenuItemView* item = root_menu.AppendMenuItem(1);
+  root_menu.set_has_mnemonics(true);
+  std::unique_ptr<actions::ActionItem> action_item =
+      actions::ActionItem::Builder().SetText(u"Settin&gs").Build();
+  ActionViewController action_view_controller;
+  action_view_controller.CreateActionViewRelationship(
+      item, action_item->GetAsWeakPtr());
+
+  EXPECT_EQ(item->title(), u"Settin&gs");
+  if (MenuConfig::instance().use_mnemonics) {
+    EXPECT_EQ('g', item->GetMnemonic());
+  } else {
+    EXPECT_EQ(0, item->GetMnemonic());
+  }
+  EXPECT_EQ(MenuItemView::GetAccessibleNameForMenuItem(
+                item->title(), std::u16string(), std::nullopt),
+            u"Settings");
+}
+
+// "&&" in an ActionItem's text shows a literal "&" and isn't used as a
+// mnemonic.
+TEST_F(MenuItemViewUnitTest, ActionItemTextWithAmpersandHasNoMnemonic) {
+  views::TestMenuItemView root_menu;
+  MenuItemView* item = root_menu.AppendMenuItem(1);
+  root_menu.set_has_mnemonics(true);
+  std::unique_ptr<actions::ActionItem> action_item =
+      actions::ActionItem::Builder().SetText(u"AT&&T").Build();
+  ActionViewController action_view_controller;
+  action_view_controller.CreateActionViewRelationship(
+      item, action_item->GetAsWeakPtr());
+
+  EXPECT_EQ(item->title(), u"AT&&T");
+  EXPECT_EQ(0, item->GetMnemonic());
+  EXPECT_EQ(MenuItemView::GetAccessibleNameForMenuItem(
+                item->title(), std::u16string(), std::nullopt),
+            u"AT&T");
+}
+
+// The title keeps the mnemonic marker when the ActionItem changes.
+TEST_F(MenuItemViewUnitTest, TitleKeepsMnemonicWhenActionItemChanges) {
+  views::TestMenuItemView root_menu;
+  MenuItemView* item = root_menu.AppendMenuItem(1);
+  std::unique_ptr<actions::ActionItem> action_item =
+      actions::ActionItem::Builder().SetText(u"Settin&gs").Build();
+  ActionViewController action_view_controller;
+  action_view_controller.CreateActionViewRelationship(
+      item, action_item->GetAsWeakPtr());
+
+  action_item->SetEnabled(false);
+
+  EXPECT_FALSE(item->GetEnabled());
+  EXPECT_EQ(item->title(), u"Settin&gs");
+
+  action_item->SetText(u"&Options");
+
+  EXPECT_EQ(item->title(), u"&Options");
+}
+
 }  // namespace views

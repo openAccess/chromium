@@ -93,6 +93,16 @@ class KEYED_SERVICE_EXPORT KeyedServiceBaseFactory : public DependencyNode {
   // testing context will be null.
   virtual bool ServiceIsNULLWhileTesting() const;
 
+  // By default, no service is created for a context passed to
+  // DependencyManager::DisableContextServicesByDefault(). Factories whose
+  // service should be created for such contexts must override this method to
+  // return true.
+  virtual bool ServiceIsAllowedWhenServicesDisabledByDefault() const;
+
+  // Returns whether DependencyManager::DisableContextServicesByDefault() has
+  // been called for |context|.
+  bool AreContextServicesDisabledByDefault(void* context) const;
+
   // Most of the KeyedServices needs a fully initialised context, but some
   // embedders delegates part of the context initialisation to services. To
   // support this, the KeyedServiceFactories are informed of the creation
@@ -118,6 +128,7 @@ class KEYED_SERVICE_EXPORT KeyedServiceBaseFactory : public DependencyNode {
   SEQUENCE_CHECKER(sequence_checker_);
 
  private:
+  friend class BrowserContextDependencyManager;
   friend class DependencyManager;
 
   // The DependencyManager used. In real code, this will be a singleton used
@@ -127,6 +138,11 @@ class KEYED_SERVICE_EXPORT KeyedServiceBaseFactory : public DependencyNode {
   // Registers any preferences used by this service. This should be overridden
   // by any services that want to register context-specific preferences.
   virtual void RegisterPrefs(user_prefs::PrefRegistrySyncable* registry) {}
+
+  // Returns true if the service should be created once startup is complete.
+  // Only exposed to subclasses via BrowserContextKeyedServiceFactory and
+  // RefcountedBrowserContextKeyedServiceFactory.
+  virtual bool ServiceIsCreatedAfterStartup() const;
 
   // Create the service associated with |context|.
   virtual void CreateServiceNow(void* context) = 0;

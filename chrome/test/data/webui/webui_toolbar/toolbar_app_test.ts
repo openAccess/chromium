@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {browserProxyFactory} from 'chrome://resources/cr_components/help_bubble/help_bubble.mojom-webui.js';
 import type {HelpBubbleHandlerInterface} from 'chrome://resources/cr_components/help_bubble/help_bubble.mojom-webui.js';
@@ -12,20 +12,10 @@ import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_as
 import {TestSearchboxBrowserProxy} from 'chrome://webui-test/cr_components/searchbox/test_searchbox_browser_proxy.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, INVALID_FOCUS_REQUEST_HANDLE, resetInitialStateForTesting, SearchboxBrowserProxy, SecurityChipRole, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {LhsChipIdentifier, ToolbarAppElement} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {BrowserProxy, FocusRequestListener, NavigationControlsStateListener} from 'chrome://webui-toolbar.top-chrome/browser_proxy.js';
-import {AvatarToolbarButtonState} from 'chrome://webui-toolbar.top-chrome/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import {AppMenuIconType, AppMenuSeverity, AvatarToolbarButtonState, BrowserProxyImpl, ContentSettingImageType, createDefaultLocationBarState, INVALID_FOCUS_REQUEST_HANDLE, PageActionAnimationStyle, PageActionId, SearchboxBrowserProxy, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {FocusRequestListener, ToolbarAppElement, ToolbarStateListener} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
-class TestToolbarUiHandler extends TestBrowserProxy {
-  constructor() {
-    super(['onPageInitialized']);
-  }
-
-  onPageInitialized() {
-    this.methodCalled('onPageInitialized');
-  }
-}
+import {TestToolbarBrowserProxy as BaseTestToolbarBrowserProxy} from './test_toolbar_browser_proxy.js';
 
 class TestBrowserControlsHandler extends TestBrowserProxy {
   constructor() {
@@ -37,53 +27,35 @@ class TestBrowserControlsHandler extends TestBrowserProxy {
   }
 }
 
-class TestToolbarBrowserProxy extends TestBrowserProxy implements BrowserProxy {
-  toolbarUIHandler: any;
-  browserControlsHandler: any;
-  private listener_: NavigationControlsStateListener|null = null;
+class TestToolbarBrowserProxy extends BaseTestToolbarBrowserProxy {
+  private listener_: ToolbarStateListener|null = null;
 
   constructor() {
-    super([
-      'recordInHistogram',
-      'addNavigationStateListener',
-      'addFocusRequestListener',
-      'removeNavigationStateListener',
-      'removeFocusRequestListener',
-    ]);
-    this.toolbarUIHandler = new TestToolbarUiHandler();
+    super();
     this.browserControlsHandler = new TestBrowserControlsHandler();
   }
 
-  recordInHistogram() {}
-
-  addNavigationStateListener(listener: NavigationControlsStateListener) {
-    this.methodCalled('addNavigationStateListener', listener);
+  override addToolbarStateListener(listener: ToolbarStateListener) {
+    this.methodCalled('addToolbarStateListener', listener);
     this.listener_ = listener;
     return 1;
   }
 
-  addFocusRequestListener(listener: FocusRequestListener) {
+  override addFocusRequestListener(listener: FocusRequestListener) {
     this.methodCalled('addFocusRequestListener', listener);
     return INVALID_FOCUS_REQUEST_HANDLE;
   }
 
-  removeNavigationStateListener(handle: number) {
-    this.methodCalled('removeNavigationStateListener', handle);
+  override removeToolbarStateListener(handle: number) {
+    this.methodCalled('removeToolbarStateListener', handle);
     this.listener_ = null;
   }
 
-  removeFocusRequestListener(handle: number) {
+  override removeFocusRequestListener(handle: number) {
     this.methodCalled('removeFocusRequestListener', handle);
   }
 
-  onChipClicked(_chip: LhsChipIdentifier, _isPointerClick: boolean) {}
-  onChipPointerEntered(_chip: LhsChipIdentifier) {}
-  onChipPointerExited(_chip: LhsChipIdentifier) {}
-  onChipMousePressed(_chip: LhsChipIdentifier) {}
-  onChipExpandAnimationEnded(_chip: LhsChipIdentifier) {}
-  onChipCollapseAnimationEnded(_chip: LhsChipIdentifier) {}
-
-  fireNavigationStateListener(iconUpdates: any[], state: any) {
+  fireToolbarStateListener(iconUpdates: any[], state: any) {
     if (this.listener_) {
       this.listener_(iconUpdates, state);
     }
@@ -113,7 +85,7 @@ class TestHelpBubbleHandler extends TestBrowserProxy implements
   }
 }
 
-function createMockNavigationState() {
+function createMockToolbarState() {
   return {
     reloadControlState: {
       doubleClickInterval: {microseconds: 500000n},
@@ -139,39 +111,7 @@ function createMockNavigationState() {
       shouldBeShown: false,
       isContextMenuVisible: false,
     },
-    locationBarState: {
-      omniboxViewState: {
-        textPieces: [],
-        inlineAutocompletion: '',
-        a11yFriendlySuggestionText: '',
-        selection: null,
-        textIsUrl: false,
-      },
-      locationBarFlags: {
-        userInputInProgress: false,
-        popupOpen: false,
-      },
-      contentSettingImageStates: [],
-      pageActionStates: [],
-      lhsChipsState: {
-        securityChip: {
-          icon: {handleId: 0n},
-          securityLevel: 0,
-          text: '',
-          tooltip: '',
-          isClickable: false,
-          isTextDangerous: false,
-          isVisible: true,
-          accessibilityState: {
-            role: SecurityChipRole.kButton,
-            label: '',
-            description: '',
-          },
-        },
-        activityIndicators: [],
-        permissionDashboard: null,
-      },
-    },
+    locationBarState: createDefaultLocationBarState(),
     avatarControlState: {
       state: AvatarToolbarButtonState.kNormal,
       icon: {handleId: 0n},
@@ -182,26 +122,53 @@ function createMockNavigationState() {
       enabled: true,
       hasLinearGradientRing: false,
     },
+    appMenuControlState: {
+      iconType: AppMenuIconType.kNone,
+      severity: AppMenuSeverity.kNone,
+      labelText: null as string | null,
+      accessibilityText: '',
+      tooltip: '',
+      isContextMenuVisible: false,
+      windowIsMaximizedOrFullscreen: false,
+    },
+    glicButtonState: {
+      open: false,
+      shouldShow: false,
+      isContextMenuVisible: false,
+      shouldMatchToolbarStyle: false,
+      useCustomThemeFallback: false,
+      nudgeLabel: null as string | null,
+    },
+    overflowButtonControlState: {
+      isContextMenuVisible: false,
+    },
     layoutConstantsVersion: 0,
     pinnedToolbarActionsState: [],
+    controlsAppearInactive: false,
   };
 }
 
 suite('ToolbarAppTest', () => {
   let app: ToolbarAppElement;
   let browserProxy: TestToolbarBrowserProxy;
-  let originalGetVariableValue: any;
 
   let startTrackingCalls: Array<[HTMLElement, string]> = [];
   let stopTrackingCalls: HTMLElement[] = [];
+  let highlightCallbacks = new Map<string, (highlighted: boolean) => void>();
 
   const mockManager = {
-    startTracking: (element: HTMLElement, nativeId: string) => {
-      startTrackingCalls.push([element, nativeId]);
-    },
+    startTracking:
+        (element: HTMLElement, nativeId: string,
+         options?: {onHighlightChanged?: (highlighted: boolean) => void}) => {
+          startTrackingCalls.push([element, nativeId]);
+          if (options?.onHighlightChanged) {
+            highlightCallbacks.set(nativeId, options.onHighlightChanged);
+          }
+        },
     stopTracking: (element: HTMLElement) => {
       stopTrackingCalls.push(element);
     },
+    notifyElementActivated: (_element: HTMLElement) => {},
   };
 
   setup(() => {
@@ -209,6 +176,7 @@ suite('ToolbarAppTest', () => {
 
     startTrackingCalls = [];
     stopTrackingCalls = [];
+    highlightCallbacks = new Map();
     TrackedElementManager.setInstance(mockManager as any);
 
     const handler = new TestHelpBubbleHandler();
@@ -219,20 +187,6 @@ suite('ToolbarAppTest', () => {
     BrowserProxyImpl.setInstance(browserProxy);
     SearchboxBrowserProxy.setInstance(new TestSearchboxBrowserProxy());
 
-    // Reset C++ injected values to ensure tests start in a clean state.
-    const loadTimeDataData = (loadTimeData as any).data_;
-    if (loadTimeDataData) {
-      delete loadTimeDataData['isNavigationLoading'];
-      delete loadTimeDataData['reloadCanShowMenu'];
-      delete loadTimeDataData['backButtonEnabled'];
-      delete loadTimeDataData['forwardButtonEnabled'];
-      delete loadTimeDataData['homeButtonShouldBeShown'];
-      delete loadTimeDataData['batterySaverButtonVisible'];
-      delete loadTimeDataData['layoutConstantsVersion'];
-      delete loadTimeDataData['touchUi'];
-      delete loadTimeDataData['isFallbackPrewarming'];
-    }
-
     loadTimeData.overrideValues({
       enableReloadButton: true,
       enableSplitTabsButton: true,
@@ -241,47 +195,16 @@ suite('ToolbarAppTest', () => {
       enableBackForwardButtons: true,
       enablePinnedToolbarActions: true,
       enableAvatarButton: true,
+      toolbarAppMenuLabelResizingEnabled: true,
+      toolbarGlicButtonResizingEnabled: true,
       splitTabsIndicatorWidth: 10,
       splitTabsIndicatorHeight: 10,
       splitTabsIndicatorSpacing: 10,
     });
-
-    originalGetVariableValue = chrome.getVariableValue;
-    chrome.getVariableValue = (key: string) => {
-      if (key === 'initialState') {
-        const state: Record<string, any> = {};
-        const keys = [
-          'isNavigationLoading',
-          'backButtonEnabled',
-          'forwardButtonEnabled',
-          'initialWebUISurfaceSyncEnabled',
-          'isFallbackPrewarming',
-          'reloadCanShowMenu',
-          'homeButtonShouldBeShown',
-          'batterySaverButtonVisible',
-          'layoutConstantsVersion',
-          'touchUi',
-        ];
-        for (const k of keys) {
-          if (loadTimeData.valueExists(k)) {
-            state[k] = loadTimeData.getValue(k);
-          }
-        }
-        return JSON.stringify(state);
-      }
-      return originalGetVariableValue(key);
-    };
-
-    resetInitialStateForTesting();
-  });
-
-  teardown(() => {
-    chrome.getVariableValue = originalGetVariableValue;
-    resetInitialStateForTesting();
   });
 
   test('Sync Disabled (Initial Sync Feature is False)', async () => {
-    loadTimeData.overrideValues({
+    browserProxy.setInitialState({
       initialWebUISurfaceSyncEnabled: false,
     });
 
@@ -292,11 +215,17 @@ suite('ToolbarAppTest', () => {
 
     assertEquals(
         1, browserProxy.toolbarUIHandler.getCallCount('onPageInitialized'));
+    assertEquals(7, startTrackingCalls.length);
+
+    // The location bar contents, which track elements of their own, render
+    // once the browser's state arrives.
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
+    await microtasksFinished();
     assertEquals(9, startTrackingCalls.length);
   });
 
   test('Sync Enabled (Initial Sync Feature is True)', async () => {
-    loadTimeData.overrideValues({
+    browserProxy.setInitialState({
       initialWebUISurfaceSyncEnabled: true,
       isFallbackPrewarming: true,
     });
@@ -312,7 +241,7 @@ suite('ToolbarAppTest', () => {
     assertEquals(0, startTrackingCalls.length);
 
     // Trigger visual state update (simulate browser sync)
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
 
     await microtasksFinished();
 
@@ -325,7 +254,7 @@ suite('ToolbarAppTest', () => {
   });
 
   test('Sync Enabled - Synchronous Boot (Initial State Present)', async () => {
-    loadTimeData.overrideValues({
+    browserProxy.setInitialState({
       initialWebUISurfaceSyncEnabled: true,
       isFallbackPrewarming: false,
       isNavigationLoading: false,
@@ -341,6 +270,12 @@ suite('ToolbarAppTest', () => {
     // Verify app initializes synchronously without needing a Mojo update
     assertEquals(
         1, browserProxy.toolbarUIHandler.getCallCount('onPageInitialized'));
+    assertEquals(7, startTrackingCalls.length);
+
+    // The location bar contents, which track elements of their own, render
+    // once the browser's state arrives.
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
+    await microtasksFinished();
     assertEquals(9, startTrackingCalls.length);
 
     // Verify initial boot snapshot captures the correct values
@@ -351,8 +286,34 @@ suite('ToolbarAppTest', () => {
     assertFalse(snapshot.forwardButtonEnabled);
   });
 
+  test('Sync Enabled - Location Bar Waits For State', async () => {
+    browserProxy.setInitialState({
+      initialWebUISurfaceSyncEnabled: true,
+      isFallbackPrewarming: false,
+      isNavigationLoading: false,
+      backButtonEnabled: true,
+      forwardButtonEnabled: false,
+    });
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await microtasksFinished();
+
+    // The toolbar renders and initializes synchronously, but the location bar
+    // contents wait for the browser's state.
+    const locationBar = app.shadowRoot.querySelector('location-bar');
+    assertTrue(!!locationBar);
+    assertFalse(!!locationBar.shadowRoot.querySelector('readonly-omnibox'));
+    assertEquals(
+        1, browserProxy.toolbarUIHandler.getCallCount('onPageInitialized'));
+
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
+    await microtasksFinished();
+    assertTrue(!!locationBar.shadowRoot.querySelector('readonly-omnibox'));
+  });
+
   test('Sync Enabled - Synchronous Mojo Update', async () => {
-    loadTimeData.overrideValues({
+    browserProxy.setInitialState({
       initialWebUISurfaceSyncEnabled: true,
       isFallbackPrewarming: true,
     });
@@ -361,7 +322,7 @@ suite('ToolbarAppTest', () => {
     document.body.appendChild(app);
 
     // Fire update synchronously before microtasks finish
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
 
     await microtasksFinished();
 
@@ -371,7 +332,7 @@ suite('ToolbarAppTest', () => {
   });
 
   test('Sync Enabled - Multiple Rapid Mojo Updates', async () => {
-    loadTimeData.overrideValues({
+    browserProxy.setInitialState({
       initialWebUISurfaceSyncEnabled: true,
       isFallbackPrewarming: true,
     });
@@ -379,9 +340,9 @@ suite('ToolbarAppTest', () => {
     app = document.createElement('toolbar-app');
     document.body.appendChild(app);
 
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
 
     await microtasksFinished();
 
@@ -391,7 +352,7 @@ suite('ToolbarAppTest', () => {
   });
 
   test('Sync Enabled - Synchronous Detach Reattach', async () => {
-    loadTimeData.overrideValues({
+    browserProxy.setInitialState({
       initialWebUISurfaceSyncEnabled: true,
       isFallbackPrewarming: true,
     });
@@ -400,14 +361,14 @@ suite('ToolbarAppTest', () => {
     document.body.appendChild(app);
 
     // Fire Mojo update which schedules initialization
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
 
     // Detach and re-attach synchronously before microtask runs
     document.body.removeChild(app);
     document.body.appendChild(app);
 
     // Since it was re-attached, it needs a new Mojo update to initialize
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
 
     await microtasksFinished();
 
@@ -417,7 +378,7 @@ suite('ToolbarAppTest', () => {
   });
 
   test('Sync Enabled - Asynchronous Detach Reattach', async () => {
-    loadTimeData.overrideValues({
+    browserProxy.setInitialState({
       initialWebUISurfaceSyncEnabled: true,
       isFallbackPrewarming: true,
     });
@@ -426,7 +387,7 @@ suite('ToolbarAppTest', () => {
     document.body.appendChild(app);
 
     // Fire Mojo update
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
 
     // Let initialization finish
     await microtasksFinished();
@@ -443,15 +404,15 @@ suite('ToolbarAppTest', () => {
     await microtasksFinished();
 
     // Verify it is not initialized yet (since it's waiting for Mojo update)
-    assertEquals(11, startTrackingCalls.length);
+    assertEquals(10, startTrackingCalls.length);
     assertEquals(
         1, browserProxy.toolbarUIHandler.getCallCount('onPageInitialized'));
 
     // Fire Mojo update to trigger initialization on reconnect
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
     await microtasksFinished();
 
-    assertEquals(20, startTrackingCalls.length);
+    assertEquals(19, startTrackingCalls.length);
     assertEquals(
         2, browserProxy.toolbarUIHandler.getCallCount('onPageInitialized'));
   });
@@ -459,7 +420,7 @@ suite('ToolbarAppTest', () => {
   test(
       'Sync Enabled - Detach Before Child Elements Update Complete',
       async () => {
-        loadTimeData.overrideValues({
+        browserProxy.setInitialState({
           initialWebUISurfaceSyncEnabled: true,
           isFallbackPrewarming: true,
         });
@@ -468,8 +429,7 @@ suite('ToolbarAppTest', () => {
         document.body.appendChild(app);
 
         // Fire Mojo update which schedules initialization
-        browserProxy.fireNavigationStateListener(
-            [], createMockNavigationState());
+        browserProxy.fireToolbarStateListener([], createMockToolbarState());
 
         // Wait for the app's own update to complete, so initializePage_ is
         // called
@@ -488,7 +448,7 @@ suite('ToolbarAppTest', () => {
       });
 
   test('Event Listener Clean Up on Detach', async () => {
-    loadTimeData.overrideValues({
+    browserProxy.setInitialState({
       initialWebUISurfaceSyncEnabled: true,
       isFallbackPrewarming: true,
     });
@@ -520,7 +480,7 @@ suite('ToolbarAppTest', () => {
       document.body.appendChild(app);
 
       // Fire Mojo update
-      browserProxy.fireNavigationStateListener([], createMockNavigationState());
+      browserProxy.fireToolbarStateListener([], createMockToolbarState());
       await microtasksFinished();
 
       // Verify page is initialized
@@ -541,7 +501,7 @@ suite('ToolbarAppTest', () => {
   });
 
   test('Sync Enabled - Multiple Rapid Reconnects and Updates', async () => {
-    loadTimeData.overrideValues({
+    browserProxy.setInitialState({
       initialWebUISurfaceSyncEnabled: true,
       isFallbackPrewarming: true,
     });
@@ -551,18 +511,18 @@ suite('ToolbarAppTest', () => {
     app = document.createElement('toolbar-app');
     document.body.appendChild(app);
 
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
     document.body.removeChild(app);
 
     app = document.createElement('toolbar-app');
     document.body.appendChild(app);
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
     document.body.removeChild(app);
 
     app = document.createElement('toolbar-app');
     document.body.appendChild(app);
-    browserProxy.fireNavigationStateListener([], createMockNavigationState());
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
 
     await microtasksFinished();
 
@@ -573,7 +533,7 @@ suite('ToolbarAppTest', () => {
   });
 
   test('AvatarButtonHighlightClasses', async () => {
-    loadTimeData.overrideValues({
+    browserProxy.setInitialState({
       initialWebUISurfaceSyncEnabled: false,
     });
     const highlightClasses = [
@@ -588,13 +548,13 @@ suite('ToolbarAppTest', () => {
     await microtasksFinished();
 
     const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
-    const innerButton = avatarButton.shadowRoot.querySelector('#button')!;
+    const innerButton = avatarButton.$.button;
 
     // Helper to update state and check class
     const checkClass = async (state: any, expectedClass: string) => {
-      const navigationState = createMockNavigationState();
-      navigationState.avatarControlState = state;
-      browserProxy.fireNavigationStateListener([], navigationState);
+      const toolbarState = createMockToolbarState();
+      toolbarState.avatarControlState = state;
+      browserProxy.fireToolbarStateListener([], toolbarState);
       await microtasksFinished();
       if (expectedClass) {
         assertTrue(
@@ -680,7 +640,7 @@ suite('ToolbarAppTest', () => {
   });
 
   test('AvatarButtonLinearGradientRing', async () => {
-    loadTimeData.overrideValues({
+    browserProxy.setInitialState({
       initialWebUISurfaceSyncEnabled: false,
     });
 
@@ -689,12 +649,12 @@ suite('ToolbarAppTest', () => {
     await microtasksFinished();
 
     const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
-    const innerButton = avatarButton.shadowRoot.querySelector('#button')!;
+    const innerButton = avatarButton.$.button;
 
     // Helper to update state and check attribute
     const checkLinearGradientRing = async (hasLinearGradientRing: boolean) => {
-      const navigationState = createMockNavigationState();
-      navigationState.avatarControlState = {
+      const toolbarState = createMockToolbarState();
+      toolbarState.avatarControlState = {
         state: AvatarToolbarButtonState.kNormal,
         text: 'Profile',
         icon: {handleId: 0n},
@@ -704,19 +664,19 @@ suite('ToolbarAppTest', () => {
         enabled: true,
         hasLinearGradientRing: hasLinearGradientRing,
       };
-      browserProxy.fireNavigationStateListener([], navigationState);
+      browserProxy.fireToolbarStateListener([], toolbarState);
       await microtasksFinished();
       const icon = avatarButton.shadowRoot.querySelector('#icon')!;
       const iconStyle = window.getComputedStyle(icon);
-      const actualButton = innerButton.shadowRoot!.querySelector('#button')!;
+      const actualButton = innerButton.$.button;
       const buttonStyle = window.getComputedStyle(actualButton);
 
       if (hasLinearGradientRing) {
         assertTrue(innerButton.hasAttribute('has-linear-gradient-ring'));
-        assertEquals('30px', iconStyle.width);
-        assertEquals('30px', iconStyle.height);
-        assertEquals('5px', buttonStyle.paddingLeft);
-        assertEquals('7px', buttonStyle.paddingRight);
+        assertEquals('28px', iconStyle.width);
+        assertEquals('28px', iconStyle.height);
+        assertEquals('6px', buttonStyle.paddingLeft);
+        assertEquals('8px', buttonStyle.paddingRight);
       } else {
         assertFalse(innerButton.hasAttribute('has-linear-gradient-ring'));
         assertEquals('20px', iconStyle.width);
@@ -744,9 +704,9 @@ suite('ToolbarAppTest', () => {
     await microtasksFinished();
 
     const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
-    const innerChip = avatarButton.shadowRoot.querySelector('#button')!;
+    const innerChip = avatarButton.$.button;
     const visualTarget =
-        innerChip.shadowRoot!.querySelector('.iph-visual-target')!;
+        innerChip.shadowRoot.querySelector('.iph-visual-target')!;
     assertTrue(!!visualTarget);
 
     avatarButton.classList.add('anchor-highlight');
@@ -770,9 +730,9 @@ suite('ToolbarAppTest', () => {
     await microtasksFinished();
 
     const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
-    const innerChip = avatarButton.shadowRoot.querySelector('#button')!;
+    const innerChip = avatarButton.$.button;
     const visualTarget =
-        innerChip.shadowRoot!.querySelector('.iph-visual-target')!;
+        innerChip.shadowRoot.querySelector('.iph-visual-target')!;
     assertTrue(!!visualTarget);
 
     avatarButton.hasHelpBubble = true;
@@ -789,5 +749,498 @@ suite('ToolbarAppTest', () => {
     await microtasksFinished();
 
     assertFalse(innerChip.classList.contains('help-anchor-highlight'));
+  });
+
+  test('AvatarButtonClickSuppression', async () => {
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await microtasksFinished();
+
+    const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
+    const innerChip = avatarButton.$.button;
+    const setHighlighted =
+        highlightCallbacks.get('kToolbarAvatarButtonElementId')!;
+    assertTrue(!!setHighlighted);
+    const handler = browserProxy.toolbarUIHandler;
+
+    const dispatchMouseClick = () => {
+      innerChip.dispatchEvent(new PointerEvent(
+          'pointerdown', {bubbles: true, button: 0, pointerType: 'mouse'}));
+      innerChip.dispatchEvent(new PointerEvent(
+          'click', {bubbles: true, button: 0, pointerType: 'mouse'}));
+    };
+
+    // 1. Normal click when not highlighted opens the menu.
+    dispatchMouseClick();
+    assertEquals(1, handler.getCallCount('showAvatarMenu'));
+
+    // 2. Click while highlighted (profile menu open) is suppressed.
+    setHighlighted(true);
+    dispatchMouseClick();
+    assertEquals(1, handler.getCallCount('showAvatarMenu'));
+
+    // 3. Click right after unhighlighting (< 100ms) is suppressed.
+    setHighlighted(false);
+    dispatchMouseClick();
+    assertEquals(1, handler.getCallCount('showAvatarMenu'));
+
+    // 4. Keyboard activation (empty pointerType) is not suppressed even after
+    // a pointerdown that armed click skipping.
+    innerChip.dispatchEvent(new PointerEvent(
+        'pointerdown', {bubbles: true, button: 0, pointerType: 'mouse'}));
+    innerChip.dispatchEvent(
+        new PointerEvent('click', {bubbles: true, button: 0, pointerType: ''}));
+    assertEquals(2, handler.getCallCount('showAvatarMenu'));
+
+    // 5. Click >= 100ms after unhighlighting opens the menu.
+    await new Promise(resolve => setTimeout(resolve, 150));
+    dispatchMouseClick();
+    assertEquals(3, handler.getCallCount('showAvatarMenu'));
+  });
+
+  test('AvatarButtonDoesNotAnimateOnNewWindow', async () => {
+    browserProxy.setInitialState({
+      initialWebUISurfaceSyncEnabled: false,
+    });
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await microtasksFinished();
+
+    const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
+    const textSpan = avatarButton.shadowRoot.querySelector('#text')!;
+
+    assertTrue(avatarButton.classList.contains('initial-load'));
+
+    let transitionFired = false;
+    textSpan.addEventListener('transitionrun', () => {
+      transitionFired = true;
+    });
+    textSpan.addEventListener('transitionstart', () => {
+      transitionFired = true;
+    });
+
+    // Simulate initial Mojo toolbar state delivery for an Incognito window.
+    const toolbarState = createMockToolbarState();
+    toolbarState.avatarControlState = {
+      state: AvatarToolbarButtonState.kIncognitoProfile,
+      text: 'Incognito',
+      icon: {handleId: 0n},
+      tooltip: '',
+      accessibilityName: '',
+      accessibilityDescription: '',
+      enabled: true,
+      hasLinearGradientRing: false,
+    };
+
+    browserProxy.fireToolbarStateListener([], toolbarState);
+    await microtasksFinished();
+
+    // Trigger style calculation / layout.
+    window.getComputedStyle(textSpan).maxWidth;
+
+    assertFalse(
+        transitionFired,
+        'Avatar button text should not animate on initial window load');
+
+    // Wait for the animation frame to remove initial-load.
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    assertFalse(avatarButton.classList.contains('initial-load'));
+  });
+
+  test('AvatarButtonAnimatesOnSubsequentTextChanges', async () => {
+    browserProxy.setInitialState({
+      initialWebUISurfaceSyncEnabled: false,
+    });
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await microtasksFinished();
+
+    const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
+    const textSpan = avatarButton.shadowRoot.querySelector('#text')!;
+
+    assertTrue(avatarButton.classList.contains('initial-load'));
+
+    // Deliver initial toolbar state for a standard window without text.
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
+    await microtasksFinished();
+
+    // Wait for initial-load to be removed after initial window load.
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    assertFalse(avatarButton.classList.contains('initial-load'));
+    window.getComputedStyle(textSpan).maxWidth;
+
+    let transitionFired = false;
+    textSpan.addEventListener('transitionrun', () => {
+      transitionFired = true;
+    });
+    textSpan.addEventListener('transitionstart', () => {
+      transitionFired = true;
+    });
+
+    // Subsequent state change (e.g. sync error with label) should animate.
+    const syncErrorToolbarState = createMockToolbarState();
+    syncErrorToolbarState.avatarControlState = {
+      state: AvatarToolbarButtonState.kSyncError,
+      text: 'Error',
+      icon: {handleId: 0n},
+      tooltip: '',
+      accessibilityName: '',
+      accessibilityDescription: '',
+      enabled: true,
+      hasLinearGradientRing: false,
+    };
+    browserProxy.fireToolbarStateListener([], syncErrorToolbarState);
+    await microtasksFinished();
+    // Trigger layout/style resolution, then flush event loop for queued events.
+    window.getComputedStyle(textSpan).maxWidth;
+    await microtasksFinished();
+
+    assertTrue(
+        transitionFired ||
+            window.getComputedStyle(textSpan).maxWidth.includes('calc-size'),
+        'Avatar button text should animate on subsequent state changes');
+    assertFalse(avatarButton.classList.contains('initial-load'));
+  });
+
+  test('AppMenuAndAvatarSpacing', async () => {
+    loadTimeData.overrideValues({
+      enableAvatarButton: true,
+      enableAppMenuButton: true,
+    });
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await microtasksFinished();
+
+    const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
+    const appMenuButton = app.shadowRoot.querySelector('app-menu-button')!;
+    assertTrue(!!avatarButton, 'avatar-button should be present');
+    assertTrue(!!appMenuButton, 'app-menu-button should be present');
+
+    // 1. Both collapsed (no text on avatar, no labelText on app menu).
+    const navState = createMockToolbarState();
+    navState.avatarControlState.text = '';
+    navState.appMenuControlState.labelText = null;
+    browserProxy.fireToolbarStateListener([], navState);
+    await microtasksFinished();
+
+    assertFalse(avatarButton.hasAttribute('has-label'));
+    assertFalse(appMenuButton.hasAttribute('has-label'));
+    assertEquals(
+        '0px', window.getComputedStyle(appMenuButton).marginInlineStart);
+
+    // 2. App menu expanded with label, avatar collapsed without text.
+    // Leading margin on appMenuButton should be calc(5px - 2px) = 3px.
+    const appMenuExpandedState = createMockToolbarState();
+    appMenuExpandedState.avatarControlState.text = '';
+    appMenuExpandedState.appMenuControlState.labelText = 'Update';
+    browserProxy.fireToolbarStateListener([], appMenuExpandedState);
+    await microtasksFinished();
+
+    assertFalse(avatarButton.hasAttribute('has-label'));
+    assertTrue(appMenuButton.hasAttribute('has-label'));
+    assertEquals(
+        '3px', window.getComputedStyle(appMenuButton).marginInlineStart);
+
+    // 3. Both avatar and app menu expanded with labels.
+    // Avatar has trailing margin 3px, so appMenuButton's leading margin
+    // collapses to 0px to preserve 5px inter-button spacing with the 2px
+    // flexbox gap.
+    const bothExpandedState = createMockToolbarState();
+    bothExpandedState.avatarControlState.text = 'Paused';
+    bothExpandedState.appMenuControlState.labelText = 'Update';
+    browserProxy.fireToolbarStateListener([], bothExpandedState);
+    await microtasksFinished();
+
+    assertTrue(avatarButton.hasAttribute('has-label'));
+    assertTrue(appMenuButton.hasAttribute('has-label'));
+    assertEquals(
+        '0px', window.getComputedStyle(appMenuButton).marginInlineStart);
+
+    // 4. If avatar button is overflowed/hidden, appMenuButton's leading margin
+    // uncollapses to 3px.
+    avatarButton.classList.add('overflow-display-none');
+    await microtasksFinished();
+    assertEquals(
+        '3px', window.getComputedStyle(appMenuButton).marginInlineStart);
+  });
+
+  test('GlicButtonResponsivePriorityAndNoOverflowButton', async () => {
+    loadTimeData.overrideValues({
+      enableAppMenuButton: true,
+      enableGlicButton: true,
+      toolbarAppMenuLabelResizingEnabled: true,
+      toolbarGlicButtonResizingEnabled: true,
+      webUIToolbarFullyEnabled: true,
+      glicButtonLabel: 'Gemini',
+      glicButtonTooltip: 'Gemini',
+      glicButtonTooltipClose: 'Close Gemini',
+      glicButtonAccName: 'Gemini',
+    });
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+
+    const state = createMockToolbarState();
+    state.appMenuControlState.labelText = 'Update';
+    state.glicButtonState.shouldShow = true;
+    state.backForwardControlState.forwardButtonState.shouldBeShown = false;
+    state.homeControlState.shouldBeShown = false;
+    browserProxy.fireToolbarStateListener([], state);
+    await microtasksFinished();
+
+    // 1. Verify priority order in getResponsiveControls() places app-menu first
+    // among buttons, and glic-button before forward/home/battery-saver/media.
+    const controls = app.getResponsiveControls();
+    const controlIds = controls.map(c => c.id);
+    assertEquals(
+        [
+          'location-bar',
+          'app-menu',
+          'avatar',
+          'split-tabs',
+          'glic-button',
+          'forward',
+          'home',
+          'pinnedToolbarActions',
+        ].join(','),
+        controlIds.join(','));
+
+    // 2. Simulate constrained width where app-menu's label fits, higher
+    // priority controls fit, lower priority controls are not shown, and only
+    // Glic's expanded label overflows. Verify that app-menu expands first,
+    // Glic's label collapses, and #overflow button does NOT appear.
+    const appMenuButton = app.shadowRoot.querySelector('#app-menu')!;
+    const glicButton = app.shadowRoot.querySelector('#glic-button')!;
+    const overflowButton = app.shadowRoot.querySelector('#overflow')!;
+    assertTrue(!!appMenuButton);
+    assertTrue(!!glicButton);
+    assertTrue(!!overflowButton);
+
+    app.getAvailableWidth = () =>
+        glicButton.hasAttribute('has-label') ? -10 : 100;
+    (app as any).layoutResponsiveControls();
+    await microtasksFinished();
+
+    assertFalse(appMenuButton.hasAttribute('collapsed'));
+    assertTrue(
+        appMenuButton.hasAttribute('has-label'),
+        'Higher-priority App Menu label should stay expanded');
+    assertTrue(glicButton.hasAttribute('collapsed'));
+    assertFalse(
+        glicButton.hasAttribute('has-label'),
+        'Glic button label should collapse when space is insufficient');
+    assertTrue(
+        overflowButton.hasAttribute('hidden'),
+        'Collapsing Glic label alone must not cause #overflow button to appear');
+    assertEquals(0, app.getOverflowedMenuItems().length);
+
+    // 3. Restore available width and verify Glic label expands again.
+    app.getAvailableWidth = () => 1000;
+    (app as any).layoutResponsiveControls();
+    await microtasksFinished();
+
+    assertFalse(glicButton.hasAttribute('collapsed'));
+    assertTrue(
+        glicButton.hasAttribute('has-label'),
+        'Glic button label should expand when space is available');
+    assertTrue(overflowButton.hasAttribute('hidden'));
+
+    // 4. When App Menu has no labelText, it cannot shrink or overflow and
+    // should be excluded from getResponsiveControls().
+    const stateWithoutAppMenuLabel = createMockToolbarState();
+    stateWithoutAppMenuLabel.appMenuControlState.labelText = null;
+    stateWithoutAppMenuLabel.glicButtonState.shouldShow = true;
+    browserProxy.fireToolbarStateListener([], stateWithoutAppMenuLabel);
+    await microtasksFinished();
+
+    assertFalse(
+        app.getResponsiveControls().some(c => c.id === 'app-menu'),
+        'App menu without a label should not be in getResponsiveControls()');
+  });
+
+  test('GlicButtonResizingDisabledFlag', async () => {
+    loadTimeData.overrideValues({
+      enableAppMenuButton: true,
+      enableGlicButton: true,
+      toolbarAppMenuLabelResizingEnabled: false,
+      toolbarGlicButtonResizingEnabled: false,
+      glicButtonLabel: 'Gemini',
+      glicButtonTooltip: 'Gemini',
+      glicButtonTooltipClose: 'Close Gemini',
+      glicButtonAccName: 'Gemini',
+    });
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    const state = createMockToolbarState();
+    state.appMenuControlState.labelText = 'Update';
+    state.glicButtonState.shouldShow = true;
+    browserProxy.fireToolbarStateListener([], state);
+    await microtasksFinished();
+
+    const controlIds = app.getResponsiveControls().map(c => c.id);
+    assertFalse(
+        controlIds.includes('app-menu'),
+        'App menu button should be excluded from responsive controls when resizing flag is disabled');
+    assertFalse(
+        controlIds.includes('glic-button'),
+        'Glic button should be excluded from responsive controls when resizing flag is disabled');
+  });
+
+  test('ControlsAppearInactive', async () => {
+    loadTimeData.overrideValues({enableAppMenuButton: true});
+    const rootStyle = document.documentElement.style;
+    rootStyle.setProperty('--color-toolbar-button-icon', 'rgb(1, 2, 3)');
+    rootStyle.setProperty(
+        '--color-toolbar-button-icon-inactive', 'rgb(4, 5, 6)');
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    const state = createMockToolbarState();
+    browserProxy.fireToolbarStateListener([], state);
+    await microtasksFinished();
+
+    const reloadIconButton =
+        app.shadowRoot.querySelector('reload-button')!.$.button;
+    const appMenuChip = app.shadowRoot.querySelector('app-menu-button')!
+                            .shadowRoot.querySelector('toolbar-chip-button')!;
+    function getFillColor(): string {
+      return getComputedStyle(reloadIconButton)
+          .getPropertyValue('--cr-icon-button-fill-color')
+          .trim();
+    }
+    assertFalse(app.hasAttribute('controls-appear-inactive'));
+    assertEquals('rgb(1, 2, 3)', getFillColor());
+    assertEquals('rgb(1, 2, 3)', getComputedStyle(appMenuChip).color);
+
+    state.controlsAppearInactive = true;
+    browserProxy.fireToolbarStateListener([], {...state});
+    await microtasksFinished();
+    assertTrue(app.hasAttribute('controls-appear-inactive'));
+    assertEquals('rgb(4, 5, 6)', getFillColor());
+    assertEquals('rgb(4, 5, 6)', getComputedStyle(appMenuChip).color);
+
+    state.controlsAppearInactive = false;
+    browserProxy.fireToolbarStateListener([], {...state});
+    await microtasksFinished();
+    assertFalse(app.hasAttribute('controls-appear-inactive'));
+    assertEquals('rgb(1, 2, 3)', getFillColor());
+    assertEquals('rgb(1, 2, 3)', getComputedStyle(appMenuChip).color);
+
+    rootStyle.removeProperty('--color-toolbar-button-icon');
+    rootStyle.removeProperty('--color-toolbar-button-icon-inactive');
+  });
+
+  test('ControlsAppearInactiveLabels', async () => {
+    loadTimeData.overrideValues({
+      enableAvatarButton: true,
+      enableAppMenuButton: true,
+    });
+    const disabledLabelColor = 'rgb(7, 8, 9)';
+    const rootStyle = document.documentElement.style;
+    rootStyle.setProperty(
+        '--color-label-foreground-disabled', disabledLabelColor);
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    const state = createMockToolbarState();
+    state.avatarControlState.text = 'Paused';
+    state.appMenuControlState.labelText = 'Update';
+    state.locationBarState.selectedKeyword = {
+      shortName: 'Bookmarks',
+      fullName: 'Search Bookmarks',
+      icon: {handleId: 0n},
+    };
+    state.locationBarState.contentSettingImageStates = [{
+      type: ContentSettingImageType.kPopups,
+      isBlocked: true,
+      tooltip: '',
+      accessibilityString: '',
+      shouldRunAnimation: false,
+      explanatoryString: 'Pop-up blocked',
+      identifier: {nativeIdentifier: '', secondaryIdentifier: ''},
+    }];
+    state.locationBarState.pageActionStates = [{
+      pageActionId: PageActionId.kActionShowTranslate,
+      accessibleName: '',
+      tooltipText: '',
+      icon: {handleId: 0n},
+      text: 'Translate',
+      shouldShowChip: true,
+      shouldAnimateChipIn: false,
+      shouldAnimateChipOut: false,
+      backgroundColorOverride: null,
+      foregroundColorOverride: null,
+      identifier: {nativeIdentifier: '', secondaryIdentifier: ''},
+      isActive: false,
+      tabSwitchToken: 0,
+      animationStyle: PageActionAnimationStyle.kStandard,
+      trailingIcon: null,
+      showTrailingIcon: false,
+    }];
+    browserProxy.fireToolbarStateListener([], state);
+    await microtasksFinished();
+
+    const root = app.shadowRoot;
+    const locationBar = root.querySelector('location-bar')!.shadowRoot;
+    const labels = [
+      root.querySelector('avatar-button')!.shadowRoot.querySelector('#text')!,
+      root.querySelector('app-menu-button')!.shadowRoot.querySelector('#text')!,
+      locationBar.querySelector('selected-keyword')!.shadowRoot.querySelector(
+          '#text-wrap')!,
+      locationBar.querySelector('content-settings-icons')!.shadowRoot
+          .querySelector('content-setting-icon')!.$.label,
+      locationBar.querySelector('page-action-icons')!.shadowRoot
+          .querySelector('page-action-icon')!.shadowRoot.querySelector('#text')!
+      ,
+    ];
+    const activeColors = labels.map(label => getComputedStyle(label).color);
+    assertFalse(activeColors.includes(disabledLabelColor));
+
+    // Labels use the disabled label color while the window is inactive.
+    state.controlsAppearInactive = true;
+    browserProxy.fireToolbarStateListener([], {...state});
+    await microtasksFinished();
+    for (const label of labels) {
+      assertEquals(disabledLabelColor, getComputedStyle(label).color);
+    }
+
+    state.controlsAppearInactive = false;
+    browserProxy.fireToolbarStateListener([], {...state});
+    await microtasksFinished();
+    labels.forEach((label, i) => {
+      assertEquals(activeColors[i], getComputedStyle(label).color);
+    });
+
+    rootStyle.removeProperty('--color-label-foreground-disabled');
+  });
+
+  test('GlicButtonNotRenderedWhenProfileIsNotEligible', async () => {
+    loadTimeData.overrideValues({enableGlicButton: true});
+    browserProxy.setInitialState({isProfileEligibleForGlic: false});
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    const state = createMockToolbarState();
+    state.glicButtonState.shouldShow = true;
+    browserProxy.fireToolbarStateListener([], state);
+    await microtasksFinished();
+
+    assertFalse(!!app.shadowRoot.querySelector('glic-button'));
+  });
+
+  test('AvatarButtonNotRenderedWhenProfileCannotShowIt', async () => {
+    loadTimeData.overrideValues({enableAvatarButton: true});
+    browserProxy.setInitialState({canShowAvatarForProfile: false});
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
+    await microtasksFinished();
+
+    assertFalse(!!app.shadowRoot.querySelector('avatar-button'));
   });
 });

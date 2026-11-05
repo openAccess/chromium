@@ -4,7 +4,10 @@
 
 #include "chrome/updater/test/unit_test_util.h"
 
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -42,6 +45,7 @@
 #include "base/test/multiprocess_test.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/platform_thread.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "base/version.h"
@@ -253,7 +257,7 @@ bool DeleteFileAndEmptyParentDirectories(
 }
 
 base::FilePath GetLogDestinationDir() {
-  const char* var = std::getenv("ISOLATED_OUTDIR");
+  const char* var = getenv("ISOLATED_OUTDIR");
   return var ? base::FilePath::FromUTF8Unsafe(var) : base::FilePath();
 }
 
@@ -451,7 +455,7 @@ void SetupFakeUpdaterVersion(UpdaterScope scope,
   std::vector<uint32_t> components = base_version.components();
   base::CheckedNumeric<uint32_t> new_version = components[0];
   new_version += major_version_offset;
-  ASSERT_TRUE(new_version.AssignIfValid(&components[0]));
+  ASSERT_TRUE(new_version.AssignIfValid(components.data()));
   SetupFakeUpdater(scope, base::Version(std::move(components)),
                    should_create_updater_executable);
 }

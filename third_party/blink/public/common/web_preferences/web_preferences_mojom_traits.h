@@ -128,6 +128,10 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
     return r.allow_unrestricted_window_focus;
   }
 
+  static bool clipboard_focus_exempt(const blink::web_pref::WebPreferences& r) {
+    return r.clipboard_focus_exempt;
+  }
+
   static bool remote_fonts_enabled(const blink::web_pref::WebPreferences& r) {
     return r.remote_fonts_enabled;
   }
@@ -547,6 +551,11 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
     return r.web_app_scope;
   }
 
+  static const GURL& web_app_custom_manifest_url(
+      const ::blink::web_pref::WebPreferences& r) {
+    return r.web_app_custom_manifest_url;
+  }
+
   static bool is_initial_profile(const ::blink::web_pref::WebPreferences& r) {
     return r.is_initial_profile;
   }
@@ -849,6 +858,11 @@ struct BLINK_COMMON_EXPORT StructTraits<blink::mojom::WebPreferencesDataView,
 
   static bool is_indigo_onboarding(const blink::web_pref::WebPreferences& r) {
     return r.is_indigo_onboarding;
+  }
+
+  static bool is_xslt_deprecation_banner_suppressed(
+      const blink::web_pref::WebPreferences& r) {
+    return r.is_xslt_deprecation_banner_suppressed;
   }
 
   static bool Read(blink::mojom::WebPreferencesDataView r,

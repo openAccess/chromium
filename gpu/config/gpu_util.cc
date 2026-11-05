@@ -62,6 +62,7 @@
 #include "ui/gl/gl_utils.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
 #include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "ui/gfx/android/android_surface_control_compat.h"
@@ -311,7 +312,8 @@ GpuFeatureStatus GetSkiaGraphiteFeatureStatus(
   if (blocklisted_features.count(GPU_FEATURE_TYPE_SKIA_GRAPHITE)) {
     return kGpuFeatureStatusBlocklisted;
   }
-  if (gpu_preferences.gr_context_type != GrContextType::kGraphiteDawn) {
+  if (gpu_preferences.gr_context_type != GrContextType::kGraphiteDawn &&
+      gpu_preferences.gr_context_type != GrContextType::kGraphiteVulkan) {
     return kGpuFeatureStatusDisabled;
   }
   const bool can_use_graphite = [command_line]() -> bool {
@@ -403,7 +405,6 @@ void SetProcessGlWorkaroundsFromGpuFeatures(
 
   gl::GlWorkarounds workarounds = {
       .disable_d3d11 = is_enabled(DISABLE_D3D11),
-      .disable_metal = is_enabled(DISABLE_METAL),
 #if BUILDFLAG(IS_WIN)
       .disable_direct_composition_video_overlays =
           is_enabled(DISABLE_DIRECT_COMPOSITION_VIDEO_OVERLAYS),
@@ -751,6 +752,14 @@ GpuFeatureInfo ComputeGpuFeatureInfo(const GPUInfo& gpu_info,
     enabled_driver_bug_workarounds = list->MakeDecision(
         GpuControlList::kOsAny, std::string(), gpu_info, target_test_group,
         gpu_preferences.ignored_gpu_blocklist_entries);
+#if BUILDFLAG(IS_ANDROID)
+    // On Android Desktop, site isolation is active. enable
+    // enable_webgl_timer_query_extensions.
+    if (base::android::device_info::is_desktop()) {
+      enabled_driver_bug_workarounds.insert(
+          gpu::ENABLE_WEBGL_TIMER_QUERY_EXTENSIONS);
+    }
+#endif
     gpu_feature_info.applied_gpu_driver_bug_list_entries =
         list->GetActiveEntries();
 
@@ -795,7 +804,10 @@ GrContextType GpuModeToGrContextType(GpuMode mode) {
     case GpuMode::HARDWARE_VULKAN:
       return GrContextType::kVulkan;
     case GpuMode::HARDWARE_GRAPHITE:
-      return GrContextType::kGraphiteDawn;
+      return base::CommandLine::ForCurrentProcess()->HasSwitch(
+                 switches::kSkiaGraphiteVulkanBackend)
+                 ? GrContextType::kGraphiteVulkan
+                 : GrContextType::kGraphiteDawn;
     case GpuMode::UNKNOWN:
     case GpuMode::SOFTWARE_GL:
     case GpuMode::DISPLAY_COMPOSITOR:
@@ -807,6 +819,7 @@ bool IsGrContextTypeSupported(GrContextType gr_context_type,
                               const GpuFeatureInfo& gpu_feature_info) {
   switch (gr_context_type) {
     case GrContextType::kGraphiteDawn:
+    case GrContextType::kGraphiteVulkan:
       return gpu_feature_info.status_values[GPU_FEATURE_TYPE_SKIA_GRAPHITE] ==
              kGpuFeatureStatusEnabled;
     case GrContextType::kVulkan:
@@ -936,6 +949,9 @@ gl::GLDisplay* InitializeGLThreadSafe(base::CommandLine* command_line,
   } else {
     gl_display = gl::GetDefaultDisplayEGL();
   }
+  out_gpu_info->gl_implementation_parts = gl::GetGLImplementationParts();
+  out_gpu_info->passthrough_cmd_decoder =
+      gpu_preferences.use_passthrough_cmd_decoder;
   CollectContextGraphicsInfo(out_gpu_info);
   *out_gpu_feature_info = ComputeGpuFeatureInfo(*out_gpu_info, gpu_preferences,
                                                 command_line, nullptr);

@@ -13,7 +13,6 @@
 #include <string>
 #include <vector>
 
-#include "ash/public/cpp/token_handle_store.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
@@ -28,8 +27,8 @@
 #include "chrome/browser/ash/child_accounts/child_policy_observer.h"
 #include "chrome/browser/ash/hats/hats_notification_controller.h"
 #include "chrome/browser/ash/login/signin/oauth2_login_manager.h"
+#include "chrome/browser/ash/login/signin/token_handle_store.h"
 #include "chrome/browser/ash/net/xdr_manager.h"
-#include "chrome/browser/ash/release_notes/release_notes_notification.h"
 #include "chrome/browser/ash/system_web_apps/apps/help_app/help_app_notification_controller.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
@@ -69,9 +68,7 @@ class KnownUser;
 namespace ash {
 
 class AuthStatusConsumer;
-class OnboardingUserActivityCounter;
 class AuthenticatorBuilder;
-class LegacyTokenHandleFetcher;
 class EolNotification;
 class FrozenUpdateNotification;
 class InputEventsBlocker;
@@ -365,8 +362,6 @@ class UserSessionManager
   base::WeakPtr<UserSessionManager> GetUserSessionManagerAsWeakPtr();
 
  private:
-  // Observes the Device Account's LST and informs UserSessionManager about it.
-  class DeviceAccountGaiaTokenObserver;
   friend class test::UserSessionManagerTestApi;
 
   using SigninSessionRestoreStateSet = std::set<AccountId>;
@@ -499,20 +494,10 @@ class UserSessionManager
       InputEventsBlocker* input_events_blocker,
       const locale_util::LanguageSwitchResult& result);
 
-  // Callback invoked when `token_handle_util_` has finished.
-  void OnTokenHandleObtained(const AccountId& account_id, bool success);
-
   // Returns `true` if token handles should be used on this device.
   bool TokenHandlesEnabled();
 
   void CreateTokenHandleStoreIfMissing();
-
-  // Update token handle if the existing token handle is missing/invalid.
-  void UpdateTokenHandleIfRequired(Profile* const profile,
-                                   const AccountId& account_id);
-
-  // Force update token handle.
-  void UpdateTokenHandle(Profile* const profile, const AccountId& account_id);
 
   // Test API methods.
   void InjectAuthenticatorBuilderForTesting(
@@ -533,8 +518,6 @@ class UserSessionManager
 
   bool IsFullRestoreEnabled(Profile* profile);
 
-  void OnUserEligibleForOnboardingSurvey(Profile* profile);
-
   // Triggers loading of the shill profile for |account_id|. This should only be
   // called for the primary user session.
   void LoadShillProfile(const AccountId& account_id);
@@ -551,7 +534,6 @@ class UserSessionManager
       const user_manager::User* user,
       TokenHandleService* token_handle_service);
 
-  void FetchTokenHandleLegacy(Profile* profile, const user_manager::User* user);
   void FetchTokenHandle(Profile* profile, const user_manager::User* user);
 
   const raw_ref<PrefService> local_state_;
@@ -632,9 +614,6 @@ class UserSessionManager
   bool should_obtain_handles_;
 
   raw_ptr<TokenHandleStore> token_handle_store_;
-  std::unique_ptr<LegacyTokenHandleFetcher> token_handle_fetcher_;
-  std::map<Profile*, std::unique_ptr<DeviceAccountGaiaTokenObserver>>
-      token_observers_;
 
   // Whether should launch browser, tests may override this value.
   bool should_launch_browser_;
@@ -666,9 +645,6 @@ class UserSessionManager
       help_app_notification_controller_;
 
   bool token_handle_backfill_tried_for_testing_ = false;
-
-  std::unique_ptr<OnboardingUserActivityCounter>
-      onboarding_user_activity_counter_;
 
   // Callback that allows tests to inject a test EolNotification implementation.
   EolNotificationHandlerFactoryCallback eol_notification_handler_test_factory_;

@@ -7,6 +7,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
+#include "components/viz/common/surfaces/local_surface_id.h"
 #include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-blink-forward.h"
@@ -171,7 +172,8 @@ class CORE_EXPORT RemoteFrame final : public Frame,
   void SetReplicatedOrigin(
       const scoped_refptr<const SecurityOrigin>& origin,
       bool is_potentially_trustworthy_unique_origin) override;
-  void SetReplicatedIsAdFrame(bool is_ad_frame) override;
+  void SetReplicatedAdFrameStatus(
+      mojom::blink::FrameAdStatus ad_frame_status) override;
   void SetReplicatedIsSecureContextRoot(bool is_secure_context_root) override;
   void SetReplicatedName(const String& name,
                          const String& unique_name) override;
@@ -211,8 +213,8 @@ class CORE_EXPORT RemoteFrame final : public Frame,
   void EnableAutoResize(const gfx::Size& min_size,
                         const gfx::Size& max_size) override;
   void DisableAutoResize() override;
-  void DidUpdateVisualProperties(
-      const cc::RenderFrameMetadata& metadata) override;
+  void DidUpdateChildLocalSurfaceId(
+      const viz::LocalSurfaceId& local_surface_id) override;
   void SetFrameSinkId(const viz::FrameSinkId& frame_sink_id,
                       bool allow_paint_holding) override;
   void ChildProcessGone() override;
@@ -306,8 +308,9 @@ class CORE_EXPORT RemoteFrame final : public Frame,
   // Will be nullptr when this RemoteFrame's parent is not a LocalFrame.
   std::unique_ptr<ChildFrameCompositingHelper> compositing_helper_;
 
-  // Whether the frame is considered to be an ad frame by Ad Tagging.
-  bool is_ad_frame_;
+  // The ad status of this frame.
+  mojom::blink::FrameAdStatus ad_frame_status_ =
+      mojom::blink::FrameAdStatus::kNotAd;
 
   HeapMojoAssociatedRemote<mojom::blink::RemoteFrameHost>
       remote_frame_host_remote_{nullptr};

@@ -6,6 +6,7 @@
 #define SERVICES_WEBNN_ORT_GRAPH_BUILDER_ORT_H_
 
 #include <memory>
+#include <string>
 #include <string_view>
 
 #include "base/containers/flat_map.h"
@@ -17,6 +18,7 @@
 #include "base/types/expected.h"
 #include "services/webnn/ort/model_editor.h"
 #include "services/webnn/public/cpp/context_properties.h"
+#include "services/webnn/public/cpp/execution_providers_info.h"
 #include "services/webnn/public/cpp/webnn_types.h"
 #include "services/webnn/public/mojom/webnn_error.mojom-forward.h"
 #include "services/webnn/public/mojom/webnn_graph.mojom-forward.h"
@@ -61,6 +63,7 @@ class GraphBuilderOrt {
   static std::unique_ptr<ModelEditor::ModelInfo> CreateAndBuild(
       const mojom::GraphInfo& graph_info,
       ContextProperties context_properties,
+      EpWorkarounds ep_workarounds,
       base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
           constant_operands);
 
@@ -73,13 +76,27 @@ class GraphBuilderOrt {
   GraphBuilderOrt(
       const mojom::GraphInfo& graph_info,
       ContextProperties context_properties,
+      EpWorkarounds ep_workarounds,
       base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
           constant_operands);
 
   const mojom::Operand& GetOperand(OperandId operand_id) const;
 
-  // Get the name of an existing operand by its id.
-  std::string GetOperandNameById(OperandId operand_id) const;
+  // Gets the name without materializing a deferred uint8 cast.
+  std::string GetRawOperandName(OperandId operand_id) const;
+
+  // Get the name of an existing operand by its id. Requesting the name emits
+  // any deferred uint8 cast that produces it, so this is not const.
+  std::string GetOperandNameById(OperandId operand_id);
+
+  // Returns a bool tensor for `operand_id`, reusing one that already exists
+  // and otherwise emitting the uint8 -> bool cast.
+  std::string GetOperandNameAsBool(OperandId operand_id);
+
+  // Emits the deferred uint8 cast for `operand_id`, if one is pending.
+  void FlushPendingUint8Cast(OperandId operand_id);
+
+  void RegisterLogicalOutput(OperandId output_id, std::string bool_name);
 
   // Generate the unique name of a newly created operand by combining a prefix
   // "inserted" and `next_operand_id_`, and then increase `next_operand_id_`.
@@ -219,12 +236,16 @@ class GraphBuilderOrt {
                            OperandDataType data_type,
                            uint32_t dim_size);
 
-  // Clamp the indices to ensure that all values in indices are within bounds
-  // [-s, s) along axis of size s, i.e. -input_shape[i] <= indices[..., i] <=
-  // input_shape[i] - 1. The data type of indices is assumed to be int64.
-  std::string ClampGatherNDIndices(base::cstring_view indices,
-                                   base::span<const uint32_t> input_shape,
-                                   base::span<const uint32_t> indices_shape);
+  // Clamps `indices` so that all values are within bounds [-s, s) along axis
+  // of size s, i.e. -input_shape[i] <= indices[..., i] <= input_shape[i] - 1.
+  // Then, if `ep_workarounds_` requires it, shifts negative indices to their
+  // equivalent non-negative value: where(indices < 0, indices +
+  // input_shape[axis], indices). The data type of indices is assumed to be
+  // int64.
+  std::string NormalizeGatherScatterNDIndices(
+      base::cstring_view indices,
+      base::span<const uint32_t> input_shape,
+      base::span<const uint32_t> indices_shape);
 
   template <typename T>
   void AddBinaryOperation(const T& operation, base::cstring_view op_type);
@@ -310,13 +331,15 @@ class GraphBuilderOrt {
   base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
       constant_operands_;
 
-  // The output of logical operators is cast to uint8 to match the specified
-  // WebNN behavior however if these are passed as inputs to other logical
-  // operators the original uncast tensors, stored in this map, can be used
-  // directly.
-  base::flat_map<OperandId, std::string> operand_to_bool_name_;
+  struct BoolTensor {
+    std::string name;
+    // False while a logical output's uint8 cast is pending.
+    bool uint8_materialized;
+  };
+  base::flat_map<OperandId, BoolTensor> bool_tensors_;
 
   const ContextProperties context_properties_;
+  const EpWorkarounds ep_workarounds_;
 
   ModelEditor model_editor_;
 };

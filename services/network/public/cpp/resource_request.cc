@@ -230,8 +230,6 @@ ResourceRequest::TrustedParams& ResourceRequest::TrustedParams::operator=(
   response_body_stream = other.response_body_stream;
   expected_response_headers_for_synthetic_response =
       other.expected_response_headers_for_synthetic_response;
-  is_ad_auction_trusted_signals_request =
-      other.is_ad_auction_trusted_signals_request;
   warc_capture_id = other.warc_capture_id;
   return *this;
 }
@@ -257,8 +255,6 @@ bool ResourceRequest::TrustedParams::EqualsForTesting(
          (!!response_body_stream == !!other.response_body_stream) &&
          expected_response_headers_for_synthetic_response ==
              other.expected_response_headers_for_synthetic_response &&
-         is_ad_auction_trusted_signals_request ==
-             other.is_ad_auction_trusted_signals_request &&
          warc_capture_id == other.warc_capture_id;
 }
 

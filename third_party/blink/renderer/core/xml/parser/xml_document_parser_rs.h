@@ -18,6 +18,7 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 
 namespace blink {
@@ -49,6 +50,7 @@ class CORE_EXPORT XMLDocumentParserRs final : public ScriptableDocumentParser,
   bool WellFormed() const override;
   OrdinalNumber LineNumber() const override;
   TextPosition GetTextPosition() const override;
+  bool SawXslTransformForTesting() const { return saw_xsl_transform_; }
 
   // XmlCallbacks
   void StartDocument(rust::Str version,
@@ -75,6 +77,13 @@ class CORE_EXPORT XMLDocumentParserRs final : public ScriptableDocumentParser,
   void EndDocument() override;
 
  private:
+  // Converts `xml_string` to UTF-8 and appends it directly to `read_state_`'s
+  // Rust input buffer via `xml_ffi::append_to_source()`, without running
+  // ProcessEvents(). By contrast, Append() is the DocumentParser entry point
+  // that buffers into `pending_src_` if the parser is paused or already inside
+  // ProcessEvents(), and otherwise calls AppendToSource() followed by
+  // ProcessEvents().
+  void AppendToSource(const String& xml_string);
   void ProcessEvents();
 
   // From DocumentParser
@@ -98,7 +107,6 @@ class CORE_EXPORT XMLDocumentParserRs final : public ScriptableDocumentParser,
   void PauseParsing();
   void ResumeParsing();
 
- private:
   void PushCurrentNode(ContainerNode*);
   void PopCurrentNode();
   void ClearCurrentNodeStack();
@@ -110,15 +118,28 @@ class CORE_EXPORT XMLDocumentParserRs final : public ScriptableDocumentParser,
 
   void CheckIfBlockingStyleSheetAdded();
 
+  bool ShouldMarkScriptAlreadyStarted() const;
+  bool IsXSLTAllowed() const;
+  void UpdateScriptStartPositionIfNeeded();
+
   Member<XMLParserScriptRunner> script_runner_;
   TextPosition script_start_position_;
+  bool set_script_start_position_on_next_event_ = false;
   bool saw_error_ = false;
   bool saw_css_ = false;
 
   XMLErrors xml_errors_;
   Member<Document> document_;
 
+  // Accumulates character data from Characters() callbacks for the current
+  // DOM Text node (`leaf_text_node_`) until UpdateLeafTextNode() flushes it.
   StringBuilder buffered_text_;
+
+  // Queues raw, unparsed XML source chunks passed to Append() while the parser
+  // is paused (`parser_paused_`) or already inside ProcessEvents()
+  // (`in_process_events_`), to be fed to the Rust XML reader via
+  // AppendToSource() in ProcessEvents().
+  StringBuilder pending_src_;
 
   Member<ContainerNode> current_node_;
   // In fragment parsing, track a parent element that has reset the default
@@ -133,8 +154,17 @@ class CORE_EXPORT XMLDocumentParserRs final : public ScriptableDocumentParser,
   const bool parsing_fragment_;
   bool saw_first_element_ = false;
   bool saw_end_document_ = false;
+  bool saw_xsl_transform_ = false;
+  StringBuilder original_source_for_transform_;
 
   bool parser_paused_ = false;
+  // Re-entrancy guard for ProcessEvents(). Callbacks invoked from
+  // xml_ffi::process_next_event() can run script (e.g. inline <script> or
+  // synchronous blur events when flushing leaf text nodes) that feeds more
+  // data to Append() or calls Finish(). Re-entering ProcessEvents() while a
+  // callback is on the stack would process inner events before the outer
+  // callback finishes updating parser state (such as current_node_stack_).
+  bool in_process_events_ = false;
   bool requesting_script_ = false;
   bool waiting_for_stylesheets_ = false;
   bool added_pending_parser_blocking_stylesheet_ = false;

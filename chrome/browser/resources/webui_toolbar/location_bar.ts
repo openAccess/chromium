@@ -11,11 +11,12 @@ import '/shared/permission_dashboard.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 
 import {loadTimeData} from '//resources/js/load_time_data.js';
-import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
+import {CrLitElement, nothing} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import {PressHandler} from '/shared/toolbar_button.js';
 import type {OverflowMenuItem} from '/shared/toolbar_ui_api.mojom-webui.js';
-import {SecurityChipRole} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
-import type {LocationBarState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import {PageActionId, PermissionAction, PermissionChipTheme, PermissionPromptStyle, SecurityChipRole} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import type {LocationBarState, PermissionChipState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 
 import type {ToolbarAppElement} from './app.js';
 import {BrowserProxyImpl} from './browser_proxy.js';
@@ -25,7 +26,76 @@ import {getHtml} from './location_bar.html.js';
 import type {PageActionIconsElement} from './page_action_icons.js';
 import type {ReadonlyOmniboxElement} from './readonly_omnibox.js';
 import type {ResponsiveControl} from './responsive_control.js';
-import {PressHandler} from './toolbar_button.js';
+
+function createDefaultPermissionChipState(): PermissionChipState {
+  return {
+    isVisible: false,
+    iconName: '',
+    message: '',
+    tooltip: '',
+    theme: PermissionChipTheme.kUnspecified,
+    userDecision: PermissionAction.kUnspecified,
+    shouldShowBlockedIcon: false,
+    promptStyle: PermissionPromptStyle.kUnspecified,
+    isFullyCollapsed: false,
+    accessibilityName: '',
+    stateToken: 0,
+  };
+}
+
+// Returns a new default LocationBarState, used before the first state is
+// received from the browser. Returns a fresh object on every call so callers
+// never share nested objects/arrays.
+export function createDefaultLocationBarState(): LocationBarState {
+  return {
+    omniboxViewState: {
+      browserVersion: 0,
+      uiVersion: 0,
+      formattedFullUrl: '',
+      textPieces: [],
+      placeholder: null,
+      inlineAutocompletion: '',
+      additionalText: '',
+      a11yFriendlySuggestionText: '',
+      selection: null,
+      textIsUrl: false,
+      userInputInProgress: false,
+      hasTemporaryText: false,
+    },
+    locationBarFlags: {
+      userInputInProgress: false,
+      popupOpen: false,
+      forceAimButtonFocusRing: false,
+      isVirtualKeyboardVisible: false,
+    },
+    selectedKeyword: null,
+    lhsChipsState: {
+      securityChip: {
+        icon: {handleId: 0n},
+        securityLevel: 0,
+        text: '',
+        tooltip: '',
+        accessibilityState: {
+          role: SecurityChipRole.kButton,
+          label: '',
+          description: '',
+        },
+        isClickable: false,
+        isTextDangerous: false,
+        isVisible: true,
+        isContextMenuVisible: false,
+      },
+      activityIndicators: [],
+      permissionDashboard: {
+        indicatorChip: createDefaultPermissionChipState(),
+        requestChip: createDefaultPermissionChipState(),
+        isDividerVisible: false,
+      },
+    },
+    contentSettingImageStates: [],
+    pageActionStates: [],
+  };
+}
 
 export interface LocationBarElement {
   $: {
@@ -59,6 +129,10 @@ export class LocationBarElement extends CrLitElement implements
   }
 
   override render() {
+    if (this.waitForState && !this.contentRendered_) {
+      return nothing;
+    }
+    this.contentRendered_ = true;
     return getHtml.bind(this)();
   }
 
@@ -67,62 +141,31 @@ export class LocationBarElement extends CrLitElement implements
       locationBarState: {type: Object},
       isPopupOpen: {type: Boolean},
       touchUi: {type: Boolean},
+      waitForState: {type: Boolean},
     };
   }
 
-  accessor locationBarState: LocationBarState = {
-    omniboxViewState: {
-      browserVersion: 0,
-      uiVersion: 0,
-      formattedFullUrl: '',
-      textPieces: [],
-      placeholder: null,
-      inlineAutocompletion: '',
-      additionalText: '',
-      a11yFriendlySuggestionText: '',
-      selection: null,
-      textIsUrl: false,
-      userInputInProgress: false,
-    },
-    locationBarFlags: {
-      userInputInProgress: false,
-      popupOpen: false,
-      forceAimButtonFocusRing: false,
-      isVirtualKeyboardVisible: false,
-    },
-    selectedKeyword: null,
-    lhsChipsState: {
-      securityChip: {
-        icon: {handleId: 0n},
-        securityLevel: 0,
-        text: '',
-        tooltip: '',
-        accessibilityState: {
-          role: SecurityChipRole.kButton,
-          label: '',
-          description: '',
-        },
-        isClickable: false,
-        isTextDangerous: false,
-        isVisible: true,
-        isContextMenuVisible: false,
-      },
-      activityIndicators: [],
-      permissionDashboard: null,
-    },
-    contentSettingImageStates: [],
-    pageActionStates: [],
-  };
+  accessor locationBarState: LocationBarState = createDefaultLocationBarState();
 
   accessor isPopupOpen: boolean = false;
   accessor touchUi: boolean = false;
+  // While true and the contents have not rendered yet, render() returns
+  // nothing. toolbar-app binds this to "no ToolbarState received yet", so it is
+  // true from toolbar-app's first render until the browser's first
+  // ToolbarState arrives, and again after toolbar-app is disconnected. The
+  // contents then render once, from real state, instead of first from
+  // createDefaultLocationBarState(). Once rendered they stay, so a reconnected
+  // toolbar keeps showing the last state.
+  //
+  // This does not delay the first frame. The host element still renders, and
+  // this element's update completes synchronously, so toolbar-app reports the
+  // page as initialized at the same time as before. A frame painted before the
+  // state arrives shows the empty location bar.
+  accessor waitForState: boolean = false;
 
   private browserProxy_: BrowserProxy = BrowserProxyImpl.getInstance();
   private focusState_: boolean = false;
-
-  constructor() {
-    super();
-  }
+  private contentRendered_: boolean = false;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -134,10 +177,6 @@ export class LocationBarElement extends CrLitElement implements
     this.addEventListener('blur', this.onBlur_.bind(this));
   }
 
-  override disconnectedCallback() {
-    super.disconnectedCallback();
-  }
-
   override willUpdate(changedProperties: PropertyValues<this>): void {
     super.willUpdate(changedProperties);
     if (changedProperties.has('locationBarState')) {
@@ -147,7 +186,13 @@ export class LocationBarElement extends CrLitElement implements
 
   override updated(changedProperties: PropertyValues<this>): void {
     super.updated(changedProperties);
-    if (changedProperties.has('locationBarState')) {
+    if (changedProperties.has('locationBarState') ||
+        changedProperties.has('waitForState')) {
+      // Until the contents render, locationBarState is the placeholder from
+      // createDefaultLocationBarState(), so leave the host classes alone.
+      if (!this.contentRendered_) {
+        return;
+      }
       this.classList.toggle(
           'popup-open', this.locationBarState.locationBarFlags.popupOpen);
       this.classList.toggle(
@@ -157,6 +202,11 @@ export class LocationBarElement extends CrLitElement implements
           'no-focus-ring',
           this.locationBarState.locationBarFlags.popupOpen ||
               this.locationBarState.locationBarFlags.forceAimButtonFocusRing);
+      const pageActions = this.locationBarState.pageActionStates;
+      const isAimLastVisible = pageActions && pageActions.length === 1 &&
+          pageActions[0]?.pageActionId === PageActionId.kActionAiMode;
+      this.classList.toggle('aim-last-page-action', isAimLastVisible);
+
       const aimButton = this.$.pageActions.aiModePageAction();
       if (aimButton) {
         aimButton.forceFocusRing =
@@ -295,6 +345,11 @@ export class LocationBarElement extends CrLitElement implements
     if (e.detail === 0) {
       this.clearInput_();
     }
+  }
+
+  protected isPermissionDashboardVisible_(): boolean {
+    const dashboard = this.locationBarState.lhsChipsState.permissionDashboard;
+    return dashboard.indicatorChip.isVisible || dashboard.requestChip.isVisible;
   }
 }
 

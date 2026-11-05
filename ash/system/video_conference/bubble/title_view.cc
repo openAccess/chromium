@@ -6,9 +6,7 @@
 
 #include <memory>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/notifier_catalogs.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/public/cpp/system/anchored_nudge_data.h"
 #include "ash/public/cpp/system/anchored_nudge_manager.h"
 #include "ash/resources/vector_icons/vector_icons.h"
@@ -82,15 +80,11 @@ TitleView::TitleView(base::OnceClosure close_bubble_callback) {
                                         *title_label);
   SetFlexForView(title_column, 1);
 
-  if (features::IsVcTrayTitleHeaderEnabled()) {
-    AddChildView(std::make_unique<MicTestButton>());
-    VideoConferenceTrayController::Get()->UpdateSidetoneSupportedState();
-  }
+  AddChildView(std::make_unique<MicTestButton>());
+  VideoConferenceTrayController::Get()->UpdateSidetoneSupportedState();
 
-  if (features::IsVcStudioLookEnabled()) {
-    AddChildView(
-        std::make_unique<SettingsButton>(std::move(close_bubble_callback)));
-  }
+  AddChildView(
+      std::make_unique<SettingsButton>(std::move(close_bubble_callback)));
 }
 
 TitleView::~TitleView() {
@@ -196,9 +190,7 @@ MicTestButtonContainer::MicTestButtonContainer(PressedCallback callback)
               kVideoConferenceSidetoneIcon, cros_tokens::kCrosSysOnSurface))
           .SetImageSize(kIconSize)
           .Build());
-  if (features::IsVcTrayMicIndicatorEnabled()) {
-    mic_indicator_ = AddChildView(std::make_unique<MicIndicator>());
-  }
+  mic_indicator_ = AddChildView(std::make_unique<MicIndicator>());
 
   SetBorder(views::CreateEmptyBorder(kMicTestButtonPadding));
   // Paints this view to a layer so it will be on top of the
@@ -220,10 +212,7 @@ void MicTestButtonContainer::OnThemeChanged() {
                       : cros_tokens::kCrosSysOnSurface;
   sidetone_icon_->SetImage(
       ui::ImageModel::FromVectorIcon(kVideoConferenceSidetoneIcon, color_id));
-  if (features::IsVcTrayMicIndicatorEnabled()) {
-    CHECK(mic_indicator_);
-    mic_indicator_->OnThemeChanged();
-  }
+  mic_indicator_->OnThemeChanged();
 }
 
 MicTestButtonContainer::~MicTestButtonContainer() = default;

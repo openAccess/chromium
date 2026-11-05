@@ -7,6 +7,7 @@
 #include <stddef.h>
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -39,7 +40,7 @@ Widget* GetWidgetForWindow(aura::Window* window) {
   // we'll end up with two children in the AX node tree that have the same
   // parent.
   if (widget->GetNativeWindow() != window) {
-    DCHECK(window->IsRootWindow());
+    CHECK(window->IsRootWindow(), base::NotFatalUntil::M163);
     return nullptr;
   }
 
@@ -76,11 +77,11 @@ void FireLocationChangesRecursively(aura::Window* window,
 }
 
 std::string GetWindowName(aura::Window* window) {
-  std::string class_name = window->GetName();
+  std::string_view class_name = window->GetName();
   if (class_name.empty()) {
-    class_name = "aura::Window";
+    return "aura::Window";
   }
-  return class_name;
+  return std::string(class_name);
 }
 
 }  // namespace
@@ -153,7 +154,10 @@ void AXWindowObjWrapper::GetChildren(
   // Also consider any associated widgets as children.
   Widget* widget = GetWidgetForWindow(window_);
   if (widget && widget->IsVisible()) {
-    out_children->push_back(aura_obj_cache_->GetOrCreate(widget));
+    if (AXAuraObjWrapper* widget_wrapper =
+            aura_obj_cache_->GetOrCreate(widget)) {
+      out_children->push_back(widget_wrapper);
+    }
   }
 }
 
@@ -244,7 +248,7 @@ void AXWindowObjWrapper::OnWindowDestroyed(aura::Window* window) {
 }
 
 void AXWindowObjWrapper::OnWindowDestroying(aura::Window* window) {
-  DCHECK_EQ(window, window_);
+  CHECK_EQ(window, window_, base::NotFatalUntil::M163);
   window_destroying_ = true;
 }
 

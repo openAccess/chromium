@@ -22,8 +22,7 @@ UnexportableKeyProvider::~UnexportableKeyProvider() = default;
 
 std::unique_ptr<UnexportableAttestationKey>
 UnexportableKeyProvider::GenerateAttestationKeySlowly(
-    base::span<const SignatureVerifier::SignatureAlgorithm>
-        acceptable_algorithms) {
+    base::span<const sign::SignatureKind> acceptable_algorithms) {
   return nullptr;
 }
 
@@ -32,9 +31,6 @@ UnexportableKeyProvider::FromWrappedAttestationKeySlowly(
     base::span<const uint8_t> wrapped_key) {
   return nullptr;
 }
-
-VirtualUnexportableSigningKey::~VirtualUnexportableSigningKey() = default;
-VirtualUnexportableKeyProvider::~VirtualUnexportableKeyProvider() = default;
 
 bool UnexportableSigningKey::IsHardwareBacked() const {
   return false;
@@ -66,15 +62,6 @@ GetMicrosoftSoftwareUnexportableKeyProvider() {
   }
 #if BUILDFLAG(IS_WIN)
   return GetMicrosoftSoftwareUnexportableKeyProviderWin();
-#else
-  return nullptr;
-#endif
-}
-
-std::unique_ptr<VirtualUnexportableKeyProvider>
-GetVirtualUnexportableKeyProvider_DO_NOT_USE_METRICS_ONLY() {
-#if BUILDFLAG(IS_WIN)
-  return GetVirtualUnexportableKeyProviderWin();
 #else
   return nullptr;
 #endif

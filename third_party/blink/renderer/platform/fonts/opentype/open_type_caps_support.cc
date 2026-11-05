@@ -14,13 +14,13 @@ namespace blink {
 
 namespace {
 
-bool activationSelectorPresent(
+bool ActivationSelectorPresent(
     hb_face_t* hb_face,
     const hb_aat_layout_feature_type_t feature_type,
     const hb_aat_layout_feature_selector_t enabled_selector_expectation) {
   Vector<hb_aat_layout_feature_selector_info_t> feature_selectors;
-  unsigned num_feature_selectors = 0;
-  unsigned default_index = 0;
+  wtf_size_t num_feature_selectors = 0;
+  wtf_size_t default_index = 0;
   num_feature_selectors = hb_aat_layout_feature_type_get_selector_infos(
       hb_face, feature_type, 0, nullptr, nullptr, nullptr);
   feature_selectors.resize(num_feature_selectors);
@@ -38,12 +38,6 @@ bool activationSelectorPresent(
 }
 }  // namespace
 
-OpenTypeCapsSupport::OpenTypeCapsSupport()
-    : harfbuzz_face_(nullptr),
-      font_support_(FontSupport::kFull),
-      caps_synthesis_(CapsSynthesis::kNone),
-      font_format_(FontFormat::kUndetermined) {}
-
 OpenTypeCapsSupport::OpenTypeCapsSupport(
     const HarfBuzzFace* harfbuzz_face,
     FontDescription::FontVariantCaps requested_caps,
@@ -51,10 +45,7 @@ OpenTypeCapsSupport::OpenTypeCapsSupport(
     hb_script_t script)
     : harfbuzz_face_(harfbuzz_face),
       requested_caps_(requested_caps),
-      font_synthesis_small_caps_(font_synthesis_small_caps),
-      font_support_(FontSupport::kFull),
-      caps_synthesis_(CapsSynthesis::kNone),
-      font_format_(FontFormat::kUndetermined) {
+      font_synthesis_small_caps_(font_synthesis_small_caps) {
   if (requested_caps != FontDescription::kCapsNormal)
     DetermineFontSupport(script);
 }
@@ -180,7 +171,7 @@ bool OpenTypeCapsSupport::SupportsAatFeature(uint32_t tag) const {
   hb_face_t* const hb_face = hb_font_get_face(harfbuzz_face_->GetScaledFont());
 
   Vector<hb_aat_layout_feature_type_t> aat_features;
-  unsigned feature_count =
+  wtf_size_t feature_count =
       hb_aat_layout_get_feature_types(hb_face, 0, nullptr, nullptr);
   aat_features.resize(feature_count);
   if (!hb_aat_layout_get_feature_types(hb_face, 0, &feature_count,
@@ -197,18 +188,20 @@ bool OpenTypeCapsSupport::SupportsAatFeature(uint32_t tag) const {
 
     // Check for new style small caps, feature id 38.
     if (aat_features.Contains(HB_AAT_LAYOUT_FEATURE_TYPE_LOWER_CASE)) {
-      if (activationSelectorPresent(
+      if (ActivationSelectorPresent(
               hb_face, HB_AAT_LAYOUT_FEATURE_TYPE_LOWER_CASE,
-              HB_AAT_LAYOUT_FEATURE_SELECTOR_LOWER_CASE_SMALL_CAPS))
+              HB_AAT_LAYOUT_FEATURE_SELECTOR_LOWER_CASE_SMALL_CAPS)) {
         return true;
+      }
     }
 
     // Check for old style small caps enabling selector, feature id 3.
     if (aat_features.Contains(HB_AAT_LAYOUT_FEATURE_TYPE_LETTER_CASE)) {
-      if (activationSelectorPresent(hb_face,
-                                    HB_AAT_LAYOUT_FEATURE_TYPE_LETTER_CASE,
-                                    HB_AAT_LAYOUT_FEATURE_SELECTOR_SMALL_CAPS))
+      if (ActivationSelectorPresent(
+              hb_face, HB_AAT_LAYOUT_FEATURE_TYPE_LETTER_CASE,
+              HB_AAT_LAYOUT_FEATURE_SELECTOR_SMALL_CAPS)) {
         return true;
+      }
     }
 
     // Neither old or new style small caps present.
@@ -219,7 +212,7 @@ bool OpenTypeCapsSupport::SupportsAatFeature(uint32_t tag) const {
     if (!aat_features.Contains(HB_AAT_LAYOUT_FEATURE_TYPE_UPPER_CASE))
       return false;
 
-    return activationSelectorPresent(
+    return ActivationSelectorPresent(
         hb_face, HB_AAT_LAYOUT_FEATURE_TYPE_UPPER_CASE,
         HB_AAT_LAYOUT_FEATURE_SELECTOR_UPPER_CASE_SMALL_CAPS);
   }

@@ -9,6 +9,7 @@
 #include "content/browser/media/session/media_session_impl.h"
 #include "media/base/media_switches.h"
 #include "services/media_session/public/mojom/audio_focus.mojom.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "content/public/android/content_jni_headers/AudioFocusDelegate_jni.h"
@@ -27,15 +28,15 @@ AudioFocusDelegateAndroid::AudioFocusDelegateAndroid(
 
 AudioFocusDelegateAndroid::~AudioFocusDelegateAndroid() {
   JNIEnv* env = base::android::AttachCurrentThread();
-  DCHECK(env);
+  CHECK(env, base::NotFatalUntil::M160);
   Java_AudioFocusDelegate_tearDown(env, j_media_session_delegate_);
 }
 
 void AudioFocusDelegateAndroid::Initialize() {
   JNIEnv* env = base::android::AttachCurrentThread();
-  DCHECK(env);
+  CHECK(env, base::NotFatalUntil::M160);
   j_media_session_delegate_.Reset(
-      Java_AudioFocusDelegate_create(env, reinterpret_cast<intptr_t>(this)));
+      Java_AudioFocusDelegate_create(env, jni_zero::MakeRaw(this)));
 }
 
 AudioFocusDelegate::AudioFocusResult
@@ -56,7 +57,7 @@ AudioFocusDelegateAndroid::RequestAudioFocus(
   is_deferred_gain_pending_ = false;
 
   JNIEnv* env = base::android::AttachCurrentThread();
-  DCHECK(env);
+  CHECK(env, base::NotFatalUntil::M160);
   bool success = Java_AudioFocusDelegate_requestAudioFocus(
       env, j_media_session_delegate_,
       audio_focus_type ==
@@ -67,7 +68,7 @@ AudioFocusDelegateAndroid::RequestAudioFocus(
 
 void AudioFocusDelegateAndroid::AbandonAudioFocus() {
   JNIEnv* env = base::android::AttachCurrentThread();
-  DCHECK(env);
+  CHECK(env, base::NotFatalUntil::M160);
   is_deferred_gain_pending_ = false;
   Java_AudioFocusDelegate_abandonAudioFocus(env, j_media_session_delegate_);
 }
@@ -75,7 +76,7 @@ void AudioFocusDelegateAndroid::AbandonAudioFocus() {
 std::optional<media_session::mojom::AudioFocusType>
 AudioFocusDelegateAndroid::GetCurrentFocusType() const {
   JNIEnv* env = base::android::AttachCurrentThread();
-  DCHECK(env);
+  CHECK(env, base::NotFatalUntil::M160);
   return Java_AudioFocusDelegate_isFocusTransient(env,
                                                   j_media_session_delegate_)
              ? media_session::mojom::AudioFocusType::kGainTransientMayDuck

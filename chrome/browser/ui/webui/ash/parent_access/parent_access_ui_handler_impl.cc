@@ -9,23 +9,22 @@
 #include <utility>
 
 #include "base/base64.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
-#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/system/sys_info.h"
 #include "base/time/time.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_dialog.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_metrics_utils.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_ui.mojom.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/google/core/common/google_util.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/access_token_fetcher.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/supervised_user/core/browser/proto/parent_access_callback.pb.h"
-#include "components/sync/base/features.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "url/gurl.h"
@@ -72,11 +71,13 @@ void ParentAccessUiHandlerImpl::RecordParentAccessWidgetError(
 }
 
 ParentAccessUiHandlerImpl::ParentAccessUiHandlerImpl(
+    const ApplicationLocaleStorage* application_locale_storage,
+    signin::IdentityManager* identity_manager,
     mojo::PendingReceiver<parent_access_ui::mojom::ParentAccessUiHandler>
         receiver,
-    signin::IdentityManager* identity_manager,
     ParentAccessUiHandlerDelegate* delegate)
-    : identity_manager_(identity_manager),
+    : application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      identity_manager_(identity_manager),
       delegate_(delegate),
       receiver_(this, std::move(receiver)),
       params_(delegate_ ? delegate_->CloneParentAccessParams() : nullptr) {
@@ -101,11 +102,7 @@ void ParentAccessUiHandlerImpl::GetOauthToken(GetOauthTokenCallback callback) {
 
   oauth2_access_token_fetcher_ =
       identity_manager_->CreateAccessTokenFetcherForAccount(
-          identity_manager_->GetPrimaryAccountId(
-              base::FeatureList::IsEnabled(
-                  syncer::kReplaceSyncPromosWithSignInPromos)
-                  ? signin::ConsentLevel::kSignin
-                  : signin::ConsentLevel::kSync),
+          identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
           signin::OAuthConsumerId::kParentAccess,
           base::BindOnce(&ParentAccessUiHandlerImpl::OnAccessTokenFetchComplete,
                          weak_ptr_factory_.GetWeakPtr(), std::move(callback)),
@@ -159,7 +156,7 @@ void ParentAccessUiHandlerImpl::OnParentAccessDone(
   }
   switch (result) {
     case parent_access_ui::mojom::ParentAccessResult::kApproved:
-      DCHECK(parent_access_token_);
+      CHECK(parent_access_token_, base::NotFatalUntil::M162);
       if (state_tracker_) {
         state_tracker_->OnWebUiStateChanged(
             ParentAccessStateTracker::FlowResult::kAccessApproved);
@@ -207,8 +204,8 @@ void ParentAccessUiHandlerImpl::GetParentAccessUrl(
   }
 
   std::string platform_version = base::SysInfo::OperatingSystemVersion();
-  std::string language_code =
-      google_util::GetGoogleLocale(g_browser_process->GetApplicationLocale());
+  std::string language_code = google_util::GetGoogleLocale(
+      std::string(application_locale_storage_->GetTag().tag_string()));
 
   std::string url;
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
@@ -216,7 +213,7 @@ void ParentAccessUiHandlerImpl::GetParentAccessUrl(
     url = command_line->GetSwitchValueASCII(kParentAccessSwitch);
   } else {
     url = kParentAccessDefaultURL;
-    DCHECK(GURL(url).DomainIs("google.com"));
+    CHECK(GURL(url).DomainIs("google.com"), base::NotFatalUntil::M162);
   }
 
   const GURL base_url(url);
@@ -294,7 +291,7 @@ void ParentAccessUiHandlerImpl::OnParentAccessCallbackReceived(
               .verification_proof_case() ==
           kids::platform::parentaccess::client::proto::OnParentVerified::
               VerificationProofCase::kParentAccessToken) {
-        DCHECK(!parent_access_token_);
+        CHECK(!parent_access_token_, base::NotFatalUntil::M162);
         parent_access_token_ = std::make_unique<
             kids::platform::parentaccess::client::proto::ParentAccessToken>();
         parent_access_token_->CopyFrom(

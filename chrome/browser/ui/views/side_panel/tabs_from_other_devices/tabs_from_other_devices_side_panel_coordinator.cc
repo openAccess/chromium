@@ -64,7 +64,19 @@ TabsFromOtherDevicesSidePanelCoordinator::
                                              Profile* profile)
     : scoped_unowned_user_data_(browser->GetUnownedUserDataHost(), *this),
       browser_(CHECK_DEREF(browser)),
-      profile_(CHECK_DEREF(profile)) {}
+      profile_(CHECK_DEREF(profile)),
+      metrics_recorder_(
+          std::make_unique<TabsFromOtherDevicesSidePanelMetrics>()) {
+  auto entry = std::make_unique<SidePanelEntry>(
+      SidePanelEntry::Key(SidePanelEntry::Id::kTabsFromOtherDevices),
+      base::BindRepeating(&CreateTabsFromOtherDevicesWebView, &browser_.get(),
+                          &profile_.get(), metrics_recorder_->GetWeakPtr()),
+      /*default_content_width_callback=*/base::NullCallback());
+
+  metrics_recorder_->Observe(entry.get());
+
+  SidePanelRegistry::From(browser)->Register(std::move(entry));
+}
 
 TabsFromOtherDevicesSidePanelCoordinator::
     ~TabsFromOtherDevicesSidePanelCoordinator() = default;
@@ -74,19 +86,4 @@ bool TabsFromOtherDevicesSidePanelCoordinator::IsSupported(Profile* profile) {
   // This side panel is not supported in incognito, guest, etc.
   return profile->IsRegularProfile() &&
          base::FeatureList::IsEnabled(features::kTabsFromOtherDevicesSidePanel);
-}
-
-void TabsFromOtherDevicesSidePanelCoordinator::CreateAndRegisterEntry(
-    SidePanelRegistry* global_registry) {
-  metrics_recorder_ = std::make_unique<TabsFromOtherDevicesSidePanelMetrics>();
-
-  auto entry = std::make_unique<SidePanelEntry>(
-      SidePanelEntry::Key(SidePanelEntry::Id::kTabsFromOtherDevices),
-      base::BindRepeating(&CreateTabsFromOtherDevicesWebView, &browser_.get(),
-                          &profile_.get(), metrics_recorder_->GetWeakPtr()),
-      /*default_content_width_callback=*/base::NullCallback());
-
-  metrics_recorder_->Observe(entry.get());
-
-  global_registry->Register(std::move(entry));
 }

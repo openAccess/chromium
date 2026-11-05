@@ -66,7 +66,7 @@ class PasswordGenerationControllerImpl
   void OnGenerationRequested(
       autofill::password_generation::PasswordGenerationType type) override;
   void GeneratedPasswordAccepted(
-      const std::u16string& password,
+      const password_manager::PasswordString& password,
       base::WeakPtr<password_manager::ContentPasswordManagerDriver> driver,
       autofill::password_generation::PasswordGenerationType type) override;
   void GeneratedPasswordRejected(
@@ -76,9 +76,7 @@ class PasswordGenerationControllerImpl
   // for testing.
   std::unique_ptr<TouchToFillPasswordGenerationController>
   CreateTouchToFillGenerationControllerForTesting(
-      std::unique_ptr<TouchToFillPasswordGenerationBridge> bridge,
-      base::WeakPtr<ManualFillingController> manual_filling_controller)
-      override;
+      std::unique_ptr<TouchToFillPasswordGenerationBridge> bridge) override;
   TouchToFillPasswordGenerationController*
   GetTouchToFillGenerationControllerForTesting() override;
 

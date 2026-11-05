@@ -13,7 +13,6 @@
 #include "ash/shelf/shelf.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/wm/mru_window_tracker.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -122,7 +121,9 @@ class ObserverToCloseWidget : public ui::ImplicitAnimationObserver {
 
 HomeToOverviewNudgeController::HomeToOverviewNudgeController(
     HotseatWidget* hotseat_widget)
-    : hotseat_widget_(hotseat_widget) {}
+    : hotseat_widget_(hotseat_widget) {
+  widget_observations_.AddObservation(hotseat_widget_);
+}
 
 HomeToOverviewNudgeController::~HomeToOverviewNudgeController() = default;
 
@@ -165,14 +166,18 @@ void HomeToOverviewNudgeController::SetNudgeAllowedForCurrentShelf(
 
 void HomeToOverviewNudgeController::OnWidgetDestroying(views::Widget* widget) {
   nudge_ = nullptr;
-  widget_observations_.RemoveAllObservations();
+  if (hotseat_widget_ == widget) {
+    hotseat_widget_ = nullptr;
+  }
+  widget_observations_.RemoveObservation(widget);
 }
 
 void HomeToOverviewNudgeController::OnWidgetBoundsChanged(
     views::Widget* widget,
     const gfx::Rect& new_bounds) {
-  if (widget == hotseat_widget_)
+  if (widget == hotseat_widget_ && nudge_) {
     UpdateNudgeAnchorBounds();
+  }
 }
 
 bool HomeToOverviewNudgeController::HasShowTimerForTesting() const {
@@ -210,7 +215,6 @@ void HomeToOverviewNudgeController::ShowNudge() {
   UpdateNudgeAnchorBounds();
 
   widget_observations_.AddObservation(nudge_->GetWidget());
-  widget_observations_.AddObservation(hotseat_widget_.get());
 
   nudge_->GetWidget()->Show();
   nudge_->GetWidget()->GetLayer()->SetTransform(gfx::Transform());
@@ -329,7 +333,7 @@ void HomeToOverviewNudgeController::HideNudge(HideTransition transition) {
     nudge_->label()->layer()->SetOpacity(0.0f);
   }
 
-  widget_observations_.RemoveAllObservations();
+  widget_observations_.RemoveObservation(nudge_->GetWidget());
   nudge_ = nullptr;
 
   // Invalidated nudge tap handler callbacks.

@@ -21,14 +21,41 @@
 #import "components/prefs/pref_change_registrar.h"
 #import "components/prefs/pref_service.h"
 #import "components/segmentation_platform/embedder/home_modules/tips_manager/constants.h"
+#import "components/segmentation_platform/public/features.h"
+#import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
 #import "ios/chrome/browser/content_suggestions/tips/coordinator/tips_magic_stack_mediator_delegate.h"
+#import "ios/chrome/browser/content_suggestions/tips/ui/ntp_theme_actionable_tip_config.h"
 #import "ios/chrome/browser/content_suggestions/tips/ui/tips_module_audience.h"
 #import "ios/chrome/browser/content_suggestions/tips/ui/tips_module_config.h"
 #import "ios/chrome/browser/content_suggestions/ui/content_suggestions_view_controller_audience.h"
+#import "ios/chrome/browser/home_customization/model/home_background_customization_service.h"
+#import "ios/chrome/browser/home_customization/model/home_customization_seed_colors.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_color_palette.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_color_palette_util.h"
+#import "ios/chrome/browser/ntp/ui_bundled/theme_utils.h"
+#import "ios/chrome/browser/push_notification/model/constants.h"
+#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "net/traffic_annotation/network_traffic_annotation.h"
 #import "url/gurl.h"
 #import "url/url_util.h"
+
+namespace {
+// Index of the Violet seed color in `kSeedColors`.
+constexpr size_t kVioletSeedColorIndex = 8;
+static_assert(kVioletSeedColorIndex < kSeedColors.size());
+
+// Number of preset background themes displayed in the actionable NTP Theme tip.
+constexpr size_t kPresetThemeCount = 2;
+
+// Holds a preset custom background proto and its downloaded thumbnail image.
+struct NtpCustomBackgroundWithImage {
+  sync_pb::NtpCustomBackground proto;
+  UIImage* image = [[UIImage alloc] init];
+};
+
+}  // namespace
 
 using segmentation_platform::TipIdentifier;
 
@@ -53,6 +80,28 @@ using segmentation_platform::TipIdentifier;
 
   // The bookmark model used to check if a shoping page is bookmarked.
   raw_ptr<bookmarks::BookmarkModel> _bookmarkModel;
+
+  // The home customization service used to update the background and store the
+  // selected theme.
+  raw_ptr<HomeBackgroundCustomizationService> _backgroundCustomizationService;
+
+  // The local state Pref service.
+  raw_ptr<PrefService> _localStatePrefService;
+
+  // Registrar for local state Pref changes notifications.
+  PrefChangeRegistrar _localStatePrefChangeRegistrar;
+
+  // The preset background themes and their thumbnail images displayed in the
+  // actionable NTP theme tip.
+  std::vector<NtpCustomBackgroundWithImage> _presetBackgrounds;
+
+  // The current actionable module configuration when an actionable tip is
+  // active.
+  NTPThemeActionableTipConfig* _actionableConfig;
+
+  // YES when the user has selected an inline NTP theme swatch on the current
+  // tab that has not yet been committed to storage.
+  BOOL _hasUncommittedInlineTheme;
 }
 
 - (instancetype)initWithIdentifier:(TipIdentifier)identifier
@@ -61,7 +110,10 @@ using segmentation_platform::TipIdentifier;
                      bookmarkModel:(bookmarks::BookmarkModel*)bookmarkModel
                       imageFetcher:
                           (std::unique_ptr<image_fetcher::ImageDataFetcher>)
-                              imageFetcher {
+                              imageFetcher
+    backgroundCustomizationService:
+        (HomeBackgroundCustomizationService*)backgroundCustomizationService
+             localStatePrefService:(PrefService*)localStatePrefService {
   self = [super init];
 
   if (self) {
@@ -69,22 +121,37 @@ using segmentation_platform::TipIdentifier;
     CHECK(shoppingService);
     CHECK(bookmarkModel);
     CHECK(imageFetcher);
+    CHECK(localStatePrefService);
 
     _profilePrefService = profilePrefService;
+    _localStatePrefService = localStatePrefService;
+
     _config = [[TipsModuleConfig alloc] initWithTipIdentifier:identifier];
     _config.audience = self;
+    if (identifier == TipIdentifier::kTipsNotifications) {
+      _config.switchOn = [self isTipsNotificationEnabled];
+    }
     _shoppingService = shoppingService;
     _bookmarkModel = bookmarkModel;
     _imageFetcher = std::move(imageFetcher);
+    _backgroundCustomizationService = backgroundCustomizationService;
 
     if (!_prefObserverBridge) {
       _prefObserverBridge = std::make_unique<PrefObserverBridge>(self);
 
       _profilePrefChangeRegistrar.Init(profilePrefService);
+      _localStatePrefChangeRegistrar.Init(localStatePrefService);
 
       _prefObserverBridge->ObserveChangesForPreference(
           ntp_tiles::prefs::kTipsHomeModuleEnabled,
           &_profilePrefChangeRegistrar);
+      _prefObserverBridge->ObserveChangesForPreference(
+          prefs::kIosRecentlyUsedBackgrounds, &_profilePrefChangeRegistrar);
+      _prefObserverBridge->ObserveChangesForPreference(
+          prefs::kIosUserUploadedBackground, &_profilePrefChangeRegistrar);
+      _prefObserverBridge->ObserveChangesForPreference(
+          prefs::kAppLevelPushNotificationPermissions,
+          &_localStatePrefChangeRegistrar);
     }
   }
 
@@ -92,18 +159,49 @@ using segmentation_platform::TipIdentifier;
 }
 
 - (void)disconnect {
+  // Stop observing prefs before StoreCurrentTheme() mutates background prefs.
+  _profilePrefChangeRegistrar.RemoveAll();
+  _localStatePrefChangeRegistrar.RemoveAll();
+  _prefObserverBridge.reset();
+  _profilePrefService = nil;
+  _localStatePrefService = nullptr;
+
+  if (_hasUncommittedInlineTheme && _backgroundCustomizationService) {
+    _hasUncommittedInlineTheme = NO;
+    _backgroundCustomizationService->StoreCurrentTheme();
+  }
+
   _shoppingService = nil;
   _imageFetcher = nullptr;
   _bookmarkModel = nullptr;
-
-  _profilePrefChangeRegistrar.RemoveAll();
-  _prefObserverBridge.reset();
-  _profilePrefService = nil;
+  _backgroundCustomizationService = nullptr;
 }
 
 - (void)reconfigureWithTipIdentifier:(TipIdentifier)identifier {
+  // Always update `_config` so `_config.identifier` reflects the current tip
+  // for impression and interaction logging in `ContentSuggestionsCoordinator`,
+  // even when an actionable config is displayed.
   _config = [[TipsModuleConfig alloc] initWithTipIdentifier:identifier];
   _config.audience = self;
+
+  if (identifier == TipIdentifier::kTipsNotifications) {
+    _config.switchOn = [self isTipsNotificationEnabled];
+  }
+
+  // Reset `_actionableConfig` so `activeConfig` falls back to `_config` when
+  // reconfigured with an informational tip.
+  _actionableConfig = nil;
+  _hasUncommittedInlineTheme = NO;
+
+  if (identifier == TipIdentifier::kNTPTheme &&
+      segmentation_platform::features::
+          IsMagicStackNTPThemeTipIosActionableEnabled()) {
+    _actionableConfig = [[NTPThemeActionableTipConfig alloc] init];
+    _actionableConfig.audience = self;
+    _actionableConfig.colorPalettes = [self buildNTPThemeColorPalettes];
+    _actionableConfig.selectedIndex = 0;
+    [self fetchPresetBackgroundImages];
+  }
 
   if (_config.identifier == TipIdentifier::kLensShop) {
     [self fetchImage];
@@ -111,24 +209,114 @@ using segmentation_platform::TipIdentifier;
 }
 
 - (void)removeModuleWithCompletion:(ProceduralBlock)completion {
+  if (_hasUncommittedInlineTheme) {
+    _hasUncommittedInlineTheme = NO;
+    if (_backgroundCustomizationService) {
+      _backgroundCustomizationService->StoreCurrentTheme();
+    }
+  }
   [self.delegate removeTipsModuleWithCompletion:completion];
+}
+
+- (void)completeInPlaceInteractionIfNeeded {
+  if (!_hasUncommittedInlineTheme) {
+    return;
+  }
+  [self removeModuleWithCompletion:nil];
+}
+
+- (void)setTipsNotificationsSwitchEnabled:(BOOL)enabled {
+  if (_config.identifier != TipIdentifier::kTipsNotifications ||
+      _config.switchOn == enabled) {
+    return;
+  }
+  _config.switchOn = enabled;
+  [_config.consumer setSwitchOn:enabled animated:YES];
+}
+
+- (MagicStackModule*)activeConfig {
+  return _actionableConfig ? _actionableConfig : _config;
 }
 
 #pragma mark - PrefObserverDelegate
 
 - (void)onPreferenceChanged:(const std::string&)preferenceName {
   CHECK(_profilePrefService);
-  CHECK_EQ(preferenceName, ntp_tiles::prefs::kTipsHomeModuleEnabled);
-  if (!_profilePrefService->GetBoolean(
-          ntp_tiles::prefs::kTipsHomeModuleEnabled)) {
-    [self.delegate removeTipsModuleWithCompletion:nil];
+  if (preferenceName == ntp_tiles::prefs::kTipsHomeModuleEnabled) {
+    if (!_profilePrefService->GetBoolean(
+            ntp_tiles::prefs::kTipsHomeModuleEnabled)) {
+      [self.delegate removeTipsModuleWithCompletion:nil];
+    }
+  } else if (preferenceName == prefs::kIosRecentlyUsedBackgrounds) {
+    if (_actionableConfig && _presetBackgrounds.empty()) {
+      [self fetchPresetBackgroundImages];
+    }
+  } else if (preferenceName == prefs::kIosUserUploadedBackground) {
+    if (_actionableConfig &&
+        !_profilePrefService->GetDict(prefs::kIosUserUploadedBackground)
+             .empty()) {
+      _hasUncommittedInlineTheme = NO;
+      __weak TipsMagicStackMediator* weakSelf = self;
+      [self.delegate removeTipsModuleWithCompletion:^{
+        [weakSelf.presentationAudience didSaveNTPThemeBackgroundPhoto];
+      }];
+    }
+  } else if (preferenceName == prefs::kAppLevelPushNotificationPermissions) {
+    [self setTipsNotificationsSwitchEnabled:[self isTipsNotificationEnabled]];
   }
 }
 
 #pragma mark - TipsModuleAudience
 
 - (void)didSelectTip:(TipIdentifier)tip {
+  // Log engagement before forwarding the selection, as handling the tip
+  // selection removes the module from the Magic Stack.
+  [self.delegate logMagicStackEngagementForType:self.activeConfig.type];
   [self.presentationAudience didSelectTip:tip];
+}
+
+- (void)didSelectNTPThemePhotoPicker {
+  // Log engagement before forwarding the selection to the presentation
+  // audience.
+  [self.delegate logMagicStackEngagementForType:self.activeConfig.type];
+  [self.presentationAudience didSelectNTPThemePhotoPicker];
+}
+
+- (void)didSelectNTPThemeAtIndex:(NSInteger)index {
+  if (!_backgroundCustomizationService) {
+    return;
+  }
+  _actionableConfig.selectedIndex = index;
+  _hasUncommittedInlineTheme = YES;
+
+  if (index == 0) {
+    _backgroundCustomizationService->ClearCurrentBackground();
+  } else if (index == 1) {
+    const SeedColor& seedColor = kSeedColors[kVioletSeedColorIndex];
+    _backgroundCustomizationService->SetBackgroundColor(
+        seedColor.color, SchemeVariantToProtoEnum(seedColor.variant));
+  } else if (index >= 2 &&
+             static_cast<size_t>(index - 2) < _presetBackgrounds.size()) {
+    const sync_pb::NtpCustomBackground& background =
+        _presetBackgrounds[index - 2].proto;
+    GURL thumbnailURL =
+        AddOptionsToImageURL(RemoveOptionsFromImageURL(background.url()).spec(),
+                             GetThumbnailImageOptions());
+    _backgroundCustomizationService->SetCurrentBackground(
+        GURL(background.url()), thumbnailURL, background.attribution_line_1(),
+        background.attribution_line_2(),
+        GURL(background.attribution_action_url()), background.collection_id());
+  }
+  [self.delegate logMagicStackEngagementForType:self.activeConfig.type];
+  [self.presentationAudience didSelectNTPThemeOption];
+}
+
+- (void)didToggleTipsNotificationsSwitch:(BOOL)enabled {
+  // Record the new UI state without reconfiguring so the active `UISwitch`
+  // completes its native animation uninterrupted.
+  _config.switchOn = enabled;
+  [self.delegate logMagicStackEngagementForType:self.activeConfig.type];
+  [self.presentationAudience didToggleTipsNotificationsSwitch:enabled];
 }
 
 #pragma mark - Private
@@ -196,6 +384,81 @@ using segmentation_platform::TipIdentifier;
 
   _config.productImageData = data;
   [self.delegate tipsMagicStackMediatorDidReconfigureItem];
+}
+
+// Loads up to `kPresetThemeCount` preset backgrounds and fetches their
+// thumbnail images.
+- (void)fetchPresetBackgroundImages {
+  if (!_backgroundCustomizationService || !_imageFetcher) {
+    return;
+  }
+  _presetBackgrounds.clear();
+  for (const RecentlyUsedBackground& recent :
+       _backgroundCustomizationService->GetRecentlyUsedBackgrounds()) {
+    if (const HomeCustomBackground* customBg =
+            std::get_if<HomeCustomBackground>(&recent)) {
+      if (const sync_pb::NtpCustomBackground* ntpBg =
+              std::get_if<sync_pb::NtpCustomBackground>(customBg)) {
+        _presetBackgrounds.push_back(
+            NtpCustomBackgroundWithImage{.proto = *ntpBg});
+        if (_presetBackgrounds.size() == kPresetThemeCount) {
+          break;
+        }
+      }
+    }
+  }
+
+  __weak TipsMagicStackMediator* weakSelf = self;
+  for (size_t i = 0; i < _presetBackgrounds.size(); ++i) {
+    GURL thumbnailURL = AddOptionsToImageURL(
+        RemoveOptionsFromImageURL(_presetBackgrounds[i].proto.url()).spec(),
+        GetThumbnailImageOptions());
+    _imageFetcher->FetchImageData(
+        thumbnailURL,
+        base::BindOnce(^(const std::string& imageData,
+                         const image_fetcher::RequestMetadata& metadata) {
+          [weakSelf onPresetBackgroundImageFetched:imageData atIndex:i];
+        }),
+        NO_TRAFFIC_ANNOTATION_YET);
+  }
+}
+
+- (NSArray<NewTabPageColorPalette*>*)buildNTPThemeColorPalettes {
+  const SeedColor& violet = kSeedColors[kVioletSeedColorIndex];
+  return @[
+    [[NewTabPageColorPalette alloc] init],
+    CreateColorPaletteFromSeedColor(UIColorFromRGB(violet.color),
+                                    violet.variant),
+  ];
+}
+
+// Updates `_actionableConfig.backgroundImages` when a preset thumbnail image
+// finishes downloading.
+- (void)onPresetBackgroundImageFetched:(const std::string&)imageData
+                               atIndex:(size_t)index {
+  UIImage* image =
+      [UIImage imageWithData:[NSData dataWithBytes:imageData.data()
+                                            length:imageData.size()]];
+  if (!image || !_actionableConfig || index >= _presetBackgrounds.size()) {
+    return;
+  }
+  _presetBackgrounds[index].image = image;
+  NSMutableArray<UIImage*>* backgroundImages =
+      [NSMutableArray arrayWithCapacity:_presetBackgrounds.size()];
+  for (const NtpCustomBackgroundWithImage& background : _presetBackgrounds) {
+    [backgroundImages addObject:background.image];
+  }
+  _actionableConfig.backgroundImages = backgroundImages;
+  [self.delegate tipsMagicStackMediatorDidReconfigureItem];
+}
+
+// Returns YES if app-level Tips push notifications are enabled in local state.
+- (BOOL)isTipsNotificationEnabled {
+  CHECK(_localStatePrefService);
+  return _localStatePrefService
+      ->GetDict(prefs::kAppLevelPushNotificationPermissions)
+      .FindBool(kTipsNotificationKey)
+      .value_or(false);
 }
 
 @end

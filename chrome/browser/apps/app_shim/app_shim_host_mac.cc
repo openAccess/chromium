@@ -38,7 +38,7 @@ AppShimHost::AppShimHost(AppShimHost::Client* client,
       app_id_(app_id),
       profile_path_(profile_path),
       uses_remote_views_(uses_remote_views),
-      child_process_host_id_(
+      child_process_id_(
           content::ChildProcessHost::GenerateChildProcessUniqueId()),
       launch_weak_factory_(this) {
   // Create the interfaces used to host windows, so that browser windows may be
@@ -58,7 +58,7 @@ AppShimHost::AppShimHost(AppShimHost::Client* client,
   }
 
   auto shared_memory = base::HistogramSharedMemory::Create(
-      child_process_host_id_,
+      child_process_id_.value(),
       {content::PROCESS_TYPE_UTILITY, "AppShimMetrics", 512 << 10});
   if (shared_memory) {
     histogram_allocator_ = std::move(shared_memory->allocator);
@@ -89,7 +89,7 @@ void AppShimHost::ChannelError(uint32_t custom_reason,
              << " description: " << description;
 
   if (auto* provider = metrics::SubprocessMetricsProvider::GetInstance()) {
-    provider->DeregisterSubprocessAllocator(child_process_host_id_);
+    provider->DeregisterSubprocessAllocator(child_process_id_);
   } else {
     // SubprocessMetricsProvider can be null in tests.
     CHECK_IS_TEST();
@@ -102,8 +102,8 @@ void AppShimHost::ChannelError(uint32_t custom_reason,
 void AppShimHost::LaunchShimInternal(
     web_app::LaunchShimUpdateBehavior update_behavior,
     web_app::ShimLaunchMode launch_mode) {
-  DCHECK(launch_shim_has_been_called_);
-  DCHECK(!bootstrap_);
+  CHECK(launch_shim_has_been_called_, base::NotFatalUntil::M161);
+  CHECK(!bootstrap_, base::NotFatalUntil::M161);
   launch_weak_factory_.InvalidateWeakPtrs();
   pending_chrome_initiated_launch_mode_ = launch_mode;
   client_->OnShimLaunchRequested(
@@ -122,7 +122,7 @@ void AppShimHost::OnShimProcessLaunched(
     base::Process shim_process) {
   // If a bootstrap connected, then it should have invalidated all weak
   // pointers, preventing this from being called.
-  DCHECK(!bootstrap_);
+  CHECK(!bootstrap_, base::NotFatalUntil::M161);
 
   // If the shim process was created, then await either an AppShimHostBootstrap
   // connecting or the process exiting.
@@ -141,10 +141,10 @@ void AppShimHost::OnShimProcessLaunched(
 void AppShimHost::OnShimProcessTerminated(
     web_app::LaunchShimUpdateBehavior update_behavior,
     web_app::ShimLaunchMode launch_mode) {
-  DCHECK(!bootstrap_);
+  CHECK(!bootstrap_, base::NotFatalUntil::M161);
 
   if (auto* provider = metrics::SubprocessMetricsProvider::GetInstance()) {
-    provider->DeregisterSubprocessAllocator(child_process_host_id_);
+    provider->DeregisterSubprocessAllocator(child_process_id_);
   } else {
     // SubprocessMetricsProvider can be null in tests.
     CHECK_IS_TEST();
@@ -182,6 +182,14 @@ void AppShimHost::SetOnShimConnectedForTesting(base::OnceClosure closure) {
   on_shim_connected_for_testing_ = std::move(closure);
 }
 
+void AppShimHost::SetNotificationPermissionStatusForTesting(
+    mac_notifications::mojom::PermissionStatus status) {
+  notification_permission_status_overridden_for_testing_ = true;
+  client_->OnNotificationPermissionStatusChanged(
+      this, last_notification_permission_status_, status);
+  last_notification_permission_status_ = status;
+}
+
 base::ProcessId AppShimHost::GetAppShimPid() const {
   if (bootstrap_) {
     return bootstrap_->GetAppShimPid();
@@ -205,7 +213,7 @@ void AppShimHost::OnBootstrapConnected(
 
   MaybeRecordLaunchResult(LaunchResult::kSuccess);
 
-  DCHECK(!bootstrap_);
+  CHECK(!bootstrap_, base::NotFatalUntil::M161);
   bootstrap_ = std::move(bootstrap);
   bootstrap_->OnConnectedToHost(std::move(app_shim_receiver_));
 
@@ -219,9 +227,8 @@ void AppShimHost::OnBootstrapConnected(
     CHECK_IS_TEST();
   } else if (histogram_allocator_) {
     provider->RegisterSubprocessAllocator(
-        child_process_host_id_,
-        std::make_unique<base::PersistentHistogramAllocator>(
-            std::move(histogram_allocator_)));
+        child_process_id_, std::make_unique<base::PersistentHistogramAllocator>(
+                               std::move(histogram_allocator_)));
   }
 
   if (on_shim_connected_for_testing_) {
@@ -302,11 +309,18 @@ void AppShimHost::ApplicationWillTerminate() {
 
 void AppShimHost::NotificationPermissionStatusChanged(
     mac_notifications::mojom::PermissionStatus status) {
-  client_->OnNotificationPermissionStatusChanged(this, status);
+  if (notification_permission_status_overridden_for_testing_) {
+    return;
+  }
+  client_->OnNotificationPermissionStatusChanged(
+      this, last_notification_permission_status_, status);
+  last_notification_permission_status_ = status;
 }
 
 base::FilePath AppShimHost::GetProfilePath() const {
   // This should only be used by single-profile-app paths.
+  // TODO(crbug.com/572515497): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!profile_path_.empty());
   return profile_path_;
 }
@@ -351,5 +365,6 @@ void AppShimHost::MaybeRecordLaunchResult(LaunchResult result) {
 }
 
 uint64_t AppShimHost::GetProcessIdForHistogram() const {
-  return child_process_host_id_;
+  // TODO(crbug.com/379869738): Remove GetUnsafeValue.
+  return child_process_id_.GetUnsafeValue();
 }

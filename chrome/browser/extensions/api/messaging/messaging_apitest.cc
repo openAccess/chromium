@@ -102,14 +102,16 @@ class MessageSender : public ExtensionHostRegistry::Observer {
   }
 
  private:
-  static base::ListValue BuildEventArguments(const bool last_message,
-                                             const std::string& data) {
-    return base::ListValue().Append(
+  static scoped_refptr<EventArgs> BuildEventArguments(const bool last_message,
+                                                      const std::string& data) {
+    auto args = base::MakeRefCounted<EventArgs>();
+    args->data.Append(
         base::DictValue().Set("lastMessage", last_message).Set("data", data));
+    return args;
   }
 
   static std::unique_ptr<Event> BuildEvent(
-      base::ListValue event_args,
+      scoped_refptr<const EventArgs> event_args,
       content::BrowserContext* browser_context,
       GURL event_url) {
     auto event =
@@ -2347,27 +2349,6 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerMessagingApiTest,
   const blink::StorageKey extension_key =
       blink::StorageKey::CreateFirstParty(extension_origin);
   EXPECT_EQ(0u, GetWorkerRefCount(extension_key));
-}
-
-class MessagingApiFencedFrameTest : public MessagingApiTest {
- protected:
-  MessagingApiFencedFrameTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        {{blink::features::kFencedFrames, {}},
-         {blink::features::kFencedFramesAPIChanges, {}},
-         {blink::features::kFencedFramesDefaultMode, {}},
-         {features::kPrivacySandboxAdsAPIsOverride, {}}},
-        {/* disabled_features */});
-  }
-  ~MessagingApiFencedFrameTest() override = default;
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(MessagingApiFencedFrameTest, Load) {
-  ASSERT_TRUE(RunExtensionTest("messaging/connect_fenced_frames", {}))
-      << message_;
 }
 
 }  // namespace

@@ -56,13 +56,12 @@ class UI_ANDROID_EXPORT ModalDialogWrapper : public DialogModelHost,
   virtual ~ModalDialogWrapper();
 
   // JNI methods.
-  void PositiveButtonClicked(JNIEnv* env);
-  void NegativeButtonClicked(JNIEnv* env);
-  void CheckboxToggled(JNIEnv* env, bool is_checked);
-  void MenuItemClicked(JNIEnv* env, int32_t index);
-  void ParagraphLinkClicked(JNIEnv* env, int32_t index);
-  void Dismissed(JNIEnv* env, int32_t dismissalCause);
-  void Destroy(JNIEnv* env);
+  void PositiveButtonClicked();
+  void NegativeButtonClicked();
+  void CheckboxToggled(bool is_checked);
+  void MenuItemClicked(int32_t index);
+  void Dismissed(int32_t dismissal_cause);
+  void Destroy();
 
   // LINT.IfChange(DismissalCause)
   // Corresponds to the DialogDismissalCause in DialogDismissalCause.java.
@@ -121,7 +120,7 @@ class UI_ANDROID_EXPORT ModalDialogWrapper : public DialogModelHost,
   std::optional<int> dismissal_cause_;
 
   ElementIdentifier checkbox_id_;
-  std::vector<DialogModelMenuItem*> menu_items_;
+  std::vector<raw_ptr<DialogModelMenuItem>> menu_items_;
 
   const raw_ptr<WindowAndroid> window_android_;
 

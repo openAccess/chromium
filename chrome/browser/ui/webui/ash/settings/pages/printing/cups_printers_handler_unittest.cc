@@ -85,6 +85,7 @@ void RemovedPrinter(base::OnceClosure quit_closure,
 class FakePpdProvider : public chromeos::PpdProvider {
  public:
   FakePpdProvider() = default;
+  ~FakePpdProvider() override = default;
 
   void ResolveManufacturers(ResolveManufacturersCallback cb) override {}
   void ResolvePrinters(const std::string& manufacturer,
@@ -97,9 +98,6 @@ class FakePpdProvider : public chromeos::PpdProvider {
                          ResolvePpdLicenseCallback cb) override {}
   void ReverseLookup(const std::string& effective_make_and_model,
                      ReverseLookupCallback cb) override {}
-
- private:
-  ~FakePpdProvider() override {}
 };
 
 // A fake ui::SelectFileDialog, which will cancel the file selection instead of
@@ -201,7 +199,7 @@ class MockNewWindowDelegate : public testing::NiceMock<TestNewWindowDelegate> {
 
 class CupsPrintersHandlerTest : public testing::Test {
  public:
-  constexpr static const std::string kPpdPrinterName = "printer_name";
+  static constexpr char kPpdPrinterName[] = "printer_name";
   CupsPrintersHandlerTest()
       : task_environment_(content::BrowserTaskEnvironment::REAL_IO_THREAD),
         profile_(std::make_unique<TestingProfile>()),
@@ -211,7 +209,7 @@ class CupsPrintersHandlerTest : public testing::Test {
 
   void SetUp() override {
     printers_handler_ = CupsPrintersHandler::CreateForTesting(
-        profile_.get(), base::MakeRefCounted<FakePpdProvider>(),
+        profile_.get(), std::make_unique<FakePpdProvider>(),
         &printers_manager_);
     printers_handler_->SetWebUIForTest(&web_ui_);
     printers_handler_->RegisterMessages();
@@ -282,8 +280,7 @@ class CupsPrintersHandlerTest : public testing::Test {
   const std::string kDefaultPpdData = "PPD data used for testing";
   const std::string kPpdDataStrWithHeader = R"(*PPD-Adobe: "4.3")";
   const std::string kPpdErrorString =
-      base::StringPrintf("Unable to retrieve PPD for %s.",
-                         kPpdPrinterName.c_str());
+      base::StringPrintf("Unable to retrieve PPD for %s.", kPpdPrinterName);
 
   MockNewWindowDelegate& new_window_delegate() { return new_window_delegate_; }
 

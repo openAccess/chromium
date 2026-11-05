@@ -29,7 +29,6 @@ class WebContents;
 }  // namespace content
 
 #if !BUILDFLAG(IS_ANDROID)
-class Browser;
 class BrowserWindow;
 #endif
 
@@ -79,6 +78,8 @@ struct BrowserWindowCreateParams {
       bool user_gesture);
 
   static BrowserWindowCreateParams CreateForDevTools(Profile* profile);
+
+  bool is_pip() const { return pip_options.has_value(); }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
   // The type of browser window to create.
@@ -162,7 +163,10 @@ struct BrowserWindowCreateParams {
   // fullscreen.
   bool can_fullscreen = true;
 
-  // Document Picture in Picture options, specific to TYPE_PICTURE_IN_PICTURE.
+  // Document Picture in Picture options, specific to TYPE_FLOATING when used
+  // for Document Picture-in-Picture. Presence of this value indicates that the
+  // window is a Document Picture-in-Picture window; do not set this for
+  // non-Picture-in-Picture windows.
   std::optional<blink::mojom::PictureInPictureWindowOptions> pip_options;
 
   // Specifies the collapsed state for the Vertical Tab Strip. True if the
@@ -262,7 +266,8 @@ void CreateBrowserWindow(
 // browser unittests.
 // TODO(crbug.com/417766643): Remove this once all use of Browser in unittests
 // has been eliminated.
-std::unique_ptr<Browser> DeprecatedCreateOwnedBrowserWindowForTesting(
+std::unique_ptr<BrowserWindowInterface>
+DeprecatedCreateOwnedBrowserWindowForTesting(
     BrowserWindowCreateParams create_params);
 #endif  // !BUILDFLAG(IS_ANDROID)
 

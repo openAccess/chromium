@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/hash_functions.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 namespace cssvalue {
@@ -40,6 +41,7 @@ CSSPathValue* CreatePathValue() {
 
 const CSSPathValue& CSSPathValue::EmptyPathValue() {
   DEFINE_STATIC_LOCAL(Persistent<CSSPathValue>, empty, (CreatePathValue()));
+  CHECK(IsMainThread());
   return *empty;
 }
 
@@ -60,8 +62,8 @@ bool CSSPathValue::Equals(const CSSPathValue& other) const {
          ByteStream() == other.ByteStream();
 }
 
-unsigned CSSPathValue::CustomHash() const {
-  return HashInts(static_cast<unsigned>(style_path_->GetWindRule()),
+uint32_t CSSPathValue::CustomHash() const {
+  return HashInts(static_cast<uint32_t>(style_path_->GetWindRule()),
                   ByteStream().Hash());
 }
 

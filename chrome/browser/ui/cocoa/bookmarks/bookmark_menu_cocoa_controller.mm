@@ -30,7 +30,8 @@
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/profile_metrics/browser_profile_type.h"
 #import "ui/base/cocoa/cocoa_base_utils.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #import "ui/menus/cocoa/menu_controller.h"
 
 using base::UserMetricsAction;
@@ -65,17 +66,17 @@ const BookmarkNode* GetNodeByUuid(const BookmarkModel* model,
 }
 
 void DoOpenBookmark(Profile* profile,
-                    WindowOpenDisposition disposition,
+                    ui::mojom::WindowOpenDisposition disposition,
                     const BookmarkNode* node) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   BrowserWindowInterface* browser =
       ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser(
           /*match_original_profiles=*/true);
   if (!browser) {
     browser = CreateBrowserWindow(BrowserWindowCreateParams(profile, true));
   }
-  OpenURLParams params(node->url(), Referrer(), disposition,
-                       ui::PAGE_TRANSITION_AUTO_BOOKMARK, false);
+  OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
+      node->url(), disposition, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
   browser->OpenURL(params, /*navigation_handle_callback=*/{});
   RecordBookmarkLaunch(BookmarkLaunchLocation::kTopMenu,
                        profile_metrics::GetBrowserProfileType(profile));
@@ -88,7 +89,7 @@ void DoOpenBookmark(Profile* profile,
 class BookmarkRestorer : public BookmarkMergedSurfaceServiceObserver {
  public:
   BookmarkRestorer(Profile* profile,
-                   WindowOpenDisposition disposition,
+                   ui::mojom::WindowOpenDisposition disposition,
                    base::Uuid guid);
   ~BookmarkRestorer() override = default;
 
@@ -113,7 +114,7 @@ class BookmarkRestorer : public BookmarkMergedSurfaceServiceObserver {
 
  private:
   const raw_ptr<Profile> profile_;
-  const WindowOpenDisposition disposition_;
+  const ui::mojom::WindowOpenDisposition disposition_;
   const base::Uuid guid_;
   raw_ptr<BookmarkMergedSurfaceService> bookmark_service_;
   base::ScopedObservation<BookmarkMergedSurfaceService,
@@ -122,7 +123,7 @@ class BookmarkRestorer : public BookmarkMergedSurfaceServiceObserver {
 };
 
 BookmarkRestorer::BookmarkRestorer(Profile* profile,
-                                   WindowOpenDisposition disposition,
+                                   ui::mojom::WindowOpenDisposition disposition,
                                    base::Uuid guid)
     : profile_(profile), disposition_(disposition), guid_(guid) {
   bookmark_service_ =
@@ -145,7 +146,7 @@ void BookmarkRestorer::BookmarkMergedSurfaceServiceBeingDeleted() {
 
 // Open the URL of the given BookmarkNode in the current tab. Waits for
 // BookmarkModelLoaded() if needed (e.g. for a freshly-loaded profile).
-void OpenBookmarkByGUID(WindowOpenDisposition disposition,
+void OpenBookmarkByGUID(ui::mojom::WindowOpenDisposition disposition,
                         base::Uuid guid,
                         Profile* profile) {
   if (!profile) {
@@ -196,7 +197,7 @@ void OpenBookmarkByGUID(WindowOpenDisposition disposition,
 - (instancetype)initWithBridge:(BookmarkMenuBridge*)bridge {
   if ((self = [super init])) {
     _bridge = bridge;
-    DCHECK(_bridge);
+    CHECK(_bridge, base::NotFatalUntil::M162);
   }
   return self;
 }
@@ -253,7 +254,7 @@ void OpenBookmarkByGUID(WindowOpenDisposition disposition,
 // Open the URL of the given BookmarkNode in the current tab. If the Profile
 // is not loaded in memory, load it first.
 - (void)openURLForGUID:(base::Uuid)guid {
-  WindowOpenDisposition disposition =
+  ui::mojom::WindowOpenDisposition disposition =
       ui::WindowOpenDispositionFromNSEvent([NSApp currentEvent]);
   if (Profile* profile = _bridge->GetProfile()) {
     OpenBookmarkByGUID(disposition, std::move(guid), profile);
@@ -276,7 +277,7 @@ void OpenBookmarkByGUID(WindowOpenDisposition disposition,
 
 + (void)openBookmarkByGUID:(base::Uuid)guid
                  inProfile:(Profile*)profile
-           withDisposition:(WindowOpenDisposition)disposition {
+           withDisposition:(ui::mojom::WindowOpenDisposition)disposition {
   OpenBookmarkByGUID(disposition, guid, profile);
 }
 

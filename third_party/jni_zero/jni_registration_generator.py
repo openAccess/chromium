@@ -10,9 +10,7 @@ import itertools
 import json
 import multiprocessing
 import os
-import pathlib
 import pickle
-import posixpath
 import re
 import sys
 import zipfile
@@ -23,21 +21,29 @@ from codegen import header_common
 from codegen import natives_header
 from codegen import register_natives
 import common
+import java_parse
 import java_types
 import jni_generator
-import parse
+import kotlin_parse
+import parse_common
 import proxy
-
 
 _THIS_DIR = os.path.dirname(__file__)
 
 
-def _ParseHelper(package_prefix, package_prefix_filter, path):
+def _ParseHelper(package_prefix, package_prefix_filter, enable_safe_pointers,
+                 path):
+  parse_func = (kotlin_parse.parse_kotlin_file
+                if path.endswith('.kt') else java_parse.parse_java_file)
   try:
-    return parse.parse_java_file(path,
-                                 package_prefix=package_prefix,
-                                 package_prefix_filter=package_prefix_filter,
-                                 allow_private_called_by_natives=True)
+    # The link step emits only JNI boundary types, so safe pointer inner types
+    # are never resolved to C++ types here.
+    return parse_common.parse_file(path,
+                                   parse_func,
+                                   package_prefix=package_prefix,
+                                   package_prefix_filter=package_prefix_filter,
+                                   allow_private_called_by_natives=True,
+                                   enable_safe_pointers=enable_safe_pointers)
   except Exception as e:
     return e
 
@@ -47,7 +53,8 @@ def _LoadJniObjs(paths,
                  package_prefix,
                  package_prefix_filter,
                  *,
-                 weak_cbns_by_path=None):
+                 weak_cbns_by_path=None,
+                 enable_safe_pointers=False):
   ret = {}
   weak_cbns_by_path = weak_cbns_by_path or {}
   if all(p.endswith('.jni.pickle') for p in paths):
@@ -64,7 +71,7 @@ def _LoadJniObjs(paths,
       ]
   else:
     func = functools.partial(_ParseHelper, package_prefix,
-                             package_prefix_filter)
+                             package_prefix_filter, enable_safe_pointers)
     with multiprocessing.Pool() as pool:
       errors = []
       for res in pool.imap_unordered(func, paths, chunksize=64):
@@ -138,11 +145,13 @@ def _Generate(args,
   native_sources_set = set(native_sources_list)
   java_sources_set = set(java_sources_list)
 
-  jni_objs_by_path = _LoadJniObjs(native_sources_set | java_sources_set,
-                                  args.namespace,
-                                  args.package_prefix,
-                                  args.package_prefix_filter,
-                                  weak_cbns_by_path=weak_cbns_by_path)
+  jni_objs_by_path = _LoadJniObjs(
+      native_sources_set | java_sources_set,
+      args.namespace,
+      args.package_prefix,
+      args.package_prefix_filter,
+      weak_cbns_by_path=weak_cbns_by_path,
+      enable_safe_pointers=args.enable_safe_pointers)
 
   present_jni_objs = list(
       _Flatten(jni_objs_by_path, native_sources_set & java_sources_set))
@@ -460,28 +469,6 @@ def _ParseMetadataJson(path):
   return sources_by_module, use_weaks_by_path
 
 
-def _write_depfile(depfile_path, first_gn_output, inputs):
-  def _process_path(path):
-    assert not os.path.isabs(path), f'Found abs path in depfile: {path}'
-    if os.path.sep != posixpath.sep:
-      path = str(pathlib.Path(path).as_posix())
-    assert '\\' not in path, f'Found \\ in depfile: {path}'
-    return path.replace(' ', '\\ ')
-
-  sb = []
-  sb.append(_process_path(first_gn_output))
-  if inputs:
-    # Sort and uniquify to ensure file is hermetic.
-    # One path per line to keep it human readable.
-    sb.append(': \\\n ')
-    sb.append(' \\\n '.join(sorted(_process_path(p) for p in set(inputs))))
-  else:
-    sb.append(': ')
-  sb.append('\n')
-
-  pathlib.Path(depfile_path).write_text(''.join(sb))
-
-
 def main(parser, args, jni_mode):
   if args.header_path and not args.manual_jni_registration:
     parser.error('--header-path requires --manual-jni-registration.')
@@ -544,4 +531,4 @@ def main(parser, args, jni_mode):
     all_inputs.append(args.java_sources_file)
     if args.native_sources_file:
       all_inputs.append(args.native_sources_file)
-    _write_depfile(args.depfile, args.srcjar_path, all_inputs)
+    common.write_depfile(args.depfile, args.srcjar_path, all_inputs)

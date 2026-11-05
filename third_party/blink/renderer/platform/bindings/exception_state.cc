@@ -32,13 +32,16 @@
 
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/debug/crash_logging.h"
 #include "base/notreached.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/exception_context.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/v8_binding.h"
+#include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
 #include "third_party/blink/renderer/platform/bindings/v8_throw_exception.h"
 #include "third_party/blink/renderer/platform/wtf/assertions.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
 
@@ -71,10 +74,6 @@ NOINLINE void ExceptionState::ThrowSyntaxError(const char* message) {
   ThrowSyntaxError(String(message));
 }
 
-NOINLINE void ExceptionState::ThrowWasmCompileError(const char* message) {
-  ThrowWasmCompileError(String(message));
-}
-
 NOINLINE void ExceptionState::ThrowDOMException(DOMExceptionCode exception_code,
                                                 const char* message) {
   ThrowDOMException(exception_code, String(message));
@@ -83,6 +82,10 @@ NOINLINE void ExceptionState::ThrowDOMException(DOMExceptionCode exception_code,
 void ExceptionState::SetExceptionInfo(ExceptionCode exception_code,
                                       const String& message) {
   had_exception_ = true;
+  if (isolate_) {
+    V8PerIsolateData::From(isolate_)->SetLastExceptionInfo(context_,
+                                                           exception_code);
+  }
   if (!swallow_all_exceptions_) {
     return;
   }
@@ -174,17 +177,6 @@ void ExceptionState::ThrowSyntaxError(const String& message) {
   }
 }
 
-void ExceptionState::ThrowWasmCompileError(const String& message) {
-#if DCHECK_IS_ON()
-  DCHECK_AT(!assert_no_exceptions_, location_)
-      << "WebAssembly.CompileError should not be thrown.";
-#endif
-  SetExceptionInfo(ToExceptionCode(ESErrorType::kWasmCompileError), message);
-  if (isolate_) {
-    V8ThrowException::ThrowWasmCompileError(isolate_, message);
-  }
-}
-
 void ExceptionState::RethrowV8Exception(v8::TryCatch& try_catch) {
 #if DCHECK_IS_ON()
   DCHECK_AT(!assert_no_exceptions_, location_)
@@ -195,6 +187,26 @@ void ExceptionState::RethrowV8Exception(v8::TryCatch& try_catch) {
       String());
   if (isolate_) {
     try_catch.ReThrow();
+  }
+}
+
+// static
+void ExceptionState::AssertNoPendingException(v8::Isolate* isolate) {
+  if (isolate->HasPendingException() && !isolate->IsExecutionTerminating()) {
+    const V8PerIsolateData::LastExceptionInfo& pending_exception =
+        V8PerIsolateData::From(isolate)->GetLastExceptionInfo();
+    SCOPED_CRASH_KEY_NUMBER("v8", "pending-exception-context",
+                            static_cast<int>(pending_exception.context_type));
+    SCOPED_CRASH_KEY_NUMBER("v8", "pending-exception-code",
+                            pending_exception.code);
+    SCOPED_CRASH_KEY_STRING32("v8", "pending-exception-interface",
+                              pending_exception.interface_name.Utf8());
+    SCOPED_CRASH_KEY_STRING32("v8", "pending-exception-property",
+                              pending_exception.property_name.Utf8());
+
+    // Output the crash key strings for the unit test.
+    NOTREACHED() << pending_exception.interface_name.Utf8() << ":"
+                 << pending_exception.property_name.Utf8();
   }
 }
 

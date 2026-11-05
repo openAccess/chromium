@@ -92,13 +92,6 @@ export class MostRelevantTabResumptionModuleElement extends I18nMixinLit
   protected getMenuItems_(): MenuItem[] {
     return [
       {
-        action: 'dismiss',
-        icon: loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-            'modules:thumb-down' :
-            'modules:thumb_down-old',
-        text: this.i18n('modulesMostRelevantTabResumptionDismissAll'),
-      },
-      {
         action: 'disable',
         icon: loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
             'modules:block' :
@@ -121,16 +114,6 @@ export class MostRelevantTabResumptionModuleElement extends I18nMixinLit
       message: loadTimeData.getStringF(
           'modulesDisableToastMessage',
           loadTimeData.getString('modulesThisTypeOfCardText')),
-    });
-  }
-
-  protected onHeaderDismissButtonClick_() {
-    MostRelevantTabResumptionProxyImpl.getInstance().handler.dismissModule(
-        this.urlVisits);
-    this.fire('dismiss-module-instance', {
-      message: loadTimeData.getString('modulesTabResumptionMultiDismiss'),
-      restoreCallback: () => MostRelevantTabResumptionProxyImpl.getInstance()
-                                 .handler.restoreModule(this.urlVisits),
     });
   }
 
@@ -276,7 +259,8 @@ async function createElement():
     return null;
   }
 
-  const element = new MostRelevantTabResumptionModuleElement();
+  const element =
+      document.createElement('ntp-most-relevant-tab-resumption-module');
   element.urlVisits = urlVisits;
 
   urlVisits.slice(0, MAX_URL_VISITS).forEach((urlVisit) => {

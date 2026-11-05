@@ -5,22 +5,16 @@
 #include "chrome/browser/android/overlay_panel/overlay_panel_content.h"
 
 #include <memory>
-#include <set>
 
 #include "base/android/jni_string.h"
-#include "base/functional/bind.h"
-#include "base/functional/callback.h"
-#include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "cc/input/browser_controls_offset_tag_modifications.h"
 #include "cc/input/browser_controls_state.h"
-#include "chrome/browser/android/tab_android.h"
-#include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "components/embedder_support/android/delegate/web_contents_delegate_android.h"
 #include "components/navigation_interception/intercept_navigation_delegate.h"
-#include "components/variations/variations_associated_data.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/android/view_android.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -36,14 +30,7 @@ OverlayPanelContent::OverlayPanelContent(
   java_manager_.Reset(env, obj);
 }
 
-OverlayPanelContent::~OverlayPanelContent() {
-  JNIEnv* env = base::android::AttachCurrentThread();
-  Java_OverlayPanelContent_clearNativePanelContentPtr(env, java_manager_);
-}
-
-void OverlayPanelContent::Destroy(JNIEnv* env) {
-  delete this;
-}
+OverlayPanelContent::~OverlayPanelContent() = default;
 
 void OverlayPanelContent::OnPhysicalBackingSizeChanged(
     JNIEnv* env,
@@ -67,9 +54,6 @@ void OverlayPanelContent::SetWebContents(
   web_contents_->SetOwnerLocationForDebug(FROM_HERE);
 
   web_contents_->SetIsOverlayContent(true);
-  // TODO(pedrosimonetti): confirm if we need this after promoting it
-  // to a real tab.
-  TabAndroid::AttachTabHelpers(web_contents_.get());
   web_contents_delegate_ = std::make_unique<
       web_contents_delegate_android::WebContentsDelegateAndroid>(
       env, jweb_contents_delegate);
@@ -77,7 +61,7 @@ void OverlayPanelContent::SetWebContents(
 }
 
 void OverlayPanelContent::DestroyWebContents(JNIEnv* env) {
-  DCHECK(web_contents_.get());
+  CHECK(web_contents_.get(), base::NotFatalUntil::M161);
   // At the time this is called we may be deeply nested in a callback from
   // WebContents. WebContents does not support being deleted from a callback
   // (crashes). To avoid this problem DeleteSoon() is used. See
@@ -113,10 +97,10 @@ void OverlayPanelContent::UpdateBrowserControlsState(JNIEnv* env,
       state, cc::BrowserControlsState::kBoth, false, std::nullopt);
 }
 
-static int64_t JNI_OverlayPanelContent_Init(JNIEnv* env,
-                                            const JavaRef<jobject>& obj) {
-  OverlayPanelContent* content = new OverlayPanelContent(env, obj);
-  return reinterpret_cast<intptr_t>(content);
+static jni_zero::JniUniquePtr<OverlayPanelContent> JNI_OverlayPanelContent_Init(
+    JNIEnv* env,
+    const JavaRef<jobject>& obj) {
+  return jni_zero::MakeUnique<OverlayPanelContent>(env, obj);
 }
 
 DEFINE_JNI(OverlayPanelContent)

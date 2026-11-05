@@ -15,15 +15,18 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
+import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityClient;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.IntentOrigin;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.ResolutionType;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.SearchType;
+import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.common.ResourceRequestBody;
 import org.chromium.url.GURL;
@@ -46,7 +49,7 @@ public class SearchActivityClientImpl implements SearchActivityClient {
     // offer complimentary default values.
     @VisibleForTesting
     /* package */ static final String ACTION_SEARCH_FORMAT =
-            "org.chromium.chrome.browser.ui.searchactivityutils.ACTION_SEARCH:%d:%d";
+            "org.chromium.chrome.browser.ui.searchactivityutils.ACTION_SEARCH:%d:%d:%d:%d";
 
     private final Context mContext;
     private final @IntentOrigin int mOrigin;
@@ -55,18 +58,20 @@ public class SearchActivityClientImpl implements SearchActivityClient {
         private final Intent mIntent;
         private final @IntentOrigin int mOrigin;
         private @SearchType int mSearchType;
+        private @AutocompleteRequestType int mRequestType;
+        private boolean mMayLaunchChildActivities;
 
         IntentBuilderImpl(Context context, int origin) {
             mOrigin = origin;
             mIntent = new Intent();
             mIntent.setComponent(new ComponentName(context, SearchActivity.class));
             mIntent.putExtra(SearchActivityExtras.EXTRA_ORIGIN, origin);
-            mIntent.addFlags(
-                    Intent.FLAG_ACTIVITY_NO_HISTORY | Intent.FLAG_ACTIVITY_PREVIOUS_IS_TOP);
+            mIntent.addFlags(Intent.FLAG_ACTIVITY_PREVIOUS_IS_TOP);
 
             // Initialize defaults.
             setSearchType(SearchType.TEXT);
             setResolutionType(ResolutionType.OPEN_IN_CHROME);
+            setRequestType(AutocompleteRequestType.SEARCH);
         }
 
         @Override
@@ -116,15 +121,41 @@ public class SearchActivityClientImpl implements SearchActivityClient {
         }
 
         @Override
+        public IntentBuilder setRequestType(@AutocompleteRequestType int requestType) {
+            mIntent.putExtra(SearchActivityExtras.EXTRA_REQUEST_TYPE, requestType);
+            mRequestType = requestType;
+            return this;
+        }
+
+        @Override
+        public IntentBuilder setMayLaunchChildActivities(boolean mayLaunchChildActivities) {
+            mMayLaunchChildActivities = mayLaunchChildActivities;
+            return this;
+        }
+
+        @Override
         public Intent build() {
+            boolean noHistory =
+                    !mMayLaunchChildActivities || !ChromeFeatureList.sOneStepAimAccess.isEnabled();
             // Ensure `action` is unique especially across different Widget implementations.
             // Otherwise, a QuickActionSearchWidget action may override the SearchActivity widget,
             // triggering functionality we might not want to activate.
             mIntent.setAction(
-                    String.format(Locale.getDefault(), ACTION_SEARCH_FORMAT, mOrigin, mSearchType));
+                    String.format(
+                            Locale.getDefault(),
+                            ACTION_SEARCH_FORMAT,
+                            mOrigin,
+                            mSearchType,
+                            mRequestType,
+                            noHistory ? 1 : 0));
             // Ensure a copy is made so that the builder can be reused, producing variations of an
             // intent.
             var intent = new Intent(mIntent);
+            // NO_HISTORY finishes SearchActivity as soon as a child activity covers it, dropping
+            // the child's result. Only sessions that may launch child activities opt out of it.
+            if (noHistory) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY);
+            }
             IntentUtils.addTrustedIntentExtras(intent);
             return intent;
         }
@@ -149,22 +180,22 @@ public class SearchActivityClientImpl implements SearchActivityClient {
 
     @Override
     public void requestOmniboxForResult(Intent intent) {
-        if (!(mContext instanceof Activity)) {
+        if (!(mContext instanceof Activity activity)) {
             Log.w(TAG, "Intent not dispatched; SearchActivityClient not associated with Activity");
             return;
         }
 
-        ((Activity) mContext)
-                .startActivityForResult(
-                        intent,
-                        getClientUniqueRequestCode(),
-                        ActivityOptions.makeCustomAnimation(
-                                        mContext, android.R.anim.fade_in, R.anim.no_anim)
-                                .toBundle());
+        activity.startActivityForResult(
+                intent,
+                getClientUniqueRequestCode(),
+                ActivityOptions.makeCustomAnimation(
+                                mContext, android.R.anim.fade_in, R.anim.no_anim)
+                        .toBundle());
     }
 
     @Override
-    public boolean isOmniboxResult(int requestCode, Intent intent) {
+    @Contract("_, null -> false")
+    public boolean isOmniboxResult(int requestCode, @Nullable Intent intent) {
         return requestCode == getClientUniqueRequestCode()
                 && IntentUtils.isTrustedIntentFromSelf(intent)
                 && !TextUtils.isEmpty(intent.getDataString());

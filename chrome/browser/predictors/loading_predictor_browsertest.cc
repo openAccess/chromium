@@ -42,6 +42,7 @@
 #include "chrome/browser/predictors/predictors_switches.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -69,7 +70,6 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_mock_cert_verifier.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/preconnect_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/simple_url_loader_test_helper.h"
@@ -100,6 +100,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/navigation/preloading_headers.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -225,11 +226,21 @@ class TestPreconnectManagerObserver
     preconnect_manager->SetObserverForTesting(this);
   }
 
-  void OnPreconnectUrl(const GURL& url,
-                       int num_sockets,
-                       bool allow_credentials) override {
+  void OnPreconnectUrl(
+      const GURL& url,
+      int num_sockets,
+      bool allow_credentials,
+      const net::NetworkAnonymizationKey& network_anonymization_key,
+      mojo::PendingRemote<network::mojom::ConnectionChangeObserverClient>&
+          connection_change_observer_client) override {
     preconnect_url_attempts_.insert(url.DeprecatedGetOriginAsURL());
     preconnect_url_attempts_history_.push_back(url.DeprecatedGetOriginAsURL());
+    if (!ProxyFound(url, network_anonymization_key)) {
+      ResolveHostRequestInfo preconnect_info{url.GetHost(),
+                                             network_anonymization_key};
+      successful_dns_lookups_.insert(preconnect_info);
+    }
+    CheckForWaitingLoop();
   }
 
   void OnPreresolveFinished(
@@ -1532,57 +1543,6 @@ INSTANTIATE_TEST_SUITE_P(Flags,
                          LCPPAutoPreconnectTest,
                          ::testing::Bool(),
                          ::testing::PrintToStringParamName());
-
-class SuppressesLoadingPredictorOnSlowNetworkBrowserTest
-    : public LoadingPredictorBrowserTest {
- public:
-  SuppressesLoadingPredictorOnSlowNetworkBrowserTest() {
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        {{features::kSuppressesLoadingPredictorOnSlowNetwork,
-          {{features::kSuppressesLoadingPredictorOnSlowNetworkThreshold.name,
-            "500ms"}}}},
-        {});
-  }
-
-  network::NetworkQualityTracker& GetNetworkQualityTracker() const {
-    return *g_browser_process->network_quality_tracker();
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-// Tests that kSuppressesLoadingPredictorOnSlowNetwork feature suppresses
-// LoadingPredictor on slow network.
-IN_PROC_BROWSER_TEST_F(SuppressesLoadingPredictorOnSlowNetworkBrowserTest,
-                       SuppressesOnSlowNetwork) {
-  GURL url = embedded_test_server()->GetURL("/nocontent");
-  base::TimeDelta http_rtt = GetNetworkQualityTracker().GetHttpRTT();
-  int32_t downstream_throughput_kbps =
-      GetNetworkQualityTracker().GetDownstreamThroughputKbps();
-
-  {
-    // LoadingPredictor will be suppressed on slow networks.
-    GetNetworkQualityTracker().ReportRTTsAndThroughputForTesting(
-        base::Milliseconds(501), downstream_throughput_kbps);
-    auto observer = NavigateToURLAsync(url);
-    ASSERT_TRUE(observer->WaitForNavigationFinished());
-    EXPECT_EQ(0u, loading_predictor()->GetTotalHintsActivatedForTesting());
-  }
-
-  {
-    // LoadingPredictor will not be suppressed on fast networks.
-    GetNetworkQualityTracker().ReportRTTsAndThroughputForTesting(
-        base::Milliseconds(500), downstream_throughput_kbps);
-    auto observer = NavigateToURLAsync(url);
-    ASSERT_TRUE(observer->WaitForNavigationFinished());
-    EXPECT_EQ(1u, loading_predictor()->GetTotalHintsActivatedForTesting());
-  }
-
-  // Reset to the original values.
-  GetNetworkQualityTracker().ReportRTTsAndThroughputForTesting(
-      http_rtt, downstream_throughput_kbps);
-}
 
 enum class NetworkIsolationKeyMode {
   kDisabled,
@@ -3016,76 +2976,10 @@ IN_PROC_BROWSER_TEST_F(LoadingPredictorMultiplePageBrowserTest,
 }
 
 // Test interaction with fenced frames.
-class FencedFrameLoadingPredictorBrowserTest
-    : public LoadingPredictorBrowserTest {
- public:
-  void SetUpOnMainThread() override {
-    LoadingPredictorBrowserTest::SetUpOnMainThread();
 
-    // Set up the embedded https test server for fenced frame which requires a
-    // secure context to load.
-    embedded_https_test_server().SetSSLConfig(
-        net::EmbeddedTestServer::CERT_TEST_NAMES);
-
-    // Add content/test/data for cross_site_iframe_factory.html.
-    embedded_https_test_server().ServeFilesFromSourceDirectory(
-        "content/test/data");
-    embedded_https_test_server().ServeFilesFromDirectory(
-        GetChromeTestDataDir());
-  }
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_test_helper_;
-  }
-
-  content::WebContents* GetWebContents() {
-    return browser()->GetTabStripModel()->GetActiveWebContents();
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_test_helper_;
-};
 
 // Verify DNS prefetch is working in fenced frame.
-IN_PROC_BROWSER_TEST_F(FencedFrameLoadingPredictorBrowserTest, DnsPrefetch) {
-  ASSERT_TRUE(embedded_https_test_server().Start());
 
-  // Navigate to a page that contains a fenced frame.
-  const GURL main_url = embedded_https_test_server().GetURL(
-      "a.test", "/cross_site_iframe_factory.html?a.test(a.test{fenced})");
-  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
-
-  // Get fenced frame render frame host.
-  std::vector<content::RenderFrameHost*> child_frames =
-      fenced_frame_test_helper().GetChildFencedFrameHosts(
-          GetWebContents()->GetPrimaryMainFrame());
-  ASSERT_EQ(child_frames.size(), 1u);
-  content::RenderFrameHost* fenced_frame_rfh = child_frames[0];
-
-  // Get fenced frame NetworkAnonymizationKey.
-  const net::NetworkAnonymizationKey& network_anonymization_key =
-      fenced_frame_rfh->GetIsolationInfoForSubresources()
-          .network_anonymization_key();
-
-  GURL dns_prefetch_url("https://chromium.org");
-
-  // Add a link element in fenced frame that does a DNS prefetch.
-  EXPECT_TRUE(ExecJs(fenced_frame_rfh, content::JsReplace(R"(
-                    var link_element = document.createElement('link');
-                    link_element.href = $1;
-                    link_element.rel = 'dns-prefetch';
-                    document.body.appendChild(link_element);
-          )",
-                                                          dns_prefetch_url)));
-
-  // The observer should observe a DNS prefetch which succeeds.
-  preconnect_manager_observer()->WaitUntilHostLookedUp(
-      dns_prefetch_url.GetHost(), network_anonymization_key);
-  EXPECT_TRUE(preconnect_manager_observer()->HasHostBeenLookedUp(
-      dns_prefetch_url.GetHost(), network_anonymization_key));
-  EXPECT_TRUE(preconnect_manager_observer()->HostFound(
-      dns_prefetch_url.GetHost(), network_anonymization_key));
-}
 
 // TODO(crbug.com/489349560): Allow `LoadingPredictorBrowserTest` to specify the
 // type of EmbeddedTestServer, instead of the subclass to construct its own.
@@ -3095,7 +2989,7 @@ class ConnectionAllowlistLoadingPredictorBrowserTest
   ConnectionAllowlistLoadingPredictorBrowserTest() {
     feature_list_.InitWithFeatures(
         /*enabled_features=*/{network::features::kConnectionAllowlists},
-        /*disabled_features=*/{});
+        /*disabled_features=*/{features::kPreconnectManagerDirectFastPath});
   }
 
   // Note: `LoadingPredictorBrowserTest::SetUpOnMainThread()` sets up the
@@ -3627,6 +3521,60 @@ IN_PROC_BROWSER_TEST_P(
     EXPECT_FALSE(preconnect_manager_observer()->HasHostBeenLookedUp(
         "blocked.com", network_anonymization_key2));
   }
+}
+
+// A history navigation initiated by a document with a Connection-Allowlist
+// should not trigger any speculative preconnects, since those would be checked
+// against (and reported to) the initiator's Connection-Allowlist and disclose
+// the session history entry to it.
+IN_PROC_BROWSER_TEST_P(
+    LoadingPredictorBrowserTestWithOptimizationGuideAndConnectionAllowlist,
+    NoPreconnectForHistoryNavigationFromConnectionAllowlistInitiator) {
+  content::WebContents* tab =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  // Disable BFCache so that the history navigation below goes to the network.
+  content::DisableBackForwardCacheForTesting(
+      tab, content::BackForwardCache::DisableForTestingReason::
+               TEST_REQUIRES_NO_CACHING);
+
+  // secondnav.com is in the allowlist of `allowlist_url`, so the history
+  // navigation to it is not blocked.
+  GURL history_url =
+      embedded_test_server()->GetURL("secondnav.com", "/title1.html");
+  GURL allowlist_url = embedded_test_server()->GetURL(
+      "test.com", "/preload/connection_allowlist_redirect_allowed.html");
+  SetUpOptimizationHint(
+      history_url, {Subresource("https://example.com",
+                                optimization_guide::proto::RESOURCE_TYPE_CSS,
+                                /*preconnect_only=*/true)});
+
+  // 1. Create the session history entry, then navigate to a document with a
+  // Connection-Allowlist.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), history_url));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), allowlist_url));
+  ASSERT_TRUE(tab->GetPrimaryMainFrame()
+                  ->GetConnectionAllowlists()
+                  .enforced.has_value());
+
+  auto count_attempts = [&]() {
+    const std::vector<GURL>& history =
+        preconnect_manager_observer()->PreconnectUrlAttemptsHistory();
+    return std::ranges::count_if(history, [&](const GURL& origin) {
+      return origin == history_url.DeprecatedGetOriginAsURL() ||
+             origin == GURL("https://example.com");
+    });
+  };
+  const auto attempts_before_history_navigation = count_attempts();
+
+  // 2. Go back from the Connection-Allowlist document.
+  content::TestNavigationObserver back_observer(tab);
+  EXPECT_TRUE(content::ExecJs(tab, "history.back();"));
+  back_observer.Wait();
+  EXPECT_EQ(history_url, tab->GetLastCommittedURL());
+  base::RunLoop().RunUntilIdle();
+
+  // No preconnects should have been made for the history navigation.
+  EXPECT_EQ(attempts_before_history_navigation, count_attempts());
 }
 
 class LoadingPredictorPrefetchBrowserTestWithConnectionAllowlist

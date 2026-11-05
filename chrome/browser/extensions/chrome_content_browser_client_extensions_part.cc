@@ -24,7 +24,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_selections.h"
-#include "chrome/browser/sync_file_system/local/sync_file_system_backend.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
@@ -48,6 +47,7 @@
 #include "extensions/browser/api/web_request/web_request_api.h"
 #include "extensions/browser/api/web_request/web_request_api_helpers.h"
 #include "extensions/browser/bad_message.h"
+#include "extensions/browser/extension_config_map.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_webkit_preferences.h"
@@ -71,6 +71,7 @@
 #include "extensions/common/permissions/permissions_data.h"
 #include "extensions/common/switches.h"
 #include "pdf/buildflags.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "url/origin.h"
@@ -85,7 +86,6 @@
 #include "ash/constants/ash_extension_constants.h"
 #include "chrome/browser/chromeos/extensions/vpn_provider/vpn_service_factory.h"
 #include "chrome/browser/media_galleries/fileapi/media_file_system_backend.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/user_manager/user_manager_impl.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -226,7 +226,7 @@ std::optional<GURL> ChromeContentBrowserClientExtensionsPart::GetEffectiveURL(
     Profile* profile,
     const GURL& url) {
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile);
-  DCHECK(registry);
+  CHECK(registry, base::NotFatalUntil::M161);
 
   // If the URL is part of a hosted app's web extent, convert it to the app's
   // extension URL. I.e., the effective URL becomes a chrome-extension: URL
@@ -384,7 +384,7 @@ bool ChromeContentBrowserClientExtensionsPart::
 bool ChromeContentBrowserClientExtensionsPart::CanCommitURL(
     content::RenderProcessHost* process_host,
     const GURL& url) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Enforce that extension URLs commit in the correct extension process where
   // possible, accounting for many exceptions to the rule.
@@ -441,7 +441,7 @@ bool ChromeContentBrowserClientExtensionsPart::CanCommitURL(
     bool found_owner = WebViewRendererState::GetInstance()->GetOwnerInfo(
         process_host->GetDeprecatedID(), &owner_process_id,
         &owner_extension_id);
-    DCHECK(found_owner);
+    CHECK(found_owner, base::NotFatalUntil::M161);
     return extension->is_platform_app() &&
            extension->permissions_data()->HasAPIPermission(
                mojom::APIPermissionID::kWebView) &&
@@ -458,7 +458,7 @@ bool ChromeContentBrowserClientExtensionsPart::IsSuitableHost(
     Profile* profile,
     content::RenderProcessHost* process_host,
     const content::SecurityPrincipal& security_principal) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile);
   ProcessMap* process_map = ProcessMap::Get(profile);
@@ -518,7 +518,8 @@ ChromeContentBrowserClientExtensionsPart::GetProcessCountToIgnoreForLimit() {
 bool ChromeContentBrowserClientExtensionsPart::
     ShouldEmbeddedFramesTryToReuseExistingProcess(
         content::RenderFrameHost* outermost_main_frame) {
-  DCHECK(!outermost_main_frame->GetParentOrOuterDocument());
+  CHECK(!outermost_main_frame->GetParentOrOuterDocument(),
+        base::NotFatalUntil::M161);
 
   // Most out-of-process embedded frames aggressively look for a random
   // same-site process to reuse if possible, to keep the process count low. Skip
@@ -627,6 +628,22 @@ bool ChromeContentBrowserClientExtensionsPart::AllowServiceWorker(
 
 // static
 bool ChromeContentBrowserClientExtensionsPart::
+    IsClipboardAllowedForServiceWorker(const url::Origin& origin) {
+  // The renderer only exposes navigator.clipboard to extension service workers
+  // when this is on, so the browser has to agree or a disabled feature still
+  // hands out a ClipboardHost.
+  if (!base::FeatureList::IsEnabled(
+          blink::features::kClipboardOnExtensionServiceWorker)) {
+    return false;
+  }
+  // Only extension service workers ever get a ClipboardHost. Whether a given
+  // extension may write is decided per call, because the permission can be
+  // revoked while the worker is running.
+  return origin.scheme() == kExtensionScheme;
+}
+
+// static
+bool ChromeContentBrowserClientExtensionsPart::
     MayDeleteServiceWorkerRegistration(
         const GURL& scope,
         content::BrowserContext* browser_context) {
@@ -717,8 +734,7 @@ bool ChromeContentBrowserClientExtensionsPart::IsBuiltinComponent(
 
 #if BUILDFLAG(IS_CHROMEOS)
   // Check if the component is the ODFS extension.
-  if (chromeos::features::IsUploadOfficeToCloudEnabled() &&
-      extension_id == extension_misc::kODFSExtensionId) {
+  if (extension_id == extension_misc::kODFSExtensionId) {
     // Check ODFS was loaded externally.
     const Extension* extension = ExtensionRegistry::Get(browser_context)
                                      ->GetInstalledExtension(extension_id);
@@ -861,6 +877,8 @@ void ChromeContentBrowserClientExtensionsPart::BrowserURLHandlerCreated(
   handler->AddHandlerPair(
       BrowserURLHandler::null_handler(),
       &ExtensionUrlOverrides::HandleChromeURLOverrideReverse);
+  handler->AddHandlerPair(&ExtensionConfigMap::HandleChromeURL,
+                          &ExtensionConfigMap::HandleChromeURLReverse);
 }
 
 void ChromeContentBrowserClientExtensionsPart::
@@ -875,23 +893,6 @@ void ChromeContentBrowserClientExtensionsPart::GetURLRequestAutoMountHandlers(
   handlers->push_back(base::BindRepeating(
       MediaFileSystemBackend::AttemptAutoMountForURLRequest));
 #endif
-}
-
-void ChromeContentBrowserClientExtensionsPart::GetAdditionalFileSystemBackends(
-    content::BrowserContext* browser_context,
-    const base::FilePath& storage_partition_path,
-    std::vector<std::unique_ptr<storage::FileSystemBackend>>*
-        additional_backends) {
-#if BUILDFLAG(IS_CHROMEOS)
-  additional_backends->push_back(
-      std::make_unique<MediaFileSystemBackend>(storage_partition_path));
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-  additional_backends->push_back(
-      std::make_unique<sync_file_system::SyncFileSystemBackend>(
-          Profile::FromBrowserContext(browser_context)));
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 }
 
 void ChromeContentBrowserClientExtensionsPart::

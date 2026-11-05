@@ -5,8 +5,10 @@
 #ifndef CHROME_BROWSER_UI_ACCELERATOR_TABLE_H_
 #define CHROME_BROWSER_UI_ACCELERATOR_TABLE_H_
 
+#include <optional>
 #include <vector>
 
+#include "ui/actions/action_id.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
 namespace ui {
@@ -14,10 +16,18 @@ class Accelerator;
 }
 
 // This contains the list of accelerators for the Aura implementation.
+//
+// For guidelines on proposing, adding, retiring, or swapping keyboard
+// shortcuts in Chrome, please see //docs/ui/learn/keyboard_shortcuts.md.
 struct AcceleratorMapping {
   ui::KeyboardCode keycode;
   int modifiers;
   int command_id;
+  // The declarative Action (see chrome/browser/ui/actions/chrome_action_id.h)
+  // that `command_id` triggers, if any. Populated by GetAcceleratorList()
+  // using the same IDC_* -> Action ID mapping as BrowserCommandController (see
+  // chrome/browser/ui/actions/command_id_to_action_id.h).
+  std::optional<actions::ActionId> action_id;
 };
 
 // Returns a list of accelerator mapping information for accelerators
@@ -49,5 +59,10 @@ bool GetAcceleratorForCommandId(int command_id, ui::Accelerator* accelerator);
 // Returns true if the command identified by |command_id| should be executed
 // repeatedly while its accelerator keys are held down.
 bool IsCommandRepeatable(int command_id);
+
+// Returns true if the command identified by `command_id` is reserved by the
+// browser and should be handled before web content gets a chance to intercept
+// it (outside of app/custom-tab mode and fullscreen).
+bool IsReservedCommand(int command_id);
 
 #endif  // CHROME_BROWSER_UI_ACCELERATOR_TABLE_H_

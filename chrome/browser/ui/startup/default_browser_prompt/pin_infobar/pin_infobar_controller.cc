@@ -211,7 +211,7 @@ void PinInfoBarController::OnInfoBarRemoved(infobars::InfoBar* infobar,
 
 void PinInfoBarController::OnManagerWillBeDestroyed(
     infobars::InfoBarManager* manager) {
-  DCHECK_EQ(infobar_manager_, manager);
+  CHECK_EQ(infobar_manager_, manager, base::NotFatalUntil::M162);
   infobar_ = nullptr;
   infobar_manager_->RemoveObserver(this);
   infobar_manager_ = nullptr;
@@ -285,11 +285,12 @@ void PinInfoBarController::OnShouldOfferToPinResult(
   // Only offer to pin if:
   // * it's okay to pin to the taskbar
   // * this is a normal browser window
-  // * the current profile is not incognito or a guest
+  // * the current profile is not an incognito, isolated mode, or guest profile
   const auto* profile = browser_->GetProfile();
   if (!should_offer_to_pin ||
       browser_->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
-      profile->IsIncognitoProfile() || profile->IsGuestSession()) {
+      profile->IsPrimaryOTRProfileWithRegularParent() ||
+      profile->IsGuestSession()) {
     std::move(done_callback).Run(false);
     return;
   }

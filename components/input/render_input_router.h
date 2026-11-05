@@ -217,8 +217,7 @@ class COMPONENT_EXPORT(INPUT) RenderInputRouter
 
   void RenderProcessBlockedStateChanged(bool blocked);
 
-  // Stops all existing hang monitor timeouts and assumes the renderer is
-  // responsive.
+  // Stops all existing hang monitor timeouts.
   void StopInputEventAckTimeout();
   void RestartInputEventAckTimeoutIfNecessary();
 
@@ -240,6 +239,9 @@ class COMPONENT_EXPORT(INPUT) RenderInputRouter
   // Called by |input_event_ack_timeout_| when an input event timed out without
   // getting an ack from the renderer.
   void OnInputEventAckTimeout();
+
+  // Cancels any active fling and resets scroll tracking state.
+  void ClearScrollTrackingState();
 
   bool is_currently_scrolling_viewport_ = false;
 

@@ -4,8 +4,6 @@
 
 #include "third_party/blink/renderer/modules/webaudio/audio_handler.h"
 
-#include <inttypes.h>
-
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/public/platform/modules/webrtc/webrtc_logging.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_node_input.h"
@@ -88,6 +86,7 @@ void AudioHandler::Dispose() {
   deferred_task_handler_->RemoveChangedChannelCountMode(this);
   deferred_task_handler_->RemoveChangedChannelInterpretation(this);
   deferred_task_handler_->RemoveAutomaticPullNode(this);
+  deferred_task_handler_->RemoveTailProcessingHandler(this, false);
   for (auto& output : outputs_) {
     output->Dispose();
   }
@@ -616,9 +615,8 @@ void AudioHandler::UpdateChannelInterpretation() {
 
 void AudioHandler::SendLogMessage(const String& function_name,
                                   const String& message) {
-  WebRtcLogMessage(Format("[WA]AH::{} {} [type={}, this=0x{:X}]", function_name,
-                          message, NodeTypeName(),
-                          reinterpret_cast<uintptr_t>(this))
+  WebRtcLogMessage(StrCat({"[WA]AH::", function_name, " ", message,
+                           " [type=", NodeTypeName(), "]"})
                        .Utf8());
 }
 

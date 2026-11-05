@@ -13,6 +13,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
+#include "base/memory/raw_ptr.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
@@ -96,8 +97,9 @@ class VolumeControlInternal {
   void SetVolumeOnThread(media::VolumeChangeSource source,
                          AudioContentType type,
                          float level) {
-    DCHECK(thread_.task_runner()->BelongsToCurrentThread());
-    DCHECK(type != AudioContentType::kOther);
+    CHECK(thread_.task_runner()->BelongsToCurrentThread(),
+          base::NotFatalUntil::M163);
+    CHECK(type != AudioContentType::kOther, base::NotFatalUntil::M163);
 
     {
       base::AutoLock lock(volume_lock_);
@@ -118,8 +120,9 @@ class VolumeControlInternal {
   void SetMutedOnThread(media::VolumeChangeSource source,
                         AudioContentType type,
                         bool muted) {
-    DCHECK(thread_.task_runner()->BelongsToCurrentThread());
-    DCHECK(type != AudioContentType::kOther);
+    CHECK(thread_.task_runner()->BelongsToCurrentThread(),
+          base::NotFatalUntil::M163);
+    CHECK(type != AudioContentType::kOther, base::NotFatalUntil::M163);
 
     {
       base::AutoLock lock(volume_lock_);
@@ -142,7 +145,7 @@ class VolumeControlInternal {
   std::map<AudioContentType, bool> muted_;
 
   base::Lock observer_lock_;
-  std::vector<VolumeObserver*> volume_observers_;
+  std::vector<raw_ptr<VolumeObserver, VectorExperimental>> volume_observers_;
 
   base::Thread thread_;
 };

@@ -283,6 +283,7 @@ void ReportGetProcessAudioDeviceIdsFromBundleIdDuration(
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(HostTimeStatus)
 enum class HostTimeStatus {
   kNoMissingHostTime = 0,
   kSometimesMissingHostTimeNoRecover = 1,
@@ -290,6 +291,7 @@ enum class HostTimeStatus {
   kAlwaysMissingHostTime = 3,
   kMaxValue = kAlwaysMissingHostTime
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:CatapAudioInputStreamHostTimeStatus)
 
 HostTimeStatus GetHostTimeStatus(int total_callbacks,
                                  int callbacks_with_missing_host_time,
@@ -445,8 +447,7 @@ bool IsSameOrSubBundle(std::string_view process_bundle_id,
   // separator. This prevents "com.example.app-other" from matching
   // "com.example.app".
   std::string main_with_dot = std::string(main_bundle_id) + ".";
-  return base::StartsWith(process_bundle_id, main_with_dot,
-                          base::CompareCase::SENSITIVE);
+  return process_bundle_id.starts_with(main_with_dot);
 }
 
 

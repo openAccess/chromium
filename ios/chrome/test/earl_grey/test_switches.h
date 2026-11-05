@@ -25,6 +25,12 @@ extern const char kSimulatePostDeviceRestore[];
 // Switch used to enable FakeTabGroupSyncService for testing.
 extern const char kEnableFakeTabGroupSyncService[];
 
+// Switch used to enable FakeExtensionService for testing.
+extern const char kEnableFakeExtensionService[];
+
+// Switch used to enable FakeChromeLensViewFinderController for testing.
+extern const char kEnableFakeLensViewFinder[];
+
 // Switch used to force the status of fetching the Google Family for the user in
 // Earl Grey tests. If not specified, unknown status is retuned for all tests.
 extern const char kFamilyStatus[];
@@ -41,6 +47,29 @@ extern const char kLoadMinimalAppUI[];
 
 // Switch to use the default infobar duration instead a longer one for EGTests.
 extern const char kUseDefaultInfobarDuration[];
+
+// Switch used to pause the application startup sequence at the background
+// initialization stage (AppInitStage::kBrowserObjectsForBackgroundHandlers),
+// keeping connected scenes in the background, to simulate background launch
+// conditions.
+extern const char kPauseStartupAtBackgroundStage[];
+
+// Switch used to simulate opening an external URL via
+// `UISceneConnectionOptions.URLContexts` on cold start.
+extern const char kTestOpenURLAtStartup[];
+
+// Switch used to simulate continuing an `NSUserActivity` with the given
+// `activityType` via `UISceneConnectionOptions.userActivities` on cold start.
+extern const char kTestUserActivityTypeAtStartup[];
+
+// Switch used to set the URL on the cold-start `NSUserActivity` (and its
+// `INInteraction` intent, if applicable) specified by
+// `kTestUserActivityTypeAtStartup`.
+extern const char kTestUserActivityURLAtStartup[];
+
+// Switch used to simulate a home screen quick action shortcut item with the
+// given `type` via `UISceneConnectionOptions.shortcutItem` on cold start.
+extern const char kTestShortcutItemAtStartup[];
 
 }  // namespace test_switches
 

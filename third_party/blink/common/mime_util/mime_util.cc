@@ -12,16 +12,11 @@
 #include "base/containers/fixed_flat_set.h"
 #include "base/feature_list.h"
 #include "base/strings/string_util.h"
-#include "build/build_config.h"
+#include "media/base/mime_util.h"
 #include "media/media_buildflags.h"
 #include "net/base/mime_util.h"
 #include "third_party/blink/public/common/buildflags.h"
 #include "third_party/blink/public/common/features.h"
-
-#if !BUILDFLAG(IS_IOS)
-// iOS doesn't use and must not depend on //media
-#include "media/base/mime_util.h"
-#endif
 
 namespace blink {
 
@@ -133,9 +128,7 @@ bool IsSupportedNonImageMimeType(std::string_view mime_type) {
   std::string mime_lower = base::ToLowerASCII(mime_type);
   return kSupportedNonImageTypes.contains(mime_lower) ||
          kSupportedJavascriptTypes.contains(mime_lower) ||
-#if !BUILDFLAG(IS_IOS)
          media::IsSupportedMediaMimeType(mime_lower) ||
-#endif
          (mime_lower.starts_with("text/") &&
           !kUnsupportedTextTypes.contains(mime_lower)) ||
          (mime_lower.starts_with("application/") &&
@@ -165,12 +158,20 @@ bool IsJSONMimeType(std::string_view mime_type) {
       net::MimeTypeValidationLevel::kWildcardSlashAndTokens);
 }
 
-// TODO(crbug.com/362282752): Allow other `*/*+xml` MIME types.
 // https://mimesniff.spec.whatwg.org/#xml-mime-type
+// Full `*+xml` matching is behind SpecCompliantXmlMimeTypes; without the
+// flag, only `application/*+xml` is recognized (legacy behavior).
 bool IsXMLMimeType(std::string_view mime_type) {
-  return net::MatchesMimeType("text/xml", mime_type) ||
-         net::MatchesMimeType("application/xml", mime_type) ||
-         net::MatchesMimeType("application/*+xml", mime_type);
+  if (net::MatchesMimeType("text/xml", mime_type) ||
+      net::MatchesMimeType("application/xml", mime_type)) {
+    return true;
+  }
+  if (base::FeatureList::IsEnabled(features::kSpecCompliantXmlMimeTypes)) {
+    return net::MatchesMimeType(
+        "*+xml", mime_type,
+        net::MimeTypeValidationLevel::kWildcardSlashAndTokens);
+  }
+  return net::MatchesMimeType("application/*+xml", mime_type);
 }
 
 // From step 3 of

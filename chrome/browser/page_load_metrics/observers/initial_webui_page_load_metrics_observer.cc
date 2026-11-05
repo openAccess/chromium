@@ -5,18 +5,11 @@
 #include "chrome/browser/page_load_metrics/observers/initial_webui_page_load_metrics_observer.h"
 
 #include "base/barrier_closure.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
-#include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
-#include "chrome/browser/ui/waap/waap_ui_metrics_service.h"
+#include "chrome/browser/ui/waap/initial_webui_metrics_dispatcher.h"
 #include "chrome/browser/ui/waap/waap_utils.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter_service.h"
-#include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "components/page_load_metrics/browser/page_load_metrics_observer_delegate.h"
 #include "components/page_load_metrics/browser/page_load_metrics_util.h"
 #include "content/public/browser/navigation_handle.h"
@@ -29,6 +22,7 @@
 #include "services/metrics/public/cpp/metrics_utils.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
@@ -43,17 +37,8 @@ constexpr char kMarkJsCompositionComplete[] = "JsCompositionComplete";
 InitialWebUIPageLoadMetricsObserver::InitialWebUIPageLoadMetricsObserver() =
     default;
 
-InitialWebUIPageLoadMetricsObserver::~InitialWebUIPageLoadMetricsObserver() {
-  base::UmaHistogramEnumeration(
-      "InitialWebUI.Toolbar.WindowMetricsManagerBindingStatus",
-      manager_binding_status_);
-  if (manager_binding_status_ ==
-      WindowMetricsManagerBindingStatus::kNeverBound) {
-    base::UmaHistogramMediumTimes(
-        "InitialWebUI.Toolbar.TimeWithoutWindowMetricsManagerOnDestruction",
-        base::TimeTicks::Now() - creation_time_);
-  }
-}
+InitialWebUIPageLoadMetricsObserver::~InitialWebUIPageLoadMetricsObserver() =
+    default;
 
 const char* InitialWebUIPageLoadMetricsObserver::GetObserverName() const {
   return "InitialWebUIPageLoadMetricsObserver";
@@ -66,8 +51,8 @@ void InitialWebUIPageLoadMetricsObserver::OnMonotonicFirstPaintInPage(
     return;
   }
 
-  first_paint_time_ = timing.monotonic_paint_timing->first_paint.value();
-  FlushMetricsToManager();
+  GetMetricsDispatcher().OnFirstPaint(
+      timing.monotonic_paint_timing->first_paint.value());
 }
 
 void InitialWebUIPageLoadMetricsObserver::OnMonotonicFirstContentfulPaintInPage(
@@ -77,9 +62,8 @@ void InitialWebUIPageLoadMetricsObserver::OnMonotonicFirstContentfulPaintInPage(
     return;
   }
 
-  first_contentful_paint_time_ =
-      timing.monotonic_paint_timing->first_contentful_paint.value();
-  FlushMetricsToManager();
+  GetMetricsDispatcher().OnFirstContentfulPaint(
+      timing.monotonic_paint_timing->first_contentful_paint.value());
 }
 
 void InitialWebUIPageLoadMetricsObserver::OnFirstContentfulPaintInPage(
@@ -132,9 +116,6 @@ InitialWebUIPageLoadMetricsObserver::OnStart(
     content::NavigationHandle* navigation_handle,
     const GURL& currently_committed_url,
     bool started_in_foreground) {
-  if (GetMetricsManager()) {
-    manager_binding_status_ = WindowMetricsManagerBindingStatus::kBoundAtStart;
-  }
   if (started_in_foreground) {
     last_time_shown_ = navigation_handle->NavigationStart();
   }
@@ -156,9 +137,7 @@ InitialWebUIPageLoadMetricsObserver::OnCommit(
     base::TimeTicks init_time = rfh->GetProcess()->GetLastInitTime();
     base::TimeTicks launched_time = rfh->GetProcess()->GetProcessLaunchedTime();
 
-    renderer_process_times_ = RendererProcessTimes{
-        .init_time = init_time, .launched_time = launched_time};
-    FlushMetricsToManager();
+    GetMetricsDispatcher().OnCommit(init_time, launched_time);
   }
 
   const net::HttpResponseHeaders* response_headers =
@@ -184,15 +163,6 @@ InitialWebUIPageLoadMetricsObserver::OnCommit(
   return CONTINUE_OBSERVING;
 }
 
-WaapUIMetricsService* InitialWebUIPageLoadMetricsObserver::service() const {
-  CHECK(GetDelegate().GetWebContents()->GetBrowserContext());
-  auto* profile = Profile::FromBrowserContext(
-      GetDelegate().GetWebContents()->GetBrowserContext());
-  auto* service = WaapUIMetricsService::Get(profile);
-  CHECK(service);
-  return service;
-}
-
 MetricsReporter& InitialWebUIPageLoadMetricsObserver::GetMetricsReporter() {
   MetricsReporterService* service = MetricsReporterService::GetFromWebContents(
       GetDelegate().GetWebContents());
@@ -202,60 +172,14 @@ MetricsReporter& InitialWebUIPageLoadMetricsObserver::GetMetricsReporter() {
   return *service->metrics_reporter();
 }
 
-InitialWebUIWindowMetricsManager*
-InitialWebUIPageLoadMetricsObserver::GetMetricsManager() const {
+InitialWebUIMetricsDispatcher&
+InitialWebUIPageLoadMetricsObserver::GetMetricsDispatcher() {
   content::WebContents* web_contents = GetDelegate().GetWebContents();
-  if (!web_contents) {
-    return nullptr;
-  }
-  if (BrowserWindowInterface* browser =
-          webui::GetBrowserWindowInterface(web_contents)) {
-    return InitialWebUIWindowMetricsManager::From(browser);
-  }
-  gfx::NativeWindow window = web_contents->GetTopLevelNativeWindow();
-  BrowserWindowInterface* browser =
-      GlobalBrowserCollection::GetInstance()->FindBrowserWithWindow(window);
-  return browser ? InitialWebUIWindowMetricsManager::From(browser) : nullptr;
-}
-
-void InitialWebUIPageLoadMetricsObserver::FlushMetricsToManager() {
-  auto* manager = GetMetricsManager();
-  if (!manager) {
-    // When the manager is not ready, subscribe to BrowserWindowInterface
-    // changes so that all held metrics can be flushed once it becomes
-    // available.
-    if (!bwi_subscription_ && GetDelegate().GetWebContents()) {
-      bwi_subscription_ = webui::RegisterBrowserWindowInterfaceChanged(
-          GetDelegate().GetWebContents(),
-          base::BindRepeating(
-              &InitialWebUIPageLoadMetricsObserver::FlushMetricsToManager,
-              weak_factory_.GetWeakPtr()));
-    }
-    return;
-  }
-
-  if (manager_binding_status_ ==
-      WindowMetricsManagerBindingStatus::kNeverBound) {
-    manager_binding_status_ = WindowMetricsManagerBindingStatus::kBoundDeferred;
-    base::UmaHistogramMediumTimes(
-        "InitialWebUI.Toolbar.TimeToWindowMetricsManagerBound",
-        base::TimeTicks::Now() - creation_time_);
-  }
-
-  if (renderer_process_times_.has_value()) {
-    manager->OnReloadButtonRendererProcessCreatedAndLaunched(
-        renderer_process_times_->init_time,
-        renderer_process_times_->launched_time);
-    renderer_process_times_.reset();
-  }
-  if (first_paint_time_.has_value()) {
-    manager->OnReloadButtonFirstPaint(*first_paint_time_);
-    first_paint_time_.reset();
-  }
-  if (first_contentful_paint_time_.has_value()) {
-    manager->OnReloadButtonFirstContentfulPaint(*first_contentful_paint_time_);
-    first_contentful_paint_time_.reset();
-  }
+  CHECK(web_contents);
+  auto* dispatcher =
+      InitialWebUIMetricsDispatcher::GetOrCreateForWebContents(web_contents);
+  CHECK(dispatcher);
+  return *dispatcher;
 }
 
 page_load_metrics::PageLoadMetricsObserver::ObservePolicy
@@ -296,7 +220,7 @@ void InitialWebUIPageLoadMetricsObserver::OnFailedProvisionalLoad(
   // for UMA histograms using the equivalent positive value. For consistency in
   // UKM, we convert to a positive value here.
   int64_t net_error_code = static_cast<int64_t>(failed_load_info.error) * -1;
-  DCHECK_GE(net_error_code, 0);
+  CHECK_GE(net_error_code, 0, base::NotFatalUntil::M161);
 
   ukm::builders::InitialWebUIPageLoad(GetDelegate().GetPageUkmSourceId())
       .SetNet_ErrorCode_OnFailedProvisionalLoad(net_error_code)
@@ -489,7 +413,7 @@ void InitialWebUIPageLoadMetricsObserver::RecordRendererUsageMetrics() {
 
 void InitialWebUIPageLoadMetricsObserver::RecordPageLoadTimestampMetrics(
     ukm::builders::InitialWebUIPageLoad& builder) {
-  DCHECK(!navigation_start_time_.is_null());
+  CHECK(!navigation_start_time_.is_null(), base::NotFatalUntil::M161);
 
   base::Time::Exploded exploded;
   navigation_start_time_.LocalExplode(&exploded);

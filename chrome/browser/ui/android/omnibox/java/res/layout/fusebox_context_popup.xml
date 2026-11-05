@@ -16,11 +16,54 @@ found in the LICENSE file.
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:paddingStart="8dp"
-        android:paddingEnd="8dp"
         android:paddingTop="4dp"
         android:paddingBottom="4dp"
         android:importantForAccessibility="no">
+
+        <ImageView
+            android:id="@+id/fusebox_drag_handle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:src="@drawable/drag_handlebar"
+            android:importantForAccessibility="no"
+            android:visibility="gone" />
+
+        <include
+            layout="@layout/fusebox_list_item"
+            android:id="@+id/fusebox_add_current_tab_top"
+            android:visibility="gone" />
+
+        <View
+            style="@style/Fusebox.PopupMenu.Divider"
+            android:id="@+id/fusebox_current_tab_top_divider"
+            android:visibility="gone" />
+
+        <TextView
+            style="@style/Fusebox.PopupMenu.Header"
+            android:id="@+id/fusebox_attachments_header"
+            android:text="@string/fusebox_add_to_your_search_header"
+            android:visibility="gone" />
+
+        <TextView
+            style="@style/Fusebox.PopupMenu.Header"
+            android:id="@+id/fusebox_recent_tabs_header"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/fusebox_recent_tabs_header"
+            android:visibility="gone"/>
+
+        <LinearLayout
+            android:id="@+id/fusebox_recent_tabs_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone"/>
+
+        <View
+            style="@style/Fusebox.PopupMenu.Divider"
+            android:id="@+id/fusebox_recent_tabs_divider"
+            android:visibility="gone"/>
 
         <ViewStub
             android:id="@+id/fusebox_attachments_stub"
@@ -29,19 +72,64 @@ found in the LICENSE file.
 
         <View
             style="@style/Fusebox.PopupMenu.Divider"
-            android:id="@+id/fusebox_tools_divider"/>
+            android:id="@+id/fusebox_pinned_section_top_divider"
+            android:visibility="gone" />
 
-        <TextView
-            style="@style/Fusebox.PopupMenu.Header"
-            android:id="@+id/fusebox_tools_header"/>
+        <include
+            layout="@layout/fusebox_list_item"
+            android:id="@+id/fusebox_add_current_tab_pinned"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/fusebox_pinned_tools_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone" />
 
         <View
             style="@style/Fusebox.PopupMenu.Divider"
-            android:id="@+id/fusebox_models_divider"/>
+            android:id="@+id/fusebox_pinned_section_bottom_divider"
+            android:visibility="gone" />
 
-        <TextView
-            style="@style/Fusebox.PopupMenu.Header"
-            android:id="@+id/fusebox_models_header"/>
+        <include
+            layout="@layout/fusebox_list_item"
+            android:id="@+id/fusebox_more_options_button" />
+
+        <LinearLayout
+            android:id="@+id/fusebox_accordion_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <include
+                layout="@layout/fusebox_list_item"
+                android:id="@+id/fusebox_pick_file_button_accordion"
+                android:visibility="gone"/>
+
+            <include
+                layout="@layout/fusebox_list_item"
+                android:id="@+id/fusebox_pick_drive_button_accordion"
+                android:visibility="gone"/>
+
+            <View
+                style="@style/Fusebox.PopupMenu.Divider"
+                android:id="@+id/fusebox_tools_divider"/>
+
+            <TextView
+                style="@style/Fusebox.PopupMenu.Header"
+                android:id="@+id/fusebox_tools_header"/>
+
+            <View
+                style="@style/Fusebox.PopupMenu.Divider"
+                android:id="@+id/fusebox_models_divider"/>
+
+            <TextView
+                style="@style/Fusebox.PopupMenu.Header"
+                android:id="@+id/fusebox_models_header"/>
+
+        </LinearLayout>
 
     </LinearLayout>
 

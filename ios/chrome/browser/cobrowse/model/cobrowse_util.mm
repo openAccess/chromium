@@ -4,14 +4,17 @@
 
 #import "ios/chrome/browser/cobrowse/model/cobrowse_util.h"
 
+#import "components/contextual_search/contextual_search_service.h"
 #import "components/omnibox/browser/aim_eligibility_service.h"
+#import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/aim/model/ios_chrome_aim_eligibility_service_factory.h"
 #import "ios/chrome/browser/composebox/public/features.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
 
-bool IsAimCobrowseEligible(ProfileIOS* profile) {
+bool IsAimCobrowseEligible(AimEligibilityService* aim_eligibility_service,
+                           const PrefService* prefs) {
   if (!IsAimCobrowseEnabled() || !IsAssistantContainerEnabled()) {
     return false;
   }
@@ -20,16 +23,12 @@ bool IsAimCobrowseEligible(ProfileIOS* profile) {
     return false;
   }
 
-  if (IsComposeboxAIMDisabled()) {
+  if (!prefs ||
+      !contextual_search::ContextualSearchService::IsContextSharingEnabled(
+          prefs)) {
     return false;
   }
 
-  if (!profile || profile->IsOffTheRecord()) {
-    return false;
-  }
-
-  AimEligibilityService* aim_eligibility_service =
-      IOSChromeAimEligibilityServiceFactory::GetForProfile(profile);
   if (!aim_eligibility_service ||
       !aim_eligibility_service->IsFuseboxEligible() ||
       !aim_eligibility_service->IsCobrowseEligible()) {
@@ -37,4 +36,37 @@ bool IsAimCobrowseEligible(ProfileIOS* profile) {
   }
 
   return true;
+}
+
+bool IsAimCobrowseEligible(ProfileIOS* profile) {
+  if (!profile || profile->IsOffTheRecord()) {
+    return false;
+  }
+
+  return IsAimCobrowseEligible(
+      IOSChromeAimEligibilityServiceFactory::GetForProfile(profile),
+      profile->GetPrefs());
+}
+
+bool IsAimCobrowseAddTabEligible(AimEligibilityService* aim_eligibility_service,
+                                 const PrefService* prefs) {
+  return IsAimCobrowseEligible(aim_eligibility_service, prefs) &&
+         IsAimCobrowseAddTabEntrypointEnabled();
+}
+
+bool IsAimCobrowseAddTabEligible(ProfileIOS* profile) {
+  return IsAimCobrowseEligible(profile) &&
+         IsAimCobrowseAddTabEntrypointEnabled();
+}
+
+bool IsAimCobrowseWebSelectionSearchEligible(
+    AimEligibilityService* aim_eligibility_service,
+    const PrefService* prefs) {
+  return IsAimCobrowseEligible(aim_eligibility_service, prefs) &&
+         IsAimCobrowseWebSelectionSearchEnabled();
+}
+
+bool IsAimCobrowseWebSelectionSearchEligible(ProfileIOS* profile) {
+  return IsAimCobrowseEligible(profile) &&
+         IsAimCobrowseWebSelectionSearchEnabled();
 }

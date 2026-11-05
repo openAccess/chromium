@@ -19,18 +19,22 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import static org.chromium.ui.base.ClipboardImpl.CHROME_WEB_CUSTOM_DATA_MIME_TYPE;
+
 import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ProviderInfo;
 import android.content.res.AssetFileDescriptor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.PersistableBundle;
+import android.os.Process;
 import android.os.TransactionTooLargeException;
 import android.provider.OpenableColumns;
 import android.text.SpannableString;
@@ -109,8 +113,7 @@ public class ClipboardTest {
                 .thenAnswer(inv -> mRealContext.getString((Integer) inv.getArgument(0)));
         ContextUtils.initApplicationContextForTests(mMockContext);
 
-        ProviderInfo info = new ProviderInfo();
-        info.packageName = mPackageName;
+        ProviderInfo info = createProviderInfo(mPackageName, Process.myUid());
         when(mMockPm.resolveContentProvider(eq(mPackageName), anyInt())).thenReturn(info);
     }
 
@@ -268,18 +271,24 @@ public class ClipboardTest {
         when(mMockClipboardManager.getPrimaryClip()).thenReturn(clipData);
 
         // Allowed.
-        ProviderInfo otherAppInfo = new ProviderInfo();
-        otherAppInfo.packageName = "com.other.app";
+        ProviderInfo otherAppInfo = createProviderInfo("com.other.app", Process.myUid() + 1);
         when(mMockPm.resolveContentProvider(eq("tmp"), anyInt())).thenReturn(otherAppInfo);
         assertTrue(clipboard.hasFilenames());
         assertTwoFilesReturned(clipboard.getFilenames());
 
         // Rejected.
-        ProviderInfo ownAppInfo = new ProviderInfo();
-        ownAppInfo.packageName = mPackageName;
+        ProviderInfo ownAppInfo = createProviderInfo(mPackageName, Process.myUid());
         when(mMockPm.resolveContentProvider(eq("tmp"), anyInt())).thenReturn(ownAppInfo);
         assertFalse(clipboard.hasFilenames());
         assertEquals(0, clipboard.getFilenames().length);
+    }
+
+    private static ProviderInfo createProviderInfo(String packageName, int uid) {
+        ProviderInfo providerInfo = new ProviderInfo();
+        providerInfo.packageName = packageName;
+        providerInfo.applicationInfo = new ApplicationInfo();
+        providerInfo.applicationInfo.uid = uid;
+        return providerInfo;
     }
 
     @Test
@@ -587,5 +596,38 @@ public class ClipboardTest {
 
         assertNull(mClipboard.clipDataToHtmlText(clipData));
         assertNull(ClipboardTextDataProvider.getLastCopiedMetadata());
+    }
+
+    @Test
+    @EnableFeatures({UiAndroidFeatures.CLIPBOARD_OVERSIZED_PAYLOAD_PROVIDER})
+    public void testSetPrimaryClipOversizedOffloadsWebCustomData() {
+        mockPrimaryClipTransactionTooLarge(1);
+
+        assertTrue(
+                mClipboard.setClipboardText(
+                        Map.of(
+                                MIMETYPE_TEXT_HTML,
+                                HTML_TEXT,
+                                CHROME_WEB_CUSTOM_DATA_MIME_TYPE,
+                                "custom")));
+
+        verify(mMockClipboardManager, Mockito.times(2)).setPrimaryClip(mClipDataCaptor.capture());
+        ClipData clip = mClipDataCaptor.getValue();
+        assertNull(clip.getItemAt(0).getHtmlText());
+        assertNotNull(clip.getItemAt(0).getUri());
+        assertFalse(
+                clip.getDescription().getExtras().containsKey(CHROME_WEB_CUSTOM_DATA_MIME_TYPE));
+    }
+
+    @Test
+    public void testOperationsDoNotThrowWhenClipboardManagerThrows() {
+        mClipboard.overrideClipboardManagerForTesting(mMockClipboardManager);
+        when(mMockClipboardManager.getPrimaryClipDescription()).thenThrow(new RuntimeException());
+        when(mMockClipboardManager.getPrimaryClip()).thenThrow(new RuntimeException());
+        doThrow(new RuntimeException()).when(mMockClipboardManager).setPrimaryClip(any());
+
+        assertNull(mClipboard.getCoercedText());
+        assertNull(mClipboard.getCustomClipData(CHROME_WEB_CUSTOM_DATA_MIME_TYPE));
+        assertFalse(mClipboard.setClipboardText(Map.of(MIMETYPE_TEXT_HTML, HTML_TEXT)));
     }
 }

@@ -23,8 +23,7 @@ import org.chromium.build.annotations.Nullable;
 public final class Typemapped extends org.chromium.mojo.bindings.Struct {
 
     private static final int STRUCT_SIZE = 24;
-    private static final org.chromium.mojo.bindings.DataHeader[] VERSION_ARRAY = new org.chromium.mojo.bindings.DataHeader[] {new org.chromium.mojo.bindings.DataHeader(24, 0)};
-    private static final org.chromium.mojo.bindings.DataHeader DEFAULT_STRUCT_INFO = VERSION_ARRAY[0];
+    private static final int STRUCT_VERSION = 0;
     public byte field;
     public @Nullable Integer optional;
     public @Nullable Boolean[] optionalContainer;
@@ -34,7 +33,7 @@ public final class Typemapped extends org.chromium.mojo.bindings.Struct {
     }
 
     public Typemapped() {
-        this(0);
+        this(STRUCT_VERSION);
     }
 
     public static Typemapped deserialize(org.chromium.mojo.bindings.Message message) {
@@ -47,8 +46,7 @@ public final class Typemapped extends org.chromium.mojo.bindings.Struct {
      * @throws org.chromium.mojo.bindings.DeserializationException on deserialization failure.
      */
     public static Typemapped deserialize(java.nio.ByteBuffer data) {
-        return deserialize(new org.chromium.mojo.bindings.Message(
-                data, new java.util.ArrayList<org.chromium.mojo.system.Handle>()));
+        return deserialize(new org.chromium.mojo.bindings.Message(data));
     }
 
     @SuppressWarnings("unchecked")
@@ -56,18 +54,12 @@ public final class Typemapped extends org.chromium.mojo.bindings.Struct {
         if (decoder0 == null) {
             return null;
         }
-        decoder0.increaseStackDepth();
-        Typemapped result;
-        try {
-            org.chromium.mojo.bindings.DataHeader mainDataHeader = decoder0.readAndValidateDataHeader(VERSION_ARRAY);
-            final int elementsOrVersion = mainDataHeader.elementsOrVersion;
-            result = new Typemapped(elementsOrVersion);
+        final int elementsOrVersion = decoder0.readAndValidateStructHeader(STRUCT_SIZE);
+        Typemapped result = new Typemapped(elementsOrVersion);
                 {
-                    
                 result.field = decoder0.readByte(8);
                 }
                 {
-                    
                 if (decoder0.readBoolean(9, 0)) {
                   result.optional = new Integer(decoder0.readInt(12));
                 } else {
@@ -75,31 +67,21 @@ public final class Typemapped extends org.chromium.mojo.bindings.Struct {
                 }
                 }
                 {
-                    
                 result.optionalContainer = decoder0.readBooleanNullables(16, org.chromium.mojo.bindings.BindingsHelper.ELEMENT_NULLABLE, org.chromium.mojo.bindings.BindingsHelper.UNSPECIFIED_ARRAY_LENGTH);
                 }
-
-        } finally {
-            decoder0.decreaseStackDepth();
-        }
         return result;
     }
 
     @SuppressWarnings("unchecked")
     @Override
-    protected final void encode(org.chromium.mojo.bindings.Encoder encoder) {
-        org.chromium.mojo.bindings.Encoder encoder0 = encoder.getEncoderAtDataOffset(DEFAULT_STRUCT_INFO);
-        
+    protected final void encodeFields(org.chromium.mojo.bindings.Encoder encoder0) {
         encoder0.encode(this.field, 8);
         final boolean optional$flag = this.optional != null;
         final int optional$value = optional$flag
             ? this.optional
             : 0;
-        
         encoder0.encode(optional$flag, 9, 0);
-        
         encoder0.encode(optional$value, 12);
-        
         encoder0.encode(this.optionalContainer, 16, org.chromium.mojo.bindings.BindingsHelper.ELEMENT_NULLABLE, org.chromium.mojo.bindings.BindingsHelper.UNSPECIFIED_ARRAY_LENGTH);
     }
 }

@@ -97,7 +97,6 @@ class RecentTabsSubMenuModel : public ui::SimpleMenuModel,
   using SplitItems = std::map<int, SessionID>;
   struct SubMenuItem;
   using SubMenuItems = std::map<int, SubMenuItem>;
-  using DeviceNameItems = base::flat_set<int>;
 
   // Index of the separator that follows the history menu item. Used as a
   // reference position for inserting local entries.
@@ -201,12 +200,7 @@ class RecentTabsSubMenuModel : public ui::SimpleMenuModel,
   // for all items whose parent is the RecentTabsSubMenuModel itself.
   int GetParentCommandId(int command_id) const;
 
-  // Add the favicon for the device section header.
-  void AddDeviceFavicon(SimpleMenuModel* containing_model,
-                        size_t index_in_menu,
-                        syncer::DeviceInfo::FormFactor device_form_factor);
-
-  // Add the favicon for a local or other devices' tab asynchronously,
+  // Add the favicon for a local tab asynchronously,
   // OnFaviconDataAvailable() will be invoked when the favicon is ready.
   void AddTabFavicon(int command_id,
                      ui::SimpleMenuModel* menu_model,

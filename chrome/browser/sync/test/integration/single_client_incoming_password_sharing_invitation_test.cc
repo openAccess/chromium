@@ -156,12 +156,7 @@ class SingleClientIncomingPasswordSharingInvitationTest
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
   SingleClientIncomingPasswordSharingInvitationTest()
-      : SyncTest(SINGLE_CLIENT) {
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitAndEnableFeature(
-          syncer::kReplaceSyncPromosWithSignInPromos);
-    }
-  }
+      : SyncTest(SINGLE_CLIENT) {}
 
   SyncTest::SetupSyncMode GetSetupSyncMode() const override {
     return GetParam();
@@ -198,9 +193,6 @@ class SingleClientIncomingPasswordSharingInvitationTest
             specifics.incoming_password_sharing_invitation().guid(), specifics,
             /*creation_time=*/0, /*last_modified_time=*/0));
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(,
@@ -446,7 +438,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientIncomingPasswordSharingInvitationTest,
   // to become active.
   GetSyncService(0)->GetUserSettings()->SetSelectedType(
       syncer::UserSelectableType::kPasswords, true);
-  PasswordSyncActiveChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(PasswordSyncActiveChecker(GetSyncService(0)).Wait());
 
   // Double check that both Passwords and Sharing Invitations are enabled.
   ASSERT_TRUE(GetSyncService(0)->GetActiveDataTypes().Has(syncer::PASSWORDS));

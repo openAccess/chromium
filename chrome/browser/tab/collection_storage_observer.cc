@@ -4,124 +4,204 @@
 
 #include "chrome/browser/tab/collection_storage_observer.h"
 
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "chrome/browser/tab/node_hash_cache.h"
 #include "chrome/browser/tab/tab_state_storage_service.h"
 #include "components/tabs/public/direct_child_walker.h"
 #include "components/tabs/public/tab_collection.h"
+#include "components/tabs/public/tab_interface.h"
+#include "components/tabs/public/tab_strip_collection.h"
 
 namespace tabs {
 
+namespace {
+
+void ProcessAndSaveCollection(const TabCollection* collection,
+                              TabStateStorageService* service,
+                              NodeHashCache* hash_cache,
+                              std::vector<StorageId>& live_ids) {
+  StorageId storage_id = service->GetStorageId(collection);
+  live_ids.push_back(storage_id);
+
+  if (!hash_cache) {
+    service->Save(collection);
+    return;
+  }
+
+  const bool is_tab_strip =
+      (collection->type() == TabCollection::Type::TABSTRIP);
+  NodeHashes current_hashes =
+      NodeHashCache::ComputeHashes(collection, *service);
+  std::optional<NodeHashes> cached = hash_cache->GetNodeHashes(storage_id);
+
+  if (!cached.has_value()) {
+    service->Save(collection);
+    hash_cache->SetNodeHashes(storage_id, current_hashes);
+    return;
+  }
+
+  const bool payload_changed =
+      is_tab_strip || (current_hashes.payload_hash != cached->payload_hash);
+  const bool children_changed =
+      (current_hashes.children_hash != cached->children_hash);
+
+  if (payload_changed && children_changed) {
+    service->Save(collection);
+  } else if (payload_changed) {
+    service->SavePayload(collection);
+  } else if (children_changed) {
+    service->SaveChildren(collection);
+  }
+
+  if (current_hashes != *cached) {
+    hash_cache->SetNodeHashes(storage_id, current_hashes);
+  }
+}
+
+// Post-order crawler for post-restore and live structural snapshots.
+class StructureSnapshotCrawler : public DirectChildWalker::Processor {
+ public:
+  StructureSnapshotCrawler(TabStateStorageService* service,
+                           NodeHashCache* hash_cache,
+                           std::vector<StorageId>& live_ids)
+      : service_(service), hash_cache_(hash_cache), live_ids_(live_ids) {}
+
+  void ProcessTab(const TabInterface* tab) override {
+    live_ids_->push_back(service_->GetStorageId(tab));
+  }
+
+  void ProcessCollection(const TabCollection* collection) override {
+    DirectChildWalker walker(collection, this);
+    walker.Walk();
+
+    ProcessAndSaveCollection(collection, service_, hash_cache_, *live_ids_);
+  }
+
+ private:
+  raw_ptr<TabStateStorageService> service_;
+  raw_ptr<NodeHashCache> hash_cache_;
+  const raw_ref<std::vector<StorageId>> live_ids_;
+};
+
 // Traverses a TabCollection subtree and removes all encountered collections
-// and tabs from the provided TabStateStorageService.
+// and tabs from the provided TabStateStorageService and NodeHashCache.
 class SubTreeRemoveCrawler : public DirectChildWalker::Processor {
  public:
-  SubTreeRemoveCrawler(const TabCollection* collection,
-                       TabStateStorageService* service)
-      : root_(collection), service_(service) {}
+  SubTreeRemoveCrawler(TabStateStorageService* service,
+                       NodeHashCache* hash_cache)
+      : service_(service), hash_cache_(hash_cache) {}
 
   void ProcessTab(const TabInterface* tab) override { service_->Remove(tab); }
 
   void ProcessCollection(const TabCollection* collection) override {
     service_->Remove(collection);
+    if (hash_cache_) {
+      hash_cache_->RemoveNode(service_->GetStorageId(collection));
+    }
     DirectChildWalker walker(collection, this);
     walker.Walk();
   }
 
  private:
-  raw_ptr<const TabCollection> root_;
   raw_ptr<TabStateStorageService> service_;
+  raw_ptr<NodeHashCache> hash_cache_;
 };
 
+}  // namespace
+
 CollectionStorageObserver::CollectionStorageObserver(
-    tabs::TabStateStorageService* service)
-    : service_(service) {}
+    TabStripCollection* collection,
+    TabStateStorageService* service)
+    : collection_(collection), service_(service) {}
 
-CollectionStorageObserver::~CollectionStorageObserver() = default;
+void CollectionStorageObserver::SaveStructureSnapshot(bool clear_unused_nodes) {
+  auto batch = service_->CreateScopedBatch();
+  std::vector<StorageId> live_ids;
+  NodeHashCache* hash_cache =
+      synchronizer_ ? &synchronizer_->hash_cache() : nullptr;
 
-void CollectionStorageObserver::SaveChildNodeOnly(
-    TabCollectionNodeHandle handle) {
-  if (std::holds_alternative<TabCollection::Handle>(handle)) {
-    const TabCollection* collection =
-        std::get<TabCollection::Handle>(handle).Get();
-    if (collection->GetParentCollection()) {
-      service_->Save(collection);
+  StructureSnapshotCrawler crawler(service_, hash_cache, live_ids);
+  DirectChildWalker walker(collection_, &crawler);
+  walker.Walk();
+
+  ProcessAndSaveCollection(collection_, service_, hash_cache, live_ids);
+
+  std::string window_tag = service_->GetWindowTag(collection_);
+  bool is_off_the_record = service_->IsOffTheRecord(collection_);
+
+  service_->ClearDivergentNodesForWindow(window_tag, is_off_the_record);
+  if (clear_unused_nodes) {
+    if (hash_cache) {
+      hash_cache->PruneExcept(live_ids);
     }
-  } else {
-    const TabInterface* tab = std::get<TabHandle>(handle).Get();
-    if (tab->GetParentCollection()) {
-      service_->Save(tab);
-    }
+    service_->ClearNodesForWindowExcept(window_tag, is_off_the_record,
+                                        std::move(live_ids));
   }
 }
+
+void CollectionStorageObserver::SetSynchronizer(
+    StorageCollectionSynchronizer* synchronizer) {
+  synchronizer_ = synchronizer;
+}
+
+CollectionStorageObserver::~CollectionStorageObserver() = default;
 
 void CollectionStorageObserver::OnChildrenAdded(
     const TabCollection::Position& position,
     const tabs::TabCollectionNodes& handles,
     bool insert_from_detached) {
   for (const auto& handle : handles) {
-    const TabCollection* parent;
-    if (std::holds_alternative<TabCollection::Handle>(handle)) {
-      const TabCollection* collection =
-          std::get<TabCollection::Handle>(handle).Get();
-      service_->Save(collection);
-      parent = collection->GetParentCollection();
-    } else {
+    if (std::holds_alternative<TabHandle>(handle)) {
       const TabInterface* tab = std::get<TabHandle>(handle).Get();
       service_->Save(tab);
-      parent = tab->GetParentCollection();
     }
-
-    DCHECK(parent) << "Child node should have parent";
-    service_->SaveChildren(parent);
+  }
+  if (synchronizer_) {
+    synchronizer_->SaveStructureSnapshot(/*clear_unused_nodes=*/false,
+                                         base::NullCallback());
   }
 }
 
 void CollectionStorageObserver::OnChildrenRemoved(
     const TabCollection::Position& position,
     const tabs::TabCollectionNodes& handles) {
+  NodeHashCache* hash_cache =
+      synchronizer_ ? &synchronizer_->hash_cache() : nullptr;
   for (const auto& handle : handles) {
     if (std::holds_alternative<TabCollection::Handle>(handle)) {
       const TabCollection* collection =
           std::get<TabCollection::Handle>(handle).Get();
-      ClearSubTree(collection, service_);
+      ClearSubTree(collection, service_, hash_cache);
     } else {
       const TabInterface* tab = std::get<TabHandle>(handle).Get();
       service_->Remove(tab);
     }
-    service_->SaveChildren(position.parent_handle.Get());
+  }
+  if (synchronizer_) {
+    synchronizer_->SaveStructureSnapshot(/*clear_unused_nodes=*/false,
+                                         base::NullCallback());
   }
 }
 
 void CollectionStorageObserver::OnChildMoved(
     const TabCollection::Position& to_position,
     const NodeData& node_data) {
-  TabCollectionNodeHandle handle = node_data.handle;
-  const TabCollection* curr_parent;
-  const TabCollection* prev_parent = node_data.position.parent_handle.Get();
-  if (std::holds_alternative<TabCollectionHandle>(handle)) {
-    const TabCollection* collection =
-        std::get<TabCollection::Handle>(handle).Get();
-    curr_parent = collection->GetParentCollection();
-  } else {
-    const TabInterface* tab = std::get<TabHandle>(handle).Get();
-    curr_parent = tab->GetParentCollection();
-  }
-
-  DCHECK(curr_parent) << "Child node should have parent";
-  service_->SaveChildren(curr_parent);
-  service_->Save(curr_parent);
-  if (curr_parent != prev_parent) {
-    service_->SaveChildren(prev_parent);
-    service_->Save(prev_parent);
+  if (synchronizer_) {
+    synchronizer_->SaveStructureSnapshot(/*clear_unused_nodes=*/false,
+                                         base::NullCallback());
   }
 }
 
 // static
 void CollectionStorageObserver::ClearSubTree(const TabCollection* collection,
-                                             TabStateStorageService* service) {
-  service->Remove(collection);
-  SubTreeRemoveCrawler crawler(collection, service);
-  DirectChildWalker walker(collection, &crawler);
-  walker.Walk();
+                                             TabStateStorageService* service,
+                                             NodeHashCache* hash_cache) {
+  SubTreeRemoveCrawler crawler(service, hash_cache);
+  crawler.ProcessCollection(collection);
 }
 
 }  // namespace tabs

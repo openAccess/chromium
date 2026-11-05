@@ -13,6 +13,7 @@ include_rules = [
 
     # web_media_player_ms{_compositor}.cc includes.
     "+base/containers/circular_deque.h",
+    "+base/moving_window.h",
     "+base/task/common/task_annotator.h",
     "+base/values.h",
     "+cc/layers/surface_layer.h",
@@ -22,8 +23,8 @@ include_rules = [
     "+gpu/command_buffer/client/test_shared_image_interface.h",
     "+media/media_buildflags.h",
     "+media/filters/video_renderer_algorithm.h",
-    "+media/renderers/paint_canvas_video_renderer.h",
-    "+media/video/mappable_shared_image_video_frame_pool.h",
+    "+media/gfx/paint_canvas_video_renderer.h",
+    "+media/gfx/mappable_shared_image_video_frame_pool.h",
     "+services/viz/public/cpp/gpu/context_provider_command_buffer.h",
     "+skia/ext/platform_canvas.h",
 
@@ -61,7 +62,7 @@ specific_include_rules = {
         "+base/numerics/ranges.h",
         "+base/run_loop.h",
         "+cc/layers/layer.h",
-        "+media/video/mock_mappable_shared_image_video_frame_pool.h",
+        "+media/gfx/mock_mappable_shared_image_video_frame_pool.h",
         "+media/video/mock_gpu_video_accelerator_factories.h",
 
         "+base/files/file_path.h",

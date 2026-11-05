@@ -48,7 +48,6 @@ using ::testing::_;
 using ::testing::AnyNumber;
 using ::testing::DoAll;
 using ::testing::InSequence;
-using ::testing::InvokeWithoutArgs;
 using ::testing::Mock;
 using ::testing::NiceMock;
 using ::testing::Return;
@@ -312,6 +311,8 @@ class VideoCaptureManagerTest : public testing::Test {
 
     base::RunLoop run_loop;
     vcm_->EnumerateDevices(
+        media::mojom::VideoCaptureDeviceEnumerationMode::
+            kDevicesWithCapabilities,
         base::BindOnce(&VideoCaptureManagerTest::HandleEnumerationResult,
                        base::Unretained(this), run_loop.QuitClosure()));
     run_loop.Run();
@@ -336,11 +337,9 @@ class VideoCaptureManagerTest : public testing::Test {
     }
   }
 
-  VideoCaptureControllerID StartClient(
-      const base::UnguessableToken& session_id,
-      bool expect_success,
-      std::optional<url::Origin> origin = std::nullopt,
-      bool is_allowed_on_lock_screen = false) {
+  VideoCaptureControllerID StartClient(const base::UnguessableToken& session_id,
+                                       bool expect_success,
+                                       bool is_allowed_on_lock_screen = false) {
     media::VideoCaptureParams params;
     params.requested_format = media::VideoCaptureFormat(
         gfx::Size(320, 240), 30, media::PIXEL_FORMAT_I420);
@@ -348,7 +347,7 @@ class VideoCaptureManagerTest : public testing::Test {
     VideoCaptureControllerID client_id = base::UnguessableToken::Create();
     vcm_->ConnectClient(
         session_id, params, client_id, render_frame_host_id_,
-        frame_observer_.get(), origin, is_allowed_on_lock_screen,
+        frame_observer_.get(), is_allowed_on_lock_screen,
         base::BindOnce(&VideoCaptureManagerTest::OnGotControllerCallback,
                        base::Unretained(this), client_id, expect_success));
     base::RunLoop().RunUntilIdle();
@@ -526,6 +525,7 @@ TEST_F(VideoCaptureManagerTest, ConnectAndDisconnectDevices) {
   video_capture_device_factory_->SetToDefaultDevicesConfig(1);
   base::RunLoop run_loop;
   vcm_->EnumerateDevices(
+      media::mojom::VideoCaptureDeviceEnumerationMode::kDevicesWithCapabilities,
       base::BindOnce(&VideoCaptureManagerTest::HandleEnumerationResult,
                      base::Unretained(this), run_loop.QuitClosure()));
   run_loop.Run();
@@ -535,6 +535,7 @@ TEST_F(VideoCaptureManagerTest, ConnectAndDisconnectDevices) {
   video_capture_device_factory_->SetToDefaultDevicesConfig(3);
   base::RunLoop run_loop2;
   vcm_->EnumerateDevices(
+      media::mojom::VideoCaptureDeviceEnumerationMode::kDevicesWithCapabilities,
       base::BindOnce(&VideoCaptureManagerTest::HandleEnumerationResult,
                      base::Unretained(this), run_loop2.QuitClosure()));
   run_loop2.Run();
@@ -1096,7 +1097,7 @@ TEST_F(VideoCaptureManagerTest,
   EXPECT_CALL(*listener_,
               Closed(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE,
                      video_session_id))
-      .WillOnce(testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
   vcm_->Close(video_session_id);
   run_loop.Run();
 
@@ -1125,8 +1126,7 @@ TEST_F(VideoCaptureManagerTest,
     EXPECT_CALL(*listener_,
                 Closed(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE,
                        video_session_id))
-        .WillOnce(
-            testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     StopClient(client_id);
     vcm_->Close(video_session_id);
     run_loop.Run();
@@ -1152,8 +1152,7 @@ TEST_F(VideoCaptureManagerTest,
     EXPECT_CALL(*listener_,
                 Closed(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE,
                        video_session_id2))
-        .WillOnce(
-            testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     vcm_->Close(video_session_id2);
     run_loop.Run();
   }
@@ -1182,8 +1181,6 @@ class TestContentBrowserClientForLockScreen : public ContentBrowserClient {
 TEST_F(VideoCaptureManagerTest, ScreenLockAllowsAuthorizedOriginDeviceStart) {
   const url::Origin allowed_origin =
       url::Origin::Create(GURL("https://allowed-origin.com"));
-  const url::Origin disallowed_origin =
-      url::Origin::Create(GURL("https://disallowed-origin.com"));
 
   TestContentBrowserClientForLockScreen test_browser_client(allowed_origin);
   ContentBrowserClient* old_browser_client =
@@ -1197,7 +1194,7 @@ TEST_F(VideoCaptureManagerTest, ScreenLockAllowsAuthorizedOriginDeviceStart) {
               Opened(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _));
   EXPECT_CALL(*frame_observer_, OnStarted(_)).Times(0);
   auto video_session_id1 = vcm_->Open(devices_.front());
-  StartClient(video_session_id1, false, disallowed_origin);
+  StartClient(video_session_id1, false);
   EXPECT_FALSE(video_capture_device_factory_->has_active_devices());
   Mock::VerifyAndClearExpectations(frame_observer_.get());
 
@@ -1207,7 +1204,7 @@ TEST_F(VideoCaptureManagerTest, ScreenLockAllowsAuthorizedOriginDeviceStart) {
               Opened(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _));
   EXPECT_CALL(*frame_observer_, OnStarted(_)).Times(1);
   auto video_session_id2 = vcm_->Open(devices_.front());
-  auto client_id2 = StartClient(video_session_id2, true, allowed_origin,
+  auto client_id2 = StartClient(video_session_id2, true,
                                 /*is_allowed_on_lock_screen=*/true);
   EXPECT_TRUE(video_capture_device_factory_->has_active_devices());
 
@@ -1217,8 +1214,7 @@ TEST_F(VideoCaptureManagerTest, ScreenLockAllowsAuthorizedOriginDeviceStart) {
                 Closed(blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE, _))
         .Times(2)
         .WillOnce(testing::Return())
-        .WillOnce(
-            testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     vcm_->Close(video_session_id1);
     StopClient(client_id2);
     vcm_->Close(video_session_id2);
@@ -1264,19 +1260,23 @@ TEST_F(VideoCaptureManagerTest, DeviceCaptureDeviceNotClosedOnScreenlock) {
 // ScreenLocked event on desktop platforms.
 TEST_F(VideoCaptureManagerTest, DesktopCaptureDeviceClosedOnScreenlock) {
   InSequence s;
-  // ScreenLocked event should stop desktop capture device.
+  // ScreenLocked event should abort and then close the desktop capture device.
   EXPECT_CALL(*listener_,
               Opened(blink::mojom::MediaStreamType::DISPLAY_VIDEO_CAPTURE, _));
   EXPECT_CALL(*frame_observer_, OnStarted(_));
+  EXPECT_CALL(*listener_,
+              Aborted(blink::mojom::MediaStreamType::DISPLAY_VIDEO_CAPTURE, _));
   EXPECT_CALL(*listener_,
               Closed(blink::mojom::MediaStreamType::DISPLAY_VIDEO_CAPTURE, _));
 
   // Simulate we add 1 fake display media device.
   video_capture_device_factory_->SetToDefaultDevicesConfig(1);
   base::RunLoop run_loop;
-  vcm_->EnumerateDevices(base::BindOnce(
-      &VideoCaptureManagerTest::HandleEnumerationResultAsDisplayMediaDevices,
-      base::Unretained(this), run_loop.QuitClosure()));
+  vcm_->EnumerateDevices(
+      media::mojom::VideoCaptureDeviceEnumerationMode::kDevicesWithCapabilities,
+      base::BindOnce(&VideoCaptureManagerTest::
+                         HandleEnumerationResultAsDisplayMediaDevices,
+                     base::Unretained(this), run_loop.QuitClosure()));
   run_loop.Run();
   ASSERT_EQ(devices_.size(), 1u);
 

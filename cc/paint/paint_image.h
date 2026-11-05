@@ -150,7 +150,7 @@ struct CC_PAINT_EXPORT ImageHeaderMetadata {
 // scale or animation frame.
 class CC_PAINT_EXPORT PaintImage {
  public:
-  using Id = int;
+  using Id = int64_t;
   using AnimationSequenceId = uint32_t;
   enum class AnimationSyncSequence : AnimationSequenceId {
     // All instances of the image animation together on a shared timeline.
@@ -164,7 +164,7 @@ class CC_PAINT_EXPORT PaintImage {
   // stays constant for the same image, the content id can be updated when the
   // backing encoded data for this image changes. For instance, in the case of
   // images which can be progressively updated as more encoded data is received.
-  using ContentId = int;
+  using ContentId = int64_t;
 
   // A GeneratorClientId can be used to namespace different clients that are
   // using the output of a PaintImageGenerator.
@@ -176,7 +176,7 @@ class CC_PAINT_EXPORT PaintImage {
   // parallel. This is particularly important for animated images, where
   // compositors displaying the same image can request decodes for different
   // frames from this image.
-  using GeneratorClientId = int;
+  using GeneratorClientId = int64_t;
   static const GeneratorClientId kDefaultGeneratorClientId;
 
   // The default frame index to use if no index is provided. For multi-frame
@@ -312,8 +312,10 @@ class CC_PAINT_EXPORT PaintImage {
   CompletionState completion_state() const { return completion_state_; }
   bool is_multipart() const { return is_multipart_; }
   bool is_high_bit_depth() const { return is_high_bit_depth_; }
-  bool may_be_lcp_candidate() const { return may_be_lcp_candidate_; }
   bool no_cache() const { return no_cache_; }
+  // Returns true if pixel readback of this image is disallowed (e.g., cross-
+  // origin images without CORS access).
+  bool is_read_back_disallowed() const { return is_read_back_disallowed_; }
   int repetition_count() const { return repetition_count_; }
   bool ShouldAnimate() const;
   AnimationSequenceId reset_animation_sequence_id() const {
@@ -348,6 +350,7 @@ class CC_PAINT_EXPORT PaintImage {
   }
   bool GetReinterpretAsSRGB() const { return reinterpret_as_srgb_; }
 
+  void UnionColorVolumeInto(gfx::ContentColorVolume& color_volume) const;
   gfx::ContentColorUsage GetContentColorUsage() const;
 
   // Returns whether this image will be decoded and rendered from YUV data
@@ -409,6 +412,12 @@ class CC_PAINT_EXPORT PaintImage {
   // 0.5f corresponds to 2^0.5 ~= 1.41x SDR white).
   float GetMaximumRenderedHdrHeadroom() const;
 
+  // Returns true if converting this image to the target color space in a
+  // decode cache would clamp values above white, destroying HDR content (from
+  // a gainmap or HDR color space) or content that is white-scaled at draw time.
+  // Decode caches must keep such images in their original color space.
+  bool DecodeCacheColorConversionIsDestructive() const;
+
   std::string ToString() const;
 
  private:
@@ -424,7 +433,6 @@ class CC_PAINT_EXPORT PaintImage {
   friend class DrawImageRectOp;
   friend class DrawImageOp;
   friend class DrawSkottieOp;
-  friend class ToneMapUtil;
 
   // TODO(crbug.com/40110279): Remove these once GetSkImage()
   // is fully removed.
@@ -478,16 +486,14 @@ class CC_PAINT_EXPORT PaintImage {
   // Whether this image has more than 8 bits per color channel.
   bool is_high_bit_depth_ = false;
 
-  // Whether this image may untimately be a candidate for Largest Contentful
-  // Paint. The final LCP contribution of an image is unknown until we present
-  // it, but this flag is intended for metrics on when we do not present the
-  // image when the system claims.
-  bool may_be_lcp_candidate_ = false;
-
   // Indicates that the image is unlikely to be re-used past the first frame it
   // appears in. Used as a hint to avoid caching it downstream, but is not a
   // mandate.
   bool no_cache_ = false;
+
+  // Whether readback of this image's pixel data is disallowed (e.g., cross-
+  // origin images without CORS access).
+  bool is_read_back_disallowed_ = false;
 
   // An incrementing sequence number maintained by the painter to indicate if
   // this animation should be reset in the compositor. Incrementing this number

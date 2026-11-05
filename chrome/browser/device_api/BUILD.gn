@@ -53,6 +53,7 @@ source_set("impl") {
     "//components/content_settings/core/common",
     "//components/permissions:permissions_common",
     "//components/pref_registry",
+    "//components/user_manager",
     "//components/value_store",
     "//services/network/public/cpp",
     "//third_party/blink/public:runtime_features_for_public",
@@ -65,12 +66,11 @@ source_set("impl") {
       "//chrome/browser/ash/policy/core",
       "//chrome/browser/ash/policy/handlers",
       "//chrome/browser/ash/profiles",
+      "//chromeos/ash/components/network",
       "//chromeos/ash/components/system",
       "//chromeos/components/kiosk",
     ]
   }
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("unit_tests") {
@@ -83,10 +83,13 @@ source_set("unit_tests") {
     ":device_api",
     "//base/test:test_config",
     "//base/test:test_support",
+    "//chrome/browser/web_applications:isolated_web_app_test",
     "//chrome/browser/web_applications:web_app_test",
     "//chrome/browser/web_applications:web_applications_test_support",
-    "//chrome/browser/web_applications:web_applications_unit_tests",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//chrome/test/base:testing_browser_process",
+    "//components/enterprise/isolated_mode",
     "//components/permissions:test_support",
     "//components/profile_metrics",
     "//components/sync_preferences:test_support",
@@ -108,9 +111,10 @@ source_set("browser_tests") {
   deps = [
     ":device_api",
     "//base/test:test_support",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/tabs:tab_strip",
-    "//chrome/test:test_support_ui",
+    "//chrome/test/base:in_process_browser_test",
+    "//chrome/test/base:mixin_based_in_process_browser_test",
+    "//chrome/test/base:ui_test_utils",
     "//content/test:test_support",
     "//net:test_support",
     "//testing/gtest",
@@ -121,6 +125,8 @@ source_set("browser_tests") {
     deps += [
       "//chrome/browser/ash/login/test:test_support",
       "//chrome/browser/ash/policy/core:test_support",
+      "//chromeos/ash/components/dbus/shill",
+      "//chromeos/ash/components/network",
       "//chromeos/ash/components/system",
     ]
   }

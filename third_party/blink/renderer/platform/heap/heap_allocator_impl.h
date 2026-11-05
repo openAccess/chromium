@@ -9,6 +9,7 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_table_backing.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector_backing.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/process_heap.h"
 #include "third_party/blink/renderer/platform/heap/thread_state_storage.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/heap/write_barrier.h"
@@ -78,8 +79,9 @@ class PLATFORM_EXPORT HeapAllocator {
 
   template <typename T>
   static void FreeVectorBacking(T* array) {
-    if (!array)
+    if (!array || !ProcessHeap::IsHeapVectorPromptlyFreeEnabled()) {
       return;
+    }
 
     HeapVectorBacking<T>::FromArray(array)->Free(
         ThreadStateStorageFor<ThreadingTrait<T>::kAffinity>::GetState()
@@ -87,13 +89,13 @@ class PLATFORM_EXPORT HeapAllocator {
   }
 
   template <typename T>
-  static bool ExpandVectorBacking(T* array, size_t new_size) {
+  static bool ExpandVectorBacking(T* array, uint32_t new_size) {
     DCHECK(array);
     return HeapVectorBacking<T>::FromArray(array)->Resize(new_size);
   }
 
   template <typename T>
-  static bool ShrinkVectorBacking(T* array, size_t, size_t new_size) {
+  static bool ShrinkVectorBacking(T* array, size_t, uint32_t new_size) {
     DCHECK(array);
     return HeapVectorBacking<T>::FromArray(array)->Resize(new_size);
   }
@@ -124,7 +126,7 @@ class PLATFORM_EXPORT HeapAllocator {
   }
 
   template <typename T, typename HashTable>
-  static bool ExpandHashTableBacking(T* array, size_t new_size) {
+  static bool ExpandHashTableBacking(T* array, uint32_t new_size) {
     DCHECK(array);
     return HeapHashTableBacking<HashTable>::FromArray(array)->Resize(new_size);
   }
@@ -165,7 +167,7 @@ class PLATFORM_EXPORT HeapAllocator {
   }
 
   template <typename T>
-  static void TraceBackingStoreIfMarked(T* object) {
+  static void TraceBackingStoreStrongly(T* object) {
     HeapConsistency::WriteBarrierParams params;
     if (HeapConsistency::GetWriteBarrierType(object, params) ==
         HeapConsistency::WriteBarrierType::kMarking) {

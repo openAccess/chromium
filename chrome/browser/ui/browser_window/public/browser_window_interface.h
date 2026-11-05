@@ -12,23 +12,20 @@
 #include "content/public/browser/page_navigator.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #endif
 
 // This is the public interface for a browser window. Most features in
 // //chrome/browser depend on this interface, and thus to prevent circular
 // dependencies this interface should not depend on anything else in //chrome.
-// Ping erikchen for assistance if this class does not have the functionality
-// your feature needs. This comment will be deleted after there are 10+ features
-// in BrowserWindowFeatures.
 //
 // This interface is shared between desktop platforms and the experimental
 // desktop android platform. As such, the features exposed directly on this
 // class should only be those that apply to all these platforms, and should only
 // be features that are core to the concept of a browser window. Classes related
-// to specific features should likely instead be stored either as an entry in
-// the UnownedUserData (via BrowserWindowInterface::GetUnownedUserDataHost())
-// or on DesktopBrowserWindowCapabilities.
+// to specific features should instead be stored either as an entry in
+// the UnownedUserData via BrowserWindowInterface::GetUnownedUserDataHost().
+// Desktop-only functions should live in DesktopBrowserWindowCapabilities.
 
 #if !BUILDFLAG(IS_ANDROID)
 namespace tabs {
@@ -149,10 +146,12 @@ class BrowserWindowInterface : public content::PageNavigator {
     // strip).
     TYPE_APP_POPUP,
 #if !BUILDFLAG(IS_ANDROID)
-    // Document picture-in-picture browser.  It's mostly the same as a
-    // TYPE_POPUP, except that it floats above other windows.  It also has some
-    // additional restrictions, like it cannot navigated, to prevent misuse.
-    TYPE_PICTURE_IN_PICTURE,
+    // Floating browser (e.g. Document Picture-in-Picture or always-on-top
+    // popup). It's mostly the same as a TYPE_POPUP, except that it floats
+    // above other windows and uses a minimal frame. Document Picture-in-Picture
+    // windows also have additional restrictions (see
+    // DesktopBrowserWindowCapabilities::IsDocumentPictureInPicture()).
+    TYPE_FLOATING,
 #endif
 #if BUILDFLAG(IS_ANDROID)
     // TODO(https://crbug.com/493668475): Revisit if this type is needed.
@@ -229,7 +228,7 @@ class BrowserWindowInterface : public content::PageNavigator {
   // Opens a URL, with the given disposition. This is a convenience wrapper
   // around OpenURL from content::PageNavigator.
   virtual void OpenGURL(const GURL& gurl,
-                        WindowOpenDisposition disposition) = 0;
+                        ui::mojom::WindowOpenDisposition disposition) = 0;
 
   // Never nullptr.
   //

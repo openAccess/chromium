@@ -18,9 +18,10 @@
 #include "components/grit/optimization_guide_internals_resources.h"
 #include "components/grit/optimization_guide_internals_resources_map.h"
 #include "components/optimization_guide/core/delivery/prediction_manager.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
+#include "components/optimization_guide/core/model_quality/model_quality_logs_uploader_service.h"
+#include "components/optimization_guide/core/model_quality/model_quality_prefs.h"
 #include "components/optimization_guide/core/model_quality/model_quality_util.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
 #include "components/optimization_guide/optimization_guide_internals/webui/optimization_guide_internals.mojom.h"
 #include "components/optimization_guide/optimization_guide_internals/webui/optimization_guide_internals_page_handler_impl.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
@@ -63,7 +64,7 @@ void OptimizationGuideInternalsUI::CreatePageHandler(
     mojo::PendingRemote<optimization_guide_internals::mojom::Page> page) {
   Profile* profile = Profile::FromWebUI(web_ui());
   auto* service = OptimizationGuideKeyedServiceFactory::GetForProfile(profile);
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M161);
   OptimizationGuideLogger* optimization_guide_logger =
       service->GetOptimizationGuideLogger();
   optimization_guide_internals_page_handler_ =
@@ -87,9 +88,8 @@ void OptimizationGuideInternalsUI::RequestLoggedModelQualityClientIds(
     RequestLoggedModelQualityClientIdsCallback callback) {
   PrefService* local_state = g_browser_process->local_state();
 
-  int64_t client_id =
-      local_state->GetInt64(optimization_guide::model_execution::prefs::
-                                localstate::kModelQualityLoggingClientId);
+  int64_t client_id = local_state->GetInt64(
+      optimization_guide::prefs::localstate::kModelQualityLoggingClientId);
 
   // If the client id is zero no client id is set, in that case do nothing.
   if (client_id == 0) {

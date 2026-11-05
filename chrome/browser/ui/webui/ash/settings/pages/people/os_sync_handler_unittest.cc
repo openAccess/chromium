@@ -15,11 +15,13 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/webui/ash/settings/pref_names.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/test_chrome_web_ui_controller_factory.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/signin/fake_identity_manager_provider.h"
+#include "chromeos/ash/components/sync/fake_sync_service_provider.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/sync/base/features.h"
 #include "components/sync/base/pref_names.h"
@@ -94,11 +96,6 @@ void CheckConfigDataTypeArguments(const base::DictValue& dictionary,
             config == SYNC_ALL_OS_TYPES || wallpaper_enabled);
 }
 
-std::unique_ptr<KeyedService> BuildTestSyncService(
-    content::BrowserContext* context) {
-  return std::make_unique<syncer::TestSyncService>();
-}
-
 class TestWebUIProvider
     : public TestChromeWebUIControllerFactory::WebUIProvider {
  public:
@@ -128,14 +125,31 @@ class OsSyncHandlerTest : public ChromeRenderViewHostTestHarness {
     // Sign in the user.
     identity_test_env_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile());
-    identity_test_env_adaptor_->identity_test_env()->SetPrimaryAccount(
-        "test@gmail.com", primary_account_consent_level_);
+    CoreAccountInfo account_info =
+        identity_test_env_adaptor_->identity_test_env()->SetPrimaryAccount(
+            "test@gmail.com", primary_account_consent_level_);
 
-    sync_service_ = static_cast<syncer::TestSyncService*>(
-        SyncServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-            profile(), base::BindRepeating(&BuildTestSyncService)));
-    user_settings_ = sync_service_->GetUserSettings();
-    sync_service_->SetSignedIn(primary_account_consent_level_);
+    // OnProfileCreationStarted() doesn't run in this test, so nothing else
+    // annotates `profile()` with its AccountId, nor registers an
+    // ash::IdentityManagerProvider; do both here.
+    const AccountId account_id =
+        AccountId::FromUserEmailGaiaId(account_info.email, account_info.gaia);
+    ash::AnnotatedAccountId::Set(profile(), account_id);
+    identity_manager_provider_ =
+        std::make_unique<ash::FakeIdentityManagerProvider>();
+    identity_manager_provider_->SetIdentityManagerForAccount(
+        account_id,
+        identity_test_env_adaptor_->identity_test_env()->identity_manager());
+
+    user_settings_ = sync_service_.GetUserSettings();
+    sync_service_.SetSignedIn(primary_account_consent_level_);
+
+    // OSSyncHandler reaches the SyncService through ash::SyncServiceProvider,
+    // so the test owns the service and registers it there; nothing consults
+    // the Profile-keyed factory any more.
+    sync_service_provider_ = std::make_unique<ash::FakeSyncServiceProvider>();
+    sync_service_provider_->SetSyncServiceForAccount(account_id,
+                                                     &sync_service_);
 
     auto handler = std::make_unique<OSSyncHandler>(profile());
     handler_ = handler.get();
@@ -145,7 +159,11 @@ class OsSyncHandlerTest : public ChromeRenderViewHostTestHarness {
   }
 
   void TearDown() override {
+    identity_manager_provider_.reset();
     web_ui_.reset();
+    // Destroying the handler removes its SyncService observer, which goes
+    // through the provider, so the provider has to outlive `web_ui_`.
+    sync_service_provider_.reset();
     identity_test_env_adaptor_.reset();
     ChromeRenderViewHostTestHarness::TearDown();
   }
@@ -183,10 +201,13 @@ class OsSyncHandlerTest : public ChromeRenderViewHostTestHarness {
 
   MockNewWindowDelegate& new_window_delegate() { return new_window_delegate_; }
 
-  raw_ptr<syncer::TestSyncService, DanglingUntriaged> sync_service_ = nullptr;
+  // Declared before `sync_service_provider_`, which holds a pointer to it.
+  syncer::TestSyncService sync_service_;
   raw_ptr<syncer::SyncUserSettings, DanglingUntriaged> user_settings_ = nullptr;
   std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
       identity_test_env_adaptor_;
+  std::unique_ptr<ash::FakeIdentityManagerProvider> identity_manager_provider_;
+  std::unique_ptr<ash::FakeSyncServiceProvider> sync_service_provider_;
   std::unique_ptr<TestWebUI> web_ui_;
   TestWebUIProvider test_web_ui_provider_;
   std::unique_ptr<TestChromeWebUIControllerFactory> test_web_ui_factory_;
@@ -210,7 +231,7 @@ TEST_F(OsSyncHandlerTest, OsSyncPrefsSentOnNavigateToPage) {
 
 TEST_F(OsSyncHandlerTest, OpenConfigPageBeforeSyncEngineInitialized) {
   // Sync engine is stopped initially and will start up later.
-  sync_service_->SetMaxTransportState(
+  sync_service_.SetMaxTransportState(
       SyncService::TransportState::START_DEFERRED);
 
   // Navigate to the page.
@@ -220,8 +241,8 @@ TEST_F(OsSyncHandlerTest, OpenConfigPageBeforeSyncEngineInitialized) {
   EXPECT_EQ(0U, web_ui_->call_data().size());
 
   // Now, act as if the SyncService has started up.
-  sync_service_->SetMaxTransportState(SyncService::TransportState::ACTIVE);
-  handler_->OnStateChanged(sync_service_);
+  sync_service_.SetMaxTransportState(SyncService::TransportState::ACTIVE);
+  handler_->OnStateChanged(&sync_service_);
 
   // Update for sync prefs is sent.
   ASSERT_EQ(1U, web_ui_->call_data().size());
@@ -343,9 +364,6 @@ class OsSyncHandlerTestWithoutSyncConsent : public OsSyncHandlerTest {
 TEST_F(
     OsSyncHandlerTestWithoutSyncConsent,
     NavigateToPageClearsSyncFeatureDisabledViaDashboardWhenFlagEnabledAndNoSyncConsent) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(syncer::kReplaceSyncPromosWithSignInPromos);
-
   static_cast<syncer::TestSyncUserSettings*>(user_settings_)
       ->SetSyncFeatureDisabledViaDashboard();
   ASSERT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());
@@ -357,25 +375,7 @@ TEST_F(
 TEST_F(
     OsSyncHandlerTest,
     NavigateToPageDoesNotClearSyncFeatureDisabledViaDashboardWithSyncConsent) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(syncer::kReplaceSyncPromosWithSignInPromos);
-
   // ConsentLevel::kSync is set by default in SetUp().
-  static_cast<syncer::TestSyncUserSettings*>(user_settings_)
-      ->SetSyncFeatureDisabledViaDashboard();
-  ASSERT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());
-
-  handler_->HandleDidNavigateToOsSyncPage(base::ListValue());
-  EXPECT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());
-}
-
-TEST_F(
-    OsSyncHandlerTestWithoutSyncConsent,
-    NavigateToPageDoesNotClearSyncFeatureDisabledViaDashboardWhenFlagDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      syncer::kReplaceSyncPromosWithSignInPromos);
-
   static_cast<syncer::TestSyncUserSettings*>(user_settings_)
       ->SetSyncFeatureDisabledViaDashboard();
   ASSERT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());

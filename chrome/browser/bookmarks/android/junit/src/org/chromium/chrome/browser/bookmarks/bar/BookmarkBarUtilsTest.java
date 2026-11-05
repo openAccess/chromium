@@ -15,7 +15,6 @@ import static org.chromium.base.test.util.HistogramWatcher.newBuilder;
 import android.app.Activity;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -31,6 +30,7 @@ import org.robolectric.annotation.Config;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features;
+import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils.BookmarkBarClickModifier;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils.BookmarkBarSettingChangeOrigin;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils.BookmarkBarShownReason;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils.BookmarkBarVisibilityStateOnStartUpReason;
@@ -133,7 +133,6 @@ public class BookmarkBarUtilsTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @SmallTest
     public void testShowBookmarkBar_UserPrefs_Set() {
         mOverrideContextRule.setIsDesktop(true);
         BookmarkBarUtils.setUserPrefsShowBookmarksBar(mProfile, true, false);
@@ -141,7 +140,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testShowBookmarkBar_UserPrefs_isEnabled_Default() {
         mOverrideContextRule.setIsDesktop(true);
         setBooleanPref(
@@ -154,7 +152,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testShowBookmarkBar_UserPrefs_isEnabled_WithUserChoice() {
         mOverrideContextRule.setIsDesktop(true);
         setBooleanPref(
@@ -167,7 +164,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testShowBookmarkBar_UserPrefs_isEnabled_Policy_Mandatory() {
         mOverrideContextRule.setIsDesktop(true);
         setBooleanPref(
@@ -180,7 +176,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testShowBookmarkBar_UserPrefs_isEnabled_Policy_Recommended() {
         mOverrideContextRule.setIsDesktop(true);
         setBooleanPref(
@@ -193,7 +188,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testShowBookmarkBar_UserPrefs_isEnabled_Policy_Recommended_Overridden() {
         mOverrideContextRule.setIsDesktop(true);
         setBooleanPref(
@@ -210,7 +204,6 @@ public class BookmarkBarUtilsTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @SmallTest
     public void testShowBookmarkBar_DevicePrefs_isEnabled_Default() {
         mOverrideContextRule.setIsDesktop(false);
         ContextUtils.getAppSharedPreferences().edit().clear().apply();
@@ -224,7 +217,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testShowBookmarkBar_DevicePrefs_isEnabled_WithUserChoice() {
         mOverrideContextRule.setIsDesktop(false);
         ContextUtils.getAppSharedPreferences().edit().clear().apply();
@@ -241,7 +233,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testShowBookmarkBar_DevicePrefs_isEnabled_Policy_Mandatory() {
         mOverrideContextRule.setIsDesktop(false);
         ContextUtils.getAppSharedPreferences().edit().clear().apply();
@@ -255,7 +246,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testShowBookmarkBar_DevicePrefs_isEnabled_Policy_Recommended() {
         mOverrideContextRule.setIsDesktop(false);
         ContextUtils.getAppSharedPreferences().edit().clear().apply();
@@ -271,7 +261,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void
             testShowBookmarkBar_DevicePrefs_isEnabled_Policy_Recommended_OverriddenByUserPrefs() {
         mOverrideContextRule.setIsDesktop(false);
@@ -290,7 +279,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void
             testShowBookmarkBar_DevicePrefs_isEnabled_Policy_Recommended_OverriddenByDevicePrefs() {
         mOverrideContextRule.setIsDesktop(false);
@@ -310,7 +298,6 @@ public class BookmarkBarUtilsTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @SmallTest
     public void testBookmarkBarVisibilityState_UserPrefs_Set() {
         mOverrideContextRule.setIsDesktop(true);
         BookmarkBarUtils.setUserPrefsBookmarkBarVisibilityState(
@@ -324,7 +311,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testBookmarkBarVisibilityState_UserPrefs_isEnabled_Default() {
         mOverrideContextRule.setIsDesktop(true);
         setIntegerPref(
@@ -339,7 +325,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testBookmarkBarVisibilityState_UserPrefs_isEnabled_WithUserChoice() {
         mOverrideContextRule.setIsDesktop(true);
         setIntegerPref(
@@ -354,7 +339,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testBookmarkBarVisibilityState_UserPrefs_isEnabled_Policy_Mandatory() {
         mOverrideContextRule.setIsDesktop(true);
         setIntegerPref(
@@ -369,7 +353,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testBookmarkBarVisibilityState_UserPrefs_isEnabled_Policy_Recommended() {
         mOverrideContextRule.setIsDesktop(true);
         setIntegerPref(
@@ -384,7 +367,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testBookmarkBarVisibilityState_UserPrefs_isEnabled_Policy_Recommended_Overridden() {
         mOverrideContextRule.setIsDesktop(true);
         setIntegerPref(
@@ -403,7 +385,6 @@ public class BookmarkBarUtilsTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @SmallTest
     public void testBookmarkBarVisibilityState_DevicePrefs_isEnabled_Default() {
         mOverrideContextRule.setIsDesktop(false);
         ContextUtils.getAppSharedPreferences().edit().clear().apply();
@@ -419,7 +400,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testBookmarkBarVisibilityState_DevicePrefs_isEnabled_WithUserChoice() {
         mOverrideContextRule.setIsDesktop(false);
         ContextUtils.getAppSharedPreferences().edit().clear().apply();
@@ -438,7 +418,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testBookmarkBarVisibilityState_DevicePrefs_isEnabled_Policy_Mandatory() {
         mOverrideContextRule.setIsDesktop(false);
         ContextUtils.getAppSharedPreferences().edit().clear().apply();
@@ -454,7 +433,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testBookmarkBarVisibilityState_DevicePrefs_isEnabled_Policy_Recommended() {
         mOverrideContextRule.setIsDesktop(false);
         ContextUtils.getAppSharedPreferences().edit().clear().apply();
@@ -470,7 +448,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void
             testBookmarkBarVisibilityState_DevicePrefs_isEnabled_Policy_Recommended_OverriddenByUserPrefs() {
         mOverrideContextRule.setIsDesktop(false);
@@ -489,7 +466,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void
             testBookmarkBarVisibilityState_DevicePrefs_isEnabled_Policy_Recommended_OverriddenByDevicePrefs() {
         mOverrideContextRule.setIsDesktop(false);
@@ -514,7 +490,6 @@ public class BookmarkBarUtilsTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @SmallTest
     public void testIsBookmarkBarManagedByPolicy() {
         assertFalse(
                 "Should be false for null profile.",
@@ -537,7 +512,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testIsBookmarkBarRecommended() {
         assertFalse(
                 "Should be false for null profile.",
@@ -558,7 +532,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testIsActivityStateBookmarkBarCompatible() {
         // Case: Below "w412dp" threshold w/ feature disabled.
         RuntimeEnvironment.setQualifiers("w411dp");
@@ -580,14 +553,12 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw599dp")
     public void testIsDeviceBookmarkBarCompatibleOnPhone() {
         assertFalse(BookmarkBarUtils.isDeviceBookmarkBarCompatible(mActivity));
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw600dp")
     public void testIsDeviceBookmarkBarCompatibleOnTablet() {
         assertTrue(BookmarkBarUtils.isDeviceBookmarkBarCompatible(mActivity));
@@ -598,7 +569,6 @@ public class BookmarkBarUtilsTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @SmallTest
     public void testIsBookmarkBarVisible_Desktop() {
         mOverrideContextRule.setIsDesktop(true);
 
@@ -622,7 +592,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testIsBookmarkBarVisible_Tablet() {
         mOverrideContextRule.setIsDesktop(false);
 
@@ -640,7 +609,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testIsBookmarkBarVisible_XR() {
         mOverrideContextRule.setIsDesktop(false);
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
@@ -657,7 +625,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testMetrics_SetUserPrefsShowBookmarksBar() {
         mOverrideContextRule.setIsDesktop(true);
 
@@ -688,7 +655,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testMetrics_SetDevicePrefShowBookmarksBar() {
         mOverrideContextRule.setIsDesktop(false);
 
@@ -717,7 +683,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testMetrics_RecordStartUpMetrics_Desktop() {
         mOverrideContextRule.setIsDesktop(true);
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
@@ -750,7 +715,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     public void testMetrics_RecordStartUpMetrics_Tablet() {
         mOverrideContextRule.setIsDesktop(false);
         BookmarkBarUtils.setActivityStateBookmarkBarCompatibleForTesting(true);
@@ -799,7 +763,6 @@ public class BookmarkBarUtilsTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @SmallTest
     @Features.EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testGetBookmarkBarVisibilityState_Desktop() {
         mOverrideContextRule.setIsDesktop(true);
@@ -842,7 +805,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     @Features.EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testGetBookmarkBarVisibilityState_Tablet() {
         mOverrideContextRule.setIsDesktop(false);
@@ -870,7 +832,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     @Features.EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testGetBookmarkBarVisibilityState_XR() {
         mOverrideContextRule.setIsDesktop(false);
@@ -892,7 +853,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     @Features.EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testMetrics_SetUserPrefsBookmarkBarVisibilityState() {
         mOverrideContextRule.setIsDesktop(true);
@@ -985,7 +945,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     @Features.EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testMetrics_SetDevicePrefBookmarkBarVisibilityState() {
         mOverrideContextRule.setIsDesktop(false);
@@ -1075,7 +1034,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     @Features.EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testIsBookmarkBarVisibleForState_Desktop() {
         mOverrideContextRule.setIsDesktop(true);
@@ -1105,7 +1063,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     @Features.EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testIsBookmarkBarVisibleForState_Tablet() {
         mOverrideContextRule.setIsDesktop(false);
@@ -1141,7 +1098,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     @Features.EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testMetrics_RecordStartUpMetricsForVisibilityState_Desktop() {
         mOverrideContextRule.setIsDesktop(true);
@@ -1194,7 +1150,6 @@ public class BookmarkBarUtilsTest {
     }
 
     @Test
-    @SmallTest
     @Features.EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testMetrics_RecordStartUpMetricsForVisibilityState_Tablet() {
         mOverrideContextRule.setIsDesktop(false);
@@ -1264,5 +1219,83 @@ public class BookmarkBarUtilsTest {
                         .build();
         BookmarkBarUtils.recordStartUpMetricsForVisibilityState(mProfile);
         watcher4.assertExpected();
+    }
+
+    @Test
+    public void testGetClickModifier() {
+        assertEquals(
+                BookmarkBarClickModifier.MIDDLE_CLICK,
+                BookmarkBarUtils.getClickModifier(
+                        /* isCtrlPressed= */ false,
+                        /* isShiftPressed= */ false,
+                        /* isMiddleClick= */ true));
+        assertEquals(
+                BookmarkBarClickModifier.MIDDLE_CLICK,
+                BookmarkBarUtils.getClickModifier(
+                        /* isCtrlPressed= */ true,
+                        /* isShiftPressed= */ false,
+                        /* isMiddleClick= */ true));
+        assertEquals(
+                BookmarkBarClickModifier.MIDDLE_CLICK,
+                BookmarkBarUtils.getClickModifier(
+                        /* isCtrlPressed= */ true,
+                        /* isShiftPressed= */ true,
+                        /* isMiddleClick= */ true));
+        assertEquals(
+                BookmarkBarClickModifier.CTRL,
+                BookmarkBarUtils.getClickModifier(
+                        /* isCtrlPressed= */ true,
+                        /* isShiftPressed= */ false,
+                        /* isMiddleClick= */ false));
+        assertEquals(
+                BookmarkBarClickModifier.CTRL,
+                BookmarkBarUtils.getClickModifier(
+                        /* isCtrlPressed= */ true,
+                        /* isShiftPressed= */ true,
+                        /* isMiddleClick= */ false));
+        assertEquals(
+                BookmarkBarClickModifier.SHIFT,
+                BookmarkBarUtils.getClickModifier(
+                        /* isCtrlPressed= */ false,
+                        /* isShiftPressed= */ true,
+                        /* isMiddleClick= */ false));
+        assertEquals(
+                BookmarkBarClickModifier.NO_MODIFIER,
+                BookmarkBarUtils.getClickModifier(
+                        /* isCtrlPressed= */ false,
+                        /* isShiftPressed= */ false,
+                        /* isMiddleClick= */ false));
+    }
+
+    @Test
+    public void testRecordClickModifier() {
+        var watcher =
+                newBuilder()
+                        .expectIntRecord(
+                                BookmarkBarUtils.BOOKMARK_BAR_CLICK_MODIFIER,
+                                BookmarkBarClickModifier.CTRL)
+                        .expectIntRecord(
+                                BookmarkBarUtils.BOOKMARK_BAR_CLICK_MODIFIER,
+                                BookmarkBarClickModifier.SHIFT)
+                        .expectIntRecord(
+                                BookmarkBarUtils.BOOKMARK_BAR_CLICK_MODIFIER,
+                                BookmarkBarClickModifier.MIDDLE_CLICK)
+                        .expectIntRecord(
+                                BookmarkBarUtils.BOOKMARK_BAR_CLICK_MODIFIER,
+                                BookmarkBarClickModifier.NO_MODIFIER)
+                        .build();
+
+        BookmarkBarUtils.recordClickModifier(
+                /* isCtrlPressed= */ true, /* isShiftPressed= */ false, /* isMiddleClick= */ false);
+        BookmarkBarUtils.recordClickModifier(
+                /* isCtrlPressed= */ false, /* isShiftPressed= */ true, /* isMiddleClick= */ false);
+        BookmarkBarUtils.recordClickModifier(
+                /* isCtrlPressed= */ false, /* isShiftPressed= */ false, /* isMiddleClick= */ true);
+        BookmarkBarUtils.recordClickModifier(
+                /* isCtrlPressed= */ false,
+                /* isShiftPressed= */ false,
+                /* isMiddleClick= */ false);
+
+        watcher.assertExpected();
     }
 }

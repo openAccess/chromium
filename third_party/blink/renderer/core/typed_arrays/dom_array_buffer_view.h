@@ -40,13 +40,13 @@ class CORE_EXPORT DOMArrayBufferView : public ScriptWrappable {
   ~DOMArrayBufferView() override = default;
 
   DOMArrayBuffer* buffer() const {
-    DCHECK(!IsShared());
+    CHECK(!IsShared());
     DCHECK(dom_array_buffer_);
     return static_cast<DOMArrayBuffer*>(dom_array_buffer_.Get());
   }
 
   DOMSharedArrayBuffer* BufferShared() const {
-    DCHECK(IsShared());
+    CHECK(IsShared());
     DCHECK(dom_array_buffer_);
     return static_cast<DOMSharedArrayBuffer*>(dom_array_buffer_.Get());
   }
@@ -129,9 +129,7 @@ class CORE_EXPORT DOMArrayBufferView : public ScriptWrappable {
     ScriptWrappable::Trace(visitor);
   }
 
-  void DetachForTesting() { dom_array_buffer_->Detach(); }
-
-  bool IsDetached() const { return dom_array_buffer_->IsDetached(); }
+  bool IsDetached() const { return !IsShared() && buffer()->IsDetached(); }
 
  protected:
   DOMArrayBufferView(DOMArrayBufferBase* dom_array_buffer, size_t byte_offset)

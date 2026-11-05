@@ -220,9 +220,9 @@ class ContentAutofillDriver : public AutofillDriver,
   // autofill::AutofillDriver:
   void ExposeDomNodeIdsInAllFrames() override;
   void TriggerFormExtractionInAllFrames(
+      bool force,
       base::OnceCallback<void(bool success)> form_extraction_finished_callback)
       override;
-  void ClearFormCacheInAllFrames() override;
   void RendererShouldClearPreviewedForm() override;
 
   // Group (1b): browser -> renderer events, routed (see comment above).
@@ -247,9 +247,6 @@ class ContentAutofillDriver : public AutofillDriver,
   void SendEmailVerificationToken(FieldGlobalId email_field_id,
                                   const std::string& email,
                                   const std::string& token) override;
-  void UpdateEmailVerificationState(
-      const FieldGlobalId& email_field_id,
-      mojom::EmailVerificationState state) override;
   void ExtractFormWithField(FieldGlobalId field_id,
                             BrowserFormHandler final_handler) override;
   void RendererShouldAcceptDataListSuggestion(
@@ -286,7 +283,8 @@ class ContentAutofillDriver : public AutofillDriver,
   // Group (1d): browser -> renderer events, unrouted (see comment above).
   // autofill::AutofillDriver:
   void TriggerFormExtractionInDriverFrame(
-      AutofillDriverRouterAndFormForestPassKey pass_key) override;
+      AutofillDriverRouterAndFormForestPassKey pass_key,
+      bool force) override;
 
   // Group (2a): renderer -> browser events, broadcast (see comment above).
   // mojom::AutofillDriver:
@@ -333,8 +331,8 @@ class ContentAutofillDriver : public AutofillDriver,
   void DidDetectJavaScriptAutofill(
       const FormData& form,
       FieldRendererId trigger_field_id,
-      std::vector<mojom::JavaScriptFieldModificationPtr> field_modifications)
-      override;
+      std::vector<mojom::JavaScriptFieldModificationPtr> field_modifications,
+      base::TimeTicks detection_start_timestamp) override;
 
   // The functions below this line do not cross the IPC boundary.
   bool IsSafeToFill(const FormFieldData& field,

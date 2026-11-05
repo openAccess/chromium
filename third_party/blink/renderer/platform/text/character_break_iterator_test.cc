@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/platform/text/character_break_iterator.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace blink {
@@ -13,7 +14,7 @@ class CharacterBreakIteratorTest : public testing::Test {};
 
 TEST_F(CharacterBreakIteratorTest, Offsets16) {
   struct {
-    const char16_t* source;
+    StringView source;
     // Break offsets, other than 0 and the source length.
     const std::initializer_list<int> offsets;
   } kCases[] = {
@@ -26,7 +27,7 @@ TEST_F(CharacterBreakIteratorTest, Offsets16) {
       {u"a\U0001F635\u200d\U0001f4ABz", {1, 6}},
   };
   for (const auto& test_case : kCases) {
-    StringView text(test_case.source);
+    StringView text = test_case.source;
     SCOPED_TRACE("Source: " + text.Utf8());
     int length = static_cast<int>(text.length());
     CharacterBreakIterator iter(text);
@@ -41,7 +42,7 @@ TEST_F(CharacterBreakIteratorTest, Offsets16) {
     EXPECT_EQ(length, iter.Next());
 
     int offset = length;
-    for (int expected_offset : base::Reversed(test_case.offsets)) {
+    for (int expected_offset : std::views::reverse(test_case.offsets)) {
       offset = iter.Preceding(offset);
       EXPECT_EQ(expected_offset, offset);
     }

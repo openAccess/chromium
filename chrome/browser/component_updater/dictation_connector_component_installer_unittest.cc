@@ -4,6 +4,8 @@
 
 #include "chrome/browser/component_updater/dictation_connector_component_installer.h"
 
+#include <stdint.h>
+
 #include <memory>
 
 #include "base/files/file_path.h"
@@ -85,6 +87,23 @@ TEST_F(DictationConnectorComponentInstallerTest,
   DictationConnectorComponentInstallerPolicy().GetHash(&hash);
   EXPECT_EQ(crx_file::id_util::GenerateIdFromHash(hash),
             extension_misc::kDictationConnectorExtensionId);
+}
+
+TEST_F(DictationConnectorComponentInstallerTest,
+       GetInstallerAttributesDefaultEmpty) {
+  DictationConnectorComponentInstallerPolicy policy;
+  EXPECT_TRUE(policy.GetInstallerAttributes().empty());
+}
+
+TEST_F(DictationConnectorComponentInstallerTest,
+       GetInstallerAttributesFromFeatureParam) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      dictation::kDictation,
+      {{dictation::kDictationConnectorTag.name, "canary"}});
+  DictationConnectorComponentInstallerPolicy policy;
+  update_client::InstallerAttributes expected = {{"connector_tag", "canary"}};
+  EXPECT_EQ(policy.GetInstallerAttributes(), expected);
 }
 
 }  // namespace component_updater

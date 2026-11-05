@@ -18,6 +18,7 @@
 #include "third_party/blink/renderer/modules/accessibility/ax_node_object.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object-inl.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -189,46 +190,52 @@ const AXPosition AXPosition::FromPosition(
   const Node* container_node = parent_anchored_position.AnchorNode();
   DCHECK(container_node);
   const AXObject* container = ax_object_cache.Get(container_node);
-  if (!container)
-    return {};
-
-  if (container_node->IsTextNode()) {
-    if (!container->IsIncludedInTree()) {
-      // Find the closest DOM sibling that is unignored in the accessibility
+  // A node can exist in the DOM without an AX object. For example, in
+  // <div><span><img>\n</span></div>, container_node can be the collapsed
+  // newline text node and container is null. Keep going to find a nearby AX
+  // position. The same applies to a <script> element and its contents.
+  if (!container || container_node->IsTextNode()) {
+    if (!container || !container->IsIncludedInTree()) {
+      const ContainerNode* parent_node = container_node->parentNode();
+      const AXObject* parent = ax_object_cache.Get(parent_node);
+      // In <div><span><img>\n</span><p>After</p></div>, use the <div> as the
+      // search boundary and the newline as the starting point. This lets the
+      // search reach "After" outside the excluded <span>.
+      while (parent_node && (!parent || !parent->IsIncludedInTree())) {
+        parent_node = parent_node->parentNode();
+        parent = ax_object_cache.Get(parent_node);
+      }
+      if (!parent) {
+        return {};
+      }
+      // Find the closest DOM node that is included in the accessibility
       // tree.
       switch (adjustment_behavior) {
         case AXPositionAdjustmentBehavior::kMoveRight: {
           const AXObject* next_container = FindNeighboringUnignoredObject(
-              *document, *container_node, container_node->parentNode(),
-              adjustment_behavior, ax_object_cache);
+              *document, *container_node, parent_node, adjustment_behavior,
+              ax_object_cache);
           if (next_container) {
             return CreatePositionBeforeObject(*next_container,
                                               adjustment_behavior);
           }
 
-          // Do the next best thing by moving up to the unignored parent if it
-          // exists.
-          if (!container || !container->ParentObjectIncludedInTree())
-            return {};
-          return CreateLastPositionInObject(
-              *container->ParentObjectIncludedInTree(), adjustment_behavior);
+          // No included object remains between the position and the parent's
+          // end.
+          return CreateLastPositionInObject(*parent, adjustment_behavior);
         }
 
         case AXPositionAdjustmentBehavior::kMoveLeft: {
           const AXObject* previous_container = FindNeighboringUnignoredObject(
-              *document, *container_node, container_node->parentNode(),
-              adjustment_behavior, ax_object_cache);
+              *document, *container_node, parent_node, adjustment_behavior,
+              ax_object_cache);
           if (previous_container) {
             return CreatePositionAfterObject(*previous_container,
                                              adjustment_behavior);
           }
 
-          // Do the next best thing by moving up to the unignored parent if it
-          // exists.
-          if (!container || !container->ParentObjectIncludedInTree())
-            return {};
-          return CreateFirstPositionInObject(
-              *container->ParentObjectIncludedInTree(), adjustment_behavior);
+          // No included object precedes the position within this parent.
+          return CreateFirstPositionInObject(*parent, adjustment_behavior);
         }
       }
     }
@@ -335,12 +342,11 @@ const AXPosition AXPosition::FromPosition(
                 DynamicTo<ContainerNode>(container_node), adjustment_behavior,
                 ax_object_cache);
             if (previous_child) {
-              // |CreatePositionAfterObject| cannot be used here because it will
-              // try to create a position before the object that comes after
-              // |previous_child|, which in this case is the ignored object
-              // itself.
-              return CreateLastPositionInObject(*previous_child,
-                                                adjustment_behavior);
+              // Use a position after the object, rather than inside it.
+              // In <div><img>\n<p>After</p></div>, offset 0 inside the image
+              // would put the endpoint before the image.
+              return CreatePositionAfterObject(*previous_child,
+                                               adjustment_behavior);
             }
 
             return CreateFirstPositionInObject(*container, adjustment_behavior);
@@ -527,9 +533,9 @@ bool AXPosition::IsValid(String* failure_reason) const {
   if (IsTextPosition()) {
     if (text_offset_or_child_index_ > MaxTextOffset()) {
       if (failure_reason) {
-        *failure_reason = String::Format(
-            "\nPosition invalid: text offset too large.\n%d vs. %d.",
-            text_offset_or_child_index_, MaxTextOffset());
+        *failure_reason =
+            Format("\nPosition invalid: text offset too large.\n{} vs. {}.",
+                   text_offset_or_child_index_, MaxTextOffset());
       }
       return false;
     }
@@ -537,10 +543,10 @@ bool AXPosition::IsValid(String* failure_reason) const {
     if (text_offset_or_child_index_ >
         container_object_->ChildCountIncludingIgnored()) {
       if (failure_reason) {
-        *failure_reason = String::Format(
-            "\nPosition invalid: child index too large.\n%d vs. %d.",
-            text_offset_or_child_index_,
-            container_object_->ChildCountIncludingIgnored());
+        *failure_reason =
+            Format("\nPosition invalid: child index too large.\n{} vs. {}.",
+                   text_offset_or_child_index_,
+                   container_object_->ChildCountIncludingIgnored());
       }
       return false;
     }
@@ -924,7 +930,7 @@ const PositionWithAffinity AXPosition::ToPositionWithAffinity(
   // Return directly without further offset mapping.
   if (adjusted_position.container_object_->RoleValue() ==
           ax::mojom::blink::Role::kStaticText &&
-      layout_object && layout_object->StyleRef().ShouldPreserveWhiteSpaces()) {
+      layout_object && layout_object->Style().ShouldPreserveWhiteSpaces()) {
     return PositionWithAffinity(
         Position(*container_node, adjusted_position.TextOffset()), affinity_);
   }
@@ -1129,7 +1135,8 @@ bool operator<(const AXPosition& a, const AXPosition& b) {
     return false;
   if (ancestor == a.ContainerObject()) {
     DCHECK(!a.IsTextPosition());
-    index_in_ancestor1 = a.ChildIndex();
+    // A position before a child is also before positions inside that child.
+    return a.ChildIndex() <= index_in_ancestor2;
   }
   if (ancestor == b.ContainerObject()) {
     DCHECK(!b.IsTextPosition());
@@ -1173,7 +1180,8 @@ bool operator>(const AXPosition& a, const AXPosition& b) {
   }
   if (ancestor == b.ContainerObject()) {
     DCHECK(!b.IsTextPosition());
-    index_in_ancestor2 = b.ChildIndex();
+    // A position inside a child is after a position before that child.
+    return index_in_ancestor1 >= b.ChildIndex();
   }
   return index_in_ancestor1 > index_in_ancestor2;
 }

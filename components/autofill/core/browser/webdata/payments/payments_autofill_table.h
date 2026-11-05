@@ -94,7 +94,7 @@ class VirtualCardUsageData;
 //                      CardIssuer.Issuer enum from the Chrome Sync response.
 //                      For example, GOOGLE or ISSUER_UNKNOWN.
 //   instrument_id      Credit card id assigned by the server to identify this
-//                      card. This is opaque to the client, and |id| is the
+//                      card. This is opaque to the client, and `id` is the
 //                      legacy version of this.
 //   virtual_card_enrollment_state
 //                      An enum indicating the virtual card enrollment state of
@@ -214,12 +214,12 @@ class VirtualCardUsageData;
 //
 //   offer_id           The unique server ID for this offer data.
 //   offer_reward_amount
-//                      The string including the reward details of the offer.
-//                      Could be either percentage cashback (XXX%) or fixed
-//                      amount cashback (XXX$).
+//                      TODO(crbug.com/546252995): Rename `offer_reward_amount`
+//                      to `offer_short_title`.
+//                      The short title of the offer.
 //   expiry             The timestamp when the offer will go expired. Expired
 //                      offers will not be shown in the frontend.
-//   offer_details_url  The link leading to the offer details page on Gpay app.
+//   offer_details_url  The link leading to the offer terms and conditions page.
 //   promo_code         The promo code to be autofilled for a promo code offer.
 //   value_prop_text    Server-driven UI string to explain the value of the
 //                      offer.
@@ -228,22 +228,14 @@ class VirtualCardUsageData;
 //   usage_instructions_text
 //                      Server-driven UI string to instruct the user on how they
 //                      can redeem the offer.
-// -----------------------------------------------------------------------------
-// offer_eligible_instrument
-//                      Contains the mapping of credit cards and card linked
-//                      offers.
-//
-//   offer_id           Int 64 to identify the relevant offer. Matches the
-//                      offer_id in the offer_data table.
-//   instrument_id      The new form of instrument id of the card. Will not be
-//                      used for now.
+//   issue_time         The timestamp when the offer was issued.
 // -----------------------------------------------------------------------------
 // offer_merchant_domain
 //                      Contains the mapping of merchant domains and card linked
 //                      offers.
 //
 //   offer_id           Int 64 to identify the relevant offer. Matches the
-//                      offer_id in the offer_data table.
+//                      `offer_id` in the `offer_data` table.
 //   merchant_domain    List of full origins for merchant websites on which
 //                      this offer would apply.
 // -----------------------------------------------------------------------------
@@ -371,7 +363,7 @@ class PaymentsAutofillTable : public WebDatabaseTable {
 
   ~PaymentsAutofillTable() override;
 
-  // Retrieves the PaymentsAutofillTable* owned by |db|.
+  // Retrieves the PaymentsAutofillTable* owned by `db`.
   static PaymentsAutofillTable* FromWebDatabase(WebDatabase* db);
 
   // WebDatabaseTable:
@@ -411,7 +403,7 @@ class PaymentsAutofillTable : public WebDatabaseTable {
   // value indicates if `kLocalStoredCvcTable` got updated or not.
   bool UpdateLocalCvc(const std::string& guid, const std::u16string& cvc);
 
-  // Removes a row from the credit_cards table.  |guid| is the identifier of the
+  // Removes a row from the credit_cards table.  `guid` is the identifier of the
   // credit card to remove.
   bool RemoveCreditCard(const std::string& guid);
 
@@ -419,7 +411,7 @@ class PaymentsAutofillTable : public WebDatabaseTable {
   // production server cards are set directly via `SetServerCreditCards`.
   bool AddServerCreditCardForTesting(const CreditCard& credit_card);
 
-  // Retrieves a credit card with guid |guid|.
+  // Retrieves a credit card with guid `guid`.
   std::unique_ptr<CreditCard> GetCreditCard(const std::string& guid);
 
   // Retrieves the local/server credit cards in the database.
@@ -508,12 +500,22 @@ class PaymentsAutofillTable : public WebDatabaseTable {
   bool GetPaymentsCustomerData(
       std::unique_ptr<PaymentsCustomerData>& customer_data) const;
 
-  // |autofill_offer_data| must include all existing offers, since table will
-  // be completely overwritten.
+  // `autofill_offer_data` must include all existing offers, since the table
+  // will be completely overwritten.
   void SetAutofillOffers(
       const std::vector<AutofillOfferData>& autofill_offer_data);
+  // Returns the offers with the most recently issued ones first, followed by
+  // offers with an unknown (null) issue time. Ties are broken by offer id, so
+  // that the order is deterministic.
   bool GetAutofillOffers(
       std::vector<std::unique_ptr<AutofillOfferData>>* autofill_offer_data);
+
+  // Inserts `autofill_offer_data`, replacing any offer with the same offer id.
+  bool AddOrUpdateAutofillOffer(const AutofillOfferData& autofill_offer_data);
+  // Removes the offer with `offer_id`. Succeeds if no such offer exists.
+  bool RemoveAutofillOffer(std::string_view offer_id);
+  // Returns whether an offer with `offer_id` is stored.
+  bool AutofillOfferExists(std::string_view offer_id);
 
   // CRUD operations for VirtualCardUsageData in the virtual_card_usage_data
   // table
@@ -602,16 +604,19 @@ class PaymentsAutofillTable : public WebDatabaseTable {
   bool MigrateToVersion141AddCardBenefitSourceColumn();
   bool MigrateToVersion144AddCardCreationSourceColumn();
   bool MigrateToVersion153ReplaceOriginWithIsUserConfirmed();
+  bool MigrateToVersion156ClearLegacyOffers();
+  bool MigrateToVersion158OfferIdAsString();
+  bool MigrateToVersion160AddOfferIssueTime();
 
  private:
-  // Adds to |masked_credit_cards| and updates |server_card_metadata|.
+  // Adds to `masked_credit_cards` and updates `server_card_metadata`.
   // Must already be in a transaction.
   void AddMaskedCreditCards(const std::vector<CreditCard>& credit_cards);
 
-  // Deletes server credit cards by |id|. Returns true if a row was deleted.
+  // Deletes server credit cards by `id`. Returns true if a row was deleted.
   bool DeleteFromMaskedCreditCards(const std::string& id);
 
-  // Get the list of eligible merchant domains for the specific 'benefit_id`.
+  // Get the list of eligible merchant domains for the specific `benefit_id`.
   base::flat_set<url::Origin> GetMerchantDomainsForBenefitId(
       const CreditCardBenefitBase::BenefitId& benefit_id);
 
@@ -626,7 +631,6 @@ class PaymentsAutofillTable : public WebDatabaseTable {
   bool InitServerCreditCardCloudTokenDataTable();
   bool InitStoredCvcTable();
   bool InitOfferDataTable();
-  bool InitOfferEligibleInstrumentTable();
   bool InitOfferMerchantDomainTable();
   bool InitVirtualCardUsageDataTable();
   bool InitMaskedBankAccountsTable();

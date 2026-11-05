@@ -16,6 +16,8 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 using content::OpenURLParams;
 using content::Referrer;
@@ -60,9 +62,9 @@ GURL SpellingBubbleModel::GetHelpPageURL() const {
 }
 
 void SpellingBubbleModel::OpenHelpPage() {
-  OpenURLParams params(GetHelpPageURL(), Referrer(),
-                       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                       ui::PAGE_TRANSITION_LINK, false);
+  OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
+      GetHelpPageURL(), ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui::PAGE_TRANSITION_LINK);
   if (web_contents_) {
     web_contents_->OpenURL(params, /*navigation_handle_callback=*/{});
     return;
@@ -75,7 +77,7 @@ void SpellingBubbleModel::OpenHelpPage() {
 
 void SpellingBubbleModel::SetPref(bool enabled) {
   PrefService* pref = profile_->GetPrefs();
-  DCHECK(pref);
+  CHECK(pref, base::NotFatalUntil::M163);
   pref->SetBoolean(spellcheck::prefs::kSpellCheckUseSpellingService, enabled);
 
   // If the user has explicitly opted in to using the spelling service,

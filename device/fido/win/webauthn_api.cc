@@ -14,6 +14,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_util_win.h"
@@ -286,6 +287,8 @@ class WinWebAuthnApiImpl : public WinWebAuthnApi {
     api_version_ = get_api_version_number_ ? get_api_version_number_() : 0;
 
     FIDO_LOG(DEBUG) << "webauthn.dll version " << api_version_;
+    base::UmaHistogramSparse("WebAuthentication.Windows.ApiVersion",
+                             base::saturated_cast<int>(api_version_));
   }
 
   bool is_bound_ = false;
@@ -577,8 +580,14 @@ AuthenticatorMakeCredentialBlocking(WinWebAuthnApi* webauthn_api,
   }
   FIDO_LOG(DEBUG) << "WebAuthNAuthenticatorMakeCredential()="
                   << *credential_attestation;
-  return {MakeCredentialStatus::kSuccess,
-          ToAuthenticatorMakeCredentialResponse(*credential_attestation)};
+  std::optional<AuthenticatorMakeCredentialResponse> response =
+      ToAuthenticatorMakeCredentialResponse(*credential_attestation);
+  if (!response) {
+    FIDO_LOG(ERROR) << "Failed to parse WebAuthNAuthenticatorMakeCredential() "
+                       "response";
+    return {MakeCredentialStatus::kAuthenticatorResponseInvalid, std::nullopt};
+  }
+  return {MakeCredentialStatus::kSuccess, std::move(response)};
 }
 
 std::pair<GetAssertionStatus, std::optional<AuthenticatorGetAssertionResponse>>
@@ -724,15 +733,18 @@ AuthenticatorGetAssertionBlocking(WinWebAuthnApi* webauthn_api,
   FIDO_LOG(DEBUG) << "WebAuthNAuthenticatorGetAssertion()=" << *assertion;
   std::optional<AuthenticatorGetAssertionResponse> response =
       ToAuthenticatorGetAssertionResponse(*assertion, request_options);
-  if (response && !request_options.prf_inputs.empty() &&
+  if (!response) {
+    FIDO_LOG(ERROR) << "Failed to parse WebAuthNAuthenticatorGetAssertion() "
+                       "response";
+    return {GetAssertionStatus::kAuthenticatorResponseInvalid, std::nullopt};
+  }
+  if (!request_options.prf_inputs.empty() &&
       webauthn_api->Version() < WEBAUTHN_API_VERSION_4) {
     // This version of Windows does not yet support passing in inputs for
     // hmac_secret.
     response->hmac_secret_not_evaluated = true;
   }
-  return {response ? GetAssertionStatus::kSuccess
-                   : GetAssertionStatus::kAuthenticatorResponseInvalid,
-          std::move(response)};
+  return {GetAssertionStatus::kSuccess, std::move(response)};
 }
 
 std::pair<bool, std::vector<DiscoverableCredentialMetadata>>

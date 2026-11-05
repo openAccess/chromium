@@ -351,6 +351,7 @@ public class MiniOriginBarController implements Observer {
                 locationBarView.getPaddingTop(),
                 locationBarRightPadding,
                 locationBarView.getPaddingBottom());
+        mControlContainer.doSynchronousLayout(/* forceCaptureAfterLayout= */ false);
 
         recomputeLayouts();
     }
@@ -387,9 +388,6 @@ public class MiniOriginBarController implements Observer {
         mSuppressToolbarSceneLayerSupplier.set(false);
         mControlContainer.toggleLocationBarOnlyMode(false);
 
-        mControlContainer.mutateLayoutParams().height = LayoutParams.WRAP_CONTENT;
-        mControlContainer.doSynchronousLayout(/* forceCaptureAfterLayout= */ false);
-
         var locationBarView = mLocationBar.getContainerView();
         locationBarView.setLayoutParams(mDefaultLocationBarLayoutParams);
         locationBarView.setPadding(
@@ -397,7 +395,11 @@ public class MiniOriginBarController implements Observer {
                 locationBarView.getPaddingTop(),
                 mDefaultLocationBarRightPadding,
                 locationBarView.getPaddingBottom());
+        locationBarView.setTranslationX(0.0f);
         mLocationBar.setUrlBarUsesSmallText(false);
+
+        mControlContainer.mutateLayoutParams().height = LayoutParams.WRAP_CONTENT;
+        mControlContainer.doSynchronousLayout(/* forceCaptureAfterLayout= */ false);
     }
 
     public void destroy() {

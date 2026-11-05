@@ -20,11 +20,13 @@ if (is_android) {
 }
 
 mojom("ax_constants_mojo") {
+  generate_blink = true
   generate_java = true
   sources = [ "ax_constants.mojom" ]
 }
 
 mojom_component("ax_enums_mojo") {
+  generate_blink = true
   generate_java = true
   sources = [ "ax_enums.mojom" ]
 
@@ -111,10 +113,7 @@ component("ax_base") {
     ]
   }
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   public_deps = [
     ":ax_constants_mojo",
@@ -215,10 +214,7 @@ component("accessibility_internal") {
     "null_ax_action_target.h",
   ]
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   deps = [
     "//base",
@@ -251,10 +247,7 @@ if (is_android || is_chromeos) {
       "ax_assistant_structure.h",
     ]
 
-    configs += [
-      "//build/config/compiler:wexit_time_destructors",
-      "//build/config/compiler:wglobal_constructors",
-    ]
+    configs += [ "//build/config/compiler:wglobal_constructors" ]
 
     deps = [ ":accessibility" ]
 
@@ -302,10 +295,6 @@ static_library("test_support") {
     "//base/test:test_support",
     "//third_party/abseil-cpp:absl",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 test("accessibility_unittests") {
@@ -467,10 +456,6 @@ test("accessibility_unittests") {
       configs += [ "//build/config/linux/atk" ]
     }
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 fuzzer_test("ax_tree_fuzzer") {
@@ -565,7 +550,6 @@ if (is_android) {
 
     sources = [ "android/java/src/org/chromium/ui/accessibility/AccessibilityFeaturesMap.java" ]
     deps = [
-      ":accessibility_features_java",
       "//base:base_java",
       "//third_party/jni_zero:jni_zero_java",
     ]
@@ -583,8 +567,6 @@ if (is_android) {
     ]
     deps = [
       "//base:base_java",
-      "//base:flagged_apis_java",
-      "//base:service_loader_java",
       "//build/android:build_java",
       "//third_party/androidx:androidx_annotation_annotation_jvm_java",
       "//third_party/jni_zero:jni_zero_java",
@@ -609,6 +591,7 @@ if (is_android) {
     sources = [
       "android/javatests/src/org/chromium/ui/accessibility/AccessibilityStateJUnitTestHelper.java",
       "android/javatests/src/org/chromium/ui/accessibility/AccessibilityStateTest.java",
+      "android/javatests/src/org/chromium/ui/accessibility/ApplicationStatusAccessibilityStateVisibilityManagerTest.java",
     ]
     deps = [
       ":ax_base_java",
@@ -616,7 +599,6 @@ if (is_android) {
       "//base:base_java_test_support",
       "//base:base_junit_test_support",
       "//third_party/android_deps:guava_android_java",
-      "//third_party/androidx:androidx_test_runner_java",
       "//third_party/google-truth:google_truth_java",
       "//third_party/junit",
       "//third_party/mockito:mockito_java",

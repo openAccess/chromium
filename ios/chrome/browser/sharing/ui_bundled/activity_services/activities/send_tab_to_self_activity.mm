@@ -6,18 +6,20 @@
 
 #import <vector>
 
+#import "base/check.h"
 #import "base/feature_list.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
+#import "base/not_fatal_until.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/send_tab_to_self/features.h"
 #import "components/send_tab_to_self/metrics_util.h"
 #import "components/send_tab_to_self/send_tab_to_self_entry.h"
 #import "components/send_tab_to_self/send_tab_to_self_model.h"
 #import "components/send_tab_to_self/send_tab_to_self_sync_service.h"
-#import "components/send_tab_to_self/target_device_info.h"
 #import "components/strings/grit/components_strings.h"
+#import "components/sync_device_info/remote_device_info.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/send_tab_to_self_commands.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
@@ -37,7 +39,7 @@ NSString* const kSendTabToSelfActivityType =
 
 // Returns the sorted list of target devices if the Send Tab to Self model is
 // ready and the feature flag is enabled.
-std::vector<send_tab_to_self::TargetDeviceInfo> GetTargetDevices(
+std::vector<syncer::RemoteDeviceInfo> GetTargetDevices(
     send_tab_to_self::SendTabToSelfSyncService* sync_service) {
   if (!base::FeatureList::IsEnabled(
           send_tab_to_self::kSendTabToSelfIOSShareSheetDeviceList)) {
@@ -51,7 +53,7 @@ std::vector<send_tab_to_self::TargetDeviceInfo> GetTargetDevices(
   if (!model || !model->IsReady()) {
     return {};
   }
-  std::vector<send_tab_to_self::TargetDeviceInfo> devices =
+  std::vector<syncer::RemoteDeviceInfo> devices =
       model->GetTargetDeviceInfoSortedList();
   if (devices.size() > kMaxShareSheetTargetDevices) {
     devices.resize(kMaxShareSheetTargetDevices);
@@ -95,8 +97,7 @@ std::vector<send_tab_to_self::TargetDeviceInfo> GetTargetDevices(
   [activities addObject:[[SendTabToSelfActivity alloc] initWithData:data
                                                             handler:handler]];
 
-  std::vector<send_tab_to_self::TargetDeviceInfo> devices =
-      GetTargetDevices(syncService);
+  std::vector<syncer::RemoteDeviceInfo> devices = GetTargetDevices(syncService);
 
   for (const auto& device : devices) {
     NSString* deviceName = base::SysUTF8ToNSString(device.device_name);
@@ -170,6 +171,7 @@ std::vector<send_tab_to_self::TargetDeviceInfo> GetTargetDevices(
                   deviceName:(NSString*)deviceName
                   formFactor:(syncer::DeviceInfo::FormFactor)formFactor
                       osType:(syncer::DeviceInfo::OsType)osType {
+  CHECK(cacheGUID.length, base::NotFatalUntil::M158);
   if ((self = [super initWithData:data handler:handler])) {
     _activityTitleOverride = activityTitle;
     _cacheGUID = cacheGUID;
@@ -181,6 +183,12 @@ std::vector<send_tab_to_self::TargetDeviceInfo> GetTargetDevices(
 }
 
 #pragma mark - UIActivity Overrides
+
+- (NSString*)activityType {
+  CHECK(_cacheGUID.length, base::NotFatalUntil::M158);
+  return [NSString
+      stringWithFormat:@"%@.%@", kSendTabToSelfActivityType, _cacheGUID];
+}
 
 - (NSString*)activityTitle {
   return _activityTitleOverride;

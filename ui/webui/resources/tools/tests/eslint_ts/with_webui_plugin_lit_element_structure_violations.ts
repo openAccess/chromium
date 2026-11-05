@@ -71,9 +71,7 @@ customElements.define(TestError5Element.is, TestError5Element);
 // Case1.6: Class with
 //  1) Inconsistent DOM name suffix.
 //  2) Incorrect order method definition order
-//  3) Usage of this.dispatchEvent(new CustomEvent(...))
-//  4) Usage of incorrect dollar sign notation.
-//  5) Usage of CustomEvent type without a type parameter.
+//  3) Usage of CustomEvent type without a type parameter.
 export class TestError6Element extends CrLitElement {
   override render() {
     return '';
@@ -109,17 +107,6 @@ export class TestError6Element extends CrLitElement {
 
   override updated() {
     super.updated();
-
-    this.dispatchEvent(
-        new CustomEvent('foo1-updated', {bubbles: true, composed: true}));
-    this.dispatchEvent(new CustomEvent(
-        'foo2-updated', {bubbles: true, composed: true, detail: 'foo'}));
-
-    const FOO3_UPDATED = 'foo3-updated';
-    this.dispatchEvent(new CustomEvent(
-        FOO3_UPDATED, {bubbles: true, composed: true, detail: 'foo'}));
-
-    this.$['hello-button'].focus();
   }
 
   override firstUpdated() {}
@@ -153,6 +140,16 @@ declare global {
 }
 
 customElements.define(TestError7ElementFoo.is, TestError7ElementFoo);
+
+type Constructor<T> = new (...args: any[]) => T;
+const FooMixin = <T extends Constructor<CrLitElement>>(superClass: T): T => {
+  class FooMixin extends superClass {}
+  return FooMixin;
+};
+const FooMixinLit = <T extends Constructor<CrLitElement>>(superClass: T): T => {
+  class FooMixinLit extends superClass {}
+  return FooMixinLit;
+};
 
 // Case1.8: Class with incorrect class name, using "extends
 // FooMixin(CrLitElement)".
@@ -218,7 +215,84 @@ declare global {
   }
 }
 
-customElements.define(TestError11Element.is, TestError11Element);
+// Case1.12: Invalid (optional/nullable/undefinable) properties in '$'
+// interface.
+export interface TestError12Element {
+  $: {
+    input: HTMLInputElement,
+    nullableBtn: HTMLElement|null,
+    undefinableBtn: HTMLElement|undefined,
+    optionalBtn?: HTMLElement,
+  };
+}
+
+export class TestError12Element extends CrLitElement {
+  static get is() {
+    return 'test-error12';
+  }
+
+  override render() {
+    return html``;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'test-error12': TestError12Element;
+  }
+}
+
+customElements.define(TestError12Element.is, TestError12Element);
+
+// Case1.13: Mixin class with missing superclass calls and incorrect method
+// definition order.
+export const TestError13Mixin =
+    <T extends Constructor<CrLitElement>>(superClass: T): T => {
+      class TestError13Mixin extends superClass {
+        override disconnectedCallback() {}
+        override connectedCallback() {}
+      }
+      return TestError13Mixin;
+    };
+
+// Case1.14: Class extending an intermediate CrLitElement subclass (rather than
+// CrLitElement directly).
+export abstract class TestBaseLitElement extends CrLitElement {}
+export class TestError14ElementFoo extends TestBaseLitElement {
+  static get is() {
+    return 'test-error14';
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'test-error14': TestError14ElementFoo;
+  }
+}
+
+customElements.define(TestError14ElementFoo.is, TestError14ElementFoo);
+
+// Case1.15: Class with constructor parameters.
+export class TestError15Element extends CrLitElement {
+  static get is() {
+    return 'test-error15';
+  }
+
+  constructor(_param: string) {
+    super();
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'test-error15': TestError15Element;
+  }
+}
+
+customElements.define(TestError15Element.is, TestError15Element);
+
+// Case1.16: Instantiating CrLitElement subclass with 'new'.
+const _error16 = new TestError15Element('foo');
 
 
 /* Cases with no violations below. */
@@ -244,8 +318,13 @@ export class TestNoError3Element extends CrLitElement {
   }
 
   static override get properties() {
-    return {};
+    return {
+      foo: {type: String},
+    };
   }
+
+  accessor foo: string = 'foo';
+  private bar_: number = 0;
 
   constructor() {
     super();
@@ -253,17 +332,22 @@ export class TestNoError3Element extends CrLitElement {
 
   override connectedCallback() {
     super.connectedCallback();
+    this.bar_ = 1;
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    this.bar_ = 0;
   }
 
   override willUpdate() {
     super.willUpdate();
+    this.bar_ = 2;
   }
 
-  override firstUpdated() {}
+  override firstUpdated() {
+    this.bar_ = 3;
+  }
 
   override updated() {
     super.updated();
@@ -279,7 +363,6 @@ export class TestNoError3Element extends CrLitElement {
         {bubbles: true, composed: true, cancelable: true, detail: 'bar'}));
 
     this.fire('bar-updated', 'bar');
-    this.$.helloOtherButton.focus();
   }
 
   // Test case where CustomEvent is used with a function parameter.
@@ -308,3 +391,20 @@ declare global {
 }
 
 customElements.define(TestNoError4ElementFoo.is, TestNoError4ElementFoo);
+
+// Case2.5: Mixin class with rest constructor parameters (required by
+// TypeScript TS2545 whenever a mixin class defines a constructor).
+export const TestNoError5Mixin =
+    <T extends Constructor<CrLitElement>>(superClass: T): T => {
+      class TestNoError5Mixin extends superClass {
+        constructor(...args: any[]) {
+          super(...args);
+        }
+      }
+      return TestNoError5Mixin;
+    };
+
+// Case2.6: Instantiating non-CrLitElement class with 'new' or CrLitElement
+// subclass with document.createElement() is allowed.
+const _noError6a = new TestNoError2Element();
+const _noError6b = document.createElement('test-no-error3');

@@ -19,8 +19,10 @@ import androidx.test.espresso.intent.matcher.IntentMatchers;
 import androidx.test.filters.MediumTest;
 
 import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -28,20 +30,26 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.AwContents;
+import org.chromium.android_webview.ContentRestrictionRequestBypassedThrottleReason;
 import org.chromium.android_webview.common.AwFeatures;
+import org.chromium.android_webview.test.util.CommonResources;
 import org.chromium.base.AconfigFlaggedApiDelegate;
+import org.chromium.base.CallbackUtils;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Promise;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.net.test.util.TestWebServer;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Test integration with content restriction on WebViews. */
 @RunWith(Parameterized.class)
@@ -61,26 +69,37 @@ public class AwContentRestrictionTest extends AwParameterizedTest {
     private static final String ALLOWED_PAYLOAD = "allowed";
     private static final String BLOCKED_PAYLOAD = "blocked";
     private static final String REDIRECT_SITE_PATH = "/redirect.html";
+    private static final String REQUEST_BYPASSED_THROTTLE_HISTOGRAM =
+            "Android.WebView.ContentRestriction.RequestBypassedThrottleReason";
 
     private AwContents mAwContents;
     private TestWebServer mWebServer;
+    private static TestAconfigDelegate sTestAconfigDelegate;
     private final TestAwContentsClient mContentsClient = new TestAwContentsClient();
 
     /**
      * Test implementation of {@link AconfigFlaggedApiDelegate} to mock out Android platform
-     * dependencies for the content restriction feature.
+     * dependencies for the content restriction feature. This is marked static to simplify
+     * registration before app process startup that is shared across all tests.
      */
-    private class TestAconfigDelegate implements AconfigFlaggedApiDelegate {
+    private static class TestAconfigDelegate implements AconfigFlaggedApiDelegate {
+        private final AtomicInteger mIsContentRestrictionEnabledCallCount = new AtomicInteger(0);
+
         @Override
         public boolean isContentRestrictionEnabled() {
+            mIsContentRestrictionEnabledCallCount.incrementAndGet();
             return true;
+        }
+
+        public int getIsContentRestrictionEnabledCallCount() {
+            return mIsContentRestrictionEnabledCallCount.get();
         }
 
         @Override
         public Promise<Boolean> requestContentRestrictionClassification(
                 Uri uri, ParcelFileDescriptor requestBody, String mimeType, Executor executor) {
             boolean allow = true;
-            if (uri.getPath().contains(BLOCKED_SITE_PATH)) {
+            if (uri.getPath() != null && uri.getPath().contains(BLOCKED_SITE_PATH)) {
                 allow = false;
             }
             if (requestBody != null) {
@@ -111,9 +130,21 @@ public class AwContentRestrictionTest extends AwParameterizedTest {
         public boolean sendShowRestrictedContentIntent(Uri uri) {
             Intent intent = new Intent(Intent.ACTION_VIEW, uri);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            mActivityTestRule.getActivity().startActivity(intent);
+            ContextUtils.getApplicationContext().startActivity(intent);
             return true;
         }
+    }
+
+    @BeforeClass
+    public static void setUpClass() {
+        sTestAconfigDelegate = new TestAconfigDelegate();
+        AconfigFlaggedApiDelegate.setInstanceForTesting(sTestAconfigDelegate);
+    }
+
+    @AfterClass
+    public static void tearDownClass() {
+        AconfigFlaggedApiDelegate.setInstanceForTesting(null);
+        sTestAconfigDelegate = null;
     }
 
     public AwContentRestrictionTest(AwSettingsMutation param) {
@@ -123,7 +154,6 @@ public class AwContentRestrictionTest extends AwParameterizedTest {
     @Before
     public void setUp() throws Exception {
         mWebServer = TestWebServer.start();
-        AconfigFlaggedApiDelegate.setInstanceForTesting(new TestAconfigDelegate());
 
         AwTestContainerView testContainerView =
                 mActivityTestRule.createAwTestContainerViewOnMainSync(mContentsClient);
@@ -134,7 +164,6 @@ public class AwContentRestrictionTest extends AwParameterizedTest {
 
     @After
     public void tearDown() throws Exception {
-        AconfigFlaggedApiDelegate.setInstanceForTesting(null);
         mActivityTestRule.destroyAwContentsOnMainSync(mAwContents);
         mWebServer.shutdown();
     }
@@ -347,5 +376,116 @@ public class AwContentRestrictionTest extends AwParameterizedTest {
         Assert.assertEquals(initialHistoryCount, getNavigationHistoryEntryCount());
         Assert.assertEquals(
                 ALLOWED_SITE_2_TITLE, mActivityTestRule.getTitleOnUiThread(mAwContents));
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView"})
+    @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
+    public void testContentRestrictionEnabledCached() throws Throwable {
+        // Ensure the initial asynchronous check on startup has completed.
+        CriteriaHelper.pollInstrumentationThread(
+                () -> sTestAconfigDelegate.getIsContentRestrictionEnabledCallCount() > 0,
+                "Initial content restriction check should complete");
+        int initialCallCount = sTestAconfigDelegate.getIsContentRestrictionEnabledCallCount();
+
+        // Perform multiple navigations (both allowed and blocked sites) to track JNI call count.
+        mActivityTestRule.loadUrlSync(
+                mAwContents,
+                mContentsClient.getOnPageFinishedHelper(),
+                mWebServer.getResponseUrl(ALLOWED_SITE_1_PATH));
+        Assert.assertEquals(
+                ALLOWED_SITE_1_TITLE, mActivityTestRule.getTitleOnUiThread(mAwContents));
+
+        mActivityTestRule.loadUrlSync(
+                mAwContents,
+                mContentsClient.getOnPageFinishedHelper(),
+                mWebServer.getResponseUrl(ALLOWED_SITE_2_PATH));
+        Assert.assertEquals(
+                ALLOWED_SITE_2_TITLE, mActivityTestRule.getTitleOnUiThread(mAwContents));
+
+        mActivityTestRule.loadUrlAsync(mAwContents, mWebServer.getResponseUrl(BLOCKED_SITE_PATH));
+        waitForInterstitialPageLoad();
+
+        // Ensure that the cached value of the content restriction enabled state is used across all
+        // navigations.
+        Assert.assertEquals(
+                "isContentRestrictionEnabled JNI should not be queried during navigations",
+                initialCallCount,
+                sTestAconfigDelegate.getIsContentRestrictionEnabledCallCount());
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView"})
+    @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
+    public void testRecordRequestBypassedThrottle_samePageNavigation() throws Throwable {
+        mActivityTestRule.loadUrlSync(
+                mAwContents,
+                mContentsClient.getOnPageFinishedHelper(),
+                mWebServer.getResponseUrl(ALLOWED_SITE_1_PATH));
+        try (HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        REQUEST_BYPASSED_THROTTLE_HISTOGRAM,
+                        ContentRestrictionRequestBypassedThrottleReason.SAME_PAGE_NAVIGATION)) {
+            mActivityTestRule.loadUrlSync(
+                    mAwContents,
+                    mContentsClient.getOnPageFinishedHelper(),
+                    mWebServer.getResponseUrl(ALLOWED_SITE_1_PATH) + "#section");
+        }
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView"})
+    @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
+    public void testRecordRequestBypassedThrottle_urlOverride() throws Throwable {
+        // shouldOverrideUrlLoading is only triggered with renderer initiated navigations,
+        // so we create a page with a link and simulate a link click.
+        final String pageWithLink =
+                CommonResources.makeHtmlPageWithSimpleLinkTo(
+                        mWebServer.getResponseUrl(ALLOWED_SITE_2_PATH));
+        final String pageWithLinkUrl =
+                mWebServer.setResponse("/page_with_link.html", pageWithLink, null);
+        mActivityTestRule.loadUrlSync(
+                mAwContents, mContentsClient.getOnPageFinishedHelper(), pageWithLinkUrl);
+
+        TestAwContentsClient.ShouldOverrideUrlLoadingHelper urlOverrideHelper =
+                mContentsClient.getShouldOverrideUrlLoadingHelper();
+        urlOverrideHelper.setShouldOverrideUrlLoadingReturnValue(true);
+        int callCount = urlOverrideHelper.getCallCount();
+        try (HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        REQUEST_BYPASSED_THROTTLE_HISTOGRAM,
+                        ContentRestrictionRequestBypassedThrottleReason.URL_OVERRIDE)) {
+            clickLinkById("link");
+            urlOverrideHelper.waitForCallback(callCount);
+        } finally {
+            urlOverrideHelper.setShouldOverrideUrlLoadingReturnValue(false);
+        }
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"AndroidWebView"})
+    @EnableFeatures({AwFeatures.WEBVIEW_CONTENT_RESTRICTION_SUPPORT})
+    public void testRecordRequestBypassedThrottle_requestIntercept() throws Throwable {
+        final String interceptedPath = "/intercepted.html";
+        TestAwContentsClient.ShouldInterceptRequestHelper interceptHelper =
+                mContentsClient.getShouldInterceptRequestHelper();
+        interceptHelper.enqueueHtmlResponse("<html><body>intercepted</body></html>", null);
+        int callCount = interceptHelper.getCallCount();
+        try (HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        REQUEST_BYPASSED_THROTTLE_HISTOGRAM,
+                        ContentRestrictionRequestBypassedThrottleReason.REQUEST_INTERCEPT)) {
+            mActivityTestRule.loadUrlSync(
+                    mAwContents,
+                    mContentsClient.getOnPageFinishedHelper(),
+                    mWebServer.getResponseUrl(interceptedPath));
+            interceptHelper.waitForCallback(callCount);
+            // Ensure UI thread has processed the posted histogram recording task.
+            ThreadUtils.runOnUiThreadBlocking(CallbackUtils.emptyRunnable());
+        }
     }
 }

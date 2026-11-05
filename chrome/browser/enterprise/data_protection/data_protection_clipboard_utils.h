@@ -10,6 +10,7 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
+#include "chrome/browser/enterprise/data_protection/data_protection_clipboard_utils_types.h"
 #include "components/enterprise/buildflags/buildflags.h"
 #include "components/enterprise/common/files_scan_data.h"
 #include "content/public/browser/content_browser_client.h"
@@ -21,9 +22,9 @@ static_assert(BUILDFLAG(ENTERPRISE_DATA_CONTROLS));
 
 class GURL;
 class Profile;
+class SkBitmap;
 
 namespace content {
-class BrowserContext;
 class ClipboardEndpoint;
 class RenderFrameHost;
 class WebContents;
@@ -31,42 +32,6 @@ struct DropData;
 }  // namespace content
 
 namespace enterprise_data_protection {
-
-// Holds cached values from a clipboard source endpoint so that policy checks
-// can be performed asynchronously without requiring the original source tab or
-// RenderFrameHost to remain alive or unnavigated.
-struct BasicPasteSource {
-  BasicPasteSource();
-  BasicPasteSource(const BasicPasteSource&);
-  BasicPasteSource& operator=(const BasicPasteSource&);
-  BasicPasteSource(BasicPasteSource&&);
-  BasicPasteSource& operator=(BasicPasteSource&&);
-  virtual ~BasicPasteSource();
-
-  std::optional<ui::DataTransferEndpoint> data_transfer_endpoint;
-  base::WeakPtr<content::BrowserContext> browser_context;
-  bool gemini_in_chrome = false;
-};
-
-// Extends `BasicPasteSource` to also include the active user account email.
-// Suitable for Enterprise Connectors reporting and safe browsing contexts.
-struct FullPasteSource : public BasicPasteSource {
-  FullPasteSource();
-  FullPasteSource(const FullPasteSource&);
-  FullPasteSource& operator=(const FullPasteSource&);
-  FullPasteSource(FullPasteSource&&);
-  FullPasteSource& operator=(FullPasteSource&&);
-  ~FullPasteSource() override;
-
-  std::string active_user;
-};
-
-// Returns a basic cached snapshot of `source` without querying user identity.
-BasicPasteSource CacheBasicPasteSource(
-    const content::ClipboardEndpoint& source);
-
-// Returns a full cached snapshot of `source`, including the active user email.
-FullPasteSource CacheFullPasteSource(const content::ClipboardEndpoint& source);
 
 // This function checks if a paste is allowed to proceed according to the
 // following policies:
@@ -239,13 +204,25 @@ void ShouldAllowSearchWith(content::WebContents* web_contents,
 // long-running content analysis or asynchronous dialogs.
 bool IsClipboardCopyAllowedByPolicyForUI(content::WebContents* web_contents);
 
-// Copies `text` to the user's clipboard. This checks the Data Controls rules to
-// ensure the copy is allowed.
+// Copies `text` to the OS clipboard. This routes the data to
+// `IsClipboardCopyAllowedByPolicy` to check if the copy is allowed.
 void CopyTextToClipboard(content::RenderFrameHost* rfh,
                          const std::u16string& text);
 
-// Returns the initiator main frame's last committed URL if the `original_url`
-// is a Print Preview URL. Returns std::nullopt otherwise.
+// Copies `bitmap` to the OS clipboard. This routes the data to
+// `IsClipboardCopyAllowedByPolicy` to check if the copy is allowed.
+void CopyImageToClipboard(content::RenderFrameHost& rfh,
+                          const SkBitmap& bitmap);
+
+// Returns the URL to use for data protection checks for `rfh`. If the main
+// frame's last committed URL is invalid, about:blank, or about:srcdoc, this
+// falls back to the main frame's precursor/tuple origin URL (or about:blank if
+// no valid origin tuple exists), and unwraps distilled page URLs.
+GURL GetUrlFromRenderFrameHost(content::RenderFrameHost* rfh);
+
+// Returns the desired URL for clipboard source/destination reporting for
+// `render_frame_host`, including resolving the initiator URL when
+// `original_url` is a Print Preview URL.
 std::optional<GURL> MaybeOverrideSourceURLForClipboardAccess(
     content::RenderFrameHost* render_frame_host,
     const GURL& original_url);

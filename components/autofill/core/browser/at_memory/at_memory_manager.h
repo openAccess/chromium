@@ -25,9 +25,13 @@
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
+#include "components/autofill/core/browser/data_model/valuables/valuable_types.h"
 #include "components/autofill/core/browser/filling/autofill_ai/autofill_ai_access_manager.h"
+#include "components/autofill/core/browser/foundations/autofill_manager.h"
+#include "components/autofill/core/browser/foundations/scoped_autofill_managers_observation.h"
 #include "components/autofill/core/browser/integrators/at_memory/at_memory_query_service.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
+#include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
 #include "components/autofill/core/common/aliases.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
@@ -44,11 +48,12 @@ struct AtMemorySearchState;
 struct MemorySearchResults;
 class AutofillClient;
 class BrowserAutofillManager;
+class FormData;
 
 // Manager for the AtMemory feature. It handles queries to the
 // `AtMemoryQueryService` and manages session-based metrics. Owned by
 // `AutofillClient`, its lifetime is tied to it.
-class AtMemoryManager {
+class AtMemoryManager : public AutofillManager::Observer {
  public:
   using UpdateSuggestionsCallback =
       base::RepeatingCallback<void(std::vector<Suggestion>,
@@ -60,13 +65,16 @@ class AtMemoryManager {
   AtMemoryManager(const AtMemoryManager&) = delete;
   AtMemoryManager& operator=(const AtMemoryManager&) = delete;
 
-  ~AtMemoryManager();
+  ~AtMemoryManager() override;
 
   // Returns the state (suggestions and filter) for `field_id`.
   // If search statefulness is enabled and persisted state exists, returns
   // the persisted state. Otherwise, returns empty query suggestions.
-  AtMemorySearchState GetStateForField(const FieldGlobalId& field_id,
-                                       const url::Origin& field_origin);
+  AtMemorySearchState GetStateForField(
+      const FieldGlobalId& field_id,
+      const url::Origin& field_origin,
+      std::optional<AutofillSuggestionTriggerSource> trigger_source =
+          std::nullopt);
 
   // Called when suggestions are shown. The manager initiates an AtMemory
   // session if the `trigger_source` is an AtMemory one.
@@ -76,8 +84,7 @@ class AtMemoryManager {
       const FormGlobalId& form_id,
       const FieldGlobalId& field_id,
       AutofillSuggestionTriggerSource trigger_source,
-      base::optional_ref<const AutofillSuggestionDelegate::SuggestionMetadata>
-          parent_suggestion_metadata,
+      const AutofillSuggestionDelegate::SuggestionUiMetadata& metadata,
       UpdateSuggestionsCallback update_callback,
       ukm::SourceId ukm_source_id);
 
@@ -90,7 +97,30 @@ class AtMemoryManager {
   bool OnSearchSubmitted(const std::u16string& filter);
 
   // Called when suggestions are hidden.
-  void OnPopupHidden();
+  void OnPopupHidden(SuggestionHidingReason reason);
+
+  // AutofillManager::Observer:
+  void OnAutofillManagerStateChanged(
+      AutofillManager& manager,
+      AutofillManager::LifecycleState previous,
+      AutofillManager::LifecycleState new_state) override;
+  void OnFillOrPreviewForm(
+      AutofillManager& manager,
+      FormGlobalId form_id,
+      FieldGlobalId trigger_field_id,
+      mojom::ActionPersistence action_persistence,
+      const base::flat_set<FieldGlobalId>& filled_field_ids,
+      const base::flat_map<FieldGlobalId, DenseSet<FieldFillingSkipReason>>&
+          skip_reasons,
+      const FillingPayload& filling_payload) override;
+  void OnFillOrPreviewField(AutofillManager& manager,
+                            FormGlobalId form_id,
+                            FieldGlobalId field_id,
+                            mojom::ActionPersistence action_persistence,
+                            const std::u16string& value,
+                            std::optional<FieldType> field_type_used) override;
+  void OnAfterFormSubmitted(AutofillManager& manager,
+                            const FormData& form) override;
 
   // Fills the selected search result. Returns `IsAsync(true)` if the operation
   // involves reauthentication or server communication.
@@ -116,6 +146,14 @@ class AtMemoryManager {
   void RecordAutofillAiEntityUse(
       const Suggestion::AtMemoryPayload::Identifier& identifier);
 
+  // Records the use of the loyalty card identified by the payload's
+  // identifier.
+  void RecordLoyaltyCardUse(
+      const Suggestion::AtMemoryPayload::Identifier& identifier);
+
+  // Records an impression for the keyboard shortcut settings promo.
+  void RecordShortcutSettingsPromoImpression();
+
   // Returns true if a search is currently in progress.
   bool IsSearching() const;
 
@@ -124,7 +162,11 @@ class AtMemoryManager {
   // * kPersonalContextNotice (optional)
   // * kTitle (optional)
   // * kAtMemorySearchResult (repeated)
-  std::vector<Suggestion> GetEmptyQuerySuggestions() const;
+  // * kAtMemoryShortcutSettingsPromo (optional, on popup open)
+  std::vector<Suggestion> GetEmptyQuerySuggestions(
+      bool on_popup_open,
+      std::optional<AutofillSuggestionTriggerSource> trigger_source =
+          std::nullopt) const;
 
   // Appends the personal context notice to the suggestions if necessary.
   void MaybeAppendPersonalContextNotice(
@@ -171,47 +213,85 @@ class AtMemoryManager {
   Suggestion CreateUnsupportedQuerySuggestion(const std::u16string& query);
 
   // Cancels any pending search queries and resets searching states.
-  void CancelPendingQueries();
+  // `query_completed` indicates that this happens because the final response
+  // of the query was received, which is reflected in the persisted state.
+  void CancelPendingQueries(AtMemoryQueryCompleted query_completed);
 
-  // Sends the given suggestions to the UI.
-  void SendSuggestions(std::vector<Suggestion> suggestions);
+  // Invoked when `state_manager_` resets its state. Cancels pending search
+  // queries and hides the suggestion popup if showing.
+  void OnStateReset();
+
+  // Sends suggestions to the UI if the popup is showing.
+  void ShowSuggestions(std::vector<Suggestion> suggestions);
+
+  // Returns the list of suggestions to show in the query typing state.
+  std::vector<Suggestion> GetQueryTypingSuggestions(
+      const std::u16string& query) const;
+
+  // Returns the list of suggestions to show in the fetching state.
+  std::vector<Suggestion> GetFetchingStateSuggestions() const;
+
+  // Takes raw search results or error suggestions and adds accessibility
+  // announcements, section titles, and footer notices as appropriate.
+  std::vector<Suggestion> GetResultsRetrievedSuggestions(
+      const std::vector<Suggestion>& results) const;
 
   // Advances to the next fetching suggestion message and updates the UI.
   void AdvanceFetchingSuggestion();
+
+  // Starts rotating the fetching suggestion messages, beginning with the first
+  // one. Requires `popup_state_`.
+  void StartFetchingTimer();
+
+  // Stops rotating the fetching suggestion messages, if any, without
+  // cancelling the pending query.
+  void StopFetchingTimer();
 
   // Appends previously filled suggestions to the list of suggestions.
   void MaybeAppendPreviouslyFilledSuggestions(
       std::vector<Suggestion>& suggestions) const;
 
+  // Appends the keyboard shortcut settings promo to the suggestions if the
+  // conditions are met.
+  void MaybeAppendShortcutSettingsPromo(
+      bool on_popup_open,
+      std::optional<AutofillSuggestionTriggerSource> trigger_source,
+      std::vector<Suggestion>& suggestions) const;
+
   // Shows all the suggestions in the empty state.
   // These suggestions will be in order:
-  // * kPersonalContextNotice (optional)
   // * kTitle (optional)
   // * kAtMemorySearchResult (repeated)
+  // * kSeparator (optional)
+  // * kPersonalContextNotice (optional)
   void ShowEmptyQuerySuggestions();
 
   // Shows all the suggestions in the query typing state.
   // These suggestions will be in order:
   // * kAtMemorySearchAffordance | kAtMemoryNoConnection
+  // * kSeparator
   // * kAtMemoryAiDisclosure | kPersonalContextNotice
   void ShowQueryTypingSuggestions(const std::u16string& query);
 
   // Shows all the suggestions in the fetching state.
   // These suggestions will be in order:
   // * kAtMemoryFetching
+  // * kSeparator (optional)
   // * kPersonalContextNotice (optional)
   void ShowFetchingStateSuggestions();
 
   // Shows all the suggestions in the results retrieved state.
   // These suggestions will be in order:
-  // * kPersonalContextNotice (optional)
   // * kAtMemorySearchResult (repeated)
+  // * kSeparator (optional)
+  // * kPersonalContextNotice (optional)
   void ShowResultsRetrievedStateSuggestions(const MemorySearchResults& result);
 
   // Shows all the suggestions in the no results retrieved state.
   // These suggestions will be in order:
-  // * kPersonalContextNotice (optional)
   // * suggestion describing the error
+  // * kSeparator (optional)
+  // * kPersonalContextNotice (optional)
   void ShowNoResultsStateSuggestions(const std::u16string& query,
                                      const MemorySearchResults& result);
 
@@ -220,7 +300,6 @@ class AtMemoryManager {
                 const std::variant<Iban::Guid, Iban::InstrumentId>& identifier,
                 const FormGlobalId& form_id,
                 const FieldGlobalId& field_id,
-                const Suggestion& suggestion,
                 std::unique_ptr<AtMemoryMetricsRecorder> metrics);
 
   // Fills the unmasked credit card value after fetching it.
@@ -228,49 +307,16 @@ class AtMemoryManager {
                       const std::string& credit_card_guid,
                       const FormGlobalId& form_id,
                       const FieldGlobalId& field_id,
-                      const Suggestion& suggestion,
+                      MemoryDataType memory_data_type,
                       std::unique_ptr<AtMemoryMetricsRecorder> metrics);
 
-  // Triggers reauthentication and fetching of the unmasked Personal Context
-  // value, which fills the field upon completion. Returns `IsAsync(true)` if
-  // the operation involves reauthentication or server communication.
-  IsAsync FillSensitivePersonalContextData(
-      BrowserAutofillManager& bam,
-      const FormGlobalId& form_id,
-      const FieldGlobalId& field_id,
-      const Suggestion& suggestion,
-      std::unique_ptr<AtMemoryMetricsRecorder> metrics);
-
-  // Fills the field with the unmasked sensitive SPII Personal Context value if
-  // fetching succeeded, or records failure metrics if it failed.
-  void OnSensitivePersonalContextDataFetched(
-      base::WeakPtr<BrowserAutofillManager> bam,
-      const FormGlobalId& form_id,
-      const FieldGlobalId& field_id,
-      std::unique_ptr<AtMemoryMetricsRecorder> metrics,
-      AtMemoryQueryService::SpiiRetrievalResult result);
-
-  // Fills sensitive identity data by selecting the appropriate filling path
-  // depending on whether the data is sourced from Autofill AI or Personal
-  // Context. Returns `IsAsync(true)` if the operation involves reauthentication
-  // or server communication.
-  IsAsync FillSensitiveAutofillAiOrPersonalContextData(
-      BrowserAutofillManager& bam,
-      const FormGlobalId& form_id,
-      const FieldGlobalId& field_id,
-      const Suggestion& suggestion,
-      std::unique_ptr<AtMemoryMetricsRecorder> metrics);
-
-  // Fills the unmasked AutofillAI value after fetching it. Returns
-  // `IsAsync(true)` if the operation involves reauthentication or server
-  // communication.
+  // Fills sensitive Autofill AI identity data. Returns `IsAsync(true)` if the
+  // operation involves reauthentication or server communication.
   IsAsync FillSensitiveAutofillAiData(
       BrowserAutofillManager& bam,
-      const EntityInstance::EntityId& entity_id,
       const FormGlobalId& form_id,
       const FieldGlobalId& field_id,
       const Suggestion& suggestion,
-      AttributeType data_type,
       std::unique_ptr<AtMemoryMetricsRecorder> metrics);
 
   // Callback handler when the unmasked AutofillAI entity has been fetched.
@@ -278,7 +324,6 @@ class AtMemoryManager {
       base::WeakPtr<BrowserAutofillManager> bam,
       const FormGlobalId& form_id,
       const FieldGlobalId& field_id,
-      const Suggestion& suggestion,
       AttributeType data_type,
       std::unique_ptr<AtMemoryMetricsRecorder> metrics,
       base::expected<EntityInstance, AutofillAiAccessManager::FailureReason>
@@ -286,17 +331,27 @@ class AtMemoryManager {
       bool reauth_attempted,
       bool did_fetch_from_server);
 
+  // Fills `field_id` with `value` and triggers a HaTS survey.
+  void FillField(BrowserAutofillManager& bam,
+                 const FormGlobalId& form_id,
+                 const FieldGlobalId& field_id,
+                 const std::u16string& value);
+
   // Returns the active target field origin depending on whether search
   // statefulness is enabled.
   const url::Origin& target_field_origin() const;
+
+  // Returns the metrics recorder of the active session, which is always owned
+  // by `state_manager_`.
+  AtMemoryMetricsRecorder* metrics_recorder() const {
+    return state_manager_.metrics_recorder();
+  }
 
   // Encapsulates state for the currently visible AtMemory popup.
   struct PopupState {
     AutofillSuggestionTriggerSource trigger_source =
         AutofillSuggestionTriggerSource::kUnspecified;
     UpdateSuggestionsCallback update_callback;
-    // TODO(crbug.com/535486238): Reconsider where metrics_recorder should live.
-    std::unique_ptr<AtMemoryMetricsRecorder> metrics_recorder;
     // Flag indicating that a search query is in progress.
     // TODO(crbug.com/535486238): Remove `is_searching` once
     // `kAutofillAtMemorySearchStatefulness` is fully launched.
@@ -310,6 +365,16 @@ class AtMemoryManager {
   const raw_ref<AutofillClient> client_;
 
   std::optional<PopupState> popup_state_;
+
+  // Timer to show a survey after a delay when dismissing an AtMemory popup
+  // without accepting a suggestion. The survey will only be triggered if there
+  // has been no other AtMemory invocation in the meantime to avoid surveys on
+  // accidental dismissal.
+  base::OneShotTimer hats_survey_dismissal_timer_;
+  // The field associated with the most recent AtMemory invocation. It is used
+  // to cancel the dismissal survey timer on filling, submission or navigation.
+  FieldGlobalId last_field_id_;
+  ScopedAutofillManagersObservation autofill_managers_observation_{this};
 
   // Origin of the target field for the active search session. Only set when
   // `kAutofillAtMemorySearchStatefulness` is disabled.

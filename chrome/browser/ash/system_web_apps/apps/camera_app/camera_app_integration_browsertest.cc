@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/system_web_apps/test_support/system_web_app_browsertest_base.h"
 #include "chrome/browser/ash/system_web_apps/test_support/system_web_app_integration_test.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -90,5 +91,12 @@ IN_PROC_BROWSER_TEST_P(CameraAppIntegrationTest, CCAAPI) {
   EXPECT_TRUE(has_window_launch_queue);
 }
 
-INSTANTIATE_SYSTEM_WEB_APP_MANAGER_TEST_SUITE_REGULAR_PROFILE_P(
-    CameraAppIntegrationTest);
+// Guest sessions are covered because the camera app runs in the off-the-record
+// guest profile there, which has no MediaDeviceSaltService. See the comment on
+// the CameraAppUI constructor. Incognito is left out: the camera app does not
+// run there at all, and ChromeCameraAppUIDelegate CHECKs on the missing
+// CameraSaveHandler well before any of this matters.
+INSTANTIATE_SYSTEM_WEB_APP_MANAGER_TEST_SUITE_P(
+    CameraAppIntegrationTest,
+    ::testing::Values(TestProfileParam({TestProfileType::kRegular}),
+                      TestProfileParam({TestProfileType::kGuest})));

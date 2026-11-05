@@ -37,6 +37,7 @@
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/mojom/v8_cache_options.mojom-forward.h"
 #include "third_party/blink/public/mojom/webpreferences/web_preferences.mojom-forward.h"
+#include "third_party/blink/public/platform/generic_font_family.h"
 #include "third_party/blink/public/platform/web_common.h"
 #include "third_party/blink/public/platform/web_effective_connection_type.h"
 
@@ -44,6 +45,7 @@ namespace blink {
 
 enum class LCDTextPreference;
 class WebString;
+class WebURL;
 
 // WebSettings is owned by the WebView and allows code to modify the settings
 // for the WebView's page without any knowledge of WebCore itself.  For the most
@@ -102,6 +104,7 @@ class WebSettings {
   virtual void SetAllowRunningOfInsecureContent(bool) = 0;
   virtual void SetAllowScriptsToCloseWindows(bool) = 0;
   virtual void SetAllowUnrestrictedWindowFocus(bool) = 0;
+  virtual void SetClipboardFocusExempt(bool) = 0;
   virtual void SetAllowUniversalAccessFromFileURLs(bool) = 0;
   virtual void SetAccessibilityFontWeightAdjustment(int) = 0;
   virtual void SetAlwaysShowContextMenuOnTouch(bool) = 0;
@@ -115,8 +118,6 @@ class WebSettings {
   virtual void SetCaretBrowsingEnabled(bool) = 0;
   virtual void SetClobberUserAgentInitialScaleQuirk(bool) = 0;
   virtual void SetCookieEnabled(bool) = 0;
-  virtual void SetCursiveFontFamily(const WebString&,
-                                    UScriptCode = USCRIPT_COMMON) = 0;
   virtual void SetDNSPrefetchingEnabled(bool) = 0;
   virtual void SetDOMPasteAllowed(bool) = 0;
   virtual void SetDefaultFixedFontSize(int) = 0;
@@ -137,14 +138,11 @@ class WebSettings {
   virtual void SetSmoothScrollForFindEnabled(bool) = 0;
   virtual void SetWebGL1Enabled(bool) = 0;
   virtual void SetWebGL2Enabled(bool) = 0;
-  virtual void SetFantasyFontFamily(const WebString&,
+  // For GenericFontFamily::kFixed, Osaka font should be represented as "Osaka",
+  // not "Osaka-Mono".
+  virtual void SetGenericFontFamily(GenericFontFamily,
+                                    const WebString&,
                                     UScriptCode = USCRIPT_COMMON) = 0;
-  virtual void SetMathFontFamily(const WebString&,
-                                 UScriptCode = USCRIPT_COMMON) = 0;
-  // Osaka font should be represented as "Osaka", not "Osaka-Mono" in the
-  // first argument.
-  virtual void SetFixedFontFamily(const WebString&,
-                                  UScriptCode = USCRIPT_COMMON) = 0;
   virtual void SetNetworkQuietTimeout(double timeout) = 0;
   virtual void SetForceMainWorldInitialization(bool) = 0;
   virtual void SetForceZeroLayoutHeight(bool) = 0;
@@ -167,6 +165,7 @@ class WebSettings {
   virtual void SetMaxTouchPoints(int) = 0;
   virtual void SetPictureInPictureEnabled(bool) = 0;
   virtual void SetWebAppScope(const WebString&) = 0;
+  virtual void SetWebAppCustomManifestUrl(const WebURL&) = 0;
   virtual void SetIsInitialProfile(bool) = 0;
   virtual void SetPresentationRequiresUserGesture(bool) = 0;
   virtual void SetEmbeddedMediaExperienceEnabled(bool) = 0;
@@ -192,13 +191,9 @@ class WebSettings {
   virtual void SetRenderVSyncNotificationEnabled(bool) = 0;
   virtual void SetReportScreenSizeInPhysicalPixelsQuirk(bool) = 0;
   virtual void SetRubberBandingOnCompositorThread(bool) = 0;
-  virtual void SetSansSerifFontFamily(const WebString&,
-                                      UScriptCode = USCRIPT_COMMON) = 0;
   virtual void SetSelectTrailingWhitespaceEnabled(bool) = 0;
   virtual void SetSelectionIncludesAltImageText(bool) = 0;
   virtual void SetSelectionStrategy(SelectionStrategyType) = 0;
-  virtual void SetSerifFontFamily(const WebString&,
-                                  UScriptCode = USCRIPT_COMMON) = 0;
   virtual void SetShouldPrintBackgrounds(bool) = 0;
   virtual void SetShouldClearDocumentBackground(bool) = 0;
   virtual void SetShowContextMenuOnMouseUp(bool) = 0;
@@ -213,8 +208,6 @@ class WebSettings {
   // elements using SPACE or ENTER keys.
   virtual void SetSpatialNavigationEnabled(bool) = 0;
   virtual void SetSpellCheckEnabledByDefault(bool) = 0;
-  virtual void SetStandardFontFamily(const WebString&,
-                                     UScriptCode = USCRIPT_COMMON) = 0;
   virtual void SetStrictMixedContentChecking(bool) = 0;
   virtual void SetStrictMixedContentCheckingForPlugin(bool) = 0;
   virtual void SetStrictlyBlockBlockableMixedContent(bool) = 0;

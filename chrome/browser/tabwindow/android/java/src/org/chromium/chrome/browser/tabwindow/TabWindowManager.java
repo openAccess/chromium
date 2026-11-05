@@ -191,7 +191,8 @@ public interface TabWindowManager {
      * @param windowId The ID of the window that holds the tab group.
      * @param tabGroupId The tab group ID of the tab group.
      * @param isIncognito Whether the grouped tabs are incognito tabs.
-     * @return A list of tabs associated with the root ID, or {@code null} if no tabs are found.
+     * @return A list of tabs associated with the tab group ID, or {@code null} if no tabs are
+     *     found.
      */
     @Nullable List<Tab> getGroupedTabsByWindow(
             @WindowId int windowId, Token tabGroupId, boolean isIncognito);
@@ -246,8 +247,22 @@ public interface TabWindowManager {
      * @param tabGroupId The group to look for.
      * @return The window id that holds the given tab group.
      */
+    default @WindowId int findWindowIdForTabGroup(Token tabGroupId) {
+        return findWindowIdForTabGroup(tabGroupId, /* includeClosingGroups= */ false);
+    }
+
+    /**
+     * Tries to discern the correct window id that contains a tab group. This may be a live activity
+     * or in a headless tab model. If {@code includeClosingGroups} is true, also checks for groups
+     * pending closure in each model's comprehensive tab list.
+     *
+     * @param tabGroupId The group to look for.
+     * @param includeClosingGroups Whether to include groups pending closure.
+     * @return The window id that holds the given tab group, or {@link #INVALID_WINDOW_ID} if not
+     *     found.
+     */
     @WindowId
-    int findWindowIdForTabGroup(Token tabGroupId);
+    int findWindowIdForTabGroup(Token tabGroupId, boolean includeClosingGroups);
 
     /**
      * Registers a {@link TabModelSelector} for a Custom Tab.

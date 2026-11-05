@@ -16,6 +16,7 @@
 #include "ash/test/ash_test_base.h"
 #include "base/i18n/message_formatter.h"
 #include "base/path_service.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -23,6 +24,7 @@
 #include "base/time/time.h"
 #include "chromeos/ash/components/test/ash_test_suite.h"
 #include "components/user_manager/user_type.h"
+#include "remoting/base/email_utils.h"
 #include "remoting/base/string_resources.h"
 #include "remoting/host/chromeos/features.h"
 #include "remoting/host/it2me/it2me_confirmation_dialog.h"
@@ -152,7 +154,7 @@ class It2MeConfirmationDialogChromeOSTest
 
     return base::i18n::MessageFormatter::FormatWithNumberedArgs(
         l10n_util::GetStringUTF16(message_id),
-        base::UTF8ToUTF16(remote_user_email),
+        FormatEmailForDisplay(remote_user_email),
         l10n_util::GetStringUTF16(IDS_SHARE_CONFIRM_DIALOG_DECLINE),
         l10n_util::GetStringUTF16(IDS_SHARE_CONFIRM_DIALOG_CONFIRM));
   }
@@ -163,7 +165,7 @@ class It2MeConfirmationDialogChromeOSTest
         base::i18n::MessageFormatter::FormatWithNumberedArgs(
             l10n_util::GetStringUTF16(
                 IDS_SHARE_CONFIRM_DIALOG_MESSAGE_ADMIN_INITIATED_CRD_UNATTENDED),
-            remote_user_email);
+            FormatEmailForDisplay(remote_user_email));
     auto_accept_message.append(u"\n\n");
     auto_accept_message.append(l10n_util::GetPluralStringFUTF16(
         IDS_CRD_AUTO_ACCEPT_COUNTDOWN, time_left.InSeconds()));
@@ -267,6 +269,19 @@ TEST_P(It2MeConfirmationDialogChromeOSTestWithCrdUnattendedDisabled,
   EXPECT_EQ(message_center().NotificationCount(), 1llu);
   EXPECT_EQ(notification->message(),
             FormatMessage(kTestingRemoteEmail, GetParam()));
+}
+
+TEST_P(It2MeConfirmationDialogChromeOSTestWithCrdUnattendedDisabled,
+       NotificationElidesLongEmail) {
+  std::string long_email = std::string(100, 'a') + "@example.com";
+  CreateAndShowDialog(long_email, DoNothingCallback());
+
+  const message_center::Notification* notification = GetFirstNotification();
+  ASSERT_NE(notification, nullptr);
+  EXPECT_EQ(notification->message(), FormatMessage(long_email, GetParam()));
+  EXPECT_NE(notification->message().find(u"@example.com"),
+            std::u16string::npos);
+  EXPECT_NE(notification->message().find(u"…"), std::u16string::npos);
 }
 
 TEST_P(It2MeConfirmationDialogChromeOSTestWithCrdUnattendedDisabled,
@@ -409,7 +424,7 @@ TEST_P(It2MeConfirmationDialogChromeOSTestWithCrdUnattendedEnabled,
 
 TEST_P(It2MeConfirmationDialogChromeOSTestWithCrdUnattendedEnabled,
        ShowDialogOnUserSessionScreenDuringActiveUserSession) {
-  SimulateUserLogin({kTestUserEmail});
+  SimulateUserLogin(AccountId::FromUserEmail(kTestUserEmail));
 
   CreateAndShowDialog(kTestingRemoteEmail, DoNothingCallback());
 
@@ -425,7 +440,7 @@ TEST_P(It2MeConfirmationDialogChromeOSTestWithCrdUnattendedEnabled,
   ASSERT_TRUE(DialogVisibleInParentContainer(kLoginScreen));
   ASSERT_FALSE(DialogVisibleInParentContainer(kUserSessionScreen));
 
-  SimulateUserLogin({kTestUserEmail});
+  SimulateUserLogin(AccountId::FromUserEmail(kTestUserEmail));
 
   ASSERT_FALSE(DialogVisibleInParentContainer(kLoginScreen));
   ASSERT_TRUE(DialogVisibleInParentContainer(kUserSessionScreen));
@@ -433,7 +448,7 @@ TEST_P(It2MeConfirmationDialogChromeOSTestWithCrdUnattendedEnabled,
 
 TEST_P(It2MeConfirmationDialogChromeOSTestWithCrdUnattendedEnabled,
        DialogShouldMoveToLoginScreenOnUserLogout) {
-  SimulateUserLogin({kTestUserEmail});
+  SimulateUserLogin(AccountId::FromUserEmail(kTestUserEmail));
 
   CreateAndShowDialog(kTestingRemoteEmail, DoNothingCallback());
 
@@ -455,7 +470,7 @@ TEST_P(It2MeConfirmationDialogChromeOSTestWithCrdUnattendedEnabled,
   ASSERT_TRUE(DialogVisibleInParentContainer(kLockScreen));
   ASSERT_FALSE(DialogVisibleInParentContainer(kUserSessionScreen));
 
-  SimulateUserLogin({kTestUserEmail});
+  SimulateUserLogin(AccountId::FromUserEmail(kTestUserEmail));
 
   ASSERT_FALSE(DialogVisibleInParentContainer(kLockScreen));
   ASSERT_TRUE(DialogVisibleInParentContainer(kUserSessionScreen));
@@ -463,7 +478,7 @@ TEST_P(It2MeConfirmationDialogChromeOSTestWithCrdUnattendedEnabled,
 
 TEST_P(It2MeConfirmationDialogChromeOSTestWithCrdUnattendedEnabled,
        DialogShouldMoveToLockSessionScreenWhenSessionIsLocked) {
-  SimulateUserLogin({kTestUserEmail});
+  SimulateUserLogin(AccountId::FromUserEmail(kTestUserEmail));
 
   CreateAndShowDialog(kTestingRemoteEmail, DoNothingCallback());
 

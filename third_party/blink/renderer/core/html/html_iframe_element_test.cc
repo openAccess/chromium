@@ -345,31 +345,6 @@ TEST_F(HTMLIFrameElementSimTest, AllowAttributeParsingError) {
       << ConsoleMessages().front();
 }
 
-TEST_F(HTMLIFrameElementSimTest, Adauctionheaders_SecureContext_Allowed) {
-  SimRequest main_resource("https://example.com", "text/html");
-  LoadURL("https://example.com");
-  main_resource.Complete(R"(
-    <iframe adauctionheaders></iframe>
-  )");
-
-  EXPECT_TRUE(ConsoleMessages().empty());
-}
-
-TEST_F(HTMLIFrameElementSimTest, Adauctionheaders_InsecureContext_NotAllowed) {
-  SimRequest main_resource("http://example.com", "text/html");
-  LoadURL("http://example.com");
-  main_resource.Complete(R"(
-    <iframe adauctionheaders></iframe>
-  )");
-
-  EXPECT_EQ(ConsoleMessages().size(), 1u);
-  EXPECT_TRUE(ConsoleMessages().front().starts_with(
-      "adAuctionHeaders: Protected Audience APIs "
-      "are only available in secure contexts."))
-      << "Unexpected error; got: " << ConsoleMessages().front();
-}
-
-
 TEST_F(HTMLIFrameElementSimTest, SetTrackedElement) {
   ScopedAIPageContentTrackedElementsIframeForTest scoped_feature(true);
   SimRequest main_resource("https://example.com", "text/html");
@@ -378,8 +353,7 @@ TEST_F(HTMLIFrameElementSimTest, SetTrackedElement) {
     <iframe id="my-iframe" src="https://iframe.com"></iframe>
   )");
 
-  auto* iframe = To<HTMLIFrameElement>(
-      GetDocument().getElementById(AtomicString("my-iframe")));
+  auto* iframe = To<HTMLIFrameElement>(GetElementById("my-iframe"));
 
   viz::TrackedElementFeature tracking_feature =
       viz::TrackedElementFeature::kIframeTracking;

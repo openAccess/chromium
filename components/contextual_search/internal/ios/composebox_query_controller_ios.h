@@ -25,7 +25,9 @@ class ComposeboxQueryControllerIOS : public ComposeboxQueryController {
       std::optional<std::string> page_title,
       std::optional<std::string> file_name,
       UploadImageType image_type,
+      std::optional<std::string> mime_type_string,
       RequestBodyProtoCreatedCallback callback) override;
+  bool IsGoogleChromeApiKeyUsed() const override;
 };
 
 #endif  // COMPONENTS_CONTEXTUAL_SEARCH_INTERNAL_IOS_COMPOSEBOX_QUERY_CONTROLLER_IOS_H_

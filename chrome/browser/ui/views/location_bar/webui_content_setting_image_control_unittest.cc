@@ -9,12 +9,14 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ui/content_settings/content_setting_image_model.h"
 #include "chrome/browser/ui/content_settings/content_setting_image_view_delegate.h"
 #include "chrome/browser/ui/views/toolbar/mock_webui_toolbar_control_delegate.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/content_settings/core/common/features.h"
 #include "content/public/browser/page.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -210,6 +212,53 @@ TEST_F(WebUIContentSettingImageControlTest,
   EXPECT_EQ(u"Popup Tooltip", popup_state->tooltip);
 }
 
+// The camera/mic indicator is always drawn by the Permissions Dashboard on the
+// left-hand side, while the sensor indicator is drawn on the left-hand side
+// only while the corresponding feature is enabled (falling back to a
+// right-hand-side content setting image when disabled).
+TEST_F(WebUIContentSettingImageControlTest,
+       ProcessContentSettingState_ActivityIndicators) {
+  const struct TestCase {
+    bool enable_lhs_indicators;
+    std::vector<ImageType> expected_types;
+  } kTestCases[] = {
+      {false, {ImageType::kSensors}},
+      {true, {}},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.enable_lhs_indicators);
+
+    // A `ScopedFeatureList` can only be initialized once, so it has to be
+    // re-created on every iteration.
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatureState(
+        content_settings::features::kLeftHandSideSensorActivityIndicators,
+        test_case.enable_lhs_indicators);
+
+    std::vector<std::unique_ptr<ContentSettingImageModel>> models;
+    auto media_model_ptr = std::make_unique<FakeContentSettingImageModel>(
+        ImageType::kMediaStream, ContentSettingsType::MEDIASTREAM_CAMERA);
+    auto* media_model = media_model_ptr.get();
+    models.push_back(std::move(media_model_ptr));
+    auto sensors_model_ptr = std::make_unique<FakeContentSettingImageModel>(
+        ImageType::kSensors, ContentSettingsType::SENSORS);
+    auto* sensors_model = sensors_model_ptr.get();
+    models.push_back(std::move(sensors_model_ptr));
+
+    control_->InitForTesting(std::move(models));
+
+    media_model->set_visible(true);
+    sensors_model->set_visible(true);
+
+    auto state = control_->ProcessContentSettingState(web_contents());
+    ASSERT_EQ(test_case.expected_types.size(), state.size());
+    for (size_t i = 0; i < state.size(); ++i) {
+      EXPECT_EQ(test_case.expected_types[i], state[i]->type);
+    }
+  }
+}
+
 TEST_F(WebUIContentSettingImageControlTest, ShowContentSettingsBubble) {
   std::vector<std::unique_ptr<ContentSettingImageModel>> models;
   auto cookies_model_ptr = std::make_unique<MockContentSettingImageModel>(
@@ -348,9 +397,6 @@ TEST_F(WebUIContentSettingImageControlTest,
   ASSERT_EQ(1u, state1.size());
   EXPECT_TRUE(state1[0]->should_run_animation);
 
-  // WebUI finishes animation and calls OnContentSettingImageAnimationEnded.
-  control_->OnContentSettingImageAnimationEnded(ImageType::kPopups);
-
   // Second update: animation has already run, so AnnounceAlert should not be
   // called again.
   auto state2 = control_->ProcessContentSettingState(web_contents());
@@ -478,6 +524,13 @@ TEST_F(WebUIContentSettingImageControlTest, TestPressed) {
   control_->ProcessContentSettingState(web_contents());
   EXPECT_FALSE(control_->TestPressed(0));
 
+  // When delegate specifies the image should be hidden, should return false.
+  cookies_model->set_visible(true);
+  delegate_->set_should_hide(true);
+  control_->ProcessContentSettingState(web_contents());
+  EXPECT_FALSE(control_->TestPressed(0));
+  delegate_->set_should_hide(false);
+
   // Visible model should attempt to show bubble and return true.
   cookies_model->set_visible(true);
   control_->ProcessContentSettingState(web_contents());
@@ -488,4 +541,32 @@ TEST_F(WebUIContentSettingImageControlTest, TestPressed) {
       .WillOnce(testing::Return(
           testing::ByMove(std::unique_ptr<ContentSettingBubbleModel>())));
   EXPECT_TRUE(control_->TestPressed(0));
+}
+
+TEST_F(WebUIContentSettingImageControlTest, IsContentSettingImageVisible) {
+  std::vector<std::unique_ptr<ContentSettingImageModel>> models;
+  auto cookies_model_ptr = std::make_unique<FakeContentSettingImageModel>(
+      ImageType::kCookies, ContentSettingsType::COOKIES);
+  auto* cookies_model = cookies_model_ptr.get();
+  models.push_back(std::move(cookies_model_ptr));
+
+  control_->InitForTesting(std::move(models));
+
+  // Out of bounds index should return false.
+  EXPECT_FALSE(control_->IsContentSettingImageVisible(1));
+
+  // Hidden model should return false.
+  cookies_model->set_visible(false);
+  control_->ProcessContentSettingState(web_contents());
+  EXPECT_FALSE(control_->IsContentSettingImageVisible(0));
+
+  // Visible model should return true.
+  cookies_model->set_visible(true);
+  control_->ProcessContentSettingState(web_contents());
+  EXPECT_TRUE(control_->IsContentSettingImageVisible(0));
+
+  // When delegate specifies the image should be hidden, should return false.
+  delegate_->set_should_hide(true);
+  control_->ProcessContentSettingState(web_contents());
+  EXPECT_FALSE(control_->IsContentSettingImageVisible(0));
 }

@@ -14,6 +14,7 @@
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
@@ -42,7 +43,7 @@ GURL ChromePopupNavigationDelegate::GetURL() {
 blocked_content::PopupNavigationDelegate::NavigateResult
 ChromePopupNavigationDelegate::NavigateWithGesture(
     const blink::mojom::WindowFeatures& window_features,
-    std::optional<WindowOpenDisposition> updated_disposition) {
+    std::optional<ui::mojom::WindowOpenDisposition> updated_disposition) {
   params_.user_gesture = true;
   if (updated_disposition) {
     params_.disposition = updated_disposition.value();
@@ -53,10 +54,10 @@ ChromePopupNavigationDelegate::NavigateWithGesture(
   ::Navigate(&params_);
 #endif
   if (params_.navigated_or_inserted_contents &&
-      params_.disposition == WindowOpenDisposition::NEW_POPUP) {
+      params_.disposition == ui::mojom::WindowOpenDisposition::kNewPopup) {
     content::RenderFrameHost* host =
         params_.navigated_or_inserted_contents->GetPrimaryMainFrame();
-    DCHECK(host);
+    CHECK(host, base::NotFatalUntil::M162);
     mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> client;
     host->GetRemoteAssociatedInterfaces()->GetInterface(&client);
     client->SetWindowFeatures(window_features.Clone());

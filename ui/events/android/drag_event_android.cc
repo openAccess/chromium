@@ -19,31 +19,35 @@ DragEventAndroid::DragEventAndroid(
     const gfx::PointF& location,
     const gfx::PointF& screen_location,
     const std::vector<std::u16string>& mime_types,
-    const base::android::JavaRef<jstring>& content,
+    bool has_files,
     const base::android::JavaRef<jobjectArray>& filenames,
     const base::android::JavaRef<jstring>& text,
     const base::android::JavaRef<jstring>& html,
     const base::android::JavaRef<jstring>& url,
     const base::android::JavaRef<jstring>& custom_data,
-    const base::android::JavaRef<jstring>& effect_allowed)
+    const base::android::JavaRef<jstring>& effect_allowed,
+    const base::android::JavaRef<jstring>& drag_id,
+    const base::android::JavaRef<jbyteArray>& image_bytes,
+    const base::android::JavaRef<jstring>& image_extension,
+    const base::android::JavaRef<jstring>& image_filename)
     : action_(action),
       location_(location),
       screen_location_(screen_location),
-      mime_types_(mime_types) {
-  content_.Reset(env, content);
+      mime_types_(mime_types),
+      has_files_(has_files) {
   filenames_.Reset(env, filenames);
   text_.Reset(env, text);
   html_.Reset(env, html);
   url_.Reset(env, url);
   custom_data_.Reset(env, custom_data);
   effect_allowed_.Reset(env, effect_allowed);
+  drag_id_.Reset(env, drag_id);
+  image_bytes_.Reset(env, image_bytes);
+  image_extension_.Reset(env, image_extension);
+  image_filename_.Reset(env, image_filename);
 }
 
 DragEventAndroid::~DragEventAndroid() {}
-
-ScopedJavaLocalRef<jstring> DragEventAndroid::GetJavaContent() const {
-  return ScopedJavaLocalRef<jstring>(content_);
-}
 
 ScopedJavaLocalRef<jobjectArray> DragEventAndroid::GetJavaFilenames() const {
   return ScopedJavaLocalRef<jobjectArray>(filenames_);
@@ -69,14 +73,31 @@ ScopedJavaLocalRef<jstring> DragEventAndroid::GetJavaEffectAllowed() const {
   return ScopedJavaLocalRef<jstring>(effect_allowed_);
 }
 
+ScopedJavaLocalRef<jstring> DragEventAndroid::GetJavaDragId() const {
+  return ScopedJavaLocalRef<jstring>(drag_id_);
+}
+
+ScopedJavaLocalRef<jbyteArray> DragEventAndroid::GetJavaImageBytes() const {
+  return ScopedJavaLocalRef<jbyteArray>(image_bytes_);
+}
+
+ScopedJavaLocalRef<jstring> DragEventAndroid::GetJavaImageExtension() const {
+  return ScopedJavaLocalRef<jstring>(image_extension_);
+}
+
+ScopedJavaLocalRef<jstring> DragEventAndroid::GetJavaImageFilename() const {
+  return ScopedJavaLocalRef<jstring>(image_filename_);
+}
+
 std::unique_ptr<DragEventAndroid> DragEventAndroid::CreateFor(
     const gfx::PointF& new_location) const {
   gfx::PointF new_screen_location =
       new_location + (screen_location() - location());
   JNIEnv* env = AttachCurrentThread();
   return std::make_unique<DragEventAndroid>(
-      env, action_, new_location, new_screen_location, *mime_types_, content_,
-      filenames_, text_, html_, url_, custom_data_, effect_allowed_);
+      env, action_, new_location, new_screen_location, *mime_types_, has_files_,
+      filenames_, text_, html_, url_, custom_data_, effect_allowed_, drag_id_,
+      image_bytes_, image_extension_, image_filename_);
 }
 
 }  // namespace ui

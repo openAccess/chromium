@@ -46,7 +46,7 @@ class NetErrorDiagnosticsDialog : public ui::BaseShellDialogImpl {
   void Show(content::WebContents* web_contents,
             const std::string& failed_url,
             base::OnceClosure callback) {
-    DCHECK(!callback.is_null());
+    CHECK(!callback.is_null(), base::NotFatalUntil::M161);
 
     HWND parent =
         views::HWNDForNativeWindow(web_contents->GetTopLevelNativeWindow());
@@ -96,13 +96,16 @@ bool CanShowNetworkDiagnosticsDialog(content::WebContents* web_contents) {
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
   // The Windows diagnostic tool logs URLs it's run with, so it shouldn't be
-  // used with incognito or guest profiles.  See https://crbug.com/40612751
-  return !profile->IsIncognitoProfile() && !profile->IsGuestSession();
+  // used with incognito, Enterprise Isolated Mode or guest profiles.
+  // See https://crbug.com/40612751
+  return !profile->IsPrimaryOTRProfileWithRegularParent() &&
+         !profile->IsGuestSession();
 }
 
 void ShowNetworkDiagnosticsDialog(content::WebContents* web_contents,
                                   const std::string& failed_url) {
-  DCHECK(CanShowNetworkDiagnosticsDialog(web_contents));
+  CHECK(CanShowNetworkDiagnosticsDialog(web_contents),
+        base::NotFatalUntil::M161);
 
   NetErrorDiagnosticsDialog* dialog = new NetErrorDiagnosticsDialog();
   dialog->Show(

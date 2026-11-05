@@ -15,6 +15,8 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/metrics_hashes.h"
 #include "chrome/browser/devtools/devtools_availability_checker.h"
+#include "chrome/browser/policy/developer_tools_policy_checker.h"
+#include "chrome/browser/policy/developer_tools_policy_checker_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/pref_names.h"
 #include "content/public/browser/browser_context.h"
@@ -42,6 +44,14 @@ ChromeDevToolsSessionBase::ChromeDevToolsSessionBase(
         prefs::kDevToolsAvailability,
         base::BindRepeating(&ChromeDevToolsSessionBase::OnDevToolsPolicyChanged,
                             base::Unretained(this)));
+    if (policy::DeveloperToolsPolicyChecker* checker =
+            policy::DeveloperToolsPolicyCheckerFactory::GetForBrowserContext(
+                profile)) {
+      policy_checker_callback_subscription_ =
+          checker->AddObserver(base::BindRepeating(
+              &ChromeDevToolsSessionBase::OnDevToolsPolicyChanged,
+              base::Unretained(this)));
+    }
   }
 }
 
@@ -67,14 +77,16 @@ void ChromeDevToolsSessionBase::HandleCommand(
                                  std::string_view fallthrough_data) {
         cb.Run(message);
       });
-  DCHECK(dispatchable.ok());  // Checked by content::DevToolsSession.
+  CHECK(dispatchable.ok(),
+        base::NotFatalUntil::M161);  // Checked by content::DevToolsSession.
 
   auto command_uma_id = GetCommandUmaId(std::string_view(
       reinterpret_cast<const char*>(dispatchable.Method().data()),
       dispatchable.Method().size()));
   std::string client_type = client_channel_->GetClient()->GetTypeForMetrics();
-  DCHECK(client_type == "DevTools" || client_type == "Extension" ||
-         client_type == "RemoteDebugger" || client_type == "Other");
+  CHECK(client_type == "DevTools" || client_type == "Extension" ||
+            client_type == "RemoteDebugger" || client_type == "Other",
+        base::NotFatalUntil::M161);
   base::UmaHistogramSparse("DevTools.CDPCommandFrom" + client_type,
                            command_uma_id);
 

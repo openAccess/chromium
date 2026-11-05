@@ -43,6 +43,7 @@ source_set("coordinator") {
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/shared/public/commands",
+    "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/browser/shared/public/snackbar",
     "//ios/chrome/browser/shared/ui/symbols",
     "//ios/chrome/browser/signin/model",
@@ -52,5 +53,8 @@ source_set("coordinator") {
     "//ios/web/public",
     "//ui/base",
   ]
-  public_deps = [ "//ios/chrome/browser/composebox/public:entrypoint" ]
+  public_deps = [
+    "//ios/chrome/browser/composebox/public:entrypoint",
+    "//third_party/omnibox_proto",
+  ]
 }

@@ -104,6 +104,31 @@ TEST_F(UrlKeyedDataCollectionConsentHelperTest, PersonalizedDataCollection) {
 }
 
 TEST_F(UrlKeyedDataCollectionConsentHelperTest,
+       PersonalizedDataCollection_CustomPassphrase) {
+  std::unique_ptr<UrlKeyedDataCollectionConsentHelper> helper =
+      UrlKeyedDataCollectionConsentHelper::
+          NewPersonalizedDataCollectionConsentHelper(&sync_service_);
+  helper->AddObserver(this);
+
+  sync_service_.SetMaxTransportState(
+      syncer::SyncService::TransportState::ACTIVE);
+  sync_service_.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false,
+      /*types=*/{syncer::UserSelectableType::kHistory});
+  sync_service_.SetIsUsingExplicitPassphrase(true);
+  // Custom passphrase encryption is not supported for history data types, so
+  // DataTypeControllers stop them and they are not active in Sync.
+  sync_service_.SetFailedDataTypes({syncer::HISTORY_DELETE_DIRECTIVES});
+  sync_service_.FireStateChanged();
+
+  EXPECT_EQ(helper->GetConsentState(),
+            UrlKeyedDataCollectionConsentHelper::State::kDisabled);
+  EXPECT_FALSE(helper->IsEnabled());
+  EXPECT_TRUE(state_changed_notifications_.empty());
+  helper->RemoveObserver(this);
+}
+
+TEST_F(UrlKeyedDataCollectionConsentHelperTest,
        PersonalizedDataCollection_NullSyncService) {
     std::unique_ptr<UrlKeyedDataCollectionConsentHelper> helper =
         UrlKeyedDataCollectionConsentHelper::
@@ -116,9 +141,7 @@ TEST_F(UrlKeyedDataCollectionConsentHelperTest,
        PersonalizedBookmarksDataCollection) {
   std::unique_ptr<UrlKeyedDataCollectionConsentHelper> helper =
       UrlKeyedDataCollectionConsentHelper::
-          NewPersonalizedBookmarksDataCollectionConsentHelper(
-              &sync_service_,
-              /*require_sync_feature_enabled=*/false);
+          NewPersonalizedBookmarksDataCollectionConsentHelper(&sync_service_);
   helper->AddObserver(this);
   EXPECT_FALSE(helper->IsEnabled());
   EXPECT_TRUE(state_changed_notifications_.empty());
@@ -133,43 +156,12 @@ TEST_F(UrlKeyedDataCollectionConsentHelperTest,
   helper->RemoveObserver(this);
 }
 
-// TODO(crbug.com/40066949): Remove once kSync becomes unreachable or is
-// deleted from the codebase. See ConsentLevel::kSync documentation for
-// details.
-TEST_F(UrlKeyedDataCollectionConsentHelperTest,
-       PersonalizedBookmarksDataCollection_IsSyncFeatureEnabled) {
-  std::unique_ptr<UrlKeyedDataCollectionConsentHelper> helper =
-      UrlKeyedDataCollectionConsentHelper::
-          NewPersonalizedBookmarksDataCollectionConsentHelper(
-              &sync_service_,
-              /*require_sync_feature_enabled=*/true);
-  sync_service_.SetSignedIn(signin::ConsentLevel::kSync);
-  sync_service_.GetUserSettings()->SetSelectedTypes(
-      /*sync_everything=*/false,
-      /*types=*/{syncer::UserSelectableType::kBookmarks});
-  sync_service_.FireStateChanged();
-  EXPECT_TRUE(sync_service_.IsSyncFeatureEnabled());
-  EXPECT_TRUE(helper->IsEnabled());
-
-  helper->AddObserver(this);
-  sync_service_.SetSignedIn(signin::ConsentLevel::kSignin);
-  EXPECT_FALSE(sync_service_.IsSyncFeatureEnabled());
-  EXPECT_TRUE(helper->IsEnabled());
-  EXPECT_EQ(0U, state_changed_notifications_.size());
-
-  sync_service_.FireStateChanged();
-  EXPECT_FALSE(helper->IsEnabled());
-  EXPECT_EQ(1U, state_changed_notifications_.size());
-  helper->RemoveObserver(this);
-}
-
 TEST_F(UrlKeyedDataCollectionConsentHelperTest,
        PersonalizedBookmarksDataCollection_NullSyncService) {
   std::unique_ptr<UrlKeyedDataCollectionConsentHelper> helper =
       UrlKeyedDataCollectionConsentHelper::
           NewPersonalizedBookmarksDataCollectionConsentHelper(
-              /*sync_service=*/nullptr,
-              /*require_sync_feature_enabled=*/false);
+              /*sync_service=*/nullptr);
   EXPECT_FALSE(helper->IsEnabled());
 }
 

@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Contrasenya incorrecta</translation>
 <translation id="5059127710849015030">Nepalès (transliteració)</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> ha establert regles d'anul·lació del servidor intermediari</translation>
 <translation id="5081517858322016911">Se suprimiran <ph name="TOTAL_FILE_SIZE" /> de fitxers</translation>
 <translation id="508423945471810158">S'estan traslladant <ph name="NUMBER_OF_ITEMS" /> elements a la carpeta <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">S'ha produït un error.</translation>
-<translation id="5102922915594634436">Gestiona les carpetes sincronitzades</translation>
 <translation id="5109254780565519649">S'ha produït un error. És possible que alguns elements no s'hagin restaurat.</translation>
 <translation id="5110329002213341433">Anglès (Canadà)</translation>
 <translation id="5119780910075847424">La sincronització s'ha posat en pausa</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">Hindi</translation>
 <translation id="7665680517722058469">Prova una altra cerca</translation>
 <translation id="7689532716264131859">S'han mogut <ph name="NUMBER_OF_ITEMS" /> elements a la paperera</translation>
-<translation id="7693909743393669729">En formatar una unitat, se n'esborren totes les dades que s'hi hagin emmagatzemat i se'n suprimeixen totes les particions existents, incloses algunes que potser no es veuen. Aquesta acció no es pot desfer.</translation>
 <translation id="7695430100978772476">No s'ha pogut formatar <ph name="DRIVE_NAME" /></translation>
 <translation id="76959938259365003">No s'ha pogut buidar la paperera.</translation>
 <translation id="7705251383879779343"><ph name="FILE_NAME" /> s'ha copiat.</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">Workman nord-americà internacional</translation>
 <translation id="7903984238293908205">Katakana</translation>
 <translation id="7908378463497120834">Com a mínim una partició del dispositiu d'emmagatzematge extern no s'ha pogut muntar.</translation>
-<translation id="7908793776359722643">En formatar una partició, se n'esborren totes les dades que s'hi hagin emmagatzemat. Aquesta acció no es pot desfer.</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">Els fitxers de La meva unitat se sincronitzaran amb el Chromebook automàticament perquè hi puguis accedir sense connexió a Internet.</translation>
 <translation id="7925247922861151263">Error en la comprovació d'AAA</translation>

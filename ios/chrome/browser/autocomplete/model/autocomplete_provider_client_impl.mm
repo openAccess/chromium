@@ -9,7 +9,6 @@
 #import "components/application_locale_storage/application_locale_storage.h"
 #import "components/history/core/browser/history_service.h"
 #import "components/history/core/browser/top_sites.h"
-#import "components/keyed_service/core/service_access_type.h"
 #import "components/language/core/browser/pref_names.h"
 #import "components/omnibox/browser/actions/omnibox_pedal_provider.h"
 #import "components/omnibox/browser/autocomplete_classifier.h"
@@ -87,7 +86,10 @@ PrefService* AutocompleteProviderClientImpl::GetLocalState() {
 }
 
 std::string AutocompleteProviderClientImpl::GetApplicationLocale() const {
-  return GetApplicationContext()->GetApplicationLocaleStorage()->Get();
+  return std::string(GetApplicationContext()
+                         ->GetApplicationLocaleStorage()
+                         ->GetTag()
+                         .tag_string());
 }
 
 const AutocompleteSchemeClassifier&
@@ -101,8 +103,7 @@ AutocompleteProviderClientImpl::GetAutocompleteClassifier() {
 }
 
 history::HistoryService* AutocompleteProviderClientImpl::GetHistoryService() {
-  return ios::HistoryServiceFactory::GetForProfile(
-      profile_, ServiceAccessType::EXPLICIT_ACCESS);
+  return ios::HistoryServiceFactory::GetForProfile(profile_);
 }
 
 scoped_refptr<history::TopSites> AutocompleteProviderClientImpl::GetTopSites() {
@@ -136,8 +137,11 @@ AutocompleteProviderClientImpl::GetTemplateURLService() const {
 RemoteSuggestionsService*
 AutocompleteProviderClientImpl::GetRemoteSuggestionsService(
     bool create_if_necessary) const {
-  return RemoteSuggestionsServiceFactory::GetForProfile(profile_,
-                                                        create_if_necessary);
+  if (create_if_necessary) {
+    return RemoteSuggestionsServiceFactory::GetForProfile(profile_);
+  }
+
+  return RemoteSuggestionsServiceFactory::GetForProfileIfExists(profile_);
 }
 
 ZeroSuggestCacheService*
@@ -254,6 +258,11 @@ signin::IdentityManager* AutocompleteProviderClientImpl::GetIdentityManager()
 }
 
 bool AutocompleteProviderClientImpl::IsOffTheRecord() const {
+  return profile_->IsOffTheRecord();
+}
+
+bool AutocompleteProviderClientImpl::IsPrimaryOTRProfileWithRegularParent()
+    const {
   return profile_->IsOffTheRecord();
 }
 

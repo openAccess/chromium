@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #import <memory>
+#import <optional>
 
 #import "base/base_paths.h"
 #import "base/ios/ios_util.h"
@@ -18,13 +19,14 @@
 #import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/autofill/ios/common/features.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
 #import "ios/chrome/browser/autofill/ui_bundled/bottom_sheet/bottom_sheet_constants.h"
-#import "ios/chrome/browser/badges/model/features.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_constants.h"
 #import "ios/chrome/browser/infobars/ui_bundled/banners/infobar_banner_constants.h"
 #import "ios/chrome/browser/infobars/ui_bundled/modals/infobar_save_card_modal_constants.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
+#import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
@@ -253,27 +255,36 @@ void FillAndSubmitXframeCreditCardForm() {
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config;
 
-  if ([self isRunningTest:@selector(DISABLED_testOfferLocalSave_WithInfobar)]) {
-    // This test needs the badge.
-    config.features_disabled.push_back(kAutofillBadgeRemoval);
-  }
-
-  if ([self isRunningTest:@selector(DISABLED_testStickySavePromptJourney)]) {
+  if ([self isRunningTest:@selector(testStickySavePromptJourney)]) {
     config.features_enabled.push_back(kAutofillStickyInfobarIos);
   }
   if ([self isRunningTest:@selector(
                               testLocalSaveBottomSheetStrikeLimitExperiment)]) {
     config.features_enabled.push_back(
         autofill::features::kAutofillSaveCardBottomSheetStrikeLimitIos);
+  } else {
+    // The field trial testing config enables this experiment, which raises the
+    // number of times the bottom sheet is shown before falling back to the
+    // infobar from 1 to 3. All other tests verify the default flow, where the
+    // infobar is offered after the first strike.
     config.features_disabled.push_back(
-        autofill::features::kAutofillUpstreamEnforceStrikeDelay);
+        autofill::features::kAutofillSaveCardBottomSheetStrikeLimitIos);
   }
+
+  // The field trial testing config also enables the strike delay, which would
+  // suppress save offers for a day after a strike. Disable it so multi-strike
+  // flows can be tested without waiting for the strike delay to pass.
+  config.features_disabled.push_back(
+      autofill::features::kAutofillUpstreamEnforceStrikeDelay);
 
   return config;
 }
 
 - (void)setUp {
   [super setUp];
+
+  [SigninEarlGrey
+      signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
 
   net::test_server::RegisterDefaultHandlers(self.testServer);
 
@@ -305,6 +316,16 @@ void FillAndSubmitXframeCreditCardForm() {
 }
 
 #pragma mark - Page interaction helper methods
+
+// Loads the credit card upload form and waits for Autofill to parse it.
+// `BrowserAutofillManager::ValidateSubmittedForm()` drops submissions of forms
+// that are not yet in the Autofill form cache, so filling and submitting right
+// after the page load is racy.
+- (void)loadCreditCardUploadForm {
+  [ChromeEarlGrey loadURL:self.testServer->GetURL(kCreditCardUploadForm)];
+  GREYAssertTrue([AutofillAppInterface waitForFormToBeCachedInMainFrame],
+                 @"Forms were not parsed and cached.");
+}
 
 - (void)fillAndSubmitFormWithID:(NSString*)formID {
   [ChromeEarlGrey tapWebStateElementWithID:formID];
@@ -346,7 +367,8 @@ void FillAndSubmitXframeCreditCardForm() {
 }
 
 // Sets up the Google Payments server response to offer upload or local save on
-// submitting the credit card form.
+// submitting the credit card form. The strike count of the card is left
+// untouched.
 - (void)fillAndSubmitFormWithID:(NSString*)formID
                paymentsResponse:(NSString*)fakeResponse
                       errorCode:(int)errorCode
@@ -355,15 +377,17 @@ void FillAndSubmitXframeCreditCardForm() {
                paymentsResponse:fakeResponse
                       errorCode:errorCode
                    forLocalSave:localSave
-                     numStrikes:0];
+                     numStrikes:std::nullopt];
 }
 
+// Same as above, but sets the strike count of the card to `numStrikes` before
+// submitting the form when `numStrikes` has a value.
 - (void)fillAndSubmitFormWithID:(NSString*)formID
                paymentsResponse:(NSString*)fakeResponse
                       errorCode:(int)errorCode
                    forLocalSave:(BOOL)localSave
-                     numStrikes:(int)numStrikes {
-  [ChromeEarlGrey loadURL:self.testServer->GetURL(kCreditCardUploadForm)];
+                     numStrikes:(std::optional<int>)numStrikes {
+  [self loadCreditCardUploadForm];
 
   // Set up the Google Payments server response.
   [AutofillAppInterface setPaymentsResponse:fakeResponse
@@ -388,9 +412,11 @@ void FillAndSubmitXframeCreditCardForm() {
   // the page.
   [ChromeEarlGrey tapWebStateElementWithID:formID];
 
-  // Set strike count on the active page.
-  [AutofillAppInterface setFormFillMaxStrikes:numStrikes
-                                      forCard:@"CreditCardSave__5454"];
+  // Set strike count on the active page if specified.
+  if (numStrikes.has_value()) {
+    [AutofillAppInterface setFormFillMaxStrikes:*numStrikes
+                                        forCard:@"CreditCardSave__5454"];
+  }
 
   // Submit the form.
   [self submitForm];
@@ -630,9 +656,7 @@ void FillAndSubmitXframeCreditCardForm() {
 
 // Ensures that UMA metrics are correctly logged when the user declines upload
 // on a bottomsheet and an infobar.
-// TODO(crbug.com/507579591): Improve StrikeDatabase test infra and re-enable
-//                            this test.
-- (void)DISABLED_testUMA_Upstream_UserDeclinesBottomSheetAndInfobar {
+- (void)testUMA_Upstream_UserDeclinesBottomSheetAndInfobar {
   // Form submitted with full credit card data and no previous strikes offers
   // upstream save in a bottomsheet.
   [self fillAndSubmitFormWithID:kFillFullFormId
@@ -708,9 +732,7 @@ void FillAndSubmitXframeCreditCardForm() {
 // Ensures that UMA metrics are correctly logged when the user declines upload
 // on a bottomsheet and accepts when offered infobar. On accept, ensures that an
 // UploadCardRequest RPC is sent to Google Payments Server.
-// TODO(crbug.com/507579591): Improve StrikeDatabase test infra and re-enable
-//                            this test.
-- (void)DISABLED_testUMA_Upstream_UserDeclinesBottomSheetAcceptsInfobar {
+- (void)testUMA_Upstream_UserDeclinesBottomSheetAcceptsInfobar {
   // Form submitted with full credit card data and no previous strikes offers
   // card upload in a bottomsheet.
   [self fillAndSubmitFormWithID:kFillFullFormId
@@ -802,9 +824,7 @@ void FillAndSubmitXframeCreditCardForm() {
   }
 }
 
-// TODO(crbug.com/439735103): Re-enable the test.
-- (void)
-    DISABLED_testSaveCardBottomSheetShowsLoadingAndConfirmationAfterAcceptPushed {
+- (void)testSaveCardBottomSheetShowsLoadingAndConfirmationAfterAcceptPushed {
   [self fillAndSubmitFormWithID:kFillFullFormId
                paymentsResponse:kResponseGetUploadDetailsSuccess
                       errorCode:net::HTTP_OK
@@ -819,7 +839,7 @@ void FillAndSubmitXframeCreditCardForm() {
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   [[EarlGrey selectElementWithMatcher:
                  grey_accessibilityLabel(l10n_util::GetNSString(
-                     IDS_AUTOFILL_GOOGLE_PAY_LOGO_ACCESSIBLE_NAME))]
+                     IDS_AUTOFILL_GOOGLE_WALLET_LOGO_ACCESSIBLE_NAME))]
       assertWithMatcher:grey_sufficientlyVisible()];
 
   [[EarlGrey
@@ -838,78 +858,83 @@ void FillAndSubmitXframeCreditCardForm() {
   [[EarlGrey selectElementWithMatcher:UploadBottomSheetCancelButtonMatcher()]
       assertWithMatcher:grey_userInteractionEnabled()];
 
-  // Push the accept button on the save card bottomsheet.
-  [[EarlGrey selectElementWithMatcher:BottomSheetAcceptButtonMatcher()]
-      performAction:grey_tap()];
+  {
+    // Synchronization off due to an infinite spinner and button animations.
+    ScopedSynchronizationDisabler disabler;
 
-  // Assert an activity indicator view is being shown in the loading state.
-  GREYAssertTrue(
-      [self waitForUIElementToAppearWithMatcher:ActivityIndicatorMatcher()],
-      @"Save card bottomsheet failed to show activity indicator in loading "
-      @"state.");
-  [[EarlGrey selectElementWithMatcher:ActivityIndicatorMatcher()]
-      assertWithMatcher:grey_sufficientlyVisible()];
+    // Push the accept button on the save card bottomsheet.
+    [[EarlGrey selectElementWithMatcher:BottomSheetAcceptButtonMatcher()]
+        performAction:grey_tap()];
 
-  // Assert the accept button is disabled and has accessibility label for
-  // loading state.
-  [[EarlGrey
-      selectElementWithMatcher:chrome_test_util::ButtonStackPrimaryButton()]
-      assertWithMatcher:
-          grey_allOf(
-              grey_not(grey_enabled()),
-              grey_accessibilityLabel(l10n_util::GetNSString(
-                  IDS_AUTOFILL_SAVE_CARD_PROMPT_LOADING_THROBBER_ACCESSIBLE_NAME)),
-              nil)];
+    // Assert an activity indicator view is being shown in the loading state.
+    GREYAssertTrue(
+        [self waitForUIElementToAppearWithMatcher:ActivityIndicatorMatcher()],
+        @"Save card bottomsheet failed to show activity indicator in loading "
+        @"state.");
+    [[EarlGrey selectElementWithMatcher:ActivityIndicatorMatcher()]
+        assertWithMatcher:grey_sufficientlyVisible()];
 
-  // Assert the cancel button is disabled.
-  [[EarlGrey
-      selectElementWithMatcher:chrome_test_util::ButtonStackSecondaryButton()]
-      assertWithMatcher:grey_not(grey_enabled())];
+    // Assert the accept button is disabled and has accessibility label for
+    // loading state.
+    [[EarlGrey
+        selectElementWithMatcher:chrome_test_util::ButtonStackPrimaryButton()]
+        assertWithMatcher:
+            grey_allOf(
+                grey_not(grey_enabled()),
+                grey_accessibilityLabel(l10n_util::GetNSString(
+                    IDS_AUTOFILL_SAVE_CARD_PROMPT_LOADING_THROBBER_ACCESSIBLE_NAME)),
+                nil)];
 
-  // Inject a response from the payments server when saving the card.
-  [AutofillAppInterface setPaymentsResponse:kSaveCardResponse
-                                 forRequest:kSaveCardUrl
-                              withErrorCode:net::HTTP_OK];
+    // Assert the cancel button is disabled.
+    [[EarlGrey
+        selectElementWithMatcher:chrome_test_util::ButtonStackSecondaryButton()]
+        assertWithMatcher:grey_not(grey_enabled())];
 
-  [AutofillAppInterface resetEventWaiterForEvents:@[
-    @(CreditCardSaveManagerObserverEvent::kOnSentUploadCardRequestCalled)
-  ]
-                                          timeout:kWaitForDownloadTimeout];
+    // Inject a response from the payments server when saving the card.
+    [AutofillAppInterface setPaymentsResponse:kSaveCardResponse
+                                   forRequest:kSaveCardUrl
+                                withErrorCode:net::HTTP_OK];
 
-  // Inject risk data required for the card upload request to be initiated.
-  [AutofillAppInterface setPaymentsRiskData:@"Fake risk data for tests"];
+    [AutofillAppInterface resetEventWaiterForEvents:@[
+      @(CreditCardSaveManagerObserverEvent::kOnSentUploadCardRequestCalled)
+    ]
+                                            timeout:kWaitForDownloadTimeout];
 
-  GREYAssertTrue([AutofillAppInterface waitForEvents],
-                 @"Upload card request was not called.");
+    // Inject risk data required for the card upload request to be initiated.
+    [AutofillAppInterface setPaymentsRiskData:@"Fake risk data for tests"];
 
-  // Assert the accept button is still disabled and has accessibility label for
-  // confirmation state.
-  [[EarlGrey
-      selectElementWithMatcher:chrome_test_util::ButtonStackPrimaryButton()]
-      assertWithMatcher:
-          grey_allOf(
-              grey_not(grey_enabled()),
-              grey_accessibilityLabel(l10n_util::GetNSString(
-                  IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_SUCCESS_ACCESSIBLE_NAME)),
-              nil)];
+    GREYAssertTrue([AutofillAppInterface waitForEvents],
+                   @"Upload card request was not called.");
 
-  // Assert a checkmark symbol is being shown in the confirmation state.
-  [[[EarlGrey
-      selectElementWithMatcher:chrome_test_util::ButtonStackCheckmarkSymbol()]
-      inRoot:chrome_test_util::ButtonStackPrimaryButton()]
-      assertWithMatcher:grey_sufficientlyVisible()];
+    // Assert the accept button is still disabled and has accessibility label
+    // for confirmation state.
+    [[EarlGrey
+        selectElementWithMatcher:chrome_test_util::ButtonStackPrimaryButton()]
+        assertWithMatcher:
+            grey_allOf(
+                grey_not(grey_enabled()),
+                grey_accessibilityLabel(l10n_util::GetNSString(
+                    IDS_AUTOFILL_SAVE_CARD_CONFIRMATION_SUCCESS_ACCESSIBLE_NAME)),
+                nil)];
 
-  // Assert the cancel button is disabled.
-  [[EarlGrey
-      selectElementWithMatcher:chrome_test_util::ButtonStackSecondaryButton()]
-      assertWithMatcher:grey_not(grey_enabled())];
+    // Assert a checkmark symbol is being shown in the confirmation state.
+    [[[EarlGrey
+        selectElementWithMatcher:chrome_test_util::ButtonStackCheckmarkSymbol()]
+        inRoot:chrome_test_util::ButtonStackPrimaryButton()]
+        assertWithMatcher:grey_sufficientlyVisible()];
 
-  // Wait for bottomsheet to auto-dismiss.
-  GREYAssertTrue(
-      [self
-          waitForUIElementToDisappearWithMatcher:UploadBottomSheetTitleMatcher()
-                             showingConfirmation:YES],
-      @"Save card bottomsheet failed to auto-dismiss in confirmation state.");
+    // Assert the cancel button is disabled.
+    [[EarlGrey
+        selectElementWithMatcher:chrome_test_util::ButtonStackSecondaryButton()]
+        assertWithMatcher:grey_not(grey_enabled())];
+
+    // Wait for bottomsheet to auto-dismiss.
+    GREYAssertTrue(
+        [self waitForUIElementToDisappearWithMatcher:
+                  UploadBottomSheetTitleMatcher()
+                                 showingConfirmation:YES],
+        @"Save card bottomsheet failed to auto-dismiss in confirmation state.");
+  }
 }
 
 // Ensures that the bottomsheet goes away and no credit card is saved to Chrome
@@ -1083,12 +1108,10 @@ void FillAndSubmitXframeCreditCardForm() {
 // when navigating without an explicit user gesture, and then the prompt is
 // dismissed when navigating with a user gesture. Test with the credit card save
 // prompt but the type of credit card prompt doesn't matter in this test case.
-// TODO(crbug.com/507579591): Improve StrikeDatabase test infra and re-enable
-//                            this test.
-- (void)DISABLED_testStickySavePromptJourney {
+- (void)testStickySavePromptJourney {
   const GURL testPageURL = self.testServer->GetURL(kCreditCardUploadForm);
 
-  [ChromeEarlGrey loadURL:testPageURL];
+  [self loadCreditCardUploadForm];
 
   // Set up the Google Payments server response.
   [AutofillAppInterface setPaymentsResponse:kResponseGetUploadDetailsFailure
@@ -1325,14 +1348,12 @@ void FillAndSubmitXframeCreditCardForm() {
 
 // Test infobar is offered for card with non zero strike and card is saved to
 // Chrome if user accepts the infobar.
-// TODO(crbug.com/507579591): Improve StrikeDatabase test infra and re-enable
-//                            this test.
-- (void)DISABLED_testOfferLocalSave_WithInfobar {
+- (void)testOfferLocalSave_WithInfobar {
   // Ensure there are no saved credit cards.
   GREYAssertEqual(0U, [AutofillAppInterface localCreditCount],
                   @"There should be no saved credit card.");
 
-  [ChromeEarlGrey loadURL:self.testServer->GetURL(kCreditCardUploadForm)];
+  [self loadCreditCardUploadForm];
 
   // Set up the Google Payments server response.
   [AutofillAppInterface setPaymentsResponse:kResponseGetUploadDetailsFailure
@@ -1362,11 +1383,11 @@ void FillAndSubmitXframeCreditCardForm() {
       [self waitForUIElementToAppearWithMatcher:LocalBannerLabelsMatcher()],
       @"Local save card infobar failed to show.");
 
-  // Verify that the badge is displayed.
+  // Verify that the badge is not displayed.
   [[EarlGrey
       selectElementWithMatcher:grey_accessibilityID(
                                    kBadgeButtonSaveCardAccessibilityIdentifier)]
-      assertWithMatcher:grey_notNil()];
+      assertWithMatcher:grey_nil()];
 
   // Tap the save button.
   [[EarlGrey selectElementWithMatcher:LocalSaveButtonMatcher()]
@@ -1391,7 +1412,7 @@ void FillAndSubmitXframeCreditCardForm() {
   GREYAssertEqual(0U, [AutofillAppInterface localCreditCount],
                   @"There should be no saved credit card.");
 
-  [ChromeEarlGrey loadURL:self.testServer->GetURL(kCreditCardUploadForm)];
+  [self loadCreditCardUploadForm];
 
   // Set up the Google Payments server response.
   [AutofillAppInterface setPaymentsResponse:kResponseGetUploadDetailsFailure
@@ -1444,9 +1465,7 @@ void FillAndSubmitXframeCreditCardForm() {
 
 // Tests CVC validation with short invalid input in the credit card upload save
 // modal.
-// TODO(crbug.com/507579591): Improve StrikeDatabase test infra and re-enable
-//                            this test.
-- (void)DISABLED_testUpstreamCVCValidation_WithShortInvalidInput {
+- (void)testUpstreamCVCValidation_WithShortInvalidInput {
   // Action: Trigger the upstream save modal to be displayed.
   [self triggerCreditCardSaveModal];
 
@@ -1464,9 +1483,7 @@ void FillAndSubmitXframeCreditCardForm() {
 
 // Tests CVC validation with long invalid input in the credit card upload save
 // modal.
-// TODO(crbug.com/507579591): Improve StrikeDatabase test infra and re-enable
-//                            this test.
-- (void)DISABLED_testUpstreamCVCValidation_WithLongInvalidInput {
+- (void)testUpstreamCVCValidation_WithLongInvalidInput {
   // Trigger the upstream save modal to be displayed.
   [self triggerCreditCardSaveModal];
 
@@ -1484,9 +1501,7 @@ void FillAndSubmitXframeCreditCardForm() {
 
 // Tests CVC validation with non-digit invalid input in the credit card upload
 // save modal.
-// TODO(crbug.com/507579591): Improve StrikeDatabase test infra and re-enable
-//                            this test.
-- (void)DISABLED_testUpstreamCVCValidation_WithNonDigitInput {
+- (void)testUpstreamCVCValidation_WithNonDigitInput {
   // Trigger the upstream save modal to be displayed.
   [self triggerCreditCardSaveModal];
 
@@ -1504,9 +1519,7 @@ void FillAndSubmitXframeCreditCardForm() {
 
 // Tests CVC validation with 4 digits valid input in the credit card upload save
 // modal.
-// TODO(crbug.com/507579591): Improve StrikeDatabase test infra and re-enable
-//                            this test.
-- (void)DISABLED_testUpstreamCVCValidation_WithValidInput {
+- (void)testUpstreamCVCValidation_WithValidInput {
   // Trigger the upstream save modal to be displayed.
   [self triggerCreditCardSaveModal];
 

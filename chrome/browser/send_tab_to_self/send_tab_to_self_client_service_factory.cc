@@ -12,6 +12,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/send_tab_to_self/send_tab_to_self_client_service.h"
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
+#include "chrome/common/chrome_features.h"
 #include "components/send_tab_to_self/send_tab_to_self_model.h"
 #include "components/send_tab_to_self/send_tab_to_self_sync_service.h"
 
@@ -23,7 +24,7 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/android/send_tab_to_self/android_notification_handler.h"
 #else
-#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_toolbar_icon_controller.h"
+#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_receiving_ui_handler.h"
 #endif
 
 namespace send_tab_to_self {
@@ -86,7 +87,7 @@ SendTabToSelfClientServiceFactory::BuildServiceInstanceForBrowserContext(
 #if BUILDFLAG(IS_ANDROID)
       std::make_unique<AndroidNotificationHandler>(model)
 #else
-      std::make_unique<SendTabToSelfToolbarIconController>(profile)
+      std::make_unique<SendTabToSelfReceivingUiHandler>(profile)
 #endif
           ,
       model);
@@ -94,7 +95,11 @@ SendTabToSelfClientServiceFactory::BuildServiceInstanceForBrowserContext(
 
 bool SendTabToSelfClientServiceFactory::ServiceIsCreatedWithBrowserContext()
     const {
-  return true;
+  return !::features::IsLazyAfterStartupKeyedServicesEnabled();
+}
+
+bool SendTabToSelfClientServiceFactory::ServiceIsCreatedAfterStartup() const {
+  return ::features::IsLazyAfterStartupKeyedServicesEnabled();
 }
 
 bool SendTabToSelfClientServiceFactory::ServiceIsNULLWhileTesting() const {

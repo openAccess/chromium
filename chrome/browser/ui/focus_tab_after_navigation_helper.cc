@@ -14,6 +14,7 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/base_window.h"
+#include "ui/base/page_transition_types.h"
 
 FocusTabAfterNavigationHelper::FocusTabAfterNavigationHelper(
     content::WebContents* contents)
@@ -32,7 +33,7 @@ void FocusTabAfterNavigationHelper::ReadyToCommitNavigation(
   // (only 1 is a hard-requirement;  2 and 3 seem desirable but there are no
   // known scenarios where violating these requirements would lead to bugs).
   if (ShouldFocusTabContents(navigation)) {
-    web_contents()->SetInitialFocus();
+    web_contents()->Focus();
   }
 }
 

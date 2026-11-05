@@ -349,20 +349,6 @@ void MetricsWebContentsObserver::DidStartNavigationImpl(
     // start with ukm::kInvalidSourceId and set a correct ukm::SourceId on
     // activation.
     CHECK_EQ(ukm::kInvalidSourceId, source_id);
-  } else if (navigation_handle->GetNavigatingFrameType() ==
-             content::FrameType::kFencedFrameRoot) {
-    // For FencedFrames, use the primary page's ukm::SourceId. `primary_page_`
-    // can be nullptr if the main frame is in data URL or so.
-    if (primary_page_) {
-      source_id = primary_page_->GetPageUkmSourceId();
-      parent_tracker = primary_page_->GetWeakPtr();
-    } else {
-      // Use ukm::NoURLSourceId() rather than kInvalidSourceId to avoid
-      // unexpected check failure. This happens on tests that create a
-      // FencedFrame via FencedFrameTestHelper directly without a correct setup
-      // being finished on the embedder frame.
-      source_id = ukm::NoURLSourceId();
-    }
   } else {
     NOTREACHED();
   }
@@ -812,19 +798,7 @@ void MetricsWebContentsObserver::HandleCommittedNavigationForTrackedLoad(
     primary_page_ = std::move(tracker);
     active_pages_.clear();
   } else {
-    CHECK_EQ(navigation_handle->GetNavigatingFrameType(),
-             content::FrameType::kFencedFrameRoot);
-    // There may be an active tracker in the map if navigation happens on the
-    // non-primary page. `emplace` operation below doesn't overwrite it, but
-    // just fails. It results in destructing the moved tracker unexpectedly.
-    // To avoid this problem, we ensure destructing existing tracker beforehand.
-    auto it = active_pages_.find(navigation_handle->GetRenderFrameHost());
-    if (it != active_pages_.end()) {
-      active_pages_.erase(it);
-    }
-
-    active_pages_.emplace(navigation_handle->GetRenderFrameHost(),
-                          std::move(tracker));
+    NOTREACHED();
   }
   raw_tracker->Commit(navigation_handle);
   CHECK(raw_tracker->did_commit());
@@ -1352,30 +1326,6 @@ void MetricsWebContentsObserver::RemoveLifecycleObserver(
   lifecycle_observers_.RemoveObserver(observer);
 }
 
-void MetricsWebContentsObserver::OnSharedStorageWorkletHostCreated(
-    content::RenderFrameHost* rfh) {
-  if (!rfh) {
-    return;
-  }
-
-  if (PageLoadTracker* tracker = GetPageLoadTracker(rfh)) {
-    tracker->OnSharedStorageWorkletHostCreated();
-  }
-}
-
-void MetricsWebContentsObserver::OnSharedStorageSelectURLCalled(
-    content::RenderFrameHost* main_rfh) {
-  if (!main_rfh) {
-    return;
-  }
-
-  if (PageLoadTracker* tracker = GetPageLoadTracker(main_rfh)) {
-    tracker->OnSharedStorageSelectURLCalled();
-  }
-}
-
-
-
 base::TimeTicks MetricsWebContentsObserver::GetCreated() {
   return created_;
 }
@@ -1468,9 +1418,20 @@ PageLoadTracker* MetricsWebContentsObserver::GetPageLoadTrackerIfValid(
   // subframe's timing update.
   PageLoadTracker* tracker = GetPageLoadTrackerLegacy(render_frame_host);
   // We may receive notifications from frames that have been navigated away
-  // from. In that case the PageLoadTracker is already destroyed in
-  // DidFinishNavigation (unless it's stored in bfcache). We simply ignore them.
-  if (!tracker && !render_frame_host->GetMainFrame()->IsActive()) {
+  // from or have not yet committed. In that case the PageLoadTracker is
+  // already destroyed in DidFinishNavigation (unless it's stored in bfcache),
+  // or the frame itself is not active. We simply ignore them.
+  const bool is_prerendering_or_bfcached_or_unloading =
+      render_frame_host->IsInLifecycleState(
+          content::RenderFrameHost::LifecycleState::kPrerendering) ||
+      render_frame_host->IsInLifecycleState(
+          content::RenderFrameHost::LifecycleState::kInBackForwardCache) ||
+      render_frame_host->IsInLifecycleState(
+          content::RenderFrameHost::LifecycleState::kPendingDeletion);
+  const bool is_valid_frame =
+      render_frame_host->IsActive() ||
+      (tracker && is_prerendering_or_bfcached_or_unloading);
+  if (!is_valid_frame) {
     RecordInternalError(ERR_IPC_FROM_WRONG_FRAME);
     return nullptr;
   }

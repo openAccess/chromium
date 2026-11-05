@@ -14,6 +14,7 @@
 
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/lazy_instance.h"
@@ -38,6 +39,7 @@
 #include "content/browser/renderer_host/render_view_host_delegate.h"
 #include "content/browser/renderer_host/render_view_host_factory.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
+#include "content/browser/renderer_host/render_widget_host_view_child_frame.h"
 #include "content/common/content_navigation_policy.h"
 #include "content/common/content_switches_internal.h"
 #include "content/common/features.h"
@@ -198,6 +200,10 @@ std::optional<int64_t> FrameTree::Delegate::GetPrivilegedContentsFeatureId() {
 }
 
 bool FrameTree::Delegate::DoesWebContentsDisallowServiceWorkerControl() {
+  return false;
+}
+
+bool FrameTree::Delegate::DoesWebContentsDisallowSharedWorkers() {
   return false;
 }
 
@@ -396,7 +402,7 @@ FrameTreeNode* FrameTree::AddFrame(
     const blink::LocalFrameToken& frame_token,
     const base::UnguessableToken& devtools_frame_token,
     const blink::DocumentToken& document_token,
-    const base::UnguessableToken& initiator_state_token,
+    const blink::InitiatorStateToken& initiator_state_token,
     const blink::FramePolicy& frame_policy,
     const blink::mojom::FrameOwnerProperties& frame_owner_properties,
     bool was_discarded,
@@ -491,6 +497,89 @@ FrameTreeNode* FrameTree::AddFrame(
   manager_delegate_->NotifySwappedFromRenderManager(
       nullptr, added_node->current_frame_host());
   return added_node;
+}
+
+FrameTreeNode* FrameTree::CreateDelegateFrameTreeNode(
+    RenderFrameHostImpl* parent,
+    blink::FrameOwnerElementType owner_type) {
+  CHECK(base::FeatureList::IsEnabled(blink::features::kPersistentWidgetAPI));
+  return AddFrame(
+      /*parent=*/parent,
+      /*process_id=*/parent->GetProcess()->GetDeprecatedID(),
+      /*new_routing_id=*/parent->GetProcess()->GetNextRoutingID(),
+      /*frame_remote=*/mojo::NullAssociatedRemote(),
+      /*browser_interface_broker_receiver=*/mojo::NullReceiver(),
+      /*policy_container_bind_params=*/nullptr,
+      /*associated_interface_provider_receiver=*/mojo::NullAssociatedReceiver(),
+      /*scope=*/blink::mojom::TreeScopeType::kDocument,
+      /*frame_name=*/"",
+      /*frame_unique_name=*/"",
+      /*is_created_by_script=*/true,
+      /*frame_token=*/blink::LocalFrameToken(),
+      /*devtools_frame_token=*/base::UnguessableToken::Create(),
+      /*document_token=*/blink::DocumentToken(),
+      /*initiator_state_token=*/blink::InitiatorStateToken(),
+      /*frame_policy=*/blink::FramePolicy(),
+      /*frame_owner_properties=*/blink::mojom::FrameOwnerProperties(),
+      /*was_discarded=*/false,
+      /*owner_type=*/owner_type,
+      /*is_dummy_frame_for_inner_tree=*/true);
+}
+
+RenderFrameProxyHost* FrameTree::ConnectOuterDelegateProxy(
+    FrameTreeNode* outer_delegate_node,
+    RenderFrameHostImpl* embedder_rfh,
+    const blink::RemoteFrameToken& frame_token,
+    blink::mojom::RemoteFrameInterfacesFromRendererPtr
+        remote_frame_interfaces) {
+  CHECK(base::FeatureList::IsEnabled(blink::features::kPersistentWidgetAPI));
+  outer_delegate_node->current_frame_host()
+      ->set_inner_tree_main_frame_tree_node_id(root()->frame_tree_node_id());
+
+  FrameTreeNode* inner_root = root();
+  RenderFrameProxyHost* proxy_host =
+      inner_root->current_frame_host()
+          ->browsing_context_state()
+          ->GetRenderFrameProxyHost(embedder_rfh->GetSiteInstance()->group());
+  if (!proxy_host) {
+    proxy_host =
+        inner_root->current_frame_host()
+            ->browsing_context_state()
+            ->CreateOuterDelegateProxy(embedder_rfh->GetSiteInstance()->group(),
+                                       inner_root, frame_token);
+  }
+
+  proxy_host->BindRemoteFrameInterfaces(
+      std::move(remote_frame_interfaces->frame),
+      std::move(remote_frame_interfaces->frame_host_receiver));
+
+  inner_root->current_frame_host()->PropagateEmbeddingTokenToParentFrame();
+  proxy_host->SetRenderFrameProxyCreated(true);
+  return proxy_host;
+}
+
+bool FrameTree::InitRenderViewForInnerFrameTree() {
+  CHECK(base::FeatureList::IsEnabled(blink::features::kPersistentWidgetAPI));
+  FrameTreeNode* inner_root = root();
+  RenderFrameHostManager* inner_render_manager = inner_root->render_manager();
+  RenderViewHost* rvh =
+      inner_render_manager->current_frame_host()->GetRenderViewHost();
+  if (!inner_render_manager->InitRenderView(
+          inner_render_manager->current_frame_host()
+              ->GetSiteInstance()
+              ->group(),
+          static_cast<RenderViewHostImpl*>(rvh), /*proxy=*/nullptr,
+          /*navigation_metrics_token=*/std::nullopt)) {
+    return false;
+  }
+
+  RenderWidgetHostViewBase* child_rwhv =
+      inner_render_manager->GetRenderWidgetHostView();
+  CHECK(child_rwhv);
+  CHECK(child_rwhv->IsRenderWidgetHostViewChildFrame());
+  inner_render_manager->SetRWHViewForInnerFrameTree(
+      static_cast<RenderWidgetHostViewChildFrame*>(child_rwhv));
+  return true;
 }
 
 void FrameTree::RemoveFrame(FrameTreeNode* child) {
@@ -1009,7 +1098,65 @@ void FrameTree::Init(SiteInstanceImpl* main_frame_site_instance,
 void FrameTree::DidAccessInitialMainDocument() {
   OPTIONAL_TRACE_EVENT0("content", "FrameTree::DidAccessInitialDocument");
   has_accessed_initial_main_document_ = true;
+  // The Viz non-empty CompositorFrame notification is intentionally left armed
+  // so that subsequent draws into a scripted about:blank document populate the
+  // false bucket of
+  // Navigation.InitialDocument.NonEmptyCompositorFrameTreatedAsAccess as a
+  // baseline.
   controller().DidAccessInitialMainDocument();
+}
+
+void FrameTree::OnFirstVisuallyNonEmptyCompositorFrame(
+    RenderWidgetHostImpl* widget) {
+  // `widget` was armed when it became the initial main frame's widget, so
+  // re-check that it still is: a CompositorFrame from a subframe or from a
+  // widget that has since been replaced says nothing about the initial empty
+  // document.
+  RenderFrameHostImpl* root_rfh = root()->current_frame_host();
+  if (!root_rfh || root_rfh->GetRenderWidgetHost() != widget) {
+    return;
+  }
+
+  // Almost always false, because an honest renderer that draws into the initial
+  // empty document has already sent DidAccessInitialMainDocument() first (and
+  // cross-document navigations away from the initial empty document cancel the
+  // notification in RenderWidgetHostImpl::DidNavigate()).
+  const bool is_unmodified_blank_tab = controller().IsUnmodifiedBlankTab();
+
+  // Record a histogram to distinguish legitimate false cases (e.g., when a page
+  // draws into an about:blank popup after DidAccessInitialMainDocument()) from
+  // any cases where this call could actually reset the address bar. Note that
+  // cross-document navigations cancel the notification at commit time, so
+  // normal paints after navigations in new tabs do not record a sample. A
+  // non-trivial true rate means CompositorFrame::HasVisuallyNonEmptyContent()
+  // is reporting ordinary blank tabs as non-empty (e.g., false positives),
+  // since actual spoof attempts should be vanishingly rare. Recorded even when
+  // the killswitch below is off, so the rate stays measurable after a
+  // killswitch pull.
+  base::UmaHistogramBoolean(
+      "Navigation.InitialDocument.NonEmptyCompositorFrameTreatedAsAccess",
+      is_unmodified_blank_tab);
+
+  if (!is_unmodified_blank_tab) {
+    return;
+  }
+
+  if (!base::FeatureList::IsEnabled(
+          features::kClearPendingUrlOnNonEmptyCompositorFrame)) {
+    return;
+  }
+
+  // The renderer drew content into the initial empty document, so treat the
+  // document as accessed even though the renderer never sent the untrusted
+  // DidAccessInitialMainDocument IPC. This stops a renderer-initiated pending
+  // URL from being shown over renderer-controlled pixels.
+  //
+  // A pending URL from an in-flight browser-initiated navigation keeps showing,
+  // since GetVisibleEntry() does not depend on IsUnmodifiedBlankTab() for it.
+  // A browser-initiated pending URL left visible by an aborted navigation is
+  // discarded, though, like any other access to the initial empty document
+  // (see https://crbug.com/40079181).
+  DidAccessInitialMainDocument();
 }
 
 void FrameTree::NodeLoadingStateChanged(

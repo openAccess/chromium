@@ -70,9 +70,11 @@ void WellKnownChangePasswordNavigationThrottle::MaybeCreateAndAdd(
   auto& handle = registry.GetNavigationHandle();
   auto* profile =
       Profile::FromBrowserContext(handle.GetWebContents()->GetBrowserContext());
-  // Create WellKnownChangePasswordNavigationThrottle only for regular or
-  // incognito profiles.
-  if (!profile->IsRegularProfile() && !profile->IsIncognitoProfile()) {
+  // Create WellKnownChangePasswordNavigationThrottle only for regular
+  // profiles or primary OTR profiles with a regular parent (e.g. incognito or
+  // enterprise isolated mode).
+  if (!profile->IsRegularProfile() &&
+      !profile->IsPrimaryOTRProfileWithRegularParent()) {
     return;
   }
 
@@ -141,7 +143,8 @@ WellKnownChangePasswordNavigationThrottle::WillStartRequest() {
 
   // Create a new IsolationInfo with RequestType::kOther since this is sort of
   // a subresource request (so it shouldn't change sites on redirects).
-  DCHECK(!navigation_handle()->GetIsolationInfo().IsEmpty());
+  CHECK(!navigation_handle()->GetIsolationInfo().IsEmpty(),
+        base::NotFatalUntil::M162);
   trusted_params.isolation_info = net::IsolationInfo::Create(
       net::IsolationInfo::RequestType::kOther,
       *navigation_handle()->GetIsolationInfo().top_frame_origin(),

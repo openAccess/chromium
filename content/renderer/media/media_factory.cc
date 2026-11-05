@@ -17,6 +17,7 @@
 #include "base/memory/raw_ref.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task/bind_post_task.h"
@@ -49,7 +50,6 @@
 #include "media/mojo/buildflags.h"
 #include "media/mojo/mojom/key_system_support.mojom.h"
 #include "media/mojo/mojom/media_metrics_provider.mojom.h"
-#include "media/renderers/decrypting_renderer_factory.h"
 #include "media/renderers/default_decoder_factory.h"
 #include "media/renderers/renderer_impl_factory.h"
 #include "media/video/gpu_video_accelerator_factories.h"
@@ -64,12 +64,15 @@
 #include "third_party/blink/public/platform/media/web_media_player_builder.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_media_player_client.h"
+#include "third_party/blink/public/platform/web_security_origin.h"
 #include "third_party/blink/public/platform/web_surface_layer_bridge.h"
 #include "third_party/blink/public/platform/web_video_frame_submitter.h"
 #include "third_party/blink/public/web/blink.h"
 #include "third_party/blink/public/web/modules/media/audio/audio_device_factory.h"
 #include "third_party/blink/public/web/modules/mediastream/media_stream_video_source.h"
 #include "third_party/blink/public/web/modules/mediastream/web_media_player_ms.h"
+#include "third_party/blink/public/web/web_associated_url_loader.h"
+#include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_view.h"
 #include "url/origin.h"
@@ -83,7 +86,6 @@
 
 #if BUILDFLAG(ENABLE_CAST_RECEIVER)
 #include "components/cast_streaming/common/public/cast_streaming_url.h"  // nogncheck
-#include "components/cast_streaming/common/public/features.h"  // nogncheck
 #include "components/cast_streaming/renderer/public/resource_provider.h"  // nogncheck
 #include "components/cast_streaming/renderer/public/wrapping_renderer_factory_selector.h"  // nogncheck
 #endif
@@ -467,13 +469,20 @@ std::unique_ptr<blink::WebMediaPlayer> MediaFactory::CreateMediaPlayer(
 
   if (!media_player_builder_) {
     media_player_builder_ = std::make_unique<blink::WebMediaPlayerBuilder>(
-        *web_frame,
-        /*network_task_runner=*/render_frame_->GetTaskRunner(
-            blink::TaskType::kNetworkingUnfreezable));
+        *web_frame->Scheduler(), request_routing_token_cb_,
+        // base::Unretained() is safe in both callbacks because
+        // `media_player_builder_` is owned by `this`, which is owned by
+        // `render_frame_`, and media players and their resource loads do not
+        // outlive the frame's document.
+        base::BindRepeating(&blink::WebLocalFrame::HasTransientUserActivation,
+                            base::Unretained(web_frame)),
+        base::BindRepeating(&blink::WebLocalFrame::CreateAssociatedURLLoader,
+                            base::Unretained(web_frame)));
   }
 
   return media_player_builder_->Build(
-      web_frame, client, encrypted_client, delegate,
+      web_frame->GetSecurityOrigin(), web_frame->GetDocument().Url(),
+      web_frame->GetDocument().Title(), client, encrypted_client, delegate,
       std::move(factory_selector), std::move(submitter), std::move(media_log),
       player_id,
       base::BindRepeating(&RenderFrameImpl::DeferMediaLoad,
@@ -483,8 +492,8 @@ std::unique_ptr<blink::WebMediaPlayer> MediaFactory::CreateMediaPlayer(
       std::move(compositor_worker_task_runner),
       render_thread->compositor_task_runner(),
       blink::Platform::Current()->VideoFrameCompositorTaskRunner(), initial_cdm,
-      request_routing_token_cb_, media_observer,
-      embedded_media_experience_enabled, std::move(metrics_provider),
+      media_observer, embedded_media_experience_enabled,
+      std::move(metrics_provider),
       base::BindOnce(&blink::WebSurfaceLayerBridge::Create,
                      parent_frame_sink_id),
       RenderThreadImpl::current()->SharedMainThreadContextProvider(),
@@ -530,8 +539,7 @@ MediaFactory::CreateRendererFactorySelector(
   bool is_base_renderer_factory_set = false;
 
 #if BUILDFLAG(ENABLE_CAST_RECEIVER)
-  if (cast_streaming::IsCastRemotingEnabled() &&
-      cast_streaming::IsCastStreamingMediaSourceUrl(url) &&
+  if (cast_streaming::IsCastStreamingMediaSourceUrl(url) &&
       cast_streaming_resource_provider_) {
     factory_selector =
         std::make_unique<cast_streaming::WrappingRendererFactorySelector>(
@@ -579,11 +587,7 @@ MediaFactory::CreateRendererFactorySelector(
         RendererType::kCast, std::make_unique<CastRendererClientFactory>(
                                  media_log, CreateMojoRendererFactory()));
 #else
-    // The "default" MojoRendererFactory can be wrapped by a
-    // DecryptingRendererFactory without changing any behavior.
-    factory_selector->AddBaseFactory(
-        RendererType::kMojo, std::make_unique<media::DecryptingRendererFactory>(
-                                 media_log, CreateMojoRendererFactory()));
+    NOTREACHED();
 #endif  // BUILDFLAG(ENABLE_CAST_RENDERER)
   }
 #endif  // BUILDFLAG(ENABLE_MOJO_RENDERER)
@@ -827,8 +831,9 @@ media::CdmFactory* MediaFactory::GetCdmFactory() {
 
 media::mojom::InterfaceFactory* MediaFactory::GetMediaInterfaceFactory() {
   if (!media_interface_factory_) {
-    media_interface_factory_ =
-        std::make_unique<MediaInterfaceFactory>(&GetInterfaceBroker());
+    media_interface_factory_ = std::make_unique<MediaInterfaceFactory>(
+        &GetInterfaceBroker(),
+        render_frame_->GetTaskRunner(blink::TaskType::kInternalMedia));
   }
 
   return media_interface_factory_.get();

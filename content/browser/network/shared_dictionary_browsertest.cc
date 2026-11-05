@@ -30,6 +30,7 @@
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
@@ -430,6 +431,7 @@ class DummyAuthContentBrowserClient
       const GURL& url,
       scoped_refptr<net::HttpResponseHeaders> response_headers,
       bool first_auth_attempt,
+      bool do_not_prompt_for_login,
       GuestPageHolder* guest,
       LoginDelegate::LoginAuthRequiredCallback auth_required_callback)
       override {
@@ -510,7 +512,7 @@ class DummyClientCertStoreContentBrowserClient
   }
   base::OnceClosure SelectClientCertificate(
       BrowserContext* browser_context,
-      int process_id,
+      ChildProcessId process_id,
       WebContents* web_contents,
       net::SSLCertRequestInfo* cert_request_info,
       net::ClientCertIdentityList client_certs,
@@ -1069,7 +1071,28 @@ IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
                          GetURL("/shared_dictionary/test.dict"));
 }
 
-IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
+class SharedDictionarySubresourceBrowserTest
+    : public SharedDictionaryBrowserTest {
+ public:
+  SharedDictionarySubresourceBrowserTest() {
+    feature_list_.InitAndEnableFeatureWithParameters(
+        blink::features::kRestrictLinkHeaderOnSubresource,
+        {{"disable_compression_dictionary", "false"}});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         SharedDictionarySubresourceBrowserTest,
+                         testing::Values(BrowserType::kNormal,
+                                         BrowserType::kOffTheRecord),
+                         [](const testing::TestParamInfo<BrowserType>& info) {
+                           return ToString(info.param);
+                         });
+
+IN_PROC_BROWSER_TEST_P(SharedDictionarySubresourceBrowserTest,
                        LinkRelCompressionDictionarySubresourceHeader) {
   RunWriteDictionaryTest(
       FetchType::kLinkRelCompressionDictionarySubresourceHeader,
@@ -2036,18 +2059,9 @@ IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
   EXPECT_FALSE(HasPreloadedSharedDictionaryInfo());
 }
 
-IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
-                       DoNotPreloadDictionayUnderMemoryPressure) {
-  SendMemoryPressureToNetworkService();
-  mojo::PendingRemote<network::mojom::PreloadedSharedDictionaryInfoHandle>
-      preloaded_shared_dictionaries_handle;
-  GetTargetNetworkContext()->PreloadSharedDictionaryInfoForDocument(
-      {GetURL("/")},
-      preloaded_shared_dictionaries_handle.InitWithNewPipeAndPassReceiver());
-  FlushNetworkServiceInstanceForTesting();
-  EXPECT_FALSE(HasPreloadedSharedDictionaryInfo());
-}
-
+// Verifies that memory pressure is delivered end to end to the
+// SharedDictionaryManager in the network service. The manager's behavior under
+// memory pressure is covered by shared_dictionary_manager_unittest.cc.
 IN_PROC_BROWSER_TEST_P(SharedDictionaryBrowserTest,
                        PreloadedDictionayDiscardedByMemoryPressure) {
   mojo::PendingRemote<network::mojom::PreloadedSharedDictionaryInfoHandle>

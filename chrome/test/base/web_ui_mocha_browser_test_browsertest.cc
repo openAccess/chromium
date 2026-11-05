@@ -8,6 +8,7 @@
 #include <tuple>
 
 #include "base/command_line.h"
+#include "base/debug/stack_trace.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -15,6 +16,7 @@
 #include "base/logging.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/test_switches.h"
@@ -121,12 +123,20 @@ class WebUIMochaSuccessFailureTest : public WebUIMochaBrowserTest {
   static void RunTestStatic(const std::string& file,
                             const std::string& trigger) {
     ASSERT_TRUE(s_test_);
+    // Suppress stack trace symbolization for expected fatal failures caught by
+    // EXPECT_FATAL_FAILURE. Symbolizing stack traces on Windows official builds
+    // with symbols can take 15-45+ seconds and cause test timeouts, even though
+    // ScopedFakeTestPartResultReporter discards the stack trace.
+    base::debug::OverrideStackTraceOutputForTesting suppress_stacks(
+        base::debug::OverrideStackTraceOutputForTesting::Mode::kSuppressOutput);
     s_test_->RunTest(file, trigger);
   }
 
   static void RunTestWithoutTestLoaderStatic(const std::string& file,
                                              const std::string& trigger) {
     ASSERT_TRUE(s_test_);
+    base::debug::OverrideStackTraceOutputForTesting suppress_stacks(
+        base::debug::OverrideStackTraceOutputForTesting::Mode::kSuppressOutput);
     s_test_->RunTestWithoutTestLoader(file, trigger);
   }
 

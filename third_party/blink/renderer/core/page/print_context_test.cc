@@ -115,7 +115,7 @@ class PrintContextTest : public PaintTestConfigurations, public RenderingTest {
     base::FieldTrialParams auto_flush_params;
     auto_flush_params["max_pinned_image_kb"] = "1";
     print_feature_list_.InitAndEnableFeatureWithParameters(
-        kCanvas2DAutoFlushParams, auto_flush_params);
+        features::kCanvas2DAutoFlushParams, auto_flush_params);
   }
 
   void TearDown() override {
@@ -1279,7 +1279,7 @@ TEST_P(PrintContextFrameTest, DISABLED_SubframePrintPageLayout) {
   // The child document element inside iframe.
   auto* child = ChildDocument().documentElement();
   // The iframe element in the document.
-  auto* target = GetDocument().getElementById(AtomicString("target"));
+  auto* target = GetElementById("target");
 
   GetDocument().GetFrame()->StartPrinting(WebPrintParams(page_size),
                                           maximum_shrink_ratio);
@@ -1352,6 +1352,27 @@ TEST_P(PrintContextTest, WhiteRootBackgroundWithShouldPrintBackgroundEnabled) {
   PrintSinglePage(canvas);
 }
 
+TEST_P(PrintContextTest, MeterWithShouldPrintBackgroundDisabled) {
+  MockPageContextCanvas canvas;
+  SetBodyInnerHTML("<meter value=0.5></meter>");
+
+  GetDocument().GetSettings()->SetShouldPrintBackgrounds(false);
+  Vector<SkColor> rect_colors;
+  EXPECT_CALL(canvas, onDrawRect(_, _))
+      .Times(testing::AnyNumber())
+      .WillRepeatedly([&rect_colors](const SkRect&, const SkPaint& paint) {
+        rect_colors.push_back(paint.getColor());
+      });
+  PrintSinglePage(canvas);
+
+  // The <meter> gauge is drawn with CSS backgrounds in the UA shadow tree.
+  // It should be visible in print output even when backgrounds are disabled,
+  // i.e. not be forced to white. crbug.com/41198413
+  EXPECT_TRUE(std::ranges::any_of(rect_colors, [](SkColor color) {
+    return color != SK_ColorWHITE;
+  })) << "expected a non-white fill for the <meter> value";
+}
+
 TEST_P(PrintContextFrameTest, SafePrintableInset) {
   SetBodyInnerHTML(R"HTML(
       <style>
@@ -1366,7 +1387,7 @@ TEST_P(PrintContextFrameTest, SafePrintableInset) {
       <div id="target" style="position:absolute; width:100%; height:100%;"></div>
 )HTML");
   gfx::SizeF page_size(400, 300);
-  auto* target = GetDocument().getElementById(AtomicString("target"));
+  auto* target = GetElementById("target");
 
   WebPrintParams params(page_size);
   // top, right, bottom, left insets: 20px, 50px, 0, 10px (see page_size).

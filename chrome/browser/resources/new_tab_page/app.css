@@ -6,7 +6,6 @@
  * #type=style-lit
  * #import=chrome://resources/cr_elements/cr_shared_style_lit.css.js
  * #import=chrome://resources/cr_elements/cr_icons_lit.css.js
- * #scheme=relative
  * #include=cr-shared-style-lit cr-icons-lit
  * #css_wrapper_metadata_end */
 
@@ -20,7 +19,6 @@
   --cr-searchbox-icon-left-position: 12px;
   --cr-searchbox-icon-size-in-searchbox: 20px;
   --cr-searchbox-icon-top-position: 0;
-  --cr-searchbox-min-width: var(--ntp-search-box-width);
   --cr-searchbox-results-search-icon-size: 20px;
   --ntp-theme-text-shadow: none;
   --ntp-one-google-bar-height: 56px;
@@ -35,22 +33,24 @@
   --ntp-protected-icon-background-color: transparent;
   --ntp-protected-icon-background-color-hovered: rgba(255, 255, 255, 0.1);
   --ntp-scrim-opacity_: 1;
-  --threads-rail-width: 76px;
-  --threads-rail-focus-outline-color: var(--color-new-tab-page-focus-ring);
+
+<if expr="is_android">
+  /* Use Google Sans Text for the NTP realbox on Android. The @font-face
+   * rules in text_defaults_md.css register the font names, and
+   * AndroidFontLookupImpl downloads them from GMSCore. */
+  font-family: 'Google Sans Text', 'Google Sans', Arial, sans-serif;
+</if>
 }
 
 /**
- * Hide everything that should not display when the composebox is open
- * so they are not tabbable.
+ * Hide everything that should not display while the composebox blocks the
+ * page so they are not tabbable.
  */
-:host([show-composebox_]:not([ntp-realbox-next-enabled_])) cr-most-visited,
-:host([show-composebox_]:not([ntp-realbox-next-enabled_])) ntp-modules,
-:host([show-composebox_]:not([ntp-realbox-next-enabled_]))
-  #backgroundImageAttribution,
-:host([show-composebox_]:not([ntp-realbox-next-enabled_]))
-  ntp-customize-buttons,
-:host([show-composebox_]:not([ntp-realbox-next-enabled_]))
-  setup-list-module-wrapper {
+:host([page-content-hidden_]) cr-most-visited,
+:host([page-content-hidden_]) ntp-modules,
+:host([page-content-hidden_]) #backgroundImageAttribution,
+:host([page-content-hidden_]) ntp-customize-buttons,
+:host([page-content-hidden_]) setup-list-module-wrapper {
   display: none;
 }
 
@@ -59,30 +59,27 @@
   --ntp-scrim-opacity_: 0.5;
 }
 
-/**
- * Maintain a larger width if the secondary side can be shown and was at any
- * point available to be shown.
- */
-:host([realbox-can-show-secondary-side][realbox-had-secondary-side]),
-:host([realbox-can-show-secondary-side]) {
-  --ntp-search-box-width: 746px;
-}
-
-@media (min-width: 560px) {
-  :host {
+@container rhsWrapper (min-width: 560px) {
+  #rhsContent {
     --ntp-search-box-width: 449px;
   }
 }
 
-@media (min-width: 672px) {
-  :host {
+@container rhsWrapper (min-width: 672px) {
+  #rhsContent {
     --ntp-search-box-width: 561px;
   }
 }
 
+@container rhsWrapper (min-width: 900px) {
+  #rhsContent {
+    --ntp-search-box-width: 746px;
+  }
+}
+
 /*A module width of 768px with 18px gaps on each side. */
-@media (min-width: 804px) {
-  :host {
+@container rhsWrapper (min-width: 804px) {
+  #rhsContent {
     --ntp-module-layout-width: 768px;
     --ntp-module-width: 768px;
   }
@@ -154,31 +151,23 @@ cr-most-visited {
   width: 100%;
 }
 
+/* With the LHS present, #rhsContent changes width on every frame of the LHS
+ * transition. Keep the OGB iframe at a constant width anchored to the far
+ * edge, so it is not re-laid out (and painted blank) while the LHS animates.
+ * The surplus width overflows under the LHS, where #rhsContent clips it. */
+:host([enable-threads-rail_]) #oneGoogleBar {
+  inset-inline-end: 0;
+  width: max(100%, 100vw);
+}
+
 #content {
-  align-items: center;
   display: flex;
-  flex-direction: column;
-  height: calc(100vh - var(--ntp-one-google-bar-height));
-  min-width: fit-content; /* Prevents OneGoogleBar cutoff at 500% zoom. */
-  padding-top: var(--ntp-one-google-bar-height);
-  position: relative;
-  z-index: 1;
+  flex-direction: row;
+  height: 100vh;
 }
 
-/*
- * Below 900px, the threads rail will shift the main content aside.
- * This happens in conjunction with the realbox width change as well,
- * when the total width reaches 824px + 76px (realbox + rail).
- */
-@media (max-width: 900px) {
-  #content[ntp-threads-rail-open] {
-    margin-inline-start: var(--threads-rail-width);
-    width: calc(100% - var(--threads-rail-width));
-  }
-}
-
-:host([show-composebox_]) #content,
-:host([show-voice-search-scrim_]) #content {
+:host([show-composebox_]) #rhsContent,
+:host([show-voice-search-scrim_]) #rhsContent {
   z-index: unset;
 }
 
@@ -235,8 +224,10 @@ ntp-searchbox[shown] {
   border-radius: 8px;
   bottom: 16px;
   color: var(--color-new-tab-page-attribution-foreground);
+  /* 100cqw = width of the rhsWrapper (query container). */
+  inset-inline-start: calc(100% - 100cqw + 16px);
   line-height: 20px;
-  max-width: 50vw;
+  max-width: 50cqw;
   padding: 8px;
   position: fixed;
   z-index: -1;
@@ -246,14 +237,6 @@ ntp-searchbox[shown] {
 
 #backgroundImageAttribution:hover {
   background-color: var(--ntp-protected-icon-background-color-hovered);
-}
-
-:host-context([dir='ltr']) #backgroundImageAttribution {
-  left: 16px;
-}
-
-:host-context([dir='rtl']) #backgroundImageAttribution {
-  right: 16px;
 }
 
 #backgroundImageAttribution1Container {
@@ -310,15 +293,12 @@ svg {
   position: fixed;
 }
 
-:host([energy-effect-enabled_]) #composebox {
-  --cr-composebox-expanded-border-radius: 28px;
-}
-
 #composebox {
   --color-composebox-submit-button-background: var(
     --color-new-tab-page-composebox-submit-button-background);
 
   --cr-composebox-background-color: var(--color-composebox-background);
+  --cr-composebox-expanded-border-radius: 28px;
   --cr-composebox-submit-border-radius: 100px;
   --cr-composebox-submit-height: 36px;
   --cr-composebox-submit-icon-size: 24px;
@@ -352,7 +332,7 @@ ntp-lens-upload-dialog {
   background: var(--color-composebox-scrim-background);
   inset: 0;
   opacity: var(--ntp-scrim-opacity_);
-  position: fixed;
+  position: absolute;
   transition: all 250ms ease;
   z-index: 1;
 }
@@ -410,6 +390,7 @@ ntp-lens-upload-dialog {
   --cr-composebox-submit-icon-offset: 0;
   --cr-composebox-submit-icon-size: 24px;
   --cr-composebox-submit-width: 48px;
+  --voice-search-wave-top: 49px;
   background: var(--color-composebox-background);
   border: none;
   border-radius: 28px;
@@ -424,13 +405,52 @@ ntp-lens-upload-dialog {
   position: absolute;
   position-anchor: --dialog-anchor;
   top: anchor(top);
+  transition: height 200ms ease-in-out, min-height 200ms ease-in-out;
   width: var(--ntp-search-box-width);
 }
 
-#voiceSearchDialog:has(#voiceSearch[live-transcript-enabled]) {
+#voiceSearchDialog:has(
+    #voiceSearch[live-transcript-enabled]:not([audio-wave-enabled])) {
   height: auto;
   max-height: 254px;
   min-height: 128px;
+}
+
+#voiceSearchDialog:has(#voiceSearch[audio-wave-enabled]) {
+  --voice-search-wave-top: 49px;
+  height: 168px;
+  min-height: 168px;
+}
+
+#voiceSearchDialog:has(#voiceSearch[transcript-lines='2']) {
+  --transcript-lines: 2;
+}
+
+#voiceSearchDialog:has(#voiceSearch[transcript-lines='3']) {
+  --transcript-lines: 3;
+}
+
+#voiceSearchDialog:has(#voiceSearch[transcript-lines='4']) {
+  --transcript-lines: 4;
+}
+
+#voiceSearchDialog:has(#voiceSearch[transcript-lines='5']) {
+  --transcript-lines: 5;
+}
+
+#voiceSearchDialog:has(#voiceSearch[transcript-lines='6']) {
+  --transcript-lines: 6;
+}
+
+#voiceSearchDialog:has(#voiceSearch[transcript-lines='7']) {
+  --transcript-lines: 7;
+}
+
+#voiceSearchDialog:has(#voiceSearch[has-multiline-transcript]) {
+  --voice-search-wave-top: min(
+      198px, calc(30px + var(--transcript-lines, 2) * 24px));
+  height: min(310px, calc(142px + var(--transcript-lines, 2) * 24px));
+  min-height: min(310px, calc(142px + var(--transcript-lines, 2) * 24px));
 }
 
 /* Disable default scrim and use custom scrim instead. */
@@ -444,9 +464,15 @@ ntp-lens-upload-dialog {
   width: 100%;
 }
 
-#voiceSearchDialog:has(#voiceSearch[live-transcript-enabled])
+#voiceSearchDialog:has(
+    #voiceSearch[live-transcript-enabled]:not([audio-wave-enabled]))
     #voiceSearchCardContainer {
   height: auto;
+}
+
+#voiceSearchDialog:has(#voiceSearch[audio-wave-enabled])
+    #voiceSearchCardContainer {
+  height: 100%;
 }
 
 #voiceSearch {
@@ -463,10 +489,20 @@ ntp-lens-upload-dialog {
   --voice-search-minimum-height: 128px;
 }
 
-#voiceSearch[live-transcript-enabled] {
+#voiceSearch[live-transcript-enabled]:not([audio-wave-enabled]) {
   height: auto;
   inset: auto;
   position: static;
+}
+
+/* In audio-wave mode, overlay #voiceSearch directly over #voiceSearchGlow. */
+#voiceSearch[audio-wave-enabled] {
+  --voice-bottom-actions-bottom: 16px;
+  --voice-bottom-actions-inset-inline-end: 16px;
+  --voice-search-minimum-height: 168px;
+  height: 100%;
+  inset: 0;
+  position: absolute;
 }
 
 #voiceSearch::part(voice-stop-button) {
@@ -483,14 +519,60 @@ ntp-lens-upload-dialog {
   position: absolute;
 }
 
-#voiceSearch:not([live-transcript-enabled])
-    ~ #voiceSearchGlow::part(full-container-overlay) {
+#voiceSearchGlow::part(full-container-overlay) {
   min-block-size: 0;
   position: absolute;
+}
+
+#voiceSearchDialog:has(#voiceSearch[audio-wave-enabled])
+    #voiceSearchGlow::part(full-container-overlay) {
+  height: 48px;
+  inset-inline: 0;
+  padding: 0;
+  top: var(--voice-search-wave-top);
+  transition: top 200ms ease-in-out;
 }
 
 :host-context([webui-rounded-icons]) {
   #linkIcon {
     -webkit-mask-image: url(icons/link.svg);
   }
+}
+
+#lhsWrapper {
+  flex-shrink: 0;
+  /* This is one layer above rhs, so that the tooltips can overflow on top of
+   * rhs. */
+  z-index: 2;
+}
+
+/* The query container for the @container rules above. This can't be
+ * #rhsContent itself: a size container ignores its content when sizing,
+ * which would break the min-width: fit-content on #rhsContent. */
+#rhsWrapper {
+  container: rhsWrapper / inline-size;
+  flex-grow: 1;
+  /* #rhsContent scrolls vertically. This scrolls horizontally when
+   * #rhsContent is wider, e.g. at 500% zoom. */
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+#rhsContent {
+  /* safe: children wider than this column are start-aligned instead of
+   * centered, so they can't spill over #lhsWrapper. */
+  align-items: safe center;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: fit-content; /* Prevents OneGoogleBar cutoff at 500% zoom. */
+  overflow: auto;
+  padding-top: var(--ntp-one-google-bar-height);
+  position: relative;
+  z-index: 1;
+}
+
+:host(:not([show-background-image_])) #rhsContent {
+  background-color: var(--color-new-tab-page-background);
 }

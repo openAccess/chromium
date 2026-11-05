@@ -23,8 +23,9 @@
 #include "chrome/browser/ash/fileapi/file_system_backend.h"
 #include "chrome/browser/ash/fileapi/file_system_backend_delegate.h"
 #include "chrome/browser/ash/fileapi/observable_file_system_operation_impl.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/media_galleries/fileapi/media_file_system_backend.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/cros_disks/cros_disks_client.h"
 #include "components/file_access/scoped_file_access_delegate.h"
 #include "components/user_manager/user.h"
@@ -49,7 +50,8 @@ namespace {
 // Returns the `AccountId` associated with the specified `profile`.
 AccountId GetAccountId(Profile* profile) {
   user_manager::User* user =
-      profile ? ProfileHelper::Get()->GetUserByProfile(profile) : nullptr;
+      profile ? BrowserContextHelper::Get()->GetUserByBrowserContext(profile)
+              : nullptr;
   return user ? user->GetAccountId() : AccountId();
 }
 
@@ -72,8 +74,9 @@ bool IsReadOperation(BackendFunction backend_function,
 
 // static
 bool FileSystemBackend::CanHandleURL(const storage::FileSystemURL& url) {
-  if (!url.is_valid())
+  if (!url.is_valid()) {
     return false;
+  }
   return url.type() == storage::kFileSystemTypeLocal ||
          url.type() == storage::kFileSystemTypeProvided ||
          url.type() == storage::kFileSystemTypeDeviceMediaAsFileStorage ||
@@ -180,7 +183,7 @@ void FileSystemBackend::ResolveURL(const storage::FileSystemURL& url,
   // point plus the inner mount point.
   if (id == "archive" || id == "removable") {
     std::vector<std::string> components = url.virtual_path().GetComponents();
-    DCHECK_EQ(id, components.at(0));
+    CHECK_EQ(id, components.at(0), base::NotFatalUntil::M160);
     if (components.size() < 2) {
       // Unable to access /archive and /removable directories directly. The
       // inner mount name must be specified.
@@ -243,20 +246,37 @@ bool FileSystemBackend::IsAccessAllowed(
     BackendFunction backend_function,
     storage::OperationType operation_type,
     const storage::FileSystemURL& url) const {
-  if (!url.is_valid())
+  if (!url.is_valid() || !CanHandleURL(url)) {
     return false;
+  }
 
-  // No extra check is needed for isolated file systems.
-  if (url.mount_type() == storage::kFileSystemTypeIsolated)
-    return true;
-
-  if (!CanHandleURL(url))
-    return false;
+  if (url.mount_type() == storage::kFileSystemTypeIsolated) {
+    // Isolated file systems wrapping a path on a real file system (e.g. the
+    // ones created for drag-and-drop or file chooser flows) are authorized
+    // for their consumer when they are registered, so no extra check is
+    // needed for them. The same holds for isolated file systems wrapping a
+    // file system that is not handled by this backend.
+    if (url.TypeImpliesPathIsReal() || !url.origin().opaque()) {
+      return true;
+    }
+    // Isolated file systems wrapping the virtual file systems handled by
+    // this backend are registered on demand from a virtual path (see
+    // file_manager::util::CreateIsolatedURLFromVirtualPath()). When such a
+    // URL carries no origin, access must have been granted through
+    // GrantFileAccessToOrigin() for the URL's origin and virtual path.
+    base::FilePath virtual_path;
+    if (!GetVirtualPath(url.path(), &virtual_path)) {
+      return false;
+    }
+    return file_access_permissions_->HasAccessPermission(url.origin(),
+                                                         virtual_path);
+  }
 
   const url::Origin origin = url.origin();
   // If there is no origin set, then it's an internal access.
-  if (origin.opaque())
+  if (origin.opaque()) {
     return true;
+  }
 
   // The chrome://file-manager can access its filesystem origin.
   if (origin.GetURL() == file_manager::kChromeUIFileManagerURL) {
@@ -321,15 +341,17 @@ storage::AsyncFileUtil* FileSystemBackend::GetAsyncFileUtil(
 
 storage::WatcherManager* FileSystemBackend::GetWatcherManager(
     storage::FileSystemType type) {
-  if (type == storage::kFileSystemTypeProvided)
+  if (type == storage::kFileSystemTypeProvided) {
     return file_system_provider_delegate_->GetWatcherManager(type);
+  }
 
   if (type == storage::kFileSystemTypeDeviceMediaAsFileStorage) {
     return mtp_delegate_->GetWatcherManager(type);
   }
 
-  if (type == storage::kFileSystemTypeArcDocumentsProvider)
+  if (type == storage::kFileSystemTypeArcDocumentsProvider) {
     return arc_documents_provider_delegate_->GetWatcherManager(type);
+  }
 
   // TODO(mtomasz): Add support for other backends.
   return nullptr;
@@ -339,7 +361,7 @@ storage::CopyOrMoveFileValidatorFactory*
 FileSystemBackend::GetCopyOrMoveFileValidatorFactory(
     storage::FileSystemType type,
     base::File::Error* error_code) {
-  DCHECK(error_code);
+  CHECK(error_code, base::NotFatalUntil::M160);
   *error_code = base::File::FILE_OK;
   return nullptr;
 }
@@ -350,7 +372,7 @@ FileSystemBackend::CreateFileSystemOperation(
     const storage::FileSystemURL& url,
     storage::FileSystemContext* context,
     base::File::Error* error_code) const {
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M160);
 
   if (!IsAccessAllowed(BackendFunction::kCreateFileSystemOperation, type,
                        url)) {
@@ -377,9 +399,10 @@ FileSystemBackend::CreateFileSystemOperation(
                          .get()));
   }
 
-  DCHECK(url.type() == storage::kFileSystemTypeProvided ||
-         url.type() == storage::kFileSystemTypeArcContent ||
-         url.type() == storage::kFileSystemTypeArcDocumentsProvider);
+  CHECK(url.type() == storage::kFileSystemTypeProvided ||
+            url.type() == storage::kFileSystemTypeArcContent ||
+            url.type() == storage::kFileSystemTypeArcDocumentsProvider,
+        base::NotFatalUntil::M160);
   return std::make_unique<ObservableFileSystemOperationImpl>(
       account_id_, type, url, context,
       std::make_unique<storage::FileSystemOperationContext>(context));
@@ -423,7 +446,7 @@ FileSystemBackend::CreateFileStreamReader(
     storage::FileSystemContext* context,
     file_access::ScopedFileAccessDelegate::RequestFilesAccessIOCallback
         file_access) const {
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M160);
 
   if (!IsAccessAllowed(BackendFunction::kCreateFileStreamReader,
                        storage::OperationType::kNone, url)) {
@@ -469,7 +492,7 @@ FileSystemBackend::CreateFileStreamWriter(
     const storage::FileSystemURL& url,
     int64_t offset,
     storage::FileSystemContext* context) const {
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M160);
 
   if (!IsAccessAllowed(BackendFunction::kCreateFileStreamWriter,
                        storage::OperationType::kNone, url)) {
@@ -512,8 +535,9 @@ storage::FileSystemURL FileSystemBackend::CreateInternalURL(
     storage::FileSystemContext* context,
     const base::FilePath& entry_path) const {
   base::FilePath virtual_path;
-  if (!GetVirtualPath(entry_path, &virtual_path))
+  if (!GetVirtualPath(entry_path, &virtual_path)) {
     return storage::FileSystemURL();
+  }
 
   return context->CreateCrackedFileSystemURL(
       blink::StorageKey(), storage::kFileSystemTypeExternal, virtual_path);

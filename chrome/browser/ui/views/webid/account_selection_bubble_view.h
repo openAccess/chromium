@@ -92,6 +92,10 @@ class AccountSelectionBubbleView : public views::BoxLayoutView,
   void ShowRequestPermissionDialog(
       const IdentityRequestAccountPtr& account) override;
 
+  void ShowIdpPicker(const std::vector<IdentityProviderDataPtr>& idp_list,
+                     const gfx::Image& rp_icon,
+                     bool show_back_button) override;
+
   std::string GetDialogTitle() const override;
   std::optional<std::string> GetDialogSubtitle() const override;
 
@@ -123,8 +127,7 @@ class AccountSelectionBubbleView : public views::BoxLayoutView,
   // Adds the accounts provided to the given view. This method does not reorder
   // the accounts, and assumes they are provided in the correct order.
   void AddAccounts(const std::vector<IdentityRequestAccountPtr>& accounts,
-                   views::View* accounts_content,
-                   bool is_multi_idp);
+                   views::View* accounts_content);
 
   // Invoked whenever the expandable account chooser is scrolled.
   void OnExpandableAccountsScrolled();

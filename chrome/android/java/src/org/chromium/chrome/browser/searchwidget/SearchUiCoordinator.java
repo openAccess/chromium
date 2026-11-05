@@ -8,6 +8,7 @@ import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -32,6 +33,7 @@ import org.chromium.chrome.browser.omnibox.LocationBarEmbedder;
 import org.chromium.chrome.browser.omnibox.LocationBarEmbedderUiOverrides;
 import org.chromium.chrome.browser.omnibox.OverrideUrlLoadingDelegate;
 import org.chromium.chrome.browser.omnibox.UrlFocusChangeListener;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionDelegateImpl;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.TabFavicon;
@@ -61,6 +63,7 @@ public class SearchUiCoordinator {
     private @Nullable View mAnchorView;
     private @Nullable EdgeToEdgeSystemBarColorHelper mSystemBarColorHelper;
     private @Nullable BackPressManager mBackPressManager;
+    private @Nullable OmniboxResourceProvider mResourceProvider;
     private @Nullable LocationBarCoordinator mLocationBarCoordinator;
 
     // LocationBarEmbedderUiOverrides are passed to several child components upon construction.
@@ -127,6 +130,15 @@ public class SearchUiCoordinator {
         mAnchorView = contentView.findViewById(R.id.toolbar);
         mSystemBarColorHelper = systemBarColorHelper;
         mBackPressManager = backPressManager != null ? backPressManager : new BackPressManager();
+        Context context = mSearchBox.getContext();
+        mResourceProvider =
+                new OmniboxResourceProvider(
+                        context,
+                        OmniboxResourceProvider.getBrandedColorScheme(
+                                context,
+                                mLocationBarDataProvider.isIncognitoBranded(),
+                                mLocationBarDataProvider.getPrimaryColor()),
+                        TabFavicon::getBitmap);
 
         mLocationBarCoordinator =
                 new LocationBarCoordinator(
@@ -162,7 +174,7 @@ public class SearchUiCoordinator {
                         /* browserControlsStateProvider= */ null,
                         /* isToolbarPositionCustomizationEnabled= */ false,
                         /* pageZoomManager= */ null,
-                        TabFavicon::getBitmap,
+                        mResourceProvider,
                         assertNonNull(snackbarManager),
                         assertNonNull(contentView.findViewById(R.id.bottom_container)),
                         /* omniboxChipManager= */ null,
@@ -185,6 +197,10 @@ public class SearchUiCoordinator {
         if (mLocationBarCoordinator != null) {
             mLocationBarCoordinator.destroy();
             mLocationBarCoordinator = null;
+        }
+        if (mResourceProvider != null) {
+            mResourceProvider.destroy();
+            mResourceProvider = null;
         }
     }
 
@@ -284,16 +300,11 @@ public class SearchUiCoordinator {
     /**
      * Begins a search query execution and focuses the Omnibox.
      *
-     * @param intentOrigin The origin of the search intent.
-     * @param searchType The type of search requested.
-     * @param query Optional initial query text.
+     * @param session The search session defining the origin, search type, request type and initial
+     *     query.
      * @param windowAndroid Optional window container.
      */
-    public void beginQuery(
-            int intentOrigin,
-            int searchType,
-            @Nullable String query,
-            @Nullable WindowAndroid windowAndroid) {
+    public void beginQuery(SearchActivitySession session, @Nullable WindowAndroid windowAndroid) {
         assertNonNull(mLocationBarCoordinator);
         assertNonNull(mSearchBox);
 
@@ -301,9 +312,10 @@ public class SearchUiCoordinator {
 
         mLocationBarCoordinator.setUrlBarFocus(
                 new AutocompleteInput(OmniboxFocusReason.OMNIBOX_TAP)
-                        .setUserText(query != null ? query : "")
-                        .setSelection(TextSelection.SELECT_ALL));
-        mSearchBox.beginQuery(intentOrigin, searchType, windowAndroid);
+                        .setUserText(session.query != null ? session.query : "")
+                        .setSelection(TextSelection.SELECT_ALL)
+                        .setRequestType(session.requestType));
+        mSearchBox.beginQuery(session.intentOrigin, session.searchType, windowAndroid);
     }
 
     /**
@@ -348,10 +360,12 @@ public class SearchUiCoordinator {
      */
     public void setStatusAndNavBarColors() {
         Drawable anchorViewBackground = assertNonNull(mAnchorView).getBackground();
-        assert anchorViewBackground instanceof GradientDrawable
-                : "Unsupported background drawable.";
+        if (!(anchorViewBackground instanceof GradientDrawable gradientDrawable)) {
+            assert false : "Unsupported background drawable.";
+            return;
+        }
 
-        ColorStateList color = ((GradientDrawable) anchorViewBackground).getColor();
+        ColorStateList color = gradientDrawable.getColor();
         int anchorViewColor = assumeNonNull(color).getDefaultColor();
 
         StatusBarColorController.setStatusBarColor(

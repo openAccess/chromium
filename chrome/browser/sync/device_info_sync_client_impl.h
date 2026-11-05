@@ -12,8 +12,6 @@
 
 class Profile;
 
-namespace browser_sync {
-
 class DeviceInfoSyncClientImpl : public syncer::DeviceInfoSyncClient {
  public:
   explicit DeviceInfoSyncClientImpl(Profile* profile);
@@ -25,9 +23,6 @@ class DeviceInfoSyncClientImpl : public syncer::DeviceInfoSyncClient {
 
   // syncer::DeviceInfoSyncClient:
   std::string GetSigninScopedDeviceId() const override;
-
-  // syncer::DeviceInfoSyncClient:
-  bool GetSendTabToSelfReceivingEnabled() const override;
 
   // syncer::DeviceInfoSyncClient:
   syncer::DeviceInfo::SendTabReceivingType GetSendTabToSelfReceivingType()
@@ -59,13 +54,13 @@ class DeviceInfoSyncClientImpl : public syncer::DeviceInfoSyncClient {
   syncer::DeviceInfo::GlicExperimentalTriggeringState
   GetGlicExperimentalTriggeringState() const override;
   std::optional<int> GetGlicExperimentalTriggeringVersion() const override;
-  std::optional<syncer::DeviceInfo::PersonalContextInfo>
+  base::flat_set<std::string> GetGlicExperimentalTriggeringCapabilities()
+      const override;
+  syncer::DeviceInfo::PersonalContextInfo::StatusOrInfo
   GetLocalPersonalContextInfo() const override;
 
  private:
   const raw_ptr<Profile> profile_;
 };
-
-}  // namespace browser_sync
 
 #endif  // CHROME_BROWSER_SYNC_DEVICE_INFO_SYNC_CLIENT_IMPL_H_

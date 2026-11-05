@@ -7,7 +7,6 @@ include_rules = [
   "+components/content_settings/core/common",
   "+components/discardable_memory/client",
   "+components/metrics",
-  "+components/metrics:single_sample_metrics",
   "+components/url_formatter",
   "+components/viz/client",
   "+components/viz/common",
@@ -50,7 +49,6 @@ specific_include_rules = {
   ],
   "render_thread_impl_discardable_memory_browsertest\\.cc": [
     "+components/discardable_memory/service",
-    "+content/browser/browser_main_loop.h",
   ],
   ".*_(unit|pixel|perf)test.*\\.cc": [
     "+components/viz/test",

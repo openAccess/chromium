@@ -47,6 +47,7 @@ source_set("impl") {
     "//base",
     "//chrome/browser/bookmarks",
     "//chrome/browser/ui:chrome_pages",
+    "//chrome/browser/ui:scoped_tabbed_browser_displayer",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/bookmarks",
     "//chrome/browser/ui/call_to_action",
@@ -63,7 +64,6 @@ source_set("impl") {
     "//content/public/common",
     "//ui/base",
   ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("unit_tests") {
@@ -102,10 +102,12 @@ source_set("browser_tests") {
     ":commerce",
     "//base",
     "//base:build_time",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/commerce:test_support",
     "//chrome/browser/ui/test:dialog",
+    "//chrome/browser/ui/views/frame:browser_view_header",
+    "//chrome/browser/ui/views/frame:top_container_view",
     "//chrome/test:test_support",
     "//components/commerce/core:shopping_service_test_support",
     "//content/test:test_support",
@@ -132,13 +134,13 @@ if (!is_chromeos_device) {
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui:view_ids",
       "//chrome/browser/ui/commerce:test_support",
-      "//chrome/browser/ui/tabs:tabs_public",
       "//chrome/test:test_support",
       "//chrome/test/user_education:impl",
       "//components/commerce/core:account_checker_test_support",
       "//components/commerce/core:feature_list",
       "//components/commerce/core:shopping_service_test_support",
       "//components/feature_engagement/test:test_support",
+      "//components/tabs:public",
       "//ui/base/clipboard:clipboard_test_support",
     ]
   }

@@ -30,7 +30,6 @@
 #include "chrome/grit/nearby_share_dialog_resources_map.h"
 #include "chrome/grit/theme_resources.h"
 #include "chromeos/components/sharesheet/constants.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
@@ -38,6 +37,7 @@
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "net/base/url_util.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/views/controls/webview/webview.h"
@@ -68,8 +68,9 @@ bool NearbyShareDialogUIConfig::IsWebUIEnabled(
 NearbyShareDialogUI::NearbyShareDialogUI(content::WebUI* web_ui)
     : ui::MojoWebUIController(web_ui, /*enable_chrome_send=*/true) {
   Profile* profile = Profile::FromWebUI(web_ui);
-  DCHECK(NearbySharingServiceFactory::IsNearbyShareSupportedForBrowserContext(
-      profile));
+  CHECK(NearbySharingServiceFactory::IsNearbyShareSupportedForBrowserContext(
+            profile),
+        base::NotFatalUntil::M162);
 
   nearby_service_ = NearbySharingServiceFactory::GetForBrowserContext(profile);
 
@@ -125,8 +126,8 @@ NearbyShareDialogUI::NearbyShareDialogUI(content::WebUI* web_ui)
   const GURL& url = web_ui->GetWebContents()->GetVisibleURL();
   SetAttachmentFromQueryParameter(url);
 
-  html_source->AddBoolean("isQuickShareV2Enabled",
-                          chromeos::features::IsQuickShareV2Enabled());
+  // TODO(crbug.com/350547931): Remove the feature for WebUI.
+  html_source->AddBoolean("isQuickShareV2Enabled", true);
 }
 
 NearbyShareDialogUI::~NearbyShareDialogUI() = default;
@@ -138,8 +139,9 @@ void NearbyShareDialogUI::SetAttachments(
 
 void NearbyShareDialogUI::SetWebView(views::WebView* web_view) {
   CHECK(web_view);
-  web_view_ = web_view;
-  web_view_->GetWebContents()->SetDelegate(this);
+  web_view->GetWebContents()->SetDelegate(this);
+  SetReferenceView(web_view);
+  SetAcceleratorHandling(views::WebContentsAcceleratorHandling::kEnabled);
 }
 
 void NearbyShareDialogUI::BindInterface(
@@ -164,17 +166,6 @@ void NearbyShareDialogUI::BindInterface(
       NearbySharingServiceFactory::GetForBrowserContext(
           Profile::FromWebUI(web_ui()));
   nearby_sharing_service->GetContactManager()->Bind(std::move(receiver));
-}
-
-bool NearbyShareDialogUI::HandleKeyboardEvent(
-    content::WebContents* source,
-    const input::NativeWebKeyboardEvent& event) {
-  if (!web_view_) {
-    return false;
-  }
-
-  return unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-      event, web_view_->GetFocusManager());
 }
 
 void NearbyShareDialogUI::WebContentsCreated(

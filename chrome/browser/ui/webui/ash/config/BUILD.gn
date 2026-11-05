@@ -8,10 +8,8 @@ assert(is_chromeos)
 
 static_library("config") {
   sources = [
-    "chrome_untrusted_web_ui_configs_chromeos.cc",
-    "chrome_untrusted_web_ui_configs_chromeos.h",
-    "chrome_web_ui_configs_chromeos.cc",
-    "chrome_web_ui_configs_chromeos.h",
+    "ash_web_ui_config_manager.cc",
+    "ash_web_ui_config_manager.h",
   ]
 
   deps = [
@@ -38,11 +36,10 @@ static_library("config") {
     "//ash/webui/status_area_internals",
     "//ash/webui/vc_background_ui",
     "//chrome/browser:browser_process",
-    "//chrome/browser:global_features",
+    "//chrome/browser/app_mode",
     "//chrome/browser/ash/annotator",
     "//chrome/browser/ash/app_mode",
     "//chrome/browser/ash/boca/receiver",
-    "//chrome/browser/ash/borealis",
     "//chrome/browser/ash/diagnostics",
     "//chrome/browser/ash/eche_app",
     "//chrome/browser/ash/login/demo_mode",
@@ -64,8 +61,7 @@ static_library("config") {
     "//chrome/browser/ash/system_web_apps/apps/projector_app",
     "//chrome/browser/ash/system_web_apps/apps/recorder_app",
     "//chrome/browser/ash/system_web_apps/apps/vc_background_ui",
-    "//chrome/browser/consent_auditor",
-    "//chrome/browser/ui",
+    "//chrome/browser/feedback",
     "//chrome/browser/ui/ash/holding_space",
     "//chrome/browser/ui/select_file_policy",
     "//chrome/browser/ui/webui/about",
@@ -93,7 +89,6 @@ static_library("config") {
     "//chrome/browser/ui/webui/ash/lock_screen_reauth",
     "//chrome/browser/ui/webui/ash/login",
     "//chrome/browser/ui/webui/ash/mako",
-    "//chrome/browser/ui/webui/ash/manage_mirrorsync",
     "//chrome/browser/ui/webui/ash/multidevice_internals",
     "//chrome/browser/ui/webui/ash/multidevice_setup",
     "//chrome/browser/ui/webui/ash/network_ui",
@@ -113,13 +108,35 @@ static_library("config") {
     "//chrome/browser/ui/webui/nearby_share",
     "//chromeos/ash/components/boca/receiver",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/consent_auditor:consent_auditor_provider",
+    "//chromeos/ash/components/manta:manta_service_provider",
+    "//chromeos/ash/components/media_device_salt:media_device_salt_service_provider",
     "//chromeos/ash/components/signin:identity_manager_provider",
-    "//chromeos/ash/experiences/guest_os/borealis/motd",
+    "//components/application_locale_storage",
     "//components/cross_device/logging",
+    "//components/user_manager",
     "//ui/webui",
   ]
 
   if (!is_official_build) {
     deps += [ "//ash/webui/sample_system_web_app_ui" ]
   }
+}
+
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [ "ash_web_ui_config_manager_unittest.cc" ]
+
+  deps = [
+    ":config",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/browser:global_features",
+    "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
+    "//content/test:test_support",
+    "//testing/gtest",
+    "//url",
+  ]
 }

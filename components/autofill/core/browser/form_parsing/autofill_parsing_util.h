@@ -7,6 +7,8 @@
 
 #include <stdint.h>
 
+#include <utility>
+
 #include "base/check.h"
 #include "base/check_op.h"
 #include "components/autofill/core/common/dense_set.h"
@@ -87,7 +89,8 @@ enum class RegexFeature : uint8_t {
   kAutofillFixStateCountryMisclassification = 4,
   kAutofillSupportCombinedZipAndCityFR = 5,
   kAutofillEnableExpandIbanRegexPattern = 6,
-  kMaxValue = kAutofillEnableExpandIbanRegexPattern,
+  kAutofillStricterPhoneExtensionRegex = 7,
+  kMaxValue = kAutofillStricterPhoneExtensionRegex,
 };
 
 // Returns a `DenseSet` containing all `RegexFeature`s whose corresponding
@@ -120,7 +123,7 @@ class OptionalRegexFeatureWithState {
   }
 
  private:
-  static_assert(static_cast<uint8_t>(RegexFeature::kMaxValue) < (1 << 6));
+  static_assert(std::to_underlying(RegexFeature::kMaxValue) < (1 << 6));
 
   const RegexFeature feature_ : 6;
   const uint8_t enabled_ : 1;

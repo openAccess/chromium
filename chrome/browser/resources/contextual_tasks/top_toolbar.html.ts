@@ -14,11 +14,11 @@ export function getHtml(this: TopToolbarElement) {
   return html`<!--_html_template_start_-->
 <div id="top-row" data-element-id="kContextualTasksWebUIToolbarElementId">
   <if expr="not is_android">
-    ${this.isPermissionShowing_() ? html`
-      <permission-dashboard
-          .dashboardState="${this.permissionDashboardState}">
-      </permission-dashboard>
-    ` : ''}
+    <permission-dashboard
+        .delegate="${this.permissionChipDelegate_}"
+        .dashboardState="${this.permissionDashboardState}"
+        ?hidden="${!this.isPermissionShowing_()}">
+    </permission-dashboard>
   </if>
   <div class="top-toolbar-logo-container"
       ?hidden="${this.isPermissionShowing_()}">
@@ -80,6 +80,18 @@ export function getHtml(this: TopToolbarElement) {
         ?disabled="${!this.enableOpenInNewTabButton}">
       </cr-icon-button>
     ` : ''}
+    ${this.isSidePanelRearchitectureEnabled_ && this.profileAvatarUrl ? html`
+      <cr-button id="profileIndicator" class="profile-indicator"
+          aria-label="$i18n{accountMenuButtonAccessibleName}"
+          aria-haspopup="menu"
+          @click="${this.onProfileIndicatorClick_}"
+          @pointerenter="${this.onProfileIndicatorPointerenter_}"
+          @pointerleave="${this.onProfileIndicatorPointerleave_}">
+        <img class="profile-avatar-img"
+            src="${this.profileAvatarUrl}"
+            alt="">
+      </cr-button>
+    ` : ''}
     <cr-icon-button id="overflowMenuButton" iron-icon="cr:more-vert"
       data-element-id="kContextualTasksWebUIOverflowMenuElementId"
       class="no-overlap ${this.overflowMenuOpen_ ? 'active' : ''}" title="$i18n{moreOptionsTooltip}"
@@ -95,6 +107,18 @@ export function getHtml(this: TopToolbarElement) {
     </cr-icon-button>
   </div>
 </div>
+  <cr-lazy-render-lit id="accountMenu" .template="${() => html`
+    <contextual-tasks-account-menu
+        .fullName="${this.accountFullName}"
+        .email="${this.accountEmail}"
+        .signedInAccountCount="${this.signedInAccountCount}">
+    </contextual-tasks-account-menu>`}">
+  </cr-lazy-render-lit>
+  ${this.isSidePanelRearchitectureEnabled_ && this.profileAvatarUrl ? html`
+    <contextual-tasks-profile-tooltip id="profileTooltip"
+        .fullName="${this.accountFullName}" .email="${this.accountEmail}">
+    </contextual-tasks-profile-tooltip>
+  ` : ''}
   <cr-lazy-render-lit id="sourcesMenu" .template="${() => html`
     <contextual-tasks-sources-menu .contextInfos="${this.contextInfos}">
     </contextual-tasks-sources-menu>`}">
@@ -107,19 +131,13 @@ export function getHtml(this: TopToolbarElement) {
         .isAiPage="${this.isAiPage}"
         .isAimEligible="${this.isAimEligible}"
         .isCobrowseEligible="${this.isCobrowseEligible}"
-        .isHandshakeComplete="${this.isHandshakeComplete}"
         .contextualTasksEnableSpatialModelToolbarLayout="${this.contextualTasksEnableSpatialModelToolbarLayout_}"
         .contextualTasksEnableSpatialModelToolbarLayoutNewThreadInOverflow="${this.contextualTasksEnableSpatialModelToolbarLayoutNewThreadInOverflow_}"
         @pin-click="${this.onPinClick_}"
-        @new-thread-click="${this.onNewThreadClick_}"
+        @new-thread-click="${this.onOverflowMenuNewThreadClick_}"
         @open-changed="${this.onOverflowMenuOpenChanged_}">
     </contextual-tasks-overflow-menu>`}">
   </cr-lazy-render-lit>
-  ${this.showReopenTabs_ ? html`
-    <reopen-tabs
-        @reopen-click="${this.onReopenTabsReopenClick_}"
-        @dismiss-click="${this.onReopenTabsDismissClick_}">
-    </reopen-tabs>` : ''}
   <!--_html_template_end_-->`;
 }
 // clang-format on

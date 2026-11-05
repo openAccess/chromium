@@ -13,8 +13,8 @@
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/search_engines/template_url_service.h"
@@ -66,11 +66,10 @@ class FindsTabHelperTest : public ChromeRenderViewHostTestHarness {
         base::BindRepeating(&TemplateURLServiceFactory::BuildInstanceFor));
     template_url_service_ = TemplateURLServiceFactory::GetForProfile(profile());
 
-    FindsTabHelper::CreateForWebContents(
+    tab_helper_ = std::make_unique<FindsTabHelper>(
         web_contents(), finds::FindsServiceFactory::GetForProfile(profile()),
         /*opt_guide_service=*/nullptr, template_url_service_,
         profile()->GetPrefs());
-    tab_helper_ = FindsTabHelper::FromWebContents(web_contents());
 
     finds_service_ = FindsServiceFactory::GetForProfile(profile());
     ASSERT_NE(finds_service_, nullptr);
@@ -84,13 +83,13 @@ class FindsTabHelperTest : public ChromeRenderViewHostTestHarness {
       finds_service_->RemoveObserver(&finds_service_observer_);
     }
     finds_service_ = nullptr;
-    tab_helper_ = nullptr;
+    tab_helper_.reset();
     template_url_service_ = nullptr;
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
   void CallDidFinishNavigation(content::NavigationHandle* handle) {
-    static_cast<content::WebContentsObserver*>(tab_helper_)
+    static_cast<content::WebContentsObserver*>(tab_helper_.get())
         ->DidFinishNavigation(handle);
   }
 
@@ -99,7 +98,7 @@ class FindsTabHelperTest : public ChromeRenderViewHostTestHarness {
   }
 
   void CallDidFirstVisuallyNonEmptyPaint() {
-    static_cast<content::WebContentsObserver*>(tab_helper_)
+    static_cast<content::WebContentsObserver*>(tab_helper_.get())
         ->DidFirstVisuallyNonEmptyPaint();
   }
 
@@ -138,7 +137,7 @@ class FindsTabHelperTest : public ChromeRenderViewHostTestHarness {
   MockFindsServiceObserver finds_service_observer_;
   raw_ptr<TemplateURLService> template_url_service_ = nullptr;
   raw_ptr<FindsService> finds_service_ = nullptr;
-  raw_ptr<FindsTabHelper> tab_helper_ = nullptr;
+  std::unique_ptr<FindsTabHelper> tab_helper_;
   int srp_return_count_threshold_ = 0;
 };
 
@@ -184,8 +183,7 @@ TEST_F(FindsTabHelperTest, TestOptInCooldownNotPassed) {
 TEST_F(FindsTabHelperTest, TestEnterprisePolicyDisabled) {
   profile()->GetPrefs()->SetInteger(
       optimization_guide::prefs::kFindsEnterprisePolicyAllowed,
-      static_cast<int>(optimization_guide::model_execution::prefs::
-                           ModelExecutionEnterprisePolicyValue::kDisable));
+      static_cast<int>(optimization_guide::EnterprisePolicyValue::kDisable));
   EXPECT_CALL(finds_service_observer_, OnOptInCriteriaFulfilled()).Times(0);
   SimulateSRPBackNavigations(srp_return_count_threshold_);
   EXPECT_EQ(srp_return_count(), 0);

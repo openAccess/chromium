@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "chrome/browser/ui/tabs/tab_data.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_desktop.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "components/tab_groups/tab_group_color.h"
@@ -50,7 +51,7 @@ void FakeBaseTabStripController::AddTab(int index,
 }
 
 void FakeBaseTabStripController::RemoveTab(int index) {
-  DCHECK(IsValidIndex(index));
+  CHECK(IsValidIndex(index), base::NotFatalUntil::M162);
   num_tabs_--;
   if (index < num_pinned_tabs_) {
     num_pinned_tabs_--;
@@ -303,13 +304,18 @@ FakeBaseTabStripController::GetFocusedGroup() const {
   return focused_group_;
 }
 
-void FakeBaseTabStripController::SetFocusedGroup(
-    std::optional<tab_groups::TabGroupId> group) {
+void FakeBaseTabStripController::EnterFocusMode(
+    const tab_groups::TabGroupId& group) {
   focused_group_ = group;
 }
 
+void FakeBaseTabStripController::ExitFocusMode(
+    std::optional<TabGroupFocusExitReason> reason) {
+  focused_group_ = std::nullopt;
+}
+
 void FakeBaseTabStripController::SetActiveIndex(int new_index) {
-  DCHECK(IsValidIndex(new_index));
+  CHECK(IsValidIndex(new_index), base::NotFatalUntil::M162);
   active_index_ = new_index;
   selection_model_.SetSelectedIndex(active_index_);
   if (tab_strip_) {

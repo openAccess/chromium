@@ -5,16 +5,31 @@
 #import "ios/chrome/browser/main/coordinator/browser_layout_coordinator.h"
 
 #import "ios/chrome/browser/browser_view/ui_bundled/fake_browser_view_controller.h"
+#import "ios/chrome/browser/browser_view/ui_bundled/safe_area_provider.h"
 #import "ios/chrome/browser/main/ui/browser_layout_view_controller.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_scene_agent.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "ui/base/device_form_factor.h"
+
+// Subclass of `SafeAreaProvider` that counts `safeArea` queries.
+@interface CountingSafeAreaProvider : SafeAreaProvider
+@property(nonatomic, assign) NSInteger safeAreaCallCount;
+@end
+
+@implementation CountingSafeAreaProvider
+- (UIEdgeInsets)safeArea {
+  _safeAreaCallCount++;
+  return [super safeArea];
+}
+@end
 
 class BrowserLayoutCoordinatorTest : public PlatformTest {
  protected:
@@ -87,17 +102,115 @@ TEST_F(BrowserLayoutCoordinatorTest, BrowserViewControllerAssignment) {
   [coordinator stop];
 }
 
-// Tests the tab strip visibility based on form factor.
+// Test that the tab strip view controller is created on start for tablet or
+// lazily when traits change to regular size class on phone, and updates
+// BrowserLayoutState.tabStripVisible.
 TEST_F(BrowserLayoutCoordinatorTest, TabStripVisibility) {
   BrowserLayoutCoordinator* coordinator =
       [[BrowserLayoutCoordinator alloc] initWithBrowser:browser_.get()];
   [coordinator start];
 
-  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET) {
+  if (CanShowTabStrip(coordinator.viewController)) {
     EXPECT_NE(coordinator.viewController.tabStripViewController, nil);
+    EXPECT_TRUE(browser_->GetBrowserLayoutState().tabStripVisible);
   } else {
     EXPECT_EQ(coordinator.viewController.tabStripViewController, nil);
+    EXPECT_FALSE(browser_->GetBrowserLayoutState().tabStripVisible);
+    coordinator.viewController.traitOverrides.horizontalSizeClass =
+        UIUserInterfaceSizeClassRegular;
+    coordinator.viewController.traitOverrides.verticalSizeClass =
+        UIUserInterfaceSizeClassRegular;
+    [coordinator.viewController updateTraitsIfNeeded];
+    EXPECT_NE(coordinator.viewController.tabStripViewController, nil);
+    EXPECT_TRUE(browser_->GetBrowserLayoutState().tabStripVisible);
   }
+
+  [coordinator stop];
+}
+
+// Test that when there is no safe area top inset (e.g. on Duo devices on iOS
+// 27.0) and the tab strip is showing, the tab strip top margin is at least
+// 16.0pt and the browser view controller's top toolbar inset accounts for it.
+TEST_F(BrowserLayoutCoordinatorTest, TabStripTopMarginWithoutSafeArea) {
+  BrowserLayoutCoordinator* coordinator =
+      [[BrowserLayoutCoordinator alloc] initWithBrowser:browser_.get()];
+  [coordinator start];
+
+  FakeBrowserViewController* bvc = [[FakeBrowserViewController alloc] init];
+  coordinator.viewController.browserViewController = bvc;
+
+  coordinator.viewController.traitOverrides.horizontalSizeClass =
+      UIUserInterfaceSizeClassRegular;
+  coordinator.viewController.traitOverrides.verticalSizeClass =
+      UIUserInterfaceSizeClassRegular;
+  [coordinator.viewController updateTraitsIfNeeded];
+
+  ASSERT_NE(coordinator.viewController.tabStripViewController, nil);
+  EXPECT_EQ(
+      coordinator.viewController.tabStripViewController.view.frame.origin.y,
+      16.0);
+  EXPECT_EQ(bvc.topToolbarInset, 60.0);
+
+  [coordinator stop];
+}
+
+// Tests that `BrowserLayoutViewController` skips `SafeAreaProvider` queries
+// when the tab strip cannot be shown, and ignores trait changes that do not
+// affect tab strip visibility (such as `userInterfaceStyle` changes during
+// background snapshot capture).
+TEST_F(BrowserLayoutCoordinatorTest,
+       SkipsRedundantSafeAreaQueriesOnTraitAndLayoutUpdates) {
+  BrowserLayoutCoordinator* coordinator =
+      [[BrowserLayoutCoordinator alloc] initWithBrowser:browser_.get()];
+  [coordinator start];
+
+  CountingSafeAreaProvider* safe_area_provider =
+      [[CountingSafeAreaProvider alloc] initWithBrowser:browser_.get()];
+  coordinator.viewController.safeAreaProvider = safe_area_provider;
+
+  // Force compact size class where the tab strip cannot be shown.
+  coordinator.viewController.traitOverrides.horizontalSizeClass =
+      UIUserInterfaceSizeClassCompact;
+  coordinator.viewController.traitOverrides.verticalSizeClass =
+      UIUserInterfaceSizeClassRegular;
+  [coordinator.viewController updateTraitsIfNeeded];
+
+  safe_area_provider.safeAreaCallCount = 0;
+
+  // Assigning `browserViewController` in compact size class should not query
+  // `safeAreaProvider.safeArea` because `CanShowTabStrip` is false.
+  FakeBrowserViewController* bvc = [[FakeBrowserViewController alloc] init];
+  coordinator.viewController.browserViewController = bvc;
+  EXPECT_EQ(safe_area_provider.safeAreaCallCount, 0);
+  EXPECT_EQ(bvc.topToolbarInset, 0.0);
+
+  // Safe area insets changes in compact mode should also skip querying
+  // `safeAreaProvider.safeArea`.
+  [coordinator.viewController viewSafeAreaInsetsDidChange];
+  EXPECT_EQ(safe_area_provider.safeAreaCallCount, 0);
+
+  // Transition to regular x regular size class so the tab strip is shown.
+  coordinator.viewController.traitOverrides.horizontalSizeClass =
+      UIUserInterfaceSizeClassRegular;
+  coordinator.viewController.traitOverrides.verticalSizeClass =
+      UIUserInterfaceSizeClassRegular;
+  [coordinator.viewController updateTraitsIfNeeded];
+  EXPECT_GT(safe_area_provider.safeAreaCallCount, 0);
+
+  // Safe area insets changes with the tab strip shown should query
+  // `safeAreaProvider.safeArea` exactly once to update the layout.
+  safe_area_provider.safeAreaCallCount = 0;
+  [coordinator.viewController viewSafeAreaInsetsDidChange];
+  EXPECT_EQ(safe_area_provider.safeAreaCallCount, 1);
+
+  // Changing an unrelated trait (e.g. `userInterfaceStyle` during background
+  // snapshot capture) should not trigger `sizeClassDidChange` or query
+  // `safeAreaProvider.safeArea`.
+  safe_area_provider.safeAreaCallCount = 0;
+  coordinator.viewController.traitOverrides.userInterfaceStyle =
+      UIUserInterfaceStyleDark;
+  [coordinator.viewController updateTraitsIfNeeded];
+  EXPECT_EQ(safe_area_provider.safeAreaCallCount, 0);
 
   [coordinator stop];
 }

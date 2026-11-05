@@ -12,6 +12,8 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/wallpaper/sea_pen_image.h"
+#include "ash/wallpaper/sea_pen_fetcher.h"
+#include "ash/wallpaper/sea_pen_utils.h"
 #include "ash/wallpaper/wallpaper_utils/sea_pen_metadata_utils.h"
 #include "ash/wallpaper/wallpaper_utils/wallpaper_resizer.h"
 #include "ash/webui/common/mojom/sea_pen.mojom.h"
@@ -22,10 +24,7 @@
 #include "base/values.h"
 #include "chrome/browser/ash/login/demo_mode/demo_session.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
-#include "chrome/browser/ash/wallpaper_handlers/sea_pen_fetcher.h"
-#include "chrome/browser/ash/wallpaper_handlers/sea_pen_utils.h"
 #include "chrome/browser/ash/wallpaper_handlers/wallpaper_fetcher_delegate.h"
-#include "chrome/browser/ash/wallpaper_handlers/wallpaper_handlers_metric_utils.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
@@ -35,7 +34,9 @@
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "components/feedback/feedback_constants.h"
+#include "components/manta/manta_service.h"
 #include "components/manta/manta_status.h"
+#include "components/manta/snapper_provider.h"
 #include "content/public/browser/web_ui.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -72,11 +73,28 @@ PersonalizationAppSeaPenProviderBase::PersonalizationAppSeaPenProviderBase(
     content::WebUI* web_ui,
     std::unique_ptr<wallpaper_handlers::WallpaperFetcherDelegate>
         wallpaper_fetcher_delegate,
+    manta::MantaService* manta_service,
     manta::proto::FeatureName feature_name)
     : feature_name_(feature_name),
       profile_(Profile::FromWebUI(web_ui)),
       wallpaper_fetcher_delegate_(std::move(wallpaper_fetcher_delegate)),
+      manta_service_(manta_service),
       web_ui_(web_ui) {}
+
+PersonalizationAppSeaPenProviderBase::PersonalizationAppSeaPenProviderBase(
+    content::WebUI* web_ui,
+    std::unique_ptr<wallpaper_handlers::WallpaperFetcherDelegate>
+        wallpaper_fetcher_delegate,
+    manta::MantaService* manta_service,
+    manta::proto::FeatureName feature_name,
+    std::unique_ptr<SeaPenFetcher> sea_pen_fetcher)
+    : PersonalizationAppSeaPenProviderBase(
+          web_ui,
+          std::move(wallpaper_fetcher_delegate),
+          manta_service,
+          feature_name) {
+  sea_pen_fetcher_ = std::move(sea_pen_fetcher);
+}
 
 PersonalizationAppSeaPenProviderBase::~PersonalizationAppSeaPenProviderBase() =
     default;
@@ -85,7 +103,7 @@ void PersonalizationAppSeaPenProviderBase::BindInterface(
     mojo::PendingReceiver<::ash::personalization_app::mojom::SeaPenProvider>
         receiver) {
   CHECK(::ash::features::IsSeaPenEnabled() ||
-        ::ash::features::IsVcBackgroundReplaceEnabled());
+        ::ash::features::IsVideoConferenceEnabled());
   sea_pen_receiver_.reset();
   sea_pen_receiver_.Bind(std::move(receiver));
 }
@@ -234,11 +252,15 @@ void PersonalizationAppSeaPenProviderBase::GetRecentSeaPenImageThumbnail(
                      weak_ptr_factory_.GetWeakPtr(), id, std::move(callback)));
 }
 
-wallpaper_handlers::SeaPenFetcher*
+SeaPenFetcher*
 PersonalizationAppSeaPenProviderBase::GetOrCreateSeaPenFetcher() {
   if (!sea_pen_fetcher_) {
+    std::unique_ptr<manta::SnapperProvider> snapper_provider;
+    if (manta_service_) {
+      snapper_provider = manta_service_->CreateSnapperProvider();
+    }
     sea_pen_fetcher_ =
-        wallpaper_fetcher_delegate_->CreateSeaPenFetcher(profile_);
+        SeaPenFetcher::MakeSeaPenFetcher(std::move(snapper_provider));
   }
   return sea_pen_fetcher_.get();
 }
@@ -248,8 +270,6 @@ void PersonalizationAppSeaPenProviderBase::OnFetchThumbnailsDone(
     const mojom::SeaPenQueryPtr& query,
     std::optional<std::vector<SeaPenImage>> images,
     manta::MantaStatusCode status_code) {
-  RecordSeaPenMantaStatusCode(query->which(), status_code,
-                              wallpaper_handlers::SeaPenApiType::kThumbnails);
   if (!images) {
     std::move(callback).Run(std::nullopt, status_code);
     return;
@@ -291,7 +311,8 @@ void PersonalizationAppSeaPenProviderBase::OnFetchWallpaperDone(
 
 void PersonalizationAppSeaPenProviderBase::OnRecentSeaPenImageSelected(
     bool success) {
-  DCHECK(pending_select_recent_sea_pen_image_callback_);
+  CHECK(pending_select_recent_sea_pen_image_callback_,
+        base::NotFatalUntil::M160);
   std::move(pending_select_recent_sea_pen_image_callback_).Run(success);
 }
 
@@ -368,7 +389,7 @@ void PersonalizationAppSeaPenProviderBase::OpenFeedbackDialog(
   }
 
   std::string feedback_text =
-      wallpaper_handlers::GetFeedbackText(query_and_thumbnail->first, metadata);
+      GetFeedbackText(query_and_thumbnail->first, metadata);
 
   base::DictValue ai_metadata;
   ai_metadata.Set(feedback::kSeaPenMetadataKey, "true");
@@ -389,8 +410,7 @@ void PersonalizationAppSeaPenProviderBase::OpenFeedbackDialog(
 
 void PersonalizationAppSeaPenProviderBase::ShouldShowSeaPenIntroductionDialog(
     ShouldShowSeaPenIntroductionDialogCallback callback) {
-  if (!features::IsSeaPenEnabled() &&
-      !features::IsVcBackgroundReplaceEnabled()) {
+  if (!features::IsSeaPenEnabled() && !features::IsVideoConferenceEnabled()) {
     sea_pen_receiver_.ReportBadMessage(
         "Cannot call `ShouldShowSeaPenIntroductionDialog()` without Sea Pen "
         "feature enabled");
@@ -408,8 +428,7 @@ void PersonalizationAppSeaPenProviderBase::
 void PersonalizationAppSeaPenProviderBase::
     ShouldShowSeaPenFreeformIntroductionDialog(
         ShouldShowSeaPenFreeformIntroductionDialogCallback callback) {
-  if (!features::IsSeaPenEnabled() &&
-      !features::IsVcBackgroundReplaceEnabled() &&
+  if (!features::IsSeaPenEnabled() && !features::IsVideoConferenceEnabled() &&
       !features::IsSeaPenTextInputEnabled()) {
     sea_pen_receiver_.ReportBadMessage(
         "Cannot call `ShouldShowSeaPenFreeformIntroductionDialog()` without "

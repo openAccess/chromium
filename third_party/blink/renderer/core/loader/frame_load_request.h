@@ -32,6 +32,7 @@
 #include "base/time/time.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/network/public/mojom/referrer_policy.mojom-blink.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/blob/blob_url_store.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/policy_container.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/triggering_event_info.mojom-blink.h"
@@ -178,11 +179,10 @@ struct CORE_EXPORT FrameLoadRequest {
   void SetNoOpener() { window_features_.noopener = true; }
   void SetExplicitOpener() { window_features_.explicit_opener = true; }
 
-  const std::optional<base::UnguessableToken>& GetScriptToolInvocationId()
-      const {
+  const std::optional<ToolInvocationToken>& GetScriptToolInvocationId() const {
     return script_tool_invocation_id_;
   }
-  void SetScriptToolInvocationId(const base::UnguessableToken& id) {
+  void SetScriptToolInvocationId(const ToolInvocationToken& id) {
     script_tool_invocation_id_ = id;
   }
   void SetNoReferrer() {
@@ -200,10 +200,10 @@ struct CORE_EXPORT FrameLoadRequest {
   const LocalFrameToken* GetInitiatorFrameToken() const;
 
   void SetInitiatorStateToken(
-      const base::UnguessableToken& initiator_state_token) {
+      const InitiatorStateToken& initiator_state_token) {
     initiator_state_token_ = initiator_state_token;
   }
-  const base::UnguessableToken& GetInitiatorStateToken() const {
+  const InitiatorStateToken& GetInitiatorStateToken() const {
     return initiator_state_token_;
   }
 
@@ -211,7 +211,7 @@ struct CORE_EXPORT FrameLoadRequest {
       const DocumentToken& initiator_document_token) {
     initiator_document_token_ = initiator_document_token;
   }
-  const std::optional<DocumentToken>& GetInitiatorDocumentToken() const {
+  const DocumentToken& GetInitiatorDocumentToken() const {
     return initiator_document_token_;
   }
 
@@ -251,7 +251,7 @@ struct CORE_EXPORT FrameLoadRequest {
   ClientNavigationReason client_navigation_reason_ =
       ClientNavigationReason::kNone;
   NavigationPolicy navigation_policy_ = kNavigationPolicyCurrentTab;
-  std::optional<base::UnguessableToken> script_tool_invocation_id_;
+  std::optional<ToolInvocationToken> script_tool_invocation_id_;
   mojom::blink::TriggeringEventInfo triggering_event_info_ =
       mojom::blink::TriggeringEventInfo::kNotFromEvent;
   // The element that triggered the navigation. This may be cross-origin to the
@@ -269,8 +269,8 @@ struct CORE_EXPORT FrameLoadRequest {
   std::optional<WebPictureInPictureWindowOptions>
       picture_in_picture_window_options_;
   std::optional<LocalFrameToken> initiator_frame_token_;
-  base::UnguessableToken initiator_state_token_;
-  std::optional<DocumentToken> initiator_document_token_;
+  InitiatorStateToken initiator_state_token_;
+  DocumentToken initiator_document_token_;
   mojo::PendingRemote<mojom::blink::NavigationStateKeepAliveHandle>
       initiator_navigation_state_keep_alive_handle_;
   SourceLocation* source_location_ = nullptr;

@@ -7,6 +7,7 @@
 
 #include <string>
 
+#include "base/containers/span.h"
 #include "base/files/scoped_file.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -33,12 +34,12 @@ class WaylandDataDeviceBase {
 
   // Sets the callback responsible for handling selection events.
   void set_selection_offer_callback(SelectionOfferCallback callback) {
-    DCHECK(!selection_offer_callback_ || !callback);
+    CHECK(!selection_offer_callback_ || !callback, base::NotFatalUntil::M163);
     selection_offer_callback_ = callback;
   }
 
   // Returns MIME types given by the current data offer.
-  const std::vector<std::string>& GetAvailableMimeTypes() const;
+  base::span<const std::string> GetAvailableMimeTypes() const;
 
   // Synchronously reads and returns selection data with |mime_type| format.
   // TODO(crbug.com/40398800): Drop once Clipboard API becomes async.

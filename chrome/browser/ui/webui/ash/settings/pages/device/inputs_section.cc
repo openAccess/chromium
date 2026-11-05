@@ -285,13 +285,8 @@ void AddInputMethodOptionsLoadTimeData(
   html_source->AddLocalizedStrings(kLocalizedStrings);
   html_source->AddBoolean("isPhysicalKeyboardAutocorrectAllowed",
                           is_physical_keyboard_autocorrect_allowed);
-  html_source->AddBoolean(
-      "isPhysicalKeyboardPredictiveWritingAllowed",
-      base::FeatureList::IsEnabled(features::kAssistMultiWord) &&
-          is_physical_keyboard_predictive_writing_allowed);
-  html_source->AddBoolean(
-      "autocorrectEnableByDefault",
-      base::FeatureList::IsEnabled(features::kAutocorrectByDefault));
+  html_source->AddBoolean("isPhysicalKeyboardPredictiveWritingAllowed",
+                          is_physical_keyboard_predictive_writing_allowed);
 }
 
 }  // namespace
@@ -461,9 +456,6 @@ void InputsSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
       "onDeviceGrammarCheckEnabled",
       base::FeatureList::IsEnabled(features::kOnDeviceGrammarCheck));
 
-  html_source->AddBoolean(
-      "languagePacksInSettingsEnabled",
-      base::FeatureList::IsEnabled(features::kLanguagePacksInSettings));
   // TODO(b/290861003): Update the settings code and remove this.
   html_source->AddBoolean("isShortcutCustomizationEnabled", true);
 
@@ -566,7 +558,7 @@ void InputsSection::UpdateSpellCheckSearchTags() {
 
 void InputsSection::UpdateAutocorrectTags(
     input_method::InputMethodManager* manager) {
-  DCHECK(manager);
+  CHECK(manager, base::NotFatalUntil::M162);
   const std::string engine_id =
       extension_ime_util::GetComponentIDByInputMethodID(
           manager->GetActiveIMEState()->GetCurrentInputMethod().id());

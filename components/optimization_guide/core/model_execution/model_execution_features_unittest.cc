@@ -5,7 +5,7 @@
 #include "components/optimization_guide/core/model_execution/model_execution_features.h"
 
 #include "base/test/scoped_feature_list.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -16,9 +16,7 @@ using features::internal::GetAllowedFeaturesForUnsignedUser;
 using testing::UnorderedElementsAre;
 
 TEST(ModelExecutionFeature, GetAllowedFeaturesForUnsignedUser) {
-  // The kHistorySearch feature launched with `allow_unsigned_user` true.
-  EXPECT_THAT(GetAllowedFeaturesForUnsignedUser(),
-              UnorderedElementsAre(UserVisibleFeatureKey::kHistorySearch));
+  EXPECT_THAT(GetAllowedFeaturesForUnsignedUser(), UnorderedElementsAre());
   {
     base::test::ScopedFeatureList scoped_feature_list;
     scoped_feature_list.InitWithFeaturesAndParameters(
@@ -28,16 +26,13 @@ TEST(ModelExecutionFeature, GetAllowedFeaturesForUnsignedUser) {
           {{"allow_unsigned_user", "true"}}}},
         {});
     EXPECT_THAT(GetAllowedFeaturesForUnsignedUser(),
-                UnorderedElementsAre(UserVisibleFeatureKey::kHistorySearch,
-                                     UserVisibleFeatureKey::kCompose,
+                UnorderedElementsAre(UserVisibleFeatureKey::kCompose,
                                      UserVisibleFeatureKey::kWallpaperSearch));
   }
   {
     base::test::ScopedFeatureList scoped_feature_list;
     scoped_feature_list.InitWithFeaturesAndParameters(
-        {{features::internal::kHistorySearchSettingsVisibility,
-          {{"allow_unsigned_user", "false"}}},
-         {features::internal::kComposeSettingsVisibility,
+        {{features::internal::kComposeSettingsVisibility,
           {{"allow_unsigned_user", "false"}}},
          {features::internal::kWallpaperSearchSettingsVisibility,
           {{"allow_unsigned_user", "true"}}}},

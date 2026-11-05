@@ -10,7 +10,9 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/chrome_pref_names.h"
 #include "ash/webui/media_app_ui/url_constants.h"
-#include "base/functional/bind.h"
+#include "base/check_deref.h"
+#include "base/i18n/language_tag.h"
+#include "base/memory/raw_ref.h"
 #include "base/version.h"
 #include "chrome/browser/accessibility/media_app/ax_media_app_service_factory.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
@@ -19,12 +21,15 @@
 #include "chrome/browser/ash/mahi/media_app/mahi_media_app_service_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/channel/channel_info.h"
+#include "chromeos/ash/components/search_engines/template_url_service_provider.h"
+#include "chromeos/ash/components/signin/identity_manager_provider.h"
 #include "chromeos/ash/components/specialized_features/feature_access_checker.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/components/mahi/public/cpp/mahi_manager.h"
+#include "components/account_id/account_id.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url_service.h"
@@ -65,13 +70,17 @@ bool PhotosIntegrationSupported(const apps::AppUpdate& update) {
   return photos_version >= base::Version(kMinPhotosVersion);
 }
 
-bool IsLensInGalleryEnabled(Profile* profile, PrefService* pref_service) {
+bool IsLensInGalleryEnabled(const AccountId& account_id,
+                            PrefService* pref_service) {
   if (!pref_service->GetBoolean(ash::prefs::kMediaAppLensEnabled)) {
     return false;
   }
 
   const TemplateURLService* service =
-      TemplateURLServiceFactory::GetForProfile(profile);
+      ash::TemplateURLServiceProvider::Get().Find(account_id);
+  if (!service) {
+    return false;
+  }
   const TemplateURL* default_url = service->GetDefaultSearchProvider();
   return default_url &&
          default_url->url_ref().HasGoogleBaseURLs(service->search_terms_data());
@@ -79,7 +88,11 @@ bool IsLensInGalleryEnabled(Profile* profile, PrefService* pref_service) {
 
 }  // namespace
 
-ChromeMediaAppGuestUIDelegate::ChromeMediaAppGuestUIDelegate() = default;
+ChromeMediaAppGuestUIDelegate::ChromeMediaAppGuestUIDelegate(
+    const ApplicationLocaleStorage* application_locale_storage)
+    : application_locale_storage_(CHECK_DEREF(application_locale_storage)) {}
+
+ChromeMediaAppGuestUIDelegate::~ChromeMediaAppGuestUIDelegate() = default;
 
 void ChromeMediaAppGuestUIDelegate::RegisterProfilePrefs(
     PrefRegistrySimple* registry) {
@@ -101,7 +114,8 @@ void ChromeMediaAppGuestUIDelegate::PopulateLoadTimeData(
         photos_integration_supported = PhotosIntegrationSupported(update);
       });
 
-  source->AddString("appLocale", g_browser_process->GetApplicationLocale());
+  source->AddString("appLocale",
+                    application_locale_storage_->GetTag().tag_string());
 
   source->AddBoolean("mantisExpandBackground",
                      base::FeatureList::IsEnabled(
@@ -119,8 +133,15 @@ void ChromeMediaAppGuestUIDelegate::PopulateLoadTimeData(
                      base::FeatureList::IsEnabled(
                          ash::features::kMediaAppImageMantisMakeASticker));
 
-  source->AddBoolean("lensInGallery",
-                     IsLensInGalleryEnabled(profile, pref_service));
+  // Guest sessions substitute their off-the-record profile for the original
+  // everywhere, including here, but the AccountId is only ever annotated on
+  // the original profile (per crbug.com/546860700 review) -- unwrap to it
+  // before looking up the annotation.
+  source->AddBoolean(
+      "lensInGallery",
+      IsLensInGalleryEnabled(CHECK_DEREF(ash::AnnotatedAccountId::Get(
+                                 profile->GetOriginalProfile())),
+                             pref_service));
   source->AddBoolean(
       "pdfReadonly",
       !pref_service->GetBoolean(ash::chrome_prefs::kPdfAnnotationsEnabled));
@@ -150,11 +171,15 @@ std::unique_ptr<specialized_features::FeatureAccessChecker>
 ChromeMediaAppGuestUIDelegate::GetFeatureAccessChecker(
     specialized_features::FeatureAccessConfig config,
     content::WebUI* web_ui) const {
+  Profile* profile = Profile::FromWebUI(web_ui);
+  // See the comment on the account_id lookup in PopulateLoadTimeData() above:
+  // guest sessions substitute their off-the-record profile here too, but the
+  // AccountId is only annotated on the original profile.
   return std::make_unique<specialized_features::FeatureAccessChecker>(
-      std::move(config), Profile::FromWebUI(web_ui)->GetPrefs(),
-      IdentityManagerFactory::GetForProfile(Profile::FromWebUI(web_ui)),
-      base::BindRepeating(
-          []() { return g_browser_process->variations_service(); }));
+      g_browser_process->variations_service(), profile->GetPrefs(),
+      ash::IdentityManagerProvider::Get().Find(CHECK_DEREF(
+          ash::AnnotatedAccountId::Get(profile->GetOriginalProfile()))),
+      std::move(config));
 }
 
 PrefService* ChromeMediaAppGuestUIDelegate::GetPrefService(
@@ -187,15 +212,18 @@ void ChromeMediaAppGuestUIDelegate::CreateAndBindMahiUntrustedService(
   }
 }
 
-MediaAppGuestUIConfig::MediaAppGuestUIConfig()
+MediaAppGuestUIConfig::MediaAppGuestUIConfig(
+    const ApplicationLocaleStorage* application_locale_storage)
     : WebUIConfig(content::kChromeUIUntrustedScheme,
-                  ash::kChromeUIMediaAppHost) {}
+                  ash::kChromeUIMediaAppHost),
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)) {}
 
 MediaAppGuestUIConfig::~MediaAppGuestUIConfig() = default;
 
 std::unique_ptr<content::WebUIController>
 MediaAppGuestUIConfig::CreateWebUIController(content::WebUI* web_ui,
                                              const GURL& url) {
-  auto delegate = std::make_unique<ChromeMediaAppGuestUIDelegate>();
+  auto delegate = std::make_unique<ChromeMediaAppGuestUIDelegate>(
+      &application_locale_storage_.get());
   return std::make_unique<ash::MediaAppGuestUI>(web_ui, std::move(delegate));
 }

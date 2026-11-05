@@ -12,3 +12,5 @@ Extensions:
   - ExtensionUnpublishedAvailability
   - ExtensionExtendedBackgroundLifetimeForPortConnectionsToUrls
   - ExtensionDOMActivityLoggingEnabled
+  - ExtensionReviewPromptsEnabled
+  - ExtensionForceInstallWithSearchOrNewTabOverridesEnabled

@@ -21,8 +21,10 @@
 namespace blink {
 
 class File;
+class ReadableStream;
 class Transferables;
 class ScriptState;
+class WritableStream;
 
 // Serializes V8 values according to the HTML structured clone algorithm:
 // https://html.spec.whatwg.org/C/#structured-clone
@@ -60,6 +62,9 @@ class CORE_EXPORT V8ScriptValueSerializer
   // If false is returned and no more specific exception is thrown, a generic
   // DataCloneError message will be used.
   virtual bool WriteDOMObject(ScriptWrappable*, ExceptionState&);
+
+  bool WriteReadableStream(ReadableStream*, ExceptionState&);
+  bool WriteWritableStream(WritableStream*, ExceptionState&);
 
   ScriptState* GetScriptState() const { return script_state_; }
 
@@ -138,6 +143,10 @@ class CORE_EXPORT V8ScriptValueSerializer
 
   bool AdoptSharedValueConveyor(v8::Isolate* isolate,
                                 v8::SharedValueConveyor&& conveyor) override;
+
+  // Stores the blob in `serialized_script_value_` and returns an identifier for
+  // use with `serializer_`. The identifier is an index.
+  String AttachBlob(scoped_refptr<BlobDataHandle> blob_data);
 
   ScriptState* script_state_;
   scoped_refptr<SerializedScriptValue> serialized_script_value_;

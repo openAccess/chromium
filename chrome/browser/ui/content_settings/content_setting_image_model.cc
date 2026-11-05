@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/content_settings/content_setting_image_model.h"
 
 #include <algorithm>
+#include <array>
 #include <string>
 #include <utility>
 
@@ -25,7 +26,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/blocked_content/framebust_block_tab_helper.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model.h"
 #include "chrome/browser/ui/content_settings/content_setting_image_model_states.h"
 #include "chrome/browser/ui/layout_constants.h"
@@ -39,6 +40,7 @@
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/content_settings/core/common/features.h"
+#include "components/feature_engagement/public/feature_constants.h"
 #include "components/no_state_prefetch/browser/no_state_prefetch_manager.h"
 #include "components/permissions/features.h"
 #include "components/permissions/permission_request_manager.h"
@@ -103,7 +105,7 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(ContentSettingImageModel,
                                       kClipboardRWElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(ContentSettingImageModel,
                                       kStorageAccessElementId);
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(ContentSettingImageModel,
                                       kSmartCardIconElementId);
 #endif
@@ -118,7 +120,7 @@ using ImageType = ContentSettingImageModel::ImageType;
 
 // The ordering of the models here influences the order in which icons are
 // shown in the omnibox.
-constexpr ImageType kContentSettingImageOrder[] = {
+constexpr auto kContentSettingImageOrder = std::to_array<ImageType>({
     ImageType::kCookies,
     ImageType::kImages,
     ImageType::kJavaScript,
@@ -136,15 +138,16 @@ constexpr ImageType kContentSettingImageOrder[] = {
     ImageType::kClipboardReadWrite,
     ImageType::kNotifications,
     ImageType::kStorageAccess,
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     ImageType::kSmartCard,
 #endif
 #if BUILDFLAG(IS_WIN)
     ImageType::kProtectedMediaIdentifier,
 #endif
-};
+});
 
-ui::ElementIdentifier GetElementIdentifierForType(ImageType image_type) {
+constexpr ui::ElementIdentifier GetElementIdentifierForType(
+    ImageType image_type) {
   switch (image_type) {
     case ImageType::kCookies:
       return ContentSettingImageModel::kCookiesIconElementId;
@@ -180,7 +183,7 @@ ui::ElementIdentifier GetElementIdentifierForType(ImageType image_type) {
       return ContentSettingImageModel::kStorageAccessElementId;
     case ImageType::kNotifications:
       return kNotificationContentSettingImageView;
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     case ImageType::kSmartCard:
       return ContentSettingImageModel::kSmartCardIconElementId;
 #endif
@@ -323,7 +326,7 @@ class ContentSettingMediaImageModel : public ContentSettingImageModel {
   PageSpecificContentSettings::MicrophoneCameraState state_;
 };
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 // Image model for displaying media icons in the location bar.
 class ContentSettingSmartCardImageModel
     : public ContentSettingSimpleImageModel {
@@ -358,7 +361,7 @@ class ContentSettingSmartCardImageModel
         delegate, page, ContentSettingsType::SMART_CARD_GUARD);
   }
 };
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 
 class ContentSettingSensorsImageModel : public ContentSettingSimpleImageModel {
  public:
@@ -609,7 +612,7 @@ void GetIconChromeRefresh(ContentSettingsType type,
                               ? vector_icons::kIframeIcon
                               : vector_icons::kIframeOldIcon);
       return;
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     case ContentSettingsType::SMART_CARD_GUARD:
       // Indicator shows only when at least one connection is active, hence no
       // need for the off icon.
@@ -710,7 +713,7 @@ ContentSettingImageModel::CreateForContentType(ImageType image_type) {
       return std::make_unique<ContentSettingStorageAccessImageModel>();
     case ImageType::kNotifications:
       return std::make_unique<ContentSettingNotificationsImageModel>();
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     case ImageType::kSmartCard:
       return std::make_unique<ContentSettingSmartCardImageModel>();
 #endif
@@ -724,6 +727,7 @@ ContentSettingImageModel::CreateForContentType(ImageType image_type) {
 }
 
 void ContentSettingImageModel::Update(content::WebContents* contents) {
+  promo_params_.reset();
   bool new_visibility = contents ? UpdateAndGetVisibility(contents) : false;
   is_visible_ = new_visibility;
   if (contents && !is_visible_) {
@@ -737,19 +741,23 @@ void ContentSettingImageModel::Update(content::WebContents* contents) {
       ContentSettingImageModelStates::Get(contents)->SetBubbleWasAutoOpened(
           image_type(), false);
     }
+    ContentSettingImageModelStates::Get(contents)->SetIconShownRecorded(
+        image_type(), false);
+    ContentSettingImageModelStates::Get(contents)->SetPromoWasShown(
+        image_type(), false);
   }
 }
 
 bool ContentSettingImageModel::ShouldRunAnimation(
     content::WebContents* contents) {
-  DCHECK(contents);
+  CHECK(contents, base::NotFatalUntil::M162);
   return !ContentSettingImageModelStates::Get(contents)->AnimationHasRun(
       image_type());
 }
 
 void ContentSettingImageModel::SetAnimationHasRun(
     content::WebContents* contents) {
-  DCHECK(contents);
+  CHECK(contents, base::NotFatalUntil::M162);
   ContentSettingImageModelStates::Get(contents)->SetAnimationHasRun(
       image_type(), true);
 }
@@ -779,6 +787,19 @@ void ContentSettingImageModel::SetBubbleWasAutoOpened(
     content::WebContents* contents) {
   ContentSettingImageModelStates::Get(contents)->SetBubbleWasAutoOpened(
       image_type(), true);
+}
+
+std::optional<user_education::FeaturePromoParams>
+ContentSettingImageModel::TakePromoParams(content::WebContents* contents) {
+  CHECK(contents, base::NotFatalUntil::M162);
+  if (!promo_params_ ||
+      ContentSettingImageModelStates::Get(contents)->PromoWasShown(
+          image_type())) {
+    return std::nullopt;
+  }
+  ContentSettingImageModelStates::Get(contents)->SetPromoWasShown(image_type(),
+                                                                  true);
+  return std::exchange(promo_params_, std::nullopt);
 }
 
 void ContentSettingImageModel::SetIcon(ContentSettingsType type, bool blocked) {
@@ -857,7 +878,7 @@ bool ContentSettingBlockedImageModel::UpdateAndGetVisibility(
 
   SetIcon(type, is_blocked);
   set_explanatory_string_id(explanation_id);
-  DCHECK(tooltip_id);
+  CHECK(tooltip_id, base::NotFatalUntil::M162);
   set_tooltip(l10n_util::GetStringUTF16(tooltip_id));
   return true;
 }
@@ -1172,7 +1193,7 @@ bool ContentSettingMediaImageModel::UpdateAndGetVisibility(
   }
 #endif  // BUILDFLAG(IS_MAC)
 
-  DCHECK(IsMicAccessed() || IsCamAccessed());
+  CHECK(IsMicAccessed() || IsCamAccessed(), base::NotFatalUntil::M162);
 
   int id = IDS_CAMERA_BLOCKED;
   if (IsMicBlockedOnSiteLevel() || IsCameraBlockedOnSiteLevel()) {
@@ -1256,6 +1277,17 @@ std::unique_ptr<ContentSettingBubbleModel>
 ContentSettingMediaImageModel::CreateBubbleModelImpl(
     ContentSettingBubbleModel::Delegate* delegate,
     content::Page& page) {
+  // The mic/camera state may have been cleared after the indicator was shown
+  // (e.g. Safety Hub auto-revoked permission and stopped capture while the
+  // indicator was dismissing). The bubble requires non-empty state (see
+  // ContentSettingMediaStreamBubbleModel's constructor), so return nullptr and
+  // let the caller dismiss the stale indicator.
+  PageSpecificContentSettings* content_settings =
+      PageSpecificContentSettings::GetForPage(page);
+  if (!content_settings ||
+      content_settings->GetMicrophoneCameraState().empty()) {
+    return nullptr;
+  }
   return std::make_unique<ContentSettingMediaStreamBubbleModel>(delegate, page);
 }
 
@@ -1412,12 +1444,15 @@ ContentSettingNotificationsImageModel::ContentSettingNotificationsImageModel()
   SetIcon(ContentSettingsType::NOTIFICATIONS, /*blocked=*/false);
   set_tooltip(
       l10n_util::GetStringUTF16(IDS_NOTIFICATIONS_OFF_EXPLANATORY_TEXT));
+  set_accessibility_string_id(IDS_NOTIFICATIONS_OFF_EXPLANATORY_TEXT);
 }
 
 bool ContentSettingNotificationsImageModel::UpdateAndGetVisibility(
     WebContents* web_contents) {
   set_should_auto_open_bubble(false);
+  set_should_keep_label_expanded(false);
   set_blocked_on_system_level(false);
+  set_explanatory_string_id(0);
 
 #if BUILDFLAG(IS_MAC)
   if (std::optional<webapps::AppId> app_id =
@@ -1436,21 +1471,51 @@ bool ContentSettingNotificationsImageModel::UpdateAndGetVisibility(
         content_settings
             ->notifications_was_denied_because_of_system_permission();
 
-    const mac_notifications::mojom::PermissionStatus system_permission_status =
-        AppShimRegistry::Get()->GetNotificationPermissionStatusForApp(*app_id);
+    const AppShimRegistry::NotificationPermissionStatus
+        system_permission_status =
+            AppShimRegistry::Get()->GetNotificationPermissionStatusForApp(
+                *app_id);
 
     // If the system level permission for this app is currently "denied", and
     // either the chrome level permission was granted (and notifications have
-    // been attempted to be used in this page) or the chrome level permission
-    // just switched from "ask" to "blocked", show the indicator icon.
+    // been attempted to be used in this page) or the page was explicitly
+    // marked as having notifications blocked by the system level permission,
+    // show the indicator icon.
     if ((was_denied_because_of_system_permission || is_allowed) &&
-        system_permission_status ==
-            mac_notifications::mojom::PermissionStatus::kDenied) {
+        (system_permission_status ==
+             AppShimRegistry::NotificationPermissionStatus::kImplicitlyDenied ||
+         system_permission_status ==
+             AppShimRegistry::NotificationPermissionStatus::
+                 kExplicitlyDenied)) {
       SetIcon(ContentSettingsType::NOTIFICATIONS, /*blocked=*/true);
-      // If the chrome level permission was just auto-denied, also popup the
-      // bubble.
-      set_should_auto_open_bubble(was_denied_because_of_system_permission);
+      // UpdateAndGetVisibility() runs on every location bar refresh, and for
+      // multiple models sharing the same tab, so only record once per time
+      // the icon becomes visible in a tab.
+      ContentSettingImageModelStates* states =
+          ContentSettingImageModelStates::Get(web_contents);
+      if (!states->IconShownRecorded(image_type())) {
+        states->SetIconShownRecorded(image_type(), true);
+        base::RecordAction(base::UserMetricsAction(
+            "ContentSettings.Notifications.SystemPermissionIconShown"));
+      }
       set_blocked_on_system_level(true);
+      // If the user explicitly turned off notifications for this app at the
+      // system level, only show the icon without drawing further attention to
+      // it.
+      if (system_permission_status ==
+          AppShimRegistry::NotificationPermissionStatus::kExplicitlyDenied) {
+        return true;
+      }
+      // Otherwise show the explanatory label, and keep it expanded until the
+      // user has seen the bubble.
+      // TODO(crbug.com/575482442): Only keep the label expanded a limited
+      // number of times per web app, and fall back to a less aggressive
+      // indicator afterwards.
+      set_explanatory_string_id(IDS_NOTIFICATIONS_OFF_EXPLANATORY_TEXT);
+      set_should_keep_label_expanded(true);
+      // If the page was explicitly marked as having notifications blocked by
+      // the system level permission, also popup the bubble.
+      set_should_auto_open_bubble(was_denied_because_of_system_permission);
       return true;
     }
   }
@@ -1462,22 +1527,29 @@ bool ContentSettingNotificationsImageModel::UpdateAndGetVisibility(
   // We shouldn't show the icon unless we're a PWA.
   // TODO(crbug.com/40186737): Allow PermissionRequestManager to identify the
   // correct UI style of a permission prompt.
-  const bool quiet_icon_allowed = web_app::AppBrowserController::IsWebApp(
-      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents));
+  const tabs::TabInterface* const tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents);
+  const BrowserWindowInterface* const browser =
+      tab ? tab->GetBrowserWindowInterface() : nullptr;
+  const web_app::AppBrowserController* const app_controller =
+      browser ? web_app::AppBrowserController::From(browser) : nullptr;
 
-  if (!quiet_icon_allowed || !manager ||
+  // |manager| may be null in tests.
+  if (!app_controller || !manager ||
       !manager->ShouldCurrentRequestUseQuietUI()) {
     return false;
   }
 
-  // |manager| may be null in tests.
   SetIcon(ContentSettingsType::NOTIFICATIONS, /*blocked=*/false);
-  if (permissions::PermissionUiSelector::ShouldSuppressAnimation(
+  // Web app titlebars don't show transient explanatory labels, so rather than
+  // animating in an explanatory label, only show the icon. Unless the quiet UI
+  // was triggered for a reason that calls for minimal UI, also show an
+  // in-product help promo anchored to the icon.
+  if (!permissions::PermissionUiSelector::ShouldSuppressAnimation(
           manager->ReasonForUsingQuietUi())) {
-    set_accessibility_string_id(IDS_NOTIFICATIONS_OFF_EXPLANATORY_TEXT);
-    set_explanatory_string_id(0);
-  } else {
-    set_explanatory_string_id(IDS_NOTIFICATIONS_OFF_EXPLANATORY_TEXT);
+    set_promo_params(user_education::FeaturePromoParams(
+        feature_engagement::kIPHPwaQuietNotificationFeature,
+        app_controller->app_id()));
   }
   return true;
 }
@@ -1569,11 +1641,13 @@ ContentSettingImageModel::ContentSettingImageModel(
       image_type_should_notify_accessibility_(
           image_type_should_notify_accessibility) {}
 
+ContentSettingImageModel::~ContentSettingImageModel() = default;
+
 std::unique_ptr<ContentSettingBubbleModel>
 ContentSettingImageModel::CreateBubbleModel(
     ContentSettingBubbleModel::Delegate* delegate,
     content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
   return CreateBubbleModelImpl(delegate, web_contents->GetPrimaryPage());
 }
 
@@ -1596,15 +1670,15 @@ ContentSettingImageModel::GenerateContentSettingImageModels() {
 }
 
 // static
-std::vector<ui::ElementIdentifier>
+base::span<const ui::ElementIdentifier>
 ContentSettingImageModel::GetAllElementIdentifiers() {
-  std::vector<ui::ElementIdentifier> result;
-  result.reserve(std::size(kContentSettingImageOrder));
-  for (auto type : kContentSettingImageOrder) {
-    result.push_back(GetElementIdentifierForType(type));
-  }
-
-  return result;
+  static constexpr auto kAllElementIdentifiers = []() consteval {
+    std::array<ui::ElementIdentifier, kContentSettingImageOrder.size()> result;
+    std::ranges::transform(kContentSettingImageOrder, result.begin(),
+                           GetElementIdentifierForType);
+    return result;
+  }();
+  return kAllElementIdentifiers;
 }
 
 // static
@@ -1618,4 +1692,20 @@ size_t ContentSettingImageModel::GetContentSettingImageModelIndexForTesting(
     }
   }
   NOTREACHED();
+}
+
+// static
+bool ContentSettingImageModel::IsLeftHandSideIndicatorEnabled(
+    ImageType image_type) {
+  // Only the permission activity indicators are ever hosted by the dashboard;
+  // every other image type is always a right-hand-side content setting image.
+  switch (image_type) {
+    case ImageType::kMediaStream:
+      return true;
+    case ImageType::kSensors:
+      return base::FeatureList::IsEnabled(
+          content_settings::features::kLeftHandSideSensorActivityIndicators);
+    default:
+      return false;
+  }
 }

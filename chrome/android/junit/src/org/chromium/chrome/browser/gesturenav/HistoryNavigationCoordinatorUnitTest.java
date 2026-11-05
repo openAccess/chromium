@@ -6,10 +6,15 @@ package org.chromium.chrome.browser.gesturenav;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
 
@@ -23,16 +28,20 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.gesturenav.BackActionDelegate.ActionType;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.components.browser_ui.widget.TouchEventProvider;
+import org.chromium.content.browser.navigation_transitions.BackForwardTransitionAnimationManagerImpl;
+import org.chromium.content.browser.navigation_transitions.BackForwardTransitionAnimationManagerImplJni;
 import org.chromium.ui.base.BackGestureEventSwipeEdge;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.insets.InsetObserver;
@@ -40,6 +49,7 @@ import org.chromium.ui.insets.InsetObserver;
 @RunWith(BaseRobolectricTestRunner.class)
 public class HistoryNavigationCoordinatorUnitTest {
     private HistoryNavigationCoordinator mHistoryNavigationCoordinator;
+    private ViewGroup mParentView;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -52,48 +62,54 @@ public class HistoryNavigationCoordinatorUnitTest {
             new ActivityScenarioRule<>(TestActivity.class);
 
     @Mock private ActivityLifecycleDispatcher mLifecycleDispatcher;
-    @Mock private ViewGroup mParentView;
     @Mock private TouchEventProvider mTouchEventProvider;
     @Mock private FullscreenManager mFullscreenManager;
     @Mock private InsetObserver mInsetObserver;
     @Mock private BackActionDelegate mBackActionDelegate;
     @Mock private Tab mTab;
-    @Mock private GestureNavigationUtils.Natives mGestureNavigationUtilsJni;
+    @Mock private BackForwardTransitionAnimationManagerImpl.Natives mAnimationManagerJni;
+    @Mock private SideUiStateProvider mSideUiStateProvider;
 
     @Captor private ArgumentCaptor<FullscreenManager.Observer> mFullscreenObserverCaptor;
 
     @Before
     public void setup() {
-        GestureNavigationUtilsJni.setInstanceForTesting(mGestureNavigationUtilsJni);
+        BackForwardTransitionAnimationManagerImplJni.setInstanceForTesting(mAnimationManagerJni);
         mActivityScenarioRule.getScenario().onActivity(this::onActivity);
     }
 
     private void onActivity(TestActivity activity) {
-        when(mParentView.getContext()).thenReturn(activity);
+        mParentView = new FrameLayout(activity);
     }
 
     private void initializeHistoryNavigationCoordinator() {
+        initializeHistoryNavigationCoordinator(ObservableSuppliers.alwaysNull(), null);
+    }
+
+    private void initializeHistoryNavigationCoordinator(
+            NullableObservableSupplier<Tab> tabSupplier, BackActionDelegate backActionDelegate) {
         mHistoryNavigationCoordinator =
                 HistoryNavigationCoordinator.create(
                         null,
                         mLifecycleDispatcher,
                         mParentView,
                         null,
-                        ObservableSuppliers.alwaysNull(),
+                        tabSupplier,
                         mInsetObserver,
-                        null,
+                        backActionDelegate,
                         mTouchEventProvider,
                         mFullscreenManager);
+        mHistoryNavigationCoordinator.initNavigationHandler();
     }
 
     @Test
-    @DisabledTest // This needs to be re-worked for Q.
     public void testFullscreenObserver_onEnterAndOnExit() {
         mAutomotiveContextWrapperTestRule.setIsAutomotive(true);
         initializeHistoryNavigationCoordinator();
         verify(mFullscreenManager).addObserver(mFullscreenObserverCaptor.capture());
         NavigationHandler navigationHandler =
                 mHistoryNavigationCoordinator.getNavigationHandlerForTesting();
+        clearInvocations(mTouchEventProvider);
 
         mFullscreenObserverCaptor.getValue().onEnterFullscreen(null, null);
         verify(mTouchEventProvider).removeTouchEventObserver(navigationHandler);
@@ -104,17 +120,14 @@ public class HistoryNavigationCoordinatorUnitTest {
     @Test
     public void testWindowResizing_stopsOnScroll() {
         initializeHistoryNavigationCoordinator();
-        mHistoryNavigationCoordinator.initNavigationHandler();
         NavigationHandler navigationHandler =
                 mHistoryNavigationCoordinator.getNavigationHandlerForTesting();
 
-        when(mParentView.getWidth()).thenReturn(100);
-        when(mParentView.getHeight()).thenReturn(200);
+        mParentView.layout(0, 0, 100, 200);
         navigationHandler.onDown();
 
         // Simulate resizing the window.
-        when(mParentView.getWidth()).thenReturn(150);
-        when(mParentView.getHeight()).thenReturn(200);
+        mParentView.layout(0, 0, 150, 200);
 
         boolean handled = navigationHandler.onScroll(0f, 10f, 0f, 10f, 0f);
         assertTrue(handled);
@@ -122,18 +135,8 @@ public class HistoryNavigationCoordinatorUnitTest {
 
     @Test
     public void testTriggerUi_actionNone_isNoOp() {
-        mHistoryNavigationCoordinator =
-                HistoryNavigationCoordinator.create(
-                        null,
-                        mLifecycleDispatcher,
-                        mParentView,
-                        null,
-                        ObservableSuppliers.createNullable(mTab),
-                        mInsetObserver,
-                        mBackActionDelegate,
-                        mTouchEventProvider,
-                        mFullscreenManager);
-        mHistoryNavigationCoordinator.initNavigationHandler();
+        initializeHistoryNavigationCoordinator(
+                ObservableSuppliers.createNullable(mTab), mBackActionDelegate);
         NavigationHandler navigationHandler =
                 mHistoryNavigationCoordinator.getNavigationHandlerForTesting();
 
@@ -156,18 +159,8 @@ public class HistoryNavigationCoordinatorUnitTest {
 
     @Test
     public void testTriggerUi_forwardSwipe_recordsIncorrectEdgeSwipeEvenIfBackActionNone() {
-        mHistoryNavigationCoordinator =
-                HistoryNavigationCoordinator.create(
-                        null,
-                        mLifecycleDispatcher,
-                        mParentView,
-                        null,
-                        ObservableSuppliers.createNullable(mTab),
-                        mInsetObserver,
-                        mBackActionDelegate,
-                        mTouchEventProvider,
-                        mFullscreenManager);
-        mHistoryNavigationCoordinator.initNavigationHandler();
+        initializeHistoryNavigationCoordinator(
+                ObservableSuppliers.createNullable(mTab), mBackActionDelegate);
         NavigationHandler navigationHandler =
                 mHistoryNavigationCoordinator.getNavigationHandlerForTesting();
 
@@ -187,5 +180,24 @@ public class HistoryNavigationCoordinatorUnitTest {
             assertFalse(navigationHandler.isActive());
             verify(mBackActionDelegate).onGestureUnhandled();
         }
+    }
+
+    @Test
+    public void testSetSideUiStateProvider() {
+        initializeHistoryNavigationCoordinator();
+        when(mSideUiStateProvider.getCurrentSideUiSpecs()).thenReturn(new SideUiSpecs(50, 100));
+
+        mHistoryNavigationCoordinator.setSideUiStateProvider(mSideUiStateProvider);
+        verify(mSideUiStateProvider).addObserver(any());
+
+        // Calling with the same provider again should be a no-op.
+        mHistoryNavigationCoordinator.setSideUiStateProvider(mSideUiStateProvider);
+        verify(mSideUiStateProvider, times(1)).addObserver(any());
+
+        // Setting a different provider should remove the observer from the old one.
+        SideUiStateProvider newProvider = mock(SideUiStateProvider.class);
+        mHistoryNavigationCoordinator.setSideUiStateProvider(newProvider);
+        verify(mSideUiStateProvider).removeObserver(any());
+        verify(newProvider).addObserver(any());
     }
 }

@@ -6,10 +6,16 @@
 
 #include <inttypes.h>
 
-#include <algorithm>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
+#include "base/check.h"
 #include "base/containers/span.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
 #include "base/unguessable_token.h"
@@ -19,17 +25,24 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_audio_frame_options.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/typed_arrays/array_buffer/array_buffer_contents.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
-#include "third_party/blink/renderer/core/workers/worker_global_scope.h"
 #include "third_party/blink/renderer/modules/peerconnection/peer_connection_util.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_audio_frame_delegate.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
-#include "third_party/blink/renderer/platform/bindings/v8_binding.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/webrtc/api/frame_transformer_factory.h"
 #include "third_party/webrtc/api/frame_transformer_interface.h"
+#include "v8/include/v8-isolate.h"
+#include "v8/include/v8-local-handle.h"
+#include "v8/include/v8-value.h"
 
 namespace blink {
 namespace {
@@ -198,9 +211,9 @@ uint32_t RTCEncodedAudioFrame::timestamp() const {
   return delegate_->RtpTimestamp().value_or(0);
 }
 
-DOMArrayBuffer* RTCEncodedAudioFrame::data(ExecutionContext* context) const {
+DOMArrayBuffer* RTCEncodedAudioFrame::data() const {
   if (!frame_data_) {
-    frame_data_ = delegate_->CreateDataBuffer(context->GetIsolate());
+    frame_data_ = delegate_->CreateDataBuffer();
   }
   return frame_data_.Get();
 }
@@ -274,11 +287,11 @@ void RTCEncodedAudioFrame::setMetadata(ExecutionContext* execution_context,
   }
 }
 
-void RTCEncodedAudioFrame::setData(ExecutionContext*, DOMArrayBuffer* data) {
+void RTCEncodedAudioFrame::setData(DOMArrayBuffer* data) {
   frame_data_ = data;
 }
 
-String RTCEncodedAudioFrame::toString(ExecutionContext* context) const {
+String RTCEncodedAudioFrame::toString() const {
   StringBuilder sb;
   sb.Append("RTCEncodedAudioFrame{");
   if (std::optional<uint32_t> rtp_timestamp = delegate_->RtpTimestamp()) {
@@ -287,7 +300,7 @@ String RTCEncodedAudioFrame::toString(ExecutionContext* context) const {
     sb.Append(", ");
   }
   sb.Append("size: ");
-  sb.AppendNumber(data(context) ? data(context)->ByteLength() : 0);
+  sb.AppendNumber(data()->ByteLength());
   sb.Append("}");
   return sb.ToString();
 }

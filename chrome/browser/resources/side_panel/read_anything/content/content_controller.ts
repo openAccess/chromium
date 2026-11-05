@@ -7,13 +7,11 @@ import {loadTimeData} from '//resources/js/load_time_data.js';
 
 import type {VisualBrowserProxy} from '../app/visual_browser_proxy.js';
 import {VisualBrowserProxyImpl} from '../app/visual_browser_proxy.js';
-import type {AudioBrowserProxy} from '../read_aloud/audio_browser_proxy.js';
-import {AudioBrowserProxyImpl} from '../read_aloud/audio_browser_proxy.js';
 import {previousReadHighlightClass} from '../read_aloud/movement.js';
 import {getReadAloudModel} from '../read_aloud/read_aloud_model_browser_proxy.js';
 import {ReadAloudNode} from '../read_aloud/read_aloud_types.js';
 import {SpeechController} from '../read_aloud/speech_controller.js';
-import {isDistilledByReadability, LOG_EMPTY_DELAY_MS} from '../shared/common.js';
+import {isBlockTrackingEnabled, isDistilledByReadability, LOG_EMPTY_DELAY_MS} from '../shared/common.js';
 import {LinkStatus, ReadAnythingLogger} from '../shared/read_anything_logger.js';
 import {getReadingModeTextNodes} from '../shared/tree_traversal.js';
 
@@ -22,6 +20,22 @@ import {ContentBrowserProxyImpl} from './content_browser_proxy.js';
 import {NodeStore} from './node_store.js';
 import {removeExtraneousElementsFrom} from './readability_content_processing.js';
 import {ReadabilityImageClassifier} from './readability_image_classifier.js';
+
+// Sanitizer options for distilled HTML rendered in Reading mode.
+const READABILITY_SET_HTML_OPTIONS: SetHtmlOptions = {
+  sanitizer: {
+    removeElements: [
+      'dialog',
+      'link',
+      'meta',
+      'style',
+      'template',
+      // Also remove <style> elements inside <svg>, which use the SVG namespace.
+      {name: 'style', namespace: 'http://www.w3.org/2000/svg'},
+    ],
+    removeAttributes: ['class', 'data-link', 'popover', 'style'],
+  },
+};
 
 const DATA_PREFIX = 'data-';
 const LINK_DATA_ATTR = 'link';
@@ -57,6 +71,9 @@ const SCREEN2X_TAG_TO_RM_TAG: Map<string, string> = new Map([
   // happens, ensure they're converted to divs so that an interactable
   // element isn't shown on the reading mode panel.
   ['input', 'div'],
+  // List markers are rendered via CSS or synthesized for speech, not as
+  // '<::marker>' elements.
+  ['::marker', 'span'],
 ]);
 
 // Readability doesn't need to replace as many tags as Screen2x. If there's
@@ -66,6 +83,38 @@ const READABILITY_TAG_TO_RM_TAG: Map<string, string> = new Map([
   ['button', 'div'],
   ['details', 'div'],
   ['mark', 'div'],
+  ['i', 'b'],
+  ['em', 'b'],
+]);
+
+const READABILITY_REPLACED_ELEMENTS_SELECTOR =
+    [...READABILITY_TAG_TO_RM_TAG.keys(), ':not(:defined)'].join(',');
+
+// The tags of the elements that are registered as blocks in the NodeStore when
+// block tracking is enabled (see ContentController.buildSubtree_). A block
+// is an element whose text is translated as a unit, and which translation
+// doesn't replace, so it can be used to map selections of translated text to
+// the text in the AX tree. When blocks are nested, text belongs to the
+// innermost block. Only used when building content from the AX tree (see
+// buildSubtree_), not for Readability distillation.
+const SCREEN2X_BLOCK_TAGS: Set<string> = new Set([
+  'BLOCKQUOTE',
+  'CAPTION',
+  'DD',
+  'DIV',
+  'DT',
+  'FIGCAPTION',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'LI',
+  'P',
+  'PRE',
+  'TD',
+  'TH',
 ]);
 
 export interface ContentListener {
@@ -147,19 +196,18 @@ export class ContentController {
       VisualBrowserProxyImpl.getInstance();
   private contentBrowserProxy_: ContentBrowserProxy =
       ContentBrowserProxyImpl.getInstance();
-  private audioBrowserProxy_: AudioBrowserProxy =
-      AudioBrowserProxyImpl.getInstance();
 
   private readonly listeners_: ContentListener[] = [];
   private currentState_: ContentState = CONTENT_STATES[ContentType.NO_CONTENT];
   private previousRootId_?: number;
 
-  // The Trusted Types policy is registered globally on the window object.
-  // The browser only allows a policy name to be registered once per page load.
-  // Making this static ensures that multiple instances of ContentController
-  // (which occur frequently during WebUI test runs) share the same policy
-  // reference and do not trigger a "Policy already exists" TypeError.
-  private static trustedUpdatePolicy: TrustedTypePolicy|undefined;
+  // Whether the browser is waiting for the content to be translated. While
+  // true, content is drawn (so it can be translated) but the state stays
+  // LOADING so it's kept behind the loading screen.
+  private isAwaitingTranslation_: boolean = false;
+  // Whether content was drawn while awaiting translation, so the transition
+  // to HAS_CONTENT was deferred until the translation is shown or fails.
+  private isHidingContentForTranslation_: boolean = false;
 
   // Holds the text nodes extracted from the current rendered distillation.
   // This array ensures that we can link a DOM node back to its AXTree
@@ -172,18 +220,58 @@ export class ContentController {
     this.contentBrowserProxy_.onNodeWillBeDeleted.addListener(
         this.onNodeWillBeDeleted.bind(this));
     this.contentBrowserProxy_.showEmpty.addListener(this.setEmpty.bind(this));
+    this.visualBrowserProxy_.onAwaitingTranslationChanged.addListener(
+        this.setAwaitingTranslation_.bind(this));
+    // The browser may have signaled before this listener was registered.
+    this.isAwaitingTranslation_ =
+        this.visualBrowserProxy_.isAwaitingTranslation();
   }
 
   getState(): ContentState {
     return this.currentState_;
   }
 
+  // Whether content has been drawn but is kept behind the loading screen until
+  // its translation is shown or fails. The state is LOADING while this is true.
+  isHidingContentForTranslation(): boolean {
+    return this.isHidingContentForTranslation_;
+  }
+
   setState(type: ContentType) {
-    if (type === this.currentState_.type) {
+    if (type === ContentType.HAS_CONTENT && this.isAwaitingTranslation_) {
+      // Keep the state matching what's shown: the content is drawn so it can
+      // be translated, but stays behind the loading screen until then.
+      this.applyState_(ContentType.LOADING, /*hideForTranslation=*/ true);
+    } else {
+      this.applyState_(type, /*hideForTranslation=*/ false);
+    }
+  }
+
+  private applyState_(type: ContentType, hideForTranslation: boolean) {
+    // Listeners are also notified when only `hideForTranslation` changes, so
+    // that content hidden behind the loading screen is still drawn.
+    const changed = type !== this.currentState_.type ||
+        hideForTranslation !== this.isHidingContentForTranslation_;
+    this.isHidingContentForTranslation_ = hideForTranslation;
+    if (!changed) {
       return;
     }
     this.currentState_ = CONTENT_STATES[type];
     this.listeners_.forEach(l => l.onContentStateChange());
+  }
+
+  private setAwaitingTranslation_(awaiting: boolean) {
+    if (awaiting === this.isAwaitingTranslation_) {
+      return;
+    }
+    this.isAwaitingTranslation_ = awaiting;
+    if (awaiting && this.hasContent()) {
+      // Content that's already shown goes back behind the loading screen.
+      this.applyState_(ContentType.LOADING, /*hideForTranslation=*/ true);
+    } else if (!awaiting && this.isHidingContentForTranslation_) {
+      // Whether the translation is shown or failed, the content is now shown.
+      this.applyState_(ContentType.HAS_CONTENT, /*hideForTranslation=*/ false);
+    }
   }
 
   hasContent(): boolean {
@@ -193,6 +281,11 @@ export class ContentController {
   isEmpty(): boolean {
     return this.currentState_.type === ContentType.NO_CONTENT ||
         this.currentState_.type === ContentType.NO_SELECTABLE_CONTENT;
+  }
+
+  attemptToRedistill() {
+    this.setEmpty();
+    this.contentBrowserProxy_.onNoTextContent();
   }
 
   setEmpty() {
@@ -226,8 +319,8 @@ export class ContentController {
 
     // When a node is deleted, the read aloud model can get out of sync with the
     // DOM. To be safe, delete the node from the model.
-    if (deletedNode && !this.audioBrowserProxy_.isPhraseHighlightingEnabled()) {
-      getReadAloudModel().onNodeWillBeDeleted?.(deletedNode);
+    if (deletedNode) {
+      getReadAloudModel().onNodeWillBeDeleted(deletedNode);
     }
 
     if (deletedNode) {
@@ -271,7 +364,7 @@ export class ContentController {
       const contentHtml = this.contentBrowserProxy_.getHtmlContent();
 
       if (!contentHtml || !contentHtml.trim()) {
-        this.setEmpty();
+        this.attemptToRedistill();
         return null;
       }
 
@@ -283,9 +376,12 @@ export class ContentController {
         contentFragment.appendChild(titleElement);
       }
 
+      // Parse into a <template> so custom elements defined in the Reading Mode
+      // WebUI are not upgraded before they can be unwrapped below.
+      const template = document.createElement('template');
+      template.setHTML(contentHtml, READABILITY_SET_HTML_OPTIONS);
       const contentContainer = document.createElement('div');
-      contentContainer.innerHTML = this.getTrustedHtml(contentHtml);
-
+      contentContainer.appendChild(template.content);
 
       // Strip single newlines from text nodes to prevent unexpected sentence
       // breaks, as Readability preserves raw HTML newlines which are visually
@@ -301,11 +397,12 @@ export class ContentController {
       }
 
       // Replace tags that shouldn't be interactive or have special behavior
-      // in reading mode. This is similar to what happens in `buildSubtree_`
-      // for Screen2x.
-      for (const [tag, replacement] of READABILITY_TAG_TO_RM_TAG) {
-        const elements = contentContainer.querySelectorAll(tag);
-        for (const element of elements) {
+      // in reading mode, and unwrap any custom elements defined in the Reading
+      // Mode WebUI before connecting to the shadow root.
+      for (const element of contentContainer.querySelectorAll(
+               READABILITY_REPLACED_ELEMENTS_SELECTOR)) {
+        const replacement = READABILITY_TAG_TO_RM_TAG.get(element.localName);
+        if (replacement) {
           const replacementEl = document.createElement(replacement);
           while (element.firstChild) {
             replacementEl.appendChild(element.firstChild);
@@ -314,6 +411,8 @@ export class ContentController {
             replacementEl.setAttribute(attr.name, attr.value);
           }
           element.replaceWith(replacementEl);
+        } else if (customElements.get(element.localName)) {
+          element.replaceWith(...element.childNodes);
         }
       }
 
@@ -328,7 +427,7 @@ export class ContentController {
           this.contentBrowserProxy_.hasValidSelection() && hasImages;
 
       if (!contentContainer.textContent?.trim() && !hasImagesAsContent) {
-        this.setEmpty();
+        this.attemptToRedistill();
         return null;
       }
 
@@ -373,7 +472,7 @@ export class ContentController {
       return null;
     }
 
-    const node = this.buildSubtree_(rootId);
+    const node = this.buildSubtree_(rootId, isBlockTrackingEnabled());
     // If there is no text or images in the tree, do not proceed. The empty
     // state container will show instead.
     // We should only consider images as content when determining whether or
@@ -388,8 +487,7 @@ export class ContentController {
       // content and also not showing the empty page sometimes. In this case,
       // send that info back to the controller.
       if (this.hasContent()) {
-        this.setEmpty();
-        this.contentBrowserProxy_.onNoTextContent();
+        this.attemptToRedistill();
       } else if (!this.isEmpty()) {
         // This is possible when the AXTree returns bad selection data and
         // reading mode believes it has selected content to distll but
@@ -417,8 +515,7 @@ export class ContentController {
   }
 
   onRenderedTextMappingReady() {
-    if (!isDistilledByReadability() ||
-        !this.contentBrowserProxy_.isReadabilitySelectTextEnabled()) {
+    if (!isDistilledByReadability()) {
       return;
     }
 
@@ -487,29 +584,36 @@ export class ContentController {
         this.listeners_.forEach(l => l.onNewPageDrawn());
       }
       this.nodeStore_.estimateWordsSeenWithDelay();
-      // Initialize the speech tree with the new content.
-      if (!this.audioBrowserProxy_.isPhraseHighlightingEnabled()) {
-        const contextNode = ReadAloudNode.create(rootNode);
-        if (contextNode) {
-          // Don't initialize until after drawing otherwise, the DOM nodes might
-          // not yet exist in the tree.
-          getReadAloudModel().init(contextNode);
-        }
-      }
+      // Initialize the speech tree with the new content. Don't initialize
+      // until after drawing. Otherwise, the DOM nodes might not yet exist in
+      // the tree.
+      // TODO(crbug.com/575459750): Don't let Read Aloud setup block
+      // distillation or other Reading mode work.
+      getReadAloudModel().init(ReadAloudNode.create(rootNode));
     });
   }
 
-  private buildSubtree_(nodeId: number): Node {
+  // `shouldTrackBlocks` is whether to register blocks and their text in the
+  // NodeStore, so that selections of translated content can be synced with the
+  // main panel. When tracking blocks, `blockId` is the AXNodeID of the
+  // innermost block containing the node, if any, and `parentId` is the
+  // AXNodeID of the node's parent, if any. Text nodes that aren't in a block
+  // are grouped by their parent instead.
+  private buildSubtree_(
+      nodeId: number, shouldTrackBlocks: boolean, blockId?: number,
+      parentId?: number): Node {
     let htmlTag = this.contentBrowserProxy_.getHtmlTag(nodeId);
     const dataAttributes = new Map<string, string>();
 
     // Text nodes do not have an html tag.
     if (!htmlTag.length) {
-      return this.createTextNode_(nodeId);
+      return this.createTextNode_(
+          nodeId, shouldTrackBlocks ? blockId ?? parentId : undefined);
     }
 
     // For Google Docs, we extract text from Annotated Canvas. The Annotated
-    // Canvas elements with text are leaf nodes with <rect> html tag.
+    // Canvas elements with text are leaf nodes with <rect> html tag. Blocks
+    // are only tracked for PDFs, so there's no block to pass here.
     if (this.contentBrowserProxy_.isGoogleDocs() &&
         this.contentBrowserProxy_.isLeafNode(nodeId)) {
       return this.createTextNode_(nodeId);
@@ -522,10 +626,16 @@ export class ContentController {
     const url = this.contentBrowserProxy_.getUrl(nodeId);
     if (!this.shouldShowLinks_() && htmlTag === LINKS_ON_TAG) {
       htmlTag = LINKS_OFF_TAG;
-      dataAttributes.set(LINK_DATA_ATTR, url ?? '');
+      if (url) {
+        dataAttributes.set(LINK_DATA_ATTR, url);
+      }
     }
 
     const element = document.createElement(htmlTag);
+    if (element instanceof HTMLLIElement && parentId !== undefined &&
+        this.contentBrowserProxy_.getHtmlTag(parentId) === 'ol') {
+      this.setListMarker_(element, nodeId);
+    }
     const htmlId = this.contentBrowserProxy_.getHtmlId(nodeId);
     if (htmlId) {
       element.id = htmlId;
@@ -535,6 +645,9 @@ export class ContentController {
       element.dataset[attr] = val;
     }
     this.nodeStore_.setDomNode(element, nodeId);
+    if (shouldTrackBlocks && SCREEN2X_BLOCK_TAGS.has(element.tagName)) {
+      blockId = nodeId;
+    }
     const direction = this.contentBrowserProxy_.getTextDirection(nodeId);
     if (direction) {
       element.setAttribute('dir', direction);
@@ -548,11 +661,6 @@ export class ContentController {
       element.style.display = display;
       element.classList.add('downloaded-image');
     }
-
-    if (element.nodeName === 'FIGURE') {
-      element.style.display = display;
-    }
-
     if (url && element.nodeName === 'A') {
       this.setLinkAttributes_(element, url, nodeId);
     }
@@ -561,15 +669,43 @@ export class ContentController {
       element.setAttribute('lang', language);
     }
 
-    this.appendChildSubtrees_(element, nodeId);
+    this.appendChildSubtrees_(element, nodeId, shouldTrackBlocks, blockId);
+
+    // Check after the children are built so the figure's contents are in the
+    // node store.
+    if (element.nodeName === 'FIGURE') {
+      const showFigure = this.visualBrowserProxy_.isImagesEnabled() ||
+          this.isFigureSelected_(element);
+      element.style.display = showFigure ? '' : 'none';
+    }
     return element;
   }
 
-  private appendChildSubtrees_(node: Node, nodeId: number) {
+  private appendChildSubtrees_(
+      node: Node, nodeId: number, shouldTrackBlocks: boolean,
+      blockId?: number) {
     for (const childNodeId of this.contentBrowserProxy_.getChildren(nodeId)) {
-      const childNode = this.buildSubtree_(childNodeId);
+      const childNode =
+          this.buildSubtree_(childNodeId, shouldTrackBlocks, blockId, nodeId);
       node.appendChild(childNode);
     }
+  }
+
+  // Copies the source marker (e.g. "5." or "a.") onto the list item so it is
+  // shown and spoken as on the page, rather than renumbered from 1 in decimal.
+  private setListMarker_(li: HTMLLIElement, nodeId: number) {
+    const markerId = this.contentBrowserProxy_.getChildren(nodeId).find(
+        childId =>
+            this.contentBrowserProxy_.getHtmlTag(childId) === '::marker');
+    if (markerId === undefined) {
+      return;
+    }
+    const marker = this.contentBrowserProxy_.getTextContent(markerId).trim();
+    if (!marker) {
+      return;
+    }
+    li.dataset['marker'] = marker;
+    li.style.listStyleType = JSON.stringify(`${marker} `);
   }
 
   private safeParseUrl_(url: string, base?: string): URL|null {
@@ -651,34 +787,47 @@ export class ContentController {
     };
   }
 
-  private createTextNode_(nodeId: number): Node {
+  // `blockId` is the AXNodeID of the block that the text node belongs to. It's
+  // only set when tracking blocks, and the text is registered in the block if
+  // it's set. See buildSubtree_.
+  private createTextNode_(nodeId: number, blockId?: number): Node {
     const textContent = this.contentBrowserProxy_.getTextContent(nodeId);
     const textNode = document.createTextNode(textContent);
     this.nodeStore_.setDomNode(textNode, nodeId);
+    if (blockId !== undefined) {
+      this.nodeStore_.registerTextInBlock(nodeId, blockId, textContent.length);
+    }
     const isOverline = this.contentBrowserProxy_.isOverline(nodeId);
     const shouldBold = this.contentBrowserProxy_.shouldBold(nodeId);
+    const isPdf = this.visualBrowserProxy_.isPdf();
+    const isSuperscript =
+        isPdf && this.contentBrowserProxy_.isSuperscript(nodeId);
+    const isSubscript = isPdf && !isSuperscript &&
+        this.contentBrowserProxy_.isSubscript(nodeId);
 
-    // When creating text nodes, save the first text node id. We need this
-    // node id to call InitAXPosition in playSpeech. If it's not saved here,
-    // we have to retrieve it through a DOM search such as createTreeWalker,
-    // which can be computationally expensive.
-    // This needs to be done after the text node is created and added to the
-    // node store.
-    if (this.audioBrowserProxy_.isPhraseHighlightingEnabled()) {
-      this.speechController_.initializeSpeechTree(textNode);
-    }
-
-    if (!shouldBold && !isOverline) {
+    if (!shouldBold && !isOverline && !isSuperscript && !isSubscript) {
       return textNode;
     }
 
-    const htmlTag = shouldBold ? 'b' : 'span';
-    const parentElement = document.createElement(htmlTag);
-    if (isOverline) {
-      parentElement.style.textDecoration = 'overline';
+    let node: Node = textNode;
+    if (shouldBold || isOverline) {
+      const htmlTag = shouldBold ? 'b' : 'span';
+      const parentElement = document.createElement(htmlTag);
+      if (isOverline) {
+        parentElement.style.textDecoration = 'overline';
+      }
+      parentElement.appendChild(node);
+      node = parentElement;
     }
-    parentElement.appendChild(textNode);
-    return parentElement;
+    // Superscripts and subscripts are wrapped rather than given an html tag by
+    // getHtmlTag so that the text node itself, and not an element, stays mapped
+    // to the AXNode.
+    if (isSuperscript || isSubscript) {
+      const supOrSub = document.createElement(isSuperscript ? 'sup' : 'sub');
+      supOrSub.appendChild(node);
+      node = supOrSub;
+    }
+    return node;
   }
 
   updateLinks(shadowRoot?: ShadowRoot) {
@@ -752,11 +901,15 @@ export class ContentController {
 
     // Set the url information on the new element.
     if (showLinks) {
-      const url = elemToReplace.dataset[LINK_DATA_ATTR] ?? '';
-      this.setLinkAttributes_(newElem, url, nodeId);
+      const url = elemToReplace.dataset[LINK_DATA_ATTR];
+      if (url) {
+        this.setLinkAttributes_(newElem, url, nodeId);
+      }
     } else {
-      const url = elemToReplace.getAttribute('href') ?? '';
-      newElem.dataset[LINK_DATA_ATTR] = url;
+      const url = elemToReplace.getAttribute('href');
+      if (url) {
+        newElem.dataset[LINK_DATA_ATTR] = url;
+      }
     }
 
     // Remove the highlighting formatting when showing links, and add it back
@@ -814,27 +967,76 @@ export class ContentController {
         colorSpaceConversion: 'none',
         premultiplyAlpha: 'premultiply',
       });
-      context.drawImage(bitmap, 0, 0);
-      this.listeners_.forEach(l => l.onContentChange());
+      try {
+        // Return early if content was cleared or redistilled while the image
+        // was decoding. Otherwise, listeners would be notified to recalculate
+        // text positions for unchanged content.
+        if (this.nodeStore_.getDomNode(nodeId) !== element) {
+          return;
+        }
+        context.drawImage(bitmap, 0, 0);
+        this.listeners_.forEach(l => l.onContentChange());
+      } finally {
+        bitmap.close();
+      }
     }
   }
 
   onRenderedTextBlocksAvailable(container: HTMLElement) {
-    if (!isDistilledByReadability() ||
-        !this.contentBrowserProxy_.isReadabilitySelectTextEnabled()) {
+    const renderedTextNodes = getReadingModeTextNodes(container);
+
+    // Final check to ensure there are actually visible text nodes.
+    // Otherwise, a blank screen may be shown instead of the empty state
+    // page. Only attempt to redistill if Readability content is shown. If
+    // updateContent already found no text, it has already requested a
+    // redistill.
+    this.setEmptyIfNoTextNodesAvailable(
+        renderedTextNodes,
+        /*shouldAttemptToRedistill=*/ isDistilledByReadability() &&
+            this.hasContent());
+
+    if (!isDistilledByReadability() || !this.hasContent()) {
       return;
     }
 
     // Capture the specific node instances currently rendered in the UI.
     // We store them in an array so that the index becomes the identifier that
     // links this node to its AXTree mapping in the renderer.
-    this.renderedTextNodes_ = getReadingModeTextNodes(container);
+    this.renderedTextNodes_ = renderedTextNodes;
 
     // Extract the raw text content from each node to send to the mapping
     // algorithm in the renderer.
     const blocks = this.renderedTextNodes_.map(n => n.textContent || '');
 
     this.contentBrowserProxy_.onRenderedTextBlocksAvailable(blocks);
+  }
+
+  setEmptyIfNoTextNodesAvailable(
+      nodes: Node[], shouldAttemptToRedistill: boolean) {
+    if (!nodes || nodes.length === 0) {
+      if (shouldAttemptToRedistill) {
+        this.attemptToRedistill();
+      } else {
+        this.setEmpty();
+      }
+    }
+  }
+
+  onImagesVisibilityChanged(container: HTMLElement, shadowRoot?: ShadowRoot) {
+    this.updateImages(shadowRoot);
+
+    // Toggling the images toggle may mean that reading mode is going from
+    // no content to content or from content to no content (e.g. on pages
+    // with no text outside of image captions), so recompute if there's
+    // distillable content each time Images are toggled. This is called in
+    // a wrapper for updateImages instead of in updateImages directly to
+    // avoid creating new tree walkers each time updateImages is called.
+    // Reading mode should not redistill from an image toggle change, even if
+    // a different distillation method may be able to show content and the
+    // current distillation method cannot.
+    this.setEmptyIfNoTextNodesAvailable(
+        getReadingModeTextNodes(container),
+        /*shouldAttemptToRedistill=*/ false);
   }
 
   updateImages(shadowRoot?: ShadowRoot) {
@@ -857,8 +1059,8 @@ export class ContentController {
       this.speechController_.resetForNewContent();
       const container = shadowRoot.getElementById('container') || shadowRoot;
       this.updateReadAloudState(container as Node);
-    } else if (!this.audioBrowserProxy_.isPhraseHighlightingEnabled()) {
-      getReadAloudModel().resetModel?.();
+    } else {
+      getReadAloudModel().resetModel();
     }
   }
 
@@ -872,7 +1074,8 @@ export class ContentController {
       return;
     }
 
-    const anchors = Array.from(root.querySelectorAll<HTMLAnchorElement>('a'));
+    const anchors = Array.from(root.querySelectorAll<HTMLElement>(
+        `${LINKS_ON_TAG}, ${LINKS_OFF_SELECTOR}`));
     const originalAnchors: Record<string, AxTreeAnchorMetadata[]> =
         this.contentBrowserProxy_.getAxTreeAnchors();
     let successCount = 0;
@@ -881,7 +1084,8 @@ export class ContentController {
     let tooManyMatchesCount = 0;
     for (const anchor of anchors) {
       // Use raw href attribute to match axTreeAnchors keys correctly
-      const url = anchor.getAttribute('href') || '';
+      const url =
+          anchor.getAttribute('href') || anchor.dataset[LINK_DATA_ATTR] || '';
       if (!url) {
         noHrefCount++;
         this.transformLinkContainer_(anchor, false);
@@ -891,6 +1095,7 @@ export class ContentController {
       const options = originalAnchors[url];
       if (!options) {
         noMatchCount++;
+        anchor.removeAttribute('href');
         this.transformLinkContainer_(anchor, false);
         continue;
       }
@@ -908,6 +1113,7 @@ export class ContentController {
       if (matchIndex === null || matchIndex >= options.length) {
         tooManyMatchesCount++;
         // Convert the anchor to text if no match is found.
+        anchor.removeAttribute('href');
         this.transformLinkContainer_(anchor, false);
         continue;
       }
@@ -928,7 +1134,9 @@ export class ContentController {
 
       const nodeID = match.axId;
       this.nodeStore_.setDomNode(anchor, nodeID);
-      this.setLinkAttributes_(anchor, url, nodeID);
+      if (anchor.nodeName === 'A') {
+        this.setLinkAttributes_(anchor, url, nodeID);
+      }
       successCount++;
     }
 
@@ -943,8 +1151,7 @@ export class ContentController {
   }
 
   private findStrictMatch_(
-      domNode: HTMLAnchorElement, candidates: AxTreeAnchorMetadata[]): number
-      |null {
+      domNode: HTMLElement, candidates: AxTreeAnchorMetadata[]): number|null {
     let bestCandidateIndex: number|null = null;
     let highestScore = -1;
     let tieDetected = false;
@@ -986,7 +1193,7 @@ export class ContentController {
   //    links (e.g., "Read More").
   // 4. Attributes (Title/Target): Micro tie-breakers for edge cases.
   private calculateMatchScore_(
-      domNode: HTMLAnchorElement, axLink: AxTreeAnchorMetadata): number {
+      domNode: HTMLElement, axLink: AxTreeAnchorMetadata): number {
     if (!domNode || !axLink) {
       return 0;
     }
@@ -1035,12 +1242,27 @@ export class ContentController {
     if (axLink.title && domNode.title && axLink.title === domNode.title) {
       score += 7;
     }
-    if (axLink.target && domNode.target &&
-        axLink.target.toLowerCase() === domNode.target.toLowerCase()) {
+    const target = domNode.getAttribute('target');
+    if (axLink.target && target &&
+        axLink.target.toLowerCase() === target.toLowerCase()) {
       score += 3;
     }
 
     return score;
+  }
+
+  // Returns true if the selection starts or ends inside the figure. This
+  // matches when the model switches to selection mode for figure selections.
+  private isFigureSelected_(figure: HTMLElement): boolean {
+    if (!this.contentBrowserProxy_.hasValidSelection()) {
+      return false;
+    }
+    const startNode =
+        this.nodeStore_.getDomNode(this.contentBrowserProxy_.getStartNodeId());
+    const endNode =
+        this.nodeStore_.getDomNode(this.contentBrowserProxy_.getEndNodeId());
+    return (!!startNode && figure.contains(startNode)) ||
+        (!!endNode && figure.contains(endNode));
   }
 
   private updateImagesForAxTree_(shadowRoot: ParentNode): boolean {
@@ -1052,8 +1274,12 @@ export class ContentController {
     // on canvases.
     const canvases = shadowRoot.querySelectorAll<HTMLElement>('canvas, figure');
     for (const canvas of canvases) {
-      canvas.style.display = imagesEnabled ? '' : 'none';
-      this.markTextNodesHiddenIfImagesHidden_(canvas);
+      const show = imagesEnabled ||
+          (canvas.nodeName === 'FIGURE' && this.isFigureSelected_(canvas));
+      canvas.style.display = show ? '' : 'none';
+      if (!show) {
+        this.markTextNodesHiddenIfImagesHidden_(canvas);
+      }
     }
     return canvases.length > 0;
   }
@@ -1102,25 +1328,6 @@ export class ContentController {
         }
       });
     });
-  }
-
-  private getTrustedHtml(html: string): TrustedHTML {
-    if (!ContentController.trustedUpdatePolicy || !isDistilledByReadability()) {
-      return window.trustedTypes!.emptyHTML;
-    }
-    return ContentController.trustedUpdatePolicy.createHTML(html);
-  }
-
-  configureTrustedTypes(): void {
-    if (!window.trustedTypes || ContentController.trustedUpdatePolicy) {
-      return;
-    }
-    ContentController.trustedUpdatePolicy =
-        window.trustedTypes.createPolicy('reader-mode-policy', {
-          createHTML: (s: string) => s,
-          createScript: () => '',
-          createScriptURL: () => '',
-        });
   }
 
   static getInstance(): ContentController {

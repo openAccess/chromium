@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <optional>
@@ -354,6 +355,140 @@ TEST_F(FileHandlersFromManifestTest, Basic) {
   }
 }
 
+TEST_F(FileHandlersFromManifestTest,
+       MultipleValidHandlersWithMultipleAcceptAndExtensions) {
+  std::vector<blink::mojom::ManifestFileHandlerPtr> manifest_file_handlers;
+
+  // Handler 1: Images with multiple MIME types and multiple extensions.
+  {
+    auto file_handler = blink::mojom::ManifestFileHandler::New();
+    file_handler->action = MakeActionUrl(0);
+    file_handler->name = u"Image Handler";
+    file_handler->accept[u"image/png"] = {u".png"};
+    file_handler->accept[u"image/jpeg"] = {u".jpg", u".jpeg"};
+    manifest_file_handlers.push_back(std::move(file_handler));
+  }
+
+  // Handler 2: Documents with a single MIME type.
+  {
+    auto file_handler = blink::mojom::ManifestFileHandler::New();
+    file_handler->action = MakeActionUrl(1);
+    file_handler->name = u"PDF Handler";
+    file_handler->accept[u"application/pdf"] = {u".pdf"};
+    manifest_file_handlers.push_back(std::move(file_handler));
+  }
+
+  auto web_app_info = CreateWebAppInstallInfo();
+  PopulateFileHandlerInfoFromManifest(manifest_file_handlers, GetStartUrl(),
+                                      &web_app_info);
+  const apps::FileHandlers& file_handlers = web_app_info.file_handlers;
+  ASSERT_EQ(file_handlers.size(), 2U);
+
+  EXPECT_EQ(file_handlers[0].action, MakeActionUrl(0));
+  EXPECT_EQ(file_handlers[0].display_name, u"Image Handler");
+  ASSERT_EQ(file_handlers[0].accept.size(), 2U);
+
+  EXPECT_EQ(file_handlers[1].action, MakeActionUrl(1));
+  EXPECT_EQ(file_handlers[1].display_name, u"PDF Handler");
+  ASSERT_EQ(file_handlers[1].accept.size(), 1U);
+  EXPECT_EQ(file_handlers[1].accept[0].mime_type, "application/pdf");
+  EXPECT_EQ(file_handlers[1].accept[0].file_extensions.size(), 1U);
+  EXPECT_EQ(*file_handlers[1].accept[0].file_extensions.begin(), ".pdf");
+}
+
+TEST_F(FileHandlersFromManifestTest, InvalidMimeTypesAndExtensions) {
+  std::vector<blink::mojom::ManifestFileHandlerPtr> manifest_file_handlers;
+
+  // Invalid MIME type: x-scheme-handler/mailto
+  {
+    auto file_handler = blink::mojom::ManifestFileHandler::New();
+    file_handler->action = MakeActionUrl(0);
+    file_handler->name = u"Invalid1";
+    file_handler->accept[u"x-scheme-handler/mailto"] = {u".eml"};
+    manifest_file_handlers.push_back(std::move(file_handler));
+  }
+
+  // Invalid MIME type: not a valid format (missing slash)
+  {
+    auto file_handler = blink::mojom::ManifestFileHandler::New();
+    file_handler->action = MakeActionUrl(1);
+    file_handler->name = u"Invalid2";
+    file_handler->accept[u"image_png"] = {u".png"};
+    manifest_file_handlers.push_back(std::move(file_handler));
+  }
+
+  // Invalid extension: missing leading dot
+  {
+    auto file_handler = blink::mojom::ManifestFileHandler::New();
+    file_handler->action = MakeActionUrl(2);
+    file_handler->name = u"Invalid3";
+    file_handler->accept[u"image/png"] = {u"png"};
+    manifest_file_handlers.push_back(std::move(file_handler));
+  }
+
+  // Invalid extension: single dot only
+  {
+    auto file_handler = blink::mojom::ManifestFileHandler::New();
+    file_handler->action = MakeActionUrl(3);
+    file_handler->name = u"Invalid4";
+    file_handler->accept[u"image/png"] = {u"."};
+    manifest_file_handlers.push_back(std::move(file_handler));
+  }
+
+  auto web_app_info = CreateWebAppInstallInfo();
+  PopulateFileHandlerInfoFromManifest(manifest_file_handlers, GetStartUrl(),
+                                      &web_app_info);
+  // Verify that all invalid file handlers were skipped and no file handlers
+  // were added.
+  EXPECT_TRUE(web_app_info.file_handlers.empty());
+}
+
+TEST_F(FileHandlersFromManifestTest, MixedValidAndInvalidFileHandlers) {
+  std::vector<blink::mojom::ManifestFileHandlerPtr> manifest_file_handlers;
+
+  // File handler containing a mix of valid and invalid accept entries /
+  // extensions:
+  // - "x-scheme-handler/https": invalid MIME type, should be dropped.
+  // - "image/png": valid MIME type with valid (".png") and invalid
+  // ("invalid_ext", ".") extensions.
+  // - "text/plain": valid MIME type with valid (".txt") extension.
+  {
+    auto file_handler = blink::mojom::ManifestFileHandler::New();
+    file_handler->action = MakeActionUrl(0);
+    file_handler->name = u"Mixed";
+    file_handler->accept[u"x-scheme-handler/https"] = {u".html"};
+    file_handler->accept[u"image/png"] = {u"invalid_ext", u".", u".png"};
+    file_handler->accept[u"text/plain"] = {u".txt"};
+    manifest_file_handlers.push_back(std::move(file_handler));
+  }
+
+  auto web_app_info = CreateWebAppInstallInfo();
+  PopulateFileHandlerInfoFromManifest(manifest_file_handlers, GetStartUrl(),
+                                      &web_app_info);
+  const apps::FileHandlers& file_handlers = web_app_info.file_handlers;
+  ASSERT_EQ(file_handlers.size(), 1U);
+  EXPECT_EQ(file_handlers[0].action, MakeActionUrl(0));
+  ASSERT_EQ(file_handlers[0].accept.size(), 2U);
+
+  // Find image/png accept entry. Note that only one extension (".png") is
+  // retained; the invalid extensions ("invalid_ext" missing a leading dot and
+  // "." having length <= 1) are filtered out.
+  auto img_it = std::ranges::find(file_handlers[0].accept, "image/png",
+                                  &apps::FileHandler::AcceptEntry::mime_type);
+  ASSERT_NE(img_it, file_handlers[0].accept.end());
+  EXPECT_EQ(img_it->file_extensions.size(), 1U);
+  EXPECT_EQ(*img_it->file_extensions.begin(), ".png");
+  EXPECT_FALSE(img_it->file_extensions.contains("invalid_ext"));
+  EXPECT_FALSE(img_it->file_extensions.contains("."));
+
+  // Find text/plain accept entry
+  auto txt_it = std::ranges::find(file_handlers[0].accept, "text/plain",
+                                  &apps::FileHandler::AcceptEntry::mime_type);
+  ASSERT_NE(txt_it, file_handlers[0].accept.end());
+  EXPECT_EQ(txt_it->file_extensions.size(), 1U);
+  EXPECT_EQ(*txt_it->file_extensions.begin(), ".txt");
+}
+
 // Test duplicate icon download URLs from the manifest.
 TEST(WebAppInstallUtils, DuplicateIconDownloadURLs) {
   auto web_app_info = CreateWebAppInstallInfo();
@@ -450,6 +585,142 @@ TEST(WebAppInstallUtils, DuplicateIconDownloadURLs) {
     EXPECT_EQ(1u, download_urls.count(IconUrlWithSize::CreateForUnspecifiedSize(
                       GURL(url_str))));
   }
+}
+
+TEST(WebAppInstallUtils, GetValidIconUrlsToDownload_RequestsDeclaredSizes) {
+  const GURL kSizedIconUrl("https://www.example.com/icon.svg");
+  const GURL kUnsizedIconUrl("https://www.example.com/icon.png");
+  const GURL kShortcutIconUrl("https://www.example.com/shortcut.svg");
+
+  auto web_app_info = CreateWebAppInstallInfo();
+  apps::IconInfo sized_icon;
+  sized_icon.url = kSizedIconUrl;
+  sized_icon.square_size_px = 192;
+  web_app_info.manifest_icons.push_back(sized_icon);
+  apps::IconInfo unsized_icon;
+  unsized_icon.url = kUnsizedIconUrl;
+  web_app_info.manifest_icons.push_back(unsized_icon);
+
+  WebAppShortcutsMenuItemInfo shortcut_item;
+  WebAppShortcutsMenuItemInfo::Icon shortcut_icon;
+  shortcut_icon.url = kShortcutIconUrl;
+  shortcut_icon.square_size_px = 96;
+  shortcut_item.SetShortcutIconInfosForPurpose(IconPurpose::ANY,
+                                               {shortcut_icon});
+  web_app_info.shortcuts_menu_item_infos.push_back(std::move(shortcut_item));
+
+  IconUrlSizeSet download_urls = GetValidIconUrlsToDownload(web_app_info);
+
+  EXPECT_THAT(
+      download_urls,
+      testing::UnorderedElementsAre(
+          IconUrlWithSize::Create(kSizedIconUrl, gfx::Size(192, 192)),
+          IconUrlWithSize::CreateForUnspecifiedSize(kUnsizedIconUrl),
+          IconUrlWithSize::Create(kShortcutIconUrl, gfx::Size(96, 96))));
+}
+
+// Raster icons are not rasterized at the requested size, so declared sizes
+// must not turn into several downloads of the same URL.
+TEST(WebAppInstallUtils, GetValidIconUrlsToDownload_RasterUrlOnce) {
+  const GURL raster_url("https://www.example.com/icon.ico");
+  auto web_app_info = CreateWebAppInstallInfo();
+  for (int size : {48, 256}) {
+    apps::IconInfo icon;
+    icon.url = raster_url;
+    icon.square_size_px = size;
+    web_app_info.manifest_icons.push_back(icon);
+  }
+  apps::IconInfo trusted_icon;
+  trusted_icon.url = raster_url;
+  trusted_icon.square_size_px = 256;
+  web_app_info.trusted_icons.push_back(trusted_icon);
+
+  EXPECT_THAT(GetValidIconUrlsToDownload(web_app_info),
+              testing::ElementsAre(
+                  IconUrlWithSize::CreateForUnspecifiedSize(raster_url)));
+}
+
+// `GetTrustedIconsFromManifest()` records `kIconSizeForSVGNoIntrinsicSize` for
+// a "sizes": "any" icon, which must not add a second download of a raster icon
+// that is already requested without a size.
+TEST(WebAppInstallUtils, GetValidIconUrlsToDownload_RasterSizeAnyOnce) {
+  const GURL raster_url("https://www.example.com/icon?format=png");
+  auto web_app_info = CreateWebAppInstallInfo();
+  apps::IconInfo manifest_icon;
+  manifest_icon.url = raster_url;
+  manifest_icon.square_size_px = 0;
+  web_app_info.manifest_icons.push_back(manifest_icon);
+  apps::IconInfo trusted_icon;
+  trusted_icon.url = raster_url;
+  trusted_icon.square_size_px = 1024;
+  web_app_info.trusted_icons.push_back(trusted_icon);
+
+  EXPECT_THAT(GetValidIconUrlsToDownload(web_app_info),
+              testing::ElementsAre(
+                  IconUrlWithSize::CreateForUnspecifiedSize(raster_url)));
+}
+
+TEST(WebAppInstallUtils, GetValidIconUrlsToDownload_SizeAnySkipsUnspecified) {
+  const GURL svg_url("https://www.example.com/icon?format=svg");
+  auto web_app_info = CreateWebAppInstallInfo();
+  web_app_info.svg_icon_urls.insert(svg_url);
+  apps::IconInfo icon;
+  icon.url = svg_url;
+  icon.square_size_px = 0;
+  web_app_info.manifest_icons.push_back(icon);
+  web_app_info.icons_with_size_any.manifest_icons[IconPurpose::ANY] = svg_url;
+
+  const IconUrlSizeSet urls = GetValidIconUrlsToDownload(web_app_info);
+  EXPECT_FALSE(
+      urls.contains(IconUrlWithSize::CreateForUnspecifiedSize(svg_url)));
+  EXPECT_TRUE(
+      urls.contains(IconUrlWithSize::Create(svg_url, gfx::Size(16, 16))));
+}
+
+// An SVG entry declaring both "any" and an explicit size must still be
+// requested at that explicit size.
+TEST(WebAppInstallUtils, GetValidIconUrlsToDownload_SizeAnyKeepsExplicitSize) {
+  const GURL svg_url("https://www.example.com/icon.svg");
+  auto web_app_info = CreateWebAppInstallInfo();
+  web_app_info.svg_icon_urls.insert(svg_url);
+  for (int size : {0, 256}) {
+    apps::IconInfo icon;
+    icon.url = svg_url;
+    icon.square_size_px = size;
+    web_app_info.manifest_icons.push_back(icon);
+  }
+  web_app_info.icons_with_size_any.manifest_icons[IconPurpose::ANY] = svg_url;
+  web_app_info.icons_with_size_any.manifest_icon_provided_sizes.emplace(256,
+                                                                        256);
+
+  const IconUrlSizeSet urls = GetValidIconUrlsToDownload(web_app_info);
+  EXPECT_TRUE(
+      urls.contains(IconUrlWithSize::Create(svg_url, gfx::Size(256, 256))));
+  EXPECT_FALSE(
+      urls.contains(IconUrlWithSize::CreateForUnspecifiedSize(svg_url)));
+}
+
+// Sizes above the icon size limit are discarded after download, so they must
+// not be rasterized in the first place.
+TEST(WebAppInstallUtils, GetValidIconUrlsToDownload_HomeTabSvgSizeLimit) {
+  const GURL svg_url("https://www.example.com/home_tab.svg");
+  auto web_app_info = CreateWebAppInstallInfo();
+
+  TabStrip tab_strip;
+  blink::Manifest::HomeTabParams home_tab_params;
+  blink::Manifest::ImageResource home_icon;
+  home_icon.src = svg_url;
+  home_icon.purpose.push_back(Purpose::ANY);
+  home_icon.sizes = {gfx::Size(32, 32), gfx::Size(2048, 2048)};
+  home_tab_params.icons.push_back(std::move(home_icon));
+  tab_strip.home_tab = std::move(home_tab_params);
+  web_app_info.tab_strip = std::move(tab_strip);
+
+  const IconUrlSizeSet urls = GetValidIconUrlsToDownload(web_app_info);
+  EXPECT_TRUE(
+      urls.contains(IconUrlWithSize::Create(svg_url, gfx::Size(32, 32))));
+  EXPECT_FALSE(
+      urls.contains(IconUrlWithSize::Create(svg_url, gfx::Size(2048, 2048))));
 }
 
 TEST(WebAppInstallUtils, SetWebAppManifestFields_Summary) {
@@ -581,6 +852,184 @@ TEST(WebAppInstallUtils, SetWebAppManifestFields_DisplayOverride) {
   EXPECT_THAT(
       web_app->display_mode_override(),
       testing::ElementsAre(DisplayOverride::CreateUnframed({foo_pattern})));
+}
+
+TEST(WebAppInstallUtils, PopulateProductIcons_NonSquareIconsResizedToSquare) {
+  SkBitmap non_square_bitmap;
+  non_square_bitmap.allocN32Pixels(120, 80);
+  non_square_bitmap.eraseColor(SK_ColorGREEN);
+
+  const GURL kIconUrl("https://www.example.com/icon.png");
+  IconsMap icons_map;
+  icons_map.emplace(kIconUrl, std::vector<SkBitmap>{non_square_bitmap});
+
+  auto web_app_info = CreateWebAppInstallInfo();
+  web_app_info.title = u"App Name";
+  apps::IconInfo info;
+  info.url = kIconUrl;
+  info.purpose = apps::IconInfo::Purpose::kAny;
+  info.square_size_px = 96;
+  web_app_info.manifest_icons.push_back(info);
+
+  PopulateProductIcons(&web_app_info, &icons_map);
+
+  EXPECT_FALSE(web_app_info.is_generated_icon);
+  EXPECT_TRUE(ContainsOneIconOfEachSize(web_app_info.icon_bitmaps.any));
+  ASSERT_TRUE(web_app_info.icon_bitmaps.any.contains(96));
+  EXPECT_EQ(SK_ColorTRANSPARENT,
+            web_app_info.icon_bitmaps.any.at(96).getColor(0, 0));
+  for (const auto& [size, bitmap] : web_app_info.icon_bitmaps.any) {
+    EXPECT_EQ(size, bitmap.width());
+    EXPECT_EQ(size, bitmap.height());
+    EXPECT_EQ(SK_ColorGREEN, bitmap.getColor(size / 2, size / 2));
+  }
+}
+
+TEST(WebAppInstallUtils,
+     PopulateTrustedIconBitmaps_NonSquareIconsResizedToSquare) {
+  SkBitmap non_square_bitmap;
+  non_square_bitmap.allocN32Pixels(200, 100);
+  non_square_bitmap.eraseColor(SK_ColorBLUE);
+
+  const GURL kIconUrl("https://www.example.com/trusted_icon.svg");
+  IconsMap icons_map;
+  icons_map.emplace(kIconUrl, std::vector<SkBitmap>{non_square_bitmap});
+
+  auto web_app_info = CreateWebAppInstallInfo();
+  web_app_info.title = u"App Name";
+  apps::IconInfo trusted_info;
+  trusted_info.url = kIconUrl;
+  trusted_info.purpose = apps::IconInfo::Purpose::kAny;
+  trusted_info.square_size_px = 1024;
+  web_app_info.trusted_icons.push_back(trusted_info);
+
+  PopulateTrustedIconBitmaps(web_app_info, icons_map);
+
+  EXPECT_FALSE(web_app_info.trusted_icon_bitmaps.any.empty());
+  ASSERT_TRUE(web_app_info.trusted_icon_bitmaps.any.contains(128));
+  EXPECT_EQ(128, web_app_info.trusted_icon_bitmaps.any[128].width());
+  EXPECT_EQ(128, web_app_info.trusted_icon_bitmaps.any[128].height());
+  EXPECT_EQ(SK_ColorBLUE,
+            web_app_info.trusted_icon_bitmaps.any[128].getColor(64, 48));
+  EXPECT_EQ(SK_ColorTRANSPARENT,
+            web_app_info.trusted_icon_bitmaps.any[128].getColor(64, 0));
+  EXPECT_FALSE(web_app_info.trusted_icon_bitmaps.any.contains(1024));
+}
+
+TEST(WebAppInstallUtils,
+     PopulateTrustedIconBitmaps_RepeatedUrlWithMultipleFrames) {
+  SkBitmap small;
+  small.allocN32Pixels(48, 36);
+  small.eraseColor(SK_ColorRED);
+  SkBitmap large;
+  large.allocN32Pixels(256, 192);
+  large.eraseColor(SK_ColorBLUE);
+  const GURL icon_url("https://www.example.com/icon.ico");
+  IconsMap icons_map;
+  icons_map.emplace(icon_url, std::vector<SkBitmap>{small, large});
+
+  auto web_app_info = CreateWebAppInstallInfo();
+  for (int size : {48, 256}) {
+    apps::IconInfo info;
+    info.url = icon_url;
+    info.purpose = apps::IconInfo::Purpose::kAny;
+    info.square_size_px = size;
+    web_app_info.trusted_icons.push_back(info);
+  }
+  PopulateTrustedIconBitmaps(web_app_info, icons_map);
+
+  ASSERT_TRUE(web_app_info.trusted_icon_bitmaps.any.contains(256));
+  EXPECT_EQ(SK_ColorBLUE,
+            web_app_info.trusted_icon_bitmaps.any.at(256).getColor(128, 128));
+  ASSERT_TRUE(web_app_info.trusted_icon_bitmaps.any.contains(48));
+  EXPECT_EQ(SK_ColorRED,
+            web_app_info.trusted_icon_bitmaps.any.at(48).getColor(24, 24));
+}
+
+TEST(WebAppInstallUtils, PopulateProductIcons_SkipsBitmapWithoutPixels) {
+  SkBitmap unallocated;
+  ASSERT_TRUE(unallocated.setInfo(SkImageInfo::MakeN32Premul(120, 80)));
+  ASSERT_FALSE(unallocated.empty());
+  ASSERT_TRUE(unallocated.drawsNothing());
+
+  const GURL icon_url("https://www.example.com/icon.png");
+  IconsMap icons_map;
+  icons_map.emplace(icon_url, std::vector<SkBitmap>{unallocated});
+  auto web_app_info = CreateWebAppInstallInfo();
+  web_app_info.title = u"App Name";
+  apps::IconInfo info;
+  info.url = icon_url;
+  info.purpose = apps::IconInfo::Purpose::kAny;
+  info.square_size_px = 120;
+  web_app_info.manifest_icons.push_back(info);
+
+  PopulateProductIcons(&web_app_info, &icons_map);
+  EXPECT_TRUE(web_app_info.is_generated_icon);
+}
+
+TEST(WebAppInstallUtils, PopulateOtherIcons_NonSquareShortcutAndHomeTabIcons) {
+  SkBitmap non_square_bitmap;
+  non_square_bitmap.allocN32Pixels(96, 48);
+  non_square_bitmap.eraseColor(SK_ColorRED);
+
+  const GURL kShortcutIconUrl1("https://www.example.com/shortcut1.png");
+  const GURL kShortcutIconUrl2("https://www.example.com/shortcut2.svg");
+  const GURL kHomeTabIconUrl("https://www.example.com/home_tab.png");
+
+  auto web_app_info = CreateWebAppInstallInfo();
+  {
+    WebAppShortcutsMenuItemInfo shortcut_item;
+    shortcut_item.name = u"Shortcut 1";
+    shortcut_item.url = GURL("https://www.example.com/s1");
+
+    WebAppShortcutsMenuItemInfo::Icon icon1;
+    icon1.url = kShortcutIconUrl1;
+    icon1.square_size_px = 64;
+
+    WebAppShortcutsMenuItemInfo::Icon icon2;
+    icon2.url = kShortcutIconUrl2;
+    icon2.square_size_px = 0;
+
+    shortcut_item.SetShortcutIconInfosForPurpose(IconPurpose::ANY,
+                                                 {icon1, icon2});
+    web_app_info.shortcuts_menu_item_infos.push_back(std::move(shortcut_item));
+  }
+
+  {
+    TabStrip tab_strip;
+    blink::Manifest::HomeTabParams home_tab_params;
+    blink::Manifest::ImageResource home_icon;
+    home_icon.src = kHomeTabIconUrl;
+    home_icon.purpose.push_back(Purpose::ANY);
+    home_icon.sizes.emplace_back(32, 32);
+    home_tab_params.icons.push_back(std::move(home_icon));
+    tab_strip.home_tab = std::move(home_tab_params);
+    web_app_info.tab_strip = std::move(tab_strip);
+  }
+
+  IconsMap icons_map;
+  icons_map.emplace(kShortcutIconUrl1,
+                    std::vector<SkBitmap>{non_square_bitmap});
+  icons_map.emplace(kShortcutIconUrl2,
+                    std::vector<SkBitmap>{non_square_bitmap});
+  icons_map.emplace(kHomeTabIconUrl, std::vector<SkBitmap>{non_square_bitmap});
+
+  PopulateOtherIcons(&web_app_info, icons_map);
+
+  ASSERT_EQ(1u, web_app_info.shortcuts_menu_icon_bitmaps.size());
+  EXPECT_TRUE(web_app_info.shortcuts_menu_icon_bitmaps[0].any.contains(64));
+  ASSERT_TRUE(web_app_info.shortcuts_menu_icon_bitmaps[0].any.contains(96));
+  EXPECT_EQ(
+      SK_ColorTRANSPARENT,
+      web_app_info.shortcuts_menu_icon_bitmaps[0].any.at(96).getColor(0, 0));
+  EXPECT_EQ(
+      SK_ColorRED,
+      web_app_info.shortcuts_menu_icon_bitmaps[0].any.at(96).getColor(48, 48));
+
+  ASSERT_TRUE(web_app_info.other_icon_bitmaps.contains(kHomeTabIconUrl));
+  ASSERT_EQ(1u, web_app_info.other_icon_bitmaps[kHomeTabIconUrl].size());
+  EXPECT_EQ(96, web_app_info.other_icon_bitmaps[kHomeTabIconUrl][0].width());
+  EXPECT_EQ(96, web_app_info.other_icon_bitmaps[kHomeTabIconUrl][0].height());
 }
 
 }  // namespace web_app

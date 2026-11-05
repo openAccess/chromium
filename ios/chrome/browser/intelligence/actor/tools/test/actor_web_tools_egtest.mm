@@ -12,7 +12,9 @@
 #import "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #import "ios/chrome/browser/intelligence/actor/tools/test/actor_app_interface.h"
 #import "ios/chrome/browser/intelligence/actor/tools/test/actor_tools_base_test_case.h"
+#import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
+#import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/web/public/test/element_selector.h"
 #import "url/gurl.h"
@@ -22,7 +24,111 @@
 
 @implementation ActorWebToolsTestCase
 
+- (void)tearDownHelper {
+  [ActorAppInterface stopAllTasks];
+  [super tearDownHelper];
+}
+
 #pragma mark - ClickTool Tests
+
+// Tests that the software keyboard is dismissed when actuation begins, remains
+// suppressed while the actor clicks into an `<input>`, and reappears once
+// actuation ends.
+- (void)testClickTool_suppressesKeyboardDuringActuation {
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/multi_field_form.html")];
+  [ChromeEarlGrey
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithElementID:"username"]];
+
+  optimization_guide::proto::Action action;
+  optimization_guide::proto::ClickAction* clickAction = action.mutable_click();
+  clickAction->set_tab_id([ChromeEarlGrey currentTabID].intValue);
+  clickAction->set_click_type(optimization_guide::proto::ClickAction::LEFT);
+  clickAction->set_click_count(optimization_guide::proto::ClickAction::SINGLE);
+  [self setCoordinatesOnTarget:clickAction->mutable_target()
+                  withSelector:"#otherstuff"];
+
+  // Tap into the text input so the software keyboard appears.
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElementWithId("username")];
+  [ChromeEarlGrey waitForKeyboardToAppear];
+
+  // Execute a click action on another `<input>` in the active tab. Starting
+  // actuation transitions the tab to `kActorControlled`, and the tab remains
+  // in that state while the task enters `kReflecting` after the action
+  // finishes.
+  GREYAssertNil([self executeAction:action], @"Action execution failed.");
+
+  // Verify that the keyboard was dismissed and remains suppressed after
+  // clicking into the input.
+  [ChromeEarlGrey waitForKeyboardToDisappear];
+
+  // Stop all tasks so actuation ends and the tab returns to `kInactive`.
+  [ActorAppInterface stopAllTasks];
+
+  // Verify that the keyboard reappears.
+  [ChromeEarlGrey waitForKeyboardToAppear];
+}
+
+// Tests that actuating on a background tab does not suppress the software
+// keyboard in the foreground tab.
+- (void)testClickTool_backgroundTabActuationDoesNotSuppressForegroundKeyboard {
+  const GURL formURL = self.testServer->GetURL("/multi_field_form.html");
+  [ChromeEarlGrey loadURL:formURL];
+  [ChromeEarlGrey
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithElementID:"username"]];
+
+  // Build the click action targeting the initial tab before moving it to the
+  // background.
+  optimization_guide::proto::Action action;
+  optimization_guide::proto::ClickAction* clickAction = action.mutable_click();
+  clickAction->set_tab_id([ChromeEarlGrey currentTabID].intValue);
+  clickAction->set_click_type(optimization_guide::proto::ClickAction::LEFT);
+  clickAction->set_click_count(optimization_guide::proto::ClickAction::SINGLE);
+  [self setCoordinatesOnTarget:clickAction->mutable_target()
+                  withSelector:"#otherstuff"];
+
+  // Open a new foreground tab and focus an `<input>` so the software keyboard
+  // appears.
+  [ChromeEarlGrey openNewTab];
+  [ChromeEarlGrey loadURL:formURL];
+  [ChromeEarlGrey
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithElementID:"username"]];
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElementWithId("username")];
+  [ChromeEarlGrey waitForKeyboardToAppear];
+
+  // Actuate on the background tab and verify the foreground keyboard remains
+  // visible throughout actuation.
+  std::string serializedAction;
+  action.SerializeToString(&serializedAction);
+  NSData* actionData = [NSData dataWithBytes:serializedAction.data()
+                                      length:serializedAction.length()];
+  __block NSError* executionError = nil;
+  __block BOOL actionCompleted = NO;
+  __block BOOL keyboardHiddenDuringActuation = NO;
+  [ActorAppInterface executeActionWithProto:actionData
+                                 completion:^(NSError* error) {
+                                   executionError = error;
+                                   actionCompleted = YES;
+                                 }];
+  BOOL success = [[GREYCondition
+      conditionWithName:@"Wait for action completion"
+                  block:^BOOL {
+                    if (![EarlGrey isKeyboardShownWithError:nil]) {
+                      keyboardHiddenDuringActuation = YES;
+                    }
+                    return actionCompleted;
+                  }]
+      waitWithTimeout:base::test::ios::kWaitForActionTimeout.InSecondsF()];
+  GREYAssertTrue(success, @"Action timed out.");
+  GREYAssertNil(executionError, @"Action execution failed.");
+  GREYAssertFalse(keyboardHiddenDuringActuation,
+                  @"Keyboard was hidden during background actuation.");
+  [ChromeEarlGrey waitForKeyboardToAppear];
+}
 
 // Tests that the click tool successfully clicks an element using its
 // coordinates.
@@ -168,9 +274,9 @@
   optimization_guide::proto::Action* waitAction = actions.add_actions();
   waitAction->mutable_wait()->set_wait_time_ms(500);
 
-  // Execute both actions in a single task. Under the hood, this creates and
-  // destructs of two ToolController objects. This verifies that the lifetimes
-  // are managed correctly and don't cause a crash.
+  // Execute both actions in a single task. Under the hood, the same
+  // ToolController runs both tools. This verifies that the lifetimes are
+  // managed correctly and don't cause a crash.
   [self executeActions:actions];
 }
 
@@ -252,6 +358,39 @@
           @"window.frames[0].document.querySelector('input').value"];
   GREYAssertEqualObjects(base::SysUTF8ToNSString(value.GetString()),
                          @"Hello World", @"Input value did not match");
+}
+
+// Tests that the `TypeTool` with `follow_by_enter = true` submits the enclosing
+// form.
+- (void)testTypeTool_followByEnterSubmitsForm {
+  const std::string formHTML = R"(
+    <form onsubmit="event.preventDefault(); window.formSubmitted = true;">
+      <input type="text">
+    </form>
+  )";
+  [ChromeEarlGrey loadURL:[self URLForHTML:formHTML]];
+  [ChromeEarlGrey
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithCSSSelector:"input"]];
+
+  optimization_guide::proto::Action action;
+  optimization_guide::proto::TypeAction* typeAction = action.mutable_type();
+  typeAction->set_tab_id([ChromeEarlGrey currentTabID].intValue);
+  typeAction->set_text("Hello World");
+  typeAction->set_mode(optimization_guide::proto::TypeAction::APPEND);
+  typeAction->set_follow_by_enter(true);
+
+  [self setCoordinatesOnTarget:typeAction->mutable_target()
+                  withSelector:"input"];
+
+  GREYAssertNil([self executeAction:action], @"Action execution failed.");
+
+  base::Value value = [ChromeEarlGrey
+      evaluateJavaScript:@"document.querySelector('input').value"];
+  GREYAssertEqualObjects(base::SysUTF8ToNSString(value.GetString()),
+                         @"Hello World", @"Input value did not match");
+
+  [ChromeEarlGrey waitForJavaScriptCondition:@"window.formSubmitted === true"];
 }
 
 #pragma mark - ScrollTool Tests
@@ -594,6 +733,112 @@
         return value.is_string() && value.GetString() == "v2";
       });
   GREYAssertTrue(success, @"Select value did not match");
+}
+
+#pragma mark - DragAndReleaseTool Tests
+
+// Tests that the DragAndReleaseTool can successfully drag and drop an element
+// given coordinates.
+- (void)testDragAndReleaseTool_dragsByCoordinates {
+  const std::string dragHTML =
+      R"(
+      <div id='source' draggable='true'
+           style='width: 80px; height: 80px; background: red;'>Source</div>
+      <div id='target'
+           style='width: 80px; height: 80px; background: blue;
+                  margin-top: 50px;'
+           ondragover='event.preventDefault();'
+           ondrop='this.innerText="Dropped";'>Target</div>
+      )";
+  [ChromeEarlGrey loadURL:[self URLForHTML:dragHTML]];
+  [ChromeEarlGrey
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithCSSSelector:"#source"]];
+  [ChromeEarlGrey
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithCSSSelector:"#target"]];
+
+  optimization_guide::proto::Action action;
+  optimization_guide::proto::DragAndReleaseAction* dragAction =
+      action.mutable_drag_and_release();
+  dragAction->set_tab_id([ChromeEarlGrey currentTabID].intValue);
+
+  [self setCoordinatesOnTarget:dragAction->mutable_from_target()
+                  withSelector:"#source"];
+  [self setCoordinatesOnTarget:dragAction->mutable_to_target()
+                  withSelector:"#target"];
+
+  GREYAssertNil([self executeAction:action], @"Action execution failed.");
+
+  [ChromeEarlGrey waitForWebStateContainingText:"Dropped"];
+}
+
+// Tests that the DragAndReleaseTool can successfully drag an element
+// given its document and node identifiers for the source target.
+- (void)testDragAndReleaseTool_dragsByIdentifiers {
+  const std::string dragHTML =
+      R"(
+      <input type='range' id='slider' min='0' max='100' value='0'
+             style='width: 200px;'>
+      )";
+  [ChromeEarlGrey loadURL:[self URLForHTML:dragHTML]];
+  [ChromeEarlGrey
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithCSSSelector:"#slider"]];
+
+  NSData* apcData = [ActorAppInterface fetchLatestAPC];
+  optimization_guide::proto::PageContext pageContext;
+  GREYAssertTrue(pageContext.ParseFromArray([apcData bytes], [apcData length]),
+                 @"Failed to parse PageContext");
+
+  std::string mainFrameToken = pageContext.annotated_page_content()
+                                   .main_frame_data()
+                                   .document_identifier()
+                                   .serialized_token();
+  FindNodeResult result = FindNodeWithPredicate(
+      pageContext.annotated_page_content().root_node(),
+      [](const optimization_guide::proto::ContentNode& n) {
+        return n.content_attributes().has_form_control_data() &&
+               n.content_attributes().form_control_data().form_control_type() ==
+                   optimization_guide::proto::FormControlType::
+                       FORM_CONTROL_TYPE_INPUT_RANGE;
+      },
+      mainFrameToken);
+
+  GREYAssertTrue(result.node != nullptr, @"Failed to find slider node");
+  int nodeId = result.node->content_attributes().common_ancestor_dom_node_id();
+
+  optimization_guide::proto::Action action;
+  optimization_guide::proto::DragAndReleaseAction* dragAction =
+      action.mutable_drag_and_release();
+  dragAction->set_tab_id([ChromeEarlGrey currentTabID].intValue);
+
+  dragAction->mutable_from_target()->set_content_node_id(nodeId);
+  dragAction->mutable_from_target()
+      ->mutable_document_identifier()
+      ->set_serialized_token(result.frame_token);
+
+  base::Value rect = [ChromeEarlGrey
+      evaluateJavaScript:
+          @"const r = "
+          @"document.querySelector('#slider').getBoundingClientRect(); "
+          @"[r.left + r.width, r.top + r.height / 2]"];
+  GREYAssertTrue(rect.is_list() && rect.GetList().size() == 2,
+                 @"Failed to get rect");
+  dragAction->mutable_to_target()->mutable_coordinate()->set_x(
+      static_cast<int>(rect.GetList()[0].GetDouble()));
+  dragAction->mutable_to_target()->mutable_coordinate()->set_y(
+      static_cast<int>(rect.GetList()[1].GetDouble()));
+
+  GREYAssertNil([self executeAction:action], @"Action execution failed.");
+
+  bool success = base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool {
+        base::Value value = [ChromeEarlGrey
+            evaluateJavaScript:@"document.querySelector('#slider').value"];
+        return value.is_string() && value.GetString() == "100";
+      });
+  GREYAssertTrue(success, @"Slider value did not reach 100 after drag");
 }
 
 @end

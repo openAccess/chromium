@@ -13,7 +13,8 @@
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/url_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 const char kWebViewSidePanelWebContentsUserDataKey[] =
     "web_view_side_panel_web_contents_user_data";
@@ -66,7 +67,8 @@ void MaybeCreateAndAddWebViewSidePanelThrottle(
                  bool should_run_async,
                  navigation_interception::InterceptNavigationThrottle::
                      ResultCallback result_callback) {
-                DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+                CHECK_CURRENTLY_ON(content::BrowserThread::UI,
+                                   base::NotFatalUntil::M161);
                 CHECK(!should_run_async);
                 auto* data = static_cast<WebViewSidePanelWebContentsUserData*>(
                     handle->GetWebContents()->GetUserData(
@@ -83,10 +85,21 @@ void MaybeCreateAndAddWebViewSidePanelThrottle(
                   return;
                 }
 
-                content::OpenURLParams params(
-                    next_url, content::Referrer(handle->GetReferrer()),
-                    WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                    handle->GetPageTransition(), handle->IsRendererInitiated());
+                content::OpenURLParams params =
+                    handle->IsRendererInitiated()
+                        ? content::OpenURLParams::CreateRendererInitiated(
+                              next_url,
+                              ui::mojom::WindowOpenDisposition::
+                                  kNewForegroundTab,
+                              handle->GetPageTransition(),
+                              content::Referrer(handle->GetReferrer()),
+                              handle->GetInitiatorNavigationState())
+                        : content::OpenURLParams::CreateBrowserInitiated(
+                              next_url,
+                              ui::mojom::WindowOpenDisposition::
+                                  kNewForegroundTab,
+                              handle->GetPageTransition(),
+                              content::Referrer(handle->GetReferrer()));
                 params.initiator_origin = handle->GetInitiatorOrigin();
                 params.initiator_base_url = handle->GetInitiatorBaseUrl();
                 data->delegate()->OpenUrlInBrowser(params);

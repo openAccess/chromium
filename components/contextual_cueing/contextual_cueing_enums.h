@@ -84,9 +84,14 @@ enum class ContextualCueingDecision {
   kWebContentsDestroyed = 32,
   // Tab navigated away or is no longer active during async eligibility check.
   kNoLongerActiveTabAfterEligibilityCheck = 33,
-  kMaxValue = kNoLongerActiveTabAfterEligibilityCheck,
+  // (iOS only) The user is not eligible for contextual cues (e.g.,
+  // missing account capability, or disabled by enterprise or workspace policy).
+  kUserIneligible = 34,
+  kMaxValue = kUserIneligible,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_cueing/enums.xml:ContextualCueingDecision)
+
+const char* GetName(ContextualCueingDecision decision);
 
 // LINT.IfChange(ContextualCueingInteraction)
 enum class ContextualCueingInteraction {
@@ -98,6 +103,8 @@ enum class ContextualCueingInteraction {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_cueing/enums.xml:ContextualCueingInteraction)
 
+const char* GetName(ContextualCueingInteraction interaction);
+
 // LINT.IfChange(CueFormFactor)
 enum class CueFormFactor {
   kIcon = 0,
@@ -106,6 +113,8 @@ enum class CueFormFactor {
   kMaxValue = kAnchoredMessage,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_cueing/enums.xml:CueFormFactor)
+
+const char* GetName(CueFormFactor form_factor);
 
 }  // namespace contextual_cueing
 

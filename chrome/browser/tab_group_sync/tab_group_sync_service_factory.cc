@@ -88,7 +88,7 @@ TabGroupSyncServiceFactory::~TabGroupSyncServiceFactory() = default;
 std::unique_ptr<KeyedService>
 TabGroupSyncServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
-  DCHECK(context);
+  CHECK(context, base::NotFatalUntil::M162);
   Profile* profile = static_cast<Profile*>(context);
   auto* pref_service = profile->GetPrefs();
 
@@ -118,8 +118,7 @@ TabGroupSyncServiceFactory::BuildServiceInstanceForBrowserContext(
   if (IsTabGroupSyncDelegateAndroidEnabled()) {
     auto j_delegate_deps = Java_TabGroupSyncDepsProvider_createDeps(
         base::android::AttachCurrentThread());
-    delegate = std::make_unique<TabGroupSyncDelegateAndroid>(service.get(),
-                                                             j_delegate_deps);
+    delegate = std::make_unique<TabGroupSyncDelegateAndroid>(j_delegate_deps);
   } else {
     delegate = std::make_unique<EmptyTabGroupSyncDelegate>();
   }

@@ -7,8 +7,7 @@
 #include <string>
 
 #include "ash/resources/vector_icons/vector_icons.h"
-#include "ash/style/ash_color_provider.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/system_decoration.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/compositor/layer.h"
 #include "ui/views/controls/button/button.h"
@@ -20,11 +19,7 @@
 namespace ash {
 namespace {
 
-class ActionButtonViewTest : public views::ViewsTestBase {
- private:
-  // Required by `ActionButtonView`.
-  AshColorProvider color_provider_;
-};
+using ActionButtonViewTest = views::ViewsTestBase;
 
 TEST_F(ActionButtonViewTest, ShowsIconAndLabelByDefault) {
   ActionButtonView action_button(
@@ -60,10 +55,17 @@ TEST_F(ActionButtonViewTest, ShadowBoundsAlignedWithButton) {
   const gfx::Rect button_bounds(20, 30, 120, 36);
   action_button->SetBoundsRect(button_bounds);
 
-  SystemShadow* shadow = action_button->shadow_for_testing();
+  SystemDecoration* shadow = action_button->shadow_for_testing();
   ASSERT_TRUE(shadow);
   EXPECT_EQ(shadow->GetLayer()->parent(), action_button->layer()->parent());
   EXPECT_EQ(shadow->GetContentBounds(), button_bounds);
+
+  SystemDecoration* highlight_border =
+      action_button->highlight_border_for_testing();
+  ASSERT_TRUE(highlight_border);
+  EXPECT_EQ(highlight_border->GetLayer()->parent(), action_button->layer());
+  EXPECT_EQ(highlight_border->GetContentBounds(),
+            action_button->GetLocalBounds());
 }
 
 }  // namespace

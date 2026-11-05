@@ -28,7 +28,6 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.permissions.PermissionTestRule;
 import org.chromium.chrome.browser.settings.SettingsActivity;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
@@ -56,7 +55,6 @@ import java.util.concurrent.TimeoutException;
 })
 @DisableFeatures({
     ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE,
-    ChromeFeatureList.SETTINGS_MULTI_COLUMN,
     ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER
 })
 public class SiteSettingsMenuTest {
@@ -71,16 +69,10 @@ public class SiteSettingsMenuTest {
         "anti_abuse_things_to_consider_section_one"
     };
 
-    private static final String[] CLEAR_BROWSING_DATA_LINK_WITH_CONTAINMENT =
-            new String[] {"clear_browsing_data_link"};
-
     private static final String[] NULL_ARRAY = new String[0];
 
     public AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.autoResetCtaActivityRule();
-
-    public PermissionTestRule mPermissionTestRule =
-            new PermissionTestRule(mActivityTestRule.getActivityTestRule(), true);
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -88,9 +80,7 @@ public class SiteSettingsMenuTest {
 
     @Rule
     public final RuleChain mRuleChain =
-            RuleChain.outerRule(mAdvancedProtectionRule)
-                    .around(mActivityTestRule)
-                    .around(mPermissionTestRule);
+            RuleChain.outerRule(mAdvancedProtectionRule).around(mActivityTestRule);
 
     @Before
     public void setUp() throws TimeoutException {
@@ -168,7 +158,8 @@ public class SiteSettingsMenuTest {
     @Feature({"Preferences"})
     public void testOnlyExpectedPreferencesAllSites() {
         SiteSettingsTestHelper.checkPreferencesForCategory(
-                SiteSettingsCategory.Type.ALL_SITES, CLEAR_BROWSING_DATA_LINK_WITH_CONTAINMENT);
+                SiteSettingsCategory.Type.ALL_SITES,
+                SiteSettingsTestHelper.CLEAR_BROWSING_DATA_LINK);
     }
 
     @Test

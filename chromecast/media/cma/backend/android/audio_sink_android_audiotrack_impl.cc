@@ -12,10 +12,12 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "chromecast/media/api/decoder_buffer_base.h"
 #include "media/base/audio_bus.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chromecast/media/cma/backend/android/audio_track_jni_headers/AudioSinkAudioTrackImpl_jni.h"
@@ -86,9 +88,9 @@ AudioSinkAndroidAudioTrackImpl::AudioSinkAndroidAudioTrackImpl(
             << " use_hw_av_sync_=" << use_hw_av_sync_
             << " device_id_=" << device_id_
             << " content_type_=" << content_type_;
-  DCHECK(delegate_);
-  DCHECK_GT(num_channels_, 0);
-  DCHECK_GT(input_samples_per_second_, 0);
+  CHECK(delegate_, base::NotFatalUntil::M163);
+  CHECK_GT(num_channels_, 0, base::NotFatalUntil::M163);
+  CHECK_GT(input_samples_per_second_, 0, base::NotFatalUntil::M163);
 
   base::Thread::Options options;
   options.thread_type = base::ThreadType::kRealtimeAudio;
@@ -107,7 +109,7 @@ AudioSinkAndroidAudioTrackImpl::~AudioSinkAndroidAudioTrackImpl() {
 bool AudioSinkAndroidAudioTrackImpl::Initialize(int audio_track_session_id,
                                                 bool is_apk_audio) {
   j_audio_sink_audiotrack_impl_ = Java_AudioSinkAudioTrackImpl_create(
-      base::android::AttachCurrentThread(), reinterpret_cast<int64_t>(this),
+      base::android::AttachCurrentThread(), jni_zero::MakeRaw(this),
       static_cast<int>(content_type_), num_channels_, input_samples_per_second_,
       kDirectBufferSize, audio_track_session_id, is_apk_audio, use_hw_av_sync_);
   if (!j_audio_sink_audiotrack_impl_) {
@@ -116,8 +118,8 @@ bool AudioSinkAndroidAudioTrackImpl::Initialize(int audio_track_session_id,
 
   // Below arguments are initialized from AudioSinkAudioTrackImpl Java class by
   // calling into native APIs of this class.
-  DCHECK(direct_pcm_buffer_address_);
-  DCHECK(direct_rendering_delay_address_);
+  CHECK(direct_pcm_buffer_address_, base::NotFatalUntil::M163);
+  CHECK(direct_rendering_delay_address_, base::NotFatalUntil::M163);
 
   LOG(INFO) << __func__ << "(" << this << "):"
             << " audio_track_session_id=" << audio_track_session_id;
@@ -176,7 +178,8 @@ void AudioSinkAndroidAudioTrackImpl::FinalizeOnFeederThread() {
 }
 
 void AudioSinkAndroidAudioTrackImpl::PreventDelegateCalls() {
-  DCHECK(caller_task_runner_->BelongsToCurrentThread());
+  CHECK(caller_task_runner_->BelongsToCurrentThread(),
+        base::NotFatalUntil::M163);
   weak_factory_.InvalidateWeakPtrs();
 }
 
@@ -195,8 +198,9 @@ void AudioSinkAndroidAudioTrackImpl::CacheDirectBufferAddress(
 
 void AudioSinkAndroidAudioTrackImpl::WritePcm(
     scoped_refptr<DecoderBufferBase> data) {
-  DCHECK(caller_task_runner_->BelongsToCurrentThread());
-  DCHECK(!pending_data_);
+  CHECK(caller_task_runner_->BelongsToCurrentThread(),
+        base::NotFatalUntil::M163);
+  CHECK(!pending_data_, base::NotFatalUntil::M163);
   pending_data_ = std::move(data);
   pending_data_bytes_already_fed_ = 0;
   FeedData();
@@ -205,7 +209,7 @@ void AudioSinkAndroidAudioTrackImpl::WritePcm(
 void AudioSinkAndroidAudioTrackImpl::FeedData() {
   RUN_ON_FEEDER_THREAD(FeedData);
 
-  DCHECK(pending_data_);
+  CHECK(pending_data_, base::NotFatalUntil::M163);
   if (pending_data_->end_of_stream()) {
     state_ = kStateGotEos;
     ScheduleWaitForEosTask();
@@ -261,9 +265,10 @@ void AudioSinkAndroidAudioTrackImpl::FeedData() {
 }
 
 void AudioSinkAndroidAudioTrackImpl::ScheduleWaitForEosTask() {
-  DCHECK(wait_for_eos_task_.IsCancelled());
-  DCHECK(state_ == kStateGotEos);
-  DCHECK(feeder_task_runner_->BelongsToCurrentThread());
+  CHECK(wait_for_eos_task_.IsCancelled(), base::NotFatalUntil::M163);
+  CHECK(state_ == kStateGotEos, base::NotFatalUntil::M163);
+  CHECK(feeder_task_runner_->BelongsToCurrentThread(),
+        base::NotFatalUntil::M163);
 
   int64_t playout_time_left_us =
       Java_AudioSinkAudioTrackImpl_prepareForShutdown(
@@ -278,8 +283,9 @@ void AudioSinkAndroidAudioTrackImpl::ScheduleWaitForEosTask() {
 }
 
 void AudioSinkAndroidAudioTrackImpl::OnPlayoutDone() {
-  DCHECK(feeder_task_runner_->BelongsToCurrentThread());
-  DCHECK(state_ == kStateGotEos);
+  CHECK(feeder_task_runner_->BelongsToCurrentThread(),
+        base::NotFatalUntil::M163);
+  CHECK(state_ == kStateGotEos, base::NotFatalUntil::M163);
   PostPcmCallback();
 }
 
@@ -287,10 +293,13 @@ int AudioSinkAndroidAudioTrackImpl::ReformatData() {
   // Data is in planar float format, i.e., planar audio data for stereo is all
   // left samples first, then all right -> "LLLLLLLLLLLLLLLLRRRRRRRRRRRRRRRR").
   // AudioTrack needs interleaved format -> "LRLRLRLRLRLRLRLRLRLRLRLRLRLRLRLR").
-  DCHECK(direct_pcm_buffer_address_);
-  DCHECK_EQ(0u, pending_data_->data_size() % sizeof(float));
-  CHECK_LT(static_cast<int>(pending_data_->data_size()), kDirectBufferSize);
-  int num_of_samples = pending_data_->data_size() / sizeof(float);
+  CHECK(direct_pcm_buffer_address_, base::NotFatalUntil::M163);
+  CHECK_EQ(0u, pending_data_->data_size() % sizeof(float),
+           base::NotFatalUntil::M163);
+  CHECK_LT(pending_data_->data_size(),
+           base::checked_cast<size_t>(kDirectBufferSize));
+  int num_of_samples =
+      base::checked_cast<int>(pending_data_->data_size() / sizeof(float));
   int num_of_frames = num_of_samples / num_channels_;
   std::vector<const float*> src(num_channels_);
   for (int c = 0; c < num_channels_; c++) {
@@ -306,7 +315,7 @@ int AudioSinkAndroidAudioTrackImpl::ReformatData() {
         *UNSAFE_TODO(dst++) = *UNSAFE_TODO(src[c]++);
       }
     }
-    return static_cast<int>(pending_data_->data_size()) /
+    return base::checked_cast<int>(pending_data_->data_size()) /
            (sizeof(float) / sizeof(int16_t));
   } else {
     float* dst = reinterpret_cast<float*>(direct_pcm_buffer_address_);
@@ -315,7 +324,7 @@ int AudioSinkAndroidAudioTrackImpl::ReformatData() {
         *UNSAFE_TODO(dst++) = *UNSAFE_TODO(src[c]++);
       }
     }
-    return static_cast<int>(pending_data_->data_size());
+    return base::checked_cast<int>(pending_data_->data_size());
   }
 }
 
@@ -336,8 +345,8 @@ void AudioSinkAndroidAudioTrackImpl::TrackRawMonotonicClockDeviation() {
 void AudioSinkAndroidAudioTrackImpl::FeedDataContinue() {
   RUN_ON_FEEDER_THREAD(FeedDataContinue);
 
-  DCHECK(pending_data_);
-  DCHECK(pending_data_bytes_already_fed_);
+  CHECK(pending_data_, base::NotFatalUntil::M163);
+  CHECK(pending_data_bytes_already_fed_, base::NotFatalUntil::M163);
 
   int left_to_send =
       pending_data_bytes_after_reformat_ - pending_data_bytes_already_fed_;
@@ -363,7 +372,7 @@ void AudioSinkAndroidAudioTrackImpl::FeedDataContinue() {
       base::android::AttachCurrentThread(), j_audio_sink_audiotrack_impl_,
       left_to_send, timestamp_ns_new);
 
-  DCHECK(written == left_to_send);
+  CHECK(written == left_to_send, base::NotFatalUntil::M163);
 
   // RenderingDelay was returned through JNI via direct buffers.
   sink_rendering_delay_.delay_microseconds = direct_rendering_delay_address_[0];
@@ -377,7 +386,7 @@ void AudioSinkAndroidAudioTrackImpl::FeedDataContinue() {
 
 void AudioSinkAndroidAudioTrackImpl::PostPcmCallback() {
   RUN_ON_CALLER_THREAD(PostPcmCallback);
-  DCHECK(pending_data_);
+  CHECK(pending_data_, base::NotFatalUntil::M163);
   pending_data_ = nullptr;
   pending_data_bytes_already_fed_ = 0;
   delegate_->OnWritePcmCompletion(MediaPipelineBackendAndroid::kBufferSuccess);
@@ -385,7 +394,8 @@ void AudioSinkAndroidAudioTrackImpl::PostPcmCallback() {
 
 void AudioSinkAndroidAudioTrackImpl::SignalError(
     AudioSinkAndroid::SinkError error) {
-  DCHECK(feeder_task_runner_->BelongsToCurrentThread());
+  CHECK(feeder_task_runner_->BelongsToCurrentThread(),
+        base::NotFatalUntil::M163);
   state_ = kStateError;
   PostError(error);
 }
@@ -418,7 +428,8 @@ void AudioSinkAndroidAudioTrackImpl::SetPaused(bool paused) {
 }
 
 void AudioSinkAndroidAudioTrackImpl::UpdateVolume() {
-  DCHECK(feeder_task_runner_->BelongsToCurrentThread());
+  CHECK(feeder_task_runner_->BelongsToCurrentThread(),
+        base::NotFatalUntil::M163);
   Java_AudioSinkAudioTrackImpl_setVolume(base::android::AttachCurrentThread(),
                                          j_audio_sink_audiotrack_impl_,
                                          EffectiveVolume());

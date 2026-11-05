@@ -47,15 +47,24 @@ enum class PasswordTitleType {
   UPDATE_PASSWORD,  // update plain password
 };
 
+class AccountInfo;
 class BrowserWindowInterface;
 class Profile;
-struct AccountInfo;
 
 // The desired width and height in pixels for an account avatar.
 inline constexpr int kAvatarImageSize = 32;
 
-// Crops and scales |image_skia| to the desired size for an account avatar.
-gfx::ImageSkia ScaleImageForAccountAvatar(gfx::ImageSkia image_skia);
+// Crops and scales `skia_image` to the desired `size` for an account avatar.
+gfx::ImageSkia ScaleImageForAccountAvatar(gfx::ImageSkia skia_image,
+                                          int size = kAvatarImageSize);
+
+// Returns `text` prepared to be displayed on a single line in the password
+// manager UI. Control characters, line breaks and other whitespace sequences
+// are collapsed into single spaces, and unterminated directional formatting
+// characters are terminated. This is meant for site-provided credential data
+// (e.g. usernames and display names stored via the Credential Management API),
+// which must not be able to add lines or change the layout of browser UI.
+std::u16string GetSingleLineDisplayText(std::u16string text);
 
 // Returns the upper and lower label to be displayed in the account chooser UI
 // for |form|. The lower label can be multiline.

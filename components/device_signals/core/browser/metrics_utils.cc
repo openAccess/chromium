@@ -25,6 +25,8 @@ constexpr char kCollectionFailureHistogram[] =
     "Enterprise.DeviceSignals.Collection.Failure";
 constexpr char kCollectionSignalsCountHistogram[] =
     "Enterprise.DeviceSignals.Collection.SignalsCount";
+constexpr char kCollectionTotalLatencyHistogram[] =
+    "Enterprise.DeviceSignals.Collection.TotalLatency";
 
 constexpr char kCollectionSuccessLatencyHistogramFormat[] =
     "Enterprise.DeviceSignals.Collection.Success.%s.Latency";
@@ -39,6 +41,7 @@ constexpr char kCollectionSuccessSizeHistogramFormat[] =
 constexpr char kCollectionSpecificFailureHistogramFormat[] =
     "Enterprise.DeviceSignals.Collection.Failure.%sLevelError";
 
+// LINT.IfChange(EnterpriseSignals)
 std::string GetHistogramVariant(SignalName signal_name) {
   switch (signal_name) {
     case SignalName::kAntiVirus:
@@ -57,8 +60,11 @@ std::string GetHistogramVariant(SignalName signal_name) {
       return "BrowserContextSignals";
     case SignalName::kCertificates:
       return "Certificates";
+    case SignalName::kVerifyApps:
+      return "VerifyApps";
   }
 }
+// LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/histograms.xml:EnterpriseSignals)
 
 std::string GetErrorHistogramVariant(SignalName signal_name,
                                      bool is_top_level_error) {
@@ -133,6 +139,14 @@ void LogSignalCollectionSucceeded(SignalName signal_name,
           kMaxSampleValue);
     }
   }
+}
+
+void LogTotalSignalCollectionLatency(base::TimeTicks start_time) {
+  // Unlike the per-signal histograms, this is the max over a fan-out that can
+  // include slow collectors (e.g. WMI-backed signals on Windows), so use medium
+  // times (up to 3 minutes) to keep the tail out of the overflow bucket.
+  base::UmaHistogramMediumTimes(kCollectionTotalLatencyHistogram,
+                                base::TimeTicks::Now() - start_time);
 }
 
 void LogCrowdStrikeParsingError(SignalsParsingError error) {

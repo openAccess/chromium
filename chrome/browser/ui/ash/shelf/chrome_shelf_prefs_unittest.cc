@@ -5,8 +5,9 @@
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_prefs.h"
 
 #include <algorithm>
-#include <map>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "ash/constants/ash_pref_names.h"
@@ -14,7 +15,6 @@
 #include "ash/public/cpp/shelf_types.h"
 #include "ash/webui/mall/app_id.h"
 #include "base/containers/to_vector.h"
-#include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/test/scoped_feature_list.h"
@@ -158,7 +158,7 @@ class ChromeShelfPrefsTest : public testing::Test {
   void TearDown() override {
     shelf_prefs_.reset();
     scoped_user_manager_.reset();
-    ChromeShelfPrefs::SetShouldAddDefaultAppsForTest(false);
+    ChromeShelfPrefs::SetShouldAddDefaultAppsForTest(std::nullopt);
     profile_.reset();
   }
 
@@ -221,25 +221,29 @@ class ChromeShelfPrefsTest : public testing::Test {
   }
 
   std::string GetPinned() {
-    static const base::NoDestructor<std::map<std::string, std::string>> kAppMap(
-        {
-            {app_constants::kChromeAppId, "chrome"},
-            {ash::kGeminiAppId, "gemini"},
-            {ash::kNotebookLmAppId, "notebook_lm"},
-            {ash::kMallSystemAppId, "mall"},
-            {ash::kGmailAppId, "gmail"},
-            {ash::kGoogleCalendarAppId, "cal"},
-            {file_manager::kFileManagerSwaAppId, "files"},
-            {ash::kMessagesAppId, "messages"},
-            {ash::kGoogleMeetAppId, "meet"},
-            {arc::kPlayStoreAppId, "play"},
-            {ash::kYoutubeAppId, "youtube"},
-            {arc::kGooglePhotosAppId, "photos"},
-        });
+    struct AppIdName {
+      std::string_view app_id;
+      std::string_view name;
+    };
+    static constexpr AppIdName kAppNames[] = {
+        {app_constants::kChromeAppId, "chrome"},
+        {ash::kGeminiAppId, "gemini"},
+        {ash::kNotebookLmAppId, "notebook_lm"},
+        {ash::kMallSystemAppId, "mall"},
+        {ash::kGmailAppId, "gmail"},
+        {ash::kGoogleCalendarAppId, "cal"},
+        {file_manager::kFileManagerSwaAppId, "files"},
+        {ash::kMessagesAppId, "messages"},
+        {ash::kGoogleMeetAppId, "meet"},
+        {arc::kPlayStoreAppId, "play"},
+        {ash::kYoutubeAppId, "youtube"},
+        {arc::kGooglePhotosAppId, "photos"},
+    };
     std::vector<std::string> apps;
     for (const auto& app_id : GetPinnedAppIds()) {
-      auto it = kAppMap->find(app_id);
-      apps.push_back(it != kAppMap->end() ? it->second : app_id);
+      const auto* it = std::ranges::find(kAppNames, app_id, &AppIdName::app_id);
+      apps.push_back(it != std::end(kAppNames) ? std::string(it->name)
+                                               : app_id);
     }
     return base::JoinString(apps, ", ");
   }
@@ -750,37 +754,4 @@ TEST_F(ChromeShelfPrefsTest, PinPreloadEmpty) {
   shelf_prefs_->OnGetPinPreloadApps({}, pin_order);
   EXPECT_TRUE(shelf_prefs_->DidAddPreloadApps());
   EXPECT_EQ(get_prefs(), "[ \"default\", \"preload\" ]\n");
-}
-
-// Cleanup duplicate values of 'preload' in prefs (crbug.com/350769496).
-TEST_F(ChromeShelfPrefsTest, CleanupPreloadPrefs) {
-  PrefService* prefs = profile_->GetPrefs();
-  std::vector<std::string> pref_names = {
-      ash::prefs::kShelfDefaultPinLayoutRolls,
-      ash::prefs::kShelfDefaultPinLayoutRollsForTabletFormFactor};
-
-  const struct {
-    std::vector<std::string> pref_list;
-    std::string expected;
-  } tests[] = {
-      {{}, R"([  ])"},
-      {{"default"}, R"([ "default" ])"},
-      {{"default", "preload"}, R"([ "default", "preload" ])"},
-      {{"default", "preload", "preload"}, R"([ "default", "preload" ])"},
-      {{"preload", "default", "preload"}, R"([ "default", "preload" ])"},
-      {{"preload"}, R"([ "preload" ])"},
-      {{"preload", "preload"}, R"([ "preload" ])"},
-  };
-
-  for (const auto& test : tests) {
-    for (const auto& pref_name : pref_names) {
-      base::ListValue list;
-      for (const auto& item : test.pref_list) {
-        list.Append(item);
-      }
-      prefs->SetList(pref_name, std::move(list));
-      ChromeShelfPrefs::CleanupPreloadPrefs(prefs);
-      EXPECT_EQ(test.expected + "\n", prefs->GetList(pref_name).DebugString());
-    }
-  }
 }

@@ -3,10 +3,6 @@ include_rules = [
   # details.
   "-chrome",
 
-  # This directory is in //chrome, which violates the rule above. Allow this
-  # directory to #include its own files.
-  "+chrome/browser/ash/login/lock",
-
   # Existing dependencies within //chrome. There is an active effort to
   # refactor //chrome/browser/ash to break these dependencies; see b/332804822.
   # Whenever possible, avoid adding new //chrome dependencies to this list.
@@ -22,20 +18,25 @@ include_rules = [
   "+chrome/browser/ash/system",
   "+chrome/browser/profiles",
   "+chrome/browser/ui/ash",
-  "+chrome/browser/ui/ash/assistant",
-  "+chrome/browser/ui/ash/session",
-  "+chrome/browser/ui/ash/wallpaper",
-  "+chrome/browser/ui/exclusive_access",
   "+chrome/browser/ui/webui/ash/lock_screen_reauth",
   "+chrome/common/chrome_constants.h",
-  "+chrome/common/chrome_switches.h",
   "+chrome/grit",
-  "+chrome/test/base",
 ]
 
 specific_include_rules = {
+  # Only tests need these //chrome dependencies.
+  "screen_locker_browsertest\\.cc": [
+    "+chrome/browser/ui/exclusive_access",
+  ],
+  # The factory injects the IdentityManager into LockScreenReauthManager and
+  # must DependsOn() IdentityManagerFactory so it outlives the service; the
+  # unittest constructs the service directly and resolves it the same way.
   "lock_screen_reauth_manager_factory\\.cc": [
     "+chrome/browser/browser_process.h",
+    "+chrome/browser/signin",
+  ],
+  "lock_screen_reauth_manager_unittest\\.cc": [
+    "+chrome/browser/signin",
   ],
   "screen_locker_unittest\\.cc": [
     "+chrome/browser/global_features.h",

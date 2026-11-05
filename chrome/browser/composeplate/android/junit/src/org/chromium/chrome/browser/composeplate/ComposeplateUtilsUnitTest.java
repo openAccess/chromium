@@ -8,8 +8,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
@@ -27,8 +25,6 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -46,16 +42,14 @@ import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 
 /** Unit tests for {@link ComposeplateUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ComposeplateUtilsUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private ComposeplateUtils.Natives mMockComposeplateUtilsJni;
     @Mock private Profile mProfile;
-    @Mock private View mView;
-    @Captor private ArgumentCaptor<Drawable> mDrawableCaptor;
 
     private Context mContext;
+    private View mView;
 
     @Before
     public void setUp() {
@@ -63,8 +57,8 @@ public class ComposeplateUtilsUnitTest {
                 new ContextThemeWrapper(
                         ApplicationProvider.getApplicationContext(),
                         R.style.Theme_BrowserUI_DayNight);
+        mView = new View(mContext);
         ComposeplateUtilsJni.setInstanceForTesting(mMockComposeplateUtilsJni);
-        when(mView.getContext()).thenReturn(mContext);
         when(mMockComposeplateUtilsJni.isAimEntrypointEligible(eq(mProfile))).thenReturn(true);
     }
 
@@ -120,12 +114,57 @@ public class ComposeplateUtilsUnitTest {
     }
 
     @Test
+    public void testCanShowComposeplateButtonOnNtp_AiModeButtonUiConfig() {
+        // Case 1: mobile, the default search engine provides an AiModeButtonUiConfig, and the
+        // composeplate button should be shown.
+        DeviceInfo.setIsDesktopForTesting(false);
+        assertTrue(
+                ComposeplateUtils.canShowComposeplateButtonOnNtp(
+                        /* hasAiModeButtonUiConfig= */ true));
+
+        // Case 2: mobile, the default search engine doesn't provide an AiModeButtonUiConfig, and
+        // the composeplate button should not be shown.
+        assertFalse(
+                ComposeplateUtils.canShowComposeplateButtonOnNtp(
+                        /* hasAiModeButtonUiConfig= */ false));
+
+        // Case 3: Desktop, the default search engine provides an AiModeButtonUiConfig, but the
+        // composeplate button should not be shown.
+        DeviceInfo.setIsDesktopForTesting(true);
+        assertFalse(
+                ComposeplateUtils.canShowComposeplateButtonOnNtp(
+                        /* hasAiModeButtonUiConfig= */ true));
+
+        // Case 4: Desktop, the default search engine doesn't provide an AiModeButtonUiConfig, and
+        // the composeplate button should not be shown.
+        assertFalse(
+                ComposeplateUtils.canShowComposeplateButtonOnNtp(
+                        /* hasAiModeButtonUiConfig= */ false));
+
+        // Verifies that the native eligibility check isn't consulted: the presence of the
+        // AiModeButtonUiConfig is the only signal, since native doesn't provide one to an
+        // ineligible client.
+        DeviceInfo.setIsDesktopForTesting(false);
+        when(mMockComposeplateUtilsJni.isAimEntrypointEligible(eq(mProfile))).thenReturn(false);
+        assertTrue(
+                ComposeplateUtils.canShowComposeplateButtonOnNtp(
+                        /* hasAiModeButtonUiConfig= */ true));
+    }
+
+    @Test
+    public void testCanShowComposeplateButtonOnDevice() {
+        DeviceInfo.setIsDesktopForTesting(false);
+        assertTrue(ComposeplateUtils.canShowComposeplateButtonOnDevice());
+
+        DeviceInfo.setIsDesktopForTesting(true);
+        assertFalse(ComposeplateUtils.canShowComposeplateButtonOnDevice());
+    }
+
+    @Test
     public void testApplyWhiteBackgroundAndShadow() {
         // Verifies the apply case.
         ComposeplateUtils.applyWhiteBackground(mContext, mView, /* apply= */ true);
         verifyPureWhiteBackgroundApplied();
-
-        clearInvocations(mView);
 
         // Verifies the reset case.
         ComposeplateUtils.applyWhiteBackground(mContext, mView, /* apply= */ false);
@@ -170,8 +209,6 @@ public class ComposeplateUtilsUnitTest {
                 mContext, mView, /* applyWhiteBackground= */ true);
         verifyPureWhiteBackgroundApplied();
 
-        clearInvocations(mView);
-
         // When Aurora is disabled on default theme, reset to default background.
         ComposeplateUtils.applySearchBoxBackground(
                 mContext, mView, /* applyWhiteBackground= */ false);
@@ -185,8 +222,6 @@ public class ComposeplateUtilsUnitTest {
         ComposeplateUtils.applySearchBoxBackground(
                 mContext, mView, /* applyWhiteBackground= */ true);
         verifyDrawableApplied(R.drawable.fake_search_box_white_with_primary_color_alpha_2);
-
-        clearInvocations(mView);
 
         // When Aurora is enabled on default theme, apply theme base mixed with 2% primary.
         ComposeplateUtils.applySearchBoxBackground(
@@ -202,8 +237,6 @@ public class ComposeplateUtilsUnitTest {
                 mContext, mView, /* applyWhiteBackground= */ true);
         verifyPureWhiteBackgroundApplied();
 
-        clearInvocations(mView);
-
         // When Aurora is disabled on default theme, reset to default background.
         ComposeplateUtils.applyComposeplateBackground(
                 mContext, mView, /* applyWhiteBackground= */ false);
@@ -211,7 +244,7 @@ public class ComposeplateUtilsUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.NTP_AURORA)
+    @EnableFeatures({ChromeFeatureList.NTP_AURORA + ":change_button_color/false"})
     public void testApplyComposeplateBackground_buttonColorDisabled_auroraEnabled() {
         // When Aurora is enabled but button color is disabled on customized image theme, apply pure
         // white.
@@ -219,8 +252,6 @@ public class ComposeplateUtilsUnitTest {
         ComposeplateUtils.applyComposeplateBackground(
                 mContext, mView, /* applyWhiteBackground= */ true);
         verifyPureWhiteBackgroundApplied();
-
-        clearInvocations(mView);
 
         // When Aurora is enabled but button color is disabled on default theme, reset to default
         // background.
@@ -241,8 +272,6 @@ public class ComposeplateUtilsUnitTest {
                 mContext, mView, /* applyWhiteBackground= */ true);
         verifyDrawableApplied(R.drawable.fake_search_box_white_with_primary_color_alpha_2);
 
-        clearInvocations(mView);
-
         // When Aurora button color is enabled on default theme, apply 8% primary background.
         ComposeplateUtils.applyComposeplateBackground(
                 mContext, mView, /* applyWhiteBackground= */ false);
@@ -250,8 +279,7 @@ public class ComposeplateUtilsUnitTest {
     }
 
     private void verifyDrawableApplied(@DrawableRes int expectedDrawableRes) {
-        verify(mView).setBackground(mDrawableCaptor.capture());
-        Drawable captured = mDrawableCaptor.getValue();
+        Drawable captured = mView.getBackground();
         Drawable expected = mContext.getDrawable(expectedDrawableRes);
 
         if (expected instanceof LayerDrawable) {
@@ -278,10 +306,8 @@ public class ComposeplateUtilsUnitTest {
     }
 
     private void verifyPureWhiteBackgroundApplied() {
-        verify(mView).setBackground(mDrawableCaptor.capture());
-        assertTrue(mDrawableCaptor.getValue() instanceof GradientDrawable);
-        assertEquals(
-                Color.WHITE,
-                ((GradientDrawable) mDrawableCaptor.getValue()).getColor().getDefaultColor());
+        Drawable background = mView.getBackground();
+        assertTrue(background instanceof GradientDrawable);
+        assertEquals(Color.WHITE, ((GradientDrawable) background).getColor().getDefaultColor());
     }
 }

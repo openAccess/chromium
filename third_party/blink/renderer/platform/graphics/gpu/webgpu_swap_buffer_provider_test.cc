@@ -14,6 +14,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/task_environment.h"
 #include "gpu/command_buffer/client/webgpu_interface_stub.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
@@ -22,6 +23,7 @@
 #include "third_party/blink/renderer/platform/graphics/gpu/drawing_buffer_test_helpers.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/webgpu_cpp.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/webgpu_native_test_support.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 
 using testing::_;
 using testing::Return;
@@ -93,8 +95,13 @@ class MockWebGPUInterface : public gpu::webgpu::WebGPUInterfaceStub {
   uint64_t token_id_ = 42;
 };
 
-class FakeProviderClient : public WebGPUSwapBufferProvider::Client {
+class FakeProviderClient final : public GarbageCollected<FakeProviderClient>,
+                                 public WebGPUSwapBufferProvider::Client {
  public:
+  void Trace(Visitor* visitor) const override {
+    WebGPUSwapBufferProvider::Client::Trace(visitor);
+  }
+
   void OnTextureTransferred() override {
     DCHECK(texture);
     texture = nullptr;
@@ -154,7 +161,7 @@ class WebGPUSwapBufferProviderForTests : public WebGPUSwapBufferProvider {
 
  private:
   raw_ptr<bool> alive_;
-  raw_ptr<FakeProviderClient> client_;
+  Persistent<FakeProviderClient> client_;
   wgpu::TextureDescriptor texture_desc_;
   wgpu::DawnTextureInternalUsageDescriptor texture_internal_usage_;
 };
@@ -162,6 +169,10 @@ class WebGPUSwapBufferProviderForTests : public WebGPUSwapBufferProvider {
 }  // anonymous namespace
 
 class WebGPUSwapBufferProviderTest : public testing::Test {
+ public:
+  WebGPUSwapBufferProviderTest()
+      : client_(MakeGarbageCollected<FakeProviderClient>()) {}
+
  protected:
   static constexpr wgpu::TextureFormat kFormat =
       wgpu::TextureFormat::RGBA8Unorm;
@@ -210,9 +221,9 @@ class WebGPUSwapBufferProviderTest : public testing::Test {
     ASSERT_TRUE(s2c_serializer_.Flush());
     ASSERT_NE(adapter_, nullptr);
 
-    wgpu::DeviceDescriptor deviceDesc = {};
+    wgpu::DeviceDescriptor device_desc = {};
     adapter_.RequestDevice(
-        &deviceDesc, wgpu::CallbackMode::AllowSpontaneous,
+        &device_desc, wgpu::CallbackMode::AllowSpontaneous,
         [&](wgpu::RequestDeviceStatus, wgpu::Device device, wgpu::StringView) {
           device_ = std::move(device);
         });
@@ -224,8 +235,8 @@ class WebGPUSwapBufferProviderTest : public testing::Test {
         std::move(provider), scheduler::GetSingleThreadTaskRunnerForTesting());
 
     provider_ = base::MakeRefCounted<WebGPUSwapBufferProviderForTests>(
-        &provider_alive_, &client_, device_.Get(), dawn_control_client_, kUsage,
-        kInternalUsage, kFormat, PredefinedColorSpace::kSRGB,
+        &provider_alive_, client_.Get(), device_.Get(), dawn_control_client_,
+        kUsage, kInternalUsage, kFormat, PredefinedColorSpace::kSRGB,
         gfx::HDRMetadata(), kTopLeft_GrSurfaceOrigin);
   }
 
@@ -263,7 +274,7 @@ class WebGPUSwapBufferProviderTest : public testing::Test {
   scoped_refptr<DawnControlClientHolder> dawn_control_client_;
   raw_ptr<MockWebGPUInterface> webgpu_;
   raw_ptr<gpu::TestSharedImageInterface> sii_;
-  FakeProviderClient client_;
+  Persistent<FakeProviderClient> client_;
   scoped_refptr<WebGPUSwapBufferProviderForTests> provider_;
   bool provider_alive_ = true;
 };
@@ -382,19 +393,29 @@ TEST_F(WebGPUSwapBufferProviderTest, VerifyInsertAndWaitSyncTokenCorrectly) {
   // synchronize properly
   EXPECT_TRUE(
       provider_->PrepareTransferableResource(&resource, &release_callback));
-  EXPECT_EQ(webgpu_->most_recent_generated_token, resource.sync_token());
+  if (!base::FeatureList::IsEnabled(
+          ::features::kUseAutomaticSyncTokenManagement)) {
+    EXPECT_EQ(webgpu_->most_recent_generated_token, resource.sync_token());
+  } else {
+    // Under automatic SyncToken management, ClientSharedImage manages
+    // SyncTokens internally and the client-visible SyncToken is empty.
+    EXPECT_FALSE(resource.sync_token().HasData());
+  }
 
   // Check that the release token is used to synchronize the shared image
   // destruction
   gpu::SyncToken release_token;
   webgpu_->GenSyncTokenCHROMIUM(release_token.GetData());
-  std::move(release_callback).Run(release_token, false /* lostResource */);
+  gpu::SyncToken returned_token = resource.shared_image()->EndExport(
+      gpu::SharedImageExportResult::CreateForTesting(release_token));
+  std::move(release_callback).Run(returned_token, false /* lostResource */);
   resource = viz::TransferableResource();
 
   // Release the unused swap buffers held by the provider.
   provider_ = nullptr;
 
-  EXPECT_EQ(sii_->MostRecentDestroyToken(), release_token);
+  EXPECT_THAT(sii_->MostRecentDestroyTokens(),
+              testing::Contains(release_token));
 }
 
 // Ensures swap buffers will be recycled.

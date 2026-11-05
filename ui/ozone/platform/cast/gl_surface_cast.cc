@@ -55,15 +55,17 @@ GLSurfaceCast::GLSurfaceCast(gl::GLDisplayEGL* display,
       parent_(parent),
       uses_triple_buffering_(
           chromecast::IsFeatureEnabled(chromecast::kTripleBuffer720)) {
-  DCHECK(parent_);
+  CHECK(parent_, base::NotFatalUntil::M163);
 }
 
 bool GLSurfaceCast::Resize(const gfx::Size& size,
                            float scale_factor,
                            const gfx::ColorSpace& color_space,
                            bool has_alpha) {
-  return parent_->ResizeDisplay(size) &&
-         NativeViewGLSurfaceEGL::Resize(size, scale_factor, color_space,
+  if (parent_ && !parent_->ResizeDisplay(size)) {
+    return false;
+  }
+  return NativeViewGLSurfaceEGL::Resize(size, scale_factor, color_space,
                                         has_alpha);
 }
 

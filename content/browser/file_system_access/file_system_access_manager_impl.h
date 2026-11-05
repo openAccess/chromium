@@ -58,6 +58,7 @@ class FileSystemContext;
 
 namespace content {
 class ChromeBlobStorageContext;
+class CrossOriginStorageFileHandleImpl;
 class FileSystemAccessAccessHandleHostImpl;
 class FileSystemAccessDataTransferTokenImpl;
 class FileSystemAccessDirectoryHandleImpl;
@@ -155,6 +156,7 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
 
   // storage::mojom::FileSystemAccessContext:
   void SerializeHandle(
+      const blink::StorageKey& storage_key,
       mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token,
       SerializeHandleCallback callback) override;
   void DeserializeHandle(
@@ -169,11 +171,11 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
   blink::mojom::FileSystemAccessEntryPtr CreateFileEntryFromPath(
       const BindingContext& binding_context,
       const PathInfo& path_info,
-      UserAction user_action) override;
+      AccessTrigger access_trigger) override;
   blink::mojom::FileSystemAccessEntryPtr CreateDirectoryEntryFromPath(
       const BindingContext& binding_context,
       const PathInfo& path_info,
-      UserAction user_action) override;
+      AccessTrigger access_trigger) override;
   void ResolveTransferToken(
       mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken>
           transfer_token,
@@ -291,6 +293,10 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
       mojo::PendingReceiver<blink::mojom::FileSystemAccessTransferToken>
           receiver);
   void CreateTransferToken(
+      const CrossOriginStorageFileHandleImpl& file,
+      mojo::PendingReceiver<blink::mojom::FileSystemAccessTransferToken>
+          receiver);
+  void CreateTransferToken(
       const FileSystemAccessDirectoryHandleImpl& directory,
       mojo::PendingReceiver<blink::mojom::FileSystemAccessTransferToken>
           receiver);
@@ -400,7 +406,7 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
       const PathInfo& path_info,
       const blink::StorageKey& storage_key,
       FileSystemAccessPermissionContext::HandleType handle_type,
-      FileSystemAccessPermissionContext::UserAction user_action);
+      FileSystemAccessPermissionContext::AccessTrigger access_trigger);
   // Same as above, but for paths in a sandboxed file system.
   SharedHandleState GetSharedHandleStateForSandboxedPath();
 
@@ -555,7 +561,7 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
                                     const PathInfo& entry,
                                     const storage::FileSystemURL& url,
                                     ChooseEntriesCallback callback,
-                                    bool success);
+                                    base::File::Error result);
   void DidChooseDirectory(
       const BindingContext& binding_context,
       const PathInfo& entry,
@@ -587,6 +593,7 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
           directory_handle_receiver,
       FileSystemAccessTransferTokenImpl* resolved_token);
   void DidResolveForSerializeHandle(
+      const blink::StorageKey& storage_key,
       SerializeHandleCallback callback,
       FileSystemAccessTransferTokenImpl* resolved_token);
   void DidGetSandboxedBucketForDeserializeHandle(
@@ -655,6 +662,7 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
   // permissions related to the URL are based on this path.
   std::string SerializeURLWithPermissionRoot(
       const storage::FileSystemURL& url,
+      const url::Origin& origin,
       FileSystemAccessPermissionContext::HandleType type,
       const base::FilePath& root_permission_path,
       const std::string& display_name);
@@ -704,11 +712,26 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
   // and `access_handle_host_receivers_`. The locks held by file writers and
   // access handles dereference the lock manager on destruction, so it should
   // outlive them.
+  //
+  // `writer_receivers_` and `access_handle_host_receivers_` should be
+  // destroyed after `file_receivers_` and `directory_receivers_`. Destroying
+  // file writers and access handle hosts releases their locks, which can
+  // synchronously promote pending lock requests and invoke callbacks on live
+  // file or directory handles. Destroying `file_receivers_` and
+  // `directory_receivers_` first invalidates those callbacks before any locks
+  // are released.
   scoped_refptr<FileSystemAccessLockManager> lock_manager_
       GUARDED_BY_CONTEXT(sequence_checker_);
 
   FileSystemAccessWatcherManager watcher_manager_
       GUARDED_BY_CONTEXT(sequence_checker_);
+
+  base::flat_set<std::unique_ptr<FileSystemAccessFileWriterImpl>,
+                 base::UniquePtrComparator>
+      writer_receivers_ GUARDED_BY_CONTEXT(sequence_checker_);
+  base::flat_set<std::unique_ptr<FileSystemAccessAccessHandleHostImpl>,
+                 base::UniquePtrComparator>
+      access_handle_host_receivers_ GUARDED_BY_CONTEXT(sequence_checker_);
 
   // All the receivers for file and directory handles that have references to
   // them.
@@ -716,12 +739,6 @@ class CONTENT_EXPORT FileSystemAccessManagerImpl
       file_receivers_ GUARDED_BY_CONTEXT(sequence_checker_);
   mojo::UniqueReceiverSet<blink::mojom::FileSystemAccessDirectoryHandle>
       directory_receivers_ GUARDED_BY_CONTEXT(sequence_checker_);
-  base::flat_set<std::unique_ptr<FileSystemAccessFileWriterImpl>,
-                 base::UniquePtrComparator>
-      writer_receivers_ GUARDED_BY_CONTEXT(sequence_checker_);
-  base::flat_set<std::unique_ptr<FileSystemAccessAccessHandleHostImpl>,
-                 base::UniquePtrComparator>
-      access_handle_host_receivers_ GUARDED_BY_CONTEXT(sequence_checker_);
 
   const bool off_the_record_;
 

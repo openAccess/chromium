@@ -42,6 +42,7 @@ import org.chromium.chrome.browser.multiwindow.UiUtils.NameWindowDialogSource;
 import org.chromium.components.browser_ui.util.TimeTextResolver;
 import org.chromium.components.browser_ui.widget.BoundedLinearLayout;
 import org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils;
+import org.chromium.components.browser_ui.widget.DialogListItemDecoration;
 import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.ui.listmenu.BasicListMenu;
 import org.chromium.ui.listmenu.ListMenu;
@@ -249,7 +250,10 @@ public class InstanceSwitcherCoordinator {
                 TYPE_INSTANCE,
                 parentView ->
                         LayoutInflater.from(mContext)
-                                .inflate(R.layout.instance_switcher_item, null),
+                                .inflate(
+                                        R.layout.instance_switcher_item,
+                                        parentView,
+                                        /* attachToRoot= */ false),
                 InstanceSwitcherItemViewBinder::bind);
         return adapter;
     }

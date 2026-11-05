@@ -17,6 +17,7 @@
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/strings/pattern.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
@@ -75,6 +76,8 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/remote_set.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
+#include "net/base/is_potentially_trustworthy.h"
+#include "net/base/switches.h"
 #include "net/net_buildflags.h"
 #include "net/proxy_resolution/proxy_config_with_annotation.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
@@ -91,6 +94,8 @@
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/test/mojom/device_posture/device_posture_provider_automation.test-mojom.h"
+#include "third_party/blink/public/test/mojom/select_file_dialog/select_file_dialog_automation.test-mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/ui_base_switches.h"
 #include "url/origin.h"
 #include "url/url_constants.h"
@@ -307,6 +312,13 @@ WebTestContentBrowserClient::WebTestContentBrowserClient() {
   static storage::QuotaSettings quota_settings(
       storage::GetHardCodedSettings(1024 * 1024 * 1024));
   StoragePartition::SetDefaultQuotaSettingsForTesting(&quota_settings);
+
+  // DevTools frontend in web tests is loaded over
+  // http://debug-frontend.test:8000 (see WebTestDevToolsBindings::Inspect).
+  // Treat this origin as secure so that the DevTools frontend has access to
+  // [SecureContext] APIs (e.g. crypto.randomUUID).
+  net::SecureOriginAllowlist::GetInstance().SetAuxiliaryAllowlist(
+      "http://debug-frontend.test:8000", nullptr);
 }
 
 WebTestContentBrowserClient::~WebTestContentBrowserClient() {
@@ -429,6 +441,11 @@ void WebTestContentBrowserClient::OverrideWebPreferences(
   }
 }
 
+bool WebTestContentBrowserClient::
+    ShouldUpdateFontRendererPreferencesFromSystemSettings() const {
+  return false;
+}
+
 void WebTestContentBrowserClient::CreateThrottlesForNavigation(
     NavigationThrottleRegistry& registry) {
   ShellContentBrowserClient::CreateThrottlesForNavigation(registry);
@@ -455,6 +472,14 @@ void WebTestContentBrowserClient::AppendExtraCommandLineSwitches(
 
   command_line->CopySwitchesFrom(*base::CommandLine::ForCurrentProcess(),
                                  kForwardSwitches);
+
+  std::vector<std::string> allowlist =
+      net::SecureOriginAllowlist::GetInstance().GetCurrentAllowlist();
+  if (!allowlist.empty()) {
+    command_line->AppendSwitchASCII(
+        net::switches::kUnsafelyTreatInsecureOriginAsSecure,
+        base::JoinString(allowlist, ","));
+  }
 }
 
 std::unique_ptr<BrowserMainParts>
@@ -539,7 +564,7 @@ bool WebTestContentBrowserClient::CanCreateWindow(
     const GURL& target_url,
     const Referrer& referrer,
     const std::string& frame_name,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& features,
     bool user_gesture,
     bool opener_suppressed,
@@ -581,6 +606,9 @@ void WebTestContentBrowserClient::RegisterBrowserInterfaceBindersForFrame(
   map->Add<blink::test::mojom::FederatedAuthRequestAutomation>(
       base::BindRepeating(&WebTestContentBrowserClient::BindFedCmAutomation,
                           base::Unretained(this)));
+  map->Add<blink::test::mojom::SelectFileDialogAutomation>(base::BindRepeating(
+      &WebTestContentBrowserClient::BindSelectFileDialogAutomation,
+      base::Unretained(this)));
   map->Add<blink::test::mojom::WebSensorProviderAutomation>(base::BindRepeating(
       &WebTestContentBrowserClient::BindWebSensorProviderAutomation,
       base::Unretained(this)));
@@ -662,6 +690,16 @@ void WebTestContentBrowserClient::BindFedCmAutomation(
                       std::move(receiver));
 }
 
+void WebTestContentBrowserClient::BindSelectFileDialogAutomation(
+    RenderFrameHost* render_frame_host,
+    mojo::PendingReceiver<blink::test::mojom::SelectFileDialogAutomation>
+        receiver) {
+  if (WebTestControlHost::Get()) {
+    WebTestControlHost::Get()->BindSelectFileDialogAutomation(
+        std::move(receiver));
+  }
+}
+
 void WebTestContentBrowserClient::BindWebSensorProviderAutomation(
     RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<blink::test::mojom::WebSensorProviderAutomation>
@@ -698,6 +736,7 @@ std::unique_ptr<LoginDelegate> WebTestContentBrowserClient::CreateLoginDelegate(
     const GURL& url,
     scoped_refptr<net::HttpResponseHeaders> response_headers,
     bool first_auth_attempt,
+    bool do_not_prompt_for_login,
     GuestPageHolder* guest,
     LoginDelegate::LoginAuthRequiredCallback auth_required_callback) {
   return nullptr;
@@ -756,15 +795,6 @@ void WebTestContentBrowserClient::BindNonAssociatedWebTestControlHost(
   }
 }
 
-#if BUILDFLAG(IS_WIN)
-bool WebTestContentBrowserClient::PreSpawnChild(
-    sandbox::TargetConfig* config,
-    sandbox::mojom::Sandbox sandbox_type,
-    ChildSpawnFlags flags) {
-  return true;
-}
-#endif  // BUILDFLAG(IS_WIN)
-
 std::string WebTestContentBrowserClient::GetAcceptLangs(
     BrowserContext* context) {
   return GetShellLanguage();
@@ -772,8 +802,7 @@ std::string WebTestContentBrowserClient::GetAcceptLangs(
 
 bool WebTestContentBrowserClient::IsPrivacySandboxReportingDestinationAttested(
     BrowserContext* browser_context,
-    const url::Origin& destination_origin,
-    PrivacySandboxInvokingAPI invoking_api) {
+    const url::Origin& destination_origin) {
   return true;
 }
 

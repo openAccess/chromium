@@ -11,6 +11,7 @@
 namespace content {
 class BrowserContext;
 class RenderFrameHost;
+struct ServiceWorkerVersionBaseInfo;
 }  // namespace content
 
 namespace extensions {
@@ -34,9 +35,16 @@ class ContextualTasksExtensionBinderProvider
   ~ContextualTasksExtensionBinderProvider() override;
 
   // extensions::ExtensionMojoBinderProvider:
+  bool IsMojoJsEnabledForFrame() const override;
+  bool IsMojoJsEnabledForServiceWorker() const override;
   void PopulateFrameBinders(
       mojo::BinderMapWithContext<content::RenderFrameHost*>& binder_map,
       content::RenderFrameHost* render_frame_host,
+      const extensions::Extension& extension) override;
+  void PopulateServiceWorkerBinders(
+      mojo::BinderMapWithContext<const content::ServiceWorkerVersionBaseInfo&>&
+          binder_map,
+      content::BrowserContext* browser_context,
       const extensions::Extension& extension) override;
 };
 

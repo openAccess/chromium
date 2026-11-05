@@ -25,8 +25,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_constants.h"
-#include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "components/account_id/account_id.h"
@@ -55,11 +53,12 @@ class ProfileHelperImpl : public ProfileHelper {
 
   void SetUserToProfileMappingForTesting(const user_manager::User* user,
                                          Profile* profile) override;
+  void ClearUserToProfileMappingForTesting() override;
 
  private:
   std::unique_ptr<BrowserContextHelper> browser_context_helper_;
 
-  // Used for testing by unit tests and FakeUserManager.
+  // Used for testing by unit tests and FakeChromeUserManager.
   std::map<const user_manager::User*, raw_ptr<Profile, CtnExperimental>>
       user_to_profile_for_testing_;
 };
@@ -104,8 +103,7 @@ std::string ProfileHelper::GetUserIdHashFromProfile(const Profile* profile) {
 // static
 base::FilePath ProfileHelper::GetUserProfileDir(
     const std::string& user_id_hash) {
-  return base::FilePath(
-      BrowserContextHelper::GetUserBrowserContextDirName(user_id_hash));
+  return base::FilePath(user_manager::User::GetDirName(user_id_hash));
 }
 
 // static
@@ -227,9 +225,10 @@ const user_manager::User* ProfileHelperImpl::GetUserByProfile(
     return user_manager::UserManager::Get()->GetPrimaryUser();
   }
 
-  DCHECK(!content::BrowserThread::IsThreadInitialized(
-             content::BrowserThread::UI) ||
-         content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(!content::BrowserThread::IsThreadInitialized(
+            content::BrowserThread::UI) ||
+            content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M161);
 
   user_manager::UserManager* user_manager = user_manager::UserManager::Get();
 
@@ -272,8 +271,12 @@ user_manager::User* ProfileHelperImpl::GetUserByProfile(
 void ProfileHelperImpl::SetUserToProfileMappingForTesting(
     const user_manager::User* user,
     Profile* profile) {
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M161);
   user_to_profile_for_testing_[user] = profile;
+}
+
+void ProfileHelperImpl::ClearUserToProfileMappingForTesting() {
+  user_to_profile_for_testing_.clear();
 }
 
 }  // namespace ash

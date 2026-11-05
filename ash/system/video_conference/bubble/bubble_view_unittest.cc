@@ -469,22 +469,12 @@ class DLCBubbleViewTest : public BubbleViewTest {
   ~DLCBubbleViewTest() override = default;
 
   // AshTestBase:
-  void SetUp() override {
-    scoped_feature_list_ = std::make_unique<base::test::ScopedFeatureList>();
-    scoped_feature_list_->InitAndEnableFeature(features::kVcDlcUi);
-    BubbleViewTest::SetUp();
-  }
-
   void TearDown() override {
     // Unregister toggle effects that were registered to ensure the
     // `VcTileUiControllers` are reset like they are in the production version.
     controller()->GetEffectsManager().UnregisterDelegate(office_bunny());
     BubbleViewTest::TearDown();
-    scoped_feature_list_.reset();
   }
-
- private:
-  std::unique_ptr<base::test::ScopedFeatureList> scoped_feature_list_;
 };
 
 // Tests that an initialized BubbleView with no errors shows no warning label.
@@ -628,6 +618,11 @@ class ResourceDependencyTest
   ~ResourceDependencyTest() override = default;
 
   // AshTestBase:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
+    init_params.create_global_cras_audio_handler = false;
+  }
+
   void SetUp() override {
     scoped_feature_list_.InitAndEnableFeature(
         features::kFeatureManagementVideoConference);
@@ -643,7 +638,6 @@ class ResourceDependencyTest
     // ash unit tests).
     controller_ = std::make_unique<FakeVideoConferenceTrayController>();
 
-    set_create_global_cras_audio_handler(false);
     AshTestBase::SetUp();
 
     // Make the video conference tray visible for testing.

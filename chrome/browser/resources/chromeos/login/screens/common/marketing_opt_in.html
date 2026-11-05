@@ -33,10 +33,6 @@ found in the LICENSE file.
   }
 
   .legal-info {
-    color: var(--cros-text-color-secondary);
-  }
-
-  :host-context(.jelly-enabled) .legal-info {
     color: var(--oobe-subheader-text-color);
     font-family: var(--oobe-marketing-opt-in-legal-info-font-family);
     font-size: var(--oobe-marketing-opt-in-legal-info-font-size);
@@ -45,10 +41,6 @@ found in the LICENSE file.
   }
 
   .toggle-title {
-    color: var(--cros-text-color-primary);
-  }
-
-  :host-context(.jelly-enabled) .toggle-title {
     color: var(--oobe-text-color);
     font-family: var(--oobe-marketing-opt-in-legal-title-font-family);
     font-size: var(--oobe-marketing-opt-in-legal-title-font-size);
@@ -80,19 +72,11 @@ found in the LICENSE file.
   #toggleRowIcon {
     --iron-icon-height: 20px;
     --iron-icon-width: 20px;
-    --iron-icon-fill-color: var(--cros-icon-color-blue);
+    --iron-icon-fill-color: var(--oobe-adaptive-dialog-icon-fill-color);
     padding-inline-end: 16px;
   }
 
-  :host-context(.jelly-enabled) #toggleRowIcon {
-    --iron-icon-fill-color: var(--oobe-adaptive-dialog-icon-fill-color);
-  }
-
   #googleUrl {
-    color: var(--cros-color-prominent);
-  }
-
-  :host-context(.jelly-enabled) #googleUrl {
     color: var(--cros-sys-primary);
   }
 
@@ -110,35 +94,23 @@ found in the LICENSE file.
     for-step="overview"
     aria-label$="[[i18nDynamic(locale, 'marketingOptInScreenTitle')]]"
     aria-describedby="marketing-opt-in-subtitle">
-  <iron-icon slot="icon"
-      icon="[[getIcon(isCloudGamingDevice)]]">
+  <iron-icon slot="icon" icon="oobe-32:checkmark">
   </iron-icon>
 
-  <h1 hidden="[[isCloudGamingDevice]]" slot="title">
+  <h1 slot="title">
     [[i18nDynamic(locale, 'marketingOptInScreenTitle')]]
-  </h1>
-  <h1 id ="marketingOptInGameDeviceTitle"
-      hidden="[[!isCloudGamingDevice]]" slot="title">
-    [[i18nDynamic(locale, 'marketingOptInScreenGameDeviceTitle')]]
   </h1>
   <div slot="subtitle">
     <!-- No marketing opt in -->
-    <div hidden="[[isCloudGamingDevice]]">
-      <div hidden="[[marketingOptInVisible]]"
-        id="marketingOptInSubtitleWithDeviceName">
-        [[i18nDynamic(locale,
-              'marketingOptInScreenSubtitleWithDeviceName')]]
-      </div>
-      <!-- Marketing opt in -->
-      <div hidden="[[!marketingOptInVisible]]" id="marketingOptInSubtitle">
-        [[i18nDynamic(locale,
-                'marketingOptInScreenSubtitle')]]
-      </div>
-    </div>
-    <div hidden="[[!isCloudGamingDevice]]"
-          id="marketingOptInGameDeviceSubtitle">
+    <div hidden="[[marketingOptInVisible]]"
+      id="marketingOptInSubtitleWithDeviceName">
       [[i18nDynamic(locale,
-              'marketingOptInScreenGameDeviceSubtitle')]]
+            'marketingOptInScreenSubtitleWithDeviceName')]]
+    </div>
+    <!-- Marketing opt in -->
+    <div hidden="[[!marketingOptInVisible]]" id="marketingOptInSubtitle">
+      [[i18nDynamic(locale,
+              'marketingOptInScreenSubtitle')]]
     </div>
     <!-- Toggle row -->
     <div class="layout horizontal center"
@@ -147,14 +119,8 @@ found in the LICENSE file.
       <iron-icon id="toggleRowIcon" icon="oobe-32:chromebook"></iron-icon>
       <div id="chromebookUpdatesOptionLabel" class="flex layout vertical"
           aria-hidden="true">
-        <div class="toggle-title" hidden="[[isCloudGamingDevice]]">
+        <div class="toggle-title">
           [[i18nDynamic(locale, 'marketingOptInGetChromebookUpdates')]]
-        </div>
-        <div class="toggle-title" hidden="[[!isCloudGamingDevice]]">
-          [[i18nDynamic(locale, 'marketingOptInGameDeviceUpdates')]]
-        </div>
-        <div class="legal-info" hidden="[[!isCloudGamingDevice]]">
-          [[i18nDynamic(locale, 'marketingOptInScreenSubtitle')]]
         </div>
         <div class="legal-info">
           [[i18nDynamic(locale, 'marketingOptInScreenUnsubscribeLong')]]
@@ -174,7 +140,7 @@ found in the LICENSE file.
     </div>
   </div>
 
-  <div hidden="[[isCloudGamingDevice]]" id="contentArea"
+  <div id="contentArea"
         slot="content" class="layout flex vertical">
     <!-- Animation -->
     <div  class="marketing-animation-content">
@@ -183,12 +149,6 @@ found in the LICENSE file.
           singleLoop="true">
       </oobe-cr-lottie>
     </div>
-  </div>
-  <div hidden="[[!isCloudGamingDevice]]" slot="content"
-        class="flex layout vertical center-justified center">
-    <iron-icon icon="oobe-illos:blazey-illo"
-        class="illustration-jelly">
-    </iron-icon>
   </div>
   <oobe-icon-button slot="bottom-buttons"
       hidden="[[!isA11ySettingsButtonVisible]]"

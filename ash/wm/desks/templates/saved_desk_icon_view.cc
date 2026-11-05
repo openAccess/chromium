@@ -10,7 +10,7 @@
 #include "ash/public/cpp/rounded_image_view.h"
 #include "ash/public/cpp/saved_desk_delegate.h"
 #include "ash/shell.h"
-#include "ash/style/ash_color_provider.h"
+#include "ash/wm/window_restore/window_restore_util.h"
 #include "base/check.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -133,7 +133,7 @@ END_METADATA
 SavedDeskRegularIconView::SavedDeskRegularIconView(
     const ui::ColorProvider* incognito_window_color_provider,
     const SavedDeskIconIdentifier& icon_identifier,
-    const std::string& app_title,
+    std::string_view app_title,
     int count,
     size_t sorting_key,
     base::OnceCallback<void(views::View*)> on_icon_loaded)
@@ -193,7 +193,7 @@ bool SavedDeskRegularIconView::IsOverflowIcon() const {
 
 void SavedDeskRegularIconView::CreateChildViews(
     const ui::ColorProvider* incognito_window_color_provider,
-    const std::string& app_title) {
+    std::string_view app_title) {
   if (GetCountToShow())
     CreateCountLabelChildView(/*show_plush*/ true, 2 * kCountLabelInsetSize);
 
@@ -241,11 +241,10 @@ void SavedDeskRegularIconView::CreateChildViews(
     return;
   }
 
-  delegate->GetFaviconForUrl(
-      icon_identifier_.url_or_id,
-      base::BindOnce(&SavedDeskRegularIconView::OnIconLoaded,
-                     weak_ptr_factory_.GetWeakPtr()),
-      &cancelable_task_tracker_);
+  GetFaviconForUrl(icon_identifier_.url_or_id,
+                   base::BindOnce(&SavedDeskRegularIconView::OnIconLoaded,
+                                  weak_ptr_factory_.GetWeakPtr()),
+                   &cancelable_task_tracker_);
 }
 
 void SavedDeskRegularIconView::OnIconLoaded(const gfx::ImageSkia& icon) {

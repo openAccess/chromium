@@ -45,6 +45,7 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/network_service_instance.h"
+#include "extensions/buildflags/buildflags.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 #if BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
@@ -251,7 +252,7 @@ scoped_refptr<base::SingleThreadTaskRunner>
 ChromeBrowserCloudManagementControllerDesktop::GetBestEffortTaskRunner() {
   // ChromeBrowserCloudManagementControllerDesktop is bound to BrowserThread::UI
   // and so must its best-effort task runner.
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   return content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT});
 }
 

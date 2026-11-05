@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/platform/wtf/linked_hash_set.h"
 
+#include <ranges>
+
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -15,6 +17,8 @@ static_assert(!IsTraceableV<LinkedHashSet<int>>,
               "LinkedHashSet must not be traceable.");
 static_assert(!IsTraceableV<LinkedHashSet<String>>,
               "LinkedHashSet must not be traceable.");
+static_assert(std::ranges::bidirectional_range<LinkedHashSet<int>>);
+static_assert(std::ranges::bidirectional_range<const LinkedHashSet<int>>);
 
 TEST(LinkedHashSetTest, CopyConstructAndAssignInt) {
   using Set = LinkedHashSet<ValueInstanceCount<int>>;
@@ -872,7 +876,7 @@ struct EmptyString {
 
 template <>
 struct HashTraits<EmptyString> : SimpleClassHashTraits<EmptyString> {
-  static unsigned GetHash(const EmptyString&) { return 0; }
+  static uint32_t GetHash(const EmptyString&) { return 0; }
   static const bool kEmptyValueIsZero = false;
 
   // This overrides SimpleClassHashTraits<EmptyString>::EmptyValue() which
@@ -1034,7 +1038,7 @@ struct Complicated {
 };
 
 struct ComplicatedHashTraits : blink::GenericHashTraits<Complicated> {
-  static unsigned GetHash(const Complicated& key) { return key.simple_.value_; }
+  static uint32_t GetHash(const Complicated& key) { return key.simple_.value_; }
   static bool Equal(const Complicated& a, const Complicated& b) {
     return a.simple_.value_ == b.simple_.value_;
   }
@@ -1044,7 +1048,7 @@ struct ComplicatedHashTraits : blink::GenericHashTraits<Complicated> {
 };
 
 struct ComplexityTranslator {
-  static unsigned GetHash(const Simple& key) { return key.value_; }
+  static uint32_t GetHash(const Simple& key) { return key.value_; }
   static bool Equal(const Complicated& a, const Simple& b) {
     return a.simple_.value_ == b.value_;
   }

@@ -6,7 +6,9 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 #include "base/base64.h"
@@ -294,17 +296,16 @@ TestResultsTracker::~TestResultsTracker() {
             FormatTimeAsIso8601(Time::Now()).c_str());
 
     for (const TestResult& result : results) {
-      UNSAFE_TODO(fprintf(
-          out_.get(),
-          "    <testcase name=\"%s\" status=\"run\" time=\"%.3f\""
-          "%s classname=\"%s\">\n",
-          result.GetTestName().c_str(), result.elapsed_time.InSecondsF(),
-          (result.timestamp
-               ? StrCat({" timestamp=\"",
-                         FormatTimeAsIso8601(*result.timestamp), "\""})
-                     .c_str()
-               : ""),
-          result.GetTestCaseName().c_str()));
+      fprintf(out_.get(),
+              "    <testcase name=\"%s\" status=\"run\" time=\"%.3f\""
+              "%s classname=\"%s\">\n",
+              result.GetTestName().c_str(), result.elapsed_time.InSecondsF(),
+              (result.timestamp
+                   ? StrCat({" timestamp=\"",
+                             FormatTimeAsIso8601(*result.timestamp), "\""})
+                         .c_str()
+                   : ""),
+              result.GetTestCaseName().c_str());
       if (result.status != TestResult::TEST_SUCCESS) {
         // The actual failure message is not propagated up to here, as it's too
         // much work to escape it properly, and in case of failure, almost
@@ -575,14 +576,21 @@ bool TestResultsTracker::SaveSummaryAsJSON(
   }
   summary_root.Set("global_tags", std::move(global_tags));
 
-  ListValue all_tests;
-  for (const auto& test : all_tests_) {
+  std::vector<std::string_view> sorted_all_tests(all_tests_.begin(),
+                                                 all_tests_.end());
+  std::ranges::sort(sorted_all_tests);
+  ListValue all_tests = ListValue::with_capacity(sorted_all_tests.size());
+  for (std::string_view test : sorted_all_tests) {
     all_tests.Append(test);
   }
   summary_root.Set("all_tests", std::move(all_tests));
 
-  ListValue disabled_tests;
-  for (const auto& disabled_test : disabled_tests_) {
+  std::vector<std::string_view> sorted_disabled_tests(disabled_tests_.begin(),
+                                                      disabled_tests_.end());
+  std::ranges::sort(sorted_disabled_tests);
+  ListValue disabled_tests =
+      ListValue::with_capacity(sorted_disabled_tests.size());
+  for (std::string_view disabled_test : sorted_disabled_tests) {
     disabled_tests.Append(disabled_test);
   }
   summary_root.Set("disabled_tests", std::move(disabled_tests));
@@ -704,8 +712,8 @@ void TestResultsTracker::PrintTests(InputIterator first,
     return;
   }
 
-  UNSAFE_TODO(fprintf(stdout, "%" PRIuS " test%s %s:\n", count,
-                      count != 1 ? "s" : "", description.c_str()));
+  fprintf(stdout, "%" PRIuS " test%s %s:\n", count, count != 1 ? "s" : "",
+          description.c_str());
   for (InputIterator it = first; it != last; ++it) {
     const std::string& test_name = *it;
     const auto location_it = test_locations_.find(test_name);

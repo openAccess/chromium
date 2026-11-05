@@ -16,8 +16,6 @@ import pickle
 from collections import OrderedDict
 from uuid import UUID
 
-# pylint: disable=raise-missing-from
-
 
 # We use our own version of __repr__ when displaying the AST, as the
 # AST currently doesn't capture which nodes are reference (e.g. to
@@ -135,7 +133,6 @@ class Kind:
     setattr(cls, name, property(Get, Set))
 
   def Repr(self, as_ref=True):
-    # pylint: disable=unused-argument
     return '<%s spec=%r is_nullable=%r>' % (
       self.__class__.__name__,
       self.spec,
@@ -147,8 +144,7 @@ class Kind:
     return self.Repr()
 
   def __eq__(self, rhs):
-    # pylint: disable=unidiomatic-typecheck
-    return type(self) == type(rhs) and (
+    return type(self) == type(rhs) and (  # noqa: E721
       self.spec,
       self.parent_kind,
       self.is_nullable,
@@ -250,7 +246,7 @@ class ValueKind(Kind):
   def __eq__(self, rhs):
     return isinstance(rhs, ValueKind) and super().__eq__(rhs)
 
-  def __hash__(self):  # pylint: disable=useless-super-delegation
+  def __hash__(self):
     return super().__hash__()
 
 
@@ -325,7 +321,7 @@ class ReferenceKind(Kind):
   def __eq__(self, rhs):
     return isinstance(rhs, ReferenceKind) and super().__eq__(rhs)
 
-  def __hash__(self):  # pylint: disable=useless-super-delegation
+  def __hash__(self):
     return super().__hash__()
 
 
@@ -526,7 +522,6 @@ class Field:
     self.attributes = attributes
 
   def Repr(self, as_ref=True):
-    # pylint: disable=unused-argument
     # Fields are only referenced by objects which define them and thus
     # they are always displayed as non-references.
     return GenericRepr(self, {'mojom_name': False, 'kind': True})
@@ -849,8 +844,19 @@ class Array(ReferenceKind):
     return id(self)
 
 
+def _ValidateMapKeyKind(key_kind):
+  if IsNullableKind(key_kind):
+    raise Exception("Nullable kinds cannot be keys in maps.")
+  if IsAnyHandleKind(key_kind):
+    raise Exception("Handles cannot be keys in maps.")
+  if IsAnyInterfaceKind(key_kind):
+    raise Exception("Interfaces cannot be keys in maps.")
+  if IsArrayKind(key_kind):
+    raise Exception("Arrays cannot be keys in maps.")
+
+
 class Map(ReferenceKind):
-  """A map.
+  """An ordered map.
 
   Attributes:
     key_kind: {Kind} The type of the keys. May be None.
@@ -865,14 +871,7 @@ class Map(ReferenceKind):
       ReferenceKind.__init__(
         self, 'm[' + key_kind.spec + '][' + value_kind.spec + ']'
       )
-      if IsNullableKind(key_kind):
-        raise Exception("Nullable kinds cannot be keys in maps.")
-      if IsAnyHandleKind(key_kind):
-        raise Exception("Handles cannot be keys in maps.")
-      if IsAnyInterfaceKind(key_kind):
-        raise Exception("Interfaces cannot be keys in maps.")
-      if IsArrayKind(key_kind):
-        raise Exception("Arrays cannot be keys in maps.")
+      _ValidateMapKeyKind(key_kind)
     else:
       ReferenceKind.__init__(self)
 
@@ -892,6 +891,53 @@ class Map(ReferenceKind):
 
   def __eq__(self, rhs):
     return isinstance(rhs, Map) and (self.key_kind, self.value_kind) == (
+      rhs.key_kind,
+      rhs.value_kind,
+    )
+
+  def __hash__(self):
+    return id(self)
+
+
+class HashMap(ReferenceKind):
+  """A hash map.
+
+  Attributes:
+    key_kind: {Kind} The type of the keys. May be None.
+    value_kind: {Kind} The type of the elements. May be None.
+  """
+
+  Kind.AddSharedProperty('key_kind')
+  Kind.AddSharedProperty('value_kind')
+
+  def __init__(self, key_kind=None, value_kind=None):
+    if key_kind is not None and value_kind is not None:
+      ReferenceKind.__init__(
+        self, 'hm[' + key_kind.spec + '][' + value_kind.spec + ']'
+      )
+      _ValidateMapKeyKind(key_kind)
+    else:
+      ReferenceKind.__init__(self)
+
+    self.key_kind = key_kind
+    self.value_kind = value_kind
+
+  def Repr(self, as_ref=True):
+    if as_ref:
+      return '<%s spec=%r is_nullable=%r key_kind=%s value_kind=%s>' % (
+        self.__class__.__name__,
+        self.spec,
+        self.is_nullable,
+        Repr(self.key_kind),
+        Repr(self.value_kind),
+      )
+    return GenericRepr(self, {'key_kind': True, 'value_kind': True})
+
+  def __eq__(self, rhs):
+    return isinstance(rhs, HashMap) and (
+      self.key_kind,
+      self.value_kind,
+    ) == (
       rhs.key_kind,
       rhs.value_kind,
     )
@@ -973,7 +1019,7 @@ class PendingAssociatedReceiver(ReferenceKind):
     if kind is not None:
       if not isinstance(kind, Interface):
         raise Exception(
-          'pending_associated_receiver<T> requires T to be an interface'
+          'pending_associated_receiver<T> requires T to be an interface '
           + 'type. Got %r' % kind.spec
         )
       ReferenceKind.__init__(self, 'rca:' + kind.spec)
@@ -1005,7 +1051,6 @@ class Parameter:
     self.attributes = attributes
 
   def Repr(self, as_ref=True):
-    # pylint: disable=unused-argument
     return '<%s mojom_name=%r kind=%s>' % (
       self.__class__.__name__,
       self.mojom_name,
@@ -1103,7 +1148,7 @@ class Method:
   def AddResponseParameter(
     self, mojom_name, kind, ordinal=None, default=None, attributes=None
   ):
-    if self.response_parameters == None:
+    if self.response_parameters == None:  # noqa: E711
       self.response_parameters = []
     parameter = Parameter(mojom_name, kind, ordinal, default, attributes)
     self.response_parameters.append(parameter)
@@ -1333,7 +1378,7 @@ class Interface(ReferenceKind):
 
     try:
       u = UUID(uuid_str)
-    except:
+    except:  # noqa: E722
       raise ValueError(
         'Invalid format for Uuid attribute on interface {}. '
         'Expected standard RFC 4122 string representation of '
@@ -1563,6 +1608,12 @@ class Module:
     return feature
 
   def Stylize(self, stylizer):
+    self._Stylize(stylizer, set())
+
+  def _Stylize(self, stylizer, visited):
+    if self in visited:
+      return
+    visited.add(self)
     self.namespace = stylizer.StylizeModule(self.mojom_namespace)
     for struct in self.structs:
       struct.Stylize(stylizer)
@@ -1578,10 +1629,10 @@ class Module:
       feature.Stylize(stylizer)
 
     for imported_module in self.imports:
-      imported_module.Stylize(stylizer)
+      imported_module._Stylize(stylizer, visited)
 
   def Dump(self, f):
-    pickle.dump(self, f)
+    _MojomPickler(f).dump(self)
 
   @property
   def include_send_validation(self):
@@ -1596,6 +1647,63 @@ class Module:
     result = pickle.load(f)
     assert isinstance(result, Module)
     return result
+
+
+def _Identity(x):
+  return x
+
+
+class _MojomPickler(pickle.Pickler):
+  """Custom pickler that deduplicates transitive Module, Kind, and NamedValue
+  instances by module path and spec. When multiple .mojom-module dependencies
+  are loaded independently, shared transitive modules are unpickled as distinct
+  objects, which would otherwise cause exponential duplication when
+  re-dumped."""
+
+  def __init__(self, f):
+    super().__init__(f, protocol=pickle.HIGHEST_PROTOCOL)
+    self._modules = {}
+    self._kinds = {}
+
+  def reducer_override(self, obj):
+    if isinstance(obj, Module) and obj.path is not None:
+      canon = self._modules.setdefault(obj.path, obj)
+      if obj is not canon:
+        return (_Identity, (canon,))
+    elif (
+      isinstance(obj, Kind)
+      and obj.module is not None
+      and obj.module.path is not None
+    ):
+      canon_mod = self._modules.setdefault(obj.module.path, obj.module)
+      base_spec = obj.spec[1:] if obj.spec.startswith('?') else obj.spec
+      if base_spec in canon_mod.kinds:
+        canon_kind = canon_mod.kinds[base_spec]
+        if obj.spec.startswith('?'):
+          # Cache nullable kinds in self._kinds so that multiple references
+          # share the exact same nullable Kind instance.
+          key = (canon_mod.path, obj.spec)
+          cached = self._kinds.get(key)
+          if cached is None:
+            cached = (
+              obj if obj.module is canon_mod else canon_kind.MakeNullableKind()
+            )
+            self._kinds[key] = cached
+          canon_kind = cached
+        if obj is not canon_kind:
+          return (_Identity, (canon_kind,))
+    elif (
+      isinstance(obj, NamedValue)
+      and obj.module is not None
+      and obj.module.path is not None
+    ):
+      canon_mod = self._modules.setdefault(obj.module.path, obj.module)
+      spec = obj.GetSpec()
+      if spec in canon_mod.values:
+        canon_val = canon_mod.values[spec]
+        if obj is not canon_val:
+          return (_Identity, (canon_val,))
+    return NotImplemented
 
 
 def IsBoolKind(kind):
@@ -1718,8 +1826,14 @@ def IsNullableKind(kind):
   return kind.is_nullable
 
 
+# TODO(crbug.com/527629109): Add an IsOrderedMapKind and
+# rename this to IsAnyMapKind
 def IsMapKind(kind):
-  return isinstance(kind, Map)
+  return isinstance(kind, (Map, HashMap))
+
+
+def IsHashMapKind(kind):
+  return isinstance(kind, HashMap)
 
 
 def IsObjectKind(kind):
@@ -1749,8 +1863,7 @@ def IsAnyHandleKind(kind):
 
 def IsAnyInterfaceKind(kind):
   return (
-    IsInterfaceKind(kind)
-    or IsAssociatedKind(kind)
+    IsAssociatedKind(kind)
     or IsPendingRemoteKind(kind)
     or IsPendingReceiverKind(kind)
   )
@@ -1768,7 +1881,7 @@ def IsAssociatedKind(kind):
 
 def HasCallbacks(interface):
   for method in interface.methods:
-    if method.response_parameters != None:
+    if method.response_parameters != None:  # noqa: E711
       return True
   return False
 
@@ -1826,18 +1939,12 @@ def MethodPassesAssociatedKinds(method, visited_kinds=None):
   )
 
 
-# Determines whether a method passes interfaces.
-def MethodPassesInterfaces(method):
-  return _AnyMethodParameterRecursive(method, IsInterfaceKind)
-
-
 def MethodNeedsRemoteKind(method, kind_to_check, visited_kinds=None):
 
   def needs_remote_import(reference_kind):
     return (
       (
-        IsInterfaceKind(reference_kind)
-        or IsPendingRemoteKind(reference_kind)
+        IsPendingRemoteKind(reference_kind)
         or IsPendingAssociatedRemoteKind(reference_kind)
       )
       # if types are compared directly, it will fail

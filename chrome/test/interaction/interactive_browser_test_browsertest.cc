@@ -14,12 +14,14 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/test/bind.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/test_switches.h"
 #include "components/constrained_window/constrained_window_views.h"
@@ -587,7 +589,8 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestBrowsertest,
       // it's there.
       InstrumentNextTab(kIncognito1Id, AnyBrowser()),
       NameView(
-          kIncognitoNtbName, base::BindLambdaForTesting([incognito_browser]() {
+          kIncognitoNtbName,
+          base::BindLambdaForTesting([this, incognito_browser]() {
             return AsView(
                 ui::ElementTracker::GetElementTracker()->GetUniqueElement(
                     kNewTabButtonElementId,

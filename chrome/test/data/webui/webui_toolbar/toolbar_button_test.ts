@@ -5,7 +5,9 @@
 import {isMac} from 'chrome://resources/js/platform.js';
 import {MenuSourceType} from 'chrome://resources/mojo/ui/base/mojom/menu_source_type.mojom-webui.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {getClickSourceType, getContextMenuSourceType, PressHandler} from 'chrome://webui-toolbar.top-chrome/app.js';
+import {microtasksFinished} from 'chrome://webui-test/test_util.js';
+import {getClickSourceType, getContextMenuSourceType, HighlightTracker, PressHandler} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {MediaButtonElement} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 suite('ToolbarButtonTest', function() {
   test('GetClickSourceType', function() {
@@ -40,6 +42,11 @@ suite('ToolbarButtonTest', function() {
     assertEquals(
         MenuSourceType.kMouse,
         getClickSourceType(new MouseEvent('click', {detail: 1})));
+
+    // KeyboardEvent -> kKeyboard
+    assertEquals(
+        MenuSourceType.kKeyboard,
+        getClickSourceType(new KeyboardEvent('keydown', {key: 'ArrowDown'})));
   });
 
   test('GetContextMenuSourceType', function() {
@@ -89,6 +96,78 @@ suite('ToolbarButtonTest', function() {
     assertEquals(
         MenuSourceType.kMouse,
         getContextMenuSourceType(new MouseEvent('contextmenu', {button: 2})));
+
+    // KeyboardEvent -> kKeyboard
+    assertEquals(
+        MenuSourceType.kKeyboard,
+        getContextMenuSourceType(
+            new KeyboardEvent('keydown', {key: 'ArrowDown'})));
+  });
+
+  suite('HighlightTracker', function() {
+    const leftMouseDown =
+        new PointerEvent('pointerdown', {button: 0, pointerType: 'mouse'});
+    const mouseClick = new PointerEvent('click', {pointerType: 'mouse'});
+
+    // Returns a tracker whose bubble is open.
+    function createHighlightedTracker(): HighlightTracker {
+      const tracker = new HighlightTracker();
+      tracker.onHighlightChanged(true);
+      return tracker;
+    }
+
+    // Simulates a click whose pointerdown is `down`, and returns whether the
+    // click was skipped.
+    function clickSkipped(
+        tracker: HighlightTracker, down: PointerEvent,
+        click: PointerEvent = mouseClick): boolean {
+      tracker.onPointerdown(down);
+      return tracker.shouldSkipClick(click);
+    }
+
+    test('NonPrimaryButtonNotSkipped', function() {
+      assertFalse(clickSkipped(
+          createHighlightedTracker(),
+          new PointerEvent('pointerdown', {button: 1, pointerType: 'mouse'})));
+      assertFalse(clickSkipped(
+          createHighlightedTracker(),
+          new PointerEvent('pointerdown', {button: 2, pointerType: 'mouse'})));
+    });
+
+    test('KeyboardNotSkipped', function() {
+      // Empty pointerType on pointerdown (e.g. keyboard).
+      assertFalse(clickSkipped(
+          createHighlightedTracker(),
+          new PointerEvent('pointerdown', {button: 0, pointerType: ''})));
+      // Keyboard click, even after a pointerdown that dismissed the bubble.
+      assertFalse(clickSkipped(
+          createHighlightedTracker(), leftMouseDown,
+          new PointerEvent('click', {pointerType: ''})));
+    });
+
+    test('SkippedWhenBubbleOpen', function() {
+      const tracker = createHighlightedTracker();
+      assertTrue(clickSkipped(tracker, leftMouseDown));
+      // Only the one click following the pointerdown is skipped.
+      assertFalse(tracker.shouldSkipClick(mouseClick));
+    });
+
+    test('NotSkippedWhenBubbleClosed', function() {
+      assertFalse(clickSkipped(new HighlightTracker(), leftMouseDown));
+
+      // Bubble closed more than 100ms ago.
+      const tracker = new HighlightTracker();
+      tracker.lastUnhighlightedTime = performance.now() - 200;
+      assertFalse(clickSkipped(tracker, leftMouseDown));
+    });
+
+    test('SkippedWhenBubbleRecentlyClosed', function() {
+      // The highlight may be removed before the pointerdown that dismissed the
+      // bubble arrives.
+      const tracker = createHighlightedTracker();
+      tracker.onHighlightChanged(false);
+      assertTrue(clickSkipped(tracker, leftMouseDown));
+    });
   });
 
   const TARGET_SIZE = 100;
@@ -273,5 +352,23 @@ suite('ToolbarButtonTest', function() {
     // Short press should be triggered.
     assertEquals(1, shortPressCount);
     assertEquals(0, longPressCount);
+  });
+});
+
+suite('MediaButton', function() {
+  let mediaButton: MediaButtonElement;
+
+  setup(async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    mediaButton = document.createElement('media-button');
+    document.body.appendChild(mediaButton);
+    await microtasksFinished();
+  });
+
+  test('AriaHasPopupIsDialog', () => {
+    assertTrue(!!mediaButton.shadowRoot);
+    const crIconButton =
+        mediaButton.shadowRoot.querySelector('cr-icon-button')!;
+    assertEquals('dialog', crIconButton.getAttribute('aria-haspopup'));
   });
 });

@@ -32,6 +32,7 @@ found in the LICENSE file.
         android:layout_gravity="start"
         android:layout_marginVertical="@dimen/vertical_tabs_header_margin_vertical"
         app:layout_constraintTop_toBottomOf="@id/desktop_window_spacer"
+        app:layout_goneMarginTop="@dimen/vertical_tabs_header_margin_top"
         android:paddingTop="@dimen/vertical_tabs_header_padding_vertical">
         <ImageButton
             android:id="@+id/collapse_button"
@@ -50,32 +51,67 @@ found in the LICENSE file.
             android:layout_height="match_parent"
             android:layout_weight="1"
             android:visibility="visible" />
-        <ImageButton
+        <!-- Tab search button. -->
+        <LinearLayout
             android:id="@+id/tab_search_button"
             android:layout_width="@dimen/vertical_tabs_header_button_size"
             android:layout_height="@dimen/vertical_tabs_header_button_size"
-            android:src="@drawable/ic_manage_search_16dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
             android:background="@drawable/vertical_tabs_button_background"
             android:contentDescription="@string/accessibility_search_loupe_tooltip_text"
-            android:scaleType="center"
-            android:focusable="true"
-            android:padding="@dimen/vertical_tabs_header_button_padding"/>
+            android:clickable="true"
+            android:focusable="true">
+            <ImageView
+                android:id="@+id/tab_search_icon"
+                android:layout_width="@dimen/vertical_tabs_header_button_size"
+                android:layout_height="match_parent"
+                android:src="@drawable/ic_manage_search_20dp"
+                android:scaleType="center"
+                android:importantForAccessibility="no" />
+            <TextView
+                android:id="@+id/tab_search_label"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/vertical_tabs_tab_search"
+                android:singleLine="true"
+                android:ellipsize="end"
+                android:textAppearance="@style/TextAppearance.TextMedium.Primary"
+                android:importantForAccessibility="no"
+                android:visibility="gone" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- Pinned Tabs Recycler View -->
-    <org.chromium.chrome.browser.tasks.tab_management.TabListRecyclerView
+    <org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalPinnedTabListRecyclerView
         android:id="@+id/pinned_tabs_recycler_view"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:paddingTop="@dimen/vertical_tab_pinned_tabs_padding_top"
         android:paddingBottom="@dimen/vertical_tab_pinned_tabs_padding_bottom"
+        android:layout_marginEnd="@dimen/vertical_tabs_scrollbar_margin_end"
+        android:paddingEnd="@dimen/vertical_tabs_scrollbar_padding_end"
         android:clipToPadding="false"
+        android:requiresFadingEdge="vertical"
+        android:fadingEdgeLength="@dimen/vertical_tab_pinned_tabs_fading_edge_length"
         app:layout_constrainedHeight="true"
         app:layout_constraintTop_toBottomOf="@id/vertical_tab_header_container"
         android:scrollbars="vertical"
         android:scrollbarStyle="outsideOverlay"
         android:scrollbarThumbVertical="@drawable/vertical_tabs_scrollbar_thumb"
         android:scrollbarSize="@dimen/vertical_tabs_scrollbar_width" />
+
+    <!-- Separator between pinned tabs and regular tabs -->
+    <View
+        android:id="@+id/pinned_tabs_separator"
+        android:layout_width="@dimen/vertical_tabs_pinned_separator_width"
+        android:layout_height="@dimen/vertical_tabs_pinned_separator_height"
+        android:background="@drawable/vertical_tabs_pinned_separator"
+        android:visibility="gone"
+        app:layout_constraintTop_toBottomOf="@id/pinned_tabs_recycler_view"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
 
     <!-- Tab List Recycler View -->
     <org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabListRecyclerView

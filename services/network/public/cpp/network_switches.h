@@ -45,10 +45,6 @@ extern const char kUnsafelyTreatInsecureOriginAsSecure[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kAdditionalTrustTokenKeyCommitments[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-extern const char kUseFirstPartySet[];
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-extern const char kUseRelatedWebsiteSet[];
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kIpAddressSpaceOverrides[];
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 extern const char kLocalNetworkAccessPermissionsPolicyDefaultEnabled[];

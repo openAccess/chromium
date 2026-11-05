@@ -15,8 +15,10 @@
 #include "chrome/browser/glic/glic_metrics.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/test/base/testing_profile.h"
 #include "components/metrics/profile_metrics_service.h"
 #include "components/tabs/public/mock_tab_interface.h"
+#include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
@@ -46,7 +48,8 @@ class GlicMetricsSessionManagerTest : public testing::Test {
   }
 
   void SetUp() override {
-    metrics_ = std::make_unique<GlicInstanceMetrics>(&profile_metrics_service_);
+    metrics_ = std::make_unique<GlicInstanceMetrics>(&profile_metrics_service_,
+                                                     &profile_);
   }
 
  protected:
@@ -58,11 +61,12 @@ class GlicMetricsSessionManagerTest : public testing::Test {
               1);
   }
 
-  base::test::TaskEnvironment task_environment_{
+  content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   base::test::ScopedFeatureList feature_list_;
   base::HistogramTester histogram_tester_;
   base::UserActionTester user_action_tester_;
+  TestingProfile profile_;
   metrics::ProfileMetricsService profile_metrics_service_;
   std::unique_ptr<GlicInstanceMetrics> metrics_;
 };
@@ -540,7 +544,7 @@ TEST_F(GlicMetricsSessionManagerTest, WasTurnSubmitted_Floaty_True) {
   metrics_.reset();
 
   histogram_tester_.ExpectUniqueSample(
-      "Glic.Session.WasTurnSubmitted.Floaty.OsButton", true, 1);
+      "Glic.Instance.Session.WasTurnSubmitted.Floaty.OsButton", true, 1);
 }
 
 TEST_F(GlicMetricsSessionManagerTest, WasTurnSubmitted_Floaty_False) {
@@ -554,7 +558,7 @@ TEST_F(GlicMetricsSessionManagerTest, WasTurnSubmitted_Floaty_False) {
   metrics_.reset();
 
   histogram_tester_.ExpectUniqueSample(
-      "Glic.Session.WasTurnSubmitted.Floaty.OsButton", false, 1);
+      "Glic.Instance.Session.WasTurnSubmitted.Floaty.OsButton", false, 1);
 }
 
 TEST_F(GlicMetricsSessionManagerTest, WasTurnSubmitted_SidePanel_True) {
@@ -574,7 +578,8 @@ TEST_F(GlicMetricsSessionManagerTest, WasTurnSubmitted_SidePanel_True) {
   metrics_.reset();
 
   histogram_tester_.ExpectUniqueSample(
-      "Glic.Session.WasTurnSubmitted.SidePanel.TopChromeButton", true, 1);
+      "Glic.Instance.Session.WasTurnSubmitted.SidePanel.TopChromeButton", true,
+      1);
 }
 
 }  // namespace glic

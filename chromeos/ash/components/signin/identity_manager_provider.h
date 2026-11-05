@@ -5,6 +5,8 @@
 #ifndef CHROMEOS_ASH_COMPONENTS_SIGNIN_IDENTITY_MANAGER_PROVIDER_H_
 #define CHROMEOS_ASH_COMPONENTS_SIGNIN_IDENTITY_MANAGER_PROVIDER_H_
 
+#include "base/component_export.h"
+
 class AccountId;
 
 namespace signin {
@@ -13,7 +15,7 @@ class IdentityManager;
 
 namespace ash {
 
-class IdentityManagerProvider {
+class COMPONENT_EXPORT(IDENTITY_MANAGER_PROVIDER) IdentityManagerProvider {
  public:
   IdentityManagerProvider();
   IdentityManagerProvider(const IdentityManagerProvider&) = delete;
@@ -23,8 +25,10 @@ class IdentityManagerProvider {
   // Returns the process-wide singleton.
   static IdentityManagerProvider& Get();
 
-  // Returns IdentityManager instance for the User corresponding to the
-  // `account_id`. Or, nullptr if it is not available.
+  // Returns the IdentityManager for the User corresponding to `account_id`.
+  // The caller must ensure the User's BrowserContext (profile) is alive.
+  // Returns nullptr only if IdentityManager is not available for that
+  // profile, such as for Guest profiles.
   virtual signin::IdentityManager* Find(const AccountId& account_id) = 0;
 };
 

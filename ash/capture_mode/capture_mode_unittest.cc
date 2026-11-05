@@ -334,7 +334,7 @@ class CaptureModeTestBase : public AshTestBase {
 
   void SwitchToUser2() {
     constexpr char kUserEmail[] = "user2@capture_mode";
-    SimulateUserLogin({kUserEmail});
+    SimulateUserLogin(AccountId::FromUserEmail(kUserEmail));
   }
 
   void OpenSettingsView() {
@@ -6092,8 +6092,8 @@ enum AbortReason {
   kUserPressedEsc,
 };
 
-struct {
-  const std::string scope_trace;
+constexpr struct {
+  const char* scope_trace;
   const AbortReason reason;
 } kTestCases[] = {
     {"Blocked by DLP", kBlockedByDlp},
@@ -7449,6 +7449,51 @@ TEST_P(CaptureModeSettingsTest, FolderRecommendedByPolicy) {
   EXPECT_TRUE(test_api->GetSelectFolderMenuItem()->GetEnabled());
 }
 
+// Tests that a folder recommended by policy can be overridden by selecting the
+// default Downloads folder in the settings menu, and switched back.
+TEST_P(CaptureModeSettingsTest,
+       OverrideFolderRecommendedByPolicyWithDownloads) {
+  auto* controller = StartImageRegionCapture();
+
+  const base::FilePath custom_folder(
+      CreateCustomFolderInUserDownloadsPath("test"));
+  auto* test_delegate =
+      static_cast<TestCaptureModeDelegate*>(controller->delegate_for_testing());
+  test_delegate->set_policy_capture_path(
+      {custom_folder,
+       CaptureModeDelegate::CapturePathEnforcement::kRecommended});
+
+  auto* event_generator = GetEventGenerator();
+  ClickOnView(GetSettingsButton(), event_generator);
+  CaptureModeSettingsTestApi test_api;
+  WaitForSettingsMenuToBeRefreshed();
+
+  CaptureModeMenuGroup* save_to_menu_group = test_api.GetSaveToMenuGroup();
+  ASSERT_TRUE(save_to_menu_group);
+  EXPECT_TRUE(save_to_menu_group->IsOptionChecked(kCustomFolder));
+  EXPECT_FALSE(save_to_menu_group->IsOptionChecked(kDownloadsFolder));
+
+  // Clicking the "Downloads" option should override the recommended policy
+  // folder without clearing the custom folder option from the menu.
+  ClickOnView(test_api.GetDefaultDownloadsOption(), event_generator);
+  EXPECT_TRUE(save_to_menu_group->IsOptionChecked(kDownloadsFolder));
+  EXPECT_FALSE(save_to_menu_group->IsOptionChecked(kCustomFolder));
+  const auto default_downloads_folder =
+      test_delegate->GetUserDefaultDownloadsFolder();
+  auto capture_folder = controller->GetCurrentCaptureFolder();
+  EXPECT_EQ(capture_folder.path, default_downloads_folder);
+  EXPECT_TRUE(capture_folder.is_default_downloads_folder);
+  EXPECT_EQ(custom_folder, controller->GetCustomCaptureFolder());
+
+  // Clicking on the recommended folder option should switch back to using it.
+  ClickOnView(test_api.GetCustomFolderOptionIfAny(), event_generator);
+  EXPECT_TRUE(save_to_menu_group->IsOptionChecked(kCustomFolder));
+  EXPECT_FALSE(save_to_menu_group->IsOptionChecked(kDownloadsFolder));
+  capture_folder = controller->GetCurrentCaptureFolder();
+  EXPECT_EQ(capture_folder.path, custom_folder);
+  EXPECT_FALSE(capture_folder.is_default_downloads_folder);
+}
+
 // Tests the folder selection settings when it's enforced by policy.
 TEST_P(CaptureModeSettingsTest, FolderSetByPolicy) {
   auto* controller = StartImageRegionCapture();
@@ -7474,13 +7519,35 @@ TEST_P(CaptureModeSettingsTest, FolderSetByPolicy) {
   CaptureModeMenuGroup* save_to_menu_group = test_api->GetSaveToMenuGroup();
   EXPECT_TRUE(save_to_menu_group->IsManagedByPolicy());
 
-  EXPECT_TRUE(test_api->GetCustomFolderOptionIfAny()->GetEnabled());
+  views::View* custom_option = test_api->GetCustomFolderOptionIfAny();
+  ASSERT_TRUE(custom_option);
+  EXPECT_TRUE(custom_option->GetEnabled());
+  EXPECT_TRUE(save_to_menu_group->IsOptionChecked(kCustomFolder));
+
+  // Clicking on the custom folder option when managed by policy should be a
+  // no-op and not crash.
+  ClickOnView(custom_option, event_generator);
   EXPECT_TRUE(save_to_menu_group->IsOptionChecked(kCustomFolder));
 
   EXPECT_FALSE(test_api->GetDefaultDownloadsOption()->GetEnabled());
   EXPECT_FALSE(save_to_menu_group->IsOptionChecked(kDownloadsFolder));
 
   EXPECT_FALSE(test_api->GetSelectFolderMenuItem()->GetEnabled());
+
+  // Disabled options and menu items should not be highlightable.
+  CaptureModeSettingsView* settings_menu = GetCaptureModeSettingsView();
+  ASSERT_TRUE(settings_menu);
+  std::vector<CaptureModeSessionFocusCycler::HighlightableView*>
+      highlightable_items = settings_menu->GetHighlightableItems();
+  EXPECT_TRUE(std::ranges::contains(
+      highlightable_items, test_api->GetCustomFolderOptionIfAny(),
+      &CaptureModeSessionFocusCycler::HighlightableView::GetView));
+  EXPECT_FALSE(std::ranges::contains(
+      highlightable_items, test_api->GetDefaultDownloadsOption(),
+      &CaptureModeSessionFocusCycler::HighlightableView::GetView));
+  EXPECT_FALSE(std::ranges::contains(
+      highlightable_items, test_api->GetSelectFolderMenuItem(),
+      &CaptureModeSessionFocusCycler::HighlightableView::GetView));
 }
 
 // -----------------------------------------------------------------------------

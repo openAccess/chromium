@@ -21,7 +21,6 @@
 #include "base/values.h"
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service_factory.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/login/auth/challenge_response/cert_utils.h"
@@ -47,13 +46,18 @@ namespace {
 constexpr base::TimeDelta kDefaultMaximumExtensionLoadWaitingTime =
     base::Seconds(5);
 
-base::flat_set<std::string> GetLoginScreenPolicyExtensionIds() {
-  DCHECK(BrowserContextHelper::Get()->GetSigninBrowserContext());
+Profile* GetSigninProfile() {
+  Profile* profile = Profile::FromBrowserContext(
+      BrowserContextHelper::Get()->GetSigninBrowserContext());
+  CHECK(profile, base::NotFatalUntil::M161);
+  return profile;
+}
 
-  const PrefService* const prefs =
-      ProfileHelper::GetSigninProfile()->GetPrefs();
-  DCHECK_EQ(prefs->GetAllPrefStoresInitializationStatus(),
-            PrefService::INITIALIZATION_STATUS_SUCCESS);
+base::flat_set<std::string> GetLoginScreenPolicyExtensionIds() {
+  const PrefService* const prefs = GetSigninProfile()->GetPrefs();
+  CHECK_EQ(prefs->GetAllPrefStoresInitializationStatus(),
+           PrefService::INITIALIZATION_STATUS_SUCCESS,
+           base::NotFatalUntil::M161);
 
   const PrefService::Preference* const pref =
       prefs->FindPreference(extensions::pref_names::kInstallForceList);
@@ -68,7 +72,7 @@ base::flat_set<std::string> GetLoginScreenPolicyExtensionIds() {
 }
 
 Profile* GetProfile() {
-  return ProfileHelper::GetSigninProfile()->GetOriginalProfile();
+  return GetSigninProfile()->GetOriginalProfile();
 }
 
 extensions::ExtensionRegistry* GetExtensionRegistry() {
@@ -111,7 +115,7 @@ void LoadStoredChallengeResponseSpkiKeysForUser(
 // the DeviceLoginScreenExtensions admin policy).
 chromeos::CertificateProviderService* GetCertificateProviderService() {
   return chromeos::CertificateProviderServiceFactory::GetForBrowserContext(
-      ProfileHelper::GetSigninProfile());
+      GetSigninProfile());
 }
 
 // Maps from the TLS 1.3 SignatureScheme values into the challenge-response key
@@ -213,7 +217,8 @@ class ExtensionLoadObserver final
   }
 
   void OnShutdown(extensions::ExtensionRegistry* registry) override {
-    DCHECK(extension_registry_observation_.IsObservingSource(registry));
+    CHECK(extension_registry_observation_.IsObservingSource(registry),
+          base::NotFatalUntil::M161);
     extension_registry_observation_.Reset();
     TriggerExtensionsReadyCallback();
   }
@@ -227,7 +232,8 @@ class ExtensionLoadObserver final
   }
 
   void OnProcessManagerShutdown(extensions::ProcessManager* manager) override {
-    DCHECK(process_manager_observation_.IsObservingSource(manager));
+    CHECK(process_manager_observation_.IsObservingSource(manager),
+          base::NotFatalUntil::M161);
     process_manager_observation_.Reset();
     TriggerExtensionsReadyCallback();
   }
@@ -235,7 +241,8 @@ class ExtensionLoadObserver final
   // extensions::ExtensionHostObserver
 
   void OnExtensionHostDestroyed(extensions::ExtensionHost* host) override {
-    DCHECK(extension_host_observations_.IsObservingSource(host));
+    CHECK(extension_host_observations_.IsObservingSource(host),
+          base::NotFatalUntil::M161);
     extension_host_observations_.RemoveObservation(host);
     StopWaitingOnExtension(host->extension_id());
   }
@@ -419,7 +426,8 @@ void ChallengeResponseAuthKeysLoader::LoadAvailableKeys(
 void ChallengeResponseAuthKeysLoader::OnProfileWillBeDestroyed(
     Profile* profile) {
   profile_is_destroyed_ = true;
-  DCHECK(profile_subscription_.IsObservingSource(profile));
+  CHECK(profile_subscription_.IsObservingSource(profile),
+        base::NotFatalUntil::M161);
   profile_subscription_.Reset();
 }
 

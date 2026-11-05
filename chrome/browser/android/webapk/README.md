@@ -5,9 +5,8 @@ Chromium on Android.
 
 Following Chromium's
 [documentation guidelines](/docs/documentation_guidelines.md), this document
-describes **how native WebAPK components bridge Java UI/coordinators, the WebAPK
-minting server, and Chrome Sync**. For class-specific API details, see the
-header files.
+describes **how native WebAPK components bridge Java UI/coordinators and the
+WebAPK minting server**. For class-specific API details, see the header files.
 
 For the comprehensive architectural guide covering the complete Java/C++ call
 graphs, see
@@ -21,8 +20,7 @@ Java WebApkActivityCoordinator / WebApkUpdateManager
                      ▼ (JNI)
 [Native WebAPK Services] chrome/browser/android/webapk/
       ├── WebApkInstaller ──► WebAPK Minting Server (Requests signed APK)
-      ├── WebApkUpdateManager ──► Manifest Serialization & Update Dispatch
-      └── WebApkSyncBridge / WebApkDatabase ──► Chrome Sync Engine
+      └── WebApkUpdateManager ──► Manifest Serialization & Update Dispatch
 ```
 
 ### 1. Installation Pipeline
@@ -39,15 +37,7 @@ Java WebApkActivityCoordinator / WebApkUpdateManager
   the profile-keyed service that queues, deduplicates, and manages active
   installation requests across tabs.
 
-### 2. Synchronization & Persistence
-
-- **[`WebApkSyncBridge`](webapk_sync_bridge.h)** &
-  **[`WebApkDatabase`](webapk_database.h)**: Synchronizes installed WebAPK
-  specifics with Chrome Sync and persists local state in LevelDB, enabling
-  WebAPK restoration on new Android devices via
-  [`WebApkRestoreManager`](webapk_restore_manager.h).
-
-### 3. Update Dispatch & Invariants
+### 2. Update Dispatch & Invariants
 
 - **Background Update Bridge:** Free JNI functions in
   [`webapk_update_manager.cc`](webapk_update_manager.cc) serialize updated

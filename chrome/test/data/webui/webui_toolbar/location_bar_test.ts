@@ -2,13 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestSearchboxBrowserProxy} from 'chrome://webui-test/cr_components/searchbox/test_searchbox_browser_proxy.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {OmniboxTextColor, SearchboxBrowserProxy, SecurityChipRole} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {LocationBarElement, LocationBarState} from 'chrome://webui-toolbar.top-chrome/app.js';
+import {OmniboxTextColor, SearchboxBrowserProxy, SecurityChipRole} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {LocationBarElement, LocationBarState} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 suite('LocationBar', function() {
   let locationBar: LocationBarElement;
@@ -50,14 +50,16 @@ suite('LocationBar', function() {
           isContextMenuVisible: false,
         },
         activityIndicators: [],
-        permissionDashboard: null,
+        permissionDashboard: initialState.lhsChipsState.permissionDashboard,
       },
     };
     await microtasksFinished();
 
     const locationIcon = locationBar.shadowRoot.querySelector('location-icon');
     assertTrue(!!locationIcon);
-    const button = locationIcon.$.button;
+    const chip = locationIcon.$.button;
+    assertTrue(!!chip);
+    const button = chip.$.button;
     assertTrue(!!button);
     assertEquals('BUTTON', button.tagName);
     assertEquals(accessibilityLabel, button.ariaLabel);
@@ -100,7 +102,7 @@ suite('LocationBar', function() {
           isContextMenuVisible: false,
         },
         activityIndicators: [],
-        permissionDashboard: null,
+        permissionDashboard: initialState.lhsChipsState.permissionDashboard,
       },
     };
     await microtasksFinished();
@@ -131,7 +133,6 @@ suite('LocationBar', function() {
         isBlocked: true,
         tooltip: 'Cookies blocked',
         accessibilityString: '',
-        isBubbleVisible: false,
         shouldRunAnimation: false,
         explanatoryString: '',
         identifier: {
@@ -280,5 +281,99 @@ suite('LocationBar', function() {
     assertEquals('', input.value);
     assertEquals('', omnibox.$.textContainer.textContent);
     assertEquals(searchbox, omnibox.shadowRoot.activeElement);
+  });
+
+  test('PermissionDashboard visibility', async () => {
+    const permissionDashboard =
+        locationBar.shadowRoot.querySelector('permission-dashboard');
+    assertTrue(!!permissionDashboard);
+    assertFalse(permissionDashboard.hasAttribute('visible'));
+
+    // Showing indicator chip should make dashboard visible.
+    locationBar.locationBarState = {
+      ...initialState,
+      lhsChipsState: {
+        ...initialState.lhsChipsState,
+        permissionDashboard: {
+          ...initialState.lhsChipsState.permissionDashboard,
+          indicatorChip: {
+            ...initialState.lhsChipsState.permissionDashboard.indicatorChip,
+            isVisible: true,
+          },
+        },
+      },
+    };
+    await microtasksFinished();
+    assertTrue(permissionDashboard.hasAttribute('visible'));
+
+    // Showing request chip should make dashboard visible.
+    locationBar.locationBarState = {
+      ...initialState,
+      lhsChipsState: {
+        ...initialState.lhsChipsState,
+        permissionDashboard: {
+          ...initialState.lhsChipsState.permissionDashboard,
+          indicatorChip: {
+            ...initialState.lhsChipsState.permissionDashboard.indicatorChip,
+            isVisible: false,
+          },
+          requestChip: {
+            ...initialState.lhsChipsState.permissionDashboard.requestChip,
+            isVisible: true,
+          },
+        },
+      },
+    };
+    await microtasksFinished();
+    assertTrue(permissionDashboard.hasAttribute('visible'));
+
+    // Hiding both chips should hide dashboard.
+    locationBar.locationBarState = {
+      ...initialState,
+      lhsChipsState: {
+        ...initialState.lhsChipsState,
+        permissionDashboard: {
+          ...initialState.lhsChipsState.permissionDashboard,
+          indicatorChip: {
+            ...initialState.lhsChipsState.permissionDashboard.indicatorChip,
+            isVisible: false,
+          },
+          requestChip: {
+            ...initialState.lhsChipsState.permissionDashboard.requestChip,
+            isVisible: false,
+          },
+        },
+      },
+    };
+    await microtasksFinished();
+    assertFalse(permissionDashboard.hasAttribute('visible'));
+  });
+
+  test('WaitForStateDefersContents', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    locationBar = document.createElement('location-bar');
+    locationBar.waitForState = true;
+    locationBar.locationBarState = {
+      ...locationBar.locationBarState,
+      locationBarFlags: {
+        ...locationBar.locationBarState.locationBarFlags,
+        popupOpen: true,
+      },
+    };
+    document.body.appendChild(locationBar);
+    await microtasksFinished();
+    assertFalse(!!locationBar.shadowRoot.querySelector('readonly-omnibox'));
+    // The host classes also wait for the contents.
+    assertFalse(locationBar.classList.contains('popup-open'));
+
+    locationBar.waitForState = false;
+    await microtasksFinished();
+    assertTrue(!!locationBar.shadowRoot.querySelector('readonly-omnibox'));
+    assertTrue(locationBar.classList.contains('popup-open'));
+
+    // Once rendered, the contents stay.
+    locationBar.waitForState = true;
+    await microtasksFinished();
+    assertTrue(!!locationBar.shadowRoot.querySelector('readonly-omnibox'));
   });
 });

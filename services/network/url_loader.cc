@@ -31,7 +31,6 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/sequence_checker.h"
 #include "base/strings/strcat.h"
-#include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
@@ -44,6 +43,7 @@
 #include "build/build_config.h"
 #include "mojo/public/cpp/bindings/shared_remote.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
+#include "net/base/auth.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/features.h"
 #include "net/base/isolation_info.h"
@@ -86,11 +86,11 @@
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_getter.h"
+#include "net/url_request/url_request_http_transaction_factory_override.h"
 #include "services/network/accept_ch_frame_interceptor.h"
 #include "services/network/cookie_settings.h"
 #include "services/network/devtools_durable_msg_writer.h"
 #include "services/network/file_opener_for_upload.h"
-#include "services/network/orb/orb_impl.h"
 #include "services/network/pervasive_resources/shared_resource_checker.h"
 #include "services/network/public/cpp/client_hints.h"
 #include "services/network/public/cpp/constants.h"
@@ -109,6 +109,7 @@
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/sri_message_signatures.h"
 #include "services/network/public/cpp/synthetic_response_util.h"
+#include "services/network/public/cpp/trust_token_http_headers.h"
 #include "services/network/public/mojom/client_security_state.mojom.h"
 #include "services/network/public/mojom/cookie_access_observer.mojom.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
@@ -176,7 +177,9 @@ bool ShouldNotifyAboutCookie(net::CookieInclusionStatus status) {
          status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                        EXCLUDE_PORT_MISMATCH) ||
          status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
-                                       EXCLUDE_SCHEME_MISMATCH);
+                                       EXCLUDE_SCHEME_MISMATCH) ||
+         status.HasExclusionReason(
+             net::CookieInclusionStatus::ExclusionReason::EXCLUDE_INVALID_HOST);
 }
 
 scoped_refptr<RefCountedDeviceBoundSessionAccessObserverRemote>
@@ -360,6 +363,7 @@ URLLoader::URLLoader(
       factory_params_(context.GetFactoryParams()),
       coep_reporter_(context.GetCoepReporter()),
       dip_reporter_(context.GetDipReporter()),
+      url_loader_header_client_(context.GetUrlLoaderHeaderClient()),
       request_id_(request_id),
       keepalive_request_size_(keepalive_request_size),
       keepalive_(request.keepalive),
@@ -581,6 +585,16 @@ URLLoader::URLLoader(
 
   throttling_token_ = network::ScopedThrottlingToken::MaybeCreate(
       url_request_->net_log().source().id, request.throttling_profile_id);
+
+  // Route through isolated session's delayed sockets if one exists for
+  // this request's throttling profile and URL.
+  if (auto handle = request.throttling_profile_id
+                        ? context.GetIsolatedTransactionFactory(
+                              *request.throttling_profile_id, request.url)
+                        : nullptr) {
+    net::HttpTransactionFactoryOverride::Set(url_request_.get(),
+                                             std::move(handle));
+  }
 
   if (keepalive_ && keepalive_statistics_recorder_) {
     keepalive_statistics_recorder_->OnLoadStarted(
@@ -1070,7 +1084,8 @@ void URLLoader::OnReceivedRedirect(net::URLRequest* url_request,
   url_loader_util::SetRequestCredentials(
       redirect_info.new_url, factory_params_->client_security_state,
       request_mode_, request_credentials_mode_, url_request_->initiator(),
-      *url_request_);
+      *url_request_, &origin_access_list_.get(),
+      factory_params_->disable_web_security);
 
   // Clear the Cookie header to ensure that cookies passed in through the
   // `ResourceRequest` do not persist across redirects.
@@ -1086,6 +1101,18 @@ void URLLoader::OnReceivedRedirect(net::URLRequest* url_request,
         net::CookieSettingOverride::kStorageAccessGrantEligibleViaHeader);
     url_request_->cookie_setting_overrides().Remove(
         net::CookieSettingOverride::kStorageAccessGrantEligible);
+
+    // Request headers added by `trust_token_interceptor_` are computed for the
+    // initial request origin and must not be sent to a different origin. In
+    // addition, `trust_token_interceptor_` must handle the cross-origin
+    // redirect so that subsequent responses are not processed against the
+    // initial request origin and the operation fails.
+    if (trust_token_interceptor_) {
+      for (std::string_view header : TrustTokensRequestHeaders()) {
+        url_request_->RemoveRequestHeaderByName(header);
+      }
+      trust_token_interceptor_->OnCrossOriginRedirect();
+    }
   }
 
   DCHECK_EQ(emitted_devtools_raw_request_, emitted_devtools_raw_response_);
@@ -1116,7 +1143,13 @@ void URLLoader::OnAuthRequired(net::URLRequest* url_request,
     return;
   }
 
-  if (do_not_prompt_for_login_) {
+  // Server auth challenges for requests that must not prompt for login are
+  // cancelled here. Proxy auth challenges are forwarded, flagged, so that
+  // non-UI credential sources in the browser (e.g. extensions or enterprise
+  // policy) can still answer them. The browser never shows login UI for them.
+  if (do_not_prompt_for_login_ &&
+      (!auth_info.is_proxy || !base::FeatureList::IsEnabled(
+                                  features::kForwardProxyAuthWithoutPrompt))) {
     OnAuthCredentials(std::nullopt);
     return;
   }
@@ -1125,7 +1158,7 @@ void URLLoader::OnAuthRequired(net::URLRequest* url_request,
 
   url_loader_network_observer_->OnAuthRequired(
       fetch_window_id_, request_id_, url_request_->url(), first_auth_attempt_,
-      auth_info, url_request->response_headers(),
+      do_not_prompt_for_login_, auth_info, url_request->response_headers(),
       auth_challenge_responder_receiver_.BindNewPipeAndPassRemote());
 
   auth_challenge_responder_receiver_.set_disconnect_handler(
@@ -1210,6 +1243,7 @@ void URLLoader::OnResponseStarted(net::URLRequest* url_request, int net_error) {
   ReportFlaggedResponseCookies(!delay_cookie_call);
 
   if (net_error != net::OK) {
+    MaybeNotifyHeaderClientOfFailure(net_error);
     NotifyCompleted(net_error);
     // |this| may have been deleted.
     return;
@@ -1333,28 +1367,6 @@ void URLLoader::ContinueOnResponseStarted() {
     url_request_->AbortAndCloseConnection();
     DeleteSelf();
     return;
-  }
-
-  // Enforce ad-auction-only signals -- the renderer process isn't allowed
-  // to read auction-only signals for ad auctions; only the browser process
-  // is allowed to read those, and only the browser process can issue trusted
-  // requests.
-  // TODO(crbug.com/40269364): Remove old names once API users have migrated to
-  // new names.
-  if (!factory_params_->is_trusted && response_->headers) {
-    std::optional<std::string> auction_only =
-        response_->headers->GetNormalizedHeader("Ad-Auction-Only");
-    if (!auction_only) {
-      auction_only =
-          response_->headers->GetNormalizedHeader("X-FLEDGE-Auction-Only");
-    }
-    if (auction_only &&
-        base::EqualsCaseInsensitiveASCII(*auction_only, "true")) {
-      CompleteBlockedResponse(net::ERR_BLOCKED_BY_RESPONSE, false);
-      url_request_->AbortAndCloseConnection();
-      DeleteSelf();
-      return;
-    }
   }
 
   // Figure out if we need to sniff (for MIME type detection or for Opaque
@@ -1830,6 +1842,9 @@ void URLLoader::DidRead(int num_bytes,
       CHECK(!into_slop_bucket);
       CompletePendingWrite(num_bytes == 0);
     }
+    if (num_bytes < 0) {
+      MaybeNotifyHeaderClientOfFailure(num_bytes);
+    }
     // If we are reading into the SlopBucket then notification of completion
     // will be postponed until the data has been forwarded to the mojo data
     // pipe.
@@ -2039,6 +2054,25 @@ void URLLoader::CancelRequest() {
   url_request_->CancelWithError(net::ERR_SSL_CLIENT_AUTH_CERT_NEEDED);
 }
 
+void URLLoader::MaybeNotifyHeaderClientOfFailure(int net_error) {
+  DCHECK_LT(net_error, 0);
+  if (!url_loader_header_client_ ||
+      (options_ & mojom::kURLLoadOptionAsCorsPreflight)) {
+    return;
+  }
+  net::IPEndPoint remote_endpoint;
+  if (!url_request_->GetTransactionRemoteEndpoint(&remote_endpoint)) {
+    net::ConnectionAttempts attempts = url_request_->GetConnectionAttempts();
+    if (!attempts.empty() && attempts.back().result == net_error) {
+      remote_endpoint = attempts.back().endpoint;
+    }
+  }
+  if (!remote_endpoint.address().empty()) {
+    url_loader_header_client_->OnLoaderFailedWithRemoteEndpoint(
+        request_id_, remote_endpoint);
+  }
+}
+
 void URLLoader::NotifyCompleted(int error_code) {
   // Every terminal path funnels through here and DeleteSelf() follows shortly,
   // so close the archive record now. A load that ended badly is still worth
@@ -2215,16 +2249,16 @@ void URLLoader::NotifyEarlyResponse(
   DCHECK(headers);
   DCHECK_EQ(headers->response_code(), 103);
 
-  // Calculate IP address space.
   mojom::ParsedHeadersPtr parsed_headers =
       PopulateParsedHeaders(headers.get(), url_request_->url());
+
+  // Calculate IP address space.
   net::IPEndPoint transaction_endpoint;
   bool has_endpoint =
       url_request_->GetTransactionRemoteEndpoint(&transaction_endpoint);
   DCHECK(has_endpoint);
   CalculateClientAddressSpaceParams params{
       .client_address_space_inherited_from_service_worker = std::nullopt,
-      .parsed_headers = &parsed_headers,
       .remote_endpoint = &transaction_endpoint,
   };
   mojom::IPAddressSpace ip_address_space =

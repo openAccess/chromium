@@ -47,6 +47,7 @@
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/interaction_sequence.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if !BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ui/download/download_display.h"
@@ -103,14 +104,14 @@ class TestCriticalUserJourneyService : public CriticalUserJourneyService {
             })
             .Build());
 
-    // AnyOf Start Journey: Click New Tab button or Location Icon (triggers
+    // AnyOf Start Journey: Click New Tab button or Tab Search Button (triggers
     // start), then click the App Menu Button.
     registry->AddJourney(
         CriticalUserJourney::Builder(&kAnyOfStartJourney)
             .AddAnyOf({
                 Branch(kNewTabButtonElementId,
                        ui::InteractionSequence::StepType::kActivated, 1),
-                Branch(kLocationIconElementId,
+                Branch(kTabSearchButtonElementId,
                        ui::InteractionSequence::StepType::kActivated, 2),
             })
             .AddStep(kToolbarAppMenuButtonElementId,
@@ -330,8 +331,8 @@ IN_PROC_BROWSER_TEST_F(CriticalUserJourneyServiceInteractiveTest,
       base::StrCat({GetMetricJourneyPrefix(kAnyOfStartJourney), ".Result"});
 
   RunTestSequence(
-      // Step 1: Click the Location Icon (triggers start).
-      PressButton(kLocationIconElementId),
+      // Step 1: Click the Tab Search Button (triggers start).
+      PressButton(kTabSearchButtonElementId),
 
       // Step 2: Click the App Menu Button.
       PressButton(kToolbarAppMenuButtonElementId));
@@ -386,7 +387,7 @@ class RealCriticalUserJourneyServiceInteractiveTest
               manager, 1,
               content::DownloadTestObserver::ON_DANGEROUS_DOWNLOAD_FAIL));
       ui_test_utils::NavigateToURLWithDisposition(
-          browser(), url, WindowOpenDisposition::CURRENT_TAB,
+          browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui_test_utils::BROWSER_TEST_NO_WAIT);
       observer->WaitForFinished();
     }));
@@ -520,7 +521,7 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
       PressButton(kToolbarAppMenuButtonElementId),
       SelectMenuItem(AppMenuModel::kClearBrowsingDataMenuItem),
       WaitForHide(AppMenuModel::kClearBrowsingDataMenuItem),
-      WaitForWebContentsReady(
+      WaitForWebContentsNavigation(
           kFirstTabElementId,
           chrome::GetSettingsUrl(chrome::kClearBrowserDataSubPage)),
       InstrumentTab(kClearBrowsingDataPage),
@@ -528,6 +529,13 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
       WaitForEvent(kBrowserViewElementId,
                    browsing_data_important_sites_util::
                        kClearBrowsingDataHistoryEventId));
+
+  // Verification
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return histograms.GetBucketCount(
+               result, CriticalUserJourneySession::JourneyResult::kCompleted) >
+           0;
+  }));
 
   histograms.ExpectBucketCount(step_reached, 2, 1);  // App Menu Clicked
   histograms.ExpectBucketCount(step_reached, 3,
@@ -564,7 +572,7 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
   RunTestSequence(
       InstrumentTab(kFirstTabElementId),
       SendAccelerator(kBrowserViewElementId, clear_browsing_data_accelerator),
-      WaitForWebContentsReady(
+      WaitForWebContentsNavigation(
           kFirstTabElementId,
           chrome::GetSettingsUrl(chrome::kClearBrowserDataSubPage)),
       InstrumentTab(kClearBrowsingDataPage),
@@ -572,6 +580,13 @@ IN_PROC_BROWSER_TEST_F(RealCriticalUserJourneyServiceInteractiveTest,
       WaitForEvent(kBrowserViewElementId,
                    browsing_data_important_sites_util::
                        kClearBrowsingDataHistoryEventId));
+
+  // Verification
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return histograms.GetBucketCount(
+               result, CriticalUserJourneySession::JourneyResult::kCompleted) >
+           0;
+  }));
 
   histograms.ExpectBucketCount(step_reached, 1, 1);  // App Menu Clicked
   histograms.ExpectBucketCount(step_reached, 3,

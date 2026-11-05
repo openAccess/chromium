@@ -26,12 +26,14 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/profiles/profile_indicator_icon.h"
@@ -42,6 +44,7 @@
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
+#include "chrome/common/chrome_features.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "chromeos/constants/chromeos_features.h"
@@ -510,8 +513,9 @@ void BrowserFrameViewChromeOS::Layout(PassKey) {
 
   // The top right corner must be occupied by a caption button for easy mouse
   // access. This check is agnostic to RTL layout.
-  DCHECK_EQ(caption_button_container_->y(), 0);
-  DCHECK_EQ(caption_button_container_->bounds().right(), width());
+  CHECK_EQ(caption_button_container_->y(), 0, base::NotFatalUntil::M162);
+  CHECK_EQ(caption_button_container_->bounds().right(), width(),
+           base::NotFatalUntil::M162);
 }
 
 gfx::Size BrowserFrameViewChromeOS::GetMinimumSize() const {
@@ -687,7 +691,7 @@ ui::ImageModel BrowserFrameViewChromeOS::GetFaviconForTabIconView() {
 }
 
 void BrowserFrameViewChromeOS::OnWindowDestroying(aura::Window* window) {
-  DCHECK(window_observation_.IsObserving());
+  CHECK(window_observation_.IsObserving(), base::NotFatalUntil::M162);
   window_observation_.Reset();
   display_observer_.reset();
 }
@@ -701,9 +705,7 @@ void BrowserFrameViewChromeOS::OnWindowPropertyChanged(aura::Window* window,
   if (key == chromeos::kWindowHasRoundedCornersKey) {
     UpdateWindowRoundedCorners();
     if (GetProperty(chromeos::kWindowHasRoundedCornersKey) != old) {
-      if (auto* const browser_view = GetBrowserView()) {
-        browser_view->InvalidateLayout();
-      }
+      SafeInvoke(GetBrowserView()).Then(&views::View::InvalidateLayout, false);
     }
   }
 
@@ -820,9 +822,17 @@ bool BrowserFrameViewChromeOS::ShouldEnableImmersiveModeController() const {
     return false;
   }
 
-  if (IsLockedFullscreen() &&
-      (!frame_window->GetProperty(chromeos::kUseImmersiveInTrustedPinned))) {
-    return false;
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    const auto* locked_state_controller =
+        chromeos::LockedStateController::From(GetBrowserView()->browser());
+    if (locked_state_controller->IsLocked() &&
+        !locked_state_controller->GetCapabilities().use_immersive_mode) {
+      return false;
+    }
+  } else if (IsLockedFullscreen()) {
+    if (!frame_window->GetProperty(chromeos::kUseImmersiveInTrustedPinned)) {
+      return false;
+    }
   }
   if (display::Screen::Get()->InTabletMode() &&
       (IsSnapped() || browser_widget()->IsMaximized())) {
@@ -831,11 +841,9 @@ bool BrowserFrameViewChromeOS::ShouldEnableImmersiveModeController() const {
     return !GetBrowserView()->GetSupportsTabStrip();
   }
 
-  const auto* fullscreen_controller = GetBrowserView()
-                                          ->browser()
-                                          ->GetFeatures()
-                                          .exclusive_access_manager()
-                                          ->fullscreen_controller();
+  const auto* fullscreen_controller =
+      ExclusiveAccessManager::From(GetBrowserView()->browser())
+          ->fullscreen_controller();
   // For other scnarios, use immersive if the browser is in fullscreen, and it
   // is NOT requested via extension or HTML API `requestFullscreen()`.
   return browser_widget()->IsFullscreen() &&
@@ -851,7 +859,7 @@ bool BrowserFrameViewChromeOS::ShouldShowAvatarForTesting(
 
 bool BrowserFrameViewChromeOS::IsLockedFullscreen() const {
   return ash::WindowState::Get(browser_widget()->GetNativeWindow())
-      ->IsLockedFullscreen();
+      ->IsTrustedPinned();
 }
 
 void BrowserFrameViewChromeOS::PaintAsActiveChanged() {
@@ -899,9 +907,16 @@ bool BrowserFrameViewChromeOS::GetShowCaptionButtonsWhenNotInOverview() const {
   // state. This is to show the three dot menu which is a part of caption button
   // container, rather than showing buttons. Only relevant for non-web browser
   // scenarios.
-  if (IsLockedFullscreen() &&
-      frame_window->GetProperty(chromeos::kUseImmersiveInTrustedPinned)) {
-    return true;
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    if (chromeos::LockedStateController::From(GetBrowserView()->browser())
+            ->GetCapabilities()
+            .use_immersive_mode) {
+      return true;
+    }
+  } else if (IsLockedFullscreen()) {
+    if (frame_window->GetProperty(chromeos::kUseImmersiveInTrustedPinned)) {
+      return true;
+    }
   }
 
   if (GetHideCaptionButtonsForFullscreen()) {
@@ -1065,7 +1080,7 @@ gfx::RoundedCornersF BrowserFrameViewChromeOS::GetWindowRoundedCorners() const {
 }
 
 void BrowserFrameViewChromeOS::UpdateWindowRoundedCorners() {
-  DCHECK(GetWidget());
+  CHECK(GetWidget(), base::NotFatalUntil::M162);
 
   const gfx::RoundedCornersF window_radii = GetWindowRoundedCorners();
 
@@ -1123,7 +1138,8 @@ void BrowserFrameViewChromeOS::LayoutProfileIndicator() {
   profile_indicator_icon_->SetVisible(true);
 
   // The layout size is set along with the image.
-  DCHECK_LE(profile_indicator_icon_->height(), frame_height);
+  CHECK_LE(profile_indicator_icon_->height(), frame_height,
+           base::NotFatalUntil::M162);
 }
 
 bool BrowserFrameViewChromeOS::GetOverviewMode() const {

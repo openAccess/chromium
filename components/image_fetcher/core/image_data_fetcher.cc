@@ -13,11 +13,13 @@
 #include "components/image_fetcher/core/image_fetcher_metrics_reporter.h"
 #include "net/base/data_url.h"
 #include "net/base/load_flags.h"
+#include "net/base/net_errors.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
@@ -68,24 +70,24 @@ void ImageDataFetcher::SetImageDownloadLimit(
 void ImageDataFetcher::FetchImageData(const GURL& image_url,
                                       ImageDataFetcherCallback callback,
                                       ImageFetcherParams params,
-                                      bool send_cookies) {
+                                      std::optional<url::Origin> initiator) {
   FetchImageData(
       image_url, std::move(callback), params, /*referrer=*/std::string(),
       net::ReferrerPolicy::CLEAR_ON_TRANSITION_FROM_SECURE_TO_INSECURE,
-      send_cookies);
+      std::move(initiator));
 }
 
 void ImageDataFetcher::FetchImageData(
     const GURL& image_url,
     ImageDataFetcherCallback callback,
     const net::NetworkTrafficAnnotationTag& traffic_annotation,
-    bool send_cookies) {
+    std::optional<url::Origin> initiator) {
   FetchImageData(
       image_url, std::move(callback),
       ImageFetcherParams(traffic_annotation, kNoUmaClient),
       /*referrer=*/std::string(),
       net::ReferrerPolicy::CLEAR_ON_TRANSITION_FROM_SECURE_TO_INSECURE,
-      send_cookies);
+      std::move(initiator));
 }
 
 void ImageDataFetcher::FetchImageData(
@@ -94,10 +96,10 @@ void ImageDataFetcher::FetchImageData(
     const std::string& referrer,
     net::ReferrerPolicy referrer_policy,
     const net::NetworkTrafficAnnotationTag& traffic_annotation,
-    bool send_cookies) {
+    std::optional<url::Origin> initiator) {
   FetchImageData(image_url, std::move(callback),
                  ImageFetcherParams(traffic_annotation, kNoUmaClient), referrer,
-                 referrer_policy, send_cookies);
+                 referrer_policy, std::move(initiator));
 }
 
 void ImageDataFetcher::FetchImageData(const GURL& image_url,
@@ -105,7 +107,7 @@ void ImageDataFetcher::FetchImageData(const GURL& image_url,
                                       ImageFetcherParams params,
                                       const std::string& referrer,
                                       net::ReferrerPolicy referrer_policy,
-                                      bool send_cookies) {
+                                      std::optional<url::Origin> initiator) {
   uint64_t flow_id =
       reinterpret_cast<uint64_t>(this) ^ (++fetch_sequence_number_);
   TRACE_EVENT("ui", "ImageDataFetcher::FetchImageData",
@@ -118,6 +120,9 @@ void ImageDataFetcher::FetchImageData(const GURL& image_url,
     std::string charset, data;
     if (!net::DataURL::Parse(image_url, &metadata.mime_type, &charset, &data)) {
       DVLOG(0) << "Failed to parse data url";
+      data.clear();
+      metadata.mime_type.clear();
+      metadata.net_error = net::ERR_INVALID_URL;
     }
 
     std::move(callback).Run(std::move(data), metadata);
@@ -128,9 +133,10 @@ void ImageDataFetcher::FetchImageData(const GURL& image_url,
   request->url = image_url;
   request->referrer_policy = referrer_policy;
   request->referrer = GURL(referrer);
-  if (send_cookies) {
-    request->credentials_mode = network::mojom::CredentialsMode::kInclude;
-    request->site_for_cookies = net::SiteForCookies::FromUrl(image_url);
+  if (initiator.has_value()) {
+    request->request_initiator = initiator;
+    request->credentials_mode = network::mojom::CredentialsMode::kSameOrigin;
+    request->site_for_cookies = net::SiteForCookies::FromOrigin(*initiator);
   } else {
     request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   }
@@ -138,6 +144,11 @@ void ImageDataFetcher::FetchImageData(const GURL& image_url,
   std::unique_ptr<network::SimpleURLLoader> loader =
       network::SimpleURLLoader::Create(std::move(request),
                                        params.traffic_annotation());
+
+  if (params.block_local_requests()) {
+    loader->SetURLLoaderFactoryOptions(
+        network::mojom::kURLLoadOptionBlockLocalRequest);
+  }
 
   // For compatibility in error handling. This is a little wasteful since the
   // body will get thrown out anyway, though.
@@ -176,10 +187,10 @@ void ImageDataFetcher::OnURLLoaderComplete(
               perfetto::Flow::ProcessScoped(flow_id));
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(pending_requests_.find(source) != pending_requests_.end());
-  bool success = source->NetError() == net::OK;
-  int status_code = source->NetError();
-
   RequestMetadata metadata;
+  metadata.net_error = source->NetError();
+  bool success = metadata.net_error == net::OK;
+  int status_code = metadata.net_error;
   if (success && source->ResponseInfo() && source->ResponseInfo()->headers) {
     net::HttpResponseHeaders* headers = source->ResponseInfo()->headers.get();
     metadata.mime_type = source->ResponseInfo()->mime_type;

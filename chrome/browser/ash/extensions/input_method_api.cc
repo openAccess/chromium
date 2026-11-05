@@ -20,8 +20,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/extensions/dictionary_event_router.h"
 #include "chrome/browser/ash/extensions/ime_menu_event_router.h"
 #include "chrome/browser/ash/extensions/input_method_event_router.h"
@@ -36,9 +34,11 @@
 #include "chrome/browser/spellchecker/spellcheck_service.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/common/extensions/api/input_method_private.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/language_packs/handwriting.h"
 #include "chromeos/ash/components/language_packs/language_pack_manager.h"
+#include "chromeos/ash/experiences/extensions/common/api/input_method_private.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -50,7 +50,8 @@
 #include "ui/base/ime/ash/input_method_descriptor.h"
 #include "ui/base/ime/ash/input_method_manager.h"
 #include "ui/base/ime/ash/input_method_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
@@ -304,9 +305,10 @@ InputMethodPrivateOpenOptionsPageFunction::Run() {
                            web_contents)
                      : nullptr;
     if (browser) {
-      content::OpenURLParams url_params(options_page_url, content::Referrer(),
-                                        WindowOpenDisposition::SINGLETON_TAB,
-                                        ui::PAGE_TRANSITION_LINK, false);
+      content::OpenURLParams url_params =
+          content::OpenURLParams::CreateBrowserInitiated(
+              options_page_url, ui::mojom::WindowOpenDisposition::kSingletonTab,
+              ui::PAGE_TRANSITION_LINK);
       browser->GetBrowser().OpenURL(url_params,
                                     /*navigation_handle_callback=*/{});
     }
@@ -408,10 +410,11 @@ ExtensionFunction::ResponseAction InputMethodPrivateSetSettingsFunction::Run() {
   extensions::EventRouter* router =
       extensions::EventRouter::Get(browser_context());
   if (router->HasEventListener(OnInputMethodOptionsChanged::kEventName)) {
+    auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+        OnInputMethodOptionsChanged::Create(params->engine_id));
     auto event = std::make_unique<extensions::Event>(
         extensions::events::INPUT_IME_ON_INPUT_METHOD_OPTIONS_CHANGED,
-        OnInputMethodOptionsChanged::kEventName,
-        OnInputMethodOptionsChanged::Create(params->engine_id),
+        OnInputMethodOptionsChanged::kEventName, std::move(event_args),
         browser_context());
     router->BroadcastEvent(std::move(event));
   }
@@ -600,7 +603,8 @@ std::string InputMethodAPI::GetInputMethodForXkb(const std::string& xkb_id) {
   std::string xkb_prefix =
       ash::extension_ime_util::GetInputMethodIDByEngineID(kXkbPrefix);
   size_t prefix_length = xkb_prefix.length();
-  DCHECK(xkb_id.substr(0, prefix_length) == xkb_prefix);
+  CHECK(xkb_id.substr(0, prefix_length) == xkb_prefix,
+        base::NotFatalUntil::M160);
   return xkb_id.substr(prefix_length);
 }
 

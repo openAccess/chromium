@@ -19,17 +19,18 @@
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/translate/partial_translate_bubble_model.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/webui/tab_search/tab_search.mojom.h"
 #include "chrome/common/buildflags.h"
 #include "components/user_education/common/new_badge/new_badge_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "components/apps/link_capturing/intent_picker_info.h"
 #endif  //  !BUILDFLAG(IS_ANDROID)
 
-class Browser;
 class LocationBarTesting;
 class GlobalBrowserCollection;
 class OmniboxView;
@@ -108,6 +109,8 @@ class TestBrowserWindow : public BrowserWindow,
   ui::mojom::WindowShowState GetWindowShowState() const override;
   bool IsFullscreen() const override;
   LocationBar* GetLocationBar() const override;
+  ui::AcceleratorProvider* GetAcceleratorProvider() override;
+  PinnedToolbarActions* GetPinnedToolbarActions() override;
   autofill::AutofillBubbleHandler* GetAutofillBubbleHandler() override;
   void SetFocusToLocationBar(bool is_user_initiated) override {}
   void UpdateReloadStopState(bool is_loading, bool force) override {}
@@ -118,7 +121,8 @@ class TestBrowserWindow : public BrowserWindow,
   void FocusToolbar() override {}
   void ToolbarSizeChanged(bool is_animating) override {}
   void TabDraggingStatusChanged(bool is_dragging) override {}
-  void LinkOpeningFromGesture(WindowOpenDisposition disposition) override {}
+  void LinkOpeningFromGesture(
+      ui::mojom::WindowOpenDisposition disposition) override {}
   void FocusAppMenu() override {}
   void ShowAppMenu() override {}
   void PreHandleDragUpdate(const content::DropData& drop_data,
@@ -172,8 +176,6 @@ class TestBrowserWindow : public BrowserWindow,
   web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHostFor(
       content::WebContents* web_contents) override;
   void ShowAvatarBubbleFromAvatarButton(bool is_source_keyboard) override {}
-  void MaybeShowProfileSwitchIPH() override {}
-  void MaybeShowSupervisedUserProfileSignInIPH() override {}
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || \
     BUILDFLAG(IS_LINUX)

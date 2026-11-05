@@ -295,6 +295,21 @@ enum class DisableTouchpadMode {
   kMaxValue = kOnExternalMouseConnected,
 };
 
+// Font style used in the Hover Text bubble.
+// These values are written to prefs so should not be changed.
+enum class HoverTextFontStyle {
+  kSystemSans = 0,
+  kSerif = 1,
+  kMonospace = 2,
+  kMaxValue = kMonospace,
+};
+
+enum class HoverTextPointerType {
+  kMouse,
+  kTouchPress,
+  kTouchRelease,
+};
+
 }  // namespace ash
 
 #endif  // ASH_PUBLIC_CPP_ACCESSIBILITY_CONTROLLER_ENUMS_H_

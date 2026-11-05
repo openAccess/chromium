@@ -4,12 +4,12 @@
 
 #include "extensions/browser/renderer_startup_helper.h"
 
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/check_is_test.h"
-#include "base/containers/adapters.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
@@ -27,6 +27,8 @@
 #include "content/public/browser/render_process_host.h"
 #include "extensions/browser/bad_message.h"
 #include "extensions/browser/extension_function_dispatcher.h"
+#include "extensions/browser/extension_mojo_binder_registry.h"
+#include "extensions/browser/extension_mojo_binder_registry_factory.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
@@ -197,6 +199,13 @@ mojom::ExtensionLoadedParamsPtr CreateExtensionLoadedParams(
       user_script_manager &&
       user_script_manager->AreUserScriptsAllowed(extension);
 
+  bool is_mojo_js_enabled_for_service_worker = false;
+  if (auto* registry = ExtensionMojoBinderRegistryFactory::GetForBrowserContext(
+          browser_context)) {
+    is_mojo_js_enabled_for_service_worker =
+        registry->IsMojoJsEnabledForServiceWorker(extension);
+  }
+
   return mojom::ExtensionLoadedParams::New(
       extension.manifest()->value()->Clone(), extension.location(),
       extension.path(),
@@ -208,7 +217,8 @@ mojom::ExtensionLoadedParamsPtr CreateExtensionLoadedParams(
       permissions_data->UsesDefaultPolicyHostRestrictions(),
       user_scripts_allowed, extension.id(),
       GetWorkerActivationToken(browser_context, extension),
-      extension.creation_flags(), extension.guid());
+      extension.creation_flags(), extension.guid(),
+      is_mojo_js_enabled_for_service_worker);
 }
 
 base::flat_map<std::string, std::string> ToFlatMap(
@@ -734,7 +744,8 @@ void RendererStartupHelper::GetMessageBundle(
   // Iterate through the imports in reverse.  This will allow later imported
   // modules to override earlier imported modules, as the list order is
   // maintained from the definition in manifest.json of the imports.
-  for (const SharedModuleInfo::ImportInfo& import : base::Reversed(imports)) {
+  for (const SharedModuleInfo::ImportInfo& import :
+       std::views::reverse(imports)) {
     const Extension* imported_extension =
         extension_set.GetByID(import.extension_id);
     if (!imported_extension) {

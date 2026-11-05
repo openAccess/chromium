@@ -6,18 +6,16 @@
 #define COMPONENTS_OPTIMIZATION_GUIDE_CORE_MODEL_EXECUTION_TEST_FAKE_MODEL_ASSETS_H_
 
 #include <cstdint>
-#include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/values.h"
-#include "components/optimization_guide/core/delivery/model_info.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_names.h"
 #include "components/optimization_guide/proto/on_device_base_model_metadata.pb.h"
 #include "components/optimization_guide/proto/on_device_model_execution_config.pb.h"
-#include "components/optimization_guide/proto/text_safety_model_metadata.pb.h"
-#include "components/optimization_guide/public/mojom/model_broker.mojom-forward.h"
 
 namespace optimization_guide {
 
@@ -56,9 +54,6 @@ class FakeBaseModelAsset {
   // Returns a fake manifest content for this asset.
   base::DictValue Manifest() const;
 
-  // Constructs metadata compatible with the default constructed asset.
-  static proto::OnDeviceBaseModelMetadata DefaultSpec();
-
  private:
   std::string version_ = "0.0.1";
   base::ListValue supported_performance_hints_;
@@ -71,63 +66,16 @@ class FakeAdaptationAsset {
   struct Content {
     proto::OnDeviceModelExecutionFeatureConfig config;
     std::optional<uint32_t> weight;
-    proto::OnDeviceBaseModelMetadata metadata =
-        FakeBaseModelAsset::DefaultSpec();
   };
   explicit FakeAdaptationAsset(Content&& content);
   ~FakeAdaptationAsset();
 
   int64_t version() const { return 12345; }
-  mojom::OnDeviceFeature feature() const { return feature_; }
-
-  const ModelInfo& model_info() const { return model_info_; }
 
   base::FilePath dir() { return temp_dir_.GetPath(); }
 
  private:
   base::ScopedTempDir temp_dir_;
-  mojom::OnDeviceFeature feature_;
-  ModelInfo model_info_;
-};
-
-// Language model files and metadata suitable for a FakeOnDeviceModelService.
-class FakeLanguageModelAsset {
- public:
-  FakeLanguageModelAsset();
-  ~FakeLanguageModelAsset();
-
-  const ModelInfo& model_info() const { return model_info_; }
-  base::FilePath model_path() const;
-
- private:
-  base::ScopedTempDir temp_dir_;
-  ModelInfo model_info_;
-};
-
-// Safety model files and metadata suitable for a FakeOnDeviceModelService.
-class FakeSafetyModelAsset {
- public:
-  struct Content {
-    proto::TextSafetyModelMetadata metadata;
-    int64_t model_info_version = 1;
-  };
-  // Constructs a safety model with the given content.
-  explicit FakeSafetyModelAsset(Content&& content);
-
-  // Constructs a simple safety model supporting a single feature.
-  explicit FakeSafetyModelAsset(proto::FeatureTextSafetyConfiguration&& config);
-
-  ~FakeSafetyModelAsset();
-
-  const ModelInfo& model_info() const { return model_info_; }
-
-  const std::vector<base::FilePath>& AdditionalFiles() const {
-    return model_info_.additional_files;
-  }
-
- private:
-  base::ScopedTempDir temp_dir_;
-  ModelInfo model_info_;
 };
 
 // File paths that can be used in testing, handling platform differences, namely

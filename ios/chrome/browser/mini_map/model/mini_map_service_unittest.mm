@@ -7,7 +7,6 @@
 #import <memory>
 
 #import "base/test/ios/wait_util.h"
-#import "base/test/scoped_feature_list.h"
 #import "components/search_engines/template_url_service.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/identity_test_environment.h"
@@ -30,14 +29,15 @@
 
 class MiniMapServiceTest : public PlatformTest {
  public:
-  MiniMapServiceTest() : application_(OCMClassMock([UIApplication class])) {}
+  MiniMapServiceTest() : application_(OCMClassMock([UIApplication class])) {
+    // Force the localization in a country where the service is allowed.
+    scoped_variations_service_.Get()->OverrideStoredPermanentCountry("us");
+  }
 
   void SetUp() override {
     PlatformTest::SetUp();
 
-    MiniMapServiceFactory::GetInstance();
     TestProfileIOS::Builder test_profile_builder;
-
     test_profile_builder.AddTestingFactory(
         ios::TemplateURLServiceFactory::GetInstance(),
         ios::TemplateURLServiceFactory::GetDefaultFactory());
@@ -54,6 +54,8 @@ class MiniMapServiceTest : public PlatformTest {
   }
 
   web::WebTaskEnvironment task_environment_;
+  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
+  IOSChromeScopedTestingVariationsService scoped_variations_service_;
   std::unique_ptr<TestProfileIOS> profile_;
   raw_ptr<MiniMapService> mini_map_service_;
   id application_;
@@ -132,23 +134,4 @@ TEST_F(MiniMapUniversalLinkTest,
        TestMiniMapUniversalLinkDisabledWhenCountryExcluded) {
   scoped_variations_service_.Get()->OverrideStoredPermanentCountry("fr");
   EXPECT_FALSE(IsMiniMapUniversalLinkEnabled());
-}
-
-using MiniMapServiceCounterfactualTest = PlatformTest;
-
-TEST_F(MiniMapServiceCounterfactualTest,
-       TestServiceCreationWithCounterfactualFlag) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kIOSMiniMapUniversalLinkCounterfactual);
-
-  web::WebTaskEnvironment task_environment;
-  TestProfileIOS::Builder test_profile_builder;
-  test_profile_builder.AddTestingFactory(
-      ios::TemplateURLServiceFactory::GetInstance(),
-      ios::TemplateURLServiceFactory::GetDefaultFactory());
-  std::unique_ptr<TestProfileIOS> profile =
-      std::move(test_profile_builder).Build();
-
-  MiniMapService* service = MiniMapServiceFactory::GetForProfile(profile.get());
-  EXPECT_TRUE(service);
 }

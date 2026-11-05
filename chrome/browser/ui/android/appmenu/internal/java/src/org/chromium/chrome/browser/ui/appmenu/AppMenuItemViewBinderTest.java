@@ -4,7 +4,12 @@
 
 package org.chromium.chrome.browser.ui.appmenu;
 
-import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import android.app.Activity;
 import android.content.res.ColorStateList;
@@ -22,41 +27,32 @@ import android.widget.TextView;
 import androidx.annotation.Nullable;
 import androidx.appcompat.content.res.AppCompatResources;
 import androidx.core.widget.ImageViewCompat;
-import androidx.test.annotation.UiThreadTest;
-import androidx.test.filters.MediumTest;
 
 import com.google.android.material.button.MaterialButton;
 
-import org.junit.Assert;
 import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
-import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.BaseActivityTestRule;
-import org.chromium.base.test.util.Batch;
+import org.chromium.base.Token;
+import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler.AppMenuItemType;
-import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
 import org.chromium.components.browser_ui.util.motion.MotionEventTestUtils;
+import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.ModelListAdapter;
 import org.chromium.ui.modelutil.PropertyModel;
-import org.chromium.ui.test.util.BlankUiTestActivity;
-
-import java.util.concurrent.TimeoutException;
 
 /** Tests for {@link AppMenuItemViewBinder}. */
-@RunWith(ChromeJUnit4ClassRunner.class)
-@Batch(Batch.UNIT_TESTS)
+@RunWith(BaseRobolectricTestRunner.class)
 public class AppMenuItemViewBinderTest {
     static class TestClickHandler implements AppMenuClickHandler {
         public CallbackHelper onClickCallback = new CallbackHelper();
@@ -79,10 +75,6 @@ public class AppMenuItemViewBinderTest {
         }
     }
 
-    @ClassRule
-    public static BaseActivityTestRule<BlankUiTestActivity> sActivityTestRule =
-            new BaseActivityTestRule<>(BlankUiTestActivity.class);
-
     static final int MENU_ID1 = 100;
     static final int MENU_ID2 = 200;
     static final int MENU_ID3 = 300;
@@ -101,29 +93,20 @@ public class AppMenuItemViewBinderTest {
     static final String TITLE_8 = "Menu Item Eight";
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     private Activity mActivity;
     private MVCListAdapter.ModelList mMenuList;
     private ModelListAdapter mModelListAdapter;
-
     private TestClickHandler mClickHandler;
 
-    @BeforeClass
-    public static void setupSuite() {
-        sActivityTestRule.launchActivity(null);
-    }
-
     @Before
-    public void setUpTest() throws Exception {
+    public void setUpTest() {
         mClickHandler = new TestClickHandler();
+        mActivity = Robolectric.buildActivity(TestActivity.class).setup().get();
+        mMenuList = new MVCListAdapter.ModelList();
+        mModelListAdapter = new ModelListAdapter(mMenuList);
 
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mActivity = sActivityTestRule.getActivity();
-                    mMenuList = new MVCListAdapter.ModelList();
-                    mModelListAdapter = new ModelListAdapter(mMenuList);
-
-                    AppMenuHandlerImpl.registerDefaultViewBinders(mModelListAdapter, true);
-                });
+        AppMenuHandlerImpl.registerDefaultViewBinders(mModelListAdapter, true);
     }
 
     private PropertyModel createStandardMenuItem(int menuId, String title) {
@@ -221,8 +204,6 @@ public class AppMenuItemViewBinderTest {
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testStandardMenuItem_WithMenuTitle() {
         createStandardMenuItem(MENU_ID1, TITLE_1);
 
@@ -231,13 +212,11 @@ public class AppMenuItemViewBinderTest {
         TextView titleView = view.findViewById(R.id.menu_item_text);
         ImageView itemIcon = view.findViewById(R.id.menu_item_icon);
 
-        Assert.assertEquals("Incorrect title text for item 1", TITLE_1, titleView.getText());
-        Assert.assertNull("Should not have icon for item 1", itemIcon.getDrawable());
+        assertEquals("Incorrect title text for item 1", TITLE_1, titleView.getText());
+        assertNull("Should not have icon for item 1", itemIcon.getDrawable());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testStandardMenuItem_WithMenuIcon() {
         PropertyModel standardModel = createStandardMenuItem(MENU_ID1, TITLE_1);
 
@@ -248,12 +227,37 @@ public class AppMenuItemViewBinderTest {
         standardModel.set(
                 AppMenuItemProperties.ICON,
                 AppCompatResources.getDrawable(mActivity, R.drawable.test_ic_vintage_filter));
-        Assert.assertNotNull("Should have icon for item 1", itemIcon.getDrawable());
+        assertNotNull("Should have icon for item 1", itemIcon.getDrawable());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
+    public void testStandardMenuItem_WithShortcutText() {
+        String shortcut = "Ctrl+T";
+        PropertyModel standardModel = createStandardMenuItem(MENU_ID1, TITLE_1);
+
+        ViewGroup parentView = mActivity.findViewById(android.R.id.content);
+        View view = mModelListAdapter.getView(0, null, parentView);
+        TextView shortcutView = view.findViewById(R.id.menu_item_shortcut);
+
+        assertNotNull("Shortcut view should exist", shortcutView);
+        assertEquals(
+                "Shortcut view should be gone by default", View.GONE, shortcutView.getVisibility());
+
+        standardModel.set(AppMenuItemProperties.SHORTCUT_TEXT, shortcut);
+        assertEquals(
+                "Shortcut view should be visible when shortcut text is set",
+                View.VISIBLE,
+                shortcutView.getVisibility());
+        assertEquals("Incorrect shortcut text", shortcut, shortcutView.getText());
+
+        standardModel.set(AppMenuItemProperties.SHORTCUT_TEXT, null);
+        assertEquals(
+                "Shortcut view should be gone when shortcut text is cleared",
+                View.GONE,
+                shortcutView.getVisibility());
+    }
+
+    @Test
     public void testStandardMenuItem_WithCheckedAndCheckable() {
         PropertyModel standardModel = createStandardMenuItem(MENU_ID1, TITLE_1);
 
@@ -262,34 +266,31 @@ public class AppMenuItemViewBinderTest {
 
         AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
         view.onInitializeAccessibilityNodeInfo(info);
-        Assert.assertNull("Should not have RadioButton class initially", info.getClassName());
-        Assert.assertFalse("Should not be selected initially", info.isSelected());
-        Assert.assertNull(
-                "Should not have collection item info initially", info.getCollectionItemInfo());
+        assertNull("Should not have RadioButton class initially", info.getClassName());
+        assertFalse("Should not be selected initially", info.isSelected());
+        assertNull("Should not have collection item info initially", info.getCollectionItemInfo());
 
         standardModel.set(AppMenuItemProperties.CHECKABLE, true);
         standardModel.set(AppMenuItemProperties.CHECKED, true);
 
         AccessibilityNodeInfo checkedInfo = AccessibilityNodeInfo.obtain();
         view.onInitializeAccessibilityNodeInfo(checkedInfo);
-        Assert.assertEquals(RadioButton.class.getName(), checkedInfo.getClassName());
-        Assert.assertTrue("Should be checked", checkedInfo.isChecked());
-        Assert.assertNotNull(checkedInfo.getCollectionItemInfo());
-        Assert.assertEquals(0, checkedInfo.getCollectionItemInfo().getColumnIndex());
-        Assert.assertEquals(0, checkedInfo.getCollectionItemInfo().getRowIndex());
+        assertEquals(RadioButton.class.getName(), checkedInfo.getClassName());
+        assertTrue("Should be checked", checkedInfo.isChecked());
+        assertNotNull(checkedInfo.getCollectionItemInfo());
+        assertEquals(0, checkedInfo.getCollectionItemInfo().getColumnIndex());
+        assertEquals(0, checkedInfo.getCollectionItemInfo().getRowIndex());
 
         standardModel.set(AppMenuItemProperties.CHECKED, false);
         AccessibilityNodeInfo uncheckedInfo = AccessibilityNodeInfo.obtain();
         view.onInitializeAccessibilityNodeInfo(uncheckedInfo);
-        Assert.assertEquals(RadioButton.class.getName(), uncheckedInfo.getClassName());
-        Assert.assertFalse("Should not be selected", uncheckedInfo.isSelected());
-        Assert.assertNotNull(uncheckedInfo.getCollectionItemInfo());
+        assertEquals(RadioButton.class.getName(), uncheckedInfo.getClassName());
+        assertFalse("Should not be selected", uncheckedInfo.isSelected());
+        assertNotNull(uncheckedInfo.getCollectionItemInfo());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
-    public void testStandardMenuItem_WithClickHandler_OnClickListener() throws TimeoutException {
+    public void testStandardMenuItem_WithClickHandler_OnClickListener() {
         PropertyModel standardModel = createStandardMenuItem(MENU_ID1, TITLE_1);
         standardModel.set(AppMenuItemProperties.CLICK_HANDLER, mClickHandler);
 
@@ -297,17 +298,15 @@ public class AppMenuItemViewBinderTest {
         View view =
                 mModelListAdapter.getView(/* position= */ 0, /* convertView= */ null, parentView);
         view.performClick();
-        mClickHandler.onClickCallback.waitForCallback(/* currentCallCount= */ 0);
+        assertEquals(1, mClickHandler.onClickCallback.getCallCount());
 
-        Assert.assertEquals(
+        assertEquals(
                 "Incorrect clicked item id",
                 MENU_ID1,
                 mClickHandler.lastClickedModel.get(AppMenuItemProperties.MENU_ITEM_ID));
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testStandardMenuItem_WithClickHandler_OnPeripheralClickListener_TouchScreenClick() {
         PropertyModel standardModel = createStandardMenuItem(MENU_ID1, TITLE_1);
         standardModel.set(AppMenuItemProperties.CLICK_HANDLER, mClickHandler);
@@ -322,16 +321,11 @@ public class AppMenuItemViewBinderTest {
         // As the motion events are simulated using dispatchTouchEvent(), the OnClickListener will
         // not be triggered either.
         // Therefore, the onClickCallback should not be called.
-        assertThrows(
-                TimeoutException.class,
-                () -> mClickHandler.onClickCallback.waitForCallback(/* currentCallCount= */ 0));
+        assertEquals(0, mClickHandler.onClickCallback.getCallCount());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
-    public void testStandardMenuItem_WithClickHandler_OnPeripheralClickListener_PeripheralClick()
-            throws TimeoutException {
+    public void testStandardMenuItem_WithClickHandler_OnPeripheralClickListener_PeripheralClick() {
         PropertyModel standardModel = createStandardMenuItem(MENU_ID1, TITLE_1);
         standardModel.set(AppMenuItemProperties.CLICK_HANDLER, mClickHandler);
 
@@ -341,8 +335,8 @@ public class AppMenuItemViewBinderTest {
         simulateClickWithMotionEvents(view, InputDevice.SOURCE_MOUSE, MotionEvent.TOOL_TYPE_MOUSE);
 
         // Simulated mouse motion events should trigger OnPeripheralClickListener.
-        mClickHandler.onClickCallback.waitForCallback(/* currentCallCount= */ 0);
-        Assert.assertEquals(
+        assertEquals(1, mClickHandler.onClickCallback.getCallCount());
+        assertEquals(
                 "Incorrect clicked item id",
                 MENU_ID1,
                 mClickHandler.lastClickedModel.get(AppMenuItemProperties.MENU_ITEM_ID));
@@ -381,9 +375,7 @@ public class AppMenuItemViewBinderTest {
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
-    public void testConvertView_Reused_StandardMenuItem() throws TimeoutException {
+    public void testConvertView_Reused_StandardMenuItem() {
         PropertyModel standardModel1 = createStandardMenuItem(MENU_ID1, TITLE_1);
         standardModel1.set(AppMenuItemProperties.CLICK_HANDLER, mClickHandler);
         PropertyModel standardModel2 = createStandardMenuItem(MENU_ID2, TITLE_2);
@@ -393,28 +385,26 @@ public class AppMenuItemViewBinderTest {
         View view1 = mModelListAdapter.getView(0, null, parentView);
         TextView titleView = view1.findViewById(R.id.menu_item_text);
 
-        Assert.assertEquals("Incorrect title text for item 1", TITLE_1, titleView.getText());
+        assertEquals("Incorrect title text for item 1", TITLE_1, titleView.getText());
 
         View view2 = mModelListAdapter.getView(1, view1, parentView);
-        Assert.assertEquals("Convert view should have been re-used", view1, view2);
-        Assert.assertEquals("Title should have been updated", TITLE_2, titleView.getText());
+        assertEquals("Convert view should have been re-used", view1, view2);
+        assertEquals("Title should have been updated", TITLE_2, titleView.getText());
 
         view2.performClick();
-        mClickHandler.onClickCallback.waitForCallback(0);
-        Assert.assertEquals(
+        assertEquals(1, mClickHandler.onClickCallback.getCallCount());
+        assertEquals(
                 "Incorrect clicked item id",
                 MENU_ID2,
                 mClickHandler.lastClickedModel.get(AppMenuItemProperties.MENU_ITEM_ID));
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testConvertView_Reused_TitleMenuItem() {
         createTitleMenuItem(MENU_ID2, TITLE_2, null, MENU_ID3, TITLE_3, true, true);
         createTitleMenuItem(MENU_ID5, TITLE_5, null, MENU_ID6, TITLE_6, true, false);
 
-        Assert.assertEquals(
+        assertEquals(
                 "Wrong item view type",
                 AppMenuItemType.TITLE_BUTTON,
                 mModelListAdapter.getItemViewType(0));
@@ -423,43 +413,38 @@ public class AppMenuItemViewBinderTest {
         View view1 = mModelListAdapter.getView(0, null, parentView);
         TextView titleView = view1.findViewById(R.id.menu_item_text);
 
-        Assert.assertEquals("Incorrect title text for item 1", TITLE_2, titleView.getText());
+        assertEquals("Incorrect title text for item 1", TITLE_2, titleView.getText());
 
         ImageView iconView = view1.findViewById(R.id.menu_item_icon);
-        Assert.assertNotNull(iconView);
-        Assert.assertNotEquals(View.VISIBLE, iconView.getVisibility());
+        assertNotNull(iconView);
+        assertNotEquals(View.VISIBLE, iconView.getVisibility());
 
         View view2 = mModelListAdapter.getView(1, view1, parentView);
-        Assert.assertEquals("Convert view should have been re-used", view1, view2);
-        Assert.assertEquals("Title should have been updated", TITLE_5, titleView.getText());
+        assertEquals("Convert view should have been re-used", view1, view2);
+        assertEquals("Title should have been updated", TITLE_5, titleView.getText());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testConvertView_Reused_TitleMenuItem_WithMenuIcon() {
         Drawable icon =
                 AppCompatResources.getDrawable(mActivity, R.drawable.test_ic_vintage_filter);
         createTitleMenuItem(MENU_ID2, TITLE_2, icon, MENU_ID3, TITLE_3, true, true);
         createTitleMenuItem(MENU_ID5, TITLE_5, icon, MENU_ID6, TITLE_6, true, false);
 
-        Assert.assertEquals(
+        assertEquals(
                 "Wrong item view type",
                 AppMenuItemType.TITLE_BUTTON,
                 mModelListAdapter.getItemViewType(0));
 
         ViewGroup parentView = mActivity.findViewById(android.R.id.content);
         View view1 = mModelListAdapter.getView(0, null, parentView);
-        Assert.assertNotNull(
-                "Should have icon for item 1", view1.findViewById(R.id.menu_item_icon));
+        assertNotNull("Should have icon for item 1", view1.findViewById(R.id.menu_item_icon));
 
         View view2 = mModelListAdapter.getView(1, view1, parentView);
-        Assert.assertEquals("Convert view should have been re-used", view1, view2);
+        assertEquals("Convert view should have been re-used", view1, view2);
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testConvertView_Reused_IconRow_SameButtonCount() {
         Drawable icon =
                 AppCompatResources.getDrawable(mActivity, R.drawable.test_ic_vintage_filter);
@@ -502,22 +487,20 @@ public class AppMenuItemViewBinderTest {
         View view1 = mModelListAdapter.getView(0, null, parentView);
         View buttonOne = view1.findViewById(R.id.button_one);
 
-        Assert.assertEquals(
+        assertEquals(
                 "Incorrect content description for item 1",
                 TITLE_1,
                 buttonOne.getContentDescription());
 
         View view2 = mModelListAdapter.getView(1, view1, parentView);
-        Assert.assertEquals("Convert view should have been re-used", view1, view2);
-        Assert.assertEquals(
+        assertEquals("Convert view should have been re-used", view1, view2);
+        assertEquals(
                 "Content description should have been updated",
                 TITLE_4,
                 buttonOne.getContentDescription());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testConvertView_Reused_IconRow_IncreasingButtonCount() {
         Drawable icon =
                 AppCompatResources.getDrawable(mActivity, R.drawable.test_ic_vintage_filter);
@@ -558,16 +541,14 @@ public class AppMenuItemViewBinderTest {
 
         ViewGroup parentView = mActivity.findViewById(android.R.id.content);
         View view1 = mModelListAdapter.getView(0, null, parentView);
-        Assert.assertEquals(3, countVisibleChildren((ViewGroup) view1));
+        assertEquals(3, countVisibleChildren((ViewGroup) view1));
 
         View view2 = mModelListAdapter.getView(1, view1, parentView);
-        Assert.assertEquals(4, countVisibleChildren((ViewGroup) view2));
-        Assert.assertEquals("Convert view should be re-used", view1, view2);
+        assertEquals(4, countVisibleChildren((ViewGroup) view2));
+        assertEquals("Convert view should be re-used", view1, view2);
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testConvertView_Reused_IconRow_DecreasingButtonCount() {
         Drawable icon =
                 AppCompatResources.getDrawable(mActivity, R.drawable.test_ic_vintage_filter);
@@ -594,11 +575,11 @@ public class AppMenuItemViewBinderTest {
 
         ViewGroup parentView = mActivity.findViewById(android.R.id.content);
         View view1 = mModelListAdapter.getView(0, null, parentView);
-        Assert.assertEquals(5, countVisibleChildren((ViewGroup) view1));
+        assertEquals(5, countVisibleChildren((ViewGroup) view1));
 
         View view2 = mModelListAdapter.getView(1, view1, parentView);
-        Assert.assertEquals(3, countVisibleChildren((ViewGroup) view2));
-        Assert.assertEquals("Convert view should be re-used", view1, view2);
+        assertEquals(3, countVisibleChildren((ViewGroup) view2));
+        assertEquals("Convert view should be re-used", view1, view2);
     }
 
     private static int countVisibleChildren(ViewGroup view) {
@@ -610,17 +591,15 @@ public class AppMenuItemViewBinderTest {
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testConvertView_NotReused() {
         createStandardMenuItem(MENU_ID1, TITLE_1);
         createTitleMenuItem(MENU_ID3, TITLE_3, null, MENU_ID4, TITLE_4, true, true);
 
-        Assert.assertEquals(
+        assertEquals(
                 "Wrong item view type for item 1",
                 AppMenuItemType.STANDARD,
                 mModelListAdapter.getItemViewType(0));
-        Assert.assertEquals(
+        assertEquals(
                 "Wrong item view type for item 2",
                 AppMenuItemType.TITLE_BUTTON,
                 mModelListAdapter.getItemViewType(1));
@@ -629,20 +608,129 @@ public class AppMenuItemViewBinderTest {
         View view1 = mModelListAdapter.getView(0, null, parentView);
         TextView titleView = view1.findViewById(R.id.menu_item_text);
 
-        Assert.assertEquals("Incorrect title text for item 1", TITLE_1, titleView.getText());
+        assertEquals("Incorrect title text for item 1", TITLE_1, titleView.getText());
 
         View view2 = mModelListAdapter.getView(1, view1, parentView);
-        Assert.assertNotEquals("Standard view should not have been re-used", view1, view2);
-        Assert.assertEquals(
+        assertNotEquals("Standard view should not have been re-used", view1, view2);
+        assertEquals(
                 "Title for view 1 should have not have been updated", TITLE_1, titleView.getText());
 
         View view3 = mModelListAdapter.getView(0, view2, parentView);
-        Assert.assertNotEquals("Title button view should not have been re-used", view2, view3);
+        assertNotEquals("Title button view should not have been re-used", view2, view3);
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
+    public void testConvertView_TabGroup_RecyclingAndSeparationFromStandard() {
+        Token token1 = new Token(1L, 2L);
+        Token token2 = new Token(3L, 4L);
+
+        // 1. STANDARD item (has AppMenuItemProperties.ALL_KEYS, lacks TAB_GROUP_ID).
+        PropertyModel standardModel =
+                new PropertyModel.Builder(AppMenuItemProperties.ALL_KEYS)
+                        .with(AppMenuItemProperties.MENU_ITEM_ID, MENU_ID1)
+                        .with(AppMenuItemProperties.TITLE, TITLE_1)
+                        .build();
+        mMenuList.add(new MVCListAdapter.ListItem(AppMenuItemType.STANDARD, standardModel));
+
+        // 2. TAB_GROUP item 1 (has AppMenuTabGroupItemProperties.ALL_KEYS).
+        PropertyModel tabGroupModel1 =
+                new PropertyModel.Builder(AppMenuTabGroupItemProperties.ALL_KEYS)
+                        .with(AppMenuItemProperties.MENU_ITEM_ID, MENU_ID2)
+                        .with(AppMenuItemProperties.TITLE, TITLE_2)
+                        .with(AppMenuTabGroupItemProperties.TAB_GROUP_ID, token1)
+                        .build();
+        mMenuList.add(new MVCListAdapter.ListItem(AppMenuItemType.TAB_GROUP, tabGroupModel1));
+
+        // 3. TAB_GROUP item 2 (has AppMenuTabGroupItemProperties.ALL_KEYS).
+        PropertyModel tabGroupModel2 =
+                new PropertyModel.Builder(AppMenuTabGroupItemProperties.ALL_KEYS)
+                        .with(AppMenuItemProperties.MENU_ITEM_ID, MENU_ID3)
+                        .with(AppMenuItemProperties.TITLE, TITLE_3)
+                        .with(AppMenuTabGroupItemProperties.TAB_GROUP_ID, token2)
+                        .build();
+        mMenuList.add(new MVCListAdapter.ListItem(AppMenuItemType.TAB_GROUP, tabGroupModel2));
+
+        // 4. STANDARD_NO_ICON item (has AppMenuItemProperties.ALL_KEYS).
+        PropertyModel standardNoIconModel =
+                new PropertyModel.Builder(AppMenuItemProperties.ALL_KEYS)
+                        .with(AppMenuItemProperties.MENU_ITEM_ID, MENU_ID4)
+                        .with(AppMenuItemProperties.TITLE, TITLE_4)
+                        .build();
+        mMenuList.add(
+                new MVCListAdapter.ListItem(AppMenuItemType.STANDARD_NO_ICON, standardNoIconModel));
+
+        // 5. TAB_GROUP_NO_ICON item 1 (has AppMenuTabGroupItemProperties.ALL_KEYS).
+        PropertyModel tabGroupNoIconModel1 =
+                new PropertyModel.Builder(AppMenuTabGroupItemProperties.ALL_KEYS)
+                        .with(AppMenuItemProperties.MENU_ITEM_ID, MENU_ID5)
+                        .with(AppMenuItemProperties.TITLE, TITLE_5)
+                        .with(AppMenuTabGroupItemProperties.TAB_GROUP_ID, token1)
+                        .build();
+        mMenuList.add(
+                new MVCListAdapter.ListItem(
+                        AppMenuItemType.TAB_GROUP_NO_ICON, tabGroupNoIconModel1));
+
+        // 6. TAB_GROUP_NO_ICON item 2 (has AppMenuTabGroupItemProperties.ALL_KEYS).
+        PropertyModel tabGroupNoIconModel2 =
+                new PropertyModel.Builder(AppMenuTabGroupItemProperties.ALL_KEYS)
+                        .with(AppMenuItemProperties.MENU_ITEM_ID, MENU_ID6)
+                        .with(AppMenuItemProperties.TITLE, TITLE_6)
+                        .with(AppMenuTabGroupItemProperties.TAB_GROUP_ID, token2)
+                        .build();
+        mMenuList.add(
+                new MVCListAdapter.ListItem(
+                        AppMenuItemType.TAB_GROUP_NO_ICON, tabGroupNoIconModel2));
+
+        // Verify distinct item view types prevent recycling collisions.
+        assertEquals(AppMenuItemType.STANDARD, mModelListAdapter.getItemViewType(0));
+        assertEquals(AppMenuItemType.TAB_GROUP, mModelListAdapter.getItemViewType(1));
+        assertEquals(AppMenuItemType.TAB_GROUP, mModelListAdapter.getItemViewType(2));
+        assertEquals(AppMenuItemType.STANDARD_NO_ICON, mModelListAdapter.getItemViewType(3));
+        assertEquals(AppMenuItemType.TAB_GROUP_NO_ICON, mModelListAdapter.getItemViewType(4));
+        assertEquals(AppMenuItemType.TAB_GROUP_NO_ICON, mModelListAdapter.getItemViewType(5));
+
+        ViewGroup parentView = mActivity.findViewById(android.R.id.content);
+
+        // Standard view must not be reused for TabGroup (different item type).
+        View standardView = mModelListAdapter.getView(0, null, parentView);
+        View tabGroupView1 = mModelListAdapter.getView(1, standardView, parentView);
+        assertNotEquals(
+                "Standard view should not have been re-used for TabGroup",
+                standardView,
+                tabGroupView1);
+
+        // TabGroup view can be safely reused for another TabGroup item without throwing
+        // IllegalArgumentException.
+        View tabGroupView2 = mModelListAdapter.getView(2, tabGroupView1, parentView);
+        assertEquals(
+                "TabGroup view should be re-used for another TabGroup item",
+                tabGroupView1,
+                tabGroupView2);
+        TextView titleView = tabGroupView2.findViewById(R.id.menu_item_text);
+        assertEquals("Incorrect title text after TabGroup recycling", TITLE_3, titleView.getText());
+
+        // StandardNoIcon view must not be reused for TabGroupNoIcon (different item type).
+        View standardNoIconView = mModelListAdapter.getView(3, null, parentView);
+        View tabGroupNoIconView1 = mModelListAdapter.getView(4, standardNoIconView, parentView);
+        assertNotEquals(
+                "StandardNoIcon view should not have been re-used for TabGroupNoIcon",
+                standardNoIconView,
+                tabGroupNoIconView1);
+
+        // TabGroupNoIcon view can be safely reused for another TabGroupNoIcon item.
+        View tabGroupNoIconView2 = mModelListAdapter.getView(5, tabGroupNoIconView1, parentView);
+        assertEquals(
+                "TabGroupNoIcon view should be re-used for another TabGroupNoIcon item",
+                tabGroupNoIconView1,
+                tabGroupNoIconView2);
+        TextView noIconTitleView = tabGroupNoIconView2.findViewById(R.id.menu_item_text);
+        assertEquals(
+                "Incorrect title text after TabGroupNoIcon recycling",
+                TITLE_6,
+                noIconTitleView.getText());
+    }
+
+    @Test
     public void testTitleMenuItem_Checkbox() {
         createTitleMenuItem(MENU_ID2, TITLE_2, null, MENU_ID3, TITLE_3, true, true);
 
@@ -650,12 +738,10 @@ public class AppMenuItemViewBinderTest {
         View view = mModelListAdapter.getView(0, null, parentView);
         AppMenuItemIcon checkbox = view.findViewById(R.id.checkbox);
 
-        Assert.assertTrue("Checkbox should be checked", checkbox.isChecked());
+        assertTrue("Checkbox should be checked", checkbox.isChecked());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testTitleMenuItem_ToggleCheckbox() {
         createTitleMenuItem(MENU_ID2, TITLE_2, null, MENU_ID3, TITLE_3, true, false);
 
@@ -663,20 +749,17 @@ public class AppMenuItemViewBinderTest {
         View view = mModelListAdapter.getView(0, null, parentView);
         AppMenuItemIcon checkbox = view.findViewById(R.id.checkbox);
 
-        Assert.assertFalse("Checkbox should be unchecked", checkbox.isChecked());
+        assertFalse("Checkbox should be unchecked", checkbox.isChecked());
 
         checkbox.toggle();
-        Assert.assertTrue("Checkbox should be checked", checkbox.isChecked());
+        assertTrue("Checkbox should be checked", checkbox.isChecked());
 
         checkbox.toggle();
-        Assert.assertFalse("Checkbox should be unchecked again", checkbox.isChecked());
+        assertFalse("Checkbox should be unchecked again", checkbox.isChecked());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
-    public void testTitleButtonMenuItem_WithClickHandler_FocusableAndClickable()
-            throws TimeoutException {
+    public void testTitleButtonMenuItem_WithClickHandler_FocusableAndClickable() {
         PropertyModel titleModel =
                 createTitleMenuItem(MENU_ID2, TITLE_2, null, MENU_ID3, TITLE_3, false, false);
         titleModel.set(AppMenuItemProperties.CLICK_HANDLER, mClickHandler);
@@ -685,20 +768,18 @@ public class AppMenuItemViewBinderTest {
         View view = mModelListAdapter.getView(0, null, parentView);
         View titleContainer = view.findViewById(R.id.menu_item_container);
 
-        Assert.assertNotNull("Title container should be present", titleContainer);
-        Assert.assertTrue("Title container should be focusable", titleContainer.isFocusable());
+        assertNotNull("Title container should be present", titleContainer);
+        assertTrue("Title container should be focusable", titleContainer.isFocusable());
 
         titleContainer.performClick();
-        mClickHandler.onClickCallback.waitForCallback(0);
-        Assert.assertEquals(
+        assertEquals(1, mClickHandler.onClickCallback.getCallCount());
+        assertEquals(
                 "Incorrect clicked item id",
                 MENU_ID2,
                 mClickHandler.lastClickedModel.get(AppMenuItemProperties.MENU_ITEM_ID));
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testTitleButtonMenuItem_Disabled() {
         PropertyModel titleModel =
                 new PropertyModel.Builder(AppMenuItemProperties.ALL_KEYS)
@@ -723,14 +804,12 @@ public class AppMenuItemViewBinderTest {
         View view = mModelListAdapter.getView(0, null, parentView);
         View titleContainer = view.findViewById(R.id.menu_item_container);
 
-        Assert.assertNotNull("Title container should be present", titleContainer);
-        Assert.assertFalse("Title container should not be enabled", titleContainer.isEnabled());
-        Assert.assertFalse("Title container should not be focusable", titleContainer.isFocusable());
+        assertNotNull("Title container should be present", titleContainer);
+        assertFalse("Title container should not be enabled", titleContainer.isEnabled());
+        assertFalse("Title container should not be focusable", titleContainer.isFocusable());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testIconRowViewBinders() {
         Drawable icon =
                 AppCompatResources.getDrawable(mActivity, R.drawable.test_ic_vintage_filter);
@@ -741,44 +820,42 @@ public class AppMenuItemViewBinderTest {
         ViewGroup parentView = mActivity.findViewById(android.R.id.content);
         View view = mModelListAdapter.getView(0, null, parentView);
         MaterialButton button = view.findViewById(R.id.button_one);
-        Assert.assertEquals(
+        assertEquals(
                 "Incorrect content description for icon 1",
                 TITLE_1,
                 button.getContentDescription());
-        Assert.assertNotNull("Should have an icon for icon 1", button.getIcon());
+        assertNotNull("Should have an icon for icon 1", button.getIcon());
 
         button = view.findViewById(R.id.button_two);
-        Assert.assertEquals(
+        assertEquals(
                 "Incorrect content description for icon 2",
                 TITLE_2,
                 button.getContentDescription());
-        Assert.assertNotNull("Should have an icon for icon 2", button.getIcon());
+        assertNotNull("Should have an icon for icon 2", button.getIcon());
 
         button = view.findViewById(R.id.button_three);
-        Assert.assertEquals(
+        assertEquals(
                 "Incorrect content description for icon 3",
                 TITLE_3,
                 button.getContentDescription());
-        Assert.assertNotNull("Should have an icon for icon 3", button.getIcon());
+        assertNotNull("Should have an icon for icon 3", button.getIcon());
 
         button = view.findViewById(R.id.button_four);
-        Assert.assertEquals(
+        assertEquals(
                 "Incorrect content description for icon 4",
                 TITLE_4,
                 button.getContentDescription());
-        Assert.assertNotNull("Should have an icon for icon 4", button.getIcon());
+        assertNotNull("Should have an icon for icon 4", button.getIcon());
 
         button = view.findViewById(R.id.button_five);
-        Assert.assertEquals(
+        assertEquals(
                 "Incorrect content description for icon 5",
                 TITLE_5,
                 button.getContentDescription());
-        Assert.assertNotNull("Should have an icon for icon 5", button.getIcon());
+        assertNotNull("Should have an icon for icon 5", button.getIcon());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testStandardMenuItem_IconNoTint() {
         PropertyModel model = createStandardMenuItem(MENU_ID1, TITLE_1);
 
@@ -796,12 +873,10 @@ public class AppMenuItemViewBinderTest {
         ImageView itemIcon = view.findViewById(R.id.menu_item_icon);
 
         ColorStateList tint = ImageViewCompat.getImageTintList(itemIcon);
-        Assert.assertNull("Tint should be null when ICON_NO_TINT is set to true", tint);
+        assertNull("Tint should be null when ICON_NO_TINT is set to true", tint);
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testStandardMenuItem_DefaultTint() {
         PropertyModel model = createStandardMenuItem(MENU_ID1, TITLE_1);
 
@@ -818,12 +893,10 @@ public class AppMenuItemViewBinderTest {
 
         // Assert that the tint list is not null.
         ColorStateList tint = ImageViewCompat.getImageTintList(itemIcon);
-        Assert.assertNotNull("Standard icons should have a default tint", tint);
+        assertNotNull("Standard icons should have a default tint", tint);
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testStandardMenuItem_SpecificColorTint() {
         PropertyModel model = createStandardMenuItem(MENU_ID1, TITLE_1);
 
@@ -841,26 +914,23 @@ public class AppMenuItemViewBinderTest {
 
         // Assert tint list is present and matches the requested color.
         ColorStateList tint = ImageViewCompat.getImageTintList(itemIcon);
-        Assert.assertNotNull("Specific color icons should have a tint", tint);
+        assertNotNull("Specific color icons should have a tint", tint);
 
         // Check if the tint matches the expected color.
         int expectedColor = mActivity.getColor(specificColorRes);
-        Assert.assertEquals(
+        assertEquals(
                 "Tint should match the requested color resource",
                 expectedColor,
                 tint.getDefaultColor());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     public void testHeaderPixelHeight() {
         PropertyModel model = new PropertyModel.Builder(AppMenuItemProperties.ALL_KEYS).build();
         int expectedHeight =
                 mActivity.getResources().getDimensionPixelSize(R.dimen.menu_header_height);
 
-        Assert.assertEquals(
-                expectedHeight, AppMenuItemViewBinder.getHeaderPixelHeight(mActivity, model));
+        assertEquals(expectedHeight, AppMenuItemViewBinder.getHeaderPixelHeight(mActivity, model));
     }
 
     private MaterialButton getFirstButtonForIconModel(PropertyModel itemModel) {
@@ -879,8 +949,6 @@ public class AppMenuItemViewBinderTest {
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     @EnableFeatures(ChromeFeatureList.ANDROID_THEME_MODULE)
     public void testIconRowViewBinders_DefaultItem_NotCheckableSelected() {
         Drawable icon =
@@ -894,14 +962,12 @@ public class AppMenuItemViewBinderTest {
 
         MaterialButton button = getFirstButtonForIconModel(item);
 
-        Assert.assertFalse("Button should not be checkable", button.isCheckable());
-        Assert.assertFalse("Button should not be checked", button.isChecked());
-        Assert.assertFalse("Button should not be selected", button.isSelected());
+        assertFalse("Button should not be checkable", button.isCheckable());
+        assertFalse("Button should not be checked", button.isChecked());
+        assertFalse("Button should not be selected", button.isSelected());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     @EnableFeatures(ChromeFeatureList.ANDROID_THEME_MODULE)
     public void testIconRowViewBinders_ModelCheckableTrue_Ignored() {
         Drawable icon =
@@ -916,14 +982,12 @@ public class AppMenuItemViewBinderTest {
 
         MaterialButton button = getFirstButtonForIconModel(item);
 
-        Assert.assertFalse("Button should not be checkable", button.isCheckable());
-        Assert.assertFalse("Button should not be checked", button.isChecked());
-        Assert.assertFalse("Button should not be selected", button.isSelected());
+        assertFalse("Button should not be checkable", button.isCheckable());
+        assertFalse("Button should not be checked", button.isChecked());
+        assertFalse("Button should not be selected", button.isSelected());
     }
 
     @Test
-    @UiThreadTest
-    @MediumTest
     @EnableFeatures(ChromeFeatureList.ANDROID_THEME_MODULE)
     public void testIconRowViewBinders_ModelCheckedTrue_SelectedButNotAccessibilitySelected() {
         Drawable icon =
@@ -938,12 +1002,12 @@ public class AppMenuItemViewBinderTest {
 
         MaterialButton button = getFirstButtonForIconModel(item);
 
-        Assert.assertFalse("Button should not be checkable", button.isCheckable());
-        Assert.assertFalse("Button should not be checked", button.isChecked());
-        Assert.assertTrue("Button should be selected", button.isSelected());
+        assertFalse("Button should not be checkable", button.isCheckable());
+        assertFalse("Button should not be checked", button.isChecked());
+        assertTrue("Button should be selected", button.isSelected());
 
         AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
         button.onInitializeAccessibilityNodeInfo(info);
-        Assert.assertFalse("Accessibility should not show selected", info.isSelected());
+        assertFalse("Accessibility should not show selected", info.isSelected());
     }
 }

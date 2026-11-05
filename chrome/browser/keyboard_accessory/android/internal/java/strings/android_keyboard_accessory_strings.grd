@@ -172,9 +172,6 @@
   </translations>
   <release seq="1">
     <messages fallback_to_english="true">
-    <message name="IDS_ALL_PASSWORDS_BOTTOM_SHEET_CONTENT_DESCRIPTION" desc="Accessibility string read when the all passwords bottom sheet is opened. It describes the bottom sheet where a user can pick a credential to fill into a password form.">
-        List of credentials to be filled on touch.
-      </message>
       <message name="IDS_ALL_PASSWORDS_BOTTOM_SHEET_HALF_HEIGHT" desc="Accessibility string read when the all passwords bottom sheet showing a list of the user's credentials is opened at half height. The sheet will occupy the bottom half the screen.">
         List of credentials to be filled on touch opened at half height.
       </message>
@@ -208,20 +205,17 @@
       <message name="IDS_KEYBOARD_ACCESSORY_DISMISS_BUTTON" desc="Title of the button that closes the keyboard accessory.">
         Dismiss
       </message>
-      <message name="IDS_IPH_KEYBOARD_ACCESSORY_FILL_WITH_CHROME" desc="Text in In-Product-Help bubble suggesting to use an autofill suggestion provided by Chrome.">
-        Use Chrome autofill suggestion
-      </message>
       <message name="IDS_IPH_KEYBOARD_ACCESSORY_AT_MEMORY" desc="Text in the In-Product-Help bubble for a feature to help users find and fill saved autofill information.">
         Enhanced autofill can now find and fill your info from apps like Gmail and Photos
       </message>
       <message name="IDS_IPH_KEYBOARD_ACCESSORY_AUTOFILL_AI_VALUABLES_IPH" desc="Text in In-Product-Help with an item from Google Wallet">
         Now you can autofill more info from Google Wallet. Manage your information or turn these suggestions off in Settings.
       </message>
+      <message name="IDS_IPH_KEYBOARD_ACCESSORY_AUTOFILL_AI_SPII_DISCLAIMER" desc="Text in the In-Product-Help bubble reminding users to verify sensitive autofill information against the original source.">
+        Gemini can make mistakes. Long press the suggestion to review the original source and make sure this info is accurate.
+      </message>
       <message name="IDS_IPH_KEYBOARD_ACCESSORY_HOME_WORK_PROFILE_SUGGESTION" desc="Text in the In-Product-Help bubble for a home or work Autofill profile suggestion.">
         Autofill your home and work addresses from your Google Account
-      </message>
-      <message name="IDS_IPH_KEYBOARD_ACCESSORY_SWIPE_FOR_MORE" desc="Text in In-Product-Help bubble suggesting to scroll the accessory to reveal more suggestions.">
-        Swipe to see more suggestions
       </message>
       <message name="IDS_PASSWORD_GENERATION_ACCESSORY_BUTTON" desc="Text for the button used to generate a password.">
         Suggest strong password

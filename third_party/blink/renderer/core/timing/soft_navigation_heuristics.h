@@ -17,7 +17,6 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/paint/timing/lcp_objects.h"
-#include "third_party/blink/renderer/core/paint/timing/paint_timing.h"
 #include "third_party/blink/renderer/core/paint/timing/paint_timing_client.h"
 #include "third_party/blink/renderer/core/paint/timing/paint_timing_record.h"
 #include "third_party/blink/renderer/core/timing/performance_timeline_entry_id_generator.h"
@@ -80,14 +79,13 @@ class CORE_EXPORT SoftNavigationHeuristics
   // TODO(crbug.com/454082771): This should also override `OnFirstPaint()` and
   // update the underlying LCP calculator's "largest pending image" like we do
   // for hard navs.
-  void OnElementLastContentfulPaint(ImageRecord*) override;
-  void OnElementLastContentfulPaint(TextRecord*,
-                                    bool was_previously_reported) override;
+  Type GetType() const override;
+  OptionalPaintTimingCallback OnPaintFinished(
+      const HeapVector<Member<ImageRecord>>&,
+      const HeapVector<Member<TextRecord>>&) override;
   void OnFramePresented(const HeapVector<Member<ImageRecord>>&,
                         const HeapVector<Member<TextRecord>>&,
-                        const GCedHeapVector<Member<ElementTimingInfo>>*,
                         const DOMPaintTimingInfo&) override;
-  void OnPaintFinished() override;
   void OnInputOrScroll() override;
 
   void Trace(Visitor*) const override;
@@ -115,6 +113,8 @@ class CORE_EXPORT SoftNavigationHeuristics
     return paint_attribution_tracker_.Get();
   }
 
+  void SetContextForTest(SoftNavigationContext* context, Node* node);
+
   bool IsTrackingSoftNavigationsForTest() const {
     return !interaction_id_to_context_.empty();
   }
@@ -123,6 +123,12 @@ class CORE_EXPORT SoftNavigationHeuristics
   void UnregisterInteractionEffectsMonitor(InteractionEffectsMonitor*);
   void ForEachInteractionEffectsMonitor(
       base::FunctionRef<void(InteractionEffectsMonitor&)>);
+
+  // Called by the `SoftNavigationContext` when its total painted area has
+  // changed (increased).
+  void OnPaintedAreaChanged(SoftNavigationContext* context) {
+    MaybeCommitNavigationOrEmitSoftNavigation(context);
+  }
 
   void OnContextDisposed(SoftNavigationContext*);
   void UpdateSoftFcpMetricsForContext(SoftNavigationContext*) const;
@@ -161,9 +167,6 @@ class CORE_EXPORT SoftNavigationHeuristics
   // an associated committed navigation and first contentful paint timestamp
   // when this is called, and it must not have already been emitted.
   void EmitSoftNavigation(SoftNavigationContext*);
-
-  template <IsDerivedFromPaintTimingRecord T>
-  void OnContentfulPaintImpl(T*) const;
 
   uint64_t CalculateRequiredPaintArea() const;
   uint64_t CalculateViewportArea() const;

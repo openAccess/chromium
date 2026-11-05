@@ -4,15 +4,27 @@
 
 import os
 import shutil
+import sys
 import tempfile
 import unittest
-import xml.dom.minidom
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import mock  # type: ignore
 import setup_modules  # pylint: disable=unused-import
 
+
 from chromium_src.tools.metrics.common import path_util
 import chromium_src.tools.metrics.histograms.expand_owners as expand_owners
+import chromium_src.tools.metrics.histograms.histogram_configuration_model as histogram_configuration_model
+
+
+def _XMLToString(element: ET.Element) -> str:
+  if element.tag == 'histograms':
+    parent = ET.Element('histogram-configuration')
+    parent.append(element)
+    return histogram_configuration_model.PrettifyTree(parent)
+  return histogram_configuration_model.PrettifyTree(element)
 
 
 def _GetFileDirective(path: str) -> str:
@@ -60,7 +72,9 @@ def _MakeOwnersFile(filename: str, directory: str) -> str:
 class ExpandOwnersTest(unittest.TestCase):
   def setUp(self):
     super(ExpandOwnersTest, self).setUp()
-    self.temp_dir = tempfile.mkdtemp(dir=str(path_util.METRICS_TOOLS_PATH / 'histograms'))
+    self.temp_dir = tempfile.mkdtemp(
+      dir=str(path_util.METRICS_TOOLS_PATH / 'histograms')
+    )
 
     # The below construction is used rather than __file__.endswith() because
     # the file extension could be .py or .pyc.
@@ -74,6 +88,35 @@ class ExpandOwnersTest(unittest.TestCase):
   def tearDown(self):
     super(ExpandOwnersTest, self).tearDown()
     shutil.rmtree(self.temp_dir)
+
+  @unittest.skipIf(sys.platform == 'win32', 'Fake dirmd is a shell script.')
+  def testExtractComponentViaDirmdWithLargeOutput(self):
+    """Checks that dirmd output larger than the OS pipe buffer is handled."""
+    fake_src = os.path.join(self.temp_dir, 'src')
+    depot_tools = os.path.join(fake_src, 'third_party', 'depot_tools')
+    os.makedirs(depot_tools)
+    fake_dirmd = os.path.join(depot_tools, 'dirmd')
+    # Prints ~200 KB of JSON, well above the default pipe buffer size.
+    with open(fake_dirmd, 'w') as f:
+      f.write(
+        '\n'.join(
+          [
+            '#!/bin/sh',
+            'printf \'{"dirs": {"large": {"buganizerPublic": '
+            '{"componentId": "12345"}}}, "padding": "\'',
+            "head -c 200000 /dev/zero | tr '\\0' x",
+            "printf '\"}\\n'",
+            '',
+          ]
+        )
+      )
+    os.chmod(fake_dirmd, 0o755)
+
+    with mock.patch.object(path_util, 'CHROMIUM_SRC_PATH', Path(fake_src)):
+      self.assertEqual(
+        expand_owners.ExtractComponentViaDirmd(os.path.join(fake_src, 'large')),
+        '12345',
+      )
 
   def testExpandOwnersUsesMetadataOverOwners(self):
     """Checks that DIR_METADATA is used if available"""
@@ -95,7 +138,7 @@ class ExpandOwnersTest(unittest.TestCase):
       owners_file.write('\n'.join(['amy@chromium.org', 'rae@chromium.org']))
     self.maxDiff = None
     src_relative_path = _GetSrcRelativePath(absolute_path)
-    histograms = xml.dom.minidom.parseString(
+    histograms = ET.fromstring(
       """
 <histograms>
 
@@ -116,7 +159,7 @@ class ExpandOwnersTest(unittest.TestCase):
 """.format(path=src_relative_path)
     )
 
-    expected_histograms = xml.dom.minidom.parseString("""
+    expected_histograms = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -140,7 +183,9 @@ class ExpandOwnersTest(unittest.TestCase):
 """)
 
     expand_owners.ExpandHistogramsOWNERS(histograms)
-    self.assertMultiLineEqual(histograms.toxml(), expected_histograms.toxml())
+    self.assertMultiLineEqual(
+      _XMLToString(histograms), _XMLToString(expected_histograms)
+    )
 
   @mock.patch(
     'chromium_src.tools.metrics.histograms.'
@@ -155,7 +200,7 @@ class ExpandOwnersTest(unittest.TestCase):
     with open(absolute_path, 'w') as owners_file:
       owners_file.write('\n'.join(['amy@chromium.org', 'rae@chromium.org']))
 
-    histograms = xml.dom.minidom.parseString(
+    histograms = ET.fromstring(
       """
 <histograms>
 
@@ -176,7 +221,7 @@ class ExpandOwnersTest(unittest.TestCase):
 """.format(path=src_relative_path)
     )
 
-    expected_histograms = xml.dom.minidom.parseString("""
+    expected_histograms = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -198,7 +243,9 @@ class ExpandOwnersTest(unittest.TestCase):
 """)
 
     expand_owners.ExpandHistogramsOWNERS(histograms)
-    self.assertMultiLineEqual(histograms.toxml(), expected_histograms.toxml())
+    self.assertMultiLineEqual(
+      _XMLToString(histograms), _XMLToString(expected_histograms)
+    )
 
   @mock.patch(
     'chromium_src.tools.metrics.histograms.'
@@ -218,7 +265,7 @@ class ExpandOwnersTest(unittest.TestCase):
     with open(absolute_path, 'w') as owners_file:
       owners_file.write('\n'.join(['amy@chromium.org']))
 
-    histograms = xml.dom.minidom.parseString(
+    histograms = ET.fromstring(
       """
 <histograms>
 
@@ -234,7 +281,7 @@ class ExpandOwnersTest(unittest.TestCase):
 """.format(path=src_relative_path)
     )
 
-    expected_histograms = xml.dom.minidom.parseString("""
+    expected_histograms = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -247,7 +294,9 @@ class ExpandOwnersTest(unittest.TestCase):
 """)
 
     expand_owners.ExpandHistogramsOWNERS(histograms)
-    self.assertMultiLineEqual(histograms.toxml(), expected_histograms.toxml())
+    self.assertMultiLineEqual(
+      _XMLToString(histograms), _XMLToString(expected_histograms)
+    )
 
   @mock.patch(
     'chromium_src.tools.metrics.histograms.'
@@ -262,7 +311,7 @@ class ExpandOwnersTest(unittest.TestCase):
     with open(absolute_path, 'w') as owners_file:
       owners_file.write('\n'.join(['amy@chromium.org', 'rae@chromium.org']))
 
-    histograms = xml.dom.minidom.parseString(
+    histograms = ET.fromstring(
       """
 <histograms>
 
@@ -276,7 +325,7 @@ class ExpandOwnersTest(unittest.TestCase):
 """.format(src_relative_path)
     )
 
-    expected_histograms = xml.dom.minidom.parseString("""
+    expected_histograms = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -289,7 +338,9 @@ class ExpandOwnersTest(unittest.TestCase):
 """)
 
     expand_owners.ExpandHistogramsOWNERS(histograms)
-    self.assertMultiLineEqual(histograms.toxml(), expected_histograms.toxml())
+    self.assertMultiLineEqual(
+      _XMLToString(histograms), _XMLToString(expected_histograms)
+    )
 
   @mock.patch(
     'chromium_src.tools.metrics.histograms.'
@@ -322,7 +373,7 @@ class ExpandOwnersTest(unittest.TestCase):
         )
       )
 
-    histograms = xml.dom.minidom.parseString(
+    histograms = ET.fromstring(
       """
 <histograms>
 
@@ -336,7 +387,7 @@ class ExpandOwnersTest(unittest.TestCase):
 """.format(file_directive_src_relative_path)
     )
 
-    expected_histograms = xml.dom.minidom.parseString("""
+    expected_histograms = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -351,7 +402,9 @@ class ExpandOwnersTest(unittest.TestCase):
 """)
 
     expand_owners.ExpandHistogramsOWNERS(histograms)
-    self.assertEqual(histograms.toxml(), expected_histograms.toxml())
+    self.assertEqual(
+      _XMLToString(histograms), _XMLToString(expected_histograms)
+    )
 
   @mock.patch(
     'chromium_src.tools.metrics.histograms.'
@@ -378,7 +431,7 @@ class ExpandOwnersTest(unittest.TestCase):
     with open(duplicate_owner_absolute_path, 'w') as owners_file:
       owners_file.write('\n'.join(['rae@chromium.org']))
 
-    histograms = xml.dom.minidom.parseString(
+    histograms = ET.fromstring(
       """
 <histograms>
 
@@ -393,7 +446,7 @@ class ExpandOwnersTest(unittest.TestCase):
 """.format(src_relative_path, duplicate_owner_src_relative_path)
     )
 
-    expected_histograms = xml.dom.minidom.parseString("""
+    expected_histograms = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -407,11 +460,13 @@ class ExpandOwnersTest(unittest.TestCase):
 """)
 
     expand_owners.ExpandHistogramsOWNERS(histograms)
-    self.assertEqual(histograms.toxml(), expected_histograms.toxml())
+    self.assertEqual(
+      _XMLToString(histograms), _XMLToString(expected_histograms)
+    )
 
   def testExpandOwnersWithoutOWNERSFilePath(self):
     """Checks that histograms without OWNERS file paths are unchanged."""
-    histograms_without_file_paths = xml.dom.minidom.parseString("""
+    histograms_without_file_paths = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -433,7 +488,7 @@ class ExpandOwnersTest(unittest.TestCase):
     A valid primary owner is an individual's email address, e.g. rae@google.com,
     sam@chromium.org, or the owner placeholder.
     """
-    histograms_without_valid_first_owner = xml.dom.minidom.parseString("""
+    histograms_without_valid_first_owner = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -457,7 +512,7 @@ class ExpandOwnersTest(unittest.TestCase):
     A valid primary owner is an individual's email address, e.g. rae@google.com,
     sam@chromium.org, or the owner placeholder.
     """
-    histograms_without_valid_first_owner = xml.dom.minidom.parseString("""
+    histograms_without_valid_first_owner = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -481,7 +536,7 @@ class ExpandOwnersTest(unittest.TestCase):
     A valid primary owner is an individual's email address, e.g. rae@google.com,
     sam@chromium.org, or the owner placeholder.
     """
-    histograms_without_valid_first_owner = xml.dom.minidom.parseString("""
+    histograms_without_valid_first_owner = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -501,7 +556,7 @@ class ExpandOwnersTest(unittest.TestCase):
 
   def testExpandOwnersWithFakeFilePath(self):
     """Checks that an error is raised with a fake OWNERS file path."""
-    histograms_with_fake_file_path = xml.dom.minidom.parseString("""
+    histograms_with_fake_file_path = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -526,7 +581,7 @@ class ExpandOwnersTest(unittest.TestCase):
     with open(absolute_path, 'w') as owners_file:
       owners_file.write('')  # Write to the file so that it exists.
 
-    histograms_without_owners_from_file = xml.dom.minidom.parseString(
+    histograms_without_owners_from_file = ET.fromstring(
       """
 <histograms>
 
@@ -558,7 +613,7 @@ class ExpandOwnersTest(unittest.TestCase):
         'joe@chromium.org'
       )  # Write to the file so that it exists.
 
-    histograms_string = xml.dom.minidom.parseString(
+    histograms_string = ET.fromstring(
       """
 <histograms>
 
@@ -576,7 +631,7 @@ class ExpandOwnersTest(unittest.TestCase):
 
   def testExpandOwnersWithoutOWNERSPathPrefix(self):
     """Checks that an error is raised when the path is not well-formatted."""
-    histograms_without_src_prefix = xml.dom.minidom.parseString("""
+    histograms_without_src_prefix = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">
@@ -596,7 +651,7 @@ class ExpandOwnersTest(unittest.TestCase):
 
   def testExpandOwnersWithoutOWNERSPathSuffix(self):
     """Checks that an error is raised when the path is not well-formatted."""
-    histograms_without_owners_suffix = xml.dom.minidom.parseString("""
+    histograms_without_owners_suffix = ET.fromstring("""
 <histograms>
 
 <histogram name="Caffeination" units="mg">

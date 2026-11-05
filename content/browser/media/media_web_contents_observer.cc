@@ -84,14 +84,14 @@ class MediaWebContentsObserver::PlayerInfo {
   bool is_playing() const { return is_playing_; }
 
   void SetIsPlaying() {
-    DCHECK(!is_playing_);
+    CHECK(!is_playing_, base::NotFatalUntil::M160);
     is_playing_ = true;
 
     NotifyPlayerStarted();
   }
 
   void SetIsStopped(bool reached_end_of_stream) {
-    DCHECK(is_playing_);
+    CHECK(is_playing_, base::NotFatalUntil::M160);
     is_playing_ = false;
 
     NotifyPlayerStopped(
@@ -112,7 +112,7 @@ class MediaWebContentsObserver::PlayerInfo {
 
     if (observer_->power_experiment_manager_) {
       auto* render_frame_host = RenderFrameHost::FromID(id_.frame_routing_id);
-      DCHECK(render_frame_host);
+      CHECK(render_frame_host, base::NotFatalUntil::M160);
 
       // Bind the callback to a WeakPtr for the frame, so that we won't try to
       // notify the frame after it's been destroyed.
@@ -333,10 +333,11 @@ MediaWebContentsObserver::GetFullscreenVideoMediaPlayerId() const {
   return fullscreen_player_;
 }
 
-void MediaWebContentsObserver::MediaPictureInPictureChanged(
+void MediaWebContentsObserver::OnPictureInPictureStateChanged(
+    const MediaPlayerId& player_id,
     bool is_picture_in_picture) {
   session_controllers_manager_->PictureInPictureStateChanged(
-      is_picture_in_picture);
+      player_id, is_picture_in_picture);
 }
 
 void MediaWebContentsObserver::DidUpdateAudioMutingState(bool muted) {
@@ -488,7 +489,7 @@ void MediaWebContentsObserver::MediaPlayerObserverHostImpl::
     OnAudioOutputSinkChanged(const std::string& hashed_device_id) {
   auto* render_frame_host =
       RenderFrameHost::FromID(media_player_id_.frame_routing_id);
-  DCHECK(render_frame_host);
+  CHECK(render_frame_host, base::NotFatalUntil::M160);
 
   content::GetRawDeviceIdFromHMAC(
       render_frame_host->GetGlobalId(), hashed_device_id,
@@ -700,7 +701,8 @@ MediaWebContentsObserver::GetMediaPlayerRemote(const MediaPlayerId& player_id) {
 
 void MediaWebContentsObserver::OnMediaPlayerObserverDisconnected(
     const MediaPlayerId& player_id) {
-  DCHECK(media_player_observer_hosts_.contains(player_id));
+  CHECK(media_player_observer_hosts_.contains(player_id),
+        base::NotFatalUntil::M160);
   media_player_observer_hosts_.erase(player_id);
 }
 

@@ -4,10 +4,13 @@
 
 #import "ios/chrome/browser/cobrowse/model/cobrowse_browser_agent.h"
 
+#import <string_view>
+
 #import "base/functional/bind.h"
 #import "base/memory/raw_ptr.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/values.h"
+#import "components/contextual_search/pref_names.h"
 #import "components/omnibox/browser/aim_eligibility_service.h"
 #import "components/prefs/pref_service.h"
 #import "components/prefs/scoped_user_pref_update.h"
@@ -15,6 +18,7 @@
 #import "ios/chrome/browser/aim/model/ios_chrome_aim_eligibility_service_factory.h"
 #import "ios/chrome/browser/cobrowse/model/cobrowse_context.h"
 #import "ios/chrome/browser/cobrowse/model/cobrowse_util.h"
+#import "ios/chrome/browser/cobrowse/shared/metrics/assistant_aim_metrics_constants.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
@@ -23,10 +27,73 @@
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/start_surface/ui_bundled/start_surface_util.h"
 #import "ios/web/public/navigation/navigation_item.h"
 #import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/web_state.h"
 #import "net/base/url_util.h"
+
+namespace {
+
+// Query parameter and preference dictionary keys for the Cobrowse session.
+constexpr std::string_view kQueryParam = "q";
+constexpr std::string_view kServerIDParam = "mtid";
+constexpr std::string_view kTurnIDParam = "mstk";
+
+// Returns a dictionary containing the conversation query (`q`) and identifiers
+// (`mtid` and `mstk`) extracted from `context`.
+base::DictValue BuildSessionPrefDict(CobrowseContext* context) {
+  base::DictValue session_dict;
+  if (!context) {
+    return session_dict;
+  }
+  if (context.searchQuery.length > 0) {
+    session_dict.Set(kQueryParam, base::SysNSStringToUTF8(context.searchQuery));
+  }
+  if (context.serverID.length > 0) {
+    session_dict.Set(kServerIDParam, base::SysNSStringToUTF8(context.serverID));
+  }
+  if (context.turnID.length > 0) {
+    session_dict.Set(kTurnIDParam, base::SysNSStringToUTF8(context.turnID));
+  }
+  return session_dict;
+}
+
+}  // namespace
+
+// Observes SceneState transitions to terminate cobrowse when returning to the
+// foreground after the Start Surface inactivity timeout.
+@interface CobrowseSceneStateObserver : NSObject <SceneStateObserver>
+- (instancetype)initWithBrowserAgent:(CobrowseBrowserAgent*)browserAgent;
+@end
+
+@implementation CobrowseSceneStateObserver {
+  raw_ptr<CobrowseBrowserAgent> _browserAgent;
+}
+
+- (instancetype)initWithBrowserAgent:(CobrowseBrowserAgent*)browserAgent {
+  self = [super init];
+  if (self) {
+    _browserAgent = browserAgent;
+  }
+  return self;
+}
+
+#pragma mark - SceneStateObserver
+
+- (void)sceneState:(SceneState*)sceneState
+    transitionedToActivationLevel:(SceneActivationLevel)level {
+  if (level >= SceneActivationLevelForegroundActive) {
+    // If the scene returns to foreground after the Start Surface timeout has
+    // elapsed, terminate the active cobrowse session so it is not restored with
+    // stale context.
+    if (ShouldShowStartSurfaceForSceneState(sceneState)) {
+      _browserAgent->TerminateSession();
+    }
+  }
+}
+
+@end
 
 CobrowseBrowserAgent::CobrowseBrowserAgent(Browser* browser)
     : BrowserUserData<CobrowseBrowserAgent>(browser) {
@@ -43,16 +110,46 @@ CobrowseBrowserAgent::CobrowseBrowserAgent(Browser* browser)
                                 base::Unretained(this)));
   }
 
+  PrefService* pref_service = browser_->GetProfile()->GetPrefs();
+  if (pref_service) {
+    pref_change_registrar_.Init(pref_service);
+    pref_change_registrar_.Add(
+        contextual_search::kSearchContentSharingSettings,
+        base::BindRepeating(&CobrowseBrowserAgent::OnEligibilityChanged,
+                            base::Unretained(this)));
+  }
+
   SceneState* scene_state = browser_->GetSceneState();
+  if (scene_state) {
+    scene_state_observer_ =
+        [[CobrowseSceneStateObserver alloc] initWithBrowserAgent:this];
+    [scene_state addObserver:scene_state_observer_];
+  }
+
   if (!scene_state || scene_state.sceneSessionID.empty()) {
+    return;
+  }
+
+  // Check if the Start Surface should be shown on cold start. If the inactivity
+  // timeout threshold has elapsed since last backgrounding, discard any saved
+  // session pref to avoid restoring a stale cobrowse session.
+  if (ShouldShowStartSurfaceForSceneState(scene_state)) {
+    TerminateSession();
     return;
   }
 
   const auto& map = browser_->GetProfile()->GetPrefs()->GetDict(
       prefs::kCobrowseSessionActiveMap);
-  const std::string* server_id = map.FindString(scene_state.sceneSessionID);
+  const base::DictValue* session_dict =
+      map.FindDict(scene_state.sceneSessionID);
+  if (!session_dict) {
+    is_session_active_ = false;
+    return;
+  }
 
-  if (!server_id || server_id->empty()) {
+  const std::string* server_id = session_dict->FindString(kServerIDParam);
+  const std::string* turn_id = session_dict->FindString(kTurnIDParam);
+  if (!server_id || server_id->empty() || !turn_id || turn_id->empty()) {
     is_session_active_ = false;
     return;
   }
@@ -65,13 +162,26 @@ CobrowseBrowserAgent::CobrowseBrowserAgent(Browser* browser)
   }
 
   CobrowseContext* default_context = [CobrowseContext defaultContext];
-  GURL url = net::AppendOrReplaceQueryParameter(default_context.url, "mtid",
-                                                *server_id);
+  GURL url = default_context.url;
+  // Attach the query, thread ID, and the most recent turn ID to the URL. A
+  // query parameter needs to be present for continued threads and populates
+  // the assistant header title.
+  const std::string* query = session_dict->FindString(kQueryParam);
+  url =
+      net::AppendOrReplaceQueryParameter(url, kQueryParam, query ? *query : "");
+  url = net::AppendOrReplaceQueryParameter(url, kTurnIDParam, *turn_id);
+  url = net::AppendOrReplaceQueryParameter(url, kServerIDParam, *server_id);
   context_ = [[CobrowseContext alloc] initWithURL:url];
+  context_.entrypoint = AssistantAimEntrypoint::kSessionRestore;
 }
 
 CobrowseBrowserAgent::~CobrowseBrowserAgent() {
   StopObserving();
+  SceneState* scene_state = browser_->GetSceneState();
+  if (scene_state && scene_state_observer_) {
+    [scene_state removeObserver:scene_state_observer_];
+    scene_state_observer_ = nil;
+  }
 }
 
 CobrowseContext* CobrowseBrowserAgent::GetCobrowseContext() {
@@ -97,7 +207,7 @@ bool CobrowseBrowserAgent::ShouldAcceptContextUpdate(
   }
 
   // Allow contexts that have attached items in memory.
-  if (context.attachedItems.count > 0) {
+  if (context.attachedTabItems.count > 0) {
     return true;
   }
 
@@ -106,7 +216,7 @@ bool CobrowseBrowserAgent::ShouldAcceptContextUpdate(
   // an empty query and no attachments, but the current context had a valid
   // query.
   if ((!context.searchQuery || context.searchQuery.length == 0) &&
-      context.attachedItems.count == 0 && context_ &&
+      context.attachedTabItems.count == 0 && context_ &&
       context_.searchQuery.length > 0) {
     return false;
   }
@@ -142,11 +252,7 @@ void CobrowseBrowserAgent::SetCobrowseContext(CobrowseContext* context) {
 
   ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
                               prefs::kCobrowseSessionActiveMap);
-  std::string server_id = "";
-  if (context_ && context_.serverID) {
-    server_id = base::SysNSStringToUTF8(context_.serverID);
-  }
-  update->Set(scene_state.sceneSessionID, server_id);
+  update->Set(scene_state.sceneSessionID, BuildSessionPrefDict(context_));
   browser_->GetProfile()->GetPrefs()->CommitPendingWrite();
 }
 
@@ -173,7 +279,7 @@ bool CobrowseBrowserAgent::CanShowAssistantForWebState(
     return true;
   }
 
-  if (base::FeatureList::IsEnabled(kPreventCobrowseOnAimSrpTap)) {
+  if (!base::FeatureList::IsEnabled(kEnableCobrowseOnAimSrpTap)) {
     return false;
   }
 
@@ -221,6 +327,7 @@ void CobrowseBrowserAgent::ConfigureAssistantContextForWebState(
         }
       }
 
+      new_context.entrypoint = AssistantAimEntrypoint::kAimSrpLinkTap;
       SetCobrowseContext(new_context);
     }
   }
@@ -249,20 +356,29 @@ void CobrowseBrowserAgent::SetSessionActive(bool active) {
     return;
   }
 
-  std::string server_id = "";
-  if (context_ && context_.serverID) {
-    server_id = base::SysNSStringToUTF8(context_.serverID);
-  }
-  update->Set(scene_state.sceneSessionID, server_id);
+  update->Set(scene_state.sceneSessionID, BuildSessionPrefDict(context_));
   browser_->GetProfile()->GetPrefs()->CommitPendingWrite();
 }
 
 void CobrowseBrowserAgent::TerminateSession() {
   if (is_session_active_) {
-    id<SceneCommands> scene_commands_handler =
-        HandlerForProtocol(browser_->GetCommandDispatcher(), SceneCommands);
-    [scene_commands_handler hideAssistant];
-    SetSessionActive(false);
+    CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
+    if ([dispatcher dispatchingForProtocol:@protocol(SceneCommands)]) {
+      id<SceneCommands> scene_commands_handler =
+          HandlerForProtocol(dispatcher, SceneCommands);
+      [scene_commands_handler closeAssistant];
+    }
+  }
+
+  SetSessionActive(false);
+  context_ = nil;
+
+  SceneState* scene_state = browser_->GetSceneState();
+  if (scene_state && !scene_state.sceneSessionID.empty()) {
+    ScopedDictPrefUpdate update(browser_->GetProfile()->GetPrefs(),
+                                prefs::kCobrowseSessionActiveMap);
+    update->Remove(scene_state.sceneSessionID);
+    browser_->GetProfile()->GetPrefs()->CommitPendingWrite();
   }
 }
 

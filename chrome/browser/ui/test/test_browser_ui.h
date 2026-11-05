@@ -15,6 +15,10 @@
 #include "ui/base/test/skia_gold_matching_algorithm.h"
 #include "ui/gfx/geometry/rect.h"
 
+namespace ui {
+class TrackedElement;
+}
+
 namespace views {
 class Widget;
 class View;
@@ -39,6 +43,12 @@ struct ScreenshotOptions {
   // kClearFocus which will clear focus before taking the screenshot to reduce
   // flakiness. See VerifyPixelUi() implementation for more details.
   ScreenshotFocusMode focus = ScreenshotFocusMode::kClearFocus;
+  // Snapshots from the root window of the view's widget instead of the
+  // widget's own native window, with the region converted to root coordinates.
+  // This also captures other widgets that are siblings of the view's widget
+  // in the same root, such as child-modal dialogs on Desktop Aura. Only
+  // supported on Aura.
+  bool capture_root_window = false;
 };
 
 // TestBrowserUi provides a way to register an InProcessBrowserTest testing
@@ -130,6 +140,16 @@ class TestBrowserUi {
   // Verifies a region within a View. For example, verify an element within
   // web content.
   ui::test::ActionResult VerifyPixelUi(views::View* view,
+                                       const ScreenshotOptions& options,
+                                       const std::string& screenshot_prefix,
+                                       const std::string& screenshot_name);
+
+  // Can be called by VerifyUi() to ensure pixel correctness for a tracked
+  // element (e.g. Views or WebUI element).
+  ui::test::ActionResult VerifyPixelUi(ui::TrackedElement* element,
+                                       const std::string& screenshot_prefix,
+                                       const std::string& screenshot_name);
+  ui::test::ActionResult VerifyPixelUi(ui::TrackedElement* element,
                                        const ScreenshotOptions& options,
                                        const std::string& screenshot_prefix,
                                        const std::string& screenshot_name);

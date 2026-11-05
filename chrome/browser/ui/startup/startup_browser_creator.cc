@@ -31,6 +31,8 @@
 #include "base/strings/string_tokenizer.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "base/threading/thread_restrictions.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
@@ -114,6 +116,7 @@
 #include "components/user_manager/user_manager.h"
 #else
 #include "chrome/browser/extensions/api/messaging/native_messaging_launch_from_native.h"
+#include "chrome/browser/sessions/profile_diff_after_restart_recorder.h"
 #include "chrome/browser/ui/profiles/profile_picker.h"
 #endif
 
@@ -173,7 +176,8 @@ bool CanOpenProfileOnStartup(StartupProfileInfo profile_info) {
 #if BUILDFLAG(IS_CHROMEOS)
   // On ChromeOS, the user has already chosen and logged into the profile before
   // Chrome starts up.
-  DCHECK_NE(profile_info.mode, StartupProfileMode::kProfilePicker);
+  CHECK_NE(profile_info.mode, StartupProfileMode::kProfilePicker,
+           base::NotFatalUntil::M162);
   return true;
 #else
   // Profile picker startups require explicit user action, profile can't be
@@ -185,7 +189,7 @@ bool CanOpenProfileOnStartup(StartupProfileInfo profile_info) {
   Profile* profile = profile_info.profile;
 
   // System profiles are not available.
-  DCHECK(!profile->IsSystemProfile());
+  CHECK(!profile->IsSystemProfile(), base::NotFatalUntil::M162);
 
   // Profiles that require signin are not available.
   ProfileAttributesEntry* entry =
@@ -308,8 +312,7 @@ Profile* GetPrivateProfileIfRequested(const base::CommandLine& command_line,
   }
 
   Profile* profile = profile_info.profile;
-  if (IncognitoModePrefs::ShouldLaunchIncognito(command_line,
-                                                profile->GetPrefs())) {
+  if (IncognitoModePrefs::ShouldLaunchIncognito(command_line, profile)) {
     return profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
   } else {
     bool expect_incognito = command_line.HasSwitch(switches::kIncognito);
@@ -395,8 +398,8 @@ bool MaybeLaunchAppShortcutWindow(const base::CommandLine& command_line,
   if (!url.is_empty() && url.is_valid()) {
     content::ChildProcessSecurityPolicy* policy =
         content::ChildProcessSecurityPolicy::GetInstance();
-    if (policy->IsWebSafeScheme(url.GetScheme()) ||
-        url.SchemeIs(url::kFileScheme)) {
+    if (url.SchemeIsHTTPOrHTTPS() || url.SchemeIs(url::kFileScheme) ||
+        policy->IsWebSafeScheme(url.GetScheme())) {
       const content::WebContents* web_contents =
           apps::OpenExtensionAppShortcutWindow(profile, url);
       if (web_contents) {
@@ -437,30 +440,51 @@ bool MaybeLaunchExtensionApp(const base::CommandLine& command_line,
   return true;
 }
 
+// Records whether the --incognito switch was present at startup and whether
+// Incognito was launched. Incognito launches if the switch is present or the
+// IncognitoModeAvailability policy forces it, unless Incognito is disabled by
+// the policy or by platform parental controls.
+//
 // These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused. Updates need to be reflected in
-// enum IncognitoForcedStart in tools/metrics/histograms/enums.xml.
+// numeric values should never be reused.
+// LINT.IfChange(IncognitoForcedStart)
 enum class IncognitoForcedStart {
-  kNoSwitchAndNotForced = 0,
-  kSwitchButNotForced = 1,
-  kNoSwitchButForced = 2,
-  kSwitchAndForced = 3,
-  kMaxValue = kSwitchAndForced,
+  // No --incognito switch and Incognito was not launched.
+  kNoSwitchAndNotLaunched = 0,
+  // The --incognito switch was present, but Incognito was not launched because
+  // it is disabled by the IncognitoModeAvailability policy or by platform
+  // parental controls, or because startup shows the profile picker.
+  kSwitchButNotLaunched = 1,
+  // No --incognito switch, but Incognito was launched because the
+  // IncognitoModeAvailability policy forces it.
+  kNoSwitchButLaunched = 2,
+  // The --incognito switch was present and Incognito was launched.
+  kSwitchAndLaunched = 3,
+  // The --incognito switch was present and Enterprise Isolated Mode, which
+  // replaces Incognito, was launched.
+  kSwitchAndIsolatedModeLaunched = 4,
+  // No --incognito switch, but Enterprise Isolated Mode was launched because
+  // the IncognitoModeAvailability policy forces it.
+  kNoSwitchButIsolatedModeLaunched = 5,
+  kMaxValue = kNoSwitchButIsolatedModeLaunched,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/startup/enums.xml:IncognitoForcedStart)
 
-void RecordIncognitoForcedStart(bool should_launch_incognito,
-                                bool has_incognito_switch) {
-  if (has_incognito_switch) {
-    base::UmaHistogramEnumeration(
-        "Startup.IncognitoForcedStart",
-        should_launch_incognito ? IncognitoForcedStart::kSwitchAndForced
-                                : IncognitoForcedStart::kSwitchButNotForced);
-  } else {
-    base::UmaHistogramEnumeration(
-        "Startup.IncognitoForcedStart",
-        should_launch_incognito ? IncognitoForcedStart::kNoSwitchButForced
-                                : IncognitoForcedStart::kNoSwitchAndNotForced);
+IncognitoForcedStart GetIncognitoForcedStartSample(
+    bool should_launch_incognito,
+    bool has_incognito_switch,
+    bool incognito_is_isolated_mode) {
+  if (!should_launch_incognito) {
+    return has_incognito_switch ? IncognitoForcedStart::kSwitchButNotLaunched
+                                : IncognitoForcedStart::kNoSwitchAndNotLaunched;
   }
+  if (incognito_is_isolated_mode) {
+    return has_incognito_switch
+               ? IncognitoForcedStart::kSwitchAndIsolatedModeLaunched
+               : IncognitoForcedStart::kNoSwitchButIsolatedModeLaunched;
+  }
+  return has_incognito_switch ? IncognitoForcedStart::kSwitchAndLaunched
+                              : IncognitoForcedStart::kNoSwitchButLaunched;
 }
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -611,14 +635,22 @@ ProfileSetupResult SetupProfileAndIncognito(
       // TODO(crbug.com/40819749): Refactor command line processing logic
       // to validate the flag sets and reliably determine the startup mode.
       profile_info.mode != StartupProfileMode::kProfilePicker &&
-      IncognitoModePrefs::ShouldLaunchIncognito(
-          command_line, profile_info.profile->GetPrefs());
+      IncognitoModePrefs::ShouldLaunchIncognito(command_line,
+                                                profile_info.profile);
 
   result.can_use_profile =
       CanOpenProfileOnStartup(profile_info) && !result.should_launch_incognito;
 
-  RecordIncognitoForcedStart(result.should_launch_incognito,
-                             command_line.HasSwitch(switches::kIncognito));
+  const bool incognito_is_isolated_mode =
+      result.should_launch_incognito &&
+      IncognitoModePrefs::GetIncognitoModeType(profile_info.profile) ==
+          IncognitoModePrefs::IncognitoModeType::kEnterprise;
+  base::UmaHistogramEnumeration(
+      "Startup.IncognitoForcedStart",
+      GetIncognitoForcedStartSample(
+          result.should_launch_incognito,
+          command_line.HasSwitch(switches::kIncognito),
+          incognito_is_isolated_mode));
 
   // `profile` is never off-the-record. If Incognito or Guest enforcement switch
   // or policy are provided, use the appropriate private browsing profile
@@ -648,14 +680,12 @@ std::optional<bool> MaybeHandleValidateCrx(
   }
 
   extensions::StartupHelper helper;
-  std::string message;
   std::string error;
   if (helper.ValidateCrx(command_line, &error)) {
-    message = std::string("ValidateCrx Success");
+    printf("ValidateCrx Success\n");
   } else {
-    message = std::string("ValidateCrx Failure: ") + error;
+    printf("ValidateCrx Failure: %s\n", error.c_str());
   }
-  printf("%s\n", message.c_str());
   return false;
 }
 
@@ -719,10 +749,12 @@ void StartupBrowserCreator::LaunchBrowser(
   TRACE_EVENT0("ui", "StartupBrowserCreator::LaunchBrowser");
   SCOPED_UMA_HISTOGRAM_TIMER("Startup.StartupBrowserCreator.LaunchBrowser");
 
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
 #if BUILDFLAG(IS_WIN)
-  DCHECK(!command_line.HasSwitch(credential_provider::kGcpwSigninSwitch));
-  DCHECK(!command_line.HasSwitch(switches::kNotificationLaunchId));
+  CHECK(!command_line.HasSwitch(credential_provider::kGcpwSigninSwitch),
+        base::NotFatalUntil::M162);
+  CHECK(!command_line.HasSwitch(switches::kNotificationLaunchId),
+        base::NotFatalUntil::M162);
 #endif  // BUILDFLAG(IS_WIN)
   in_synchronous_profile_launch_ =
       process_startup == chrome::startup::IsProcessStartup::kYes;
@@ -764,7 +796,20 @@ void StartupBrowserCreator::LaunchBrowserForLastProfiles(
     const Profiles& last_opened_profiles,
     bool restore_tabbed_browser) {
   TRACE_EVENT0("ui", "StartupBrowserCreator::LaunchBrowserForLastProfiles");
-  DCHECK_NE(profile_info.mode, StartupProfileMode::kError);
+#if !BUILDFLAG(IS_CHROMEOS)
+  // Start observing before launching profiles: primary-profile session restore
+  // completes synchronously during launch, so observing any later would miss
+  // its completion notification and record restored profiles as lost.
+  ProfileDiffAfterRestartRecorder& profile_diff_recorder =
+      ProfileDiffAfterRestartRecorder::GetInstance();
+  profile_diff_recorder.OnStartupLaunchesStarting(
+      g_browser_process->local_state(), WasRestarted());
+  base::ScopedClosureRunner on_launches_finished(base::BindOnce(
+      &ProfileDiffAfterRestartRecorder::OnStartupLaunchesFinished,
+      base::Unretained(&profile_diff_recorder)));
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+  CHECK_NE(profile_info.mode, StartupProfileMode::kError,
+           base::NotFatalUntil::M162);
 
   Profile* profile = profile_info.profile;
   // On Windows, when chrome is launched by notification activation where the
@@ -780,6 +825,7 @@ void StartupBrowserCreator::LaunchBrowserForLastProfiles(
 #if BUILDFLAG(IS_CHROMEOS)
     NOTREACHED();
 #else
+    profile_diff_recorder.AbandonRecording();
     if (ShouldForceLaunchIntoNewProfileWithEmail(command_line, profile)) {
       std::string email =
           command_line.GetSwitchValueASCII(switches::kProfileEmail);
@@ -848,6 +894,10 @@ void StartupBrowserCreator::LaunchBrowserForLastProfiles(
 #if BUILDFLAG(IS_CHROMEOS)
     NOTREACHED();
 #else
+    // Reachable on a restart when the profile is locked: no session will be
+    // restored until the user picks a profile, so the pre-restart counts would
+    // be reported as fully lost. Drop them instead.
+    profile_diff_recorder.AbandonRecording();
     ProfilePicker::Show(ProfilePicker::Params::FromEntryPoint(
         process_startup == chrome::startup::IsProcessStartup::kYes
             ? ProfilePicker::EntryPoint::kOnStartupNoProfile
@@ -896,7 +946,7 @@ bool StartupBrowserCreator::ShouldRestoreLastSession(
 SessionStartupPref StartupBrowserCreator::GetSessionStartupPref(
     const base::CommandLine& command_line,
     const Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   const PrefService* prefs = profile->GetPrefs();
   SessionStartupPref pref = SessionStartupPref::GetStartupPref(prefs);
 
@@ -971,16 +1021,19 @@ void StartupBrowserCreator::ClearLaunchedProfilesForTesting() {
 // static
 void StartupBrowserCreator::RegisterLocalStatePrefs(
     PrefRegistrySimple* registry) {
-  registry->RegisterBooleanPref(prefs::kPromotionsEnabled, true);
 #if !BUILDFLAG(IS_CHROMEOS)
   registry->RegisterBooleanPref(prefs::kCommandLineFlagSecurityWarningsEnabled,
                                 true);
 #endif
   registry->RegisterBooleanPref(prefs::kSuppressUnsupportedOSWarning, false);
   registry->RegisterBooleanPref(prefs::kWasRestarted, false);
+#if !BUILDFLAG(IS_CHROMEOS)
+  registry->RegisterDictionaryPref(prefs::kPreSmartRestartProfileCounts);
+#endif
 
 #if BUILDFLAG(IS_WIN)
   registry->RegisterStringPref(prefs::kShortcutMigrationVersion, std::string());
+  registry->RegisterTimePref(prefs::kShortcutMigrationTime, base::Time());
 #endif
 }
 
@@ -1011,8 +1064,9 @@ bool StartupBrowserCreator::ProcessCmdLineImpl(
     chrome::startup::IsProcessStartup process_startup,
     StartupProfileInfo profile_info,
     const Profiles& last_opened_profiles) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK_NE(profile_info.mode, StartupProfileMode::kError);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK_NE(profile_info.mode, StartupProfileMode::kError,
+           base::NotFatalUntil::M162);
   TRACE_EVENT0("startup", "StartupBrowserCreator::ProcessCmdLineImpl");
   ComputeAndRecordLaunchMode(command_line);
 
@@ -1298,7 +1352,8 @@ bool StartupBrowserCreator::ProcessCmdLineImpl(
     // Use incognito profile since this is a credential provider logon.
     Profile* incognito_profile =
         privacy_safe_profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
-    DCHECK(incognito_profile->IsIncognitoProfile());
+    CHECK(incognito_profile->IsPrimaryOTRProfileWithRegularParent(),
+          base::NotFatalUntil::M162);
     // NOTE: All launch urls are ignored when running with --gcpw-signin since
     // this mode only loads Google's sign in page.
 
@@ -1418,7 +1473,7 @@ void StartupBrowserCreator::ProcessLastOpenedProfiles(
 
   // Launch the profiles in the order they became active.
   for (Profile* profile : last_opened_profiles) {
-    DCHECK(!profile->IsGuestSession());
+    CHECK(!profile->IsGuestSession(), base::NotFatalUntil::M162);
 
 #if !BUILDFLAG(IS_CHROMEOS)
     // Skip any locked profile.
@@ -1464,6 +1519,9 @@ void StartupBrowserCreator::ProcessLastOpenedProfiles(
 // activation this one.
 #if !BUILDFLAG(IS_CHROMEOS)
   if (process_startup == chrome::startup::IsProcessStartup::kYes) {
+    // Every last-opened profile was locked, so no browser was launched and
+    // nothing will be restored.
+    ProfileDiffAfterRestartRecorder::GetInstance().AbandonRecording();
     ProfilePicker::Show(ProfilePicker::Params::FromEntryPoint(
         ProfilePicker::EntryPoint::kOnStartup));
   } else  // NOLINT
@@ -1514,7 +1572,7 @@ void StartupBrowserCreator::ProcessCommandLineWithProfile(
     const base::FilePath& cur_dir,
     StartupProfileMode mode,
     Profile* profile) {
-  DCHECK_NE(mode, StartupProfileMode::kError);
+  CHECK_NE(mode, StartupProfileMode::kError, base::NotFatalUntil::M162);
   if (mode == StartupProfileMode::kBrowserWindow && !profile) {
     LOG(ERROR) << "Failed to load the profile.";
     return;
@@ -1746,7 +1804,8 @@ StartupProfileInfo GetStartupProfile(const base::FilePath& cur_dir,
   ProfileManager* profile_manager = g_browser_process->profile_manager();
   StartupProfilePathInfo path_info = GetStartupProfilePath(
       cur_dir, command_line, /*ignore_profile_picker=*/false);
-  DCHECK_NE(path_info.mode, StartupProfileMode::kError);
+  CHECK_NE(path_info.mode, StartupProfileMode::kError,
+           base::NotFatalUntil::M162);
   StartupProfileMode mode = path_info.mode;
 
   switch (mode) {

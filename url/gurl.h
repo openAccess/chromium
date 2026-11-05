@@ -17,7 +17,6 @@
 #include "base/trace_event/base_tracing_forward.h"
 #include "url/third_party/mozilla/url_parse.h"
 #include "url/url_canon.h"
-#include "url/url_canon_stdstring.h"
 #include "url/url_constants.h"
 
 // Represents a URL. GURL is Google's URL parsing library.
@@ -246,6 +245,10 @@ class COMPONENT_EXPORT(URL) GURL {
   bool SchemeIs(std::string_view lower_ascii_scheme) const;
 
   // Returns true if the scheme is "http" or "https".
+  //
+  // TODO(crbug.com/515625270): Once the Finch experiment completes, inline
+  // this method directly as `return is_http_or_https_;` (see url/gurl.cc for
+  // the Finch scaffolding and compile-size rationale).
   bool SchemeIsHTTPOrHTTPS() const;
 
   // Returns true is the scheme is "ws" or "wss".
@@ -478,6 +481,8 @@ class COMPONENT_EXPORT(URL) GURL {
 
   void ProcessFileSystemURLAfterReplaceComponents();
 
+  bool SchemeIsHTTPOrHTTPSInternal() const;
+
   // The actual text of the URL, in canonical ASCII form.
   std::string spec_;
 
@@ -486,8 +491,8 @@ class COMPONENT_EXPORT(URL) GURL {
   // invalid port number, invalid characters in the scheme, etc.).
   bool is_valid_;
 
-  // Cached result of SchemeIsHTTPOrHTTPS().
-  std::optional<bool> is_http_or_https_cache_;
+  // Precomputed result of SchemeIsHTTPOrHTTPS().
+  bool is_http_or_https_ = false;
 
   // Identified components of the canonical spec.
   url::Parsed parsed_;
@@ -500,7 +505,7 @@ class COMPONENT_EXPORT(URL) GURL {
 COMPONENT_EXPORT(URL)
 std::ostream& operator<<(std::ostream& out, const GURL& url);
 
-COMPONENT_EXPORT(URL) bool operator==(const GURL& x, const GURL& y);
+COMPONENT_EXPORT(URL) bool operator==(const GURL& lhs, const GURL& rhs);
 
 // Equality operator for comparing raw spec_. This should be used in place of
 // url == GURL(spec) where |spec| is known (i.e. constants). This is to prevent

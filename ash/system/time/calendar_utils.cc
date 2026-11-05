@@ -9,11 +9,8 @@
 
 #include "ash/calendar/calendar_client.h"
 #include "ash/calendar/calendar_controller.h"
-#include "ash/constants/ash_features.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
-#include "ash/style/ash_color_provider.h"
-#include "ash/style/color_util.h"
 #include "ash/system/time/date_helper.h"
 #include "base/i18n/icubridge/calendar.h"
 #include "base/i18n/icubridge/date_time_formatter.h"
@@ -39,10 +36,6 @@ std::u16string KeepOnlyDigits(const std::u16string& str) {
 }
 
 }  // namespace
-
-bool IsMultiCalendarEnabled() {
-  return features::IsMultiCalendarSupportEnabled();
-}
 
 bool IsToday(const base::Time selected_date) {
   return IsTheSameDay(selected_date, base::Time::Now());
@@ -86,11 +79,6 @@ base::Time::Exploded GetExplodedUTC(const base::Time& date) {
   base::Time::Exploded exploded;
   date.UTCExplode(&exploded);
   return exploded;
-}
-
-std::u16string FormatDate(const icu::SimpleDateFormat& formatter,
-                          const base::Time date) {
-  return DateHelper::GetInstance()->GetFormattedTime(&formatter, date);
 }
 
 std::u16string FormatInterval(const icu::DateIntervalFormat* formatter,
@@ -232,22 +220,6 @@ base::Time GetMinTime(const base::Time d1, const base::Time d2) {
   return (d1 < d2) ? d1 : d2;
 }
 
-SkColor GetPrimaryTextColor() {
-  const ash::AshColorProvider* color_provider = ash::AshColorProvider::Get();
-  return color_provider->GetColor(cros_tokens::kTextColorPrimary);
-}
-
-SkColor GetSecondaryTextColor() {
-  const ash::AshColorProvider* color_provider = ash::AshColorProvider::Get();
-  return color_provider->GetColor(cros_tokens::kTextColorSecondary);
-}
-
-SkColor GetDisabledTextColor() {
-  const ash::AshColorProvider* color_provider = ash::AshColorProvider::Get();
-  const SkColor primary_color =
-      color_provider->GetColor(cros_tokens::kTextColorPrimary);
-  return ColorUtil::GetDisabledColor(primary_color);
-}
 
 base::Time GetFirstDayOfMonth(const base::Time& date) {
   return date -

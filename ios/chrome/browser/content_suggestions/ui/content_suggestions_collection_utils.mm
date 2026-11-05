@@ -6,15 +6,17 @@
 
 #import <algorithm>
 
+#import "base/check.h"
 #import "base/i18n/rtl.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/content_suggestions/most_visited_tiles/public/most_visited_tiles_constants.h"
 #import "ios/chrome/browser/content_suggestions/public/ntp_home_constants.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_constants.h"
 #import "ios/chrome/browser/ntp/search_engine_logo/ui/search_engine_logo_state.h"
-#import "ios/chrome/browser/ntp/ui_bundled/discover_feed_constants.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_constants.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_header_constants.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_utils.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/elements/new_feature_badge_view.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
@@ -57,9 +59,6 @@ const CGFloat kSearchFieldTopMargin = 22;
 // Top margin for the search field for single button MIA variations.
 const CGFloat kMIASearchFieldTopMargin = 29;
 
-// Bottom margin for the search field.
-const CGFloat kNTPShrunkLogoSearchFieldBottomPadding = 20;
-
 // Height for the logo and doodle frame.
 const CGFloat kGoogleSearchDoodleHeight = 120;
 
@@ -82,6 +81,11 @@ constexpr CGFloat kLogoTopMarginAdjustment = kDoodleLogoDelta -
                                              kDoodleBottomMarginAdjustment;
 constexpr CGFloat kCleanupDoodleTopMarginAdjustment = 15;
 constexpr CGFloat kCleanupDoodleBottomMarginAdjustment = 4;
+
+// Constants for redistributing NTP header vertical space when the Quick Actions
+// row is removed in `kAimButtonRefactor`.
+constexpr CGFloat kLogoTopRemainingSpaceRatio = 2.0 / 3.0;
+constexpr CGFloat kFakeboxBottomRemainingSpaceRatio = 1.0 / 3.0;
 
 // The size of the symbol image.
 const CGFloat kSymbolContentSuggestionsPointSize = 18;
@@ -161,6 +165,7 @@ void SetUpButtonWithNewFeatureBadge(UIButton* button,
                        constant:-kNewBadgeOffsetFromButtonCenter],
   ]];
 }
+
 }  // namespace
 
 namespace content_suggestions {
@@ -195,10 +200,16 @@ const CGFloat kQuickActionsTopPaddingControl = 3.0;
 const CGFloat kMostVisitedTopPaddingControl = 19.0;
 const CGFloat kReducedModuleSpacingControl = 14.0;
 
+// Regular x Regular (iPad) Padding.
+const CGFloat kLogoTopPaddingRegularXRegular = 88.0;
+const CGFloat kDoodleTopPaddingRegularXRegular = 107.0;
+const CGFloat kLogoToFakeboxPaddingRegularXRegular = 43.0;
+const CGFloat kQuickActionsTopPaddingRegularXRegular = 11.0;
+
 // Shared spacing constants.
 const CGFloat kQuickActionsTopPadding = 12.0;
 const CGFloat kReducedModuleSpacing = 12.0;
-const CGFloat kReducedModuleSpacingRegularXRegular = 14.0;
+const CGFloat kNTPShrunkLogoSearchFieldBottomPadding = 20.0;
 
 CGFloat DoodleHeight(SearchEngineLogoState logo_state,
                      UITraitCollection* trait_collection) {
@@ -209,7 +220,7 @@ CGFloat DoodleHeight(SearchEngineLogoState logo_state,
                : 0;
   }
   if ((logo_state == SearchEngineLogoState::kDoodle) ||
-      (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET)) {
+      IsRegularXRegularSizeClass(trait_collection)) {
     return kGoogleSearchDoodleShrunkHeight;
   }
   if (IsAimEnabledInNtp()) {
@@ -230,8 +241,7 @@ CGFloat DoodleTopMargin(SearchEngineLogoState logo_state,
     top_inset = kGoogleSearchLogoHeight - kLargeFakeboxGoogleSearchLogoHeight;
   }
 
-  if (IsConsistentLogoDoodleHeightEnabled() &&
-      ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET) {
+  if (IsConsistentLogoDoodleHeightEnabled()) {
     if (logo_state == SearchEngineLogoState::kDoodle) {
       top_inset -= kDoodleTopMarginAdjustment;
     } else if (logo_state == SearchEngineLogoState::kLogo) {
@@ -247,14 +257,18 @@ CGFloat DoodleTopMargin(SearchEngineLogoState logo_state,
 }
 
 CGFloat HeaderSeparatorHeight() {
+  if (!IsChromeNextIaEnabled() && IsNewTabPageUICleanupEnabled()) {
+    return 0;
+  }
   return AlignValueToUpperPixel(kToolbarSeparatorHeight);
 }
 
-CGFloat SearchFieldTopMargin(SearchEngineLogoState logo_state) {
+CGFloat SearchFieldTopMargin(SearchEngineLogoState logo_state,
+                             UITraitCollection* trait_collection) {
   CGFloat margin =
       IsAimEnabledInNtp() ? kMIASearchFieldTopMargin : kSearchFieldTopMargin;
   if (IsConsistentLogoDoodleHeightEnabled() &&
-      ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET) {
+      !IsRegularXRegularSizeClass(trait_collection)) {
     if (logo_state == SearchEngineLogoState::kDoodle) {
       margin -= kDoodleBottomMarginAdjustment;
     }
@@ -264,9 +278,7 @@ CGFloat SearchFieldTopMargin(SearchEngineLogoState logo_state) {
 
 CGFloat SearchFieldWidth(CGFloat width, UITraitCollection* trait_collection) {
   if (IsRegularXRegularSizeClass(trait_collection)) {
-    return IsNewTabPageUICleanupEnabled()
-               ? kDiscoverFeedContentMaxWidthUICleanup
-               : kSearchFieldLarge;
+    return kSearchFieldLarge;
   }
 
   if (IsNewTabPageUICleanupEnabled()) {
@@ -324,7 +336,7 @@ CGFloat HeightForLogoHeader(SearchEngineLogoState logo_state,
                             UITraitCollection* trait_collection) {
   CGFloat header_height = LogoTopPadding(logo_state, trait_collection) +
                           DoodleHeight(logo_state, trait_collection) +
-                          LogoToFakeboxPadding(logo_state) +
+                          LogoToFakeboxPadding(logo_state, trait_collection) +
                           FakeOmniboxHeight() +
                           ntp_header::kScrolledToTopOmniboxBottomMargin +
                           ceil(HeaderSeparatorHeight());
@@ -347,17 +359,27 @@ CGFloat HeightForLogoHeader(SearchEngineLogoState logo_state,
 }
 
 CGFloat HeaderBottomPadding(UITraitCollection* trait_collection) {
-  return IsSplitToolbarMode(trait_collection)
+  return IsSplitToolbarMode(trait_collection) || IsNewTabPageUICleanupEnabled()
              ? 0
              : kNTPShrunkLogoSearchFieldBottomPadding;
 }
 
-CGFloat LogoTopPadding(SearchEngineLogoState logo_state,
-                       UITraitCollection* trait_collection) {
-  if (IsRegularXRegularSizeClass(trait_collection)) {
-    return kDoodleTopMarginRegularXRegular;
+namespace {
+
+// Returns the base top padding above the logo/doodle (excluding
+// `FakeToolbarHeight()`).
+CGFloat BaseLogoTopPadding(SearchEngineLogoState logo_state,
+                           UITraitCollection* trait_collection) {
+  if (!IsNewTabPageUICleanupEnabled()) {
+    return DoodleTopMargin(logo_state, trait_collection) - FakeToolbarHeight();
   }
+
   const bool is_doodle = (logo_state == SearchEngineLogoState::kDoodle);
+  if (IsRegularXRegularSizeClass(trait_collection)) {
+    return is_doodle ? kDoodleTopPaddingRegularXRegular
+                     : kLogoTopPaddingRegularXRegular;
+  }
+
   CGFloat padding = 0;
   switch (GetNewTabPageUICleanupVariation()) {
     case NTPUICleanupVariation::kTightPadding:
@@ -372,18 +394,116 @@ CGFloat LogoTopPadding(SearchEngineLogoState logo_state,
       break;
     case NTPUICleanupVariation::kFakeboxBackgroundAndShadow:
     case NTPUICleanupVariation::kDisabled:
-      return DoodleTopMargin(logo_state, trait_collection);
+      NOTREACHED();
   }
-  padding += FakeToolbarHeight();
-  if (IsConsistentLogoDoodleHeightEnabled() &&
-      ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET && is_doodle) {
+  if (IsConsistentLogoDoodleHeightEnabled() && is_doodle) {
     padding -= kCleanupDoodleTopMarginAdjustment;
   }
   return padding;
 }
 
-CGFloat LogoToFakeboxPadding(SearchEngineLogoState logo_state) {
+// Returns the base top padding for Most Visited Tiles.
+CGFloat BaseMostVisitedTopPadding(UITraitCollection* trait_collection) {
+  if (!IsNewTabPageUICleanupEnabled()) {
+    return kMostVisitedTopPaddingControl;
+  }
+
+  if (IsRegularXRegularSizeClass(trait_collection)) {
+    return kMostVisitedTopPaddingPreferred;
+  }
+
+  switch (GetNewTabPageUICleanupVariation()) {
+    case NTPUICleanupVariation::kTightPadding:
+      return kMostVisitedTopPaddingTight;
+    case NTPUICleanupVariation::kMediumPadding:
+      return kMostVisitedTopPaddingMedium;
+    case NTPUICleanupVariation::kPreferredPadding:
+      return kMostVisitedTopPaddingPreferred;
+    case NTPUICleanupVariation::kFakeboxBackgroundAndShadow:
+    case NTPUICleanupVariation::kDisabled:
+      NOTREACHED();
+  }
+}
+
+// Returns the base top padding for Quick Actions.
+CGFloat BaseQuickActionsTopPadding(UITraitCollection* trait_collection) {
+  if (!IsNewTabPageUICleanupEnabled()) {
+    return kQuickActionsTopPaddingControl;
+  }
+  return IsRegularXRegularSizeClass(trait_collection)
+             ? kQuickActionsTopPaddingRegularXRegular
+             : kQuickActionsTopPadding;
+}
+
+// Returns the total redistributable vertical space (above the logo and below
+// the fakebox) when the Quick Actions row is removed by `kAimButtonRefactor`.
+// Including the removed Quick Actions height and padding preserves Discover
+// feed vertical peeking. `SearchEngineLogoState::kLogo` is used as a consistent
+// baseline so the spacing below the fakebox is identical on doodle days.
+CGFloat RedistributableHeaderSpace(UITraitCollection* trait_collection) {
+  CHECK(content_suggestions::ShouldRedistributeHeaderSpace());
+
+  CGFloat redistributable_space =
+      BaseLogoTopPadding(SearchEngineLogoState::kLogo, trait_collection) +
+      BaseQuickActionsTopPadding(trait_collection) + QuickActionsHeight() +
+      BaseMostVisitedTopPadding(trait_collection);
+
+  redistributable_space += MostVisitedHeightReductionForAimModule();
+
+  return redistributable_space;
+}
+
+}  // namespace
+
+// Returns true when the active AIM arm eliminates the Quick Actions row or
+// rearranges tiles such that header vertical space needs to be redistributed.
+bool ShouldRedistributeHeaderSpace() {
+  switch (GetAimButtonRefactorArm()) {
+    case AimButtonRefactorArm::kFocusComposeboxAimQuickAction:
+    case AimButtonRefactorArm::kImageGenerationQuickAction:
+    case AimButtonRefactorArm::kAttachImageQuickAction:
+    case AimButtonRefactorArm::kDisabled:
+      return false;
+    case AimButtonRefactorArm::kAimAsModule:
+    case AimButtonRefactorArm::kAimAsMvt:
+    case AimButtonRefactorArm::kNoChips:
+      return true;
+  }
+}
+
+CGFloat LogoTopPadding(SearchEngineLogoState logo_state,
+                       UITraitCollection* trait_collection) {
+  if (logo_state != SearchEngineLogoState::kNone &&
+      ShouldRedistributeHeaderSpace()) {
+    // Absorb the Doodle-vs-Logo delta in the top padding so the fakebox Y
+    // position remains constant across doodle and logo states.
+    const CGFloat doodle_offset =
+        BaseLogoTopPadding(logo_state, trait_collection) -
+        BaseLogoTopPadding(SearchEngineLogoState::kLogo, trait_collection);
+    return FakeToolbarHeight() + doodle_offset +
+           (RedistributableHeaderSpace(trait_collection) *
+            kLogoTopRemainingSpaceRatio);
+  }
+
+  if (!IsNewTabPageUICleanupEnabled()) {
+    return DoodleTopMargin(logo_state, trait_collection);
+  }
+
+  return FakeToolbarHeight() + BaseLogoTopPadding(logo_state, trait_collection);
+}
+
+CGFloat LogoToFakeboxPadding(SearchEngineLogoState logo_state,
+                             UITraitCollection* trait_collection) {
+  if (!IsNewTabPageUICleanupEnabled()) {
+    return SearchFieldTopMargin(logo_state, trait_collection);
+  }
+
   const bool is_doodle = (logo_state == SearchEngineLogoState::kDoodle);
+  if (IsRegularXRegularSizeClass(trait_collection)) {
+    return is_doodle ? kDoodleToFakeboxPaddingPreferred
+                     : kLogoToFakeboxPaddingRegularXRegular;
+  }
+
   CGFloat padding = 0;
   switch (GetNewTabPageUICleanupVariation()) {
     case NTPUICleanupVariation::kTightPadding:
@@ -400,61 +520,42 @@ CGFloat LogoToFakeboxPadding(SearchEngineLogoState logo_state) {
       break;
     case NTPUICleanupVariation::kFakeboxBackgroundAndShadow:
     case NTPUICleanupVariation::kDisabled:
-      return SearchFieldTopMargin(logo_state);
+      NOTREACHED();
   }
-  if (IsConsistentLogoDoodleHeightEnabled() &&
-      ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET && is_doodle) {
+  if (IsConsistentLogoDoodleHeightEnabled() && is_doodle) {
     padding -= kCleanupDoodleBottomMarginAdjustment;
   }
   return padding;
 }
 
-CGFloat QuickActionsTopPadding() {
-  switch (GetNewTabPageUICleanupVariation()) {
-    case NTPUICleanupVariation::kTightPadding:
-    case NTPUICleanupVariation::kMediumPadding:
-    case NTPUICleanupVariation::kPreferredPadding:
-      // When NTP Redesign is enabled, Quick Actions is constrained directly to
-      // the fakebox, so the intended 12pt padding is used. Otherwise, subtract
-      // `ntp_header::kScrolledToTopOmniboxBottomMargin` from the intended
-      // padding to offset the header view's bottom margin.
-      return IsNTPRedesignEnabled()
-                 ? kQuickActionsTopPadding
-                 : (kQuickActionsTopPadding -
-                    ntp_header::kScrolledToTopOmniboxBottomMargin);
-    case NTPUICleanupVariation::kFakeboxBackgroundAndShadow:
-    case NTPUICleanupVariation::kDisabled:
-      return kQuickActionsTopPaddingControl;
+CGFloat QuickActionsTopPadding(UITraitCollection* trait_collection) {
+  const CGFloat padding = BaseQuickActionsTopPadding(trait_collection);
+  if (!IsNewTabPageUICleanupEnabled() || IsNTPRedesignEnabled()) {
+    return padding;
   }
+  return padding - ntp_header::kScrolledToTopOmniboxBottomMargin;
 }
 
-CGFloat MostVisitedTopPadding() {
-  switch (GetNewTabPageUICleanupVariation()) {
-    case NTPUICleanupVariation::kTightPadding:
-      return kMostVisitedTopPaddingTight;
-    case NTPUICleanupVariation::kMediumPadding:
-      return kMostVisitedTopPaddingMedium;
-    case NTPUICleanupVariation::kPreferredPadding:
-      return kMostVisitedTopPaddingPreferred;
-    case NTPUICleanupVariation::kFakeboxBackgroundAndShadow:
-    case NTPUICleanupVariation::kDisabled:
-      return kMostVisitedTopPaddingControl;
+CGFloat RedistributedHeaderBottomSpacing(UITraitCollection* trait_collection) {
+  CHECK(ShouldRedistributeHeaderSpace());
+
+  const CGFloat padding = RedistributableHeaderSpace(trait_collection) *
+                          kFakeboxBottomRemainingSpaceRatio;
+  // Match `QuickActionsTopPadding` so `kScrolledToTopOmniboxBottomMargin` is
+  // not subtracted when `kNewTabPageUICleanup` is disabled.
+  if (!IsNewTabPageUICleanupEnabled() || IsNTPRedesignEnabled()) {
+    return padding;
   }
+  return padding - ntp_header::kScrolledToTopOmniboxBottomMargin;
 }
 
-CGFloat ReducedModuleSpacing(UITraitCollection* trait_collection) {
-  if (IsRegularXRegularSizeClass(trait_collection)) {
-    return kReducedModuleSpacingRegularXRegular;
-  }
-  switch (GetNewTabPageUICleanupVariation()) {
-    case NTPUICleanupVariation::kTightPadding:
-    case NTPUICleanupVariation::kMediumPadding:
-    case NTPUICleanupVariation::kPreferredPadding:
-      return kReducedModuleSpacing;
-    case NTPUICleanupVariation::kFakeboxBackgroundAndShadow:
-    case NTPUICleanupVariation::kDisabled:
-      return kReducedModuleSpacingControl;
-  }
+CGFloat MostVisitedTopPadding(UITraitCollection* trait_collection) {
+  return BaseMostVisitedTopPadding(trait_collection);
+}
+
+CGFloat ReducedModuleSpacing() {
+  return IsNewTabPageUICleanupEnabled() ? kReducedModuleSpacing
+                                        : kReducedModuleSpacingControl;
 }
 
 void ConfigureSearchHintLabel(UILabel* search_hint_label,
@@ -554,16 +655,6 @@ void ConfigureLensButtonWithNewBadgeAlpha(UIButton* lens_button,
     subview.transform = CGAffineTransformScale(
         CGAffineTransformIdentity, new_badge_alpha, new_badge_alpha);
   }
-}
-
-UIView* NearestAncestor(UIView* view, Class of_class) {
-  if (!view) {
-    return nil;
-  }
-  if ([view isKindOfClass:of_class]) {
-    return view;
-  }
-  return NearestAncestor([view superview], of_class);
 }
 
 UIColor* SearchHintLabelColor() {

@@ -30,6 +30,7 @@
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/gtest_prod_util.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/parser/css_nesting_type.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_mode.h"
@@ -238,6 +239,7 @@ class CORE_EXPORT CSSSelector {
 
   enum PseudoType {
     kPseudoActive,
+    kFirstPseudoType = kPseudoActive,
     kPseudoActiveOption,
     kPseudoActiveViewTransition,
     kPseudoActiveViewTransitionType,
@@ -380,7 +382,6 @@ class CORE_EXPORT CSSSelector {
     kPseudoHostHasNonAutoAppearance,
     kPseudoIsHtml,
     kPseudoListBox,
-    kPseudoMenulistPopoverWithMenubarAnchor,
     kPseudoMenulistPopoverWithMenulistAnchor,
     kPseudoMultiSelectFocus,
     kPseudoOpen,
@@ -422,6 +423,7 @@ class CORE_EXPORT CSSSelector {
     // Overscroll gesture support.
     kPseudoOverscrollAreaParent,
     kPseudoOverscrollBackdrop,
+    kPseudoOverscrollClosed,
     kPseudoOverscrollOpen,
 
     // :link-to(<navigation-location>)
@@ -440,6 +442,9 @@ class CORE_EXPORT CSSSelector {
 
     // ::skeleton for preview rendering
     kPseudoSkeleton,
+
+    // Keep `kLastPseudoType` updated when adding new values.
+    kLastPseudoType = kPseudoSkeleton,
   };
 
   enum class AttributeMatchType : int {
@@ -784,6 +789,9 @@ class CORE_EXPORT CSSSelector {
   static String FormatPseudoTypeForDebugging(PseudoType);
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(CSSSelectorGCTest,
+                           InlineSelectorListToRareDataDuringMarking);
+
   // Trace() branches on the match/pseudo_type flags,
   // RuleData bucketing sets is_covered_by_bucketing,
   // and these could happen concurrently. This trips up TSan,
@@ -868,7 +876,7 @@ class CORE_EXPORT CSSSelector {
   template <bool expand_pseudo_references>
   String SelectorTextInternal(uintptr_t scope_id) const;
 
-  struct RareData : public GarbageCollected<RareData> {
+  struct CORE_EXPORT RareData : public GarbageCollected<RareData> {
     explicit RareData(const AtomicString& value);
     // Does not deep copy `selector_list_`.
     RareData(const RareData&);

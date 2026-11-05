@@ -18,15 +18,15 @@
 #include "base/test/bind.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/test_safe_browsing_database_helper.h"
+#include "chrome/browser/safe_browsing/db/test_safe_browsing_database_helper.h"
 #include "chrome/browser/subresource_filter/subresource_filter_profile_context_factory.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "components/blocked_content/safe_browsing_triggered_popup_blocker.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
-#include "components/safe_browsing/core/browser/db/v4_test_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_test_util.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/subresource_filter/content/browser/content_subresource_filter_throttle_manager.h"
 #include "components/subresource_filter/content/browser/ruleset_service.h"
@@ -392,16 +392,6 @@ SubresourceFilterListInsertingBrowserTestWithV4V5Param::UseV5() const {
 }
 
 std::optional<bool> SubresourceFilterPrerenderingBrowserTest::UseV5() const {
-  return GetParam();
-}
-
-SubresourceFilterFencedFrameBrowserTest::
-    SubresourceFilterFencedFrameBrowserTest() = default;
-
-SubresourceFilterFencedFrameBrowserTest::
-    ~SubresourceFilterFencedFrameBrowserTest() = default;
-
-std::optional<bool> SubresourceFilterFencedFrameBrowserTest::UseV5() const {
   return GetParam();
 }
 

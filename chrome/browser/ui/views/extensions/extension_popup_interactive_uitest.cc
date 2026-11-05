@@ -13,10 +13,11 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/extension_action_test_helper.h"
-#include "chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h"
+#include "chrome/browser/ui/extensions/extensions_container.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/extensions/security_dialog_tracker.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/permissions/chip/permission_chip_view.h"
+#include "chrome/browser/ui/views/permissions/chip/chip_controller.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -38,13 +39,9 @@
 #include "extensions/test/test_extension_dir.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
-#include "ui/events/base_event_utils.h"
 #include "ui/gfx/native_ui_types.h"
-#include "ui/views/interaction/element_tracker_views.h"
-#include "ui/views/test/button_test_api.h"
 #include "ui/views/test/widget_activation_waiter.h"
 #include "ui/views/test/widget_test.h"
-#include "ui/views/view_utils.h"
 #include "ui/views/widget/unique_widget_ptr.h"
 #include "ui/views/window/dialog_delegate.h"
 
@@ -80,6 +77,12 @@ class DevToolsAttachWaiter : public content::DevToolsAgentHostObserver {
  private:
   base::RunLoop run_loop_;
   raw_ptr<content::WebContents> web_contents_;
+};
+
+class CloseableTestDevToolsProtocolClient
+    : public content::TestDevToolsProtocolClient {
+ public:
+  CloseableTestDevToolsProtocolClient() { set_agent_host_can_close(); }
 };
 
 views::UniqueWidgetPtr CreateTestTopLevelWidget() {
@@ -228,21 +231,21 @@ IN_PROC_BROWSER_TEST_F(ExtensionPopupInteractiveUiTest,
   // If so, click on the chip to open the bubble.
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
   LocationBar* lb = browser_view->toolbar()->location_bar();
-  if (lb->GetChipController()->IsPermissionPromptChipVisible() &&
-      !lb->GetChipController()->IsBubbleShowing()) {
-    views::test::ButtonTestApi(
-        views::AsViewClass<views::Button>(
-            views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-                PermissionChipView::kPermissionRequestChipElementId,
-                views::ElementTrackerViews::GetContextForView(browser_view))))
-        .NotifyClick(ui::MouseEvent(ui::EventType::kMousePressed, gfx::Point(),
-                                    gfx::Point(), ui::EventTimeForNow(),
-                                    ui::EF_LEFT_MOUSE_BUTTON, 0));
-    base::RunLoop().RunUntilIdle();
+  ChipController* chip_controller = lb->GetChipController();
+  if (chip_controller->IsPermissionPromptChipVisible() &&
+      !chip_controller->IsBubbleShowing()) {
+    chip_controller->chip()->ExecuteForTesting();
+    // WebUIPermissionChip resolves the prompt bubble's anchor asynchronously,
+    // once the WebUI has registered the chip element over Mojo. Wait for it so
+    // that the prompt bubble is created.
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return !chip_controller->is_waiting_for_anchor_for_testing();
+    }));
   }
 
   // The permissions bubble should now be showing.
-  ASSERT_TRUE(permissions_api.GetPromptWindow());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return permissions_api.GetPromptWindow() != nullptr; }));
 
   base::WeakPtr<views::Widget> extension_popup_widget =
       OpenExtensionPopup(browser(), extension);
@@ -702,16 +705,16 @@ IN_PROC_BROWSER_TEST_F(ExtensionPopupInteractiveUiTest,
   extensions::ExtensionHostTestHelper popup_waiter(browser()->GetProfile(),
                                                    extension->id());
   popup_waiter.RestrictToType(extensions::mojom::ViewType::kExtensionPopup);
-  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
-  ExtensionsToolbarDesktop* extensions_container =
-      browser_view->toolbar()->extensions_container();
-  extensions_container->GetToolbarViewModel()->ShowToolbarActionPopupForAPICall(
-      extension->id(), ShowPopupCallback());
+  // Use the platform-abstract ExtensionsContainer so this works with both the
+  // Views and WebUI extensions containers.
+  ExtensionsContainer::From(*browser())
+      ->ShowToolbarActionPopupForAPICall(extension->id(), ShowPopupCallback());
 
   // The extension should load the image.
   slow_img_response.WaitForRequest();
 
   // While the extension is loading, open a security UI.
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
   views::UniqueWidgetPtr security_widget =
       CreateTestDialogWidget(browser_view->GetWidget());
   extensions::SecurityDialogTracker::GetInstance()->AddSecurityDialog(
@@ -781,6 +784,158 @@ IN_PROC_BROWSER_TEST_F(ExtensionPopupInteractiveUiTest,
 
   // The extension should be destroyed without showing.
   popup_waiter.WaitForHostDestroyed();
+}
+
+// Tests that an extension popup under active DevTools inspection is dismissed
+// when a security dialog is shown.
+IN_PROC_BROWSER_TEST_F(ExtensionPopupInteractiveUiTest,
+                       InspectedPopupClosesWhenSecurityDialogShown) {
+  static constexpr char kManifest[] =
+      R"({
+           "name": "Test Extension",
+           "manifest_version": 3,
+           "action": { "default_popup": "popup.html" },
+           "version": "0.1"
+         })";
+
+  extensions::TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("popup.html"),
+                     "<html>Hello, world!</html>");
+  const extensions::Extension* extension =
+      LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  // Open the popup and inspect it.
+  extensions::ExtensionHostTestHelper popup_waiter(profile(), extension->id());
+  popup_waiter.RestrictToType(extensions::mojom::ViewType::kExtensionPopup);
+  ExtensionActionTestHelper::Create(browser())->InspectPopup(extension->id());
+  popup_waiter.WaitForHostCompletedFirstLoad();
+  content::WebContents* extension_contents =
+      ExtensionPopup::last_popup_for_testing()->host()->host_contents();
+  ASSERT_NE(extension_contents, nullptr);
+  DevToolsAttachWaiter(extension_contents).Wait();
+
+  base::WeakPtr<views::Widget> extension_popup_widget =
+      ExtensionPopup::last_popup_for_testing()->GetWidget()->GetWeakPtr();
+  ASSERT_TRUE(extension_popup_widget);
+  views::test::WidgetVisibleWaiter(extension_popup_widget.get()).Wait();
+  EXPECT_TRUE(extension_popup_widget->IsVisible());
+
+  // Show a security dialog.
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  views::UniqueWidgetPtr security_widget =
+      CreateTestDialogWidget(browser_view->GetWidget());
+  extensions::SecurityDialogTracker::GetInstance()->AddSecurityDialog(
+      security_widget.get());
+  security_widget->Show();
+  views::test::WidgetVisibleWaiter(security_widget.get()).Wait();
+
+  // The popup should be dismissed even though it was under inspection.
+  ExpectWidgetDestroy(extension_popup_widget);
+}
+
+// Tests that an extension popup attached to a DevTools protocol client
+// (emulating chrome.debugger.attach()) is dismissed when a security dialog is
+// shown.
+IN_PROC_BROWSER_TEST_F(
+    ExtensionPopupInteractiveUiTest,
+    DevToolsProtocolClientAttachedPopupClosesWhenSecurityDialogShown) {
+  static constexpr char kManifest[] =
+      R"({
+           "name": "Test Extension",
+           "manifest_version": 3,
+           "action": { "default_popup": "popup.html" },
+           "version": "0.1"
+         })";
+
+  extensions::TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("popup.html"),
+                     "<html>Hello, world!</html>");
+  const extensions::Extension* extension =
+      LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  // Open the popup.
+  base::WeakPtr<views::Widget> extension_popup_widget =
+      OpenExtensionPopup(browser(), extension);
+  ASSERT_TRUE(extension_popup_widget);
+  EXPECT_TRUE(extension_popup_widget->IsVisible());
+
+  content::WebContents* extension_contents =
+      ExtensionPopup::last_popup_for_testing()->host()->host_contents();
+  ASSERT_NE(extension_contents, nullptr);
+
+  // Attach a DevTools protocol client (emulating chrome.debugger.attach()).
+  CloseableTestDevToolsProtocolClient devtools_client;
+  devtools_client.AttachToWebContents(extension_contents);
+
+  // Show a security dialog.
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  views::UniqueWidgetPtr security_widget =
+      CreateTestDialogWidget(browser_view->GetWidget());
+  extensions::SecurityDialogTracker::GetInstance()->AddSecurityDialog(
+      security_widget.get());
+  security_widget->Show();
+  views::test::WidgetVisibleWaiter(security_widget.get()).Wait();
+
+  // The popup should be dismissed.
+  ExpectWidgetDestroy(extension_popup_widget);
+}
+
+// Tests that an extension popup in one browser window does not close when a
+// security dialog is shown in a different browser window.
+IN_PROC_BROWSER_TEST_F(
+    ExtensionPopupInteractiveUiTest,
+    PopupDoesNotCloseWhenSecurityDialogShownInDifferentBrowser) {
+  static constexpr char kManifest[] =
+      R"({
+           "name": "Test Extension",
+           "manifest_version": 3,
+           "action": { "default_popup": "popup.html" },
+           "version": "0.1"
+         })";
+
+  extensions::TestExtensionDir test_dir;
+  test_dir.WriteManifest(kManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("popup.html"),
+                     "<html>Hello, world!</html>");
+  const extensions::Extension* extension =
+      LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  // Open the popup in the first browser.
+  base::WeakPtr<views::Widget> extension_popup_widget =
+      OpenExtensionPopup(browser(), extension);
+  ASSERT_TRUE(extension_popup_widget);
+  EXPECT_TRUE(extension_popup_widget->IsVisible());
+
+  // Create a second browser window and show a security dialog in it.
+  BrowserWindowInterface* second_browser = CreateBrowser(profile());
+  BrowserView* second_browser_view =
+      BrowserView::GetBrowserViewForBrowser(second_browser);
+  views::UniqueWidgetPtr security_widget =
+      CreateTestDialogWidget(second_browser_view->GetWidget());
+  extensions::SecurityDialogTracker::GetInstance()->AddSecurityDialog(
+      security_widget.get());
+  security_widget->Show();
+  views::test::WidgetVisibleWaiter(security_widget.get()).Wait();
+
+  // Flush the deferred CloseIfSecurityDialogPresent task.
+  base::RunLoop run_loop;
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop.QuitClosure());
+  run_loop.Run();
+
+  // The popup in the first browser should remain open.
+  EXPECT_TRUE(extension_popup_widget);
+  EXPECT_TRUE(extension_popup_widget->IsVisible());
+
+  // Clean up.
+  security_widget->Close();
+  views::test::WidgetDestroyedWaiter(security_widget.get()).Wait();
+  CloseBrowserSynchronously(second_browser);
 }
 
 // Tests that pressing Escape in an extension popup does not close the popup

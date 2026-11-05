@@ -6,6 +6,7 @@
 
 #include "base/functional/bind.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_panel_controller.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_ui_base.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_interface.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
 #include "chrome/browser/contextual_tasks/entry_point_eligibility_manager.h"
@@ -80,8 +81,7 @@ void ContextualTasksCloseButtonController::OnEntryShown(SidePanelEntry* entry) {
 void ContextualTasksCloseButtonController::OnEntryWillHide(
     SidePanelEntry* entry,
     SidePanelEntryHideReason reason) {
-  if (contextual_tasks::kShowEntryPoint.Get() ==
-      contextual_tasks::EntryPointOption::kToolbarEphemeralBranded) {
+  if (contextual_tasks::IsContextualTasksEphemeralEntryPointEnabled()) {
     is_panel_hiding_ = true;
     MaybeNotifyVisibilityShouldChange();
   }
@@ -89,8 +89,7 @@ void ContextualTasksCloseButtonController::OnEntryWillHide(
 
 void ContextualTasksCloseButtonController::OnEntryHideCancelled(
     SidePanelEntry* entry) {
-  if (contextual_tasks::kShowEntryPoint.Get() ==
-      contextual_tasks::EntryPointOption::kToolbarEphemeralBranded) {
+  if (contextual_tasks::IsContextualTasksEphemeralEntryPointEnabled()) {
     is_panel_hiding_ = false;
     MaybeNotifyVisibilityShouldChange();
   }
@@ -180,6 +179,19 @@ void ContextualTasksCloseButtonController::MaybeNotifyVisibilityShouldChange() {
       browser_window_interface_);
 
   if (controller) {
+    if (contextual_tasks::IsContextualTasksSidePanelRearchitectureEnabled()) {
+      if (contextual_tasks::ContextualTasksUIBase* toolbar_ui =
+              contextual_tasks::ContextualTasksUIBase::FromWebContents(
+                  controller->GetToolbarWebContents())) {
+        bool enabled =
+            (IsVerticalTabOrIsImmersiveMode() ||
+             (contextual_tasks::GetExpandButtonOption() ==
+              contextual_tasks::ExpandButtonOption::kSidePanelExpandButton)) &&
+            controller->CanExpandToFullTab();
+        toolbar_ui->UpdateExpandButtonEnabled(enabled);
+      }
+      return;
+    }
     content::WebContents* contents = controller->GetActiveWebContents();
     if (contents) {
       auto* ui = contextual_tasks::GetWebUiInterface(contents);

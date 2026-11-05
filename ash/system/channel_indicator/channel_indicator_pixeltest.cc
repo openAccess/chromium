@@ -31,12 +31,16 @@ class ChannelIndicatorPixelTest
   ChannelIndicatorPixelTest() = default;
 
   // AshTestBase:
-  void SetUp() override {
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
     // Instantiate a `TestShellDelegate` with the channel set to our param.
     std::unique_ptr<TestShellDelegate> shell_delegate =
         std::make_unique<TestShellDelegate>();
     shell_delegate->set_channel(GetChannel());
-    set_shell_delegate(std::move(shell_delegate));
+    init_params.delegate = std::move(shell_delegate);
+  }
+
+  void SetUp() override {
     AshTestBase::SetUp();
     GetSessionControllerClient()->SetSessionState(
         IsLoggedIn() ? session_manager::SessionState::ACTIVE
@@ -88,7 +92,7 @@ TEST_P(ChannelIndicatorPixelTest, ChannelIndicatorArea) {
       GenerateScreenshotName(l10n_util::GetStringUTF8(
           channel_indicator_utils::GetChannelNameStringResourceID(GetChannel(),
                                                                   false))),
-      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 3 : 0,
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 5 : 2,
       GetPrimaryShelf()->GetStatusAreaWidget()));
 }
 

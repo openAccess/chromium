@@ -6,30 +6,30 @@
 
 #include <stdint.h>
 
+#include <optional>
+#include <tuple>
+#include <utility>
+#include <vector>
+
 #include "base/check_is_test.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/strings/strcat.h"
-#include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/expected.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/public/common/content_client.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/message.h"
-#include "net/base/schemeful_site.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
-#include "third_party/blink/public/common/custom_handlers/protocol_handler_utils.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
+#include "third_party/blink/public/common/manifest/manifest_invariants.h"
 #include "third_party/blink/public/common/manifest/manifest_util.h"
-#include "third_party/blink/public/common/scheme_registry.h"
-#include "third_party/blink/public/common/security/protocol_handler_security_level.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 #include "third_party/blink/public/mojom/manifest/manifest_manager.mojom.h"
-#include "third_party/icu/source/common/unicode/uchar.h"
-#include "third_party/icu/source/common/unicode/utf16.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+#include "url/url_constants.h"
 
 namespace content {
 
@@ -40,157 +40,8 @@ void DispatchManifestNotFound(
   for (ManifestManagerHost::GetManifestCallback& callback : callbacks) {
     std::move(callback).Run(
         blink::mojom::ManifestRequestResult::kUnexpectedFailure, GURL(),
-        blink::mojom::Manifest::New());
+        std::nullopt);
   }
-}
-
-std::optional<std::string> MaybeGetBadMessageStringForManifest(
-    blink::mojom::ManifestRequestResult result,
-    const blink::mojom::Manifest& manifest,
-    const url::Origin& document_origin) {
-  if (result == blink::mojom::ManifestRequestResult::kSuccess &&
-      blink::IsEmptyManifest(manifest)) {
-    return "RequestManifest reported success but didn't return a manifest";
-  }
-
-  if (!blink::IsEmptyManifest(manifest)) {
-    // `start_url`, `id`, and `scope` MUST be populated if the manifest is not
-    // empty.
-    bool start_url_valid = manifest.start_url.is_valid();
-    bool id_valid = manifest.id.is_valid();
-    bool scope_valid = manifest.scope.is_valid();
-    if (!start_url_valid || !id_valid || !scope_valid) {
-      constexpr auto valid_to_string = [](bool b) -> std::string_view {
-        return b ? "valid" : "invalid";
-      };
-      return base::StrCat(
-          {"RequestManifest's manifest must "
-           "either be empty or populate the "
-           "the start_url (",
-           valid_to_string(start_url_valid), "), id (",
-           valid_to_string(id_valid), "), and scope (",
-           valid_to_string(scope_valid), ")."});
-    }
-
-    if (!document_origin.IsSameOriginWith(manifest.start_url)) {
-      return base::StrCat({"Manifest start_url (" + manifest.start_url.spec() +
-                           ") must be same-origin with the document (" +
-                           document_origin.Serialize() + ")."});
-    }
-
-    if (!document_origin.IsSameOriginWith(manifest.id)) {
-      return "Manifest id must be same-origin with the document.";
-    }
-
-    if (!document_origin.IsSameOriginWith(manifest.scope)) {
-      return "Manifest scope must be same-origin with the document.";
-    }
-
-    if (manifest.share_target &&
-        !document_origin.IsSameOriginWith(manifest.share_target->action)) {
-      return "Manifest share_target must be same-origin with the document.";
-    }
-
-    for (const auto& file_handler : manifest.file_handlers) {
-      if (!document_origin.IsSameOriginWith(file_handler->action)) {
-        return "Manifest file_handlers must be same-origin with the document.";
-      }
-      for (const auto& [mime_type, extensions] : file_handler->accept) {
-        for (const auto& extension : extensions) {
-          for (size_t i = 0; i < extension.length();) {
-            UChar32 c;
-            U16_NEXT(extension, i, extension.length(), c);
-            // TODO(crbug.com/530303003): This check for control and format
-            // characters is duplicated across manifest parsing, IPC validation,
-            // and PWA display. Consider consolidating it into a shared helper
-            // in //base/strings/string_util.h.
-            if (base::IsUnicodeControl(c) || u_charType(c) == U_FORMAT_CHAR) {
-              return "Manifest file_handlers accept extension contains invalid "
-                     "control or format characters.";
-            }
-          }
-        }
-      }
-    }
-
-    for (const auto& protocol_handler : manifest.protocol_handlers) {
-      if (!document_origin.IsSameOriginWith(protocol_handler->url)) {
-        return "Manifest protocol_handlers must be same-origin with the "
-               "document.";
-      }
-
-      blink::ProtocolHandlerSecurityLevel security_level =
-          blink::CommonSchemeRegistry::IsIsolatedAppScheme(
-              document_origin.scheme())
-              ? blink::ProtocolHandlerSecurityLevel::kIsolatedAppFeatures
-              : blink::ProtocolHandlerSecurityLevel::kStrict;
-      if (!blink::IsValidCustomHandlerScheme(
-              base::UTF16ToUTF8(protocol_handler->protocol), security_level)) {
-        return "Manifest protocol_handlers protocol is invalid or restricted "
-               "for security level:" +
-               base::ToString(security_level);
-      }
-    }
-
-    if (manifest.note_taking && manifest.note_taking->new_note_url.is_valid() &&
-        !document_origin.IsSameOriginWith(manifest.note_taking->new_note_url)) {
-      return "Manifest note_taking new_note_url must be same-origin with the "
-             "document.";
-    }
-
-    if (manifest.lock_screen && manifest.lock_screen->start_url.is_valid() &&
-        !document_origin.IsSameOriginWith(manifest.lock_screen->start_url)) {
-      return "Manifest lock_screen start_url must be same-origin with the "
-             "document.";
-    }
-
-    net::SchemefulSite document_site(document_origin);
-    for (const auto& migrate_from : manifest.migrate_from) {
-      if (!document_site.IsSameSiteWith(migrate_from->id)) {
-        return "Manifest migrate_from id must be the same site as the "
-               "document.";
-      }
-      if (migrate_from->install_url && migrate_from->install_url->is_valid() &&
-          !document_site.IsSameSiteWith(*migrate_from->install_url)) {
-        return "Manifest migrate_from install_url must be the same site as the "
-               "document.";
-      }
-    }
-
-    if (manifest.migrate_to) {
-      if (!document_site.IsSameSiteWith(manifest.migrate_to->id)) {
-        return "Manifest migrate_to id must be the same site as the document.";
-      }
-      if (manifest.migrate_to->install_url.is_valid() &&
-          !document_site.IsSameSiteWith(manifest.migrate_to->install_url)) {
-        return "Manifest migrate_to install_url must be the same site as the "
-               "document.";
-      }
-    }
-
-    for (const auto& shortcut : manifest.shortcuts) {
-      if (!shortcut.url.is_valid()) {
-        return "Manifest shortcut urls must be valid.";
-      }
-      if (!(url::IsSameOriginWith(manifest.scope, shortcut.url) &&
-            base::StartsWith(shortcut.url.path(), manifest.scope.path(),
-                             base::CompareCase::SENSITIVE))) {
-        return "Manifest shortcut urls must be within scope.";
-      }
-    }
-
-    for (const auto& icon : manifest.icons) {
-      if (!icon.src.is_valid()) {
-        return "Manifest icon urls must be valid.";
-      }
-      if (!icon.src.SchemeIsHTTPOrHTTPS() && !icon.src.SchemeIs("data") &&
-          !icon.src.SchemeIs(document_origin.scheme())) {
-        return "Manifest icon urls must be http, https, data, or match the "
-               "document scheme.";
-      }
-    }
-  }
-  return std::nullopt;
 }
 
 }  // namespace
@@ -221,14 +72,14 @@ void ManifestManagerHost::BindObserver(
 }
 
 void ManifestManagerHost::GetManifest(GetManifestCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   if (page().GetMainDocument().GetLastCommittedURL().SchemeIs(
           url::kAboutScheme)) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(std::move(callback),
                        blink::mojom::ManifestRequestResult::kNoManifestAllowed,
-                       GURL(), blink::mojom::Manifest::New()));
+                       GURL(), std::nullopt));
     return;
   }
   auto& manifest_manager = GetManifestManager();
@@ -258,7 +109,7 @@ base::CallbackListSubscription ManifestManagerHost::GetAllSpecifiedManifests(
     AllManifestsCallbackList::CallbackType callback) {
   auto result = all_manifests_callback_list_.Add(callback);
   if (last_manifest_success_result_.has_value()) {
-    callback.Run(base::ok(last_manifest_success_result_->Clone()));
+    callback.Run(base::ok(*last_manifest_success_result_));
   } else {
     MaybeFetchManifestForSubscriptions();
   }
@@ -266,16 +117,38 @@ base::CallbackListSubscription ManifestManagerHost::GetAllSpecifiedManifests(
 }
 
 void ManifestManagerHost::RequestManifestDebugInfo(
-    blink::mojom::ManifestManager::RequestManifestDebugInfoCallback callback) {
+    RequestManifestDebugInfoCallback callback) {
   if (page().GetMainDocument().GetLastCommittedURL().SchemeIs(
           url::kAboutScheme)) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback), GURL(),
-                                  blink::mojom::Manifest::New(),
+        FROM_HERE, base::BindOnce(std::move(callback), GURL(), std::nullopt,
                                   blink::mojom::ManifestDebugInfo::New()));
     return;
   }
-  GetManifestManager().RequestManifestDebugInfo(std::move(callback));
+  GetManifestManager().RequestManifestDebugInfo(
+      base::BindOnce(&ManifestManagerHost::OnRequestManifestDebugInfoResponse,
+                     weak_factory_.GetWeakPtr(), std::move(callback)));
+}
+
+void ManifestManagerHost::OnRequestManifestDebugInfoResponse(
+    RequestManifestDebugInfoCallback callback,
+    const GURL& url,
+    blink::mojom::ManifestPtr parsed_manifest,
+    blink::mojom::ManifestDebugInfoPtr debug_info) {
+  std::optional<blink::Manifest> manifest;
+  if (parsed_manifest && !blink::IsEmptyManifest(*parsed_manifest)) {
+    base::expected<blink::Manifest, blink::ManifestInvariantError> converted =
+        blink::ManifestFromMojom(*parsed_manifest);
+    if (!converted.has_value()) {
+      base::UmaHistogramEnumeration("WebApp.Manifest.InvariantViolation",
+                                    converted.error());
+      mojo::ReportBadMessage(
+          blink::ManifestInvariantErrorToString(converted.error()));
+    } else {
+      manifest = std::move(*converted);
+    }
+  }
+  std::move(callback).Run(url, manifest, std::move(debug_info));
 }
 
 blink::mojom::ManifestManager& ManifestManagerHost::GetManifestManager() {
@@ -288,36 +161,42 @@ blink::mojom::ManifestManager& ManifestManagerHost::GetManifestManager() {
   return *manifest_manager_;
 }
 
-blink::mojom::ManifestPtr ManifestManagerHost::ValidateAndMaybeOverrideManifest(
+base::expected<blink::Manifest, blink::mojom::ManifestRequestResult>
+ManifestManagerHost::ValidateAndMaybeOverrideManifest(
     blink::mojom::ManifestRequestResult result,
-    blink::mojom::ManifestPtr manifest) {
-  // Mojo bindings guarantee that `manifest` isn't null.
-  CHECK(manifest);
-
-  auto& document_origin = page().GetMainDocument().GetLastCommittedOrigin();
-  if (!blink::IsEmptyManifest(manifest) && document_origin.opaque()) {
-    // We should never get a manifest for an opaque origin, unless perhaps due
-    // to a race condition. Override to empty and log.
+    std::optional<blink::Manifest> manifest) {
+  // Intrinsic invariants already hold (enforced in ManifestFromMojom).
+  if (!manifest) {
+    if (result == blink::mojom::ManifestRequestResult::kSuccess) {
+      mojo::ReportBadMessage(
+          "RequestManifest reported success but didn't return a manifest");
+      return base::unexpected(
+          blink::mojom::ManifestRequestResult::kUnexpectedFailure);
+    }
+    return base::unexpected(result);
+  }
+  const url::Origin& document_origin =
+      page().GetMainDocument().GetLastCommittedOrigin();
+  // Navigating to an opaque origin can race with the manifest request; do not
+  // report a bad message.
+  if (document_origin.opaque()) {
     base::UmaHistogramBoolean("WebApp.Manifest.ForOpaqueOrigin", true);
-    DVLOG(1) << "Manifest received for opaque origin with start_url"
-             << manifest->start_url.spec();
-    return blink::mojom::Manifest::New();
+    return base::unexpected(
+        blink::mojom::ManifestRequestResult::kUnexpectedFailure);
+  }
+  if (!document_origin.IsSameOriginWith(manifest->GetOrigin())) {
+    mojo::ReportBadMessage("Manifest origin must match the document origin.");
+    return base::unexpected(
+        blink::mojom::ManifestRequestResult::kUnexpectedFailure);
   }
 
-  if (std::optional<std::string> bad_message_error =
-          MaybeGetBadMessageStringForManifest(result, *manifest,
-                                              document_origin);
-      bad_message_error.has_value()) {
-    mojo::ReportBadMessage(*bad_message_error);
-    return blink::mojom::Manifest::New();
+  if (std::optional<blink::Manifest> overridden =
+          GetContentClient()->browser()->MaybeOverrideManifest(
+              &page().GetMainDocument(), *manifest)) {
+    CHECK(overridden->GetOrigin() == manifest->GetOrigin());
+    return *std::move(overridden);
   }
-  if (!blink::IsEmptyManifest(manifest)) {
-    // The manifest overriding infrastructure does not support empty manifests
-    // from errors.
-    GetContentClient()->browser()->MaybeOverrideManifest(
-        &page().GetMainDocument(), manifest);
-  }
-  return manifest;
+  return *std::move(manifest);
 }
 
 void ManifestManagerHost::
@@ -325,7 +204,102 @@ void ManifestManagerHost::
         blink::mojom::ManifestRequestResult result,
         blink::mojom::ManifestPtr manifest) {
   CHECK_IS_TEST();
-  ValidateAndMaybeOverrideManifest(result, std::move(manifest));
+  std::optional<blink::Manifest> parsed_manifest;
+  if (manifest && !blink::IsEmptyManifest(*manifest)) {
+    base::expected<blink::Manifest, blink::ManifestInvariantError> converted =
+        blink::ManifestFromMojom(*manifest);
+    if (!converted.has_value()) {
+      base::UmaHistogramEnumeration("WebApp.Manifest.InvariantViolation",
+                                    converted.error());
+      mojo::ReportBadMessage(
+          blink::ManifestInvariantErrorToString(converted.error()));
+      return;
+    }
+    parsed_manifest = std::move(*converted);
+  }
+  std::ignore =
+      ValidateAndMaybeOverrideManifest(result, std::move(parsed_manifest));
+}
+
+void ManifestManagerHost::ParseManifestFromString(
+    const GURL& document_url,
+    const GURL& manifest_url,
+    const std::string& manifest_contents,
+    ParseManifestCallback callback) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  if (!document_url.is_valid() || url::Origin::Create(document_url).opaque()) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), std::nullopt));
+    return;
+  }
+  GetManifestManager().ParseManifestFromString(
+      document_url, manifest_url, manifest_contents,
+      mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+          base::BindOnce(
+              &ManifestManagerHost::OnParseManifestFromStringResponse,
+              weak_factory_.GetWeakPtr(), document_url, manifest_url,
+              std::move(callback)),
+          blink::mojom::ManifestPtr()));
+}
+
+void ManifestManagerHost::OnParseManifestFromStringResponse(
+    const GURL& document_url,
+    const GURL& manifest_url,
+    ParseManifestCallback callback,
+    blink::mojom::ManifestPtr manifest) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  std::optional<blink::Manifest> parsed_manifest =
+      ValidateParsedManifestFromString(document_url, manifest_url,
+                                       std::move(manifest));
+  std::move(callback).Run(std::move(parsed_manifest));
+}
+
+std::optional<blink::Manifest>
+ManifestManagerHost::ValidateParsedManifestFromString(
+    const GURL& document_url,
+    const GURL& manifest_url,
+    blink::mojom::ManifestPtr manifest) {
+  if (!manifest || blink::IsEmptyManifest(*manifest)) {
+    return std::nullopt;
+  }
+
+  base::expected<blink::Manifest, blink::ManifestInvariantError> converted =
+      blink::ManifestFromMojom(*manifest);
+  if (!converted.has_value()) {
+    base::UmaHistogramEnumeration("WebApp.Manifest.InvariantViolation",
+                                  converted.error());
+    mojo::ReportBadMessage(
+        blink::ManifestInvariantErrorToString(converted.error()));
+    return std::nullopt;
+  }
+
+  // The returned manifest URL must match the requested manifest_url.
+  if (converted->manifest_url() != manifest_url) {
+    mojo::ReportBadMessage("Returned manifest has incorrect manifest URL");
+    return std::nullopt;
+  }
+
+  // document_url was verified valid and non-opaque before sending the IPC.
+  url::Origin document_origin = url::Origin::Create(document_url);
+  CHECK(!document_origin.opaque());
+
+  // The manifest origin must match the document origin.
+  if (!document_origin.IsSameOriginWith(converted->GetOrigin())) {
+    mojo::ReportBadMessage("Manifest origin must match the document origin.");
+    return std::nullopt;
+  }
+
+  return std::move(*converted);
+}
+
+std::optional<blink::Manifest>
+ManifestManagerHost::ValidateParsedManifestFromStringForTesting(  // IN-TEST
+    const GURL& document_url,
+    const GURL& manifest_url,
+    blink::mojom::ManifestPtr manifest) {
+  CHECK_IS_TEST();
+  return ValidateParsedManifestFromString(document_url, manifest_url,
+                                          std::move(manifest));
 }
 
 std::vector<ManifestManagerHost::GetManifestCallback>
@@ -339,11 +313,25 @@ ManifestManagerHost::ExtractPendingCallbacks() {
 }
 
 void ManifestManagerHost::OnConnectionError() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  base::WeakPtr<ManifestManagerHost> weak_this = weak_factory_.GetWeakPtr();
   DispatchManifestNotFound(ExtractPendingCallbacks());
-  if (GetForPage(page())) {
-    DeleteForPage(page());
+  if (!weak_this) {
+    return;
   }
+  ManifestResult error_result =
+      base::unexpected(blink::mojom::RequestManifestError::New(
+          blink::mojom::ManifestRequestResult::kUnexpectedFailure,
+          std::vector<blink::mojom::ManifestErrorPtr>()));
+  developer_manifest_callback_list_.Notify(error_result);
+  if (!weak_this) {
+    return;
+  }
+  all_manifests_callback_list_.Notify(error_result);
+  if (!weak_this) {
+    return;
+  }
+  DeleteForPage(page());
 }
 
 void ManifestManagerHost::OnRequestManifestResponse(
@@ -351,19 +339,43 @@ void ManifestManagerHost::OnRequestManifestResponse(
     blink::mojom::ManifestRequestResult result,
     const GURL& url,
     blink::mojom::ManifestPtr manifest) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  manifest = ValidateAndMaybeOverrideManifest(result, std::move(manifest));
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  std::optional<blink::Manifest> parsed_manifest;
+  if (manifest && !blink::IsEmptyManifest(*manifest)) {
+    base::expected<blink::Manifest, blink::ManifestInvariantError> converted =
+        blink::ManifestFromMojom(*manifest);
+    if (!converted.has_value()) {
+      base::UmaHistogramEnumeration("WebApp.Manifest.InvariantViolation",
+                                    converted.error());
+      mojo::ReportBadMessage(
+          blink::ManifestInvariantErrorToString(converted.error()));
+      result = blink::mojom::ManifestRequestResult::kUnexpectedFailure;
+    } else {
+      parsed_manifest = std::move(*converted);
+    }
+  }
+
+  base::expected<blink::Manifest, blink::mojom::ManifestRequestResult>
+      validated_manifest =
+          ValidateAndMaybeOverrideManifest(result, std::move(parsed_manifest));
+
+  std::optional<blink::Manifest> response_manifest;
+  if (validated_manifest.has_value()) {
+    response_manifest = std::move(*validated_manifest);
+  } else {
+    result = validated_manifest.error();
+  }
   auto callback = std::move(*callbacks_.Lookup(request_id));
   callbacks_.Remove(request_id);
 
-  std::move(callback).Run(result, url, std::move(manifest));
+  std::move(callback).Run(result, url, std::move(response_manifest));
 }
 
 void ManifestManagerHost::OnRequestManifestAndErrors(
     const GURL& manifest_url_for_fetch,
     base::expected<blink::mojom::ManifestPtr,
                    blink::mojom::RequestManifestErrorPtr> result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   // Reset the information for the current manifest url being fetched if it
   // matches the request that was sent to the ManifestManager, and only process
   // requests for the latest manifest url on the page.
@@ -374,21 +386,51 @@ void ManifestManagerHost::OnRequestManifestAndErrors(
   }
 
   current_fetching_manifest_url_.reset();
-  if (result.has_value()) {
-    result = ValidateAndMaybeOverrideManifest(
-        blink::mojom::ManifestRequestResult::kSuccess, std::move(*result));
-    // Handle BadMessage case with an explicit error state instead of an empty
-    // manifest.
-    if (blink::IsEmptyManifest(*result)) {
-      result = base::unexpected(blink::mojom::RequestManifestError::New(
+  ManifestResult manifest_result =
+      base::unexpected(blink::mojom::RequestManifestError::New(
           blink::mojom::ManifestRequestResult::kUnexpectedFailure,
           std::vector<blink::mojom::ManifestErrorPtr>()));
-    } else if ((*result)->manifest_url.is_empty()) {
-      // If a manifest URL clearing raced with the request, then a default
-      // manifest can be returned. In this case, do not call observers and
-      // instead wait for the next manifest URL change to request the manifest
-      // again.
-      return;
+
+  if (result.has_value()) {
+    std::optional<blink::Manifest> parsed_manifest;
+    bool conversion_error = false;
+    if (*result && !blink::IsEmptyManifest(**result)) {
+      base::expected<blink::Manifest, blink::ManifestInvariantError> converted =
+          blink::ManifestFromMojom(**result);
+      if (!converted.has_value()) {
+        base::UmaHistogramEnumeration("WebApp.Manifest.InvariantViolation",
+                                      converted.error());
+        mojo::ReportBadMessage(
+            blink::ManifestInvariantErrorToString(converted.error()));
+        conversion_error = true;
+      } else {
+        parsed_manifest = std::move(*converted);
+      }
+    }
+    if (!conversion_error) {
+      base::expected<blink::Manifest, blink::mojom::ManifestRequestResult>
+          validated = ValidateAndMaybeOverrideManifest(
+              blink::mojom::ManifestRequestResult::kSuccess,
+              std::move(parsed_manifest));
+      if (!validated.has_value()) {
+        manifest_result =
+            base::unexpected(blink::mojom::RequestManifestError::New(
+                blink::mojom::ManifestRequestResult::kUnexpectedFailure,
+                std::vector<blink::mojom::ManifestErrorPtr>()));
+      } else if (validated->manifest_url().is_empty()) {
+        // If a manifest URL clearing raced with the request, then a default
+        // manifest can be returned. In this case, do not call observers and
+        // instead wait for the next manifest URL change to request the manifest
+        // again.
+        return;
+      } else {
+        // This copy COULD be avoided if we cached the full expected result.
+        // However - that gets really confusing if we also have it be optional.
+        // Since we only care about caching success, it is simpler to copy here,
+        // and just cache the success results as an optional.
+        last_manifest_success_result_ = *validated;
+        manifest_result = base::ok(std::move(*validated));
+      }
     }
   } else {
     blink::mojom::ManifestRequestResult error_result = result.error()->error;
@@ -400,16 +442,11 @@ void ManifestManagerHost::OnRequestManifestAndErrors(
       result.error()->error =
           blink::mojom::ManifestRequestResult::kUnexpectedFailure;
     }
+    manifest_result = base::unexpected(std::move(result.error()));
   }
-  if (result.has_value()) {
-    // This Clone COULD be avoided if we cached the full expected result.
-    // However - that gets really confusing if we also have it be optional.
-    // Since we only care about caching success, it is simpler to clone here,
-    // and just cache the success results as an optional.
-    last_manifest_success_result_ = result->Clone();
-  }
-  developer_manifest_callback_list_.Notify(result);
-  all_manifests_callback_list_.Notify(result);
+
+  developer_manifest_callback_list_.Notify(manifest_result);
+  all_manifests_callback_list_.Notify(manifest_result);
 }
 
 void ManifestManagerHost::ManifestUrlChanged(const GURL& manifest_url) {
@@ -441,14 +478,12 @@ void ManifestManagerHost::MaybeFetchManifestForSubscriptions() {
 
 void ManifestManagerHost::NotifyOnceSubscriptionsIfSuccessCached() {
   if (last_manifest_success_result_.has_value()) {
-    // This Clone COULD be avoided if we cached the full expected result.
+    // This copy COULD be avoided if we cached the full expected result.
     // However - that gets really confusing if we also have it be optional.
-    // Since we only care about caching success, it is simpler to clone here,
+    // Since we only care about caching success, it is simpler to copy here,
     // and just cache the success results as an optional.
-    base::expected<blink::mojom::ManifestPtr,
-                   blink::mojom::RequestManifestErrorPtr>
-        result = base::ok(last_manifest_success_result_->Clone());
-    developer_manifest_callback_list_.Notify(result);
+    developer_manifest_callback_list_.Notify(
+        base::ok(*last_manifest_success_result_));
   }
 }
 

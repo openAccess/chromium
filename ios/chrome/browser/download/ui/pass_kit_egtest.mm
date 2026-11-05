@@ -7,6 +7,7 @@
 #import <memory>
 
 #import "base/functional/bind.h"
+#import "base/ios/ios_util.h"
 #import "base/test/ios/wait_util.h"
 #import "ios/chrome/browser/download/model/download_test_util.h"
 #import "ios/chrome/browser/infobars/ui_bundled/banners/infobar_banner_constants.h"
@@ -23,9 +24,25 @@
 #import "ui/base/l10n/l10n_util_mac.h"
 
 using base::test::ios::kWaitForDownloadTimeout;
+using base::test::ios::kWaitForUIElementTimeout;
 using base::test::ios::WaitUntilConditionOrTimeout;
 
 namespace {
+
+// Returns whether the Wallet app is supported on the current device and
+// runtime.
+bool IsWalletAppSupported() {
+  if ([ChromeEarlGrey isIPadIdiom]) {
+    return false;
+  }
+#if TARGET_OS_SIMULATOR
+  if (base::ios::IsRunningOnOrLater(27, 1, 0) &&
+      !base::ios::IsRunningOnOrLater(27, 2, 0)) {
+    return false;
+  }
+#endif
+  return true;
+}
 
 // Returns matcher for PassKit error infobar.
 id<GREYMatcher> PassKitErrorInfobarLabels() {
@@ -108,8 +125,9 @@ std::unique_ptr<net::test_server::HttpResponse> GetResponse(
 // Tests that Chrome PassKit dialog is shown for sucessfully downloaded pkpass
 // file.
 - (void)testPassKitDownload {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Wallet app is not supported on iPads.");
+  if (!IsWalletAppSupported()) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Wallet app is not supported on iPads or iOS 27.1 simulator.");
   }
 
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/single")];
@@ -128,11 +146,40 @@ std::unique_ptr<net::test_server::HttpResponse> GetResponse(
       @"PassKit dialog UI was not presented");
 }
 
+// Tests that Chrome PassKit dialog is dismissed when web state navigation
+// occurs.
+- (void)testDismissPassKitOnNavigation {
+  if (!IsWalletAppSupported()) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Wallet app is not supported on iPads or iOS 27.1 simulator.");
+  }
+
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/single")];
+  [ChromeEarlGrey waitForWebStateContainingText:"Good"];
+  [ChromeEarlGrey tapWebStateElementWithID:@"good"];
+
+  XCUIApplication* app = [[XCUIApplication alloc] init];
+  XCUIElement* title = app.staticTexts[@"Toy Town"];
+  GREYAssert(
+      [title waitForExistenceWithTimeout:kWaitForDownloadTimeout.InSecondsF()],
+      @"PassKit dialog UI was not presented");
+
+  // Navigate away in the same tab.
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/single")];
+
+  // Verify PassKit dialog UI is dismissed.
+  GREYAssert(
+      [title
+          waitForNonExistenceWithTimeout:kWaitForUIElementTimeout.InSecondsF()],
+      @"PassKit dialog UI was not dismissed");
+}
+
 // Tests that Chrome PassKit dialog is shown for sucessfully downloaded bundle
 // pkpasses file.
 - (void)testBundlePassKitDownload {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Wallet app is not supported on iPads.");
+  if (!IsWalletAppSupported()) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Wallet app is not supported on iPads or iOS 27.1 simulator.");
   }
 
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/bundle")];
@@ -167,8 +214,9 @@ std::unique_ptr<net::test_server::HttpResponse> GetResponse(
 // semi-valid bundle pkpasses file (containing one good pkpass and a non-valid
 // one).
 - (void)testSemiValidBundlePassKitDownload {
-  if ([ChromeEarlGrey isIPadIdiom]) {
-    EARL_GREY_TEST_SKIPPED(@"Wallet app is not supported on iPads.");
+  if (!IsWalletAppSupported()) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Wallet app is not supported on iPads or iOS 27.1 simulator.");
   }
 
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/bundle")];

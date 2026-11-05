@@ -853,7 +853,22 @@ TEST_F(SaveUpdateBubbleControllerTest, IsSavingBlockedByTrustedVaultError) {
 TEST_F(SaveUpdateBubbleControllerTest, OnTrustedVaultUnlockClicked) {
   PretendPasswordWaiting();
   EXPECT_CALL(*delegate(), StartTrustedVaultErrorResolutionFlow());
-  EXPECT_CALL(*delegate(), SavePasswordAfterTrustedVaultErrorResolution());
+  EXPECT_CALL(*delegate(), SavePasswordAfterTrustedVaultErrorResolution(
+                               pending_password().username_value,
+                               pending_password().password_value));
+  controller()->OnTrustedVaultUnlockClicked();
+}
+
+TEST_F(SaveUpdateBubbleControllerTest, OnTrustedVaultUnlockClicked_Edited) {
+  PretendPasswordWaiting();
+  const std::u16string kNewUsername = u"new_user";
+  const password_manager::PasswordString kNewPassword =
+      password_manager::PasswordString(u"new_password");
+  controller()->OnCredentialEdited(kNewUsername, kNewPassword);
+
+  EXPECT_CALL(*delegate(), StartTrustedVaultErrorResolutionFlow());
+  EXPECT_CALL(*delegate(), SavePasswordAfterTrustedVaultErrorResolution(
+                               kNewUsername, kNewPassword));
   controller()->OnTrustedVaultUnlockClicked();
 }
 
@@ -863,11 +878,14 @@ TEST_F(SaveUpdateBubbleControllerTest,
   PretendPasswordWaiting();
   EXPECT_CALL(*delegate(), IsSavingBlockedByTrustedVaultError())
       .WillRepeatedly(Return(true));
+  EXPECT_CALL(*mock_smart_bubble_stats_store(), AddSiteStats).Times(0);
+  EXPECT_CALL(*delegate(), OnNoInteraction()).Times(0);
 
-  controller()->OnSaveClicked();
+  controller()->OnTrustedVaultUnlockClicked();
   DestroyModelAndVerifyControllerExpectations();
 
   histogram_tester.ExpectUniqueSample(
       "PasswordManager.SaveUIDismissalReason.TrustedVaultError",
-      static_cast<int>(password_manager::metrics_util::CLICKED_ACCEPT), 1);
+      static_cast<int>(password_manager::metrics_util::CLICKED_RESOLVE_ERROR),
+      1);
 }

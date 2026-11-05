@@ -21,7 +21,7 @@ export function getHtml(this: CrUrlListItemElement) {
 
 <div id="item">
   <slot name="prefix"></slot>
-  <div id="iconContainer">
+  <div id="iconContainer" part="iconContainer">
     <slot id="customIcon" name="customIcon">
       <div class="favicon" ?hidden="${!this.shouldShowFavicon_()}"
           .style="background-image: ${this.getFavicon_()};">
@@ -30,8 +30,7 @@ export function getHtml(this: CrUrlListItemElement) {
         <img class="url-image" is="cr-auto-img" auto-src="${this.imageUrls[0]}"
             draggable="false">
       </div>
-      <div class="folder-and-count"
-          ?hidden="${!this.shouldShowFolderCount_()}">
+      <div class="folder-and-count" ?hidden="${!this.shouldShowFolderCount_()}">
         ${this.shouldShowFolderImages_() ? html`
           ${this.imageUrls.map((item, index) => html`
             ${this.shouldShowImageUrl_(item, index) ? html`
@@ -44,7 +43,8 @@ export function getHtml(this: CrUrlListItemElement) {
         ` : ''}
         <slot id="folder-icon" name="folder-icon">
           <div class="folder cr-icon icon-folder-open"
-              ?hidden="${!this.shouldShowFolderIcon_()}"></div>
+              ?hidden="${!this.shouldShowFolderIcon_()}">
+          </div>
         </slot>
         <div class="count">${this.getDisplayedCount_()}</div>
       </div>
@@ -56,9 +56,11 @@ export function getHtml(this: CrUrlListItemElement) {
     <span class="title">${this.title}</span>
     <div class="descriptions">
       <div class="description" ?hidden="${!this.description}">
-        <span class="description-text"><bdi>${this.description}</bdi></span>
+        <span class="description-text">
+          <bdi>${this.description}</bdi>
+        </span>
         <span class="description-meta" ?hidden="${!this.descriptionMeta}">
-          &middot; ${this.descriptionMeta}
+          · ${this.descriptionMeta}
         </span>
       </div>
       <div id="badgesContainer" class="badges">
@@ -68,11 +70,10 @@ export function getHtml(this: CrUrlListItemElement) {
       </div>
     </div>
   </div>
-  <div class="suffix">
+  <div class="suffix" part="suffix">
     <slot name="suffix"></slot>
   </div>
 </div>
-<slot name="footer"></slot>
-`;
+<slot name="footer"></slot>`;
   // clang-format on
 }

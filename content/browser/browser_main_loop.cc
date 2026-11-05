@@ -19,6 +19,7 @@
 #include "base/debug/leak_annotations.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/i18n/icu_util.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
@@ -43,8 +44,12 @@
 #include "base/task/current_thread.h"
 #include "base/task/deferred_sequenced_task_runner.h"
 #include "base/task/execution_fence.h"
+#include "base/task/responsiveness/calculator.h"
+#include "base/task/responsiveness/responsiveness_calculator_delegate.h"
+#include "base/task/responsiveness/watcher.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/task/thread_pool.h"
 #include "base/task/thread_pool/initialization_util.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/thread_annotations.h"
@@ -76,8 +81,6 @@
 #include "content/browser/cpu_performance/cpu_performance.h"
 #include "content/browser/download/save_file_manager.h"
 #include "content/browser/field_trial_synchronizer.h"
-#include "content/browser/first_party_sets/first_party_set_parser.h"
-#include "content/browser/first_party_sets/first_party_sets_handler_impl.h"
 #include "content/browser/gpu/browser_gpu_channel_host_factory.h"
 #include "content/browser/gpu/browser_gpu_client_delegate.h"
 #include "content/browser/gpu/compositor_util.h"
@@ -92,7 +95,7 @@
 #include "content/browser/renderer_host/media/media_stream_manager.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
 #include "content/browser/scheduler/browser_task_executor.h"
-#include "content/browser/scheduler/responsiveness/watcher.h"
+#include "content/browser/scheduler/responsiveness/native_event_observer.h"
 #include "content/browser/screenlock_monitor/screenlock_monitor.h"
 #include "content/browser/screenlock_monitor/screenlock_monitor_device_source.h"
 #include "content/browser/security/cpsp/child_process_security_policy_impl.h"
@@ -102,6 +105,7 @@
 #include "content/browser/speech/tts_controller_impl.h"
 #include "content/browser/startup_data_impl.h"
 #include "content/browser/startup_task_runner.h"
+#include "content/browser/tracing/background_tracing_manager_impl.h"
 #include "content/browser/tracing/tracing_controller_impl.h"
 #include "content/browser/webrtc/webrtc_internals.h"
 #include "content/browser/webui/content_web_ui_configs.h"
@@ -112,7 +116,6 @@
 #include "content/common/skia_utils.h"
 #include "content/common/thread_pool_util.h"
 #include "content/public/browser/audio_service.h"
-#include "content/public/browser/background_tracing.h"
 #include "content/public/browser/browser_main_parts.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -123,6 +126,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/service_process_host.h"
 #include "content/public/browser/site_isolation_policy.h"
+#include "content/public/browser/tracing_delegate.h"
 #include "content/public/common/buildflags.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
@@ -163,6 +167,7 @@
 #include "skia/ext/event_tracer_impl.h"
 #include "skia/ext/legacy_display_globals.h"
 #include "skia/ext/skia_memory_dump_provider.h"
+#include "sql/database.h"
 #include "sql/sql_memory_dump_provider.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/display/display_features.h"
@@ -440,17 +445,49 @@ uint32_t GenerateBrowserSalt() {
   return salt;
 }
 
-std::string GetRelatedWebsiteSetSwitch() {
-  // `kUseFirstPartySet` switch is being deprecated in favor of
-  // `kUseRelatedWebsiteSet` switch. Both switches are supported during the
-  // transition period with `kUseRelatedWebsiteSet` taking precedence.
-  base::CommandLine* commandLine = base::CommandLine::ForCurrentProcess();
-  if (commandLine->HasSwitch(network::switches::kUseRelatedWebsiteSet)) {
-    return commandLine->GetSwitchValueASCII(
-        network::switches::kUseRelatedWebsiteSet);
+// Controls whether the memory-mapped ICU data file is pre-read on the
+// ThreadPool during startup.
+BASE_FEATURE(kPreReadIcuData, base::FEATURE_ENABLED_BY_DEFAULT);
+
+class BrowserResponsivenessWatcher : public base::responsiveness::Watcher {
+ public:
+  BrowserResponsivenessWatcher() : Watcher(GetIOThreadTaskRunner({})) {}
+
+ private:
+  ~BrowserResponsivenessWatcher() override = default;
+
+  std::unique_ptr<base::responsiveness::Calculator> CreateCalculator()
+      override {
+    return std::make_unique<base::responsiveness::Calculator>(
+        GetContentClient()
+            ->browser()
+            ->CreateResponsivenessCalculatorDelegate());
   }
-  return commandLine->GetSwitchValueASCII(network::switches::kUseFirstPartySet);
-}
+
+  // Overrides `Watcher`'s UI-thread observer registration hook to also install
+  // `BrowserUINativeEventObserver` (which depends on `//ui` and `//content`, so
+  // `base::responsiveness::Watcher` cannot own it directly) for native OS
+  // events dispatched from the UI message pump.
+  void RegisterMessageLoopObserverUI() override {
+    Watcher::RegisterMessageLoopObserverUI();
+    native_event_observer_ui_ =
+        std::make_unique<responsiveness::BrowserUINativeEventObserver>(
+            base::BindRepeating(
+                &BrowserResponsivenessWatcher::WillRunEventOnUIThread,
+                base::Unretained(this)),
+            base::BindRepeating(
+                &BrowserResponsivenessWatcher::DidRunEventOnUIThread,
+                base::Unretained(this)));
+  }
+
+  void Destroy() override {
+    native_event_observer_ui_.reset();
+    Watcher::Destroy();
+  }
+
+  std::unique_ptr<responsiveness::BrowserUINativeEventObserver>
+      native_event_observer_ui_;
+};
 
 }  // namespace
 
@@ -474,7 +511,7 @@ void BrowserMainLoop::EnableStartupTasks(bool enabled) {
 // BrowserMainLoop construction / destruction =============================
 
 BrowserMainLoop* BrowserMainLoop::GetInstance() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   return g_current_browser_main_loop;
 }
 
@@ -499,14 +536,14 @@ BrowserMainLoop::BrowserMainLoop(
       scoped_best_effort_execution_fence_(std::in_place)
 #endif
 {
-  DCHECK(!g_current_browser_main_loop);
+  CHECK(!g_current_browser_main_loop, base::NotFatalUntil::M159);
   DCHECK(scoped_execution_fence_)
       << "ThreadPool must be halted before kicking off content.";
   g_current_browser_main_loop = this;
 }
 
 BrowserMainLoop::~BrowserMainLoop() {
-  DCHECK_EQ(this, g_current_browser_main_loop);
+  CHECK_EQ(this, g_current_browser_main_loop, base::NotFatalUntil::M159);
   ui::Clipboard::DestroyClipboardForCurrentThread();
   g_current_browser_main_loop = nullptr;
 }
@@ -522,11 +559,15 @@ void BrowserMainLoop::Init() {
     // resets it). The thread owned by the data will be registered as
     // BrowserThread::IO in CreateThreads() instead of creating a brand new
     // thread.
-    DCHECK(!io_thread_);
+    CHECK(!io_thread_, base::NotFatalUntil::M159);
     io_thread_ = std::move(startup_data->io_thread);
 
-    DCHECK(!mojo_ipc_support_);
+    CHECK(!mojo_ipc_support_, base::NotFatalUntil::M159);
     mojo_ipc_support_ = std::move(startup_data->mojo_ipc_support);
+
+    CHECK(!background_tracing_manager_);
+    background_tracing_manager_ =
+        std::move(startup_data->background_tracing_manager);
 
     // The StartupDataImpl was destined to BrowserMainLoop, do not pass it
     // forward.
@@ -547,7 +588,8 @@ int BrowserMainLoop::EarlyInitialization() {
   // process and requires no thread been forked. The initialization has happened
   // by now since a thread to start the ServiceManager has been created
   // before the browser main loop starts.
-  DCHECK(SandboxHostLinux::GetInstance()->IsInitialized());
+  CHECK(SandboxHostLinux::GetInstance()->IsInitialized(),
+        base::NotFatalUntil::M159);
 #endif
 
   // GLib's spawning of new processes is buggy, so it's important that at this
@@ -575,7 +617,7 @@ int BrowserMainLoop::EarlyInitialization() {
 
   // SetCurrentThreadType relies on CurrentUIThread on some platforms. The
   // MessagePumpForUI needs to be bound to the main thread by this point.
-  DCHECK(base::CurrentUIThread::IsSet());
+  CHECK(base::CurrentUIThread::IsSet(), base::NotFatalUntil::M159);
   base::PlatformThread::SetDefaultThreadType(base::ThreadType::kPresentation);
 
 #if BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || \
@@ -651,8 +693,9 @@ void BrowserMainLoop::CreateMainMessageLoop() {
 
   // Register the main thread. The main thread's task runner should already have
   // been initialized but it's not yet known as BrowserThread::UI.
-  DCHECK(base::SingleThreadTaskRunner::HasCurrentDefault());
-  DCHECK(base::CurrentUIThread::IsSet());
+  CHECK(base::SingleThreadTaskRunner::HasCurrentDefault(),
+        base::NotFatalUntil::M159);
+  CHECK(base::CurrentUIThread::IsSet(), base::NotFatalUntil::M159);
   main_thread_.reset(new BrowserThreadImpl(
       BrowserThread::UI, base::SingleThreadTaskRunner::GetCurrentDefault()));
 }
@@ -788,12 +831,11 @@ int BrowserMainLoop::PreCreateThreads() {
   // This must occur before metrics recording initialization in
   // ChromeBrowserMainParts::PreCreateThreads() because it's used in
   // BackgroundTracingMetricsProvider.
-  tracing_controller_ = std::make_unique<TracingControllerImpl>();
-  background_tracing_manager_ =
-      CreateBackgroundTracingManager(tracing_controller_->tracing_delegate());
+  tracing_controller_ = std::make_unique<TracingControllerImpl>(
+      *background_tracing_manager_->delegate());
 
   // Make sure no accidental call to initialize GpuDataManager earlier.
-  DCHECK(!GpuDataManagerImpl::Initialized());
+  CHECK(!GpuDataManagerImpl::Initialized(), base::NotFatalUntil::M159);
   if (parts_) {
     result_code_ = parts_->PreCreateThreads();
   }
@@ -846,7 +888,7 @@ int BrowserMainLoop::PreCreateThreads() {
   // It's unsafe to append the gpu command line switches to the global
   // CommandLine::ForCurrentProcess object after threads are created.
   GpuDataManagerImpl::GetInstance();
-  DCHECK(GpuDataManagerImpl::Initialized());
+  CHECK(GpuDataManagerImpl::Initialized(), base::NotFatalUntil::M159);
   // We report Uma metrics on a periodic basis when running the full browser,
   // while avoiding doing so in unit tests by making it explicitly enabled here.
   GpuDataManagerImpl::GetInstance()->StartUmaTimer();
@@ -908,7 +950,7 @@ int BrowserMainLoop::PreCreateThreads() {
 void BrowserMainLoop::CreateStartupTasks() {
   TRACE_EVENT0("startup", "BrowserMainLoop::CreateStartupTasks");
 
-  DCHECK(!startup_task_runner_);
+  CHECK(!startup_task_runner_, base::NotFatalUntil::M159);
 #if BUILDFLAG(IS_ANDROID)
   // Some java scheduler tests need to test migration to C++, but the browser
   // environment isn't set up fully and if these tasks run they may crash.
@@ -1033,8 +1075,12 @@ int BrowserMainLoop::CreateThreads() {
 int BrowserMainLoop::PostCreateThreads() {
   TRACE_EVENT0("startup", "BrowserMainLoop::PostCreateThreads");
 
-  if (parts_)
-    parts_->PostCreateThreads();
+  if (parts_) {
+    result_code_ = parts_->PostCreateThreads();
+    if (result_code_ != RESULT_CODE_NORMAL_EXIT) {
+      return result_code_;
+    }
+  }
 
   PostCreateThreadsImpl();
 
@@ -1064,13 +1110,23 @@ int BrowserMainLoop::PreMainMessageLoopRun() {
     result_code_ = parts_->PreMainMessageLoopRun();
 
   // ShellBrowserMainParts initializes a ShellBrowserContext with user data
-  // directory only in PreMainMessageLoopRun(). First-Party Sets handler needs
-  // to access this directory, hence triggering after this stage has run.
+  // directory only in PreMainMessageLoopRun(). Delete any residual
+  // First-Party Sets database after this stage has run.
   if (result_code_ == RESULT_CODE_NORMAL_EXIT) {
-    FirstPartySetsHandlerImpl::GetInstance()->Init(
-        GetContentClient()->browser()->GetFirstPartySetsDirectory(),
-        FirstPartySetParser::ParseFromCommandLine(
-            GetRelatedWebsiteSetSwitch()));
+    if (base::FilePath dir =
+            GetContentClient()->browser()->GetFirstPartySetsDirectory();
+        !dir.empty()) {
+      base::ThreadPool::PostTask(
+          FROM_HERE,
+          {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+           base::TaskShutdownBehavior::BLOCK_SHUTDOWN},
+          base::BindOnce(
+              [](const base::FilePath& dir) {
+                sql::Database::Delete(
+                    dir.Append(FILE_PATH_LITERAL("first_party_sets.db")));
+              },
+              std::move(dir)));
+    }
   }
 
   variations::MaybeScheduleFakeCrash();
@@ -1120,7 +1176,8 @@ int BrowserMainLoop::PreMainMessageLoopRun() {
   // responsiveness::Watcher to catch jank induced by any unintentionally
   // blocking tasks.
   base::DisallowUnresponsiveTasks();
-  responsiveness_watcher_ = new responsiveness::Watcher;
+  responsiveness_watcher_ =
+      base::MakeRefCounted<BrowserResponsivenessWatcher>();
   responsiveness_watcher_->SetUp();
   return result_code_;
 }
@@ -1160,7 +1217,7 @@ void BrowserMainLoop::RunMainMessageLoop() {
     parameters_.autorelease_pool->Recycle();
 #endif  // BUILDFLAG(IS_MAC)
 
-  DCHECK(main_run_loop);
+  CHECK(main_run_loop, base::NotFatalUntil::M159);
   main_run_loop->Run();
 #endif  // BUILDFLAG(IS_ANDROID)
 }
@@ -1220,6 +1277,10 @@ void BrowserMainLoop::ShutdownThreadsAndCleanUp() {
 
   if (RenderProcessHost::run_renderer_in_process())
     RenderProcessHostImpl::ShutDownInProcessRenderer();
+
+  if (audio_manager_) {
+    audio_manager_->CloseIdleStreams();
+  }
 
   if (parts_) {
     TRACE_EVENT0("shutdown",
@@ -1549,6 +1610,10 @@ void BrowserMainLoop::PostCreateThreadsImpl() {
                  "BrowserMainLoop::PostCreateThreads:InitCpuPerformance");
     content::cpu_performance::Initialize();
   }
+
+  if (base::FeatureList::IsEnabled(kPreReadIcuData)) {
+    base::i18n::PreReadIcuData();
+  }
 }
 
 bool BrowserMainLoop::UsingInProcessGpu() const {
@@ -1629,12 +1694,13 @@ void BrowserMainLoop::InitializeMojo() {
 }
 
 void BrowserMainLoop::InitializeAudio() {
-  DCHECK(!audio_manager_);
+  CHECK(!audio_manager_, base::NotFatalUntil::M159);
 
   audio_manager_ = GetContentClient()->browser()->CreateAudioManager(
       MediaInternals::GetInstance());
-  DCHECK_EQ(!!audio_manager_,
-            GetContentClient()->browser()->OverridesAudioManager());
+  CHECK_EQ(!!audio_manager_,
+           GetContentClient()->browser()->OverridesAudioManager(),
+           base::NotFatalUntil::M159);
 
   // Do not initialize |audio_manager_| if running out of process.
   if (!audio_manager_ &&
@@ -1654,7 +1720,8 @@ void BrowserMainLoop::InitializeAudio() {
 #if BUILDFLAG(IS_MAC)
     // On Mac, the audio task runner must belong to the main thread.
     // See audio_thread_impl.cc and https://crbug.com/158170.
-    DCHECK(audio_manager_->GetTaskRunner()->BelongsToCurrentThread());
+    CHECK(audio_manager_->GetTaskRunner()->BelongsToCurrentThread(),
+          base::NotFatalUntil::M159);
 #endif
     audio::Service::GetInProcessTaskRunner()->StartWithTaskRunner(
         audio_manager_->GetTaskRunner());

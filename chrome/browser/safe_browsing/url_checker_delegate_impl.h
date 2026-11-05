@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_SAFE_BROWSING_URL_CHECKER_DELEGATE_IMPL_H_
 
 #include "base/memory/scoped_refptr.h"
-#include "components/safe_browsing/core/browser/url_checker_delegate.h"
+#include "components/safe_browsing/core/browser/url_checker/url_checker_delegate.h"
 #include "content/public/browser/web_contents.h"
 
 namespace safe_browsing {
@@ -50,7 +50,7 @@ class UrlCheckerDelegateImpl : public UrlCheckerDelegate {
       const base::RepeatingCallback<content::WebContents*()>&
           web_contents_getter) override;
   void ShowSuspiciousSiteWarning(
-      int64_t navigation_id,
+      const security_interstitials::UnsafeResource& resource,
       const base::RepeatingCallback<content::WebContents*()>&
           web_contents_getter) override;
   void SendUrlRealTimeAndHashRealTimeDiscrepancyReport(

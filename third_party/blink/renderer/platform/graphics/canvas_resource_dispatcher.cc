@@ -18,6 +18,7 @@
 #include "third_party/blink/public/mojom/frame_sinks/embedded_frame_sink.mojom-blink.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
+#include "third_party/blink/renderer/platform/graphics/begin_frame_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/exported_canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
@@ -26,7 +27,6 @@
 #include "third_party/blink/renderer/platform/instrumentation/histogram.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/size_f.h"
@@ -39,8 +39,6 @@ constexpr base::TimeDelta kSyntheticFrameDelay = base::Hertz(60);
 }  // namespace
 
 namespace blink {
-
-BASE_FEATURE(kVerifySyncTokensInCRD, base::FEATURE_ENABLED_BY_DEFAULT);
 
 CanvasResourceDispatcher::CanvasResourceDispatcher(
     CanvasResourceDispatcherClient* client,
@@ -135,36 +133,27 @@ void CanvasResourceDispatcher::PrepareFrame(
               SkBlendMode::kSrcOver, /*sorting_context=*/0, /*layer_id=*/0u,
               /*fast_rounded_corner=*/false);
 
-  viz::TransferableResource resource;
-
   // This property will be overridden by the embedding SurfaceLayer, so this
   // value will have no effect.
   const bool nearest_neighbor = false;
 
-  if (base::FeatureList::IsEnabled(kVerifySyncTokensInCRD)) {
-    exported_resource->PrepareTransferableResource(
-        &resource,
-        /*needs_verified_synctoken=*/false);
+  viz::TransferableResource resource =
+      exported_resource->PrepareTransferableResource();
 
-    gpu::SharedImageInterface* sii = nullptr;
+  gpu::SharedImageInterface* sii = nullptr;
 
-    if (SharedGpuContext::IsGpuCompositingEnabled()) {
-      if (auto wrapper = SharedGpuContext::ContextProviderWrapper()) {
-        sii = wrapper->ContextProvider().SharedImageInterface();
-      }
-    } else {
-      if (auto* provider = SharedGpuContext::SharedImageInterfaceProvider()) {
-        sii = provider->SharedImageInterface();
-      }
-    }
-
-    if (sii) {
-      sii->VerifySyncToken(resource.mutable_sync_token());
+  if (SharedGpuContext::IsGpuCompositingEnabled()) {
+    if (auto wrapper = SharedGpuContext::ContextProviderWrapper()) {
+      sii = wrapper->ContextProvider().SharedImageInterface();
     }
   } else {
-    exported_resource->PrepareTransferableResource(
-        &resource,
-        /*needs_verified_synctoken=*/true);
+    if (auto* provider = SharedGpuContext::SharedImageInterfaceProvider()) {
+      sii = provider->SharedImageInterface();
+    }
+  }
+
+  if (sii) {
+    sii->VerifySyncToken(resource.mutable_sync_token());
   }
 
   const viz::ResourceId resource_id = id_generator_.GenerateNextId();
@@ -265,8 +254,12 @@ void CanvasResourceDispatcher::OnBeginFrame(
   current_begin_frame_ack_ = viz::BeginFrameAck(begin_frame_args, false);
   if (HasTooManyPendingFrames() ||
       (begin_frame_args.type == viz::BeginFrameArgs::MISSED &&
-       base::TimeTicks::Now() > begin_frame_args.deadline)) {
+       base::TimeTicks::Now() > begin_frame_args.deadline) ||
+      BeginFrameProvider::ShouldThrottleBeginFrame(begin_frame_args,
+                                                   last_begin_frame_time_)) {
     sink_->DidNotProduceFrame(current_begin_frame_ack_);
+    current_begin_frame_ack_.frame_id.sequence_number =
+        viz::BeginFrameArgs::kInvalidFrameNumber;
     return;
   }
 
@@ -274,9 +267,9 @@ void CanvasResourceDispatcher::OnBeginFrame(
   // We usually never get to BeginFrame if we are on RAF mode. But it could
   // still happen that begin frame gets requested and we don't have a frame
   // anymore, so we shouldn't let the compositor wait.
-  const bool submitted_frame = Client() && Client()->BeginFrame();
-
-  if (!submitted_frame) {
+  if (Client() && Client()->BeginFrame()) {
+    last_begin_frame_time_ = begin_frame_args.frame_time;
+  } else {
     sink_->DidNotProduceFrame(current_begin_frame_ack_);
   }
 

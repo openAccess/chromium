@@ -12,6 +12,7 @@
 #import "base/functional/callback_helpers.h"
 #import "base/i18n/time_formatting.h"
 #import "base/run_loop.h"
+#import "base/sequence_checker.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
 #import "base/time/time.h"
@@ -59,15 +60,7 @@ FakeSystemIdentityManager::FakeSystemIdentityManager(
 
   for (FakeSystemIdentity* fake_identity in fake_identities) {
     [storage_ addFakeIdentity:fake_identity];
-    // Set up capabilities to remove fetch delays during the authentication
-    // flow.
-    // TODO(b/327221052): verify if this should be replaced by a handler for
-    // default capabilities.
-    AccountCapabilitiesTestMutator* mutator =
-        GetPendingCapabilitiesMutator(fake_identity);
-    mutator->set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
-        true);
-    mutator->set_can_sign_in_to_chrome(true);
+    SetUpDefaultCapabilities(fake_identity);
   }
 }
 
@@ -92,16 +85,8 @@ void FakeSystemIdentityManager::AddIdentity(id<SystemIdentity> identity) {
   FakeSystemIdentity* fake_identity =
       base::apple::ObjCCast<FakeSystemIdentity>(identity);
   [storage_ addFakeIdentity:fake_identity];
+  SetUpDefaultCapabilities(identity);
   FireIdentityListChanged();
-
-  // Set up capabilities to remove fetch delays during the authentication flow.
-  // TODO(b/327221052): verify if this should be replaced by a handler for
-  // default capabilities.
-  AccountCapabilitiesTestMutator* mutator =
-      GetPendingCapabilitiesMutator(identity);
-  mutator->set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
-      true);
-  mutator->set_can_sign_in_to_chrome(true);
 }
 
 void FakeSystemIdentityManager::AddIdentityWithUnknownCapabilities(
@@ -175,17 +160,23 @@ AccountCapabilities FakeSystemIdentityManager::GetVisibleCapabilities(
   return AccountCapabilities(details.visibleCapabilities);
 }
 
-void FakeSystemIdentityManager::SetInstantlyFillHostedDomainCache(
-    bool instantly_fill) {
-  instantly_fill_hosted_domain_cache_ = instantly_fill;
-}
-
-void FakeSystemIdentityManager::SetGetHostedDomainError(NSError* error) {
-  get_hosted_domain_error_ = error;
-}
-
-size_t FakeSystemIdentityManager::GetNumHostedDomainErrorsReturned() const {
-  return num_hosted_domain_errors_returned_;
+void FakeSystemIdentityManager::OverrideGetHostedDomainImplementation(
+    GetHostedDomainCallback custom_implementation) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!custom_implementation) {
+    get_hosted_domain_callback_.Reset();
+    return;
+  }
+  get_hosted_domain_callback_ = base::BindRepeating(
+      [](base::WeakPtr<FakeSystemIdentityManager> weak_this,
+         GetHostedDomainCallback custom_implementation,
+         id<SystemIdentity> identity, HostedDomainCallback callback) {
+        auto wrapped_callback =
+            base::BindOnce(&FakeSystemIdentityManager::OnHostedDomainFetched,
+                           weak_this, identity, std::move(callback));
+        custom_implementation.Run(identity, std::move(wrapped_callback));
+      },
+      GetWeakPtr(), std::move(custom_implementation));
 }
 
 void FakeSystemIdentityManager::FireSystemIdentityReloaded() {
@@ -498,20 +489,25 @@ UIImage* FakeSystemIdentityManager::GetCachedAvatarForIdentity(
 void FakeSystemIdentityManager::GetHostedDomain(id<SystemIdentity> identity,
                                                 HostedDomainCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
-  // Fetching the hosted domain is an asynchronous operation (as it requires
-  // some network calls).
-  PostClosure(FROM_HERE,
-              base::BindOnce(&FakeSystemIdentityManager::GetHostedDomainAsync,
-                             GetWeakPtr(), identity, std::move(callback)));
+  CHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
+  if (get_hosted_domain_callback_) {
+    get_hosted_domain_callback_.Run(identity, std::move(callback));
+    return;
+  }
+  GetHostedDomainDefault(identity, std::move(callback));
 }
 
 NSString* FakeSystemIdentityManager::GetCachedHostedDomainForIdentity(
     id<SystemIdentity> identity) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(identity);
-  if (instantly_fill_hosted_domain_cache_ ||
-      [hosted_domain_cache_ containsObject:identity]) {
+  FakeSystemIdentityDetails* details =
+      [storage_ detailsForGaiaID:identity.gaiaId];
+  if (details.cachedHostedDomain) {
+    return details.cachedHostedDomain;
+  }
+  if (!get_hosted_domain_callback_) {
+    // Using the default implementation, cache should be always populated.
     return FakeGetHostedDomainForIdentity(identity);
   }
   return nil;
@@ -520,31 +516,28 @@ NSString* FakeSystemIdentityManager::GetCachedHostedDomainForIdentity(
 void FakeSystemIdentityManager::FetchCapabilities(
     id<SystemIdentity> identity,
     const std::vector<std::string>& names,
-    FetchCapabilitiesCallback callback) {
+    FetchPartialCapabilitiesCallback partial_callback,
+    FetchCapabilitiesCompletion completion) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
-  // Fetching the hosted domain is an asynchronous operation (as it requires
+
+  // The fake fetches all the capabilities at once, so `partial_callback` is
+  // invoked a single time, right before `completion`.
+  auto callback = base::BindOnce(
+      [](FetchPartialCapabilitiesCallback partial_callback,
+         FetchCapabilitiesCompletion completion,
+         std::map<std::string, CapabilityResult> result) {
+        partial_callback.Run(result);
+        std::move(completion).Run();
+      },
+      std::move(partial_callback), std::move(completion));
+
+  // Fetching the capabilities is an asynchronous operation (as it requires
   // some network calls).
   PostClosure(
       FROM_HERE,
       base::BindOnce(&FakeSystemIdentityManager::FetchCapabilitiesAsync,
                      GetWeakPtr(), identity, names, std::move(callback)));
-}
-
-void FakeSystemIdentityManager::FetchCapabilitiesWithPartial(
-    id<SystemIdentity> identity,
-    const std::vector<std::string>& names,
-    FetchCapabilitiesCompletion completion,
-    FetchPartialCapabilitiesCallback partial_callback) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK([storage_ containsIdentityWithGaiaID:identity.gaiaId]);
-  // Fetching the hosted domain is an asynchronous operation (as it requires
-  // some network calls).
-  PostClosure(FROM_HERE,
-              base::BindOnce(
-                  &FakeSystemIdentityManager::FetchCapabilitiesWithPartialAsync,
-                  GetWeakPtr(), identity, names, std::move(completion),
-                  std::move(partial_callback)));
 }
 
 void FakeSystemIdentityManager::RegisterExternalPrivacyContextProvider(
@@ -609,18 +602,20 @@ bool FakeSystemIdentityManager::IsMDMError(id<SystemIdentity> identity,
   return false;
 }
 
-void FakeSystemIdentityManager::FetchTokenAuthURL(
-    id<SystemIdentity> identity,
-    NSURL* target_url,
-    AuthenticatedURLCallback callback) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  std::move(callback).Run(/*url=*/target_url, /*error=*/nil);
-}
-
 base::WeakPtr<FakeSystemIdentityManager>
 FakeSystemIdentityManager::GetWeakPtr() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return weak_ptr_factory_.GetWeakPtr();
+}
+
+void FakeSystemIdentityManager::SetUpDefaultCapabilities(
+    id<SystemIdentity> identity) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  AccountCapabilitiesTestMutator* mutator =
+      GetPendingCapabilitiesMutator(identity);
+  mutator->set_can_show_history_sync_opt_ins_without_minor_mode_restrictions(
+      true);
+  mutator->set_can_sign_in_to_chrome(true);
 }
 
 void FakeSystemIdentityManager::ForgetIdentityAsync(
@@ -709,25 +704,29 @@ void FakeSystemIdentityManager::FetchAvatarForIdentityAsync(
   FireIdentityUpdated(identity);
 }
 
-void FakeSystemIdentityManager::GetHostedDomainAsync(
+void FakeSystemIdentityManager::GetHostedDomainDefault(
     id<SystemIdentity> identity,
     HostedDomainCallback callback) {
+  OnHostedDomainFetched(identity, std::move(callback),
+                        FakeGetHostedDomainForIdentity(identity), nil);
+}
+
+void FakeSystemIdentityManager::OnHostedDomainFetched(
+    id<SystemIdentity> identity,
+    HostedDomainCallback callback,
+    NSString* hosted_domain,
+    NSError* error) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (![storage_ containsIdentityWithGaiaID:identity.gaiaId]) {
-    // The identity was removed before the async method was called. There is
-    // nothing to do.
-    return;
+  CHECK_EQ(hosted_domain == nil, error != nil);
+  if (hosted_domain && [storage_ containsIdentityWithGaiaID:identity.gaiaId]) {
+    // The hosted domain is now also available via
+    // GetCachedHostedDomainForIdentity().
+    [storage_ detailsForGaiaID:identity.gaiaId].cachedHostedDomain =
+        hosted_domain;
   }
-  // If a GetHostedDomain error has been set up, return that.
-  if (get_hosted_domain_error_) {
-    ++num_hosted_domain_errors_returned_;
-    std::move(callback).Run(nil, get_hosted_domain_error_);
-    return;
-  }
-  // No error -> success! The hosted domain is now also available via
-  // GetCachedHostedDomainForIdentity().
-  [hosted_domain_cache_ addObject:identity];
-  std::move(callback).Run(FakeGetHostedDomainForIdentity(identity), nil);
+  // Post the callback to guarantee that GetHostedDomain is always asynchronous.
+  PostClosure(FROM_HERE,
+              base::BindOnce(std::move(callback), hosted_domain, error));
 }
 
 void FakeSystemIdentityManager::FetchCapabilitiesAsync(
@@ -761,25 +760,6 @@ void FakeSystemIdentityManager::FetchCapabilitiesAsync(
   }
 
   std::move(callback).Run(result);
-}
-
-void FakeSystemIdentityManager::FetchCapabilitiesWithPartialAsync(
-    id<SystemIdentity> identity,
-    const std::vector<std::string>& names,
-    FetchCapabilitiesCompletion completion,
-    FetchPartialCapabilitiesCallback partial_callback) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  auto callback = base::BindOnce(
-      [](FetchPartialCapabilitiesCallback partial_callback,
-         FetchCapabilitiesCompletion completion,
-         std::map<std::string, CapabilityResult> result) {
-        partial_callback.Run(result);
-        std::move(completion).Run();
-      },
-      std::move(partial_callback), std::move(completion));
-
-  FetchCapabilitiesAsync(identity, names, std::move(callback));
 }
 
 void FakeSystemIdentityManager::PostClosure(base::Location from_here,

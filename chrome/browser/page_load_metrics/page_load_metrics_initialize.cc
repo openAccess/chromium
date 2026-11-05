@@ -41,7 +41,6 @@
 #include "chrome/browser/page_load_metrics/observers/lcp_critical_path_predictor_page_load_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/loading_predictor_page_load_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/multi_tab_loading_page_load_metrics_observer.h"
-#include "chrome/browser/page_load_metrics/observers/navigation_initiator_page_load_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/new_tab_page_initiated_page_load_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/new_tab_page_page_load_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/omnibox_suggestion_used_page_load_metrics_observer.h"
@@ -63,6 +62,7 @@
 #include "components/page_load_metrics/browser/metrics_web_contents_observer.h"
 #include "components/page_load_metrics/browser/navigation_scenario.h"
 #include "components/page_load_metrics/browser/observers/ad_metrics/ads_page_load_metrics_observer.h"
+#include "components/page_load_metrics/browser/observers/navigation_initiator_page_load_metrics_observer.h"
 #include "components/page_load_metrics/browser/observers/paid_content_page_load_metrics_observer.h"
 #include "components/page_load_metrics/browser/observers/preload_serving_metrics_page_load_metrics_observer.h"
 #include "components/page_load_metrics/browser/observers/third_party_metrics_observer.h"
@@ -99,7 +99,10 @@
 #include "chrome/browser/ui/read_anything/read_anything_soft_navigation_observer.h"
 #include "chrome/browser/ui/waap/waap_utils.h"
 #include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_ui.h"
-#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"
+// The //chrome/browser/ui/webui/top_chrome dep is in the !is_android block of
+// BUILD.gn, but that target now also exists on desktop-android, and gn check
+// does not evaluate the guard above.
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"  // nogncheck
 #include "chrome/common/webui_url_constants.h"
 #endif
 

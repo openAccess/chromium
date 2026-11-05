@@ -12,9 +12,11 @@
 #include "iamf/obu/param_definitions/demixing_param_definition.h"
 
 #include <memory>
+#include <string>
+#include <utility>
 
-#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/utils/macros.h"
 #include "iamf/common/write_bit_buffer.h"
@@ -40,20 +42,30 @@ absl::Status DemixingParamDefinition::ReadAndValidate(ReadBitBuffer& rb) {
   RETURN_IF_NOT_OK(ParamDefinition::ReadAndValidate(rb));
 
   // The sub-class specific part.
-  RETURN_IF_NOT_OK(default_demixing_info_parameter_data_.ReadAndValidate(rb));
+  auto default_demixing_param_data =
+      DefaultDemixingInfoParameterData::CreateFromBuffer(rb);
+  if (!default_demixing_param_data.ok()) {
+    return default_demixing_param_data.status();
+  }
+  default_demixing_info_parameter_data_ =
+      std::move(**default_demixing_param_data);
 
   return absl::OkStatus();
 }
 
-std::unique_ptr<ParameterData> DemixingParamDefinition::CreateParameterData()
-    const {
-  return std::make_unique<DemixingInfoParameterData>();
+absl::StatusOr<std::unique_ptr<ParameterData>>
+DemixingParamDefinition::CreateParameterDataFromBuffer(
+    ReadBitBuffer& rb) const {
+  auto parameter_data = DemixingInfoParameterData::CreateFromBuffer(rb);
+  if (!parameter_data.ok()) {
+    return parameter_data.status();
+  }
+  return std::move(parameter_data.value());
 }
 
-void DemixingParamDefinition::Print() const {
-  ABSL_LOG(INFO) << "DemixingParamDefinition:";
-  ParamDefinition::Print();
-  default_demixing_info_parameter_data_.Print();
+std::string DemixingParamDefinition::ToString() const {
+  return absl::StrCat("DemixingParamDefinition:\n", ParamDefinition::ToString(),
+                      "\n", default_demixing_info_parameter_data_.ToString());
 }
 
 }  // namespace iamf_tools

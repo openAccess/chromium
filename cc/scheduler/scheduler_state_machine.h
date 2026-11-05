@@ -148,7 +148,7 @@ class CC_EXPORT SchedulerStateMachine {
   void AsProtozeroInto(
       perfetto::protos::pbzero::ChromeCompositorStateMachineV2* state) const;
 
-  virtual Action NextAction() const;
+  Action NextAction() const;
   void WillSendBeginMainFrame();
   void WillCommit(bool commit_had_no_updates);
   virtual bool CheckWillCommit() const;
@@ -178,7 +178,7 @@ class CC_EXPORT SchedulerStateMachine {
   // Indicates that the system has entered and left a BeginImplFrame callback.
   // The scheduler will not draw more than once in a given BeginImplFrame
   // callback nor send more than one BeginMainFrame message.
-  virtual void OnBeginImplFrame(const viz::BeginFrameArgs& args);
+  void OnBeginImplFrame(const viz::BeginFrameArgs& args);
   // Indicates that the scheduler has entered the draw phase. The scheduler
   // will not draw more than once in a single draw phase.
   // TODO(sunnyps): Rename OnBeginImplFrameDeadline to OnDraw or similar.
@@ -208,6 +208,9 @@ class CC_EXPORT SchedulerStateMachine {
   // Returns the main frame throttle interval computed based on the
   // static throttle feature and the renderer settings.
   base::TimeDelta MainFrameThrottledInterval() const;
+  static base::TimeDelta GetMainFrameThrottledInterval(
+      base::TimeDelta frame_interval,
+      bool is_webview);
 
   // Indicates whether the LayerTreeHostImpl is visible.
   void SetVisible(bool visible);
@@ -259,6 +262,10 @@ class CC_EXPORT SchedulerStateMachine {
   // A function of SetTreePrioritiesAndScrollState and
   // SetCriticalBeginMainFrameToActivateIsFast.
   bool ImplLatencyTakesPriority() const;
+
+  // Notifies that we have received an input event. This is used for
+  // unthrottling.
+  void NotifyInputEvent();
 
   // Indicates that a new begin main frame flow needs to be performed, either
   // to pull updates from the main thread to the impl, or to push deltas from
@@ -480,10 +487,7 @@ class CC_EXPORT SchedulerStateMachine {
 
   int consecutive_checkerboard_animations_ = 0;
   int consecutive_no_damage_main_frames_ = 0;
-  const int repeated_no_damage_frame_throttling_threshold1_;
-  const int repeated_no_damage_frame_throttling_threshold2_;
-  const int repeated_no_damage_frame_throttling_factor1_;
-  const int repeated_no_damage_frame_throttling_factor2_;
+  const bool throttle_repeated_no_damage_frames_ = false;
   int pending_submit_frames_ = 0;
   int submit_frames_with_current_layer_tree_frame_sink_ = 0;
   bool needs_redraw_ = false;

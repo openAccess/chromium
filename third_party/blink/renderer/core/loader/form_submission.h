@@ -39,6 +39,7 @@
 #include "third_party/blink/public/web/web_frame_load_type.h"
 #include "third_party/blink/renderer/core/loader/frame_loader_types.h"
 #include "third_party/blink/renderer/core/loader/navigation_policy.h"
+#include "third_party/blink/renderer/core/probe/async_task_context.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
@@ -126,7 +127,7 @@ class FormSubmission final : public GarbageCollected<FormSubmission> {
       WebFrameLoadType load_type,
       LocalDOMWindow* origin_window,
       const LocalFrameToken& initiator_frame_token,
-      const base::UnguessableToken& initiator_state_token,
+      const InitiatorStateToken& initiator_state_token,
       const DocumentToken& initiator_document_token,
       bool has_rel_opener,
       SourceLocation* source_location,
@@ -167,11 +168,11 @@ class FormSubmission final : public GarbageCollected<FormSubmission> {
   WebFrameLoadType load_type_;
   Member<LocalDOMWindow> origin_window_;
   LocalFrameToken initiator_frame_token_;
-  base::UnguessableToken initiator_state_token_;
+  InitiatorStateToken initiator_state_token_;
   DocumentToken initiator_document_token_;
   bool has_rel_opener_ = false;
   base::TimeTicks input_start_time_;
-  std::optional<base::UnguessableToken> script_tool_invocation_id_;
+  std::optional<ToolInvocationToken> script_tool_invocation_id_;
 
   // Since form submissions are scheduled asynchronously, we need to store the
   // source location when we create the form submission and then pass it over to
@@ -184,6 +185,8 @@ class FormSubmission final : public GarbageCollected<FormSubmission> {
   // it remains available in the browser until we create the NavigationRequest.
   mojo::PendingRemote<mojom::blink::NavigationStateKeepAliveHandle>
       initiator_navigation_state_keep_alive_handle_;
+
+  probe::AsyncTaskContext async_task_context_;
 };
 
 }  // namespace blink

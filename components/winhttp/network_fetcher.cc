@@ -4,7 +4,9 @@
 
 #include "components/winhttp/network_fetcher.h"
 
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
+
 #include <limits>
 #include <optional>
 #include <string>
@@ -413,7 +415,7 @@ HRESULT NetworkFetcher::ReadData() {
   static constexpr size_t kNumBytesToRead = 0x4000;  // 16KiB.
   read_buffer_.resize(kNumBytesToRead);
 
-  if (!::WinHttpReadData(request_handle_.get(), &read_buffer_.front(),
+  if (!::WinHttpReadData(request_handle_.get(), read_buffer_.data(),
                          read_buffer_.size(), nullptr)) {
     return HRESULTFromLastError();
   }
@@ -632,7 +634,7 @@ void __stdcall NetworkFetcher::WinHttpStatusCallback(HINTERNET handle,
           base::BindOnce(&NetworkFetcher::HeadersAvailable, network_fetcher);
       break;
     case WINHTTP_CALLBACK_STATUS_READ_COMPLETE:
-      CHECK_EQ(info, &network_fetcher->read_buffer_.front());
+      CHECK_EQ(info, network_fetcher->read_buffer_.data());
       callback = base::BindOnce(&NetworkFetcher::ReadDataComplete,
                                 network_fetcher, size_t{info_len});
       break;

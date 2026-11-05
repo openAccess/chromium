@@ -51,15 +51,6 @@ targets.variant(
 )
 
 targets.variant(
-    name = "CROS_JACUZZI_RELEASE_LKGM",
-    identifier = "JACUZZI_RELEASE_LKGM",
-    skylab = targets.skylab(
-        cros_board = "jacuzzi",
-        use_lkgm = True,
-    ),
-)
-
-targets.variant(
     name = "CROS_GPU_BRYA_RELEASE_LKGM",
     identifier = "GPU_BRYA_RELEASE_LKGM",
     skylab = targets.skylab(
@@ -301,6 +292,20 @@ targets.variant(
 )
 
 targets.variant(
+    name = "SIM_IPAD_AIR_6TH_GEN_27_2",
+    identifier = "iPad Air (6th generation) 27.2",
+    mixins = [
+        "ios_runtime_cache_27_2",
+    ],
+    args = [
+        "--platform",
+        "iPad Air 11-inch (M2)",
+        "--version",
+        "27.2",
+    ],
+)
+
+targets.variant(
     name = "SIM_IPAD_A16_27_0",
     identifier = "iPad (A16) 27.0",
     mixins = [
@@ -312,6 +317,20 @@ targets.variant(
         "iPad (A16)",
         "--version",
         "27.0",
+    ],
+)
+
+targets.variant(
+    name = "SIM_IPAD_A16_27_2",
+    identifier = "iPad (A16) 27.2",
+    mixins = [
+        "ios_runtime_cache_27_2",
+    ],
+    args = [
+        "--platform",
+        "iPad (A16)",
+        "--version",
+        "27.2",
     ],
 )
 
@@ -372,6 +391,35 @@ targets.variant(
         "iPad (10th generation)",
         "--version",
         "26.5",
+    ],
+)
+
+targets.variant(
+    name = "SIM_IPAD_10TH_GEN_27_0",
+    identifier = "iPad (10th generation) 27.0",
+    mixins = [
+        "ios_runtime_cache_27_0",
+        "use-ios-simulator-cache",
+    ],
+    args = [
+        "--platform",
+        "iPad (10th generation)",
+        "--version",
+        "27.0",
+    ],
+)
+
+targets.variant(
+    name = "SIM_IPAD_10TH_GEN_27_2",
+    identifier = "iPad (10th generation) 27.2",
+    mixins = [
+        "ios_runtime_cache_27_2",
+    ],
+    args = [
+        "--platform",
+        "iPad (10th generation)",
+        "--version",
+        "27.2",
     ],
 )
 
@@ -451,6 +499,34 @@ targets.variant(
 )
 
 targets.variant(
+    name = "SIM_IPHONE_16_27_2",
+    identifier = "iPhone 16 27.2",
+    mixins = [
+        "ios_runtime_cache_27_2",
+    ],
+    args = [
+        "--platform",
+        "iPhone 16",
+        "--version",
+        "27.2",
+    ],
+)
+
+targets.variant(
+    name = "SIM_IPHONE_DUO_27_2",
+    identifier = "iPhone Duo 27.2",
+    mixins = [
+        "ios_runtime_cache_27_2_iphone19_4",
+    ],
+    args = [
+        "--platform",
+        "iPhone Duo",
+        "--version",
+        "27.2-iphone19-4",
+    ],
+)
+
+targets.variant(
     name = "SIM_IPHONE_14_PLUS_18_5",
     identifier = "iPhone 14 Plus 18.5",
     mixins = [
@@ -477,6 +553,35 @@ targets.variant(
         "iPhone 16 Plus",
         "--version",
         "26.5",
+    ],
+)
+
+targets.variant(
+    name = "SIM_IPHONE_16_PLUS_27_0",
+    identifier = "iPhone 16 Plus 27.0",
+    mixins = [
+        "ios_runtime_cache_27_0",
+        "use-ios-simulator-cache",
+    ],
+    args = [
+        "--platform",
+        "iPhone 16 Plus",
+        "--version",
+        "27.0",
+    ],
+)
+
+targets.variant(
+    name = "SIM_IPHONE_16_PLUS_27_2",
+    identifier = "iPhone 16 Plus 27.2",
+    mixins = [
+        "ios_runtime_cache_27_2",
+    ],
+    args = [
+        "--platform",
+        "iPhone 16 Plus",
+        "--version",
+        "27.2",
     ],
 )
 
@@ -541,20 +646,16 @@ targets.variant(
 )
 
 targets.variant(
-    name = "WEBVIEW_FULL_CTS_TESTS",
-    identifier = "full_mode",
-    swarming = targets.swarming(
-        shards = 2,
-    ),
-)
-
-targets.variant(
-    name = "WEBVIEW_INSTANT_CTS_TESTS",
-    identifier = "instant_mode",
+    name = "SIM_IPHONE_SE_3RD_GEN_27_2",
+    identifier = "iPhone SE (3rd generation) 27.2",
+    mixins = [
+        "ios_runtime_cache_27_2",
+    ],
     args = [
-        "--exclude-annotation",
-        "AppModeFull",
-        "--test-apk-as-instant",
+        "--platform",
+        "iPhone SE (3rd generation)",
+        "--version",
+        "27.2",
     ],
 )
 

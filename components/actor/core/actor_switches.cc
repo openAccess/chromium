@@ -17,18 +17,31 @@ const char kDisableActorSafetyChecks[] = "disable-actor-safety-checks";
 const char kAttemptFormFillingToolSkipsUI[] =
     "attempt-form-filling-tool-skips-ui";
 
-// Bypasses the requirement that OTP filling must be part of an actor login
-// flow. This is only intended for testing/automation.
-const char kAttemptOtpFillingBypassLoginCheck[] =
-    "attempt-otp-filling-bypass-login-check";
+// Supplies a mock OTP value for the `AttemptOtpFillingTool` and bypasses
+// Google Account consent fetching, opt-in dialogs, and user confirmation
+// dialogs, filling the mock value directly into the OTP field. This is only
+// intended for testing.
+// Takes precedence over one_time_tokens::switches::kMockOtpValue in
+// AttemptOtpFillingTool if both are set.
+const char kAttemptOtpFillingToolMockValueSkipsChecks[] =
+    "attempt-otp-filling-tool-mock-value-skips-checks";
 
 // Forces logging of the actor aggregated journal events in VLOG(1). Useful on
 // Android as VLOGs are removed on official builds.
 const char kEnableActorJournalVLog[] = "enable-actor-journal-vlog";
-const char kAttemptOtpFillingMockGmailOtpValue[] =
-    "attempt-otp-filling-mock-gmail-otp-value";
 
 // File or directory path where actor traces should be recorded.
 const char kActorTracePath[] = "actor-trace-path";
+
+// Specifies a comma-separated list of SchemefulSite strings that should be
+// treated as sensitive sites by the actor execution engine (bypassing the
+// optimization guide component updater check). Useful for testing.
+// Note that these entries are site-scoped (scheme and eTLD+1), not
+// origin-scoped, so specifying a site will match all subdomains and ports on
+// that site.
+// Examples:
+//   --actor-sensitive-sites="https://example.com"
+//   --actor-sensitive-sites="https://bank.com,https://example.org"
+const char kActorSensitiveSites[] = "actor-sensitive-sites";
 
 }  // namespace actor::switches

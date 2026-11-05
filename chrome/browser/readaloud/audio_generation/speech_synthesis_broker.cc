@@ -6,12 +6,25 @@
 
 #include "base/containers/span.h"
 #include "base/i18n/tag_converters.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
+#include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 
 namespace readaloud {
+
+namespace {
+
+constexpr char kAbortReasonHistogram[] =
+    "ReadAloud.Synthesis.ModelExecution.AbortReason";
+constexpr char kServerResultHistogram[] =
+    "ReadAloud.Synthesis.ModelExecution.ServerResult";
+constexpr char kModelExecutionErrorHistogram[] =
+    "ReadAloud.Synthesis.ModelExecution.Error";
+
+}  // namespace
 
 SpeechSynthesisBroker::SpeechSynthesisBroker() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -66,11 +79,13 @@ std::string_view SpeechSynthesisBroker::language_code() const {
 
 optimization_guide::proto::ReadAloudSynthesizeRequest
 SpeechSynthesisBroker::BuildSynthesizeRequest(
-    std::u16string_view text_chunk) const {
+    std::u16string_view text_chunk,
+    std::string_view voice_id_override) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   optimization_guide::proto::ReadAloudSynthesizeRequest request;
   request.set_text_chunk(base::UTF16ToUTF8(text_chunk));
-  request.set_voice_id(voice_id_);
+  request.set_voice_id(voice_id_override.empty() ? voice_id_
+                                                 : std::string(voice_id_override));
   request.set_language_code(std::string(language_tag_.tag_string()));
   return request;
 }
@@ -78,15 +93,20 @@ SpeechSynthesisBroker::BuildSynthesizeRequest(
 void SpeechSynthesisBroker::SynthesizeSpeech(
     OptimizationGuideKeyedService* opt_guide_service,
     std::u16string_view text_chunk,
+    std::string_view voice_id_override,
     SynthesizeSpeechCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!opt_guide_service || text_chunk.empty()) {
+    base::UmaHistogramEnumeration(
+        kAbortReasonHistogram, !opt_guide_service
+                                   ? AbortReason::kNullOptimizationGuideService
+                                   : AbortReason::kEmptyTextChunk);
     std::move(callback).Run(mojo_base::BigBuffer(), /*success=*/false);
     return;
   }
 
   optimization_guide::proto::ReadAloudSynthesizeRequest request =
-      BuildSynthesizeRequest(text_chunk);
+      BuildSynthesizeRequest(text_chunk, voice_id_override);
 
   opt_guide_service->ExecuteModel(
       optimization_guide::ModelBasedCapabilityKey::kReadAloudSynthesize,
@@ -96,12 +116,24 @@ void SpeechSynthesisBroker::SynthesizeSpeech(
                      weak_factory_.GetWeakPtr(), std::move(callback)));
 }
 
+void SpeechSynthesisBroker::SynthesizeSpeech(
+    OptimizationGuideKeyedService* opt_guide_service,
+    std::u16string_view text_chunk,
+    SynthesizeSpeechCallback callback) {
+  SynthesizeSpeech(opt_guide_service, text_chunk, /*voice_id_override=*/{},
+                   std::move(callback));
+}
+
 void SpeechSynthesisBroker::OnModelExecutionResult(
     SynthesizeSpeechCallback callback,
     optimization_guide::OptimizationGuideModelExecutionResult result,
     std::unique_ptr<optimization_guide::ModelQualityLogEntry> log_entry) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!result.response.has_value()) {
+    base::UmaHistogramEnumeration(kServerResultHistogram,
+                                  ServerResult::kModelExecutionError);
+    base::UmaHistogramEnumeration(kModelExecutionErrorHistogram,
+                                  result.response.error().error());
     std::move(callback).Run(mojo_base::BigBuffer(), /*success=*/false);
     return;
   }
@@ -111,9 +143,12 @@ void SpeechSynthesisBroker::OnModelExecutionResult(
   // Browser process.
   const std::string& raw_bytes = result.response.value().value();
   if (raw_bytes.empty()) {
+    base::UmaHistogramEnumeration(kServerResultHistogram,
+                                  ServerResult::kEmptyResponse);
     std::move(callback).Run(mojo_base::BigBuffer(), /*success=*/false);
     return;
   }
+  base::UmaHistogramEnumeration(kServerResultHistogram, ServerResult::kSuccess);
   mojo_base::BigBuffer buffer(base::as_byte_span(raw_bytes));
   std::move(callback).Run(std::move(buffer), /*success=*/true);
 }

@@ -24,8 +24,16 @@
 #include "content/public/browser/web_contents.h"
 #include "media/mojo/mojom/speech_recognition_result.h"
 #include "services/media_session/public/cpp/media_metadata.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/metrics/public/cpp/ukm_recorder.h"
 
 namespace glic {
+
+namespace {
+
+constexpr size_t kMinNonFinalTranscriptLength = 100;
+
+}  // namespace
 
 DOCUMENT_USER_DATA_KEY_IMPL(GlicMediaContext);
 
@@ -36,12 +44,25 @@ GlicMediaContext::~GlicMediaContext() {
   // If we got any transcript, then record its max length we saw as its total.
   // If anything is close to the cut-off, then we can infer that we likely
   // truncated it.
+  bool has_transcript = false;
   for (const auto& pair : transcripts_by_title_) {
     const auto& transcript = pair.second;
     if (transcript->max_transcript_size_ > 0) {
+      has_transcript = true;
       UMA_HISTOGRAM_COUNTS_10M("Glic.Media.TotalContextLength",
                                transcript->max_transcript_size_);
     }
+  }
+
+  const bool is_prerendering = render_frame_host().IsInLifecycleState(
+      content::RenderFrameHost::LifecycleState::kPrerendering);
+
+  // UKM recording is not allowed during prerendering. GetPageUkmSourceId()
+  // will CHECK-fail if called while the frame is still prerendering.
+  if (!is_prerendering) {
+    ukm::builders::Glic_MediaContext(render_frame_host().GetPageUkmSourceId())
+        .SetHasTranscript(has_transcript)
+        .Record(ukm::UkmRecorder::Get());
   }
 }
 
@@ -102,36 +123,49 @@ void GlicMediaContext::HandleNonFinalResult(Transcript* transcript,
         transcript->nonfinal_chunk_it_->HasMediaTimestamps() &&
         new_chunk.GetStartTime() ==
             transcript->nonfinal_chunk_it_->GetStartTime()) {
-      transcript->nonfinal_chunk_it_->text = new_chunk.text;
+      transcript->nonfinal_chunk_it_->text = std::move(new_chunk.text);
       transcript->nonfinal_chunk_it_->media_timestamp_range =
-          new_chunk.media_timestamp_range;
-      return;
+          std::move(new_chunk.media_timestamp_range);
+    } else {
+      // Otherwise, the old non-final chunk is invalid.
+      transcript->transcript_chunks_.erase(transcript->nonfinal_chunk_it_);
+      transcript->nonfinal_chunk_it_ = transcript->transcript_chunks_.end();
     }
-    // Otherwise, the old non-final chunk is invalid.
-    transcript->transcript_chunks_.erase(transcript->nonfinal_chunk_it_);
-    transcript->nonfinal_chunk_it_ = transcript->transcript_chunks_.end();
   }
 
-  // Now, insert the new non-final chunk.
-  if (new_chunk.HasMediaTimestamps()) {
-    // Insert in order of its start time.
-    auto insert_pos = std::upper_bound(
-        transcript->transcript_chunks_.begin(),
-        transcript->transcript_chunks_.end(), new_chunk,
-        [](const TranscriptChunk& a, const TranscriptChunk& b) {
-          return a.GetStartTime() < b.GetStartTime();
-        });
-    transcript->nonfinal_chunk_it_ =
-        transcript->transcript_chunks_.insert(insert_pos, std::move(new_chunk));
-  } else {
-    // A non-final chunk without a timestamp can't be sorted by time. Instead,
-    // insert it right after the last final chunk.
-    auto insert_pos = transcript->last_insertion_it_;
-    if (insert_pos != transcript->transcript_chunks_.end()) {
-      ++insert_pos;
+  // Now, insert the new non-final chunk if it wasn't updated in-place.
+  if (transcript->nonfinal_chunk_it_ == transcript->transcript_chunks_.end()) {
+    if (new_chunk.HasMediaTimestamps()) {
+      // Insert in order of its start time.
+      auto insert_pos = std::upper_bound(
+          transcript->transcript_chunks_.begin(),
+          transcript->transcript_chunks_.end(), new_chunk,
+          [](const TranscriptChunk& a, const TranscriptChunk& b) {
+            return a.GetStartTime() < b.GetStartTime();
+          });
+      transcript->nonfinal_chunk_it_ = transcript->transcript_chunks_.insert(
+          insert_pos, std::move(new_chunk));
+    } else {
+      // A non-final chunk without a timestamp can't be sorted by time. Instead,
+      // insert it right after the last final chunk.
+      auto insert_pos = transcript->last_insertion_it_;
+      if (insert_pos != transcript->transcript_chunks_.end()) {
+        ++insert_pos;
+      }
+      transcript->nonfinal_chunk_it_ = transcript->transcript_chunks_.insert(
+          insert_pos, std::move(new_chunk));
     }
-    transcript->nonfinal_chunk_it_ =
-        transcript->transcript_chunks_.insert(insert_pos, std::move(new_chunk));
+  }
+
+  // If no final chunk has been recorded yet, notify and record metrics once the
+  // non-final chunk exceeds the minimum length threshold.
+  if (transcript->next_sequence_number_ == 0 &&
+      transcript->nonfinal_chunk_it_->text.length() >
+          kMinNonFinalTranscriptLength) {
+    MaybeNotifyTranscriptionBegin();
+    transcript->max_transcript_size_ =
+        std::max(transcript->max_transcript_size_,
+                 transcript->nonfinal_chunk_it_->text.length());
   }
 }
 
@@ -144,15 +178,7 @@ void GlicMediaContext::HandleFinalResult(Transcript* transcript,
     transcript->nonfinal_chunk_it_ = transcript->transcript_chunks_.end();
   }
 
-  if (transcript->next_sequence_number_ == 0) {
-    content::WebContents* web_contents =
-        content::WebContents::FromRenderFrameHost(&render_frame_host());
-
-    if (auto* provider =
-            optimization_guide::MediaTranscriptProvider::GetFor(web_contents)) {
-      provider->OnTranscriptionBeginForFrame(&render_frame_host());
-    }
-  }
+  MaybeNotifyTranscriptionBegin();
 
   // Process final result.
   new_chunk.sequence_number = transcript->next_sequence_number_++;
@@ -208,6 +234,20 @@ void GlicMediaContext::HandleFinalResult(Transcript* transcript,
   TrimTranscript(transcript);
 }
 
+void GlicMediaContext::MaybeNotifyTranscriptionBegin() {
+  if (has_notified_transcription_begin_) {
+    return;
+  }
+
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(&render_frame_host());
+  if (auto* provider =
+          optimization_guide::MediaTranscriptProvider::GetFor(web_contents)) {
+    provider->OnTranscriptionBeginForFrame(&render_frame_host());
+    has_notified_transcription_begin_ = true;
+  }
+}
+
 void GlicMediaContext::TrimTranscript(Transcript* transcript) {
   // Trim `transcript_chunks_` to a reasonable size.
   constexpr size_t kMaxTranscriptLength = 1000000;
@@ -246,22 +286,26 @@ void GlicMediaContext::TrimTranscript(Transcript* transcript) {
 std::list<GlicMediaContext::TranscriptChunk>
 GlicMediaContext::GetTranscriptChunks() const {
   const Transcript* transcript = GetTranscriptIfExists();
-  // Don't return transcripts if we don't have any final chunk.
-  if (!transcript || transcript->next_sequence_number_ == 0) {
+  // Don't return transcripts if we don't have any final chunk or sufficiently
+  // long non-final chunk.
+  if (!transcript || !transcript->HasTranscriptChunks()) {
     return {};
   }
+
+  UMA_HISTOGRAM_COUNTS_10M("Glic.Media.SharedContextLength",
+                           transcript->max_transcript_size_);
+
   return transcript->transcript_chunks_;
 }
 
 bool GlicMediaContext::HasTranscriptChunks() const {
   const Transcript* transcript = GetTranscriptIfExists();
-  // We don't have transcripts if we don't have any final chunk.
-  return transcript && transcript->next_sequence_number_ > 0 &&
-         !transcript->transcript_chunks_.empty();
+  return transcript && transcript->HasTranscriptChunks();
 }
 
 void GlicMediaContext::ClearAllTranscripts() {
   transcripts_by_title_.clear();
+  has_notified_transcription_begin_ = false;
 }
 
 void GlicMediaContext::OnPeerConnectionAdded() {
@@ -403,6 +447,17 @@ GlicMediaContext::Transcript* GlicMediaContext::GetTranscriptIfExists() const {
 
 GlicMediaContext::Transcript::Transcript() = default;
 GlicMediaContext::Transcript::~Transcript() = default;
+
+bool GlicMediaContext::Transcript::HasTranscriptChunks() const {
+  if (transcript_chunks_.empty()) {
+    return false;
+  }
+  if (next_sequence_number_ > 0) {
+    return true;
+  }
+  return nonfinal_chunk_it_ != transcript_chunks_.end() &&
+         nonfinal_chunk_it_->text.length() > kMinNonFinalTranscriptLength;
+}
 
 GlicMediaContext::TranscriptChunk::TranscriptChunk() = default;
 GlicMediaContext::TranscriptChunk::TranscriptChunk(

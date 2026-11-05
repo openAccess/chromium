@@ -66,13 +66,16 @@
 #include "components/webapps/browser/web_app_url_config.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/browser/browser_thread.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "url/origin.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_data.h"
 #endif
+
+#if BUILDFLAG(IS_LINUX)
+#include "chrome/browser/web_applications/os_integration/web_app_shortcut_linux.h"
+#endif  // BUILDFLAG(IS_LINUX)
 
 namespace web_app {
 
@@ -237,8 +240,6 @@ void ApplyUserDisplayModeSyncMitigations(const FinalizeJobOptions& options,
     return;
   }
 
-  sync_pb::WebAppSpecifics sync_proto = web_app.sync_proto();
-
   switch (web_app.sync_proto().user_display_mode_cros()) {
     case sync_pb::WebAppSpecifics_UserDisplayMode_BROWSER:
       // Pre-M122 CrOS devices use the user_display_mode_default sync field
@@ -320,6 +321,56 @@ void FinalizeInstallOrUpdateJob::Start(InstallFinalizedCallback callback) {
     return;
   }
   callback_ = std::move(callback);
+
+#if BUILDFLAG(IS_LINUX)
+  if (ShouldRunPortalPreflight(options_)) {
+    gfx::ImageFamily image_family;
+    const IconBitmaps& icons = web_app_info_.trusted_icon_bitmaps.any.empty()
+                                   ? web_app_info_.icon_bitmaps
+                                   : web_app_info_.trusted_icon_bitmaps;
+    for (const auto& [size, bitmap] : icons.any) {
+      if (!bitmap.drawsNothing()) {
+        image_family.Add(gfx::ImageSkia::CreateFrom1xBitmap(bitmap));
+      }
+    }
+    PreparePortalInstallOnUIThread(
+        base::UTF16ToUTF8(web_app_info_.title.value()),
+        GetShortcutIconBytes(image_family), web_app_info_.start_url(),
+        base::BindOnce(&FinalizeInstallOrUpdateJob::OnPortalPreflightCompleted,
+                       weak_ptr_factory_.GetWeakPtr()));
+    return;
+  }
+#endif  // BUILDFLAG(IS_LINUX)
+
+  ContinueStartAfterPreflight();
+}
+
+#if BUILDFLAG(IS_LINUX)
+// static
+bool FinalizeInstallOrUpdateJob::ShouldRunPortalPreflight(
+    const FinalizeJobOptions& options) {
+  return !options.is_silent_update &&
+         options.install_state ==
+             proto::InstallState::INSTALLED_WITH_OS_INTEGRATION &&
+         options.source == WebAppManagement::kUserInstalled &&
+         ShouldUseDynamicLauncherPortal();
+}
+
+void FinalizeInstallOrUpdateJob::OnPortalPreflightCompleted(
+    std::optional<std::string> token) {
+  if (!token.has_value()) {
+    LOG(ERROR)
+        << "Portal PrepareInstall returned nullopt (user cancelled prompt)";
+    RunCallbackAndResetLock(webapps::AppId(),
+                            webapps::InstallResultCode::kUserInstallDeclined);
+    return;
+  }
+  portal_token_ = token.value();
+  ContinueStartAfterPreflight();
+}
+#endif  // BUILDFLAG(IS_LINUX)
+
+void FinalizeInstallOrUpdateJob::ContinueStartAfterPreflight() {
   webapps::ManifestId manifest_id = web_app_info_.manifest_id();
 
   if (options_.is_silent_update) {
@@ -352,7 +403,6 @@ void FinalizeInstallOrUpdateJob::Start(InstallFinalizedCallback callback) {
       !web_app_info_.scope_extensions.empty() &&
       !web_app_info_.validated_scope_extensions.has_value();
   bool needs_migration_validation =
-      base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi) &&
       !web_app_info_.migration_sources.empty();
 
   if (options_.skip_origin_association_validation ||
@@ -552,7 +602,8 @@ void FinalizeInstallOrUpdateJob::SetWebAppFieldsForInstall(
   // install is user initiated or it's a new app.
   if (ShouldInstallOverwriteUserDisplayMode(options_.install_surface) ||
       !existing_web_app) {
-    DCHECK(web_app_info_.user_display_mode.has_value());
+    CHECK(web_app_info_.user_display_mode.has_value(),
+          base::NotFatalUntil::M162);
     web_app->SetUserDisplayMode(*web_app_info_.user_display_mode);
   }
   if (options_.run_on_os_login_mode.has_value()) {
@@ -671,7 +722,7 @@ void FinalizeInstallOrUpdateJob::WriteTranslations(
         translations,
     CommitCallback commit_callback,
     bool success) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!success) {
     std::move(commit_callback).Run(success);
     return;
@@ -683,7 +734,7 @@ void FinalizeInstallOrUpdateJob::CommitToSyncBridge(
     std::unique_ptr<WebApp> web_app,
     CommitCallback commit_callback,
     bool success) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!success) {
     std::move(commit_callback).Run(success);
     return;
@@ -706,8 +757,10 @@ void FinalizeInstallOrUpdateJob::WriteExternalConfigMapInfo(
     bool is_placeholder,
     GURL install_url,
     std::vector<std::string> additional_policy_ids) {
-  DCHECK(!(source == WebAppManagement::Type::kSync && is_placeholder));
-  DCHECK(!(source == WebAppManagement::Type::kUserInstalled && is_placeholder));
+  CHECK(!(source == WebAppManagement::Type::kSync && is_placeholder),
+        base::NotFatalUntil::M162);
+  CHECK(!(source == WebAppManagement::Type::kUserInstalled && is_placeholder),
+        base::NotFatalUntil::M162);
   if (source != WebAppManagement::Type::kSync &&
       source != WebAppManagement::Type::kUserInstalled &&
       !WebAppManagement::IsIwaType(source)) {
@@ -739,16 +792,14 @@ void FinalizeInstallOrUpdateJob::AdjustAppStateBeforeCommit(
   // changed. If we already have a app installed that wants to be a migration
   // target for the newly installed app, this makes sure that this is reflected
   // correctly.
-  if (base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi)) {
-    provider.scheduler().ScheduleResolveWebAppPendingMigrationInfo(
-        base::DoNothing());
-  }
+  provider.scheduler().ScheduleResolveWebAppPendingMigrationInfo(
+      base::DoNothing());
 }
 
 void FinalizeInstallOrUpdateJob::OnDatabaseCommitCompleted(
     std::optional<WebAppScope> old_scope,
     bool success) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!success) {
     RunCallbackAndResetLock(webapps::AppId(),
                             webapps::InstallResultCode::kWriteDataFailed);
@@ -776,6 +827,9 @@ void FinalizeInstallOrUpdateJob::OnDatabaseCommitCompleted(
     synchronize_options->add_shortcut_to_desktop = options_.add_to_desktop;
     synchronize_options->add_to_quick_launch_bar =
         options_.add_to_quick_launch_bar;
+#if BUILDFLAG(IS_LINUX)
+    synchronize_options->portal_token = portal_token_;
+#endif  // BUILDFLAG(IS_LINUX)
 
     switch (options_.source) {
       case WebAppManagement::kSystem:
@@ -794,7 +848,19 @@ void FinalizeInstallOrUpdateJob::OnDatabaseCommitCompleted(
       case WebAppManagement::kSync:
       case WebAppManagement::kUserInstalled:
       case WebAppManagement::kIwaUserInstalled:
+#if BUILDFLAG(IS_MAC)
+        // When `kWebAppInstallDialog` is enabled, the dialog's Success step
+        // provides an explicit "Show in Finder" button on macOS, so do not
+        // automatically reveal the app shim in Finder during install
+        // finalization. Explicit post-install shortcut creation (e.g. from
+        // chrome://apps) still passes `SHORTCUT_CREATION_BY_USER`.
+        synchronize_options->reason =
+            base::FeatureList::IsEnabled(features::kWebAppInstallDialog)
+                ? SHORTCUT_CREATION_AUTOMATED
+                : SHORTCUT_CREATION_BY_USER;
+#else
         synchronize_options->reason = SHORTCUT_CREATION_BY_USER;
+#endif
         break;
     }
   }

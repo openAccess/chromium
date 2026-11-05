@@ -28,11 +28,10 @@ static_assert(kDawnReturnCmdsOffset < kMaxWireBufferSize, "");
 }  // anonymous namespace
 
 DawnServiceSerializer::CommandBuffer::CommandBuffer(size_t size)
-    : buffer(base::AlignedUninit<std::byte>(size, kWireAlignment)),
+    : buffer(base::AlignedZeroed<std::byte>(size, kWireAlignment)),
       put_offset(kDawnReturnCmdsOffset) {
-  // Zero-initialize the entire buffer because wire command serialization
-  // does not initialize struct alignment padding or trailing padding bytes.
-  std::ranges::fill(buffer, std::byte{0});
+  // `buffer` is zero-initialized because wire command serialization does not
+  // initialize struct alignment padding or trailing padding bytes.
   cmds::DawnReturnCommandsInfoHeader* header =
       reinterpret_cast<cmds::DawnReturnCommandsInfoHeader*>(&buffer[0]);
   header->return_data_header.return_data_type =
@@ -58,11 +57,6 @@ DawnServiceSerializer::~DawnServiceSerializer() = default;
 
 size_t DawnServiceSerializer::GetMaximumAllocationSize() const {
   return kMaxWireBufferSize - kDawnReturnCmdsOffset;
-}
-
-bool DawnServiceSerializer::NeedsFlush() const {
-  DCHECK(gpu_main_thread_runner_->BelongsToCurrentThread());
-  return main_cmds_.put_offset > kDawnReturnCmdsOffset;
 }
 
 bool DawnServiceSerializer::SetWorkerPending(bool pending) {

@@ -20,17 +20,7 @@ class WebContents;
 namespace autofill {
 
 class AutofillBubbleBase;
-
-// Enum for the current showing state of the bubble.
-// TODO(crbug.com/445901842): Investigate if this can be removed.
-enum class BubbleState {
-  // The bubble and the omnibox icon should be hidden.
-  kHidden = 0,
-  // Only the omnibox icon should be visible.
-  kShowingIcon = 1,
-  // The bubble and the omnibox icon should be both visible.
-  kShowingIconAndBubble = 2,
-};
+class AutofillBubbleHandler;
 
 // Interface that exposes controller functionality to all autofill bubbles.
 class AutofillBubbleControllerBase : public BubbleControllerBase,
@@ -128,6 +118,8 @@ class AutofillBubbleControllerBase : public BubbleControllerBase,
   void ResetBubbleViewAndInformBubbleManager();
 
   AutofillBubbleBase* bubble_view() const { return bubble_view_; }
+
+  AutofillBubbleHandler* GetAutofillBubbleHandler();
 
   // True if anytime, the bubble was shown to the user in the lifecycle of the
   // bubble.

@@ -19,13 +19,14 @@ import android.view.View;
 import android.view.ViewGroup;
 
 import androidx.annotation.ColorInt;
+import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
 import androidx.core.view.ViewCompat;
 import androidx.recyclerview.widget.RecyclerView;
 
+import org.chromium.base.Callback;
 import org.chromium.base.CallbackController;
 import org.chromium.base.CallbackUtils;
-import org.chromium.base.DeviceInfo;
 import org.chromium.base.Log;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.TraceEvent;
@@ -57,7 +58,6 @@ import org.chromium.chrome.browser.feed.FeedSwipeRefreshLayout;
 import org.chromium.chrome.browser.feed.NtpFeedSurfaceLifecycleManager;
 import org.chromium.chrome.browser.feed.componentinterfaces.SurfaceCoordinator;
 import org.chromium.chrome.browser.glic.GlicHelper;
-import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.LifecycleObserver;
 import org.chromium.chrome.browser.lifecycle.PauseResumeWithNativeObserver;
@@ -95,6 +95,7 @@ import org.chromium.chrome.browser.tasks.HomeSurfaceTracker;
 import org.chromium.chrome.browser.toolbar.top.Toolbar;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
 import org.chromium.chrome.browser.ui.edge_to_edge.TopInsetProvider;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager.SnackbarManageable;
@@ -123,6 +124,7 @@ import org.chromium.content_public.browser.NavigationController;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.lang.ref.WeakReference;
@@ -198,8 +200,11 @@ public class NewTabPage
     private boolean mSnapshotSingleTabCardChanged;
     private final boolean mIsInNightMode;
     private final boolean mSupportsEnableEdgeToEdgeOnTop;
+    private final MonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeControllerSupplier;
     private final TopInsetProvider mTopInsetProvider;
     private TopInsetProvider.@Nullable Observer mTopInsetChangeObserver;
+    private @Nullable EdgeToEdgePadAdjuster mEdgeToEdgePadAdjuster;
+    private @Nullable Callback<EdgeToEdgeController> mEdgeToEdgeControllerCallback;
     private boolean mIsUseEdgeToEdgeForCustomizedTheme;
 
     private @Nullable HomepageStateListener mHomepageStateListener;
@@ -286,7 +291,7 @@ public class NewTabPage
         public void focusSearchBox(
                 boolean beginVoiceSearch,
                 @AutocompleteRequestType int requestType,
-                boolean showFuseboxPopup,
+                @OmniboxFocusReason int focusReason,
                 @Nullable String pastedText) {
             if (mIsDestroyed) return;
             FeedReliabilityLogger feedReliabilityLogger =
@@ -304,20 +309,14 @@ public class NewTabPage
                     feedReliabilityLogger.onOmniboxFocused();
                 }
 
-                @OmniboxFocusReason
-                int focusReason =
-                        pastedText == null
-                                ? OmniboxFocusReason.FAKE_BOX_TAP
-                                : OmniboxFocusReason.FAKE_BOX_LONG_PRESS;
                 @AutocompleteState int autocompleteState = AutocompleteState.ENABLED;
-                if (requestType == AutocompleteRequestType.AI_MODE) {
-                    focusReason = OmniboxFocusReason.NTP_AI_MODE;
-                } else if (showFuseboxPopup) {
-                    focusReason = OmniboxFocusReason.FAKE_BOX_PLUS_BUTTON_TAP;
+                if (focusReason == OmniboxFocusReason.FAKE_BOX_PLUS_BUTTON_TAP) {
                     autocompleteState =
                             OmniboxFeatures.sFocusFuseboxFromNtpPlusButton.getValue()
                                     ? AutocompleteState.ENABLED
                                     : AutocompleteState.STANDBY_NO_FOCUS;
+                } else if (focusReason == OmniboxFocusReason.NTP_GALLERY_CHIP_CLICKED) {
+                    autocompleteState = AutocompleteState.STANDBY_NO_FOCUS;
                 }
 
                 mOmniboxStub.beginInput(
@@ -339,7 +338,7 @@ public class NewTabPage
             Tab currentTab = mActivityTabProvider.get();
             if (currentTab == null) return null;
             NativePage nativePage = currentTab.getNativePage();
-            return (nativePage instanceof NewTabPage) ? (NewTabPage) nativePage : null;
+            return (nativePage instanceof NewTabPage newTabPage) ? newTabPage : null;
         }
 
         @Override
@@ -466,6 +465,7 @@ public class NewTabPage
         mIsInNightMode = isInNightMode;
         mIsNtpCustomizationSyncEnabled = NtpCustomizationUtils.isNTPCustomizationSyncEnabled();
         mTabStripHeightSupplier = tabStripHeightSupplier;
+        mEdgeToEdgeControllerSupplier = edgeToEdgeControllerSupplier;
         mTopInsetProvider = topInsetProvider;
 
         Profile profile = mTab.getProfile();
@@ -556,7 +556,8 @@ public class NewTabPage
                         mTabStripHeightSupplier,
                         sideUiStateProviderSupplier,
                         homeSurfaceTracker,
-                        backPressManager);
+                        backPressManager,
+                        mTemplateUrlService);
 
         initializeFeedSurfaceProvider(
                 activity,
@@ -616,8 +617,7 @@ public class NewTabPage
                 mFeedSurfaceProvider.getScrollDelegate(),
                 mFeedSurfaceProvider.getTouchEnabledDelegate(),
                 mFeedSurfaceProvider.getUiConfig(),
-                lifecycleDispatcher,
-                () -> assumeNonNull(mTemplateUrlService.getComposeplateUrl()));
+                lifecycleDispatcher);
 
         sTotalCount++;
         NewTabPageUma.recordSimultaneousNtpCount(sTotalCount);
@@ -638,13 +638,6 @@ public class NewTabPage
                     if (mRecordedFcp) return;
                     mRecordedFcp = true;
                     long durationMs = SystemClock.uptimeMillis() - mNavigationStartMs;
-                    if (DeviceInfo.isDesktop()) {
-                        // Keep collecting this histogram for Android desktop to avoid losing data.
-                        // TODO(crbug.com/531793117): Remove this histogram once we have finished
-                        // the study for Android desktop.
-                        RecordHistogram.recordMediumTimesHistogram(
-                                "NewTabPage.LoadTime.FirstContentfulPaint", durationMs);
-                    }
                     // LINT.IfChange(page_load_histogram)
                     RecordHistogram.recordCustomTimesHistogram(
                             "NewTabPage.LoadTime.FirstContentfulPaint2",
@@ -733,9 +726,33 @@ public class NewTabPage
         startupMetricsTracker.registerNtpViewObserver(mFeedSurfaceProvider.getView());
     }
 
-    /** Initialize the single tab card on home surface NTP or magic stack. */
+    /** Initialize the top inset observer or pad adjuster for edge-to-edge on top. */
     private void initTopInsetProviderObserver() {
-        mTopInsetChangeObserver = this::onToEdgeChange;
+        if (EdgeToEdgeUtils.isEdgeToEdgeRefactorEnabled()) {
+            mEdgeToEdgePadAdjuster =
+                    new EdgeToEdgePadAdjuster() {
+                        @Override
+                        public void overrideBottomInset(@Px int inset) {}
+
+                        @Override
+                        public void overrideTopInset(@Px int inset) {
+                            onToEdgeChange(inset, inset > 0);
+                        }
+
+                        @Override
+                        public void destroy() {}
+                    };
+            mEdgeToEdgeControllerCallback =
+                    controller ->
+                            controller.registerAdjuster(assumeNonNull(mEdgeToEdgePadAdjuster));
+            mEdgeToEdgeControllerSupplier.addSyncObserverAndCallIfNonNull(
+                    mEdgeToEdgeControllerCallback);
+            return;
+        }
+
+        mTopInsetChangeObserver =
+                (systemTopInset, consumeTopInset, layoutType) ->
+                        onToEdgeChange(systemTopInset, consumeTopInset);
         mTopInsetProvider.addObserver(mTopInsetChangeObserver);
     }
 
@@ -837,9 +854,8 @@ public class NewTabPage
      * @param systemTopInset The system's top inset, i.e., the height of the Status bar. While
      *     usually greater than zero, it can be zero in split-screen mode.
      * @param consumeTopInset Whether the parent layout will consume the top inset.
-     * @param layoutType The current active layout type from {@link LayoutType}.
      */
-    void onToEdgeChange(int systemTopInset, boolean consumeTopInset, @LayoutType int layoutType) {
+    void onToEdgeChange(int systemTopInset, boolean consumeTopInset) {
         // When consumeTopInset is false, it is possible: 1) the next Tab isn't NTP and 2) the next
         // Tab is NTP while NTP should show regular toolbar. NewTabPageLayout should only be
         // adjusted based on supportsEdgeToEdgeOnTop(), not the parent view's decision.
@@ -968,6 +984,11 @@ public class NewTabPage
         mNewTabPageCoordinator.getSearchBoxBounds(bounds, translation, getView());
     }
 
+    /** Returns the fake search box view. */
+    public View getSearchBoxView() {
+        return mNewTabPageCoordinator.getSearchBoxView();
+    }
+
     /**
      * Get the vertical inset applied to the search box bounds.
      *
@@ -1085,6 +1106,7 @@ public class NewTabPage
         SuggestionsMetrics.recordSurfaceVisible();
         GlicHelper.maybeShowGlicTaskInProgressSnackbar(
                 this, mTab.getProfile(), mActivity, GlicHelper.Caller.NEW_TAB_PAGE);
+        mNewTabPageCoordinator.recordNtpShown();
     }
 
     /** Records UMA for the NTP being hidden and the time spent on it. */
@@ -1156,6 +1178,15 @@ public class NewTabPage
             mVoiceRecognitionHandler.removeObserver(this);
         }
 
+        if (mEdgeToEdgeControllerCallback != null) {
+            mEdgeToEdgeControllerSupplier.removeObserver(mEdgeToEdgeControllerCallback);
+            mEdgeToEdgeControllerCallback = null;
+        }
+        if (mEdgeToEdgeControllerSupplier.get() != null && mEdgeToEdgePadAdjuster != null) {
+            mEdgeToEdgeControllerSupplier.get().unregisterAdjuster(mEdgeToEdgePadAdjuster);
+        }
+        mEdgeToEdgePadAdjuster = null;
+
         if (mTopInsetChangeObserver != null) {
             mTopInsetProvider.removeObserver(mTopInsetChangeObserver);
             mTopInsetChangeObserver = null;
@@ -1196,7 +1227,7 @@ public class NewTabPage
     }
 
     @Override
-    public boolean supportsEdgeToEdge() {
+    public boolean supportsEdgeToEdgeOnBottom() {
         return true;
     }
 
@@ -1264,6 +1295,11 @@ public class NewTabPage
 
     @Override
     public boolean shouldCaptureThumbnail() {
+        // A newly created (e.g. unfrozen) NTP must not overwrite the cached thumbnail until it has
+        // been drawn for display; otherwise the capture is blank, e.g. when restoring directly
+        // into the Hub after activity recreation.
+        if (!mFeedSurfaceProvider.hasDrawnFrame()) return false;
+
         return mNewTabPageCoordinator.shouldCaptureThumbnail()
                 || mFeedSurfaceProvider.shouldCaptureThumbnail()
                 || mSnapshotSingleTabCardChanged;
@@ -1375,12 +1411,13 @@ public class NewTabPage
     }
 
     private void updateNtpScrollListener(boolean attach) {
-        if (!(mFeedSurfaceProvider instanceof FeedSurfaceCoordinator)) return;
+        if (!(mFeedSurfaceProvider instanceof FeedSurfaceCoordinator feedSurfaceCoordinator)) {
+            return;
+        }
 
         if (!BottomBarConfigUtils.isNtpScrollOffEnabled(mTab, mContext)) return;
 
-        RecyclerView recyclerView =
-                ((FeedSurfaceCoordinator) mFeedSurfaceProvider).getRecyclerView();
+        RecyclerView recyclerView = feedSurfaceCoordinator.getRecyclerView();
         if (recyclerView == null) {
             if (mNtpScrollListener != null) {
                 mNtpScrollListener = null;

@@ -25,8 +25,6 @@
         "fuchsia.hwinfo.Product",
         // "fuchsia.intl.PropertyProvider" is provided by #intl_property_manager.
         "fuchsia.kernel.VmexResource",
-        "fuchsia.media.ProfileProvider",
-        "fuchsia.scheduler.RoleManager",
         "fuchsia.memorypressure.Provider",
         "fuchsia.process.Launcher",
         "fuchsia.sysmem.Allocator",
@@ -36,9 +34,6 @@
         "fuchsia.net.interfaces.State",
         "fuchsia.net.name.Lookup",
         "fuchsia.posix.socket.Provider",
-
-        // CastRunner sets ThemeType::DEFAULT when not headless.
-        "fuchsia.settings.Display",
 
         // Used by the test UI stack and VulkanCastRunnerIntegrationTest.
         "fuchsia.tracing.provider.Registry",
@@ -55,6 +50,16 @@
       ],
       from: "parent",
       to: "#realm_builder",
+    },
+    {
+      // CastRunner integration tests run in the "chromium-tests" test realm,
+      // which does not provide fuchsia.scheduler.RoleManager. Since the tests
+      // do not require thread scheduling roles, route the capability from void
+      // and configure CastRunnerLauncher with --use-scheduler-roles=unused.
+      protocol: [ "fuchsia.scheduler.RoleManager" ],
+      from: "void",
+      to: "#realm_builder",
+      availability: "optional",
     },
     {
       dictionary: "diagnostics",

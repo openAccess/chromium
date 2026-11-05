@@ -112,24 +112,12 @@ std::string_view ReportingDestinationAsString(
       return "Seller";
     case blink::FencedFrame::ReportingDestination::kComponentSeller:
       return "ComponentSeller";
-    case blink::FencedFrame::ReportingDestination::kSharedStorageSelectUrl:
-      return "SharedStorageSelectUrl";
     case blink::FencedFrame::ReportingDestination::kDirectSeller:
       return "DirectSeller";
   }
   NOTREACHED();
 }
 
-std::string_view InvokingAPIAsString(
-    const PrivacySandboxInvokingAPI invoking_api) {
-  switch (invoking_api) {
-    case PrivacySandboxInvokingAPI::kProtectedAudience:
-      return "Protected Audience";
-    case PrivacySandboxInvokingAPI::kSharedStorage:
-      return "Shared Storage";
-  }
-  NOTREACHED();
-}
 
 std::string AutomaticBeaconTypeAsString(
     const blink::mojom::AutomaticBeaconType type) {
@@ -185,38 +173,16 @@ FencedFrameReporter::ReportingDestinationInfo&
 FencedFrameReporter::ReportingDestinationInfo::operator=(
     ReportingDestinationInfo&&) = default;
 
-scoped_refptr<FencedFrameReporter> FencedFrameReporter::CreateForSharedStorage(
-    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    BrowserContext* browser_context,
-    const std::optional<url::Origin>& reporting_url_declarer_origin,
-    ReportingUrlMap reporting_url_map,
-    const url::Origin& main_frame_origin) {
-  // `private_aggregation_manager_` and `winner_origin_`
-  // are only needed by FLEDGE.
-  scoped_refptr<FencedFrameReporter> reporter =
-      base::MakeRefCounted<FencedFrameReporter>(
-          base::PassKey<FencedFrameReporter>(),
-          PrivacySandboxInvokingAPI::kSharedStorage,
-          std::move(url_loader_factory), browser_context, main_frame_origin);
-  reporter->reporting_metadata_.emplace(
-      blink::FencedFrame::ReportingDestination::kSharedStorageSelectUrl,
-      ReportingDestinationInfo(reporting_url_declarer_origin,
-                               std::move(reporting_url_map)));
-  return reporter;
-}
-
 FencedFrameReporter::FencedFrameReporter(
     base::PassKey<FencedFrameReporter> pass_key,
-    PrivacySandboxInvokingAPI invoking_api,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     BrowserContext* browser_context,
     const url::Origin& main_frame_origin)
     : url_loader_factory_(std::move(url_loader_factory)),
       browser_context_(browser_context),
-      main_frame_origin_(main_frame_origin),
-      invoking_api_(invoking_api) {
-  DCHECK(url_loader_factory_);
-  DCHECK(browser_context_);
+      main_frame_origin_(main_frame_origin) {
+  CHECK(url_loader_factory_, base::NotFatalUntil::M160);
+  CHECK(browser_context_, base::NotFatalUntil::M160);
 }
 
 FencedFrameReporter::~FencedFrameReporter() {
@@ -232,8 +198,8 @@ void FencedFrameReporter::OnUrlMappingReady(
     std::optional<ReportingMacros> reporting_ad_macros) {
   auto it = reporting_metadata_.find(reporting_destination);
   CHECK(it != reporting_metadata_.end());
-  DCHECK(!it->second.reporting_url_map);
-  DCHECK(!it->second.reporting_ad_macros);
+  CHECK(!it->second.reporting_url_map, base::NotFatalUntil::M160);
+  CHECK(!it->second.reporting_ad_macros, base::NotFatalUntil::M160);
 
   it->second.reporting_url_declarer_origin = reporting_url_declarer_origin;
   it->second.reporting_url_map = std::move(reporting_url_map);
@@ -261,7 +227,7 @@ bool FencedFrameReporter::SendReport(
     blink::mojom::ConsoleMessageLevel& console_message_level,
     FrameTreeNodeId initiator_frame_tree_node_id,
     std::optional<int64_t> navigation_id) {
-  DCHECK(request_initiator_frame);
+  CHECK(request_initiator_frame, base::NotFatalUntil::M160);
   auto it = reporting_metadata_.find(reporting_destination);
   // Check metadata registration for given destination. If there's no map, or
   // the map is empty, can't send a request. An entry with a null (not empty)
@@ -413,12 +379,11 @@ bool FencedFrameReporter::SendReportInternal(
   if (!GetContentClient()
            ->browser()
            ->IsPrivacySandboxReportingDestinationAttested(
-               browser_context_, url::Origin::Create(destination_url),
-               invoking_api_)) {
-    error_message = base::StrCat(
-        {"The reporting destination '",
-         ReportingDestinationAsString(reporting_destination),
-         "' is not attested for '", InvokingAPIAsString(invoking_api_), "'"});
+               browser_context_, url::Origin::Create(destination_url))) {
+    error_message =
+        base::StrCat({"The reporting destination '",
+                      ReportingDestinationAsString(reporting_destination),
+                      "' is not attested for 'Protected Audience'"});
     console_message_level = blink::mojom::ConsoleMessageLevel::kError;
     return false;
   }

@@ -24,7 +24,7 @@
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html/media/html_media_test_helper.h"
 #include "third_party/blink/renderer/core/html/media/html_video_element.h"
-#include "third_party/blink/renderer/core/layout/layout_image.h"
+#include "third_party/blink/renderer/core/layout/layout_video.h"
 #include "third_party/blink/renderer/core/loader/empty_clients.h"
 #include "third_party/blink/renderer/core/loader/resource/image_resource_content.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
@@ -602,7 +602,7 @@ TEST_F(PictureInPictureControllerTestWithWidget,
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
   // Set poster image to video
-  auto* layout_image = To<LayoutImage>(Video()->GetLayoutObject());
+  auto* layout_video = To<LayoutVideo>(Video()->GetLayoutObject());
   const char kPosterUrl[] = "http://example.com/foo.jpg";
   url_test_helpers::RegisterMockedErrorURLLoad(
       url_test_helpers::ToKURL(kPosterUrl));
@@ -610,7 +610,7 @@ TEST_F(PictureInPictureControllerTestWithWidget,
   Video()->setAttribute(html_names::kStyleAttr, AtomicString("object-fit: none;"
                                                              "height: 150px;"
                                                              "width: 150px;"));
-  layout_image->ImageResource()->SetImageResource(image_content);
+  layout_video->ImageResource()->SetImageResource(image_content);
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
   EXPECT_EQ(nullptr, PictureInPictureControllerImpl::From(GetDocument())
@@ -965,6 +965,82 @@ TEST_F(PictureInPictureControllerTestWithChromeClient,
       OpenDocumentPictureInPictureWindow(v8_scope, GetDocument());
   EXPECT_EQ(pictureInPictureWindow->document()->GetCompatibilityMode(),
             Document::kNoQuirksMode);
+}
+
+TEST_F(PictureInPictureControllerTestWithChromeClient,
+       DocumentPiPAllowedWithPictureInPictureRequestToken) {
+  V8TestingScope v8_scope;
+  ScriptState* script_state =
+      ToScriptStateForMainWorld(GetDocument().GetFrame());
+  ScriptState::Scope entered_context_scope(script_state);
+
+  PictureInPictureController& controller =
+      PictureInPictureController::From(GetDocument());
+
+  EXPECT_FALSE(LocalFrame::HasTransientUserActivation(&GetFrame()));
+  EXPECT_FALSE(controller.IsPictureInPictureRequestTokenActive());
+
+  controller.ActivatePictureInPictureRequestToken();
+  EXPECT_TRUE(controller.IsPictureInPictureRequestTokenActive());
+
+  // Opening the window should succeed and consume the token.
+  LocalDOMWindow* pip_window =
+      OpenDocumentPictureInPictureWindow(v8_scope, GetDocument());
+  EXPECT_NE(nullptr, pip_window);
+  EXPECT_FALSE(controller.IsPictureInPictureRequestTokenActive());
+  EXPECT_FALSE(LocalFrame::HasTransientUserActivation(&GetFrame()));
+}
+
+TEST_F(PictureInPictureControllerTestWithChromeClient,
+       PictureInPictureRequestTokenConsumedEvenWithUserActivation) {
+  V8TestingScope v8_scope;
+  ScriptState* script_state =
+      ToScriptStateForMainWorld(GetDocument().GetFrame());
+  ScriptState::Scope entered_context_scope(script_state);
+
+  PictureInPictureController& controller =
+      PictureInPictureController::From(GetDocument());
+
+  LocalFrame::NotifyUserActivation(
+      &GetFrame(), mojom::UserActivationNotificationType::kTest);
+  controller.ActivatePictureInPictureRequestToken();
+
+  EXPECT_TRUE(LocalFrame::HasTransientUserActivation(&GetFrame()));
+  EXPECT_TRUE(controller.IsPictureInPictureRequestTokenActive());
+
+  // Opening the window should consume the Picture-in-Picture request token
+  // even when user activation is present.
+  LocalDOMWindow* pip_window =
+      OpenDocumentPictureInPictureWindow(v8_scope, GetDocument());
+  EXPECT_NE(nullptr, pip_window);
+  EXPECT_FALSE(controller.IsPictureInPictureRequestTokenActive());
+}
+
+TEST_F(PictureInPictureControllerTestWithChromeClient,
+       PictureInPictureRequestTokenActivationAndConsumption) {
+  PictureInPictureControllerImpl::RequestToken token;
+
+  // The token is initially inactive, so `ConsumeIfActive` returns false.
+  EXPECT_FALSE(token.IsActive());
+  EXPECT_FALSE(token.ConsumeIfActive());
+
+  // Activating the token sets it to active.
+  token.Activate();
+  EXPECT_TRUE(token.IsActive());
+
+  // `ConsumeIfActive` returns true and immediately deactivates the token.
+  EXPECT_TRUE(token.ConsumeIfActive());
+  EXPECT_FALSE(token.IsActive());
+
+  // Subsequent calls to `ConsumeIfActive` return false because the token was
+  // already consumed.
+  EXPECT_FALSE(token.ConsumeIfActive());
+
+  // Calling `Deactivate` resets an active token to inactive.
+  token.Activate();
+  EXPECT_TRUE(token.IsActive());
+  token.Deactivate();
+  EXPECT_FALSE(token.IsActive());
 }
 #endif  // !BUILDFLAG(TARGET_OS_IS_ANDROID)
 

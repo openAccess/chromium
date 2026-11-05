@@ -202,6 +202,39 @@ constexpr char kExpectedPDFAXTree[] =
     "      staticText '3'\n"
     "        inlineTextBox '3'\n";
 
+constexpr char kExpectedPDFAXTreeWithHeuristics[] =
+    "pdfRoot 'PDF document containing 3 pages'\n"
+    "  region 'Page 1'\n"
+    "    heading '1 First Section'\n"
+    "      staticText '1 First Section'\n"
+    "        inlineTextBox '1 '\n"
+    "        inlineTextBox 'First Section '\n"
+    "    paragraph\n"
+    "      staticText 'This is the first section.'\n"
+    "        inlineTextBox 'This is the first section. '\n"
+    "    paragraph\n"
+    "      staticText '1'\n"
+    "        inlineTextBox '1'\n"
+    "  region 'Page 2'\n"
+    "    heading '1.1 First Subsection'\n"
+    "      staticText '1.1 First Subsection'\n"
+    "        inlineTextBox '1.1 '\n"
+    "        inlineTextBox 'First Subsection '\n"
+    "    paragraph\n"
+    "      staticText 'This is the first subsection.'\n"
+    "        inlineTextBox 'This is the first subsection. '\n"
+    "    paragraph\n"
+    "      staticText '2'\n"
+    "        inlineTextBox '2'\n"
+    "  region 'Page 3'\n"
+    "    paragraph\n"
+    "      staticText '2 Second Section'\n"
+    "        inlineTextBox '2 '\n"
+    "        inlineTextBox 'Second Section '\n"
+    "    paragraph\n"
+    "      staticText '3'\n"
+    "        inlineTextBox '3'\n";
+
 }  // namespace
 
 // Using ASSERT_TRUE deliberately instead of ASSERT_EQ or ASSERT_STREQ
@@ -217,6 +250,29 @@ class PDFExtensionAccessibilityTest : public PDFExtensionTestBase {
   ~PDFExtensionAccessibilityTest() override = default;
 
  protected:
+  // TODO(crbug.com/467180032): Remove once
+  // `kPdfAccessibilityHeuristicEnhancements` is enabled by default.
+  virtual bool UseHeuristicEnhancements() const { return false; }
+
+  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
+      const override {
+    std::vector<base::test::FeatureRefAndParams> enabled =
+        PDFExtensionTestBase::GetEnabledFeatures();
+    if (UseHeuristicEnhancements()) {
+      enabled.push_back({features::kPdfAccessibilityHeuristicEnhancements, {}});
+    }
+    return enabled;
+  }
+
+  std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
+    std::vector<base::test::FeatureRef> disabled =
+        PDFExtensionTestBase::GetDisabledFeatures();
+    if (!UseHeuristicEnhancements()) {
+      disabled.push_back(features::kPdfAccessibilityHeuristicEnhancements);
+    }
+    return disabled;
+  }
+
   ui::AXTreeUpdate GetAccessibilityTreeSnapshotForPdf(
       content::WebContents* web_contents) {
     content::FindAccessibilityNodeCriteria find_criteria;
@@ -361,9 +417,9 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTestWithOopifOverride,
     if (node.role == ax::mojom::Role::kInlineTextBox &&
         name == "First Section\r\n") {
       found = true;
-      std::vector<int32_t> word_starts =
+      base::span<const int32_t> word_starts =
           node.GetIntListAttribute(ax::mojom::IntListAttribute::kWordStarts);
-      std::vector<int32_t> word_ends =
+      base::span<const int32_t> word_ends =
           node.GetIntListAttribute(ax::mojom::IntListAttribute::kWordEnds);
       ASSERT_EQ(2U, word_starts.size());
       ASSERT_EQ(2U, word_ends.size());
@@ -513,6 +569,48 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTestWithOopifOverride,
   EXPECT_EQ(kExepectedPDFSelection, selected_text);
 }
 
+class PDFExtensionAccessibilityHeuristicsTestWithOopifOverride
+    : public PDFExtensionAccessibilityTestWithOopifOverride {
+ public:
+  PDFExtensionAccessibilityHeuristicsTestWithOopifOverride() = default;
+  ~PDFExtensionAccessibilityHeuristicsTestWithOopifOverride() override =
+      default;
+
+ protected:
+  bool UseHeuristicEnhancements() const override { return true; }
+};
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTestWithOopifOverride,
+                       PdfAccessibilityInIframe) {
+  content::ScopedAccessibilityModeOverride mode_override(ui::kAXModeComplete);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/pdf/test-iframe.html")));
+
+  WebContents* contents = GetActiveWebContents();
+  WaitForAccessibilityTreeToContainNodeWithName(contents, "2 Second Section ");
+
+  ui::AXTreeUpdate ax_tree = GetAccessibilityTreeSnapshotForPdf(contents);
+  std::string ax_tree_dump =
+      DumpPdfAccessibilityTree(ax_tree, /*skip_status_subtree=*/true);
+  ASSERT_MULTILINE_STREQ(kExpectedPDFAXTreeWithHeuristics, ax_tree_dump);
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTestWithOopifOverride,
+                       PdfAccessibilityInOOPIF) {
+  content::ScopedAccessibilityModeOverride mode_override(ui::kAXModeComplete);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      embedded_test_server()->GetURL("/pdf/test-cross-site-iframe.html")));
+
+  WebContents* contents = GetActiveWebContents();
+  WaitForAccessibilityTreeToContainNodeWithName(contents, "2 Second Section ");
+
+  ui::AXTreeUpdate ax_tree = GetAccessibilityTreeSnapshotForPdf(contents);
+  std::string ax_tree_dump =
+      DumpPdfAccessibilityTree(ax_tree, /*skip_status_subtree=*/true);
+  ASSERT_MULTILINE_STREQ(kExpectedPDFAXTreeWithHeuristics, ax_tree_dump);
+}
+
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 // Test a particular PDF encountered in the wild that triggered a crash
 // when accessibility is enabled.  (http://crbug.com/40086082)
@@ -551,15 +649,6 @@ class PDFExtensionAccessibilityTextExtractionTest
     RunTest(pdf_path, "pdf/accessibility", expected_subtext);
   }
 
- protected:
-  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
-      const override {
-    std::vector<base::test::FeatureRefAndParams> enabled =
-        PDFExtensionAccessibilityTestWithOopifOverride::GetEnabledFeatures();
-    enabled.push_back({chrome_pdf::features::kAccessiblePDFForm, {}});
-    return enabled;
-  }
-
  private:
   // The test waits until the tree dump includes `expected_subtext`.
   void RunTest(const base::FilePath& test_file_path,
@@ -567,8 +656,12 @@ class PDFExtensionAccessibilityTextExtractionTest
                std::string_view expected_subtext) {
     // Load the expectation file.
     ui::AXInspectTestHelper test_helper("content");
+    const base::FilePath::StringType expectations_qualifier =
+        UseHeuristicEnhancements() ? FILE_PATH_LITERAL("heuristics")
+                                   : FILE_PATH_LITERAL("");
     std::optional<base::FilePath> expected_file_path =
-        test_helper.GetExpectationFilePath(test_file_path);
+        test_helper.GetExpectationFilePath(test_file_path,
+                                           expectations_qualifier);
     ASSERT_TRUE(expected_file_path) << "No expectation file present.";
 
     std::optional<std::vector<std::string>> expected_lines =
@@ -621,10 +714,17 @@ class PDFExtensionAccessibilityTextExtractionTest
     int previous_node_id = 0;
     int previous_node_next_id = 0;
     std::string line;
+    auto push_line = [&](std::string_view text) {
+      // The heuristics replace trailing line breaks with spaces.
+      if (UseHeuristicEnhancements()) {
+        text = base::TrimWhitespaceASCII(text, base::TRIM_TRAILING);
+      }
+      lines.emplace_back(text);
+    };
     for (ui::AXNode* node : text_nodes) {
       // StaticText begins a new paragraph.
       if (node->GetRole() == ax::mojom::Role::kStaticText && !line.empty()) {
-        lines.push_back(line);
+        push_line(line);
         lines.push_back("\u00b6");  // pilcrow/paragraph mark, Alt+0182
         line.clear();
       }
@@ -652,7 +752,7 @@ class PDFExtensionAccessibilityTextExtractionTest
         EXPECT_EQ(prev_id, 0)
             << "Our back pointer points to something unexpected.";
         if (!line.empty()) {
-          lines.push_back(line);
+          push_line(line);
         }
         line = std::string(trimmed_name);
       }
@@ -662,7 +762,7 @@ class PDFExtensionAccessibilityTextExtractionTest
           node->GetIntAttribute(ax::mojom::IntAttribute::kNextOnLineId);
     }
     if (!line.empty()) {
-      lines.push_back(line);
+      push_line(line);
     }
 
     // Extra newline to match current expectations. TODO: get rid of this
@@ -739,13 +839,6 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTextExtractionTest,
                         /*expected_subtext=*/"Page 1");
 }
 
-// Test data of inline text boxes for PDF with text fields.
-IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTextExtractionTest,
-                       TextFields) {
-  RunTextExtractionTest(FILE_PATH_LITERAL("text_fields.pdf"),
-                        /*expected_subtext=*/"Page 1");
-}
-
 // Test data of inline text boxes for PDF with multi-line and various font-sized
 // text.
 IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTextExtractionTest,
@@ -770,13 +863,65 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTextExtractionTest,
                         /*expected_subtext=*/"Page 1");
 }
 
-class PDFExtensionAccessibilityTreeDumpTest
-    : public PDFExtensionAccessibilityTest,
-      public ::testing::WithParamInterface<
-          std::tuple<ui::AXApiType::Type, bool>> {
+class PDFExtensionAccessibilityHeuristicsTextExtractionTest
+    : public PDFExtensionAccessibilityTextExtractionTest {
  public:
-  PDFExtensionAccessibilityTreeDumpTest() : test_helper_(ax_inspect_type()) {}
-  ~PDFExtensionAccessibilityTreeDumpTest() override = default;
+  PDFExtensionAccessibilityHeuristicsTextExtractionTest() = default;
+  ~PDFExtensionAccessibilityHeuristicsTextExtractionTest() override = default;
+
+ protected:
+  bool UseHeuristicEnhancements() const override { return true; }
+};
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTextExtractionTest,
+                       NextOnLine) {
+  RunTextExtractionTest(FILE_PATH_LITERAL("next-on-line.pdf"),
+                        /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTextExtractionTest,
+                       DropCap) {
+  RunTextExtractionTest(FILE_PATH_LITERAL("drop-cap.pdf"),
+                        /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTextExtractionTest,
+                       SuperscriptSubscript) {
+  RunTextExtractionTest(FILE_PATH_LITERAL("superscript-subscript.pdf"),
+                        /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTextExtractionTest,
+                       FontChange) {
+  RunTextExtractionTest(FILE_PATH_LITERAL("font-change.pdf"),
+                        /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTextExtractionTest,
+                       WebLinks) {
+  RunTextExtractionTest(FILE_PATH_LITERAL("weblinks.pdf"),
+                        /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTextExtractionTest,
+                       ParagraphsAndHeadingUntagged) {
+  RunTextExtractionTest(
+      FILE_PATH_LITERAL("paragraphs-and-heading-untagged.pdf"),
+      /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTextExtractionTest,
+                       LinksImagesAndText) {
+  RunTextExtractionTest(FILE_PATH_LITERAL("text-image-link.pdf"),
+                        /*expected_subtext=*/"Second Page");
+}
+
+class PDFExtensionAccessibilityTreeDumpTestBase
+    : public PDFExtensionAccessibilityTest {
+ public:
+  explicit PDFExtensionAccessibilityTreeDumpTestBase(ui::AXApiType::Type type)
+      : test_helper_(type) {}
+  ~PDFExtensionAccessibilityTreeDumpTestBase() override = default;
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     PDFExtensionAccessibilityTest::SetUpCommandLine(command_line);
@@ -785,23 +930,22 @@ class PDFExtensionAccessibilityTreeDumpTest
     test_helper_.InitializeFeatureList();
   }
 
-  ui::AXApiType::Type ax_inspect_type() const {
-    return std::get<0>(GetParam());
-  }
-
-  bool UseOopif() const override { return std::get<1>(GetParam()); }
-
-  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
-      const override {
-    std::vector<base::test::FeatureRefAndParams> enabled =
-        PDFExtensionAccessibilityTest::GetEnabledFeatures();
-    enabled.push_back({chrome_pdf::features::kAccessiblePDFForm, {}});
-    return enabled;
-  }
+  virtual ui::AXApiType::Type ax_inspect_type() const = 0;
 
  protected:
   void RunPDFTest(const base::FilePath::CharType* pdf_file,
                   std::string_view expected_subtext) {
+    RunPDFTestWithExpectationsQualifier(
+        pdf_file, expected_subtext,
+        /*expectations_qualifier=*/FILE_PATH_LITERAL(""));
+  }
+
+  // Same as RunPDFTest(), but uses qualified expectation files, e.g.
+  // "weblinks-heuristics-expected-blink.txt" for "heuristics".
+  void RunPDFTestWithExpectationsQualifier(
+      const base::FilePath::CharType* pdf_file,
+      std::string_view expected_subtext,
+      const base::FilePath::StringType& expectations_qualifier) {
     base::FilePath test_path = chrome_test_utils::GetTestFilePath(
         base::FilePath(FILE_PATH_LITERAL("pdf")),
         base::FilePath(FILE_PATH_LITERAL("accessibility")));
@@ -811,7 +955,8 @@ class PDFExtensionAccessibilityTreeDumpTest
     }
     base::FilePath pdf_path = test_path.Append(pdf_file);
 
-    RunTest(pdf_path, "pdf/accessibility", expected_subtext);
+    RunTest(pdf_path, "pdf/accessibility", expected_subtext,
+            expectations_qualifier);
   }
 
  private:
@@ -837,7 +982,8 @@ class PDFExtensionAccessibilityTreeDumpTest
   // The test waits until the tree dump includes `expected_subtext`.
   void RunTest(const base::FilePath& test_file_path,
                const char* file_dir,
-               std::string_view expected_subtext) {
+               std::string_view expected_subtext,
+               const base::FilePath::StringType& expectations_qualifier) {
     std::string pdf_contents;
     {
       base::ScopedAllowBlockingForTesting allow_blocking;
@@ -856,8 +1002,8 @@ class PDFExtensionAccessibilityTreeDumpTest
     // Exit without running the test if we can't find an expectation file or if
     // the expectation file contains a skip marker.
     // This is used to skip certain tests on certain platforms.
-    base::FilePath expected_file_path =
-        test_helper_.GetExpectationFilePath(test_file_path);
+    base::FilePath expected_file_path = test_helper_.GetExpectationFilePath(
+        test_file_path, expectations_qualifier);
     if (expected_file_path.empty()) {
       LOG(INFO) << "No expectation file present, ignoring test on this "
                    "platform.";
@@ -986,6 +1132,22 @@ class PDFExtensionAccessibilityTreeDumpTest
   ui::AXInspectTestHelper test_helper_;
 };
 
+class PDFExtensionAccessibilityTreeDumpTest
+    : public ::testing::WithParamInterface<
+          std::tuple<ui::AXApiType::Type, bool>>,
+      public PDFExtensionAccessibilityTreeDumpTestBase {
+ public:
+  PDFExtensionAccessibilityTreeDumpTest()
+      : PDFExtensionAccessibilityTreeDumpTestBase(ax_inspect_type()) {}
+  ~PDFExtensionAccessibilityTreeDumpTest() override = default;
+
+  ui::AXApiType::Type ax_inspect_type() const override {
+    return std::get<0>(GetParam());
+  }
+
+  bool UseOopif() const override { return std::get<1>(GetParam()); }
+};
+
 // Constructs a list of accessibility tests, one for each accessibility tree
 // formatter testpasses.
 const std::vector<ui::AXApiType::Type> GetAXTestValues() {
@@ -1052,11 +1214,6 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTreeDumpTest, Highlights) {
              /*expected_subtext=*/"Page 1");
 }
 
-IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTreeDumpTest, TextFields) {
-  RunPDFTest(FILE_PATH_LITERAL("text_fields.pdf"),
-             /*expected_subtext=*/"Page 1");
-}
-
 IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTreeDumpTest, Images) {
   RunPDFTest(FILE_PATH_LITERAL("image_alt_text.pdf"),
              /*expected_subtext=*/"Page 1");
@@ -1079,8 +1236,77 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTreeDumpTest, TextStyle) {
              /*expected_subtext=*/"Page 1");
 }
 
+class PDFExtensionAccessibilityTreeDumpXfaTest
+    : public ::testing::WithParamInterface<
+          std::tuple<ui::AXApiType::Type, PDFExtensionTestState>>,
+      public PDFExtensionAccessibilityTreeDumpTestBase {
+ public:
+  PDFExtensionAccessibilityTreeDumpXfaTest()
+      : PDFExtensionAccessibilityTreeDumpTestBase(ax_inspect_type()) {}
+  ~PDFExtensionAccessibilityTreeDumpXfaTest() override = default;
+
+  ui::AXApiType::Type ax_inspect_type() const override {
+    return std::get<0>(GetParam());
+  }
+
+  bool UseOopif() const override {
+    return PDFTestStateUseOopif(std::get<1>(GetParam()));
+  }
+  bool EnableXfa() const {
+    return PDFTestStateEnableXfa(std::get<1>(GetParam()));
+  }
+
+ protected:
+  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
+      const override {
+    auto enabled =
+        PDFExtensionAccessibilityTreeDumpTestBase::GetEnabledFeatures();
+    if (EnableXfa()) {
+      enabled.push_back({chrome_pdf::features::kPdfXfaSupport, {}});
+    }
+    return enabled;
+  }
+
+  std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
+    auto disabled =
+        PDFExtensionAccessibilityTreeDumpTestBase::GetDisabledFeatures();
+    if (!EnableXfa()) {
+      disabled.push_back(chrome_pdf::features::kPdfXfaSupport);
+    }
+    return disabled;
+  }
+};
+
+struct PDFExtensionAccessibilityTreeDumpXfaTestPassToString {
+  std::string operator()(
+      const ::testing::TestParamInfo<
+          std::tuple<ui::AXApiType::Type, PDFExtensionTestState>>& i) const {
+    const char* config = [&] {
+      switch (std::get<1>(i.param)) {
+        case PDFExtensionTestState::kGuestViewNoXfa:
+          return "GUESTVIEW_NO_XFA_";
+        case PDFExtensionTestState::kOopifPdfNoXfa:
+          return "OOPIF_NO_XFA_";
+        case PDFExtensionTestState::kOopifPdfXfa:
+          return "OOPIF_XFA_";
+      }
+      NOTREACHED();
+    }();
+    return base::StrCat({config, std::string(std::get<0>(i.param))});
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    PDFExtensionAccessibilityTreeDumpXfaTest,
+    testing::Combine(testing::ValuesIn(GetAXTestValues()),
+                     testing::Values(PDFExtensionTestState::kGuestViewNoXfa,
+                                     PDFExtensionTestState::kOopifPdfNoXfa,
+                                     PDFExtensionTestState::kOopifPdfXfa)),
+    PDFExtensionAccessibilityTreeDumpXfaTestPassToString());
+
 // TODO(crbug.com/40745411)
-IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTreeDumpTest, XfaFields) {
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityTreeDumpXfaTest, XfaFields) {
   RunPDFTest(FILE_PATH_LITERAL("xfa_fields.pdf"),
              /*expected_subtext=*/"Page 1");
 }
@@ -1136,12 +1362,14 @@ class PDFExtensionAccessibilityHeuristicsTreeDumpTest
   ~PDFExtensionAccessibilityHeuristicsTreeDumpTest() override = default;
 
  protected:
-  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
-      const override {
-    std::vector<base::test::FeatureRefAndParams> enabled =
-        PDFExtensionAccessibilityTreeDumpTest::GetEnabledFeatures();
-    enabled.push_back({features::kPdfAccessibilityHeuristicEnhancements, {}});
-    return enabled;
+  bool UseHeuristicEnhancements() const override { return true; }
+
+  // For PDFs also used by `PDFExtensionAccessibilityTreeDumpTest`, which need
+  // separate "-heuristics" expectation files.
+  void RunHeuristicsPDFTest(const base::FilePath::CharType* pdf_file,
+                            std::string_view expected_subtext) {
+    RunPDFTestWithExpectationsQualifier(pdf_file, expected_subtext,
+                                        FILE_PATH_LITERAL("heuristics"));
   }
 };
 
@@ -1169,6 +1397,84 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
              /*expected_subtext=*/"Page 1");
 }
 
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       HeadingHeuristicsSparseCoverPage) {
+  RunPDFTest(FILE_PATH_LITERAL("heading-heuristics-sparse-cover-page.pdf"),
+             /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       HeadingHeuristicsDenseTableAndBody) {
+  RunPDFTest(FILE_PATH_LITERAL("heading-heuristics-dense-table-and-body.pdf"),
+             /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       UnorderedListHeuristics) {
+  RunPDFTest(FILE_PATH_LITERAL("unordered-list-heuristics.pdf"),
+             /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       UnorderedListCombinedHeuristics) {
+  RunPDFTest(FILE_PATH_LITERAL("unordered-list-combined-heuristics.pdf"),
+             /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       NestedUnorderedListHeuristics) {
+  RunPDFTest(FILE_PATH_LITERAL("nested-unordered-list-heuristics.pdf"),
+             /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       ParagraphsAndHeadingUntagged) {
+  RunHeuristicsPDFTest(FILE_PATH_LITERAL("paragraphs-and-heading-untagged.pdf"),
+                       /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       DirectionalTextRuns) {
+  RunHeuristicsPDFTest(FILE_PATH_LITERAL("directional-text-runs.pdf"),
+                       /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       TextDirection) {
+  RunHeuristicsPDFTest(FILE_PATH_LITERAL("text-direction.pdf"),
+                       /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       WebLinks) {
+  RunHeuristicsPDFTest(FILE_PATH_LITERAL("weblinks.pdf"),
+                       /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       OverlappingLinks) {
+  RunHeuristicsPDFTest(FILE_PATH_LITERAL("overlapping-links.pdf"),
+                       /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       LinksImagesAndText) {
+  RunHeuristicsPDFTest(FILE_PATH_LITERAL("text-image-link.pdf"),
+                       /*expected_subtext=*/"Page 2");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       TextRunStyleHeuristic) {
+  RunHeuristicsPDFTest(FILE_PATH_LITERAL("text-run-style-heuristic.pdf"),
+                       /*expected_subtext=*/"Page 1");
+}
+
+IN_PROC_BROWSER_TEST_P(PDFExtensionAccessibilityHeuristicsTreeDumpTest,
+                       TextStyle) {
+  RunHeuristicsPDFTest(FILE_PATH_LITERAL("text-style.pdf"),
+                       /*expected_subtext=*/"Page 1");
+}
+
 // This test suite contains simple tests for the PDF OCR feature.
 class PdfOcrUmaTest : public PDFExtensionAccessibilityTest,
                       public ::testing::WithParamInterface<bool> {
@@ -1191,7 +1497,8 @@ class PdfOcrUmaTest : public PDFExtensionAccessibilityTest,
   }
 
   std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
-    std::vector<base::test::FeatureRef> disabled;
+    std::vector<base::test::FeatureRef> disabled =
+        PDFExtensionAccessibilityTest::GetDisabledFeatures();
     if (!UseOopif()) {
       disabled.push_back(chrome_pdf::features::kPdfOopif);
     }
@@ -1297,7 +1604,11 @@ INSTANTIATE_TEST_SUITE_P(All,
 INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
     PDFExtensionAccessibilityTestWithOopifOverride);
 INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
+    PDFExtensionAccessibilityHeuristicsTestWithOopifOverride);
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
     PDFExtensionAccessibilityTextExtractionTest);
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
+    PDFExtensionAccessibilityHeuristicsTextExtractionTest);
 INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
     PDFExtensionAccessibilityNavigationTest);
 
@@ -1391,7 +1702,8 @@ class PdfSearchifyIntegrationTest
   }
 
   std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
-    std::vector<base::test::FeatureRef> disabled;
+    std::vector<base::test::FeatureRef> disabled =
+        PDFExtensionAccessibilityTest::GetDisabledFeatures();
     if (!IsOcrServiceEnabled()) {
       disabled.push_back(ax::mojom::features::kScreenAIOCREnabled);
     }
@@ -1431,14 +1743,18 @@ class PdfSearchifyIntegrationTest
     // If the given `pdf_path` contains a filename, "test.pdf", an expected
     // file path will have a filename, "test-expected-with-pdf-searchify.txt",
     // when OCR is available.
-    // `expected_file_suffix` will be created based on whether OCR is available
-    // and it has a separate output for Windows.
+    // `expected_file_suffix` will be created based on whether heuristic
+    // enhancements are enabled, whether OCR is available, and whether there is
+    // a separate output for Windows.
     base::FilePath::StringType expected_file_suffix;
+    if (UseHeuristicEnhancements()) {
+      expected_file_suffix = FILE_PATH_LITERAL("-heuristics");
+    }
 
     if (is_ocr_available) {
-      expected_file_suffix = FILE_PATH_LITERAL("-expected-with-pdf-searchify");
+      expected_file_suffix += FILE_PATH_LITERAL("-expected-with-pdf-searchify");
     } else {
-      expected_file_suffix =
+      expected_file_suffix +=
           FILE_PATH_LITERAL("-expected-without-pdf-searchify");
     }
 #if BUILDFLAG(IS_WIN)
@@ -1551,16 +1867,45 @@ IN_PROC_BROWSER_TEST_P(PdfSearchifyIntegrationTest,
 #endif
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    PdfSearchifyIntegrationTest,
-    ::testing::Combine(testing::Bool(), testing::Bool(), testing::Bool()),
-    [](const testing::TestParamInfo<std::tuple<bool, bool, bool>>& info) {
-      return base::StringPrintf(
-          "OcrService_%s_Library_%s_%s",
-          std::get<0>(info.param) ? "Enabled" : "Disabled",
-          std::get<1>(info.param) ? "Available" : "Unavailable",
-          std::get<2>(info.param) ? "OOPIF" : "GuestView");
-    });
+struct PdfSearchifyIntegrationTestParamToString {
+  std::string operator()(
+      const testing::TestParamInfo<std::tuple<bool, bool, bool>>& info) const {
+    return base::StringPrintf(
+        "OcrService_%s_Library_%s_%s",
+        std::get<0>(info.param) ? "Enabled" : "Disabled",
+        std::get<1>(info.param) ? "Available" : "Unavailable",
+        std::get<2>(info.param) ? "OOPIF" : "GuestView");
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PdfSearchifyIntegrationTest,
+                         ::testing::Combine(testing::Bool(),
+                                            testing::Bool(),
+                                            testing::Bool()),
+                         PdfSearchifyIntegrationTestParamToString());
+
+class PdfSearchifyHeuristicsIntegrationTest
+    : public PdfSearchifyIntegrationTest {
+ public:
+  PdfSearchifyHeuristicsIntegrationTest() = default;
+  ~PdfSearchifyHeuristicsIntegrationTest() override = default;
+
+ protected:
+  bool UseHeuristicEnhancements() const override { return true; }
+};
+
+IN_PROC_BROWSER_TEST_P(PdfSearchifyHeuristicsIntegrationTest, ThreePagePDF) {
+  RunPDFAXTreeDumpTest("inaccessible-text-in-three-page.pdf", "Page 3");
+}
+
+// Only instantiate with OCR available. Without OCR there is no text for the
+// heuristics to change.
+INSTANTIATE_TEST_SUITE_P(All,
+                         PdfSearchifyHeuristicsIntegrationTest,
+                         ::testing::Combine(testing::Values(true),
+                                            testing::Values(true),
+                                            testing::Bool()),
+                         PdfSearchifyIntegrationTestParamToString());
 
 #endif  // defined(PDF_SEARCHIFY_INTEGRATION_TEST_ENABLED)

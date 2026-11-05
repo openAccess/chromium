@@ -24,6 +24,7 @@
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
 #include "third_party/blink/renderer/core/testing/scoped_mock_overlay_scrollbars.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
@@ -417,7 +418,7 @@ TEST_F(SnapCoordinatorTest,
   {                                                                  \
     EXPECT_EQ(expected.scroll_snap_align, actual.scroll_snap_align); \
     EXPECT_EQ(expected.rect, actual.rect);                           \
-    EXPECT_EQ(expected.must_snap, actual.must_snap);                 \
+    EXPECT_EQ(expected.snap_stop, actual.snap_stop);                 \
   }
 
 // The following tests check the SnapContainerData and SnapAreaData are
@@ -447,7 +448,8 @@ TEST_F(SnapCoordinatorTest, SnapDataCalculation) {
                          cc::SnapStrictness::kMandatory),
       gfx::RectF(10, 10, width - 20, height - 20), max_position);
   cc::SnapAreaData expected_area(cc::ScrollSnapAlign(cc::SnapAlignment::kStart),
-                                 gfx::RectF(192, 192, 116, 116), false, false,
+                                 gfx::RectF(192, 192, 116, 116),
+                                 cc::SnapStop::kNormal, false,
                                  cc::ElementId(10));
   expected_container.AddSnapAreaData(expected_area);
 
@@ -482,7 +484,8 @@ TEST_F(SnapCoordinatorTest, ScrolledSnapDataCalculation) {
                          cc::SnapStrictness::kMandatory),
       gfx::RectF(10, 10, width - 20, height - 20), max_position);
   cc::SnapAreaData expected_area(cc::ScrollSnapAlign(cc::SnapAlignment::kStart),
-                                 gfx::RectF(192, 192, 116, 116), false, false,
+                                 gfx::RectF(192, 192, 116, 116),
+                                 cc::SnapStop::kNormal, false,
                                  cc::ElementId(10));
   expected_container.AddSnapAreaData(expected_area);
 
@@ -543,7 +546,8 @@ TEST_F(SnapCoordinatorTest, ScrolledSnapDataCalculationOnViewport) {
       gfx::RectF(0, 0, width, height), max_position);
 
   cc::SnapAreaData expected_area(cc::ScrollSnapAlign(cc::SnapAlignment::kStart),
-                                 gfx::RectF(200, 200, 100, 100), false, false,
+                                 gfx::RectF(200, 200, 100, 100),
+                                 cc::SnapStop::kNormal, false,
                                  cc::ElementId(10));
   expected_container.AddSnapAreaData(expected_area);
 
@@ -590,7 +594,8 @@ TEST_F(SnapCoordinatorTest, SnapDataCalculationWithBoxModel) {
   // rect.height = area.height +
   //               2 * (area.padding + area.border + area.scroll-margin)
   cc::SnapAreaData expected_area(cc::ScrollSnapAlign(cc::SnapAlignment::kStart),
-                                 gfx::RectF(208, 208, 144, 144), false, false,
+                                 gfx::RectF(208, 208, 144, 144),
+                                 cc::SnapStop::kNormal, false,
                                  cc::ElementId(10));
   expected_container.AddSnapAreaData(expected_area);
 
@@ -625,7 +630,8 @@ TEST_F(SnapCoordinatorTest, NegativeMarginSnapDataCalculation) {
                          cc::SnapStrictness::kMandatory),
       gfx::RectF(10, 10, width - 20, height - 20), max_position);
   cc::SnapAreaData expected_area(cc::ScrollSnapAlign(cc::SnapAlignment::kStart),
-                                 gfx::RectF(208, 208, 84, 84), false, false,
+                                 gfx::RectF(208, 208, 84, 84),
+                                 cc::SnapStop::kNormal, false,
                                  cc::ElementId(10));
   expected_container.AddSnapAreaData(expected_area);
 
@@ -671,7 +677,8 @@ TEST_F(SnapCoordinatorTest, AsymmetricalSnapDataCalculation) {
       gfx::RectF(16, 10, width - 28, height - 24), max_position);
   cc::SnapAreaData expected_area(
       cc::ScrollSnapAlign(cc::SnapAlignment::kCenter),
-      gfx::RectF(192, 198, 112, 108), false, false, cc::ElementId(10));
+      gfx::RectF(192, 198, 112, 108), cc::SnapStop::kNormal, false,
+      cc::ElementId(10));
   expected_container.AddSnapAreaData(expected_area);
 
   EXPECT_EQ_CONTAINER(expected_container, actual_container);
@@ -707,7 +714,8 @@ TEST_F(SnapCoordinatorTest, ScaledSnapDataCalculation) {
   // The area is scaled from center, so it pushes the area's top-left corner to
   // (50, 50).
   cc::SnapAreaData expected_area(cc::ScrollSnapAlign(cc::SnapAlignment::kEnd),
-                                 gfx::RectF(42, 42, 416, 416), false, false,
+                                 gfx::RectF(42, 42, 416, 416),
+                                 cc::SnapStop::kNormal, false,
                                  cc::ElementId(10));
   expected_container.AddSnapAreaData(expected_area);
 
@@ -746,7 +754,8 @@ TEST_F(SnapCoordinatorTest, VerticalRlSnapDataCalculation) {
   // and 'end' should align to the left.
   cc::SnapAreaData expected_area(
       cc::ScrollSnapAlign(cc::SnapAlignment::kStart, cc::SnapAlignment::kEnd),
-      gfx::RectF(192, 192, 116, 116), false, false, cc::ElementId(10));
+      gfx::RectF(192, 192, 116, 116), cc::SnapStop::kNormal, false,
+      cc::ElementId(10));
   expected_container.AddSnapAreaData(expected_area);
 
   EXPECT_EQ_CONTAINER(expected_container, actual_container);
@@ -991,6 +1000,125 @@ TEST_F(SnapCoordinatorTest, UseCounterNestedSnap) {
   EXPECT_FALSE(IsUseCounted(WebFeature::kScrollSnapNestedSnapAreas));
 }
 
+TEST_F(SnapCoordinatorTest, RecordsSnapAreaAncestors) {
+  SetHTML(R"HTML(
+    <style>
+      #scroller {
+        overflow: auto;
+        scroll-snap-type: both mandatory;
+        width: 200px;
+        height: 200px;
+      }
+      .snap { padding: 100px; }
+      #outer, #sibling, #inner { scroll-snap-align: start; }
+      #middle { scroll-snap-align: none start; }
+    </style>
+    <div id="scroller">
+      <div id="outer" class="snap">
+        <div id="sibling" class="snap"></div>
+        <div id="middle" class="snap">
+          <div id="inner" class="snap"></div>
+        </div>
+      </div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  const cc::SnapContainerData* data =
+      GetSnapContainerData(*scroller->GetLayoutBox());
+  ASSERT_TRUE(data);
+  ASSERT_EQ(4u, data->size());
+  EXPECT_EQ(0u, data->at(0).parent_snap_area_offset);
+  EXPECT_EQ(1u, data->at(1).parent_snap_area_offset);
+  EXPECT_EQ(2u, data->at(2).parent_snap_area_offset);
+  EXPECT_EQ(1u, data->at(3).parent_snap_area_offset);
+}
+
+TEST_F(SnapCoordinatorTest, RecordsAncestorAcrossSingleAxisScroller) {
+  ScopedSingleAxisScrollContainersForTest single_axis_scrollers(true);
+  ScopedSingleAxisScrollContainersForScrollSnapForTest single_axis_snap(true);
+  SetHTML(R"HTML(
+    <style>
+      #outer-scroller {
+        overflow-x: clip;
+        overflow-y: scroll;
+        scroll-snap-type: y mandatory;
+        width: 200px;
+        height: 200px;
+      }
+      #outer { scroll-snap-align: start; height: 400px; }
+      #inner-scroller {
+        overflow-x: scroll;
+        overflow-y: clip;
+        scroll-snap-type: x mandatory;
+        width: 100px;
+        height: 100px;
+      }
+      #middle {
+        scroll-snap-align: none start;
+        width: 300px;
+      }
+      #inner {
+        scroll-snap-align: start;
+        width: 100px;
+        height: 300px;
+      }
+    </style>
+    <div id="outer-scroller">
+      <div id="outer">
+        <div id="inner-scroller">
+          <div id="middle">
+            <div id="inner"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* scroller = GetDocument().getElementById(AtomicString("outer-scroller"));
+  const cc::SnapContainerData* data =
+      GetSnapContainerData(*scroller->GetLayoutBox());
+  ASSERT_TRUE(data);
+  ASSERT_EQ(2u, data->size());
+  EXPECT_EQ(0u, data->at(0).parent_snap_area_offset);
+  EXPECT_EQ(1u, data->at(1).parent_snap_area_offset);
+}
+
+TEST_F(SnapCoordinatorTest, ScrollSnapStopValues) {
+  ScopedCSSScrollSnapStopBeforeForTest snap_stop_before(true);
+  SetHTML(R"HTML(
+    <style>
+      #scroller {
+        overflow: auto;
+        scroll-snap-type: y mandatory;
+        width: 200px;
+        height: 200px;
+      }
+      .snap { scroll-snap-align: start; height: 300px; }
+      #normal { scroll-snap-stop: normal; }
+      #always { scroll-snap-stop: always; }
+      #before { scroll-snap-stop: before; }
+    </style>
+    <div id="scroller">
+      <div id="normal" class="snap"></div>
+      <div id="always" class="snap"></div>
+      <div id="before" class="snap"></div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* scroller = GetDocument().getElementById(AtomicString("scroller"));
+  const cc::SnapContainerData* data =
+      GetSnapContainerData(*scroller->GetLayoutBox());
+  ASSERT_TRUE(data);
+  ASSERT_EQ(3u, data->size());
+  EXPECT_EQ(cc::SnapStop::kNormal, data->at(0).snap_stop);
+  EXPECT_EQ(cc::SnapStop::kAlways, data->at(1).snap_stop);
+  EXPECT_EQ(cc::SnapStop::kBefore, data->at(2).snap_stop);
+}
+
 TEST_F(SnapCoordinatorTest, UseCounterCoveringSnapArea) {
   ClearUseCounter(WebFeature::kScrollSnapCoveringSnapArea);
   // Create some small snap areas. No covering areas should be reported.
@@ -1022,6 +1150,119 @@ TEST_F(SnapCoordinatorTest, UseCounterCoveringSnapArea) {
   )HTML");
   UpdateAllLifecyclePhasesForTest();
   EXPECT_TRUE(IsUseCounted(WebFeature::kScrollSnapCoveringSnapArea));
+}
+
+TEST_F(SnapCoordinatorTest, UseCounterSingleAxisScrollerPropagateSnapAxis) {
+  ScopedSingleAxisScrollContainersForTest enable_single_axis(true);
+  ScopedSingleAxisScrollContainersForScrollSnapForTest enable_snap(true);
+
+  ClearUseCounter(WebFeature::kSingleAxisScrollerPropagateSnapAxis);
+  // Inner container consumes both snap axes; no axes propagate to the outer
+  // container: should not count.
+  SetHTML(R"HTML(
+    <style>
+      .outer { overflow: auto; scroll-snap-type: both mandatory; width: 500px; height: 500px; }
+      .inner { overflow: auto; scroll-snap-type: both mandatory; width: 400px; height: 400px; }
+      .snap { scroll-snap-align: start; width: 100px; height: 100px; }
+    </style>
+    <div class="outer">
+      <div class="inner">
+        <div class="snap"></div>
+      </div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(IsUseCounted(WebFeature::kSingleAxisScrollerPropagateSnapAxis));
+
+  ClearUseCounter(WebFeature::kSingleAxisScrollerPropagateSnapAxis);
+  // Inner container consumes the X axis; outer container consumes the
+  // propagated Y axis: should count.
+  SetHTML(R"HTML(
+    <style>
+      .outer { overflow-x: clip; overflow-y: auto; scroll-snap-type: y mandatory; width: 500px; height: 500px; }
+      .inner { overflow-x: auto; overflow-y: clip; scroll-snap-type: x mandatory; width: 400px; height: 400px; }
+      .snap { scroll-snap-align: start; width: 100px; height: 100px; }
+    </style>
+    <div class="outer">
+      <div class="inner">
+        <div class="snap"></div>
+      </div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(IsUseCounted(WebFeature::kSingleAxisScrollerPropagateSnapAxis));
+
+  ClearUseCounter(WebFeature::kSingleAxisScrollerPropagateSnapAxis);
+  // Snap area specifies only the X axis, which is consumed by the inner
+  // container; outer container has nothing to consume: should not count.
+  SetHTML(R"HTML(
+    <style>
+      .outer { overflow-x: clip; overflow-y: auto; scroll-snap-type: y mandatory; width: 500px; height: 500px; }
+      .inner { overflow-x: auto; overflow-y: clip; scroll-snap-type: x mandatory; width: 400px; height: 400px; }
+      .snap { scroll-snap-align: none start; width: 100px; height: 100px; }
+    </style>
+    <div class="outer">
+      <div class="inner">
+        <div class="snap"></div>
+      </div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(IsUseCounted(WebFeature::kSingleAxisScrollerPropagateSnapAxis));
+
+  ClearUseCounter(WebFeature::kSingleAxisScrollerPropagateSnapAxis);
+  // Outer container consumes the propagated Y axis, but has scroll-snap-type:
+  // none: should not count.
+  SetHTML(R"HTML(
+    <style>
+      .outer { overflow-x: clip; overflow-y: auto; scroll-snap-type: none; width: 500px; height: 500px; }
+      .inner { overflow-x: auto; overflow-y: clip; scroll-snap-type: x mandatory; width: 400px; height: 400px; }
+      .snap { scroll-snap-align: start; width: 100px; height: 100px; }
+    </style>
+    <div class="outer">
+      <div class="inner">
+        <div class="snap"></div>
+      </div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(IsUseCounted(WebFeature::kSingleAxisScrollerPropagateSnapAxis));
+
+  ClearUseCounter(WebFeature::kSingleAxisScrollerPropagateSnapAxis);
+  // Outer container consumes the propagated Y axis, but can only snap in the X
+  // axis: should not count.
+  SetHTML(R"HTML(
+    <style>
+      .outer { overflow-x: clip; overflow-y: auto; scroll-snap-type: x mandatory; width: 500px; height: 500px; }
+      .inner { overflow-x: auto; overflow-y: clip; scroll-snap-type: x mandatory; width: 400px; height: 400px; }
+      .snap { scroll-snap-align: start; width: 100px; height: 100px; }
+    </style>
+    <div class="outer">
+      <div class="inner">
+        <div class="snap"></div>
+      </div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(IsUseCounted(WebFeature::kSingleAxisScrollerPropagateSnapAxis));
+
+  ClearUseCounter(WebFeature::kSingleAxisScrollerPropagateSnapAxis);
+  // Outer container consumes the propagated Y axis and can snap in both axes:
+  // should count.
+  SetHTML(R"HTML(
+    <style>
+      .outer { overflow-x: clip; overflow-y: auto; scroll-snap-type: both mandatory; width: 500px; height: 500px; }
+      .inner { overflow-x: auto; overflow-y: clip; scroll-snap-type: x mandatory; width: 400px; height: 400px; }
+      .snap { scroll-snap-align: start; width: 100px; height: 100px; }
+    </style>
+    <div class="outer">
+      <div class="inner">
+        <div class="snap"></div>
+      </div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(IsUseCounted(WebFeature::kSingleAxisScrollerPropagateSnapAxis));
 }
 
 }  // namespace blink

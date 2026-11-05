@@ -90,8 +90,8 @@ bool SodaFeatureHasUpdate(SodaFeature feature,
 }
 
 // Updates the toggle button state and accessibility state for `item` to
-// `toggled`.
-void UpdateToggleState(HoverHighlightView* item, bool toggled) {
+// `toggled` and `enabled`.
+void UpdateToggleState(HoverHighlightView* item, bool toggled, bool enabled) {
   if (!item) {
     return;
   }
@@ -102,6 +102,7 @@ void UpdateToggleState(HoverHighlightView* item, bool toggled) {
     Switch* button = static_cast<Switch*>(right_view);
     button->AnimateIsOn(toggled);
   }
+  item->SetEnabled(enabled);
 
   // The entire row is treated as one element for accessibility.
   item->SetAccessibilityState(
@@ -109,13 +110,22 @@ void UpdateToggleState(HoverHighlightView* item, bool toggled) {
               : HoverHighlightView::AccessibilityState::UNCHECKED_CHECKBOX);
 }
 
-// Updates the feature state in the UI to `enabled` on `view1` and `view2` if
-// the views exist.
-void UpdateFeatureState(bool enabled,
+// Updates the feature state in the UI to `toggled` and `enabled` on `view1` and
+// `view2` if the views exist.
+void UpdateFeatureState(bool toggled,
+                        bool enabled,
                         HoverHighlightView* view1,
                         HoverHighlightView* view2) {
-  UpdateToggleState(view1, enabled);
-  UpdateToggleState(view2, enabled);
+  UpdateToggleState(view1, toggled, enabled);
+  UpdateToggleState(view2, toggled, enabled);
+}
+
+// Updates the feature state in the UI to `toggled` on `view1` and
+// `view2` if the views exist, leaving the rows enabled.
+void UpdateFeatureState(bool toggled,
+                        HoverHighlightView* view1,
+                        HoverHighlightView* view2) {
+  UpdateFeatureState(toggled, /*enabled=*/true, view1, view2);
 }
 
 }  // namespace
@@ -205,6 +215,13 @@ void AccessibilityDetailedView::OnAccessibilityStatusChanged() {
                        docked_magnifier_top_view_);
   }
 
+  // Hover Text conflicts with Spoken Feedback. Always update its toggle and
+  // enabled state even when Spoken Feedback becomes enabled while the menu is
+  // already open, so existing rows reflect the disabled state.
+  UpdateFeatureState(controller->hover_text().enabled(),
+                     /*enabled=*/controller->IsHoverTextSettingVisibleInTray(),
+                     hover_text_view_, hover_text_top_view_);
+
   if (controller->IsAutoclickSettingVisibleInTray()) {
     bool checked = controller->autoclick().enabled();
     UpdateFeatureState(checked, autoclick_view_, autoclick_top_view_);
@@ -248,16 +265,18 @@ void AccessibilityDetailedView::OnAccessibilityStatusChanged() {
                        highlight_mouse_cursor_top_view_);
   }
 
-  if (controller->IsFocusHighlightSettingVisibleInTray()) {
-    bool checked = controller->focus_highlight().enabled();
-    UpdateFeatureState(checked, highlight_keyboard_focus_view_,
-                       highlight_keyboard_focus_top_view_);
-  }
+  // Focus Highlight and Sticky Keys conflict with Spoken Feedback. Always
+  // update their toggle and enabled state even when Spoken Feedback becomes
+  // enabled while the menu is already open, so existing rows reflect the
+  // disabled state.
+  UpdateFeatureState(
+      controller->focus_highlight().enabled(),
+      /*enabled=*/controller->IsFocusHighlightSettingVisibleInTray(),
+      highlight_keyboard_focus_view_, highlight_keyboard_focus_top_view_);
 
-  if (controller->IsStickyKeysSettingVisibleInTray()) {
-    bool checked = controller->sticky_keys().enabled();
-    UpdateFeatureState(checked, sticky_keys_view_, sticky_keys_top_view_);
-  }
+  UpdateFeatureState(controller->sticky_keys().enabled(),
+                     /*enabled=*/controller->IsStickyKeysSettingVisibleInTray(),
+                     sticky_keys_view_, sticky_keys_top_view_);
 
   if (controller->IsReducedAnimationsSettingVisibleInTray()) {
     bool checked = controller->reduced_animations().enabled();
@@ -319,6 +338,10 @@ void AccessibilityDetailedView::AddEnabledFeatures(views::View* container) {
   if (controller->IsDockedMagnifierSettingVisibleInTray() &&
       Shell::Get()->docked_magnifier_controller()->GetEnabled()) {
     docked_magnifier_top_view_ = AddDockedMagnifierView(container);
+  }
+  if (controller->IsHoverTextSettingVisibleInTray() &&
+      controller->hover_text().enabled()) {
+    hover_text_top_view_ = AddHoverTextView(container);
   }
   if (controller->IsAutoclickSettingVisibleInTray() &&
       controller->autoclick().enabled()) {
@@ -401,6 +424,10 @@ void AccessibilityDetailedView::AddAllFeatures(views::View* container) {
 
   if (controller->IsDockedMagnifierSettingVisibleInTray()) {
     docked_magnifier_view_ = AddDockedMagnifierView(container);
+  }
+
+  if (controller->IsHoverTextSettingVisibleInTray()) {
+    hover_text_view_ = AddHoverTextView(container);
   }
 
   if (controller->IsAutoclickSettingVisibleInTray()) {
@@ -535,6 +562,16 @@ HoverHighlightView* AccessibilityDetailedView::AddDockedMagnifierView(
       l10n_util::GetStringUTF16(
           IDS_ASH_STATUS_TRAY_ACCESSIBILITY_DOCKED_MAGNIFIER),
       checked, controller->IsEnterpriseIconVisibleForDockedMagnifier());
+}
+
+HoverHighlightView* AccessibilityDetailedView::AddHoverTextView(
+    views::View* container) {
+  auto* controller = Shell::Get()->accessibility_controller();
+  bool checked = controller->hover_text().enabled();
+  return AddScrollListFeatureItem(
+      container, kHoverTextIcon,
+      l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_ACCESSIBILITY_HOVER_TEXT),
+      checked, /*enterprise_managed=*/false);
 }
 
 HoverHighlightView* AccessibilityDetailedView::AddAutoclickView(
@@ -791,6 +828,14 @@ void AccessibilityDetailedView::HandleViewClicked(views::View* view) {
     base::UmaHistogramBoolean("Accessibility.CrosStatusArea.DockedMagnifier",
                               new_state);
     docked_magnifier_controller->SetEnabled(new_state);
+  } else if ((view == hover_text_top_view_ || view == hover_text_view_) &&
+             controller->IsHoverTextSettingVisibleInTray()) {
+    bool new_state = !controller->hover_text().enabled();
+    RecordAction(new_state ? UserMetricsAction("StatusArea_HoverTextEnabled")
+                           : UserMetricsAction("StatusArea_HoverTextDisabled"));
+    base::UmaHistogramBoolean("Accessibility.CrosStatusArea.HoverText",
+                              new_state);
+    controller->hover_text().SetEnabled(new_state);
   } else if ((view == large_cursor_top_view_ || view == large_cursor_view_) &&
              !controller->IsEnterpriseIconVisibleForLargeCursor()) {
     bool new_state = !controller->large_cursor().enabled();
@@ -866,6 +911,7 @@ void AccessibilityDetailedView::HandleViewClicked(views::View* view) {
     controller->cursor_highlight().SetEnabled(new_state);
   } else if ((view == highlight_keyboard_focus_top_view_ ||
               view == highlight_keyboard_focus_view_) &&
+             controller->IsFocusHighlightSettingVisibleInTray() &&
              !controller->IsEnterpriseIconVisibleForFocusHighlight()) {
     bool new_state = !controller->focus_highlight().enabled();
     RecordAction(
@@ -876,6 +922,7 @@ void AccessibilityDetailedView::HandleViewClicked(views::View* view) {
                               new_state);
     controller->focus_highlight().SetEnabled(new_state);
   } else if ((view == sticky_keys_top_view_ || view == sticky_keys_view_) &&
+             controller->IsStickyKeysSettingVisibleInTray() &&
              !controller->IsEnterpriseIconVisibleForStickyKeys()) {
     bool new_state = !controller->sticky_keys().enabled();
     RecordAction(new_state

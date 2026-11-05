@@ -10,15 +10,26 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
+#include "base/debug/stack_trace.h"
+#include "base/files/file_path.h"
 #include "base/functional/bind.h"
+#include "base/test/gtest_util.h"
+#include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/types/expected.h"
 #include "base/values.h"
 #include "chrome/browser/ash/magic_boost/mock_editor_panel_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
 #include "chromeos/constants/chromeos_features.h"
+#include "chromeos/constants/chromeos_switches.h"
+#include "components/metrics/metrics_state_manager.h"
+#include "components/metrics/startup_visibility.h"
+#include "components/metrics/test/test_enabled_state_provider.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "components/variations/service/test_variations_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -40,6 +51,11 @@ class TestMagicBoostStateObserver : public MagicBoostState::Observer {
   ~TestMagicBoostStateObserver() override = default;
 
   // MagicBoostStateObserver:
+  void OnUserEligibleForGenAIFeaturesUpdated(bool eligible) override {
+    user_eligible_for_genai_features_ = eligible;
+    ++user_eligible_updated_count_;
+  }
+
   void OnHMREnabledUpdated(bool enabled) override { hmr_enabled_ = enabled; }
 
   void OnHMRConsentStatusUpdated(HMRConsentStatus status) override {
@@ -52,12 +68,50 @@ class TestMagicBoostStateObserver : public MagicBoostState::Observer {
     // instance gets destructed.
   }
 
+  bool user_eligible_for_genai_features() const {
+    return user_eligible_for_genai_features_;
+  }
+  int user_eligible_updated_count() const {
+    return user_eligible_updated_count_;
+  }
   bool hmr_enabled() const { return hmr_enabled_; }
   HMRConsentStatus hmr_consent_status() const { return hmr_consent_status_; }
 
  private:
+  bool user_eligible_for_genai_features_ = false;
+  int user_eligible_updated_count_ = 0;
   bool hmr_enabled_ = false;
   HMRConsentStatus hmr_consent_status_ = HMRConsentStatus::kUnset;
+};
+
+// `MagicBoostState` test double with a configurable GenAI eligibility result.
+class ConfigurableEligibilityMagicBoostState : public ash::MagicBoostState {
+ public:
+  ConfigurableEligibilityMagicBoostState(
+      const variations::VariationsService* variations_service,
+      base::expected<bool, MagicBoostState::Error> expected_eligibility)
+      : ash::MagicBoostState(variations_service, base::BindRepeating([]() {
+                               return static_cast<Profile*>(nullptr);
+                             })),
+        expected_eligibility_(expected_eligibility) {}
+
+  void set_expected_eligibility(
+      base::expected<bool, MagicBoostState::Error> expected_eligibility) {
+    expected_eligibility_ = expected_eligibility;
+  }
+
+  int eligibility_check_count() const { return eligibility_check_count_; }
+
+ protected:
+  base::expected<bool, MagicBoostState::Error>
+  IsUserEligibleForGenAIFeaturesExpected() const override {
+    ++eligibility_check_count_;
+    return expected_eligibility_;
+  }
+
+ private:
+  base::expected<bool, MagicBoostState::Error> expected_eligibility_;
+  mutable int eligibility_check_count_ = 0;
 };
 
 }  // namespace
@@ -71,12 +125,27 @@ class MagicBoostStateTest : public ChromeAshTestBase {
 
   // ChromeAshTestBase:
   void SetUp() override {
+    // Needed for `MagicBoostState`.
+    PrefService* local_state =
+        TestingBrowserProcess::GetGlobal()->local_state();
+    metrics_state_manager_ = metrics::MetricsStateManager::Create(
+        local_state, &metrics_enabled_state_provider_,
+        /*backup_registry_key=*/std::wstring(),
+        /*user_data_dir=*/base::FilePath(),
+        metrics::StartupVisibility::kUnknown);
+    test_variations_service_ =
+        std::make_unique<variations::TestVariationsService>(
+            local_state, metrics_state_manager_.get());
+    TestingBrowserProcess::GetGlobal()->SetVariationsService(
+        test_variations_service_.get());
+
     ChromeAshTestBase::SetUp();
 
     prefs_ = static_cast<TestingPrefServiceSimple*>(
         ash::Shell::Get()->session_controller()->GetPrimaryUserPrefService());
 
     magic_boost_state_ = std::make_unique<MagicBoostState>(
+        TestingBrowserProcess::GetGlobal()->variations_service(),
         base::BindRepeating([]() { return static_cast<Profile*>(nullptr); }));
     magic_boost_state_->set_editor_panel_manager_for_test(
         &mock_editor_manager_);
@@ -89,6 +158,35 @@ class MagicBoostStateTest : public ChromeAshTestBase {
     magic_boost_state_.reset();
     prefs_ = nullptr;
     ChromeAshTestBase::TearDown();
+
+    TestingBrowserProcess::GetGlobal()->SetVariationsService(nullptr);
+    test_variations_service_.reset();
+    metrics_state_manager_.reset();
+  }
+
+  ConfigurableEligibilityMagicBoostState* ReplaceWithConfigurableState(
+      base::expected<bool, MagicBoostState::Error> initial_expected) {
+    prefs_ = nullptr;
+    magic_boost_state_.reset();
+    ClearLogin();
+
+    auto state = std::make_unique<ConfigurableEligibilityMagicBoostState>(
+        TestingBrowserProcess::GetGlobal()->variations_service(),
+        initial_expected);
+    auto* state_ptr = state.get();
+    state->set_editor_panel_manager_for_test(&mock_editor_manager_);
+    magic_boost_state_ = std::move(state);
+
+    SimulateUserLogin(kRegularUserLoginInfo);
+    prefs_ = static_cast<TestingPrefServiceSimple*>(
+        ash::Shell::Get()->session_controller()->GetPrimaryUserPrefService());
+    return state_ptr;
+  }
+
+  void ResetMagicBoostState() { magic_boost_state_.reset(); }
+
+  void TriggerOnRefreshTokensReady() {
+    magic_boost_state_->OnRefreshTokensReady();
   }
 
   TestingPrefServiceSimple* prefs() { return prefs_; }
@@ -101,6 +199,10 @@ class MagicBoostStateTest : public ChromeAshTestBase {
 
  private:
   raw_ptr<TestingPrefServiceSimple> prefs_;
+  metrics::TestEnabledStateProvider metrics_enabled_state_provider_{
+      /*consent=*/false, /*enabled=*/false};
+  std::unique_ptr<metrics::MetricsStateManager> metrics_state_manager_;
+  std::unique_ptr<variations::TestVariationsService> test_variations_service_;
   std::unique_ptr<TestMagicBoostStateObserver> observer_;
   std::unique_ptr<MagicBoostState> magic_boost_state_;
   testing::NiceMock<MockEditorPanelManager> mock_editor_manager_;
@@ -326,7 +428,6 @@ TEST_F(MagicBoostStateTest, DisableLobsterSettings) {
 
 struct MagicBoostHmrCardShowConditionTestCase {
   std::string test_name;
-  bool magic_boost_revamp_enabled;
   HMRConsentStatus hmr_consent_status;
   bool expected_hmr_card_shown;
 };
@@ -337,10 +438,6 @@ class MagicBoostHmrCardShowConditionTest
           MagicBoostHmrCardShowConditionTestCase> {};
 
 TEST_P(MagicBoostHmrCardShowConditionTest, ShouldShowHmrCard) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatureState(chromeos::features::kMagicBoostRevamp,
-                                    GetParam().magic_boost_revamp_enabled);
-
   MagicBoostState::Get()->AsyncWriteConsentStatus(
       GetParam().hmr_consent_status);
 
@@ -352,54 +449,231 @@ INSTANTIATE_TEST_SUITE_P(
     ,
     MagicBoostHmrCardShowConditionTest,
     testing::ValuesIn<MagicBoostHmrCardShowConditionTestCase>(
-        {// magic_boost_revamp_enabled = false
-         MagicBoostHmrCardShowConditionTestCase{
-             /*test_name=*/"NoMagicBoostRevamp_ConsentStatusUnset",
-             /*magic_boost_revamp_enabled=*/false,
-             /*hmr_consent_status=*/HMRConsentStatus::kUnset,
-             /*expected_hmr_card_shown=*/false},
-         MagicBoostHmrCardShowConditionTestCase{
-             /*test_name=*/"NoMagicBoostRevamp_ConsentStatusDeclined",
-             /*magic_boost_revamp_enabled=*/false,
-             /*hmr_consent_status=*/HMRConsentStatus::kDeclined,
-             /*expected_hmr_card_shown=*/false},
-         MagicBoostHmrCardShowConditionTestCase{
-             /*test_name=*/"NoMagicBoostRevamp_ConsentStatusApproved",
-             /*magic_boost_revamp_enabled=*/false,
-             /*hmr_consent_status=*/HMRConsentStatus::kApproved,
-             /*expected_hmr_card_shown=*/true},
-         MagicBoostHmrCardShowConditionTestCase{
-             /*test_name=*/"NoMagicBoostRevamp_"
-                           "ConsentStatusPendingDisclaimer",
-             /*magic_boost_revamp_enabled=*/false,
-             /*hmr_consent_status=*/HMRConsentStatus::kPendingDisclaimer,
-             /*expected_hmr_card_shown=*/true},
-
-         // magic_boost_revamp_enabled = true
-         MagicBoostHmrCardShowConditionTestCase{
-             /*test_name=*/"MagicBoostRevamp_ConsentStatusUnset",
-             /*magic_boost_revamp_enabled=*/true,
+        {MagicBoostHmrCardShowConditionTestCase{
+             /*test_name=*/"ConsentStatusUnset",
              /*hmr_consent_status=*/HMRConsentStatus::kUnset,
              /*expected_hmr_card_shown=*/true},
          MagicBoostHmrCardShowConditionTestCase{
-             /*test_name=*/"MagicBoostRevamp_ConsentStatusDeclined",
-             /*magic_boost_revamp_enabled=*/true,
+             /*test_name=*/"ConsentStatusDeclined",
              /*hmr_consent_status=*/HMRConsentStatus::kDeclined,
              /*expected_hmr_card_shown=*/false},
          MagicBoostHmrCardShowConditionTestCase{
-             /*test_name=*/"MagicBoostRevamp_ConsentStatusApproved",
-             /*magic_boost_revamp_enabled=*/true,
+             /*test_name=*/"ConsentStatusApproved",
              /*hmr_consent_status=*/HMRConsentStatus::kApproved,
              /*expected_hmr_card_shown=*/true},
          MagicBoostHmrCardShowConditionTestCase{
-             /*test_name=*/"MagicBoostRevamp_"
-                           "ConsentStatusPendingDisclaimer",
-             /*magic_boost_revamp_enabled=*/true,
+             /*test_name=*/"ConsentStatusPendingDisclaimer",
              /*hmr_consent_status=*/HMRConsentStatus::kPendingDisclaimer,
              /*expected_hmr_card_shown=*/true}}),
     [](const testing::TestParamInfo<
         MagicBoostHmrCardShowConditionTest::ParamType>& info) {
       return info.param.test_name;
     });
+
+TEST_F(MagicBoostStateTest,
+       IsUserEligibleForGenAIFeatures_DefaultAndWithMahiEnabled) {
+  MagicBoostState::Get()->AddObserver(observer());
+
+  // By default in unit tests (`kFeatureManagementMahi` disabled), the user is
+  // not eligible for GenAI features.
+  EXPECT_EQ(MagicBoostState::Get()->is_user_eligible_for_genai_features(),
+            base::ok(false));
+  EXPECT_FALSE(MagicBoostState::Get()->IsUserEligibleForGenAIFeatures());
+
+  // When Mahi is enabled and restrictions are overridden, refreshing tokens
+  // marks the user as eligible and notifies observers.
+  base::test::ScopedFeatureList feature_list(
+      chromeos::features::kFeatureManagementMahi);
+  base::test::ScopedCommandLine command_line;
+  command_line.GetProcessCommandLine()->AppendSwitch(
+      chromeos::switches::kMahiRestrictionsOverride);
+
+  TriggerOnRefreshTokensReady();
+
+  EXPECT_EQ(MagicBoostState::Get()->is_user_eligible_for_genai_features(),
+            base::ok(true));
+  EXPECT_TRUE(MagicBoostState::Get()->IsUserEligibleForGenAIFeatures());
+  EXPECT_TRUE(observer()->user_eligible_for_genai_features());
+  EXPECT_EQ(observer()->user_eligible_updated_count(), 1);
+
+  MagicBoostState::Get()->RemoveObserver(observer());
+}
+
+TEST_F(
+    MagicBoostStateTest,
+    IsUserEligibleForGenAIFeatures_UninitializedReturnsFalseAndDoesNotCache) {
+  auto* state = ReplaceWithConfigurableState(
+      base::unexpected(MagicBoostState::Error::kUninitialized));
+  MagicBoostState::Get()->AddObserver(observer());
+
+  // Initial login check saw `kUninitialized`, so state remains uninitialized.
+  EXPECT_EQ(state->is_user_eligible_for_genai_features(),
+            base::unexpected(MagicBoostState::Error::kUninitialized));
+  const int checks_after_login = state->eligibility_check_count();
+  EXPECT_EQ(checks_after_login, 1);
+
+  // Calling `IsUserEligibleForGenAIFeatures()` while still uninitialized
+  // returns false as a fail-safe and leaves the state uninitialized for future
+  // retries.
+  EXPECT_FALSE(state->IsUserEligibleForGenAIFeatures());
+  EXPECT_EQ(state->is_user_eligible_for_genai_features(),
+            base::unexpected(MagicBoostState::Error::kUninitialized));
+  EXPECT_EQ(state->eligibility_check_count(), checks_after_login + 1);
+  EXPECT_EQ(observer()->user_eligible_updated_count(), 0);
+
+  MagicBoostState::Get()->RemoveObserver(observer());
+}
+
+TEST_F(MagicBoostStateTest,
+       IsUserEligibleForGenAIFeatures_LazyReloadsMinorIneligibleAndCaches) {
+  auto* state = ReplaceWithConfigurableState(
+      base::unexpected(MagicBoostState::Error::kUninitialized));
+  ASSERT_EQ(state->is_user_eligible_for_genai_features(),
+            base::unexpected(MagicBoostState::Error::kUninitialized));
+
+  // Simulate account capability resolving to false (e.g. U13 / minor account).
+  state->set_expected_eligibility(base::ok(false));
+  const int checks_before = state->eligibility_check_count();
+
+  EXPECT_FALSE(state->IsUserEligibleForGenAIFeatures());
+  EXPECT_EQ(state->is_user_eligible_for_genai_features(), base::ok(false));
+  EXPECT_EQ(state->eligibility_check_count(), checks_before + 1);
+
+  // Subsequent calls use the cached value without re-querying.
+  EXPECT_FALSE(state->IsUserEligibleForGenAIFeatures());
+  EXPECT_EQ(state->eligibility_check_count(), checks_before + 1);
+}
+
+TEST_F(MagicBoostStateTest,
+       IsUserEligibleForGenAIFeatures_LazyReloadsAdultEligibleAndCaches) {
+  auto* state = ReplaceWithConfigurableState(
+      base::unexpected(MagicBoostState::Error::kUninitialized));
+  ASSERT_EQ(state->is_user_eligible_for_genai_features(),
+            base::unexpected(MagicBoostState::Error::kUninitialized));
+
+  // Simulate account capability resolving to true (eligible adult account).
+  state->set_expected_eligibility(base::ok(true));
+  const int checks_before = state->eligibility_check_count();
+
+  EXPECT_TRUE(state->IsUserEligibleForGenAIFeatures());
+  EXPECT_EQ(state->is_user_eligible_for_genai_features(), base::ok(true));
+  EXPECT_EQ(state->eligibility_check_count(), checks_before + 1);
+
+  // Subsequent calls use the cached value without re-querying.
+  EXPECT_TRUE(state->IsUserEligibleForGenAIFeatures());
+  EXPECT_EQ(state->eligibility_check_count(), checks_before + 1);
+}
+
+TEST_F(MagicBoostStateTest,
+       OnRefreshTokensReady_UpdatesEligibilityAndNotifiesObserverOnChange) {
+  auto* state = ReplaceWithConfigurableState(
+      base::unexpected(MagicBoostState::Error::kUninitialized));
+  MagicBoostState::Get()->AddObserver(observer());
+
+  // Resolve to ineligible (minor account) on refresh tokens ready.
+  state->set_expected_eligibility(base::ok(false));
+  TriggerOnRefreshTokensReady();
+  EXPECT_EQ(state->is_user_eligible_for_genai_features(), base::ok(false));
+  EXPECT_FALSE(observer()->user_eligible_for_genai_features());
+  EXPECT_EQ(observer()->user_eligible_updated_count(), 1);
+
+  // Re-triggering with the same eligibility value does not notify again.
+  TriggerOnRefreshTokensReady();
+  EXPECT_EQ(observer()->user_eligible_updated_count(), 1);
+
+  // Updating to eligible notifies the observer.
+  state->set_expected_eligibility(base::ok(true));
+  TriggerOnRefreshTokensReady();
+  EXPECT_EQ(state->is_user_eligible_for_genai_features(), base::ok(true));
+  EXPECT_TRUE(observer()->user_eligible_for_genai_features());
+  EXPECT_EQ(observer()->user_eligible_updated_count(), 2);
+
+  MagicBoostState::Get()->RemoveObserver(observer());
+}
+
+class MagicBoostStateDeathTest : public MagicBoostStateTest {
+ protected:
+  void SetUp() override {
+    GTEST_FLAG_SET(death_test_style, "fast");
+    MagicBoostStateTest::SetUp();
+  }
+
+ private:
+  base::debug::OverrideStackTraceOutputForTesting suppress_stack_traces_{
+      base::debug::OverrideStackTraceOutputForTesting::Mode::kSuppressOutput};
+};
+
+TEST_F(MagicBoostStateDeathTest,
+       AssertPreconditionsOfHelpMeReadOrCrash_SucceedsWhenAllPreconditionsMet) {
+  ReplaceWithConfigurableState(base::ok(true));
+  prefs()->SetBoolean(ash::prefs::kMagicBoostEnabled, true);
+  MagicBoostState::Get()->AsyncWriteHMREnabled(true);
+  MagicBoostState::Get()->AsyncWriteConsentStatus(HMRConsentStatus::kApproved);
+
+  MagicBoostState::AssertPreconditionsOfHelpMeReadOrCrash();
+}
+
+TEST_F(MagicBoostStateDeathTest,
+       AssertPreconditionsOfHelpMeReadOrCrash_CrashesWhenStateIsNull) {
+  ResetMagicBoostState();
+  EXPECT_CHECK_DEATH(MagicBoostState::AssertPreconditionsOfHelpMeReadOrCrash());
+}
+
+TEST_F(MagicBoostStateDeathTest,
+       AssertPreconditionsOfHelpMeReadOrCrash_CrashesWhenUserIneligible) {
+  ReplaceWithConfigurableState(base::ok(false));
+  prefs()->SetBoolean(ash::prefs::kMagicBoostEnabled, true);
+  MagicBoostState::Get()->AsyncWriteHMREnabled(true);
+  MagicBoostState::Get()->AsyncWriteConsentStatus(HMRConsentStatus::kApproved);
+
+  EXPECT_CHECK_DEATH(MagicBoostState::AssertPreconditionsOfHelpMeReadOrCrash());
+}
+
+TEST_F(
+    MagicBoostStateDeathTest,
+    AssertPreconditionsOfHelpMeReadOrCrash_CrashesWhenEligibilityUninitialized) {
+  ReplaceWithConfigurableState(
+      base::unexpected(MagicBoostState::Error::kUninitialized));
+  prefs()->SetBoolean(ash::prefs::kMagicBoostEnabled, true);
+  MagicBoostState::Get()->AsyncWriteHMREnabled(true);
+  MagicBoostState::Get()->AsyncWriteConsentStatus(HMRConsentStatus::kApproved);
+
+  EXPECT_CHECK_DEATH(MagicBoostState::AssertPreconditionsOfHelpMeReadOrCrash());
+}
+
+TEST_F(MagicBoostStateDeathTest,
+       AssertPreconditionsOfHelpMeReadOrCrash_CrashesWhenMagicBoostDisabled) {
+  ReplaceWithConfigurableState(base::ok(true));
+  prefs()->SetBoolean(ash::prefs::kMagicBoostEnabled, false);
+  MagicBoostState::Get()->AsyncWriteHMREnabled(true);
+  MagicBoostState::Get()->AsyncWriteConsentStatus(HMRConsentStatus::kApproved);
+
+  EXPECT_CHECK_DEATH(MagicBoostState::AssertPreconditionsOfHelpMeReadOrCrash());
+}
+
+TEST_F(MagicBoostStateDeathTest,
+       AssertPreconditionsOfHelpMeReadOrCrash_CrashesWhenHmrDisabled) {
+  ReplaceWithConfigurableState(base::ok(true));
+  prefs()->SetBoolean(ash::prefs::kMagicBoostEnabled, true);
+  MagicBoostState::Get()->AsyncWriteConsentStatus(HMRConsentStatus::kApproved);
+  MagicBoostState::Get()->AsyncWriteHMREnabled(false);
+
+  EXPECT_CHECK_DEATH(MagicBoostState::AssertPreconditionsOfHelpMeReadOrCrash());
+}
+
+TEST_F(MagicBoostStateDeathTest,
+       AssertPreconditionsOfHelpMeReadOrCrash_CrashesWhenConsentNotApproved) {
+  ReplaceWithConfigurableState(base::ok(true));
+  prefs()->SetBoolean(ash::prefs::kMagicBoostEnabled, true);
+  MagicBoostState::Get()->AsyncWriteHMREnabled(true);
+
+  for (HMRConsentStatus status :
+       {HMRConsentStatus::kUnset, HMRConsentStatus::kPendingDisclaimer,
+        HMRConsentStatus::kDeclined}) {
+    MagicBoostState::Get()->AsyncWriteConsentStatus(status);
+    EXPECT_CHECK_DEATH(
+        MagicBoostState::AssertPreconditionsOfHelpMeReadOrCrash());
+  }
+}
 
 }  // namespace ash

@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 
+#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/uuid.h"
@@ -28,6 +29,7 @@
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/tabs/public/mock_tab_interface.h"
 #include "components/tabs/public/tab_interface.h"
+#include "components/variations/scoped_variations_ids_provider.h"
 #include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
@@ -35,11 +37,12 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/test_renderer_host.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -69,6 +72,12 @@ class FakeContextualTasksEligibilityManager
 
   void SetIsEligible(bool eligible);
 
+  // Overrides `IsEligibleWithoutIdentity()` independently of `SetIsEligible()`.
+  // This is needed to represent a signed-out user who would otherwise be
+  // eligible: `IsEligible()` is false while `IsEligibleWithoutIdentity()` is
+  // true. When unset, `IsEligibleWithoutIdentity()` follows `SetIsEligible()`.
+  void SetIsEligibleWithoutIdentity(bool eligible);
+
   bool IsEligibleWithoutIdentity() const override;
 
  protected:
@@ -76,6 +85,7 @@ class FakeContextualTasksEligibilityManager
 
  private:
   bool is_eligible_ = true;
+  std::optional<bool> is_eligible_without_identity_;
 };
 
 class MockUiServiceForUrlIntercept : public ContextualTasksUiService {
@@ -98,7 +108,8 @@ class MockUiServiceForUrlIntercept : public ContextualTasksUiService {
               OnNavigationToAiPageIntercepted,
               (const GURL& url,
                base::WeakPtr<tabs::TabInterface> tab,
-               bool is_to_new_tab),
+               bool is_to_new_tab,
+               ui::PageTransition transition),
               (override));
   MOCK_METHOD(void,
               OnThreadLinkClicked,
@@ -120,6 +131,10 @@ class MockUiServiceForUrlIntercept : public ContextualTasksUiService {
               (override));
   MOCK_METHOD(bool, IsUrlForPrimaryAccount, (const GURL& url), (override));
   MOCK_METHOD(bool, IsSignedInToBrowserWithValidCredentials, (), (override));
+  MOCK_METHOD(bool,
+              IsSignedInForWebContentsOnInit,
+              (content::WebContents * web_contents),
+              (override));
   MOCK_METHOD(void,
               LoadUrlInWebContents,
               (const GURL& url,
@@ -132,7 +147,36 @@ class MockUiServiceForUrlIntercept : public ContextualTasksUiService {
                BrowserWindowInterface* browser),
               (override));
 
+  bool IsWebContentsInSidePanel(
+      content::WebContents* web_contents) const override {
+    if (side_panel_web_contents_.contains(web_contents)) {
+      return true;
+    }
+    if (is_web_contents_in_side_panel_override_.has_value()) {
+      return *is_web_contents_in_side_panel_override_;
+    }
+    return ContextualTasksUiService::IsWebContentsInSidePanel(web_contents);
+  }
+
+  void SetSidePanelWebContentsForTesting(content::WebContents* web_contents) {
+    side_panel_web_contents_.insert(web_contents);
+  }
+
+  void SetIsWebContentsInSidePanelForTesting(
+      std::optional<bool> in_side_panel) {
+    is_web_contents_in_side_panel_override_ = in_side_panel;
+  }
+
+  using ContextualTasksUiService::HandleCitationClick;
+  using ContextualTasksUiService::HandleLensNavigation;
   using ContextualTasksUiService::HandleNavigationImpl;
+  using ContextualTasksUiService::HandleSidePanelExternalNavigation;
+  using ContextualTasksUiService::IsAllowedSidePanelUrl;
+  using ContextualTasksUiService::IsWebContentsInSidePanel;
+  using ContextualTasksUiService::ShouldAddRequiredSidePanelUrlChanges;
+  using ContextualTasksUiService::ShouldHandleCitationClick;
+  using ContextualTasksUiService::ShouldHandleLensNavigation;
+  using ContextualTasksUiService::ShouldHandleSidePanelExternalNavigation;
   bool HandleNavigationImpl(
       content::OpenURLParams url_params,
       content::WebContents* source_contents,
@@ -145,6 +189,15 @@ class MockUiServiceForUrlIntercept : public ContextualTasksUiService {
       const std::optional<content::GlobalRenderFrameHostToken>&
           initiator_frame_token,
       const blink::mojom::WindowFeatures& window_features) override;
+
+  // Exposes the protected eligibility redirect check so tests can assert on it
+  // directly.
+  using ContextualTasksUiService::ShouldRedirectIneligibleRequest;
+
+ private:
+  std::optional<bool> is_web_contents_in_side_panel_override_;
+  base::flat_set<raw_ptr<content::WebContents, CtnExperimental>>
+      side_panel_web_contents_;
 };
 
 inline content::OpenURLParams CreateOpenUrlParams(
@@ -153,8 +206,13 @@ inline content::OpenURLParams CreateOpenUrlParams(
     ui::PageTransition page_transition =
         ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL) {
   content::Referrer referrer;
+  if (!is_renderer_initiated) {
+    return content::OpenURLParams::CreateBrowserInitiated(
+        url, ui::mojom::WindowOpenDisposition::kCurrentTab, page_transition,
+        referrer);
+  }
   return content::OpenURLParams(url, referrer,
-                                WindowOpenDisposition::CURRENT_TAB,
+                                ui::mojom::WindowOpenDisposition::kCurrentTab,
                                 page_transition, is_renderer_initiated);
 }
 
@@ -176,6 +234,7 @@ class ContextualTasksUiServiceTestBase
   std::unique_ptr<content::BrowserContext> CreateBrowserContext() override;
 
  protected:
+  network::TestURLLoaderFactory test_url_loader_factory_;
   TestingPrefServiceSimple prefs_;
   std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<signin::IdentityTestEnvironment> identity_test_env_;
@@ -186,6 +245,8 @@ class ContextualTasksUiServiceTestBase
   raw_ptr<MockUiServiceForUrlIntercept> service_for_nav_ = nullptr;
   std::unique_ptr<ContextualTasksUiService> real_service_;
   std::unique_ptr<MockContextualTasksService> contextual_tasks_service_;
+  variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
+      variations::VariationsIdsProvider::Mode::kUseSignedInState};
 };
 
 }  // namespace contextual_tasks

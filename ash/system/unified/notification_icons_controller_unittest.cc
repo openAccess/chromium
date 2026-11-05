@@ -54,7 +54,6 @@ class NotificationIconsControllerTest : public AshTestBase {
         CreateSystemNotificationPtr(
             message_center::NOTIFICATION_TYPE_SIMPLE, id, u"test_title",
             u"test message", std::u16string() /*display_source */,
-            GURL() /* origin_url */,
             message_center::NotifierId(
                 message_center::NotifierType::SYSTEM_COMPONENT, notifier_id,
                 NotificationCatalogName::kTestCatalogName),
@@ -75,7 +74,7 @@ class NotificationIconsControllerTest : public AshTestBase {
 
     // Log in.
     constexpr char kUserEmail[] = "user@gmail.com";
-    SimulateUserLogin({kUserEmail});
+    SimulateUserLogin(AccountId::FromUserEmail(kUserEmail));
 
     // Set the user's shelf auto-hide preference to always hide.
     auto accountId = AccountId::FromUserEmail(kUserEmail);

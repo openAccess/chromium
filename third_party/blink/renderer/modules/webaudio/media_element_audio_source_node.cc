@@ -70,8 +70,6 @@ MediaElementAudioSourceNode* MediaElementAudioSourceNode::Create(
 
   if (node) {
     media_element.SetAudioSourceNode(node);
-    // context keeps reference until node is disconnected
-    context.NotifySourceNodeStartedProcessing(node);
     if (!context.HasRealtimeConstraint()) {
       Deprecation::CountDeprecation(
           node->GetExecutionContext(),
@@ -112,6 +110,10 @@ void MediaElementAudioSourceNode::unlock() {
   GetMediaElementAudioSourceHandler().unlock();
 }
 
+void MediaElementAudioSourceNode::OnCurrentSrcChanged(const KURL& current_src) {
+  GetMediaElementAudioSourceHandler().OnCurrentSrcChanged(current_src);
+}
+
 void MediaElementAudioSourceNode::ReportDidCreate() {
   GraphTracer().DidCreateAudioNode(this);
 }
@@ -121,8 +123,13 @@ void MediaElementAudioSourceNode::ReportWillBeDestroyed() {
 }
 
 bool MediaElementAudioSourceNode::HasPendingActivity() const {
-  // The node stays alive as long as the context is running.
-  return context()->ContextState() == V8AudioContextState::Enum::kRunning;
+  if (context()->ContextState() != V8AudioContextState::Enum::kRunning) {
+    return false;
+  }
+  if (media_element_->paused()) {
+    return false;
+  }
+  return HasOutputsConnected();
 }
 
 void MediaElementAudioSourceNode::Trace(Visitor* visitor) const {

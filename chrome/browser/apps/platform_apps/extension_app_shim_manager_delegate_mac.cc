@@ -36,6 +36,7 @@
 #include "extensions/browser/launch_util.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_id.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 using extensions::AppWindowRegistry;
 using extensions::Extension;
@@ -191,7 +192,7 @@ void ExtensionAppShimManagerDelegate::LaunchApp(
   base::ScopedClosureRunner run_launch_finished(
       std::move(launch_finished_callback));
   const Extension* extension = MaybeGetAppExtension(profile, app_id);
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M161);
   extensions::RecordAppLaunchType(extension_misc::APP_LAUNCH_CMD_LINE_APP,
                                   extension->GetType());
 
@@ -200,7 +201,7 @@ void ExtensionAppShimManagerDelegate::LaunchApp(
 
   if (extension->is_hosted_app()) {
     auto params = CreateAppLaunchParamsUserContainer(
-        profile, extension, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        profile, extension, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         apps::LaunchSource::kFromCommandLine);
     params.launch_files = files;
     web_app::LaunchExtensionOrWebApp(profile, std::move(params),
@@ -226,7 +227,7 @@ void ExtensionAppShimManagerDelegate::LaunchShim(
     apps::ShimLaunchedCallback launched_callback,
     apps::ShimTerminatedCallback terminated_callback) {
   const Extension* extension = MaybeGetAppExtension(profile, app_id);
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M161);
   // Only force recreation of shims when RemoteViews is in use (that is, for
   // PWAs). Otherwise, shims may be created unexpectedly.
   // https://crbug.com/41446487

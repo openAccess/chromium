@@ -38,7 +38,6 @@
 
 namespace blink {
 
-class AbstractInlineTextBox;
 class ContentCaptureManager;
 class OffsetMapping;
 struct InlineItemsData;
@@ -73,7 +72,7 @@ class CORE_EXPORT LayoutText : public LayoutObject {
 
   void Trace(Visitor*) const override;
 
-  static LayoutText* CreateEmptyAnonymous(Document&, const ComputedStyle*);
+  static LayoutText* CreateEmptyAnonymous(Document&, const ComputedStyle&);
 
   const char* GetName() const override {
     NOT_DESTROYED();
@@ -159,8 +158,6 @@ class CORE_EXPORT LayoutText : public LayoutObject {
   }
 
   enum ClippingOption { kNoClipping, kClipToEllipsis };
-  void LocalQuadsInFlippedBlocksDirection(Vector<gfx::QuadF>&,
-                                          ClippingOption = kNoClipping) const;
 
   PositionWithAffinity PositionForPoint(const PhysicalOffset&) const override;
 
@@ -237,12 +234,12 @@ class CORE_EXPORT LayoutText : public LayoutObject {
 
   bool IsSecure() const {
     NOT_DESTROYED();
-    return StyleRef().TextSecurity() != ETextSecurity::kNone;
+    return Style().TextSecurity() != ETextSecurity::kNone;
   }
 
   bool HasTextTransform() const {
     NOT_DESTROYED();
-    return StyleRef().TextTransform() != ETextTransform::kNone;
+    return Style().TextTransform() != ETextTransform::kNone;
   }
 
   void MomentarilyRevealLastTypedCharacter(
@@ -250,30 +247,9 @@ class CORE_EXPORT LayoutText : public LayoutObject {
 
   bool IsAllCollapsibleWhitespace() const;
 
-  void RemoveAndDestroyTextBoxes();
-
-  AbstractInlineTextBox* FirstAbstractInlineTextBox();
-
-  bool HasAbstractInlineTextBox() const {
-    NOT_DESTROYED();
-    return has_abstract_inline_text_box_;
-  }
-
-  void SetHasAbstractInlineTextBox() {
-    NOT_DESTROYED();
-    has_abstract_inline_text_box_ = true;
-  }
-
   PhysicalRect DebugRect() const override;
 
-  void AutosizingMultiplerChanged() {
-    NOT_DESTROYED();
-    // The font size is changing, so we need to make sure to rebuild everything.
-    valid_ng_items_ = false;
-    SetNeedsCollectInlines();
-  }
-
-  virtual UChar PreviousCharacter() const;
+  virtual UChar32 PreviousCharacter() const;
 
   // Returns the OffsetMapping object when the current text is laid out with
   // LayoutNG.
@@ -342,7 +318,7 @@ class CORE_EXPORT LayoutText : public LayoutObject {
 
   void InvalidateSubtreeLayoutForFontUpdates() override;
 
-  void DetachAxHooksIfNeeded();
+  void ClearAccessibilityCacheIfNeeded();
 
   // Returns the logical location of the first line box, and the logical height
   // of the LayoutText.
@@ -425,8 +401,6 @@ class CORE_EXPORT LayoutText : public LayoutObject {
     NOTREACHED();
   }
 
-  void DeleteTextBoxes();
-
   std::pair<String, TextOffsetMap> SecureText(const String& plain,
                                               UChar mask) const;
   void SetVariableLengthTransformResult(wtf_size_t original_length,
@@ -457,14 +431,8 @@ class CORE_EXPORT LayoutText : public LayoutObject {
 
  private:
   ContentCaptureManager* GetOrResetContentCaptureManager();
-  void DetachAxHooks();
-  void ClearBlockFlowCachedData();
 
   virtual unsigned NonCollapsedCaretMaxOffset() const;
-
-  // Used for LayoutNG with accessibility. True if inline fragments are
-  // associated to |AbstractInlineTextBox|.
-  unsigned has_abstract_inline_text_box_ : 1;
 
   unsigned has_variable_length_transform_ : 1;
 
@@ -496,18 +464,6 @@ inline wtf_size_t LayoutText::FirstInlineFragmentItemIndex() const {
   if (!IsInLayoutNGInlineFormattingContext())
     return 0u;
   return first_fragment_item_index_;
-}
-
-inline void LayoutText::DetachAxHooksIfNeeded() {
-  NOT_DESTROYED();
-  if (has_abstract_inline_text_box_) [[unlikely]] {
-    DetachAxHooks();
-  }
-  if (!IsInLayoutNGInlineFormattingContext()) {
-    return;
-  }
-
-  ClearBlockFlowCachedData();
 }
 
 template <>

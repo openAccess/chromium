@@ -28,6 +28,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
@@ -105,6 +106,23 @@ void FlushFilesInDir(const base::FilePath& path,
   }
 }
 
+// Returns true if `dir` is not a symlink and resolves strictly to
+// `extensions_dir/dir.BaseName()`. This prevents pre-planted symlinks by
+// another profile writer from redirecting install steps to sibling or external
+// directories.
+bool ResolvesToDirectChildDir(const base::FilePath& dir,
+                              const base::FilePath& extensions_dir) {
+  if (base::IsLink(dir)) {
+    return false;
+  }
+  base::FilePath normalized_extensions_dir;
+  base::FilePath normalized_dir;
+  return file_util::NormalizeFilePath(extensions_dir,
+                                      &normalized_extensions_dir) &&
+         file_util::NormalizeFilePath(dir, &normalized_dir) &&
+         normalized_dir == normalized_extensions_dir.Append(dir.BaseName());
+}
+
 }  // namespace
 
 const base::FilePath::CharType kTempDirectoryName[] = FILE_PATH_LITERAL("Temp");
@@ -127,6 +145,14 @@ base::FilePath InstallExtension(const base::FilePath& unpacked_source_dir,
     if (!base::CreateDirectory(extension_dir)) {
       return base::FilePath();
     }
+  }
+
+  // Refuse to install if the destination does not resolve strictly to this
+  // extension's own directory.
+  if (!ResolvesToDirectChildDir(extension_dir, extensions_dir)) {
+    LOG(ERROR) << "Extension install directory " << extension_dir.value()
+               << " does not resolve to its expected extension directory.";
+    return base::FilePath();
   }
 
   // Get a temp directory on the same file system as the profile.
@@ -169,10 +195,22 @@ base::FilePath InstallExtension(const base::FilePath& unpacked_source_dir,
   // may still be lost.
   FlushFilesInDir(crx_temp_source, FlushOneOrAllFiles::kAllFiles);
 
-  // The target version_dir does not exists yet, so base::Move() is using
-  // rename() on POSIX systems. It is atomic in the sense that it will
-  // either complete successfully or in the event of data loss be reverted.
-  if (!base::Move(crx_temp_source, version_dir)) {
+  // `crx_temp_source` is on the same file system as `version_dir` (see
+  // GetInstallTempDir()) and `version_dir` does not exist yet, so a plain
+  // rename() is enough. It is atomic in the sense that it will either complete
+  // successfully or in the event of data loss be reverted.
+  //
+  // On POSIX, don't use base::Move(). If rename() fails, it falls back to a
+  // base::CopyDirectory() that follows symlinks. The staging directory may be
+  // writable by a less privileged process (e.g. the network service on macOS),
+  // so that fallback could copy an arbitrary directory into the profile.
+#if BUILDFLAG(IS_POSIX)
+  const bool moved =
+      base::ReplaceFile(crx_temp_source, version_dir, /*error=*/nullptr);
+#else
+  const bool moved = base::Move(crx_temp_source, version_dir);
+#endif
+  if (!moved) {
     LOG(ERROR) << "Installing extension from : " << crx_temp_source.value()
                << " into : " << version_dir.value() << " failed.";
     return base::FilePath();
@@ -407,6 +445,14 @@ std::vector<base::FilePath> FindPrivateKeyFiles(
   return result;
 }
 
+std::u16string ReservedFilenameWarning(const base::FilePath& file) {
+  return base::StrCat(
+      {u"Cannot load extension with file or directory name ",
+       file.BaseName().LossyDisplayName(),
+       u". Filenames starting with \"_\" are reserved for use by the "
+       u"system."});
+}
+
 bool CheckForIllegalFilenames(const base::FilePath& extension_path,
                               std::u16string* error) {
   // Enumerate all files and directories in the extension root.
@@ -431,11 +477,7 @@ bool CheckForIllegalFilenames(const base::FilePath& extension_path,
       continue;
     }
 
-    *error =
-        base::StrCat({u"Cannot load extension with file or directory name ",
-                      file.BaseName().LossyDisplayName(),
-                      u". Filenames starting with \"_\" are reserved for use "
-                      u"by the system."});
+    *error = ReservedFilenameWarning(file);
     return false;
   }
 
@@ -482,16 +524,51 @@ base::FilePath GetInstallTempDir(const base::FilePath& extensions_dir) {
       DLOG(WARNING) << "Can't write to path: " << temp_path.value();
       return base::FilePath();
     }
-    // This is a directory we can write to.
-    return temp_path;
-  }
-
-  // Directory doesn't exist, so create it.
-  if (!base::CreateDirectory(temp_path)) {
+  } else if (!base::CreateDirectory(temp_path)) {
     DLOG(WARNING) << "Couldn't create directory: " << temp_path.value();
     return base::FilePath();
   }
+
+  // Refuse to use the temp directory if it does not resolve strictly to
+  // `extensions_dir/Temp`.
+  if (!ResolvesToDirectChildDir(temp_path, extensions_dir)) {
+    LOG(ERROR) << "Extension install temp directory " << temp_path.value()
+               << " does not resolve to its expected directory.";
+    return base::FilePath();
+  }
+
   return temp_path;
+}
+
+bool NormalizeFilePath(const base::FilePath& path,
+                       base::FilePath* normalized_path) {
+  if (base::FilePath result; base::NormalizeFilePath(path, &result)) {
+    *normalized_path = std::move(result);
+    return true;
+  }
+#if BUILDFLAG(IS_WIN)
+  // On Windows, `base::NormalizeFilePath` is implemented via
+  // `GetFinalPathNameByHandle`, which can fail in some cases. One such case
+  // which was reported by users is with paths on a ramdisk. For example, from
+  // the author of ImDisk (see crbug.com/442094023):
+  //
+  // > ImDisk is a rather old product. It is designed to be as small and
+  // > simple as possible and compatible with Windows versions as old as NT
+  // > 3.51. By design it lacks support for certain "modern" OS features like
+  // > plug-and-play and Volume Mount Manager. The mentioned API function,
+  // > GetFinalPathNameByHandle, uses Volume Mount Manager and is therefore
+  // > not supported for ImDisk virtual disks.
+  //
+  // It can also fail if a file isn't accessible due to permissions. Since we
+  // can't normalize the path, fall back to `base::MakeAbsoluteFilePath` and
+  // proceed if the path exists.
+  base::FilePath result = base::MakeAbsoluteFilePath(path);
+  if (!result.empty() && base::PathExists(result)) {
+    *normalized_path = std::move(result);
+    return true;
+  }
+#endif
+  return false;
 }
 
 base::FilePath ExtensionURLToRelativeFilePath(const GURL& url) {

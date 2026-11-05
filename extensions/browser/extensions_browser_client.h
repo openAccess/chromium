@@ -13,11 +13,12 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/types/expected.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_config.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_config.h"
 #include "content/public/browser/bluetooth_chooser.h"
 #include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/common/child_process_id.h"
@@ -25,6 +26,7 @@
 #include "extensions/browser/extension_prefs_observer.h"
 #include "extensions/browser/extensions_browser_api_provider.h"
 #include "extensions/browser/screenshot_access.h"
+#include "extensions/common/event_args.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "extensions/common/url_pattern_set.h"
@@ -34,8 +36,10 @@
 #include "services/network/public/mojom/url_loader.mojom-forward.h"
 #include "services/network/public/mojom/url_loader_factory.mojom-forward.h"
 #include "ui/base/page_transition_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "url/gurl.h"
 
+class ExtensionFunction;
 class ExtensionFunctionRegistry;
 
 namespace base {
@@ -104,6 +108,7 @@ class SafeBrowsingDatabaseManager;
 namespace extensions {
 
 class Blocklist;
+class BrowserContextLifetimeTracker;
 class CrxInstaller;
 class ComponentExtensionResourceManager;
 class Extension;
@@ -255,6 +260,10 @@ class ExtensionsBrowserClient {
   // Returns true if `context` corresponds to a guest session.
   virtual bool IsGuestSession(content::BrowserContext* context) const = 0;
 
+  // Returns true if Enterprise Isolated Mode replaces Incognito mode.
+  virtual bool IsolatedModeReplacesIncognito(
+      content::BrowserContext* context) const;
+
   // Returns true if `extension_id` can run in an incognito window.
   virtual bool IsExtensionIncognitoEnabled(
       const ExtensionId& extension_id,
@@ -268,6 +277,10 @@ class ExtensionsBrowserClient {
   virtual bool CanExtensionCrossIncognito(
       const extensions::Extension* extension,
       content::BrowserContext* context) const = 0;
+
+  // Returns a tracker for watching a BrowserContext's off-the-record
+  // sibling's lifecycle, or null if this embedder does not support it.
+  virtual BrowserContextLifetimeTracker* GetBrowserContextLifetimeTracker() = 0;
 
   // Return the resource relative path and id for the given request.
   virtual base::FilePath GetBundleResourcePath(
@@ -376,7 +389,7 @@ class ExtensionsBrowserClient {
   virtual void BroadcastEventToRenderers(
       events::HistogramValue histogram_value,
       const std::string& event_name,
-      base::ListValue args,
+      scoped_refptr<const EventArgs> args,
       bool dispatch_to_off_the_record_profiles) = 0;
 
   // Gets the single ExtensionCache instance shared across the browser process.
@@ -598,7 +611,8 @@ class ExtensionsBrowserClient {
                                             const GURL& url);
 
   // Returns the ProtocolHandlerRegistry instance associated with the user
-  // profile.
+  // profile, or null if the embedder has none; extension protocol_handlers
+  // are then ignored.
   virtual custom_handlers::ProtocolHandlerRegistry* GetProtocolHandlerRegistry(
       content::BrowserContext* context);
 
@@ -611,8 +625,8 @@ class ExtensionsBrowserClient {
   virtual scoped_refptr<safe_browsing::SafeBrowsingDatabaseManager>
   GetSafeBrowsingDatabaseManager() const;
 
-  // Get the default v4 protocol config struct from the safe browsing service.
-  virtual std::optional<safe_browsing::V4ProtocolConfig> GetV4ProtocolConfig()
+  // Get the default SB protocol config struct from the safe browsing service.
+  virtual std::optional<safe_browsing::SBProtocolConfig> GetSBProtocolConfig()
       const;
 
   // Notifies the ExtensionActionRunner that an extension has been granted
@@ -706,6 +720,29 @@ class ExtensionsBrowserClient {
   virtual std::unique_ptr<ExtensionInstallPromptClient> CreateInstallPrompt(
       content::WebContents* web_contents,
       std::unique_ptr<InstallPromptData> prompt);
+
+  // Creates install prompt UI anchored to `native_window` rather than a
+  // WebContents, for use when `function`'s caller has no directly associated
+  // WebContents (e.g. an extension service worker).
+  virtual std::unique_ptr<ExtensionInstallPromptClient>
+  CreateInstallPromptForNativeWindow(gfx::NativeWindow native_window,
+                                     content::BrowserContext& browser_context,
+                                     std::unique_ptr<InstallPromptData> prompt);
+
+  // Returns a native window suitable for anchoring UI (e.g. a
+  // permission-request prompt) triggered by `function`. Returns null if none
+  // is found.
+  virtual gfx::NativeWindow GetNativeWindowForFunction(
+      ExtensionFunction& function);
+
+  // Returns true if lazy keyed service instantiation is enabled for extension
+  // services.
+  virtual bool IsLazyKeyedServiceInstantiationEnabled() const;
+  virtual bool IsLazySocketAndUsbKeyedServiceInstantiationEnabled() const;
+
+  // Returns true if lazy keyed service instantiation is enabled for ChromeOS
+  // extension API resource manager and dispatcher services.
+  virtual bool IsLazyChromeOSResourceKeyedServiceInstantiationEnabled() const;
 
  protected:
   std::unique_ptr<ExtensionAssetsManager> assets_manager_;

@@ -2,202 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
-import type {DragEventSource} from 'chrome://resources/mojo/ui/base/dragdrop/mojom/drag_drop_types.mojom-webui.js';
-import type {MenuSourceType} from 'chrome://resources/mojo/ui/base/mojom/menu_source_type.mojom-webui.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
+import type {CrIconElement} from 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, INVALID_FOCUS_REQUEST_HANDLE, INVALID_NAVIGATION_CONTROLS_STATE_LISTENER_HANDLE, LhsChipIdentifier, PermissionAction, PermissionChipTheme, PermissionPromptStyle} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {PermissionChipElement, PermissionChipState} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {BrowserProxy} from 'chrome://webui-toolbar.top-chrome/browser_proxy.js';
-import type {BrowserControlsServiceInterface} from 'chrome://webui-toolbar.top-chrome/shared/browser_controls_api.mojom-webui.js';
-import type {ToolbarUIServiceInterface} from 'chrome://webui-toolbar.top-chrome/shared/toolbar_ui_api.mojom-webui.js';
-
-class TestToolbarUiHandler extends TestBrowserProxy implements
-    ToolbarUIServiceInterface {
-  constructor() {
-    super([
-      'onLhsChipMousePressed',
-      'onLhsChipClicked',
-      'onLhsChipCollapseAnimationEnded',
-      'onLhsChipExpandAnimationEnded',
-      'onLhsChipPointerEntered',
-      'onLhsChipPointerExited',
-      'onLhsChipDrag',
-      'movePinnedToolbarAction',
-      'movePinnedToolbarActionBy',
-    ]);
-  }
-
-  bind() {
-    return new Promise<never>(() => {});
-  }
-  showContextMenu() {}
-  showOverflowMenu() {
-    return Promise.resolve({result: {}});
-  }
-  onOmniboxAction() {
-    return new Promise<never>(() => {});
-  }
-
-  onPageInitialized() {}
-  onContentSettingImagePointerDown() {}
-  showContentSettingsBubble() {
-    return new Promise<never>(() => {});
-  }
-  onContentSettingImageAnimationEnded() {}
-  onPageActionPointerDown() {}
-  onPageActionClick() {
-    return new Promise<never>(() => {});
-  }
-  onPageActionChipShowingChanged() {
-    return new Promise<never>(() => {});
-  }
-  invokePinnedToolbarAction() {}
-  movePinnedToolbarAction() {}
-  movePinnedToolbarActionBy() {}
-  moveExtensionAction(_extensionId: string, _targetIndex: number) {}
-  moveExtensionActionBy(_extensionId: string, _delta: number) {}
-  onHomeButtonDropUrl() {}
-  onHomeButtonDropFile() {}
-  onToolbarDropFile() {}
-  showAvatarMenu() {
-    return new Promise<never>(() => {});
-  }
-  setAvatarButtonHovered(_hovered: boolean) {
-    return new Promise<never>(() => {});
-  }
-  setAvatarButtonFocused(_focused: boolean) {
-    return new Promise<never>(() => {});
-  }
-  setAvatarButtonIphPromoShowing(_showing: boolean) {
-    return new Promise<never>(() => {});
-  }
-  onAppMenuFocusChanged(_focused: boolean) {}
-  executeExtensionAction(_extensionId: string) {}
-  showExtensionContextMenu(_extensionId: string, _source: MenuSourceType) {}
-  onPerformanceInterventionButtonClicked(_isMouseInteraction: boolean) {}
-
-  onPerformanceInterventionButtonMousePressed() {}
-
-  onLocationBarFocusWithinChanged(_focusInside: boolean) {}
-
-  onLhsChipMousePressed(id: LhsChipIdentifier, _isMiddleClick: boolean) {
-    this.methodCalled('onLhsChipMousePressed', id);
-  }
-
-  onLhsChipClicked(id: LhsChipIdentifier, isMouseInteraction: boolean) {
-    this.methodCalled('onLhsChipClicked', [id, isMouseInteraction]);
-  }
-
-  onLhsChipCollapseAnimationEnded(id: LhsChipIdentifier) {
-    this.methodCalled('onLhsChipCollapseAnimationEnded', id);
-  }
-
-  onLhsChipExpandAnimationEnded(id: LhsChipIdentifier) {
-    this.methodCalled('onLhsChipExpandAnimationEnded', id);
-  }
-
-  onLhsChipPointerEntered(id: LhsChipIdentifier) {
-    this.methodCalled('onLhsChipPointerEntered', id);
-  }
-
-  onLhsChipPointerExited(id: LhsChipIdentifier) {
-    this.methodCalled('onLhsChipPointerExited', id);
-  }
-
-  onLhsChipDrag(id: LhsChipIdentifier, source: DragEventSource) {
-    this.methodCalled('onLhsChipDrag', [id, source]);
-  }
-
-  adjustOmniboxTextForCopy(text: string, _selectionStart: number) {
-    return Promise.resolve({
-      adjustedText: text,
-      adjustedUrl: null,
-      pageTitle: null,
-    });
-  }
-}
-
-class TestBrowserControlsHandler extends TestBrowserProxy implements
-    BrowserControlsServiceInterface {
-  constructor() {
-    super([]);
-  }
-  stopLoad() {
-    return new Promise<never>(() => {});
-  }
-  reloadFromClick() {
-    return new Promise<never>(() => {});
-  }
-  splitActiveTab() {
-    return new Promise<never>(() => {});
-  }
-  back() {
-    return new Promise<never>(() => {});
-  }
-  forward() {
-    return new Promise<never>(() => {});
-  }
-  backButtonHovered() {
-    return new Promise<never>(() => {});
-  }
-  navigateHome() {
-    return new Promise<never>(() => {});
-  }
-  navigate() {
-    return new Promise<never>(() => {});
-  }
-  navigateText() {
-    return new Promise<never>(() => {});
-  }
-}
-
-class TestToolbarBrowserProxy extends TestBrowserProxy implements BrowserProxy {
-  toolbarUIHandler: TestToolbarUiHandler;
-  browserControlsHandler: TestBrowserControlsHandler;
-
-  constructor() {
-    super([
-      'recordInHistogram',
-      'addNavigationStateListener',
-      'removeNavigationStateListener',
-    ]);
-    this.toolbarUIHandler = new TestToolbarUiHandler();
-    this.browserControlsHandler = new TestBrowserControlsHandler();
-  }
-
-  recordInHistogram() {}
-  addNavigationStateListener() {
-    return INVALID_NAVIGATION_CONTROLS_STATE_LISTENER_HANDLE;
-  }
-  addFocusRequestListener() {
-    return INVALID_FOCUS_REQUEST_HANDLE;
-  }
-  removeNavigationStateListener() {}
-  removeFocusRequestListener() {}
-
-  onChipClicked(chip: LhsChipIdentifier, isPointerClick: boolean) {
-    this.toolbarUIHandler.onLhsChipClicked(chip, isPointerClick);
-  }
-  onChipPointerEntered(chip: LhsChipIdentifier) {
-    this.toolbarUIHandler.onLhsChipPointerEntered(chip);
-  }
-  onChipPointerExited(chip: LhsChipIdentifier) {
-    this.toolbarUIHandler.onLhsChipPointerExited(chip);
-  }
-  onChipMousePressed(chip: LhsChipIdentifier) {
-    this.toolbarUIHandler.onLhsChipMousePressed(chip, false);
-  }
-  onChipExpandAnimationEnded(chip: LhsChipIdentifier) {
-    this.toolbarUIHandler.onLhsChipExpandAnimationEnded(chip);
-  }
-  onChipCollapseAnimationEnded(chip: LhsChipIdentifier) {
-    this.toolbarUIHandler.onLhsChipCollapseAnimationEnded(chip);
-  }
-}
+import {BrowserProxyImpl, LhsChipIdentifier, PermissionAction, PermissionChipTheme, PermissionPromptStyle} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {PermissionChipElement, PermissionChipState} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import {TestToolbarBrowserProxy} from './test_toolbar_browser_proxy.js';
+import type {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
 
 suite('PermissionChipTest', function() {
   let chip: PermissionChipElement;
@@ -216,6 +29,7 @@ suite('PermissionChipTest', function() {
       userDecision: PermissionAction.kGranted,
       shouldShowBlockedIcon: false,
       message: 'Camera',
+      stateToken: 1,
     };
   }
 
@@ -255,12 +69,11 @@ suite('PermissionChipTest', function() {
     assertEquals('visible', style.visibility);
     assertFalse(chipEl.hasAttribute('collapsed'));
 
-    const iconEl = chip.shadowRoot.querySelector<HTMLElement>('#icon');
+    const iconEl = chip.shadowRoot.querySelector<CrIconElement>('#icon');
     assertTrue(!!iconEl);
-    assertTrue(iconEl.style.maskImage.includes('videocam_chrome_refresh.svg'));
+    assertEquals('webui-toolbar-shared:videocam', iconEl.icon);
 
-    const messageEl = chip.shadowRoot.querySelector<HTMLElement>('#message');
-    assertTrue(!!messageEl);
+    const messageEl = chip.$.message;
     assertEquals('Camera', messageEl.textContent);
 
     // Verify it is a button for accessibility
@@ -278,9 +91,12 @@ suite('PermissionChipTest', function() {
     // Left press (pointerdown)
     chipEl.dispatchEvent(new PointerEvent('pointerdown', {button: 0}));
     assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipMousePressed'));
-    assertEquals(
-        LhsChipIdentifier.kPermissionRequest,
-        toolbarUiHandler.getArgs('onLhsChipMousePressed')[0]);
+    assertDeepEquals(
+        {
+          identifier: LhsChipIdentifier.kPermissionRequest,
+          isMiddleClick: false,
+        },
+        toolbarUiHandler.getArgs('onLhsChipMousePressed').at(-1));
 
     // Right press should not trigger pressed
     chipEl.dispatchEvent(new PointerEvent('pointerdown', {button: 2}));
@@ -289,18 +105,40 @@ suite('PermissionChipTest', function() {
     // Programmatic click (e.g. keyboard)
     chipEl.click();
     assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipClicked'));
-    assertEquals(
-        LhsChipIdentifier.kPermissionRequest,
-        toolbarUiHandler.getArgs('onLhsChipClicked')[0][0]);
-    assertFalse(toolbarUiHandler.getArgs('onLhsChipClicked')[0][1]);
+    assertDeepEquals(
+        {
+          identifier: LhsChipIdentifier.kPermissionRequest,
+          isMouseInteraction: false,
+          stateToken: 1,
+        },
+        toolbarUiHandler.getArgs('onLhsChipClicked').at(-1));
 
     // Mouse click
     chipEl.dispatchEvent(new PointerEvent('click', {pointerType: 'mouse'}));
     assertEquals(2, toolbarUiHandler.getCallCount('onLhsChipClicked'));
-    assertEquals(
-        LhsChipIdentifier.kPermissionRequest,
-        toolbarUiHandler.getArgs('onLhsChipClicked')[1][0]);
-    assertTrue(toolbarUiHandler.getArgs('onLhsChipClicked')[1][1]);
+    assertDeepEquals(
+        {
+          identifier: LhsChipIdentifier.kPermissionRequest,
+          isMouseInteraction: true,
+          stateToken: 1,
+        },
+        toolbarUiHandler.getArgs('onLhsChipClicked').at(-1));
+
+    // Click with non-zero stateToken forwards the token correctly.
+    const stateWithToken = createBaseState();
+    stateWithToken.stateToken = 42;
+    chip.chipState = stateWithToken;
+    await microtasksFinished();
+
+    chipEl.click();
+    assertEquals(3, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+    assertDeepEquals(
+        {
+          identifier: LhsChipIdentifier.kPermissionRequest,
+          isMouseInteraction: false,
+          stateToken: 42,
+        },
+        toolbarUiHandler.getArgs('onLhsChipClicked').at(-1));
   });
 
   test('Pointer hover events', async function() {

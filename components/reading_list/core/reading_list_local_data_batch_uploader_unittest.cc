@@ -9,14 +9,12 @@
 
 #include "base/memory/ptr_util.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/test_future.h"
 #include "components/reading_list/core/dual_reading_list_model.h"
 #include "components/reading_list/core/fake_reading_list_model_storage.h"
 #include "components/reading_list/core/reading_list_model_impl.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/service/local_data_description.h"
 #include "components/sync/test/mock_data_type_local_change_processor.h"
 #include "components/sync/test/test_matchers.h"
@@ -65,6 +63,11 @@ class ReadingListLocalDataBatchUploaderTest : public ::testing::Test {
     ASSERT_TRUE(dual_reading_list_model_->loaded());
   }
 
+  void StopSyncingAccountModel() {
+    ON_CALL(processor_, IsTrackingMetadata).WillByDefault(Return(false));
+    ASSERT_FALSE(dual_reading_list_model_->GetAccountModelIfSyncing());
+  }
+
  private:
   base::SimpleTestClock clock_;
   testing::NiceMock<syncer::MockDataTypeLocalChangeProcessor> processor_;
@@ -85,6 +88,22 @@ TEST_F(ReadingListLocalDataBatchUploaderTest, DescriptionEmptyIfModelNull) {
 
 TEST_F(ReadingListLocalDataBatchUploaderTest,
        DescriptionEmptyIfModelNotLoaded) {
+  ReadingListLocalDataBatchUploader uploader(dual_reading_list_model());
+  base::test::TestFuture<syncer::LocalDataDescription> description;
+
+  uploader.GetLocalDataDescription(description.GetCallback());
+
+  EXPECT_THAT(description.Get(), IsEmptyLocalDataDescription());
+}
+
+TEST_F(ReadingListLocalDataBatchUploaderTest,
+       DescriptionEmptyIfAccountModelNotSyncing) {
+  LoadModel();
+  dual_reading_list_model()->GetLocalOrSyncableModel()->AddOrReplaceEntry(
+      GURL("https://local.com"), "local", reading_list::ADDED_VIA_CURRENT_APP,
+      /*estimated_read_time=*/std::nullopt,
+      /*creation_time=*/std::nullopt);
+  StopSyncingAccountModel();
   ReadingListLocalDataBatchUploader uploader(dual_reading_list_model());
   base::test::TestFuture<syncer::LocalDataDescription> description;
 
@@ -121,34 +140,6 @@ TEST_F(ReadingListLocalDataBatchUploaderTest, DescriptionHasOnlyLocalData) {
                   /*domain_count=*/1u));
 }
 
-TEST_F(ReadingListLocalDataBatchUploaderTest,
-       LocalDescriptionEmptyItemsWhenFeatureDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      syncer::kSyncReadingListBatchUploadSelectedItems);
-
-  LoadModel();
-  dual_reading_list_model()->GetLocalOrSyncableModel()->AddOrReplaceEntry(
-      GURL("https://local.com"), "local", reading_list::ADDED_VIA_CURRENT_APP,
-      /*estimated_read_time=*/std::nullopt,
-      /*creation_time=*/std::nullopt);
-  dual_reading_list_model()->GetAccountModelIfSyncing()->AddOrReplaceEntry(
-      GURL("https://account.com"), "account",
-      reading_list::ADDED_VIA_CURRENT_APP,
-      /*estimated_read_time=*/std::nullopt,
-      /*creation_time=*/std::nullopt);
-  ReadingListLocalDataBatchUploader uploader(dual_reading_list_model());
-  base::test::TestFuture<syncer::LocalDataDescription> description;
-
-  uploader.GetLocalDataDescription(description.GetCallback());
-
-  EXPECT_THAT(description.Get(),
-              MatchesLocalDataDescription(_, /*local_data_models=*/IsEmpty(),
-                                          /*item_count=*/1u,
-                                          /*domains=*/ElementsAre("local.com"),
-                                          /*domain_count=*/1u));
-}
-
 TEST_F(ReadingListLocalDataBatchUploaderTest, MigrationNoOpsIfModelNull) {
   ReadingListLocalDataBatchUploader uploader(nullptr);
 
@@ -167,6 +158,27 @@ TEST_F(ReadingListLocalDataBatchUploaderTest, MigrationNoOpsIfModelNotLoaded) {
       {syncer::LocalDataItemModel::DataId(GURL("https://local.com"))});
 
   // Should not crash;
+}
+
+TEST_F(ReadingListLocalDataBatchUploaderTest,
+       MigrationNoOpsIfAccountModelNotSyncing) {
+  const GURL kLocalUrl("https://local.com");
+  LoadModel();
+  dual_reading_list_model()->GetLocalOrSyncableModel()->AddOrReplaceEntry(
+      kLocalUrl, "local", reading_list::ADDED_VIA_CURRENT_APP,
+      /*estimated_read_time=*/std::nullopt,
+      /*creation_time=*/std::nullopt);
+  StopSyncingAccountModel();
+  ReadingListLocalDataBatchUploader uploader(dual_reading_list_model());
+
+  uploader.TriggerLocalDataMigration();
+  uploader.TriggerLocalDataMigrationForItems(
+      {syncer::LocalDataItemModel::DataId(kLocalUrl)});
+
+  EXPECT_EQ(
+      dual_reading_list_model()->GetStorageStateForURLForTesting(kLocalUrl),
+      DualReadingListModel::StorageStateForTesting::
+          kExistsInLocalOrSyncableModelOnly);
 }
 
 TEST_F(ReadingListLocalDataBatchUploaderTest, MigrationUploadsLocalData) {

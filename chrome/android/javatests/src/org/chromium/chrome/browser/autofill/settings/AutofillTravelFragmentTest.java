@@ -15,6 +15,8 @@ import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.Assert.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -22,6 +24,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -33,6 +36,7 @@ import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
 
 import org.hamcrest.Matchers;
+import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -46,35 +50,43 @@ import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManager;
 import org.chromium.chrome.browser.autofill.autofill_ai.EntityDataManagerFactory;
+import org.chromium.chrome.browser.autofill.editors.common.EditorObserverForTest;
+import org.chromium.chrome.browser.autofill.editors.common.EditorViewBase;
 import org.chromium.chrome.browser.autofill.settings.personal_context.AutofillPersonalContextFragment;
+import org.chromium.chrome.browser.device_reauth.BiometricStatus;
+import org.chromium.chrome.browser.device_reauth.DeviceAuthAvailabilityCheckerBridge;
 import org.chromium.chrome.browser.device_reauth.ReauthenticatorBridge;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncher;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.preferences.Pref;
+import org.chromium.chrome.browser.settings.SettingsInTab;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.settings.SettingsTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.components.autofill.autofill_ai.DetailsForUpsertPass;
 import org.chromium.components.autofill.autofill_ai.EntityInstance;
 import org.chromium.components.autofill.autofill_ai.EntityInstanceWithLabels;
 import org.chromium.components.autofill.autofill_ai.EntityType;
+import org.chromium.components.autofill.autofill_ai.EntityTypeName;
+import org.chromium.components.autofill.autofill_ai.RecordType;
 import org.chromium.components.autofill.autofill_ai.utils.TestUtils;
+import org.chromium.components.autofill.payments.LegalMessageLine;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.user_prefs.UserPrefs;
-import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.MockitoHelper;
 
 import java.util.Arrays;
@@ -87,7 +99,6 @@ import java.util.List;
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures({
-    ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
     ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
     ChromeFeatureList.AUTOFILL_AI_AVAILABLE_BY_DEFAULT,
 })
@@ -108,6 +119,8 @@ public class AutofillTravelFragmentTest {
     public void setUp() {
         HelpAndFeedbackLauncherFactory.setInstanceForTesting(mHelpAndFeedbackLauncher);
         ReauthenticatorBridge.setInstanceForTesting(mMockReauthenticatorBridge);
+        DeviceAuthAvailabilityCheckerBridge.setBiometricAvailabilityStatusForTesting(
+                BiometricStatus.BIOMETRICS_AVAILABLE);
 
         mEntityDataManager = mock(EntityDataManager.class);
         EntityDataManagerFactory.setInstanceForTesting(mEntityDataManager);
@@ -138,8 +151,10 @@ public class AutofillTravelFragmentTest {
 
     @Test
     @SmallTest
-    @Restriction(DeviceFormFactor.PHONE) // Tablets and desktops don't have a help button or menu.
     public void testHelpMenuTriggersAutofillHelp() {
+        // Settings in a tab doesn't have a help button or menu.
+        Assume.assumeTrue(!SettingsInTab.shouldOpenSettingsInTab());
+
         mSettingsTestRule.startSettingsActivity();
 
         onView(withId(R.id.menu_id_targeted_help)).perform(click());
@@ -278,27 +293,124 @@ public class AutofillTravelFragmentTest {
         when(mEntityDataManager.getInstancesToList()).thenReturn(instancesMap);
         when(mEntityDataManager.getAutofillAiOptInStatus()).thenReturn(true);
 
+        CallbackHelper editorReadyHelper = registerEditorReadyObserver();
+
         mSettingsTestRule.startSettingsActivity();
         setTravelTogglePreference(true);
 
-        Preference addVehicle =
-                ThreadUtils.runOnUiThreadBlocking(
-                        () -> {
-                            PreferenceCategory category =
-                                    mSettingsTestRule.getFragment().findPreference("Vehicle");
-                            return category.findPreference("Vehicle" + " Add");
-                        });
-        assertNotNull(addVehicle);
+        Preference addVehicle = waitForEnabledAddVehiclePreference();
+        int callCount = editorReadyHelper.getCallCount();
         ThreadUtils.runOnUiThreadBlocking(addVehicle::performClick);
+        editorReadyHelper.waitForCallback(callCount);
 
-        onView(withText("Add Vehicle")).check(matches(isDisplayed()));
+        onView(withText("Add Vehicle")).inRoot(isDialog()).check(matches(isDisplayed()));
 
-        onView(withText("Done")).perform(click());
+        onView(withText("Done")).inRoot(isDialog()).perform(click());
         verify(mEntityDataManager)
                 .addOrUpdateEntityInstance(
                         any(),
                         eq(R.string.autofill_ai_save_or_update_local_entity_source_notice),
                         eq(R.string.done),
+                        eq(null),
+                        any());
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.AUTOFILL_ENABLE_WALLET_DISCLOSURE_NOTICE_PUBLIC_PASS)
+    public void testAutofillAiEntities_publicWalletEntitiesConsumeDetailsForUpsert()
+            throws Exception {
+        EntityType vehicleType =
+                TestUtils.getVehicleEntityType(
+                        /* isReadOnly= */ false,
+                        /* isEnabled= */ true,
+                        /* isEligibleForWalletStorage= */ true);
+
+        LinkedHashMap<EntityType, List<EntityInstanceWithLabels>> instancesMap =
+                new LinkedHashMap<>();
+        instancesMap.put(vehicleType, Collections.emptyList());
+
+        when(mEntityDataManager.getInstancesToList()).thenReturn(instancesMap);
+        when(mEntityDataManager.getAutofillAiOptInStatus()).thenReturn(true);
+        when(mEntityDataManager.isEligibleForWalletNotice(
+                        eq(EntityTypeName.VEHICLE), eq(RecordType.SERVER_WALLET)))
+                .thenReturn(true);
+
+        LegalMessageLine legalMessageLine = new LegalMessageLine("Legal disclaimer with link.");
+        legalMessageLine.links.add(
+                new LegalMessageLine.Link(0, 5, "https://policies.google.com/privacy"));
+        byte[] legalMessageToken = new byte[] {1, 2, 3};
+        DetailsForUpsertPass eligibleUserResponse =
+                new DetailsForUpsertPass(List.of(legalMessageLine), legalMessageToken);
+        DetailsForUpsertPass ineligibleUserResponse =
+                new DetailsForUpsertPass(Collections.emptyList(), new byte[0]);
+
+        when(mEntityDataManager.extractPreloadedDetailsForUpsertPass(EntityTypeName.VEHICLE))
+                .thenReturn(eligibleUserResponse, ineligibleUserResponse, null);
+
+        CallbackHelper editorReadyHelper = registerEditorReadyObserver();
+
+        mSettingsTestRule.startSettingsActivity();
+        setTravelTogglePreference(true);
+
+        Preference addVehicle = waitForEnabledAddVehiclePreference();
+        verify(mEntityDataManager).preloadDetailsForUpsertPass(EntityTypeName.VEHICLE);
+
+        // First entity addition extracts `eligibleUserResponse` and saves to Wallet with the
+        // legal message token.
+        int callCount = editorReadyHelper.getCallCount();
+        ThreadUtils.runOnUiThreadBlocking(addVehicle::performClick);
+        editorReadyHelper.waitForCallback(callCount);
+
+        verify(mEntityDataManager).extractPreloadedDetailsForUpsertPass(EntityTypeName.VEHICLE);
+        verify(mEntityDataManager, times(2))
+                .isEligibleForWalletNotice(
+                        eq(EntityTypeName.VEHICLE), eq(RecordType.SERVER_WALLET));
+
+        onView(withText("Add Vehicle")).inRoot(isDialog()).check(matches(isDisplayed()));
+        onView(withText("Done")).inRoot(isDialog()).perform(click());
+        verify(mEntityDataManager)
+                .addOrUpdateEntityInstance(
+                        any(),
+                        eq(R.string.autofill_ai_save_entity_in_wallet_source_notice),
+                        eq(R.string.done),
+                        eq(legalMessageToken),
+                        any());
+
+        // Second entity addition extracts `ineligibleUserResponse` (empty legal message and
+        // legal message token) and still saves to Wallet, passing a null legal message token.
+        callCount = editorReadyHelper.getCallCount();
+        ThreadUtils.runOnUiThreadBlocking(addVehicle::performClick);
+        editorReadyHelper.waitForCallback(callCount);
+
+        verify(mEntityDataManager, times(2))
+                .extractPreloadedDetailsForUpsertPass(EntityTypeName.VEHICLE);
+        onView(withText("Add Vehicle")).inRoot(isDialog()).check(matches(isDisplayed()));
+        onView(withText("Done")).inRoot(isDialog()).perform(click());
+        verify(mEntityDataManager)
+                .addOrUpdateEntityInstance(
+                        any(),
+                        eq(R.string.autofill_ai_save_entity_in_wallet_source_notice),
+                        eq(R.string.done),
+                        eq(null),
+                        any());
+
+        // Third entity addition gets `null` from `extractPreloadedDetailsForUpsertPass` and falls
+        // back to `RecordType.LOCAL`.
+        callCount = editorReadyHelper.getCallCount();
+        ThreadUtils.runOnUiThreadBlocking(addVehicle::performClick);
+        editorReadyHelper.waitForCallback(callCount);
+
+        verify(mEntityDataManager, times(3))
+                .extractPreloadedDetailsForUpsertPass(EntityTypeName.VEHICLE);
+        onView(withText("Add Vehicle")).inRoot(isDialog()).check(matches(isDisplayed()));
+        onView(withText("Done")).inRoot(isDialog()).perform(click());
+        verify(mEntityDataManager)
+                .addOrUpdateEntityInstance(
+                        any(),
+                        eq(R.string.autofill_ai_save_or_update_local_entity_source_notice),
+                        eq(R.string.done),
+                        eq(null),
                         any());
     }
 
@@ -387,5 +499,47 @@ public class AutofillTravelFragmentTest {
                 () ->
                         UserPrefs.get(mSettingsTestRule.getFragment().getProfile())
                                 .setBoolean(Pref.AUTOFILL_AI_TRAVEL_ENTITIES_ENABLED, value));
+    }
+
+    private Preference waitForEnabledAddVehiclePreference() {
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    PreferenceCategory category =
+                            mSettingsTestRule.getFragment().findPreference("Vehicle");
+                    Criteria.checkThat(category, notNullValue());
+                    Preference addVehicle = category.findPreference("Vehicle Add");
+                    Criteria.checkThat(addVehicle, notNullValue());
+                    Criteria.checkThat(addVehicle.isEnabled(), is(true));
+                });
+        return ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    PreferenceCategory category =
+                            mSettingsTestRule.getFragment().findPreference("Vehicle");
+                    return category.findPreference("Vehicle Add");
+                });
+    }
+
+    private CallbackHelper registerEditorReadyObserver() {
+        CallbackHelper editorReadyHelper = new CallbackHelper();
+        EditorViewBase.setEditorObserverForTest(
+                new EditorObserverForTest() {
+                    @Override
+                    public void onEditorReadyToEdit() {
+                        editorReadyHelper.notifyCalled();
+                    }
+
+                    @Override
+                    public void onEditorValidationError() {}
+
+                    @Override
+                    public void onEditorTextUpdate() {}
+
+                    @Override
+                    public void onEditorDismiss() {}
+
+                    @Override
+                    public void onEditorConfirmationDialogShown() {}
+                });
+        return editorReadyHelper;
     }
 }

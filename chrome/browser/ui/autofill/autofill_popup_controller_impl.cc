@@ -5,13 +5,13 @@
 #include "chrome/browser/ui/autofill/autofill_popup_controller_impl.h"
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <string>
 #include <utility>
 #include <variant>
 #include <vector>
 
-#include "base/check_deref.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/containers/to_vector.h"
@@ -83,7 +83,6 @@ bool ShouldEnforcePaintChecks(AutofillSuggestionTriggerSource trigger_source) {
     case AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl:
     case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
     case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
-    case AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
       return false;
     case AutofillSuggestionTriggerSource::kUnspecified:
     case AutofillSuggestionTriggerSource::kFormControlElementClicked:
@@ -99,9 +98,22 @@ bool ShouldEnforcePaintChecks(AutofillSuggestionTriggerSource trigger_source) {
     case AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
     case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
     case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
+    case AutofillSuggestionTriggerSource::kGmailOneTimePasswordAvailable:
     case AutofillSuggestionTriggerSource::kGlic:
       return true;
   }
+}
+
+// Returns the AtMemory search bar placeholders: the default one, followed by
+// the example queries in order.
+std::vector<std::u16string> GetAtMemoryPlaceholders() {
+  static constexpr auto kMessageIds = std::to_array<int>(
+      {IDS_AUTOFILL_AT_MEMORY_POPUP_SEARCH_BAR_PLACEHOLDER,
+       IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE_ORDER_NUMBER,
+       IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE_FLIGHT_CONFIRMATION_CODE,
+       IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE_TRACKING_NUMBER,
+       IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE_HOTEL_ADDRESS});
+  return base::ToVector(kMessageIds, &l10n_util::GetStringUTF16);
 }
 
 std::optional<AutofillPopupView::SearchBarConfig> GetSearchBarConfig(
@@ -111,16 +123,14 @@ std::optional<AutofillPopupView::SearchBarConfig> GetSearchBarConfig(
     case AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
     case AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl:
     case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
-    case AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
       return AutofillPopupView::SearchBarConfig{
-          .placeholder = l10n_util::GetStringUTF16(
-              IDS_AUTOFILL_AT_MEMORY_POPUP_SEARCH_BAR_PLACEHOLDER),
+          .placeholders = GetAtMemoryPlaceholders(),
           .initial_value = search_bar_initial_value,
           .no_results_message = u""};
     case AutofillSuggestionTriggerSource::kManualFallbackPasswords:
       return AutofillPopupView::SearchBarConfig{
-          .placeholder = l10n_util::GetStringUTF16(
-              IDS_AUTOFILL_POPUP_SEARCH_BAR_PASSWORDS_INPUT_PLACEHOLDER),
+          .placeholders = {l10n_util::GetStringUTF16(
+              IDS_AUTOFILL_POPUP_SEARCH_BAR_PASSWORDS_INPUT_PLACEHOLDER)},
           .initial_value = {},
           .no_results_message = l10n_util::GetStringUTF16(
               IDS_AUTOFILL_POPUP_SEARCH_BAR_PASSWORDS_NOT_FOUND)};
@@ -136,6 +146,7 @@ std::optional<AutofillPopupView::SearchBarConfig> GetSearchBarConfig(
     case AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
     case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
     case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
+    case AutofillSuggestionTriggerSource::kGmailOneTimePasswordAvailable:
     case AutofillSuggestionTriggerSource::kGlic:
     case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
     case AutofillSuggestionTriggerSource::kUnspecified:
@@ -233,7 +244,6 @@ std::optional<AutofillPopupView::SubPopupConfig> GetSubPopupConfig(
     case AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl:
     case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
     case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
-    case AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
       return AutofillPopupView::SubPopupConfig{.no_selection_hide_delay =
                                                    base::Seconds(1)};
     case AutofillSuggestionTriggerSource::kManualFallbackPasswords:
@@ -249,6 +259,7 @@ std::optional<AutofillPopupView::SubPopupConfig> GetSubPopupConfig(
     case AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
     case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
     case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
+    case AutofillSuggestionTriggerSource::kGmailOneTimePasswordAvailable:
     case AutofillSuggestionTriggerSource::kGlic:
     case AutofillSuggestionTriggerSource::kUnspecified:
       return std::nullopt;
@@ -258,13 +269,14 @@ std::optional<AutofillPopupView::SubPopupConfig> GetSubPopupConfig(
 
 }  // namespace
 
-
 bool AutofillPopupControllerImpl::MayRecycle(
     base::WeakPtr<AutofillSuggestionDelegate> delegate,
     content::WebContents* web_contents,
+    const LocalFrameToken& anchor_frame_token,
     AutofillSuggestionTriggerSource trigger_source) const {
   return delegate_.get() == delegate.get() &&
          container_view() == web_contents->GetNativeView() &&
+         GetAnchorFrameToken() == anchor_frame_token &&
          GetSuggestionTriggerSource() == trigger_source;
 }
 
@@ -306,13 +318,6 @@ void AutofillPopupControllerImpl::Show(
   suggestions_filling_product_ = GetFillingProductFromSuggestionTypes(
       base::ToVector(suggestions, &Suggestion::type), trigger_source_);
 
-  if (suggestions.empty() && !IsAtMemoryTriggerSource(trigger_source_) &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillAndroidKeyboardAccessoryDynamicPositioning)) {
-    Hide(SuggestionHidingReason::kNoSuggestions);
-    return;
-  }
-
   if (!suggestions.empty() &&
       suggestions[0].type == SuggestionType::kDatalistEntry) {
     AutofillMetrics::LogDataListSuggestionsShown();
@@ -330,40 +335,17 @@ void AutofillPopupControllerImpl::Show(
     return;
   }
 
-  content::RenderFrameHost* rfh = nullptr;
-  if (base::FeatureList::IsEnabled(features::kAutofillSimplifyFocusCheck)) {
-    rfh = FindRenderFrameHostByToken(*web_contents_,
-                                     controller_common_.frame_token);
-  } else {
-    // The focused frame may be different from the one one the controller is
-    // anchored to. This happens in two scenarios:
-    // - With frame-transcending forms: the focused frame is a subframe whose
-    //   form has been flattened into an ancestor form.
-    // - With race conditions: while Autofill parsed the form, the focus may
-    //   have moved to another frame.
-    // We support the case where the focused frame is a descendant of the
-    // `delegate_`'s frame. We observe the focused frame's RenderFrameDeleted()
-    // event.
-    rfh = web_contents_->GetFocusedFrame();
-    content::RenderFrameHost* anchor_rfh = FindRenderFrameHostByToken(
-        *web_contents_, controller_common_.frame_token);
-
-    const bool focus_is_in_descendant =
-        rfh && delegate_ && IsAncestorOf(anchor_rfh, rfh);
-
-    // If the focused frame is null or not a descendant of the delegate's frame,
-    // we either hide the popup, or fall back to the delegate's frame if focus
-    // loss should be ignored (e.g. when typing in a popup search bar).
-    if (!focus_is_in_descendant) {
-      if (!should_ignore_focus_loss) {
-        Hide(SuggestionHidingReason::kNoFrameHasFocus);
-        return;
-      }
-      rfh = delegate_ ? GetRenderFrameHost_DoNotUse(*delegate_) : nullptr;
-    }
-  }
-
+  content::RenderFrameHost* rfh = FindRenderFrameHostByToken(
+      *web_contents_, controller_common_.field_id.frame_token);
   if (!rfh) {
+    Hide(SuggestionHidingReason::kNoFrameHasFocus);
+    return;
+  }
+  if (rfh != web_contents_->GetFocusedFrame() && !should_ignore_focus_loss &&
+      base::FeatureList::IsEnabled(
+          features::kAutofillRequireFocusInFrameForSuggestions)) {
+    base::UmaHistogramEnumeration("Autofill.SuggestionSuppressionDueToNoFocus",
+                                  trigger_source);
     Hide(SuggestionHidingReason::kNoFrameHasFocus);
     return;
   }
@@ -436,11 +418,17 @@ void AutofillPopupControllerImpl::Show(
   }
 
   if (IsRootPopup()) {
-    // We may already be observing from a previous `Show` call.
     // TODO(crbug.com/41486228): Consider not to recycle views or controllers
     // and only permit a single call to `Show`.
-    key_press_observer_.Reset();
-    key_press_observer_.Observe(rfh);
+    key_press_registration_.Register(
+        rfh, base::BindRepeating(
+                 // Cannot bind HandleKeyPressEvent() directly because of its
+                 // return value.
+                 [](base::WeakPtr<AutofillPopupControllerImpl> weak_this,
+                    const input::NativeWebKeyboardEvent& event) {
+                   return weak_this && weak_this->HandleKeyPressEvent(event);
+                 },
+                 weak_ptr_factory_.GetWeakPtr()));
 
     if (non_filtered_suggestions_.size() == 1 &&
         non_filtered_suggestions_[0].type ==
@@ -452,12 +440,7 @@ void AutofillPopupControllerImpl::Show(
                          SuggestionHidingReason::kFadeTimerExpired));
     }
   }
-  delegate_->OnSuggestionsShown(
-      non_filtered_suggestions_,
-      IsRootPopup()
-          ? std::nullopt
-          : std::optional<AutofillSuggestionDelegate::SuggestionMetadata>(
-                {.multi_index = GetParentMultiRowIndex()}));
+  delegate_->OnSuggestionsShown(non_filtered_suggestions_, GetPopupMetadata());
 
   if (autofill_metrics::ShouldLogAutofillSuggestionShown(trigger_source_)) {
     AutofillMetrics::LogPopupInteraction(suggestions_filling_product_,
@@ -484,8 +467,17 @@ void AutofillPopupControllerImpl::UpdateDataListValues(
   if (HasEmptySuggestionContent()) {
     Hide(SuggestionHidingReason::kNoSuggestions);
   } else {
+    if (base::FeatureList::IsEnabled(
+            features::kAutofillResetAcceptanceBarrierOnDataListUpdate)) {
+      barrier_for_accepting_.reset();
+    }
     OnSuggestionsChanged();
   }
+}
+
+const LocalFrameToken& AutofillPopupControllerImpl::GetAnchorFrameToken()
+    const {
+  return controller_common_.field_id.frame_token;
 }
 
 bool AutofillPopupControllerImpl::IsViewVisibilityAcceptingThresholdEnabled()
@@ -524,7 +516,7 @@ void AutofillPopupControllerImpl::Hide(SuggestionHidingReason reason) {
     delegate_->ClearPreviewedForm();
     delegate_->OnSuggestionsHidden(reason);
   }
-  key_press_observer_.Reset();
+  key_press_registration_.Unregister();
   popup_hide_helper_.reset();
   // TODO(crbug.com/341916065): Consider only emitting this metric if the popup
   // has been opened before. Today the show method can call `Hide()` before
@@ -554,7 +546,8 @@ void AutofillPopupControllerImpl::OnSuggestionsChanged() {
 
 void AutofillPopupControllerImpl::AcceptSuggestion(
     int index,
-    AutofillMetrics::SuggestionAcceptedMethod accept_method) {
+    AutofillMetrics::SuggestionAcceptedMethod accept_method,
+    bool was_obscured) {
   CHECK_LT(base::checked_cast<size_t>(index), GetSuggestions().size());
 
   // Ignore clicks immediately after the popup was shown. This is to prevent
@@ -588,16 +581,13 @@ void AutofillPopupControllerImpl::AcceptSuggestion(
   base::UmaHistogramEnumeration("Autofill.SuggestionAccepted.Method",
                                 accept_method);
 
-  std::vector<size_t> multi_row_index = GetParentMultiRowIndex();
-  multi_row_index.push_back(index);
-  delegate_->DidAcceptSuggestion(suggestion,
-                                 AutofillSuggestionDelegate::SuggestionMetadata{
-                                     .multi_index = std::move(multi_row_index),
-                                     .from_search_result = !!filter_});
+  delegate_->DidAcceptSuggestion(
+      suggestion, GetSuggestionMetadata(index, was_obscured),
+      controller_common_.form_id, controller_common_.field_id);
 }
 
-std::vector<size_t> AutofillPopupControllerImpl::GetParentMultiRowIndex()
-    const {
+AutofillSuggestionDelegate::SuggestionUiMetadata
+AutofillPopupControllerImpl::GetPopupMetadata() const {
   const int popup_level = GetPopupLevel();
   std::vector<size_t> multi_row_index(popup_level, 0);
   base::WeakPtr<AutofillPopupControllerImpl> controller =
@@ -608,7 +598,19 @@ std::vector<size_t> AutofillPopupControllerImpl::GetParentMultiRowIndex()
         controller->view_->GetIndexOfSubPopupAnchorSuggestion().value_or(0);
     controller = controller->parent_controller_.value_or({});
   }
-  return multi_row_index;
+  return {.multi_index = std::move(multi_row_index)};
+}
+
+AutofillSuggestionDelegate::SuggestionMetadata
+AutofillPopupControllerImpl::GetSuggestionMetadata(size_t row_index,
+                                                   bool was_obscured) const {
+  std::vector<size_t> multi_index = GetPopupMetadata().multi_index;
+  multi_index.push_back(row_index);
+  return {
+      .multi_index = std::move(multi_index),
+      .from_search_result = filter_.has_value(),
+      .was_obscured = was_obscured,
+  };
 }
 
 gfx::NativeView AutofillPopupControllerImpl::container_view() const {
@@ -668,9 +670,7 @@ const Suggestion& AutofillPopupControllerImpl::GetSuggestionAt(int row) const {
   return GetSuggestions()[row];
 }
 
-bool AutofillPopupControllerImpl::RemoveSuggestion(
-    int list_index,
-    AutofillMetrics::SingleEntryRemovalMethod removal_method) {
+bool AutofillPopupControllerImpl::RemoveSuggestion(int list_index) {
   if (IsPointerLocked(web_contents_.get())) {
     Hide(SuggestionHidingReason::kMouseLocked);
     return false;
@@ -695,21 +695,13 @@ bool AutofillPopupControllerImpl::RemoveSuggestion(
   SuggestionType suggestion_type = GetSuggestions()[list_index].type;
   switch (GetFillingProductFromSuggestionType(suggestion_type)) {
     case FillingProduct::kAddress:
-      switch (removal_method) {
-        case AutofillMetrics::SingleEntryRemovalMethod::
-            kKeyboardShiftDeletePressed: {
-          MaybeRecordAddressDeletedMetric(web_contents_.get(),
-                                          GetSuggestions()[list_index]);
-          break;
-        }
-        case AutofillMetrics::SingleEntryRemovalMethod::kKeyboardAccessory:
-          NOTREACHED();
-        case AutofillMetrics::SingleEntryRemovalMethod::kDeleteButtonClicked:
-          NOTREACHED();
-      }
+      MaybeRecordAddressDeletedMetric(web_contents_.get(),
+                                      GetSuggestions()[list_index]);
       break;
     case FillingProduct::kAutocomplete:
-      AutofillMetrics::OnAutocompleteSuggestionDeleted(removal_method);
+      AutofillMetrics::LogAutocompleteEvent(
+          AutofillMetrics::AutocompleteEvent::AUTOCOMPLETE_SUGGESTION_DELETED,
+          GetSuggestions()[list_index]);
       if (view_) {
         view_->AxAnnounce(l10n_util::GetStringFUTF16(
             IDS_AUTOFILL_AUTOCOMPLETE_ENTRY_DELETED_A11Y_HINT,
@@ -735,16 +727,13 @@ bool AutofillPopupControllerImpl::RemoveSuggestion(
   }
 
   // Remove the deleted element.
+  auto suggestion_iter = std::ranges::find(non_filtered_suggestions_,
+                                           GetSuggestions()[list_index]);
+  CHECK(suggestion_iter != non_filtered_suggestions_.end());
+  non_filtered_suggestions_.erase(suggestion_iter);
+  CleanUpRedundantSeparators(non_filtered_suggestions_);
   if (filter_) {
-    auto suggestion_iter = std::find(non_filtered_suggestions_.begin(),
-                                     non_filtered_suggestions_.end(),
-                                     GetSuggestions()[list_index]);
-    CHECK(suggestion_iter != non_filtered_suggestions_.end());
-    non_filtered_suggestions_.erase(suggestion_iter);
     UpdateFilteredSuggestions();
-  } else {
-    non_filtered_suggestions_.erase(non_filtered_suggestions_.begin() +
-                                    list_index);
   }
 
   if (HasEmptySuggestionContent()) {
@@ -924,36 +913,6 @@ AutofillPopupControllerImpl::GetRootAXPlatformNodeForWebContents() {
   return ui::AXPlatformNode::FromNativeViewAccessible(native_view_accessible);
 }
 
-AutofillPopupControllerImpl::KeyPressObserver::KeyPressObserver(
-    AutofillPopupControllerImpl* observer)
-    : observer_(CHECK_DEREF(observer)) {}
-
-AutofillPopupControllerImpl::KeyPressObserver::~KeyPressObserver() {
-  Reset();
-}
-
-void AutofillPopupControllerImpl::KeyPressObserver::Observe(
-    content::RenderFrameHost* rfh) {
-  rfh_ = rfh->GetGlobalId();
-  handler_ = base::BindRepeating(
-      // Cannot bind HandleKeyPressEvent() directly because of its
-      // return value.
-      [](base::WeakPtr<AutofillPopupControllerImpl> weak_this,
-         const input::NativeWebKeyboardEvent& event) {
-        return weak_this && weak_this->HandleKeyPressEvent(event);
-      },
-      observer_->weak_ptr_factory_.GetWeakPtr());
-  rfh->GetRenderWidgetHost()->AddKeyPressEventCallback(handler_);
-}
-
-void AutofillPopupControllerImpl::KeyPressObserver::Reset() {
-  if (auto* rfh = content::RenderFrameHost::FromID(rfh_)) {
-    rfh->GetRenderWidgetHost()->RemoveKeyPressEventCallback(handler_);
-  }
-  rfh_ = {};
-  handler_ = content::RenderWidgetHost::KeyPressEventCallback();
-}
-
 // AutofillPopupController implementation.
 
 void AutofillPopupControllerImpl::SelectSuggestion(int index) {
@@ -982,7 +941,9 @@ void AutofillPopupControllerImpl::SelectSuggestion(int index) {
   }
 
   any_suggestion_selected_ = true;
-  delegate_->DidSelectSuggestion(GetSuggestionAt(index));
+  delegate_->DidSelectSuggestion(GetSuggestionAt(index),
+                                 controller_common_.form_id,
+                                 controller_common_.field_id);
 }
 
 void AutofillPopupControllerImpl::UnselectSuggestion() {

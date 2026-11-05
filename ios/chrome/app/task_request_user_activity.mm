@@ -61,6 +61,7 @@
 #import "ios/chrome/common/intents/OpenInChromeIntent.h"
 #import "ios/chrome/common/intents/SearchInChromeIntent.h"
 #import "net/base/apple/url_conversions.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace {
 
@@ -423,8 +424,8 @@ void OpenLatestTab(SceneState* sceneState,
       base::BindOnce(&OpenLatestTabWithBrowser), browser->AsWeakPtr()));
 
   UrlLoadParams params;
-  // Use SWITCH_TO_TAB as a signal to avoid opening a new NTP if tabs exist.
-  params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
+  // Use `kSwitchToTab` as a signal to avoid opening a new NTP if tabs exist.
+  params.disposition = ui::mojom::WindowOpenDisposition::kSwitchToTab;
 
   id<TabOpening> tabOpener = sceneState.controller;
   [tabOpener dismissModalsAndMaybeOpenSelectedTabInMode:targetMode
@@ -444,7 +445,7 @@ void OpenPasswordSearchWithBrowser(Browser* browser) {
 void OpenSettingsWithBrowser(Browser* browser) {
   id<SceneCommands> handler =
       HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands);
-  [handler maybeShowSettingsFromViewController];
+  [handler showSettingsFromViewController:nil];
 }
 
 // Opens the Set Default Browser settings page.
@@ -615,15 +616,20 @@ URLAndCallback GetURLAndCallbackFromSearchInChromeIntent(
     return {url_to_open, {}};
   }
 
+  // Whitespace-only phrases are treated as empty. Shortcuts donated by older
+  // Chrome versions carry a single space as `searchPhrase`, because SiriKit
+  // used to reject donations with an empty parameter.
   NSString* search_phrase = intent.searchPhrase;
-  if (search_phrase.length > 0) {
-    GURL generated_url =
-        GenerateResultGURLFromSearchQuery(search_phrase, profile);
-    if (generated_url.is_valid()) {
-      url_to_open = generated_url;
-    }
-  } else {
+  NSString* trimmed_search_phrase = [search_phrase
+      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+  if (trimmed_search_phrase.length == 0) {
     return {url_to_open, base::BindOnce(&FocusOmniboxWithBrowser)};
+  }
+
+  GURL generated_url =
+      GenerateResultGURLFromSearchQuery(search_phrase, profile);
+  if (generated_url.is_valid()) {
+    url_to_open = generated_url;
   }
   return {url_to_open, {}};
 }
@@ -682,6 +688,9 @@ void OpenSpotlightURL(NSURL* webpage_url,
       sceneState:(SceneState*)sceneState
       targetMode:(ApplicationModeForTabOpening)targetMode
       completion:(CallbackWithBrowser)callback;
+
+// Records metrics for the user activity.
+- (void)recordMetrics;
 @end
 
 // Subclass handling siri shortcuts, passkey import and handoff.
@@ -734,11 +743,12 @@ void OpenSpotlightURL(NSURL* webpage_url,
 }
 
 - (void)execute {
+  [self recordMetrics];
   // Ignore invalid user activities.
   if (_userActivityType == UserActivityType::kInvalid) {
     return;
   }
-  SceneState* sceneState = [self sceneStateFromSessionID];
+  SceneState* sceneState = self.sceneState;
   CHECK(sceneState);
   Browser* browser =
       sceneState.browserProviderInterface.currentBrowserProvider.browser;
@@ -757,6 +767,11 @@ void OpenSpotlightURL(NSURL* webpage_url,
 }
 
 - (void)handleUserActivityWithSceneState:(SceneState*)sceneState {
+  // This method must be overridden by subclasses.
+  NOTREACHED();
+}
+
+- (void)recordMetrics {
   // This method must be overridden by subclasses.
   NOTREACHED();
 }
@@ -826,16 +841,9 @@ void OpenSpotlightURL(NSURL* webpage_url,
 
 @implementation TaskRequestForUserActivitySimple
 
-- (instancetype)initWithUserActivity:(NSUserActivity*)userActivity
-                          sceneState:(SceneState*)sceneState
-                         isColdStart:(BOOL)isColdStart {
-  if ((self = [super initWithUserActivity:userActivity
-                               sceneState:sceneState
-                              isColdStart:isColdStart])) {
-    RecordMetrics(self.userActivityType, SpotlightActionType::kUnknown,
-                  userActivity);
-  }
-  return self;
+- (void)recordMetrics {
+  RecordMetrics(self.userActivityType, SpotlightActionType::kUnknown,
+                self.userActivity);
 }
 
 - (void)handleUserActivityWithSceneState:(SceneState*)sceneState {
@@ -1025,9 +1033,12 @@ void OpenSpotlightURL(NSURL* webpage_url,
                                sceneState:sceneState
                               isColdStart:isColdStart])) {
     _spotlightActionType = spotlightActionType;
-    RecordMetrics(self.userActivityType, _spotlightActionType, userActivity);
   }
   return self;
+}
+
+- (void)recordMetrics {
+  RecordMetrics(self.userActivityType, _spotlightActionType, self.userActivity);
 }
 
 - (void)handleUserActivityWithSceneState:(SceneState*)sceneState {

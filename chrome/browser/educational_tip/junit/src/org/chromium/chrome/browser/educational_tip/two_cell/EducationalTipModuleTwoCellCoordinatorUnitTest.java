@@ -14,7 +14,6 @@ import static org.mockito.Mockito.when;
 import android.content.Context;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -40,7 +39,6 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.setup_list.SetupListManager;
 import org.chromium.chrome.browser.setup_list.SetupListModuleUtils;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
-import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.shadows.ShadowAppCompatResources;
 
@@ -50,9 +48,7 @@ import java.util.Set;
 
 /** Unit tests for {@link EducationalTipModuleTwoCellCoordinator} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowAppCompatResources.class})
+@Config(shadows = {ShadowAppCompatResources.class})
 public class EducationalTipModuleTwoCellCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Rule public FakeTimeTestRule mFakeTime = new FakeTimeTestRule();
@@ -67,7 +63,6 @@ public class EducationalTipModuleTwoCellCoordinatorUnitTest {
     @Mock private SetupListManager mSetupListManager;
 
     @Captor private ArgumentCaptor<PropertyModel> mPropertyModelCaptor;
-    @Captor private ArgumentCaptor<BottomSheetObserver> mBottomSheetObserverCaptor;
 
     private Context mContext;
     private NonNullObservableSupplier<Profile> mProfileSupplier;
@@ -91,7 +86,6 @@ public class EducationalTipModuleTwoCellCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShowModule() {
         List<Integer> rankedModules =
                 Arrays.asList(
@@ -141,7 +135,6 @@ public class EducationalTipModuleTwoCellCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBottomSheetObserver_AddedAndRemoved() {
         mCoordinator =
                 new EducationalTipModuleTwoCellCoordinator(
@@ -152,7 +145,6 @@ public class EducationalTipModuleTwoCellCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnClick_ReportsContainerType() {
         List<Integer> rankedModules =
                 Arrays.asList(
@@ -178,7 +170,6 @@ public class EducationalTipModuleTwoCellCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnClick_MarksItemComplete() {
         List<Integer> rankedModules =
                 Arrays.asList(
@@ -205,7 +196,6 @@ public class EducationalTipModuleTwoCellCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetModuleType() {
         mCoordinator =
                 new EducationalTipModuleTwoCellCoordinator(
@@ -214,7 +204,6 @@ public class EducationalTipModuleTwoCellCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdateModule_TriggersAnimation() {
         List<Integer> rankedModules =
                 Arrays.asList(

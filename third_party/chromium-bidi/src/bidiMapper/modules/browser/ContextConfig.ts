@@ -39,6 +39,7 @@ type DigitalCredentialsBehavior = Omit<
 export class ContextConfig {
   // keep-sorted start block=yes
   acceptInsecureCerts?: boolean;
+  bypassCSP?: true | null;
   clientHints?: UAClientHints.UserAgentClientHints.ClientHintsMetadata | null;
   devicePixelRatio?: number | null;
   digitalCredentialsBehavior?: DigitalCredentialsBehavior;
@@ -47,22 +48,26 @@ export class ContextConfig {
   emulatedNetworkConditions?: Emulation.NetworkConditions | null;
   // Extra headers are kept in CDP format.
   extraHeaders?: Protocol.Network.Headers;
+  forcedColorsModeTheme?: Emulation.ForcedColorsModeTheme | null;
   geolocation?:
     | Emulation.GeolocationCoordinates
     | Emulation.GeolocationPositionError
     | null;
   locale?: string | null;
   maxTouchPoints?: number | null;
+  mediaFeatures?: Emulation.MediaFeatures | null;
   prerenderingDisabled?: boolean;
   screenArea?: Emulation.ScreenArea | null;
   screenOrientation?: Emulation.ScreenOrientation | null;
   scriptingEnabled?: false | null;
   scrollbarType?: 'classic' | 'overlay' | null;
+  textLayoutMode?: Emulation.TextLayoutMode | null;
   // Timezone is kept in CDP format with GMT prefix for offset values.
   timezone?: string | null;
   userAgent?: string | null;
   userPromptHandler?: Session.UserPromptHandler;
   viewport?: BrowsingContext.Viewport | null;
+  viewportMeta?: true | null;
   // keep-sorted end
 
   /**

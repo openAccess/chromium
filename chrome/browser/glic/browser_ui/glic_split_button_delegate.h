@@ -8,7 +8,8 @@
 #include <optional>
 #include <string>
 
-#include "chrome/browser/actor/ui/task_list_bubble/actor_task_list_bubble_controller_delegate.h"
+#include "chrome/browser/glic/browser_ui/activity_list_bubble/glic_activity_list_bubble_controller_delegate.h"
+#include "chrome/browser/glic/browser_ui/glic_split_button_ui_state.h"
 
 namespace glic {
 
@@ -35,7 +36,8 @@ struct NudgeParams {
 
 // Delegate interface for the UI container that houses GlicButton and
 // GlicActorTaskIcon.
-class GlicSplitButtonDelegate : public ActorTaskListBubbleControllerDelegate {
+class GlicSplitButtonDelegate
+    : public GlicActivityListBubbleControllerDelegate {
  public:
   ~GlicSplitButtonDelegate() override;
 
@@ -64,15 +66,15 @@ class GlicSplitButtonDelegate : public ActorTaskListBubbleControllerDelegate {
   virtual void SetGlicActorNudgeLabel(const std::u16string& nudge_label);
 
   // Show the actor nudge with text.
-  virtual void TriggerGlicActorNudge(const std::u16string& nudge_text);
+  virtual void TriggerGlicActorNudge(const std::u16string& nudge_label);
 
   // Update the nudge button "pressed state".
   virtual void SetGlicActorNudgePressedState(bool pressed);
 
-  // ActorTaskListBubbleControllerDelegate:
-  void ShowActorTaskListBubble() override;
-  void CloseActorTaskListBubble() override;
-  bool IsActorTaskListBubbleShowing() override;
+  // GlicActivityListBubbleControllerDelegate:
+  void ShowActivityListBubble() override;
+  void CloseActivityListBubble() override;
+  bool IsActivityListBubbleShowing() override;
 
   // Methods related to glic button visibility and glic panel visibility
 
@@ -81,6 +83,9 @@ class GlicSplitButtonDelegate : public ActorTaskListBubbleControllerDelegate {
 
   // Update the button when glic panel shows or hides.
   virtual void SetGlicPanelIsOpen(bool open);
+
+  // Split button state update:
+  virtual void UpdateSplitButtonUi(const GlicSplitButtonUiState& state) {}
 };
 
 }  // namespace glic

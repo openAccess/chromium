@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {getFavicon, getFaviconForPageURL, getFaviconUrl, getFileIconUrl} from 'chrome://resources/js/icon.js';
+import {getFavicon, getFaviconForPageURL, getFaviconUrl, getFileIconUrl, isFaviconUrl, resolveSchemeRelativeUrl} from 'chrome://resources/js/icon.js';
 import type {GetFaviconUrlParams} from 'chrome://resources/js/icon.js';
 import {isAndroid, isIOS} from 'chrome://resources/js/platform.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
@@ -133,10 +133,40 @@ suite('IconTest', function() {
     assertEquals(expected, getFavicon(url));
   });
 
+  test('IsFaviconUrl', function() {
+    assertTrue(isFaviconUrl(getFaviconUrl('http://foo.com')));
+    assertTrue(isFaviconUrl('chrome://favicon2/?size=16'));
+    assertFalse(isFaviconUrl('chrome://favicon/size/16/http://foo.com'));
+    assertFalse(isFaviconUrl('chrome://resources/images/icon.svg'));
+    assertFalse(isFaviconUrl('//resources/images/icon.svg'));
+    assertFalse(isFaviconUrl(''));
+  });
+
+  test('IsFaviconUrl_Extension', function() {
+    const extensionOrigin =
+        'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
+    assertTrue(isFaviconUrl(
+        `${extensionOrigin}/_favicon/?size=16&pageUrl=http%3A%2F%2Ffoo.com`));
+    assertTrue(isFaviconUrl(`${extensionOrigin}/_favicon/`));
+    assertFalse(isFaviconUrl(`${extensionOrigin}/images/icon.svg`));
+    assertFalse(isFaviconUrl(`${extensionOrigin}/foo/_favicon/`));
+    assertFalse(isFaviconUrl('https://example.com/_favicon/'));
+    assertFalse(isFaviconUrl('/_favicon/?size=16'));
+  });
+
   test('GetFileIconUrl', function() {
     assertEquals(
         getFileIconUrl('file path'),
         'chrome://fileicon/?path=file+path&scale=' + window.devicePixelRatio +
             'x');
+  });
+
+  test('ResolveSchemeRelativeUrl', function() {
+    assertEquals(
+        '//resources/images/icon_clear.svg',
+        resolveSchemeRelativeUrl('//resources/images/icon_clear.svg'));
+    assertEquals(
+        '//image?url=https%3A%2F%2Fa.com',
+        resolveSchemeRelativeUrl('//image?url=https%3A%2F%2Fa.com'));
   });
 });

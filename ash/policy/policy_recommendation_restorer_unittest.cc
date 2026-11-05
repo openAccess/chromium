@@ -47,9 +47,9 @@ class PolicyRecommendationRestorerTest : public NoSessionAshTestBase {
   ~PolicyRecommendationRestorerTest() override = default;
 
   // NoSessionAshTestBase override:
-  void SetUp() override {
-    set_create_signin_pref_service(false);
-    NoSessionAshTestBase::SetUp();
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    NoSessionAshTestBase::SetUpInitParams(init_params);
+    init_params.create_signin_pref_service = false;
   }
 
   void ConnectToSigninPrefService() {
@@ -250,7 +250,7 @@ TEST_F(PolicyRecommendationRestorerTest,
   SetUserSettings();
 
   ConnectToSigninPrefService();
-  SimulateUserLogin({"user@test.com"});
+  SimulateUserLogin(AccountId::FromUserEmail("user@test.com"));
 
   VerifyPrefFollowsUser(prefs::kAccessibilityLargeCursorEnabled,
                         base::Value(true));
@@ -360,7 +360,7 @@ TEST_F(PolicyRecommendationRestorerTest, DoNothingOnSessionStart) {
   ConnectToSigninPrefService();
   SetUserSettings();
 
-  SimulateUserLogin({"user@test.com"});
+  SimulateUserLogin(AccountId::FromUserEmail("user@test.com"));
   VerifyPrefsFollowUser();
   EXPECT_FALSE(RestoreTimerIsRunning());
 }

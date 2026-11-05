@@ -138,11 +138,8 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   // The default pref store should hold values that configure default browsing
   // behavior.
   registry->RegisterStringPref(prefs::kSupervisedUserId, std::string());
-  registry->RegisterDictionaryPref(prefs::kSupervisedUserManualHosts);
-  registry->RegisterDictionaryPref(prefs::kSupervisedUserManualURLs);
   registry->RegisterIntegerPref(prefs::kDefaultSupervisedUserFilteringBehavior,
                                 static_cast<int>(FilteringBehavior::kAllow));
-  registry->RegisterBooleanPref(prefs::kSupervisedUserSafeSites, false);
   for (const char* pref : kCustodianInfoPrefs) {
     registry->RegisterStringPref(pref, std::string());
   }
@@ -181,10 +178,6 @@ bool IsChildAccountStatusKnown(const PrefService& pref_service) {
   return pref_service.GetBoolean(prefs::kChildAccountStatusKnown);
 }
 #endif
-
-bool IsSafeSitesEnabled(const PrefService& pref_service) {
-  return pref_service.GetBoolean(prefs::kSupervisedUserSafeSites);
-}
 
 bool IsSubjectToParentalControls(const PrefService& pref_service) {
   return pref_service.GetString(prefs::kSupervisedUserId) == kChildAccountSUID;

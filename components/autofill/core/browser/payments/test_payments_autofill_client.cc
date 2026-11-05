@@ -31,6 +31,7 @@
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/ui/payments/autofill_progress_ui_type.h"
 #include "components/autofill/core/browser/ui/payments/bnpl_ui_delegate.h"
+#include "components/autofill/core/browser/ui/payments/payments_churned_users_ui_delegate.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -190,12 +191,15 @@ void TestPaymentsAutofillClient::ShowAutofillProgressDialog(
     AutofillProgressUiType autofill_progress_dialog_type,
     base::OnceClosure cancel_callback) {
   autofill_progress_dialog_shown_ = true;
+  autofill_progress_dialog_closed_ = false;
   autofill_progress_dialog_type_ = autofill_progress_dialog_type;
+  autofill_progress_dialog_cancel_callback_ = std::move(cancel_callback);
 }
 
 void TestPaymentsAutofillClient::CloseAutofillProgressDialog(
     bool show_confirmation_before_closing,
     base::OnceClosure no_user_perceived_authentication_callback) {
+  autofill_progress_dialog_closed_ = true;
   if (no_user_perceived_authentication_callback) {
     std::move(no_user_perceived_authentication_callback).Run();
   }
@@ -358,9 +362,6 @@ TestPaymentsAutofillClient::GetMerchantPromoCodeManager() {
   return mock_merchant_promo_code_manager_.get();
 }
 
-void TestPaymentsAutofillClient::OpenPromoCodeOfferDetailsURL(const GURL& url) {
-}
-
 AutofillOfferManager* TestPaymentsAutofillClient::GetAutofillOfferManager() {
   return autofill_offer_manager_.get();
 }
@@ -370,6 +371,10 @@ void TestPaymentsAutofillClient::UpdateOfferNotification(
     const OfferNotificationOptions& options) {}
 
 void TestPaymentsAutofillClient::DismissOfferNotification() {}
+
+bool TestPaymentsAutofillClient::IsTabVisibleForOfferNotification() const {
+  return is_tab_visible_for_offer_notification_;
+}
 
 bool TestPaymentsAutofillClient::ShowTouchToFillCreditCard(
     base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
@@ -504,6 +509,11 @@ TestPaymentsAutofillClient::GetWalletReminderNoticeManager() {
         std::make_unique<WalletReminderNoticeManager>(&client_.get());
   }
   return wallet_reminder_notice_manager_.get();
+}
+
+PaymentsChurnedUsersUiDelegate*
+TestPaymentsAutofillClient::GetPaymentsChurnedUsersUiDelegate() {
+  return payments_churned_users_ui_delegate_.get();
 }
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)

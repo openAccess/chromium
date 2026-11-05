@@ -4,25 +4,56 @@
 
 #include "remoting/host/win/chromoting_module.h"
 
+#include <wrl/client.h>
+
 #include "base/compiler_specific.h"
+#include "base/debug/debugger.h"
+#include "base/functional/bind.h"
+#include "base/immediate_crash.h"
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_executor.h"
+#include "base/time/time.h"
 #include "base/win/scoped_handle.h"
+#include "base/win/wrl_module.h"
 #include "remoting/base/auto_thread_task_runner.h"
 #include "remoting/base/typed_buffer.h"
 #include "remoting/host/base/host_exit_codes.h"
+#include "remoting/host/win/hang_watchdog.h"
 #include "remoting/host/win/rdp_desktop_session.h"
+#include "remoting/host/win/rdp_desktop_session_class_factory.h"
 
 namespace remoting {
 
 namespace {
 
+// If the main thread stops running tasks for about this long, e.g. because the
+// RDP ActiveX control is hung, the process crashes itself.
+constexpr base::TimeDelta kHangTimeout = base::Seconds(30);
+
+// How often the main thread records a heartbeat and the watchdog thread checks
+// it.
+constexpr base::TimeDelta kHeartbeatInterval = base::Seconds(5);
+static_assert(kHeartbeatInterval < kHangTimeout);
+
+// Run on the watchdog thread. Crashes the process rather than terminating it,
+// so that a crash dump captures the stack of the hung main thread.
+void CrashHungProcess() {
+  // Breaking into a debugger or stepping stops the main thread from running
+  // tasks while `base::LiveTicks` keeps advancing, which looks like a hang.
+  if (base::debug::BeingDebugged()) {
+    return;
+  }
+  LOG(ERROR) << "The main thread has been hung for about " << kHangTimeout
+             << ", crashing the RDP desktop session process.";
+  base::ImmediateCrash();
+}
+
 // Holds a reference to the task runner used by the module.
-base::LazyInstance<scoped_refptr<AutoThreadTaskRunner>>::DestructorAtExit
+base::LazyInstance<scoped_refptr<AutoThreadTaskRunner>>::Leaky
     g_module_task_runner = LAZY_INSTANCE_INITIALIZER;
 
 // Lowers the process integrity level such that it does not exceed |max_level|.
@@ -75,27 +106,44 @@ bool LowerProcessIntegrityLevel(DWORD max_level) {
   return true;
 }
 
+class WRLModule
+    : public Microsoft::WRL::Module<Microsoft::WRL::OutOfProc, WRLModule> {
+ public:
+  STDMETHODIMP_(unsigned long) DecrementObjectCount() override {
+    unsigned long count = Module::DecrementObjectCount();
+    if (count == 0) {
+      OnModuleReleased();
+    }
+    return count;
+  }
+
+ private:
+  void OnModuleReleased() {
+    // Stop accepting activations.
+    HRESULT hr = CoSuspendClassObjects();
+    CHECK(SUCCEEDED(hr));
+
+    // Release the message loop reference, causing the message loop to exit.
+    g_module_task_runner.Get() = nullptr;
+  }
+};
+
 }  // namespace
 
-ChromotingModule::ChromotingModule(ATL::_ATL_OBJMAP_ENTRY* classes,
-                                   ATL::_ATL_OBJMAP_ENTRY* classes_end)
-    : classes_(classes), classes_end_(classes_end) {
-  // Don't do anything if COM initialization failed.
+ChromotingModule::ChromotingModule() {
   if (!com_initializer_.Succeeded()) {
     return;
   }
 
-  ATL::_AtlComModule.ExecuteObjectMain(true);
+  WRLModule::Create();
 }
 
 ChromotingModule::~ChromotingModule() {
-  // Don't do anything if COM initialization failed.
   if (!com_initializer_.Succeeded()) {
     return;
   }
 
-  Term();
-  ATL::_AtlComModule.ExecuteObjectMain(false);
+  WRLModule::GetModule().Terminate();
 }
 
 // static
@@ -109,12 +157,10 @@ bool ChromotingModule::Run() {
     return false;
   }
 
-  // Register class objects.
-  HRESULT result = RegisterClassObjects(CLSCTX_LOCAL_SERVER,
-                                        REGCLS_MULTIPLEUSE | REGCLS_SUSPENDED);
-  if (FAILED(result)) {
-    LOG(ERROR) << "Failed to register class objects, result=0x" << std::hex
-               << result << std::dec << ".";
+  Microsoft::WRL::ComPtr<IClassFactory> factory =
+      Microsoft::WRL::Make<RdpDesktopSessionFactory>();
+  if (!factory) {
+    LOG(ERROR) << "Failed to create class factory.";
     return false;
   }
 
@@ -124,66 +170,39 @@ bool ChromotingModule::Run() {
   g_module_task_runner.Get() = new AutoThreadTaskRunner(
       main_task_executor.task_runner(), run_loop.QuitClosure());
 
-  // Start accepting activations.
-  result = CoResumeClassObjects();
-  if (FAILED(result)) {
-    LOG(ERROR) << "CoResumeClassObjects() failed, result=0x" << std::hex
-               << result << std::dec << ".";
+  auto& wrl_module = WRLModule::GetModule();
+  IID class_id = __uuidof(RdpDesktopSession);
+  IClassFactory* factory_ptr = factory.Get();
+  DWORD cookie = 0;
+  HRESULT hr = wrl_module.RegisterCOMObject(nullptr, &class_id, &factory_ptr,
+                                            &cookie, 1);
+  if (FAILED(hr)) {
+    LOG(ERROR) << "Failed to register class objects, result=0x" << std::hex
+               << hr << std::dec << ".";
     return false;
   }
 
-  // Run the loop until the module lock counter reaches zero.
-  run_loop.Run();
+  // Crash the process if the main thread stops running tasks, e.g. because the
+  // RDP ActiveX control is hung. The heartbeat timer posts to
+  // `main_task_executor`'s task runner rather than the module's
+  // AutoThreadTaskRunner, so it doesn't keep the run loop alive.
+  {
+    HangWatchdog hang_watchdog(kHangTimeout, kHeartbeatInterval,
+                               base::BindRepeating(&CrashHungProcess));
+
+    // Run the loop until the module lock counter reaches zero.
+    run_loop.Run();
+  }
 
   // Unregister class objects.
-  result = RevokeClassObjects();
-  if (FAILED(result)) {
+  hr = wrl_module.UnregisterCOMObject(nullptr, &cookie, 1);
+  if (FAILED(hr)) {
     LOG(ERROR) << "Failed to unregister class objects, result=0x" << std::hex
-               << result << std::dec << ".";
+               << hr << std::dec << ".";
     return false;
   }
 
   return true;
-}
-
-LONG ChromotingModule::Unlock() {
-  LONG count = ATL::CAtlModuleT<ChromotingModule>::Unlock();
-
-  if (!count) {
-    // Stop accepting activations.
-    HRESULT hr = CoSuspendClassObjects();
-    CHECK(SUCCEEDED(hr));
-
-    // Release the message loop reference, causing the message loop to exit.
-    g_module_task_runner.Get() = nullptr;
-  }
-
-  return count;
-}
-
-HRESULT ChromotingModule::RegisterClassObjects(DWORD class_context,
-                                               DWORD flags) {
-  for (ATL::_ATL_OBJMAP_ENTRY* i = classes_; i != classes_end_;
-       UNSAFE_TODO(++i)) {
-    HRESULT result = i->RegisterClassObject(class_context, flags);
-    if (FAILED(result)) {
-      return result;
-    }
-  }
-
-  return S_OK;
-}
-
-HRESULT ChromotingModule::RevokeClassObjects() {
-  for (ATL::_ATL_OBJMAP_ENTRY* i = classes_; i != classes_end_;
-       UNSAFE_TODO(++i)) {
-    HRESULT result = i->RevokeClassObject();
-    if (FAILED(result)) {
-      return result;
-    }
-  }
-
-  return S_OK;
 }
 
 // RdpClient entry point.
@@ -194,11 +213,8 @@ int RdpDesktopSessionMain() {
     return kInitializationFailed;
   }
 
-  ATL::_ATL_OBJMAP_ENTRY rdp_client_entry[] = {
-      OBJECT_ENTRY(__uuidof(RdpDesktopSession), RdpDesktopSession)};
-
-  ChromotingModule module(rdp_client_entry, UNSAFE_TODO(rdp_client_entry + 1));
-  return module.Run() ? kSuccessExitCode : kInitializationFailed;
+  ChromotingModule chromoting_module;
+  return chromoting_module.Run() ? kSuccessExitCode : kInitializationFailed;
 }
 
 }  // namespace remoting

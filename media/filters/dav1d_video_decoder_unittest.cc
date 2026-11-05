@@ -33,7 +33,7 @@ namespace media {
 namespace {
 
 MATCHER(ContainsDecoderErrorLog, "") {
-  return CONTAINS_STRING(arg, "dav1d_send_data() failed");
+  return arg.contains("dav1d_send_data() failed");
 }
 
 }  // namespace
@@ -268,9 +268,8 @@ TEST_F(Dav1dVideoDecoderTest, DecodeFrame_12bitMono) {
 }
 
 TEST_F(Dav1dVideoDecoderTest, DecodeFrame_AgtmMetadata) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {features::kHdrAgtm, features::kHdrAgtmParseOldSyntax}, {});
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kHdrAgtmParseOldSyntax);
   Initialize();
 
   // Simulate decoding a single frame.

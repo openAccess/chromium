@@ -4,19 +4,19 @@
 
 #include "services/audio/input_controller.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
-#include "base/base_paths.h"
 #include "base/compiler_specific.h"
-#include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "input_controller.h"
@@ -32,7 +32,6 @@
 #include "media/base/audio_glitch_info.h"
 #include "media/base/audio_processing.h"
 #include "media/base/media_switches.h"
-#include "third_party/tflite/src/tensorflow/lite/model_builder.h"
 #if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
 #include "media/webrtc/voice_isolation/voice_isolation.h"
 #endif
@@ -44,13 +43,11 @@
 #include "services/audio/reference_signal_provider.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/flatbuffers/src/include/flatbuffers/flatbuffers.h"
-#include "third_party/tflite/src/tensorflow/lite/model_builder.h"
 
 #if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
 #include "media/webrtc/ml_model_handle.h"  // nogncheck
-#include "media/webrtc/voice_isolation/voice_isolation.h"
-#include "services/audio/ml_model_manager.h"
+#include "services/audio/test/fake_ml_model_handles.h"
+#include "services/audio/test/mock_ml_model_manager.h"
 #endif
 
 using ::testing::_;
@@ -58,7 +55,6 @@ using ::testing::AtLeast;
 using ::testing::Contains;
 using ::testing::Exactly;
 using ::testing::HasSubstr;
-using ::testing::InvokeWithoutArgs;
 using ::testing::NiceMock;
 using ::testing::NotNull;
 using ::testing::Return;
@@ -68,10 +64,19 @@ namespace audio {
 
 namespace {
 
-const int kSampleRate = media::AudioParameters::kAudioCDSampleRate;
+constexpr int kSampleRate = media::AudioParameters::kAudioCDSampleRate;
 const media::ChannelLayoutConfig kChannelLayoutConfig =
     media::ChannelLayoutConfig::Stereo();
-const int kSamplesPerPacket = kSampleRate / 100;
+constexpr int kSamplesPerPacket = kSampleRate / 100;
+
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+// Stream parameters for the voice isolation tests: VoiceIsolationHandler only
+// accepts the 48 kHz, 10 ms buffers that VoiceIsolation supports. The other
+// tests keep `kSampleRate`.
+constexpr int kVoiceIsolationSampleRateHz = media::VoiceIsolation::kSampleRate;
+constexpr int kVoiceIsolationFramesPerBuffer =
+    media::VoiceIsolation::kFrameSize;
+#endif
 
 // InputController will poll once every second, so wait at most a bit
 // more than that for the callbacks.
@@ -92,52 +97,6 @@ std::unique_ptr<LoopbackMixin> DoNotCreateLoopbackMixin(
   return nullptr;
 }
 
-#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
-
-class FakeMlModelHandle : public media::MlModelHandle {
- public:
-  FakeMlModelHandle() {
-    base::FilePath source_root;
-    CHECK(base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &source_root));
-    source_root = source_root.AppendASCII("media")
-                      .AppendASCII("webrtc")
-                      .AppendASCII("voice_isolation")
-                      .AppendASCII("test_model_1_2_160_2.tflite");
-
-    model_ = tflite::FlatBufferModel::BuildFromFile(
-        source_root.AsUTF8Unsafe().c_str());
-    CHECK(model_);
-  }
-
-  const tflite::FlatBufferModel& Get() override { return *model_; }
-
- private:
-  ~FakeMlModelHandle() override = default;
-  std::vector<uint8_t> buffer_;
-  std::unique_ptr<tflite::FlatBufferModel> model_;
-};
-
-class FakeMlModelManager : public MlModelManager {
- public:
-  FakeMlModelManager() = default;
-  ~FakeMlModelManager() override = default;
-
-  scoped_refptr<media::MlModelHandle> GetModel(
-      mojom::MlModelType model_type) override {
-    if (model_type == mojom::MlModelType::kVoiceIsolationDenoiser &&
-        !return_null_model_) {
-      return base::MakeRefCounted<FakeMlModelHandle>();
-    }
-    return nullptr;
-  }
-
-  void set_return_null_model(bool val) { return_null_model_ = val; }
-
- private:
-  bool return_null_model_ = false;
-};
-
-#endif  // BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
 }  // namespace
 
 class MockInputControllerEventHandler : public InputController::EventHandler {
@@ -347,7 +306,7 @@ TEST_F(InputControllerTest, CreateAndCloseWithoutRecording) {
   EXPECT_CALL(event_handler_, OnCreated(_));
   CreateAudioController();
   task_environment_.RunUntilIdle();
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   EXPECT_CALL(sync_writer_, Close());
   controller_->Close();
@@ -362,7 +321,7 @@ TEST_F(InputControllerTest, CreateAndCloseWithoutRecording) {
 TEST_F(SystemTimeInputControllerTest, CreateRecordAndClose) {
   EXPECT_CALL(event_handler_, OnCreated(_));
   CreateAudioController();
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   base::HistogramTester histogram_tester;
   base::RunLoop loop;
@@ -373,7 +332,7 @@ TEST_F(SystemTimeInputControllerTest, CreateRecordAndClose) {
     EXPECT_CALL(sync_writer_, Write(NotNull(), _, _, _)).Times(Exactly(9));
     EXPECT_CALL(sync_writer_, Write(NotNull(), _, _, _))
         .Times(AtLeast(1))
-        .WillOnce(InvokeWithoutArgs([&]() { loop.Quit(); }));
+        .WillOnce([&]() { loop.Quit(); });
   }
   controller_->Record();
   loop.Run();
@@ -400,7 +359,7 @@ TEST_F(InputControllerTestWithMockAudioManager, LoopbackMixinIsEngaged) {
 
   CreateAudioControllerWithMixin(
       media::AudioDeviceDescription::kLoopbackWithoutChromeId);
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   EXPECT_CALL(mixin_verifier_, Start());
   controller_->Record();
@@ -430,7 +389,7 @@ TEST_F(InputControllerTestWithMockAudioManager, PropagatesGlitchInfo) {
   auto audio_bus = media::AudioBus::Create(params_);
 
   CreateAudioController();
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
   controller_->Record();
 
   ASSERT_TRUE(mock_stream.captured_callback_);
@@ -460,7 +419,7 @@ TEST_F(InputControllerTestWithMockAudioManager, LogsStatsInDestructor) {
   auto audio_bus = media::AudioBus::Create(params_);
 
   CreateAudioController();
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
   controller_->Record();
 
   ASSERT_TRUE(mock_stream.captured_callback_);
@@ -487,7 +446,7 @@ TEST_F(InputControllerTestWithMockAudioManager, LogsStatsInDestructor) {
 TEST_F(InputControllerTest, RecordTwice) {
   EXPECT_CALL(event_handler_, OnCreated(_));
   CreateAudioController();
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   controller_->Record();
   controller_->Record();
@@ -499,7 +458,7 @@ TEST_F(InputControllerTest, RecordTwice) {
 TEST_F(InputControllerTest, CloseTwice) {
   EXPECT_CALL(event_handler_, OnCreated(_));
   CreateAudioController();
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   controller_->Record();
 
@@ -516,7 +475,7 @@ TEST_F(InputControllerTest, TestOnmutedCallbackInitiallyUnmuted) {
 
   media::FakeAudioInputStream::SetGlobalMutedState(false);
   CreateAudioController();
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
   task_environment_.FastForwardBy(kOnMutePollInterval);
 
   testing::Mock::VerifyAndClearExpectations(&event_handler_);
@@ -538,7 +497,7 @@ TEST_F(InputControllerTest, TestOnmutedCallbackInitiallyMuted) {
 
   media::FakeAudioInputStream::SetGlobalMutedState(true);
   CreateAudioController();
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
   task_environment_.FastForwardBy(kOnMutePollInterval);
 
   testing::Mock::VerifyAndClearExpectations(&event_handler_);
@@ -547,6 +506,39 @@ TEST_F(InputControllerTest, TestOnmutedCallbackInitiallyMuted) {
   media::FakeAudioInputStream::SetGlobalMutedState(false);
   task_environment_.FastForwardBy(kOnMutePollInterval);
 
+  controller_->Close();
+}
+
+TEST_F(InputControllerTestWithMockAudioManager,
+       UsesMuteStateChangeNotifications) {
+  MockAudioInputStream mock_stream;
+  auto* audio_manager =
+      static_cast<media::MockAudioManager*>(audio_manager_.get());
+  audio_manager->SetSupportsInputMuteStateChangeNotifications(true);
+  audio_manager->SetMakeInputStreamCB(base::BindRepeating(
+      [](media::AudioInputStream* stream, const media::AudioParameters& params,
+         const std::string& device_id) { return stream; },
+      &mock_stream));
+
+  EXPECT_CALL(mock_stream, IsMuted()).WillOnce(Return(false));
+  EXPECT_CALL(event_handler_, OnCreated(false));
+  CreateAudioController();
+  ASSERT_TRUE(controller_);
+
+  testing::Mock::VerifyAndClearExpectations(&mock_stream);
+  EXPECT_CALL(mock_stream, IsMuted()).Times(0);
+
+  EXPECT_CALL(event_handler_, OnMuted(true));
+  audio_manager->NotifyInputMuteStateChanged(true);
+  testing::Mock::VerifyAndClearExpectations(&event_handler_);
+
+  // A manager which provides notifications should not also be polled.
+  task_environment_.FastForwardBy(kOnMutePollInterval * 2);
+
+  EXPECT_CALL(event_handler_, OnMuted(false));
+  audio_manager->NotifyInputMuteStateChanged(false);
+
+  EXPECT_CALL(sync_writer_, Close());
   controller_->Close();
 }
 
@@ -588,6 +580,13 @@ class InputControllerTestHelper {
         ->OnReferenceStreamError();
   }
 
+  // Reports an error directly, bypassing the production triggers. Prefer
+  // CallOnReferenceStreamError() where a real trigger suffices; this is for
+  // error codes and states (e.g. after Close()) that have no public trigger.
+  void DoReportError(InputController::ErrorCode error_code) {
+    controller_->DoReportError(error_code);
+  }
+
  private:
   raw_ptr<InputController> controller_;
 };
@@ -606,9 +605,40 @@ class MockReferenceSignalProvider : public ReferenceSignalProvider {
 };
 
 template <base::test::TaskEnvironment::TimeSource TimeSource =
-              base::test::TaskEnvironment::TimeSource::MOCK_TIME>
+              base::test::TaskEnvironment::TimeSource::MOCK_TIME,
+          AudioManagerType audio_manager_type = AudioManagerType::FAKE>
 class TimeSourceInputControllerTestWithReferenceSignalProvider
-    : public TimeSourceInputControllerTest<TimeSource> {
+    : public TimeSourceInputControllerTest<TimeSource, audio_manager_type> {
+ public:
+  TimeSourceInputControllerTestWithReferenceSignalProvider() {
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+    ON_CALL(ml_model_manager_,
+            GetModel(mojom::MlModelType::kVoiceIsolationDenoiser))
+        .WillByDefault(
+            []() { return base::MakeRefCounted<FakeMlModelHandle>(); });
+#endif
+  }
+
+  // Spins until VoiceIsolationHandler has handled the ThreadPool reply, i.e.
+  // OnComponentCreated() ran (success or failure).
+  [[nodiscard]] bool WaitForVoiceIsolationStartupToFinish() {
+    return base::test::RunUntil([&]() {
+      return std::ranges::any_of(
+          this->event_handler_.log_messages(), [](const auto& m) {
+            return m.find("OnComponentCreated") != std::string::npos;
+          });
+    });
+  }
+
+  ~TimeSourceInputControllerTestWithReferenceSignalProvider() override {
+    // `helper_` holds a raw_ptr to `controller_`; destroy it before
+    // `controller_`.
+    helper_.reset();
+    // `controller_` owns a VoiceIsolationHandler that holds
+    // base::Unretained(&ml_model_manager_); destroy it first.
+    this->controller_.reset();
+  }
+
  protected:
   void CreateAudioController() final {
     // Must use |this| to access template base class members:
@@ -681,7 +711,7 @@ class TimeSourceInputControllerTestWithReferenceSignalProvider
   media::mojom::AudioProcessingConfigPtr processing_config_;
   mojo::Remote<media::mojom::AudioProcessorControls> remote_controls_;
 #if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
-  FakeMlModelManager ml_model_manager_;
+  NiceMock<MockMlModelManager> ml_model_manager_;
 #endif
   std::unique_ptr<InputControllerTestHelper> helper_;
 };
@@ -698,7 +728,7 @@ TEST_F(InputControllerTestWithReferenceSignalProvider,
 
   CreateAudioController();
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   base::RunLoop loop;
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
@@ -723,7 +753,7 @@ TEST_F(InputControllerTestWithReferenceSignalProvider,
 
   CreateAudioController();
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   base::RunLoop loop;
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
@@ -748,7 +778,7 @@ TEST_F(InputControllerTestWithReferenceSignalProvider,
 
   CreateAudioController();
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   EXPECT_TRUE(helper_->IsUsingProcessingThread());
 
@@ -767,7 +797,7 @@ TEST_F(
   SetupProcessingConfig(AudioProcessingType::kWithoutPlayoutReference);
   CreateAudioController();
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   controller_->Record();
   controller_->SetOutputDeviceForAec(kOutputDeviceId);
@@ -797,7 +827,7 @@ TEST_F(InputControllerTestWithReferenceSignalProvider,
 
   CreateAudioController();
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   controller_->Record();
   controller_->SetOutputDeviceForAec(kOutputDeviceId);
@@ -823,7 +853,7 @@ TEST_F(InputControllerTestWithReferenceSignalProvider,
   SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
   CreateAudioController();
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   controller_->SetOutputDeviceForAec(kOutputDeviceId);
   controller_->Record();
@@ -847,7 +877,7 @@ TEST_F(InputControllerTestWithReferenceSignalProvider, FifoSize) {
   SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
   CreateAudioController();
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   controller_->SetOutputDeviceForAec(kOutputDeviceId);
   controller_->Record();
@@ -881,7 +911,7 @@ TEST_F(InputControllerTestWithReferenceSignalProvider, ChangeOutputForAec) {
   SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
   CreateAudioController();
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   controller_->SetOutputDeviceForAec(kOutputDeviceId);
   controller_->Record();
@@ -914,7 +944,7 @@ TEST_F(SystemTimeInputControllerTestWithReferenceSignalProvider,
   helper_->AttachOnProcessedCallback(
       base::BindLambdaForTesting(verify_data_processed));
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   base::RunLoop loop;
 
@@ -924,7 +954,7 @@ TEST_F(SystemTimeInputControllerTestWithReferenceSignalProvider,
     EXPECT_CALL(sync_writer_, Write(NotNull(), _, _, _)).Times(Exactly(9));
     EXPECT_CALL(sync_writer_, Write(NotNull(), _, _, _))
         .Times(AtLeast(1))
-        .WillOnce(InvokeWithoutArgs([&]() { loop.Quit(); }));
+        .WillOnce([&]() { loop.Quit(); });
   }
   controller_->Record();
 
@@ -957,7 +987,7 @@ TEST_F(InputControllerTestWithReferenceSignalProvider, ReferenceStreamError) {
   SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
   CreateAudioController();
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   controller_->SetOutputDeviceForAec(kOutputDeviceId);
   controller_->Record();
@@ -969,6 +999,42 @@ TEST_F(InputControllerTestWithReferenceSignalProvider, ReferenceStreamError) {
   helper_->CallOnReferenceStreamError();
 
   controller_->Close();
+}
+
+// Verifies that only the first error reaches the EventHandler: a repeat of the
+// same error and a subsequent different error are both dropped.
+TEST_F(InputControllerTestWithReferenceSignalProvider,
+       RepeatedErrorsReportedAtMostOnce) {
+  SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
+  EXPECT_CALL(event_handler_, OnCreated(_));
+  CreateAudioController();
+  ASSERT_TRUE(controller_);
+
+  EXPECT_CALL(event_handler_, OnError(InputController::REFERENCE_STREAM_ERROR))
+      .Times(1);
+  helper_->CallOnReferenceStreamError();
+
+  // Same error again, then a different one: neither may be dispatched.
+  helper_->CallOnReferenceStreamError();
+  helper_->DoReportError(InputController::STREAM_ERROR);
+
+  EXPECT_CALL(sync_writer_, Close());
+  controller_->Close();
+}
+
+// Verifies that an error surfacing after Close() is not reported, even if the
+// controller had not reported any error before.
+TEST_F(InputControllerTestWithReferenceSignalProvider,
+       ErrorsAfterCloseAreIgnored) {
+  EXPECT_CALL(event_handler_, OnCreated(_));
+  CreateAudioController();
+  ASSERT_TRUE(controller_);
+
+  EXPECT_CALL(sync_writer_, Close());
+  controller_->Close();
+
+  EXPECT_CALL(event_handler_, OnError(_)).Times(0);
+  helper_->DoReportError(InputController::STREAM_ERROR);
 }
 
 class ParameterizedInputControllerUmaDelayTest
@@ -1007,7 +1073,7 @@ TEST_P(ParameterizedInputControllerUmaDelayTest, CreateRecordAndClose) {
   helper_->AttachOnProcessedCallback(
       base::BindLambdaForTesting(verify_data_processed));
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   base::HistogramTester histogram_tester;
   base::RunLoop loop;
@@ -1018,7 +1084,7 @@ TEST_P(ParameterizedInputControllerUmaDelayTest, CreateRecordAndClose) {
     EXPECT_CALL(sync_writer_, Write(NotNull(), _, _, _)).Times(Exactly(9));
     EXPECT_CALL(sync_writer_, Write(NotNull(), _, _, _))
         .Times(AtLeast(1))
-        .WillOnce(InvokeWithoutArgs([&]() { loop.Quit(); }));
+        .WillOnce([&]() { loop.Quit(); });
   }
   controller_->Record();
 
@@ -1078,7 +1144,7 @@ void InputControllerTestWithReferenceSignalProvider::TestReferenceOpenError(
   SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
   CreateAudioController();
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
 
   controller_->SetOutputDeviceForAec(kOutputDeviceId);
 
@@ -1133,7 +1199,7 @@ TEST_F(InputControllerTestWithReferenceSignalProvider,
   // the AudioProcessingConfig as null.
   CreateAudioController();
 
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
   controller_->Record();
 
   // We are not doing echo cancellation, so we are not using the fifo.
@@ -1148,13 +1214,13 @@ TEST_F(SystemTimeInputControllerTestWithReferenceSignalProvider,
   SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
   EXPECT_CALL(event_handler_, OnCreated(_));
   CreateAudioController();
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
   EXPECT_FALSE(helper_->HasVoiceIsolation());
 
   base::RunLoop loop;
   EXPECT_CALL(sync_writer_, Write(NotNull(), _, _, _))
       .Times(AtLeast(1))
-      .WillOnce(InvokeWithoutArgs([&]() { loop.Quit(); }));
+      .WillOnce([&]() { loop.Quit(); });
 
   controller_->Record();
   loop.Run();
@@ -1165,18 +1231,20 @@ TEST_F(SystemTimeInputControllerTestWithReferenceSignalProvider,
 
 TEST_F(SystemTimeInputControllerTestWithReferenceSignalProvider,
        VoiceIsolationEnabledInConfig) {
+  params_.Reset(params_.format(), params_.channel_layout_config(),
+                kVoiceIsolationSampleRateHz, kVoiceIsolationFramesPerBuffer);
   SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
   processing_config_->settings.voice_isolation = true;
   EXPECT_CALL(event_handler_, OnCreated(_));
 
   CreateAudioController();
-  ASSERT_TRUE(controller_.get());
+  ASSERT_TRUE(controller_);
   EXPECT_TRUE(helper_->HasVoiceIsolation());
 
   base::RunLoop loop;
   EXPECT_CALL(sync_writer_, Write(NotNull(), _, _, _))
       .Times(AtLeast(1))
-      .WillOnce(InvokeWithoutArgs([&]() { loop.Quit(); }));
+      .WillOnce([&]() { loop.Quit(); });
 
   controller_->Record();
   loop.Run();
@@ -1187,14 +1255,196 @@ TEST_F(SystemTimeInputControllerTestWithReferenceSignalProvider,
 
 TEST_F(SystemTimeInputControllerTestWithReferenceSignalProvider,
        VoiceIsolationCreationFailsIfModelNotAvailable) {
+  params_.Reset(params_.format(), params_.channel_layout_config(),
+                kVoiceIsolationSampleRateHz, kVoiceIsolationFramesPerBuffer);
   SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
   processing_config_->settings.voice_isolation = true;
-  ml_model_manager_.set_return_null_model(true);
+  ON_CALL(ml_model_manager_,
+          GetModel(mojom::MlModelType::kVoiceIsolationDenoiser))
+      .WillByDefault(Return(nullptr));
   EXPECT_CALL(event_handler_, OnError(InputController::STREAM_CREATE_ERROR));
 
   CreateAudioController();
-  EXPECT_TRUE(controller_.get());
+  EXPECT_TRUE(controller_);
   controller_->Close();
+}
+
+// Verifies that when an audio stream is created with voice isolation enabled
+// but component initialization fails asynchronously on the background
+// ThreadPool:
+// 1. InputController dispatches STREAM_ERROR to EventHandler::OnError to
+//    terminate the stream.
+// 2. The failing model is invalidated in MlModelManager so that subsequent
+//    stream creation calls do not repeatedly reload the broken model.
+TEST_F(
+    SystemTimeInputControllerTestWithReferenceSignalProvider,
+    VoiceIsolationAsyncStartupFailureReportsStreamErrorAndInvalidatesModel) {
+  params_.Reset(params_.format(), params_.channel_layout_config(),
+                kVoiceIsolationSampleRateHz, kVoiceIsolationFramesPerBuffer);
+  SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
+  processing_config_->settings.voice_isolation = true;
+
+  // Configure manager to return a handle whose component creation will fail.
+  scoped_refptr<media::MlModelHandle> failing_model =
+      base::MakeRefCounted<FakeInvalidMlModelHandle>();
+  ON_CALL(ml_model_manager_,
+          GetModel(mojom::MlModelType::kVoiceIsolationDenoiser))
+      .WillByDefault(Return(failing_model));
+  EXPECT_CALL(ml_model_manager_,
+              InvalidateModel(mojom::MlModelType::kVoiceIsolationDenoiser,
+                              failing_model));
+
+  EXPECT_CALL(event_handler_, OnCreated(_));
+
+  // Expect STREAM_ERROR dispatched to EventHandler when ThreadPool creation
+  // fails.
+  base::RunLoop loop;
+  EXPECT_CALL(event_handler_, OnError(InputController::STREAM_ERROR))
+      .WillOnce([&]() { loop.Quit(); });
+
+  // Initialize controller; pipeline starts in pass-through warmup.
+  CreateAudioController();
+  ASSERT_TRUE(controller_.get());
+  EXPECT_TRUE(helper_->HasVoiceIsolation());
+
+  // Wait for background creation failure to post back and trigger OnError.
+  loop.Run();
+
+  controller_->Close();
+}
+
+// Verifies that if an audio input stream is closed via Close() before
+// asynchronous voice isolation initialization finishes on the ThreadPool:
+// 1. The subsequent creation failure does not dispatch OnError to the
+//    EventHandler.
+// 2. The failing model is still invalidated: a broken model is broken
+//    regardless of whether the stream that discovered it is still open.
+TEST_F(SystemTimeInputControllerTestWithReferenceSignalProvider,
+       VoiceIsolationStartupFailureAfterCloseInvalidatesModelWithoutError) {
+  params_.Reset(params_.format(), params_.channel_layout_config(),
+                kVoiceIsolationSampleRateHz, kVoiceIsolationFramesPerBuffer);
+  SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
+  processing_config_->settings.voice_isolation = true;
+
+  scoped_refptr<media::MlModelHandle> failing_model =
+      base::MakeRefCounted<FakeInvalidMlModelHandle>();
+  ON_CALL(ml_model_manager_,
+          GetModel(mojom::MlModelType::kVoiceIsolationDenoiser))
+      .WillByDefault(Return(failing_model));
+  EXPECT_CALL(ml_model_manager_,
+              InvalidateModel(mojom::MlModelType::kVoiceIsolationDenoiser,
+                              failing_model));
+
+  EXPECT_CALL(event_handler_, OnCreated(_));
+  EXPECT_CALL(event_handler_, OnError(_)).Times(0);
+
+  CreateAudioController();
+  ASSERT_TRUE(controller_.get());
+
+  // Close stream immediately before background task replies.
+  controller_->Close();
+
+  // Wait for background creation failure to be handled and logged.
+  EXPECT_TRUE(WaitForVoiceIsolationStartupToFinish());
+}
+
+using SystemTimeInputControllerTestWithMockAudioManager =
+    TimeSourceInputControllerTestWithReferenceSignalProvider<
+        base::test::TaskEnvironment::TimeSource::SYSTEM_TIME,
+        AudioManagerType::MOCK>;
+
+// Verifies that if stream creation fails synchronously while voice isolation
+// initialization is still in flight on the ThreadPool:
+// 1. The EventHandler receives exactly one error (STREAM_CREATE_ERROR); the
+//    later voice isolation startup failure is not reported as a second error.
+// 2. The failing model is still invalidated.
+TEST_F(
+    SystemTimeInputControllerTestWithMockAudioManager,
+    VoiceIsolationStartupFailureAfterStreamCreateErrorInvalidatesModelWithoutSecondError) {
+  params_.Reset(params_.format(), params_.channel_layout_config(),
+                kVoiceIsolationSampleRateHz, kVoiceIsolationFramesPerBuffer);
+  SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
+  processing_config_->settings.voice_isolation = true;
+
+  scoped_refptr<media::MlModelHandle> failing_model =
+      base::MakeRefCounted<FakeInvalidMlModelHandle>();
+  ON_CALL(ml_model_manager_,
+          GetModel(mojom::MlModelType::kVoiceIsolationDenoiser))
+      .WillByDefault(Return(failing_model));
+  EXPECT_CALL(ml_model_manager_,
+              InvalidateModel(mojom::MlModelType::kVoiceIsolationDenoiser,
+                              failing_model));
+
+  auto* mock_audio_manager =
+      static_cast<media::MockAudioManager*>(audio_manager_.get());
+  mock_audio_manager->SetInputStreamParameters(params_);
+  // Explicit: MockAudioManager already returns nullptr without a callback.
+  mock_audio_manager->SetMakeInputStreamCB(base::BindRepeating(
+      [](const media::AudioParameters&,
+         const std::string&) -> media::AudioInputStream* { return nullptr; }));
+
+  // EventHandler should receive exactly one STREAM_CREATE_ERROR from DoCreate,
+  // and NOT receive a second STREAM_ERROR when the background task completes.
+  EXPECT_CALL(event_handler_, OnError(InputController::STREAM_CREATE_ERROR))
+      .Times(1);
+
+  CreateAudioController();
+  ASSERT_TRUE(controller_);
+  // The handler must survive until the ThreadPool reply for this test to
+  // exercise the race; if MaybeSetUpAudioProcessing() bailed out, fail here
+  // rather than by RunUntil() timeout.
+  ASSERT_TRUE(helper_->HasVoiceIsolation());
+
+  // Wait for the background thread pool task to complete and reply.
+  EXPECT_TRUE(WaitForVoiceIsolationStartupToFinish());
+}
+
+// Verifies that if stream Open() fails synchronously while voice isolation
+// initialization is still in flight on the ThreadPool:
+// 1. The EventHandler receives exactly one error (STREAM_OPEN_ERROR); the
+//    later voice isolation startup failure is not reported as a second error.
+// 2. The failing model is still invalidated.
+TEST_F(
+    SystemTimeInputControllerTestWithMockAudioManager,
+    VoiceIsolationStartupFailureAfterStreamOpenErrorInvalidatesModelWithoutSecondError) {
+  params_.Reset(params_.format(), params_.channel_layout_config(),
+                kVoiceIsolationSampleRateHz, kVoiceIsolationFramesPerBuffer);
+  SetupProcessingConfig(AudioProcessingType::kWithPlayoutReference);
+  processing_config_->settings.voice_isolation = true;
+
+  scoped_refptr<media::MlModelHandle> failing_model =
+      base::MakeRefCounted<FakeInvalidMlModelHandle>();
+  ON_CALL(ml_model_manager_,
+          GetModel(mojom::MlModelType::kVoiceIsolationDenoiser))
+      .WillByDefault(Return(failing_model));
+  EXPECT_CALL(ml_model_manager_,
+              InvalidateModel(mojom::MlModelType::kVoiceIsolationDenoiser,
+                              failing_model));
+
+  MockAudioInputStream mock_stream;
+  EXPECT_CALL(mock_stream, Open())
+      .WillOnce(Return(media::AudioInputStream::OpenOutcome::kFailed));
+  EXPECT_CALL(mock_stream, Close());
+
+  auto* mock_audio_manager =
+      static_cast<media::MockAudioManager*>(audio_manager_.get());
+  mock_audio_manager->SetInputStreamParameters(params_);
+  mock_audio_manager->SetMakeInputStreamCB(base::BindRepeating(
+      [](media::AudioInputStream* stream, const media::AudioParameters&,
+         const std::string&) { return stream; },
+      &mock_stream));
+
+  // EventHandler should receive exactly one STREAM_OPEN_ERROR from DoCreate,
+  // and NOT receive a second STREAM_ERROR when the background task completes.
+  EXPECT_CALL(event_handler_, OnError(InputController::STREAM_OPEN_ERROR))
+      .Times(1);
+
+  CreateAudioController();
+  ASSERT_TRUE(controller_);
+  ASSERT_TRUE(helper_->HasVoiceIsolation());
+
+  // Wait for the background thread pool task to complete and reply.
+  EXPECT_TRUE(WaitForVoiceIsolationStartupToFinish());
 }
 #endif  // BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
 

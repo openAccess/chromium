@@ -578,10 +578,14 @@ InkDropImpl::HighlightStateFactory::CreateVisibleState(
 
 InkDropImpl::InkDropImpl(InkDropHost* ink_drop_host,
                          const gfx::Size& host_size,
-                         AutoHighlightMode auto_highlight_mode)
+                         AutoHighlightMode auto_highlight_mode,
+                         bool show_highlight_on_hover,
+                         bool show_highlight_on_focus)
     : ink_drop_host_(ink_drop_host),
       highlight_state_factory_(auto_highlight_mode, this),
-      root_layer_(std::make_unique<ui::LayerNotDrawn>()) {
+      root_layer_(std::make_unique<ui::LayerNotDrawn>()),
+      show_highlight_on_hover_(show_highlight_on_hover),
+      show_highlight_on_focus_(show_highlight_on_focus) {
   root_layer_->SetBounds(gfx::Rect(host_size));
   root_layer_->SetName("InkDropImpl:RootLayer");
   SetHighlightState(highlight_state_factory_.CreateStartState());
@@ -697,7 +701,7 @@ void InkDropImpl::DestroyHiddenTargetedAnimations() {
 }
 
 void InkDropImpl::CreateInkDropRipple() {
-  DCHECK(!destroying_);
+  CHECK(!destroying_, base::NotFatalUntil::M163);
 
   DestroyInkDropRipple();
   ink_drop_ripple_ = ink_drop_host_->CreateInkDropRipple();
@@ -721,12 +725,12 @@ void InkDropImpl::DestroyInkDropRipple() {
 }
 
 void InkDropImpl::CreateInkDropHighlight() {
-  DCHECK(!destroying_);
+  CHECK(!destroying_, base::NotFatalUntil::M163);
 
   DestroyInkDropHighlight();
 
   highlight_ = ink_drop_host_->CreateInkDropHighlight();
-  DCHECK(highlight_);
+  CHECK(highlight_, base::NotFatalUntil::M163);
 
   // If the platform provides HC colors, we need to show them fully on hover and
   // press.
@@ -754,8 +758,8 @@ void InkDropImpl::DestroyInkDropHighlight() {
 }
 
 void InkDropImpl::AddRootLayerToHostIfNeeded() {
-  DCHECK(highlight_ || ink_drop_ripple_);
-  DCHECK(!root_layer_->children().empty());
+  CHECK(highlight_ || ink_drop_ripple_, base::NotFatalUntil::M163);
+  CHECK(!root_layer_->children().empty(), base::NotFatalUntil::M163);
   if (!root_layer_added_to_host_) {
     root_layer_added_to_host_ = true;
     ink_drop_host_->AddInkDropLayer(root_layer_.get());
@@ -774,7 +778,7 @@ void InkDropImpl::RemoveRootLayerFromHostIfNeeded() {
 
 void InkDropImpl::AnimationStarted(InkDropState ink_drop_state) {
   // AnimationStarted should only be called from |ink_drop_ripple_|.
-  DCHECK(ink_drop_ripple_);
+  CHECK(ink_drop_ripple_, base::NotFatalUntil::M163);
 
   highlight_state_->AnimationStarted(ink_drop_state);
   NotifyInkDropAnimationStarted();

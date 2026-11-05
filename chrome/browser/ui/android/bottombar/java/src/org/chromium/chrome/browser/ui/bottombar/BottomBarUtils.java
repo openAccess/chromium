@@ -8,13 +8,20 @@ import static org.chromium.build.NullUtil.assertNonNull;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.RippleDrawable;
 
 import androidx.annotation.ColorInt;
+import androidx.annotation.DrawableRes;
+import androidx.annotation.Px;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.ui.android.bars_common.CaptureSafeRippleDrawable;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.browser_ui.styles.IncognitoColors;
+import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.HighlightParams;
+import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.HighlightShape;
+import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.util.ColorUtils;
 import org.chromium.ui.util.ValueUtils;
 
@@ -48,9 +55,38 @@ public class BottomBarUtils {
         return IncognitoColors.getColorSurfaceContainerHigh(context, isIncognito);
     }
 
-    /** Gets the height of the bottom bar. */
-    public static int getBottomBarHeight(Context context) {
-        return context.getResources().getDimensionPixelSize(R.dimen.bottom_bar_height);
+    /**
+     * Gets the height of the bottom bar, accounting for whether the bottom omnibox is present.
+     *
+     * @param context The context used to resolve dimensions.
+     * @param isBottomOmniboxPresent Whether the bottom omnibox is present right above the bottom
+     *     bar. Pass {@code false} to get the full configured bar height.
+     * @return The height of the bottom bar in pixels.
+     */
+    public static @Px int getBottomBarHeight(Context context, boolean isBottomOmniboxPresent) {
+        int heightDp = BottomBarConfigUtils.getBottomBarHeightDp();
+        int heightPx = ViewUtils.dpToPx(context, heightDp);
+        if (isBottomOmniboxPresent
+                && BottomBarConfigUtils.shouldRemoveTopPaddingForBottomOmnibox()) {
+            heightPx -= getButtonPaddingVertical(context);
+        }
+        return heightPx;
+    }
+
+    /**
+     * Returns the vertical padding in pixels for bottom bar buttons.
+     *
+     * <p>The buttons have a fixed size at every supported bar height, so the only quantity that
+     * varies with the bar height is this padding. It centers the fixed-size background within the
+     * bar and, because the bottom bar layouts highlight with {@code boundsRespectPadding}, it is
+     * also what keeps the IPH highlight rectangle wrapped tightly around that background.
+     */
+    public static @Px int getButtonPaddingVertical(Context context) {
+        int barHeightPx = getBottomBarHeight(context, /* isBottomOmniboxPresent= */ false);
+        int backgroundSizePx =
+                context.getResources()
+                        .getDimensionPixelSize(R.dimen.bottom_bar_new_tab_background_size);
+        return Math.max(0, (barHeightPx - backgroundSizePx) / 2);
     }
 
     /**
@@ -124,20 +160,24 @@ public class BottomBarUtils {
      *
      * @param context The context used to resolve resources.
      * @param brandedColorScheme The branded color scheme.
-     * @return The mutated RippleDrawable.
+     * @return The mutated {@link RippleDrawable}.
      */
     public static RippleDrawable createHoverableRipple(
             Context context, @BrandedColorScheme int brandedColorScheme) {
         boolean isIncognito = brandedColorScheme == BrandedColorScheme.INCOGNITO;
-        int rippleResId =
+        @DrawableRes
+        int selectorResId =
                 isIncognito
-                        ? R.drawable.default_icon_background_baseline
-                        : R.drawable.default_icon_background;
-        RippleDrawable ripple =
-                (RippleDrawable) assertNonNull(context.getDrawable(rippleResId)).mutate();
-        ripple.setColor(
-                ColorStateList.valueOf(getRippleColorNoBackground(context, brandedColorScheme)));
-        return ripple;
+                        ? R.drawable.default_icon_background_selector_baseline
+                        : R.drawable.default_icon_background_selector;
+        Drawable content = assertNonNull(context.getDrawable(selectorResId)).mutate();
+        @Px
+        int size =
+                context.getResources()
+                        .getDimensionPixelSize(R.dimen.bottom_bar_new_tab_background_size);
+        ColorStateList color =
+                ColorStateList.valueOf(getRippleColorNoBackground(context, brandedColorScheme));
+        return new CaptureSafeRippleDrawable(color, content, size);
     }
 
     /**
@@ -188,5 +228,17 @@ public class BottomBarUtils {
     public static @ColorInt int getRippleColorBackground(Context context, boolean isIncognito) {
         int onSurface = IncognitoColors.getColorOnSurface(context, isIncognito);
         return ColorUtils.setAlphaComponentWithFloat(onSurface, 0.08f);
+    }
+
+    public static HighlightParams createButtonHighlightParams(
+            Context context, boolean useNewTabBackgroundRadius) {
+        HighlightParams params = new HighlightParams(HighlightShape.RECTANGLE);
+        params.setBoundsRespectPadding(true);
+        int radiusResId =
+                useNewTabBackgroundRadius
+                        ? R.dimen.bottom_bar_new_tab_background_radius
+                        : R.dimen.bottom_bar_button_highlight_radius;
+        params.setCornerRadius(context.getResources().getDimensionPixelSize(radiusResId));
+        return params;
     }
 }

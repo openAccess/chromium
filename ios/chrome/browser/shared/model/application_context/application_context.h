@@ -86,8 +86,10 @@ class AccountProfileMapper;
 class ApplicationContext;
 class ApplicationLocaleStorage;
 class BrowserPolicyConnectorIOS;
+class DeviceIntegrityService;
 class IncognitoSessionTracker;
 class IOSChromeIOThread;
+class OmahaService;
 class PrefService;
 
 class ProfileManagerIOS;
@@ -242,6 +244,9 @@ class ApplicationContext {
   // features not declared by `BASE_DECLARE_FEATURE()`.
   virtual AdditionalFeaturesController* GetAdditionalFeaturesController() = 0;
 
+  // Returns the application's DeviceIntegrityService instance.
+  virtual DeviceIntegrityService* GetDeviceIntegrityService() = 0;
+
   // Returns the AutoDeletionService instance.
   virtual auto_deletion::AutoDeletionService* GetAutoDeletionService() = 0;
 
@@ -254,6 +259,9 @@ class ApplicationContext {
   // parental controls, it will be a no-op stub.
   virtual supervised_user::DeviceParentalControls&
   GetDeviceParentalControls() = 0;
+
+  // Returns the OmahaService instance.
+  virtual OmahaService& GetOmahaService() = 0;
 
  protected:
   // Sets the global ApplicationContext instance.

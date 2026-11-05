@@ -22,15 +22,14 @@
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/not_fatal_until.h"
 #include "base/stl_util.h"
 #include "base/strings/strcat.h"
+#include "base/task/bind_post_task.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "base/unguessable_token.h"
 #include "components/services/storage/indexed_db/locks/partitioned_lock_id.h"
 #include "components/services/storage/indexed_db/locks/partitioned_lock_manager.h"
-#include "components/services/storage/privileged/mojom/indexed_db_client_state_checker.mojom.h"
 #include "content/browser/indexed_db/indexed_db_reporting.h"
 #include "content/browser/indexed_db/instance/backing_store.h"
 #include "content/browser/indexed_db/instance/callback_helpers.h"
@@ -149,9 +148,7 @@ Connection::Connection(BucketContext& bucket_context,
                        base::RepeatingClosure on_version_change_ignored,
                        base::OnceCallback<void(Connection&)> on_close,
                        std::unique_ptr<DatabaseCallbacks> callbacks,
-                       mojo::Remote<storage::mojom::IndexedDBClientStateChecker>
-                           client_state_checker,
-                       base::UnguessableToken client_token,
+                       const storage::BucketClientInfo& client_info,
                        int scheduling_priority)
     : id_(g_next_indexed_db_connection_id++),
       bucket_context_(&bucket_context),
@@ -159,8 +156,10 @@ Connection::Connection(BucketContext& bucket_context,
       on_version_change_ignored_(std::move(on_version_change_ignored)),
       on_close_(std::move(on_close)),
       callbacks_(std::move(callbacks)),
-      client_state_checker_(std::move(client_state_checker)),
-      client_token_(client_token),
+      client_info_(client_info),
+      client_token_(client_info.document_token
+                        ? client_info.document_token->value()
+                        : client_info.context_token.value()),
       scheduling_priority_(scheduling_priority) {
   IncrementNumConnections();
 
@@ -199,38 +198,55 @@ Transaction* Connection::CreateVersionChangeTransaction(
 }
 
 void Connection::DisallowInactiveClient(
-    storage::mojom::DisallowInactiveClientReason reason,
+    DisallowInactiveClientReason reason,
     base::OnceCallback<void(bool)> callback) {
-  if (!client_state_checker_.is_bound()) {
-    // If the remote is no longer connected, we expect the client will terminate
-    // the connection soon, so marking `was_active` true here.
+  if (!client_info_.document_token) {
+    // Non-document clients (e.g. workers) cannot be in the back/forward cache
+    // or frozen, so they are always active.
     std::move(callback).Run(/*was_active=*/true);
     return;
   }
 
+  const content::DisallowInactiveClientCallback& checker =
+      bucket_context_->delegate().client_state_checker;
+  CHECK(checker);
+
   size_t reason_index = std::to_underlying(reason);
 
-  if (client_keep_active_remotes_[reason_index].is_bound()) {
-    // Since the keep_active remote is found in client_keep_active_remotes_,
+  if (client_keep_active_handles_[reason_index]) {
+    // Since the keep_active handle is found in client_keep_active_handles_,
     // the client must be active (would have been cleared if evicted).
-    // Still call server but pass null receiver.
-    client_state_checker_->DisallowInactiveClient(
-        id_, reason, mojo::NullReceiver(), std::move(callback));
+    // Still call server to perform checks without registering a new handle.
+    checker.Run(
+        client_info_.process_id, *client_info_.document_token, reason,
+        base::BindOnce([](base::OnceCallback<void(bool)> cb, bool was_active,
+                          ScopedKeepActive) { std::move(cb).Run(was_active); },
+                       std::move(callback)));
     return;
   }
 
-  // Normal path - create new remote and bind it
-  client_state_checker_->DisallowInactiveClient(
-      id_, reason,
-      client_keep_active_remotes_[reason_index].BindNewPipeAndPassReceiver(),
-      std::move(callback));
+  // Normal path - request check and keep active handle
+  checker.Run(
+      client_info_.process_id, *client_info_.document_token, reason,
+      base::BindOnce(
+          [](base::WeakPtr<Connection> self, size_t reason_index,
+             base::OnceCallback<void(bool)> callback, bool was_active,
+             ScopedKeepActive keep_active) {
+            if (self && keep_active) {
+              CHECK(was_active);
+              self->client_keep_active_handles_[reason_index] =
+                  std::move(keep_active);
+            }
+            std::move(callback).Run(was_active);
+          },
+          weak_factory_.GetWeakPtr(), reason_index, std::move(callback)));
 
   // TODO(381086791): Remove this histogram when the regression is fixed.
   static constexpr char kClientKeepActiveRemotesCount[] =
       "IndexedDB.ClientKeepActiveRemotesCount";
   size_t remotes_count = 0u;
-  for (const auto& remote : client_keep_active_remotes_) {
-    remotes_count += remote.is_bound() ? 1u : 0u;
+  for (const ScopedKeepActive& handle : client_keep_active_handles_) {
+    remotes_count += handle ? 1u : 0u;
   }
   base::UmaHistogramCounts1M(kClientKeepActiveRemotesCount, remotes_count);
 }
@@ -241,7 +257,6 @@ void Connection::RemoveTransaction(int64_t id) {
     return;
   }
 
-  base::TimeTicks start = base::TimeTicks::Now();
   bool can_go_inactive = true;
 
   // If this client is still blocking other clients, leave the keep-actives
@@ -253,20 +268,11 @@ void Connection::RemoveTransaction(int64_t id) {
       break;
     }
   }
-  base::TimeDelta duration = base::TimeTicks::Now() - start;
-  if (duration > base::Milliseconds(2)) {
-    base::UmaHistogramTimes("IndexedDB.RemoveTransactionLongTimes", duration);
-    base::UmaHistogramCounts100000(
-        "IndexedDB.RemoveTransactionRequestQueueSize",
-        bucket_context_->lock_manager().RequestsWaitingForMetrics());
-    base::UmaHistogramCounts100000(
-        "IndexedDB.RemoveTransactionConnectionTxnCount", transactions_.size());
-  }
 
   // Safe to make this client inactive.
   if (can_go_inactive) {
-    for (auto& remotes : client_keep_active_remotes_) {
-      remotes.reset();
+    for (ScopedKeepActive& handle : client_keep_active_handles_) {
+      handle.RunAndReset();
     }
   }
 }
@@ -708,8 +714,7 @@ void Connection::DidBecomeInactive() {
     // the acquisition, we should disallow the activation for this client
     // so the lock is immediately available.
     transaction->DontAllowInactiveClientToBlockOthers(
-        storage::mojom::DisallowInactiveClientReason::
-            kTransactionIsOngoingAndBlockingOthers);
+        DisallowInactiveClientReason::kTransactionIsOngoingAndBlockingOthers);
   }
 }
 
@@ -801,8 +806,8 @@ std::unique_ptr<DatabaseCallbacks> Connection::AbortTransactionsAndClose(
   AbortAllTransactions(error);
 
   std::unique_ptr<DatabaseCallbacks> callbacks = std::move(callbacks_);
-  for (auto& remotes : client_keep_active_remotes_) {
-    remotes.reset();
+  for (ScopedKeepActive& handle : client_keep_active_handles_) {
+    handle.RunAndReset();
   }
   bucket_context_->quota_manager()->NotifyBucketAccessed(
       bucket_context_->bucket_locator(), base::Time::Now());
@@ -832,7 +837,7 @@ bool Connection::IsHoldingLocks(
 void Connection::RecordCreateTransactionHistograms(
     blink::mojom::IDBTransactionMode mode) {
   const bool db_exists = database_.get() != nullptr;
-  CHECK(db_exists, base::NotFatalUntil::M145);
+  CHECK(db_exists);
 
   // Histograms to diagnose memory leak crbug.com/381086791.
   // TODO(crbug.com/381086791): Remove after the leak is fixed.

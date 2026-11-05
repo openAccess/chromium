@@ -9,13 +9,11 @@
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/notification_utils.h"
 #include "base/check_deref.h"
-#include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
-#include "chrome/common/url_constants.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -77,18 +75,18 @@ class TetherNotificationPresenterTest : public BrowserWithTestWindowTest {
     TestSettingsUiDelegate() = default;
     ~TestSettingsUiDelegate() override = default;
 
-    Profile* last_profile() { return last_profile_; }
+    const user_manager::User* last_user() { return last_user_; }
     std::string last_settings_subpage() { return last_settings_subpage_; }
 
     // TetherNotificationPresenter::SettingsUiDelegate:
-    void ShowSettingsSubPageForProfile(Profile* profile,
-                                       const std::string& sub_page) override {
-      last_profile_ = profile;
+    void ShowSettingsSubPage(const user_manager::User& user,
+                             const std::string& sub_page) override {
+      last_user_ = &user;
       last_settings_subpage_ = sub_page;
     }
 
    private:
-    raw_ptr<Profile, DanglingUntriaged> last_profile_ = nullptr;
+    raw_ptr<const user_manager::User> last_user_ = nullptr;
     std::string last_settings_subpage_;
   };
 
@@ -103,14 +101,15 @@ class TetherNotificationPresenterTest : public BrowserWithTestWindowTest {
   void SetUp() override {
     BrowserWithTestWindowTest::SetUp();
 
-    test_network_connect_ = base::WrapUnique(new TestNetworkConnect());
+    test_network_connect_ = std::make_unique<TestNetworkConnect>();
 
     notification_presenter_ = std::make_unique<TetherNotificationPresenter>(
-        profile(), test_network_connect_.get());
+        &user(), test_network_connect_.get());
 
-    test_settings_ui_delegate_ = new TestSettingsUiDelegate();
+    auto delegate = std::make_unique<TestSettingsUiDelegate>();
+    test_settings_ui_delegate_ = delegate.get();
     notification_presenter_->SetSettingsUiDelegateForTesting(
-        base::WrapUnique(test_settings_ui_delegate_.get()));
+        std::move(delegate));
     has_verified_metrics_ = false;
   }
 
@@ -123,6 +122,11 @@ class TetherNotificationPresenterTest : public BrowserWithTestWindowTest {
           0u /* num_expected_body_tapped_connection_failed */,
           0u /* num_expected_button_tapped_single_host_nearby */);
     }
+
+    // Destroy the presenter, which holds a reference to the user, before the
+    // harness tears the UserManager down.
+    notification_presenter_.reset();
+    test_settings_ui_delegate_ = nullptr;
 
     BrowserWithTestWindowTest::TearDown();
   }
@@ -141,11 +145,14 @@ class TetherNotificationPresenterTest : public BrowserWithTestWindowTest {
         TetherNotificationPresenter::kSetupRequiredNotificationId);
   }
 
-  std::string GetUserScopedNotificationId(const std::string& notification_id) {
-    const user_manager::User& user = CHECK_DEREF(
+  const user_manager::User& user() {
+    return CHECK_DEREF(
         BrowserContextHelper::Get()->GetUserByBrowserContext(profile()));
+  }
+
+  std::string GetUserScopedNotificationId(const std::string& notification_id) {
     return CreateUserScopedNotificationId(notification_id,
-                                          user.username_hash());
+                                          user().username_hash());
   }
 
   const message_center::Notification* GetNotification(
@@ -155,13 +162,13 @@ class TetherNotificationPresenterTest : public BrowserWithTestWindowTest {
   }
 
   void VerifySettingsOpened(const std::string& expected_subpage) {
-    EXPECT_EQ(profile(), test_settings_ui_delegate_->last_profile());
+    EXPECT_EQ(&user(), test_settings_ui_delegate_->last_user());
     EXPECT_EQ(expected_subpage,
               test_settings_ui_delegate_->last_settings_subpage());
   }
 
   void VerifySettingsNotOpened() {
-    EXPECT_FALSE(test_settings_ui_delegate_->last_profile());
+    EXPECT_FALSE(test_settings_ui_delegate_->last_user());
     EXPECT_TRUE(test_settings_ui_delegate_->last_settings_subpage().empty());
   }
 

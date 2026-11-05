@@ -6,17 +6,22 @@
 
 #include <memory>
 
+#include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
 #include "build/build_config.h"
-#if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/renderer_context_menu/context_menu_content_type_read_anything.h"
-#endif
 #include "chrome/common/webui_url_constants.h"
 #include "components/renderer_context_menu/context_menu_content_type.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
 #include "extensions/buildflags/buildflags.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/glic/host/guest_util.h"            // nogncheck
+#include "chrome/browser/glic/public/glic_keyed_service.h"  // nogncheck
+#include "chrome/browser/renderer_context_menu/context_menu_content_type_glic.h"
+#include "chrome/browser/renderer_context_menu/context_menu_content_type_read_anything.h"
+#endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/app_mode/app_mode_utils.h"
@@ -70,8 +75,9 @@ ContextMenuContentTypeFactory::~ContextMenuContentTypeFactory() = default;
 std::unique_ptr<ContextMenuContentType> ContextMenuContentTypeFactory::Create(
     content::RenderFrameHost* render_frame_host,
     const content::ContextMenuParams& params) {
-  if (IsUserSessionBlocked())
+  if (IsUserSessionBlocked()) {
     return std::make_unique<NullContextMenuContentType>(params);
+  }
 
   return CreateInternal(render_frame_host, params);
 }
@@ -81,11 +87,22 @@ std::unique_ptr<ContextMenuContentType>
 ContextMenuContentTypeFactory::CreateInternal(
     content::RenderFrameHost* render_frame_host,
     const content::ContextMenuParams& params) {
+#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_EXTENSIONS)
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(render_frame_host);
+#endif
 #if !BUILDFLAG(IS_ANDROID)
   if (params.page_url.SchemeIs(content::kChromeUIUntrustedScheme) &&
       params.page_url.host() ==
           chrome::kChromeUIUntrustedReadAnythingSidePanelHost) {
     return std::make_unique<ContextMenuContentTypeReadAnything>(params);
+  }
+
+  if (glic::GlicKeyedService::IsNoWebviewEnabled(
+          web_contents ? web_contents->GetBrowserContext() : nullptr)) {
+    if (glic::IsAnyGlicWebContents(web_contents)) {
+      return std::make_unique<ContextMenuContentTypeGlic>(params);
+    }
   }
 #endif
 
@@ -101,8 +118,6 @@ ContextMenuContentTypeFactory::CreateInternal(
         web_view_guest->GetWeakPtr(), params));
   }
 
-  content::WebContents* web_contents =
-      content::WebContents::FromRenderFrameHost(render_frame_host);
   const extensions::mojom::ViewType view_type =
       extensions::GetViewType(web_contents);
 

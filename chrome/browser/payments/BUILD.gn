@@ -25,12 +25,11 @@ source_set("impl") {
 
   deps = [
     "//base",
+    "//chrome/browser/net",
     "//components/payments/core",
     "//content/public/browser",
     "//net",
-    "//services/metrics/public/cpp:ukm_builders",
     "//services/network/public/cpp",
-    "//url",
   ]
 
   if (!is_android) {
@@ -46,7 +45,7 @@ source_set("impl") {
       "//chrome/browser/autofill",
       "//chrome/browser/profiles:profile",
       "//chrome/browser/signin",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/views/payments",
       "//chrome/browser/ui/web_applications",
       "//chrome/browser/web_applications",
@@ -116,6 +115,7 @@ source_set("browser_tests") {
     "//base/test:test_support",
     "//chrome/browser/payments/browser_binding:browsertests",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_utils",
     "//chrome/test/payments:test_support",
     "//components/payments/content",
     "//components/payments/content:test_support",
@@ -148,7 +148,7 @@ source_set("browser_tests") {
     ]
 
     deps += [
-      "//chrome/test:test_support_ui",
+      "//chrome/browser/ui:browser_tabstrip",
       "//components/payments/content:utils",
       "//components/payments/content/utility",
       "//components/permissions",
@@ -176,6 +176,7 @@ source_set("unittests") {
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/payments/browser_binding:unittests",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/content_settings/core/test:test_support",
     "//components/infobars/content",
     "//components/payments/core",
@@ -186,7 +187,6 @@ source_set("unittests") {
     "//services/network/public/cpp",
     "//testing/gmock",
     "//testing/gtest",
-    "//third_party/fuzztest",
   ]
 
   if (is_android) {

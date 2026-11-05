@@ -4,17 +4,18 @@
 
 import 'chrome://password-manager/password_manager.js';
 
-import {BatchUploadPasswordsEntryPoint, OpenWindowProxyImpl, Page, PasswordManagerImpl, Router, SyncBrowserProxyImpl, TrustedVaultBannerState} from 'chrome://password-manager/password_manager.js';
+import {BatchUploadPasswordsEntryPoint, OpenWindowProxyImpl, Page, PasswordManagerImpl, PrefsBrowserProxy, PrefService, Router, SyncBrowserProxyImpl, TrustedVaultBannerState} from 'chrome://password-manager/password_manager.js';
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
-import {$$, eventToPromise, isVisible} from 'chrome://webui-test/test_util.js';
+import {$$, eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import type {ActorLoginPermission} from './password_manager.mojom-webui.js';
 import {TestPasswordManagerProxy} from './test_password_manager_proxy.js';
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 import {TestSyncBrowserProxy} from './test_sync_browser_proxy.js';
 import {createBlockedSiteEntry, createCredentialGroup, createPasswordEntry, makePasswordManagerPrefs} from './test_util.js';
 
@@ -64,13 +65,20 @@ function createActorLoginPermission(
 suite('SettingsSectionTest', function() {
   let passwordManager: TestPasswordManagerProxy;
   let openWindowProxy: TestOpenWindowProxy;
+  let prefsBrowserProxy: TestPrefsBrowserProxy;
+  let prefService: PrefService;
   let syncProxy: TestSyncBrowserProxy;
   // <if expr="is_win or is_macosx">
   let passkeysProxy: TestPasskeysBrowserProxy;
   // </if>
 
-  setup(function() {
+  setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    prefsBrowserProxy = new TestPrefsBrowserProxy(makePasswordManagerPrefs());
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+    PrefService.resetInstanceForTesting();
+    prefService = PrefService.getInstance();
+    await prefService.whenInitialized();
     passwordManager = new TestPasswordManagerProxy();
     PasswordManagerImpl.setInstance(passwordManager);
     openWindowProxy = new TestOpenWindowProxy();
@@ -86,9 +94,7 @@ suite('SettingsSectionTest', function() {
 
   test('pref value displayed in the UI', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
-    const prefObject = settings.getPref<boolean>('credentials_enable_service');
-    prefObject.value = false;
+    prefService.setPrefValue('credentials_enable_service', false);
     document.body.appendChild(settings);
     await flushTasks();
 
@@ -98,38 +104,45 @@ suite('SettingsSectionTest', function() {
 
   test('clicking the toggle updates corresponding pref', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
     document.body.appendChild(settings);
     await flushTasks();
 
-    assertTrue(settings.getPref<boolean>('credentials_enable_service').value);
+    assertTrue(
+        prefService.getPref<boolean>('credentials_enable_service').value);
     assertTrue(settings.$.passwordToggle.checked);
 
     settings.$.passwordToggle.click();
-    assertFalse(settings.getPref<boolean>('credentials_enable_service').value);
+    assertFalse(
+        prefService.getPref<boolean>('credentials_enable_service').value);
     assertFalse(settings.$.passwordToggle.checked);
   });
 
   test('enforcement disables toggle', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
-    const prefObject = settings.getPref<boolean>('credentials_enable_service');
-    prefObject.enforcement = chrome.settingsPrivate.Enforcement.ENFORCED;
+    prefsBrowserProxy.fakeApi.sendPrefChanges([{
+      key: 'credentials_enable_service',
+      value: true,
+      enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+    }]);
     document.body.appendChild(settings);
     await flushTasks();
 
-    assertTrue(settings.getPref<boolean>('credentials_enable_service').value);
+    assertTrue(
+        prefService.getPref<boolean>('credentials_enable_service').value);
     assertTrue(settings.$.passwordToggle.checked);
     settings.$.passwordToggle.click();
-    assertTrue(settings.getPref<boolean>('credentials_enable_service').value);
+    assertTrue(
+        prefService.getPref<boolean>('credentials_enable_service').value);
   });
 
   test('extension control includes icon', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
-    const prefObject = settings.getPref<boolean>('credentials_enable_service');
-    prefObject.extensionId = 'test';
-    prefObject.controlledByName = 'test extension';
+    prefsBrowserProxy.fakeApi.sendPrefChanges([{
+      key: 'credentials_enable_service',
+      value: true,
+      extensionId: 'test',
+      controlledByName: 'test extension',
+    }]);
     document.body.appendChild(settings);
     await flushTasks();
 
@@ -140,24 +153,23 @@ suite('SettingsSectionTest', function() {
 
   test('no extension control icon by default', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
     document.body.appendChild(settings);
     await flushTasks();
 
     assertTrue(settings.$.passwordToggle.checked);
     settings.$.passwordToggle.click();
-    assertFalse(!!settings.$.passwordToggle.shadowRoot!.querySelector(
+    assertFalse(!!settings.$.passwordToggle.shadowRoot.querySelector(
         'extension-controlled-indicator'));
   });
 
   test('pref updated externally', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
     document.body.appendChild(settings);
     await flushTasks();
 
     assertTrue(settings.$.autosigninToggle.checked);
-    settings.set('prefs.credentials_enable_autosignin.value', false);
+    prefService.setPrefValue('credentials_enable_autosignin', false);
+    await microtasksFinished();
 
     assertFalse(settings.$.autosigninToggle.checked);
   });
@@ -170,9 +182,8 @@ suite('SettingsSectionTest', function() {
         {biometricAuthenticationForFillingToggleVisible: true});
 
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
-    settings.getPref('password_manager.biometric_authentication_filling')
-        .value = false;
+    prefService.setPrefValue(
+        'password_manager.biometric_authentication_filling', false);
     document.body.appendChild(settings);
     await flushTasks();
 
@@ -181,7 +192,7 @@ suite('SettingsSectionTest', function() {
             '#biometricAuthenticationToggle');
     assertTrue(!!biometricAuthenticationToggle);
     assertFalse(biometricAuthenticationToggle.checked);
-    assertFalse(settings
+    assertFalse(prefService
                     .getPref<boolean>(
                         'password_manager.biometric_authentication_filling')
                     .value);
@@ -191,7 +202,7 @@ suite('SettingsSectionTest', function() {
     // Pref settings should not change until authentication succeeds.
     await passwordManager.whenCalled('switchBiometricAuthBeforeFillingState');
     assertFalse(biometricAuthenticationToggle.checked);
-    assertFalse(settings
+    assertFalse(prefService
                     .getPref<boolean>(
                         'password_manager.biometric_authentication_filling')
                     .value);
@@ -203,7 +214,6 @@ suite('SettingsSectionTest', function() {
     loadTimeData.overrideValues(
         {biometricAuthenticationForFillingToggleVisible: false});
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
     document.body.appendChild(settings);
     await flushTasks();
     assertFalse(!!settings.shadowRoot!.querySelector<PrefToggleButtonElement>(
@@ -299,44 +309,58 @@ suite('SettingsSectionTest', function() {
     assertFalse(!!settings.shadowRoot!.querySelector('#addShortcutBanner'));
   });
 
-  test(
-      'import visible when policy disabled and controlled by extension',
-      async function() {
-        const settings = document.createElement('settings-section');
-        settings.prefs = makePasswordManagerPrefs();
-        const prefObject =
-            settings.getPref<boolean>('credentials_enable_service');
-        prefObject.value = false;
-        prefObject.enforcement = chrome.settingsPrivate.Enforcement.ENFORCED;
-        prefObject.controlledBy = chrome.settingsPrivate.ControlledBy.EXTENSION;
-        document.body.appendChild(settings);
-        await flushTasks();
+  test('import visible when extension turns saving off', async function() {
+    const settings = document.createElement('settings-section');
+    prefsBrowserProxy.fakeApi.sendPrefChanges([{
+      key: 'credentials_enable_service',
+      value: false,
+      enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+      controlledBy: chrome.settingsPrivate.ControlledBy.EXTENSION,
+    }]);
+    document.body.appendChild(settings);
+    await flushTasks();
 
-        assertTrue(!!settings.shadowRoot!.querySelector('passwords-importer'));
-      });
+    assertTrue(!!settings.shadowRoot!.querySelector('passwords-importer'));
+  });
 
   test(
-      'import hidden when policy disabled and not controlled by extension',
+      'import hidden when mandatory policy blocks password saving',
       async function() {
         const settings = document.createElement('settings-section');
-        settings.prefs = makePasswordManagerPrefs();
-        const prefObject =
-            settings.getPref<boolean>('credentials_enable_service');
-        prefObject.value = false;
-        prefObject.enforcement = chrome.settingsPrivate.Enforcement.ENFORCED;
-        prefObject.controlledBy =
-            chrome.settingsPrivate.ControlledBy.DEVICE_POLICY;
+        prefsBrowserProxy.fakeApi.sendPrefChanges([{
+          key: 'credentials_enable_service',
+          value: false,
+          enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+          controlledBy: chrome.settingsPrivate.ControlledBy.DEVICE_POLICY,
+        }]);
         document.body.appendChild(settings);
         await flushTasks();
 
         assertFalse(!!settings.shadowRoot!.querySelector('passwords-importer'));
       });
 
-  test('import visible when policy enabled', async function() {
+  test(
+      'import hidden when mandatory policy arrives after load',
+      async function() {
+        const settings = document.createElement('settings-section');
+        document.body.appendChild(settings);
+        await flushTasks();
+        assertTrue(!!settings.shadowRoot!.querySelector('passwords-importer'));
+
+        prefsBrowserProxy.fakeApi.sendPrefChanges([{
+          key: 'credentials_enable_service',
+          value: false,
+          enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+          controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
+        }]);
+        await flushTasks();
+
+        assertFalse(!!settings.shadowRoot!.querySelector('passwords-importer'));
+      });
+
+  test('import visible when no policy is set', async function() {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
-    const prefObject = settings.getPref<boolean>('credentials_enable_service');
-    prefObject.value = true;
+    prefService.setPrefValue('credentials_enable_service', true);
     document.body.appendChild(settings);
     await flushTasks();
 
@@ -643,7 +667,7 @@ suite('SettingsSectionTest', function() {
         'remove-actor-login-permission-dialog');
     assertTrue(!!dialog);
 
-    dialog.shadowRoot!.querySelector<HTMLElement>('#disconnect')!.click();
+    dialog.$.disconnect.click();
     await passwordManager.whenCalled('revokeActorLoginPermission');
     assertEquals(passwordManager.data.actorLoginPermissions.length, 0);
   });
@@ -917,7 +941,6 @@ suite('SettingsSectionTest', function() {
 
   test('passkey upgrade toggle changes pref value', async () => {
     const settings = document.createElement('settings-section');
-    settings.prefs = makePasswordManagerPrefs();
     document.body.appendChild(settings);
     await flushTasks();
 
@@ -927,14 +950,14 @@ suite('SettingsSectionTest', function() {
     assertTrue(!!passkeyUpgradeToggle);
 
     assertTrue(
-        settings
+        prefService
             .getPref<boolean>('credentials_enable_automatic_passkey_upgrades')
             .value);
     assertTrue(passkeyUpgradeToggle.checked);
 
     passkeyUpgradeToggle.click();
     assertFalse(
-        settings
+        prefService
             .getPref<boolean>('credentials_enable_automatic_passkey_upgrades')
             .value);
     assertFalse(passkeyUpgradeToggle.checked);
@@ -944,7 +967,6 @@ suite('SettingsSectionTest', function() {
       'passkey upgrade toggle hides with password toggle unchecked',
       async () => {
         const settings = document.createElement('settings-section');
-        settings.prefs = makePasswordManagerPrefs();
         document.body.appendChild(settings);
         await flushTasks();
 

@@ -8,7 +8,13 @@ import android.graphics.Bitmap;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
+
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 /**
  * This class acts as a bridge between Java and the C++ task manager, providing the methods for
@@ -16,7 +22,11 @@ import org.jni_zero.NativeMethods;
  * manager logic.
  */
 @JNINamespace("task_manager")
+@NullMarked
 public class TaskManagerServiceBridge {
+    @JniType("::task_manager::TaskManagerObserverAndroid")
+    public interface NativeTaskManagerObserverAndroid extends JniTypeToken {}
+
     /** Describes the GPU memory usage. */
     public static class GpuMemoryUsage {
         /**
@@ -38,7 +48,7 @@ public class TaskManagerServiceBridge {
         }
 
         @Override
-        public boolean equals(Object other) {
+        public boolean equals(@Nullable Object other) {
             if (this == other) return true;
             if (!(other instanceof GpuMemoryUsage)) return false;
             GpuMemoryUsage that = (GpuMemoryUsage) other;
@@ -57,7 +67,7 @@ public class TaskManagerServiceBridge {
      */
     public ObserverHandle addObserver(
             TaskManagerObserver observer, int refreshTimeMillis, @RefreshType int refreshType) {
-        long pointer =
+        JniUniquePtr<NativeTaskManagerObserverAndroid> pointer =
                 TaskManagerServiceBridgeJni.get()
                         .addObserver(observer, refreshTimeMillis, refreshType);
         return new ObserverHandle(pointer);
@@ -65,7 +75,7 @@ public class TaskManagerServiceBridge {
 
     /** Removes the observer. */
     public void removeObserver(ObserverHandle handle) {
-        TaskManagerServiceBridgeJni.get().removeObserver(handle.getPointer());
+        handle.destroy();
     }
 
     // Following methods for fetching task information mirror the functions in
@@ -75,7 +85,7 @@ public class TaskManagerServiceBridge {
         return TaskManagerServiceBridgeJni.get().getTitle(taskId);
     }
 
-    public Bitmap getIcon(long taskId) {
+    public @Nullable Bitmap getIcon(long taskId) {
         return TaskManagerServiceBridgeJni.get().getIcon(taskId);
     }
 
@@ -103,32 +113,36 @@ public class TaskManagerServiceBridge {
         return TaskManagerServiceBridgeJni.get().isTaskKillable(taskId);
     }
 
+    public @TaskType int getType(long taskId) {
+        return TaskManagerServiceBridgeJni.get().getType(taskId);
+    }
+
     public void killTask(long taskId) {
         TaskManagerServiceBridgeJni.get().killTask(taskId);
     }
 
     public static class ObserverHandle {
-        private final long mPointer;
+        private final JniUniquePtr<NativeTaskManagerObserverAndroid> mPointer;
 
-        ObserverHandle(long pointer) {
+        ObserverHandle(JniUniquePtr<NativeTaskManagerObserverAndroid> pointer) {
             mPointer = pointer;
         }
 
-        long getPointer() {
-            return mPointer;
+        void destroy() {
+            mPointer.destroy();
         }
     }
 
     @NativeMethods
     public interface Natives {
-        long addObserver(
+        JniUniquePtr<NativeTaskManagerObserverAndroid> addObserver(
                 TaskManagerObserver observer, int refreshTimeMillis, @RefreshType int refreshType);
 
-        void removeObserver(long pointer);
-
+        @JniType("std::u16string")
         String getTitle(long taskid);
 
-        Bitmap getIcon(long taskId);
+        @JniType("SkBitmap")
+        @Nullable Bitmap getIcon(long taskId);
 
         long getMemoryFootprintUsage(long taskId);
 
@@ -141,6 +155,9 @@ public class TaskManagerServiceBridge {
         GpuMemoryUsage getGpuMemoryUsage(long taskId);
 
         boolean isTaskKillable(long taskId);
+
+        @TaskType
+        int getType(long taskId);
 
         void killTask(long taskId);
     }

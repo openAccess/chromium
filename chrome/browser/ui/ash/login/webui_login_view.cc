@@ -19,7 +19,6 @@
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
@@ -29,12 +28,14 @@
 #include "chrome/browser/ui/ash/login/login_screen_client_impl.h"
 #include "chrome/browser/ui/ash/system/system_tray_client_impl.h"
 #include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/network/network_state.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/password_manager/core/browser/password_manager.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -56,7 +57,7 @@
 #include "ui/views/widget/widget.h"
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-#include "chrome/browser/safe_browsing/chrome_password_reuse_detection_manager_client.h"
+#include "chrome/browser/safe_browsing/password_protection/chrome_password_reuse_detection_manager_client.h"
 #endif
 
 namespace ash {
@@ -149,19 +150,19 @@ WebUILoginView::~WebUILoginView() {
 
 void WebUILoginView::Init() {
   // Init() should only be called once.
-  DCHECK(!web_view_);
+  CHECK(!web_view_, base::NotFatalUntil::M162);
   auto web_view =
       std::make_unique<views::WebView>(ProfileHelper::GetSigninProfile());
   WebContents* web_contents = web_view->GetWebContents();
 
   InitializeWebView(web_view.get());
-  web_view->set_allow_accelerators(true);
 
   web_view_ = AddChildView(std::move(web_view));
 
   WebContentsModalDialogManager::FromWebContents(web_contents)
       ->SetDelegate(this);
   web_contents->SetDelegate(this);
+  SetAcceleratorHandling(views::WebContentsAcceleratorHandling::kEnabled);
   content::WebContentsObserver::Observe(web_contents);
 }
 
@@ -258,7 +259,7 @@ void WebUILoginView::SetKeyboardEventsAndSystemTrayEnabled(bool enabled) {
 // WebUILoginView protected: ---------------------------------------------------
 
 void WebUILoginView::Layout(PassKey) {
-  DCHECK(web_view_);
+  CHECK(web_view_, base::NotFatalUntil::M162);
   web_view_->SetBoundsRect(bounds());
 
   for (auto& observer : observer_list_) {
@@ -313,9 +314,7 @@ bool WebUILoginView::HandleKeyboardEvent(content::WebContents* source,
     // Disable arrow key traversal because arrow keys are handled via
     // accelerator when this view has focus.
     ScopedArrowKeyTraversalDisabler disabler;
-
-    handled = unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-        event, GetFocusManager());
+    handled = WebContentsDelegateViews::HandleKeyboardEvent(source, event);
   }
 
   return handled;

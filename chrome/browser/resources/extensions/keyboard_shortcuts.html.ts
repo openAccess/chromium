@@ -32,9 +32,8 @@ export function getHtml(this: KeyboardShortcutsElement) {
                       item.name)}"
                   .inputDisabled="${this.computeInputDisabled_(item, command)}"
                   @input-capture-change="${this.onInputCaptureChange_}"
-                  @shortcut-updated="${
-                      this.onShortcutUpdated_.bind(
-                          this, item.id, command.name)}">
+                  @shortcut-updated="${this.onShortcutUpdated_.bind(
+                      this, item.id, command.name)}">
               </cr-shortcut-input>
             </div>
             <div class="shortcut-scope-container">

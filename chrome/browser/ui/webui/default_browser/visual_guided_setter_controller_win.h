@@ -12,12 +12,13 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/process/process.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/timer/timer.h"
 #include "base/win/windows_types.h"
-#include "chrome/browser/ui/webui/default_browser/settings_window_finder_win.h"
+#include "chrome/browser/default_browser/win/settings_window_finder_win.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
@@ -72,11 +73,35 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
     // The user moved or resized the Settings window, taking over its
     // placement. The flow stops docking and leaves the window floating.
     kUserRepositioned = 7,
-    kMaxValue = kUserRepositioned,
+    // The width the Settings window would dock at puts the "Default apps" page
+    // in a layout whose rows we cannot place: the "Set default" button wraps
+    // below the name Chrome is registered under, or the width sits on the
+    // breakpoint where the navigation pane collapses. We degrade to floating
+    // rather than point the guidance arrow at the wrong row.
+    kSettingsLayoutUnstable = 8,
+    // The user moved or resized the Chrome window. Without continuous
+    // docking the Settings window cannot follow it, so the placement the
+    // guide arranged is stale.
+    kChromeWindowRepositioned = 9,
+    // Without continuous docking: the Chrome window was activated after the
+    // Settings window was placed, bringing it in front of the arrangement the
+    // guide set up.
+    kChromeWindowActivated = 10,
+    // Without continuous docking: the Chrome window was minimized or hidden,
+    // or the guide tab was hidden, after the Settings window was placed.
+    kChromeWindowHidden = 11,
+    // Without continuous docking: the user minimized, maximized, snapped, or
+    // otherwise changed the Settings window's placement after the guide
+    // placed it, other than by dragging it (see kUserRepositioned).
+    kSettingsWindowStateChanged = 12,
+    kMaxValue = kSettingsWindowStateChanged,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/enums.xml:DefaultBrowserVisualGuideOutcome)
 
   using ErrorCallback = base::RepeatingCallback<void(bool)>;
+  // Receives the docked Settings window's client bounds in WebUI CSS pixels. It
+  // only ever run with the bounds of a window that really docked.
+  using DockedBoundsCallback = base::RepeatingCallback<void(const gfx::Rect&)>;
 
   explicit VisualGuidedSetterControllerWin(views::Widget* parent_widget);
 
@@ -94,10 +119,24 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   void SetAnchorRectInWebUi(const gfx::Rect& rect);
   void SetWebContents(content::WebContents* web_contents);
   void SetErrorCallback(ErrorCallback callback);
+  // `callback` runs whenever the bounds the docked Settings window really
+  // occupies change: the window is asked for the stage's geometry, but the
+  // Settings app enforces a minimum size, so what it gets can be taller. Once
+  // it has run, the page keeps that size for the rest of the flow.
+  void SetDockedBoundsCallback(DockedBoundsCallback callback);
 
   // content::WebContentsObserver:
   void OnVisibilityChanged(content::Visibility visibility) override;
   void PrimaryPageChanged(content::Page& page) override;
+
+  // views::WidgetObserver:
+  void OnWidgetBoundsChanged(views::Widget* widget,
+                             const gfx::Rect& new_bounds) override;
+  void OnWidgetDestroyed(views::Widget* widget) override;
+  void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override;
+  void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
+  void OnWidgetShowStateChanged(views::Widget* widget) override;
+  void OnWidgetThemeChanged(views::Widget* widget) override;
 
   bool is_running() const { return is_running_; }
   bool has_anchor_rect() const { return has_anchor_rect_; }
@@ -117,6 +156,9 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   virtual bool IsDpiCompatibleForDocking(HWND hwnd,
                                          const gfx::Rect& target_rect) const;
   virtual void CloseSettingsWindow();
+  // Whether `hwnd` belongs to the still-running process the Settings window was
+  // found in. Once a window is destroyed, its HWND value can be reused for
+  // another window.
   virtual bool IsValidSettingsProcess(HWND hwnd) const;
 
   // Low-level Win32 window probes backing the predicates above. Virtual for
@@ -125,9 +167,13 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   virtual bool IsWindowOnScreen(HWND hwnd) const;
   virtual bool IsWindowCloaked(HWND hwnd) const;
   virtual bool IsWindowMinimized(HWND hwnd) const;
+  virtual bool IsWindowMaximized(HWND hwnd) const;
   // Screen bounds of the latched Settings window, or nullopt when they are
   // unavailable or empty. Virtual for testing.
   virtual std::optional<gfx::Rect> GetSettingsWindowScreenRect() const;
+  // Screen bounds (physical pixels) of the latched Settings window's client
+  // area, or nullopt when they are unavailable or empty. Virtual for testing.
+  virtual std::optional<gfx::Rect> GetSettingsWindowClientScreenRect() const;
   // Overlay forwarding. Virtual for testing, so tests can observe when the
   // guidance arrow is shown or hidden.
   virtual void ShowOverlayArrow(const gfx::Point& start, const gfx::Point& end);
@@ -138,24 +184,14 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   // Outcome::kSettingsLaunchFailed instead of waiting for the finder timeout.
   void OnLaunchSettingsResult(bool succeeded);
 
- protected:
   // Returns the rect to dock the Settings window to, in physical screen
   // pixels. Virtual for testing.
   virtual gfx::Rect ComputeDockedSettingsRect() const;
 
  private:
-  // views::WidgetObserver:
-  void OnWidgetBoundsChanged(views::Widget* widget,
-                             const gfx::Rect& new_bounds) override;
-  void OnWidgetDestroyed(views::Widget* widget) override;
-  void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override;
-  void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
-  void OnWidgetShowStateChanged(views::Widget* widget) override;
-  void OnWidgetThemeChanged(views::Widget* widget) override;
-
   // Starts the polling and event-hooking logic to find the Settings window.
   void StartFindSettingsWindow();
-  void OnSettingsWindowFound(HWND hwnd);
+  void OnSettingsWindowFound(HWND hwnd, base::Process process);
   void OnFindSettingsTimeout();
 
   // Asynchronously spawns the OS Default Apps settings URI.
@@ -180,6 +216,14 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   // Notifies error_callback_ of error status changes.
   void NotifyErrorState(bool is_error);
 
+  // Reports the docked window's current client bounds to
+  // docked_bounds_callback_, once the window sits where the last layout put
+  // it. Until then its bounds are wherever Settings opened, which the page
+  // must not fit its slot to.
+  void ReportDockedSettingsBounds();
+  // Runs docked_bounds_callback_ if `bounds` differ from the last report.
+  void NotifyDockedSettingsBounds(const gfx::Rect& bounds);
+
   // Halts the controller, kills timers, and releases OS resources.
   void TearDownInternal();
 
@@ -191,13 +235,50 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   // window.
   void OnSettingsWindowMoveSize(bool in_progress);
 
+  // Whether a user disturbance of the arrangement should degrade the flow:
+  // only without continuous docking (with it, the Settings window follows
+  // Chrome and the arrangement survives), and only while a running, not yet
+  // degraded flow has placed the latched Settings window at least once.
+  bool ShouldDegradeOnUserDisturbance() const;
+
+  // Degrades with `reason` if ShouldDegradeOnUserDisturbance(). A Settings
+  // window that has already been closed instead ends the flow as
+  // kSettingsWindowClosed: closing it hands activation back to Chrome, which
+  // must not be mistaken for the user bringing Chrome to the front.
+  void MaybeDegradeOnUserDisturbance(Outcome reason);
+
+  // Degrades when the Chrome window is minimized or hidden, or moved or
+  // resized away from where the guide last arranged the Settings window
+  // against it.
+  void MaybeDegradeOnChromeWindowBoundsChanged(const gfx::Rect& new_bounds);
+
+  // Whether the latched Settings window has been minimized, maximized, or
+  // moved since it settled where the guide placed it. Only meaningful without
+  // continuous docking.
+  bool HasUserChangedSettingsWindow() const;
+
+  // Records the Settings window's bounds once the guide's last placement has
+  // landed, as the baseline HasUserChangedSettingsWindow() compares against.
+  void MaybeRecordSettledSettingsRect();
+
   ErrorCallback error_callback_;
   std::optional<bool> last_reported_error_;
+
+  DockedBoundsCallback docked_bounds_callback_;
+  // Empty until a docked window has been reported, and non-empty from then
+  // until Start() begins a new flow.
+  gfx::Rect last_reported_docked_bounds_;
+  // The rect the last layout asked the Settings window to take, in physical
+  // screen pixels. Its origin is honored even when the window's minimum size
+  // clamps the requested size, so it tells the two apart.
+  std::optional<gfx::Rect> last_applied_settings_rect_;
 
   raw_ptr<views::Widget> parent_widget_ = nullptr;
   HWND chrome_hwnd_ = nullptr;
   HWND settings_hwnd_ = nullptr;
-  DWORD settings_pid_ = 0;
+  // Owner of `settings_hwnd_`, held with SYNCHRONIZE so its pid is not
+  // reissued and its exit can be polled. Invalid when no window is latched.
+  base::Process settings_process_;
 
   std::unique_ptr<GuidedSetterOverlayWindowWin> overlay_;
 
@@ -212,6 +293,16 @@ class VisualGuidedSetterControllerWin : public views::WidgetObserver,
   bool is_running_ = false;
   bool is_degraded_ = false;
   bool last_known_chrome_active_ = true;
+  // The Chrome window's screen bounds as of the last layout the guide
+  // applied, i.e. what the Settings window was arranged against. Compared
+  // against to tell a real move from the redundant bounds changes Windows
+  // emits.
+  gfx::Rect last_known_chrome_bounds_;
+  // The Settings window's actual screen bounds once the last applied layout
+  // landed (its origin matches last_applied_settings_rect_). The actual
+  // rather than the requested bounds, since the app's minimum size can clamp
+  // the size. Reset whenever the guide applies a different rect.
+  std::optional<gfx::Rect> settled_settings_rect_;
 
   gfx::Rect anchor_rect_in_webui_;
   bool has_anchor_rect_ = false;

@@ -49,7 +49,7 @@ public class MessagesMetrics {
         String histogramName =
                 DISMISSED_HISTOGRAM_PREFIX + messageIdentifierToHistogramSuffix(messageIdentifier);
         RecordHistogram.recordEnumeratedHistogram(
-                histogramName, dismissReason, DismissReason.COUNT);
+                histogramName, dismissReason, DismissReason.MAX_VALUE + 1);
     }
 
     /**
@@ -238,6 +238,12 @@ public class MessagesMetrics {
                 return "PasswordSavedConfirmation";
             case MessageIdentifier.EMAIL_VERIFIED:
                 return "EmailVerified";
+            case MessageIdentifier.RESURRECT_CHURNED_USERS:
+                return "ResurrectChurnedUsers";
+            case MessageIdentifier.EMAIL_VERIFICATION_ERROR:
+                return "EmailVerificationError";
+            case MessageIdentifier.EMAIL_VERIFICATION_LOADING:
+                return "EmailVerificationLoading";
             default:
                 return "Unknown";
         }

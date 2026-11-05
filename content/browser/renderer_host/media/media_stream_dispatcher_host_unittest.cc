@@ -395,8 +395,12 @@ class MediaStreamDispatcherHostTest : public RenderViewHostTestHarness {
 
     stub_video_device_ids_.emplace_back(kRegularVideoDeviceId1);
     stub_video_device_ids_.emplace_back(kDepthVideoDeviceId);
-    ON_CALL(*mock_video_capture_provider_, GetDeviceInfosAsync(_))
-        .WillByDefault(
+    ON_CALL(
+        *mock_video_capture_provider_,
+        DoGetDeviceInfosAsync(media::mojom::VideoCaptureDeviceEnumerationMode::
+                                  kDevicesWithCapabilities,
+                              _))
+        .WillByDefault(testing::WithArg<1>(
             [this](
                 VideoCaptureProvider::GetDeviceInfosCallback result_callback) {
               std::vector<media::VideoCaptureDeviceInfo> result;
@@ -408,7 +412,7 @@ class MediaStreamDispatcherHostTest : public RenderViewHostTestHarness {
               }
               std::move(result_callback)
                   .Run(media::mojom::DeviceEnumerationResult::kSuccess, result);
-            });
+            }));
 
     base::RunLoop run_loop;
     MediaDevicesManager::BoolDeviceTypes devices_to_enumerate;
@@ -699,6 +703,24 @@ TEST_F(MediaStreamDispatcherHostTest,
                   main_rfh()->GetGlobalId().child_id,
                   bad_message::MSDH_RESTRICT_OWN_AUDIO_IS_SET_WHEN_UNSUPPORTED))
       .Times(media::IsRestrictOwnAudioSupported() ? 0 : 1);
+  host_->OnGenerateStreams(kPageRequestId, controls);
+}
+
+TEST_F(MediaStreamDispatcherHostTest,
+       BadMessageIfRequestAllScreensWithoutVideoCaptureSet) {
+  blink::StreamControls controls;
+  controls.audio.stream_type = MediaStreamType::NO_SERVICE;
+  controls.video.stream_type = MediaStreamType::DISPLAY_VIDEO_CAPTURE;
+  controls.request_all_screens = true;
+
+  SetupFakeUI(/*expect_started=*/true);
+
+  EXPECT_CALL(
+      *this,
+      MockOnBadMessage(
+          main_rfh()->GetGlobalId().child_id,
+          bad_message::MSDH_REQUEST_ALL_SCREENS_WITH_INVALID_STREAM_TYPE))
+      .Times(1);
   host_->OnGenerateStreams(kPageRequestId, controls);
 }
 
@@ -1408,7 +1430,7 @@ class MediaStreamDispatcherHostActiveRfhTest
   void DeactivateMainRfh() {
     RenderFrameHostImpl* const rfhi = RenderFrameHostImpl::From(main_rfh());
     rfhi->SetLifecycleState(
-        RenderFrameHostImpl::LifecycleStateImpl::kInBackForwardCache);
+        RenderFrameHostLifecycleStateImpl::kInBackForwardCache);
   }
 
  protected:

@@ -4,12 +4,9 @@
 
 package org.chromium.android_webview.robolectric.common.services;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.android_webview.common.services.ServiceNames;
 import org.chromium.android_webview.services.AwMinidumpUploadJobService;
@@ -23,10 +20,8 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 
 /** Tests the constants in ServiceNames. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ServiceNamesTest {
     @Test
-    @SmallTest
     public void testServiceNamesValid() {
         Assert.assertEquals(
                 "Incorrect class name constant",

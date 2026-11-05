@@ -4,6 +4,7 @@
 
 import("//build/config/android/rules.gni")
 import("//chromecast/chromecast.gni")
+import("//components/module_installer/android/module_interface_processor.gni")
 import("//media/media_options.gni")
 import("//third_party/jni_zero/jni_zero.gni")
 
@@ -27,6 +28,7 @@ java_group("cast_shell_android_resources") {
 
 android_resources("cast_browser_android_resources") {
   sources = [
+    "../resources/raw/back_pressed.js",
     "apk/res/drawable-anydpi-v26/ic_settings_cast.xml",
     "apk/res/drawable-hdpi/ic_settings_cast.png",
     "apk/res/drawable-mdpi/ic_settings_cast.png",
@@ -35,7 +37,6 @@ android_resources("cast_browser_android_resources") {
     "apk/res/drawable-xxhdpi/ic_settings_cast.png",
     "apk/res/drawable-xxxhdpi/ic_settings_cast.png",
     "apk/res/layout/cast_web_contents_activity.xml",
-    "apk/res/raw/back_pressed.js",
   ]
 }
 
@@ -107,8 +108,6 @@ android_library("crash_handler_java") {
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/jni_zero:jni_zero_java",
   ]
-  annotation_processor_deps =
-      [ "//components/module_installer/android:module_interface_processor" ]
 }
 
 generate_jni("crash_handler_jni_headers") {
@@ -162,10 +161,6 @@ common_java_sources = [
   "$common_java_src_dir/org/chromium/chromecast/shell/WebContentsRegistry.java",
 ]
 
-generate_product_config_srcjar("product_config_for_browser") {
-  java_package = "org.chromium.chromecast.shell"
-}
-
 generate_jni("jni_headers") {
   sources = [
     "apk/src/org/chromium/chromecast/shell/CastContentWindowAndroid.java",
@@ -175,25 +170,25 @@ generate_jni("jni_headers") {
   deps = [ "//components/android_autofill/browser:jni_headers_features" ]
 }
 
+module_interface_processor("cast_browser_module_interface") {
+  sources = [ "apk/src/org/chromium/chromecast/shell/CastBrowser.java" ]
+}
+
 android_library("cast_shell_java") {
   sources = common_java_sources
 
   resources_package = "org.chromium.chromecast.shell"
   srcjar_deps = [
+    ":cast_browser_module_interface",
     ":jni_headers",
-    ":product_config_for_browser",
     "//chromecast/browser:java_enums",
   ]
-
-  jar_excluded_patterns = [ "*/ProductConfig.class" ]
 
   mergeable_android_manifests = [ cast_shell_android_manifest ]
   deps = common_android_library_deps + [
            ":cast_shell_android_resources",
            ":cast_shell_manifest",
          ]
-  annotation_processor_deps =
-      [ "//components/module_installer/android:module_interface_processor" ]
 }
 
 robolectric_binary("cast_shell_junit_tests") {
@@ -201,6 +196,7 @@ robolectric_binary("cast_shell_junit_tests") {
     "junit/src/org/chromium/chromecast/shell/AsyncTaskRunnerTest.java",
     "junit/src/org/chromium/chromecast/shell/BackPressCallbackAdapterTest.java",
     "junit/src/org/chromium/chromecast/shell/BroadcastReceiverScopeTest.java",
+    "junit/src/org/chromium/chromecast/shell/CastCommandLineHelperTest.java",
     "junit/src/org/chromium/chromecast/shell/CastWebContentsActivityTest.java",
     "junit/src/org/chromium/chromecast/shell/CastWebContentsComponentTest.java",
     "junit/src/org/chromium/chromecast/shell/CastWebContentsIntentUtilsTest.java",
@@ -213,6 +209,7 @@ robolectric_binary("cast_shell_junit_tests") {
   ]
 
   deps = [
+    ":cast_command_line_helper_java",
     ":cast_intents_java",
     ":cast_shell_java",
     ":crash_handler_java",

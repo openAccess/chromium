@@ -8,7 +8,11 @@
 #include <string>
 #include <string_view>
 
-#include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
+#include "build/build_config.h"
+
+namespace webrtc {
+class DesktopRect;
+}  // namespace webrtc
 
 namespace remoting {
 

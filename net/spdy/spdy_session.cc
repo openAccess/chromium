@@ -1056,11 +1056,12 @@ bool SpdySession::ShouldSendPriorityUpdate() const {
 }
 
 int SpdySession::ConfirmHandshake(CompletionOnceCallback callback) {
+  if (availability_state_ == STATE_DRAINING || drain_session_pending_) {
+    return ERR_CONNECTION_CLOSED;
+  }
+
   if (availability_state_ == STATE_GOING_AWAY)
     return ERR_FAILED;
-
-  if (availability_state_ == STATE_DRAINING)
-    return ERR_CONNECTION_CLOSED;
 
   int rv = ERR_IO_PENDING;
   if (!in_confirm_handshake_) {
@@ -1244,9 +1245,6 @@ void SpdySession::UpdateStreamPriority(SpdyStream* stream,
 
   DCHECK(IsStreamActive(stream_id));
 
-  if (base::FeatureList::IsEnabled(features::kAvoidH2Reprioritization))
-    return;
-
   auto updates = priority_dependency_state_.OnStreamUpdate(
       stream_id, ConvertRequestPriorityToSpdyPriority(new_priority));
   for (auto u : updates) {
@@ -1418,7 +1416,7 @@ void SpdySession::StartGoingAway(spdy::SpdyStreamId last_good_stream_id,
 
 void SpdySession::MaybeFinishGoingAway() {
   if (active_streams_.empty() && created_streams_.empty() &&
-      availability_state_ == STATE_GOING_AWAY) {
+      availability_state_ == STATE_GOING_AWAY && !drain_session_pending_) {
     DoDrainSession(OK, "Finished going away");
   }
 }
@@ -1684,11 +1682,12 @@ int SpdySession::TryCreateStream(
     base::WeakPtr<SpdyStream>* stream) {
   DCHECK(request);
 
+  if (availability_state_ == STATE_DRAINING || drain_session_pending_) {
+    return ERR_CONNECTION_CLOSED;
+  }
+
   if (availability_state_ == STATE_GOING_AWAY)
     return ERR_FAILED;
-
-  if (availability_state_ == STATE_DRAINING)
-    return ERR_CONNECTION_CLOSED;
 
   // Fail if ChangeSocketTag() has been called.
   if (request->socket_tag_ != spdy_session_key_.socket_tag())
@@ -1718,12 +1717,8 @@ int SpdySession::CreateStream(const SpdyStreamRequest& request,
                               base::WeakPtr<SpdyStream>* stream) {
   DCHECK_GE(request.priority(), MINIMUM_PRIORITY);
   DCHECK_LE(request.priority(), MAXIMUM_PRIORITY);
-
-  if (availability_state_ == STATE_GOING_AWAY)
-    return ERR_FAILED;
-
-  if (availability_state_ == STATE_DRAINING)
-    return ERR_CONNECTION_CLOSED;
+  CHECK_EQ(availability_state_, STATE_AVAILABLE);
+  CHECK(!drain_session_pending_);
 
   DCHECK(socket_);
   UMA_HISTOGRAM_BOOLEAN("Net.SpdySession.CreateStreamWithSocketConnected",
@@ -1827,6 +1822,9 @@ base::WeakPtr<SpdyStreamRequest> SpdySession::GetNextPendingStreamRequest() {
 }
 
 void SpdySession::ProcessPendingStreamRequests() {
+  if (availability_state_ != STATE_AVAILABLE) {
+    return;
+  }
   size_t max_requests_to_process =
       max_concurrent_streams_ -
       (active_streams_.size() + created_streams_.size());
@@ -1855,17 +1853,6 @@ void SpdySession::CloseActiveStreamIterator(ActiveStreamMap::iterator it,
   priority_dependency_state_.OnStreamDestruction(owned_stream->stream_id());
 
   DeleteStream(std::move(owned_stream), status);
-
-  if (active_streams_.empty() && created_streams_.empty()) {
-    // If the socket belongs to a socket pool, and there are no active streams,
-    // and the socket pool is stalled, then close the session to free up a
-    // socket slot.
-    if (stream_socket_handle_ && stream_socket_handle_->IsPoolStalled()) {
-      DoDrainSession(ERR_CONNECTION_CLOSED, "Closing idle connection.");
-    } else {
-      MaybeFinishGoingAway();
-    }
-  }
 }
 
 void SpdySession::CloseCreatedStreamIterator(CreatedStreamSet::iterator it,
@@ -1953,7 +1940,7 @@ void SpdySession::EnqueuePriorityFrame(spdy::SpdyStreamId stream_id,
 
 void SpdySession::PumpReadLoop(ReadState expected_read_state, int result) {
   CHECK(!in_io_loop_);
-  if (availability_state_ == STATE_DRAINING) {
+  if (availability_state_ == STATE_DRAINING || drain_session_pending_) {
     return;
   }
   std::ignore = DoReadLoop(expected_read_state, result);
@@ -1986,8 +1973,9 @@ int SpdySession::DoReadLoop(ReadState expected_read_state, int result) {
         NOTREACHED() << "read_state_: " << read_state_;
     }
 
-    if (availability_state_ == STATE_DRAINING)
+    if (availability_state_ == STATE_DRAINING || drain_session_pending_) {
       break;
+    }
 
     if (result == ERR_IO_PENDING)
       break;
@@ -2066,7 +2054,7 @@ int SpdySession::DoReadComplete(int result) {
         reinterpret_cast<char*>(available_data.data()), available_data.size());
     available_data = available_data.subspan(bytes_processed);
 
-    if (availability_state_ == STATE_DRAINING) {
+    if (availability_state_ == STATE_DRAINING || drain_session_pending_) {
       return ERR_CONNECTION_CLOSED;
     }
 
@@ -2653,6 +2641,23 @@ void SpdySession::DeleteStream(std::unique_ptr<SpdyStream> stream, int status) {
     MaybeDisableBrokenConnectionDetection();
   stream->OnClose(status);
 
+  if (active_streams_.empty() && created_streams_.empty() &&
+      !drain_session_pending_) {
+    // If the socket belongs to a socket pool, and there are no active streams,
+    // and the socket pool is stalled, then close the session to free up a
+    // socket slot.
+    if (stream_socket_handle_ && stream_socket_handle_->IsPoolStalled()) {
+      DoDrainSessionAsync(ERR_CONNECTION_CLOSED, "Closing idle connection.");
+    } else {
+      MaybeFinishGoingAway();
+    }
+  }
+
+  // Neither `DoDrainSessionAsync()` nor `MaybeFinishGoingAway()` deletes `this`
+  // synchronously (`SpdySession` only deletes itself in
+  // `CheckForCompleteShutdown()` from the read/write loop tasks). Process
+  // pending stream requests after the idle-drain check above so requests are
+  // not popped when the session is about to drain.
   if (availability_state_ == STATE_AVAILABLE) {
     ProcessPendingStreamRequests();
   }
@@ -2701,6 +2706,7 @@ void SpdySession::DcheckDraining() const {
 void SpdySession::DoDrainSession(Error err,
                                  const std::string& description,
                                  bool force_send_go_away) {
+  drain_session_pending_ = false;
   if (availability_state_ == STATE_DRAINING) {
     return;
   }
@@ -2759,10 +2765,14 @@ void SpdySession::DoDrainSession(Error err,
 void SpdySession::DoDrainSessionAsync(Error err,
                                       std::string description,
                                       bool force_send_go_away) {
+  if (availability_state_ == STATE_DRAINING || drain_session_pending_) {
+    return;
+  }
   // Make this unavailable to prevent consumers from pulling it from the session
   // pool again, which could result in an infinite loop, or otherwise running
   // into this error again rather than trying a new connection.
   MakeUnavailable(err);
+  drain_session_pending_ = true;
 
   // This will close the socket and inform consumers asynchronously. If
   // something happens before this task runs (like a read error), that should
@@ -3212,6 +3222,13 @@ void SpdySession::OnAltSvc(
       stream_id != 0) {
     return;
   }
+  // Alternative services are persisted, so only accept them over connections
+  // with valid certificates, with no errors (even bypassed ones).
+  SSLInfo ssl_info;
+  if (!GetSSLInfo(&ssl_info) || !ssl_info.is_valid() ||
+      IsCertStatusError(ssl_info.cert_status)) {
+    return;
+  }
   url::SchemeHostPort scheme_host_port;
   if (stream_id == 0) {
     if (origin.empty())
@@ -3222,10 +3239,6 @@ void SpdySession::OnAltSvc(
     }
     if (!gurl.SchemeIs(url::kHttpsScheme))
       return;
-    SSLInfo ssl_info;
-    if (!GetSSLInfo(&ssl_info)) {
-      return;
-    }
     if (!CanPool(transport_security_state_, ssl_info, *ssl_config_service_,
                  host_port_pair().host(), gurl.host())) {
       return;
@@ -3240,6 +3253,8 @@ void SpdySession::OnAltSvc(
     const GURL& gurl(it->second->url());
     if (!gurl.SchemeIs(url::kHttpsScheme))
       return;
+    // No need for CanPool() here, since the stream's origin was already
+    // validated against this session when the stream was created.
     scheme_host_port = url::SchemeHostPort(gurl);
   }
 
@@ -3313,7 +3328,10 @@ void SpdySession::IncreaseSendWindowSize(int delta_window_size) {
       std::numeric_limits<int32_t>::max() - session_send_window_size_;
   if (delta_window_size > max_delta_window_size) {
     RecordProtocolErrorHistogram(PROTOCOL_ERROR_INVALID_WINDOW_UPDATE_SIZE);
-    DoDrainSession(
+    // Drain asynchronously because IncreaseSendWindowSize() can be called from
+    // OnWriteBufferConsumed() when discarding a queued SpdyBuffer during stream
+    // cancellation, while a consumer is on the stack.
+    DoDrainSessionAsync(
         ERR_HTTP2_PROTOCOL_ERROR,
         base::StrCat(
             {"Received WINDOW_UPDATE [delta: ",
@@ -3431,6 +3449,13 @@ void SpdySession::QueueSendStalledStream(const SpdyStream& stream) {
 }
 
 void SpdySession::ResumeSendStalledStreams() {
+  // Don't resume streams if the session is draining. Streams are still
+  // resumed in `STATE_GOING_AWAY` (when `!drain_session_pending_`) so that
+  // active streams accepted by the peer before a `GOAWAY` frame can finish.
+  if (availability_state_ == STATE_DRAINING || drain_session_pending_) {
+    return;
+  }
+
   // We don't have to worry about new streams being queued, since
   // doing so would cause IsSendStalled() to return true. But we do
   // have to worry about streams being closed, as well as ourselves

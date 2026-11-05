@@ -4,6 +4,8 @@
 
 #include "chrome/browser/actor/ui/ui_event.h"
 
+#include <utility>
+
 #include "chrome/common/actor.mojom-shared.h"
 
 namespace actor::ui {
@@ -24,7 +26,7 @@ StopTask::StopTask(actor::TaskId id,
       last_acted_on_tab_handle(last_acted_on_tab_handle),
       duration(duration),
       feature_mode(feature_mode) {
-  DCHECK(ActorTask::IsCompletedState(final_state));
+  CHECK(ActorTask::IsCompletedState(final_state), base::NotFatalUntil::M161);
 }
 StopTask::~StopTask() = default;
 StopTask::StopTask(const StopTask&) = default;
@@ -33,6 +35,15 @@ TaskStateChanged::TaskStateChanged(actor::TaskId id, ActorTask::State state)
     : task_id(id), state(state) {}
 TaskStateChanged::TaskStateChanged(const TaskStateChanged&) = default;
 TaskStateChanged::~TaskStateChanged() = default;
+
+TaskStepProgressUpdated::TaskStepProgressUpdated(actor::TaskId id,
+                                                 std::string step_progress)
+    : task_id(id), step_progress(std::move(step_progress)) {}
+TaskStepProgressUpdated::TaskStepProgressUpdated(
+    const TaskStepProgressUpdated&) = default;
+TaskStepProgressUpdated::TaskStepProgressUpdated(TaskStepProgressUpdated&&) =
+    default;
+TaskStepProgressUpdated::~TaskStepProgressUpdated() = default;
 
 StartingToActOnTab::StartingToActOnTab(tabs::TabInterface::Handle th,
                                        actor::TaskId id)

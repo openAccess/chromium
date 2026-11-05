@@ -23,6 +23,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/apps/app_service/app_registry_cache_waiter.h"
@@ -35,6 +36,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/test/ssl_test_utils.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
@@ -89,7 +91,6 @@
 #include "chrome/browser/ash/app_list/app_list_client_impl.h"
 #include "chrome/browser/ash/app_list/app_list_syncable_service.h"
 #include "chrome/browser/ash/app_list/app_list_syncable_service_factory.h"
-#include "chromeos/constants/chromeos_features.h"
 #endif
 
 namespace web_app {
@@ -1589,38 +1590,6 @@ IN_PROC_BROWSER_TEST_F(PreinstalledWebAppManagerBrowserTest,
     ExpectInitialManifestFieldsFromBasicWebApp(icon_manager(), web_app,
                                                start_url, scope);
   }
-}
-
-class PreinstalledWebAppManagerWithCloudGamingBrowserTest
-    : public PreinstalledWebAppManagerBrowserTest {
- public:
-  PreinstalledWebAppManagerWithCloudGamingBrowserTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        chromeos::features::kCloudGamingDevice);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(PreinstalledWebAppManagerWithCloudGamingBrowserTest,
-                       GateOnCloudGamingFeature) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-
-  constexpr char kAppConfigTemplate[] =
-      R"({
-        "app_url": "$1",
-        "launch_container": "window",
-        "user_type": ["unmanaged"],
-        "feature_name": "$2"
-      })";
-  std::string app_config = base::ReplaceStringPlaceholders(
-      kAppConfigTemplate,
-      {GetAppUrl().spec(), chromeos::features::kCloudGamingDevice.name},
-      nullptr);
-
-  EXPECT_EQ(SyncPreinstalledAppConfig(GetAppUrl(), app_config),
-            webapps::InstallResultCode::kSuccessNewInstall);
 }
 
 #endif  // BUILDFLAG(IS_CHROMEOS)

@@ -46,8 +46,12 @@ class TestFileUtil : public LocalFileUtil {
   base::File::Error GetLocalFilePath(FileSystemOperationContext* context,
                                      const FileSystemURL& file_system_url,
                                      base::FilePath* local_file_path) override {
-    *local_file_path = base_path_.Append(file_system_url.path());
-    if (IsHiddenItem(*local_file_path)) {
+    if (file_system_url.path().IsAbsolute()) {
+      *local_file_path = file_system_url.path();
+    } else {
+      *local_file_path = base_path_.Append(file_system_url.path());
+    }
+    if (IsHiddenItemUnderRoot(*local_file_path, base_path_)) {
       return base::File::FILE_ERROR_NOT_FOUND;
     }
     return base::File::FILE_OK;

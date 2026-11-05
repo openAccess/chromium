@@ -4,6 +4,7 @@
 
 #include "chrome/browser/apps/app_service/metrics/website_metrics.h"
 
+#include <optional>
 #include <random>
 
 #include "base/functional/bind.h"
@@ -11,6 +12,7 @@
 #include "base/rand_util.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/tick_clock.h"
+#include "base/types/optional_ref.h"
 #include "chrome/browser/apps/app_service/metrics/app_platform_metrics_utils.h"
 #include "chrome/browser/apps/browser_instance/web_contents_instance_id_utils.h"
 #include "chrome/browser/history/history_service_factory.h"
@@ -170,7 +172,7 @@ void WebsiteMetrics::ActiveTabWebContentsObserver::WebContentsDestroyed() {
 void WebsiteMetrics::ActiveTabWebContentsObserver::
     OnInstallableWebAppStatusUpdated(
         webapps::InstallableWebAppCheckResult result,
-        const std::optional<webapps::WebAppBannerData>& data) {
+        base::optional_ref<const webapps::WebAppBannerData> data) {
   owner_->OnInstallableWebAppStatusUpdated(web_contents(), result, data);
 }
 
@@ -243,7 +245,7 @@ void WebsiteMetrics::OnTabStripModelChanged(
     TabStripModel* tab_strip_model,
     const TabStripModelChange& change,
     const TabStripSelectionChange& selection) {
-  DCHECK(tab_strip_model);
+  CHECK(tab_strip_model, base::NotFatalUntil::M161);
   auto* window = GetWindowWithTabStripModel(tab_strip_model);
   if (!window || !window_to_web_contents_.contains(window)) {
     // Skip the app browser window.
@@ -306,7 +308,8 @@ void WebsiteMetrics::OnWindowDestroying(aura::Window* window) {
 
 void WebsiteMetrics::HistoryServiceBeingDeleted(
     history::HistoryService* history_service) {
-  DCHECK(history_observation_.IsObservingSource(history_service));
+  CHECK(history_observation_.IsObservingSource(history_service),
+        base::NotFatalUntil::M161);
   history_observation_.Reset();
 }
 
@@ -568,7 +571,7 @@ void WebsiteMetrics::OnWebContentsUpdated(content::WebContents* web_contents) {
 void WebsiteMetrics::OnInstallableWebAppStatusUpdated(
     content::WebContents* web_contents,
     webapps::InstallableWebAppCheckResult result,
-    const std::optional<webapps::WebAppBannerData>& data) {
+    base::optional_ref<const webapps::WebAppBannerData> data) {
   auto it = webcontents_to_ukm_key_.find(web_contents);
   if (it == webcontents_to_ukm_key_.end()) {
     // If the `web_contents` has been removed or replaced, we don't need to set
@@ -643,7 +646,7 @@ void WebsiteMetrics::SetTabInActivated(content::WebContents* web_contents) {
   }
 
   const auto current_time = tick_clock_->NowTicks();
-  DCHECK_GE(current_time, it->second.start_time);
+  CHECK_GE(current_time, it->second.start_time, base::NotFatalUntil::M161);
   it->second.running_time_in_five_minutes +=
       current_time - it->second.start_time;
   it->second.is_activated = false;
@@ -655,7 +658,7 @@ void WebsiteMetrics::SaveUsageTime() {
     if (it.second.is_activated) {
       // Continued usage of active web content.
       const auto current_time = tick_clock_->NowTicks();
-      DCHECK_GE(current_time, it.second.start_time);
+      CHECK_GE(current_time, it.second.start_time, base::NotFatalUntil::M161);
       it.second.running_time_in_five_minutes +=
           current_time - it.second.start_time;
       it.second.start_time = current_time;

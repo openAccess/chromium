@@ -32,8 +32,8 @@
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/notifications/notification_handler.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager_factory.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
@@ -104,14 +104,15 @@ std::string ReadNotificationImage(const base::FilePath& file_path) {
   if (!ret)
     return std::string();
 
-  DCHECK_LE(data.size(), static_cast<size_t>(kMaxImagePreviewSize));
+  CHECK_LE(data.size(), static_cast<size_t>(kMaxImagePreviewSize),
+           base::NotFatalUntil::M161);
 
   return data;
 }
 
 SkBitmap CropImage(const SkBitmap& original_bitmap) {
-  DCHECK_NE(0, original_bitmap.width());
-  DCHECK_NE(0, original_bitmap.height());
+  CHECK_NE(0, original_bitmap.width(), base::NotFatalUntil::M161);
+  CHECK_NE(0, original_bitmap.height(), base::NotFatalUntil::M161);
 
   const SkSize container_size =
       SkSize::Make(message_center::kNotificationPreferredImageWidth,
@@ -206,6 +207,7 @@ void RecordButtonClickAction(DownloadCommands::Command command) {
     // Not actually displayed in notification, so should never be reached.
     case DownloadCommands::ALWAYS_OPEN_TYPE:
     case DownloadCommands::PLATFORM_OPEN:
+    case DownloadCommands::OPEN_WITH:
     case DownloadCommands::LEARN_MORE_INTERRUPTED:
     case DownloadCommands::LEARN_MORE_DOWNLOAD_BLOCKED:
     case DownloadCommands::OPEN_SAFE_BROWSING_SETTING:
@@ -483,12 +485,13 @@ void DownloadItemNotification::Update() {
 
 void DownloadItemNotification::UpdateNotificationData(bool display,
                                                       bool force_pop_up) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (item_->GetState() == download::DownloadItem::CANCELLED) {
     // Confirms that a download is cancelled by user action.
-    DCHECK(item_->GetLastFailState() == FailState::USER_CANCELED ||
-           item_->GetLastFailState() == FailState::USER_SHUTDOWN);
+    CHECK(item_->GetLastFailState() == FailState::USER_CANCELED ||
+              item_->GetLastFailState() == FailState::USER_SHUTDOWN,
+          base::NotFatalUntil::M161);
 
     CloseNotification();
     return;
@@ -505,8 +508,8 @@ void DownloadItemNotification::UpdateNotificationData(bool display,
   if (item_->IsDangerous()) {
     notification_->set_type(message_center::NOTIFICATION_TYPE_SIMPLE);
     MaybeRecordDangerousDownloadWarningShown(*item_);
-    if (!item_->MightBeMalicious() &&
-        item_->GetDangerType() !=
+    if (!item_->MightBeMalicious() ||
+        item_->GetDangerType() ==
             download::DOWNLOAD_DANGER_TYPE_SENSITIVE_CONTENT_WARNING) {
       notification_->set_priority(message_center::HIGH_PRIORITY);
     } else {
@@ -543,7 +546,7 @@ void DownloadItemNotification::UpdateNotificationData(bool display,
         break;
       }
       case download::DownloadItem::COMPLETE:
-        DCHECK(item_->IsDone());
+        CHECK(item_->IsDone(), base::NotFatalUntil::M161);
         notification_->set_priority(message_center::DEFAULT_PRIORITY);
         notification_->set_type(message_center::NOTIFICATION_TYPE_SIMPLE);
         notification_->set_progress(100);
@@ -605,7 +608,7 @@ void DownloadItemNotification::UpdateNotificationData(bool display,
     if (item_->GetCompletedBytes() > kMaxImagePreviewSize)
       return;
 
-    DCHECK(notification_->image().IsEmpty());
+    CHECK(notification_->image().IsEmpty(), base::NotFatalUntil::M161);
 
     image_decode_status_ = IN_PROGRESS;
 
@@ -669,7 +672,7 @@ void DownloadItemNotification::OnImageLoaded(std::string image_data) {
 }
 
 void DownloadItemNotification::OnImageDecoded(const SkBitmap& decoded_bitmap) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (decoded_bitmap.drawsNothing()) {
     OnDecodeImageFailed();
@@ -697,8 +700,8 @@ void DownloadItemNotification::OnImageCropped(const SkBitmap& bitmap) {
 }
 
 void DownloadItemNotification::OnDecodeImageFailed() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(notification_->image().IsEmpty());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(notification_->image().IsEmpty(), base::NotFatalUntil::M161);
 
   image_decode_status_ = FAILED;
   UpdateNotificationData(!closed_, false);
@@ -934,6 +937,7 @@ std::u16string DownloadItemNotification::GetCommandLabel(
 #endif
     case DownloadCommands::ALWAYS_OPEN_TYPE:
     case DownloadCommands::PLATFORM_OPEN:
+    case DownloadCommands::OPEN_WITH:
     case DownloadCommands::LEARN_MORE_INTERRUPTED:
     case DownloadCommands::LEARN_MORE_DOWNLOAD_BLOCKED:
     case DownloadCommands::OPEN_SAFE_BROWSING_SETTING:
@@ -950,7 +954,7 @@ std::u16string DownloadItemNotification::GetCommandLabel(
 
 std::u16string DownloadItemNotification::GetWarningStatusString() const {
   // Should only be called if IsDangerous() or IsInsecure().
-  DCHECK(item_->IsDangerous() || item_->IsInsecure());
+  CHECK(item_->IsDangerous() || item_->IsInsecure(), base::NotFatalUntil::M161);
   std::u16string elided_filename =
       item_->GetFileNameToReportUser().LossyDisplayName();
   // If insecure, that warning is shown first.
@@ -1025,9 +1029,12 @@ std::u16string DownloadItemNotification::GetWarningStatusString() const {
     case download::DOWNLOAD_DANGER_TYPE_BLOCKED_SCAN_FAILED: {
       return l10n_util::GetStringUTF16(IDS_PROMPT_DOWNLOAD_BLOCKED_SCAN_FAILED);
     }
+    case download::DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_OPENED_DANGEROUS: {
+      return l10n_util::GetStringUTF16(
+          IDS_PROMPT_DOWNLOAD_DEEP_SCANNED_OPENED_DANGEROUS);
+    }
     case download::DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_FAILED:
     case download::DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_SAFE:
-    case download::DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_OPENED_DANGEROUS:
     case download::DOWNLOAD_DANGER_TYPE_ASYNC_SCANNING:
     case download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS:
     case download::DOWNLOAD_DANGER_TYPE_MAYBE_DANGEROUS_CONTENT:
@@ -1085,13 +1092,6 @@ std::u16string DownloadItemNotification::GetSubStatusString() const {
   if (item_->IsInsecure() || item_->IsDangerous())
     return GetWarningStatusString();
 
-  if (item_->GetDangerType() ==
-      download::DownloadDangerType::
-          DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_OPENED_DANGEROUS) {
-    return l10n_util::GetStringUTF16(
-        IDS_PROMPT_DOWNLOAD_DEEP_SCANNED_OPENED_DANGEROUS);
-  }
-
   switch (item_->GetState()) {
     case download::DownloadItem::IN_PROGRESS:
       // The download is a CRX (app, extension, theme, ...) and it is being
@@ -1117,7 +1117,7 @@ std::u16string DownloadItemNotification::GetSubStatusString() const {
       FailState fail_state = item_->GetLastFailState();
       if (fail_state != FailState::USER_CANCELED) {
         const auto interrupt_text = item_->GetInterruptDescription();
-        DCHECK(!interrupt_text.empty());
+        CHECK(!interrupt_text.empty(), base::NotFatalUntil::M161);
         return interrupt_text;
       }
       [[fallthrough]];  // Same as download::DownloadItem::CANCELLED.
@@ -1200,7 +1200,8 @@ bool DownloadItemNotification::AllowedToOpenWhileScanning() const {
 
 BrowserWindowInterface* DownloadItemNotification::GetBrowser() const {
   chrome::ScopedTabbedBrowserDisplayer browser_displayer(profile());
-  DCHECK(browser_displayer.browser_window_interface());
+  CHECK(browser_displayer.browser_window_interface(),
+        base::NotFatalUntil::M161);
   return browser_displayer.browser_window_interface();
 }
 

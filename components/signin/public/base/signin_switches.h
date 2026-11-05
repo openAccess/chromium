@@ -8,6 +8,7 @@
 #include "base/component_export.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "extensions/buildflags/buildflags.h"
@@ -55,12 +56,17 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kAccountRetrievalWaitsForRestoration);
 #endif
 
+#if BUILDFLAG(IS_ANDROID)
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kAvatarButtonSyncPromoForTesting);
+BASE_DECLARE_FEATURE(kAddSessionFallbackToPrimaryAccount);
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
-bool IsAvatarSyncPromoFeatureEnabled();
+BASE_DECLARE_FEATURE(kAddSessionReauthPrimaryAccountFirst);
+#endif  // BUILDFLAG(IS_ANDROID)
+
+// Extends the AI subscription avatar decorations to more surfaces. Has no
+// effect unless `kEnableAiSubscriptionAvatarRing` is also enabled.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
-base::TimeDelta GetAvatarSyncPromoFeatureMinimumCookeAgeParam();
+BASE_DECLARE_FEATURE(kAiSubscriptionAvatarRingFollowup);
 
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kAvoidAutoTriggerListAccountsOnStale);
@@ -75,15 +81,6 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kBeforeFirstRunDesktopRefreshSurvey);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-// This feature flag is used as a subset of the original code that was behind
-// `kSyncEnableBookmarksInTransportMode` that introduced changes that are not
-// directly related to Transport Mode. Mostly the changes are Ui-visible and
-// will be migrated to be using this flag instead. This will allow to run
-// a Finch study on Cros and launch independently of TransportMode on Cros. The
-// flag is enabled by default on Windows/Mac/Linux.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kBookmarksMigrateUiChanges);
-
 #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kBoundSessionCredentialsKillSwitch);
@@ -91,18 +88,15 @@ BASE_DECLARE_FEATURE(kBoundSessionCredentialsKillSwitch);
 
 #if BUILDFLAG(IS_IOS)
 // Feature flag to build the External Privacy Context, which is used to provide
-// the capability service with device signals.
+// the capability service with device signals. The feature is fully launched and
+// is no longer checked: it is only kept as the owner of the
+// `AgeMismatchLearnMoreUrl` param below.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kBuildExternalPrivacyContext);
+// URL of the help page opened from the age mismatch sign-out prompt.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 extern const base::FeatureParam<std::string>
     kBuildExternalPrivacyContextAgeMismatchLearnMoreUrl;
-#endif
-
-#if BUILDFLAG(IS_IOS)
-// Feature flag to enable caching identities in ios_internal.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kCacheIdentityListInChrome);
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
@@ -247,6 +241,13 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 extern const base::FeatureParam<std::string> kCrossDeviceSigninUrl;
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
+#if BUILDFLAG(IS_IOS)
+// Feature flag to dismiss modal dialogs before presenting the cross-device
+// sign-in UI.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kCrossDeviceSigninDismissModals);
+#endif  // BUILDFLAG(IS_IOS)
+
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 // Feature flag to enable cross-device sign-in promo.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
@@ -257,6 +258,15 @@ extern const base::FeatureParam<std::string> kCrossDeviceSigninFromDesktopUrl;
 // Param to control if the "New" badge should be shown.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 extern const base::FeatureParam<bool> kCrossDeviceSigninFromDesktopNewBadge;
+
+// Feature flag to enable follow-up entry points for the cross-device sign-in
+// promo.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kCrossDeviceSigninFromDesktopFollowup);
+// Param to control if the cross-device sign-in QR code bubble is enabled from
+// the What's New page.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+extern const base::FeatureParam<bool> kCrossDeviceSigninFromDesktopWhatsNew;
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -265,6 +275,15 @@ extern const base::FeatureParam<bool> kCrossDeviceSigninFromDesktopNewBadge;
 // key=value pairs in the `X-Chrome-ID-Consistency-Response` header.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kDiceHeaderVersion2);
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+// Killswitch for sanitizing the URL when moving an intercepted tab to the
+// destination profile (new or existing). When enabled, navigates Gaia URLs to
+// an HTTPS google.<TLD> or youtube.<TLD> continue URL on a standard port if
+// present, or falls back to the New Tab Page (including for non-HTTP(S) URLs).
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kDiceInterceptSanitizeGaiaUrl);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -306,8 +325,20 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 extern const base::FeatureParam<bool> kAccountPreviewDataPersistAccounts;
 
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kEnableAccountPreviewDataFetchOptimizations);
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(bool, kAccountPreviewDataReducedTypes);
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(bool, kAccountPreviewDataPreconnect);
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(bool, kAccountPreviewDataMediumPriority);
+
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kEnableAccountPreviewEntityPreviews);
 
+// Controls whether storing and exposing the preferred account when offering
+// signed-out users to sign in is enabled. This flag has no effect if
+// `kEnableAccountPreviewData` is not enabled.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kEnableAccountPreviewPreferredAccount);
 // Feature parameters for quartile classification thresholds of sync data
@@ -338,9 +369,63 @@ BASE_DECLARE_FEATURE_PARAM(size_t, kAutofillWalletMetadataMedianThreshold);
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE_PARAM(size_t, kAutofillWalletMetadataQ3Threshold);
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(size_t, kReadingListQ1Threshold);
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(size_t, kReadingListMedianThreshold);
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(size_t, kReadingListQ3Threshold);
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(size_t, kExtensionsQ1Threshold);
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(size_t, kExtensionsMedianThreshold);
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(size_t, kExtensionsQ3Threshold);
+#endif
+
+// Controls followup features for preferred account preview (new promos, and
+// updated strings). This flag has no effect if
+// `kEnableAccountPreviewPreferredAccount` is not enabled.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kEnableAccountPreviewPreferredAccountFollowup);
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+// Controls whether preferred account selection is enabled in the First Run
+// Experience (FRE).
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kEnableAccountPreviewPreferredAccountFRE);
+// Maximum duration the FRE waits for an ongoing preferred account computation
+// to update the selected account.
+// TODO(crbug.com/580849527): Rename to more generic name.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
+                           kAccountPreviewPreferredAccountFREFetchTimeout);
+#endif
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+// Controls whether preferred account preview personalization is enabled for
+// sign-in interceptions. This flag has no effect if
+// `kEnableAccountPreviewPreferredAccount` is not enabled.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kEnableAccountPreviewPreferredAccountIntercept);
+// Maximum duration the sign-in interception waits for an ongoing preferred
+// account computation to personalize the interception bubble.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE_PARAM(
     base::TimeDelta,
-    kAccountPreviewPreferredAccountSingleAccountPromoFetchTimeout);
+    kAccountPreviewPreferredAccountInterceptFetchTimeout);
+#endif
+
+// Controls whether storing and exposing the preferred account when offering
+// signed-in users to switch accounts is enabled. This flag has no effect if
+// `kEnableAccountPreviewData` is not enabled.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kEnableAccountPreviewSwitchingAccount);
+// When true, skips cooldowns and throttling limits for the account switching
+// promo. Used for manual and automated testing.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(bool,
+                           kEnableAccountPreviewSwitchingAccountSkipCooldown);
 
 #if BUILDFLAG(IS_ANDROID)
 // Enables the use of 1P app account information on Android in preferred account
@@ -350,12 +435,6 @@ BASE_DECLARE_FEATURE(kEnableAccountPreviewUseAppAccount);
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
                            kAccountPreviewAppAccountExpirationDuration);
-#endif
-
-#if BUILDFLAG(IS_IOS)
-// Feature flag to prefetch and cache account capabilities.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kEnableACPrefetch);
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
@@ -420,14 +499,6 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE_PARAM(std::string, kCookieBindingUpgradeSessionId);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
-#if !defined(NDEBUG) && !BUILDFLAG(IS_ANDROID)
-// A fake feature corresponding to the kFakeCapabilityForTestingName account
-// capability. This is only used in unit tests (and must be left disabled to
-// prevent fetching the fake capability).
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kEnableFakeCapabilityForTesting);
-#endif
-
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kEnableMtlsTokenBinding);
@@ -467,33 +538,6 @@ BASE_DECLARE_FEATURE_PARAM(bool, kOAuthMultiloginYoutubeCookieBindingEnforced);
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kEnablePreferencesAccountStorage);
 
-#if BUILDFLAG(IS_ANDROID)
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kEnableSeamlessSignin);
-enum class SeamlessSigninPromoType {
-  // Compact design with a single button to sign in and a dropdown icon for
-  // changing account.
-  kCompact,
-  // Design with a button to sign in and a button for changing account, similar
-  // to the current promo.
-  kTwoButtons,
-};
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-extern const base::FeatureParam<SeamlessSigninPromoType>
-    kSeamlessSigninPromoType;
-enum class SeamlessSigninStringType {
-  // Strings with "Sign in to Chrome" in the title and "Continue as" in the
-  // primary button
-  kContinueButton,
-  // Strings with "Sign in to Chrome" in the description and "Sign in as" in the
-  // primary button
-  kSigninButton,
-};
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-extern const base::FeatureParam<SeamlessSigninStringType>
-    kSeamlessSigninStringType;
-#endif  // BUILDFLAG(IS_ANDROID)
-
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kEnableSearchAIModeSigninPromo);
@@ -509,13 +553,6 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kEnableWebSigninLoadingDialog);
 #endif  // BUILDFLAG(IS_ANDROID)
 
-#if BUILDFLAG(IS_IOS)
-// Feature flag controlling whether the CanSignInToChrome account capability
-// should be used to determine whether an account is eligible for sign-in.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kEnforceCanSignInToChromeCapability);
-#endif
-
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kEnforceManagementDisclaimer);
@@ -524,9 +561,42 @@ extern const base::FeatureParam<base::TimeDelta>
     kPolicyDisclaimerRegistrationRetryDelay;
 #endif
 
-// Feature flag to fetch AccountInfo (UserInfo & Capabilities) on restart.
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// This feature controls showing the visually refreshed enterprise signin
+// dialogs, i.e. all the screens served by `ManagedUserProfileNoticeUI`
+// (enterprise profile welcome/creation, OIDC and the device signals
+// disclaimer). This feature is no-op if `kFirstRunDesktopRefresh` is disabled.
+//
+// This is a chained launch: these dialogs ship after the rest of the first run
+// desktop refresh, and are held back in the search engine choice screen
+// regions until `kFirstRunDesktopChoiceScreenRefresh` is enabled, so that
+// users never see them refreshed next to a non-refreshed flow.
+//
+// Clients should never use this feature directly to determine if the
+// refresh is enabled, they should use
+// `IsEnterpriseSigninDialogsRefreshEnabled()` instead.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kFetchAccountInfoOnRestart);
+BASE_DECLARE_FEATURE(kEnterpriseSigninDialogsRefresh);
+// A helper function to determine if the enterprise signin dialogs refresh is
+// enabled (see `kEnterpriseSigninDialogsRefresh`, `kFirstRunDesktopRefresh` and
+// `kFirstRunDesktopChoiceScreenRefresh` flags).
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+bool IsEnterpriseSigninDialogsRefreshEnabled(
+    bool is_in_search_engine_choice_region);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+// Controls whether the navigation performed by
+// `chrome.identity.launchWebAuthFlow` is attributed with the extesion's origin.
+// Introduced as a kill switch.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kExtensionWebAuthFlowInitiatorOrigin);
+#endif
+
+// Feature flag to fetch Account Capabilities on restart. UserInfo is not
+// affected and keeps being refreshed only when invalid or stale.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kFetchAccountCapabilitiesOnRestart);
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 // This feature controls running visually refreshed first run and profile
@@ -557,23 +627,6 @@ BASE_DECLARE_FEATURE(kFirstRunDesktopRefresh);
 // flags).
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 bool IsFirstRunDesktopRefreshEnabled(bool is_in_search_engine_choice_region);
-// LINT.IfChange(FirstRunDesktopSignInPromoVariation)
-enum class FirstRunDesktopSignInPromoVariation {
-  // Default sign-in promo containing both sign-in and don't sign-in buttons
-  // next to each other on the promo page.
-  kDefault = 0,
-  // Sign-in promo containing both sign-in and don't sign-in buttons but the
-  // don't sign in button is moved to the top corner of the promo page and the
-  // page informs the user they can create an account in the next step(s).
-  kDontSignInInTheTopCorner = 1,
-  // Sign-in promo containing only the sign-in button on the promo page. The
-  // don't sign in button is moved to the Gaia page.
-  kDontSignInOnGaiaPage = 2,
-};
-// LINT.ThenChange(//chrome/browser/resources/intro/sign_in_promo_refresh.ts:Variation)
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-extern const base::FeatureParam<FirstRunDesktopSignInPromoVariation>
-    kFirstRunDesktopSignInPromoVariation;
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
@@ -656,6 +709,14 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kForceStartupSigninPromo);
 #endif
 
+#if BUILDFLAG(IS_ANDROID)
+// Enables the state-machine implementation of FullscreenSigninMediator.
+// Exposed to Java as a CachedFlag because FullscreenSigninCoordinator may be
+// created before native initialization.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kFullscreenSigninMediatorStateMachine);
+#endif  // BUILDFLAG(IS_ANDROID)
+
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 // TODO(crbug.com/408962000): This feature is going to be used after clients
 // have the required information in local storage.
@@ -670,50 +731,34 @@ BASE_DECLARE_FEATURE_PARAM(int, kFullscreenSignInPromoUseDateInterval);
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kGaiaAccountIdEnforcement);
 
-#if !BUILDFLAG(IS_IOS)
-// When enabled, GLIC will check a new CanUseGeminiInChrome account capability
-// to determine profile eligibility, instead of CanUseModelExecutionFeatures.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kGlicEligibilitySeparateAccountCapability);
-#endif
-
 // Feature to handle mdm errors on Enterprise and EDU accounts
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kHandleMdmErrorsForDasherAccounts);
 
-#if BUILDFLAG(IS_IOS)
-// Killswitch for ignoring X-Chrome-Manage-Accounts header in subframes.
+#if BUILDFLAG(IS_ANDROID)
+// Feature to handle MDM errors on managed accounts on Android.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kIgnoreChromeManageAccountsInSubframes);
-#endif
-
-#if BUILDFLAG(IS_IOS)
-// Feature flag to ignore invalid grant errors in AuthenticationService.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kIgnoreInvalidGrantError);
-#endif
+BASE_DECLARE_FEATURE(kHandleMdmErrorsForDasherAccountsOnAndroid);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-// Controls the MagiChrome passkey sign-in experiment, enabling either the
-// Autofill-based promo flow or the native Views-based banner flow.
+// Controls the MagiChrome passkey sign-in experiment. The active flow is
+// selected by the `flow_type` param below.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kMagiChromePasskeySignIn);
-// Controls which flow is active: "autofill" or "banner".
+// Controls which client flow is active. The client only acts on "autofill";
+// any other value means no client passkey UI.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 extern const base::FeatureParam<std::string> kMagiChromePasskeySignInFlowType;
+// Numeric Gaia experiment arm, forwarded to Gaia as the
+// `magichrome_fre_exp_branch` URL query parameter. Arms start at 1; the
+// default 0 (also used for unset or non-integer values) forwards nothing.
+// Each Finch arm must set this consistently with `flow_type`.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+extern const base::FeatureParam<int> kMagiChromePasskeySignInGaiaExpBranch;
 // Returns true if the MagiChrome passkey sign-in Autofill flow is active.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 bool IsMagiChromePasskeyAutofillEnabled();
-// Returns true if the MagiChrome passkey sign-in native Views banner flow is
-// active.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-bool IsMagiChromePasskeyBannerEnabled();
-#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
-
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-// Controls experiments for MagiChrome (e.g. Gaia sign-in URL parameters).
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kMagiChromeSignInExperimentsBatch1);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 #if BUILDFLAG(IS_ANDROID)
@@ -734,8 +779,10 @@ BASE_DECLARE_FEATURE(kMigrateAccountManagerDelegate);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_IOS)
+// Migrates primary account reauthentication flows from `SigninCoordinator` to
+// `SigninReauthCoordinator`.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kNoAccountWebSignin);
+BASE_DECLARE_FEATURE(kMigrateToSigninReauthCoordinator);
 #endif
 
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
@@ -804,20 +851,18 @@ BASE_DECLARE_FEATURE(kProfileDiscOnAllPages);
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kProfilesReordering);
 
-#if BUILDFLAG(IS_IOS)
-// Feature flag controlling whether Chrome uses the contextual version of
-// relevant account capabilities on supported platforms.
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+// Re-authentication (mainly in the sign-in pending state) opens Gaia's
+// `/AccountChooser` with `ptc=1` instead of `/AddSession`, skipping the email
+// page.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kReadContextualAccountCapabilities);
-#endif
+BASE_DECLARE_FEATURE(kReauthSkipIdentifierPage);
 
-// Enables fetching the capability of the same name on all platforms.
+// Follow-up to `kReauthSkipIdentifierPage` covering supervised user
+// pending-state re-authentication (`ptc=1`) and split fallback metrics.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kReadIsSubjectToUniversalOptOutCapability);
-
-// Enables fetching the capability of the same name on all platforms.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kReadSupportsWalletPrivatePassesInAutofillCapability);
+BASE_DECLARE_FEATURE(kReauthSkipIdentifierPageFollowup);
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 #if !BUILDFLAG(IS_ANDROID)
 // Kill switch for Device Management Service OAuth scope.
@@ -831,10 +876,27 @@ BASE_DECLARE_FEATURE(kSearchAIModeSignInPromoSelfDismissal);
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
+// When enabled, the SecondaryGoogleAccountSigninAllowed policy is honored on
+// Android: if the policy is set to false, Chrome asks Google web properties
+// (via the X-Chrome-Connected header) not to offer adding another account.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kSecondaryGoogleAccountsSigninAllowedOnAndroid);
+#endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_ANDROID)
 // Opens a desktop-like profile menu from the toolbar sign-in button on Desktop
 // Android.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kSigninButtonProfileMenu);
+
+// Shows an error card in the profile menu on Desktop Android.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kSigninButtonProfileMenuErrorCard);
+
+// Enables fast-follow enhancements and visual adjustments for the desktop-like
+// profile menu on Desktop Android.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kSigninButtonProfileMenuRefinements);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 // Enables the new visual design for the profile switch interception bubble,
@@ -852,36 +914,11 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kSigninLevelUpButton);
 #endif  // BUILDFLAG(IS_ANDROID)
 
-// Feature to control the experiment for max count of showing contextual sign-in
-// promos and UNO bubble reprompt.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kSigninPromoLimitsExperiment);
-// Param that controls the threshold of the contextual sign in promo shown
-// limit for the experiment.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-extern const base::FeatureParam<int> kContextualSigninPromoShownThreshold;
-// Param that controls the threshold of the contextual sign in promos dismissed
-// limit for the experiment.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-extern const base::FeatureParam<int> kContextualSigninPromoDismissedThreshold;
-
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 // Uses the Material Next theme for the signin promo.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kSignInPromoMaterialNextUI);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-// Feature to show a promo on the avatar pill on profile startup.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kSigninPromoOnAvatarPill);
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
-                           kSigninPromoOnAvatarPillStartupDelayForPromoShow);
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
-                           kSigninPromoOnAvatarPillDelayForNextPromoAllowed);
-#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 // Feature flag used for testing purposes only:
 //
@@ -911,6 +948,11 @@ BASE_DECLARE_FEATURE(kSignOutOfChrome);
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kSkipCheckForAccountManagementOnSignin);
 #endif  // BUILDFLAG(IS_ANDROID)
+
+// When enabled, /ListAccounts is not sent if there are no cookies for the Gaia
+// origin, as the response would contain no accounts.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kSkipListAccountsWithoutGaiaCookies);
 
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kSkipRefreshTokenCheckInIdentityManager);
@@ -943,6 +985,12 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kSupportForcedSigninPolicy);
 #endif  // BUILDFLAG(IS_ANDROID)
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+// Enables signin interception for web sign-in in popup windows.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kSupportSigninInterceptionInPopups);
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+
 #if BUILDFLAG(IS_ANDROID)
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kSupportWebSigninAddSession);
@@ -967,12 +1015,31 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kUndoChromeOsUseConsentLevelSignin);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+// Unifies the logic to wait for cookies after sign-in for Desktop Android
+// Extensions.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kUnifyWaitForCookies);
+#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+
+#if BUILDFLAG(IS_IOS)
+// Feature flag to use the AccountInfoFetcherIos.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kUseAccountInfoFetcherIos);
+#endif
+
 #if BUILDFLAG(IS_ANDROID)
 // Additional gate for user policy registration and download based on user
 // accepting account management.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kUserPolicyFetchRequiresAcceptance);
 #endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_IOS)
+// Killswitch for verifying the request initiator when handling Mirror headers.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kVerifyRequestInitiatorForMirrorHeaders);
+#endif  // BUILDFLAG(IS_IOS)
 
 // keep-sorted end
 

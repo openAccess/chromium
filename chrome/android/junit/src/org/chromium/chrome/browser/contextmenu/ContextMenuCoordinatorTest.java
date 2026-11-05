@@ -21,6 +21,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
 
@@ -122,7 +123,6 @@ public class ContextMenuCoordinatorTest {
     }
 
     @Test
-    @DisabledTest(message = "crbug.com/40912149")
     @EnableFeatures({ContentFeatures.TOUCH_DRAG_AND_CONTEXT_MENU})
     @Config(qualifiers = "mdpi")
     @CommandLineFlags.Add(ContextMenuSwitches.FORCE_CONTEXT_MENU_POPUP)
@@ -213,7 +213,6 @@ public class ContextMenuCoordinatorTest {
     }
 
     @Test
-    @DisabledTest(message = "crbug.com/40912149")
     @DisableFeatures(ContentFeatures.TOUCH_DRAG_AND_CONTEXT_MENU)
     @Config(qualifiers = "mdpi")
     public void testDisplayMenu() {
@@ -341,9 +340,9 @@ public class ContextMenuCoordinatorTest {
     }
 
     private ContextMenuDialog createContextMenuDialogForTest(boolean isPopup) {
-        View contentView = Mockito.mock(View.class);
-        View rootView = Mockito.mock(View.class);
-        View webContentView = Mockito.mock(View.class);
+        View contentView = new View(mActivity);
+        View rootView = new View(mActivity);
+        View webContentView = new View(mActivity);
 
         return ContextMenuCoordinator.createContextMenuDialog(
                 mActivity,
@@ -383,7 +382,6 @@ public class ContextMenuCoordinatorTest {
                         0,
                         false,
                         /* openedFromInterestFor= */ false,
-                        /* interestForNodeID= */ 0,
                         /* additionalNavigationParams= */ null);
 
         final Window window = Mockito.mock(Window.class);
@@ -392,12 +390,11 @@ public class ContextMenuCoordinatorTest {
         doReturn(window).when(mWindowAndroid).getWindow();
         final WindowManager.LayoutParams attrs = new WindowManager.LayoutParams();
         doReturn(attrs).when(window).getAttributes();
-        final View mockDecorView = Mockito.mock(View.class);
-        doReturn(mockDecorView).when(window).getDecorView();
+        final View decorView = new View(mActivity);
+        doReturn(decorView).when(window).getDecorView();
 
-        final ViewGroup mockContainerView = Mockito.mock(ViewGroup.class);
-        final ViewAndroidDelegate viewAndroidDelegate =
-                new TestViewAndroidDelegate(mockContainerView);
+        final ViewGroup containerView = new FrameLayout(mActivity);
+        final ViewAndroidDelegate viewAndroidDelegate = new TestViewAndroidDelegate(containerView);
         doReturn(viewAndroidDelegate).when(mWebContentsMock).getViewAndroidDelegate();
 
         mCoordinator.displayMenu(mWindowAndroid, mWebContentsMock, params, items, null, null, null);

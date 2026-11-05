@@ -7,6 +7,8 @@
 #include <string_view>
 #include <utility>
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/containers/heap_array.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
@@ -17,16 +19,24 @@
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/api/image_writer_private/error_constants.h"
 #include "chrome/browser/extensions/api/image_writer_private/extraction_properties.h"
-#include "chrome/browser/extensions/api/image_writer_private/image_writer_utility_client.h"
 #include "chrome/browser/extensions/api/image_writer_private/operation_manager.h"
 #include "chrome/browser/extensions/api/image_writer_private/tar_extractor.h"
 #include "chrome/browser/extensions/api/image_writer_private/xz_extractor.h"
 #include "chrome/browser/extensions/api/image_writer_private/zip_extractor.h"
+#include "chrome/browser/extensions/api/image_writer_private/zstd_extractor.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 
-namespace extensions {
-namespace image_writer {
+#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/extensions/api/image_writer_private/image_writer_utility_client.h"
+#endif
+
+#if BUILDFLAG(IS_ANDROID)
+#include "content/public/browser/device_service.h"
+#include "services/device/public/mojom/usb_manager.mojom.h"
+#endif
+
+namespace extensions::image_writer {
 
 crypto::obsolete::Md5 MakeMd5HasherForImageWriter() {
   return crypto::obsolete::Md5();
@@ -38,7 +48,8 @@ namespace {
 bool IsArchive(const base::FilePath& image_path) {
   return ZipExtractor::IsZipFile(image_path) ||
          TarExtractor::IsTarFile(image_path) ||
-         XzExtractor::IsXzFile(image_path);
+         XzExtractor::IsXzFile(image_path) ||
+         ZstdExtractor::IsZstdFile(image_path);
 }
 
 // Extracts the archive at |image_path| using to |temp_dir_path| using a proper
@@ -55,6 +66,14 @@ void ExtractArchive(ExtractionProperties properties) {
   }
 }
 
+#if BUILDFLAG(IS_ANDROID)
+void BindDefaultUsbDeviceManager(
+    mojo::PendingReceiver<device::mojom::UsbDeviceManager> receiver) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  content::GetDeviceService().BindUsbDeviceManager(std::move(receiver));
+}
+#endif
+
 }  // namespace
 
 Operation::Operation(base::WeakPtr<OperationManager> manager,
@@ -69,14 +88,29 @@ Operation::Operation(base::WeakPtr<OperationManager> manager,
       device_path_(device_path),
 #endif
       temp_dir_(std::make_unique<base::ScopedTempDir>()),
-      stage_(image_writer_api::Stage::kUnknown),
-      progress_(0),
       download_folder_(download_folder),
       task_runner_(
-          base::ThreadPool::CreateSequencedTaskRunner(blocking_task_traits())) {
+          base::ThreadPool::CreateSequencedTaskRunner(blocking_task_traits()))
+#if BUILDFLAG(IS_ANDROID)
+      ,
+      usb_binder_(base::BindRepeating(&BindDefaultUsbDeviceManager))
+#endif
+{
 }
 
 Operation::~Operation() {
+  // `Operation` is `RefCountedThreadSafe` and every task posted to
+  // `task_runner_` (including `Start()`, `Cancel()`, and `Abort()`, which call
+  // `CleanUp()`) holds a `scoped_refptr<Operation>`. Therefore `~Operation()`
+  // only runs once no `Operation` task is queued or executing on
+  // `task_runner_`, and in normal operation `CleanUp()` has already reset
+  // these members on `task_runner_`. `DeleteSoon` handles unit tests that drop
+  // an unstarted or uncancelled `Operation` on the UI thread.
+  task_runner_->DeleteSoon(FROM_HERE, std::move(zstd_extractor_));
+#if BUILDFLAG(IS_ANDROID)
+  task_runner_->DeleteSoon(FROM_HERE, std::move(usb_manager_));
+  task_runner_->DeleteSoon(FROM_HERE, std::move(usb_session_));
+#endif
   // base::ScopedTempDir must be destroyed on a thread that allows blocking IO
   // because it will try delete the directory if a call to Delete() hasn't been
   // made or was unsuccessful.
@@ -84,7 +118,7 @@ Operation::~Operation() {
 }
 
 void Operation::Cancel() {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
 
   stage_ = image_writer_api::Stage::kNone;
 
@@ -92,7 +126,7 @@ void Operation::Cancel() {
 }
 
 void Operation::Abort() {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
   Error(error::kAborted);
 }
 
@@ -108,8 +142,12 @@ void Operation::PostTask(base::OnceClosure task) {
   task_runner_->PostTask(FROM_HERE, std::move(task));
 }
 
+bool Operation::ShouldWipeBackupGpt() const {
+  return false;
+}
+
 void Operation::Start() {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
 #if BUILDFLAG(IS_CHROMEOS)
   if (download_folder_.empty() ||
       !temp_dir_->CreateUniqueTempDirUnderPath(download_folder_)) {
@@ -128,12 +166,12 @@ void Operation::Start() {
 }
 
 void Operation::OnExtractOpenComplete(const base::FilePath& image_path) {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
   image_path_ = image_path;
 }
 
 void Operation::Extract(base::OnceClosure continuation) {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
   if (IsCancelled()) {
     return;
   }
@@ -144,23 +182,40 @@ void Operation::Extract(base::OnceClosure continuation) {
     ExtractionProperties properties;
     properties.image_path = image_path_;
     properties.temp_dir_path = temp_dir_->GetPath();
-    properties.open_callback =
-        base::BindOnce(&Operation::OnExtractOpenComplete, this);
-    properties.complete_callback = base::BindOnce(
-        &Operation::CompleteAndContinue, this, std::move(continuation));
-    properties.failure_callback =
-        base::BindOnce(&Operation::OnExtractFailure, this);
-    properties.progress_callback =
-        base::BindRepeating(&Operation::OnExtractProgress, this);
 
-    ExtractArchive(std::move(properties));
+    if (ZstdExtractor::IsZstdFile(properties.image_path)) {
+      // `this` owns `zstd_extractor_` on `task_runner_` and resets it in
+      // `CompleteAndContinue()`, `CleanUp()`, and `~Operation()`, so
+      // `base::Unretained(this)` is safe and avoids a
+      // `scoped_refptr<Operation>` reference cycle during extraction.
+      properties.open_callback = base::BindOnce(
+          &Operation::OnExtractOpenComplete, base::Unretained(this));
+      properties.complete_callback =
+          base::BindOnce(&Operation::CompleteAndContinue,
+                         base::Unretained(this), std::move(continuation));
+      properties.failure_callback =
+          base::BindOnce(&Operation::OnExtractFailure, base::Unretained(this));
+      properties.progress_callback = base::BindRepeating(
+          &Operation::OnExtractProgress, base::Unretained(this));
+      zstd_extractor_ = ZstdExtractor::Extract(std::move(properties));
+    } else {
+      properties.open_callback =
+          base::BindOnce(&Operation::OnExtractOpenComplete, this);
+      properties.complete_callback = base::BindOnce(
+          &Operation::CompleteAndContinue, this, std::move(continuation));
+      properties.failure_callback =
+          base::BindOnce(&Operation::OnExtractFailure, this);
+      properties.progress_callback =
+          base::BindRepeating(&Operation::OnExtractProgress, this);
+      ExtractArchive(std::move(properties));
+    }
   } else {
     PostTask(std::move(continuation));
   }
 }
 
 void Operation::Finish() {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
 
   CleanUp();
 
@@ -170,7 +225,7 @@ void Operation::Finish() {
 }
 
 void Operation::Error(const std::string& error_message) {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
 
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
@@ -181,7 +236,7 @@ void Operation::Error(const std::string& error_message) {
 }
 
 void Operation::SetProgress(int progress) {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
 
   if (progress <= progress_) {
     return;
@@ -199,7 +254,7 @@ void Operation::SetProgress(int progress) {
 }
 
 void Operation::SetStage(image_writer_api::Stage stage) {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
 
   if (IsCancelled()) {
     return;
@@ -214,25 +269,26 @@ void Operation::SetStage(image_writer_api::Stage stage) {
 }
 
 bool Operation::IsCancelled() {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
 
   return stage_ == image_writer_api::Stage::kNone;
 }
 
 void Operation::AddCleanUpFunction(base::OnceClosure callback) {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
   cleanup_functions_.push_back(std::move(callback));
 }
 
 void Operation::CompleteAndContinue(base::OnceClosure continuation) {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
+  zstd_extractor_.reset();
   SetProgress(kProgressComplete);
   PostTask(std::move(continuation));
 }
 
-#if !BUILDFLAG(IS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 void Operation::StartUtilityClient() {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
   if (!image_writer_client_.get()) {
     image_writer_client_ = ImageWriterUtilityClient::Create(task_runner_);
     AddCleanUpFunction(base::BindOnce(&Operation::StopUtilityClient, this));
@@ -240,12 +296,12 @@ void Operation::StartUtilityClient() {
 }
 
 void Operation::StopUtilityClient() {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
   image_writer_client_->Shutdown();
 }
 
 void Operation::WriteImageProgress(int64_t total_bytes, int64_t curr_bytes) {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
   if (IsCancelled()) {
     return;
   }
@@ -261,7 +317,7 @@ void Operation::WriteImageProgress(int64_t total_bytes, int64_t curr_bytes) {
 void Operation::GetMD5SumOfFile(
     const base::FilePath& file_path,
     base::OnceCallback<void(const std::string&)> callback) {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
   if (IsCancelled()) {
     return;
   }
@@ -294,7 +350,7 @@ void Operation::MD5Chunk(
     size_t bytes_processed,
     size_t bytes_total,
     base::OnceCallback<void(const std::string&)> callback) {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
   if (IsCancelled()) {
     return;
   }
@@ -331,25 +387,29 @@ void Operation::MD5Chunk(
 }
 
 void Operation::OnExtractFailure(const std::string& error) {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
   Error(error);
 }
 
 void Operation::OnExtractProgress(int64_t total_bytes, int64_t progress_bytes) {
-  DCHECK(IsRunningInCorrectSequence());
-  CHECK(total_bytes > 0);
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
+  CHECK_GT(total_bytes, 0);
 
   int progress_percent = kProgressComplete * progress_bytes / total_bytes;
   SetProgress(progress_percent);
 }
 
 void Operation::CleanUp() {
-  DCHECK(IsRunningInCorrectSequence());
+  CHECK(IsRunningInCorrectSequence(), base::NotFatalUntil::M161);
+  zstd_extractor_.reset();
+#if BUILDFLAG(IS_ANDROID)
+  usb_manager_.reset();
+  usb_session_.reset();
+#endif
   for (base::OnceClosure& cleanup_function : cleanup_functions_) {
     std::move(cleanup_function).Run();
   }
   cleanup_functions_.clear();
 }
 
-}  // namespace image_writer
-}  // namespace extensions
+}  // namespace extensions::image_writer

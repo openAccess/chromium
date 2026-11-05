@@ -18,17 +18,16 @@
 #include "components/prefs/pref_change_registrar.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 class MetricsReporter;
 class OmniboxController;
+class Profile;
 
 struct AiModeButtonUiConfig;
 
 namespace content {
-class WebUI;
+class WebContents;
 }  // namespace content
 
 // Handles bidirectional communication between NTP realbox JS and the browser.
@@ -40,7 +39,8 @@ class WebuiOmniboxHandler : public ContextualSearchboxHandler,
       mojo::PendingRemote<searchbox::mojom::Page> pending_page,
       MetricsReporter* metrics_reporter,
       OmniboxController* omnibox_controller,
-      content::WebUI* web_ui,
+      Profile* profile,
+      content::WebContents* web_contents,
       GetSessionHandleCallback get_session_callback);
 
   WebuiOmniboxHandler(const WebuiOmniboxHandler&) = delete;
@@ -49,10 +49,11 @@ class WebuiOmniboxHandler : public ContextualSearchboxHandler,
   ~WebuiOmniboxHandler() override;
 
   // searchbox::mojom::PageHandler:
-  void ActivateKeyword(uint8_t line,
-                       const GURL& url,
-                       base::TimeTicks match_selection_timestamp,
-                       bool is_mouse_event) override;
+  void ActivateKeyword(
+      uint8_t line,
+      const GURL& url,
+      base::TimeTicks match_selection_timestamp,
+      searchbox::mojom::KeywordActivationMethod activation_method) override;
   void OnThumbnailRemoved() override {}
   void OpenLensSearch() override;
   void AddTabContext(int32_t tab_id,
@@ -81,11 +82,20 @@ class WebuiOmniboxHandler : public ContextualSearchboxHandler,
 
   void StepSelection(OmniboxPopupSelection::Direction direction,
                      OmniboxPopupSelection::Step step);
-  void OpenCurrentSelection(WindowOpenDisposition disposition);
+  void OpenCurrentSelection(ui::mojom::WindowOpenDisposition disposition);
   void SetAimButtonVisible(bool visible) override;
 
+  // Stops observing the omnibox of the browser window that embeds the popup
+  // and drops the state tied to that window. Called before the popup's
+  // WebContents moves to another browser window.
+  void DetachFromOmniboxController();
+
+  // Observes `omnibox_controller`, the omnibox of the browser window that now
+  // embeds the popup, and sends its current results to the page.
+  void AttachToOmniboxController(OmniboxController* omnibox_controller);
+
   // SearchboxHandler:
-  WindowOpenDisposition ComputeWindowOpenDisposition(
+  ui::mojom::WindowOpenDisposition ComputeWindowOpenDisposition(
       uint8_t mouse_button,
       bool alt_key,
       bool ctrl_key,
@@ -94,6 +104,8 @@ class WebuiOmniboxHandler : public ContextualSearchboxHandler,
       bool via_keyboard) override;
   bool ShouldShowFirstContextualDescription() const override;
   bool SupportsKeywordMode() const override;
+  void SetPopupSelection(
+      searchbox::mojom::OmniboxPopupSelectionPtr selection) override;
   void OverrideIconPaths(
       const AutocompleteMatch& match,
       searchbox::mojom::AutocompleteMatch* mojom_match) const override;

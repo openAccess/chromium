@@ -59,10 +59,6 @@ class AccountCapabilities {
   const base::flat_map<std::string, bool>& ConvertToAccountCapabilitiesIOS();
 #endif
 
-  // Resets the cached list of supported account capability names.
-  // Useful for testing scenarios where feature flags change between tests.
-  static void ResetSupportedAccountCapabilityNamesForTesting();
-
   // clang-format off
   // keep-sorted start newline_separated=yes sticky_prefixes=#if,BUILDFLAG group_prefixes=#endif,can,has,is,must
   // clang-format on
@@ -83,11 +79,6 @@ class AccountCapabilities {
 
   // Chrome can override the account info for accounts with this capability.
   signin::Tribool can_override_account_info() const;
-
-#if !BUILDFLAG(IS_IOS)
-  // Chrome can run privacy sandbox trials for accounts with this capability.
-  signin::Tribool can_run_chrome_privacy_sandbox_trials() const;
-#endif
 
   // Chrome can show history sync opt in screens without minor mode
   // restrictions with this capability.
@@ -163,11 +154,6 @@ class AccountCapabilities {
   // with accounts with this capability.
   signin::Tribool is_subject_to_account_level_enterprise_policies() const;
 
-  // Chrome must show the notice before using the privacy sandbox restricted
-  // measurement API
-  signin::Tribool
-  is_subject_to_chrome_privacy_sandbox_restricted_measurement_notice() const;
-
   // Chrome applies enterprise features to accounts with this capability.
   // This capability returns true all managed accounts and does not reflect
   // whether the account will receive account level enterprise policies or not
@@ -177,6 +163,12 @@ class AccountCapabilities {
   // Chrome applies parental controls to accounts with this capability.
   signin::Tribool is_subject_to_parental_controls() const;
 
+  // Chrome applies parental controls via the Chrome supervision bundle to
+  // accounts with this capability.
+  // This should only be used for logging; use is_subject_to_parental_controls()
+  // for feature logic.
+  signin::Tribool is_subject_to_parental_controls_via_bundle() const;
+
   // Whether the user is subject to Universal Opt-Out.
   signin::Tribool is_subject_to_universal_opt_out() const;
 
@@ -185,10 +177,25 @@ class AccountCapabilities {
   signin::Tribool must_fetch_apple_age_range_in_chrome() const;
 #endif
 
+  // Whether Autofill must show equally weighted buttons when offering to save
+  // Wallet private passes.
+  signin::Tribool
+  must_show_equally_weighted_buttons_for_private_passes_in_chrome_autofill()
+      const;
+
 #if BUILDFLAG(IS_IOS)
   // Whether the client must skip Apple's age range check in Chrome.
   signin::Tribool must_skip_apple_age_range_in_chrome() const;
 #endif
+
+  // The user should be addressed in feminine grammatical gender.
+  signin::Tribool should_be_addressed_in_feminine_grammatical_gender() const;
+
+  // The user should be addressed in masculine grammatical gender.
+  signin::Tribool should_be_addressed_in_masculine_grammatical_gender() const;
+
+  // The user should be addressed in neuter grammatical gender.
+  signin::Tribool should_be_addressed_in_neuter_grammatical_gender() const;
 
   // Whether the account may fill and save Wallet private passes in Autofill.
   signin::Tribool supports_wallet_private_passes_in_autofill() const;
@@ -232,11 +239,6 @@ class AccountCapabilities {
   const base::flat_map<std::string, signin::Tribool>& GetCapabilityOverrides()
       const;
 
-  // Internal version of GetSupportedAccountCapabilityNames that calculates the
-  // list on each call, rather than returning a cached value.
-  static std::vector<std::string_view>
-  GetSupportedAccountCapabilityNamesInternal();
-
   friend std::optional<AccountCapabilities>
   signin::AccountCapabilitiesFromServerResponse(
       const base::DictValue& account_capabilities);
@@ -266,15 +268,7 @@ class AccountCapabilities {
   FRIEND_TEST_ALL_PREFIXES(AccountCapabilitiesTest,
                            CapabilityOverrides);
   FRIEND_TEST_ALL_PREFIXES(AccountCapabilitiesTest,
-                           ConversionWithJNI_FlagGuardDisabled_CppToJava);
-  FRIEND_TEST_ALL_PREFIXES(AccountCapabilitiesTest,
-                           ConversionWithJNI_FlagGuardDisabled_JavaToCpp);
-  FRIEND_TEST_ALL_PREFIXES(AccountCapabilitiesTest,
                            GetSupportedAccountCapabilityNames);
-  FRIEND_TEST_ALL_PREFIXES(AccountCapabilitiesTest,
-                           GetSupportedAccountCapabilityNames_FlagDisabled);
-  FRIEND_TEST_ALL_PREFIXES(AccountCapabilitiesTest,
-                           GetSupportedAccountCapabilityNames_FlagEnabled);
   FRIEND_TEST_ALL_PREFIXES(AccountTrackerServiceTest,
                            TokenAvailable_AccountCapabilitiesCancelled);
   FRIEND_TEST_ALL_PREFIXES(AccountTrackerServiceTest,

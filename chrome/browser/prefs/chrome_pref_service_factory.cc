@@ -238,7 +238,7 @@ GetTrackingConfiguration() {
   const SettingsEnforcementGroup enforcement_group =
       GetSettingsEnforcementGroup();
 
-  browser_sync::ChromeSyncablePrefsDatabase syncable_prefs_db;
+  ChromeSyncablePrefsDatabase syncable_prefs_db;
   std::vector<prefs::mojom::TrackedPreferenceMetadataPtr> result;
   for (size_t i = 0; i < std::size(kTrackedPrefs); ++i) {
     prefs::mojom::TrackedPreferenceMetadataPtr data =
@@ -348,7 +348,8 @@ void PrepareFactory(
   scoped_refptr<PrefStore> supervised_user_prefs =
       base::MakeRefCounted<SupervisedUserPrefStore>(
           family_link_settings_service, device_parental_controls);
-  DCHECK(async || supervised_user_prefs->IsInitializationComplete());
+  CHECK(async || supervised_user_prefs->IsInitializationComplete(),
+        base::NotFatalUntil::M163);
   factory->set_supervised_user_prefs(supervised_user_prefs);
 }
 
@@ -578,8 +579,9 @@ void HandlePersistentPrefStoreReadError(
   // The error callback is always invoked back on the main thread (which is
   // BrowserThread::UI unless called during early initialization before the main
   // thread is promoted to BrowserThread::UI).
-  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::UI) ||
-         !BrowserThread::IsThreadInitialized(BrowserThread::UI));
+  CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI) ||
+            !BrowserThread::IsThreadInitialized(BrowserThread::UI),
+        base::NotFatalUntil::M163);
 
   if (error != PersistentPrefStore::PREF_READ_ERROR_NONE) {
 #if !BUILDFLAG(IS_CHROMEOS)

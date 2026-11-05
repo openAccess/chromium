@@ -18,7 +18,6 @@ import android.view.ContextThemeWrapper;
 import androidx.annotation.ColorInt;
 import androidx.core.content.res.ResourcesCompat;
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -256,7 +255,6 @@ public class StripLayoutTabTest {
     }
 
     @Test
-    @SmallTest
     public void testAnchorRect() {
         int folioFootLengthPx =
                 Math.round(
@@ -289,8 +287,8 @@ public class StripLayoutTabTest {
                 Resources.ID_NULL,
                 tab.getAlertIndicatorOverlayRes());
         assertEquals(
-                "Should return recording media color for tint",
-                mContext.getColor(R.color.tab_recording_media_color),
+                "Should return recording alert color for tint",
+                mContext.getColor(R.color.tab_recording_alert_color),
                 tab.getAlertIndicatorTint());
         assertEquals(
                 "Should return default 16dp width for recording indicator",

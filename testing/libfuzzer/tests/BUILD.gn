@@ -8,6 +8,7 @@ import("//build/config/features.gni")
 import("//build/config/sanitizers/sanitizers.gni")
 import("//testing/libfuzzer/fuzzer_test.gni")
 import("//testing/test.gni")
+import("//third_party/libprotobuf-mutator/fuzzable_proto_library.gni")
 
 group("tests") {
   testonly = true
@@ -16,13 +17,18 @@ group("tests") {
 
 # Basic smoke tests for fuzzing
 test("fuzzing_unittests") {
-  sources = [ "fuzztest_cq_smoke_test.cc" ]
+  sources = [
+    "disable_flaky_fuzztests_listener_unittest.cc",
+    "fuzztest_cq_smoke_test.cc",
+  ]
   fuzztests = [ "FuzzTestCqSmokeTest.StringsAlwaysOccupyPositiveSpace" ]
 
   deps = [
+    "//base",
     "//base/test:run_all_unittests",
     "//base/test:test_support",
     "//testing/gtest",
+    "//testing/libfuzzer:disable_flaky_fuzztests_listener",
     "//third_party/fuzztest",
   ]
   data_deps = []
@@ -38,7 +44,6 @@ test("fuzzing_unittests") {
     ]
 
     deps += [
-      "//base",
       "//testing/gmock",
       "//testing/libfuzzer:buildflags",
     ]
@@ -61,6 +66,7 @@ test("fuzzing_unittests") {
       ]
       if (use_centipede) {
         data_deps += [
+          ":test_config_only_LLVMFuzzer_TestOneInput_fuzzer__generate",
           ":wrapped_llvm_crashing_fuzzer_LLVMFuzzer_TestOneInput_fuzzer__generate",
           ":wrapped_llvm_stub_fuzzer_LLVMFuzzer_TestOneInput_fuzzer__generate",
         ]
@@ -165,12 +171,13 @@ if (use_fuzzing_engine && !is_win) {
 # ClusterFuzz bots.
 
 # To catch bugs that only present themselves in content fuzzers, e.g.
-# https://crbug.com/524216727, depend on content when possible. In component
-# builds, //content/public/browser brings in many shared libraries. Centipede
-# attempts to symbolize all of them, which causes the tests to time out. Avoid
-# bringing in so many symbols to avoid this.
+# https://crbug.com/524216727, depend on content when possible.
+#
+# In component builds, //content/public/browser brings in many shared libraries:
+# - Centipede attempts to symbolize all of them, which causes tests to time out.
+# - Debug builds take too long to load so many symbols, which also causes timeouts.
 _test_fuzzer_extra_deps = []
-if (use_blink && !use_centipede) {
+if (use_blink && !use_centipede && !is_debug) {
   _test_fuzzer_extra_deps += [ "//content/public/browser" ]
 }
 
@@ -189,10 +196,17 @@ fuzzer_test("llvm_crashing_fuzzer") {
   is_fuzztest_compatible = false
 }
 
+fuzzable_proto_library("lpm_test_proto") {
+  sources = [ "lpm_test.proto" ]
+}
+
 # Regression test fuzzer for LPM.
 fuzzer_test("lpm_stub_fuzzer") {
   sources = [ "lpm_stub_fuzzer.cc" ]
-  deps = [ "//third_party/libprotobuf-mutator" ]
+  deps = [
+    ":lpm_test_proto_fuzzable",
+    "//third_party/libprotobuf-mutator",
+  ]
   deps += _test_fuzzer_extra_deps
   additional_configs = [ "//testing/libfuzzer:no_clusterfuzz" ]
   is_fuzztest_compatible = false

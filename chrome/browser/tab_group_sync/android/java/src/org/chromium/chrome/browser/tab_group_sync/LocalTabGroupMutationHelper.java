@@ -8,12 +8,14 @@ import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.chrome.browser.tabmodel.TabGroupTitleUtils.UNSET_TAB_GROUP_TITLE;
 
 import android.text.TextUtils;
+import android.util.Pair;
 
 import org.chromium.base.Token;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncControllerImpl.TabCreationDelegate;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
@@ -104,8 +106,7 @@ public class LocalTabGroupMutationHelper {
         mTabModel.setTabGroupCollapsed(tabGroupId, true);
 
         // Notify sync backend about IDs of the newly created group and tabs.
-        LocalTabGroupId localTabGroupId =
-                TabGroupSyncUtils.getLocalTabGroupId(mTabModel, tabGroupId);
+        LocalTabGroupId localTabGroupId = TabGroupSyncUtils.getLocalTabGroupId(rootTab);
         assert localTabGroupId != null : "Local tab group ID is null after creating a group!";
         mTabGroupSyncService.updateLocalTabGroupMapping(
                 assertNonNull(tabGroup.syncId), localTabGroupId, openingSource);
@@ -160,6 +161,8 @@ public class LocalTabGroupMutationHelper {
             return;
         }
 
+        reconcileReplacedTabIds(tabs, tabGroup);
+
         // We want to reconcile the local group with the synced group.
         // The algorithm is different depending on whether we are running this on startup or for a
         // subsequent sync update.
@@ -191,18 +194,16 @@ public class LocalTabGroupMutationHelper {
 
             // If the tab exists, navigate to the desired URL. Otherwise, create a new tab.
             String title = savedTab.title == null ? UNSET_TAB_GROUP_TITLE : savedTab.title;
-            if (localTab != null) {
-                maybeNavigateToUrl(localTab, assertNonNull(savedTab.url), title);
-            } else {
+            if (localTab == null) {
                 localTab =
                         createTabAndAddToGroup(
-                                assertNonNull(savedTab.url),
-                                title,
-                                desiredTabModelIndex,
-                                parent,
-                                tabGroupId);
+                                assertNonNull(savedTab.url), title, desiredTabModelIndex, parent);
                 mTabGroupSyncService.updateLocalTabId(
                         tabGroup.localId, assertNonNull(savedTab.syncId), localTab.getId());
+            } else if (TabGroupSyncPendingReconciliation.isSuppressed(localTab)) {
+                reconcileSuppressedTab(tabGroup, savedTab, localTab, /* position= */ i);
+            } else {
+                maybeNavigateToUrl(localTab, assertNonNull(savedTab.url), title);
             }
 
             // Move tab if required.
@@ -223,7 +224,7 @@ public class LocalTabGroupMutationHelper {
 
     /** Helper method to create a tab with a given URL and add it to the tab group. */
     private Tab createTabAndAddToGroup(
-            GURL url, String title, int desiredTabModelIndex, Tab parentTab, Token tabGroupId) {
+            GURL url, String title, int desiredTabModelIndex, Tab parentTab) {
         if (!TabGroupSyncUtils.isSavableUrl(url)) {
             title = TabGroupSyncUtils.UNSAVEABLE_TAB_TITLE;
             url = TabGroupSyncUtils.UNSAVEABLE_URL_OVERRIDE;
@@ -236,12 +237,8 @@ public class LocalTabGroupMutationHelper {
 
         List<Tab> tabsToMerge = new ArrayList<>();
         tabsToMerge.add(newTab);
-        int lastTabId = mTabModel.getGroupLastShownTabId(tabGroupId);
-        assert lastTabId != Tab.INVALID_TAB_ID;
         mTabModel.mergeListOfTabsToGroup(
-                tabsToMerge,
-                mTabModel.getTabByIdChecked(lastTabId),
-                /* notify= */ TabGroupMergeNotificationType.DONT_NOTIFY);
+                tabsToMerge, parentTab, /* notify= */ TabGroupMergeNotificationType.DONT_NOTIFY);
         return newTab;
     }
 
@@ -257,7 +254,7 @@ public class LocalTabGroupMutationHelper {
     public void closeTabGroup(LocalTabGroupId localGroupId, @ClosingSource int closingSource) {
         LogUtils.log(TAG, "closeTabGroup " + localGroupId);
         Token tabGroupId = localGroupId.tabGroupId;
-        assert mTabModel.tabGroupExists(tabGroupId);
+        assert mTabModel.containsTabGroup(tabGroupId);
 
         SavedTabGroup group = mTabGroupSyncService.getGroup(localGroupId);
         boolean isCollaboration = group != null && !TextUtils.isEmpty(group.collaborationId);
@@ -274,6 +271,56 @@ public class LocalTabGroupMutationHelper {
 
         // Remove mapping from service. Collect metrics before that.
         mTabGroupSyncService.removeLocalTabGroupMapping(localGroupId, closingSource);
+    }
+
+    /**
+     * Reconciles local tabs carrying navigation suppression with saved tabs in sync upfront,
+     * updating their mapped local ID before closure and tab lookup algorithms run.
+     */
+    private void reconcileReplacedTabIds(List<Tab> localTabs, SavedTabGroup tabGroup) {
+        assert tabGroup.localId != null;
+        for (Tab localTab : localTabs) {
+            @TabId
+            int replacedId = TabGroupSyncPendingReconciliation.getReplacedLocalTabId(localTab);
+            if (replacedId == Tab.INVALID_TAB_ID) continue;
+
+            for (SavedTabGroupTab savedTab : tabGroup.savedTabs) {
+                if (savedTab.localId != null && savedTab.localId.intValue() == replacedId) {
+                    updateSavedTabLocalId(tabGroup, savedTab, localTab.getId());
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Reconciles a suppressed local tab with sync by committing its resting URL to sync, ensuring
+     * its local ID mapping is up to date, and clearing the suppression marker.
+     */
+    private void reconcileSuppressedTab(
+            SavedTabGroup tabGroup, SavedTabGroupTab savedTab, Tab localTab, int position) {
+        assert tabGroup.localId != null;
+        if (savedTab.localId == null || savedTab.localId.intValue() != localTab.getId()) {
+            updateSavedTabLocalId(tabGroup, savedTab, localTab.getId());
+        }
+        Pair<GURL, String> urlAndTitle =
+                TabGroupSyncUtils.getFilteredUrlAndTitle(localTab.getUrl(), localTab.getTitle());
+        savedTab.url = urlAndTitle.first;
+        savedTab.title = urlAndTitle.second;
+        mTabGroupSyncService.updateTab(
+                assertNonNull(tabGroup.localId),
+                localTab.getId(),
+                urlAndTitle.second,
+                urlAndTitle.first,
+                position);
+        TabGroupSyncPendingReconciliation.clear(localTab);
+    }
+
+    private void updateSavedTabLocalId(
+            SavedTabGroup tabGroup, SavedTabGroupTab savedTab, @TabId int newLocalTabId) {
+        savedTab.localId = newLocalTabId;
+        mTabGroupSyncService.updateLocalTabId(
+                assertNonNull(tabGroup.localId), assertNonNull(savedTab.syncId), newLocalTabId);
     }
 
     private List<Tab> findLocalTabsNotInSyncPostStartup(SavedTabGroup savedTabGroup) {

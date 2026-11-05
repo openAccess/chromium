@@ -18,6 +18,7 @@
 #include "base/i18n/base_i18n_switches.h"
 #include "base/i18n/break_iterator.h"
 #include "base/i18n/char_iterator.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
 #include "base/i18n/rtl.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
@@ -35,6 +36,7 @@
 #include "build/build_config.h"
 #include "skia/ext/codec_utils.h"
 #include "skia/ext/font_utils.h"
+#include "third_party/abseil-cpp/absl/container/inlined_vector.h"
 #include "third_party/icu/source/common/unicode/ubidi.h"
 #include "third_party/icu/source/common/unicode/uscript.h"
 #include "third_party/icu/source/common/unicode/utf16.h"
@@ -63,7 +65,7 @@
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/android/locale_utils.h"
+#include "base/i18n/android_locale.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #include <hb.h>
@@ -79,6 +81,9 @@ const size_t kMaxTextLength = 10000;
 // is arbitrarily chosen to be a good limit because it is unlikely for a single
 // character to belong to more scripts.
 const size_t kMaxScripts = 32;
+// Keep the script buffer on the stack to avoid per-call heap allocations in
+// GetScriptExtensions(), ScriptSetIntersect(), and ScriptInterval().
+using ScriptVector = absl::InlinedVector<UScriptCode, kMaxScripts>;
 
 // A kill switch to ignore (copy the previous value) of the script extension
 // property, in case problems occur by changes in ICU/CLDR.
@@ -257,9 +262,10 @@ bool IsBracket(UChar32 codepoint) {
 
 // Returns a vector containing the script and the script extensions of the
 // Unicode |codepoint|.
-std::vector<UScriptCode> GetScriptExtensions(UChar32 codepoint) {
+ScriptVector GetScriptExtensions(UChar32 codepoint) {
   UErrorCode icu_error = U_ZERO_ERROR;
-  std::vector<UScriptCode> result(kMaxScripts);
+  ScriptVector result;
+  result.resize(kMaxScripts);
   size_t count = uscript_getScriptExtensions(codepoint, result.data(),
                                              result.size(), &icu_error);
   CHECK_NE(icu_error, U_BUFFER_OVERFLOW_ERROR) << " #ext: " << count;
@@ -272,7 +278,7 @@ std::vector<UScriptCode> GetScriptExtensions(UChar32 codepoint) {
 
 // Intersects the script extensions set of |codepoint| with |result| and writes
 // to |result|.
-void ScriptSetIntersect(UChar32 codepoint, std::vector<UScriptCode>& result) {
+void ScriptSetIntersect(UChar32 codepoint, ScriptVector& result) {
   // The recommended implementation strategy is to treat all the characters of a
   // combining character sequence, including spacing combining marks, as having
   // the Script property value of the first character in the sequence.
@@ -310,7 +316,7 @@ void ScriptSetIntersect(UChar32 codepoint, std::vector<UScriptCode>& result) {
   // For most of the codepoints, the script extensions set contains only one
   // element. For CJK codepoints, it's common to see 3-4 scripts. For really
   // rare cases, the set can go above 20 scripts.
-  std::vector<UScriptCode> extensions = GetScriptExtensions(codepoint);
+  ScriptVector extensions = GetScriptExtensions(codepoint);
 
   // Implicit script 'inherited' is inheriting scripts from preceding codepoint.
   if (extensions.size() == 1 && extensions[0] == USCRIPT_INHERITED) {
@@ -319,7 +325,7 @@ void ScriptSetIntersect(UChar32 codepoint, std::vector<UScriptCode>& result) {
 
   CHECK(!std::ranges::contains(extensions, USCRIPT_INHERITED));
 
-  std::erase_if(result, [&](auto script) {
+  absl::erase_if(result, [&](auto script) {
     return !std::ranges::contains(extensions, script);
   });
 }
@@ -451,7 +457,7 @@ size_t ScriptInterval(std::u16string_view text,
 
   base::i18n::UTF16CharIterator char_iterator(text.substr(start, length));
 
-  std::vector<UScriptCode> scripts = GetScriptExtensions(char_iterator.get());
+  ScriptVector scripts = GetScriptExtensions(char_iterator.get());
   *script = scripts[0];
 
   while (char_iterator.Advance()) {
@@ -1541,12 +1547,12 @@ void ShapeRunWithFont(const ShapeRunWithFontInput& in,
   hb_font_destroy(harfbuzz_font);
 }
 
-std::string GetApplicationLocale() {
+base::i18n::LanguageTag GetApplicationLocale() {
 #if BUILDFLAG(IS_ANDROID)
   // TODO(etienneb): Android locale should work the same way than base locale.
-  return base::android::GetDefaultLocaleString();
+  return base::i18n::GetAndroidDefaultLocale();
 #else
-  return base::i18n::GetConfiguredLocale();
+  return base::i18n::GetDefaultIcuLocale();
 #endif
 }
 

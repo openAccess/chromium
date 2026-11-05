@@ -30,6 +30,8 @@
 
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 
+#include <stddef.h>
+
 #include "base/compiler_specific.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/choosers/date_time_chooser.mojom-blink.h"
@@ -40,6 +42,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/js_event_handler_for_content_attribute.h"
 #include "third_party/blink/renderer/bindings/core/v8/native_value_traits_impl.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_aria_notification_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_focus_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_selection_mode.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
@@ -127,14 +130,6 @@ String ConvertSanitizedValueToStateValue(const InputType& input_type,
   return sanitized_value;
 }
 
-bool AutocompleteAttributeContainsEmailVerificationToken(
-    const AtomicString& autocomplete_value) {
-  DEFINE_STATIC_LOCAL(const AtomicString, kEmailVerificationToken,
-                      ("email-verification-token"));
-  return SpaceSplitString(autocomplete_value.ToAsciiLower())
-      .Contains(kEmailVerificationToken);
-}
-
 }  // namespace
 
 using ValueMode = InputType::ValueMode;
@@ -171,7 +166,8 @@ HTMLInputElement::HTMLInputElement(Document& document,
       needs_to_update_view_value_(true),
       is_placeholder_visible_(false),
       has_been_password_field_(false),
-      scheduled_create_shadow_tree_(false),
+      is_shadow_tree_creation_scheduled_(false),
+      scheduled_shadow_tree_creation_index_hint_(0),
       // |input_type_| is lazily created when constructed by the parser to avoid
       // constructing unnecessarily a text InputType and its shadow subtree,
       // just to destroy them when the |type| attribute gets set by the parser
@@ -180,6 +176,14 @@ HTMLInputElement::HTMLInputElement(Document& document,
                       ? nullptr
                       : MakeGarbageCollected<TextInputType>(*this)),
       input_type_view_(input_type_ ? input_type_->CreateView() : nullptr) {
+  // The bit-fields from `has_dirty_value_` to
+  // `scheduled_shadow_tree_creation_index_hint_` are meant to share one
+  // 32-bit word after `size_`; adding a bit would silently grow every input
+  // by 8 bytes.
+  static_assert(offsetof(HTMLInputElement, input_type_) -
+                        offsetof(HTMLInputElement, size_) ==
+                    2 * sizeof(unsigned),
+                "HTMLInputElement's bit-fields no longer fit in 32 bits");
   SetHasCustomStyleCallbacks();
 }
 
@@ -982,9 +986,8 @@ void HTMLInputElement::ParseAttribute(
   } else if (name == html_names::kOnsearchAttr) {
     // Search field and slider attributes all just cause updateFromElement to be
     // called through style recalcing.
-    SetAttributeEventListener(event_type_names::kSearch,
-                              JSEventHandlerForContentAttribute::Create(
-                                  GetExecutionContext(), name, value));
+    SetElementAttributeEventListenerFromScriptBody(event_type_names::kSearch,
+                                                   name, value, params.reason);
   } else if (name == html_names::kIncrementalAttr) {
     UseCounter::Count(GetDocument(), WebFeature::kIncrementalAttribute);
   } else if (name == html_names::kMinAttr) {
@@ -1051,22 +1054,6 @@ void HTMLInputElement::FinishParsingChildren() {
     if (checked)
       SetChecked(checked);
     dirty_checkedness_ = false;
-  }
-  if (Form() && RuntimeEnabledFeatures::EmailVerificationStatusIndicatorEnabled(
-                    GetExecutionContext())) {
-    if (IsEmailVerificationTokenField()) {
-      Form()->NotifyEmailVerificationTokenFieldChanged();
-    }
-  }
-}
-
-void HTMLInputElement::setNonce(const AtomicString& nonce) {
-  Element::setNonce(nonce);
-  if (Form() && RuntimeEnabledFeatures::EmailVerificationStatusIndicatorEnabled(
-                    GetExecutionContext())) {
-    if (IsEmailVerificationTokenField()) {
-      Form()->NotifyEmailVerificationTokenFieldChanged();
-    }
   }
 }
 
@@ -1141,6 +1128,7 @@ void HTMLInputElement::ResetImpl() {
   } else if (input_type_->GetValueMode() == ValueMode::kFilename) {
     SetNonDirtyValue(String());
     SetNeedsValidityCheck();
+    UpdateView();
   }
   SetChecked(FastHasAttribute(html_names::kCheckedAttr));
   dirty_checkedness_ = false;
@@ -1331,23 +1319,22 @@ void HTMLInputElement::SetSuggestedValue(const String& value) {
   if (!input_type_->CanSetSuggestedValue()) {
     // Clear the suggested value because it may have been set when
     // `input_type_->CanSetSuggestedValue()` was true.
-    SetAutofillState(WebAutofillState::kNotFilled);
     TextControlElement::SetSuggestedValue(String());
+    SetAutofillState(WebAutofillState::kNotFilled);
     return;
   }
   needs_to_update_view_value_ = true;
   String sanitized_value = SanitizeValue(value);
 
-  if (RuntimeEnabledFeatures::CanvasDrawElementEnabled(GetExecutionContext()) &&
-      IsInCanvasSubtree()) {
+  if (IsInCanvasSubtree()) {
     // Hide suggested values when under canvas, to prevent leaking this
     // information to javascript.
     sanitized_value = String();
   }
 
+  TextControlElement::SetSuggestedValue(sanitized_value);
   SetAutofillState(sanitized_value.empty() ? WebAutofillState::kNotFilled
                                            : WebAutofillState::kPreviewed);
-  TextControlElement::SetSuggestedValue(sanitized_value);
 
   // Update the suggested value revelation.
   if (auto* placeholder = PlaceholderElement()) {
@@ -1365,16 +1352,15 @@ void HTMLInputElement::SetSuggestedValue(const String& value) {
   input_type_view_->UpdateView();
 }
 
-void HTMLInputElement::DidChangeIsInCanvasSubtree() {
-  TextControlElement::DidChangeIsInCanvasSubtree();
-  if (IsInCanvasSubtree() &&
-      RuntimeEnabledFeatures::CanvasDrawElementEnabled(GetExecutionContext())) {
-    // Hide suggested values when under canvas, to prevent leaking this
-    // information to javascript.
+void HTMLInputElement::DidChangeIsInCanvasSubtree(
+    CanvasSubtreePropagation propagation_behavior) {
+  TextControlElement::DidChangeIsInCanvasSubtree(propagation_behavior);
+  // Hide suggested values when under canvas, to prevent leaking this
+  // information to javascript. Skip when there is nothing to hide:
+  // SetSuggestedValue() always rebuilds the view, which can move focus and run
+  // script during slot assignment recalc (crbug.com/574469802).
+  if (IsInCanvasSubtree() && !SuggestedValue().IsNull()) {
     SetSuggestedValue(String());
-  }
-  if (auto* email_input = DynamicTo<EmailInputType>(input_type_.Get())) {
-    email_input->UpdateEmailVerificationIndicator();
   }
 }
 
@@ -1590,23 +1576,44 @@ EventDispatchHandlingState* HTMLInputElement::LegacyPreActivationBehavior(
   return input_type_view_->LegacyPreActivationBehavior();
 }
 
-void HTMLInputElement::RunActivationBehavior(
+void HTMLInputElement::RunActivationBehaviorBeforeDOMActivate(
     Event& event,
     EventDispatchHandlingState* state) {
   if (!state) {
     return;
   }
-
   // https://html.spec.whatwg.org/C#the-input-element:activation-behaviour.
   //
-  // The activation behavior for input elements element, given event, are these
-  // steps:
+  // The activation behavior for input elements element, given event, are
+  // these steps:
   //
   //   [...]
   //   2. Run element's input activation behavior, if any, and do nothing
   //      otherwise.
+  //
+  // For checkboxes and radio buttons this commits (or reverts) the checked
+  // state and marks the click event as default-handled, which suppresses the
+  // DOMActivate event and `RunActivationBehavior()` below.
   input_type_view_->RunInputActivationBehavior(
       event, *static_cast<ClickHandlingState*>(state));
+}
+
+void HTMLInputElement::RunActivationBehavior(
+    Event& event,
+    EventDispatchHandlingState* state) {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    return;
+  }
+  if (event.defaultPrevented() || event.DefaultHandled()) {
+    return;
+  }
+
+  input_type_view_->HandleDOMActivateEvent(event);
+  if (event.DefaultHandled()) {
+    return;
+  }
+
+  TextControlElement::RunActivationBehavior(event, state);
 }
 
 void HTMLInputElement::DefaultEventHandler(Event& evt) {
@@ -1621,6 +1628,20 @@ void HTMLInputElement::DefaultEventHandler(Event& evt) {
     input_type_view_->HandleClickEvent(To<MouseEvent>(evt));
     if (evt.DefaultHandled())
       return;
+  }
+
+  // DOMActivate events cause the input to be "activated" - in the case of image
+  // and submit inputs, this means actually submitting the form. For reset
+  // inputs, the form is reset. These events are sent when the user clicks on
+  // the element, or presses enter while it is the active element. JavaScript
+  // code wishing to activate the element must dispatch a DOMActivate event - a
+  // click event will not do the job.
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled() &&
+      evt.type() == event_type_names::kDOMActivate) {
+    input_type_view_->HandleDOMActivateEvent(evt);
+    if (evt.DefaultHandled()) {
+      return;
+    }
   }
 
   auto* keyboard_event = DynamicTo<KeyboardEvent>(evt);
@@ -1638,18 +1659,6 @@ void HTMLInputElement::DefaultEventHandler(Event& evt) {
                         evt.type() == event_type_names::kKeypress);
   if (call_base_class_early) {
     TextControlElement::DefaultEventHandler(evt);
-    if (evt.DefaultHandled())
-      return;
-  }
-
-  // DOMActivate events cause the input to be "activated" - in the case of image
-  // and submit inputs, this means actually submitting the form. For reset
-  // inputs, the form is reset. These events are sent when the user clicks on
-  // the element, or presses enter while it is the active element. JavaScript
-  // code wishing to activate the element must dispatch a DOMActivate event - a
-  // click event will not do the job.
-  if (evt.type() == event_type_names::kDOMActivate) {
-    input_type_view_->HandleDOMActivateEvent(evt);
     if (evt.DefaultHandled())
       return;
   }
@@ -1692,9 +1701,11 @@ void HTMLInputElement::DefaultEventHandler(Event& evt) {
     return;
   }
 
-  if (evt.IsBeforeTextInsertedEvent()) {
-    input_type_view_->HandleBeforeTextInsertedEvent(
-        static_cast<BeforeTextInsertedEvent&>(evt));
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    if (evt.IsBeforeTextInsertedEvent()) {
+      input_type_view_->HandleBeforeTextInsertedEvent(
+          static_cast<BeforeTextInsertedEvent&>(evt));
+    }
   }
 
   if (mouse_event && evt.type() == event_type_names::kMousedown) {
@@ -1709,13 +1720,27 @@ void HTMLInputElement::DefaultEventHandler(Event& evt) {
     TextControlElement::DefaultEventHandler(evt);
 }
 
+String HTMLInputElement::FilterBeforeTextInserted(const String& text) {
+  CHECK(RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled());
+  if (input_type_view_) {
+    return input_type_view_->FilterBeforeTextInserted(text);
+  }
+  return text;
+}
+
 ShadowRoot* HTMLInputElement::EnsureShadowSubtree() {
-  scheduled_create_shadow_tree_ = false;
+  if (IsShadowTreeCreationScheduled()) {
+    GetDocument().UnscheduleShadowTreeCreation(*this);
+  }
   input_type_view_->CreateShadowSubtreeIfNeeded();
   return UserAgentShadowRoot();
 }
 
 bool HTMLInputElement::HasActivationBehavior() const {
+  if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled() &&
+      ShadowPseudoId() == shadow_element_names::kPseudoFileUploadButton) {
+    return false;
+  }
   return true;
 }
 
@@ -1895,10 +1920,6 @@ void HTMLInputElement::OnSearch() {
   input_type_->DispatchSearchEvent();
 }
 
-void HTMLInputElement::UpdateClearButtonVisibility() {
-  input_type_view_->UpdateClearButtonVisibility();
-}
-
 bool HTMLInputElement::IsInnerEditorValueEmpty() const {
   return input_type_view_->IsInnerEditorValueEmpty();
 }
@@ -1913,12 +1934,6 @@ void HTMLInputElement::DidChangeForm() {
   TextControlElement::DidChangeForm();
   if (input_type_) {
     AddToRadioButtonGroup();
-    if (RuntimeEnabledFeatures::EmailVerificationStatusIndicatorEnabled(
-            GetExecutionContext())) {
-      if (type() == input_type_names::kEmail) {
-        UpdateEmailVerificationIndicator();
-      }
-    }
   }
 }
 
@@ -1926,37 +1941,25 @@ Node::InsertionNotificationRequest HTMLInputElement::InsertedInto(
     ContainerNode& insertion_point) {
   TextControlElement::InsertedInto(insertion_point);
   HTMLFormElement* form = Form();
-  // During parser association, Associate() is called before attributes
-  // (like autocomplete) are parsed and before the element is inserted into
-  // the DOM. Later, when attributes are set, AttributeChanged calls
-  // NotifyEmailVerificationTokenFieldChanged which queries ListedElements()
-  // and prematurely rebuilds/caches the form elements.
-  // If the element has FormWasSetByParser() = true, InsertedInto will not
-  // run ResetFormOwner or call Associate() again, which would normally
-  // invalidate the cache. In this case, we must manually invalidate it here
-  // so the newly inserted token is correctly included in future queries,
-  // and then notify.
-  // Otherwise, for dynamically added elements (where FormWasSetByParser()
-  // is false), ResetFormOwner() -> Associate() is run and already handles
-  // the invalidation and notification.
-  if (form &&
-      RuntimeEnabledFeatures::EmailVerificationStatusIndicatorEnabled(
-          GetExecutionContext()) &&
-      IsEmailVerificationTokenField() && FormWasSetByParser()) {
-    form->InvalidateListedElements();
-    form->NotifyEmailVerificationTokenFieldChanged();
-  }
   if (insertion_point.isConnected()) {
     if (!form) {
       AddToRadioButtonGroup();
     }
+    // Defer creating the UA shadow subtree to the next style/layout update
+    // (many inputs are removed again before that). A document that is not
+    // active never updates style, so don't queue there; EnsureShadowSubtree()
+    // creates the subtree on demand.
     if (!input_type_view_->HasCreatedShadowSubtree() &&
-        input_type_view_->NeedsShadowSubtree()) {
-      scheduled_create_shadow_tree_ = true;
+        input_type_view_->NeedsShadowSubtree() && GetDocument().IsActive()) {
       GetDocument().ScheduleShadowTreeCreation(*this);
     }
   }
-  ResetListAttributeTargetObserver();
+  if (insertion_point.isConnected()) {
+    ResetListAttributeTargetObserver();
+  } else {
+    // The observer is only ever registered while connected.
+    DCHECK(!list_attribute_target_observer_);
+  }
   LogAddElementIfIsolatedWorldAndInDocument("input", html_names::kTypeAttr,
                                             html_names::kFormactionAttr);
 
@@ -1976,7 +1979,11 @@ Node::InsertionNotificationRequest HTMLInputElement::InsertedInto(
     }
   }
 
-  return kInsertionShouldCallDidNotifySubtreeInsertions;
+  // DidNotifySubtreeInsertionsToDocument() re-resolves the list attribute
+  // target, which cannot have changed if there is no (non-empty) list
+  // attribute: DataList() is null before and after the insertion.
+  return has_non_empty_list_ ? kInsertionShouldCallDidNotifySubtreeInsertions
+                             : kInsertionDone;
 }
 
 void HTMLInputElement::RemovedFrom(ContainerNode& insertion_point) {
@@ -1985,14 +1992,13 @@ void HTMLInputElement::RemovedFrom(ContainerNode& insertion_point) {
     if (!Form()) {
       RemoveFromRadioButtonGroup();
     }
-    if (scheduled_create_shadow_tree_) {
-      scheduled_create_shadow_tree_ = false;
+    if (IsShadowTreeCreationScheduled()) {
       GetDocument().UnscheduleShadowTreeCreation(*this);
     }
   }
   TextControlElement::RemovedFrom(insertion_point);
   DCHECK(!isConnected());
-  ResetListAttributeTargetObserver();
+  SetListAttributeTargetObserver(nullptr);
 
   if (RuntimeEnabledFeatures::FilterableSelectEnabled()) {
     HTMLSelectElement::SelectOptgroupDatalist result =
@@ -2034,31 +2040,6 @@ void HTMLInputElement::RequiredAttributeChanged() {
 void HTMLInputElement::DisabledAttributeChanged(DisabledChangedReason reason) {
   TextControlElement::DisabledAttributeChanged(reason);
   input_type_view_->DisabledAttributeChanged(reason);
-}
-
-void HTMLInputElement::AttributeChanged(
-    const AttributeModificationParams& params) {
-  HTMLFormControlElement::AttributeChanged(params);
-  if (Form() && RuntimeEnabledFeatures::EmailVerificationStatusIndicatorEnabled(
-                    GetExecutionContext())) {
-    if (params.name == html_names::kAutocompleteAttr) {
-      bool old_has_token =
-          AutocompleteAttributeContainsEmailVerificationToken(params.old_value);
-      bool new_has_token =
-          AutocompleteAttributeContainsEmailVerificationToken(params.new_value);
-      if (old_has_token != new_has_token) {
-        Form()->NotifyEmailVerificationTokenFieldChanged();
-      }
-    } else if (params.name == html_names::kNonceAttr) {
-      if (IsEmailVerificationTokenField()) {
-        bool old_was_empty = params.old_value.empty();
-        bool new_is_empty = params.new_value.empty();
-        if (old_was_empty != new_is_empty) {
-          Form()->NotifyEmailVerificationTokenFieldChanged();
-        }
-      }
-    }
-  }
 }
 
 void HTMLInputElement::SelectColorInColorChooser(const Color& color) {
@@ -2204,13 +2185,17 @@ void HTMLInputElement::SetListAttributeTargetObserver(
 }
 
 void HTMLInputElement::ResetListAttributeTargetObserver() {
-  const AtomicString& value = FastGetAttribute(html_names::kListAttr);
-  if (!value.IsNull() && isConnected()) {
-    SetListAttributeTargetObserver(
-        MakeGarbageCollected<ListAttributeTargetObserver>(value, this));
-  } else {
+  // An IdTargetObserver with an empty id never observes anything, so only
+  // create one for a non-empty list attribute. `has_non_empty_list_` avoids
+  // the attribute lookup on the common insertion path.
+  if (!has_non_empty_list_ || !isConnected()) {
     SetListAttributeTargetObserver(nullptr);
+    return;
   }
+  const AtomicString& value = FastGetAttribute(html_names::kListAttr);
+  DCHECK(!value.empty());
+  SetListAttributeTargetObserver(
+      MakeGarbageCollected<ListAttributeTargetObserver>(value, this));
 }
 
 void HTMLInputElement::ListAttributeTargetChanged() {
@@ -2263,12 +2248,12 @@ int HTMLInputElement::scrollWidth() {
   const auto* box = GetLayoutBox();
   if (!editor_box || !box)
     return TextControlElement::scrollWidth();
-  // Adjust scrollWidth to include input element horizontal paddings and
-  // decoration width.
-  LayoutUnit adjustment = box->PhysicalPaddingBoxRect().Width() -
+  // Adjust scrollWidth to include the horizontal paddings and decoration width
+  // in the client rect.
+  LayoutUnit adjustment = PhysicalClientRect(*box).Width() -
                           editor_box->PhysicalPaddingBoxRect().Width();
   return AdjustForAbsoluteZoom::AdjustLayoutUnit(
-             editor_box->ScrollWidth() + adjustment, box->StyleRef())
+             editor_box->ScrollWidth() + adjustment, box->Style())
       .Round();
 }
 
@@ -2288,12 +2273,12 @@ int HTMLInputElement::scrollHeight() {
   const auto* box = GetLayoutBox();
   if (!editor_box || !box)
     return TextControlElement::scrollHeight();
-  // Adjust scrollHeight to include input element vertical paddings and
-  // decoration height.
-  LayoutUnit adjustment = box->PhysicalPaddingBoxRect().Height() -
+  // Adjust scrollHeight to include the vertical paddings and decoration height
+  // in the client rect.
+  LayoutUnit adjustment = PhysicalClientRect(*box).Height() -
                           editor_box->PhysicalPaddingBoxRect().Height();
   return AdjustForAbsoluteZoom::AdjustLayoutUnit(
-             editor_box->ScrollHeight() + adjustment, box->StyleRef())
+             editor_box->ScrollHeight() + adjustment, box->Style())
       .Round();
 }
 
@@ -2352,13 +2337,6 @@ RadioButtonGroupScope* HTMLInputElement::GetRadioButtonGroupScope() const {
   if (isConnected())
     return &GetTreeScope().GetRadioButtonGroupScope();
   return nullptr;
-}
-
-unsigned HTMLInputElement::SizeOfRadioGroup() const {
-  RadioButtonGroupScope* scope = GetRadioButtonGroupScope();
-  if (!scope)
-    return 0;
-  return scope->GroupSizeFor(this);
 }
 
 inline void HTMLInputElement::AddToRadioButtonGroup() {
@@ -2451,6 +2429,12 @@ OpaqueRange* HTMLInputElement::createValueRange(
                                               exception_state);
 }
 
+void HTMLInputElement::ClosePopupView() {
+  if (input_type_view_) {
+    input_type_view_->ClosePopupView();
+  }
+}
+
 bool HTMLInputElement::SetupDateTimeChooserParameters(
     DateTimeChooserParameters& parameters) {
   if (!GetDocument().View())
@@ -2517,9 +2501,12 @@ bool HTMLInputElement::ShouldDrawCapsLockIndicator() const {
   return input_type_view_->ShouldDrawCapsLockIndicator();
 }
 
-void HTMLInputElement::SetShouldRevealPassword(bool value) {
-  if (!!should_reveal_password_ == value)
+void HTMLInputElement::SetShouldRevealPassword(
+    bool value,
+    PasswordVisibilityAnnouncement announcement) {
+  if (!!should_reveal_password_ == value) {
     return;
+  }
   should_reveal_password_ = value;
   if (HTMLElement* inner_editor = InnerEditorElement()) {
     // Update -webkit-text-security style.
@@ -2527,30 +2514,21 @@ void HTMLInputElement::SetShouldRevealPassword(bool value) {
         kLocalStyleChange,
         StyleChangeReasonForTracing::Create(style_change_reason::kControl));
   }
-}
-
-void HTMLInputElement::SetEmailVerificationState(EmailVerificationState state) {
-  if (auto* email_input = DynamicTo<EmailInputType>(input_type_.Get())) {
-    email_input->SetEmailVerificationState(state);
+  if (announcement == PasswordVisibilityAnnouncement::kAnnounce) {
+    AnnouncePasswordVisibility();
   }
 }
 
-EmailVerificationState HTMLInputElement::GetEmailVerificationState() const {
-  if (auto* email_input = DynamicTo<EmailInputType>(input_type_.Get())) {
-    return email_input->GetEmailVerificationState();
+void HTMLInputElement::AnnouncePasswordVisibility() {
+  if (!RuntimeEnabledFeatures::AriaNotifyEnabled(GetExecutionContext())) {
+    return;
   }
-  return EmailVerificationState::kNone;
-}
-
-void HTMLInputElement::UpdateEmailVerificationIndicator() {
-  if (auto* email_input = DynamicTo<EmailInputType>(input_type_.Get())) {
-    email_input->UpdateEmailVerificationIndicator();
-  }
-}
-
-bool HTMLInputElement::IsEmailVerificationTokenField() const {
-  return AutocompleteAttributeContainsEmailVerificationToken(
-      FastGetAttribute(html_names::kAutocompleteAttr));
+  // Native password visibility announcements intentionally respect the
+  // document's aria-notify permissions policy.
+  ariaNotify(GetLocale().QueryString(ShouldRevealPassword()
+                                         ? IDS_FORM_PASSWORD_SHOWN
+                                         : IDS_FORM_PASSWORD_HIDDEN),
+             AriaNotificationOptions::Create());
 }
 
 void HTMLInputElement::DispatchSimulatedEnter() {
@@ -2664,12 +2642,17 @@ void HTMLInputElement::showPicker(ExceptionState& exception_state) {
   if (!LocalFrame::HasTransientUserActivation(frame)) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotAllowedError,
-        "HTMLInputElement::showPicker() requires a user gesture.");
+        "HTMLInputElement::showPicker() requires user activation.");
     return;
   }
-  LocalFrame::ConsumeTransientUserActivation(frame);
 
+  if (!RuntimeEnabledFeatures::PopupWidgetRequiresUserActivationEnabled()) {
+    LocalFrame::ConsumeTransientUserActivation(frame);
+  }
   input_type_view_->OpenPopupView();
+  if (RuntimeEnabledFeatures::PopupWidgetRequiresUserActivationEnabled()) {
+    LocalFrame::ConsumeTransientUserActivation(frame);
+  }
 }
 
 bool HTMLInputElement::IsPickerVisible() const {
@@ -2695,10 +2678,11 @@ bool HTMLInputElement::IsValidBuiltinCommand(HTMLElement& invoker,
 }
 
 bool HTMLInputElement::HandleCommandInternal(HTMLElement& invoker,
-                                             CommandEventType command) {
+                                             CommandEventType command,
+                                             UIEvent* activate_event) {
   CHECK(IsValidBuiltinCommand(invoker, command));
 
-  if (HTMLElement::HandleCommandInternal(invoker, command)) {
+  if (HTMLElement::HandleCommandInternal(invoker, command, activate_event)) {
     return true;
   }
 
@@ -2752,8 +2736,9 @@ bool HTMLInputElement::HandleCommandInternal(HTMLElement& invoker,
 }
 
 void HTMLInputElement::SetFocused(bool is_focused,
-                                  mojom::blink::FocusType focus_type) {
-  TextControlElement::SetFocused(is_focused, focus_type);
+                                  mojom::blink::FocusType focus_type,
+                                  BlurEventBehavior blur_event_behavior) {
+  TextControlElement::SetFocused(is_focused, focus_type, blur_event_behavior);
   if (input_type_) {
     input_type_->UpdateWheelEventRegistration(/*is_detaching=*/false);
   }
@@ -2770,6 +2755,19 @@ void HTMLInputElement::SetFocused(bool is_focused,
 
   if (RadioButtonGroupScope* scope = GetRadioButtonGroupScope()) {
     scope->UpdateLastFocusedState(this);
+  }
+
+  if (focus_type != mojom::blink::FocusType::kPage && IsTextField()) {
+    if (HTMLSelectElement* select = FilterTarget()) {
+      // TODO(crbug.com/453705243): Track the target select element like we are
+      // already doing for the list attribute in order to remove the
+      // :active-option pseudo.
+      if (is_focused) {
+        select->StartFiltering();
+      } else {
+        select->StopFiltering();
+      }
+    }
   }
 }
 
@@ -2789,7 +2787,7 @@ bool HTMLInputElement::IsBaseAppearanceCombobox() const {
 }
 
 HTMLSelectElement* HTMLInputElement::FilterTarget() const {
-  if (!RuntimeEnabledFeatures::FilterableSelectEnabled()) {
+  if (!RuntimeEnabledFeatures::FilterableSelectEnabled() || !IsTextField()) {
     return nullptr;
   }
   if (nearest_ancestor_select_) {

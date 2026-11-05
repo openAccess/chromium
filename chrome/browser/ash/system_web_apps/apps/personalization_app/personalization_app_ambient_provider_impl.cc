@@ -31,6 +31,7 @@
 #include "ash/webui/personalization_app/mojom/personalization_app_mojom_traits.h"
 #include "base/barrier_closure.h"
 #include "base/check.h"
+#include "base/containers/linear_find.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
@@ -38,8 +39,6 @@
 #include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/ambient_video_albums.h"
-#include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_manager.h"
-#include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_manager_factory.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
@@ -99,14 +98,7 @@ PersonalizationAppAmbientProviderImpl::PersonalizationAppAmbientProviderImpl(
 }
 
 PersonalizationAppAmbientProviderImpl::
-    ~PersonalizationAppAmbientProviderImpl() {
-  if (page_viewed_) {
-    ::ash::personalization_app::PersonalizationAppManagerFactory::
-        GetForBrowserContext(profile_)
-            ->MaybeStartHatsTimer(
-                ::ash::personalization_app::HatsSurveyType::kScreensaver);
-  }
-}
+    ~PersonalizationAppAmbientProviderImpl() = default;
 
 void PersonalizationAppAmbientProviderImpl::BindInterface(
     mojo::PendingReceiver<ash::personalization_app::mojom::AmbientProvider>
@@ -118,7 +110,7 @@ void PersonalizationAppAmbientProviderImpl::BindInterface(
 void PersonalizationAppAmbientProviderImpl::IsAmbientModeEnabled(
     IsAmbientModeEnabledCallback callback) {
   PrefService* pref_service = profile_->GetPrefs();
-  DCHECK(pref_service);
+  CHECK(pref_service, base::NotFatalUntil::M160);
   std::move(callback).Run(
       pref_service->GetBoolean(ash::ambient::prefs::kAmbientModeEnabled));
 }
@@ -186,14 +178,14 @@ void PersonalizationAppAmbientProviderImpl::SetAmbientObserver(
 void PersonalizationAppAmbientProviderImpl::SetAmbientModeEnabled(
     bool enabled) {
   PrefService* pref_service = profile_->GetPrefs();
-  DCHECK(pref_service);
+  CHECK(pref_service, base::NotFatalUntil::M160);
   pref_service->SetBoolean(ash::ambient::prefs::kAmbientModeEnabled, enabled);
 }
 
 void PersonalizationAppAmbientProviderImpl::SetAmbientTheme(
     mojom::AmbientTheme to_theme) {
   PrefService* pref_service = profile_->GetPrefs();
-  DCHECK(pref_service);
+  CHECK(pref_service, base::NotFatalUntil::M160);
   AmbientUiSettings orig_settings = GetCurrentUiSettings();
   mojom::AmbientTheme from_theme = orig_settings.theme();
   if (from_theme == to_theme) {
@@ -297,11 +289,6 @@ void PersonalizationAppAmbientProviderImpl::SetAlbumSelected(
       } else {
         settings_->topic_source = mojom::TopicSource::kGooglePhotos;
       }
-
-      ash::ambient::RecordAmbientModeTotalNumberOfAlbums(
-          personal_albums_.albums.size());
-      ash::ambient::RecordAmbientModeSelectedNumberOfAlbums(
-          settings_->selected_album_ids.size());
       break;
     }
     case (mojom::TopicSource::kArtGallery): {
@@ -331,7 +318,7 @@ void PersonalizationAppAmbientProviderImpl::SetAlbumSelected(
       // still be updated with the requested video, and it will be applied
       // if/when the user selects the video theme later.
       PrefService* pref_service = profile_->GetPrefs();
-      DCHECK(pref_service);
+      CHECK(pref_service, base::NotFatalUntil::M160);
       AmbientUiSettings(GetCurrentUiSettings().theme(), *video)
           .WriteToPrefService(*pref_service);
       break;
@@ -340,10 +327,6 @@ void PersonalizationAppAmbientProviderImpl::SetAlbumSelected(
   UpdateSettings();
   OnTopicSourceChanged();
   OnAlbumsChanged();
-}
-
-void PersonalizationAppAmbientProviderImpl::SetPageViewed() {
-  page_viewed_ = true;
 }
 
 void PersonalizationAppAmbientProviderImpl::FetchSettingsAndAlbums() {
@@ -401,7 +384,7 @@ void PersonalizationAppAmbientProviderImpl::OnScreenSaverDurationChanged() {
   }
 
   PrefService* pref_service = profile_->GetPrefs();
-  DCHECK(pref_service);
+  CHECK(pref_service, base::NotFatalUntil::M160);
   int duration_minutes = pref_service->GetInteger(
       ambient::prefs::kAmbientModeRunningDurationMinutes);
   CHECK(duration_minutes >= 0);
@@ -491,21 +474,21 @@ void PersonalizationAppAmbientProviderImpl::
 
 bool PersonalizationAppAmbientProviderImpl::IsAmbientModeEnabled() {
   PrefService* pref_service = profile_->GetPrefs();
-  DCHECK(pref_service);
+  CHECK(pref_service, base::NotFatalUntil::M160);
   return pref_service->GetBoolean(ash::ambient::prefs::kAmbientModeEnabled);
 }
 
 AmbientUiSettings PersonalizationAppAmbientProviderImpl::GetCurrentUiSettings()
     const {
   PrefService* pref_service = profile_->GetPrefs();
-  DCHECK(pref_service);
+  CHECK(pref_service, base::NotFatalUntil::M160);
   return AmbientUiSettings::ReadFromPrefService(*pref_service);
 }
 
 void PersonalizationAppAmbientProviderImpl::UpdateSettings() {
   DCHECK(IsAmbientModeEnabled())
       << "Ambient mode must be enabled to update settings";
-  DCHECK(settings_);
+  CHECK(settings_, base::NotFatalUntil::M160);
   DCHECK_NE(settings_->topic_source, mojom::TopicSource::kVideo)
       << "Ambient backend is not aware of the video topic source";
 
@@ -647,7 +630,7 @@ void PersonalizationAppAmbientProviderImpl::FetchPreviewImages() {
   previews_weak_factory_.InvalidateWeakPtrs();
   if (GetCurrentUiSettings().theme() == mojom::AmbientTheme::kVideo) {
     std::optional<AmbientVideo> video = GetCurrentUiSettings().video();
-    DCHECK(video.has_value());
+    CHECK(video.has_value(), base::NotFatalUntil::M160);
     auto url_arr =
         AmbientBackendController::Get()->GetTimeOfDayVideoPreviewImageUrls(
             video.value());
@@ -709,26 +692,15 @@ void PersonalizationAppAmbientProviderImpl::OnMachineStatisticsReady() {
 ash::PersonalAlbum*
 PersonalizationAppAmbientProviderImpl::FindPersonalAlbumById(
     const std::string& album_id) {
-  auto it = std::ranges::find(personal_albums_.albums, album_id,
-                              &ash::PersonalAlbum::album_id);
-
-  if (it == personal_albums_.albums.end()) {
-    return nullptr;
-  }
-
-  return &(*it);
+  return base::LinearFind(personal_albums_.albums, album_id,
+                          &ash::PersonalAlbum::album_id);
 }
 
 ash::ArtSetting* PersonalizationAppAmbientProviderImpl::FindArtAlbumById(
     const std::string& album_id) {
-  auto it = std::ranges::find(settings_->art_settings, album_id,
-                              &ash::ArtSetting::album_id);
-  // Album does not exist any more.
-  if (it == settings_->art_settings.end()) {
-    return nullptr;
-  }
-
-  return &(*it);
+  // Album may not exist any more.
+  return base::LinearFind(settings_->art_settings, album_id,
+                          &ash::ArtSetting::album_id);
 }
 
 void PersonalizationAppAmbientProviderImpl::ResetLocalSettings() {
@@ -800,7 +772,7 @@ PersonalizationAppAmbientProviderImpl::GetCurrentTopicSource() const {
   if (GetCurrentUiSettings().theme() == mojom::AmbientTheme::kVideo) {
     return mojom::TopicSource::kVideo;
   } else {
-    DCHECK(settings_);
+    CHECK(settings_, base::NotFatalUntil::M160);
     return settings_->topic_source;
   }
 }

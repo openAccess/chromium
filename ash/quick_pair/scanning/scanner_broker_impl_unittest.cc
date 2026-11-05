@@ -32,7 +32,7 @@
 
 namespace {
 
-const std::string kUserEmail = "test@test.test";
+constexpr char kUserEmail[] = "test@test.test";
 constexpr char kTestDeviceAddress[] = "11:12:13:14:15:16";
 constexpr char kValidModelId[] = "718c17";
 
@@ -187,7 +187,8 @@ class ScannerBrokerImplTest : public NoSessionAshTestBase,
   }
 
   void Login(user_manager::UserType user_type) {
-    SimulateUserLogin({kUserEmail, user_type});
+    SimulateUserLogin({.account_id = AccountId::FromUserEmail(kUserEmail),
+                       .user_type = user_type});
   }
 
   auto* discoverable_scanner_for_test() {

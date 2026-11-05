@@ -7,7 +7,6 @@ package org.chromium.chrome.browser.tasks.tab_management;
 import android.content.Context;
 
 import androidx.annotation.ColorInt;
-import androidx.annotation.ColorRes;
 import androidx.annotation.DrawableRes;
 import androidx.core.content.ContextCompat;
 import androidx.core.content.res.ResourcesCompat;
@@ -140,22 +139,13 @@ public class TabUiThemeUtil {
     }
 
     /**
-     * Returns the mini thumbnail placeholder color for the given group color.
-     *
-     * @param context {@link Context} used to retrieve color.
-     * @param isIncognito Whether the color is used for incognito mode.
-     * @param groupColor The group color that will be composited with the mini thumbnail placeholder
-     *     overlay color.
+     * Returns the color of the drop indicator shown when a link is dragged onto the tab strip,
+     * which is colorOutline. Incognito uses the dark theme's colorOutline.
      */
-    public static @ColorInt int getMiniThumbnailPlaceholderColorForGroup(
-            Context context, boolean isIncognito, @ColorInt int groupColor) {
-        @ColorRes
-        int foregroundRes =
-                isIncognito
-                        ? R.color.mini_thumbnail_placeholder_overlay_color_baseline
-                        : R.color.mini_thumbnail_placeholder_overlay_color;
-        @ColorInt int foregroundColor = context.getColor(foregroundRes);
-        return androidx.core.graphics.ColorUtils.compositeColors(foregroundColor, groupColor);
+    public static @ColorInt int getLinkDropIndicatorColor(Context context, boolean isIncognito) {
+        return isIncognito
+                ? context.getColor(R.color.baseline_neutral_variant_60)
+                : SemanticColorUtils.getColorOutline(context);
     }
 
     /**

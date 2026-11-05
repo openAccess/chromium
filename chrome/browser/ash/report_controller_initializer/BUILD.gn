@@ -10,15 +10,12 @@ static_library("report_controller_initializer") {
     "report_controller_initializer.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//base",
     "//chrome/browser/ash/login",
     "//chrome/browser/ash/policy/core",
     "//chrome/browser/ash/settings",
     "//chrome/browser/first_run",
-    "//chrome/browser/net",
     "//chromeos/ash/components/channel",
     "//chromeos/ash/components/report",
     "//chromeos/ash/components/report:fresnel_service_proto",
@@ -41,6 +38,7 @@ source_set("unit_tests") {
     "//chrome/browser:browser_process_platform_part",
     "//chrome/browser/ash/settings",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/install_attributes:test_support",
     "//testing/gtest",
     "//third_party/private_membership",

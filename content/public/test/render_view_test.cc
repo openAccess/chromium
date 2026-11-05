@@ -71,7 +71,6 @@
 #include "third_party/blink/public/web/web_input_element.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_script_source.h"
-#include "third_party/blink/public/web/web_v8_features.h"
 #include "third_party/blink/public/web/web_view.h"
 #include "ui/color/color_provider.h"
 #include "ui/color/color_provider_manager.h"
@@ -411,7 +410,6 @@ void RenderViewTest::SetUp() {
   blink::WebRuntimeFeatures::EnableTestOnlyFeatures(true);
   blink::WebRuntimeFeatures::EnableOverlayScrollbars(
       ui::NativeTheme::GetInstanceForWeb()->use_overlay_scrollbar());
-  blink::WebV8Features::InitializeMojoJSAllowedProtectedMemory();
 
   test_io_thread_ =
       std::make_unique<base::TestIOThread>(base::TestIOThread::kAutoStart);
@@ -519,7 +517,7 @@ void RenderViewTest::SetUp() {
   policy_container_host_ = std::make_unique<MockPolicyContainerHost>();
   main_frame_params->policy_container =
       policy_container_host_->CreatePolicyContainerForBlink();
-  main_frame_params->initiator_state_token = base::UnguessableToken::Create();
+  main_frame_params->initiator_state_token = blink::InitiatorStateToken();
 
   auto widget_params = mojom::CreateFrameWidgetParams::New();
   widget_params->routing_id = render_thread_->GetNextRoutingID();

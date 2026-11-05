@@ -50,6 +50,9 @@ BASE_FEATURE(kRefreshFeedOnRestart, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kFeedContainment, base::FEATURE_ENABLED_BY_DEFAULT);
 
+// See b/577835384.
+BASE_FEATURE(kFeedContainmentClipFirstCard, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kFeedRecyclerBinderUnmountOnDetach,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -60,6 +63,12 @@ BASE_FEATURE(kFeedAudioOverviews, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kAndroidOpenIncognitoAsWindow, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kWideScreenFeedForFoldables, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// TODO(b/517926260): Remove this feature flag once the change has made it
+// through a stable channel revision.
+// See b/517926260.
+BASE_FEATURE(kFeedNullItemAnimatorOnScrollRestore,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE_PARAM(base::TimeDelta, kFeedCloseRefreshDelay, &kInterestFeedV2,
                     "feed_close_refresh_delay", base::Minutes(30));

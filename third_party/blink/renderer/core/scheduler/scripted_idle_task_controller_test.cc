@@ -267,9 +267,12 @@ class ScriptedIdleTaskControllerTest : public testing::Test {
     execution_context_.emplace(
         std::make_unique<IdleTaskControllerFrameScheduler>(
             &scheduler_.value()));
+    controller_ = MakeGarbageCollected<ScriptedIdleTaskController>(
+        &execution_context_->GetExecutionContext());
   }
 
   void DeleteScheduler() {
+    controller_.Clear();
     execution_context_.reset();
     scheduler_overrider_.reset();
     scheduler_.reset();
@@ -277,16 +280,14 @@ class ScriptedIdleTaskControllerTest : public testing::Test {
 
   void DeleteExecutionContext() { execution_context_.reset(); }
 
-  ScriptedIdleTaskController* GetController() {
-    return &ScriptedIdleTaskController::From(
-        execution_context_->GetExecutionContext());
-  }
+  ScriptedIdleTaskController* GetController() { return controller_.Get(); }
 
  protected:
   test::TaskEnvironment task_environment_;
   std::optional<MockScriptedIdleTaskControllerScheduler> scheduler_;
 
  private:
+  Persistent<ScriptedIdleTaskController> controller_;
   std::optional<ScopedSchedulerOverrider> scheduler_overrider_;
   std::optional<ScopedNullExecutionContext> execution_context_;
 };
@@ -409,8 +410,6 @@ TEST_F(ScriptedIdleTaskControllerTest,
 
 TEST_F(ScriptedIdleTaskControllerTest,
        SchedulerTasksCleanedUpdOnTimeoutTaskRun) {
-  base::test::ScopedFeatureList feature_list(kRemoveCancelledScriptedIdleTasks);
-
   InitializeScheduler(ShouldYield(false));
 
   // Register many idle tasks with a timeout.
@@ -431,8 +430,6 @@ TEST_F(ScriptedIdleTaskControllerTest,
 
 TEST_F(ScriptedIdleTaskControllerTest,
        SchedulerTasksCleanedUpOnExecutionContextDeleted) {
-  base::test::ScopedFeatureList feature_list(kRemoveCancelledScriptedIdleTasks);
-
   InitializeScheduler(ShouldYield(false));
 
   // Register many idle tasks with a timeout.
@@ -451,8 +448,6 @@ TEST_F(ScriptedIdleTaskControllerTest,
 
 TEST_F(ScriptedIdleTaskControllerTest,
        SchedulerTasksRemovedOnManyIdleTasksCancelled) {
-  base::test::ScopedFeatureList feature_list(kRemoveCancelledScriptedIdleTasks);
-
   InitializeScheduler(ShouldYield(false));
 
   // Register 1 idle task which will not be cancelled.

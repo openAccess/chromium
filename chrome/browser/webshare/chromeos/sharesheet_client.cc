@@ -30,7 +30,6 @@
 #include "components/prefs/pref_service.h"
 #include "components/services/app_service/public/cpp/intent.h"
 #include "components/services/app_service/public/cpp/intent_util.h"
-#include "components/tabs/public/tab_interface.h"
 #include "components/visibility_timer/visibility_timer_tab_helper.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
@@ -115,7 +114,7 @@ void SharesheetClient::Share(
     const GURL& share_url,
     std::vector<blink::mojom::SharedFilePtr> files,
     blink::mojom::ShareService::ShareCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 
   // The SharesheetClient only shows one share sheet at a time.
   if (current_share_.has_value() || !web_contents()) {
@@ -127,13 +126,13 @@ void SharesheetClient::Share(
 
   Profile* const profile =
       Profile::FromBrowserContext(web_contents()->GetBrowserContext());
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
 
-  // File sharing is denied in incognito, as files are written to disk.
-  // To prevent sites from using that to detect whether incognito mode is
-  // active, we deny after a random time delay, to simulate a user cancelling
-  // the share.
-  if (profile->IsIncognitoProfile() && !files.empty()) {
+  // File sharing is denied in incognito and enterprise isolated mode, as files
+  // are written to disk. To prevent sites from using that to detect whether
+  // incognito or isolated mode is active, we deny after a random time delay,
+  // to simulate a user cancelling the share.
+  if (profile->IsPrimaryOTRProfileWithRegularParent() && !files.empty()) {
     // Random number of seconds in the range [1.0, 2.0).
     double delay_seconds = 1.0 + 1.0 * base::RandDouble();
     visibility_timer::VisibilityTimerTabHelper::CreateForWebContents(
@@ -147,10 +146,8 @@ void SharesheetClient::Share(
     return;
   }
 
-  // If the tab is no longer active, return permission denied.
-  tabs::TabInterface* tab_interface =
-      tabs::TabInterface::MaybeGetFromContents(web_contents());
-  if (tab_interface && !tab_interface->IsActivated()) {
+  // If the tab is no longer active or visible, return permission denied.
+  if (!ShareServiceImpl::IsWebContentsForegroundAndVisible(web_contents())) {
     std::move(callback).Run(blink::mojom::ShareError::PERMISSION_DENIED);
     return;
   }
@@ -203,7 +200,7 @@ void SharesheetClient::SetSharesheetCallbackForTesting(
 }
 
 void SharesheetClient::OnPrepareDirectory(blink::mojom::ShareError error) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (!current_share_.has_value())
     return;
 
@@ -229,7 +226,7 @@ void SharesheetClient::OnPrepareDirectory(blink::mojom::ShareError error) {
 }
 
 void SharesheetClient::OnPrepareSubdirectory(blink::mojom::ShareError error) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (!current_share_.has_value())
     return;
 
@@ -251,12 +248,18 @@ void SharesheetClient::OnPrepareSubdirectory(blink::mojom::ShareError error) {
 }
 
 void SharesheetClient::OnStoreFiles(blink::mojom::ShareError error) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (!current_share_.has_value())
     return;
 
-  if (!web_contents() || error != blink::mojom::ShareError::OK) {
-    std::move(current_share_->callback).Run(error);
+  // Re-check here rather than aborting immediately on visibility changes so
+  // transient tab switches or occlusions do not cancel in-flight shares.
+  if (!web_contents() || error != blink::mojom::ShareError::OK ||
+      !ShareServiceImpl::IsWebContentsForegroundAndVisible(web_contents())) {
+    std::move(current_share_->callback)
+        .Run(error != blink::mojom::ShareError::OK
+                 ? error
+                 : blink::mojom::ShareError::PERMISSION_DENIED);
     ScheduleSharedFileDirectoryDeletion(std::move(current_share_->file_paths),
                                         base::Minutes(0));
     current_share_ = std::nullopt;
@@ -290,12 +293,12 @@ void SharesheetClient::ShowSharesheet(
     const std::string& text,
     const std::string& title,
     DeliveredCallback delivered_callback) {
-  DCHECK_EQ(file_paths.size(), content_types.size());
-  DCHECK_EQ(file_paths.size(), file_sizes.size());
+  CHECK_EQ(file_paths.size(), content_types.size(), base::NotFatalUntil::M162);
+  CHECK_EQ(file_paths.size(), file_sizes.size(), base::NotFatalUntil::M162);
 
   Profile* const profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
 
   apps::IntentPtr intent =
       file_paths.empty() ? apps_util::MakeShareIntent(text, title)
@@ -307,7 +310,8 @@ void SharesheetClient::ShowSharesheet(
       (intent->files)[index]->file_size = file_sizes[index];
     }
   }
-  DCHECK(intent->share_text.has_value() || !intent->files.empty());
+  CHECK(intent->share_text.has_value() || !intent->files.empty(),
+        base::NotFatalUntil::M162);
 
   sharesheet::SharesheetService* const sharesheet_service =
       sharesheet::SharesheetServiceFactory::GetForProfile(profile);

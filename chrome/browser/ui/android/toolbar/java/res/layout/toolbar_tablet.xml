@@ -97,6 +97,13 @@ found in the LICENSE file.
             android:visibility="gone" />
 
         <ViewStub
+            android:id="@+id/download_button_stub"
+            android:layout="@layout/download_toolbar_button"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:visibility="gone"/>
+
+        <ViewStub
             android:id="@+id/signin_button_stub"
             android:layout="@layout/signin_button_view"
             android:layout_width="wrap_content"
@@ -124,6 +131,7 @@ found in the LICENSE file.
             android:layout_width="@dimen/glic_divider_width"
             android:layout_height="@dimen/glic_divider_height"
             android:layout_marginVertical="@dimen/glic_divider_margin"
+            android:layout_marginEnd="4dp"
             android:background="@drawable/divider_line_bg"
             android:importantForAccessibility="no"
             android:visibility="gone" />
@@ -131,11 +139,31 @@ found in the LICENSE file.
         <ViewStub
             android:id="@+id/glic_action_chip_stub"
             android:inflatedId="@+id/glic_action_chip"
-            android:layout="@layout/optional_toolbar_button"
+            android:layout="@layout/glic_action_chip"
             style="@style/ToolbarHoverableButton.AdaptiveDensity"
-            android:layout_width="@dimen/min_touch_target_size"
+            android:layout_width="wrap_content"
             android:layout_height="?attr/toolbarButtonHeight"
             android:visibility="gone" />
+
+        <org.chromium.chrome.browser.toolbar.top.AiOverlayMicrophoneButtonView
+            android:id="@+id/ai_overlay_microphone_button"
+            style="@style/ToolbarHoverableButton.AdaptiveDensity"
+            android:clickable="true"
+            android:focusable="true"
+            android:src="@drawable/ic_mic_white_24dp"
+            android:visibility="gone"
+            android:contentDescription="@string/accessibility_toolbar_btn_ai_overlay_mic"
+            android:tooltipText="@string/accessibility_toolbar_btn_ai_overlay_mic" />
+
+        <org.chromium.ui.widget.ChromeImageButton
+            android:id="@+id/ttc_toolbar_button"
+            style="@style/ToolbarHoverableButton.AdaptiveDensity"
+            android:clickable="true"
+            android:focusable="true"
+            android:src="@drawable/ic_audio_spark_24dp"
+            android:visibility="gone"
+            android:contentDescription="@string/ttc_entrypoint_label"
+            android:tooltipText="@string/ttc_entrypoint_label" />
 
         <org.chromium.chrome.browser.toolbar.top.ToggleTabStackButton
             android:id="@+id/tab_switcher_button"

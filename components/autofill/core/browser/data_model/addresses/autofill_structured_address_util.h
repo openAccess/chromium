@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "components/autofill/core/browser/autofill_type.h"
@@ -24,12 +25,8 @@
 namespace autofill {
 
 struct AddressToken {
-  // The original value.
-  std::u16string value;
   // The normalized value.
   std::u16string normalized_value;
-  // The token position in the original string.
-  int position;
 };
 
 enum class RegEx;
@@ -57,19 +54,11 @@ enum class SortedTokenComparisonStatus {
   kSuperset
 };
 
-// The result from comparing two sets of sorted tokens containing the status and
-// the additional tokens in the super/sub sets.
+// The result from comparing two sets of sorted tokens.
 struct SortedTokenComparisonResult {
-  explicit SortedTokenComparisonResult(
-      SortedTokenComparisonStatus status,
-      std::vector<AddressToken> additional_tokens = {});
-  SortedTokenComparisonResult(SortedTokenComparisonResult&& other);
-  SortedTokenComparisonResult& operator=(SortedTokenComparisonResult&& other);
-  ~SortedTokenComparisonResult();
+  explicit SortedTokenComparisonResult(SortedTokenComparisonStatus status);
   // The status of the token comparison.
   SortedTokenComparisonStatus status = SortedTokenComparisonStatus::kDistinct;
-  // The additional elements in the super/subsets.
-  std::vector<AddressToken> additional_tokens{};
   // Return true if one is a subset of the other.
   bool OneIsSubset() const;
   // Returns true if one contains the other.
@@ -250,17 +239,14 @@ std::string CaptureTypeWithPatternOptional(
 
 // Determines the 2-letter country code from a given value.
 // This function handles two cases:
-// 1. The value is expected to be a country code (e.g.,
-// autocomplete="country-code").
-//   It validates the value as a 2-letter code. If validation fails,
-//   it falls back to treating it as a full country name (to handle
-//   incorrectly tagged fields).
-// 2. The value is expected to be a full country name (e.g.,
-// autocomplete="country").
-//   It attempts to find a matching country code from the name.
-std::string ParseCountryCode(const AutofillType& type,
-                             std::u16string_view value,
-                             std::string_view app_locale);
+// 1. The value is expected to be a country code.
+//    It validates the value as a 2-letter code. If validation fails,
+//    it falls back to treating it as a full country name (to handle
+//    incorrectly tagged fields).
+// 2. The value is expected to be a full country name.
+//    It attempts to find a matching country code from the name.
+std::string ParseCountry(std::u16string_view value,
+                         std::string_view app_locale);
 
 // Returns true of both vectors contain the same tokens in the same order.
 bool AreSortedTokensEqual(const std::vector<AddressToken>& first,
@@ -289,6 +275,49 @@ SortedTokenComparisonResult CompareSortedTokens(
 // Convenience wrapper to supply untokenized strings.
 SortedTokenComparisonResult CompareSortedTokens(std::u16string_view first,
                                                 std::u16string_view second);
+
+
+// Returns true if `sub` is an abbreviated concatenated subsequence of `super`.
+//
+// This means each token in `sub` must match a corresponding subsequence of
+// tokens from `super`, processed in order. Tokens from `super` can be skipped.
+// The matching for a `sub` token can be one of the following:
+//
+// 1.  Exact Match:
+//     A token in `sub` is identical to a token in `super`.
+//
+// 2.  Concatenated Initials:
+//     A token in `sub` is formed by concatenating the first letters (initials)
+//     of an ordered subsequence of tokens from `super`.
+//     - Example: Given `super` = ["john", "quincy", "public"],
+//       `sub` = ["jqp"] matches by taking initials from all three.
+//       `sub` = ["jq"] matches by taking initials from "john", "quincy",
+//       skipping "public".
+//
+// Key Rules:
+// - Tokens from `super` are always consumed in their original order.
+// - Tokens in `super` can be skipped between matches for different `sub`
+//   tokens.
+// - Tokens in `super` can also be skipped when forming a single concatenated
+//   initials token in `sub`.
+//   (e.g., "jp" from ["john", "quincy", "public"], skipping "quincy").
+//
+// Examples with `super` = ["john", "quincy", "public"]:
+// Valid `sub` sequences:
+//   ["john", "quincy"          ]
+//   ["j"   , "q"     , "p"     ]
+//   ["jq"  ,           "public"]
+//   ["jqp"                     ]
+//   ["john",           "p"     ]
+//   ["jp"                      ]...
+//
+// Note: Empty tokens are considered to be equivalent to the absence of the
+// token and just bypassed by the algorithm.
+//
+// The number of iterations does not exceed `super.size() + sub.size()`.
+bool IsAbbreviatedConcatenatedSubsequence(
+    base::span<const std::u16string_view> super,
+    base::span<const std::u16string_view> sub);
 
 }  // namespace autofill
 #endif  // COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_ADDRESSES_AUTOFILL_STRUCTURED_ADDRESS_UTIL_H_

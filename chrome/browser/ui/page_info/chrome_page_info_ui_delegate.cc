@@ -4,7 +4,6 @@
 
 #include "chrome/browser/ui/page_info/chrome_page_info_ui_delegate.h"
 
-#include "base/feature_list.h"
 #include "base/notreached.h"
 #include "build/build_config.h"
 #include "chrome/browser/page_info/about_this_site_tab_helper.h"
@@ -21,7 +20,6 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "components/content_settings/core/common/content_settings_types.h"
-#include "components/content_settings/core/common/features.h"
 #include "components/page_info/core/about_this_site_service.h"
 #include "components/page_info/core/features.h"
 #include "components/page_info/core/merchant_trust_service.h"
@@ -30,6 +28,7 @@
 #include "components/permissions/permissions_client.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/permission_controller.h"
 #include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/permission_result.h"
@@ -44,9 +43,7 @@
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/extensions/window_controller_list.h"  // nogncheck
 #include "chrome/browser/page_info/about_this_site_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/page_info/about_this_site_side_panel.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/web_app_ui_utils.h"
 #endif
 
@@ -137,7 +134,8 @@ ChromePageInfoUiDelegate::GetAboutThisSiteInfo() {
           AboutThisSiteServiceFactory::GetForProfile(GetProfile())) {
     return service->GetAboutThisSiteInfo(
         site_url_, web_contents_->GetPrimaryMainFrame()->GetPageUkmSourceId(),
-        AboutThisSiteTabHelper::FromWebContents(web_contents_));
+        AboutThisSiteTabHelper::From(
+            tabs::TabInterface::MaybeGetFromContents(web_contents_)));
   }
 
   return std::nullopt;
@@ -146,7 +144,7 @@ ChromePageInfoUiDelegate::GetAboutThisSiteInfo() {
 void ChromePageInfoUiDelegate::OpenMoreAboutThisPageUrl(
     const GURL& url,
     const ui::Event& event) {
-  DCHECK(page_info::IsAboutThisSiteFeatureEnabled());
+  CHECK(page_info::IsAboutThisSiteFeatureEnabled(), base::NotFatalUntil::M162);
   ShowAboutThisSiteSidePanel(web_contents_, url);
 }
 #endif
@@ -248,9 +246,9 @@ bool ChromePageInfoUiDelegate::ShouldShowSettingsLinkForPermission(
             AppShimRegistry::Get()->GetNotificationPermissionStatusForApp(
                 *app_id);
         if (system_permission_status ==
-                mac_notifications::mojom::PermissionStatus::kGranted ||
+                AppShimRegistry::NotificationPermissionStatus::kGranted ||
             system_permission_status ==
-                mac_notifications::mojom::PermissionStatus::kNotDetermined) {
+                AppShimRegistry::NotificationPermissionStatus::kNotDetermined) {
           return false;
         }
         *text_id = IDS_PAGE_INFO_NOTIFICATIONS_SYSTEM_SETTINGS_DESCRIPTION;
@@ -260,18 +258,14 @@ bool ChromePageInfoUiDelegate::ShouldShowSettingsLinkForPermission(
 #endif
       return false;
     case ContentSettingsType::MEDIASTREAM_CAMERA:
-      if (base::FeatureList::IsEnabled(
-              content_settings::features::kLeftHandSideActivityIndicators) &&
-          system_permission_settings::IsDenied(type)) {
+      if (system_permission_settings::IsDenied(type)) {
         *text_id = IDS_PAGE_INFO_CAMERA_SYSTEM_SETTINGS_DESCRIPTION;
         *link_id = IDS_PAGE_INFO_SETTINGS_OF_A_SYSTEM_LINK;
         return true;
       }
       return false;
     case ContentSettingsType::MEDIASTREAM_MIC:
-      if (base::FeatureList::IsEnabled(
-              content_settings::features::kLeftHandSideActivityIndicators) &&
-          system_permission_settings::IsDenied(type)) {
+      if (system_permission_settings::IsDenied(type)) {
         *text_id = IDS_PAGE_INFO_MICROPHONE_SYSTEM_SETTINGS_DESCRIPTION;
         *link_id = IDS_PAGE_INFO_SETTINGS_OF_A_SYSTEM_LINK;
         return true;
@@ -287,9 +281,7 @@ bool ChromePageInfoUiDelegate::ShouldShowSettingsLinkForPermission(
       return false;
 #endif
     case ContentSettingsType::CLIPBOARD_READ_WRITE:
-      if (base::FeatureList::IsEnabled(
-              content_settings::features::kLeftHandSideActivityIndicators) &&
-          system_permission_settings::IsDenied(type)) {
+      if (system_permission_settings::IsDenied(type)) {
         *text_id = IDS_PAGE_INFO_CLIPBOARD_SYSTEM_SETTINGS_DESCRIPTION;
         *link_id = IDS_PAGE_INFO_SETTINGS_OF_A_SYSTEM_LINK;
         return true;
@@ -328,7 +320,7 @@ ChromePageInfoUiDelegate::GetEmbargoResult(ContentSettingsType type) {
 
 #if !BUILDFLAG(IS_ANDROID)
 void ChromePageInfoUiDelegate::OpenMerchantTrustSidePanel(const GURL& url) {
-  DCHECK(page_info::IsMerchantTrustFeatureEnabled());
+  CHECK(page_info::IsMerchantTrustFeatureEnabled(), base::NotFatalUntil::M162);
   ShowMerchantTrustSidePanel(web_contents_, url);
 }
 #endif

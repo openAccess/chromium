@@ -19,7 +19,6 @@ load("./linux.star", chromium_linux = "chromium")
 load("./mac.star", chromium_mac = "chromium")
 load("./mojo.star", "mojo")
 load("./platform.star", "platform")
-load("./reclient.star", "reclient")
 load("./rust.star", "rust")
 load("./simple.star", "simple")
 load("./typescript_all.star", "typescript_all")
@@ -89,11 +88,11 @@ def init(ctx):
             },
         },
         "rules": [],
-        # Allowlist for fail-on-bad-deps feature.
-        "bad_deps": {
+        # Outputs with known missing deps. They don't fail the build with
+        # -missing_deps=error/fatal.
+        "missing_deps": {
             "./obj/ash/quick_pair/repository/repository/device_address_map.o": "crbug.com/546524333",
             "./obj/ash/quick_pair/repository/repository/device_image_store.o": "crbug.com/546524333",
-            "./obj/chrome/browser/ash/smb_client/smb_client/smbfs_share.o": "crbug.com/548936578",
         },
         # Executables sent from Windows host to Linux workers need to set executable bit explicitly.
         # This is necessary for cross platform build actions. e.g. node binary for typescript
@@ -110,8 +109,6 @@ def init(ctx):
     step_config = rust.step_config(ctx, step_config)
     step_config = simple.step_config(ctx, step_config)
     step_config = typescript_all.step_config(ctx, step_config)
-    if reclient.enabled(ctx):
-        step_config = reclient.step_config(ctx, step_config)
 
     step_config = denylist.step_config(ctx, step_config)
 
@@ -132,7 +129,6 @@ def init(ctx):
     handlers.update(host.handlers)
     handlers.update(rust.handlers)
     handlers.update(simple.handlers)
-    handlers.update(reclient.handlers)
     handlers.update(typescript_all.handlers)
 
     return module(

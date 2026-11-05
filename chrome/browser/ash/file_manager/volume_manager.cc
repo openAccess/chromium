@@ -40,8 +40,9 @@
 #include "chrome/browser/ash/policy/skyvault/local_files_migration_manager.h"
 #include "chrome/browser/ash/policy/skyvault/policy_utils.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/ash/smb_client/smb_service.h"
+#include "chrome/browser/ash/smb_client/smb_service_factory.h"
 #include "chrome/browser/media_galleries/fileapi/mtp_device_map_service.h"
-#include "chrome/common/chrome_features.h"
 #include "chromeos/ash/components/policy/external_storage/device_id.h"
 #include "chromeos/ash/components/policy/external_storage/external_storage_policy_controller.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
@@ -238,6 +239,37 @@ bool IsSkyVaultV2Enabled() {
 
 }  // namespace
 
+class VolumeManager::SmbObserver
+    : public ash::smb_client::SmbService::Observer {
+ public:
+  explicit SmbObserver(VolumeManager* volume_manager)
+      : volume_manager_(volume_manager) {}
+  ~SmbObserver() override = default;
+
+  void Observe(ash::smb_client::SmbService* smb_service) {
+    observation_.Reset();
+    if (smb_service) {
+      observation_.Observe(smb_service);
+    }
+  }
+
+  // ash::smb_client::SmbService::Observer:
+  void OnSmbFsMounted(const base::FilePath& mount_point,
+                      const std::string& display_name) override {
+    volume_manager_->AddSmbFsVolume(mount_point, display_name);
+  }
+
+  void OnSmbFsUnmounted(const base::FilePath& mount_point) override {
+    volume_manager_->RemoveSmbFsVolume(mount_point);
+  }
+
+ private:
+  const raw_ptr<VolumeManager> volume_manager_;
+  base::ScopedObservation<ash::smb_client::SmbService,
+                          ash::smb_client::SmbService::Observer>
+      observation_{this};
+};
+
 int VolumeManager::counter_ = 0;
 
 VolumeManager::VolumeManager(
@@ -336,6 +368,13 @@ void VolumeManager::Initialize() {
     }
   }
 
+  // Subscribe to SmbService for SMB share mount/unmount events.
+  if (ash::smb_client::SmbService* const smb_service =
+          ash::smb_client::SmbServiceFactory::Get(profile_)) {
+    smb_observer_ = std::make_unique<SmbObserver>(this);
+    smb_observer_->Observe(smb_service);
+  }
+
   // Subscribe to Profile Preference change.
   pref_change_registrar_.Init(profile_->GetPrefs());
   pref_change_registrar_.Add(
@@ -394,6 +433,7 @@ void VolumeManager::Shutdown() {
   }
 
   drive_observation_.Reset();
+  smb_observer_.reset();
 
   if (file_system_provider_service_) {
     file_system_provider_service_->RemoveObserver(this);
@@ -414,24 +454,24 @@ void VolumeManager::Shutdown() {
 }
 
 void VolumeManager::AddObserver(VolumeManagerObserver* observer) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(observer);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(observer, base::NotFatalUntil::M161);
   observers_.AddObserver(observer);
 }
 
 void VolumeManager::RemoveObserver(VolumeManagerObserver* observer) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(observer);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(observer, base::NotFatalUntil::M161);
   observers_.RemoveObserver(observer);
 }
 
 std::vector<base::WeakPtr<Volume>> VolumeManager::GetVolumeList() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   std::vector<base::WeakPtr<Volume>> result;
   result.reserve(mounted_volumes_.size());
   for (const auto& volume : mounted_volumes_) {
-    DCHECK(volume);
+    CHECK(volume, base::NotFatalUntil::M161);
     result.push_back(volume->AsWeakPtr());
   }
   return result;
@@ -439,11 +479,11 @@ std::vector<base::WeakPtr<Volume>> VolumeManager::GetVolumeList() {
 
 base::WeakPtr<Volume> VolumeManager::FindVolumeById(
     const std::string& volume_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (const Volumes::const_iterator it = mounted_volumes_.find(volume_id);
       it != mounted_volumes_.end()) {
-    DCHECK(*it);
+    CHECK(*it, base::NotFatalUntil::M161);
     return (*it)->AsWeakPtr();
   }
 
@@ -452,10 +492,10 @@ base::WeakPtr<Volume> VolumeManager::FindVolumeById(
 
 base::WeakPtr<Volume> VolumeManager::FindVolumeFromPath(
     const base::FilePath& path) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   for (const auto& volume : mounted_volumes_) {
-    DCHECK(volume);
+    CHECK(volume, base::NotFatalUntil::M161);
     const base::FilePath& volume_mount_path = volume->mount_path();
     if (path == volume_mount_path || volume_mount_path.IsParent(path)) {
       return volume->AsWeakPtr();
@@ -468,7 +508,7 @@ base::WeakPtr<Volume> VolumeManager::FindVolumeFromPath(
 void VolumeManager::AddSshfsCrostiniVolume(
     const base::FilePath& sshfs_mount_path,
     const base::FilePath& remote_mount_path) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   // Ignore if volume already exists.
   if (!DoMountEvent(Volume::CreateForSshfsCrostini(sshfs_mount_path,
                                                    remote_mount_path))) {
@@ -493,7 +533,7 @@ void VolumeManager::AddSftpGuestOsVolume(
     const base::FilePath& sftp_mount_path,
     const base::FilePath& remote_mount_path,
     const guest_os::VmType vm_type) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   DoMountEvent(Volume::CreateForSftpGuestOs(
       std::move(display_name), sftp_mount_path, remote_mount_path, vm_type));
 }
@@ -501,7 +541,7 @@ void VolumeManager::AddSftpGuestOsVolume(
 void VolumeManager::RemoveSshfsCrostiniVolume(
     const base::FilePath& sshfs_mount_path,
     RemoveSshfsCrostiniVolumeCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   disk_mount_manager_->UnmountPath(
       sshfs_mount_path.value(),
       base::BindOnce(&VolumeManager::OnSshfsCrostiniUnmountCallback,
@@ -513,7 +553,7 @@ void VolumeManager::RemoveSftpGuestOsVolume(
     const base::FilePath& sftp_mount_path,
     const guest_os::VmType vm_type,
     RemoveSshfsCrostiniVolumeCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   disk_mount_manager_->UnmountPath(
       sftp_mount_path.value(),
       base::BindOnce(&VolumeManager::OnSftpGuestOsUnmountCallback,
@@ -523,31 +563,31 @@ void VolumeManager::RemoveSftpGuestOsVolume(
 
 bool VolumeManager::RegisterAndroidFilesDirectoryForTesting(
     const base::FilePath& path) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   bool result =
       storage::ExternalMountPoints::GetSystemInstance()->RegisterFileSystem(
           file_manager::util::GetAndroidFilesMountPointName(),
           storage::kFileSystemTypeLocal, storage::FileSystemMountOption(),
           path);
-  DCHECK(result);
+  CHECK(result, base::NotFatalUntil::M161);
   return DoMountEvent(Volume::CreateForAndroidFiles(path));
 }
 
 bool VolumeManager::RegisterMediaViewForTesting(
     const std::string& root_document_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   return DoMountEvent(Volume::CreateForMediaView(root_document_id));
 }
 
 bool VolumeManager::RemoveAndroidFilesDirectoryForTesting(
     const base::FilePath& path) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   DoUnmountEvent(*Volume::CreateForAndroidFiles(path));
   return true;
 }
 
 void VolumeManager::RemoveDownloadsDirectoryForTesting() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   base::FilePath path;
   if (FindDownloadsMountPointPath(profile_, &path)) {
     DoUnmountEvent(*Volume::CreateForDownloads(path));
@@ -556,7 +596,7 @@ void VolumeManager::RemoveDownloadsDirectoryForTesting() {
 
 bool VolumeManager::RegisterDownloadsDirectoryForTesting(
     const base::FilePath& path) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   base::FilePath old_path;
   if (FindDownloadsMountPointPath(profile_, &old_path)) {
@@ -584,7 +624,7 @@ bool VolumeManager::RegisterDownloadsDirectoryForTesting(
 
 bool VolumeManager::RegisterCrostiniDirectoryForTesting(
     const base::FilePath& path) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   const bool ok =
       storage::ExternalMountPoints::GetSystemInstance()->RegisterFileSystem(
@@ -612,7 +652,7 @@ bool VolumeManager::AddVolumeForTesting(base::FilePath path,
 }
 
 bool VolumeManager::AddVolumeForTesting(std::unique_ptr<Volume> volume) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   return DoMountEvent(std::move(volume));
 }
 
@@ -624,19 +664,19 @@ void VolumeManager::RemoveVolumeForTesting(
     const base::FilePath& device_path,
     const std::string& drive_label,
     const std::string& file_system_type) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   DoUnmountEvent(*Volume::CreateForTesting(path, volume_type, device_type,
                                            read_only, device_path, drive_label,
                                            file_system_type));
 }
 
 void VolumeManager::RemoveVolumeForTesting(const std::string& volume_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   DoUnmountEvent(volume_id);
 }
 
 void VolumeManager::OnFileSystemMounted() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // Raise mount event.
   // We can pass ash::MountError::kNone even when authentication is failed
@@ -645,7 +685,7 @@ void VolumeManager::OnFileSystemMounted() {
 }
 
 void VolumeManager::OnFileSystemBeingUnmounted() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   DoUnmountEvent(*Volume::CreateForDrive(GetDriveMountPointPath()));
 }
 
@@ -656,7 +696,7 @@ void VolumeManager::OnDriveIntegrationServiceDestroyed() {
 void VolumeManager::OnAutoMountableDiskEvent(
     ash::disks::DiskMountManager::DiskEvent event,
     const ash::disks::Disk& disk) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // Disregard hidden devices.
   if (disk.is_hidden()) {
@@ -719,7 +759,7 @@ void VolumeManager::OnAutoMountableDiskEvent(
 void VolumeManager::OnDeviceEvent(
     ash::disks::DiskMountManager::DeviceEvent event,
     const std::string& device_path) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   DVLOG(1) << "OnDeviceEvent: " << event << ", " << device_path;
   switch (event) {
@@ -745,7 +785,7 @@ void VolumeManager::OnMountEvent(
     ash::disks::DiskMountManager::MountEvent event,
     ash::MountError error,
     const ash::disks::DiskMountManager::MountPoint& mount_info) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // Network storage is responsible for doing its own mounting.
   if (mount_info.mount_type == ash::MountType::kNetworkStorage) {
@@ -776,7 +816,7 @@ void VolumeManager::OnFormatEvent(
     ash::FormatError error,
     const std::string& device_path,
     const std::string& device_label) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   DVLOG(1) << "OnFormatEvent: " << event << ", error = " << error
            << ", device_path = " << device_path;
 
@@ -811,52 +851,12 @@ void VolumeManager::OnFormatEvent(
   NOTREACHED() << "Unexpected FormatEvent " << event;
 }
 
-void VolumeManager::OnPartitionEvent(
-    ash::disks::DiskMountManager::PartitionEvent event,
-    ash::PartitionError error,
-    const std::string& device_path,
-    const std::string& device_label) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DVLOG(1) << "OnPartitionEvent: " << event << ", error = " << error
-           << ", device_path = " << device_path;
-
-  switch (event) {
-    case ash::disks::DiskMountManager::PARTITION_STARTED:
-      for (auto& observer : observers_) {
-        observer.OnPartitionStarted(device_path, device_label,
-                                    error == ash::PartitionError::kSuccess);
-      }
-      return;
-
-    case ash::disks::DiskMountManager::PARTITION_COMPLETED:
-      // If partitioning failed, try to mount the device so the user can retry.
-      // MountPath auto-detects filesystem format if second argument is
-      // empty. The third argument (mount label) is not used in a disk mount
-      // operation.
-      if (error != ash::PartitionError::kSuccess) {
-        disk_mount_manager_->MountPath(
-            device_path, {}, {}, {}, ash::MountType::kDevice,
-            GetExternalStorageAccessMode(
-                profile_, GetDeviceIdFromDevicePath(device_path)),
-            base::DoNothing());
-      }
-
-      for (auto& observer : observers_) {
-        observer.OnPartitionCompleted(device_path, device_label,
-                                      error == ash::PartitionError::kSuccess);
-      }
-      return;
-  }
-
-  NOTREACHED() << "Unexpected PartitionEvent " << event;
-}
-
 void VolumeManager::OnRenameEvent(
     ash::disks::DiskMountManager::RenameEvent event,
     ash::RenameError error,
     const std::string& device_path,
     const std::string& device_label) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   DVLOG(1) << "OnRenameEvent: " << event << ", error = " << error
            << ", device_path = " << device_path;
 
@@ -950,7 +950,7 @@ void VolumeManager::OnProvidedFileSystemMount(
   auto fsp_file_system_url = mount_points->CreateExternalFileSystemURL(
       blink::StorageKey::CreateFirstParty(util::GetFilesAppOrigin()), fsid, {});
   const std::string url = fsp_file_system_url.ToGURL().spec();
-  DCHECK(fsp_file_system_url.is_valid());
+  CHECK(fsp_file_system_url.is_valid(), base::NotFatalUntil::M160);
 
   // Attach the FSP storage device to the fusebox daemon.
   const std::string subdir = FuseBoxSubdirFSP(file_system_info);
@@ -969,7 +969,7 @@ void VolumeManager::OnProvidedFileSystemMount(
         fusebox_fsid, storage::kFileSystemTypeFuseBox,
         storage::FileSystemMountOption(), fusebox_volume->mount_path());
     LOG_IF(ERROR, !result) << "invalid FuseBox FSP mount path";
-    DCHECK(result);
+    CHECK(result, base::NotFatalUntil::M160);
   }
 
   // Mount the fusebox FSP storage device in files app.
@@ -978,7 +978,7 @@ void VolumeManager::OnProvidedFileSystemMount(
 
 void VolumeManager::ConvertFuseBoxFSPVolumeIdToFSPIfNeeded(
     std::string* volume_id) const {
-  DCHECK(volume_id);
+  CHECK(volume_id, base::NotFatalUntil::M160);
 
   static const base::FilePath::CharType kFuseBoxFSPVolumeIdPrefix[] =
       FILE_PATH_LITERAL("fuseboxprovided:fsp:");
@@ -992,7 +992,7 @@ void VolumeManager::ConvertFuseBoxFSPVolumeIdToFSPIfNeeded(
 
 // TODO(aidazolic): Figure out why it's called twice for every update.
 void VolumeManager::OnLocalUserFilesPolicyChanged() {
-  if (!base::FeatureList::IsEnabled(features::kSkyVault)) {
+  if (!base::FeatureList::IsEnabled(ash::features::kSkyVault)) {
     return;
   }
 
@@ -1070,8 +1070,8 @@ void VolumeManager::OnExternalStorageDisabledChangedUnmountCallback(
 }
 
 void VolumeManager::OnArcPlayStoreEnabledChanged(bool enabled) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(IsArcEnabled(profile_));
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(IsArcEnabled(profile_), base::NotFatalUntil::M160);
   const bool mounting =
       arc::ShouldAlwaysMountAndroidVolumesInFilesForTesting() || enabled;
 
@@ -1150,7 +1150,7 @@ void VolumeManager::OnRemovableStorageAttached(
   // Resolve mtp storage name and get MtpStorageInfo.
   std::string storage_name;
   base::RemoveChars(info.location(), kRootPath, &storage_name);
-  DCHECK(!storage_name.empty());
+  CHECK(!storage_name.empty(), base::NotFatalUntil::M160);
   if (get_mtp_storage_info_callback_.is_null()) {
     storage_monitor::StorageMonitor::GetInstance()
         ->media_transfer_protocol_manager()
@@ -1218,7 +1218,7 @@ void VolumeManager::DoAttachMtpStorage(
         fsid, storage::kFileSystemTypeDeviceMediaAsFileStorage,
         storage::FileSystemMountOption(), path);
     LOG_IF(ERROR, !result) << "invalid MTP mount path";
-    DCHECK(result);
+    CHECK(result, base::NotFatalUntil::M160);
   }
 
   // Register the MTP storage device with the MTPDeviceMapService.
@@ -1241,7 +1241,7 @@ void VolumeManager::DoAttachMtpStorage(
   auto mtp_file_system_url = mount_points->CreateExternalFileSystemURL(
       blink::StorageKey::CreateFirstParty(util::GetFilesAppOrigin()), fsid, {});
   const std::string url = mtp_file_system_url.ToGURL().spec();
-  DCHECK(mtp_file_system_url.is_valid());
+  CHECK(mtp_file_system_url.is_valid(), base::NotFatalUntil::M160);
 
   // Attach the MTP storage device to the fusebox daemon.
   std::string subdir = FuseBoxSubdirMTP(info.device_id());
@@ -1260,7 +1260,7 @@ void VolumeManager::DoAttachMtpStorage(
         fusebox_fsid, storage::kFileSystemTypeFuseBox,
         storage::FileSystemMountOption(), fusebox_volume->mount_path());
     LOG_IF(ERROR, !result) << "invalid FuseBox MTP mount path";
-    DCHECK(result);
+    CHECK(result, base::NotFatalUntil::M160);
   }
 
   // Mount the fusebox MTP storage device in files app.
@@ -1278,7 +1278,7 @@ void VolumeManager::OnRemovableStorageDetached(
     if (it == end) {
       return;
     }
-    DCHECK(*it);
+    CHECK(*it, base::NotFatalUntil::M160);
     if ((*it)->source_path().value() == info.location()) {
       break;
     }
@@ -1347,7 +1347,7 @@ void VolumeManager::OnDocumentsProviderRootAdded(
       arc::kDocumentsProviderMountPointName,
       arc::GetDocumentsProviderMountPathSuffix(authority, root_id));
   const std::string url = adp_file_system_url.ToGURL().spec();
-  DCHECK(adp_file_system_url.is_valid());
+  CHECK(adp_file_system_url.is_valid(), base::NotFatalUntil::M160);
 
   // Attach the ADP storage device to the fusebox daemon.
   std::string subdir = FuseBoxSubdirADP(authority, root_id);
@@ -1365,7 +1365,7 @@ void VolumeManager::OnDocumentsProviderRootAdded(
         fusebox_fsid, storage::kFileSystemTypeFuseBox,
         storage::FileSystemMountOption(), fusebox_volume->mount_path());
     LOG_IF(ERROR, !result) << "invalid FuseBox ADP mount path";
-    DCHECK(result);
+    CHECK(result, base::NotFatalUntil::M160);
   }
 
   // Mount the fusebox ADP storage device in files app.
@@ -1441,7 +1441,7 @@ void VolumeManager::AddSmbFsVolume(const base::FilePath& mount_point,
 }
 
 void VolumeManager::RemoveSmbFsVolume(const base::FilePath& mount_point) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   DoUnmountEvent(*Volume::CreateForSmb(mount_point, ""));
 }
@@ -1535,7 +1535,7 @@ void VolumeManager::OnStorageMonitorInitialized() {
 
 bool VolumeManager::DoMountEvent(std::unique_ptr<Volume> volume_ptr,
                                  ash::MountError error) {
-  DCHECK(volume_ptr);
+  CHECK(volume_ptr, base::NotFatalUntil::M160);
   const Volume& volume = *volume_ptr;
 
   // Archive files are mounted globally in system. We however don't want to show
@@ -1547,7 +1547,7 @@ bool VolumeManager::DoMountEvent(std::unique_ptr<Volume> volume_ptr,
     bool from_current_profile =
         profile_->GetPath().IsParent(volume.source_path());
     for (const auto& mounted_volume : mounted_volumes_) {
-      DCHECK(mounted_volume);
+      CHECK(mounted_volume, base::NotFatalUntil::M160);
       if (mounted_volume->mount_path().IsParent(volume.source_path())) {
         from_current_profile = true;
         break;
@@ -1579,8 +1579,9 @@ bool VolumeManager::DoMountEvent(std::unique_ptr<Volume> volume_ptr,
       UMA_HISTOGRAM_ENUMERATION("FileBrowser.VolumeType", volume.type(),
                                 NUM_VOLUME_TYPE);
     } else {
-      DCHECK(volume_ptr);
-      DCHECK_EQ((*it)->volume_id(), volume.volume_id());
+      CHECK(volume_ptr, base::NotFatalUntil::M160);
+      CHECK_EQ((*it)->volume_id(), volume.volume_id(),
+               base::NotFatalUntil::M160);
 
       // It is possible for a Volume object with different properties to be
       // inserted here. Replace the Volume in |mounted_volumes_|.
@@ -1588,7 +1589,7 @@ bool VolumeManager::DoMountEvent(std::unique_ptr<Volume> volume_ptr,
       VLOG(1) << "Replaced volume '" << volume.volume_id() << "'";
     }
 
-    DCHECK_EQ(&volume, it->get());
+    CHECK_EQ(&volume, it->get(), base::NotFatalUntil::M160);
   }
 
   for (auto& observer : observers_) {
@@ -1600,7 +1601,7 @@ bool VolumeManager::DoMountEvent(std::unique_ptr<Volume> volume_ptr,
 
 void VolumeManager::DoUnmountEvent(Volumes::const_iterator it,
                                    const ash::MountError error) {
-  DCHECK(it != mounted_volumes_.end());
+  CHECK(it != mounted_volumes_.end(), base::NotFatalUntil::M160);
 
   // Hold a reference to the removed Volume from |mounted_volumes_|, because
   // OnVolumeMounted() will access it.
@@ -1684,7 +1685,7 @@ void VolumeManager::MountDownloadsVolume(bool read_only) {
   const base::FilePath localVolume =
       file_manager::util::GetMyFilesFolderForProfile(profile_);
   const bool success = RegisterDownloadsMountPoint(profile_, localVolume);
-  DCHECK(success);
+  CHECK(success, base::NotFatalUntil::M160);
   DoMountEvent(Volume::CreateForDownloads(localVolume, {}, nullptr, read_only));
 
   // Asynchronously record the disk usage for the downloads path.
@@ -1703,7 +1704,7 @@ void VolumeManager::UnmountDownloadsVolume() {
 }
 
 void VolumeManager::MountArcRoots() {
-  DCHECK(IsArcEnabled(profile_));
+  CHECK(IsArcEnabled(profile_), base::NotFatalUntil::M160);
   if (arc_volumes_mounted_) {
     return;
   }
@@ -1719,7 +1720,7 @@ void VolumeManager::MountArcRoots() {
 }
 
 void VolumeManager::UnmountArcRoots() {
-  DCHECK(IsArcEnabled(profile_));
+  CHECK(IsArcEnabled(profile_), base::NotFatalUntil::M160);
   if (!arc_volumes_mounted_) {
     return;
   }

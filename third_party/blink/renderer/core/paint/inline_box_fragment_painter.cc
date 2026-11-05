@@ -130,7 +130,8 @@ void InlineBoxFragmentPainter::PaintMask(const PaintInfo& paint_info,
       GetSlicePaintType(style_.MaskBoxImage(), adjusted_frame_rect,
                         adjusted_clip_rect, object_may_have_multiple_boxes);
   if (border_painting_type == kDontPaint ||
-      (paint_info.IsPrivacyPreserving() && style_.MaskBoxImage().GetImage() &&
+      (paint_info.IsReadBackAllowedRendering() &&
+       style_.MaskBoxImage().GetImage() &&
        !style_.MaskBoxImage().GetImage()->IsCorsSameOrigin())) {
     return;
   }
@@ -496,9 +497,9 @@ void InlineBoxFragmentPainterBase::PaintFillLayers(
     bool object_has_multiple_boxes) {
   // FIXME: This should be a for loop or similar. It's a little non-trivial to
   // do so, however, since the layers need to be painted in reverse order.
-  if (layer.Next()) {
-    PaintFillLayers(box_painter, info, c, *layer.Next(), rect, bg_paint_context,
-                    object_has_multiple_boxes);
+  if (layer.NextForUsedValue()) {
+    PaintFillLayers(box_painter, info, c, *layer.NextForUsedValue(), rect,
+                    bg_paint_context, object_has_multiple_boxes);
   }
   PaintFillLayer(box_painter, info, c, layer, rect, bg_paint_context,
                  object_has_multiple_boxes);
@@ -539,7 +540,6 @@ void InlineBoxFragmentPainterBase::PaintFillLayer(
 // self-painting |LayoutInline|.
 void InlineBoxFragmentPainter::PaintAllFragments(
     const LayoutInline& layout_inline,
-    const FragmentData& fragment_data,
     wtf_size_t fragment_data_idx,
     const PaintInfo& paint_info) {
   // TODO(kojii): If the block flow is dirty, children of these fragments
@@ -549,6 +549,8 @@ void InlineBoxFragmentPainter::PaintAllFragments(
     return;
   }
 
+  const FragmentData& fragment_data =
+      layout_inline.FragmentList().at(fragment_data_idx);
   ScopedPaintState paint_state(layout_inline, paint_info, &fragment_data);
   PhysicalOffset paint_offset = paint_state.PaintOffset();
   const PaintInfo& local_paint_info = paint_state.GetPaintInfo();

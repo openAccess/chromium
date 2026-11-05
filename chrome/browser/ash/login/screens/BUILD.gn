@@ -9,8 +9,6 @@ assert(is_chromeos)
 
 static_library("screens") {
   sources = [
-    "account_selection_screen.cc",
-    "account_selection_screen.h",
     "add_child_screen.cc",
     "add_child_screen.h",
     "ai_intro_screen.cc",
@@ -169,7 +167,6 @@ static_library("screens") {
     "//ash",
     "//ash/public/cpp",
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/apps/app_discovery_service",
     "//chrome/browser/ash/accessibility",
     "//chrome/browser/ash/app_mode",
@@ -195,6 +192,7 @@ static_library("screens") {
     "//chromeos/ash/components/dbus/session_manager",
     "//chromeos/ash/components/dbus/update_engine",
     "//chromeos/ash/components/dbus/userdataauth",
+    "//chromeos/ash/components/dbus/userdataauth:userdataauth_proto",
     "//chromeos/ash/components/drivefs",
     "//chromeos/ash/components/hid_detection",
     "//chromeos/ash/components/login/auth",
@@ -273,12 +271,9 @@ static_library("screens") {
     "//chrome/browser/ash/profiles",
     "//chrome/browser/ash/settings",
     "//chrome/browser/ash/system",
-    "//chrome/browser/consent_auditor",
     "//chrome/browser/enterprise/browser_management:management_identity",
     "//chrome/browser/metrics",
-    "//chrome/browser/net",
     "//chrome/browser/prefs:util",
-    "//chrome/browser/signin",
     "//chrome/browser/sync",
     "//chrome/browser/sync:factories",
     "//chrome/browser/ui:chrome_pages",
@@ -294,6 +289,7 @@ static_library("screens") {
     "//chromeos/ash/components/assistant:buildflags",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/channel",
+    "//chromeos/ash/components/consent_auditor:consent_auditor_provider",
     "//chromeos/ash/components/dbus",
     "//chromeos/ash/components/dbus/concierge:concierge_proto",
     "//chromeos/ash/components/dbus/debug_daemon",
@@ -414,7 +410,6 @@ static_library("test_support") {
     "//base",
     "//chrome/browser/ash/login/demo_mode",
     "//chrome/browser/ash/login/screens",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/webui/ash/login",
     "//google_apis",
     "//testing/gmock",
@@ -526,7 +521,7 @@ source_set("browser_tests") {
     "//chrome/browser/signin",
     "//chrome/browser/speech",
     "//chrome/browser/sync",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/ash/login",
     "//chrome/browser/ui/webui/ash/login",
     "//chrome/browser/ui/webui/ash/settings",
@@ -608,6 +603,7 @@ source_set("browser_tests") {
 
     # Tests from subdirectories:
     "osauth:browser_tests",
+    "//chrome/browser/ash/account_manager",
   ]
 }
 
@@ -631,13 +627,13 @@ source_set("unit_tests") {
     "//base/test:test_support",
     "//chrome/browser/ash/login:test_support",
     "//chrome/browser/ash/settings:test_support",
-    "//chrome/browser/ui",
     "//chrome/browser/ui:test_support",
     "//chrome/browser/ui/webui/ash/login",
     "//chrome/browser/ui/webui/ash/login:test_support",
     "//chrome/browser/ui/webui/ash/login/mojom",
     "//chrome/test:test_support",
     "//chrome/test:test_support_unit",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/dbus/arc",
     "//chromeos/ash/components/dbus/concierge",
     "//chromeos/ash/components/dbus/oobe_config",

@@ -6,8 +6,8 @@
 
 #include <bit>
 #include <optional>
+#include <ranges>
 
-#include "base/containers/adapters.h"
 #include "base/notreached.h"
 #include "third_party/blink/renderer/core/animation/css/css_animations.h"
 #include "third_party/blink/renderer/core/animation/css_interpolation_environment.h"
@@ -67,6 +67,7 @@
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
+#include "third_party/blink/renderer/core/html/shadow/shadow_element_names.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style_property_shorthand.h"
@@ -329,6 +330,35 @@ void StyleCascade::Apply(CascadeFilter filter) {
   ApplyUnresolvedEnv(resolver);
 }
 
+void StyleCascade::ApplyPrecomputedHover() {
+  SetApplyPrecomputeHoverRules(true);
+  ResetAndCollectAgain();
+
+  CascadeFilter filter;
+  // For performance avoid stack initialization on this large object.
+  STACK_UNINITIALIZED CascadeResolver resolver(filter);
+
+  // TODO: If the property value depends on the parent style, we cannot do the
+  // precomputation without also precomputing the ancestor chain :hover styles.
+  // That includes 'unset', color functions with currentcolor, etc.
+  if (map_.NativeBitset().Has(CSSPropertyID::kColor)) {
+    LookupAndApply(GetCSSPropertyColor(), resolver);
+  }
+  if (map_.NativeBitset().Has(CSSPropertyID::kTextDecorationColor)) {
+    LookupAndApply(GetCSSPropertyTextDecorationColor(), resolver);
+  }
+  if (map_.NativeBitset().Has(CSSPropertyID::kTextDecorationLine)) {
+    LookupAndApply(GetCSSPropertyTextDecorationLine(), resolver);
+  }
+  if (map_.NativeBitset().Has(CSSPropertyID::kTextDecorationStyle)) {
+    LookupAndApply(GetCSSPropertyTextDecorationStyle(), resolver);
+  }
+  if (map_.NativeBitset().Has(CSSPropertyID::kTextDecorationThickness)) {
+    LookupAndApply(GetCSSPropertyTextDecorationThickness(), resolver);
+  }
+  state_.StyleBuilder().SetStyleType(kPseudoIdPrecomputedHover);
+}
+
 std::unique_ptr<CSSBitset> StyleCascade::ReleaseImportantSet() {
   CollectDeclarationsIfNeeded();
   return map_.ReleaseImportantSet();
@@ -471,6 +501,10 @@ void StyleCascade::CollectFromMatchResult() {
   int index = 0;
   for (const MatchedProperties& properties :
        match_result_.GetMatchedProperties()) {
+    if (properties.data_.precompute_hover && !apply_precompute_hover_rules_) {
+      index++;
+      continue;
+    }
     ExpandCascade(
         properties, GetDocument(), index++,
         [this](CascadePriority cascade_priority,
@@ -899,7 +933,8 @@ void StyleCascade::ApplyInterpolation(
 
   InterpolationTypesMap map(state_.GetDocument().GetPropertyRegistry(),
                             state_.GetDocument());
-  CSSInterpolationEnvironment environment(map, state_, this, &resolver);
+  CSSInterpolationEnvironment environment(ToPropertyHandle(property, priority),
+                                          map, state_, this, &resolver);
 
   const Interpolation& interpolation = *interpolations.front();
   if (IsA<InvalidatableInterpolation>(interpolation)) {
@@ -908,7 +943,7 @@ void StyleCascade::ApplyInterpolation(
     To<TransitionInterpolation>(interpolation).Apply(environment);
   }
 
-  // Applying a color property interpolation will also unconditionally apply
+  // Applying a color property interpolation inside a link will also apply
   // the -internal-visited- counterpart (see CSSColorInterpolationType::
   // ApplyStandardPropertyValue). To make sure !important rules in :visited
   // selectors win over animations, we re-apply the -internal-visited property
@@ -1288,7 +1323,7 @@ StyleCascade::MakeFunctionContextFromMixinAndResolveSubstitutions(
       // Find the last-declared value with a matching container query (if
       // any), and apply it.
       for (const MixinParameterBindings::CQDependentValue& candidate :
-           base::Reversed(candidates)) {
+           std::views::reverse(candidates)) {
         if (EvaluateContainerQueries(state_.GetElement(), state_.GetPseudoId(),
                                      *candidate.container_queries,
                                      state_.NearestSizeContainer(),
@@ -1693,7 +1728,7 @@ bool StyleCascade::ResolveTokensInto(CSSParserTokenStream& stream,
       success &= ResolveEnvInto(stream, tree_scope, resolver, context, out);
     } else if (token.FunctionId() == CSSValueID::kAttr) {
       CSSParserTokenStream::BlockGuard guard(stream);
-      state_.StyleBuilder().SetHasAttrFunction();
+      state_.SetHasAttrFunction();
       success &= ResolveAttrInto(stream, tree_scope, resolver, context,
                                  function_context, out);
     } else if (token.FunctionId() == CSSValueID::kInternalAutoBase) {
@@ -2538,11 +2573,13 @@ bool StyleCascade::ResolveAutoBaseInto(CSSParserTokenStream& stream,
     has_base_appearance = true;
   } else if (state_.StyleBuilder().InBaseAppearance()) {
     // Don't allow base appearance to be inherited to elements which actually
-    // support the appearance property.
+    // support the appearance property, other than for file selector buttons.
     bool could_support_base_appearance =
         element.SupportsBaseAppearance(AppearanceValue::kBase) ||
         element.SupportsBaseAppearance(AppearanceValue::kBaseSelect);
-    has_base_appearance = !could_support_base_appearance;
+    has_base_appearance = !could_support_base_appearance ||
+                          element.ShadowPseudoId() ==
+                              shadow_element_names::kPseudoFileUploadButton;
   }
 
   if (has_base_appearance) {
@@ -2619,7 +2656,7 @@ const CSSValue* StyleCascade::CoerceIntoNumericValue(
     const CSSParserContext& context) {
   STACK_UNINITIALIZED StyleCascade cascade(state);
   CascadeResolver resolver{CascadeFilter()};
-  bool is_attr_tainted_unused;
+  bool is_attr_tainted_unused = false;
   CSSParserLocalContext local_context =
       CSSParserLocalContext::CreateWithoutPropertyForAtRules();
   return cascade.CoerceIntoNumericValueInternal(

@@ -771,13 +771,13 @@ bool AcceleratorControllerImpl::CanPerformAction(
   // accelerator.
   switch (action) {
     case AcceleratorAction::kAccessibilityAction:
-      return ::features::IsAccessibilityAcceleratorEnabled();
+      return true;
     case AcceleratorAction::kCycleBackwardMru:
     case AcceleratorAction::kCycleForwardMru:
       return accelerators::CanCycleMru();
     case AcceleratorAction::kCycleSameAppWindowsBackward:
     case AcceleratorAction::kCycleSameAppWindowsForward:
-      return accelerators::CanCycleSameAppWindows();
+      return false;
     case AcceleratorAction::kDesksActivateDeskLeft:
     case AcceleratorAction::kDesksActivateDeskRight:
     case AcceleratorAction::kDesksMoveActiveItemLeft:
@@ -900,7 +900,7 @@ bool AcceleratorControllerImpl::CanPerformAction(
     case AcceleratorAction::kToggleMirrorMode:
       return true;
     case AcceleratorAction::kToggleMouseKeys:
-      return ::features::IsAccessibilityMouseKeysEnabled();
+      return true;
     case AcceleratorAction::kToggleOverview:
       return accelerators::CanToggleOverview();
     case AcceleratorAction::kToggleSnapGroup:
@@ -1037,9 +1037,7 @@ void AcceleratorControllerImpl::PerformAction(
   // function above.
   switch (action) {
     case AcceleratorAction::kAccessibilityAction:
-      if (::features::IsAccessibilityAcceleratorEnabled()) {
-        accelerators::AccessibilityAction();
-      }
+      accelerators::AccessibilityAction();
       break;
     case AcceleratorAction::kBrightnessDown: {
       base::RecordAction(UserMetricsAction("Accel_BrightnessDown_F6"));
@@ -1053,17 +1051,14 @@ void AcceleratorControllerImpl::PerformAction(
     }
     case AcceleratorAction::kCycleBackwardMru:
       RecordCycleBackwardMru(accelerator);
-      accelerators::CycleBackwardMru(/*same_app_only=*/false);
+      accelerators::CycleBackwardMru();
       break;
     case AcceleratorAction::kCycleForwardMru:
       RecordCycleForwardMru(accelerator);
-      accelerators::CycleForwardMru(/*same_app_only=*/false);
+      accelerators::CycleForwardMru();
       break;
     case AcceleratorAction::kCycleSameAppWindowsBackward:
-      accelerators::CycleBackwardMru(/*same_app_only=*/true);
-      break;
     case AcceleratorAction::kCycleSameAppWindowsForward:
-      accelerators::CycleForwardMru(/*same_app_only=*/true);
       break;
     case AcceleratorAction::kDesksActivateDeskLeft:
       // UMA metrics are recorded in the function.
@@ -1503,9 +1498,7 @@ void AcceleratorControllerImpl::PerformAction(
       accelerators::ToggleMirrorMode();
       break;
     case AcceleratorAction::kToggleMouseKeys:
-      if (::features::IsAccessibilityMouseKeysEnabled()) {
-        accelerators::ToggleMouseKeys();
-      }
+      accelerators::ToggleMouseKeys();
       break;
     case AcceleratorAction::kToggleMultitaskMenu:
       accelerators::ToggleMultitaskMenu();

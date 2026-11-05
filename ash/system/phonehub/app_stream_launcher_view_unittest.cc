@@ -5,7 +5,6 @@
 #include "ash/system/phonehub/app_stream_launcher_view.h"
 
 #include "ash/constants/ash_features.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/system/phonehub/app_stream_launcher_item.h"
 #include "ash/system/phonehub/app_stream_launcher_list_item.h"
 #include "ash/system/phonehub/phone_hub_metrics.h"
@@ -38,9 +37,6 @@ class AppStreamLauncherViewTest : public views::ViewsTestBase {
     CreateWidget();
     generator_ =
         std::make_unique<ui::test::EventGenerator>(GetRootWindow(widget_));
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kEcheSWA},
-        /*disabled_features=*/{});
   }
 
   // AshTestBase:
@@ -94,9 +90,6 @@ class AppStreamLauncherViewTest : public views::ViewsTestBase {
 
   base::test::ScopedFeatureList feature_list_;
 
- private:
-  // This is required in order for the context to find color provider
-  AshColorProvider color_provider_;
   std::unique_ptr<AppStreamLauncherView> app_stream_launcher_view_;
   phonehub::FakePhoneHubManager fake_phone_hub_manager_;
   raw_ptr<views::Widget> widget_ = nullptr;

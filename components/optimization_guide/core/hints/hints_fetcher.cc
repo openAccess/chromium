@@ -17,11 +17,11 @@
 #include "base/strings/strcat.h"
 #include "base/time/default_clock.h"
 #include "components/optimization_guide/core/hints/hints_processing_util.h"
+#include "components/optimization_guide/core/hints/prefs.h"
 #include "components/optimization_guide/core/hints/store_update_data.h"
 #include "components/optimization_guide/core/optimization_guide_common.mojom.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/prefs/pref_service.h"
@@ -79,13 +79,14 @@ std::string_view GetStringNameForRequestContext(
       return "GlicZeroStateSuggestions";
     case proto::RequestContext::CONTEXT_FILTER_EXECUTION:
       return "FilterExecution";
+    case proto::RequestContext::CONTEXT_CONTEXT_HUB:
+      return "ContextHub";
   }
   NOTREACHED();
 }
 
 void RecordRequestStatusHistogram(proto::RequestContext request_context,
-                                  FetcherRequestStatus status) {
-  DCHECK_NE(status, FetcherRequestStatus::kDeprecatedNetworkOffline);
+                                  HintsFetcherRequestStatus status) {
   base::UmaHistogramEnumeration(
       base::StrCat(
           {"OptimizationGuide.HintsFetcher.GetHintsRequest.RequestStatus.",
@@ -137,7 +138,7 @@ HintsFetcher::~HintsFetcher() {
       std::move(hints_fetched_callback_).Run(std::nullopt);
     }
     RecordRequestStatusHistogram(request_context_,
-                                 FetcherRequestStatus::kRequestCanceled);
+                                 HintsFetcherRequestStatus::kRequestCanceled);
   }
 }
 
@@ -219,7 +220,7 @@ bool HintsFetcher::FetchOptimizationGuideServiceHints(
         optimization_guide_logger_,
         "No hints fetched: HintsFetcher busy in another fetch");
     RecordRequestStatusHistogram(request_context_,
-                                 FetcherRequestStatus::kFetcherBusy);
+                                 HintsFetcherRequestStatus::kFetcherBusy);
     std::move(hints_fetched_callback).Run(std::nullopt);
     return false;
   }
@@ -232,7 +233,7 @@ bool HintsFetcher::FetchOptimizationGuideServiceHints(
                            optimization_guide_logger_,
                            "No hints fetched: No hosts/URLs");
     RecordRequestStatusHistogram(
-        request_context_, FetcherRequestStatus::kNoHostsOrURLsToFetchHints);
+        request_context_, HintsFetcherRequestStatus::kNoHostsOrURLsToFetchHints);
     std::move(hints_fetched_callback).Run(std::nullopt);
     return false;
   }
@@ -246,7 +247,7 @@ bool HintsFetcher::FetchOptimizationGuideServiceHints(
                            "No hints fetched: No supported optimization types");
     RecordRequestStatusHistogram(
         request_context_,
-        FetcherRequestStatus::kNoSupportedOptimizationTypesToFetchHints);
+        HintsFetcherRequestStatus::kNoSupportedOptimizationTypesToFetchHints);
     std::move(hints_fetched_callback).Run(std::nullopt);
     return false;
   }
@@ -393,7 +394,7 @@ void HintsFetcher::HandleResponse(const std::string& get_hints_response_data,
         base::TimeTicks::Now() - hints_fetch_start_time_);
     if (skip_cache) {
       RecordRequestStatusHistogram(request_context_,
-                                   FetcherRequestStatus::kSuccess);
+                                   HintsFetcherRequestStatus::kSuccess);
       std::move(hints_fetched_callback_).Run(std::move(get_hints_response));
 
       return;
@@ -407,12 +408,12 @@ void HintsFetcher::HandleResponse(const std::string& get_hints_response_data,
     }
     UpdateHostsSuccessfullyFetched(valid_duration);
     RecordRequestStatusHistogram(request_context_,
-                                 FetcherRequestStatus::kSuccess);
+                                 HintsFetcherRequestStatus::kSuccess);
     std::move(hints_fetched_callback_).Run(std::move(get_hints_response));
   } else {
     hosts_fetched_.clear();
     RecordRequestStatusHistogram(request_context_,
-                                 FetcherRequestStatus::kResponseError);
+                                 HintsFetcherRequestStatus::kResponseError);
     std::move(hints_fetched_callback_).Run(std::nullopt);
   }
 }
@@ -497,30 +498,25 @@ void HintsFetcher::OnURLLoadComplete(bool skip_cache,
 std::vector<GURL> HintsFetcher::GetSizeLimitedURLsForFetching(
     const std::vector<GURL>& urls) const {
   std::vector<GURL> valid_urls;
-  for (size_t i = 0; i < urls.size(); i++) {
+  for (const GURL& url : urls) {
     if (valid_urls.size() >= kMaxUrls) {
-      base::UmaHistogramCounts100(
-          base::StrCat(
-              {"OptimizationGuide.HintsFetcher.GetHintsRequest.DroppedUrls.",
-               GetStringNameForRequestContext(request_context_)}),
-          urls.size() - i);
       OPTIMIZATION_GUIDE_LOG(
           optimization_guide_common::mojom::LogSource::HINTS,
           optimization_guide_logger_,
           base::StrCat({"Skipped adding URL due to limit, context:",
                         GetStringNameForRequestContext(request_context_),
-                        " URL:", urls[i].possibly_invalid_spec()}));
+                        " URL:", url.possibly_invalid_spec()}));
       break;
     }
-    if (IsValidURLForURLKeyedHint(urls[i])) {
-      valid_urls.push_back(urls[i]);
+    if (IsValidURLForURLKeyedHint(url)) {
+      valid_urls.push_back(url);
     } else {
       OPTIMIZATION_GUIDE_LOG(
           optimization_guide_common::mojom::LogSource::HINTS,
           optimization_guide_logger_,
           base::StrCat({"Skipped adding invalid URL, context:",
                         GetStringNameForRequestContext(request_context_),
-                        " URL:", urls[i].possibly_invalid_spec()}));
+                        " URL:", url.possibly_invalid_spec()}));
     }
   }
   return valid_urls;
@@ -537,17 +533,11 @@ std::vector<std::string> HintsFetcher::GetSizeLimitedHostsDueForHintsRefresh(
   std::vector<std::string> target_hosts;
   target_hosts.reserve(hosts.size());
 
-  for (size_t i = 0; i < hosts.size(); i++) {
+  for (const std::string& host : hosts) {
     if (target_hosts.size() >= kMaxHosts) {
-      base::UmaHistogramCounts100(
-          base::StrCat(
-              {"OptimizationGuide.HintsFetcher.GetHintsRequest.DroppedHosts.",
-               GetStringNameForRequestContext(request_context_)}),
-          hosts.size() - i);
       break;
     }
 
-    std::string host = hosts[i];
     // Skip over localhosts, IP addresses, and invalid hosts.
     if (net::HostStringIsLocalhost(host)) {
       continue;

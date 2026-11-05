@@ -9,7 +9,7 @@
 #import "base/memory/raw_ptr.h"
 #import "base/strings/utf_string_conversions.h"
 #import "base/test/scoped_feature_list.h"
-#import "ios/chrome/browser/badges/model/features.h"
+#import "ios/chrome/browser/badges/ui_bundled/badge_button.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_consumer.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_item.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_type.h"
@@ -22,6 +22,7 @@
 #import "ios/chrome/browser/infobars/model/infobar_type.h"
 #import "ios/chrome/browser/infobars/model/test/fake_infobar_ios.h"
 #import "ios/chrome/browser/infobars/ui_bundled/test_infobar_delegate.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/overlays/model/public/common/infobars/infobar_overlay_request_config.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_presenter.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_request.h"
@@ -31,19 +32,24 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_opener.h"
+#import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
+#import "ios/chrome/browser/shared/public/commands/page_info_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "ios/web/public/web_state_user_data.h"
 #import "testing/gtest/include/gtest/gtest.h"
+#import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
 
 namespace {
-// The two infobar types used in tests.  Both support badges.
-constexpr InfobarType kFirstInfobarType = InfobarType::kInfobarTypePasswordSave;
+// The two infobar types used in tests. Both support badges.
+constexpr InfobarType kFirstInfobarType = InfobarType::kInfobarTypePermissions;
+constexpr BadgeType kFirstInfobarBadgeType = kBadgeTypePermissionsCamera;
 constexpr std::u16string_view kFirstInfobarMessageText =
     u"FakeInfobarDelegate1";
-constexpr InfobarType kSecondInfobarType =
-    InfobarType::kInfobarTypePasswordUpdate;
+constexpr InfobarType kSecondInfobarType = InfobarType::kInfobarTypeTranslate;
 constexpr std::u16string_view kSecondInfobarMessageText =
     u"FakeInfobarDelegate2";
 // Parameters used for BadgeMediator test fixtures.
@@ -83,6 +89,7 @@ class BadgeMediatorTest : public testing::TestWithParam<TestParam> {
       : badge_consumer_([[FakeBadgeConsumer alloc] init]),
         profile_(TestProfileIOS::Builder().Build()),
         browser_(std::make_unique<TestBrowser>(profile())) {
+    feature_list_.InitAndDisableFeature(kProactiveSuggestionsFramework);
     overlay_presenter_ = OverlayPresenter::FromBrowser(
         browser(), OverlayModality::kInfobarBanner);
     overlay_presenter_->SetPresentationContext(&overlay_presentation_context_);
@@ -90,8 +97,6 @@ class BadgeMediatorTest : public testing::TestWithParam<TestParam> {
         [[BadgeMediator alloc] initWithWebStateList:web_state_list()
                                    overlayPresenter:overlay_presenter_];
     badge_mediator_.consumer = badge_consumer_;
-
-    feature_list_.InitAndDisableFeature(kAutofillBadgeRemoval);
   }
 
   ~BadgeMediatorTest() override {
@@ -174,7 +179,7 @@ TEST_P(BadgeMediatorTest, BadgeMediatorTestAddInfobar) {
   AppendActivatedWebState();
   AddInfobar(kFirstInfobarType, kFirstInfobarMessageText);
   ASSERT_TRUE(badge_consumer_.displayedBadge);
-  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kBadgeTypePasswordSave);
+  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kFirstInfobarBadgeType);
 }
 
 // Test that the BadgeMediator handled the removal of the correct badge when two
@@ -187,7 +192,7 @@ TEST_P(BadgeMediatorTest, BadgeMediatorTestRemoveInfobar) {
   EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kBadgeTypeOverflow);
   RemoveInfobar(second_infobar);
   ASSERT_TRUE(badge_consumer_.displayedBadge);
-  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kBadgeTypePasswordSave);
+  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kFirstInfobarBadgeType);
 }
 
 TEST_P(BadgeMediatorTest, BadgeMediatorTestMarkAsRead) {
@@ -211,7 +216,7 @@ TEST_P(BadgeMediatorTest, BadgeMediatorTestSwitchWebState) {
   AppendActivatedWebState();
   AddInfobar(kFirstInfobarType, kFirstInfobarMessageText);
   ASSERT_TRUE(badge_consumer_.displayedBadge);
-  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kBadgeTypePasswordSave);
+  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kFirstInfobarBadgeType);
   AppendActivatedWebState();
   EXPECT_FALSE(badge_consumer_.displayedBadge);
 }
@@ -223,7 +228,7 @@ TEST_P(BadgeMediatorTest,
   AppendActivatedWebState();
   AddInfobar(kFirstInfobarType, kFirstInfobarMessageText);
   ASSERT_TRUE(badge_consumer_.displayedBadge);
-  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kBadgeTypePasswordSave);
+  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kFirstInfobarBadgeType);
   AppendActivatedWebState();
   std::unique_ptr<InfoBarIOS> added_infobar = std::make_unique<FakeInfobarIOS>(
       kSecondInfobarType, std::u16string(kSecondInfobarMessageText));
@@ -275,7 +280,7 @@ TEST_P(BadgeMediatorTest, BadgeMediatorTestRestartWithInfobar) {
                                  overlayPresenter:overlay_presenter_];
   badge_mediator_.consumer = badge_consumer_;
   ASSERT_TRUE(badge_consumer_.displayedBadge);
-  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kBadgeTypePasswordSave);
+  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kFirstInfobarBadgeType);
 }
 
 // Test that the BadgeMediator clears its badges when the last WebState is
@@ -285,7 +290,7 @@ TEST_P(BadgeMediatorTest, BadgeMediatorTestCloseLastTab) {
   AppendActivatedWebState();
   AddInfobar(kFirstInfobarType, kFirstInfobarMessageText);
   ASSERT_TRUE(badge_consumer_.displayedBadge);
-  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kBadgeTypePasswordSave);
+  EXPECT_EQ(badge_consumer_.displayedBadge.badgeType, kFirstInfobarBadgeType);
   web_state_list()->DetachWebStateAt(0);
   AppendActivatedWebState();
   ASSERT_FALSE(badge_consumer_.displayedBadge);
@@ -328,11 +333,8 @@ TEST_P(BadgeMediatorTest, InfobarBannerOverlayObserving) {
   EXPECT_FALSE(badge_states[type] & BadgeStatePresented);
 }
 
-// Test that no badge is shown when an autofill infobar is added and the feature
-// to remove the badge is enabled.
+// Test that no badge is shown when an autofill or password infobar is added.
 TEST_P(BadgeMediatorTest, BadgeMediatorTestNoBadge) {
-  base::test::ScopedFeatureList feature_list{kAutofillBadgeRemoval};
-
   AppendActivatedWebState();
 
   AddInfobar(InfobarType::kInfobarTypePasswordSave, u"FakeInfobar1");
@@ -347,6 +349,55 @@ TEST_P(BadgeMediatorTest, BadgeMediatorTestNoBadge) {
 
   AddInfobar(InfobarType::kInfobarTypeSaveCard, u"FakeInfobar4");
   EXPECT_FALSE(badge_consumer_.displayedBadge);
+}
+
+// Tests that tapping the permissions badge dispatches `showPageInfo` when
+// `kDomainLevelSitePermissions` is enabled.
+TEST_P(BadgeMediatorTest, PermissionsBadgeButtonTappedShowsPageInfo) {
+  base::test::ScopedFeatureList feature_list{kDomainLevelSitePermissions};
+
+  AppendActivatedWebState();
+
+  id mock_page_info_handler =
+      OCMStrictProtocolMock(@protocol(PageInfoCommands));
+  badge_mediator_.pageInfoHandler = mock_page_info_handler;
+
+  OCMExpect([mock_page_info_handler showPageInfo]);
+
+  BadgeButton* button =
+      [BadgeButton badgeButtonWithType:kBadgeTypePermissionsCamera];
+  [badge_mediator_ permissionsBadgeButtonTapped:button];
+
+  EXPECT_OCMOCK_VERIFY(mock_page_info_handler);
+}
+
+// Tests that BadgeTypeForInfobarType and IsBadgeSupportedForInfobarType return
+// kBadgeTypeNone / false for sunset autofill/password infobars.
+TEST_P(BadgeMediatorTest, SunsetAutofillInfobarsHaveNoBadges) {
+  EXPECT_EQ(BadgeTypeForInfobarType(InfobarType::kInfobarTypePasswordSave),
+            kBadgeTypeNone);
+  EXPECT_EQ(BadgeTypeForInfobarType(InfobarType::kInfobarTypePasswordUpdate),
+            kBadgeTypeNone);
+  EXPECT_EQ(BadgeTypeForInfobarType(InfobarType::kInfobarTypeSaveCard),
+            kBadgeTypeNone);
+  EXPECT_EQ(BadgeTypeForInfobarType(
+                InfobarType::kInfobarTypeSaveAutofillAddressProfile),
+            kBadgeTypeNone);
+
+  EXPECT_FALSE(
+      IsBadgeSupportedForInfobarType(InfobarType::kInfobarTypePasswordSave));
+  EXPECT_FALSE(
+      IsBadgeSupportedForInfobarType(InfobarType::kInfobarTypePasswordUpdate));
+  EXPECT_FALSE(
+      IsBadgeSupportedForInfobarType(InfobarType::kInfobarTypeSaveCard));
+  EXPECT_FALSE(IsBadgeSupportedForInfobarType(
+      InfobarType::kInfobarTypeSaveAutofillAddressProfile));
+
+  // Supported badges are unaffected.
+  EXPECT_EQ(BadgeTypeForInfobarType(InfobarType::kInfobarTypeTranslate),
+            kBadgeTypeTranslate);
+  EXPECT_TRUE(
+      IsBadgeSupportedForInfobarType(InfobarType::kInfobarTypeTranslate));
 }
 
 INSTANTIATE_TEST_SUITE_P(/* No InstantiationName */,

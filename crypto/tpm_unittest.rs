@@ -8,11 +8,6 @@ chromium::import! {
     "//crypto:tpm";
 }
 
-const OBJECT_HANDLE: u32 = 0x81000001;
-const SIGN_HANDLE: u32 = 0x81000002;
-const QUALIFYING_DATA: &[u8] = &[1, 2, 3, 4];
-const WRONG_EXTRA_DATA: &[u8] = &[5, 6, 7, 8];
-
 fn build_test_ticket(tag: u16, hierarchy: u32, digest: &[u8]) -> Vec<u8> {
     let mut writer = tpm::Writer::new();
     writer.write_u16(tag);
@@ -21,280 +16,18 @@ fn build_test_ticket(tag: u16, hierarchy: u32, digest: &[u8]) -> Vec<u8> {
     writer.into_inner()
 }
 
-struct ResponseBuilder {
-    tag: u16,
-    rc: u32,
-    magic: u32,
-    type_: u16,
-    qualified_signer: Vec<u8>,
-    extra_data: Vec<u8>,
-    algorithms: tpm::SignatureAlgorithms,
-    sig: Vec<u8>,
-}
-
-#[allow(dead_code)]
-impl ResponseBuilder {
-    fn new() -> Self {
-        Self {
-            tag: tpm::TpmSt::TPM_ST_NO_SESSIONS.repr,
-            rc: 0,
-            magic: tpm::TpmConstant::TPM_GENERATED_VALUE.repr,
-            type_: tpm::TpmSt::TPM_ST_ATTEST_CERTIFY.repr,
-            qualified_signer: Vec::new(),
-            extra_data: Vec::new(),
-            algorithms: tpm::SignatureAlgorithms {
-                sig_alg: tpm::TpmAlg::TPM_ALG_RSASSA,
-                hash_alg: tpm::TpmAlg::TPM_ALG_SHA256,
-            },
-            sig: Vec::new(),
-        }
-    }
-
-    fn with_tag(mut self, tag: u16) -> Self {
-        self.tag = tag;
-        self
-    }
-
-    fn with_rc(mut self, rc: u32) -> Self {
-        self.rc = rc;
-        self
-    }
-
-    fn with_magic(mut self, magic: u32) -> Self {
-        self.magic = magic;
-        self
-    }
-
-    fn with_type(mut self, type_: u16) -> Self {
-        self.type_ = type_;
-        self
-    }
-
-    fn with_qualified_signer(mut self, qualified_signer: &[u8]) -> Self {
-        self.qualified_signer = qualified_signer.to_vec();
-        self
-    }
-
-    fn with_extra_data(mut self, extra_data: &[u8]) -> Self {
-        self.extra_data = extra_data.to_vec();
-        self
-    }
-
-    fn with_sig_alg(mut self, sig_alg: u16) -> Self {
-        self.algorithms.sig_alg = tpm::TpmAlg { repr: sig_alg };
-        self
-    }
-
-    fn with_hash_alg(mut self, hash_alg: u16) -> Self {
-        self.algorithms.hash_alg = tpm::TpmAlg { repr: hash_alg };
-        self
-    }
-
-    fn with_sig(mut self, sig: &[u8]) -> Self {
-        self.sig = sig.to_vec();
-        self
-    }
-
-    fn build(self) -> Vec<u8> {
-        let mut attest_payload_size: u16 = 4 // Magic
-            + 2 // Type
-            + 2 // Name size
-            + u16::try_from(self.qualified_signer.len()).unwrap()
-            + 2 // Data size
-            + u16::try_from(self.extra_data.len()).unwrap()
-            + 17 // clockInfo
-            + 8; // firmwareVersion
-
-        if self.type_ == tpm::TpmSt::TPM_ST_ATTEST_CERTIFY.repr {
-            attest_payload_size += 2 + 2; // name and qualifiedName
-        }
-
-        let attest_size: u16 = 2 // Attest size field
-            + attest_payload_size;
-
-        let mut signature_size: u16 = 2 // sigAlg
-            + 2 // hashAlg
-            + u16::try_from(self.sig.len()).unwrap();
-        if self.algorithms.sig_alg == tpm::TpmAlg::TPM_ALG_RSASSA {
-            signature_size += 2; // sig size field
-        }
-
-        let mut total_size: u32 = 10; // Header
-        if self.rc == 0 {
-            total_size += u32::from(attest_size) + u32::from(signature_size);
-        }
-
-        let mut writer = tpm::Writer::with_capacity(usize::try_from(total_size).unwrap());
-        writer.write_u16(self.tag);
-        writer.write_u32(total_size);
-        writer.write_u32(self.rc);
-
-        if self.rc == 0 {
-            writer.write_u16(attest_payload_size);
-            writer.write_u32(self.magic);
-            writer.write_u16(self.type_);
-
-            writer.write_tpm2b(&self.qualified_signer);
-
-            writer.write_tpm2b(&self.extra_data);
-
-            writer.write_bytes(&[0; 17]); // clockInfo
-            writer.write_bytes(&[0; 8]); // firmwareVersion
-
-            if self.type_ == tpm::TpmSt::TPM_ST_ATTEST_CERTIFY.repr {
-                writer.write_u16(0); // name
-                writer.write_u16(0); // qualified_name
-            }
-
-            // Signature
-            writer.write_u16(self.algorithms.sig_alg.repr);
-            writer.write_u16(self.algorithms.hash_alg.repr);
-            if self.algorithms.sig_alg == tpm::TpmAlg::TPM_ALG_RSASSA {
-                writer.write_tpm2b(&self.sig);
-            } else {
-                writer.write_bytes(&self.sig);
-            }
-        }
-
-        writer.into_inner()
-    }
-}
-
-#[gtest(TpmTest, BuildCertifyCommandNullScheme)]
-fn test_build_certify_command_null_scheme() {
-    let cmd = tpm::build_certify_command(OBJECT_HANDLE, SIGN_HANDLE, QUALIFYING_DATA);
-    expect_eq!(cmd.len(), 48);
-
-    let mut reader = tpm::Reader::new(&cmd);
-
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmSt::TPM_ST_SESSIONS.repr);
-    expect_eq!(reader.read_u32().unwrap(), 48); // commandSize
-    expect_eq!(reader.read_u32().unwrap(), tpm::TpmCc::TPM_CC_CERTIFY.repr);
-
-    // Handles
-    expect_eq!(reader.read_u32().unwrap(), OBJECT_HANDLE);
-    expect_eq!(reader.read_u32().unwrap(), SIGN_HANDLE);
-
-    // Auth size
-    expect_eq!(reader.read_u32().unwrap(), 18);
-
-    // Auth sessions
-    expect_eq!(reader.read_u32().unwrap(), tpm::TpmRh::TPM_RS_PW.repr);
-    expect_eq!(reader.read_u16().unwrap(), 0); // nonce size
-    expect_eq!(reader.read_u8().unwrap(), 0); // sessionAttributes
-    expect_eq!(reader.read_u16().unwrap(), 0); // hmac size
-
-    expect_eq!(reader.read_u32().unwrap(), tpm::TpmRh::TPM_RS_PW.repr);
-    expect_eq!(reader.read_u16().unwrap(), 0); // nonce size
-    expect_eq!(reader.read_u8().unwrap(), 0); // sessionAttributes
-    expect_eq!(reader.read_u16().unwrap(), 0); // hmac size
-
-    // Qualifying data
-    expect_eq!(reader.read_u16().unwrap(), u16::try_from(QUALIFYING_DATA.len()).unwrap());
-    expect_eq!(reader.read_bytes(QUALIFYING_DATA.len()).unwrap(), QUALIFYING_DATA);
-
-    // Scheme
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_NULL.repr);
-}
-
-#[gtest(TpmParserTest, EmptyBuffer)]
-fn test_empty_buffer() {
-    let empty: &[u8] = &[];
-    let expected_extra_data: &[u8] = &[];
-    let result = tpm::parse_certify_response(empty, expected_extra_data);
-    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::BufferTooSmall));
-}
-
-#[gtest(TpmParserTest, BadMagic)]
-fn test_bad_magic() {
-    let bad_magic = ResponseBuilder::new().with_magic(0xBAADBEEF).build();
-
-    let expected_extra_data: &[u8] = &[];
-    let result = tpm::parse_certify_response(&bad_magic, expected_extra_data);
-    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::BadMagicNumber));
-}
-
-#[gtest(TpmParserTest, TpmErrorResponse)]
-fn test_tpm_error_response() {
-    let error_resp = ResponseBuilder::new().with_rc(0x100).build();
-
-    let expected_extra_data: &[u8] = &[];
-    let result = tpm::parse_certify_response(&error_resp, expected_extra_data);
-    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::TpmErrorResponse));
-    expect_eq!(result.status.tpm_response_code, 0x100);
-}
-
-#[gtest(TpmParserTest, WrongTag)]
-fn test_wrong_tag() {
-    let wrong_tag = ResponseBuilder::new().with_tag(0x8003).build();
-
-    let expected_extra_data: &[u8] = &[];
-    let result = tpm::parse_certify_response(&wrong_tag, expected_extra_data);
-    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::WrongType));
-}
-
-#[gtest(TpmParserTest, WrongAttestType)]
-fn test_wrong_attest_type() {
-    let wrong_type = ResponseBuilder::new().with_type(0x8018).build();
-
-    let expected_extra_data: &[u8] = &[];
-    let result = tpm::parse_certify_response(&wrong_type, expected_extra_data);
-    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::WrongType));
-}
-
-#[gtest(TpmParserTest, ChallengeMismatch)]
-fn test_challenge_mismatch() {
-    let challenge_mismatch = ResponseBuilder::new().with_extra_data(QUALIFYING_DATA).build();
-
-    let expected_extra_data: &[u8] = WRONG_EXTRA_DATA;
-    let result = tpm::parse_certify_response(&challenge_mismatch, expected_extra_data);
-    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::ChallengeMismatch));
-}
-
-#[gtest(TpmParserTest, HappyPath)]
-fn test_happy_path() {
-    let expected_sig = &[0xAA, 0xBB, 0xCC, 0xDD];
-    let happy_resp =
-        ResponseBuilder::new().with_extra_data(QUALIFYING_DATA).with_sig(expected_sig).build();
-
-    let result = tpm::parse_certify_response(&happy_resp, QUALIFYING_DATA);
-
-    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::Ok));
-    expect_eq!(result.status.tpm_response_code, 0);
-
-    let expected_statement_bytes = &[
-        0xFF, 0x54, 0x43, 0x47, // TPM_GENERATED_VALUE
-        0x80, 0x17, // TPM_ST_ATTEST_CERTIFY
-        0x00, 0x00, // qualified signer len
-        0x00, 0x04, // extra data len
-        0x01, 0x02, 0x03, 0x04, // extra data (QUALIFYING_DATA)
-        // clockInfo (17 bytes)
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // firmwareVersion (8 bytes)
-        0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, // name len
-        0x00, 0x00, // qualified name len
-    ];
-    expect_eq!(result.statement, expected_statement_bytes);
-    let expected_signature_bytes = &[
-        0x00, 0x14, // TPM_ALG_RSASSA
-        0x00, 0x0B, // TPM_ALG_SHA256
-        0x00, 0x04, // signature size
-        0xAA, 0xBB, 0xCC, 0xDD, // signature bytes
-    ];
-    expect_eq!(result.signature, expected_signature_bytes);
-}
-
 #[gtest(TpmParserTest, ParseRsaSignature)]
 fn test_parse_rsa_signature() {
     let mut writer = tpm::Writer::new();
-    writer.write_u16(tpm::TpmAlg::TPM_ALG_RSASSA.repr);
-    writer.write_u16(tpm::TpmAlg::TPM_ALG_SHA256.repr);
+    writer.write_u16(tpm::TpmAlgSigScheme::TPM_ALG_RSASSA.repr);
+    writer.write_u16(tpm::TpmAlgHash::TPM_ALG_SHA256.repr);
     writer.write_tpm2b(b"rsa signature bytes");
     let signature = writer.into_inner();
 
     let parsed = tpm::parse_tpm_signature(&signature);
     expect_true!(matches!(parsed.status, tpm::ffi::SignatureParseResult::Ok));
-    expect_eq!(parsed.sig_alg, tpm::TpmAlg::TPM_ALG_RSASSA);
-    expect_eq!(parsed.hash_alg, tpm::TpmAlg::TPM_ALG_SHA256);
+    expect_eq!(parsed.sig_alg, tpm::TpmAlgSigScheme::TPM_ALG_RSASSA);
+    expect_eq!(parsed.hash_alg, tpm::TpmAlgHash::TPM_ALG_SHA256);
     expect_eq!(parsed.rsa_sig, b"rsa signature bytes");
     expect_true!(parsed.ecdsa_r.is_empty());
     expect_true!(parsed.ecdsa_s.is_empty());
@@ -303,16 +36,16 @@ fn test_parse_rsa_signature() {
 #[gtest(TpmParserTest, ParseEcdsaSignature)]
 fn test_parse_ecdsa_signature() {
     let mut writer = tpm::Writer::new();
-    writer.write_u16(tpm::TpmAlg::TPM_ALG_ECDSA.repr);
-    writer.write_u16(tpm::TpmAlg::TPM_ALG_SHA256.repr);
+    writer.write_u16(tpm::TpmAlgSigScheme::TPM_ALG_ECDSA.repr);
+    writer.write_u16(tpm::TpmAlgHash::TPM_ALG_SHA256.repr);
     writer.write_tpm2b(b"r coordinate");
     writer.write_tpm2b(b"s coordinate");
     let signature = writer.into_inner();
 
     let parsed = tpm::parse_tpm_signature(&signature);
     expect_true!(matches!(parsed.status, tpm::ffi::SignatureParseResult::Ok));
-    expect_eq!(parsed.sig_alg, tpm::TpmAlg::TPM_ALG_ECDSA);
-    expect_eq!(parsed.hash_alg, tpm::TpmAlg::TPM_ALG_SHA256);
+    expect_eq!(parsed.sig_alg, tpm::TpmAlgSigScheme::TPM_ALG_ECDSA);
+    expect_eq!(parsed.hash_alg, tpm::TpmAlgHash::TPM_ALG_SHA256);
     expect_true!(parsed.rsa_sig.is_empty());
     expect_eq!(parsed.ecdsa_r, b"r coordinate");
     expect_eq!(parsed.ecdsa_s, b"s coordinate");
@@ -322,7 +55,7 @@ fn test_parse_ecdsa_signature() {
 fn test_parse_invalid_signature_algorithm() {
     let mut writer = tpm::Writer::new();
     writer.write_u16(0x1234); // Invalid signature algorithm
-    writer.write_u16(tpm::TpmAlg::TPM_ALG_SHA256.repr);
+    writer.write_u16(tpm::TpmAlgHash::TPM_ALG_SHA256.repr);
     writer.write_bytes(b"dummy");
     let signature = writer.into_inner();
 
@@ -336,7 +69,7 @@ fn test_parse_invalid_signature_algorithm() {
 #[gtest(TpmParserTest, ParseBufferTooSmall)]
 fn test_parse_buffer_too_small() {
     let mut writer = tpm::Writer::new();
-    writer.write_u16(tpm::TpmAlg::TPM_ALG_RSASSA.repr);
+    writer.write_u16(tpm::TpmAlgSigScheme::TPM_ALG_RSASSA.repr);
     let signature = writer.into_inner();
 
     let parsed = tpm::parse_tpm_signature(&signature);
@@ -346,8 +79,8 @@ fn test_parse_buffer_too_small() {
 #[gtest(TpmParserTest, ParseTrailingBytes)]
 fn test_parse_trailing_bytes() {
     let mut writer = tpm::Writer::new();
-    writer.write_u16(tpm::TpmAlg::TPM_ALG_RSASSA.repr);
-    writer.write_u16(tpm::TpmAlg::TPM_ALG_SHA256.repr);
+    writer.write_u16(tpm::TpmAlgSigScheme::TPM_ALG_RSASSA.repr);
+    writer.write_u16(tpm::TpmAlgHash::TPM_ALG_SHA256.repr);
     writer.write_tpm2b(b"rsa signature bytes");
     writer.write_bytes(b"extra garbage");
     let signature = writer.into_inner();
@@ -359,12 +92,8 @@ fn test_parse_trailing_bytes() {
 #[gtest(TpmTest, BuildHashCommand)]
 fn test_build_hash_command() {
     let data = &[1, 2, 3, 4];
-    let hash_alg = tpm::TpmAlg::TPM_ALG_SHA256;
-    // Note: TPM_RH_OWNER (0x40000001) is used for standard keys and mock validation
-    // tickets in unit tests. By contrast, TPM_RH_ENDORSEMENT (0x4000000b) MUST be
-    // used for Windows Attestation Identity Keys (AIKs) in production.
-    let hierarchy = tpm::TpmRh::TPM_RH_OWNER;
-    let cmd = tpm::build_hash_command(data, hash_alg, hierarchy);
+    let hash_alg = tpm::TpmAlgHash::TPM_ALG_SHA256;
+    let cmd = tpm::build_hash_command(data, hash_alg);
 
     // Header size (10) + data size prefix (2) + data size (4) + hash_alg (2) +
     // hierarchy (4) = 22
@@ -378,7 +107,7 @@ fn test_build_hash_command() {
     expect_eq!(reader.read_u16().unwrap(), 4);
     expect_eq!(reader.read_bytes(4).unwrap(), data);
     expect_eq!(reader.read_u16().unwrap(), hash_alg.repr);
-    expect_eq!(reader.read_u32().unwrap(), hierarchy.repr);
+    expect_eq!(reader.read_u32().unwrap(), tpm::TpmRh::TPM_RH_OWNER.repr);
 }
 
 struct HashResponseBuilder {
@@ -455,52 +184,11 @@ fn test_hash_happy_path() {
 fn test_build_sign_command() {
     let key_handle = 0x81000001;
     let digest = &[1, 2, 3];
-    let sig_alg = tpm::TpmAlg::TPM_ALG_ECDSA;
-    let hash_alg = tpm::TpmAlg::TPM_ALG_SHA256;
     let validation_ticket = &[7, 8, 9, 10];
-    let cmd = tpm::build_sign_command(key_handle, digest, sig_alg, hash_alg, validation_ticket);
+    let cmd = tpm::build_sign_command(key_handle, digest, validation_ticket);
 
-    // Header (10) + Handle (4) + AuthSize (4) + Session (9) + digest prefix (2) +
-    // digest len (3)
-    // + sig_alg (2) + hash_alg (2) + ticket len (4) = 40
-    expect_eq!(cmd.len(), 40);
-
-    let mut reader = tpm::Reader::new(&cmd);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmSt::TPM_ST_SESSIONS.repr);
-    expect_eq!(reader.read_u32().unwrap(), 40);
-    expect_eq!(reader.read_u32().unwrap(), tpm::TpmCc::TPM_CC_SIGN.repr);
-
-    expect_eq!(reader.read_u32().unwrap(), key_handle);
-
-    // Auth session
-    expect_eq!(reader.read_u32().unwrap(), 9); // auth size
-    expect_eq!(reader.read_u32().unwrap(), tpm::TpmRh::TPM_RS_PW.repr);
-    expect_eq!(reader.read_u16().unwrap(), 0);
-    expect_eq!(reader.read_u8().unwrap(), 0);
-    expect_eq!(reader.read_u16().unwrap(), 0);
-
-    // Parameters
-    expect_eq!(reader.read_u16().unwrap(), 3);
-    expect_eq!(reader.read_bytes(3).unwrap(), digest);
-
-    expect_eq!(reader.read_u16().unwrap(), sig_alg.repr);
-    expect_eq!(reader.read_u16().unwrap(), hash_alg.repr);
-
-    expect_eq!(reader.read_bytes(4).unwrap(), validation_ticket);
-}
-
-#[gtest(TpmTest, BuildSignCommandNullScheme)]
-fn test_build_sign_command_null_scheme() {
-    let key_handle = 0x81000001;
-    let digest = &[1, 2, 3];
-    let sig_alg = tpm::TpmAlg::TPM_ALG_NULL;
-    let hash_alg = tpm::TpmAlg::TPM_ALG_SHA256;
-    let validation_ticket = &[7, 8, 9, 10];
-    let cmd = tpm::build_sign_command(key_handle, digest, sig_alg, hash_alg, validation_ticket);
-
-    // Header (10) + Handle (4) + AuthSize (4) + Session (9) + digest prefix (2) +
-    // digest len (3)
-    // + sig_alg (2) + ticket len (4) = 38 (no hash_alg written)
+    // Header (10) + Handle (4) + AuthSize (4) + Session (9) + digest prefix (2)
+    // + digest len (3) + sig_alg TPM_ALG_NULL (2) + ticket len (4) = 38
     expect_eq!(cmd.len(), 38);
 
     let mut reader = tpm::Reader::new(&cmd);
@@ -521,8 +209,7 @@ fn test_build_sign_command_null_scheme() {
     expect_eq!(reader.read_u16().unwrap(), 3);
     expect_eq!(reader.read_bytes(3).unwrap(), digest);
 
-    expect_eq!(reader.read_u16().unwrap(), sig_alg.repr); // TPM_ALG_NULL
-                                                          // No hash_alg
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_NULL.repr);
 
     expect_eq!(reader.read_bytes(4).unwrap(), validation_ticket);
 }
@@ -540,8 +227,8 @@ impl SignResponseBuilder {
         Self {
             tag: tpm::TpmSt::TPM_ST_SESSIONS.repr,
             rc: 0,
-            sig_alg: tpm::TpmAlg::TPM_ALG_RSASSA.repr,
-            hash_alg: tpm::TpmAlg::TPM_ALG_SHA256.repr,
+            sig_alg: tpm::TpmAlgSigScheme::TPM_ALG_RSASSA.repr,
+            hash_alg: tpm::TpmAlgHash::TPM_ALG_SHA256.repr,
             sig: vec![0xAA, 0xBB],
         }
     }
@@ -550,7 +237,7 @@ impl SignResponseBuilder {
         let mut sig_size = 2 // sigAlg
             + 2 // hashAlg
             + u16::try_from(self.sig.len()).unwrap();
-        if self.sig_alg == tpm::TpmAlg::TPM_ALG_RSASSA.repr {
+        if self.sig_alg == tpm::TpmAlgSigScheme::TPM_ALG_RSASSA.repr {
             sig_size += 2; // size prefix
         }
 
@@ -577,7 +264,7 @@ impl SignResponseBuilder {
 
             writer.write_u16(self.sig_alg);
             writer.write_u16(self.hash_alg);
-            if self.sig_alg == tpm::TpmAlg::TPM_ALG_RSASSA.repr {
+            if self.sig_alg == tpm::TpmAlgSigScheme::TPM_ALG_RSASSA.repr {
                 writer.write_tpm2b(&self.sig);
             } else {
                 writer.write_bytes(&self.sig);
@@ -606,8 +293,8 @@ fn test_sign_happy_path() {
 
     let expected_sig_bytes = {
         let mut writer = tpm::Writer::new();
-        writer.write_u16(tpm::TpmAlg::TPM_ALG_RSASSA.repr);
-        writer.write_u16(tpm::TpmAlg::TPM_ALG_SHA256.repr);
+        writer.write_u16(tpm::TpmAlgSigScheme::TPM_ALG_RSASSA.repr);
+        writer.write_u16(tpm::TpmAlgHash::TPM_ALG_SHA256.repr);
         writer.write_tpm2b(&[0xAA, 0xBB]);
         writer.into_inner()
     };
@@ -616,7 +303,7 @@ fn test_sign_happy_path() {
 
 #[gtest(TpmTest, BuildHashSequenceStartCommand)]
 fn test_build_hash_sequence_start_command() {
-    let hash_alg = tpm::TpmAlg::TPM_ALG_SHA256;
+    let hash_alg = tpm::TpmAlgHash::TPM_ALG_SHA256;
     let cmd = tpm::build_hash_sequence_start_command(hash_alg);
 
     // Header (10) + auth (2) + hashAlg (2) = 14
@@ -891,8 +578,7 @@ fn test_sequence_update_tpm_error() {
 fn test_build_sequence_complete_command() {
     let sequence_handle = 0x80000001;
     let data = &[1, 2, 3, 4];
-    let hierarchy = tpm::TpmRh::TPM_RH_OWNER;
-    let cmd = tpm::build_sequence_complete_command(sequence_handle, data, hierarchy);
+    let cmd = tpm::build_sequence_complete_command(sequence_handle, data);
 
     // Header (10) + Handle (4) + AuthSize (4) + Session (9) + data prefix (2) +
     // data len (4) + hierarchy (4) = 37
@@ -913,15 +599,14 @@ fn test_build_sequence_complete_command() {
     expect_eq!(reader.read_u16().unwrap(), 0);
 
     expect_eq!(reader.read_tpm2b().unwrap(), data);
-    expect_eq!(reader.read_u32().unwrap(), hierarchy.repr);
+    expect_eq!(reader.read_u32().unwrap(), tpm::TpmRh::TPM_RH_OWNER.repr);
 }
 
 #[gtest(TpmTest, BuildSequenceCompleteCommandMaxBuffer)]
 fn test_build_sequence_complete_command_max_buffer() {
     let sequence_handle = 0x80000001;
     let data = vec![0xAA; tpm::TPM_MAX_BUFFER_SIZE];
-    let hierarchy = tpm::TpmRh::TPM_RH_OWNER;
-    let cmd = tpm::build_sequence_complete_command(sequence_handle, &data, hierarchy);
+    let cmd = tpm::build_sequence_complete_command(sequence_handle, &data);
 
     // Header (10) + Handle (4) + AuthSize (4) + Session (9) + data prefix (2) +
     // 1024 + hierarchy (4) = 1057
@@ -1178,14 +863,216 @@ fn test_flush_context_tpm_error() {
     expect_eq!(result.tpm_response_code, 0x100);
 }
 
-#[gtest(TpmTest, BuildCreateAikCommandEccP256)]
-fn test_build_create_aik_command_ecc_p256() {
+struct CreatePrimaryResponseBuilder {
+    tag: u16,
+    rc: u32,
+    object_handle: u32,
+    /// Bytes standing in for the response parameters that follow
+    /// `objectHandle`. The parser does not read them, but a real TPM always
+    /// sends them, so the tests cover their presence.
+    body: Vec<u8>,
+}
+
+impl CreatePrimaryResponseBuilder {
+    fn new() -> Self {
+        Self {
+            tag: tpm::TpmSt::TPM_ST_SESSIONS.repr,
+            rc: 0,
+            object_handle: 0x80FFFFFF,
+            body: vec![0xAA; 8],
+        }
+    }
+
+    fn set_tag(mut self, tag: u16) -> Self {
+        self.tag = tag;
+        self
+    }
+
+    fn set_rc(mut self, rc: u32) -> Self {
+        self.rc = rc;
+        self
+    }
+
+    fn set_object_handle(mut self, object_handle: u32) -> Self {
+        self.object_handle = object_handle;
+        self
+    }
+
+    fn set_body(mut self, body: Vec<u8>) -> Self {
+        self.body = body;
+        self
+    }
+
+    fn build(self) -> Vec<u8> {
+        let total_size = 14 + self.body.len();
+        let mut writer = tpm::Writer::with_capacity(total_size);
+        writer.write_u16(self.tag);
+        writer.write_u32(total_size as u32);
+        writer.write_u32(self.rc);
+        writer.write_u32(self.object_handle);
+        writer.write_bytes(&self.body);
+        writer.into_inner()
+    }
+}
+
+#[gtest(TpmTest, BuildCreatePrimaryEccSrkCommand)]
+fn test_build_create_primary_ecc_srk_command() {
+    let cmd = tpm::build_create_primary_ecc_srk_command();
+    expect_eq!(cmd.len(), 67);
+
+    let mut reader = tpm::Reader::new(&cmd);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmSt::TPM_ST_SESSIONS.repr);
+    expect_eq!(reader.read_u32().unwrap(), 67);
+    expect_eq!(reader.read_u32().unwrap(), tpm::TpmCc::TPM_CC_CREATE_PRIMARY.repr);
+
+    // Primary handle: the owner hierarchy, not a parent object.
+    expect_eq!(reader.read_u32().unwrap(), tpm::TpmRh::TPM_RH_OWNER.repr);
+
+    // Auth session
+    expect_eq!(reader.read_u32().unwrap(), 9);
+    expect_eq!(reader.read_u32().unwrap(), tpm::TpmRh::TPM_RS_PW.repr);
+    expect_eq!(reader.read_u16().unwrap(), 0);
+    expect_eq!(reader.read_u8().unwrap(), 0);
+    expect_eq!(reader.read_u16().unwrap(), 0);
+
+    // inSensitive (size 4, userAuth 0, data 0)
+    expect_eq!(reader.read_u16().unwrap(), 4);
+    expect_eq!(reader.read_u16().unwrap(), 0);
+    expect_eq!(reader.read_u16().unwrap(), 0);
+
+    // inPublic (size 26)
+    expect_eq!(reader.read_u16().unwrap(), 26);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgPublic::TPM_ALG_ECC.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgHash::TPM_ALG_SHA256.repr);
+    expect_eq!(reader.read_u32().unwrap(), tpm::ECC_SRK_OBJECT_ATTRIBUTES);
+    expect_eq!(reader.read_u16().unwrap(), 0); // authPolicy
+
+    // parameters (TPMS_ECC_PARMS). A storage key carries real symmetric
+    // parameters, unlike the AIK's null symmetric definition.
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSymmetric::TPM_ALG_AES.repr);
+    expect_eq!(reader.read_u16().unwrap(), 128); // keyBits
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSymmetric::TPM_ALG_CFB.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_NULL.repr); // scheme
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmEccCurve::TPM_ECC_NIST_P256.repr); // curveID
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_NULL.repr); // kdf
+
+    // unique
+    expect_eq!(reader.read_u16().unwrap(), 0); // x
+    expect_eq!(reader.read_u16().unwrap(), 0); // y
+
+    // outsideInfo
+    expect_eq!(reader.read_u16().unwrap(), 0);
+
+    // creationPCR
+    expect_eq!(reader.read_u32().unwrap(), 0);
+
+    expect_true!(reader.is_empty());
+}
+
+#[gtest(TpmTest, BuildCreatePrimaryEccSrkCommandGoldenBytes)]
+fn test_build_create_primary_ecc_srk_command_golden_bytes() {
+    // Byte-for-byte expectation, not just a field-by-field one. A primary key
+    // is derived from the template, so any change to these bytes silently
+    // produces a *different* key: objects wrapped under it would stop loading
+    // under the provider's own SRK, with no error at the point of the mistake.
+    //
+    // These are the exact bytes that were verified against a discrete TPM to
+    // reproduce the key the Platform Crypto Provider persists at 0x81000009.
+    #[rustfmt::skip]
+    const EXPECTED: [u8; 67] = [
+        0x80, 0x02,             // tag: TPM_ST_SESSIONS
+        0x00, 0x00, 0x00, 0x43, // commandSize: 67
+        0x00, 0x00, 0x01, 0x31, // commandCode: TPM_CC_CREATE_PRIMARY
+        0x40, 0x00, 0x00, 0x01, // primaryHandle: TPM_RH_OWNER
+        0x00, 0x00, 0x00, 0x09, // authorizationSize: 9
+        0x40, 0x00, 0x00, 0x09, // sessionHandle: TPM_RS_PW
+        0x00, 0x00,             // nonce: empty
+        0x00,                   // sessionAttributes
+        0x00, 0x00,             // hmac: empty
+        0x00, 0x04,             // inSensitive size
+        0x00, 0x00,             // userAuth: empty
+        0x00, 0x00,             // data: empty
+        0x00, 0x1A,             // inPublic size: 26
+        0x00, 0x23,             // type: TPM_ALG_ECC
+        0x00, 0x0B,             // nameAlg: TPM_ALG_SHA256
+        0x00, 0x03, 0x04, 0x72, // objectAttributes
+        0x00, 0x00,             // authPolicy: empty
+        0x00, 0x06,             // symmetric.algorithm: TPM_ALG_AES
+        0x00, 0x80,             // symmetric.keyBits: 128
+        0x00, 0x43,             // symmetric.mode: TPM_ALG_CFB
+        0x00, 0x10,             // scheme: TPM_ALG_NULL
+        0x00, 0x03,             // curveID: TPM_ECC_NIST_P256
+        0x00, 0x10,             // kdf: TPM_ALG_NULL
+        0x00, 0x00,             // unique.x: empty
+        0x00, 0x00,             // unique.y: empty
+        0x00, 0x00,             // outsideInfo: empty
+        0x00, 0x00, 0x00, 0x00, // creationPCR: empty
+    ];
+
+    expect_eq!(tpm::build_create_primary_ecc_srk_command(), EXPECTED.to_vec());
+}
+
+#[gtest(TpmParserTest, CreatePrimaryHappyPath)]
+fn test_create_primary_happy_path() {
+    let resp = CreatePrimaryResponseBuilder::new().set_object_handle(0x80000001).build();
+
+    let result = tpm::parse_create_primary_response(&resp);
+    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::Ok));
+    expect_eq!(result.status.tpm_response_code, 0);
+    expect_eq!(result.object_handle, 0x80000001);
+}
+
+#[gtest(TpmParserTest, CreatePrimaryIgnoresTrailingParameters)]
+fn test_create_primary_ignores_trailing_parameters() {
+    // The parser deliberately stops after `objectHandle`, so a long parameter
+    // area must not be treated as an error.
+    let resp = CreatePrimaryResponseBuilder::new().set_body(vec![0x5A; 256]).build();
+
+    let result = tpm::parse_create_primary_response(&resp);
+    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::Ok));
+    expect_eq!(result.object_handle, 0x80FFFFFF);
+}
+
+#[gtest(TpmParserTest, CreatePrimaryTpmError)]
+fn test_create_primary_tpm_error() {
+    // TPM_RC_AUTH_FAIL, what a machine with non-empty owner authorization
+    // returns.
+    let resp = CreatePrimaryResponseBuilder::new().set_rc(0x98E).build();
+
+    let result = tpm::parse_create_primary_response(&resp);
+    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::TpmErrorResponse));
+    expect_eq!(result.status.tpm_response_code, 0x98E);
+    expect_eq!(result.object_handle, 0);
+}
+
+#[gtest(TpmParserTest, CreatePrimaryWrongTag)]
+fn test_create_primary_wrong_tag() {
+    let resp =
+        CreatePrimaryResponseBuilder::new().set_tag(tpm::TpmSt::TPM_ST_NO_SESSIONS.repr).build();
+
+    let result = tpm::parse_create_primary_response(&resp);
+    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::WrongType));
+    expect_eq!(result.object_handle, 0);
+}
+
+#[gtest(TpmParserTest, CreatePrimaryMissingHandle)]
+fn test_create_primary_missing_handle() {
+    // A well-formed header that ends before `objectHandle`.
+    let mut writer = tpm::Writer::with_capacity(10);
+    writer.write_u16(tpm::TpmSt::TPM_ST_SESSIONS.repr);
+    writer.write_u32(10);
+    writer.write_u32(0);
+    let resp = writer.into_inner();
+
+    let result = tpm::parse_create_primary_response(&resp);
+    expect_true!(matches!(result.status.result, tpm::ffi::ParseResult::BufferTooSmall));
+    expect_eq!(result.object_handle, 0);
+}
+
+#[gtest(TpmTest, BuildCreateEcdsaAikCommandP256)]
+fn test_build_create_ecdsa_aik_command_p256() {
     const PARENT_HANDLE: u32 = 0x81000009;
-    let cmd = tpm::build_create_aik_command(
-        PARENT_HANDLE,
-        tpm::TpmAlg::TPM_ALG_ECDSA,
-        tpm::TpmAlg::TPM_ALG_SHA256,
-    );
+    let cmd = tpm::build_create_ecdsa_aik_command(PARENT_HANDLE, tpm::TpmAlgHash::TPM_ALG_SHA256);
     expect_eq!(cmd.len(), 65);
 
     let mut reader = tpm::Reader::new(&cmd);
@@ -1210,17 +1097,17 @@ fn test_build_create_aik_command_ecc_p256() {
 
     // inPublic (size 24)
     expect_eq!(reader.read_u16().unwrap(), 24);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_ECC.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_SHA256.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgPublic::TPM_ALG_ECC.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgHash::TPM_ALG_SHA256.repr);
     expect_eq!(reader.read_u32().unwrap(), tpm::AIK_OBJECT_ATTRIBUTES);
     expect_eq!(reader.read_u16().unwrap(), 0); // authPolicy
 
     // parameters
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_NULL.repr); // symmetric
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_ECDSA.repr); // scheme
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_SHA256.repr); // scheme hashAlg
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_NULL.repr); // symmetric
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_ECDSA.repr); // scheme
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgHash::TPM_ALG_SHA256.repr); // scheme hashAlg
     expect_eq!(reader.read_u16().unwrap(), tpm::TpmEccCurve::TPM_ECC_NIST_P256.repr); // curveID
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_NULL.repr); // kdf
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_NULL.repr); // kdf
 
     // unique
     expect_eq!(reader.read_u16().unwrap(), 0); // x
@@ -1233,14 +1120,10 @@ fn test_build_create_aik_command_ecc_p256() {
     expect_eq!(reader.read_u32().unwrap(), 0);
 }
 
-#[gtest(TpmTest, BuildCreateAikCommandEccP384)]
-fn test_build_create_aik_command_ecc_p384() {
+#[gtest(TpmTest, BuildCreateEcdsaAikCommandP384)]
+fn test_build_create_ecdsa_aik_command_p384() {
     const PARENT_HANDLE: u32 = 0x81000009;
-    let cmd = tpm::build_create_aik_command(
-        PARENT_HANDLE,
-        tpm::TpmAlg::TPM_ALG_ECDSA,
-        tpm::TpmAlg::TPM_ALG_SHA384,
-    );
+    let cmd = tpm::build_create_ecdsa_aik_command(PARENT_HANDLE, tpm::TpmAlgHash::TPM_ALG_SHA384);
     expect_eq!(cmd.len(), 65);
 
     let mut reader = tpm::Reader::new(&cmd);
@@ -1254,27 +1137,23 @@ fn test_build_create_aik_command_ecc_p384() {
 
     // inPublic
     expect_eq!(reader.read_u16().unwrap(), 24);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_ECC.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_SHA384.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgPublic::TPM_ALG_ECC.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgHash::TPM_ALG_SHA384.repr);
     expect_eq!(reader.read_u32().unwrap(), tpm::AIK_OBJECT_ATTRIBUTES);
     expect_eq!(reader.read_u16().unwrap(), 0);
 
     // parameters
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_NULL.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_ECDSA.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_SHA384.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_NULL.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_ECDSA.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgHash::TPM_ALG_SHA384.repr);
     expect_eq!(reader.read_u16().unwrap(), tpm::TpmEccCurve::TPM_ECC_NIST_P384.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_NULL.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_NULL.repr);
 }
 
-#[gtest(TpmTest, BuildCreateAikCommandEccP521)]
-fn test_build_create_aik_command_ecc_p521() {
+#[gtest(TpmTest, BuildCreateEcdsaAikCommandP521)]
+fn test_build_create_ecdsa_aik_command_p521() {
     const PARENT_HANDLE: u32 = 0x81000009;
-    let cmd = tpm::build_create_aik_command(
-        PARENT_HANDLE,
-        tpm::TpmAlg::TPM_ALG_ECDSA,
-        tpm::TpmAlg::TPM_ALG_SHA512,
-    );
+    let cmd = tpm::build_create_ecdsa_aik_command(PARENT_HANDLE, tpm::TpmAlgHash::TPM_ALG_SHA512);
     expect_eq!(cmd.len(), 65);
 
     let mut reader = tpm::Reader::new(&cmd);
@@ -1288,97 +1167,17 @@ fn test_build_create_aik_command_ecc_p521() {
 
     // inPublic
     expect_eq!(reader.read_u16().unwrap(), 24);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_ECC.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_SHA512.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgPublic::TPM_ALG_ECC.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgHash::TPM_ALG_SHA512.repr);
     expect_eq!(reader.read_u32().unwrap(), tpm::AIK_OBJECT_ATTRIBUTES);
     expect_eq!(reader.read_u16().unwrap(), 0);
 
     // parameters
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_NULL.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_ECDSA.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_SHA512.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_NULL.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_ECDSA.repr);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgHash::TPM_ALG_SHA512.repr);
     expect_eq!(reader.read_u16().unwrap(), tpm::TpmEccCurve::TPM_ECC_NIST_P521.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_NULL.repr);
-}
-
-#[gtest(TpmTest, BuildCreateAikCommandRsaPkcs1)]
-fn test_build_create_aik_command_rsa_pkcs1() {
-    const PARENT_HANDLE: u32 = 0x81000001;
-    let cmd = tpm::build_create_aik_command(
-        PARENT_HANDLE,
-        tpm::TpmAlg::TPM_ALG_RSASSA,
-        tpm::TpmAlg::TPM_ALG_SHA256,
-    );
-    expect_eq!(cmd.len(), 65);
-
-    let mut reader = tpm::Reader::new(&cmd);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmSt::TPM_ST_SESSIONS.repr);
-    expect_eq!(reader.read_u32().unwrap(), 65);
-    expect_eq!(reader.read_u32().unwrap(), tpm::TpmCc::TPM_CC_CREATE.repr);
-    expect_eq!(reader.read_u32().unwrap(), PARENT_HANDLE);
-
-    // Skip auth session (13 bytes) + inSensitive (6 bytes)
-    let _ = reader.read_bytes(19).unwrap();
-
-    // inPublic
-    expect_eq!(reader.read_u16().unwrap(), 24);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_RSA.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_SHA256.repr);
-    expect_eq!(reader.read_u32().unwrap(), tpm::AIK_OBJECT_ATTRIBUTES);
-    expect_eq!(reader.read_u16().unwrap(), 0);
-
-    // parameters
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_NULL.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_RSASSA.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_SHA256.repr);
-    expect_eq!(reader.read_u16().unwrap(), 2048);
-    expect_eq!(reader.read_u32().unwrap(), 0); // exponent
-
-    // unique
-    expect_eq!(reader.read_u16().unwrap(), 0);
-
-    // outsideInfo
-    expect_eq!(reader.read_u16().unwrap(), 0);
-
-    // creationPCR
-    expect_eq!(reader.read_u32().unwrap(), 0);
-}
-
-#[gtest(TpmTest, BuildCreateAikCommandRsaPss)]
-fn test_build_create_aik_command_rsa_pss() {
-    const PARENT_HANDLE: u32 = 0x81000001;
-    let cmd = tpm::build_create_aik_command(
-        PARENT_HANDLE,
-        tpm::TpmAlg::TPM_ALG_RSAPSS,
-        tpm::TpmAlg::TPM_ALG_SHA256,
-    );
-    expect_eq!(cmd.len(), 65);
-
-    let mut reader = tpm::Reader::new(&cmd);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmSt::TPM_ST_SESSIONS.repr);
-    expect_eq!(reader.read_u32().unwrap(), 65);
-    expect_eq!(reader.read_u32().unwrap(), tpm::TpmCc::TPM_CC_CREATE.repr);
-    expect_eq!(reader.read_u32().unwrap(), PARENT_HANDLE);
-
-    // Skip auth session (13 bytes) + inSensitive (6 bytes)
-    let _ = reader.read_bytes(19).unwrap();
-
-    // inPublic
-    expect_eq!(reader.read_u16().unwrap(), 24);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_RSA.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_SHA256.repr);
-    expect_eq!(reader.read_u32().unwrap(), tpm::AIK_OBJECT_ATTRIBUTES);
-    expect_eq!(reader.read_u16().unwrap(), 0);
-
-    // parameters
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_NULL.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_RSAPSS.repr);
-    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlg::TPM_ALG_SHA256.repr);
-    expect_eq!(reader.read_u16().unwrap(), 2048);
-    expect_eq!(reader.read_u32().unwrap(), 0); // exponent
-
-    // unique
-    expect_eq!(reader.read_u16().unwrap(), 0);
+    expect_eq!(reader.read_u16().unwrap(), tpm::TpmAlgSigScheme::TPM_ALG_NULL.repr);
 }
 
 struct CreateResponseBuilder {

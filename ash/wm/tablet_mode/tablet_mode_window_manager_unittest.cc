@@ -22,6 +22,7 @@
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/mru_window_tracker.h"
 #include "ash/wm/overview/overview_controller.h"
+#include "ash/wm/snap_group/snap_group_controller.h"
 #include "ash/wm/splitview/split_view_constants.h"
 #include "ash/wm/splitview/split_view_controller.h"
 #include "ash/wm/splitview/split_view_divider.h"
@@ -52,7 +53,9 @@
 #include "ui/base/hit_test.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/compositor/layer.h"
+#include "ui/compositor/layer_animator.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/widget/widget.h"
 #include "ui/wm/core/ime_util_chromeos.h"
 #include "ui/wm/core/transient_window_manager.h"
@@ -1183,7 +1186,7 @@ TEST_F(TabletModeWindowManagerTest, KeepPinnedModeOn_Case5) {
   EXPECT_FALSE(window_state->IsPinned());
 }
 
-TEST_F(TabletModeWindowManagerTest, LockedFullscreenWindowCannotMinimize) {
+TEST_F(TabletModeWindowManagerTest, TrustedPinnedWindowCannotMinimize) {
   std::unique_ptr<aura::Window> window(CreateWindow(
       aura::client::WINDOW_TYPE_NORMAL, gfx::Rect(20, 140, 100, 100)));
   WindowState* window_state = WindowState::Get(window.get());
@@ -1198,22 +1201,22 @@ TEST_F(TabletModeWindowManagerTest, LockedFullscreenWindowCannotMinimize) {
     window_state->OnWMEvent(&event);
   }
   EXPECT_TRUE(window_state->IsPinned());
-  EXPECT_FALSE(window_state->IsLockedFullscreen());
+  EXPECT_FALSE(window_state->IsTrustedPinned());
 
   // Standard pinned window should allow minimize event in tablet mode.
   window_state->Minimize();
   EXPECT_TRUE(window_state->IsMinimized());
 
-  // Locked fullscreen window should ignore minimize event.
+  // Trusted pinned window should ignore minimize event.
   window_state->Restore();
   {
-    WMEvent event(WM_EVENT_LOCKED_FULLSCREEN);
+    WMEvent event(WM_EVENT_TRUSTED_PIN);
     window_state->OnWMEvent(&event);
   }
-  EXPECT_TRUE(window_state->IsLockedFullscreen());
+  EXPECT_TRUE(window_state->IsTrustedPinned());
 
   window_state->Minimize();
-  EXPECT_TRUE(window_state->IsLockedFullscreen());
+  EXPECT_TRUE(window_state->IsTrustedPinned());
   EXPECT_FALSE(window_state->IsMinimized());
 
   // Exit tablet mode.
@@ -2109,6 +2112,69 @@ TEST_F(TabletModeWindowManagerTest, StateTypeOnAttachNewDragWindow) {
   }
 
   DestroyTabletModeWindowManager();
+}
+
+// Tests that windows that are occluded in tablet mode do not animate when
+// leaving tablet mode, even if they have a snapped window state.
+TEST_F(TabletModeWindowManagerTest, NoAnimationForOccludedWindowsOnExit) {
+  std::unique_ptr<aura::Window> window1 = CreateToplevelTestWindow({400, 400});
+  std::unique_ptr<aura::Window> window2 = CreateToplevelTestWindow({400, 400});
+  std::unique_ptr<aura::Window> window3 = CreateToplevelTestWindow({400, 400});
+  CreateTabletModeWindowManager();
+
+  split_view_controller()->SnapWindow(window1.get(), SnapPosition::kPrimary);
+  split_view_controller()->SnapWindow(window2.get(), SnapPosition::kSecondary);
+  // `window3` replaces `window2` in split view, but `window2` keeps its snapped
+  // window state behind `window3`.
+  split_view_controller()->SnapWindow(window3.get(), SnapPosition::kSecondary);
+  ASSERT_EQ(window3.get(), split_view_controller()->secondary_window());
+  ASSERT_TRUE(WindowState::Get(window2.get())->IsSnapped());
+
+  gfx::ScopedAnimationDurationScaleMode animation_scale(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  DestroyTabletModeWindowManager();
+
+  EXPECT_TRUE(window1->layer()->GetAnimator()->is_animating());
+  EXPECT_FALSE(window2->layer()->GetAnimator()->is_animating());
+  EXPECT_TRUE(window3->layer()->GetAnimator()->is_animating());
+}
+
+// Tests that a normal window occluded behind two snapped windows in split view
+// (which form a snap group in clamshell mode) does not animate when leaving
+// tablet mode.
+TEST_F(TabletModeWindowManagerTest,
+       NoAnimationForNormalWindowBehindSplitViewOnExit) {
+  std::unique_ptr<aura::Window> normal_window =
+      CreateWindowWithAppType(chromeos::AppType::BROWSER, {400, 400});
+  std::unique_ptr<aura::Window> window1 =
+      CreateWindowWithAppType(chromeos::AppType::BROWSER, {400, 400});
+  std::unique_ptr<aura::Window> window2 =
+      CreateWindowWithAppType(chromeos::AppType::BROWSER, {400, 400});
+  CreateTabletModeWindowManager();
+  ASSERT_TRUE(WindowState::Get(normal_window.get())->IsMaximized());
+
+  split_view_controller()->SnapWindow(
+      window1.get(), SnapPosition::kPrimary,
+      WindowSnapActionSource::kDragOrSelectOverviewWindowToSnap,
+      /*activate_window=*/true);
+  split_view_controller()->SnapWindow(
+      window2.get(), SnapPosition::kSecondary,
+      WindowSnapActionSource::kDragOrSelectOverviewWindowToSnap,
+      /*activate_window=*/true);
+  ASSERT_EQ(split_view_controller()->state(),
+            SplitViewController::State::kBothSnapped);
+  ASSERT_TRUE(split_view_controller()->split_view_divider()->divider_widget());
+
+  gfx::ScopedAnimationDurationScaleMode animation_scale(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  DestroyTabletModeWindowManager();
+
+  EXPECT_TRUE(SnapGroupController::Get()->AreWindowsInSnapGroup(window1.get(),
+                                                                window2.get()));
+  EXPECT_TRUE(WindowState::Get(normal_window.get())->IsNormalStateType());
+  EXPECT_FALSE(normal_window->layer()->GetAnimator()->is_animating());
+  EXPECT_TRUE(window1->layer()->GetAnimator()->is_animating());
+  EXPECT_TRUE(window2->layer()->GetAnimator()->is_animating());
 }
 
 }  // namespace ash

@@ -5,8 +5,14 @@
 #include "ui/views/widget/desktop_aura/desktop_drag_drop_client_win.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/auto_reset.h"
+#include "base/check_op.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
+#include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/scoped_observation.h"
 #include "base/threading/hang_watcher.h"
@@ -26,6 +32,11 @@
 namespace views {
 
 namespace {
+
+base::RepeatingClosure& GetOnDragStartedCallback() {
+  static base::NoDestructor<base::RepeatingClosure> callback;
+  return *callback;
+}
 
 class SourceWindowObserver : public aura::WindowObserver {
  public:
@@ -50,7 +61,28 @@ class SourceWindowObserver : public aura::WindowObserver {
 
 bool g_is_dragging = false;
 
+// Number of live ScopedSuppressForWindowMove() scopes. A counter allows
+// independent scopes, such as a pre-threshold click-hold and a move loop, to
+// overlap and be destroyed in any order without leaving drags permanently
+// suppressed or prematurely enabled.
+int g_window_move_suppression_count = 0;
+
 }  // namespace
+
+// static
+base::ScopedClosureRunner
+DesktopDragDropClientWin::ScopedSuppressForWindowMove() {
+  ++g_window_move_suppression_count;
+  return base::ScopedClosureRunner(base::BindOnce([] {
+    CHECK_GT(g_window_move_suppression_count, 0);
+    --g_window_move_suppression_count;
+  }));
+}
+
+// static
+bool DesktopDragDropClientWin::IsDragInProgressOrSuppressedForTesting() {
+  return g_is_dragging || g_window_move_suppression_count > 0;
+}
 
 DesktopDragDropClientWin::DesktopDragDropClientWin(
     aura::Window* root_window,
@@ -75,7 +107,8 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
     int allowed_operations,
     ui::mojom::DragEventSource source) {
   CHECK(!g_is_dragging);
-  if (desktop_host_->IsInNativeMoveResizeLoop()) {
+  if (desktop_host_->IsInNativeMoveResizeLoop() ||
+      g_window_move_suppression_count > 0) {
     return ui::PreferredDragOperation(
         ui::DragDropTypes::DropEffectToDragOperation(DROPEFFECT_NONE));
   }
@@ -116,6 +149,10 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
   // any) is not valid since the user can take unbounded time to complete the
   // drag. (http://crbug.com/806174)
   base::HangWatcher::InvalidateActiveExpectations();
+
+  if (auto& callback = GetOnDragStartedCallback()) {
+    callback.Run();
+  }
 
   HRESULT result = ::DoDragDrop(
       ui::OSExchangeDataProviderWin::GetIDataObject(*data.get()),
@@ -160,6 +197,12 @@ void DesktopDragDropClientWin::AddObserver(
 void DesktopDragDropClientWin::RemoveObserver(
     aura::client::DragDropClientObserver* observer) {
   NOTIMPLEMENTED();
+}
+
+// static
+void DesktopDragDropClientWin::SetOnDragStartedCallbackForTesting(
+    base::RepeatingClosure callback) {
+  GetOnDragStartedCallback() = std::move(callback);
 }
 
 void DesktopDragDropClientWin::OnNativeWidgetDestroying(HWND window) {

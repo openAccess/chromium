@@ -350,6 +350,8 @@ void GrammarManager::AcceptSuggestion() {
         surrounding_text.selection_range.end() + surrounding_text.offset);
 
     // Delete the incorrect grammar fragment.
+    // TODO(crbug.com/576844843): CHECK-exclusion: Convert to a CHECK once
+    // we are confident it won't be triggered.
     DCHECK(current_fragment_.range.Contains(selection_range));
     const uint32_t before =
         selection_range.start() - current_fragment_.range.start();

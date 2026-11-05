@@ -14,13 +14,12 @@ import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeActionRateLimiter;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeManager;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeManager.DistillationStatus;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeMetrics;
-import org.chromium.chrome.browser.dom_distiller.TabDistillabilityProvider;
-import org.chromium.chrome.browser.dom_distiller.TabDistillabilityProvider.DistillabilityObserver;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.reader_mode.ReaderModeActionRateLimiter;
+import org.chromium.chrome.browser.reader_mode.ReaderModeManager;
+import org.chromium.chrome.browser.reader_mode.ReaderModeManager.DistillationStatus;
+import org.chromium.chrome.browser.reader_mode.ReaderModeMetrics;
+import org.chromium.chrome.browser.reader_mode.TabDistillabilityProvider;
+import org.chromium.chrome.browser.reader_mode.TabDistillabilityProvider.DistillabilityObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabHidingType;
 import org.chromium.chrome.browser.tab.TabObserver;
@@ -182,8 +181,7 @@ public class ReaderModeActionProvider implements ContextualPageActionController.
         // timed-out ones to give a chance to Message UI that could have been held off until now(
         // only for MTB-CCT).
         boolean isReaderMode = action == AdaptiveToolbarButtonVariant.READER_MODE;
-        if (!(isReaderMode
-                || (ChromeFeatureList.sCctAdaptiveButton.isEnabled() && hasSignalTimedOut()))) {
+        if (!(isReaderMode || hasSignalTimedOut())) {
             return;
         }
 

@@ -5,6 +5,8 @@
 package org.chromium.chrome.browser.webapps;
 
 import android.content.Context;
+import android.content.Intent;
+import android.graphics.Bitmap;
 import android.os.Handler;
 import android.text.TextUtils;
 
@@ -18,10 +20,13 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
+import org.chromium.chrome.browser.ShortcutHelper;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.banners.AppMenuVerbiage;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
@@ -36,6 +41,7 @@ import org.chromium.components.webapps.AddToHomescreenDialogView;
 import org.chromium.components.webapps.AddToHomescreenProperties;
 import org.chromium.components.webapps.AddToHomescreenViewDelegate;
 import org.chromium.components.webapps.AppType;
+import org.chromium.components.webapps.WebappsFeatureMap;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.ui.base.WindowAndroid;
@@ -57,6 +63,8 @@ public class AddToHomescreenInstallTest {
 
     private static final String MANIFEST_TEST_PAGE_PATH =
             "/chrome/test/data/banners/manifest_test_page.html";
+    private static final String NO_MANIFEST_TEST_PAGE_PATH =
+            "/chrome/test/data/banners/no_manifest_test_page.html";
     private static final String MANIFEST_TEST_PAGE_TITLE = "Web app banner test page";
 
     private static final String INSTALL_PATH_HISTOGRAM_NAME = "WebApk.Install.PathToInstall";
@@ -113,6 +121,8 @@ public class AddToHomescreenInstallTest {
     private ChromeActivity mActivity;
     private Tab mTab;
     private HistogramWatcher mInstallHistogramsWatcher;
+    private final CallbackHelper mAddShortcutCallback = new CallbackHelper();
+    private String mAddedShortcutTitle;
 
     @Before
     public void setUp() throws Exception {
@@ -122,6 +132,21 @@ public class AddToHomescreenInstallTest {
         mTab = mActivityTestRule.getActivityTab();
         mInstallHistogramsWatcher =
                 HistogramWatcher.newSingleRecordWatcher("Webapp.Install.InstallEvent", 0);
+        // Don't ask the launcher to pin a shortcut. It would show a confirmation dialog in its own
+        // task that nothing dismisses, so it would outlive the test and affect later tests.
+        ShortcutHelper.setDelegateForTests(
+                new ShortcutHelper.Delegate() {
+                    @Override
+                    public void addShortcutToHomescreen(
+                            String id,
+                            String title,
+                            Bitmap icon,
+                            boolean isIconAdaptive,
+                            Intent shortcutIntent) {
+                        mAddedShortcutTitle = title;
+                        mAddShortcutCallback.notifyCalled();
+                    }
+                });
     }
 
     private void loadUrl(String url, String expectedPageTitle) throws Exception {
@@ -163,5 +188,23 @@ public class AddToHomescreenInstallTest {
         installApp(mTab, "", /* expectAdded= */ true, /* expectedDialogType= */ AppType.WEBAPK);
 
         histogram.assertExpected();
+    }
+
+    @Test
+    @SmallTest
+    @Feature("{Webapp}")
+    @EnableFeatures({WebappsFeatureMap.ANDROID_INSTALL_ANY_PAGE_AS_DIY_APP_STOPGAP})
+    public void testInstallDiyWebApk() throws Exception {
+        HistogramWatcher histogram =
+                HistogramWatcher.newSingleRecordWatcher(INSTALL_PATH_HISTOGRAM_NAME, 2);
+
+        // A sub-path page with no manifest and no icon link: installs as a DIY
+        // WebAPK with a generated icon.
+        loadUrl(mServer.getURL(NO_MANIFEST_TEST_PAGE_PATH), MANIFEST_TEST_PAGE_TITLE);
+        installApp(mTab, "", /* expectAdded= */ true, /* expectedDialogType= */ AppType.WEBAPK_DIY);
+
+        histogram.assertExpected();
+        mAddShortcutCallback.waitForOnly();
+        Assert.assertEquals(MANIFEST_TEST_PAGE_TITLE, mAddedShortcutTitle);
     }
 }

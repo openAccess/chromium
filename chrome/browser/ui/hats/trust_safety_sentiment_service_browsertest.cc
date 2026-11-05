@@ -6,18 +6,19 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/time/time_override.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/bubble_anchor_util.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
 #include "chrome/browser/ui/page_info/page_info_dialog.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 using ::testing::_;
 
@@ -59,14 +60,17 @@ class TrustSafetySentimentServiceBrowserTest : public InProcessBrowserTest {
 
   void TearDownOnMainThread() override { mock_hats_service_ = nullptr; }
 
+  content::WebContents* web_contents() {
+    return browser()->GetTabStripModel()->GetActiveWebContents();
+  }
+
   void OpenPageInfo() {
-    ShowPageInfoDialog(browser()->tab_strip_model()->GetActiveWebContents(),
-                       base::DoNothing(),
+    ShowPageInfoDialog(web_contents(), base::DoNothing(),
                        bubble_anchor_util::Anchor::kLocationBar);
   }
 
   void ClosePageInfo() {
-    PageInfoBubbleView::GetPageInfoBubbleForTesting()
+    PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents())
         ->GetWidget()
         ->CloseWithReason(views::Widget::ClosedReason::kCloseButtonClicked);
     base::RunLoop().RunUntilIdle();
@@ -79,7 +83,7 @@ class TrustSafetySentimentServiceBrowserTest : public InProcessBrowserTest {
     permission.default_setting = ContentSetting::CONTENT_SETTING_ASK;
 
     auto* bubble = static_cast<PageInfoBubbleView*>(
-        PageInfoBubbleView::GetPageInfoBubbleForTesting());
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents()));
     bubble->presenter_for_testing()->OnSitePermissionChanged(
         permission.type, permission.setting, permission.requesting_origin,
         permission.is_one_time);
@@ -91,7 +95,7 @@ class TrustSafetySentimentServiceBrowserTest : public InProcessBrowserTest {
          i++) {
       ui_test_utils::NavigateToURLWithDisposition(
           browser(), GURL(chrome::kChromeUINewTabURL),
-          WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     }
   }

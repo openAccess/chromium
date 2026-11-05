@@ -7,35 +7,28 @@
 
 #import <memory>
 
-#import "base/no_destructor.h"
-#import "ios/chrome/browser/shared/model/profile/profile_keyed_service_factory_ios.h"
-
-class OptimizationGuideService;
-class ProfileIOS;
+#import "ios/chrome/browser/optimization_guide/model/optimization_guide_service.h"
+#import "ios/chrome/browser/shared/model/profile/typed_profile_keyed_service_factory_ios.h"
 
 // Singleton that owns all OptimizationGuideService objects and associates them
 // with Profiles.
-class OptimizationGuideServiceFactory : public ProfileKeyedServiceFactoryIOS {
+class OptimizationGuideServiceFactory final
+    : public TypedProfileKeyedServiceFactoryIOS<OptimizationGuideServiceFactory,
+                                                OptimizationGuideService> {
  public:
-  static OptimizationGuideService* GetForProfile(ProfileIOS* profile);
-  static OptimizationGuideServiceFactory* GetInstance();
+  explicit OptimizationGuideServiceFactory(PassKey key);
 
   // Initializes the prediction model store.
   static void InitializePredictionModelStore();
 
   // Returns the default factory used to build OptimizationGuideService. Can be
   // registered with AddTestingFactory to use real instances during testing.
-  static TestingFactory GetDefaultFactory();
+  static TestingFactoryByRef GetDefaultFactory();
 
  private:
-  friend class base::NoDestructor<OptimizationGuideServiceFactory>;
-
-  OptimizationGuideServiceFactory();
-  ~OptimizationGuideServiceFactory() override;
-
   // ProfileKeyedServiceFactoryIOS:
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      ProfileIOS* profile) const override;
+      ProfileIOS& profile) const final;
 };
 
 #endif  // IOS_CHROME_BROWSER_OPTIMIZATION_GUIDE_MODEL_OPTIMIZATION_GUIDE_SERVICE_FACTORY_H_

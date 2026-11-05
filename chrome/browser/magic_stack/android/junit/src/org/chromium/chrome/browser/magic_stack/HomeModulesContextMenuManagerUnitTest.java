@@ -9,7 +9,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
@@ -20,10 +19,10 @@ import android.graphics.Rect;
 import android.view.ContextThemeWrapper;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.TextView;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -34,7 +33,7 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
@@ -46,7 +45,6 @@ import org.chromium.ui.widget.AnchoredPopupWindow.VerticalOrientation;
 
 /** Unit tests for {@link HomeModulesContextMenuManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class HomeModulesContextMenuManagerUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -54,12 +52,12 @@ public class HomeModulesContextMenuManagerUnitTest {
     private static final String EXPECTED_OPTION_2 = "More settings";
     private static final int MODULE_TYPE = ModuleType.PRICE_CHANGE;
     @Mock private ModuleProvider mModuleProvider;
-    @Mock private View mView;
     @Mock private ModuleDelegate mModuleDelegate;
     @Mock private AnchoredPopupWindow mPopupWindow;
     @Mock private Runnable mDismissPopupWindowRunnable;
     @Captor private ArgumentCaptor<AnchoredPopupWindow.LayoutObserver> mLayoutObserverCaptor;
     private Context mContext;
+    private View mView;
     private BasicListMenu mMenu;
     private HomeModulesContextMenuManager mManager;
 
@@ -69,11 +67,11 @@ public class HomeModulesContextMenuManagerUnitTest {
                 new ContextThemeWrapper(
                         ApplicationProvider.getApplicationContext(),
                         R.style.Theme_BrowserUI_DayNight);
+        mView = new View(mContext);
         mManager = new HomeModulesContextMenuManager(mModuleDelegate);
 
         when(mModuleProvider.getModuleContextMenuHideText(any(Context.class)))
                 .thenReturn(EXPECTED_OPTION_1);
-        when(mView.getContext()).thenReturn(mContext);
         when(mModuleProvider.getModuleType()).thenReturn(MODULE_TYPE);
 
         mMenu =
@@ -84,7 +82,6 @@ public class HomeModulesContextMenuManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDisplayMenu() {
         View view =
                 LayoutInflater.from(mContext).inflate(R.layout.educational_tip_module_layout, null);
@@ -103,7 +100,6 @@ public class HomeModulesContextMenuManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetListMenuContent() {
         // Obtains the first and second list views created by mManager.getListMenu().
         View listItemView1 =
@@ -121,7 +117,6 @@ public class HomeModulesContextMenuManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetListMenuDelegation() {
         // Verifies the magic stack module is removed, the action is recorded in the histogram and
         // the popup window is dismissed at the end of the clicking the first option.
@@ -156,14 +151,12 @@ public class HomeModulesContextMenuManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDismissPopupWindow() {
         mManager.dismissPopupWindow();
         verify(mPopupWindow).dismiss();
     }
 
     @Test
-    @SmallTest
     public void testShowContextMenu() {
         mManager.showContextMenu(mMenu, mView);
 
@@ -182,7 +175,6 @@ public class HomeModulesContextMenuManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShowContextMenuWithShortMenuItem() {
         int leftPadding = 10;
         int rightPadding = 8;
@@ -197,7 +189,6 @@ public class HomeModulesContextMenuManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShowContextMenuWithLongMenuItem() {
         int viewWidth = 100;
         BasicListMenu menu = setMenuData(10, 8, 100, viewWidth);
@@ -209,7 +200,6 @@ public class HomeModulesContextMenuManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShouldShowItem() {
         // Verifies that the "more settings" and "hide" menu items are default shown for all
         // modules.
@@ -227,26 +217,25 @@ public class HomeModulesContextMenuManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetAnchorRectangle() {
         int width = 440;
         int height = 897;
         int locationHorizontal = 1808;
         int locationVertical = 32423;
 
-        doAnswer(
-                        invocation -> {
-                            int[] list = invocation.getArgument(0);
-                            list[0] = locationHorizontal;
-                            list[1] = locationVertical;
-                            return null;
-                        })
-                .when(mView)
-                .getLocationOnScreen(any(int[].class));
-        when(mView.getWidth()).thenReturn(width);
-        when(mView.getHeight()).thenReturn(height);
+        // getLocationOnScreen() requires the view to be attached to a window.
+        View view = new View(mContext);
+        WindowManager windowManager = mContext.getSystemService(WindowManager.class);
+        windowManager.addView(view, new WindowManager.LayoutParams(width, height));
+        ShadowLooper.idleMainLooper();
+        view.layout(
+                locationHorizontal,
+                locationVertical,
+                locationHorizontal + width,
+                locationVertical + height);
 
-        Rect anchorRect = mManager.getAnchorRectangle(mView);
+        Rect anchorRect = mManager.getAnchorRectangle(view);
+        windowManager.removeView(view);
 
         assertEquals(anchorRect.left, locationHorizontal);
         assertEquals(anchorRect.right, locationHorizontal + width);
@@ -256,14 +245,13 @@ public class HomeModulesContextMenuManagerUnitTest {
 
     private BasicListMenu setMenuData(
             int leftPadding, int rightPadding, int maxWidth, int viewWidth) {
-        View contentView = mock(View.class);
+        View contentView = new View(mContext);
+        contentView.setPadding(leftPadding, 0, rightPadding, 0);
         BasicListMenu menu = mock(BasicListMenu.class);
 
         when(menu.getContentView()).thenReturn(contentView);
-        when(contentView.getPaddingLeft()).thenReturn(leftPadding);
-        when(contentView.getPaddingRight()).thenReturn(rightPadding);
         when(menu.getMaxItemWidth()).thenReturn(maxWidth);
-        when(mView.getWidth()).thenReturn(viewWidth);
+        mView.layout(0, 0, viewWidth, 0);
 
         return menu;
     }

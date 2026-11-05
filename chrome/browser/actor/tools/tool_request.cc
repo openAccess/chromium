@@ -6,15 +6,15 @@
 
 #include <optional>
 
+#include "base/notimplemented.h"
+#include "chrome/browser/actor/actor_surface.h"
+#include "chrome/browser/actor/tools/registry/tool_definition.h"
 #include "chrome/browser/actor/tools/tool.h"
-#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 
 namespace actor {
 
 using ::content::WebContents;
-using ::tabs::TabHandle;
-using ::tabs::TabInterface;
 
 ToolRequest::CreateToolResult::CreateToolResult(std::unique_ptr<Tool> tool,
                                                 mojom::ActionResultPtr result)
@@ -26,6 +26,11 @@ ToolRequest::~ToolRequest() = default;
 ToolRequest::ToolRequest(const ToolRequest& other) = default;
 ToolRequest& ToolRequest::operator=(const ToolRequest& other) = default;
 
+std::optional<ToolDefinition> ToolRequest::GetToolDefinition() {
+  NOTIMPLEMENTED_LOG_ONCE();
+  return std::nullopt;
+}
+
 bool ToolRequest::IsFollowup() const {
   return is_followup_;
 }
@@ -35,7 +40,7 @@ void ToolRequest::SetAsFollowup(base::PassKey<ExecutionEngine>) {
 }
 
 bool ToolRequest::IsTabScoped() const {
-  return GetTabHandle() != tabs::TabHandle::Null();
+  return !GetActorSurfaceHandle().is_null();
 }
 
 bool ToolRequest::AddsTabToObservationSet() const {
@@ -46,8 +51,8 @@ GURL ToolRequest::GetURLForJournal() const {
   return GURL::EmptyGURL();
 }
 
-tabs::TabHandle ToolRequest::GetTabHandle() const {
-  return tabs::TabHandle();
+ActorSurfaceHandle ToolRequest::GetActorSurfaceHandle() const {
+  return ActorSurfaceHandle::Null();
 }
 
 std::string ToolRequest::JournalEvent() const {
@@ -60,8 +65,8 @@ bool ToolRequest::RequiresUrlCheckInCurrentTab() const {
   return IsTabScoped();
 }
 
-tabs::TabHandle ToolRequest::GetTabForValidation() const {
-  return GetTabHandle();
+ActorSurfaceHandle ToolRequest::GetActorSurfaceForValidation() const {
+  return GetActorSurfaceHandle();
 }
 
 std::optional<url::Origin> ToolRequest::AssociatedOriginGrant() const {
@@ -73,31 +78,40 @@ ToolRequest::GetObservationPageStabilityConfig() const {
   return ObservationDelayController::PageStabilityConfig();
 }
 
+bool ToolRequest::ShouldSkipObservationDelay() const {
+  return skip_observation_delay_;
+}
+
+void ToolRequest::SetSkipObservationDelay(bool skip_observation_delay) {
+  skip_observation_delay_ = skip_observation_delay;
+}
+
 bool ToolRequest::RequiresOpeningWebContents() const {
   return false;
 }
 
-TabToolRequest::TabToolRequest(const tabs::TabHandle tab_handle)
-    : tab_handle_(tab_handle) {
+TabToolRequest::TabToolRequest(ActorSurfaceHandle actor_surface_handle)
+    : actor_surface_handle_(actor_surface_handle) {
   // The given handle need not be valid - the handle is validated at time of
   // dereferencing when instantiating a tool. However, it must be a non-null
   // value.
-  CHECK_NE(tab_handle.raw_value(), TabHandle::Null().raw_value());
+  CHECK(!actor_surface_handle.is_null());
 }
+
 TabToolRequest::~TabToolRequest() = default;
 TabToolRequest::TabToolRequest(const TabToolRequest& other) = default;
 TabToolRequest& TabToolRequest::operator=(const TabToolRequest& other) =
     default;
 
 GURL TabToolRequest::GetURLForJournal() const {
-  if (TabInterface* tab = tab_handle_.Get()) {
-    return tab->GetContents()->GetLastCommittedURL();
+  if (ActorSurface* actor_surface = actor_surface_handle_.Get()) {
+    return actor_surface->GetWebContents()->GetLastCommittedURL();
   }
   return ToolRequest::GetURLForJournal();
 }
 
-tabs::TabHandle TabToolRequest::GetTabHandle() const {
-  return tab_handle_;
+ActorSurfaceHandle TabToolRequest::GetActorSurfaceHandle() const {
+  return actor_surface_handle_;
 }
 
 }  // namespace actor

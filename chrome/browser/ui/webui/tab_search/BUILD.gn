@@ -34,10 +34,7 @@ source_set("tab_search") {
     "tab_search_sync_handler.h",
     "tab_search_ui.h",
   ]
-  public_deps = [
-    "//chrome/browser:browser_public_dependencies",
-    "//chrome/browser/ui:browser_live_tab_context",
-  ]
+  public_deps = [ "//chrome/browser/ui:browser_live_tab_context" ]
   deps = [
     ":mojo_bindings",
     "//base",
@@ -46,16 +43,19 @@ source_set("tab_search") {
     "//chrome/browser/favicon",
     "//chrome/browser/glic/resources:grit",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/resources/tab_group_shared:resources",
     "//chrome/browser/resources/tab_search:resources",
     "//chrome/browser/sessions",
     "//chrome/browser/signin",
     "//chrome/browser/sync",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui:tab_ui_helper",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/interaction",
     "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/browser/ui/tabs/alert:tab_alert",
+    "//chrome/browser/ui/tabs/organizer",
     "//chrome/browser/ui/tabs/tab_strip_api",
     "//chrome/browser/ui/tabs/tab_strip_api/tab_strip_model_impl",
     "//chrome/browser/ui/webui:favicon_source",
@@ -86,6 +86,17 @@ source_set("tab_search") {
   ]
 }
 
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "search_handler_unittest.cc" ]
+  deps = [
+    ":tab_search",
+    "//base/test:test_support",
+    "//mojo/public/cpp/bindings",
+    "//testing/gtest",
+  ]
+}
+
 source_set("browser_tests") {
   testonly = true
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
@@ -96,12 +107,15 @@ source_set("browser_tests") {
   deps = [
     ":tab_search",
     "//chrome/browser/tab_group_sync:factories",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_commands",
+    "//chrome/browser/ui:browser_tabstrip",
     "//chrome/browser/ui:recently_audible_helper",
     "//chrome/browser/ui:tab_ui_helper",
+    "//chrome/browser/ui/browser_ui_controller",
     "//chrome/browser/ui/tabs/saved_tab_groups:test_support",
     "//chrome/browser/ui/webui:webui_util",
     "//chrome/browser/ui/webui/metrics_reporter:test_support",
+    "//chrome/browser/ui/webui/util",
     "//chrome/browser/vr",
     "//chrome/test:test_support",
     "//chrome/test:test_support_ui",

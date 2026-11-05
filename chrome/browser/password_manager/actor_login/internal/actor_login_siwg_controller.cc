@@ -13,6 +13,7 @@
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/actor/action_result.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
+#include "components/password_manager/core/browser/actor_login/actor_login_quality_logger_interface.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host_view.h"
@@ -22,6 +23,8 @@
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/geometry/point_conversions.h"
 
 namespace actor_login {
@@ -153,7 +156,7 @@ ActorLoginSiwgController::ActorLoginSiwgController(
     ActorLoginPermissionService& permission_service,
     LoginStatusResultOrErrorReply on_finished_callback,
     base::WeakPtr<ActionSequenceDelegate> action_sequence_delegate,
-    base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger,
+    scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger,
     base::TimeTicks attempt_login_tool_start_time,
     PostButtonClickLoginResultCallback post_button_click_login_result_callback)
     : ActorLoginSiwgController(
@@ -176,7 +179,7 @@ ActorLoginSiwgController::ActorLoginSiwgController(
     ActorLoginPermissionService& permission_service,
     LoginStatusResultOrErrorReply on_finished_callback,
     base::WeakPtr<ActionSequenceDelegate> action_sequence_delegate,
-    base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger,
+    scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger,
     base::TimeTicks attempt_login_tool_start_time,
     PostButtonClickLoginResultCallback post_button_click_login_result_callback)
     : content::WebContentsObserver(web_contents),
@@ -286,11 +289,11 @@ void ActorLoginSiwgController::DidOpenRequestedURL(
     content::RenderFrameHost* source_render_frame_host,
     const GURL& url,
     const content::Referrer& referrer,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
     bool started_from_context_menu,
     bool renderer_initiated) {
-  if (disposition == WindowOpenDisposition::NEW_POPUP) {
+  if (disposition == ui::mojom::WindowOpenDisposition::kNewPopup) {
     popup_observer_ = std::make_unique<PopupObserver>(new_contents, this);
   }
 }

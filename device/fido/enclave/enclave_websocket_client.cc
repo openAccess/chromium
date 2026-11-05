@@ -8,12 +8,10 @@
 #include <utility>
 
 #include "base/containers/to_vector.h"
-#include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
 #include "components/device_event_log/device_event_log.h"
 #include "device/fido/network_context_factory.h"
-#include "device/fido/public/features.h"
 #include "device/fido/public/fido_constants.h"
 #include "net/http/http_request_headers.h"
 #include "net/storage_access_api/status.h"
@@ -61,6 +59,7 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
             }
           }
           destination: GOOGLE_OWNED_SERVICE
+          legacy_api_url: "https://enclave.ua5v.com"
           last_reviewed: "2023-07-05"
         }
         policy {
@@ -139,10 +138,8 @@ void EnclaveWebSocketClient::Connect() {
         "Reauthentication", *reauthentication_token_));
   }
 
-  uint32_t options = network::mojom::kWebSocketOptionBlockAllCookies;
-  if (base::FeatureList::IsEnabled(kWebAuthnSocketMaxPriorityMode)) {
-    options |= network::mojom::kWebSocketOptionMaximumPriority;
-  }
+  const uint32_t options = network::mojom::kWebSocketOptionBlockAllCookies |
+                           network::mojom::kWebSocketOptionMaximumPriority;
 
   network_context_factory_.Run()->CreateWebSocket(
       service_url_, {kEnclaveWebSocketProtocol},
@@ -161,7 +158,8 @@ void EnclaveWebSocketClient::Connect() {
       // This is a browser-internal connection to the passkey enclave service.
       // It does not belong to any webpage, so we bypass connection allowlists.
       network::GetNoOpNetworkRestrictionsId(),
-      /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown);
+      /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown,
+      /*target_network=*/std::nullopt);
 }
 
 void EnclaveWebSocketClient::InternalWrite(base::span<const uint8_t> data) {

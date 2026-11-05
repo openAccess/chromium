@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/reading_list/ui_bundled/reading_list_coordinator.h"
 
+#import <utility>
+
 #import "base/check_op.h"
 #import "base/ios/ios_util.h"
 #import "base/memory/raw_ptr.h"
@@ -35,8 +37,8 @@
 #import "ios/chrome/browser/favicon/model/ios_chrome_large_icon_service_factory.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_scene_agent.h"
+#import "ios/chrome/browser/menu/public/menu_histograms.h"
 #import "ios/chrome/browser/menu/ui_bundled/browser_action_factory.h"
-#import "ios/chrome/browser/menu/ui_bundled/menu_histograms.h"
 #import "ios/chrome/browser/metrics/model/new_tab_page_uma.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
@@ -61,12 +63,14 @@
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
+#import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_navigation_controller.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_navigation_controller_constants.h"
 #import "ios/chrome/browser/shared/ui/util/pasteboard_util.h"
 #import "ios/chrome/browser/sharing/ui_bundled/sharing_coordinator.h"
 #import "ios/chrome/browser/sharing/ui_bundled/sharing_params.h"
+#import "ios/chrome/browser/signin/model/account_preview_data_service_factory.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
@@ -220,6 +224,8 @@
                   accountManagerService:accountManagerService
                             authService:_authService
                             prefService:_prefService
+              accountPreviewDataService:AccountPreviewDataServiceFactory::
+                                            GetForProfile(profile)
                             syncService:_syncService
                             accessPoint:signin_metrics::AccessPoint::
                                             kReadingList
@@ -537,9 +543,9 @@
   [_signinCoordinator stop];
   __weak __typeof(self) weakSelf = self;
   [command addSigninCompletion:^(SigninCoordinator* coordinator,
-                                 SigninCoordinatorResult result,
-                                 id<SystemIdentity>) {
-    [weakSelf signinDidCompleteWithCoordinator:coordinator result:result];
+                                 SigninCoordinatorResultOrIdentity result) {
+    [weakSelf signinDidCompleteWithCoordinator:coordinator
+                                        result:std::move(result)];
   }];
   _signinCoordinator = [SigninCoordinator
       signinCoordinatorWithCommand:command
@@ -551,9 +557,10 @@
 #pragma mark - SigninPromoViewMediatorDelegate Helper
 
 - (void)signinDidCompleteWithCoordinator:(SigninCoordinator*)coordinator
-                                  result:(SigninCoordinatorResult)result {
-  CHECK_EQ(_signinCoordinator, coordinator, base::NotFatalUntil::M151);
-  [_signinPromoViewMediator signinDidCompleteWithResult:result];
+                                  result:(SigninCoordinatorResultOrIdentity)
+                                             result {
+  CHECK_EQ(_signinCoordinator, coordinator);
+  [_signinPromoViewMediator signinDidCompleteWithResult:std::move(result)];
   [self updateSignInPromoVisibility];
   [self stopSigninCoordinator];
 }
@@ -592,7 +599,7 @@
     (const signin::PrimaryAccountChangeEvent&)event {
   switch (event.GetEventTypeFor(signin::ConsentLevel::kSignin)) {
     case signin::PrimaryAccountChangeEvent::Type::kSet:
-      if (!_signinPromoViewMediator.showSpinner) {
+      if (!_signinPromoViewMediator.spinnerVisible) {
         self.shouldShowSignInPromo = NO;
       }
       break;
@@ -650,7 +657,7 @@
     return;
   }
 
-  if (_signinPromoViewMediator.showSpinner) {
+  if (_signinPromoViewMediator.spinnerVisible) {
     // If the user is signed-in with the promo (thus opted-in for Reading List
     // account storage), the promo should stay visible during the initial sync
     // and a spinner should be shown on it.
@@ -687,11 +694,9 @@
                                 promoDelegate:_signinPromoViewMediator
                                     promoText:[self promoTextForPromoAction]];
   if (shouldShowSignInPromo) {
-    [_signinPromoViewMediator signinPromoViewIsVisible];
+    [_signinPromoViewMediator signinPromoDidBecomeVisible];
   } else {
-    if (_signinPromoViewMediator.isUsable) {
-      [_signinPromoViewMediator signinPromoViewIsHidden];
-    }
+    [_signinPromoViewMediator signinPromoViewIsHidden];
   }
 }
 

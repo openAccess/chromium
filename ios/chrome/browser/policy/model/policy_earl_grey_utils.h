@@ -7,6 +7,9 @@
 
 #import <string>
 
+struct AppLaunchConfiguration;
+class GURL;
+
 namespace base {
 class Value;
 }
@@ -19,11 +22,18 @@ namespace policy_test_utils {
 std::string GetValueForPlatformPolicy(const std::string& policy_key);
 
 // Sets the boolean policy corresponding to `policy_key` to the given boolean
-// value, and removes previous policies.
+// value, and removes previous policies. The policy is installed as a mandatory
+// machine platform policy.
 void SetPolicy(bool enabled, const std::string& policy_key);
 // Merges the boolean policy corresponding to `policy_key` to the existing
-// policies with its value sets to `enabled`.
+// policies with its value sets to `enabled`. The policy is installed as a
+// mandatory machine platform policy.
 void MergePolicy(bool enabled, const std::string& policy_key);
+// Same as `MergePolicy`, but installs the policy with the user scope and the
+// cloud source. Policies guarded by `policy::CloudUserOnlyPolicyChecker`
+// (e.g. CloudProfileReportingEnabled and UserSecuritySignalsReporting) are
+// silently dropped unless they are set this way.
+void MergeCloudUserPolicy(bool enabled, const std::string& policy_key);
 
 // Sets the integer policy corresponding to `policy_key` to the given integer
 // value, and removes previous policies.
@@ -55,6 +65,15 @@ void SetPolicy(base::Value value, const std::string& policy_key);
 
 // Clears all policy values.
 void ClearPolicies();
+
+// Adds launch arguments to `config` that enable Chrome Browser Cloud
+// Management with `enrollment_token`, using `policy_server_url` as the device
+// management server. The server URL is required so that tests never enroll
+// against the production server: on first run, startup is blocked on
+// `AppInitStage::kEnterprise` until the server responds.
+void AddCBCMEnrollmentArguments(AppLaunchConfiguration& config,
+                                const std::string& enrollment_token,
+                                const GURL& policy_server_url);
 
 }  // namespace policy_test_utils
 

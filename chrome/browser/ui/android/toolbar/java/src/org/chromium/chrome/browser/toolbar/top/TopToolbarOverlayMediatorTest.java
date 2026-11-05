@@ -50,7 +50,6 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.theme.ToolbarThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.ToolbarProgressBar;
-import org.chromium.components.browser_ui.widget.ClipDrawableProgressBar;
 import org.chromium.ui.modelutil.PropertyModel;
 
 /** Tests for the top toolbar overlay's mediator (composited version of the top toolbar). */
@@ -64,7 +63,7 @@ public class TopToolbarOverlayMediatorTest {
     @Mock private ToolbarThemeColorProvider mToolbarThemeColorProvider;
     @Mock private Tab mTab;
     @Mock private Tab mTab2;
-    @Mock private ToolbarProgressBar mProgressBar;
+    private ToolbarProgressBar mProgressBar;
 
     @Captor private ArgumentCaptor<TabObserver> mTabObserverCaptor;
 
@@ -72,9 +71,6 @@ public class TopToolbarOverlayMediatorTest {
     private ArgumentCaptor<BrowserControlsStateProvider.Observer> mBrowserControlsObserverCaptor;
 
     @Captor private ArgumentCaptor<LayoutStateProvider.LayoutStateObserver> mLayoutObserverCaptor;
-
-    @Captor
-    private ArgumentCaptor<ClipDrawableProgressBar.ProgressBarObserver> mProgressBarObserverCaptor;
 
     private final SettableMonotonicObservableSupplier<Tab> mTabSupplier =
             ObservableSuppliers.createMonotonic();
@@ -94,6 +90,7 @@ public class TopToolbarOverlayMediatorTest {
         TopToolbarOverlayMediator.setToolbarBackgroundColorForTesting(Color.RED);
         TopToolbarOverlayMediator.setUrlBarColorForTesting(Color.BLUE);
         TopToolbarOverlayMediator.setIsTabletForTesting(false);
+        mProgressBar = new ToolbarProgressBar(mContext, /* attrs= */ null);
 
         mModel =
                 new PropertyModel.Builder(TopToolbarOverlayProperties.ALL_KEYS)
@@ -129,7 +126,6 @@ public class TopToolbarOverlayMediatorTest {
         // Ensure the observer is added to the initial tab.
         setTabSupplierTab(mTab);
 
-        verify(mProgressBar).addObserver(mProgressBarObserverCaptor.capture());
         verify(mTab).addObserver(mTabObserverCaptor.capture());
         verify(mBrowserControlsVisibilityManager)
                 .addObserver(mBrowserControlsObserverCaptor.capture());
@@ -228,6 +224,8 @@ public class TopToolbarOverlayMediatorTest {
     }
 
     @Test
+    // TODO(https://crbug.com/556322774): when cleaning up APB, keep the bug fix to pass this test.
+    @EnableFeatures(ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER)
     public void testProgressUpdate_phone_fromTabObserver() {
         // TODO(crbug.com/525121986): Failing on Desktop Android.
         assumeFalse(BuildConfig.IS_DESKTOP_ANDROID);
@@ -252,7 +250,8 @@ public class TopToolbarOverlayMediatorTest {
 
         mModel.set(TopToolbarOverlayProperties.PROGRESS_BAR_INFO, null);
 
-        mProgressBarObserverCaptor.getValue().onVisibleProgressUpdated();
+        // The progress bar starts at alpha 0; making it visible notifies its observers.
+        mProgressBar.setAlpha(1.0f);
 
         assertNotNull(
                 "The progress bar data should be populated.",
@@ -272,6 +271,8 @@ public class TopToolbarOverlayMediatorTest {
     }
 
     @Test
+    // TODO(https://crbug.com/556322774): when cleaning up APB, keep the bug fix to pass this test.
+    @EnableFeatures(ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER)
     public void testProgressUpdate_tablet_fromProgressBar() {
         // TODO(crbug.com/525121986): Failing on Desktop Android.
         assumeFalse(BuildConfig.IS_DESKTOP_ANDROID);
@@ -279,7 +280,8 @@ public class TopToolbarOverlayMediatorTest {
         TopToolbarOverlayMediator.setIsTabletForTesting(true);
         mModel.set(TopToolbarOverlayProperties.PROGRESS_BAR_INFO, null);
 
-        mProgressBarObserverCaptor.getValue().onVisibleProgressUpdated();
+        // The progress bar starts at alpha 0; making it visible notifies its observers.
+        mProgressBar.setAlpha(1.0f);
 
         assertNotNull(
                 "The progress bar data should not be empty.",
@@ -374,6 +376,7 @@ public class TopToolbarOverlayMediatorTest {
     @Test
     @EnableFeatures(ChromeFeatureList.BROWSER_CONTROLS_HIDING_TOKEN)
     public void testUpdateVisibility_hasHidingTokens() {
+        when(mTab.isTrustedWebActivity()).thenReturn(true);
         assertTrue("View should be visible.", mModel.get(TopToolbarOverlayProperties.VISIBLE));
 
         when(mBrowserControlsVisibilityManager.hasHidingTokens()).thenReturn(true);
@@ -390,6 +393,22 @@ public class TopToolbarOverlayMediatorTest {
 
         assertTrue(
                 "View should be restored when hiding tokens are released.",
+                mModel.get(TopToolbarOverlayProperties.VISIBLE));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.BROWSER_CONTROLS_HIDING_TOKEN)
+    public void testUpdateVisibility_hasHidingTokens_notTwa() {
+        when(mTab.isTrustedWebActivity()).thenReturn(false);
+        assertTrue("View should be visible.", mModel.get(TopToolbarOverlayProperties.VISIBLE));
+
+        when(mBrowserControlsVisibilityManager.hasHidingTokens()).thenReturn(true);
+        mBrowserControlsObserverCaptor
+                .getValue()
+                .onAndroidControlsVisibilityChanged(View.INVISIBLE);
+
+        assertTrue(
+                "View should remain visible when not a TWA.",
                 mModel.get(TopToolbarOverlayProperties.VISIBLE));
     }
 
@@ -528,6 +547,7 @@ public class TopToolbarOverlayMediatorTest {
         float height = 700.0f;
         mMediator.setViewportHeight(height);
         mBottomToolbarControlsOffsetSupplier.set(0);
+        doReturn(0).when(mBrowserControlsVisibilityManager).getTopControlsHairlineHeight();
         doReturn(ControlsPosition.BOTTOM)
                 .when(mBrowserControlsVisibilityManager)
                 .getControlsPosition();
@@ -537,6 +557,29 @@ public class TopToolbarOverlayMediatorTest {
                 .onControlsOffsetChanged(0, 0, false, 0, 0, false, false, false);
         assertEquals(
                 700.0f,
+                mModel.get(TopToolbarOverlayProperties.LEGACY_CONTENT_OFFSET),
+                MathUtils.EPSILON);
+    }
+
+    @Test
+    public void testContentOffset_ControlsAtBottom_compensatesForHairlineAboveToolbar() {
+        // The bottom-anchored capture has the hairline above the toolbar, but ToolbarLayer
+        // assumes it is below. The content offset must therefore be shifted up by the hairline
+        // height so the composited toolbar lines up with the Android view.
+        float height = 700.0f;
+        int hairlineHeight = 3;
+        int bottomControlsOffset = -126;
+        mMediator.setViewportHeight(height);
+        doReturn(hairlineHeight)
+                .when(mBrowserControlsVisibilityManager)
+                .getTopControlsHairlineHeight();
+        doReturn(ControlsPosition.BOTTOM)
+                .when(mBrowserControlsVisibilityManager)
+                .getControlsPosition();
+
+        mBottomToolbarControlsOffsetSupplier.set(bottomControlsOffset);
+        assertEquals(
+                height + bottomControlsOffset - hairlineHeight,
                 mModel.get(TopToolbarOverlayProperties.LEGACY_CONTENT_OFFSET),
                 MathUtils.EPSILON);
     }
@@ -581,6 +624,131 @@ public class TopToolbarOverlayMediatorTest {
         assertEquals(
                 newOffsetTag.getBottomControlsOffsetTag(),
                 mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+    }
+
+    @Test
+    public void testOffsetTag_animatedSwapToTop_attachesTopTagDuringBottomAnimation() {
+        BrowserControlsOffsetTagsInfo offsetTagsInfo = new BrowserControlsOffsetTagsInfo();
+        doReturn(ControlsPosition.BOTTOM)
+                .when(mBrowserControlsVisibilityManager)
+                .getControlsPosition();
+        mMediator.updateOffsetTag(offsetTagsInfo);
+        assertEquals(
+                offsetTagsInfo.getBottomControlsOffsetTag(),
+                mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+
+        // BrowserControlsManager starts the bottom height animation before it updates the
+        // position.
+        mBrowserControlsObserverCaptor.getValue().onBottomControlsHeightAnimationStarted();
+        assertNull(mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+
+        doReturn(ControlsPosition.TOP)
+                .when(mBrowserControlsVisibilityManager)
+                .getControlsPosition();
+        mBrowserControlsObserverCaptor.getValue().onControlsPositionChanged(ControlsPosition.TOP);
+
+        // The top tag must be attached before the first frame at the new position, while the
+        // bottom height animation is still running.
+        assertEquals(
+                offsetTagsInfo.getTopControlsOffsetTag(),
+                mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+
+        mBrowserControlsObserverCaptor.getValue().onBottomControlsHeightAnimationEnded();
+        assertEquals(
+                offsetTagsInfo.getTopControlsOffsetTag(),
+                mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+    }
+
+    @Test
+    public void testOffsetTag_animatedSwapToBottom_clearsTopTagDuringBottomAnimation() {
+        BrowserControlsOffsetTagsInfo offsetTagsInfo = new BrowserControlsOffsetTagsInfo();
+        doReturn(ControlsPosition.TOP)
+                .when(mBrowserControlsVisibilityManager)
+                .getControlsPosition();
+        mMediator.updateOffsetTag(offsetTagsInfo);
+
+        mBrowserControlsObserverCaptor.getValue().onBottomControlsHeightAnimationStarted();
+        assertEquals(
+                offsetTagsInfo.getTopControlsOffsetTag(),
+                mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+
+        doReturn(ControlsPosition.BOTTOM)
+                .when(mBrowserControlsVisibilityManager)
+                .getControlsPosition();
+        mBrowserControlsObserverCaptor
+                .getValue()
+                .onControlsPositionChanged(ControlsPosition.BOTTOM);
+
+        // The stale top tag must not stay attached to the bottom-anchored toolbar.
+        assertNull(mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+
+        mBrowserControlsObserverCaptor.getValue().onBottomControlsHeightAnimationEnded();
+        assertEquals(
+                offsetTagsInfo.getBottomControlsOffsetTag(),
+                mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+    }
+
+    @Test
+    public void testOffsetTag_animatedSwapToBottom_visibilityForced_noTag() {
+        // With forced visibility the renderer provides no offset tags (TTOM doesn't query
+        // isVisibilityForced() directly).
+        BrowserControlsOffsetTagsInfo offsetTagsInfo =
+                new BrowserControlsOffsetTagsInfo(null, null, null);
+        doReturn(ControlsPosition.TOP)
+                .when(mBrowserControlsVisibilityManager)
+                .getControlsPosition();
+        mMediator.updateOffsetTag(offsetTagsInfo);
+        assertNull(mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+
+        mBrowserControlsObserverCaptor.getValue().onBottomControlsHeightAnimationStarted();
+        assertNull(mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+
+        doReturn(ControlsPosition.BOTTOM)
+                .when(mBrowserControlsVisibilityManager)
+                .getControlsPosition();
+        mBrowserControlsObserverCaptor
+                .getValue()
+                .onControlsPositionChanged(ControlsPosition.BOTTOM);
+        assertNull(mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+
+        mBrowserControlsObserverCaptor.getValue().onBottomControlsHeightAnimationEnded();
+        assertNull(mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+    }
+
+    @Test
+    public void testOffsetTag_bottomAnimationWhileTop_appliesNewTagImmediately() {
+        BrowserControlsOffsetTagsInfo offsetTagsInfo = new BrowserControlsOffsetTagsInfo();
+        doReturn(ControlsPosition.TOP)
+                .when(mBrowserControlsVisibilityManager)
+                .getControlsPosition();
+        mMediator.updateOffsetTag(offsetTagsInfo);
+
+        mBrowserControlsObserverCaptor.getValue().onBottomControlsHeightAnimationStarted();
+
+        BrowserControlsOffsetTagsInfo newOffsetTagsInfo = new BrowserControlsOffsetTagsInfo();
+        mMediator.updateOffsetTag(newOffsetTagsInfo);
+        assertEquals(
+                newOffsetTagsInfo.getTopControlsOffsetTag(),
+                mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+    }
+
+    @Test
+    public void testOffsetTag_bottomAnimationWhileTop_clearsTagImmediately() {
+        BrowserControlsOffsetTagsInfo offsetTagsInfo = new BrowserControlsOffsetTagsInfo();
+        doReturn(ControlsPosition.TOP)
+                .when(mBrowserControlsVisibilityManager)
+                .getControlsPosition();
+        mMediator.updateOffsetTag(offsetTagsInfo);
+
+        mBrowserControlsObserverCaptor.getValue().onBottomControlsHeightAnimationStarted();
+        assertEquals(
+                offsetTagsInfo.getTopControlsOffsetTag(),
+                mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
+
+        // TopControlsStacker clears the tag via prepForHeightAdjustmentAnimation() before a top
+        // controls height animation, which may overlap with the bottom controls height animation.
+        mMediator.updateOffsetTag(null);
+        assertNull(mModel.get(TopToolbarOverlayProperties.TOOLBAR_OFFSET_TAG));
     }
 
     @Test

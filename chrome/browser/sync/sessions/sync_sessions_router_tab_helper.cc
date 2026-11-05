@@ -82,20 +82,6 @@ void SyncSessionsRouterTabHelper::DidFinishLoad(
   }
 }
 
-void SyncSessionsRouterTabHelper::DidOpenRequestedURL(
-    content::WebContents* new_contents,
-    content::RenderFrameHost* source_render_frame_host,
-    const GURL& url,
-    const content::Referrer& referrer,
-    WindowOpenDisposition disposition,
-    ui::PageTransition transition,
-    bool started_from_context_menu,
-    bool renderer_initiated) {
-  // TODO(crbug.com/40649749): This is a relic from when we actually did change
-  // something about the tab here. It should be safe to remove now.
-  NotifyRouter();
-}
-
 void SyncSessionsRouterTabHelper::OnVisibilityChanged(
     content::Visibility visibility) {
   // Only notify a notification when the tab becomes visible. This is necessary

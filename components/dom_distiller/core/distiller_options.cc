@@ -7,14 +7,11 @@
 namespace dom_distiller {
 
 DistillerOptions::DistillerOptions() = default;
-
-DistillerOptions::DistillerOptions(
-    proto::DomDistillerOptions dom_distiller_options)
-    : dom_distiller(std::move(dom_distiller_options)) {}
-
-DistillerOptions::DistillerOptions(ReadabilityOptions readability_options)
-    : readability(std::move(readability_options)) {}
-
+DistillerOptions::DistillerOptions(const DistillerOptions&) = default;
+DistillerOptions& DistillerOptions::operator=(const DistillerOptions&) =
+    default;
+DistillerOptions::DistillerOptions(DistillerOptions&&) = default;
+DistillerOptions& DistillerOptions::operator=(DistillerOptions&&) = default;
 DistillerOptions::~DistillerOptions() = default;
 
 }  // namespace dom_distiller

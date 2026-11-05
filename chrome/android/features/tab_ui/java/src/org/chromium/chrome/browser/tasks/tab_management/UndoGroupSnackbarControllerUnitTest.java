@@ -16,7 +16,6 @@ import static org.mockito.Mockito.when;
 import android.content.Context;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -106,7 +105,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShowUndoGroupSnackbar_SingleTabGroup_ShowsSingleTabTemplateText() {
         when(mTabModel.getTabCountForGroup(mTabGroupId)).thenReturn(1);
 
@@ -117,7 +115,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShowUndoGroupSnackbar_MultipleTabsGroup_ShowsMultipleTabsTemplateText() {
         when(mTabModel.getTabCountForGroup(mTabGroupId)).thenReturn(3);
 
@@ -128,7 +125,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShowUndoGroupSnackbar_WhenNotThrottled_ShowsImmediately() {
         mTabGroupObserver.showUndoGroupSnackbar(mUndoGroupMetadata);
 
@@ -136,7 +132,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShowUndoGroupSnackbar_WhenThrottled_DelaysUntilStopThrottling() {
         int token = mController.startThrottling();
         assertNotEquals(TokenHolder.INVALID_TOKEN, token);
@@ -152,7 +147,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShowUndoGroupSnackbar_WhenThrottledMultipleTimes_ShowsOnlyLastSnackbar() {
         int token = mController.startThrottling();
 
@@ -169,7 +163,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShowUndoGroupSnackbar_WhenThrottledAndMovedOutOfGroup_CancelsSnackbar() {
         int token = mController.startThrottling();
 
@@ -177,7 +170,7 @@ public class UndoGroupSnackbarControllerUnitTest {
         verify(mSnackbarManager, never()).showSnackbar(any());
 
         // Drag out of group triggers willMoveTabOutOfGroup.
-        mTabGroupObserver.willMoveTabOutOfGroup(mTab, null);
+        mTabGroupObserver.willMoveTabOutOfGroup(mTab);
 
         // Dismissing snackbars while throttled must expire the pending operation.
         verify(mTabModel).undoGroupOperationExpired(mUndoGroupMetadata);
@@ -188,7 +181,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnAction_CallsPerformUndoGroupOperation() {
         mController.onAction(mUndoGroupMetadata);
 
@@ -196,7 +188,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDismissNoAction_CallsUndoGroupOperationExpired() {
         mController.onDismissNoAction(mUndoGroupMetadata);
 
@@ -204,7 +195,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testTabModelSelectorTabModelObserver_DidAddTab_DismissesSnackbar() {
         mTabModelObserver.didAddTab(
                 mTab,
@@ -216,7 +206,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     @DisableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
     public void testTabModelSelectorTabModelObserver_WillCloseTab_DismissesSnackbar() {
         mTabModelObserver.willCloseTab(mTab, /* didCloseAlone= */ true);
@@ -225,9 +214,9 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
-    public void testTabModelSelectorTabModelObserver_WillCloseTab_DismissesSnackbar_WillCloseTabs() {
+    public void
+            testTabModelSelectorTabModelObserver_WillCloseTab_DismissesSnackbar_WillCloseTabs() {
         mTabModelObserver.willCloseTabs(
                 List.of(mTab), /* isAllTabs= */ false, /* allowUndo= */ false);
 
@@ -235,7 +224,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testTabModelSelectorTabModelObserver_OnFinishingTabClosure_DismissesSnackbar() {
         mTabModelObserver.onFinishingTabClosure(mTab, TabClosingSource.UNKNOWN);
 
@@ -243,7 +231,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShowUndoGroupSnackbar_Incognito_UsesIncognitoTabModel() {
         when(mUndoGroupMetadata.isIncognito()).thenReturn(true);
         when(mIncognitoTabModel.getTabCountForGroup(mTabGroupId)).thenReturn(2);
@@ -255,15 +242,13 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testWillMoveTabOutOfGroup_DismissesSnackbar() {
-        mTabGroupObserver.willMoveTabOutOfGroup(mTab, null);
+        mTabGroupObserver.willMoveTabOutOfGroup(mTab);
 
         verify(mSnackbarManager).dismissSnackbars(mController);
     }
 
     @Test
-    @SmallTest
     public void testCurrentTabModelObserver_OnTabModelChanged_DismissesSnackbar() {
         mCurrentTabModelSupplier.set(mIncognitoTabModel);
 
@@ -271,7 +256,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDestroy_RemovesObserversAndCleanUp() {
         mController.destroy();
 
@@ -282,7 +266,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDestroy_WhenThrottled_DiscardsPendingMetadata() {
         int token = mController.startThrottling();
         mTabGroupObserver.showUndoGroupSnackbar(mUndoGroupMetadata);
@@ -296,7 +279,6 @@ public class UndoGroupSnackbarControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDismissSnackbars_WhenThrottled_ExpiresPendingMetadata() {
         mController.startThrottling();
         mTabGroupObserver.showUndoGroupSnackbar(mUndoGroupMetadata);

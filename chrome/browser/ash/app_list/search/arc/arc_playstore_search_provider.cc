@@ -16,7 +16,6 @@
 #include "chrome/browser/ash/app_list/search/arc/arc_playstore_search_result.h"
 #include "chrome/browser/ash/app_list/search/types.h"
 #include "chrome/browser/ash/extensions/gfx_utils.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/experiences/arc/app/arc_playstore_search_request_state.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
@@ -84,7 +83,7 @@ ArcPlayStoreSearchProvider::ArcPlayStoreSearchProvider(
       max_results_(max_results),
       profile_(profile),
       list_controller_(list_controller) {
-  DCHECK_EQ(kHistogramBuckets, max_results + 1);
+  CHECK_EQ(kHistogramBuckets, max_results + 1, base::NotFatalUntil::M160);
 }
 
 ArcPlayStoreSearchProvider::~ArcPlayStoreSearchProvider() = default;
@@ -103,7 +102,7 @@ void ArcPlayStoreSearchProvider::Start(const std::u16string& query) {
                 GetRecentAndSuggestedAppsFromPlayStore)
           : nullptr;
 
-  DCHECK(!query.empty());
+  CHECK(!query.empty(), base::NotFatalUntil::M160);
   if (app_instance == nullptr)
     return;
 
@@ -125,10 +124,10 @@ void ArcPlayStoreSearchProvider::OnResults(
     arc::ArcPlayStoreSearchRequestState state,
     std::vector<arc::mojom::AppDiscoveryResultPtr> results) {
   if (state != arc::ArcPlayStoreSearchRequestState::SUCCESS) {
-    DCHECK(
-        state ==
-            arc::ArcPlayStoreSearchRequestState::PHONESKY_RESULT_INVALID_DATA ||
-        results.empty());
+    CHECK(state == arc::ArcPlayStoreSearchRequestState::
+                       PHONESKY_RESULT_INVALID_DATA ||
+              results.empty(),
+          base::NotFatalUntil::M160);
     UMA_HISTOGRAM_ENUMERATION(kAppListPlayStoreQueryStateHistogram, state,
                               arc::ArcPlayStoreSearchRequestState::STATE_COUNT);
 

@@ -3,9 +3,14 @@
 # found in the LICENSE file.
 
 import("//build/config/chromeos/args.gni")
+import("//third_party/blink/public/public_features.gni")
 
 source_set("smart_card") {
-  if (is_chromeos) {
+  deps = [
+    "//build:chromeos_buildflags",
+    "//chrome/app:generated_resources",
+  ]
+  if (enable_smart_card) {
     sources = [
       "chromeos_smart_card_delegate.cc",
       "chromeos_smart_card_delegate.h",
@@ -38,8 +43,7 @@ source_set("smart_card") {
       ]
     }
 
-    deps = [
-      "//chrome/browser/chromeos/extensions/smart_card_provider_private",
+    deps += [
       "//chrome/browser/content_settings:content_settings_factory",
       "//chrome/browser/permissions",
       "//chrome/browser/profiles:profile",
@@ -49,14 +53,18 @@ source_set("smart_card") {
       "//components/strings:components_strings_grit",
       "//content/public/browser",
     ]
+
+    if (is_chromeos) {
+      deps +=
+          [ "//chrome/browser/chromeos/extensions/smart_card_provider_private" ]
+    }
   }
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
   # TODO(crbug.com/40247152): Add chrome_smart_card_delegate.* for Win/Mac/Linux
-  # and move smart_card_* out of the is_chromeos guard.
+  # and turn on enable_smart_card there.
 }
 
-if (is_chromeos) {
+if (enable_smart_card) {
   source_set("unit_tests") {
     testonly = true
     sources = [
@@ -107,11 +115,10 @@ if (is_chromeos) {
       "//chrome/browser/permissions",
       "//chrome/browser/policy:test_support",
       "//chrome/browser/profiles:profile",
-      "//chrome/browser/ui",
       "//chrome/browser/ui/views/permissions",
       "//chrome/test:test_support_ui",
       "//components/permissions:permissions_common",
       "//content/test:test_support",
     ]
   }
-}  # is_chromeos
+}  # enable_smart_card

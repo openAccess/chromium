@@ -25,6 +25,12 @@ BASE_FEATURE(kAllowWindowCaptureExclusionInRemoteSessions,
 // stable.
 BASE_FEATURE(kApplyInitialUrlToWebContents, base::FEATURE_ENABLED_BY_DEFAULT);
 
+// When enabled, drag and drop is only enabled for widgets that accept drag and
+// drop and require drag and drop support (e.g. not tooltips, popups, or
+// widgets where accept_events is false).
+BASE_FEATURE(kDisableDragDropForUnneededWidgets,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Enables input protection by blocking interaction with views that are
 // currently or were recently obscured by always-on-top windows, and prevents
 // unintended events on security-sensitive UI that appears and activates
@@ -43,7 +49,63 @@ BASE_FEATURE(kEnableTouchDragCursorSync, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kKeyboardAccessibleTooltipInViews,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// If enabled, NativeViewHost controls the layers of the native view.
-BASE_FEATURE(kNativeViewHostManagesLayers, base::FEATURE_ENABLED_BY_DEFAULT);
+// When enabled, views::Label avoids computing the size of its text (which
+// requires expensive text shaping) to determine whether its default tooltip
+// should be shown, when the answer is known without it (empty or obscured
+// text, or zero content width, typically because the label hasn't been laid
+// out yet).
+BASE_FEATURE(kLabelDefaultTooltipFastPath, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, `Widget::SetNativeTheme()` skips triggering a redundant
+// `ThemeChanged()` pass if the widget's effective `NativeTheme` did not change.
+// TODO(crbug.com/40280130): Remove this flag once the behavior is stable.
+BASE_FEATURE(kSkipRedundantSetNativeThemeUpdate,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_MAC)
+// When enabled, focusing a View in an inactive Widget makes the Widget's window
+// key (i.e. activates it), matching the behavior on other platforms. This is a
+// kill switch, see crbug.com/40486728.
+// TODO(crbug.com/40486728): Remove this flag once the behavior is stable.
+BASE_FEATURE(kMacActivateWidgetOnFocusRequest,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, tell the browser compositor when the window is on an inactive
+// space, to allow it to reclaim resources. Should be enabled alongside
+// `features::kDetectSpaceChangeViaOcclusion` so that windows become visible
+// immediately during interactive space swipe gestures.
+BASE_FEATURE(kNotifyCompositorOfSpaceVisibilityOnMacOs,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, tell the browser compositor when the window is fully occluded
+// (covered by other windows), to allow it to reclaim resources. The occlusion
+// state comes from `WindowOcclusionCheckerMac` for tracked top-level windows.
+// Becoming occluded is debounced; becoming visible again takes effect
+// immediately.
+BASE_FEATURE(kNotifyCompositorOfWindowOcclusionOnMacOs,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, tell the browser compositor when the window is hidden, to allow
+// it to reclaim resources.
+BASE_FEATURE(kNotifyCompositorOfWindowVisibilityOnMacOs,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#endif
+
+#if BUILDFLAG(IS_WIN)
+// When enabled, HWNDMessageHandler skips the frame change that updates
+// auto-hide taskbar adjustments of a maximized window on display and work area
+// changes, when the adjustments are already up-to-date.
+BASE_FEATURE(kSkipRedundantMaximizedFrameChange,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, HWNDMessageHandler skips redundant SendFrameChanged() calls and
+// no-op HandleClientSizeChanged() notifications.
+BASE_FEATURE(kSkipRedundantSendFrameChanged, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, HWNDMessageHandler::Activate() skips SetWindowPos() and
+// SetForegroundWindow() when an unminimized, unowned window is already the
+// active foreground window and at the top of its z-order band.
+BASE_FEATURE(kSkipRedundantWindowActivation, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_WIN)
 
 }  // namespace views::features

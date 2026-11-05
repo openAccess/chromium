@@ -14,7 +14,7 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-import common  # pylint: disable=wrong-import-position
+import common  # noqa: E402
 
 
 def support_orchestrate(test_type: str) -> bool:
@@ -73,6 +73,9 @@ def support_orchestrate(test_type: str) -> bool:
         'snapshot_unittests',
         'sql_unittests',
         'storage_unittests',
+        # The test_type string passed to run_test.py when setting up the test
+        # environment via orchestrate (equivalent to test_env_setup.py).
+        'test_env_expose.py',
         'ui_base_unittests',
         'ui_touch_selection_unittests',
         'ui_unittests',
@@ -98,7 +101,10 @@ def run_tests_with_orchestrate(
     if not logs_dir:
         logs_dir = '/tmp/'
 
-    config_json = os.path.join(SCRIPT_DIR, 'orchestrate.json')
+    config_json = os.path.join(
+        SCRIPT_DIR, f'orchestrate_{common.get_host_arch()}.json'
+    )
+    assert os.path.exists(config_json)
     overrides = {
         'emulator': {
             'package_archives': packages,
@@ -127,10 +133,15 @@ def run_tests_with_orchestrate(
     env = os.environ.copy()
     if logs_dir:
         env['TEST_UNDECLARED_OUTPUTS_DIR'] = logs_dir
+    common.catch_sigterm()
     print(f"Running command: {subprocess.list2cmdline(cmd)}")
-    try:
-        proc = subprocess.run(cmd, env=env, cwd=out_dir, check=False)
-        return proc.returncode
-    except KeyboardInterrupt:
-        print("\nExecution interrupted by user.", file=sys.stderr)
-        return 130
+    with subprocess.Popen(cmd, env=env, cwd=out_dir) as proc:
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            print("\nExecution interrupted by user.", file=sys.stderr)
+            proc.terminate()
+            return 130
+        except SystemExit:
+            proc.terminate()
+            return proc.wait()

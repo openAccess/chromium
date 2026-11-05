@@ -16,6 +16,7 @@
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/lazy_instance.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
@@ -44,6 +45,8 @@
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_function_dispatcher.h"
 #include "extensions/buildflags/buildflags.h"
+#include "extensions/common/event_args.h"
+#include "ui/base/page_transition_types.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "components/webapps/isolated_web_apps/scheme.h"
@@ -93,9 +96,10 @@ BookmarkEventRouter::~BookmarkEventRouter() {
   }
 }
 
-void BookmarkEventRouter::DispatchEvent(events::HistogramValue histogram_value,
-                                        const std::string& event_name,
-                                        base::ListValue event_args) {
+void BookmarkEventRouter::DispatchEvent(
+    events::HistogramValue histogram_value,
+    const std::string& event_name,
+    scoped_refptr<const extensions::EventArgs> event_args) {
   EventRouter* event_router = EventRouter::Get(browser_context_);
   if (event_router) {
     event_router->BroadcastEvent(std::make_unique<extensions::Event>(
@@ -112,8 +116,7 @@ void BookmarkEventRouter::BookmarkModelBeingDeleted() {
   // This codepath is unexpected because `this` is owned by a KeyedService that
   // depends on BookmarkModelFactory, which means BookmarkModel must outlive
   // `this`.
-  NOTREACHED(base::NotFatalUntil::M138);
-  model_ = nullptr;
+  NOTREACHED();
 }
 
 void BookmarkEventRouter::BookmarkNodeMoved(const BookmarkNode* old_parent,
@@ -124,12 +127,14 @@ void BookmarkEventRouter::BookmarkNodeMoved(const BookmarkNode* old_parent,
   // moved from/to it. Validate this assumption here, as otherwise this method
   // would need to recalculate child indices. This is a debug-only check since
   // it is not constant-time.
-  DCHECK(std::ranges::all_of(old_parent->children(), [](const auto& child) {
-    return child->IsVisible();
-  }));
-  DCHECK(std::ranges::all_of(new_parent->children(), [](const auto& child) {
-    return child->IsVisible();
-  }));
+  CHECK(
+      std::ranges::all_of(old_parent->children(),
+                          [](const auto& child) { return child->IsVisible(); }),
+      base::NotFatalUntil::M161);
+  CHECK(
+      std::ranges::all_of(new_parent->children(),
+                          [](const auto& child) { return child->IsVisible(); }),
+      base::NotFatalUntil::M161);
 
   const BookmarkNode* node = new_parent->children()[new_index].get();
   api::bookmarks::OnMoved::MoveInfo move_info;
@@ -138,9 +143,11 @@ void BookmarkEventRouter::BookmarkNodeMoved(const BookmarkNode* old_parent,
   move_info.old_parent_id = base::NumberToString(old_parent->id());
   move_info.old_index = static_cast<int>(old_index);
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      api::bookmarks::OnMoved::Create(base::NumberToString(node->id()),
+                                      move_info));
   DispatchEvent(events::BOOKMARKS_ON_MOVED, api::bookmarks::OnMoved::kEventName,
-                api::bookmarks::OnMoved::Create(
-                    base::NumberToString(node->id()), move_info));
+                std::move(event_args));
 }
 
 void BookmarkEventRouter::BookmarkNodeAdded(const BookmarkNode* parent,
@@ -154,10 +161,11 @@ void BookmarkEventRouter::BookmarkNodeAdded(const BookmarkNode* parent,
 
   BookmarkTreeNode tree_node = bookmarks_helpers::GetBookmarkTreeNode(
       model_, managed_, node, /*recurse=*/false, /*only_folders=*/false);
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      api::bookmarks::OnCreated::Create(base::NumberToString(node->id()),
+                                        tree_node));
   DispatchEvent(events::BOOKMARKS_ON_CREATED,
-                api::bookmarks::OnCreated::kEventName,
-                api::bookmarks::OnCreated::Create(
-                    base::NumberToString(node->id()), tree_node));
+                api::bookmarks::OnCreated::kEventName, std::move(event_args));
 }
 
 void BookmarkEventRouter::BookmarkNodeRemoved(
@@ -189,10 +197,11 @@ void BookmarkEventRouter::BookmarkNodeRemoved(
     remove_info.node.syncing = !model_->IsLocalOnlyNode(*parent);
   }
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      api::bookmarks::OnRemoved::Create(base::NumberToString(node->id()),
+                                        remove_info));
   DispatchEvent(events::BOOKMARKS_ON_REMOVED,
-                api::bookmarks::OnRemoved::kEventName,
-                api::bookmarks::OnRemoved::Create(
-                    base::NumberToString(node->id()), remove_info));
+                api::bookmarks::OnRemoved::kEventName, std::move(event_args));
 }
 
 void BookmarkEventRouter::BookmarkAllUserNodesRemoved(
@@ -215,10 +224,11 @@ void BookmarkEventRouter::BookmarkNodeChanged(const BookmarkNode* node) {
     change_info.url = node->url().spec();
   }
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      api::bookmarks::OnChanged::Create(base::NumberToString(node->id()),
+                                        change_info));
   DispatchEvent(events::BOOKMARKS_ON_CHANGED,
-                api::bookmarks::OnChanged::kEventName,
-                api::bookmarks::OnChanged::Create(
-                    base::NumberToString(node->id()), change_info));
+                api::bookmarks::OnChanged::kEventName, std::move(event_args));
 }
 
 void BookmarkEventRouter::BookmarkNodeFaviconChanged(const BookmarkNode* node) {
@@ -232,10 +242,12 @@ void BookmarkEventRouter::BookmarkNodeChildrenReordered(
     reorder_info.child_ids.push_back(base::NumberToString(child->id()));
   }
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      api::bookmarks::OnChildrenReordered::Create(
+          base::NumberToString(node->id()), reorder_info));
   DispatchEvent(events::BOOKMARKS_ON_CHILDREN_REORDERED,
                 api::bookmarks::OnChildrenReordered::kEventName,
-                api::bookmarks::OnChildrenReordered::Create(
-                    base::NumberToString(node->id()), reorder_info));
+                std::move(event_args));
 }
 
 void BookmarkEventRouter::BookmarkPermanentNodeVisibilityChanged(
@@ -256,10 +268,11 @@ void BookmarkEventRouter::BookmarkPermanentNodeVisibilityChanged(
     // Convert the index to be the index as seen by extensions.
     tree_node.index = bookmarks_helpers::GetAPIIndexOf(*node);
 
+    auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+        api::bookmarks::OnCreated::Create(base::NumberToString(node->id()),
+                                          tree_node));
     DispatchEvent(events::BOOKMARKS_ON_CREATED,
-                  api::bookmarks::OnCreated::kEventName,
-                  api::bookmarks::OnCreated::Create(
-                      base::NumberToString(node->id()), tree_node));
+                  api::bookmarks::OnCreated::kEventName, std::move(event_args));
   } else {
     // There are currently no scenarios where a node that has children is
     // hidden.
@@ -280,23 +293,27 @@ void BookmarkEventRouter::BookmarkPermanentNodeVisibilityChanged(
     remove_info.node.index = std::nullopt;
     remove_info.node.parent_id = std::nullopt;
 
+    auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+        api::bookmarks::OnRemoved::Create(base::NumberToString(node->id()),
+                                          remove_info));
     DispatchEvent(events::BOOKMARKS_ON_REMOVED,
-                  api::bookmarks::OnRemoved::kEventName,
-                  api::bookmarks::OnRemoved::Create(
-                      base::NumberToString(node->id()), remove_info));
+                  api::bookmarks::OnRemoved::kEventName, std::move(event_args));
   }
 }
 
 void BookmarkEventRouter::ExtensiveBookmarkChangesBeginning() {
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      api::bookmarks::OnImportBegan::Create());
   DispatchEvent(events::BOOKMARKS_ON_IMPORT_BEGAN,
                 api::bookmarks::OnImportBegan::kEventName,
-                api::bookmarks::OnImportBegan::Create());
+                std::move(event_args));
 }
 
 void BookmarkEventRouter::ExtensiveBookmarkChangesEnded() {
+  auto args = base::MakeRefCounted<extensions::EventArgs>(
+      api::bookmarks::OnImportEnded::Create());
   DispatchEvent(events::BOOKMARKS_ON_IMPORT_ENDED,
-                api::bookmarks::OnImportEnded::kEventName,
-                api::bookmarks::OnImportEnded::Create());
+                api::bookmarks::OnImportEnded::kEventName, std::move(args));
 }
 
 BookmarksAPI::BookmarksAPI(BrowserContext* context)
@@ -469,7 +486,7 @@ ExtensionFunction::ResponseAction BookmarksSearchFunction::RunOnReady() {
         BookmarkModelFactory::GetForBrowserContext(GetProfile()), query,
         std::numeric_limits<int>::max());
   } else {
-    DCHECK(params->query.as_object);
+    CHECK(params->query.as_object, base::NotFatalUntil::M161);
     const api::bookmarks::Search::Params::Query::Object& object =
         *params->query.as_object;
     bookmarks::QueryFields query;
@@ -602,9 +619,10 @@ const BookmarkNode* BookmarksCreateFunction::CreateBookmarkNode(
   // Only the root node currently has non-visible children. Validate this
   // assumption here, as otherwise this method would need to recalculate child
   // indices. This is a debug-only check since it is not constant-time.
-  DCHECK(std::ranges::all_of(parent->children(), [](const auto& child) {
-    return child->IsVisible();
-  }));
+  CHECK(
+      std::ranges::all_of(parent->children(),
+                          [](const auto& child) { return child->IsVisible(); }),
+      base::NotFatalUntil::M161);
 
   size_t index;
   if (!details.index) {  // Optional (defaults to end).
@@ -652,7 +670,7 @@ const BookmarkNode* BookmarksCreateFunction::CreateBookmarkNode(
     model->SetDateFolderModified(parent, base::Time::Now());
   }
 
-  DCHECK(node);
+  CHECK(node, base::NotFatalUntil::M161);
 
   return node;
 }
@@ -711,9 +729,10 @@ ExtensionFunction::ResponseAction BookmarksMoveFunction::RunOnReady() {
   // Only the root node currently has non-visible children. Validate this
   // assumption here, as otherwise this method would need to recalculate child
   // indices. This is a debug-only check since it is not constant-time.
-  DCHECK(std::ranges::all_of(parent->children(), [](const auto& child) {
-    return child->IsVisible();
-  }));
+  CHECK(
+      std::ranges::all_of(parent->children(),
+                          [](const auto& child) { return child->IsVisible(); }),
+      base::NotFatalUntil::M161);
 
   size_t index;
   if (params->destination.index) {  // Optional (defaults to end).

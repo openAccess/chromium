@@ -7,8 +7,11 @@ package org.chromium.chrome.browser.sync;
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
+import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
+
+import static org.hamcrest.CoreMatchers.allOf;
 
 import android.app.Activity;
 import android.app.PendingIntent;
@@ -48,6 +51,7 @@ import org.chromium.components.sync.protocol.AutofillWalletSpecifics;
 import org.chromium.components.sync.protocol.EntitySpecifics;
 import org.chromium.components.sync.protocol.SyncEntity;
 import org.chromium.components.sync.protocol.WalletMaskedCreditCard;
+import org.chromium.components.trusted_vault.SecurityDomainId;
 import org.chromium.components.trusted_vault.TrustedVaultClient;
 import org.chromium.components.user_prefs.UserPrefs;
 
@@ -182,7 +186,7 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
 
     private FakeServerHelper mFakeServerHelper;
     private SyncService mSyncService;
-    private final SigninTestRule mSigninTestRule = new SigninTestRule();
+    private final SigninTestRule mSigninTestRule = SigninTestRule.createWithCleanups();
     private final BlankCTATabInitialStateRule mBlankCTATabRule =
             new BlankCTATabInitialStateRule(this, false);
 
@@ -302,7 +306,8 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
     @Override
     protected void before() throws Throwable {
         super.before();
-        TrustedVaultClient.get().setBackendForTesting(FakeTrustedVaultClientBackend.get());
+        TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC)
+                .setBackendForTesting(FakeTrustedVaultClientBackend.get());
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -328,6 +333,7 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
                     getPrefService().clearPref(SyncPrefNames.SELECTED_TYPES_PER_ACCOUNT);
                     getPrefService().clearPref(SyncPrefNames.SYNC_KEEP_EVERYTHING_SYNCED);
                     getPrefService().clearPref(SyncPrefNames.SYNC_TRANSPORT_DATA_PER_ACCOUNT);
+                    getPrefService().clearPref(SyncPrefNames.SYNC_MANAGED);
                 });
     }
 
@@ -381,7 +387,7 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
 
     // UI interaction convenience methods.
     public void togglePreference(final TwoStatePreference pref) {
-        onView(withId(R.id.recycler_view))
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
                 .perform(
                         RecyclerViewActions.actionOnItem(
                                 hasDescendant(withText(pref.getTitle().toString())), click()));

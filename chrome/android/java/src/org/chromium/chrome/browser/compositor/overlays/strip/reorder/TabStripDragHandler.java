@@ -11,9 +11,6 @@ import android.app.Activity;
 import android.content.ClipDescription;
 import android.content.Context;
 import android.content.res.Resources;
-import android.graphics.BlurMaskFilter;
-import android.graphics.Canvas;
-import android.graphics.Paint;
 import android.graphics.Point;
 import android.graphics.PointF;
 import android.os.Handler;
@@ -22,9 +19,6 @@ import android.view.DragEvent;
 import android.view.View;
 import android.view.View.DragShadowBuilder;
 import android.view.ViewGroup;
-import android.widget.ImageView;
-
-import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.Log;
@@ -35,7 +29,6 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
-import org.chromium.chrome.browser.compositor.LayerTitleCache;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelper;
 import org.chromium.chrome.browser.dragdrop.ChromeDragDropUtils;
 import org.chromium.chrome.browser.dragdrop.ChromeDropDataAndroid;
@@ -43,10 +36,11 @@ import org.chromium.chrome.browser.dragdrop.ChromeTabDropDataAndroid;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabFavicon;
+import org.chromium.chrome.browser.tab_ui.MultiThumbnailCardProvider;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tabmodel.TabGroupMetadata;
 import org.chromium.chrome.browser.tabmodel.TabList;
-import org.chromium.chrome.browser.tasks.tab_management.MultiThumbnailCardProvider;
 import org.chromium.chrome.browser.tasks.tab_management.TabDragHandlerBase;
 import org.chromium.ui.base.MimeTypeUtils;
 import org.chromium.ui.dragdrop.DragAndDropDelegate;
@@ -73,10 +67,12 @@ public class TabStripDragHandler extends TabDragHandlerBase {
     private final Supplier<StripLayoutHelper> mStripLayoutHelperSupplier;
     private final Supplier<Boolean> mStripLayoutVisibilitySupplier;
     private final MonotonicObservableSupplier<TabContentManager> mTabContentManagerSupplier;
-    private final MonotonicObservableSupplier<LayerTitleCache> mLayerTitleCacheSupplier;
     private final BrowserControlsStateProvider mBrowserControlStateProvider;
     private final float mPxToDp;
     private final Supplier<Integer> mTabStripHeightSupplier;
+
+    // TODO(crbug.com/570681883): Move the tab drag logic into a matching mTabDragDelegate.
+    private final TabStripLinkDragDelegate mLinkDragDelegate;
 
     /** Handler and runnable to post/cancel an #onDragExit when the drag starts. */
     private final Handler mHandler = new Handler(Looper.getMainLooper());
@@ -97,6 +93,8 @@ public class TabStripDragHandler extends TabDragHandlerBase {
     // Tracks whether the current drag has ever left the source strip.
     private boolean mDragEverLeftStrip;
 
+    private boolean mIsLinkDrag;
+
     private boolean mWasCancelled;
 
     /**
@@ -107,7 +105,6 @@ public class TabStripDragHandler extends TabDragHandlerBase {
      * @param stripLayoutHelperSupplier Supplier for StripLayoutHelper to perform strip actions.
      * @param stripLayoutVisibilitySupplier Supplier for if the given tab strip is visible.
      * @param tabContentManagerSupplier Supplier of the manager providing tab thumbnail snapshots.
-     * @param layerTitleCacheSupplier Supplier for the LayerTitleCache.
      * @param multiInstanceManager MultiInstanceManager to perform move action when drop completes.
      * @param dragAndDropDelegate DragAndDropDelegate to initiate tab drag and drop.
      * @param browserControlStateProvider BrowserControlsStateProvider to compute drag-shadow
@@ -120,7 +117,6 @@ public class TabStripDragHandler extends TabDragHandlerBase {
             Supplier<StripLayoutHelper> stripLayoutHelperSupplier,
             Supplier<Boolean> stripLayoutVisibilitySupplier,
             MonotonicObservableSupplier<TabContentManager> tabContentManagerSupplier,
-            MonotonicObservableSupplier<LayerTitleCache> layerTitleCacheSupplier,
             MultiInstanceManager multiInstanceManager,
             DragAndDropDelegate dragAndDropDelegate,
             BrowserControlsStateProvider browserControlStateProvider,
@@ -132,8 +128,11 @@ public class TabStripDragHandler extends TabDragHandlerBase {
         mStripLayoutHelperSupplier = stripLayoutHelperSupplier;
         mStripLayoutVisibilitySupplier = stripLayoutVisibilitySupplier;
         mTabContentManagerSupplier = tabContentManagerSupplier;
-        mLayerTitleCacheSupplier = layerTitleCacheSupplier;
         mBrowserControlStateProvider = browserControlStateProvider;
+        mLinkDragDelegate =
+                new TabStripLinkDragDelegate(
+                        stripLayoutHelperSupplier,
+                        () -> getTabModelSelector().getCurrentModel().getProfile());
     }
 
     /**
@@ -206,7 +205,6 @@ public class TabStripDragHandler extends TabDragHandlerBase {
      *
      * @param dragSourceView View used to create the drag shadow.
      * @param tabGroupId The dragged group's ID.
-     * @param isGroupShared Whether the dragged group is shared with other collaborators.
      * @param startPoint Position of the drag start point in view coordinates.
      * @param positionX The horizontal position of the dragged group title in view coordinates.
      * @param widthDp Width of the group title in dp.
@@ -215,7 +213,6 @@ public class TabStripDragHandler extends TabDragHandlerBase {
     public boolean startGroupDragAction(
             View dragSourceView,
             Token tabGroupId,
-            boolean isGroupShared,
             PointF startPoint,
             float positionX,
             float widthDp) {
@@ -223,7 +220,7 @@ public class TabStripDragHandler extends TabDragHandlerBase {
             return false;
         }
 
-        ChromeDropDataAndroid dropData = prepareGroupDropData(tabGroupId, isGroupShared);
+        ChromeDropDataAndroid dropData = prepareGroupDropData(tabGroupId);
 
         // Initialize drag shadow.
         initShadowView(dragSourceView);
@@ -255,7 +252,8 @@ public class TabStripDragHandler extends TabDragHandlerBase {
                         getActivity(),
                         mBrowserControlStateProvider,
                         tabContentManager,
-                        getCurrentTabModelSupplier());
+                        getCurrentTabModelSupplier(),
+                        TabFavicon::getBitmap);
         mMultiThumbnailCardProvider.initWithNative(
                 assumeNonNull(getTabModelSelector().getModel(/* incognito= */ false).getProfile()));
 
@@ -270,14 +268,13 @@ public class TabStripDragHandler extends TabDragHandlerBase {
                 mBrowserControlStateProvider,
                 mMultiThumbnailCardProvider,
                 tabContentManager,
-                mLayerTitleCacheSupplier,
                 getTabModelSelector(),
                 () -> {
                     DragShadowBuilder shadowBuilder = DragDropGlobalState.getDragShadowBuilder();
                     if (shadowBuilder instanceof TabDragShadowBuilder builder) {
                         // We register callbacks (e.g. to update the thumbnail) that may attempt to
                         // update the shadow after the drop has already ended. No-op in that case.
-                        showDragShadow(builder.mShowDragShadow);
+                        showDragShadow(builder.getShowDragShadow());
                     }
                 });
     }
@@ -309,6 +306,7 @@ public class TabStripDragHandler extends TabDragHandlerBase {
     /** Cleans up internal state. */
     @Override
     public void destroy() {
+        super.destroy();
         if (mMultiThumbnailCardProvider != null) {
             mMultiThumbnailCardProvider.destroy();
             mMultiThumbnailCardProvider = null;
@@ -320,9 +318,12 @@ public class TabStripDragHandler extends TabDragHandlerBase {
     }
 
     private boolean onDragStart(float xPx, ClipDescription clipDescription) {
-        // Only proceed if browser content is being dragged; otherwise, skip the operations.
+        mIsLinkDrag = false;
+        // Only proceed if browser content or a link is being dragged; otherwise, skip the
+        // operations.
         if (!isDraggingBrowserContent(clipDescription)) {
-            return false;
+            mIsLinkDrag = mLinkDragDelegate.canHandle(clipDescription);
+            return mIsLinkDrag && Boolean.TRUE.equals(mStripLayoutVisibilitySupplier.get());
         }
 
         // Return true only when the tab strip is visible.
@@ -351,6 +352,7 @@ public class TabStripDragHandler extends TabDragHandlerBase {
 
     private boolean onDragEnter(float xPx) {
         mHoveringInStrip = true;
+        if (mIsLinkDrag) return mLinkDragDelegate.onDragEnter(xPx * mPxToDp);
         boolean isDragSource = isDragSource();
         if (isDragSource || DeviceInfo.isXr()) {
             mHandler.removeCallbacks(mOnDragExitRunnable);
@@ -392,6 +394,7 @@ public class TabStripDragHandler extends TabDragHandlerBase {
     private boolean onDragLocationInStrip(float xPx, float yPx) {
         float xDp = xPx * mPxToDp;
         float yDp = yPx * mPxToDp;
+        if (mIsLinkDrag) return mLinkDragDelegate.onDragWithin(xDp);
         mStripLayoutHelperSupplier
                 .get()
                 .handleDragWithin(xDp, yDp, xDp - mLastXDp, isDraggedItemIncognito());
@@ -410,15 +413,23 @@ public class TabStripDragHandler extends TabDragHandlerBase {
         if (didOccurInTabStrip(dropEvent.getY())) {
             res = onDropInStrip(dropEvent);
         } else {
-            DragDropMetricUtils.recordDragDropResult(
-                    DragDropResult.IGNORED_TOOLBAR, isTabGroupDrop(), isMultiTabDrop());
+            if (!mIsLinkDrag) {
+                DragDropMetricUtils.recordDragDropResult(
+                        DragDropResult.IGNORED_TOOLBAR, isTabGroupDrop(), isMultiTabDrop());
+            }
             res = false;
         }
-        if (res) DragDropGlobalState.notifyChromeHandledDrop(dropEvent);
+        if (res && DragDropGlobalState.hasValue()) {
+            DragDropGlobalState.notifyChromeHandledDrop(dropEvent);
+        }
         return res;
     }
 
     private boolean onDropInStrip(DragEvent dropEvent) {
+        if (mIsLinkDrag) {
+            return mLinkDragDelegate.onDrop(dropEvent, dropEvent.getX() * mPxToDp);
+        }
+
         StripLayoutHelper helper = mStripLayoutHelperSupplier.get();
         helper.stopReorderMode(false);
         if (isDragSource()) {
@@ -585,12 +596,23 @@ public class TabStripDragHandler extends TabDragHandlerBase {
     }
 
     private boolean onDragEnd(boolean dropHandled) {
-        mHoveringInStrip = false;
+        if (mIsLinkDrag) {
+            mHoveringInStrip = false;
+            mIsLinkDrag = false;
+            return mLinkDragDelegate.onDragExit();
+        }
 
-        // No-op for destination strip.
+        // Clean up reorder mode on the destination strip if the drag ended without a drop while
+        // hovering.
         if (!isDragSource()) {
+            if (!dropHandled && mHoveringInStrip) {
+                mStripLayoutHelperSupplier.get().stopReorderMode(/* isDragCancelled= */ true);
+            }
+            mHoveringInStrip = false;
             return false;
         }
+
+        mHoveringInStrip = false;
 
         if (dropHandled && !DragDropGlobalState.didChromeHandleDrop()) {
             // If browser content is dragged off the strip, then dropped to create a new window,
@@ -639,15 +661,16 @@ public class TabStripDragHandler extends TabDragHandlerBase {
     private boolean onDragExit() {
         mHoveringInStrip = false;
         mDragEverLeftStrip = true;
+        if (mIsLinkDrag) return mLinkDragDelegate.onDragExit();
         if (DeviceInfo.isXr()) {
-            showDragShadow(true);
+            showDragShadow(/* show= */ true);
         }
         boolean isDragSource = isDragSource();
         if (isDragSource) {
             DragShadowBuilder shadowBuilder = DragDropGlobalState.getDragShadowBuilder();
             if (shadowBuilder instanceof TabDragShadowBuilder builder) {
                 if (mShadowView != null) {
-                    builder.mShowDragShadow = true;
+                    builder.setShowDragShadow(/* show= */ true);
                     mShadowView.expand();
                 }
             }
@@ -727,87 +750,6 @@ public class TabStripDragHandler extends TabDragHandlerBase {
     protected @BackPressResult int cancelDrag() {
         mWasCancelled = true;
         return super.cancelDrag();
-    }
-
-    @VisibleForTesting
-    static class TabDragShadowBuilder extends View.DragShadowBuilder {
-        // Touch offset for drag shadow view.
-        private final Point mDragShadowOffset;
-        // Source initiating drag - to call updateDragShadow().
-        private final View mDragSourceView;
-        // Whether drag shadow should be shown.
-        private boolean mShowDragShadow;
-        // Paint for the shadow.
-        private final Paint mShadowPaint;
-        private final float mCornerRadius;
-
-        public TabDragShadowBuilder(View dragSourceView, View shadowView, Point dragShadowOffset) {
-            // Store the View parameter.
-            super(shadowView);
-            mDragShadowOffset = dragShadowOffset;
-            mDragSourceView = dragSourceView;
-
-            // Set up the shadow paint.
-            Context context = shadowView.getContext();
-            Resources resources = shadowView.getResources();
-            mShadowPaint = new Paint();
-            mShadowPaint.setAntiAlias(true);
-            mShadowPaint.setColor(context.getColor(R.color.tab_strip_reorder_shadow_color));
-            float blurThickness =
-                    resources.getDimension(R.dimen.tab_strip_dragged_tab_shadow_thickness);
-            mShadowPaint.setMaskFilter(
-                    new BlurMaskFilter(blurThickness, BlurMaskFilter.Blur.OUTER));
-            mCornerRadius = resources.getDimension(R.dimen.tab_grid_card_bg_radius);
-        }
-
-        public void update(boolean show) {
-            mShowDragShadow = show;
-            mDragSourceView.updateDragShadow(this);
-        }
-
-        @Override
-        public void onDrawShadow(Canvas canvas) {
-            View shadowView = getView();
-            if (mShowDragShadow) {
-                View cardView = shadowView.findViewById(R.id.card_view);
-                if (cardView == null) {
-                    shadowView.draw(canvas); // Fallback
-                    return;
-                }
-                // Draw the shadow.
-                canvas.drawRoundRect(
-                        cardView.getLeft(),
-                        cardView.getTop(),
-                        cardView.getRight(),
-                        cardView.getBottom(),
-                        mCornerRadius,
-                        mCornerRadius,
-                        mShadowPaint);
-
-                // Draw the view on top of the shadow.
-                shadowView.draw(canvas);
-            } else {
-                // When drag shadow should hide, replace with empty ImageView.
-                ImageView imageView = new ImageView(shadowView.getContext());
-                imageView.layout(0, 0, shadowView.getWidth(), shadowView.getHeight());
-                imageView.draw(canvas);
-            }
-        }
-
-        // Defines a callback that sends the drag shadow dimensions and touch point
-        // back to the system.
-        @Override
-        public void onProvideShadowMetrics(Point size, Point touch) {
-            // Set the size parameter's width and height values. These get back to the system
-            // through the size parameter.
-            size.set(getView().getWidth(), getView().getHeight());
-            touch.set(mDragShadowOffset.x, mDragShadowOffset.y);
-            Log.d(TAG, "DnD onProvideShadowMetrics: %s", mDragShadowOffset);
-        }
-
-        boolean getShadowShownForTesting() {
-            return mShowDragShadow;
-        }
     }
 
     DragShadowBuilder createDragShadowBuilder(

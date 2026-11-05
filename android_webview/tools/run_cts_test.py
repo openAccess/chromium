@@ -10,7 +10,7 @@ import tempfile
 import sys
 import unittest
 
-import mock  # pylint: disable=import-error
+import mock
 import run_cts
 
 sys.path.append(
@@ -18,8 +18,7 @@ sys.path.append(
     os.path.dirname(__file__), os.pardir, os.pardir, 'build', 'android'
   )
 )
-# pylint: disable=wrong-import-position,import-error
-import devil_chromium  # pylint: disable=unused-import
+import devil_chromium  # noqa: F401
 from devil.android.ndk import abis
 from devil.android.sdk import version_codes
 
@@ -180,38 +179,21 @@ class _RunCtsTest(unittest.TestCase):
       run_cts.GetTestRunFilterArg(mock_args, cts_run, arch='x86'),
     )
 
-  def testFilter_IncludesForMode(self):
+  def testFilter_IncludesAndExcludes(self):
     mock_args = self._getArgsMock()
 
     cts_run = {
       'apk': 'module.apk',
       'includes': [
-        {'match': 'good#test1', 'mode': 'instant'},
+        {'match': 'good#test1'},
         {'match': 'good#test2'},
-        {'match': 'exclude#test4', 'mode': 'full'},
+        {'match': 'exclude#test4'},
       ],
     }
 
     self.assertEqual(
-      [run_cts.TEST_FILTER_OPT + '=good.test1:good.test2'],
-      run_cts.GetTestRunFilterArg(mock_args, cts_run, test_app_mode='instant'),
-    )
-
-  def testFilter_ExcludesForMode(self):
-    mock_args = self._getArgsMock(skip_expected_failures=True)
-
-    cts_run = {
-      'apk': 'module.apk',
-      'excludes': [
-        {'match': 'good#test1', 'mode': 'instant'},
-        {'match': 'good#test2'},
-        {'match': 'exclude#test4', 'mode': 'full'},
-      ],
-    }
-
-    self.assertEqual(
-      [run_cts.TEST_FILTER_OPT + '=-good.test1:good.test2'],
-      run_cts.GetTestRunFilterArg(mock_args, cts_run, test_app_mode='instant'),
+      [run_cts.TEST_FILTER_OPT + '=good.test1:good.test2:exclude.test4'],
+      run_cts.GetTestRunFilterArg(mock_args, cts_run),
     )
 
   def testIsolatedFilter_CombinesExcludedMatches(self):

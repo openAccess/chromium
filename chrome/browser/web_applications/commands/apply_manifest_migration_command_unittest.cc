@@ -10,7 +10,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/model/migration_behavior.h"
@@ -29,7 +28,6 @@
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/common/web_app_id.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "url/gurl.h"
@@ -52,12 +50,6 @@ class ApplyManifestMigrationCommandTest : public WebAppTest {
     webapps::WebappInstallSource install_source =
         webapps::WebappInstallSource::OMNIBOX_INSTALL_ICON;
   };
-
-  ApplyManifestMigrationCommandTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        blink::features::kWebAppMigrationApi);
-  }
-  ~ApplyManifestMigrationCommandTest() override = default;
 
   void SetUp() override {
     WebAppTest::SetUp();
@@ -214,7 +206,6 @@ class ApplyManifestMigrationCommandTest : public WebAppTest {
 
  private:
   base::HistogramTester histogram_tester_;
-  base::test::ScopedFeatureList scoped_feature_list_;
   raw_ptr<FakeWebAppOriginAssociationManager> association_manager_ = nullptr;
 };
 

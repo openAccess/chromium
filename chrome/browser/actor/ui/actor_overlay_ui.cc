@@ -14,6 +14,7 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/actor_overlay_resources.h"
 #include "chrome/grit/actor_overlay_resources_map.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/webui/webui_util.h"
@@ -89,7 +90,7 @@ void ActorOverlayUI::SetOverlayBackground(bool is_visible) {
 }
 
 void ActorOverlayUI::SetBorderGlowVisibility(bool is_visible) {
-  DCHECK(handler_);
+  CHECK(handler_, base::NotFatalUntil::M161);
   handler_->SetBorderGlowVisibility(is_visible);
 }
 
@@ -104,13 +105,23 @@ bool ActorOverlayUI::IsActorOverlayWebContents(
 
 void ActorOverlayUI::MoveCursorTo(const gfx::Point& point,
                                   base::OnceClosure callback) {
-  DCHECK(handler_);
+  CHECK(handler_, base::NotFatalUntil::M161);
   handler_->MoveCursorTo(point, std::move(callback));
 }
 
 void ActorOverlayUI::TriggerClickAnimation(base::OnceClosure callback) {
-  DCHECK(handler_);
+  CHECK(handler_, base::NotFatalUntil::M161);
   handler_->TriggerClickAnimation(std::move(callback));
+}
+
+void ActorOverlayUI::SetCursorChip(const std::string& text) {
+  // If handler is not initialized yet, queue the update.
+  if (!handler_) {
+    SetHandlerInitializedCallback(base::BindOnce(
+        &ActorOverlayUI::SetCursorChip, weak_factory_.GetWeakPtr(), text));
+    return;
+  }
+  handler_->SetCursorChip(text);
 }
 
 }  // namespace actor::ui

@@ -96,6 +96,21 @@ chromium-metrics-reviews@google.com.
   <int value="7" label="The user turned the Chrome setting off"/>
 </enum>
 
+<!-- LINT.IfChange(AndroidAutofillMainFrameCreditCardFieldValidationResult) -->
+
+<enum name="AndroidAutofillMainFrameCreditCardFieldValidationResult">
+  <summary>
+    Outcome of checking a filled main-frame cardholder name or expiration date
+    field during a cross-origin credit card fill.
+  </summary>
+  <int value="0" label="Allowed"/>
+  <int value="1" label="Implausible value"/>
+  <int value="2" label="Implausible select option text"/>
+  <int value="3" label="Duplicate expiration part"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/android_autofill/browser/card_value_validation.h:AndroidAutofillMainFrameCreditCardFieldValidationResult) -->
+
 <enum name="AndroidAutofillPrefillRequestState">
   <summary>
     Describes the state of a prefill request for a given, cacheable, form.
@@ -114,6 +129,21 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="Prefill request not sent - not enough time."/>
 </enum>
 
+<!--  LINT.IfChange(AtMemoryFailedToOpenReason) -->
+
+<enum name="AtMemoryFailedToOpenReason">
+  <int value="0" label="Opened: all prerequisites were met"/>
+  <int value="1" label="No browser or no web state list"/>
+  <int value="2" label="No active web state"/>
+  <int value="3" label="No autofill client"/>
+  <int value="4" label="No AtMemory manager"/>
+  <int value="5" label="No autofill manager for the primary main frame"/>
+  <int value="6" label="No focused field"/>
+  <int value="7" label="The AtMemory UI is already open"/>
+</enum>
+
+<!-- LINT.ThenChange(//ios/chrome/browser/autofill/atmemory/utils/atmemory_ui_util.h:AtMemoryFailedToOpenReason) -->
+
 <!--  LINT.IfChange(AttemptFormFillingToolEvent) -->
 
 <enum name="AttemptFormFillingToolEvent">
@@ -127,7 +157,7 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="Autofill Attention Dialog accepted by the user"/>
 </enum>
 
-<!-- LINT.ThenChange(//chrome/browser/actor/tools/attempt_form_filling_tool_metrics.h:AttemptFormFillingToolEvent) -->
+<!-- LINT.ThenChange(//chrome/browser/actor/tools/autofill/attempt_form_filling/attempt_form_filling_tool_metrics.h:AttemptFormFillingToolEvent) -->
 
 <enum name="AufofillStructuredTokenVerificationStatus">
   <int value="0" label="No Status"/>
@@ -259,6 +289,25 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//components/autofill/core/browser/webdata/autofill_ai/entity_table.cc:DecryptionStatus) -->
 
+<!-- LINT.IfChange(AutofillAiEntitySuppressionConfirmationDialogResult) -->
+
+<enum name="AutofillAiEntitySuppressionConfirmationDialogResult">
+  <int value="0" label="Accepted"/>
+  <int value="1" label="Cancelled"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/autofill/core/browser/integrators/autofill_ai/metrics/personal_context_metrics.h:AutofillAiEntitySuppressionConfirmationDialogResult) -->
+
+<!-- LINT.IfChange(AutofillAiEntitySuppressionLoadDropReason) -->
+
+<enum name="AutofillAiEntitySuppressionLoadDropReason">
+  <int value="0" label="Decryption failed"/>
+  <int value="1" label="Parsing failed"/>
+  <int value="2" label="Invalid entry"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/autofill/core/browser/integrators/autofill_ai/metrics/personal_context_metrics.h:AutofillAiEntitySuppressionLoadDropReason) -->
+
 <enum name="AutofillAiEntityType">
 <!-- Generated from components/autofill/core/browser/data_model/autofill_ai/entity_schema.json.
 Called by update_autofill_enums.py.-->
@@ -290,13 +339,6 @@ Called by update_autofill_enums.py.-->
   <int value="4" label="The model returned a valid, non-empty result."/>
 </enum>
 
-<enum name="AutofillAiOptInFunnelEvents">
-  <int value="0" label="IPH was shown"/>
-  <int value="1" label="FFR was shown"/>
-  <int value="2" label="The FFR learn more button was clicked"/>
-  <int value="3" label="FFR was accepted"/>
-</enum>
-
 <!-- LINT.IfChange(AutofillAiOptInStatus) -->
 
 <enum name="AutofillAiOptInStatus">
@@ -317,6 +359,42 @@ Called by update_autofill_enums.py.-->
 </enum>
 
 <!-- LINT.ThenChange(/components/autofill/core/browser/integrators/autofill_ai/metrics/personal_context_metrics.h:PersonalContextCacheReadinessOnFirstInteraction) -->
+
+<!-- LINT.IfChange(AutofillAiPersonalContextDeduplicationAgainstRecordType) -->
+
+<enum name="AutofillAiPersonalContextDeduplicationAgainstRecordType">
+  <int value="0" label="Local"/>
+  <int value="1" label="Server Wallet"/>
+  <int value="2" label="Not deduplicated"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/autofill/core/browser/integrators/autofill_ai/metrics/personal_context_metrics.h:AutofillAiPersonalContextDeduplicationAgainstRecordType) -->
+
+<!-- LINT.IfChange(AutofillAiPersonalContextPrefetchEntityFunnelOutcome) -->
+
+<enum name="AutofillAiPersonalContextPrefetchEntityFunnelOutcome">
+  <int value="0" label="Parsing failed"/>
+  <int value="1" label="Invalid"/>
+  <int value="2" label="Suppressed"/>
+  <int value="3" label="Deduplicated"/>
+  <int value="4" label="Passed"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/autofill/core/browser/integrators/autofill_ai/metrics/personal_context_metrics.h:AutofillAiPersonalContextPrefetchEntityFunnelOutcome) -->
+
+<!-- LINT.IfChange(AutofillAiPersonalContextPrefetchEntityValidationResult) -->
+
+<enum name="AutofillAiPersonalContextPrefetchEntityValidationResult">
+  <int value="0" label="Valid"/>
+  <int value="1" label="Failed: Import constraints not met"/>
+  <int value="2" label="Failed: TTL expired"/>
+  <int value="3" label="Failed: Missing date attribute for TTL"/>
+  <int value="4" label="Failed: Malformed date string"/>
+  <int value="5" label="Failed: Unsupported entity type"/>
+  <int value="6" label="Failed: Missing source"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/autofill/core/browser/integrators/autofill_ai/metrics/personal_context_metrics.h:AutofillAiPersonalContextPrefetchEntityValidationResult) -->
 
 <!-- LINT.IfChange(AutofillAiPersonalContextPrefetchTriggerResult) -->
 
@@ -615,6 +693,15 @@ Called by update_autofill_enums.py.-->
   <int value="861" label="SHIPMENT_TRACKING_NUMBER: Failure"/>
 </enum>
 
+<!-- LINT.IfChange(AutofillAiSourceType) -->
+
+<enum name="AutofillAiSourceType">
+  <int value="0" label="Gmail"/>
+  <int value="1" label="Photos"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/autofill/core/browser/data_model/autofill_ai/entity_instance.h:SourceType) -->
+
 <!-- LINT.IfChange(AutofillAiUnmaskResult) -->
 
 <enum name="AutofillAiUnmaskResult">
@@ -628,6 +715,40 @@ Called by update_autofill_enums.py.-->
 </enum>
 
 <!-- LINT.ThenChange(/components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h:AutofillAiUnmaskResult) -->
+
+<!-- LINT.IfChange(AutofillAiUpsertDetailsCacheStatus) -->
+
+<enum name="AutofillAiUpsertDetailsCacheStatus">
+  <int value="0" label="Cache hit"/>
+  <int value="1" label="Cache miss (preload request in flight)"/>
+  <int value="2" label="Cache miss (no preload request in flight)"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h:AutofillAiUpsertDetailsCacheStatus) -->
+
+<!-- LINT.IfChange(AutofillAiWalletManagementUrlSyncStatus) -->
+
+<enum name="AutofillAiWalletManagementUrlSyncStatus">
+  <int value="0" label="Valid URL"/>
+  <int value="1" label="Missing or empty URL"/>
+  <int value="2" label="Invalid URL"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/autofill/core/browser/webdata/valuables/valuable_sync_bridge.h:AutofillAiWalletManagementUrlSyncStatus) -->
+
+<!-- LINT.IfChange(AutofillAiWalletNoticeFunnelEvents) -->
+
+<enum name="AutofillAiWalletNoticeFunnelEvents">
+  <int value="0" label="Fetching upsert details"/>
+  <int value="1" label="Upsert details fetch success"/>
+  <int value="2" label="Upsert details fetch error"/>
+  <int value="3" label="Legal message shown"/>
+  <int value="4" label="Link clicked"/>
+  <int value="5" label="Entity saved"/>
+  <int value="6" label="Entity not saved"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h:AutofillAiWalletNoticeFunnelEvents) -->
 
 <enum name="AutofillAlternativeNameFieldValueCharacterSet">
   <int value="0" label="Katakana"/>
@@ -670,20 +791,19 @@ Called by update_autofill_enums.py.-->
   <int value="5" label="Internal error"/>
 </enum>
 
-<!-- LINT.IfChange(AutofillAtMemorySpiiRetrievalFailureReason) -->
+<!-- LINT.IfChange(AutofillAtMemoryStateRestored) -->
 
-<enum name="AutofillAtMemorySpiiRetrievalFailureReason">
-  <int value="0" label="No connection"/>
-  <int value="1" label="Reauth failed"/>
-  <int value="2" label="Reauth in progress"/>
-  <int value="3" label="Fetch failed"/>
-  <int value="4" label="Parse failed"/>
+<enum name="AutofillAtMemoryStateRestored">
+  <int value="0" label="New session"/>
+  <int value="1" label="Restored with existing query"/>
+  <int value="2" label="Restored while searching"/>
+  <int value="3" label="Restored with response"/>
 </enum>
 
-<!-- LINT.ThenChange(//components/autofill/core/browser/integrators/at_memory/at_memory_query_service.h:SpiiRetrievalFailureReason) -->
+<!-- LINT.ThenChange(//components/autofill/core/browser/at_memory/at_memory_metrics_recorder.h:AutofillAtMemoryStateRestored) -->
 
 <enum name="AutofillAtMemoryTriggerSource">
-  <int value="0" label="Typed trigger"/>
+  <int value="0" label="(Obsolete) Typed trigger"/>
   <int value="1" label="Context menu"/>
   <int value="2" label="Keyboard shortcut"/>
   <int value="3" label="Double Ctrl"/>
@@ -737,6 +857,7 @@ Called by update_autofill_enums.py.-->
   <int value="11" label="OmniboxAutofill"/>
   <int value="12" label="PaymentsChurnedUsers"/>
   <int value="13" label="WalletReminderNotice"/>
+  <int value="14" label="GmailOtpOptIn"/>
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/ui/autofill/bubble_controller_base.h:BubbleType) -->
@@ -3053,6 +3174,26 @@ Called by update_autofill_enums.py.-->
   <int value="1" label="Suggestion Selected"/>
 </enum>
 
+<!-- LINT.IfChange(AutofillJavaScriptDropdownType) -->
+
+<enum name="AutofillJavaScriptDropdownType">
+  <int value="0" label="None"/>
+  <int value="1" label="Email Picker"/>
+  <int value="2" label="Address Picker"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/autofill/core/browser/foundations/browser_autofill_manager.h:JavaScriptDropdownType) -->
+
+<!-- LINT.IfChange(AutofillKeyboardAccessoryInteraction) -->
+
+<enum name="AutofillKeyboardAccessoryInteraction">
+  <int value="0" label="The keyboard accessory was shown"/>
+  <int value="1" label="A suggestion was selected"/>
+  <int value="2" label="A suggestion was accepted"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/autofill/core/browser/metrics/autofill_metrics.h:AutofillKeyboardAccessoryInteraction) -->
+
 <enum name="AutofillLoyaltyCardAffiliationCategoryFillingReadiness">
   <int value="0" label="No loyalty cards available"/>
   <int value="1" label="Only affiliated loyalty cards available"/>
@@ -3135,11 +3276,11 @@ Called by update_autofill_enums.py.-->
   <int value="8"
       label="User entered the autofill options via private inference notice."/>
   <int value="9"
-      label="User entered the autofill options via personal context atmemory
-             notice."/>
+      label="(Obsolete) User entered the autofill options via personal
+             context atmemory notice."/>
   <int value="10"
-      label="User entered the autofill options via personal context ambient
-             autofill notice."/>
+      label="(Obsolete) User entered the autofill options via personal
+             context ambient autofill notice."/>
   <int value="11"
       label="User entered the autofill options via settings search."/>
 </enum>
@@ -3186,15 +3327,6 @@ Called by update_autofill_enums.py.-->
              response"/>
 </enum>
 
-<enum name="AutofillPasswordFormType">
-  <int value="0" label="No password form"/>
-  <int value="1" label="Login form"/>
-  <int value="2" label="Signup form"/>
-  <int value="3" label="Change password form"/>
-  <int value="4" label="Reset password form"/>
-  <int value="5" label="Single username form"/>
-</enum>
-
 <enum name="AutofillPaymentMethodsActionEnum">
   <int value="0" label="Added with nickname"/>
   <int value="1" label="Added without nickname"/>
@@ -3207,13 +3339,6 @@ Called by update_autofill_enums.py.-->
   <int value="0" label="None: No phone number in import"/>
   <int value="1" label="Valid: Phone number was imported"/>
   <int value="2" label="Invalid: Phone number was removed before the import"/>
-</enum>
-
-<enum name="AutofillPlusAddressDelegateSuggestionContext">
-  <int value="0" label="Autofill profile filling on email field"/>
-  <int value="1" label="Autofill profile filling on non-email field"/>
-  <int value="2" label="Autocomplete"/>
-  <int value="3" label="Manual fallback"/>
 </enum>
 
 <enum name="AutofillPopupInteraction">
@@ -4095,6 +4220,42 @@ Called by update_autofill_enums.py.-->
   <int value="8" label="EditedFallback"/>
 </enum>
 
+<!-- LINT.IfChange(AutofillPromoCodeFormEvent) -->
+
+<enum name="AutofillPromoCodeFormEvent">
+  <int value="0"
+      label="Navigated to page with promo code field and promo code present
+             (once)"/>
+  <int value="1"
+      label="Navigated to page with promo code field and no promo code
+             present (once)"/>
+  <int value="2" label="Promo code suggestions shown (once)"/>
+  <int value="3" label="Promo code suggestion filled (once)"/>
+  <int value="4"
+      label="Form submitted with promo code present for the page (once). This
+             is tracked separately of submissions with fills to compare
+             conversion rates with users that don't have a promo code saved
+             for a page"/>
+  <int value="5"
+      label="Form submitted without promo code present for the page (once).
+             This is used to compare conversion rates between pages with and
+             without promo codes"/>
+  <int value="6"
+      label="Form submitted after promo code suggestion was filled on
+             suggestion acceptance (once). This is used to see the funnel for
+             how often users submit a form after filling a promo code
+             suggestion"/>
+  <int value="7"
+      label="Form submitted and promo code field contained a value (once).
+             This can be compared with the autofilled metric to see how often
+             users manually enter a promo code in the field"/>
+  <int value="8"
+      label="Manage offers footer in the promo code suggestions dropdown
+             clicked (once)"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/autofill/core/browser/metrics/payments/promo_code_metrics.h:AutofillPromoCodeFormEvent) -->
+
 <enum name="AutofillPromptStatus">
   <int value="0" label="Address and credit card"/>
   <int value="1" label="Address only"/>
@@ -4125,15 +4286,6 @@ Called by update_autofill_enums.py.-->
   </summary>
   <int value="0" label="GET"/>
   <int value="1" label="POST"/>
-</enum>
-
-<enum name="AutofillQueryResult">
-  <int value="0" label="Sent"/>
-  <int value="1" label="Received"/>
-  <int value="2" label="Parsed"/>
-  <int value="3" label="Response matches local"/>
-  <int value="4" label="Response improves local (nonempty)"/>
-  <int value="5" label="Response improves local (empty)"/>
 </enum>
 
 <enum name="AutofillRationalizationQualityMetric">
@@ -4176,6 +4328,7 @@ Called by update_autofill_enums.py.-->
   <int value="1" label="Not shown, max strikes reached"/>
   <int value="2" label="Not shown, required delay has not passed"/>
   <int value="3" label="Not shown, CVC missing for possible card update"/>
+  <int value="4" label="Not shown, CVC missing for UnionPay upload"/>
 </enum>
 
 <!-- TODO(crbug.com/430588721): Clean up use of AutofillSavePaymentMethodPromptResultEnum once refactored save card metrics have rolled out. -->
@@ -4200,24 +4353,16 @@ Called by update_autofill_enums.py.-->
   <int value="2" label="Some other item selected"/>
 </enum>
 
-<enum name="AutofillScanCreditCardResult">
-  <int value="0" label="Unknown result"/>
-  <int value="1"
-      label="Credit card was scanned to fill the form and the form was
-             submitted without any additional edits by the user"/>
-  <int value="2"
-      label="Credit card was scanned to fill the form and the form was
-             submitted with edits by the user to fields that were NOT filled
-             by the scanner"/>
-  <int value="3"
-      label="Credit card was scanned to fill the form and the form was
-             submitted with edits by the user to fields filled by the scanner"/>
-  <int value="4"
-      label="Credit card was scanned to fill the form and but the form was
-             not submitted and instead the user closed the form"/>
-  <int value="5" label="Credit card scanner was started but cancelled"/>
-  <int value="6"
-      label="Credit card scanner option was shown to the user but not used"/>
+<enum name="AutofillScanCreditCardPromptEntryPoint">
+  <int value="0" label="Keyboard accessory"/>
+  <int value="1" label="Bottom sheet"/>
+  <int value="2" label="Settings page"/>
+</enum>
+
+<enum name="AutofillScanCreditCardScreenType">
+  <int value="0" label="Unknown"/>
+  <int value="1" label="OCR"/>
+  <int value="2" label="NFC"/>
 </enum>
 
 <enum name="AutofillServerCardUnmaskResult">
@@ -4343,14 +4488,6 @@ Called by update_autofill_enums.py.-->
   <int value="7"
       label="(Error) Capitalization only and Capitalization and diacritic
              only and empty to non-empty update"/>
-</enum>
-
-<enum name="AutofillSingleEntryRemovalMethod">
-  <int value="0" label="Keyboard shift + delete pressed"/>
-  <int value="1" label="Delete button clicked"/>
-  <int value="2"
-      label="Keyboard accessory suggestion long pressed and deletion dialog
-             confirmed"/>
 </enum>
 
 <!-- LINT.IfChange(FieldPredictionOverlapXml) -->
@@ -4538,11 +4675,12 @@ Called by update_autofill_enums.py.-->
   <int value="19" label="(Obsolete) Plus address update in browser process"/>
   <int value="20" label="Proactive password recovery"/>
   <int value="21" label="Glic"/>
-  <int value="22" label="AtMemory trigger string"/>
+  <int value="22" label="(Obsolete) AtMemory trigger string"/>
   <int value="23" label="AtMemory context menu"/>
   <int value="24" label="AtMemory inactivity nudge"/>
   <int value="25" label="AtMemory keyboard shortcut"/>
   <int value="26" label="AtMemory double Ctrl"/>
+  <int value="27" label="Gmail One-Time Password Available"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/autofill/core/common/mojom/autofill_types.mojom:AutofillSuggestionTriggerSource) -->
@@ -4638,7 +4776,9 @@ Called by update_autofill_enums.py.-->
   <int value="0" label="Shown successfully"/>
   <int value="1" label="Not shown: already acknowledged according to server"/>
   <int value="2" label="Not shown: already acknowledged according to pref"/>
-  <int value="3" label="Not shown: network or server error"/>
+  <int value="3"
+      label="Not shown: ineligible according to server (or network/server
+             error)"/>
   <int value="4" label="Not shown: preempted by mandatory reauth"/>
   <int value="5" label="Not shown: preempted by VCN enrollment"/>
   <int value="6" label="Not shown: preempted by card or CVC save"/>
@@ -5010,6 +5150,17 @@ Called by update_autofill_enums.py.-->
   <int value="4" label="Flow was cancelled"/>
   <int value="5" label="Unexpected errors"/>
 </enum>
+
+<!-- LINT.IfChange(CardVerificationStatus) -->
+
+<enum name="CardVerificationStatus">
+  <int value="0" label="Card is verified on this device"/>
+  <int value="1"
+      label="Card is not verified on this device (forces required CVC auth)"/>
+  <int value="2" label="Preflight call timed out (forces fallback CVC auth)"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/autofill/core/browser/metrics/payments/better_auth_metrics.h:CardVerificationStatus) -->
 
 <enum name="CheckBoxStatus">
   <int value="0" label="Not shown"/>
@@ -5390,6 +5541,8 @@ Called by update_autofill_enums.py.-->
   <int value="21" label="One time token expired"/>
   <int value="22" label="OTP attribute not found"/>
   <int value="23" label="Server error"/>
+  <int value="24" label="Subscription expired"/>
+  <int value="25" label="Message authentication failed"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/one_time_tokens/core/browser/one_time_token_retrieval_error.h) -->
@@ -5653,6 +5806,9 @@ Called by update_autofill_enums.py.-->
   <int value="74" label="CreditCardSecurityCode"/>
   <int value="75" label="CreditCardNameOnCard"/>
   <int value="76" label="CreditCardNickname"/>
+  <int value="77" label="LoyaltyMembershipId"/>
+  <int value="78" label="LoyaltyMembershipProgram"/>
+  <int value="79" label="LoyaltyMembershipProvider"/>
 </enum>
 
 <!-- LINT.ThenChange(//components/autofill/core/browser/integrators/at_memory/memory_data_type.h:MemoryDataType) -->
@@ -5724,6 +5880,38 @@ Called by update_autofill_enums.py.-->
   <int value="2" label="Not Phishing"/>
 </enum>
 
+<!-- LINT.IfChange(OneTimeTokensTickleArrival) -->
+
+<enum name="OneTimeTokensTickleArrival">
+  <summary>
+    The arrival order and timing of push notifications (tickles) relative to OTP
+    form detection on a web page.
+  </summary>
+  <int value="0" label="After OTP field detection"/>
+  <int value="1" label="Before OTP field detection (pre-arrival)"/>
+  <int value="2" label="Without OTP field detection (orphan/expired in cache)"/>
+  <int value="3" label="Expired on arrival (from push service)"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/one_time_tokens/core/browser/one_time_token_service_constants.h:TickleArrival) -->
+
+<!-- LINT.IfChange(OneTimeTokensTickleFormOutcome) -->
+
+<enum name="OneTimeTokensTickleFormOutcome">
+  <summary>
+    The outcome of an OTP web form relative to push notification delivery and
+    user interaction.
+  </summary>
+  <int value="0"
+      label="Tickle before user interaction (active and unedited field)"/>
+  <int value="1"
+      label="Tickle after user interaction (typed, pasted, submitted, or
+             navigated)"/>
+  <int value="2" label="No tickle received (3 minutes elapsed)"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/one_time_tokens/core/browser/one_time_token_service_constants.h:TickleFormOutcome) -->
+
 <!-- LINT.IfChange(OtpFillingSafeBrowsingCheckResult) -->
 
 <enum name="OtpFillingSafeBrowsingCheckResult">
@@ -5759,7 +5947,9 @@ Called by update_autofill_enums.py.-->
 
 <!-- LINT.ThenChange(/components/autofill/core/browser/metrics/payments/bnpl_metrics.h:PayLaterTabsFormEvent) -->
 
-<enum name="PaymentsChurnedUsersBubbleShowResult">
+<!-- LINT.IfChange(PaymentsChurnedUsersUiShowResult) -->
+
+<enum name="PaymentsChurnedUsersUiShowResult">
   <int value="0" label="Shown successfully"/>
   <int value="1" label="Off The Record"/>
   <int value="2" label="No Cached Form"/>
@@ -5769,6 +5959,8 @@ Called by update_autofill_enums.py.-->
   <int value="6" label="Pref Not User Controlled"/>
   <int value="7" label="No Account Info Present"/>
 </enum>
+
+<!-- LINT.ThenChange(/components/autofill/core/browser/payments/payments_churned_users_metrics.h:PaymentsChurnedUsersUiShowResult) -->
 
 <enum name="PaymentsUiClosedReason">
   <int value="0" label="Unknown"/>
@@ -6010,23 +6202,6 @@ Called by update_autofill_enums.py.-->
 
 <!-- LINT.ThenChange(/components/one_time_tokens/android/backend/sms/sms_otp_retrieval_api_error_codes.h:SmsOtpRetrievalApiErrorCode) -->
 
-<!-- LINT.IfChange(SubmissionBlockedReasonIOS) -->
-
-<enum name="SubmissionBlockedReasonIOS">
-  <summary>
-    Represents the various reasons why a form submission might be blocked or
-    ignored by Autofill on iOS.
-  </summary>
-  <int value="0" label="No user gesture"/>
-  <int value="1" label="Autofill disabled"/>
-  <int value="2" label="No frame"/>
-  <int value="3" label="No driver"/>
-  <int value="4" label="Cross-origin frame"/>
-  <int value="5" label="No delegate"/>
-</enum>
-
-<!-- LINT.ThenChange(//components/autofill/ios/browser/autofill_util.h:SubmissionBlockedReasonIOS) -->
-
 <!-- LINT.IfChange(SuggestionsFromGeminiAction) -->
 
 <enum name="SuggestionsFromGeminiAction">
@@ -6101,7 +6276,7 @@ Called by update_autofill_enums.py.-->
   <int value="39" label="(Obsolete) Create new plus address"/>
   <int value="40" label="(Obsolete) Fill existing plus address"/>
   <int value="41" label="Merchant promo code entry"/>
-  <int value="42" label="See promo code details"/>
+  <int value="42" label="(Obsolete) See promo code details"/>
   <int value="43" label="Webauthn credential"/>
   <int value="44" label="Webauthn sign-in with another device"/>
   <int value="45" label="Title"/>
@@ -6160,6 +6335,11 @@ Called by update_autofill_enums.py.-->
   <int value="97" label="AtMemory fetching"/>
   <int value="98" label="Remove Autofill AI info"/>
   <int value="99" label="Autofill AI source attribution"/>
+  <int value="100" label="Gmail one time password entry"/>
+  <int value="101" label="Open Gmail for OTPs"/>
+  <int value="102" label="Manage offers"/>
+  <int value="103" label="AtMemory shortcut settings promo"/>
+  <int value="104" label="Pending state trusted vault error"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/autofill/core/browser/suggestions/suggestion_type.h:SuggestionType) -->

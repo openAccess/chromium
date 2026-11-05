@@ -7,6 +7,7 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_worklet_node_options.h"
+#include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_node.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_param_map.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet_handler.h"
@@ -30,21 +31,22 @@ class ScriptState;
 //               [Main Scope]                   |    [AudioWorkletGlobalScope]
 //  AudioWorkletNode <-> AudioWorkletHandler <==|==>   AudioWorkletProcessor
 //   (JS interface)       (Renderer access)     |      (V8 audio processing)
-class AudioWorkletNode final : public AudioNode,
-                               public ActiveScriptWrappable<AudioWorkletNode> {
+class MODULES_EXPORT AudioWorkletNode final
+    : public AudioNode,
+      public ActiveScriptWrappable<AudioWorkletNode> {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  static AudioWorkletNode* Create(ScriptState*,
-                                  BaseAudioContext*,
+  static AudioWorkletNode* Create(ScriptState* script_state,
+                                  BaseAudioContext* context,
                                   const String& name,
-                                  const AudioWorkletNodeOptions*,
-                                  ExceptionState&);
+                                  const AudioWorkletNodeOptions* options,
+                                  ExceptionState& exception_state);
 
-  AudioWorkletNode(BaseAudioContext&,
+  AudioWorkletNode(BaseAudioContext& context,
                    const String& name,
-                   const AudioWorkletNodeOptions*,
-                   const Vector<CrossThreadAudioParamInfo>,
+                   const AudioWorkletNodeOptions* options,
+                   const Vector<CrossThreadAudioParamInfo> param_info_list,
                    MessagePort* node_port);
 
   // ActiveScriptWrappable
@@ -53,12 +55,13 @@ class AudioWorkletNode final : public AudioNode,
   // IDL
   AudioParamMap* parameters() const;
   MessagePort* port() const;
-  DEFINE_ATTRIBUTE_EVENT_LISTENER(processorerror, kError)
+  EventListener* onprocessorerror();
+  void setOnprocessorerror(EventListener* listener);
 
   void FireProcessorError(
       const AudioWorkletProcessorErrorDetails& error_details);
 
-  void Trace(Visitor*) const override;
+  void Trace(Visitor* visitor) const override;
 
   // InspectorHelperMixin
   void ReportDidCreate() final;

@@ -12,6 +12,7 @@
 #include "chrome/browser/apps/link_capturing/enable_link_capturing_infobar_delegate.h"
 #include "chrome/browser/apps/link_capturing/link_capturing_feature_test_support.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/web_apps/web_app_link_capturing_test_utils.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
@@ -34,6 +35,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/manifest/manifest_launch_handler.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 
 using blink::mojom::ManifestLaunchHandler_ClientMode;
@@ -169,7 +171,8 @@ IN_PROC_BROWSER_TEST_F(WebAppNavigationCapturingIntentPickerBrowserTest,
                        MAYBE_DoShowIconAndBubbleOnChromePasswordManagerPage) {
   GURL password_manager_url("chrome://password-manager");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), password_manager_url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), password_manager_url,
+      ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   webapps::AppId pwd_manager_app_id =

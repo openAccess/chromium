@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "components/renderer_context_menu/context_menu_content_type.h"
@@ -22,11 +23,12 @@
 #include "content/public/browser/site_instance.h"
 #include "content/public/common/buildflags.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/menus/simple_menu_model.h"
 
 namespace content {
+class NavigationHandle;
 class RenderFrameHost;
 class WebContents;
 }
@@ -170,17 +172,20 @@ class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
   void OpenURL(const GURL& url,
                const GURL& referrer,
                const url::Origin& initiator,
-               WindowOpenDisposition disposition,
+               ui::mojom::WindowOpenDisposition disposition,
                ui::PageTransition transition);
 
   // Opens the specified URL with extra headers.
-  virtual void OpenURLWithExtraHeaders(const GURL& url,
-                                       const GURL& referrer,
-                                       const url::Origin& initiator,
-                                       WindowOpenDisposition disposition,
-                                       ui::PageTransition transition,
-                                       const std::string& extra_headers,
-                                       bool started_from_context_menu);
+  virtual void OpenURLWithExtraHeaders(
+      const GURL& url,
+      const GURL& referrer,
+      const url::Origin& initiator,
+      ui::mojom::WindowOpenDisposition disposition,
+      ui::PageTransition transition,
+      const std::string& extra_headers,
+      bool started_from_context_menu,
+      base::OnceCallback<void(content::NavigationHandle&)>
+          navigation_handle_callback);
 
   virtual ui::IsNewFeatureAtValue GetIsNewFeatureAtValue(
       const std::string& feature_name) const;
@@ -191,7 +196,7 @@ class RenderViewContextMenuBase : public ui::SimpleMenuModel::Delegate,
       const GURL& url,
       const GURL& referring_url,
       const url::Origin& initiator,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       ui::PageTransition transition,
       const std::string& extra_headers,
       bool started_from_context_menu);

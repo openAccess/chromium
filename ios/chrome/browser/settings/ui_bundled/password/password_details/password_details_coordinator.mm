@@ -290,13 +290,11 @@ constexpr base::TimeDelta kShareSpinnerMinTime = base::Seconds(0.5);
                                      title:title
                                    message:message
                              barButtonItem:self.viewController.deleteButton];
-  __weak __typeof(self.mediator) weakMediator = self.mediator;
   __weak __typeof(self) weakSelf = self;
   [self.actionSheetCoordinator
       addItemWithTitle:buttonText
                 action:^{
-                  [weakMediator removeCredential:credential];
-                  [weakSelf dismissActionSheetCoordinator];
+                  [weakSelf deleteCredential:credential];
                 }
                  style:UIAlertActionStyleDestructive];
   [self.actionSheetCoordinator
@@ -360,7 +358,11 @@ constexpr base::TimeDelta kShareSpinnerMinTime = base::Seconds(0.5);
     [self dismissPasswordDetailsTableViewController];
   } else {
     // For credential details opened from the Password Manager in the settings.
-    [self.baseNavigationController popViewControllerAnimated:YES];
+    // When the last password is deleted, the navigation stack performs a quick
+    // cascade pop (popping both the details and issues controllers). Using
+    // animated:NO prevents concurrent/colliding UI animations which previously
+    // crashed UIKit and dismissed the entire Settings UI.
+    [self.baseNavigationController popViewControllerAnimated:NO];
   }
 }
 
@@ -513,6 +515,12 @@ constexpr base::TimeDelta kShareSpinnerMinTime = base::Seconds(0.5);
   self.alertCoordinator = nil;
 }
 
+// Dismisses the action sheet coordinator and removes `credential`.
+- (void)deleteCredential:(CredentialDetails*)credential {
+  [self dismissActionSheetCoordinator];
+  [self.mediator removeCredential:credential];
+}
+
 // Starts reauthCoordinator. If Password Details was opened from outside the
 // Password Manager, Local Authentication is required. Once started
 // reauthCoordinator observes scene state changes and requires authentication
@@ -589,7 +597,7 @@ constexpr base::TimeDelta kShareSpinnerMinTime = base::Seconds(0.5);
   if (!webState) {
     return;
   }
-  CHECK(webState->IsRealized(), base::NotFatalUntil::M150);
+  CHECK(webState->IsRealized());
   password_manager::PasswordManagerClient* passwordManagerClient =
       PasswordTabHelper::FromWebState(webState)->GetPasswordManagerClient();
   passwordManagerClient->UpdateFormManagers();

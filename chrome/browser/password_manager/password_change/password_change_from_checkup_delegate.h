@@ -6,11 +6,10 @@
 #define CHROME_BROWSER_PASSWORD_MANAGER_PASSWORD_CHANGE_PASSWORD_CHANGE_FROM_CHECKUP_DELEGATE_H_
 
 #include <memory>
-#include <string>
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/password_manager/password_change/password_change_actuator.h"
 #include "components/password_manager/core/browser/password_store/stored_credential.h"
 
@@ -19,6 +18,7 @@ class WebContents;
 }
 
 namespace password_manager {
+class PasswordString;
 struct StoredCredential;
 }  // namespace password_manager
 
@@ -55,7 +55,7 @@ class PasswordChangeFromCheckupDelegate
   void OnActuationStateChanged(
       PasswordChangeActuator::State new_state) override;
 
-  std::u16string generated_password() const;
+  password_manager::PasswordString generated_password() const;
 
   void OpenActuationTab();
 

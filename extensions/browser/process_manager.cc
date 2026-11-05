@@ -57,6 +57,7 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
+#include "extensions/common/manifest_handlers/back_forward_cache_info.h"
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
 #include "extensions/common/mojom/renderer.mojom.h"
@@ -208,7 +209,7 @@ ProcessManager::ProcessManager(BrowserContext* context,
       browser_context_(context),
       startup_background_hosts_created_(false),
       last_background_close_sequence_id_(0) {
-  extension_registry_->AddObserver(this);
+  extension_registry_observation_.Observe(extension_registry_);
 
   // Only the original profile needs to listen for ready to create background
   // pages for all spanning extensions.
@@ -226,7 +227,7 @@ ProcessManager::~ProcessManager() {
 }
 
 void ProcessManager::Shutdown() {
-  extension_registry_->RemoveObserver(this);
+  extension_registry_observation_.Reset();
   CloseBackgroundHosts();
   DCHECK(background_hosts_.empty());
   content::DevToolsAgentHost::RemoveObserver(this);
@@ -239,6 +240,7 @@ void ProcessManager::RegisterRenderFrameHost(
     content::RenderFrameHost* render_frame_host,
     const Extension* extension) {
   DCHECK(render_frame_host->IsRenderFrameLive());
+  CHECK(extension);
   ExtensionRenderFrameData* data = &all_extension_frames_[render_frame_host];
   data->view_type = GetViewType(render_frame_host);
 
@@ -247,10 +249,12 @@ void ProcessManager::RegisterRenderFrameHost(
   // UnregisterRenderFrame.
   AcquireLazyKeepaliveCountForFrame(render_frame_host);
 
-  content::BackForwardCache::DisableForRenderFrameHost(
-      render_frame_host->GetGlobalId(),
-      back_forward_cache::DisabledReason(
-          back_forward_cache::DisabledReasonId::kExtensionFrame));
+  if (!BackForwardCacheInfo::IsSupported(*extension)) {
+    content::BackForwardCache::DisableForRenderFrameHost(
+        render_frame_host->GetGlobalId(),
+        back_forward_cache::DisabledReason(
+            back_forward_cache::DisabledReasonId::kExtensionFrame));
+  }
 
   for (auto& observer : observer_list_)
     observer.OnExtensionFrameRegistered(extension->id(), render_frame_host);
@@ -1003,7 +1007,7 @@ void ProcessManager::StartTrackingServiceWorkerRunningInstance(
         content::RenderProcessHost::FromID(worker_id.render_process_id);
     DCHECK(render_process_host);
     if (!process_observations_.IsObservingSource(render_process_host)) {
-      // These will be cleaned up in RenderProcessExited().
+      // Cleaned up in RenderProcessExited() or RenderProcessHostDestroyed().
       process_observations_.AddObservation(render_process_host);
     }
     for (auto& observer : observer_list_)
@@ -1014,6 +1018,16 @@ void ProcessManager::StartTrackingServiceWorkerRunningInstance(
 void ProcessManager::RenderProcessExited(
     content::RenderProcessHost* host,
     const content::ChildProcessTerminationInfo& info) {
+  UntrackRenderProcessForWorkers(host);
+}
+
+void ProcessManager::RenderProcessHostDestroyed(
+    content::RenderProcessHost* host) {
+  UntrackRenderProcessForWorkers(host);
+}
+
+void ProcessManager::UntrackRenderProcessForWorkers(
+    content::RenderProcessHost* host) {
   DCHECK(process_observations_.IsObservingSource(host));
   process_observations_.RemoveObservation(host);
   const content::ChildProcessId render_process_id = host->GetID();
@@ -1037,8 +1051,9 @@ void ProcessManager::RenderProcessExited(
          all_running_extension_workers_.GetAllForExtension(extension_id,
                                                            render_process_id)) {
       StopTrackingServiceWorkerRunningInstance(worker_id);
-      ServiceWorkerTaskQueue::Get(browser_context_)
-          ->RenderProcessForWorkerExited(worker_id);
+      if (auto* task_queue = ServiceWorkerTaskQueue::Get(browser_context_)) {
+        task_queue->RenderProcessForWorkerExited(worker_id);
+      }
     }
   }
 #if DCHECK_IS_ON()

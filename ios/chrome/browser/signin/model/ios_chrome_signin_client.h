@@ -10,7 +10,6 @@
 #import "base/memory/raw_ptr.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
 #import "components/signin/public/base/signin_client.h"
-#import "net/cookies/cookie_change_dispatcher.h"
 
 class ProfileIOS;
 class WaitForNetworkCallbackHelperIOS;
@@ -56,6 +55,7 @@ class IOSChromeSigninClient : public SigninClient {
       signin::PrimaryAccountChangeEvent event_details) override;
   signin::OAuthConsumer GetOAuthConsumerFromId(
       signin::OAuthConsumerId oauth_consumer_id) const override;
+  bool IsAccountSignedInOnOtherProfile(const GaiaId& gaia_id) const override;
 
  private:
   // Helper to delay callbacks until connection becomes online again.

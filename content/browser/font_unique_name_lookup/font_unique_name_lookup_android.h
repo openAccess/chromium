@@ -10,8 +10,10 @@
 
 #include "base/files/file_path.h"
 #include "base/memory/read_only_shared_memory_region.h"
+#include "base/sequence_checker.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/thread_annotations.h"
 #include "content/common/content_export.h"
 #include "third_party/blink/public/mojom/font_unique_name_lookup/font_unique_name_lookup.mojom.h"
 
@@ -44,10 +46,11 @@ class CONTENT_EXPORT FontUniqueNameLookup {
   // FontFilesCollector to enumerate font files and a BuildFingerprintProvider
   // to access the Android build fingerprint.
   FontUniqueNameLookup(const base::FilePath& cache_directory);
-  ~FontUniqueNameLookup();
+  virtual ~FontUniqueNameLookup();
 
   // Return a ReadOnlySharedMemoryRegion to access the serialized form of the
-  // current lookup table. To be used with FontTableMatcher.
+  // current lookup table, or an invalid region if the table is not valid. To
+  // be used with FontTableMatcher.
   base::ReadOnlySharedMemoryRegion DuplicateMemoryRegion();
 
   void QueueShareMemoryRegionWhenReady(
@@ -69,7 +72,7 @@ class CONTENT_EXPORT FontUniqueNameLookup {
   // updating, returns false if an error occured in acquiring memory or
   // serializing the scanned files to the shared memory region. Publicly exposed
   // for testing.
-  bool UpdateTable();
+  virtual bool UpdateTable();
   // Try to find a serialized lookup table in the directory specified at
   // construction and load it into memory. Do not use this method. Instead, call
   // GetInstance() to get an initialized instance. Publicly exposed for testing.
@@ -114,7 +117,14 @@ class CONTENT_EXPORT FontUniqueNameLookup {
 
   base::FilePath TableCacheFilePath();
 
+  // Dispatches all queued callbacks; runs exclusively on
+  // callback_access_runner_.
   void PostCallbacks();
+
+  void EnqueueCallbackOnSequence(
+      scoped_refptr<base::SequencedTaskRunner> task_runner,
+      blink::mojom::FontUniqueNameLookup::GetUniqueNameLookupTableCallback
+          callback);
 
   // We have a asynchronous update tasks which need write access to the
   // proto_storage_ MappedReadOnlyRegion after reading the index file from disk,
@@ -125,6 +135,10 @@ class CONTENT_EXPORT FontUniqueNameLookup {
   // ready by means of a WaitableEvent.
   base::WaitableEvent proto_storage_ready_;
   base::MappedReadOnlyRegion proto_storage_;
+
+  // Sequence runner dedicated to serializing pending_callbacks_ access:
+  scoped_refptr<base::SequencedTaskRunner> callback_access_runner_;
+  SEQUENCE_CHECKER(callback_sequence_checker_);
 
   base::FilePath cache_directory_;
   std::string android_build_fingerprint_for_testing_;
@@ -142,7 +156,8 @@ class CONTENT_EXPORT FontUniqueNameLookup {
         mojo_callback;
   };
 
-  std::vector<CallbackOnTaskRunner> pending_callbacks_;
+  std::vector<CallbackOnTaskRunner> pending_callbacks_
+      GUARDED_BY_CONTEXT(callback_sequence_checker_);
 };
 }  // namespace content
 

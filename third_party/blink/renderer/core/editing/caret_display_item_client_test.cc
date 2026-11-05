@@ -7,6 +7,8 @@
 #include "build/build_config.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_cssnumericvalue_double.h"
+#include "third_party/blink/renderer/core/animation/animation.h"
 #include "third_party/blink/renderer/core/editing/frame_caret.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
 #include "third_party/blink/renderer/core/editing/position_with_affinity.h"
@@ -346,7 +348,7 @@ TEST_P(CaretDisplayItemClientTest, EnsureInvalidatePreviousLayoutBlock) {
   GetDocument().GetPage()->GetFocusController().SetActive(true);
   GetDocument().GetPage()->GetFocusController().SetFocused(true);
   UpdateAllLifecyclePhasesForCaretTest();
-  auto* p1 = GetDocument().getElementById(AtomicString("p1"));
+  auto* p1 = GetElementById("p1");
   auto* p1_block = To<LayoutBlock>(p1->GetLayoutObject());
 
   // Set caret into p1.
@@ -366,7 +368,7 @@ TEST_P(CaretDisplayItemClientTest, EnsureInvalidatePreviousLayoutBlock) {
   GetDocument().documentElement()->setScrollTop(1000000000);
   UpdateAllLifecyclePhasesForCaretTest();
 
-  auto* p3 = GetDocument().getElementById(AtomicString("p3"));
+  auto* p3 = GetElementById("p3");
   // Set caret into p3. Should set PreviousCaretLayoutBlock to p1.
   Selection().SetSelection(
       SelectionInDomTree::Builder().Collapse(Position(p3, 0)).Build(),
@@ -448,8 +450,8 @@ TEST_P(CaretDisplayItemClientTest, CompositingChange) {
 
   GetDocument().GetPage()->GetFocusController().SetActive(true);
   GetDocument().GetPage()->GetFocusController().SetFocused(true);
-  auto* container = GetDocument().getElementById(AtomicString("container"));
-  auto* editor = GetDocument().getElementById(AtomicString("editor"));
+  auto* container = GetElementById("container");
+  auto* editor = GetElementById("editor");
   auto* editor_block = To<LayoutBlock>(editor->GetLayoutObject());
   Selection().SetSelection(
       SelectionInDomTree::Builder().Collapse(Position(editor, 0)).Build(),
@@ -488,14 +490,14 @@ TEST_P(CaretDisplayItemClientTest, PlainTextRTLCaretPosition) {
       "<div id='regular' dir='rtl'>&#1575;&#1582;&#1578;&#1576;&#1585;</div>"
       "<div id='plaintext'>&#1575;&#1582;&#1578;&#1576;&#1585;</div>");
 
-  auto* regular = GetDocument().getElementById(AtomicString("regular"));
+  auto* regular = GetElementById("regular");
   auto* regular_text_node = regular->firstChild();
   const Position& regular_position =
       Position::FirstPositionInNode(*regular_text_node);
   const PhysicalRect regular_caret_rect = ComputeCaretRect(
       PositionWithAffinity(regular_position), CaretShape::kBar);
 
-  auto* plaintext = GetDocument().getElementById(AtomicString("plaintext"));
+  auto* plaintext = GetElementById("plaintext");
   auto* plaintext_text_node = plaintext->firstChild();
   const Position& plaintext_position =
       Position::FirstPositionInNode(*plaintext_text_node);
@@ -526,7 +528,7 @@ TEST_P(CaretDisplayItemClientTest, MAYBE_InsertSpaceToWhiteSpacePreWrapRTL) {
       "<div id='editor' contentEditable='true' "
       "dir='rtl'>&#1575;&#1582;&#1578;&#1576;&#1585;</div>");
 
-  auto* editor = GetDocument().getElementById(AtomicString("editor"));
+  auto* editor = GetElementById("editor");
   auto* editor_block = To<LayoutBlock>(editor->GetLayoutObject());
   auto* text_node = editor->firstChild();
   const Position& position = Position::LastPositionInNode(*text_node);
@@ -582,7 +584,7 @@ TEST_P(CaretDisplayItemClientTest, InsertSpaceToWhiteSpacePreWrap) {
       "</style>"
       "<div id='editor' contentEditable='true'>XXXXX</div>");
 
-  auto* editor = GetDocument().getElementById(AtomicString("editor"));
+  auto* editor = GetElementById("editor");
   auto* editor_block = To<LayoutBlock>(editor->GetLayoutObject());
   auto* text_node = editor->firstChild();
   const Position position = Position::LastPositionInNode(*text_node);
@@ -674,6 +676,171 @@ TEST_P(CaretDisplayItemClientTest, CaretAtEdgeOfInlineBlock) {
 
   test(Position::FirstPositionInNode(editable), PhysicalRect(20, 0, 1, 10));
   test(Position::LastPositionInNode(editable), PhysicalRect(79, 0, 1, 10));
+}
+
+// https://crbug.com/353556446: the bar caret width is chosen in local CSS
+// px but painted through the element transform, so a transform scale made it
+// fade (scale down) or fatten (scale up) on screen.
+TEST_P(CaretDisplayItemClientTest, BarCaretWidthRespectsTransformScale) {
+  LoadAhem();
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      body { margin: 0; font: 10px/10px Ahem; }
+      #down { transform: scale(0.1); transform-origin: 0 0; }
+      #up { transform: scale(10); transform-origin: 0 0; }
+    </style>
+    <div id=down contenteditable>ABCDE</div>
+    <div id=up contenteditable>ABCDE</div>
+  )HTML");
+  GetDocument().GetPage()->GetFocusController().SetActive(true);
+  GetDocument().GetPage()->GetFocusController().SetFocused(true);
+
+  auto* down = GetElementById("down");
+  Selection().SetSelection(SelectionInDomTree::Builder()
+                               .Collapse(Position::FirstPositionInNode(*down))
+                               .Build(),
+                           SetSelectionOptions());
+  UpdateAllLifecyclePhasesForCaretTest();
+  // 1 CSS px worth of local px: 1 / 0.1.
+  EXPECT_EQ(10, CaretLocalRect().Width());
+
+  auto* up = GetElementById("up");
+  Selection().SetSelection(SelectionInDomTree::Builder()
+                               .Collapse(Position::FirstPositionInNode(*up))
+                               .Build(),
+                           SetSelectionOptions());
+  UpdateAllLifecyclePhasesForCaretTest();
+  // 1 CSS px worth of local px: 1 / 10.
+  EXPECT_EQ(LayoutUnit(0.1f), CaretLocalRect().Width());
+}
+
+// The compensation has to follow a transform that changes after the caret was
+// placed, not just the transform that was in effect at that time.
+TEST_P(CaretDisplayItemClientTest, BarCaretWidthFollowsTransformChange) {
+  LoadAhem();
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      body { margin: 0; font: 10px/10px Ahem; }
+      #editable { transform: scale(0.1); transform-origin: 0 0; }
+    </style>
+    <div id=editable contenteditable>ABCDE</div>
+  )HTML");
+  GetDocument().GetPage()->GetFocusController().SetActive(true);
+  GetDocument().GetPage()->GetFocusController().SetFocused(true);
+
+  auto* editable = GetElementById("editable");
+  Selection().SetSelection(
+      SelectionInDomTree::Builder()
+          .Collapse(Position::FirstPositionInNode(*editable))
+          .Build(),
+      SetSelectionOptions());
+  UpdateAllLifecyclePhasesForCaretTest();
+  EXPECT_EQ(10, CaretLocalRect().Width());
+
+  editable->SetInlineStyleProperty(CSSPropertyID::kTransform, "scale(0.5)");
+  UpdateAllLifecyclePhasesExceptPaint();
+  EXPECT_FALSE(GetCaretDisplayItemClient().IsValid());
+  UpdateAllLifecyclePhasesForCaretTest();
+  EXPECT_EQ(2, CaretLocalRect().Width());
+  ASSERT_TRUE(CaretLayer());
+
+  editable->SetInlineStyleProperty(CSSPropertyID::kTransform, "none");
+  UpdateAllLifecyclePhasesExceptPaint();
+  EXPECT_FALSE(GetCaretDisplayItemClient().IsValid());
+  UpdateAllLifecyclePhasesForCaretTest();
+  EXPECT_EQ(1, CaretLocalRect().Width());
+  ASSERT_CARET_LAYER();
+}
+
+TEST_P(CaretDisplayItemClientTest, BarCaretWidthFollowsTransformAnimation) {
+  LoadAhem();
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      body { margin: 0; font: 10px/10px Ahem; }
+      @keyframes zoom { from { transform: scale(0.1); }
+                         to { transform: scale(0.5); } }
+      #editable { animation: zoom 1s linear paused;
+                  transform-origin: 0 0; }
+    </style>
+    <div id=editable contenteditable>ABCDE</div>
+  )HTML");
+  GetDocument().GetPage()->GetFocusController().SetActive(true);
+  GetDocument().GetPage()->GetFocusController().SetFocused(true);
+
+  auto* editable = GetElementById("editable");
+  Selection().SetSelection(
+      SelectionInDomTree::Builder()
+          .Collapse(Position::FirstPositionInNode(*editable))
+          .Build(),
+      SetSelectionOptions());
+  UpdateAllLifecyclePhasesForCaretTest();
+  EXPECT_EQ(10, CaretLocalRect().Width());
+
+  auto animations = editable->getAnimations();
+  ASSERT_EQ(1u, animations.size());
+  animations[0]->setCurrentTime(MakeGarbageCollected<V8CSSNumberish>(999),
+                                ASSERT_NO_EXCEPTION);
+  UpdateAllLifecyclePhasesExceptPaint();
+  EXPECT_FALSE(GetCaretDisplayItemClient().IsValid());
+  UpdateAllLifecyclePhasesForCaretTest();
+  EXPECT_EQ(2, CaretLocalRect().Width());
+  ASSERT_TRUE(CaretLayer());
+}
+
+TEST_P(CaretDisplayItemClientTest, CharacterCaretShapesFollowTransformScale) {
+  LoadAhem();
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      body { margin: 0; font: 10px/10px Ahem; }
+      #editable { transform: scale(0.1); transform-origin: 0 0; }
+    </style>
+    <div id=editable contenteditable style="caret-color: black">ABCDE</div>
+  )HTML");
+  GetDocument().GetPage()->GetFocusController().SetActive(true);
+  GetDocument().GetPage()->GetFocusController().SetFocused(true);
+
+  auto* editable = GetElementById("editable");
+  Selection().SetSelection(
+      SelectionInDomTree::Builder()
+          .Collapse(Position::FirstPositionInNode(*editable->firstChild()))
+          .Build(),
+      SetSelectionOptions());
+
+  for (const char* shape : {"block", "underscore"}) {
+    editable->SetInlineStyleProperty(CSSPropertyID::kCaretShape, shape);
+    UpdateAllLifecyclePhasesForCaretTest();
+    EXPECT_EQ(10, CaretLocalRect().Width()) << shape;
+    ASSERT_CARET_LAYER();
+
+    editable->SetInlineStyleProperty(CSSPropertyID::kTransform, "scale(10)");
+    UpdateAllLifecyclePhasesForCaretTest();
+    EXPECT_EQ(10, CaretLocalRect().Width()) << shape;
+    ASSERT_CARET_LAYER();
+
+    editable->SetInlineStyleProperty(CSSPropertyID::kTransform, "scale(0.1)");
+  }
+}
+
+TEST_P(CaretDisplayItemClientTest, BarCaretWidthFollowsTransformWhenFlagOff) {
+  ScopedCaretWidthIgnoresTransformForTest scoped(false);
+  LoadAhem();
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      body { margin: 0; font: 10px/10px Ahem; }
+      #down { transform: scale(0.1); transform-origin: 0 0; }
+    </style>
+    <div id=down contenteditable>ABCDE</div>
+  )HTML");
+  GetDocument().GetPage()->GetFocusController().SetActive(true);
+  GetDocument().GetPage()->GetFocusController().SetFocused(true);
+
+  auto* down = GetElementById("down");
+  Selection().SetSelection(SelectionInDomTree::Builder()
+                               .Collapse(Position::FirstPositionInNode(*down))
+                               .Build(),
+                           SetSelectionOptions());
+  UpdateAllLifecyclePhasesForCaretTest();
+  EXPECT_EQ(1, CaretLocalRect().Width());
 }
 
 class ComputeCaretRectTest : public EditingTestBase {

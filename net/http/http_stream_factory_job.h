@@ -32,7 +32,6 @@
 #include "net/spdy/spdy_session_key.h"
 #include "net/spdy/spdy_session_pool.h"
 #include "net/ssl/ssl_config.h"
-#include "url/gurl.h"
 #include "url/scheme_host_port.h"
 
 namespace net {
@@ -505,6 +504,9 @@ class HttpStreamFactory::Job
 
   // The time when the connection setup attempt has started.
   std::optional<base::TimeTicks> init_connection_time_;
+
+  // The time when this job started waiting for other job(s).
+  std::optional<base::TimeTicks> wait_start_time_;
 
   // Keeps track of the connection management config.
   std::optional<ConnectionManagementConfig> management_config_;

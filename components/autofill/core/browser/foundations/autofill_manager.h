@@ -132,7 +132,7 @@ class AutofillManager
     // complete (if it started at all). Whether the server types have been
     // determined by then or not is unspecified.
     //
-    // TODO(crbug.com/470949499): Consider calling OnAfterFormsSeen() after the
+    // TODO(crbug.com/40232021): Consider calling OnAfterFormsSeen() after the
     // heuristics *and* the server predictions have been determined. The main
     // challenge is likely the server's possibly slow response time.
     virtual void OnBeforeFormsSeen(
@@ -402,6 +402,7 @@ class AutofillManager
       const FormData& form,
       const FieldGlobalId& trigger_field_id,
       const std::vector<JavaScriptFieldModification>& field_modifications,
+      base::TimeTicks detection_start_timestamp,
       RendererEventPassKey pass_key);
 
   // Other events.
@@ -447,7 +448,8 @@ class AutofillManager
   virtual bool CanShowAutofillUi() const;
 
   // Forwards call to the same-named `AutofillDriver` function.
-  virtual void TriggerFormExtractionInAllFrames(
+  void TriggerFormExtractionInAllFrames(
+      bool force,
       base::OnceCallback<void(bool success)> form_extraction_finished_callback);
 
   // Returns server predictions for fields identified by `field_ids` in a form
@@ -486,11 +488,8 @@ class AutofillManager
 
   AutofillDriver& driver() { return *driver_; }
 
-  // Reparses all known forms.
-  virtual void ReparseKnownForms();
-
-  // After subscribing, FieldClassificationModelHandler::OnModelUpdated() will
-  // trigger ReparseKnownForms(). There may be a handler for Autofill and/or
+  // After subscribing, `FieldClassificationModelHandler::OnModelUpdated()` will
+  // trigger form extraction. There may be a handler for Autofill and/or
   // Password Manager.
   void SubscribeToMlModelChanges(FieldClassificationModelHandler& handler);
 
@@ -575,18 +574,15 @@ class AutofillManager
   virtual void OnDidDetectJavaScriptAutofillImpl(
       const FormData& form,
       const FieldGlobalId& trigger_field_id,
-      const std::vector<JavaScriptFieldModification>& field_modifications) = 0;
+      const std::vector<JavaScriptFieldModification>& field_modifications,
+      base::TimeTicks detection_start_timestamp) = 0;
   virtual void OnLoadedServerPredictionsImpl(
       base::span<const raw_ref<FormStructure>> forms) = 0;
 
   // Parses multiple forms in one go. The function proceeds in five stages:
   //
   // 1. Turn (almost) every FormData into a FormStructure.
-  // 2. Potentially query server predictions if the
-  //    `kAutofillServerQueryPredictionsEarly` feature is enabled. When the
-  //    feature is disabled, this step does nothing as server predictions are
-  //    queried in a separate call to OnFormsParsed() normally as part of the
-  //    passed in callback.
+  // 2. Query server predictions.
   // 3. Runs ML models on all FormStructures, if the necessary features are
   //    enabled.
   // 4. Run DetermineHeuristicTypes() on all FormStructures.
@@ -626,14 +622,12 @@ class AutofillManager
   void RunMlModels(AsyncContext context,
                    base::OnceCallback<void(AsyncContext)> done_callback);
 
-  // Triggers the server predictions query for all `forms` that
-  // `ShouldBeQueried()`. This is used when kAutofillServerQueryPredictionsEarly
-  // is enabled.
+  // Triggers the server predictions query for all `forms` that have
+  // `FormParsingPermission::kServerQuery`.
   void QueryServerPredictions(base::span<const FormData> forms,
                               base::TimeTicks form_seen_timestamp);
 
-  // Populates the form cache with the queried form signatures from `response`
-  // if the feature kAutofillServerQueryPredictionsEarly is enabled.
+  // Populates the form cache with the queried form signatures from `response`.
   void PopulateCacheForQueryResponse(
       base::span<const FormData> forms,
       const AutofillCrowdsourcingManager::QueryResponse& response);
@@ -650,9 +644,8 @@ class AutofillManager
       const std::vector<raw_ref<FormStructure>>& forms);
 
   // Invoked when forms from OnFormsSeen() have been parsed to
-  // |form_structures|.
-  void OnFormsParsed(const std::vector<FormData>& forms,
-                     base::TimeTicks form_seen_timestamp);
+  // `form_structures_`.
+  void OnFormsParsed(const std::vector<FormData>& forms);
 
   // Updates `form_structures_` with the information in `forms` and `context`,
   // if available. `context` is available when this function is called as a

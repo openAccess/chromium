@@ -7,7 +7,6 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -16,6 +15,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace skills {
 
@@ -59,7 +59,7 @@ IN_PROC_BROWSER_TEST_F(SkillsDialogLauncherBrowserTest,
                        LaunchWaitsForNavigation) {
   GURL url("chrome://newtab");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   tabs::TabInterface* tab = browser()->tab_strip_model()->GetActiveTab();
@@ -90,7 +90,7 @@ IN_PROC_BROWSER_TEST_F(SkillsDialogLauncherBrowserTest,
                        TabDestroyedDuringLoad) {
   GURL url("chrome://newtab");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   tabs::TabInterface* tab = browser()->tab_strip_model()->GetActiveTab();

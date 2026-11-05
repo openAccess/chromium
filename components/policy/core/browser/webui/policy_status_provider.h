@@ -46,6 +46,7 @@ inline constexpr char kUsernameKey[] = "username";
 inline constexpr char kEnterpriseDomainManagerKey[] = "enterpriseDomainManager";
 inline constexpr char kDomainKey[] = "domain";
 inline constexpr char kEnrollmentTokenKey[] = "enrollmentToken";
+inline constexpr char kAzureAdJoinTypeKey[] = "azureAdJoinType";
 
 // An interface for querying the status of a policy provider.  It surfaces
 // things like last fetch time or status of the backing store, but not the
@@ -96,10 +97,6 @@ class POLICY_EXPORT PolicyStatusProvider {
   static std::u16string GetPolicyStatusFromStore(const CloudPolicyStore*,
                                                  const CloudPolicyClient*);
   static std::u16string GetTimeSinceLastActionString(base::Time);
-
-  // TODO: crbug.com/40897784 - remove once all status providers implement the
-  // mojo version of `GetStatus()`.
-  static policy::mojom::StatusPtr DictStatusToMojo(const base::DictValue& dict);
 
   // Add policy push information along with conditional refresh interval into
   // policy `status` dictionary.

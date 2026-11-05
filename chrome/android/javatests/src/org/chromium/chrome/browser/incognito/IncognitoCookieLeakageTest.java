@@ -8,11 +8,9 @@ import static org.junit.Assert.assertEquals;
 
 import android.os.Build;
 
-import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.LargeTest;
 
 import org.hamcrest.Matchers;
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -37,6 +35,7 @@ import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.net.test.EmbeddedTestServer;
+import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -49,6 +48,7 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE, ChromeSwitches.DISABLE_ALL_IPH})
+@DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/568491886
 public class IncognitoCookieLeakageTest {
     private static final String COOKIES_SETTING_PATH = "/chrome/test/data/android/cookie.html";
     private String mCookiesTestPage;
@@ -64,15 +64,8 @@ public class IncognitoCookieLeakageTest {
 
     @Before
     public void setUp() throws TimeoutException {
-        mTestServer =
-                EmbeddedTestServer.createAndStartServer(
-                        ApplicationProvider.getApplicationContext());
+        mTestServer = mChromeActivityTestRule.getTestServer();
         mCookiesTestPage = mTestServer.getURL(COOKIES_SETTING_PATH);
-    }
-
-    @After
-    public void tearDown() {
-        mChromeActivityTestRule.closeAllWindowsAndDeleteInstanceAndTabState();
     }
 
     private void setCookies(Tab tab) throws TimeoutException {

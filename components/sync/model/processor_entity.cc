@@ -6,13 +6,16 @@
 
 #include <utility>
 
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/memory/ptr_util.h"
-#include "base/not_fatal_until.h"
+#include "base/task/thread_pool.h"
 #include "base/trace_event/memory_usage_estimator.h"
 #include "components/sync/base/client_tag_hash.h"
 #include "components/sync/base/deletion_origin.h"
 #include "components/sync/base/time.h"
 #include "components/sync/engine/commit_and_get_updates_types.h"
+#include "components/sync/protocol/attachment_metadata.h"
 #include "components/sync/protocol/collaboration_metadata.h"
 #include "components/sync/protocol/entity_data.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
@@ -20,6 +23,17 @@
 #include "components/version_info/version_info.h"
 
 namespace syncer {
+
+// static
+void ProcessorEntity::DeleteAttachmentFileAsync(
+    const base::FilePath& file_path) {
+  CHECK(!file_path.empty());
+  // TODO(crbug.com/568634932): Implement startup garbage collection for
+  // orphaned attachment files in case browser shutdown preempts this task.
+  base::ThreadPool::PostTask(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      base::GetDeleteFileCallback(file_path));
+}
 
 std::unique_ptr<ProcessorEntity> ProcessorEntity::CreateNew(
     const std::string& storage_key,
@@ -77,6 +91,10 @@ void ProcessorEntity::SetCommitData(std::unique_ptr<EntityData> data) {
   }
   data->creation_time = ProtoTimeToTime(metadata().creation_time());
   data->modification_time = ProtoTimeToTime(metadata().modification_time());
+  if (metadata().attachment_metadata().has_attachment()) {
+    data->attachment_metadata = AttachmentMetadata::FromProto(
+        metadata().attachment_metadata().attachment());
+  }
 
   commit_data_ = std::move(data);
   // TODO(crbug.com/408182457): This DCHECK is sometimes violated for SESSIONS.
@@ -108,7 +126,12 @@ bool ProcessorEntity::IsUnsyncedLocalCreation() const {
 }
 
 bool ProcessorEntity::RequiresCommitRequest() const {
-  return metadata().sequence_number() > commit_requested_sequence_number_;
+  // Hold back the entity from commit while its attachment is still being
+  // uploaded to the blob server so `temporary_blob_id` is available before
+  // building the `SyncEntity` commit proto, without blocking other ready
+  // entities in the same datatype.
+  return metadata().sequence_number() > commit_requested_sequence_number_ &&
+         !HasPendingAttachmentUpload();
 }
 
 bool ProcessorEntity::RequiresCommitData() const {
@@ -148,7 +171,8 @@ void ProcessorEntity::RecordAcceptedRemoteUpdate(
     const UpdateResponseData& update,
     sync_pb::EntitySpecifics trimmed_specifics,
     std::optional<sync_pb::UniquePosition> unique_position) {
-  DCHECK(!IsUnsynced());
+  CHECK(!IsUnsynced());
+  CHECK(!HasPendingAttachmentUpload());
   metadata_.RecordAcceptedRemoteUpdate(update, std::move(trimmed_specifics),
                                        std::move(unique_position));
   UpdateCommitDataAndSequenceAfterRemoteUpdate();
@@ -158,7 +182,8 @@ void ProcessorEntity::RecordForcedRemoteUpdate(
     const UpdateResponseData& update,
     sync_pb::EntitySpecifics trimmed_specifics,
     std::optional<sync_pb::UniquePosition> unique_position) {
-  CHECK(IsUnsynced(), base::NotFatalUntil::M141);
+  CHECK(IsUnsynced());
+  ClearPendingAttachmentUpload();
   commit_data_.reset();
   metadata_.RecordForcedRemoteUpdate(update, std::move(trimmed_specifics),
                                      std::move(unique_position));
@@ -178,12 +203,15 @@ void ProcessorEntity::RecordLocalUpdate(
     sync_pb::EntitySpecifics trimmed_specifics,
     std::optional<sync_pb::UniquePosition> unique_position) {
   DCHECK(!metadata().client_tag_hash().empty());
+  // Any pending attachment upload is carried over across local specifics
+  // updates unless explicitly replaced via `RecordAttachmentUploadQueued()`.
   metadata_.RecordLocalUpdate(*data, std::move(trimmed_specifics),
                               unique_position);
   SetCommitData(std::move(data));
 }
 
 bool ProcessorEntity::RecordLocalDeletion(const DeletionOrigin& origin) {
+  ClearPendingAttachmentUpload();
   commit_data_.reset();
   metadata_.RecordLocalDeletion(origin);
   // Return true if server might know about this entity.
@@ -202,6 +230,7 @@ bool ProcessorEntity::RecordLocalDeletion(const DeletionOrigin& origin) {
 }
 
 void ProcessorEntity::InitializeCommitRequestData(CommitRequestData* request) {
+  CHECK(!HasPendingAttachmentUpload());
   if (!metadata().is_deleted()) {
     DCHECK(HasCommitData());
     DCHECK_EQ(commit_data_->client_tag_hash.value(),
@@ -235,10 +264,8 @@ void ProcessorEntity::InitializeCommitRequestData(CommitRequestData* request) {
 
 void ProcessorEntity::ReceiveCommitResponse(const CommitResponseData& data,
                                             bool commit_only) {
-  CHECK_EQ(metadata().client_tag_hash(), data.client_tag_hash.value(),
-           base::NotFatalUntil::M141);
-  CHECK_GT(data.sequence_number, metadata().acked_sequence_number(),
-           base::NotFatalUntil::M141);
+  CHECK_EQ(metadata().client_tag_hash(), data.client_tag_hash.value());
+  CHECK_GT(data.sequence_number, metadata().acked_sequence_number());
   // Version is not valid for commit only types, as it's stripped before being
   // sent to the server, so it cannot behave correctly.
   // Ignore the response if the server responds with an unexpected version.
@@ -279,5 +306,75 @@ size_t ProcessorEntity::EstimateMemoryUsage() const {
   return memory_usage;
 }
 
+bool ProcessorEntity::HasPendingAttachmentUpload() const {
+  return metadata_.HasPendingAttachmentUpload();
+}
+
+bool ProcessorEntity::HasAttachmentUploadInProgress() const {
+  return !abort_attachment_upload_callback_.is_null();
+}
+
+void ProcessorEntity::RecordAttachmentUploadQueued(
+    const base::FilePath& file_path) {
+  ClearPendingAttachmentUpload();
+  metadata_.RecordAttachmentUploadQueued(file_path);
+}
+
+void ProcessorEntity::RecordAttachmentUploadStarted(
+    base::OnceClosure abort_attachment_upload_callback) {
+  CHECK(HasPendingAttachmentUpload());
+  CHECK(abort_attachment_upload_callback);
+  CHECK(!abort_attachment_upload_callback_);
+  abort_attachment_upload_callback_ =
+      std::move(abort_attachment_upload_callback);
+}
+
+void ProcessorEntity::RecordAttachmentUploadFailed() {
+  CHECK(HasPendingAttachmentUpload());
+  CHECK(abort_attachment_upload_callback_);
+  abort_attachment_upload_callback_.Reset();
+  ClearPendingAttachmentUpload();
+}
+
+void ProcessorEntity::RecordAttachmentUploadResumeUrlReceived(
+    const GURL& upload_url) {
+  CHECK(HasPendingAttachmentUpload());
+  metadata_.RecordAttachmentUploadResumeUrlReceived(upload_url);
+}
+
+void ProcessorEntity::RecordAttachmentUploadCompleted(
+    const std::string& temporary_blob_id) {
+  CHECK(HasPendingAttachmentUpload());
+  abort_attachment_upload_callback_.Reset();
+  DeleteAttachmentFileAsync(base::FilePath::FromUTF8Unsafe(
+      metadata().attachment_metadata().pending_upload().file_path()));
+  metadata_.RecordAttachmentUploadCompleted(temporary_blob_id);
+  if (commit_data_) {
+    commit_data_->attachment_metadata = AttachmentMetadata::FromProto(
+        metadata().attachment_metadata().attachment());
+  }
+}
+
+void ProcessorEntity::ClearPendingAttachmentUpload() {
+  if (commit_data_) {
+    commit_data_->attachment_metadata.reset();
+  }
+  if (!HasPendingAttachmentUpload()) {
+    CHECK(!abort_attachment_upload_callback_);
+    return;
+  }
+  DeleteAttachmentFileAsync(base::FilePath::FromUTF8Unsafe(
+      metadata().attachment_metadata().pending_upload().file_path()));
+  metadata_.RecordPendingAttachmentUploadCleared();
+  if (abort_attachment_upload_callback_) {
+    std::move(abort_attachment_upload_callback_).Run();
+  }
+}
+
+void ProcessorEntity::PauseAttachmentUpload() {
+  if (abort_attachment_upload_callback_) {
+    std::move(abort_attachment_upload_callback_).Run();
+  }
+}
 
 }  // namespace syncer

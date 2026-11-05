@@ -13,11 +13,9 @@ import utils.command_util as command
 import utils.constants as const
 from utils.command_error import CommandError
 
-_DIR_SOURCE_ROOT = os.path.normpath(
-  os.path.join(os.path.basename(__file__), '../../..')
-)
 _COMMON_EXTENSIONS = (
   '.java',
+  '.kt',
   '.cc',
   '.mm',
   '.h',
@@ -110,7 +108,7 @@ def IsTestFile(file_path: str) -> const.TestValidity:
     test_macro_regex = const.CXX_GTEST_TEST_DEFINITION_MACRO_REGEX
   elif file_path.endswith('.rs'):
     test_macro_regex = const.RUST_GTEST_TEST_DEFINITION_MACRO_REGEX
-  elif file_path.endswith('.java'):
+  elif file_path.endswith(('.java', '.kt')):
     test_macro_regex = const.JUNIT_TEST_ANNOTATION_REGEX
   else:
     return const.TestValidity.MAYBE_A_TEST
@@ -277,7 +275,7 @@ def IsProbablyFile(name: str) -> bool:
   return (
     name.endswith(_COMMON_EXTENSIONS)
     or os.path.exists(name)
-    or os.path.exists(os.path.join(_DIR_SOURCE_ROOT, name))
+    or os.path.exists(os.path.join(const.SRC_DIR, name))
   )
 
 
@@ -345,7 +343,7 @@ def FindMatchingTestFiles(
   # Return early if there's an exact file match.
   exists = os.path.isfile(target)
   if not exists:
-    src_rel_path = os.path.join(_DIR_SOURCE_ROOT, target)
+    src_rel_path = os.path.join(const.SRC_DIR, target)
     exists = os.path.isfile(src_rel_path)
     if exists:
       target = src_rel_path
@@ -390,7 +388,9 @@ def FindMatchingTestFiles(
   if len(exact) >= 1:
     # Given "Foo", don't ask to disambiguate ModFoo.java vs Foo.java.
     more_exact: list[str] = [
-      p for p in exact if os.path.basename(p) in (target, f'{target}.java')
+      p
+      for p in exact
+      if os.path.basename(p) in (target, f'{target}.java', f'{target}.kt')
     ]
     if len(more_exact) == 1:
       test_files = more_exact
@@ -411,24 +411,29 @@ def FindMatchingTestFiles(
   return test_files
 
 
-def _GetChangedFiles() -> list[str]:
-  # Find files updated in both committed and uncommitted changes.
-  merge_base_command: list[str] = ['git', 'merge-base', 'origin/main', 'HEAD']
-  merge_base: str = command.RunCommand(merge_base_command).strip()
+def _GetChangedFiles(git_ref: str | None) -> list[str]:
+  # If `git_ref` is a single ref (or default), `git diff` compares it with the
+  # working tree, including uncommitted changes. If it is a range (A..B),
+  # it compares the two commits directly, excluding uncommitted changes.
+  if not git_ref:
+    merge_base_command: list[str] = ['git', 'merge-base', 'origin/main', 'HEAD']
+    git_ref = command.RunCommand(merge_base_command).strip()
   git_command: list[str] = [
     'git',
     'diff',
     '--name-only',
     '--diff-filter=ACMRT',
-    merge_base,
+    git_ref,
   ]
   changed_files: list[str] = command.RunCommand(git_command).splitlines()
-  return changed_files
+  # Filter out files that no longer exist in the working directory, e.g.
+  # `git_ref` is a commit range and the file is deleted in uncommitted changes.
+  return [f for f in changed_files if (const.SRC_DIR / f).exists()]
 
 
-def GetChangedTestFiles() -> list[str]:
+def GetChangedTestFiles(git_ref: str | None) -> list[str]:
   """Gets test files modified in git."""
-  changed_files = _GetChangedFiles()
+  changed_files = _GetChangedFiles(git_ref)
   test_files: list[str] = []
 
   for f in changed_files:
@@ -498,13 +503,13 @@ def _FindRelatedTestFiles(
       check_exts = ['.rs']
       split_pattern = r'_'  # snake_case
       separator = '_'
-    case '.java':
-      test_exts = ['.java']
-      check_exts = ['.java']
+    case '.java' | '.kt':
+      test_exts = ['.java', '.kt']
+      check_exts = ['.java', '.kt']
       split_pattern = r'(?=[A-Z])'  # PascalCase
       separator = ''
     case _:
-      # Only C++, Java, and Rust code files are supported.
+      # Only C++, Java, Kotlin, and Rust code files are supported.
       return []
 
   candidates = _GetPotentiallyRelatedTestFiles(
@@ -553,9 +558,11 @@ def _FindRelatedTestFiles(
   return related_tests
 
 
-def GetRelatedTestFiles(remote_search: bool = False) -> list[str]:
+def GetRelatedTestFiles(
+  git_ref: str | None, remote_search: bool = False
+) -> list[str]:
   """Gets files modified in git, and finds their related test files."""
-  changed_files = _GetChangedFiles()
+  changed_files = _GetChangedFiles(git_ref)
   related_test_files: set[str] = set()
 
   if shutil.which('cs') is None:

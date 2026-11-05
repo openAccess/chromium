@@ -11,45 +11,23 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_test_util.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_bubble_controller.h"
-#include "chrome/grit/generated_resources.h"
+#include "chrome/grit/branded_strings.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
-#include "components/signin/public/base/signin_buildflags.h"
-#include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "components/strings/grit/components_strings.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/bubble/bubble_frame_view.h"
+#include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/view_utils.h"
 
 namespace send_tab_to_self {
-
-namespace {
-
-class StubSendTabToSelfBubbleController : public SendTabToSelfBubbleController {
- public:
-  explicit StubSendTabToSelfBubbleController(content::WebContents* web_contents)
-      : SendTabToSelfBubbleController(web_contents) {}
-
-  ~StubSendTabToSelfBubbleController() override = default;
-
-  AccountInfo GetSharingAccountInfo() override {
-    auto* identity_manager = IdentityManagerFactory::GetForProfile(
-        Profile::FromBrowserContext(GetWebContents().GetBrowserContext()));
-    CHECK(identity_manager);
-    return identity_manager->FindExtendedAccountInfo(
-        identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin));
-  }
-};
-
-}  // namespace
 
 class SendTabToSelfNoTargetDeviceBubbleViewTest : public ChromeViewsTestBase {
  protected:
@@ -77,12 +55,6 @@ class SendTabToSelfNoTargetDeviceBubbleViewTest : public ChromeViewsTestBase {
 
     web_contents_ = content::WebContentsTester::CreateTestWebContents(
         profile_.get(), nullptr);
-    // Owned by WebContents.
-    auto controller = std::make_unique<StubSendTabToSelfBubbleController>(
-        web_contents_.get());
-    controller_ = controller.get();
-    web_contents_->SetUserData(StubSendTabToSelfBubbleController::UserDataKey(),
-                               std::move(controller));
   }
 
   void CreateNoTargetDeviceBubble() {
@@ -99,7 +71,6 @@ class SendTabToSelfNoTargetDeviceBubbleViewTest : public ChromeViewsTestBase {
     bubble_widget_ = nullptr;
     widget->CloseNow();
     anchor_widget_.reset();
-    controller_ = nullptr;
     web_contents_.reset();
     ChromeViewsTestBase::TearDown();
     identity_test_env_adaptor_.reset();
@@ -137,10 +108,8 @@ class SendTabToSelfNoTargetDeviceBubbleViewTest : public ChromeViewsTestBase {
   content::RenderViewHostTestEnabler test_render_host_factories_;
   std::unique_ptr<content::WebContents> web_contents_;
   std::unique_ptr<views::Widget> anchor_widget_;
-  raw_ptr<SendTabToSelfBubbleView> bubble_ = nullptr;
+  raw_ptr<SendTabToSelfNoTargetDeviceBubbleView> bubble_ = nullptr;
   raw_ptr<views::Widget> bubble_widget_ = nullptr;
-  // Owned by WebContents.
-  raw_ptr<StubSendTabToSelfBubbleController> controller_;
 };
 
 // Verifies that the "no target devices" layout is loaded when the user is
@@ -151,12 +120,25 @@ TEST_F(SendTabToSelfNoTargetDeviceBubbleViewTest, LoadsDeviceActivityDesign) {
 
   CreateNoTargetDeviceBubble();
 
+  // Window title and close button should be configured on the bubble.
+  EXPECT_EQ(bubble_->GetWindowTitle(),
+            l10n_util::GetStringUTF16(IDS_SEND_TAB_TO_SELF));
+  EXPECT_TRUE(bubble_->ShouldShowCloseButton());
+
   // Ok button should not be visible.
   EXPECT_FALSE(bubble_->GetOkButton());
 
-  // Verify label contains the correct "no devices" notice.
+  // Verify labels contain the correct "no devices" notice and account email.
   EXPECT_NE(nullptr, FindLabelWithText(l10n_util::GetStringUTF16(
                          IDS_SEND_TAB_TO_SELF_NO_TARGET_DEVICE_LABEL)));
+  views::Label* email_label = FindLabelWithText(u"user@host.com");
+  ASSERT_NE(nullptr, email_label);
+
+  // Verify the account info row contains both the avatar image and email label.
+  ASSERT_NE(nullptr, email_label->parent());
+  ASSERT_EQ(2u, email_label->parent()->children().size());
+  EXPECT_TRUE(views::IsViewClass<views::ImageView>(
+      email_label->parent()->children()[0]));
 
   // Frame view should not have a header view.
   EXPECT_EQ(nullptr, bubble_->GetBubbleFrameView()->GetHeaderViewForTesting());

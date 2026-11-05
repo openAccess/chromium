@@ -138,6 +138,7 @@ struct WebPreferences {
   bool text_areas_are_resizable;
   bool allow_scripts_to_close_windows;
   bool allow_unrestricted_window_focus;
+  bool clipboard_focus_exempt;
   bool remote_fonts_enabled;
   bool javascript_can_access_clipboard;
   // We don't use dns_prefetching_enabled to disable DNS prefetching.  Instead,
@@ -281,6 +282,9 @@ struct WebPreferences {
 
   // Representation of the Web App Manifest scope if any.
   url.mojom.Url web_app_scope;
+
+  // Custom Web App Manifest URL if specified by embedder (e.g. for IWAs).
+  url.mojom.Url web_app_custom_manifest_url;
 
   // Whether this renderer is associated with the browser's initial ("Default")
   // profile.
@@ -536,4 +540,13 @@ struct WebPreferences {
   // should be able to set the onboarding result. Note that this is separately
   // verified when it sets the result.
   bool is_indigo_onboarding = false;
+
+  // True if the user dismissed the XSLT deprecation warning banner with the
+  // "Never show this warning" checkbox checked. Suppression is global: it applies
+  // to every site, not just the one the banner was dismissed on.
+  // TODO(crbug.com/560233256): This preference is temporary, and is only
+  // required before XSLT is disabled by default in M158. It can be removed in
+  // M158, or whenever XSLT is disabled by default (other than for origin
+  // trials and enterprise policy).
+  bool is_xslt_deprecation_banner_suppressed = false;
 };

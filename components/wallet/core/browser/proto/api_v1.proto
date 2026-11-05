@@ -90,3 +90,46 @@ message UpsertPassResponse {
   // The unique identifier of the created or updated pass.
   optional string pass_id = 1;
 }
+
+// Request for the GetDetailsForUpsertPass RPC.
+message GetDetailsForUpsertPassRequest {
+  // Information about the client making the request.
+  optional ClientInfo client_info = 1;
+
+  // The type of pass being saved (e.g. VEHICLE_REGISTRATION, LOYALTY_CARD).
+  enum PassType {
+    // Unspecified pass type.
+    PASS_TYPE_UNSPECIFIED = 0;
+    // Vehicle registration pass.
+    PASS_TYPE_VEHICLE_REGISTRATION = 1;
+    // Loyalty card pass.
+    PASS_TYPE_LOYALTY_CARD = 2;
+  }
+
+  // The pass type requested for upsert.
+  optional PassType pass_type = 2;
+}
+
+// Response for the GetDetailsForUpsertPass RPC.
+message GetDetailsForUpsertPassResponse {
+  reserved 2;
+
+  // Localized legal disclosure message to render in the save dialog.
+  // Empty if the user/account is not eligible for disclosures.
+  optional LegalMessage legal_message = 1;
+
+  // The user's eligibility status for privacy disclosure.
+  enum UserEligibility {
+    // Unspecified eligibility status.
+    USER_ELIGIBILITY_UNSPECIFIED = 0;
+    // User is eligible to receive privacy disclosures based on account country.
+    USER_ELIGIBILITY_ELIGIBLE = 1;
+    // User is not eligible to receive privacy disclosures based on account
+    // country.
+    USER_ELIGIBILITY_INELIGIBLE = 2;
+  }
+
+  // The user's eligibility status for receiving privacy disclosures.
+  // When not USER_ELIGIBILITY_ELIGIBLE, legal_message will not be populated.
+  optional UserEligibility user_eligibility = 3;
+}

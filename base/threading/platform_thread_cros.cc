@@ -9,9 +9,7 @@
 #include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/dcheck_is_on.h"
-#include "base/feature_list.h"
 #include "base/files/file_util.h"
-#include "base/metrics/field_trial_params.h"
 #include "base/no_destructor.h"
 #include "base/process/internal_linux.h"
 #include "base/process/process.h"
@@ -26,14 +24,11 @@
 
 namespace base {
 
-BASE_FEATURE(kSchedUtilHints, base::FEATURE_ENABLED_BY_DEFAULT);
-
 namespace {
 
 CrossProcessPlatformThreadDelegate* g_cross_process_platform_thread_delegate =
     nullptr;
 
-std::atomic<bool> g_use_sched_util(true);
 std::atomic<bool> g_scheduler_hints_adjusted(false);
 
 // When a device doesn't specify uclamp values via chrome switches,
@@ -42,12 +37,8 @@ std::atomic<bool> g_scheduler_hints_adjusted(false);
 // is chosen conservatively where it does not show noticeable
 // power usage increased from several perf/power tests.
 const int kSchedulerBoostDef = 20;
-const int kSchedulerLimitDef = 100;
-const bool kSchedulerUseLatencyTuneDef = true;
 
 int g_scheduler_boost_adj;
-int g_scheduler_limit_adj;
-bool g_scheduler_use_latency_tune_adj;
 
 // Defined by linux uclamp ABI of sched_setattr().
 constexpr uint32_t kSchedulerUclampMin = 0;
@@ -117,35 +108,19 @@ long sched_setattr(pid_t pid,
 }
 
 // Setup whether a thread is latency sensitive. The thread_id should
-// always be the value in the root PID namespace (see FindThreadID).
+// always be the value in the root PID namespace (see GetNamespaceThreadId).
 void SetThreadLatencySensitivity(ProcessId process_id,
                                  PlatformThreadId thread_id,
                                  ThreadType thread_type) {
   struct sched_attr attr;
   bool is_urgent = false;
-  int boost_percent, limit_percent;
-  int latency_sensitive_urgent;
-
-  // Scheduler boost defaults to true unless disabled.
-  if (!g_use_sched_util.load()) {
-    return;
-  }
-
-  // FieldTrial API can be called only once features were parsed.
-  if (g_scheduler_hints_adjusted.load()) {
-    boost_percent = g_scheduler_boost_adj;
-    limit_percent = g_scheduler_limit_adj;
-    latency_sensitive_urgent = g_scheduler_use_latency_tune_adj;
-  } else {
-    boost_percent = kSchedulerBoostDef;
-    limit_percent = kSchedulerLimitDef;
-    latency_sensitive_urgent = kSchedulerUseLatencyTuneDef;
-  }
+  int boost_percent = g_scheduler_hints_adjusted.load() ? g_scheduler_boost_adj
+                                                        : kSchedulerBoostDef;
 
   // The thread_id passed in here is either 0 (in which case we ste for current
   // thread), or is a tid that is not the NS tid but the global one. The
-  // conversion from NS tid to global tid is done by the callers using
-  // FindThreadID().
+  // conversion from NS tid to global tid is done by the caller using
+  // GetNamespaceThreadId().
   FilePath thread_dir;
   if (thread_id != kInvalidThreadId &&
       thread_id != PlatformThread::CurrentId()) {
@@ -184,7 +159,7 @@ void SetThreadLatencySensitivity(ProcessId process_id,
 
   // Logging error only if failed to write when latency sensitive, otherwise
   // silently ignore as "0" is the default value.
-  if (is_urgent && latency_sensitive_urgent) {
+  if (is_urgent) {
     PLOG_IF(ERROR, !WriteFile(latency_sensitive_file,
                               base::byte_span_from_cstring("1")))
         << "Failed to write latency file.";
@@ -202,9 +177,7 @@ void SetThreadLatencySensitivity(ProcessId process_id,
     attr.sched_util_max = kSchedulerUclampMax;
   } else {
     attr.sched_util_min = kSchedulerUclampMin;
-    attr.sched_util_max =
-        (saturated_cast<uint32_t>(limit_percent) * kSchedulerUclampMax + 50) /
-        100;
+    attr.sched_util_max = kSchedulerUclampMax;
   }
 
   DCHECK_GE(attr.sched_util_min, kSchedulerUclampMin);
@@ -253,12 +226,6 @@ void SetThreadRTPrioFromType(ProcessId process_id,
 }
 
 void PlatformThreadChromeOS::InitializeFeatures() {
-  DCHECK(FeatureList::GetInstance());
-  if (!FeatureList::IsEnabled(kSchedUtilHints)) {
-    g_use_sched_util.store(false);
-    return;
-  }
-
   int boost_def = kSchedulerBoostDef;
 
   if (CommandLine::ForCurrentProcess()->HasSwitch(
@@ -276,13 +243,7 @@ void PlatformThreadChromeOS::InitializeFeatures() {
     }
   }
 
-  g_scheduler_boost_adj = GetFieldTrialParamByFeatureAsInt(
-      kSchedUtilHints, "BoostUrgent", boost_def);
-  g_scheduler_limit_adj = GetFieldTrialParamByFeatureAsInt(
-      kSchedUtilHints, "LimitNonUrgent", kSchedulerLimitDef);
-  g_scheduler_use_latency_tune_adj = GetFieldTrialParamByFeatureAsBool(
-      kSchedUtilHints, "LatencyTune", kSchedulerUseLatencyTuneDef);
-
+  g_scheduler_boost_adj = boost_def;
   g_scheduler_hints_adjusted.store(true);
 }
 

@@ -22,12 +22,12 @@
 #include "base/test/gmock_callback_support.h"
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/autofill/autofill_uitest_util.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -72,6 +72,8 @@
 #include "third_party/blink/public/common/switches.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_mode.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
 namespace autofill {
@@ -173,7 +175,7 @@ class AutofillTest : public InProcessBrowserTest {
       bool simulate_click = true) {
     GURL url = embedded_test_server()->GetURL("/autofill/" + filename);
     NavigateParams params(browser(), url, ui::PAGE_TRANSITION_LINK);
-    params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     ui_test_utils::NavigateToURL(&params);
     ASSERT_TRUE(
         autofill_manager_injector_[web_contents()]->WaitForFormsSeen(1));

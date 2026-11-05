@@ -24,12 +24,16 @@
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/document_init.h"
+#include "third_party/blink/renderer/core/dom/focus_params.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
+#include "third_party/blink/renderer/core/html/html_camera_element.h"
+#include "third_party/blink/renderer/core/html/html_dialog_element.h"
 #include "third_party/blink/renderer/core/html/html_geolocation_element.h"
 #include "third_party/blink/renderer/core/html/html_iframe_element.h"
 #include "third_party/blink/renderer/core/html/html_install_element.h"
+#include "third_party/blink/renderer/core/html/html_microphone_element.h"
 #include "third_party/blink/renderer/core/html/html_permission_element_test_helper.h"
 #include "third_party/blink/renderer/core/html/html_span_element.h"
 #include "third_party/blink/renderer/core/html/html_user_media_element.h"
@@ -199,7 +203,10 @@ class HTMLCapabilityElementBaseTestBase : public PageTestBase {
       base::test::TaskEnvironment::TimeSource time_source)
       : PageTestBase(time_source) {}
 
-  void SetUp() override { PageTestBase::SetUp(); }
+  void SetUp() override {
+    PageTestBase::SetUp();
+    GetDocument().GetSettings()->SetDefaultFontSize(12);
+  }
 
  private:
   ScopedUserMediaElementForTest scoped_feature_{true};
@@ -443,6 +450,75 @@ TEST_F(HTMLCapabilityElementBaseTest, SetTypeAfterInsertedInto) {
   }
 }
 
+TEST_F(HTMLCapabilityElementBaseTest, DisplayModeIconOnly) {
+  ScopedCapabilityElementIconOnlyModeForTest scoped_feature(true);
+  HeapVector<Member<HTMLCapabilityElementBase>> elements = {
+      MakeGarbageCollected<HTMLCameraElement>(GetDocument()),
+      MakeGarbageCollected<HTMLMicrophoneElement>(GetDocument()),
+      MakeGarbageCollected<HTMLGeolocationElement>(GetDocument())};
+  const Vector<const char*> expected_labels = {
+      kCameraString, kMicrophoneString, kGeolocationString};
+  for (wtf_size_t i = 0; i < elements.size(); ++i) {
+    auto& permission_element = elements[i];
+    const char* expected_label = expected_labels[i];
+    GetDocument().body()->AppendChild(permission_element);
+    GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+    WaitForPermissionElementRegistration(permission_element);
+    EXPECT_FALSE(permission_element->IsIconOnly());
+    CheckInnerText(permission_element, expected_label);
+    EXPECT_EQ(expected_label, permission_element->AccessibleLabel());
+    EXPECT_EQ(expected_label, permission_element->computedName());
+
+    permission_element->setAttribute(html_names::kDisplaymodeAttr,
+                                     AtomicString("icon-only"));
+    EXPECT_TRUE(permission_element->IsIconOnly());
+    CheckInnerText(permission_element, g_empty_string);
+    EXPECT_EQ(expected_label, permission_element->AccessibleLabel());
+    EXPECT_EQ(expected_label, permission_element->computedName());
+
+    permission_element->removeAttribute(html_names::kDisplaymodeAttr);
+    EXPECT_FALSE(permission_element->IsIconOnly());
+    CheckInnerText(permission_element, expected_label);
+    EXPECT_EQ(expected_label, permission_element->AccessibleLabel());
+    EXPECT_EQ(expected_label, permission_element->computedName());
+  }
+}
+
+TEST_F(HTMLCapabilityElementBaseTest, DisplayModeIconOnlyCaseInsensitive) {
+  ScopedCapabilityElementIconOnlyModeForTest scoped_feature(true);
+  auto* permission_element =
+      MakeGarbageCollected<HTMLCameraElement>(GetDocument());
+  GetDocument().body()->AppendChild(permission_element);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  WaitForPermissionElementRegistration(permission_element);
+  permission_element->setAttribute(html_names::kDisplaymodeAttr,
+                                   AtomicString("iCoN-oNlY"));
+  EXPECT_TRUE(permission_element->IsIconOnly());
+  CheckInnerText(permission_element, g_empty_string);
+}
+
+TEST_F(HTMLCapabilityElementBaseTest, DisplayModeIconOnlyDisabled) {
+  ScopedCapabilityElementIconOnlyModeForTest scoped_feature(false);
+  auto* permission_element =
+      MakeGarbageCollected<HTMLCameraElement>(GetDocument());
+  GetDocument().body()->AppendChild(permission_element);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  WaitForPermissionElementRegistration(permission_element);
+  EXPECT_FALSE(permission_element->IsIconOnly());
+  EXPECT_FALSE(permission_element->permission_text_span_for_testing()
+                   ->innerText()
+                   .empty());
+
+  permission_element->setAttribute(html_names::kDisplaymodeAttr,
+                                   AtomicString("icon-only"));
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(permission_element->IsIconOnly());
+  CheckInnerText(permission_element, kCameraString);
+  EXPECT_NE(nullptr, permission_element->permission_text_span_for_testing()
+                         ->GetComputedStyle());
+  EXPECT_EQ(kCameraString, permission_element->computedName());
+}
+
 TEST_F(HTMLCapabilityElementBaseTest,
        SetInnerTextAfterRegistrationSingleElement) {
   const struct {
@@ -665,6 +741,53 @@ TEST_F(HTMLCapabilityElementBaseTest,
             permission_element->permissionStatus());
 }
 
+TEST_F(HTMLCapabilityElementBaseTest, FocusRequiresUserActivation) {
+  auto* permission_element = CreatePermissionElement("camera");
+  EXPECT_EQ(nullptr, GetDocument().FocusedElement());
+
+  // 1. Script-initiated focus without transient user activation is blocked.
+  permission_element->Focus(FocusParams());
+  EXPECT_EQ(nullptr, GetDocument().FocusedElement());
+
+  permission_element->Focus(FocusParams(FocusTrigger::kScript));
+  EXPECT_EQ(nullptr, GetDocument().FocusedElement());
+
+  // 2. User-gesture focus succeeds even without transient user activation.
+  permission_element->Focus(FocusParams(FocusTrigger::kUserGesture));
+  EXPECT_EQ(permission_element, GetDocument().FocusedElement());
+
+  GetDocument().ClearFocusedElement();
+  EXPECT_EQ(nullptr, GetDocument().FocusedElement());
+
+  // 3. Script-initiated focus with transient user activation succeeds.
+  LocalFrame::NotifyUserActivation(
+      GetDocument().GetFrame(),
+      mojom::blink::UserActivationNotificationType::kTest);
+  permission_element->Focus(FocusParams());
+  EXPECT_EQ(permission_element, GetDocument().FocusedElement());
+}
+
+TEST_F(HTMLCapabilityElementBaseTest,
+       DialogAutofocusDoesNotFocusWithoutUserActivation) {
+  SetBodyContent(R"HTML(
+    <dialog id='d'>
+      <usermedia id='camera' type='camera' autofocus></usermedia>
+    </dialog>
+  )HTML");
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  auto* dialog = To<HTMLDialogElement>(
+      GetDocument().QuerySelector(AtomicString("dialog")));
+  auto* permission_element = To<HTMLCapabilityElementBase>(
+      GetDocument().QuerySelector(AtomicString("usermedia")));
+
+  // Open the dialog programmatically without user activation.
+  dialog->showModal(ASSERT_NO_EXCEPTION);
+  EXPECT_TRUE(dialog->IsOpenAndActive());
+  EXPECT_NE(permission_element, GetDocument().FocusedElement());
+}
+
 class HTMLCapabilityElementBaseClickingEnabledTest
     : public HTMLCapabilityElementBaseTest {
  public:
@@ -709,6 +832,7 @@ class HTMLCapabilityElementBaseSimTest : public SimTest {
  protected:
   void SetUp() override {
     SimTest::SetUp();
+    GetDocument().GetSettings()->SetDefaultFontSize(12);
     MainFrame().GetFrame()->GetBrowserInterfaceBroker().SetBinderForTesting(
         PermissionService::Name_,
         blink::BindRepeating(
@@ -743,6 +867,21 @@ class HTMLCapabilityElementBaseSimTest : public SimTest {
       permission_element->setAttribute(html_names::kTypeAttr,
                                        AtomicString(permission));
     }
+    document.body()->AppendChild(permission_element);
+    document.UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+    GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+    return permission_element;
+  }
+
+  HTMLCapabilityElementBase* CreatePrefixedPermissionElement(
+      Document& document,
+      const char* local_name,
+      const char* prefix = "x") {
+    auto* permission_element =
+        To<HTMLCapabilityElementBase>(document.createElementNS(
+            html_names::xhtmlNamespaceURI,
+            AtomicString(String(prefix) + ":" + local_name),
+            ASSERT_NO_EXCEPTION));
     document.body()->AppendChild(permission_element);
     document.UpdateStyleAndLayout(DocumentUpdateReason::kTest);
     GetDocument().View()->UpdateAllLifecyclePhasesForTest();
@@ -795,6 +934,42 @@ TEST_F(HTMLCapabilityElementBaseSimTest, InitializeGrantedText) {
     EXPECT_NE(0, rect->width());
     EXPECT_NE(0, rect->height());
   }
+}
+
+TEST_F(HTMLCapabilityElementBaseSimTest,
+       ContainIntrinsicSizeDoesNotAffectWidthBounds) {
+  SimRequest resource("https://example.test", "text/html");
+  LoadURL("https://example.test");
+  resource.Complete(R"(
+    <body>
+    </body>
+  )");
+  constexpr char kBaseStyle[] =
+      "border: none; color: black; background-color: white;";
+  auto* control = CreatePermissionElement(GetDocument(), "geolocation");
+  control->setAttribute(html_names::kStyleAttr, AtomicString(kBaseStyle));
+  auto* element = CreatePermissionElement(GetDocument(), "geolocation");
+  element->setAttribute(
+      html_names::kStyleAttr,
+      AtomicString(String(kBaseStyle) +
+                   "container-type: size; contain-intrinsic-size: 700px 100px;"
+                   "min-width: 700px;"));
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  const ComputedStyle* style = element->GetComputedStyle();
+  ASSERT_TRUE(style);
+  EXPECT_FALSE(style->IsContainerForSizeContainerQueries());
+  EXPECT_TRUE(style->ContainIntrinsicWidth().IsNoOp());
+  EXPECT_TRUE(style->ContainIntrinsicHeight().IsNoOp());
+
+  DOMRect* control_rect = control->GetBoundingClientRect();
+  DOMRect* element_rect = element->GetBoundingClientRect();
+  EXPECT_GT(control_rect->width(), 0);
+  // Without a distinct border the element's width is bounded by 3x the
+  // intrinsic content width, which `contain-intrinsic-width` should not be
+  // able to override.
+  EXPECT_LE(element_rect->width(), 3 * control_rect->width());
 }
 
 TEST_F(HTMLCapabilityElementBaseSimTest, BlockedByPermissionsPolicy) {
@@ -900,13 +1075,23 @@ TEST_F(HTMLCapabilityElementBaseSimTest, EnableClickingAfterDelay) {
 TEST_F(HTMLCapabilityElementBaseSimTest, InvalidDisplayStyleElement) {
   auto* permission_element = CreatePermissionElement(GetDocument(), "camera");
   DeferredChecker checker(permission_element);
-  permission_element->setAttribute(
-      html_names::kStyleAttr,
-      AtomicString("display: contents; position: absolute;"));
-  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
-  checker.CheckClickingEnabled(/*enabled=*/false);
-  checker.CheckClickingEnabledAfterDelay(kDefaultTimeout,
-                                         /*expected_enabled=*/false);
+  for (const String invalid_display :
+       {"contents", "inline", "list-item", "inline list-item",
+        "flow-root list-item", "inline flow-root list-item", "ruby",
+        "block ruby", "ruby-text"}) {
+    SCOPED_TRACE(invalid_display);
+    permission_element->setAttribute(
+        html_names::kStyleAttr,
+        AtomicString("display: " + invalid_display + ";"));
+    GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+    EXPECT_EQ(permission_element->GetPseudoElement(kPseudoIdMarker), nullptr);
+    checker.CheckClickingEnabled(/*enabled=*/false);
+    checker.CheckClickingEnabledAfterDelay(kDefaultTimeout,
+                                           /*expected_enabled=*/false);
+  }
+
+  EXPECT_FALSE(
+      permission_element->CanGeneratePseudoElement(kPseudoIdMarker));
 
   permission_element->setAttribute(
       html_names::kStyleAttr,
@@ -976,6 +1161,59 @@ TEST_F(HTMLCapabilityElementBaseSimTest, VisitedLinkIgnoresVisitedStyles) {
             style->VisitedDependentColor(GetCSSPropertyColor()));
   EXPECT_EQ(Color::kWhite,
             style->VisitedDependentColor(GetCSSPropertyBackgroundColor()));
+}
+
+TEST_F(HTMLCapabilityElementBaseSimTest, InheritedVerticalWritingModeIsReset) {
+  // Properties that are not on the allow-list can still be inherited from a
+  // parent element. Verify that an inherited vertical writing-mode is reset so
+  // that the size constraints, which assume a horizontal inline axis, keep the
+  // text inside the element's bounds.
+  GetDocument().body()->setAttribute(
+      html_names::kStyleAttr,
+      AtomicString("writing-mode: vertical-rl; text-orientation: upright;"));
+  auto* permission_element = CreatePermissionElement(GetDocument(), "camera");
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+
+  const ComputedStyle* style = permission_element->GetComputedStyle();
+  ASSERT_TRUE(style);
+  EXPECT_EQ(WritingMode::kHorizontalTb, style->GetWritingMode());
+  EXPECT_EQ(ETextOrientation::kMixed, style->GetTextOrientation());
+  EXPECT_EQ(FontOrientation::kHorizontal,
+            style->GetFontDescription().Orientation());
+
+  auto* text_span =
+      permission_element->permission_text_span_for_testing().Get();
+  ASSERT_TRUE(text_span);
+  gfx::Rect element_rect =
+      permission_element->GetBoundingClientRect()->ToEnclosingRect();
+  gfx::Rect text_rect = text_span->GetBoundingClientRect()->ToEnclosingRect();
+  EXPECT_TRUE(element_rect.Contains(text_rect))
+      << "element=" << element_rect.ToString()
+      << " text=" << text_rect.ToString();
+}
+
+TEST_F(HTMLCapabilityElementBaseSimTest, InheritedSVGMarkersAreReset) {
+  SimRequest main_resource("https://example.test/", "text/html");
+  LoadURL("https://example.test/");
+  main_resource.Complete(R"HTML(
+    <body>
+      <div id="container" style="marker-start: url(#m1); marker-mid: url(#m2); marker-end: url(#m3);">
+        <usermedia id="camera" type="camera"></usermedia>
+      </div>
+    </body>
+  )HTML");
+
+  Compositor().BeginFrame();
+  auto* permission_element = To<HTMLCapabilityElementBase>(
+      GetDocument().QuerySelector(AtomicString("usermedia")));
+  ASSERT_TRUE(permission_element);
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+
+  const ComputedStyle* style = permission_element->GetComputedStyle();
+  ASSERT_TRUE(style);
+  EXPECT_EQ(nullptr, style->MarkerStartResource());
+  EXPECT_EQ(nullptr, style->MarkerMidResource());
+  EXPECT_EQ(nullptr, style->MarkerEndResource());
 }
 
 TEST_F(HTMLCapabilityElementBaseSimTest, FontSizeCanDisableElement) {
@@ -1267,42 +1505,6 @@ TEST_F(HTMLCapabilityElementBaseDispatchValidationEventTest,
   EXPECT_TRUE(permission_element->isValid());
 }
 
-class HTMLCapabilityElementBaseFencedFrameTest
-    : public HTMLCapabilityElementBaseSimTest {
- public:
-  HTMLCapabilityElementBaseFencedFrameTest() {
-    scoped_feature_list_.InitAndEnableFeatureWithParameters(
-        blink::features::kFencedFrames, {{"implementation_type", "mparch"}});
-  }
-
-  ~HTMLCapabilityElementBaseFencedFrameTest() override = default;
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(HTMLCapabilityElementBaseFencedFrameTest, NotAllowedInFencedFrame) {
-  InitializeFencedFrameRoot(
-      blink::FencedFrame::DeprecatedFencedFrameMode::kDefault);
-  SimRequest resource("https://example.test", "text/html");
-  LoadURL("https://example.test");
-  resource.Complete(R"(
-    <body>
-    </body>
-  )");
-
-  for (const char* permission : {"camera", "microphone", "geolocation"}) {
-    auto* permission_element = CreatePermissionElement(
-        *MainFrame().GetFrame()->GetDocument(), permission);
-    // We need this call to establish binding to the remote permission
-    // service, otherwise the next testing binder will fail.
-    permission_element->GetPermissionService();
-    permission_service()->set_pepc_registered_callback(
-        BindOnce(&NotReachedForPEPCRegistered));
-    base::RunLoop().RunUntilIdle();
-  }
-}
-
 class HTMLInstallElementSimTest : public HTMLCapabilityElementBaseSimTest {
  public:
   HTMLInstallElementSimTest() = default;
@@ -1428,6 +1630,186 @@ TEST_F(HTMLInstallElementSimTest, InstallNotAllowedInSandboxedMainDocument) {
   EXPECT_EQ(install_element->invalidReason(), "illegal_sandbox");
 
   permission_service()->set_pepc_registered_callback(base::NullCallback());
+}
+
+TEST_F(HTMLInstallElementSimTest,
+       PrefixedInstallNotAllowedInSameOriginSubframe) {
+  SimRequest main_resource("https://example.test", "text/html");
+  LoadURL("https://example.test");
+  SimRequest iframe_resource("https://example.test/foo.html", "text/html");
+  main_resource.Complete(R"(
+    <body>
+      <iframe src='https://example.test/foo.html'
+        allow="web-app-installation *">
+      </iframe>
+    </body>
+  )");
+  iframe_resource.Finish();
+
+  auto* child_frame = To<WebLocalFrameImpl>(MainFrame().FirstChild());
+  auto* child_doc = child_frame->GetFrame()->GetDocument();
+
+  auto* install_element =
+      CreatePrefixedPermissionElement(*child_doc, "install");
+  // PEPC registration should NOT be called for prefixed <install> in subframes.
+  permission_service()->set_pepc_registered_callback(
+      BindOnce(&NotReachedForPEPCRegistered));
+
+  // The element should NOT be valid, with reason "illegal_subframe".
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return !install_element->isValid(); }));
+  EXPECT_EQ(install_element->invalidReason(), "illegal_subframe");
+
+  permission_service()->set_pepc_registered_callback(base::NullCallback());
+}
+
+TEST_F(HTMLInstallElementSimTest,
+       PrefixedInstallNotAllowedInCrossOriginSubframe) {
+  SimRequest::Params params;
+  params.response_http_headers = {
+      {"content-security-policy",
+       "frame-ancestors 'self' https://example.test"}};
+  SimRequest main_resource("https://example.test", "text/html");
+  LoadURL("https://example.test");
+  SimRequest iframe_resource("https://cross-example.test/foo.html", "text/html",
+                             params);
+  main_resource.Complete(R"(
+    <body>
+      <iframe src='https://cross-example.test/foo.html'
+        allow="web-app-installation *">
+      </iframe>
+    </body>
+  )");
+  iframe_resource.Finish();
+
+  auto* child_frame = To<WebLocalFrameImpl>(MainFrame().FirstChild());
+  auto* child_doc = child_frame->GetFrame()->GetDocument();
+
+  auto* install_element =
+      CreatePrefixedPermissionElement(*child_doc, "install");
+  // PEPC registration should NOT be called for prefixed <install> in subframes.
+  permission_service()->set_pepc_registered_callback(
+      BindOnce(&NotReachedForPEPCRegistered));
+
+  // The element should NOT be valid, with reason "illegal_subframe".
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return !install_element->isValid(); }));
+  EXPECT_EQ(install_element->invalidReason(), "illegal_subframe");
+
+  permission_service()->set_pepc_registered_callback(base::NullCallback());
+}
+
+TEST_F(HTMLInstallElementSimTest, PrefixedInstallNotAllowedInSandboxedIframe) {
+  SimRequest main_resource("https://example.test", "text/html");
+  LoadURL("https://example.test");
+  SimRequest iframe_resource("https://example.test/foo.html", "text/html");
+  main_resource.Complete(R"(
+    <body>
+      <iframe src='https://example.test/foo.html'
+        sandbox="allow-scripts allow-same-origin"
+        allow="web-app-installation *">
+      </iframe>
+    </body>
+  )");
+  iframe_resource.Finish();
+
+  auto* child_frame = To<WebLocalFrameImpl>(MainFrame().FirstChild());
+  auto* child_doc = child_frame->GetFrame()->GetDocument();
+
+  auto* install_element =
+      CreatePrefixedPermissionElement(*child_doc, "install");
+  // PEPC registration should NOT be called for prefixed <install> in sandboxed
+  // iframes.
+  permission_service()->set_pepc_registered_callback(
+      BindOnce(&NotReachedForPEPCRegistered));
+
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return !install_element->isValid(); }));
+  EXPECT_EQ(install_element->invalidReason(), "illegal_sandbox");
+
+  permission_service()->set_pepc_registered_callback(base::NullCallback());
+}
+
+TEST_F(HTMLInstallElementSimTest,
+       PrefixedInstallNotAllowedInSandboxedMainDocument) {
+  SimRequest::Params params;
+  params.response_http_headers = {
+      {"content-security-policy", "sandbox allow-same-origin allow-scripts"}};
+  SimRequest main_resource("https://example.test", "text/html", params);
+  LoadURL("https://example.test");
+  main_resource.Complete(R"(
+    <body>
+    </body>
+  )");
+
+  auto* install_element =
+      CreatePrefixedPermissionElement(GetDocument(), "install");
+  // PEPC registration should NOT be called for prefixed <install> in sandboxed
+  // documents.
+  permission_service()->set_pepc_registered_callback(
+      BindOnce(&NotReachedForPEPCRegistered));
+
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return !install_element->isValid(); }));
+  EXPECT_EQ(install_element->invalidReason(), "illegal_sandbox");
+
+  permission_service()->set_pepc_registered_callback(base::NullCallback());
+}
+
+TEST_F(HTMLInstallElementSimTest, PrefixedInstallAllowedInMainDocument) {
+  SimRequest main_resource("https://example.test", "text/html");
+  LoadURL("https://example.test");
+  main_resource.Complete(R"(
+    <body>
+    </body>
+  )");
+
+  auto* install_element =
+      CreatePrefixedPermissionElement(GetDocument(), "install");
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return install_element->isValid(); }));
+  EXPECT_TRUE(install_element->invalidReason().empty());
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kHTMLInstallElement));
+}
+
+TEST_F(HTMLCapabilityElementBaseSimTest,
+       PrefixedCapabilityElementsUseCounters) {
+  SimRequest main_resource("https://example.test", "text/html");
+  LoadURL("https://example.test");
+  main_resource.Complete(R"(
+    <body>
+    </body>
+  )");
+
+  struct TestCase {
+    const char* tag;
+    WebFeature feature;
+  };
+  const TestCase kTestCases[] = {
+      {"geolocation", WebFeature::kHTMLGeolocationElement},
+      {"camera", WebFeature::kHTMLCameraElement},
+      {"microphone", WebFeature::kHTMLMicrophoneElement},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    auto* element =
+        CreatePrefixedPermissionElement(GetDocument(), test_case.tag);
+    EXPECT_TRUE(base::test::RunUntil([&]() { return element->isValid(); }));
+    EXPECT_TRUE(element->invalidReason().empty());
+    EXPECT_TRUE(GetDocument().IsUseCounted(test_case.feature));
+  }
+
+  // Also test usermedia element with type attribute.
+  auto* usermedia_element =
+      CreatePrefixedPermissionElement(GetDocument(), "usermedia");
+  usermedia_element->setAttribute(html_names::kTypeAttr,
+                                  AtomicString("camera"));
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return usermedia_element->isValid(); }));
+  EXPECT_TRUE(usermedia_element->invalidReason().empty());
+  EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kHTMLUserMediaElement));
 }
 
 TEST_F(HTMLCapabilityElementBaseSimTest, BlockedByMissingFrameAncestorsCSP) {
@@ -1774,6 +2156,51 @@ TEST_F(HTMLCapabilityElementBaseIntersectionTest,
 }
 
 TEST_F(HTMLCapabilityElementBaseIntersectionTest,
+       IntersectionVisibleAfterRecentAttachedIntervalExpired) {
+  GetDocument().GetSettings()->SetDefaultFontSize(12);
+  SimRequest main_resource("https://example.test/", "text/html");
+  LoadURL("https://example.test/");
+  main_resource.Complete(R"HTML(
+    <div id='cover' style='position: fixed; left: 0px; top: 0px; width: 100px; height: 100px;'></div>
+    <usermedia id='camera' type='camera'></usermedia>
+  )HTML");
+
+  Compositor().BeginFrame();
+  auto* permission_element = To<HTMLCapabilityElementBase>(
+      GetDocument().QuerySelector(AtomicString("usermedia")));
+  auto* div =
+      To<HTMLDivElement>(GetDocument().QuerySelector(AtomicString("div")));
+  WaitForPermissionElementRegistration(permission_element);
+  WaitForIntersectionVisibilityChanged(
+      permission_element,
+      HTMLCapabilityElementBase::IntersectionVisibility::kOccludedOrDistorted);
+
+  // Repurpose the expire timer for another temporary reason while occluded so
+  // `kRecentlyAttachedToLayoutTree` expires while the element remains occluded,
+  // without calling `IsClickingEnabled()`.
+  permission_element->DisableClickingTemporarily(
+      HTMLCapabilityElementBase::DisableReason::
+          kIntersectionWithViewportChanged,
+      kDefaultTimeout);
+  DeferredChecker checker(permission_element, &MainFrame());
+  checker.CheckNoNewMessagesAfterDelay(kLongerThanDefaultTimeout);
+  EXPECT_FALSE(permission_element->isValid());
+
+  // Un-occluding the element after `kRecentlyAttachedToLayoutTree` has expired
+  // must still enforce `kDefaultDisableTimeout` before clicking is enabled.
+  div->SetInlineStyleProperty(CSSPropertyID::kTop, "100px");
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  WaitForIntersectionVisibilityChanged(
+      permission_element,
+      HTMLCapabilityElementBase::IntersectionVisibility::kFullyVisible);
+  EXPECT_FALSE(permission_element->isValid());
+  EXPECT_FALSE(permission_element->IsClickingEnabled());
+  checker.CheckClickingEnabledAfterDelay(kDefaultTimeout,
+                                         /*expected_enabled=*/true);
+  EXPECT_TRUE(permission_element->isValid());
+}
+
+TEST_F(HTMLCapabilityElementBaseIntersectionTest,
        IntersectionChangedDisableEnableDisable) {
   GetDocument().GetSettings()->SetDefaultFontSize(12);
   SimRequest main_resource("https://example.test/", "text/html");
@@ -1929,6 +2356,61 @@ TEST_F(HTMLCapabilityElementBaseIntersectionTest, MAYBE_ContainerDivClipPath) {
           kOutOfViewportOrClipped);
 }
 
+#if BUILDFLAG(IS_LINUX) && defined(THREAD_SANITIZER)
+#define MAYBE_ContainerDivSingularTransform \
+  DISABLED_ContainerDivSingularTransform
+#else
+#define MAYBE_ContainerDivSingularTransform ContainerDivSingularTransform
+#endif
+TEST_F(HTMLCapabilityElementBaseIntersectionTest,
+       MAYBE_ContainerDivSingularTransform) {
+  for (const char* transform :
+       {"scaleX(0)", "scaleY(0)", "scale(0)", "rotateY(90deg)"}) {
+    SCOPED_TRACE(transform);
+    TestContainerStyleAffectsVisibility(
+        CSSPropertyID::kTransform, transform,
+        HTMLCapabilityElementBase::IntersectionVisibility::
+            kOccludedOrDistorted);
+  }
+
+  // Also verify that an element initially attached inside a container with a
+  // singular transform does not become valid after the attach cooldown expires.
+  SimRequest main_resource("https://example.test/", "text/html");
+  LoadURL("https://example.test/");
+  main_resource.Complete(R"HTML(
+    <div id='container' style='transform: scaleX(0);'>
+      <geolocation id='geo'></geolocation>
+    </div>
+  )HTML");
+
+  Compositor().BeginFrame();
+  auto* permission_element = To<HTMLCapabilityElementBase>(
+      GetDocument().QuerySelector(AtomicString("geolocation")));
+  auto* div =
+      To<HTMLDivElement>(GetDocument().QuerySelector(AtomicString("div")));
+  WaitForPermissionElementRegistration(permission_element);
+  WaitForIntersectionVisibilityChanged(
+      permission_element,
+      HTMLCapabilityElementBase::IntersectionVisibility::kOccludedOrDistorted);
+
+  DeferredChecker checker(permission_element);
+  checker.CheckClickingEnabledAfterDelay(kDefaultTimeout,
+                                         /*expected_enabled=*/false);
+  EXPECT_FALSE(permission_element->isValid());
+  EXPECT_EQ(permission_element->invalidReason(),
+            "intersection_occluded_or_distorted");
+
+  // Removing the singular transform restores visibility after the cooldown.
+  div->RemoveInlineStyleProperty(CSSPropertyID::kTransform);
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  WaitForIntersectionVisibilityChanged(
+      permission_element,
+      HTMLCapabilityElementBase::IntersectionVisibility::kFullyVisible);
+  checker.CheckClickingEnabledAfterDelay(kDefaultTimeout,
+                                         /*expected_enabled=*/true);
+  EXPECT_TRUE(permission_element->isValid());
+}
+
 class HTMLCapabilityElementBaseLayoutChangeTest
     : public HTMLCapabilityElementBaseSimTest {
  public:
@@ -2069,6 +2551,34 @@ TEST_F(HTMLCapabilityElementBaseLayoutChangeTest,
 }
 
 TEST_F(HTMLCapabilityElementBaseLayoutChangeTest,
+       InvalidatePEPCAfterContainerLayoutMoveBeforePaint) {
+  SimRequest main_resource("https://example.test/", "text/html");
+  LoadURL("https://example.test/");
+  main_resource.Complete(R"HTML(
+    <div id='container' style='position: absolute; top: 0px; left: 0px;'>
+      <usermedia id='camera' type='camera'></usermedia>
+    </div>
+    )HTML");
+  Compositor().BeginFrame();
+  auto* permission_element =
+      CheckAndQueryPermissionElement(AtomicString("usermedia"));
+  // Moving the positioned container repositions the element via layout only,
+  // without recomputing the element's own style. The move must still be
+  // detected when the lifecycle is advanced only to pre-paint, which is what
+  // input hit-testing does.
+  auto* div =
+      To<HTMLDivElement>(GetDocument().QuerySelector(AtomicString("div")));
+  div->SetInlineStyleProperty(CSSPropertyID::kTop, "100px");
+  div->SetInlineStyleProperty(CSSPropertyID::kLeft, "100px");
+  GetDocument().View()->UpdateAllLifecyclePhasesExceptPaint(
+      DocumentUpdateReason::kTest);
+  EXPECT_FALSE(permission_element->IsClickingEnabled());
+  DeferredChecker checker(permission_element);
+  checker.CheckClickingEnabledAfterDelay(kDefaultTimeout,
+                                         /*expected_enabled*/ true);
+}
+
+TEST_F(HTMLCapabilityElementBaseLayoutChangeTest,
        InvalidatePEPCLayoutInAnimationFrameCallback) {
   SimRequest main_resource("https://example.test/", "text/html");
   LoadURL("https://example.test/");
@@ -2090,9 +2600,9 @@ TEST_F(HTMLCapabilityElementBaseLayoutChangeTest,
   ClassicScript::CreateUnspecifiedScript(
       "window.requestAnimationFrame(function() {\n"
       "  var camera = document.getElementById('camera');\n"
-      "  camera.style.width = '10px';\n"
+      "  camera.style.height = '1em';\n"
       "  camera.getBoundingClientRect();\n"
-      "  camera.style.width = '40px';\n"
+      "  camera.style.height = '3em';\n"
       "\n"
       "});\n")
       ->RunScript(&Window());

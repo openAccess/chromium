@@ -34,7 +34,9 @@ source_set("impl") {
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/dialogs:browser_dialogs",
     "//chrome/browser/ui/hats",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/browser/ui/views/frame:toolbar_button_provider",
+    "//chrome/browser/ui/views/frame:top_container_view",
     "//chrome/browser/ui/views/toolbar",
     "//chrome/common:chrome_features",
     "//components/constrained_window",
@@ -48,5 +50,34 @@ source_set("impl") {
     "//ui/base/metadata",
     "//ui/views",
     "//ui/web_dialogs",
+    "//url",
+  ]
+}
+
+source_set("browser_tests") {
+  testonly = true
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  sources = [ "hats_browsertest.cc" ]
+
+  deps = [
+    ":hats",
+    "//chrome/browser/devtools:test_support",
+    "//chrome/browser/ui/hats:test_support",
+    "//chrome/browser/ui/views/frame:browser_view_header",
+    "//chrome/browser/ui/zoom",
+    "//chrome/test:test_support",
+    "//content/test:test_support",
+    "//testing/gtest",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "hats_next_web_dialog_unittest.cc" ]
+  deps = [
+    ":hats",
+    "//chrome/test:test_support",
+    "//testing/gtest",
   ]
 }

@@ -35,6 +35,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/time/time.h"
@@ -469,10 +470,10 @@ TEST_F(BitmapImageTest, pngHasColorProfile) {
 
 TEST_F(BitmapImageTest, pngHasInvalidColorProfile) {
   LoadImage("png-zero-gamma-color-profile.png");
-  auto actualBitmap = GenerateBitmap(0u);
-  auto expectedBitmap =
+  auto actual_bitmap = GenerateBitmap(0u);
+  auto expected_bitmap =
       GenerateBitmapForImage("png-zero-gamma-color-profile-ref.png");
-  VerifyBitmap(actualBitmap, expectedBitmap);
+  VerifyBitmap(actual_bitmap, expected_bitmap);
 }
 
 TEST_F(BitmapImageTest, webpHasColorProfile) {
@@ -577,6 +578,7 @@ TEST_F(BitmapImageTest, ImageForDefaultFrame_MultiFrame) {
   auto default_image1 = image_->ImageForDefaultFrame();
   auto default_image2 = image_->ImageForDefaultFrame();
   EXPECT_NE(default_image1, default_image2);
+  EXPECT_EQ(default_image1->Orientation(), image_->Orientation());
 
   // But the PaintImage should be the same.
   auto paint_image1 = default_image1->PaintImageForCurrentFrame();
@@ -638,7 +640,7 @@ TEST_F(BitmapImageTest, GifDecoderMultiThreaded) {
   };
   for (int i = 0; i < 4; ++i) {
     decodes[i].thread =
-        std::make_unique<base::Thread>("Decode" + std::to_string(i));
+        std::make_unique<base::Thread>("Decode" + base::NumberToString(i));
     decodes[i].client_id = cc::PaintImage::GetNextGeneratorClientId();
 
     decodes[i].thread->StartAndWaitForTesting();

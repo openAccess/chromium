@@ -7,6 +7,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/observer_list.h"
 #include "ui/display/display_observer.h"
+#include "ui/gfx/display_color_spaces.h"
 
 namespace display {
 
@@ -37,7 +38,7 @@ void DisplayList::AddOrUpdateDisplay(const Display& display, Type type) {
     AddDisplay(display, type);
   else
     UpdateDisplay(display, type);
-  DCHECK(IsValid());
+  CHECK(IsValid(), base::NotFatalUntil::M163);
 }
 
 uint32_t DisplayList::UpdateDisplay(const Display& display) {
@@ -104,21 +105,22 @@ uint32_t DisplayList::UpdateDisplay(const Display& display, Type type) {
   }
   for (DisplayObserver& observer : observers_)
     observer.OnDisplayMetricsChanged(*local_display, changed_values);
-  DCHECK(IsValid());
+  CHECK(IsValid(), base::NotFatalUntil::M163);
   return changed_values;
 }
 
 void DisplayList::AddDisplay(const Display& display, Type type) {
-  DCHECK(displays_.end() == FindDisplayById(display.id()));
-  DCHECK_NE(display.id(), kInvalidDisplayId);
+  CHECK(displays_.end() == FindDisplayById(display.id()),
+        base::NotFatalUntil::M163);
+  CHECK_NE(display.id(), kInvalidDisplayId, base::NotFatalUntil::M163);
   // The first display must be primary.
-  DCHECK(type == Type::PRIMARY || !displays_.empty());
+  CHECK(type == Type::PRIMARY || !displays_.empty(), base::NotFatalUntil::M163);
   displays_.push_back(display);
   if (type == Type::PRIMARY)
     primary_id_ = display.id();
   for (DisplayObserver& observer : observers_)
     observer.OnDisplayAdded(display);
-  DCHECK(IsValid());
+  CHECK(IsValid(), base::NotFatalUntil::M163);
 }
 
 void DisplayList::RemoveDisplay(int64_t id) {
@@ -127,7 +129,7 @@ void DisplayList::RemoveDisplay(int64_t id) {
   if (id == primary_id_) {
     // The primary display can only be removed if it is the last display.
     // Users must choose a new primary before removing an old primary display.
-    DCHECK_EQ(1u, displays_.size());
+    CHECK_EQ(1u, displays_.size(), base::NotFatalUntil::M163);
     primary_id_ = kInvalidDisplayId;
   }
   const Display display = *iter;
@@ -135,7 +137,7 @@ void DisplayList::RemoveDisplay(int64_t id) {
   for (DisplayObserver& observer : observers_) {
     observer.OnDisplaysRemoved({display});
   }
-  DCHECK(IsValid());
+  CHECK(IsValid(), base::NotFatalUntil::M163);
 }
 
 bool DisplayList::IsValid() const {

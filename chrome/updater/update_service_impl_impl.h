@@ -5,9 +5,11 @@
 #ifndef CHROME_UPDATER_UPDATE_SERVICE_IMPL_IMPL_H_
 #define CHROME_UPDATER_UPDATE_SERVICE_IMPL_IMPL_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -92,8 +94,17 @@ class UpdateServiceImplImpl : public UpdateService {
   void GetPoliciesJson(
       base::OnceCallback<void(const std::string&)> callback) override;
 
+  // Returns true if `Install` or `RunInstaller` is in progress for `app_id`.
+  bool IsInstalling(const std::string& app_id) const;
+
  private:
   ~UpdateServiceImplImpl() override;
+
+  // Tracks an install of `app_id` until `callback` runs.
+  base::OnceCallback<void(Result)> TrackInstall(
+      const std::string& app_id,
+      base::OnceCallback<void(Result)> callback);
+  Result InstallDone(std::multiset<std::string>::iterator pos, Result result);
 
   // Runs the task at the head of `tasks_`, if any.
   void TaskStart();
@@ -200,6 +211,10 @@ class UpdateServiceImplImpl : public UpdateService {
 
   // Cancellation callbacks, keyed by appid.
   std::multimap<std::string, base::RepeatingClosure> cancellation_callbacks_;
+
+  // Lowercase IDs of apps being installed.
+  std::multiset<std::string> installing_app_ids_
+      GUARDED_BY_CONTEXT(sequence_checker_);
 };
 
 namespace internal {

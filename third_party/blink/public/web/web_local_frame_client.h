@@ -57,13 +57,13 @@
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/mojom/browser_interface_broker.mojom-shared.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-forward.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/blocked_navigation_types.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/triggering_event_info.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/user_activation_update_types.mojom-shared.h"
 #include "third_party/blink/public/mojom/loader/same_document_navigation_type.mojom-shared.h"
 #include "third_party/blink/public/mojom/media/renderer_audio_input_stream_factory.mojom-shared.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-shared.h"
 #include "third_party/blink/public/platform/child_url_loader_factory_bundle.h"
 #include "third_party/blink/public/platform/cross_variant_mojo_util.h"
 #include "third_party/blink/public/platform/modules/service_worker/web_service_worker_provider.h"
@@ -77,6 +77,7 @@
 #include "third_party/blink/public/platform/web_file_system_type.h"
 #include "third_party/blink/public/platform/web_media_player.h"
 #include "third_party/blink/public/platform/web_prescient_networking.h"
+#include "third_party/blink/public/platform/web_private_ptr.h"
 #include "third_party/blink/public/platform/web_set_sink_id_callbacks.h"
 #include "third_party/blink/public/platform/web_source_location.h"
 #include "third_party/blink/public/platform/web_url_error.h"
@@ -130,6 +131,7 @@ class WebDedicatedWorkerHostFactoryClient;
 class WebDocumentLoader;
 class WebEncryptedMediaClient;
 class WebLocalFrame;
+class WebLocalFrameImpl;
 class WebMediaPlayer;
 class WebMediaPlayerClient;
 class WebMediaPlayerEncryptedMediaClient;
@@ -274,7 +276,7 @@ class BLINK_EXPORT WebLocalFrameClient {
   using FinishChildFrameCreationFn = base::FunctionRef<void(
       WebLocalFrame*,
       const DocumentToken&,
-      const base::UnguessableToken& initiator_state_token,
+      const InitiatorStateToken& initiator_state_token,
       CrossVariantMojoRemote<mojom::BrowserInterfaceBrokerInterfaceBase>,
       std::unique_ptr<base::UnguessableToken> sandbox_origin_token)>;
   virtual WebLocalFrame* CreateChildFrame(
@@ -289,9 +291,6 @@ class BLINK_EXPORT WebLocalFrameClient {
       FinishChildFrameCreationFn complete_creation) {
     return nullptr;
   }
-
-  // Notification a new fenced frame was created.
-  virtual void DidCreateFencedFrame(const blink::RemoteFrameToken& token) {}
 
   // Called when Blink cannot find a frame with the given name in the frame's
   // browsing instance.  This gives the embedder a chance to return a frame
@@ -629,7 +628,8 @@ class BLINK_EXPORT WebLocalFrameClient {
 
   // A cpu task or tasks completed.  Triggered when at least 100ms of wall time
   // was spent in tasks on the frame.
-  virtual void DidChangeCpuTiming(base::TimeDelta time) {}
+  virtual void DidChangeCpuTiming(base::TimeDelta time,
+                                  base::TimeDelta ad_time) {}
 
   // UseCounter ----------------------------------------------------------
   // Blink exhibited a certain loading behavior that the browser process will
@@ -688,7 +688,7 @@ class BLINK_EXPORT WebLocalFrameClient {
   // Geometry notifications ----------------------------------------------
 
   // The main frame scrolled.
-  virtual void DidChangeScrollOffset() {}
+  virtual void DidChangeScrollOffset(mojom::ScrollType) {}
 
   // MediaStream -----------------------------------------------------
 
@@ -794,6 +794,9 @@ class BLINK_EXPORT WebLocalFrameClient {
   // Specifies whether to disable DOM storage interfaces such as localStorage
   // and sessionStorage.
   virtual bool IsDomStorageDisabled() const { return false; }
+
+  // Specifies whether to disable dedicated workers.
+  virtual bool AreDedicatedWorkersDisabled() const { return false; }
 
   // Returns a scriptable object for the given plugin element. This is used for
   // having an external handler implement certain customized APIs for the
@@ -902,6 +905,15 @@ class BLINK_EXPORT WebLocalFrameClient {
 
   // Returns true if this frame is for the initial WebUI.
   virtual bool IsForInitialWebUI() const { return false; }
+
+#if INSIDE_BLINK
+  void SetImplForOwnership(WebLocalFrameImpl* frame);
+#endif
+
+ private:
+  // Keeps the associated `WebLocalFrameImpl` alive in Oilpan while attached to
+  // this client. Only used for lifetime ownership, not for accessing the frame.
+  WebPrivatePtrForGC<WebLocalFrameImpl> impl_for_ownership_;
 };
 
 }  // namespace blink

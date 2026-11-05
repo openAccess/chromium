@@ -43,8 +43,8 @@ static_library("handlers") {
   ]
 
   public_deps = [
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/upgrade_detector:build_state_observer",
+    "//dbus",
   ]
 
   deps = [
@@ -104,6 +104,7 @@ static_library("handlers") {
 
     # TODO(b/354839582): Use targets having headers included from
     # chrome/browser/ash/policy/handlers/system_proxy_handler.cc.
+    "//chrome/browser/policy",
     "//chromeos/ash/components/dbus/system_proxy:system_proxy_proto",
   ]
 
@@ -170,11 +171,12 @@ source_set("unit_tests") {
     "//chrome/browser/ash/tpm",
     "//chrome/browser/extensions",
     "//chrome/browser/prefs",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/ash/shelf",
     "//chrome/common:chrome_features",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:browser_with_test_window_test",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/dbus",
     "//chromeos/ash/components/dbus/anomaly_detector",
     "//chromeos/ash/components/dbus/chunneld",
@@ -249,6 +251,7 @@ source_set("browser_tests") {
     "//chrome/browser",
     "//chrome/browser:browser_process",
     "//chrome/browser:browser_process_platform_part",
+    "//chrome/browser:global_features",
     "//chrome/browser/ash/app_mode:test_support",
     "//chrome/browser/ash/login",
     "//chrome/browser/ash/login:test_support",
@@ -267,12 +270,12 @@ source_set("browser_tests") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/site_isolation",
     "//chrome/browser/tracing",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/ash/login",
     "//chrome/browser/ui/webui/ash/login",
     "//chrome/common:constants",
     "//chrome/test:test_support",
     "//chrome/test:test_support_ui",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/cryptohome",
     "//chromeos/ash/components/dbus",
     "//chromeos/ash/components/dbus/session_manager",
@@ -313,8 +316,4 @@ source_set("browser_tests") {
     "//ui/base:features",
     "//url",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

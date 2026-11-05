@@ -11,23 +11,22 @@ import type {TabInfo, TabsFromOtherDevicesAppElement} from './app.js';
 // "no screenshots", "screenshots", "screenshot but load failed" cases.
 
 export function getHtml(this: TabsFromOtherDevicesAppElement) {
-  // clang-format off
   return html`<!--_html_template_start_-->
 <div id="container">
-  <cr-toolbar-search-field id="search-input"
-      label="$i18n{searchPrompt}"
+  <cr-toolbar-search-field id="search-input" label="$i18n{searchPrompt}"
       @search-changed="${this.onSearchChanged_}"
       ?hidden="${this.syncedDevices_.length === 0}">
   </cr-toolbar-search-field>
 
-  ${this.syncedDevices_.length === 0 ?
-      html`<div class="empty-message">$i18n{noSyncedResults}</div>` : ''}
+  ${this.syncedDevices_.length === 0 ? html`
+    <div class="empty-message">$i18n{noSyncedResults}</div>
+  ` : ''}
 
-  ${this.searchQuery_ && this.getFilteredTabs_().length === 0 ?
-      html`<div class="empty-message">$i18n{noSearchResults}</div>` : ''}
+  ${this.searchQuery_ && this.getFilteredTabs_().length === 0 ? html`
+    <div class="empty-message">$i18n{noSearchResults}</div>
+  ` : ''}
 
-  ${this.syncedDevices_.length > 0 && !this.searchQuery_ ?
-      html`
+  ${this.syncedDevices_.length > 0 && !this.searchQuery_ ? html`
     <div id="picker-container">
       <cr-button id="picker-button" @click="${this.onDeviceSelectClick_}">
         ${this.getSelectedDeviceName_()}
@@ -36,7 +35,7 @@ export function getHtml(this: TabsFromOtherDevicesAppElement) {
       <cr-action-menu id="deviceMenu">
         ${this.syncedDevices_.map(device => html`
           <button class="dropdown-item" @click="${this.onDeviceItemClick_}"
-                data-tag="${device.tag}">
+              data-tag="${device.tag}">
             ${device.name}
           </button>
         `)}
@@ -47,14 +46,12 @@ export function getHtml(this: TabsFromOtherDevicesAppElement) {
   <div id="tabs" class="${this.showScreenshots_ ? 'grid' : ''}">
     ${this.getFilteredTabs_().map((tab: TabInfo) => html`
       <div class="tab ${this.showScreenshots_ ? 'grid' : ''}"
-          @click="${this.onTabClick_}"
-          @auxclick="${this.onTabAuxclick_}"
-          data-session-tag="${tab.sessionTag}"
-          data-tab-id="${tab.sessionId}">
+          @click="${this.onTabClick_}" @auxclick="${this.onTabAuxclick_}"
+          data-session-tag="${tab.sessionTag}" data-tab-id="${tab.sessionId}">
         <div class="tab-header">
           <div class="tab-favicon-container">
             <div class="tab-favicon"
-                  style="background-image:
+                style="background-image:
                         ${getFaviconForPageURL(tab.url, true)}">
             </div>
           </div>
@@ -63,7 +60,7 @@ export function getHtml(this: TabsFromOtherDevicesAppElement) {
             ${!this.showScreenshots_ ? html`
               <div class="tab-details">
                 <span class="tab-url">${this.getHostname_(tab.url)}</span>
-                <span class="tab-timestamp-separator">&bull;</span>
+                <span class="tab-timestamp-separator">•</span>
                 <span class="tab-timestamp">${tab.timestampDisplayStr}</span>
               </div>
             ` : ''}
@@ -71,7 +68,8 @@ export function getHtml(this: TabsFromOtherDevicesAppElement) {
         </div>
         ${this.showScreenshots_ ? html`
           ${tab.screenshotUrl &&
-              !this.screenshotLoadFailed_(tab.sessionTag, tab.sessionId) ? html`
+                  !this.screenshotLoadFailed_(tab.sessionTag, tab.sessionId) ?
+              html`
             <img class="tab-screenshot" src="${tab.screenshotUrl}"
                 @error="${this.onScreenshotError_}"
                 data-session-tag="${tab.sessionTag}"
@@ -85,5 +83,4 @@ export function getHtml(this: TabsFromOtherDevicesAppElement) {
   </div>
 </div>
 <!--_html_template_end_-->`;
-  // clang-format on
 }

@@ -29,7 +29,7 @@ class TabModelObserver {
   virtual ~TabModelObserver();
 
   // Called when a |tab| is selected.
-  virtual void DidSelectTab(TabAndroid* tab, TabModel::TabSelectionType type);
+  virtual void DidSelectTab(TabAndroid* tab);
 
   // Called before tabs are removed from the TabModel for closure.
   virtual void WillCloseTabs(const std::vector<TabAndroid*>& tabs,
@@ -58,21 +58,17 @@ class TabModelObserver {
                                    bool can_restore,
                                    TabModel::TabClosingSource source);
 
-  // Called before a |tab| is added to the TabModel.
-  virtual void WillAddTab(TabAndroid* tab, TabModel::TabLaunchType type);
-
   // Called after a |tab| has been added to the TabModel.
   virtual void DidAddTab(TabAndroid* tab, TabModel::TabLaunchType type);
 
   // Called after a |tab| has been moved from one position in the TabModel to
   // another.
-  virtual void DidMoveTab(TabAndroid* tab, int new_index, int old_index);
+  virtual void DidMoveTab(TabAndroid* tab);
 
   // Called when tabs are pending closure (ie, the user has just closed it, but
   // it can still be undone). At this point the tabs have been removed from the
   // TabModel.
-  virtual void OnTabClosePending(const std::vector<TabAndroid*>& tabs,
-                                 TabModel::TabClosingSource source);
+  virtual void OnTabClosePending(const std::vector<TabAndroid*>& tabs);
 
   // Called when all |tabs| closure is undone.
   virtual void OnTabCloseUndone(const std::vector<TabAndroid*>& tabs);
@@ -104,7 +100,7 @@ class TabModelObserver {
   virtual void OnTabGroupRemoving(tab_groups::TabGroupId group_id);
 
   // Called after a tab group has been moved to a new position.
-  virtual void OnTabGroupMoved(tab_groups::TabGroupId group_id, int old_index);
+  virtual void OnTabGroupMoved(tab_groups::TabGroupId group_id);
 
   // Called after a tab group's visual data has been changed.
   virtual void OnTabGroupVisualsChanged(tab_groups::TabGroupId group_id);

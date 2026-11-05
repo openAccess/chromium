@@ -175,6 +175,11 @@ PageNode::LoadingState PageNodeImpl::GetLoadingState() const {
   return loading_state_.value();
 }
 
+bool PageNodeImpl::IsUserOrBrowserInitiatedLoad() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return is_user_or_browser_initiated_load_.value();
+}
+
 ukm::SourceId PageNodeImpl::GetUkmSourceID() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return ukm_source_id_.value();
@@ -342,6 +347,13 @@ void PageNodeImpl::SetLoadingState(LoadingState loading_state) {
   loading_state_.SetAndMaybeNotify(this, loading_state);
 }
 
+void PageNodeImpl::SetIsUserOrBrowserInitiatedLoad(
+    bool is_user_or_browser_initiated_load) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  is_user_or_browser_initiated_load_.SetAndMaybeNotify(
+      this, is_user_or_browser_initiated_load);
+}
+
 void PageNodeImpl::SetType(PageType type) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK_NE(type, PageType::kUnknown);
@@ -480,16 +492,11 @@ FrameNodeImpl* PageNodeImpl::embedder_frame_node() const {
 
 FrameNodeImpl* PageNodeImpl::primary_main_frame_node() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (main_frame_nodes_.empty()) {
-    return nullptr;
-  }
-
   for (FrameNodeImpl* frame : main_frame_nodes()) {
     if (frame->IsActive() && !frame->parent_or_outer_document()) {
       return frame;
     }
   }
-
   return nullptr;
 }
 

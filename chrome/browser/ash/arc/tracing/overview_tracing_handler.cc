@@ -30,7 +30,6 @@
 #include "chrome/browser/ash/arc/tracing/arc_tracing_graphics_model.h"
 #include "chrome/browser/ash/arc/tracing/arc_tracing_model.h"
 #include "chrome/browser/ash/arc/tracing/present_frames_tracer.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
@@ -103,7 +102,7 @@ bool ReadNameFromStatus(pid_t pid, pid_t tid, std::string* out_name) {
     }
     std::vector<std::string_view> split_value_str = base::SplitStringPiece(
         value_str, "\t", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-    DCHECK_EQ(2U, split_value_str.size());
+    CHECK_EQ(2U, split_value_str.size(), base::NotFatalUntil::M160);
     *out_name = std::string(split_value_str[1]);
     return true;
   }
@@ -147,7 +146,7 @@ std::unique_ptr<OverviewTracingResult> BuildGraphicsModel(
     const std::string& data,
     std::unique_ptr<OverviewTracingHandler::ActiveTrace> trace,
     const base::FilePath& model_path) {
-  DCHECK(trace);
+  CHECK(trace, base::NotFatalUntil::M160);
 
   if (base::FeatureList::IsEnabled(arc::kSaveRawFilesOnTracing)) {
     const base::FilePath raw_path =
@@ -196,7 +195,7 @@ std::unique_ptr<OverviewTracingResult> BuildGraphicsModel(
   std::string json_content;
   base::JSONWriter::WriteWithOptions(
       model, base::JSONWriter::OPTIONS_PRETTY_PRINT, &json_content);
-  DCHECK(!json_content.empty());
+  CHECK(!json_content.empty(), base::NotFatalUntil::M160);
 
   if (!base::WriteFile(model_path, json_content)) {
     LOG(ERROR) << "Failed serialize model to " << model_path.value() << ".";
@@ -254,7 +253,7 @@ OverviewTracingHandler::OverviewTracingHandler(
     : arc_window_focus_change_(arc_window_focus_change),
       wm_helper_(exo::WMHelper::HasInstance() ? exo::WMHelper::GetInstance()
                                               : nullptr) {
-  DCHECK(wm_helper_);
+  CHECK(wm_helper_, base::NotFatalUntil::M160);
 
   aura::Window* const current_active = wm_helper_->GetActiveWindow();
   if (current_active) {
@@ -312,7 +311,7 @@ void OverviewTracingHandler::OnWindowActivated(ActivationReason reason,
 void OverviewTracingHandler::OnWindowPropertyChanged(aura::Window* window,
                                                      const void* key,
                                                      intptr_t old) {
-  DCHECK_EQ(arc_active_window_, window);
+  CHECK_EQ(arc_active_window_, window, base::NotFatalUntil::M160);
   if (key != aura::client::kAppIconKey) {
     return;
   }
@@ -323,7 +322,7 @@ void OverviewTracingHandler::OnWindowPropertyChanged(aura::Window* window,
 }
 
 void OverviewTracingHandler::OnWindowDestroying(aura::Window* window) {
-  DCHECK_EQ(arc_active_window_, window);
+  CHECK_EQ(arc_active_window_, window, base::NotFatalUntil::M160);
   DiscardActiveArcWindow();
 }
 
@@ -332,7 +331,7 @@ void OverviewTracingHandler::OnSurfaceDestroying(exo::Surface* surface) {
 }
 
 void OverviewTracingHandler::OnCommit(exo::Surface* surface) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   if (!active_trace_) {
     return;
   }
@@ -342,8 +341,8 @@ void OverviewTracingHandler::OnCommit(exo::Surface* surface) {
 }
 
 void OverviewTracingHandler::UpdateActiveArcWindowInfo() {
-  DCHECK(arc_active_window_);
-  DCHECK(active_trace_);
+  CHECK(arc_active_window_, base::NotFatalUntil::M160);
+  CHECK(active_trace_, base::NotFatalUntil::M160);
 
   active_trace_->task_title =
       base::UTF16ToASCII(arc_active_window_->GetTitle());

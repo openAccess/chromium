@@ -13,7 +13,6 @@
 #include "base/test/task_environment.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
-#include "google_apis/gaia/fake_device_management_error_details.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -54,7 +53,7 @@ TEST(SigninErrorControllerTest, SingleAccount) {
   EXPECT_CALL(observer, OnErrorChanged()).Times(0);
 
   CoreAccountId test_account_id =
-      identity_test_env.MakeAccountAvailable(kTestEmail).account_id;
+      identity_test_env.MakeAccountAvailable(kTestEmail).GetAccountId();
   ::testing::Mock::VerifyAndClearExpectations(&observer);
 
   GoogleServiceAuthError error1 =
@@ -90,9 +89,9 @@ TEST(SigninErrorControllerTest, AccountTransitionAnyAccount) {
   signin::IdentityTestEnvironment identity_test_env;
 
   CoreAccountId test_account_id =
-      identity_test_env.MakeAccountAvailable(kTestEmail).account_id;
+      identity_test_env.MakeAccountAvailable(kTestEmail).GetAccountId();
   CoreAccountId other_test_account_id =
-      identity_test_env.MakeAccountAvailable(kOtherTestEmail).account_id;
+      identity_test_env.MakeAccountAvailable(kOtherTestEmail).GetAccountId();
   SigninErrorController error_controller(
       SigninErrorController::AccountMode::ANY_ACCOUNT,
       identity_test_env.identity_manager());
@@ -123,7 +122,7 @@ TEST(SigninErrorControllerTest, UnconsentedPrimaryAccount) {
       identity_test_env
           .MakePrimaryAccountAvailable(kTestEmail,
                                        signin::ConsentLevel::kSignin)
-          .account_id;
+          .GetAccountId();
   SigninErrorController error_controller(
       SigninErrorController::AccountMode::ANY_ACCOUNT,
       identity_test_env.identity_manager());
@@ -147,7 +146,7 @@ TEST(SigninErrorControllerTest, AuthStatusEnumerateAllErrors) {
   signin::IdentityTestEnvironment identity_test_env;
 
   CoreAccountId test_account_id =
-      identity_test_env.MakeAccountAvailable(kTestEmail).account_id;
+      identity_test_env.MakeAccountAvailable(kTestEmail).GetAccountId();
   SigninErrorController error_controller(
       SigninErrorController::AccountMode::ANY_ACCOUNT,
       identity_test_env.identity_manager());
@@ -201,9 +200,9 @@ TEST(SigninErrorControllerTest, AuthStatusChange) {
   signin::IdentityTestEnvironment identity_test_env;
 
   CoreAccountId test_account_id =
-      identity_test_env.MakeAccountAvailable(kTestEmail).account_id;
+      identity_test_env.MakeAccountAvailable(kTestEmail).GetAccountId();
   CoreAccountId other_test_account_id =
-      identity_test_env.MakeAccountAvailable(kOtherTestEmail).account_id;
+      identity_test_env.MakeAccountAvailable(kOtherTestEmail).GetAccountId();
   SigninErrorController error_controller(
       SigninErrorController::AccountMode::ANY_ACCOUNT,
       identity_test_env.identity_manager());
@@ -259,7 +258,7 @@ TEST(SigninErrorControllerTest,
       identity_test_env.MakePrimaryAccountAvailable(
           kPrimaryAccountEmail, signin::ConsentLevel::kSignin);
   CoreAccountId secondary_account_id =
-      identity_test_env.MakeAccountAvailable(kTestEmail).account_id;
+      identity_test_env.MakeAccountAvailable(kTestEmail).GetAccountId();
   SigninErrorController error_controller(
       SigninErrorController::AccountMode::ANY_ACCOUNT,
       identity_test_env.identity_manager());
@@ -277,18 +276,19 @@ TEST(SigninErrorControllerTest,
   // Set an error for the Primary Account. This should override the previous
   // error.
   identity_test_env.UpdatePersistentErrorOfRefreshTokenForAccount(
-      primary_account_info.account_id,
+      primary_account_info.GetAccountId(),
       GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
           GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
   ASSERT_EQ(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS,
             error_controller.auth_error().state());
-  ASSERT_EQ(primary_account_info.account_id,
+  ASSERT_EQ(primary_account_info.GetAccountId(),
             error_controller.error_account_id());
 
   // Clear the Primary Account error. This should cause the Secondary Account
   // error to be returned again.
   identity_test_env.UpdatePersistentErrorOfRefreshTokenForAccount(
-      primary_account_info.account_id, GoogleServiceAuthError::AuthErrorNone());
+      primary_account_info.GetAccountId(),
+      GoogleServiceAuthError::AuthErrorNone());
   ASSERT_EQ(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS,
             error_controller.auth_error().state());
   ASSERT_EQ(secondary_account_id, error_controller.error_account_id());
@@ -307,7 +307,7 @@ TEST(SigninErrorControllerTest, PrimaryAccountErrorsAreSticky) {
       identity_test_env.MakePrimaryAccountAvailable(
           kPrimaryAccountEmail, signin::ConsentLevel::kSignin);
   CoreAccountId secondary_account_id =
-      identity_test_env.MakeAccountAvailable(kTestEmail).account_id;
+      identity_test_env.MakeAccountAvailable(kTestEmail).GetAccountId();
   SigninErrorController error_controller(
       SigninErrorController::AccountMode::ANY_ACCOUNT,
       identity_test_env.identity_manager());
@@ -315,12 +315,12 @@ TEST(SigninErrorControllerTest, PrimaryAccountErrorsAreSticky) {
 
   // Set an error for the Primary Account.
   identity_test_env.UpdatePersistentErrorOfRefreshTokenForAccount(
-      primary_account_info.account_id,
+      primary_account_info.GetAccountId(),
       GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
           GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
   ASSERT_EQ(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS,
             error_controller.auth_error().state());
-  ASSERT_EQ(primary_account_info.account_id,
+  ASSERT_EQ(primary_account_info.GetAccountId(),
             error_controller.error_account_id());
 
   // Set an error for the Secondary Account. The Primary Account error should
@@ -331,13 +331,14 @@ TEST(SigninErrorControllerTest, PrimaryAccountErrorsAreSticky) {
           GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
   ASSERT_EQ(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS,
             error_controller.auth_error().state());
-  ASSERT_EQ(primary_account_info.account_id,
+  ASSERT_EQ(primary_account_info.GetAccountId(),
             error_controller.error_account_id());
 
   // Clear the Primary Account error. This should cause the Secondary Account
   // error to be returned again.
   identity_test_env.UpdatePersistentErrorOfRefreshTokenForAccount(
-      primary_account_info.account_id, GoogleServiceAuthError::AuthErrorNone());
+      primary_account_info.GetAccountId(),
+      GoogleServiceAuthError::AuthErrorNone());
   ASSERT_EQ(GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS,
             error_controller.auth_error().state());
   ASSERT_EQ(secondary_account_id, error_controller.error_account_id());

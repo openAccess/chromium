@@ -5,8 +5,13 @@
 #include "chrome/browser/ui/web_applications/web_app_dialog_utils.h"
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 
+#include "base/auto_reset.h"
+#include "base/check.h"
+#include "base/check_is_test.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -18,7 +23,6 @@
 #include "chrome/browser/shell_integration.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/web_apps/progress_delay.h"
@@ -50,6 +54,9 @@
 #include "components/webapps/browser/web_app_url_config.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/visibility.h"
+#include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
@@ -77,6 +84,18 @@ constexpr int kProgressDelaySteps = 100;
 namespace cros_events = metrics::structured::events::v2::cr_os_events;
 #endif
 
+// When non-null, the next WebAppInstallFlowDialog Show() is captured here
+// instead of running.
+base::OnceClosure* g_captured_install_dialog_show = nullptr;
+
+void RunOrCaptureInstallDialogShow(base::OnceClosure show_dialog) {
+  if (g_captured_install_dialog_show) {
+    *g_captured_install_dialog_show = std::move(show_dialog);
+    return;
+  }
+  std::move(show_dialog).Run();
+}
+
 // Helper function to show the web app installation dialog. This is called
 // once the folder icon has been resolved (asynchronously on Mac, or
 // immediately on other platforms).
@@ -92,7 +111,24 @@ void ShowWebAppInstallFlowDialog(
     InstallOsType os_type,
     std::optional<ui::ImageModel> folder_image_model,
     std::optional<std::u16string> folder_label) {
-  if (!initiator_web_contents) {
+  // Do not show a dialog after the install command has already died. On
+  // macOS that can happen during GetMacAppsFolderImageAsync, after the
+  // command's last page check.
+  if (web_app_acceptance_callback.IsCancelled()) {
+    CHECK(install_tracker);
+    install_tracker->ReportResult(webapps::MlInstallUserResponse::kIgnored);
+    return;
+  }
+  // On MacOS, the showing of the install flow dialog goes through an async hop
+  // in the middle of which the installation might be cancelled if the user
+  // changes tabs, or closes the web contents. Explicitly exit the install
+  // flow earlier if that happens.
+  if (!initiator_web_contents ||
+      initiator_web_contents->GetVisibility() == content::Visibility::HIDDEN) {
+    CHECK(install_tracker);
+    install_tracker->ReportResult(webapps::MlInstallUserResponse::kIgnored);
+    std::move(web_app_acceptance_callback)
+        .Run(/*user_accepted=*/false, nullptr, base::DoNothing());
     return;
   }
   auto progress_delay =
@@ -115,7 +151,7 @@ void OnWebAppInstallShowInstallDialog(
     content::WebContents* initiator_web_contents,
     std::unique_ptr<WebAppInstallInfo> web_app_info,
     WebAppInstallationAcceptanceCallback web_app_acceptance_callback) {
-  DCHECK(web_app_info);
+  CHECK(web_app_info, base::NotFatalUntil::M162);
   InstallOsType os_type = InstallOsType::kOther;
 #if BUILDFLAG(IS_CHROMEOS)
   os_type = InstallOsType::kCros;
@@ -165,15 +201,17 @@ void OnWebAppInstallShowInstallDialog(
                                        std::optional<std::u16string>)>
                    show_dialog_callback,
                gfx::Image folder_image) {
-              std::move(show_dialog_callback)
-                  .Run(ui::ImageModel::FromImage(folder_image),
-                       shell_integration::GetAppShortcutsSubdirName());
+              RunOrCaptureInstallDialogShow(base::BindOnce(
+                  std::move(show_dialog_callback),
+                  ui::ImageModel::FromImage(folder_image),
+                  shell_integration::GetAppShortcutsSubdirName()));
             },
             std::move(show_dialog));
         GetMacAppsFolderImageAsync(kLargeImageSize,
                                    std::move(show_dialog_with_image));
 #else
-        std::move(show_dialog).Run(std::nullopt, std::nullopt);
+        RunOrCaptureInstallDialogShow(
+            base::BindOnce(std::move(show_dialog), std::nullopt, std::nullopt));
 #endif
         return;
       }
@@ -275,12 +313,12 @@ bool CanPopOutWebApp(Profile* profile) {
 
 void CreateWebAppFromCurrentWebContents(BrowserWindowInterface* browser,
                                         WebAppInstallFlow flow) {
-  DCHECK(CanCreateWebApp(browser));
+  CHECK(CanCreateWebApp(browser), base::NotFatalUntil::M162);
 
   content::WebContents* web_contents =
       browser->tab_strip_model()->GetActiveWebContents();
   auto* provider = WebAppProvider::GetForWebContents(web_contents);
-  DCHECK(provider);
+  CHECK(provider, base::NotFatalUntil::M162);
 
   webapps::MLInstallabilityPromoter* promoter =
       webapps::MLInstallabilityPromoter::FromWebContents(web_contents);
@@ -351,6 +389,7 @@ bool CreateWebAppFromManifest(content::WebContents* web_contents,
 
   webapps::MLInstallabilityPromoter* promoter =
       webapps::MLInstallabilityPromoter::FromWebContents(web_contents);
+  CHECK(promoter);
   if (promoter->HasCurrentInstall()) {
     std::move(installed_callback)
         .Run(/*app_id=*/"",
@@ -402,7 +441,7 @@ void CreateWebAppForManifestInstall(
     content::WebContents* initiating_web_contents,
     base::WeakPtr<content::Page> initiating_page,
     std::unique_ptr<webapps::MlInstallOperationTracker> tracker,
-    blink::mojom::ManifestPtr manifest,
+    blink::Manifest manifest,
     const GURL& manifest_url,
     const GURL& requesting_page_url,
     WebAppInstalledCallback installed_callback) {
@@ -430,9 +469,8 @@ void ShowPwaInstallDialog(BrowserWindowInterface* bwi) {
   CHECK(web_contents);
 
   PwaInstallPageActionController* const pwa_install_controller =
-      bwi->GetActiveTabInterface()
-          ->GetTabFeatures()
-          ->pwa_install_page_action_controller();
+      PwaInstallPageActionController::From(bwi->GetActiveTabInterface());
+  CHECK(pwa_install_controller);
   pwa_install_controller->SetIsExecuting(true);
 
   // Close PWA install IPH if it is showing.
@@ -460,6 +498,15 @@ void ShowPwaInstallDialog(BrowserWindowInterface* bwi) {
 
 void SetInstalledCallbackForTesting(WebAppInstalledCallback callback) {
   GetInstalledCallbackForTesting() = std::move(callback);
+}
+
+base::AutoReset<base::OnceClosure*> CaptureInstallDialogShowForTesting(
+    base::OnceClosure* captured_show) {
+  CHECK_IS_TEST();
+  CHECK(captured_show);
+  CHECK(!g_captured_install_dialog_show);
+  return base::AutoReset<base::OnceClosure*>(&g_captured_install_dialog_show,
+                                             captured_show);
 }
 
 }  // namespace web_app

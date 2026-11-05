@@ -5,21 +5,27 @@
 package org.chromium.chrome.browser.settings;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
+import android.os.Bundle;
 import android.view.View;
-import android.view.ViewTreeObserver;
 
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
 import androidx.preference.PreferenceFragmentCompat;
+import androidx.preference.PreferenceGroup.PreferencePositionCallback;
 import androidx.preference.PreferenceManager;
 import androidx.preference.PreferenceScreen;
 import androidx.recyclerview.widget.RecyclerView;
@@ -33,12 +39,16 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.components.browser_ui.settings.PreferenceUpdateObserver;
+import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.widget.containment.ContainmentItemDecoration;
+
+import java.util.concurrent.TimeUnit;
 
 /** Unit tests for {@link SettingsContainmentHelper}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -50,10 +60,9 @@ public class SettingsContainmentHelperTest {
     @Mock private PreferenceUpdateObserver mObserver;
 
     @Mock private PreferenceFragmentCompat mPreferenceFragment;
-    @Mock private View mView;
-    @Mock private ViewTreeObserver mViewTreeObserver;
 
     private Context mContext;
+    private View mView;
     private SettingsContainmentHelper mContainmentHelper;
 
     private static class TestProviderFragment extends Fragment
@@ -75,6 +84,7 @@ public class SettingsContainmentHelperTest {
     public void setUp() {
         mContext = ApplicationProvider.getApplicationContext();
         mContext.setTheme(R.style.Theme_Chromium_Settings);
+        mView = new View(mContext);
         when(mDelegate.getPreferenceUpdateObserver()).thenReturn(mObserver);
         mContainmentHelper = new SettingsContainmentHelper(mContext, mDelegate);
     }
@@ -133,12 +143,62 @@ public class SettingsContainmentHelperTest {
                 .registerFragmentLifecycleCallbacks(callbackCaptor.capture(), eq(true));
         FragmentManager.FragmentLifecycleCallbacks callbacks = callbackCaptor.getValue();
 
-        when(mPreferenceFragment.getView()).thenReturn(mView);
-        when(mView.getViewTreeObserver()).thenReturn(mViewTreeObserver);
+        RecyclerView recyclerView = setUpPreferenceFragmentWithList();
 
         callbacks.onFragmentViewCreated(mFragmentManager, mPreferenceFragment, mView, null);
 
-        verify(mViewTreeObserver).addOnGlobalLayoutListener(any());
+        // Containment is only applied once a global layout pass happens.
+        assertEquals(0, recyclerView.getItemDecorationCount());
+        mView.getViewTreeObserver().dispatchOnGlobalLayout();
+        assertEquals(1, recyclerView.getItemDecorationCount());
+    }
+
+    @Test
+    public void testPostUpdateContainmentOnLayout_addsLayoutListener() {
+        RecyclerView recyclerView = setUpPreferenceFragmentWithList();
+
+        mContainmentHelper.postUpdateContainmentOnLayout(mPreferenceFragment);
+
+        // Containment is only applied once a global layout pass happens.
+        assertEquals(0, recyclerView.getItemDecorationCount());
+        mView.getViewTreeObserver().dispatchOnGlobalLayout();
+        assertEquals(1, recyclerView.getItemDecorationCount());
+    }
+
+    @Test
+    public void testPostUpdateContainmentOnLayout_removesExistingListenerBeforeAddingNew() {
+        setUpPreferenceFragmentWithList();
+
+        // First call registers an initial layout listener.
+        mContainmentHelper.postUpdateContainmentOnLayout(mPreferenceFragment);
+
+        // Second call must unregister the previous listener before registering a new one
+        // to prevent duplicate triggers and listener leaks on rapid successive updates.
+        mContainmentHelper.postUpdateContainmentOnLayout(mPreferenceFragment);
+        mView.getViewTreeObserver().dispatchOnGlobalLayout();
+
+        // Containment is updated only once, i.e. only one listener was triggered.
+        verify(mPreferenceFragment, times(1)).getPreferenceScreen();
+    }
+
+    @Test
+    public void testPostUpdateContainmentOnLayout_onGlobalLayoutTriggersUpdateAndCleansUp() {
+        RecyclerView recyclerView = setUpPreferenceFragmentWithList();
+        RecyclerView.Adapter expectedAdapter = recyclerView.getAdapter();
+
+        mContainmentHelper.postUpdateContainmentOnLayout(mPreferenceFragment);
+
+        // Simulate global layout completion passes.
+        mView.getViewTreeObserver().dispatchOnGlobalLayout();
+        mView.getViewTreeObserver().dispatchOnGlobalLayout();
+
+        // Verify listener removes itself to prevent redundant future invocations,
+        // attaches ContainmentItemDecoration, and preserves adapter without view re-inflation.
+        verify(mPreferenceFragment, times(1)).getPreferenceScreen();
+        assertEquals(1, recyclerView.getItemDecorationCount());
+        assertEquals(
+                ContainmentItemDecoration.class, recyclerView.getItemDecorationAt(0).getClass());
+        assertEquals(expectedAdapter, recyclerView.getAdapter());
     }
 
     @Test
@@ -225,6 +285,76 @@ public class SettingsContainmentHelperTest {
 
         // Verify ContainmentItemDecoration was removed from RecyclerView
         assertEquals(0, recyclerView.getItemDecorationCount());
+    }
+
+    private abstract static class TestPreferenceAdapter
+            extends RecyclerView.Adapter<RecyclerView.ViewHolder>
+            implements PreferencePositionCallback {}
+
+    @Test
+    public void testOnFragmentAttached_scrollsAndHighlightsPreferenceFromArgs() {
+        mContainmentHelper.registerCallbacks(mFragmentManager);
+        ArgumentCaptor<FragmentManager.FragmentLifecycleCallbacks> callbackCaptor =
+                ArgumentCaptor.forClass(FragmentManager.FragmentLifecycleCallbacks.class);
+        verify(mFragmentManager)
+                .registerFragmentLifecycleCallbacks(callbackCaptor.capture(), eq(true));
+        FragmentManager.FragmentLifecycleCallbacks callbacks = callbackCaptor.getValue();
+
+        PreferenceFragmentCompat fragment =
+                spy(
+                        new PreferenceFragmentCompat() {
+                            @Override
+                            public void onCreatePreferences(
+                                    @Nullable Bundle savedInstanceState,
+                                    @Nullable String rootKey) {}
+                        });
+        doNothing().when(fragment).scrollToPreference("my_pref");
+        when(fragment.getView()).thenReturn(mView);
+
+        View itemView = new View(mContext);
+        RecyclerView.ViewHolder viewHolder = new RecyclerView.ViewHolder(itemView) {};
+        RecyclerView listView =
+                new RecyclerView(mContext) {
+                    @Override
+                    public @Nullable ViewHolder findViewHolderForAdapterPosition(int position) {
+                        return position == 2 ? viewHolder : null;
+                    }
+                };
+        TestPreferenceAdapter mockAdapter = mock(TestPreferenceAdapter.class);
+        when(mockAdapter.getPreferenceAdapterPosition("my_pref")).thenReturn(2);
+        listView.setAdapter(mockAdapter);
+        setFragmentList(fragment, listView);
+
+        Bundle args = SettingsNavigation.createHighlightArgs(null, "my_pref");
+        fragment.setArguments(args);
+
+        callbacks.onFragmentAttached(mFragmentManager, fragment, mContext);
+
+        assertFalse(args.containsKey(SettingsNavigation.EXTRA_HIGHLIGHT_PREFERENCE));
+
+        ShadowLooper.idleMainLooper(250, TimeUnit.MILLISECONDS);
+
+        verify(fragment).scrollToPreference("my_pref");
+        assertTrue((Boolean) itemView.getTag(R.id.highlight_state));
+    }
+
+    /**
+     * Sets up {@link #mPreferenceFragment} with {@link #mView} as its view and an empty preference
+     * list.
+     *
+     * @return The fragment's list {@link RecyclerView}.
+     */
+    private RecyclerView setUpPreferenceFragmentWithList() {
+        when(mPreferenceFragment.getView()).thenReturn(mView);
+        when(mPreferenceFragment.getContext()).thenReturn(mContext);
+
+        RecyclerView recyclerView = createRecyclerView();
+        setFragmentList(mPreferenceFragment, recyclerView);
+
+        PreferenceManager preferenceManager = new PreferenceManager(mContext);
+        PreferenceScreen preferenceScreen = preferenceManager.createPreferenceScreen(mContext);
+        when(mPreferenceFragment.getPreferenceScreen()).thenReturn(preferenceScreen);
+        return recyclerView;
     }
 
     /** Creates a no-op {@link RecyclerView} with an adapter for testing. */

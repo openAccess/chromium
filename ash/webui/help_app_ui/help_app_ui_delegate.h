@@ -11,7 +11,6 @@
 #include "ash/webui/help_app_ui/help_app_ui.mojom.h"
 
 class GURL;
-class PrefService;
 
 namespace ash {
 
@@ -36,9 +35,6 @@ class HelpAppUIDelegate {
   virtual void TriggerWelcomeTipCallToAction(
       help_app::mojom::ActionTypeId action_type_id) = 0;
 
-  // Gets locally stored users preferences and state.
-  virtual PrefService* GetLocalState() = 0;
-
   // Launches the MS365 setup flow (or shows the final screen of the flow if it
   // was already completed).
   virtual void LaunchMicrosoft365Setup() = 0;
@@ -53,8 +49,7 @@ class HelpAppUIDelegate {
       ash::help_app::mojom::PageHandler::GetDeviceInfoCallback callback) = 0;
 
   // Opens a valid https:// URL in a new browser tab without getting intercepted
-  // by URL capturing logic. If the "HelpAppAutoTriggerInstallDialog" feature
-  // flag is enabled, this will automatically trigger the install dialog.
+  // by URL capturing logic, and automatically triggers the install dialog.
   // Failure to provide a valid https:// URL will cause the Help app renderer
   // process to crash.
   virtual std::optional<std::string> OpenUrlInBrowserAndTriggerInstallDialog(

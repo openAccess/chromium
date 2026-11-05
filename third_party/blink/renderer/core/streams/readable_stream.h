@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_STREAMS_READABLE_STREAM_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_STREAMS_READABLE_STREAM_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <memory>
@@ -208,6 +209,13 @@ class CORE_EXPORT ReadableStream
 
   void LockAndDisturb(ScriptState*);
 
+  // Marks the stream as disturbed without acquiring a reader. For callers that
+  // hand the stream's data to a consumer which acquires its own reader, and so
+  // cannot use LockAndDisturb(). The standard's "create a proxy" disturbs the
+  // stream synchronously, before any read has happened.
+  // https://streams.spec.whatwg.org/#readablestream-create-a-proxy
+  void MarkDisturbed() { is_disturbed_ = true; }
+
   // https://streams.spec.whatwg.org/#readablestream-close
   void CloseStream(ScriptState*, ExceptionState&);
 
@@ -297,6 +305,10 @@ class CORE_EXPORT ReadableStream
   friend class ReadableStreamDefaultReader;
   friend class ReadableStreamGenericReader;
   friend class TeeEngine;
+
+  // Called exactly once after a successful byte-stream read delivers bytes.
+  // Subclasses may override this even though it is private.
+  virtual void DidConsumeBytes(size_t) {}
 
   class PullAlgorithm;
   class CancelAlgorithm;

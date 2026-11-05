@@ -6,14 +6,18 @@
 
 #import <Foundation/Foundation.h>
 
+#import "base/command_line.h"
 #import "base/strings/stringprintf.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/password_manager/core/browser/manage_passwords_referrer.h"
+#import "components/password_manager/core/common/remote_actor/remote_actor_features.h"
 #import "ios/chrome/app/app_startup_parameters.h"
 #import "ios/chrome/app/startup/app_launch_metrics.h"
+#import "ios/chrome/app/startup/app_startup_utils.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
 #import "ios/chrome/browser/default_browser/model/utils_test_support.h"
+#import "ios/chrome/browser/flags/chrome_switches.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -35,8 +39,27 @@ void CheckLaunchSourceForURL(first_run::ExternalLaunch expectedSource,
   EXPECT_EQ(expectedSource, [params launchSource]);
 }
 
-typedef PlatformTest AppStartupParametersTest;
-TEST_F(PlatformTest, ParseURLWithEmptyURL) {
+// Test fixture for testing ChromeAppStartupParameters with the legacy startup
+// flow.
+class AppStartupParametersTest : public PlatformTest {
+ protected:
+  AppStartupParametersTest() {
+    ResetEnableNewStartupFlowEnabledForTesting();
+    scoped_feature_list_.InitAndDisableFeature(kEnableNewStartupFlow);
+    SaveEnableNewStartupFlowForNextStart();
+  }
+
+  ~AppStartupParametersTest() override {
+    ResetEnableNewStartupFlowEnabledForTesting();
+    [app_group::GetCommonGroupUserDefaults()
+        removeObjectForKey:app_group::kChromeCapabilitiesPreference];
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Tests that parsing an empty URL returns nil.
+TEST_F(AppStartupParametersTest, ParseURLWithEmptyURL) {
   NSURL* url = [NSURL URLWithString:@""];
   ChromeAppStartupParameters* params = [ChromeAppStartupParameters
       startupParametersWithURL:url
@@ -719,8 +742,7 @@ TEST_F(AppStartupParametersTest,
 // "appstoregeminipromo" action.
 TEST_F(AppStartupParametersTest, ExternalActionSchemeAppStoreGeminiPromo) {
   base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures({kAppStoreInAppEvents, kPageActionMenu},
-                                       {});
+  scoped_feature_list.InitWithFeatures({kPageActionMenu}, {});
 
   base::HistogramTester histogram_tester;
   NSURL* url =
@@ -872,6 +894,78 @@ TEST_F(AppStartupParametersTest, GoogleOneDeepLinkDisabled) {
   EXPECT_EQ("https://one.google.com/deeplink", [params externalURL].spec());
   EXPECT_EQ("https://one.google.com/deeplink", [params completeURL].spec());
   EXPECT_EQ(NO_ACTION, [params postOpeningAction]);
+}
+
+// Tests that IsAppSwitcherAISummarizationTestingExternalURLEnabled returns
+// true only when both the feature and switch are enabled.
+TEST_F(AppStartupParametersTest,
+       AppSwitcherAISummarizationTestingExternalURLEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+
+  // 1. Both disabled.
+  scoped_feature_list.InitWithFeatures(
+      {}, {kPageActionMenu, kAppSwitcherAISummarization});
+  EXPECT_FALSE(IsAppSwitcherAISummarizationTestingExternalURLEnabled());
+
+  // 2. Feature enabled, switch not enabled.
+  scoped_feature_list.Reset();
+  scoped_feature_list.InitWithFeatures(
+      {kPageActionMenu, kAppSwitcherAISummarization}, {});
+  EXPECT_FALSE(IsAppSwitcherAISummarizationTestingExternalURLEnabled());
+
+  // 3. Both feature and switch enabled.
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      switches::kEnableAppSwitcherAISummarizationTestingExternalURL);
+  EXPECT_TRUE(IsAppSwitcherAISummarizationTestingExternalURLEnabled());
+
+  // 4. Switch enabled, but feature disabled.
+  scoped_feature_list.Reset();
+  scoped_feature_list.InitWithFeatures(
+      {}, {kPageActionMenu, kAppSwitcherAISummarization});
+  EXPECT_FALSE(IsAppSwitcherAISummarizationTestingExternalURLEnabled());
+}
+
+// Tests that `SaveFieldTrialValuesForGroupApp()` sets
+// `kChromeSupportsRemoteActorCredentialSharingCapability` when the feature is
+// enabled.
+TEST_F(AppStartupParametersTest, SaveFieldTrialValues_RemoteActorEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      password_manager::features::kRemoteActorCredentialSharing);
+
+  SaveFieldTrialValuesForGroupApp();
+
+  NSUserDefaults* defaults = app_group::GetCommonGroupUserDefaults();
+  NSDictionary* capabilities =
+      [defaults dictionaryForKey:app_group::kChromeCapabilitiesPreference];
+  EXPECT_TRUE([capabilities
+          [app_group::kChromeSupportsRemoteActorCredentialSharingCapability]
+      boolValue]);
+}
+
+// Tests that `SaveFieldTrialValuesForGroupApp()` removes
+// `kChromeSupportsRemoteActorCredentialSharingCapability` when the feature is
+// disabled.
+TEST_F(AppStartupParametersTest, SaveFieldTrialValues_RemoteActorDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      password_manager::features::kRemoteActorCredentialSharing);
+
+  // Pre-populate defaults to verify it gets cleared when feature is disabled.
+  NSUserDefaults* defaults = app_group::GetCommonGroupUserDefaults();
+  [defaults setObject:@{
+    app_group::kChromeSupportsRemoteActorCredentialSharingCapability : @YES
+  }
+               forKey:app_group::kChromeCapabilitiesPreference];
+
+  SaveFieldTrialValuesForGroupApp();
+
+  NSDictionary* capabilities =
+      [defaults dictionaryForKey:app_group::kChromeCapabilitiesPreference];
+  EXPECT_NSEQ(
+      nil,
+      capabilities
+          [app_group::kChromeSupportsRemoteActorCredentialSharingCapability]);
 }
 
 }  // namespace

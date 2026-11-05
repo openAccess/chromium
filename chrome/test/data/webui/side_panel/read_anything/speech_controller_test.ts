@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 import {ContentPositionSource, MAX_SPEECH_LENGTH, ReadAloudHighlighter, ReadAloudNode} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import type {NodeStore, Segment, SpeechController, SpeechListener, VoiceLanguageController, WordBoundaries} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {assertEquals, assertFalse, assertGE, assertGT, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
+import type {NodeStore, Segment, SpeechController, VoiceLanguageController, WordBoundaries} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertGE, assertGT, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {MockTimer} from 'chrome-untrusted://webui-test/mock_timer.js';
 
 import {createSpeechErrorEvent, createSpeechSynthesisVoice, createWordBoundaryEvent, setContent, setupTestEnvironment} from './common.js';
@@ -11,11 +11,9 @@ import type {TestAudioBrowserProxy} from './test_audio_browser_proxy.js';
 import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 import type {TestReadAloudModelBrowserProxy} from './test_read_aloud_browser_proxy.js';
 import type {TestSpeechBrowserProxy} from './test_speech_browser_proxy.js';
-import type {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
 
 suite('SpeechController', () => {
   let audioBrowserProxy: TestAudioBrowserProxy;
-  let visualBrowserProxy: TestVisualBrowserProxy;
   let speech: TestSpeechBrowserProxy;
   let speechController: SpeechController;
   let isSpeechActiveChanged: boolean;
@@ -38,10 +36,31 @@ suite('SpeechController', () => {
     return element;
   }
 
+  function addWordBoundaryListener(
+      onWordBoundary: (segments: Segment[]) => void) {
+    speechController.addListener({
+      onWordBoundary,
+      onIsSpeechActiveChange() {},
+      onIsAudioCurrentlyPlayingChange() {},
+      onEngineStateChange() {},
+      onPreviewVoicePlaying() {},
+      onPlayingFromSelection() {},
+    });
+  }
+
+  // Starts speech and makes the model return a highlight for the first word.
+  function playWithWordHighlight(text: string) {
+    onPlayPauseToggle(text);
+    const node = readAloudModel.getCurrentTextSegments()[0]!.node;
+    const highlights: Segment[] = [{node, start: 0, length: 3}];
+    readAloudModel.setHighlightForCurrentSegmentIndex(highlights);
+    readAloudModel.resetResolver('getHighlightForCurrentSegmentIndex');
+    return {spoken: speech.getArgs('speak')[0], highlights};
+  }
+
   setup(() => {
     const result = setupTestEnvironment();
     audioBrowserProxy = result.audioBrowserProxy;
-    visualBrowserProxy = result.visualBrowserProxy;
     speech = result.speech;
     metrics = result.metrics;
     readAloudModel = result.readAloudModel;
@@ -781,6 +800,55 @@ suite('SpeechController', () => {
         assertTrue(highlighter.hasCurrentGranularity());
       });
 
+  test('onHighlightGranularityChange prefetches phrases when used', () => {
+    audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+    audioBrowserProxy.baseLanguageForSpeech = 'en';
+    audioBrowserProxy.highlightGranularity =
+        audioBrowserProxy.phraseHighlighting;
+    wordBoundaries.updateBoundary(0);
+
+    speechController.onHighlightGranularityChange(
+        audioBrowserProxy.phraseHighlighting);
+
+    assertEquals(1, readAloudModel.getCallCount('prefetchPhraseBoundaries'));
+  });
+
+  test('onHighlightGranularityChange does not prefetch for words', () => {
+    audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+    audioBrowserProxy.baseLanguageForSpeech = 'en';
+    audioBrowserProxy.highlightGranularity = audioBrowserProxy.wordHighlighting;
+    wordBoundaries.updateBoundary(0);
+
+    speechController.onHighlightGranularityChange(
+        audioBrowserProxy.wordHighlighting);
+
+    assertEquals(0, readAloudModel.getCallCount('prefetchPhraseBoundaries'));
+  });
+
+  test('playing speech prefetches phrases when used', () => {
+    audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+    audioBrowserProxy.baseLanguageForSpeech = 'en';
+    audioBrowserProxy.highlightGranularity =
+        audioBrowserProxy.phraseHighlighting;
+    wordBoundaries.updateBoundary(0);
+
+    onPlayPauseToggle('Prefetch the phrases');
+
+    assertEquals(1, readAloudModel.getCallCount('prefetchPhraseBoundaries'));
+  });
+
+  test('playing speech does not prefetch for non-English speech', () => {
+    audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+    audioBrowserProxy.baseLanguageForSpeech = 'fr';
+    audioBrowserProxy.highlightGranularity =
+        audioBrowserProxy.phraseHighlighting;
+    wordBoundaries.updateBoundary(0);
+
+    onPlayPauseToggle('Bonjour tout le monde');
+
+    assertEquals(0, readAloudModel.getCallCount('prefetchPhraseBoundaries'));
+  });
+
   test('onLockScreen while paused does nothing', () => {
     speechController.onLockScreen();
 
@@ -916,6 +984,27 @@ suite('SpeechController', () => {
     assertTrue(speechController.isAudioCurrentlyPlaying());
   });
 
+  test('interruption error ignored when activeUtterance is null', async () => {
+    const text = 'Stale utterance interruption test.';
+    const element = onPlayPauseToggle(text);
+    const utterance = await speech.whenCalled('speak');
+
+    speechController.onPlayPauseToggle(element);
+    assertTrue(speechController.isPausedFromButton());
+    speech.reset();
+    audioBrowserProxy.reset();
+    metrics.reset();
+
+    // Simulate a late interrupted callback arriving after activeUtterance was
+    // cleared on stop.
+    utterance.onstart(
+        new SpeechSynthesisEvent('start', {utterance: utterance}));
+    utterance.onerror(createSpeechErrorEvent(utterance, 'interrupted'));
+
+    assertTrue(speechController.isPausedFromButton());
+    assertEquals(0, metrics.getCallCount('recordSpeechStopSource'));
+  });
+
   test('playFromContentPosition logs selection metric', async () => {
     const text = 'This is a selection.';
     setContent(text, readAloudModel);
@@ -944,7 +1033,7 @@ suite('SpeechController', () => {
     const node = document.createTextNode(text);
     nodeStore.setDomNode(node, id);
     const segments: Segment[] =
-        [{node: ReadAloudNode.create(node)!, start: 0, length: text.length}];
+        [{node: ReadAloudNode.create(node), start: 0, length: text.length}];
     readAloudModel.setCurrentTextSegments(segments);
     readAloudModel.setCurrentTextContent(text);
     element.appendChild(node);
@@ -975,7 +1064,7 @@ suite('SpeechController', () => {
     const node = document.createTextNode(text);
     nodeStore.setDomNode(node, id);
     const segments: Segment[] =
-        [{node: ReadAloudNode.create(node)!, start: 0, length: text.length}];
+        [{node: ReadAloudNode.create(node), start: 0, length: text.length}];
     readAloudModel.setCurrentTextSegments(segments);
     readAloudModel.setCurrentTextContent(text);
     element.appendChild(node);
@@ -993,6 +1082,48 @@ suite('SpeechController', () => {
     assertTrue(onPlayingFromPosition);
   });
 
+  test('collapsed selection keeps line focus position', async () => {
+    const text = 'Lost for kind words to say.';
+    const element = document.createElement('p');
+    const id = 2;
+    const node = document.createTextNode(text);
+    nodeStore.setDomNode(node, id);
+    const segments: Segment[] =
+        [{node: ReadAloudNode.create(node), start: 0, length: text.length}];
+    readAloudModel.setCurrentTextSegments(segments);
+    readAloudModel.setCurrentTextContent(text);
+    element.appendChild(node);
+    document.body.appendChild(element);
+    const range = document.createRange();
+    range.selectNode(node);
+    const rect = range.getClientRects().item(0);
+    assertTrue(!!rect);
+    speechController.onLineFocusChange(
+        document.caretPositionFromPoint(rect.left, rect.top));
+
+    speechController.onSelectionChange(null);
+    speechController.onPlayPauseToggle(element);
+    await speech.whenCalled('speak');
+
+    assertTrue(onPlayingFromPosition);
+  });
+
+  test('clearing line focus keeps selection position', async () => {
+    const text = 'Keep my selection.';
+    setContent(text, readAloudModel);
+    const node = nodeStore.getDomNode(2)!;
+    speechController.onSelectionChange(
+        {node, offset: 0, source: ContentPositionSource.SELECTION});
+    const element = document.createElement('p');
+    element.textContent = text;
+
+    speechController.onLineFocusChange(null);
+    speechController.onPlayPauseToggle(element);
+    await speech.whenCalled('speak');
+
+    assertTrue(onPlayingFromPosition);
+  });
+
   test(
       'playFromContentPosition starts from beginning when line focus off',
       async () => {
@@ -1002,7 +1133,7 @@ suite('SpeechController', () => {
         const node = document.createTextNode(text);
         nodeStore.setDomNode(node, id);
         const segments: Segment[] = [
-          {node: ReadAloudNode.create(node)!, start: 0, length: text.length},
+          {node: ReadAloudNode.create(node), start: 0, length: text.length},
         ];
         readAloudModel.setCurrentTextSegments(segments);
         readAloudModel.setCurrentTextContent(text);
@@ -1062,17 +1193,17 @@ suite('SpeechController', () => {
         nodeStore.setDomNode(node3, 3);
 
         const segment1 = {
-          node: ReadAloudNode.create(node1)!,
+          node: ReadAloudNode.create(node1),
           start: 0,
           length: text1.length,
         };
         const segment2 = {
-          node: ReadAloudNode.create(node2)!,
+          node: ReadAloudNode.create(node2),
           start: 0,
           length: text2.length,
         };
         const segment3 = {
-          node: ReadAloudNode.create(node3)!,
+          node: ReadAloudNode.create(node3),
           start: 0,
           length: text3.length,
         };
@@ -1136,76 +1267,6 @@ suite('SpeechController', () => {
       });
 
   test(
-      'playFromContentPosition without line focus adds intermediate highlights',
-      async () => {
-        visualBrowserProxy.lineFocusEnabled = false;
-        const text1 = 'First line. ';
-        const text2 = 'Second line.';
-        const node1 = document.createTextNode(text1);
-        const node2 = document.createTextNode(text2);
-        nodeStore.setDomNode(node1, 1);
-        nodeStore.setDomNode(node2, 2);
-
-        const segment1 = {
-          node: ReadAloudNode.create(node1)!,
-          start: 0,
-          length: text1.length,
-        };
-        const segment2 = {
-          node: ReadAloudNode.create(node2)!,
-          start: 0,
-          length: text2.length,
-        };
-
-        const allSegments = [[segment1], [segment2]];
-        const allContent = [text1, text2];
-        let currentSegmentIndex = 0;
-
-        readAloudModel.resetSpeechToBeginning = () => {
-          readAloudModel.methodCalled('resetSpeechToBeginning');
-          currentSegmentIndex = 0;
-          readAloudModel.setCurrentTextSegments(
-              allSegments[currentSegmentIndex]!);
-          readAloudModel.setCurrentTextContent(
-              allContent[currentSegmentIndex]!);
-        };
-
-        readAloudModel.moveSpeechForward = () => {
-          readAloudModel.methodCalled('moveSpeechForward');
-          if (currentSegmentIndex < allSegments.length - 1) {
-            currentSegmentIndex++;
-            readAloudModel.setCurrentTextSegments(
-                allSegments[currentSegmentIndex]!);
-            readAloudModel.setCurrentTextContent(
-                allContent[currentSegmentIndex]!);
-          }
-        };
-
-        readAloudModel.setCurrentTextSegments(
-            allSegments[currentSegmentIndex]!);
-        readAloudModel.setCurrentTextContent(allContent[currentSegmentIndex]!);
-
-        const element = document.createElement('p');
-        element.appendChild(node1);
-        element.appendChild(node2);
-        document.body.appendChild(element);
-
-        let nextGranularityCalls = 0;
-        highlighter.onWillMoveToNextGranularity = () => {
-          nextGranularityCalls++;
-        };
-
-        speechController.onSelectionChange(
-            {node: node2, offset: 0, source: ContentPositionSource.SELECTION});
-        speechController.onPlayPauseToggle(element);
-        await speech.whenCalled('speak');
-
-        assertEquals(1, readAloudModel.getCallCount('moveSpeechForward'));
-        assertEquals(1, nextGranularityCalls);
-        assertTrue(onPlayingFromPosition);
-      });
-
-  test(
       'playFromContentPosition with invalid node plays from next node',
       async () => {
         const text = 'This text does not have the target node.';
@@ -1228,7 +1289,7 @@ suite('SpeechController', () => {
         const id = 2;
         nodeStore.setDomNode(node, id);
         const segments: Segment[] = [
-          {node: ReadAloudNode.create(node)!, start: 0, length: text.length},
+          {node: ReadAloudNode.create(node), start: 0, length: text.length},
         ];
         readAloudModel.setCurrentTextSegments(segments);
 
@@ -1264,7 +1325,7 @@ suite('SpeechController', () => {
   });
 
   test(
-      'highlightAndPlayMessage highlights before notifying word boundary when line focus is enabled',
+      'highlightAndPlayMessage highlights before notifying word boundary',
       async () => {
         const text = 'Testing highlight order with line focus.';
         setContent(text, readAloudModel);
@@ -1276,18 +1337,9 @@ suite('SpeechController', () => {
         const originalHighlight = highlighter.highlightCurrentGranularity;
         highlighter.highlightCurrentGranularity = (...args) => {
           events.push('highlight');
-          originalHighlight.apply(highlighter, args);
+          return originalHighlight.apply(highlighter, args);
         };
-
-        const testListener: SpeechListener = {
-          onWordBoundary: () => events.push('word_boundary'),
-          onIsSpeechActiveChange: () => {},
-          onIsAudioCurrentlyPlayingChange: () => {},
-          onEngineStateChange: () => {},
-          onPreviewVoicePlaying: () => {},
-          onPlayingFromSelection: () => {},
-        };
-        speechController.addListener(testListener);
+        addWordBoundaryListener(() => events.push('word_boundary'));
 
         speechController.onPlayPauseToggle(element);
         await speech.whenCalled('speak');
@@ -1296,6 +1348,77 @@ suite('SpeechController', () => {
         assertEquals('word_boundary', events[1]);
 
         highlighter.highlightCurrentGranularity = originalHighlight;
+      });
+
+  test('word boundary highlights before notifying listeners', () => {
+    audioBrowserProxy.highlightGranularity = audioBrowserProxy.wordHighlighting;
+    const {spoken} = playWithWordHighlight('Highlight then notify');
+    const events: string[] = [];
+    const highlighter = ReadAloudHighlighter.getInstance();
+    const originalHighlight = highlighter.highlightCurrentGranularity;
+    highlighter.highlightCurrentGranularity = (...args) => {
+      events.push('highlight');
+      return originalHighlight.apply(highlighter, args);
+    };
+    addWordBoundaryListener(() => events.push('word_boundary'));
+
+    spoken.onboundary(createWordBoundaryEvent(spoken, 0, 9));
+    highlighter.highlightCurrentGranularity = originalHighlight;
+
+    assertDeepEquals(['highlight', 'word_boundary'], events);
+  });
+
+  test('word boundary reuses word highlight segments for listeners', () => {
+    audioBrowserProxy.highlightGranularity = audioBrowserProxy.wordHighlighting;
+    const {spoken, highlights} =
+        playWithWordHighlight('One lookup per word boundary');
+    let notified: Segment[] = [];
+    addWordBoundaryListener(segments => {
+      notified = segments;
+    });
+
+    spoken.onboundary(createWordBoundaryEvent(spoken, 0, 3));
+
+    assertEquals(
+        1, readAloudModel.getCallCount('getHighlightForCurrentSegmentIndex'));
+    assertEquals(highlights, notified);
+  });
+
+  test(
+      'word boundary with phrase highlighting notifies listeners with words',
+      () => {
+        audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+        audioBrowserProxy.baseLanguageForSpeech = 'en';
+        audioBrowserProxy.highlightGranularity =
+            audioBrowserProxy.phraseHighlighting;
+        const {spoken} = playWithWordHighlight('Phrases are not words');
+
+        spoken.onboundary(createWordBoundaryEvent(spoken, 0, 7));
+
+        // [index, highlightPhrases] for the phrase highlight, then for the
+        // listeners' word lookup.
+        assertDeepEquals(
+            [[0, true], [0, false]],
+            readAloudModel.getArgs('getHighlightForCurrentSegmentIndex'));
+      });
+
+  test(
+      'word boundary with sentence highlighting looks up word segments', () => {
+        audioBrowserProxy.highlightGranularity =
+            audioBrowserProxy.sentenceHighlighting;
+        const {spoken, highlights} =
+            playWithWordHighlight('Sentences still notify');
+        let notified: Segment[] = [];
+        addWordBoundaryListener(segments => {
+          notified = segments;
+        });
+
+        spoken.onboundary(createWordBoundaryEvent(spoken, 0, 9));
+
+        assertDeepEquals(
+            [[0, false]],
+            readAloudModel.getArgs('getHighlightForCurrentSegmentIndex'));
+        assertEquals(highlights, notified);
       });
 
   test('onLockScreen callback triggers onLockScreen', () => {
@@ -1324,5 +1447,100 @@ suite('SpeechController', () => {
     audioBrowserProxy.onTabMuteStateChange.callListeners(true);
     speech.reset();
     audioBrowserProxy.onTabMuteStateChange.callListeners(false);
+  });
+
+  suite('speech playback session per page logging', () => {
+    let originalDateNow: () => number;
+    let fakeTime: number;
+
+    const baseUma = 'Accessibility.ReadAnything.SpeechPlaybackSession.PerPage';
+
+    function getPerPageCallCount(): number {
+      const calls = metrics.getArgs('recordSpeechPlaybackLength');
+      return calls.filter(call => call[0] === baseUma).length;
+    }
+
+    function getLastPerPageDuration(): number|undefined {
+      const calls = metrics.getArgs('recordSpeechPlaybackLength');
+      const perPageCalls = calls.filter(call => call[0] === baseUma);
+      return perPageCalls.length > 0 ?
+          perPageCalls[perPageCalls.length - 1][1] :
+          undefined;
+    }
+
+    setup(() => {
+      originalDateNow = Date.now;
+      fakeTime = 1000;
+      Date.now = () => fakeTime;
+    });
+
+    teardown(() => {
+      Date.now = originalDateNow;
+    });
+
+    test(
+        'resetForNewContent logs cumulative playback across multiple play/pause episodes',
+        () => {
+          // Episode 1: play for 500ms and pause.
+          onPlayPauseToggle('First sentence to read aloud.');
+          fakeTime += 500;
+          onPlayPauseToggle('First sentence to read aloud.');
+
+          // Episode 2: resume for 300ms and pause.
+          fakeTime += 100;
+          onPlayPauseToggle('First sentence to read aloud.');
+          fakeTime += 300;
+          onPlayPauseToggle('First sentence to read aloud.');
+
+          // Per-page metric is not logged yet while still on the page.
+          assertEquals(0, getPerPageCallCount());
+
+          // User navigates away / new content is loaded.
+          speechController.resetForNewContent();
+
+          // Cumulative playback duration (500 + 300 = 800ms) should be logged.
+          assertEquals(1, getPerPageCallCount());
+          assertEquals(800, getLastPerPageDuration());
+
+          // Calling resetForNewContent again without new playback should not
+          // re-log.
+          speechController.resetForNewContent();
+          assertEquals(1, getPerPageCallCount());
+        });
+
+    test(
+        'resetForNewContent does not log when savedSpeechPlayingState is set',
+        () => {
+          onPlayPauseToggle('Style change test.');
+          fakeTime += 250;
+          onPlayPauseToggle('Style change test.');
+
+          // Save state as happens during visual/style settings changes.
+          speechController.saveReadAloudState();
+          speechController.resetForNewContent();
+
+          // Should not log per-page metric for an in-page redraw.
+          assertEquals(0, getPerPageCallCount());
+        });
+
+    test('onReadingModeWillClose logs cumulative playback duration', () => {
+      onPlayPauseToggle('Closing reading mode test.');
+      fakeTime += 350;
+      onPlayPauseToggle('Closing reading mode test.');
+
+      assertEquals(0, getPerPageCallCount());
+
+      speechController.onReadingModeWillClose();
+
+      assertEquals(1, getPerPageCallCount());
+      assertEquals(350, getLastPerPageDuration());
+    });
+
+    test('does not log per-page metric when speech was never played', () => {
+      speechController.resetForNewContent();
+      speechController.onReadingModeWillClose();
+
+      assertEquals(0, getPerPageCallCount());
+    });
   });
 });

@@ -15,7 +15,7 @@
 
 namespace mirroring {
 
-// Abstract interface for dispatching inbound and outbound RPC messages.
+// Interface for dispatching inbound and outbound RPC messages.
 class COMPONENT_EXPORT(MIRRORING_SERVICE) RpcDispatcher {
  public:
   RpcDispatcher() = default;
@@ -27,12 +27,14 @@ class COMPONENT_EXPORT(MIRRORING_SERVICE) RpcDispatcher {
 
   using ResponseCallback =
       base::RepeatingCallback<void(const std::vector<uint8_t>& response)>;
+  using ErrorCallback = base::RepeatingClosure;
 
   // Handles registration for RPC messages. Currently only one callback that
   // receives all RPC messages is allowed. Multiple calls to `Subscribe` will
-  // overwrite the currently set callback. Callbacks should be executed
+  // overwrite the currently set callbacks. Callbacks should be executed
   // on the same sequence that RpcDispatcher is instantiated.
-  virtual void Subscribe(ResponseCallback callback) = 0;
+  virtual void Subscribe(ResponseCallback callback,
+                         ErrorCallback error_callback) = 0;
   virtual void Unsubscribe() = 0;
 
   // Requests to send outbound `message` to the remoting implementation on the

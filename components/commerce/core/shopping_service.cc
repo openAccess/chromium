@@ -58,7 +58,6 @@
 #include "components/session_proto_db/session_proto_storage.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "components/signin/public/base/signin_pref_names.h"
-#include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
 #include "components/unified_consent/url_keyed_data_collection_consent_helper.h"
 #include "net/base/url_util.h"
@@ -74,15 +73,6 @@ const size_t kRecentTabsMaxSize = 10;
 
 using UrlProductInfoTuple =
     std::tuple<const GURL, const std::optional<ProductInfo>>;
-
-// Returns the consent level to use for endpoint fetchers.
-// This function can be deleted once the Sync feature is removed.
-signin::ConsentLevel GetConsentLevelForEndpointFetchers(
-    PrefService* pref_service) {
-  return syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-             ? signin::ConsentLevel::kSignin
-             : signin::ConsentLevel::kSync;
-}
 
 }  // namespace
 
@@ -126,9 +116,7 @@ ShoppingService::ShoppingService(
       bookmark_consent_throttle_(
           unified_consent::UrlKeyedDataCollectionConsentHelper::
               NewPersonalizedBookmarksDataCollectionConsentHelper(
-                  sync_service,
-                  /*require_sync_feature_enabled=*/!syncer::
-                      IsReplaceSyncPromosWithSignInPromosEnabled())),
+                  sync_service)),
       web_extractor_(std::move(web_extractor)),
       tab_restore_service_(tab_restore_service),
       weak_ptr_factory_(this) {
@@ -171,7 +159,7 @@ ShoppingService::ShoppingService(
     if (subscription_proto_db) {
       subscriptions_manager_ = std::make_unique<SubscriptionsManager>(
           identity_manager, url_loader_factory, subscription_proto_db,
-          account_checker_.get(), GetConsentLevelForEndpointFetchers(pref_service_));
+          account_checker_.get(), signin::ConsentLevel::kSignin);
     }
   }
 
@@ -887,7 +875,8 @@ void ShoppingService::GetUrlInfosForWebWrappersWithProducts(
 const std::vector<UrlInfo>
 ShoppingService::GetUrlInfosForRecentlyViewedWebWrappers() {
   std::vector<UrlInfo> info_list;
-  for (auto info : recently_visited_tabs_) {
+  info_list.reserve(recently_visited_tabs_.size());
+  for (const auto& info : recently_visited_tabs_) {
     if (!info.url.SchemeIsHTTPOrHTTPS()) {
       continue;
     }
@@ -1264,7 +1253,10 @@ ShoppingService::OptGuideResultToPriceInsightsInfo(
       }
 
       if (history.has_jackpot_url() && !history.jackpot_url().empty()) {
-        info->jackpot_url = GURL(history.jackpot_url());
+        GURL jackpot_url(history.jackpot_url());
+        if (jackpot_url.is_valid() && jackpot_url.SchemeIsHTTPOrHTTPS()) {
+          info->jackpot_url = std::move(jackpot_url);
+        }
       }
     }
   }
@@ -1590,6 +1582,15 @@ void ShoppingService::GetProductIdentifierForUrl(
 }
 
 void ShoppingService::UpdateRecentlyViewedURL(WebWrapper* web) {
+  // Viewing the most recent URL again only needs its title refreshed. Entries
+  // only carry a URL and a title, so this matches the erase and insert below
+  // without shifting the whole list.
+  if (!recently_visited_tabs_.empty() &&
+      recently_visited_tabs_.front().url == web->GetLastCommittedURL()) {
+    recently_visited_tabs_.front().title = web->GetTitle();
+    return;
+  }
+
   bool already_exists_in_recents = false;
   for (auto it = recently_visited_tabs_.begin();
        it != recently_visited_tabs_.end(); ++it) {

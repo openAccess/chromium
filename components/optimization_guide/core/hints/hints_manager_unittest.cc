@@ -20,20 +20,21 @@
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "components/optimization_guide/core/access_token_helper.h"
 #include "components/optimization_guide/core/filters/bloom_filter.h"
 #include "components/optimization_guide/core/filters/hints_component_util.h"
 #include "components/optimization_guide/core/hints/hint_cache.h"
 #include "components/optimization_guide/core/hints/hints_fetcher.h"
 #include "components/optimization_guide/core/hints/hints_fetcher_factory.h"
+#include "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #include "components/optimization_guide/core/hints/optimization_guide_navigation_data.h"
 #include "components/optimization_guide/core/hints/optimization_guide_store.h"
+#include "components/optimization_guide/core/hints/prefs.h"
 #include "components/optimization_guide/core/hints/tab_url_provider.h"
 #include "components/optimization_guide/core/hints/top_host_provider.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
 #include "components/optimization_guide/core/optimization_guide_permissions_util.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
 #include "components/optimization_guide/core/proto_database_provider_test_base.h"
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -511,6 +512,13 @@ class HintsManagerTest : public ProtoDatabaseProviderTestBase {
     base::RunLoop().RunUntilIdle();
   }
 
+  void WaitForAccessTokenCallbacks() {
+    base::RunLoop run_loop;
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, run_loop.QuitClosure());
+    run_loop.Run();
+  }
+
  protected:
   OptimizationGuideLogger optimization_guide_logger_;
   std::unique_ptr<HintsManager> hints_manager_;
@@ -712,12 +720,8 @@ TEST_F(HintsManagerTest, ParseInvalidConfigVersions) {
 }
 
 TEST_F(HintsManagerTest, ComponentProcessingWhileShutdown) {
-  base::HistogramTester histogram_tester;
   InitializeWithDefaultConfig("10.0.0.0", /*should_wait=*/false);
   hints_manager()->Shutdown();
-
-  histogram_tester.ExpectUniqueSample(
-      "OptimizationGuide.ProcessingComponentAtShutdown", true, 1);
 
   EXPECT_TRUE(
       pref_service()->GetString(prefs::kPendingHintsProcessingVersion).empty());
@@ -2177,10 +2181,6 @@ TEST_F(HintsManagerFetchingTest, URLHintsNotFetchedAtNavigationTime) {
     histogram_tester.ExpectBucketCount(
         "OptimizationGuide.HintsManager.RaceNavigationFetchAttemptStatus",
         RaceNavigationFetchAttemptStatus::kRaceNavigationFetchURL, 1);
-    histogram_tester.ExpectUniqueSample(
-        "OptimizationGuide.HintsManager."
-        "PageNavigationHintsReturnedBeforeDataFlushed",
-        true, 1);
     RunUntilIdle();
   }
 
@@ -2200,10 +2200,6 @@ TEST_F(HintsManagerFetchingTest, URLHintsNotFetchedAtNavigationTime) {
     EXPECT_EQ(
         navigation_data->hints_fetch_attempt_status(),
         RaceNavigationFetchAttemptStatus::kRaceNavigationFetchNotAttempted);
-    histogram_tester.ExpectTotalCount(
-        "OptimizationGuide.HintsManager."
-        "PageNavigationHintsReturnedBeforeDataFlushed",
-        0);
   }
 }
 
@@ -2266,6 +2262,7 @@ TEST_F(HintsManagerFetchingTest, CanApplyOptimizationCalledMidFetch) {
   auto navigation_data =
       CreateTestNavigationData(url_without_hints(), {proto::DEFER_ALL_SCRIPT});
   CallOnNavigationStartOrRedirect(navigation_data.get(), base::DoNothing());
+  WaitForAccessTokenCallbacks();
   OptimizationTypeDecision optimization_type_decision =
       hints_manager()->CanApplyOptimization(navigation_data->navigation_url(),
                                             proto::DEFER_ALL_SCRIPT,
@@ -2452,6 +2449,7 @@ TEST_F(HintsManagerFetchingTest,
       BuildTestHintsFetcherFactory(
           {HintsFetcherEndState::kFetchSuccessWithHostHints}));
   CallOnNavigationStartOrRedirect(navigation_data.get(), base::DoNothing());
+  WaitForAccessTokenCallbacks();
   OptimizationMetadata optimization_metadata;
   OptimizationTypeDecision optimization_type_decision =
       hints_manager()->CanApplyOptimization(navigation_data->navigation_url(),
@@ -2476,10 +2474,8 @@ TEST_F(HintsManagerFetchingTest,
       CreateTestNavigationData(url_without_hints(), {proto::RESOURCE_LOADING});
   {
     base::HistogramTester histogram_tester;
-    hints_manager()->SetHintsFetcherFactoryForTesting(
-        BuildTestHintsFetcherFactory(
-            {HintsFetcherEndState::kFetchSuccessWithHostHints}));
     CallOnNavigationStartOrRedirect(navigation_data.get(), base::DoNothing());
+    WaitForAccessTokenCallbacks();
     histogram_tester.ExpectUniqueSample(
         "OptimizationGuide.HintsManager.RaceNavigationFetchAttemptStatus",
         RaceNavigationFetchAttemptStatus::kRaceNavigationFetchHostAndURL, 1);
@@ -2489,10 +2485,8 @@ TEST_F(HintsManagerFetchingTest,
 
   {
     base::HistogramTester histogram_tester;
-    hints_manager()->SetHintsFetcherFactoryForTesting(
-        BuildTestHintsFetcherFactory(
-            {HintsFetcherEndState::kFetchSuccessWithHostHints}));
     CallOnNavigationStartOrRedirect(navigation_data.get(), base::DoNothing());
+    WaitForAccessTokenCallbacks();
     histogram_tester.ExpectUniqueSample(
         "OptimizationGuide.HintsManager.RaceNavigationFetchAttemptStatus",
         RaceNavigationFetchAttemptStatus::kRaceNavigationFetchAlreadyInProgress,
@@ -2529,6 +2523,7 @@ TEST_F(HintsManagerFetchingTest,
   {
     base::HistogramTester histogram_tester;
     CallOnNavigationStartOrRedirect(navigation_data.get(), base::DoNothing());
+    WaitForAccessTokenCallbacks();
     histogram_tester.ExpectUniqueSample(
         "OptimizationGuide.HintsManager.RaceNavigationFetchAttemptStatus",
         RaceNavigationFetchAttemptStatus::kRaceNavigationFetchHostAndURL, 1);
@@ -2542,6 +2537,7 @@ TEST_F(HintsManagerFetchingTest,
   {
     base::HistogramTester histogram_tester;
     CallOnNavigationStartOrRedirect(navigation_data.get(), base::DoNothing());
+    WaitForAccessTokenCallbacks();
     histogram_tester.ExpectUniqueSample(
         "OptimizationGuide.HintsManager.RaceNavigationFetchAttemptStatus",
         RaceNavigationFetchAttemptStatus::kRaceNavigationFetchHost, 1);
@@ -2578,6 +2574,7 @@ TEST_F(HintsManagerFetchingTest,
                                   base::DoNothing());
   CallOnNavigationStartOrRedirect(navigation_data_without_hints2.get(),
                                   base::DoNothing());
+  WaitForAccessTokenCallbacks();
 
   // The third one is over the max and should evict another one.
   histogram_tester.ExpectTotalCount(
@@ -2603,6 +2600,7 @@ TEST_F(HintsManagerFetchingTest,
   auto navigation_data = CreateTestNavigationData(
       url_with_url_keyed_hint(), {proto::COMPRESS_PUBLIC_IMAGES});
   CallOnNavigationStartOrRedirect(navigation_data.get(), base::DoNothing());
+  WaitForAccessTokenCallbacks();
   hints_manager()->CanApplyOptimization(
       url_with_url_keyed_hint(), proto::COMPRESS_PUBLIC_IMAGES,
       base::BindOnce([](OptimizationGuideDecision decision,
@@ -3100,6 +3098,7 @@ TEST_F(HintsManagerFetchingTest, NewOptTypeRegisteredClearsHintCache) {
                                   run_loop.QuitClosure());
 
   run_loop.Run();
+  WaitForAccessTokenCallbacks();
 
   optimization_type_decision = hints_manager()->CanApplyOptimization(
       navigation_data->navigation_url(), proto::DEFER_ALL_SCRIPT,
@@ -3168,6 +3167,7 @@ TEST_F(HintsManagerFetchingTest, BatchUpdateCalledMoreThanMaxConcurrent) {
                                  OptimizationGuideDecisionWithMetadata>&)>(),
         std::nullopt);
   }
+  WaitForAccessTokenCallbacks();
 
   // The last one is over the max and should evict another one.
   histogram_tester.ExpectTotalCount(
@@ -3427,6 +3427,7 @@ TEST_F(HintsManagerFetchingTest,
           },
           run_loop.get()),
       request_context_metadata);
+  WaitForAccessTokenCallbacks();
   HintsFetcher* it =
       hints_manager_->batch_update_hints_fetchers_.Peek(0)->second.get();
   TestHintsFetcher* it2 = static_cast<TestHintsFetcher*>(it);
@@ -3472,6 +3473,7 @@ TEST_F(
           },
           run_loop.get()),
       request_context_metadata);
+  WaitForAccessTokenCallbacks();
   HintsFetcher* it =
       hints_manager_->batch_update_hints_fetchers_.Peek(0)->second.get();
   TestHintsFetcher* it2 = static_cast<TestHintsFetcher*>(it);
@@ -3507,6 +3509,7 @@ TEST_F(HintsManagerFetchingTest,
           },
           run_loop.get()),
       std::nullopt);
+  WaitForAccessTokenCallbacks();
   HintsFetcher* it =
       hints_manager_->batch_update_hints_fetchers_.Peek(0)->second.get();
   TestHintsFetcher* it2 = static_cast<TestHintsFetcher*>(it);
@@ -3601,16 +3604,8 @@ class HintsManagerPersonalizedFetchingTest : public HintsManagerFetchingTest {
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-// TODO(crbug.com/41482478): test is failing on iPhone device.
-#if TARGET_OS_IOS && !TARGET_OS_SIMULATOR
-#define MAYBE_SuccessfulPersonalizedHintsFetching \
-  DISABLED_SuccessfulPersonalizedHintsFetching
-#else
-#define MAYBE_SuccessfulPersonalizedHintsFetching \
-  SuccessfulPersonalizedHintsFetching
-#endif
 TEST_F(HintsManagerPersonalizedFetchingTest,
-       MAYBE_SuccessfulPersonalizedHintsFetching) {
+       SuccessfulPersonalizedHintsFetching) {
   ASSERT_TRUE(identity_test_env()->identity_manager());
   AccountInfo account_info = identity_test_env()->MakePrimaryAccountAvailable(
       "test_email", signin::ConsentLevel::kSignin);

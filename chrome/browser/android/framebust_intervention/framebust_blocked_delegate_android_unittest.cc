@@ -10,7 +10,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
-#include "components/blocked_content/popup_blocker_tab_helper.h"
 #include "components/blocked_content/safe_browsing_triggered_popup_blocker.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
 #include "components/content_settings/browser/test_page_specific_content_settings_delegate.h"
@@ -86,8 +85,6 @@ void FramebustBlockedMessageDelegateTest::SetUp() {
           content_settings::TestPageSpecificContentSettingsDelegate>(
           /*prefs=*/nullptr, settings_map_.get()));
 
-  PopupBlockerTabHelper::CreateForWebContents(web_contents());
-
   FramebustBlockedMessageDelegate::CreateForWebContents(web_contents());
   framebust_blocked_message_delegate_ =
       FramebustBlockedMessageDelegate::FromWebContents(web_contents());
@@ -112,9 +109,10 @@ bool FramebustBlockedMessageDelegateTest::EnqueueMessage(GURL url) {
       .WillOnce(testing::Return(true));
   auto intervention_outcome =
       [](FramebustBlockedMessageDelegate::InterventionOutcome outcome) {};
-  return GetDelegate()->ShowMessage(url, url::Origin::Create(url),
-                                    settings_map(),
-                                    base::BindOnce(intervention_outcome));
+  return GetDelegate()->ShowMessage(
+      url, url::Origin::Create(url),
+      main_rfh()->GetCurrentInitiatorNavigationState(), settings_map(),
+      base::BindOnce(intervention_outcome));
 }
 
 void FramebustBlockedMessageDelegateTest::TriggerActionClick() {
@@ -151,6 +149,7 @@ TEST_F(FramebustBlockedMessageDelegateTest, MessagePropertyValues) {
   // #EnqueueMessage ensure message is enqueued only once.
   GetDelegate()->ShowMessage(GURL("b.test"),
                              url::Origin::Create(GURL("b.test")),
+                             main_rfh()->GetCurrentInitiatorNavigationState(),
                              settings_map(), base::NullCallback());
   EXPECT_EQ(
       url_formatter::FormatUrlForSecurityDisplay(

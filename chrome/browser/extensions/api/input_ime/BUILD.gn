@@ -16,8 +16,6 @@ source_set("input_ime") {
     "input_ime_api_chromeos.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [
     "//base",
     "//build:chromeos_buildflags",
@@ -37,6 +35,7 @@ source_set("input_ime") {
     "//chrome/browser/ash/login/session",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/ui/ash/keyboard",
+    "//chromeos/ash/experiences/extensions/common/api",
     "//chromeos/ash/services/ime/public/cpp:structs",
     "//ui/base:features",
     "//ui/base/ime",

@@ -87,10 +87,11 @@ class JourneyLogger {
     // .show() was allowed without a user activaiton.
     kActivationlessShow = 1 << 10,
 
-    // Correspond to the merchant specifying requestShipping,
-    // requestPayerName,
-    // requestPayerEmail, requestPayerPhone.
+    // Corresponds to the merchant specifying requestShipping.
     kRequestShipping = 1 << 11,
+    // Corresponds to the merchant specifying requestPayerName.
+    kRequestPayerName = 1 << 12,
+    // See more request payer options with higher bit-indexes below.
 
     // The merchent requested a Google Pay Authentication method.
     kRequestMethodGooglePayAuthentication = 1 << 13,
@@ -120,6 +121,12 @@ class JourneyLogger {
     // Whether the PaymentRequest was initiated in a cross-site iframe.
     kInitiatedInCrossSiteIframe = 1 << 26,
 
+    // See more request payer options with lower bit-indexes above.
+    // Corresponds to the merchant specifying requestPayerEmail.
+    kRequestPayerEmail = 1 << 27,
+    // Corresponds to the merchant specifying requestPayerPhone.
+    kRequestPayerPhone = 1 << 28,
+
     // Bits for secure-payment-confirmation method.
     kNoMatchingCredentials = 1 << 29,
     kRequestMethodSecurePaymentConfirmation = 1 << 30,
@@ -146,6 +153,18 @@ class JourneyLogger {
     ABORT_REASON_USER_OPTED_OUT = 11,
     ABORT_REASON_INTERNAL_ERROR = 12,
     ABORT_REASON_MAX,
+  };
+
+  // The reason why the Payment Request was not shown.
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.payments
+  // GENERATED_JAVA_CLASS_NAME_OVERRIDE: NotShownReason
+  enum NotShownReason {
+    NOT_SHOWN_REASON_ALREADY_SHOWING = 0,
+    NOT_SHOWN_REASON_USER_ACTIVATION_REQUIRED = 1,
+    NOT_SHOWN_REASON_BACKGROUND_TAB = 2,
+    NOT_SHOWN_REASON_NO_SUPPORTED_PAYMENT_METHOD = 3,
+    NOT_SHOWN_REASON_USER_CANCEL = 4,
+    NOT_SHOWN_REASON_MAX,
   };
 
   // The categories of the payment methods.
@@ -256,7 +275,7 @@ class JourneyLogger {
   void SetAborted(AbortReason reason);
 
   // Records that the Payment Request was not shown to the user.
-  void SetNotShown();
+  void SetNotShown(NotShownReason reason);
 
   // Records that PaymentRequest.canMakePayment() was called.
   void SetCanMakePaymentCalled();

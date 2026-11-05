@@ -27,6 +27,7 @@
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_delegate_desktop.h"
 #include "chrome/browser/ui/tabs/tab_group_deletion_dialog_controller.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/bookmarks/saved_tab_groups/saved_tab_group_bar.h"
 #include "chrome/common/channel_info.h"
@@ -51,13 +52,16 @@
 #include "components/sync_device_info/device_info_sync_service.h"
 #include "components/sync_device_info/device_info_tracker.h"
 #include "components/tab_groups/tab_group_color.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/views/view_utils.h"
 #include "url/gurl.h"
 
@@ -270,7 +274,7 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateSessionRestoreBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), urls[0]));
   for (int i = 1; i < 6; ++i) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), urls[i], WindowOpenDisposition::NEW_BACKGROUND_TAB,
+        browser(), urls[i], ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   }
 
@@ -1045,10 +1049,10 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateBrowserTest,
   // the group locally. We send the addition first and removal next because this
   // is the order merges are sent from bridge. If removal is sent first, model
   // will delete the group instead for last tab closure.
-  const SavedTabGroupTab added_tab1(GURL(chrome::kChromeUINewTabURL),
+  const SavedTabGroupTab added_tab1(chrome::ChromeUINewTabURLAsGURL(),
                                     u"New Tab 1", saved_group_id,
                                     /*position=*/0);
-  const SavedTabGroupTab added_tab2(GURL(chrome::kChromeUINewTabURL),
+  const SavedTabGroupTab added_tab2(chrome::ChromeUINewTabURLAsGURL(),
                                     u"New Tab 2", saved_group_id,
                                     /*position=*/1);
   model_->AddTabToGroupFromSync(saved_group_id, added_tab1);
@@ -1183,7 +1187,7 @@ IN_PROC_BROWSER_TEST_F(TabGroupSyncDelegateBrowserTestWithFocusing,
   base::Uuid saved_guid = saved_group->saved_guid();
 
   // Focus the group.
-  browser()->tab_strip_model()->SetFocusedGroup(local_id);
+  browser()->tab_strip_model()->EnterFocusMode(local_id);
   ASSERT_EQ(local_id, browser()->tab_strip_model()->GetFocusedGroup());
 
   // Delete the saved group.

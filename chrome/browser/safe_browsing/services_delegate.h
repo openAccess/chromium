@@ -37,7 +37,7 @@ class DownloadProtectionService;
 class IncidentReportingService;
 class SafeBrowsingServiceImpl;
 class SafeBrowsingDatabaseManager;
-struct V4ProtocolConfig;
+struct SBProtocolConfig;
 
 // Abstraction to help organize code for mobile vs full safe browsing modes.
 // This helper class should be owned by a SafeBrowsingServiceImpl, and it
@@ -58,9 +58,11 @@ class ServicesDelegate {
 #endif
     virtual bool CanCreateIncidentReportingService() = 0;
 
+    virtual scoped_refptr<SafeBrowsingDatabaseManager>
+    CreateDatabaseManager() = 0;
+
     // Caller takes ownership of the returned object. Cannot use std::unique_ptr
     // because services may not be implemented for some build configs.
-    virtual SafeBrowsingDatabaseManager* CreateDatabaseManager() = 0;
 #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
     virtual DownloadProtectionService* CreateDownloadProtectionService() = 0;
 #endif
@@ -113,7 +115,7 @@ class ServicesDelegate {
   // database manager.
   virtual void StartOnUIThread(
       scoped_refptr<network::SharedURLLoaderFactory> browser_url_loader_factory,
-      const V4ProtocolConfig& v4_config) = 0;
+      const SBProtocolConfig& config) = 0;
   virtual void StopOnUIThread(bool shutdown) = 0;
 
   virtual void CreateTelemetryService(Profile* profile) {}

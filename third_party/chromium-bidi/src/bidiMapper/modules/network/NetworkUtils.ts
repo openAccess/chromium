@@ -21,7 +21,10 @@
  */
 import type {Protocol} from 'devtools-protocol';
 
-import {InvalidArgumentException} from '../../../protocol/ErrorResponse.js';
+import {
+  InvalidArgumentException,
+  UnableToSetCookieException,
+} from '../../../protocol/ErrorResponse.js';
 import {Network, type Storage} from '../../../protocol/protocol.js';
 import {base64ToString} from '../../../utils/base64.js';
 
@@ -164,7 +167,7 @@ export function networkHeaderFromCookieHeaders(
 /** Converts from Bidi auth action to CDP auth challenge response. */
 export function cdpAuthChallengeResponseFromBidiAuthContinueWithAuthAction(
   action: 'default' | 'cancel' | 'provideCredentials',
-) {
+): 'Default' | 'CancelAuth' | 'ProvideCredentials' {
   switch (action) {
     case 'default':
       return 'Default';
@@ -193,7 +196,7 @@ export function cdpToBiDiCookie(
     secure: cookie.secure,
     sameSite:
       cookie.sameSite === undefined
-        ? Network.SameSite.None
+        ? Network.SameSite.Default
         : sameSiteCdpToBiDi(cookie.sameSite),
     ...(cookie.expires >= 0 ? {expiry: Math.round(cookie.expires)} : undefined),
   };
@@ -233,7 +236,22 @@ export function bidiToCdpCookie(
   params: Storage.SetCookieParameters,
   partitionKey: Storage.PartitionKey,
 ): Protocol.Network.CookieParam {
+  if (
+    partitionKey['goog:hasCrossSiteAncestor'] !== undefined &&
+    partitionKey.sourceOrigin === undefined &&
+    params.cookie['goog:partitionKey'] === undefined
+  ) {
+    // CDP requires `topLevelSite` whenever `partitionKey` is set.
+    throw new UnableToSetCookieException(
+      'Cannot set goog:hasCrossSiteAncestor without sourceOrigin.',
+    );
+  }
+
   const deserializedValue = deserializeByteValue(params.cookie.value);
+  const sameSite =
+    params.cookie.sameSite === undefined
+      ? undefined
+      : sameSiteBiDiToCdp(params.cookie.sameSite);
   const result: Protocol.Network.CookieParam = {
     name: params.cookie.name,
     value: deserializedValue,
@@ -243,7 +261,10 @@ export function bidiToCdpCookie(
     httpOnly: params.cookie.httpOnly ?? false,
     ...(partitionKey.sourceOrigin !== undefined && {
       partitionKey: {
-        hasCrossSiteAncestor: false,
+        // Default to same-site ancestor unless overridden by BiDi+ extension.
+        hasCrossSiteAncestor:
+          (partitionKey['goog:hasCrossSiteAncestor'] as boolean | undefined) ??
+          false,
         // CDP's `partitionKey.topLevelSite` is the BiDi's `partition.sourceOrigin`.
         topLevelSite: partitionKey.sourceOrigin,
       },
@@ -251,9 +272,7 @@ export function bidiToCdpCookie(
     ...(params.cookie.expiry !== undefined && {
       expires: params.cookie.expiry,
     }),
-    ...(params.cookie.sameSite !== undefined && {
-      sameSite: sameSiteBiDiToCdp(params.cookie.sameSite),
-    }),
+    ...(sameSite === undefined ? {} : {sameSite}),
   };
 
   // Extending with CDP-specific properties with `goog:` prefix.
@@ -268,6 +287,9 @@ export function bidiToCdpCookie(
   }
   if (params.cookie[`goog:sourcePort`] !== undefined) {
     result.sourcePort = params.cookie[`goog:sourcePort`];
+  }
+  if (params.cookie[`goog:partitionKey`] !== undefined) {
+    result.partitionKey = params.cookie[`goog:partitionKey`];
   }
 
   return result;
@@ -284,23 +306,21 @@ function sameSiteCdpToBiDi(
     case 'Lax':
       return Network.SameSite.Lax;
     default:
-      // Defaults to `Lax`:
-      // https://web.dev/articles/samesite-cookies-explained#samesitelax_by_default
-      return Network.SameSite.Lax;
+      return Network.SameSite.Default;
   }
 }
 
 export function sameSiteBiDiToCdp(
   sameSite: Network.SameSite,
-): Protocol.Network.CookieSameSite {
+): Protocol.Network.CookieSameSite | undefined {
   switch (sameSite) {
     case Network.SameSite.None:
       return 'None';
     case Network.SameSite.Strict:
       return 'Strict';
-    // Defaults to `Lax`:
-    // https://web.dev/articles/samesite-cookies-explained#samesitelax_by_default
     case Network.SameSite.Default:
+      // Omit `sameSite` so CDP stores an unspecified (browser-default) cookie.
+      return undefined;
     case Network.SameSite.Lax:
       return 'Lax';
   }

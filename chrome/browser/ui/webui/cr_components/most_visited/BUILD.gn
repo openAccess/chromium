@@ -15,10 +15,7 @@ source_set("most_visited") {
     "most_visited_handler.h",
     "most_visited_pref_observer.h",
   ]
-  public_deps = [
-    "//chrome/browser:browser_public_dependencies",
-    "//chrome/browser/ui/search",
-  ]
+  public_deps = [ "//chrome/browser/ui/search" ]
   deps = [
     "//base",
     "//chrome/browser:browser_features",
@@ -31,12 +28,10 @@ source_set("most_visited") {
     "//chrome/browser/preloading/new_tab_page_preload",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/search_engines",
-    "//chrome/browser/ui/tabs:tabs_public",
     "//chrome/browser/ui/webui:webui_util",
     "//chrome/common/search:mojo_bindings",
     "//components/history/core/browser",
     "//components/ntp_tiles",
-    "//components/ntp_tiles:pref_names",
     "//components/page_load_metrics/browser",
     "//components/prefs",
     "//components/search",
@@ -50,9 +45,6 @@ source_set("most_visited") {
   ]
   if (!is_android) {
     deps += [ "//chrome/browser/web_applications" ]
-  } else {
-    # most_visited_handler.cc includes android/tab_features.h.
-    deps += [ "//chrome/browser/android:tabs_public" ]
   }
 }
 
@@ -70,7 +62,7 @@ source_set("unit_tests") {
     "//chrome/browser/ui/search",
     "//chrome/test:test_support",
     "//components/ntp_tiles",
-    "//components/ntp_tiles:pref_names",
+    "//components/ntp_tiles:test_support",
     "//components/prefs",
     "//components/search",
     "//components/search_engines",

@@ -6,6 +6,7 @@ module blink.mojom;
 
 import "cc/mojom/browser_controls_offset_tag_modifications.mojom";
 import "cc/mojom/browser_controls_state.mojom";
+import "mojo/public/mojom/base/big_buffer.mojom";
 import "mojo/public/mojom/base/byte_size.mojom";
 import "mojo/public/mojom/base/byte_string.mojom";
 import "mojo/public/mojom/base/shared_memory.mojom";
@@ -43,8 +44,6 @@ import "third_party/blink/public/mojom/dom/dom_node_id.mojom";
 import "third_party/blink/public/mojom/dom_storage/storage_area.mojom";
 import "third_party/blink/public/mojom/drag/drag.mojom";
 import "third_party/blink/public/mojom/favicon/favicon_url.mojom";
-import "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom";
-import "third_party/blink/public/mojom/fenced_frame/fenced_frame_config.mojom";
 import "third_party/blink/public/mojom/fetch/fetch_api_request.mojom";
 import "third_party/blink/public/mojom/frame/blocked_navigation_types.mojom";
 import "third_party/blink/public/mojom/frame/frame_owner_properties.mojom";
@@ -136,11 +135,11 @@ struct DownloadURLParams {
   mojo_base.mojom.String16? suggested_name;
   network.mojom.RedirectMode cross_origin_redirects;
 
-  // Non-null when |url| is for "blob:".
+  // Non-null when `url` is for "blob:".
   pending_remote<BlobURLToken>? blob_url_token;
 
-  // Non-null when |url| is for "data:", eg. when saving an image.
-  pending_remote<Blob>? data_url_blob;
+  // Non-null when `url` is for "data:", eg. when saving an image.
+  mojo_base.mojom.BigBuffer? data_url_buffer;
 
   // Whether to prompt the user for a destination filepath.
   bool should_prompt_for_save_location = false;
@@ -185,6 +184,7 @@ enum FrameOwnerElementType {
   kEmbed,
   kFrame,
   kFencedframe,
+  kPersistentwidget,
 };
 
 enum NavigationApiEntryRestoreReason {
@@ -534,6 +534,23 @@ interface LocalFrameHost {
   // settings.
   ShowCaptionSettings();
 
+  // Notifies the browser that a video ad was detected within this frame.
+  // The browser then locates the root ad frame (the top-most ancestor that
+  // is still an ad frame) and notifies the root ad frame's parent document
+  // so that the root ad frame's owner element (<iframe>) can be tagged.
+  //
+  // Prerequisite: The frame must already be an ad frame (enforced at the mojom
+  // boundary).
+  //
+  // Note: Renderer-to-browser communication for typical ad-tagging is routed
+  // via subresource_filter.mojom.SubresourceFilterHost. This stems from a
+  // historical strict layering constraint to keep ad-related logic out of
+  // //content. As this constraint has relaxed over time, routing the video
+  // tagging via mojom::LocalFrameHost is now acceptable and cleaner. We may
+  // eventually consolidate the renderer-to-browser ad-tagging communication
+  // into a single channel.
+  UpdateToVideoAdFrame();
+
   // Sent to the browser when focus changes inside the frame.
   // - is_editable_element: Whether the newly focused element needs
   //   keyboard input (true for textfields, text areas and content
@@ -664,6 +681,10 @@ interface LocalFrameHost {
   // navigation.
   FrameSizeChanged(gfx.mojom.Size size);
 
+  // The frame's bounds in its local root widget's DIP space, used by the
+  // browser process to constrain unbounded elements inside iframes.
+  FrameBoundsInLocalRootChanged(gfx.mojom.Rect bounds);
+
   // Notifies the frame that the document's color scheme has been inferred.
   DidInferColorScheme(PreferredColorScheme color_scheme);
 
@@ -679,48 +700,6 @@ interface LocalFrameHost {
   // RemoteFrameHost messages already signal the browser via RouteMessageEvent.
   ReceivedDelegatedCapability(DelegatedCapability delegated_capability);
 
-  // See:
-  // https://github.com/WICG/turtledove/blob/main/Fenced_Frames_Ads_Reporting.md
-  //
-  // This implements the API:
-  // window.fence.reportEvent({eventType, eventData, destination})
-  //
-  // A document in a fenced frame can invoke the reportEvent API to request the
-  // browser to send `eventData` in a beacon toward the URL registered against
-  // `eventType` by the worklet in registerAdBeacon. Depending on the declared
-  // `destination`, the beacon is sent to the reporting destination's
-  // registered URL.
-  // Note the `destination` above is a WebIDL sequence, which means it may
-  // contain multiple destinations. It is forwarded as a collection in a single
-  // IPC call, instead of making an IPC call for each destination.
-  // For the list of available reporting destinations, see enum
-  // ReportingDestination defined in:
-  // third_party/blink/public/mojom/fenced_frame/fenced_frame_config.mojom
-  // `cross_origin_exposed` determines if this event can be used with reporting
-  // metadata that lives in a cross-origin frame. See the comment in
-  // "fence_event.idl" for more details.
-  SendFencedFrameReportingBeacon(string event_data,
-                                 string event_type,
-                                 array<ReportingDestination> destinations,
-                                 bool cross_origin_exposed);
-
-  // See:
-  // https://github.com/WICG/turtledove/blob/main/Fenced_Frames_Ads_Reporting.md
-  //
-  // This implements the API:
-  // window.fence.reportEvent({destinationURL})
-  //
-  // A document in a fenced frame can invoke the reportEvent API to request the
-  // browser to send a beacon to the https URL `destinationURL`, where macros
-  // in `destinationURL` will be substituted using the values specified by
-  // registerAdMacro in the Protected Audience auction's buyer worklet.
-  // `cross_origin_exposed` determines if this event can be used with reporting
-  // metadata that lives in a cross-origin frame. See the comment in
-  // "fence_event.idl" for more details.
-  //
-  SendFencedFrameReportingBeaconToCustomURL(
-      url.mojom.Url destination_url, bool cross_origin_exposed);
-
   // Notify the browser that there is a legacy technology used by the page.
   // The event contains the technology `type` and code location from the
   // ExecutionContext.
@@ -731,37 +710,6 @@ interface LocalFrameHost {
   // by the server.
   SendLegacyTechEvent(
       string type, LegacyTechEventCodeLocation code_location);
-
-  // Fenced frames can send beacons automatically when an event happens.
-  //
-  // For now, only "reserved.top_navigation_start" and
-  // "reserved.top_navigation_commit" is supported ("reserved.top_navigation"
-  // will still work, but is deprecated). The `event_data` is installed in the
-  // RenderFrameHost and will be sent toward `destinations` on the next
-  // cross-document top-frame navigation.
-  // `cross_origin_exposed` determines if this data can be used for an automatic
-  // beacon that originates from a cross-origin subframe. See the comment in
-  // "fence_event.idl" for more details.
-  SetFencedFrameAutomaticBeaconReportEventData(
-      AutomaticBeaconType event_type,
-      string event_data,
-      array<ReportingDestination> destinations,
-      bool once,
-      bool cross_origin_exposed);
-
-  // Sent by the frame in a renderer process that hosts/owns a <fencedframe>
-  // element, to the browser process requesting the creation of a new fenced
-  // frame tree that will host the contents of the <fencedframe> element.
-  // `fenced_frame` - the receiver that the browser will bind to receive
-  //                  messages from the renderer.
-  // `frame_token` - the unique identifier of the RenderFrameProxy
-  // `devtools_frame_token` - the unique identifier of the main FrameTreeNode in
-  //                          the "inner" fenced frame FrameTree
-  CreateFencedFrame(
-      pending_associated_receiver<blink.mojom.FencedFrameOwnerHost> fenced_frame,
-      RemoteFrameInterfacesFromRenderer remote_frame_interfaces,
-      blink.mojom.RemoteFrameToken frame_token,
-      mojo_base.mojom.UnguessableToken devtools_frame_token);
 
   // Notifies when the ViewTransition opt-in state for the current Document
   // changes.
@@ -781,9 +729,10 @@ interface LocalFrameHost {
                 DragEventSourceInfo event_info);
 
   // Register the remote corresponding to |receiver| as a keep alive handle for
-  // browser-process navigation state associated with this LocalFrameHost.
+  // browser-process navigation state associated with the `initiator_state_token`.
   IssueKeepAliveHandle(
-      pending_receiver<NavigationStateKeepAliveHandle> receiver);
+      pending_receiver<NavigationStateKeepAliveHandle> receiver,
+      blink.mojom.InitiatorStateToken initiator_state_token);
 
   // Used to tell the browser that storage access was requested and whether it
   // was allowed.
@@ -814,6 +763,28 @@ interface LocalFrameHost {
       pending_associated_receiver<UnboundedSurfaceHost> host,
       pending_associated_remote<UnboundedSurfaceClient> client,
       gfx.mojom.Rect bounds);
+
+  // Sent when the user dismisses the XSLT deprecation warning banner with the
+  // "Never show this warning" checkbox checked. The embedder persists this, and
+  // sends it back to the renderer as
+  // `WebPreferences::is_xslt_deprecation_banner_suppressed`.
+  // This is not security sensitive: the banner is injected into the page's own
+  // DOM, so a page can already hide it. A compromised renderer can therefore
+  // only suppress a deprecation warning.
+  // TODO(crbug.com/560233256): This message is temporary, and is only required
+  // before XSLT is disabled by default in M158. It can be removed in M158, or
+  // whenever XSLT is disabled by default (other than for origin trials and
+  // enterprise policy).
+  SuppressXSLTDeprecationBanner();
+
+  // Sent when the document in the frame records a user edit in a form text
+  // control (e.g., <input> text field or <textarea>) for the first time.
+  DidHaveFormEdit();
+
+  // Sent when the document in the frame records a user edit (including form
+  // text controls and non-form editable elements such as contenteditable) for
+  // the first time.
+  DidHaveUserEdit();
 };
 
 // Implemented in Browser, this interface defines frame-specific methods
@@ -875,6 +846,10 @@ interface LocalFrame {
   //         the child frame's owner element.
   SendInterventionReport(
       string id, string message, blink.mojom.FrameToken? child_frame_token);
+
+  // Notifies this frame that a child frame (identified by `child_frame_token`)
+  // has been updated to be a video ad.
+  UpdateChildFrameToVideoAd(blink.mojom.FrameToken child_frame_token);
 
   // Updates this frame's FrameOwner properties, such as scrolling, margin,
   // or allowfullscreen.  This is used when this frame's parent is in
@@ -1114,7 +1089,7 @@ interface LocalFrame {
   // TODO(crbug.com/515541906): This method is to be merged with the InvokeTool
   // method in chrome/common/chrome_render_frame.mojom once //chrome
   // implementation for script tools is moved to //content.
-  InvokeScriptToolForInspector(mojo_base.mojom.UnguessableToken invocation_id,
+  InvokeScriptToolForInspector(blink.mojom.ToolInvocationToken invocation_id,
                                string tool_name,
                                string input_arguments) => (bool success);
 
@@ -1129,7 +1104,7 @@ interface LocalFrame {
   // chrome/common/chrome_render_frame.mojom once //chrome implementation for
   // script tools is moved to //content.
   NotifyInspectorOfCrossDocumentScriptToolResult(
-      mojo_base.mojom.UnguessableToken invocation_id);
+      blink.mojom.ToolInvocationToken invocation_id);
 
   // Requests the index of a character in the frame's text stream at the given
   // point. The point is in the viewport coordinate space. Replies using
@@ -1366,6 +1341,7 @@ interface LocalMainFrame {
 
   // Replaces the active document with an empty document to free resources,
   // e.g. for supporting tab discard.
+  [SupportsUrgent]
   Discard() => ();
 
   // Updates the frame's finalized locally differentially private

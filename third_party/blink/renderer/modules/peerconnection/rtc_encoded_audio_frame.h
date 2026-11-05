@@ -7,8 +7,10 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <optional>
 
+#include "base/memory/scoped_refptr.h"
 #include "base/types/expected.h"
 #include "base/unguessable_token.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
@@ -16,8 +18,9 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
-#include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "v8/include/v8-isolate.h"
 
 namespace webrtc {
 class TransformableAudioFrameInterface;
@@ -59,15 +62,15 @@ class MODULES_EXPORT RTCEncodedAudioFrame final : public ScriptWrappable {
   // Returns the RTP Packet Timestamp for this frame.
   uint32_t timestamp() const;
   std::optional<uint16_t> sequenceNumber() const;
-  DOMArrayBuffer* data(ExecutionContext* context) const;
+  DOMArrayBuffer* data() const;
   RTCEncodedAudioFrameMetadata* getMetadata(ExecutionContext*) const;
   base::expected<void, String> SetMetadata(ExecutionContext*,
                                            const RTCEncodedAudioFrameMetadata*);
   void setMetadata(ExecutionContext*,
                    RTCEncodedAudioFrameMetadata*,
                    ExceptionState&);
-  void setData(ExecutionContext*, DOMArrayBuffer*);
-  String toString(ExecutionContext* context) const;
+  void setData(DOMArrayBuffer*);
+  String toString() const;
 
   base::UnguessableToken OwnerId();
   int64_t Counter();

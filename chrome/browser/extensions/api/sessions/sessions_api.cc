@@ -38,12 +38,14 @@
 #include "components/sessions/content/content_live_tab.h"
 #include "components/sessions/core/live_tab_context.h"
 #include "components/sessions/core/serialized_navigation_entry.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "components/sync_sessions/open_tabs_ui_delegate.h"
 #include "components/sync_sessions/session_sync_service.h"
 #include "components/sync_sessions/synced_session.h"
 #include "components/tab_groups/tab_group_color.h"
 #include "components/url_formatter/url_formatter.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_function_dispatcher.h"
 #include "extensions/browser/extension_function_registry.h"
@@ -51,6 +53,7 @@
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/mojom/context_type.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -291,7 +294,7 @@ api::tabs::Tab SessionsGetRecentlyClosedFunction::CreateTabModel(
 
 api::windows::Window SessionsGetRecentlyClosedFunction::CreateWindowModel(
     const sessions::tab_restore::Window& window) {
-  DCHECK(!window.tabs.empty());
+  CHECK(!window.tabs.empty(), base::NotFatalUntil::M161);
 
   std::vector<api::tabs::Tab> tabs;
   for (const auto& tab : window.tabs) {
@@ -306,7 +309,7 @@ api::windows::Window SessionsGetRecentlyClosedFunction::CreateWindowModel(
 
 api::tab_groups::TabGroup SessionsGetRecentlyClosedFunction::CreateGroupModel(
     const sessions::tab_restore::Group& group) {
-  DCHECK(!group.tabs.empty());
+  CHECK(!group.tabs.empty(), base::NotFatalUntil::M161);
 
   return ExtensionTabUtil::CreateTabGroupObject(group.group_id,
                                                 group.visual_data);
@@ -510,6 +513,8 @@ std::optional<api::windows::Window>
 SessionsGetDevicesFunction::CreateWindowModel(
     const sessions::SessionWindow& window,
     const std::string& session_tag) {
+  // TODO(crbug.com/575408483): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!window.tabs.empty());
 
   // Ignore app popup window for now because we do not have a corresponding
@@ -651,7 +656,7 @@ ExtensionFunction::ResponseAction SessionsGetDevicesFunction::Run() {
   sync_sessions::SessionSyncService* service =
       SessionSyncServiceFactory::GetInstance()->GetForProfile(
           Profile::FromBrowserContext(browser_context()));
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M161);
 
   sync_sessions::OpenTabsUIDelegate* open_tabs =
       service->GetOpenTabsUIDelegate();
@@ -710,7 +715,7 @@ SessionsRestoreFunction::GetRestoredWindowResult(int window_id) {
           extension(), WindowController::kPopulateTabs, source_context_type());
   std::optional<api::windows::Window> window =
       api::windows::Window::FromValue(window_value);
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M161);
   return ArgumentList(Restore::Results::Create(
       CreateSessionModelHelper(base::Time::Now().ToTimeT(), std::nullopt,
                                std::move(*window), std::nullopt)));
@@ -746,7 +751,9 @@ SessionsRestoreFunction::RestoreMostRecentlyClosed(
   }
   std::vector<sessions::LiveTab*> restored_tabs =
       tab_restore_service->RestoreMostRecentEntry(context);
-  DCHECK(restored_tabs.size());
+  if (restored_tabs.empty()) {
+    return RespondNow(Error(kNoActiveTabError));
+  }
 
   sessions::ContentLiveTab* first_tab =
       static_cast<sessions::ContentLiveTab*>(restored_tabs[0]);
@@ -923,17 +930,19 @@ ExtensionFunction::ResponseAction SessionsRestoreFunction::RestoreLocalSession(
   if (!context) {
     return RespondNow(Error(kNoLiveTabContextError));
   }
-  std::vector<sessions::LiveTab*> restored_tabs =
+  std::optional<std::vector<sessions::LiveTab*>> restored_tabs =
       tab_restore_service->RestoreEntryById(
           context, SessionID::FromSerializedValue(session_id.id()),
-          WindowOpenDisposition::UNKNOWN);
-  // If the ID is invalid, restored_tabs will be empty.
-  if (restored_tabs.empty()) {
+          ui::mojom::WindowOpenDisposition::kUnknown);
+  if (!restored_tabs.has_value()) {
     return RespondNow(Error(kInvalidSessionIdError, session_id.ToString()));
+  }
+  if (restored_tabs->empty()) {
+    return RespondNow(Error(kNoActiveTabError));
   }
 
   sessions::ContentLiveTab* first_tab =
-      static_cast<sessions::ContentLiveTab*>(restored_tabs[0]);
+      static_cast<sessions::ContentLiveTab*>((*restored_tabs)[0]);
 
   // Retrieve the window through any of the tabs in restored_tabs.
   if (is_window) {
@@ -951,7 +960,7 @@ SessionsRestoreFunction::RestoreForeignSession(
   Profile* profile = Profile::FromBrowserContext(browser_context());
   sync_sessions::SessionSyncService* service =
       SessionSyncServiceFactory::GetInstance()->GetForProfile(profile);
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M161);
 
   sync_sessions::OpenTabsUIDelegate* open_tabs =
       service->GetOpenTabsUIDelegate();
@@ -971,7 +980,8 @@ SessionsRestoreFunction::RestoreForeignSession(
 
     content::WebContents* tab_contents =
         SessionRestore::RestoreForeignSessionTab(
-            contents, *tab, WindowOpenDisposition::NEW_FOREGROUND_TAB);
+            contents, *tab,
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab);
     return RespondNow(GetRestoredTabResult(tab_contents));
   }
 
@@ -1010,7 +1020,7 @@ SessionsRestoreFunction::RestoreForeignSession(
 void SessionsRestoreFunction::OnRestoreForeignSessionWindows(
     std::vector<BrowserWindowInterface*> browsers) {
   // Will always create one browser because we only restore one window per call.
-  DCHECK_EQ(1u, browsers.size());
+  CHECK_EQ(1u, browsers.size(), base::NotFatalUntil::M161);
   Respond(GetRestoredWindowResult(ExtensionTabUtil::GetWindowId(browsers[0])));
 }
 
@@ -1112,9 +1122,9 @@ void SessionsEventRouter::OnRecentlyClosedUpdated(int64_t j_browser_context) {
 // static
 void SessionsEventRouter::BroadcastOnChangedEvent(Profile* profile) {
   CHECK(profile);
-  EventRouter::Get(profile)->BroadcastEvent(std::make_unique<Event>(
-      events::SESSIONS_ON_CHANGED, api::sessions::OnChanged::kEventName,
-      base::ListValue()));
+  EventRouter::Get(profile)->BroadcastEvent(
+      std::make_unique<Event>(events::SESSIONS_ON_CHANGED,
+                              api::sessions::OnChanged::kEventName, nullptr));
 }
 
 SessionsAPI::SessionsAPI(content::BrowserContext* context)

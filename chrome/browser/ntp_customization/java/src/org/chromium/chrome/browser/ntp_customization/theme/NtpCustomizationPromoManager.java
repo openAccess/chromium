@@ -8,11 +8,13 @@ import android.content.Context;
 
 import androidx.annotation.IntDef;
 
+import org.chromium.base.CommandLine;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.TimeUtils;
 import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType;
@@ -71,6 +73,12 @@ public class NtpCustomizationPromoManager {
      */
     public static boolean canTriggerCustomizationBottomSheet(
             WindowAndroid windowAndroid, boolean isLff, int ntpOpenedCount) {
+        CommandLine commandLine = CommandLine.getInstance();
+        if (commandLine.hasSwitch(ChromeSwitches.DISABLE_NTP_THEME_PROMO_BOTTOM_SHEET_FOR_TESTING)
+                || commandLine.hasSwitch(ChromeSwitches.NO_FIRST_RUN)) {
+            return false;
+        }
+
         if (!NtpCustomizationUtils.isNtpThemeCustomizationEnabled(windowAndroid, isLff)) {
             return false;
         }

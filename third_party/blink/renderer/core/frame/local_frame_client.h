@@ -50,9 +50,9 @@
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/mojom/blob/blob_url_store.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/devtools/devtools_agent.mojom-blink-forward.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/frame/remote_frame.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/frame/triggering_event_info.mojom-blink-forward.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/scheduler/web_scoped_virtual_time_pauser.h"
 #include "third_party/blink/public/platform/web_background_resource_fetch_assets.h"
 #include "third_party/blink/public/platform/web_content_settings_client.h"
@@ -89,7 +89,6 @@ namespace blink {
 class AssociatedInterfaceProvider;
 class ChildURLLoaderFactoryBundle;
 class DocumentLoader;
-class HTMLFencedFrameElement;
 class HTMLFormElement;
 class HTMLFrameOwnerElement;
 class HTMLMediaElement;
@@ -98,7 +97,6 @@ class HistoryItem;
 class KURL;
 class LocalDOMWindow;
 class LocalFrame;
-class RemoteFrame;
 class RemotePlaybackClient;
 class ResourceError;
 class ResourceRequest;
@@ -197,7 +195,7 @@ class CORE_EXPORT LocalFrameClient : public FrameClient {
       base::TimeTicks actual_navigation_start,
       const String& href_translate,
       const LocalFrameToken* initiator_frame_token,
-      const base::UnguessableToken& initiator_state_token,
+      const InitiatorStateToken& initiator_state_token,
       const DocumentToken& initiator_document_token,
       SourceLocation* source_location,
       mojo::PendingRemote<mojom::blink::NavigationStateKeepAliveHandle>
@@ -207,7 +205,8 @@ class CORE_EXPORT LocalFrameClient : public FrameClient {
       mojo::PendingReceiver<
           mojom::blink::NavigationResumeDeferredCommitListener>
           resume_defer_commit_listener,
-      std::optional<base::UnguessableToken> script_tool_invocation_id) = 0;
+      std::optional<ToolInvocationToken> script_tool_invocation_id,
+      const String& script_injector_host) = 0;
 
   virtual void DispatchWillSendSubmitEvent(HTMLFormElement*) = 0;
 
@@ -235,7 +234,8 @@ class CORE_EXPORT LocalFrameClient : public FrameClient {
       PerformanceTimelineEntryIdInfo navigation_id) {}
 
   // Will be called when |CpuTiming| events are updated
-  virtual void DidChangeCpuTiming(base::TimeDelta time) {}
+  virtual void DidChangeCpuTiming(base::TimeDelta time,
+                                  base::TimeDelta ad_time) {}
 
   // Will be called when a particular loading code path has been used. This
   // propogates renderer loading behavior to the browser process for histograms.
@@ -292,12 +292,6 @@ class CORE_EXPORT LocalFrameClient : public FrameClient {
   virtual LocalFrame* CreateFrame(const AtomicString& name,
                                   HTMLFrameOwnerElement*) = 0;
 
-  // Creates a remote fenced frame hosted by an MPArch frame tree for the
-  // |HTMLFencedFrameElement|.
-  virtual RemoteFrame* CreateFencedFrame(
-      HTMLFencedFrameElement*,
-      mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>) = 0;
-
   // TODO(crbug.com/40511450): Remove `load_manually` once PPAPI is gone.
   virtual WebPluginContainerImpl* CreatePlugin(HTMLPlugInElement&,
                                                const KURL&,
@@ -325,7 +319,7 @@ class CORE_EXPORT LocalFrameClient : public FrameClient {
   virtual void WillReleaseScriptContext(v8::Local<v8::Context>,
                                         int32_t world_id) = 0;
 
-  virtual void DidChangeScrollOffset() {}
+  virtual void DidChangeScrollOffset(mojom::blink::ScrollType) {}
 
   // Immediately notifies the browser of a change in the current HistoryItem.
   // Prefer DidUpdateCurrentHistoryItem().
@@ -375,9 +369,6 @@ class CORE_EXPORT LocalFrameClient : public FrameClient {
 
   virtual scoped_refptr<WebBackgroundResourceFetchAssets>
   MaybeGetBackgroundResourceFetchAssets() = 0;
-
-  virtual void SetVirtualTimePauser(
-      WebScopedVirtualTimePauser virtual_time_pauser) {}
 
   virtual String evaluateInInspectorOverlayForTesting(const String& script) = 0;
 
@@ -445,6 +436,9 @@ class CORE_EXPORT LocalFrameClient : public FrameClient {
   // Specifies whether to disable DOM storage interfaces such as localStorage
   // and sessionStorage.
   virtual bool IsDomStorageDisabled() const { return false; }
+
+  // Specifies whether to disable dedicated workers.
+  virtual bool AreDedicatedWorkersDisabled() const { return false; }
 
   // Debugging -----------------------------------------------------------
   virtual void BindDevToolsAgent(

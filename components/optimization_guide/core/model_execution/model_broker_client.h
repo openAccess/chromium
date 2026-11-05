@@ -15,37 +15,30 @@
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
 #include "components/optimization_guide/core/model_execution/on_device_execution.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_feature_adapter.h"
-#include "components/optimization_guide/core/model_execution/safety_checker.h"
-#include "components/optimization_guide/core/model_execution/safety_config.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_names.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
 #include "components/optimization_guide/proto/model_quality_metadata.pb.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
-#include "mojo/public/cpp/bindings/remote_set.h"
 #include "services/on_device_model/public/mojom/download_observer.mojom.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace optimization_guide {
 
-class ModelClient final : public TextSafetyClient {
+class ModelClient final {
  public:
   ModelClient(mojo::PendingRemote<mojom::ModelSolution> remote,
               mojom::ModelSolutionConfigPtr config,
               on_device_model::Capabilities device_capabilities);
-  ~ModelClient() override;
+  ~ModelClient();
 
   // Construct a session for this capability.
   std::unique_ptr<OnDeviceSession> CreateSession(
       const SessionConfigParams& config_params,
       base::WeakPtr<OptimizationGuideLogger> logger);
-
-  // TextSafetyClient:
-  void StartSession(
-      mojo::PendingReceiver<on_device_model::mojom::TextSafetySession> session)
-      override;
 
   base::WeakPtr<ModelClient> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
@@ -62,10 +55,6 @@ class ModelClient final : public TextSafetyClient {
     return capabilities_;
   }
 
-  const proto::FeatureTextSafetyConfiguration& safety_config() const {
-    return safety_config_;
-  }
-
   const TokenLimits& token_limits() const {
     return feature_adapter_->GetTokenLimits();
   }
@@ -79,6 +68,8 @@ class ModelClient final : public TextSafetyClient {
     return feature_adapter_->GetFeatureMetadata();
   }
 
+  OnDeviceBaseModel base_model() const { return base_model_; }
+
  private:
   // Called when the remote disconnects.
   void OnDisconnect();
@@ -87,8 +78,8 @@ class ModelClient final : public TextSafetyClient {
 
   mojo::Remote<mojom::ModelSolution> remote_;
   scoped_refptr<const OnDeviceModelFeatureAdapter> feature_adapter_;
-  proto::FeatureTextSafetyConfiguration safety_config_;
   proto::OnDeviceModelVersions model_versions_;
+  OnDeviceBaseModel base_model_ = OnDeviceBaseModel::kUnknown;
   on_device_model::Capabilities capabilities_;
   mojom::OnDeviceFeature feature_;
   base::WeakPtrFactory<ModelClient> weak_ptr_factory_{this};
@@ -138,11 +129,16 @@ class ModelSubscriberImpl : public mojom::ModelSubscriber {
   void CapabilitiesUpdated(
       const on_device_model::Capabilities& capabilities) override;
 
-  // Fire all pending callbacks
-  void FlushCallbacks();
+  // Collect ready `WaitForClient()` callbacks to run once `this` is no longer
+  // needed on the stack.
+  [[nodiscard]] std::vector<base::OnceClosure> FlushModelClientCallbacks();
 
-  // Fire all pending CanCreateSession callbacks.
-  void FlushCanCreateSessionCallbacks();
+  // Collect ready `CanCreateSession()` callbacks to run once `this` is no
+  // longer needed on the stack.
+  [[nodiscard]] std::vector<base::OnceClosure> FlushCanCreateSessionCallbacks();
+
+  // Collect all ready callbacks from both queues.
+  [[nodiscard]] std::vector<base::OnceClosure> FlushAllCallbacks();
 
   std::vector<ClientCallback> callbacks_;
   std::optional<mojom::ModelUnavailableReason> unavailable_reason_;
@@ -202,6 +198,12 @@ class ModelBrokerClient final {
   void AddModelDownloadProgressObserver(
       const std::string& use_case,
       mojo::PendingRemote<on_device_model::mojom::DownloadObserver> observer);
+
+  // The logger for this client. Callers outside of //components should use
+  // this rather than OptimizationGuideLogger::GetInstance(): in component
+  // builds each shared library links its own copy of the singleton, and only
+  // the one owned by the browser layer is observed by the internals page.
+  base::WeakPtr<OptimizationGuideLogger> logger() const { return logger_; }
 
  private:
   mojo::Remote<mojom::ModelBroker> remote_;

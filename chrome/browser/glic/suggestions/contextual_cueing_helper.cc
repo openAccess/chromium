@@ -33,7 +33,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/side_panel/side_panel_ui_provider.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/common/pref_names.h"
 #include "components/feature_engagement/public/feature_constants.h"
@@ -50,6 +49,7 @@
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -58,10 +58,8 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #else
 #include "chrome/browser/contextual_tasks/contextual_tasks_side_panel_coordinator.h"  // nogncheck crbug.com/40147906
-#include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/glic/glic_button_interface.h"  // nogncheck crbug.com/40147906
-#include "ui/views/controls/button/label_button.h"  // nogncheck crbug.com/40147906
 #endif
 
 namespace glic {
@@ -324,17 +322,12 @@ bool ContextualCueingHelper::IsBrowserBlockingNudges(
   }
 
   BrowserWindowInterface* browser_window_interface =
-#if !BUILDFLAG(IS_ANDROID)
       tab_interface->GetBrowserWindowInterface();
-#else
-      // NEEDS_ANDROID_IMPL: GetBrowserWindowInterface will be available later
-      nullptr;
-#endif
+
+#if !BUILDFLAG(IS_ANDROID)  // NEEDS_ANDROID_IMPL
   if (!browser_window_interface) {
     return false;
   }
-
-#if !BUILDFLAG(IS_ANDROID)  // NEEDS_ANDROID_IMPL
   auto* user_education_interface =
       BrowserUserEducationInterface::From(browser_window_interface);
   if (!user_education_interface) {
@@ -348,8 +341,6 @@ bool ContextualCueingHelper::IsBrowserBlockingNudges(
   }
 #endif
 
-#if !BUILDFLAG(IS_ANDROID)
-  // NEEDS_ANDROID_IMPL
   Profile* profile =
       Profile::FromBrowserContext(web_contents()->GetBrowserContext());
 
@@ -360,16 +351,9 @@ bool ContextualCueingHelper::IsBrowserBlockingNudges(
   auto* glic_service =
       glic::GlicKeyedServiceFactory::GetGlicKeyedService(profile);
 
-  if (glic_service->IsPanelShowingForBrowser(*browser_window_interface)) {
+  if (browser_window_interface &&
+      glic_service->IsPanelShowingForBrowser(*browser_window_interface)) {
     recorder->set_nudge_decision(NudgeDecision::kNudgeNotShownWindowShowing);
-    return true;
-  }
-
-  auto* glic_side_panel_coordinator =
-      glic::GlicSidePanelCoordinator::GetForTab(tab_interface);
-  if (glic_side_panel_coordinator && glic_side_panel_coordinator->IsShowing()) {
-    recorder->set_nudge_decision(
-        NudgeDecision::kNudgeNotShownSidePanelForTabShowing);
     return true;
   }
 
@@ -379,8 +363,6 @@ bool ContextualCueingHelper::IsBrowserBlockingNudges(
     recorder->set_nudge_decision(NudgeDecision::kNudgeNotShownActorActiveOnTab);
     return true;
   }
-
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID)
   auto* controller = contextual_tasks::ContextualTasksPanelController::From(
@@ -470,7 +452,7 @@ ContextualCueingHelper::AutoOpenGlicSidePanel(
   auto* tab_interface = tabs::TabInterface::GetFromContents(web_contents());
   auto* bwi =
       tab_interface ? tab_interface->GetBrowserWindowInterface() : nullptr;
-  auto* side_panel_ui = bwi ? SidePanelUIProvider::From(bwi) : nullptr;
+  auto* side_panel_ui = bwi ? SidePanelUI::From(bwi) : nullptr;
 
   if (side_panel_ui && side_panel_ui->IsSidePanelShowing()) {
     return RecordAutoOpenResult(
@@ -493,8 +475,7 @@ ContextualCueingHelper::AutoOpenGlicSidePanel(
   }
 
 #if !BUILDFLAG(IS_ANDROID)
-  views::LabelButton* glic_button = glic::GlicButtonInterface::FromBrowser(bwi);
-  if (!glic_button || !glic_button->GetVisible()) {
+  if (!glic::GlicButtonInterface::IsVisible(bwi)) {
     return RecordAutoOpenResult(
         GlicAutoOpenResult::kPreventedFromButtonNotVisible);
   }

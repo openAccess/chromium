@@ -25,11 +25,18 @@ _ROOT_DIR = posixpath.dirname(posixpath.dirname(_THIS_DIR))
 def _add_io_args(parser, *, is_final=False, is_javap=False):
   inputs = parser.add_argument_group(title='Inputs')
   outputs = parser.add_argument_group(title='Outputs')
+  inputs.add_argument('--type-catalog',
+                      action='append',
+                      dest='type_catalogs',
+                      help='Path to input type catalog JSON files.')
+  inputs.add_argument(
+      '--type-catalogs-file',
+      help='JSON file containing a list of paths to type catalog JSON files.')
   if is_final:
     inputs.add_argument(
         '--java-sources-file',
         required=True,
-        help='JSON file containing paths to .java or .jni.pickle files '
+        help='JSON file containing paths to .java, .kt, or .jni.pickle files '
         'and their module names, taken from Java dependency tree.')
     inputs.add_argument(
         '--priority-java-sources-file',
@@ -42,7 +49,7 @@ def _add_io_args(parser, *, is_final=False, is_javap=False):
         'omitting switch_num for unique signatures.')
     inputs.add_argument(
         '--native-sources-file',
-        help='JSON file containing paths to .java or .jni.pickle files '
+        help='JSON file containing paths to .java, .kt, or .jni.pickle files '
         'and their module names, taken from Native dependency tree.')
   else:
     if is_javap:
@@ -53,7 +60,7 @@ def _add_io_args(parser, *, is_final=False, is_javap=False):
 
       help_text = 'Paths within the .jar'
     else:
-      help_text = 'Paths to .java files to parse.'
+      help_text = 'Paths to .java or .kt files to parse.'
     inputs.add_argument('--input-file',
                         action='append',
                         required=True,
@@ -95,11 +102,13 @@ def _add_io_args(parser, *, is_final=False, is_javap=False):
         ' hash is enabled).')
     outputs.add_argument('--jni-pickle',
                          help='Path to write intermediate .jni.pickle file.')
+    outputs.add_argument('--output-type-catalog',
+                         help='Path to output type catalog JSON file.')
   if is_final:
     outputs.add_argument('--impl-path',
                          help='Path to output C++ implementation file.')
-    outputs.add_argument(
-        '--depfile', help='Path to depfile (for use with ninja build system)')
+  outputs.add_argument('--depfile',
+                       help='Path to depfile (for use with ninja build system)')
 
 
 def _add_codegen_args(parser, *, is_final=False, is_javap=False):
@@ -162,7 +171,6 @@ def _add_codegen_args(parser, *, is_final=False, is_javap=False):
         '@CalledByNative methods, so that they will function even if no '
         'generate_final_jni() exists.')
 
-
   if is_javap:
     group.add_argument('--unchecked-exceptions',
                        action='store_true',
@@ -177,6 +185,10 @@ def _add_codegen_args(parser, *, is_final=False, is_javap=False):
         '--enable-jni-multiplexing',
         action='store_true',
         help='Enables JNI multiplexing for Java native methods')
+    group.add_argument(
+        '--enable-safe-pointers',
+        action='store_true',
+        help='Enables parsing and generation of safe JNI pointers.')
     group.add_argument(
         '--package-prefix',
         help='Adds a prefix to the classes fully qualified-name. Effectively '
@@ -300,6 +312,7 @@ def main():
                               is_muxing=bool_arg('enable_jni_multiplexing'),
                               is_per_file=bool_arg('per_file_natives'))
     args.func(parser, args, jni_mode)
+
 
 if __name__ == '__main__':
   _maybe_relaunch_with_newer_python()

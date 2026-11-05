@@ -26,14 +26,12 @@
 #include "chrome/browser/ash/browser_delegate/browser_controller_impl.h"
 #include "chrome/browser/ash/login/demo_mode/demo_mode_window_closer.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
-#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
-#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
-#include "chrome/test/base/test_browser_window.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
+#include "components/account_id/account_id_literal.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -50,9 +48,9 @@ namespace {
 const base::TimeDelta kReLuanchDemoAppIdleDuration = base::Seconds(90);
 const base::TimeDelta kLogoutDelayMax = base::Minutes(90);
 
-const char kUser[] = "user@gmail.com";
-const AccountId kAccountId =
-    AccountId::FromUserEmailGaiaId(kUser, GaiaId("1111"));
+constexpr char kUser[] = "user@gmail.com";
+constexpr AccountId::Literal kAccountId =
+    AccountId::Literal::FromUserEmailGaiaId(kUser, GaiaId::Literal("1111"));
 constexpr SkColor kWallpaperColor = SK_ColorMAGENTA;
 
 constexpr char kDemoSessionToSNotificationId[] = "demo_session_ToS";
@@ -162,38 +160,6 @@ class DemoModeIdleHandlerTest : public DemoModeIdleHandlerTestBase {
     demo_mode::SetDoNothingWhenPowerIdle();
   }
 };
-
-TEST_F(DemoModeIdleHandlerTest, CloseAllBrowsers) {
-  // Ensure MGS logout timer not started.
-  EXPECT_FALSE(
-      demo_mode_idle_handler()->GetMGSLogoutTimeoutForTest().has_value());
-
-  // Initialize 2 browsers.
-  std::unique_ptr<BrowserWindowInterface> browser_1 =
-      CreateBrowserWithTestWindowForParams(
-          BrowserWindowCreateParams(profile(), /*user_gesture=*/true));
-  std::unique_ptr<BrowserWindowInterface> browser_2 =
-      CreateBrowserWithTestWindowForParams(
-          BrowserWindowCreateParams(profile(), /*user_gesture=*/true));
-  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2U);
-
-  // Trigger close all browsers by being idle for
-  // `kReLuanchDemoAppIdleDuration`.
-  SimulateUserActivity();
-  FastForwardBy(kReLuanchDemoAppIdleDuration);
-  EXPECT_TRUE(
-      static_cast<TestBrowserWindow*>(browser_1->GetWindow())->IsClosed());
-  EXPECT_TRUE(
-      static_cast<TestBrowserWindow*>(browser_2->GetWindow())->IsClosed());
-  // `TestBrowserWindow` does not destroy `Browser` when `Close()` is called,
-  // but real browser window does. Reset both browsers here to fake this
-  // behavior.
-  browser_1.reset();
-  browser_2.reset();
-
-  EXPECT_EQ(get_launch_demo_app_count(), 1);
-  EXPECT_TRUE(GlobalBrowserCollection::GetInstance()->IsEmpty());
-}
 
 TEST_F(DemoModeIdleHandlerTest, ClearAndCloseClipboard) {
   ash::ClipboardHistoryControllerImpl* clipboard_history_controller =

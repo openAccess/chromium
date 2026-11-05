@@ -19,7 +19,6 @@
 #include "base/synchronization/lock.h"
 #include "chrome/browser/local_discovery/service_discovery_device_lister.h"
 #include "chrome/browser/local_discovery/service_discovery_shared_client.h"
-#include "chrome/browser/profiles/profile.h"
 #include "components/device_event_log/device_event_log.h"
 #include "crypto/obsolete/md5.h"
 
@@ -304,7 +303,7 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
   // PrinterDetector override.
   void RegisterPrintersFoundCallback(OnPrintersFoundCallback cb) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_);
-    DCHECK(!on_printers_found_callback_);
+    CHECK(!on_printers_found_callback_, base::NotFatalUntil::M160);
     on_printers_found_callback_ = std::move(cb);
   }
 
@@ -379,7 +378,7 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
 
     // Request a new round of discovery from the lister.
     auto lister_entry = device_listers_.find(service_type);
-    DCHECK(lister_entry != device_listers_.end());
+    CHECK(lister_entry != device_listers_.end(), base::NotFatalUntil::M160);
     lister_entry->second->DiscoverNewDevices();
   }
 
@@ -392,7 +391,7 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
         this, discovery_client_.get(), service_type);
     lister->Start();
     lister->DiscoverNewDevices();
-    DCHECK(!device_listers_.contains(service_type));
+    CHECK(!device_listers_.contains(service_type), base::NotFatalUntil::M160);
     device_listers_[service_type] = std::move(lister);
   }
 
@@ -430,7 +429,7 @@ class ZeroconfPrinterDetectorImpl : public ZeroconfPrinterDetector {
   bool IsPrintersEmpty() const {
     printers_lock_.AssertAcquired();
     for (const char* service_type : kServiceNames) {
-      DCHECK(printers_.contains(service_type));
+      CHECK(printers_.contains(service_type), base::NotFatalUntil::M160);
       if (!printers_.at(service_type).empty()) {
         return false;
       }

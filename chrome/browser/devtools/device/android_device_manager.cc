@@ -15,6 +15,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/no_destructor.h"
 #include "base/strings/strcat.h"
@@ -25,6 +26,8 @@
 #include "base/task/thread_pool.h"
 #include "base/threading/thread.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
+#include "base/types/pass_key.h"
 #include "chrome/browser/devtools/device/usb/usb_device_manager_helper.h"
 #include "chrome/browser/devtools/device/usb/usb_device_provider.h"
 #include "content/public/browser/browser_thread.h"
@@ -497,9 +500,11 @@ void AndroidDeviceManager::Device::HttpUpgrade(const std::string& socket_name,
 }
 
 AndroidDeviceManager::Device::Device(
+    base::PassKey<AndroidDeviceManager>,
     scoped_refptr<base::SingleThreadTaskRunner> device_task_runner,
     scoped_refptr<DeviceProvider> provider,
-    const std::string& serial, const DeviceInfo::ConnectedState connected_state)
+    const std::string& serial,
+    const DeviceInfo::ConnectedState connected_state)
     : RefCountedDeleteOnSequence<Device>(
           base::SingleThreadTaskRunner::GetCurrentDefault()),
       task_runner_(device_task_runner),
@@ -516,13 +521,13 @@ AndroidDeviceManager::Device::~Device() {
 // static
 AndroidDeviceManager::HandlerThread*
 AndroidDeviceManager::HandlerThread::GetInstance() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   static base::NoDestructor<AndroidDeviceManager::HandlerThread> s_instance;
   return s_instance.get();
 }
 
 AndroidDeviceManager::HandlerThread::HandlerThread() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   thread_ = new base::Thread(kDevToolsAdbBridgeThreadName);
   base::Thread::Options options;
   options.message_pump_type = base::MessagePumpType::IO;
@@ -544,7 +549,7 @@ void AndroidDeviceManager::HandlerThread::StopThread(
 }
 
 AndroidDeviceManager::HandlerThread::~HandlerThread() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (!thread_)
     return;
   // Shut down thread on a thread other than UI so it can join a thread.
@@ -576,7 +581,7 @@ void AndroidDeviceManager::QueryDevices(DevicesCallback callback) {
 
 void AndroidDeviceManager::CountDevices(
     base::OnceCallback<void(int)> callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   handler_thread_->message_loop()->PostTask(
       FROM_HERE,
       base::BindOnce(&UsbDeviceManagerHelper::CountDevices,
@@ -585,7 +590,7 @@ void AndroidDeviceManager::CountDevices(
 
 void AndroidDeviceManager::set_usb_device_manager_for_test(
     mojo::PendingRemote<device::mojom::UsbDeviceManager> fake_usb_manager) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   handler_thread_->message_loop()->PostTask(
       FROM_HERE,
       base::BindOnce(&UsbDeviceManagerHelper::SetUsbManagerForTesting,
@@ -612,8 +617,10 @@ void AndroidDeviceManager::UpdateDevices(
     scoped_refptr<Device> device;
     if (found == devices_.end() || !found->second ||
         found->second->provider_.get() != it->provider.get()) {
-      device =
-          new Device(handler_thread_->message_loop(), it->provider, it->serial, it->connected_state);
+      device = base::MakeRefCounted<Device>(
+          base::PassKey<AndroidDeviceManager>(),
+          handler_thread_->message_loop(), it->provider, it->serial,
+          it->connected_state);
     } else {
       device = found->second.get();
       device->connected_state_ = it->connected_state;

@@ -9,67 +9,66 @@
 
 namespace blink {
 
-unsigned ShapeResultTestInfo::NumberOfRunsForTesting() const {
+wtf_size_t ShapeResultTestInfo::NumberOfRunsForTesting() const {
   return runs_.size();
 }
 
 ShapeResultRun& ShapeResultTestInfo::RunInfoForTesting(
-    unsigned run_index) const {
+    wtf_size_t run_index) const {
   return *runs_[run_index];
 }
 
-bool ShapeResultTestInfo::RunInfoForTesting(unsigned run_index,
-                                            unsigned& start_index,
-                                            unsigned& num_characters,
-                                            unsigned& num_glyphs,
+bool ShapeResultTestInfo::RunInfoForTesting(wtf_size_t run_index,
+                                            wtf_size_t& start_index,
+                                            wtf_size_t& num_characters,
+                                            wtf_size_t& num_glyphs,
                                             hb_script_t& script) const {
   if (run_index < runs_.size() && runs_[run_index]) {
     start_index = runs_[run_index]->start_index_;
     num_characters = runs_[run_index]->num_characters_;
-    num_glyphs = runs_[run_index]->glyph_data_.size();
+    num_glyphs = runs_[run_index]->NumGlyphs();
     script = runs_[run_index]->script_;
     return true;
   }
   return false;
 }
 
-bool ShapeResultTestInfo::RunInfoForTesting(unsigned run_index,
-                                            unsigned& start_index,
-                                            unsigned& num_glyphs,
+bool ShapeResultTestInfo::RunInfoForTesting(wtf_size_t run_index,
+                                            wtf_size_t& start_index,
+                                            wtf_size_t& num_glyphs,
                                             hb_script_t& script) const {
-  unsigned num_characters;
+  wtf_size_t num_characters;
   return RunInfoForTesting(run_index, start_index, num_characters, num_glyphs,
                            script);
 }
 
-uint16_t ShapeResultTestInfo::GlyphForTesting(unsigned run_index,
-                                              unsigned glyph_index) const {
-  return runs_[run_index]->glyph_data_[glyph_index].glyph;
+uint16_t ShapeResultTestInfo::GlyphForTesting(wtf_size_t run_index,
+                                              wtf_size_t glyph_index) const {
+  return runs_[run_index]->glyph_data_.GlyphAt(glyph_index).glyph;
 }
 
-float ShapeResultTestInfo::AdvanceForTesting(unsigned run_index,
-                                             unsigned glyph_index) const {
-  return runs_[run_index]->glyph_data_[glyph_index].advance;
+float ShapeResultTestInfo::AdvanceForTesting(wtf_size_t run_index,
+                                             wtf_size_t glyph_index) const {
+  return runs_[run_index]->glyph_data_.GlyphAt(glyph_index).advance;
 }
 
 SimpleFontData* ShapeResultTestInfo::FontDataForTesting(
-    unsigned run_index) const {
+    wtf_size_t run_index) const {
   return runs_[run_index]->font_data_.Get();
 }
 
-Vector<unsigned> ShapeResultTestInfo::CharacterIndexesForTesting() const {
-  Vector<unsigned> character_indexes;
+Vector<wtf_size_t> ShapeResultTestInfo::CharacterIndexesForTesting() const {
+  Vector<wtf_size_t> character_indexes;
   for (const auto& run : runs_) {
-    for (const auto& glyph_data : run->glyph_data_) {
-      character_indexes.push_back(run->start_index_ +
-                                  glyph_data.character_index);
+    for (wtf_size_t i = 0; i < run->NumGlyphs(); ++i) {
+      character_indexes.push_back(run->GlyphToCharacterIndex(i));
     }
   }
   return character_indexes;
 }
 
 void AddGlyphInfo(void* context,
-                  unsigned character_index,
+                  wtf_size_t character_index,
                   Glyph glyph,
                   gfx::Vector2dF glyph_offset,
                   float advance,
@@ -88,11 +87,11 @@ void ComputeGlyphResults(const ShapeResult& result,
 
 bool CompareResultGlyphs(const Vector<ShapeResultTestGlyphInfo>& test,
                          const Vector<ShapeResultTestGlyphInfo>& reference,
-                         unsigned reference_start,
-                         unsigned num_glyphs) {
+                         wtf_size_t reference_start,
+                         wtf_size_t num_glyphs) {
   float advance_offset = reference[reference_start].advance;
   bool glyphs_match = true;
-  for (unsigned i = 0; i < test.size(); i++) {
+  for (wtf_size_t i = 0; i < test.size(); ++i) {
     const auto& test_glyph = test[i];
     const auto& reference_glyph = reference[i + reference_start];
     if (test_glyph.character_index != reference_glyph.character_index ||
@@ -109,7 +108,7 @@ bool CompareResultGlyphs(const Vector<ShapeResultTestGlyphInfo>& test,
     fprintf(stderr, "║ Character Index │ Glyph │ Advance ║\n");
     fprintf(stderr, "╟─────────────────┼───────┼─────────╢    ");
     fprintf(stderr, "╟─────────────────┼───────┼─────────╢\n");
-    for (unsigned i = 0; i < test.size(); i++) {
+    for (wtf_size_t i = 0; i < test.size(); ++i) {
       const auto& test_glyph = test[i];
       const auto& reference_glyph = reference[i + reference_start];
 

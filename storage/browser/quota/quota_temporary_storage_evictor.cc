@@ -9,7 +9,6 @@
 #include <algorithm>
 
 #include "base/auto_reset.h"
-#include "base/byte_size.h"
 #include "base/check.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -24,15 +23,7 @@
 namespace {
 constexpr double kUsageRatioToStartEviction = 0.7;
 constexpr int kThresholdOfErrorsToStopEviction = 5;
-constexpr base::TimeDelta kHistogramReportInterval = base::Minutes(60);
 constexpr double kDiskSpaceShortageAllowanceRatio = 0.5;
-
-// Use ByteSizeDelta since -1 is used as a sentinel. UMA will log negatives in
-// the 0 bucket.
-void UmaHistogramMbytes(const std::string& name, base::ByteSizeDelta sample) {
-  base::UmaHistogramCustomCounts(name, sample.InMiB(), 1,
-                                 base::TiBS(10).InMiB(), 100);
-}
 
 }  // namespace
 
@@ -42,7 +33,7 @@ QuotaTemporaryStorageEvictor::QuotaTemporaryStorageEvictor(
     QuotaEvictionHandler* quota_eviction_handler,
     base::TimeDelta interval)
     : quota_eviction_handler_(quota_eviction_handler), interval_(interval) {
-  CHECK(quota_eviction_handler, base::NotFatalUntil::M148);
+  CHECK(quota_eviction_handler);
 }
 
 QuotaTemporaryStorageEvictor::~QuotaTemporaryStorageEvictor() {
@@ -52,7 +43,7 @@ QuotaTemporaryStorageEvictor::~QuotaTemporaryStorageEvictor() {
 void QuotaTemporaryStorageEvictor::GetStatistics(
     std::map<std::string, int64_t>* statistics) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(statistics, base::NotFatalUntil::M148);
+  CHECK(statistics);
 
   (*statistics)["errors-on-getting-usage-and-quota"] =
       statistics_.num_errors_on_getting_usage_and_quota;
@@ -64,33 +55,11 @@ void QuotaTemporaryStorageEvictor::GetStatistics(
 
 void QuotaTemporaryStorageEvictor::ReportPerRoundHistogram() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(round_statistics_.in_round, base::NotFatalUntil::M148);
-  CHECK(round_statistics_.is_initialized, base::NotFatalUntil::M148);
+  CHECK(round_statistics_.in_round);
 
   base::Time now = base::Time::Now();
   base::UmaHistogramTimes("Quota.TimeSpentToAEvictionRound",
                           now - round_statistics_.start_time);
-  UmaHistogramMbytes(
-      "Quota.DiskspaceShortage",
-      base::ByteSizeDelta(round_statistics_.diskspace_shortage_at_round));
-  UmaHistogramMbytes(
-      "Quota.EvictedBytesPerRound",
-      base::ByteSizeDelta(round_statistics_.usage_on_beginning_of_round -
-                          round_statistics_.usage_on_end_of_round));
-  base::UmaHistogramCounts1M("Quota.NumberOfEvictedBucketsPerRound",
-                             round_statistics_.num_evicted_buckets);
-}
-
-void QuotaTemporaryStorageEvictor::ReportPerHourHistogram() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  Statistics stats_in_hour(statistics_);
-  stats_in_hour.subtract_assign(previous_statistics_);
-  previous_statistics_ = statistics_;
-
-  base::UmaHistogramCounts1M("Quota.EvictedBucketsPerHour",
-                             stats_in_hour.num_evicted_buckets);
-  base::UmaHistogramCounts1M("Quota.EvictionRoundsPerHour",
-                             stats_in_hour.num_eviction_rounds);
 }
 
 void QuotaTemporaryStorageEvictor::OnEvictionRoundStarted() {
@@ -137,12 +106,6 @@ void QuotaTemporaryStorageEvictor::Start() {
 
   base::AutoReset<bool> auto_reset(&timer_disabled_for_testing_, false);
   StartEvictionTimerWithDelay(base::TimeDelta());
-
-  if (histogram_timer_.IsRunning())
-    return;
-
-  histogram_timer_.Start(FROM_HERE, kHistogramReportInterval, this,
-                         &QuotaTemporaryStorageEvictor::ReportPerHourHistogram);
 }
 
 void QuotaTemporaryStorageEvictor::StartEvictionTimerWithDelay(
@@ -178,7 +141,7 @@ void QuotaTemporaryStorageEvictor::OnGotEvictionRoundInfo(
     int64_t current_usage,
     bool current_usage_is_complete) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK_GE(current_usage, 0, base::NotFatalUntil::M148);
+  CHECK_GE(current_usage, 0);
 
   // Note: if there is no storage pressure, |current_usage|
   // may not be fully calculated and may be 0.
@@ -192,8 +155,7 @@ void QuotaTemporaryStorageEvictor::OnGotEvictionRoundInfo(
                                            kUsageRatioToStartEviction));
   int64_t diskspace_shortage =
       std::max(INT64_C(0), settings.should_remain_available - available_space);
-  CHECK(current_usage_is_complete || diskspace_shortage == 0,
-        base::NotFatalUntil::M148);
+  CHECK(current_usage_is_complete || diskspace_shortage == 0);
 
   // If we're using so little that freeing all of it wouldn't help,
   // don't let the low space condition cause us to delete it all.
@@ -201,13 +163,6 @@ void QuotaTemporaryStorageEvictor::OnGotEvictionRoundInfo(
                                            kDiskSpaceShortageAllowanceRatio)) {
     diskspace_shortage = 0;
   }
-
-  if (!round_statistics_.is_initialized) {
-    round_statistics_.diskspace_shortage_at_round = diskspace_shortage;
-    round_statistics_.usage_on_beginning_of_round = current_usage;
-    round_statistics_.is_initialized = true;
-  }
-  round_statistics_.usage_on_end_of_round = current_usage;
 
   int64_t amount_to_evict = std::max(usage_overage, diskspace_shortage);
   if (status == blink::mojom::QuotaStatusCode::kOk && amount_to_evict > 0) {

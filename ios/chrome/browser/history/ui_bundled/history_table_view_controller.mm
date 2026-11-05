@@ -57,11 +57,11 @@
 #import "ios/chrome/common/ui/favicon/favicon_view.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
+#import "ios/chrome/common/ui/util/ui_util.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/navigation/referrer.h"
 #import "ios/web/public/web_state.h"
-#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "ui/strings/grit/ui_strings.h"
@@ -72,10 +72,6 @@ namespace {
 enum ItemType : NSInteger {
   kItemTypeHistoryEntry = kItemTypeEnumZero,
 };
-// The default UIButton font size used by UIKit.
-const CGFloat kButtonDefaultFontSize = 15.0;
-// Horizontal width representing UIButton's padding.
-const CGFloat kButtonHorizontalPadding = 30.0;
 }  // namespace
 
 @interface HistoryTableViewController () <UISearchBarDelegate,
@@ -614,9 +610,8 @@ const CGFloat kButtonHorizontalPadding = 30.0;
   }
   id<QuickDeleteCommands> quickDeleteHandler = HandlerForProtocol(
       self.browser->GetCommandDispatcher(), QuickDeleteCommands);
-  [quickDeleteHandler
-      showQuickDeleteAndCanPerformRadialWipeAnimation:
-          ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET];
+  [quickDeleteHandler showQuickDeleteAndCanPerformRadialWipeAnimation:
+                          IsRegularXRegularSizeClass(self.view.window)];
 }
 
 #pragma mark - Setter & Getters
@@ -639,13 +634,13 @@ const CGFloat kButtonHorizontalPadding = 30.0;
 // presented.
 - (UIBarButtonItem*)clearBrowsingDataButton {
   if (!_clearBrowsingDataButton) {
-    NSString* titleString = l10n_util::GetNSStringWithFixup(
-        IDS_HISTORY_OPEN_CLEAR_BROWSING_DATA_DIALOG);
-    _clearBrowsingDataButton =
-        [[UIBarButtonItem alloc] initWithTitle:titleString
-                                         style:UIBarButtonItemStylePlain
-                                        target:self
-                                        action:@selector(openPrivacySettings)];
+    _clearBrowsingDataButton = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemTrash
+                             target:self
+                             action:@selector(openPrivacySettings)];
+    _clearBrowsingDataButton.accessibilityLabel =
+        l10n_util::GetNSStringWithFixup(
+            IDS_HISTORY_OPEN_CLEAR_BROWSING_DATA_DIALOG);
     _clearBrowsingDataButton.accessibilityIdentifier =
         kHistoryToolbarClearBrowsingButtonIdentifier;
     _clearBrowsingDataButton.tintColor = [UIColor colorNamed:kRedColor];
@@ -678,13 +673,6 @@ const CGFloat kButtonHorizontalPadding = 30.0;
                                         target:self
                                         action:@selector(didTapEditButton)];
     _editButton.accessibilityIdentifier = kHistoryToolbarEditButtonIdentifier;
-    // Buttons don't conform to dynamic types. So it's safe to just use the
-    // default font size.
-    CGSize stringSize = [titleString sizeWithAttributes:@{
-      NSFontAttributeName : [UIFont boldSystemFontOfSize:kButtonDefaultFontSize]
-    }];
-    // Include button padding to ensure string does not get truncated
-    _editButton.width = stringSize.width + kButtonHorizontalPadding;
   }
   return _editButton;
 }

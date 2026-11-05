@@ -7,10 +7,13 @@
 
 #include <type_traits>
 
+#include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/types/expected.h"
 #include "base/values.h"
+#include "chrome/browser/profiles/profile_observer.h"
 #include "chrome/browser/web_applications/isolated_web_apps/install/non_installed_bundle_inspection_context.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/jobs/manifest_to_web_app_install_info_job.h"
@@ -25,20 +28,23 @@
 #include "components/webapps/isolated_web_apps/types/source.h"
 #include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "content/public/browser/web_contents.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 
 class Profile;
 
 namespace web_app {
 
+BASE_DECLARE_FEATURE(kIsolatedWebAppIsolateInstallPageProcess);
+
 // Loads the manifest from the bundle and assembles `WebAppInstallInfo`.
-class PrepareInstallInfoJob {
+class PrepareInstallInfoJob : public ProfileObserver {
  public:
   enum class Error {
     kCantLoadInstallUrl = 1,
     kAppIsNotInstallable = 2,
     kCantValidateManifest = 3,
     kCantRetrieveIcons = 4,
+    kProfileWillBeDestroyed = 5,
   };
 
   struct Failure {
@@ -59,7 +65,7 @@ class PrepareInstallInfoJob {
       std::unique_ptr<webapps::WebAppUrlLoader> loader,
       ResultCallback callback);
 
-  ~PrepareInstallInfoJob();
+  ~PrepareInstallInfoJob() override;
 
   PrepareInstallInfoJob(const PrepareInstallInfoJob&) = delete;
   PrepareInstallInfoJob& operator=(const PrepareInstallInfoJob&) = delete;
@@ -101,23 +107,24 @@ class PrepareInstallInfoJob {
 
   void ReportFailure(Error error, const std::string& message);
 
-  Profile* profile() { return &*profile_; }
+  // ProfileObserver:
+  void OnProfileWillBeDestroyed(Profile* profile) override;
 
   void LoadInstallUrl(base::OnceClosure next_step_callback);
   void OnLoadInstallUrl(base::OnceClosure next_step_callback,
                         webapps::WebAppUrlLoaderResult result);
 
   void CheckInstallabilityAndRetrieveManifest(
-      base::OnceCallback<void(blink::mojom::ManifestPtr)> next_step_callback);
+      base::OnceCallback<void(blink::Manifest)> next_step_callback);
   void OnCheckInstallabilityAndRetrieveManifest(
-      base::OnceCallback<void(blink::mojom::ManifestPtr)> next_step_callback,
-      blink::mojom::ManifestPtr opt_manifest,
+      base::OnceCallback<void(blink::Manifest)> next_step_callback,
+      std::optional<blink::Manifest> opt_manifest,
       bool valid_manifest_for_web_app,
       webapps::InstallableStatusCode error_code);
 
   void ValidateManifestAndGetVersion(
       base::OnceCallback<void(IwaVersion)> next_step_callback,
-      blink::mojom::ManifestPtr manifest);
+      blink::Manifest manifest);
 
   void ParseInstallInfoFromManifest(
       base::OnceCallback<void(WebAppInstallInfo)> next_step_callback,
@@ -129,7 +136,7 @@ class PrepareInstallInfoJob {
 
   void FinishJob(WebAppInstallInfo info);
 
-  const raw_ref<Profile> profile_;
+  base::ScopedObservation<Profile, ProfileObserver> profile_observation_{this};
 
   const IwaSourceWithMode source_;
   const IwaOperation operation_;
@@ -141,7 +148,7 @@ class PrepareInstallInfoJob {
   std::unique_ptr<ManifestToWebAppInstallInfoJob> manifest_to_install_info_job_;
   base::DictValue manifest_to_info_debug_data_;
 
-  blink::mojom::ManifestPtr manifest_;
+  std::optional<blink::Manifest> manifest_;
 
   ResultCallback callback_;
 

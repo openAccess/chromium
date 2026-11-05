@@ -5,14 +5,25 @@
 #include "chrome/browser/ui/unload_controller.h"
 
 #include "ash/constants/web_app_id_constants.h"
+#include "base/callback_list.h"
+#include "base/functional/bind.h"
 #include "base/json/json_reader.h"
+#include "base/location.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
+#include "build/build_config.h"
+#include "chrome/browser/download/download_browsertest_utils.h"
+#include "chrome/browser/lifetime/application_lifetime_desktop.h"
+#include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_manager_service.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -23,23 +34,37 @@
 #include "chrome/browser/web_applications/test/prevent_close_test_base.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
+#include "components/download/public/common/download_item.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/browser/browser_policy_connector_base.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/policy_constants.h"
 #include "components/webapps/common/web_app_id.h"
+#include "content/public/browser/download_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/download_test_observer.h"
+#include "content/public/test/slow_download_http_response.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/widget/any_widget_observer.h"
+#include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_delegate.h"
+#include "ui/views/window/dialog_delegate.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
+#include "chrome/common/chrome_features.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace {
@@ -139,6 +164,97 @@ IN_PROC_BROWSER_TEST_P(
             unload_controller->GetBrowserClosingStatus());
 }
 
+// Regression test for crbug.com/449247662:
+// Verifies that forced browser shutdown (`ShouldIgnoreUnloadHandlers()`)
+// forcibly closes `PreventClose` web app tabs via `UnloadController` and
+// `TabStripModelDelegate::IsTabClosable()` before destroying the `Browser`.
+IN_PROC_BROWSER_TEST_P(
+    UnloadControllerPreventCloseTest,
+    CloseAllBrowsersIgnoreUnloadHandlersWithPreventClosePWA) {
+  InstallPWA(GURL(kCalculatorAppUrl), ash::kCalculatorAppId);
+  SetPoliciesAndWaitUntilInstalled(ash::kCalculatorAppId,
+                                   kPreventCloseEnabledForCalculator,
+                                   kCalculatorForceInstalled);
+
+  BrowserWindowInterface* const app_browser =
+      LaunchPWA(ash::kCalculatorAppId, /*launch_in_window=*/true);
+  ASSERT_TRUE(app_browser);
+
+  browser_shutdown::OnShutdownStarting(
+      browser_shutdown::ShutdownType::kEndSession);
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&chrome::CloseAllBrowsers));
+  RunUntilBrowserProcessQuits();
+
+  EXPECT_TRUE(browser_shutdown::IsTryingToQuit());
+  EXPECT_TRUE(GlobalBrowserCollection::GetInstance()->IsEmpty());
+}
+
+// Verifies that closing a `PreventClose` web app window with
+// `set_force_skip_warning_user_on_close(true)` forcibly closes its tabs and
+// schedules browser deletion.
+IN_PROC_BROWSER_TEST_P(UnloadControllerPreventCloseTest,
+                       ForceCloseWindowWithPreventClosePWA) {
+  const absl::Cleanup policy_cleanup = [this] {
+    SetPolicies(/*web_app_settings=*/"[]", /*web_app_install_force_list=*/"[]");
+  };
+
+  InstallPWA(GURL(kCalculatorAppUrl), ash::kCalculatorAppId);
+  SetPoliciesAndWaitUntilInstalled(ash::kCalculatorAppId,
+                                   kPreventCloseEnabledForCalculator,
+                                   kCalculatorForceInstalled);
+
+  BrowserWindowInterface* const app_browser =
+      LaunchPWA(ash::kCalculatorAppId, /*launch_in_window=*/true);
+  ASSERT_TRUE(app_browser);
+
+  bool did_close = false;
+  base::CallbackListSubscription did_close_subscription =
+      app_browser->RegisterBrowserDidClose(base::BindLambdaForTesting(
+          [&did_close](BrowserWindowInterface*) { did_close = true; }));
+
+  ui_test_utils::BrowserDestroyedObserver destroyed_observer(app_browser);
+  UnloadController::From(app_browser)
+      ->set_force_skip_warning_user_on_close(true);
+  app_browser->GetWindow()->Close();
+
+  EXPECT_EQ(0, app_browser->GetTabStripModel()->count());
+  EXPECT_TRUE(app_browser->IsDeleteScheduled());
+  EXPECT_TRUE(did_close);
+  destroyed_observer.Wait();
+}
+
+// Verifies that synchronously destroying a `PreventClose` web app browser
+// whose tabs are still open forcibly closes its tabs via
+// `UnloadController::OnWindowClosing()` while `BrowserWindowFeatures` are still
+// valid and emits the browser-did-close notification.
+IN_PROC_BROWSER_TEST_P(UnloadControllerPreventCloseTest,
+                       SynchronouslyDestroyBrowserWithPreventClosePWA) {
+  const absl::Cleanup policy_cleanup = [this] {
+    SetPolicies(/*web_app_settings=*/"[]", /*web_app_install_force_list=*/"[]");
+  };
+
+  InstallPWA(GURL(kCalculatorAppUrl), ash::kCalculatorAppId);
+  SetPoliciesAndWaitUntilInstalled(ash::kCalculatorAppId,
+                                   kPreventCloseEnabledForCalculator,
+                                   kCalculatorForceInstalled);
+
+  BrowserWindowInterface* const app_browser =
+      LaunchPWA(ash::kCalculatorAppId, /*launch_in_window=*/true);
+  ASSERT_TRUE(app_browser);
+  ASSERT_EQ(1, app_browser->GetTabStripModel()->count());
+
+  bool did_close = false;
+  base::CallbackListSubscription did_close_subscription =
+      app_browser->RegisterBrowserDidClose(base::BindLambdaForTesting(
+          [&did_close](BrowserWindowInterface*) { did_close = true; }));
+
+  BrowserManagerService::SynchronouslyDestroyBrowser(app_browser);
+
+  EXPECT_TRUE(did_close);
+  EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
+}
+
 INSTANTIATE_TEST_SUITE_P(
     All,
     UnloadControllerPreventCloseTest,
@@ -157,23 +273,47 @@ INSTANTIATE_TEST_SUITE_P(
 
 // Browser tests for verifying `UnloadController` behavior for apps when locked
 // (and not locked) for OnTask. Only relevant for non-web browser scenarios.
-class UnloadControllerWithOnTaskTest : public InProcessBrowserTest {
+class UnloadControllerWithOnTaskTest
+    : public InProcessBrowserTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  UnloadControllerWithOnTaskTest() {
+    scoped_feature_list_.InitWithFeatureState(
+        features::kUseUnifiedLockedStateController, GetParam());
+  }
+
  protected:
   webapps::AppId InstallMockApp() {
     return web_app::test::InstallDummyWebApp(
         browser()->GetProfile(), /*app_name=*/"Mock app",
         /*app_url=*/GURL("https://www.example.com/"));
   }
+
+  void SetLockedForOnTask(BrowserWindowInterface* app_browser, bool locked) {
+    if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+      auto* controller = chromeos::LockedStateController::From(app_browser);
+      if (locked) {
+        controller->Lock(chromeos::LockedState::kOnTaskPrepared);
+      } else {
+        controller->Unlock(chromeos::LockedState::kOnTaskLocked);
+      }
+    } else {
+      ash::boca::OnTaskLockedController::From(app_browser)
+          ->set_locked_for_on_task(locked);
+    }
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(UnloadControllerWithOnTaskTest,
+IN_PROC_BROWSER_TEST_P(UnloadControllerWithOnTaskTest,
                        PreventCloseWhenLockedForOnTask) {
   // Install and launch app.
   webapps::AppId app_id = InstallMockApp();
   BrowserWindowInterface* const app_browser =
       web_app::LaunchWebAppBrowser(browser()->GetProfile(), app_id);
-  ash::boca::OnTaskLockedController::From(app_browser)
-      ->set_locked_for_on_task(true);
+  SetLockedForOnTask(app_browser, true);
 
   // Verify tab cannot be closed.
   content::WebContents* const active_web_contents =
@@ -182,14 +322,13 @@ IN_PROC_BROWSER_TEST_F(UnloadControllerWithOnTaskTest,
   EXPECT_FALSE(unload_controller->CanCloseContents(active_web_contents));
 }
 
-IN_PROC_BROWSER_TEST_F(UnloadControllerWithOnTaskTest,
+IN_PROC_BROWSER_TEST_P(UnloadControllerWithOnTaskTest,
                        AllowCloseWhenNotLockedForOnTask) {
   // Install and launch app.
   webapps::AppId app_id = InstallMockApp();
   BrowserWindowInterface* const app_browser =
       web_app::LaunchWebAppBrowser(browser()->GetProfile(), app_id);
-  ash::boca::OnTaskLockedController::From(app_browser)
-      ->set_locked_for_on_task(false);
+  SetLockedForOnTask(app_browser, false);
 
   // Verify tab can be closed.
   content::WebContents* const active_web_contents =
@@ -198,4 +337,126 @@ IN_PROC_BROWSER_TEST_F(UnloadControllerWithOnTaskTest,
   EXPECT_TRUE(unload_controller->CanCloseContents(active_web_contents));
 }
 
+INSTANTIATE_TEST_SUITE_P(All, UnloadControllerWithOnTaskTest, testing::Bool());
+
 #endif
+
+using UnloadControllerBrowserTest = InProcessBrowserTest;
+
+// Regression test for crbug.com/40075474:
+// Verifies that when a tab close (`ClosePage()`) is already in flight and
+// batched browser shutdown (`chrome::CloseAllBrowsers()` /
+// `UnloadController::RunBeforeUnloadForShutdown()`) begins before
+// `ClosePageIgnoringUnloadEvents()` runs, `UnloadController::CloseContents`
+// does not attempt to close a `WebContents` that was already removed from
+// `TabStripModel` by `OnWindowClosing()`.
+IN_PROC_BROWSER_TEST_F(UnloadControllerBrowserTest,
+                       TabClosePageOverlappingWithRunBeforeUnloadForShutdown) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
+  content::WebContents* contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::ExecJs(
+      contents, "window.addEventListener('beforeunload', () => {});"));
+  ASSERT_TRUE(contents->NeedToFireBeforeUnloadOrUnloadEvents());
+
+  // 1. Start closing the tab (sends ClosePage IPC to renderer;
+  //    ClosePageIgnoringUnloadEvents() callback is pending).
+  contents->ClosePage();
+  ASSERT_TRUE(contents->NeedToFireBeforeUnloadOrUnloadEvents());
+
+  // 2. While ClosePage() is in flight, initiate batched browser close
+  //    (Cmd+Q -> BrowserCloseManager::TryToCloseBrowsers() ->
+  //    UnloadController::RunBeforeUnloadForShutdown()).
+  chrome::CloseAllBrowsers();
+
+  // 3. Let the ClosePage() ACK (ClosePageIgnoringUnloadEvents) arrive.
+  content::WebContentsDestroyedWatcher(contents).Wait();
+}
+
+// On Mac and ChromeOS, in-progress downloads of regular profiles don't block
+// window close, so the download warning dialog is never shown.
+#if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_CHROMEOS)
+
+class UnloadControllerDownloadBrowserTest : public InProcessBrowserTest {
+ protected:
+  void SetUpOnMainThread() override {
+    InProcessBrowserTest::SetUpOnMainThread();
+    embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+        &content::SlowDownloadHttpResponse::HandleSlowDownloadRequest));
+    ASSERT_TRUE(embedded_test_server()->Start());
+  }
+
+  void TearDownOnMainThread() override {
+    // Cancel the stalled download so that browser teardown is not blocked on
+    // another download warning.
+    content::DownloadManager::DownloadVector downloads;
+    browser()->GetProfile()->GetDownloadManager()->GetAllDownloads(&downloads);
+    for (download::DownloadItem* download : downloads) {
+      download->Cancel(/*user_cancel=*/true);
+    }
+    InProcessBrowserTest::TearDownOnMainThread();
+  }
+
+  // Starts a download that never completes, from the active tab. The tab stays
+  // in the tab strip since the download navigation does not commit.
+  void CreateStalledDownload() {
+    content::DownloadTestObserverInProgress observer(
+        browser()->GetProfile()->GetDownloadManager(), 1);
+    SetPromptForDownload(browser(), false);
+    ui_test_utils::NavigateToURLWithDisposition(
+        browser(),
+        embedded_test_server()->GetURL(
+            content::SlowDownloadHttpResponse::kKnownSizeUrl),
+        ui::mojom::WindowOpenDisposition::kCurrentTab,
+        ui_test_utils::BROWSER_TEST_NO_WAIT);
+    observer.WaitForFinished();
+    ASSERT_EQ(1u, observer.NumDownloadsSeenInState(
+                      download::DownloadItem::IN_PROGRESS));
+  }
+};
+
+// Regression test for crbug.com/570186027:
+// Closing the last tab through a path that does not pre-check in-progress
+// downloads (e.g. Ctrl+W -> chrome::CloseTab()) empties the tab strip first.
+// The resulting window close (Browser::TabStripEmpty() -> HandleBeforeClose())
+// shows the download warning, and UnloadController::TabStripEmpty() moves to
+// kUnloadCompleted while the warning is open. Cancelling that warning must not
+// crash and must leave the browser window usable.
+IN_PROC_BROWSER_TEST_F(UnloadControllerDownloadBrowserTest,
+                       CancelDownloadWarningAfterClosingLastTabViaAccelerator) {
+  ASSERT_NO_FATAL_FAILURE(CreateStalledDownload());
+  ASSERT_EQ(1, browser()->GetTabStripModel()->count());
+
+  views::NamedWidgetShownWaiter waiter(views::test::AnyWidgetTestPasskey(),
+                                       "DownloadInProgressDialogView");
+  chrome::CloseTab(browser());
+  views::Widget* const dialog = waiter.WaitIfNeededAndGet();
+  ASSERT_TRUE(dialog);
+
+  // The last tab is already gone by the time the download warning shows up.
+  EXPECT_TRUE(browser()->GetTabStripModel()->empty());
+
+  // "Continue download" (i.e. cancel closing the window).
+  dialog->widget_delegate()->AsDialogDelegate()->CancelDialog();
+
+  UnloadController* const unload_controller = UnloadController::From(browser());
+  EXPECT_FALSE(unload_controller->is_attempting_to_close_browser());
+  EXPECT_FALSE(unload_controller->is_delete_scheduled());
+
+  // The window stays open and shows the downloads page.
+  ASSERT_EQ(1, browser()->GetTabStripModel()->count());
+  EXPECT_EQ(
+      GURL(chrome::kChromeUIDownloadsURL),
+      browser()->GetTabStripModel()->GetWebContentsAt(0)->GetVisibleURL());
+
+  // The download keeps running, even though the tab that started it is gone.
+  content::DownloadManager::DownloadVector downloads;
+  browser()->GetProfile()->GetDownloadManager()->GetAllDownloads(&downloads);
+  ASSERT_EQ(1u, downloads.size());
+  EXPECT_EQ(download::DownloadItem::IN_PROGRESS, downloads[0]->GetState());
+}
+
+#endif  // !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_CHROMEOS)

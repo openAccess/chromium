@@ -13,7 +13,6 @@ component("display_features") {
     "display_features.h",
   ]
   defines = [ "IS_DISPLAY_FEATURES_IMPL" ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
   deps = [ "//base" ]
 }
 
@@ -120,8 +119,6 @@ component("display") {
   }
 
   defines = [ "DISPLAY_IMPLEMENTATION" ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   public_deps = [
     ":display_features",
@@ -284,7 +281,6 @@ static_library("test_support") {
       "manager/test/touch_transform_controller_test_api.h",
       "test/display_test_util.cc",
     ]
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
     public_deps += [ "//ui/display/manager" ]
   }
 
@@ -294,6 +290,32 @@ static_library("test_support") {
       # Virtual display util stub for unimplemented platforms.
       "test/virtual_display_util_stub.cc",
     ]
+  }
+}
+
+# Virtual display tests, which change the system display configuration.
+source_set("display_interactive_ui_tests") {
+  testonly = true
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+  sources = []
+  deps = [
+    ":display",
+    ":test_support",
+    "//base",
+    "//base/test:test_support",
+    "//testing/gtest",
+    "//ui/display/types",
+  ]
+  if (is_win) {
+    sources += [ "win/test/virtual_display_util_win_interactive_uitest.cc" ]
+  }
+  if (is_mac) {
+    sources += [ "mac/test/virtual_display_util_mac_interactive_uitest.mm" ]
+    deps += [ "//ui/gfx/geometry" ]
+  }
+  if (is_linux && ozone_platform_x11 && enable_remoting) {
+    sources += [ "linux/test/virtual_display_util_linux_interactive_uitest.cc" ]
+    deps += [ "//ui/aura" ]
   }
 }
 
@@ -319,6 +341,11 @@ test("display_unittests") {
       "win/screen_win_headless_unittest.cc",
       "win/screen_win_unittest.cc",
     ]
+  }
+
+  if (is_mac) {
+    sources += [ "mac/display_link_mac_unittest.mm" ]
+    frameworks = [ "CoreGraphics.framework" ]
   }
 
   deps = [

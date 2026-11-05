@@ -36,27 +36,31 @@ void AudioContextManagerImpl::Create(
 
   // The object is bound to the lifetime of |render_frame_host| and the mojo
   // connection. See DocumentService for details.
-  new AudioContextManagerImpl(*render_frame_host, std::move(receiver));
+  base::MakeSelfDeleting<AudioContextManagerImpl>(*render_frame_host,
+                                                  std::move(receiver));
 }
 
 AudioContextManagerImpl& AudioContextManagerImpl::CreateForTesting(
     RenderFrameHost& render_frame_host,
     mojo::PendingReceiver<blink::mojom::AudioContextManager> receiver) {
-  return *new AudioContextManagerImpl(render_frame_host, std::move(receiver));
+  return *base::MakeSelfDeleting<AudioContextManagerImpl>(render_frame_host,
+                                                          std::move(receiver));
 }
 
 AudioContextManagerImpl::AudioContextManagerImpl(
     RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<blink::mojom::AudioContextManager> receiver)
-    : DocumentService(render_frame_host, std::move(receiver)),
+    mojo::PendingReceiver<blink::mojom::AudioContextManager> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key),
       clock_(base::DefaultTickClock::GetInstance()) {}
 
 AudioContextManagerImpl::~AudioContextManagerImpl() {
   // Takes care pending "audible start" times.
   base::TimeTicks now = clock_->NowTicks();
-  for (const auto& entry : pending_audible_durations_) {
-    if (!entry.second.is_null())
-      RecordAudibleTime(now - entry.second);
+  for (const auto& [_, audible_time] : pending_audible_durations_) {
+    if (!audible_time.is_null()) {
+      RecordAudibleTime(now - audible_time);
+    }
   }
   pending_audible_durations_.clear();
   UMA_HISTOGRAM_EXACT_LINEAR("WebAudio.AudioContext.ConcurrentAudioContexts",
@@ -66,6 +70,21 @@ AudioContextManagerImpl::~AudioContextManagerImpl() {
 
 void AudioContextManagerImpl::AudioContextAudiblePlaybackStarted(
     uint32_t audio_context_id) {
+  // Reject audibility assertions for contexts that were not created by this
+  // frame (or have already been closed).
+  if (!concurrent_audio_context_ids_.contains(audio_context_id)) {
+    return;
+  }
+
+  // Reject audibility assertions if the frame has no active audio output
+  // streams.
+  auto& render_frame_host_impl =
+      static_cast<RenderFrameHostImpl&>(render_frame_host());
+  if (!render_frame_host_impl.HasMediaStreams(
+          RenderFrameHostImpl::MediaStreamType::kPlayingAudioStream)) {
+    return;
+  }
+
   if (!pending_audible_durations_[audio_context_id].is_null()) {
     mojo::ReportBadMessage(
         "AudioContextAudiblePlaybackStarted() called more than once with the "
@@ -76,29 +95,33 @@ void AudioContextManagerImpl::AudioContextAudiblePlaybackStarted(
   // Keeps track of the start audible time for this context.
   pending_audible_durations_[audio_context_id] = clock_->NowTicks();
 
-  static_cast<RenderFrameHostImpl&>(render_frame_host())
-      .AudioContextPlaybackStarted(audio_context_id);
+  render_frame_host_impl.AudioContextPlaybackStarted(audio_context_id);
 }
 
 void AudioContextManagerImpl::AudioContextAudiblePlaybackStopped(
     uint32_t audio_context_id) {
-  base::TimeTicks then = pending_audible_durations_[audio_context_id];
-  DCHECK(!then.is_null());
+  auto it = pending_audible_durations_.find(audio_context_id);
+  if (it == pending_audible_durations_.end() || it->second.is_null()) {
+    return;
+  }
 
+  base::TimeTicks then = it->second;
   RecordAudibleTime(clock_->NowTicks() - then);
 
   // Resets the context slot because the context is not audible.
-  pending_audible_durations_[audio_context_id] = base::TimeTicks();
+  it->second = base::TimeTicks();
 
   static_cast<RenderFrameHostImpl&>(render_frame_host())
       .AudioContextPlaybackStopped(audio_context_id);
 }
 
 void AudioContextManagerImpl::RecordAudibleTime(base::TimeDelta audible_time) {
-  DCHECK(!audible_time.is_zero());
+  if (!audible_time.is_positive()) {
+    return;
+  }
 
   ukm::UkmRecorder* ukm_recorder = ukm::UkmRecorder::Get();
-  DCHECK(ukm_recorder);
+  CHECK(ukm_recorder, base::NotFatalUntil::M160);
 
   // AudioContextManagerImpl is created when the AudioContext starts running.
   // As the AudioContext is suspended during prerendering even if the autoplay
@@ -122,6 +145,15 @@ void AudioContextManagerImpl::AudioContextCreated(uint32_t audio_context_id) {
 
 void AudioContextManagerImpl::AudioContextClosed(uint32_t audio_context_id) {
   concurrent_audio_context_ids_.erase(audio_context_id);
+  auto it = pending_audible_durations_.find(audio_context_id);
+  if (it != pending_audible_durations_.end()) {
+    if (!it->second.is_null()) {
+      RecordAudibleTime(clock_->NowTicks() - it->second);
+      static_cast<RenderFrameHostImpl&>(render_frame_host())
+          .AudioContextPlaybackStopped(audio_context_id);
+    }
+    pending_audible_durations_.erase(it);
+  }
 }
 
 }  // namespace content

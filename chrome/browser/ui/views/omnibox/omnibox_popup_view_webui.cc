@@ -24,6 +24,7 @@
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "ui/accessibility/ax_node_data.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/views/widget/widget.h"
 
 OmniboxPopupViewWebUI::OmniboxPopupViewWebUI(
@@ -81,15 +82,14 @@ void OmniboxPopupViewWebUI::UpdatePopupAppearance() {
       controller()->autocomplete_controller()->result().has_contextual_chips();
   const bool contextual_chips_feature_enabled =
       omnibox::IsAimPopupEnabled(location_bar_->GetProfile()) &&
-      (omnibox::kShowLensSearchChip.Get() ||
-       omnibox::kAskGShowChip.Get());
+      omnibox::kAskGShowChip.Get();
   const bool has_results_or_chips =
       has_results || (contextual_chips_feature_enabled && has_contextual_chips);
   const bool should_be_visible =
       controller()->popup_state_manager()->popup_state() !=
           OmniboxPopupState::kAim &&
       (has_results_or_chips ||
-       (base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxFullPopup) &&
+       (presenter_->delegate().is_full_webui_omnibox() &&
         controller()->edit_model()->has_focus())) &&
       !omnibox_view_->IsImeShowingPopup();
 
@@ -175,7 +175,7 @@ void OmniboxPopupViewWebUI::StepSelection(
 }
 
 void OmniboxPopupViewWebUI::OpenCurrentSelection(
-    WindowOpenDisposition disposition) {
+    ui::mojom::WindowOpenDisposition disposition) {
   auto* controller =
       presenter()->GetWebUIContent()->contents_wrapper()->GetWebUIController();
   if (auto* handler = controller ? controller->omnibox_handler() : nullptr) {

@@ -58,12 +58,12 @@ FragmentItems::FragmentItems(const FragmentItems& other)
       size_of_earlier_fragments_(other.size_of_earlier_fragments_),
       items_(other.items_) {
   for (const auto& other_item : other.items_) {
-    // The |other| object is likely going to be freed after this copy. Detach
-    // any |AbstractInlineTextBox|, as they store a pointer to an individual
-    // |FragmentItem|.
+    // The `other` object is likely going to be freed after this copy. Clear
+    // cached accessibility inline text box data for any associated
+    // `LayoutText`.
     if (auto* layout_text =
             DynamicTo<LayoutText>(other_item.GetMutableLayoutObject()))
-      layout_text->DetachAxHooksIfNeeded();
+      layout_text->ClearAccessibilityCacheIfNeeded();
   }
 }
 
@@ -72,9 +72,8 @@ bool FragmentItems::IsSubSpan(const Span& span) const {
                           &span.back() <= &items_.back());
 }
 
-void FragmentItems::FinalizeAfterLayout(
-    const HeapVector<Member<const LayoutResult>, 1>& results,
-    LayoutBlockFlow& container) {
+void FragmentItems::FinalizeAfterLayout(const LayoutResultList& results,
+                                        LayoutBlockFlow& container) {
   // This class keeps the parent GC objecct and index in case the backing buffer
   // is moved, because `FragmentItem` is a traceable DISALLOW_NEW objects,
   class FragmentItemPtr {
@@ -361,8 +360,7 @@ const FragmentItem* FragmentItems::EndOfReusableItems(
 bool FragmentItems::IsContainerForCulledInline(
     const LayoutInline& layout_inline,
     bool* is_first_container,
-    bool* is_last_container,
-    bool* child_has_any_child_items) const {
+    bool* is_last_container) const {
   DCHECK(!layout_inline.HasInlineFragments());
   const wtf_size_t start_idx = size_of_earlier_fragments_;
   const wtf_size_t end_idx = EndItemIndex();
@@ -370,7 +368,6 @@ bool FragmentItems::IsContainerForCulledInline(
   bool found_item = false;
   bool has_float_ahead = false;
   *is_first_container = true;
-  *child_has_any_child_items = false;
   for (const LayoutObject* descendant = layout_inline.FirstChild(); descendant;
        descendant = next_descendant) {
     wtf_size_t item_idx = descendant->FirstInlineFragmentItemIndex();
@@ -380,7 +377,6 @@ bool FragmentItems::IsContainerForCulledInline(
       next_descendant = descendant->NextInPreOrder(&layout_inline);
     if (!item_idx)
       continue;
-    *child_has_any_child_items = true;
 
     // |FirstInlineFragmentItemIndex| is 1-based. Convert to 0-based index.
     item_idx--;
@@ -543,15 +539,14 @@ void FragmentItems::DirtyLinesFromNeedsLayout(
   // opportunities. Doing this complicates the logic, especially when culled
   // inline is involved, and common case is to append to large IFC. Choose
   // simpler logic and faster to check over more reuse opportunities.
-  const auto writing_mode = container.StyleRef().GetWritingMode();
+  const auto writing_mode = container.Style().GetWritingMode();
   for (LayoutObject* child = container.FirstChild(); child;
        child = child->NextSibling()) {
     // NeedsLayout is not helpful for an orthogonal writing-mode root because
     // its NeedsLayout flag is cleared during the ComputeMinMaxSizes() step of
     // the container.
     if (child->NeedsLayout() ||
-        !IsParallelWritingMode(writing_mode,
-                               child->StyleRef().GetWritingMode())) {
+        !IsParallelWritingMode(writing_mode, child->Style().GetWritingMode())) {
       DirtyLinesFromChangedChild(*child, container);
       return;
     }

@@ -372,7 +372,7 @@ bool OpusAudioDecoder::ConfigureDecoder(const AudioDecoderConfig& config) {
                  static_cast<int>(extra_data->skip_samples)));
   }
 
-  sample_rate_ = config.samples_per_second();
+  sample_rate_ = kOpusDefaultSampleRate;
   channels_ = config.channels();
   channel_layout_ = config.channel_layout();
   codec_delay_ = extra_data->skip_samples;
@@ -403,6 +403,17 @@ bool OpusAudioDecoder::ConfigureDecoder(const AudioDecoderConfig& config) {
     return false;
   }
 
+  // Disable phase inversion to avoid artifacts in downstream mono downmix
+  // (e.g. crbug.com/806219).
+  if (config.target_output_channel_layout() == ChannelLayoutConfig::Mono()) {
+    status = opus_multistream_decoder_ctl(opus_decoder_.get(),
+                                          OPUS_SET_PHASE_INVERSION_DISABLED(1));
+    if (status != OPUS_OK) {
+      DLOG(WARNING) << "Failed to disable phase inversion; status="
+                    << opus_strerror(status);
+    }
+  }
+
   ResetTimestampState();
   return true;
 }
@@ -419,13 +430,11 @@ bool OpusAudioDecoder::DecodeBuffer(const scoped_refptr<DecoderBuffer>& input) {
       kSampleFormatF32, channel_layout_, channels_, sample_rate_,
       kMaxOpusOutputPacketSizeSamples, pool_);
 
-  float* float_output_buffer =
-      reinterpret_cast<float*>(output_buffer->channel_data()[0].get());
-
   auto input_span = base::span(*input);
   const int frames_decoded = opus_multistream_decode_float(
       opus_decoder_.get(), input_span.data(), input_span.size(),
-      float_output_buffer, output_buffer->frame_count(), 0);
+      output_buffer->interleaved_data_cast<float>().data(),
+      output_buffer->frame_count(), 0);
 
   if (frames_decoded < 0) {
     DLOG(ERROR) << "opus_multistream_decode failed for"

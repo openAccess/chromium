@@ -19,7 +19,6 @@
 #include "chrome/browser/extensions/window_controller.h"
 #include "chrome/browser/extensions/window_controller_list.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -32,6 +31,7 @@
 #include "extensions/browser/extension_system.h"
 #include "extensions/common/extension.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -61,7 +61,7 @@ BrowserWindowInterface* LaunchAppBrowser(Profile* profile,
                   ->LaunchAppWithParamsForTesting(apps::AppLaunchParams(
                       extension_app->id(),
                       apps::LaunchContainer::kLaunchContainerWindow,
-                      WindowOpenDisposition::CURRENT_TAB,
+                      ui::mojom::WindowOpenDisposition::kCurrentTab,
                       apps::LaunchSource::kFromTest)));
 
   BrowserWindowInterface* const browser = browser_created_observer.Wait();
@@ -75,7 +75,7 @@ BrowserWindowInterface* LaunchAppBrowser(Profile* profile,
 content::WebContents* AddTab(BrowserWindowInterface* browser, const GURL& url) {
   int starting_tab_count = browser->GetTabStripModel()->count();
   ui_test_utils::NavigateToURLWithDisposition(
-      browser, url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser, url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   int tab_count = browser->GetTabStripModel()->count();
   EXPECT_EQ(starting_tab_count + 1, tab_count);

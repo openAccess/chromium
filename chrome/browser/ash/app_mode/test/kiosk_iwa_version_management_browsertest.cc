@@ -15,6 +15,7 @@
 #include "base/scoped_observation.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_data.h"
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
@@ -83,18 +84,16 @@ constexpr char kChannelNameUnknown[] = "unknown";
 
 constexpr char kUnsetPolicyValue[] = "";
 
-const web_app::UpdateChannel kChannelBeta =
-    web_app::UpdateChannel::Create(kChannelNameBeta).value();
-const web_app::UpdateChannel kChannelAlpha =
-    web_app::UpdateChannel::Create(kChannelNameAlpha).value();
-
-constexpr std::string_view GetTestAccountId() {
-  return kTestAccountId;
+web_app::UpdateChannel GetChannelBeta() {
+  return web_app::UpdateChannel::Create(kChannelNameBeta).value();
+}
+web_app::UpdateChannel GetChannelAlpha() {
+  return web_app::UpdateChannel::Create(kChannelNameAlpha).value();
 }
 
 AccountId GetTestDeviceLocalAccountId() {
   return CreateDeviceLocalAccountId(
-      GetTestAccountId(), policy::DeviceLocalAccountType::kKioskIsolatedWebApp);
+      kTestAccountId, policy::DeviceLocalAccountType::kKioskIsolatedWebApp);
 }
 
 const KioskIwaData* GetCurrentKioskIwaData() {
@@ -214,7 +213,7 @@ KioskMixin::Config CreateManualLaunchConfigWithChannel(
     const std::string& update_channel,
     const GURL& update_manifest_url) {
   KioskMixin::IsolatedWebAppOption iwa_option(
-      /*account_id=*/GetTestAccountId(),
+      /*account_id=*/kTestAccountId,
       /*web_bundle_id=*/GetTestWebBundleId(), update_manifest_url,
       update_channel);
 
@@ -228,7 +227,7 @@ KioskMixin::Config CreateManualLaunchConfigWithVersionPinning(
     bool allow_downgrades,
     const GURL& update_manifest_url) {
   KioskMixin::IsolatedWebAppOption iwa_option(
-      /*account_id=*/GetTestAccountId(),
+      /*account_id=*/kTestAccountId,
       /*web_bundle_id=*/GetTestWebBundleId(), update_manifest_url,
       /*update_channel=*/kUnsetPolicyValue, pinned_version, allow_downgrades);
 
@@ -340,9 +339,11 @@ class KioskIwaVersionManagementBaseTest
   void OverrideCacheDir() {
     // `IsolatedWebAppUpdateManager` saves the updated version to cache, if the
     // cache directory is not set, it will result with a failure.
+    base::ScopedAllowBlockingForTesting allow_blocking;
     ProfileManager* profile_manager = g_browser_process->profile_manager();
     ASSERT_TRUE(profile_manager);
-    cache_root_dir_ = profile_manager->user_data_dir();
+    cache_root_dir_ =
+        profile_manager->user_data_dir().AppendASCII("iwa_bundle_cache");
     cache_root_dir_override_ = std::make_unique<base::ScopedPathOverride>(
         ash::DIR_DEVICE_LOCAL_ACCOUNT_IWA_CACHE, cache_root_dir_);
   }
@@ -368,8 +369,8 @@ class KioskIwaUpdateChannelTest
       : KioskIwaVersionManagementBaseTest(
             KioskIwaWithCustomChannel(GetChannelName())) {
     AddTestBundle(kVersionString1);
-    AddTestBundle(kVersionString2, {{kChannelBeta, kChannelAlpha}});
-    AddTestBundle(kVersionString3, {{kChannelAlpha}});
+    AddTestBundle(kVersionString2, {{GetChannelBeta(), GetChannelAlpha()}});
+    AddTestBundle(kVersionString3, {{GetChannelAlpha()}});
   }
 
  protected:
@@ -641,8 +642,8 @@ class KioskIwaUpdateChannelChangeTest
   KioskIwaUpdateChannelChangeTest()
       : KioskIwaVersionManagementBaseTest(KioskIwaWithChannelSwitch()) {
     AddTestBundle(kVersionString1);
-    AddTestBundle(kVersionString2, {{kChannelBeta}});
-    AddTestBundle(kVersionString3, {{kChannelAlpha}});
+    AddTestBundle(kVersionString2, {{GetChannelBeta()}});
+    AddTestBundle(kVersionString3, {{GetChannelAlpha()}});
   }
 
  protected:

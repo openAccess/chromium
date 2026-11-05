@@ -14,8 +14,9 @@
 #include "base/task/cancelable_task_tracker.h"
 #include "base/time/time.h"
 #include "components/history/core/browser/history_service.h"
-#include "components/safe_browsing/content/browser/async_check_tracker.h"
+#include "components/safe_browsing/content/browser/url_checker/async_check_tracker.h"
 #include "components/safe_browsing/core/browser/suspicious_site_warning_allowlist.h"
+#include "components/security_interstitials/core/unsafe_resource.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "ui/android/modal_dialog_wrapper.h"
@@ -41,14 +42,7 @@ class SuspiciousSiteControllerAndroid
  public:
   using WarningOutcome = safe_browsing::SuspiciousSiteWarningOutcome;
   using UserInteraction = safe_browsing::SuspiciousSiteWarningUserInteraction;
-
-  // Represents user interaction choices for the suspicious site warning HaTS.
-  enum class UserChoice {
-    kMarkAsSafe,
-    kBackToSafety,
-    kDismiss,
-    kManualNavigation,
-  };
+  using UserChoice = safe_browsing::SuspiciousSiteWarningUserChoice;
 
   SuspiciousSiteControllerAndroid(const SuspiciousSiteControllerAndroid&) =
       delete;
@@ -59,8 +53,9 @@ class SuspiciousSiteControllerAndroid
 
   // Displays or stages the suspicious site warning dialog for the given
   // navigation.
-  static void ShowForWebContents(content::WebContents* web_contents,
-                                 int64_t navigation_id);
+  static void ShowForWebContents(
+      content::WebContents* web_contents,
+      const security_interstitials::UnsafeResource& resource);
 
   // WebContentsObserver overrides:
   void DidFinishNavigation(
@@ -112,28 +107,16 @@ class SuspiciousSiteControllerAndroid
   // Timestamp when the warning dialog was shown.
   base::TimeTicks dialog_shown_time_;
 
-  // Encapsulates user interaction state and metadata specific to a single
-  // warning dialog presentation. This state is naturally cleared when the
-  // controller is destroyed (e.g., when the user navigates away or bypasses).
-  struct DialogState {
-    // Tracks if the user clicked the "Learn More" help center link.
-    bool learn_more_clicked = false;
-
-    // Tracks if user has visited the suspicious site host previously.
-    bool repeat_visit = false;
-
-    // Tracks if a history query has already been dispatched for this
-    // navigation.
-    bool has_fetched_history = false;
-
-    // Tracks accumulated prompt visible time across tab switches.
-    base::TimeDelta accumulated_visible_time;
-  };
-
-  DialogState dialog_state_;
+  // Survey state for the current warning presentation.
+  SuspiciousSiteWarningSurveyState survey_state_;
 
   // Tracker for async history queries.
   base::CancelableTaskTracker history_task_tracker_;
+
+  // The UnsafeResource that triggered the suspicious site warning. This is
+  // std::nullopt when the controller is first created, before
+  // ShowForWebContents() is called for a specific navigation.
+  std::optional<security_interstitials::UnsafeResource> resource_;
 
   // Navigation ID of the main frame navigation that triggered the suspicious
   // site warning. This is std::nullopt when the controller is first created,
@@ -163,6 +146,9 @@ class SuspiciousSiteControllerAndroid
 
   // The suspicious URL currently added to the allowlist for this warning.
   GURL current_suspicious_url_;
+
+  // The referrer URL of the suspicious navigation when the warning was shown.
+  GURL current_referrer_url_;
 
   // View bridge for the Android modal dialog.
   std::unique_ptr<SuspiciousSiteDialogViewAndroid> dialog_view_;

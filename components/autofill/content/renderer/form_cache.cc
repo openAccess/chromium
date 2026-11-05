@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "base/check_deref.h"
+#include "base/containers/map_util.h"
 #include "base/feature_list.h"
 #include "components/autofill/content/renderer/autofill_agent.h"
 #include "components/autofill/content/renderer/form_autofill_util.h"
@@ -101,12 +102,13 @@ FormCache::UpdateFormCacheResult FormCache::UpdateFormCache(
     // Store only forms that contain iframes or fields.
     if (IsFormInteresting(form)) {
       FormRendererId form_id = form.renderer_id();
-      auto it = old_extracted_forms.find(form_id);
-      // it->second may be null because the cache was cleared. In this case
+      const FormData* old_form =
+          base::FindPtrOrNull(old_extracted_forms, form_id);
+      // `old_form` may be null because the cache was cleared. In this case
       // we want to list the form as an updated form.
-      if (it == old_extracted_forms.end() || !it->second ||
+      if (!old_form ||
           !FormData::IdenticalAndEquivalentDomElements(
-              *it->second, form, {FormFieldData::Exclusion::kValue})) {
+              *old_form, form, {FormFieldData::Exclusion::kValue})) {
         r.updated_forms.push_back(form);
       }
       r.removed_forms.erase(form_id);
@@ -126,12 +128,13 @@ FormCache::UpdateFormCacheResult FormCache::UpdateFormCache(
 
   bool stop_extracting_forms = false;
   for (const blink::WebFormElement& form_element : form_elements) {
-    extracted_forms_[form_util::GetFormRendererId(form_element)] = nullptr;
+    FormRendererId form_id = form_util::GetFormRendererId(form_element);
+    extracted_forms_[form_id] = nullptr;
     if (stop_extracting_forms) {
       continue;
     }
     if (std::optional<FormData> form = form_util::ExtractFormData(
-            document, form_element, field_data_manager,
+            document, form_id, field_data_manager,
             agent_->GetCallTimerState(kUpdateFormCache),
             agent_->button_titles_cache())) {
       if (!ProcessForm(std::move(*form))) {

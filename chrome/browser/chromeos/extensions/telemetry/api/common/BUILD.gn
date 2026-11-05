@@ -45,19 +45,15 @@ source_set("util") {
     "//ash/constants",
     "//ash/webui/shimless_rma/backend",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/browser_window",
-    "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/common",
+    "//chromeos/ash/components/browser_delegate",
     "//chromeos/constants",
     "//components/security_state/content",
     "//components/security_state/core",
+    "//components/webapps/isolated_web_apps:scheme",
     "//extensions/common",
   ]
-
-  if (is_mac || is_win || is_linux || is_chromeos) {
-    deps += [ "//components/webapps/isolated_web_apps:scheme" ]
-  }
 }
 
 source_set("hardware_info_delegate") {
@@ -103,20 +99,28 @@ source_set("browser_tests") {
   sources = [
     "base_telemetry_extension_api_guard_function_browsertest.cc",
     "telemetry_extension_capabilities_browser_test.cc",
+    "util_browsertest.cc",
   ]
 
   deps = [
     ":common",
     ":hardware_info_delegate",
     ":test_support",
+    ":util",
+    "//ash/webui/shimless_rma/backend",
     "//base",
     "//base/test:test_support",
-    "//chrome/browser/ash/login/users:test_support",
     "//chrome/browser/ash/test:test_support",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/browser_window",
     "//chrome/common/chromeos/extensions",
-    "//chrome/test:test_support_ui",
+    "//chrome/test/base:in_process_browser_test",
+    "//chrome/test/base:mixin_based_in_process_browser_test",
+    "//chrome/test/base:ui_test_utils",
     "//chromeos/ash/services/cros_healthd/public/cpp:test_support",
     "//chromeos/ash/services/cros_healthd/public/mojom",
+    "//components/session_manager:base",
+    "//components/session_manager/core",
     "//components/user_manager",
     "//content/public/browser",
     "//content/test:test_support",
@@ -126,6 +130,7 @@ source_set("browser_tests") {
     "//net",
     "//net:test_support",
     "//testing/gtest",
+    "//ui/base",
     "//url",
   ]
 
@@ -141,14 +146,12 @@ source_set("unit_tests") {
     ":common",
     ":hardware_info_delegate",
     ":test_support",
-    "//ash/webui/shimless_rma/backend",
     "//base",
     "//base/test:test_support",
-    "//chrome/browser/ash/login/users:test_support",
     "//chrome/browser/extensions:test_support",
-    "//chrome/browser/web_applications:web_applications_test_support",
     "//chrome/common/chromeos/extensions",
     "//chrome/test:test_support",
+    "//chrome/test/base:browser_with_test_window_test",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/mojo_service_manager:test_support",
     "//chromeos/ash/services/cros_healthd/public/cpp:fakes",
@@ -156,8 +159,6 @@ source_set("unit_tests") {
     "//components/user_manager",
     "//content/public/browser",
     "//extensions/common",
-    "//net",
-    "//net:test_support",
     "//testing/gtest",
   ]
 }

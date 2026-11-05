@@ -25,8 +25,14 @@ class EntityInstance;
 // Returns whether `attributes` satisfy at least one import constraint of
 // `entity_type`. If `entity_type` specifies no import constraints, returns
 // true.
+// This only validates whether all required `attributes` are present, not if
+// their values make sense.
 bool AttributesMeetImportConstraints(EntityType entity_type,
                                      DenseSet<AttributeType> attributes);
+
+// Validates whether the `value` makes sense for the `attribute`.
+bool ShouldImportValueForAttribute(AttributeType attribute,
+                                   std::u16string_view value);
 
 // Returns import candidates.
 std::vector<EntityInstance> GetPossibleEntitiesFromSubmittedForm(
@@ -37,7 +43,7 @@ std::vector<EntityInstance> GetPossibleEntitiesFromSubmittedForm(
 // Otherwise returns std::nullopt.
 //
 // The localization depends on the currently set ICU locale
-// (base::i18n::GetConfiguredLocale()).
+// (base::i18n::GetDefaultIcuLocale()).
 //
 // For example, if the attribute value is "2025-01-31" and the currently set ICU
 // locale is "en_US", the returned string is "Jan 31, 2025".
@@ -49,6 +55,11 @@ bool DidUserExplicitlyAcceptedImportPrompt(
 
 bool DidUserExplicitlyDeclineImportPrompt(
     AutofillClient::AutofillAiBubbleResult result);
+
+// Returns true if the entity instance is eligible for Wallet pass
+// disclosure and the prompt shown to the user is a save prompt.
+bool IsEligibleForWalletPassDisclosure(bool is_save_prompt,
+                                       const EntityInstance& entity);
 
 }  // namespace autofill
 

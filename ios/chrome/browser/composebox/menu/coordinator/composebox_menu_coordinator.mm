@@ -19,6 +19,7 @@
 #import "ios/chrome/browser/composebox/coordinator/composebox_input_state_manager.h"
 #import "ios/chrome/browser/composebox/coordinator/composebox_mode_holder.h"
 #import "ios/chrome/browser/composebox/menu/coordinator/composebox_menu_mediator.h"
+#import "ios/chrome/browser/composebox/menu/ui/composebox_menu_context_menu_builder.h"
 #import "ios/chrome/browser/composebox/menu/ui/composebox_menu_shared_tabs_view_controller.h"
 #import "ios/chrome/browser/composebox/menu/ui/composebox_menu_view_controller.h"
 #import "ios/chrome/browser/composebox/model/ios_contextual_search_service_factory.h"
@@ -28,6 +29,7 @@
 #import "ios/chrome/browser/composebox/shared/coordinator/composebox_picker_drive_result.h"
 #import "ios/chrome/browser/composebox/shared/coordinator/composebox_picker_presenter.h"
 #import "ios/chrome/browser/composebox/shared/metrics/composebox_metrics_recorder.h"
+#import "ios/chrome/browser/composebox/ui/composebox_model_item.h"
 #import "ios/chrome/browser/composebox/ui/composebox_ui_input_state.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
@@ -35,6 +37,7 @@
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_utils.h"
@@ -55,6 +58,9 @@ NSString* const kCustomFittingDetentIdentifier = @"kFittingDetentIdentifier";
 /// Top padding above the sheet. Allows the user to drag the sheet down without
 /// conflicting with system behavior.
 CGFloat const kSheetTopPadding = 40.0f;
+
+/// The corner radius of the sheet presentation.
+CGFloat const kSheetPresentationCornerRadius = 38.0f;
 
 }  // namespace
 
@@ -86,6 +92,9 @@ CGFloat const kSheetTopPadding = 40.0f;
   ComposeboxMetricsRecorder* _metricsRecorder;
   // Tracks if the user performed a successful action in the menu.
   BOOL _successfulActionPerformed;
+
+  // Context menu builder.
+  ComposeboxMenuContextMenuBuilder* _menuBuilder;
 }
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
@@ -119,9 +128,6 @@ CGFloat const kSheetTopPadding = 40.0f;
 }
 
 - (void)start {
-  _viewController = [[ComposeboxMenuViewController alloc] init];
-  _viewController.delegate = self;
-
   if (_isStandaloneMenu) {
     ProfileIOS* profile = self.browser->GetProfile();
 
@@ -181,42 +187,33 @@ CGFloat const kSheetTopPadding = 40.0f;
              metricsRecorder:_metricsRecorder];
   _mediator.delegate = self;
 
-  _viewController.sheetPresentationController.prefersGrabberVisible = YES;
-  _viewController.sheetPresentationController.delegate = self;
-  _viewController.sheetPresentationController
-      .prefersEdgeAttachedInCompactHeight = YES;
-
-  if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_PHONE) {
-    _viewController.sheetPresentationController
-        .widthFollowsPreferredContentSizeWhenEdgeAttached = YES;
+  if (!IsComposeboxPlusButtonBottomSheet()) {
+    [self createPickerPresenter];
+    [self createMenuBuilder];
   }
+}
 
-  __weak UIViewController* weakVC = _viewController;
-  auto detentResolver = ^CGFloat(
-      id<UISheetPresentationControllerDetentResolutionContext> context) {
-    CGFloat contentHeight = weakVC.preferredContentSize.height;
-    CGFloat maxAllowedHeight = context.maximumDetentValue - kSheetTopPadding;
-    return contentHeight < maxAllowedHeight ? contentHeight : maxAllowedHeight;
-  };
-  _viewController.sheetPresentationController.detents =
-      @[ [UISheetPresentationControllerDetent
-          customDetentWithIdentifier:kCustomFittingDetentIdentifier
-                            resolver:detentResolver] ];
+- (BOOL)presentingBottomSheet {
+  return _viewController.presentingViewController != nil;
+}
 
-  _viewController.mutator = _mediator;
-  _mediator.consumer = _viewController;
-
+- (void)presentBottomSheetMenu {
+  CHECK(_entrypoint == ComposeboxEntrypoint::kCobrowse ||
+        IsComposeboxPlusButtonBottomSheet());
+  [self setUpBottomSheetMenuViewController];
+  [self createPickerPresenter];
   [self recordAttachmentsMenuOpen];
   [self.baseViewController presentViewController:_viewController
                                         animated:YES
                                       completion:nil];
+}
 
-  _pickerPresenter = [[ComposeboxPickerPresenter alloc]
-      initWithBaseViewController:_viewController
-                         browser:self.browser];
-  _pickerPresenter.delegate = self;
-  _pickerPresenter.dataSource = self;
-  _pickerPresenter.metricsRecorder = _metricsRecorder;
+- (void)dismissMenu {
+  [self dismissUIWithCompletion:nil];
+}
+
+- (UIMenu*)createMenu {
+  return [_menuBuilder createMenu];
 }
 
 - (void)stop {
@@ -229,9 +226,7 @@ CGFloat const kSheetTopPadding = 40.0f;
   }
   _metricsRecorder = nil;
   if (!_viewController.isBeingDismissed) {
-    [_viewController.presentingViewController
-        dismissViewControllerAnimated:YES
-                           completion:nil];
+    [self dismissUIWithCompletion:nil];
   }
   _viewController = nil;
   [_mediator disconnect];
@@ -267,48 +262,42 @@ CGFloat const kSheetTopPadding = 40.0f;
         initWithEntrypoint:_entrypoint
                      query:nil
                   toolMode:toolMode
-                 modelMode:ComposeboxModelOption::kNone
+                 modelMode:omnibox::ModelMode::MODEL_MODE_UNSPECIFIED
             attachmentList:nil];
-    [_viewController.presentingViewController
-        dismissViewControllerAnimated:YES
-                           completion:^{
-                             [weakSelf showComposeboxWithParams:focusParams];
-                           }];
+
+    [self dismissUIWithCompletion:^{
+      [weakSelf showComposeboxWithParams:focusParams];
+    }];
   } else {
     [self.inputPlateDelegate composeboxMenuCoordinator:self
                                             didTapTool:toolMode];
-    [_viewController dismissViewControllerAnimated:YES
-                                        completion:^{
-                                          [weakSelf requestMenuDismissal];
-                                        }];
+    [self dismissUIWithCompletion:^{
+      [weakSelf requestMenuDismissal];
+    }];
   }
 }
 
 - (void)composeboxMenuMediator:(ComposeboxMenuMediator*)mediator
-                   didTapModel:(ComposeboxModelOption)modelMode {
+                   didTapModel:(omnibox::ModelMode)model {
   _successfulActionPerformed = YES;
 
   __weak __typeof(self) weakSelf = self;
   if (_isStandaloneMenu) {
-    [_metricsRecorder recordModelSelected:modelMode];
+    [_metricsRecorder recordModelSelected:model];
     ComposeboxFocusParams* focusParams = [[ComposeboxFocusParams alloc]
         initWithEntrypoint:_entrypoint
                      query:nil
                   toolMode:ComposeboxMode::kRegularSearch
-                 modelMode:modelMode
+                 modelMode:model
             attachmentList:nil];
-    [_viewController.presentingViewController
-        dismissViewControllerAnimated:YES
-                           completion:^{
-                             [weakSelf showComposeboxWithParams:focusParams];
-                           }];
+    [self dismissUIWithCompletion:^{
+      [weakSelf showComposeboxWithParams:focusParams];
+    }];
   } else {
-    [self.inputPlateDelegate composeboxMenuCoordinator:self
-                                           didTapModel:modelMode];
-    [_viewController dismissViewControllerAnimated:YES
-                                        completion:^{
-                                          [weakSelf requestMenuDismissal];
-                                        }];
+    [self.inputPlateDelegate composeboxMenuCoordinator:self didTapModel:model];
+    [self dismissUIWithCompletion:^{
+      [weakSelf requestMenuDismissal];
+    }];
   }
 }
 
@@ -321,20 +310,17 @@ CGFloat const kSheetTopPadding = 40.0f;
         initWithEntrypoint:_entrypoint
                      query:nil
                   toolMode:ComposeboxMode::kRegularSearch
-                 modelMode:ComposeboxModelOption::kNone
+                 modelMode:omnibox::ModelMode::MODEL_MODE_UNSPECIFIED
             attachmentList:attachments];
-    [_viewController.presentingViewController
-        dismissViewControllerAnimated:YES
-                           completion:^{
-                             [weakSelf showComposeboxWithParams:focusParams];
-                           }];
+    [self dismissUIWithCompletion:^{
+      [weakSelf showComposeboxWithParams:focusParams];
+    }];
   } else {
     [self.inputPlateDelegate composeboxMenuCoordinator:self
                                   didUpdateAttachments:attachments];
-    [_viewController dismissViewControllerAnimated:YES
-                                        completion:^{
-                                          [weakSelf requestMenuDismissal];
-                                        }];
+    [self dismissUIWithCompletion:^{
+      [weakSelf requestMenuDismissal];
+    }];
   }
 }
 
@@ -391,6 +377,13 @@ CGFloat const kSheetTopPadding = 40.0f;
 
 - (void)composeboxMenuMediatorDidRequestDriveFileSelection:
     (ComposeboxMenuMediator*)mediator {
+  [_metricsRecorder
+      recordAttachmentButtonUsed:FuseboxAttachmentButtonType::kDriveFiles];
+
+  if (![_mediator canAddMoreAttachments]) {
+    [self showMaxAttachmentSnackbarError];
+    return;
+  }
   [_pickerPresenter presentDriveFilePicker];
 }
 
@@ -418,17 +411,15 @@ CGFloat const kSheetTopPadding = 40.0f;
                                      didTapURL:(const GURL&)url {
   UrlLoadParams params = UrlLoadParams::InNewTab(url);
   UrlLoadingBrowserAgent::FromBrowser(self.browser)->Load(params);
-
-  [_viewController.presentingViewController dismissViewControllerAnimated:YES
-                                                               completion:nil];
+  [self dismissUIWithCompletion:nil];
 }
 
 - (void)composeboxMenuSharedTabsViewController:
             (ComposeboxMenuSharedTabsViewController*)viewController
-                   didRemoveTabWithServerToken:
-                       (const base::UnguessableToken&)serverToken {
+           didRemoveTabWithInputItemIdentifier:
+               (const base::UnguessableToken&)inputItemIdentifier {
   [self.inputPlateDelegate composeboxMenuCoordinator:self
-                         didRemoveTabWithServerToken:serverToken];
+                 didRemoveTabWithInputItemIdentifier:inputItemIdentifier];
 
   ComposeboxUIInputState* newState =
       [self.inputPlateDelegate currentUIInputStateForMenuCoordinator:self];
@@ -457,7 +448,7 @@ CGFloat const kSheetTopPadding = 40.0f;
   [_mediator processImageItems:results];
 }
 
-- (void)composeboxPickerPresenterDidDissmissCamera:
+- (void)composeboxPickerPresenterDidDismissCamera:
     (ComposeboxPickerPresenter*)presenter {
   // NO-OP.
 }
@@ -470,21 +461,17 @@ CGFloat const kSheetTopPadding = 40.0f;
 }
 
 - (void)composeboxPickerPresenter:(ComposeboxPickerPresenter*)presenter
-    handleSelectedTabsWithWebStateIDs:
-        (std::set<web::WebStateID>)selectedWebStateIDs
-                    cachedWebStateIDs:
-                        (std::set<web::WebStateID>)cachedWebStateIDs {
+                      didPickTabs:(const ComposeboxTabSelection&)selection {
   std::set<web::WebStateID> alreadyProcessedIDs =
       [_mediator allAttachedWebStateIDs];
   composebox::TabDiff diff =
-      composebox::ComputeTabDiff(alreadyProcessedIDs, selectedWebStateIDs);
+      composebox::ComputeTabDiff(alreadyProcessedIDs, selection.selected_ids);
 
   if (diff.added.size() > 0) {
     [_metricsRecorder recordTabPickerTabsAttached:diff.added.size()];
   }
 
-  [_mediator processWebStateIDs:selectedWebStateIDs
-              cachedWebStateIDs:cachedWebStateIDs];
+  [_mediator processTabSelection:selection];
 }
 
 - (void)composeboxPickerPresenter:(ComposeboxPickerPresenter*)presenter
@@ -494,10 +481,17 @@ CGFloat const kSheetTopPadding = 40.0f;
     return;
   }
   [_metricsRecorder recordDriveFilesAttached:results.count];
-  [_metricsRecorder
-      recordPickerOutcome:MobileFuseboxPickerOutcome::kAttachmentAdded
-        forAttachmentType:MobileFuseboxPickerAttachmentType::kDrive];
   [_mediator processDriveItems:results];
+}
+
+- (void)composeboxPickerPresenterDidCancelDrivePicker:
+    (ComposeboxPickerPresenter*)presenter {
+  // NO-OP.
+}
+
+- (void)composeboxPickerPresenterDidCancelTabPicker:
+    (ComposeboxPickerPresenter*)presenter {
+  // NO-OP.
 }
 
 #pragma mark - ComposeboxPickerPresenterDataSource
@@ -557,8 +551,8 @@ CGFloat const kSheetTopPadding = 40.0f;
     [_metricsRecorder recordToolModeShown:tool];
   }
 
-  for (const auto& model : _inputState.allowedModels) {
-    [_metricsRecorder recordModelModeShown:model];
+  for (ComposeboxModelItem* modelItem in _inputState.modelItems) {
+    [_metricsRecorder recordModelModeShown:modelItem.modelMode];
   }
 
   [_metricsRecorder
@@ -583,11 +577,87 @@ CGFloat const kSheetTopPadding = 40.0f;
   }
 }
 
+// Instantiates a context menu builder.
+- (void)createMenuBuilder {
+  _menuBuilder =
+      [[ComposeboxMenuContextMenuBuilder alloc] initWithInputState:_inputState];
+  _menuBuilder.mutator = _mediator;
+}
+
+// Sets up the bottom sheet menu UI.
+- (void)setUpBottomSheetMenuViewController {
+  _viewController = [[ComposeboxMenuViewController alloc] init];
+  _viewController.menuDelegate = self;
+
+  _viewController.sheetPresentationController.prefersGrabberVisible = YES;
+  _viewController.sheetPresentationController.delegate = self;
+  _viewController.sheetPresentationController
+      .prefersEdgeAttachedInCompactHeight = YES;
+  _viewController.sheetPresentationController.preferredCornerRadius =
+      kSheetPresentationCornerRadius;
+  _viewController.sheetPresentationController
+      .widthFollowsPreferredContentSizeWhenEdgeAttached = YES;
+
+  __weak UIViewController* weakVC = _viewController;
+  auto detentResolver = ^CGFloat(
+      id<UISheetPresentationControllerDetentResolutionContext> context) {
+    CGFloat contentHeight = weakVC.preferredContentSize.height;
+    CGFloat maxAllowedHeight = context.maximumDetentValue - kSheetTopPadding;
+    return contentHeight < maxAllowedHeight ? contentHeight : maxAllowedHeight;
+  };
+  _viewController.sheetPresentationController.detents =
+      @[ [UISheetPresentationControllerDetent
+          customDetentWithIdentifier:kCustomFittingDetentIdentifier
+                            resolver:detentResolver] ];
+
+  if (self.isOffTheRecord) {
+    _viewController.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+  }
+
+  _viewController.mutator = _mediator;
+  _mediator.consumer = _viewController;
+}
+
+// Builds the picker presenter.
+- (void)createPickerPresenter {
+  UIViewController* baseViewController =
+      _viewController ?: self.baseViewController;
+  _pickerPresenter = [[ComposeboxPickerPresenter alloc]
+      initWithBaseViewController:baseViewController
+                         browser:self.browser];
+  _pickerPresenter.delegate = self;
+  _pickerPresenter.dataSource = self;
+  _pickerPresenter.metricsRecorder = _metricsRecorder;
+}
+
+// Dismisses the presented selection UI. This includes the bottom sheet UI as
+// well as the presented pickers.
+- (void)dismissUIWithCompletion:(ProceduralBlock)completion {
+  if (_viewController.presentingViewController) {
+    [_viewController.presentingViewController
+        dismissViewControllerAnimated:YES
+                           completion:completion];
+  } else if (_pickerPresenter) {
+    [_pickerPresenter dismissPickerWithCompletion:completion];
+  } else {
+    if (completion) {
+      completion();
+    }
+  }
+}
+
 #pragma mark - ComposeboxMenuViewControllerDelegate
 
 - (void)composeboxMenuViewControllerDidRequestClose:
     (ComposeboxMenuViewController*)composeboxMenuViewController {
   [self requestMenuDismissal];
+}
+
+- (void)composeboxMenuViewControllerDidChangeMenuPage:
+    (ComposeboxMenuViewController*)composeboxMenuViewController {
+  [_viewController.sheetPresentationController animateChanges:^{
+    [_viewController.sheetPresentationController invalidateDetents];
+  }];
 }
 
 #pragma mark - ComposeboxInputStateManagerDelegate

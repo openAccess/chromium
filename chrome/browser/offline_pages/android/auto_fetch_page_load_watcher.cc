@@ -30,7 +30,6 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/browser/web_contents_user_data.h"
 
 namespace offline_pages {
 using auto_fetch_internal::AndroidTabFinder;
@@ -73,47 +72,30 @@ std::optional<TabInfo> AndroidTabFinder::FindNavigationTab(
   return AnroidTabInfo(*tab);
 }
 
-// Observes a WebContents to relay navigation events to
-// AutoFetchPageLoadWatcher.
-class AutoFetchPageLoadWatcher::NavigationObserver
-    : public content::WebContentsObserver,
-      public content::WebContentsUserData<
-          AutoFetchPageLoadWatcher::NavigationObserver> {
- public:
-  explicit NavigationObserver(content::WebContents* web_contents)
-      : content::WebContentsObserver(web_contents),
-        content::WebContentsUserData<
-            AutoFetchPageLoadWatcher::NavigationObserver>(*web_contents) {
-    page_load_watcher_ =
-        OfflinePageAutoFetcherServiceFactory::GetForBrowserContext(
-            web_contents->GetBrowserContext())
-            ->page_load_watcher();
-    DCHECK(page_load_watcher_);
+AutoFetchNavigationObserver::AutoFetchNavigationObserver(
+    content::WebContents* web_contents)
+    : content::WebContentsObserver(web_contents) {
+  page_load_watcher_ =
+      OfflinePageAutoFetcherServiceFactory::GetForBrowserContext(
+          web_contents->GetBrowserContext())
+          ->page_load_watcher();
+  CHECK(page_load_watcher_, base::NotFatalUntil::M161);
+}
+
+AutoFetchNavigationObserver::~AutoFetchNavigationObserver() = default;
+
+void AutoFetchNavigationObserver::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (!navigation_handle->IsInPrimaryMainFrame() ||
+      !navigation_handle->HasCommitted()) {
+    return;
   }
-
-  NavigationObserver(const NavigationObserver&) = delete;
-  NavigationObserver& operator=(const NavigationObserver&) = delete;
-
-  // content::WebContentsObserver implementation.
-  void DidFinishNavigation(
-      content::NavigationHandle* navigation_handle) override {
-    if (!navigation_handle->IsInPrimaryMainFrame() ||
-        !navigation_handle->HasCommitted())
-      return;
-    page_load_watcher_->HandleNavigation(navigation_handle);
-  }
-
- private:
-  friend class content::WebContentsUserData<
-      AutoFetchPageLoadWatcher::NavigationObserver>;
-  raw_ptr<AutoFetchPageLoadWatcher> page_load_watcher_;
-  WEB_CONTENTS_USER_DATA_KEY_DECL();
-};
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(AutoFetchPageLoadWatcher::NavigationObserver);
+  page_load_watcher_->HandleNavigation(navigation_handle);
+}
 
 // static
-void AutoFetchPageLoadWatcher::CreateForWebContents(
+std::unique_ptr<AutoFetchNavigationObserver>
+AutoFetchPageLoadWatcher::MaybeCreateNavigationObserver(
     content::WebContents* web_contents) {
   OfflinePageAutoFetcherService* service =
       OfflinePageAutoFetcherServiceFactory::GetForBrowserContext(
@@ -121,8 +103,9 @@ void AutoFetchPageLoadWatcher::CreateForWebContents(
   // Don't try to create if the service isn't available (happens in incognito
   // mode).
   if (service) {
-    NavigationObserver::CreateForWebContents(web_contents);
+    return std::make_unique<AutoFetchNavigationObserver>(web_contents);
   }
+  return nullptr;
 }
 
 namespace auto_fetch_internal {
@@ -151,7 +134,7 @@ InternalImpl::InternalImpl(AutoFetchNotifier* notifier,
 InternalImpl::~InternalImpl() = default;
 
 void InternalImpl::RequestListInitialized(std::vector<RequestInfo> request) {
-  DCHECK(!requests_initialized_);
+  CHECK(!requests_initialized_, base::NotFatalUntil::M161);
   requests_initialized_ = true;
   requests_ = std::move(request);
 
@@ -165,8 +148,8 @@ void InternalImpl::RequestListInitialized(std::vector<RequestInfo> request) {
 }
 
 void InternalImpl::UpdateNotificationStateForAllRequests() {
-  DCHECK(requests_initialized_);
-  DCHECK(tab_model_ready_);
+  CHECK(requests_initialized_, base::NotFatalUntil::M161);
+  CHECK(tab_model_ready_, base::NotFatalUntil::M161);
   // Now that we have the full list of requests, we need to verify that the
   // notification state is correct. For instance, if a tab was closed or
   // naviagated away from the request URL, we need to trigger the in-progress
@@ -361,8 +344,7 @@ class AutoFetchPageLoadWatcher::TabWatcher : public TabModelListObserver,
   }
 
   // TabModelObserver.
-  void OnTabClosePending(const std::vector<TabAndroid*>& tabs,
-                         TabModel::TabClosingSource source) override {
+  void OnTabClosePending(const std::vector<TabAndroid*>& tabs) override {
     for (TabAndroid* tab : tabs) {
       impl_->TabClosed(tab->GetAndroidId());
     }

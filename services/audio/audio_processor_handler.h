@@ -47,18 +47,21 @@ class VoiceIsolationHandler;
 //
 // Audio data flow through AudioProcessorHandler:
 //
-// * Without a dedicated processing thread (lightweight / no FIFO):
+// * Without an AudioProcessorHandler dedicated processing thread:
 //   Audio capture thread:
 //     AudioProcessorHandler::ProcessCapturedAudio()
 //     -> AudioProcessorHandler::ProcessCapturedAudioInternal()
 //     --> media::AudioProcessor (WebRTC processing)
 //     ---> AudioProcessorHandler::OnAudioProcessorOutput() (callback)
-//     ----> VoiceIsolationHandler::ProcessCapturedAudio() (if voice isolation
-//     enabled)
-//     -----> |deliver_processed_audio_callback_|
 //     ----> |deliver_processed_audio_callback_| (if voice isolation disabled)
+//     ----> VoiceIsolationHandler::ProcessCapturedAudio() (if voice isolation
+//           enabled)
+//           -> |processing_fifo_|::PushData() (if VI has dedicated thread)
+//              [Voice isolation thread]:
+//              -> VoiceIsolationHandler::ProcessCapturedAudioInternal()
+//              -> |deliver_processed_audio_callback_|
 //
-// * With a dedicated processing thread (heavy / using FIFO):
+// * With an AudioProcessorHandler dedicated processing thread (using FIFO):
 //   Audio capture thread:
 //     AudioProcessorHandler::ProcessCapturedAudio()
 //     -> |processing_fifo_|::PushData()
@@ -67,10 +70,16 @@ class VoiceIsolationHandler;
 //     callback)
 //     --> media::AudioProcessor (WebRTC processing)
 //     ---> AudioProcessorHandler::OnAudioProcessorOutput() (callback)
-//     ----> VoiceIsolationHandler::ProcessCapturedAudio() (if voice isolation
-//     enabled)
-//     -----> |deliver_processed_audio_callback_|
 //     ----> |deliver_processed_audio_callback_| (if voice isolation disabled)
+//     ----> VoiceIsolationHandler::ProcessCapturedAudio() (if voice isolation
+//           enabled)
+//           -----> |deliver_processed_audio_callback_| (if VI has no dedicated
+//                  thread)
+//           -----> |processing_fifo_|::PushData() (two-stage FIFO pipeline,
+//                  if VI has dedicated thread)
+//                  [Voice isolation thread]:
+//                  -> VoiceIsolationHandler::ProcessCapturedAudioInternal()
+//                  -> |deliver_processed_audio_callback_|
 class AudioProcessorHandler final : public ReferenceOutput::Listener,
                                     public media::mojom::AudioProcessorControls,
                                     public media::AecdumpRecordingSource {
@@ -80,8 +89,10 @@ class AudioProcessorHandler final : public ReferenceOutput::Listener,
   using DeliverProcessedAudioCallback = base::RepeatingCallback<void(
       const media::AudioBus& audio_bus,
       base::TimeTicks audio_capture_time,
-      std::optional<double> new_volume,
       const media::AudioGlitchInfo& audio_glitch_info)>;
+
+  using VolumeAdjustmentCallback =
+      base::RepeatingCallback<void(double new_volume)>;
 
   using LogCallback = base::RepeatingCallback<void(std::string_view)>;
   using ReferenceStreamErrorCallback = base::RepeatingCallback<void()>;
@@ -94,7 +105,12 @@ class AudioProcessorHandler final : public ReferenceOutput::Listener,
   // |settings|.NeedWebrtcAudioProcessing().
   // |log_callback| is used for logging messages on the owning sequence.
   // |deliver_processed_audio_callback| is used to deliver processed audio
-  // provided to ProcessCapturedAudio().
+  // provided to ProcessCapturedAudio() if `voice_isolation_handler` is not
+  // provided. Called on the processing thread if a FIFO is used, or on the
+  // capture thread otherwise.
+  // |volume_adjustment_callback| is used to deliver AGC microphone volume
+  // adjustments. Called on the processing thread if a FIFO is used, or on the
+  // capture thread otherwise.
   // |controls_receiver| calls are received by the AudioProcessorHandler.
   // |aecdump_recording_manager| is used to register and deregister an aecdump
   // recording source, and must outlive the AudioProcessorHandler if not null.
@@ -103,9 +119,8 @@ class AudioProcessorHandler final : public ReferenceOutput::Listener,
       const media::AudioParameters& input_format,
       const media::AudioParameters& output_format,
       LogCallback log_callback,
-      // Used to deliver processed audio if `voice_isolation_handler` is not
-      // provided.
       DeliverProcessedAudioCallback deliver_processed_audio_callback,
+      VolumeAdjustmentCallback volume_adjustment_callback,
       // reference_stream_error_callback will be called on the main thread.
       ReferenceStreamErrorCallback reference_stream_error_callback,
       mojo::PendingReceiver<media::mojom::AudioProcessorControls>
@@ -207,6 +222,9 @@ class AudioProcessorHandler final : public ReferenceOutput::Listener,
   // `voice_isolation_handler_`.
   const DeliverProcessedAudioCallback deliver_processed_audio_callback_;
 
+  // Used to deliver AGC volume adjustments.
+  const VolumeAdjustmentCallback volume_adjustment_callback_;
+
   const ReferenceStreamErrorCallback reference_stream_error_callback_
       GUARDED_BY_CONTEXT(owning_sequence_);
 
@@ -228,6 +246,8 @@ class AudioProcessorHandler final : public ReferenceOutput::Listener,
 
   media::AudioGlitchInfo::Accumulator glitch_info_accumulator_;
 
+  // If created, audio processing is offloaded to a dedicated real-time
+  // processing thread via this FIFO.
   std::unique_ptr<ProcessingAudioFifo> processing_fifo_;
 };
 

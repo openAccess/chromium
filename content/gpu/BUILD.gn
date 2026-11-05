@@ -68,12 +68,14 @@ target(link_target_type, "gpu_sources") {
     "//components/viz/service/main",
     "//media/gpu/ipc/service",
     "//media/mojo/clients",
+    "//sandbox:sandbox_buildflags",
     "//sandbox/policy:chromecast_sandbox_allowlist_buildflags",
     "//services/service_manager/public/cpp",
     "//services/service_manager/public/mojom",
     "//services/tracing/public/cpp",
     "//services/viz/privileged/mojom",
     "//services/webnn/public/cpp",
+    "//services/webnn/public/mojom",
     "//skia",
     "//third_party/angle:angle_gpu_info_util",
     "//ui/gfx/ipc",
@@ -107,7 +109,7 @@ target(link_target_type, "gpu_sources") {
     deps += [ "//media/mojo/services" ]
   }
 
-  if (is_linux || is_chromeos || is_mac || is_win) {
+  if (is_linux || is_chromeos || is_mac || is_win || is_android) {
     deps += [ "//sandbox" ]
   }
 

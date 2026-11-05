@@ -27,7 +27,7 @@ AppServiceAppWindowShelfItemController::AppServiceAppWindowShelfItemController(
     const ash::ShelfID& shelf_id,
     AppServiceAppWindowShelfController* controller)
     : AppWindowShelfItemController(shelf_id), controller_(controller) {
-  DCHECK(controller_);
+  CHECK(controller_, base::NotFatalUntil::M162);
 }
 
 AppServiceAppWindowShelfItemController::
@@ -86,12 +86,14 @@ AppServiceAppWindowShelfItemController::GetAppMenuItems(
                                                          filter_predicate);
   }
 
+  CacheAppMenuWindows();
+
   // The window could be teleported from the inactive user's profile to the
   // current active user, so search all profiles.
   for (Profile* profile : controller_->GetProfileList()) {
     extensions::AppWindowRegistry* const app_window_registry =
         extensions::AppWindowRegistry::Get(profile);
-    DCHECK(app_window_registry);
+    CHECK(app_window_registry, base::NotFatalUntil::M162);
 
     AppMenuItems items;
     bool switch_profile = false;
@@ -114,7 +116,7 @@ AppServiceAppWindowShelfItemController::GetAppMenuItems(
       favicon::FaviconDriver* const favicon_driver =
           favicon::ContentFaviconDriver::FromWebContents(
               app_window->web_contents());
-      DCHECK(favicon_driver);
+      CHECK(favicon_driver, base::NotFatalUntil::M162);
       gfx::ImageSkia image = favicon_driver->GetFavicon().AsImageSkia();
       if (image.isNull()) {
         const gfx::ImageSkia* app_icon = nullptr;
@@ -154,7 +156,7 @@ void AppServiceAppWindowShelfItemController::OnWindowTitleChanged(
   for (Profile* profile : controller_->GetProfileList()) {
     extensions::AppWindowRegistry* const app_window_registry =
         extensions::AppWindowRegistry::Get(profile);
-    DCHECK(app_window_registry);
+    CHECK(app_window_registry, base::NotFatalUntil::M162);
 
     extensions::AppWindow* const app_window =
         app_window_registry->GetAppWindowForNativeWindow(

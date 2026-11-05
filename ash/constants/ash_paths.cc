@@ -4,6 +4,7 @@
 
 #include "ash/constants/ash_paths.h"
 
+#include "base/base_paths.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
@@ -20,6 +21,16 @@ const base::FilePath::CharType kDefaultAppOrderFileName[] =
     FILE_PATH_LITERAL("/usr/share/google-chrome/default_app_order.json");
 #else
     FILE_PATH_LITERAL("/usr/share/chromium/default_app_order.json");
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+
+// This must be kept in sync with the "arc" sub directory of
+// chrome::DIR_STANDALONE_EXTERNAL_EXTENSIONS defined in
+// chrome/common/chrome_paths.cc.
+const base::FilePath::CharType kArcDefaultAppsDir[] =
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+    FILE_PATH_LITERAL("/usr/share/google-chrome/extensions/arc");
+#else
+    FILE_PATH_LITERAL("/usr/share/chromium/extensions/arc");
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
 const base::FilePath::CharType kMachineHardwareInfoFileName[] =
@@ -39,6 +50,9 @@ const base::FilePath::CharType kTPMFirmwareUpdateLocation[] =
 
 const base::FilePath::CharType kTPMFirmwareUpdateSRKVulnerableROCA[] =
     FILE_PATH_LITERAL("/run/tpm_firmware_update_srk_vulnerable_roca");
+
+const base::FilePath::CharType kDeviceRefreshTokenFileName[] =
+    FILE_PATH_LITERAL("device_refresh_token");
 
 const base::FilePath::CharType kDeviceLocalAccountExtensionDir[] =
     FILE_PATH_LITERAL("/var/cache/device_local_account_extensions");
@@ -104,6 +118,22 @@ bool PathProvider(int key, base::FilePath* result) {
     case FILE_TPM_FIRMWARE_UPDATE_SRK_VULNERABLE_ROCA:
       *result = base::FilePath(kTPMFirmwareUpdateSRKVulnerableROCA);
       break;
+    case FILE_DEVICE_REFRESH_TOKEN: {
+      base::FilePath cur;
+      if (!base::PathService::Get(DIR_USER_DATA, &cur)) {
+        return false;
+      }
+      *result = cur.Append(kDeviceRefreshTokenFileName);
+      break;
+    }
+    case DIR_RESOURCES: {
+      base::FilePath cur;
+      if (!base::PathService::Get(base::DIR_ASSETS, &cur)) {
+        return false;
+      }
+      *result = cur.Append(FILE_PATH_LITERAL("resources"));
+      break;
+    }
     case DIR_HOMEDIR_MOUNT:
 #if BUILDFLAG(IS_CHROMEOS_DEVICE)
       *result = base::FilePath(kCryptohomeMountRoot);
@@ -167,6 +197,9 @@ bool PathProvider(int key, base::FilePath* result) {
       *result = cur.Append(FILE_PATH_LITERAL("custom_wallpapers"));
       break;
     }
+    case DIR_ARC_DEFAULT_APPS:
+      *result = base::FilePath(kArcDefaultAppsDir);
+      break;
 
     default:
       return false;

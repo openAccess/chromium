@@ -12,7 +12,6 @@
 #include "ash/public/cpp/hotspot_config_service.h"
 #include "ash/public/cpp/network_config_service.h"
 #include "ash/webui/network_ui/network_health_resource_provider.h"
-#include "ash/webui/network_ui/traffic_counters_resource_provider.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
@@ -22,7 +21,6 @@
 #include "chrome/browser/ui/webui/ash/settings/pages/internet/internet_handler.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
 #include "chrome/browser/ui/webui/extension_control_handler.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/dbus/hermes/hermes_manager_client.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
@@ -394,34 +392,22 @@ base::span<const SearchConcept> GetCellularAddESimSearchTerms() {
 
 base::span<const SearchConcept>
 GeActiveCellularNetworkApnSettingsSearchConcepts() {
-  if (ash::features::IsApnRevampEnabled()) {
-    static constexpr auto tags = std::to_array<SearchConcept>(
-        {{IDS_OS_SETTINGS_TAG_CELLULAR_APN_SETTINGS,
-          mojom::kApnSubpagePath,
-          mojom::SearchResultIcon::kCellular,
-          mojom::SearchResultDefaultRank::kMedium,
-          mojom::SearchResultType::kSubpage,
-          {.subpage = mojom::Subpage::kApn},
-          {IDS_OS_SETTINGS_TAG_CELLULAR_APN_SETTINGS_ALT_1,
-           SearchConcept::kAltTagEnd}},
-         {IDS_OS_SETTINGS_TAG_ADD_APN,
-          mojom::kApnSubpagePath,
-          mojom::SearchResultIcon::kCellular,
-          mojom::SearchResultDefaultRank::kMedium,
-          mojom::SearchResultType::kSetting,
-          {.setting = mojom::Setting::kCellularAddApn},
-          {IDS_OS_SETTINGS_TAG_ADD_APN_ALT1, SearchConcept::kAltTagEnd}}});
-    return tags;
-  }
-
-  static constexpr auto tags = std::to_array<SearchConcept>({
-      {IDS_OS_SETTINGS_TAG_CELLULAR_APN,
-       mojom::kCellularDetailsSubpagePath,
-       mojom::SearchResultIcon::kCellular,
-       mojom::SearchResultDefaultRank::kMedium,
-       mojom::SearchResultType::kSetting,
-       {.setting = mojom::Setting::kCellularApn}},
-  });
+  static constexpr auto tags = std::to_array<SearchConcept>(
+      {{IDS_OS_SETTINGS_TAG_CELLULAR_APN_SETTINGS,
+        mojom::kApnSubpagePath,
+        mojom::SearchResultIcon::kCellular,
+        mojom::SearchResultDefaultRank::kMedium,
+        mojom::SearchResultType::kSubpage,
+        {.subpage = mojom::Subpage::kApn},
+        {IDS_OS_SETTINGS_TAG_CELLULAR_APN_SETTINGS_ALT_1,
+         SearchConcept::kAltTagEnd}},
+       {IDS_OS_SETTINGS_TAG_ADD_APN,
+        mojom::kApnSubpagePath,
+        mojom::SearchResultIcon::kCellular,
+        mojom::SearchResultDefaultRank::kMedium,
+        mojom::SearchResultType::kSetting,
+        {.setting = mojom::Setting::kCellularAddApn},
+        {IDS_OS_SETTINGS_TAG_ADD_APN_ALT1, SearchConcept::kAltTagEnd}}});
   return tags;
 }
 
@@ -1110,7 +1096,6 @@ void InternetSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
   cellular_setup::AddNonStringLoadTimeData(html_source);
   cellular_setup::AddLocalizedStrings(html_source);
   network_health::AddResources(html_source);
-  traffic_counters::AddResources(html_source);
 
   html_source->AddBoolean(
       "bypassConnectivityCheck",
@@ -1118,9 +1103,6 @@ void InternetSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
           features::kCellularBypassESimInstallationConnectivityCheck));
   html_source->AddBoolean("showTechnologyBadge",
                           !ash::features::IsSeparateNetworkIconsEnabled());
-  html_source->AddBoolean(
-      "trafficCountersForWifiTesting",
-      ash::features::IsTrafficCountersForWiFiTestingEnabled());
 
   html_source->AddString("networkGoogleNameserversLearnMoreUrl",
                          ash::external_urls::kGoogleNameserversLearnMoreURL);

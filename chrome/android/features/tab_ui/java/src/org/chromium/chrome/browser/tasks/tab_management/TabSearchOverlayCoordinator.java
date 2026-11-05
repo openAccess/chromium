@@ -16,7 +16,9 @@ import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
 import android.os.Build;
+import android.os.SystemClock;
 import android.provider.Browser;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
@@ -34,10 +36,12 @@ import androidx.annotation.DrawableRes;
 import androidx.annotation.IdRes;
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
+import androidx.core.view.WindowInsetsCompat;
 
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.IntentUtils;
+import org.chromium.base.lifetime.Destroyable;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
@@ -49,6 +53,8 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
+import org.chromium.chrome.browser.app.tabmodel.ArchivedTabModelOrchestrator;
+import org.chromium.chrome.browser.app.tabmodel.ArchivedTabModelOrchestrator.LeaseReason;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.browserservices.intents.WebappConstants;
@@ -57,6 +63,7 @@ import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.ConfigurationChangedObserver;
 import org.chromium.chrome.browser.omnibox.BackKeyBehaviorDelegate;
+import org.chromium.chrome.browser.omnibox.LocationBarCoordinator;
 import org.chromium.chrome.browser.omnibox.LocationBarEmbedder;
 import org.chromium.chrome.browser.omnibox.UrlBar;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxControls;
@@ -64,20 +71,23 @@ import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxLoadUrlParams;
 import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionDelegateImpl;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedBridge;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedEntry;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedTab;
+import org.chromium.chrome.browser.searchwidget.SearchActivitySession;
 import org.chromium.chrome.browser.searchwidget.SearchActivityUtils;
 import org.chromium.chrome.browser.searchwidget.SearchBoxDataProvider;
 import org.chromium.chrome.browser.searchwidget.SearchUiCoordinator;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
+import org.chromium.chrome.browser.tabmodel.TabGroupUtils;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.browser.tabwindow.TabWindowInfo;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.IntentOrigin;
-import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.SearchType;
 import org.chromium.components.browser_ui.desktop_windowing.AppHeaderState;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
@@ -89,10 +99,13 @@ import org.chromium.ui.AsyncViewStub;
 import org.chromium.ui.base.KeyNavigationUtil;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.edge_to_edge.EdgeToEdgeSystemBarColorHelper;
+import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
+import org.chromium.ui.mojom.WindowOpenDisposition;
+import org.chromium.ui.text.EmptyTextWatcher;
 import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
@@ -134,7 +147,8 @@ public class TabSearchOverlayCoordinator
         TabSearchDismissalReason.TAB_SELECTED,
         TabSearchDismissalReason.TAB_GROUP_SELECTED,
         TabSearchDismissalReason.URL_LOADED,
-        TabSearchDismissalReason.WINDOW_RESIZED
+        TabSearchDismissalReason.WINDOW_RESIZED,
+        TabSearchDismissalReason.TAB_RESTORED
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface TabSearchDismissalReason {
@@ -146,7 +160,8 @@ public class TabSearchOverlayCoordinator
         int TAB_GROUP_SELECTED = 5;
         int URL_LOADED = 6;
         int WINDOW_RESIZED = 7;
-        int NUM_ENTRIES = 8;
+        int TAB_RESTORED = 8;
+        int NUM_ENTRIES = 9;
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:TabSearchDismissalReason)
@@ -170,6 +185,11 @@ public class TabSearchOverlayCoordinator
     private final SearchBoxDataProvider mSearchBoxDataProvider;
     private final Callback<Profile> mProfileObserver;
     private final Callback<Boolean> mSuggestionsObserver = this::onSuggestionsChanged;
+    // On desktop / tablet devices with a hardware keyboard connected, loading the NTP causes the
+    // Omnibox to enter a STANDBY input session. When Tab Search is opened, this interface
+    // terminates any active Omnibox/Fusebox session so background suggestions are not triggered
+    // while Tab Search is active.
+    private final @Nullable FuseboxControls mFuseboxControls;
 
     // Recursion guard to prevent event dispatch loops when forwarding scrim scroll/drag events
     // to the underlying compositor view hierarchy.
@@ -180,16 +200,17 @@ public class TabSearchOverlayCoordinator
             mChangeProcessor;
     private @Nullable LinearLayout mPanelContainer;
     private @Nullable PopupWindow mPopupWindow;
-    // On desktop / tablet devices with a hardware keyboard connected, loading the NTP causes the
-    // Omnibox to enter a STANDBY input session. When Tab Search is opened, this interface
-    // terminates
-    // any active Omnibox/Fusebox session so background suggestions are not triggered while Tab
-    // Search is active.
-    private final @Nullable FuseboxControls mFuseboxControls;
     private @Nullable SearchUiCoordinator mSearchUiCoordinator;
+    private @Nullable UrlBar mUrlBar;
+    private @Nullable TextWatcher mUrlBarTextWatcher;
     private ViewTreeObserver.@Nullable OnWindowFocusChangeListener mWindowFocusListener;
     private TabObscuringHandler.@Nullable Token mTabObscuringToken;
     private boolean mEncounteredEmptyStateThisSession;
+    private @Nullable Destroyable mSearchSessionLease;
+    private @Nullable Callback<Boolean> mTabStateInitializedObserver;
+    private @Nullable NonNullObservableSupplier<Boolean> mObservedTabStateInitializedSupplier;
+    private long mSearchQueryStartTimeMs;
+    private long mInitialSuggestionsRenderTimeMs;
 
     /**
      * Constructs a new TabSearchOverlayCoordinator.
@@ -265,6 +286,11 @@ public class TabSearchOverlayCoordinator
 
     /** Destroys the coordinator, cleaning up resources and child coordinators. */
     public void destroy() {
+        cancelPendingSearchMetrics();
+        if (mSearchSessionLease != null) {
+            mSearchSessionLease.destroy();
+            mSearchSessionLease = null;
+        }
         if (mTabObscuringToken != null) {
             mTabObscuringHandler.unobscure(mTabObscuringToken);
             mTabObscuringToken = null;
@@ -279,11 +305,15 @@ public class TabSearchOverlayCoordinator
             mChangeProcessor.destroy();
             mChangeProcessor = null;
         }
+        if (mUrlBar != null) {
+            mUrlBar.removeTextChangedListener(mUrlBarTextWatcher);
+            mUrlBarTextWatcher = null;
+            mUrlBar = null;
+        }
         if (mSearchUiCoordinator != null) {
             mSearchUiCoordinator
                     .getLocationBarCoordinator()
-                    .getSuggestionsListNonEmptySupplier()
-                    .removeObserver(mSuggestionsObserver);
+                    .removeSuggestionsChangeObserver(mSuggestionsObserver);
             mSearchUiCoordinator.destroy();
             mSearchUiCoordinator = null;
         }
@@ -402,8 +432,7 @@ public class TabSearchOverlayCoordinator
 
         mSearchUiCoordinator
                 .getLocationBarCoordinator()
-                .getSuggestionsListNonEmptySupplier()
-                .addSyncObserver(mSuggestionsObserver);
+                .addSuggestionsChangeObserver(mSuggestionsObserver);
 
         View emptyStateView = panelView.findViewById(R.id.empty_state_container);
         setupEmptyStateView(emptyStateView);
@@ -503,7 +532,9 @@ public class TabSearchOverlayCoordinator
         // Shrink the size of the UrlBar text from the default (16sp) to medium (14sp) so the hint
         // text fits within the given viewport given the tab search overlay has a fixed small width.
         var locationBarCoordinator = searchUiCoordinator.getLocationBarCoordinator();
-        var urlBar = (UrlBar) locationBarCoordinator.getContainerView().findViewById(R.id.url_bar);
+        UrlBar urlBar =
+                (UrlBar) locationBarCoordinator.getContainerView().findViewById(R.id.url_bar);
+        mUrlBar = urlBar;
         if (urlBar != null) {
             urlBar.setTextAppearance(R.style.TextAppearance_TextMedium);
             urlBar.setAccessibilityTraversalAfter(R.id.tab_search_close_button);
@@ -511,7 +542,6 @@ public class TabSearchOverlayCoordinator
             LinearLayout panelContainer = assumeNonNull(mPanelContainer);
             View closeButton =
                     assumeNonNull(panelContainer.findViewById(R.id.tab_search_close_button));
-            closeButton.setFocusableInTouchMode(true);
 
             var suggestionsVisualState = locationBarCoordinator.getOmniboxSuggestionsVisualState();
             AutocompleteCoordinator autocompleteCoordinator =
@@ -534,6 +564,7 @@ public class TabSearchOverlayCoordinator
 
                         if (isTabBack || isUp) {
                             if (selectedIndex == null) {
+                                closeButton.setFocusableInTouchMode(true);
                                 closeButton.requestFocus();
                                 return true;
                             } else if (selectedIndex <= 0) {
@@ -550,6 +581,12 @@ public class TabSearchOverlayCoordinator
             urlBar.setKeyDownListener(keyListener);
             urlBar.setOnKeyListener(keyListener);
 
+            closeButton.setOnFocusChangeListener(
+                    (v, hasFocus) -> {
+                        if (!hasFocus) {
+                            closeButton.setFocusableInTouchMode(false);
+                        }
+                    });
             closeButton.setOnKeyListener(
                     (v, keyCode, event) -> {
                         if (KeyNavigationUtil.isTabForward(event)
@@ -559,6 +596,17 @@ public class TabSearchOverlayCoordinator
                         }
                         return false;
                     });
+            mUrlBarTextWatcher =
+                    new EmptyTextWatcher() {
+                        @Override
+                        public void onTextChanged(
+                                CharSequence s, int start, int before, int count) {
+                            if (isVisible()) {
+                                onSearchQueryStarted(s != null ? s.toString() : "");
+                            }
+                        }
+                    };
+            urlBar.addTextChangedListener(mUrlBarTextWatcher);
         }
 
         // If the profile supplier is null (rare), default to the non-incognito state as it is the
@@ -597,10 +645,16 @@ public class TabSearchOverlayCoordinator
         }
 
         mModel.set(TabSearchOverlayProperties.EMPTY_STATE_VISIBLE, showEmptyState);
+        onSuggestionsRendered(hasSuggestions);
     }
 
     private boolean loadUrl(OmniboxLoadUrlParams params, boolean isIncognito) {
         if (params.url == null) return false;
+
+        if (params.isRecentlyClosedTab && restoreRecentlyClosedTab(params.url)) {
+            hide(TabSearchDismissalReason.TAB_RESTORED);
+            return true;
+        }
 
         Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(params.url));
         intent.setComponent(
@@ -615,6 +669,19 @@ public class TabSearchOverlayCoordinator
             intent.putExtra(Browser.EXTRA_APPLICATION_ID, mActivity.getPackageName());
         }
 
+        // Ensure new tabs opened from search suggestions are appended to the end of the tab
+        // strip rather than inserted adjacent to the active tab. If an existing tab matches the
+        // URL, REUSE_URL_MATCHING_TAB_ELSE_NEW_TAB causes Chrome to switch to it in place, so this
+        // insertion index only applies when a new tab must be created.
+        TabModelSelector selector = mTabModelSelectorSupplier.get();
+        if (selector != null) {
+            TabModel tabModel = selector.getModel(isIncognito);
+            if (tabModel != null) {
+                intent.putExtra(IntentHandler.EXTRA_TAB_INDEX, tabModel.getCount());
+            }
+        }
+        IntentHandler.setTabLaunchType(intent, TabLaunchType.FROM_OMNIBOX);
+
         // Add trusted intent extras so Chrome trusts the incognito launch request
         IntentUtils.addTrustedIntentExtras(intent);
         IntentUtils.safeStartActivity(mActivity, intent);
@@ -623,12 +690,47 @@ public class TabSearchOverlayCoordinator
         return true;
     }
 
+    /**
+     * Restores the most recently closed tab with the given URL, including its navigation history
+     * and position, into the regular tab model.
+     *
+     * @param url The URL of the recently closed tab.
+     * @return Whether the tab was restored.
+     */
+    private boolean restoreRecentlyClosedTab(String url) {
+        Profile profile = mProfileSupplier.get();
+        TabModelSelector selector = mTabModelSelectorSupplier.get();
+        if (profile == null || selector == null) return false;
+
+        RecentlyClosedBridge bridge = new RecentlyClosedBridge(profile, selector);
+        try {
+            // TabRestoreService caps its entries, so this fetches all of them.
+            List<RecentlyClosedEntry> entries =
+                    bridge.getRecentlyClosedEntries(/* maxEntryCount= */ Integer.MAX_VALUE);
+            if (entries == null) return false;
+
+            // Entries are ordered from most to least recently closed.
+            for (RecentlyClosedEntry entry : entries) {
+                if (entry instanceof RecentlyClosedTab tab && tab.getUrl().getSpec().equals(url)) {
+                    return bridge.openRecentlyClosedTab(
+                            selector.getModel(/* incognito= */ false),
+                            tab,
+                            WindowOpenDisposition.NEW_FOREGROUND_TAB);
+                }
+            }
+            return false;
+        } finally {
+            bridge.destroy();
+        }
+    }
+
     private void bringTabToFront(TabWindowInfo tabWindowInfo, GURL url) {
         SearchActivityUtils.bringTabToFront(
                 mActivity,
                 mTabModelSelectorSupplier.get(),
                 tabWindowInfo,
                 url,
+                TabSelectionType.FROM_USER,
                 () -> hide(TabSearchDismissalReason.TAB_SELECTED));
     }
 
@@ -656,14 +758,14 @@ public class TabSearchOverlayCoordinator
         TabModelSelector selector = mTabModelSelectorSupplier.get();
         if (selector == null) return;
 
-        // Find the last active tab ID inside this local group (or the first tab if last active
-        // cannot be determined).
+        // Find the currently selected tab inside this local group (or the first tab if none is
+        // selected).
         TabModel model = selector.getModel(mSearchBoxDataProvider.isIncognito());
-        int tabId = model.getGroupLastShownTabId(syncGroup.localId.tabGroupId);
-        if (tabId == Tab.INVALID_TAB_ID) return;
+        Tab tab = TabGroupUtils.getSelectedOrFirstTabInGroup(model, syncGroup.localId.tabGroupId);
+        if (tab == null) return;
 
         // Select the active tab inside the local TabModel to focus on the group.
-        int index = TabModelUtils.getTabIndexById(model, tabId);
+        int index = model.indexOf(tab);
         if (index != TabModel.INVALID_TAB_INDEX) {
             model.setIndex(index, TabSelectionType.FROM_USER);
         }
@@ -688,6 +790,11 @@ public class TabSearchOverlayCoordinator
             mFuseboxControls.endFuseboxInput();
         }
 
+        Profile profile = mProfileSupplier.get();
+        if (profile != null && !profile.isOffTheRecord() && mSearchSessionLease == null) {
+            mSearchSessionLease =
+                    ArchivedTabModelOrchestrator.acquireLease(profile, LeaseReason.SEARCH_OVERLAY);
+        }
         // Obscure underlying tabs and toolbar to suppress accessibility focus and screen reader
         // interactions.
         if (mTabObscuringToken == null) {
@@ -708,8 +815,9 @@ public class TabSearchOverlayCoordinator
         mModel.set(TabSearchOverlayProperties.EMPTY_STATE_VISIBLE, false);
         mModel.set(TabSearchOverlayProperties.VISIBLE, true);
         mBackPressStateSupplier.set(true);
+        onSearchQueryStarted("");
         assumeNonNull(mSearchUiCoordinator)
-                .beginQuery(IntentOrigin.HUB, SearchType.TEXT, /* query= */ null, mWindowAndroid);
+                .beginQuery(SearchActivitySession.forHub(/* query= */ null), mWindowAndroid);
         updateExclusionRects();
     }
 
@@ -726,6 +834,12 @@ public class TabSearchOverlayCoordinator
         RecordHistogram.recordBooleanHistogram(
                 "Android.TabSearch.SessionHadEmptyState", mEncounteredEmptyStateThisSession);
 
+        cancelPendingSearchMetrics();
+        if (mSearchSessionLease != null) {
+            mSearchSessionLease.destroy();
+            mSearchSessionLease = null;
+        }
+
         if (mTabObscuringToken != null) {
             mTabObscuringHandler.unobscure(mTabObscuringToken);
             mTabObscuringToken = null;
@@ -734,6 +848,105 @@ public class TabSearchOverlayCoordinator
         mModel.set(TabSearchOverlayProperties.VISIBLE, false);
         mBackPressStateSupplier.set(false);
         updateExclusionRects();
+    }
+
+    private void cancelPendingSearchMetrics() {
+        if (mTabStateInitializedObserver != null) {
+            if (mObservedTabStateInitializedSupplier != null) {
+                mObservedTabStateInitializedSupplier.removeObserver(mTabStateInitializedObserver);
+            }
+            mTabStateInitializedObserver = null;
+        }
+        mObservedTabStateInitializedSupplier = null;
+        mSearchQueryStartTimeMs = 0;
+        mInitialSuggestionsRenderTimeMs = 0;
+    }
+
+    @VisibleForTesting
+    void onSearchQueryStarted(String query) {
+        cancelPendingSearchMetrics();
+
+        if (query.isEmpty()) {
+            return;
+        }
+
+        Profile profile = mProfileSupplier.get();
+        if (profile == null || profile.isOffTheRecord()) {
+            return;
+        }
+
+        mSearchQueryStartTimeMs = SystemClock.elapsedRealtime();
+        mInitialSuggestionsRenderTimeMs = 0;
+
+        ArchivedTabModelOrchestrator orchestrator =
+                ArchivedTabModelOrchestrator.getIfInstantiatedForProfile(profile);
+        if (orchestrator != null
+                && !Boolean.TRUE.equals(orchestrator.getTabStateInitializedSupplier().get())) {
+            mObservedTabStateInitializedSupplier = orchestrator.getTabStateInitializedSupplier();
+            mTabStateInitializedObserver =
+                    (initialized) -> {
+                        if (Boolean.TRUE.equals(initialized)) {
+                            if (mTabStateInitializedObserver != null
+                                    && mObservedTabStateInitializedSupplier != null) {
+                                mObservedTabStateInitializedSupplier.removeObserver(
+                                        mTabStateInitializedObserver);
+                                mTabStateInitializedObserver = null;
+                            }
+                            refreshAutocompleteForArchivedTabs();
+                        }
+                    };
+            mObservedTabStateInitializedSupplier.addSyncObserver(mTabStateInitializedObserver);
+        }
+    }
+
+    private void refreshAutocompleteForArchivedTabs() {
+        if (!isVisible() || mSearchUiCoordinator == null) return;
+        var locationBar = mSearchUiCoordinator.getLocationBarCoordinator();
+        String query = locationBar.getUrlBarCoordinator().getTextWithoutAutocomplete();
+        locationBar.startAutocompleteForQuery(query);
+    }
+
+    @VisibleForTesting
+    void onSuggestionsRendered(boolean hasSuggestions) {
+        long now = SystemClock.elapsedRealtime();
+        if (mSearchQueryStartTimeMs > 0) {
+            if (mObservedTabStateInitializedSupplier == null) {
+                // Warm path: orchestrator was already initialized at query start.
+                onArchivedTabSearchCompleted();
+            } else if (mTabStateInitializedObserver != null) {
+                // Cold path: intermediate suggestions rendered while waiting for
+                // orchestrator initialization.
+                if (mInitialSuggestionsRenderTimeMs == 0) {
+                    mInitialSuggestionsRenderTimeMs = now;
+                }
+            } else {
+                // Cold path: deferred suggestions rendered after orchestrator initialized (or
+                // finished before initial render).
+                onArchivedTabSearchCompleted();
+            }
+        }
+    }
+
+    private void onArchivedTabSearchCompleted() {
+        long now = SystemClock.elapsedRealtime();
+        if (mSearchQueryStartTimeMs > 0) {
+            long totalLatency = now - mSearchQueryStartTimeMs;
+            if (mObservedTabStateInitializedSupplier != null) {
+                RecordHistogram.recordTimesHistogram(
+                        "Tabs.ArchivedTabs.Search.TimeToPopulateResultsMs.Deferred", totalLatency);
+                if (mInitialSuggestionsRenderTimeMs > 0) {
+                    long appendLatency = now - mInitialSuggestionsRenderTimeMs;
+                    RecordHistogram.recordTimesHistogram(
+                            "Tabs.ArchivedTabs.Search.TimeToAppendResultsMs", appendLatency);
+                }
+            } else {
+                RecordHistogram.recordTimesHistogram(
+                        "Tabs.ArchivedTabs.Search.TimeToPopulateResultsMs.Warm", totalLatency);
+            }
+            mSearchQueryStartTimeMs = 0;
+            mInitialSuggestionsRenderTimeMs = 0;
+            mObservedTabStateInitializedSupplier = null;
+        }
     }
 
     /**
@@ -753,38 +966,68 @@ public class TabSearchOverlayCoordinator
     }
 
     /**
-     * Updates the top margin of the panel view based on desktop windowing state.
+     * Updates the top margin of the panel view.
      *
-     * <p>In desktop windowing mode (freeform window), the panel starts at the top of the window
-     * (topMargin = 0) to align with the caption bar / tab strip. When not in desktop windowing
-     * (e.g. fullscreen or split screen mode), the panel is offset below the OS application window
-     * toolbar / status bar trigger zone so that the close button remains accessible and clickable.
+     * <p>In desktop windowing, OS caption controls overlapping the window are unavoidable. We use
+     * {@link AppHeaderState#getCaptionControlsTopOffset()} to ensure the panel header aligns with
+     * the caption controls (or is offset below any status bar sitting above the caption).
+     *
+     * <p>When not in desktop windowing (conventional app state, e.g. fullscreen), the top margin is
+     * calculated via {@link #getTopMarginForConventionalState()} so the panel aligns below the
+     * system status bar.
      */
     private void updatePanelTopMargin() {
-        boolean isInDesktopWindow =
-                mDesktopWindowStateManager != null
-                        && mDesktopWindowStateManager.getAppHeaderState() != null
-                        && mDesktopWindowStateManager.getAppHeaderState().isInDesktopWindow();
-        if (mPanelContainer != null) {
-            View panelView = mPanelContainer.findViewById(R.id.tab_search_overlay_panel);
-            if (panelView != null
-                    && panelView.getLayoutParams() instanceof LinearLayout.LayoutParams params) {
-                var res = mPanelContainer.getContext().getResources();
-                int tabStripHeight = res.getDimensionPixelSize(R.dimen.tab_strip_height);
-                int reservedTopPadding =
-                        res.getDimensionPixelSize(R.dimen.tab_strip_reserved_top_padding);
-                int hairlineGap =
-                        res.getDimensionPixelSize(R.dimen.tab_search_overlay_hairline_gap);
-                int topMargin =
-                        !isInDesktopWindow
-                                ? (tabStripHeight - reservedTopPadding - hairlineGap)
-                                : 0;
-                if (params.topMargin != topMargin) {
-                    params.topMargin = topMargin;
-                    panelView.setLayoutParams(params);
-                }
-            }
+        if (mPanelContainer == null) {
+            return;
         }
+        View panelView = mPanelContainer.findViewById(R.id.tab_search_overlay_panel);
+        if (panelView == null
+                || !(panelView.getLayoutParams() instanceof LinearLayout.LayoutParams params)) {
+            return;
+        }
+
+        AppHeaderState appHeaderState =
+                mDesktopWindowStateManager != null
+                        ? mDesktopWindowStateManager.getAppHeaderState()
+                        : null;
+
+        int topMargin =
+                appHeaderState != null && appHeaderState.isInDesktopWindow()
+                        ? appHeaderState.getCaptionControlsTopOffset()
+                        : getTopMarginForConventionalState();
+
+        if (params.topMargin != topMargin) {
+            params.topMargin = topMargin;
+            panelView.setLayoutParams(params);
+        }
+    }
+
+    /**
+     * Returns the panel's top margin outside desktop windowing (e.g. fullscreen or multi-window).
+     *
+     * <p>The overlay {@link PopupWindow} covers the full window, including any area under the
+     * status bar or an OS-drawn caption bar, so the panel is offset by their top inset to keep the
+     * header and close button visible (0 if the window overlaps neither, e.g. the bottom window in
+     * split-screen). A caption bar can be present even when {@link
+     * AppHeaderState#isInDesktopWindow()} is false, e.g. when the desktop windowing heuristics
+     * decline to draw the app header on an external display.
+     *
+     * <p>Window insets are used rather than toolbar / tab strip view positions because the latter
+     * depend on toolbar-internal layout details (e.g. which view the tab strip height is applied to
+     * as a top margin), which previously yielded a margin of 0 with the horizontal tab strip and
+     * placed the close button under the status bar.
+     */
+    private int getTopMarginForConventionalState() {
+        InsetObserver insetObserver = mWindowAndroid.getInsetObserver();
+        WindowInsetsCompat windowInsets =
+                insetObserver != null ? insetObserver.getLastRawWindowInsets() : null;
+        if (windowInsets == null) {
+            return 0;
+        }
+        // Insets of multiple types are combined per side by taking the max, not the sum.
+        return windowInsets.getInsets(
+                        WindowInsetsCompat.Type.statusBars() | WindowInsetsCompat.Type.captionBar())
+                .top;
     }
 
     /**
@@ -846,12 +1089,19 @@ public class TabSearchOverlayCoordinator
         if (mSearchUiCoordinator != null) {
             mSearchUiCoordinator.setColorScheme(isIncognito);
         }
+        if (isIncognito) {
+            cancelPendingSearchMetrics();
+            if (mSearchSessionLease != null) {
+                mSearchSessionLease.destroy();
+                mSearchSessionLease = null;
+            }
+        }
     }
 
     private void onHideFinished() {
         // Clear focus only after the hide animation finishes to prevent animation flicker.
         if (mSearchUiCoordinator != null) {
-            var locationBar = mSearchUiCoordinator.getLocationBarCoordinator();
+            LocationBarCoordinator locationBar = mSearchUiCoordinator.getLocationBarCoordinator();
             locationBar.clearOmniboxFocus();
         }
         if (mPopupWindow != null && mPopupWindow.isShowing()) {
@@ -1078,5 +1328,34 @@ public class TabSearchOverlayCoordinator
 
     @Nullable PopupWindow getPopupWindowForTesting() {
         return mPopupWindow;
+    }
+
+    @Nullable Destroyable getSearchSessionLeaseForTesting() {
+        return mSearchSessionLease;
+    }
+
+    @Nullable Callback<Boolean> getTabStateInitializedObserverForTesting() {
+        return mTabStateInitializedObserver;
+    }
+
+    @Nullable NonNullObservableSupplier<Boolean>
+            getObservedTabStateInitializedSupplierForTesting() {
+        return mObservedTabStateInitializedSupplier;
+    }
+
+    boolean isWaitingForArchivedTabResultsForTesting() {
+        return mObservedTabStateInitializedSupplier != null;
+    }
+
+    long getSearchQueryStartTimeMsForTesting() {
+        return mSearchQueryStartTimeMs;
+    }
+
+    long getInitialSuggestionsRenderTimeMsForTesting() {
+        return mInitialSuggestionsRenderTimeMs;
+    }
+
+    @Nullable TextWatcher getUrlBarTextWatcherForTesting() {
+        return mUrlBarTextWatcher;
     }
 }

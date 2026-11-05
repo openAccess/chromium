@@ -6,11 +6,13 @@
 
 #include <windows.h>
 
-#include <shellapi.h>
+#include <stddef.h>
 
 #include <functional>
+#include <iterator>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -20,9 +22,9 @@
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/function_ref.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
-#include "base/numerics/safe_conversions.h"
 #include "base/path_service.h"
 #include "base/process/kill.h"
 #include "base/process/launch.h"
@@ -36,7 +38,6 @@
 #include "base/task/thread_pool.h"
 #include "base/version.h"
 #include "base/win/registry.h"
-#include "base/win/scoped_localalloc.h"
 #include "chrome/updater/constants.h"
 #include "chrome/updater/event_history.h"
 #include "chrome/updater/updater_branding.h"
@@ -136,7 +137,7 @@ bool IsSecureAppCommandExePath(UpdaterScope scope,
 }  // namespace
 
 AppCommandRunner::AppCommandRunner(const std::wstring& app_id)
-    : app_id_(app_id) {}
+    : app_id_(app_id), timeout_(kWaitForAppInstaller) {}
 AppCommandRunner::~AppCommandRunner() = default;
 
 // static
@@ -205,6 +206,20 @@ AppCommandRunner::LoadAutoRunOnOsUpgradeAppCommands(
 
 HRESULT AppCommandRunner::Run(base::span<const std::wstring> substitutions,
                               base::Process& process) {
+  return Run(substitutions, [] { return std::wstring(); }, process);
+}
+
+HRESULT AppCommandRunner::Run(base::span<const std::wstring> substitutions,
+                              base::FunctionRef<std::wstring()> get_caller_sid,
+                              base::Process& process) {
+  // Reset before any early return, so that a failed `Run` does not leave the
+  // output or exit code of a previous `Run` visible.
+  {
+    base::AutoLock lock{lock_};
+    output_ = {};
+    exit_code_ = std::nullopt;
+  }
+
   AppCommandStartEvent start_event;
   start_event.SetAppId(base::WideToUTF8(app_id_));
 
@@ -220,7 +235,7 @@ HRESULT AppCommandRunner::Run(base::span<const std::wstring> substitutions,
           << base::JoinString(substitutions, L",");
 
   const std::optional<std::wstring> command_line_parameters =
-      FormatAppCommandLine(parameters_, substitutions);
+      FormatAppCommandLine(parameters_, substitutions, get_caller_sid);
   if (!command_line_parameters) {
     LOG(ERROR) << __func__ << "!command_line_parameters";
     start_event.AddError({.code = E_INVALIDARG})
@@ -244,10 +259,6 @@ HRESULT AppCommandRunner::Run(base::span<const std::wstring> substitutions,
     return E_INVALIDARG;
   }
 
-  {
-    base::AutoLock lock{lock_};
-    output_ = {};
-  }
   command_completed_event_.Reset();
 
   // Holds the result of the IPC to retrieve the process and hr from
@@ -277,7 +288,7 @@ HRESULT AppCommandRunner::Run(base::span<const std::wstring> substitutions,
           FROM_HERE,
           base::BindOnce(
               [](scoped_refptr<AppCommandRunner> obj,
-                 const std::wstring& command_line,
+                 const std::wstring& command_line, base::TimeDelta timeout,
                  scoped_refptr<GetAppOutputWithExitCodeAndTimeoutResult> result)
                   -> HRESULT {
                 base::LaunchOptions options = {};
@@ -290,8 +301,8 @@ HRESULT AppCommandRunner::Run(base::span<const std::wstring> substitutions,
                 int exit_code = -1;
                 if (base::GetAppOutputWithExitCodeAndTimeout(
                         command_line,
-                        /*include_stderr=*/true, nullptr, &exit_code,
-                        kWaitForAppInstaller, options,
+                        /*include_stderr=*/true, nullptr, &exit_code, timeout,
+                        options,
                         [&](const base::Process& process,
                             std::string_view partial_output) {
                           if (!result->process) {
@@ -324,12 +335,16 @@ HRESULT AppCommandRunner::Run(base::span<const std::wstring> substitutions,
 
                 return S_OK;
               },
-              base::WrapRefCounted(this), command_line, result)
+              base::WrapRefCounted(this), command_line, timeout_, result)
               .Then(base::BindOnce(
                   [](scoped_refptr<AppCommandRunner> obj,
                      scoped_refptr<GetAppOutputWithExitCodeAndTimeoutResult>
                          result,
                      AppCommandEndEvent end_event, HRESULT hr) {
+                    if (result->exit_code.has_value()) {
+                      base::AutoLock lock{obj->lock_};
+                      obj->exit_code_ = static_cast<DWORD>(*result->exit_code);
+                    }
                     result->hr = hr;
                     result->process_event.Signal();
                     obj->command_completed_event_.Signal();
@@ -366,8 +381,21 @@ std::string AppCommandRunner::output() {
   return output_;
 }
 
+std::optional<DWORD> AppCommandRunner::exit_code() const {
+  base::AutoLock lock{lock_};
+  return exit_code_;
+}
+
 bool AppCommandRunner::TimedWait(base::TimeDelta wait_delta) {
   return command_completed_event_.TimedWait(wait_delta);
+}
+
+void AppCommandRunner::Wait() {
+  command_completed_event_.Wait();
+}
+
+void AppCommandRunner::SetTimeoutForTesting(base::TimeDelta timeout) {
+  timeout_ = timeout;
 }
 
 // static
@@ -378,21 +406,21 @@ HRESULT AppCommandRunner::GetAppCommandFormatComponents(
     std::vector<std::wstring>& parameters) {
   VLOG(2) << __func__ << ": " << scope << ": " << command_format;
 
-  int num_args = 0;
-  base::win::ScopedLocalAllocTyped<wchar_t*> argv(
-      ::CommandLineToArgvW(&command_format[0], &num_args));
-  if (!argv || num_args < 1) {
-    LOG(ERROR) << __func__ << "!argv || num_args < 1: " << num_args;
+  // `::CommandLineToArgvW` returns the path of the current executable for an
+  // empty command line, so an empty command format must be rejected here.
+  if (command_format.empty()) {
+    VLOG(1) << __func__ << ": empty command format";
     return E_INVALIDARG;
   }
 
-  // SAFETY: the unsafe buffer is present due to the ::CommandLineToArgvW call.
-  // When constructing the span, `num_args` is validated and checked as a valid
-  // size_t value.
-  UNSAFE_BUFFERS(const base::span<wchar_t*> safe_args{
-      argv.get(), base::checked_cast<size_t>(num_args)});
+  std::optional<std::vector<std::wstring>> args =
+      CommandLineToArgv(command_format);
+  if (!args) {
+    VLOG(1) << __func__ << ": failed to split: " << command_format;
+    return E_INVALIDARG;
+  }
 
-  const base::FilePath exe(safe_args[0]);
+  const base::FilePath exe(args->front());
   if (!IsSecureAppCommandExePath(scope, exe)) {
     LOG(WARNING) << __func__
                  << ": !IsSecureAppCommandExePath(scope, exe): " << exe;
@@ -400,20 +428,42 @@ HRESULT AppCommandRunner::GetAppCommandFormatComponents(
   }
 
   executable = exe;
-  parameters.clear();
-  for (size_t i = 1; i < safe_args.size(); ++i) {
-    parameters.push_back(safe_args[i]);
-  }
+  parameters.assign(std::next(args->begin()), args->end());
 
   return S_OK;
 }
 
 // static
 std::optional<std::wstring> AppCommandRunner::FormatParameter(
-    const std::wstring& parameter,
-    base::span<const std::wstring> substitutions) {
+    std::wstring_view parameter,
+    base::span<const std::wstring> substitutions,
+    base::FunctionRef<std::wstring()> get_caller_sid) {
+  static constexpr std::wstring_view kCallerSidMacro = L"%CALLER_SID%";
+
+  // Replace "%CALLER_SID%" in `parameter` with the caller's SID, if present.
+  std::wstring formatted_parameter(parameter);
+  for (size_t pos = formatted_parameter.find(L'%'); pos != std::wstring::npos;
+       pos = formatted_parameter.find(L'%', pos)) {
+    if (pos + 1 < formatted_parameter.size() &&
+        formatted_parameter[pos + 1] == L'%') {
+      pos += 2;
+    } else if (formatted_parameter.compare(pos, kCallerSidMacro.size(),
+                                           kCallerSidMacro) == 0) {
+      const std::wstring caller_sid = get_caller_sid();
+      if (caller_sid.empty()) {
+        VLOG(1) << __func__ << ": " << kCallerSidMacro
+                << " requested but caller_sid is missing";
+        return std::nullopt;
+      }
+      formatted_parameter.replace(pos, kCallerSidMacro.length(), caller_sid);
+      pos += caller_sid.length();
+    } else {
+      pos += 1;
+    }
+  }
+
   return base::internal::DoReplaceStringPlaceholders(
-      /*format_string=*/parameter, /*subst=*/substitutions,
+      /*format_string=*/formatted_parameter, /*subst=*/substitutions,
       /*placeholder_prefix=*/L'%',
       /*should_escape_multiple_placeholder_prefixes=*/false,
       /*is_strict_mode=*/true, /*offsets=*/nullptr);
@@ -422,11 +472,12 @@ std::optional<std::wstring> AppCommandRunner::FormatParameter(
 // static
 std::optional<std::wstring> AppCommandRunner::FormatAppCommandLine(
     const std::vector<std::wstring>& parameters,
-    base::span<const std::wstring> substitutions) {
+    base::span<const std::wstring> substitutions,
+    base::FunctionRef<std::wstring()> get_caller_sid) {
   std::wstring formatted_command_line;
   for (size_t i = 0; i < parameters.size(); ++i) {
     std::optional<std::wstring> formatted_parameter =
-        FormatParameter(parameters[i], substitutions);
+        FormatParameter(parameters[i], substitutions, get_caller_sid);
     if (!formatted_parameter) {
       VLOG(1) << __func__ << " FormatParameter failed: " << parameters[i]
               << ": " << substitutions.size();

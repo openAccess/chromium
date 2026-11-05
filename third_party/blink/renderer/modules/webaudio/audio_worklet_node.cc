@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_param_descriptor.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_automation_rate.h"
+#include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/events/error_event.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/messaging/message_channel.h"
@@ -28,12 +29,23 @@
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
+
+namespace {
+
+const AtomicString& ProcessorErrorEventType() {
+  return RuntimeEnabledFeatures::AudioWorkletProcessorErrorEventTypeEnabled()
+             ? event_type_names::kProcessorerror
+             : event_type_names::kError;
+}
+
+}  // namespace
 
 AudioWorkletNode::AudioWorkletNode(
     BaseAudioContext& context,
@@ -65,9 +77,9 @@ AudioWorkletNode::AudioWorkletNode(
     param_handler_map.Set(param_name, WrapRefCounted(&audio_param->Handler()));
 
     if (options->hasParameterData()) {
-      for (const auto& key_value_pair : options->parameterData()) {
-        if (key_value_pair.first == param_name) {
-          audio_param->setValue(key_value_pair.second);
+      for (const auto& [param, val] : options->parameterData()) {
+        if (param == param_name) {
+          audio_param->setValue(val);
         }
       }
     }
@@ -98,11 +110,11 @@ AudioWorkletNode* AudioWorkletNode::Create(
     if (options->numberOfOutputs() != options->outputChannelCount().size()) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kIndexSizeError,
-          StrCat({"AudioWorkletNode cannot be created: Length of specified "
-                  "'outputChannelCount' (",
-                  String::Number(options->outputChannelCount().size()),
-                  ") does not match the given number of outputs (",
-                  String::Number(options->numberOfOutputs()), ")."}));
+          Format("AudioWorkletNode cannot be created: Length of specified "
+                 "'outputChannelCount' ({}) does not match the given number of "
+                 "outputs ({}).",
+                 options->outputChannelCount().size(),
+                 options->numberOfOutputs()));
       return nullptr;
     }
 
@@ -217,15 +229,17 @@ MessagePort* AudioWorkletNode::port() const {
   return node_port_.Get();
 }
 
+EventListener* AudioWorkletNode::onprocessorerror() {
+  return GetAttributeEventListener(ProcessorErrorEventType());
+}
+
+void AudioWorkletNode::setOnprocessorerror(EventListener* listener) {
+  SetAttributeEventListener(ProcessorErrorEventType(), listener);
+}
+
 void AudioWorkletNode::FireProcessorError(
     const AudioWorkletProcessorErrorDetails& error_details) {
   DCHECK(IsMainThread());
-  DCHECK(error_details.error_state ==
-             AudioWorkletProcessorErrorState::kConstructionError ||
-         error_details.error_state ==
-             AudioWorkletProcessorErrorState::kProcessError ||
-         error_details.error_state ==
-             AudioWorkletProcessorErrorState::kProcessMethodUndefinedError);
   DCHECK(!error_details.error_message.empty());
 
   ErrorEvent* event = ErrorEvent::Create(
@@ -234,6 +248,8 @@ void AudioWorkletNode::FireProcessorError(
           error_details.source_url, error_details.char_position,
           error_details.line_number, error_details.column_number),
       nullptr);
+  // This ErrorEvent::Create() overload always uses the "error" type.
+  event->SetType(ProcessorErrorEventType());
   DispatchEvent(*event);
 }
 

@@ -10,7 +10,6 @@
 #import "base/metrics/user_metrics.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/prefs/pref_service.h"
-#import "components/send_tab_to_self/features.h"
 #import "components/send_tab_to_self/metrics_util.h"
 #import "components/send_tab_to_self/send_tab_to_self_entry.h"
 #import "components/send_tab_to_self/send_tab_to_self_model.h"
@@ -22,7 +21,6 @@
 #import "ios/chrome/browser/push_notification/model/push_notification_service.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_settings_util.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_util.h"
-#import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_browser_agent.h"
 #import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_util.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
@@ -87,9 +85,12 @@ bool SendTabPushNotificationClient::HandleNotificationInteraction(
 
   // Load URL in a new tab and mark the corresponding SendTabToSelfEntry as
   // opened.
-  GURL url = GURL(base::SysNSStringToUTF8(user_info[kUrlKey]));
-  std::string identifier = base::SysNSStringToUTF8(
-      response.notification.request.content.userInfo[kIdentifierKey]);
+  GURL url(base::SysNSStringToUTF8(user_info[kUrlKey]));
+  if (!url.is_valid()) {
+    return false;
+  }
+
+  std::string identifier = base::SysNSStringToUTF8(user_info[kIdentifierKey]);
   if (base::CallbackListSubscription subscription =
           ExecuteActionWhenBrowserReady(base::BindOnce(
               &SendTabPushNotificationClient::LoadSendTabUrlInNewTab,
@@ -112,12 +113,12 @@ bool SendTabPushNotificationClient::HandleNotificationInteraction(
 std::optional<UIBackgroundFetchResult>
 SendTabPushNotificationClient::HandleNotificationReception(
     NSDictionary<NSString*, id>* notification) {
-  UNAuthorizationStatus authStatus =
+  UNAuthorizationStatus auth_status =
       [PushNotificationUtil getSavedPermissionSettings];
-  push_notification::SettingsAuthorizationStatus settingsAuthStatus =
-      [PushNotificationUtil getNotificationSettingsStatusFrom:authStatus];
+  push_notification::SettingsAuthorizationStatus settings_auth_status =
+      [PushNotificationUtil getNotificationSettingsStatusFrom:auth_status];
   base::UmaHistogramEnumeration("IOS.Notifications.SendTab.Received",
-                                settingsAuthStatus);
+                                settings_auth_status);
   return UIBackgroundFetchResultNoData;
 }
 
@@ -128,7 +129,7 @@ SendTabPushNotificationClient::RegisterActionableNotifications() {
 
 void SendTabPushNotificationClient::LoadSendTabUrlInNewTab(
     const GURL& url,
-    std::string_view identifier,
+    std::string_view entry_guid,
     Browser* browser) {
   send_tab_to_self::SendTabToSelfSyncService* sync_service =
       SendTabToSelfSyncServiceFactory::GetForProfile(browser->GetProfile());
@@ -139,36 +140,45 @@ void SendTabPushNotificationClient::LoadSendTabUrlInNewTab(
       sync_service->GetSendTabToSelfModel();
 
   const send_tab_to_self::SendTabToSelfEntry* entry =
-      send_tab_model->GetEntryByGUID(identifier);
+      send_tab_model->GetEntryByGUID(entry_guid);
 
   OpenNewTabCommand* command = nil;
   if (entry) {
     command = send_tab_to_self::CreateOpenNewTabCommand(entry);
   } else {
     command = [OpenNewTabCommand commandWithURLFromChrome:url];
-    if (!identifier.empty()) {
+    if (!entry_guid.empty()) {
       // Attach the entry GUID even if the entry is not in the model yet so that
       // navigation tracking attributes the tab to the Send Tab to Self entry.
-      command.sendTabToSelfEntryGUID = base::SysUTF8ToNSString(identifier);
+      command.sendTabToSelfEntryGUID = base::SysUTF8ToNSString(entry_guid);
     }
+  }
+
+  if (!entry_guid.empty()) {
+    // Mark the entry opened and activated even if `entry` is null (not yet in
+    // the model). The underlying bridge buffers these IDs in
+    // `unknown_opened_entries_` / `unknown_activated_entries_`, preventing the
+    // auto-open logic from opening a duplicate tab when sync later finishes
+    // receiving the entry.
+    send_tab_model->MarkEntryOpened(entry_guid);
+    send_tab_model->MarkEntryActivated(
+        entry_guid,
+        send_tab_to_self::ShareActivatedEntryPoint::kMobileNotification);
   }
 
   id<SceneCommands> handler =
       HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands);
   [handler openURLInNewTab:command];
 
-  if (!identifier.empty()) {
-    // Mark the entry opened and activated even if `entry` is null (not yet in
-    // the model). The underlying bridge buffers these IDs in
-    // `unknown_opened_entries_` / `unknown_activated_entries_`, preventing the
-    // auto-open logic from opening a duplicate tab when sync later finishes
-    // receiving the entry.
-    send_tab_model->MarkEntryOpened(identifier);
-    send_tab_model->MarkEntryActivated(
-        identifier,
-        send_tab_to_self::ShareActivatedEntryPoint::kMobileNotification);
+  if (!entry) {
+    // When a push notification is tapped before Sync has downloaded the entry,
+    // `MarkEntryOpened()` buffers the GUID in `unknown_opened_entries_` so
+    // `DisplayNewEntries()` will never be called for it. Record `false` here
+    // to match Android, where `AutoOpenedImmediately` is logged as `false`
+    // whenever an entry is not auto-opened right away (if `entry` is already
+    // in the model, `DisplayNewEntries()` has already recorded it).
+    send_tab_to_self::RecordAutoOpenedImmediately(false);
   }
-
   send_tab_to_self::RecordAutoOpenOutcome(
       send_tab_to_self::AutoOpenOutcome::kTabOpenedViaNotification);
 

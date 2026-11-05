@@ -15,6 +15,7 @@
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 
 using chrome_test_util::WebStateScrollViewMatcher;
@@ -364,6 +365,7 @@ FindInPageTestCrossOriginFramePageHttpResponse(
 
 // Tests that characters appear in the search box and that results UI updates as
 // each characters is entered/deleted.
+TAG_SMOKE_TEST(FindInPageTestCase, testFindInPageTextInput);
 - (void)testFindInPageTextInput {
   [self setUpTestServersForWebPageTest];
 
@@ -434,11 +436,12 @@ FindInPageTestCrossOriginFramePageHttpResponse(
 // field and that the results UI updates accordingly.
 - (void)testFindInPageCopyPaste {
   // TODO(crbug.com/360362288): Flaky on iOS 18 simulators.
+  if (!@available(iOS 26, *)) {
 #if TARGET_OS_SIMULATOR
-  if (@available(iOS 18, *)) {
     EARL_GREY_TEST_DISABLED(@"Flaky on iOS 18 simulators.");
-  }
 #endif
+  }
+
   [self setUpTestServersForWebPageTest];
 
   // Load test page.

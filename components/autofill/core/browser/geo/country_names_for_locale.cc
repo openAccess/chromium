@@ -17,6 +17,7 @@
 #include "base/check_op.h"
 #include "base/containers/heap_array.h"
 #include "base/containers/span.h"
+#include "base/i18n/language_tag.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
 #include "components/autofill/core/browser/geo/country_data.h"
@@ -79,22 +80,33 @@ std::map<std::string, std::string> GetLocalizedNames(
   std::map<std::string, std::string> localized_names;
   auto buffer = base::HeapArray<uint8_t>::WithSize(1000);
 
-  for (const std::string& country_code :
+  for (const FixedCountryCode& country_code :
        CountryDataMap::GetInstance()->country_codes()) {
-    std::u16string country_name =
-        l10n_util::GetDisplayNameForCountry(country_code, locale);
-    localized_names.insert(std::make_pair(
-        GetSortKey(*collator, country_name, buffer), country_code));
+    std::u16string country_name = l10n_util::GetDisplayNameForCountry(
+        std::string_view(country_code), locale);
+    localized_names.emplace(GetSortKey(*collator, country_name, buffer),
+                            std::string_view(country_code));
   }
   return localized_names;
 }
 
+// Returns the locale string used for ICU lookups. An undetermined language
+// ("und") maps to an empty string, for which no localized names exist.
+std::string GetLocaleString(const base::i18n::LanguageTag& locale) {
+  if (locale == base::i18n::GetKnownLanguageTag("und")) {
+    return std::string();
+  }
+  return std::string(locale.tag_string());
+}
+
 }  // namespace
 
-CountryNamesForLocale::CountryNamesForLocale(std::string locale_name)
-    : locale_name_(std::move(locale_name)),
-      collator_(CreateCollator(locale_name_.c_str())),
-      localized_names_(GetLocalizedNames(locale_name_, collator_.get())) {}
+CountryNamesForLocale::CountryNamesForLocale(
+    const base::i18n::LanguageTag& locale)
+    : locale_(locale),
+      collator_(CreateCollator(GetLocaleString(locale_).c_str())),
+      localized_names_(
+          GetLocalizedNames(GetLocaleString(locale_), collator_.get())) {}
 
 CountryNamesForLocale::CountryNamesForLocale(CountryNamesForLocale&&) = default;
 

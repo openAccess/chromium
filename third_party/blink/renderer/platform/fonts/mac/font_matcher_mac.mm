@@ -34,10 +34,14 @@
 #import <Foundation/Foundation.h>
 #import <math.h>
 
+#include <array>
+#include <optional>
+#include <utility>
+
 #include "base/apple/bridging.h"
 #include "base/apple/foundation_util.h"
 #include "base/apple/scoped_cftyperef.h"
-#include "base/numerics/safe_conversions.h"
+#include "base/numerics/byte_conversions.h"
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
 #include "third_party/blink/renderer/platform/fonts/font_selection_types.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
@@ -97,28 +101,34 @@ BOOL AcceptableChoice(NSFontTraitMask desired_traits,
   return (candidate_traits & desired_traits) == desired_traits;
 }
 
+// Return true if `candidate_weight` is a better match for `desired_weight` than
+// `chosen_weight` according to the [CSS Fonts Module Level 4, §5.2 Matching
+// font styles](https://www.w3.org/TR/css-fonts-4/#font-style-matching), which
+// requires directional weight search.
 bool BetterWeightMatch(int desired_weight,
                        int chosen_weight,
                        int candidate_weight,
-                       int lower_threshold,
-                       int upper_threshold) {
-  if (desired_weight > upper_threshold) {
-    bool chosen_above = (chosen_weight >= desired_weight);
-    bool candidate_above = (candidate_weight >= desired_weight);
-    if (chosen_above != candidate_above) {
-      return candidate_above;
+                       int weight_400 = 400,
+                       int weight_500 = 500) {
+  if (desired_weight > weight_500) {
+    // For weight > 500, prefer heavier fonts first.
+    const bool is_chosen_above = chosen_weight >= desired_weight;
+    const bool is_candidate_above = candidate_weight >= desired_weight;
+    if (is_chosen_above != is_candidate_above) {
+      return is_candidate_above;
     }
-  } else if (desired_weight < lower_threshold) {
-    bool chosen_below = (chosen_weight <= desired_weight);
-    bool candidate_below = (candidate_weight <= desired_weight);
-    if (chosen_below != candidate_below) {
-      return candidate_below;
+  } else if (desired_weight < weight_400) {
+    // For weight < 400, prefer lighter fonts first.
+    const bool is_chosen_below = chosen_weight <= desired_weight;
+    const bool is_candidate_below = candidate_weight <= desired_weight;
+    if (is_chosen_below != is_candidate_below) {
+      return is_candidate_below;
     }
   } else {
-    // desired_weight in [lower, upper]: prefer [desired, upper], then
-    // < desired, then > upper.
-    auto search_priority = [desired_weight, upper_threshold](int w) -> int {
-      if (w >= desired_weight && w <= upper_threshold) {
+    // For weight in [400, 500], prefer weights between desired and 500, then
+    // lighter, then heavier.
+    auto search_priority = [desired_weight, weight_500](int w) -> int {
+      if (w >= desired_weight && w <= weight_500) {
         return 0;
       }
       if (w < desired_weight) {
@@ -126,25 +136,25 @@ bool BetterWeightMatch(int desired_weight,
       }
       return 2;
     };
-    int chosen_priority = search_priority(chosen_weight);
-    int candidate_priority = search_priority(candidate_weight);
+    const int chosen_priority = search_priority(chosen_weight);
+    const int candidate_priority = search_priority(candidate_weight);
     if (chosen_priority != candidate_priority) {
       return candidate_priority < chosen_priority;
     }
   }
 
   // Within the same search direction, prefer the closer weight.
-  int chosen_weight_delta = abs(chosen_weight - desired_weight);
-  int candidate_weight_delta = abs(candidate_weight - desired_weight);
+  const int chosen_weight_delta = abs(chosen_weight - desired_weight);
+  const int candidate_weight_delta = abs(candidate_weight - desired_weight);
   return candidate_weight_delta < chosen_weight_delta;
 }
 
 BOOL BetterChoice(NSFontTraitMask desired_traits,
-                  NSInteger desired_weight,
+                  int desired_weight,
                   NSFontTraitMask chosen_traits,
-                  NSInteger chosen_weight,
+                  int chosen_weight,
                   NSFontTraitMask candidate_traits,
-                  NSInteger candidate_weight) {
+                  int candidate_weight) {
   if (!AcceptableChoice(desired_traits, candidate_traits))
     return NO;
 
@@ -167,19 +177,24 @@ BOOL BetterChoice(NSFontTraitMask desired_traits,
       return NO;
   }
 
-  // CSS font matching algorithm (css-fonts-4 section 5.2) requires
-  // directional weight search: for weight > 6 (AppKit, i.e. CSS > 500),
-  // prefer heavier fonts first; for weight < 5 (CSS < 400), prefer lighter
-  // fonts first; for weight in [5, 6] (CSS [400, 500]), prefer weights
-  // between desired and 6, then lighter, then heavier than 6.
-  // AppKit weight 5 = CSS 400, AppKit weight 6 = CSS 500.
-  constexpr NSInteger kAppKitLowerThreshold = 5;  // CSS 400
-  constexpr NSInteger kAppKitUpperThreshold = 6;  // CSS 500
+  if (RuntimeEnabledFeatures::MacFontWeightFromOS2Enabled()) {
+    constexpr int kAppKitWeight400 = 5;  // CSS 400
+    constexpr int kAppKitWeight500 = 6;  // CSS 500
+    return BetterWeightMatch(desired_weight, chosen_weight, candidate_weight,
+                             kAppKitWeight400, kAppKitWeight500);
+  }
 
-  return BetterWeightMatch(base::checked_cast<int>(desired_weight),
-                           base::checked_cast<int>(chosen_weight),
-                           base::checked_cast<int>(candidate_weight),
-                           kAppKitLowerThreshold, kAppKitUpperThreshold);
+  int chosen_weight_delta_magnitude = abs(chosen_weight - desired_weight);
+  int candidate_weight_delta_magnitude = abs(candidate_weight - desired_weight);
+
+  // If both are the same distance from the desired weight, prefer the candidate
+  // if it is further from medium.
+  if (chosen_weight_delta_magnitude == candidate_weight_delta_magnitude) {
+    return abs(candidate_weight - 6) > abs(chosen_weight - 6);
+  }
+
+  // Otherwise, prefer the one closer to the desired weight.
+  return candidate_weight_delta_magnitude < chosen_weight_delta_magnitude;
 }
 
 CTFontSymbolicTraits ComputeDesiredTraits(FontSelectionValue desired_weight,
@@ -226,15 +241,37 @@ bool BetterChoiceCT(CTFontSymbolicTraits desired_traits,
                     int chosen_weight,
                     CTFontSymbolicTraits candidate_traits,
                     int candidate_weight) {
-  // Traits we compare, worst-to-best mismatch order. The bold trait is
-  // intentionally omitted: CoreText reports it inconsistently for some
-  // non-bold faces (e.g. HiraginoSans-W5, PingFangSC-Light), and the
-  // directional weight search in `BetterWeightMatch` below already encodes
-  // the spec's bold preference via the weight value.
-  const CTFontSymbolicTraits kMasks[] = {
-      kCTFontTraitCondensed, kCTFontTraitExpanded, kCTFontTraitItalic};
+  const bool use_os2_weight =
+      RuntimeEnabledFeatures::MacFontWeightFromOS2Enabled();
+  // A list of the traits we care about.
+  // The top item in the list is the worst trait to mismatch; if a font has this
+  // and we didn't ask for it, we'd prefer any other font in the family.
+  const CTFontSymbolicTraits kMasks[] = {kCTFontTraitCondensed,
+                                         kCTFontTraitExpanded,
+                                         kCTFontTraitItalic, kCTFontTraitBold};
 
   for (CTFontSymbolicTraits mask : kMasks) {
+    if (mask == kCTFontBoldTrait) {
+      if (use_os2_weight) {
+        // CoreText and AppKit spuriously report the bold trait on some
+        // non-bold faces (e.g., HiraginoSans-W5, PingFangSC-Light), and
+        // `kBoldThreshold` (600) does not align with the CSS Fonts 4 §5.2
+        // ascending search threshold (> 500). `BetterWeightMatch()` already
+        // encodes the spec's weight preference via numeric weights.
+        continue;
+      }
+      // CoreText reports that "HiraginoSans-W5" font with AppKit weight 6
+      // (which we map to CSS weight 500), has a bold trait. Since we consider
+      // bold threshold to be CSS weight 600, we will not match this font even
+      // if `desired_weight=500` was requested, but instead we will match
+      // "HiraginoSans-W4" with AppKit font weight 5 (CSS font weight 400).
+      // This check ignores the bold trait value if the `candidate_weight` is
+      // the same as requested.
+      if (candidate_weight == desired_weight &&
+          chosen_weight != desired_weight) {
+        return true;
+      }
+    }
     bool desired = (desired_traits & mask) != 0;
     bool chosen_has_unwanted_trait = desired != ((chosen_traits & mask) != 0);
     bool candidate_has_unwanted_trait =
@@ -247,15 +284,72 @@ bool BetterChoiceCT(CTFontSymbolicTraits desired_traits,
     }
   }
 
-  // CSS font matching algorithm (css-fonts-4 section 5.2) requires
-  // directional weight search: for weight > 500, prefer heavier fonts first;
-  // for weight < 400, prefer lighter fonts first; for weight in [400, 500],
-  // prefer weights between desired and 500, then lighter, then heavier.
-  constexpr int kCSSLowerThreshold = 400;
-  constexpr int kCSSUpperThreshold = 500;
+  if (use_os2_weight) {
+    return BetterWeightMatch(desired_weight, chosen_weight, candidate_weight);
+  }
 
-  return BetterWeightMatch(desired_weight, chosen_weight, candidate_weight,
-                           kCSSLowerThreshold, kCSSUpperThreshold);
+  int chosen_weight_delta_magnitude = abs(chosen_weight - desired_weight);
+  int candidate_weight_delta_magnitude = abs(candidate_weight - desired_weight);
+
+  // If both are the same distance from the desired weight, prefer the candidate
+  // if it is further from medium, i.e. 500.
+  if (chosen_weight_delta_magnitude == candidate_weight_delta_magnitude) {
+    return abs(candidate_weight - 500) > abs(chosen_weight - 500);
+  }
+
+  // Otherwise, prefer the one closer to the desired weight.
+  return candidate_weight_delta_magnitude < chosen_weight_delta_magnitude;
+}
+
+// Reads `usWeightClass` from the font's OpenType `OS/2` table if present and
+// valid. Both AppKit (`availableMembersOfFontFamily:`) and CoreText
+// (`kCTFontWeightTrait`) apply heuristic weight mappings that can collapse
+// distinct weights (e.g., Thin and Light in PingFang SC/TC, Noto Sans Myanmar)
+// or shift weights (e.g., Hiragino Sans W2-W8). Reading `usWeightClass`
+// directly from the `OS/2` table provides the authoritative CSS weight
+// declared by the font.
+std::optional<uint16_t> Os2WeightFromCTFont(CTFontRef font) {
+  if (!font) [[unlikely]] {
+    return std::nullopt;
+  }
+  // In variable fonts (which have an `fvar` table, e.g., `PingFangUI.ttc` on
+  // macOS 15+), named instances share a single `OS/2` table whose
+  // `usWeightClass` only reflects the default instance (400).
+  if (ScopedCFTypeRef<CFDataRef> fvar_table(
+          CTFontCopyTable(font, kCTFontTableFvar, kCTFontTableOptionNoOptions));
+      fvar_table) {
+    return std::nullopt;
+  }
+  ScopedCFTypeRef<CFDataRef> os2_table(
+      CTFontCopyTable(font, kCTFontTableOS2, kCTFontTableOptionNoOptions));
+  if (!os2_table) [[unlikely]] {
+    return std::nullopt;
+  }
+  // In the OpenType OS/2 table, `usWeightClass` is a big-endian uint16_t at
+  // byte offset 4 (following uint16_t version and int16_t xAvgCharWidth).
+  // https://learn.microsoft.com/en-us/typography/opentype/spec/os2
+  constexpr size_t kOs2WeightClassOffset = 4;
+  base::span<const uint8_t> bytes = base::apple::CFDataToSpan(os2_table.get());
+  if (bytes.size() < kOs2WeightClassOffset + sizeof(uint16_t)) [[unlikely]] {
+    return std::nullopt;
+  }
+  const uint16_t weight_class = base::U16FromBigEndian(
+      bytes.subspan<kOs2WeightClassOffset, sizeof(uint16_t)>());
+  if (weight_class >= 10 && weight_class <= 1000) {
+    // Values from 10 to 1000 are valid as is.
+    // - Values from 1 to 9 are legacy values that needs conversions. See below.
+    // - Values from 1 to 1000 are valid:
+    //   https://learn.microsoft.com/en-us/typography/opentype/spec/os2#usweightclass
+    return weight_class;
+  }
+  if (weight_class >= 1) {
+    // Some legacy TrueType fonts use 1-9 instead of 100-900; see Apple's
+    // TrueType Reference Manual:
+    // https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6OS2.html
+    // and Skia's `SkOTTable_OS_2_VA.h` / `SkCTFont.cpp`.
+    return weight_class * 100;
+  }
+  return std::nullopt;
 }
 
 // This function is similar to `BestStyleMatchForFamily` except
@@ -286,70 +380,58 @@ ScopedCFTypeRef<CTFontRef> BestStyleMatchForFamilyNS(
                                    size);
   }
 
-  NSString* matched_font_name;
+  const bool use_os2_weight =
+      RuntimeEnabledFeatures::MacFontWeightFromOS2Enabled();
+  const CTFontSymbolicTraits important_traits_mask =
+      use_os2_weight ? (kImportantTraitsMask & ~kCTFontTraitBold)
+                     : kImportantTraitsMask;
+  NSString* matched_font_name = nil;
+  ScopedCFTypeRef<CTFontRef> matched_font;
   CTFontSymbolicTraits chosen_traits;
   int chosen_weight;
   for (NSArray* font_info in fonts) {
     NSString* candidate_name = font_info[0];
-
-    int candidate_weight = kNormalWeightValue;
-    CTFontSymbolicTraits candidate_traits = kCTNormalTraitsValue;
-
-    // Per-candidate: read weight and symbolic traits from the CoreText
-    // descriptor (derived from the font's own metadata) instead of AppKit's
-    // reported values. AppKit collapses some distinct faces onto the same
-    // numeric weight (e.g. PingFangSC-Light and PingFangSC-Thin) and its
-    // trait bits don't fully align with `CTFontSymbolicTraits`. Descriptor
-    // lookup by name is cheap and runs only for the family's faces.
-    bool got_descriptor_attributes = false;
-    ScopedCFTypeRef<CTFontDescriptorRef> candidate_descriptor(
-        CTFontDescriptorCreateWithNameAndSize(NSToCFPtrCast(candidate_name),
-                                              0));
-    if (candidate_descriptor) {
-      ScopedCFTypeRef<CFTypeRef> traits_ref(CTFontDescriptorCopyAttribute(
-          candidate_descriptor.get(), kCTFontTraitsAttribute));
-      NSDictionary* traits =
-          CFToNSPtrCast(CFCast<CFDictionaryRef>(traits_ref.get()));
-      if (traits) {
-        NSNumber* weight_num =
-            ObjCCast<NSNumber>(traits[CFToNSPtrCast(kCTFontWeightTrait)]);
-        NSNumber* sym_traits_num =
-            ObjCCast<NSNumber>(traits[CFToNSPtrCast(kCTFontSymbolicTrait)]);
-        if (weight_num) {
-          candidate_weight = ToCSSFontWeight(weight_num.floatValue);
-          if (sym_traits_num) {
-            candidate_traits = sym_traits_num.intValue & kImportantTraitsMask;
+    ScopedCFTypeRef<CTFontRef> candidate_font;
+    std::optional<int> resolved_weight;
+    if (use_os2_weight && candidate_name) {
+      candidate_font.reset(
+          CTFontCreateWithName(NSToCFPtrCast(candidate_name), size, nullptr));
+      resolved_weight = Os2WeightFromCTFont(candidate_font.get());
+      if (!resolved_weight && candidate_font) {
+        ScopedCFTypeRef<CFDictionaryRef> traits_ref(
+            CTFontCopyTraits(candidate_font.get()));
+        if (NSDictionary* traits = CFToNSPtrCast(traits_ref.get())) {
+          if (NSNumber* weight_num = ObjCCast<NSNumber>(
+                  traits[CFToNSPtrCast(kCTFontWeightTrait)])) {
+            resolved_weight = ToCssFontWeight(weight_num.floatValue);
           }
-          got_descriptor_attributes = true;
         }
       }
     }
+    int candidate_weight = kNormalWeightValue;
+    if (resolved_weight) {
+      candidate_weight = *resolved_weight;
+    } else if (NSNumber* candidate_weight_ns = font_info[2]) {
+      candidate_weight = AppKitToCssFontWeight(candidate_weight_ns.intValue);
+    }
 
-    if (!got_descriptor_attributes) {
-      // Fall back to AppKit-reported weight and traits. The trait bits from
-      // `availableMembersOfFontFamily` are `NSFontTraitMask` bits whose
-      // positions do not match `CTFontSymbolicTraits` past bit 1, but italic
-      // and bold do align, which is sufficient for the fallback.
-      NSNumber* candidate_weight_ns = font_info[2];
-      if (candidate_weight_ns) {
-        candidate_weight = AppKitToCSSFontWeight(candidate_weight_ns.intValue);
-      }
-      NSNumber* candidate_traits_ns = font_info[3];
-      if (candidate_traits_ns) {
-        candidate_traits = candidate_traits_ns.intValue & kImportantTraitsMask;
-      }
+    CTFontSymbolicTraits candidate_traits = kCTNormalTraitsValue;
+    NSNumber* candidate_traits_ns = font_info[3];
+    if (candidate_traits_ns) {
+      candidate_traits = candidate_traits_ns.intValue & kImportantTraitsMask;
     }
 
     if (!matched_font_name ||
         BetterChoiceCT(desired_traits, desired_weight, chosen_traits,
                        chosen_weight, candidate_traits, candidate_weight)) {
       matched_font_name = candidate_name;
+      matched_font = std::move(candidate_font);
       chosen_traits = candidate_traits;
       chosen_weight = candidate_weight;
 
       if (chosen_weight == desired_weight &&
-          (chosen_traits & kImportantTraitsMask) ==
-              (desired_traits & kImportantTraitsMask)) {
+          (chosen_traits & important_traits_mask) ==
+              (desired_traits & important_traits_mask)) {
         break;
       }
     }
@@ -357,7 +439,9 @@ ScopedCFTypeRef<CTFontRef> BestStyleMatchForFamilyNS(
   if (!matched_font_name) {
     return ScopedCFTypeRef<CTFontRef>(nullptr);
   }
-
+  if (matched_font) {
+    return matched_font;
+  }
   return ScopedCFTypeRef<CTFontRef>(
       CTFontCreateWithName(NSToCFPtrCast(matched_font_name), size, nullptr));
 }
@@ -381,6 +465,11 @@ ScopedCFTypeRef<CTFontRef> BestStyleMatchForFamily(
     return ScopedCFTypeRef<CTFontRef>(nullptr);
   }
 
+  const bool use_os2_weight =
+      RuntimeEnabledFeatures::MacFontWeightFromOS2Enabled();
+  const CTFontSymbolicTraits important_traits_mask =
+      use_os2_weight ? (kImportantTraitsMask & ~kCTFontTraitBold)
+                     : kImportantTraitsMask;
   ScopedCFTypeRef<CTFontRef> matched_font_in_family;
   CTFontSymbolicTraits chosen_traits;
   int chosen_weight;
@@ -392,8 +481,17 @@ ScopedCFTypeRef<CTFontRef> BestStyleMatchForFamily(
       continue;
     }
 
+    ScopedCFTypeRef<CTFontRef> candidate_font;
+    std::optional<uint16_t> os2_weight;
+    if (use_os2_weight) {
+      candidate_font.reset(
+          CTFontCreateWithFontDescriptor(descriptor, size, nullptr));
+      os2_weight = Os2WeightFromCTFont(candidate_font.get());
+    }
+
     int candidate_traits = kCTNormalTraitsValue;
-    int candidate_weight = kNormalWeightValue;
+    int candidate_weight =
+        os2_weight ? *os2_weight : static_cast<int>(kNormalWeightValue);
     ScopedCFTypeRef<CFTypeRef> traits_ref(
         CTFontDescriptorCopyAttribute(descriptor, kCTFontTraitsAttribute));
     NSDictionary* traits =
@@ -405,18 +503,24 @@ ScopedCFTypeRef<CTFontRef> BestStyleMatchForFamily(
         candidate_traits = candidate_traits_num.intValue;
       }
 
-      NSNumber* candidate_weight_num =
-          ObjCCast<NSNumber>(traits[CFToNSPtrCast(kCTFontWeightTrait)]);
-      if (candidate_weight_num) {
-        candidate_weight = ToCSSFontWeight(candidate_weight_num.floatValue);
+      if (!os2_weight) {
+        NSNumber* candidate_weight_num =
+            ObjCCast<NSNumber>(traits[CFToNSPtrCast(kCTFontWeightTrait)]);
+        if (candidate_weight_num) {
+          candidate_weight = ToCssFontWeight(candidate_weight_num.floatValue);
+        }
       }
     }
 
     if (!matched_font_in_family ||
         BetterChoiceCT(desired_traits, desired_weight, chosen_traits,
                        chosen_weight, candidate_traits, candidate_weight)) {
-      matched_font_in_family.reset(
-          CTFontCreateWithFontDescriptor(descriptor, size, nullptr));
+      if (candidate_font) {
+        matched_font_in_family = std::move(candidate_font);
+      } else {
+        matched_font_in_family.reset(
+            CTFontCreateWithFontDescriptor(descriptor, size, nullptr));
+      }
       chosen_traits = candidate_traits;
       chosen_weight = candidate_weight;
       // If we found a font with the exact weight and traits we asked for, we
@@ -424,8 +528,8 @@ ScopedCFTypeRef<CTFontRef> BestStyleMatchForFamily(
       // searching among the fonts in family to find the best (not necessarily
       // exact) match in traits and weight.
       if (chosen_weight == desired_weight &&
-          (chosen_traits & kImportantTraitsMask) ==
-              (desired_traits & kImportantTraitsMask)) {
+          (chosen_traits & important_traits_mask) ==
+              (desired_traits & important_traits_mask)) {
         return matched_font_in_family;
       }
     }
@@ -529,10 +633,10 @@ void ClampVariationValuesToFontAcceptableRange(
                                            FontSelectionValue(axis_max_value)});
 
     if (axis_id_value == kWeightTag && weight != kNormalWeightValue) {
-      weight = capabilities_range.clampToRange(weight);
+      weight = capabilities_range.ClampToRange(weight);
     }
     if (axis_id_value == kWidthTag && width != kNormalWidthValue) {
-      width = capabilities_range.clampToRange(width);
+      width = capabilities_range.ClampToRange(width);
     }
   }
 }
@@ -733,7 +837,7 @@ NSFont* MatchNSFontFamily(const AtomicString& desired_family_string,
     available_family = desired_family;
   }
 
-  NSInteger app_kit_font_weight = ToAppKitFontWeight(desired_weight);
+  int app_kit_font_weight = ToAppKitFontWeight(desired_weight);
   if (!available_family) {
     // Match by PostScript name.
     NSFont* name_matched_font =
@@ -764,7 +868,7 @@ NSFont* MatchNSFontFamily(const AtomicString& desired_family_string,
 
   // Found a family, now figure out what weight and traits to use.
   BOOL chose_font = false;
-  NSInteger chosen_weight = 0;
+  int chosen_weight = 0;
   NSFontTraitMask chosen_traits = 0;
   NSString* chosen_full_name = nil;
 
@@ -781,7 +885,7 @@ NSFont* MatchNSFontFamily(const AtomicString& desired_family_string,
     NSString* font_full_name = font_info[0];
     // font_info[1] is "the part of the font name used in the font panel that's
     // not the font name". This is not needed.
-    NSInteger font_weight = [font_info[2] intValue];
+    int font_weight = [font_info[2] intValue];
     NSFontTraitMask font_traits = [font_info[3] unsignedIntValue];
 
     BOOL new_winner;
@@ -825,7 +929,7 @@ int ToAppKitFontWeight(FontSelectionValue font_weight) {
     return 5;
 
   size_t select_weight = roundf(weight / 100) - 1;
-  static int app_kit_font_weights[] = {
+  static constexpr auto kAppKitFontWeights = std::to_array<int>({
       2,   // FontWeight100
       3,   // FontWeight200
       4,   // FontWeight300
@@ -835,15 +939,13 @@ int ToAppKitFontWeight(FontSelectionValue font_weight) {
       9,   // FontWeight700
       10,  // FontWeight800
       12,  // FontWeight900
-  };
-  DCHECK_GE(select_weight, 0ul);
-  DCHECK_LE(select_weight, std::size(app_kit_font_weights));
-  return UNSAFE_TODO(app_kit_font_weights[select_weight]);
+  });
+  return kAppKitFontWeights[select_weight];
 }
 
 // CoreText font weight ranges are taken from `GetFontWeightFromCTFont` in
 // `ui/gfx/platform_font_mac.mm`
-int ToCSSFontWeight(float ct_font_weight) {
+int ToCssFontWeight(float ct_font_weight) {
   constexpr struct {
     float weight_lower;
     float weight_upper;
@@ -872,7 +974,7 @@ float ToCTFontWeight(int css_weight) {
   if (css_weight <= 50 || css_weight >= 950) {
     return 0.0;
   }
-  const float weights[] = {
+  static constexpr auto kWeights = std::to_array<float>({
       -0.80,  // Thin (Hairline)
       -0.60,  // Extra Light (Ultra Light)
       -0.40,  // Light
@@ -882,14 +984,14 @@ float ToCTFontWeight(int css_weight) {
       0.40,   // Bold
       0.56,   // Extra Bold (Ultra Bold)
       0.62,   // Black (Heavy)
-  };
+  });
   int index = (css_weight - 50) / 100;
-  return UNSAFE_TODO(weights[index]);
+  return kWeights[index];
 }
 
 // AppKit font weight ranges are taken from `ToNSFontManagerWeight` in
 // `ui/gfx/platform_font_mac.mm`.
-int AppKitToCSSFontWeight(int appkit_font_weight) {
+int AppKitToCssFontWeight(int appkit_font_weight) {
   if (appkit_font_weight < 0) {
     return kNormalWeightValue;
   }

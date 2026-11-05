@@ -9,13 +9,13 @@
 #include <algorithm>
 #include <functional>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/check_op.h"
 #include "base/command_line.h"
-#include "base/containers/adapters.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -46,7 +46,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
-#include "content/public/browser/session_storage_namespace.h"
+#include "content/public/browser/session_storage_namespace_handle.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
@@ -64,7 +64,7 @@ using content::PreloadingFailureReason;
 using content::PreloadingHoldbackStatus;
 using content::PreloadingTriggeringOutcome;
 using content::RenderViewHost;
-using content::SessionStorageNamespace;
+using content::SessionStorageNamespaceHandle;
 using content::WebContents;
 
 namespace prerender {
@@ -203,6 +203,7 @@ NoStatePrefetchManager::StartPrefetchingFromLinkRelPrerender(
     blink::mojom::PrerenderTriggerType trigger_type,
     const content::Referrer& referrer,
     const url::Origin& initiator_origin,
+    scoped_refptr<content::InitiatorNavigationState> initiator_navigation_state,
     const gfx::Size& size) {
   Origin origin = ORIGIN_LINK_REL_PRERENDER_CROSSDOMAIN;
   switch (trigger_type) {
@@ -214,7 +215,7 @@ NoStatePrefetchManager::StartPrefetchingFromLinkRelPrerender(
       break;
   }
 
-  SessionStorageNamespace* session_storage_namespace = nullptr;
+  SessionStorageNamespaceHandle* session_storage_namespace = nullptr;
   PreloadingAttempt* attempt = nullptr;
 
   // Unit tests pass in a process_id == -1.
@@ -258,7 +259,8 @@ NoStatePrefetchManager::StartPrefetchingFromLinkRelPrerender(
         triggered_primary_page_source_id);
   }
   return StartPrefetchingWithPreconnectFallback(
-      origin, url, referrer, initiator_origin, gfx::Rect(size),
+      origin, url, referrer, initiator_origin,
+      std::move(initiator_navigation_state), gfx::Rect(size),
       session_storage_namespace, attempt ? attempt->GetWeakPtr() : nullptr);
 }
 
@@ -353,7 +355,7 @@ bool NoStatePrefetchManager::HasRecentlyBeenNavigatedTo(Origin origin,
 
   CleanUpOldNavigations(&navigations_,
                         base::Milliseconds(kNavigationRecordWindowMs));
-  for (const NavigationRecord& navigation : base::Reversed(navigations_)) {
+  for (const NavigationRecord& navigation : std::views::reverse(navigations_)) {
     if (navigation.url == url) {
       return true;
     }
@@ -498,8 +500,9 @@ NoStatePrefetchManager::StartPrefetchingWithPreconnectFallback(
     const GURL& url_arg,
     const content::Referrer& referrer,
     const std::optional<url::Origin>& initiator_origin,
+    scoped_refptr<content::InitiatorNavigationState> initiator_navigation_state,
     const gfx::Rect& bounds,
-    SessionStorageNamespace* session_storage_namespace,
+    SessionStorageNamespaceHandle* session_storage_namespace,
     base::WeakPtr<content::PreloadingAttempt> attempt) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
 
@@ -658,7 +661,8 @@ NoStatePrefetchManager::StartPrefetchingWithPreconnectFallback(
       bounds.IsEmpty() ? config_.default_tab_bounds : bounds;
 
   no_state_prefetch_contents_ptr->StartPrerendering(
-      contents_bounds, session_storage_namespace, attempt);
+      contents_bounds, session_storage_namespace,
+      std::move(initiator_navigation_state), attempt);
 
   DCHECK(no_state_prefetch_contents_ptr->prefetching_has_started());
 
@@ -795,7 +799,7 @@ void NoStatePrefetchManager::SortActivePrefetches() {
 NoStatePrefetchManager::NoStatePrefetchData*
 NoStatePrefetchManager::FindNoStatePrefetchData(
     const GURL& url,
-    SessionStorageNamespace* session_storage_namespace) {
+    SessionStorageNamespaceHandle* session_storage_namespace) {
   for (const auto& prefetch : active_prefetches_) {
     NoStatePrefetchContents* contents = prefetch->contents();
     if (contents->Matches(url, session_storage_namespace)) {
@@ -853,7 +857,7 @@ bool NoStatePrefetchManager::GetPrefetchInformation(
     *origin = ORIGIN_NONE;
   }
 
-  for (const NavigationRecord& prefetch : base::Reversed(prefetches_)) {
+  for (const NavigationRecord& prefetch : std::views::reverse(prefetches_)) {
     if (prefetch.url == url) {
       if (prefetch_age) {
         *prefetch_age = GetCurrentTimeTicks() - prefetch.time;
@@ -873,7 +877,7 @@ bool NoStatePrefetchManager::GetPrefetchInformation(
 void NoStatePrefetchManager::SetPrefetchFinalStatusForUrl(
     const GURL& url,
     FinalStatus final_status) {
-  for (NavigationRecord& prefetch : base::Reversed(prefetches_)) {
+  for (NavigationRecord& prefetch : std::views::reverse(prefetches_)) {
     if (prefetch.url == url) {
       prefetch.final_status = final_status;
       break;
@@ -1007,7 +1011,8 @@ NoStatePrefetchManager::StartPrefetchingWithPreconnectFallbackForTesting(
     const GURL& url,
     const std::optional<url::Origin>& initiator_origin) {
   return StartPrefetchingWithPreconnectFallback(
-      origin, url, content::Referrer(), initiator_origin, gfx::Rect(), nullptr);
+      origin, url, content::Referrer(), initiator_origin,
+      /*initiator_navigation_state=*/nullptr, gfx::Rect(), nullptr);
 }
 
 void NoStatePrefetchManager::SetNoStatePrefetchContentsFactoryForTest(

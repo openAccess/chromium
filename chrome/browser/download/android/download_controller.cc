@@ -75,9 +75,10 @@
 #include "ui/base/device_form_factor.h"
 #include "ui/base/page_transition_types.h"
 #include "url/android/gurl_android.h"
+#include "url/origin.h"
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 #endif
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -228,7 +229,7 @@ void DownloadController::ScheduleRemoveDownloadItem(
 static void JNI_DownloadController_CancelDownload(
     Profile* profile,
     const std::string& download_guid) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   DownloadManager* download_manager = profile->GetDownloadManager();
   if (download_manager) {
@@ -242,7 +243,7 @@ static void JNI_DownloadController_CancelDownload(
 static void JNI_DownloadController_DownloadUrl(
     const std::string& url,
     content::WebContents* web_contents) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!web_contents) {
     return;
@@ -341,7 +342,7 @@ void DownloadController::CreateAndroidDownload(
 void DownloadController::StartAndroidDownload(
     const content::WebContents::Getter& wc_getter,
     const DownloadInfo& info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   JNIEnv* env = base::android::AttachCurrentThread();
   std::u16string file_name =
@@ -374,8 +375,9 @@ void DownloadController::OnDownloadStarted(DownloadItem* download_item) {
         JNIEnv* env = base::android::AttachCurrentThread();
         ScopedJavaLocalRef<jobject> j_item =
             DownloadManagerService::CreateJavaDownloadInfo(env, download_item);
-        Java_DownloadController_onPdfDownloadStarted(env, tab->GetJavaObject(),
-                                                     j_item);
+        Java_DownloadController_onPdfDownloadStarted(
+            env, tab->GetJavaObject(), j_item,
+            download_item->GetRequestInitiator());
         should_cancel_download = false;
       }
     }
@@ -495,8 +497,7 @@ bool DownloadController::OnDangerousDownload(download::DownloadItem* item) {
   }
 
   ui::WindowAndroid* window_android =
-      GetWindowHelper(item, /*should_schedule_removal=*/true,
-                      /*fallback_to_current_window=*/false);
+      GetWindowHelper(item, /*should_schedule_removal=*/true);
 
   if (!dangerous_download_bridge_) {
     dangerous_download_bridge_ =
@@ -508,8 +509,7 @@ bool DownloadController::OnDangerousDownload(download::DownloadItem* item) {
 
 bool DownloadController::OnSensitiveDownload(download::DownloadItem* item) {
   ui::WindowAndroid* window_android =
-      GetWindowHelper(item, /*should_schedule_removal=*/true,
-                      /*fallback_to_current_window=*/false);
+      GetWindowHelper(item, /*should_schedule_removal=*/true);
 
   if (!policy_warning_download_bridge_) {
     policy_warning_download_bridge_ =
@@ -525,13 +525,14 @@ bool DownloadController::ShowDangerousDownloadDialog(
     return false;
   }
 
-  // Reached post-download (unlike OnDangerousDownload). If the original
-  // WebContents is missing, keep the download and fallback to showing the
-  // dialog in the current window.
-  ui::WindowAndroid* window_android =
-      GetWindowHelper(item, /*should_schedule_removal=*/false,
-                      /*fallback_to_current_window=*/true);
+  // Check the current active window first (or if the originating tab is
+  // inactive).
+  ui::WindowAndroid* window_android = GetCurrentWindow();
   if (!window_android) {
+    window_android = GetWindowHelper(item, /*should_schedule_removal=*/false);
+  }
+  if (!window_android && !base::FeatureList::IsEnabled(
+                             safe_browsing::kMaliciousApkDownloadCheck)) {
     return false;
   }
 
@@ -633,8 +634,7 @@ bool DownloadController::ShouldShowAppVerificationPrompt(
 
 ui::WindowAndroid* DownloadController::GetWindowHelper(
     download::DownloadItem* item,
-    bool should_schedule_removal,
-    bool fallback_to_current_window) {
+    bool should_schedule_removal) {
   WebContents* web_contents = content::DownloadItemUtils::GetWebContents(item);
   if (should_schedule_removal && !web_contents) {
     ScheduleRemoveDownloadItem(item);
@@ -644,13 +644,7 @@ ui::WindowAndroid* DownloadController::GetWindowHelper(
 
   ui::ViewAndroid* view_android =
       web_contents ? web_contents->GetNativeView() : nullptr;
-  ui::WindowAndroid* window_android =
-      view_android ? view_android->GetWindowAndroid() : nullptr;
-
-  if (fallback_to_current_window && !window_android) {
-    window_android = GetCurrentWindow();
-  }
-  return window_android;
+  return view_android ? view_android->GetWindowAndroid() : nullptr;
 }
 
 DEFINE_JNI(DownloadController)

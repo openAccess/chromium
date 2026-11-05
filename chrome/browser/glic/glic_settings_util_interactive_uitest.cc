@@ -11,6 +11,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/chrome_pages.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
@@ -19,6 +20,7 @@
 #include "components/user_education/common/user_education_features.h"
 #include "content/public/test/browser_test.h"
 #include "ui/base/interaction/element_tracker.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace {
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kFirstTab);
@@ -100,8 +102,9 @@ class GlicSettingsUtilUiTest
 
   auto ReloadTab(ui::ElementIdentifier id) {
     return Steps(Do([this]() {
-                   chrome::Reload(browser(),
-                                  WindowOpenDisposition::CURRENT_TAB);
+                   chrome::Reload(
+                       browser(),
+                       ui::mojom::WindowOpenDisposition::kCurrentTab);
                  }),
                  WaitForWebContentsNavigation(id));
   }

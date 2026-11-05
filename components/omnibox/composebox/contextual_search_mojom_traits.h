@@ -84,6 +84,8 @@ struct StructTraits<composebox_query::mojom::ToolConfigDataView,
   static std::vector<omnibox::UrlParam> aim_url_params(
       const omnibox::ToolConfig& config);
   static const std::string& menu_tooltip(const omnibox::ToolConfig& config);
+  // Returns raw int32 corresponding to omnibox::IconResourceIds.
+  static int32_t icon(const omnibox::ToolConfig& config);
 
   static bool Read(composebox_query::mojom::ToolConfigDataView data,
                    omnibox::ToolConfig* output);
@@ -156,6 +158,7 @@ struct StructTraits<composebox_query::mojom::InputStateDataView,
       const omnibox::InputState& input);
   static int32_t max_total_inputs(const omnibox::InputState& input);
   static bool is_canvas_query_submitted(const omnibox::InputState& input);
+  static bool will_fulfill_in_aim(const omnibox::InputState& input);
 
   static bool Read(composebox_query::mojom::InputStateDataView data,
                    omnibox::InputState* output);

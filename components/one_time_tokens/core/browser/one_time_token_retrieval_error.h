@@ -39,7 +39,13 @@ enum class OneTimeTokenRetrievalError {
   kGmailOtpBackendOtpAttributeNotFound = 22,
   kGmailOtpBackendServerError = 23,
   kSubscriptionExpired = 24,
-  kMaxValue = kSubscriptionExpired,
+  kGmailOtpBackendMessageAuthenticationFailed = 25,
+  // The subscription timed out after at least one token delivered via the
+  // subscription was rejected for a sender-domain mismatch. Subscription
+  // delivery can include emails received up to 3 minutes before the request
+  // (see `GmailOtpBackendImpl::ProcessCachedNotifications()`).
+  kGmailOtpSenderDomainMismatch = 26,
+  kMaxValue = kGmailOtpSenderDomainMismatch,
 };
 
 std::ostream& operator<<(std::ostream& os, OneTimeTokenRetrievalError error);

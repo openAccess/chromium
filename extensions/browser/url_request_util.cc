@@ -8,6 +8,7 @@
 
 #include "base/types/optional_util.h"
 #include "components/guest_view/buildflags/buildflags.h"
+#include "content/public/browser/child_process_security_policy.h"
 #include "content/public/common/child_process_id.h"
 #include "extensions/browser/extension_navigation_ui_data.h"
 #include "extensions/browser/extensions_browser_client.h"
@@ -48,10 +49,7 @@ bool AllowCrossRendererResourceLoad(
   const GURL& url = request.url;
   std::string_view resource_path = url.path();
 
-  // This logic is performed for main frame requests in
-  // ExtensionNavigationThrottle::WillStartRequest.
-  if (child_id ||
-      destination != network::mojom::RequestDestination::kDocument) {
+  if (child_id) {
     // Extensions with webview: allow loading certain resources by guest
     // renderers with privileged partition IDs as specified in owner's extension
     // the manifest file.
@@ -102,12 +100,10 @@ bool AllowCrossRendererResourceLoad(
 
   DCHECK_EQ(extension->url(), url.GetWithEmptyPath());
 
-  // Navigating the main frame to an extension URL is allowed, even if not
-  // explicitly listed as web_accessible_resource.
-  if (destination == network::mojom::RequestDestination::kDocument) {
-    *allowed = true;
-    return true;
-  }
+  // Main frame navigations to extension URLs are handled directly in the
+  // browser process by ExtensionNavigationThrottle and the navigation
+  // URLLoaderFactory. They never legitimately arrive through a renderer's
+  // subresource factory and must not bypass web_accessible_resources checks.
 
   // When navigating in subframe, verify that the extension the resource is
   // loaded from matches the process loading it.
@@ -118,16 +114,23 @@ bool AllowCrossRendererResourceLoad(
   }
 
   // If the request is initiated by an opaque origin, allow it if the origin's
-  // precursor matches the extension. This allows sandboxed data URLs and srcdoc
-  // documents from an extension to access its resources (necessary for
-  // backwards compatibility), even if they rendered in a non-extension process.
-  if (request.request_initiator && request.request_initiator.value().opaque()) {
-    const GURL precursor_url = request.request_initiator.value()
-                                   .GetTupleOrPrecursorTupleIfOpaque()
-                                   .GetURL();
+  // precursor matches the extension and the process is authorized to host that
+  // origin. This allows sandboxed data URLs and srcdoc documents from an
+  // extension to access its resources (necessary for backwards compatibility).
+  if (request.request_initiator && request.request_initiator->opaque()) {
+    const GURL precursor_url =
+        request.request_initiator->GetTupleOrPrecursorTupleIfOpaque().GetURL();
     if (extension->origin() == url::Origin::Create(precursor_url)) {
-      *allowed = true;
-      return true;
+      // Pass the opaque initiator rather than `extension->origin()`:
+      // HostsOrigin() checks an opaque origin's precursor, and sandboxed
+      // processes may only host opaque origins.
+      // TODO(crbug.com/379869738): Remove GetUnsafeValue.
+      if (child_id.is_null() ||
+          content::ChildProcessSecurityPolicy::GetInstance()->HostsOrigin(
+              child_id.GetUnsafeValue(), *request.request_initiator)) {
+        *allowed = true;
+        return true;
+      }
     }
   }
 

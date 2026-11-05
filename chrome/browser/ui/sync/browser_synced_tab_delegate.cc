@@ -6,15 +6,19 @@
 
 #include "chrome/browser/sync/sessions/sync_sessions_router_tab_helper.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 
 DEFINE_USER_DATA(BrowserSyncedTabDelegate);
 
 BrowserSyncedTabDelegate::BrowserSyncedTabDelegate(
     tabs::TabInterface& tab,
-    content::WebContents* web_contents)
+    content::WebContents* web_contents,
+    tasks::TaskTabHelper* task_tab_helper,
+    SupervisedUserNavigationObserver* supervised_user_navigation_observer)
     : scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
-  SetWebContents(web_contents);
+  SetWebContents(web_contents, task_tab_helper,
+                 supervised_user_navigation_observer);
 }
 
 // static

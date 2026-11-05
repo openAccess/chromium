@@ -7,59 +7,55 @@
 
 #include "mojo/public/rust/bindings/multiplex_router/cpp_interop/mojo_responder_wrapper.h"
 
+#include <algorithm>
 #include <utility>
+#include <vector>
 
 #include "mojo/public/cpp/bindings/interface_id.h"
+#include "mojo/public/cpp/bindings/lib/responder_thunk.h"
 #include "mojo/public/rust/bindings/multiplex_router/cpp_interop/associated_endpoint_rust_adapter.h"
 
 namespace mojo::rust::bindings {
 
 // Concrete target object held inside `base::SequenceBound<ResponderHolder>`.
 // Accepts incoming message wrappers from Rust, converts them into C++
-// `mojo::Message` instances, and calls `MessageReceiverWithStatus::Accept` on
+// `mojo::Message` instances, and calls `ResponderThunk::Accept` on
 // the bound sequence.
 class MojoResponderWrapper::ResponderHolder {
  public:
   explicit ResponderHolder(
-      std::unique_ptr<mojo::MessageReceiverWithStatus> responder)
+      std::unique_ptr<mojo::internal::ResponderThunk> responder)
       : responder_(std::move(responder)) {}
 
-  void Accept(
-      std::unique_ptr<mojo::rust::ScopedMessageHandleWrapper> msg_wrapper) {
-    if (!responder_ || !msg_wrapper) {
-      return;
-    }
-    mojo::ScopedMessageHandle handle = msg_wrapper->take_handle();
-    mojo::Message message = mojo::Message::CreateFromMessageHandle(&handle);
-    std::ignore = responder_->Accept(&message);
+  void Accept(std::unique_ptr<mojo::Message> message) {
+    auto responder = std::move(responder_);
+    std::ignore = responder->Accept(message.get());
   }
 
  private:
-  std::unique_ptr<mojo::MessageReceiverWithStatus> responder_;
+  std::unique_ptr<mojo::internal::ResponderThunk> responder_;
 };
 
 MojoResponderWrapper::MojoResponderWrapper(
-    std::unique_ptr<mojo::MessageReceiverWithStatus> responder,
+    std::unique_ptr<mojo::internal::ResponderThunk> responder,
     scoped_refptr<base::SequencedTaskRunner> runner,
-    scoped_refptr<mojo::AssociatedGroupController> group_controller)
+    scoped_refptr<mojo::AssociatedGroupController> group_controller,
+    std::vector<mojo::ScopedInterfaceEndpointHandle> associated_handles)
     : responder_(
           responder ? base::SequenceBound<ResponderHolder>(runner,
                                                            std::move(responder))
                     : base::SequenceBound<ResponderHolder>()),
-      group_controller_(std::move(group_controller)) {}
+      group_controller_(std::move(group_controller)),
+      associated_handles_(std::move(associated_handles)) {}
 
 MojoResponderWrapper::~MojoResponderWrapper() = default;
 
 // Sends a response message using the wrapped C++ responder.
-bool MojoResponderWrapper::Accept(
-    std::unique_ptr<mojo::rust::ScopedMessageHandleWrapper> message_wrapper)
-    const {
-  if (!message_wrapper || !responder_) {
-    return false;
-  }
-  responder_.AsyncCall(&ResponderHolder::Accept)
-      .WithArgs(std::move(message_wrapper));
-  return true;
+void MojoResponderWrapper::Accept(
+    std::unique_ptr<mojo::Message> message) const {
+  CHECK(responder_);
+  responder_.AsyncCall(&ResponderHolder::Accept).WithArgs(std::move(message));
+  responder_.Reset();
 }
 
 // Returns true if this wrapper can be used to send a response message.
@@ -73,35 +69,33 @@ bool MojoResponderWrapper::CanSendResponse() const {
 // will be created; otherwise `interface_id` is used.
 std::unique_ptr<AssociatedEndpointRustAdapter>
 MojoResponderWrapper::RegisterNewEndpoint(uint32_t interface_id) const {
-  if (!group_controller_) {
-    return nullptr;
+  // If an interface ID was provided, it must be an endpoint from the incoming
+  // message, already extracted into `associated_handles_`.
+  if (interface_id != mojo::kInvalidInterfaceId) {
+    auto it = std::ranges::find_if(associated_handles_,
+                                   [interface_id](const auto& handle) {
+                                     return handle.id() == interface_id;
+                                   });
+    if (it == associated_handles_.end()) {
+      return nullptr;
+    }
+    auto handle = std::move(*it);
+    associated_handles_.erase(it);
+    return std::make_unique<AssociatedEndpointRustAdapter>(std::move(handle));
   }
 
-  mojo::ScopedInterfaceEndpointHandle new_handle;
-  if (interface_id == mojo::kInvalidInterfaceId) {
-    mojo::ScopedInterfaceEndpointHandle local_handle;
-    mojo::ScopedInterfaceEndpointHandle remote_handle;
-    mojo::ScopedInterfaceEndpointHandle::CreatePairPendingAssociation(
-        &local_handle, &remote_handle);
-    group_controller_->AssociateInterface(std::move(remote_handle));
-    new_handle = std::move(local_handle);
-  } else {
-    new_handle = group_controller_->CreateLocalEndpointHandle(
-        mojo::InterfaceId(interface_id));
-  }
-
-  if (!new_handle.is_valid()) {
-    return nullptr;
-  }
-  return std::make_unique<AssociatedEndpointRustAdapter>(std::move(new_handle));
+  // If we got an invalid interface ID, register a new one
+  auto adapter = std::make_unique<AssociatedEndpointRustAdapter>(
+      group_controller_.get(), mojo::kInvalidInterfaceId);
+  return adapter->is_valid() ? std::move(adapter) : nullptr;
 }
 
-// Returns a copy of this wrapper that can register new endpoints on the
-// message pipe but can't send response messages.
-std::unique_ptr<MojoResponderWrapper> MojoResponderWrapper::CloneAsRegistrar()
-    const {
-  return std::make_unique<MojoResponderWrapper>(
-      nullptr, scoped_refptr<base::SequencedTaskRunner>(), group_controller_);
+uint32_t MojoResponderWrapper::AssociateInterface(
+    std::unique_ptr<AssociatedEndpointRustAdapter> endpoint) const {
+  if (!group_controller_ || !endpoint) {
+    return mojo::kInvalidInterfaceId;
+  }
+  return group_controller_->AssociateInterface(endpoint->PassHandle());
 }
 
 }  // namespace mojo::rust::bindings

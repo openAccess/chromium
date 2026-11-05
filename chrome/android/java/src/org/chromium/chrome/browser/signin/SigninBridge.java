@@ -30,7 +30,7 @@ import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.signin.services.SigninMetricsUtils;
 import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
-import org.chromium.chrome.browser.signin.services.WebSigninBridge;
+import org.chromium.chrome.browser.signin.services.WebSigninTrackerBridge;
 import org.chromium.chrome.browser.sync.settings.AccountManagementFragment;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig;
@@ -58,7 +58,7 @@ import org.chromium.components.signin.GAIAServiceType;
 import org.chromium.components.signin.SigninFeatureMap;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
-import org.chromium.components.signin.base.CoreAccountInfo;
+import org.chromium.components.signin.base.ExternalEntryPoint;
 import org.chromium.components.signin.base.SigninDeepLinkPayload;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.metrics.AccountConsistencyPromoAction;
@@ -417,7 +417,8 @@ final class SigninBridge {
                 accountPreviewDataService,
                 assertNonNull(windowAndroid.getModalDialogManager()),
                 bottomSheetController,
-                new WebSigninAccountPickerDelegate(tab, new WebSigninBridge.Factory(), continueUrl),
+                new WebSigninAccountPickerDelegate(
+                        tab, new WebSigninTrackerBridge.Factory(), continueUrl),
                 strings,
                 DeviceLockActivityLauncherImpl.get(),
                 AccountPickerLaunchMode.DEFAULT,
@@ -449,19 +450,24 @@ final class SigninBridge {
     }
 
     /**
-     * Starts the flow to reauthenticate.
+     * Starts the flow to reauthenticate {@code accountToReauth}, then waits for cookies for {@code
+     * targetAccountId} and redirects to {@code continueUrl}.
      *
      * @param tab The target tab for the continueUrl navigation.
      * @param continueUrl The URL to navigate to after the reauthentication. This will not be an
      *     empty string.
-     * @param selectedAccountId The account to be reauthenticated .
+     * @param accountToReauth The account to be reauthenticated.
+     * @param targetAccountId The account whose cookies to wait for before redirecting.
      */
     @CalledByNative
-    private static void startUpdateCredentialsFlow(
+    @VisibleForTesting
+    static void startUpdateCredentialsFlow(
             Tab tab,
             @JniType("GURL") GURL continueUrl,
-            @JniType("CoreAccountId") CoreAccountId selectedAccountId) {
-        assert selectedAccountId != null;
+            @JniType("CoreAccountId") CoreAccountId accountToReauth,
+            @JniType("CoreAccountId") CoreAccountId targetAccountId) {
+        assert accountToReauth != null;
+        assert targetAccountId != null;
         assert continueUrl != null;
         WindowAndroid windowAndroid = tab.getWindowAndroid();
         if (windowAndroid == null || !tab.isUserInteractable()) {
@@ -472,12 +478,11 @@ final class SigninBridge {
         GURL initialTabURL = tab.getUrl();
         AccountManagerFacade accountManagerFacade = AccountManagerFacadeProvider.getInstance();
         accountManagerFacade.updateCredentials(
-                selectedAccountId,
+                accountToReauth,
                 assumeNonNull(windowAndroid.getActivity().get()),
                 (success) -> {
                     if (success && !tab.isDestroyed() && tab.getUrl().equals(initialTabURL)) {
-                        waitForCookiesAndRedirect(
-                                tab, selectedAccountId, continueUrl, initialTabURL);
+                        waitForCookiesAndRedirect(tab, targetAccountId, continueUrl, initialTabURL);
                     }
                 });
     }
@@ -497,24 +502,20 @@ final class SigninBridge {
         @Nullable Context context = windowAndroid.getContext().get();
         @Nullable IdentityManager identityManager =
                 IdentityServicesProvider.get().getIdentityManager(profile);
-        @Nullable SigninManager signinManager =
-                IdentityServicesProvider.get().getSigninManager(profile);
-        if (context == null || identityManager == null || signinManager == null) {
+        if (context == null || identityManager == null) {
             return;
         }
-        startSigninDeepLinkFlow(context, profile, identityManager, signinManager, payload);
+        startSigninDeepLinkFlow(context, profile, identityManager, payload);
     }
 
     private static void startSigninDeepLinkFlow(
             Context context,
             Profile profile,
             IdentityManager identityManager,
-            SigninManager signinManager,
             SigninDeepLinkPayload payload) {
         ThreadUtils.assertOnUiThread();
 
-        final @Nullable CoreAccountInfo primaryAccountInfo =
-                identityManager.getPrimaryAccountInfo();
+        final AccountInfo primaryAccountInfo = identityManager.getPrimaryAccountInfo();
 
         final @Nullable AccountInfo targetAccountInfo =
                 identityManager.findExtendedAccountInfoByEmailAddress(payload.getEmail());
@@ -524,15 +525,10 @@ final class SigninBridge {
                         && targetAccountInfo != null
                         && primaryAccountInfo.getId().equals(targetAccountInfo.getId());
 
-        SigninMetricsUtils.recordCrossDeviceInitialState(
-                payload.getExternalEntryPoint(),
-                getCrossDeviceInitialState(
-                        /* isSigninAllowed= */ signinManager.isSigninAllowed(),
-                        /* isSignedIn= */ primaryAccountInfo != null,
-                        /* isTargetAccountOnDevice= */ targetAccountInfo != null,
-                        /* isTargetAccountSignedIn= */ isTargetAccountSignedIn));
-
         if (isTargetAccountSignedIn) {
+            SigninMetricsUtils.recordCrossDeviceInitialState(
+                    payload.getExternalEntryPoint(),
+                    CrossDeviceInitialState.SIGNED_IN_WITH_TARGET_ACCOUNT);
             String message =
                     SigninDeepLinkFlowStrings.alreadySignedInMessage(
                             context, assumeNonNull(targetAccountInfo), payload);
@@ -553,31 +549,36 @@ final class SigninBridge {
                 SigninAndHistorySyncActivityLauncherImpl.get()
                         .createFullscreenSigninIntentOrShowError(
                                 context, profile, config, SigninAccessPoint.DEEP_LINK_DEFAULT);
-        if (intent != null) {
-            context.startActivity(intent);
+        if (intent == null) {
+            SigninMetricsUtils.recordCrossDeviceInitialState(
+                    payload.getExternalEntryPoint(), CrossDeviceInitialState.FLOW_FORBIDDEN);
+            return;
         }
+
+        recordCrossDeviceFlowStart(
+                payload.getExternalEntryPoint(), primaryAccountInfo, targetAccountInfo);
+        context.startActivity(intent);
     }
 
-    private static @CrossDeviceInitialState int getCrossDeviceInitialState(
-            boolean isSigninAllowed,
-            boolean isSignedIn,
-            boolean isTargetAccountOnDevice,
-            boolean isTargetAccountSignedIn) {
-        if (!isSigninAllowed) {
-            return CrossDeviceInitialState.FLOW_FORBIDDEN;
-        } else if (isTargetAccountSignedIn) {
-            return CrossDeviceInitialState.SIGNED_IN_WITH_TARGET_ACCOUNT;
-        } else if (isSignedIn) {
-            return isTargetAccountOnDevice
-                    ? CrossDeviceInitialState
-                            .SIGNED_IN_WITH_DIFFERENT_ACCOUNT_TARGET_ACCOUNT_ON_DEVICE
-                    : CrossDeviceInitialState
-                            .SIGNED_IN_WITH_DIFFERENT_ACCOUNT_TARGET_ACCOUNT_NOT_ON_DEVICE;
+    private static void recordCrossDeviceFlowStart(
+            @ExternalEntryPoint int entryPoint,
+            @Nullable AccountInfo primaryAccountInfo,
+            @Nullable AccountInfo targetAccountInfo) {
+        @CrossDeviceInitialState int initialState;
+        if (primaryAccountInfo != null) {
+            initialState =
+                    targetAccountInfo != null
+                            ? CrossDeviceInitialState
+                                    .SIGNED_IN_WITH_DIFFERENT_ACCOUNT_TARGET_ACCOUNT_ON_DEVICE
+                            : CrossDeviceInitialState
+                                    .SIGNED_IN_WITH_DIFFERENT_ACCOUNT_TARGET_ACCOUNT_NOT_ON_DEVICE;
         } else {
-            return isTargetAccountOnDevice
-                    ? CrossDeviceInitialState.SIGNED_OUT_TARGET_ACCOUNT_ON_DEVICE
-                    : CrossDeviceInitialState.SIGNED_OUT_TARGET_ACCOUNT_NOT_ON_DEVICE;
+            initialState =
+                    targetAccountInfo != null
+                            ? CrossDeviceInitialState.SIGNED_OUT_TARGET_ACCOUNT_ON_DEVICE
+                            : CrossDeviceInitialState.SIGNED_OUT_TARGET_ACCOUNT_NOT_ON_DEVICE;
         }
+        SigninMetricsUtils.recordCrossDeviceInitialState(entryPoint, initialState);
     }
 
     private SigninBridge() {}

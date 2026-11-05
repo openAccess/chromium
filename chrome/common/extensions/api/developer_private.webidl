@@ -125,6 +125,8 @@ dictionary DisableReasons {
   required boolean parentDisabledPermissions;
   required boolean unsupportedManifestVersion;
   required boolean unsupportedDeveloperExtension;
+  required boolean disabledByAnotherExtension;
+  DOMString? disabledByExtensionName;
 };
 
 dictionary OptionsPage {
@@ -254,6 +256,7 @@ dictionary ExtensionInfo {
   boolean pinnedToToolbar;
   required boolean isAffectedByMV2Deprecation;
   required boolean canUploadAsAccountExtension;
+  required boolean canShowReviewPrompt;
 };
 
 dictionary ProfileInfo {

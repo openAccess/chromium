@@ -7,19 +7,22 @@
 
 #import <UIKit/UIKit.h>
 
+#import "components/autofill/core/common/unique_ids.h"
 #import "ios/chrome/browser/shared/coordinator/chrome_coordinator/chrome_coordinator.h"
-
-@protocol ManualFillContentInjector;
 
 // Main coordinator for the AtMemory feature flow. It manages the shared
 // navigation controller and coordinates transitions between the search and
 // granular fill child coordinators.
 @interface AtMemoryCoordinator : ChromeCoordinator
 
+// YES if a Settings navigation controller is currently presented by this
+// coordinator.
+@property(nonatomic, readonly, getter=isSettingsPresented)
+    BOOL settingsPresented;
+
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
                                    browser:(Browser*)browser
-                           contentInjector:
-                               (id<ManualFillContentInjector>)contentInjector
+                                   fieldId:(autofill::FieldGlobalId)fieldId
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController

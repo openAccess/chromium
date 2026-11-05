@@ -1,0 +1,84 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/browser/ttc/core/session_view_impl.h"
+
+#include <memory>
+
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/notreached.h"
+#include "chrome/browser/ttc/core/session_view_delegate.h"
+#include "chrome/browser/ttc/core/voice_plate_controller.h"
+#include "chrome/browser/ui/toasts/api/toast_id.h"
+#include "chrome/browser/ui/toasts/toast_controller.h"
+#include "chrome/browser/ui/views/voice/waveform_mode.h"
+
+namespace ttc {
+
+using voice::WaveformMode;
+
+ToastId GetToastIdForError(ErrorCode error) {
+  switch (error) {
+    case ErrorCode::kUnknown:
+    case ErrorCode::kRateLimited:
+    case ErrorCode::kSafetyBlocked:
+    case ErrorCode::kInternalBackendError:
+    case ErrorCode::kSessionExpired:
+    case ErrorCode::kOptimizationGuideUnavailable:
+    case ErrorCode::kExecutionSessionCreationFailed:
+    case ErrorCode::kAudioUnknownError:
+    case ErrorCode::kSetupTimeout:
+      return ToastId::kTtcGenericError;
+
+    case ErrorCode::kAudioNoMicrophoneDetected:
+    case ErrorCode::kAudioMicrophoneInUse:
+      return ToastId::kTtcNoMicrophoneError;
+
+    case ErrorCode::kInactivityTimeout:
+      return ToastId::kTtcInactivityTimeout;
+  }
+
+  NOTREACHED();
+}
+
+SessionViewImpl::SessionViewImpl(SessionViewDelegate& delegate)
+    : delegate_(delegate),
+      voice_plate_controller_(std::make_unique<VoicePlateController>(
+          *delegate.GetProfile(),
+          base::BindRepeating(&SessionViewImpl::OnVoicePlateCloseClicked,
+                              base::Unretained(this)))) {}
+
+SessionViewImpl::~SessionViewImpl() = default;
+
+void SessionViewImpl::UpdateAudioLevel(float audio_level) {
+  if (voice_plate_controller_) {
+    voice_plate_controller_->UpdateAudioLevel(audio_level);
+  }
+}
+
+void SessionViewImpl::OnSessionInitialized() {
+  if (voice_plate_controller_) {
+    voice_plate_controller_->SetMode(WaveformMode::kLive);
+  }
+}
+
+void SessionViewImpl::OnError(ErrorCode error) {
+  if (ToastController* toast_controller =
+          ToastController::From(delegate_->GetBrowserWindowInterface())) {
+    toast_controller->MaybeShowToast(ToastParams(GetToastIdForError(error)));
+  }
+}
+
+void SessionViewImpl::OnVoicePlateCloseClicked() {
+  delegate_->EndSessionAsync();
+}
+
+// The desktop voice plate doesn't show transcripts yet; they're only surfaced
+// on Android so far.
+void SessionViewImpl::OnTranscriptionsUpdated(
+    const std::string& user_transcript,
+    const std::string& model_transcript) {}
+
+}  // namespace ttc

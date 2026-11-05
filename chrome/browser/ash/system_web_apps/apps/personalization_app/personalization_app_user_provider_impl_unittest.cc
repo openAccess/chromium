@@ -9,6 +9,7 @@
 #include <optional>
 
 #include "ash/capture_mode/fake_video_source_provider.h"
+#include "ash/constants/ash_paths.h"
 #include "ash/public/cpp/default_user_image.h"
 #include "ash/webui/personalization_app/mojom/personalization_app.mojom.h"
 #include "base/containers/span.h"
@@ -21,12 +22,16 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_path_override.h"
+#include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/login/users/avatar/fake_user_image_file_selector.h"
 #include "chrome/browser/ash/login/users/avatar/user_image_manager_impl.h"
 #include "chrome/browser/ash/login/users/avatar/user_image_manager_registry.h"
 #include "chrome/browser/ash/login/users/avatar/user_image_prefs.h"
 #include "chrome/browser/ash/login/users/default_user_image/default_user_images.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/login/users/profile_user_manager_controller.h"
+#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -208,6 +213,9 @@ class PersonalizationAppUserProviderImplTest : public testing::Test {
   void SetUp() override {
     UserImageManagerImpl::SkipDefaultUserImageDownloadForTesting();
     ASSERT_TRUE(profile_manager_.SetUp());
+    profile_user_manager_controller_ =
+        std::make_unique<ash::ProfileUserManagerController>(
+            profile_manager_.profile_manager(), user_manager_.Get());
 
     // Add a User then log in.
     const AccountId account_id =
@@ -219,8 +227,9 @@ class PersonalizationAppUserProviderImplTest : public testing::Test {
         account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id));
 
     // Create a profile and set it as User profile.
+    ash::ScopedAccountIdAnnotator annotator(profile_manager_.profile_manager(),
+                                            account_id);
     profile_ = profile_manager_.CreateTestingProfile(kFakeTestEmail);
-    user_manager_->OnUserProfileCreated(account_id, profile_->GetPrefs());
 
     web_contents_ = content::WebContents::Create(
         content::WebContents::CreateParams(profile_));
@@ -236,8 +245,12 @@ class PersonalizationAppUserProviderImplTest : public testing::Test {
   }
 
   void TearDown() override {
-    user_manager_->OnUserProfileWillBeDestroyed(
-        AccountId::FromUserEmailGaiaId(kFakeTestEmail, kTestGaiaId));
+    user_provider_.reset();
+    web_ui_.set_web_contents(nullptr);
+    web_contents_.reset();
+    profile_ = nullptr;
+    profile_manager_.DeleteAllTestingProfiles();
+    profile_user_manager_controller_.reset();
   }
 
   TestingProfile* profile() { return profile_; }
@@ -312,11 +325,14 @@ class PersonalizationAppUserProviderImplTest : public testing::Test {
   FakeVideoCaptureService fake_video_capture_service_;
   user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
       user_manager_{std::make_unique<ash::FakeChromeUserManager>()};
+  std::unique_ptr<ash::ProfileUserManagerController>
+      profile_user_manager_controller_;
   UserImageManagerRegistry user_image_manager_registry_{
       TestingBrowserProcess::GetGlobal()->local_state(),
       TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
       user_manager_.Get()};
   TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal()};
+  base::ScopedPathOverride user_data_dir_override_{ash::DIR_USER_DATA};
   data_decoder::test::InProcessDataDecoder data_decoder_;
   content::TestWebUI web_ui_;
   std::unique_ptr<content::WebContents> web_contents_;
@@ -635,6 +651,7 @@ TEST_F(PersonalizationAppUserProviderImplTest, SelectImageFromDisk) {
   auto fake_file_selector =
       std::make_unique<ash::FakeUserImageFileSelector>(web_ui());
   fake_file_selector->SetFilePath(file_path);
+  auto* fake_file_selector_ptr = fake_file_selector.get();
   user_provider()->SetUserImageFileSelectorForTesting(
       std::move(fake_file_selector));
   user_provider_remote()->get()->SelectImageFromDisk();
@@ -643,6 +660,9 @@ TEST_F(PersonalizationAppUserProviderImplTest, SelectImageFromDisk) {
                 ->FindUser(GetAccountId(profile()))
                 ->image_index(),
             user_manager::UserImage::Type::kExternal);
+  // The file selection dialog should initially show the Downloads folder.
+  EXPECT_EQ(file_manager::util::GetDownloadsFolderForProfile(profile()),
+            fake_file_selector_ptr->downloads_path());
 }
 
 TEST_F(PersonalizationAppUserProviderImplTest,

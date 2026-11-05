@@ -207,6 +207,8 @@ std::string GetUserActionableErrorString(
       return "Needs settings confirmation";
     case SyncService::UserActionableError::kUnrecoverableError:
       return "Unrecoverable error";
+    case SyncService::UserActionableError::kPasskeysLocked:
+      return "Passkeys locked";
 #endif  // !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
 #if BUILDFLAG(IS_ANDROID)
     case SyncService::UserActionableError::kNeedsUPMBackendUpgrade:
@@ -216,10 +218,10 @@ std::string GetUserActionableErrorString(
       return "Client version is too old and needs upgrade";
     case SyncService::UserActionableError::kBookmarksLimitExceeded:
       return "Bookmarks limit exceeded";
-#if BUILDFLAG(IS_IOS)
+#if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
     case SyncService::UserActionableError::kDeviceManagementError:
       return "Device Management error";
-#endif  // BUILDFLAG(IS_IOS)
+#endif  // BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
   }
 
   NOTREACHED();
@@ -568,8 +570,9 @@ base::DictValue ConstructAboutInformation(
     is_syncing->Set(full_status.syncing);
   }
   is_local_sync_enabled->Set(is_local_sync_enabled_state);
-  if (is_local_sync_enabled_state && is_status_valid) {
-    local_backend_path->Set(full_status.local_sync_folder);
+  if (is_local_sync_enabled_state) {
+    local_backend_path->Set(
+        service->GetLocalSyncBackendFolderForDebugging().AsUTF8Unsafe());
   }
 
   // Network.

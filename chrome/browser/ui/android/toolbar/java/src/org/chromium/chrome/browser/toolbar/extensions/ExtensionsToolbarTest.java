@@ -13,7 +13,6 @@ import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 import static androidx.test.espresso.matcher.ViewMatchers.hasSibling;
 import static androidx.test.espresso.matcher.ViewMatchers.isActivated;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
-import static androidx.test.espresso.matcher.ViewMatchers.isRoot;
 import static androidx.test.espresso.matcher.ViewMatchers.isSelected;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
@@ -27,10 +26,14 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
-import static org.chromium.ui.test.util.ViewUtils.VIEW_GONE;
-import static org.chromium.ui.test.util.ViewUtils.VIEW_NULL;
-import static org.chromium.ui.test.util.ViewUtils.withEventualExpectedViewState;
+import static org.chromium.base.test.transit.ViewFinder.waitForNoView;
 
 import android.app.Instrumentation;
 import android.os.SystemClock;
@@ -51,12 +54,13 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
-import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.ImportantFormFactors;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
@@ -72,11 +76,11 @@ import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.view.ContentView;
+import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.content_public.browser.test.util.TestTouchUtils;
-import org.chromium.extensions.common.ExtensionFeatures;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.ViewUtils;
@@ -93,7 +97,6 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE, ChromeSwitches.TEST_TYPE})
-@DisableFeatures(ExtensionFeatures.EXTENSION_DISABLE_UNSUPPORTED_DEVELOPER)
 // @ImportantFormFactors may look redundant, but is actually essential to make this test run on CQ
 // because android-desktop CQ builders run chrome_public_test_apk_desktop that only covers tests
 // specific to desktop.
@@ -170,10 +173,7 @@ public class ExtensionsToolbarTest {
         ExtensionTestUtils.disableExtension(mProfile, extension2Id);
 
         // The extension 2 should disappear.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action 2"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action 2"));
     }
 
     /**
@@ -184,6 +184,7 @@ public class ExtensionsToolbarTest {
      */
     @Test
     @LargeTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562625134
     public void testClickingOnASecondActionClosesTheFirst() throws IOException {
         String alphaId =
                 loadPopupExtension(
@@ -303,10 +304,7 @@ public class ExtensionsToolbarTest {
         uninstallTestExtension(id);
 
         // The extension should disappear from the toolbar.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action"));
 
         // The popup should be gone.
         CriteriaHelper.pollInstrumentationThread(
@@ -340,10 +338,7 @@ public class ExtensionsToolbarTest {
         uninstallTestExtension(extensionId);
 
         // The extension should disappear from the toolbar.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action"));
 
         // The popup should be gone.
         CriteriaHelper.pollInstrumentationThread(
@@ -679,10 +674,7 @@ public class ExtensionsToolbarTest {
                 () -> UserPrefs.get(mProfile).setBoolean(Pref.PIN_EXTENSIONS_MENU_BUTTON, false));
 
         // Ensure the menu button is not visible anymore.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withId(R.id.extensions_menu_button), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withId(R.id.extensions_menu_button));
     }
 
     @Test
@@ -711,10 +703,7 @@ public class ExtensionsToolbarTest {
         ViewUtils.onViewWaiting(withId(R.id.extensions_menu_close_button)).perform(click());
 
         // Verify that the extensions menu button is no longer visible on the toolbar.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withId(R.id.extensions_menu_button), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withId(R.id.extensions_menu_button));
 
         // Open the extensions menu via the app menu.
         ViewUtils.onViewWaiting(withId(R.id.menu_button_wrapper)).perform(click());
@@ -791,10 +780,7 @@ public class ExtensionsToolbarTest {
         ExtensionTestUtils.setExtensionActionVisible(mProfile, extensionId, false);
 
         // Verify the extension is not visible on the toolbar initially.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action"));
 
         // Pin the extension programmatically.
         ExtensionTestUtils.setExtensionActionVisible(mProfile, extensionId, true);
@@ -807,10 +793,7 @@ public class ExtensionsToolbarTest {
         ExtensionTestUtils.setExtensionActionVisible(mProfile, extensionId, false);
 
         // Verify the action disappears from the toolbar.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action"));
     }
 
     @Test
@@ -829,10 +812,7 @@ public class ExtensionsToolbarTest {
         ExtensionTestUtils.disableExtension(mProfile, extensionId);
 
         // Verify the action disappears from the toolbar.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withContentDescription("Test Action"), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withContentDescription("Test Action"));
 
         // Re-enable the extension.
         ExtensionTestUtils.enableExtension(mProfile, extensionId);
@@ -1029,6 +1009,7 @@ public class ExtensionsToolbarTest {
 
     @Test
     @LargeTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562625134
     public void testExtensionCommandClosesPopupIfOpen() throws IOException {
         String extensionId =
                 loadCommandExtension(
@@ -1059,6 +1040,7 @@ public class ExtensionsToolbarTest {
 
     @Test
     @LargeTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/562625134
     public void testNonExtensionCommandIsSentToApplicationWindow() throws IOException {
         String extensionId = loadPopupExtension("extension", "Extension", "Action", "popup opened");
         ExtensionTestUtils.setExtensionActionVisible(mProfile, extensionId, true);
@@ -1152,10 +1134,7 @@ public class ExtensionsToolbarTest {
         ViewUtils.onViewWaiting(withText("Remove from Chromium")).perform(click());
 
         // The dialog should trigger dismiss on the extensions menu.
-        onView(isRoot())
-                .check(
-                        withEventualExpectedViewState(
-                                withId(R.id.extensions_menu_close_button), VIEW_GONE | VIEW_NULL));
+        waitForNoView(withId(R.id.extensions_menu_close_button));
     }
 
     @Test
@@ -1202,35 +1181,24 @@ public class ExtensionsToolbarTest {
         "in-product-help-demo-mode-choice=IPH_ExtensionsPinnedByDefault",
         "disable-user-education-rate-limiting"
     })
-    @org.chromium.base.test.util.Features.EnableFeatures({
+    @EnableFeatures({
         "ExtensionsPinnedByDefault",
         "kExtensionsPinnedByDefault",
         "IPH_ExtensionsPinnedByDefault"
     })
     public void testPinnedByDefaultIphShowsOnExtensionInstall() throws IOException {
-        org.chromium.components.feature_engagement.Tracker tracker =
-                org.mockito.Mockito.mock(org.chromium.components.feature_engagement.Tracker.class);
-        org.mockito.Mockito.when(tracker.shouldTriggerHelpUi(org.mockito.Mockito.anyString()))
-                .thenReturn(false);
-        org.mockito.Mockito.when(
-                        tracker.shouldTriggerHelpUi(
-                                org.mockito.Mockito.eq("IPH_ExtensionsPinnedByDefault")))
-                .thenReturn(true);
-        org.mockito.Mockito.when(tracker.wouldTriggerHelpUi(org.mockito.Mockito.anyString()))
-                .thenReturn(false);
-        org.mockito.Mockito.when(
-                        tracker.wouldTriggerHelpUi(
-                                org.mockito.Mockito.eq("IPH_ExtensionsPinnedByDefault")))
-                .thenReturn(true);
-        org.mockito.Mockito.doAnswer(
+        Tracker tracker = mock(Tracker.class);
+        when(tracker.shouldTriggerHelpUi(anyString())).thenReturn(false);
+        when(tracker.shouldTriggerHelpUi(eq("IPH_ExtensionsPinnedByDefault"))).thenReturn(true);
+        when(tracker.wouldTriggerHelpUi(anyString())).thenReturn(false);
+        when(tracker.wouldTriggerHelpUi(eq("IPH_ExtensionsPinnedByDefault"))).thenReturn(true);
+        doAnswer(
                         invocation -> {
-                            invocation
-                                    .<org.chromium.base.Callback<Boolean>>getArgument(0)
-                                    .onResult(true);
+                            invocation.<Callback<Boolean>>getArgument(0).onResult(true);
                             return null;
                         })
                 .when(tracker)
-                .addOnInitializedCallback(org.mockito.Mockito.any());
+                .addOnInitializedCallback(any());
         TrackerFactory.setTrackerForTests(tracker);
         // Enable the pinned by default preference so that the IPH appears.
         ThreadUtils.runOnUiThreadBlocking(

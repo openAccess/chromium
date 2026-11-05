@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/sync/model/prefs/cross_device_pref_tracker/cross_device_pref_tracker_factory.h"
 
+#import <utility>
+
 #import "base/check.h"
 #import "base/feature_list.h"
 #import "components/keyed_service/core/keyed_service.h"
@@ -17,37 +19,21 @@
 #import "ios/chrome/browser/sync/model/prefs/cross_device_pref_tracker/ios_chrome_cross_device_pref_provider.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 
-// static
-sync_preferences::CrossDevicePrefTracker*
-CrossDevicePrefTrackerFactory::GetForProfile(ProfileIOS* profile) {
-  // The factory configuration ensures this is only called for the original
-  // profile.
-  CHECK(!profile->IsOffTheRecord());
-
-  return GetInstance()
-      ->GetServiceForProfileAs<sync_preferences::CrossDevicePrefTracker>(
-          profile, /*create=*/true);
-}
-
-// static
-CrossDevicePrefTrackerFactory* CrossDevicePrefTrackerFactory::GetInstance() {
-  static base::NoDestructor<CrossDevicePrefTrackerFactory> instance;
-  return instance.get();
-}
-
-CrossDevicePrefTrackerFactory::CrossDevicePrefTrackerFactory()
-    : ProfileKeyedServiceFactoryIOS("CrossDevicePrefTracker",
-                                    ServiceCreation::kCreateWithProfile,
-                                    TestingCreation::kNoServiceForTests) {
+CrossDevicePrefTrackerFactory::CrossDevicePrefTrackerFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "CrossDevicePrefTracker",
+                                         ServiceCreation::kCreateWithProfile,
+                                         TestingCreation::kNoServiceForTests) {
   DependsOn(DeviceInfoSyncServiceFactory::GetInstance());
   DependsOn(SyncServiceFactory::GetInstance());
 }
 
-CrossDevicePrefTrackerFactory::~CrossDevicePrefTrackerFactory() = default;
-
 std::unique_ptr<KeyedService>
 CrossDevicePrefTrackerFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
+  // The factory configuration ensures this is only called for the original
+  // profile.
+  CHECK(!profile.IsOffTheRecord());
   if (!base::FeatureList::IsEnabled(
           sync_preferences::features::kEnableCrossDevicePrefTracker)) {
     return nullptr;
@@ -57,7 +43,7 @@ CrossDevicePrefTrackerFactory::BuildServiceInstanceFor(
 
   // The implementation in `components/sync_preferences` is platform-agnostic.
   return std::make_unique<sync_preferences::CrossDevicePrefTrackerImpl>(
-      profile->GetSyncablePrefs(), GetApplicationContext()->GetLocalState(),
+      profile.GetSyncablePrefs(), GetApplicationContext()->GetLocalState(),
       DeviceInfoSyncServiceFactory::GetForProfile(profile),
       SyncServiceFactory::GetForProfile(profile), std::move(pref_provider));
 }

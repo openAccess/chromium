@@ -20,6 +20,8 @@ found in the LICENSE file.
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:minHeight="?attr/listItemHeight"
+        android:maxLines="1"
+        android:ellipsize="end"
         android:textAlignment="viewStart"
         android:gravity="start|center_vertical" />
 
@@ -31,5 +33,15 @@ found in the LICENSE file.
         android:gravity="center_vertical"
         android:importantForAccessibility="no"
         android:tint="@macro/default_icon_color_secondary"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/menu_item_shortcut"
+        android:textAppearance="@style/TextAppearance.TextMedium.Secondary"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:maxLines="1"
+        android:paddingStart="@dimen/menu_item_shortcut_with_text_end_padding_start"
+        android:duplicateParentState="true"
         android:visibility="gone" />
 </LinearLayout>

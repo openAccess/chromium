@@ -10,6 +10,7 @@
 
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/types/expected.h"
 #include "components/actor/core/aggregated_journal.h"
@@ -72,9 +73,15 @@ class TestCreditCardAccessManager : public CreditCardAccessManager {
   void PrepareToFetchCreditCard() override {}
 
   void FetchCreditCard(const CreditCard*,
+                       bool require_user_confirmation,
                        OnCreditCardFetchedCallback callback) override;
 
   [[nodiscard]] bool RunCreditCardFetchedCallback(const CreditCard& card);
+
+  MOCK_METHOD(void,
+              RetrieveCreditCardForOpaqueToken,
+              (const std::string&, OnCreditCardRetrievedForOpaqueTokenCallback),
+              (override));
 
  private:
   OnCreditCardFetchedCallback callback_;
@@ -97,6 +104,7 @@ class TestBrowserAutofillManagerWithTestCCAM
       const FieldGlobalId& field_id,
       const FillingPayload& filling_payload,
       AutofillTriggerSource trigger_source,
+      bool require_user_confirmation,
       const base::flat_set<FieldGlobalId>& blocked_fields) override;
 
   FieldGlobalId last_trigger_field_id() const { return last_trigger_field_id_; }
@@ -129,7 +137,7 @@ class TestActorAutofillClient : public TestAutofillClient {
 class ActorTestBase : public testing::Test,
                       public WithTestAutofillClientDriverManager<
                           TestActorAutofillClient,
-                          TestActorAutofillDriver,
+                          testing::NiceMock<TestActorAutofillDriver>,
                           TestBrowserAutofillManagerWithTestCCAM> {
  public:
   ActorTestBase();
@@ -157,6 +165,11 @@ class ActorTestBase : public testing::Test,
   }
   ActorFormFillingServiceImpl& service() { return *service_; }
   ::actor::AggregatedJournal& journal() { return journal_; }
+
+  // This is intended to be initialized by derived classes. It needs to be
+  // defined before the `task_environment_` to ensure a correct destruction
+  // order.
+  base::test::ScopedFeatureList feature_list_;
 
  private:
   base::test::TaskEnvironment task_environment_{

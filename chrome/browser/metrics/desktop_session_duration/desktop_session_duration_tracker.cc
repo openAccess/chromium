@@ -11,11 +11,14 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/observer_list.h"
 #include "base/strings/string_number_conversions.h"
-#include "chrome/browser/browser_process.h"
+#include "build/build_config.h"
 #include "chrome/common/chrome_switches.h"
-#include "components/activity_reporter/activity_reporter.h"
-#include "components/metrics/private_metrics/puma_histogram_functions.h"
 #include "ui/events/types/event_type.h"
+
+#if !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/browser_process.h"
+#include "components/activity_reporter/activity_reporter.h"
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 namespace metrics {
 
@@ -47,7 +50,8 @@ bool IsAutoLaunchedByOs() {
 
 // static
 void DesktopSessionDurationTracker::Initialize() {
-  DCHECK(!g_desktop_session_duration_tracker_instance);
+  CHECK(!g_desktop_session_duration_tracker_instance,
+        base::NotFatalUntil::M161);
   g_desktop_session_duration_tracker_instance =
       new DesktopSessionDurationTracker;
 }
@@ -59,7 +63,7 @@ bool DesktopSessionDurationTracker::IsInitialized() {
 
 // static
 DesktopSessionDurationTracker* DesktopSessionDurationTracker::Get() {
-  DCHECK(g_desktop_session_duration_tracker_instance);
+  CHECK(g_desktop_session_duration_tracker_instance, base::NotFatalUntil::M161);
   return g_desktop_session_duration_tracker_instance;
 }
 
@@ -74,12 +78,12 @@ void DesktopSessionDurationTracker::OnVisibilityChanged(
     base::TimeDelta time_ago) {
   is_visible_ = visible;
   if (is_visible_ && !is_first_session_) {
-    DCHECK(time_ago.is_zero());
+    CHECK(time_ago.is_zero(), base::NotFatalUntil::M161);
     // We're not considering visibility changes as explicit input events sent
     // to Chrome.
     OnUserEvent(std::nullopt);
   } else if (in_session_ && !is_audio_playing_) {
-    DCHECK(!visible);
+    CHECK(!visible, base::NotFatalUntil::M161);
     DVLOG(4) << "Ending session due to visibility change";
     EndSession(time_ago);
   }
@@ -105,7 +109,7 @@ void DesktopSessionDurationTracker::OnUserEvent(
     StartSession();
   }
 
-  DCHECK(in_session_);
+  CHECK(in_session_, base::NotFatalUntil::M161);
 
   const bool is_interactive =
       event.has_value() && !std::ranges::contains(kNonInteractiveEvents, event);
@@ -125,7 +129,7 @@ void DesktopSessionDurationTracker::EndSessionForTesting() {
 
 // static
 void DesktopSessionDurationTracker::CleanupForTesting() {
-  DCHECK(g_desktop_session_duration_tracker_instance);
+  CHECK(g_desktop_session_duration_tracker_instance, base::NotFatalUntil::M161);
   delete g_desktop_session_duration_tracker_instance;
   g_desktop_session_duration_tracker_instance = nullptr;
 }
@@ -175,7 +179,7 @@ void DesktopSessionDurationTracker::OnTimerFired() {
 }
 
 void DesktopSessionDurationTracker::StartSession() {
-  DCHECK(!in_session_);
+  CHECK(!in_session_, base::NotFatalUntil::M161);
   in_session_ = true;
   is_first_session_ = false;
   session_start_ = base::TimeTicks::Now();
@@ -201,7 +205,7 @@ void DesktopSessionDurationTracker::StartSession() {
 
 void DesktopSessionDurationTracker::EndSession(
     base::TimeDelta time_to_discount) {
-  DCHECK(in_session_);
+  CHECK(in_session_, base::NotFatalUntil::M161);
   in_session_ = false;
 
   // Cancel the inactivity timer, to prevent the session from ending a second
@@ -239,16 +243,12 @@ void DesktopSessionDurationTracker::EndSession(
         interactive_delta);
   }
 
-  // Records true each time Session.TotalDuration is supposed to be recorded
-  // in a PUMA histogram. Allowing for the count to be collected.
-  metrics::private_metrics::PumaHistogramBoolean(
-      metrics::private_metrics::PumaType::kRc,
-      "PUMA.RegionalCapabilities.Session.TotalDuration.Recorded", true);
-
   UMA_HISTOGRAM_CUSTOM_TIMES("Session.TotalDurationMax1Day", delta,
                              base::Milliseconds(1), base::Hours(24), 50);
 
+#if !BUILDFLAG(IS_CHROMEOS)
   g_browser_process->activity_reporter()->ReportActive();
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 }
 
 void DesktopSessionDurationTracker::InitInactivityTimeout() {

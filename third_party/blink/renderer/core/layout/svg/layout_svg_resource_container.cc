@@ -181,8 +181,10 @@ void LayoutSVGResourceContainer::InvalidateClientsIfActiveResource() {
   // in tree order), notify any clients that they need to reevaluate the
   // resource's contents.
   LocalSVGResource* resource = ResourceForContainer(*this);
-  if (!resource || resource->Target() != GetElement())
+  if (!resource ||
+      resource->Target(SVGResource::Usage::kElement) != GetElement()) {
     return;
+  }
   GetDocument().ScheduleSVGResourceInvalidation(*resource);
 }
 
@@ -214,7 +216,7 @@ bool LayoutSVGResourceContainer::FindCycle() const {
 
 static HeapVector<Member<SVGResource>> CollectResources(
     const LayoutObject& layout_object) {
-  const ComputedStyle& style = layout_object.StyleRef();
+  const ComputedStyle& style = layout_object.Style();
   HeapVector<Member<SVGResource>> resources;
   if (auto* reference_clip =
           DynamicTo<ReferenceClipPathOperation>(style.ClipPath())) {
@@ -256,8 +258,8 @@ bool LayoutSVGResourceContainer::FindCycleInResources(
       }
     }
   }
-  for (const FillLayer* layer = &layout_object.StyleRef().MaskLayers(); layer;
-       layer = layer->Next()) {
+  for (const FillLayer* layer = &layout_object.Style().MaskLayers(); layer;
+       layer = layer->NextForUsedValue()) {
     const auto* mask_source =
         DynamicTo<StyleMaskSourceImage>(layer->GetImage());
     if (!mask_source) {
@@ -311,8 +313,10 @@ void LayoutSVGResourceContainer::MarkAllClientsForInvalidation(
   if (is_invalidating_)
     return;
   LocalSVGResource* resource = ResourceForContainer(*this);
-  if (!resource || resource->Target() != GetElement())
+  if (!resource ||
+      resource->Target(SVGResource::Usage::kElement) != GetElement()) {
     return;
+  }
   // Remove modes for which invalidations have already been
   // performed. If no modes remain we are done.
   invalidation_mask &= ~completed_invalidations_mask_;

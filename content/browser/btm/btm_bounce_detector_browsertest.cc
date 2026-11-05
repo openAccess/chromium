@@ -68,7 +68,6 @@
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/content_mock_cert_verifier.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/hit_test_region_observer.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/render_frame_host_test_support.h"
@@ -455,7 +454,6 @@ class BtmBounceDetectorBrowserTest : public ContentBrowserTest {
     }
   }
 
-  auto* fenced_frame_test_helper() { return &fenced_frame_test_helper_; }
   auto* prerender_test_helper() { return &prerender_test_helper_; }
 
   RenderFrameHost* GetIFrame() {
@@ -515,7 +513,6 @@ class BtmBounceDetectorBrowserTest : public ContentBrowserTest {
 
  private:
   test::PrerenderTestHelper prerender_test_helper_;
-  test::FencedFrameTestHelper fenced_frame_test_helper_;
   base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<ContentBrowserTestTpcBlockingBrowserClient> browser_client_;
 };
@@ -852,68 +849,6 @@ IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
            "a.test/page_with_blank_iframe.html (Read) -> d.test/title1.html")));
 }
 
-IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
-                       DiscardFencedFrameCookieClientAccess) {
-  std::vector<std::string> redirects;
-  StartAppendingRedirectsTo(&redirects);
-
-  const GURL primary_main_frame_url =
-      embedded_test_server()->GetURL("a.test", "/title1.html");
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), primary_main_frame_url));
-
-  const GURL fenced_frame_url =
-      embedded_test_server()->GetURL("a.test", "/fenced_frames/title1.html");
-  RenderFrameHostWrapper fenced_frame(
-      fenced_frame_test_helper()->CreateFencedFrame(
-          GetActiveWebContents()->GetPrimaryMainFrame(), fenced_frame_url));
-  EXPECT_FALSE(fenced_frame.IsDestroyed());
-
-  AccessCookieViaJSIn(GetActiveWebContents(), fenced_frame.get());
-
-  const GURL primary_main_frame_final_url =
-      embedded_test_server()->GetURL("d.test", "/title1.html");
-  // Performs a Client-redirect to `primary_main_frame_final_url`.
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      GetActiveWebContents(), primary_main_frame_final_url));
-
-  CloseTab(GetActiveWebContents());
-  EXPECT_THAT(
-      redirects,
-      ElementsAre(
-          ("[1/1] blank -> a.test/title1.html (None) -> d.test/title1.html")));
-}
-
-IN_PROC_BROWSER_TEST_F(BtmBounceDetectorBrowserTest,
-                       DiscardFencedFrameCookieServerAccess) {
-  std::vector<std::string> redirects;
-  StartAppendingRedirectsTo(&redirects);
-
-  const GURL primary_main_frame_url =
-      embedded_test_server()->GetURL("a.test", "/title1.html");
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), primary_main_frame_url));
-
-  const GURL fenced_frame_url = embedded_test_server()->GetURL(
-      "a.test", "/fenced_frames/set_cookie_header.html");
-  URLCookieAccessObserver observer(GetActiveWebContents(), fenced_frame_url,
-                                   CookieOperation::kChange);
-  RenderFrameHostWrapper fenced_frame(
-      fenced_frame_test_helper()->CreateFencedFrame(
-          GetActiveWebContents()->GetPrimaryMainFrame(), fenced_frame_url));
-  EXPECT_FALSE(fenced_frame.IsDestroyed());
-  observer.Wait();
-
-  const GURL primary_main_frame_final_url =
-      embedded_test_server()->GetURL("d.test", "/title1.html");
-  // Performs a Client-redirect to `primary_main_frame_final_url`.
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      GetActiveWebContents(), primary_main_frame_final_url));
-
-  CloseTab(GetActiveWebContents());
-  EXPECT_THAT(
-      redirects,
-      ElementsAre(
-          "[1/1] blank -> a.test/title1.html (None) -> d.test/title1.html"));
-}
 
 // TODO(crbug.com/40917101): Flaky on Mac.
 #if BUILDFLAG(IS_MAC)
@@ -1709,37 +1644,6 @@ IN_PROC_BROWSER_TEST_P(BtmSiteDataAccessDetectorTest,
                            "(Write) -> d.test/title1.html")));
 }
 
-IN_PROC_BROWSER_TEST_P(BtmSiteDataAccessDetectorTest,
-                       DiscardFencedFrameCookieClientAccess) {
-  std::vector<std::string> redirects;
-  StartAppendingRedirectsTo(&redirects);
-
-  const GURL primary_main_frame_url =
-      embedded_https_test_server().GetURL("a.test", "/title1.html");
-  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), primary_main_frame_url));
-
-  const GURL fenced_frame_url = embedded_https_test_server().GetURL(
-      "a.test", "/fenced_frames/title0.html");
-  std::unique_ptr<RenderFrameHostWrapper> fenced_frame =
-      std::make_unique<RenderFrameHostWrapper>(
-          fenced_frame_test_helper()->CreateFencedFrame(
-              GetActiveWebContents()->GetPrimaryMainFrame(), fenced_frame_url));
-  EXPECT_NE(fenced_frame, nullptr);
-
-  EXPECT_TRUE(AccessStorage(fenced_frame->get(), GetParam()));
-
-  const GURL primary_main_frame_final_url =
-      embedded_https_test_server().GetURL("d.test", "/title1.html");
-  // Performs a Client-redirect to `primary_main_frame_final_url`.
-  ASSERT_TRUE(NavigateToURLFromRendererWithoutUserGesture(
-      GetActiveWebContents(), primary_main_frame_final_url));
-
-  CloseTab(GetActiveWebContents());
-  EXPECT_THAT(
-      redirects,
-      ElementsAre(
-          ("[1/1] blank -> a.test/title1.html (None) -> d.test/title1.html")));
-}
 
 IN_PROC_BROWSER_TEST_P(BtmSiteDataAccessDetectorTest,
                        DiscardPrerenderedPageCookieClientAccess) {

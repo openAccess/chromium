@@ -5,6 +5,7 @@
 #include "content/browser/process_lock.h"
 
 #include "base/feature_list.h"
+#include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "content/browser/agent_cluster_key.h"
 #include "content/common/features.h"
@@ -43,13 +44,14 @@ ProcessLock ProcessLock::CreateAllowAnySite(
       /*does_site_request_dedicated_process_for_coop=*/false,
       /*is_jit_disabled=*/false, /*are_v8_optimizations_disabled=*/false,
       /*is_fenced=*/false, browser_context_id,
-      EmbedderIsolationInfo::CreateNone()));
+      EmbedderIsolationInfo::CreateNone(), SiteShard::kDefault));
 }
 
 // static
 ProcessLock ProcessLock::Create(const IsolationContext& isolation_context,
                                 const UrlInfo& url_info) {
-  DCHECK(url_info.storage_partition_config.has_value());
+  CHECK(url_info.storage_partition_config.has_value(),
+        base::NotFatalUntil::M160);
   CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI));
   return ProcessLock(SiteInfo::Create(isolation_context, url_info));
 }
@@ -68,6 +70,24 @@ ProcessLock::ProcessLock(const ProcessLock&) = default;
 ProcessLock& ProcessLock::operator=(const ProcessLock&) = default;
 
 ProcessLock::~ProcessLock() = default;
+
+void ProcessLock::SetIsUsed(const std::optional<SiteShard>& shard) {
+  if (shard.has_value()) {
+    if (AllowsAnySite() && is_unused_) {
+      CHECK_EQ(site_info_->shard(), SiteShard::kDefault)
+          << "Cannot change the shard of a process: " << *this;
+      site_info_ =
+          site_info_->WithShard(base::PassKey<ProcessLock>(), shard.value());
+    } else {
+      // The process selection logic (see
+      // RenderProcessHostImpl::IsSuitableHost()) must never put content from
+      // different shards in the same process.
+      CHECK_EQ(this->shard(), shard.value())
+          << "Attempting to change the shard of a process with lock " << *this;
+    }
+  }
+  is_unused_ = false;
+}
 
 bool ProcessLock::AllowsAnySite() const {
   if (!site_info_.has_value()) {
@@ -103,7 +123,7 @@ GURL ProcessLock::GetProcessLockURL() const {
 }
 
 StoragePartitionConfig ProcessLock::GetStoragePartitionConfig() const {
-  DCHECK(site_info_.has_value());
+  CHECK(site_info_.has_value(), base::NotFatalUntil::M160);
   return site_info_->GetStoragePartitionConfig();
 }
 
@@ -136,7 +156,7 @@ bool ProcessLock::MatchesScheme(const std::string& scheme) const {
 }
 
 bool ProcessLock::HasOpaqueOrigin() const {
-  DCHECK(IsLockedToSite());
+  CHECK(IsLockedToSite(), base::NotFatalUntil::M160);
   if (agent_cluster_key().IsOriginKeyed()) {
     return agent_cluster_key().GetOrigin().opaque();
   }
@@ -207,6 +227,9 @@ bool ProcessLock::operator==(const ProcessLock& rhs) const {
   // At this point, both `this` and `rhs` are known to have valid SiteInfos.
   // Here we proceed with a comparison almost identical to
   // SiteInfo::MakeSecurityPrincipalKey(), except that `site_url_` is excluded.
+  // Note that `is_unused_` is intentionally excluded so that a used process's
+  // lock compares equal to expected locks freshly constructed from SiteInfo or
+  // UrlInfo.
   return site_info_->ProcessLockCompareTo(rhs.site_info_.value()) == 0;
 }
 
@@ -221,6 +244,7 @@ bool ProcessLock::operator<(const ProcessLock& rhs) const {
   // At this point, both `this` and `rhs` are known to have valid SiteInfos.
   // Here we proceed with a comparison almost identical to
   // SiteInfo::MakeSecurityPrincipalKey(), except that `site_url_` is excluded.
+  // `is_unused_` is also intentionally excluded (see operator==).
   return site_info_->ProcessLockCompareTo(rhs.site_info_.value()) < 0;
 }
 
@@ -262,6 +286,10 @@ std::string ProcessLock::ToString() const {
       if (GetStoragePartitionConfig().in_memory())
         ret += ", in-memory";
     }
+
+    if (shard() != SiteShard::kDefault) {
+      ret += base::StrCat({" shard='", SiteShardToString(shard()), "'"});
+    }
   } else {
     ret += " no-site-info";
   }
@@ -273,5 +301,14 @@ std::string ProcessLock::ToString() const {
 std::ostream& operator<<(std::ostream& out, const ProcessLock& process_lock) {
   return out << process_lock.ToString();
 }
+
+namespace rust::process_lock {
+
+void SetIsUsedForShard(ProcessLock& lock,
+                       const std::optional<SiteShard>& shard) {
+  lock.SetIsUsed(shard);
+}
+
+}  // namespace rust::process_lock
 
 }  // namespace content

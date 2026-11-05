@@ -15,7 +15,7 @@
 #include "partition_alloc/partition_alloc_base/compiler_specific.h"
 #include "partition_alloc/partition_alloc_base/component_export.h"
 #include "partition_alloc/partition_alloc_check.h"
-#include "partition_alloc/partition_alloc_constants.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/tagging.h"
 #include "partition_alloc/thread_isolation/alignment.h"
 
@@ -58,11 +58,13 @@ class ReservationOffsetTableAddressInfo;
 //    PartitionAlloc. This isn't a problem in 64-bit mode, where allocation
 //    granularity is kSuperPageSize.
 class PA_COMPONENT_EXPORT(PARTITION_ALLOC) ReservationOffsetTable {
+ public:
   static constexpr uint16_t kOffsetTagNotAllocated =
       std::numeric_limits<uint16_t>::max();
   static constexpr uint16_t kOffsetTagNormalBuckets =
       std::numeric_limits<uint16_t>::max() - 1;
 
+ private:
 #if PA_BUILDFLAG(HAS_64_BIT_POINTERS)
   // There is one reservation offset table per Pool in 64-bit mode.
   static constexpr size_t kRegularOffsetTableLength =

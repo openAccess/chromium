@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <xf86drmMode.h>
 
+#include <array>
 #include <memory>
 #include <utility>
 
@@ -47,11 +48,6 @@ using testing::_;
 using testing::IsEmpty;
 using testing::Return;
 using testing::SizeIs;
-
-// TODO(crbug.com/40945652): These tests should not use a single-point
-// curve as the non-empty value (it is arguably not a valid input).
-const display::GammaCurve kNonemptyGammaCurve({{0, 0, 0}});
-const display::GammaCurve kEmptyGammaCurve;
 
 const gfx::Size kDefaultBufferSize(2, 2);
 // Create a basic mode for a 6x4 screen.
@@ -1118,7 +1114,7 @@ TEST_P(HardwareDisplayPlaneManagerTest,
 
   {
     constexpr float kEpsilon = 0.001f;
-    float rgb[3] = {0.4f, 0.5f, 0.6f};
+    std::array<float, 3> rgb = {0.4f, 0.5f, 0.6f};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], 0.1f * 0.4f, kEpsilon);
     EXPECT_NEAR(rgb[1], 0.2f * 0.5f, kEpsilon);
@@ -1154,7 +1150,7 @@ TEST_P(HardwareDisplayPlaneManagerTest, CtmColorManagement_GammaAdjustment) {
 
   {
     constexpr float kEpsilon = 0.001f;
-    float rgb[3] = {0.6f, 0.5f, 0.4f};
+    std::array<float, 3> rgb = {0.6f, 0.5f, 0.4f};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], 0.9f * 0.6f, kEpsilon);
     EXPECT_NEAR(rgb[1], 0.8f * 0.5f, kEpsilon);
@@ -1207,7 +1203,7 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest,
   // srgb-linear using https://colorjs.io/apps/convert/.
   {
     constexpr float kEpsilon = 0.001f;
-    float rgb[3] = {0.1937649f, 0.51051424f, 0.77947779f};
+    std::array<float, 3> rgb = {0.1937649f, 0.51051424f, 0.77947779f};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], 0.25f, kEpsilon);
     EXPECT_NEAR(rgb[1], 0.5f, kEpsilon);
@@ -1252,8 +1248,9 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
   // Constants for a test color value in P3 and sRGB. This is the conversion of
   // color(--display-p3-linear 0.25 0.5 0.75) to srgb-linear using
   // https://colorjs.io/apps/convert/.
-  const float kColorP3[3] = {0.25, 0.5, 0.75};
-  const float kColorSRGB[3] = {0.1937649f, 0.51051424f, 0.77947779f};
+  constexpr std::array<float, 3> kColorP3 = {0.25f, 0.5f, 0.75f};
+  constexpr std::array<float, 3> kColorSRGB = {0.1937649f, 0.51051424f,
+                                               0.77947779f};
 
   // Commit a plane that is P3. Color conversion should be a no-op.
   {
@@ -1265,7 +1262,7 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
     EXPECT_EQ(1, fake_drm_->get_commit_count());
     EXPECT_NE(0u, GetCrtcPropertyValue(crtc_id, "CTM"));
 
-    float rgb[3] = {kColorP3[0], kColorP3[1], kColorP3[2]};
+    std::array<float, 3> rgb = kColorP3;
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], kColorP3[0], kEpsilon);
     EXPECT_NEAR(rgb[1], kColorP3[1], kEpsilon);
@@ -1283,7 +1280,7 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
 
     // This is the conversion of color(--display-p3-linear 0.25 0.5 0.75) to
     // srgb-linear using https://colorjs.io/apps/convert/.
-    float rgb[3] = {kColorSRGB[0], kColorSRGB[1], kColorSRGB[2]};
+    std::array<float, 3> rgb = kColorSRGB;
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], kColorP3[0], kEpsilon);
     EXPECT_NEAR(rgb[1], kColorP3[1], kEpsilon);
@@ -1300,7 +1297,8 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
     fake_drm_->plane_manager()->SetColorTemperatureAdjustment(
         fake_drm_->crtc_property(0).id, cta);
 
-    float rgb[3] = {2.f * kColorSRGB[0], kColorSRGB[1], kColorSRGB[2]};
+    std::array<float, 3> rgb = {2.f * kColorSRGB[0], kColorSRGB[1],
+                                kColorSRGB[2]};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], kColorP3[0], kEpsilon);
     EXPECT_NEAR(rgb[1], kColorP3[1], kEpsilon);
@@ -1312,7 +1310,8 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
     fake_drm_->plane_manager()->SetOutputColorSpace(crtc_id,
                                                     SkNamedPrimariesExt::kSRGB);
 
-    float rgb[3] = {2.f * kColorSRGB[0], kColorSRGB[1], kColorSRGB[2]};
+    std::array<float, 3> rgb = {2.f * kColorSRGB[0], kColorSRGB[1],
+                                kColorSRGB[2]};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], kColorP3[0], kEpsilon);
     EXPECT_NEAR(rgb[1], kColorP3[1], kEpsilon);
@@ -1331,7 +1330,7 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
     PerformPageFlip(/*crtc_idx=*/0, &state, planes);
     EXPECT_NE(0u, GetCrtcPropertyValue(crtc_id, "CTM"));
 
-    float rgb[3] = {1.0f, 0.75f, 0.25f};
+    std::array<float, 3> rgb = {1.0f, 0.75f, 0.25f};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], 0.5f, kEpsilon);
     EXPECT_NEAR(rgb[1], 0.75f, kEpsilon);
@@ -1345,7 +1344,7 @@ TEST_P(HardwareDisplayPlaneManagerAtomicTest, CtmColorManagement_Combined) {
         display::GammaCurve::MakeScale(0.5, 0.25 / 0.75, 0.1 / 0.25);
     fake_drm_->plane_manager()->SetGammaAdjustment(crtc_id, gamma_adjustment);
 
-    float rgb[3] = {1.0f, 0.75f, 0.25f};
+    std::array<float, 3> rgb = {1.0f, 0.75f, 0.25f};
     ApplyCrtcColorSpaceConversion(fake_drm_.get(), crtc_id, rgb);
     EXPECT_NEAR(rgb[0], 0.25f, kEpsilon);
     EXPECT_NEAR(rgb[1], 0.25f, kEpsilon);
@@ -2247,8 +2246,9 @@ TEST_F(HardwareDisplayPlaneManagerSeamlessModeTest,
   // Invalid crtc will result in a DCHECK.
   int32_t wrong_crtc_id = 9999;
   EXPECT_NE(wrong_crtc_id, crtc_id_);
-  EXPECT_DCHECK_DEATH(
-      plane_manager_->TestSeamlessMode(wrong_crtc_id, arbitrary_mode));
+  EXPECT_CHECK_DEATH(
+      plane_manager_->TestSeamlessMode(wrong_crtc_id, arbitrary_mode),
+      base::NotFatalUntil::M163);
 }
 
 TEST_P(HardwareDisplayPlaneManagerAtomicTest, CrtcOffsetPageFlip) {

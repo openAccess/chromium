@@ -161,7 +161,7 @@ void ValidationMessageOverlayDelegate::CreatePage(const FrameOverlay& overlay) {
       nullptr, nullptr, mojo::NullRemote());
   frame->SetView(MakeGarbageCollected<LocalFrameView>(*frame, view_size));
   frame->Init(/*opener=*/nullptr, DocumentToken(),
-              /*initiator_state_token=*/base::UnguessableToken::Create(),
+              /*initiator_state_token=*/InitiatorStateToken(),
               /*policy_container=*/nullptr, StorageKey(),
               /*document_ukm_source_id=*/ukm::kInvalidSourceId,
               /*creator_base_url=*/NullUrl());
@@ -177,7 +177,7 @@ void ValidationMessageOverlayDelegate::CreatePage(const FrameOverlay& overlay) {
   LayoutObject* anchor_layout = anchor_->GetLayoutObject();
   page_->GetSettings().SetPreferredColorScheme(
       !in_forced_colors_mode && anchor_layout &&
-              anchor_layout->StyleRef().UsedColorScheme() ==
+              anchor_layout->Style().UsedColorScheme() ==
                   mojom::blink::ColorScheme::kDark
           ? mojom::blink::PreferredColorScheme::kDark
           : mojom::blink::PreferredColorScheme::kLight);

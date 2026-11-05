@@ -15,9 +15,11 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/gtest_util.h"
 #include "chrome/browser/task_manager/sampling/shared_sampler.h"
-#include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/testing_browser_process_death_test_mixin.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/test/browser_task_environment.h"
 #include "gpu/ipc/common/memory_stats.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -38,7 +40,9 @@ class FakeTask : public Task {
 
   Type GetType() const override { return type_; }
 
-  int GetChildProcessUniqueID() const override { return 0; }
+  content::ChildProcessId GetChildProcessUniqueID() const override {
+    return content::ChildProcessId(1);
+  }
 
   base::WeakPtr<Task> GetParentTask() const override { return nullptr; }
 
@@ -109,8 +113,12 @@ TEST_F(TaskGroupTest, RefreshZeroTasksDeathTest) {
   // Remove the fake Task from the group.
   task_group_->RemoveTask(fake_task_.get());
 
-  EXPECT_DCHECK_DEATH(
-      task_group_->Refresh(gpu::VideoMemoryUsageStats(), base::TimeDelta(), 0));
+  // TODO(crbug.com/555029697): TaskGroup::Refresh() validates `!empty()` with
+  // CHECK(..., base::NotFatalUntil::M162), which is not fatal in official
+  // non-DCHECK builds, so use EXPECT_DCHECK_DEATH_WITH until M162.
+  EXPECT_DCHECK_DEATH_WITH(
+      task_group_->Refresh(gpu::VideoMemoryUsageStats(), base::TimeDelta(), 0),
+      "Check failed");
 }
 
 // Verify that Refresh() for a field which can be refreshed synchronously

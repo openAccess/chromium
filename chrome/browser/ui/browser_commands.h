@@ -23,7 +23,7 @@
 #include "content/public/common/page_zoom.h"
 #include "printing/buildflags/buildflags.h"
 #include "ui/actions/actions.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 class BrowserWindowInterface;
 class CommandObserver;
@@ -40,6 +40,14 @@ namespace bookmarks {
 class BookmarkModel;
 enum class BookmarkBarVisibilityState;
 }  // namespace bookmarks
+
+namespace lens {
+enum class LensOverlayInvocationSource;
+}  // namespace lens
+
+namespace omnibox {
+enum ChromeAimEntryPoint : int;
+}  // namespace omnibox
 
 namespace split_tabs {
 enum class SplitTabCreatedSource;
@@ -62,12 +70,12 @@ bool ExecuteCommandWithContext(
 bool ExecuteCommandWithDisposition(
     BrowserWindowInterface* browser,
     int command,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     base::TimeTicks time_stamp = base::TimeTicks::Now());
 bool ExecuteCommandWithDispositionAndContext(
     BrowserWindowInterface* browser,
     int command,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     actions::ActionInvocationContext context,
     base::TimeTicks time_stamp = base::TimeTicks::Now());
 void UpdateCommandEnabled(BrowserWindowInterface* browser, int command, bool enabled);
@@ -104,22 +112,26 @@ void OpenURLOffTheRecord(Profile* profile, const GURL& url);
 bool CanGoBack(const BrowserWindowInterface* browser);
 bool CanGoBack(content::WebContents* web_contents);
 bool ShouldEnableBackButton(const BrowserWindowInterface* browser);
-void GoBack(BrowserWindowInterface* browser, WindowOpenDisposition disposition);
+void GoBack(BrowserWindowInterface* browser,
+            ui::mojom::WindowOpenDisposition disposition);
 void GoBack(content::WebContents* web_contents);
 bool CanGoForward(const BrowserWindowInterface* browser);
 bool CanGoForward(content::WebContents* web_contents);
 bool ShouldEnableForwardButton(const BrowserWindowInterface* browser);
 void GoForward(BrowserWindowInterface* browser,
-               WindowOpenDisposition disposition);
+               ui::mojom::WindowOpenDisposition disposition);
 void GoForward(content::WebContents* web_contents);
-void NavigateToIndexWithDisposition(BrowserWindowInterface* browser,
-                                    int index,
-                                    WindowOpenDisposition disposition);
-void Reload(BrowserWindowInterface* browser, WindowOpenDisposition disposition);
+void NavigateToIndexWithDisposition(
+    BrowserWindowInterface* browser,
+    int index,
+    ui::mojom::WindowOpenDisposition disposition);
+void Reload(BrowserWindowInterface* browser,
+            ui::mojom::WindowOpenDisposition disposition);
 void ReloadBypassingCache(BrowserWindowInterface* browser,
-                          WindowOpenDisposition disposition);
+                          ui::mojom::WindowOpenDisposition disposition);
 bool CanReload(const BrowserWindowInterface* browser);
-void Home(BrowserWindowInterface* browser, WindowOpenDisposition disposition);
+void Home(BrowserWindowInterface* browser,
+          ui::mojom::WindowOpenDisposition disposition);
 base::WeakPtr<content::NavigationHandle> OpenCurrentURL(
     BrowserWindowInterface* browser);
 void Stop(BrowserWindowInterface* browser);
@@ -228,9 +240,10 @@ bool GroupAllUngroupedTabs(BrowserWindowInterface* browser);
 bool CanGroupAllUngroupedTabs(BrowserWindowInterface* browser);
 // Creates a new tab at the end of the group which last had the active tab.
 void AddNewTabToRecentGroup(BrowserWindowInterface* browser);
-// Unfocuses the currently focused tab group, if any.
-void UnfocusTabGroup(BrowserWindowInterface* browser,
-                     TabGroupFocusExitReason exit_reason);
+// Exits tab group focus mode in `browser` if a group is currently focused,
+// recording `exit_reason` in metrics.
+void ExitFocusMode(BrowserWindowInterface* browser,
+                   TabGroupFocusExitReason exit_reason);
 
 void MuteSiteForKeyboardFocusedTab(BrowserWindowInterface* browser);
 bool HasKeyboardFocusedTab(const BrowserWindowInterface* browser);
@@ -274,6 +287,7 @@ bool CanGenerateQrCode(BrowserWindowInterface* browser);
 void GenerateQRCode(BrowserWindowInterface* browser);
 void SharingHub(BrowserWindowInterface* browser);
 void ScreenshotCapture(BrowserWindowInterface* browser);
+void ShowTtcMenuItem(BrowserWindowInterface* browser);
 void SavePage(BrowserWindowInterface* browser);
 bool CanSavePage(const BrowserWindowInterface* browser);
 void Print(BrowserWindowInterface* browser);
@@ -341,7 +355,10 @@ void ToggleShowAiModeOmniboxButton(BrowserWindowInterface* browser);
 void ToggleShowSearchTools(BrowserWindowInterface* browser);
 void ShowAppMenu(BrowserWindowInterface* browser);
 void ShowAvatarMenu(BrowserWindowInterface* browser);
-void OpenUpdateChromeDialog(BrowserWindowInterface* browser);
+void MaybeUpdateChrome(BrowserWindowInterface* browser);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+void OpenScheduledRestartDialog(BrowserWindowInterface* browser);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 bool CanRequestTabletSite(content::WebContents* current_tab);
 bool IsRequestingTabletSite(BrowserWindowInterface* browser);
 void ToggleRequestTabletSite(BrowserWindowInterface* browser);
@@ -382,6 +399,10 @@ void ProcessInterceptedChromeURLNavigationInIncognito(BrowserWindowInterface* br
                                                       const GURL& url);
 void ExecLensOverlay(BrowserWindowInterface* browser);
 void ExecLensRegionSearch(BrowserWindowInterface* browser);
+void ExecAskGoogleAboutThisPage(
+    BrowserWindowInterface* browser,
+    lens::LensOverlayInvocationSource invocation_source,
+    omnibox::ChromeAimEntryPoint entry_point);
 
 }  // namespace chrome
 

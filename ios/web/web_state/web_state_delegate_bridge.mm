@@ -130,6 +130,20 @@ void WebStateDelegateBridge::HandlePermissionsDecisionRequest(
   }
 }
 
+void WebStateDelegateBridge::RequestGeolocationPermission(
+    WebState* source,
+    const GURL& origin,
+    WebStatePermissionDecisionHandler handler) {
+  if ([delegate_ respondsToSelector:
+                     @selector(webState:requestGeolocation:decisionHandler:)]) {
+    [delegate_ webState:source
+        requestGeolocation:origin
+           decisionHandler:handler];
+  } else {
+    handler(PermissionDecisionShowDefaultPrompt);
+  }
+}
+
 void WebStateDelegateBridge::OnAuthRequired(
     WebState* source,
     NSURLProtectionSpace* protection_space,
@@ -167,6 +181,33 @@ void WebStateDelegateBridge::OnAuthRequired(
                                                        std::move(callback))];
   } else {
     std::move(callback).Run(nil);
+  }
+}
+
+void WebStateDelegateBridge::OnProxyAuthChallenge(
+    WebState* source,
+    NSURLProtectionSpace* protection_space,
+    NSURLCredential* proposed_credential,
+    NSURLResponse* failure_response,
+    ProxyAuthCallback callback) {
+  if ([delegate_
+          respondsToSelector:
+              @selector(
+                  webState:didRequestProxyAuthForProtectionSpace:
+                  proposedCredential:failureResponse:completionHandler:)]) {
+    [delegate_ webState:source
+        didRequestProxyAuthForProtectionSpace:protection_space
+                           proposedCredential:proposed_credential
+                              failureResponse:failure_response
+                            completionHandler:base::CallbackToBlock(
+                                                  std::move(callback))];
+  } else {
+    // Fall back to the base implementation, which forwards the challenge to
+    // `OnAuthRequired` so that delegates that do not implement the proxy
+    // specific method still get a chance to handle the challenge.
+    WebStateDelegate::OnProxyAuthChallenge(
+        source, protection_space, proposed_credential, failure_response,
+        std::move(callback));
   }
 }
 

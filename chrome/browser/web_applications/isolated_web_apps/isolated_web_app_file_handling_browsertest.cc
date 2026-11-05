@@ -22,7 +22,6 @@
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
@@ -34,6 +33,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_launcher.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/file_manager/file_manager_test_util.h"
@@ -65,9 +65,10 @@ class IsolatedWebAppFileHandlingBrowserTest
   content::WebContents* LaunchWithFiles(
       const webapps::AppId& app_id,
       const std::vector<base::FilePath>& files) {
-    apps::AppLaunchParams params(
-        app_id, apps::LaunchContainer::kLaunchContainerWindow,
-        WindowOpenDisposition::NEW_WINDOW, apps::LaunchSource::kFromTest);
+    apps::AppLaunchParams params(app_id,
+                                 apps::LaunchContainer::kLaunchContainerWindow,
+                                 ui::mojom::WindowOpenDisposition::kNewWindow,
+                                 apps::LaunchSource::kFromTest);
 
     auto launch_infos =
         file_handler_manager().GetMatchingFileHandlerUrls(app_id, files);
@@ -108,6 +109,8 @@ class IsolatedWebAppFileHandlingBrowserTest
     EXPECT_EQ(expected_file_path.BaseName().AsUTF8Unsafe(),
               EvalJs(web_contents, "window.launchParams.files[0].name"));
     EXPECT_EQ("granted", EvalJs(web_contents, R"(
+        window.launchParams.files[0].queryPermission({mode: 'read'}))"));
+    EXPECT_EQ("prompt", EvalJs(web_contents, R"(
         window.launchParams.files[0].queryPermission({mode: 'readwrite'}))"));
   }
 };

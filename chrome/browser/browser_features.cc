@@ -7,6 +7,7 @@
 #include "base/feature_list.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
+#include "extensions/buildflags/buildflags.h"
 
 namespace features {
 
@@ -125,36 +126,9 @@ BASE_FEATURE(kInstallPlatformExperienceHelperWin,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
-// Enables app-menu item for reporting an unsafe site to Google.
-BASE_FEATURE(kReportUnsafeSite, base::FEATURE_ENABLED_BY_DEFAULT);
-
 // When this feature is enabled, the network service will restart unsandboxed if
 // a previous attempt to launch it sandboxed failed.
 BASE_FEATURE(kRestartNetworkServiceUnsandboxedForFailedLaunch,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Gates sandboxed iframe navigation toward external protocol behind any of:
-// - allow-top-navigation
-// - allow-top-navigation-to-custom-protocols
-// - allow-top-navigation-with-user-gesture (+ user gesture)
-// - allow-popups
-//
-// Motivation:
-// Developers are surprised that a sandboxed iframe can navigate and/or
-// redirect the user toward an external application.
-// General iframe navigation in sandboxed iframe are not blocked normally,
-// because they stay within the iframe. However they can be seen as a popup or
-// a top-level navigation when it leads to opening an external application. In
-// this case, it makes sense to extend the scope of sandbox flags, to block
-// malvertising.
-//
-// Implementation bug: https://crbug.com/40057420
-// I2S: https://groups.google.com/a/chromium.org/g/blink-dev/c/-t-f7I6VvOI
-//
-// Enabled in M103. Flag to be removed in M106
-BASE_FEATURE(kSandboxExternalProtocolBlocked, base::FEATURE_ENABLED_BY_DEFAULT);
-// Enabled in M100. Flag to be removed in M106
-BASE_FEATURE(kSandboxExternalProtocolBlockedWarning,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_LINUX)
@@ -164,15 +138,6 @@ BASE_FEATURE(kSecretPortalKeyProviderUseForEncryption,
              base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_LINUX)
 
-// Enables migration of the network context data from `unsandboxed_data_path` to
-// `data_path`. See the explanation in network_context.mojom.
-BASE_FEATURE(kTriggerNetworkDataMigration,
-#if BUILDFLAG(IS_WIN)
-             base::FEATURE_ENABLED_BY_DEFAULT
-#else
-             base::FEATURE_DISABLED_BY_DEFAULT
-#endif
-);
 
 // Enables runtime detection of USB devices which provide a WebUSB landing page
 // descriptor.
@@ -184,6 +149,28 @@ BASE_FEATURE(kWebUsbDeviceDetection, base::FEATURE_ENABLED_BY_DEFAULT);
 // sandbox/win/src/security_level.h. Only available on Windows 10 RS1 (1607,
 // Build 14393) onwards.
 BASE_FEATURE(kBrowserDynamicCodeDisabled, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Eagerly resolves all delay-loaded imports for user32.dll, uxtheme.dll,
+// gdi32.dll, imm32.dll and dwmapi.dll (loading those that aren't loaded yet)
+// during browser process startup, at a point selected by
+// `kEagerlyResolveCoreDllsImportsTiming`. This avoids UI-thread jank from
+// contending on the apphelp.dll critical section (SE_GetProcAddressForCaller)
+// during lazy delay-load resolution.
+BASE_FEATURE(kEagerlyResolveCoreDllsImports, base::FEATURE_DISABLED_BY_DEFAULT);
+
+constexpr base::FeatureParam<EagerlyResolveCoreDllsImportsTiming>::Option
+    kEagerlyResolveCoreDllsImportsTimingOptions[] = {
+        {EagerlyResolveCoreDllsImportsTiming::kPreCreateThreads,
+         "pre-create-threads"},
+        {EagerlyResolveCoreDllsImportsTiming::kBeforeThreadPoolStart,
+         "before-thread-pool-start"},
+};
+BASE_FEATURE_ENUM_PARAM(
+    /*T=*/EagerlyResolveCoreDllsImportsTiming,
+    /*feature_object_name=*/kEagerlyResolveCoreDllsImportsTiming,
+    /*feature=*/&kEagerlyResolveCoreDllsImports,
+    /*default_value=*/EagerlyResolveCoreDllsImportsTiming::kPreCreateThreads,
+    /*options=*/&kEagerlyResolveCoreDllsImportsTimingOptions);
 
 // When enabled, the browser will run with isolation enabled on the next
 // restart.
@@ -218,11 +205,6 @@ const base::FeatureParam<base::TimeDelta>
     kNoPreReadMainDllStartup_StartupDuration{&kNoPreReadMainDllStartup,
                                              "no-preread-dll-startup-time",
                                              base::Minutes(2)};
-
-// When enabled, the browser process will re-launch itself when launched with
-// an elevated linked token. The re-launched browser will use the token from
-// the Windows Shell (explorer.exe), which is typically non-elevated.
-BASE_FEATURE(kAutoDeElevate, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN)
 
 // This flag enables the removal of IWAs surface captures from Chrome Tabs

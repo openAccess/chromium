@@ -10,7 +10,6 @@
 #import "base/feature_list.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/notreached.h"
-#import "base/time/time.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/metrics/metrics_service.h"
@@ -30,7 +29,6 @@
 #import "ios/chrome/browser/first_run/public/features.h"
 #import "ios/chrome/browser/first_run/public/first_run_screen_delegate.h"
 #import "ios/chrome/browser/first_run/public/first_run_util.h"
-#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/screen/ui_bundled/screen_provider.h"
 #import "ios/chrome/browser/screen/ui_bundled/screen_type.h"
 #import "ios/chrome/browser/search_engine_choice/coordinator/search_engine_choice_coordinator.h"
@@ -56,12 +54,14 @@ class FirstRunCoordinatorMetricsHelper final {
 
   // Triggers an UMA metrics log upload.
   void StartOutOfBandUploadIfPossible() {
-    metrics_service_->StartOutOfBandUploadIfPossible(
-        metrics::MetricsService::OutOfBandUploadPasskey());
+    if (metrics_service_) {
+      metrics_service_->StartOutOfBandUploadIfPossible(
+          metrics::MetricsService::OutOfBandUploadPasskey());
+    }
   }
 
  private:
-  raw_ptr<metrics::MetricsService> metrics_service_;
+  raw_ptr<metrics::MetricsService> metrics_service_ = nullptr;
 };
 
 }  // namespace first_run
@@ -77,15 +77,19 @@ class FirstRunCoordinatorMetricsHelper final {
 @implementation FirstRunCoordinator {
   // First Run navigation controller.
   UINavigationController* _navigationController;
+  // Completion block called when the First Run UI finishes dismissing.
+  ProceduralBlock _completion;
 }
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
                                    browser:(Browser*)browser
-                            screenProvider:(ScreenProvider*)screenProvider {
+                            screenProvider:(ScreenProvider*)screenProvider
+                                completion:(ProceduralBlock)completion {
   self = [super initWithBaseViewController:viewController browser:browser];
   if (self) {
     CHECK_EQ(browser->type(), Browser::Type::kRegular);
     _screenProvider = screenProvider;
+    _completion = [completion copy];
     _navigationController =
         [[UINavigationController alloc] initWithNavigationBarClass:nil
                                                       toolbarClass:nil];
@@ -111,23 +115,12 @@ class FirstRunCoordinatorMetricsHelper final {
                                       completion:completion];
 }
 
-- (void)stopWithCompletion:(ProceduralBlock)completionHandler {
-  if (self.childCoordinator) {
-    // If the child coordinator is not nil, then the FRE is stopped because
-    // Chrome is being shutdown.
-    base::UmaHistogramEnumeration(first_run::kFirstRunStageHistogram,
-                                  first_run::kFirstRunInterrupted);
-    [self stopChildCoordinator];
-  }
-  [_navigationController.presentingViewController
-      dismissViewControllerAnimated:YES
-                         completion:completionHandler];
-  _navigationController = nil;
-  [super stop];
+- (void)stopWithCompletion {
+  [self stopWithExecuteCompletion:YES];
 }
 
 - (void)stop {
-  [self stopWithCompletion:nil];
+  [self stopWithExecuteCompletion:NO];
 }
 
 #pragma mark - FirstRunScreenDelegate
@@ -177,8 +170,7 @@ class FirstRunCoordinatorMetricsHelper final {
         return;
       }
 
-      if (IsAppStoreInAppEventsEnabled() && self.profile &&
-          self.profile->GetPrefs() &&
+      if (self.profile && self.profile->GetPrefs() &&
           self.profile->GetPrefs()->GetBoolean(
               prefs::kAppStoreGeminiPromoTriggered)) {
         // If first run started due to app store external action, do not show
@@ -277,6 +269,27 @@ class FirstRunCoordinatorMetricsHelper final {
 }
 
 #pragma mark - Private
+
+// Stops the coordinator and optionally executes `_completion` after dismissal.
+- (void)stopWithExecuteCompletion:(BOOL)executeCompletion {
+  if (self.childCoordinator) {
+    // If the child coordinator is not nil, then the FRE is stopped because
+    // Chrome is being shutdown.
+    base::UmaHistogramEnumeration(first_run::kFirstRunStageHistogram,
+                                  first_run::kFirstRunInterrupted);
+    [self stopChildCoordinator];
+  }
+  ProceduralBlock completion = nil;
+  if (executeCompletion) {
+    completion = _completion;
+  }
+  _completion = nil;
+  [_navigationController.presentingViewController
+      dismissViewControllerAnimated:YES
+                         completion:completion];
+  _navigationController = nil;
+  [super stop];
+}
 
 - (void)stopChildCoordinator {
   // The child's `stop` method must unset the delegate.

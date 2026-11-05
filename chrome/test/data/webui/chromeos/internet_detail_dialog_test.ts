@@ -11,7 +11,6 @@ import type {CrButtonElement} from 'chrome://resources/ash/common/cr_elements/cr
 import type {CrToastElement} from 'chrome://resources/ash/common/cr_elements/cr_toast/cr_toast.js';
 import type {ApnListElement} from 'chrome://resources/ash/common/network/apn_list.js';
 import {MojoInterfaceProviderImpl} from 'chrome://resources/ash/common/network/mojo_interface_provider.js';
-import type {NetworkApnListElement} from 'chrome://resources/ash/common/network/network_apnlist.js';
 import type {NetworkChooseMobileElement} from 'chrome://resources/ash/common/network/network_choose_mobile.js';
 import type {NetworkIpConfigElement} from 'chrome://resources/ash/common/network/network_ip_config.js';
 import type {NetworkNameserversElement} from 'chrome://resources/ash/common/network/network_nameservers.js';
@@ -20,7 +19,6 @@ import type {NetworkProxyElement} from 'chrome://resources/ash/common/network/ne
 import type {NetworkSiminfoElement} from 'chrome://resources/ash/common/network/network_siminfo.js';
 import {OncMojo} from 'chrome://resources/ash/common/network/onc_mojo.js';
 import {assert} from 'chrome://resources/js/assert.js';
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import type {ApnProperties, GlobalPolicy, SIMInfo} from 'chrome://resources/mojo/chromeos/services/network_config/public/mojom/cros_network_config.mojom-webui.js';
 import {ApnAuthenticationType, ApnIpType, ApnSource, ApnState, ApnType, InhibitReason, MAX_NUM_CUSTOM_APNS} from 'chrome://resources/mojo/chromeos/services/network_config/public/mojom/cros_network_config.mojom-webui.js';
 import {ConnectionStateType, DeviceStateType, NetworkType, OncSource, PortalState} from 'chrome://resources/mojo/chromeos/services/network_config/public/mojom/network_types.mojom-webui.js';
@@ -304,266 +302,205 @@ suite('internet-detail-dialog', () => {
         'network-siminfo'));
   });
 
-  // Syntactic sugar for running test twice with different values for the
-  // apnRevamp feature flag.
-  [true, false].forEach(isApnRevampEnabled => {
-    test(
-        `Dialog disabled when inhibited, ApnRevamp enabled is: ${
-            isApnRevampEnabled}`,
-        async () => {
-          loadTimeData.overrideValues({
-            apnRevamp: isApnRevampEnabled,
-          });
+  test('Dialog disabled when inhibited', async () => {
+    // Start uninhibited.
+    await setupCellularNetwork(/*isPrimary=*/ true, /*isInhibited=*/ false);
+    await init();
 
-          // Start uninhibited.
-          await setupCellularNetwork(
-              /*isPrimary=*/ true, /*isInhibited=*/ false);
-          await init();
+    const connectDisconnectButton =
+        getElement<CrButtonElement>('#connectDisconnect');
+    const networkSimInfo = getElement<NetworkSiminfoElement>('network-siminfo');
+    const networkChooseMobile =
+        getElement<NetworkChooseMobileElement>('network-choose-mobile');
+    // TODO(b/318561207): Get <apn-list> element.
+    const networkProxy = getElement<NetworkProxyElement>('network-proxy');
+    const networkIpConfig =
+        getElement<NetworkIpConfigElement>('network-ip-config');
+    const networkNameservers =
+        getElement<NetworkNameserversElement>('network-nameservers');
+    const infoFields = getElement<NetworkPropertyListMojoElement>(
+        'network-property-list-mojo');
 
-          const connectDisconnectButton =
-              getElement<CrButtonElement>('#connectDisconnect');
-          const networkSimInfo =
-              getElement<NetworkSiminfoElement>('network-siminfo');
-          const networkChooseMobile =
-              getElement<NetworkChooseMobileElement>('network-choose-mobile');
-          let apnList: NetworkApnListElement|null = null;
-          if (isApnRevampEnabled) {
-            // TODO(b/318561207): Get <apn-list> element.
-          } else {
-            apnList = getElement<NetworkApnListElement>('network-apnlist');
-          }
-          const networkProxy = getElement<NetworkProxyElement>('network-proxy');
-          const networkIpConfig =
-              getElement<NetworkIpConfigElement>('network-ip-config');
-          const networkNameservers =
-              getElement<NetworkNameserversElement>('network-nameservers');
-          const infoFields = getElement<NetworkPropertyListMojoElement>(
-              'network-property-list-mojo');
+    assertFalse(connectDisconnectButton.disabled);
+    assertFalse(networkSimInfo.disabled);
+    assertFalse(networkChooseMobile.disabled);
+    assertTrue(networkProxy.editable);
+    assertFalse(networkIpConfig.disabled);
+    assertFalse(networkNameservers.disabled);
+    assertFalse(infoFields.disabled);
 
-          assertFalse(connectDisconnectButton.disabled);
-          assertFalse(networkSimInfo.disabled);
-          assertFalse(networkChooseMobile.disabled);
-          if (apnList) {
-            assertFalse(apnList.disabled);
-          }
-          assertTrue(networkProxy.editable);
-          assertFalse(networkIpConfig.disabled);
-          assertFalse(networkNameservers.disabled);
-          assertFalse(infoFields.disabled);
+    // Mock device being inhibited.
+    setDeviceState(
+        NetworkType.kCellular,
+        DeviceStateType.kEnabled,
+        InhibitReason.kInstallingProfile,
+        [{
+          iccid: testIccid,
+          isPrimary: true,
+          slotId: 1,
+          eid: 'eid',
+        }],
+    );
+    await flushAsync();
 
-          // Mock device being inhibited.
-          setDeviceState(
-              NetworkType.kCellular,
-              DeviceStateType.kEnabled,
-              InhibitReason.kInstallingProfile,
-              [{
-                iccid: testIccid,
-                isPrimary: true,
-                slotId: 1,
-                eid: 'eid',
-              }],
-          );
-          await flushAsync();
+    assertTrue(connectDisconnectButton.disabled);
+    assertTrue(networkSimInfo.disabled);
+    assertTrue(networkChooseMobile.disabled);
+    assertFalse(networkProxy.editable);
+    assertTrue(networkIpConfig.disabled);
+    assertTrue(networkNameservers.disabled);
+    assertTrue(infoFields.disabled);
 
-          assertTrue(connectDisconnectButton.disabled);
-          assertTrue(networkSimInfo.disabled);
-          assertTrue(networkChooseMobile.disabled);
-          if (apnList) {
-            assertTrue(apnList.disabled);
-          }
-          assertFalse(networkProxy.editable);
-          assertTrue(networkIpConfig.disabled);
-          assertTrue(networkNameservers.disabled);
-          assertTrue(infoFields.disabled);
+    // Uninhibit.
+    setDeviceState(
+        NetworkType.kCellular,
+        DeviceStateType.kEnabled,
+        InhibitReason.kNotInhibited,
+        [{
+          iccid: testIccid,
+          isPrimary: true,
+          slotId: 1,
+          eid: 'eid',
+        }],
+    );
+    await flushAsync();
 
-          // Uninhibit.
-          setDeviceState(
-              NetworkType.kCellular,
-              DeviceStateType.kEnabled,
-              InhibitReason.kNotInhibited,
-              [{
-                iccid: testIccid,
-                isPrimary: true,
-                slotId: 1,
-                eid: 'eid',
-              }],
-          );
-          await flushAsync();
-
-          assertFalse(connectDisconnectButton.disabled);
-          assertFalse(networkSimInfo.disabled);
-          assertFalse(networkChooseMobile.disabled);
-          if (apnList) {
-            assertFalse(apnList.disabled);
-          }
-          assertTrue(networkProxy.editable);
-          assertFalse(networkIpConfig.disabled);
-          assertFalse(networkNameservers.disabled);
-          assertFalse(infoFields.disabled);
-        });
+    assertFalse(connectDisconnectButton.disabled);
+    assertFalse(networkSimInfo.disabled);
+    assertFalse(networkChooseMobile.disabled);
+    assertTrue(networkProxy.editable);
+    assertFalse(networkIpConfig.disabled);
+    assertFalse(networkNameservers.disabled);
+    assertFalse(infoFields.disabled);
   });
 
-  // Syntactic sugar for running test twice with different values for the
-  // apnRevamp feature flag.
-  [true, false].forEach(isApnRevampEnabled => {
-    test('Show/Hide APN row correspondingly to ApnRevamp flag', async () => {
-      loadTimeData.overrideValues({
-        apnRevamp: isApnRevampEnabled,
-      });
-      const errorState = 'invalid-apn';
-      await setupCellularNetwork(
-          /* isPrimary= */ true, /* isInhibited= */ false,
-          /* connectedApn= */ undefined, /* customApnList= */ undefined,
-          errorState, PortalState.kNoInternet);
+  test('Show APN row', async () => {
+    const errorState = 'invalid-apn';
+    await setupCellularNetwork(
+        /* isPrimary= */ true, /* isInhibited= */ false,
+        /* connectedApn= */ undefined, /* customApnList= */ undefined,
+        errorState, PortalState.kNoInternet);
 
-      await init();
-      const legacyApnElement =
-          internetDetailDialog.shadowRoot!.querySelector('network-apnlist');
-      const apnSection =
-          internetDetailDialog.shadowRoot!.querySelector('cr-expand-button');
+    await init();
+    const legacyApnElement =
+        internetDetailDialog.shadowRoot!.querySelector('network-apnlist');
+    const apnSection =
+        internetDetailDialog.shadowRoot!.querySelector('cr-expand-button');
 
-      if (isApnRevampEnabled) {
-        assertFalse(!!legacyApnElement);
-        assertTrue(!!apnSection);
-        assertEquals(
-            internetDetailDialog.i18n('internetApnPageTitle'),
-            getElement('#apnRowTitle').textContent);
-        const apnRowSublabel = getElement('#apnRowSublabel');
-        const getApnSectionSublabel = () => {
-          assert(apnRowSublabel.textContent);
-          return apnRowSublabel.textContent.trim();
-        };
+    assertFalse(!!legacyApnElement);
+    assertTrue(!!apnSection);
+    assertEquals(
+        internetDetailDialog.i18n('internetApnPageTitle'),
+        getElement('#apnRowTitle').textContent);
+    const apnRowSublabel = getElement('#apnRowSublabel');
+    const getApnSectionSublabel = () => {
+      assert(apnRowSublabel.textContent);
+      return apnRowSublabel.textContent.trim();
+    };
 
-        assertFalse(!!getApnSectionSublabel());
-        const getApnList = () => getElement<ApnListElement>('apn-list');
-        assertTrue(getApnList().shouldOmitLinks);
-        assertEquals(errorState, getApnList().errorState);
-        assertEquals(PortalState.kNoInternet, getApnList().portalState);
-        const isApnListShowing = () =>
-            getElement<IronCollapseElement>('iron-collapse').opened;
+    assertFalse(!!getApnSectionSublabel());
+    const getApnList = () => getElement<ApnListElement>('apn-list');
+    assertTrue(getApnList().shouldOmitLinks);
+    assertEquals(errorState, getApnList().errorState);
+    assertEquals(PortalState.kNoInternet, getApnList().portalState);
+    const isApnListShowing = () =>
+        getElement<IronCollapseElement>('iron-collapse').opened;
 
-        assertFalse(isApnListShowing());
+    assertFalse(isApnListShowing());
 
-        // Add a connected APN.
-        const accessPointName = 'access point name';
-        await setupCellularNetwork(
-            /* isPrimary= */ true, /* isInhibited= */ false,
-            createApn(accessPointName, ApnSource.kModb));
+    // Add a connected APN.
+    const accessPointName = 'access point name';
+    await setupCellularNetwork(
+        /* isPrimary= */ true, /* isInhibited= */ false,
+        createApn(accessPointName, ApnSource.kModb));
 
-        // Force a refresh.
-        internetDetailDialog.onDeviceStateListChanged();
-        await flushAsync();
-        assertEquals(accessPointName, getApnSectionSublabel());
-        assertFalse(apnRowSublabel.hasAttribute('warning'));
-        assertFalse(isApnListShowing());
+    // Force a refresh.
+    internetDetailDialog.onDeviceStateListChanged();
+    await flushAsync();
+    assertEquals(accessPointName, getApnSectionSublabel());
+    assertFalse(apnRowSublabel.hasAttribute('warning'));
+    assertFalse(isApnListShowing());
 
-        // Update the APN's name property and add a restricted connectivity
-        // state.
-        const name = 'name';
-        await setupCellularNetwork(
-            /* isPrimary= */ true, /* isInhibited= */ false,
-            createApn(accessPointName, ApnSource.kModb, name),
-            /* customApnList= */ undefined, /* errorState= */ undefined,
-            PortalState.kNoInternet);
+    // Update the APN's name property and add a restricted connectivity
+    // state.
+    const name = 'name';
+    await setupCellularNetwork(
+        /* isPrimary= */ true, /* isInhibited= */ false,
+        createApn(accessPointName, ApnSource.kModb, name),
+        /* customApnList= */ undefined, /* errorState= */ undefined,
+        PortalState.kNoInternet);
 
-        // Force a refresh.
-        internetDetailDialog.onDeviceStateListChanged();
-        await flushAsync();
-        assertEquals(name, getApnSectionSublabel());
-        assertTrue(apnRowSublabel.hasAttribute('warning'));
-        assertFalse(isApnListShowing());
+    // Force a refresh.
+    internetDetailDialog.onDeviceStateListChanged();
+    await flushAsync();
+    assertEquals(name, getApnSectionSublabel());
+    assertTrue(apnRowSublabel.hasAttribute('warning'));
+    assertFalse(isApnListShowing());
 
-        // Expand the section, the sublabel should no longer show.
-        apnSection.click();
-        await flushAsync();
-        assertFalse(!!getApnSectionSublabel());
-        assertTrue(isApnListShowing());
+    // Expand the section, the sublabel should no longer show.
+    apnSection.click();
+    await flushAsync();
+    assertFalse(!!getApnSectionSublabel());
+    assertTrue(isApnListShowing());
 
-        // Collapse the section, the sublabel should show.
-        apnSection.click();
-        await flushAsync();
-        assertEquals(name, getApnSectionSublabel());
-        assertFalse(isApnListShowing());
-      } else {
-        assertTrue(!!legacyApnElement);
-        assertFalse(!!apnSection);
-      }
-    });
+    // Collapse the section, the sublabel should show.
+    apnSection.click();
+    await flushAsync();
+    assertEquals(name, getApnSectionSublabel());
+    assertFalse(isApnListShowing());
   });
 
-  [true, false].forEach(isApnRevampAndAllowApnModificationPolicyEnabled => {
-    test(
-        `Managed APN UI states when ` +
-            `isApnRevampAndAllowApnModificationPolicyEnabled is ${
-                isApnRevampAndAllowApnModificationPolicyEnabled}`,
-        async () => {
-          loadTimeData.overrideValues({
-            apnRevamp: true,
-            isApnRevampAndAllowApnModificationPolicyEnabled:
-                isApnRevampAndAllowApnModificationPolicyEnabled,
-          });
-          await setupCellularNetwork(
-              /* isPrimary= */ true, /* isInhibited= */ false);
+  test('Managed APN UI states', async () => {
+    await setupCellularNetwork(
+        /* isPrimary= */ true, /* isInhibited= */ false);
 
-          await init();
-          assertTrue(!!internetDetailDialog.shadowRoot!.querySelector(
-              'cr-expand-button'));
+    await init();
+    assertTrue(
+        !!internetDetailDialog.shadowRoot!.querySelector('cr-expand-button'));
 
-          // Check for APN policies managed icon.
-          const getApnManagedIcon = () =>
-              internetDetailDialog.shadowRoot!.querySelector('#apnManagedIcon');
-          assertFalse(!!getApnManagedIcon());
-          const apnList =
-              internetDetailDialog.shadowRoot!.querySelector<ApnListElement>(
-                  '#apnList');
-          assertTrue(!!apnList);
-          assertFalse(apnList.shouldDisallowApnModification);
-          const createCustomApnButton = () =>
-              getElement<CrButtonElement>('#createCustomApnButton');
-          const discoverMoreApnsButton = () =>
-              getElement<CrButtonElement>('#discoverMoreApnsButton');
-          assertTrue(!!createCustomApnButton());
-          assertFalse(createCustomApnButton().disabled);
-          assertTrue(!!discoverMoreApnsButton());
-          assertFalse(discoverMoreApnsButton().disabled);
+    // Check for APN policies managed icon.
+    const getApnManagedIcon = () =>
+        internetDetailDialog.shadowRoot!.querySelector('#apnManagedIcon');
+    assertFalse(!!getApnManagedIcon());
+    const apnList =
+        internetDetailDialog.shadowRoot!.querySelector<ApnListElement>(
+            '#apnList');
+    assertTrue(!!apnList);
+    assertFalse(apnList.shouldDisallowApnModification);
+    const createCustomApnButton = () =>
+        getElement<CrButtonElement>('#createCustomApnButton');
+    const discoverMoreApnsButton = () =>
+        getElement<CrButtonElement>('#discoverMoreApnsButton');
+    assertTrue(!!createCustomApnButton());
+    assertFalse(createCustomApnButton().disabled);
+    assertTrue(!!discoverMoreApnsButton());
+    assertFalse(discoverMoreApnsButton().disabled);
 
-          let globalPolicy = {
-            allowApnModification: true,
-          } as GlobalPolicy;
-          mojoApi.setGlobalPolicy(globalPolicy);
-          await flushAsync();
-          assertFalse(!!getApnManagedIcon());
-          assertFalse(apnList.shouldDisallowApnModification);
-          assertFalse(createCustomApnButton().disabled);
-          assertFalse(discoverMoreApnsButton().disabled);
+    let globalPolicy = {
+      allowApnModification: true,
+    } as GlobalPolicy;
+    mojoApi.setGlobalPolicy(globalPolicy);
+    await flushAsync();
+    assertFalse(!!getApnManagedIcon());
+    assertFalse(apnList.shouldDisallowApnModification);
+    assertFalse(createCustomApnButton().disabled);
+    assertFalse(discoverMoreApnsButton().disabled);
 
-          globalPolicy = {
-            allowApnModification: false,
-          } as GlobalPolicy;
-          mojoApi.setGlobalPolicy(globalPolicy);
-          await flushAsync();
-          assertEquals(
-              isApnRevampAndAllowApnModificationPolicyEnabled,
-              !!getApnManagedIcon());
-          assertEquals(
-              isApnRevampAndAllowApnModificationPolicyEnabled,
-              apnList.shouldDisallowApnModification);
-          assertEquals(
-              isApnRevampAndAllowApnModificationPolicyEnabled,
-              createCustomApnButton().disabled);
-          assertEquals(
-              isApnRevampAndAllowApnModificationPolicyEnabled,
-              discoverMoreApnsButton().disabled);
-        });
+    globalPolicy = {
+      allowApnModification: false,
+    } as GlobalPolicy;
+    mojoApi.setGlobalPolicy(globalPolicy);
+    await flushAsync();
+    assertTrue(!!getApnManagedIcon());
+    assertTrue(apnList.shouldDisallowApnModification);
+    assertTrue(createCustomApnButton().disabled);
+    assertTrue(discoverMoreApnsButton().disabled);
   });
 
   test(
       'Disable and show tooltip for New APN button when custom APNs limit is' +
           ' reached',
       async () => {
-        loadTimeData.overrideValues({
-          apnRevamp: true,
-        });
         await setupCellularNetwork(
             /* isPrimary= */ true, /* isInhibited= */ false,
             createApn(
@@ -640,9 +577,6 @@ suite('internet-detail-dialog', () => {
       });
 
   test('Show toast on show-error-toast event', async function() {
-    loadTimeData.overrideValues({
-      apnRevamp: true,
-    });
     await init();
     const getErrorToast = () => getElement<CrToastElement>('#errorToast');
     assertFalse(getErrorToast().open);
@@ -654,24 +588,6 @@ suite('internet-detail-dialog', () => {
     assertTrue(getErrorToast().open);
     assertEquals(getElement('#errorToastMessage').innerHTML, message);
   });
-
-  test(
-      'Dont show toast on show-error-toast event when ApnRevamp false',
-      async function() {
-        loadTimeData.overrideValues({
-          apnRevamp: false,
-        });
-        await init();
-        const getErrorToast = () =>
-            internetDetailDialog.shadowRoot!.querySelector('#errorToast');
-        assertFalse(!!getErrorToast());
-
-        const message = 'Toast message';
-        const event = new CustomEvent('show-error-toast', {detail: message});
-        internetDetailDialog.dispatchEvent(event);
-        await flushAsync();
-        assertFalse(!!getErrorToast());
-      });
 
   test('MacAddress not shown when invalid', async function() {
     mojoApi.setNetworkTypeEnabledState(NetworkType.kWiFi, true);

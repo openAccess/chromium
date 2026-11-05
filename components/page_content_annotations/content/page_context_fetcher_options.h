@@ -117,7 +117,14 @@ class ScreenshotOptions {
 class PdfOptions {
  public:
   enum class Format {
+    // Bytes extraction is supported on:
+    // - Top-level document PDF rendered in Chrome PDF viewer.
+    // - Embedded PDF rendered in Chrome PDF viewer, if feature
+    // `kGlicEmbeddedPdfBytesExtraction` is enabled.
     kBytes,
+
+    // Text extraction is supported on top-level document PDF rendered in Chrome
+    // PDF viewer.
     kText,
   };
 
@@ -142,6 +149,10 @@ struct FetchPageContextOptions {
   // Limit defining the number of bytes for inner text returned. A value
   // of 0 indicates no inner text should be returned.
   uint32_t inner_text_bytes_limit = 0;
+
+  // If true, the inner text includes the text of each frame's active
+  // EditContext. See `blink::mojom::InnerTextParams::include_edit_context`.
+  bool inner_text_include_edit_context = false;
 
   // Options for taking a screenshot. If not set, no screenshot will be taken.
   std::optional<ScreenshotOptions> screenshot_options = std::nullopt;

@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "ash/metrics/user_metrics_recorder.h"
@@ -188,12 +189,12 @@ class DemoSessionMetricsRecorderTest : public AshTestBase {
     generator.GestureTapAt(gfx::Point(0, 0));
   }
 
-  void MockOnAppCreation(const std::string& app_id_or_package,
+  void MockOnAppCreation(std::string_view app_id_or_package,
                          const bool is_arc_app) {
     metrics_recorder_->OnAppCreation(app_id_or_package, is_arc_app);
   }
 
-  void MockOnAppDestruction(const std::string& app_id_or_package,
+  void MockOnAppDestruction(std::string_view app_id_or_package,
                             const bool is_arc_app) {
     metrics_recorder_->OnAppDestruction(app_id_or_package, is_arc_app);
   }
@@ -901,7 +902,8 @@ TEST_F(DemoSessionMetricsRecorderTest,
 TEST_F(DemoSessionMetricsRecorderTest, UserActivelyExitsMGS) {
   // Simulate to enter the demo MGS.
   ClearLogin();
-  SimulateUserLogin({kUserEmail, user_manager::UserType::kPublicAccount});
+  SimulateUserLogin({.account_id = AccountId::FromUserEmail(kUserEmail),
+                     .user_type = user_manager::UserType::kPublicAccount});
 
   DemoSessionMetricsRecorder::RecordExitSessionAction(
       DemoSessionMetricsRecorder::ExitSessionFrom::kShelf);
@@ -935,7 +937,7 @@ TEST_F(DemoSessionMetricsRecorderTest, UserActivelyExitsSignedInSession) {
       DemoSessionMetricsRecorder::SessionType::kSignedInDemoSession);
 
   // Simulate to sign in the session with a regular user.
-  SimulateUserLogin({kUserEmail});
+  SimulateUserLogin(AccountId::FromUserEmail(kUserEmail));
 
   // Even though it's signed-in, the generic exit demo session user actions are
   // still recorded.

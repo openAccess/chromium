@@ -14,7 +14,7 @@
 #include "base/time/time.h"
 #include "chrome/browser/ash/extensions/file_manager/system_notification_manager.h"
 #include "chrome/browser/ash/file_manager/volume_manager_observer.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 
 namespace file_manager {
@@ -63,12 +63,6 @@ class DeviceEventRouter : public VolumeManagerObserver,
   void OnFormatCompleted(const std::string& device_path,
                          const std::string& device_label,
                          bool success) override;
-  void OnPartitionStarted(const std::string& device_path,
-                          const std::string& device_label,
-                          bool success) override;
-  void OnPartitionCompleted(const std::string& device_path,
-                            const std::string& device_label,
-                            bool success) override;
   void OnRenameStarted(const std::string& device_path,
                        const std::string& device_label,
                        bool success) override;

@@ -6,6 +6,9 @@
 
 #import <optional>
 
+#import "url/gurl.h"
+#import "url/origin.h"
+
 namespace actor {
 
 ActorToolRequest::ActorToolRequest(optimization_guide::proto::Action action)
@@ -24,6 +27,8 @@ ToolType ActorToolRequest::GetToolType() const {
       return ToolType::kScroll;
     case optimization_guide::proto::Action::kSelect:
       return ToolType::kSelect;
+    case optimization_guide::proto::Action::kDragAndRelease:
+      return ToolType::kDragAndRelease;
     case optimization_guide::proto::Action::kNavigate:
       return ToolType::kNavigate;
     case optimization_guide::proto::Action::kBack:
@@ -72,6 +77,11 @@ web::WebStateID ActorToolRequest::GetTargetWebStateId() const {
     case optimization_guide::proto::Action::kSelect:
       if (action_.select().has_tab_id()) {
         tab_id = action_.select().tab_id();
+      }
+      break;
+    case optimization_guide::proto::Action::kDragAndRelease:
+      if (action_.drag_and_release().has_tab_id()) {
+        tab_id = action_.drag_and_release().tab_id();
       }
       break;
     case optimization_guide::proto::Action::kNavigate:
@@ -130,4 +140,47 @@ web::WebStateID ActorToolRequest::GetTargetWebStateId() const {
   // LINT.ThenChange(//ios/chrome/browser/intelligence/actor/tools/model/actor_tool_factory.mm:CreateTool)
 }
 
+bool ActorToolRequest::RequiresUrlCheckInCurrentTab() const {
+  if (!GetTargetWebStateId().valid()) {
+    return false;
+  }
+
+  switch (GetToolType()) {
+    case ToolType::kNavigate:
+    case ToolType::kBack:
+    case ToolType::kForward:
+    case ToolType::kWait:
+    case ToolType::kWaitZeroDuration:
+    case ToolType::kCreateTab:
+    case ToolType::kUnknown:
+      return false;
+    case ToolType::kClick:
+    case ToolType::kType:
+    case ToolType::kScroll:
+    case ToolType::kSelect:
+    case ToolType::kDragAndRelease:
+    case ToolType::kScrollTo:
+    case ToolType::kAttemptLogin:
+    case ToolType::kAttemptFormFilling:
+    case ToolType::kCloseTab:
+    case ToolType::kActivateTab:
+      return true;
+  }
+}
+
+std::optional<url::Origin> ActorToolRequest::AssociatedOriginGrant() const {
+  if (action_.action_case() != optimization_guide::proto::Action::kNavigate ||
+      !action_.navigate().has_url()) {
+    return std::nullopt;
+  }
+  const GURL url(action_.navigate().url());
+  if (!url.is_valid()) {
+    return std::nullopt;
+  }
+  url::Origin origin = url::Origin::Create(url);
+  if (origin.opaque()) {
+    return std::nullopt;
+  }
+  return origin;
+}
 }  // namespace actor

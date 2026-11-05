@@ -4,7 +4,8 @@
 
 #include "components/component_updater/component_installer.h"
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -123,6 +124,7 @@ class MockUpdateClient : public UpdateClient {
               (const, override));
   MOCK_METHOD(bool, IsUpdating, (const std::string& id), (const, override));
   MOCK_METHOD(void, Stop, (), (override));
+  MOCK_METHOD(bool, Cancel, (const std::string& id), (override));
   MOCK_METHOD(void,
               CleanupStaleDownloads,
               (base::Time older_than, base::OnceClosure callback),
@@ -261,7 +263,8 @@ ComponentInstallerTest::ComponentInstallerTest() {
   RegisterComponentUpdateServicePrefs(pref_->registry());
   config_ = base::MakeRefCounted<TestConfigurator>(pref_.get());
   component_updater_ = std::make_unique<CrxUpdateService>(
-      config_, std::move(scheduler), update_client_, "");
+      config_, std::move(scheduler), update_client_, "",
+      /*update_checks_disabled=*/false);
 }
 
 ComponentInstallerTest::~ComponentInstallerTest() {

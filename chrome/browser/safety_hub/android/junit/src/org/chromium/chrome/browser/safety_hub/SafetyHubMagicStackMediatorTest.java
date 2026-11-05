@@ -61,7 +61,6 @@ public class SafetyHubMagicStackMediatorTest {
     @Mock private SettingsNavigation mSettingsNavigation;
     @Mock private PrefChangeRegistrar mPrefChangeRegistrar;
     @Mock private Supplier<ModalDialogManager> mModalDialogManagerSupplier;
-    @Mock private View mView;
 
     private Context mContext;
     private Profile mProfile;
@@ -70,10 +69,12 @@ public class SafetyHubMagicStackMediatorTest {
     private PropertyModel mModel;
     private SafetyHubMagicStackMediator mMediator;
     private ModalDialogManager mModalDialogManager;
+    private View mView;
 
     @Before
     public void setUp() {
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
+        mView = new View(mContext);
         mProfile = mSafetyHubTestRule.getProfile();
         mPrefService = mSafetyHubTestRule.getPrefService();
         mPasswordCheckIntentForAccountCheckup =
@@ -168,40 +169,6 @@ public class SafetyHubMagicStackMediatorTest {
                 shadowOf(mModel.get(SafetyHubMagicStackViewProperties.ICON_DRAWABLE))
                         .getCreatedFromResId(),
                 R.drawable.ic_check_circle_filled_green_24dp);
-
-        OnClickListener onClickListener =
-                mModel.get(SafetyHubMagicStackViewProperties.BUTTON_ON_CLICK_LISTENER);
-        onClickListener.onClick(mView);
-        verify(mSettingsNavigation).startSettings(eq(mContext), eq(SafetyHubFragment.class));
-    }
-
-    @Test
-    public void testNotificationPermissionsDisplayed() {
-        MagicStackEntry entry =
-                MagicStackEntry.create(
-                        DESCRIPTION, MagicStackEntry.ModuleType.NOTIFICATION_PERMISSIONS);
-        doReturn(entry).when(mMagicStackBridge).getModuleToShow();
-        mMediator.showModule();
-
-        verify(mModuleDelegate).onDataReady(eq(ModuleType.SAFETY_HUB), eq(mModel));
-        assertEquals(
-                mModel.get(SafetyHubMagicStackViewProperties.HEADER),
-                mContext.getString(R.string.safety_hub_magic_stack_module_name));
-        assertEquals(
-                mModel.get(SafetyHubMagicStackViewProperties.TITLE),
-                mContext.getString(R.string.safety_hub_magic_stack_notifications_title));
-        assertEquals(DESCRIPTION, mModel.get(SafetyHubMagicStackViewProperties.SUMMARY));
-        assertEquals(
-                mModel.get(SafetyHubMagicStackViewProperties.BUTTON_TEXT),
-                mContext.getString(R.string.safety_hub_magic_stack_safe_state_button_text));
-        assertEquals(
-                mModel.get(SafetyHubMagicStackViewProperties.BUTTON_CONTENT_DESCRIPTION),
-                mContext.getString(
-                        R.string.safety_hub_magic_stack_safe_state_button_content_description));
-        assertEquals(
-                shadowOf(mModel.get(SafetyHubMagicStackViewProperties.ICON_DRAWABLE))
-                        .getCreatedFromResId(),
-                R.drawable.safety_hub_notifications_icon);
 
         OnClickListener onClickListener =
                 mModel.get(SafetyHubMagicStackViewProperties.BUTTON_ON_CLICK_LISTENER);

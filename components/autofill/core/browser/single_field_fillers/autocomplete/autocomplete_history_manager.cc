@@ -17,9 +17,11 @@
 #include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/location.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_util.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/version_info/version_info.h"
 #include "components/autofill/core/browser/at_memory/at_memory_enablement_util.h"
@@ -30,6 +32,7 @@
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/browser/permissions/autofill_policy_service.h"
 #include "components/autofill/core/browser/single_field_fillers/single_field_fill_router.h"
 #include "components/autofill/core/browser/studies/autofill_experiments.h"
 #include "components/autofill/core/browser/suggestions/autocomplete_suggestion_generator.h"
@@ -37,6 +40,7 @@
 #include "components/autofill/core/browser/suggestions/suggestion_generator.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/browser/webdata/autocomplete/autocomplete_entry.h"
+#include "components/autofill/core/browser/webdata/autocomplete/autocomplete_table_label_sensitive.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_features.h"
@@ -273,6 +277,7 @@ bool IsHtmlFieldTypeSaveable(const AutofillField* field) {
 //  - neither empty nor whitespace-only value
 //  - text field
 //  - autocomplete is not disabled
+//  - field data category is not blocked by policy for the form's URL
 //  - field type is eligible (e.g. not a CVC or promo code)
 //  - field was not autofilled by a structured product (e.g., Address,
 //    Payments)
@@ -281,7 +286,8 @@ bool IsHtmlFieldTypeSaveable(const AutofillField* field) {
 //    this way it is consistent for all platforms)
 //  - not a presentation field
 bool IsFieldValueSaveable(const FormFieldData& field,
-                          const FormStructure* form) {
+                          const FormStructure* form,
+                          const PrefService* pref_service) {
   // Only save values from text-like input elements that are not password
   // or number inputs.
   if (!field.IsTextInputElement() || field.IsPasswordInputElement() ||
@@ -312,6 +318,20 @@ bool IsFieldValueSaveable(const FormFieldData& field,
   const AutofillField* autofill_field =
       form ? form->GetFieldById(field.global_id()) : nullptr;
 
+  if (pref_service && form && autofill_field) {
+    const GURL& url = form->main_frame_origin().GetURL();
+    if (std::ranges::any_of(
+            AutofillPolicyService::GetAutofillPolicyDataCategoriesForType(
+                autofill_field->Type()),
+            [&](AutofillClient::AutofillPolicyDataCategory category) {
+              return AutofillPolicyService::
+                  IsAutofillTypeBlockedByPolicyFromPref(*pref_service, url,
+                                                        category);
+            })) {
+      return false;
+    }
+  }
+
   // Reject fields with types that are ineligible for autocomplete such as
   // credit card numbers, CVCs, IBANs, or promo codes.
   if (!IsPredictedFieldTypeSaveable(autofill_field)) {
@@ -323,17 +343,18 @@ bool IsFieldValueSaveable(const FormFieldData& field,
     return false;
   }
 
-  if (autofill_field &&
-      autofill_field->all_modifiers().contains(FieldModifier::kAutofill) &&
-      (autofill_field->last_modifier() != FieldModifier::kUser ||
-       autofill_field->filling_product() != FillingProduct::kAutocomplete)) {
-    // If a field has been autofilled by a structured product (e.g. Address,
-    // Payments, Autofill AI), we avoid saving the submitted value to
-    // Autocomplete, even if the user edited it.
-    //
-    // However, if the field was filled by Autocomplete and then edited by
-    // the user, we should save the edited value as it represents a new
-    // user-edited autocomplete value.
+  const bool was_autofilled =
+      autofill_field &&
+      autofill_field->all_modifiers().contains(FieldModifier::kAutofill);
+  const bool was_autocompleted_and_later_modified =
+      autofill_field &&
+      autofill_field->filling_product() == FillingProduct::kAutocomplete &&
+      autofill_field->last_modifier() == FieldModifier::kUser;
+
+  // Reject a field if it was autofilled by a structured product (e.g. Address,
+  // Payments, Autofill AI). The exception is when the user used Autocomplete
+  // and modified the value afterwards.
+  if (was_autofilled && !was_autocompleted_and_later_modified) {
     return false;
   }
 
@@ -396,6 +417,16 @@ AutocompleteHistoryManager::AutocompleteHistoryManager(
           /*new_migration_generation=*/expected_migration_generation));
     }
   }
+
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillRecordAutocompleteTableStats)) {
+    // Delay the query to avoid impact on startup.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&AutocompleteHistoryManager::QueryAutocompleteTableStats,
+                       weak_ptr_factory_.GetWeakPtr()),
+        kTableStatsRecordingDelay);
+  }
 }
 
 AutocompleteHistoryManager::~AutocompleteHistoryManager() = default;
@@ -440,7 +471,7 @@ void AutocompleteHistoryManager::OnWillSubmitFormWithFields(
   std::vector<FormFieldData> autocomplete_saveable_fields;
   autocomplete_saveable_fields.reserve(fields.size());
   for (const FormFieldData& field : fields) {
-    if (IsFieldValueSaveable(field, form)) {
+    if (IsFieldValueSaveable(field, form, pref_service_)) {
       autocomplete_saveable_fields.push_back(field);
     }
   }
@@ -469,20 +500,40 @@ void AutocompleteHistoryManager::OnRemoveCurrentSingleFieldSuggestion(
 void AutocompleteHistoryManager::OnSingleFieldSuggestionSelected(
     const Suggestion& suggestion) {
   CHECK_EQ(suggestion.type, SuggestionType::kAutocompleteEntry);
-  const AutocompleteEntry& entry =
-      CHECK_DEREF(std::get_if<AutocompleteEntry>(&suggestion.payload));
-  // The AutocompleteEntry was found, use it to log the DaysSinceLastUsed.
-  base::TimeDelta time_delta = base::Time::Now() - entry.date_last_used();
-  AutofillMetrics::LogAutocompleteDaysSinceLastUse(time_delta.InDays());
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillLabelSensitiveAutocomplete)) {
+    const AutocompleteSearchResultLabelSensitive& entry =
+        CHECK_DEREF(std::get_if<AutocompleteSearchResultLabelSensitive>(
+            &suggestion.payload));
+    base::TimeDelta time_delta = base::Time::Now() - entry.date_last_used();
+    AutofillMetrics::LogAutocompleteDaysSinceLastUse(time_delta.InDays());
 
-  if (profile_database_) {
-    // Form submission will skip saving any fields that were autofilled.
-    // Therefore, we must update the autocomplete entry's metadata immediately
-    // when the suggestion is selected.
-    FormFieldData field;
-    field.set_name(entry.key().name());
-    field.set_value(entry.key().value());
-    profile_database_->AddFormFields({field});
+    if (profile_database_) {
+      // Form submission will skip saving any fields that were autofilled.
+      // Therefore, we must update the autocomplete entry's metadata immediately
+      // when the suggestion is selected.
+      FormFieldData field;
+      field.set_name(entry.query_name());
+      field.set_label(entry.query_label());
+      field.set_value(entry.value());
+      profile_database_->AddFormFields({field});
+    }
+  } else {
+    const AutocompleteEntry& entry =
+        CHECK_DEREF(std::get_if<AutocompleteEntry>(&suggestion.payload));
+    // The AutocompleteEntry was found, use it to log the DaysSinceLastUsed.
+    base::TimeDelta time_delta = base::Time::Now() - entry.date_last_used();
+    AutofillMetrics::LogAutocompleteDaysSinceLastUse(time_delta.InDays());
+
+    if (profile_database_) {
+      // Form submission will skip saving any fields that were autofilled.
+      // Therefore, we must update the autocomplete entry's metadata immediately
+      // when the suggestion is selected.
+      FormFieldData field;
+      field.set_name(entry.key().name());
+      field.set_value(entry.key().value());
+      profile_database_->AddFormFields({field});
+    }
   }
 }
 
@@ -530,6 +581,24 @@ void AutocompleteHistoryManager::OnLegacyTableDataMigrationReturned(
         prefs::kAutofillAutocompleteLabelSensitiveMigrationGeneration,
         new_migration_generation);
   }
+}
+
+void AutocompleteHistoryManager::QueryAutocompleteTableStats() {
+  profile_database_->GetAutocompleteTableStats(base::BindOnce(
+      &AutocompleteHistoryManager::OnAutocompleteTableStatsReturned,
+      weak_ptr_factory_.GetWeakPtr()));
+}
+
+void AutocompleteHistoryManager::OnAutocompleteTableStatsReturned(
+    WebDataServiceBase::Handle current_handle,
+    std::unique_ptr<WDTypedResult> result) {
+  if (!result) {
+    return;
+  }
+  DCHECK_EQ(AUTOCOMPLETE_TABLE_STATS, result->GetType());
+  const auto* stats_result =
+      static_cast<const WDResult<AutocompleteTableStats>*>(result.get());
+  AutofillMetrics::LogAutocompleteTableStats(stats_result->GetValue());
 }
 
 }  // namespace autofill

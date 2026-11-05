@@ -33,8 +33,7 @@ class OnTaskSystemWebAppManagerImpl : public OnTaskSystemWebAppManager {
 
   // OnTaskSystemWebAppManager:
   void LaunchSystemWebAppAsync(
-      base::OnceCallback<void(bool)> callback,
-      const GURL& url = GURL(kChromeBocaAppUntrustedIndexURL)) override;
+      base::OnceCallback<void(bool)> callback) override;
   void CloseSystemWebAppWindow(SessionID window_id) override;
   SessionID GetActiveSystemWebAppWindowID() override;
   void SetPinStateForSystemWebAppWindow(bool pinned,
@@ -43,7 +42,7 @@ class OnTaskSystemWebAppManagerImpl : public OnTaskSystemWebAppManager {
                                           SessionID window_id) override;
   void SetWindowTrackerForSystemWebAppWindow(
       SessionID window_id,
-      const std::vector<BocaWindowObserver*> observers) override;
+      const std::vector<raw_ptr<boca::BocaWindowObserver>> observers) override;
   SessionID CreateBackgroundTabWithUrl(
       SessionID window_id,
       GURL url,

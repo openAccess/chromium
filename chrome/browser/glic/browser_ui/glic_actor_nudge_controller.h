@@ -56,19 +56,18 @@ class GlicActorNudgeController {
   virtual void ShowGlicActorTaskIcon();
   virtual void HideGlicActorTaskIcon();
   virtual void SetGlicActorNudgeLabel(const std::u16string& nudge_label);
-  virtual void TriggerGlicActorNudge(const std::u16string& nudge_text);
+  virtual void TriggerGlicActorNudge(const std::u16string& nudge_label);
   virtual void ShowBubble();
   virtual void CloseBubble();
   virtual bool IsShowingNudge();
-  virtual void OnBubbleVisibilityChange(bool is_bubble_open);
 
  private:
-  // Subscribe to updates from the GlicActorTaskIconManager.
+  // Subscribe to updates from the LegacyGlicActivityManager.
   void RegisterActorNudgeStateCallback();
 
   // Only update the nudge label if it's already showing, otherwise retrigger
   // the nudge. Shows the task list bubble after if show_bubble is true.
-  void UpdateNudgeLabelOrRetrigger(std::u16string nudge_label_text,
+  void UpdateNudgeLabelOrRetrigger(std::u16string nudge_label,
                                    bool show_bubble);
 
   void CallOnBoth(base::RepeatingCallback<void(GlicSplitButtonDelegate&)> fn);
@@ -79,8 +78,6 @@ class GlicActorNudgeController {
 
   std::vector<base::CallbackListSubscription>
       actor_nudge_state_change_callback_subscription_;
-  std::vector<base::CallbackListSubscription>
-      bubble_visibility_change_subscription_;
 
   ::ui::ScopedUnownedUserData<GlicActorNudgeController> scoped_data_holder_;
 

@@ -69,6 +69,7 @@
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_client_settings_object_snapshot.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/runtime_feature_state/runtime_feature_state_override_context.h"
 #include "third_party/blink/renderer/platform/weborigin/security_policy.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
@@ -92,10 +93,6 @@ DedicatedWorkerGlobalScope* DedicatedWorkerGlobalScope::Create(
       creation_params->begin_frame_provider_params;
 
   KURL response_script_url = creation_params->script_url;
-  network::mojom::ReferrerPolicy response_referrer_policy =
-      creation_params->referrer_policy;
-  DocumentPolicy::DocumentPolicyBundle response_document_policy =
-      std::move(creation_params->document_policy);
   base::TimeTicks start_time;
   if (creation_params->dedicated_worker_start_time.has_value()) {
     start_time = *creation_params->dedicated_worker_start_time;
@@ -106,28 +103,12 @@ DedicatedWorkerGlobalScope* DedicatedWorkerGlobalScope::Create(
     start_time = base::TimeTicks::Now();
   }
 
-  Vector<network::mojom::blink::ContentSecurityPolicyPtr> response_csp =
-      std::move(creation_params->response_content_security_policies);
-  auto* global_scope = MakeGarbageCollected<DedicatedWorkerGlobalScope>(
+  // `Initialize()` is called after script fetch.
+  return MakeGarbageCollected<DedicatedWorkerGlobalScope>(
       base::PassKey<DedicatedWorkerGlobalScope>(), std::move(creation_params),
       thread, time_origin, std::move(inherited_trial_features),
       begin_frame_provider_params, std::move(dedicated_worker_host),
       std::move(back_forward_cache_controller_host), start_time);
-
-  if (global_scope->IsOffMainThreadScriptFetchDisabled()) {
-    // Legacy on-the-main-thread worker script fetch (to be removed):
-    // Pass dummy origin trial tokens here as it is already set to outside's
-    // origin trial tokens in DedicatedWorkerGlobalScope's constructor.
-    global_scope->Initialize(response_script_url, response_referrer_policy,
-                             std::move(response_csp),
-                             std::move(response_document_policy),
-                             nullptr /* response_origin_trial_tokens */);
-    return global_scope;
-  } else {
-    // Off-the-main-thread worker script fetch:
-    // Initialize() is called after script fetch.
-    return global_scope;
-  }
 }
 
 // static
@@ -148,6 +129,8 @@ DedicatedWorkerGlobalScope::ParseCreationParams(
       creation_params->direct_sockets_force_enabled_in_parent;
   parsed_creation_params.creator_document_policy =
       std::move(creation_params->creator_document_policy);
+  parsed_creation_params.dedicated_worker_script_initiator_url =
+      std::move(creation_params->dedicated_worker_script_initiator_url);
 
   parsed_creation_params.creation_params = std::move(creation_params);
   return parsed_creation_params;
@@ -204,7 +187,12 @@ DedicatedWorkerGlobalScope::DedicatedWorkerGlobalScope(
           parsed_creation_params.parent_storage_access_api_status),
       creator_document_policy_(
           std::move(parsed_creation_params.creator_document_policy)),
-      dedicated_worker_start_time_(dedicated_worker_start_time) {
+      dedicated_worker_start_time_(dedicated_worker_start_time),
+      worker_script_initiator_url_(std::move(
+          parsed_creation_params.dedicated_worker_script_initiator_url)) {
+  CHECK(RuntimeEnabledFeatures::ResourceTimingInitiatorEnabled() ||
+        worker_script_initiator_url_.IsEmpty());
+
   // TODO(mkwst): This needs a specification.
   if (!parsed_creation_params.parent_is_isolated_context) {
     is_isolated_context_ = false;
@@ -347,26 +335,9 @@ void DedicatedWorkerGlobalScope::FetchAndRunClassicScript(
       mojom::blink::RequestContextType::WORKER;
   network::mojom::RequestDestination destination =
       network::mojom::RequestDestination::kWorker;
-
-  // Step 12.1. "Set request's reserved client to inside settings."
-  // The browesr process takes care of this.
-
-  // Step 12.2. "Fetch request, and asynchronously wait to run the remaining
-  // steps as part of fetch's process response for the response response."
-  WorkerClassicScriptLoader* classic_script_loader =
-      MakeGarbageCollected<WorkerClassicScriptLoader>();
-  classic_script_loader->LoadTopLevelScriptAsynchronously(
-      *this,
-      CreateOutsideSettingsFetcher(outside_settings_object,
-                                   outside_resource_timing_notifier),
-      script_url, std::move(worker_main_script_load_params), context_type,
-      destination, network::mojom::RequestMode::kSameOrigin,
-      network::mojom::CredentialsMode::kSameOrigin,
-      BindOnce(&DedicatedWorkerGlobalScope::DidReceiveResponseForClassicScript,
-               WrapWeakPersistent(this), WrapPersistent(classic_script_loader)),
-      BindOnce(&DedicatedWorkerGlobalScope::DidFetchClassicScript,
-               WrapWeakPersistent(this), WrapPersistent(classic_script_loader),
-               stack_id));
+  FetchClassicScript(script_url, std::move(worker_main_script_load_params),
+                     outside_settings_object, outside_resource_timing_notifier,
+                     context_type, destination, stack_id);
 }
 
 // https://html.spec.whatwg.org/C/#worker-processing-model
@@ -406,12 +377,6 @@ void DedicatedWorkerGlobalScope::FetchAndRunModuleScript(
                     ModuleScriptCustomFetchType::kWorkerConstructor,
                     MakeGarbageCollected<WorkerModuleTreeClient>(
                         ScriptController()->GetScriptState()));
-}
-
-bool DedicatedWorkerGlobalScope::IsOffMainThreadScriptFetchDisabled() {
-  // TODO(https://crbug.com/835717): Remove this function now that dedicated
-  // workers support off-the-main-thread script fetch by default.
-  return false;
 }
 
 const String DedicatedWorkerGlobalScope::name() const {
@@ -470,71 +435,6 @@ void DedicatedWorkerGlobalScope::postMessage(ScriptState* script_state,
             std::move(context), GetExecutionContext(), trace_id);
       },
       perfetto::Flow::Global(trace_id));  // SchedulePostMessage
-}
-
-void DedicatedWorkerGlobalScope::DidReceiveResponseForClassicScript(
-    WorkerClassicScriptLoader* classic_script_loader) {
-  DCHECK(IsContextThread());
-  probe::DidReceiveScriptResponse(this, classic_script_loader->Identifier());
-}
-
-// https://html.spec.whatwg.org/C/#worker-processing-model
-void DedicatedWorkerGlobalScope::DidFetchClassicScript(
-    WorkerClassicScriptLoader* classic_script_loader,
-    const v8_inspector::V8StackTraceId& stack_id) {
-  DCHECK(IsContextThread());
-  TRACE_EVENT("blink.worker",
-              "DedicatedWorkerGlobalScope::DidFetchClassicScript");
-  TRACE_EVENT_END("blink.worker",
-                  perfetto::NamedTrack::FromPointer(
-                      "blink::DedicatedWorkerGlobalScope", this));
-  base::UmaHistogramTimes(
-      "Worker.TopLevelScript.FetchClassicScriptTime",
-      base::TimeTicks::Now() - fetch_classic_script_start_time_);
-
-  // Step 12. "If the algorithm asynchronously completes with null, then:"
-  if (classic_script_loader->Failed()) {
-    // Step 12.1. "Queue a task to fire an event named error at worker."
-    // DidFailToFetchClassicScript() will asynchronously fire the event.
-    ReportingProxy().DidFailToFetchClassicScript();
-
-    // Step 12.2. "Run the environment discarding steps for inside settings."
-    // Do nothing because the HTML spec doesn't define these steps for web
-    // workers.
-
-    // Schedule worker termination.
-    close();
-
-    // Step 12.3. "Return."
-    return;
-  }
-  ReportingProxy().DidFetchScript();
-  probe::ScriptImported(this, classic_script_loader->Identifier(),
-                        classic_script_loader->SourceText());
-
-  auto response_referrer_policy = network::mojom::ReferrerPolicy::kDefault;
-  if (!classic_script_loader->GetReferrerPolicy().IsNull()) {
-    SecurityPolicy::ReferrerPolicyFromHeaderValue(
-        classic_script_loader->GetReferrerPolicy(),
-        kDoNotSupportReferrerPolicyLegacyKeywords, &response_referrer_policy);
-  }
-
-  // Step 12.3-12.6 are implemented in Initialize().
-  // Pass dummy origin trial tokens here as it is already set to outside's
-  // origin trial tokens in DedicatedWorkerGlobalScope's constructor.
-  Initialize(classic_script_loader->ResponseURL(), response_referrer_policy,
-             classic_script_loader->GetContentSecurityPolicy()
-                 ? mojo::Clone(classic_script_loader->GetContentSecurityPolicy()
-                                   ->GetParsedPolicies())
-                 : Vector<network::mojom::blink::ContentSecurityPolicyPtr>(),
-             classic_script_loader->GetDocumentPolicy(),
-             nullptr /* response_origin_trial_tokens */);
-
-  // Step 12.7. "Asynchronously complete the perform the fetch steps with
-  // response."
-  EvaluateClassicScript(
-      classic_script_loader->ResponseURL(), classic_script_loader->SourceText(),
-      classic_script_loader->ReleaseCachedMetadata(), stack_id);
 }
 
 int DedicatedWorkerGlobalScope::requestAnimationFrame(

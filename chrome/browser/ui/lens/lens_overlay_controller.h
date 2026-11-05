@@ -84,10 +84,6 @@ class LensOverlayUrlResponse;
 }  // namespace proto
 }  // namespace lens
 
-namespace ui {
-class TrackedElement;
-}  // namespace ui
-
 class LensSearchController;
 class PrefService;
 enum class SidePanelEntryHideReason;
@@ -129,10 +125,8 @@ class LensOverlayController : public OverlayBaseController,
       mojo::PendingRemote<lens::mojom::LensPage> page);
 
   // Returns the screenshot initially displayed on this overlay. If no
-  // screenshot is showing, will return nullptr.
-  const SkBitmap& initial_screenshot() {
-    return initialization_data_->initial_screenshot_;
-  }
+  // screenshot is showing, will return an empty SkBitmap.
+  virtual const SkBitmap& initial_screenshot() const;
 
   // Returns the screenshot of the live page which may have been updated after
   // the overlay is hidden and the live page is shown. If no screenshot is
@@ -172,7 +166,7 @@ class LensOverlayController : public OverlayBaseController,
   void TriggerCopy();
 
   // Returns true if the overlay has a region selection.
-  bool HasRegionSelection() const;
+  virtual bool HasRegionSelection() const;
 
   // Returns true if the results side panel is currently showing, or is opening.
   bool IsResultsSidePanelShowingOrWillOpen();
@@ -244,7 +238,7 @@ class LensOverlayController : public OverlayBaseController,
   void IssueSearchBoxRequestForTesting(
       base::Time query_start_time,
       const std::string& search_box_text,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       bool is_zero_prefix_suggestion,
       std::map<std::string, std::string> additional_query_params);
 
@@ -301,7 +295,7 @@ class LensOverlayController : public OverlayBaseController,
   void SetInvocationTimeForWebUIBinding(base::TimeTicks time);
 
   // Clears the selected region.
-  void ClearRegionSelection();
+  virtual void ClearRegionSelection();
 
   // Returns the lens suggest inputs stored in this controller for testing.
   lens::proto::LensOverlaySuggestInputs GetLensSuggestInputsForTesting();
@@ -313,6 +307,9 @@ class LensOverlayController : public OverlayBaseController,
   const lens::mojom::CenterRotatedBoxPtr& get_selected_region_for_testing() {
     return initialization_data_->selected_region_;
   }
+
+  // Returns the active selected region, or empty if none.
+  virtual const lens::mojom::CenterRotatedBoxPtr& selected_region() const;
 
   LensSearchController* get_lens_search_controller_for_testing() {
     return lens_search_controller_;
@@ -346,7 +343,7 @@ class LensOverlayController : public OverlayBaseController,
   void IssueTextSearchRequest(
       std::string query_text,
       std::map<std::string, std::string> additional_query_parameters,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       bool is_zero_prefix_suggestion,
       lens::LensOverlayInvocationSource invocation_source);
 
@@ -415,7 +412,7 @@ class LensOverlayController : public OverlayBaseController,
   void IssueSearchBoxRequest(
       base::Time query_start_time,
       const std::string& search_box_text,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       bool is_zero_prefix_suggestion,
       std::map<std::string, std::string> additional_query_params,
       std::optional<lens::LensOverlayInvocationSource> invocation_source);
@@ -554,7 +551,7 @@ class LensOverlayController : public OverlayBaseController,
       base::Time query_start_time,
       std::string query_text,
       std::map<std::string, std::string> additional_query_parameters,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       bool is_zero_prefix_suggestion,
       lens::LensOverlayInvocationSource invocation_source);
 
@@ -624,6 +621,7 @@ class LensOverlayController : public OverlayBaseController,
   void FinishedWaitingForReflow(base::TimeTicks reflow_start_time) override;
   bool ShouldShowPreselectionBubble() override;
   void ShowPreselectionBubble() override;
+  void HideOverlay(bool entering_background) override;
   bool UseOverlayBlur() override;
   void NotifyPageNavigated() override;
   void NotifyOverlayClosing() override;
@@ -713,8 +711,6 @@ class LensOverlayController : public OverlayBaseController,
   void RecordLensOverlaySemanticEvent(
       lens::mojom::SemanticEvent event) override;
   void SaveAsImage(lens::mojom::CenterRotatedBoxPtr region) override;
-  void MaybeShowTranslateFeaturePromo() override;
-  void MaybeCloseTranslateFeaturePromo(bool feature_engaged) override;
   void FetchSupportedLanguages(
       FetchSupportedLanguagesCallback callback) override;
   void FinishReshowOverlay() override;
@@ -724,10 +720,6 @@ class LensOverlayController : public OverlayBaseController,
   // content::WebContentsObserver:
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
-
-  // Tries to show the translate feature promo after the translate button
-  // element is shown.
-  void TryShowTranslateFeaturePromo(ui::TrackedElement* element);
 
   // Performs shared logic for IssueTextSelectionRequest() and
   // IssueTranslateSelectionRequest().
@@ -741,7 +733,7 @@ class LensOverlayController : public OverlayBaseController,
   void IssueSearchBoxRequestPart2(
       base::Time query_start_time,
       const std::string& search_box_text,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       bool is_zero_prefix_suggestion,
       std::map<std::string, std::string> additional_query_params,
       std::optional<lens::LensOverlayInvocationSource> invocation_source);
@@ -778,7 +770,7 @@ class LensOverlayController : public OverlayBaseController,
       base::Time query_start_time,
       std::string query_text,
       std::map<std::string, std::string> additional_query_parameters,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       bool is_zero_prefix_suggestion,
       lens::LensOverlayInvocationSource invocation_source);
 
@@ -832,6 +824,13 @@ class LensOverlayController : public OverlayBaseController,
 
   // Shorthand to grab the LensSessionMetricsLogger for this instance of Lens.
   lens::LensSessionMetricsLogger* GetLensSessionMetricsLogger();
+
+  // Suspends media playback on the tab if media is actively playing and Lens
+  // was invoked from the video context menu entrypoint.
+  void MaybeSuspendMedia();
+
+  // Resumes media playback on the tab if it was suspended by the overlay.
+  void MaybeResumeMedia();
 
   // Owns this class.
   raw_ptr<LensSearchController> lens_search_controller_;
@@ -903,9 +902,6 @@ class LensOverlayController : public OverlayBaseController,
   // if the text response came back before the initialization data was ready.
   std::optional<lens::mojom::TextPtr> pre_initialization_text_;
 
-  // The callback subscription for the element shown callback used to show the
-  // translate feature promo.
-  base::CallbackListSubscription translate_button_shown_subscription_;
 
   // Matcher for URLs that are eligible to have the tutorial IPH shown.
   std::unique_ptr<url_matcher::URLMatcher> tutorial_iph_url_matcher_;
@@ -961,6 +957,9 @@ class LensOverlayController : public OverlayBaseController,
   // Whether the user performed an interaction without accepting the privacy
   // notice.
   bool user_interacted_without_accepting_privacy_notice = false;
+
+  // Whether media playback on the tab was suspended by the overlay.
+  bool did_suspend_media_ = false;
 
   // --------------------Browser window scoped state: END---------------------
 

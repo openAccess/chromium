@@ -15,7 +15,7 @@ import re
 _SRC_PATH = pathlib.Path(__file__).resolve().parents[2]
 
 sys.path.insert(1, str(_SRC_PATH / 'third_party/depot_tools'))
-import gclient_eval
+import gclient_eval  # noqa: E402
 
 
 _FETCH_ALL_PATH = _SRC_PATH / 'third_party/android_deps/fetch_all.py'
@@ -131,7 +131,7 @@ def fill_template(template_path, output_path, **kwargs):
   content = pathlib.Path(template_path).read_text()
   for key, value in kwargs.items():
     replace_string = '{{' + key + '}}'
-    if not replace_string in content:
+    if replace_string not in content:
       raise Exception(
         f'Replace text {replace_string} not found in {template_path}'
       )
@@ -210,8 +210,8 @@ def create_to_commit_zip(
     output_path: where to output the zipfile.
     package_root: path to gradle/cipd package.
     dirnames: list of subdirs under |package_root| to walk.
-    absolute_file_map: List of files to be stored under the absolute prefix
-      CHROMIUM_SRC/.
+    absolute_file_map: dict of file path relative to |package_root| -> path
+      in the repo; each is stored under the absolute prefix CHROMIUM_SRC/.
   """
   to_commit_paths = []
   for directory in dirnames:
@@ -219,6 +219,10 @@ def create_to_commit_zip(
       for filename in files:
         # Avoid committing actual artifacts.
         if filename.endswith(('.aar', '.jar')):
+          continue
+        # License texts stay in the cipd package only; README.chromium points
+        # at them there. See https://crbug.com/559659818.
+        if filename.startswith('LICENSE'):
           continue
         # TODO(mheikal): stop outputting these from gradle since they are not
         # useful.

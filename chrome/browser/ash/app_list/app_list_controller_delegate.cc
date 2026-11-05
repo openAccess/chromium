@@ -10,8 +10,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/extensions/extension_util.h"
-#include "chrome/browser/extensions/install_tracker_factory.h"
 #include "chrome/browser/extensions/launch_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -29,6 +27,8 @@
 #include "extensions/common/manifest_handlers/options_page_info.h"
 #include "net/base/url_util.h"
 #include "rlz/buildflags/buildflags.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/geometry/rect.h"
 
 #if BUILDFLAG(ENABLE_RLZ)
@@ -58,7 +58,7 @@ void AppListControllerDelegate::DoShowAppInfoFlow(Profile* profile,
   auto app_type = apps::AppServiceProxyFactory::GetForProfile(profile)
                       ->AppRegistryCache()
                       .GetAppType(app_id);
-  DCHECK_NE(app_type, apps::AppType::kUnknown);
+  CHECK_NE(app_type, apps::AppType::kUnknown, base::NotFatalUntil::M160);
 
   std::string sub_page;
   std::optional<ash::SettingsAppManager::EntryPoint> entry_point;
@@ -93,7 +93,8 @@ void AppListControllerDelegate::ShowOptionsPage(Profile* profile,
     return;
 
   OpenURL(profile, extensions::OptionsPageInfo::GetOptionsPage(extension),
-          ui::PAGE_TRANSITION_LINK, WindowOpenDisposition::CURRENT_TAB);
+          ui::PAGE_TRANSITION_LINK,
+          ui::mojom::WindowOpenDisposition::kCurrentTab);
 }
 
 extensions::LaunchType AppListControllerDelegate::GetExtensionLaunchType(
@@ -136,6 +137,6 @@ void AppListControllerDelegate::LaunchAppWithUrl(
     const GURL& url,
     apps::LaunchSource launch_source) {
   auto* proxy = apps::AppServiceProxyFactory::GetForProfile(profile);
-  DCHECK(proxy);
+  CHECK(proxy, base::NotFatalUntil::M160);
   proxy->LaunchAppWithUrl(app_id, event_flags, url, launch_source);
 }

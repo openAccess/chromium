@@ -21,8 +21,8 @@
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/cached_metadata_handler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 #include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 #include "v8/include/v8.h"
 
@@ -175,6 +175,9 @@ void ScriptCacheConsumer::NotifyClientWaiting(
   // kBothFinished and wanting to post using the task runner.
   CHECK(!finish_callback_task_runner_);
   finish_callback_task_runner_ = task_runner;
+
+  CHECK(V8CodeCache::HasCodeCache(classic_script->CacheHandler(),
+                                  CachedMetadataHandler::kCrashIfUnchecked));
 
   {
     v8::HandleScope scope(isolate_);

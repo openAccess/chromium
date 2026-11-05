@@ -10,6 +10,7 @@
 #include "chrome/browser/android/extensions/extensions_url_override_state_tracker.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handlers/incognito_info.h"
 
@@ -77,7 +78,8 @@ void ExtensionUrlOverrideStateTrackerImpl::UpdateOverrides(
     const URLOverrides::URLOverrideMap& overrides,
     int overrides_delta) {
   EnsureOverridesInitialized(overrides);
-  DCHECK(extension_id_to_incognito_status_.count(extension.id()));
+  CHECK(extension_id_to_incognito_status_.count(extension.id()),
+        base::NotFatalUntil::M161);
   bool incognito_override_allowed =
       extension_id_to_incognito_status_[extension.id()];
   for (const auto& page_override_pair : overrides) {
@@ -98,8 +100,8 @@ void ExtensionUrlOverrideStateTrackerImpl::UpdateOverrides(
 
     int new_regular_overrides_count = counts[false];
     int new_incognito_overrides_count = counts[true];
-    DCHECK_GE(new_regular_overrides_count, 0);
-    DCHECK_GE(new_incognito_overrides_count, 0);
+    CHECK_GE(new_regular_overrides_count, 0, base::NotFatalUntil::M161);
+    CHECK_GE(new_incognito_overrides_count, 0, base::NotFatalUntil::M161);
 
     bool was_enabled = prev_regular_overrides_count > 0;
     bool is_enabled = new_regular_overrides_count > 0;
@@ -107,7 +109,7 @@ void ExtensionUrlOverrideStateTrackerImpl::UpdateOverrides(
       listener_->OnUrlOverrideEnabled(chrome_url_path,
                                       new_incognito_overrides_count > 0);
     } else if (was_enabled && !is_enabled) {
-      DCHECK_EQ(new_incognito_overrides_count, 0);
+      CHECK_EQ(new_incognito_overrides_count, 0, base::NotFatalUntil::M161);
       listener_->OnUrlOverrideDisabled(chrome_url_path);
     } else if (is_enabled) {
       bool was_incognito_enabled = prev_incognito_overrides_count > 0;

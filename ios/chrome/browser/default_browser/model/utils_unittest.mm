@@ -11,18 +11,23 @@
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/test/mock_tracker.h"
 #import "components/prefs/testing_pref_service.h"
+#import "components/segmentation_platform/public/features.h"
 #import "components/sync_preferences/testing_pref_service_syncable.h"
 #import "ios/chrome/browser/default_browser/model/features.h"
 #import "ios/chrome/browser/default_browser/model/utils_test_support.h"
+#import "ios/chrome/browser/default_browser/promo/contextual/public/contextual_default_browser_promo_constants.h"
 #import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/commands/contextual_default_browser_promo_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/test/testing_application_context.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
+#import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
 namespace {
@@ -322,11 +327,14 @@ TEST_F(DefaultBrowserUtilsTest,
 // Test LogOpenHTTPURLFromExternalURL conversion metric logging.
 TEST_F(DefaultBrowserUtilsTest,
        TestLogOpenHTTPURLFromExternalURLConversionMetrics) {
-  // When user opens a link for the first time ever, all conversion
-  // histograms should record true.
+  // When user opens a link for the first time ever without having clicked the
+  // promo action button, all conversion histograms should record true and
+  // PromoSurface should not be recorded.
   {
     base::HistogramTester histogram_tester;
     LogOpenHTTPURLFromExternalURL();
+    histogram_tester.ExpectTotalCount(
+        "IOS.DefaultBrowser.Conversion.PromoSurface", 0);
     histogram_tester.ExpectBucketCount("IOS.DefaultBrowser.Conversion7", true,
                                        1);
     histogram_tester.ExpectBucketCount("IOS.DefaultBrowser.Conversion14", true,
@@ -339,10 +347,13 @@ TEST_F(DefaultBrowserUtilsTest,
                                        1);
   }
 
-  // Opening again immediately should record false for all histograms.
+  // Opening again immediately should record false for all day-window histograms
+  // and should not record PromoSurface.
   {
     base::HistogramTester histogram_tester;
     LogOpenHTTPURLFromExternalURL();
+    histogram_tester.ExpectTotalCount(
+        "IOS.DefaultBrowser.Conversion.PromoSurface", 0);
     histogram_tester.ExpectBucketCount("IOS.DefaultBrowser.Conversion7", false,
                                        1);
     histogram_tester.ExpectBucketCount("IOS.DefaultBrowser.Conversion14", false,
@@ -355,12 +366,21 @@ TEST_F(DefaultBrowserUtilsTest,
                                        false, 1);
   }
 
-  // Simulate opening a link after 30 days.
+  // Simulate clicking the promo action button ("Open Settings") on the First
+  // Run promo, then dismissing a subsequent promo, and opening a link after 30
+  // days. The conversion should still be attributed to kFirstRun.
+  RecordDefaultBrowserPromoLastAction(
+      IOSDefaultBrowserPromoAction::kActionButton,
+      IOSDefaultBrowserPromoSurface::kFirstRun);
+  RecordDefaultBrowserPromoLastAction(IOSDefaultBrowserPromoAction::kDismiss);
   SetObjectIntoStorageForKey(kLastHTTPURLOpenTime,
                              (base::Time::Now() - base::Days(30)).ToNSDate());
   {
     base::HistogramTester histogram_tester;
     LogOpenHTTPURLFromExternalURL();
+    histogram_tester.ExpectUniqueSample(
+        "IOS.DefaultBrowser.Conversion.PromoSurface",
+        IOSDefaultBrowserPromoSurface::kFirstRun, 1);
     histogram_tester.ExpectBucketCount("IOS.DefaultBrowser.Conversion7", true,
                                        1);
     histogram_tester.ExpectBucketCount("IOS.DefaultBrowser.Conversion14", true,
@@ -373,12 +393,31 @@ TEST_F(DefaultBrowserUtilsTest,
                                        false, 1);
   }
 
-  // Simulate opening a link after 100 days.
+  // Simulate a subsequent conversion after 30 days without clicking any new
+  // promo action button. Because the previous surface was reset after logging,
+  // PromoSurface should not be recorded.
+  SetObjectIntoStorageForKey(kLastHTTPURLOpenTime,
+                             (base::Time::Now() - base::Days(30)).ToNSDate());
+  {
+    base::HistogramTester histogram_tester;
+    LogOpenHTTPURLFromExternalURL();
+    histogram_tester.ExpectTotalCount(
+        "IOS.DefaultBrowser.Conversion.PromoSurface", 0);
+  }
+
+  // Simulate clicking the promo action button on a Tailored promo and opening a
+  // link after 100 days.
+  RecordDefaultBrowserPromoLastAction(
+      IOSDefaultBrowserPromoAction::kActionButton,
+      IOSDefaultBrowserPromoSurface::kTailored);
   SetObjectIntoStorageForKey(kLastHTTPURLOpenTime,
                              (base::Time::Now() - base::Days(100)).ToNSDate());
   {
     base::HistogramTester histogram_tester;
     LogOpenHTTPURLFromExternalURL();
+    histogram_tester.ExpectUniqueSample(
+        "IOS.DefaultBrowser.Conversion.PromoSurface",
+        IOSDefaultBrowserPromoSurface::kTailored, 1);
     histogram_tester.ExpectBucketCount("IOS.DefaultBrowser.Conversion7", true,
                                        1);
     histogram_tester.ExpectBucketCount("IOS.DefaultBrowser.Conversion14", true,
@@ -504,5 +543,123 @@ TEST_F(DefaultBrowserUtilsTest,
               kIPHiOSPromoOverflowMenuDestinationDefaultBrowserFeature)))
       .Times(1);
   DismissDefaultBrowserPromoOverflowMenu(&mock_tracker);
+}
+
+// Tests MaybeShowContextualDefaultBrowserPromo under various conditions.
+TEST_F(DefaultBrowserUtilsTest, TestMaybeShowContextualDefaultBrowserPromo) {
+  testing::NiceMock<feature_engagement::test::MockTracker> mock_tracker;
+  id mock_handler =
+      OCMProtocolMock(@protocol(ContextualDefaultBrowserPromoCommands));
+
+  // Should not trigger when tracker or handler is nil.
+  MaybeShowContextualDefaultBrowserPromo(nullptr, mock_handler);
+  MaybeShowContextualDefaultBrowserPromo(&mock_tracker, nil);
+
+  // Should not trigger when Chrome is likely default browser.
+  SetObjectIntoStorageForKey(kLastHTTPURLOpenTime,
+                             (base::Time::Now() - base::Days(2)).ToNSDate());
+  EXPECT_TRUE(IsChromeLikelyDefaultBrowser());
+  OCMReject([mock_handler showContextualDefaultBrowserPromoWithType:
+                              ContextualDefaultBrowserPromoType::kGemini]);
+  MaybeShowContextualDefaultBrowserPromo(&mock_tracker, mock_handler);
+
+  // Clear HTTP URL open time so Chrome is not default.
+  ClearDefaultBrowserPromoData();
+  EXPECT_FALSE(IsChromeLikelyDefaultBrowser());
+
+  // Should not trigger when feature flag is disabled.
+  MaybeShowContextualDefaultBrowserPromo(&mock_tracker, mock_handler);
+
+  // Enable feature flag.
+  feature_list_.InitAndEnableFeature(kIOSDefaultBrowserContextualPromo);
+
+  // Should not trigger handler when FET returns false.
+  EXPECT_CALL(mock_tracker,
+              ShouldTriggerHelpUI(testing::Ref(
+                  feature_engagement::
+                      kIPHiOSPromoContextualDefaultBrowserGeminiFeature)))
+      .WillOnce(testing::Return(false));
+  MaybeShowContextualDefaultBrowserPromo(&mock_tracker, mock_handler);
+  EXPECT_OCMOCK_VERIFY(mock_handler);
+
+  // Should trigger handler when FET returns true.
+  mock_handler =
+      OCMProtocolMock(@protocol(ContextualDefaultBrowserPromoCommands));
+  EXPECT_CALL(mock_tracker,
+              ShouldTriggerHelpUI(testing::Ref(
+                  feature_engagement::
+                      kIPHiOSPromoContextualDefaultBrowserGeminiFeature)))
+      .WillOnce(testing::Return(true));
+  OCMExpect([mock_handler showContextualDefaultBrowserPromoWithType:
+                              ContextualDefaultBrowserPromoType::kGemini]);
+  MaybeShowContextualDefaultBrowserPromo(&mock_tracker, mock_handler);
+  EXPECT_OCMOCK_VERIFY(mock_handler);
+}
+
+// Tests LogDefaultBrowserFullscreenPromoOpportunity records FirstTime and
+// Regular histograms correctly across different score buckets and fail-open.
+TEST_F(DefaultBrowserUtilsTest, LogDefaultBrowserFullscreenPromoOpportunity) {
+  base::HistogramTester histogram_tester;
+
+  // 1. First eligible opportunity with score 0.05 (bucket < 0.1).
+  LogDefaultBrowserFullscreenPromoOpportunity(0.05f);
+
+  histogram_tester.ExpectUniqueSample(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.Opportunity.FirstTime",
+      IOSDefaultBrowserVideoPromoOpportunity::kScoreUnder0_1, 1);
+  histogram_tester.ExpectUniqueSample(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.OpportunityScore.FirstTime", 5,
+      1);
+  histogram_tester.ExpectUniqueSample(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.Opportunity.Regular",
+      IOSDefaultBrowserVideoPromoOpportunity::kScoreUnder0_1, 1);
+  histogram_tester.ExpectUniqueSample(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.OpportunityScore.Regular", 5, 1);
+
+  // 2. Second eligible opportunity with score 0.35 (bucket 0.2 - 0.4).
+  // FirstTime histograms should NOT be re-recorded.
+  LogDefaultBrowserFullscreenPromoOpportunity(0.35f);
+
+  histogram_tester.ExpectTotalCount(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.Opportunity.FirstTime", 1);
+  histogram_tester.ExpectTotalCount(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.OpportunityScore.FirstTime", 1);
+  histogram_tester.ExpectBucketCount(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.Opportunity.Regular",
+      IOSDefaultBrowserVideoPromoOpportunity::kScore0_2To0_4, 1);
+  histogram_tester.ExpectBucketCount(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.OpportunityScore.Regular", 35,
+      1);
+
+  // 3. Third eligible opportunity with model failure (nullopt).
+  // Should fail-open to top bucket (kScore0_6AndAbove) and 100%.
+  LogDefaultBrowserFullscreenPromoOpportunity(std::nullopt);
+
+  histogram_tester.ExpectTotalCount(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.Opportunity.FirstTime", 1);
+  histogram_tester.ExpectBucketCount(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.Opportunity.Regular",
+      IOSDefaultBrowserVideoPromoOpportunity::kScore0_6AndAbove, 1);
+  histogram_tester.ExpectBucketCount(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.OpportunityScore.Regular", 100,
+      1);
+
+  // 4. Fourth opportunity with a new Finch experiment cohort (cohort 2).
+  // FirstTime histograms should record again for the new cohort.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      segmentation_platform::features::kDefaultBrowserPromoPropensityModel,
+      {{"opportunity_experiment_cohort", "2"}});
+
+  LogDefaultBrowserFullscreenPromoOpportunity(0.15f);
+
+  histogram_tester.ExpectTotalCount(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.Opportunity.FirstTime", 2);
+  histogram_tester.ExpectBucketCount(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.Opportunity.FirstTime",
+      IOSDefaultBrowserVideoPromoOpportunity::kScore0_1To0_2, 1);
+  histogram_tester.ExpectBucketCount(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.OpportunityScore.FirstTime", 15,
+      1);
 }
 }  // namespace

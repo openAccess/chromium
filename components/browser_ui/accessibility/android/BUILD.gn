@@ -23,7 +23,6 @@ source_set("android") {
     ":accessibility_jni_headers",
     "//base",
     "//components/prefs",
-    "//components/user_prefs",
     "//content/public/browser",
     "//services/metrics/public/cpp:ukm_builders",
   ]
@@ -56,8 +55,6 @@ android_library("lib_java") {
     "java/src/org/chromium/components/browser_ui/accessibility/PageZoomMetrics.java",
     "java/src/org/chromium/components/browser_ui/accessibility/PageZoomPreference.java",
     "java/src/org/chromium/components/browser_ui/accessibility/PageZoomProperties.java",
-    "java/src/org/chromium/components/browser_ui/accessibility/PageZoomSeekbarPreference.java",
-    "java/src/org/chromium/components/browser_ui/accessibility/PageZoomSliderPreference.java",
     "java/src/org/chromium/components/browser_ui/accessibility/ZoomEventsObserver.java",
   ]
 
@@ -74,7 +71,6 @@ android_library("lib_java") {
     "//components/browser_ui/widget/android:java",
     "//components/cached_flags:java",
     "//components/dom_distiller/core/android:dom_distiller_core_java",
-    "//components/omnibox/common:features_java",
     "//components/prefs/android:java",
     "//components/user_prefs/android:java",
     "//content/public/android:content_full_java",
@@ -119,7 +115,6 @@ android_resources("java_resources") {
     "java/res/drawable/page_zoom_background.xml",
     "java/res/drawable/page_zoom_ripple.xml",
     "java/res/layout/page_zoom_indicator_view.xml",
-    "java/res/layout/page_zoom_legacy_preference.xml",
     "java/res/layout/page_zoom_preference.xml",
     "java/res/layout/page_zoom_slider.xml",
     "java/res/layout/page_zoom_view.xml",
@@ -163,7 +158,6 @@ robolectric_library("junit") {
     "//third_party/android_deps:material_design_java",
     "//third_party/androidx:androidx_appcompat_appcompat_java",
     "//third_party/androidx:androidx_test_core_java",
-    "//third_party/androidx:androidx_test_runner_java",
     "//third_party/hamcrest:hamcrest_core_java",
     "//third_party/hamcrest:hamcrest_library_java",
     "//third_party/jni_zero:jni_zero_java",

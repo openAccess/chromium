@@ -211,6 +211,10 @@ inline constexpr char16_t kDoNotTrackLearnMoreURL[] =
     u"https://support.google.com/chrome?p=settings_do_not_track";
 #endif
 
+// "Learn more" URL for Universal Opt-Out.
+inline constexpr char16_t kUniversalOptOutLearnMoreURL[] =
+    u"https://support.google.com/chrome?p=opt_out_request";
+
 // The URL for the "Learn more" page for interrupted downloads.
 inline constexpr char kDownloadInterruptedLearnMoreURL[] =
     "https://support.google.com/chrome?p=ui_download_errors";
@@ -552,20 +556,12 @@ inline constexpr char16_t kSyncEncryptionHelpURL[] =
 inline constexpr char kSyncErrorsHelpURL[] =
     "https://support.google.com/chrome?p=settings_sync_error";
 
-// Legacy URL to the sync google dashboard.
-inline constexpr char kLegacySyncGoogleDashboardURL[] =
-    "https://www.google.com/settings/chrome/sync";
-#if BUILDFLAG(IS_CHROMEOS)
-static_assert(std::string_view(kLegacySyncGoogleDashboardURL) ==
-              ash::chrome_external_urls::kLegacySyncGoogleDashboardURL);
-#endif
-
-// New URL to the sync google dashboard.
-inline constexpr char kNewSyncGoogleDashboardURL[] =
+// URL to the sync google dashboard.
+inline constexpr char kSyncGoogleDashboardURL[] =
     "https://chrome.google.com/data";
 #if BUILDFLAG(IS_CHROMEOS)
-static_assert(std::string_view(kNewSyncGoogleDashboardURL) ==
-              ash::chrome_external_urls::kNewSyncGoogleDashboardURL);
+static_assert(std::string_view(kSyncGoogleDashboardURL) ==
+              ash::chrome_external_urls::kSyncGoogleDashboardURL);
 #endif
 
 // The URL for the "Learn more" page for sync setup on the personal stuff page.
@@ -593,19 +589,6 @@ inline constexpr char kComposeLearnMorePageURL[] =
 // The URL for the "Learn more" page for Help me Write for managed users.
 inline constexpr char kComposeLearnMorePageManagedURL[] =
     "https://support.google.com/chrome/a?p=help_me_write_settings";
-
-// The URL for the "Learn more" links for pages related to History search.
-inline constexpr char kHistorySearchLearnMorePageURL[] =
-    "https://support.google.com/chrome?p=ai_history_search";
-
-// The URL for the "Learn more" links for pages related to History search for
-// managed users.
-inline constexpr char kHistorySearchLearnMorePageManagedURL[] =
-    "https://support.google.com/chrome/a?p=search_history";
-
-// The URL for the Settings page to enable history search.
-inline constexpr char16_t kHistorySearchSettingURL[] =
-    u"chrome://settings/ai/historySearch";
 
 // The URL for the "Learn more" page for Wallpaper Search.
 inline constexpr char kWallpaperSearchLearnMorePageURL[] =

@@ -481,8 +481,7 @@ found in the LICENSE file.
     <label id="screenWakeLockStatus" lockStatus="released" />
   </div>
   <div class="section">
-    <h1>Desktop Screenshot</h1>
-    <button id="desktopScreenshot">Capture</button>
+    <h1>Panel Screenshot</h1>
     <button id="panelScreenshot">Capture Panel</button>
     <span id="desktopScreenshotErrorReason"></span>
     <img id="desktopScreenshotImg" />
@@ -490,6 +489,11 @@ found in the LICENSE file.
   <div class="section">
     <h1>Region Capture</h1>
     <button id="captureRegionBtn">Capture Region</button>
+    <!-- Enabled while a CAPTURE_REGION_HOTKEY invoke is held back by the
+         `hold_capture_region_hotkey` URL parameter. -->
+    <button id="releaseCaptureRegionHotkey" disabled>
+      Answer held capture-region hotkey
+    </button>
     <ul id="captureRegionResultList"></ul>
     <label for="deleteCaptureRegion">Delete Region ID:</label>
     <input type="text" id="deleteCaptureRegion" name="deleteCaptureRegion" />
@@ -680,6 +684,35 @@ found in the LICENSE file.
       <button id="getSkillBtn">Get Skill</button>
       <button id="manageSkillsBtn">Manage Skills</button>
       <button id="browseSkillsBtn">Browse Skills</button>
+    </div>
+  </div>
+  <div class="section">
+    <h1>Chrome Tools</h1>
+    <div>
+      <button id="getChromeToolsBtn">Get Chrome Tools</button>
+    </div>
+    <p id="toolsStatus" style="white-space: pre-wrap; font-family: monospace; font-size: 12px;">Click Get Chrome Tools to query available host tools.</p>
+    <div>
+      <label>Select Tool:
+        <select id="toolSelect">
+          <option value="">-- No tools loaded --</option>
+        </select>
+      </label>
+    </div>
+    <div style="margin-top: 8px;">
+      <label>JSON Arguments:
+        <br />
+        <textarea id="toolArgumentsInput" rows="4" style="width: 100%; font-family: monospace;" placeholder='{"url": "https://google.com", "new_tab": true}'></textarea>
+      </label>
+    </div>
+    <div style="margin-top: 8px;">
+      <button id="executeToolBtn">Execute Tool</button>
+    </div>
+    <div>
+      <label>Execution Result:
+        <br />
+        <textarea id="executeToolResult" rows="4" readonly style="width: 100%; font-family: monospace; background: #f0f0f0;"></textarea>
+      </label>
     </div>
   </div>
   <div class="section">

@@ -24,26 +24,9 @@ export function getHtml(this: SignInPromoRefreshElement) {
     ?autoplay="${!this.shouldDisableAnimations_}">
 </cr-lottie>
 
-<!-- TODO(crbug.com/469390080): Consider moving this button to the native
-     toolbar to unify the logic once the experiment concludes. -->
-${this.isTopRightCornerVariation_() ? html`
-  <div id="top-right-corner-container"
-      class="${this.isFirstRunDesktopRevampEnabled_ ?
-        'has-effects-control-button' : ''}">
-    <cr-button id="declineSignInButton"
-        class="${this.isFirstRunDesktopRevampEnabled_ ?
-          'no-border' : 'tangible-button tonal-button'}"
-        ?disabled="${this.shouldDisableButtons_()}"
-        @click="${this.onDeclineSignInButtonClick_}">
-      $i18n{declineSignInButtonTitle}
-    </cr-button>
-    ${this.isFirstRunDesktopRevampEnabled_ ? html`<div id="separator"></div>` : ''}
-  </div>
-` : ''}
-
 <div id="product-logo-container">
   <img id="product-logo-animation" src="images/product-logo-animation.svg"
-    alt="$i18n{productLogoAltText}">
+      alt="$i18n{productLogoAltText}">
 </div>
 
 <h1 class="title fade-in">$i18n{pageTitle}</h1>
@@ -59,8 +42,7 @@ ${this.isTopRightCornerVariation_() ? html`
     `)}
   </div>
 
-  <div id="managedDeviceDisclaimer"
-      ?hidden="${!this.isDeviceManaged_}"
+  <div id="managedDeviceDisclaimer" ?hidden="${!this.isDeviceManaged_}"
       class="${this.getDisclaimerVisibilityClass_()}">
     <div id="iconContainer">
       <cr-icon icon="cr:domain" aria-hidden="true"></cr-icon>
@@ -69,37 +51,26 @@ ${this.isTopRightCornerVariation_() ? html`
   </div>
 </div>
 
-<div id="buttonRow" class="fade-in">
-  ${this.isTopRightCornerVariation_() ? html`
-    <p id="create-account-disclaimer">$i18n{createAccountDisclaimer}</p>
-  ` : ''}
-  <div id="buttonContainer">
-    <if expr="not is_win">
-      ${this.isDefaultVariation_() ? html`
-      <cr-button id="declineSignInButton"
-          class="tangible-button tonal-button"
-          ?disabled="${this.shouldDisableButtons_()}"
-          @click="${this.onDeclineSignInButtonClick_}">
-        $i18n{declineSignInButtonTitle}
-      </cr-button>
-      ` : ''}
-    </if>
-    <cr-button id="acceptSignInButton" class="tangible-button action-button"
-        ?disabled="${this.shouldDisableButtons_()}"
-        @click="${this.onAcceptSignInButtonClick_}">
-      $i18n{acceptSignInButtonTitle}
-    </cr-button>
-    <if expr="is_win">
-      ${this.isDefaultVariation_() ? html`
-      <cr-button id="declineSignInButton"
-          class="tangible-button tonal-button"
-          ?disabled="${this.shouldDisableButtons_()}"
-          @click="${this.onDeclineSignInButtonClick_}">
-        $i18n{declineSignInButtonTitle}
-      </cr-button>
-      ` : ''}
-    </if>
-  </div>
+<div id="buttonContainer" class="fade-in">
+<if expr="not is_win">
+  <cr-button id="declineSignInButton" class="tangible-button tonal-button"
+      ?disabled="${this.shouldDisableButtons_()}"
+      @click="${this.onDeclineSignInButtonClick_}">
+    $i18n{declineSignInButtonTitle}
+  </cr-button>
+</if>
+  <cr-button id="acceptSignInButton" class="tangible-button action-button"
+      ?disabled="${this.shouldDisableButtons_()}"
+      @click="${this.onAcceptSignInButtonClick_}">
+    $i18n{acceptSignInButtonTitle}
+  </cr-button>
+<if expr="is_win">
+  <cr-button id="declineSignInButton" class="tangible-button tonal-button"
+      ?disabled="${this.shouldDisableButtons_()}"
+      @click="${this.onDeclineSignInButtonClick_}">
+    $i18n{declineSignInButtonTitle}
+  </cr-button>
+</if>
 </div>
 <!--_html_template_end_-->`;
   // clang-format on

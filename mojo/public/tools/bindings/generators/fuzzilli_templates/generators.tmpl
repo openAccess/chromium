@@ -1,7 +1,9 @@
-// TODO(crbug.com/500386713) Consider using mojoBuiltins or another list instead of regex
+/// Names of every ObjectGroup registered by this profile.
+private let mojoTargetGroups = Set(mojoObjectGroups.map { $0.name })
+
 private func isTargetObject(type: ILType) -> Bool {
     guard type.Is(.object()), let group = type.group else { return false }
-    return group.starts(with: mojoPrefix)
+    return mojoTargetGroups.contains(group)
 }
 
 /// Mojo variant of the builtin `MethodCallGenerator` that operates only on
@@ -26,7 +28,7 @@ private let MojoMethodCallGenerator = CodeGenerator("MojoMethodCallGenerator") {
     let methodName = b.type(of: obj).randomMethod()!
     let signatures = b.methodSignatures(of: methodName, on: obj)
     let signature = chooseUniform(from: signatures)
-    let arguments = b.findOrGenerateArguments(forSignature: signature)
+    let arguments = b.findOrGenerateArguments(forSignature: signature, maxNumberOfVariablesToGenerate: 1000)
     b.callMethod(methodName, on: obj, withArgs: arguments, guard: false)
 }
 

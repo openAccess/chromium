@@ -14,6 +14,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/android/tab_android_data_provider.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
+#include "chrome/browser/sync/glue/synced_window_delegates_getter_android.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_test_helper.h"
@@ -24,12 +25,11 @@
 #include "components/sync/protocol/sync_enums.pb.h"
 #include "components/sync_sessions/features.h"
 #include "components/sync_sessions/mock_sync_sessions_client.h"
+#include "components/sync_sessions/synced_window_delegate.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
-
-namespace browser_sync {
 
 namespace {
 
@@ -46,6 +46,12 @@ class MockTabAndroidDataProvider : public TabAndroidDataProvider {
               GetWebContentsByteBuffer,
               (),
               (const override));
+};
+
+class SessionIdTestTabModel : public TestTabModel {
+ public:
+  using TabModel::SetSessionId;
+  using TestTabModel::TestTabModel;
 };
 
 const int kVersion = 2;
@@ -157,6 +163,56 @@ TEST_F(SyncedTabDelegateAndroidTest,
   EXPECT_NE(nullptr, placeholder.get());
 }
 
-}  // namespace
+TEST_F(SyncedTabDelegateAndroidTest,
+       SyncedWindowDelegatesGetterAndroidIsScopedToProfile) {
+  std::unique_ptr<TestingProfile> other_profile =
+      TestingProfile::Builder().Build();
+  Profile* otr_profile =
+      profile_->GetPrimaryOTRProfile(/*create_if_needed=*/true);
 
-}  // namespace browser_sync
+  SessionIdTestTabModel profile_model_2(profile_.get());
+  const SessionID profile_window_id_2 = SessionID::NewUnique();
+  profile_model_2.SetSessionId(profile_window_id_2);
+  TabModelList::AddTabModel(&profile_model_2);
+
+  SessionIdTestTabModel other_model(other_profile.get());
+  const SessionID other_window_id = SessionID::NewUnique();
+  other_model.SetSessionId(other_window_id);
+  TabModelList::AddTabModel(&other_model);
+
+  SessionIdTestTabModel otr_model(otr_profile);
+  const SessionID otr_window_id = SessionID::NewUnique();
+  otr_model.SetSessionId(otr_window_id);
+  TabModelList::AddTabModel(&otr_model);
+
+  SyncedWindowDelegatesGetterAndroid profile_getter(profile_.get());
+  const sync_sessions::SyncedWindowDelegatesGetter::SyncedWindowDelegateMap
+      profile_delegates = profile_getter.GetSyncedWindowDelegates();
+  EXPECT_EQ(2u, profile_delegates.size());
+  EXPECT_EQ(test_tab_model_->GetSyncedWindowDelegate(),
+            profile_delegates.at(test_tab_model_->GetSessionId()));
+  EXPECT_EQ(profile_model_2.GetSyncedWindowDelegate(),
+            profile_delegates.at(profile_window_id_2));
+  EXPECT_FALSE(profile_delegates.contains(other_window_id));
+  EXPECT_FALSE(profile_delegates.contains(otr_window_id));
+
+  EXPECT_EQ(profile_model_2.GetSyncedWindowDelegate(),
+            profile_getter.FindById(profile_window_id_2));
+  EXPECT_EQ(nullptr, profile_getter.FindById(other_window_id));
+  EXPECT_EQ(nullptr, profile_getter.FindById(otr_window_id));
+  EXPECT_EQ(nullptr, profile_getter.FindById(SessionID::NewUnique()));
+
+  SyncedWindowDelegatesGetterAndroid other_getter(other_profile.get());
+  const sync_sessions::SyncedWindowDelegatesGetter::SyncedWindowDelegateMap
+      other_delegates = other_getter.GetSyncedWindowDelegates();
+  EXPECT_EQ(1u, other_delegates.size());
+  EXPECT_EQ(other_model.GetSyncedWindowDelegate(),
+            other_delegates.at(other_window_id));
+
+  EXPECT_EQ(other_model.GetSyncedWindowDelegate(),
+            other_getter.FindById(other_window_id));
+  EXPECT_EQ(nullptr, other_getter.FindById(profile_window_id_2));
+  EXPECT_EQ(nullptr, other_getter.FindById(otr_window_id));
+}
+
+}  // namespace

@@ -39,6 +39,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -56,6 +57,8 @@ import org.chromium.chrome.browser.actor.ui.ControlOwnership;
 import org.chromium.chrome.browser.actor.ui.TabIndicatorStatus;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonStateController;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicToolbarButtonController;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonController;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
@@ -242,11 +245,13 @@ public class GlicAndroidUiIntegrationTest {
 
         // Verify that toggleUI was called on GlicKeyedService.
         verify(mGlicService, Mockito.timeout(5000))
-                .toggleUI(Mockito.anyLong(), Mockito.eq(false), Mockito.any(), Mockito.anyInt());
+                .toggleUI(Mockito.any(), Mockito.eq(false), Mockito.any(), Mockito.anyInt());
     }
 
     @Test
     @LargeTest
+    // TODO(crbug.com/570554196): Re-enable.
+    @DisableIf.Build(supported_abis_includes = "x86_64", message = "https://crbug.com/570554196")
     public void testButtonClickShowsTaskMenuWhenTaskOnOtherTab() {
         // Set up active task on a different tab.
         int otherTabId = mTab.getId() + 1;

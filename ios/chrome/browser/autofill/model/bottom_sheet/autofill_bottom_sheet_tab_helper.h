@@ -7,6 +7,7 @@
 
 #import <memory>
 
+#import "base/gtest_prod_util.h"
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/scoped_multi_source_observation.h"
@@ -36,6 +37,25 @@ class ScriptMessage;
 @class CommandDispatcher;
 @protocol FormInputSuggestionsProvider;
 @class FormSuggestion;
+
+// Status of the user gesture check when attempting to show the payments bottom
+// sheet.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(PaymentsBottomSheetUserGestureStatus)
+enum class PaymentsBottomSheetUserGestureStatus {
+  kValidGesture = 0,
+  kNoUserGesture = 1,
+  kUserNotInteracting = 2,
+  kMaxValue = kUserNotInteracting,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/ios/enums.xml:PaymentsBottomSheetUserGestureStatus)
+
+// Histogram name for recording the user gesture status when attempting to show
+// the payments bottom sheet.
+inline constexpr std::string_view
+    kPaymentsBottomSheetUserGestureStatusHistogram =
+        "IOS.PaymentsBottomSheet.UserGestureStatus";
 
 // This class manages state and events relating to the showing of various bottom
 // sheets for Autofill/Password Manager.
@@ -95,7 +115,7 @@ class AutofillBottomSheetTabHelper
   // Handler for JavaScript messages. Dispatch to more specific handler.
   void OnFormMessageReceived(const web::ScriptMessage& message);
 
-  // Sets the bottom sheet CommandDispatcher.
+  // Sets the bottom sheet AutofillCommands handler.
   void SetAutofillBottomSheetHandler(id<AutofillCommands> commands_handler);
 
   // Sets the password generation provider used for proactive password
@@ -148,8 +168,11 @@ class AutofillBottomSheetTabHelper
   void RefocusElementIfNeeded(const std::string& frame_id);
 
   // WebStateObserver:
+  void DidStartNavigation(web::WebState* web_state,
+                          web::NavigationContext* navigation_context) override;
   void DidFinishNavigation(web::WebState* web_state,
                            web::NavigationContext* navigation_context) override;
+  void RenderProcessGone(web::WebState* web_state) override;
   void WebStateDestroyed(web::WebState* web_state) override;
 
   // web::WebFramesManager::Observer:
@@ -204,6 +227,10 @@ class AutofillBottomSheetTabHelper
 
  private:
   friend class web::WebStateUserData<AutofillBottomSheetTabHelper>;
+  FRIEND_TEST_ALL_PREFIXES(AutofillBottomSheetTabHelperTest,
+                           DidStartNavigationCancelsPendingCallbacks);
+  FRIEND_TEST_ALL_PREFIXES(AutofillBottomSheetTabHelperTest,
+                           RenderProcessGoneClearsState);
 
   explicit AutofillBottomSheetTabHelper(web::WebState* web_state);
 
@@ -259,6 +286,10 @@ class AutofillBottomSheetTabHelper
   // Shows the password generation suggestion view controller.
   void ShowProactivePasswordGenerationBottomSheet(
       const autofill::FormActivityParams& params);
+
+  // Cancels any pending asynchronous suggestion queries (e.g. for payments
+  // bottom sheet) associated with a previous page or document.
+  void CancelPendingSuggestionRequests();
 
   // Password generation provider used to trigger proactive password generation
   id<PasswordGenerationProvider> generation_provider_;
@@ -316,6 +347,13 @@ class AutofillBottomSheetTabHelper
   // Callbacks to be run when the virtual card enrollment bottom sheet UI has
   // completed.
   autofill::VirtualCardEnrollmentCallbacks virtual_card_enrollment_callbacks_;
+
+  // Weak pointers handed out to pending suggestion retrieval callbacks. Kept
+  // separate from `weak_factory_` because `CancelPendingSuggestionRequests()`
+  // invalidates the whole factory, and only suggestion requests may be
+  // cancelled that way.
+  base::WeakPtrFactory<AutofillBottomSheetTabHelper>
+      suggestion_request_weak_factory_{this};
 
   base::WeakPtrFactory<AutofillBottomSheetTabHelper> weak_factory_{this};
 };

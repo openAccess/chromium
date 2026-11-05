@@ -4,12 +4,14 @@
 
 #include "chrome/browser/performance_manager/policies/memory_saver_mode_policy.h"
 
+#include "base/feature_list.h"
 #include "base/notreached.h"
 #include "chrome/browser/performance_manager/policies/page_discarding_helper.h"
 #include "components/performance_manager/public/decorators/tab_page_decorator.h"
 #include "components/performance_manager/public/features.h"
 #include "components/performance_manager/public/user_tuning/prefs.h"
 #include "components/performance_manager/public/user_tuning/tab_revisit_tracker.h"
+#include "content/public/browser/browser_memory_coordinator.h"
 
 namespace performance_manager::policies {
 
@@ -19,12 +21,12 @@ using user_tuning::prefs::MemorySaverModeAggressiveness;
 }  // namespace
 
 MemorySaverModePolicy::MemorySaverModePolicy() {
-  DCHECK(!g_memory_saver_mode_policy);
+  CHECK(!g_memory_saver_mode_policy, base::NotFatalUntil::M163);
   g_memory_saver_mode_policy = this;
 }
 
 MemorySaverModePolicy::~MemorySaverModePolicy() {
-  DCHECK_EQ(this, g_memory_saver_mode_policy);
+  CHECK_EQ(this, g_memory_saver_mode_policy, base::NotFatalUntil::M163);
   g_memory_saver_mode_policy = nullptr;
 }
 
@@ -72,9 +74,18 @@ void MemorySaverModePolicy::OnBeforeTabRemoved(
 void MemorySaverModePolicy::OnPassedToGraph(Graph* graph) {
   graph->AddPageNodeObserver(this);
   graph->GetRegisteredObjectAs<TabPageDecorator>()->AddObserver(this);
+
+  if (base::FeatureList::IsEnabled(
+          features::kMemorySaverMemoryCoordinatorPolicy)) {
+    memory_coordinator_policy_.emplace(
+        content::BrowserMemoryCoordinator::Get().policy_manager());
+    memory_coordinator_policy_->UpdateState(memory_saver_mode_enabled_, mode_);
+  }
 }
 
 void MemorySaverModePolicy::OnTakenFromGraph(Graph* graph) {
+  memory_coordinator_policy_.reset();
+
   // The logic in this class depends on being notified of pages being removed,
   // otherwise there's no guarantee PageNode pointers are still valid when
   // timers fire. To avoid possibly having callbacks manipulate invalid PageNode
@@ -94,10 +105,14 @@ void MemorySaverModePolicy::OnMemorySaverModeChanged(bool enabled) {
   memory_saver_mode_enabled_ = enabled;
 
   if (memory_saver_mode_enabled_) {
-    DCHECK(active_discard_timers_.empty());
+    CHECK(active_discard_timers_.empty(), base::NotFatalUntil::M163);
     StartAllDiscardTimers();
   } else {
     active_discard_timers_.clear();
+  }
+
+  if (memory_coordinator_policy_) {
+    memory_coordinator_policy_->UpdateState(memory_saver_mode_enabled_, mode_);
   }
 }
 
@@ -110,6 +125,10 @@ void MemorySaverModePolicy::SetMode(MemorySaverModeAggressiveness mode) {
   if (memory_saver_mode_enabled_) {
     active_discard_timers_.clear();
     StartAllDiscardTimers();
+  }
+
+  if (memory_coordinator_policy_) {
+    memory_coordinator_policy_->UpdateState(memory_saver_mode_enabled_, mode_);
   }
 }
 
@@ -177,7 +196,7 @@ void MemorySaverModePolicy::DiscardPageTimerCallback(
 
   // Turning off Memory Saver Mode would delete the timer, so it's not
   // possible to get here and for Memory Saver Mode to be off.
-  DCHECK(IsMemorySaverDiscardingEnabled());
+  CHECK(IsMemorySaverDiscardingEnabled(), base::NotFatalUntil::M163);
 
   // If the time elapsed according to `LiveTicks` is shorter than
   // `requested_time_before_discard`, it means that the device was in a

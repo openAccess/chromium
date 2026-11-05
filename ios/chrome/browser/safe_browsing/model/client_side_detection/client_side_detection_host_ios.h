@@ -6,9 +6,11 @@
 #define IOS_CHROME_BROWSER_SAFE_BROWSING_MODEL_CLIENT_SIDE_DETECTION_CLIENT_SIDE_DETECTION_HOST_IOS_H_
 
 #import <optional>
+#import <string>
 #import <vector>
 
 #import "base/memory/raw_ptr.h"
+#import "base/memory/raw_ref.h"
 #import "base/memory/weak_ptr.h"
 #import "base/scoped_observation.h"
 #import "base/time/time.h"
@@ -16,8 +18,8 @@
 #import "components/safe_browsing/core/browser/client_side_detection_host_base.h"
 #import "components/safe_browsing/core/browser/db/database_manager.h"
 #import "components/safe_browsing/core/common/phishing_classifier/phishing_classifier.h"
-#import "components/safe_browsing/core/common/phishing_classifier/phishing_image_embedder.h"
 #import "components/safe_browsing/core/common/visual_utils.h"
+#import "ios/chrome/browser/safe_browsing/model/client_side_detection/client_side_detection_service.h"
 #import "ios/chrome/browser/web/model/web_performance_metrics/web_performance_metrics_tab_helper.h"
 #import "ios/components/security_interstitials/safe_browsing/safe_browsing_query_manager.h"
 #import "ios/web/public/web_state_observer.h"
@@ -25,7 +27,9 @@
 #import "ui/gfx/image/image.h"
 #import "url/gurl.h"
 
+class PageContextWrapperFactory;
 class PrefService;
+@class PageContextWrapper;
 @class UIImage;
 
 namespace history {
@@ -42,23 +46,9 @@ class NavigationContext;
 
 namespace safe_browsing {
 
-class ClientSideDetectionService;
 class ClientSideDetectionHostIOSTest;
+class IntelligentScanDelegate;
 class VerdictCacheManager;
-
-// Reasons why visual classification returned early on iOS.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-//
-// LINT.IfChange(VisualClassificationEarlyReturnReason)
-enum class VisualClassificationEarlyReturnReason {
-  kScorerMissingBeforeSnapshot = 0,
-  kSnapshotHelperMissing = 1,
-  kSnapshotFailed = 2,
-  kScorerMissingAfterSnapshot = 3,
-  kMaxValue = kScorerMissingAfterSnapshot,
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/sb_client/enums.xml:SBClientPhishingVisualClassificationEarlyReturnReason)
 
 // Host that manages client-side phishing detection for a WebState.
 class ClientSideDetectionHostIOS
@@ -70,12 +60,19 @@ class ClientSideDetectionHostIOS
   // Constructs a host instance managing client-side detection for `web_state`.
   // `service`, `cache_manager`, `pref_service`, `identity_manager`, and
   // `history_service` supply required service dependencies.
-  ClientSideDetectionHostIOS(web::WebState* web_state,
-                             ClientSideDetectionService* service,
-                             VerdictCacheManager* cache_manager,
-                             PrefService* pref_service,
-                             signin::IdentityManager* identity_manager,
-                             history::HistoryService* history_service);
+  // `intelligent_scan_delegate` is optional and may be null if intelligent
+  // scanning is unsupported or disabled. `page_context_wrapper_factory` is
+  // optional and defaults to `DefaultPageContextWrapperFactory::GetInstance()`
+  // if null.
+  ClientSideDetectionHostIOS(
+      web::WebState* web_state,
+      ClientSideDetectionService* service,
+      VerdictCacheManager* cache_manager,
+      IntelligentScanDelegate* intelligent_scan_delegate,
+      PrefService* pref_service,
+      signin::IdentityManager* identity_manager,
+      history::HistoryService* history_service,
+      PageContextWrapperFactory* page_context_wrapper_factory = nullptr);
   ~ClientSideDetectionHostIOS() override;
 
   ClientSideDetectionHostIOS(const ClientSideDetectionHostIOS&) = delete;
@@ -91,6 +88,14 @@ class ClientSideDetectionHostIOS
   bool IsAccountSignedIn() override;
   bool IsErrorDocument() override;
   void GetInnerText(HostInnerTextCallback callback) override;
+  // Note: On iOS, the tab screenshot is captured alongside inner text in
+  // `GetInnerText()` via `PageContextWrapper` and cached in
+  // `intelligent_scan_tab_screenshot_`, rather than being captured here.
+  void MaybeCaptureScreenshotAndStartIntelligentScan(
+      std::unique_ptr<ClientPhishingRequest> verdict,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip,
+      std::string inner_text) override;
   void ClassifyPhishingThroughThresholds(
       ClientPhishingRequest* verdict) override;
   void MaybeStartImageEmbedding(
@@ -99,7 +104,8 @@ class ClientSideDetectionHostIOS
       bool is_invalid_ip,
       PhishingDetectorResult result) override;
   void MaybeRunUserReportCallback() override;
-  // TODO(crbug.com/502615476): Fully implement this method on iOS.
+  // Note: `GeminiAntiscamProtectionService` is a desktop/Android MQLS telemetry
+  // feature and is not supported on iOS.
   void MaybeStartGeminiAntiscamProtection(
       GURL url,
       ClientSideDetectionType request_type,
@@ -111,6 +117,7 @@ class ClientSideDetectionHostIOS
       GURL phishing_url,
       ClientSideDetectionType request_type,
       std::optional<IntelligentScanVerdict> intelligent_scan_verdict,
+      bool is_phishing,
       bool should_show_scam_warning) override;
   void UpdateDebuggingMetadataWithNetworkResult(
       GURL phishing_url,
@@ -119,6 +126,11 @@ class ClientSideDetectionHostIOS
   // This provides a minimal fallback containing only the current event URL and
   // its immediate HTTP referrer.
   void AddReferrerChain(ClientPhishingRequest* verdict) override;
+  void CaptureScreenshot(ScreenshotCallback callback) override;
+  visual_utils::CanExtractVisualFeaturesResult
+  DetermineVisualFeaturesExtraction() override;
+  void OnVisualClassificationEarlyReturn(
+      VisualClassificationEarlyReturnReason reason) override;
 
   // web::WebStateObserver implementation:
   void DidFinishNavigation(web::WebState* web_state,
@@ -143,6 +155,10 @@ class ClientSideDetectionHostIOS
   void OnVisualClassificationDoneForTesting(
       const GURL& url,
       const std::vector<double>& visual_scores);
+
+  // Sets whether the local resource / localhost pre-classification check should
+  // be bypassed for testing.
+  static void SetBypassLocalResourceCheckForTesting(bool bypass);
 
  private:
   friend class ClientSideDetectionHostIOSTest;
@@ -180,14 +196,13 @@ class ClientSideDetectionHostIOS
                                           PreClassificationCheckResult reason);
 
   // Callback invoked when CSD allowlist lookup completes. Initiates
-  // high-confidence allowlist check.
+  // high-confidence allowlist check if the CSD allowlist did not match.
   void OnAllowlistCheckDone(const GURL& url, bool match_allowlist);
 
   // Callback invoked when High-Confidence allowlist lookup completes. Evaluates
   // allowlist results and logs duration metrics.
   void OnHighConfidenceAllowlistCheckDone(
       const GURL& url,
-      bool match_allowlist,
       base::TimeTicks check_start_time,
       bool url_on_high_confidence_allowlist,
       std::optional<SafeBrowsingDatabaseManager::
@@ -212,8 +227,9 @@ class ClientSideDetectionHostIOS
   // Callback invoked when `SnapshotTabHelper` produces a snapshot of the page.
   void OnSnapshotReceived(const GURL& url, UIImage* ui_image);
 
-  // Callback invoked when `PhishingClassifier` completes visual phishing
-  // classification.
+  // Forwards a completed visual classification to the base class together
+  // with the pre-classification state (`send_sample_ping_`,
+  // `did_match_high_confidence_allowlist_`) held by this host.
   void OnClassificationDone(const GURL& url,
                             const gfx::Image& image,
                             ClientSideDetectionType request_type,
@@ -221,18 +237,10 @@ class ClientSideDetectionHostIOS
                             const ClientPhishingRequest& verdict,
                             PhishingClassifier::Result result);
 
-  // Returns whether visual features can be extracted from the current page.
-  visual_utils::CanExtractVisualFeaturesResult
-  DetermineVisualFeaturesExtraction();
-
-  // Callback invoked when `PhishingImageEmbedder` completes image embedding.
-  void OnImageEmbeddingDone(
-      std::unique_ptr<safe_browsing::ClientPhishingRequest> verdict,
-      std::optional<bool> did_match_high_confidence_allowlist,
-      bool is_invalid_ip,
-      safe_browsing::PhishingImageEmbedder::Result result,
-      const safe_browsing::ImageFeatureEmbedding& image_embedding,
-      const safe_browsing::VisualFeatures& visual_features);
+  // Callback invoked when `PageContextWrapper` completes inner text (and
+  // optional tab screenshot) extraction.
+  void OnInnerTextExtracted(std::string inner_text,
+                            std::optional<std::string> tab_screenshot);
 
   // Associated WebState.
   raw_ptr<web::WebState> web_state_ = nullptr;
@@ -243,12 +251,18 @@ class ClientSideDetectionHostIOS
   // Reference to the identity manager.
   raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;
 
-  std::unique_ptr<PhishingClassifier> classifier_;
-  std::unique_ptr<PhishingImageEmbedder> image_embedder_;
+  // In-flight callback for inner text extraction.
+  HostInnerTextCallback pending_inner_text_callback_;
 
-  // Cached page snapshot image associated with active visual classification.
-  // Retained on classification success for downstream visual image embedding.
-  gfx::Image classification_image_;
+  // Raw PNG bytes of the tab screenshot extracted alongside inner text for
+  // multimodal intelligent scan.
+  std::optional<std::string> intelligent_scan_tab_screenshot_;
+
+  // `PageContextWrapper` for inner text extraction.
+  __strong PageContextWrapper* page_context_wrapper_ = nil;
+
+  // Factory used to create `PageContextWrapper` instances.
+  const raw_ref<PageContextWrapperFactory> page_context_wrapper_factory_;
 
   bool is_preclassifying_ = false;
   bool is_page_loaded_ = false;
@@ -265,6 +279,10 @@ class ClientSideDetectionHostIOS
   base::ScopedObservation<SafeBrowsingQueryManager,
                           SafeBrowsingQueryManager::Observer>
       query_manager_observation_{this};
+
+  // Invalidation factory dedicated to inner text extraction callbacks.
+  base::WeakPtrFactory<ClientSideDetectionHostIOS> inner_text_weak_factory_{
+      this};
 
   base::WeakPtrFactory<ClientSideDetectionHostIOS> weak_ptr_factory_{this};
 };

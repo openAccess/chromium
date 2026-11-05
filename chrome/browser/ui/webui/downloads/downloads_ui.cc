@@ -19,8 +19,8 @@
 #include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/enterprise/connectors/connectors_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager_factory.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager_factory.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/downloads/downloads.mojom.h"
 #include "chrome/browser/ui/webui/downloads/downloads_dom_handler.h"
@@ -297,13 +297,14 @@ void DownloadsUI::BindInterface(
 void DownloadsUI::CreatePageHandler(
     mojo::PendingRemote<downloads::mojom::Page> page,
     mojo::PendingReceiver<downloads::mojom::PageHandler> receiver) {
-  DCHECK(page);
+  CHECK(page, base::NotFatalUntil::M162);
   Profile* profile = Profile::FromWebUI(web_ui());
   // Make sure download history is initialized.
   DownloadCoreService* service =
       DownloadCoreServiceFactory::GetForBrowserContext(profile);
   if (service) {
-    service->InitializeHistory();
+    service->InitializeHistory(
+        DownloadCoreService::DownloadHistoryLoadTrigger::kDownloadsPage);
   }
   DownloadManager* dlm = profile->GetDownloadManager();
 

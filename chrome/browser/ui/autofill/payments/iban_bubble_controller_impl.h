@@ -23,7 +23,6 @@
 
 namespace autofill {
 
-class AutofillBubbleHandler;
 enum class IbanBubbleType;
 
 // Implementation of per-tab class to control the IBAN save bubble, manage saved
@@ -95,12 +94,8 @@ class IbanBubbleControllerImpl
 
   // SavePaymentIconController:
   std::u16string GetSavePaymentIconTooltipText() const override;
-  bool ShouldShowSavingPaymentAnimation() const override;
-  bool ShouldShowPaymentSavedLabelAnimation() const override;
-  void OnAnimationEnded() override;
   bool IsIconVisible() const override;
   AutofillBubbleBase* GetPaymentBubbleView() const override;
-  int GetSaveSuccessAnimationStringId() const override;
   const SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams&
   GetConfirmationUiParams() const override;
 
@@ -132,8 +127,6 @@ class IbanBubbleControllerImpl
 
   Profile* GetProfile();
 
-  AutofillBubbleHandler* GetAutofillBubbleHandler();
-
   // Sets up the controller's state for a local IBAN save prompt.
   void SetupLocalSave(Iban iban,
                       payments::PaymentsAutofillClient::SaveIbanPromptCallback
@@ -162,9 +155,6 @@ class IbanBubbleControllerImpl
 
   // Note: Below fields are set when IBAN save is offered.
   //
-  // Is true only if the [IBAN saved] label animation should be shown.
-  bool should_show_iban_saved_label_animation_ = false;
-
   // The type of bubble that is either currently being shown or would
   // be shown when the IBAN save icon is clicked.
   IbanBubbleType current_bubble_type_ = IbanBubbleType::kInactive;

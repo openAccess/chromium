@@ -14,30 +14,21 @@
 #include "base/time/time.h"
 #include "chromeos/ash/components/settings/timezone_settings.h"
 #include "third_party/icu/source/i18n/unicode/dtitvfmt.h"
-#include "third_party/icu/source/i18n/unicode/dtptngen.h"
 #include "third_party/icu/source/i18n/unicode/gregocal.h"
-#include "third_party/icu/source/i18n/unicode/smpdtfmt.h"
 #include "third_party/icu/source/i18n/unicode/timezone.h"
 
 namespace ash {
 
-// A singleton class used to create and cache `GregorianCalendar`,
-// `icu::SimpleDateFormat` and `icu::DateIntervalFormat` objects, so that they
-// don't have to be recreated each time when querying the time difference or
-// formatting a time. This improves performance since creating
-// `icu::SimpleDateFormat` and `icu::DateIntervalFormat` objects is expensive.
+// A singleton class used to create and cache `GregorianCalendar` and
+// `icu::DateIntervalFormat` objects, so that they don't have to be recreated
+// each time when querying the time difference or formatting a time interval.
+// This improves performance since creating `icu::DateIntervalFormat` objects
+// is expensive.
 class DateHelper : public LocaleChangeObserver,
                    public system::TimezoneSettings::Observer {
  public:
   // Returns the singleton instance.
   ASH_EXPORT static DateHelper* GetInstance();
-
-  // Creates a formatter object used to format dates from the given `pattern`.
-  icu::SimpleDateFormat CreateSimpleDateFormatter(const char* pattern);
-
-  // Creates a formatter object that extracts the hours field from a given date.
-  // Uses `pattern` to differentiate between 12 and 24 hour clock formats.
-  icu::SimpleDateFormat CreateHoursFormatter(const char* pattern);
 
   // Creates a date interval formatter object that formats a `DateInterval` into
   // text as compactly as possible.
@@ -49,10 +40,6 @@ class DateHelper : public LocaleChangeObserver,
   // "11/18/2021, 8:30 AM – 11/19/2021, 7:20 AM").
   std::unique_ptr<icu::DateIntervalFormat> CreateDateIntervalFormatter(
       const char* pattern);
-
-  // Returns a formatted string of a `time` using the given `formatter`.
-  std::u16string GetFormattedTime(const icu::DateFormat* formatter,
-                                  const base::Time& time);
 
   // Returns a formatted interval string using the given `formatter`.
   ASH_EXPORT std::u16string GetFormattedInterval(
@@ -93,7 +80,7 @@ class DateHelper : public LocaleChangeObserver,
 
   ~DateHelper() override;
 
-  // Resets the icu::SimpleDateFormat objects after a time zone change.
+  // Resets the icu::DateIntervalFormat objects after a time zone change.
   ASH_EXPORT void ResetFormatters();
 
   // Calculates the week titles based on the language setting.

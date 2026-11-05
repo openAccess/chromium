@@ -41,6 +41,10 @@ class MockTrustedURLLoaderHeaderClient
       (const network::ResourceRequest& request,
        mojo::PendingReceiver<network::mojom::TrustedHeaderClient> receiver),
       (override));
+  MOCK_METHOD(void,
+              OnLoaderFailedWithRemoteEndpoint,
+              (int32_t request_id, const net::IPEndPoint& remote_endpoint),
+              (override));
 
   void Bind(mojo::PendingReceiver<network::mojom::TrustedURLLoaderHeaderClient>
                 receiver) {
@@ -79,8 +83,9 @@ TEST_F(HttpHeaderInjectionURLLoaderHeaderClientTest, ForwardsOnLoaderCreated) {
   mojo::PendingRemote<network::mojom::TrustedHeaderClient> header_client;
 
   base::RunLoop run_loop;
-  EXPECT_CALL(mock_target, OnLoaderCreated(123, testing::_))
-      .WillOnce(testing::InvokeWithoutArgs([&]() { run_loop.Quit(); }));
+  EXPECT_CALL(mock_target, OnLoaderCreated(123, testing::_)).WillOnce([&]() {
+    run_loop.Quit();
+  });
 
   client_remote->OnLoaderCreated(
       123, header_client.InitWithNewPipeAndPassReceiver());
@@ -109,7 +114,7 @@ TEST_F(HttpHeaderInjectionURLLoaderHeaderClientTest,
   base::RunLoop run_loop;
   EXPECT_CALL(mock_target,
               OnLoaderForCorsPreflightCreated(testing::_, testing::_))
-      .WillOnce(testing::InvokeWithoutArgs([&]() { run_loop.Quit(); }));
+      .WillOnce([&]() { run_loop.Quit(); });
 
   client_remote->OnLoaderForCorsPreflightCreated(
       request, header_client.InitWithNewPipeAndPassReceiver());

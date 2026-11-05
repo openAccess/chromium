@@ -11,6 +11,7 @@
 #include "third_party/omnibox_proto/input_type.pb.h"
 #include "third_party/omnibox_proto/model_config.pb.h"
 #include "third_party/omnibox_proto/model_mode.pb.h"
+#include "third_party/omnibox_proto/tool_config.pb.h"
 #include "third_party/omnibox_proto/tool_mode.pb.h"
 
 namespace composebox_query {
@@ -87,6 +88,37 @@ TEST(ContextualSearchMojomTraitsTest, ModelConfigWithInvalidIcon) {
   EXPECT_FALSE(output.has_icon());
 }
 
+TEST(ContextualSearchMojomTraitsTest, ToolConfigWithIcon) {
+  omnibox::ToolConfig input;
+  input.set_tool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  input.set_menu_label("Test Tool");
+  input.mutable_icon()->set_icon_id(omnibox::IconResourceIds::TRAVEL_EXPLORE);
+
+  omnibox::ToolConfig output;
+  ASSERT_TRUE(
+      mojo::test::SerializeAndDeserialize<mojom::ToolConfig>(input, output));
+
+  EXPECT_EQ(output.tool(), omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  EXPECT_EQ(output.menu_label(), "Test Tool");
+  EXPECT_TRUE(output.has_icon());
+  EXPECT_EQ(output.icon().icon_id(), omnibox::IconResourceIds::TRAVEL_EXPLORE);
+}
+
+TEST(ContextualSearchMojomTraitsTest, ToolConfigWithInvalidIcon) {
+  omnibox::ToolConfig input;
+  input.set_tool(omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  input.set_menu_label("Test Tool");
+  input.mutable_icon()->set_icon_id(static_cast<omnibox::IconResourceIds>(999));
+
+  omnibox::ToolConfig output;
+  ASSERT_TRUE(
+      mojo::test::SerializeAndDeserialize<mojom::ToolConfig>(input, output));
+
+  EXPECT_EQ(output.tool(), omnibox::ToolMode::TOOL_MODE_DEEP_SEARCH);
+  EXPECT_EQ(output.menu_label(), "Test Tool");
+  EXPECT_FALSE(output.has_icon());
+}
+
 TEST(ContextualSearchMojomTraitsTest, ContextUploadStatusUnknownValue) {
   contextual_search::ContextUploadStatus input =
       static_cast<contextual_search::ContextUploadStatus>(999);
@@ -106,6 +138,18 @@ TEST(ContextualSearchMojomTraitsTest, ContextUploadErrorTypeUnknownValue) {
           input, output));
 
   EXPECT_EQ(output, contextual_search::ContextUploadErrorType::kUnknown);
+}
+
+TEST(ContextualSearchMojomTraitsTest, InputStateWillFulfillInAim) {
+  omnibox::InputState input;
+  EXPECT_TRUE(input.will_fulfill_in_aim);
+  input.will_fulfill_in_aim = false;
+
+  omnibox::InputState output;
+  ASSERT_TRUE(
+      mojo::test::SerializeAndDeserialize<mojom::InputState>(input, output));
+
+  EXPECT_FALSE(output.will_fulfill_in_aim);
 }
 
 }  // namespace composebox_query

@@ -15,7 +15,7 @@
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_observer.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "google_apis/gaia/core_account_id.h"
-#include "google_apis/gaia/fake_device_management_error_details.h"
+#include "google_apis/gaia/gaia_auth_test_util.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "services/network/test/test_utils.h"
@@ -63,16 +63,15 @@ TEST_F(ProfileOAuth2TokenServiceDelegateTest, InvalidateTokensForMultilogin) {
 
   // Check that OnAuthErrorChanged is not fired from
   // InvalidateTokensForMultilogin and refresh tokens are not set in error.
+  const GoogleServiceAuthError error =
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER);
   EXPECT_CALL(mock_observer,
-              OnAuthErrorChanged(
-                  ::testing::_,
-                  GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
-                      GoogleServiceAuthError::InvalidGaiaCredentialsReason::
-                          CREDENTIALS_REJECTED_BY_SERVER),
-                  testing::_))
+              OnAuthErrorChanged(::testing::_, error, testing::_))
       .Times(0);
 
-  delegate.InvalidateTokenForMultilogin(account_id1);
+  delegate.InvalidateTokenForMultilogin(account_id1, error);
 
   EXPECT_EQ(delegate.GetAuthError(account_id1).state(),
             GoogleServiceAuthError::NONE);
@@ -97,7 +96,7 @@ std::vector<GoogleServiceAuthError> GetAllErrors() {
               kInvalidScope),
       GoogleServiceAuthError::FromTokenBindingChallenge(std::string()),
       GoogleServiceAuthError::FromDeviceManagementError(
-          std::make_unique<gaia::FakeDeviceManagementErrorDetails>()),
+          gaia::CreateFakeDeviceManagementErrorDetails()),
   };
   static_assert(
       std::size(table) == GoogleServiceAuthError::NUM_STATES -

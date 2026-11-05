@@ -4,8 +4,6 @@
 
 #include "components/update_client/ping_manager.h"
 
-#include <stddef.h>
-
 #include <memory>
 #include <optional>
 #include <string>
@@ -90,6 +88,7 @@ void PingManager::SendPing(const std::string& session_id,
                   config_->GetProdId(),
                   config_->GetBrowserVersion().GetString(),
                   config_->GetChannel(), config_->GetOSLongName(),
+                  config_->GetDeviceFormFactor(),
                   config_->GetDownloadPreference(),
                   config_->IsMachineExternallyManaged(),
                   config_->ExtraRequestParams(), {}, std::move(apps))),

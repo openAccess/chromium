@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_DEVTOOLS_DEVTOOLS_WINDOW_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/callback_list.h"
@@ -23,6 +24,7 @@
 #include "content/public/browser/devtools_manager_delegate.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"  // nogncheck crbug.com/40147906
@@ -35,6 +37,7 @@ class Profile;
 class DevToolsWindowTesting;
 class DevToolsEventForwarder;
 class DevToolsEyeDropper;
+enum class DevToolsBlockReason;
 
 namespace content {
 class DevToolsAgentHost;
@@ -117,6 +120,13 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
                                content::WebContents* web_contents);
   static bool AllowDevToolsFor(Profile* profile,
                                content::DevToolsAgentHost* agent_host);
+
+  // Returns why DevTools are not allowed for the specified |profile| and
+  // |web_contents|, or DevToolsBlockReason::kNotBlocked if AllowDevToolsFor()
+  // returns true.
+  static DevToolsBlockReason GetBlockReasonFor(
+      Profile* profile,
+      content::WebContents* web_contents);
 
   // Return the DevToolsWindow for the given WebContents if one exists,
   // otherwise nullptr.
@@ -434,7 +444,7 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
@@ -469,7 +479,8 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
   void SetInspectedPageBounds(const gfx::Rect& rect) override;
   void InspectElementCompleted() override;
   void SetIsDocked(bool is_docked) override;
-  void OpenInNewTab(const std::string& url) override;
+  void OpenInNewTab(const std::string& url,
+                    const std::optional<std::string>& initiator_id) override;
   void OpenSearchResultsInNewTab(const std::string& url) override;
   void SetWhitelistedShortcuts(const std::string& message) override;
   void SetEyeDropperActive(bool active) override;
@@ -487,7 +498,11 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
   int GetOpenedByForLogging() override;
   int GetClosedByForLogging() override;
 
-  void OpenInNewTab(const GURL& url);
+  // Opens `url` in a new tab. The navigation is attributed to the frame of
+  // the inspected page or to the worker that `initiator_id` identifies (by
+  // DevTools target id or frame id), or to an opaque origin otherwise.
+  void OpenInNewTab(const GURL& url,
+                    const std::optional<std::string>& initiator_id);
   void ColorPickedInEyeDropper(int r, int g, int b, int a);
 
   // content::WebContentsObserver
@@ -603,6 +618,9 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
   raw_ptr<Throttle> throttle_ = nullptr;
   bool open_new_window_for_popups_ = false;
   raw_ptr<infobars::InfoBar> sharing_infobar_ = nullptr;
+  // Whether `sharing_infobar_` was created by `infobars::BrowserInfoBarManager`
+  // rather than `ProcessSharingInfobarDelegate`.
+  bool is_sharing_infobar_migrated_ = false;
   int checked_sharing_process_id_ = content::ChildProcessHost::kInvalidUniqueID;
 
 #if BUILDFLAG(IS_ANDROID)

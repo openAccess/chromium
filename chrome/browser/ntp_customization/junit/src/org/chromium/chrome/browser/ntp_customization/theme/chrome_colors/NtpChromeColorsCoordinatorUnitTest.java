@@ -14,7 +14,6 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator.BottomSheetType.CHROME_COLORS;
@@ -41,7 +40,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -76,7 +74,6 @@ public class NtpChromeColorsCoordinatorUnitTest {
     @Mock private Runnable mOnChromeColorSelectedCallback;
     @Mock private View.OnClickListener mOnClickListener;
     @Mock private TextWatcher mTextWatcher;
-    @Captor private ArgumentCaptor<TextWatcher> mTextWatcherCaptor;
 
     private static final String FILE_ID_HASH = "fileIdHash";
 
@@ -371,9 +368,10 @@ public class NtpChromeColorsCoordinatorUnitTest {
         verify(mOnChromeColorSelectedCallback).run();
         assertEquals(colorId, NtpCustomizationUtils.getNtpThemeColorIdFromSharedPreference());
 
+        clearInvocations(mOnChromeColorSelectedCallback);
         mCoordinator.onItemClicked(colorInfo1);
         verify(mBottomSheetDelegate).onNewColorSelected(eq(true));
-        verify(mOnChromeColorSelectedCallback, times(2)).run();
+        verify(mOnChromeColorSelectedCallback).run();
         assertEquals(colorId1, NtpCustomizationUtils.getNtpThemeColorIdFromSharedPreference());
     }
 
@@ -397,6 +395,13 @@ public class NtpChromeColorsCoordinatorUnitTest {
                 NtpCustomizationUtils.getPrimaryColorFromCustomizedThemeColor(
                                 mContext, /* checkDailyRefresh= */ false)
                         .intValue());
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("NewTabPage.Customization.Theme.ChromeColor.Click")
+                        .build();
+        mCoordinator.destroy();
+        watcher.assertExpected();
     }
 
     @Test

@@ -37,6 +37,7 @@
 #include "content/public/test/test_utils.h"
 #include "net/http/http_status_code.h"
 #include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -278,6 +279,79 @@ TEST_F(NtpCustomBackgroundServiceTest, LocalBackgroundImageCopyCreated) {
   EXPECT_EQ(true, custom_background->is_uploaded_image);
 }
 
+// base::CreateSymbolicLink() is only available on POSIX.
+#if BUILDFLAG(IS_POSIX)
+TEST_F(NtpCustomBackgroundServiceTest,
+       LocalBackgroundImageCopyReplacesSymlink) {
+  EXPECT_CALL(observer_, OnCustomBackgroundImageUpdated).Times(1);
+
+  base::FilePath profile_path = profile().GetPath();
+  base::FilePath source_path(profile_path.AppendASCII("test_file"));
+  base::FilePath victim_path(profile_path.AppendASCII("victim"));
+  base::FilePath copy_path(profile_path.AppendASCII(
+      chrome::kChromeUIUntrustedNewTabPageBackgroundFilename));
+  ASSERT_TRUE(base::WriteFile(source_path, "background_image"));
+  ASSERT_TRUE(base::WriteFile(victim_path, "hi"));
+  ASSERT_TRUE(base::CreateSymbolicLink(victim_path, copy_path));
+  ASSERT_TRUE(base::IsLink(copy_path));
+
+  custom_background_service_->SelectLocalBackgroundImage(source_path);
+  task_environment_.RunUntilIdle();
+
+  std::string victim_contents;
+  ASSERT_TRUE(base::ReadFileToString(victim_path, &victim_contents));
+  EXPECT_EQ("hi", victim_contents);
+
+  EXPECT_FALSE(base::IsLink(copy_path));
+  std::string copy_contents;
+  ASSERT_TRUE(base::ReadFileToString(copy_path, &copy_contents));
+  EXPECT_EQ("background_image", copy_contents);
+}
+#endif  // BUILDFLAG(IS_POSIX)
+
+TEST_F(NtpCustomBackgroundServiceTest,
+       LocalBackgroundImageCopyReadFailureKeepsCurrentBackground) {
+  EXPECT_CALL(observer_, OnCustomBackgroundImageUpdated).Times(1);
+
+  sync_preferences::TestingPrefServiceSyncable* pref_service =
+      profile().GetTestingPrefService();
+  base::FilePath profile_path = profile().GetPath();
+  base::Token token = base::Token::CreateRandom();
+  base::FilePath wallpaper_path(profile_path.AppendASCII(
+      token.ToString() +
+      chrome::kChromeUIUntrustedNewTabPageBackgroundFilename));
+  ASSERT_TRUE(base::WriteFile(wallpaper_path, "wallpaper_image"));
+  custom_background_service_->SetBackgroundToLocalResourceWithId(token, false);
+  task_environment_.RunUntilIdle();
+
+  custom_background_service_->SelectLocalBackgroundImage(
+      profile_path.AppendASCII("missing_file"));
+  task_environment_.RunUntilIdle();
+
+  EXPECT_TRUE(base::PathExists(wallpaper_path));
+  EXPECT_TRUE(
+      pref_service->GetBoolean(prefs::kNtpCustomBackgroundLocalToDevice));
+  EXPECT_EQ(pref_service->GetString(prefs::kNtpCustomBackgroundLocalToDeviceId),
+            token.ToString());
+}
+
+TEST_F(NtpCustomBackgroundServiceTest,
+       LocalBackgroundImageCopyWriteFailureDoesNotSetLocalImage) {
+  EXPECT_CALL(observer_, OnCustomBackgroundImageUpdated).Times(0);
+
+  base::FilePath profile_path = profile().GetPath();
+  base::FilePath source_path(profile_path.AppendASCII("test_file"));
+  ASSERT_TRUE(base::WriteFile(source_path, "background_image"));
+  ASSERT_TRUE(base::CreateDirectory(profile_path.AppendASCII(
+      chrome::kChromeUIUntrustedNewTabPageBackgroundFilename)));
+
+  custom_background_service_->SelectLocalBackgroundImage(source_path);
+  task_environment_.RunUntilIdle();
+
+  EXPECT_FALSE(profile().GetTestingPrefService()->GetBoolean(
+      prefs::kNtpCustomBackgroundLocalToDevice));
+}
+
 TEST_F(NtpCustomBackgroundServiceTest,
        SettingUrlRemovesLocalBackgroundImageCopy) {
   EXPECT_CALL(observer_, OnCustomBackgroundImageUpdated).Times(1);
@@ -332,7 +406,7 @@ TEST_F(NtpCustomBackgroundServiceTest, UpdatingPrefUpdatesNtpTheme) {
   EXPECT_TRUE(custom_background_service_->IsCustomBackgroundSet());
 }
 
-TEST_F(NtpCustomBackgroundServiceTest, SetLocalImage) {
+TEST_F(NtpCustomBackgroundServiceTest, SetLocalImageFromEmptyFile) {
   EXPECT_CALL(observer_, OnCustomBackgroundImageUpdated).Times(1);
   ASSERT_FALSE(custom_background_service_->IsCustomBackgroundSet());
 
@@ -342,7 +416,7 @@ TEST_F(NtpCustomBackgroundServiceTest, SetLocalImage) {
   base::FilePath profile_path = profile().GetPath();
   base::FilePath path(profile_path.AppendASCII(
       chrome::kChromeUIUntrustedNewTabPageBackgroundFilename));
-  base::WriteFile(path, "background_image");
+  base::WriteFile(path, "");
   base::ThreadPoolInstance::Get()->FlushForTesting();
 
   custom_background_service_->SelectLocalBackgroundImage(path);
@@ -443,6 +517,7 @@ TEST_F(NtpCustomBackgroundServiceTest, LocalImageDoesNotHaveAttribution) {
   mock_ntp_background_service().AddValidBackdropUrlForTesting(kUrl);
   custom_background_service_->SetCustomBackgroundInfo(
       kUrl, GURL(), kAttributionLine1, kAttributionLine2, kActionUrl, "");
+  base::ThreadPoolInstance::Get()->FlushForTesting();
 
   auto custom_background = custom_background_service_->GetCustomBackground();
   ASSERT_EQ(kAttributionLine1,
@@ -457,7 +532,6 @@ TEST_F(NtpCustomBackgroundServiceTest, LocalImageDoesNotHaveAttribution) {
   base::FilePath path(profile_path.AppendASCII(
       chrome::kChromeUIUntrustedNewTabPageBackgroundFilename));
   base::WriteFile(path, "background_image");
-  base::ThreadPoolInstance::Get()->FlushForTesting();
 
   custom_background_service_->SelectLocalBackgroundImage(path);
   task_environment_.RunUntilIdle();
@@ -623,9 +697,11 @@ TEST_F(NtpCustomBackgroundServiceTest, RefreshesBackgroundAfter24Hours) {
   EXPECT_TRUE(custom_background_service_->IsCustomBackgroundSet());
 }
 
-// TODO (crbug.com/41493847): Fix and re-enable or remove if no longer relevant.
-TEST_F(NtpCustomBackgroundServiceTest,
-       DISABLED_TestUpdateCustomBackgroundColor) {
+// Verifies that `NtpCustomBackgroundService::UpdateCustomBackgroundColorAsync`
+// updates the background color only when valid metadata is present and the URL
+// matches the active custom background. Extraction under invalid conditions
+// leaves the background color unchanged.
+TEST_F(NtpCustomBackgroundServiceTest, TestUpdateCustomBackgroundColor) {
   EXPECT_CALL(observer_, OnCustomBackgroundImageUpdated).Times(2);
   EXPECT_CALL(mock_theme_delegate(), OnBackgroundColorExtracted).Times(1);
   SkBitmap bitmap;

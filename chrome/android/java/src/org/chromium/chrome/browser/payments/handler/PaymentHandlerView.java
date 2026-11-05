@@ -17,6 +17,8 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
 import org.chromium.components.payments.ui.InputProtector;
 import org.chromium.content_public.browser.RenderCoordinates;
 import org.chromium.content_public.browser.WebContents;
@@ -29,6 +31,11 @@ import org.chromium.content_public.browser.WebContents;
  */
 @NullMarked
 /* package */ class PaymentHandlerView implements BottomSheetContent {
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder()
+                    .setUserCritical(UserCriticalFeature.PAYMENT_HANDLER)
+                    .build();
+
     private final View mToolbarView;
     private final PaymentHandlerContentFrameLayout mContentView;
     private final View mThinWebView;
@@ -121,6 +128,11 @@ import org.chromium.content_public.browser.WebContents;
     public void destroy() {}
 
     @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
+    }
+
+    @Override
     public @ContentPriority int getPriority() {
         // If multiple bottom sheets are queued up to be shown, prioritize payment-handler, because
         // it's triggered by a user gesture, such as a click on <button>Buy this article</button>.
@@ -168,6 +180,11 @@ import org.chromium.content_public.browser.WebContents;
     @Override
     public boolean swipeToDismissEnabled() {
         // flinging down hard enough will close the sheet.
+        return true;
+    }
+
+    @Override
+    public boolean showHandlebar() {
         return true;
     }
 }

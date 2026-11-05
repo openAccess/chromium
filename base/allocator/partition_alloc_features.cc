@@ -99,6 +99,12 @@ BASE_FEATURE_PARAM(int,
                    "ring-size",
                    partition_alloc::internal::SlotSpanRingMaxSize::kMedium);
 
+BASE_FEATURE(kPartitionAllocMinProvisioningSize, FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(size_t,
+                   kPartitionAllocMinProvisioningSizeInBytes,
+                   &kPartitionAllocMinProvisioningSize,
+                   16 * 1024);
+
 BASE_FEATURE(kPartitionAllocWithAdvancedChecks, FEATURE_ENABLED_BY_DEFAULT);
 constexpr FeatureParam<PartitionAllocWithAdvancedChecksEnabledProcesses>::Option
     kPartitionAllocWithAdvancedChecksEnabledProcessesOptions[] = {
@@ -138,7 +144,6 @@ constinit const FeatureParam<std::string>
             "main":{
               "branch-capacity-in-bytes":524288,
               "enable-quarantine":true,
-              "enable-zapping":true,
               "leak-on-destruction":false
             }
           },
@@ -146,7 +151,6 @@ constinit const FeatureParam<std::string>
             "amsc":{
               "branch-capacity-in-bytes":524288,
               "enable-quarantine":true,
-              "enable-zapping":true,
               "leak-on-destruction":false
             }
           }
@@ -157,7 +161,6 @@ constinit const FeatureParam<std::string>
             "amsc":{
               "branch-capacity-in-bytes":524288,
               "enable-quarantine":true,
-              "enable-zapping":true,
               "leak-on-destruction":false
             }
           }
@@ -190,12 +193,7 @@ BASE_FEATURE_ENUM_PARAM(BackupRefPtrEnabledProcesses,
                         kBackupRefPtrEnabledProcessesParam,
                         &kPartitionAllocBackupRefPtr,
                         kPAFeatureEnabledProcessesStr,
-// Exception for IS_DESKTOP_ANDROID approved in crbug.com/482155132.
-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_DESKTOP_ANDROID)
-                        BackupRefPtrEnabledProcesses::kNonRenderer,
-#else
                         BackupRefPtrEnabledProcesses::kAllProcesses,
-#endif
                         &kBackupRefPtrEnabledProcessesOptions);
 
 constexpr FeatureParam<BackupRefPtrMode>::Option kBackupRefPtrModeOptions[] = {
@@ -217,13 +215,7 @@ constinit const FeatureParam<bool> kBackupRefPtrSuppressDoubleFreeDetectedCrash{
     false};
 constinit const FeatureParam<bool> kBackupRefPtrSuppressCorruptionDetectedCrash{
     &kPartitionAllocBackupRefPtr, "brp-suppress-corruption-detected-crash",
-#if PA_BUILDFLAG(IS_IOS)
-    // TODO(crbug.com/41497028): Continue investigation and remove once
-    // addressed.
-    true};
-#else
     false};
-#endif
 
 BASE_FEATURE(kPartitionAllocMemoryTagging,
 #if PA_BUILDFLAG(USE_FULL_MTE) || BUILDFLAG(IS_ANDROID)
@@ -434,5 +426,7 @@ BASE_FEATURE(kPartitionAllocUsePriorityInheritanceLocks,
 
 BASE_FEATURE(kPartitionAllocTighterAlignedAllocBound,
              FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPartitionAllocMemoryPressureMonitor, FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace base::features

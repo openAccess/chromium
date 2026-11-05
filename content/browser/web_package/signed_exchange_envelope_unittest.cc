@@ -33,8 +33,8 @@ const char kSignatureString[] =
     " cert-sha256=*W7uB969dFW3Mb5ZefPS9Tq5ZbH5iSmOILpjv2qEArmI=*;"
     " date=1511128380; expires=1511733180";
 
-cbor::Value CBORByteString(const char* str) {
-  return cbor::Value(str, cbor::Value::Type::BYTE_STRING);
+cbor::Value CBORByteString(std::string_view str) {
+  return cbor::Value(base::as_byte_span(str));
 }
 
 std::optional<SignedExchangeEnvelope> GenerateHeaderAndParse(
@@ -43,8 +43,10 @@ std::optional<SignedExchangeEnvelope> GenerateHeaderAndParse(
     std::string_view signature,
     const std::map<const char*, const char*>& response_map) {
   cbor::Value::MapValue response_cbor_map;
-  for (auto& pair : response_map)
-    response_cbor_map[CBORByteString(pair.first)] = CBORByteString(pair.second);
+  for (auto& pair : response_map) {
+    response_cbor_map.insert_or_assign(CBORByteString(pair.first),
+                                       CBORByteString(pair.second));
+  }
 
   DCHECK_EQ(version, SignedExchangeVersion::kB3);
   auto serialized =

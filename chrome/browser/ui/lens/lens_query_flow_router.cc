@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/lens/lens_query_flow_router.h"
 
 #include "base/rand_util.h"
+#include "base/strings/string_number_conversions.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/contextual_search/contextual_search_service_factory.h"
@@ -13,6 +14,7 @@
 #include "chrome/browser/contextual_tasks/contextual_tasks_service_factory.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_factory.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
 #include "chrome/browser/lens/core/mojom/lens.mojom.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/contextual_search/tab_contextualization_controller.h"
@@ -39,6 +41,7 @@
 #include "components/omnibox/common/logger.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "content/public/browser/navigation_controller.h"
 #include "mojo/public/cpp/bindings/clone_traits.h"
 #include "net/base/url_util.h"
 #include "third_party/lens_server_proto/lens_overlay_server.pb.h"
@@ -51,6 +54,28 @@ bool IsVisualSelectionType(lens::LensOverlaySelectionType selection_type) {
          selection_type == lens::TAP_ON_REGION_GLEAM ||
          selection_type == lens::TAP_ON_OBJECT ||
          selection_type == lens::INJECTED_IMAGE;
+}
+
+bool IsSelectedRegionOnlyInvocationSource(
+    Profile* profile,
+    std::optional<lens::LensOverlayInvocationSource> invocation_source) {
+  if (invocation_source ==
+      lens::LensOverlayInvocationSource::kOmniboxPopupButton) {
+    return true;
+  }
+  if (lens::features::
+          IsLensOverlayNonBlockingPrivacyNoticeForImageSearchEnabled() &&
+      invocation_source ==
+          lens::LensOverlayInvocationSource::kContentAreaContextMenuImage) {
+    return true;
+  }
+  if (contextual_tasks::AreContextualTasksUpdatedEntryPointsEnabled(profile)) {
+    return invocation_source ==
+               lens::LensOverlayInvocationSource::kContentAreaContextMenuPage ||
+           invocation_source == lens::LensOverlayInvocationSource::kAppMenu ||
+           invocation_source == lens::LensOverlayInvocationSource::kToolbar;
+  }
+  return false;
 }
 
 std::vector<lens::ContextualInput> ConvertPageContentToContextualInput(
@@ -71,10 +96,22 @@ omnibox::ChromeAimEntryPoint AimEntryPointFromInvocationSource(
   // TODO(crbug.com/483805922): Create individual AIM entry points for each
   // Lens invocation source.
   if (invocation_source ==
+      lens::LensOverlayInvocationSource::kOmniboxPopupButton) {
+    return omnibox::DESKTOP_CHROME_COBROWSE_OMNIBOX_POPUP_BUTTON;
+  }
+  if (invocation_source ==
       lens::LensOverlayInvocationSource::kOmniboxContextualSuggestion) {
     if (base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxAskGAboutThisPage)) {
       return omnibox::DESKTOP_CHROME_COBROWSE_OMNIBOX_CONTEXTUAL_SUGGESTION;
     }
+    return omnibox::DESKTOP_CHROME_OTHER_OMNIBOX_COMPOSEBOX_ENTRY_POINT;
+  }
+  if (invocation_source ==
+      lens::LensOverlayInvocationSource::kOmniboxPageAction) {
+    return omnibox::DESKTOP_CHROME_COBROWSE_OMNIBOX_TAB_SEARCH;
+  }
+  if (invocation_source ==
+      lens::LensOverlayInvocationSource::kOmniboxContextualQuery) {
     return omnibox::DESKTOP_CHROME_OTHER_OMNIBOX_COMPOSEBOX_ENTRY_POINT;
   }
   return omnibox::DESKTOP_CHROME_LENS_CONTEXTUAL_SEARCHBOX_ENTRY_POINT;
@@ -83,6 +120,47 @@ omnibox::ChromeAimEntryPoint AimEntryPointFromInvocationSource(
 }  // namespace
 
 namespace lens {
+
+bool IsOmniboxInvocationSource(
+    std::optional<lens::LensOverlayInvocationSource> invocation_source) {
+  if (!invocation_source.has_value()) {
+    return false;
+  }
+  switch (invocation_source.value()) {
+    case lens::LensOverlayInvocationSource::kOmnibox:
+    case lens::LensOverlayInvocationSource::kOmniboxPageAction:
+    case lens::LensOverlayInvocationSource::kOmniboxContextualSuggestion:
+    case lens::LensOverlayInvocationSource::kOmniboxContextualQuery:
+    case lens::LensOverlayInvocationSource::kOmniboxPopupButton:
+      return true;
+    // Note: kOmniboxEverywhereComposebox is intentionally excluded for now
+    // to restrict non-blocking navigation strictly to standard Omnibox entry
+    // points.
+    default:
+      return false;
+  }
+}
+
+bool ShouldFetchActiveTabForInvocationSource(
+    std::optional<lens::LensOverlayInvocationSource> invocation_source,
+    const contextual_search::ContextualSearchSessionHandle* session_handle) {
+  // Omnibox contextual compose queries upload tab context before submission,
+  // so forcing a second fetch would be redundant. That only holds while the
+  // query is issued on the session that context was uploaded to. When the
+  // query is fulfilled on a session of its own, as happens when it is routed
+  // to the Lens side panel, the pre-uploaded context is unreachable and the
+  // active tab must still be contextualized.
+  if ((invocation_source ==
+           lens::LensOverlayInvocationSource::kOmniboxContextualQuery ||
+       invocation_source ==
+           lens::LensOverlayInvocationSource::kOmniboxPageAction) &&
+      session_handle &&
+      (!session_handle->GetUploadedContextTokens().empty() ||
+       !session_handle->GetSubmittedContextTokens().empty())) {
+    return false;
+  }
+  return true;
+}
 
 LensQueryFlowRouter::LensQueryFlowRouter(
     LensSearchController* lens_search_controller)
@@ -153,11 +231,12 @@ void LensQueryFlowRouter::StartQueryFlow(
     if (!GetContextualSearchSessionHandle()) {
       pending_session_handle_ = CreateContextualSearchSessionHandle();
       pending_session_handle_->NotifySessionStarted();
-      // Add observer to listen for context upload status changes. This is only
-      // needed when a new session handle is created as part of this flow as
-      // the response is not used by the overlay otherwise.
+    }
+    if (auto* session_handle = GetContextualSearchSessionHandle();
+        session_handle && session_handle->GetController()) {
+      // Add observer to listen for context upload status changes.
       context_upload_status_observation_.Observe(
-          GetContextualSearchSessionHandle()->GetController());
+          session_handle->GetController());
     }
 
     initial_context_params_ = InitialContextParams{
@@ -173,8 +252,8 @@ void LensQueryFlowRouter::StartQueryFlow(
         .invocation_time = invocation_time,
     };
 
-    if (lens_search_controller_->invocation_source() ==
-        lens::LensOverlayInvocationSource::kOmniboxPopupButton) {
+    if (IsSelectedRegionOnlyInvocationSource(
+            profile(), lens_search_controller_->invocation_source())) {
       context_upload_mode_ = ContextUploadMode::kSelectedRegionOnly;
       // For region-only uploads, page context is not uploaded, but page context
       // eligibility is evaluated to ensure protected pages are blocked.
@@ -183,9 +262,10 @@ void LensQueryFlowRouter::StartQueryFlow(
       return;
     }
 
-    ContextUploadMode initial_mode = ShouldPopulateFullPageContext()
-                                         ? ContextUploadMode::kFullPage
-                                         : ContextUploadMode::kViewportOnly;
+    ContextUploadMode initial_mode =
+        should_upload_page_content && ShouldPopulateFullPageContext()
+            ? ContextUploadMode::kFullPage
+            : ContextUploadMode::kViewportOnly;
 
     auto upload_task = base::BindOnce(
         &LensQueryFlowRouter::UploadContextualInputData,
@@ -359,6 +439,7 @@ void LensQueryFlowRouter::SendRegionSearch(
     std::optional<SkBitmap> region_bytes_to_send = region_bytes;
     lens::mojom::CenterRotatedBoxPtr region_to_send =
         region ? region->Clone() : nullptr;
+    lens::mojom::CenterRotatedBoxPtr viewport_region;
 
     if (context_upload_mode_ == ContextUploadMode::kSelectedRegionOnly) {
       // For region-only uploads, the selected region must be cropped out of the
@@ -378,6 +459,10 @@ void LensQueryFlowRouter::SendRegionSearch(
                                     region_bitmap, GURL(), std::nullopt,
                                     base::span<const PageContent>(),
                                     lens::MimeType::kImage, std::nullopt));
+      // Save the viewport region before overwriting region_to_send, so that
+      // the OCR text response can be mapped back to the viewport coordinate
+      // space.
+      viewport_region = region ? region->Clone() : nullptr;
       // Set the region bounds to indicate that the selected region is the
       // entirety of the context image.
       region_bytes_to_send = region_bitmap;
@@ -390,7 +475,8 @@ void LensQueryFlowRouter::SendRegionSearch(
     SendInteractionToContextualTasks(CreateSearchUrlRequestInfoFromInteraction(
         std::move(region_to_send), std::move(region_bytes_to_send),
         /*query_text=*/std::nullopt, lens_selection_type,
-        additional_search_query_params, query_start_time, invocation_source));
+        additional_search_query_params, query_start_time, invocation_source,
+        std::move(viewport_region)));
     return;
   }
 
@@ -545,11 +631,44 @@ void LensQueryFlowRouter::HandleInteractionResponse(
     // TODO(crbug.com/469836056): Verify that this is the correct resized bitmap
     // to be using to generate the text once the interaction response returns
     // text.
-    lens_search_controller_->HandleInteractionResponse(
-        lens::CreateTextMojomFromInteractionResponse(
-            interaction_response, zoomed_crop,
-            gfx::Size(GetViewportScreenshot().width(),
-                      GetViewportScreenshot().height())));
+    lens::mojom::TextPtr text = lens::CreateTextMojomFromInteractionResponse(
+        interaction_response, zoomed_crop,
+        gfx::Size(GetViewportScreenshot().width(),
+                  GetViewportScreenshot().height()));
+
+    // In region-only mode, the interaction request was evaluated on the cropped
+    // region alone, so the returned text coordinates are normalized relative to
+    // the crop [0, 1]. CreateTextMojomFromInteractionResponse scales the size
+    // and center point by the crop width and height, but does not translate by
+    // the crop origin in the viewport. Translate the coordinates into viewport
+    // space.
+    if (image_crop.has_value() && image_crop->has_zoomed_crop() &&
+        image_crop->zoomed_crop().has_crop() &&
+        image_crop->zoomed_crop().crop().has_center_x() &&
+        image_crop->zoomed_crop().crop().has_center_y() &&
+        context_upload_mode_ == ContextUploadMode::kSelectedRegionOnly &&
+        text && text->text_layout) {
+      const auto& crop = image_crop->zoomed_crop().crop();
+      const float origin_x = crop.center_x() - crop.width() / 2.0f;
+      const float origin_y = crop.center_y() - crop.height() / 2.0f;
+      auto remap_geometry = [&](const lens::mojom::GeometryPtr& geometry) {
+        if (geometry && geometry->bounding_box) {
+          auto& box = geometry->bounding_box->box;
+          box.set_origin(gfx::PointF(origin_x + box.x(), origin_y + box.y()));
+        }
+      };
+      for (const auto& paragraph : text->text_layout->paragraphs) {
+        remap_geometry(paragraph->geometry);
+        for (const auto& line : paragraph->lines) {
+          remap_geometry(line->geometry);
+          for (const auto& word : line->words) {
+            remap_geometry(word->geometry);
+          }
+        }
+      }
+    }
+
+    lens_search_controller_->HandleInteractionResponse(std::move(text));
   }
 }
 
@@ -664,6 +783,10 @@ void LensQueryFlowRouter::OnContextUploadStatusChanged(
   }
 }
 
+void LensQueryFlowRouter::OnControllerDestroyed() {
+  context_upload_status_observation_.Reset();
+}
+
 void LensQueryFlowRouter::SendInteractionToContextualTasks(
     std::unique_ptr<CreateSearchUrlRequestInfo> request_info) {
   if (!eligibility_logged_in_session_) {
@@ -717,10 +840,17 @@ void LensQueryFlowRouter::SendInteractionToContextualTasks(
   pending_search_url_request_ = std::move(request_info);
   if (query_contextualizer_) {
     // Force contextualization of the active tab only if the overlay token was
-    // never fetched. This happens for flows that do not call StartQueryFlow /
-    // open the overlay like omnibox contextual suggestions.
+    // never fetched and the invocation source requires tab contextualization.
+    // Certain entry points (such as the Omnibox compose flow) handle tab
+    // context prior to submission, but only when the query is issued on the
+    // session that context was uploaded to.
     std::vector<contextual_tasks::QueryContextualizer::TabId> force_tabs;
-    if (!overlay_tab_context_file_token_.has_value()) {
+    if (!overlay_tab_context_file_token_.has_value() &&
+        ShouldFetchActiveTabForInvocationSource(
+            pending_search_url_request_->invocation_source,
+            GetContextualSearchSessionHandle()) &&
+        ShouldPopulateFullPageContext() &&
+        lens_search_controller_->IsCurrentTabSameOrigin()) {
       force_tabs.push_back(tab_interface()->GetHandle().raw_value());
     }
     contextual_tasks::QueryContextualizer::ContextualizeParams params;
@@ -731,9 +861,20 @@ void LensQueryFlowRouter::SendInteractionToContextualTasks(
         base::BindRepeating(&LensQueryFlowRouter::ShowContextualTasksErrorPage,
                             weak_factory_.GetWeakPtr());
     params.on_processed_callback = base::DoNothing();
-    params.complete_callback =
-        base::BindOnce(&LensQueryFlowRouter::OnContextualizedComplete,
-                       weak_factory_.GetWeakPtr());
+    const bool is_omnibox = IsOmniboxInvocationSource(
+        pending_search_url_request_->invocation_source);
+    if (contextual_tasks::
+            GetIsContextualTasksNonBlockingUrlNavigationEnabled() &&
+        is_omnibox) {
+      params.on_uploads_started_callback =
+          base::BindOnce(&LensQueryFlowRouter::OnContextualizedComplete,
+                         weak_factory_.GetWeakPtr());
+      params.complete_callback = base::DoNothing();
+    } else {
+      params.complete_callback =
+          base::BindOnce(&LensQueryFlowRouter::OnContextualizedComplete,
+                         weak_factory_.GetWeakPtr());
+    }
     params.enable_smart_tab_selection = false;
     query_contextualizer_->Contextualize(std::move(params));
     return;
@@ -783,6 +924,14 @@ void LensQueryFlowRouter::OpenContextualTasksPanel(
     return;
   }
 
+  // An empty URL means search URL creation failed or was superseded. For
+  // example, a newer region selection started a new context upload, which
+  // fails the stale pending request. The newer request opens the panel itself,
+  // so do not open the side panel for this one.
+  if (url.is_empty()) {
+    return;
+  }
+
   // Show the side panel. This will create a new task and associate it with the
   // active tab.
   auto entry_point = AimEntryPointFromInvocationSource(
@@ -800,8 +949,7 @@ void LensQueryFlowRouter::OpenContextualTasksPanel(
   // update its UI state.
   lens_overlay_controller()->NotifyResultsPanelOpened();
 
-  if (is_contextual_text_query &&
-      lens_overlay_controller()->IsOverlayShowing()) {
+  if (is_contextual_text_query && !lens_search_controller_->IsOff()) {
     // Wait until the URL generation concludes and the panel is successfully
     // opened to avoid interrupting the flow by closing Lens too early. Close
     // the overlay by posting a task to avoid destroying the searchbox handler
@@ -871,9 +1019,20 @@ void LensQueryFlowRouter::UploadContextualInputData(
           &LensQueryFlowRouter::ShowContextualTasksErrorPage,
           weak_factory_.GetWeakPtr());
       params.on_processed_callback = base::DoNothing();
-      params.complete_callback =
-          base::BindOnce(&LensQueryFlowRouter::OnContextualizedComplete,
-                         weak_factory_.GetWeakPtr());
+      const bool is_omnibox = IsOmniboxInvocationSource(
+          pending_search_url_request_->invocation_source);
+      if (contextual_tasks::
+              GetIsContextualTasksNonBlockingUrlNavigationEnabled() &&
+          is_omnibox) {
+        params.on_uploads_started_callback =
+            base::BindOnce(&LensQueryFlowRouter::OnContextualizedComplete,
+                           weak_factory_.GetWeakPtr());
+        params.complete_callback = base::DoNothing();
+      } else {
+        params.complete_callback =
+            base::BindOnce(&LensQueryFlowRouter::OnContextualizedComplete,
+                           weak_factory_.GetWeakPtr());
+      }
       params.enable_smart_tab_selection = true;
       query_contextualizer_->Contextualize(std::move(params));
       return;
@@ -896,8 +1055,10 @@ bool LensQueryFlowRouter::ShouldPopulateFullPageContext() const {
   // if the invocation source is one where page context is blocked.
   if (context_upload_mode_ == ContextUploadMode::kSelectedRegionOnly ||
       (lens_search_controller_ &&
-       lens_search_controller_->invocation_source() ==
-           lens::LensOverlayInvocationSource::kOmniboxPopupButton)) {
+       (lens_search_controller_->invocation_source() ==
+            lens::LensOverlayInvocationSource::kContextualTasksComposebox ||
+        IsSelectedRegionOnlyInvocationSource(
+            profile(), lens_search_controller_->invocation_source())))) {
     return false;
   }
   const bool can_add_page_content_to_query =
@@ -967,7 +1128,8 @@ LensQueryFlowRouter::CreateSearchUrlRequestInfoFromInteraction(
     lens::LensOverlaySelectionType lens_selection_type,
     std::map<std::string, std::string> additional_search_query_params,
     base::Time query_start_time,
-    lens::LensOverlayInvocationSource invocation_source) {
+    lens::LensOverlayInvocationSource invocation_source,
+    lens::mojom::CenterRotatedBoxPtr viewport_region) {
   auto request_info = std::make_unique<CreateSearchUrlRequestInfo>();
   request_info->search_url_type = SearchUrlType::kStandard;
   if (query_text.has_value()) {
@@ -993,17 +1155,40 @@ LensQueryFlowRouter::CreateSearchUrlRequestInfoFromInteraction(
   lens::AppendLensOverlaySidePanelParams(additional_search_query_params,
                                          gen204_id_, has_text, has_image);
 
-  request_info->additional_params = additional_search_query_params;
   request_info->invocation_source = invocation_source;
   request_info->aim_entry_point =
       AimEntryPointFromInvocationSource(invocation_source);
 
+  // Extract and preserve any explicit AIM entry point from the query parameters
+  // for Omnibox queries (e.g. from page classification like SRP or NTP).
+  if (lens::IsOmniboxInvocationSource(invocation_source)) {
+    if (auto it = additional_search_query_params.find("aep");
+        it != additional_search_query_params.end()) {
+      int aep_val;
+      if (base::StringToInt(it->second, &aep_val) &&
+          omnibox::ChromeAimEntryPoint_IsValid(aep_val)) {
+        request_info->aim_entry_point =
+            static_cast<omnibox::ChromeAimEntryPoint>(aep_val);
+      }
+      additional_search_query_params.erase(it);
+    }
+  }
+
+  request_info->additional_params = additional_search_query_params;
+
   if (region) {
     auto client_logs =
         base::MakeRefCounted<lens::RefCountedLensOverlayClientLogs>();
+    // When viewport_region is present (e.g. kSelectedRegionOnly mode), the
+    // region box has been normalized relative to region_bytes (the cropped
+    // region bitmap). Use region_bytes as the base image so that the computed
+    // zoom factor remains 1.0 rather than scaling relative to the full
+    // viewport.
+    const SkBitmap& base_image = (viewport_region && region_bytes.has_value())
+                                     ? *region_bytes
+                                     : GetViewportScreenshot();
     auto image_crop_and_bitmap = lens::DownscaleAndEncodeBitmapRegionIfNeeded(
-        GetViewportScreenshot(), region->Clone(), region_bytes,
-        std::move(client_logs));
+        base_image, region->Clone(), region_bytes, std::move(client_logs));
     if (image_crop_and_bitmap) {
       lens_search_controller_->HandleThumbnailCreated(
           image_crop_and_bitmap->image_crop.image().image_content(),
@@ -1011,9 +1196,37 @@ LensQueryFlowRouter::CreateSearchUrlRequestInfoFromInteraction(
       request_info->image_crop = std::move(image_crop_and_bitmap->image_crop);
     }
   }
-  request_info->interaction_response_callback =
-      base::BindOnce(&LensQueryFlowRouter::HandleInteractionResponse,
-                     weak_factory_.GetWeakPtr(), request_info->image_crop);
+  // Determine the crop box to associate with the interaction response. When
+  // viewport_region is present, the server request was evaluated on the
+  // cropped context image, but any returned OCR text and objects need to be
+  // remapped to the full viewport overlay coordinate frame.
+  std::optional<lens::ImageCrop> response_image_crop;
+  if (viewport_region) {
+    lens::ImageCrop crop_for_response;
+    auto* mutable_zoomed_crop = crop_for_response.mutable_zoomed_crop();
+    mutable_zoomed_crop->set_parent_width(GetViewportScreenshot().width());
+    mutable_zoomed_crop->set_parent_height(GetViewportScreenshot().height());
+    const float zoom = (request_info->image_crop &&
+                        request_info->image_crop->has_zoomed_crop())
+                           ? request_info->image_crop->zoomed_crop().zoom()
+                           : 1.0f;
+    mutable_zoomed_crop->set_zoom(zoom);
+    mutable_zoomed_crop->mutable_crop()->set_center_x(viewport_region->box.x());
+    mutable_zoomed_crop->mutable_crop()->set_center_y(viewport_region->box.y());
+    mutable_zoomed_crop->mutable_crop()->set_width(
+        viewport_region->box.width());
+    mutable_zoomed_crop->mutable_crop()->set_height(
+        viewport_region->box.height());
+    mutable_zoomed_crop->mutable_crop()->set_coordinate_type(
+        lens::CoordinateType::NORMALIZED);
+    response_image_crop = std::move(crop_for_response);
+  } else {
+    response_image_crop = request_info->image_crop;
+  }
+
+  request_info->interaction_response_callback = base::BindOnce(
+      &LensQueryFlowRouter::HandleInteractionResponse,
+      weak_factory_.GetWeakPtr(), std::move(response_image_crop));
   return request_info;
 }
 

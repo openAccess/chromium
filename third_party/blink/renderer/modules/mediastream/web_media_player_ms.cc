@@ -28,9 +28,9 @@
 #include "media/base/video_frame.h"
 #include "media/base/video_transformation.h"
 #include "media/base/video_types.h"
+#include "media/gfx/mappable_shared_image_video_frame_pool.h"
 #include "media/mojo/mojom/media_metrics_provider.mojom-blink.h"
 #include "media/mojo/mojom/watch_time_recorder.mojom-blink.h"
-#include "media/video/mappable_shared_image_video_frame_pool.h"
 #include "services/viz/public/cpp/gpu/context_provider_command_buffer.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom-blink.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
@@ -57,7 +57,6 @@
 #include "third_party/blink/renderer/platform/mediastream/media_stream_source.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/timer.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_media.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/format.h"
@@ -408,7 +407,9 @@ void WebMediaPlayerMS::Shutdown() {
   }
 
   // Destruct compositor resources in the proper order.
-  get_client()->SetCcLayer(nullptr);
+  if (get_client()) {
+    get_client()->SetCcLayer(nullptr);
+  }
 
   if (frame_deliverer_) {
     video_task_runner_->DeleteSoon(FROM_HERE, std::move(frame_deliverer_));

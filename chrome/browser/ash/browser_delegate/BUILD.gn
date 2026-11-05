@@ -4,32 +4,6 @@
 
 assert(is_chromeos)
 
-# To be moved out of //chrome.
-static_library("browser_delegate") {
-  sources = [
-    "browser_controller.cc",
-    "browser_controller.h",
-    "browser_delegate.h",
-    "browser_type.h",
-  ]
-
-  public_deps = [
-    "//base",
-    "//components/account_id",
-    "//components/apps/link_capturing",
-    "//components/sessions:session_id",
-    "//components/tab_groups",
-    "//components/tabs:public",
-    "//components/webapps/browser",
-    "//components/webapps/common",
-    "//content/public/browser",
-    "//ui/gfx/geometry",
-    "//ui/views",
-    "//ui/views/controls/webview",
-    "//url",
-  ]
-}
-
 static_library("impl") {
   sources = [
     "browser_controller_impl.cc",
@@ -41,34 +15,46 @@ static_library("impl") {
   ]
 
   public_deps = [
-    ":browser_delegate",
     "//base",
     "//chrome/browser/ui/browser_window",
+    "//chromeos/ash/components/browser_delegate",
   ]
 
   deps = [
     "//ash",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ash/boca/on_task",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/devtools",
     "//chrome/browser/lifetime",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/sessions",
+    "//chrome/browser/ui:browser_command_controller",
+    "//chrome/browser/ui:browser_commands",
     "//chrome/browser/ui:browser_init_state",
+    "//chrome/browser/ui:browser_tabstrip",
+    "//chrome/browser/ui:browser_window_header",
+    "//chrome/browser/ui:intent_picker_tab_helper",
     "//chrome/browser/ui/autofill",
     "//chrome/browser/ui/browser_window:create_browser_window",
+    "//chrome/browser/ui/chromeos/locked_state",
     "//chrome/browser/ui/location_bar",
     "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/tabs:tab_group",
     "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/browser/ui/views:simple_web_view_dialog",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/browser/ui/views/frame:contents_web_view",
     "//chrome/browser/ui/web_applications",
     "//chrome/browser/ui/web_applications:launch_utils",
     "//chrome/browser/ui/window_metadata",
     "//chrome/browser/web_applications",
+    "//chrome/common:chrome_features",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ui/base",
+    "//components/captive_portal/core",
+    "//components/sessions",
     "//components/sessions:session_id",
+    "//third_party/blink/public/mojom:mojom_platform",
     "//ui/aura",
     "//ui/base",
   ]

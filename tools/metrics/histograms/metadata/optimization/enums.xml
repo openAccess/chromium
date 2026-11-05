@@ -36,6 +36,28 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//components/optimization_guide/content/browser/page_content_proto_provider.cc:AIPageContentExtractionConcurrency) -->
 
+<!-- LINT.IfChange(AIPageContentExtractionStatus) -->
+
+<enum name="AIPageContentExtractionStatus">
+  <int value="0" label="Unknown"/>
+  <int value="1" label="Success"/>
+  <int value="2" label="Main frame not live"/>
+  <int value="3" label="Main frame timeout"/>
+  <int value="4" label="Main frame empty or disconnected renderer response"/>
+  <int value="5" label="Main frame redacted"/>
+  <int value="6" label="Main frame torn down"/>
+  <int value="7" label="Attribute type mismatch"/>
+  <int value="8" label="Missing iframe data"/>
+  <int value="9" label="Subframe torn down"/>
+  <int value="10" label="Iframe not child of current frame"/>
+  <int value="11" label="Remote frame has child nodes"/>
+  <int value="12" label="Remote frame has inline content"/>
+  <int value="13" label="Local frame missing content"/>
+  <int value="14" label="Unexpected iframe in popup"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/optimization_guide/content/browser/page_content_proto_provider.h:AIPageContentExtractionStatus) -->
+
 <!-- LINT.IfChange(AIPageContentGetImageBytesStatus) -->
 
 <enum name="AIPageContentGetImageBytesStatus">
@@ -60,11 +82,6 @@ chromium-metrics-reviews@google.com.
 <enum name="BooleanAnnotated">
   <int value="0" label="Not Annotated"/>
   <int value="1" label="Annotated"/>
-</enum>
-
-<enum name="BooleanStored">
-  <int value="0" label="Not Stored"/>
-  <int value="1" label="Stored"/>
 </enum>
 
 <enum name="FeatureCurrentlyEnabledResult">
@@ -106,18 +123,6 @@ chromium-metrics-reviews@google.com.
       label="Not visible because the device is unsupported by the feature."/>
 </enum>
 
-<enum name="HintCacheStoreEntryType">
-  <summary>
-    Possible store entry types contained within the HintCacheStore.
-  </summary>
-  <int value="0" label="Unknown"/>
-  <int value="1" label="Metadata"/>
-  <int value="2" label="Component Hint"/>
-  <int value="3" label="Fetched Hint"/>
-  <int value="4" label="Prediction Model"/>
-  <int value="5" label="[Deprecated] Host Model Features"/>
-</enum>
-
 <!-- LINT.IfChange(OnDeviceBaseModelEnum) -->
 
 <enum name="InstalledModel">
@@ -137,25 +142,6 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//components/optimization_guide/core/model_execution/on_device_model_names.h:OnDeviceBaseModelEnum) -->
-
-<enum name="OnDeviceModelAdaptationAvailability">
-  <int value="0" label="Adaptation model was available"/>
-  <int value="1" label="Base model was not available"/>
-  <int value="2"
-      label="Base model spec was invalid, so adaptation model cannot be
-             fetched"/>
-  <int value="3" label="Adaptation model was not available"/>
-  <int value="4" label="The received adaptation model was invalid"/>
-  <int value="5"
-      label="The received adaptation model was incompatible with the base
-             model"/>
-  <int value="6"
-      label="The execution config in the adaptation model was invalid"/>
-  <int value="7" label="The model execution feature was not recently used."/>
-  <int value="8"
-      label="The received adaptation model was incompatible with the base
-             model's performance hints"/>
-</enum>
 
 <enum name="OnDeviceModelPerformanceClass">
   <int value="0" label="Unknown"/>
@@ -180,6 +166,8 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="Parse error"/>
   <int value="5" label="Not allowed by user setting"/>
   <int value="6" label="The installed component is obsolete"/>
+  <int value="7" label="Evicted due to no recent usage"/>
+  <int value="8" label="User requested uninstall"/>
 </enum>
 
 <!-- LINT.ThenChange(//components/optimization_guide/core/model_execution/manifest_broker/manifest.h:UninstallReason) -->
@@ -212,8 +200,17 @@ chromium-metrics-reviews@google.com.
   <int value="7" label="ErrorCancelled"/>
 </enum>
 
-<enum name="OptimizationGuideFetcherRequestStatus">
-  <int value="0" label="Unknown"/>
+<enum name="OptimizationGuideHintCacheLevelDBStoreStatus">
+  <int value="0" label="Unitialized"/>
+  <int value="1" label="Initializing"/>
+  <int value="2" label="Available"/>
+  <int value="3" label="Failed"/>
+</enum>
+
+<!-- LINT.IfChange(OptimizationGuideHintsFetcherRequestStatus) -->
+
+<enum name="OptimizationGuideHintsFetcherRequestStatus">
+  <int value="0" label="DEPRECATED - Unknown"/>
   <int value="1" label="Success">Request sent and received response.</int>
   <int value="2" label="Response Error">
     Request sent but response not received.
@@ -233,27 +230,9 @@ chromium-metrics-reviews@google.com.
   <int value="7" label="Fetch was canceled">
     Fetch request was canceled before completion.
   </int>
-  <int value="8" label="User not signed-in">
-    Request was not started because user was not signed-in.
-  </int>
 </enum>
 
-<enum name="OptimizationGuideHintCacheLevelDBStoreLoadMetadataResult">
-  <int value="0" label="Success"/>
-  <int value="1" label="LoadMetadataFailed"/>
-  <int value="2" label="SchemaMetadataMissing"/>
-  <int value="3" label="SchemaMetadataWrongVersion"/>
-  <int value="4" label="ComponentMetadataMissing"/>
-  <int value="5" label="FetchedMetadataMissing"/>
-  <int value="6" label="ComponentAndFetchedMetadataMissing"/>
-</enum>
-
-<enum name="OptimizationGuideHintCacheLevelDBStoreStatus">
-  <int value="0" label="Unitialized"/>
-  <int value="1" label="Initializing"/>
-  <int value="2" label="Available"/>
-  <int value="3" label="Failed"/>
-</enum>
+<!-- LINT.ThenChange(//components/optimization_guide/core/hints/hints_fetcher.h:HintsFetcherRequestStatus) -->
 
 <enum name="OptimizationGuideModelDeliveryEvent">
   <int value="0" label="Unknown"/>
@@ -312,6 +291,27 @@ chromium-metrics-reviews@google.com.
   <int value="12" label="Response parsing failed"/>
   <int value="13" label="Failed to run safety checks"/>
 </enum>
+
+<!-- LINT.IfChange(OptimizationGuideModelExecutionFetcherRequestStatus) -->
+
+<enum name="OptimizationGuideModelExecutionFetcherRequestStatus">
+  <int value="0" label="DEPRECATED - Unknown"/>
+  <int value="1" label="Success">Request sent and received response.</int>
+  <int value="2" label="Response Error">
+    Request sent but response not received.
+  </int>
+  <int value="4" label="Fetcher Busy">
+    Request not sent because fetcher busy with another request.
+  </int>
+  <int value="7" label="Fetch was canceled">
+    Fetch request was canceled before completion.
+  </int>
+  <int value="8" label="User not signed-in">
+    Request was not started because user was not signed-in.
+  </int>
+</enum>
+
+<!-- LINT.ThenChange(//components/optimization_guide/core/model_execution/model_execution_fetcher.h:ModelExecutionFetcherRequestStatus) -->
 
 <enum name="OptimizationGuideModelQualityLogsUploadStatus">
   <int value="0" label="Unknown"/>
@@ -712,20 +712,31 @@ chromium-metrics-reviews@google.com.
   </int>
 </enum>
 
-<enum name="OptimizationGuideReadCacheResult">
-  <int value="0" label="Unknown"/>
-  <int value="1" label="Success"/>
-  <int value="2" label="Invalid protobuf"/>
-  <int value="3" label="Base64 decoding error"/>
+<!-- LINT.IfChange(OptimizationGuideStreamingConnectionStatus) -->
+
+<enum name="OptimizationGuideStreamingConnectionStatus">
+  <int value="0" label="Connected"/>
+  <int value="1" label="Access token failure"/>
+  <int value="2" label="Handshake failed"/>
+  <int value="3" label="Client error during connect"/>
+  <int value="4" label="Mojo pipe disconnected during connect"/>
+  <int value="5" label="Cancelled by destruction"/>
 </enum>
 
-<enum name="OptimizationGuideTextSafetyInferenceResult">
-  <int value="0" label="Success"/>
-  <int value="1" label="Encoding failed"/>
-  <int value="2" label="Model creation failed"/>
-  <int value="3" label="Model execution failed"/>
-  <int value="4" label="Regression failed"/>
+<!-- LINT.ThenChange(//components/optimization_guide/core/model_execution/remote_model_execution_session_impl.h:StreamingConnectionStatus) -->
+
+<!-- LINT.IfChange(OptimizationGuideStreamingDisconnectReason) -->
+
+<enum name="OptimizationGuideStreamingDisconnectReason">
+  <int value="0" label="Session destroyed"/>
+  <int value="1" label="Idle timeout"/>
+  <int value="2" label="Server drop (clean)"/>
+  <int value="3" label="Server drop (unclean)"/>
+  <int value="4" label="Client error"/>
+  <int value="5" label="Mojo pipe disconnected"/>
 </enum>
+
+<!-- LINT.ThenChange(//components/optimization_guide/core/model_execution/remote_model_execution_session_impl.h:StreamingDisconnectReason) -->
 
 <enum name="OptimizationGuideUserFeedback">
   <int value="0" label="Unknown"/>
@@ -854,6 +865,8 @@ chromium-metrics-reviews@google.com.
   <int value="131" label="FILTER_EXTRACT_ATTRIBUTES"/>
   <int value="132" label="AUTOFILL_AT_MEMORY_BLOCKED"/>
   <int value="133" label="FILTER_EXECUTION_STRATEGY"/>
+  <int value="134" label="PAYMENT_QR_CODE_MERCHANT_URL_REGEX_ALLOWLIST"/>
+  <int value="135" label="QUICK_ANSWERS"/>
 </enum>
 
 <enum name="PageContentAnnotationsStorageStatus">

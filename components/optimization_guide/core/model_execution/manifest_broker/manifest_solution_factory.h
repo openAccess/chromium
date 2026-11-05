@@ -12,10 +12,13 @@
 
 #include "base/byte_size.h"
 #include "base/containers/flat_map.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
+#include "base/metrics/field_trial_params.h"
 #include "base/sequence_checker.h"
+#include "base/time/time.h"
 #include "base/types/expected.h"
 #include "base/version.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest.h"
@@ -23,14 +26,22 @@
 #include "components/optimization_guide/core/model_execution/on_device_model_access_controller.h"
 #include "components/optimization_guide/core/model_execution/performance_class.h"
 #include "components/optimization_guide/proto/manifest.pb.h"
-#include "components/optimization_guide/proto/text_safety_model_metadata.pb.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom-shared.h"
 #include "services/on_device_model/public/cpp/model_assets.h"
 #include "services/on_device_model/public/cpp/service_client.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace optimization_guide {
+
+// Feature and parameter controlling the idle timeout before loaded on-device
+// models (base models and adaptations) disconnect and unload.
+// NOTE: This feature and parameter are actively used by automated benchmarks
+// and tests (e.g. Web-Workloads blink-ai, see crbug.com/562517320) via
+// `--enable-features=OnDeviceModelIdleTimeout:on_device_model_idle_timeout/10s`
+// to lower model offload latency between test runs. Do not remove as a dead
+// feature.
+BASE_DECLARE_FEATURE(kOnDeviceModelIdleTimeout);
+extern const base::FeatureParam<base::TimeDelta> kOnDeviceModelIdleTimeoutParam;
 
 class UsageTracker;
 
@@ -70,15 +81,16 @@ class ManifestSolutionFactory {
     mojo::Remote<on_device_model::mojom::OnDeviceModel> remote_;
   };
 
-  struct SafetyModelState {
-    SafetyModelState();
-    ~SafetyModelState();
-    SafetyModelState(const SafetyModelState& other) = delete;
-    SafetyModelState& operator=(const SafetyModelState& other) = delete;
-    SafetyModelState(SafetyModelState&& other);
-    SafetyModelState& operator=(SafetyModelState&& other);
+  struct PostprocessedModelState {
+    PostprocessedModelState();
+    ~PostprocessedModelState();
+    PostprocessedModelState(const PostprocessedModelState& other) = delete;
+    PostprocessedModelState& operator=(const PostprocessedModelState& other) =
+        delete;
+    PostprocessedModelState(PostprocessedModelState&& other);
+    PostprocessedModelState& operator=(PostprocessedModelState&& other);
 
-    mojo::Remote<on_device_model::mojom::TextSafetyModel> remote_;
+    mojo::Remote<on_device_model::mojom::OnDeviceModel> remote_;
   };
 
   struct SolutionState {
@@ -126,6 +138,13 @@ class ManifestSolutionFactory {
  private:
   class Solution;
 
+  // Finishes handling an asset state update and notifies `on_asset_init_` if
+  // this was the asset's initial state transition.
+  void OnAssetStateUpdated(bool is_initial_state);
+
+  // Unloads models and resets state associated with the given asset.
+  void UnloadAsset(const std::string& asset_id);
+
   // Resolves a file reference to a file path.
   // Returns nullopt if the asset is not available.
   std::optional<base::FilePath> ResolveFile(
@@ -144,20 +163,34 @@ class ManifestSolutionFactory {
   ModelBrokerImpl::MaybeSolution CreateSolutionForUseCase(
       const std::string& use_case_name);
 
+  // Resolves the base model recipe ID for a given solution recipe ID,
+  // unwrapping adaptations and postprocessed models.
+  const std::string& GetBaseModelRecipeId(const std::string& solution_id) const;
+
+  // Logs the model's version, backend and cache configuration to the
+  // optimization guide internals page.
+  void LogBaseModelInitialization(const std::string& model_id,
+                                  const proto::BaseModelRecipe& recipe,
+                                  const BaseModelState& state) const;
+
   // Gets or loads the model.
   mojo::Remote<on_device_model::mojom::OnDeviceModel>& GetOrLoadModel(
       const std::string& model_id);
 
   void LoadBaseModel(const std::string& model_id, BaseModelState& state);
   void LoadAdaptation(const std::string& model_id, AdaptationState& state);
-
-  mojo::Remote<on_device_model::mojom::TextSafetyModel>&
-  GetOrLoadTextSafetyModel(const std::string& model_id);
+  void LoadPostProcessor(const std::string& model_id,
+                         PostprocessedModelState& state);
 
   // Called when a base model disconnects unexpectedly.
   void OnBaseModelDisconnect(const std::string& model_id,
                              uint32_t reason,
                              const std::string& description);
+
+  // Called when a postprocessed model disconnects unexpectedly.
+  void OnPostprocessedModelDisconnect(const std::string& model_id,
+                                      uint32_t reason,
+                                      const std::string& description);
 
   on_device_model::ModelAssetPaths GetModelAssetPaths(
       const proto::BaseModelRecipe& recipe) const;
@@ -178,7 +211,7 @@ class ManifestSolutionFactory {
   base::flat_map<std::string, AssetState> assets_;
   base::flat_map<std::string, BaseModelState> base_models_;
   base::flat_map<std::string, AdaptationState> adaptations_;
-  base::flat_map<std::string, SafetyModelState> safety_models_;
+  base::flat_map<std::string, PostprocessedModelState> postprocessed_models_;
   base::flat_map<std::string, SolutionState> solutions_;
 
   base::RepeatingClosure on_asset_init_;

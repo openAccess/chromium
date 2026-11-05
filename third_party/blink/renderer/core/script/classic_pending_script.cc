@@ -18,6 +18,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/referrer_script_info.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_streamer.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_code_cache.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_compile_hints_common.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/scriptable_document_parser.h"
@@ -28,7 +29,6 @@
 #include "third_party/blink/renderer/core/lcp_critical_path_predictor/lcp_critical_path_predictor.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/core/loader/resource/script_resource.h"
-#include "third_party/blink/renderer/core/loader/url_matcher.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/script/cache_hint_attribute_value.h"
 #include "third_party/blink/renderer/core/script/document_write_intervention.h"
@@ -102,7 +102,7 @@ ClassicPendingScript* ClassicPendingScript::Fetch(
   ExecutionContext* context = element_document.GetExecutionContext();
   FetchParameters params(options.CreateFetchParameters(
       url, context->GetSecurityOrigin(), context->GetCurrentWorld(),
-      cross_origin, encoding, defer, context));
+      cross_origin, encoding, defer));
 
   ClassicPendingScript* pending_script =
       MakeGarbageCollected<ClassicPendingScript>(
@@ -520,9 +520,17 @@ void ClassicPendingScript::NotifyFinished(Resource* resource) {
   classic_script_ =
       ClassicScript::CreateFromResource(To<ScriptResource>(resource), options_);
 
+  if (CachedMetadataHandler* cache_handler = classic_script_->CacheHandler()) {
+    cache_handler->Check(
+        ExecutionContext::GetCodeCacheHostFromContext(execution_context),
+        classic_script_->SourceText());
+  }
+
   // We'll still wait for ScriptCacheConsumer before marking this PendingScript
-  // ready.
-  if (classic_script_->CacheConsumer()) {
+  // ready, provided the code cache passed validation.
+  if (classic_script_->CacheConsumer() &&
+      V8CodeCache::HasCodeCache(classic_script_->CacheHandler(),
+                                CachedMetadataHandler::kCrashIfUnchecked)) {
     AdvanceReadyState(kWaitingForCacheConsumer);
     // TODO(leszeks): Decide whether kNetworking is the right task type here.
     classic_script_->CacheConsumer()->NotifyClientWaiting(

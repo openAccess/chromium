@@ -123,6 +123,30 @@ enum AppMenuAction {
   MENU_ACTION_SHOW_CONTACT_INFO = 101,
   // MENU_ACTION_SHOW_CONTEXTUAL_TASKS_SIDE_PANEL = 102, // DEPRECATED
   MENU_ACTION_NEW_ISOLATED_WINDOW = 103,
+  MENU_ACTION_TTC_APP_MENU = 104,
+  MENU_ACTION_CREATE_NEW_TAB_GROUP = 105,
+  MENU_ACTION_SAVED_TAB_GROUP_DELETE = 106,
+  MENU_ACTION_SAVED_TAB_GROUP_OPEN_IN_BROWSER = 107,
+  MENU_ACTION_SAVED_TAB_GROUP_OPEN_IN_NEW_WINDOW = 108,
+  MENU_ACTION_SAVED_TAB_GROUP_PIN = 109,
+  MENU_ACTION_BOOKMARK_BAR_ALWAYS_HIDE = 110,
+  MENU_ACTION_BOOKMARK_BAR_ALWAYS_SHOW = 111,
+  MENU_ACTION_BOOKMARK_BAR_ONLY_ON_NTP = 112,
+  MENU_ACTION_GLOBAL_ERROR = 113,
+  MENU_ACTION_SHOW_SYNC_PASSPHRASE_DIALOG = 114,
+  MENU_ACTION_SHOW_MANAGEMENT_PAGE = 115,
+  MENU_ACTION_REPORT_UNSAFE_SITE = 116,
+  MENU_ACTION_SHARING_HUB_SCREENSHOT = 117,
+  MENU_ACTION_TAKE_SCREENSHOT = 118,
+  MENU_ACTION_TAB_SEARCH = 119,
+  MENU_ACTION_TOGGLE_VERTICAL_TABS = 120,
+  MENU_ACTION_NAME_WINDOW = 121,
+  MENU_ACTION_ASK_GOOGLE_ABOUT_THIS_PAGE = 122,
+  MENU_ACTION_CHROME_ENTERPRISE_RELEASE_NOTES = 123,
+  MENU_ACTION_MANAGE_SKILLS = 124,
+  MENU_ACTION_SHOW_SKILLS_AND_EXTENSIONS = 125,
+  MENU_ACTION_SCHEDULED_RESTART_DIALOG = 126,
+  MENU_ACTION_OTHER_DEVICE_TAB = 127,
   LIMIT_MENU_ACTION
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/ui/enums.xml:WrenchMenuAction)
@@ -189,6 +213,23 @@ class HelpMenuModel : public ui::SimpleMenuModel {
   void Build(BrowserWindowInterface* browser);
 };
 
+class SkillsAndExtensionsMenuModel : public ui::SimpleMenuModel {
+ public:
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kManageSkillsMenuItem);
+
+  explicit SkillsAndExtensionsMenuModel(
+      ui::SimpleMenuModel::Delegate* delegate);
+
+  SkillsAndExtensionsMenuModel(const SkillsAndExtensionsMenuModel&) = delete;
+  SkillsAndExtensionsMenuModel& operator=(const SkillsAndExtensionsMenuModel&) =
+      delete;
+
+  ~SkillsAndExtensionsMenuModel() override;
+
+ private:
+  void Build();
+};
+
 // A menu model that builds the contents of the app menu.
 class AppMenuModel : public ui::SimpleMenuModel,
                      public user_education::HighlightingSimpleMenuModelDelegate,
@@ -200,7 +241,9 @@ class AppMenuModel : public ui::SimpleMenuModel,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kTabGroupsMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kDownloadsMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kHistoryMenuItem);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kOtherDeviceTabsMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kExtensionsMenuItem);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSkillsAndExtensionsMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kClearBrowsingDataMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kMoreToolsMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kIncognitoMenuItem);
@@ -210,11 +253,14 @@ class AppMenuModel : public ui::SimpleMenuModel,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kIdentityDocsMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kTravelMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kShowLensOverlay);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAskGoogleAboutThisPageItem);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kContextualTasksSubmenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSaveAndShareMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kCastTitleItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kInstallAppItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kCreateShortcutItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSetBrowserAsDefaultMenuItem);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kScheduledRestartMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kHelpMenuItem);
 
   // Internal placeholder container command IDs.
@@ -225,10 +271,16 @@ class AppMenuModel : public ui::SimpleMenuModel,
   static constexpr int kFindAndEditMenuPlaceholder = IDC_FIND_AND_EDIT_MENU;
   static constexpr int kSaveAndShareMenuPlaceholder = IDC_SAVE_AND_SHARE_MENU;
   static constexpr int kRecentTabsMenuPlaceholder = IDC_RECENT_TABS_MENU;
+  static constexpr int kOtherDeviceTabsMenuPlaceholder =
+      IDC_OTHER_DEVICE_TABS_MENU;
   static constexpr int kSharingHubMenuPlaceholder = IDC_SHARING_HUB_MENU;
   static constexpr int kProfileMenuPlaceholder = IDC_PROFILE_MENU_IN_APP_MENU;
   static constexpr int kReadingListMenuPlaceholder = IDC_READING_LIST_MENU;
   static constexpr int kExtensionsSubmenuPlaceholder = IDC_EXTENSIONS_SUBMENU;
+  static constexpr int kSkillsAndExtensionsMenuPlaceholder =
+      IDC_SKILLS_AND_EXTENSIONS_MENU;
+  static constexpr int kContextualTasksMenuPlaceholder =
+      IDC_CONTEXTUAL_TASKS_MENU;
   static constexpr int kBookmarksMenuPlaceholder = IDC_BOOKMARKS_MENU;
   static constexpr int kSavedTabGroupsMenuPlaceholder =
       IDC_SAVED_TAB_GROUPS_MENU;
@@ -240,8 +292,8 @@ class AppMenuModel : public ui::SimpleMenuModel,
   // varies depending upon the underlying model. The command IDs for items in
   // these menus will be staggered and each increment by this value, so they
   // don't have conflicts. Currently, this accounts for the bookmarks, recent
-  // tabs menus, the profile submenu, tab groups submenu, and the comparison
-  // tables submenu.
+  // tabs menus, the profile submenu, tab groups submenu, and the other device
+  // tabs submenu.
   static constexpr int kNumUnboundedMenuTypes = 5;
 
   // First command ID to use for each unbounded menu. These should be staggered,
@@ -250,7 +302,8 @@ class AppMenuModel : public ui::SimpleMenuModel,
   static constexpr int kMinRecentTabsCommandId = kMinBookmarksCommandId + 1;
   static constexpr int kMinOtherProfileCommandId = kMinRecentTabsCommandId + 1;
   static constexpr int kMinTabGroupsCommandId = kMinOtherProfileCommandId + 1;
-  static constexpr int kMinCompareCommandId = kMinTabGroupsCommandId + 1;
+  static constexpr int kMinOtherDeviceTabsCommandId =
+      kMinTabGroupsCommandId + 1;
 
   // TODO(mickeyburks): Highlight menu items dynamically through
   // TutorialDescription instead of hardcoding specific tutorials here.
@@ -258,6 +311,14 @@ class AppMenuModel : public ui::SimpleMenuModel,
   // is currently running in the given browser.
   static AlertMenuItem GetAlertItemForRunningTutorial(
       BrowserWindowInterface* browser);
+
+  // Conditionally return the update app menu item title based on upgrade
+  // detector state.
+  static std::u16string GetUpgradeDialogTitleText();
+
+  // Conditionally return the update app menu item substring text based on
+  // upgrade detector state.
+  static std::u16string GetUpgradeDialogSubstringText();
 
   // Creates an app menu model for the given browser. Init() must be called
   // before passing this to an AppMenu. |app_menu_icon_controller|, if provided,
@@ -323,6 +384,10 @@ class AppMenuModel : public ui::SimpleMenuModel,
                                       int event_flags);
 
  private:
+  // Adds the "Relaunch later..." menu item if a pending update is eligible for
+  // scheduled restart. Returns whether the menu item was added.
+  bool AddScheduledRestartMenuItem();
+
   // Adds actionable global error menu items to the menu.
   // Examples: Extension permissions and sign in errors.
   // Returns a boolean indicating whether any menu items were added.

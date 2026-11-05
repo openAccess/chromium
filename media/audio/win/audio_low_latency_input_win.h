@@ -106,6 +106,7 @@ class MEDIA_EXPORT WASAPIAudioInputStream
   // that has no audio devices).
   // Note: This enum is used to record a histogram value and should not be
   // re-ordered.
+  // LINT.IfChange(StreamOpenResult)
   enum StreamOpenResult {
     OPEN_RESULT_OK = 0,
     OPEN_RESULT_CREATE_INSTANCE = 1,
@@ -124,7 +125,7 @@ class MEDIA_EXPORT WASAPIAudioInputStream
     OPEN_RESULT_OK_WITH_RESAMPLING = 14,
     OPEN_RESULT_MAX = OPEN_RESULT_OK_WITH_RESAMPLING
   };
-
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:AudioStreamOpenResult)
 
   using ActivateAudioInterfaceAsyncCallback =
       base::RepeatingCallback<HRESULT(LPCWSTR,
@@ -229,7 +230,7 @@ class MEDIA_EXPORT WASAPIAudioInputStream
   // function returns false with |*hr| == S_FALSE, the OS supports a closest
   // match but we don't support conversion to it.
   bool DesiredFormatIsSupported(HRESULT* hr);
-  void SetupConverterAndStoreFormatInfo();
+  bool SetupConverterAndStoreFormatInfo();
   HRESULT InitializeAudioEngine();
 
   void ReportOpenResult(HRESULT hr);
@@ -371,7 +372,11 @@ class MEDIA_EXPORT WASAPIAudioInputStream
   // ideally, never), we support using an AudioConverter.
   std::unique_ptr<AudioConverter> converter_;
   std::unique_ptr<AudioBus> convert_bus_;
-  bool imperfect_buffer_size_conversion_ = false;
+  // Minimum number of full blocks required in `fifo_` before delivering a
+  // packet (`1` normally, or `converter_->GetMaxInputFramesRequested(...) /
+  // input_frames_per_buffer` when converting so `ProvideInput()` never
+  // underflows).
+  int min_blocks_for_convert_ = 1;
 
   // Callback to send log messages to registered clients.
   AudioManager::LogCallback log_callback_;

@@ -10,14 +10,15 @@ import android.view.LayoutInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewGroup.MarginLayoutParams;
 
 import androidx.appcompat.widget.Toolbar;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.chromium.base.supplier.NonNullObservableSupplier;
-import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.bookmarks.BookmarkListEntry.ViewType;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.browser_ui.widget.FadingShadow;
@@ -40,9 +41,16 @@ public class BookmarkFolderPickerCoordinator implements BackPressHandler {
     private final View mView;
     private final RecyclerView mRecyclerView;
     private final BookmarkFolderPickerMediator mMediator;
+    private final boolean mIsDesktopDialog;
 
     private final SimpleRecyclerViewAdapter mAdapter = new SimpleRecyclerViewAdapter(mModelList);
 
+    /**
+     * @param isDesktopDialog Whether the hosting activity uses the desktop dialog rather than the
+     *     full-screen presentation.
+     * @param restoredFolderId The folder to show instead of the default one, e.g. after the
+     *     activity was recreated. Ignored if it no longer exists.
+     */
     public BookmarkFolderPickerCoordinator(
             Context context,
             BookmarkModel bookmarkModel,
@@ -52,11 +60,14 @@ public class BookmarkFolderPickerCoordinator implements BackPressHandler {
             BookmarkUiPrefs bookmarkUiPrefs,
             ImprovedBookmarkRowCoordinator improvedBookmarkRowCoordinator,
             ShoppingService shoppingService,
-            boolean isFromBookmarkDialog) {
+            boolean isFromBookmarkDialog,
+            boolean isDesktopDialog,
+            @Nullable BookmarkId restoredFolderId) {
         mContext = context;
         mBookmarkModel = bookmarkModel;
+        mIsDesktopDialog = isDesktopDialog;
         int layoutId =
-                BookmarkUtils.isDesktopBookmarksLayoutEnabled()
+                mIsDesktopDialog
                         ? R.layout.bookmark_folder_picker_desktop
                         : R.layout.bookmark_folder_picker;
         mView = LayoutInflater.from(mContext).inflate(layoutId, null);
@@ -67,11 +78,11 @@ public class BookmarkFolderPickerCoordinator implements BackPressHandler {
         mRecyclerView.setAdapter(mAdapter);
         mAdapter.registerType(
                 ViewType.IMPROVED_BOOKMARK_VISUAL,
-                BookmarkManagerCoordinator::buildVisualImprovedBookmarkRow,
+                ImprovedBookmarkRow::buildVisualRow,
                 ImprovedBookmarkRowViewBinder::bind);
         mAdapter.registerType(
                 ViewType.IMPROVED_BOOKMARK_COMPACT,
-                BookmarkManagerCoordinator::buildCompactImprovedBookmarkRow,
+                this::buildCompactRow,
                 ImprovedBookmarkRowViewBinder::bind);
         mAdapter.registerType(
                 ViewType.SECTION_HEADER,
@@ -79,7 +90,10 @@ public class BookmarkFolderPickerCoordinator implements BackPressHandler {
                 BookmarkManagerViewBinder::bindSectionHeaderView);
 
         PropertyModel model = new PropertyModel(BookmarkFolderPickerProperties.ALL_KEYS);
-        PropertyModelChangeProcessor.create(model, mView, BookmarkFolderPickerViewBinder::bind);
+        PropertyModelChangeProcessor.create(
+                model,
+                mView,
+                (m, v, k) -> BookmarkFolderPickerViewBinder.bind(m, v, k, mIsDesktopDialog));
 
         mMediator =
                 new BookmarkFolderPickerMediator(
@@ -93,33 +107,43 @@ public class BookmarkFolderPickerCoordinator implements BackPressHandler {
                         addNewFolderCoordinator,
                         improvedBookmarkRowCoordinator,
                         shoppingService,
-                        isFromBookmarkDialog);
+                        isFromBookmarkDialog,
+                        mIsDesktopDialog,
+                        restoredFolderId);
 
-        if (BookmarkUtils.isDesktopBookmarksLayoutEnabled()) {
-            Toolbar toolbar = mView.findViewById(R.id.toolbar);
-            toolbar.setNavigationOnClickListener(
-                    (v) -> {
-                        if (!mMediator.onBackPressed()) {
-                            if (mContext instanceof Activity activity) {
-                                activity.finish();
-                            } else {
-                                finishRunnable.run();
+        if (mIsDesktopDialog) {
+            View backButton = mView.findViewById(R.id.back_button);
+            if (backButton != null) {
+                backButton.setOnClickListener(
+                        (v) -> {
+                            if (!mMediator.onBackPressed()) {
+                                if (mContext instanceof Activity activity) {
+                                    activity.finish();
+                                    activity.overridePendingTransition(0, 0);
+                                } else {
+                                    finishRunnable.run();
+                                }
                             }
-                        }
-                    });
+                        });
+            }
+        } else {
+            FadingShadowView shadow = mView.findViewById(R.id.shadow);
+            if (shadow != null) {
+                shadow.init(
+                        mContext.getColor(R.color.toolbar_shadow_color), FadingShadow.POSITION_TOP);
+                mRecyclerView.setOnScrollListener(
+                        new RecyclerView.OnScrollListener() {
+                            @Override
+                            public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
+                                super.onScrolled(recyclerView, dx, dy);
+                                shadow.setVisibility(
+                                        mRecyclerView.canScrollVertically(-1)
+                                                ? View.VISIBLE
+                                                : View.GONE);
+                            }
+                        });
+            }
         }
-
-        FadingShadowView shadow = mView.findViewById(R.id.shadow);
-        shadow.init(mContext.getColor(R.color.toolbar_shadow_color), FadingShadow.POSITION_TOP);
-        mRecyclerView.setOnScrollListener(
-                new RecyclerView.OnScrollListener() {
-                    @Override
-                    public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
-                        super.onScrolled(recyclerView, dx, dy);
-                        shadow.setVisibility(
-                                mRecyclerView.canScrollVertically(-1) ? View.VISIBLE : View.GONE);
-                    }
-                });
     }
 
     /** Destroys the coordinator. */
@@ -133,7 +157,7 @@ public class BookmarkFolderPickerCoordinator implements BackPressHandler {
     }
 
     /** Returns the {@link Toolbar} for the folder picker. */
-    public Toolbar getToolbar() {
+    public @Nullable Toolbar getToolbar() {
         return mView.findViewById(R.id.toolbar);
     }
 
@@ -143,6 +167,11 @@ public class BookmarkFolderPickerCoordinator implements BackPressHandler {
 
     public void updateNavigationIcon() {
         mMediator.updateNavigationIconForCurrentParent();
+    }
+
+    /** Returns the folder being shown, or null if the model hasn't loaded yet. */
+    public @Nullable BookmarkId getCurrentFolderId() {
+        return mMediator.getCurrentFolderId();
     }
 
     // Delegate setup methods.
@@ -158,12 +187,34 @@ public class BookmarkFolderPickerCoordinator implements BackPressHandler {
 
     // Building rows for the recycler view.
 
+    View buildCompactRow(ViewGroup parent) {
+        View row = ImprovedBookmarkRow.buildCompactRow(parent);
+        if (mIsDesktopDialog) {
+            View container = row.findViewById(R.id.container);
+            if (container != null
+                    && container.getLayoutParams() instanceof MarginLayoutParams marginParams) {
+                marginParams.setMarginStart(0);
+                marginParams.setMarginEnd(0);
+                container.setLayoutParams(marginParams);
+            }
+        }
+        return row;
+    }
+
     View buildSectionHeaderView(ViewGroup parent) {
         int layoutId =
                 mBookmarkModel.areAccountBookmarkFoldersActive()
                         ? R.layout.bookmark_section_header_v2
                         : R.layout.bookmark_section_header;
-        return LayoutInflater.from(parent.getContext()).inflate(layoutId, parent, false);
+        View view = LayoutInflater.from(parent.getContext()).inflate(layoutId, parent, false);
+        if (mIsDesktopDialog) {
+            view.setPaddingRelative(0, view.getPaddingTop(), 0, view.getPaddingBottom());
+            if (view.getLayoutParams() instanceof MarginLayoutParams marginParams) {
+                marginParams.topMargin = 0;
+                view.setLayoutParams(marginParams);
+            }
+        }
+        return view;
     }
 
     // BackPressHandler implementation.
@@ -175,15 +226,6 @@ public class BookmarkFolderPickerCoordinator implements BackPressHandler {
 
     @Override
     public NonNullObservableSupplier<Boolean> getHandleBackPressChangedSupplier() {
-        if (BookmarkUtils.isDesktopBookmarksLayoutEnabled()) {
-            return mMediator.getHandleBackPressChangedSupplier();
-        }
-        return ObservableSuppliers.alwaysTrue();
-    }
-
-    // Testing methods.
-
-    void openFolderForTesting(BookmarkId folder) {
-        mMediator.populateFoldersForParentId(folder);
+        return mMediator.getHandleBackPressChangedSupplier();
     }
 }

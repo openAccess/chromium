@@ -4,10 +4,16 @@
 
 #include "chrome/browser/ui/tabs/tab_menu_model.h"
 
+#include <utility>
+
 #include "base/callback_list.h"
 #include "base/feature_list.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/test/scoped_icu_locale.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/commerce/shopping_service_factory.h"
 #include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "chrome/browser/glic/host/glic_features.mojom.h"
@@ -16,22 +22,23 @@
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/glic/test_support/glic_test_environment.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/tabs/existing_base_sub_menu_model.h"
-#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/split_tab_menu_model.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/split_tab_mute_menu_model.h"
 #include "chrome/browser/ui/tabs/split_tab_swap_menu_model.h"
-#include "chrome/browser/ui/tabs/split_view_layout_menu_model.h"
 #include "chrome/browser/ui/tabs/tab_menu_model_delegate.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_utils.h"
 #include "chrome/browser/ui/tabs/test_tab_strip_model_delegate.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_bubble_controller.h"
+#include "chrome/browser/ui/views/toolbar/pinned_action_test_accessor.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -51,16 +58,21 @@
 #include "components/send_tab_to_self/features.h"
 #include "components/send_tab_to_self/send_tab_to_self_model.h"
 #include "components/send_tab_to_self/stub_send_tab_to_self_sync_service.h"
-#include "components/send_tab_to_self/target_device_info.h"
+#include "components/signin/public/base/signin_buildflags.h"
+#include "components/sync_device_info/remote_device_info.h"
 #include "components/tabs/public/split_tab_data.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "net/dns/mock_host_resolver.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/menu_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/menus/simple_menu_model.h"
+#include "url/gurl.h"
 
 class TabMenuModelBrowserTest : public MenuModelTest,
                                 public InProcessBrowserTest {
@@ -81,8 +93,18 @@ class TabMenuModelBrowserTest : public MenuModelTest,
         submenu->GetIndexOfCommandId(static_cast<int>(command_id)).value()));
   }
 
- private:
-  base::test::ScopedFeatureList feature_list_;
+  ui::SimpleMenuModel* GetArrangeSplitSubmenu(
+      int tab_index,
+      std::unique_ptr<TabMenuModel>& out_menu_model) {
+    out_menu_model = std::make_unique<TabMenuModel>(
+        &delegate_, TabMenuModelDelegate::From(browser()),
+        browser()->tab_strip_model(), tab_index);
+    size_t arrange_submenu_index =
+        out_menu_model->GetIndexOfCommandId(TabStripModel::CommandArrangeSplit)
+            .value();
+    return static_cast<ui::SimpleMenuModel*>(
+        out_menu_model->GetSubmenuModelAt(arrange_submenu_index));
+  }
 };
 
 IN_PROC_BROWSER_TEST_F(TabMenuModelBrowserTest, Basics) {
@@ -358,32 +380,293 @@ IN_PROC_BROWSER_TEST_F(TabMenuModelBrowserTest, MultiSelectTabs) {
   }
 }
 
-class TabMenuModelSplitViewHorizontalBrowserTest
-    : public TabMenuModelBrowserTest {
+namespace {
+
+// Returns the label of the "Mute sites" item in `menu_model`.
+std::u16string GetMuteSitesLabel(TabMenuModel& menu_model) {
+  return menu_model.GetLabelAt(
+      menu_model.GetIndexOfCommandId(TabStripModel::CommandToggleSiteMuted)
+          .value());
+}
+
+// Returns the "Mute sites" submenu of `menu_model`, or nullptr if "Mute sites"
+// is a regular menu item.
+ui::SimpleMenuModel* GetMuteSitesSubmenu(TabMenuModel& menu_model) {
+  const std::optional<size_t> index =
+      menu_model.GetIndexOfCommandId(TabStripModel::CommandToggleSiteMuted);
+  if (!index.has_value() ||
+      menu_model.GetTypeAt(*index) != ui::MenuModel::TYPE_SUBMENU) {
+    return nullptr;
+  }
+  return static_cast<ui::SimpleMenuModel*>(
+      menu_model.GetSubmenuModelAt(*index));
+}
+
+size_t GetMuteSubmenuIndex(ui::SimpleMenuModel* submenu,
+                           SplitTabMuteMenuModel::CommandId id) {
+  return submenu->GetIndexOfCommandId(static_cast<int>(id)).value();
+}
+
+std::u16string GetMuteSubmenuLabel(ui::SimpleMenuModel* submenu,
+                                   SplitTabMuteMenuModel::CommandId id) {
+  return submenu->GetLabelAt(GetMuteSubmenuIndex(submenu, id));
+}
+
+}  // namespace
+
+class TabMenuModelMuteSitesBrowserTest : public TabMenuModelBrowserTest {
  public:
-  TabMenuModelSplitViewHorizontalBrowserTest() {
-    scoped_feature_list_.InitAndEnableFeature(tabs::kSplitViewHorizontal);
+  void SetUpOnMainThread() override {
+    TabMenuModelBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
+    ASSERT_TRUE(embedded_test_server()->Start());
   }
 
-  ui::SimpleMenuModel* GetArrangeSplitSubmenu(
-      int tab_index,
-      std::unique_ptr<TabMenuModel>& out_menu_model) {
-    out_menu_model = std::make_unique<TabMenuModel>(
-        &delegate_, TabMenuModelDelegate::From(browser()),
-        browser()->tab_strip_model(), tab_index);
-    size_t arrange_submenu_index =
-        out_menu_model->GetIndexOfCommandId(TabStripModel::CommandArrangeSplit)
-            .value();
-    return static_cast<ui::SimpleMenuModel*>(
-        out_menu_model->GetSubmenuModelAt(arrange_submenu_index));
+  // Navigates the first tab to `first_url`, opens `second_url` in a second tab
+  // and puts both tabs in a side-by-side split. Returns the split's id.
+  split_tabs::SplitTabId CreateSplit(const GURL& first_url,
+                                     const GURL& second_url) {
+    EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), first_url));
+    EXPECT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
+        browser(), second_url,
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+        ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
+
+    TabStripModel* tab_strip_model = browser()->tab_strip_model();
+    EXPECT_EQ(tab_strip_model->count(), 2);
+    tab_strip_model->AddToNewSplit(
+        {0},
+        split_tabs::SplitTabVisualData(split_tabs::SplitTabLayout::kSideBySide),
+        split_tabs::SplitTabCreatedSource::kToolbarButton);
+    return tab_strip_model->GetSplitForTab(1).value();
   }
 
- protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  // Returns the tab indices of the first and second view of `split_id`.
+  std::pair<int, int> GetSplitIndices(split_tabs::SplitTabId split_id) {
+    TabStripModel* tab_strip_model = browser()->tab_strip_model();
+    const std::vector<tabs::TabInterface*> tabs_in_split =
+        tab_strip_model->GetSplitData(split_id)->ListTabs();
+    EXPECT_EQ(tabs_in_split.size(), 2u);
+    return {tab_strip_model->GetIndexOfTab(tabs_in_split[0]),
+            tab_strip_model->GetIndexOfTab(tabs_in_split[1])};
+  }
+
+  bool IsMuted(int index) {
+    TabStripModel* tab_strip_model = browser()->tab_strip_model();
+    return IsSiteMuted(tab_strip_model->GetTabAtIndex(index)->GetHandle()) &&
+           tab_strip_model->GetWebContentsAt(index)->IsAudioMuted();
+  }
 };
 
-IN_PROC_BROWSER_TEST_F(TabMenuModelSplitViewHorizontalBrowserTest,
-                       ToggleOrientationMenuAction) {
+IN_PROC_BROWSER_TEST_F(TabMenuModelMuteSitesBrowserTest, MuteSitesSubmenu) {
+  using CommandId = SplitTabMuteMenuModel::CommandId;
+
+  TabStripModel* tab_strip_model = browser()->tab_strip_model();
+
+  // Outside of a split, "Mute site" is a regular menu item.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("a.com", "/title1.html")));
+  {
+    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
+                            tab_strip_model, 0);
+    EXPECT_TRUE(
+        menu_model.GetIndexOfCommandId(TabStripModel::CommandToggleSiteMuted)
+            .has_value());
+    EXPECT_FALSE(GetMuteSitesSubmenu(menu_model));
+  }
+
+  // Put two different sites in a split so that muting one of them leaves the
+  // other one playing.
+  const split_tabs::SplitTabId split_id =
+      CreateSplit(embedded_test_server()->GetURL("a.com", "/title1.html"),
+                  embedded_test_server()->GetURL("b.com", "/title2.html"));
+  const auto [left_index, right_index] = GetSplitIndices(split_id);
+
+  // For a split, "Mute sites" is a submenu that can mute both sites or just
+  // the site in one of the views. Mute only the left site.
+  {
+    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
+                            tab_strip_model, left_index);
+    EXPECT_EQ(
+        GetMuteSitesLabel(menu_model),
+        l10n_util::GetPluralStringFUTF16(IDS_TAB_CXMENU_SOUND_MUTE_SITE, 2));
+    ui::SimpleMenuModel* submenu = GetMuteSitesSubmenu(menu_model);
+    ASSERT_TRUE(submenu);
+    ASSERT_EQ(submenu->GetItemCount(), 4u);
+    EXPECT_EQ(submenu->GetTypeAt(1), ui::MenuModel::TYPE_SEPARATOR);
+    EXPECT_EQ(
+        GetMuteSubmenuLabel(submenu, CommandId::kToggleAllSitesMuted),
+        l10n_util::GetPluralStringFUTF16(IDS_TAB_CXMENU_SOUND_MUTE_SITE, 2));
+    EXPECT_EQ(GetMuteSubmenuLabel(submenu, CommandId::kToggleStartSiteMuted),
+              l10n_util::GetStringUTF16(IDS_SPLIT_TAB_MUTE_LEFT_SITE));
+    EXPECT_EQ(GetMuteSubmenuLabel(submenu, CommandId::kToggleEndSiteMuted),
+              l10n_util::GetStringUTF16(IDS_SPLIT_TAB_MUTE_RIGHT_SITE));
+
+    submenu->ActivatedAt(
+        GetMuteSubmenuIndex(submenu, CommandId::kToggleStartSiteMuted));
+  }
+  EXPECT_TRUE(IsMuted(left_index));
+  EXPECT_FALSE(IsMuted(right_index));
+
+  // The left site now offers to unmute, and "Mute sites" mutes both sites.
+  {
+    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
+                            tab_strip_model, left_index);
+    ui::SimpleMenuModel* submenu = GetMuteSitesSubmenu(menu_model);
+    ASSERT_TRUE(submenu);
+    EXPECT_EQ(GetMuteSubmenuLabel(submenu, CommandId::kToggleStartSiteMuted),
+              l10n_util::GetStringUTF16(IDS_SPLIT_TAB_UNMUTE_LEFT_SITE));
+    EXPECT_EQ(GetMuteSubmenuLabel(submenu, CommandId::kToggleEndSiteMuted),
+              l10n_util::GetStringUTF16(IDS_SPLIT_TAB_MUTE_RIGHT_SITE));
+
+    submenu->ActivatedAt(
+        GetMuteSubmenuIndex(submenu, CommandId::kToggleAllSitesMuted));
+  }
+  EXPECT_TRUE(IsMuted(left_index));
+  EXPECT_TRUE(IsMuted(right_index));
+
+  // With both sites muted, the menu offers to unmute. Unmute the right site.
+  {
+    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
+                            tab_strip_model, right_index);
+    EXPECT_EQ(
+        GetMuteSitesLabel(menu_model),
+        l10n_util::GetPluralStringFUTF16(IDS_TAB_CXMENU_SOUND_UNMUTE_SITE, 2));
+    ui::SimpleMenuModel* submenu = GetMuteSitesSubmenu(menu_model);
+    ASSERT_TRUE(submenu);
+    EXPECT_EQ(
+        GetMuteSubmenuLabel(submenu, CommandId::kToggleAllSitesMuted),
+        l10n_util::GetPluralStringFUTF16(IDS_TAB_CXMENU_SOUND_UNMUTE_SITE, 2));
+    EXPECT_EQ(GetMuteSubmenuLabel(submenu, CommandId::kToggleEndSiteMuted),
+              l10n_util::GetStringUTF16(IDS_SPLIT_TAB_UNMUTE_RIGHT_SITE));
+
+    submenu->ActivatedAt(
+        GetMuteSubmenuIndex(submenu, CommandId::kToggleEndSiteMuted));
+  }
+  EXPECT_TRUE(IsMuted(left_index));
+  EXPECT_FALSE(IsMuted(right_index));
+
+  // In RTL, the start tab (index 0) in a side-by-side split is shown on the
+  // right and the end tab (index 1) is shown on the left, so the labels flip
+  // while `kToggleStartSiteMuted` and `kToggleEndSiteMuted` still target index
+  // 0 and index 1 respectively.
+  {
+    base::i18n::ScopedDefaultIcuLocale rtl_locale(
+        base::i18n::GetKnownLanguageTag("he"));
+    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
+                            tab_strip_model, left_index);
+    ui::SimpleMenuModel* submenu = GetMuteSitesSubmenu(menu_model);
+    ASSERT_TRUE(submenu);
+    EXPECT_EQ(GetMuteSubmenuLabel(submenu, CommandId::kToggleStartSiteMuted),
+              l10n_util::GetStringUTF16(IDS_SPLIT_TAB_UNMUTE_RIGHT_SITE));
+    EXPECT_EQ(GetMuteSubmenuLabel(submenu, CommandId::kToggleEndSiteMuted),
+              l10n_util::GetStringUTF16(IDS_SPLIT_TAB_MUTE_LEFT_SITE));
+
+    submenu->ActivatedAt(
+        GetMuteSubmenuIndex(submenu, CommandId::kToggleEndSiteMuted));
+    EXPECT_TRUE(IsMuted(right_index));
+    submenu->ActivatedAt(
+        GetMuteSubmenuIndex(submenu, CommandId::kToggleEndSiteMuted));
+    EXPECT_FALSE(IsMuted(right_index));
+  }
+
+  // Stacked splits refer to the top and bottom views.
+  tab_strip_model->UpdateSplitLayout(split_id,
+                                     split_tabs::SplitTabLayout::kStacked);
+  {
+    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
+                            tab_strip_model, left_index);
+    ui::SimpleMenuModel* submenu = GetMuteSitesSubmenu(menu_model);
+    ASSERT_TRUE(submenu);
+    EXPECT_EQ(GetMuteSubmenuLabel(submenu, CommandId::kToggleStartSiteMuted),
+              l10n_util::GetStringUTF16(IDS_SPLIT_TAB_UNMUTE_TOP_SITE));
+    EXPECT_EQ(GetMuteSubmenuLabel(submenu, CommandId::kToggleEndSiteMuted),
+              l10n_util::GetStringUTF16(IDS_SPLIT_TAB_MUTE_BOTTOM_SITE));
+  }
+
+  // An unselected split still gets the submenu, and "Mute sites" covers both
+  // of its sites.
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_FALSE(tab_strip_model->IsTabSelected(left_index));
+  {
+    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
+                            tab_strip_model, left_index);
+    EXPECT_EQ(
+        GetMuteSitesLabel(menu_model),
+        l10n_util::GetPluralStringFUTF16(IDS_TAB_CXMENU_SOUND_MUTE_SITE, 2));
+    EXPECT_TRUE(GetMuteSitesSubmenu(menu_model));
+  }
+
+  // When the selection spans the split and another tab, "Mute sites" acts on
+  // the whole selection, so it stays a regular menu item.
+  tab_strip_model->AddSelectionFromAnchorTo(left_index);
+  ASSERT_TRUE(tab_strip_model->IsTabSelected(left_index));
+  {
+    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
+                            tab_strip_model, left_index);
+    EXPECT_TRUE(
+        menu_model.GetIndexOfCommandId(TabStripModel::CommandToggleSiteMuted)
+            .has_value());
+    EXPECT_FALSE(GetMuteSitesSubmenu(menu_model));
+  }
+
+  // After separating the split, the muted site can still be unmuted via the
+  // regular single-tab "Unmute site" item.
+  tab_strip_model->RemoveSplit(split_id);
+  tab_strip_model->ActivateTabAt(left_index);
+  {
+    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
+                            tab_strip_model, left_index);
+    EXPECT_EQ(
+        GetMuteSitesLabel(menu_model),
+        l10n_util::GetPluralStringFUTF16(IDS_TAB_CXMENU_SOUND_UNMUTE_SITE, 1));
+    tab_strip_model->ExecuteContextMenuCommand(
+        left_index, TabStripModel::CommandToggleSiteMuted);
+  }
+  EXPECT_FALSE(IsMuted(left_index));
+}
+
+// The per-view items change the sound content setting of the view's site, so
+// when both views show the same site they mute and unmute both views.
+IN_PROC_BROWSER_TEST_F(TabMenuModelMuteSitesBrowserTest,
+                       MuteSitesSubmenuSameSite) {
+  using CommandId = SplitTabMuteMenuModel::CommandId;
+
+  TabStripModel* tab_strip_model = browser()->tab_strip_model();
+  const split_tabs::SplitTabId split_id =
+      CreateSplit(embedded_test_server()->GetURL("a.com", "/title1.html"),
+                  embedded_test_server()->GetURL("a.com", "/title2.html"));
+  const auto [left_index, right_index] = GetSplitIndices(split_id);
+
+  {
+    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
+                            tab_strip_model, left_index);
+    ui::SimpleMenuModel* submenu = GetMuteSitesSubmenu(menu_model);
+    ASSERT_TRUE(submenu);
+    submenu->ActivatedAt(
+        GetMuteSubmenuIndex(submenu, CommandId::kToggleStartSiteMuted));
+  }
+  EXPECT_TRUE(IsMuted(left_index));
+  EXPECT_TRUE(IsMuted(right_index));
+
+  // Both views now offer to unmute, and unmuting either of them unmutes both.
+  {
+    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
+                            tab_strip_model, left_index);
+    ui::SimpleMenuModel* submenu = GetMuteSitesSubmenu(menu_model);
+    ASSERT_TRUE(submenu);
+    EXPECT_EQ(GetMuteSubmenuLabel(submenu, CommandId::kToggleStartSiteMuted),
+              l10n_util::GetStringUTF16(IDS_SPLIT_TAB_UNMUTE_LEFT_SITE));
+    EXPECT_EQ(GetMuteSubmenuLabel(submenu, CommandId::kToggleEndSiteMuted),
+              l10n_util::GetStringUTF16(IDS_SPLIT_TAB_UNMUTE_RIGHT_SITE));
+    submenu->ActivatedAt(
+        GetMuteSubmenuIndex(submenu, CommandId::kToggleEndSiteMuted));
+  }
+  EXPECT_FALSE(IsMuted(left_index));
+  EXPECT_FALSE(IsMuted(right_index));
+}
+
+IN_PROC_BROWSER_TEST_F(TabMenuModelBrowserTest, ToggleOrientationMenuAction) {
   chrome::NewTab(browser(), NewTabTypes::kNewTabCommand);
 
   TabStripModel* tab_strip_model = browser()->tab_strip_model();
@@ -430,61 +713,6 @@ IN_PROC_BROWSER_TEST_F(TabMenuModelSplitViewHorizontalBrowserTest,
       arrange_submenu_2->GetIndexOfCommandId(toggle_cmd_id).value();
   EXPECT_EQ(arrange_submenu_2->GetLabelAt(item_idx_2),
             l10n_util::GetStringUTF16(IDS_SPLIT_TAB_SHOW_SIDE_BY_SIDE));
-}
-
-class TabMenuModelSplitViewHorizontalDirectAccessBrowserTest
-    : public TabMenuModelBrowserTest {
- public:
-  TabMenuModelSplitViewHorizontalDirectAccessBrowserTest() {
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        /*enabled_features=*/{{tabs::kSplitViewHorizontal,
-                               {{"split_view_horizontal_direct_access",
-                                 "true"}}}},
-        /*disabled_features=*/{});
-  }
-
-  void TestNewSplit(SplitViewLayoutMenuModel::CommandId command_id,
-                    split_tabs::SplitTabLayout expected_layout) {
-    chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
-
-    TabStripModel* tab_strip_model = browser()->tab_strip_model();
-    ASSERT_EQ(tab_strip_model->count(), 2);
-    ASSERT_EQ(tab_strip_model->active_index(), 1);
-
-    TabMenuModel menu_model(&delegate_, TabMenuModelDelegate::From(browser()),
-                            tab_strip_model, 0);
-
-    size_t submenu_index =
-        menu_model.GetIndexOfCommandId(TabStripModel::CommandAddToSplit)
-            .value();
-    ui::SimpleMenuModel* submenu = static_cast<ui::SimpleMenuModel*>(
-        menu_model.GetSubmenuModelAt(submenu_index));
-    submenu->ActivatedAt(static_cast<size_t>(
-        submenu->GetIndexOfCommandId(static_cast<int>(command_id)).value()));
-
-    EXPECT_TRUE(tab_strip_model->GetActiveTab()->GetSplit().has_value());
-    EXPECT_EQ(
-        expected_layout,
-        tab_strip_model
-            ->GetSplitData(tab_strip_model->GetActiveTab()->GetSplit().value())
-            ->visual_data()
-            ->split_layout());
-  }
-
- protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(TabMenuModelSplitViewHorizontalDirectAccessBrowserTest,
-                       NewSideBySideSplit) {
-  TestNewSplit(SplitViewLayoutMenuModel::CommandId::kSideBySide,
-               split_tabs::SplitTabLayout::kSideBySide);
-}
-
-IN_PROC_BROWSER_TEST_F(TabMenuModelSplitViewHorizontalDirectAccessBrowserTest,
-                       NewStackedSplit) {
-  TestNewSplit(SplitViewLayoutMenuModel::CommandId::kStacked,
-               split_tabs::SplitTabLayout::kStacked);
 }
 
 IN_PROC_BROWSER_TEST_F(TabMenuModelBrowserTest, SwapWithActiveTab) {
@@ -683,10 +911,7 @@ IN_PROC_BROWSER_TEST_F(TabMenuModelGlicMultiTabTest, TooManyShared) {
 
 class TabMenuModelSendTabToSelfBrowserTest : public TabMenuModelBrowserTest {
  public:
-  TabMenuModelSendTabToSelfBrowserTest() {
-    feature_list_.InitAndEnableFeature(
-        send_tab_to_self::kSendTabToSelfEnhancedDesktopUI);
-  }
+  TabMenuModelSendTabToSelfBrowserTest() = default;
 
   void SetUpBrowserContextKeyedServices(
       content::BrowserContext* context) override {
@@ -704,17 +929,15 @@ class TabMenuModelSendTabToSelfBrowserTest : public TabMenuModelBrowserTest {
                SendTabToSelfSyncServiceFactory::GetForProfile(profile()))
         ->GetFakeSendTabToSelfModel();
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(TabMenuModelSendTabToSelfBrowserTest,
                        SendMultipleSelectedTabs) {
-  std::vector<send_tab_to_self::TargetDeviceInfo> devices;
+  std::vector<syncer::RemoteDeviceInfo> devices;
   devices.emplace_back("Device 0", "guid0",
                        syncer::DeviceInfo::FormFactor::kDesktop,
-                       syncer::DeviceInfo::OsType::kLinux, base::Time::Now());
+                       syncer::DeviceInfo::OsType::kLinux, base::Time::Now(),
+                       /*has_high_precision_timestamp=*/false);
   model()->SetTargetDeviceInfoSortedList(devices);
 
   ASSERT_TRUE(embedded_test_server()->Start());
@@ -755,3 +978,95 @@ IN_PROC_BROWSER_TEST_F(TabMenuModelSendTabToSelfBrowserTest,
   }
   EXPECT_THAT(sent_urls, testing::UnorderedElementsAre(url2, url3));
 }
+
+class TabMenuModelSendTabToSelfSigninPromosBrowserTest
+    : public TabMenuModelSendTabToSelfBrowserTest {
+ public:
+  TabMenuModelSendTabToSelfSigninPromosBrowserTest() {
+    signin_promos_feature_list_.InitWithFeatures(
+        {send_tab_to_self::kSendTabToSelfSubmenuSigninPromos,
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+         send_tab_to_self::kSendTabToSelfNoTargetDeviceQrCode
+#endif
+        },
+        {});
+  }
+
+ private:
+  base::test::ScopedFeatureList signin_promos_feature_list_;
+};
+
+// Tests that for `kOfferSignIn`, the tab context menu renders Send Tab to Self
+// as a submenu and that activating the submenu item opens the promo bubble.
+IN_PROC_BROWSER_TEST_F(TabMenuModelSendTabToSelfSigninPromosBrowserTest,
+                       SubmenuForOfferSignIn) {
+  auto* sync_service =
+      static_cast<send_tab_to_self::StubSendTabToSelfSyncService*>(
+          SendTabToSelfSyncServiceFactory::GetForProfile(profile()));
+  TabStripModel* tab_strip = browser()->tab_strip_model();
+  sync_service->SetEntryPointDisplayReason(
+      send_tab_to_self::EntryPointDisplayReason::kOfferSignIn);
+
+  TabMenuModel menu(&delegate_, TabMenuModelDelegate::From(browser()),
+                    tab_strip, 0);
+  std::optional<size_t> index =
+      menu.GetIndexOfCommandId(TabStripModel::CommandSendTabToSelf);
+  ASSERT_TRUE(index.has_value());
+  EXPECT_EQ(menu.GetTypeAt(*index), ui::MenuModel::TYPE_SUBMENU);
+
+  ui::SimpleMenuModel* submenu =
+      static_cast<ui::SimpleMenuModel*>(menu.GetSubmenuModelAt(*index));
+  ASSERT_NE(submenu, nullptr);
+  ASSERT_EQ(submenu->GetItemCount(), 2u);
+  EXPECT_EQ(submenu->GetTypeAt(0), ui::MenuModel::TYPE_TITLE);
+  EXPECT_EQ(submenu->GetCommandIdAt(1),
+            IDC_CONTENT_CONTEXT_SEND_TAB_TO_SELF_SIGN_IN);
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  submenu->ActivatedAt(1);
+  auto* controller = send_tab_to_self::SendTabToSelfBubbleController::
+      GetOrCreateForWebContents(tab_strip->GetActiveWebContents());
+  if (!controller->IsBubbleShown()) {
+    PinnedActionTestAccessor::WaitForAnimation(browser());
+  }
+  EXPECT_TRUE(controller->IsBubbleShown());
+#endif
+}
+
+// Tests that for `kOfferReauth`, the tab context menu renders Send Tab to Self
+// as a submenu.
+IN_PROC_BROWSER_TEST_F(TabMenuModelSendTabToSelfSigninPromosBrowserTest,
+                       SubmenuForOfferReauth) {
+  auto* sync_service =
+      static_cast<send_tab_to_self::StubSendTabToSelfSyncService*>(
+          SendTabToSelfSyncServiceFactory::GetForProfile(profile()));
+  sync_service->SetEntryPointDisplayReason(
+      send_tab_to_self::EntryPointDisplayReason::kOfferReauth);
+
+  TabMenuModel menu(&delegate_, TabMenuModelDelegate::From(browser()),
+                    browser()->tab_strip_model(), 0);
+  std::optional<size_t> index =
+      menu.GetIndexOfCommandId(TabStripModel::CommandSendTabToSelf);
+  ASSERT_TRUE(index.has_value());
+  EXPECT_EQ(menu.GetTypeAt(*index), ui::MenuModel::TYPE_SUBMENU);
+}
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// Tests that for `kInformNoTargetDevice`, the tab context menu renders Send Tab
+// to Self as a submenu when `kSendTabToSelfNoTargetDeviceQrCode` is enabled.
+IN_PROC_BROWSER_TEST_F(TabMenuModelSendTabToSelfSigninPromosBrowserTest,
+                       SubmenuForInformNoTargetDevice) {
+  auto* sync_service =
+      static_cast<send_tab_to_self::StubSendTabToSelfSyncService*>(
+          SendTabToSelfSyncServiceFactory::GetForProfile(profile()));
+  sync_service->SetEntryPointDisplayReason(
+      send_tab_to_self::EntryPointDisplayReason::kInformNoTargetDevice);
+
+  TabMenuModel menu(&delegate_, TabMenuModelDelegate::From(browser()),
+                    browser()->tab_strip_model(), 0);
+  std::optional<size_t> index =
+      menu.GetIndexOfCommandId(TabStripModel::CommandSendTabToSelf);
+  ASSERT_TRUE(index.has_value());
+  EXPECT_EQ(menu.GetTypeAt(*index), ui::MenuModel::TYPE_SUBMENU);
+}
+#endif

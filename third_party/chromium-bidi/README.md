@@ -1,5 +1,5 @@
 > [!NOTE]
-> If you are viewing this on GitHub, the source was moved to [Chromium](https://chromium.googlesource.com/chromium/src/+/main/third_party/chromium-bidi). Please contribute there.
+> If you are viewing this on GitHub, the source was moved to [Chromium](https://chromium.googlesource.com/chromium/src/+/main/third_party/chromium-bidi). Please contribute there and [file issues on `crbug.com`](https://issues.chromium.org/issues/new?component=1608258).
 
 # WebDriver BiDi for Chromium [![chromium-bidi on npm](https://img.shields.io/npm/v/chromium-bidi)](https://www.npmjs.com/package/chromium-bidi)
 
@@ -221,63 +221,25 @@ To auto-format and lint files:
 
 ### Starting WebDriver BiDi Server
 
-First, build the target:
+ChromeDriver is used as the WebDriver BiDi server.
+
+First, build the targets:
 
 ```sh
-autoninja -C ../../out/Default third_party/chromium-bidi:default
+autoninja -C ../../out/Default third_party/chromium-bidi:default chrome/test/chromedriver:chromedriver_server
 ```
 
 Run the server:
 
 ```sh
-./tools/node.py tools/run-bidi-server.mjs --gen-dir ../../out/Default/gen/third_party/chromium-bidi
+./tools/run_bidi_server.py --gen-dir ../../out/Default/gen/third_party/chromium-bidi
 ```
 
 By default, the server runs on port `8080`. Use the `PORT=` environment variable or `--port=` argument to run it on another port:
 
 ```sh
-PORT=8081 ./tools/node.py tools/run-bidi-server.mjs --gen-dir ../../out/Default/gen/third_party/chromium-bidi
-./tools/node.py tools/run-bidi-server.mjs --gen-dir ../../out/Default/gen/third_party/chromium-bidi --port=8081
-```
-
-Use the `DEBUG` environment variable to see debug info:
-
-```sh
-DEBUG=* ./tools/node.py tools/run-bidi-server.mjs --gen-dir ../../out/Default/gen/third_party/chromium-bidi
-```
-
-Use the `DEBUG_DEPTH` (default: `10`) environment variable to see debug deeply nested objects:
-
-```sh
-DEBUG_DEPTH=100 DEBUG=* ./tools/node.py tools/run-bidi-server.mjs --gen-dir ../../out/Default/gen/third_party/chromium-bidi
-```
-
-Use the `CHANNEL=...` environment variable with one of the following values to run
-the specific Chrome channel: `stable`, `beta`, `canary`, `dev`, `local`. Default is
-`local`. The `local` channel means the pinned in `.browser` Chrome version will be
-downloaded if it is not yet in cache. Otherwise, the requested Chrome version should
-be installed.
-
-```sh
-CHANNEL=dev ./tools/node.py tools/run-bidi-server.mjs --gen-dir ../../out/Default/gen/third_party/chromium-bidi
-```
-
-Use the CLI argument `--verbose` to have CDP events printed to the console. Note: you have to enable debugging output `bidi:mapper:debug:*` as well.
-
-```sh
-DEBUG=bidi:mapper:debug:* ./tools/node.py tools/run-bidi-server.mjs --gen-dir ../../out/Default/gen/third_party/chromium-bidi --verbose
-```
-
-or
-
-```sh
-DEBUG=* ./tools/node.py tools/run-bidi-server.mjs --gen-dir ../../out/Default/gen/third_party/chromium-bidi --verbose
-```
-
-To run the browser in headful mode:
-
-```sh
-./tools/node.py tools/run-bidi-server.mjs --gen-dir ../../out/Default/gen/third_party/chromium-bidi --port=8081 --headless=false
+PORT=8081 ./tools/run_bidi_server.py --gen-dir ../../out/Default/gen/third_party/chromium-bidi
+./tools/run_bidi_server.py --gen-dir ../../out/Default/gen/third_party/chromium-bidi --port=8081
 ```
 
 ## Running
@@ -315,13 +277,13 @@ Filter unit tests by file path:
 ../../out/Default/bin/run_webdriver_bidi_unittests -- --test-path-pattern="<path_pattern>"
 ```
 
-Filter unit tests using ResultDB / Chromium test filter (`--test-filter` / `--isolated-script-test-filter`):
+Filter unit tests using ResultDB / Chromium test filter (`--test-filter` / `--isolated-script-test-filter` / `--gtest_filter`):
 
 ```sh
 ../../out/Default/bin/run_webdriver_bidi_unittests --test-filter=':chromium-bidi!mocha:src/utils/:assert.test.ts#assert:should not throw an error when the predicate is truthy'
 ```
 
-Multiple tests can be separated with `::`:
+Multiple tests can be separated with `::` or `:`:
 
 ```sh
 ../../out/Default/bin/run_webdriver_bidi_unittests --test-filter=':chromium-bidi!mocha:src/utils/:assert.test.ts#assert:should not throw an error when the predicate is truthy:::chromium-bidi!mocha:src/utils/:DefaultMap.test.ts#DefaultMap:sets and gets properly'
@@ -365,13 +327,13 @@ Run all E2E tests:
 ../../out/Default/bin/run_webdriver_bidi_e2e_tests
 ```
 
-Filter E2E tests using ResultDB / Chromium test filter (`--test-filter` / `--isolated-script-test-filter`):
+Filter E2E tests using ResultDB / Chromium test filter (`--test-filter` / `--isolated-script-test-filter` / `--gtest_filter`):
 
 ```sh
 ../../out/Default/bin/run_webdriver_bidi_e2e_tests --test-filter=':chromium-bidi!pytest:tests/bluetooth/:test_characteristic_emulation.py#test_bluetooth_add_same_characteristic_uuid_twice'
 ```
 
-Legacy pytest node IDs and multiple `::`-separated test IDs are also supported:
+Legacy pytest node IDs, wildcards (`*`), and multiple `::` or `:` separated test IDs are also supported:
 
 ```sh
 ../../out/Default/bin/run_webdriver_bidi_e2e_tests --isolated-script-test-filter='tests/bluetooth/test_characteristic_emulation.py::test_bluetooth_add_same_characteristic_uuid_twice::tests/browser/test_create_user_context.py::test_browser_create_user_context_proxy[True]'
@@ -409,12 +371,6 @@ Run a specific test using the `-k` filter:
 ../../out/Default/bin/run_webdriver_bidi_e2e_tests -- -k <TestName>
 ```
 
-Use `CHROMEDRIVER` environment variable to run tests in `chromedriver` instead of NodeJS runner:
-
-```shell
-CHROMEDRIVER=true ../../out/Default/bin/run_webdriver_bidi_e2e_tests
-```
-
 Use the `PORT` environment variable to connect to another port:
 
 ```sh
@@ -448,7 +404,7 @@ sometimes it is useful to run the http server outside the test
 case, for example for manual debugging. This can be done by running:
 
 ```sh
-vpython3 -vpython-spec .vpython3 tools/run_local_http_server.py
+vpython3 tools/run_local_http_server.py
 ```
 
 ### Examples
@@ -483,17 +439,17 @@ The architecture is described in the
 [WebDriver BiDi in Chrome Context implementation plan](https://docs.google.com/document/d/1VfQ9tv0wPSnb5TI-MOobjoQ5CXLnJJx9F_PxOMQc8kY)
 .
 
-There are 2 main modules:
+There are 2 main components:
 
-1. backend WS server in `src`. It runs webSocket server, and for each ws connection
-   runs an instance of browser with BiDi Mapper.
-2. front-end BiDi Mapper in `src/bidiMapper`. Gets BiDi commands from the backend,
-   and map them to CDP commands.
+1. ChromeDriver (C++ server), which hosts the WebDriver BiDi WebSocket and HTTP endpoints and manages browser instances.
+2. Front-end BiDi Mapper in `src/bidiMapper` (bundled into `mapperTab.js`). It runs inside the browser, receives BiDi commands from ChromeDriver, and translates them to CDP commands.
 
 ## Contributing
 
 The `chromium-bidi` source code lives in the Chromium repository under `third_party/chromium-bidi`.
 Contributions should follow the [Chromium Contributing Guide](https://chromium.googlesource.com/chromium/src/+/main/docs/contributing.md).
+
+Issues are tracked in the [Chromium issue tracker (`Chromium > Platform > Browser Automation > ChromeDriver`)](https://issues.chromium.org/issues?q=componentid:1608258). If you find a bug, please [file an issue on `crbug.com`](https://issues.chromium.org/issues/new?component=1608258).
 
 The BiDi commands are processed in `src/bidiMapper/CommandProcessor.ts`. To add a
 new command, add it to `_processCommand`, write and call the module processor for it.
@@ -518,32 +474,39 @@ new command, add it to `_processCommand`, write and call the module processor fo
    ```sh
    ./tools/append_notices.py
    ```
-4. Upload the filtered `node_modules` to Google Cloud Storage and update `DEPS`:
+4. Upload the filtered `node_modules` to Google Cloud Storage and update `DEPS` files (`DEPS` and Chromium's root `../../DEPS`):
    ```sh
-   ./tools/update_node_modules.mjs --force
+   ./tools/update_node_modules.py --force
    ```
-5. Upload a CL with `package.json`, `package-lock.json`, `DEPS`, and any updated `README.chromium` / `licenses/` via `git cl upload` and submit for review.
+5. Upload a CL with `package.json`, `package-lock.json`, `DEPS`, `../../DEPS`, and any updated `README.chromium` / `licenses/` via `git cl upload` and submit for review.
 
 ### Publish new `npm` release
 
-TODO(crbug.com/540164671): describe the process.
+Publishing to npm is automated and is part of the [Chrome for Testing (CfT)](https://developer.chrome.com/blog/chrome-for-testing/) release pipeline, replacing the GitHub Actions workflow that was used before the move to Chromium. There are no manual steps: since `chromium-bidi` is tightly coupled with ChromeDriver, which is released through the CfT infrastructure, one `npm publish` happens per Chrome release.
+
+**How it works.** The package is published by the [`linux64-cft`](https://ci.chromium.org/ui/p/chrome/builders/official.cft/linux64-cft) official builder (Googlers: see the `npm_archive_datas` section of `internal/testing/buildbot/archive/linux64-cft.json`). The builder does not run `npm publish` itself and holds no npm credentials; the final release is delegated to the OSS Exit Gate, an internal Google service for publishing to external registries.
+
+**Versioning.** The published version follows the Chrome version, not the `version` field in `package.json`. The fourth component becomes a semver pre-release suffix, e.g. Chrome `153.0.8009.0` is published as `153.0.8009-0`.
+
+**Tagging.** Every release is tagged as `latest`.
 
 ### Syncing from Chromium to GitHub
 
-[Chromium (`third_party/chromium-bidi`)](https://chromium.googlesource.com/chromium/src/+/main/third_party/chromium-bidi) is the source of truth, and changes are synced out to the GitHub mirror at [GoogleChromeLabs/chromium-bidi](https://github.com/GoogleChromeLabs/chromium-bidi) using [Copybara](https://goto.google.com/copybara).
+[Chromium (`third_party/chromium-bidi`)](https://chromium.googlesource.com/chromium/src/+/main/third_party/chromium-bidi) is the source of truth. Every commit on `main` that touches this directory is mirrored automatically to [GoogleChromeLabs/chromium-bidi](https://github.com/GoogleChromeLabs/chromium-bidi) by [Copybara](https://goto.google.com/copybara): one GitHub commit per Chromium commit, carrying a `GitOrigin-RevId` trailer. Chromium-specific files (`README.chromium`, `OWNERS`, `DIR_METADATA`, `licenses/`, `copy.bara.sky`) are not exported.
 
-The configuration file is located at [`third_party/chromium-bidi/copy.bara.sky`](copy.bara.sky).
+The workflow is defined in [`third_party/chromium-bidi/copy.bara.sky`](https://chromium.googlesource.com/chromium/src/+/main/third_party/chromium-bidi/copy.bara.sky). The automated run is registered in Copybara-as-a-Service from an internal copy of that file (Googlers: the location is documented in its header). When changing `origin_files` or `transformations`, update both copies. Sync failures are emailed to browser-automation@google.com.
 
-TODO(crbug.com/549520316): Automate the sync process.
+#### Running Copybara manually (fallback)
 
-#### Running Copybara manually
+Only needed if the automated sync is paused or broken.
 
 > [!NOTE]
-> The Copybara sync takes ~10 minutes to run as it iteratively processes commits from Chromium history.
+> Copybara processes pending Chromium commits one by one, and the first run on a machine also has to fetch Chromium, so expect tens of minutes. If a single git step exceeds the default 15-minute timeout, pass `--repo-timeout=30m`.
 
-1. **Prerequisites:**
+1. **Prerequisites (Googlers):**
    - Set up the `copybara` CLI alias (see [go/copybara-setup](https://goto.google.com/copybara-setup)).
-   - Ensure your credentials for pushing to GitHub are configured via SSH.
+   - Create a GitHub token for `GoogleChromeLabs/chromium-bidi` (fine-grained: `Contents` and `Workflows` set to _Read and write_; classic: `repo` and `workflow` scopes) and store it where Copybara's git looks up HTTPS credentials, `~/.googlekeys/copybara_git_credentials` (one line: `https://<github-user>:<token>@github.com`).
+   - Ask a repository admin to add your GitHub account to the bypass list of the `main` branch ruleset; direct pushes to `main` are rejected otherwise.
 
 2. **Launch directory:**
    Run Copybara from the **root of the Chromium repository** (`src/`):
@@ -554,7 +517,8 @@ TODO(crbug.com/549520316): Automate the sync process.
 
 3. **Sync:**
    ```sh
-   copybara third_party/chromium-bidi/copy.bara.sky default
+   copybara third_party/chromium-bidi/copy.bara.sky default --dry-run  # verify first
+   copybara third_party/chromium-bidi/copy.bara.sky default            # push to GitHub
    ```
 
 ## Update CDDL types
@@ -563,14 +527,14 @@ TODO(crbug.com/549520316): Automate the sync process.
 
 - **cddlconv**: We use [cddlconv](https://github.com/google/cddlconv) to generate our WebDriverBiDi types.
   1. Install [Rust](https://rustup.rs/).
-  2. Run `cargo install cddlconv@0.1.10`
+  2. Run `cargo install cddlconv@0.2.0`
 - **parse5**: [parse5](https://github.com/inikulin/parse5) is required by the `webdriver-bidi` specification repository to extract CDDL definitions from specifications.
   1. Run `npm install -g parse5`
 
 Run the following steps from the `third_party/chromium-bidi` directory:
 
-1. (Optional) If you want to add a new specification, add it to the `tools/update-bidi-types.sh` script.
-2. Run the `tools/update-bidi-types.sh` script.
+1. (Optional) If you want to add a new specification, add it to the `tools/update_bidi_types.py` script.
+2. Run the `tools/update_bidi_types.py` script.
 3. Build the project (`autoninja -C ../../out/Default third_party/chromium-bidi:default`). If a new WebDriver BiDi command was added, compilation will fail with `Switch is not exhaustive. Cases not matched ...`.
 4. Add the new BiDi command to `CommandProcessor.#processCommand` in `src/bidiMapper/CommandProcessor.ts`. For now, just have it throw an UnknownErrorException.
 

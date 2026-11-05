@@ -7,8 +7,10 @@
 #include <algorithm>
 
 #include "base/base_switches.h"
+#include "base/containers/span.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/rand_util.h"
+#include "build/build_config.h"
 #include "chrome/browser/about_flags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/flag_descriptions.h"
@@ -73,7 +75,7 @@ void UpdateChromeLabsNewBadgePrefs(Profile* profile) {
   base::DictValue& new_badge_prefs = update.Get();
 
   std::vector<std::string> lab_internal_names;
-  const std::vector<LabInfo>& all_labs =
+  base::span<const LabInfo> all_labs =
       ChromeLabsModel::GetInstance()->GetLabInfo();
   for (const auto& lab : all_labs) {
     if (IsChromeLabsFeatureValid(lab, profile)) {
@@ -125,7 +127,7 @@ bool AreNewChromeLabsExperimentsAvailable(Profile* profile) {
   base::DictValue& new_badge_prefs = update.Get();
 
   std::vector<std::string> lab_internal_names;
-  const std::vector<LabInfo>& all_labs =
+  base::span<const LabInfo> all_labs =
       ChromeLabsModel::GetInstance()->GetLabInfo();
 
   return std::ranges::any_of(
@@ -143,6 +145,11 @@ bool IsChromeLabsEnabled() {
   if (chrome::GetChannel() == version_info::Channel::STABLE) {
     return false;
   }
+#if !BUILDFLAG(IS_ANDROID)
+  if (features::IsWebUIPinnedToolbarActionsEnabled()) {
+    return false;
+  }
+#endif
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           ::switches::kEnableBenchmarking)) {
     return true;

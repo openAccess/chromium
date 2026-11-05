@@ -6,9 +6,13 @@
 
 #include <memory>
 
+#include "base/callback_list.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
+#include "base/test/with_feature_override.h"
 #include "base/time/time.h"
+#include "components/content_settings/core/common/features.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/network_change_notifier.h"
 #include "services/device/geolocation/geolocation_context.h"
@@ -36,10 +40,9 @@ class FakeGeolocationProvider : public GeolocationProvider {
   base::CallbackListSubscription AddLocationUpdateCallback(
       const LocationUpdateCallback& callback,
       bool enable_high_accuracy) override {
-    location_update_callback_ = callback;
     last_set_accuracy_ = enable_high_accuracy;
     add_callback_count_++;
-    return {};
+    return callback_list_.Add(callback);
   }
 
   void OverrideLocationForTesting(mojom::GeopositionResultPtr result) override {
@@ -51,16 +54,15 @@ class FakeGeolocationProvider : public GeolocationProvider {
 
   void SimulateLocationUpdate(const mojom::GeopositionResult& result) {
     cached_result_ = result.Clone();
-    if (location_update_callback_) {
-      location_update_callback_.Run(result);
-    }
+    callback_list_.Notify(result);
   }
 
   bool GetLastSetAccuracy() const { return last_set_accuracy_; }
   int GetAddCallbackCount() const { return add_callback_count_; }
 
  private:
-  LocationUpdateCallback location_update_callback_;
+  base::RepeatingCallbackList<void(const mojom::GeopositionResult&)>
+      callback_list_;
   bool last_set_accuracy_;
   int add_callback_count_ = 0;
   mojom::GeopositionResultPtr cached_result_;
@@ -93,6 +95,8 @@ class GeolocationImplTest : public testing::Test {
         url::Origin::Create(GURL("https://test.com")),
         mojom::GeolocationClientId::kForTesting, has_precise_permission);
   }
+
+  void FlushForTesting() { geolocation_.FlushForTesting(); }
 
   void OnPermissionUpdated(mojom::GeolocationPermissionLevel permission_level) {
     geolocation_context_.OnPermissionUpdated(
@@ -150,7 +154,7 @@ TEST_F(GeolocationImplTest, QueryNextPosition) {
   // should match the update.
   TestFuture<mojom::GeopositionResultPtr> future;
   geolocation()->QueryNextPosition(future.GetCallback());
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   auto position = MakeGeoposition(37, -122);
   SimulateLocationUpdate(*position);
   EXPECT_EQ(future.Get(), position);
@@ -161,7 +165,7 @@ TEST_F(GeolocationImplTest, QueryNextPositionError) {
   // called with the error.
   TestFuture<mojom::GeopositionResultPtr> future;
   geolocation()->QueryNextPosition(future.GetCallback());
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   auto error =
       MakeGeopositionError(mojom::GeopositionErrorCode::kPositionUnavailable);
   SimulateLocationUpdate(*error);
@@ -173,15 +177,33 @@ TEST_F(GeolocationImplTest, QueryNextPositionWithoutUpdate) {
   // called.
   TestFuture<mojom::GeopositionResultPtr> future;
   geolocation()->QueryNextPosition(future.GetCallback());
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(future.IsReady());
 }
 
-TEST_F(GeolocationImplTest, SetAndClearOverride) {
+class GeolocationImplTestWithApproxLocation
+    : public base::test::WithFeatureOverride,
+      public GeolocationImplTest {
+ public:
+  GeolocationImplTestWithApproxLocation()
+      : base::test::WithFeatureOverride(
+            content_settings::features::kApproximateGeolocationPermission) {}
+};
+
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(GeolocationImplTestWithApproxLocation);
+
+TEST_P(GeolocationImplTestWithApproxLocation, SetAndClearOverride) {
+  if (IsParamFeatureEnabled()) {
+    // When `kApproximateGeolocationPermission` is enabled, the overridden
+    // position's `is_precise` flag is updated based on
+    // `high_accuracy_hint_ && has_precise_permission_` to meet the spec
+    // requirement.
+    geolocation()->SetHighAccuracyHint(true);
+  }
   // Simulate a location update.
   auto initial_position = MakeGeoposition(37, -122);
   SimulateLocationUpdate(*initial_position);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
 
   auto override_position = MakeGeoposition(41, 74);
   // Set the position override. The callback is called with the overridden
@@ -195,16 +217,24 @@ TEST_F(GeolocationImplTest, SetAndClearOverride) {
   TestFuture<mojom::GeopositionResultPtr> clear_future;
   geolocation()->QueryNextPosition(clear_future.GetCallback());
   ClearOverride();
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(clear_future.IsReady());
 }
 
-TEST_F(GeolocationImplTest, SetAndClearOverrideWithoutUpdate) {
+TEST_P(GeolocationImplTestWithApproxLocation,
+       SetAndClearOverrideWithoutUpdate) {
+  if (IsParamFeatureEnabled()) {
+    // When `kApproximateGeolocationPermission` is enabled, the overridden
+    // position's `is_precise` flag is updated based on
+    // `high_accuracy_hint_ && has_precise_permission_` to meet the spec
+    // requirement.
+    geolocation()->SetHighAccuracyHint(true);
+  }
   // Query the position before the first location update. The callback is not
   // called.
   TestFuture<mojom::GeopositionResultPtr> error_future;
   geolocation()->QueryNextPosition(error_future.GetCallback());
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(error_future.IsReady());
 
   // Set the position override. The callback is called with a GeopositionError.
@@ -224,14 +254,14 @@ TEST_F(GeolocationImplTest, SetAndClearOverrideWithoutUpdate) {
   TestFuture<mojom::GeopositionResultPtr> clear_future;
   geolocation()->QueryNextPosition(clear_future.GetCallback());
   ClearOverride();
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(clear_future.IsReady());
 }
 
 TEST_F(GeolocationImplTest, PermissionDenied) {
   TestFuture<mojom::GeopositionResultPtr> future;
   geolocation()->QueryNextPosition(future.GetCallback());
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
 
   OnPermissionUpdated(mojom::GeolocationPermissionLevel::kDenied);
 
@@ -244,30 +274,30 @@ TEST_F(GeolocationImplTest, PermissionDenied) {
 TEST_F(GeolocationImplTest, OnPermissionUpdated) {
   // Initially, with kPrecise permission, high accuracy request is accepted.
   geolocation()->SetHighAccuracyHint(true);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_TRUE(GetLastSetAccuracy());
 
   // Updated to kApproximate permission , original high accuracy should be
   // disabled.
   OnPermissionUpdated(mojom::GeolocationPermissionLevel::kApproximate);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(GetLastSetAccuracy());
 
   // Given that current permission is kApproximate, the request for high
   // accuracy should be ignored.
   geolocation()->SetHighAccuracyHint(true);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(GetLastSetAccuracy());
 
   // Change back to kPrecise, high accuracy should be re-enabled.
   OnPermissionUpdated(mojom::GeolocationPermissionLevel::kPrecise);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_TRUE(GetLastSetAccuracy());
 
   // With kPrecise permission, the request for low accuracy should still be
   // acceptable.
   geolocation()->SetHighAccuracyHint(false);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(GetLastSetAccuracy());
 }
 
@@ -281,53 +311,53 @@ TEST_F(GeolocationImplTest, EffectiveHighAccuracy) {
   // the first granted `SetHighAccuracyHint(true)` is called. A repeated
   // `SetHighAccuracyHint(false)` should not create new subscription.
   geolocation()->SetHighAccuracyHint(false);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(GetLastSetAccuracy());
   EXPECT_EQ(1, GetAddCallbackCount());
 
   // Set high accuracy to true. A new subscription should be created.
   // effective_high_accuracy will be true.
   geolocation()->SetHighAccuracyHint(true);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_TRUE(GetLastSetAccuracy());
   EXPECT_EQ(2, GetAddCallbackCount());
 
   // Set high accuracy to true again. No new subscription should be created.
   geolocation()->SetHighAccuracyHint(true);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_TRUE(GetLastSetAccuracy());
   EXPECT_EQ(2, GetAddCallbackCount());
 
   // Change permission to approximate. A new subscription should be created.
   // effective_high_accuracy will be false.
   OnPermissionUpdated(mojom::GeolocationPermissionLevel::kApproximate);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(GetLastSetAccuracy());
   EXPECT_EQ(3, GetAddCallbackCount());
 
   // Change permission to approximate again. No new subscription should be
   // created.
   OnPermissionUpdated(mojom::GeolocationPermissionLevel::kApproximate);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(GetLastSetAccuracy());
   EXPECT_EQ(3, GetAddCallbackCount());
 
   // Change permission to precise. A new subscription should be created.
   // effective_high_accuracy will be true, because high_accuracy is still true.
   OnPermissionUpdated(mojom::GeolocationPermissionLevel::kPrecise);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_TRUE(GetLastSetAccuracy());
   EXPECT_EQ(4, GetAddCallbackCount());
 
   // Set high accuracy to false. A new subscription should be created.
   geolocation()->SetHighAccuracyHint(false);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(GetLastSetAccuracy());
   EXPECT_EQ(5, GetAddCallbackCount());
 
   // Set high accuracy to false again. No new subscription should be created.
   geolocation()->SetHighAccuracyHint(false);
-  base::RunLoop().RunUntilIdle();
+  FlushForTesting();
   EXPECT_FALSE(GetLastSetAccuracy());
   EXPECT_EQ(5, GetAddCallbackCount());
 }
@@ -430,6 +460,244 @@ TEST_F(GeolocationImplTest,
 
   EXPECT_TRUE(geolocation_result.Get()->is_position());
   EXPECT_EQ(geolocation_result.Get()->get_position()->latitude, 37);
+}
+
+TEST_F(GeolocationImplTest,
+       PermissionDowngradeToApproximateInvalidatesPreciseResult) {
+  // Start with precise permission and low accuracy requested.
+  geolocation()->SetHighAccuracyHint(false);
+  FlushForTesting();
+
+  // Simulate a precise location update.
+  auto precise_position = MakeGeoposition(37, -122);
+  precise_position->get_position()->is_precise = true;
+  SimulateLocationUpdate(*precise_position);
+  FlushForTesting();
+
+  // Downgrade permission to approximate. Because high_accuracy_hint is false,
+  // effective_high_accuracy does not change (remains false), but the cached
+  // precise result must still be invalidated.
+  OnPermissionUpdated(mojom::GeolocationPermissionLevel::kApproximate);
+  FlushForTesting();
+
+  // QueryNextPosition should not be immediately fulfilled with the stale
+  // precise position.
+  TestFuture<mojom::GeopositionResultPtr> future;
+  geolocation()->QueryNextPosition(future.GetCallback());
+  FlushForTesting();
+  EXPECT_FALSE(future.IsReady());
+
+  // Simulate an approximate location update; it should fulfill the query.
+  auto approx_position = MakeGeoposition(38, -123);
+  approx_position->get_position()->is_precise = false;
+  SimulateLocationUpdate(*approx_position);
+
+  EXPECT_EQ(future.Get(), approx_position);
+}
+
+TEST_F(GeolocationImplTest,
+       PermissionDowngradeToApproximatePreservesApproximateResult) {
+  // Start with precise permission.
+  geolocation()->SetHighAccuracyHint(false);
+  FlushForTesting();
+
+  // Simulate an approximate location update.
+  auto approx_position = MakeGeoposition(37, -122);
+  approx_position->get_position()->is_precise = false;
+  SimulateLocationUpdate(*approx_position);
+  FlushForTesting();
+
+  // Downgrade permission to approximate. Since the cached result is already
+  // approximate, it should not be invalidated.
+  OnPermissionUpdated(mojom::GeolocationPermissionLevel::kApproximate);
+  FlushForTesting();
+
+  TestFuture<mojom::GeopositionResultPtr> future;
+  geolocation()->QueryNextPosition(future.GetCallback());
+
+  EXPECT_EQ(future.Get(), approx_position);
+}
+
+TEST_F(GeolocationImplTest,
+       QueryNextPositionApproximatePermissionPreciseResult) {
+  BindGeolocation(/*has_precise_permission=*/false);
+
+  TestFuture<mojom::GeopositionResultPtr> future;
+  geolocation()->QueryNextPosition(future.GetCallback());
+  FlushForTesting();
+
+  // Simulate a precise location update received from provider.
+  auto precise_position = MakeGeoposition(37, -122);
+  precise_position->get_position()->is_precise = true;
+  SimulateLocationUpdate(*precise_position);
+  FlushForTesting();
+
+  // The precise position must be dropped when the client only has approximate
+  // permission, so the query should remain pending.
+  EXPECT_FALSE(future.IsReady());
+
+  // An approximate location update should fulfill the query.
+  auto approx_position = MakeGeoposition(38, -123);
+  approx_position->get_position()->is_precise = false;
+  SimulateLocationUpdate(*approx_position);
+
+  EXPECT_EQ(future.Get(), approx_position);
+}
+
+TEST_P(GeolocationImplTestWithApproxLocation,
+       PermissionDowngradeToApproximatePreservesOverride) {
+  if (IsParamFeatureEnabled()) {
+    // When `kApproximateGeolocationPermission` is enabled, the overridden
+    // position's `is_precise` flag is updated based on
+    // `high_accuracy_hint_ && has_precise_permission_` to meet the spec
+    // requirement.
+    geolocation()->SetHighAccuracyHint(true);
+    FlushForTesting();
+  }
+
+  // Set an override with a precise position.
+  auto override_position = MakeGeoposition(41, 74);
+  override_position->get_position()->is_precise = true;
+  SetOverride(*override_position);
+
+  // Downgrade permission to approximate.
+  OnPermissionUpdated(mojom::GeolocationPermissionLevel::kApproximate);
+  FlushForTesting();
+
+  // The overridden position should be preserved and returned without
+  // violating the precise permission check.
+  TestFuture<mojom::GeopositionResultPtr> future;
+  geolocation()->QueryNextPosition(future.GetCallback());
+
+  EXPECT_EQ(future.Get(), override_position);
+}
+
+TEST_F(GeolocationImplTest, ClearOverrideResumesSubscription) {
+  BindGeolocation(/*has_precise_permission=*/false);
+
+  // Call SetOverride with a precise position.
+  auto override_position = MakeGeoposition(41, 74);
+  override_position->get_position()->is_precise = true;
+  SetOverride(*override_position);
+
+  // Call ClearOverride to clear the position override.
+  ClearOverride();
+  FlushForTesting();
+
+  // Call QueryNextPosition to trigger position acquisition.
+  TestFuture<mojom::GeopositionResultPtr> future;
+  geolocation()->QueryNextPosition(future.GetCallback());
+  FlushForTesting();
+  EXPECT_FALSE(future.IsReady());
+
+  // Call SimulateLocationUpdate with an approximate position.
+  auto approx_position = MakeGeoposition(37, -122);
+  approx_position->get_position()->is_precise = false;
+  SimulateLocationUpdate(*approx_position);
+
+  // Check that the QueryNextPosition callback receives the approximate
+  // position.
+  EXPECT_EQ(future.Get(), approx_position);
+}
+
+TEST_F(GeolocationImplTest,
+       PermissionDowngradeWhileRequestActiveDropsPreciseUpdate) {
+  // Start with precise location permission (SetUp binds with precise=true).
+  // Call QueryNextPosition to request a position.
+  TestFuture<mojom::GeopositionResultPtr> future;
+  geolocation()->QueryNextPosition(future.GetCallback());
+  FlushForTesting();
+  EXPECT_FALSE(future.IsReady());
+
+  // Call OnPermissionUpdated to simulate a downgrade to approximate location
+  // permission while the request is active.
+  OnPermissionUpdated(mojom::GeolocationPermissionLevel::kApproximate);
+  FlushForTesting();
+
+  // Simulate a location update with a precise position; it should be ignored.
+  auto precise_position = MakeGeoposition(37, -122);
+  precise_position->get_position()->is_precise = true;
+  SimulateLocationUpdate(*precise_position);
+  FlushForTesting();
+  EXPECT_FALSE(future.IsReady());
+
+  // Simulate another location update with an approximate position.
+  auto approx_position = MakeGeoposition(38, -123);
+  approx_position->get_position()->is_precise = false;
+  SimulateLocationUpdate(*approx_position);
+
+  // Check that the QueryNextPosition callback receives only the approximate
+  // position.
+  EXPECT_EQ(future.Get(), approx_position);
+}
+
+TEST_F(GeolocationImplTest, NullFieldsOnApproximatePosition) {
+  auto position = MakeGeoposition(37, -122);
+  position->get_position()->altitude = 100.0;
+  position->get_position()->altitude_accuracy = 50.0;
+  position->get_position()->heading = 90.0;
+  position->get_position()->speed = 10.0;
+  position->get_position()->is_precise = false;
+
+  TestFuture<mojom::GeopositionResultPtr> future;
+  geolocation()->QueryNextPosition(future.GetCallback());
+  FlushForTesting();
+  SimulateLocationUpdate(*position);
+
+  auto expected_position = position.Clone();
+  expected_position->get_position()->altitude = mojom::kBadAltitude;
+  expected_position->get_position()->altitude_accuracy = mojom::kBadAccuracy;
+  expected_position->get_position()->heading = mojom::kBadHeading;
+  expected_position->get_position()->speed = mojom::kBadSpeed;
+  EXPECT_EQ(future.Take(), expected_position);
+
+  position->get_position()->is_precise = true;
+  geolocation()->QueryNextPosition(future.GetCallback());
+  FlushForTesting();
+  SimulateLocationUpdate(*position);
+
+  EXPECT_EQ(future.Take(), position);
+}
+
+TEST_F(GeolocationImplTest, SetOverrideWithLowAccuracyHint) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      content_settings::features::kApproximateGeolocationPermission);
+
+  // Simulate an initial location update so SetOverride reports a position.
+  auto initial_position = MakeGeoposition(37, -122);
+  SimulateLocationUpdate(*initial_position);
+  FlushForTesting();
+
+  auto override_position = MakeGeoposition(41, 74);
+  override_position->get_position()->altitude = 100.0;
+  override_position->get_position()->altitude_accuracy = 50.0;
+  override_position->get_position()->heading = 90.0;
+  override_position->get_position()->speed = 10.0;
+  override_position->get_position()->is_precise = true;
+
+  // With `high_accuracy_hint_` defaulting to `false`, `SetOverride` should
+  // downgrade `is_precise` to `false` and sanitize `altitude`,
+  // `altitude_accuracy`, `heading`, and `speed` to `mojom::kBad*`.
+  TestFuture<mojom::GeopositionResultPtr> future;
+  geolocation()->QueryNextPosition(future.GetCallback());
+  SetOverride(*override_position);
+
+  auto expected_position = override_position.Clone();
+  expected_position->get_position()->is_precise = false;
+  expected_position->get_position()->altitude = mojom::kBadAltitude;
+  expected_position->get_position()->altitude_accuracy = mojom::kBadAccuracy;
+  expected_position->get_position()->heading = mojom::kBadHeading;
+  expected_position->get_position()->speed = mojom::kBadSpeed;
+  EXPECT_EQ(future.Take(), expected_position);
+
+  // Even when `high_accuracy_hint_` is `true`, an override explicitly set with
+  // `is_precise = false` should remain approximate (`is_precise = false`).
+  geolocation()->SetHighAccuracyHint(true);
+  FlushForTesting();
+  override_position->get_position()->is_precise = false;
+  geolocation()->QueryNextPosition(future.GetCallback());
+  SetOverride(*override_position);
+  EXPECT_EQ(future.Take(), expected_position);
 }
 
 }  // namespace device

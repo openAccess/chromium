@@ -9,7 +9,6 @@
 <translation id="207576718733492531">Danh sách thông tin đăng nhập mà bạn có thể chạm để điền đã bị đóng.</translation>
 <translation id="2652129567809778422">Chọn mật khẩu</translation>
 <translation id="2903493209154104877">Địa chỉ</translation>
-<translation id="3399357656427473483">Danh sách các thông tin đăng nhập mà bạn có thể chạm để điền.</translation>
 <translation id="3688051737190211318">Nếu tin tưởng <ph name="ORIGIN" />, bạn có thể sử dụng mật khẩu đã lưu để đăng nhập.</translation>
 <translation id="4110818514910776249">Giờ đây, bạn có thể chọn tự động điền nhiều thông tin hơn từ Google Wallet. Hãy quản lý thông tin của bạn hoặc tắt những nội dung đề xuất này trong phần Cài đặt.</translation>
 <translation id="4553044860350038560">Khoá truy cập khác</translation>
@@ -18,7 +17,7 @@
 <translation id="4660011489602794167">Hiện bàn phím</translation>
 <translation id="4953563283121525742">Nhà bán hàng không chấp nhận thẻ ảo này</translation>
 <translation id="5016175294846053194">Nội dung tự động điền đề xuất có sẵn phía trên bàn phím</translation>
-<translation id="5234764350956374838">Bỏ qua</translation>
+<translation id="5234764350956374838">Đóng</translation>
 <translation id="5441504010984421144">Danh sách các thông tin xác thực mà bạn có thể chạm để điền đã được mở ở toàn độ cao.</translation>
 <translation id="5447973833955560753">Mật khẩu khôi phục</translation>
 <translation id="5880385758720707152">Tự động điền địa chỉ nhà riêng và nơi làm việc từ Tài khoản Google của bạn</translation>
@@ -28,11 +27,10 @@
 <translation id="6736243959894955139">Địa chỉ</translation>
 <translation id="6745212570062463886">Tự động điền tên và địa chỉ email từ Tài khoản Google của bạn</translation>
 <translation id="6851249282047649312">Mở khoá mật khẩu</translation>
+<translation id="7087807086191250928">Gemini có thể mắc sai sót. Nhấn và giữ đề xuất để xem lại nguồn ban đầu và đảm bảo thông tin này chính xác.</translation>
 <translation id="7286867818472074330">Chọn khoá truy cập</translation>
-<translation id="7594473730623999723">Vuốt để xem thêm mục đề xuất</translation>
 <translation id="7873973044507799456">Hiện các địa chỉ đã lưu</translation>
 <translation id="7923276689696325192">Tính năng tự động điền nâng cao hiện có thể tìm và điền thông tin của bạn từ các ứng dụng như Gmail và Photos</translation>
-<translation id="7992095260806105436">Sử dụng nội dung tự động điền do Chrome đề xuất</translation>
 <translation id="8118489163946903409">Phương thức thanh toán</translation>
 <translation id="8705308553596171387">Không có mật khẩu</translation>
 <translation id="879180780857354295">Các tuỳ chọn điền thay thế hiển thị phía trên bàn phím</translation>

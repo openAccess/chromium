@@ -6,6 +6,7 @@ module blink.mojom;
 
 import "services/on_device_model/public/mojom/download_observer.mojom";
 import "third_party/blink/public/mojom/ai/ai_common.mojom";
+import "third_party/blink/public/mojom/ai/ai_decision_model.mojom";
 import "third_party/blink/public/mojom/ai/ai_semantic_embedder.mojom";
 import "third_party/blink/public/mojom/ai/ai_language_model.mojom";
 import "third_party/blink/public/mojom/ai/ai_proofreader.mojom";
@@ -74,11 +75,9 @@ enum ModelAvailabilityCheckResult {
   // The specified options are not supported with the requested performance
   // preference.
   kUnavailableIncompatiblePreferenceOptions = 21,
-  // The specified options are not supported with speculative decoding (MTP).
-  kUnavailableIncompatibleSpeculativeDecodingOptions = 22,
   // The device does not have sufficient disk space to build caches for the
   // on-device model.
-  kUnavailableInsufficientDiskSpaceForCaches = 23,
+  kUnavailableInsufficientDiskSpaceForCaches = 22,
 
   // Append new line here
 };
@@ -140,6 +139,17 @@ interface AIManagerCreateSemanticEmbedderClient {
 
   // Called when the manager cannot create an AISemanticEmbedder.
   OnError(AIManagerCreateClientError error);
+};
+
+// The client interface that receives an AIDecisionModel from an AIManager.
+interface AIManagerCreateDecisionModelClient {
+  // Called with a created decision model's mojo interface as a result for the
+  // CreateDecisionModel() method of the AIManager.
+  OnSessionCreated(pending_remote<blink.mojom.AIDecisionModel> decision_model);
+
+  // Called when the manager cannot create an AIDecisionModel.
+  // `quota_error_info` may provide additional info for kInitialInputTooLarge.
+  OnError(AIManagerCreateClientError error, QuotaErrorInfo? quota_error_info);
 };
 
 // The manager that could create a new session for the model.
@@ -214,4 +224,14 @@ interface AIManager {
     // notified upon completion or failure via the `client` interface.
     pending_remote<on_device_model.mojom.DownloadObserver>? monitor
   );
+
+  // Returns decision model availability info from the underlying service.
+  CanCreateDecisionModel(AIDecisionModelCreateOptions options) =>
+      (ModelAvailabilityCheckResult result);
+  // Creates a decision model session, passing the result or error to the
+  // client. Creation will be aborted if the client is disconnected.
+  CreateDecisionModel(
+      pending_remote<AIManagerCreateDecisionModelClient> client,
+      AIDecisionModelCreateOptions options,
+      pending_remote<on_device_model.mojom.DownloadObserver>? monitor);
 };

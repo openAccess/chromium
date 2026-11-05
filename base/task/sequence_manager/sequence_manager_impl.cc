@@ -122,13 +122,12 @@ void ReclaimMemoryFromQueue(internal::TaskQueueImpl* queue, LazyNow* lazy_now) {
 // and moving backwards in memory. Returns a pointer to the first digit of the
 // result. Does *not* NUL-terminate the number.
 #if !BUILDFLAG(IS_ANDROID)
-char* PrependHexAddress(char* output, const void* address) {
-  uintptr_t value = reinterpret_cast<uintptr_t>(address);
+char* PrependHexAddress(char* output, uintptr_t address) {
   static const std::string_view kHexChars = "0123456789ABCDEF";
   do {
-    *UNSAFE_TODO(output--) = kHexChars[value % 16];
-    value /= 16;
-  } while (value);
+    *UNSAFE_TODO(output--) = kHexChars[address % 16];
+    address /= 16;
+  } while (address);
   *UNSAFE_TODO(output--) = 'x';
   *output = '0';
   return output;
@@ -392,6 +391,12 @@ void SequenceManagerImpl::MoveReadyDelayedTasksToWorkQueues(LazyNow* lazy_now) {
 }
 
 void SequenceManagerImpl::OnBeginNestedRunLoop() {
+  // See `Settings::can_run_tasks_synchronously`: a nested `RunLoop` must run
+  // inside a task. `OnIdle()` doesn't allow sync work while a task is on
+  // `task_execution_stack`, but a `MessagePump` work item suspended in a nested
+  // loop isn't tracked by `work_tracker_`.
+  CHECK(!settings().can_run_tasks_synchronously ||
+        !main_thread_only().task_execution_stack.empty());
   main_thread_only().nesting_depth++;
   if (main_thread_only().observer) {
     main_thread_only().observer->OnBeginNestedRunLoop();
@@ -458,7 +463,9 @@ void SequenceManagerImpl::MaybeEmitTaskDetails(
 
 void SequenceManagerImpl::SetRunTaskSynchronouslyAllowed(
     bool can_run_tasks_synchronously) {
-  work_tracker_.SetRunTaskSynchronouslyAllowed(can_run_tasks_synchronously);
+  if (settings().can_run_tasks_synchronously) {
+    work_tracker_.SetRunTaskSynchronouslyAllowed(can_run_tasks_synchronously);
+  }
 }
 
 std::optional<SequenceManagerImpl::SelectedTask>
@@ -687,8 +694,8 @@ bool SequenceManagerImpl::OnIdle() {
   return have_work_to_do;
 }
 
-void SequenceManagerImpl::WillRequestReloadImmediateWorkQueue() {
-  work_tracker_.WillRequestReloadImmediateWorkQueue();
+void SequenceManagerImpl::DidRequestReloadImmediateWorkQueue() {
+  work_tracker_.DidRequestReloadImmediateWorkQueue();
 }
 
 SyncWorkAuthorization SequenceManagerImpl::TryAcquireSyncWorkAuthorization() {

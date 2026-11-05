@@ -9,6 +9,7 @@ import("//third_party/harfbuzz/harfbuzz.gni")
 
 if (use_system_harfbuzz) {
   import("//build/config/linux/pkg_config.gni")
+
   pkg_config("harfbuzz_from_pkgconfig") {
     visibility = [
       "//third_party/freetype",
@@ -53,16 +54,19 @@ if (use_system_harfbuzz) {
     edition = "2021"
     features = [
       "font",
-      "shape",
+      "skrifa",
     ]
     bindgen_deps = [ ":hb_rs_generator" ]
     deps = [
       "//third_party/rust/font_types/v0_12:lib",
-      "//third_party/rust/harfrust/v0_13:lib",
-      "//third_party/rust/read_fonts/v0_43:lib",
-      "//third_party/rust/skrifa/v0_46:lib",
+      "//third_party/rust/read_fonts/v0_45:lib",
+      "//third_party/rust/skrifa/v0_48:lib",
       "//third_party/rust/smallvec/v1:lib",
     ]
+    if (enable_harfrust) {
+      features += [ "shape" ]
+      deps += [ "//third_party/rust/harfrust/v0_14:lib" ]
+    }
   }
 
   config("harfbuzz_config") {
@@ -217,6 +221,7 @@ if (use_system_harfbuzz) {
       "src/src/hb-ot-color.cc",
       "src/src/hb-ot-color.h",
       "src/src/hb-ot-deprecated.h",
+      "src/src/hb-ot-dual.hh",
       "src/src/hb-ot-face-table-list.hh",
       "src/src/hb-ot-face.cc",
       "src/src/hb-ot-face.hh",
@@ -306,6 +311,7 @@ if (use_system_harfbuzz) {
       "src/src/hb-ot-vorg-table.hh",
       "src/src/hb-priority-queue.hh",
       "src/src/hb-repacker.hh",
+      "src/src/hb-result.hh",
       "src/src/hb-sanitize.hh",
       "src/src/hb-script-list.h",
       "src/src/hb-serialize.hh",
@@ -353,6 +359,7 @@ if (use_system_harfbuzz) {
       "src/src/hb-unicode.cc",
       "src/src/hb-unicode.hh",
       "src/src/hb-utf.hh",
+      "src/src/hb-vector.h",
       "src/src/hb-vector.hh",
       "src/src/hb.hh",
     ]
@@ -472,7 +479,6 @@ if (use_system_harfbuzz) {
       "HAVE_FONTATIONS",
       "HB_NO_MMAP",
       "HB_NO_RESOURCE_FORK",
-      "HAVE_HARFRUST",
 
       # Use assignment to empty value to work around a build failure.
       "HB_NO_PAINT=",
@@ -563,8 +569,11 @@ if (use_system_harfbuzz) {
     deps = [
       ":harfbuzz_rust",
       "//third_party/icu:icuuc",
-      "//third_party/rust/harfrust/v0_13:lib",
     ]
+    if (enable_harfrust) {
+      defines += [ "HAVE_HARFRUST" ]
+      deps += [ "//third_party/rust/harfrust/v0_14:lib" ]
+    }
 
     if (use_glib) {
       configs += [ "//build/config/linux:glib" ]

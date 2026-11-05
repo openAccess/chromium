@@ -23,6 +23,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/tabs/tab_menu_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -48,6 +49,8 @@
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/focused_node_details.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -135,8 +138,10 @@ class ToolbarViewTest : public ToolbarAccessibilityTest {
         /*disabled_features=*/
         // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
         // is enabled and then remove these two Features.
+        // TODO(crbug.com/579030694): Investigate lazy loading OrganizerPanel.
         {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
+         omnibox::internal::kWebUIOmniboxAimPopup,
+         organizer_panel::kOrganizerPanel});
   }
   ToolbarViewTest(const ToolbarViewTest&) = delete;
   ToolbarViewTest& operator=(const ToolbarViewTest&) = delete;
@@ -355,9 +360,10 @@ IN_PROC_BROWSER_TEST_P(ToolbarViewTest, BackForwardButtonUpdate) {
       ExpectBackForwardButtonEnabled(kToolbarForwardButtonElementId, false));
 }
 
-// TODO(crbug.com/548345902): Re-enable once fixed. Failing at step 9:
+// TODO(crbug.com/548345902, crbug.com/574662700): Re-enable once fixed. Failing
+// at step 9:
 // WaitForWebContentsNavigation(kWebContentsId, GURL(url::kAboutBlankURL))
-#if BUILDFLAG(IS_CHROMEOS) && defined(MEMORY_SANITIZER)
+#if defined(MEMORY_SANITIZER)
 #define MAYBE_BackButtonHoverThenClick DISABLED_BackButtonHoverThenClick
 #else
 #define MAYBE_BackButtonHoverThenClick BackButtonHoverThenClick
@@ -511,7 +517,7 @@ IN_PROC_BROWSER_TEST_P(ToolbarViewTest,
   ExtensionsToolbarDesktop* extensions_container =
       BrowserView::GetBrowserViewForBrowser(browser())
           ->toolbar()
-          ->extensions_container();
+          ->extensions_container_for_testing();
   EXPECT_NE(nullptr, extensions_container);
 }
 
@@ -535,7 +541,7 @@ IN_PROC_BROWSER_TEST_P(ToolbarViewTest,
   ExtensionsToolbarDesktop* extensions_container =
       BrowserView::GetBrowserViewForBrowser(target_browser)
           ->toolbar()
-          ->extensions_container();
+          ->extensions_container_for_testing();
   EXPECT_EQ(nullptr, extensions_container);
 }
 

@@ -10,6 +10,8 @@
 
 #include "base/command_line.h"
 #include "base/functional/callback.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_split.h"
@@ -166,6 +168,7 @@ static constexpr char const*
 static constexpr char const* kAllProcessSwitchesToCopy[] = {
     // This is used by every child process in WebEngineContentClient.
     switches::kEnableContentDirectories,
+    switches::kUseSchedulerRoles,
 };
 
 }  // namespace
@@ -193,7 +196,7 @@ WebEngineContentBrowserClient::CreateDevToolsManagerDelegate() {
 }
 
 std::string WebEngineContentBrowserClient::GetProduct() {
-  return std::string(version_info::GetProductNameAndVersionForUserAgent());
+  return version_info::GetProductNameAndVersionForUserAgent();
 }
 
 std::string WebEngineContentBrowserClient::GetUserAgent() {
@@ -301,9 +304,9 @@ void WebEngineContentBrowserClient::AppendExtraCommandLineSwitches(
   }
 }
 
-std::string WebEngineContentBrowserClient::GetApplicationLocale() {
+base::i18n::LanguageTag WebEngineContentBrowserClient::GetApplicationLocale() {
   // ICU is configured with the system locale by WebEngineBrowserMainParts.
-  return base::i18n::GetConfiguredLocale();
+  return base::i18n::GetDefaultIcuLocale();
 }
 
 std::string WebEngineContentBrowserClient::GetAcceptLangs(
@@ -326,7 +329,7 @@ bool WebEngineContentBrowserClient::MayDeleteServiceWorkerRegistration(
 
 base::OnceClosure WebEngineContentBrowserClient::SelectClientCertificate(
     content::BrowserContext* browser_context,
-    int process_id,
+    content::ChildProcessId process_id,
     content::WebContents* web_contents,
     net::SSLCertRequestInfo* cert_request_info,
     net::ClientCertIdentityList client_certs,

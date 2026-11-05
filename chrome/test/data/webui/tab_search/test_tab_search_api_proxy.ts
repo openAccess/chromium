@@ -2,14 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import type {PageRemote, ProfileData, SwitchToTabInfo, TabSearchApiProxy} from 'chrome://tab-search.top-chrome/tab_search.js';
-import {PageCallbackRouter} from 'chrome://tab-search.top-chrome/tab_search.js';
+import type {PageHandlerInterface, ProfileData, SwitchToTabInfo, TabSearchApiProxy} from 'chrome://tab-search.top-chrome/tab_search.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 
 export class TestTabSearchApiProxy extends TestBrowserProxy implements
-    TabSearchApiProxy {
-  callbackRouter: PageCallbackRouter;
-  callbackRouterRemote: PageRemote;
+    PageHandlerInterface, TabSearchApiProxy {
   private profileData_?: ProfileData;
   private isSplit_: boolean = false;
 
@@ -21,16 +18,14 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
       'getProfileData',
       'getIsSplit',
       'openRecentlyClosedEntry',
+      'recordRecentlyClosedItemOpenAction',
       'replaceActiveSplitTab',
       'switchToTab',
       'saveRecentlyClosedExpandedPref',
-      'maybeShowUi',
+      'startTabGroupTutorial',
+      'maybeShowUI',
+      'redirectToNtp',
     ]);
-
-    this.callbackRouter = new PageCallbackRouter();
-
-    this.callbackRouterRemote =
-        this.callbackRouter.$.bindNewPipeAndPassRemote();
   }
 
   closeTab(tabId: number) {
@@ -55,8 +50,13 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
     return Promise.resolve({isSplit: this.isSplit_});
   }
 
-  openRecentlyClosedEntry(id: number, withSearch: boolean, isTab: boolean) {
-    this.methodCalled('openRecentlyClosedEntry', [id, withSearch, isTab]);
+  openRecentlyClosedEntry(id: number) {
+    this.methodCalled('openRecentlyClosedEntry', [id]);
+  }
+
+  recordRecentlyClosedItemOpenAction(withSearch: boolean, isTab: boolean) {
+    this.methodCalled(
+        'recordRecentlyClosedItemOpenAction', [withSearch, isTab]);
   }
 
   replaceActiveSplitTab(replacementTabId: number) {
@@ -71,16 +71,17 @@ export class TestTabSearchApiProxy extends TestBrowserProxy implements
     this.methodCalled('saveRecentlyClosedExpandedPref', [expanded]);
   }
 
-  maybeShowUi() {
-    this.methodCalled('maybeShowUi');
+  startTabGroupTutorial() {
+    this.methodCalled('startTabGroupTutorial');
   }
 
-  getCallbackRouter() {
-    return this.callbackRouter;
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  maybeShowUI() {
+    this.methodCalled('maybeShowUI');
   }
 
-  getCallbackRouterRemote() {
-    return this.callbackRouterRemote;
+  redirectToNtp() {
+    this.methodCalled('redirectToNtp');
   }
 
   setProfileData(profileData: ProfileData) {

@@ -12,14 +12,17 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabGroupTitleUtils;
+import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
 import org.chromium.components.tab_group_sync.SavedTabGroupTab;
 import org.chromium.components.tab_groups.TabGroupColorId;
 import org.chromium.url.GURL;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 /** Encapsulates metadata, window location, and sync status for a tab group. */
 @NullMarked
@@ -32,18 +35,22 @@ public class GroupWindowInfo {
     public final List<GURL> faviconUrls;
     public final @GroupWindowState int groupWindowState;
     public final long lastModifiedTimeMs;
+    public final @Nullable String collaborationId;
+    public final boolean isArchived;
 
     /**
      * Constructs a new {@link GroupWindowInfo} instance.
      *
      * @param localId The local tab group ID token, if available.
      * @param syncId The sync ID string, if available.
-     * @param title The displayable title of the tab group.
-     * @param color The color ID of the tab group.
-     * @param tabCount The number of tabs in the tab group.
-     * @param faviconUrls The list of URLs for rendering the favicon cluster.
-     * @param groupWindowState The {@link GroupWindowState} location of the tab group.
-     * @param lastModifiedTimeMs The last modified timestamp in milliseconds.
+     * @param title The display title of the group.
+     * @param color The color of the tab group.
+     * @param tabCount The number of tabs in the group.
+     * @param faviconUrls The favicon URLs for tabs in the group.
+     * @param groupWindowState The {@link GroupWindowState} of the group.
+     * @param lastModifiedTimeMs The last modified time of the group in milliseconds.
+     * @param collaborationId The collaboration ID string, if available.
+     * @param isArchived Whether the tab group is archived.
      */
     public GroupWindowInfo(
             @Nullable Token localId,
@@ -53,7 +60,9 @@ public class GroupWindowInfo {
             int tabCount,
             List<GURL> faviconUrls,
             @GroupWindowState int groupWindowState,
-            long lastModifiedTimeMs) {
+            long lastModifiedTimeMs,
+            @Nullable String collaborationId,
+            boolean isArchived) {
         this.localId = localId;
         this.syncId = syncId;
         this.title = title;
@@ -62,81 +71,259 @@ public class GroupWindowInfo {
         this.faviconUrls = faviconUrls;
         this.groupWindowState = groupWindowState;
         this.lastModifiedTimeMs = lastModifiedTimeMs;
+        this.collaborationId = collaborationId;
+        this.isArchived = isArchived;
     }
 
     /**
-     * Factory method for creating {@link GroupWindowInfo} for a synced tab group.
+     * Factory method for creating {@link GroupWindowInfo} for a synced tab group, prioritizing live
+     * local {@link TabModel} metadata when the group is present locally.
      *
      * @param context Context for resolving fallback titles.
+     * @param localTabModel The local {@link TabModel}.
      * @param savedGroup The {@link SavedTabGroup} instance.
      * @param state The {@link GroupWindowState} of the group.
+     * @param localTabs Pre-resolved tabs belonging to the group, or an empty list.
      * @return A new {@link GroupWindowInfo} instance.
      */
     public static GroupWindowInfo forSyncedGroup(
-            Context context, SavedTabGroup savedGroup, @GroupWindowState int state) {
+            Context context,
+            TabModel localTabModel,
+            SavedTabGroup savedGroup,
+            @GroupWindowState int state,
+            List<Tab> localTabs) {
         Token localId = savedGroup.localId != null ? savedGroup.localId.tabGroupId : null;
-        int tabCount = savedGroup.savedTabs != null ? savedGroup.savedTabs.size() : 0;
-        String title =
-                TextUtils.isEmpty(savedGroup.title)
-                        ? TabGroupTitleUtils.getDefaultTitle(context, tabCount)
-                        : savedGroup.title;
-        List<GURL> faviconUrls =
-                savedGroup.savedTabs != null
-                        ? TabGroupFaviconCluster.buildUrlListFromSyncGroup(savedGroup)
-                        : Collections.emptyList();
-        long lastModifiedTimeMs = savedGroup.updateTimeMs;
-        if (savedGroup.savedTabs != null) {
-            for (SavedTabGroupTab tab : savedGroup.savedTabs) {
-                lastModifiedTimeMs = Math.max(lastModifiedTimeMs, tab.updateTimeMs);
-            }
-        }
-        return new GroupWindowInfo(
-                localId,
-                savedGroup.syncId,
-                title,
-                savedGroup.color,
-                tabCount,
-                faviconUrls,
-                state,
-                lastModifiedTimeMs);
+        return forLocalOrSyncedGroupInternal(
+                context, localTabModel, localId, savedGroup, state, localTabs);
     }
 
     /**
      * Factory method for creating {@link GroupWindowInfo} for a local tab group.
      *
-     * @param context Context for resolving default titles.
-     * @param tabModel The {@link TabModel} containing the tab group.
-     * @param groupId The local tab group ID {@link Token}.
+     * @param context Context for resolving fallback titles.
+     * @param tabModel The tab model containing the group.
+     * @param groupId The target tab group ID.
+     * @param state The {@link GroupWindowState} of the group.
+     * @param localTabs Pre-resolved tabs belonging to the group, or an empty list.
      * @return A new {@link GroupWindowInfo} instance.
      */
-    public static GroupWindowInfo forLocalGroup(Context context, TabModel tabModel, Token groupId) {
-        int tabCount = tabModel.getTabCountForGroup(groupId);
-        String title = TabGroupTitleUtils.getDisplayableTitle(context, tabModel, groupId);
-        @TabGroupColorId int color = tabModel.getTabGroupColorWithFallback(groupId);
-        List<Tab> tabs = tabModel.getTabsInGroup(groupId);
-        List<GURL> faviconUrls = TabGroupFaviconCluster.buildUrlListFromFilter(groupId, tabModel);
-        boolean isFullyClosing = true;
-        long lastModifiedTimeMs = 0L;
-        if (tabs != null) {
-            for (Tab tab : tabs) {
-                isFullyClosing &= tab.isClosing();
-                lastModifiedTimeMs = Math.max(lastModifiedTimeMs, tab.getTimestampMillis());
-            }
-        }
-        @GroupWindowState
-        int groupWindowState =
-                isFullyClosing && tabs != null && !tabs.isEmpty()
-                        ? GroupWindowState.IN_CURRENT_CLOSING
-                        : GroupWindowState.IN_CURRENT;
+    public static GroupWindowInfo forLocalGroup(
+            Context context,
+            TabModel tabModel,
+            Token groupId,
+            @GroupWindowState int state,
+            List<Tab> localTabs) {
+        return forLocalOrSyncedGroupInternal(
+                context, tabModel, groupId, /* savedGroup= */ null, state, localTabs);
+    }
 
+    /**
+     * Internal factory helper constructing a {@link GroupWindowInfo} from local {@link TabModel}
+     * data, augmenting with optional sync metadata (syncId, fallback title, update time).
+     *
+     * @param context Context for resolving fallback titles.
+     * @param localTabModel The local {@link TabModel}.
+     * @param localGroupId The local tab group ID {@link Token}, if available.
+     * @param savedGroup The {@link SavedTabGroup} instance, if synced.
+     * @param state The {@link GroupWindowState} of the group.
+     * @return A new {@link GroupWindowInfo} instance.
+     */
+    private static GroupWindowInfo forLocalOrSyncedGroupInternal(
+            Context context,
+            TabModel localTabModel,
+            @Nullable Token localGroupId,
+            @Nullable SavedTabGroup savedGroup,
+            @GroupWindowState int state,
+            List<Tab> localTabs) {
+        if (localTabs.isEmpty() && localGroupId != null) {
+            localTabs = getLocalTabsInGroup(localTabModel, localGroupId);
+        }
+        boolean hasLocalTabs = !localTabs.isEmpty();
+        boolean existsLocally =
+                localGroupId != null
+                        && (hasLocalTabs || localTabModel.containsTabGroup(localGroupId));
+
+        int tabCount = resolveTabCount(localTabModel, localGroupId, localTabs, savedGroup);
+        String title =
+                resolveTitle(
+                        context,
+                        localTabModel,
+                        localGroupId,
+                        savedGroup,
+                        existsLocally,
+                        tabCount,
+                        localTabs);
+        @TabGroupColorId
+        int color = resolveColor(localTabModel, localGroupId, savedGroup, existsLocally);
+        List<GURL> faviconUrls = resolveFaviconUrls(localTabs, savedGroup);
+        long lastModifiedTimeMs = resolveLastModifiedTimeMs(localTabs, savedGroup);
+        String syncId = savedGroup != null ? savedGroup.syncId : null;
+
+        String collaborationId = savedGroup != null ? savedGroup.collaborationId : null;
+        boolean isArchived = savedGroup != null && savedGroup.archivalTimeMs != null;
         return new GroupWindowInfo(
-                groupId,
-                /* syncId= */ null,
+                localGroupId,
+                syncId,
                 title,
                 color,
                 tabCount,
                 faviconUrls,
-                groupWindowState,
-                lastModifiedTimeMs);
+                state,
+                lastModifiedTimeMs,
+                collaborationId,
+                isArchived);
+    }
+
+    private static int resolveTabCount(
+            @Nullable TabModel localTabModel,
+            @Nullable Token localGroupId,
+            List<Tab> localTabs,
+            @Nullable SavedTabGroup savedGroup) {
+        if (!localTabs.isEmpty()) {
+            return localTabs.size();
+        }
+        if (localTabModel != null
+                && localGroupId != null
+                && localTabModel.containsTabGroup(localGroupId)) {
+            int count = localTabModel.getTabCountForGroup(localGroupId);
+            if (count > 0) {
+                return count;
+            }
+        }
+        return savedGroup != null && savedGroup.savedTabs != null ? savedGroup.savedTabs.size() : 0;
+    }
+
+    private static String resolveTitle(
+            Context context,
+            TabModel localTabModel,
+            @Nullable Token localGroupId,
+            @Nullable SavedTabGroup savedGroup,
+            boolean existsLocally,
+            int tabCount,
+            List<Tab> localTabs) {
+        String title = null;
+        if (existsLocally && localGroupId != null) {
+            title = localTabModel.getTabGroupTitle(localGroupId);
+        }
+        if (savedGroup == null) {
+            if (!TextUtils.isEmpty(title)) {
+                return title;
+            }
+            int nonClosingCount = countNonClosingTabs(localTabs);
+            return TabGroupTitleUtils.getDefaultTitle(context, nonClosingCount);
+        }
+        if (TextUtils.isEmpty(title)) {
+            title = savedGroup.title;
+        }
+        if (TextUtils.isEmpty(title)) {
+            title = TabGroupTitleUtils.getDefaultTitle(context, tabCount);
+        }
+        return title;
+    }
+
+    private static @TabGroupColorId int resolveColor(
+            @Nullable TabModel localTabModel,
+            @Nullable Token localGroupId,
+            @Nullable SavedTabGroup savedGroup,
+            boolean hasLocalData) {
+        if (hasLocalData && localTabModel != null && localGroupId != null) {
+            return localTabModel.getTabGroupColorWithFallback(localGroupId);
+        }
+        return savedGroup != null ? savedGroup.color : TabGroupColorId.GREY;
+    }
+
+    private static int countNonClosingTabs(List<Tab> tabs) {
+        int count = 0;
+        for (Tab tab : tabs) {
+            if (!tab.isClosing()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static List<GURL> resolveFaviconUrls(
+            List<Tab> localTabs, @Nullable SavedTabGroup savedGroup) {
+        if (!localTabs.isEmpty()) {
+            return extractFaviconUrlsFromLocalTabs(localTabs);
+        }
+        if (savedGroup != null && savedGroup.savedTabs != null) {
+            return TabGroupFaviconCluster.buildUrlListFromSyncGroup(savedGroup);
+        }
+        return Collections.emptyList();
+    }
+
+    private static List<GURL> extractFaviconUrlsFromLocalTabs(List<Tab> localTabs) {
+        int urlCount = Math.min(TabGroupFaviconCluster.CORNER_COUNT, localTabs.size());
+        List<GURL> faviconUrls = new ArrayList<>(urlCount);
+        for (int i = 0; i < urlCount; i++) {
+            faviconUrls.add(localTabs.get(i).getUrl());
+        }
+        return faviconUrls;
+    }
+
+    private static long resolveLastModifiedTimeMs(
+            List<Tab> localTabs, @Nullable SavedTabGroup savedGroup) {
+        long localLastModified = 0L;
+        if (!localTabs.isEmpty()) {
+            localLastModified = getLastModifiedTimeMs(localTabs);
+        }
+        long savedLastModified = savedGroup != null ? savedGroup.updateTimeMs : 0L;
+        if (savedGroup != null && savedGroup.savedTabs != null) {
+            for (SavedTabGroupTab tab : savedGroup.savedTabs) {
+                savedLastModified = Math.max(savedLastModified, tab.updateTimeMs);
+            }
+        }
+        return Math.max(localLastModified, savedLastModified);
+    }
+
+    /**
+     * Returns the list of local {@link Tab}s belonging to {@code groupId}. If the group is
+     * detached/pending closure (so {@link TabModel#getTabsInGroup(Token)} returns empty), falls
+     * back to filtering {@link TabModel#getComprehensiveModel()}.
+     *
+     * @param tabModel The tab model containing tabs.
+     * @param groupId The target tab group ID.
+     * @return List of tabs belonging to the group.
+     */
+    private static List<Tab> getLocalTabsInGroup(
+            @Nullable TabModel tabModel, @Nullable Token groupId) {
+        if (tabModel == null || groupId == null) {
+            return Collections.emptyList();
+        }
+        List<Tab> tabs = tabModel.getTabsInGroup(groupId);
+        if (tabs != null && !tabs.isEmpty()) {
+            return tabs;
+        }
+        if (!TabGroupUiUtils.isRemoteGroupOperationsEnabled()) {
+            return Collections.emptyList();
+        }
+        List<Tab> allGroupTabs = new ArrayList<>();
+        TabList comprehensiveModel = tabModel.getComprehensiveModel();
+        if (comprehensiveModel != null) {
+            if (comprehensiveModel.iterator() != null) {
+                for (Tab tab : comprehensiveModel) {
+                    if (Objects.equals(tab.getTabGroupId(), groupId)) {
+                        allGroupTabs.add(tab);
+                    }
+                }
+            } else {
+                for (int i = 0; i < comprehensiveModel.getCount(); i++) {
+                    Tab tab = comprehensiveModel.getTabAt(i);
+                    if (tab != null && Objects.equals(tab.getTabGroupId(), groupId)) {
+                        allGroupTabs.add(tab);
+                    }
+                }
+            }
+        }
+        return allGroupTabs;
+    }
+
+    private static long getLastModifiedTimeMs(List<Tab> tabs) {
+        long lastModifiedTimeMs = 0L;
+        for (Tab tab : tabs) {
+            lastModifiedTimeMs = Math.max(lastModifiedTimeMs, tab.getTimestampMillis());
+        }
+        return lastModifiedTimeMs;
     }
 }

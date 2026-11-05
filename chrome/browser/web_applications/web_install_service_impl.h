@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_WEB_APPLICATIONS_WEB_INSTALL_SERVICE_IMPL_H_
 #define CHROME_BROWSER_WEB_APPLICATIONS_WEB_INSTALL_SERVICE_IMPL_H_
 
+#include <optional>
 #include <vector>
 
 #include "base/auto_reset.h"
@@ -12,12 +13,13 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
+#include "chrome/browser/web_applications/model/parse_manifest_result.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/browser/document_service.h"
 #include "content/public/browser/permission_result.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/mojom/manifest/manifest_manager.mojom-forward.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
 #include "third_party/blink/public/mojom/web_install/web_install.mojom.h"
@@ -56,8 +58,9 @@ enum class WebInstallServiceResult {
   kNoCustomManifestId = 7,
   kManifestIdMismatch = 8,
   kInstallInProgress = 9,
+  kNoManifestIcons = 10,
   // Insert new values above this line.
-  kMaxValue = kInstallInProgress,
+  kMaxValue = kNoManifestIcons,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/webapps/enums.xml:WebInstallServiceResult)
 
@@ -86,6 +89,10 @@ class WebInstallServiceImpl
     : public content::DocumentService<blink::mojom::WebInstallService>,
       public content::WebContentsObserver {
  public:
+  WebInstallServiceImpl(
+      content::RenderFrameHost& render_frame_host,
+      mojo::PendingReceiver<blink::mojom::WebInstallService> receiver,
+      base::SelfDeletingPassKey key);
   WebInstallServiceImpl(const WebInstallServiceImpl&) = delete;
   WebInstallServiceImpl& operator=(const WebInstallServiceImpl&) = delete;
 
@@ -129,9 +136,6 @@ class WebInstallServiceImpl
   void InstallCurrentDocumentInternal(InstallFromManifestCallback callback,
                                       bool triggered_from_element);
 
-  WebInstallServiceImpl(
-      content::RenderFrameHost& render_frame_host,
-      mojo::PendingReceiver<blink::mojom::WebInstallService> receiver);
   ~WebInstallServiceImpl() override;
 
   // Manages `install_in_progress_`.
@@ -153,7 +157,8 @@ class WebInstallServiceImpl
   void OnDidCheckInstallabilityForCurrentDocumentInstall(
       InstallFromManifestCallbackWithMetrics callback_with_metrics,
       base::WeakPtr<WebAppDataRetriever> data_retriever,
-      blink::mojom::ManifestPtr manifest,
+      std::optional<GURL> linked_manifest_url,
+      std::optional<blink::Manifest> manifest,
       bool valid_manifest_for_web_app,
       webapps::InstallableStatusCode error_code);
 
@@ -177,6 +182,7 @@ class WebInstallServiceImpl
       blink::mojom::ManifestInstallOptionsPtr options,
       std::unique_ptr<webapps::MlInstallOperationTracker> install_tracker,
       bool triggered_from_element,
+      bool can_report_devtools_issue,
       base::expected<std::string, WebInstallManifestFetchError> result);
 
   // Callback for when the manifest parse command completes.
@@ -185,7 +191,8 @@ class WebInstallServiceImpl
       blink::mojom::ManifestInstallOptionsPtr options,
       std::unique_ptr<webapps::MlInstallOperationTracker> install_tracker,
       bool triggered_from_element,
-      blink::mojom::ManifestPtr manifest);
+      bool can_report_devtools_issue,
+      ParseManifestResult parse_result);
 
   void OnManifestInstallNotSupportedDialogClosed(
       InstallFromManifestCallbackWithMetrics callback_with_metrics);
@@ -195,7 +202,7 @@ class WebInstallServiceImpl
       InstallFromManifestCallbackWithMetrics callback_with_metrics,
       blink::mojom::ManifestInstallOptionsPtr options,
       std::unique_ptr<webapps::MlInstallOperationTracker> install_tracker,
-      blink::mojom::ManifestPtr manifest,
+      blink::Manifest manifest,
       const std::vector<content::PermissionResult>& permission_result);
 
   // Shared "permission granted, proceed to install" step for the manifest URL
@@ -204,7 +211,7 @@ class WebInstallServiceImpl
       InstallFromManifestCallbackWithMetrics callback_with_metrics,
       blink::mojom::ManifestInstallOptionsPtr options,
       std::unique_ptr<webapps::MlInstallOperationTracker> install_tracker,
-      blink::mojom::ManifestPtr manifest);
+      blink::Manifest manifest);
 
   // Callback for when the manifest URL install command completes.
   void OnAppInstalledFromManifest(

@@ -32,6 +32,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_DOM_EVENTS_EVENT_TARGET_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_DOM_EVENTS_EVENT_TARGET_H_
 
+#include "build/build_config.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatch_result.h"
@@ -133,7 +134,19 @@ class CORE_EXPORT EventTargetData final
 //   return ExecutionContextLifecycleObserver::executionContext (if you are an
 //   ExecutionContextLifecycleObserver)
 //   or the document you're in.
+//
+// EventTarget ends with a 32-bit member. The MSVC ABI does not place derived
+// class members in base class tail padding, so on 64-bit Windows EventTarget is
+// packed to 4 bytes to let a 32-bit member of a subclass (e.g. Node's
+// node_flags_) fill that space. Its members stay naturally aligned, since the
+// MSVC ABI places polymorphic bases first.
+#if BUILDFLAG(IS_WIN) && defined(ARCH_CPU_64_BITS)
+#pragma pack(push, 4)
+#endif
 class CORE_EXPORT EventTarget : public ScriptWrappable {
+#if BUILDFLAG(IS_WIN) && defined(ARCH_CPU_64_BITS)
+#pragma pack(pop)
+#endif
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -171,7 +184,12 @@ class CORE_EXPORT EventTarget : public ScriptWrappable {
                         bool use_capture = false);
   bool addEventListener(const AtomicString& event_type,
                         EventListener*,
-                        AddEventListenerOptionsResolved*);
+                        AddEventListenerOptionsResolved&);
+  // Deleted so that passing a pointer is a compile error rather than silently
+  // converting to `true` for the `use_capture` overload above.
+  bool addEventListener(const AtomicString&,
+                        EventListener*,
+                        AddEventListenerOptionsResolved*) = delete;
 
   bool removeEventListener(const AtomicString& event_type, V8EventListener*);
   bool removeEventListener(
@@ -273,6 +291,7 @@ class CORE_EXPORT EventTarget : public ScriptWrappable {
   DEFINE_ATTRIBUTE_EVENT_LISTENER(formdata, kFormdata)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(gotpointercapture, kGotpointercapture)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(input, kInput)
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(installresult, kInstallresult)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(invalid, kInvalid)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(keydown, kKeydown)
   DEFINE_ATTRIBUTE_EVENT_LISTENER(keypress, kKeypress)
@@ -353,7 +372,7 @@ class CORE_EXPORT EventTarget : public ScriptWrappable {
 
   virtual bool AddEventListenerInternal(const AtomicString& event_type,
                                         EventListener*,
-                                        const AddEventListenerOptionsResolved*);
+                                        const AddEventListenerOptionsResolved&);
   bool RemoveEventListenerInternal(
       const AtomicString& event_type,
       const EventListener*,
@@ -376,7 +395,7 @@ class CORE_EXPORT EventTarget : public ScriptWrappable {
   LocalDOMWindow* ExecutingWindow();
   void SetDefaultAddEventListenerOptions(const AtomicString& event_type,
                                          EventListener*,
-                                         AddEventListenerOptionsResolved*);
+                                         AddEventListenerOptionsResolved&);
 
   RegisteredEventListener* GetAttributeRegisteredEventListener(
       const AtomicString& event_type);

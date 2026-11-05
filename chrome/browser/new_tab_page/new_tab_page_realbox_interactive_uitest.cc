@@ -113,6 +113,8 @@ const DeepQuery kLensSearchButton = {"ntp-app", "ntp-searchbox",
                                      "#lensSearchButton"};
 const DeepQuery kComposeButton = {"ntp-app", "ntp-searchbox", "#composeButton",
                                   "#composeButton"};
+const DeepQuery kComposeButtonHost = {"ntp-app", "ntp-searchbox",
+                                      "#composeButton"};
 const DeepQuery kComposeboxVoiceSearchButton = {"ntp-app", "#composebox",
                                                 "#voiceSearchButton"};
 const DeepQuery kContextualEntrypoint = {"ntp-app", "ntp-searchbox", "#context",
@@ -860,7 +862,7 @@ IN_PROC_BROWSER_TEST_F(NtpRealboxTabFlyoverInteractiveTest,
                                  SearchContentSharingSettingsValue::kEnabled));
       }),
       // Open a background tab first, then open NTP.
-      AddInstrumentedTab(kFirstTab, GURL("about:blank")),
+      AddInstrumentedTab(kFirstTab, GURL("https://www.example.com")),
       AddInstrumentedTab(kNtpElementId, chrome::ChromeUINewTabURLAsGURL()),
       // Open NTP composebox by clicking compose button.
       WaitForElementToRender(kNtpElementId, kRealbox),
@@ -896,7 +898,7 @@ IN_PROC_BROWSER_TEST_F(NtpRealboxTabFlyoverInteractiveTest,
       // Verify tab is attached in NTP composebox.
       WaitForElementToRender(kNtpElementId, kComposeboxFaviconGroup),
       CheckJsResultAt(kNtpElementId, {"ntp-app", "#composebox"},
-                      "el => el.files.size", 1),
+                      "el => el.attachedContext.size", 1),
       CheckJsResultAt(kNtpElementId, {"ntp-app", "#composebox"},
                       "el => el.errorMessage", ""),
       CheckJsResultAt(kNtpElementId, {"ntp-app", "#composebox"},
@@ -1363,7 +1365,79 @@ IN_PROC_BROWSER_TEST_F(NtpRealboxDefaultExperienceInteractiveTest,
                            "(el) => el.value === 'a'"));
 }
 
-IN_PROC_BROWSER_TEST_F(NtpRealboxDefaultExperienceInteractiveTest,
+// Pins kRealboxVirtualFocusNavigation on, independent of whether
+// fieldtrial_testing_config.json is applied.
+class NtpRealboxDefaultExperienceVirtualFocusInteractiveTest
+    : public NtpRealboxDefaultExperienceInteractiveTest {
+ public:
+  NtpRealboxDefaultExperienceVirtualFocusInteractiveTest() {
+    virtual_focus_feature_list_.InitAndEnableFeature(
+        ntp_features::kRealboxVirtualFocusNavigation);
+  }
+
+ private:
+  base::test::ScopedFeatureList virtual_focus_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(NtpRealboxDefaultExperienceVirtualFocusInteractiveTest,
+                       RemoveSuggestionViaKeyboard) {
+  RunTestSequence(
+      AddInstrumentedTab(kNtpElementId, chrome::ChromeUINewTabURLAsGURL()),
+      WaitForElementToRender(kNtpElementId, kRealboxInput),
+      // Seed history result to populate the dropdown
+      SeedSearchboxResult("a"), SeedSearchboxResult("b"),
+      // Click on Realbox to show the dropdown
+      ClickElement(kNtpElementId, kRealboxInput),
+      WaitForElementVisibilityChange(kSearchboxDropdown,
+                                     /*expected_visible=*/true),
+      // Pressing Tab moves virtual focus to the AIM button.
+      SendKeyPress(kNtpElementId, ui::VKEY_TAB),
+      WaitForJsConditionAt(
+          kNtpElementId, kComposeButtonHost,
+          "(el) => el && el.hasAttribute('has-virtual-focus')"),
+      // Pressing Tab again selects the inline autocomplete match.
+      SendKeyPress(kNtpElementId, ui::VKEY_TAB),
+      WaitForJsConditionAt(kNtpElementId, kRealboxInput,
+                           "(el) => el.value === 'b'"),
+      // Pressing Tab again selects the match remove button.
+      SendKeyPress(kNtpElementId, ui::VKEY_TAB),
+      WaitForJsConditionAt(kNtpElementId, kRealboxMatchRemoveButton,
+                           "(el) => el && el.classList.contains('selected')"),
+      // Trigger the remove button via ENTER
+      SendKeyPress(kNtpElementId, ui::VKEY_RETURN),
+      // After removing the match, the next match is selected.
+      WaitForJsConditionAt(kNtpElementId, kRealboxInput,
+                           "(el) => el.value === 'a'"),
+      // Pressing Tab selects the next match's remove button.
+      SendKeyPress(kNtpElementId, ui::VKEY_TAB),
+      WaitForJsConditionAt(kNtpElementId, kRealboxMatchRemoveButton,
+                           "(el) => el && el.classList.contains('selected')"),
+      // Trigger the remove button via ENTER
+      SendKeyPress(kNtpElementId, ui::VKEY_RETURN),
+      // After all history matches are removed, verify none remain.
+      WaitForJsConditionAt(kNtpElementId, kSearchboxDropdown,
+                           "(el) => el && ![...el.shadowRoot.querySelectorAll("
+                           "'cr-searchbox-match')].some(m => "
+                           "m.match.supportsDeletion)"));
+}
+
+// Pins kRealboxVirtualFocusNavigation off to cover the legacy native-focus
+// behavior.
+// TODO(crbug.com/483160026): Remove once kRealboxVirtualFocusNavigation
+// launches.
+class NtpRealboxDefaultExperienceLegacyFocusInteractiveTest
+    : public NtpRealboxDefaultExperienceInteractiveTest {
+ public:
+  NtpRealboxDefaultExperienceLegacyFocusInteractiveTest() {
+    virtual_focus_feature_list_.InitAndDisableFeature(
+        ntp_features::kRealboxVirtualFocusNavigation);
+  }
+
+ private:
+  base::test::ScopedFeatureList virtual_focus_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(NtpRealboxDefaultExperienceLegacyFocusInteractiveTest,
                        RemoveSuggestionViaKeyboard) {
   RunTestSequence(
       AddInstrumentedTab(kNtpElementId, chrome::ChromeUINewTabURLAsGURL()),

@@ -5,39 +5,29 @@
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
 
 #import "base/barrier_callback.h"
-#import "base/command_line.h"
+#import "base/check.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
 #import "base/rand_util.h"
-#import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
 #import "base/version.h"
-#import "components/feature_engagement/public/event_constants.h"
-#import "components/feature_engagement/public/feature_constants.h"
-#import "components/feature_engagement/public/tracker.h"
-#import "components/policy/policy_constants.h"
 #import "components/prefs/pref_service.h"
 #import "components/signin/ios/browser/features.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_switches.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
-#import "components/signin/public/identity_manager/tribool.h"
 #import "components/sync/service/sync_service.h"
-#import "components/sync/service/sync_user_settings.h"
 #import "google_apis/gaia/gaia_auth_util.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/change_profile_commands.h"
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/app/tests_hook.h"
-#import "ios/chrome/browser/authentication/history_sync/coordinator/history_sync_coordinator.h"
 #import "ios/chrome/browser/authentication/history_sync/model/history_sync_utils.h"
 #import "ios/chrome/browser/authentication/ui_bundled/change_profile/change_profile_settings_continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/change_profile/change_profile_signout_continuation.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/features.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
-#import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/promos_manager/model/constants.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -47,13 +37,11 @@
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios_util.h"
 #import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
@@ -398,18 +386,6 @@ void RecordFullscreenSigninPromoStarted(
   [defaults setInteger:display_count forKey:kSigninPromoViewDisplayCountKey];
 }
 
-Tribool TriboolFromCapabilityResult(SystemIdentityCapabilityResult result) {
-  switch (result) {
-    case SystemIdentityCapabilityResult::kTrue:
-      return Tribool::kTrue;
-    case SystemIdentityCapabilityResult::kFalse:
-      return Tribool::kFalse;
-    case SystemIdentityCapabilityResult::kUnknown:
-      return Tribool::kUnknown;
-  }
-  NOTREACHED();
-}
-
 NSArray<id<SystemIdentity>>* GetIdentitiesOnDevice(
     signin::IdentityManager* identityManager,
     ChromeAccountManagerService* accountManagerService) {
@@ -551,11 +527,12 @@ void MultiProfileSignOutForProfile(
         break;
       }
     }
-    base::OnceClosure authentication_signout_completion = base::BindOnce(
-        std::move(signout_completion_closure), trigger_scene_state);
-    authentication_service->SignOut(
-        signout_source,
-        base::CallbackToBlock(std::move(authentication_signout_completion)));
+    authentication_service->SignOut(signout_source);
+    if (signout_completion_closure) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(std::move(signout_completion_closure),
+                                    trigger_scene_state));
+    }
     return;
   }
 

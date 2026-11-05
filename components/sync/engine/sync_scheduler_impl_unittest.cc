@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/auto_reset.h"
+#include "base/containers/flat_map.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -748,7 +749,7 @@ TEST_F(SyncSchedulerImplTest, NudgeCoalescingWithDifferentTimings) {
   // Create a huge time delay.
   base::TimeDelta delay = base::Days(1);
 
-  std::map<DataType, base::TimeDelta> delay_map;
+  base::flat_map<DataType, base::TimeDelta> delay_map;
   delay_map[THEMES] = delay;
   scheduler()->OnReceivedCustomNudgeDelays(delay_map);
   scheduler()->ScheduleLocalNudge(THEMES);
@@ -2052,6 +2053,45 @@ TEST_F(SyncSchedulerImplTest, CanRunJobWithoutCachedAccessToken) {
   StartSyncScheduler();
   scheduler()->ScheduleLocalNudge(THEMES);
   RunLoop();
+}
+
+TEST_F(SyncSchedulerImplTest, SkipsSyncCycleWhenFetchedAccessTokenInvalid) {
+  base::test::ScopedFeatureList feature_list(kSyncUsePropagatedAccessToken);
+
+  testing::NiceMock<MockSyncAccessTokenFetcher> fetcher;
+  EXPECT_CALL(fetcher, FetchAccessToken)
+      .WillOnce(base::test::RunOnceCallback<0>(signin::AccessTokenInfo()));
+
+  RebuildSchedulerWithAccessTokenFetcher(&fetcher);
+
+  connection()->SetServerResponse(HttpResponse::ForSuccessForTest());
+  ASSERT_EQ(HttpResponse::SERVER_CONNECTION_OK, connection()->server_status());
+  EXPECT_CALL(*syncer(), NormalSyncShare).Times(0);
+
+  StartSyncScheduler();
+  scheduler()->ScheduleLocalNudge(THEMES);
+  PumpLoop();
+
+  ASSERT_EQ(HttpResponse::SERVER_CONNECTION_OK, connection()->server_status());
+
+  // Once valid credentials become available, `OnCredentialsUpdated()` retries
+  // the pending nudge even when `server_status()` was already
+  // `SERVER_CONNECTION_OK`.
+  testing::Mock::VerifyAndClearExpectations(&fetcher);
+  testing::Mock::VerifyAndClearExpectations(syncer());
+  EXPECT_CALL(fetcher, FetchAccessToken)
+      .WillOnce(base::test::RunOnceCallback<0>(
+          CreateValidAccessTokenInfo("valid_access_token")));
+  SyncShareTimes times;
+  EXPECT_CALL(
+      *syncer(),
+      NormalSyncShare(_, _, SyncCycleHasAccessToken("valid_access_token")))
+      .WillOnce(DoAll(SimulateNormalSuccess,
+                      RecordSyncShare(&times, /*success=*/true)));
+
+  scheduler()->OnCredentialsUpdated();
+  PumpLoop();
+  EXPECT_EQ(1U, times.size());
 }
 
 }  // namespace syncer

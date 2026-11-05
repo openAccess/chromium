@@ -9,7 +9,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
-import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -31,16 +30,19 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.ApplicationStatus;
-import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.app.tab_activity_glue.ReparentingTabGroupTask;
 import org.chromium.chrome.browser.app.tab_activity_glue.ReparentingTabsTask;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.NewWindowAppSource;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
@@ -66,13 +68,25 @@ import java.util.Map.Entry;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(sdk = 31)
 public class TabReparentingDelegateUnitTest {
+    /**
+     * Records intents passed to {@link #onNewIntent}, since the real implementation requires native
+     * initialization.
+     */
+    private static class TestChromeTabbedActivity extends ChromeTabbedActivity {
+        final List<Intent> mNewIntents = new ArrayList<>();
+
+        @Override
+        @SuppressWarnings("MissingSuperCall") // super requires native initialization.
+        public void onNewIntent(Intent intent) {
+            mNewIntents.add(intent);
+        }
+    }
+
     private static final int SOURCE_WINDOW_ID = 1;
     private static final int DEST_WINDOW_ID = 2;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private ChromeTabbedActivity mCurrentActivity;
-    @Mock private ChromeTabbedActivity mDestActivity;
     @Mock private MismatchedIndicesHandler mMismatchedIndicesHandler;
     @Mock private TabGroupSyncFeatures.Natives mTabGroupSyncFeaturesJniMock;
     @Mock private TabGroupSyncService mTabGroupSyncService;
@@ -87,6 +101,8 @@ public class TabReparentingDelegateUnitTest {
     @Captor private ArgumentCaptor<Runnable> mOnSaveTabListRunnableCaptor;
 
     private TabReparentingDelegate mDelegate;
+    private TestChromeTabbedActivity mCurrentActivity;
+    private TestChromeTabbedActivity mDestActivity;
 
     @Before
     public void setup() {
@@ -98,8 +114,8 @@ public class TabReparentingDelegateUnitTest {
         mDelegate = new TabReparentingDelegate();
         TabReparentingDelegate.setPersistentStoreForTesting(mTabPersistentStore);
 
-        when(mCurrentActivity.getPackageName())
-                .thenReturn(ContextUtils.getApplicationContext().getPackageName());
+        mCurrentActivity = Robolectric.buildActivity(TestChromeTabbedActivity.class).get();
+        mDestActivity = Robolectric.buildActivity(TestChromeTabbedActivity.class).get();
 
         MultiWindowTestUtils.setupTabModelSelectorFactory(mock(Profile.class), mock(Profile.class));
         TabWindowManagerSingleton.getInstance()
@@ -117,7 +133,7 @@ public class TabReparentingDelegateUnitTest {
         ReparentingTabsTask.setReparentingTabsTaskForTesting(mReparentingTabsTask);
         when(mReparentingTabsTask.begin(any(), any(), any(), any())).thenReturn(true);
         ReparentingTabGroupTask.setReparentingTabGroupTaskForTesting(mReparentingTabGroupTask);
-        doNothing().when(mReparentingTabGroupTask).begin(any(), any());
+        when(mReparentingTabGroupTask.begin(any(), any())).thenReturn(true);
 
         MultiWindowUtils.setActivityByWindowIdForTesting(SOURCE_WINDOW_ID, mCurrentActivity);
         when(mTab1.getContext()).thenReturn(mCurrentActivity);
@@ -138,12 +154,12 @@ public class TabReparentingDelegateUnitTest {
 
         // Act.
         mDelegate.reparentTabsToNewWindow(
-                mCurrentActivity,
                 tabs,
                 INVALID_WINDOW_ID,
                 openAdjacently,
                 /* finalizeCallback= */ null,
-                NewWindowAppSource.MENU);
+                NewWindowAppSource.MENU,
+                /* destGroupTabId= */ Tab.INVALID_TAB_ID);
 
         // Verify that the reparenting task is initiated.
         var intentCaptor = ArgumentCaptor.forClass(Intent.class);
@@ -165,6 +181,10 @@ public class TabReparentingDelegateUnitTest {
                         .getValue()
                         .getIntExtra(IntentHandler.EXTRA_WINDOW_ID, INVALID_WINDOW_ID));
         assertEquals(
+                "EXTRA_DEST_TAB_ID should not be set when invalid.",
+                Tab.INVALID_TAB_ID,
+                IntentHandler.getDestTabId(intentCaptor.getValue()));
+        assertEquals(
                 "New window source extra is incorrect.",
                 NewWindowAppSource.MENU,
                 intentCaptor
@@ -172,6 +192,86 @@ public class TabReparentingDelegateUnitTest {
                         .getIntExtra(
                                 IntentHandler.EXTRA_NEW_WINDOW_APP_SOURCE,
                                 NewWindowAppSource.UNKNOWN));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.CROSS_WINDOW_TAB_GROUP_OPERATIONS)
+    public void testReparentTabsToNewWindow_withDestGroupTabId() {
+        // Setup.
+        List<Tab> tabs = List.of(mTab1, mTab2);
+        boolean openAdjacently = true;
+        int destGroupTabId = 42;
+
+        // Act.
+        mDelegate.reparentTabsToNewWindow(
+                tabs,
+                DEST_WINDOW_ID,
+                openAdjacently,
+                /* finalizeCallback= */ null,
+                NewWindowAppSource.TAB_REPARENTING_TO_INSTANCE_WITH_NO_ACTIVITY,
+                destGroupTabId);
+
+        // Verify.
+        var intentCaptor = ArgumentCaptor.forClass(Intent.class);
+        verify(mReparentingTabsTask)
+                .begin(eq(mCurrentActivity), intentCaptor.capture(), eq(null), eq(null));
+
+        assertEquals(
+                "FLAG_ACTIVITY_LAUNCH_ADJACENT is not set as expected.",
+                openAdjacently,
+                (intentCaptor.getValue().getFlags() & Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT) != 0);
+        assertFalse(
+                "EXTRA_PREFER_NEW is not set as expected.",
+                intentCaptor.getValue().getBooleanExtra(IntentHandler.EXTRA_PREFER_NEW, false));
+        assertEquals(
+                "EXTRA_WINDOW_ID is not set as expected.",
+                DEST_WINDOW_ID,
+                intentCaptor
+                        .getValue()
+                        .getIntExtra(IntentHandler.EXTRA_WINDOW_ID, INVALID_WINDOW_ID));
+        assertEquals(
+                "EXTRA_DEST_TAB_ID is not set as expected.",
+                destGroupTabId,
+                IntentHandler.getDestTabId(intentCaptor.getValue()));
+        assertEquals(
+                "New window source extra is incorrect.",
+                NewWindowAppSource.TAB_REPARENTING_TO_INSTANCE_WITH_NO_ACTIVITY,
+                intentCaptor
+                        .getValue()
+                        .getIntExtra(
+                                IntentHandler.EXTRA_NEW_WINDOW_APP_SOURCE,
+                                NewWindowAppSource.UNKNOWN));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.CROSS_WINDOW_TAB_GROUP_OPERATIONS)
+    public void testReparentTabsToNewWindow_withDestGroupTabId_flagDisabled_doesNotSetExtra() {
+        // Setup.
+        List<Tab> tabs = List.of(mTab1, mTab2);
+        boolean openAdjacently = true;
+        int destGroupTabId = 42;
+
+        // Act.
+        mDelegate.reparentTabsToNewWindow(
+                tabs,
+                DEST_WINDOW_ID,
+                openAdjacently,
+                /* finalizeCallback= */ null,
+                NewWindowAppSource.TAB_REPARENTING_TO_INSTANCE_WITH_NO_ACTIVITY,
+                destGroupTabId);
+
+        // Verify.
+        var intentCaptor = ArgumentCaptor.forClass(Intent.class);
+        verify(mReparentingTabsTask)
+                .begin(eq(mCurrentActivity), intentCaptor.capture(), eq(null), eq(null));
+
+        assertFalse(
+                "EXTRA_DEST_TAB_ID should not be set when flag is disabled.",
+                intentCaptor.getValue().hasExtra(IntentHandler.EXTRA_DEST_TAB_ID));
+        assertEquals(
+                "EXTRA_DEST_TAB_ID should be INVALID_TAB_ID when flag is disabled.",
+                Tab.INVALID_TAB_ID,
+                IntentHandler.getDestTabId(intentCaptor.getValue()));
     }
 
     @Test
@@ -248,6 +348,7 @@ public class TabReparentingDelegateUnitTest {
         // Verify.
         assertFalse(result);
         verify(mReparentingTabsTask).begin(eq(mCurrentActivity), any(), eq(null), eq(null));
+        verify(mTab1).destroy();
     }
 
     @Test
@@ -259,7 +360,7 @@ public class TabReparentingDelegateUnitTest {
                 /* destGroupTabId= */ Tab.INVALID_TAB_ID,
                 /* bringToFront= */ true);
 
-        verify(mDestActivity, never()).onNewIntent(any());
+        assertTrue(mDestActivity.mNewIntents.isEmpty());
         verify(mReparentingTabsTask, never()).setupIntent(any(), any());
     }
 
@@ -273,21 +374,20 @@ public class TabReparentingDelegateUnitTest {
                 mDestActivity,
                 tabs,
                 /* destTabIndex= */ 2,
-                /* destGroupTabId= */ TabList.INVALID_TAB_INDEX,
+                /* destGroupTabId= */ Tab.INVALID_TAB_ID,
                 /* bringToFront= */ true);
 
         // Verify that the reparenting task is initiated.
         var setupIntentCaptor = ArgumentCaptor.forClass(Intent.class);
-        var onNewIntentCaptor = ArgumentCaptor.forClass(Intent.class);
         verify(mReparentingTabsTask).setupIntent(setupIntentCaptor.capture(), eq(null));
-        verify(mDestActivity).onNewIntent(onNewIntentCaptor.capture());
+        assertEquals(1, mDestActivity.mNewIntents.size());
 
         // Verify the intent used in the reparenting task.
         assertEquals(
                 "Intents passed to setup reparenting task and sent to the activity should be the"
                         + " same.",
                 setupIntentCaptor.getValue(),
-                onNewIntentCaptor.getValue());
+                mDestActivity.mNewIntents.get(0));
         assertTrue(
                 "EXTRA_TAB_INDEX is not set.",
                 setupIntentCaptor.getValue().hasExtra(IntentHandler.EXTRA_TAB_INDEX));
@@ -308,16 +408,15 @@ public class TabReparentingDelegateUnitTest {
 
         // Verify that the reparenting task is initiated.
         var setupIntentCaptor = ArgumentCaptor.forClass(Intent.class);
-        var onNewIntentCaptor = ArgumentCaptor.forClass(Intent.class);
         verify(mReparentingTabsTask).setupIntent(setupIntentCaptor.capture(), eq(null));
-        verify(mDestActivity).onNewIntent(onNewIntentCaptor.capture());
+        assertEquals(1, mDestActivity.mNewIntents.size());
 
         // Verify the intent used in the reparenting task.
         assertEquals(
                 "Intents passed to setup reparenting task and sent to the activity should be the"
                         + " same.",
                 setupIntentCaptor.getValue(),
-                onNewIntentCaptor.getValue());
+                mDestActivity.mNewIntents.get(0));
         assertTrue(
                 "EXTRA_DEST_TAB_ID is not set.",
                 setupIntentCaptor.getValue().hasExtra(IntentHandler.EXTRA_DEST_TAB_ID));
@@ -339,7 +438,7 @@ public class TabReparentingDelegateUnitTest {
 
     @Test
     public void testReparentTabsToExistingWindow_targetActivityFinishingOrDestroyed() {
-        when(mDestActivity.isActivityFinishingOrDestroyed()).thenReturn(true);
+        mDestActivity.finish();
         List<Tab> tabs = List.of(mTab1, mTab2);
 
         mDelegate.reparentTabsToExistingWindow(
@@ -349,26 +448,26 @@ public class TabReparentingDelegateUnitTest {
                 /* destGroupTabId= */ Tab.INVALID_TAB_ID,
                 /* bringToFront= */ true);
 
-        verify(mDestActivity, never()).onNewIntent(any());
+        assertTrue(mDestActivity.mNewIntents.isEmpty());
         verify(mReparentingTabsTask, never()).setupIntent(any(), any());
     }
 
     @Test
     public void testReparentTabGroupToExistingWindow_targetActivityFinishingOrDestroyed() {
-        when(mDestActivity.isActivityFinishingOrDestroyed()).thenReturn(true);
-        TabGroupMetadata tabGroupMetadata = getTestTabGroupMetadata(/* isGroupShared= */ false);
+        mDestActivity.finish();
+        TabGroupMetadata tabGroupMetadata = getTestTabGroupMetadata();
 
         mDelegate.reparentTabGroupToExistingWindow(
                 mDestActivity, tabGroupMetadata, /* destTabIndex= */ 3, /* bringToFront= */ true);
 
-        verify(mDestActivity, never()).onNewIntent(any());
+        assertTrue(mDestActivity.mNewIntents.isEmpty());
         verify(mReparentingTabGroupTask, never()).setupIntent(any(), any());
         verify(mTabPersistentStore, never()).pauseSaveTabList();
     }
 
     @Test
     public void testReparentTabGroupToExistingWindow_targetActivityDestroyedDuringAsyncSave() {
-        TabGroupMetadata tabGroupMetadata = getTestTabGroupMetadata(/* isGroupShared= */ true);
+        TabGroupMetadata tabGroupMetadata = getTestTabGroupMetadata();
 
         mDelegate.reparentTabGroupToExistingWindow(
                 mDestActivity, tabGroupMetadata, /* destTabIndex= */ 3, /* bringToFront= */ true);
@@ -377,11 +476,11 @@ public class TabReparentingDelegateUnitTest {
         verify(mTabPersistentStore).resumeSaveTabList(mOnSaveTabListRunnableCaptor.capture());
 
         // Target activity is destroyed before resumeSaveTabList callback executes.
-        when(mDestActivity.isActivityFinishingOrDestroyed()).thenReturn(true);
+        mDestActivity.finish();
         mOnSaveTabListRunnableCaptor.getValue().run();
 
         // onNewIntent is NOT called, but sync service observation is resumed.
-        verify(mDestActivity, never()).onNewIntent(any());
+        assertTrue(mDestActivity.mNewIntents.isEmpty());
         verify(mTabGroupSyncService).setLocalObservationMode(/* observeLocalChanges= */ true);
     }
 
@@ -397,25 +496,17 @@ public class TabReparentingDelegateUnitTest {
 
     @Test
     public void testReparentTabGroupToExistingWindow() {
-        doTestReparentTabGroupToExistingWindow(
-                /* isGroupShared= */ false, /* pauseResumeTabGroupSyncService= */ true);
-    }
-
-    @Test
-    public void testReparentTabGroupToExistingWindow_sharedTabGroup() {
-        doTestReparentTabGroupToExistingWindow(
-                /* isGroupShared= */ true, /* pauseResumeTabGroupSyncService= */ true);
+        doTestReparentTabGroupToExistingWindow(/* pauseResumeTabGroupSyncService= */ true);
     }
 
     @Test
     public void testReparentTabGroupToExistingWindow_noSourceTabPersistentStore() {
-        doTestReparentTabGroupToExistingWindow(
-                /* isGroupShared= */ false, /* pauseResumeTabGroupSyncService= */ false);
+        doTestReparentTabGroupToExistingWindow(/* pauseResumeTabGroupSyncService= */ false);
     }
 
     private void doTestReparentTabGroupToNewWindow(boolean pauseResumeTabGroupSyncService) {
         // Setup.
-        TabGroupMetadata tabGroupMetadata = getTestTabGroupMetadata(/* isGroupShared= */ false);
+        TabGroupMetadata tabGroupMetadata = getTestTabGroupMetadata();
         boolean openAdjacently = true;
         if (!pauseResumeTabGroupSyncService) {
             MultiWindowUtils.setActivityByWindowIdForTesting(
@@ -488,10 +579,9 @@ public class TabReparentingDelegateUnitTest {
         }
     }
 
-    private void doTestReparentTabGroupToExistingWindow(
-            boolean isGroupShared, boolean pauseResumeTabGroupSyncService) {
+    private void doTestReparentTabGroupToExistingWindow(boolean pauseResumeTabGroupSyncService) {
         // Setup.
-        TabGroupMetadata tabGroupMetadata = getTestTabGroupMetadata(isGroupShared);
+        TabGroupMetadata tabGroupMetadata = getTestTabGroupMetadata();
         if (!pauseResumeTabGroupSyncService) {
             MultiWindowUtils.setActivityByWindowIdForTesting(
                     SOURCE_WINDOW_ID, /* activity= */ null);
@@ -511,20 +601,19 @@ public class TabReparentingDelegateUnitTest {
         }
 
         var setupIntentCaptor = ArgumentCaptor.forClass(Intent.class);
-        var onNewIntentCaptor = ArgumentCaptor.forClass(Intent.class);
         verify(mReparentingTabGroupTask).setupIntent(setupIntentCaptor.capture(), eq(null));
         if (pauseResumeTabGroupSyncService) {
             // Verify that we only send the reparent intent after the Runnable runs.
-            verify(mDestActivity, never()).onNewIntent(any());
+            assertTrue(mDestActivity.mNewIntents.isEmpty());
             mOnSaveTabListRunnableCaptor.getValue().run();
         }
-        verify(mDestActivity).onNewIntent(onNewIntentCaptor.capture());
+        assertEquals(1, mDestActivity.mNewIntents.size());
 
         assertEquals(
                 "Intents passed to setup reparenting task and sent to the activity should be the"
                         + " same.",
                 setupIntentCaptor.getValue(),
-                onNewIntentCaptor.getValue());
+                mDestActivity.mNewIntents.get(0));
         assertTrue(
                 "FLAG_ACTIVITY_LAUNCH_ADJACENT is not set.",
                 (setupIntentCaptor.getValue().getFlags() & Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT)
@@ -542,7 +631,7 @@ public class TabReparentingDelegateUnitTest {
         }
     }
 
-    private static TabGroupMetadata getTestTabGroupMetadata(boolean isGroupShared) {
+    private static TabGroupMetadata getTestTabGroupMetadata() {
         ArrayList<Entry<Integer, String>> tabIdsToUrls =
                 new ArrayList<>(
                         List.of(
@@ -558,7 +647,6 @@ public class TabReparentingDelegateUnitTest {
                 /* tabGroupTitle= */ null,
                 /* mhtmlTabTitle= */ null,
                 /* tabGroupCollapsed= */ false,
-                isGroupShared,
                 /* isIncognito= */ false);
     }
 }

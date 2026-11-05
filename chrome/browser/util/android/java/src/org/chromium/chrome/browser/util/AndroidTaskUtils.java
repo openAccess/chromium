@@ -7,18 +7,31 @@ package org.chromium.chrome.browser.util;
 import android.app.ActivityManager;
 import android.app.ActivityManager.AppTask;
 import android.app.ActivityManager.RecentTaskInfo;
+import android.app.TaskLocation;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.graphics.Rect;
 import android.net.Uri;
+import android.os.Build;
+import android.os.OutcomeReceiver;
+import android.os.Process;
 import android.text.TextUtils;
 import android.util.Pair;
+import android.view.Display;
 
+import androidx.annotation.ChecksSdkIntAtLeast;
+import androidx.annotation.VisibleForTesting;
+
+import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.PackageManagerUtils;
+import org.chromium.base.Promise;
 import org.chromium.base.ResettersForTesting;
+import org.chromium.base.task.PostTask;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
@@ -39,8 +52,46 @@ public class AndroidTaskUtils {
     // that won't cause Chrome to blow up in degenerate cases.
     private static final int MAX_NUM_TASKS = 100;
 
-    @Nullable private static AppTask sAppTaskForTesting;
-    @Nullable private static Map<AppTask, RecentTaskInfo> sTaskInfosForTesting;
+    /** Delegate interface for testing {@link #moveTaskTo} and {@link #moveTaskToWithPromise}. */
+    @VisibleForTesting
+    public interface MoveTaskDelegate {
+        default void moveTaskTo(AppTask at, int displayId, Rect bounds) {
+            moveTaskToWithPromise(at, displayId, bounds);
+        }
+
+        default Promise<Pair<Integer, Rect>> moveTaskToWithPromise(
+                AppTask at, int displayId, Rect bounds) {
+            return Promise.fulfilled(Pair.create(Display.INVALID_DISPLAY, new Rect()));
+        }
+    }
+
+    private static @Nullable AppTask sAppTaskForTesting;
+    private static @Nullable Map<AppTask, RecentTaskInfo> sTaskInfosForTesting;
+    private static @Nullable MoveTaskDelegate sMoveTaskDelegateForTesting;
+    private static @Nullable Boolean sCanRepositionSelfWindowsForTesting;
+
+    /**
+     * Checks whether Chrome holds the permission required to reposition/resize windows. On API 37+
+     * (Cinnamon Bun), this permission is granted to the default browser role holder.
+     */
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.CINNAMON_BUN)
+    public static boolean canRepositionSelfWindows() {
+        if (sCanRepositionSelfWindowsForTesting != null) {
+            return sCanRepositionSelfWindowsForTesting;
+        }
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN
+                && ApiCompatibilityUtils.checkPermission(
+                                ContextUtils.getApplicationContext(),
+                                android.Manifest.permission.REPOSITION_SELF_WINDOWS,
+                                Process.myPid(),
+                                Process.myUid())
+                        == PackageManager.PERMISSION_GRANTED;
+    }
+
+    public static void setCanRepositionSelfWindowsForTesting(@Nullable Boolean canReposition) {
+        sCanRepositionSelfWindowsForTesting = canReposition;
+        ResettersForTesting.register(() -> sCanRepositionSelfWindowsForTesting = null);
+    }
 
     /**
      * Finishes tasks other than the one with the given ID that were started with the given data in
@@ -124,15 +175,64 @@ public class AndroidTaskUtils {
     }
 
     /**
-     * Given an AppTask retrieves the task component name.
-     * @param task The app task to use.
-     * @return Fully qualified component name name or null if we were not able to
-     * determine it.
+     * Get all recent tasks with component name matching any of the given names.
+     *
+     * @param context the Android Context
+     * @param componentsAccepted the set of names accepted
+     * @return all matching recent {@link AppTask} and their respective {@link RecentTaskInfo}
      */
-    public static @Nullable String getTaskComponentName(AppTask task) {
-        RecentTaskInfo info = getTaskInfoFromTask(task);
-        if (info == null) return null;
+    public static Set<Pair<AppTask, RecentTaskInfo>> getRecentAppTasksMatchingComponentNames(
+            Context context, Set<String> componentsAccepted) {
+        return getRecentAppTasksMatchingComponentNames(
+                context, componentsAccepted, /* matchTopAndBaseActivities= */ false);
+    }
 
+    /**
+     * Get all recent tasks with component name matching any of the given names.
+     *
+     * @param context the Android Context
+     * @param componentsAccepted the set of names accepted
+     * @param matchTopAndBaseActivities whether to also match top and base activity class names
+     * @return all matching recent {@link AppTask} and their respective {@link RecentTaskInfo}
+     */
+    public static Set<Pair<AppTask, RecentTaskInfo>> getRecentAppTasksMatchingComponentNames(
+            Context context, Set<String> componentsAccepted, boolean matchTopAndBaseActivities) {
+        HashSet<Pair<AppTask, RecentTaskInfo>> matchingTasks = new HashSet<>();
+
+        ActivityManager manager =
+                (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+
+        for (AppTask task : manager.getAppTasks()) {
+            RecentTaskInfo info = getTaskInfoFromTask(task);
+            if (info == null) continue;
+            String componentName = getTaskComponentName(info);
+
+            boolean matches = componentName != null && componentsAccepted.contains(componentName);
+            if (matchTopAndBaseActivities) {
+                matches =
+                        matches
+                                || (info.topActivity != null
+                                        && componentsAccepted.contains(
+                                                info.topActivity.getClassName()))
+                                || (info.baseActivity != null
+                                        && componentsAccepted.contains(
+                                                info.baseActivity.getClassName()));
+            }
+
+            if (matches) {
+                matchingTasks.add(Pair.create(task, info));
+            }
+        }
+        return matchingTasks;
+    }
+
+    /**
+     * Given a RecentTaskInfo retrieves the task component name.
+     *
+     * @param info The RecentTaskInfo to use.
+     * @return Fully qualified component name or null if we were not able to determine it.
+     */
+    private static @Nullable String getTaskComponentName(RecentTaskInfo info) {
         Intent baseIntent = info.baseIntent;
         if (baseIntent == null) {
             return null;
@@ -143,31 +243,6 @@ public class AndroidTaskUtils {
             if (resolveInfo == null) return null;
             return resolveInfo.activityInfo.name;
         }
-    }
-
-    /**
-     * Get all recent tasks with component name matching any of the given names.
-     * @param context the Android Context
-     * @param componentsAccepted the set of names accepted
-     * @return all matching recent {@link AppTask} and their respective {@link RecentTaskInfo}
-     */
-    public static Set<Pair<AppTask, RecentTaskInfo>> getRecentAppTasksMatchingComponentNames(
-            Context context, Set<String> componentsAccepted) {
-        HashSet<Pair<AppTask, RecentTaskInfo>> matchingTasks = new HashSet<>();
-
-        ActivityManager manager =
-                (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
-
-        for (AppTask task : manager.getAppTasks()) {
-            RecentTaskInfo info = AndroidTaskUtils.getTaskInfoFromTask(task);
-            if (info == null) continue;
-            String componentName = AndroidTaskUtils.getTaskComponentName(task);
-
-            if (componentsAccepted.contains(componentName)) {
-                matchingTasks.add(Pair.create(task, info));
-            }
-        }
-        return matchingTasks;
     }
 
     /**
@@ -240,5 +315,80 @@ public class AndroidTaskUtils {
     public static void setAppTaskForTesting(@Nullable AppTask task) {
         sAppTaskForTesting = task;
         ResettersForTesting.register(() -> sAppTaskForTesting = null);
+    }
+
+    public static void setMoveTaskDelegateForTesting(@Nullable MoveTaskDelegate delegate) {
+        sMoveTaskDelegateForTesting = delegate;
+        ResettersForTesting.register(() -> sMoveTaskDelegateForTesting = null);
+    }
+
+    /**
+     * Calls the {@link android.app.ActivityManager.AppTask#moveTaskTo} method if supported,
+     * otherwise no-op.
+     *
+     * @param at {@link android.app.ActivityManager.AppTask} on which the method should be called.
+     * @param displayId identifier of the target display.
+     * @param bounds pixel-based target coordinates relative to the top-left corner of the target
+     *     display.
+     */
+    public static void moveTaskTo(AppTask at, int displayId, Rect bounds) {
+        if (sMoveTaskDelegateForTesting != null) {
+            sMoveTaskDelegateForTesting.moveTaskTo(at, displayId, bounds);
+            return;
+        }
+        moveTaskToWithPromise(at, displayId, bounds);
+    }
+
+    /**
+     * Calls the {@link android.app.ActivityManager.AppTask#moveTaskTo} method if supported,
+     * otherwise no-op. Trigger callback when this succeeds or fails.
+     *
+     * @param at {@link android.app.ActivityManager.AppTask} on which the method should be called.
+     * @param displayId identifier of the target display.
+     * @param bounds pixel-based target coordinates relative to the top-left corner of the target
+     *     display.
+     * @return A promise fulfilled with a pair of the actual target display id and actual updated
+     *     bounds.
+     */
+    public static Promise<Pair<Integer, Rect>> moveTaskToWithPromise(
+            AppTask at, int displayId, Rect bounds) {
+        if (sMoveTaskDelegateForTesting != null) {
+            return sMoveTaskDelegateForTesting.moveTaskToWithPromise(at, displayId, bounds);
+        }
+        final Promise<Pair<Integer, Rect>> result = new Promise<>();
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.CINNAMON_BUN) {
+            return result;
+        }
+        final OutcomeReceiver<TaskLocation, Exception> listener =
+                new OutcomeReceiver<>() {
+                    @Override
+                    public void onError(Exception e) {
+                        Log.w(TAG, e);
+                        result.reject(e);
+                    }
+
+                    @Override
+                    public void onResult(TaskLocation tl) {
+                        Log.d(
+                                TAG,
+                                "moveTaskTo call returned new task location {displayId: "
+                                        + tl.getDisplayId()
+                                        + ", bounds: "
+                                        + tl.getBounds()
+                                        + "}");
+                        result.fulfill(Pair.create(tl.getDisplayId(), tl.getBounds()));
+                    }
+                };
+        try {
+            // Use a UI thread executor so that the Promise is fulfilled on the thread that
+            // created it.
+            at.moveTaskTo(
+                    new TaskLocation(displayId, bounds),
+                    PostTask.getUiUserVisibleExecutor(),
+                    listener);
+        } catch (Exception e) {
+            Log.w(TAG, e);
+        }
+        return result;
     }
 }

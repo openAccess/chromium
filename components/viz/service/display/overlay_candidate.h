@@ -186,7 +186,7 @@ class VIZ_SERVICE_EXPORT OverlayCandidate {
   // 1. Current page is in full screen mode which is decided by
   // AggregatedFrame::page_fullscreen_mode.
   // 2. IsPossibleFullScreenLetterboxing helper from
-  // DCLayerOverlayProcessor returns true, which basically means the draw
+  // full_screen_video_util.h returns true, which basically means the draw
   // quad beneath the overlay quad touches two sides of the screen while
   // starting at display origin (0, 0). Then before swap chain presentation and
   // with possible_video_fullscreen_letterboxing be true, some necessary
@@ -208,6 +208,11 @@ class VIZ_SERVICE_EXPORT OverlayCandidate {
   // |display_rect| before |clip_rect| was applied. Valid only for surface
   // control.
   gfx::RectF unclipped_display_rect = gfx::RectF(0.f, 0.f, 1.f, 1.f);
+  // The `desiredRatio` to pass to
+  // ASurfaceTransaction_setExtendedRangeBrightness for this candidate, which is
+  // the HDR headroom that the system compositor should provide. A value of 1
+  // indicates that no HDR headroom is requested.
+  float desired_brightness_ratio = 1.f;
 #endif
 
   // Stacking order of the overlay plane relative to the main surface,
@@ -258,7 +263,7 @@ class VIZ_SERVICE_EXPORT OverlayCandidate {
   TrackingId tracking_id = kDefaultTrackingId;
 
 #if BUILDFLAG(IS_WIN)
-  // Used to identify overlays that originate from the same cc layer.
+  // If set, must be unique within a frame.
   gfx::OverlayLayerId layer_id;
 #endif
 

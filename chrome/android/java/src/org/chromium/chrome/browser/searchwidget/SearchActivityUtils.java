@@ -21,6 +21,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxLoadUrlParams;
 import org.chromium.chrome.browser.tab.TabLaunchType;
@@ -32,6 +33,7 @@ import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.IntentOrigin;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.ResolutionType;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.SearchType;
+import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.components.url_formatter.UrlFormatter;
 import org.chromium.url.GURL;
 
@@ -144,6 +146,31 @@ public class SearchActivityUtils {
     }
 
     /**
+     * Returns the request type the Omnibox should begin in. Honored only when the intent is trusted
+     * and One Step AIM Access is enabled; otherwise SEARCH.
+     */
+    /* package */ static @AutocompleteRequestType int getIntentRequestType(Intent intent) {
+        if (ChromeFeatureList.sOneStepAimAccess.isEnabled()
+                && IntentUtils.isTrustedIntentFromSelf(intent)) {
+            return IntentUtils.safeGetIntExtra(
+                    intent,
+                    SearchActivityExtras.EXTRA_REQUEST_TYPE,
+                    AutocompleteRequestType.SEARCH);
+        }
+
+        return AutocompleteRequestType.SEARCH;
+    }
+
+    /** Builds the {@link SearchActivitySession} describing the search requested by the intent. */
+    /* package */ static SearchActivitySession getIntentSession(Intent intent) {
+        return new SearchActivitySession(
+                getIntentOrigin(intent),
+                getIntentSearchType(intent),
+                getIntentRequestType(intent),
+                getIntentQuery(intent));
+    }
+
+    /**
      * Resolve the {@link requestOmniboxForResult}.
      *
      * @param activity the activity resolving the request
@@ -234,13 +261,16 @@ public class SearchActivityUtils {
     }
 
     /**
-     * Brings the specified tab to the front. If the tab is in the current window and same model,
-     * switches to it directly. Otherwise, launches an intent to bring it to the front.
+     * Brings the specified tab to the front with the given selection type. If the tab is in the
+     * current model of the current activity, it switches to the tab directly. Otherwise, it
+     * launches an intent to activate the tab in its respective window/activity.
      *
      * @param activity The current activity.
      * @param tabModelSelector The TabModelSelector for the current activity.
      * @param tabWindowInfo Information about the tab and its window.
      * @param url The URL of the tab.
+     * @param selectionType The {@link TabSelectionType} to use when selecting the tab in the
+     *     current model.
      * @param onTabSwitched A callback to run after switching to the tab or launching the intent.
      */
     public static void bringTabToFront(
@@ -248,6 +278,7 @@ public class SearchActivityUtils {
             @Nullable TabModelSelector tabModelSelector,
             TabWindowInfo tabWindowInfo,
             GURL url,
+            @TabSelectionType int selectionType,
             @Nullable Runnable onTabSwitched) {
         if (tabModelSelector == null) return;
         TabModel tabModel = tabWindowInfo.tabModel;
@@ -256,7 +287,7 @@ public class SearchActivityUtils {
         if (tabModelSelector.getCurrentModel() == tabModel) {
             int tabIndex = tabModel.indexOf(tabWindowInfo.tab);
             if (tabIndex == TabModel.INVALID_TAB_INDEX) return;
-            tabModel.setIndex(tabIndex, TabSelectionType.FROM_OMNIBOX);
+            tabModel.setIndex(tabIndex, selectionType);
             if (onTabSwitched != null) {
                 onTabSwitched.run();
             }

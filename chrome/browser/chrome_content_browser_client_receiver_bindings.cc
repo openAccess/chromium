@@ -4,6 +4,7 @@
 
 // This file exposes services from the browser to child processes.
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/single_thread_task_runner.h"
@@ -14,6 +15,7 @@
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/chrome_content_browser_client_parts.h"
 #include "chrome/browser/content_settings/content_settings_manager_delegate.h"
+#include "chrome/browser/facilitated_payments/facilitated_payments_driver_binder.h"
 #include "chrome/browser/headless/headless_mode_util.h"
 #include "chrome/browser/net/net_error_tab_helper.h"
 #include "chrome/browser/net_benchmarking.h"
@@ -23,31 +25,37 @@
 #include "chrome/browser/safe_browsing/extension_telemetry/extension_web_request_reporter_impl.h"
 #include "chrome/browser/signin/google_accounts_private_api_host.h"
 #include "chrome/browser/supervised_user/supervised_user_navigation_observer.h"
+#include "chrome/browser/sync_tab_context/tab_context_decryption_token_tab_helper.h"
 #include "chrome/browser/trusted_vault/trusted_vault_encryption_keys_tab_helper.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/request_header_integrity/buildflags.h"
 #include "components/autofill/content/browser/content_autofill_driver_factory.h"
 #include "components/content_capture/browser/onscreen_content_provider.h"
+#include "components/facilitated_payments/core/features/features.h"
+#include "components/facilitated_payments/core/mojom/facilitated_payments_agent.mojom.h"
 #include "components/metrics/call_stacks/call_stack_profile_collector.h"
 #include "components/offline_pages/buildflags/buildflags.h"
 #include "components/page_load_metrics/browser/metrics_web_contents_observer.h"
 #include "components/password_manager/content/browser/content_password_manager_driver_factory.h"
+#include "components/password_manager/core/common/remote_actor/remote_actor_features.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/content/browser/mojo_safe_browsing_impl.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/security_interstitials/content/security_interstitial_tab_helper.h"
 #include "components/spellcheck/spellcheck_buildflags.h"
 #include "components/subresource_filter/content/browser/content_subresource_filter_throttle_manager.h"
 #include "components/surface_embed/browser/surface_embed_host.h"
 #include "components/surface_embed/common/features.h"
+#include "components/sync/base/features.h"
 #include "content/public/browser/browser_child_process_host.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/service_worker_version_base_info.h"
 #include "content/public/common/buildflags.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
 #include "media/mojo/buildflags.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
@@ -55,6 +63,7 @@
 #include "printing/buildflags/buildflags.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 #include "third_party/widevine/cdm/buildflags.h"
+#include "ui/webui/buildflags.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/plugins/plugin_observer_android.h"
@@ -101,10 +110,8 @@
 #include "chrome/browser/indigo/onboarding/indigo_onboarding_dialog.h"
 #include "chrome/browser/password_manager/remote_actor/remote_actor_credential_sharing_impl.h"
 #include "chrome/browser/record_replay/chrome_record_replay_client.h"
-#include "chrome/browser/ui/search/search_tab_helper.h"
 #include "chrome/browser/ui/webui_browser/webui_browser_ui.h"
 #include "chrome/common/indigo/indigo.mojom.h"
-#include "chrome/common/password_manager/remote_actor_credential_sharing_policy.h"
 #include "components/record_replay/core/common/record_replay.mojom.h"
 #endif
 
@@ -136,48 +143,13 @@
 #include "chrome/browser/offline_pages/offline_page_tab_helper.h"
 #endif
 
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+#include "chrome/browser/ui/search/search_tab_helper.h"
+#endif
+
 namespace {
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-// Helper method for ExposeInterfacesToRenderer() that checks the latest
-// SafeBrowsing pref value on the UI thread before hopping over to the IO
-// thread.
-void MaybeCreateSafeBrowsingForRenderer(
-    int process_id,
-    base::RepeatingCallback<scoped_refptr<safe_browsing::UrlCheckerDelegate>(
-        bool safe_browsing_enabled,
-        bool should_check_on_sb_disabled,
-        const std::vector<std::string>& allowlist_domains)>
-        get_checker_delegate,
-    mojo::PendingReceiver<safe_browsing::mojom::SafeBrowsing> receiver) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-
-  content::RenderProcessHost* render_process_host =
-      content::RenderProcessHost::FromID(process_id);
-  if (!render_process_host)
-    return;
-
-  PrefService* pref_service =
-      Profile::FromBrowserContext(render_process_host->GetBrowserContext())
-          ->GetPrefs();
-
-  std::vector<std::string> allowlist_domains =
-      safe_browsing::GetURLAllowlistByPolicy(pref_service);
-
-  bool safe_browsing_enabled =
-      safe_browsing::IsSafeBrowsingEnabled(*pref_service);
-
-  safe_browsing::MojoSafeBrowsingImpl::MaybeCreate(
-      process_id,
-      base::BindRepeating(get_checker_delegate, safe_browsing_enabled,
-                          // Navigation initiated from renderer should never
-                          // check when safe browsing is disabled, because
-                          // enterprise check only supports mainframe URL.
-                          /*should_check_on_sb_disabled=*/false,
-                          allowlist_domains),
-      std::move(receiver));
-}
-
 // TODO(crbug.com/486154580): Switch to ENABLE_EXTENSIONS_CORE when safe
 // browsing is better supported on desktop Android.
 #if BUILDFLAG(ENABLE_EXTENSIONS)
@@ -236,20 +208,18 @@ void ChromeContentBrowserClient::ExposeInterfacesToRenderer(
         base::BindRepeating(
             &NetBenchmarking::Create,
             loading_predictor ? loading_predictor->GetWeakPtr() : nullptr,
-            render_process_host->GetDeprecatedID()),
+            render_process_host->GetID()),
         ui_task_runner);
   }
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-  if (safe_browsing_service_) {
-    registry->AddInterface<safe_browsing::mojom::SafeBrowsing>(
-        base::BindRepeating(
-            &MaybeCreateSafeBrowsingForRenderer,
-            render_process_host->GetDeprecatedID(),
-            base::BindRepeating(
-                &ChromeContentBrowserClient::GetSafeBrowsingUrlCheckerDelegate,
-                base::Unretained(this))),
-        ui_task_runner);
+  // Profiles that disable keyed services by default aren't used for browsing
+  // the web, so there is nothing for Safe Browsing to do in them.
+  // SafeBrowsingService doesn't track these profiles either (see
+  // `SafeBrowsingServiceImpl::OnProfileAdded()`).
+  if (safe_browsing_service_ &&
+      !AreKeyedServicesDisabledForProfileByDefault(Profile::FromBrowserContext(
+          render_process_host->GetBrowserContext()))) {
 // TODO(crbug.com/486154580): Switch to ENABLE_EXTENSIONS_CORE when safe
 // browsing is better supported on desktop Android.
 #if BUILDFLAG(ENABLE_EXTENSIONS)
@@ -417,6 +387,13 @@ void ChromeContentBrowserClient::
       base::BindRepeating(
           &autofill::ContentAutofillDriverFactory::BindAutofillDriver,
           &render_frame_host));
+  if (base::FeatureList::IsEnabled(
+          payments::facilitated::kEnableDesktopQrCodeDetection)) {
+    associated_registry
+        .AddInterface<payments::facilitated::mojom::FacilitatedPaymentsDriver>(
+            base::BindRepeating(&BindFacilitatedPaymentsDriver,
+                                &render_frame_host));
+  }
 #if !BUILDFLAG(IS_ANDROID)
   if (base::FeatureList::IsEnabled(surface_embed::features::kSurfaceEmbed)) {
     associated_registry.AddInterface<surface_embed::mojom::SurfaceEmbedHost>(
@@ -454,7 +431,7 @@ void ChromeContentBrowserClient::
       },
       &render_frame_host));
 #if !BUILDFLAG(IS_ANDROID)
-  if (features::RemoteActorCredentialSharingEnabled()) {
+  if (password_manager::features::RemoteActorCredentialSharingEnabled()) {
     associated_registry.AddInterface<
         chrome::mojom::RemoteActorCredentialSharing>(base::BindRepeating(
         [](content::RenderFrameHost* render_frame_host,
@@ -535,6 +512,18 @@ void ChromeContentBrowserClient::
                                                     render_frame_host);
       },
       &render_frame_host));
+  if (base::FeatureList::IsEnabled(syncer::kSyncEncryptedTabContextContainer)) {
+    associated_registry.AddInterface<
+        chrome::mojom::TabContextDecryptionTokenExtension>(base::BindRepeating(
+        [](content::RenderFrameHost* render_frame_host,
+           mojo::PendingAssociatedReceiver<
+               chrome::mojom::TabContextDecryptionTokenExtension> receiver) {
+          TabContextDecryptionTokenTabHelper::
+              BindTabContextDecryptionTokenExtension(std::move(receiver),
+                                                     render_frame_host);
+        },
+        &render_frame_host));
+  }
   associated_registry.AddInterface<
       chrome::mojom::GoogleAccountsPrivateApiExtension>(base::BindRepeating(
       [](content::RenderFrameHost* render_frame_host,
@@ -596,7 +585,7 @@ void ChromeContentBrowserClient::
         &render_frame_host));
   }
 #endif  // BUILDFLAG(ENABLE_PDF)
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
   associated_registry.AddInterface<search::mojom::EmbeddedSearchConnector>(
       base::BindRepeating(
           [](content::RenderFrameHost* render_frame_host,
@@ -606,7 +595,7 @@ void ChromeContentBrowserClient::
                                                          render_frame_host);
           },
           &render_frame_host));
-#endif  //  !BUILDFLAG(IS_ANDROID)
+#endif
 #if BUILDFLAG(ENABLE_PRINTING)
   associated_registry.AddInterface<printing::mojom::PrintManagerHost>(
       base::BindRepeating(

@@ -20,14 +20,34 @@
 
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "iamf/cli/channel_label.h"
 #include "iamf/cli/labeled_frame.h"
+#include "iamf/common/utils/macros.h"
+#include "iamf/common/utils/validation_utils.h"
 #include "iamf/obu/types.h"
 
 namespace iamf_tools {
+
+/*!\brief Validates trimming for incoming labeled frame.
+ *
+ * This function also writes the common number of time ticks after trimming.
+ *
+ * \param labeled_frame Input labeled frame.
+ * \param ordered_labels Arrangement of the output channels.
+ * \param num_samples_per_frame Number of samples per frame.
+ * \param trimming_settings Settings to enable/disable trimming at start/end.
+ * \param num_valid_ticks Output number of valid time ticks after trimming.
+ * \return `absl::OkStatus()` on success. A specific status on failure.
+ */
+absl::Status ValidateTrimming(
+    const LabeledFrame& labeled_frame,
+    absl::Span<const ChannelLabel::Label> ordered_labels,
+    size_t num_samples_per_frame, TrimmingSettings trimming_settings,
+    size_t& num_valid_ticks);
 
 /*!\brief Arranges the input samples to render.
  *
@@ -49,6 +69,45 @@ absl::Status ArrangeSamples(
     TrimmingSettings trimming_settings,
     std::vector<absl::Span<const InternalSampleType>>& samples_to_render,
     size_t& num_valid_ticks);
+
+/*!\brief Validates that all given sample spans have equal length.
+ *
+ * \param samples Span of input channel containers.
+ * \return Common number of ticks across channels, or a specific status on
+ *         failure.
+ */
+template <typename T>
+absl::StatusOr<size_t> GetCommonNumTicks(absl::Span<const T> samples) {
+  const size_t expected_size = samples.empty() ? 0 : samples[0].size();
+  for (size_t i = 1; i < samples.size(); ++i) {
+    RETURN_IF_NOT_OK(ValidateContainerSizeEqual("Sample count across channels",
+                                                samples[i], expected_size));
+  }
+  return expected_size;
+}
+
+/*!\brief Validates that all given labels are present and have equal ticks.
+ *
+ * \param label_to_samples Input sample map.
+ * \param labels Required channel labels.
+ * \return Common number of ticks across channels on success, or a specific
+ *         status on failure.
+ */
+absl::StatusOr<size_t> CheckPresenceAndGetCommonNumTicks(
+    const LabelSamplesMap& label_to_samples,
+    absl::Span<const ChannelLabel::Label> labels);
+
+/*!\brief Validates that the rendered samples are valid (not empty, not jagged,
+ *         and does not exceed the expected frame size).
+ *
+ * \param rendered_samples The rendered samples to validate.
+ * \param expected_frame_size The expected frame size.
+ * \return `absl::OkStatus()` on success. `absl::InvalidArgumentError()` if
+ *         validation fails.
+ */
+absl::Status ValidateRenderedSamples(
+    absl::Span<const absl::Span<const InternalSampleType>> rendered_samples,
+    uint32_t expected_frame_size);
 
 /*!\brief Writes the input PCM sample to a buffer.
  *

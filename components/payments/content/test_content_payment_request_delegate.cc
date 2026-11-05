@@ -9,8 +9,8 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/task/single_thread_task_runner.h"
-#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/error_strings.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "content/public/browser/render_frame_host.h"
 
 namespace payments {
@@ -112,6 +112,7 @@ PrefService* TestContentPaymentRequestDelegate::GetPrefService() {
 
 void TestContentPaymentRequestDelegate::EmbedPaymentHandlerWindow(
     const GURL& url,
+    const std::optional<gfx::Size>& preferred_web_contents_size,
     PaymentHandlerOpenWindowCallback callback) {}
 
 bool TestContentPaymentRequestDelegate::IsInteractive() const {
@@ -126,14 +127,6 @@ TestContentPaymentRequestDelegate::GetInvalidSslCertificateErrorMessage() {
 autofill::TestAddressNormalizer*
 TestContentPaymentRequestDelegate::test_address_normalizer() {
   return core_delegate_.test_address_normalizer();
-}
-
-void TestContentPaymentRequestDelegate::DelayFullCardRequestCompletion() {
-  core_delegate_.DelayFullCardRequestCompletion();
-}
-
-void TestContentPaymentRequestDelegate::CompleteFullCardRequest() {
-  core_delegate_.CompleteFullCardRequest();
 }
 
 const base::WeakPtr<PaymentUIObserver>

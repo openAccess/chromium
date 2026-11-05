@@ -13,6 +13,8 @@
 #include "base/files/scoped_temp_file.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/current_thread.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
+#include "base/test/run_until.h"
 #include "base/test/test_file_util.h"
 #include "chrome/browser/ash/crostini/crostini_pref_names.h"
 #include "chrome/browser/ash/crostini/crostini_test_helper.h"
@@ -76,7 +78,7 @@ class CrostiniExportImportTest : public testing::Test {
   const message_center::Notification* GetUiNotification(
       const std::string& notification_id) {
     const user_manager::User& user =
-        CHECK_DEREF(user_manager_->GetActiveUser());
+        CHECK_DEREF(user_manager_->FindUser(account_id_));
     return message_center::MessageCenter::Get()->FindNotificationById(
         ash::CreateUserScopedNotificationId(notification_id,
                                             user.username_hash()));
@@ -97,7 +99,7 @@ class CrostiniExportImportTest : public testing::Test {
       return nullptr;
     }
     const user_manager::User& user =
-        CHECK_DEREF(user_manager_->GetActiveUser());
+        CHECK_DEREF(user_manager_->FindUser(account_id_));
     const std::string ui_notification_id = ash::CreateUserScopedNotificationId(
         controller_notification->id(), user.username_hash());
     const message_center::Notification* ui_notification =
@@ -207,15 +209,14 @@ class CrostiniExportImportTest : public testing::Test {
     user_manager_.Reset(std::make_unique<user_manager::UserManagerImpl>(
         std::make_unique<user_manager::FakeUserManagerDelegate>(),
         TestingBrowserProcess::GetGlobal()->GetTestingLocalState()));
-    const AccountId account_id =
-        AccountId::FromUserEmailGaiaId("test@test", GaiaId("12345"));
     ASSERT_TRUE(user_manager::TestHelper(user_manager_.Get())
-                    .AddRegularUser(account_id));
+                    .AddRegularUser(account_id_));
     user_manager_->UserLoggedIn(
-        account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id));
+        account_id_,
+        user_manager::TestHelper::GetFakeUsernameHash(account_id_));
 
     profile_ = std::make_unique<TestingProfile>();
-    ash::AnnotatedAccountId::Set(profile_.get(), account_id);
+    ash::AnnotatedAccountId::Set(profile_.get(), account_id_);
     message_center::MessageCenter::Initialize();
 
     crostini_export_import_ = std::make_unique<CrostiniExportImport>(profile());
@@ -256,6 +257,8 @@ class CrostiniExportImportTest : public testing::Test {
  protected:
   Profile* profile() { return profile_.get(); }
 
+  const AccountId account_id_ =
+      AccountId::FromUserEmailGaiaId("test@test", GaiaId("12345"));
   user_manager::ScopedUserManager user_manager_;
   std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<CrostiniExportImport> crostini_export_import_;
@@ -392,6 +395,49 @@ TEST_F(CrostiniExportImportTest, TestExportDiskImageFail) {
     std::string msg("Backup couldn't be completed due to an error");
     EXPECT_EQ(ui_notification->message(), base::UTF8ToUTF16(msg));
   }
+}
+
+TEST_F(CrostiniExportImportTest, TestExportDiskImageFailSpace) {
+  crostini_export_import_->FillOperationData(
+      ExportImportType::EXPORT_DISK_IMAGE);
+  base::ScopedTempFile zipfile;
+  EXPECT_TRUE(zipfile.Create());
+  crostini_export_import_->FileSelected(ui::SelectedFileInfo(zipfile.path()),
+                                        0);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return ash::FakeConciergeClient::Get()->export_disk_image_call_count() == 1;
+  }));
+  base::WeakPtr<CrostiniExportImportNotificationController> controller =
+      GetController(default_container_id_);
+  ASSERT_NE(controller, nullptr);
+  EXPECT_EQ(controller->status(),
+            CrostiniExportImportStatusTracker::Status::RUNNING);
+
+  std::string notification_id;
+  {
+    const message_center::Notification* notification =
+        GetNotification(default_container_id_);
+    ASSERT_NE(notification, nullptr);
+    notification_id = notification->id();
+    EXPECT_EQ(notification->progress(), 0);
+    EXPECT_TRUE(notification->pinned());
+  }
+
+  // Fails due to insufficient space.
+  SendDiskImageProgress(default_container_id_,
+                        vm_tools::concierge::DISK_STATUS_NOT_ENOUGH_SPACE, 0);
+  EXPECT_EQ(GetController(default_container_id_), nullptr);
+  EXPECT_EQ(controller, nullptr);
+  {
+    const message_center::Notification* ui_notification =
+        GetUiNotification(notification_id);
+    ASSERT_NE(ui_notification, nullptr);
+    EXPECT_FALSE(ui_notification->pinned());
+    std::string msg("Backup couldn't be completed due to an error");
+    EXPECT_EQ(ui_notification->message(), base::UTF8ToUTF16(msg));
+  }
+  base::ThreadPoolInstance::Get()->FlushForTesting();
+  EXPECT_FALSE(base::PathExists(zipfile.path()));
 }
 
 TEST_F(CrostiniExportImportTest, TestExportDiskImageCancelled) {
@@ -639,6 +685,50 @@ TEST_F(CrostiniExportImportTest, TestImportDiskImageFail) {
     std::string msg("Restoring couldn't be completed due to an error");
     EXPECT_EQ(ui_notification->message(), base::UTF8ToUTF16(msg));
   }
+}
+
+TEST_F(CrostiniExportImportTest, TestImportDiskImageFailSpace) {
+  SetImportResponse();
+  crostini_export_import_->FillOperationData(
+      ExportImportType::IMPORT_DISK_IMAGE);
+  base::ScopedTempFile zipfile;
+  EXPECT_TRUE(zipfile.Create());
+  crostini_export_import_->FileSelected(ui::SelectedFileInfo(zipfile.path()),
+                                        0);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return ash::FakeConciergeClient::Get()->import_disk_image_call_count() == 1;
+  }));
+  base::WeakPtr<CrostiniExportImportNotificationController> controller =
+      GetController(default_container_id_);
+  ASSERT_NE(controller, nullptr);
+  EXPECT_EQ(controller->status(),
+            CrostiniExportImportStatusTracker::Status::RUNNING);
+
+  std::string notification_id;
+  {
+    const message_center::Notification* notification =
+        GetNotification(default_container_id_);
+    ASSERT_NE(notification, nullptr);
+    notification_id = notification->id();
+    EXPECT_EQ(notification->progress(), 0);
+    EXPECT_TRUE(notification->pinned());
+  }
+
+  // Fails due to insufficient space.
+  SendDiskImageProgress(default_container_id_,
+                        vm_tools::concierge::DISK_STATUS_NOT_ENOUGH_SPACE, 0);
+  EXPECT_EQ(GetController(default_container_id_), nullptr);
+  EXPECT_EQ(controller, nullptr);
+  {
+    const message_center::Notification* ui_notification =
+        GetUiNotification(notification_id);
+    ASSERT_NE(ui_notification, nullptr);
+    EXPECT_FALSE(ui_notification->pinned());
+    std::string msg("Cannot restore due to lack of storage space.");
+    EXPECT_EQ(ui_notification->message(), base::UTF8ToUTF16(msg));
+  }
+  base::ThreadPoolInstance::Get()->FlushForTesting();
+  EXPECT_TRUE(base::PathExists(zipfile.path()));
 }
 
 TEST_F(CrostiniExportImportTest, TestImportDiskImageCancelled) {

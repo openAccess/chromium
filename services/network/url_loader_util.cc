@@ -17,6 +17,7 @@
 #include "net/base/upload_bytes_element_reader.h"
 #include "net/base/upload_data_stream.h"
 #include "net/base/upload_file_element_reader.h"
+#include "net/cookies/cookie_setting_override.h"
 #include "net/cookies/cookie_util.h"
 #include "net/device_bound_sessions/session_usage.h"
 #include "net/http/http_connection_info.h"
@@ -31,7 +32,6 @@
 #include "services/network/pervasive_resources/shared_resource_checker.h"
 #include "services/network/public/cpp/connection_allowlist.h"
 #include "services/network/public/cpp/connection_allowlist_parser.h"
-#include "services/network/public/cpp/cors/cors.h"
 #include "services/network/public/cpp/cors/origin_access_list.h"
 #include "services/network/public/cpp/data_element.h"
 #include "services/network/public/cpp/features.h"
@@ -54,9 +54,8 @@ namespace {
 
 // TODO(https://crbug.com/375352611): add the check for enabling third-party
 // cookies.
-constexpr uint64_t kAllowedDevToolsCookieSettingOverrides =
-    1u << static_cast<int>(
-        net::CookieSettingOverride::kForceDisableThirdPartyCookies);
+constexpr net::CookieSettingOverrides kAllowedDevToolsCookieSettingOverrides = {
+    net::CookieSettingOverride::kForceDisableThirdPartyCookies};
 
 const char* GetDestinationTypePartString(
     network::mojom::RequestDestination destination) {
@@ -76,15 +75,41 @@ const char* GetCertStatePartString(const net::SSLInfo& ssl_info) {
   return ssl_info.is_issued_by_known_root ? "KnownRootCert" : "UnknownRootCert";
 }
 
-// Returns true if the |credentials_mode| of the request allows sending
+// Returns true if the initiator is same-origin with `url`, if the request has
+// no initiator (e.g. browser navigation), if `disable_web_security` is enabled,
+// or if granted access via `origin_access_list`.
+bool IsSameOriginOrAccessAllowed(
+    const GURL& url,
+    const std::optional<url::Origin>& initiator,
+    const cors::OriginAccessList* origin_access_list,
+    bool disable_web_security) {
+  if (disable_web_security &&
+      base::FeatureList::IsEnabled(
+          features::kAllowSameOriginCredentialsWithDisableWebSecurity)) {
+    return true;
+  }
+  if (!initiator.has_value() || initiator->IsSameOriginWith(url)) {
+    return true;
+  }
+  return origin_access_list &&
+         origin_access_list->CheckAccessState(*initiator, url) ==
+             cors::OriginAccessList::AccessState::kAllowed;
+}
+
+// Returns true if the `credentials_mode` of the request allows sending
 // credentials.
-bool ShouldAllowCredentials(mojom::CredentialsMode credentials_mode) {
+bool ShouldAllowCredentials(mojom::CredentialsMode credentials_mode,
+                            const GURL& url,
+                            const std::optional<url::Origin>& initiator,
+                            const cors::OriginAccessList* origin_access_list,
+                            bool disable_web_security) {
   switch (credentials_mode) {
     case mojom::CredentialsMode::kInclude:
-    // TODO(crbug.com/40619226): Make this work with
-    // CredentialsMode::kSameOrigin.
-    case mojom::CredentialsMode::kSameOrigin:
       return true;
+
+    case mojom::CredentialsMode::kSameOrigin:
+      return IsSameOriginOrAccessAllowed(url, initiator, origin_access_list,
+                                         disable_web_security);
 
     case mojom::CredentialsMode::kOmit:
     case mojom::CredentialsMode::kOmitBug_775438_Workaround:
@@ -92,13 +117,24 @@ bool ShouldAllowCredentials(mojom::CredentialsMode credentials_mode) {
   }
 }
 
-// Returns true when the |credentials_mode| of the request allows sending client
+// Returns true when the `credentials_mode` of the request allows sending client
 // certificates.
-bool ShouldSendClientCertificates(mojom::CredentialsMode credentials_mode) {
+bool ShouldSendClientCertificates(
+    mojom::CredentialsMode credentials_mode,
+    const GURL& url,
+    const std::optional<url::Origin>& initiator,
+    const cors::OriginAccessList* origin_access_list,
+    bool disable_web_security) {
   switch (credentials_mode) {
     case mojom::CredentialsMode::kInclude:
-    case mojom::CredentialsMode::kSameOrigin:
       return true;
+
+    case mojom::CredentialsMode::kSameOrigin:
+      if (IsSameOriginOrAccessAllowed(url, initiator, origin_access_list,
+                                      disable_web_security)) {
+        return true;
+      }
+      return !base::FeatureList::IsEnabled(features::kOmitCorsClientCert);
 
     // TODO(crbug.com/40089326): Due to a bug, the default behavior does
     // not properly correspond to Fetch's "credentials mode", in that client
@@ -371,21 +407,13 @@ std::unique_ptr<net::UploadDataStream> CreateUploadDataStream(
 net::CookieSettingOverrides CalculateCookieSettingOverrides(
     net::CookieSettingOverrides factory_overrides,
     net::CookieSettingOverrides devtools_overrides,
-    const ResourceRequest& request,
-    bool emit_metrics) {
+    const ResourceRequest& request) {
   net::CookieSettingOverrides overrides(factory_overrides);
-  if (request.is_outermost_main_frame &&
-      network::cors::IsCorsEnabledRequestMode(request.mode)) {
-    overrides.Put(
-        net::CookieSettingOverride::kTopLevelStorageAccessGrantEligible);
-  }
 
   // Only apply the DevTools overrides if the request is from devtools enabled
   // context.
   if (request.devtools_request_id.has_value()) {
-    CHECK_EQ(devtools_overrides.ToEnumBitmask() &
-                 ~kAllowedDevToolsCookieSettingOverrides,
-             0u);
+    CHECK(kAllowedDevToolsCookieSettingOverrides.HasAll(devtools_overrides));
     overrides = base::Union(overrides, devtools_overrides);
   }
 
@@ -565,12 +593,12 @@ void ConfigureUrlRequest(const ResourceRequest& request,
   // `url_request.storage_access_status()`.
   url_request.cookie_setting_overrides() = CalculateCookieSettingOverrides(
       factory_params.cookie_setting_overrides,
-      factory_params.devtools_cookie_setting_overrides, request,
-      /*emit_metrics=*/true);
+      factory_params.devtools_cookie_setting_overrides, request);
   url_request.SetLoadFlags(request.load_flags);
-  SetRequestCredentials(request.url, factory_params.client_security_state,
-                        request.mode, request.credentials_mode,
-                        request.request_initiator, url_request);
+  SetRequestCredentials(
+      request.url, factory_params.client_security_state, request.mode,
+      request.credentials_mode, request.request_initiator, url_request,
+      &origin_access_list, factory_params.disable_web_security);
   if (request.credentials_mode == mojom::CredentialsMode::kInclude) {
     url_request.set_storage_access_status(
         url_request.CalculateStorageAccessStatus());
@@ -625,19 +653,27 @@ void SetRequestCredentials(
     mojom::RequestMode request_mode,
     mojom::CredentialsMode credentials_mode,
     const std::optional<url::Origin>& initiator,
-    net::URLRequest& url_request) {
+    net::URLRequest& url_request,
+    const cors::OriginAccessList* origin_access_list,
+    bool disable_web_security) {
   bool policies_allow_credentials = WebPoliciesAllowCredentials(
       url, client_security_state, request_mode, initiator);
 
   bool allow_credentials =
-      ShouldAllowCredentials(credentials_mode) && policies_allow_credentials;
-
-  bool allow_client_certificates =
-      ShouldSendClientCertificates(credentials_mode) &&
+      ShouldAllowCredentials(credentials_mode, url, initiator,
+                             origin_access_list, disable_web_security) &&
       policies_allow_credentials;
 
-  // The decision not to include credentials is sticky. This is equivalent to
-  // checking the tainted origin flag in the fetch specification.
+  bool allow_client_certificates =
+      ShouldSendClientCertificates(credentials_mode, url, initiator,
+                                   origin_access_list, disable_web_security) &&
+      policies_allow_credentials;
+
+  // The decision not to include credentials is sticky. Under WHATWG Fetch 4.5
+  // (HTTP-redirect fetch) and 4.6 (HTTP-network-or-cache fetch, step 8), a
+  // cross-origin redirect sets response tainting to 'cors' or 'opaque',
+  // causing 'same-origin' credentials mode to evaluate includeCredentials to
+  // false.
   if (!allow_credentials) {
     url_request.set_disallow_credentials();
   }

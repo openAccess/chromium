@@ -9,6 +9,7 @@ import android.view.LayoutInflater;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.ImageView;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -42,6 +43,9 @@ import org.chromium.chrome.R;
     /** The button that declines/cancels email verification. */
     final Button mCancelButton;
 
+    /** The spinner shown inside the confirm button while verification is in progress. */
+    final ProgressBar mConfirmButtonSpinner;
+
     EmailVerificationBottomSheetView(Context context) {
         mContentView =
                 (ViewGroup)
@@ -55,5 +59,7 @@ import org.chromium.chrome.R;
         mDescription = mContentView.findViewById(R.id.email_verification_description_text);
         mConfirmButton = mContentView.findViewById(R.id.email_verification_confirm_button);
         mCancelButton = mContentView.findViewById(R.id.email_verification_cancel_button);
+        mConfirmButtonSpinner =
+                mContentView.findViewById(R.id.email_verification_confirm_button_spinner);
     }
 }

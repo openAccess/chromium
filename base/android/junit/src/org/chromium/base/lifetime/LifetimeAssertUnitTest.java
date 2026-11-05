@@ -4,6 +4,8 @@
 
 package org.chromium.base.lifetime;
 
+import org.jni_zero.JniRawPtr;
+import org.jni_zero.JniUniquePtr;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Assume;
@@ -114,6 +116,44 @@ public class LifetimeAssertUnitTest {
     public void testResetForTesting() {
         LifetimeAssert.resetForTesting();
         // Should not throw.
+        LifetimeAssert.assertAllInstancesDestroyedForTesting();
+    }
+
+    @Test
+    public void testSafePointersTrackerFactoryRegistration() {
+        LifetimeAssert.setSafeToGc(mTestClass.mLifetimeAssert, true);
+        LifetimeAssert.registerSafePointersTrackerFactory();
+        JniUniquePtr<?> ptr = JniUniquePtr.createForTesting(0x1234L);
+        ptr.destroy();
+        JniRawPtr<?> rawPtr = JniRawPtr.createForTesting(0x1234L);
+        rawPtr.release();
+        LifetimeAssert.assertAllInstancesDestroyedForTesting();
+    }
+
+    @Test
+    public void testAssertAllInstancesDestroyedForTesting_creationContextInMessage() {
+        LifetimeAssert.setSafeToGc(mTestClass.mLifetimeAssert, true);
+        Object target = new Object();
+        LifetimeAssert asserter = LifetimeAssert.create(target, "passed to Foo#bar parameter baz");
+        try {
+            LifetimeAssert.assertAllInstancesDestroyedForTesting();
+            Assert.fail();
+        } catch (LifetimeAssert.LifetimeAssertException e) {
+            Assert.assertTrue(
+                    e.getMessage(),
+                    e.getMessage()
+                            .startsWith(
+                                    "Object of type java.lang.Object (passed to Foo#bar parameter"
+                                            + " baz) was not destroyed"));
+        }
+        LifetimeAssert.destroy(asserter);
+    }
+
+    @Test(expected = LifetimeAssert.LifetimeAssertException.class)
+    public void testSafePointersTrackerFactoryRegistration_unclosedLeak() {
+        LifetimeAssert.setSafeToGc(mTestClass.mLifetimeAssert, true);
+        LifetimeAssert.registerSafePointersTrackerFactory();
+        JniUniquePtr.createForTesting(0x1234L);
         LifetimeAssert.assertAllInstancesDestroyedForTesting();
     }
 }

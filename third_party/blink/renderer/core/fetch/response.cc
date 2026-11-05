@@ -353,7 +353,9 @@ Response* Response::redirect(ScriptState* script_state,
                              const String& url,
                              uint16_t status,
                              ExceptionState& exception_state) {
-  KURL parsed_url = ExecutionContext::From(script_state)->CompleteURL(url);
+  // The URL parser always encodes as UTF-8, so don't use CompleteURL(), which
+  // uses the document's encoding.
+  KURL parsed_url(ExecutionContext::From(script_state)->BaseURL(), url);
   if (!parsed_url.IsValid()) {
     exception_state.ThrowTypeError(StrCat({"Failed to parse URL from ", url}));
     return nullptr;
@@ -425,6 +427,10 @@ FetchResponseData* Response::CreateUnfilteredFetchResponseDataWithoutBody(
   response->SetResponseTime(fetch_api_response.response_time);
   response->SetCacheStorageCacheName(
       fetch_api_response.cache_storage_cache_name);
+  if (fetch_api_response.cache_storage_side_data_writer.is_valid()) {
+    response->SetCacheStorageSideDataWriter(
+        std::move(fetch_api_response.cache_storage_side_data_writer));
+  }
   response->SetConnectionInfo(fetch_api_response.connection_info);
   response->SetAlpnNegotiatedProtocol(
       AtomicString(fetch_api_response.alpn_negotiated_protocol));
@@ -432,6 +438,7 @@ FetchResponseData* Response::CreateUnfilteredFetchResponseDataWithoutBody(
   response->SetHasRangeRequested(fetch_api_response.has_range_requested);
   response->SetRequestIncludeCredentials(
       fetch_api_response.request_include_credentials);
+  response->SetTimingAllowPassed(fetch_api_response.timing_allow_passed);
 
   for (const auto& header : fetch_api_response.headers)
     response->HeaderList()->Append(header.key, header.value);

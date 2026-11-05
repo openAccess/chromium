@@ -12,14 +12,15 @@
 #include <regstr.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <sysinfoapi.h>
 #include <winhttp.h>
 #include <wrl/client.h>
 #include <wtsapi32.h>
 
 #include <algorithm>
-#include <cstdint>
-#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
@@ -106,6 +107,23 @@ ICallingProcessInfo : public IUnknown {
                                                  HANDLE * handle) = 0;
 };
 
+// Filters the `explorer.exe` processes. This filter is used with
+// `base::ProcessIterator` instead of using `base::NamedProcessIterator`
+// because the latter compares executable names with
+// `base::FilePath::CompareEqualIgnoreCase`, which calls `::CharUpperW` in
+// user32 and `CHECK`s that win32k system calls are not disabled for the
+// process. Some environments which virtualize win32k, such as GraphOn
+// GO-Global, report the win32k lockdown mitigation as enabled for updater
+// processes launched from a hosted application, which makes the `CHECK` fail
+// (see crbug.com/574549798). The process name is pure ASCII, so an ASCII
+// case-insensitive comparison is sufficient and has no user32 dependency.
+class ExplorerProcessFilter : public base::ProcessFilter {
+ public:
+  bool Includes(const base::ProcessEntry& entry) const override {
+    return base::EqualsCaseInsensitiveASCII(entry.exe_file(), L"explorer.exe");
+  }
+};
+
 // Returns `true` if the current process token is a split UAC token.
 bool IsUserRunningSplitToken() {
   std::optional<base::win::AccessToken> token =
@@ -162,7 +180,7 @@ HRESULT GetProcessIntegrityLevel(DWORD process_id, MANDATORY_LEVEL* level) {
     return E_FAIL;
   }
   std::unique_ptr<TOKEN_MANDATORY_LABEL, base::FreeDeleter> label(
-      static_cast<TOKEN_MANDATORY_LABEL*>(std::malloc(label_size)));
+      static_cast<TOKEN_MANDATORY_LABEL*>(malloc(label_size)));
   if (!::GetTokenInformation(token_holder.get(), TokenIntegrityLevel,
                              label.get(), label_size, &label_size)) {
     return HRESULTFromLastError();
@@ -171,7 +189,8 @@ HRESULT GetProcessIntegrityLevel(DWORD process_id, MANDATORY_LEVEL* level) {
 }
 
 bool IsExplorerRunningAtMediumOrLower() {
-  base::NamedProcessIterator iter(L"EXPLORER.EXE", nullptr);
+  const ExplorerProcessFilter filter;
+  base::ProcessIterator iter(&filter);
   while (const base::ProcessEntry* process_entry = iter.NextProcessEntry()) {
     MANDATORY_LEVEL level = MandatoryLevelUntrusted;
     if (SUCCEEDED(GetProcessIntegrityLevel(process_entry->pid(), &level)) &&
@@ -252,20 +271,6 @@ std::optional<int> DaynumFromDWORD(DWORD value) {
              : std::nullopt;
 }
 
-std::optional<std::vector<std::wstring>> CommandLineToArgv(
-    const std::wstring& command_line) {
-  int num_args = 0;
-  base::win::ScopedLocalAllocTyped<wchar_t*> argv(
-      ::CommandLineToArgvW(&command_line[0], &num_args));
-  if (!argv || num_args < 1) {
-    LOG(ERROR) << __func__ << "!argv || num_args < 1: " << num_args;
-    return std::nullopt;
-  }
-  // SAFETY: `num_args` describes the valid portion of `argv`.
-  return UNSAFE_BUFFERS(
-      std::vector<std::wstring>(argv.get(), argv.get() + num_args));
-}
-
 [[nodiscard]] bool IsServicePresentNonAdmin(const std::wstring& service_name) {
   ScopedScHandle scm(
       ::OpenSCManager(nullptr, nullptr, SC_MANAGER_CONNECT | GENERIC_READ));
@@ -313,6 +318,20 @@ std::wstring SanitizeAppId(const std::wstring& app_id) {
 }
 
 }  // namespace
+
+std::optional<std::vector<std::wstring>> CommandLineToArgv(
+    const std::wstring& command_line) {
+  int num_args = 0;
+  base::win::ScopedLocalAllocTyped<wchar_t*> argv(
+      ::CommandLineToArgvW(command_line.c_str(), &num_args));
+  if (!argv || num_args < 1) {
+    LOG(ERROR) << __func__ << ": !argv || num_args < 1: " << num_args;
+    return std::nullopt;
+  }
+  // SAFETY: `num_args` describes the valid portion of `argv`.
+  return UNSAFE_BUFFERS(
+      std::vector<std::wstring>(argv.get(), argv.get() + num_args));
+}
 
 NamedObjectAttributes::NamedObjectAttributes(const std::wstring& name,
                                              const std::wstring& sddl)
@@ -536,6 +555,42 @@ HResultOr<bool> IsCOMCallerAdmin() {
       token->IsMember(base::win::WellKnownSid::kBuiltinAdministrators));
 }
 
+std::wstring GetCOMCallerSid() {
+  ScopedClientImpersonation impersonate_client;
+  std::optional<base::win::AccessToken> token;
+  if (!impersonate_client.is_valid()) {
+    // RPC_E_CALL_COMPLETE indicates that the caller is in-proc.
+    if (impersonate_client.result() != RPC_E_CALL_COMPLETE) {
+      LOG(ERROR) << "Failed to impersonate caller: "
+                 << logging::SystemErrorCodeToString(
+                        impersonate_client.result());
+      return {};
+    }
+    token = base::win::AccessToken::FromCurrentProcess(/*impersonation=*/false,
+                                                       TOKEN_QUERY);
+    if (token && token->User() ==
+                     base::win::Sid(base::win::WellKnownSid::kLocalSystem)) {
+      LOG(ERROR) << "Cannot use LocalSystem process token for in-proc caller";
+      return {};
+    }
+  } else {
+    token = base::win::AccessToken::FromCurrentThread(
+        /*open_as_self=*/true, TOKEN_QUERY);
+  }
+
+  if (!token) {
+    PLOG(ERROR) << "Failed to get access token";
+    return {};
+  }
+
+  std::optional<std::wstring> sddl = token->User().ToSddlString();
+  if (!sddl) {
+    LOG(ERROR) << "Failed to convert user SID to SDDL";
+    return {};
+  }
+  return *std::move(sddl);
+}
+
 bool IsUACOn() {
   // The presence of a split token definitively indicates that UAC is on. But
   // the absence of the token does not necessarily indicate that UAC is off.
@@ -712,7 +767,20 @@ HResultOr<DWORD> RunElevated(const base::FilePath& file_path,
 }
 
 HRESULT RunDeElevatedCmdLine(const std::wstring& cmd_line) {
-  if (!IsElevatedWithUACOn()) {
+  // Directly launch the process only when the caller is not an admin, or when
+  // the caller is an admin (other than LocalSystem) and UAC is off by both
+  // system policy and the runtime check. `IsUACOn()` alone is not sufficient
+  // when the caller is elevated with a non-split token (e.g., built-in
+  // Administrator in an over-the-shoulder elevation) because an unprivileged
+  // interactive user can terminate or re-DACL their own `explorer.exe`.
+  if (!::IsUserAnAdmin() ||
+      (!base::win::UserAccountControlIsEnabled() && !IsUACOn() && [] {
+        const std::optional<base::win::AccessToken> token =
+            base::win::AccessToken::FromCurrentProcess();
+        return token &&
+               token->User() !=
+                   base::win::Sid(base::win::WellKnownSid::kLocalSystem);
+      }())) {
     auto process = base::LaunchProcess(cmd_line, {});
     return process.IsValid() ? S_OK : HRESULTFromLastError();
   }
@@ -872,12 +940,12 @@ bool CompareOSVersions(const OSVERSIONINFOEX& os_version, BYTE oper) {
 
 bool EnableSecureDllLoading() {
 #if defined(COMPONENT_BUILD)
-  const DWORD directory_flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+  constexpr DWORD kDirectoryFlags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
 #else
-  const DWORD directory_flags = LOAD_LIBRARY_SEARCH_SYSTEM32;
+  constexpr DWORD kDirectoryFlags = LOAD_LIBRARY_SEARCH_SYSTEM32;
 #endif
 
-  return ::SetDefaultDllDirectories(directory_flags);
+  return ::SetDefaultDllDirectories(kDirectoryFlags);
 }
 
 bool EnableProcessHeapMetadataProtection() {
@@ -1054,7 +1122,7 @@ bool IsGuid(const std::wstring& s) {
   CHECK(!s.empty());
 
   GUID guid = {0};
-  return SUCCEEDED(::IIDFromString(&s[0], &guid));
+  return SUCCEEDED(::IIDFromString(s.c_str(), &guid));
 }
 
 void ForEachRegistryRunValueWithPrefix(
@@ -1416,7 +1484,8 @@ std::optional<base::ProcessId> GetExplorerPidInActiveSession() {
     return {};
   }
 
-  base::NamedProcessIterator iter(L"EXPLORER.EXE", nullptr);
+  const ExplorerProcessFilter filter;
+  base::ProcessIterator iter(&filter);
   while (const base::ProcessEntry* process_entry = iter.NextProcessEntry()) {
     DWORD process_session = 0;
     if (::ProcessIdToSessionId(process_entry->pid(), &process_session) &&
@@ -1568,19 +1637,20 @@ HResultOr<std::wstring> GetCommandLineForPid(DWORD process_id) {
                                               sizeof(info), nullptr))) {
     return base::unexpected(E_FAIL);
   }
-  BYTE* peb = reinterpret_cast<BYTE*>(info.PebBaseAddress);
+  const uintptr_t peb = reinterpret_cast<uintptr_t>(info.PebBaseAddress);
   if (!peb) {
     return base::unexpected(E_FAIL);
   }
   SIZE_T bytes_read = 0;
   DWORD_PTR dw = 0;
 
-  // Get the address of the process parameters.
-  // SAFETY: the `ProcessParameters` offset into the PEB is always valid.
+  // Get the address of the process parameters. `peb` is an address in the
+  // remote process, so it is never dereferenced locally; it is only passed to
+  // `::ReadProcessMemory`.
   if (!::ReadProcessMemory(
           process_handle.get(),
-          UNSAFE_BUFFERS(peb + offsetof(PEB, ProcessParameters)), &dw,
-          sizeof(dw), &bytes_read)) {
+          reinterpret_cast<LPCVOID>(peb + offsetof(PEB, ProcessParameters)),
+          &dw, sizeof(dw), &bytes_read)) {
     return base::unexpected(HRESULTFromLastError());
   }
 

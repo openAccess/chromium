@@ -11,6 +11,7 @@
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/ui/actor_border_view_controller.h"
+#include "chrome/browser/actor/ui/actor_task_unload_handler.h"
 #include "chrome/browser/actor/ui/actor_ui_metrics.h"
 #include "chrome/browser/actor/ui/actor_ui_tab_controller_interface.h"
 #include "chrome/browser/actor/ui/actor_ui_window_controller.h"
@@ -18,13 +19,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/tab_change_type.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
+#include "components/constrained_window/constrained_window_views.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
-
-DEFINE_USER_DATA(actor::ui::ActorUiTabController);
+#include "ui/views/bubble/bubble_dialog_model_host.h"
+#include "ui/views/widget/widget.h"
 
 namespace actor::ui {
 using ::tabs::TabInterface;
@@ -47,8 +47,7 @@ ActorUiTabController::ActorUiTabController(
           FROM_HERE,
           features::kGlicActorUiDebounceTimer.Get(),
           base::BindRepeating(&ActorUiTabController::UpdateScrimBackground,
-                              base::Unretained(this))),
-      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
+                              base::Unretained(this))) {
   CHECK(base::FeatureList::IsEnabled(features::kGlicActorUi));
   CHECK(base::FeatureList::IsEnabled(features::kGlicActor));
   CHECK(actor_keyed_service_);
@@ -107,6 +106,31 @@ ActorUiTabController::RegisterActorOverlayStateChange(
                      weak_factory_.GetWeakPtr()));
 }
 
+void ActorUiTabController::SetCursorChipText(const std::string& text) {
+  if (cursor_chip_text_ == text) {
+    return;
+  }
+  cursor_chip_text_ = text;
+  if (cursor_chip_text_changed_callback_) {
+    cursor_chip_text_changed_callback_.Run(cursor_chip_text_);
+  }
+}
+
+std::string ActorUiTabController::GetCursorChipText() const {
+  return cursor_chip_text_;
+}
+
+[[nodiscard]] base::ScopedClosureRunner
+ActorUiTabController::RegisterCursorChipTextChange(
+    CursorChipTextChangeCallback callback) {
+  CHECK(!callback.is_null());
+  CHECK(cursor_chip_text_changed_callback_.is_null());
+  cursor_chip_text_changed_callback_ = std::move(callback);
+  return base::ScopedClosureRunner(
+      base::BindOnce(&ActorUiTabController::UnregisterCursorChipTextChange,
+                     weak_factory_.GetWeakPtr()));
+}
+
 void ActorUiTabController::SetActorTabIndicatorVisibility(
     TabIndicatorStatus tab_indicator_status,
     base::OnceClosure callback) {
@@ -115,16 +139,9 @@ void ActorUiTabController::SetActorTabIndicatorVisibility(
   // alert migrates away from the GLIC_ACCESSING resources.
   if (tab_indicator_ != tab_indicator_status) {
     tab_indicator_ = tab_indicator_status;
-    if (NotifyActorTabIndicatorStateChanged(tab_indicator_)) {
-      // Notify tab strip model of state change.
-      if (auto* browser_window = tab_->GetBrowserWindowInterface()) {
-        browser_window->GetTabStripModel()->NotifyTabChanged(
-            base::to_address(tab_), TabChangeType::kAll);
-      }
-    }
+    NotifyActorTabIndicatorStateChanged(tab_indicator_);
   }
   std::move(callback).Run();
-  return;
 }
 
 void ActorUiTabController::OnViewBoundsChanged() {
@@ -278,7 +295,7 @@ void ActorUiTabController::OnWindowOmniboxPopupVisibilityChanged() {
 }
 
 void ActorUiTabController::OnModalUIChanged(tabs::TabInterface* tab) {
-  DCHECK_EQ(tab, base::to_address(tab_));
+  CHECK_EQ(tab, base::to_address(tab_), base::NotFatalUntil::M161);
   UpdateUi(base::BindOnce(&LogAndIgnoreCallbackError, "OnModalUIChanged"));
 }
 
@@ -297,6 +314,10 @@ void ActorUiTabController::UnregisterActorOverlayStateChange() {
 
 void ActorUiTabController::UnregisterActorOverlayBackgroundChange() {
   actor_overlay_background_changed_callback_.Reset();
+}
+
+void ActorUiTabController::UnregisterCursorChipTextChange() {
+  cursor_chip_text_changed_callback_.Reset();
 }
 
 void ActorUiTabController::UnregisterHandoffButtonController() {
@@ -324,5 +345,51 @@ ActorUiTabController::GetWeakPtr() {
 UiTabState ActorUiTabController::GetCurrentUiTabState() const {
   return current_ui_tab_state_;
 }
+
+bool ActorUiTabController::MaybeDeferNavigation(
+    tabs::TabInterface* tab,
+    const GURL& url,
+    ActorNavigationThrottle::Delegate::NavigationConfirmedCallback callback) {
+  CHECK(!tab || tab == &*tab_);
+  content::WebContents* contents = tab_->GetContents();
+  if (!ActorTaskTabCloseConfirmDialog::ShouldShow(contents)) {
+    return false;
+  }
+
+  // A newer navigation supersedes the pending one. This frees the tab-modal
+  // slot for the dialog created below.
+  CancelNavigationConfirmation(tab);
+
+  // The task is left running here. If the user accepts, the throttle stops it
+  // with `kUserNavigatedAway`.
+  std::unique_ptr<views::BubbleDialogModelHost> delegate =
+      ActorTaskTabCloseConfirmDialog::CreateDelegate(contents,
+                                                     std::move(callback));
+  if (!delegate) {
+    return false;
+  }
+  active_navigation_confirm_widget_ =
+      constrained_window::ShowWebModalDialogViews(delegate.release(), contents)
+          ->GetWeakPtr();
+  return true;
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+void ActorUiTabController::CancelNavigationConfirmation(
+    tabs::TabInterface* tab) {
+  CHECK(!tab || tab == &*tab_);
+  // Closing synchronously releases the old dialog's tab-modal slot and rejects
+  // its navigation if that navigation's throttle still exists; the navigation
+  // may already have been superseded.
+  if (active_navigation_confirm_widget_) {
+    active_navigation_confirm_widget_->CloseNow();
+  }
+}
+
+views::Widget*
+ActorUiTabController::GetActiveNavigationConfirmDialogWidgetForTesting() const {
+  return active_navigation_confirm_widget_.get();
+}
+#endif
 
 }  // namespace actor::ui

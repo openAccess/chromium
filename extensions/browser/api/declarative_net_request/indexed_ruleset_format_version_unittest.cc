@@ -67,6 +67,7 @@ table EmbedderConditions {
   top_domains_excluded : [string];
   response_headers: [HeaderCondition];
   excluded_response_headers: [HeaderCondition];
+  requires_host_permissions: bool = true;
 }
 enum IndexType : ubyte {
   before_request_except_allow_all_requests = 0,
@@ -91,7 +92,7 @@ table ModifyHeaderInfo {
   regex_options: RegexFilterOptions;
 }
 table HeaderCondition {
-  header: string;
+  header: string (required);
   values: [string];
   excluded_values: [string];
 }
@@ -177,7 +178,7 @@ TEST_F(IndexedRulesetFormatVersionTest, CheckVersionUpdated) {
   EXPECT_EQ(StripCommentsAndWhitespace(kFlatbufferSchemaExpected),
             StripCommentsAndWhitespace(flatbuffer_schema))
       << "Schema change detected; update this test and the schema version.";
-  EXPECT_EQ(36, GetIndexedRulesetFormatVersionForTesting())
+  EXPECT_EQ(37, GetIndexedRulesetFormatVersionForTesting())
       << "Update this test if you update the schema version.";
 }
 

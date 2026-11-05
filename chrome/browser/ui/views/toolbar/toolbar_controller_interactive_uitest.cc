@@ -21,6 +21,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/side_panel/side_panel_action_callback.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
+#include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
 #include "chrome/browser/ui/toolbar_controller_util.h"
@@ -52,6 +53,7 @@
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/animating_layout_manager_test_util.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/test/views_test_utils.h"
@@ -167,7 +169,7 @@ class ToolbarControllerUiTest : public InteractiveFeaturePromoTest,
   // defined in ToolbarView should have minimum size
   int GetOverflowThresholdWidthInPinnedSidePanelContainer() {
     auto* extensions_container =
-        browser_view_->toolbar()->extensions_container();
+        browser_view_->toolbar()->extensions_container_for_testing();
     int diff = extensions_container->GetPreferredSize().width() -
                extensions_container->GetMinimumSize().width();
     return toolbar_container_view_->GetPreferredSize().width() - diff;
@@ -421,7 +423,7 @@ class ToolbarControllerUiTest : public InteractiveFeaturePromoTest,
     return Steps(
         Do([=, this]() {
           chrome::ExecuteCommandWithContext(
-              browser(), IDC_SHOW_READING_MODE_SIDE_PANEL,
+              browser(), IDC_SHOW_READING_MODE,
               actions::ActionInvocationContext::Builder()
                   .SetProperty(
                       kSidePanelOpenTriggerKey,
@@ -1030,6 +1032,33 @@ IN_PROC_BROWSER_TEST_P(ToolbarControllerUiTest, ActivateActionElementFromMenu) {
                 "ResponsiveToolbar.OverflowMenuItemActivated.ForwardButton"));
 }
 
+#if !BUILDFLAG(IS_CHROMEOS)
+IN_PROC_BROWSER_TEST_P(ToolbarControllerUiTest, ActivateAvatarElementFromMenu) {
+  base::UserActionTester user_action_tester;
+  EXPECT_EQ(0, user_action_tester.GetActionCount(
+                   "ResponsiveToolbar.OverflowButtonActivated"));
+  EXPECT_EQ(0, user_action_tester.GetActionCount(
+                   "ResponsiveToolbar.OverflowMenuItemActivated.AvatarButton"));
+  RunTestSequence(
+      WaitForElementVisibility(kToolbarAvatarButtonElementId, true),
+      AddDummyButtonsToToolbarTillElementOverflowsWithoutResizing(
+          kToolbarAvatarButtonElementId),
+      PressButton(kToolbarOverflowButtonElementId),
+      ActivateMenuItemWithElementId(kToolbarAvatarButtonElementId),
+      WaitForShow(kToolbarAvatarBubbleElementId),
+      WaitForElementVisibility(kToolbarAvatarButtonElementId, true),
+      WithView(kToolbarAvatarBubbleElementId,
+               [](views::View* view) { view->GetWidget()->Close(); }),
+      WaitForHide(kToolbarAvatarBubbleElementId),
+      WaitForElementVisibility(kToolbarAvatarButtonElementId, false),
+      CheckIfOverflowed(kToolbarAvatarButtonElementId, true));
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   "ResponsiveToolbar.OverflowButtonActivated"));
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   "ResponsiveToolbar.OverflowMenuItemActivated.AvatarButton"));
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
 // TODO(crbug.com/361296257): ActionItemsOverflowAndReappear is flaky on
 // linux64-rel-ready.
 #if BUILDFLAG(IS_LINUX)
@@ -1057,22 +1086,20 @@ IN_PROC_BROWSER_TEST_P(ToolbarControllerUiTest,
 
 IN_PROC_BROWSER_TEST_P(ToolbarControllerUiTest,
                        ActionItemsShowInMenuAndActivateFromMenu) {
-  RunTestSequence(PinBookmarkToToolbar(),
-                  AddDummyButtonsToToolbarTillElementOverflows(
-                      ChromeActionIds::kActionSidePanelShowBookmarks),
-                  PressButton(kToolbarOverflowButtonElementId),
-                  CheckMenuMatchesOverflowedElements(),
+  RunTestSequence(
+      PinBookmarkToToolbar(),
+      AddDummyButtonsToToolbarTillElementOverflows(
+          ChromeActionIds::kActionSidePanelShowBookmarks),
+      PressButton(kToolbarOverflowButtonElementId),
+      CheckMenuMatchesOverflowedElements(),
 
-                  // Check bookmark menu item is activated correctly.
-                  ActivateMenuItemWithElementId(
-                      ChromeActionIds::kActionSidePanelShowBookmarks),
-                  WaitForShow(kSidePanelElementId), Check([this]() {
-                    return browser()
-                        ->GetFeatures()
-                        .side_panel_ui()
-                        ->IsSidePanelEntryShowing(SidePanelEntry::Key(
-                            SidePanelEntry::Id::kBookmarks));
-                  }));
+      // Check bookmark menu item is activated correctly.
+      ActivateMenuItemWithElementId(
+          ChromeActionIds::kActionSidePanelShowBookmarks),
+      WaitForShow(kSidePanelElementId), Check([this]() {
+        return SidePanelUI::From(browser())->IsSidePanelEntryShowing(
+            SidePanelEntry::Key(SidePanelEntry::Id::kBookmarks));
+      }));
 }
 
 IN_PROC_BROWSER_TEST_P(ToolbarControllerUiTest,
@@ -1178,7 +1205,7 @@ IN_PROC_BROWSER_TEST_P(ToolbarControllerUiTest,
 
   EXPECT_FALSE(BrowserView::GetBrowserViewForBrowser(browser())
                    ->toolbar()
-                   ->extensions_container()
+                   ->extensions_container_for_testing()
                    ->GetAnimatingLayoutManager()
                    ->is_animating());
 }

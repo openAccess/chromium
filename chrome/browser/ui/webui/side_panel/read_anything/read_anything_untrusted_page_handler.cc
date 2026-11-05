@@ -4,26 +4,26 @@
 
 #include "chrome/browser/ui/webui/side_panel/read_anything/read_anything_untrusted_page_handler.h"
 
-#include <algorithm>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/check.h"
-#include "base/check_op.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
-#include "base/containers/flat_map.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/types/pass_key.h"
 #include "base/values.h"
 #include "chrome/browser/accessibility/phrase_segmentation/dependency_parser_model_loader.h"
 #include "chrome/browser/accessibility/phrase_segmentation/dependency_parser_model_loader_factory.h"
-#include "chrome/browser/browser_features.h"
-#include "chrome/browser/dom_distiller/dom_distiller_service_factory.h"
+#include "chrome/browser/feedback/public/feedback_source.h"
+#include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/language/language_model_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/reader_mode/reader_mode_service_factory.h"
 #include "chrome/browser/screen_ai/screen_ai_service_router.h"
 #include "chrome/browser/screen_ai/screen_ai_service_router_factory.h"
 #include "chrome/browser/speech/extension_api/tts_engine_extension_api.h"
@@ -33,11 +33,14 @@
 #include "chrome/browser/ui/read_anything/read_anything_prefs.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
+#include "chrome/browser/ui/webui/side_panel/read_anything/read_anything_iph_controller.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/read_anything/read_anything.mojom-shared.h"
 #include "chrome/common/read_anything/read_anything.mojom.h"
 #include "chrome/common/read_anything/read_anything_util.h"
+#include "chrome/common/webui_url_constants.h"
+#include "chrome/grit/generated_resources.h"
 #include "components/dom_distiller/content/browser/distiller_javascript_utils.h"
 #include "components/dom_distiller/content/browser/distiller_page_web_contents.h"
 #include "components/dom_distiller/core/distiller_page.h"
@@ -48,11 +51,11 @@
 #include "components/language/core/common/locale_util.h"
 #include "components/language_detection/core/constants.h"
 #include "components/pdf/browser/pdf_frame_util.h"
+#include "components/pdf/common/constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
-#include "components/translate/core/browser/language_state.h"
-#include "components/translate/core/browser/translate_driver.h"
 #include "components/translate/core/browser/translate_manager.h"
+#include "components/translate/core/common/translate_features.h"
 #include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
@@ -65,7 +68,7 @@
 #include "content/public/common/url_constants.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
-#include "net/http/http_status_code.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "pdf/buildflags.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
@@ -75,17 +78,17 @@
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/accessibility/ax_mode.h"
-#include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_node_id_forward.h"
-#include "ui/accessibility/ax_tree_manager.h"
 #include "ui/accessibility/ax_tree_update.h"
-#include "ui/gfx/geometry/rect.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 #include "url/url_constants.h"
 
 #if BUILDFLAG(ENABLE_PDF)
 #include "components/pdf/common/pdf_util.h"
+#include "components/translate/content/browser/content_translate_driver.h"
 #include "extensions/browser/mime_handler/mime_handler_stream_manager.h"
 #include "pdf/pdf_features.h"
 #endif  // BUILDFLAG(ENABLE_PDF)
@@ -108,7 +111,7 @@ using read_anything::mojom::UntrustedPage;
 using read_anything::mojom::UntrustedPageHandler;
 using read_anything::mojom::VoicePackInstallationState;
 
-// A helper class that orchestrates page distillation using the
+// A helper class that orchestrates Readability page distillation using the
 // DomDistillerService.
 //
 // It triggers distillation via StartDistillation() and implements the
@@ -119,12 +122,13 @@ using read_anything::mojom::VoicePackInstallationState;
 // outstanding request, ensuring that only one distillation request is active
 // at any given time. Once distillation completes, it forwards the resulting
 // article to the enclosing ReadAnythingUntrustedPageHandler.
-class ReadAnythingUntrustedPageHandler::DomDistillerDelegate
+class ReadAnythingUntrustedPageHandler::ReadabilityDistillerDelegate
     : public dom_distiller::ViewRequestDelegate {
  public:
-  explicit DomDistillerDelegate(ReadAnythingUntrustedPageHandler* handler)
+  explicit ReadabilityDistillerDelegate(
+      ReadAnythingUntrustedPageHandler* handler)
       : handler_(handler) {}
-  ~DomDistillerDelegate() override = default;
+  ~ReadabilityDistillerDelegate() override = default;
 
   void StartDistillation(dom_distiller::DomDistillerService* service,
                          content::WebContents* contents) {
@@ -141,6 +145,14 @@ class ReadAnythingUntrustedPageHandler::DomDistillerDelegate
         url);
   }
 
+  // Cancels an in-flight distillation request, if any. Resetting the handle
+  // removes this delegate as an observer, so OnArticleReady() is not called.
+  void CancelDistillation() {
+    viewer_handle_.reset();
+    // Cleared so it is never attributed to a later distillation.
+    start_time_ = base::TimeTicks();
+  }
+
   // dom_distiller::ViewRequestDelegate:
   void OnArticleReady(
       const dom_distiller::DistilledArticleProto* article_proto) override {
@@ -152,11 +164,6 @@ class ReadAnythingUntrustedPageHandler::DomDistillerDelegate
     viewer_handle_.reset();
   }
 
-  void OnArticleUpdated(
-      dom_distiller::ArticleDistillationUpdate article_update) override {
-    // Unused.
-  }
-
  private:
   raw_ptr<ReadAnythingUntrustedPageHandler> handler_;
   std::unique_ptr<dom_distiller::ViewerHandle> viewer_handle_;
@@ -164,6 +171,10 @@ class ReadAnythingUntrustedPageHandler::DomDistillerDelegate
 };
 
 namespace {
+
+// Histogram bounds for Accessibility.ReadAnything.WordsDistilledAfterOmnibox.
+constexpr int kMaxWordsDistilled = 25000;
+constexpr int kWordsDistilledBuckets = 100;
 
 // All AXMode flags of kAXModeWebContentsOnly are needed. |ui::AXMode::kHTML| is
 // needed for retrieveing the `aria-expanded` attribute.
@@ -184,6 +195,16 @@ constexpr int PDF_LOAD_DELAY_MS = 1000;
 
 // Prefix definition for logging.
 constexpr char kReadAnythingPrefix[] = "Read Anything";
+
+// Category tag for feedback reports submitted from Reading Mode.
+constexpr char kFeedbackCategoryTag[] = "reading_mode";
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// chrome://whats-new renders its content in a single https://www.google.com
+// child frame (see the frame-src CSP in WhatsNewUI). Reading mode distills that
+// frame directly.
+constexpr char kWhatsNewEmbeddedContentOrigin[] = "https://www.google.com";
+#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
 
@@ -265,6 +286,69 @@ constexpr std::string_view kRendererScrollRequestHistogram =
 constexpr std::string_view kRendererSelectionRequestHistogram =
     "Accessibility.ReadAnything.RendererRequestForSelection.Result";
 
+// The contents MIME type is fixed when the main frame commits, so this reliably
+// identifies full-page PDFs before their content frame exists.
+bool IsFullPagePdf(content::WebContents* contents) {
+  return contents && contents->GetContentsMimeType() == pdf::kPDFMimeType;
+}
+
+bool IsPdfContents(content::WebContents* contents, bool has_pdf_observer) {
+  if (!contents) {
+    return false;
+  }
+  return chrome_pdf::features::IsOopifPdfEnabled()
+             ? !!extensions::mime_handler::MimeHandlerStreamManager::
+                    FromWebContents(contents)
+             : has_pdf_observer;
+}
+
+// Returns the frame hosting the PDF's contents, or nullptr if `contents` is
+// not displaying a PDF or the frame does not exist yet. This is the frame that
+// `PdfAccessibilityTree` serializes the PDF's accessibility nodes into, so its
+// tree is the one holding the PDF text.
+//
+// With OOPIF PDF the content frame is a child of the PDF extension host, which
+// is itself a child of the primary main frame; without it, the extension frame
+// is the primary main frame of the guest contents. Either way the content
+// frame is the child of the embedder host. This mirrors the resolution used by
+// printing (printing::GetRenderFrameHostToUse) and Mahi
+// (mahi::GetPDFRenderFrameHost).
+content::RenderFrameHost* FindPdfContentFrame(content::WebContents* contents) {
+  content::RenderFrameHost* embedder_host =
+      chrome_pdf::features::IsOopifPdfEnabled()
+          ? pdf_frame_util::FindFullPagePdfExtensionHost(contents)
+          : contents->GetPrimaryMainFrame();
+  return embedder_host ? pdf_frame_util::FindPdfChildFrame(embedder_host)
+                       : nullptr;
+}
+
+// Returns whether `rfh` is a subframe of the primary page that the primary main
+// frame can already script, i.e. it is same-origin with it. Opaque main frame
+// origins are excluded because opaque-origin frames cannot script each other.
+// file:// main frame origins are excluded because all file:// URLs share one
+// url::Origin even though Blink isolates local files from each other.
+bool IsSameOriginSubframe(content::RenderFrameHost* rfh,
+                          content::RenderFrameHost* main_frame) {
+  const url::Origin& main_origin = main_frame->GetLastCommittedOrigin();
+  return rfh->GetMainFrame() == main_frame && !main_origin.opaque() &&
+         main_origin.scheme() != url::kFileScheme &&
+         rfh->GetLastCommittedOrigin().IsSameOriginWith(main_origin);
+}
+
+// chrome://whats-new only exists on Windows, Mac and Linux.
+bool IsWhatsNewEmbeddedContentFrame(content::RenderFrameHost* rfh,
+                                    content::RenderFrameHost* main_frame) {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  return rfh->GetParent() == main_frame &&
+         main_frame->GetLastCommittedOrigin().IsSameOriginWith(
+             GURL(chrome::kChromeUIWhatsNewURL)) &&
+         rfh->GetLastCommittedOrigin().IsSameOriginWith(
+             GURL(kWhatsNewEmbeddedContentOrigin));
+#else
+  return false;
+#endif
+}
+
 }  // namespace
 
 ReadAnythingWebContentsObserver::ReadAnythingWebContentsObserver(
@@ -306,12 +390,6 @@ void ReadAnythingWebContentsObserver::AccessibilityEventReceived(
   page_handler_->AccessibilityEventReceived(details);
 }
 
-void ReadAnythingWebContentsObserver::AccessibilityLocationChangesReceived(
-    const ui::AXTreeID& tree_id,
-    ui::AXLocationAndScrollUpdates& details) {
-  page_handler_->AccessibilityLocationChangesReceived(tree_id, details);
-}
-
 void ReadAnythingWebContentsObserver::PrimaryPageChanged(content::Page& page) {
   page_handler_->PrimaryPageChanged();
 }
@@ -331,6 +409,11 @@ void ReadAnythingWebContentsObserver::WebContentsDestroyed() {
 void ReadAnythingWebContentsObserver::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
   page_handler_->DidFinishNavigation(navigation_handle);
+}
+
+void ReadAnythingWebContentsObserver::RenderFrameDeleted(
+    content::RenderFrameHost* render_frame_host) {
+  page_handler_->RenderFrameDeleted(render_frame_host);
 }
 
 void ReadAnythingUntrustedPageHandler::MaybeUpdateImmersivePinStatus() {
@@ -361,12 +444,21 @@ ReadAnythingUntrustedPageHandler::ReadAnythingUntrustedPageHandler(
       web_ui_(web_ui),
       receiver_(this, std::move(receiver)),
       page_(std::move(page)),
-      use_screen_ai_service_(use_screen_ai_service)
+      use_screen_ai_service_(use_screen_ai_service),
 #if BUILDFLAG(IS_CHROMEOS)
-      ,
-      extension_wrapper_(std::move(extension_wrapper))
+      extension_wrapper_(std::move(extension_wrapper)),
 #endif
-{
+      // Unretained is safe because `this` owns `translate_observer_`.
+      translate_observer_(
+          base::BindRepeating(
+              &ReadAnythingUntrustedPageHandler::SetLanguageCode,
+              base::Unretained(this)),
+          base::BindRepeating(
+              &ReadAnythingUntrustedPageHandler::SendTranslationState,
+              base::Unretained(this)),
+          base::BindRepeating(
+              &ReadAnythingUntrustedPageHandler::SendTranslationFailed,
+              base::Unretained(this))) {
   ax_action_handler_observer_.Observe(
       ui::AXActionHandlerRegistry::GetInstance());
 
@@ -383,6 +475,8 @@ ReadAnythingUntrustedPageHandler::ReadAnythingUntrustedPageHandler(
   CHECK(read_anything_controller_);
   read_anything_controller_->AddObserver(this);
   tab_ = read_anything_controller_->tab();
+  iph_controller_ =
+      std::make_unique<ReadAnythingIphController>(read_anything_controller_);
   pinned_toolbar_ = PinnedToolbarActionsModel::Get(Profile::FromWebUI(web_ui));
   pinned_toolbar_actions_observation_.Observe(pinned_toolbar_);
   MaybeUpdateImmersivePinStatus();
@@ -413,15 +507,14 @@ ReadAnythingUntrustedPageHandler::ReadAnythingUntrustedPageHandler(
                 weak_factory_.GetWeakPtr()));
   }
 
-  if (features::IsReadAnythingWithReadabilityEnabled() &&
-      !features::IsReadAnythingReadAloudPhraseHighlightingEnabled()) {
+  if (features::IsReadAnythingWithReadabilityEnabled()) {
     // Set the JavaScript world ID.
     if (!dom_distiller::DistillerJavaScriptWorldIdIsSet()) {
       dom_distiller::SetDistillerJavaScriptWorldId(
           ISOLATED_WORLD_ID_CHROME_INTERNAL);
     }
 
-    distiller_delegate_ = std::make_unique<DomDistillerDelegate>(this);
+    distiller_delegate_ = std::make_unique<ReadabilityDistillerDelegate>(this);
   }
 
   // Enable accessibility for the top level render frame and all descendants.
@@ -451,7 +544,7 @@ ReadAnythingUntrustedPageHandler::~ReadAnythingUntrustedPageHandler() {
       this);
   extensions::ExtensionRegistry::Get(profile_)->RemoveObserver(this);
 #endif
-  translate_observation_.Reset();
+  translate_observer_.Reset();
   main_observer_.reset();
   pdf_observer_.reset();
   LogTextStyle();
@@ -488,20 +581,19 @@ void ReadAnythingUntrustedPageHandler::DidStopLoading() {
   // recognized as a pdf after the page finishes loading, check again after
   // a small delay. This will allow PDFs to be more reliably distilled when
   // they're opened while reading mode is already opened.
-  if (!CheckForPdfContentAfterLoad()) {
+  if (!CheckForPdfContentFrame()) {
     timer_.Start(
         FROM_HERE, base::Milliseconds(PDF_LOAD_DELAY_MS),
         base::BindOnce(
             base::IgnoreResult(
-                &ReadAnythingUntrustedPageHandler::CheckForPdfContentAfterLoad),
+                &ReadAnythingUntrustedPageHandler::CheckForPdfContentFrame),
             base::Unretained(this)));
   }
 }
 
-bool ReadAnythingUntrustedPageHandler::CheckForPdfContentAfterLoad() {
-  // If this page was previously recognized as not a pdf from the original
-  // call to PrimaryPageChanged() but it's now recognized as a PDF after the
-  // page has finished loaded, notify the page of the new tree as a PDF.
+bool ReadAnythingUntrustedPageHandler::CheckForPdfContentFrame() {
+  // The PDF content frame may not exist yet when PrimaryPageChanged() runs.
+  // If it has since appeared, notify the page of the PDF tree.
   if (!is_pdf_with_frame_) {
     SetUpPdfObserver();
     CheckIfActiveAXTreeChangedToPdf();
@@ -533,22 +625,20 @@ bool ReadAnythingUntrustedPageHandler::IsGoogleDocs(const GURL& url) const {
 }
 
 void ReadAnythingUntrustedPageHandler::WebContentsDestroyed() {
-  translate_observation_.Reset();
+  translate_observer_.Reset();
   audible_closure_.RunAndReset();
 }
 
 void ReadAnythingUntrustedPageHandler::AccessibilityEventReceived(
     const ui::AXUpdatesAndEvents& details) {
+  // Only forward accessibility data for frames that Reading Mode distills.
+  if (!IsObservingTree(details.ax_tree_id)) {
+    DVLOG(2) << "Dropping accessibility event for tree " << details.ax_tree_id;
+    return;
+  }
+  forwarded_tree_ids_.insert(details.ax_tree_id);
   page_->AccessibilityEventReceived(details.ax_tree_id, details.updates,
                                     details.events);
-}
-
-void ReadAnythingUntrustedPageHandler::AccessibilityLocationChangesReceived(
-    const ui::AXTreeID& tree_id,
-    ui::AXLocationAndScrollUpdates& details) {
-  if (features::IsReadAnythingDocsIntegrationEnabled()) {
-    page_->AccessibilityLocationChangesReceived(tree_id, details);
-  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -556,7 +646,11 @@ void ReadAnythingUntrustedPageHandler::AccessibilityLocationChangesReceived(
 ///////////////////////////////////////////////////////////////////////////////
 
 void ReadAnythingUntrustedPageHandler::TreeRemoved(ui::AXTreeID ax_tree_id) {
-  page_->OnAXTreeDestroyed(ax_tree_id);
+  // The registry reports removals for every tree in the browser; only tell the
+  // renderer about trees it was sent.
+  if (forwarded_tree_ids_.erase(ax_tree_id)) {
+    page_->OnAXTreeDestroyed(ax_tree_id);
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -602,16 +696,18 @@ void ReadAnythingUntrustedPageHandler::OnUpdateLanguageStatus(
     content::LanguageInstallStatus install_status,
     const std::string& error) {
   // Language status is profile-dependent so only send the update if the status
-  // is for this profile. Incognito profiles download the language to the main
-  // profile, so we need to always send the language updates for incognito.
+  // is for this profile. Primary off-the-record profiles with regular parents
+  // (such as Incognito or Enterprise Isolated Mode) download the language to
+  // the main profile, so we need to always send the language updates for them.
   // Guest profiles don't have matching IDs, so if this profile is a guest and
   // the profile sending the language status is a guest, then we do send the
   // status update.
   Profile* statusProfile = Profile::FromBrowserContext(browser_context);
   const bool shouldSendGuestStatus =
       statusProfile->IsGuestSession() && profile_->IsGuestSession();
-  if (!shouldSendGuestStatus && !profile_->IsIncognitoProfile() &&
-      statusProfile->UniqueId() != profile_->UniqueId()) {
+  if (!shouldSendGuestStatus &&
+      !profile_->IsPrimaryOTRProfileWithRegularParent() &&
+      statusProfile->UniqueToken() != profile_->UniqueToken()) {
     return;
   }
   auto voicePackInfo = read_anything::mojom::VoicePackInfo::New();
@@ -747,10 +843,21 @@ void ReadAnythingUntrustedPageHandler::OnDistillationStateChanged(
   }
 
   distillation_state_ = new_state;
+  // Update IPH before ReadAnythingController, which moves Reading Mode from
+  // immersive to the side panel when the page is empty.
+  iph_controller_->OnDistillationStateChanged(new_state);
   auto* ra_controller = GetReadAnythingController();
   CHECK(ra_controller);
 
-  ra_controller->OnDistillationStateChanged(new_state);
+  ra_controller->OnEmptyStateChanged(
+      new_state == ReadAnythingDistillationState::kDistillationEmpty);
+
+  // Translate only once the content is distilled, so that the translation
+  // applies to the content shown in Reading Mode.
+  if (new_state == read_anything::mojom::ReadAnythingDistillationState::
+                       kDistillationWithContent) {
+    MaybeTriggerPendingPdfTranslation();
+  }
 }
 
 void ReadAnythingUntrustedPageHandler::OnGetVoicePackInfo(
@@ -833,47 +940,48 @@ bool ReadAnythingUntrustedPageHandler::IsObservingTree(
     return false;
   }
 
-  content::WebContents* contents = !!pdf_observer_
-                                       ? pdf_observer_->web_contents()
-                                       : main_observer_->web_contents();
+  content::WebContents* contents = GetWebContents();
 
   if (!contents) {
     return false;
   }
 
-  bool are_contents_pdf =
-      chrome_pdf::features::IsOopifPdfEnabled()
-          ? !!extensions::mime_handler::MimeHandlerStreamManager::
-                 FromWebContents(contents)
-          : !!pdf_observer_;
-
-  if (!are_contents_pdf) {
-    return rfh == contents->GetPrimaryMainFrame();
+  if (!IsPdfContents(contents, !!pdf_observer_)) {
+    // `contents` is the main observed contents here.
+    content::RenderFrameHost* main_frame = contents->GetPrimaryMainFrame();
+    return rfh == main_frame || IsSameOriginSubframe(rfh, main_frame) ||
+           IsWhatsNewEmbeddedContentFrame(rfh, main_frame);
   }
 
   content::RenderFrameHost* pdf_rfh =
       chrome_pdf::features::IsOopifPdfEnabled()
           ? pdf_frame_util::FindFullPagePdfExtensionHost(contents)
           : pdf_frame_util::FindPdfChildFrame(contents->GetPrimaryMainFrame());
-  return pdf_rfh && rfh == pdf_rfh;
+  if (!pdf_rfh) {
+    return false;
+  }
+  if (rfh == pdf_rfh) {
+    return true;
+  }
+
+  // For OOPIF PDFs, `pdf_rfh` is the extension host, while PDF content lives
+  // in its child frame. Accept both so requests targeting either the extension
+  // host or the content frame succeed.
+  return chrome_pdf::features::IsOopifPdfEnabled() &&
+         rfh == pdf_frame_util::FindPdfChildFrame(pdf_rfh);
 }
 
 bool ReadAnythingUntrustedPageHandler::AreActionsAllowedInTree(
     const ui::AXTreeID& tree_id) const {
   content::RenderFrameHost* rfh =
       content::RenderFrameHost::FromAXTreeID(tree_id);
-  if (!rfh) {
+  if (!rfh || rfh->IsErrorDocument()) {
     return false;
   }
 
   content::WebContents* contents = GetWebContents();
-  bool are_contents_pdf =
-      chrome_pdf::features::IsOopifPdfEnabled()
-          ? !!extensions::mime_handler::MimeHandlerStreamManager::
-                 FromWebContents(contents)
-          : !!pdf_observer_;
-
-  return are_contents_pdf || rfh->GetLastCommittedURL().SchemeIsHTTPOrHTTPS();
+  return IsPdfContents(contents, !!pdf_observer_) ||
+         rfh->GetLastCommittedURL().SchemeIsHTTPOrHTTPS();
 }
 
 void ReadAnythingUntrustedPageHandler::OnLineSpaceChange(
@@ -903,86 +1011,62 @@ void ReadAnythingUntrustedPageHandler::OnLinksEnabledChanged(bool enabled) {
       prefs::kAccessibilityReadAnythingLinksEnabled, enabled);
 }
 
-std::string ReadAnythingUntrustedPageHandler::GetDisplayLanguage() {
-  std::string source_lang = current_language_code_;
-
-  content::WebContents* main_contents = GetWebContents();
-  if (!main_contents) {
-    return source_lang;
-  }
-
-  ChromeTranslateClient* main_client =
-      ChromeTranslateClient::FromWebContents(main_contents);
-  if (!main_client) {
-    return source_lang;
-  }
-
-  const translate::LanguageState& main_language_state =
-      main_client->GetLanguageState();
-
-  // Use the main page's translated language if it has already been translated.
-  if (main_language_state.IsPageTranslated()) {
-    return main_language_state.current_language();
-  }
-
-  // Fall back to the main page's source language if ours is unknown.
-  if (source_lang.empty() || source_lang == "und" || source_lang == "und-und") {
-    return main_language_state.source_language();
-  }
-
-  return source_lang;
-}
-
 void ReadAnythingUntrustedPageHandler::OnTranslationRequested() {
   if (!features::IsReadAnythingTranslateEntryPointEnabled()) {
     mojo::ReportBadMessage("Translate entry point not enabled");
     return;
   }
-  content::WebContents* side_panel_contents = web_ui_->GetWebContents();
-  if (!side_panel_contents) {
+
+  // Translating the tab also translates the content displayed in reading mode:
+  // while reading mode is open, ContentTranslateDriver dispatches the
+  // translation to both the tab's and the side panel's TranslateAgent. See
+  // ContentTranslateDriver::GetTranslateAgents().
+  content::WebContents* main_contents =
+      main_observer_ ? main_observer_->web_contents() : nullptr;
+  if (!main_contents) {
     return;
   }
 
-  ChromeTranslateClient::CreateForWebContents(side_panel_contents);
   ChromeTranslateClient* translate_client =
-      ChromeTranslateClient::FromWebContents(side_panel_contents);
+      ChromeTranslateClient::FromWebContents(main_contents);
   if (!translate_client) {
     return;
   }
 
   translate::TranslateManager* translate_manager =
       translate_client->GetTranslateManager();
-  if (translate_manager) {
-    // Sync the article's true source language to the side panel
-    // TranslateManager (using the current language if the main page was
-    // translated) and preserve any existing target language before opening the
-    // Translate bubble.
-    std::optional<std::string> target_lang;
-    translate::LanguageState* language_state =
-        translate_manager->GetLanguageState();
-
-    if (language_state) {
-      if (language_state->IsPageTranslated()) {
-        target_lang = language_state->current_language();
-      }
-
-      std::string source_lang = GetDisplayLanguage();
-
-      if (target_lang == source_lang) {
-        target_lang = std::nullopt;
-      }
-      if (!source_lang.empty() && source_lang != "und" &&
-          source_lang != "und-und") {
-        language_state->LanguageDetermined(
-            source_lang, /*page_level_translation_criteria_met=*/true);
-      }
-      language_state->set_translation_pending(false);
-    }
-    translate_manager->ShowTranslateUI(/*source_code=*/std::nullopt,
-                                       /*target_code=*/target_lang,
-                                       /*auto_translate=*/true,
-                                       /*triggered_from_menu=*/true);
+  if (!translate_manager) {
+    return;
   }
+
+  translate_manager->ShowTranslateUI(/*auto_translate=*/true,
+                                     /*triggered_from_menu=*/true);
+}
+
+void ReadAnythingUntrustedPageHandler::OnSendFeedback() {
+  if (!features::IsReadAnythingSendFeedbackEnabled()) {
+    receiver_.ReportBadMessage("Send feedback entry point not enabled");
+    return;
+  }
+
+  if (!HasTransientUserActivation()) {
+    return;
+  }
+
+  if (!tab_->IsActivated() || !tab_->GetBrowserWindowInterface()) {
+    return;
+  }
+
+  // TODO(crbug.com/579419628): Use chrome::CanShowFeedback(profile_) via
+  // ReadAnythingUntrustedUI loadTimeData to hide the send feedback entry point
+  // when feedback is disabled by policy.
+  chrome::ShowFeedbackPage(
+      tab_->GetBrowserWindowInterface(), feedback::kFeedbackSourceReadingMode,
+      /*description_template=*/std::string(),
+      /*description_placeholder_text=*/
+      l10n_util::GetStringUTF8(IDS_READING_MODE_FEEDBACK_PLACEHOLDER),
+      /*category_tag=*/kFeedbackCategoryTag,
+      /*extra_diagnostics=*/std::string());
 }
 
 void ReadAnythingUntrustedPageHandler::OnImagesEnabledChanged(bool enabled) {
@@ -1039,7 +1123,17 @@ void ReadAnythingUntrustedPageHandler::OnLineFocusChanged(
     profile_->GetPrefs()->SetInteger(
         prefs::kAccessibilityReadAnythingLastNonDisabledLineFocus,
         static_cast<size_t>(last_non_disabled_line_focus));
+
+    if (current_line_focus == read_anything::mojom::LineFocus::kOff) {
+      return;
+    }
+
+    iph_controller_->OnLineFocusTurnedOn();
   }
+}
+
+void ReadAnythingUntrustedPageHandler::OnAiPlaybackStateChanged(bool enabled) {
+  iph_controller_->OnAiPlaybackStateChanged(enabled);
 }
 
 void ReadAnythingUntrustedPageHandler::UpdateForListenToThisPage(
@@ -1071,9 +1165,7 @@ void ReadAnythingUntrustedPageHandler::OnReadAloudAudioStateChange(
   }
   // Show the tab audio icon when read aloud is playing, and hide it when it
   // stops playing.
-  content::WebContents* contents = !!pdf_observer_
-                                       ? pdf_observer_->web_contents()
-                                       : main_observer_->web_contents();
+  content::WebContents* contents = GetWebContents();
   if (contents) {
     if (playing) {
       audible_closure_ = contents->MarkAudible();
@@ -1170,7 +1262,11 @@ void ReadAnythingUntrustedPageHandler::OnImageDataDownloaded(
     const GURL& image_url,
     const std::vector<SkBitmap>& bitmaps,
     const std::vector<gfx::Size>& sizes) {
-  CHECK(IsObservingTree(target_tree_id));
+  // The target frame may have been removed or navigated while the image was
+  // downloading.
+  if (!IsObservingTree(target_tree_id)) {
+    return;
+  }
   if (!ui::IsValidAXNodeIDFromRenderer(node_id)) {
     VLOG(1) << "Received image data download notification with invalid node_id "
             << node_id;
@@ -1202,6 +1298,14 @@ void ReadAnythingUntrustedPageHandler::ScrollToTargetNode(
         ReadAnythingRendererRequestResult::kNotObservedTree);
     VLOG(1) << "Received scroll request for tree_id " << target_tree_id
             << " which is not currently being observed";
+    return;
+  }
+
+  // If the render frame is in an errored state, return early instead of
+  // scrolling to avoid performing actions on invalid nodes.
+  content::RenderFrameHost* rfh =
+      content::RenderFrameHost::FromAXTreeID(target_tree_id);
+  if (!rfh || rfh->IsErrorDocument()) {
     return;
   }
 
@@ -1237,6 +1341,7 @@ void ReadAnythingUntrustedPageHandler::CloseUI() {
     return;
   }
   read_anything_controller_->CloseImmersiveUI(
+      base::PassKey<ReadAnythingUntrustedPageHandler>(),
       ReadAnythingCloseReason::kClosedByUser);
 }
 
@@ -1253,7 +1358,9 @@ void ReadAnythingUntrustedPageHandler::SendPinStateRequest() {
 
 void ReadAnythingUntrustedPageHandler::TogglePresentation() {
   CHECK(read_anything_controller_);
-  read_anything_controller_->TogglePresentation(/*is_user_initiated=*/true);
+  read_anything_controller_->TogglePresentation(
+      base::PassKey<ReadAnythingUntrustedPageHandler>(),
+      /*is_user_initiated=*/true);
 }
 
 void ReadAnythingUntrustedPageHandler::AckReadingModeHidden() {
@@ -1273,24 +1380,66 @@ void ReadAnythingUntrustedPageHandler::OnSpeechEngineStalled() {
 #endif
 }
 
-void ReadAnythingUntrustedPageHandler::RequestReadabilityDistillation() {
+void ReadAnythingUntrustedPageHandler::RequestReadabilityDistillation(
+    read_anything::mojom::ReadabilityDistillationReason reason,
+    RequestReadabilityDistillationCallback callback) {
+  // Use a local wrapper so any early return or teardown runs the callback with
+  // (kIneligible, "", "") on destruction, containing fallback handling to this
+  // function scope.
+  auto wrapped_callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+      std::move(callback),
+      read_anything::mojom::ReadabilityDistillationResult::kIneligible, "", "");
   if (!features::IsReadAnythingWithReadabilityEnabled()) {
     return;
   }
-  readability_distillation_tree_change_start_time_ = base::TimeTicks();
-  RequestDomDistillerDistillation(tab_->GetContents());
+
+  // Keep timing renderer-initiated tree-change distillations; exclude
+  // re-distillations from the metric.
+  const base::TimeTicks tree_change_start_time =
+      reason ==
+              read_anything::mojom::ReadabilityDistillationReason::kTreeChanged
+          ? readability_distillation_tree_change_start_time_
+          : base::TimeTicks();
+  // Tree changes reset this state in OnActiveAXTreeIDChanged(), but
+  // same-document (SPA) navigations reuse the AXTree ID, so reset here.
+  ResetReadabilityState();
+  readability_distillation_tree_change_start_time_ = tree_change_start_time;
+
+  // Registered before starting so a result can never arrive before the
+  // callback. Resetting replies (kIneligible, "", "") if distillation never
+  // started.
+  readability_callback_ = std::move(wrapped_callback);
+  if (!MaybeStartReadabilityDistillation(tab_->GetContents())) {
+    readability_callback_.Reset();
+  }
 }
 
-void ReadAnythingUntrustedPageHandler::PerformActionInTargetTree(
+void ReadAnythingUntrustedPageHandler::ResetReadabilityState() {
+  if (readability_callback_) {
+    std::move(readability_callback_)
+        .Run(read_anything::mojom::ReadabilityDistillationResult::kCancelled,
+             "", "");
+  }
+  readability_callback_.Reset();
+  if (distiller_delegate_) {
+    distiller_delegate_->CancelDistillation();
+  }
+  readability_title_.reset();
+  readability_content_.reset();
+  readability_distillation_tree_change_start_time_ = base::TimeTicks();
+}
+
+bool ReadAnythingUntrustedPageHandler::PerformActionInTargetTree(
     const ui::AXActionData& data) {
   CHECK(IsObservingTree(data.target_tree_id));
   ui::AXActionHandlerBase* handler =
       ui::AXActionHandlerRegistry::GetInstance()->GetActionHandler(
           data.target_tree_id);
   if (!handler) {
-    return;
+    return false;
   }
   handler->PerformAction(data);
+  return true;
 }
 
 void ReadAnythingUntrustedPageHandler::OnSelectionChange(
@@ -1298,9 +1447,11 @@ void ReadAnythingUntrustedPageHandler::OnSelectionChange(
     ui::AXNodeID anchor_node_id,
     int anchor_offset,
     ui::AXNodeID focus_node_id,
-    int focus_offset) {
+    int focus_offset,
+    OnSelectionChangeCallback callback) {
   if (!HasTransientUserActivation()) {
     VLOG(1) << "OnSelectionChange failed with no transient user activation";
+    std::move(callback).Run(false);
     return;
   }
 
@@ -1310,6 +1461,7 @@ void ReadAnythingUntrustedPageHandler::OnSelectionChange(
         ReadAnythingRendererRequestResult::kNotObservedTree);
     VLOG(1) << "Received selection request for tree_id " << target_tree_id
             << " which is not currently being observed";
+    std::move(callback).Run(false);
     return;
   }
 
@@ -1318,6 +1470,7 @@ void ReadAnythingUntrustedPageHandler::OnSelectionChange(
         kRendererSelectionRequestHistogram,
         ReadAnythingRendererRequestResult::kDisallowedActionOnPageType);
     VLOG(1) << "Ignoring selection change on non-HTTP/HTTPS frame";
+    std::move(callback).Run(false);
     return;
   }
 
@@ -1326,11 +1479,13 @@ void ReadAnythingUntrustedPageHandler::OnSelectionChange(
   if (!ui::IsValidAXNodeIDFromRenderer(anchor_node_id)) {
     VLOG(1) << "Received selection request with invalid anchor_node_id "
             << anchor_node_id;
+    std::move(callback).Run(false);
     return;
   }
   if (!ui::IsValidAXNodeIDFromRenderer(focus_node_id)) {
     VLOG(1) << "Received selection request with invalid focus_node_id "
             << focus_node_id;
+    std::move(callback).Run(false);
     return;
   }
   ui::AXActionData action_data;
@@ -1341,40 +1496,44 @@ void ReadAnythingUntrustedPageHandler::OnSelectionChange(
   action_data.focus_node_id = focus_node_id;
   action_data.focus_offset = focus_offset;
 
-  PerformActionInTargetTree(action_data);
+  std::move(callback).Run(PerformActionInTargetTree(action_data));
 }
 
-void ReadAnythingUntrustedPageHandler::OnCollapseSelection() {
+void ReadAnythingUntrustedPageHandler::OnCollapseSelection(
+    OnCollapseSelectionCallback callback) {
   if (!HasTransientUserActivation()) {
     VLOG(1) << "OnCollapseSelection failed with no transient user activation";
+    std::move(callback).Run(false);
     return;
   }
 
-  if (main_observer_ && main_observer_->web_contents()) {
-    main_observer_->web_contents()->CollapseSelection();
+  if (!main_observer_ || !main_observer_->web_contents()) {
+    std::move(callback).Run(false);
+    return;
   }
+  main_observer_->web_contents()->CollapseSelection();
+  std::move(callback).Run(true);
 }
 
 void ReadAnythingUntrustedPageHandler::OnDistillationStatus(
     read_anything::mojom::DistillationStatus status,
     int word_count) {
-  if (last_open_trigger_ == ReadAnythingOpenTrigger::kOmniboxChip) {
-    if (status != read_anything::mojom::DistillationStatus::kStillRunning) {
-      last_open_trigger_ = ReadAnythingOpenTrigger::kUnknown;
-      base::UmaHistogramEnumeration(
-          "Accessibility.ReadAnything.DistillationStatusAfterOmnibox", status);
-      base::UmaHistogramCustomCounts(
-          "Accessibility.ReadAnything.WordsDistilledAfterOmnibox", word_count,
-          1, kMaxWordsDistilled, kWordsDistilledBuckets);
+  if (last_open_trigger_ == ReadAnythingOpenTrigger::kOmniboxChip &&
+      status != read_anything::mojom::DistillationStatus::kStillRunning) {
+    last_open_trigger_ = ReadAnythingOpenTrigger::kUnknown;
+    base::UmaHistogramEnumeration(
+        "Accessibility.ReadAnything.DistillationStatusAfterOmnibox", status);
+    base::UmaHistogramCustomCounts(
+        "Accessibility.ReadAnything.WordsDistilledAfterOmnibox", word_count, 1,
+        kMaxWordsDistilled, kWordsDistilledBuckets);
 
-      content::WebContents* web_contents =
-          main_observer_ ? main_observer_->web_contents() : nullptr;
-      if (web_contents && web_contents->GetPrimaryMainFrame()) {
-        ukm::builders::Accessibility_ReadAnything_OmniboxEntryPointDistillation(
-            web_contents->GetPrimaryMainFrame()->GetPageUkmSourceId())
-            .SetDistillationStatus(static_cast<int>(status))
-            .Record(ukm::UkmRecorder::Get());
-      }
+    content::WebContents* web_contents =
+        main_observer_ ? main_observer_->web_contents() : nullptr;
+    if (web_contents && web_contents->GetPrimaryMainFrame()) {
+      ukm::builders::Accessibility_ReadAnything_OmniboxEntryPointDistillation(
+          web_contents->GetPrimaryMainFrame()->GetPageUkmSourceId())
+          .SetDistillationStatus(static_cast<int>(status))
+          .Record(ukm::UkmRecorder::Get());
     }
   }
 }
@@ -1393,8 +1552,7 @@ void ReadAnythingUntrustedPageHandler::Activate(
     bool active,
     ReadAnythingOpenTrigger open_trigger,
     std::optional<base::TimeDelta> completed_session_duration) {
-  active_ = active;
-  if (active_) {
+  if (active) {
     last_open_trigger_ = open_trigger;
     if (features::IsReadAnythingImprovedUiEnabled() &&
         open_trigger == ReadAnythingOpenTrigger::kListenToThisPageContextMenu) {
@@ -1419,6 +1577,14 @@ void ReadAnythingUntrustedPageHandler::Activate(
     // it was previously marked as hidden.
     OnGetPresentationState();
     RestoreSettingsFromPrefs();
+
+    // The content may have been distilled before Reading Mode was shown, in
+    // which case the distillation state won't change again.
+    if (distillation_state_ ==
+        read_anything::mojom::ReadAnythingDistillationState::
+            kDistillationWithContent) {
+      MaybeTriggerPendingPdfTranslation();
+    }
   }
   if (!active && !tab_will_detach_) {
     if (features::IsReadAnythingImprovedUiEnabled() &&
@@ -1456,12 +1622,22 @@ void ReadAnythingUntrustedPageHandler::OnReadingModePresenterChanged() {
 }
 
 // This is used for same-document navigations (such as fragment navigations) in
-// the main frame.
+// the main frame, as well as subframe navigations that may commit a late-
+// arriving PDF content frame.
 void ReadAnythingUntrustedPageHandler::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
-  if (!navigation_handle->IsInPrimaryMainFrame() ||
-      !navigation_handle->HasCommitted() ||
-      !navigation_handle->IsSameDocument()) {
+  if (!navigation_handle->HasCommitted()) {
+    return;
+  }
+
+  if (!navigation_handle->IsInPrimaryMainFrame()) {
+    if (IsFullPagePdf(main_observer_->web_contents())) {
+      CheckForPdfContentFrame();
+    }
+    return;
+  }
+
+  if (!navigation_handle->IsSameDocument()) {
     return;
   }
 
@@ -1477,10 +1653,28 @@ void ReadAnythingUntrustedPageHandler::DidFinishNavigation(
   page_->OnMainFrameSameDocumentNavigation(url);
 }
 
+void ReadAnythingUntrustedPageHandler::RenderFrameDeleted(
+    content::RenderFrameHost* render_frame_host) {
+#if BUILDFLAG(ENABLE_PDF)
+  // `is_pdf_with_frame_` is otherwise only cleared on a primary page change, so
+  // clear it here to resume looking for a PDF content frame if the current one
+  // goes away without a navigation, such as when the plugin crashes.
+  content::WebContents* contents = GetWebContents();
+  if (is_pdf_with_frame_ && contents &&
+      render_frame_host == FindPdfContentFrame(contents)) {
+    is_pdf_with_frame_ = false;
+  }
+#endif  // BUILDFLAG(ENABLE_PDF)
+}
+
 void ReadAnythingUntrustedPageHandler::OnTabDiscarded(
     tabs::TabInterface* tab,
     content::WebContents* old_contents,
     content::WebContents* new_contents) {
+  // The old contents, and its translate driver, will be destroyed, so stop
+  // observing it now. The new contents is observed in
+  // OnActiveAXTreeIDChanged().
+  translate_observer_.Reset();
   main_observer_ = std::make_unique<ReadAnythingWebContentsObserver>(
       weak_factory_.GetSafeRef(), new_contents, kReadAnythingAXMode);
   SetUpPdfObserver();
@@ -1517,62 +1711,82 @@ void ReadAnythingUntrustedPageHandler::OnScreenAIServiceInitialized(
 
 void ReadAnythingUntrustedPageHandler::SetUpPdfObserver() {
 #if BUILDFLAG(ENABLE_PDF)
-  pdf_observer_.reset();
   content::WebContents* main_contents = main_observer_->web_contents();
   // TODO(crbug.com/340272378): When removing this feature flag, delete
   // `pdf_observer_` and integrate ReadAnythingWebContentsObserver with
   // ReadAnythingUntrustedPageHandler.
-  if (!chrome_pdf::features::IsOopifPdfEnabled()) {
+  content::WebContents* pdf_contents = nullptr;
+  // Only adopt the PDF guest when the tab itself is a full-page PDF. An
+  // embedded PDF on an HTML page is not distilled as a PDF.
+  if (!chrome_pdf::features::IsOopifPdfEnabled() &&
+      IsFullPagePdf(main_contents)) {
     std::vector<content::WebContents*> inner_contents =
         main_contents ? main_contents->GetInnerWebContents()
                       : std::vector<content::WebContents*>();
     // Check if this is a pdf.
     if (AreInnerContentsPdfContent(inner_contents)) {
-      pdf_observer_ = std::make_unique<ReadAnythingWebContentsObserver>(
-          weak_factory_.GetSafeRef(), inner_contents[0], kReadAnythingAXMode);
+      pdf_contents = inner_contents[0];
     }
+  }
+
+  // Constructing the observer resets accessibility on the contents, which
+  // generates another round of accessibility events. Because this runs on every
+  // accessibility event until a PDF content frame is found, only recreate the
+  // observer when the contents to observe actually changes.
+  if (pdf_observer_ && pdf_observer_->web_contents() == pdf_contents) {
+    return;
+  }
+
+  pdf_observer_.reset();
+  if (pdf_contents) {
+    pdf_observer_ = std::make_unique<ReadAnythingWebContentsObserver>(
+        weak_factory_.GetSafeRef(), pdf_contents, kReadAnythingAXMode);
   }
 #endif  // BUILDFLAG(ENABLE_PDF)
 }
 
 void ReadAnythingUntrustedPageHandler::CheckIfActiveAXTreeChangedToPdf() {
 #if BUILDFLAG(ENABLE_PDF)
-  content::WebContents* contents = !!pdf_observer_
-                                       ? pdf_observer_->web_contents()
-                                       : main_observer_->web_contents();
-  bool are_contents_pdf =
-      chrome_pdf::features::IsOopifPdfEnabled()
-          ? !!extensions::mime_handler::MimeHandlerStreamManager::
-                 FromWebContents(contents)
-          : !!pdf_observer_;
-  if (!are_contents_pdf) {
+  content::WebContents* contents = GetWebContents();
+  if (!IsPdfContents(contents, !!pdf_observer_)) {
     return;
   }
 
-  content::RenderFrameHost* pdf_rfh =
-      chrome_pdf::features::IsOopifPdfEnabled()
-          ? pdf_frame_util::FindFullPagePdfExtensionHost(contents)
-          : pdf_frame_util::FindPdfChildFrame(contents->GetPrimaryMainFrame());
+  content::RenderFrameHost* pdf_rfh = FindPdfContentFrame(contents);
+
   if (pdf_rfh) {
     is_pdf_with_frame_ = true;
-    is_waiting_for_pdf_frame_ = false;
     VLOG(1) << "Sending pdf tree with id " << pdf_rfh->GetAXTreeID();
+    forwarded_tree_ids_.insert(pdf_rfh->GetAXTreeID());
     page_->OnActiveAXTreeIDChanged(
         pdf_rfh->GetAXTreeID(), pdf_rfh->GetPageUkmSourceId(), /*is_pdf=*/true);
   } else {
     VLOG(1) << "Page is a pdf, but has no pdf frame yet";
-    is_waiting_for_pdf_frame_ = true;
   }
 #endif  // BUILDFLAG(ENABLE_PDF)
 }
 
 void ReadAnythingUntrustedPageHandler::OnActiveAXTreeIDChanged() {
-  is_pdf_with_frame_ = false;
-  is_waiting_for_pdf_frame_ = false;
+  // Reset the distillation from the previous tree/page so its result is not
+  // used as stale content.
+  ResetReadabilityState();
+  // Likewise, the previous page's distillation state no longer applies, and
+  // distillation of the new page hasn't been attempted yet. Otherwise, e.g.
+  // Activate() could trigger a pending PDF translation before the new page's
+  // content is distilled. This is set directly rather than through
+  // OnDistillationStateChanged(), whose validation of the renderer's messages
+  // still rejects kNotAttempted after initialization. Leave kUndefined alone:
+  // this is also called from the constructor, before the renderer reports its
+  // initial kNotAttempted state, which must still be accepted.
+  if (distillation_state_ !=
+      read_anything::mojom::ReadAnythingDistillationState::kUndefined) {
+    distillation_state_ =
+        read_anything::mojom::ReadAnythingDistillationState::kNotAttempted;
+  }
 
-  content::WebContents* contents = !!pdf_observer_
-                                       ? pdf_observer_->web_contents()
-                                       : main_observer_->web_contents();
+  is_pdf_with_frame_ = false;
+
+  content::WebContents* contents = GetWebContents();
   if (!contents) {
     VLOG(1) << "Sending unknown tree because no contents. Used pdf: "
             << !!pdf_observer_;
@@ -1581,37 +1795,24 @@ void ReadAnythingUntrustedPageHandler::OnActiveAXTreeIDChanged() {
     return;
   }
 
-  // Observe the new contents so we can get the page language once it's
-  // determined.
-  if (ChromeTranslateClient* translate_client =
-          ChromeTranslateClient::FromWebContents(contents)) {
-    translate::TranslateDriver* driver = translate_client->GetTranslateDriver();
-    const std::string& source_language =
-        translate_client->GetLanguageState().source_language();
-    // If we're not already observing these web contents, then observe them so
-    // we can get a callback when the language is determined. Otherwise, we
-    // just set the language directly.
-    if (!translate_observation_.IsObservingSource(driver)) {
-      translate_observation_.Reset();
-      translate_observation_.Observe(driver);
-      // The language may have already been determined before (and then
-      // unobserved), so send the language if it's not empty. If the language
-      // is outdated, we'll receive a call in OnLanguageDetermined and send
-      // the updated lang there.
-      if (!source_language.empty()) {
-        SetLanguageCode(source_language);
-      }
-    } else {
-      SetLanguageCode(source_language);
-    }
-  }
+  // Observe the new contents to get the page language once it's
+  // determined, and observe the tab's translation state so the page knows
+  // whether the content it displays is translated. Translation state is
+  // observed on the tab's contents rather than pdf_observer_'s, because the
+  // translation of the content displayed in reading mode (including PDFs) is
+  // driven by the tab's ContentTranslateDriver. See OnTranslationRequested().
+  // The tab's contents exists here: either it's `contents`, or it contains
+  // `contents` as the PDF's inner contents.
+  translate_observer_.Observe(
+      /*tab_contents=*/CHECK_DEREF(main_observer_->web_contents()),
+      /*web_contents=*/*contents);
 
 #if BUILDFLAG(ENABLE_PDF)
   CheckIfActiveAXTreeChangedToPdf();
-  // If is_waiting_for_pdf_frame_ is true, we know the current page is a pdf,
-  // but we don't have the necessary info to call OnActiveAXTreeIDChanged
-  // accurately, so wait until the pdf frame is loaded.
-  if (is_pdf_with_frame_ || is_waiting_for_pdf_frame_) {
+  // If the current page is a pdf, either OnActiveAXTreeIDChanged was already
+  // sent above with the pdf frame's tree id, or the pdf frame has not loaded
+  // yet and OnActiveAXTreeIDChanged will be called once the pdf frame commits.
+  if (IsPdfContents(contents, !!pdf_observer_)) {
     return;
   }
 #endif  // BUILDFLAG(ENABLE_PDF)
@@ -1619,18 +1820,13 @@ void ReadAnythingUntrustedPageHandler::OnActiveAXTreeIDChanged() {
   content::RenderFrameHost* rfh = contents->GetPrimaryMainFrame();
   VLOG(1) << "Sending non-pdf tree with id " << rfh->GetAXTreeID();
 
-  // TODO: crbug.com/444029483- Phrase highlighting currently doesn't work
-  // with the TS text segmentation method. Therefore, it doesn't work with
-  // Readability. Until phrase highlighting works with TSTextSegmentation,
-  // default to using Screen2x when the phrase highlighting flag is enabled.
   // Google Docs enforces a strict TrustedHTML Content Security Policy that
   // causes Readability script injection to fail. Avoid requesting Readability
   // distillation when on Google Docs so the renderer can fall back cleanly to
   // Screen2x.
   const bool use_readability =
       features::IsReadAnythingWithReadabilityEnabled() && !is_pdf_with_frame_ &&
-      !IsGoogleDocs(contents->GetLastCommittedURL()) &&
-      !features::IsReadAnythingReadAloudPhraseHighlightingEnabled();
+      !IsGoogleDocs(contents->GetLastCommittedURL());
 
   if (use_readability) {
     readability_distillation_tree_change_start_time_ = base::TimeTicks::Now();
@@ -1650,6 +1846,7 @@ void ReadAnythingUntrustedPageHandler::OnActiveAXTreeIDChanged() {
 
   // When IsReadAnythingWithReadabilityEnabled is true, we still send AX tree
   // for text selection.
+  forwarded_tree_ids_.insert(rfh->GetAXTreeID());
   page_->OnActiveAXTreeIDChanged(rfh->GetAXTreeID(), rfh->GetPageUkmSourceId(),
                                  /*is_pdf=*/false);
 
@@ -1662,52 +1859,58 @@ void ReadAnythingUntrustedPageHandler::OnActiveAXTreeIDChanged() {
     // Now that the renderer is prepped, request distillation. If this fails
     // synchronously, the renderer will correctly fall back to Screen2x for the
     // *new* tree.
-    RequestDomDistillerDistillation(contents);
+    MaybeStartReadabilityDistillation(contents);
   }
 }
-void ReadAnythingUntrustedPageHandler::RequestDomDistillerDistillation(
+
+bool ReadAnythingUntrustedPageHandler::MaybeStartReadabilityDistillation(
     content::WebContents* content) {
-  if (!features::IsReadAnythingWithReadabilityEnabled() ||
-      features::IsReadAnythingReadAloudPhraseHighlightingEnabled() ||
-      is_pdf_with_frame_ ||
-      (content && IsGoogleDocs(content->GetLastCommittedURL()))) {
-    return;
+  if (!content || !features::IsReadAnythingWithReadabilityEnabled() ||
+      IsPdfContents(content, !!pdf_observer_) ||
+      IsGoogleDocs(content->GetLastCommittedURL())) {
+    return false;
   }
 
   // Don't attempt Readability distillation in automated tests. This is to prevent internal
   // scripts from leaking.
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kEnableAutomation)) {
-    page_->OnReadabilityDistillationStateChanged(
-        read_anything::mojom::ReadAnythingDistillationState::
-            kDistillationEmpty);
-    page_->UpdateContent("", "");
-    return;
+    MaybeSendEmptyReadabilityContent();
+    return false;
   }
 
   const GURL& url = content->GetLastCommittedURL();
   RecordDistillationSchemeHistogram(url);
 
-  if (!url.SchemeIsHTTPOrHTTPS()) {
-    VLOG(1) << kReadAnythingPrefix << ": URL is not HTTP/HTTPS, skipping for "
+  content::RenderFrameHost* rfh = content->GetPrimaryMainFrame();
+  if (!url.SchemeIsHTTPOrHTTPS() || !rfh || rfh->IsErrorDocument()) {
+    VLOG(1) << kReadAnythingPrefix
+            << ": URL is not HTTP/HTTPS or is error document, skipping for "
             << url.spec();
-    // Call UpdateContent with empty values so status can be updated from show
-    // loading to no content.
-    page_->OnReadabilityDistillationStateChanged(
-        read_anything::mojom::ReadAnythingDistillationState::
-            kDistillationEmpty);
-    page_->UpdateContent("", "");
-    return;
+    MaybeSendEmptyReadabilityContent();
+    return false;
   }
 
   dom_distiller::DomDistillerService* dom_distiller_service =
-      dom_distiller::DomDistillerServiceFactory::GetForBrowserContext(
+      reader_mode::ReaderModeServiceFactory::GetForBrowserContext(
           content->GetBrowserContext());
-  DCHECK(dom_distiller_service);
-  page_->OnReadabilityDistillationStateChanged(
-      read_anything::mojom::ReadAnythingDistillationState::
-          kDistillationInProgress);
+  CHECK(dom_distiller_service, base::NotFatalUntil::M162);
+  if (!features::IsReadAnythingDistillerRefactorEnabled()) {
+    page_->OnReadabilityDistillationStateChanged(
+        read_anything::mojom::ReadAnythingDistillationState::
+            kDistillationInProgress);
+  }
   distiller_delegate_->StartDistillation(dom_distiller_service, content);
+  return true;
+}
+
+void ReadAnythingUntrustedPageHandler::MaybeSendEmptyReadabilityContent() {
+  if (features::IsReadAnythingDistillerRefactorEnabled()) {
+    return;
+  }
+  page_->OnReadabilityDistillationStateChanged(
+      read_anything::mojom::ReadAnythingDistillationState::kDistillationEmpty);
+  page_->UpdateContent(/*title=*/"", /*content=*/"");
 }
 
 void ReadAnythingUntrustedPageHandler::RecordListenToThisPagePlaybackMetric(
@@ -1759,27 +1962,38 @@ void ReadAnythingUntrustedPageHandler::RecordDistillationSchemeHistogram(
 void ReadAnythingUntrustedPageHandler::ProcessDistilledArticle(
     const dom_distiller::DistilledArticleProto* article_proto) {
   CHECK(features::IsReadAnythingWithReadabilityEnabled() &&
-        !is_pdf_with_frame_ &&
-        !features::IsReadAnythingReadAloudPhraseHighlightingEnabled());
+        !is_pdf_with_frame_);
   if (article_proto && article_proto->pages_size() > 0) {
-    dom_distiller_title_ = article_proto->title();
+    readability_title_ = article_proto->title();
 
     std::string full_html;
     for (const auto& page : article_proto->pages()) {
       full_html.append(page.html());
     }
-    dom_distiller_content_ = full_html;
+    readability_content_ = full_html;
 
     // If distillation successfully produced content, update the distillation
     // state and notify the renderer.
-    if (dom_distiller_content()) {
-      page_->OnReadabilityDistillationStateChanged(
-          read_anything::mojom::ReadAnythingDistillationState::
-              kDistillationWithContent);
-      page_->UpdateContent(dom_distiller_title().value_or(""),
-                           dom_distiller_content().value());
+    if (readability_content()) {
+      // `readability_callback_` Set only for renderer-requested distillations.
+      if (readability_callback_) {
+        const std::string& content = readability_content().value();
+        std::move(readability_callback_)
+            .Run(content.empty() ? read_anything::mojom::
+                                       ReadabilityDistillationResult::kEmpty
+                                 : read_anything::mojom::
+                                       ReadabilityDistillationResult::kSuccess,
+                 readability_title().value_or(""), content);
+      }
+      if (!features::IsReadAnythingDistillerRefactorEnabled()) {
+        page_->OnReadabilityDistillationStateChanged(
+            read_anything::mojom::ReadAnythingDistillationState::
+                kDistillationWithContent);
+        page_->UpdateContent(readability_title().value_or(""),
+                             readability_content().value());
+      }
       if (features::IsReadAnythingDistillationQualityEvaluationEnabled()) {
-        EvaluateDistillationQuality(dom_distiller_content().value());
+        EvaluateDistillationQuality(readability_content().value());
       }
       if (!readability_distillation_tree_change_start_time_.is_null()) {
         base::UmaHistogramMediumTimes(
@@ -1790,10 +2004,12 @@ void ReadAnythingUntrustedPageHandler::ProcessDistilledArticle(
       }
     }
   } else {
-    page_->OnReadabilityDistillationStateChanged(
-        read_anything::mojom::ReadAnythingDistillationState::
-            kDistillationEmpty);
-    page_->UpdateContent(/*title=*/"", /*content=*/"");
+    if (readability_callback_) {
+      std::move(readability_callback_)
+          .Run(read_anything::mojom::ReadabilityDistillationResult::kEmpty,
+               /*title=*/"", /*content=*/"");
+    }
+    MaybeSendEmptyReadabilityContent();
   }
   // Reset the tree-change start time once distillation has finished,
   // regardless of whether content was successfully produced.
@@ -1951,14 +2167,45 @@ void ReadAnythingUntrustedPageHandler::SetLanguageCode(
   }
 }
 
-void ReadAnythingUntrustedPageHandler::OnLanguageDetermined(
-    const translate::LanguageDetectionDetails& details) {
-  SetLanguageCode(details.adopted_language);
+void ReadAnythingUntrustedPageHandler::SendTranslationState(
+    bool is_translated) {
+  if (!base::FeatureList::IsEnabled(translate::kEnableTranslatePdf)) {
+    return;
+  }
+  // The page's translation state only changes through this message, so only
+  // send it if it's different from what the page already has.
+  if (last_sent_is_translated_ == is_translated) {
+    return;
+  }
+  last_sent_is_translated_ = is_translated;
+  page_->OnTranslationStateChanged(is_translated);
 }
 
-void ReadAnythingUntrustedPageHandler::OnTranslateDriverDestroyed(
-    translate::TranslateDriver* driver) {
-  translate_observation_.Reset();
+void ReadAnythingUntrustedPageHandler::MaybeTriggerPendingPdfTranslation() {
+#if BUILDFLAG(ENABLE_PDF)
+  if (!base::FeatureList::IsEnabled(translate::kEnableTranslatePdf)) {
+    return;
+  }
+  // The pending translation is on the tab's ContentTranslateDriver, which is
+  // attached to the tab's contents rather than to the inner contents hosting
+  // the PDF.
+  content::WebContents* tab_contents = tab_ ? tab_->GetContents() : nullptr;
+  if (!tab_contents) {
+    return;
+  }
+  if (auto* driver =
+          translate::ContentTranslateDriver::FromWebContents(tab_contents)) {
+    // This is a no-op unless a PDF translation is pending.
+    driver->MaybeTriggerPendingPdfTranslation();
+  }
+#endif  // BUILDFLAG(ENABLE_PDF)
+}
+
+void ReadAnythingUntrustedPageHandler::SendTranslationFailed() {
+  if (!base::FeatureList::IsEnabled(translate::kEnableTranslatePdf)) {
+    return;
+  }
+  page_->OnTranslationFailed();
 }
 
 void ReadAnythingUntrustedPageHandler::LogExtensionState() {
@@ -2016,6 +2263,12 @@ void ReadAnythingUntrustedPageHandler::LogTextStyle() {
           prefs->GetInteger(prefs::kAccessibilityReadAnythingLetterSpacing));
   base::UmaHistogramEnumeration("Accessibility.ReadAnything.LetterSpacing",
                                 letter_spacing);
+  base::UmaHistogramBoolean(
+      "Accessibility.ReadAnything.Images",
+      prefs->GetBoolean(prefs::kAccessibilityReadAnythingImagesEnabled));
+  base::UmaHistogramBoolean(
+      "Accessibility.ReadAnything.Links",
+      prefs->GetBoolean(prefs::kAccessibilityReadAnythingLinksEnabled));
   if (features::IsReadAnythingLineFocusEnabled()) {
     auto line_focus = static_cast<read_anything::mojom::LineFocus>(
         prefs->GetInteger(prefs::kAccessibilityReadAnythingLineFocus));

@@ -23,7 +23,6 @@ from xml.etree import ElementTree
 STRINGS_DIR = sys.argv[2] + 'components/strings/'
 
 
-# pylint: disable=inconsistent-return-statements
 def extract_accept_langs(filename):
     tree = ElementTree.parse(STRINGS_DIR + filename).getroot()
     for child in tree:
@@ -31,16 +30,15 @@ def extract_accept_langs(filename):
             return tree.get('lang'), child.text
 
 
-# pylint: enable=inconsistent-return-statements
-
-
 def gen_accept_langs_table():
     accept_langs_list = [
-        extract_accept_langs(filename) for filename in os.listdir(STRINGS_DIR)
+        extract_accept_langs(filename)
+        for filename in os.listdir(STRINGS_DIR)
         if re.match(r'components_locale_settings_\S+.xtb', filename)
     ]
-    return dict(accept_langs for accept_langs in accept_langs_list
-                if accept_langs)
+    return dict(
+        accept_langs for accept_langs in accept_langs_list if accept_langs
+    )
 
 
 HEADER = "static NSDictionary* const acceptLangs = @{"
@@ -56,7 +54,7 @@ FOOTER = "};"
 def main():
     with open(sys.argv[1] + "/accept_languages_table.h", "w+") as f:
         print(HEADER, file=f)
-        for (locale, accept_langs) in gen_accept_langs_table().items():
+        for locale, accept_langs in gen_accept_langs_table().items():
             print(LINE(locale, accept_langs), file=f)
         print(FOOTER, file=f)
 

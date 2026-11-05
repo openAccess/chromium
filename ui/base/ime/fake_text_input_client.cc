@@ -42,7 +42,7 @@ void FakeTextInputClient::set_source_id(ukm::SourceId source_id) {
 
 void FakeTextInputClient::SetTextAndSelection(const std::u16string& text,
                                               gfx::Range selection) {
-  DCHECK_LE(selection_.end(), text.length());
+  CHECK_LE(selection_.end(), text.length(), base::NotFatalUntil::M163);
   text_ = text;
   selection_ = selection;
 }
@@ -259,18 +259,16 @@ void FakeTextInputClient::GetActiveTextInputControlLayoutBounds(
     std::optional<gfx::Rect>* control_bounds,
     std::optional<gfx::Rect>* selection_bounds) {}
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(IS_WIN)
 ui::TextInputClient::EditingContext
 FakeTextInputClient::GetTextEditingContext() {
   return EditingContext{.page_url = url_};
 }
-#endif
 
-#if BUILDFLAG(IS_WIN)
 void FakeTextInputClient::SetActiveCompositionForAccessibility(
     const gfx::Range& range,
     const std::u16string& active_composition_text,
     bool is_composition_committed) {}
-#endif
+#endif  // BUILDFLAG(IS_WIN)
 
 }  // namespace ui

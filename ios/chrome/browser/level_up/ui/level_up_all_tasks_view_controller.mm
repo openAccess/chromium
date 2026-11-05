@@ -48,7 +48,7 @@ NSString* const kCategoriesSectionIdentifier = @"CategoriesSection";
   [super viewDidLoad];
 
   self.view.backgroundColor = [UIColor colorNamed:kSecondaryBackgroundColor];
-  self.title = l10n_util::GetNSString(IDS_IOS_LEVEL_UP_SEE_ALL);
+  self.title = l10n_util::GetNSString(IDS_IOS_LEVEL_UP_ALL_TASKS_TITLE);
 
   UICollectionViewCompositionalLayoutConfiguration* config =
       [[UICollectionViewCompositionalLayoutConfiguration alloc] init];
@@ -106,6 +106,11 @@ NSString* const kCategoriesSectionIdentifier = @"CategoriesSection";
 
 - (void)addCategoryCard:(LevelUpCategory*)category {
   [_categories addObject:category];
+  // Expand the completed section by default when all tasks in `category` are
+  // completed so the category card does not appear completely collapsed.
+  if (category.activeTasks.count == 0) {
+    [_expandedCategories addObject:category.title];
+  }
 }
 
 #pragma mark - Private

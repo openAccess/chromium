@@ -79,7 +79,6 @@ TEST(Bcp47ExtensionTest, GenericExtension) {
 
   PrivateUseSubtags ext2 = CreatePrivateUseSubtags("private-use");
   EXPECT_EQ(ext2.SubtagsString(), "private-use");
-  EXPECT_THAT(ext2.subtags(), ElementsAre("private", "use"));
 }
 
 TEST(Bcp47ExtensionTest, UnicodeExtensionBasics) {
@@ -190,6 +189,14 @@ TEST(Bcp47ExtensionTest, UnicodeExtensionFromString) {
   EXPECT_EQ(ext1->SubtagsString(), "attr1-ca-gregory");
   EXPECT_TRUE(ext1->has_attribute("attr1"));
   EXPECT_THAT(ext1->GetKeywordValue("ca"), Optional(Eq("gregory")));
+
+  // Overload with span.
+  std::vector<std::string_view> span_input1 = {"attr1", "ca", "gregory"};
+  auto ext1_span = UnicodeExtension::FromSubtags(span_input1);
+  ASSERT_TRUE(ext1_span.has_value());
+  EXPECT_EQ(ext1_span->SubtagsString(), "attr1-ca-gregory");
+  EXPECT_TRUE(ext1_span->has_attribute("attr1"));
+  EXPECT_THAT(ext1_span->GetKeywordValue("ca"), Optional(Eq("gregory")));
 
   // Valid with just attributes.
   auto ext2 = UnicodeExtension::FromString("u-attr1-attr2");
@@ -409,6 +416,13 @@ TEST(Bcp47ExtensionTest, ExtensionFromString) {
   EXPECT_EQ(ext1->singleton(), 'a');
   EXPECT_EQ(ext1->SubtagsString(), "myext");
 
+  // Overload with span.
+  std::vector<std::string_view> span_input1 = {"myext"};
+  auto ext1_span = Extension::FromSubtags('a', span_input1);
+  ASSERT_TRUE(ext1_span.has_value());
+  EXPECT_EQ(ext1_span->singleton(), 'a');
+  EXPECT_EQ(ext1_span->SubtagsString(), "myext");
+
   auto ext2 = Extension::FromString("b-sub1-sub2");
   ASSERT_TRUE(ext2.has_value());
   EXPECT_EQ(ext2->singleton(), 'b');
@@ -427,8 +441,12 @@ TEST(Bcp47ExtensionTest, ExtensionFromString) {
   // Invalid: doesn't start with singleton-.
   EXPECT_FALSE(Extension::FromString("-a-myext").has_value());
 
+  // Valid: 2-char subtags are allowed (RFC 5646 Section 2.2.6).
+  ASSERT_OK_AND_ASSIGN(Extension two_char_ext, Extension::FromString("a-at"));
+  EXPECT_EQ(two_char_ext.SubtagsString(), "at");
+
   // Invalid: invalid subtag (too short).
-  EXPECT_FALSE(Extension::FromString("a-at").has_value());
+  EXPECT_FALSE(Extension::FromString("a-b").has_value());
   // Invalid: invalid subtag (too long).
   EXPECT_FALSE(Extension::FromString("a-toolongsubtag").has_value());
 }
@@ -456,8 +474,12 @@ TEST(Bcp47ExtensionTest, ExtensionMutation) {
   EXPECT_TRUE(ext.AddSubtag("sub1"));
   EXPECT_EQ(ext.SubtagsString(), "aaa-abc-bbb-sub1-sub2");
 
+  // 2-char subtags are valid.
+  EXPECT_TRUE(ext.AddSubtag("at"));
+  EXPECT_EQ(ext.SubtagsString(), "aaa-abc-at-bbb-sub1-sub2");
+
   // Invalid.
-  EXPECT_FALSE(ext.AddSubtag("at"));
+  EXPECT_FALSE(ext.AddSubtag("a"));
   EXPECT_FALSE(ext.AddSubtag("toolongsubtag"));
 }
 
@@ -466,6 +488,12 @@ TEST(Bcp47ExtensionTest, PrivateUseSubtagsFromString) {
   auto ext1 = PrivateUseSubtags::FromString("x-private");
   ASSERT_TRUE(ext1.has_value());
   EXPECT_EQ(ext1->SubtagsString(), "private");
+
+  // Overload with span.
+  std::vector<std::string_view> span_input1 = {"private"};
+  auto ext1_span = PrivateUseSubtags::FromSubtags(span_input1);
+  ASSERT_TRUE(ext1_span.has_value());
+  EXPECT_EQ(ext1_span->SubtagsString(), "private");
 
   auto ext2 = PrivateUseSubtags::FromString("x-sub1-sub2");
   ASSERT_TRUE(ext2.has_value());

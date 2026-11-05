@@ -4,11 +4,14 @@
 
 #include "base/i18n/timezone.h"
 
+#include <cmath>
 #include <memory>
 #include <string>
 
 #include "base/check.h"
-#include "base/i18n/tag_converters.h"
+#include "base/features.h"
+#include "base/i18n/icu4c_tag_converter.h"  // nogncheck
+#include "base/i18n/language_tag.h"
 #include "base/i18n/unicodestring.h"
 #include "base/memory/ptr_util.h"
 #include "base/notreached.h"
@@ -97,11 +100,19 @@ TimeZone TimeZone::FromString(std::string_view id) {
 
 // static
 TimeZone TimeZone::GMT() {
+  if (features::IsI18nOptimizationsEnabled()) {
+    return TimeZone(std::make_unique<Impl>(
+        base::WrapUnique(icu::TimeZone::getGMT()->clone())));
+  }
   return FromString("GMT");
 }
 
 // static
 TimeZone TimeZone::Unknown() {
+  if (features::IsI18nOptimizationsEnabled()) {
+    return TimeZone(std::make_unique<Impl>(
+        base::WrapUnique(icu::TimeZone::getUnknown().clone())));
+  }
   return FromString("Etc/Unknown");
 }
 
@@ -161,11 +172,16 @@ void TimeZone::GetOffset(base::Time time,
                          bool is_local,
                          base::TimeDelta& raw_offset,
                          base::TimeDelta& dst_offset) const {
+  const double ms = time.InMillisecondsFSinceUnixEpoch();
+  if (!std::isfinite(ms)) {
+    raw_offset = GetRawOffset();
+    dst_offset = base::TimeDelta();
+    return;
+  }
   int32_t raw_ms = 0;
   int32_t dst_ms = 0;
   UErrorCode status = U_ZERO_ERROR;
-  impl_->icu_timezone->getOffset(time.InMillisecondsFSinceUnixEpoch(), is_local,
-                                 raw_ms, dst_ms, status);
+  impl_->icu_timezone->getOffset(ms, is_local, raw_ms, dst_ms, status);
   DCHECK(U_SUCCESS(status));
   raw_offset = base::Milliseconds(raw_ms);
   dst_offset = base::Milliseconds(dst_ms);
@@ -176,9 +192,12 @@ bool TimeZone::UseDaylightTime() const {
 }
 
 bool TimeZone::InDaylightTime(base::Time time) const {
+  const double ms = time.InMillisecondsFSinceUnixEpoch();
+  if (!std::isfinite(ms)) {
+    return false;
+  }
   UErrorCode status = U_ZERO_ERROR;
-  bool in_daylight = impl_->icu_timezone->inDaylightTime(
-      time.InMillisecondsFSinceUnixEpoch(), status);
+  bool in_daylight = impl_->icu_timezone->inDaylightTime(ms, status);
   DCHECK(U_SUCCESS(status));
   return in_daylight;
 }
@@ -190,8 +209,8 @@ bool TimeZone::operator==(const TimeZone& other) const {
   return *impl_->icu_timezone == *other.impl_->icu_timezone;
 }
 
-bool TimeZone::operator!=(const TimeZone& other) const {
-  return !(*this == other);
+std::strong_ordering TimeZone::operator<=>(const TimeZone& other) const {
+  return impl_->id <=> other.impl_->id;
 }
 
 TimeZone::TimeZone(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {

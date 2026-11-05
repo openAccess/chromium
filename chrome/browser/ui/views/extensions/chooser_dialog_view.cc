@@ -36,7 +36,7 @@ ChooserDialogView::ChooserDialogView(
   // | Get help                         |
   // ------------------------------------
 
-  DCHECK(chooser_controller);
+  CHECK(chooser_controller, base::NotFatalUntil::M162);
 
   SetUseDefaultFillLayout(true);
   SetButtonLabel(ui::mojom::DialogButton::kOk,
@@ -83,6 +83,10 @@ views::View* ChooserDialogView::GetInitiallyFocusedView() {
   return GetCancelButton();
 }
 
+bool ChooserDialogView::ShouldAllowKeyEventsDuringInputProtection() const {
+  return false;
+}
+
 void ChooserDialogView::OnSelectionChanged() {
   DialogModelChanged();
 }
@@ -100,8 +104,8 @@ namespace extensions {
 void ShowConstrainedDeviceChooserDialog(
     content::WebContents* web_contents,
     std::unique_ptr<permissions::ChooserController> controller) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(controller);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(controller, base::NotFatalUntil::M162);
 
   web_modal::WebContentsModalDialogManager* manager =
       web_modal::WebContentsModalDialogManager::FromWebContents(web_contents);
@@ -114,7 +118,7 @@ void ShowConstrainedDeviceChooserDialog(
 }  //  namespace extensions
 
 void ChromeUsbDevicePermissionsPrompt::ShowDialogViews() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   std::unique_ptr<permissions::ChooserController> chooser_controller(
       new DevicePermissionsDialogController(

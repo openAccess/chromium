@@ -4,8 +4,10 @@
 
 #include "components/performance_manager/public/performance_manager.h"
 
+#include <memory>
 #include <utility>
 
+#include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "components/performance_manager/embedder/performance_manager_registry.h"
@@ -16,19 +18,22 @@
 #include "components/performance_manager/public/graph/page_node.h"
 #include "components/performance_manager/public/render_frame_host_proxy.h"
 #include "components/performance_manager/test_support/performance_manager_browsertest_harness.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/surface_embed_connector.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/url_loader_interceptor.h"
 #include "content/shell/browser/shell.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "url/gurl.h"
 #include "url/origin.h"
 
 namespace performance_manager {
@@ -223,55 +228,6 @@ IN_PROC_BROWSER_TEST_F(PerformanceManagerBrowserTest, OriginAboutBlankFrame) {
                   main_frame_origin, IsOpaqueDerivedFrom(main_frame_origin)));
 }
 
-// TODO(crbug.com/540481427): Add more tests that exercise GetMainFrameNodes()
-// and GetPrimaryMainFrameNode() in the presence of fenced frames.
-class PerformanceManagerFencedFrameBrowserTest
-    : public PerformanceManagerBrowserTest {
- public:
-  PerformanceManagerFencedFrameBrowserTest() = default;
-  ~PerformanceManagerFencedFrameBrowserTest() override = default;
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
-  content::WebContents* GetWebContents() { return shell()->web_contents(); }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(PerformanceManagerFencedFrameBrowserTest,
-                       NoParentFrameNode) {
-  auto initial_url = embedded_test_server()->GetURL("/empty.html");
-  ASSERT_TRUE(NavigateToURL(shell(), initial_url));
-
-  PerformanceManagerTabHelper* tab_helper =
-      PerformanceManagerTabHelper::FromWebContents(GetWebContents());
-  ASSERT_TRUE(tab_helper);
-
-  // Main frame, which is going to be the fenced frame's outer document.
-  content::RenderFrameHost* main_frame_host =
-      GetWebContents()->GetPrimaryMainFrame();
-  FrameNodeImpl* main_frame_node = tab_helper->GetFrameNode(main_frame_host);
-
-  // Load a fenced frame.
-  GURL fenced_frame_url =
-      embedded_test_server()->GetURL("/fenced_frames/title1.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(main_frame_host,
-                                                   fenced_frame_url);
-  FrameNodeImpl* fenced_frame_node =
-      tab_helper->GetFrameNode(fenced_frame_host);
-
-  // Make sure |fenced_frame_node| does not have a parent frame node.
-  EXPECT_EQ(fenced_frame_node->parent_frame_node(), nullptr);
-
-  // The outer document of the fenced frame is available.
-  EXPECT_EQ(fenced_frame_node->parent_or_outer_document_or_embedder(),
-            main_frame_node);
-}
-
 IN_PROC_BROWSER_TEST_F(PerformanceManagerBrowserTest,
                        SetViewportIntersectionForSurfaceEmbedChild) {
   content::WebContents* parent_contents = shell()->web_contents();
@@ -316,6 +272,38 @@ IN_PROC_BROWSER_TEST_F(PerformanceManagerBrowserTest,
 
   // The embedder frame node should be null after detaching.
   EXPECT_FALSE(page_node->GetEmbedderFrameNode());
+}
+
+// The embedder frame node can leave the graph while a SurfaceEmbed child is
+// still attached, e.g. when the embedder's renderer process dies. Destroying
+// the child afterwards, which detaches it, must not crash.
+IN_PROC_BROWSER_TEST_F(PerformanceManagerBrowserTest,
+                       DestroySurfaceEmbedChildAfterEmbedderProcessDied) {
+  content::WebContents* parent_contents = shell()->web_contents();
+  ASSERT_TRUE(NavigateToURL(shell(), GURL("about:blank")));
+
+  content::WebContents::CreateParams create_params(
+      parent_contents->GetBrowserContext());
+  std::unique_ptr<content::WebContents> child_contents =
+      content::WebContents::Create(create_params);
+
+  content::SurfaceEmbedConnector::Attach(
+      child_contents.get(), parent_contents->GetPrimaryMainFrame(), nullptr);
+
+  base::WeakPtr<PageNode> page_node =
+      PerformanceManager::GetPrimaryPageNodeForWebContents(
+          child_contents.get());
+  ASSERT_TRUE(page_node);
+  ASSERT_TRUE(page_node->GetEmbedderFrameNode());
+
+  // Removing the embedder's main frame node from the graph severs the
+  // embedding relationship.
+  content::CrashTab(parent_contents);
+  ASSERT_TRUE(page_node);
+  EXPECT_FALSE(page_node->GetEmbedderFrameNode());
+
+  child_contents.reset();
+  EXPECT_FALSE(page_node);
 }
 
 }  // namespace performance_manager

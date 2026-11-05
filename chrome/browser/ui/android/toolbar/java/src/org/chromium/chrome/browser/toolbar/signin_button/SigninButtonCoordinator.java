@@ -23,7 +23,6 @@ import org.chromium.chrome.browser.tabmodel.IncognitoStateProvider;
 import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.R;
 import org.chromium.chrome.browser.toolbar.top.ToolbarChildButton;
-import org.chromium.chrome.browser.toolbar.top.ToolbarUtils;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
@@ -149,8 +148,6 @@ public class SigninButtonCoordinator extends ToolbarChildButton implements UrlFo
      */
     @Override
     public int updateVisibility(int availableWidth) {
-        assert ToolbarUtils.isToolbarTabletResizeRefactorEnabled();
-
         // Cannot measure accurately if inflation has not happened yet.
         maybeInflateView();
 
@@ -165,7 +162,7 @@ public class SigninButtonCoordinator extends ToolbarChildButton implements UrlFo
                     View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
             width = mView.getMeasuredWidth();
         } else {
-            width = mContext.getResources().getDimensionPixelSize(R.dimen.toolbar_button_width);
+            width = mContext.getResources().getDimensionPixelSize(R.dimen.signin_button_width);
         }
         setHasSpaceToShow(availableWidth >= width);
         return Math.min(availableWidth, width);

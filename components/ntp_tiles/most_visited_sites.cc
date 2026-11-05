@@ -23,12 +23,15 @@
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "components/ntp_tiles/constants.h"
+#include "components/ntp_tiles/custom_links_pref_names.h"
 #include "components/ntp_tiles/features.h"
 #include "components/ntp_tiles/icon_cacher.h"
 #include "components/ntp_tiles/metrics.h"
+#include "components/ntp_tiles/popular_sites_pref_names.h"
 #include "components/ntp_tiles/pref_names.h"
 #include "components/ntp_tiles/switches.h"
 #include "components/pref_registry/pref_registry_syncable.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
 #include "components/search/ntp_features.h"
 #include "components/supervised_user/core/common/buildflags.h"
@@ -46,6 +49,12 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 // GN doesn't understand conditional includes, so we need nogncheck here.
 #include "extensions/common/constants.h"  // nogncheck
+#endif
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_CHROMEOS)
+#include "components/ntp_tiles/enterprise/enterprise_shortcuts_pref_names.h"
+#include "components/ntp_tiles/enterprise/enterprise_shortcuts_store.h"
 #endif
 
 using history::TopSites;
@@ -242,6 +251,10 @@ bool MostVisitedSites::DoesSourceExist(TileSource source) const {
       return custom_links_manager_ != nullptr;
     case TileSource::ENTERPRISE_SHORTCUTS:
       return enterprise_shortcuts_manager_ != nullptr;
+    case TileSource::AI_MODE:
+      // Native code should not be aware of AI mode except when recording
+      // metrics. See crbug.com/573235952.
+      return false;
   }
   NOTREACHED();
 }
@@ -994,6 +1007,40 @@ bool MostVisitedSites::IsNtpTileFromPreinstalledApp(GURL url) {
 #else
   return false;
 #endif
+}
+
+// static
+bool MostVisitedSites::HasEnterpriseShortcuts(const PrefService& prefs) {
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_CHROMEOS)
+  return EnterpriseShortcutsStore::HasPolicyLinks(prefs);
+#else
+  return false;
+#endif
+}
+
+// static
+void MostVisitedSites::AddEnterpriseShortcutsObserver(
+    PrefChangeRegistrar& registrar,
+    const base::RepeatingClosure& callback) {
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_CHROMEOS)
+  registrar.Add(prefs::kEnterpriseShortcutsPolicyList, callback);
+#endif
+}
+
+// static
+void MostVisitedSites::AddCustomLinksObserver(
+    PrefChangeRegistrar& registrar,
+    CustomLinksScope scope,
+    const base::RepeatingClosure& callback) {
+  const bool is_desktop = scope == CustomLinksScope::kDesktop;
+  registrar.Add(
+      is_desktop ? prefs::kCustomLinksList : prefs::kCustomLinksListMobile,
+      callback);
+  registrar.Add(is_desktop ? prefs::kCustomLinksInitialized
+                           : prefs::kCustomLinksInitializedMobile,
+                callback);
 }
 
 // static

@@ -30,6 +30,10 @@
 #include "ui/views/view_tracker.h"
 #include "ui/views/widget/unique_widget_ptr.h"
 
+namespace base::i18n {
+class LanguageTag;
+}  // namespace base::i18n
+
 namespace views {
 class ImageButton;
 class ImageView;
@@ -54,7 +58,7 @@ class QuickAnswersView : public chromeos::ReadWriteCardsView {
   struct Params {
    public:
     std::string title;
-    Design design = Design::kCurrent;
+    bool is_magic_boost = false;
     // Set true to show a Google internal variant of Qucik Answers UI.
     bool is_internal = false;
   };
@@ -94,7 +98,7 @@ class QuickAnswersView : public chromeos::ReadWriteCardsView {
   std::optional<Intent> GetIntent() const;
 
   void SetResult(const StructuredResult& structured_result,
-                 const std::string& application_locale);
+                 const base::i18n::LanguageTag& application_locale);
 
   void ShowRetryView();
 
@@ -134,7 +138,7 @@ class QuickAnswersView : public chromeos::ReadWriteCardsView {
 
   base::WeakPtr<QuickAnswersUiController> controller_;
   std::string title_;
-  const Design design_;
+  const bool is_magic_boost_;
   std::optional<Intent> intent_;
   const bool is_internal_;
 

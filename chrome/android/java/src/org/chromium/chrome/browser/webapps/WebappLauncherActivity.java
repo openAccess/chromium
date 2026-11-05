@@ -35,11 +35,14 @@ import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntent
 import org.chromium.chrome.browser.browserservices.intents.WebappConstants;
 import org.chromium.chrome.browser.browserservices.intents.WebappIntentUtils;
 import org.chromium.chrome.browser.customtabs.BaseCustomTabActivity;
+import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.CustomTabLocator;
+import org.chromium.chrome.browser.customtabs.content.WebAppLaunchHandler;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.firstrun.FirstRunFlowSequencer;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.intents.BrowserIntentUtils;
+import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.webapk.lib.client.WebApkValidator;
 import org.chromium.components.webapps.ShortcutSource;
 import org.chromium.webapk.lib.common.WebApkConstants;
@@ -271,7 +274,12 @@ public class WebappLauncherActivity extends Activity {
         if (webappMac == null) {
             return false;
         }
-        byte[] macBytes = Base64.decode(webappMac, Base64.DEFAULT);
+        byte[] macBytes;
+        try {
+            macBytes = Base64.decode(webappMac, Base64.DEFAULT);
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
         String encodedIcon = IntentUtils.safeGetStringExtra(intent, WebappConstants.EXTRA_ICON);
 
         int verificationResult =
@@ -290,10 +298,30 @@ public class WebappLauncherActivity extends Activity {
             Activity launchingActivity, Intent intent, LaunchData launchData) {
         Intent launchIntent = createIntentToLaunchForWebapp(intent, launchData);
 
+        // Strip spoofed extra
+        IntentUtils.safeRemoveExtra(
+                launchIntent, CustomTabIntentDataProvider.EXTRA_VERIFIED_SHARE_DATA);
+
+        // Stash verified share data if present
+        if (launchData.isForWebApk && isShareIntent(intent)) {
+            WebAppLaunchHandler.copyShareDataPermissionsForWebApk(
+                    launchingActivity, intent, launchIntent, launchData.webApkPackageName);
+        }
+
         WarmupManager.getInstance()
                 .maybePrefetchDnsForUrlInBackground(launchingActivity, launchData.url);
 
-        IntentUtils.safeStartActivity(launchingActivity, launchIntent);
+        int reparentTabId = IntentHandler.getTabId(launchIntent);
+        boolean started = IntentUtils.safeStartActivity(launchingActivity, launchIntent);
+        if (launchData.isForWebApk && reparentTabId != Tab.INVALID_TAB_ID) {
+            // Only detach the tab once the WebappActivity that adopts it has been started, so the
+            // tab stays in its window if the launch fails.
+            if (started) {
+                WebApkReparentingHandler.getInstance().detachAndRegisterTabAndClear(reparentTabId);
+            } else {
+                WebApkReparentingHandler.getInstance().clear();
+            }
+        }
         if (IntentUtils.isIntentForNewTaskOrNewDocument(launchIntent)) {
             launchingActivity.finishAndRemoveTask();
         } else {
@@ -352,14 +380,13 @@ public class WebappLauncherActivity extends Activity {
     }
 
     /**
-     * Checks whether or not the MAC is present and valid for the web app shortcut.
+     * Checks whether or not the intent was sent by Chrome.
      *
-     * <p>The MAC is used to prevent malicious apps from launching Chrome into a full screen
-     * Activity for phishing attacks (among other reasons).
+     * <p>The intent verification is used to confirm that the request to launch Chrome into a full
+     * screen Activity was initiated by Chrome.
      *
-     * @param url The URL for the web app.
-     * @param mac MAC to compare the URL against. See {@link WebappAuthenticator}.
-     * @return Whether the MAC is valid for the URL.
+     * @param intent The intent to verify.
+     * @return Whether the intent sender was Chrome.
      */
     private static boolean wasIntentFromChrome(Intent intent) {
         return IntentHandler.wasIntentSenderChrome(intent);
@@ -386,6 +413,21 @@ public class WebappLauncherActivity extends Activity {
 
         if (launchData.isForWebApk) {
             WebappIntentUtils.copyWebApkLaunchIntentExtras(intent, launchIntent);
+            int reparentTabId =
+                    WebApkReparentingHandler.getInstance().getTabIdForReparenting(intent);
+            if (reparentTabId != Tab.INVALID_TAB_ID) {
+                // WebAPK launches always have an ID, see extractLaunchData().
+                assert launchData.id != null;
+                if (CustomTabLocator.findRunningWebappActivityWithId(launchData.id) != null) {
+                    // A running WebappActivity may receive this launch in onNewIntent(), which
+                    // doesn't adopt reparented tabs, so launch it without reparenting instead.
+                    WebApkReparentingHandler.getInstance().clear();
+                } else {
+                    IntentHandler.setTabId(launchIntent, reparentTabId);
+                    launchIntent.putExtra(IntentHandler.EXTRA_SKIP_LOAD_ON_REPARENTING, true);
+                    IntentUtils.addTrustedIntentExtras(launchIntent);
+                }
+            }
         } else {
             WebappIntentUtils.copyWebappLaunchIntentExtras(intent, launchIntent);
             launchIntent.putExtra(WebappConstants.EXTRA_IS_ICON_TRUSTED, launchData.isIconTrusted);
@@ -421,5 +463,15 @@ public class WebappLauncherActivity extends Activity {
         new Handler()
                 .postDelayed(
                         () -> IntentUtils.safeStartActivity(appContext, intent), launchDelayMs);
+    }
+
+    private static boolean isShareIntent(Intent intent) {
+        return Intent.ACTION_SEND.equals(intent.getAction())
+                || Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction())
+                || !TextUtils.isEmpty(
+                        IntentUtils.safeGetStringExtra(
+                                intent,
+                                WebApkConstants
+                                        .EXTRA_WEBAPK_SELECTED_SHARE_TARGET_ACTIVITY_CLASS_NAME));
     }
 }

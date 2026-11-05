@@ -24,7 +24,10 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetFeatureMap;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 
@@ -40,6 +43,12 @@ import org.chromium.ui.base.WindowAndroid;
  */
 @NullMarked
 class AuthenticatorIncognitoConfirmationBottomsheet {
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder()
+                    .setUserInitiated(true)
+                    .setUserCritical(UserCriticalFeature.AUTHENTICATOR_INCOGNITO_CONFIRMATION)
+                    .build();
+
     private final WebContents mWebContents;
     private @Nullable BottomSheetController mController;
     private @MonotonicNonNull Runnable mPositiveCallback;
@@ -53,6 +62,14 @@ class AuthenticatorIncognitoConfirmationBottomsheet {
                 @Override
                 public void onSheetStateChanged(int newState, int reason) {
                     if (newState == BottomSheetController.SheetState.HIDDEN) {
+                        // With deferred content swaps, the hidden content is still the current
+                        // content while observers are notified, so ignore other contents being
+                        // hidden. Without, the controller already replaced it by this point.
+                        if (BottomSheetFeatureMap.sBottomSheetDeferContentSwapOnHidden.isEnabled()
+                                && assumeNonNull(mController).getCurrentSheetContent()
+                                        != mBottomSheetContent) {
+                            return;
+                        }
                         close(false);
                     }
                 }
@@ -90,7 +107,24 @@ class AuthenticatorIncognitoConfirmationBottomsheet {
                 }
 
                 @Override
-                public void destroy() {}
+                public void destroy() {
+                    if (!BottomSheetFeatureMap.sBottomSheetDeferContentSwapOnHidden.isEnabled()) {
+                        return;
+                    }
+                    // The controller destroys contents it drops without showing them, such as
+                    // requests cleared by clearRequestsAndHide(). Those never observe HIDDEN, so
+                    // close the sheet here. The current content is closed once it is hidden.
+                    if (assumeNonNull(mController).getCurrentSheetContent()
+                            == mBottomSheetContent) {
+                        return;
+                    }
+                    close(/* success= */ false);
+                }
+
+                @Override
+                public BottomSheetType getSheetType() {
+                    return BOTTOM_SHEET_TYPE;
+                }
 
                 @Override
                 public int getPriority() {
@@ -136,11 +170,19 @@ class AuthenticatorIncognitoConfirmationBottomsheet {
 
     public void close(boolean success) {
         if (!mIsShowing) return;
+        boolean resetShowingEarly =
+                BottomSheetFeatureMap.sBottomSheetDeferContentSwapOnHidden.isEnabled();
+        if (resetShowingEarly) {
+            // Hiding the content can destroy it right away, which closes the sheet again.
+            mIsShowing = false;
+        }
 
         assumeNonNull(mController);
         mController.removeObserver(mBottomSheetObserver);
         mController.hideContent(/* content= */ mBottomSheetContent, /* animate= */ true);
-        mIsShowing = false;
+        if (!resetShowingEarly) {
+            mIsShowing = false;
+        }
 
         if (success) {
             assumeNonNull(mPositiveCallback).run();

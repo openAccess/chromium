@@ -4,11 +4,11 @@
 
 #include "content/browser/service_worker/service_worker_client.h"
 
+#include <ranges>
 #include <set>
 #include <variant>
 
 #include "base/check_is_test.h"
-#include "base/containers/adapters.h"
 #include "base/debug/alias.h"
 #include "base/debug/crash_logging.h"
 #include "base/metrics/histogram_functions.h"
@@ -19,6 +19,7 @@
 #include "content/browser/loader/navigation_url_loader_impl.h"
 #include "content/browser/preloading/prefetch/prefetch_features.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/service_worker/service_worker_container_host.h"
@@ -370,7 +371,8 @@ void ServiceWorkerClient::RemoveMatchingRegistration(
 
 ServiceWorkerRegistration* ServiceWorkerClient::MatchRegistration() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  for (const auto& registration : base::Reversed(matching_registrations_)) {
+  for (const auto& registration :
+       std::views::reverse(matching_registrations_)) {
     if (registration.second->is_uninstalled()) {
       continue;
     }
@@ -503,6 +505,14 @@ ServiceWorkerClient::CommitResponse(
     auto* rfh = RenderFrameHostImpl::FromID(*rfh_id);
     // `rfh` may be null in tests (but it should not happen in production).
     if (rfh) {
+      // Cache the ancestor frame type (whether the frame is nested within a
+      // fenced frame) at commit time while the RenderFrameHost is still alive.
+      // This caches it on the ServiceWorkerClient, so it remains accessible
+      // even if the RenderFrameHost is later destroyed before a service
+      // worker registration IPC is processed.
+      if (rfh->IsNestedWithinFencedFrame()) {
+        ancestor_frame_type_ = blink::mojom::AncestorFrameType::kFencedFrame;
+      }
       rfh->AddServiceWorkerClient(client_uuid(),
                                   weak_ptr_factory_.GetWeakPtr());
       // A window client hosted by a privileged WebContents (see //chrome's
@@ -535,6 +545,14 @@ ServiceWorkerClient::CommitResponse(
       base::PassKey<ServiceWorkerClient>(), AsWeakPtr(), container_info,
       policy_container_policies, std::move(coep_reporter),
       std::move(dip_reporter), std::move(ukm_source_id));
+
+  // Pre-commit request interception may attach a controller before the real
+  // response arrive. If the final policies make the client ineligible, shed any
+  // attached controller and matching registrations.
+  if (!IsEligibleForServiceWorkerController()) {
+    SetControllerRegistration(nullptr, /*notify_controllerchange=*/false);
+    RemoveAllMatchingRegistrations();
+  }
 
   // `network_url_loader_factory_for_prefetch_` is no longer used after commit.
   network_url_loader_factory_for_prefetch_.reset();
@@ -760,6 +778,10 @@ bool ServiceWorkerClient::IsEligibleForServiceWorkerController() const {
   // A client hosted by a privileged WebContents that forbids service worker
   // control is permanently ineligible; this dominates every other check.
   if (disallows_service_worker_control_) {
+    return false;
+  }
+
+  if (container_host_ && !container_host_->HasValidSandboxFlags()) {
     return false;
   }
 

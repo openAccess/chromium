@@ -35,7 +35,6 @@ import "services/network/public/mojom/device_bound_sessions.mojom";
 import "services/network/public/mojom/devtools_observer.mojom";
 import "services/network/public/mojom/document_isolation_policy.mojom";
 import "services/network/public/mojom/fetch_api.mojom";
-import "services/network/public/mojom/first_party_sets_access_delegate.mojom";
 import "services/network/public/mojom/hash_value.mojom";
 import "services/network/public/mojom/host_resolver.mojom";
 import "services/network/public/mojom/http_cache_backend_file_operations.mojom";
@@ -61,6 +60,7 @@ import "services/network/public/mojom/proxy_lookup_client.mojom";
 import "services/network/public/mojom/proxy_resolving_socket.mojom";
 import "services/network/public/mojom/reporting_service.mojom";
 import "services/network/public/mojom/restricted_cookie_manager.mojom";
+import "services/network/public/mojom/restricted_device_bound_sessions.mojom";
 import "services/network/public/mojom/restricted_udp_socket.mojom";
 import "services/network/public/mojom/schemeful_site.mojom";
 import "services/network/public/mojom/shared_dictionary_access_observer.mojom";
@@ -86,6 +86,7 @@ import "services/network/public/mojom/web_transport.mojom";
 import "services/network/public/mojom/websocket.mojom";
 import "services/network/public/mojom/x509_certificate.mojom";
 import "services/proxy_resolver/public/mojom/proxy_resolver.mojom";
+import "services/proxy_resolver/public/mojom/system_proxy_resolver.mojom";
 import "url/mojom/origin.mojom";
 import "url/mojom/scheme_host_port.mojom";
 import "url/mojom/url.mojom";
@@ -98,6 +99,9 @@ import "services/network/public/mojom/p2p.mojom";
 
 [EnableIf=is_p2p_enabled]
 import "services/network/public/mojom/p2p_trusted.mojom";
+
+[EnableIf=enable_disk_cache_sql_backend]
+import "services/network/public/mojom/shared_http_cache_client.mojom";
 
 const uint32 kWebSocketOptionNone = 0;
 
@@ -220,6 +224,11 @@ interface TrustedURLLoaderHeaderClient {
   OnLoaderForCorsPreflightCreated(
       URLRequest request,
       pending_receiver<TrustedHeaderClient> header_client);
+
+  // Called when a URLLoader fails after resolving a remote endpoint, before
+  // `URLLoaderClient::OnComplete()` is dispatched.
+  OnLoaderFailedWithRemoteEndpoint(
+      int32 request_id, IPEndPoint remote_endpoint);
 };
 
 struct HttpAuthStaticNetworkContextParams {
@@ -379,7 +388,7 @@ struct NetworkContextParams {
   // Handles all proxy resolution logic if the current proxy config comes from
   // the operating system. Otherwise, or if this is not populated, proxy
   // resolution is handled by Chrome as normal.
-  [EnableIf=is_win|is_mac]
+  [EnableIf=is_win|is_mac|is_linux]
   pending_remote<proxy_resolver.mojom.SystemProxyResolver>?
       system_proxy_resolver;
 
@@ -595,14 +604,6 @@ struct NetworkContextParams {
   // typically calculated and set later via SetSharedDictionaryCacheMaxSize).
   // Ignored if `shared_dictionary_enabled` is false.
   mojo_base.mojom.ByteSize? shared_dictionary_cache_max_size;
-
-  // Parameters for constructing the FirstPartySetsAccessDelegate.
-  // |first_party_sets_access_delegate_params| is the initial configuration to
-  // use. If nullptr, uses the default configuration. Updated configurations
-  // can be passed in via |first_party_sets_access_delegate_receiver|.
-  FirstPartySetsAccessDelegateParams? first_party_sets_access_delegate_params;
-  pending_receiver<FirstPartySetsAccessDelegate>?
-      first_party_sets_access_delegate_receiver;
 
   // TODO(crbug.com/40777535): This flag is intended to be temporary and to be
   // removed (always enabled) in the future.
@@ -865,6 +866,17 @@ struct URLLoaderFactoryParams {
   // field once Chrome Platform Apps are gone.
   bool ignore_isolated_world_origin = true;
 
+  // The origin of the isolated world that is permitted to use this factory.
+  // When `ignore_isolated_world_origin` is false, requests with an
+  // `isolated_world_origin` that does not match this lock will be rejected
+  // with a bad message report.
+  // Setting this field when `ignore_isolated_world_origin` is true is invalid
+  // and will also result in a bad message report.
+  //
+  // TODO(crbug.com/40137011): Remove `isolated_world_origin_lock` once Chrome
+  // Platform Apps are gone and `ignore_isolated_world_origin` is removed.
+  url.mojom.Origin? isolated_world_origin_lock;
+
   // Indicate whether a request is not from web page ( probably from chrome
   // extension background page ).
   bool unsafe_non_webby_initiator = false;
@@ -991,6 +1003,10 @@ struct URLLoaderFactoryParams {
   // If this is true, the request's main frame origin is recently accessed.
   bool is_main_frame_origin_recently_accessed = false;
 
+  // If this is true, responses fetched using this factory may be eligible for
+  // storage in the Renderer Accessible HTTP Cache.
+  bool renderer_accessible_http_cache_write_enabled = false;
+
   // An unguessable token used to apply network restrictions to outgoing
   // requests using this factory. The token is matched against the tokens in
   // `NetworkContext::network_restrictions_ids_`.
@@ -1025,6 +1041,19 @@ struct URLLoaderFactoryParams {
 struct IdAndAllowlistedPatterns {
   mojo_base.mojom.UnguessableToken network_restrictions_id;
   ConnectionAllowlists allowlists;
+};
+
+// Configuration for a wildcard QUIC hint that matches hostnames by suffix.
+// Wildcard hints only match subdomains (e.g. "mail.google.com"), not apex
+// domains ("google.com"). For apex or exact domains, AddQuicHints should be
+// used instead.
+struct WildcardQuicHint {
+  // Suffix of hostnames that should match. Must start with "*." (e.g.
+  // "*.google.com") or leading "." (e.g. ".google.com"). Bare domains without
+  // a wildcard prefix are rejected.
+  string host_suffix;
+  // Port to match and use for QUIC attempts.
+  uint16 port = 443;
 };
 
 // Represents a distinct context for making network requests, with its own
@@ -1104,6 +1133,19 @@ interface NetworkContext {
       CookieSettingOverrides devtools_cookie_setting_overrides,
       bool prefer_bound_cookie_context,
       pending_remote<CookieAccessObserver>? cookie_observer);
+
+  // Binds a RestrictedDeviceBoundSessionManager for one Document. `origin` is
+  // the Document's committed origin and `isolation_info` its isolation info
+  // for subresources, both supplied by the browser process. The network
+  // service CHECKs that `isolation_info.frame_origin()` equals `origin`, that
+  // `origin` is potentially trustworthy and not opaque, and that
+  // `isolation_info` has no nonce and is first-party for `origin`. The
+  // comment on RestrictedDeviceBoundSessionObserver says which sessions the
+  // manager shows the Document.
+  GetRestrictedDeviceBoundSessionManager(
+      pending_receiver<RestrictedDeviceBoundSessionManager> manager,
+      url.mojom.Origin origin,
+      IsolationInfo isolation_info);
 
   // Provides a TrustTokenQueryAnswerer scoped to the given top-frame origin
   // (subsequent calls to its HasTrustTokens(issuer) and
@@ -1314,6 +1356,33 @@ interface NetworkContext {
   ClearSharedDictionaryCacheForIsolationKey(
       SharedDictionaryIsolationKey isolation_key) => ();
 
+  // Clears dictionaries from the shared dictionary cache for sites configured
+  // with session-only cookie policy.
+  ClearSharedDictionarySessionOnlyData() => ();
+
+  // Registers a `SharedHttpCacheClientFactory` remote for `key` to enable the
+  // Renderer-Accessible HTTP Cache. Transient `NetworkIsolationKey`s are
+  // ignored.
+  //
+  // Once the isolated SQLite shared cache database files for `key` are ready,
+  // the network service calls `SharedHttpCacheClientFactory::CreateClient` on
+  // `shared_http_cache_client` to provide read-only database file handles and
+  // bind a `SharedHttpCacheClient` receiver for subsequent URL hash
+  // notifications (`OnResourcesAdded`).
+  //
+  // Each call registers an independent client instance and receives its own set
+  // of database file descriptors.
+  //
+  // The registration lifetime is bound to `shared_http_cache_client` until
+  // `CreateClient` is invoked, after which it transfers to the resulting
+  // `SharedHttpCacheClient` connection. If the network service restarts or the
+  // Mojo pipe disconnects, `SharedHttpCacheClient` treats subsequent lookups as
+  // cache misses and transparently falls back to normal `URLLoader` requests.
+  [EnableIf=enable_disk_cache_sql_backend]
+  RegisterHttpCacheClient(
+    NetworkIsolationKey key,
+    pending_remote<SharedHttpCacheClientFactory> shared_http_cache_client);
+
   // Configures per-resource reporting endpoints set with the
   // Reporting-Endpoints header.
   // |reporting_source| is a token which identifies the document or worker with
@@ -1342,7 +1411,7 @@ interface NetworkContext {
   SendReportsAndRemoveSource(
       mojo_base.mojom.UnguessableToken reporting_source);
 
-  // Queues any outstanding reports for a single |reporting_source| (which
+  // Queues any outstanding reports for a single `reporting_source` (which
   // must not be empty) to be sent immediately, without removing the reporting
   // endpoint configuration for that source.
   SendReportsForSource(
@@ -1403,6 +1472,39 @@ interface NetworkContext {
   SetNetworkConditions(mojo_base.mojom.UnguessableToken throttling_profile_id,
                        mojo_base.mojom.UnguessableToken throttling_client_id,
                        array<MatchedNetworkConditions> conditions);
+
+  // Applies network delay at the socket layer. Unlike SetNetworkConditions
+  // (which throttles at the URLLoader level), this creates or updates an
+  // isolated throttling session for a specific throttling profile (DevTools
+  // session). Requests carrying this throttling_profile_id will use an isolated
+  // HttpNetworkSession with socket-level delay instead of the primary session.
+  //
+  // `latency` is the simulated round-trip time applied at the socket layer.
+  // Unlike the legacy NetworkConditions latency (a one-time delay injected
+  // before response delivery), socket RTT compounds across every network
+  // round trip: TCP handshake, TLS negotiation, and each HTTP request/
+  // response exchange all pay it, as on a real link.
+  //
+  // Throughputs are in bytes per second; values <= 0 mean that direction is
+  // unconstrained. Calls with invalid values (negative or infinite latency,
+  // non-finite throughput) are ignored, leaving existing conditions
+  // unchanged.
+  //
+  // A request uses the conditions in effect when it started, for its whole
+  // lifetime: calling this again (or ClearSocketLayerNetworkConditions)
+  // affects only requests started afterwards; in-flight requests finish
+  // under their captured conditions.
+  SetSocketLayerNetworkConditions(
+      mojo_base.mojom.UnguessableToken throttling_profile_id,
+      mojo_base.mojom.TimeDelta latency,
+      double download_throughput_bytes_per_second,
+      double upload_throughput_bytes_per_second);
+
+  // Removes the isolated throttling session for a throttling profile.
+  // In-flight requests finish under their captured conditions; requests
+  // started afterwards use the primary, unthrottled session.
+  ClearSocketLayerNetworkConditions(
+      mojo_base.mojom.UnguessableToken throttling_profile_id);
 
   // Updates the Accept-Language header to be used for requests.
   SetAcceptLanguage(string new_accept_language);
@@ -1537,6 +1639,11 @@ interface NetworkContext {
   // Clears the list of bad proxy servers that has been cached.
   ClearBadProxiesCache() => ();
 
+  // Retrieves the current proxy settings (original and effective
+  // configurations), the cached list of bad proxies, and the time tick offset
+  // as a NetLog-formatted dictionary.
+  GetProxySettings() => (mojo_base.mojom.DictionaryValue proxy_settings);
+
   // Creates a WebSocket connection to |url|. |requested_protocols| is a
   // list of tokens identifying sub-protocols the renderer would like to use,
   // as described in RFC6455 "Subprotocols Using the WebSocket Protocol".
@@ -1596,7 +1703,8 @@ interface NetworkContext {
       pending_remote<TrustedHeaderClient>? header_client,
       mojo_base.mojom.UnguessableToken? throttling_profile_id,
       mojo_base.mojom.UnguessableToken network_restrictions_id,
-      IPAddressSpace target_address_space);
+      IPAddressSpace target_address_space,
+      int64? target_network);
 
   // Creates a WebTransport connection to |url|. |origin| is used for the
   // client indication - see
@@ -1815,8 +1923,11 @@ interface NetworkContext {
       ProxyServer proxy_server, string auth_scheme, string realm)
       => (AuthCredentials? credentials);
 
-  // Enables the checking of static PKP records.
-  EnableStaticKeyPinningForTesting() => ();
+  // Re-initialize the key pinning state in the network context's
+  // TransportSecurityState. This can pick up changes in the test's default key
+  // pinning configuration that were made after the TransportSecurityState was
+  // already created.
+  ReinitializeKeyPinningForTesting() => ();
 
   // Verifies the given certificate using the context's CertVerifier.
   VerifyCertificateForTesting(X509Certificate certificate,
@@ -1934,6 +2045,28 @@ interface NetworkContext {
   AddQuicHints(array<url.mojom.SchemeHostPort> origins,
                NetworkAnonymizationKey network_anonymization_key);
 
+  // Requests that the network service prioritizes QUIC connections to hostnames
+  // matching the given wildcard suffixes (e.g. ".google.com"). Unlike
+  // AddQuicHints which is scoped to a specific NetworkAnonymizationKey,
+  // wildcard hints apply globally across all network partitions within this
+  // NetworkContext (though brokenness is tracked per partition).
+  AddWildcardQuicHints(array<WildcardQuicHint> hints);
+
+  // Configures whether to try QUIC by default for all HTTPS origins when no
+  // specific alternative service or known QUIC hint is found. Applies globally
+  // across all network partitions within this NetworkContext (though brokenness
+  // is tracked per partition).
+  SetTryQuicByDefault(bool enable);
+
   // Updates the variations headers to be used for requests.
   SetVariationsHeaders(variations.mojom.VariationsHeaders? variations_headers);
+
+  // Clones this NetworkContext connection. The new receiver is bound to the
+  // same underlying NetworkContext instance. Disconnection of any cloned
+  // receiver does not destroy the NetworkContext nor disconnect other sibling
+  // clones. When owned by NetworkService, disconnection of the primary
+  // NetworkContext receiver will destroy the NetworkContext instance and
+  // disconnect all clones.
+  [AllowedContext=sandbox.mojom.Context.kBrowser]
+  Clone(pending_receiver<NetworkContext> receiver);
 };

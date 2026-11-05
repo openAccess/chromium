@@ -8,6 +8,7 @@
 #include "base/memory/raw_ref.h"
 #include "chrome/browser/ui/webui/webui_toolbar/adapters/browser_controls_adapter.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 class CommandUpdater;
 class BrowserWindowInterface;
@@ -27,13 +28,14 @@ class BrowserControlsAdapterImpl : public BrowserControlsAdapter,
   ~BrowserControlsAdapterImpl() override;
 
   // BrowserControlsAdapter:
-  void Reload(bool bypass_cache, WindowOpenDisposition disposition) override;
+  void Reload(bool bypass_cache,
+              ui::mojom::WindowOpenDisposition disposition) override;
   void Stop() override;
-  void Back(WindowOpenDisposition disposition) override;
-  void Forward(WindowOpenDisposition disposition) override;
+  void Back(ui::mojom::WindowOpenDisposition disposition) override;
+  void Forward(ui::mojom::WindowOpenDisposition disposition) override;
   void BackButtonHovered() override;
   void CreateNewSplitTab() override;
-  void NavigateHome(WindowOpenDisposition disposition) override;
+  void NavigateHome(ui::mojom::WindowOpenDisposition disposition) override;
   void Navigate(const GURL& url) override;
   void NavigateText(const std::string& text) override;
   webui_toolbar::TabSplitStatus ComputeSplitTabStatus() override;
@@ -41,6 +43,14 @@ class BrowserControlsAdapterImpl : public BrowserControlsAdapter,
  private:
   // Helper to retrieve and reset the drag origin state.
   bool GetDragOriginatedFromRendererAndReset();
+
+  // Helper to retrieve and reset whether the unfiltered drag URL had a
+  // `javascript:` scheme.
+  bool GetDragHasJavaScriptUrlAndReset();
+
+  // Opens `url` in the current tab on behalf of a drop. Navigations from
+  // renderer-originated drags get an opaque initiator origin.
+  void OpenDroppedUrl(const GURL& url, bool drag_originated_from_renderer);
 
   // Not owned.
   const base::raw_ref<BrowserWindowInterface> browser_;

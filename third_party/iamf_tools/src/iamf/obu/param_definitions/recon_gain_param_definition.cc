@@ -13,9 +13,10 @@
 
 #include <cstddef>
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
-#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "iamf/common/read_bit_buffer.h"
@@ -46,33 +47,34 @@ absl::Status ReconGainParamDefinition::ReadAndValidate(ReadBitBuffer& rb) {
   return absl::OkStatus();
 }
 
-std::unique_ptr<ParameterData> ReconGainParamDefinition::CreateParameterData()
-    const {
-  auto recon_gain_parameter_data =
-      std::make_unique<ReconGainInfoParameterData>();
-  recon_gain_parameter_data->recon_gain_is_present_flags.resize(
-      aux_data_.size());
-  for (size_t i = 0; i < aux_data_.size(); i++) {
-    recon_gain_parameter_data->recon_gain_is_present_flags[i] =
-        aux_data_[i].recon_gain_is_present_flag;
+absl::StatusOr<std::unique_ptr<ParameterData>>
+ReconGainParamDefinition::CreateParameterDataFromBuffer(
+    ReadBitBuffer& rb) const {
+  std::vector<bool> recon_gain_is_present_flags(aux_data_.size());
+  for (size_t i = 0; i < aux_data_.size(); ++i) {
+    recon_gain_is_present_flags[i] = aux_data_[i].recon_gain_is_present_flag;
   }
-  recon_gain_parameter_data->recon_gain_elements.resize(aux_data_.size());
-  return recon_gain_parameter_data;
+  auto parameter_data = ReconGainInfoParameterData::CreateFromBuffer(
+      rb, recon_gain_is_present_flags);
+  if (!parameter_data.ok()) {
+    return parameter_data.status();
+  }
+  return std::move(parameter_data.value());
 }
 
-void ReconGainParamDefinition::Print() const {
-  ABSL_LOG(INFO) << "ReconGainParamDefinition:";
-  ParamDefinition::Print();
-  ABSL_LOG(INFO) << "  audio_element_id= " << audio_element_id_;
-
-  for (size_t i = 0; i < aux_data_.size(); i++) {
-    ABSL_LOG(INFO) << "  // recon_gain_is_present_flags[" << i << "]= "
-                   << absl::StrCat(aux_data_[i].recon_gain_is_present_flag);
+std::string ReconGainParamDefinition::ToString() const {
+  std::string result =
+      absl::StrCat("ReconGainParamDefinition:\n", ParamDefinition::ToString(),
+                   "\n  audio_element_id= ", audio_element_id_);
+  for (size_t i = 0; i < aux_data_.size(); ++i) {
     const auto& channel_numbers = aux_data_[i].channel_numbers_for_layer;
-    ABSL_LOG(INFO) << "  // channel_numbers_for_layer[" << i
-                   << "]= " << channel_numbers.surround << "."
-                   << channel_numbers.lfe << "." << channel_numbers.height;
+    absl::StrAppend(&result, "\n  // recon_gain_is_present_flags[", i,
+                    "]= ", aux_data_[i].recon_gain_is_present_flag,
+                    "\n  // channel_numbers_for_layer[", i,
+                    "]= ", channel_numbers.surround, ".", channel_numbers.lfe,
+                    ".", channel_numbers.height);
   }
+  return result;
 }
 
 }  // namespace iamf_tools

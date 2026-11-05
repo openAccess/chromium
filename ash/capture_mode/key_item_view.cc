@@ -6,7 +6,6 @@
 
 #include <memory>
 
-#include "ash/capture_mode/capture_mode_util.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
@@ -21,7 +20,6 @@
 #include "ui/views/border.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/widget/widget.h"
 
 namespace ash {
@@ -37,37 +35,21 @@ constexpr char kGoogleSansFont[] = "Google Sans";
 constexpr int kKeyItemViewFontSize = 18;
 constexpr int kKeyItemViewLineHeight = 24;
 
-SkColor GetColor() {
-  return capture_mode_util::GetColorProviderForNativeTheme()->GetColor(
-      cros_tokens::kCrosSysSystemBaseElevated);
-}
-
 }  // namespace
 
-KeyItemView::KeyItemView(ui::KeyboardCode key_code)
-    : key_code_(key_code),
-      shadow_(SystemShadow::CreateShadowOnNinePatchLayerForView(
-          this,
-          SystemShadow::Type::kElevation4)) {
+KeyItemView::KeyItemView(ui::KeyboardCode key_code) : key_code_(key_code) {
   SetPaintToLayer();
-  SetBackground(
-      views::CreateRoundedRectBackground(GetColor(), kKeyItemHeight / 2));
   layer()->SetFillsBoundsOpaquely(false);
+  SetBackground(views::CreateRoundedRectBackground(
+      cros_tokens::kCrosSysSystemBaseElevated, kKeyItemHeight / 2));
 
-  capture_mode_util::SetHighlightBorder(
-      this, kKeyItemHeight / 2,
-      views::HighlightBorder::Type::kHighlightBorderOnShadow);
-
-  shadow_->SetRoundedCorners(gfx::RoundedCornersF(kKeyItemHeight / 2.0f));
+  decoration_ = SystemDecoration::CreateForView(
+      this, SystemDecoration::ShadowType::kElevation4,
+      SystemDecoration::HighlightBorderMode::kHighlightBorder);
+  decoration_->SetRoundedCorners(gfx::RoundedCornersF(kKeyItemHeight / 2.0f));
 }
 
 KeyItemView::~KeyItemView() = default;
-
-void KeyItemView::OnThemeChanged() {
-  views::View::OnThemeChanged();
-  GetBackground()->SetColor(GetColor());
-  SchedulePaint();
-}
 
 void KeyItemView::Layout(PassKey) {
   const auto bounds = GetContentsBounds();

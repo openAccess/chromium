@@ -14,7 +14,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.services.media_session.MediaMetadata;
@@ -24,7 +23,6 @@ import java.util.Set;
 
 /** Robolectric tests for MediaImageManager. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class MediaNotificationInfoTest {
     @Mock private MediaNotificationListener mListener;
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -104,7 +102,6 @@ public class MediaNotificationInfoTest {
         builder.setPaused(true);
         builder.setPrivate(false);
         builder.setNotificationSmallIcon(1);
-        builder.setDefaultNotificationLargeIcon(2);
 
         builder.setActions(
                 MediaNotificationInfo.ACTION_PLAY_PAUSE | MediaNotificationInfo.ACTION_STOP);
@@ -127,10 +124,27 @@ public class MediaNotificationInfoTest {
         assertEquals(original.isPaused, copy.isPaused);
         assertEquals(original.isPrivate, copy.isPrivate);
         assertEquals(original.notificationSmallIcon, copy.notificationSmallIcon);
-        assertEquals(original.defaultNotificationLargeIcon, copy.defaultNotificationLargeIcon);
 
         assertEquals(original.supportsPlayPause(), copy.supportsPlayPause());
         assertEquals(original.supportsStop(), copy.supportsStop());
         assertEquals(original.mediaSessionActions, copy.mediaSessionActions);
+    }
+
+    @Test
+    public void testBuilderWithSourceTitle() {
+        MediaNotificationInfo.Builder builder = new MediaNotificationInfo.Builder();
+        builder.setOrigin("https://example.com");
+        builder.setMetadata(new MediaMetadata("title", "artist", "album", "example.com"));
+        builder.setListener(mListener);
+        builder.setInstanceId(0);
+        builder.setId(0);
+
+        MediaNotificationInfo info = builder.build();
+        assertNotNull(info);
+        assertEquals("https://example.com", info.origin);
+        assertEquals("title", info.metadata.getTitle());
+        assertEquals("artist", info.metadata.getArtist());
+        assertEquals("album", info.metadata.getAlbum());
+        assertEquals("example.com", info.metadata.getSourceTitle());
     }
 }

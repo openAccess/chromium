@@ -58,7 +58,7 @@ class MEDIA_EXPORT HlsManifestDemuxerEngine : public ManifestDemuxer::Engine,
   // ManifestDemuxer::Engine implementation
   std::string GetName() const override;
   void Initialize(ManifestDemuxerEngineHost* host,
-                  PipelineStatusCallback status_cb) override;
+                  HlsDemuxerStatusCallback status_cb) override;
   void OnTimeUpdate(base::TimeDelta time,
                     double playback_rate,
                     ManifestDemuxer::DelayCallback cb) override;
@@ -163,8 +163,9 @@ class MEDIA_EXPORT HlsManifestDemuxerEngine : public ManifestDemuxer::Engine,
                             ManifestDemuxer::SeekCallback cb);
 
   // Posted by `::Initialize()`
-  void InitAction(PipelineStatusCallback status_cb);
-  void FinishInitialization(PipelineStatusCallback cb, HlsDemuxerStatus status);
+  void InitAction(HlsDemuxerStatusCallback status_cb);
+  void FinishInitialization(HlsDemuxerStatusCallback cb,
+                            HlsDemuxerStatus status);
 
   // Posted by `::OnTimeUpdate()`
   void OnTimeUpdateAction(base::TimeDelta time,
@@ -262,7 +263,7 @@ class MEDIA_EXPORT HlsManifestDemuxerEngine : public ManifestDemuxer::Engine,
       HlsDemuxerStatusCallback parse_complete_cb,
       PlaylistParseInfo parse_info,
       scoped_refptr<hls::MediaPlaylist> playlist,
-      HlsDemuxerStatus::Or<RelaxedParserSupportedType> maybe_info);
+      base::expected<RelaxedParserSupportedType, HlsDemuxerStatus> maybe_info);
   void DetermineBitstreamContainer(
       scoped_refptr<hls::MediaSegment> segment,
       HlsDemuxerStatusCb<RelaxedParserSupportedType> cb,
@@ -274,7 +275,7 @@ class MEDIA_EXPORT HlsManifestDemuxerEngine : public ManifestDemuxer::Engine,
                                    std::unique_ptr<MediaTracks> tracks);
 
   // Parses a playlist using the multivariant playlist, if it's being used.
-  hls::ParseStatus::Or<scoped_refptr<hls::MediaPlaylist>>
+  base::expected<scoped_refptr<hls::MediaPlaylist>, hls::ParseStatus>
   ParseMediaPlaylistFromStringSource(std::string_view source,
                                      GURL uri,
                                      const url::Origin& manifest_origin,

@@ -15,6 +15,8 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/task/execution_fence.h"
+#include "base/test/test_future.h"
 #include "chrome/browser/ash/wallpaper_handlers/test_wallpaper_fetcher_delegate.h"
 #include "chrome/browser/ui/ash/wallpaper/test_wallpaper_controller.h"
 #include "chrome/browser/ui/ash/wallpaper/wallpaper_controller_client_impl.h"
@@ -27,7 +29,7 @@
 #include "chromeos/ash/experiences/arc/test/fake_wallpaper_instance.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/user_names.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_utils.h"
@@ -69,14 +71,14 @@ class ArcWallpaperServiceTest : public testing::Test {
   ~ArcWallpaperServiceTest() override = default;
 
   void SetUp() override {
-    test_user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
             TestingBrowserProcess::GetGlobal()->local_state());
     // User
     const AccountId account_id(AccountId::FromUserEmailGaiaId(
         user_manager::StubAccountId().GetUserEmail(), GaiaId("1234567890")));
-    ASSERT_TRUE(test_user_session_manager_->AddRegularUser(account_id));
-    test_user_session_manager_->LogIn(account_id);
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(account_id));
+    user_session_test_environment_->LogIn(account_id);
 
     // Wallpaper
     wallpaper_controller_client_ = std::make_unique<
@@ -110,7 +112,7 @@ class ArcWallpaperServiceTest : public testing::Test {
 
     ash::SystemSaltGetter::Shutdown();
     wallpaper_controller_client_.reset();
-    test_user_session_manager_.reset();
+    user_session_test_environment_.reset();
   }
 
  protected:
@@ -121,7 +123,8 @@ class ArcWallpaperServiceTest : public testing::Test {
 
  private:
   std::unique_ptr<content::BrowserTaskEnvironment> task_environment_;
-  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   arc::ArcServiceManager arc_service_manager_;
   // testing_profile_ needs to be deleted before arc_service_manager_.
   TestingProfile testing_profile_;
@@ -178,4 +181,25 @@ TEST_F(ArcWallpaperServiceTest, GetEmptyWallpaper) {
 
   service_->GetWallpaper(base::DoNothing());
   content::RunAllTasksUntilIdle();
+}
+
+// Verifies that GetWallpaper() completes even while BEST_EFFORT tasks are
+// blocked by an execution fence (e.g. during Chrome startup before
+// AfterStartupTaskUtils unblocks BEST_EFFORT queues). Android SystemUI calls
+// GetWallpaper() synchronously during boot, so stalling it on BEST_EFFORT would
+// hang SystemUI and KeyguardService initialization (b/577511643).
+TEST_F(ArcWallpaperServiceTest, GetWallpaperDuringBestEffortFence) {
+  // Set up a valid wallpaper image via SetWallpaper() using the fake decoder.
+  service_->SetImageDecoderForTesting(std::make_unique<SuccessImageDecoder>());
+  test_wallpaper_controller_.SetCurrentUser(user_manager::StubAccountId());
+  service_->SetWallpaper(/*data=*/{}, /*wallpaper_id=*/10);
+
+  // Block all BEST_EFFORT tasks to simulate Chrome's startup task deferral.
+  base::ScopedBestEffortExecutionFence best_effort_fence;
+
+  // GetWallpaper() should still complete and return non-empty PNG bytes because
+  // it posts work at USER_VISIBLE priority rather than BEST_EFFORT.
+  base::test::TestFuture<const std::vector<uint8_t>&> future;
+  service_->GetWallpaper(future.GetCallback());
+  EXPECT_FALSE(future.Get().empty());
 }

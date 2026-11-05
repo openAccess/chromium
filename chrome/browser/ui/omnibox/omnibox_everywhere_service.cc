@@ -5,9 +5,9 @@
 #include "chrome/browser/ui/omnibox/omnibox_everywhere_service.h"
 
 #include <memory>
-#include <vector>
+#include <utility>
 
-#include "base/feature_list.h"
+#include "base/functional/callback_helpers.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
@@ -15,25 +15,72 @@
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_feature_promo_controller.h"
+#include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_fre_controller.h"
+#include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_prefs.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_ui_manager.h"
-#include "chrome/browser/ui/omnibox/omnibox_everywhere_service_factory.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/user_education/user_education_service.h"
 #include "chrome/browser/user_education/user_education_service_factory.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/display/display.h"
+#include "ui/display/screen.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/views/widget/widget.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/ui/omnibox/omnibox_everywhere/mac_window_util.h"
+#endif
+
+namespace {
+
+void ActivateAndFocusBrowserWindow(BrowserWindowInterface* bwi) {
+  if (!bwi) {
+    return;
+  }
+#if BUILDFLAG(IS_MAC)
+  // On macOS, when navigating from Loomnibox (an auxiliary overlay window on
+  // a fullscreen Space) to a browser window that may reside on another Space,
+  // explicit application activation and window ordering is required to switch
+  // Mission Control Spaces to Chrome.
+  omnibox_everywhere::ActivateBrowserWindowOnMac(bwi);
+#else
+  if (bwi->GetWindow()) {
+    if (bwi->GetWindow()->IsMinimized()) {
+      bwi->GetWindow()->Restore();
+    }
+    bwi->GetWindow()->Show();
+    bwi->GetWindow()->Activate();
+  }
+#endif
+  if (auto* tab_strip = bwi->GetTabStripModel()) {
+    if (auto* web_contents = tab_strip->GetActiveWebContents()) {
+      web_contents->Focus();
+    }
+  }
+}
+
+}  // namespace
 
 OmniboxEverywhereService::OmniboxEverywhereService(Profile* profile)
-    : profile_(profile) {
+    : profile_(profile),
+      fre_controller_(
+          std::make_unique<omnibox_everywhere::OmniboxEverywhereFreController>(
+              profile_->GetPrefs())) {
   feature_engagement::Tracker* const tracker_service =
       feature_engagement::TrackerFactory::GetForBrowserContext(profile_);
   UserEducationService* const user_education_service =
@@ -58,6 +105,16 @@ OmniboxEverywhereService::feature_promo_controller() {
 const user_education::FeaturePromoController*
 OmniboxEverywhereService::feature_promo_controller() const {
   return feature_promo_controller_.get();
+}
+
+omnibox_everywhere::OmniboxEverywhereFreController*
+OmniboxEverywhereService::fre_controller() {
+  return fre_controller_.get();
+}
+
+const omnibox_everywhere::OmniboxEverywhereFreController*
+OmniboxEverywhereService::fre_controller() const {
+  return fre_controller_.get();
 }
 
 omnibox_everywhere::OmniboxEverywhereController*
@@ -85,16 +142,13 @@ bool OmniboxEverywhereService::AcquireProfileKeepAlive() {
 
 void OmniboxEverywhereService::ReleaseProfileKeepAlive() {
   profile_keep_alive_.reset();
-  if (feature_promo_controller_) {
-    feature_promo_controller_->EndPromo(
-        feature_engagement::kIPHOmniboxEverywhereLensPromoFeature,
-        user_education::EndFeaturePromoReason::kAbortPromo);
-  }
+  EndLensPromo();
 }
 
 void OmniboxEverywhereService::Shutdown() {
   ReleaseProfileKeepAlive();
   feature_promo_controller_.reset();
+  fre_controller_.reset();
   if (controller()) {
     controller()->ShutdownForProfile(profile_);
   }
@@ -113,6 +167,7 @@ bool OmniboxEverywhereService::IsPopupVisible() const {
 bool OmniboxEverywhereService::IsPopupVisibleForProfile() const {
   return controller() && controller()->ui_manager() &&
          controller()->ui_manager()->IsVisible() &&
+         !controller()->ui_manager()->is_demoted() &&
          controller()->ui_manager()->profile() == profile_;
 }
 
@@ -121,6 +176,24 @@ void OmniboxEverywhereService::MaybeShowLensPromo() {
     feature_promo_controller_->MaybeShowPromo(
         user_education::FeaturePromoParams(
             feature_engagement::kIPHOmniboxEverywhereLensPromoFeature));
+  }
+}
+
+void OmniboxEverywhereService::EndLensPromo() {
+  if (feature_promo_controller_) {
+    feature_promo_controller_->EndPromo(
+        feature_engagement::kIPHOmniboxEverywhereLensPromoFeature,
+        user_education::EndFeaturePromoReason::kAbortPromo);
+  }
+}
+
+void OmniboxEverywhereService::OnLensSearchClicked() {
+  if (feature_promo_controller_) {
+    feature_promo_controller_->NotifyFeatureUsedIfValid(
+        feature_engagement::kIPHOmniboxEverywhereLensPromoFeature);
+    feature_promo_controller_->EndPromo(
+        feature_engagement::kIPHOmniboxEverywhereLensPromoFeature,
+        user_education::EndFeaturePromoReason::kFeatureEngaged);
   }
 }
 
@@ -143,13 +216,6 @@ void OmniboxEverywhereService::OnDrivePickerClosed() {
 }
 
 void OmniboxEverywhereService::OnScreensharePickerOpened() {
-  if (feature_promo_controller_) {
-    feature_promo_controller_->NotifyFeatureUsedIfValid(
-        feature_engagement::kIPHOmniboxEverywhereLensPromoFeature);
-    feature_promo_controller_->EndPromo(
-        feature_engagement::kIPHOmniboxEverywhereLensPromoFeature,
-        user_education::EndFeaturePromoReason::kFeatureEngaged);
-  }
   if (ui_manager()) {
     ui_manager()->OnScreensharePickerOpened();
   }
@@ -158,6 +224,30 @@ void OmniboxEverywhereService::OnScreensharePickerOpened() {
 void OmniboxEverywhereService::OnScreensharePickerClosed() {
   if (ui_manager()) {
     ui_manager()->OnScreensharePickerClosed();
+  }
+}
+
+void OmniboxEverywhereService::ShowScreenshotDisclosureDialog(
+    base::OnceClosure on_accepted,
+    base::OnceClosure on_cancelled) {
+  if (ui_manager()) {
+    ui_manager()->ShowScreenshotDisclosureDialog(
+        base::BindOnce(
+            &OmniboxEverywhereService::OnScreenshotDisclosureAccepted,
+            weak_factory_.GetWeakPtr(), std::move(on_accepted)),
+        std::move(on_cancelled));
+    return;
+  }
+  if (on_cancelled) {
+    std::move(on_cancelled).Run();
+  }
+}
+
+void OmniboxEverywhereService::OnScreenshotDisclosureAccepted(
+    base::OnceClosure on_accepted) {
+  omnibox_everywhere::prefs::SetScreenshotDisclosureAccepted(profile_, true);
+  if (on_accepted) {
+    std::move(on_accepted).Run();
   }
 }
 
@@ -185,40 +275,138 @@ void OmniboxEverywhereService::OnFileChooserClosed() {
   }
 }
 
-void OmniboxEverywhereService::OpenUrl(const GURL& url,
-                                       WindowOpenDisposition disposition,
-                                       ui::PageTransition transition) {
+void OmniboxEverywhereService::OnHotkeyDropdownOpened() {
+  if (ui_manager()) {
+    ui_manager()->OnHotkeyDropdownOpened();
+  }
+}
+
+void OmniboxEverywhereService::OnHotkeyDropdownClosed() {
+  if (ui_manager()) {
+    ui_manager()->OnHotkeyDropdownClosed();
+  }
+}
+
+void OmniboxEverywhereService::ShowOverflowMenu(
+    const gfx::Rect& anchor_screen_rect,
+    ui::mojom::MenuSourceType source_type,
+    base::OnceClosure on_closed) {
+  if (ui_manager()) {
+    ui_manager()->ShowOverflowMenu(anchor_screen_rect, source_type,
+                                   std::move(on_closed));
+    return;
+  }
+  if (on_closed) {
+    std::move(on_closed).Run();
+  }
+}
+
+void OmniboxEverywhereService::OpenUrl(
+    const GURL& url,
+    ui::mojom::WindowOpenDisposition disposition,
+    ui::PageTransition transition) {
   OpenUrl(url, disposition, transition, base::NullCallback());
 }
 
 void OmniboxEverywhereService::OpenUrl(
     const GURL& url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
     base::OnceCallback<void(content::NavigationHandle&)>
         navigation_handle_callback) {
   auto* browser_collection = ProfileBrowserCollection::GetForProfile(profile_);
   CHECK(browser_collection);
   BrowserWindowInterface* bwi = browser_collection->GetLastActiveBrowser();
-  bool is_new_window = false;
+  NavigateInBrowserWindow(bwi, url, disposition, transition,
+                          std::move(navigation_handle_callback));
+}
+
+void OmniboxEverywhereService::NavigateInBrowserWindow(
+    BrowserWindowInterface* bwi,
+    const GURL& url,
+    ui::mojom::WindowOpenDisposition disposition,
+    ui::PageTransition transition,
+    base::OnceCallback<void(content::NavigationHandle&)>
+        navigation_handle_callback) {
+  NavigateParams params = bwi ? NavigateParams(bwi, url, transition)
+                              : NavigateParams(profile_, url, transition);
+  params.should_trigger_session_restore = false;
+
   if (!bwi) {
-    bwi = chrome::OpenEmptyWindow(profile_);
-    is_new_window = true;
-  }
-
-  if (bwi) {
-    NavigateParams params(bwi, url, transition);
+    params.disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
+  } else {
     params.disposition =
-        is_new_window ? WindowOpenDisposition::CURRENT_TAB
-                      : ((disposition == WindowOpenDisposition::CURRENT_TAB)
-                             ? WindowOpenDisposition::NEW_FOREGROUND_TAB
-                             : disposition);
-    params.window_action = NavigateParams::WindowAction::kShowWindow;
-    base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
-    if (handle && navigation_handle_callback) {
-      std::move(navigation_handle_callback).Run(*handle);
-    }
+        (disposition == ui::mojom::WindowOpenDisposition::kCurrentTab)
+            ? ui::mojom::WindowOpenDisposition::kNewForegroundTab
+            : disposition;
+  }
+  params.window_action = NavigateParams::WindowAction::kShowWindow;
+
+  base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
+  if (handle && navigation_handle_callback) {
+    std::move(navigation_handle_callback).Run(*handle);
   }
 
+  // Dismiss the Omnibox Everywhere popup before activating the target browser
+  // window. Otherwise, dismissing the popup after activation causes AppKit on
+  // macOS (and other window managers) to return focus to the previously active
+  // application (e.g. a fullscreen app over which Loomnibox was displayed).
   HidePopup();
+
+  ActivateAndFocusBrowserWindow(params.browser);
+}
+
+// static
+gfx::Rect OmniboxEverywhereService::CalculateInPlaceWindowBounds(
+    const gfx::Rect& popup_bounds,
+    const gfx::Rect& work_area) {
+  const int width =
+      omnibox::kOmniboxEverywhereScreenshotNewWindowWidthParam.Get();
+  const int height =
+      omnibox::kOmniboxEverywhereScreenshotNewWindowHeightParam.Get();
+  const int vertical_offset =
+      omnibox::kOmniboxEverywhereScreenshotNewWindowVerticalOffsetParam.Get();
+  const int x = popup_bounds.x() + (popup_bounds.width() - width) / 2;
+  const int y = popup_bounds.y() - vertical_offset;
+  gfx::Rect bounds(x, y, width, height);
+  if (!work_area.IsEmpty()) {
+    bounds.AdjustToFit(work_area);
+  }
+  return bounds;
+}
+
+gfx::Rect OmniboxEverywhereService::GetInPlaceWindowBounds() const {
+  const views::Widget* widget = ui_manager() ? ui_manager()->widget() : nullptr;
+  auto* screen = display::Screen::Get();
+  if (!widget || !screen) {
+    return gfx::Rect(
+        0, 0, omnibox::kOmniboxEverywhereScreenshotNewWindowWidthParam.Get(),
+        omnibox::kOmniboxEverywhereScreenshotNewWindowHeightParam.Get());
+  }
+  const gfx::Rect popup_bounds = widget->GetWindowBoundsInScreen();
+  const gfx::Rect work_area =
+      screen->GetDisplayMatching(popup_bounds).work_area();
+  return CalculateInPlaceWindowBounds(popup_bounds, work_area);
+}
+
+void OmniboxEverywhereService::OpenUrlWithInPlaceWindow(
+    const GURL& url,
+    ui::PageTransition transition,
+    base::OnceCallback<void(content::NavigationHandle&)>
+        navigation_handle_callback) {
+  BrowserWindowInterface* bwi = nullptr;
+  if (GetBrowserWindowCreationStatusForProfile(*profile_) ==
+      BrowserWindowInterface::CreationStatus::kOk) {
+    BrowserWindowCreateParams browser_params(profile_,
+                                             /*from_user_gesture=*/true);
+    browser_params.should_trigger_session_restore = false;
+    browser_params.initial_bounds = GetInPlaceWindowBounds();
+    browser_params.initial_origin_specified =
+        BrowserWindowCreateParams::ValueSpecified::kSpecified;
+    bwi = CreateBrowserWindow(std::move(browser_params));
+  }
+
+  NavigateInBrowserWindow(bwi, url,
+                          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                          transition, std::move(navigation_handle_callback));
 }

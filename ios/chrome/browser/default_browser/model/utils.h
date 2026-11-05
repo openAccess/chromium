@@ -15,6 +15,7 @@ class Tracker;
 namespace base {
 class TimeDelta;
 }  // namespace base
+@protocol ContextualDefaultBrowserPromoCommands;
 @protocol PictureInPictureCommands;
 
 enum class DefaultBrowserPromoOverflowMenuType;
@@ -38,6 +39,24 @@ enum class IOSDefaultBrowserPromoAction {
   kMaxValue = kDismiss,
 };
 
+// Enum representing the default browser promo surface where the user tapped
+// the primary action button ("Open Settings") prior to a default browser
+// conversion. These values are persisted to logs. Entries should not be
+// renumbered and numeric values should never be reused.
+// LINT.IfChange(IOSDefaultBrowserPromoSurface)
+enum class IOSDefaultBrowserPromoSurface {
+  kNone = 0,
+  kFirstRun = 1,
+  kFullscreenGeneric = 2,
+  kTailored = 3,
+  kNonModal = 4,
+  kSetUpList = 5,
+  kContextual = 6,
+  kSettings = 7,
+  kMaxValue = kSettings,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/ios/enums.xml:IOSDefaultBrowserPromoSurface)
+
 // Enum for the default browser promo UMA histograms. These values are persisted
 // to logs. Entries should not be renumbered and numeric values should never be
 // reused.
@@ -58,6 +77,20 @@ enum class IOSDefaultBrowserVideoPromoAction {
   kTertiaryActionTapped = 3,
   kMaxValue = kTertiaryActionTapped,
 };
+
+// Enum buckets for the IOS.DefaultBrowserVideoPromo.Fullscreen.Opportunity.*
+// UMA metrics. These values are persisted to logs. Entries should not be
+// renumbered and numeric values should never be reused.
+// LINT.IfChange(IOSDefaultBrowserVideoPromoOpportunity)
+enum class IOSDefaultBrowserVideoPromoOpportunity {
+  kScoreUnder0_1 = 0,
+  kScore0_1To0_2 = 1,
+  kScore0_2To0_4 = 2,
+  kScore0_4To0_6 = 3,
+  kScore0_6AndAbove = 4,
+  kMaxValue = kScore0_6AndAbove,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/ios/enums.xml:IOSDefaultBrowserVideoPromoOpportunity)
 
 // Enum actions for the IOS.DefaultBrowserPromo.OverflowMenu UMA metrics.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -129,6 +162,12 @@ void LogOpenHTTPURLFromExternalURL();
 // Logs to the FET that a default browser promo has been shown.
 void LogToFETDefaultBrowserPromoShown(feature_engagement::Tracker* tracker);
 
+// Logs to the FET that a Gemini session was terminated and records whether the
+// contextual default browser promo would have triggered to the opportunity UMA
+// histogram.
+void LogDefaultBrowserPromoOpportunityForGemini(
+    feature_engagement::Tracker* tracker);
+
 // Returns whether blue dot display timestamp has already been set.
 bool HasDefaultBrowserBlueDotDisplayTimestamp();
 
@@ -198,6 +237,10 @@ void LogDefaultBrowserPromoHistogramForAction(
     DefaultPromoType type,
     IOSDefaultBrowserPromoAction action);
 
+// Logs opportunity bucket and continuous score telemetry for the fullscreen
+// default browser video promo.
+void LogDefaultBrowserFullscreenPromoOpportunity(std::optional<float> score);
+
 // Returns the feature associated with a given promo reason.
 //
 // The promo reason (`promo_reason`) represents the event or condition
@@ -220,8 +263,12 @@ const std::string GetFeatureEventNameForPromoReason(
 // Migration to FET.
 
 // Records the last action the user took when a Default Browser Promo was
-// presented.
-void RecordDefaultBrowserPromoLastAction(IOSDefaultBrowserPromoAction action);
+// presented, and if `action` is `kActionButton`, records the promo `surface`
+// where the primary action button was tapped.
+void RecordDefaultBrowserPromoLastAction(
+    IOSDefaultBrowserPromoAction action,
+    IOSDefaultBrowserPromoSurface surface =
+        IOSDefaultBrowserPromoSurface::kNone);
 
 // Log to UserDefaults non-modal promo migration done.
 void LogNonModalPromoMigrationDone();
@@ -236,6 +283,11 @@ NSDate* LastTimeUserInteractedWithNonModalPromo();
 // Promo was presented.
 std::optional<IOSDefaultBrowserPromoAction> DefaultBrowserPromoLastAction();
 
+// Returns the last Default Browser Promo surface where the user tapped
+// `kActionButton` ("Open Settings"), or `IOSDefaultBrowserPromoSurface::kNone`
+// if `kActionButton` has not been tapped on any promo.
+IOSDefaultBrowserPromoSurface DefaultBrowserPromoLastActionSurface();
+
 // Opens the appropriate iOS settings to set Chromium as default browser. If
 // the relevant feature flags are enabled or if
 // `force_default_apps_if_available` is set to true, the new Default Apps page
@@ -247,5 +299,11 @@ void OpenIOSDefaultBrowserSettingsPage(
     bool force_default_apps_if_available = false,
     UIApplication* ui_application_to_use = nil,
     id<PictureInPictureCommands> pip_handler = nil);
+
+// Evaluates whether the contextual default browser promo is eligible with
+// `tracker`, and if so, triggers it using `promo_handler`.
+void MaybeShowContextualDefaultBrowserPromo(
+    feature_engagement::Tracker* tracker,
+    id<ContextualDefaultBrowserPromoCommands> promo_handler);
 
 #endif  // IOS_CHROME_BROWSER_DEFAULT_BROWSER_MODEL_UTILS_H_

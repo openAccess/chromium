@@ -16,7 +16,7 @@ WebUIInfoSingleton::WebUIInfoSingleton() = default;
 
 WebUIInfoSingleton::~WebUIInfoSingleton() = default;
 
-bool WebUIInfoSingleton::HasListener() {
+bool WebUIInfoSingleton::HasListener() const {
   return has_test_listener_ || !webui_instances_.empty();
 }
 
@@ -297,6 +297,25 @@ void WebUIInfoSingleton::ClearHPRTLookupPings() {
   std::map<int, V5::SearchHashesResponse>().swap(hprt_lookup_responses_);
 }
 
+void WebUIInfoSingleton::AddToV5GetHashLookups(
+    V5GetHashProtocolManager::V5GetHashLookup lookup) {
+  if (!HasListener()) {
+    return;
+  }
+
+  for (safe_browsing::WebUIInfoSingletonEventObserver* webui_listener :
+       webui_instances_) {
+    webui_listener->NotifyV5GetHashLookupJsListener(lookup);
+  }
+
+  v5_get_hash_lookups_.push_back(std::move(lookup));
+}
+
+void WebUIInfoSingleton::ClearV5GetHashLookups() {
+  std::vector<V5GetHashProtocolManager::V5GetHashLookup>().swap(
+      v5_get_hash_lookups_);
+}
+
 void WebUIInfoSingleton::LogMessage(const std::string& message) {
   if (!HasListener()) {
     return;
@@ -521,6 +540,7 @@ void WebUIInfoSingleton::MaybeClearData() {
     ClearPGPings();
     ClearURTLookupPings();
     ClearHPRTLookupPings();
+    ClearV5GetHashLookups();
     ClearLogMessages();
     ClearReportingEvents();
 

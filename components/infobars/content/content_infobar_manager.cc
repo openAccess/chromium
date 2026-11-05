@@ -12,6 +12,7 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 
 namespace infobars {
@@ -90,18 +91,20 @@ void ContentInfoBarManager::NavigationEntryCommitted(
   }
 }
 
-void ContentInfoBarManager::OpenURL(const GURL& url,
-                                    WindowOpenDisposition disposition,
-                                    const std::string& text_fragment) {
+void ContentInfoBarManager::OpenURL(
+    const GURL& url,
+    ui::mojom::WindowOpenDisposition disposition,
+    const std::string& text_fragment) {
   // A normal user click on an infobar URL will result in a CURRENT_TAB
   // disposition; turn that into a NEW_FOREGROUND_TAB so that we don't end up
   // smashing the page the user is looking at.
-  content::OpenURLParams params(
-      url, content::Referrer(),
-      (disposition == WindowOpenDisposition::CURRENT_TAB)
-          ? WindowOpenDisposition::NEW_FOREGROUND_TAB
-          : disposition,
-      ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          url,
+          (disposition == ui::mojom::WindowOpenDisposition::kCurrentTab)
+              ? ui::mojom::WindowOpenDisposition::kNewForegroundTab
+              : disposition,
+          ui::PAGE_TRANSITION_LINK);
   if (!text_fragment.empty()) {
     params.internal_scroll_to_text_fragment = text_fragment;
   }

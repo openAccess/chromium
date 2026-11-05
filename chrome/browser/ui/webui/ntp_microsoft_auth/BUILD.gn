@@ -35,7 +35,6 @@ source_set("ntp_microsoft_auth") {
     "ntp_microsoft_auth_response_capture_navigation_throttle.h",
     "ntp_microsoft_auth_untrusted_ui.h",
   ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
   deps = [
     ":shared",
     ":untrusted",
@@ -70,6 +69,7 @@ if (!is_android) {
       "//chrome/browser/search_engines",
       "//chrome/browser/ui/search:test_support_ui",
       "//chrome/test:test_support",
+      "//chrome/test/base:chrome_render_view_host_test_harness",
       "//content/test:test_support",
       "//testing/gtest",
     ]

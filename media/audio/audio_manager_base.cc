@@ -29,23 +29,24 @@
 #include "media/audio/audio_output_resampler.h"
 #include "media/audio/fake_audio_input_stream.h"
 #include "media/audio/fake_audio_output_stream.h"
+#include "media/base/device_enumeration_outcome.h"
 #include "media/base/media_switches.h"
 
 namespace media {
 
 namespace {
 
-const int kStreamCloseDelaySeconds = 5;
+constexpr int kStreamCloseDelaySeconds = 5;
 
 // Default maximum number of output streams that can be open simultaneously
 // for all platforms.
-const int kDefaultMaxOutputStreams = 16;
+constexpr int kDefaultMaxOutputStreams = 16;
 
 // Default maximum number of input streams that can be open simultaneously
 // for all platforms.
-const int kMaxInputStreams = 16;
+constexpr int kMaxInputStreams = 16;
 
-const int kMaxInputChannels = 3;
+constexpr int kMaxInputChannels = 3;
 
 // Helper function to pass as callback when the audio debug recording is not
 // enabled.
@@ -55,8 +56,9 @@ std::unique_ptr<AudioDebugRecorder> GetNullptrAudioDebugRecorder(
 }
 
 // This enum must match the numbering for AudioOutputProxyStreamFormat in
-// enums.xml. Do not reorder or remove items, only add new items before
-// STREAM_FORMAT_MAX.
+// tools/metrics/histograms/metadata/media/enums.xml. Do not reorder or remove
+// items, only add new items before STREAM_FORMAT_MAX.
+// LINT.IfChange(StreamFormat)
 enum StreamFormat {
   STREAM_FORMAT_BITSTREAM = 0,
   STREAM_FORMAT_PCM_LINEAR = 1,
@@ -65,11 +67,13 @@ enum StreamFormat {
   STREAM_FORMAT_FAKE = 4,
   STREAM_FORMAT_MAX = 4,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:AudioOutputProxyStreamFormat)
 
 // Used to log errors in `AudioManagerBase::MakeAudioInputStream` and
 // `AudioManagerBase::MakeAudioOutputStream`. These values are persisted to
 // logs. Entries should not be renumbered and numeric values should never be
 // reused.
+// LINT.IfChange(MakeAudioStreamResult)
 enum class MakeAudioStreamResult {
   kNoError = 0,
   kErrorSwitchFailAudioStreamCreation = 1,
@@ -78,6 +82,7 @@ enum class MakeAudioStreamResult {
   kErrorCreateStream = 4,
   kMaxValue = kErrorCreateStream
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:MakeAudioStreamStatus)
 
 void LogMakeAudioInputStreamResult(MakeAudioStreamResult result) {
   base::UmaHistogramEnumeration("Media.Audio.MakeAudioInputStreamStatus",
@@ -93,28 +98,6 @@ void SendLogMessage(const AudioManagerBase::LogCallback& callback,
                     const std::string& message) {
   if (!callback.is_null()) {
     callback.Run("AMB::" + message);
-  }
-}
-
-// Used to log outcomes of audio device enumeration. These values are persisted
-// to logs. Entries should not be renumbered and numeric values should never be
-// reused.
-enum class AudioDeviceEnumerationOutcome {
-  kSuccessEmptyResult = 0,
-  kSuccessNonEmptyResult = 1,
-  kFailureEmptyResult = 2,
-  kFailureNonEmptyResult = 3,
-  kMaxValue = kFailureNonEmptyResult
-};
-
-AudioDeviceEnumerationOutcome GetAudioEnumerationOutcome(bool success,
-                                                         bool has_devices) {
-  if (success) {
-    return has_devices ? AudioDeviceEnumerationOutcome::kSuccessNonEmptyResult
-                       : AudioDeviceEnumerationOutcome::kSuccessEmptyResult;
-  } else {
-    return has_devices ? AudioDeviceEnumerationOutcome::kFailureNonEmptyResult
-                       : AudioDeviceEnumerationOutcome::kFailureEmptyResult;
   }
 }
 
@@ -305,6 +288,20 @@ AudioManagerBase::~AudioManagerBase() {
   CHECK(input_streams_.empty());
 }
 
+void AudioManagerBase::CloseIdleStreams() {
+  if (GetTaskRunner()->BelongsToCurrentThread()) {
+    CloseAllIdleStreamsOnAudioThread();
+    return;
+  }
+  // AudioManagerBase outlives `audio_thread_` (stopped in
+  // AudioManager::Shutdown() before ~AudioManagerBase()), so base::Unretained
+  // is safe.
+  GetTaskRunner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&AudioManagerBase::CloseAllIdleStreamsOnAudioThread,
+                     base::Unretained(this)));
+}
+
 void AudioManagerBase::LogAudioManagerStartup() {
   GetDeviceLogHelper()->LogMessage("AMB::LogAudioManagerStartup",
                                    "AudioManager starts.");
@@ -320,7 +317,7 @@ void AudioManagerBase::GetAudioInputDeviceDescriptions(
       &AudioManagerBase::GetGroupIDInput);
   base::UmaHistogramEnumeration(
       "Media.Audio.InputDeviceEnumerationOutcome",
-      GetAudioEnumerationOutcome(
+      GetDeviceEnumerationOutcome(
           success, /*has_devices=*/!device_descriptions->empty()));
   GetDeviceLogHelper()->LogDeviceList(true, __func__, *device_descriptions);
 }
@@ -335,7 +332,7 @@ void AudioManagerBase::GetAudioOutputDeviceDescriptions(
       &AudioManagerBase::GetGroupIDOutput);
   base::UmaHistogramEnumeration(
       "Media.Audio.OutputDeviceEnumerationOutcome",
-      GetAudioEnumerationOutcome(
+      GetDeviceEnumerationOutcome(
           success, /*has_devices=*/!device_descriptions->empty()));
   GetDeviceLogHelper()->LogDeviceList(false, __func__, *device_descriptions);
 }
@@ -755,6 +752,15 @@ void AudioManagerBase::ShutdownOnAudioThread() {
 
   // Close all output streams.
   output_dispatchers_.clear();
+}
+
+void AudioManagerBase::CloseAllIdleStreamsOnAudioThread() {
+  DCHECK(GetTaskRunner()->BelongsToCurrentThread());
+  for (auto& params : output_dispatchers_) {
+    if (params->dispatcher) {
+      params->dispatcher->CloseAllIdleStreams();
+    }
+  }
 }
 
 void AudioManagerBase::AddOutputDeviceChangeListener(

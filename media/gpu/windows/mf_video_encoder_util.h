@@ -127,6 +127,19 @@ static constexpr uint8_t kH265MinQuantizer = 10;
 static constexpr uint8_t kH265MaxQuantizer = 42;
 #endif  // BUILDFLAG(ENABLE_PLATFORM_HEVC)
 
+// Shuts down an activated IMFActivate on scope exit.
+class ScopedActivationShutdown {
+ public:
+  explicit ScopedActivationShutdown(IMFActivate* activate);
+  ~ScopedActivationShutdown();
+
+  ScopedActivationShutdown(const ScopedActivationShutdown&) = delete;
+  ScopedActivationShutdown& operator=(const ScopedActivationShutdown&) = delete;
+
+ private:
+  ComMFActivate activate_;
+};
+
 // Returns true if |qp| is a valid quantizer parameter for |codec|.
 bool IsValidQp(VideoCodec codec, uint64_t qp);
 
@@ -163,11 +176,13 @@ std::vector<Microsoft::WRL::ComPtr<IMFActivate>> EnumerateHardwareEncoders(
     VideoCodec codec);
 
 // Get the maximum supported framerate and resolution combinations for the given
-// codec and HMFT. If |allow_set_output_type| is true, it will try to set the
-// output type to get the maximum supported framerate and resolution; otherwise,
-// we merely query the maximum supported macroblocks per second for calculation.
+// codec and HMFT from |vendor|. If |allow_set_output_type| is true, it will try
+// to set the output type to get the maximum supported framerate and resolution;
+// otherwise, we merely query the maximum supported macroblocks per second for
+// calculation.
 std::vector<FramerateAndResolution> GetMaxFramerateAndResolutionsFromMFT(
     VideoCodec codec,
+    DriverVendor vendor,
     IMFTransform* encoder,
     bool allow_set_output_type);
 

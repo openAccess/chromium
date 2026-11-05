@@ -10,12 +10,21 @@
 
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
+#import "components/actor/public/mojom/actor_types.mojom-forward.h"
+#import "components/origin_gating/core/checker_id.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_origin_gating_checker_delegate_ios.h"
 #import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/tool_delegate.h"
 #import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/web_state_id.h"
+#import "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#import "url/origin.h"
 
-@class ActorTaskInterventionHandler;
+namespace origin_gating {
+class OriginGatingChecker;
+class OriginGatingConfiguration;
+class OriginGatingRegistration;
+}  // namespace origin_gating
 
 namespace web {
 class WebState;
@@ -29,6 +38,16 @@ class ActorTool;
 class ActorToolFactory;
 class ActorToolRequest;
 class ToolController;
+
+// Context passed to `OriginGatingChecker::ComputeGatingDecision` for
+// `GateableEvent::kPageAction` checks so tab-specific predicates can inspect
+// the target `WebState`.
+struct PageActionGatingContext : public origin_gating::GatingDecisionContext {
+  explicit PageActionGatingContext(base::WeakPtr<web::WebState> web_state);
+  ~PageActionGatingContext() override;
+
+  base::WeakPtr<web::WebState> web_state;
+};
 
 // Executes a sequence of actions moving through the state machine.
 //
@@ -107,6 +126,16 @@ class ActorEngine : public ToolDelegate {
   // Cancels any ongoing and pending actions.
   void CancelOngoingAndPendingActions(EngineResult reason);
 
+  // Asynchronously fails the current in-flight tool with `reason` and
+  // completes the action.
+  void FailCurrentTool(mojom::ActionResultCode reason);
+
+  // Pauses any ongoing actions being executed by the engine.
+  void PauseOngoingActions();
+
+  // Notifies the engine that the task was uninterrupted.
+  void DidUninterruptTask();
+
   // ToolDelegate:
   ActorTaskId GetTaskId() const override;
   AggregatedJournal& GetJournal() const override;
@@ -120,8 +149,27 @@ class ActorEngine : public ToolDelegate {
       const web::NavigationManager::WebLoadParams& load_params,
       bool in_background) override;
 
+  // Returns the origin gating checker ID used for evaluating navigation
+  // and actuation policies.
+  origin_gating::CheckerId GetOriginGatingCheckerId() const;
+
+  // Returns the OriginGatingChecker instance for gating navigation actions.
+  origin_gating::OriginGatingChecker* GetOriginGatingChecker();
+
+  // Pre-approves `added_writable_mainframe_origins` as non-user-confirmed
+  // allowed main-frame navigation destinations for the task.
+  void AddWritableMainframeOrigins(
+      const absl::flat_hash_set<url::Origin>& added_writable_mainframe_origins);
+
+  void IsAcceptableNavigationDestination(
+      const GURL& url,
+      ToolExecutionCallback callback) override;
+
  private:
   friend class ActorEngineTest;
+
+  // Helper to build the configuration and custom predicates for the checker.
+  static origin_gating::OriginGatingConfiguration CreateOriginGatingConfig();
 
   // Executes the next action.
   void ExecuteNextAction();
@@ -159,6 +207,16 @@ class ActorEngine : public ToolDelegate {
   // Returns the index of the action currently in progress.
   size_t InProgressActionIndex() const;
 
+  // Callback invoked when the pre-execution origin gating check completes.
+  void OnPreExecutionGatingDecision(
+      base::WeakPtr<web::WebState> web_state,
+      std::unique_ptr<origin_gating::GatingDecisionContext> context,
+      origin_gating::GatingDecision decision);
+
+  // Proceeds to tool verification and UI pre-invoke after pre-execution checks
+  // pass.
+  void OnPreExecutionChecksComplete();
+
   // The current state of the execution engine.
   State state_;
 
@@ -181,21 +239,32 @@ class ActorEngine : public ToolDelegate {
   // implementation.
   std::vector<ActionResult> action_results_;
 
-  // The state machine responsible for validating, creating, invoking and
-  // post-invocation of the current tool.
-  std::unique_ptr<ToolController> tool_controller_;
-
   // The delegate to notify of execution milestones.
   raw_ptr<ExecutionUpdatesDelegate> execution_updates_delegate_ = nullptr;
 
   // The ActorTask that owns this ActorEngine.
   raw_ptr<ActorTask> owner_task_ = nullptr;
 
+  // Delegate and registration for origin gating.
+  ActorOriginGatingCheckerDelegateIOS origin_gating_delegate_;
+  std::unique_ptr<origin_gating::OriginGatingRegistration>
+      origin_gating_registration_;
+
+  // Handles the asynchronous gating decision for navigation destination checks.
+  void OnNavigationDestinationGatingDecision(
+      ToolExecutionCallback callback,
+      std::unique_ptr<origin_gating::GatingDecisionContext> context,
+      origin_gating::GatingDecision decision);
+
   // The handler for form filling and login tasks.
   std::unique_ptr<ActorTaskFormFillingHandler> form_filling_handler_;
 
-  // Handler object that intercepts task UI interventions.
-  __strong ActorTaskInterventionHandler* intervention_handler_ = nil;
+  // The state machine responsible for validating, creating, invoking and
+  // post-invocation of the current tool. Reused for every action so that it is
+  // never destroyed while one of its methods is on the stack. Declared after
+  // the members its tools reach through `ToolDelegate` so that it is destroyed
+  // first.
+  const std::unique_ptr<ToolController> tool_controller_;
 
   // Weak pointer factory.
   base::WeakPtrFactory<ActorEngine> weak_ptr_factory_{this};

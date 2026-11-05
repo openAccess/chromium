@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <array>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -22,6 +23,7 @@
 #include "chrome/test/base/chrome_test_utils.h"
 #include "components/services/app_service/public/cpp/intent.h"
 #include "components/services/app_service/public/cpp/intent_util.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/common/extension.h"
@@ -35,7 +37,7 @@
 #include "storage/browser/quota/quota_manager_proxy.h"
 #include "storage/browser/test/test_file_system_context.h"
 #include "storage/common/file_system/file_system_types.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/display/types/display_constants.h"
 
 namespace apps {
@@ -68,7 +70,7 @@ class ExtensionAppsChromeOsBrowserTest
     // Launch app with intent.
     Profile* const profile = browser()->GetProfile();
     const int32_t event_flags =
-        apps::GetEventFlags(WindowOpenDisposition::NEW_WINDOW,
+        apps::GetEventFlags(ui::mojom::WindowOpenDisposition::kNewWindow,
                             /*prefer_container=*/true);
     apps::AppServiceProxyFactory::GetForProfile(profile)->LaunchAppWithIntent(
         extension.id(), event_flags, std::move(intent),
@@ -248,11 +250,10 @@ IN_PROC_BROWSER_TEST_F(ExtensionAppsChromeOsBrowserTest, NavigateExisting) {
   ASSERT_TRUE(extension);
 
   // Open a file twice by launching the file handler each time.
-  content::WebContents* web_contents[2];
-  for (unsigned short i = 0; i < 2; i++) {
+  std::array<content::WebContents*, 2> web_contents = {};
+  for (auto& contents : web_contents) {
     LaunchExtensionAndCatchResult(*extension);
-    UNSAFE_TODO(web_contents[i]) =
-        browser()->GetTabStripModel()->GetActiveWebContents();
+    contents = browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
   // GetWindowIdOfTab() returns -1 for SessionID::InvalidValue().

@@ -45,6 +45,8 @@ bool IsValidTransform(const gfx::Transform& transform) {
     // If testing with unexpectedly high values, catch on debug builds rather
     // than silently change data.  On release builds its better to be safe and
     // validate.
+    // CHECK-exclusion: See the above comment. Intentionally leveraging the
+    // nature of DCHECK.
     DCHECK(false);
     return false;
   }
@@ -102,6 +104,8 @@ device::mojom::XRViewPtr ValidateXRView(const device::mojom::XRView* view) {
   int kMinSize = 2;
   // DCHECK on debug builds to catch legitimate large sizes, but clamp on
   // release builds to ensure valid state.
+  // TODO(crbug.com/573926226): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK_LT(view->viewport.width() + view->viewport.x(), kMaxSize);
   DCHECK_LT(view->viewport.height() + view->viewport.y(), kMaxSize);
   DCHECK_GT(view->viewport.width() + view->viewport.x(), kMinSize);
@@ -268,7 +272,7 @@ void BrowserXRRuntimeImpl::OnServiceAdded(VRServiceImpl* service) {
 
 void BrowserXRRuntimeImpl::OnServiceRemoved(VRServiceImpl* service) {
   DVLOG(2) << __func__ << ": id=" << id_;
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M159);
   services_.erase(service);
   if (service == presenting_service_) {
     // Our presenting service is no longer valid, so we need to clear it before
@@ -431,7 +435,7 @@ void BrowserXRRuntimeImpl::EnsureInstalled(
 }
 
 void BrowserXRRuntimeImpl::OnInstallFinished(XrInstallResult result) {
-  DCHECK(install_finished_callback_);
+  CHECK(install_finished_callback_, base::NotFatalUntil::M159);
 
   std::move(install_finished_callback_).Run(result);
 }

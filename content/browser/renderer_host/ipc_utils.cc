@@ -9,6 +9,7 @@
 
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
+#include "base/feature_list.h"
 #include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
 #include "content/browser/bad_message.h"
@@ -26,8 +27,10 @@
 #include "content/public/common/url_constants.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "net/http/http_request_headers.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom.h"
-#include "ui/base/window_open_disposition.h"
+#include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace content {
 
@@ -36,19 +39,19 @@ namespace {
 // Validates that the specified `disposition` could be legitimately sent by the
 // renderer, as defined by NavigationPolicyToDisposition() in
 // render_frame_impl.cc.
-bool IsValidRendererDisposition(WindowOpenDisposition disposition) {
+bool IsValidRendererDisposition(ui::mojom::WindowOpenDisposition disposition) {
   switch (disposition) {
-    case WindowOpenDisposition::CURRENT_TAB:
-    case WindowOpenDisposition::NEW_FOREGROUND_TAB:
-    case WindowOpenDisposition::NEW_BACKGROUND_TAB:
-    case WindowOpenDisposition::NEW_POPUP:
-    case WindowOpenDisposition::NEW_WINDOW:
-    case WindowOpenDisposition::SAVE_TO_DISK:
-    case WindowOpenDisposition::NEW_PICTURE_IN_PICTURE:
-    case WindowOpenDisposition::NEW_SPLIT_VIEW:
+    case ui::mojom::WindowOpenDisposition::kCurrentTab:
+    case ui::mojom::WindowOpenDisposition::kNewForegroundTab:
+    case ui::mojom::WindowOpenDisposition::kNewBackgroundTab:
+    case ui::mojom::WindowOpenDisposition::kNewPopup:
+    case ui::mojom::WindowOpenDisposition::kNewWindow:
+    case ui::mojom::WindowOpenDisposition::kSaveToDisk:
+    case ui::mojom::WindowOpenDisposition::kNewPictureInPicture:
+    case ui::mojom::WindowOpenDisposition::kNewSplitView:
       return true;
     default:
-      // Certain dispositions, such as SWITCH_TO_TAB, are only used internally
+      // Certain dispositions, such as `kSwitchToTab`, are only used internally
       // within the browser process and should not be triggerable by a renderer
       // process. Allowing a compromised renderer to send those could let it
       // manipulate other tabs in unintended ways. See
@@ -195,6 +198,15 @@ bool VerifyDownloadUrlParams(RenderProcessHost* process,
   if (!VerifyBlobToken(process_id, params.blob_url_token, params.url))
     return false;
 
+  // Unlike OpenURL (where a renderer may legitimately navigate to an external
+  // blob: URL without a token, e.g. via drag-and-drop), renderer-initiated
+  // downloads of blob: URLs always bind a BlobURLToken.
+  if (params.url.SchemeIsBlob() && !params.blob_url_token.is_valid()) {
+    bad_message::ReceivedBadMessage(
+        process_id, bad_message::RFH_DOWNLOAD_URL_BLOB_WITHOUT_TOKEN);
+    return false;
+  }
+
   // Verify |params.initiator_origin|.
   if (params.initiator_origin &&
       !VerifyInitiatorOrigin(process_id, *params.initiator_origin))
@@ -211,10 +223,11 @@ bool VerifyDownloadUrlParams(RenderProcessHost* process,
     }
   }
 
-  // If |params.url| is not set, this must be a large data URL being passed
-  // through |params.data_url_blob|.
-  if (!params.url.is_valid() && !params.data_url_blob.is_valid())
+  // If `params.url` is not set, this must be a large data URL being passed
+  // through `params.data_url_buffer`.
+  if (!params.url.is_valid() && !params.data_url_buffer) {
     return false;
+  }
 
   // Verification succeeded.
   return true;
@@ -328,11 +341,19 @@ bool VerifyBeginNavigationCommonParams(
     return false;
   }
 
-  // Verify |transition| is webby.
+  // Verify |transition| is webby and does not contain renderer-disallowed
+  // qualifiers. Note that PageTransitionIsWebTriggerable() strips qualifiers
+  // and only checks the core transition type.
   if (!PageTransitionIsWebTriggerable(
           ui::PageTransitionFromInt(common_params->transition))) {
     bad_message::ReceivedBadMessage(
         process, bad_message::RFHI_BEGIN_NAVIGATION_NON_WEBBY_TRANSITION);
+    return false;
+  }
+  if ((common_params->transition &
+       ui::PAGE_TRANSITION_RENDERER_DISALLOWED_QUALIFIERS_MASK) != 0) {
+    bad_message::ReceivedBadMessage(
+        process, bad_message::RFHI_BEGIN_NAVIGATION_DISALLOWED_QUALIFIER);
     return false;
   }
 
@@ -428,9 +449,33 @@ bool VerifyCreateNewWindowParams(const RenderFrameHostImpl& current_rfh,
   }
 
   if (params.pip_options &&
-      params.disposition != WindowOpenDisposition::NEW_PICTURE_IN_PICTURE) {
+      params.disposition !=
+          ui::mojom::WindowOpenDisposition::kNewPictureInPicture) {
     bad_message::ReceivedBadMessage(
         process, bad_message::RFH_CREATE_NEW_WINDOW_INVALID_PIP_OPTIONS);
+    return false;
+  }
+
+  // Split tab hints may only be sent when the WindowOpenSplitTab feature is
+  // enabled. The Blink runtime feature follows any override of the
+  // base::Feature, so a well-behaved renderer never sends these when the
+  // base::Feature is disabled. The position and size hints are only sent along
+  // with a split request, and the size is always in
+  // [kMinSplitSize, kMaxSplitSize].
+  CHECK(params.features);
+  const blink::mojom::WindowFeatures& features = *params.features;
+  const bool has_split_hints =
+      features.split_position != blink::mojom::SplitTabPosition::kUnspecified ||
+      features.split_size.has_value();
+  if ((features.is_split || has_split_hints) &&
+      (!base::FeatureList::IsEnabled(blink::features::kWindowOpenSplitTab) ||
+       !features.is_split ||
+       (features.split_size.has_value() &&
+        (*features.split_size < blink::mojom::WindowFeatures::kMinSplitSize ||
+         *features.split_size >
+             blink::mojom::WindowFeatures::kMaxSplitSize)))) {
+    bad_message::ReceivedBadMessage(
+        process, bad_message::RFH_CREATE_NEW_WINDOW_INVALID_SPLIT_TAB_FEATURES);
     return false;
   }
 
@@ -440,6 +485,16 @@ bool VerifyCreateNewWindowParams(const RenderFrameHostImpl& current_rfh,
     bad_message::ReceivedBadMessage(process,
                                     bad_message::ILLEGAL_UPLOAD_PARAMS);
     return false;
+  }
+
+  // Verify `referrer`.
+  if (params.referrer && !params.referrer->url.is_empty()) {
+    if (!policy->HostsOrigin(process->GetID().GetUnsafeValue(),
+                             url::Origin::Create(params.referrer->url))) {
+      bad_message::ReceivedBadMessage(
+          process, bad_message::RFH_CREATE_NEW_WINDOW_INVALID_REFERRER);
+      return false;
+    }
   }
 
   return true;

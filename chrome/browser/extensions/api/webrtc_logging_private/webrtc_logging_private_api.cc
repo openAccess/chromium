@@ -25,6 +25,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/common/error_utils.h"
 
@@ -161,9 +162,8 @@ content::RenderProcessHost* WebrtcLoggingPrivateFunction::RphFromRequest(
   if (!ExtensionTabUtil::GetTabById(tab_id, browser_context(),
                                     include_incognito_information(),
                                     &contents)) {
-    *error = extensions::ErrorUtils::FormatErrorMessage(
-        extensions::ExtensionTabUtil::kTabNotFoundError,
-        base::NumberToString(tab_id));
+    *error = ErrorUtils::FormatErrorMessage(kTabNotFoundError,
+                                            base::NumberToString(tab_id));
     return nullptr;
   }
   if (!contents) {
@@ -212,7 +212,7 @@ WebrtcLoggingPrivateFunctionWithGenericCallback::PrepareTask(
 
 void WebrtcLoggingPrivateFunctionWithGenericCallback::FireCallback(
     bool success, const std::string& error_message) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (success) {
     Respond(NoArguments());
   } else {
@@ -223,7 +223,7 @@ void WebrtcLoggingPrivateFunctionWithGenericCallback::FireCallback(
 void WebrtcLoggingPrivateFunctionWithUploadCallback::FireCallback(
     bool success, const std::string& report_id,
     const std::string& error_message) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (success) {
     api::webrtc_logging_private::UploadResult result;
     result.report_id = report_id;
@@ -235,7 +235,7 @@ void WebrtcLoggingPrivateFunctionWithUploadCallback::FireCallback(
 
 void WebrtcLoggingPrivateFunctionWithRecordingDoneCallback::FireErrorCallback(
     const std::string& error_message) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   Respond(Error(error_message));
 }
 
@@ -243,7 +243,7 @@ void WebrtcLoggingPrivateFunctionWithRecordingDoneCallback::FireCallback(
     const std::string& prefix_path,
     bool did_stop,
     bool did_manual_stop) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   api::webrtc_logging_private::RecordingInfo result;
   result.prefix_path = prefix_path;
   result.did_stop = did_stop;
@@ -548,16 +548,16 @@ void WebrtcLoggingPrivateStartEventLoggingFunction::FireCallback(
     bool success,
     const std::string& log_id,
     const std::string& error_message) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (success) {
-    DCHECK(!log_id.empty());
-    DCHECK(error_message.empty());
+    CHECK(!log_id.empty(), base::NotFatalUntil::M161);
+    CHECK(error_message.empty(), base::NotFatalUntil::M161);
     api::webrtc_logging_private::StartEventLoggingResult result;
     result.log_id = log_id;
     Respond(WithArguments(result.ToValue()));
   } else {
-    DCHECK(log_id.empty());
-    DCHECK(!error_message.empty());
+    CHECK(log_id.empty(), base::NotFatalUntil::M161);
+    CHECK(!error_message.empty(), base::NotFatalUntil::M161);
     Respond(Error(error_message));
   }
 }
@@ -595,7 +595,7 @@ WebrtcLoggingPrivateGetLogsDirectoryFunction::Run() {
 void WebrtcLoggingPrivateGetLogsDirectoryFunction::FireCallback(
     const std::string& filesystem_id,
     const std::string& base_name) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   base::DictValue dict;
   dict.Set("fileSystemId", filesystem_id);
   dict.Set("baseName", base_name);
@@ -604,7 +604,7 @@ void WebrtcLoggingPrivateGetLogsDirectoryFunction::FireCallback(
 
 void WebrtcLoggingPrivateGetLogsDirectoryFunction::FireErrorCallback(
     const std::string& error_message) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   Respond(Error(error_message));
 }
 

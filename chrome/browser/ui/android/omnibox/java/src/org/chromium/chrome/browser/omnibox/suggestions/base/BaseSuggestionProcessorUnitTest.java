@@ -9,7 +9,6 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.robolectric.Shadows.shadowOf;
 
@@ -28,6 +27,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLog;
 
@@ -46,6 +46,7 @@ import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.UrlBarEditingTextStateProvider;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxDrawableState;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteUIContext;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionHost;
 import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionInSuggest;
@@ -53,6 +54,7 @@ import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewPr
 import org.chromium.chrome.browser.omnibox.suggestions.basic.BasicSuggestionProcessor.BookmarkState;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
@@ -89,7 +91,7 @@ public class BaseSuggestionProcessorUnitTest {
 
         @Override
         public PropertyModel createModel() {
-            return new PropertyModel(BaseSuggestionViewProperties.ALL_KEYS);
+            return createPropertyModel(BaseSuggestionViewProperties.ALL_KEYS);
         }
 
         @Override
@@ -115,7 +117,8 @@ public class BaseSuggestionProcessorUnitTest {
 
     private static final GURL TEST_URL = JUnitTestGURLs.URL_1;
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private SuggestionHost mSuggestionHost;
     @Mock private OmniboxImageSupplier mImageSupplier;
@@ -131,6 +134,7 @@ public class BaseSuggestionProcessorUnitTest {
     private TestBaseSuggestionProcessor mProcessor;
     private AutocompleteMatch mSuggestion;
     private PropertyModel mModel;
+    private OmniboxResourceProvider mResourceProvider;
     private AutocompleteInput mInput;
     SettableNonNullObservableSupplier<Integer> mControlsPositionSupplier =
             ObservableSuppliers.createNonNull(ControlsPosition.TOP);
@@ -138,9 +142,11 @@ public class BaseSuggestionProcessorUnitTest {
     @Before
     public void setUp() {
         mContext = ContextUtils.getApplicationContext();
+        mResourceProvider = new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
         mUiContext =
                 new AutocompleteUIContext(
                         mContext,
+                        mResourceProvider,
                         mSuggestionHost,
                         mTextProvider,
                         mImageSupplier,
@@ -276,7 +282,7 @@ public class BaseSuggestionProcessorUnitTest {
         touchDownListener.onResult(1000L);
 
         histogramWatcher.assertExpected();
-        verify(mSuggestionHost, times(1))
+        verify(mSuggestionHost)
                 .onSuggestionTouchDown(mSuggestion, /* position= */ 0, /* eventTime= */ 1000L);
     }
 
@@ -611,7 +617,7 @@ public class BaseSuggestionProcessorUnitTest {
                                 /* tabId= */ 0,
                                 ActionPresentationMode.CHIP)));
 
-        var chips = mModel.get(ActionChipsProperties.ACTION_CHIPS);
+        var chips = mModel.get(BaseSuggestionViewProperties.ACTION_CHIPS);
         assertEquals(null, chips);
     }
 
@@ -634,7 +640,7 @@ public class BaseSuggestionProcessorUnitTest {
                                 /* tabId= */ 0,
                                 ActionPresentationMode.CHIP)));
 
-        var chips = mModel.get(ActionChipsProperties.ACTION_CHIPS);
+        var chips = mModel.get(BaseSuggestionViewProperties.ACTION_CHIPS);
         assertEquals(null, chips);
     }
 

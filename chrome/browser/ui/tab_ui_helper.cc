@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/tab_ui_helper.h"
 
 #include <optional>
+#include <utility>
 
 #include "base/byte_size.h"
 #include "base/callback_list.h"
@@ -13,21 +14,26 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_forward.h"
 #include "base/process/kill.h"
+#include "base/task/cancelable_task_tracker.h"
 #include "build/build_config.h"
+#include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/favicon/favicon_utils.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom.h"
 #include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/performance_controls/memory_saver_utils.h"
 #include "chrome/browser/ui/tabs/features.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_web_contents_listener.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_browser_controller.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/favicon/content/content_favicon_util.h"
+#include "components/favicon/core/favicon_service.h"
+#include "components/favicon_base/favicon_types.h"
 #include "components/security_interstitials/content/security_interstitial_tab_helper.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/tabs/public/tab_network_state.h"
@@ -42,6 +48,25 @@
 #include "url/gurl.h"
 
 namespace {
+
+// Returns the tab-background color id for the default globe favicon, resolved
+// from the tab's active state and the window's active state. Bound into the
+// favicon model and queried at raster time, so the globe's light/dark variant
+// tracks both. crbug.com/544891511
+ui::ColorId GetDefaultFaviconBackgroundColorId(
+    base::WeakPtr<tabs::TabInterface> tab) {
+  if (!tab) {
+    return kColorTabBackgroundActiveFrameActive;
+  }
+  const BrowserWindowInterface* const window = tab->GetBrowserWindowInterface();
+  const bool frame_active = window && window->IsActive();
+  if (tab->IsActivated()) {
+    return frame_active ? kColorTabBackgroundActiveFrameActive
+                        : kColorTabBackgroundActiveFrameInactive;
+  }
+  return frame_active ? kColorTabBackgroundInactiveFrameActive
+                      : kColorTabBackgroundInactiveFrameInactive;
+}
 
 bool IsNTP(const GURL& url) {
   return url.SchemeIs(content::kChromeUIScheme) &&
@@ -77,6 +102,13 @@ bool ShouldShowAppIcon(web_app::WebAppBrowserController* app_controller,
 
 DEFINE_USER_DATA(TabUIHelper);
 
+TabUIHelper::PendingNavigationState::PendingNavigationState(
+    std::u16string title)
+    : title(std::move(title)),
+      favicon_tracker(std::make_unique<base::CancelableTaskTracker>()) {}
+
+TabUIHelper::PendingNavigationState::~PendingNavigationState() = default;
+
 TabUIHelper::TabUIHelper(tabs::TabInterface& tab_interface)
     : ContentsObservingTabFeature(tab_interface),
       scoped_unowned_user_data_(tab_interface.GetUnownedUserDataHost(), *this) {
@@ -104,15 +136,8 @@ base::CallbackListSubscription TabUIHelper::AddTabUIChangeCallback(
 }
 
 std::u16string TabUIHelper::GetTitle() const {
-  if (auto* tab_features = tab().GetTabFeatures()) {
-    const tab_groups::SavedTabGroupWebContentsListener* wc_listener =
-        tab_features->saved_tab_group_web_contents_listener();
-    if (wc_listener) {
-      if (const std::optional<tab_groups::DeferredTabState>&
-              deferred_tab_state = wc_listener->deferred_tab_state()) {
-        return deferred_tab_state.value().title();
-      }
-    }
+  if (pending_navigation_state_.has_value()) {
+    return pending_navigation_state_->title;
   }
 
   const std::u16string& contents_title = web_contents()->GetTitle();
@@ -176,13 +201,8 @@ bool TabUIHelper::IsMonochromeFavicon() {
 }
 
 ui::ImageModel TabUIHelper::GetFavicon() {
-  const tab_groups::SavedTabGroupWebContentsListener* wc_listener =
-      tab().GetTabFeatures()->saved_tab_group_web_contents_listener();
-  if (wc_listener) {
-    if (const std::optional<tab_groups::DeferredTabState>& deferred_tab_state =
-            wc_listener->deferred_tab_state()) {
-      return deferred_tab_state.value().favicon();
-    }
+  if (pending_navigation_state_.has_value()) {
+    return pending_navigation_state_->favicon;
   }
 
   web_app::WebAppBrowserController* const web_app_browser_controller =
@@ -201,8 +221,29 @@ ui::ImageModel TabUIHelper::GetFavicon() {
     }
   }
 
+  // When the page provides no favicon of its own, use the tab-background-aware
+  // default globe. Its light/dark variant is resolved against this tab's
+  // background at raster time -- which depends on the tab's active state and
+  // the window's active state -- rather than the global color scheme, which can
+  // disagree and render the globe low-contrast ("dim") on some Linux themes
+  // (e.g. the built-in PDF viewer). crbug.com/544891511
+  const favicon::FaviconDriver* const favicon_driver =
+      favicon::ContentFaviconDriver::FromWebContents(web_contents());
+  if (!favicon_driver || !favicon_driver->FaviconIsValid()) {
+    // Cache the model so repeated calls return an equal ImageModel; TabData
+    // compares favicons by value, and a fresh BindRepeating each call would
+    // never compare equal. The bound resolver still re-runs at raster time, so
+    // the variant continues to track the tab's and window's active state.
+    if (default_favicon_model_.IsEmpty()) {
+      default_favicon_model_ =
+          favicon::GetDefaultFaviconModel(base::BindRepeating(
+              &GetDefaultFaviconBackgroundColorId, tab().GetWeakPtr()));
+    }
+    return default_favicon_model_;
+  }
+
   return ui::ImageModel::FromImage(
-      favicon::TabFaviconFromWebContents(web_contents()));
+      favicon::GetTabFaviconMaybeDesaturatedOnError(web_contents()));
 }
 
 bool TabUIHelper::ShouldHideThrobber() const {
@@ -263,6 +304,32 @@ GURL TabUIHelper::GetLastCommittedURL() {
   return tab().GetContents()->GetLastCommittedURL();
 }
 
+void TabUIHelper::SetPendingNavigationState(const GURL& url,
+                                            const std::u16string& title) {
+  pending_navigation_state_.emplace(title);
+  tab_ui_change_callbacks_.Notify();
+
+  if (favicon::FaviconService* const favicon_service =
+          FaviconServiceFactory::GetForProfile(
+              Profile::FromBrowserContext(web_contents()->GetBrowserContext()),
+              ServiceAccessType::EXPLICIT_ACCESS)) {
+    favicon_service->GetFaviconImageForPageURL(
+        url,
+        base::BindOnce(&TabUIHelper::OnGetPendingNavigationFaviconImageResult,
+                       base::Unretained(this)),
+        pending_navigation_state_->favicon_tracker.get());
+  }
+}
+
+void TabUIHelper::ClearPendingNavigationState() {
+  if (!pending_navigation_state_.has_value()) {
+    return;
+  }
+
+  pending_navigation_state_.reset();
+  tab_ui_change_callbacks_.Notify();
+}
+
 void TabUIHelper::TitleWasSet(content::NavigationEntry* entry) {
   tab_ui_change_callbacks_.Notify();
 }
@@ -304,6 +371,13 @@ void TabUIHelper::PrimaryMainFrameRenderProcessGone(
 }
 
 void TabUIHelper::PrimaryPageChanged(content::Page& page) {
+  // Drop the cached default-favicon model on navigation so its identity is
+  // stable only within a page. TabData compares favicons by value, so the model
+  // must be equal across calls on the same page; but a new page must yield a
+  // different favicon (e.g. once its own favicon loads), so the cache must not
+  // persist across navigations. crbug.com/544891511
+  default_favicon_model_ = ui::ImageModel();
+
   if (tab().IsSplit()) {
     split_tabs::LogSplitViewUpdatedUKM(
         tab().GetBrowserWindowInterface()->GetTabStripModel(),
@@ -366,6 +440,16 @@ void TabUIHelper::NotifyTabUIChanged(
 
 tabs::TabNetworkState TabUIHelper::GetTabNetworkState() {
   return tabs::TabNetworkStateForWebContents(tab().GetContents());
+}
+
+void TabUIHelper::OnGetPendingNavigationFaviconImageResult(
+    const favicon_base::FaviconImageResult& result) {
+  if (!pending_navigation_state_.has_value() || result.image.IsEmpty()) {
+    return;
+  }
+
+  pending_navigation_state_->favicon = ui::ImageModel::FromImage(result.image);
+  tab_ui_change_callbacks_.Notify();
 }
 
 void TabUIHelper::OnTabPinnedStatusChange(tabs::TabInterface* tab_interface,

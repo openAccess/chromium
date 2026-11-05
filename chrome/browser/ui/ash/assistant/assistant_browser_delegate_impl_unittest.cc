@@ -57,8 +57,13 @@ constexpr auto kAccountId =
 
 class AssistantBrowserDelegateImplTest : public ChromeAshTestBase {
  public:
-  AssistantBrowserDelegateImplTest() { set_start_session(false); }
+  AssistantBrowserDelegateImplTest() = default;
   ~AssistantBrowserDelegateImplTest() override = default;
+
+  void SetUpInitParams(ash::AshTestHelper::InitParams& init_params) override {
+    ChromeAshTestBase::SetUpInitParams(init_params);
+    init_params.users.clear();
+  }
 
   void SetUp() override {
     user_manager_.Reset(std::make_unique<user_manager::UserManagerImpl>(
@@ -100,8 +105,7 @@ class AssistantBrowserDelegateImplTest : public ChromeAshTestBase {
     // Also, AshTestHelper does not respect real SessionManager via
     // SimulateUserLogin. Call it manually here, too.
     session_manager->CreateSession(
-        kAccountId,
-        user_manager::FakeUserManager::GetFakeUsernameHash(kAccountId),
+        kAccountId, user_manager::TestHelper::GetFakeUsernameHash(kAccountId),
         /*new_user=*/false,
         /*has_active_session=*/false);
 
@@ -112,6 +116,7 @@ class AssistantBrowserDelegateImplTest : public ChromeAshTestBase {
       profile_ = profile_manager_->CreateTestingProfile(
           std::string(kAccountId.GetUserEmail()));
     }
+    // TODO(crbug.com/40225390): Use ProfileUserManagerController.
     user_manager_->OnUserProfileCreated(kAccountId, profile_->GetPrefs());
 
     web_app::FakeWebAppProvider::Get(profile_.get())

@@ -17,7 +17,6 @@
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/signin/signin_promo.h"
-#include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -26,6 +25,7 @@
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/signin/signin_view_controller_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/toolbar/avatar_toolbar_iph_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/color_provider_browser_helper.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -33,18 +33,20 @@
 #include "chrome/browser/ui/webui/signin/profile_customization_ui.h"
 #include "chrome/browser/ui/webui/signin/signin_url_utils.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
-#include "chrome/browser/ui/webui/signin/sync_confirmation_ui.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/web_modal/web_contents_modal_dialog_host.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/animating_layout_manager.h"
@@ -60,8 +62,14 @@
 #include "chrome/browser/ui/webui/signin/signout_confirmation/signout_confirmation_ui.h"
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
+#if !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/ui/webui/signin/signin_error_ui.h"
+#include "chrome/browser/ui/webui/signin/signin_ui_error.h"
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 #include "chrome/browser/ui/webui/signin/history_sync_optin/history_sync_optin_ui.h"
+#include "chrome/browser/ui/webui/signin/managed_user_profile_notice_ui.h"
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 
 namespace {
@@ -71,17 +79,9 @@ const int kModalDialogWidth = 448;
 const int kManagedUserNoticeConfirmationDialogWidth = 780;
 const int kManagedUserNoticeConfirmationDialogHeight = 560;
 #endif
-const int kSyncConfirmationDialogWidth = 512;
-const int kSyncConfirmationDialogHeight = 487;
+#if !BUILDFLAG(IS_CHROMEOS)
 const int kSigninErrorDialogHeight = 164;
-
-int GetSyncConfirmationDialogPreferredHeight(Profile* profile) {
-  // If sync is disabled, then the sync confirmation dialog looks like an error
-  // dialog and thus it has the same preferred size.
-  return SyncServiceFactory::IsSyncAllowed(profile)
-             ? kSyncConfirmationDialogHeight
-             : kSigninErrorDialogHeight;
-}
+#endif
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 void CloseModalSigninInBrowser(
@@ -93,16 +93,13 @@ void CloseModalSigninInBrowser(
     return;
   }
 
-  browser->GetFeatures().signin_view_controller()->CloseModalSignin();
-  BrowserView* browser_view =
-      BrowserView::GetBrowserViewForBrowser(browser.get());
-  if (browser_view) {
-    if (show_supervised_user_iph) {
-      browser_view->MaybeShowSupervisedUserProfileSignInIPH();
-    }
-    if (show_profile_switch_iph) {
-      browser_view->MaybeShowProfileSwitchIPH();
-    }
+  SigninViewController::From(browser.get())->CloseModalSignin();
+  auto* iph_controller = AvatarToolbarIphController::From(browser.get());
+  if (show_supervised_user_iph) {
+    iph_controller->MaybeShowSupervisedUserProfileSignInIPH();
+  }
+  if (show_profile_switch_iph) {
+    iph_controller->MaybeShowProfileSwitchIPH();
   }
 }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -125,19 +122,6 @@ class WidgetAutoResizingLayout : public views::FillLayout {
 
 }  // namespace
 
-// static
-std::unique_ptr<views::WebView>
-SigninViewControllerDelegateViews::CreateSyncConfirmationWebView(
-    BrowserWindowInterface* browser,
-    SyncConfirmationStyle style,
-    bool is_sync_promo) {
-  GURL url = GURL(chrome::kChromeUISyncConfirmationURL);
-  return CreateDialogWebView(
-      browser, AppendSyncConfirmationQueryParams(url, style, is_sync_promo),
-      GetSyncConfirmationDialogPreferredHeight(browser->GetProfile()),
-      kSyncConfirmationDialogWidth, InitializeSigninWebDialogUI(true));
-}
-
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 std::unique_ptr<views::WebView>
 SigninViewControllerDelegateViews::CreateHistorySyncOptInWebView(
@@ -152,8 +136,7 @@ SigninViewControllerDelegateViews::CreateHistorySyncOptInWebView(
       CreateDialogWebView(browser,
                           HistorySyncOptinUI::AppendHistorySyncOptinQueryParams(
                               url, launch_context),
-                          /*dialog_height=*/0, kModalDialogWidth,
-                          InitializeSigninWebDialogUI(false));
+                          /*dialog_height=*/0, kModalDialogWidth);
   CHECK(web_view);
   auto* helper = ColorProviderBrowserHelper::From(browser);
   if (helper && helper->color_provider_source()) {
@@ -172,18 +155,27 @@ SigninViewControllerDelegateViews::CreateHistorySyncOptInWebView(
 }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 
+#if !BUILDFLAG(IS_CHROMEOS)
 // static
 std::unique_ptr<views::WebView>
 SigninViewControllerDelegateViews::CreateSigninErrorWebView(
-    BrowserWindowInterface* browser) {
-  auto web_view = CreateDialogWebView(
-      browser, GURL(chrome::kChromeUISigninErrorURL), kSigninErrorDialogHeight,
-      std::nullopt, InitializeSigninWebDialogUI(true));
+    BrowserWindowInterface* browser,
+    const SigninUIError& error) {
+  auto web_view =
+      CreateDialogWebView(browser, GURL(chrome::kChromeUISigninErrorURL),
+                          kSigninErrorDialogHeight, std::nullopt);
   CHECK(web_view);
   web_view->SetProperty(views::kElementIdentifierKey,
                         SigninViewController::kSigninErrorViewId);
+  SigninErrorUI* web_ui = web_view->GetWebContents()
+                              ->GetWebUI()
+                              ->GetController()
+                              ->GetAs<SigninErrorUI>();
+  DCHECK(web_ui);
+  web_ui->InitializeMessageHandlerWithBrowser(browser, error);
   return web_view;
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 // static
@@ -200,8 +192,7 @@ SigninViewControllerDelegateViews::CreateProfileCustomizationWebView(
   }
   std::unique_ptr<views::WebView> web_view = CreateDialogWebView(
       browser, url, ProfileCustomizationUI::kPreferredHeight,
-      ProfileCustomizationUI::kPreferredWidth,
-      InitializeSigninWebDialogUI(false));
+      ProfileCustomizationUI::kPreferredWidth);
 
   ProfileCustomizationUI* web_ui = web_view->GetWebContents()
                                        ->GetWebUI()
@@ -225,8 +216,7 @@ SigninViewControllerDelegateViews::CreateSignoutConfirmationWebView(
   // dynamically based on its contents, so the initial height does not matter.
   std::unique_ptr<views::WebView> web_view = CreateDialogWebView(
       browser, GURL(chrome::kChromeUISignoutConfirmationURL),
-      /*dialog_height=*/0, kModalDialogWidth,
-      InitializeSigninWebDialogUI(false));
+      /*dialog_height=*/0, kModalDialogWidth);
   web_view->SetProperty(
       views::kElementIdentifierKey,
       SigninViewController::kSignoutConfirmationDialogViewElementId);
@@ -281,7 +271,9 @@ SigninViewControllerDelegateViews::CreateManagedUserNoticeConfirmationWebView(
   ManagedUserProfileNoticeParams::CreateForWebContents(
       web_view->GetWebContents(), &browser, screen_type,
       std::move(create_param));
-  web_view->LoadInitialURL(GURL(chrome::kChromeUIManagedUserProfileNoticeUrl));
+
+  web_view->LoadInitialURL(
+      ManagedUserProfileNoticeUI::GetUrl(screen_type, *browser.GetProfile()));
   return web_view;
 }
 #endif
@@ -332,27 +324,11 @@ bool SigninViewControllerDelegateViews::HandleContextMenu(
   return true;
 }
 
-bool SigninViewControllerDelegateViews::HandleKeyboardEvent(
-    content::WebContents* source,
-    const input::NativeWebKeyboardEvent& event) {
-  if (!allow_closing_by_pressing_escape_ &&
-      event.windows_key_code == ui::VKEY_ESCAPE) {
-    return true;
-  }
-  // If this is a ModalType::kChild, then GetFocusManager() will return the
-  // focus manager of the parent window, which has registered accelerators, and
-  // the accelerators will fire. If this is a ModalType::kWindow, then this will
-  // have no effect, since no accelerators have been registered for this
-  // standalone window.
-  return unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-      event, GetFocusManager());
-}
-
 content::WebContents* SigninViewControllerDelegateViews::AddNewContents(
     content::WebContents* source,
     std::unique_ptr<content::WebContents> new_contents,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture,
     bool* was_blocked) {
@@ -400,8 +376,7 @@ SigninViewControllerDelegateViews::SigninViewControllerDelegateViews(
     : content_view_(content_view.get()),
       browser_(browser),
       should_show_close_button_(should_show_close_button),
-      on_closed_callback_(std::move(on_closed_callback)),
-      allow_closing_by_pressing_escape_(allow_closing_by_pressing_escape) {
+      on_closed_callback_(std::move(on_closed_callback)) {
   DCHECK(content_view_->GetWebContents());
   DCHECK(browser_);
   DCHECK(browser_->GetTabStripModel()->GetActiveWebContents())
@@ -446,6 +421,13 @@ SigninViewControllerDelegateViews::SigninViewControllerDelegateViews(
   }
 #endif
 
+  // Configure required accelerator handling.
+  SetAcceleratorHandling(views::WebContentsAcceleratorHandling::kEnabled);
+  if (!allow_closing_by_pressing_escape) {
+    // Swallow ESC keypresses.
+    SetOnEscCallback(base::ReturnValueRepeating(true));
+  }
+
   AttachToWebContents(content_view_->GetWebContents());
 
   DCHECK(dialog_modal_type == ui::mojom::ModalType::kChild ||
@@ -473,18 +455,10 @@ SigninViewControllerDelegateViews::CreateDialogWebView(
     BrowserWindowInterface* browser,
     const GURL& url,
     int dialog_height,
-    std::optional<int> opt_width,
-    InitializeSigninWebDialogUI initialize_signin_web_dialog_ui) {
+    std::optional<int> opt_width) {
   int dialog_width = opt_width.value_or(kModalDialogWidth);
   views::WebView* web_view = new views::WebView(browser->GetProfile());
   web_view->LoadInitialURL(url);
-
-  if (initialize_signin_web_dialog_ui) {
-    SigninWebDialogUI* web_dialog_ui = static_cast<SigninWebDialogUI*>(
-        web_view->GetWebContents()->GetWebUI()->GetController());
-    web_dialog_ui->InitializeMessageHandlerWithBrowser(browser);
-  }
-
   web_view->SetPreferredSize(gfx::Size(dialog_width, dialog_height));
 
   return std::unique_ptr<views::WebView>(web_view);
@@ -515,7 +489,7 @@ void SigninViewControllerDelegateViews::DisplayModal() {
       if (should_show_close_button_) {
         auto border = std::make_unique<views::BubbleBorder>(
             views::BubbleBorder::NONE, views::BubbleBorder::STANDARD_SHADOW);
-        border->SetColor(kColorProfilesReauthDialogBorder);
+        border->set_background_color(kColorProfilesReauthDialogBorder);
         GetBubbleFrameView()->SetBubbleBorder(std::move(border));
       }
       constrained_window::ShowModalDialog(
@@ -534,6 +508,7 @@ void SigninViewControllerDelegateViews::AttachToWebContents(
   DCHECK(web_contents);
   content::WebContentsObserver::Observe(web_contents);
   web_contents->SetDelegate(this);
+
   web_modal::WebContentsModalDialogManager::CreateForWebContents(web_contents);
   web_modal::WebContentsModalDialogManager::FromWebContents(web_contents)
       ->SetDelegate(this);
@@ -580,19 +555,6 @@ END_METADATA
 // SigninViewControllerDelegate static methods
 // --------------------------------------------------------------------
 
-// static
-SigninViewControllerDelegate*
-SigninViewControllerDelegate::CreateSyncConfirmationDelegate(
-    BrowserWindowInterface* browser,
-    SyncConfirmationStyle style,
-    bool is_sync_promo) {
-  return new SigninViewControllerDelegateViews(
-      SigninViewControllerDelegateViews::CreateSyncConfirmationWebView(
-          browser, style, is_sync_promo),
-      browser, ui::mojom::ModalType::kWindow, true, false,
-      /*animate_on_resize=*/true);
-}
-
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 // static
 SigninViewControllerDelegate*
@@ -613,15 +575,19 @@ SigninViewControllerDelegate::CreateSyncHistoryOptInDelegate(
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
+#if !BUILDFLAG(IS_CHROMEOS)
 // static
 SigninViewControllerDelegate*
 SigninViewControllerDelegate::CreateSigninErrorDelegate(
-    BrowserWindowInterface* browser) {
+    BrowserWindowInterface* browser,
+    const SigninUIError& error) {
   return new SigninViewControllerDelegateViews(
-      SigninViewControllerDelegateViews::CreateSigninErrorWebView(browser),
+      SigninViewControllerDelegateViews::CreateSigninErrorWebView(browser,
+                                                                  error),
       browser, ui::mojom::ModalType::kWindow, true, false,
       /*animate_on_resize=*/true);
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 // static
@@ -744,10 +710,11 @@ SigninViewControllerDelegate::CreateManagedUserNoticeDelegate(
         BlockNavigationUntilEnterpriseActionTaken(
             browser.GetProfile(), active_contents, dialog_web_contents, email);
 
-    content::OpenURLParams params(active_contents->GetVisibleURL(),
-                                  content::Referrer(),
-                                  WindowOpenDisposition::CURRENT_TAB,
-                                  ui::PAGE_TRANSITION_AUTO_TOPLEVEL, false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            active_contents->GetVisibleURL(),
+            ui::mojom::WindowOpenDisposition::kCurrentTab,
+            ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
 
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,

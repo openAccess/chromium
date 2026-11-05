@@ -20,6 +20,7 @@
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace policy {
 
@@ -42,11 +43,11 @@ DeviceCloudPolicyInitializer::DeviceCloudPolicyInitializer(
 }
 
 DeviceCloudPolicyInitializer::~DeviceCloudPolicyInitializer() {
-  DCHECK(!is_initialized_);
+  CHECK(!is_initialized_, base::NotFatalUntil::M160);
 }
 
 void DeviceCloudPolicyInitializer::Init() {
-  DCHECK(!is_initialized_);
+  CHECK(!is_initialized_, base::NotFatalUntil::M160);
 
   is_initialized_ = true;
 
@@ -70,7 +71,7 @@ void DeviceCloudPolicyInitializer::Init() {
 }
 
 void DeviceCloudPolicyInitializer::Shutdown() {
-  DCHECK(is_initialized_);
+  CHECK(is_initialized_, base::NotFatalUntil::M160);
 
   policy_store_->RemoveObserver(this);
   state_keys_update_subscription_ = {};

@@ -163,6 +163,10 @@ enum ActionResultCode {
   // inspections for sensitive data.
   kActionBlockedByEnterpriseContentScan = 51,
 
+  // The action or tool targeted a tab, window, or resource belonging to a
+  // different profile than the active task.
+  kActionTargetCrossProfile = 52,
+
   // Please see the comment above about adding new values.
 
   ///////////////////////////////////////////////////////////////////////
@@ -536,6 +540,9 @@ enum ActionResultCode {
   // The trigger field for OTP filling was not found.
   kOtpFieldNotFound = 1416,
 
+  // The user declined the Gmail OTP filling confirmation dialog.
+  kOtpUserDeclinedFillingConfirmation = 1417,
+
   ///////////////////////////////////////////////////////////////////////
   // Codes 1500-1599: Errors for translate page.
 
@@ -555,6 +562,81 @@ enum ActionResultCode {
 
   // The requested text could not be found or highlighted on the page.
   kFindAndHighlightTextNotFound = 1700,
+
+  ///////////////////////////////////////////////////////////////////////
+  // Codes 1800-1899: Action results for file upload.
+
+  // The file was not authorized in the session allowlist.
+  kFileUploadUnauthorizedFile = 1800,
+
+  // No files were provided for the file upload action.
+  kFileUploadEmptyFileList = 1801,
+
+  // One or more of the files could not be downloaded from the given URL.
+  kFileUploadDownloadFailed = 1802,
+
+  // The file could not be exposed to the renderer (e.g. the memory limit of the
+  // in-memory file system has reached).
+  kFileUploadFileSystemRegistrationFailed = 1803,
+
+  ///////////////////////////////////////////////////////////////////////
+  // Codes 1900-1999: Errors for perform search.
+
+  // Template URL service for search was not available.
+  kSearchServiceUnavailable = 1900,
+
+  // Search could not be performed because default search provider was not set.
+  kDefaultSearchProviderNotSet = 1901,
+
+  // Site-based search could not be performed because the page has neither an
+  // OpenSearch template nor a discoverable search input.
+  kSiteBasedSearchNotAvailable = 1902,
+
+  // The default search provider does not support search term replacement or
+  // failed to generate a valid search URL.
+  kSearchUrlGenerationFailed = 1903,
+
+  ///////////////////////////////////////////////////////////////////////
+  // Codes 2000-2099: Errors for page search (switch tab, open known page).
+
+  // The query did not match any page.
+  kPageSearchNoMatch = 2000,
+
+  // The query matched more than one page, so the tool did not act. The message
+  // lists the candidates so the caller can disambiguate and retry.
+  kPageSearchAmbiguousMatch = 2001,
+
+  // The query only matched the currently active tab, so no tab switch was
+  // performed.
+  kPageSearchAlreadyOnMatchingTab = 2002,
+
+  ///////////////////////////////////////////////////////////////////////
+  // Codes 2100-2199: Errors for get screenshot.
+
+  // The screenshot capture failed.
+  kScreenshotCaptureFailed = 2100,
+
+  // Another screenshot capture is already in progress on this tab.
+  kScreenshotCaptureThrottled = 2101,
+
+  // The page for which the screenshot was requested changed during capture.
+  kScreenshotCapturePageChanged = 2102,
+
+  // The page for which the screenshot was requested was not eligible for
+  // capture.
+  kScreenshotCapturePageNotEligible = 2103,
+
+  ///////////////////////////////////////////////////////////////////////
+  // Codes 2200-2299: Errors for Gemini panel tool.
+
+  // The Glic service was not available for the profile.
+  kGeminiPanelServiceUnavailable = 2200,
+
+  // Invoking the Gemini panel failed.
+  kGeminiPanelInvokeFailed = 2201,
+
+  // The target surface is not in a tab.
+  kGeminiPanelNotInTab = 2202,
 
   // Please see the comment above about adding new values.
 };

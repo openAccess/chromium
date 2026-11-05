@@ -49,12 +49,6 @@
       ]
     }
   },
-  "$build/reclient": {
-    "instance": "rbe-chromium-untrusted",
-    "jobs": 5120,
-    "metrics_project": "chromium-reclient-metrics",
-    "scandeps_server": true
-  },
   "$build/siso": {
     "configs": [],
     "disable_batch_mode": true,
@@ -75,5 +69,6 @@
     ]
   },
   "builder_group": "chromium.build",
+  "enable_missing_deps_check": true,
   "recipe": "chrome_build/build_perf_developer"
 }

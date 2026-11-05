@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/photos/model/photos_service_factory.h"
 
+#import <utility>
+
 #import "base/functional/bind.h"
 #import "ios/chrome/browser/photos/model/photos_service.h"
 #import "ios/chrome/browser/photos/model/photos_service_configuration.h"
@@ -16,13 +18,13 @@
 namespace {
 
 // Build a PhotosService instance.
-std::unique_ptr<KeyedService> BuildPhotosService(ProfileIOS* profile) {
+std::unique_ptr<KeyedService> BuildPhotosService(ProfileIOS& profile) {
   PhotosServiceConfiguration* configuration =
       [[PhotosServiceConfiguration alloc] init];
   ApplicationContext* application_context = GetApplicationContext();
   configuration.singleSignOnService =
       application_context->GetSingleSignOnService();
-  configuration.prefService = profile->GetPrefs();
+  configuration.prefService = profile.GetPrefs();
   configuration.identityManager =
       IdentityManagerFactory::GetForProfile(profile);
   configuration.accountManagerService =
@@ -33,34 +35,23 @@ std::unique_ptr<KeyedService> BuildPhotosService(ProfileIOS* profile) {
 }  // namespace
 
 // static
-PhotosService* PhotosServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<PhotosService>(profile,
-                                                              /*create=*/true);
-}
-
-// static
-PhotosServiceFactory* PhotosServiceFactory::GetInstance() {
-  static base::NoDestructor<PhotosServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-PhotosServiceFactory::TestingFactory PhotosServiceFactory::GetDefaultFactory() {
+PhotosServiceFactory::TestingFactoryByRef
+PhotosServiceFactory::GetDefaultFactory() {
   return base::BindOnce(&BuildPhotosService);
 }
 
-PhotosServiceFactory::PhotosServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("PhotosService",
-                                    TestingCreation::kNoServiceForTests,
-                                    ProfileSelection::kRedirectedInIncognito,
-                                    ServiceCreation::kCreateWithProfile) {
+PhotosServiceFactory::PhotosServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "PhotosService",
+          TestingCreation::kNoServiceForTests,
+          ProfileSelection::kRedirectedInIncognito,
+          ServiceCreation::kCreateWithProfile) {
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(ChromeAccountManagerServiceFactory::GetInstance());
 }
 
-PhotosServiceFactory::~PhotosServiceFactory() = default;
-
 std::unique_ptr<KeyedService> PhotosServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   return BuildPhotosService(profile);
 }

@@ -12,13 +12,12 @@
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/payments/content/test_payment_manifest_downloader.h"
 #include "components/payments/content/utility/payment_manifest_parser.h"
-#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/const_csp_checker.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "components/webdata_services/web_data_service_wrapper_factory.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
@@ -62,17 +61,12 @@ class ManifestVerifierBrowserTest : public InProcessBrowserTest {
 
     const_csp_checker_ = std::make_unique<ConstCSPChecker>(/*allow=*/true);
 
-    mojo::Remote<network::mojom::URLLoaderFactory> renderer_url_loader_factory;
-    web_contents->GetPrimaryMainFrame()->CreateNetworkServiceDefaultFactory(
-        renderer_url_loader_factory.BindNewPipeAndPassReceiver());
-
     test_downloader_ = std::make_unique<TestDownloader>(
         const_csp_checker_->GetWeakPtr(),
         browser()
             ->GetProfile()
             ->GetDefaultStoragePartition()
             ->GetURLLoaderFactoryForBrowserProcess(),
-        std::move(renderer_url_loader_factory),
         web_contents->GetPrimaryMainFrame()->GetWeakDocumentPtr());
     test_downloader_->AddTestServerURL("https://", https_server_->GetURL("/"));
   }
@@ -451,7 +445,7 @@ IN_PROC_BROWSER_TEST_F(ManifestVerifierBrowserTest,
                        SinglePaymentMethodName404) {
   std::string expected_pattern =
       "Unable to download payment manifest "
-      "\"https://127.0.0.1:\\d+/404.test/webpay\". HTTP 404 Not Found.";
+      "\"https://127.0.0.1:\\d+/404.test/webpay\".";
   {
     content::InstalledPaymentAppsFinder::PaymentApps apps;
     apps[0] = std::make_unique<content::StoredPaymentApp>();
@@ -490,8 +484,7 @@ IN_PROC_BROWSER_TEST_F(ManifestVerifierBrowserTest,
                        MultiplePaymentMethodName404) {
   std::string expected_pattern =
       "Unable to download payment manifest "
-      "\"https://127.0.0.1:\\d+/404(aswell)?.test/webpay\". HTTP 404 Not "
-      "Found.";
+      "\"https://127.0.0.1:\\d+/404(aswell)?.test/webpay\".";
   {
     content::InstalledPaymentAppsFinder::PaymentApps apps;
     apps[0] = std::make_unique<content::StoredPaymentApp>();

@@ -21,9 +21,8 @@ public interface PdfActionsDelegate {
      * Called when a link in the PDF is clicked.
      *
      * @param uri The uri of the link that was clicked.
-     * @return True if the link was handled, false otherwise.
      */
-    boolean onLinkClicked(Uri uri);
+    void onLinkClicked(Uri uri);
 
     /**
      * Called when the PDF document is successfully loaded.
@@ -53,11 +52,22 @@ public interface PdfActionsDelegate {
     /** Called when the edit mode changes. */
     void onEditModeChanged(boolean editMode);
 
+    /** Enters edit mode. */
+    void enterEditMode();
+
     /** Returns whether the page navigation and edit button are visible in the top toolbar. */
     boolean isPageNavAndEditVisible();
 
     /** Returns the URI of the PDF document. */
-    @Nullable Uri getUri();
+    @Nullable
+    Uri getUri();
+
+    /**
+     * Show pdf specific find in page UI.
+     *
+     * @return whether the pdf specific find in page UI is shown.
+     */
+    boolean findInPage();
 
     /** Returns whether the current PDF is loaded in Incognito mode. */
     boolean isIncognito();
@@ -79,5 +89,3 @@ public interface PdfActionsDelegate {
     /** Called when saving edits to a file failed. */
     void onPdfEditsSaveFailed();
 }
-
-

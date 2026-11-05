@@ -25,7 +25,6 @@ mek@chromium.org
 dibyapal@chromium.org
 # arc
 batoon@google.com
-youkichihosoi@chromium.org
 lingyufeng@chromium.org
 # ash_clipboard
 dmblack@google.com
@@ -62,7 +61,6 @@ schenney@chromium.org
 mlippautz@chromium.org
 toyoshim@chromium.org
 yigu@chromium.org
-npm@chromium.org
 gjc@google.com
 # bluetooth
 chadduffin@chromium.org
@@ -74,6 +72,7 @@ nikhilcn@google.com
 reillyg@chromium.org
 # bookmarks
 emshack@chromium.org
+mastiz@chromium.org
 mschillaci@google.com
 # borealis
 # see crostini
@@ -90,12 +89,10 @@ crisrael@google.com
 khorimoto@chromium.org
 tby@chromium.org
 jimmyxgong@chromium.org
-gavinwill@chromium.org
 # chromeos
 achuith@chromium.org
 chadduffin@chromium.org
 crisrael@google.com
-enlightened@chromium.org
 jiajunz@google.com
 khorimoto@chromium.org
 nikhilcn@google.com
@@ -121,6 +118,8 @@ harrisonsean@chromium.org
 jeffreycohen@chromium.org
 tbansal@chromium.org
 guiperez@google.com
+# content_settings
+dullweber@chromium.org
 # contextual_tasks
 nyquist@chromium.org
 qinmin@chromium.org
@@ -154,7 +153,6 @@ erikchen@chromium.org
 changhaohan@chromium.org
 # diagnostics
 jimmyxgong@chromium.org
-gavinwill@chromium.org
 # direct
 schenney@chromium.org
 # download
@@ -166,7 +164,6 @@ poromov@chromium.org
 zmin@chromium.org
 seblalancette@chromium.org
 igorruvinov@chromium.org
-vsavu@google.com
 hendrich@chromium.org
 # event
 jonross@chromium.org
@@ -179,6 +176,8 @@ ljjlee@google.com
 # fastpair
 jackshira@google.com
 dclasson@google.com
+# favicons
+mastiz@chromium.org
 # feature_engagement
 mschillaci@google.com
 nyquist@chromium.org
@@ -231,11 +230,11 @@ shend@chromium.org
 cthomp@chromium.org
 # ios
 ginnyhuang@chromium.org
-ajuma@chromium.org
 guiperez@google.com
 olivierrobin@chromium.org
 sebsg@chromium.org
 rkgibson@google.com
+adamta@google.com
 # language
 perrier@chromium.org
 curranmax@chromium.org
@@ -305,10 +304,15 @@ jdonnelly@chromium.org
 julietlevesque@google.com
 mahmadi@chromium.org
 manukh@chromium.org
+mfacey@chromium.org
+niharm@google.com
 toyoshim@chromium.org
 # on_device_model
 cduvall@chromium.org
 xinghuilu@chromium.org
+# one_time_tokens
+kazinova@google.com
+salmaabdelaziz@google.com
 # oobe
 bohdanty@google.com
 ziegltrum@google.com
@@ -321,7 +325,6 @@ tbansal@chromium.org
 wittman@chromium.org
 # others
 jimmyxgong@chromium.org
-gavinwill@chromium.org
 jonross@chromium.org
 dullweber@chromium.org
 olivierli@chromium.org
@@ -379,7 +382,7 @@ spelchat@chromium.org
 # printing
 andyphan@chromium.org
 jimmyxgong@chromium.org
-gavinwill@chromium.org
+pmoy@chromium.org
 # privacy_budget
 antoniosartori@chromium.org
 # privacy
@@ -394,8 +397,6 @@ svend@chromium.org
 alexilin@chromium.org
 rsult@google.com
 # private_metrics
-kjarosz@google.com
-# puma
 kjarosz@google.com
 # quick_answers
 xiaohuic@chromium.org
@@ -425,7 +426,7 @@ thefrog@chromium.org
 xinghuilu@chromium.org
 # scanning
 jimmyxgong@chromium.org
-gavinwill@chromium.org
+pmoy@chromium.org
 # scheduler
 spvm@chromium.org
 # search
@@ -469,6 +470,8 @@ zgroza@chromium.org
 drubery@chromium.org
 thefrog@chromium.org
 xinghuilu@chromium.org
+# stability and Windows
+wfh@chromium.org
 # startup
 fdoray@chromium.org
 spvm@chromium.org
@@ -478,7 +481,7 @@ leimy@chromium.org
 csharrison@chromium.org
 tbansal@chromium.org
 # sync
-mmoskvitin@google.com
+mastiz@chromium.org
 rushans@google.com
 treib@chromium.org
 # tab
@@ -494,6 +497,8 @@ perrier@chromium.org
 curranmax@chromium.org
 tbansal@chromium.org
 toyoshim@chromium.org
+# trusted_vault
+mastiz@chromium.org
 # ui
 koretadaniel@chromium.org
 # update_engine
@@ -504,6 +509,8 @@ mickeyburks@chromium.org
 # v8
 emaxx@google.com
 mlippautz@chromium.org
+# voice_typing
+amyasinghal@google.com
 # web_apk
 eirage@chromium.org
 hartmanng@chromium.org

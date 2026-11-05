@@ -17,10 +17,12 @@
 
 use std::sync::{Arc, OnceLock};
 
+use cxx::UniquePtr;
+
 use crate::message::MojomMessage;
 use crate::pending_associated_endpoint_parsing::Registrar;
 
-use super::cpp_interop::CppRouterHandle;
+use super::cpp_interop::{ffi, CppRouterHandle};
 use super::endpoint_registry::{EndpointInfo, InterfaceId};
 use super::multiplex_router_handle::MultiplexRouterHandle;
 
@@ -44,6 +46,10 @@ pub(crate) enum AssociatedRouterHandle {
     Cpp(CppRouterHandle),
 }
 
+/// Panic message used whenever an associated endpoint is used before its peer
+/// has been sent, and it therefore has no router to talk to.
+const NOT_YET_ASSOCIATED_ERR_STR: &str = "Associated Remotes and Receivers cannot be used before the other endpoint has been sent via a message.";
+
 impl RouterHandle {
     pub(crate) fn new_associated(handle: AssociatedRouterHandle) -> Self {
         Self::Associated(Arc::new(OnceLock::from(handle)))
@@ -52,19 +58,20 @@ impl RouterHandle {
     pub(crate) fn send_message(&self, msg: MojomMessage) {
         match self {
             Self::Primary(handle) => handle.send_message(msg),
-            Self::Associated(lock) => lock
-                .get()
-                .expect("Associated Remotes and Receivers cannot be used before the other endpoint has been sent via a message.")
-                .send_message(msg),
+            Self::Associated(lock) => {
+                let handle = lock.get().expect(NOT_YET_ASSOCIATED_ERR_STR);
+                assert!(handle.ready_for_messages(), "{}", NOT_YET_ASSOCIATED_ERR_STR);
+                handle.send_message(msg);
+            }
         }
     }
 
-    // Checks if this router handle has a corresponding pipe and can therefore be
-    // used to send and receive messages.
+    // Checks if this router handle has a corresponding pipe and can therefore
+    // be used to send and receive messages.
     pub(crate) fn ready_for_messages(&self) -> bool {
         match self {
             Self::Primary(_) => true,
-            Self::Associated(lock) => lock.get().is_some(),
+            Self::Associated(lock) => lock.get().is_some_and(|handle| handle.ready_for_messages()),
         }
     }
 }
@@ -81,13 +88,29 @@ impl Registrar for RouterHandle {
                 .map(AssociatedRouterHandle::Rust),
             Self::Associated(lock) => lock
                 .get()
-                .expect("Associated Remotes and Receivers cannot be used before the other endpoint has been sent via a message.")
+                .expect(NOT_YET_ASSOCIATED_ERR_STR)
                 .register_new_endpoint(interface_id, endpoint_info),
+        }
+    }
+
+    fn associate_interface(&self, handle: CppRouterHandle) -> Option<InterfaceId> {
+        match self {
+            Self::Primary(primary_handle) => primary_handle.associate_interface(handle),
+            Self::Associated(lock) => {
+                lock.get().expect(NOT_YET_ASSOCIATED_ERR_STR).associate_interface(handle)
+            }
         }
     }
 }
 
 impl AssociatedRouterHandle {
+    pub(crate) fn ready_for_messages(&self) -> bool {
+        match self {
+            Self::Rust(_) => true,
+            Self::Cpp(cpp_handle) => cpp_handle.is_associated(),
+        }
+    }
+
     pub(crate) fn send_message(&self, msg: MojomMessage) {
         match self {
             Self::Rust(handle) => handle.send_message(msg),
@@ -109,6 +132,17 @@ impl AssociatedRouterHandle {
         match self {
             Self::Rust(handle) => handle.bind(endpoint_info),
             Self::Cpp(cpp_handle) => cpp_handle.bind(endpoint_info),
+        }
+    }
+
+    /// Converts this handle into a C++ FFI adapter.
+    pub(crate) fn into_cpp(self) -> UniquePtr<ffi::AssociatedEndpointRustAdapter> {
+        match self {
+            Self::Rust(handle) => {
+                let (id, router) = handle.into_parts();
+                ffi::CreateWithRustController(router.cpp_group_controller().as_pin(), id)
+            }
+            Self::Cpp(handle) => handle.into_adapter(),
         }
     }
 }
@@ -135,6 +169,13 @@ impl Registrar for AssociatedRouterHandle {
             Self::Cpp(cpp_handle) => cpp_handle
                 .register_new_endpoint(interface_id, endpoint_info)
                 .map(AssociatedRouterHandle::Cpp),
+        }
+    }
+
+    fn associate_interface(&self, handle: CppRouterHandle) -> Option<InterfaceId> {
+        match self {
+            Self::Rust(rust_handle) => rust_handle.associate_interface(handle),
+            Self::Cpp(cpp_handle) => cpp_handle.associate_interface(handle),
         }
     }
 }

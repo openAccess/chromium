@@ -20,9 +20,13 @@ namespace drive {
 
 namespace {
 
-// Base URL for the embedded ConsentKit UI.
+// Base URL for the desktop ConsentKit UI, loaded in an iframe.
 constexpr char kConsentKitBaseUrl[] =
     "https://consent.google.com/signedin/landing";
+
+// Base URL for the mobile ConsentKit UI, loaded top-level in a WebView.
+constexpr char kConsentKitWebViewBaseUrl[] =
+    "https://consent.google.com/signedin/embedded/landing";
 
 }  // namespace
 
@@ -45,6 +49,10 @@ void ConsentKitUrlBuilder::SetProductId(int32_t product_id) {
   product_id_ = product_id;
 }
 
+void ConsentKitUrlBuilder::SetProductSurface(int32_t product_surface) {
+  product_surface_ = product_surface;
+}
+
 void ConsentKitUrlBuilder::SetEntrypointId(const std::string& entrypoint_id) {
   entrypoint_id_ = entrypoint_id;
 }
@@ -56,6 +64,10 @@ void ConsentKitUrlBuilder::SetHostOrigins(
 
 void ConsentKitUrlBuilder::SetDarkMode(bool is_dark_mode) {
   is_dark_mode_ = is_dark_mode;
+}
+
+void ConsentKitUrlBuilder::SetUseWebViewEndpoint(bool use_web_view_endpoint) {
+  use_web_view_endpoint_ = use_web_view_endpoint;
 }
 
 GURL ConsentKitUrlBuilder::Build() {
@@ -73,11 +85,10 @@ GURL ConsentKitUrlBuilder::Build() {
 
   base::ListValue flow_params = base::ListValue().Append(flow_id_);
 
-  base::ListValue product_entry_point =
-      base::ListValue::with_capacity(3)
-          .Append(product_id_)
-          .Append(76)  // CHROME_DESKTOP_NEW_TAB_PAGE
-          .Append(entrypoint_id_);
+  base::ListValue product_entry_point = base::ListValue::with_capacity(3)
+                                            .Append(product_id_)
+                                            .Append(product_surface_)
+                                            .Append(entrypoint_id_);
 
   base::ListValue shared_consent_session_id =
       base::ListValue::with_capacity(3)
@@ -112,15 +123,18 @@ GURL ConsentKitUrlBuilder::Build() {
   }
 
   // --- Assemble URL ---
-  GURL url(kConsentKitBaseUrl);
+  GURL url(use_web_view_endpoint_ ? kConsentKitWebViewBaseUrl
+                                  : kConsentKitBaseUrl);
 
   // Required Parameters:
   url = net::AppendQueryParameter(url, "ppc", json_config);
   url = net::AppendQueryParameter(url, "authuser",
                                   base::NumberToString(session_index_));
   url = net::AppendQueryParameter(url, "hl", locale_);
-  for (const auto& origin : host_origins_) {
-    url = net::AppendQueryParameter(url, "origin", origin);
+  if (!use_web_view_endpoint_) {
+    for (const auto& origin : host_origins_) {
+      url = net::AppendQueryParameter(url, "origin", origin);
+    }
   }
   url = net::AppendQueryParameter(url, "allowNonWebView", "true");
 

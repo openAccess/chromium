@@ -11,6 +11,7 @@ import static org.junit.Assert.assertNotNull;
 import android.app.Activity;
 import android.content.res.ColorStateList;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.LayerDrawable;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.ImageView;
@@ -23,6 +24,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.actions.ActionId;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.ui.base.TestActivity;
@@ -136,12 +139,76 @@ public class BottomBarViewBinderUnitTest {
         assertEquals(R.id.extra_button_container, mBottomBarView.getChildAt(1).getId());
 
         // 2: new tab container
-        View centerContainer = mBottomBarView.getChildAt(2);
-
         // 3: tab switcher container
-        View tabSwitcherContainer = mBottomBarView.getChildAt(3);
 
         // 4: app_menu_button_container
         assertEquals(R.id.app_menu_button_container, mBottomBarView.getChildAt(4).getId());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR + ":bottom_bar_height_dp/56")
+    public void testDynamicDimensions() {
+        // At 56dp bar height and 1.0x density:
+        // - Vertical padding centers the fixed 40dp button background within the 56dp bar
+        //   and tightly wraps the boundsRespectPadding IPH highlight: (56 - 40) / 2 = 8px.
+        // - Horizontal padding is fixed at 4px (R.dimen.bottom_bar_button_padding_horizontal).
+        View newTabButton = mBottomBarView.findViewById(R.id.new_tab_button);
+        assertEquals(4, newTabButton.getPaddingStart());
+        assertEquals(8, newTabButton.getPaddingTop());
+        assertEquals(4, newTabButton.getPaddingEnd());
+        assertEquals(8, newTabButton.getPaddingBottom());
+
+        View homeButton =
+                mBottomBarView.getContainerForAction(ActionId.HOME_BUTTON).getTargetView();
+        assertNotNull(homeButton);
+        assertEquals(4, homeButton.getPaddingStart());
+        assertEquals(8, homeButton.getPaddingTop());
+        assertEquals(4, homeButton.getPaddingEnd());
+        assertEquals(8, homeButton.getPaddingBottom());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testTopPaddingRemovedProperty() {
+        View newTabButton = mBottomBarView.findViewById(R.id.new_tab_button);
+        View homeButton =
+                mBottomBarView.getContainerForAction(ActionId.HOME_BUTTON).getTargetView();
+        assertNotNull(homeButton);
+
+        // Initially top padding is not removed (8px top and bottom at 56dp height).
+        assertEquals(8, newTabButton.getPaddingTop());
+        assertEquals(8, newTabButton.getPaddingBottom());
+        assertEquals(8, homeButton.getPaddingTop());
+        assertEquals(8, homeButton.getPaddingBottom());
+
+        // Remove top padding: topPad becomes 0, bottomPad stays 8.
+        mModel.set(BottomBarProperties.IS_TOP_PADDING_REMOVED, true);
+        assertEquals(0, newTabButton.getPaddingTop());
+        assertEquals(8, newTabButton.getPaddingBottom());
+        assertEquals(0, homeButton.getPaddingTop());
+        assertEquals(8, homeButton.getPaddingBottom());
+        LayerDrawable newTabBackground =
+                (LayerDrawable) mBottomBarView.getNewTabBackgroundForTesting();
+        assertEquals(0, newTabBackground.getLayerInsetTop(0));
+        assertEquals(8, newTabBackground.getLayerInsetBottom(0));
+
+        // Ensure color scheme updates preserve the removed top padding and layer insets.
+        mModel.set(BottomBarProperties.COLOR_SCHEME, BrandedColorScheme.INCOGNITO);
+        assertEquals(0, newTabButton.getPaddingTop());
+        assertEquals(8, newTabButton.getPaddingBottom());
+        assertEquals(0, homeButton.getPaddingTop());
+        assertEquals(8, homeButton.getPaddingBottom());
+        assertEquals(0, mBottomBarView.getNewTabRippleNoBackgroundForTesting().getLayerInsetTop(0));
+        assertEquals(
+                8, mBottomBarView.getNewTabRippleNoBackgroundForTesting().getLayerInsetBottom(0));
+        assertEquals(0, mBottomBarView.getOtherRipplesForTesting()[0].getLayerInsetTop(0));
+        assertEquals(8, mBottomBarView.getOtherRipplesForTesting()[0].getLayerInsetBottom(0));
+
+        // Restore top padding: topPad returns to 8.
+        mModel.set(BottomBarProperties.IS_TOP_PADDING_REMOVED, false);
+        assertEquals(8, newTabButton.getPaddingTop());
+        assertEquals(8, newTabButton.getPaddingBottom());
+        assertEquals(8, homeButton.getPaddingTop());
+        assertEquals(8, homeButton.getPaddingBottom());
     }
 }

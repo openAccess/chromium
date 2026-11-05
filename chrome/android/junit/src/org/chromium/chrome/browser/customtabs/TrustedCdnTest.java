@@ -14,7 +14,6 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -76,9 +75,7 @@ public class TrustedCdnTest {
         mCustomTabTrustedCdnPublisherUrlVisibility =
                 new CustomTabTrustedCdnPublisherUrlVisibility(
                         mWindowAndroid, mLifecycleDispatcher, () -> mShouldPackageShowPublisherUrl);
-        doReturn(PUBLISHER_URL)
-                .when(mTrustedCdnNatives)
-                .getPublisherUrl(ArgumentMatchers.anyLong());
+        doReturn(PUBLISHER_URL).when(mTrustedCdnNatives).getPublisherUrl(eq(mWebContents));
         TrustedCdn.initForTesting(mTab);
     }
 

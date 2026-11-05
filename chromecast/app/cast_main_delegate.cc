@@ -16,8 +16,8 @@
 #include "base/cpu.h"
 #include "base/debug/leak_annotations.h"
 #include "base/files/file.h"
-#include "base/files/file_path.h"
 #include "base/files/file_enumerator.h"
+#include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/logging/logging_settings.h"
@@ -28,7 +28,7 @@
 #include "build/build_config.h"
 #include "chromecast/base/cast_paths.h"
 #include "chromecast/base/chromecast_switches.h"
-#include "chromecast/base/process_types.h"
+#include "chromecast/base/version.h"
 #include "chromecast/browser/cast_content_browser_client.h"
 #include "chromecast/browser/cast_feature_list_creator.h"
 #include "chromecast/chromecast_buildflags.h"
@@ -201,6 +201,17 @@ void CastMainDelegate::PreSandboxStartup() {
     base::android::InitJavaExceptionReporter();
 #endif
     crash_reporter::InitializeCrashKeys();
+
+    static crash_reporter::CrashKeyString<64> browser_version_key(
+        "browser_version");
+    browser_version_key.Set(CAST_BUILD_RELEASE);
+
+#if BUILDFLAG(IS_ANDROID)
+    if (process_type.empty()) {
+      static crash_reporter::CrashKeyString<64> ptype_override_key("ptype");
+      ptype_override_key.Set("cast_browser");
+    }
+#endif
   }
   InitializeResourceBundle();
 }
@@ -285,13 +296,7 @@ std::optional<int> CastMainDelegate::PostEarlyInitialization(
   // Initialize the base::FeatureList and the PrefService (which it depends on),
   // so objects initialized after this point can use features from
   // base::FeatureList.
-  const base::CommandLine* command_line =
-      base::CommandLine::ForCurrentProcess();
-  const bool use_browser_config =
-      command_line->HasSwitch(switches::kUseCastBrowserPrefConfig);
-  ProcessType process_type = use_browser_config ? ProcessType::kCastBrowser
-                                                : ProcessType::kCastService;
-  cast_feature_list_creator_->CreatePrefServiceAndFeatureList(process_type);
+  cast_feature_list_creator_->CreatePrefServiceAndFeatureList();
 
   content::InitializeMojoCore();
 

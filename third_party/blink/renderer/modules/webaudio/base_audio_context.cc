@@ -73,7 +73,6 @@
 #include "third_party/blink/renderer/modules/webaudio/script_processor_node.h"
 #include "third_party/blink/renderer/modules/webaudio/stereo_panner_node.h"
 #include "third_party/blink/renderer/modules/webaudio/wave_shaper_node.h"
-#include "third_party/blink/renderer/platform/audio/fft_frame.h"
 #include "third_party/blink/renderer/platform/audio/hrtf_database_loader.h"
 #include "third_party/blink/renderer/platform/audio/iir_filter.h"
 #include "third_party/blink/renderer/platform/audio/vector_math.h"
@@ -81,7 +80,6 @@
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -182,8 +180,6 @@ void BaseAudioContext::Initialize() {
     // only create the listener if the destination node exists.
     listener_ = MakeGarbageCollected<AudioListener>(*this);
 
-    FFTFrame::Initialize(sampleRate());
-
     // Report the context construction to the inspector.
     ReportDidCreate();
   }
@@ -229,6 +225,25 @@ void BaseAudioContext::Dispose() {
   // BaseAudioContext is going away, so remove the context from the orphan
   // handlers.
   GetDeferredTaskHandler().ClearContextFromOrphanHandlers();
+
+  // Clear any pending resolvers without allocating DOMExceptions (which is
+  // forbidden during GC).
+  DetachPendingResolvers();
+}
+
+void BaseAudioContext::DetachPendingResolvers() {
+  for (auto& resolver : decode_audio_resolvers_) {
+    resolver->SuppressDetachCheck();
+  }
+  decode_audio_resolvers_.clear();
+
+  {
+    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+    for (auto& resolver : pending_promise_resolvers_) {
+      resolver->SuppressDetachCheck();
+    }
+    pending_promise_resolvers_.clear();
+  }
 }
 
 void BaseAudioContext::ContextLifecycleStateChanged(
@@ -397,6 +412,7 @@ ScriptPromise<AudioBuffer> BaseAudioContext::decodeAudioData(
 
     auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<AudioBuffer>>(
         script_state, exception_state.GetContext());
+    resolver->SuppressDetachCheck();
     auto promise = resolver->Promise();
     decode_audio_resolvers_.insert(resolver);
 
@@ -825,22 +841,27 @@ void BaseAudioContext::AddPendingPromiseResolver(
     ScriptPromiseResolver<IDLUndefined>* resolver) {
   DCHECK(IsMainThread());
 
+  resolver->SuppressDetachCheck();
   DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
   pending_promise_resolvers_.push_back(resolver);
 }
 
-void BaseAudioContext::ResolvePendingPromiseResolvers() {
+void BaseAudioContext::ResolvePendingPromiseResolver(
+    ScriptPromiseResolver<IDLUndefined>* resolver) {
   DCHECK(IsMainThread());
 
-  HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>> resolvers;
-  {
-    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
-    resolvers.swap(pending_promise_resolvers_);
+  if (!resolver) {
+    return;
   }
 
-  for (auto& resolver : resolvers) {
-    resolver->Resolve();
+  {
+    DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+    if (Erase(pending_promise_resolvers_, resolver) == 0) {
+      return;
+    }
   }
+
+  resolver->Resolve();
 }
 
 void BaseAudioContext::RejectPendingPromiseResolversWithException(
@@ -857,6 +878,16 @@ void BaseAudioContext::RejectPendingPromiseResolversWithException(
     resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError, message));
   }
+}
+
+void BaseAudioContext::RemovePendingPromiseResolvers(
+    const HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>& resolvers) {
+  DCHECK(IsMainThread());
+
+  DeferredTaskHandler::GraphAutoLocker locker(GetDeferredTaskHandler());
+  EraseIf(pending_promise_resolvers_, [&resolvers](const auto& resolver) {
+    return resolvers.Contains(resolver);
+  });
 }
 
 void BaseAudioContext::RejectPendingDecodeAudioDataResolvers() {

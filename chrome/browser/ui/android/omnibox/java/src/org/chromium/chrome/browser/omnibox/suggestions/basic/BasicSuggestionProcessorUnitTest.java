@@ -22,7 +22,6 @@ import android.graphics.drawable.Drawable;
 import android.view.ContextThemeWrapper;
 
 import androidx.annotation.DrawableRes;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -33,6 +32,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
@@ -51,6 +51,7 @@ import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionInSug
 import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewProperties;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
@@ -124,7 +125,8 @@ public class BasicSuggestionProcessorUnitTest {
         SUGGESTION_TYPE_NAMES = map;
     }
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private SuggestionHost mSuggestionHost;
     @Mock private Bitmap mBitmap;
@@ -138,6 +140,7 @@ public class BasicSuggestionProcessorUnitTest {
     private AutocompleteMatch mSuggestion;
     private PropertyModel mModel;
     private AutocompleteInput mInput;
+    private OmniboxResourceProvider mResourceProvider;
 
     private static class BookmarkPredicate implements BasicSuggestionProcessor.BookmarkState {
         boolean mState;
@@ -155,9 +158,11 @@ public class BasicSuggestionProcessorUnitTest {
         var context =
                 new ContextThemeWrapper(
                         ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
+        mResourceProvider = new OmniboxResourceProvider(context, BrandedColorScheme.APP_DEFAULT);
         mUiContext =
                 new AutocompleteUIContext(
                         context,
+                        mResourceProvider,
                         mSuggestionHost,
                         null,
                         mImageSupplier,
@@ -168,12 +173,10 @@ public class BasicSuggestionProcessorUnitTest {
                         mActionDelegate);
         mProcessor = new BasicSuggestionProcessor(mUiContext);
         mInput = new AutocompleteInput();
-        OmniboxResourceProvider.disableCachesForTesting();
     }
 
     @After
     public void tearDown() {
-        OmniboxResourceProvider.reenableCachesForTesting();
         mInput.reset();
     }
 
@@ -243,7 +246,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getSuggestionIconTypeForSearch_Default() {
         int[][] testCases = {
             {OmniboxSuggestionType.URL_WHAT_YOU_TYPED, ICON_MAGNIFIER},
@@ -274,7 +276,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getSuggestionIconTypeForUrl_Default() {
         int[][] testCases = {
             {OmniboxSuggestionType.URL_WHAT_YOU_TYPED, ICON_GLOBE},
@@ -305,7 +306,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getSuggestionIconTypeForBookmarks_Default() {
         int[][] testCases = {
             {OmniboxSuggestionType.URL_WHAT_YOU_TYPED, ICON_BOOKMARK},
@@ -338,7 +338,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getSuggestionIconTypeForTrendingQueries() {
         int[][] testCases = {
             {OmniboxSuggestionType.URL_WHAT_YOU_TYPED, ICON_TRENDS},
@@ -360,7 +359,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void getFallbackIconFromIconType_validIconForEachType() {
         var resourceMap =
                 Map.ofEntries(
@@ -400,7 +398,10 @@ public class BasicSuggestionProcessorUnitTest {
                         Map.entry(
                                 SuggestTemplateInfo.IconType.PHOTO_SPARK,
                                 R.drawable.ic_photo_spark_24dp),
-                        Map.entry(SuggestTemplateInfo.IconType.BOLT, R.drawable.bolt_24dp));
+                        Map.entry(SuggestTemplateInfo.IconType.BOLT, R.drawable.bolt_24dp),
+                        Map.entry(
+                                SuggestTemplateInfo.IconType.IMAGE_CREATE,
+                                R.drawable.image_create_24dp));
 
         for (var iconType : SuggestTemplateInfo.IconType.values()) {
             assertTrue(iconType.toString(), resourceMap.containsKey(iconType));
@@ -412,7 +413,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void refineIconNotShownForWhatYouTypedSuggestions() {
         final String typed = "Typed content";
         createSearchSuggestion(OmniboxSuggestionType.URL_WHAT_YOU_TYPED, typed);
@@ -426,7 +426,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void refineIconShownForRefineSuggestions() {
         final String typed = "Typed content";
         createSearchSuggestion(OmniboxSuggestionType.SEARCH_SUGGEST, typed);
@@ -443,7 +442,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void refineIcon_notShownForQueryTiles() {
         createSearchSuggestion(OmniboxSuggestionType.TILE_SUGGESTION, "Music");
         PropertyModel model = mProcessor.createModel();
@@ -452,7 +450,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void switchTabIcon_shownForSwitchToTabSuggestions() {
         mInput.setPageClassification(PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS);
 
@@ -470,7 +467,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void suggestionFavicons_showFaviconWhenAvailable() {
         final ArgumentCaptor<Callback<Drawable>> callback = MockitoHelper.callbackCaptor();
         mProcessor.onNativeInitialized();
@@ -491,7 +487,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void suggestionFavicons_doNotFetchForSearchSuggestions() {
         mProcessor.onNativeInitialized();
         createSearchSuggestion(OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED, "");
@@ -500,7 +495,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void suggestionFavicons_doNotFetchForBookmarked() {
         mProcessor.onNativeInitialized();
         mIsBookmarked.mState = true;
@@ -510,7 +504,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void suggestionIcons_documentSuggestionBrandingIcons() {
         mProcessor.onNativeInitialized();
         int[][] testCases = {
@@ -542,7 +535,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void suggestionFavicons_doNotReplaceFallbackIconWhenNoFaviconIsAvailable() {
         final ArgumentCaptor<Callback<Drawable>> callback = MockitoHelper.callbackCaptor();
         mProcessor.onNativeInitialized();
@@ -559,18 +551,60 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void searchSuggestions_searchQueriesCanWrapAroundWithFeatureEnabled() {
         mProcessor.onNativeInitialized();
         createSearchSuggestion(OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED, "");
-        assertEquals(true, mModel.get(SuggestionViewProperties.ALLOW_WRAP_AROUND));
+        assertEquals(true, mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
 
         createUrlSuggestion(OmniboxSuggestionType.URL_WHAT_YOU_TYPED, "");
-        assertEquals(false, mModel.get(SuggestionViewProperties.ALLOW_WRAP_AROUND));
+        assertEquals(false, mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
     }
 
     @Test
-    @SmallTest
+    public void searchSuggestions_primaryTextWrapping() {
+        mProcessor.onNativeInitialized();
+        createSearchSuggestion(OmniboxSuggestionType.SEARCH_SUGGEST, "");
+        assertTrue(mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
+
+        var templateNoWrap = SuggestTemplateInfo.newBuilder().setWrapPrimaryText(false).build();
+        mSuggestion =
+                createSuggestionBuilder(OmniboxSuggestionType.SEARCH_SUGGEST, "")
+                        .setIsSearch(true)
+                        .setSerializedSuggestTemplate(templateNoWrap.toByteArray())
+                        .build();
+        mModel = mProcessor.createModel();
+        mProcessor.populateModel(mInput, mSuggestion, mModel, 0);
+        assertFalse(mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
+
+        var templateWrap = SuggestTemplateInfo.newBuilder().setWrapPrimaryText(true).build();
+        mSuggestion =
+                createSuggestionBuilder(OmniboxSuggestionType.URL_WHAT_YOU_TYPED, "")
+                        .setIsSearch(false)
+                        .setSerializedSuggestTemplate(templateWrap.toByteArray())
+                        .build();
+        mModel = mProcessor.createModel();
+        mProcessor.populateModel(mInput, mSuggestion, mModel, 0);
+        assertTrue(mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
+    }
+
+    @Test
+    public void searchSuggestions_secondaryTextWrapping() {
+        mProcessor.onNativeInitialized();
+        createSearchSuggestion(OmniboxSuggestionType.SEARCH_SUGGEST, "");
+        assertFalse(mModel.get(SuggestionViewProperties.TEXT_LINE_2_WRAP));
+
+        var template = SuggestTemplateInfo.newBuilder().setWrapSecondaryText(true).build();
+        mSuggestion =
+                createSuggestionBuilder(OmniboxSuggestionType.SEARCH_SUGGEST, "")
+                        .setIsSearch(true)
+                        .setSerializedSuggestTemplate(template.toByteArray())
+                        .build();
+        mModel = mProcessor.createModel();
+        mProcessor.populateModel(mInput, mSuggestion, mModel, 0);
+        assertTrue(mModel.get(SuggestionViewProperties.TEXT_LINE_2_WRAP));
+    }
+
+    @Test
     public void internalUrlSuggestions_doNotPresentInternalScheme() {
         mProcessor.onNativeInitialized();
         // URLs that are rejected by UrlBarData should not be presented to the User.
@@ -580,7 +614,6 @@ public class BasicSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void starterPackSuggestions_fallbackIcons() {
         mProcessor.onNativeInitialized();
 
@@ -622,18 +655,16 @@ public class BasicSuggestionProcessorUnitTest {
         mModel = mProcessor.createModel();
         mProcessor.populateModel(mInput, mSuggestion, mModel, 0);
         OmniboxDrawableState icon4 = mModel.get(BaseSuggestionViewProperties.ICON);
-        assertEquals(R.drawable.ic_spark_4c_16dp, shadowOf(icon4.drawable).getCreatedFromResId());
+        assertEquals(R.drawable.ic_spark_24dp, shadowOf(icon4.drawable).getCreatedFromResId());
     }
 
     @Test
-    @SmallTest
     public void topPaddingDefaultZero() {
         createUrlSuggestion(OmniboxSuggestionType.URL_WHAT_YOU_TYPED, "");
         assertEquals(0, mModel.get(BaseSuggestionViewProperties.TOP_PADDING));
     }
 
     @Test
-    @SmallTest
     public void accessibilityAnnouncements_groupedSearchSuggestions() {
         mProcessor.onNativeInitialized();
         mSuggestion =
@@ -654,11 +685,11 @@ public class BasicSuggestionProcessorUnitTest {
                 "Google, Technology corporation. Search. 2 of 5 in the group Trending"
                         + " Searches.";
         assertEquals(
-                expectedAnnouncement, mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION));
+                expectedAnnouncement,
+                mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION_SUPPLIER).get());
     }
 
     @Test
-    @SmallTest
     public void accessibilityAnnouncements_groupedAiModeSuggestions() {
         mProcessor.onNativeInitialized();
         mSuggestion =
@@ -679,11 +710,39 @@ public class BasicSuggestionProcessorUnitTest {
         String expectedAnnouncement =
                 "Gemini, AI Mode. Conversation. 3 of 4 in the group AI Suggestions.";
         assertEquals(
-                expectedAnnouncement, mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION));
+                expectedAnnouncement,
+                mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION_SUPPLIER).get());
     }
 
     @Test
-    @SmallTest
+    public void accessibilityAnnouncements_noDescription() {
+        mProcessor.onNativeInitialized();
+        mSuggestion =
+                createSuggestionBuilder(OmniboxSuggestionType.SEARCH_SUGGEST, "Google")
+                        .setIsSearch(true)
+                        .setDescription("")
+                        .build();
+        mModel = mProcessor.createModel();
+        mModel.set(SuggestionCommonProperties.HEADER_TITLE, "Trending Searches");
+        mModel.set(SuggestionCommonProperties.INDEX_IN_GROUP, 0);
+        mModel.set(SuggestionCommonProperties.TOTAL_IN_GROUP, 3);
+
+        mProcessor.populateModel(mInput, mSuggestion, mModel, 0);
+
+        assertEquals(
+                "Google. Search. 1 of 3 in the group Trending Searches.",
+                mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION_SUPPLIER).get());
+    }
+
+    @Test
+    public void accessibilityAnnouncements_notSetWithoutGroup() {
+        mProcessor.onNativeInitialized();
+        createSearchSuggestion(OmniboxSuggestionType.SEARCH_SUGGEST, "Google");
+        assertEquals(0, mModel.get(SuggestionCommonProperties.TOTAL_IN_GROUP));
+        assertNull(mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION_SUPPLIER));
+    }
+
+    @Test
     public void desktopLayoutExemption_TabSearch() {
         OmniboxCapabilities.setIsDesktopPlatformForTesting(true);
 

@@ -14,7 +14,8 @@
 #ifndef CHROME_UPDATER_CERTIFICATE_TAG_H_
 #define CHROME_UPDATER_CERTIFICATE_TAG_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <vector>
@@ -48,7 +49,7 @@ class BinaryInterface {
   // If writing a new tag, `tag` is inserted as the entire tag and patch
   // space. Tags (including blank tags) intended to be patched on-the-fly by the
   // download server must therefore be padded by the caller with null bytes to
-  // the size of the patch space (see `kMaxTagStringBytes` in tag.cc).
+  // the size of the patch space (see `kMaxTagStringBytes` in tag.h).
   virtual std::optional<std::vector<uint8_t>> SetTag(
       base::span<const uint8_t> tag) = 0;
 

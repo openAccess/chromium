@@ -21,9 +21,12 @@
 #include "components/autofill/core/common/form_field_data.h"
 #include "components/autofill/core/common/save_password_progress_logger.h"
 #include "components/autofill/core/common/unique_ids.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
+#include "components/password_manager/core/browser/actor_login/actor_login_quality_logger_interface.h"
 #include "components/password_manager/core/browser/actor_login/actor_login_types.h"
 #include "components/password_manager/core/browser/actor_login/internal/actor_login_form_finder.h"
 #include "components/password_manager/core/browser/browser_save_password_progress_logger.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/password_form_cache.h"
 #include "components/password_manager/core/browser/password_form_manager.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
@@ -115,7 +118,7 @@ ActorLoginCredentialFiller::ActorLoginCredentialFiller(
     const Credential& credential,
     bool should_store_permission,
     PasswordManagerClient* client,
-    base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger,
+    scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger,
     base::TimeTicks attempt_login_start_time,
     IsTaskInFocus is_task_in_focus,
     FrameFillingStartedCallback frame_filling_started_cb,
@@ -216,7 +219,7 @@ void ActorLoginCredentialFiller::OnAffiliationsReceived(
 
 void ActorLoginCredentialFiller::FetchEligibleForms(
     base::OnceCallback<
-        void(std::vector<password_manager::PasswordFormManager*>)>
+        void(std::vector<raw_ptr<password_manager::PasswordFormManager>>)>
         on_forms_retrieved_cb) {
   CHECK(network::IsOriginPotentiallyTrustworthy(origin_));
   auto log_parsed_forms_details =
@@ -238,7 +241,8 @@ void ActorLoginCredentialFiller::FetchEligibleForms(
 }
 
 void ActorLoginCredentialFiller::ProcessRetrievedForms(
-    std::vector<password_manager::PasswordFormManager*> eligible_managers) {
+    std::vector<raw_ptr<password_manager::PasswordFormManager>>
+        eligible_managers) {
   std::unique_ptr<BrowserSavePasswordProgressLogger> logger =
       GetLogger(client_);
 
@@ -261,7 +265,10 @@ void ActorLoginCredentialFiller::ProcessRetrievedForms(
     return;
   }
 
-  device_authenticator_ = client_->GetDeviceAuthenticator();
+  if (!base::FeatureList::IsEnabled(
+          password_manager::features::kDeviceReauthRefactor)) {
+    device_authenticator_ = client_->GetDeviceAuthenticator();
+  }
 
   bool is_primary_main_frame =
       signin_form_manager->GetDriver()->IsInPrimaryMainFrame();
@@ -275,10 +282,10 @@ void ActorLoginCredentialFiller::ProcessRetrievedForms(
 std::pair<password_manager::PasswordFormManager*,
           const password_manager::StoredCredential*>
 ActorLoginCredentialFiller::FindReferenceFormAndCredential(
-    const std::vector<password_manager::PasswordFormManager*>&
+    const std::vector<raw_ptr<password_manager::PasswordFormManager>>&
         eligible_managers) {
   // Try to find a manager where the credential is an exact match.
-  for (auto* manager : eligible_managers) {
+  for (password_manager::PasswordFormManager* manager : eligible_managers) {
     const password_manager::StoredCredential* match =
         GetMatchingStoredCredential(*manager);
     if (match && password_manager_util::GetMatchType(*match) ==
@@ -288,7 +295,7 @@ ActorLoginCredentialFiller::FindReferenceFormAndCredential(
   }
 
   // Try to find a manager where the credential is an affiliated match.
-  for (auto* manager : eligible_managers) {
+  for (password_manager::PasswordFormManager* manager : eligible_managers) {
     const password_manager::StoredCredential* match =
         GetMatchingStoredCredential(*manager);
     if (match && password_manager_util::GetMatchType(*match) ==
@@ -310,14 +317,15 @@ ActorLoginCredentialFiller::FindReferenceFormAndCredential(
 }
 
 void ActorLoginCredentialFiller::MaybeReauthAndFillAllEligibleFields(
-    std::vector<password_manager::PasswordFormManager*> eligible_managers,
+    std::vector<raw_ptr<password_manager::PasswordFormManager>>
+        eligible_managers,
     password_manager::StoredCredential stored_credential,
     bool is_primary_main_frame) {
   // TODO(crbug.com/458711310): Avoid re-calling this method after fetching
   // forms if re-authentication occurs before filling.
   if (IsReauthBeforeFillingRequired()) {
     base::OnceCallback<void(
-        std::vector<password_manager::PasswordFormManager*>)>
+        std::vector<raw_ptr<password_manager::PasswordFormManager>>)>
         fill_all_fields_cb =
             base::BindOnce(&ActorLoginCredentialFiller::FillAllEligibleFields,
                            weak_ptr_factory_.GetWeakPtr(),
@@ -416,11 +424,24 @@ bool ActorLoginCredentialFiller::DoesStoredCredentialBelongToManager(
 }
 
 bool ActorLoginCredentialFiller::IsReauthBeforeFillingRequired() {
-  return client_->IsReauthBeforeFillingRequired(device_authenticator_.get());
+  if (!base::FeatureList::IsEnabled(
+          password_manager::features::kDeviceReauthRefactor)) {
+    return client_->IsReauthBeforeFillingRequiredLegacy(
+        device_authenticator_.get());
+  }
+  std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker> checker =
+      client_->GetDeviceAuthAvailabilityChecker();
+  return client_->IsReauthBeforeFillingRequired(checker.get());
 }
 
 void ActorLoginCredentialFiller::ReauthenticateAndFill(
     base::OnceClosure fill_form_cb) {
+  if (base::FeatureList::IsEnabled(
+          password_manager::features::kDeviceReauthRefactor)) {
+    device_authenticator_ = client_->GetDeviceAuthenticator();
+  }
+  CHECK(device_authenticator_);
+
   std::u16string message;
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS) || \
     BUILDFLAG(IS_IOS)
@@ -459,7 +480,8 @@ void ActorLoginCredentialFiller::OnDeviceReauthCompleted(
 void ActorLoginCredentialFiller::FillAllEligibleFields(
     password_manager::StoredCredential stored_credential,
     bool should_skip_iframes,
-    std::vector<password_manager::PasswordFormManager*> eligible_managers) {
+    std::vector<raw_ptr<password_manager::PasswordFormManager>>
+        eligible_managers) {
   if (reauth_start_time_.has_value()) {
     base::TimeDelta reauth_duration =
         base::TimeTicks::Now() - reauth_start_time_.value();

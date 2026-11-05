@@ -80,28 +80,12 @@ void DisplayCALayerTree::UpdateCALayerTree(gfx::CALayerParams ca_layer_params) {
   }
 #endif
 
-#if BUILDFLAG(IS_MAC)
   // Remote layers are the most common case.
   if (ca_layer_params.ca_context_id) {
-    if (ca_layer_params.ca_context_fence_mach_port.is_valid()) {
-      ca_context_fence_mach_ports_.push_back(
-          std::move(ca_layer_params.ca_context_fence_mach_port));
-      // If the ca_context_fence_mach_ports_ is freed here, then the screen
-      // flickers (even if in a ScopedCAActionDisabler). Keeping the port alive
-      // for some amount of time after seems to reduce the likelihood of
-      // flickering. Keeping ports alive appears to consume no resources beyond
-      // the mach ports themselves (the IOSurfaces referenced by the CAContext
-      // kept alive by a port are unreferenced, even if the port is never
-      // freed), so this does not have memory usage implications.
-      if (ca_context_fence_mach_ports_.size() >
-          features::kCAContextMaxFencePorts.Get()) {
-        ca_context_fence_mach_ports_.pop_front();
-      }
-    }
+    // Any CAContext fence ports will be dropped here.
     GotCALayerFrame(ca_layer_params.ca_context_id);
     return;
   }
-#endif
 
   // IOSurfaces can be sent from software compositing, or if remote layers are
   // manually disabled.
@@ -173,7 +157,7 @@ void DisplayCALayerTree::GotIOSurfaceFrame(
     base::apple::ScopedCFTypeRef<IOSurfaceRef> io_surface,
     const gfx::Size& dip_size,
     float scale_factor) {
-  DCHECK(io_surface);
+  CHECK(io_surface, base::NotFatalUntil::M163);
   TRACE_EVENT0("ui", "DisplayCALayerTree::GotIOSurfaceFrame");
   ScopedCAActionDisabler disabler;
 

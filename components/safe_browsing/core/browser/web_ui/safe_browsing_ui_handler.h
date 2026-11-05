@@ -7,7 +7,7 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "base/values.h"
-#include "components/safe_browsing/core/browser/download_check_result.h"
+#include "components/safe_browsing/core/browser/download/download_check_result.h"
 #include "components/safe_browsing/core/browser/web_ui/safe_browsing_local_state_delegate.h"
 #include "components/safe_browsing/core/browser/web_ui/safe_browsing_ui_util.h"
 #include "components/safe_browsing/core/browser/web_ui/web_ui_info_singleton_event_observer.h"
@@ -139,6 +139,11 @@ class SafeBrowsingUIHandler {
   // Get the reporting events that have been collected since the oldest
   // currently open chrome://safe-browsing tab was opened.
   void GetReportingEvents(const base::ListValue& args);
+
+  // Gets the V5 get-hash network lookups that have been collected since the
+  // oldest currently open chrome://safe-browsing tab was opened.
+  //  - `args`: the JavaScript callback ID passed in a ListValue.
+  void GetV5GetHashLookups(const base::ListValue& args);
 
   // Get the deep scanning requests that have been collected since the oldest
   // currently open chrome://safe-browsing tab was opened.

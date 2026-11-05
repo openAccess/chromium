@@ -36,7 +36,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -61,6 +60,7 @@
 #include "components/variations/variations_switches.h"
 #include "components/variations/variations_test_utils.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -79,6 +79,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/zlib/google/compression_utils.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -361,7 +362,12 @@ class VariationHeaderSetter : public ChromeBrowserMainExtraParts {
 class VariationsHttpHeadersBrowserTest : public PlatformBrowserTest {
  public:
   VariationsHttpHeadersBrowserTest()
-      : https_server_(net::test_server::EmbeddedTestServer::TYPE_HTTPS) {}
+      : https_server_(net::test_server::EmbeddedTestServer::TYPE_HTTPS) {
+#if BUILDFLAG(IS_ANDROID)
+    // SetUpOnMainThread() uses NetworkConnectionChangeSimulator.
+    set_use_test_network_connection_tracker(false);
+#endif
+  }
 
   VariationsHttpHeadersBrowserTest(const VariationsHttpHeadersBrowserTest&) =
       delete;
@@ -733,12 +739,12 @@ class VariationsHttpHeadersBrowserTestWithInactiveLimitedLayer
   }
 };
 
-class VariationsHttpHeadersBrowserTestWithSetLowEntropyRandomizationSource
+class VariationsHttpHeadersBrowserTestWithSetLimitedEntropyRandomizationSource
     : public VariationsHttpHeadersBrowserTest {
  public:
-  VariationsHttpHeadersBrowserTestWithSetLowEntropyRandomizationSource() =
+  VariationsHttpHeadersBrowserTestWithSetLimitedEntropyRandomizationSource() =
       default;
-  ~VariationsHttpHeadersBrowserTestWithSetLowEntropyRandomizationSource()
+  ~VariationsHttpHeadersBrowserTestWithSetLimitedEntropyRandomizationSource()
       override = default;
 
  protected:
@@ -1099,7 +1105,7 @@ IN_PROC_BROWSER_TEST_P(VariationsHttpHeadersBrowserTestWithActiveLimitedLayer,
 }
 
 IN_PROC_BROWSER_TEST_F(
-    VariationsHttpHeadersBrowserTestWithSetLowEntropyRandomizationSource,
+    VariationsHttpHeadersBrowserTestWithSetLimitedEntropyRandomizationSource,
     LimitedEntropyRandomization_ExperimentLogging) {
   // CreateEntropyProvidersForTesting() ensures a limited entropy provider is
   // created.
@@ -1130,7 +1136,7 @@ IN_PROC_BROWSER_TEST_F(
 }
 
 IN_PROC_BROWSER_TEST_F(
-    VariationsHttpHeadersBrowserTestWithSetLowEntropyRandomizationSource,
+    VariationsHttpHeadersBrowserTestWithSetLimitedEntropyRandomizationSource,
     LimitedEntropyRandomization_ExperimentLoggingWithoutGoogleWebExperimentationId) {
   // CreateEntropyProvidersForTesting() ensures a limited entropy provider is
   // created.

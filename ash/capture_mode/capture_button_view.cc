@@ -101,6 +101,7 @@ CaptureButtonView::CaptureButtonView(
 
   capture_button_->SetHorizontalAlignment(gfx::ALIGN_CENTER);
   capture_button_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 12)));
+  capture_button_->SetEnabledTextColors(kColorAshTextColorPrimary);
   SetupButton(capture_button_);
 
   // Only show the drop down button if there are more than one recording types
@@ -121,6 +122,10 @@ CaptureButtonView::CaptureButtonView(
     drop_down_button_->SetMinimumImageSize(capture_mode::kSettingsIconSize);
     drop_down_button_->SetTooltipText(l10n_util::GetStringUTF16(
         IDS_ASH_SCREEN_CAPTURE_RECORDING_TYPE_BUTTON_TOOLTIP));
+    drop_down_button_->SetImageModel(
+        views::Button::STATE_NORMAL,
+        ui::ImageModel::FromVectorIcon(kDropDownArrowIcon,
+                                       kColorAshIconColorPrimary));
   }
 }
 
@@ -149,11 +154,10 @@ void CaptureButtonView::UpdateViewVisuals() {
   const auto button_state = GetCaptureButtonState();
   capture_button_->SetText(l10n_util::GetStringUTF16(button_state.label_id));
 
-  const SkColor icon_color =
-      GetColorProvider()->GetColor(kColorAshIconColorPrimary);
   capture_button_->SetImageModel(
       views::Button::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(*button_state.vector_icon, icon_color));
+      ui::ImageModel::FromVectorIcon(*button_state.vector_icon,
+                                     kColorAshIconColorPrimary));
 
   if (should_invalidate_focus_ring) {
     // Note that we don't need to invalidate the focus ring of the
@@ -178,22 +182,6 @@ CaptureButtonView::GetHighlightableItems() const {
         CaptureModeSessionFocusCycler::HighlightHelper::Get(drop_down_button_));
   }
   return result;
-}
-
-void CaptureButtonView::OnThemeChanged() {
-  views::View::OnThemeChanged();
-
-  auto* color_provider = GetColorProvider();
-  capture_button_->SetEnabledTextColors(
-      color_provider->GetColor(kColorAshTextColorPrimary));
-
-  if (drop_down_button_) {
-    drop_down_button_->SetImageModel(
-        views::Button::STATE_NORMAL,
-        ui::ImageModel::FromVectorIcon(
-            kDropDownArrowIcon,
-            color_provider->GetColor(kColorAshIconColorPrimary)));
-  }
 }
 
 void CaptureButtonView::SetupButton(views::Button* button) {

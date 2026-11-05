@@ -16,6 +16,7 @@
 #include "components/site_engagement/content/site_engagement_metrics.h"
 #include "components/site_engagement/content/site_engagement_score.h"
 #include "components/site_engagement/content/site_engagement_service.h"
+#include "components/tabs/public/mock_tab_interface.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_entry.h"
@@ -67,18 +68,15 @@ class SiteEngagementHelperTest : public content::RenderViewHostTestHarness {
   }
 
   void TearDown() override {
+    helper_.reset();
     SiteEngagementService::ClearServiceProvider(service_provider_.get());
 
     content::RenderViewHostTestHarness::TearDown();
   }
 
   SiteEngagementService::Helper* GetHelper(content::WebContents* web_contents) {
-    SiteEngagementService::Helper::CreateForWebContents(web_contents);
-    SiteEngagementService::Helper* helper =
-        SiteEngagementService::Helper::FromWebContents(web_contents);
-
-    DCHECK(helper);
-    return helper;
+    helper_ = std::make_unique<SiteEngagementService::Helper>(web_contents);
+    return helper_.get();
   }
 
   void TrackingStarted(SiteEngagementService::Helper* helper) {
@@ -198,6 +196,7 @@ class SiteEngagementHelperTest : public content::RenderViewHostTestHarness {
   }
 
  private:
+  std::unique_ptr<SiteEngagementService::Helper> helper_;
   std::unique_ptr<TestSiteEngagementServiceProvider> service_provider_;
   TestingPrefServiceSimple pref_service_;
   permissions::TestPermissionsClient permissions_client_;
@@ -688,6 +687,28 @@ TEST_F(SiteEngagementHelperTest, SingleTabNavigation) {
   NavigationSimulator::NavigateAndCommitFromBrowser(web_contents(), url1);
   EXPECT_TRUE(input_tracker_timer->IsRunning());
   EXPECT_FALSE(IsTrackingInput(helper));
+}
+
+TEST_F(SiteEngagementHelperTest, FromTabInterface) {
+  EXPECT_EQ(nullptr, SiteEngagementService::Helper::From(nullptr));
+
+  tabs::MockTabInterface tab;
+  EXPECT_EQ(nullptr, SiteEngagementService::Helper::From(&tab));
+
+  auto helper =
+      std::make_unique<SiteEngagementService::Helper>(tab, web_contents());
+  EXPECT_EQ(helper.get(), SiteEngagementService::Helper::From(&tab));
+
+  // Resetting before recreating on the same tab (matching
+  // TabFeatures::WillDiscardContents) must unregister the old instance and
+  // allow a replacement Helper to bind to the same TabInterface.
+  helper.reset();
+  EXPECT_EQ(nullptr, SiteEngagementService::Helper::From(&tab));
+
+  auto replacement_helper =
+      std::make_unique<SiteEngagementService::Helper>(tab, web_contents());
+  EXPECT_EQ(replacement_helper.get(),
+            SiteEngagementService::Helper::From(&tab));
 }
 
 }  // namespace site_engagement

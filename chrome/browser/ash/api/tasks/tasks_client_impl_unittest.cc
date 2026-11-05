@@ -49,6 +49,7 @@
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/test/test_shared_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -370,10 +371,6 @@ TEST_F(TasksClientImplTest, GetTaskLists) {
   histogram_tester()->ExpectUniqueSample(
       "Ash.Glanceables.Api.Tasks.GetTaskLists.PagesCount",
       /*sample=*/1,
-      /*expected_bucket_count=*/1);
-  histogram_tester()->ExpectUniqueSample(
-      "Ash.Glanceables.Api.Tasks.TaskListsCount",
-      /*sample=*/2,
       /*expected_bucket_count=*/1);
 }
 
@@ -829,10 +826,6 @@ TEST_F(TasksClientImplTest, GetTaskListsFetchesAllPages) {
       "Ash.Glanceables.Api.Tasks.GetTaskLists.PagesCount",
       /*sample=*/3,
       /*expected_bucket_count=*/1);
-  histogram_tester()->ExpectUniqueSample(
-      "Ash.Glanceables.Api.Tasks.TaskListsCount",
-      /*sample=*/3,
-      /*expected_bucket_count=*/1);
 }
 
 TEST_F(TasksClientImplTest, GlanceablesBubbleClosedWhileFetchingTaskListsPage) {
@@ -1124,14 +1117,6 @@ TEST_F(TasksClientImplTest, GetTasks) {
   histogram_tester()->ExpectUniqueSample(
       "Ash.Glanceables.Api.Tasks.GetTasks.PagesCount",
       /*sample=*/1,
-      /*expected_bucket_count=*/1);
-  histogram_tester()->ExpectUniqueSample(
-      "Ash.Glanceables.Api.Tasks.RawTasksCount",
-      /*sample=*/3,
-      /*expected_bucket_count=*/1);
-  histogram_tester()->ExpectUniqueSample(
-      "Ash.Glanceables.Api.Tasks.ProcessedTasksCount",
-      /*sample=*/2,
       /*expected_bucket_count=*/1);
 }
 
@@ -1728,14 +1713,6 @@ TEST_F(TasksClientImplTest, GetTasksFetchesAllPages) {
       "Ash.Glanceables.Api.Tasks.GetTasks.PagesCount",
       /*sample=*/3,
       /*expected_bucket_count=*/1);
-  histogram_tester()->ExpectUniqueSample(
-      "Ash.Glanceables.Api.Tasks.RawTasksCount",
-      /*sample=*/3,
-      /*expected_bucket_count=*/1);
-  histogram_tester()->ExpectUniqueSample(
-      "Ash.Glanceables.Api.Tasks.ProcessedTasksCount",
-      /*sample=*/2,
-      /*expected_bucket_count=*/1);
 }
 
 TEST_F(TasksClientImplTest, GlanceablesBubbleClosedWhileFetchingTasksPage) {
@@ -1964,10 +1941,6 @@ TEST_F(TasksClientImplTest, MarkAsCompleted) {
   histogram_tester()->ExpectUniqueSample(
       "Ash.Glanceables.Api.Tasks.PatchTask.Status", ApiErrorCode::HTTP_SUCCESS,
       /*expected_bucket_count=*/2);
-  histogram_tester()->ExpectUniqueSample(
-      "Ash.Glanceables.Api.Tasks.SimultaneousMarkAsCompletedRequestsCount",
-      /*sample=*/2,
-      /*expected_bucket_count=*/1);
 }
 
 TEST_F(TasksClientImplTest, MarkAsCompletedOnHttpError) {

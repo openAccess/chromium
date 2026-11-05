@@ -15,7 +15,6 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
-#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/shill/shill_device_client.h"
 #include "chromeos/ash/components/dbus/shill/shill_profile_client.h"
 #include "chromeos/ash/components/dbus/shill/shill_service_client.h"
@@ -29,7 +28,7 @@
 #include "components/account_id/account_id_literal.h"
 #include "components/onc/onc_constants.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/test_helper.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
@@ -90,19 +89,18 @@ class NetworkingPrivateApiTest : public ApiUnitTest {
   void SetUp() override {
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     base::FilePath path = temp_dir_.GetPath().Append(
-        ash::BrowserContextHelper::GetUserBrowserContextDirName(
-            GetTestUserHash()));
+        user_manager::User::GetDirName(GetTestUserHash()));
     SetBrowserContextPath(path);
 
     ApiUnitTest::SetUp();
 
-    ash::test::TestUserSessionManager::RegisterLocalStatePrefs(
+    ash::test::UserSessionTestEnvironment::RegisterLocalStatePrefs(
         local_state_.registry());
-    user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(&local_state_);
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(&local_state_);
 
-    ASSERT_TRUE(user_session_manager_->AddRegularUser(kTestAccountId));
-    user_session_manager_->LogIn(kTestAccountId);
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(kTestAccountId));
+    user_session_test_environment_->LogIn(kTestAccountId);
 
     base::RunLoop().RunUntilIdle();
 
@@ -116,7 +114,7 @@ class NetworkingPrivateApiTest : public ApiUnitTest {
   }
 
   void TearDown() override {
-    user_session_manager_.reset();
+    user_session_test_environment_.reset();
 
     ApiUnitTest::TearDown();
   }
@@ -377,7 +375,8 @@ class NetworkingPrivateApiTest : public ApiUnitTest {
  private:
   base::ScopedTempDir temp_dir_;
   TestingPrefServiceSimple local_state_;
-  std::unique_ptr<ash::test::TestUserSessionManager> user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   ash::NetworkHandlerTestHelper network_handler_test_helper_;
 };
 

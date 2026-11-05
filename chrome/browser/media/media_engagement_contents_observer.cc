@@ -22,6 +22,7 @@
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/mojom/autoplay/autoplay.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "base/time/time.h"
@@ -59,7 +60,7 @@ MediaEngagementContentsObserver::MediaEngagementContentsObserver(
     MediaEngagementService* service)
     : WebContentsObserver(web_contents),
       service_(service),
-      task_runner_(nullptr) {}
+      task_runner_(service->task_runner_for_test_) {}
 
 MediaEngagementContentsObserver::~MediaEngagementContentsObserver() = default;
 
@@ -94,6 +95,17 @@ void MediaEngagementContentsObserver::PlaybackTimer::Reset() {
   start_time_.reset();
 }
 
+void MediaEngagementContentsObserver::PlaybackTimer::SetClockForTest(
+    base::Clock* clock) {
+  if (IsRunning()) {
+    clock_ = clock;
+    start_time_ = clock_->Now();
+    recorded_time_ = base::TimeDelta();
+  } else {
+    clock_ = clock;
+  }
+}
+
 void MediaEngagementContentsObserver::WebContentsDestroyed() {
   RegisterAudiblePlayersWithSession();
   session_ = nullptr;
@@ -106,7 +118,6 @@ void MediaEngagementContentsObserver::WebContentsDestroyed() {
 void MediaEngagementContentsObserver::ClearPlayerStates() {
   playback_timer_.Stop();
   player_states_.clear();
-  significant_players_.clear();
   audio_context_players_.clear();
   audio_context_timer_.Stop();
 }
@@ -118,21 +129,25 @@ void MediaEngagementContentsObserver::RegisterAudiblePlayersWithSession() {
   int32_t significant_players = 0;
   int32_t audible_players = 0;
 
-  for (const auto& row : audible_players_) {
-    const PlayerState& player_state = GetPlayerState(row.first);
+  for (auto& [player_id, player_state] : player_states_) {
+    if (!player_state.was_audible) {
+      continue;
+    }
     const base::TimeDelta elapsed = player_state.playback_timer->Elapsed();
 
     if (elapsed < kMaxShortPlaybackTime && player_state.reached_end_of_stream) {
       session_->RecordShortPlaybackIgnored(elapsed.InMilliseconds());
-      continue;
+    } else {
+      significant_players += player_state.significant_playback_recorded;
+      ++audible_players;
     }
 
-    significant_players += row.second.first;
-    ++audible_players;
+    player_state.was_audible = false;
+    player_state.significant_playback_recorded = false;
+    player_state.significant_playback_timer.reset();
   }
 
   session_->RegisterAudiblePlayers(audible_players, significant_players);
-  audible_players_.clear();
 }
 
 void MediaEngagementContentsObserver::DidFinishNavigation(
@@ -178,7 +193,7 @@ MediaEngagementContentsObserver::GetPlayerState(
     return state->second;
 
   auto iter =
-      player_states_.insert(std::make_pair(id, PlayerState(service_->clock_)));
+      player_states_.emplace(id, PlayerState(service_->clock_));
   return iter.first->second;
 }
 
@@ -222,8 +237,6 @@ void MediaEngagementContentsObserver::MediaResized(
 void MediaEngagementContentsObserver::MediaDestroyed(
     const content::MediaPlayerId& id) {
   player_states_.erase(id);
-  audible_players_.erase(id);
-  significant_players_.erase(id);
 }
 
 void MediaEngagementContentsObserver::MediaStoppedPlaying(
@@ -270,22 +283,25 @@ bool MediaEngagementContentsObserver::IsPlayerStateComplete(
 void MediaEngagementContentsObserver::OnSignificantMediaPlaybackTimeForPlayer(
     const content::MediaPlayerId& id) {
   // Clear the timer.
-  auto audible_row = audible_players_.find(id);
-  CHECK(audible_row != audible_players_.end());
+  auto state_it = player_states_.find(id);
+  CHECK(state_it != player_states_.end());
+  CHECK(state_it->second.was_audible);
 
-  audible_row->second.second = nullptr;
+  state_it->second.significant_playback_timer = nullptr;
 
   // Check that the tab is not muted.
   auto* audible_helper = RecentlyAudibleHelper::FromWebContents(web_contents());
-  if (web_contents()->IsAudioMuted() || !audible_helper->WasRecentlyAudible())
+  if (web_contents()->IsAudioMuted() || !audible_helper ||
+      !audible_helper->WasRecentlyAudible()) {
     return;
+  }
 
   // Record significant audible playback.
-  audible_row->second.first = true;
+  state_it->second.significant_playback_recorded = true;
 }
 
 void MediaEngagementContentsObserver::OnSignificantMediaPlaybackTimeForPage() {
-  DCHECK(session_);
+  CHECK(session_, base::NotFatalUntil::M161);
 
   if (session_->significant_media_element_playback_recorded())
     return;
@@ -293,15 +309,16 @@ void MediaEngagementContentsObserver::OnSignificantMediaPlaybackTimeForPage() {
   // Do not record significant playback if the tab did not make
   // a sound recently.
   auto* audible_helper = RecentlyAudibleHelper::FromWebContents(web_contents());
-  if (!audible_helper->WasRecentlyAudible())
+  if (!audible_helper || !audible_helper->WasRecentlyAudible()) {
     return;
+  }
 
   session_->RecordSignificantMediaElementPlayback();
 }
 
 void MediaEngagementContentsObserver::
     OnSignificantAudioContextPlaybackTimeForPage() {
-  DCHECK(session_);
+  CHECK(session_, base::NotFatalUntil::M161);
 
   if (session_->significant_audio_context_playback_recorded())
     return;
@@ -309,8 +326,9 @@ void MediaEngagementContentsObserver::
   // Do not record significant playback if the tab did not make
   // a sound recently.
   auto* audible_helper = RecentlyAudibleHelper::FromWebContents(web_contents());
-  if (!audible_helper->WasRecentlyAudible())
+  if (!audible_helper || !audible_helper->WasRecentlyAudible()) {
     return;
+  }
 
   session_->RecordSignificantAudioContextPlayback();
 }
@@ -324,25 +342,15 @@ void MediaEngagementContentsObserver::MaybeInsertRemoveSignificantPlayer(
     return;
 
   // If the player has an audio track, is un-muted and is playing then we should
-  // add it to the audible players map.
+  // mark it as audible.
   if (state.muted == false && state.playing == true &&
-      state.has_audio == true &&
-      audible_players_.find(id) == audible_players_.end()) {
-    audible_players_.emplace(id, std::make_pair(false, nullptr));
+      state.has_audio == true && !state.was_audible) {
+    state.was_audible = true;
+    state.significant_playback_recorded = false;
+    state.significant_playback_timer = nullptr;
   }
 
-  const bool is_currently_listed_significant =
-      significant_players_.find(id) != significant_players_.end();
-
-  if (is_currently_listed_significant) {
-    if (!IsSignificantPlayer(id)) {
-      significant_players_.erase(id);
-    }
-  } else {
-    if (IsSignificantPlayer(id)) {
-      significant_players_.insert(id);
-    }
-  }
+  state.is_significant = IsSignificantPlayer(id);
 }
 
 bool MediaEngagementContentsObserver::IsSignificantPlayer(
@@ -374,13 +382,13 @@ void MediaEngagementContentsObserver::UpdatePlayerTimer(
   UpdatePageTimer();
 
   // The player should be considered audible.
-  auto audible_row = audible_players_.find(id);
-  if (audible_row == audible_players_.end())
+  auto state_it = player_states_.find(id);
+  if (state_it == player_states_.end() || !state_it->second.was_audible)
     return;
 
   // If we meet all the reqirements for being significant then start a timer.
-  if (significant_players_.find(id) != significant_players_.end()) {
-    if (audible_row->second.second)
+  if (state_it->second.is_significant) {
+    if (state_it->second.significant_playback_timer)
       return;
 
     auto new_timer = std::make_unique<base::OneShotTimer>();
@@ -394,18 +402,20 @@ void MediaEngagementContentsObserver::UpdatePlayerTimer(
                            OnSignificantMediaPlaybackTimeForPlayer,
                        base::Unretained(this), id));
 
-    audible_row->second.second = std::move(new_timer);
-  } else if (audible_row->second.second) {
+    state_it->second.significant_playback_timer = std::move(new_timer);
+  } else if (state_it->second.significant_playback_timer) {
     // We no longer meet the requirements so we should get rid of the timer.
-    audible_row->second.second = nullptr;
+    state_it->second.significant_playback_timer = nullptr;
   }
 }
 
 bool MediaEngagementContentsObserver::AreConditionsMet() const {
-  if (significant_players_.empty())
+  if (web_contents()->IsAudioMuted())
     return false;
 
-  return !web_contents()->IsAudioMuted();
+  return std::ranges::any_of(
+      player_states_,
+      [](const auto& pair) { return pair.second.is_significant; });
 }
 
 void MediaEngagementContentsObserver::UpdatePageTimer() {
@@ -467,6 +477,24 @@ void MediaEngagementContentsObserver::UpdateAudioContextTimer() {
 void MediaEngagementContentsObserver::SetTaskRunnerForTest(
     scoped_refptr<base::SequencedTaskRunner> task_runner) {
   task_runner_ = std::move(task_runner);
+  for (auto& pair : player_states_) {
+    pair.second.playback_timer->SetClockForTest(service_->clock_);  // IN-TEST
+  }
+  if (playback_timer_.IsRunning()) {
+    playback_timer_.Stop();
+    UpdatePageTimer();
+  }
+  if (audio_context_timer_.IsRunning()) {
+    audio_context_timer_.Stop();
+    UpdateAudioContextTimer();
+  }
+  for (auto& pair : player_states_) {
+    if (pair.second.significant_playback_timer &&
+        pair.second.significant_playback_timer->IsRunning()) {
+      pair.second.significant_playback_timer = nullptr;
+      UpdatePlayerTimer(pair.first);
+    }
+  }
 }
 
 void MediaEngagementContentsObserver::ReadyToCommitNavigation(

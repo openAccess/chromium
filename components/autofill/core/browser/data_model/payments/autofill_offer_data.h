@@ -5,8 +5,6 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_PAYMENTS_AUTOFILL_OFFER_DATA_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_DATA_MODEL_PAYMENTS_AUTOFILL_OFFER_DATA_H_
 
-#include <stdint.h>
-
 #include <string>
 #include <vector>
 
@@ -28,56 +26,34 @@ struct DisplayStrings {
   std::string usage_instructions_text;
 };
 
-// Represents an offer for certain merchants. Card-linked offers are redeemable
-// with certain cards, and the unique ids of those cards are stored in
-// |eligible_instrument_id|. Promo code offers are redeemable with autofillable
-// promo codes. Merchants are determined by |merchant_origins|.
+// Represents an offer for certain merchants. Offers are redeemable with
+// autofillable promo codes. Merchants are determined by `merchant_origins`.
 class AutofillOfferData {
  public:
   // The specific type of offer.
   enum class OfferType {
     // Default value, should not be used.
     UNKNOWN,
-    // GPay-activated card linked offer.
-    GPAY_CARD_LINKED_OFFER,
-    // GPay-activated promo code offer.
-    GPAY_PROMO_CODE_OFFER,
     // Google Wallet direct offer.
     WALLET_DIRECT_OFFER,
   };
 
-  // Returns an AutofillOfferData for a GPay card-linked offer.
-  static AutofillOfferData GPayCardLinkedOffer(
-      int64_t offer_id,
-      base::Time expiry,
-      const std::vector<GURL>& merchant_origins,
-      const GURL& offer_details_url,
-      const DisplayStrings& display_strings,
-      const std::vector<int64_t>& eligible_instrument_id,
-      const std::string& offer_reward_amount);
-  // Returns an AutofillOfferData for a GPay promo code offer.
-  static AutofillOfferData GPayPromoCodeOffer(
-      int64_t offer_id,
-      base::Time expiry,
-      const std::vector<GURL>& merchant_origins,
-      const GURL& offer_details_url,
-      const DisplayStrings& display_strings,
-      const std::string& promo_code);
-  // Returns an AutofillOfferData for a Google Wallet direct offer.
-  static AutofillOfferData WalletDirectOffer(
-      int64_t offer_id,
-      base::Time expiry,
-      const std::vector<GURL>& merchant_origins,
-      const GURL& offer_details_url,
-      const DisplayStrings& display_strings,
-      const std::string& promo_code);
+  // Constructs an AutofillOfferData for a Google Wallet direct offer.
+  AutofillOfferData(std::string offer_id,
+                    base::Time expiry,
+                    std::vector<GURL> merchant_origins,
+                    GURL offer_details_url,
+                    DisplayStrings display_strings,
+                    std::string promo_code,
+                    std::string offer_short_title,
+                    base::Time issue_time);
 
-  // TODO(crbug.com/40932427): Refactor this class to ensure the correct access
-  // specifiers and move constructors and move assignment constructors.
   AutofillOfferData();
   ~AutofillOfferData();
   AutofillOfferData(const AutofillOfferData&);
+  AutofillOfferData(AutofillOfferData&&);
   AutofillOfferData& operator=(const AutofillOfferData&);
+  AutofillOfferData& operator=(AutofillOfferData&&);
   bool operator==(const AutofillOfferData& other_offer_data) const;
 
   // Compares two AutofillOfferData based on their member fields. Returns 0 if
@@ -85,43 +61,34 @@ class AutofillOfferData {
   // result of first found difference.
   int Compare(const AutofillOfferData& other_offer_data) const;
 
-  // Returns true if the current offer is a card-linked offer.
-  bool IsCardLinkedOffer() const;
-
-  // Returns true if the current offer is a GPay promo code offer.
-  bool IsGPayPromoCodeOffer() const;
-
-  // Returns true if the current offer is a Google Wallet direct offer.
-  bool IsWalletDirectOffer() const;
-
-  // Returns true if the current offer is 1) not expired and 2) contains the
-  // given |origin| in the list of |merchant_origins|.
+  // Returns true if the current offer is 1) not expired and 2) eligible for the
+  // given `origin` (see `IsEligibleForOrigin()`).
   bool IsActiveAndEligibleForOrigin(const GURL& origin) const;
 
+  // Returns true if the given `origin` has the same eTLD+1 as one of the
+  // `merchant_origins`, e.g. a merchant origin of https://store.example.com/
+  // matches https://example.com/ and https://www.example.com/, but not
+  // https://notexample.com/. This is the same matching as for loyalty cards.
+  bool IsEligibleForOrigin(const GURL& origin) const;
+
   OfferType GetOfferType() const { return offer_type_; }
-  int64_t GetOfferId() const { return offer_id_; }
+  const std::string& GetOfferId() const { return offer_id_; }
   base::Time GetExpiry() const { return expiry_; }
+  base::Time GetIssueTime() const { return issue_time_; }
   const std::vector<GURL>& GetMerchantOrigins() const {
     return merchant_origins_;
   }
   const GURL& GetOfferDetailsUrl() const { return offer_details_url_; }
   const DisplayStrings& GetDisplayStrings() const { return display_strings_; }
-  const std::string& GetOfferRewardAmount() const {
-    return offer_reward_amount_;
-  }
-  const std::vector<int64_t>& GetEligibleInstrumentIds() const {
-    return eligible_instrument_id_;
-  }
+  const std::string& GetOfferShortTitle() const { return offer_short_title_; }
   const std::string& GetPromoCode() const { return promo_code_; }
 
 #ifdef UNIT_TEST
-  void SetOfferIdForTesting(int64_t offer_id) { offer_id_ = offer_id; }
+  void SetOfferIdForTesting(std::string offer_id) {
+    offer_id_ = std::move(offer_id);
+  }
   void SetMerchantOriginForTesting(const std::vector<GURL>& merchant_origins) {
     merchant_origins_ = merchant_origins;
-  }
-  void SetEligibleInstrumentIdForTesting(
-      const std::vector<int64_t>& eligible_instrument_id) {
-    eligible_instrument_id_ = eligible_instrument_id;
   }
 
   void SetPromoCode(const std::string& promo_code) { promo_code_ = promo_code; }
@@ -136,34 +103,20 @@ class AutofillOfferData {
 #endif
 
  private:
-  // Constructs an AutofillOfferData for a card-linked offer.
-  AutofillOfferData(int64_t offer_id,
-                    base::Time expiry,
-                    const std::vector<GURL>& merchant_origins,
-                    const GURL& offer_details_url,
-                    const DisplayStrings& display_strings,
-                    const std::vector<int64_t>& eligible_instrument_id,
-                    const std::string& offer_reward_amount);
-  // Constructs an AutofillOfferData for a GPay promo code offer or Wallet
-  // direct offer.
-  AutofillOfferData(OfferType offer_type,
-                    int64_t offer_id,
-                    base::Time expiry,
-                    const std::vector<GURL>& merchant_origins,
-                    const GURL& offer_details_url,
-                    const DisplayStrings& display_strings,
-                    const std::string& promo_code);
-
   // The specific type of offer, which informs decisions made by other classes,
   // such as UI rendering or metrics.
   OfferType offer_type_ = OfferType::UNKNOWN;
 
   // The unique server ID for this offer data.
-  int64_t offer_id_;
+  std::string offer_id_;
 
   // The timestamp when the offer will expire. Expired offers will not be shown
   // in the frontend.
   base::Time expiry_;
+
+  // The timestamp when the offer was issued. Null if the issue time is unknown,
+  // since it is optional.
+  base::Time issue_time_;
 
   // The URL that contains the offer details.
   GURL offer_details_url_;
@@ -172,21 +125,11 @@ class AutofillOfferData {
   // redeemed.
   std::vector<GURL> merchant_origins_;
 
-  // Optional server-driven strings for certain offer elements. Generally most
-  // useful for promo code offers, but could potentially apply to card-linked
-  // offers as well.
+  // Optional server-driven strings for certain offer elements.
   DisplayStrings display_strings_;
 
-  /* Card-linked offer-specific fields */
-
-  // The string including the reward details of the offer. Could be either
-  // percentage off (XXX%) or fixed amount off ($XXX).
-  std::string offer_reward_amount_;
-
-  // The ids of the cards this offer can be applied to.
-  std::vector<int64_t> eligible_instrument_id_;
-
-  /* Promo code offer-specific fields */
+  // The short title of the offer.
+  std::string offer_short_title_;
 
   // A promo/gift/coupon code that can be applied at checkout with the merchant.
   std::string promo_code_;

@@ -13,11 +13,8 @@ import static org.chromium.chrome.browser.magic_stack.HomeModulesUtils.INVALID_I
 
 import android.os.SystemClock;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.TimeUtils;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
@@ -31,10 +28,8 @@ import org.chromium.components.segmentation_platform.InputContext;
 
 /** Unit tests for {@link HomeModulesUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class HomeModulesUtilsUnitTest {
     @Test
-    @SmallTest
     public void testIncreaseFreshnessCount() {
         @ModuleType int moduleType = ModuleType.PRICE_CHANGE;
         verifyFreshnessKeysDoNotExistInSharedPreference(moduleType);
@@ -49,7 +44,6 @@ public class HomeModulesUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testResetFreshnessCountAsFresh() {
         @ModuleType int moduleType = ModuleType.PRICE_CHANGE;
         verifyFreshnessKeysDoNotExistInSharedPreference(moduleType);
@@ -66,7 +60,6 @@ public class HomeModulesUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testFreshnessScoreTimeStamp() {
         @ModuleType int moduleType = ModuleType.PRICE_CHANGE;
 
@@ -78,7 +71,6 @@ public class HomeModulesUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetFreshnessScore() {
         @ModuleType int moduleType = ModuleType.PRICE_CHANGE;
 
@@ -115,7 +107,6 @@ public class HomeModulesUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({
         ChromeFeatureList.SEGMENTATION_PLATFORM_ANDROID_HOME_MODULE_RANKER,
         ChromeFeatureList.SEGMENTATION_PLATFORM_ANDROID_HOME_MODULE_RANKER_V2
@@ -139,7 +130,6 @@ public class HomeModulesUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIncreaseAndGetImpressionCountBeforeInteraction() {
         @ModuleType int moduleType = ModuleType.TAB_GROUP_PROMO;
         verifyImpressionCountBeforeInteractionKeysDoNotExistInSharedPreference(moduleType);

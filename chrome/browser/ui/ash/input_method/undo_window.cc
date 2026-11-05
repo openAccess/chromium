@@ -6,10 +6,8 @@
 
 #include <iostream>
 
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ash/input_method/assistive_window_properties.h"
 #include "chrome/browser/ui/ash/input_method/border_factory.h"
 #include "chrome/browser/ui/ash/input_method/colors.h"
@@ -49,10 +47,10 @@ void SetHighlighted(views::View& view, bool highlighted) {
 }  // namespace
 
 UndoWindow::UndoWindow(gfx::NativeView parent, AssistiveDelegate* delegate)
-    : delegate_(delegate) {
+    : delegate_(delegate->GetWeakPtr()) {
   DialogDelegate::SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   SetCanActivate(false);
-  DCHECK(parent);
+  CHECK(parent, base::NotFatalUntil::M162);
   set_parent_window(parent);
   set_margins(gfx::Insets(kPadding));
   SetArrow(views::BubbleBorder::Arrow::BOTTOM_LEFT);
@@ -77,8 +75,7 @@ UndoWindow::UndoWindow(gfx::NativeView parent, AssistiveDelegate* delegate)
 
   learn_more_button_ =
       AddChildView(std::make_unique<views::ImageButton>(base::BindRepeating(
-          &AssistiveDelegate::AssistiveWindowButtonClicked,
-          base::Unretained(delegate_),
+          &AssistiveDelegate::AssistiveWindowButtonClicked, delegate_,
           AssistiveWindowButton{
               .id = ui::ime::ButtonId::kLearnMore,
               .window_type = ash::ime::AssistiveWindowType::kLearnMore})));
@@ -163,7 +160,9 @@ void UndoWindow::UndoButtonPressed() {
       .id = ButtonId::kUndo,
       .window_type = ash::ime::AssistiveWindowType::kUndoWindow};
   SetButtonHighlighted(button, true);
-  delegate_->AssistiveWindowButtonClicked(button);
+  if (delegate_) {
+    delegate_->AssistiveWindowButtonClicked(button);
+  }
 }
 
 BEGIN_METADATA(UndoWindow)

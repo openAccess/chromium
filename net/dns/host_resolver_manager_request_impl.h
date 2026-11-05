@@ -7,10 +7,10 @@
 
 #include <deque>
 #include <optional>
-#include <set>
 #include <string>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/containers/linked_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/safe_ref.h"
@@ -48,7 +48,7 @@ class ResolveContext;
 // (~RequestImpl).
 class HostResolverManager::RequestImpl
     : public HostResolver::ResolveHostRequest,
-      public base::LinkNode<HostResolverManager::RequestImpl> {
+      public base::UnsafeLinkNode<HostResolverManager::RequestImpl> {
  public:
   RequestImpl(NetLogWithSource source_net_log,
               HostResolver::Host request_host,
@@ -71,7 +71,7 @@ class HostResolverManager::RequestImpl
       const override;
   base::span<const std::string> GetTextResults() const override;
   base::span<const HostPortPair> GetHostnameResults() const override;
-  const std::set<std::string>& GetDnsAliasResults() const override;
+  const base::flat_set<std::string>& GetDnsAliasResults() const override;
   net::ResolveErrorInfo GetResolveErrorInfo() const override;
   const std::optional<HostCache::EntryStaleness>& GetStaleInfo() const override;
   void ChangeRequestPriority(RequestPriority priority) override;
@@ -184,7 +184,7 @@ class HostResolverManager::RequestImpl
   std::optional<HostCache::EntryStaleness> stale_info_;
   AddressList legacy_address_results_;
   std::vector<HostResolverEndpointResult> endpoint_results_;
-  std::set<std::string> fixed_up_dns_alias_results_;
+  base::flat_set<std::string> fixed_up_dns_alias_results_;
   ResolveErrorInfo error_info_;
 
   const raw_ptr<const base::TickClock> tick_clock_;

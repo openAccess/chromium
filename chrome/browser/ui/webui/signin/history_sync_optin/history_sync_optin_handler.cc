@@ -17,8 +17,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/webui/signin/history_sync_optin/history_sync_optin.mojom.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -156,8 +154,7 @@ void HistorySyncOptinHandler::MaybeGetAccountInfo() {
 
 void HistorySyncOptinHandler::UpdateDialogHeight(uint32_t height) {
   if (browser_) {
-    browser_->GetFeatures().signin_view_controller()->SetModalSigninHeight(
-        height);
+    SigninViewController::From(browser_.get())->SetModalSigninHeight(height);
   }
 }
 
@@ -169,7 +166,7 @@ void HistorySyncOptinHandler::FinishAndCloseDialog(
   auto callback = std::move(history_optin_completed_callback_);
 
   if (browser_ && should_close_modal_dialog_.value_or(false)) {
-    browser_->GetFeatures().signin_view_controller()->CloseModalSignin();
+    SigninViewController::From(browser_.get())->CloseModalSignin();
   }
   if (!callback->is_null()) {
     std::move(callback.value()).Run(result);

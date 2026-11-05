@@ -18,7 +18,7 @@
 #include "third_party/jni_zero/jni_zero.h"
 
 // Must come after headers that provide symbols used by @JniType.
-#include "chrome/browser/ui/side_panel/internal/android/jni_headers/SidePanelWindowScopedDevFeatureImpl_jni.h"
+#include "chrome/browser/ui/side_panel/internal/android/dev_jni_headers/SidePanelWindowScopedDevFeatureImpl_jni.h"
 
 namespace {
 using jni_zero::AttachCurrentThread;
@@ -29,10 +29,9 @@ using jni_zero::ScopedJavaLocalRef;
 static int64_t JNI_SidePanelWindowScopedDevFeatureImpl_Init(
     JNIEnv* env,
     const JavaRef<jobject>& caller,
-    int64_t nativeBrowserWindowPtr) {
-  return reinterpret_cast<intptr_t>(new SidePanelWindowScopedDevFeature(
-      env, caller,
-      reinterpret_cast<BrowserWindowInterface*>(nativeBrowserWindowPtr)));
+    BrowserWindowInterface* browser_window) {
+  return reinterpret_cast<intptr_t>(
+      new SidePanelWindowScopedDevFeature(env, caller, browser_window));
 }
 
 SidePanelWindowScopedDevFeature::SidePanelWindowScopedDevFeature(
@@ -65,13 +64,11 @@ SidePanelWindowScopedDevFeature::~SidePanelWindowScopedDevFeature() {
 }
 
 void SidePanelWindowScopedDevFeature::Toggle() {
-  auto* side_panel_coordinator =
-      SidePanelCoordinatorAndroid::From(browser_window_);
-  CHECK(side_panel_coordinator);
+  auto* side_panel_ui = SidePanelUI::From(browser_window_);
+  CHECK(side_panel_ui);
 
-  side_panel_coordinator->Toggle(
-      SidePanelEntryKey(SidePanelEntry::Id::kSidePanelDev),
-      SidePanelOpenTrigger::kToolbarButton);
+  side_panel_ui->Toggle(SidePanelEntryKey(SidePanelEntry::Id::kSidePanelDev),
+                        SidePanelOpenTrigger::kToolbarButton);
 }
 
 void SidePanelWindowScopedDevFeature::Destroy() {

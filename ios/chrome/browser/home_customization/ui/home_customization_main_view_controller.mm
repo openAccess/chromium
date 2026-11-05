@@ -178,6 +178,14 @@
          self.collectionView.contentSize.height;
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+  [super viewDidAppear:animated];
+  if (self.shouldScrollToBottomOnPresentation) {
+    self.shouldScrollToBottomOnPresentation = NO;
+    [self scrollToBottomAnimated:YES];
+  }
+}
+
 #pragma mark - Private
 
 // Registers the different cells used by the collection view.
@@ -259,6 +267,23 @@
   }
 
   return snapshot;
+}
+
+// Scrolls the collection view to the bottom so the toggle cells are visible.
+- (void)scrollToBottomAnimated:(BOOL)animated {
+  NSInteger lastSection = [_collectionView numberOfSections] - 1;
+  if (lastSection < 0) {
+    return;
+  }
+  NSInteger lastItem = [_collectionView numberOfItemsInSection:lastSection] - 1;
+  if (lastItem < 0) {
+    return;
+  }
+  NSIndexPath* lastIndexPath = [NSIndexPath indexPathForItem:lastItem
+                                                   inSection:lastSection];
+  [_collectionView scrollToItemAtIndexPath:lastIndexPath
+                          atScrollPosition:UICollectionViewScrollPositionBottom
+                                  animated:animated];
 }
 
 #pragma mark - HomeCustomizationViewControllerProtocol
@@ -344,9 +369,11 @@
 
   id<BackgroundCustomizationConfiguration> configuration =
       _backgroundCollectionConfiguration.configurations[itemIdentifier];
-  // Don't allow deletion for the default entry.
+  // Don't allow deletion for the default or ephemeral entry.
   if (configuration.backgroundStyle ==
-      HomeCustomizationBackgroundStyle::kDefault) {
+          HomeCustomizationBackgroundStyle::kDefault ||
+      configuration.backgroundStyle ==
+          HomeCustomizationBackgroundStyle::kEphemeral) {
     return [UIContextMenuConfiguration configurationWithIdentifier:nil
                                                    previewProvider:nil
                                                     actionProvider:nil];
@@ -486,7 +513,10 @@
   }
 
   if (backgroundConfiguration.backgroundStyle ==
-      HomeCustomizationBackgroundStyle::kPreset) {
+          HomeCustomizationBackgroundStyle::kPreset ||
+      (backgroundConfiguration.backgroundStyle ==
+           HomeCustomizationBackgroundStyle::kEphemeral &&
+       !backgroundConfiguration.thumbnailURL.is_empty())) {
     [self fetchPresetImageForCell:backgroundCell
                     configuration:backgroundConfiguration
                    itemIdentifier:itemIdentifier];
@@ -613,7 +643,9 @@
     [identifiers addObject:key];
 
     if (configuration.backgroundStyle ==
-        HomeCustomizationBackgroundStyle::kDefault) {
+            HomeCustomizationBackgroundStyle::kDefault ||
+        configuration.backgroundStyle ==
+            HomeCustomizationBackgroundStyle::kEphemeral) {
       indexAfterDefault = identifiers.count;
     }
   }

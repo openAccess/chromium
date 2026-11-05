@@ -57,6 +57,7 @@ class FrameTimingDetails;
 namespace blink {
 
 class AnimationFrameTimingInfo;
+class LocalDOMWindow;
 class LocalFrame;
 // An interface exposed within Blink from local root frames that provides
 // local-root specific things related to compositing and input. This
@@ -246,9 +247,9 @@ class PLATFORM_EXPORT FrameWidget {
   // Returns information about available screens and the current screen.
   virtual const display::ScreenInfos& GetScreenInfos() = 0;
 
-  // Returns information about the screen that would be showing the widget
-  // without DevTools emulation applied.
-  virtual const display::ScreenInfo& GetOriginalScreenInfo() = 0;
+  // Returns the device scale factor of the screen that would be showing the
+  // widget without DevTools emulation applied.
+  virtual float GetOriginalDeviceScaleFactor() = 0;
 
   // Called to get the position of the widget's window in screen
   // coordinates. Note, the window includes any decorations such as borders,
@@ -317,6 +318,11 @@ class PLATFORM_EXPORT FrameWidget {
   // this widget, taking into account its transform to main frame space.
   virtual float GetCompositingScaleFactor() = 0;
 
+  // Returns inherited pinch zoom, which scales scrolling in child widgets but
+  // is not part of their local visual viewport. Returns 1 for the top-level
+  // widget, whose pinch zoom is already included in input-event transforms.
+  virtual float GetExternalPageScaleFactor() const = 0;
+
   // Get and set the configuration for the debugging overlay managed by the
   // underlying LayerTreeHost. This may return null if the widget does not
   // composite.
@@ -357,12 +363,17 @@ class PLATFORM_EXPORT FrameWidget {
   virtual AnimationFrameTimingInfo* RecordRenderingUpdateEndTime(
       base::TimeTicks) = 0;
   // https://github.com/MicrosoftEdge/MSEdgeExplainers/blob/main/ConditionalTracing/explainer-for-loaf.md
+  // `window` is the window creating the entry. Its origin restricts access to
+  // the mark or measure, and its identity scopes which marks a measure can
+  // resolve.
   virtual void MarkConditional(const AtomicString& name,
-                               base::TimeTicks start_time) = 0;
+                               base::TimeTicks start_time,
+                               LocalDOMWindow* window) = 0;
   virtual void MeasureConditional(const AtomicString& name,
                                   const AtomicString& start_mark,
                                   const AtomicString& end_mark,
-                                  base::TimeTicks end_time) = 0;
+                                  base::TimeTicks end_time,
+                                  LocalDOMWindow* window) = 0;
 
   virtual void OnFirstContentfulPaint() = 0;
 

@@ -15,8 +15,9 @@ class AutocompleteResult;
 
 // This KeyedService is meant to observe multiple AutocompleteController
 // instances and forward the notifications to its own observers.
-// Its main purpose is to act as a bridge between the chrome://omnibox WebUI
-// handler, and the many usages of AutocompleteController (Views, NTP, Android).
+// Its main purpose is to act as a bridge between the chrome://omnibox-internals
+// WebUI handler, and the many usages of AutocompleteController (Views, NTP,
+// Android).
 class AutocompleteControllerEmitter : public KeyedService,
                                       public AutocompleteController::Observer {
  public:
@@ -37,6 +38,7 @@ class AutocompleteControllerEmitter : public KeyedService,
                        bool default_match_changed) override;
   void OnMlScored(AutocompleteController* controller,
                   const AutocompleteResult& result) override;
+  void OnControllerDestroying(AutocompleteController* controller) override;
 
  private:
   base::ObserverList<AutocompleteController::Observer> observers_;

@@ -99,7 +99,7 @@ struct MoveOnlyHashTraits : public GenericHashTraits<MoveOnlyHashValue> {
   static bool IsDeletedValue(const MoveOnlyHashValue& value) {
     return value.Value() == MoveOnlyHashValue::kDeleted;
   }
-  static unsigned GetHash(const MoveOnlyHashValue& value) {
+  static uint32_t GetHash(const MoveOnlyHashValue& value) {
     return blink::GetHash(value.Value());
   }
   static bool Equal(const MoveOnlyHashValue& left,
@@ -115,7 +115,7 @@ class CountCopy final {
  public:
   static int* const kDeletedValue;
 
-  CountCopy() : counter_(nullptr) {}
+  CountCopy() = default;
   explicit CountCopy(int* counter) : counter_(counter) {}
   explicit CountCopy(int& counter) : counter_(&counter) {}
   CountCopy(const CountCopy& other) : counter_(other.counter_) {
@@ -132,7 +132,7 @@ class CountCopy final {
   const int* Counter() const { return counter_; }
 
  private:
-  int* counter_;
+  int* counter_ = nullptr;
 };
 
 struct CountCopyHashTraits : public GenericHashTraits<CountCopy> {
@@ -144,7 +144,7 @@ struct CountCopyHashTraits : public GenericHashTraits<CountCopy> {
   static bool IsDeletedValue(const CountCopy& value) {
     return value.Counter() == CountCopy::kDeletedValue;
   }
-  static unsigned GetHash(const CountCopy& value) {
+  static uint32_t GetHash(const CountCopy& value) {
     return blink::GetHash(value.Counter());
   }
   static bool Equal(const CountCopy& left, const CountCopy& right) {
@@ -162,7 +162,7 @@ struct ValueInstanceCountBase {
 template <typename T>
 class ValueInstanceCount final : public ValueInstanceCountBase {
  public:
-  ValueInstanceCount() : counter_(nullptr), value_(T()) {}
+  ValueInstanceCount() = default;
   explicit ValueInstanceCount(int* counter, T value = T())
       : counter_(counter), value_(value) {
     if (counter_ && counter_ != kDeletedValue)
@@ -191,8 +191,8 @@ class ValueInstanceCount final : public ValueInstanceCountBase {
   const T& Value() const { return value_; }
 
  private:
-  int* counter_;
-  T value_;
+  int* counter_ = nullptr;
+  T value_{};
 };
 
 template <typename T>
@@ -208,7 +208,7 @@ struct ValueInstanceCountHashTraits
   static bool IsDeletedValue(const ValueInstanceCount<T>& value) {
     return value.Counter() == ValueInstanceCount<T>::kDeletedValue;
   }
-  static unsigned GetHash(const ValueInstanceCount<T>& value) {
+  static uint32_t GetHash(const ValueInstanceCount<T>& value) {
     return blink::GetHash(value.Counter());
   }
   static bool Equal(const ValueInstanceCount<T>& left,
@@ -242,7 +242,7 @@ class DummyRefCounted : public RefCounted<DummyRefCounted> {
     RefCounted<DummyRefCounted>::Release();
   }
 
-  static int ref_invokes_count_;
+  static wtf_size_t ref_invokes_count_;
 
  private:
   bool& is_deleted_;
@@ -291,7 +291,7 @@ class LivenessCounter {
   void AddRef() { live_++; }
   void Release() { live_--; }
 
-  static unsigned live_;
+  static wtf_size_t live_;
 };
 
 }  // namespace blink

@@ -71,7 +71,7 @@ constexpr int kMaxPopupWebContentsTopYOverflow = 8;
 std::unique_ptr<views::Border> CreateBorder() {
   auto border = std::make_unique<views::BubbleBorder>(
       views::BubbleBorder::NONE, views::BubbleBorder::STANDARD_SHADOW);
-  border->SetColor(ui::kColorDropdownBackground);
+  border->set_background_color(ui::kColorDropdownBackground);
   border->set_rounded_corners(
       gfx::RoundedCornersF(PopupBaseView::GetCornerRadius()));
   border->set_md_shadow_elevation(
@@ -113,13 +113,40 @@ class PopupBaseView::Widget : public views::Widget {
     params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
     params.shadow_type = views::Widget::InitParams::ShadowType::kNone;
     params.activatable = activatable;
+#if BUILDFLAG(IS_OZONE)
+    // On Ozone platforms (particularly Wayland on Linux and ChromeOS), popups
+    // with desktop-level native widgets (accelerated widgets) are backed by
+    // Wayland subsurfaces or popup xdg surfaces. Wayland compositors (such as
+    // GNOME Mutter) do not deliver frame callbacks or dispatch continuous
+    // paint/animation events to subsurfaces when the parent window does not
+    // continuously commit new frames, causing interactive controls and
+    // animations (e.g. `views::Throbber`) in activatable popups to freeze.
+    // Setting `use_accelerated_widget_override = false` forces the widget to be
+    // hosted as an in-tree `NativeWidgetAura` composited directly within the
+    // browser window's main compositor tree, ensuring reliable event dispatch
+    // and smooth animations.
+    if (activatable == views::Widget::InitParams::Activatable::kYes) {
+      params.use_accelerated_widget_override = false;
+    }
+#endif
 
-    // `kSecuritySurface` makes the popup to display on top of all other windows
-    // (including system ones, but the support among different OS, versions and
-    // setups is not consistent). This is not required for regular autofill
-    // popup use, but it makes certain attacks (those based on the popup being
-    // obscured) less practical.
-    params.z_order = ui::ZOrderLevel::kSecuritySurface;
+    // `kSecuritySurface` makes the popup display on top of all other windows
+    // (including system ones, but the support among different OS, versions
+    // and setups is not consistent). This is not required for regular
+    // Autofill popup use, but it makes certain attacks (those based on the
+    // popup being obscured) less practical.
+    if constexpr (BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)) {
+      // On ChromeOS and Linux, `Activatable::kYes` and `kSecuritySurface` are
+      // incompatible because `kSecuritySurface` windows force accelerated
+      // desktop-level widgets (subsurfaces) which do not support reliable
+      // activation and repainting on Wayland compositors like Mutter.
+      params.z_order =
+          activatable == views::Widget::InitParams::Activatable::kYes
+              ? ui::ZOrderLevel::kFloatingUIElement
+              : ui::ZOrderLevel::kSecuritySurface;
+    } else {
+      params.z_order = ui::ZOrderLevel::kSecuritySurface;
+    }
 
     Init(std::move(params));
     AddObserver(popup_base_view());
@@ -413,8 +440,8 @@ void PopupBaseView::NotifyAXSelection(views::View& selected_view) {
        "PopupSeparatorView", "PopupWarningView", "PopupBaseView",
        "PasswordGenerationPopupViewViews::GeneratedPasswordBox", "PopupRowView",
        "PopupRowWithButtonView", "PopupRowContentView", "MdTextButton",
-       "PopupBnplFootnoteView", "PopupAtMemoryAiDisclosureView",
-       "PopupNoticeView"});
+       "PopupBnplFootnoteView", "PopupFooterWithLinkView", "PopupNoticeView",
+       "LinkFragment"});
   DCHECK(kDerivedClasses.contains(selected_view.GetClassName()))
       << "If you add a new derived class from AutofillPopupRowView, add it "
          "here and to onSelection(evt) in "
@@ -508,7 +535,7 @@ gfx::Rect PopupBaseView::GetOptimalPositionAndPlaceArrowOnPopup(
     base::span<const views::BubbleArrowSide> preferred_popup_sides) {
   views::BubbleBorder* border = static_cast<views::BubbleBorder*>(
       GetWidget()->GetRootView()->GetBorder());
-  DCHECK(border);
+  CHECK(border, base::NotFatalUntil::M162);
 
   gfx::Rect popup_bounds;
 
@@ -529,8 +556,8 @@ gfx::Rect PopupBaseView::GetOptimalPositionAndPlaceArrowOnPopup(
 
   // Those values are not supported for adding an arrow.
   // Currently, they can not be returned by GetOptimalPopupPlacement().
-  DCHECK(arrow != views::BubbleBorder::Arrow::NONE);
-  DCHECK(arrow != views::BubbleBorder::Arrow::FLOAT);
+  CHECK(arrow != views::BubbleBorder::Arrow::NONE, base::NotFatalUntil::M162);
+  CHECK(arrow != views::BubbleBorder::Arrow::FLOAT, base::NotFatalUntil::M162);
 
   if (show_arrow_pointer_) {
     // Set the arrow position to the border.
@@ -634,11 +661,8 @@ bool PopupBaseView::OverlapsWithAnotherPrompt(
     return true;
   }
 
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillPopupCheckHtmlFormPopupOverlap)) {
-    if (BoundsOverlapWithHtmlFormPopup(popup_bounds, web_contents)) {
-      return true;
-    }
+  if (BoundsOverlapWithHtmlFormPopup(popup_bounds, web_contents)) {
+    return true;
   }
 
   return false;

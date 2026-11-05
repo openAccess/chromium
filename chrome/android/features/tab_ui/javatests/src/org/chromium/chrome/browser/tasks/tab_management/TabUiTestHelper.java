@@ -20,6 +20,7 @@ import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -27,6 +28,7 @@ import static org.junit.Assert.assertTrue;
 import static org.chromium.base.test.util.CallbackHelper.WAIT_TIMEOUT_SECONDS;
 import static org.chromium.base.test.util.CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL;
 import static org.chromium.base.test.util.CriteriaHelper.DEFAULT_POLLING_INTERVAL;
+import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.components.browser_ui.widget.RecyclerViewTestUtils.waitForStableRecyclerView;
 
 import android.app.Activity;
@@ -57,15 +59,14 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import org.hamcrest.Matcher;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.transit.TrafficControl;
 import org.chromium.base.test.util.ApplicationTestUtils;
-import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.compositor.layouts.Layout;
 import org.chromium.chrome.browser.compositor.layouts.LayoutManagerChrome;
 import org.chromium.chrome.browser.hub.HubLayout;
-import org.chromium.chrome.browser.layouts.LayoutStateProvider.LayoutStateObserver;
 import org.chromium.chrome.browser.layouts.LayoutTestUtils;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.tab.Tab;
@@ -75,9 +76,14 @@ import org.chromium.chrome.browser.tab_ui.TabCardThemeUtil;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabThumbnailView;
 import org.chromium.chrome.browser.tabmodel.TabModel;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.hub.IncognitoTabSwitcherStation;
+import org.chromium.chrome.test.transit.hub.RegularTabSwitcherStation;
+import org.chromium.chrome.test.transit.hub.TabSwitcherStation;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.browser_ui.util.motion.MotionEventTestUtils;
 import org.chromium.content_public.browser.LoadUrlParams;
@@ -86,7 +92,6 @@ import org.chromium.content_public.common.ContentUrlConstants;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeoutException;
 
 /** Utilities helper class for tab grid/group tests. */
 public class TabUiTestHelper {
@@ -109,6 +114,11 @@ public class TabUiTestHelper {
      * Open additional tabs for the provided activity. The added tabs will be opened to
      * "about:blank" and will not wait for the page to finish loading.
      *
+     * <p>Waits for the new tab animation to finish. {@code NewTabAnimationLayout#doneHiding()}
+     * selects the tab it animated, and it runs off the compositor's frame loop, so it can land well
+     * after the tab model itself has settled. Returning early therefore means a {@link
+     * TabModelUtils#setIndex} that follows is silently undone when the animation completes.
+     *
      * @param cta The activity to add the tabs to.
      * @param incognito Whether the tabs should be incognito.
      * @param count The number of tabs to create.
@@ -125,58 +135,61 @@ public class TabUiTestHelper {
                                         null);
                     });
         }
+        LayoutTestUtils.waitForBrowsingLayout(cta);
     }
 
     /**
      * Enter tab switcher from a tab page.
      *
+     * <p>Hops on Public Transit at the current page, then clicks {@link
+     * CtaPageStation#tabSwitcherButtonElement} to travel to the {@link TabSwitcherStation} for the
+     * current tab model. The returned Station is left ACTIVE; callers that are not using Public
+     * Transit can ignore it, and the next hop on will discard it.
+     *
+     * <p>Hops on at |cta| specifically, so this works with more than one window open.
+     *
+     * <p>This util takes an Activity because it does not know where its caller is. A Public Transit
+     * test that holds a live {@link CtaPageStation} should call {@link
+     * CtaPageStation#openRegularTabSwitcher()} on it instead, which also verifies the page's exit
+     * Conditions; calling this util from one logs a warning and makes the caller's Station
+     * unusable.
+     *
      * @param cta The current running activity.
+     * @return the {@link TabSwitcherStation} entered.
      */
-    public static void enterTabSwitcher(ChromeTabbedActivity cta) {
+    public static TabSwitcherStation enterTabSwitcher(ChromeTabbedActivity cta) {
         assertFalse(cta.getLayoutManager().isLayoutVisible(LayoutType.HUB));
-        // TODO(crbug.com/40155797): Replace this with clicking tab switcher button via espresso.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    cta.findViewById(R.id.tab_switcher_button).performClick();
-                });
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
+        Tab currentTab = ThreadUtils.runOnUiThreadBlocking(cta::getActivityTab);
+        boolean incognito = currentTab.isIncognitoBranded();
+        CtaPageStation page =
+                TrafficControl.hopOnAt(
+                        cta,
+                        CtaPageStation.newGenericBuilder()
+                                .withTabAlreadySelected(currentTab)
+                                .withIncognito(incognito)
+                                .build());
+        return incognito ? page.openIncognitoTabSwitcher() : page.openRegularTabSwitcher();
     }
 
     /**
      * Leave tab switcher by tapping "back".
      *
+     * <p>Hops on Public Transit at the tab switcher and presses back to return to the previous tab.
+     *
      * @param cta The current running activity.
+     * @return the {@link CtaPageStation} returned to.
      */
-    public static void leaveTabSwitcher(ChromeTabbedActivity cta) {
-        LayoutManagerChrome layoutManager = cta.getLayoutManager();
-        LayoutTestUtils.waitForLayout(layoutManager, LayoutType.HUB);
-        // Back press may resolve differently during the show/hide animations. Don't call this until
-        // we are certain the layout is visible.
-        CallbackHelper finishedHidingCallbackHelper = new CallbackHelper();
-        LayoutStateObserver observer =
-                new LayoutStateObserver() {
-                    @Override
-                    public void onFinishedHiding(int layoutType) {
-                        if (layoutType != LayoutType.HUB) return;
-
-                        finishedHidingCallbackHelper.notifyCalled();
-                    }
-                };
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    layoutManager.addObserver(observer);
-                    cta.onBackPressed();
-                });
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.BROWSING);
-        try {
-            finishedHidingCallbackHelper.waitForOnly();
-        } catch (TimeoutException e) {
-            throw new AssertionError("LayoutType.HUB never finished hiding.", e);
-        }
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    layoutManager.removeObserver(observer);
-                });
+    public static CtaPageStation leaveTabSwitcher(ChromeTabbedActivity cta) {
+        TabModelSelector selector = cta.getTabModelSelector();
+        boolean incognito =
+                ThreadUtils.runOnUiThreadBlocking(() -> cta.getCurrentTabModel().isIncognito());
+        TabSwitcherStation tabSwitcher =
+                TrafficControl.hopOnAt(
+                        cta,
+                        incognito
+                                ? IncognitoTabSwitcherStation.from(selector)
+                                : RegularTabSwitcherStation.from(selector));
+        return tabSwitcher.leaveHubToPreviousTabViaBack(CtaPageStation.newGenericBuilder());
     }
 
     /**
@@ -224,7 +237,7 @@ public class TabUiTestHelper {
                                 withId(R.id.tab_list_recycler_view),
                                 withParent(withId(R.id.tab_grid_dialog_recycler_view_container))))
                 .perform(RecyclerViewActions.actionOnItemAtPosition(index, click()));
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.BROWSING);
+        LayoutTestUtils.waitForBrowsingLayout(cta);
     }
 
     /**
@@ -429,7 +442,6 @@ public class TabUiTestHelper {
                     }
                     createTabGroup(cta, isIncognito, tabGroup);
                     assertEquals(1, tabModel.getTabGroupCount());
-                    assertEquals(1, tabModel.getIndividualTabAndGroupCount());
                 });
     }
 
@@ -665,30 +677,38 @@ public class TabUiTestHelper {
         assertTrue(recyclerView instanceof TabListRecyclerView);
         CriteriaHelper.pollUiThread(
                 () -> {
-                    boolean allFetched = true;
-                    int i = 0;
                     LinearLayoutManager layoutManager =
                             (LinearLayoutManager) recyclerView.getLayoutManager();
-                    for (i = layoutManager.findFirstVisibleItemPosition();
-                            i <= layoutManager.findLastVisibleItemPosition();
-                            i++) {
+                    Criteria.checkThat("LayoutManager is null.", layoutManager, notNullValue());
+                    assumeNonNull(layoutManager);
+                    int firstVisible = layoutManager.findFirstVisibleItemPosition();
+                    int lastVisible = layoutManager.findLastVisibleItemPosition();
+                    Criteria.checkThat(
+                            "No visible items.", firstVisible, not(RecyclerView.NO_POSITION));
+                    Criteria.checkThat(
+                            "Invalid last visible item.",
+                            lastVisible,
+                            not(RecyclerView.NO_POSITION));
+                    for (int i = firstVisible; i <= lastVisible; i++) {
                         View v = layoutManager.findViewByPosition(i);
+                        Criteria.checkThat(
+                                "View at position " + i + " is null.", v, notNullValue());
+                        assumeNonNull(v);
                         TabThumbnailView thumbnail = v.findViewById(R.id.tab_thumbnail);
 
                         // Some items may not be cards or may not have thumbnails.
                         if (thumbnail == null) continue;
 
-                        if (thumbnail.isPlaceholder()
-                                || !(thumbnail.getDrawable() instanceof BitmapDrawable)
-                                || ((BitmapDrawable) thumbnail.getDrawable()).getBitmap() == null) {
-                            allFetched = false;
-                            break;
-                        }
+                        boolean hasValidBitmap =
+                                !thumbnail.isPlaceholder()
+                                        && (thumbnail.getDrawable()
+                                                instanceof BitmapDrawable bitmapDrawable)
+                                        && bitmapDrawable.getBitmap() != null;
+                        Criteria.checkThat(
+                                "The thumbnail for card at position " + i + " is missing.",
+                                hasValidBitmap,
+                                is(true));
                     }
-                    Criteria.checkThat(
-                            "The thumbnail for card at position " + i + " is missing.",
-                            allFetched,
-                            is(true));
                 });
     }
 

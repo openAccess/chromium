@@ -4,26 +4,35 @@
 
 import 'chrome://settings/settings.js';
 
-import type {SettingsAiLoggingInfoBullet} from 'chrome://settings/settings.js';
-import {loadTimeData, ModelExecutionEnterprisePolicyValue} from 'chrome://settings/settings.js';
+import type {SettingsAiLoggingInfoBulletElement} from 'chrome://settings/settings.js';
+import {loadTimeData, ModelExecutionEnterprisePolicyValue, PrefsBrowserProxy, PrefService} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
+import {microtasksFinished} from 'chrome://webui-test/test_util.js';
+
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 
 type PrefObject = chrome.settingsPrivate.PrefObject;
 
 suite('LoggingInfoBullet', function() {
-  let row: SettingsAiLoggingInfoBullet;
+  let row: SettingsAiLoggingInfoBulletElement;
+  let prefService: PrefService;
 
-  function createRow(
+  async function createRow(
       pref: PrefObject, loggingManagedDisabledCustomLabel: string|null = null) {
+    const prefsBrowserProxy = new TestPrefsBrowserProxy([pref]);
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+    PrefService.resetInstanceForTesting();
+    prefService = PrefService.getInstance();
+    await prefService.whenInitialized();
+
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     row = document.createElement('settings-ai-logging-info-bullet');
-    row.pref = pref;
+    row.prefKey = pref.key;
     if (loggingManagedDisabledCustomLabel) {
       row.loggingManagedDisabledCustomLabel = loggingManagedDisabledCustomLabel;
     }
     document.body.appendChild(row);
-    return flushTasks();
+    return microtasksFinished();
   }
 
   test('infoBulletPolicyAllow', async () => {
@@ -34,10 +43,11 @@ suite('LoggingInfoBullet', function() {
     };
     await createRow(pref);
 
-    const li = row.shadowRoot!.querySelector('li');
+    const li = row.shadowRoot.querySelector('li');
     assertTrue(!!li);
     assertEquals(
-        loadTimeData.getString('aiSubpageSublabelReviewers'), li.textContent);
+        loadTimeData.getString('aiSubpageSublabelReviewers'),
+        li.textContent.trim());
     assertTrue(!!li.querySelector('cr-icon'));
     assertFalse(!!li.querySelector('cr-policy-pref-indicator'));
   });
@@ -53,12 +63,13 @@ suite('LoggingInfoBullet', function() {
         loadTimeData.getString(
             'autofillAiSubpageSublabelLoggingManagedDisabled'));
 
-    const li = row.shadowRoot!.querySelector('li');
+    const li = row.shadowRoot.querySelector('li');
     assertTrue(!!li);
     // The custom label is not used since it only applies when logging is
     // disabled.
     assertEquals(
-        loadTimeData.getString('aiSubpageSublabelReviewers'), li.textContent);
+        loadTimeData.getString('aiSubpageSublabelReviewers'),
+        li.textContent.trim());
   });
 
   test('infoBulletPolicyAllowWithoutLogging', async () => {
@@ -71,11 +82,11 @@ suite('LoggingInfoBullet', function() {
     };
     await createRow(pref);
 
-    const li = row.shadowRoot!.querySelector('li');
+    const li = row.shadowRoot.querySelector('li');
     assertTrue(!!li);
     assertEquals(
         loadTimeData.getString('aiSubpageSublabelLoggingManagedDisabled'),
-        li.textContent);
+        li.textContent.trim());
     assertFalse(!!li.querySelector('cr-icon'));
     assertTrue(!!li.querySelector('cr-policy-pref-indicator'));
   });
@@ -92,9 +103,9 @@ suite('LoggingInfoBullet', function() {
         'autofillAiSubpageSublabelLoggingManagedDisabled');
     await createRow(pref, customLabel);
 
-    const li = row.shadowRoot!.querySelector('li');
+    const li = row.shadowRoot.querySelector('li');
     assertTrue(!!li);
-    assertEquals(customLabel, li.textContent);
+    assertEquals(customLabel, li.textContent.trim());
   });
 
   test('infoBulletPolicyDisabled', async () => {
@@ -107,11 +118,11 @@ suite('LoggingInfoBullet', function() {
     };
     await createRow(pref);
 
-    const li = row.shadowRoot!.querySelector('li');
+    const li = row.shadowRoot.querySelector('li');
     assertTrue(!!li);
     assertEquals(
         loadTimeData.getString('aiSubpageSublabelLoggingManagedDisabled'),
-        li.textContent);
+        li.textContent.trim());
     assertFalse(!!li.querySelector('cr-icon'));
     assertTrue(!!li.querySelector('cr-policy-pref-indicator'));
   });
@@ -128,9 +139,9 @@ suite('LoggingInfoBullet', function() {
         'autofillAiSubpageSublabelLoggingManagedDisabled');
     await createRow(pref, customLabel);
 
-    const li = row.shadowRoot!.querySelector('li');
+    const li = row.shadowRoot.querySelector('li');
     assertTrue(!!li);
-    assertEquals(customLabel, li.textContent);
+    assertEquals(customLabel, li.textContent.trim());
     assertFalse(!!li.querySelector('cr-icon'));
     assertTrue(!!li.querySelector('cr-policy-pref-indicator'));
   });

@@ -74,6 +74,7 @@ UILabel* CreateWatermarkLabel() {
 - (void)setUpView {
   self.backgroundColor = [UIColor clearColor];
   self.userInteractionEnabled = NO;
+  self.accessibilityElementsHidden = YES;
   self.layer.zPosition = CGFLOAT_MAX;
   self.clipsToBounds = YES;
 
@@ -143,6 +144,30 @@ UILabel* CreateWatermarkLabel() {
     return;
   }
   _fontSize = fontSize;
+  [self updateLabel];
+}
+
+- (void)updateWithText:(NSString*)text style:(WatermarkStyle)style {
+  CGFloat newFillOpacity =
+      style.fill_opacity.has_value()
+          ? std::clamp<CGFloat>(style.fill_opacity.value(), 0.0, 1.0)
+          : _fillOpacity;
+  CGFloat newOutlineOpacity =
+      style.outline_opacity.has_value()
+          ? std::clamp<CGFloat>(style.outline_opacity.value(), 0.0, 1.0)
+          : _outlineOpacity;
+  CGFloat newFontSize =
+      style.font_size.has_value() ? style.font_size.value() : _fontSize;
+
+  if ([_text isEqualToString:text] && _fillOpacity == newFillOpacity &&
+      _outlineOpacity == newOutlineOpacity && _fontSize == newFontSize) {
+    return;
+  }
+
+  _text = [text copy];
+  _fillOpacity = newFillOpacity;
+  _outlineOpacity = newOutlineOpacity;
+  _fontSize = newFontSize;
   [self updateLabel];
 }
 

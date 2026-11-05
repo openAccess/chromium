@@ -16,8 +16,10 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/param_definitions/subblock_schedule.h"
@@ -168,18 +170,30 @@ class ParamDefinition {
    */
   const std::optional<SubblockSchedule>& GetSchedule() const;
 
-  /*!\brief Creates a parameter data.
+  /*!\brief Creates parameter data from a buffer.
    *
-   * The created instance will one of the subclassees of `ParameterData`,
+   * The created instance will be one of the subclasses of `ParameterData`,
    * depending on the specific subclass implementing this function.
    *
-   * \return Unique pointer to the created parameter data.
+   * \param rb Buffer to read from.
+   * \return Unique pointer to created parameter data, or specific error
+   *         on failure.
    */
-  virtual std::unique_ptr<ParameterData> CreateParameterData() const = 0;
+  virtual absl::StatusOr<std::unique_ptr<ParameterData>>
+  CreateParameterDataFromBuffer(ReadBitBuffer& rb) const = 0;
 
-  /*!\brief Prints the parameter definition.
+  /*!\brief Returns a string representation of the parameter definition.
+   *
+   * \return String representation of the parameter definition.
    */
-  virtual void Print() const;
+  virtual std::string ToString() const;
+
+  /*!\brief Supports Abseil stringification. */
+  template <typename Sink>
+  friend void AbslStringify(Sink& sink,
+                            const ParamDefinition& param_definition) {
+    sink.Append(param_definition.ToString());
+  }
 
   friend bool operator==(const ParamDefinition& lhs,
                          const ParamDefinition& rhs) = default;
@@ -211,4 +225,4 @@ class ParamDefinition {
 
 }  // namespace iamf_tools
 
-#endif  // OBU_PARAM_DEFINITIONS_H_
+#endif  // OBU_PARAM_DEFINITIONS_PARAM_DEFINITION_BASE_H_

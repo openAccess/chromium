@@ -27,7 +27,6 @@
 @implementation SearchEngineTestCase
 
 - (void)setUp {
-  [[self class] testForStartup];
   [super setUp];
   // Make sure the search engine has been reset, to avoid any issues if it was
   // not by a previous test.
@@ -295,12 +294,6 @@
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
                       grey_accessibilityID(
                           kSearchEngineChoiceLearnMoreAccessibilityIdentifier)];
-
-  // Expand the bottom sheet to largeDetent by swiping up on the sheet view.
-  [[EarlGrey selectElementWithMatcher:
-                 grey_accessibilityID(
-                     kSearchEngineChoiceLearnMoreAccessibilityIdentifier)]
-      performAction:grey_swipeSlowInDirection(kGREYDirectionUp)];
 
   // Verify the Waffle third paragraph text is present.
   NSString* waffleText = l10n_util::GetNSString(

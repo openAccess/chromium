@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/tips_manager/model/tips_manager_ios_factory.h"
 
+#import <utility>
+
 #import "components/pref_registry/pref_registry_syncable.h"
 #import "components/segmentation_platform/embedder/home_modules/tips_manager/tips_manager.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -14,42 +16,29 @@
 namespace {
 
 // Helper function to create an `TipsManagerIOS` instance.
-std::unique_ptr<KeyedService> BuildServiceInstance(ProfileIOS* profile) {
+std::unique_ptr<KeyedService> BuildServiceInstance(ProfileIOS& profile) {
   return std::make_unique<TipsManagerIOS>(
-      profile->GetPrefs(), GetApplicationContext()->GetLocalState());
+      profile.GetPrefs(), GetApplicationContext()->GetLocalState());
 }
 
 }  // namespace
 
-// static
-TipsManagerIOS* TipsManagerIOSFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<TipsManagerIOS>(profile,
-                                                               /*create=*/true);
-}
+TipsManagerIOSFactory::TipsManagerIOSFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "TipsManagerIOS",
+          ServiceCreation::kCreateWithProfile,
+          TestingCreation::kNoServiceForTests,
+          ProfileSelection::kOwnInstanceInIncognito) {}
 
 // static
-TipsManagerIOSFactory* TipsManagerIOSFactory::GetInstance() {
-  static base::NoDestructor<TipsManagerIOSFactory> instance;
-  return instance.get();
-}
-
-TipsManagerIOSFactory::TipsManagerIOSFactory()
-    : ProfileKeyedServiceFactoryIOS("TipsManagerIOS",
-                                    ServiceCreation::kCreateWithProfile,
-                                    TestingCreation::kNoServiceForTests,
-                                    ProfileSelection::kOwnInstanceInIncognito) {
-}
-
-TipsManagerIOSFactory::~TipsManagerIOSFactory() = default;
-
-// static
-TipsManagerIOSFactory::TestingFactory
+TipsManagerIOSFactory::TestingFactoryByRef
 TipsManagerIOSFactory::GetDefaultFactory() {
   return base::BindOnce(&BuildServiceInstance);
 }
 
 std::unique_ptr<KeyedService> TipsManagerIOSFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   return BuildServiceInstance(profile);
 }
 

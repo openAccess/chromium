@@ -10,8 +10,11 @@
 #include "chrome/browser/tab/tab_state_storage_service.h"
 #include "components/tabs/public/tab_collection.h"
 #include "components/tabs/public/tab_collection_observer.h"
+#include "components/tabs/public/tab_strip_collection.h"
 
 namespace tabs {
+
+class NodeHashCache;
 
 // Observes changes to the structure of a TabStripCollection.
 // This class does not manage observer registration and
@@ -19,7 +22,8 @@ namespace tabs {
 class CollectionStorageObserver
     : public StorageCollectionSynchronizer::CollectionSynchronizerObserver {
  public:
-  explicit CollectionStorageObserver(TabStateStorageService* service);
+  CollectionStorageObserver(TabStripCollection* collection,
+                            TabStateStorageService* service);
   ~CollectionStorageObserver() override;
 
   CollectionStorageObserver(const CollectionStorageObserver&) = delete;
@@ -34,14 +38,19 @@ class CollectionStorageObserver
                          const TabCollectionNodes& handles) override;
   void OnChildMoved(const TabCollection::Position& to_position,
                     const NodeData& node_data) override;
-  void SaveChildNodeOnly(TabCollectionNodeHandle handle) override;
+
+  void SaveStructureSnapshot(bool clear_unused_nodes) override;
+  void SetSynchronizer(StorageCollectionSynchronizer* synchronizer) override;
 
   // Removes `collection` and all its descendants from storage.
   static void ClearSubTree(const TabCollection* collection,
-                           TabStateStorageService* service);
+                           TabStateStorageService* service,
+                           NodeHashCache* hash_cache);
 
  private:
+  raw_ptr<TabStripCollection> collection_;
   raw_ptr<TabStateStorageService> service_;
+  raw_ptr<StorageCollectionSynchronizer> synchronizer_ = nullptr;
 };
 
 }  // namespace tabs

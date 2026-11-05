@@ -120,7 +120,7 @@ FeedbackUI::FeedbackUI(content::WebUI* web_ui) : MojoWebDialogUI(web_ui) {
 FeedbackUI::~FeedbackUI() = default;
 
 bool FeedbackUI::IsFeedbackEnabled(Profile* profile) {
-  return chrome::CanShowFeedback(profile);
+  return chrome::CanSubmitFeedback(profile);
 }
 
 void FeedbackUI::BindInterface(
@@ -141,8 +141,8 @@ void FeedbackUI::CreatePageHandler(
         BrowserWindowInterface* browser =
             GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
                 web_contents.get());
-        if (browser && browser->GetFeatures().toast_controller()) {
-          browser->GetFeatures().toast_controller()->MaybeShowToast(
+        if (browser && ToastController::From(browser)) {
+          ToastController::From(browser)->MaybeShowToast(
               ToastParams(ToastId::kReportUnsafeSiteConfirmation));
         }
       },

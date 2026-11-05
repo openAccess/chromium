@@ -3,13 +3,13 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/chromeos/extensions/wm/wm_desks_private_events.h"
+
 #include <memory>
 
 #include "base/uuid.h"
 #include "chrome/browser/extensions/extension_service_test_with_install.h"
-#include "chrome/common/extensions/api/wm_desks_private.h"
-#include "chrome/test/base/test_browser_window.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chromeos/ash/experiences/extensions/common/api/wm_desks_private.h"
 #include "components/crx_file/id_util.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/test/mock_render_process_host.h"
@@ -90,8 +90,8 @@ TEST_F(WMDesksPrivateEventsUnitTest, DispatchEventOnDeskAdded) {
   const auto& event_map = test_observer.events();
   auto iter = event_map.find(event_name);
   ASSERT_FALSE(iter == event_map.end());
-  ASSERT_EQ(2u, iter->second->event_args.size());
-  EXPECT_EQ(desk_1.AsLowercaseString(), iter->second->event_args[0]);
+  ASSERT_EQ(2u, iter->second->args().size());
+  EXPECT_EQ(desk_1.AsLowercaseString(), iter->second->args()[0]);
 }
 
 TEST_F(WMDesksPrivateEventsUnitTest, DispatchEventOnDeskRemoved) {
@@ -113,8 +113,8 @@ TEST_F(WMDesksPrivateEventsUnitTest, DispatchEventOnDeskRemoved) {
   const auto& event_map = test_observer.events();
   auto iter = event_map.find(event_name);
   ASSERT_FALSE(iter == event_map.end());
-  ASSERT_EQ(1u, iter->second->event_args.size());
-  EXPECT_EQ(desk_1.AsLowercaseString(), iter->second->event_args[0]);
+  ASSERT_EQ(1u, iter->second->args().size());
+  EXPECT_EQ(desk_1.AsLowercaseString(), iter->second->args()[0]);
 }
 
 TEST_F(WMDesksPrivateEventsUnitTest, DispatchEventOnDeskSwitched) {
@@ -137,9 +137,9 @@ TEST_F(WMDesksPrivateEventsUnitTest, DispatchEventOnDeskSwitched) {
   const auto& event_map = test_observer.events();
   auto iter = event_map.find(event_name);
   ASSERT_FALSE(iter == event_map.end());
-  ASSERT_EQ(2u, iter->second->event_args.size());
-  EXPECT_EQ(desk_1.AsLowercaseString(), iter->second->event_args[0]);
-  EXPECT_EQ(desk_2.AsLowercaseString(), iter->second->event_args[1]);
+  ASSERT_EQ(2u, iter->second->args().size());
+  EXPECT_EQ(desk_1.AsLowercaseString(), iter->second->args()[0]);
+  EXPECT_EQ(desk_2.AsLowercaseString(), iter->second->args()[1]);
 }
 
 TEST_F(WMDesksPrivateEventsUnitTest, DispatchEventOnDeskRemovalUndone) {
@@ -161,7 +161,7 @@ TEST_F(WMDesksPrivateEventsUnitTest, DispatchEventOnDeskRemovalUndone) {
   const auto& event_map = test_observer.events();
   auto iter = event_map.find(event_name);
   ASSERT_FALSE(iter == event_map.end());
-  ASSERT_EQ(2u, iter->second->event_args.size());
-  EXPECT_EQ(desk_1.AsLowercaseString(), iter->second->event_args[0]);
+  ASSERT_EQ(2u, iter->second->args().size());
+  EXPECT_EQ(desk_1.AsLowercaseString(), iter->second->args()[0]);
 }
 }  // namespace extensions

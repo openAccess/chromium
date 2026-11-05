@@ -6,17 +6,20 @@
 
 #include <optional>
 
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
-#include "base/task/thread_pool.h"
+#include "base/task/task_runner.h"
 #include "base/trace_event/trace_event.h"
-#include "build/branding_buildflags.h"
 #include "components/optimization_guide/proto/manifest.pb.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace optimization_guide {
+
+BASE_FEATURE(kOnDeviceWebSpeechPolisherModel,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 namespace {
 
@@ -75,6 +78,11 @@ std::optional<Manifest::ParseError> CheckUniqueIdentifiers(
       return Manifest::ParseError::kDuplicateIdentifier;
     }
   }
+  for (const auto& [id, _] : manifest.recipes().postprocessed_models()) {
+    if (!model_identifiers.insert(id).second) {
+      return Manifest::ParseError::kDuplicateIdentifier;
+    }
+  }
   for (const auto& [id, _] : manifest.recipes().base_models()) {
     if (!model_identifiers.insert(id).second) {
       return Manifest::ParseError::kDuplicateIdentifier;
@@ -94,11 +102,8 @@ std::optional<Manifest::ParseError> ValidateReferences(
   };
   for (const auto& [_, solution] : manifest.recipes().solutions()) {
     if (!recipes.adaptations().contains(solution.model_recipe_id()) &&
+        !recipes.postprocessed_models().contains(solution.model_recipe_id()) &&
         !recipes.base_models().contains(solution.model_recipe_id())) {
-      return Manifest::ParseError::kMissingIdentifier;
-    }
-    if (!solution.safety_model_recipe_id().empty() &&
-        !recipes.safety_models().contains(solution.safety_model_recipe_id())) {
       return Manifest::ParseError::kMissingIdentifier;
     }
     if (!is_valid_asset(solution.config_file().asset_id())) {
@@ -115,18 +120,20 @@ std::optional<Manifest::ParseError> ValidateReferences(
     }
   }
 
-  for (const auto& [_, base_model] : manifest.recipes().base_models()) {
-    if (!is_valid_asset(base_model.weights_file().asset_id())) {
+  for (const auto& [_, postprocessed_model] :
+       manifest.recipes().postprocessed_models()) {
+    if (!recipes.base_models().contains(
+            postprocessed_model.base_model_recipe_id())) {
+      return Manifest::ParseError::kMissingIdentifier;
+    }
+    if (!recipes.base_models().contains(
+            postprocessed_model.postprocessor_model_recipe_id())) {
       return Manifest::ParseError::kMissingIdentifier;
     }
   }
 
-  for (const auto& [_, safety_model] : manifest.recipes().safety_models()) {
-    if (!is_valid_asset(safety_model.weights_file().asset_id())) {
-      return Manifest::ParseError::kMissingIdentifier;
-    }
-    if (!is_valid_asset(
-            safety_model.language_detection_model_file().asset_id())) {
+  for (const auto& [_, base_model] : manifest.recipes().base_models()) {
+    if (!is_valid_asset(base_model.weights_file().asset_id())) {
       return Manifest::ParseError::kMissingIdentifier;
     }
   }
@@ -142,10 +149,23 @@ std::optional<Manifest::ParseError> ValidateReferences(
   return std::nullopt;
 }
 
+// Replaces references to postprocessed models in solutions with their
+// underlying primary base model and removes all postprocessed model recipes.
+void DisablePostprocessedModels(proto::Recipes& recipes) {
+  for (auto& [_, solution] : *recipes.mutable_solutions()) {
+    if (auto it =
+            recipes.postprocessed_models().find(solution.model_recipe_id());
+        it != recipes.postprocessed_models().end()) {
+      solution.set_model_recipe_id(it->second.base_model_recipe_id());
+    }
+  }
+  recipes.clear_postprocessed_models();
+}
+
 struct References {
   absl::flat_hash_set<std::string> solutions;
-  absl::flat_hash_set<std::string> safety_models;
   absl::flat_hash_set<std::string> adaptations;
+  absl::flat_hash_set<std::string> postprocessed_models;
   absl::flat_hash_set<std::string> base_models;
   absl::flat_hash_set<Manifest::AssetId> assets;
 
@@ -176,11 +196,11 @@ struct References {
       const proto::SolutionRecipe& solution = recipes.solutions().at(id);
       if (recipes.adaptations().contains(solution.model_recipe_id())) {
         adaptations.insert(solution.model_recipe_id());
+      } else if (recipes.postprocessed_models().contains(
+                     solution.model_recipe_id())) {
+        postprocessed_models.insert(solution.model_recipe_id());
       } else {
         base_models.insert(solution.model_recipe_id());
-      }
-      if (solution.has_safety_model_recipe_id()) {
-        safety_models.insert(solution.safety_model_recipe_id());
       }
       assets.insert(solution.config_file().asset_id());
     }
@@ -189,15 +209,15 @@ struct References {
       base_models.insert(adaptation.base_model_recipe_id());
       assets.insert(adaptation.weights_file().asset_id());
     }
+    for (const auto& id : postprocessed_models) {
+      const proto::PostprocessedModelRecipe& postprocessed_model =
+          recipes.postprocessed_models().at(id);
+      base_models.insert(postprocessed_model.base_model_recipe_id());
+      base_models.insert(postprocessed_model.postprocessor_model_recipe_id());
+    }
     for (const auto& id : base_models) {
       const proto::BaseModelRecipe& base_model = recipes.base_models().at(id);
       assets.insert(base_model.weights_file().asset_id());
-    }
-    for (const auto& id : safety_models) {
-      const proto::SafetyModelRecipe& safety_model =
-          recipes.safety_models().at(id);
-      assets.insert(safety_model.weights_file().asset_id());
-      assets.insert(safety_model.language_detection_model_file().asset_id());
     }
   }
 
@@ -211,13 +231,13 @@ struct References {
       referenced.mutable_adaptations()->emplace(id,
                                                 original.adaptations().at(id));
     }
+    for (const auto& id : postprocessed_models) {
+      referenced.mutable_postprocessed_models()->emplace(
+          id, original.postprocessed_models().at(id));
+    }
     for (const auto& id : base_models) {
       referenced.mutable_base_models()->emplace(id,
                                                 original.base_models().at(id));
-    }
-    for (const auto& id : safety_models) {
-      referenced.mutable_safety_models()->emplace(
-          id, original.safety_models().at(id));
     }
     return referenced;
   }
@@ -250,6 +270,22 @@ std::optional<Manifest::ParseError> ValidateUniqueComponent(
   return std::nullopt;
 }
 
+absl::flat_hash_map<Manifest::UseCaseName,
+                    absl::flat_hash_set<Manifest::AssetId>>
+ComputeRequiredAssetsByUseCase(const proto::DeviceCategoryConfig& config,
+                               const proto::Recipes& recipes) {
+  absl::flat_hash_map<Manifest::UseCaseName,
+                      absl::flat_hash_set<Manifest::AssetId>>
+      result;
+  for (const auto& [use_case_name, _] : config.use_cases()) {
+    References references;
+    references.AddUseCase(config, use_case_name);
+    references.AddDependencies(recipes);
+    result.emplace(use_case_name, std::move(references.assets));
+  }
+  return result;
+}
+
 }  // namespace
 
 std::ostream& operator<<(std::ostream& stream, DeviceCategory device_category) {
@@ -280,6 +316,10 @@ base::expected<Manifest, Manifest::ParseError> Manifest::Create(
     return base::unexpected(error.value());
   }
 
+  if (!base::FeatureList::IsEnabled(kOnDeviceWebSpeechPolisherModel)) {
+    DisablePostprocessedModels(*manifest.mutable_recipes());
+  }
+
   proto::DeviceCategoryConfig device_category_config =
       SelectDeviceCategoryConfig(manifest, device_category);
 
@@ -299,24 +339,12 @@ base::expected<Manifest, Manifest::ParseError> Manifest::Create(
 }
 
 void Manifest::Load(
+    base::TaskRunner& task_runner,
     const base::FilePath& directory,
     DeviceCategory device_category,
     base::OnceCallback<void(base::expected<Manifest, ParseError>)> callback) {
-#if BUILDFLAG(CHROME_FOR_TESTING)
-  // Chrome for Testing blocks browser startup until all required components
-  // are installed. However, BEST_EFFORT tasks are not allowed to run until
-  // after startup completion (see `scoped_best_effort_execution_fence_` in
-  // content/browser/browser_main_loop.h).
-  //
-  // Therefore use USER_VISIBLE task priority to prevent browser startup
-  // deadlock when loading required model manifests in Chrome for Testing.
-  constexpr base::TaskPriority kTaskPriority = base::TaskPriority::USER_VISIBLE;
-#else
-  constexpr base::TaskPriority kTaskPriority = base::TaskPriority::BEST_EFFORT;
-#endif
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock(), kTaskPriority},
-      base::BindOnce(&ReadManifestFile, directory, device_category),
+  task_runner.PostTaskAndReplyWithResult(
+      FROM_HERE, base::BindOnce(&ReadManifestFile, directory, device_category),
       std::move(callback));
 }
 
@@ -330,7 +358,9 @@ Manifest::Manifest(base::FilePath directory,
       device_category_config_(std::move(device_category_config)),
       recipes_(std::move(recipes)),
       assets_(std::move(assets)),
-      asset_id_by_public_key_(ComputeAssetIdByPublicKey(assets_)) {}
+      asset_id_by_public_key_(ComputeAssetIdByPublicKey(assets_)),
+      required_assets_by_use_case_(
+          ComputeRequiredAssetsByUseCase(device_category_config_, recipes_)) {}
 
 Manifest::~Manifest() = default;
 
@@ -343,6 +373,15 @@ bool Manifest::HasAssets() const {
   return !assets_.on_demand_components().empty();
 }
 
+const proto::OnDemandComponent* Manifest::GetAssetById(
+    const AssetId& asset_id) const {
+  auto it = assets_.on_demand_components().find(asset_id);
+  if (it == assets_.on_demand_components().end()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
 const proto::OnDemandComponent* Manifest::GetAssetByPublicKey(
     const std::string& public_key) const {
   auto it = asset_id_by_public_key_.find(public_key);
@@ -352,24 +391,37 @@ const proto::OnDemandComponent* Manifest::GetAssetByPublicKey(
   return &assets_.on_demand_components().at(it->second);
 }
 
-std::optional<absl::flat_hash_set<Manifest::AssetId>>
+std::vector<Manifest::UseCaseName> Manifest::GetUseCasesRequiringAsset(
+    const AssetId& asset_id) const {
+  std::vector<UseCaseName> use_cases;
+  for (const auto& [use_case_name, required_assets] :
+       required_assets_by_use_case_) {
+    if (required_assets.contains(asset_id)) {
+      use_cases.push_back(use_case_name);
+    }
+  }
+  return use_cases;
+}
+
+base::optional_ref<const absl::flat_hash_set<Manifest::AssetId>>
 Manifest::GetRequiredAssets(const UseCaseName& use_case) const {
-  References references;
-  if (!references.AddUseCase(device_category_config_, use_case)) {
+  auto it = required_assets_by_use_case_.find(use_case);
+  if (it == required_assets_by_use_case_.end()) {
     return std::nullopt;
   }
-  references.AddDependencies(recipes_);
-  return references.assets;
+  return it->second;
 }
 
 absl::flat_hash_set<Manifest::AssetId> Manifest::GetRequiredAssets(
     const std::vector<UseCaseName>& use_cases) const {
-  References references;
+  absl::flat_hash_set<AssetId> assets;
   for (const auto& use_case : use_cases) {
-    references.AddUseCase(device_category_config_, use_case);
+    if (auto it = required_assets_by_use_case_.find(use_case);
+        it != required_assets_by_use_case_.end()) {
+      assets.insert(it->second.begin(), it->second.end());
+    }
   }
-  references.AddDependencies(recipes_);
-  return references.assets;
+  return assets;
 }
 
 }  // namespace optimization_guide

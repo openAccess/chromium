@@ -7,12 +7,14 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/containers/queue.h"
 #include "base/functional/bind.h"
-#include "base/i18n/legacy_language_tag_helpers.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/tag_converters.h"
 #include "base/json/json_reader.h"
 #include "base/metrics/histogram_macros.h"
@@ -34,7 +36,7 @@
 #include "ui/base/l10n/l10n_util.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "content/public/browser/tts_controller_delegate.h"
+#include "content/public/browser/tts_controller_delegate_chromeos.h"
 #endif
 
 namespace content {
@@ -68,6 +70,52 @@ bool IsUtteranceSpokenByRemoteEngine(TtsUtterance* utterance) {
     return utterance_impl->spoken_by_remote_engine();
   }
   return false;
+}
+
+enum class LocaleMatchLevel {
+  kNone = 0,
+  kPrefix = 1,
+  kRegional = 2,
+  kExact = 3,
+};
+
+// Determines the match level between a candidate voice's locale and a
+// target locale (such as an utterance language request or application locale).
+//
+// Returns:
+// - kExact: Both language and country match (e.g. "it-IT" vs "it-IT"), or the
+//   target specifies a generic language without country (e.g. generic "it")
+//   so any voice in that language qualifies as an exact language match.
+//   Regional dialect preferences are then handled by the application locale
+//   scoring.
+// - kRegional: The voice language matches the target language, but the target
+//   specified a country and the voice lacks one (e.g. voice "it" vs target
+//   "it-IT").
+// - kPrefix: The voice language matches the target language, but both specify
+//   differing country subtags (e.g. "it-CH" vs "it-IT").
+// - kNone: The primary language subtags do not match or either locale could
+//   not be parsed.
+LocaleMatchLevel GetLocaleMatchLevel(
+    const std::optional<base::i18n::LanguageTag>& voice_locale,
+    const std::optional<base::i18n::LanguageTag>& target_locale) {
+  if (!voice_locale || !target_locale ||
+      voice_locale->language_subtag() != target_locale->language_subtag()) {
+    return LocaleMatchLevel::kNone;
+  }
+
+  const std::string_view target_region = target_locale->region_subtag();
+  if (!target_region.empty()) {
+    const std::string_view voice_region = voice_locale->region_subtag();
+    if (voice_region == target_region) {
+      return LocaleMatchLevel::kExact;
+    }
+    if (voice_region.empty()) {
+      return LocaleMatchLevel::kRegional;
+    }
+    return LocaleMatchLevel::kPrefix;
+  }
+
+  return LocaleMatchLevel::kExact;
 }
 
 }  // namespace
@@ -257,7 +305,7 @@ void TtsControllerImpl::Pause() {
       !current_utterance_->GetEngineId().empty() && !spoken_by_remote_engine) {
     engine_delegate_->Pause(current_utterance_.get());
   } else if (current_utterance_) {
-    DCHECK(TtsPlatformReady());
+    CHECK(TtsPlatformReady(), base::NotFatalUntil::M159);
     GetTtsPlatform()->ClearError();
     GetTtsPlatform()->Pause();
   }
@@ -276,7 +324,7 @@ void TtsControllerImpl::Resume() {
       !current_utterance_->GetEngineId().empty() && !spoken_by_remote_engine) {
     engine_delegate_->Resume(current_utterance_.get());
   } else if (current_utterance_) {
-    DCHECK(TtsPlatformReady());
+    CHECK(TtsPlatformReady(), base::NotFatalUntil::M159);
     GetTtsPlatform()->ClearError();
     GetTtsPlatform()->Resume();
   } else {
@@ -397,7 +445,7 @@ void TtsControllerImpl::GetVoices(BrowserContext* browser_context,
   // if necessary.
   TtsPlatform* tts_platform = GetTtsPlatform();
 
-  DCHECK(tts_platform);
+  CHECK(tts_platform, base::NotFatalUntil::M159);
   // Ensure we have all built-in voices loaded. This is a no-op if already
   // loaded.
   tts_platform->LoadBuiltInTtsEngine(browser_context);
@@ -490,7 +538,7 @@ void TtsControllerImpl::RemoveUtteranceEventDelegate(
     if (engine_delegate_ && !current_utterance_->GetEngineId().empty()) {
       engine_delegate_->Stop(current_utterance_.get());
     } else {
-      DCHECK(TtsPlatformReady());
+      CHECK(TtsPlatformReady(), base::NotFatalUntil::M159);
       GetTtsPlatform()->ClearError();
       GetTtsPlatform()->StopSpeaking();
     }
@@ -558,7 +606,7 @@ int TtsControllerImpl::QueueSize() {
 TtsPlatform* TtsControllerImpl::GetTtsPlatform() {
   if (!tts_platform_)
     tts_platform_ = TtsPlatform::GetInstance();
-  DCHECK(tts_platform_);
+  CHECK(tts_platform_, base::NotFatalUntil::M159);
   return tts_platform_;
 }
 
@@ -614,7 +662,7 @@ void TtsControllerImpl::SpeakNow(std::unique_ptr<TtsUtterance> utterance) {
 
   if (!voice.native) {
 #if !BUILDFLAG(IS_ANDROID)
-    DCHECK(!voice.engine_id.empty());
+    CHECK(!voice.engine_id.empty(), base::NotFatalUntil::M159);
     SetCurrentUtterance(std::move(utterance));
     current_utterance_->SetEngineId(voice.engine_id);
     if (engine_delegate_) {
@@ -708,7 +756,7 @@ void TtsControllerImpl::SpeakNextUtterance() {
     std::unique_ptr<TtsUtterance> utterance =
         std::move(utterance_list_.front());
     utterance_list_.pop_front();
-    DCHECK(previous_utterance != utterance.get());
+    CHECK(previous_utterance != utterance.get(), base::NotFatalUntil::M159);
 
     if (ShouldSpeakUtterance(utterance.get()))
       SpeakNow(std::move(utterance));
@@ -788,7 +836,7 @@ void TtsControllerImpl::StripSSMLHelper(
 
 void TtsControllerImpl::PopulateParsedText(std::string* parsed_text,
                                            const base::Value* element) {
-  DCHECK(parsed_text);
+  CHECK(parsed_text, base::NotFatalUntil::M159);
   if (!element || !element->is_dict()) {
     return;
   }
@@ -815,8 +863,11 @@ void TtsControllerImpl::PopulateParsedText(std::string* parsed_text,
 
 int TtsControllerImpl::GetMatchingVoice(TtsUtterance* utterance,
                                         const std::vector<VoiceData>& voices) {
-  const std::string app_lang =
+  const std::optional<base::i18n::LanguageTag> utterance_locale =
+      base::i18n::GetLanguageTagFromString(utterance->GetLang());
+  const std::optional<base::i18n::LanguageTag> app_locale =
       GetContentClient()->browser()->GetApplicationLocale();
+
   // Start with a best score of -1, that way even if none of the criteria
   // match, something will be returned if there are any voices.
   int best_score = -1;
@@ -841,42 +892,26 @@ int TtsControllerImpl::GetMatchingVoice(TtsUtterance* utterance,
         voice.name != utterance->GetVoiceName())
       continue;
 
-    // Prefer the utterance language.
-    if (!voice.lang.empty() && !utterance->GetLang().empty()) {
-      std::optional<base::i18n::LanguageTag> voice_tag =
-          base::i18n::GetLanguageTagFromString(voice.lang);
-      std::optional<base::i18n::LanguageTag> utterance_tag =
-          base::i18n::GetLanguageTagFromString(utterance->GetLang());
+    const std::optional<base::i18n::LanguageTag> voice_locale =
+        base::i18n::GetLanguageTagFromString(voice.lang);
 
-      std::string voice_language =
-          voice_tag
-              ? base::ToLowerASCII(voice_tag->language_subtag())
-              : base::ToLowerASCII(
-                    base::i18n::GetLanguageSubtagUsingLanguageTag(voice.lang));
-      std::string voice_country =
-          voice_tag ? base::ToLowerASCII(voice_tag->region_subtag()) : "";
-      std::string utterance_language =
-          utterance_tag ? base::ToLowerASCII(utterance_tag->language_subtag())
-                        : base::ToLowerASCII(
-                              base::i18n::GetLanguageSubtagUsingLanguageTag(
-                                  utterance->GetLang()));
-      std::string utterance_country =
-          utterance_tag ? base::ToLowerASCII(utterance_tag->region_subtag())
-                        : "";
-
-      // An exact locale match is worth more than a partial match.
-      // Convert locales to lowercase to handle cases like "en-us" vs. "en-US".
-      // Cases where language and country match should score the same as an
-      // exact match.
-      if (voice_language == utterance_language &&
-          (voice_country == utterance_country ||
-           (utterance_country.empty() && voice_language == voice_country) ||
-           (voice_country.empty() &&
-            utterance_language == utterance_country))) {
-        score += 128;
-      } else if (voice_language == utterance_language) {
-        score += 64;
-      }
+    // Prefer the utterance language. Scoring weights are powers of two to
+    // enforce a strict priority hierarchy where each criterion decisively
+    // outweighs all lower-priority criteria combined (e.g. an exact dialect
+    // match always beats any regional match regardless of secondary event or
+    // preference bonuses).
+    switch (GetLocaleMatchLevel(voice_locale, utterance_locale)) {
+      case LocaleMatchLevel::kExact:
+        score += 1024;
+        break;
+      case LocaleMatchLevel::kRegional:
+        score += 512;
+        break;
+      case LocaleMatchLevel::kPrefix:
+        score += 256;
+        break;
+      case LocaleMatchLevel::kNone:
+        break;
     }
 
     // Next, prefer required event types.
@@ -889,7 +924,7 @@ int TtsControllerImpl::GetMatchingVoice(TtsUtterance* utterance,
         }
       }
       if (has_all_required_event_types)
-        score += 32;
+        score += 128;
     }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -898,32 +933,45 @@ int TtsControllerImpl::GetMatchingVoice(TtsUtterance* utterance,
       // if the utterance language is specified.
       if (!utterance->GetLang().empty() &&
           VoiceIdMatches(preferred_ids->lang_voice_id, voice)) {
-        score += 16;
+        score += 64;
       }
 
       // Then prefer the user's preference voice for the system language.
       // This is a lower priority match than the utterance voice.
       if (VoiceIdMatches(preferred_ids->locale_voice_id, voice))
-        score += 8;
+        score += 32;
 
       // Finally, prefer the user's preference voice for any language. This will
       // pick the default voice if there is no better match for the current
       // system language and utterance language.
       if (VoiceIdMatches(preferred_ids->any_locale_voice_id, voice))
-        score += 4;
+        score += 16;
     }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-    // Finally, prefer system language.
-    if (!voice.lang.empty()) {
-      if (voice.lang == app_lang) {
+    // Next, prefer system application language.
+    switch (GetLocaleMatchLevel(voice_locale, app_locale)) {
+      case LocaleMatchLevel::kExact:
+        score += 8;
+        break;
+      case LocaleMatchLevel::kRegional:
+        score += 4;
+        break;
+      case LocaleMatchLevel::kPrefix:
         score += 2;
-      } else if (base::EqualsCaseInsensitiveASCII(
-                     base::i18n::GetLanguageSubtagUsingLanguageTag(voice.lang),
-                     base::i18n::GetLanguageSubtagUsingLanguageTag(app_lang))) {
-        score += 1;
-      }
+        break;
+      case LocaleMatchLevel::kNone:
+        break;
     }
+
+#if BUILDFLAG(IS_CHROMEOS)
+    // Finally, prefer non-fallback engines (e.g. Google TTS, ARC, extensions)
+    // over fallback engines (e.g. eSpeak-ng) as a definitive tie-breaker when
+    // voices share identical locale tags.
+    if (!delegate || !delegate->IsFallbackEngine(voice.engine_id)) {
+      score += 1;
+    }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
     if (score > best_score) {
       best_score = score;
@@ -944,7 +992,7 @@ void TtsControllerImpl::SetCurrentUtterance(
 
 void TtsControllerImpl::StopCurrentUtteranceAndRemoveUtterancesMatching(
     WebContents* wc) {
-  DCHECK(wc);
+  CHECK(wc, base::NotFatalUntil::M159);
   // Removes any utterances that match the WebContents from the current
   // utterance (which our inherited WebContentsObserver starts observing every
   // time the utterance changes).
@@ -967,7 +1015,7 @@ void TtsControllerImpl::StopCurrentUtteranceAndRemoveUtterancesMatching(
       std::remove_if(utterance_list_.begin(), utterance_list_.end(), eraser),
       utterance_list_.end());
   const bool stopped = StopCurrentUtteranceIfMatches(GURL());
-  DCHECK(stopped);
+  CHECK(stopped, base::NotFatalUntil::M159);
   SpeakNextUtterance();
 }
 

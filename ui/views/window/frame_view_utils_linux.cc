@@ -122,15 +122,7 @@ SkRRect GetRestoredClipRegion(const gfx::RectF& bounds,
                               const gfx::RoundedCornersF& radii) {
   gfx::RectF clipped_bounds = bounds;
   clipped_bounds.Inset(border);
-  SkVector sk_radii[4]{
-      {radii.upper_left(), radii.upper_left()},
-      {radii.upper_right(), radii.upper_right()},
-      {radii.lower_right(), radii.lower_right()},
-      {radii.lower_left(), radii.lower_left()},
-  };
-  SkRRect clip;
-  clip.setRectRadii(gfx::RectFToSkRect(clipped_bounds), sk_radii);
-  return clip;
+  return gfx::RoundedRectFToSkRRect(clipped_bounds, radii);
 }
 
 ui::NavButtonProvider::FrameButtonDisplayType GetFrameButtonDisplayType(
@@ -177,7 +169,8 @@ void MaybeUpdateCachedFrameButtonImages(
       views::Button::ButtonState button_state =
           static_cast<views::Button::ButtonState>(state);
       views::Button* button = get_button(type);
-      DCHECK_EQ(views::ImageButton::kViewClassName, button->GetClassName());
+      CHECK_EQ(views::ImageButton::kViewClassName, button->GetClassName(),
+               base::NotFatalUntil::M163);
       static_cast<views::ImageButton*>(button)->SetImageModel(
           button_state,
           ui::ImageModel::FromImageSkia(nav_button_provider->GetImage(

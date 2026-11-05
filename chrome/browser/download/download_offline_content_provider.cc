@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -63,6 +64,10 @@ using OfflineItemVisuals = offline_items_collection::OfflineItemVisuals;
 using UpdateDelta = offline_items_collection::UpdateDelta;
 
 namespace {
+
+// When enabled, DownloadOfflineContentProvider::RunGetAllItemsCallback()
+// pre-reserves the OfflineItem vector to avoid repeated reallocations.
+BASE_FEATURE(kPreReserveOfflineItemVector, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Thumbnail size used for generating thumbnails for image files.
 const int kThumbnailSizeInDP = 64;
@@ -182,7 +187,7 @@ DownloadOfflineContentProvider::~DownloadOfflineContentProvider() {
 
 void DownloadOfflineContentProvider::SetSimpleDownloadManagerCoordinator(
     SimpleDownloadManagerCoordinator* manager) {
-  DCHECK(manager);
+  CHECK(manager, base::NotFatalUntil::M161);
   if (manager_ == manager)
     return;
 
@@ -616,13 +621,14 @@ void DownloadOfflineContentProvider::CheckForExternallyRemovedDownloads() {
 }
 
 void DownloadOfflineContentProvider::EnsureDownloadCoreServiceStarted() {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M161);
 
   // Make sure download history is initialized.
   DownloadCoreService* service =
       DownloadCoreServiceFactory::GetForBrowserContext(profile_);
   if (service) {
-    service->InitializeHistory();
+    service->InitializeHistory(DownloadCoreService::DownloadHistoryLoadTrigger::
+                                   kOfflineContentProvider);
   }
 
   CHECK(profile_->GetDownloadManager());
@@ -634,6 +640,9 @@ void DownloadOfflineContentProvider::RunGetAllItemsCallback(
   GetAllDownloads(&all_items);
 
   std::vector<OfflineItem> items;
+  if (base::FeatureList::IsEnabled(kPreReserveOfflineItemVector)) {
+    items.reserve(all_items.size());
+  }
   for (download::DownloadItem* item : all_items) {
     if (!ShouldShowDownloadItem(item))
       continue;

@@ -19,8 +19,6 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageManager;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -39,7 +37,7 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
-import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.TestProfile;
 import org.chromium.chrome.browser.share.ShareContentTypeHelper;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -68,13 +66,15 @@ public final class ShareSheetCoordinatorTest {
     private static final String MOCK_URL = JUnitTestGURLs.EXAMPLE_URL.getSpec();
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
+    private final TestProfile mProfile = TestProfile.createRegular();
+
     @Mock private DomDistillerUrlUtils.Natives mDistillerUrlUtilsJniMock;
     @Mock private ActivityLifecycleDispatcher mLifecycleDispatcher;
     @Mock private BottomSheetController mController;
     @Mock private ShareParams.TargetChosenCallback mTargetChosenCallback;
     @Mock private Supplier<Tab> mTabProvider;
     @Mock private WindowAndroid mWindow;
-    @Mock private Profile mProfile;
     @Mock Tracker mTracker;
     @Mock private SigninAndHistorySyncActivityLauncher mSigninAndHistorySyncActivityLauncher;
     @Mock private ActivityResultTracker mActivityResultTracker;
@@ -85,8 +85,7 @@ public final class ShareSheetCoordinatorTest {
     private ShareParams mParams;
     private ShareSheetCoordinator mShareSheetCoordinator;
     private ShadowPackageManager mShadowPackageManager;
-    private final SettableMonotonicObservableSupplier<ModalDialogManager>
-            mModalDialogManagerSupplier = ObservableSuppliers.createMonotonic(mModalDialogManager);
+    private SettableMonotonicObservableSupplier<ModalDialogManager> mModalDialogManagerSupplier;
 
     @Before
     public void setUp() {
@@ -122,6 +121,7 @@ public final class ShareSheetCoordinatorTest {
                 new ShareParams.Builder(mWindow, "title", MOCK_URL)
                         .setCallback(mTargetChosenCallback)
                         .build();
+        mModalDialogManagerSupplier = ObservableSuppliers.createMonotonic(mModalDialogManager);
         mShareSheetCoordinator =
                 new ShareSheetCoordinator(
                         mController,
@@ -140,7 +140,6 @@ public final class ShareSheetCoordinatorTest {
     }
 
     @Test
-    @SmallTest
     public void disableFirstPartyFeatures() {
         mShareSheetCoordinator.disableFirstPartyFeaturesForTesting();
 
@@ -154,7 +153,6 @@ public final class ShareSheetCoordinatorTest {
     }
 
     @Test
-    @SmallTest
     public void showShareSheet_avoidThirdPartyShareOptionsOnAutomotive() {
         mShadowPackageManager.setSystemFeature(
                 PackageManager.FEATURE_AUTOMOTIVE, /* supported= */ true);
@@ -172,7 +170,6 @@ public final class ShareSheetCoordinatorTest {
     }
 
     @Test
-    @SmallTest
     public void showShareSheet_createThirdPartyShareOptions() {
         mShadowPackageManager.setSystemFeature(
                 PackageManager.FEATURE_AUTOMOTIVE, /* supported= */ false);

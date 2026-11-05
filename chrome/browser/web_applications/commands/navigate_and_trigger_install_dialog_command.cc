@@ -28,6 +28,7 @@
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/browser/web_contents/web_app_url_loader.h"
 #include "components/webapps/common/web_app_id.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
@@ -127,7 +128,7 @@ void NavigateAndTriggerInstallDialogCommand::OnUrlLoaded(
 }
 
 void NavigateAndTriggerInstallDialogCommand::OnInstallabilityChecked(
-    blink::mojom::ManifestPtr opt_manifest,
+    std::optional<blink::Manifest> opt_manifest,
     bool valid_manifest_for_web_app,
     webapps::InstallableStatusCode error_code) {
   GetMutableDebugValue().Set("webapps::InstallableStatusCode",

@@ -17,6 +17,7 @@
 #include "net/base/features.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "url/gurl.h"
 
 using sessions_helper::CheckInitialState;
 using sessions_helper::NavigateTab;
@@ -30,12 +31,7 @@ class SingleClientPollingSyncTest
     : public SyncTest,
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  SingleClientPollingSyncTest() : SyncTest(SINGLE_CLIENT) {
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitAndEnableFeature(
-          syncer::kReplaceSyncPromosWithSignInPromos);
-    }
-  }
+  SingleClientPollingSyncTest() : SyncTest(SINGLE_CLIENT) {}
 
   SingleClientPollingSyncTest(const SingleClientPollingSyncTest&) = delete;
   SingleClientPollingSyncTest& operator=(const SingleClientPollingSyncTest&) =
@@ -48,16 +44,17 @@ class SingleClientPollingSyncTest
   }
 
   GURL GetInitialURL() const override {
-    return chrome::ChromeUINewTabURLAsGURL();
+    // Return a lightweight unsynced WebUI URL so the initial tab is not synced
+    // (unlike the default about:blank). Avoid chrome://newtab/ because loading
+    // the full New Tab Page WebUI and its subframes significantly slows down
+    // test setup and teardown.
+    return GURL(chrome::kChromeUIVersionURL);
   }
 
   void SetUpOnMainThread() override {
     host_resolver()->AddRule("*", "127.0.0.1");
     SyncTest::SetUpOnMainThread();
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(,

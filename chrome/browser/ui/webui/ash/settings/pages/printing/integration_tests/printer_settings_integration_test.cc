@@ -15,7 +15,6 @@
 #include "base/strings/pattern.h"
 #include "base/strings/strcat.h"
 #include "chrome/browser/ash/login/test/session_manager_state_waiter.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -28,6 +27,7 @@
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace ash {
 
@@ -250,7 +250,7 @@ class PrinterSettingsIntegrationTest : public AshIntegrationTest {
         Do([]() {
           ASSERT_FALSE(GlobalBrowserCollection::GetInstance()->IsEmpty());
           chrome::Reload(GetLastActiveBrowserWindowInterfaceWithAnyProfile(),
-                         WindowOpenDisposition::CURRENT_TAB);
+                         ui::mojom::WindowOpenDisposition::kCurrentTab);
         }),
         WaitForHide(kSettingsWebContentsId),
         WaitForShow(kSettingsWebContentsId),

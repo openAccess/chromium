@@ -10,14 +10,6 @@
 
 namespace extensions {
 
-ManifestFeature::ManifestFeature(StaticFeatureData<SimpleFeatureData> data)
-    : SimpleFeature(data) {}
-
-ManifestFeature::ManifestFeature(const SimpleFeatureData* data)
-    : SimpleFeature(data) {}
-
-ManifestFeature::~ManifestFeature() = default;
-
 Feature::Availability ManifestFeature::IsAvailableToContextImpl(
     const Extension* extension,
     mojom::ContextType context,
@@ -25,10 +17,11 @@ Feature::Availability ManifestFeature::IsAvailableToContextImpl(
     Feature::Platform platform,
     int context_id,
     bool check_developer_mode,
-    const ContextData& context_data) const {
+    const ContextData& context_data,
+    DelegatedAvailabilityCheckHandler delegated_handler) const {
   Availability availability = SimpleFeature::IsAvailableToContextImpl(
       extension, context, url, platform, context_id, check_developer_mode,
-      context_data);
+      context_data, delegated_handler);
   if (!availability.is_available())
     return availability;
 

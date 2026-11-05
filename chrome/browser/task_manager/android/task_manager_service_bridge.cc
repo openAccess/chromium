@@ -3,11 +3,11 @@
 // found in the LICENSE file.
 
 #include <optional>
+#include <string>
 
 #include "base/android/jni_string.h"
 #include "base/byte_size.h"
 #include "chrome/browser/task_manager/android/task_manager_observer_android.h"
-#include "chrome/browser/task_manager/internal/android/jni/TaskManagerServiceBridge_jni.h"
 #include "chrome/browser/task_manager/task_manager_interface.h"
 #include "chrome/browser/task_manager/task_manager_observer.h"
 #include "third_party/jni_zero/jni_zero.h"
@@ -15,45 +15,33 @@
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_rep.h"
 
+// Must come after headers that provide symbols used by @JniType.
+#include "chrome/browser/task_manager/internal/android/jni/TaskManagerServiceBridge_jni.h"
+
 namespace task_manager {
 
-static int64_t JNI_TaskManagerServiceBridge_AddObserver(
+static jni_zero::JniUniquePtr<TaskManagerObserverAndroid>
+JNI_TaskManagerServiceBridge_AddObserver(
     JNIEnv* env,
     const jni_zero::JavaRef<jobject>& observer,
     const int32_t refresh_time_millis,
     const int32_t resource_flags) {
-  TaskManagerObserverAndroid* delegate =
-      new TaskManagerObserverAndroid(env, observer, refresh_time_millis,
-                                     static_cast<RefreshType>(resource_flags));
-  return reinterpret_cast<int64_t>(delegate);
+  return jni_zero::MakeUnique<TaskManagerObserverAndroid>(
+      env, observer, refresh_time_millis,
+      static_cast<RefreshType>(resource_flags));
 }
 
-static void JNI_TaskManagerServiceBridge_RemoveObserver(JNIEnv* env,
-                                                        const int64_t ptr) {
-  TaskManagerObserverAndroid* delegate =
-      reinterpret_cast<TaskManagerObserverAndroid*>(ptr);
-  delete delegate;
+static std::u16string JNI_TaskManagerServiceBridge_GetTitle(TaskId task_id) {
+  return TaskManagerInterface::GetTaskManager()->GetTitle(task_id);
 }
 
-static jni_zero::ScopedJavaLocalRef<jstring>
-JNI_TaskManagerServiceBridge_GetTitle(JNIEnv* env, TaskId task_id) {
-  return base::android::ConvertUTF16ToJavaString(
-      env, TaskManagerInterface::GetTaskManager()->GetTitle(task_id));
-}
-
-static jni_zero::ScopedJavaLocalRef<jobject>
-JNI_TaskManagerServiceBridge_GetIcon(JNIEnv* env, TaskId task_id) {
+static SkBitmap JNI_TaskManagerServiceBridge_GetIcon(TaskId task_id) {
   const gfx::ImageSkia& icon =
       TaskManagerInterface::GetTaskManager()->GetIcon(task_id);
-  const SkBitmap bitmap = icon.GetRepresentation(1.0f).GetBitmap();
-  if (bitmap.isNull()) {
-    return nullptr;
-  }
-  return gfx::ConvertToJavaBitmap(bitmap);
+  return icon.GetRepresentation(1.0f).GetBitmap();
 }
 
 static int64_t JNI_TaskManagerServiceBridge_GetMemoryFootprintUsage(
-    JNIEnv* env,
     TaskId task_id) {
   std::optional<base::ByteSize> usage =
       TaskManagerInterface::GetTaskManager()->GetMemoryFootprintUsage(task_id);
@@ -61,21 +49,18 @@ static int64_t JNI_TaskManagerServiceBridge_GetMemoryFootprintUsage(
 }
 
 static double JNI_TaskManagerServiceBridge_GetPlatformIndependentCpuUsage(
-    JNIEnv* env,
     TaskId task_id) {
   return TaskManagerInterface::GetTaskManager()->GetPlatformIndependentCPUUsage(
       task_id);
 }
 
-static int64_t JNI_TaskManagerServiceBridge_GetNetworkUsage(JNIEnv* env,
-                                                            TaskId task_id) {
+static int64_t JNI_TaskManagerServiceBridge_GetNetworkUsage(TaskId task_id) {
   return TaskManagerInterface::GetTaskManager()
       ->GetNetworkUsage(task_id)
       .InBytes();
 }
 
-static int64_t JNI_TaskManagerServiceBridge_GetProcessId(JNIEnv* env,
-                                                         TaskId task_id) {
+static int64_t JNI_TaskManagerServiceBridge_GetProcessId(TaskId task_id) {
   return TaskManagerInterface::GetTaskManager()->GetProcessId(task_id);
 }
 
@@ -89,12 +74,16 @@ JNI_TaskManagerServiceBridge_GetGpuMemoryUsage(JNIEnv* env, TaskId task_id) {
   return Java_GpuMemoryUsage_Constructor(env, bytes, has_duplicates);
 }
 
-static bool JNI_TaskManagerServiceBridge_IsTaskKillable(JNIEnv* env,
-                                                        TaskId task_id) {
+static bool JNI_TaskManagerServiceBridge_IsTaskKillable(TaskId task_id) {
   return TaskManagerInterface::GetTaskManager()->IsTaskKillable(task_id);
 }
 
-static void JNI_TaskManagerServiceBridge_KillTask(JNIEnv* env, TaskId task_id) {
+static int32_t JNI_TaskManagerServiceBridge_GetType(TaskId task_id) {
+  return static_cast<int32_t>(
+      TaskManagerInterface::GetTaskManager()->GetType(task_id));
+}
+
+static void JNI_TaskManagerServiceBridge_KillTask(TaskId task_id) {
   TaskManagerInterface::GetTaskManager()->KillTask(task_id);
 }
 

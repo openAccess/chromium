@@ -8,6 +8,7 @@
 
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
+#include "partition_alloc/debug_data_on_stack.h"
 #include "partition_alloc/internal/partition_root_internal.h"
 #include "partition_alloc/internal/thread_cache_internal.h"
 #include "partition_alloc/partition_alloc_base/logging.h"
@@ -53,6 +54,20 @@ std::atomic_bool suppress_corruption_detected_crash = false;
 #endif  // PA_BUILDFLAG(IS_IOS)
 std::atomic<void (*)(uintptr_t)> corruption_detected_fn = nullptr;
 }  // namespace
+
+std::atomic<uint32_t> InSlotMetadata::max_ref_count_{0};
+
+// static
+PA_NOINLINE void InSlotMetadata::UpdateMaxRefCountSlow(uint32_t ref_count) {
+  uint32_t current_max = max_ref_count_.load(std::memory_order_relaxed);
+  while (ref_count > current_max) [[unlikely]] {
+    if (max_ref_count_.compare_exchange_weak(current_max, ref_count,
+                                             std::memory_order_relaxed,
+                                             std::memory_order_relaxed)) {
+      break;
+    }
+  }
+}
 
 // static
 void InSlotMetadata::SetCorruptionDetectedFn(void (*fn)(uintptr_t)) {
@@ -122,7 +137,7 @@ InSlotMetadata::DoubleFreeOrCorruptionDetected(InSlotMetadata::CountType count,
 
   auto* thread_cache = root->GetThreadCache();
   if (ThreadCache::IsValid(thread_cache)) {
-    size_t bucket_index = slot_span->bucket - root->buckets_;
+    size_t bucket_index = slot_span->bucket - root->buckets_.data();
     if (thread_cache->IsInFreelist(slot_start, bucket_index, position)) {
       DoubleFreeDetected(position);
     }

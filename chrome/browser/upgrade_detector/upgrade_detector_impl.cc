@@ -16,7 +16,6 @@
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
-#include "base/features.h"
 #include "base/functional/bind.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
@@ -117,7 +116,10 @@ UpgradeDetectorImpl::UpgradeDetectorImpl(const base::Clock* clock,
       simulating_outdated_(SimulatingOutdated()),
       is_testing_(simulating_outdated_ || IsTesting()),
       build_date_(base::GetBuildTime()) {
-  if (base::features::IsReducePPMsEnabled()) {
+  // A BEST_EFFORT task runner has been measured as beneficial for performance.
+  // Use the default task runner in unit tests where BrowserThread::UI doesn't
+  // exist.
+  if (content::BrowserThread::IsThreadInitialized(content::BrowserThread::UI)) {
     upgrade_notification_timer_.SetTaskRunner(
         content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT}));
   }
@@ -146,7 +148,7 @@ void UpgradeDetectorImpl::StartUpgradeNotificationTimer() {
 
 void UpgradeDetectorImpl::CalculateThresholds() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!upgrade_detected_time().is_null());
+  CHECK(!upgrade_detected_time().is_null(), base::NotFatalUntil::M163);
 
   DoCalculateThresholds();
 
@@ -155,7 +157,7 @@ void UpgradeDetectorImpl::CalculateThresholds() {
   for (std::array<base::TimeDelta, kNumStages>::iterator scan =
            stages_.begin() + 1;
        scan != stages_.end(); ++scan) {
-    DCHECK_GE(*(scan - 1), *scan);
+    CHECK_GE(*(scan - 1), *scan, base::NotFatalUntil::M163);
   }
 #endif  // DCHECK_IS_ON()
 }
@@ -192,7 +194,7 @@ void UpgradeDetectorImpl::DoCalculateThresholds() {
     const RelaunchWindow effective_relaunch_window =
         relaunch_window.value_or(GetDefaultRelaunchWindow());
 
-    DCHECK(!upgrade_detected_time().is_null());
+    CHECK(!upgrade_detected_time().is_null(), base::NotFatalUntil::M163);
     const base::Time adjusted_deadline =
         AdjustDeadline(upgrade_detected_time() + effective_notification_period,
                        effective_relaunch_window);
@@ -359,7 +361,7 @@ void UpgradeDetectorImpl::NotifyOnUpgradeWithTimePassed(
 base::TimeDelta UpgradeDetectorImpl::GetThresholdForLevel(
     UpgradeNotificationAnnoyanceLevel level) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!stages_[0].is_zero());
+  CHECK(!stages_[0].is_zero(), base::NotFatalUntil::M163);
   return stages_[AnnoyanceLevelToStagesIndex(level)];
 }
 
@@ -383,7 +385,7 @@ UpgradeDetectorImpl::AnnoyanceLevelToStagesIndex(
     case UPGRADE_ANNOYANCE_CRITICAL:
       break;  // Invalid input.
   }
-  DCHECK_EQ(level, UPGRADE_ANNOYANCE_HIGH);
+  CHECK_EQ(level, UPGRADE_ANNOYANCE_HIGH, base::NotFatalUntil::M163);
   return kStagesIndexHigh;
 }
 
@@ -399,7 +401,7 @@ UpgradeDetectorImpl::StageIndexToAnnoyanceLevel(size_t index) {
           UpgradeDetector::UPGRADE_ANNOYANCE_VERY_LOW,
       });
   static_assert(std::size(kIndexToLevel) == kNumStages, "mismatch");
-  DCHECK_LT(index, std::size(kIndexToLevel));
+  CHECK_LT(index, std::size(kIndexToLevel), base::NotFatalUntil::M163);
   return kIndexToLevel[index];
 }
 

@@ -57,6 +57,14 @@ class MockInputDispositionHandler : public input::InputDispositionHandler {
     on_touch_event_ack_closure_ = std::move(closure);
   }
 
+  void set_on_gesture_event_ack_closure(base::OnceClosure closure) {
+    on_gesture_event_ack_closure_ = std::move(closure);
+  }
+
+  void set_on_wheel_event_ack_closure(base::OnceClosure closure) {
+    on_wheel_event_ack_closure_ = std::move(closure);
+  }
+
   blink::mojom::InputEventResultState ack_state() const { return ack_state_; }
 
   blink::mojom::InputEventResultState acked_wheel_event_state() const {
@@ -90,7 +98,7 @@ class MockInputDispositionHandler : public input::InputDispositionHandler {
                        blink::mojom::InputEventResultSource ack_source,
                        blink::mojom::InputEventResultState ack_result);
 
-  raw_ptr<input::InputRouter, DanglingUntriaged> input_router_;
+  raw_ptr<input::InputRouter> input_router_;
 
   size_t ack_count_;
   blink::WebInputEvent::Type ack_event_type_;
@@ -105,6 +113,8 @@ class MockInputDispositionHandler : public input::InputDispositionHandler {
   std::unique_ptr<input::GestureEventWithLatencyInfo> gesture_followup_event_;
   std::unique_ptr<input::TouchEventWithLatencyInfo> touch_followup_event_;
   base::OnceClosure on_touch_event_ack_closure_;
+  base::OnceClosure on_gesture_event_ack_closure_;
+  base::OnceClosure on_wheel_event_ack_closure_;
 };
 
 }  // namespace content

@@ -727,13 +727,9 @@ scoped_refptr<VideoFrame> AlignedDataHelper::CreateVideoFrameFromVideoFrameData(
       LOG(ERROR) << "Failed to create a mappable shared image.";
       return nullptr;
     }
-    auto video_frame = media::VideoFrame::WrapMappableSharedImage(
+    return media::VideoFrame::WrapMappableSharedImage(
         std::move(shared_image), test_sii_->GenVerifiedSyncToken(),
         base::NullCallback(), visible_rect_, natural_size_, frame_timestamp);
-    if (video_frame) {
-      video_frame->set_color_space(color_space);
-    }
-    return video_frame;
   } else {
     const auto& shmem_region = video_frame_data.shmem_region;
     auto dup_region = shmem_region.Duplicate();
@@ -844,9 +840,9 @@ scoped_refptr<const VideoFrame> RawDataHelper::GetFrame(size_t index) const {
     // The data is never modified but WrapExternalYuvDataWithLayout() only
     // accepts non-const span.
     // TODO(crbug.com/40285824): spanify this usage.
-    frame_data[i] =
-        UNSAFE_TODO(base::span(const_cast<uint8_t*>(src_frame.plane_addrs[i]),
-                               video_->FrameLayout().planes()[i].size));
+    frame_data[i] = UNSAFE_TODO(
+        base::span(const_cast<uint8_t*>(src_frame.plane_addrs[i].get()),
+                   video_->FrameLayout().planes()[i].size));
   }
 
   scoped_refptr<VideoFrame> video_frame =

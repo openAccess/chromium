@@ -12,10 +12,13 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/process_manager.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_handlers/icons_handler.h"
 #include "extensions/grit/extensions_browser_resources.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/browser_window_util.h"
@@ -87,7 +90,7 @@ void ExtensionTask::Activate() {
   // when it works on Android.
   GURL url = extensions::util::GetExtensionsPageUrl(extension->id());
   NavigateParams params(browser, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   Navigate(&params);
 #else
   chrome::ShowExtensions(browser, extension->id());
@@ -114,7 +117,7 @@ int ExtensionTask::GetKeepaliveCount() const {
 }
 
 void ExtensionTask::OnExtensionIconImageChanged(extensions::IconImage* image) {
-  DCHECK_EQ(extension_icon_.get(), image);
+  CHECK_EQ(extension_icon_.get(), image, base::NotFatalUntil::M162);
 
   if (!image->image_skia().isNull())
     set_icon(image->image_skia());
@@ -124,7 +127,7 @@ std::u16string ExtensionTask::GetExtensionTitle(
     content::WebContents* web_contents,
     const extensions::Extension* extension,
     extensions::mojom::ViewType view_type) const {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
 
   std::u16string title =
       extension ? base::UTF8ToUTF16(extension->name())

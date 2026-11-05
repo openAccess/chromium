@@ -6,6 +6,7 @@
 
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "chromeos/ash/components/dbus/cryptohome/UserDataAuth.pb.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/dbus/userdataauth/cryptohome_misc_client.h"
 #include "chromeos/dbus/power/power_manager_client.h"
@@ -102,6 +103,10 @@ SessionTerminationManager::GetClosureNotifyingAppTerminating() {
                         weak_factory_.GetWeakPtr());
 }
 
+bool SessionTerminationManager::IsAppTerminating() const {
+  return is_app_terminating_;
+}
+
 // static
 bool SessionTerminationManager::IsSendingStopRequestToSessionManager() {
   return g_send_stop_request_to_session_manager;
@@ -149,6 +154,7 @@ void SessionTerminationManager::RebootIfNecessaryProcessReply(
 }
 
 void SessionTerminationManager::OnAppTerminating() {
+  is_app_terminating_ = true;
   observers_.Notify(&Observer::OnAppTerminating);
 }
 

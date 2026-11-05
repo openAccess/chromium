@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/callback_list.h"
@@ -25,6 +26,11 @@ class WebContents;
 namespace actions {
 class ActionItem;
 }
+
+namespace tabs {
+class TabInterface;
+}
+
 class BrowserWindowInterface;
 class WebUIToolbarControlDelegate;
 
@@ -57,15 +63,20 @@ class WebUIPageActionControl {
   // Asks the active controller to update visibility of page actions.
   void SetShouldHidePageActions(bool should_hide_page_actions);
 
-  // Returns the current state of all visible page actions for WebUI.
-  std::vector<toolbar_ui_api::mojom::PageActionStatePtr> GetPageActionStates();
+  // Re-resolves and pushes the state of all page actions. Needed because
+  // `PageActionState` carries resolved `SkColor`s (the color overrides and the
+  // blended `kCascadingAccent` icon color), which otherwise go stale on a
+  // same-tab theme change. Mirrors `PageActionView::OnThemeChanged()`.
+  void OnThemeChanged();
+
+  // Returns the current state of all visible page actions for WebUI. When
+  // `commit_to_cache` is true, updates each delegate's cached `old_state_`.
+  std::vector<toolbar_ui_api::mojom::PageActionStatePtr> GetPageActionStates(
+      bool commit_to_cache = false);
 
   // Returns the PageActionViewInterface for the given action id.
   PageActionViewInterface* GetPageActionViewInterface(
       actions::ActionId action_id);
-
-  // Handles a pointer down on a page action from WebUI.
-  void OnPageActionPointerDown(toolbar_ui_api::mojom::PageActionId action_id);
 
   // Handles a click on a page action from WebUI.
   void OnPageActionClick(
@@ -77,10 +88,9 @@ class WebUIPageActionControl {
   // Handles chip showing changed notification from WebUI.
   void OnPageActionChipShowingChanged(
       toolbar_ui_api::mojom::PageActionId action_id,
+      bool is_showing,
       toolbar_ui_api::mojom::ToolbarUIService::
           OnPageActionChipShowingChangedCallback callback);
-
-  void SetSuppressionThresholdForTesting(base::TimeDelta threshold);
 
   // Helpers accessed by WebUIPageActionView:
   BrowserWindowInterface* GetBrowser();
@@ -113,6 +123,18 @@ class WebUIPageActionControl {
 
   void OnControllerDestroying(page_actions::PageActionController& controller);
 
+  // Advances `tab_switch_token_` and updates cached URL specs if `web_contents`
+  // has changed either its visible URL (e.g. pending navigation start) or its
+  // last committed URL. Returns true if the token advanced.
+  bool MaybeAdvanceTabSwitchTokenForUrlChange(
+      content::WebContents& web_contents);
+
+  // Checks whether the active tab's URL changed before a delegate recomputes
+  // its `PageActionState` in response to a model mutation, advancing
+  // `tab_switch_token_` so navigation-driven icon updates do not push a stale
+  // token.
+  void MaybeAdvanceTabSwitchTokenForActiveTab();
+
   // Safe because the Browser window (which owns the ActionItem tree) owns
   // WebUILocationBar, which owns this control.
   const raw_ptr<actions::ActionItem> root_action_item_;
@@ -121,15 +143,31 @@ class WebUIPageActionControl {
   // WebUILocationBar (which owns this control).
   raw_ptr<WebUIToolbarControlDelegate> webui_delegate_ = nullptr;
 
-  // Pointer to the active tab's controller. Updated when the active tab
-  // changes. The controller is owned by TabFeatures, which is destroyed when
-  // the tab is closed. We reset/update this pointer in UpdateController().
+  // Pointers to the active tab and its controller. Updated when the active tab
+  // changes. `active_controller_` is owned by TabFeatures, which notifies
+  // `OnControllerDestroying()` before either TabFeatures or TabInterface is
+  // destroyed, resetting both pointers via `UpdateController(nullptr)`.
+  raw_ptr<tabs::TabInterface> active_tab_ = nullptr;
   raw_ptr<page_actions::PageActionController> active_controller_ = nullptr;
   base::CallbackListSubscription active_controller_subscription_;
 
   std::map<actions::ActionId, std::unique_ptr<WebUIPageActionDelegate>>
       delegates_;
   std::map<actions::ActionId, std::unique_ptr<WebUIPageActionView>> views_;
+
+  // Incremented on active controller (tab) changes and navigations. Used to
+  // track active tab changes and propagate a token to WebUI to suppress
+  // tab-switching icon animations and synchronize chip state.
+  // TODO(crbug.com/581441485): Rename tab_switch_token to tab_update_token
+  // across C++, Mojom, and TypeScript.
+  uint32_t tab_switch_token_ = 0;
+
+  // The visible and last-committed URL specs of the active tab's WebContents,
+  // used to detect both pending navigation starts (e.g. BookmarkTabHelper
+  // updating star state on DidStartNavigation via GetVisibleURL()) and
+  // navigation commits so page-load icon changes suppress animations.
+  std::string last_visible_url_spec_;
+  std::string last_committed_url_spec_;
 };
 
 }  // namespace page_actions

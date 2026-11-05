@@ -96,7 +96,7 @@ class MockWalletReminderNoticeManager : public WalletReminderNoticeManager {
       : WalletReminderNoticeManager(client) {}
   ~MockWalletReminderNoticeManager() override = default;
 
-  MOCK_METHOD(void, ShowWalletReminderNotice, (), (override));
+  MOCK_METHOD(void, ShowWalletReminderNotice, (FlowType), (override));
 };
 
 class PaymentsFormDataImporterTest
@@ -122,7 +122,8 @@ class PaymentsFormDataImporterTest
     payments_client().set_virtual_card_enrollment_manager(
         std::move(virtual_card_enrollment_manager));
     auto credit_card_save_manager =
-        std::make_unique<MockCreditCardSaveManager>(&autofill_client());
+        std::make_unique<testing::NiceMock<MockCreditCardSaveManager>>(
+            &autofill_client());
     test_api(form_data_importer().GetPaymentsFormDataImporter())
         .set_credit_card_save_manager(std::move(credit_card_save_manager));
     auto wallet_reminder_notice_manager =
@@ -226,7 +227,6 @@ class PaymentsFormDataImporterTest
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_{features::kAutofillFixCvcImport};
   base::test::TaskEnvironment task_environment_;
   test::AutofillUnitTestEnvironment autofill_test_environment_;
   syncer::TestSyncService sync_service_;
@@ -273,9 +273,9 @@ TEST_F(PaymentsFormDataImporterTest, ExtractCreditCard_InvalidCardNumber) {
 }
 
 // Tests that FormFieldData::user_input is preferred over FormFieldData::value
-// for credit card numbers.
+// for credit card numbers and CVCs.
 // Using FormFieldData::user_input enables showing the save-card prompt for
-// sites which use JavaScript to set the credit-card <input> to '***'.
+// sites which use JavaScript to set the credit-card or CVC <input> to '***'.
 TEST_F(PaymentsFormDataImporterTest, ExtractCreditCard_PreferUserInput) {
   FormData form = CreateFullCreditCardForm("Jim Johansen", "••••••••••••••••",
                                            "02", "2999");
@@ -1439,6 +1439,106 @@ TEST_F(PaymentsFormDataImporterTest, DuplicateMaskedServerCard) {
   ASSERT_TRUE(extracted_data.extracted_credit_card);
 }
 
+// Tests that when an extracted card matches an existing masked server card that
+// is missing a cardholder name, the valid cardholder name extracted from the
+// form is copied onto the returned card while the stored server card remains
+// unchanged.
+TEST_F(PaymentsFormDataImporterTest,
+       DuplicateMaskedServerCard_MissingCardholderName_CopiesValidName) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableCardholderNameFixFlow);
+
+  CreditCard server_card(CreditCard::RecordType::kMaskedServerCard, "a123");
+  test::SetCreditCardInfo(&server_card, /*name_on_card=*/"", "1881" /* Visa */,
+                          "01", "2999", "");
+  server_card.SetNetworkForMaskedCard(kVisaCard);
+  payments_data_manager().AddServerCreditCard(server_card);
+
+  std::unique_ptr<FormStructure> form_structure =
+      ConstructFormStructureFromFormData(CreateFullCreditCardForm(
+          "John Dillinger", "4012888888881881", "01", "2999"));
+  std::optional<CreditCard> extracted_credit_card =
+      ExtractCreditCard(*form_structure);
+  ASSERT_TRUE(extracted_credit_card);
+  EXPECT_EQ(extracted_credit_card->record_type(),
+            CreditCard::RecordType::kMaskedServerCard);
+  EXPECT_EQ(extracted_credit_card->GetInfo(CREDIT_CARD_NAME_FULL, kLocale),
+            u"John Dillinger");
+  EXPECT_FALSE(payments_data_manager().GetCreditCards()[0]->HasNameOnCard());
+}
+
+// Tests that when an extracted card matches an existing masked server card that
+// already has a cardholder name, the existing name is preserved and not
+// overwritten by a different name from the form.
+TEST_F(PaymentsFormDataImporterTest,
+       DuplicateMaskedServerCard_ExistingCardholderName_DoesNotOverwrite) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableCardholderNameFixFlow);
+
+  CreditCard server_card(CreditCard::RecordType::kMaskedServerCard, "a123");
+  test::SetCreditCardInfo(&server_card, "Clyde Barrow", "1881" /* Visa */, "01",
+                          "2999", "");
+  server_card.SetNetworkForMaskedCard(kVisaCard);
+  payments_data_manager().AddServerCreditCard(server_card);
+
+  std::unique_ptr<FormStructure> form_structure =
+      ConstructFormStructureFromFormData(CreateFullCreditCardForm(
+          "John Dillinger", "4012888888881881", "01", "2999"));
+  std::optional<CreditCard> extracted_credit_card =
+      ExtractCreditCard(*form_structure);
+  ASSERT_TRUE(extracted_credit_card);
+  EXPECT_EQ(extracted_credit_card->GetInfo(CREDIT_CARD_NAME_FULL, kLocale),
+            u"Clyde Barrow");
+}
+
+// Tests that an invalid cardholder name (e.g. containing digits or prohibited
+// punctuation) is not copied onto a matched server card that is missing a
+// cardholder name.
+TEST_F(PaymentsFormDataImporterTest,
+       DuplicateMaskedServerCard_MissingCardholderName_IgnoresInvalidName) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableCardholderNameFixFlow);
+
+  CreditCard server_card(CreditCard::RecordType::kMaskedServerCard, "a123");
+  test::SetCreditCardInfo(&server_card, /*name_on_card=*/"", "1881" /* Visa */,
+                          "01", "2999", "");
+  server_card.SetNetworkForMaskedCard(kVisaCard);
+  payments_data_manager().AddServerCreditCard(server_card);
+
+  for (const char* invalid_name : {"John 123", "John@Doe", "John(Doe)"}) {
+    std::unique_ptr<FormStructure> form_structure =
+        ConstructFormStructureFromFormData(CreateFullCreditCardForm(
+            invalid_name, "4012888888881881", "01", "2999"));
+    std::optional<CreditCard> extracted_credit_card =
+        ExtractCreditCard(*form_structure);
+    ASSERT_TRUE(extracted_credit_card);
+    EXPECT_FALSE(extracted_credit_card->HasNameOnCard());
+  }
+}
+
+// Tests that when `kAutofillEnableCardholderNameFixFlow` is disabled, a
+// cardholder name from the form is not copied onto a matched server card.
+TEST_F(PaymentsFormDataImporterTest,
+       DuplicateMaskedServerCard_MissingCardholderName_FeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kAutofillEnableCardholderNameFixFlow);
+
+  CreditCard server_card(CreditCard::RecordType::kMaskedServerCard, "a123");
+  test::SetCreditCardInfo(&server_card, /*name_on_card=*/"", "1881" /* Visa */,
+                          "01", "2999", "");
+  server_card.SetNetworkForMaskedCard(kVisaCard);
+  payments_data_manager().AddServerCreditCard(server_card);
+
+  std::unique_ptr<FormStructure> form_structure =
+      ConstructFormStructureFromFormData(CreateFullCreditCardForm(
+          "John Dillinger", "4012888888881881", "01", "2999"));
+  std::optional<CreditCard> extracted_credit_card =
+      ExtractCreditCard(*form_structure);
+  ASSERT_TRUE(extracted_credit_card);
+  EXPECT_FALSE(extracted_credit_card->HasNameOnCard());
+}
+
 // Tests that a credit card form that is hidden after receiving input still
 // imports the card.
 TEST_F(PaymentsFormDataImporterTest,
@@ -1948,7 +2048,9 @@ TEST_F(
 
   EXPECT_CALL(reauth_manager(), ShouldOfferOptin).WillOnce(Return(false));
   EXPECT_CALL(reauth_manager(), StartOptInFlow).Times(0);
-  EXPECT_CALL(wallet_reminder_notice_manager(), ShowWalletReminderNotice)
+  EXPECT_CALL(wallet_reminder_notice_manager(),
+              ShowWalletReminderNotice(
+                  WalletReminderNoticeManager::FlowType::kChromeDownstream))
       .Times(1);
 
   EXPECT_FALSE(
@@ -1999,7 +2101,9 @@ TEST_F(PaymentsFormDataImporterTest,
   std::unique_ptr<FormStructure> form_structure =
       ConstructFormStructureFromFormData(form);
 
-  EXPECT_CALL(wallet_reminder_notice_manager(), ShowWalletReminderNotice)
+  EXPECT_CALL(wallet_reminder_notice_manager(),
+              ShowWalletReminderNotice(
+                  WalletReminderNoticeManager::FlowType::kChromeDownstream))
       .Times(1);
 
   EXPECT_FALSE(
@@ -2124,7 +2228,9 @@ TEST_F(PaymentsFormDataImporterTest,
 
   EXPECT_CALL(credit_card_save_manager(), ProceedWithSavingIfApplicable)
       .WillOnce(Return(false));
-  EXPECT_CALL(wallet_reminder_notice_manager(), ShowWalletReminderNotice)
+  EXPECT_CALL(wallet_reminder_notice_manager(),
+              ShowWalletReminderNotice(
+                  WalletReminderNoticeManager::FlowType::kChromeDownstream))
       .Times(1);
 
   EXPECT_FALSE(

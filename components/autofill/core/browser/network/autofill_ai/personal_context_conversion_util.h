@@ -8,11 +8,15 @@
 #include <optional>
 
 #include "components/personal_context/proto/features/common_data.pb.h"
+#include "url/gurl.h"
 
 namespace autofill {
 
 class EntityInstance;
 class EntityType;
+
+// Returns the platform- and form-factor-appropriate URL for `gmail`.
+GURL GetGmailSourceUrl(const personal_context::proto::GmailReference& gmail);
 
 // Converts an Autofill AI EntityType to a Personal Context proto EntityType.
 personal_context::proto::EntityType
@@ -26,6 +30,10 @@ std::optional<EntityType> ToEntityType(
 // AI EntityType.
 std::optional<EntityType> ToEntityType(
     personal_context::proto::SensitivePiiPresence::Type presence_type);
+
+// Masks the sensitive SPII fields content in `entity`, keeping only a partial
+// suffix of length min(4, ceil(string.length() / 4)).
+void MaskSpiiEntityFields(personal_context::proto::Entity& entity);
 
 // Converts a generic `personal_context::proto::Entity` to an `EntityInstance`.
 // If `is_masked` is true, sensitive attributes (passport, drivers license, and

@@ -13,7 +13,7 @@
 #import "ios/chrome/browser/search_engine_choice/test/search_engine_choice_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/search_engine_choice/ui/search_engine_choice_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_app_interface.h"
-#import "ios/chrome/common/ui/promo_style/constants.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_constants.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
@@ -28,7 +28,6 @@
 @implementation SearchEngineChoiceFirstRunTaiyakiTestCase
 
 - (void)setUp {
-  [[self class] testForStartup];
   [super setUp];
   // Make sure the search engine has been reset, to avoid any issues if it was
   // not by a previous test.
@@ -71,7 +70,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackSecondaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
   // Check that the choice screen is shown
   [SearchEngineChoiceEarlGreyUI verifySearchEngineChoiceScreenIsDisplayed];

@@ -464,6 +464,75 @@ suite('SelectionController', () => {
           assertEquals(0, actualFocusOffset);
         });
 
+    test(
+        'backward selection with anchor on ancestor element is normalized',
+        async () => {
+          for (let i = 0; i < textNodes.length; i++) {
+            const node = getNodeAt(i);
+            nodeStore.setDomNode(node.node, node.id);
+          }
+
+          // Drag backward from the gap between node 1 and node 2 into the
+          // middle of node 1. The browser reports the anchor on the parent
+          // element, which contains the focus text node.
+          const node1 = getNodeAt(1);
+          const parent = node1.node.parentNode;
+          assertTrue(!!parent);
+          selection.setBaseAndExtent(parent, 2, node1.node, 5);
+          selectionController.onSelectionChange(selection);
+
+          // The anchor is the end of the selection, so it should resolve to the
+          // end of node 1, not the start of node 2.
+          await onSelectionChanged();
+          assertEquals(node1.id, actualAnchorId);
+          assertEquals(node1.text.length, actualAnchorOffset);
+          assertEquals(node1.id, actualFocusId);
+          assertEquals(5, actualFocusOffset);
+        });
+
+    test(
+        'backward selection with focus on ancestor element is normalized',
+        async () => {
+          for (let i = 0; i < textNodes.length; i++) {
+            const node = getNodeAt(i);
+            nodeStore.setDomNode(node.node, node.id);
+          }
+
+          // Drag backward from the middle of node 2 to the gap between node 0
+          // and node 1. The browser reports the focus on the parent element,
+          // which contains the anchor text node.
+          const node1 = getNodeAt(1);
+          const node2 = getNodeAt(2);
+          const parent = node2.node.parentNode;
+          assertTrue(!!parent);
+          selection.setBaseAndExtent(node2.node, 3, parent, 1);
+          selectionController.onSelectionChange(selection);
+
+          // The focus is the start of the selection, so it should resolve to
+          // the start of node 1, not leak backward into the end of node 0.
+          await onSelectionChanged();
+          assertEquals(node2.id, actualAnchorId);
+          assertEquals(3, actualAnchorOffset);
+          assertEquals(node1.id, actualFocusId);
+          assertEquals(0, actualFocusOffset);
+        });
+
+    test('current selection start with anchor on ancestor element', () => {
+      const node1 = getNodeAt(1);
+      nodeStore.setDomNode(node1.node, node1.id);
+
+      // Backward drag with the anchor on the parent element after node 1.
+      const parent = node1.node.parentNode;
+      assertTrue(!!parent);
+      selection.setBaseAndExtent(parent, 2, node1.node, 5);
+      selectionController.onSelectionChange(selection);
+      const selectionStart = selectionController.getCurrentSelectionStart();
+
+      assertTrue(!!selectionStart);
+      assertEquals(node1.node, selectionStart.node);
+      assertEquals(5, selectionStart.offset);
+    });
+
     test('selection in node with axNodeOffset', async () => {
       const node = getNodeAt(1);
       const axNodeOffset = 10;
@@ -613,51 +682,76 @@ suite('SelectionController', () => {
             contentBrowserProxy.distillationTypeReadability;
       });
 
-      test('does nothing when node content is missing', () => {
+      test('selects nodes with AX IDs in readability', () => {
         const expectedAnchorOffset = 2;
         const expectedFocusOffset = 10;
+        const node = getNodeAt(0);
+        nodeStore.setDomNode(node.node, node.id);
+
         selectNodesInMainPanel(
-            100, expectedAnchorOffset, 101, expectedFocusOffset);
-        const prefix =
-            'Being home alone is like being home with no, with no people. ';
-        const content = 'I was alone cause there were no people at all.';
-        contentBrowserProxy.prefixText = prefix;
-        // Simulate one of the nodes not having content.
-        contentBrowserProxy.textContentMap = {100: content};
-        const p = document.createElement('p');
-        p.appendChild(document.createTextNode(prefix));
-        p.appendChild(document.createTextNode(content));
-        document.body.appendChild(p);
+            node.id, expectedAnchorOffset, node.id, expectedFocusOffset);
+        selectionController.updateSelection(selection);
 
-        selectionController.updateSelection(selection, document.body);
-
-        assertFalse(!!selection.anchorNode);
-        assertFalse(!!selection.focusNode);
+        assertEquals(node.node, selection.anchorNode);
+        assertEquals(node.node, selection.focusNode);
+        assertEquals(expectedAnchorOffset, selection.anchorOffset);
+        assertEquals(expectedFocusOffset, selection.focusOffset);
+        assertEquals(
+            1, contentBrowserProxy.getCallCount('attemptLogEarlySelection'));
+        assertFalse(
+            contentBrowserProxy.getArgs('attemptLogEarlySelection')[0]);
       });
 
-      test('does nothing when ids are unknown', () => {
+      test('does nothing when ids are unknown in readability', () => {
         selectNodesInMainPanel(0, 2, 0, 10);
-        selectionController.updateSelection(selection, document.body);
+        selectionController.updateSelection(selection);
 
         assertFalse(!!selection.anchorNode);
         assertFalse(!!selection.focusNode);
       });
+
+      test(
+          'does nothing when one node is missing in multi-node selection',
+          () => {
+            const expectedAnchorOffset = 2;
+            const expectedFocusOffset = 10;
+            const startId = 100;
+            const endId = 101;
+            selectNodesInMainPanel(
+                startId, expectedAnchorOffset, endId, expectedFocusOffset);
+            const prefix =
+                'Being home alone is like being home with no, with no people. ';
+            const content = 'I was alone cause there were no people at all.';
+            const p = document.createElement('p');
+            p.appendChild(document.createTextNode(prefix));
+            const startNode = document.createTextNode(content);
+            p.appendChild(startNode);
+            // Simulate only one of the nodes being in nodeStore.
+            nodeStore.setDomNode(startNode, startId);
+            document.body.appendChild(p);
+
+            selectionController.updateSelection(selection);
+
+            assertFalse(!!selection.anchorNode);
+            assertFalse(!!selection.focusNode);
+          });
 
       test('selects correct text in one node', () => {
         const expectedAnchorOffset = 2;
         const expectedFocusOffset = 10;
+        const startId = 100;
         selectNodesInMainPanel(
-            100, expectedAnchorOffset, 100, expectedFocusOffset);
+            startId, expectedAnchorOffset, startId, expectedFocusOffset);
         const prefix = 'My folks were small-time grifters. ';
         const content = 'Yeah and counterfeiters too';
-        contentBrowserProxy.prefixText = prefix;
-        contentBrowserProxy.textContentMap = {100: content};
         const p = document.createElement('p');
         p.appendChild(document.createTextNode(prefix));
-        p.appendChild(document.createTextNode(content));
+        const contentNode = document.createTextNode(content);
+        p.appendChild(contentNode);
+        nodeStore.setDomNode(contentNode, startId);
         document.body.appendChild(p);
 
-        selectionController.updateSelection(selection, document.body);
+        selectionController.updateSelection(selection);
 
         assertEquals(content, selection.anchorNode!.textContent);
         assertEquals(content, selection.focusNode!.textContent);
@@ -670,15 +764,16 @@ suite('SelectionController', () => {
         const content = 'hello hello hello hello hello hello';
         const expectedAnchorOffset = 24;
         const expectedFocusOffset = 29;
+        const startId = 100;
         selectNodesInMainPanel(
-            100, expectedAnchorOffset, 100, expectedFocusOffset);
-        contentBrowserProxy.prefixText = '';
-        contentBrowserProxy.textContentMap = {100: content};
+            startId, expectedAnchorOffset, startId, expectedFocusOffset);
         const p = document.createElement('p');
-        p.appendChild(document.createTextNode(content));
+        const contentNode = document.createTextNode(content);
+        p.appendChild(contentNode);
+        nodeStore.setDomNode(contentNode, startId);
         document.body.appendChild(p);
 
-        selectionController.updateSelection(selection, document.body);
+        selectionController.updateSelection(selection);
 
         // The offsets should still be the same as before.
         assertEquals(content, selection.anchorNode!.textContent);
@@ -690,22 +785,28 @@ suite('SelectionController', () => {
       test('selects correct text in one node with different offsets', () => {
         const expectedAnchorOffset = 2;
         const expectedFocusOffset = 10;
+        const axNodeOffset = 4;
+        const startId = 100;
         selectNodesInMainPanel(
-            100, expectedAnchorOffset, 100, expectedFocusOffset);
+            startId, expectedAnchorOffset + axNodeOffset, startId,
+            expectedFocusOffset + axNodeOffset);
         const prefix = 'My folks were small-time grifters. ';
         const content = 'Yeah and counterfeiters too';
         const expectedSelection =
             content.substring(expectedAnchorOffset, expectedFocusOffset);
-        contentBrowserProxy.prefixText = prefix;
-        contentBrowserProxy.textContentMap = {100: content};
         const p = document.createElement('p');
         p.appendChild(document.createTextNode(prefix));
-        p.appendChild(document.createTextNode('    ' + content));
+        const contentNode = document.createTextNode(content);
+        p.appendChild(contentNode);
+        nodeStore.setDomNode(contentNode, startId);
+        nodeStore.setAxNodeOffset(contentNode, axNodeOffset);
         document.body.appendChild(p);
 
-        selectionController.updateSelection(selection, document.body);
+        selectionController.updateSelection(selection);
 
         assertEquals(expectedSelection, selection.toString());
+        assertEquals(expectedAnchorOffset, selection.anchorOffset);
+        assertEquals(expectedFocusOffset, selection.focusOffset);
       });
 
       test(
@@ -716,16 +817,17 @@ suite('SelectionController', () => {
             const content = 'hello hello hello hello hello hello';
             const expectedAnchorOffset = 24;
             const expectedFocusOffset = 29;
+            const startId = 100;
             selectNodesInMainPanel(
-                100, expectedAnchorOffset, 100, expectedFocusOffset);
-            contentBrowserProxy.prefixText = prefix;
-            contentBrowserProxy.textContentMap = {100: content};
+                startId, expectedAnchorOffset, startId, expectedFocusOffset);
             const p = document.createElement('p');
             p.appendChild(document.createTextNode(prefix));
-            p.appendChild(document.createTextNode(content));
+            const contentNode = document.createTextNode(content);
+            p.appendChild(contentNode);
+            nodeStore.setDomNode(contentNode, startId);
             document.body.appendChild(p);
 
-            selectionController.updateSelection(selection, document.body);
+            selectionController.updateSelection(selection);
 
             // The offsets should still be the same as before.
             assertEquals(content, selection.anchorNode!.textContent, 'anchor');
@@ -738,20 +840,20 @@ suite('SelectionController', () => {
         const beforeContent = 'they never';
         const content = ' did the kind';
         const afterContent = ' of things';
-        const prefix = beforeContent + content + afterContent;
         const expectedAnchorOffset = 2;
         const expectedFocusOffset = 7;
+        const startId = 100;
         selectNodesInMainPanel(
-            100, expectedAnchorOffset, 100, expectedFocusOffset);
-        contentBrowserProxy.prefixText = prefix;
-        contentBrowserProxy.textContentMap = {100: content};
+            startId, expectedAnchorOffset, startId, expectedFocusOffset);
         const p = document.createElement('p');
         p.appendChild(document.createTextNode(beforeContent));
-        p.appendChild(document.createTextNode(content));
+        const contentNode = document.createTextNode(content);
+        p.appendChild(contentNode);
+        nodeStore.setDomNode(contentNode, startId);
         p.appendChild(document.createTextNode(afterContent));
         document.body.appendChild(p);
 
-        selectionController.updateSelection(selection, document.body);
+        selectionController.updateSelection(selection);
 
         assertEquals(content, selection.anchorNode!.textContent);
         assertEquals(content, selection.focusNode!.textContent);
@@ -763,15 +865,16 @@ suite('SelectionController', () => {
         const content = 'That most kids parents do';
         const expectedAnchorOffset = 2;
         const expectedFocusOffset = 7;
+        const startId = 100;
         selectNodesInMainPanel(
-            100, expectedAnchorOffset, 100, expectedFocusOffset);
-        contentBrowserProxy.prefixText = '';
-        contentBrowserProxy.textContentMap = {100: content};
+            startId, expectedAnchorOffset, startId, expectedFocusOffset);
         const p = document.createElement('p');
-        p.appendChild(document.createTextNode(content));
+        const contentNode = document.createTextNode(content);
+        p.appendChild(contentNode);
+        nodeStore.setDomNode(contentNode, startId);
         document.body.appendChild(p);
 
-        selectionController.updateSelection(selection, document.body);
+        selectionController.updateSelection(selection);
 
         assertEquals(content, selection.anchorNode!.textContent);
         assertEquals(content, selection.focusNode!.textContent);
@@ -791,16 +894,17 @@ suite('SelectionController', () => {
             const prefix = 'Most fathers make a living. ';
             const startContent = 'Keepin books or pushing broom. ';
             const endContent = 'But mom and dad made homemade dough.';
-            contentBrowserProxy.prefixText = prefix;
-            contentBrowserProxy.textContentMap =
-                {[startId]: startContent, [endId]: endContent};
             const p = document.createElement('p');
             p.appendChild(document.createTextNode(prefix));
-            p.appendChild(document.createTextNode(startContent));
-            p.appendChild(document.createTextNode(endContent));
+            const startNode = document.createTextNode(startContent);
+            p.appendChild(startNode);
+            nodeStore.setDomNode(startNode, startId);
+            const endNode = document.createTextNode(endContent);
+            p.appendChild(endNode);
+            nodeStore.setDomNode(endNode, endId);
             document.body.appendChild(p);
 
-            selectionController.updateSelection(selection, document.body);
+            selectionController.updateSelection(selection);
 
             assertEquals(startContent, selection.anchorNode!.textContent);
             assertEquals(endContent, selection.focusNode!.textContent);
@@ -811,27 +915,33 @@ suite('SelectionController', () => {
       test('selects correct text in two nodes with different offsets', () => {
         const expectedAnchorOffset = 10;
         const expectedFocusOffset = 3;
+        const axNodeOffset = 4;
         const startId = 100;
         const endId = 101;
         selectNodesInMainPanel(
-            startId, expectedAnchorOffset, endId, expectedFocusOffset);
+            startId, expectedAnchorOffset + axNodeOffset, endId,
+            expectedFocusOffset);
         const prefix = 'Most fathers make a living. ';
         const startContent = 'Keepin books or pushing broom. ';
         const endContent = 'But mom and dad made homemade dough.';
         const expectedSelection = startContent.substring(expectedAnchorOffset) +
             endContent.substring(0, expectedFocusOffset);
-        contentBrowserProxy.prefixText = prefix;
-        contentBrowserProxy
-            .textContentMap = {[startId]: startContent, [endId]: endContent};
         const p = document.createElement('p');
         p.appendChild(document.createTextNode(prefix));
-        p.appendChild(document.createTextNode('    ' + startContent));
-        p.appendChild(document.createTextNode(endContent));
+        const startNode = document.createTextNode(startContent);
+        p.appendChild(startNode);
+        nodeStore.setDomNode(startNode, startId);
+        nodeStore.setAxNodeOffset(startNode, axNodeOffset);
+        const endNode = document.createTextNode(endContent);
+        p.appendChild(endNode);
+        nodeStore.setDomNode(endNode, endId);
         document.body.appendChild(p);
 
-        selectionController.updateSelection(selection, document.body);
+        selectionController.updateSelection(selection);
 
         assertEquals(expectedSelection, selection.toString());
+        assertEquals(expectedAnchorOffset, selection.anchorOffset);
+        assertEquals(expectedFocusOffset, selection.focusOffset);
       });
 
       test(
@@ -847,16 +957,17 @@ suite('SelectionController', () => {
             const prefix = 'Most fathers make a living. ';
             const startContent = 'Keepin books or pushing broom. ';
             const endContent = 'But mom and dad made homemade dough.';
-            contentBrowserProxy.prefixText = prefix;
-            contentBrowserProxy.textContentMap =
-                {[startId]: startContent, [endId]: endContent};
             const p = document.createElement('p');
             p.appendChild(document.createTextNode(prefix));
-            p.appendChild(document.createTextNode(startContent));
-            p.appendChild(document.createTextNode(endContent));
+            const startNode = document.createTextNode(startContent);
+            p.appendChild(startNode);
+            nodeStore.setDomNode(startNode, startId);
+            const endNode = document.createTextNode(endContent);
+            p.appendChild(endNode);
+            nodeStore.setDomNode(endNode, endId);
             document.body.appendChild(p);
 
-            selectionController.updateSelection(selection, document.body);
+            selectionController.updateSelection(selection);
 
             assertEquals(startContent, selection.anchorNode!.textContent);
             assertEquals(endContent, selection.focusNode!.textContent);
@@ -877,16 +988,17 @@ suite('SelectionController', () => {
             const prefix = 'Most fathers make a living. ';
             const startContent = 'Keepin books or pushing broom. ';
             const endContent = 'But mom and dad made homemade dough.';
-            contentBrowserProxy.prefixText = prefix;
-            contentBrowserProxy.textContentMap =
-                {[startId]: startContent, [endId]: endContent};
             const p = document.createElement('p');
             p.appendChild(document.createTextNode(prefix));
-            p.appendChild(document.createTextNode(startContent));
-            p.appendChild(document.createTextNode(endContent));
+            const startNode = document.createTextNode(startContent);
+            p.appendChild(startNode);
+            nodeStore.setDomNode(startNode, startId);
+            const endNode = document.createTextNode(endContent);
+            p.appendChild(endNode);
+            nodeStore.setDomNode(endNode, endId);
             document.body.appendChild(p);
 
-            selectionController.updateSelection(selection, document.body);
+            selectionController.updateSelection(selection);
 
             assertEquals(startContent, selection.anchorNode!.textContent);
             assertEquals(endContent, selection.focusNode!.textContent);
@@ -908,17 +1020,18 @@ suite('SelectionController', () => {
             const prefix2 = 'But when the heat got too intense. ';
             const startContent = 'They took it on the lam. ';
             const endContent = 'My father left a note that said.';
-            contentBrowserProxy.prefixText = prefix1;
-            contentBrowserProxy.textContentMap =
-                {[startId]: startContent, [endId]: endContent};
             const p = document.createElement('p');
             p.appendChild(document.createTextNode(prefix1));
             p.appendChild(document.createTextNode(prefix2));
-            p.appendChild(document.createTextNode(startContent));
-            p.appendChild(document.createTextNode(endContent));
+            const startNode = document.createTextNode(startContent);
+            p.appendChild(startNode);
+            nodeStore.setDomNode(startNode, startId);
+            const endNode = document.createTextNode(endContent);
+            p.appendChild(endNode);
+            nodeStore.setDomNode(endNode, endId);
             document.body.appendChild(p);
 
-            selectionController.updateSelection(selection, document.body);
+            selectionController.updateSelection(selection);
 
             assertEquals(startContent, selection.anchorNode!.textContent);
             assertEquals(endContent, selection.focusNode!.textContent);
@@ -939,17 +1052,18 @@ suite('SelectionController', () => {
             const prefix2 = 'Then Jerrys clan across the hall. ';
             const startContent = 'Stepped in to save the day. ';
             const endContent = 'They took me in and raised me right.';
-            contentBrowserProxy.prefixText = prefix1;
-            contentBrowserProxy.textContentMap =
-                {[startId]: startContent, [endId]: endContent};
             const p = document.createElement('p');
             p.appendChild(document.createTextNode(prefix1));
-            p.appendChild(document.createTextNode(startContent));
+            const startNode = document.createTextNode(startContent);
+            p.appendChild(startNode);
+            nodeStore.setDomNode(startNode, startId);
             p.appendChild(document.createTextNode(prefix2));
-            p.appendChild(document.createTextNode(endContent));
+            const endNode = document.createTextNode(endContent);
+            p.appendChild(endNode);
+            nodeStore.setDomNode(endNode, endId);
             document.body.appendChild(p);
 
-            selectionController.updateSelection(selection, document.body);
+            selectionController.updateSelection(selection);
 
             assertEquals(startContent, selection.anchorNode!.textContent);
             assertEquals(endContent, selection.focusNode!.textContent);
@@ -971,17 +1085,18 @@ suite('SelectionController', () => {
             const startContent = 'That he\'s the needle, I\'m the thread';
             const beforeEndContent = 'He\'s the butter, ';
             const endContent = 'I\'m the bread. ';
-            contentBrowserProxy.prefixText = prefix1;
-            contentBrowserProxy.textContentMap =
-                {[startId]: startContent, [endId]: endContent};
             const p = document.createElement('p');
             p.appendChild(document.createTextNode(prefix1));
-            p.appendChild(document.createTextNode(startContent));
+            const startNode = document.createTextNode(startContent);
+            p.appendChild(startNode);
+            nodeStore.setDomNode(startNode, startId);
             p.appendChild(document.createTextNode(beforeEndContent));
-            p.appendChild(document.createTextNode(endContent));
+            const endNode = document.createTextNode(endContent);
+            p.appendChild(endNode);
+            nodeStore.setDomNode(endNode, endId);
             document.body.appendChild(p);
 
-            selectionController.updateSelection(selection, document.body);
+            selectionController.updateSelection(selection);
 
             assertEquals(startContent, selection.anchorNode!.textContent);
             assertEquals(endContent, selection.focusNode!.textContent);
@@ -992,7 +1107,7 @@ suite('SelectionController', () => {
 
     test('does nothing when ids are unknown', () => {
       selectNodesInMainPanel(0, 2, 0, 10);
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertFalse(!!selection.anchorNode);
       assertFalse(!!selection.focusNode);
@@ -1001,7 +1116,7 @@ suite('SelectionController', () => {
     test('does nothing when selection is invalid', () => {
       selectNodesInMainPanel(100, 2, 101, 10);
       contentBrowserProxy.hasValidSelectionVal = false;
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertFalse(!!selection.anchorNode);
       assertFalse(!!selection.focusNode);
@@ -1015,7 +1130,7 @@ suite('SelectionController', () => {
 
       selectNodesInMainPanel(
           node.id, expectedAnchorOffset, node.id, expectedFocusOffset);
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertEquals(node.node, selection.anchorNode);
       assertEquals(node.node, selection.focusNode);
@@ -1027,7 +1142,7 @@ suite('SelectionController', () => {
       const node = getNodeAt(1);
 
       selectNodesInMainPanel(node.id, 2, node.id, 10);
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertFalse(!!selection.anchorNode);
       assertFalse(!!selection.focusNode);
@@ -1040,7 +1155,7 @@ suite('SelectionController', () => {
 
       selectNodesInMainPanel(
           parentId, expectedAnchorOffset, parentId, expectedFocusOffset);
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertEquals(node.text, selection.anchorNode?.textContent);
       assertEquals(node.text, selection.focusNode?.textContent);
@@ -1058,7 +1173,7 @@ suite('SelectionController', () => {
       // The main panel selection is relative to the paragraph.
       selectNodesInMainPanel(
           parentId, relativeAnchorOffset, parentId, selectedFocusOffset);
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertEquals(node1.text, selection.anchorNode?.textContent);
       assertEquals(node2.text, selection.focusNode?.textContent);
@@ -1078,7 +1193,7 @@ suite('SelectionController', () => {
       // The main panel selection is relative to the paragraph.
       selectNodesInMainPanel(
           parentId, selectedAnchorOffset, parentId, selectedFocusOffset);
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertEquals(node2.text, selection.anchorNode?.textContent);
       assertEquals(node2.text, selection.focusNode?.textContent);
@@ -1100,7 +1215,7 @@ suite('SelectionController', () => {
       // The main panel selection is relative to the paragraph.
       selectNodesInMainPanel(
           parentId, selectedAnchorOffset, parentId, selectedFocusOffset);
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertEquals(node2.text, selection.anchorNode?.textContent);
       assertEquals(node3.text, selection.focusNode?.textContent);
@@ -1118,7 +1233,7 @@ suite('SelectionController', () => {
 
       selectNodesInMainPanel(
           parentId, relativeAnchorOffset, node2.id, relativeFocusOffset);
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertEquals(node1.text, selection.anchorNode?.textContent);
       assertEquals(node2.text, selection.focusNode?.textContent);
@@ -1136,7 +1251,7 @@ suite('SelectionController', () => {
 
       selectNodesInMainPanel(
           node1.id, relativeAnchorOffset, parentId, selectedFocusOffset);
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertEquals(node1.text, selection.anchorNode?.textContent);
       assertEquals(node2.text, selection.focusNode?.textContent);
@@ -1155,7 +1270,7 @@ suite('SelectionController', () => {
 
       selectNodesInMainPanel(
           parentId, selectedAnchorOffset, node3.id, relativeFocusOffset);
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertEquals(node2.text, selection.anchorNode?.textContent);
       assertEquals(node3.text, selection.focusNode?.textContent);
@@ -1175,7 +1290,7 @@ suite('SelectionController', () => {
 
       selectNodesInMainPanel(
           node2.id, relativeAnchorOffset, parentId, selectedFocusOffset);
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertEquals(node2.text, selection.anchorNode?.textContent);
       assertEquals(node3.text, selection.focusNode?.textContent);
@@ -1195,7 +1310,7 @@ suite('SelectionController', () => {
       selectNodesInMainPanel(
           node.id, mainAnchorOffset, node.id, mainFocusOffset);
 
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertEquals(node.node, selection.anchorNode);
       assertEquals(0, selection.anchorOffset);  // 17 - 17
@@ -1215,7 +1330,7 @@ suite('SelectionController', () => {
       selectNodesInMainPanel(
           node.id, mainAnchorOffset, node.id, mainFocusOffset);
 
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertFalse(!!selection.anchorNode);
     });
@@ -1233,7 +1348,7 @@ suite('SelectionController', () => {
       selectNodesInMainPanel(
           node.id, mainAnchorOffset, node.id, mainFocusOffset);
 
-      selectionController.updateSelection(selection, document.body);
+      selectionController.updateSelection(selection);
 
       assertFalse(!!selection.anchorNode);
     });

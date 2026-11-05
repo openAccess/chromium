@@ -13,8 +13,10 @@
 #include "base/component_export.h"
 #include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner_helpers.h"
 #include "base/thread_annotations.h"
@@ -52,6 +54,8 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaManagerProxy
   using UsageAndQuotaCallback = QuotaManagerImpl::UsageAndQuotaCallback;
   using UsageAndQuotaWithBreakdownCallback =
       QuotaManagerImpl::UsageAndQuotaWithBreakdownCallback;
+  using UsageAndQuotaWithBreakdownAndOverrideFlagCallback =
+      QuotaManagerImpl::UsageAndQuotaWithBreakdownAndOverrideFlagCallback;
 
   // The caller is responsible for calling InvalidateQuotaManagerImpl() before
   // `quota_manager_impl` is destroyed. `quota_manager_impl_task_runner` must be
@@ -66,6 +70,12 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaManagerProxy
 
   QuotaManagerProxy(const QuotaManagerProxy&) = delete;
   QuotaManagerProxy& operator=(const QuotaManagerProxy&) = delete;
+
+  // Posts `callback` to the quota manager's sequence. The callback receives
+  // a null WeakPtr if the manager has already been invalidated when the task
+  // runs.
+  void PostTaskWithQuotaManager(
+      base::OnceCallback<void(base::WeakPtr<QuotaManagerImpl>)> callback);
 
   virtual void RegisterClient(mojo::PendingRemote<mojom::QuotaClient> client,
                               QuotaClientType client_type);
@@ -139,6 +149,15 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaManagerProxy
       scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
       base::OnceCallback<void(QuotaErrorOr<std::set<BucketInfo>>)> callback);
 
+  virtual void GetBucketsModifiedBetween(base::Time begin,
+                                         base::Time end,
+                                         GetBucketsCallback callback);
+
+  void DeleteStorageKeyData(
+      const blink::StorageKey& storage_key,
+      scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
+      StatusCallback callback);
+
   // Deletes bucket with `bucket_name` for `storage_key` for all registered
   // QuotaClients if a bucket exists. Will return QuotaStatusCode to the
   // callback. Called by Storage Buckets API for deleting buckets via
@@ -191,6 +210,16 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaManagerProxy
       const blink::StorageKey& storage_key,
       scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
       UsageAndQuotaCallback callback);
+
+  void GetUsageAndQuotaForWebApps(
+      const blink::StorageKey& storage_key,
+      scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
+      UsageAndQuotaCallback callback);
+
+  void GetUsageAndQuotaForDevtools(
+      const blink::StorageKey& storage_key,
+      scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
+      UsageAndQuotaWithBreakdownAndOverrideFlagCallback callback);
 
   void GetBucketUsageAndReportedQuota(
       BucketId bucket,
@@ -246,6 +275,9 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaManagerProxy
   virtual ~QuotaManagerProxy();
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(QuotaManagerProxyTest,
+                           ManagerDestructionInitiatedDuringPostTask);
+
   // Bound to QuotaManagerImpl's sequence.
   //
   // At the time this code is written, there is no way to explicitly bind a

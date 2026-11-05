@@ -48,8 +48,6 @@ namespace {
 constexpr char kPeopleApiURL[] =
     "https://people.googleapis.com/v1/people/me?personFields=locales";
 
-constexpr base::TimeDelta kWaitTimeout = base::Seconds(5);
-
 class GetLocaleOAuth2PeopleAPICall : public OAuth2ApiCallFlow {
  public:
   GetLocaleOAuth2PeopleAPICall(
@@ -228,7 +226,7 @@ void LocaleSwitchScreen::ShowImpl() {
   }
 
   user_manager::User* user = user_manager::UserManager::Get()->GetActiveUser();
-  DCHECK(user->is_profile_created());
+  CHECK(user->is_profile_created(), base::NotFatalUntil::M161);
   if (user->GetType() == user_manager::UserType::kPublicAccount) {
     locale_ =
         user->GetProfilePrefs()->GetString(language::prefs::kApplicationLocale);
@@ -236,7 +234,7 @@ void LocaleSwitchScreen::ShowImpl() {
     return;
   }
 
-  DCHECK(user->HasGaiaAccount());
+  CHECK(user->HasGaiaAccount(), base::NotFatalUntil::M161);
 
   identity_manager_ =
       ash::IdentityManagerProvider::Get().Find(user->GetAccountId());
@@ -244,24 +242,24 @@ void LocaleSwitchScreen::ShowImpl() {
     NOTREACHED();
   }
 
-  CoreAccountId primary_account_id =
-      identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
+  gaia_id_ = user->GetAccountId().GetGaiaId();
+  const AccountInfo account_info =
+      identity_manager_->FindExtendedAccountInfoByGaiaId(gaia_id_);
   refresh_token_loaded_ =
-      identity_manager_->HasAccountWithRefreshToken(primary_account_id);
+      !account_info.IsEmpty() && identity_manager_->HasAccountWithRefreshToken(
+                                     account_info.GetAccountId());
 
-  if (identity_manager_->GetErrorStateOfRefreshTokenForAccount(
-          primary_account_id) != GoogleServiceAuthError::AuthErrorNone()) {
+  if (!account_info.IsEmpty() &&
+      identity_manager_->GetErrorStateOfRefreshTokenForAccount(
+          account_info.GetAccountId()) !=
+          GoogleServiceAuthError::AuthErrorNone()) {
     exit_callback_.Run(Result::kLocaleFetchFailed);
     return;
   }
 
-  gaia_id_ = user->GetAccountId().GetGaiaId();
-  const AccountInfo account_info =
-      identity_manager_->FindExtendedAccountInfoByGaiaId(gaia_id_);
   account_capabilities_loaded_ =
-      refresh_token_loaded_ &&
-      SyncConsentScreen::AreCapabilitiesLoaded(
-          account_info.GetAccountCapabilities());
+      refresh_token_loaded_ && SyncConsentScreen::AreCapabilitiesLoaded(
+                                   account_info.GetAccountCapabilities());
   if (!account_capabilities_loaded_) {
     identity_manager_observer_.Observe(identity_manager_.get());
   }
@@ -269,9 +267,19 @@ void LocaleSwitchScreen::ShowImpl() {
   FetchPreferredUserLocaleAndSwitchAsync();
 
   // Wait for a reasonable time to fetch locale and account capabilities.
-  timeout_waiter_.Start(FROM_HERE, kWaitTimeout,
+  timeout_waiter_.Start(FROM_HERE, timeout_,
                         base::BindOnce(&LocaleSwitchScreen::OnTimeout,
                                        weak_factory_.GetWeakPtr()));
+}
+
+void LocaleSwitchScreen::OnRefreshTokenUpdatedForAccount(
+    const CoreAccountInfo& account_info) {
+  if (gaia_id_.empty() || account_info.gaia != gaia_id_) {
+    return;
+  }
+  refresh_token_loaded_ = true;
+  OnExtendedAccountInfoUpdated(
+      identity_manager_->FindExtendedAccountInfoByGaiaId(gaia_id_));
 }
 
 void LocaleSwitchScreen::OnErrorStateOfRefreshTokenUpdatedForAccount(
@@ -281,7 +289,7 @@ void LocaleSwitchScreen::OnErrorStateOfRefreshTokenUpdatedForAccount(
   if (error == GoogleServiceAuthError::AuthErrorNone()) {
     return;
   }
-  if (account_info.gaia != gaia_id_) {
+  if (gaia_id_.empty() || account_info.gaia != gaia_id_) {
     return;
   }
   AbandonPeopleAPICall();
@@ -292,13 +300,12 @@ void LocaleSwitchScreen::OnErrorStateOfRefreshTokenUpdatedForAccount(
 
 void LocaleSwitchScreen::OnExtendedAccountInfoUpdated(
     const AccountInfo& account_info) {
-  if (account_info.gaia != gaia_id_) {
+  if (gaia_id_.empty() || account_info.GetGaiaId() != gaia_id_) {
     return;
   }
   account_capabilities_loaded_ =
-      refresh_token_loaded_ &&
-      SyncConsentScreen::AreCapabilitiesLoaded(
-          account_info.GetAccountCapabilities());
+      refresh_token_loaded_ && SyncConsentScreen::AreCapabilitiesLoaded(
+                                   account_info.GetAccountCapabilities());
   if (!account_capabilities_loaded_) {
     return;
   }
@@ -313,9 +320,12 @@ void LocaleSwitchScreen::OnExtendedAccountInfoUpdated(
 void LocaleSwitchScreen::OnRefreshTokensLoaded() {
   // Account information can only be guaranteed correct after refresh tokens
   // are loaded.
-  refresh_token_loaded_ = true;
-  OnExtendedAccountInfoUpdated(
-      identity_manager_->FindExtendedAccountInfoByGaiaId(gaia_id_));
+  const AccountInfo account_info =
+      identity_manager_->FindExtendedAccountInfoByGaiaId(gaia_id_);
+  refresh_token_loaded_ =
+      !account_info.IsEmpty() && identity_manager_->HasAccountWithRefreshToken(
+                                     account_info.GetAccountId());
+  OnExtendedAccountInfoUpdated(account_info);
 }
 
 void LocaleSwitchScreen::FetchPreferredUserLocaleAndSwitchAsync() {
@@ -375,7 +385,8 @@ void LocaleSwitchScreen::OnRequestFailure() {
 void LocaleSwitchScreen::SwitchLocale() {
   language::ConvertToActualUILocale(&locale_);
 
-  if (locale_.empty() || locale_ == application_locale_storage_->Get()) {
+  if (locale_.empty() ||
+      locale_ == application_locale_storage_->GetTag().tag_string()) {
     exit_callback_.Run(Result::kNoSwitchNeeded);
     return;
   }
@@ -485,9 +496,9 @@ void LocaleSwitchScreen::AbandonPeopleAPICall() {
 
 void LocaleSwitchScreen::OnTimeout() {
   identity_manager_observer_.Reset();
-  if (refresh_token_loaded_ && !locale_.empty()) {
+  if (!locale_.empty()) {
     // We should switch locale if locale is fetched but it timed out while
-    // waiting for other account information (e.g. capabilities).
+    // waiting for other account information.
     SwitchLocale();
   } else {
     AbandonPeopleAPICall();

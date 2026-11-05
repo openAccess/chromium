@@ -11,7 +11,7 @@
 
 #include "base/task/sequenced_task_runner.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 
 namespace safe_browsing {
 
@@ -49,7 +49,7 @@ class TestSafeBrowsingDatabaseManager : public SafeBrowsingDatabaseManager {
   safe_browsing::ThreatSource GetNonBrowseUrlThreatSource() const override;
   void StartOnUIThread(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      const V4ProtocolConfig& config) override;
+      const SBProtocolConfig& config) override;
   void StopOnUIThread(bool shutdown) override;
   bool IsDatabaseReady() const override;
 

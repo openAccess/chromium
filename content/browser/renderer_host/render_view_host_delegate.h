@@ -10,7 +10,6 @@
 #include <optional>
 
 #include "base/process/kill.h"
-#include "content/browser/dom_storage/session_storage_namespace_impl.h"
 #include "net/base/load_states.h"
 #include "third_party/blink/public/common/page/color_provider_color_maps.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -102,7 +101,7 @@ class RenderViewHostDelegate {
 
   // Returns the light, dark and forced color maps for the ColorProvider
   // associated with this RenderViewHost.
-  virtual blink::ColorProviderColorMaps GetColorProviderColorMaps() const = 0;
+  virtual blink::ColorProviderColorMaps GetColorProviderColorMaps() = 0;
 
   // Returns true if the render view is rendering a guest.
   virtual bool IsGuest();

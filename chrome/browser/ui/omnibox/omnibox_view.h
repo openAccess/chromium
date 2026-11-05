@@ -16,8 +16,8 @@
 #include <memory>
 #include <string>
 
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "build/build_config.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/omnibox_client.h"
@@ -31,7 +31,7 @@ class OmniboxEditModel;
 
 class OmniboxView {
   // TODO(crbug.com/392015004): Remove this macro once it gets fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   using IconFetchedCallback = base::OnceCallback<void(const gfx::Image& icon)>;
@@ -216,6 +216,11 @@ class OmniboxView {
   // Hides a virtual keyboard or alternate input view if enabled.
   virtual void HideImeIfNeeded();
 
+  // Whether the client has a Full WebUI Omnibox. Declared here so
+  // `OmniboxEditModel` can query this state without directly depending on
+  // Views-layer classes.
+  virtual bool IsFullWebUIOmnibox() const;
+
  protected:
   // Tracks important state that may change between OnBeforePossibleChange() and
   // OnAfterPossibleChange().
@@ -273,6 +278,11 @@ class OmniboxView {
       const std::u16string& display_text,
       const AutocompleteMatch& match,
       int& suggestion_text_prefix_length);
+
+  // Returns true if the full WebUI popup is showing. It has its own input and
+  // narrates suggestion selections itself, so this view must not also narrate
+  // them; doing both makes the screen reader interrupt itself.
+  bool IsSuggestionNarrationOwnedByWebUIPopup() const;
 
   virtual OmniboxController* controller();
   virtual const OmniboxController* controller() const;

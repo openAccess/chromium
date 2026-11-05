@@ -34,6 +34,23 @@ TEST(MetricsTypesTest, GetInvocationSourceString) {
             GetInvocationSourceString(mojom::InvocationSource::kTabRestore));
   EXPECT_EQ("ReshowInactive", GetInvocationSourceString(
                                   mojom::InvocationSource::kReshowInactive));
+  EXPECT_EQ(
+      "ContextHubTopics",
+      GetInvocationSourceString(mojom::InvocationSource::kContextHubTopics));
+  EXPECT_EQ(
+      "ContextHubAutoTodos",
+      GetInvocationSourceString(mojom::InvocationSource::kContextHubAutoTodos));
+  EXPECT_EQ("WebContentsContextMenuLink",
+            GetInvocationSourceString(
+                mojom::InvocationSource::kWebContentsContextMenuLink));
+  EXPECT_EQ("WebContentsContextMenuPage",
+            GetInvocationSourceString(
+                mojom::InvocationSource::kWebContentsContextMenuPage));
+  EXPECT_EQ("WebContentsContextMenuTextSelection",
+            GetInvocationSourceString(
+                mojom::InvocationSource::kWebContentsContextMenuTextSelection));
+  EXPECT_EQ("ActorTool",
+            GetInvocationSourceString(mojom::InvocationSource::kActorTool));
 }
 
 TEST(MetricsTypesTest, GetResponseSegmentation) {
@@ -120,6 +137,43 @@ TEST(MetricsTypesTest, GetResponseSegmentation) {
             GetResponseSegmentation(
                 /*attached=*/true, mojom::WebClientMode::kText,
                 mojom::InvocationSource::kReshowInactive));
+
+  // ContextHubTopics Attached Text
+  EXPECT_EQ(ResponseSegmentation::kContextHubTopicsAttachedText,
+            GetResponseSegmentation(
+                /*attached=*/true, mojom::WebClientMode::kText,
+                mojom::InvocationSource::kContextHubTopics));
+
+  // ContextHubAutoTodos Attached Text
+  EXPECT_EQ(ResponseSegmentation::kContextHubAutoTodosAttachedText,
+            GetResponseSegmentation(
+                /*attached=*/true, mojom::WebClientMode::kText,
+                mojom::InvocationSource::kContextHubAutoTodos));
+
+  // WebContentsContextMenuLink Attached Text
+  EXPECT_EQ(ResponseSegmentation::kWebContentsContextMenuLinkAttachedText,
+            GetResponseSegmentation(
+                /*attached=*/true, mojom::WebClientMode::kText,
+                mojom::InvocationSource::kWebContentsContextMenuLink));
+
+  // WebContentsContextMenuPage Detached Audio
+  EXPECT_EQ(ResponseSegmentation::kWebContentsContextMenuPageDetachedAudio,
+            GetResponseSegmentation(
+                /*attached=*/false, mojom::WebClientMode::kAudio,
+                mojom::InvocationSource::kWebContentsContextMenuPage));
+
+  // WebContentsContextMenuTextSelection Attached Text
+  EXPECT_EQ(
+      ResponseSegmentation::kWebContentsContextMenuTextSelectionAttachedText,
+      GetResponseSegmentation(
+          /*attached=*/true, mojom::WebClientMode::kText,
+          mojom::InvocationSource::kWebContentsContextMenuTextSelection));
+
+  // ActorTool Attached Text
+  EXPECT_EQ(ResponseSegmentation::kActorToolAttachedText,
+            GetResponseSegmentation(
+                /*attached=*/true, mojom::WebClientMode::kText,
+                mojom::InvocationSource::kActorTool));
 }
 
 }  // namespace

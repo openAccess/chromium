@@ -9,18 +9,30 @@
 
 #import "ios/chrome/browser/browser_content/model/edit_menu_builder.h"
 
-@protocol SceneCommands;
+namespace contextual_search {
+class ContextualSearchService;
+}  // namespace contextual_search
+
+class AimEligibilityService;
+class CobrowseBrowserAgent;
+class PrefService;
 class TemplateURLService;
+@protocol SceneCommands;
 
 // Mediator that mediates between the browser container views and the
 // search with tab helpers.
 @interface SearchWithMediator : NSObject <EditMenuBuilder>
 
-// Initializer for a mediator.
-- (instancetype)initWithTemplateURLService:
-                    (TemplateURLService*)templateURLService
-                                 incognito:(BOOL)incognito
-    NS_DESIGNATED_INITIALIZER;
+// Designated initializer for SearchWithMediator.
+- (instancetype)
+    initWithTemplateURLService:(TemplateURLService*)templateURLService
+         aimEligibilityService:(AimEligibilityService*)aimEligibilityService
+          cobrowseBrowserAgent:(CobrowseBrowserAgent*)cobrowseBrowserAgent
+       contextualSearchService:
+           (contextual_search::ContextualSearchService*)contextualSearchService
+                   prefService:(PrefService*)prefService
+                     incognito:(BOOL)incognito NS_DESIGNATED_INITIALIZER;
+
 - (instancetype)init NS_UNAVAILABLE;
 
 // Disconnects the mediator.

@@ -137,7 +137,7 @@ bool ScrollbarThemeMac::ShouldDragDocumentInsteadOfThumb(
   return (event.GetModifiers() & WebInputEvent::Modifiers::kAltKey) != 0;
 }
 
-ScrollbarPart ScrollbarThemeMac::PartsToInvalidateOnThumbPositionChange(
+int ScrollbarThemeMac::PartsToInvalidateOnThumbPositionChange(
     const Scrollbar& scrollbar,
     float old_position,
     float new_position) const {
@@ -151,10 +151,6 @@ void ScrollbarThemeMac::RegisterScrollbar(Scrollbar& scrollbar) {
 
 bool ScrollbarThemeMac::IsScrollbarRegistered(Scrollbar& scrollbar) const {
   return GetScrollbarSet().Contains(&scrollbar);
-}
-
-void ScrollbarThemeMac::SetNewPainterForScrollbar(Scrollbar& scrollbar) {
-  UpdateEnabledState(scrollbar);
 }
 
 WebThemeEngine::ExtraParams GetPaintParams(const Scrollbar& scrollbar,

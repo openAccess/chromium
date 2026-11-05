@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -58,14 +59,15 @@
 #include "content/public/common/content_switches.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/common/webplugininfo.h"
+#include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
+#include "content/public/test/render_frame_host_test_support.h"
 #include "content/public/test/slow_download_http_response.h"
 #include "content/public/test/test_download_http_response.h"
 #include "content/public/test/test_file_error_injector.h"
@@ -654,9 +656,46 @@ class TestShellDownloadManagerDelegate : public ShellDownloadManagerDelegate {
     callbacks->swap(delayed_callbacks_);
   }
 
+  void CheckDownloadAllowed(
+      const WebContents::Getter& web_contents_getter,
+      const GURL& url,
+      const std::string& request_method,
+      std::optional<url::Origin> request_initiator,
+      bool from_download_cross_origin_redirect,
+      bool content_initiated,
+      const std::string& mime_type,
+      std::optional<ui::PageTransition> page_transition,
+      CheckDownloadAllowedCallback check_download_allowed_cb) override {
+    if (delay_check_download_allowed_) {
+      delayed_check_download_allowed_cb_ = std::move(check_download_allowed_cb);
+      if (on_check_download_allowed_intercepted_) {
+        std::move(on_check_download_allowed_intercepted_).Run();
+      }
+      return;
+    }
+    ShellDownloadManagerDelegate::CheckDownloadAllowed(
+        web_contents_getter, url, request_method, std::move(request_initiator),
+        from_download_cross_origin_redirect, content_initiated, mime_type,
+        page_transition, std::move(check_download_allowed_cb));
+  }
+
+  void DelayNextCheckDownloadAllowed(base::OnceClosure on_intercepted) {
+    delay_check_download_allowed_ = true;
+    on_check_download_allowed_intercepted_ = std::move(on_intercepted);
+  }
+
+  void RunDelayedCheckDownloadAllowedCallback(bool allow) {
+    delay_check_download_allowed_ = false;
+    ASSERT_TRUE(delayed_check_download_allowed_cb_);
+    std::move(delayed_check_download_allowed_cb_).Run(allow);
+  }
+
  private:
   bool delay_download_open_;
   std::vector<DownloadOpenDelayedCallback> delayed_callbacks_;
+  bool delay_check_download_allowed_ = false;
+  base::OnceClosure on_check_download_allowed_intercepted_;
+  CheckDownloadAllowedCallback delayed_check_download_allowed_cb_;
 };
 
 // Get the next created download.
@@ -1137,11 +1176,8 @@ class DownloadContentTest : public ContentBrowserTest {
     EXPECT_EQ(1u, observer->NumDownloadsSeenInState(expected_terminal_state));
   }
 
-  // Checks that |path| is has |file_size| bytes, and matches the |value|
-  // string.
-  bool VerifyFile(const base::FilePath& path,
-                  const std::string& value,
-                  const int64_t file_size) {
+  // Checks that file at |path| exists and has the exact contents of |value|.
+  bool VerifyFile(const base::FilePath& path, std::string_view value) {
     std::string file_contents;
 
     {
@@ -1152,25 +1188,15 @@ class DownloadContentTest : public ContentBrowserTest {
         return false;  // Couldn't read the file.
       }
     }
-
-    // Note: we don't handle really large files (more than size_t can hold)
-    // so we will fail in that case.
-    size_t expected_size = static_cast<size_t>(file_size);
-
     // Check the size.
-    EXPECT_EQ(expected_size, file_contents.size());
-    if (expected_size != file_contents.size()) {
+    EXPECT_EQ(value.size(), file_contents.size());
+    if (value.size() != file_contents.size()) {
       return false;
     }
 
     // Check the contents.
     EXPECT_EQ(value, file_contents);
-    if (UNSAFE_TODO(
-            memcmp(file_contents.c_str(), value.c_str(), expected_size)) != 0) {
-      return false;
-    }
-
-    return true;
+    return file_contents == value;
   }
 
   // Start a download and return the item.
@@ -1393,7 +1419,7 @@ class ParallelDownloadTest : public DownloadContentTest {
             parameters.size, std::string(), download::DownloadItem::INTERRUPTED,
             download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
             download::DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, false,
-            base::Time(), false, parallel_slices);
+            base::Time(), false, parallel_slices, base::FilePath());
     ClearAutoResumptionCount(download);
     return download;
   }
@@ -1532,65 +1558,6 @@ class DownloadPrerenderTest : public DownloadContentTest {
   test::PrerenderTestHelper prerender_helper_;
 };
 
-class DownloadFencedFrameTest : public DownloadContentTest {
- public:
-  DownloadFencedFrameTest() {
-    fenced_frame_helper_ = std::make_unique<test::FencedFrameTestHelper>();
-
-    // Fenced frame requires a secure context to disable untrusted network.
-    embedded_https_test_server().SetSSLConfig(
-        net::EmbeddedTestServer::CERT_TEST_NAMES);
-  }
-
-  ~DownloadFencedFrameTest() override = default;
-
-  void SetUpOnMainThread() override {
-    DownloadContentTest::SetUpOnMainThread();
-    ASSERT_TRUE(embedded_test_server()->Started());
-  }
-
- protected:
-  RenderFrameHost* CreateFencedFrame(RenderFrameHost* fenced_frame_parent,
-                                     const GURL& url) {
-    if (fenced_frame_helper_) {
-      return fenced_frame_helper_->CreateFencedFrame(fenced_frame_parent, url);
-    }
-
-    // FencedFrameTestHelper only supports the MPArch version of fenced frames.
-    // So need to maually create a fenced frame for the ShadowDOM version.
-    constexpr char kAddFencedFrameScript[] = R"({
-        const fenced_frame = document.createElement('fencedframe');
-        document.body.appendChild(fenced_frame);
-    })";
-    EXPECT_TRUE(ExecJs(fenced_frame_parent, kAddFencedFrameScript));
-
-    // Navigate the fenced frame from inside itself, just like the
-    // `FencedFrameTestHelper` does for MPArch.
-    RenderFrameHostImpl* rfh =
-        static_cast<RenderFrameHostImpl*>(ChildFrameAt(fenced_frame_parent, 0));
-    FrameTreeNode* target_node = rfh->frame_tree_node();
-    constexpr char kNavigateInFencedFrameScript[] = R"({
-        location.href = $1;
-    })";
-
-    TestNavigationManager navigation(shell()->web_contents(), url);
-    EXPECT_EQ(url.spec(),
-              EvalJs(rfh, JsReplace(kNavigateInFencedFrameScript, url)));
-    EXPECT_TRUE(navigation.WaitForNavigationFinished());
-
-    EXPECT_FALSE(target_node->current_frame_host()->IsErrorDocument());
-    return target_node->current_frame_host();
-  }
-
-  test::FencedFrameTestHelper* fenced_frame_helper() {
-    return fenced_frame_helper_.get();
-  }
-
- private:
-  std::unique_ptr<test::FencedFrameTestHelper> fenced_frame_helper_;
-  base::test::ScopedFeatureList feature_list_;
-};
-
 }  // namespace
 
 // Flaky. See https://crbug.com/754679.
@@ -1658,7 +1625,7 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest, MultiDownload) {
   size_t file_size1 = SlowDownloadHttpResponse::kFirstResponsePartSize +
                       SlowDownloadHttpResponse::kSecondResponsePartSize;
   std::string expected_contents(file_size1, '*');
-  ASSERT_TRUE(VerifyFile(file1, expected_contents, file_size1));
+  ASSERT_TRUE(VerifyFile(file1, expected_contents));
 
   base::FilePath file2(download2->GetTargetFilePath());
   ASSERT_TRUE(base::ContentsEqual(
@@ -3251,7 +3218,8 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest, ResumeRestoredDownload_NoFile) {
           download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
           download::DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, false,
           base::Time(), false,
-          std::vector<download::DownloadItem::ReceivedSlice>());
+          std::vector<download::DownloadItem::ReceivedSlice>(),
+          base::FilePath());
   ClearAutoResumptionCount(download);
 
   download->Resume(false);
@@ -3319,7 +3287,8 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest, ResumeRestoredDownload_NoHash) {
           download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
           download::DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, false,
           base::Time(), false,
-          std::vector<download::DownloadItem::ReceivedSlice>());
+          std::vector<download::DownloadItem::ReceivedSlice>(),
+          base::FilePath());
   ClearAutoResumptionCount(download);
 
   download->Resume(false);
@@ -3374,7 +3343,8 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest,
           download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
           download::DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, false,
           base::Time(), false,
-          std::vector<download::DownloadItem::ReceivedSlice>());
+          std::vector<download::DownloadItem::ReceivedSlice>(),
+          base::FilePath());
   ClearAutoResumptionCount(download);
 
   download->Resume(false);
@@ -3436,7 +3406,8 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest,
           download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
           download::DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, false,
           base::Time(), false,
-          std::vector<download::DownloadItem::ReceivedSlice>());
+          std::vector<download::DownloadItem::ReceivedSlice>(),
+          base::FilePath());
   ClearAutoResumptionCount(download);
 
   download->Resume(false);
@@ -3505,7 +3476,8 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest, ResumeRestoredDownload_WrongHash) {
           download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
           download::DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, false,
           base::Time(), false,
-          std::vector<download::DownloadItem::ReceivedSlice>());
+          std::vector<download::DownloadItem::ReceivedSlice>(),
+          base::FilePath());
   ClearAutoResumptionCount(download);
 
   download->Resume(false);
@@ -3581,7 +3553,8 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest, ResumeRestoredDownload_ShortFile) {
           download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
           download::DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, false,
           base::Time(), false,
-          std::vector<download::DownloadItem::ReceivedSlice>());
+          std::vector<download::DownloadItem::ReceivedSlice>(),
+          base::FilePath());
   ClearAutoResumptionCount(download);
 
   download->Resume(false);
@@ -3655,7 +3628,8 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest, ResumeRestoredDownload_LongFile) {
           download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
           download::DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, false,
           base::Time(), false,
-          std::vector<download::DownloadItem::ReceivedSlice>());
+          std::vector<download::DownloadItem::ReceivedSlice>(),
+          base::FilePath());
   ClearAutoResumptionCount(download);
 
   download->Resume(false);
@@ -4923,6 +4897,63 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest, DownloadIgnoresXFO) {
             downloads[0]->GetTargetFilePath().BaseName().value());
 }
 
+// When a navigation in a subframe is intercepted as a download and the
+// embedder's CheckDownloadAllowed() decision arrives after the subframe has
+// been detached, the download should still be associated with the
+// StoragePartition that hosted the subframe rather than falling back to the
+// default partition.
+IN_PROC_BROWSER_TEST_F(
+    DownloadContentTest,
+    InterceptedSubframeDownloadUsesInitiatorStoragePartition) {
+  // Route a.test to a non-default StoragePartition.
+  CustomStoragePartitionBrowserClient browser_client(GURL("http://a.test/"));
+
+  GURL main_url(embedded_test_server()->GetURL(
+      "a.test", "/cross_site_iframe_factory.html?a.test(a.test)"));
+  GURL download_url(
+      embedded_test_server()->GetURL("a.test", "/download/download-test.lib"));
+  WebContentsImpl* web_contents =
+      static_cast<WebContentsImpl*>(shell()->web_contents());
+
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+  FrameTreeNode* root = web_contents->GetPrimaryFrameTree().root();
+  ASSERT_EQ(1u, root->child_count());
+  FrameTreeNode* child = root->child_at(0);
+  StoragePartitionConfig initiator_config = child->current_frame_host()
+                                                ->GetSiteInstance()
+                                                ->GetSecurityPrincipal()
+                                                .GetStoragePartitionConfig();
+  ASSERT_FALSE(initiator_config.is_default());
+
+  // Navigate the subframe to a download response while holding the embedder's
+  // CheckDownloadAllowed() decision.
+  base::RunLoop intercept_loop;
+  GetDownloadManagerDelegate()->DelayNextCheckDownloadAllowed(
+      intercept_loop.QuitClosure());
+  DownloadCreateObserver download_observer(DownloadManagerForShell(shell()));
+  EXPECT_TRUE(BeginNavigateIframeToURL(web_contents, "child-0", download_url));
+  intercept_loop.Run();
+
+  // Detach the subframe before the decision is delivered.
+  RenderFrameDeletedObserver child_deleted(child->current_frame_host());
+  EXPECT_TRUE(ExecJs(root->current_frame_host(),
+                     "document.getElementById('child-0').remove();"));
+  EXPECT_TRUE(child_deleted.WaitUntilDeleted());
+  ASSERT_EQ(0u, root->child_count());
+
+  // Allow the download to proceed and wait for it to be created.
+  GetDownloadManagerDelegate()->RunDelayedCheckDownloadAllowedCallback(true);
+  download::DownloadItem* download = download_observer.WaitForFinished();
+  ASSERT_TRUE(download);
+
+  StoragePartitionConfig download_config =
+      DownloadManagerForShell(shell())
+          ->SerializedEmbedderDownloadDataToStoragePartitionConfig(
+              download->GetSerializedEmbedderDownloadData());
+  EXPECT_FALSE(download_config.is_default());
+  EXPECT_EQ(initiator_config, download_config);
+}
+
 // Verify that the response body of non-successful server response can be
 // downloaded to a file, when |fetch_error_body| sets to true.
 IN_PROC_BROWSER_TEST_F(DownloadContentTest, FetchErrorResponseBody) {
@@ -5131,8 +5162,7 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest, SaveImageAt) {
     ASSERT_TRUE(ReadFileToString(GetTestFilePath("media", "blackwhite.png"),
                                  &expected_content));
   }
-  ASSERT_TRUE(VerifyFile(downloads[0]->GetFullPath(), expected_content,
-                         expected_content.size()));
+  ASSERT_TRUE(VerifyFile(downloads[0]->GetFullPath(), expected_content));
 }
 
 // Test fixture for forcing MHTML download.
@@ -5461,74 +5491,55 @@ IN_PROC_BROWSER_TEST_F(DownloadPrerenderTest, DiscardContextMenuSaveDownload) {
   EXPECT_TRUE(downloads.empty());
 }
 
-// Verify that downloads not triggered by navigation are discarded when
-// initiated from a fenced frame.
-IN_PROC_BROWSER_TEST_F(DownloadFencedFrameTest, DiscardNonNavigationDownload) {
-  const GURL kInitialUrl = embedded_test_server()->GetURL("/empty.html");
-  const GURL kFencedFrameUrl =
-      embedded_test_server()->GetURL("/fenced_frames/title1.html");
+// Verify that a DownloadURL request with `is_context_menu_save` set is
+// discarded when initiated from a frame that is pending deletion.
+IN_PROC_BROWSER_TEST_F(DownloadContentTest,
+                       DiscardDownloadFromPendingDeletionFrame) {
+  const GURL kUrlA = embedded_test_server()->GetURL("a.test", "/empty.html");
+  const GURL kUrlB = embedded_test_server()->GetURL("b.test", "/empty.html");
   const GURL kDownloadUrl =
-      embedded_test_server()->GetURL("/download/download-test.lib");
+      embedded_test_server()->GetURL("a.test", "/download/download-test.lib");
 
-  // Create fenced frame
-  EXPECT_TRUE(NavigateToURL(shell(), kInitialUrl));
-  RenderFrameHost* fenced_frame_host = CreateFencedFrame(
-      shell()->web_contents()->GetPrimaryMainFrame(), kFencedFrameUrl);
+  DisableBackForwardCacheForTesting(shell()->web_contents(),
+                                    BackForwardCache::TEST_REQUIRES_NO_CACHING);
 
-  // Do a download without navigation from the fenced frame RenderFrameHost.
-  // The download will be dropped.
-  auto* download_manager =
-      fenced_frame_host->GetBrowserContext()->GetDownloadManager();
+  // Navigate to A and force the RenderFrameHost to linger after being
+  // navigated away from.
+  EXPECT_TRUE(NavigateToURL(shell(), kUrlA));
+  auto* rfh_a = static_cast<RenderFrameHostImpl*>(
+      shell()->web_contents()->GetPrimaryMainFrame());
+  LeaveInPendingDeletionState(rfh_a);
+
+  // Navigate to B so that `rfh_a` enters the pending deletion state.
+  EXPECT_TRUE(NavigateToURL(shell(), kUrlB));
+  EXPECT_FALSE(rfh_a->IsActive());
+
+  auto* download_manager = DownloadManagerForShell(shell());
   MockDownloadManagerObserver dm_observer(download_manager);
-  EXPECT_CALL(dm_observer, OnDownloadCreated(_, _)).Times(0);
-  EXPECT_CALL(dm_observer, OnDownloadDropped(_)).Times(1);
+  EXPECT_CALL(dm_observer, OnDownloadCreated(_, _)).Times(1);
+  EXPECT_CALL(dm_observer, OnDownloadDropped(_)).Times(0);
 
-  auto params = blink::mojom::DownloadURLParams::New();
-  params->url = kDownloadUrl;
-  static_cast<RenderFrameHostImpl*>(fenced_frame_host)
-      ->DownloadURL(std::move(params));
-
-  // Verify there were no downloads.
-  EXPECT_TRUE(EnsureNoPendingDownloads());
-  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
-  download_manager->GetAllDownloads(&downloads);
-  EXPECT_TRUE(downloads.empty());
-}
-
-// Verify that context-menu-save downloads are also discarded when initiated
-// from a fenced frame.
-IN_PROC_BROWSER_TEST_F(DownloadFencedFrameTest,
-                       DiscardContextMenuSaveDownload) {
-  const GURL kInitialUrl = embedded_test_server()->GetURL("/empty.html");
-  const GURL kFencedFrameUrl =
-      embedded_test_server()->GetURL("/fenced_frames/title1.html");
-  const GURL kDownloadUrl =
-      embedded_test_server()->GetURL("/download/download-test.lib");
-
-  // Create a fenced frame.
-  EXPECT_TRUE(NavigateToURL(shell(), kInitialUrl));
-  RenderFrameHost* fenced_frame_host = CreateFencedFrame(
-      shell()->web_contents()->GetPrimaryMainFrame(), kFencedFrameUrl);
-
-  // Do a context-menu-save download from the fenced frame RenderFrameHost.
-  // The download will be dropped.
-  auto* download_manager =
-      fenced_frame_host->GetBrowserContext()->GetDownloadManager();
-  MockDownloadManagerObserver dm_observer(download_manager);
-  EXPECT_CALL(dm_observer, OnDownloadCreated(_, _)).Times(0);
-  EXPECT_CALL(dm_observer, OnDownloadDropped(_)).Times(1);
-
+  // Send a DownloadURL request from the pending deletion frame with
+  // `is_context_menu_save` set. It should not result in a download.
   auto params = blink::mojom::DownloadURLParams::New();
   params->url = kDownloadUrl;
   params->should_prompt_for_save_location = true;
-  static_cast<RenderFrameHostImpl*>(fenced_frame_host)
-      ->DownloadURL(std::move(params));
+  rfh_a->DownloadURL(std::move(params));
 
-  // Verify there were no downloads.
-  EXPECT_TRUE(EnsureNoPendingDownloads());
+  // Trigger a download from the primary main frame and wait for it to
+  // complete. This ensures any download from the request above would have
+  // been observed by now.
+  std::unique_ptr<DownloadTestObserver> observer(CreateWaiter(shell(), 1));
+  auto barrier_parameters =
+      DownloadRequestUtils::CreateDownloadForWebContentsMainFrame(
+          shell()->web_contents(), kDownloadUrl, TRAFFIC_ANNOTATION_FOR_TESTS);
+  download_manager->DownloadUrl(std::move(barrier_parameters));
+  observer->WaitForFinished();
+
+  // Verify only the primary main frame download exists.
   std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> downloads;
   download_manager->GetAllDownloads(&downloads);
-  EXPECT_TRUE(downloads.empty());
+  EXPECT_EQ(1u, downloads.size());
 }
 
 // A download triggered by clicking on a link with a |download| attribute should
@@ -5598,7 +5609,8 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest, SVGAnchorDownloadAttribute) {
 
   EXPECT_EQ(FILE_PATH_LITERAL("svg-suggested-filename.txt"),
             downloads[0]->GetTargetFilePath().BaseName().value());
-  VerifyFile(downloads[0]->GetFullPath(), "SVG download test content", 25);
+  ASSERT_TRUE(
+      VerifyFile(downloads[0]->GetFullPath(), "SVG download test content"));
 
   DownloadManagerForShell(shell())->Shutdown();
 }
@@ -5623,7 +5635,8 @@ IN_PROC_BROWSER_TEST_F(DownloadContentTest, MathMLAnchorDownloadAttribute) {
 
   EXPECT_EQ(FILE_PATH_LITERAL("mathml-suggested-filename.txt"),
             downloads[0]->GetTargetFilePath().BaseName().value());
-  VerifyFile(downloads[0]->GetFullPath(), "MathML download test content", 28);
+  ASSERT_TRUE(
+      VerifyFile(downloads[0]->GetFullPath(), "MathML download test content"));
 
   DownloadManagerForShell(shell())->Shutdown();
 }

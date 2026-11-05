@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/containers/fixed_flat_set.h"
+#include "base/containers/span.h"
 #include "base/format_macros.h"
 #include "base/functional/callback.h"
 #include "base/strings/string_number_conversions.h"
@@ -27,7 +28,7 @@ namespace content {
 namespace {
 
 bool IsUncachedHeader(std::string_view name) {
-  DCHECK_EQ(name, base::ToLowerASCII(name));
+  CHECK_EQ(name, base::ToLowerASCII(name), base::NotFatalUntil::M159);
 
   constexpr auto kUncachedHeaders = base::MakeFixedFlatSet<std::string_view>({
       // "Hop-by-hop header fields listed in the Connection header field
@@ -141,8 +142,8 @@ bool ParseResponseMap(const cbor::Value& value,
   }
 
   const cbor::Value::MapValue& response_map = value.GetMap();
-  auto status_iter = response_map.find(
-      cbor::Value(kStatusKey, cbor::Value::Type::BYTE_STRING));
+  auto status_iter =
+      response_map.find(cbor::Value(base::byte_span_from_cstring(kStatusKey)));
   if (status_iter == response_map.end() ||
       !status_iter->second.is_bytestring()) {
     signed_exchange_utils::ReportErrorAndTraceEvent(

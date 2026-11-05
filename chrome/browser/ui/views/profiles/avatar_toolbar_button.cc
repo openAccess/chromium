@@ -88,9 +88,11 @@ AvatarToolbarButton::AvatarToolbarButton(BrowserWindowInterface* browser)
   SetHorizontalAlignment(gfx::ALIGN_LEFT);
 
   SetImageLabelSpacing(kChromeRefreshImageLabelPadding);
-  label()->SetPaintToLayer();
-  label()->SetSkipSubpixelRenderingOpacityCheck(true);
-  label()->layer()->SetFillsBoundsOpaquely(false);
+  if (AvatarToolbarButtonInterface::CanShowForProfile(browser->GetProfile())) {
+    label()->SetPaintToLayer();
+    label()->SetSkipSubpixelRenderingOpacityCheck(true);
+    label()->layer()->SetFillsBoundsOpaquely(false);
+  }
   label()->SetSubpixelRenderingEnabled(false);
 
   // With default (EASE_OUT) tween type.
@@ -205,7 +207,7 @@ void AvatarToolbarButton::AnimateTextChange(
   const std::u16string new_text = state_provider->GetText();
   const std::u16string_view current_text = GetText();
 
-  if (new_text == current_text ||
+  if (!GetVisible() || new_text == current_text ||
       gfx::ScopedAnimationDurationScaleMode::is_zero()) {
     SetHighlight(new_text, state_provider->GetHighlightColor(*color_provider));
     return;
@@ -410,19 +412,9 @@ bool AvatarToolbarButton::HasExplicitButtonState() const {
   return state_manager_.HasExplicitButtonState();
 }
 
-void AvatarToolbarButton::MaybeShowProfileSwitchIPH() {
-  state_manager_.MaybeShowProfileSwitchIPH();
+bool AvatarToolbarButton::IsReadyForIPH() const {
+  return true;
 }
-
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-void AvatarToolbarButton::MaybeShowSupervisedUserSignInIPH() {
-  state_manager_.MaybeShowSupervisedUserSignInIPH();
-}
-
-void AvatarToolbarButton::MaybeShowSignInBenefitsIPH() {
-  state_manager_.MaybeShowSignInBenefitsIPH();
-}
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 void AvatarToolbarButton::MaybeShowExplicitBrowserSigninPreferenceRememberedIPH(
     const AccountInfo& account_info) {
@@ -457,7 +449,10 @@ void AvatarToolbarButton::OnThemeChanged() {
 }
 
 void AvatarToolbarButton::ButtonPressed(bool is_source_accelerator) {
-  state_manager_.HandleButtonPressed(is_source_accelerator);
+  // The Views toolbar pops the button out once the profile menu is shown (see
+  // ToolbarController's PopOutHandler), so no token is needed.
+  state_manager_.HandleButtonPressed(is_source_accelerator,
+                                     /*keep_anchor_visible=*/{});
 }
 
 void AvatarToolbarButton::AfterPropertyChange(const void* key,
@@ -555,11 +550,6 @@ void AvatarToolbarButton::ClearActiveStateForTesting() {
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 void AvatarToolbarButton::ForceShowingPromoForTesting() {
   state_manager_.ForceShowingPromoForTesting();
-}
-
-bool AvatarToolbarButton::
-    GetStateAndFireSignedOutTriggerDelayTimerForTesting() {
-  return state_manager_.GetStateAndFireSignedOutTriggerDelayTimerForTesting();
 }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 

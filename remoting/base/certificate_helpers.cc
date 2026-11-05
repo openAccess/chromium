@@ -12,7 +12,7 @@
 #include "net/cert/x509_certificate.h"
 #include "net/ssl/client_cert_store.h"
 
-#if BUILDFLAG(USE_NSS_CERTS)
+#if BUILDFLAG(USE_NSS_CLIENT_CERTS)
 #include "net/ssl/client_cert_store_nss.h"
 #elif BUILDFLAG(IS_WIN)
 #include "net/ssl/client_cert_store_win.h"
@@ -109,15 +109,16 @@ std::unique_ptr<net::ClientCertIdentity> GetBestMatchFromCertificateList(
 }
 
 std::unique_ptr<net::ClientCertStore> CreateClientCertStoreInstance() {
-#if BUILDFLAG(USE_NSS_CERTS)
+#if BUILDFLAG(USE_NSS_CLIENT_CERTS)
   return std::make_unique<net::ClientCertStoreNSS>(
       net::ClientCertStoreNSS::PasswordDelegateFactory());
 #elif BUILDFLAG(IS_WIN)
-  // The network process is running as "Local Service" whose "Current User"
-  // cert store doesn't contain any certificates. Use the "Local Machine"
-  // store instead.
-  // The ACL on the private key of the machine certificate in the "Local
-  // Machine" cert store needs to allow access by "Local Service".
+  // Machine client certificates used for host authentication are provisioned in
+  // the "Local Machine" cert store rather than a per-user store. In
+  // multi-process mode, this store is opened by CertificateBrokerImpl in the
+  // elevated daemon process (LocalSystem) because the sandboxed network process
+  // (Low Integrity / AppContainer) cannot open CNG software-backed private key
+  // containers directly even if "Local Service" is granted DACL access.
   return std::make_unique<net::ClientCertStoreWin>(
       base::BindRepeating(&OpenLocalMachineCertStore));
 #elif BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_IOS)

@@ -124,7 +124,7 @@ void DisplayNotification(const std::u16string& title,
                          const std::u16string& text) {
   auto notification = CreateSystemNotificationPtr(
       message_center::NOTIFICATION_TYPE_SIMPLE, kNotificationId, title, text,
-      /*display_source=*/std::u16string(), /*origin_url=*/GURL(),
+      /*display_source=*/std::u16string(),
       message_center::NotifierId(message_center::NotifierType::SYSTEM_COMPONENT,
                                  kNotifierSecurityTokenSession,
                                  NotificationCatalogName::kSecurityToken),
@@ -198,9 +198,9 @@ SecurityTokenSessionController::SecurityTokenSessionController(
       extensions_tracker_(extensions::ExtensionRegistry::Get(profile), profile),
       session_manager_(session_manager::SessionManager::Get()),
       session_activation_seconds_(kSessionActivationTimeout) {
-  DCHECK(local_state_);
-  DCHECK(primary_user_);
-  DCHECK(certificate_provider_service_);
+  CHECK(local_state_, base::NotFatalUntil::M161);
+  CHECK(primary_user_, base::NotFatalUntil::M161);
+  CHECK(certificate_provider_service_, base::NotFatalUntil::M161);
   session_manager_observation_.Observe(session_manager_.get());
   certificate_provider_ =
       certificate_provider_service_->CreateCertificateProvider();

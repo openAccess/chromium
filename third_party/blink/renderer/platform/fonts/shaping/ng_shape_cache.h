@@ -44,6 +44,7 @@
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/hash_functions.h"
+#include "third_party/blink/renderer/platform/wtf/hash_functions_memory.h"
 #include "third_party/blink/renderer/platform/wtf/hash_table_deleted_value_type.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
@@ -75,8 +76,8 @@ struct ShapeCacheKey {
  public:
   ShapeCacheKey() = default;
   ShapeCacheKey(const String& text,
-                unsigned start_offset,
-                unsigned end_offset,
+                wtf_size_t start_offset,
+                wtf_size_t end_offset,
                 const AtomicString& locale,
                 base::span<const FontFeatureRange> font_features,
                 TextDirection direction)
@@ -93,14 +94,13 @@ struct ShapeCacheKey {
 
   bool IsHashTableDeletedValue() const { return text_ == g_empty_string; }
 
-  unsigned GetHash() const {
-    unsigned hash = blink::GetHash(text_);
+  uint32_t GetHash() const {
+    uint32_t hash = blink::GetHash(text_);
     AddIntToHash(hash, start_offset_);
     AddIntToHash(hash, end_offset_);
     AddIntToHash(hash, locale_ ? blink::GetHash(locale_) : 0);
-    AddIntToHash(
-        hash, StringHasher::HashMemory32(base::as_byte_span(font_features_)));
-    AddIntToHash(hash, static_cast<unsigned>(direction_));
+    AddIntToHash(hash, HashMemory32(base::as_byte_span(font_features_)));
+    AddIntToHash(hash, static_cast<uint32_t>(direction_));
     return hash;
   }
 
@@ -115,8 +115,8 @@ struct ShapeCacheKey {
 
  private:
   String text_;
-  unsigned start_offset_ = 0u;
-  unsigned end_offset_ = 0u;
+  wtf_size_t start_offset_ = 0u;
+  wtf_size_t end_offset_ = 0u;
   AtomicString locale_;
   Vector<FontFeatureRange, 1> font_features_;
   TextDirection direction_ = TextDirection::kLtr;
@@ -130,8 +130,8 @@ class NGShapeCache : public GarbageCollected<NGShapeCache>,
   USING_PRE_FINALIZER(NGShapeCache, Dispose);
 
  public:
-  static constexpr unsigned kMaxTextLengthOfEntries = 30;
-  static constexpr unsigned kMaxSize = 2048;
+  static constexpr wtf_size_t kMaxTextLengthOfEntries = 30;
+  static constexpr wtf_size_t kMaxSize = 2048;
 
   explicit NGShapeCache(const SimpleFontData* primary_font)
       : primary_font_(primary_font) {
@@ -184,15 +184,15 @@ class NGShapeCache : public GarbageCollected<NGShapeCache>,
   }
 
  private:
-  typedef HeapHashMap<ShapeCacheKey, WeakMember<const ShapeResult>> WeakMap;
-  typedef HeapHashMap<ShapeCacheKey, Member<const ShapeResult>> StrongMap;
+  using WeakMap = HeapHashMap<ShapeCacheKey, WeakMember<const ShapeResult>>;
+  using StrongMap = HeapHashMap<ShapeCacheKey, Member<const ShapeResult>>;
 
   static constexpr char kConsumerId[] = "NGShapeCache";
   static constexpr base::MemoryConsumerTraits kNGShapeCacheTraits{
       // Bounded entries of short strings; footprint under 10MB.
       base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-      // Clearing maps requires traversing hash map structures.
-      base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+      // Clearing the maps reads the entries being freed.
+      base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
       // Results can be shaped again if cleared.
       base::MemoryConsumerTraits::InformationRetention::kLossless,
       // Synchronously clears maps.
@@ -229,7 +229,7 @@ class NGShapeCache : public GarbageCollected<NGShapeCache>,
       const bool has_private_or_non_characters =
           !key.GetText().Is8Bit() &&
           std::ranges::any_of(key.GetText().Span16(), [](UChar32 c) {
-            return Character::IsPrivateUse(c) || Character::IsNonCharacter(c);
+            return unicode::IsPrivateUse(c) || unicode::IsNonCharacter(c);
           });
       // The shape-result call might try and reuse previous shape-results, we
       // can't check for equality in this case.

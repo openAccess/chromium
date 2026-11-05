@@ -11,7 +11,6 @@ import androidx.test.core.app.ApplicationProvider;
 import org.junit.runner.Description;
 import org.junit.runners.model.Statement;
 
-import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
@@ -42,6 +41,7 @@ public class TabModelSelectorObserverTestRule extends SigninTestRule {
     private TabModelSelectorBase mSelector;
     private TabModelSelectorTestTabModel mNormalTabModel;
     private TabModelSelectorTestIncognitoTabModel mIncognitoTabModel;
+    private TabContentManager mTabContentManager;
 
     public TabModelSelectorBase getSelector() {
         return mSelector;
@@ -61,8 +61,12 @@ public class TabModelSelectorObserverTestRule extends SigninTestRule {
                 new Statement() {
                     @Override
                     public void evaluate() throws Throwable {
-                        setUp();
-                        base.evaluate();
+                        try {
+                            setUp();
+                            base.evaluate();
+                        } finally {
+                            tearDown();
+                        }
                     }
                 },
                 description);
@@ -76,16 +80,25 @@ public class TabModelSelectorObserverTestRule extends SigninTestRule {
                 });
     }
 
+    private void tearDown() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    if (mSelector != null) {
+                        mSelector.destroy();
+                        mSelector = null;
+                    }
+                    if (mTabContentManager != null) {
+                        mTabContentManager.destroy();
+                        mTabContentManager = null;
+                    }
+                });
+    }
+
     private void initialize() {
         mSelector =
                 new TabModelSelectorBase(null, false) {
                     @Override
                     public void requestToShowTab(Tab tab, int type) {}
-
-                    @Override
-                    public boolean isTabModelRestored() {
-                        return true;
-                    }
 
                     @Override
                     public Tab openNewTab(
@@ -103,14 +116,14 @@ public class TabModelSelectorObserverTestRule extends SigninTestRule {
                 };
 
         TabModelOrderController orderController = new TabModelOrderControllerImpl(mSelector);
-        TabContentManager tabContentManager =
+        mTabContentManager =
                 new TabContentManager(
                         ApplicationProvider.getApplicationContext(),
                         null,
                         false,
                         mSelector::getTabById,
                         TabWindowManagerSingleton.getInstance());
-        tabContentManager.initWithNative();
+        mTabContentManager.initWithNative();
         NextTabPolicySupplier nextTabPolicySupplier = () -> NextTabPolicy.HIERARCHICAL;
         AsyncTabParamsManager asyncTabParamsManager = AsyncTabParamsManagerSingleton.getInstance();
 
@@ -125,7 +138,7 @@ public class TabModelSelectorObserverTestRule extends SigninTestRule {
                     public void requestToShowTab(Tab tab, @TabSelectionType int type) {}
 
                     @Override
-                    public boolean isTabModelRestored() {
+                    public boolean isTabStateInitialized() {
                         return true;
                     }
 
@@ -148,38 +161,36 @@ public class TabModelSelectorObserverTestRule extends SigninTestRule {
         Profile regularProfile = ProfileManager.getLastUsedRegularProfile();
         TabRemover normalTabRemover =
                 new PassthroughTabRemover(() -> mSelector.getModel(/* incognito= */ false));
-        TabUngrouperFactory tabUngrouperFactory =
-                (isIncognitoBranded, tabModelSupplier) ->
-                        new PassthroughTabUngrouper(
-                                () -> mSelector.getModel(/* incognito= */ isIncognitoBranded));
+        TabUngrouper normalTabUngrouper =
+                new PassthroughTabUngrouper(() -> mSelector.getModel(/* incognito= */ false));
         Supplier<ScopedStorageBatch> batchFactory = () -> createBatch(regularProfile);
         mNormalTabModel =
                 new TabModelSelectorTestTabModel(
                         regularProfile,
                         orderController,
-                        tabContentManager,
+                        mTabContentManager,
                         nextTabPolicySupplier,
                         asyncTabParamsManager,
                         NO_RESTORE_TYPE,
                         delegate,
                         normalTabRemover,
-                        /* isIncognitoBranded= */ false,
-                        tabUngrouperFactory,
+                        normalTabUngrouper,
                         batchFactory);
 
         TabRemover incognitoTabRemover =
                 new PassthroughTabRemover(() -> mSelector.getModel(/* incognito= */ true));
+        TabUngrouper incognitoTabUngrouper =
+                new PassthroughTabUngrouper(() -> mSelector.getModel(/* incognito= */ true));
         mIncognitoTabModel =
                 new TabModelSelectorTestIncognitoTabModel(
                         regularProfile.getPrimaryOtrProfile(/* createIfNeeded= */ true),
                         orderController,
-                        tabContentManager,
+                        mTabContentManager,
                         nextTabPolicySupplier,
                         asyncTabParamsManager,
                         delegate,
                         incognitoTabRemover,
-                        /* isIncognitoBranded= */ true,
-                        tabUngrouperFactory,
+                        incognitoTabUngrouper,
                         batchFactory);
 
         mSelector.initialize(mNormalTabModel, mIncognitoTabModel);
@@ -199,8 +210,7 @@ public class TabModelSelectorObserverTestRule extends SigninTestRule {
                 @ActivityType int activityType,
                 TabModelDelegate modelDelegate,
                 TabRemover tabRemover,
-                boolean isIncognitoBranded,
-                TabUngrouperFactory tabUngrouperFactory,
+                TabUngrouper tabUngrouper,
                 Supplier<ScopedStorageBatch> batchFactory) {
             super(
                     profile,
@@ -215,8 +225,7 @@ public class TabModelSelectorObserverTestRule extends SigninTestRule {
                     modelDelegate,
                     asyncTabParamsManager,
                     tabRemover,
-                    isIncognitoBranded,
-                    tabUngrouperFactory,
+                    tabUngrouper,
                     batchFactory,
                     /* supportUndo= */ false);
         }
@@ -250,9 +259,6 @@ public class TabModelSelectorObserverTestRule extends SigninTestRule {
         }
 
         @Override
-        public void addDelegateModelObserver(Callback<TabModelInternal> callback) {}
-
-        @Override
         public void addIncognitoObserver(IncognitoTabModelObserver observer) {}
 
         @Override
@@ -274,8 +280,7 @@ public class TabModelSelectorObserverTestRule extends SigninTestRule {
                 AsyncTabParamsManager asyncTabParamsManager,
                 TabModelDelegate modelDelegate,
                 TabRemover tabRemover,
-                boolean isIncognitoBranded,
-                TabUngrouperFactory tabUngrouperFactory,
+                TabUngrouper tabUngrouper,
                 Supplier<ScopedStorageBatch> batchFactory) {
             super(
                     ProfileManager.getLastUsedRegularProfile()
@@ -287,8 +292,7 @@ public class TabModelSelectorObserverTestRule extends SigninTestRule {
                     NO_RESTORE_TYPE,
                     modelDelegate,
                     tabRemover,
-                    isIncognitoBranded,
-                    tabUngrouperFactory,
+                    tabUngrouper,
                     batchFactory);
         }
 

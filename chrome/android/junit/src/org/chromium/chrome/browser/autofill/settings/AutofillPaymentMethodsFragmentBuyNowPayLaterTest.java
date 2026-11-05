@@ -33,7 +33,6 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.PersonalDataManager;
-import org.chromium.chrome.browser.autofill.PersonalDataManager.Iban;
 import org.chromium.chrome.browser.autofill.PersonalDataManagerFactory;
 import org.chromium.chrome.browser.device_reauth.BiometricStatus;
 import org.chromium.chrome.browser.device_reauth.ReauthenticatorBridge;
@@ -41,6 +40,7 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.components.autofill.payments.BankAccount;
+import org.chromium.components.autofill.payments.Iban;
 import org.chromium.components.payments.AndroidPaymentAppFactory;
 import org.chromium.components.payments.PackageManagerDelegate;
 import org.chromium.components.prefs.PrefService;
@@ -55,8 +55,7 @@ import java.util.List;
 @DisableFeatures({
     ChromeFeatureList.AUTOFILL_ENABLE_SEPARATE_PIX_PREFERENCE_ITEM,
     ChromeFeatureList.AUTOFILL_ENABLE_WALLET_REMINDER_NOTICE,
-    ChromeFeatureList.AUTOFILL_SYNC_EWALLET_ACCOUNTS,
-    ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
+    ChromeFeatureList.AUTOFILL_SYNC_EWALLET_ACCOUNTS
 })
 public class AutofillPaymentMethodsFragmentBuyNowPayLaterTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();

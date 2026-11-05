@@ -44,6 +44,7 @@
 #import "ios/testing/earl_grey/app_launch_configuration.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/web/common/features.h"
 #import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/navigation/reload_type.h"
@@ -69,6 +70,7 @@ using chrome_test_util::ToolbarButtonWithID;
 using reading_list_test_utils::AddedToLocalReadingListSnackbar;
 using reading_list_test_utils::OpenReadingList;
 using reading_list_test_utils::OpenTestReadingList;
+using reading_list_test_utils::ReadingListItem;
 using reading_list_test_utils::VisibleReadingListItem;
 
 namespace {
@@ -102,11 +104,22 @@ std::string operator*(const std::string& s, unsigned int n) {
   return out.str();
 }
 
+// Returns a matcher for an element whose ancestor is either UINavigationBar or
+// _UIFloatingBarContainerView (on iOS 27+).
+id<GREYMatcher> NavigationBarOrFloatingBar() {
+  NSMutableArray<id<GREYMatcher>>* ancestors = [NSMutableArray
+      arrayWithObject:grey_ancestor(grey_kindOfClass([UINavigationBar class]))];
+  Class floatingBarClass = NSClassFromString(@"_UIFloatingBarContainerView");
+  if (floatingBarClass) {
+    [ancestors addObject:grey_ancestor(grey_kindOfClass(floatingBarClass))];
+  }
+  return grey_anyOfMatchers(ancestors);
+}
+
 // Scroll to the top of the Reading List.
 void ScrollToTop() {
-  XCUIApplication* springboardApplication = [[XCUIApplication alloc]
-      initWithBundleIdentifier:@"com.apple.springboard"];
-  [springboardApplication.statusBars.firstMatch tap];
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(kReadingListViewID)]
+      performAction:chrome_test_util::ScrollToTop()];
 }
 
 // Asserts that the "mark" toolbar button is visible and has the a11y label of
@@ -120,29 +133,21 @@ void AssertToolbarMarkButtonText(int a11y_label_id) {
 
 // Asserts the `button_id` navigation bar button is not visible.
 void AssertNavigationBarButtonNotVisibleWithID(NSString* button_id) {
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityID(button_id),
-                                          grey_ancestor(grey_kindOfClassName(
-                                              @"UINavigationBar")),
-                                          nil)]
-      assertWithMatcher:grey_notVisible()];
+  [ChromeEarlGrey waitForNotSufficientlyVisibleElementWithMatcher:
+                      grey_allOf(grey_accessibilityID(button_id),
+                                 NavigationBarOrFloatingBar(), nil)];
 }
 
 // Asserts the `button_id` toolbar button is not visible.
 void AssertToolbarButtonNotVisibleWithID(NSString* button_id) {
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityID(button_id),
-                                          grey_ancestor(grey_kindOfClassName(
-                                              @"UIToolbar")),
-                                          nil)]
-      assertWithMatcher:grey_notVisible()];
+  [ChromeEarlGrey waitForNotSufficientlyVisibleElementWithMatcher:
+                      chrome_test_util::ToolbarButtonWithID(button_id)];
 }
 
 // Assert the `button_id` button is visible.
 void AssertNavigationBarButtonVisibleWithID(NSString* button_id) {
-  id<GREYMatcher> buttonMatcher =
-      grey_allOf(grey_accessibilityID(button_id),
-                 grey_ancestor(grey_kindOfClass([UINavigationBar class])), nil);
+  id<GREYMatcher> buttonMatcher = grey_allOf(grey_accessibilityID(button_id),
+                                             NavigationBarOrFloatingBar(), nil);
   [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:buttonMatcher];
 }
 
@@ -154,12 +159,13 @@ void AssertToolbarButtonVisibleWithID(NSString* button_id) {
       assertWithMatcher:grey_sufficientlyVisible()];
 }
 
-// Taps the `button_id` toolbar button.
+// Taps the `button_id` toolbar button once it is sufficiently visible, as it
+// may still be animating into place.
 void TapToolbarButtonWithID(NSString* button_id) {
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityID(button_id),
-                                          grey_sufficientlyVisible(), nil)]
-      performAction:grey_tap()];
+  id<GREYMatcher> button_matcher = grey_allOf(grey_accessibilityID(button_id),
+                                              grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:button_matcher];
+  [[EarlGrey selectElementWithMatcher:button_matcher] performAction:grey_tap()];
 }
 
 
@@ -223,22 +229,12 @@ void AssertAllEntriesVisible() {
 
 // Asserts that the entry `title` is not visible.
 void AssertEntryNotVisible(NSString* title) {
-  [ChromeEarlGreyUI waitForAppToIdle];
-  ScrollToTop();
-  NSError* error;
-
-  [[[EarlGrey selectElementWithMatcher:VisibleReadingListItem(title)]
-         usingSearchAction:grey_swipeSlowInDirection(kGREYDirectionUp)
-      onElementWithMatcher:grey_accessibilityID(kReadingListViewID)]
-      assertWithMatcher:grey_notNil()
-                  error:&error];
-  GREYAssertNotNil(error, @"Entry is visible");
+  [[EarlGrey selectElementWithMatcher:ReadingListItem(title)]
+      assertWithMatcher:grey_notVisible()];
 }
 
-// Asserts `header` is visible.
+// Asserts that `header` is not visible.
 void AssertHeaderNotVisible(NSString* header) {
-  [ChromeEarlGreyUI waitForAppToIdle];
-  ScrollToTop();
   [[EarlGrey selectElementWithMatcher:
                  chrome_test_util::StaticTextWithAccessibilityLabel(header)]
       assertWithMatcher:grey_notVisible()];
@@ -745,7 +741,7 @@ std::unique_ptr<net::test_server::HttpResponse> HandleImageQueryOrCloseSocket(
   [ChromeEarlGrey
       waitForUIElementToDisappearWithMatcher:
           grey_accessibilityID(kReadingListToolbarDeleteAllReadButtonID)];
-  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
                       grey_accessibilityID(kReadingListToolbarDeleteButtonID)];
 
   TapToolbarButtonWithID(kReadingListToolbarDeleteButtonID);
@@ -880,7 +876,8 @@ std::unique_ptr<net::test_server::HttpResponse> HandleImageQueryOrCloseSocket(
 }
 
 // Selects read and unread entries and mark them as read.
-- (void)testMarkMixedEntriesRead {
+// TODO(crbug.com/560368038): Enable this test once flakyness is fixed.
+- (void)FLAKY_testMarkMixedEntriesRead {
   // TODO(crbug.com/433982582): This test fails on iPad iOS 18 with multitasking
   // enabled.
   if (!@available(iOS 26, *)) {
@@ -980,14 +977,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleImageQueryOrCloseSocket(
 
 // Tests the Copy Link context menu action for a reading list entry.
 - (void)testContextMenuCopyLink {
-#if TARGET_IPHONE_SIMULATOR
-  // TODO(crbug.com/433982582): Flaky on an iPhone simulator.
-  if ([ChromeEarlGrey isIPhoneIdiom]) {
-    if (!@available(iOS 18, *)) {
-      EARL_GREY_TEST_DISABLED(@"Flakes on iPhone.");
-    }
-  }
-#endif
   AddEntriesAndOpenReadingList();
   LongPressEntry(kReadTitle);
 
@@ -998,12 +987,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleImageQueryOrCloseSocket(
 // Tests the Open in New Tab context menu action for a reading list entry.
 - (void)testContextMenuOpenInNewTab {
 #if TARGET_IPHONE_SIMULATOR
-  // TODO(crbug.com/433982582): Flaky on an iPhone simulator.
-  if (!@available(iOS 18, *)) {
-    if ([ChromeEarlGrey isIPhoneIdiom]) {
-      EARL_GREY_TEST_DISABLED(@"Flakes on iPhone.");
-    }
-  }
   if (!@available(iOS 26, *)) {
     // This test fails on iPad iOS 18 with multitasking enabled.
     if ([ChromeEarlGrey isIPadIdiom] && [ChromeEarlGrey isCompactWidth]) {
@@ -1027,14 +1010,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleImageQueryOrCloseSocket(
 // Tests display and selection of 'Open in New Incognito Tab' in a context menu
 // on a history entry.
 - (void)testContextMenuOpenInIncognito {
-#if TARGET_IPHONE_SIMULATOR
-  // TODO(crbug.com/433982582): Flaky on an iPhone simulator.
-  if ([ChromeEarlGrey isIPhoneIdiom]) {
-    if (!@available(iOS 18, *)) {
-      EARL_GREY_TEST_DISABLED(@"Flakes on iPhone.");
-    }
-  }
-#endif
   GURL distillablePageURL(self.testServer->GetURL(kDistillableURL));
   [self addURLToTestReadingList:distillablePageURL];
   LongPressEntry(kDistillableTitle);
@@ -1107,14 +1082,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleImageQueryOrCloseSocket(
 
 // Tests the Share context menu action for a reading list entry.
 - (void)testContextMenuShare {
-#if TARGET_IPHONE_SIMULATOR
-  // TODO(crbug.com/433982582): Flaky on an iPhone simulator.
-  if ([ChromeEarlGrey isIPhoneIdiom]) {
-    if (!@available(iOS 18, *)) {
-      EARL_GREY_TEST_DISABLED(@"Flakes on iPhone.");
-    }
-  }
-#endif
   GURL distillablePageURL(self.testServer->GetURL(kDistillableURL));
   [self addURLToTestReadingList:distillablePageURL];
   LongPressEntry(kDistillableTitle);
@@ -1127,14 +1094,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleImageQueryOrCloseSocket(
 // cause a crash. This verifies that when a new SharingCoordinator is created,
 // the old one is stopped properly to prevent dangling WebStateList observers.
 - (void)testContextMenuRepeatedShare {
-#if TARGET_IPHONE_SIMULATOR
-  // TODO(crbug.com/433982582): Flaky on an iPhone simulator.
-  if ([ChromeEarlGrey isIPhoneIdiom]) {
-    if (!@available(iOS 18, *)) {
-      EARL_GREY_TEST_DISABLED(@"Flakes on iPhone.");
-    }
-  }
-#endif
   GURL distillablePageURL(self.testServer->GetURL(kDistillableURL));
   [self addURLToTestReadingList:distillablePageURL];
 
@@ -1157,15 +1116,8 @@ std::unique_ptr<net::test_server::HttpResponse> HandleImageQueryOrCloseSocket(
 }
 
 // Tests the Delete context menu action for a reading list entry.
+TAG_SMOKE_TEST(ReadingListTestCase, testContextMenuDelete);
 - (void)testContextMenuDelete {
-#if TARGET_IPHONE_SIMULATOR
-  // TODO(crbug.com/433982582): Flaky on an iPhone simulator.
-  if ([ChromeEarlGrey isIPhoneIdiom]) {
-    if (!@available(iOS 18, *)) {
-      EARL_GREY_TEST_DISABLED(@"Flakes on iPhone.");
-    }
-  }
-#endif
   GURL distillablePageURL(self.testServer->GetURL(kDistillableURL));
   [self addURLToTestReadingList:distillablePageURL];
   LongPressEntry(kDistillableTitle);
@@ -1490,6 +1442,11 @@ std::unique_ptr<net::test_server::HttpResponse> HandleImageQueryOrCloseSocket(
 - (void)testContextMenuOpenInNewWindow {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
     EARL_GREY_TEST_DISABLED(@"Multiple windows can't be opened.");
+  }
+
+  if (![ChromeEarlGrey isIPadIdiom]) {
+    EARL_GREY_TEST_DISABLED(
+        @"Opening in new window from context menu is only supported on iPad.");
   }
 
   // TODO(crbug.com/433982582): This test fails on iPad iOS 18 with multitasking

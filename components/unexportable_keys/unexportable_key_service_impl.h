@@ -24,10 +24,9 @@
 #include "components/unexportable_keys/service_error.h"
 #include "components/unexportable_keys/unexportable_key_id.h"
 #include "components/unexportable_keys/unexportable_key_service.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace unexportable_keys {
 
@@ -55,7 +54,7 @@ enum class SpareKeyPoolRetrievalResult {
   kAlgorithmNotSupported = 5,
   kMaxValue = kAlgorithmNotSupported,
 };
-// LINT.ThenChange(/tools/metrics/histograms/metadata/net/enums.xml:SpareKeyPoolRetrievalResult)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/crypto/enums.xml:SpareKeyPoolRetrievalResult)
 
 class UnexportableKeyTaskManager;
 
@@ -63,10 +62,14 @@ class COMPONENT_EXPORT(UNEXPORTABLE_KEYS) UnexportableKeyServiceImpl
     : public UnexportableKeyService {
  public:
   // `task_manager` must outlive `UnexportableKeyServiceImpl`.
+  // When the service creates its spare signing key pool, it also creates a
+  // spare attestation key pool if `enable_spare_attestation_key_pool` is true.
+  // Only DBSC single sign-on requests attestation keys.
   explicit UnexportableKeyServiceImpl(
       UnexportableKeyTaskManager& task_manager,
       BackgroundTaskOrigin task_origin,
-      crypto::UnexportableKeyProvider::Config config);
+      crypto::UnexportableKeyProvider::Config config,
+      bool enable_spare_attestation_key_pool = false);
 
   ~UnexportableKeyServiceImpl() override;
 
@@ -90,8 +93,7 @@ class COMPONENT_EXPORT(UNEXPORTABLE_KEYS) UnexportableKeyServiceImpl
 
   // UnexportableKeyService:
   void GenerateSigningKeySlowlyAsync(
-      base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms,
+      base::span<const crypto::sign::SignatureKind> acceptable_algorithms,
       BackgroundTaskPriority priority,
       base::OnceCallback<void(ServiceErrorOr<UnexportableSigningKeyId>)>
           callback) override;
@@ -101,8 +103,7 @@ class COMPONENT_EXPORT(UNEXPORTABLE_KEYS) UnexportableKeyServiceImpl
       base::OnceCallback<void(ServiceErrorOr<UnexportableSigningKeyId>)>
           callback) override;
   void GenerateAttestationKeySlowlyAsync(
-      base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms,
+      base::span<const crypto::sign::SignatureKind> acceptable_algorithms,
       BackgroundTaskPriority priority,
       base::OnceCallback<void(ServiceErrorOr<UnexportableAttestationKeyId>)>
           callback) override;
@@ -139,7 +140,7 @@ class COMPONENT_EXPORT(UNEXPORTABLE_KEYS) UnexportableKeyServiceImpl
       UnexportableSigningKeyId key_id) const override;
   ServiceErrorOr<std::vector<uint8_t>> GetWrappedKey(
       UnexportableSigningKeyId key_id) const override;
-  ServiceErrorOr<crypto::SignatureVerifier::SignatureAlgorithm> GetAlgorithm(
+  ServiceErrorOr<crypto::sign::SignatureKind> GetAlgorithm(
       UnexportableSigningKeyId key_id) const override;
   ServiceErrorOr<std::string> GetKeyTag(
       UnexportableSigningKeyId key_id) const override;

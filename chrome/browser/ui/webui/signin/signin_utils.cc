@@ -83,7 +83,8 @@ content::RenderFrameHost* GetAuthFrame(content::WebContents* web_contents,
       [&frame, &parent_frame_name](content::RenderFrameHost* rfh) {
         auto* web_view = extensions::WebViewGuest::FromRenderFrameHost(rfh);
         if (web_view && web_view->name() == parent_frame_name) {
-          DCHECK_EQ(web_view->GetGuestMainFrame(), rfh);
+          CHECK_EQ(web_view->GetGuestMainFrame(), rfh,
+                   base::NotFatalUntil::M162);
           frame = rfh;
           return content::RenderFrameHost::FrameIterationAction::kStop;
         }
@@ -127,7 +128,7 @@ void SetInitializedModalHeight(BrowserWindowInterface* browser,
   }
 
   double height = args[0].GetDouble();
-  browser->GetFeatures().signin_view_controller()->SetModalSigninHeight(
+  SigninViewController::From(browser)->SetModalSigninHeight(
       static_cast<int>(height));
 }
 

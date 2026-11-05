@@ -14,6 +14,7 @@
 #include "ipcz/fragment_descriptor.h"
 #include "ipcz/ipcz.h"
 #include "ipcz/link_side.h"
+#include "ipcz/metrics.h"
 #include "ipcz/node.h"
 #include "ipcz/node_link.h"
 #include "third_party/abseil-cpp/absl/base/macros.h"
@@ -96,6 +97,8 @@ uint32_t ToOffset(void* ptr, void* base) {
                                static_cast<uint8_t*>(base));
 }
 
+// Returns the power-of-2 block size required to fit a fragment of
+// `fragment_size` bytes.
 size_t GetBlockSizeForFragmentSize(size_t fragment_size) {
   return std::max(kMinFragmentSize, absl::bit_ceil(fragment_size));
 }
@@ -186,7 +189,7 @@ void NodeLinkMemory::SetNodeLink(Ref<NodeLink> link) {
   {
     absl::MutexLock lock(&mutex_);
     node_link_ = std::move(link);
-    if (!node_link_) {
+    if (!node_link_ || capacity_callbacks_.empty()) {
       return;
     }
 
@@ -195,10 +198,11 @@ void NodeLinkMemory::SetNodeLink(Ref<NodeLink> link) {
     for (auto& [size, callbacks] : capacity_callbacks_) {
       block_sizes_needed.push_back(size);
     }
+    link = node_link_;
   }
 
   for (size_t size : block_sizes_needed) {
-    RequestBlockCapacity(size, [](bool) {});
+    AllocateBlockBuffer(link, size);
   }
 }
 
@@ -307,7 +311,7 @@ bool NodeLinkMemory::AddBlockBuffer(BufferId id,
   return buffer_pool_.AddBlockBuffer(id, std::move(mapping), {&allocator, 1});
 }
 
-Fragment NodeLinkMemory::AllocateFragment(size_t size) {
+Fragment NodeLinkMemory::AllocateFragmentInternal(size_t size) {
   if (size == 0 || size > kMaxFragmentSizeForBlockAllocation) {
     // TODO: Support an alternative allocation scheme for large requests.
     return {};
@@ -329,6 +333,21 @@ Fragment NodeLinkMemory::AllocateFragment(size_t size) {
   return fragment;
 }
 
+Fragment NodeLinkMemory::AllocateFragment(size_t size) {
+  Fragment fragment = AllocateFragmentInternal(size);
+  if (size == 0) {
+    return fragment;
+  }
+
+  const size_t block_size = size > kMaxFragmentSizeForBlockAllocation
+                                ? 0
+                                : GetBlockSizeForFragmentSize(size);
+  metrics::RecordAllocateBlockResult(metrics::BlockAllocationSource::kParcel,
+                                     block_size,
+                                     /*success=*/!fragment.is_null());
+  return fragment;
+}
+
 Fragment NodeLinkMemory::AllocateFragmentBestEffort(size_t size) {
   // TODO: Support an alternative allocation scheme for larger requests.
   const size_t ideal_block_size = GetBlockSizeForFragmentSize(size);
@@ -337,7 +356,7 @@ Fragment NodeLinkMemory::AllocateFragmentBestEffort(size_t size) {
   const size_t smallest_block_size = kMinBestEffortFallbackBlockSize;
   for (size_t block_size = largest_block_size;
        block_size >= smallest_block_size; block_size /= 2) {
-    const Fragment fragment = AllocateFragment(block_size);
+    const Fragment fragment = AllocateFragmentInternal(block_size);
     if (!fragment.is_null()) {
       return fragment;
     }
@@ -412,11 +431,6 @@ void NodeLinkMemory::RequestBlockCapacity(
     RequestBlockCapacityCallback callback) {
   ABSL_ASSERT(block_size >= kMinFragmentSize);
 
-  const size_t min_buffer_size = block_size * kMinBlockAllocatorCapacity;
-  const size_t num_pages =
-      (min_buffer_size + kBlockAllocatorPageSize - 1) / kBlockAllocatorPageSize;
-  const size_t buffer_size = num_pages * kBlockAllocatorPageSize;
-
   Ref<NodeLink> link;
   {
     absl::MutexLock lock(&mutex_);
@@ -438,6 +452,15 @@ void NodeLinkMemory::RequestBlockCapacity(
     link = node_link_;
   }
 
+  AllocateBlockBuffer(std::move(link), block_size);
+}
+
+void NodeLinkMemory::AllocateBlockBuffer(Ref<NodeLink> link,
+                                         size_t block_size) {
+  const size_t min_buffer_size = block_size * kMinBlockAllocatorCapacity;
+  const size_t num_pages =
+      (min_buffer_size + kBlockAllocatorPageSize - 1) / kBlockAllocatorPageSize;
+  const size_t buffer_size = num_pages * kBlockAllocatorPageSize;
   node_->AllocateSharedMemory(
       buffer_size, [self = WrapRefCounted(this), block_size,
                     link = std::move(link)](DriverMemory memory) {

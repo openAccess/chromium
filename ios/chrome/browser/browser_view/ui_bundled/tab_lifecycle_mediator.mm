@@ -22,6 +22,7 @@
 #import "ios/chrome/browser/find_in_page/model/find_tab_helper.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
+#import "ios/chrome/browser/intelligence/contextual_cueing/contextual_cueing_tab_helper.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/itunes_urls/model/itunes_urls_handler_tab_helper.h"
 #import "ios/chrome/browser/lens/model/lens_tab_helper.h"
@@ -31,16 +32,17 @@
 #import "ios/chrome/browser/passwords/model/password_tab_helper.h"
 #import "ios/chrome/browser/prerender/model/prerender_tab_helper.h"
 #import "ios/chrome/browser/print/coordinator/print_coordinator.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/autofill_commands.h"
+#import "ios/chrome/browser/shared/public/commands/browser_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_sheet_commands.h"
 #import "ios/chrome/browser/shared/public/commands/enterprise_commands.h"
 #import "ios/chrome/browser/shared/public/commands/file_upload_panel_commands.h"
+#import "ios/chrome/browser/shared/public/commands/form_input_accessory_commands.h"
 #import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
@@ -171,6 +173,9 @@
   data_controls::DataControlsTabHelper::FromWebState(webState)
       ->SetSnackbarHandler(
           static_cast<id<SnackbarCommands>>(_commandDispatcher));
+  data_controls::DataControlsTabHelper::FromWebState(webState)
+      ->SetBrowserHandler(
+          HandlerForProtocol(_commandDispatcher, BrowserCommands));
 
   // DownloadManagerTabHelper cannot function without its delegate.
   DCHECK(_downloadManagerTabHelperDelegate);
@@ -202,6 +207,9 @@
             : nil;
     autofillTabHelper->SetCommandHandlers(
         static_cast<id<SnackbarCommands>>(_commandDispatcher), atMemoryHandler);
+    id<FormInputAccessoryCommands> formInputAccessoryHandler =
+        HandlerForProtocol(_commandDispatcher, FormInputAccessoryCommands);
+    autofillTabHelper->SetFormInputAccessoryHandler(formInputAccessoryHandler);
   }
 
   ReaderModeTabHelper* readerModeTabHelper =
@@ -281,6 +289,15 @@
     id<HelpCommands> helpCommandsHandler =
         HandlerForProtocol(_commandDispatcher, HelpCommands);
     geminiTabHelper->SetHelpCommandsHandler(helpCommandsHandler);
+  }
+
+  contextual_cueing::ContextualCueingTabHelper* contextualCueingTabHelper =
+      contextual_cueing::ContextualCueingTabHelper::FromWebState(webState);
+  if (contextualCueingTabHelper) {
+    contextualCueingTabHelper->SetLocationBarBadgeCommandsHandler(
+        id<LocationBarBadgeCommands>(_commandDispatcher));
+    contextualCueingTabHelper->SetGeminiHandler(
+        HandlerForProtocol(_commandDispatcher, GeminiCommands));
   }
 
   FindTabHelper* findTabHelper = FindTabHelper::FromWebState(webState);
@@ -364,6 +381,7 @@
     autofillTabHelper->SetBaseViewController(nil);
     autofillTabHelper->SetAutofillHandler(nil);
     autofillTabHelper->SetCommandHandlers(nil, nil);
+    autofillTabHelper->SetFormInputAccessoryHandler(nil);
   }
 
   ReaderModeTabHelper* readerModeTabHelper =
@@ -425,6 +443,13 @@
     geminiTabHelper->SetGeminiHandler(nil);
     geminiTabHelper->SetLocationBarBadgeCommandsHandler(nil);
     geminiTabHelper->SetHelpCommandsHandler(nil);
+  }
+
+  contextual_cueing::ContextualCueingTabHelper* contextualCueingTabHelper =
+      contextual_cueing::ContextualCueingTabHelper::FromWebState(webState);
+  if (contextualCueingTabHelper) {
+    contextualCueingTabHelper->SetLocationBarBadgeCommandsHandler(nil);
+    contextualCueingTabHelper->SetGeminiHandler(nil);
   }
 
   FindTabHelper* findTabHelper = FindTabHelper::FromWebState(webState);

@@ -499,6 +499,14 @@ interface DOMStringList
     method constructor
     method contains
     method item
+interface DecisionModel
+    static method availability
+    static method create
+    attribute @@toStringTag
+    getter preference
+    method constructor
+    method decide
+    method destroy
 interface DecompressionStream
     attribute @@toStringTag
     getter readable
@@ -516,8 +524,6 @@ interface DisposableStack
     method use
 interface ElementImage
     attribute @@toStringTag
-    getter height
-    getter width
     method close
     method constructor
 interface ErrorEvent : Event
@@ -941,7 +947,6 @@ interface GPUQueue
     attribute @@toStringTag
     getter label
     method constructor
-    method copyElementImageToTexture
     method copyExternalImageToTexture
     method drawElementImageToTexture
     method onSubmittedWorkDone
@@ -1112,6 +1117,15 @@ interface GPUUncapturedErrorEvent : Event
 interface GPUValidationError : GPUError
     attribute @@toStringTag
     method constructor
+interface GlyphRun
+    attribute @@toStringTag
+    getter end
+    getter start
+    getter width
+    getter x
+    getter y
+    method constructor
+    method textMetrics
 interface Headers
     attribute @@toStringTag
     method @@iterator
@@ -1493,7 +1507,7 @@ interface OffscreenCanvas : EventTarget
     method constructor
     method convertToBlob
     method getContext
-    method getElementTransform
+    method getElementImageDefaultSize
     method transferToImageBitmap
     method updateElementGeometry
     setter height
@@ -1554,6 +1568,8 @@ interface OffscreenCanvasRenderingContext2D
     method ellipse
     method endLayer
     method fill
+    method fillGlyphRun
+    method fillGlyphRuns
     method fillRect
     method fillText
     method fillTextCluster
@@ -1579,7 +1595,10 @@ interface OffscreenCanvasRenderingContext2D
     method scale
     method setLineDash
     method setTransform
+    method shapeText
     method stroke
+    method strokeGlyphRun
+    method strokeGlyphRuns
     method strokeRect
     method strokeText
     method strokeTextCluster
@@ -1763,6 +1782,12 @@ interface Permissions
     method request
     method requestAll
     method revoke
+interface ProgressEvent : Event
+    attribute @@toStringTag
+    getter lengthComputable
+    getter loaded
+    getter total
+    method constructor
 interface PromiseRejectionEvent : Event
     attribute @@toStringTag
     getter promise
@@ -2031,6 +2056,16 @@ interface ServiceWorkerRegistration : EventTarget
     method unregister
     method update
     setter onupdatefound
+interface ShapedText
+    attribute @@toStringTag
+    getter width
+    method actualBoundingBox
+    method advanceToPosition
+    method constructor
+    method glyphClusters
+    method glyphRuns
+    method positionToAdvance
+    method selectionRects
 interface StorageBucket
     attribute @@toStringTag
     getter caches
@@ -2066,15 +2101,21 @@ interface Subscriber
     method error
     method next
 interface SubtleCrypto
+    static method supports
     attribute @@toStringTag
     method constructor
+    method decapsulateBits
+    method decapsulateKey
     method decrypt
     method deriveBits
     method deriveKey
     method digest
+    method encapsulateBits
+    method encapsulateKey
     method encrypt
     method exportKey
     method generateKey
+    method getPublicKey
     method importKey
     method sign
     method unwrapKey
@@ -2133,6 +2174,7 @@ interface TextDecoderStream
     getter writable
     method constructor
 interface TextDetector
+    static method create
     attribute @@toStringTag
     method constructor
     method detect
@@ -2943,6 +2985,7 @@ interface WebGL2RenderingContext
     method drawElementsInstanced
     method drawRangeElements
     method drawingBufferStorage
+    method drawingBufferToneMapping
     method enable
     method enableVertexAttribArray
     method endQuery
@@ -3030,7 +3073,6 @@ interface WebGL2RenderingContext
     method stencilMaskSeparate
     method stencilOp
     method stencilOpSeparate
-    method texElementImage2D
     method texElementSubImage2D
     method texImage2D
     method texImage3D
@@ -3478,6 +3520,7 @@ interface WebGLRenderingContext
     method drawArrays
     method drawElements
     method drawingBufferStorage
+    method drawingBufferToneMapping
     method enable
     method enableVertexAttribArray
     method finish
@@ -3534,7 +3577,6 @@ interface WebGLRenderingContext
     method stencilMaskSeparate
     method stencilOp
     method stencilOpSeparate
-    method texElementImage2D
     method texElementSubImage2D
     method texImage2D
     method texParameterf
@@ -3637,6 +3679,7 @@ interface WebSocketStream
     method close
     method constructor
 interface WebTransport
+    static getter supportsReliableOnly
     attribute @@toStringTag
     getter anticipatedConcurrentIncomingBidirectionalStreams
     getter anticipatedConcurrentIncomingUnidirectionalStreams
@@ -3648,12 +3691,14 @@ interface WebTransport
     getter incomingUnidirectionalStreams
     getter protocol
     getter ready
+    getter reliability
     getter responseHeaders
     method close
     method constructor
     method createBidirectionalStream
     method createSendGroup
     method createUnidirectionalStream
+    method exportKeyingMaterial
     method getStats
     setter anticipatedConcurrentIncomingBidirectionalStreams
     setter anticipatedConcurrentIncomingUnidirectionalStreams

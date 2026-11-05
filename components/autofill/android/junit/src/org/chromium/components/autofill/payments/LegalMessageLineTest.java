@@ -11,7 +11,6 @@ import static org.junit.Assert.assertEquals;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.autofill.payments.LegalMessageLine.Link;
@@ -20,7 +19,6 @@ import java.util.Collections;
 import java.util.List;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class LegalMessageLineTest {
     private static final String EXAMPLE = "example";
 
@@ -44,15 +42,6 @@ public class LegalMessageLineTest {
         Link link = new Link(/* start= */ 1, /* end= */ 2, /* url= */ "3");
         LegalMessageLine line = new LegalMessageLine(EXAMPLE, List.of(link));
 
-        assertThat(line.links, contains(link));
-    }
-
-    @Test
-    public void testAddLink_addsOneLinkAfterEmpty() {
-        LegalMessageLine line = new LegalMessageLine(EXAMPLE);
-
-        Link link = new Link(/* start= */ 1, /* end= */ 2, /* url= */ "3");
-        line.addLink(link);
         assertThat(line.links, contains(link));
     }
 }

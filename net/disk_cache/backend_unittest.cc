@@ -30,6 +30,7 @@
 #include "base/task/thread_pool.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/bind.h"
+#include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
@@ -45,6 +46,7 @@
 #include "net/base/features.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_isolation_key.h"
 #include "net/base/request_priority.h"
 #include "net/base/test_completion_callback.h"
 #include "net/disk_cache/backend_cleanup_tracker.h"
@@ -64,11 +66,16 @@
 #include "net/disk_cache/simple/simple_synchronous_entry.h"
 #include "net/disk_cache/simple/simple_test_util.h"
 #include "net/disk_cache/simple/simple_util.h"
+#if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
+#include "net/disk_cache/sql/shared_cache_client_remote.h"
 #include "net/disk_cache/sql/sql_backend_constants.h"
+#endif  // ENABLE_DISK_CACHE_SQL_BACKEND
+#include "net/http/http_response_info.h"
 #include "net/test/gtest_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/base/dynamic_annotations.h"
+#include "url/gurl.h"
 
 using disk_cache::EntryResult;
 using net::test::IsError;
@@ -206,10 +213,10 @@ class DiskCacheBackendTest : public DiskCacheTestWithCache {
                      net::BackendType backend_type,
                      bool expect_limit);
 
-  void UpdateLimitAndReleaseMemory(int percentage) {
+  void UpdateLimitAndReleaseMemory(base::MemoryLimit memory_limit) {
     base::RunLoop run_loop;
     test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
-        percentage, base::DoNothing());
+        memory_limit, base::DoNothing());
     test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
         run_loop.QuitClosure());
     run_loop.Run();
@@ -951,12 +958,12 @@ TEST_F(DiskCacheBackendTest, MemoryListensToMemoryPressure) {
   EXPECT_GT(CalculateSizeOfAllEntries(), 0.8 * kLimit);
 
   // Signal low-memory of various sorts, and see how small it gets.
-  UpdateLimitAndReleaseMemory(50);
+  UpdateLimitAndReleaseMemory(base::MemoryLimit::FromPercent(50));
   EXPECT_LT(CalculateSizeOfAllEntries(), 0.5 * kLimit);
 
   // At 10% memory limit, the new policy (linear interpolation between 10% and
   // 50% of max_size_) sets a limit of ~18%.
-  UpdateLimitAndReleaseMemory(10);
+  UpdateLimitAndReleaseMemory(base::MemoryLimit::FromPercent(10));
   EXPECT_LT(CalculateSizeOfAllEntries(), 0.2 * kLimit);
 }
 
@@ -4254,8 +4261,7 @@ TEST_F(DiskCacheBackendTest, SimpleCacheEnumerationDestruction) {
 }
 
 // Verify that tasks run in priority order when the experiment is enabled.
-// Test has races, disabling until fixed: https://crbug.com/853283
-TEST_F(DiskCacheBackendTest, DISABLED_SimpleCachePrioritizedEntryOrder) {
+TEST_F(DiskCacheBackendTest, SimpleCachePrioritizedEntryOrder) {
   base::test::ScopedFeatureList scoped_feature_list;
   SetBackendToTest(BackendToTest::kSimple);
   InitCache();
@@ -4265,7 +4271,8 @@ TEST_F(DiskCacheBackendTest, DISABLED_SimpleCachePrioritizedEntryOrder) {
   disk_cache::SimpleBackendImpl* simple_cache =
       static_cast<disk_cache::SimpleBackendImpl*>(cache_.get());
   auto task_runner = base::ThreadPool::CreateSequencedTaskRunner(
-      {base::TaskPriority::USER_VISIBLE, base::MayBlock()});
+      {base::TaskPriority::USER_VISIBLE, base::MayBlock(),
+       base::WithBaseSyncPrimitives()});
   simple_cache->SetTaskRunnerForTesting(task_runner);
 
   // Create three entries. Priority order is 3, 1, 2 because 3 has the highest
@@ -4289,13 +4296,16 @@ TEST_F(DiskCacheBackendTest, DISABLED_SimpleCachePrioritizedEntryOrder) {
   EXPECT_EQ(kSize, WriteData(entry2, 2, 0, buf1.get(), kSize, true));
   EXPECT_EQ(kSize, WriteData(entry3, 2, 0, buf1.get(), kSize, true));
 
-  // Wait until the task_runner's queue is empty (WriteData might have
-  // optimistically returned synchronously but still had some tasks to run in
-  // the worker pool.
-  base::RunLoop run_loop;
-  task_runner->PostTaskAndReply(FROM_HERE, base::DoNothing(),
-                                run_loop.QuitClosure());
-  run_loop.Run();
+  // Wait until both the optimistic CreateEntry tasks and the subsequent
+  // WriteData tasks (which are posted to `task_runner` from the main-thread
+  // CreationOperationComplete replies) and their WriteOperationComplete replies
+  // have all completed so all entries are in STATE_READY.
+  for (int i = 0; i < 3; ++i) {
+    base::RunLoop run_loop;
+    task_runner->PostTaskAndReply(FROM_HERE, base::DoNothing(),
+                                  run_loop.QuitClosure());
+    run_loop.Run();
+  }
 
   std::vector<int> finished_read_order;
   auto finished_callback = [](std::vector<int>* finished_read_order,
@@ -4309,6 +4319,15 @@ TEST_F(DiskCacheBackendTest, DISABLED_SimpleCachePrioritizedEntryOrder) {
   auto read_buf1 = base::MakeRefCounted<net::IOBufferWithSize>(kSize);
   auto read_buf2 = base::MakeRefCounted<net::IOBufferWithSize>(kSize);
   auto read_buf3 = base::MakeRefCounted<net::IOBufferWithSize>(kSize);
+
+  // Block `task_runner` while queueing the three ReadData calls so
+  // `task_runner` cannot start executing the first read before the remaining
+  // reads are enqueued in `prioritized_task_runner_`.
+  base::WaitableEvent block_worker;
+  task_runner->PostTask(
+      FROM_HERE,
+      base::BindOnce([](base::WaitableEvent* event) { event->Wait(); },
+                     base::Unretained(&block_worker)));
 
   // Read from the entries in order 2, 3, 1. They should be reprioritized to
   // 3, 1, 2.
@@ -4325,6 +4344,7 @@ TEST_F(DiskCacheBackendTest, DISABLED_SimpleCachePrioritizedEntryOrder) {
                                   base::OnceClosure()));
   EXPECT_EQ(0u, finished_read_order.size());
 
+  block_worker.Signal();
   read_run_loop.Run();
   EXPECT_EQ((std::vector<int>{3, 1, 2}), finished_read_order);
   entry1->Close();
@@ -6194,6 +6214,27 @@ TEST_P(DiskCacheGenericBackendTest, DeleteBackendWithMassDoom) {
   EXPECT_EQ(net::OK, cb.GetResult(rv));
   run_loop.Run();
 }
+
+#if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
+TEST_P(DiskCacheGenericBackendTest, SharedCacheNotSupported) {
+  InitCache();
+  // SqlBackendImpl is tested in sql_backend_impl_unittest.cc.
+  if (backend_to_test_ == BackendToTest::kSql) {
+    return;
+  }
+  EXPECT_FALSE(cache_->SupportsSharedCache());
+
+  EXPECT_NOTREACHED_DEATH(cache_->RegisterSharedCacheClientRemote(
+      net::NetworkIsolationKey(), nullptr));
+
+  EXPECT_NOTREACHED_DEATH(cache_->OnEntryEligibleForSharedCache(
+      "key", GURL("https://example.com"),
+      std::make_unique<net::HttpResponseInfo>(), net::NetworkIsolationKey()));
+
+  EXPECT_NOTREACHED_DEATH(cache_->ProcessAllSharedCacheEligibleEntriesForTest(
+      base::ScopedClosureRunner()));
+}
+#endif  // BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
 
 INSTANTIATE_TEST_SUITE_P(
     /* no name */,

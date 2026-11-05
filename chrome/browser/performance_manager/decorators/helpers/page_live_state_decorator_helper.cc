@@ -19,7 +19,6 @@
 
 #include "base/check.h"
 #include "base/feature_list.h"
-#include "base/not_fatal_until.h"
 #include "base/sequence_checker.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
@@ -48,7 +47,7 @@ class ActiveTabTracker : public TabModelObserver {
   ActiveTabTracker& operator=(const ActiveTabTracker&) = delete;
   ~ActiveTabTracker() override = default;
 
-  void DidSelectTab(TabAndroid* tab, TabModel::TabSelectionType type) override {
+  void DidSelectTab(TabAndroid* tab) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (tab == active_tab_) {
       return;
@@ -114,7 +113,7 @@ class ActiveTabObserver : public TabModelListObserver {
   void OnTabModelRemoved(TabModel* tab_model) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     auto tracker_iter = tracker_map_.find(tab_model);
-    CHECK(tracker_iter != tracker_map_.end(), base::NotFatalUntil::M140)
+    CHECK(tracker_iter != tracker_map_.end())
         << "Untracked TabModel by ActiveTabObserver is removed";
     if (tracker_iter == tracker_map_.end()) {
       return;
@@ -219,7 +218,7 @@ class PageLiveStateDecoratorHelper::WebContentsObserver
         next_(outer->first_web_contents_observer_) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (next_) {
-      DCHECK(!next_->prev_);
+      CHECK(!next_->prev_, base::NotFatalUntil::M163);
       next_->prev_ = this;
     }
     outer_->first_web_contents_observer_ = this;
@@ -241,6 +240,20 @@ class PageLiveStateDecoratorHelper::WebContentsObserver
                                                      capability_type, used);
   }
 
+#if BUILDFLAG(IS_ANDROID)
+  // On desktop, this is updated by TabLifecycleUnit.
+  // TODO(crbug.com/394889323): Unify the desktop and Android implementations.
+  void WasDiscarded() override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    PageLiveStateDecorator::SetIsDiscarded(web_contents(), true);
+  }
+
+  void PrimaryPageChanged(content::Page& page) override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    PageLiveStateDecorator::SetIsDiscarded(web_contents(), false);
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+
   void WebContentsDestroyed() override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     DetachAndDestroy();
@@ -250,14 +263,15 @@ class PageLiveStateDecoratorHelper::WebContentsObserver
   void DetachAndDestroy() {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     if (prev_) {
-      DCHECK_EQ(prev_->next_, this);
+      CHECK_EQ(prev_->next_, this, base::NotFatalUntil::M163);
       prev_->next_ = next_;
     } else {
-      DCHECK_EQ(outer_->first_web_contents_observer_, this);
+      CHECK_EQ(outer_->first_web_contents_observer_, this,
+               base::NotFatalUntil::M163);
       outer_->first_web_contents_observer_ = next_;
     }
     if (next_) {
-      DCHECK_EQ(next_->prev_, this);
+      CHECK_EQ(next_->prev_, this, base::NotFatalUntil::M163);
       next_->prev_ = prev_;
     }
 
@@ -375,7 +389,7 @@ void PageLiveStateDecoratorHelper::DevToolsAgentHostDetached(
 void PageLiveStateDecoratorHelper::OnPageNodeCreatedForWebContents(
     content::WebContents* web_contents) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M163);
   // Start observing the WebContents. See comment on
   // |first_web_contents_observer_| for lifetime management details.
   new WebContentsObserver(web_contents, this);

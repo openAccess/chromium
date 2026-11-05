@@ -120,7 +120,6 @@ enum CSPDirectiveName {
   StyleSrc,
   StyleSrcAttr,
   StyleSrcElem,
-  TreatAsPublicAddress,
   TrustedTypes,
   UpgradeInsecureRequests,
   WorkerSrc,
@@ -165,9 +164,6 @@ struct ContentSecurityPolicy {
   // renderer instead of 'pulling' it after the navigation commit.
   bool upgrade_insecure_requests = false;
 
-  // https://wicg.github.io/local-network-access/#treat-as-public-address
-  bool treat_as_public_address = false;
-
   // https://www.w3.org/TR/mixed-content/#strict-opt-in
   bool block_all_mixed_content = false;
 
@@ -203,10 +199,6 @@ struct ContentSecurityPolicy {
 
 // Data to report Content-Security-Policy violations.
 struct CSPViolation {
-  // The name of the directive that violates the policy. |directive| might be a
-  // directive that serves as a fallback to the |effective_directive|.
-  string directive;
-
   // The name the effective directive that was checked against.
   string effective_directive;
 

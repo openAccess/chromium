@@ -14,7 +14,6 @@
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/engine/loopback_server/persistent_tombstone_entity.h"
 #include "content/public/test/browser_test.h"
 
@@ -56,9 +55,13 @@ ServerCvcChecker::ServerCvcChecker(const size_t expected_count)
 ServerCvcChecker::~ServerCvcChecker() = default;
 
 bool ServerCvcChecker::IsExitConditionSatisfied(std::ostream* os) {
-  return fake_server()
-             ->GetSyncEntitiesByDataType(syncer::AUTOFILL_WALLET_CREDENTIAL)
-             .size() == expected_count_;
+  const size_t actual_count =
+      fake_server()
+          ->GetSyncEntitiesByDataType(syncer::AUTOFILL_WALLET_CREDENTIAL)
+          .size();
+  *os << "Waiting for " << expected_count_
+      << " wallet credentials on server, actual: " << actual_count;
+  return actual_count == expected_count_;
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -81,13 +84,7 @@ class SingleClientWalletCredentialSyncTest
     : public SyncTest,
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  SingleClientWalletCredentialSyncTest() : SyncTest(SINGLE_CLIENT) {
-    std::vector<base::test::FeatureRef> enabled_features;
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      enabled_features.push_back(syncer::kReplaceSyncPromosWithSignInPromos);
-    }
-    features_.InitWithFeatures(enabled_features, /*disabled_features=*/{});
-  }
+  SingleClientWalletCredentialSyncTest() : SyncTest(SINGLE_CLIENT) {}
 
   ~SingleClientWalletCredentialSyncTest() override = default;
 
@@ -154,9 +151,6 @@ class SingleClientWalletCredentialSyncTest
             entity_specifics, /*creation_time=*/1000,
             /*last_modified_time=*/1000));
   }
-
- private:
-  base::test::ScopedFeatureList features_;
 };
 
 INSTANTIATE_TEST_SUITE_P(

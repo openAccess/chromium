@@ -84,15 +84,17 @@ void TableExample::CreateExampleView(View* container) {
   Builder<View>(container)
       .AddChildren(
           TableView::CreateScrollViewBuilderWithTable(
-              Builder<TableView>()
+              Builder<TableView>(
+                  std::make_unique<TableView>(
+                      this,
+                      std::vector<ui::TableColumn>{
+                          TestTableColumn(0, u"Fruit", ui::TableColumn::LEFT,
+                                          1.0),
+                          TestTableColumn(1, u"Color"),
+                          TestTableColumn(2, u"Origin"),
+                          TestTableColumn(3, u"Price", ui::TableColumn::RIGHT)},
+                      TableType::kIconAndText, true))
                   .CopyAddressTo(&table_)
-                  .SetColumns(
-                      {TestTableColumn(0, u"Fruit", ui::TableColumn::LEFT, 1.0),
-                       TestTableColumn(1, u"Color"),
-                       TestTableColumn(2, u"Origin"),
-                       TestTableColumn(3, u"Price", ui::TableColumn::RIGHT)})
-                  .SetTableType(TableType::kIconAndText)
-                  .SetModel(this)
                   .SetGrouper(this)
                   .SetObserver(this))
               .SetProperty(kFlexBehaviorKey, full_flex),
@@ -113,11 +115,11 @@ void TableExample::CreateExampleView(View* container) {
       .BuildChildren();
 }
 
-size_t TableExample::RowCount() {
+size_t TableExample::RowCount() const {
   return 10;
 }
 
-std::u16string TableExample::GetText(size_t row, int column_id) {
+std::u16string TableExample::GetText(size_t row, int column_id) const {
   constexpr auto cells = std::to_array<std::array<const char* const, 4>>({
       {"Orange", "Orange", "South America", "$5"},
       {"Apple", "Green", "Canada", "$3"},
@@ -128,13 +130,13 @@ std::u16string TableExample::GetText(size_t row, int column_id) {
   return ASCIIToUTF16(cells[row % 5][column_id]);
 }
 
-ui::ImageModel TableExample::GetIcon(size_t row) {
+ui::ImageModel TableExample::GetIcon(size_t row) const {
   SkBitmap row_icon = row % 2 ? icon1_ : icon2_;
   return ui::ImageModel::FromImageSkia(
       gfx::ImageSkia::CreateFrom1xBitmap(row_icon));
 }
 
-std::u16string TableExample::GetTooltip(size_t row) {
+std::u16string TableExample::GetTooltip(size_t row) const {
   constexpr auto tooltips =
       std::to_array({"Orange - Orange you glad I didn't say banana?",
                      "Apple - An apple a day keeps the doctor away",

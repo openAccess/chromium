@@ -13,6 +13,7 @@
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/event_constants.h"
 
@@ -82,6 +83,28 @@ TEST(AcceleratorTableTest, OpenFeedbackWithSearchBasedAccelerator) {
   EXPECT_EQ(-1, command_id);
 #endif  // BUILDFLAG(IS_CHROMEOS) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
 }
+
+// Every accelerator should trigger a declarative Action so that it can be
+// resolved through the Actions framework.
+TEST(AcceleratorTableTest, EveryAcceleratorMapsToAnAction) {
+  for (const auto& entry : GetAcceleratorList()) {
+    EXPECT_TRUE(entry.action_id.has_value())
+        << "Accelerator command " << entry.command_id
+        << " has no associated action. Add an E(kActionFoo, IDC_FOO) entry in "
+           "chrome/browser/ui/actions/chrome_action_id.h.";
+  }
+}
+
+#if !BUILDFLAG(IS_MAC)
+TEST(AcceleratorTableTest, NewWindowAcceleratorMapsToNewWindowAction) {
+  EXPECT_TRUE(std::ranges::any_of(
+      GetAcceleratorList(), [](const AcceleratorMapping& mapping) {
+        return mapping.keycode == ui::VKEY_N &&
+               mapping.modifiers == ui::EF_PLATFORM_ACCELERATOR &&
+               mapping.action_id == kActionNewWindow;
+      }));
+}
+#endif  // !BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_CHROMEOS)
 TEST(AcceleratorTableTest, CheckDuplicatedAcceleratorsAsh) {
@@ -191,5 +214,29 @@ TEST_F(GetAcceleratorListTest, DevToolsAreEnabled) {
 }
 
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+TEST(AcceleratorTableTest, IsReservedCommand) {
+  EXPECT_TRUE(IsReservedCommand(IDC_NEW_TAB));
+  EXPECT_TRUE(IsReservedCommand(IDC_CLOSE_TAB));
+  EXPECT_TRUE(IsReservedCommand(IDC_CLOSE_WINDOW));
+  EXPECT_TRUE(IsReservedCommand(IDC_RESTORE_TAB));
+  EXPECT_TRUE(IsReservedCommand(IDC_CYCLE_TO_NEXT_TAB));
+  EXPECT_TRUE(IsReservedCommand(IDC_EXIT));
+
+  EXPECT_FALSE(IsReservedCommand(IDC_FIND));
+  EXPECT_FALSE(IsReservedCommand(IDC_RELOAD));
+  EXPECT_FALSE(IsReservedCommand(IDC_BOOKMARK_THIS_TAB));
+  EXPECT_FALSE(IsReservedCommand(IDC_CARET_BROWSING_TOGGLE));
+  EXPECT_FALSE(IsReservedCommand(IDC_DEV_TOOLS));
+  EXPECT_FALSE(IsReservedCommand(IDC_DEV_TOOLS_TOGGLE));
+
+#if BUILDFLAG(IS_ANDROID)
+  EXPECT_TRUE(IsReservedCommand(IDC_FOCUS_NEXT_PANE));
+  EXPECT_TRUE(IsReservedCommand(IDC_FOCUS_PREVIOUS_PANE));
+#else
+  EXPECT_FALSE(IsReservedCommand(IDC_FOCUS_NEXT_PANE));
+  EXPECT_FALSE(IsReservedCommand(IDC_FOCUS_PREVIOUS_PANE));
+#endif
+}
 
 }  // namespace chrome

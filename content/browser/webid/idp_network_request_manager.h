@@ -48,7 +48,7 @@ enum class MetricsEndpointErrorCode;
 
 // Manages network requests and maintains relevant state for interaction with
 // the Identity Provider across a FedCM transaction. Owned by
-// Request and has a lifetime limited to a single identity
+// RequestHandler and has a lifetime limited to a single identity
 // transaction between an RP and an IDP.
 //
 // Diagram of the permission-based data flows between the browser and the IDP:
@@ -87,8 +87,9 @@ class CONTENT_EXPORT IdpNetworkRequestManager : public NetworkRequestManager {
     kAccountIsNotDict = 3,
     kAccountMissesRequiredField = 4,
     kAccountsShareSameId = 5,
+    kUseNativeUiDelegation = 6,
 
-    kMaxValue = kAccountsShareSameId
+    kMaxValue = kUseNativeUiDelegation
   };
 
   // LINT.ThenChange(//tools/metrics/histograms/metadata/blink/enums.xml:FedCmAccountsResponseInvalidReason)

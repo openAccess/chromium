@@ -6,11 +6,14 @@
 #define CHROME_BROWSER_UI_CONTEXTUAL_SEARCH_SEARCHBOX_CONTEXT_DATA_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/sequence_checker.h"
+#include "components/lens/lens_overlay_invocation_source.h"
 #include "components/omnibox/browser/searchbox.mojom.h"
+#include "third_party/omnibox_proto/model_mode.pb.h"
 #include "third_party/omnibox_proto/tool_mode.pb.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
@@ -29,6 +32,8 @@ class SearchboxContextData {
     std::string text;
     std::vector<searchbox::mojom::SearchContextAttachmentPtr> file_infos;
     omnibox::ToolMode mode = omnibox::TOOL_MODE_UNSPECIFIED;
+    omnibox::ModelMode model = omnibox::MODEL_MODE_UNSPECIFIED;
+    std::optional<lens::LensOverlayInvocationSource> invocation_source;
   };
 
   DECLARE_USER_DATA(SearchboxContextData);
@@ -46,6 +51,10 @@ class SearchboxContextData {
 
   // Transfers ownership of the pending context to caller.
   std::unique_ptr<Context> TakePendingContext();
+
+  // Returns the pending context, creating an empty one if there is none, so
+  // that callers can add to it without taking it.
+  Context& GetOrCreatePendingContext();
 
  private:
   ui::ScopedUnownedUserData<SearchboxContextData> scoped_unowned_user_data_;

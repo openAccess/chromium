@@ -6,6 +6,7 @@
 #define CRYPTO_PROCESS_BOUND_STRING_H_
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/check.h"
@@ -59,43 +60,98 @@ template <typename StringType>
 class CRYPTO_EXPORT ProcessBound {
  public:
   using CharType = typename StringType::value_type;
+  using SecureStringType = std::basic_string<CharType,
+                                             std::char_traits<CharType>,
+                                             SecureAllocator<CharType>>;
+
+  ProcessBound() = default;
 
   ProcessBound(const ProcessBound& other) = default;
-  ProcessBound(ProcessBound&& other) = default;
-  ProcessBound& operator=(const ProcessBound& other) = default;
-  ProcessBound& operator=(ProcessBound&& other) = default;
+
+  ProcessBound& operator=(const ProcessBound& other) {
+    if (this != &other) {
+      SecureZeroBuffer(base::as_writable_byte_span(maybe_encrypted_data_));
+      maybe_encrypted_data_ = other.maybe_encrypted_data_;
+      original_size_ = other.original_size_;
+      encrypted_ = other.encrypted_;
+    }
+    return *this;
+  }
+
+  // Moving the `maybe_encrypted_data_` vector leaves it empty, and the other
+  // values are updated to match an empty vector for safety.
+  ProcessBound(ProcessBound&& other) noexcept
+      : maybe_encrypted_data_(std::move(other.maybe_encrypted_data_)),
+        original_size_(std::exchange(other.original_size_, 0)),
+        encrypted_(std::exchange(other.encrypted_, false)) {}
+
+  ProcessBound& operator=(ProcessBound&& other) noexcept {
+    if (this != &other) {
+      SecureZeroBuffer(base::as_writable_byte_span(maybe_encrypted_data_));
+      maybe_encrypted_data_ = std::move(other.maybe_encrypted_data_);
+      original_size_ = std::exchange(other.original_size_, 0);
+      encrypted_ = std::exchange(other.encrypted_, false);
+    }
+    return *this;
+  }
 
   // Create a process bound string. Takes a copy of the string passed in.
-  explicit ProcessBound(const StringType& value)
+  // If `encrypted` is false, the string will NOT be encrypted. This lets
+  // ProcessBound hold either encrypted or unencrypted strings without the
+  // overhead of a variant wrapper. If it's true, the string will be encrypted
+  // only on supported platforms.
+  explicit ProcessBound(const StringType& value, bool encrypted = true)
       : original_size_(value.size()) {
-    std::vector<CharType> data(value.begin(), value.end());
-    data.resize(internal::MaybeRoundUp(data.size()));
-    encrypted_ =
-        internal::MaybeEncryptBuffer(base::as_writable_byte_span(data));
+    const size_t target_size =
+        encrypted ? internal::MaybeRoundUp(value.size()) : value.size();
+    std::vector<CharType> data;
+    data.reserve(target_size);
+    data.assign(value.begin(), value.end());
+    if (encrypted) {
+      data.resize(target_size);
+      encrypted_ =
+          internal::MaybeEncryptBuffer(base::as_writable_byte_span(data));
+    } else {
+      encrypted_ = false;
+    }
     maybe_encrypted_data_ = std::move(data);
   }
 
-  ~ProcessBound() = default;
+  ~ProcessBound() {
+    SecureZeroBuffer(base::as_writable_byte_span(maybe_encrypted_data_));
+  }
 
-  // Return the decrypted string.
-  StringType value() const { return StringType(secure_value()); }
+  // Return the decrypted string, which may remain in memory. Prefer
+  // secure_value() where possible.
+  StringType value() const { return DecryptData<StringType>(); }
 
   // Return the decrypted string as a string that attempts to wipe itself after
   // use. Prefer over calling `value()` if caller can support it.
-  std::basic_string<CharType,
-                    std::char_traits<CharType>,
-                    SecureAllocator<CharType>>
-  secure_value() const {
-    if (!encrypted_) {
-      return std::basic_string<CharType, std::char_traits<CharType>,
-                               SecureAllocator<CharType>>(
-          maybe_encrypted_data_.data(), original_size_);
+  SecureStringType secure_value() const {
+    return DecryptData<SecureStringType>();
+  }
+
+  size_t size() const { return original_size_; }
+  bool empty() const { return size() == 0; }
+
+  // Returns true if the string is encrypted (ie. the platform supports
+  // encryption and the ProcessBound was created with `encrypted = true`).
+  bool is_encrypted() const { return encrypted_; }
+
+ private:
+  FRIEND_TEST_ALL_PREFIXES(ProcessBoundEncryptionTest, Encryption);
+  FRIEND_TEST_ALL_PREFIXES(ProcessBoundEncryptionTest, EmptyString);
+  FRIEND_TEST_ALL_PREFIXES(ProcessBoundEncryptionTest, Unencrypted);
+
+  template <typename DecryptedStringType>
+  DecryptedStringType DecryptData() const {
+    if (!encrypted_ || original_size_ == 0) {
+      return DecryptedStringType(maybe_encrypted_data_.data(), original_size_);
     }
 
     // Copy to decrypt in-place.
-    std::basic_string<CharType, std::char_traits<CharType>,
-                      SecureAllocator<CharType>>
-        decrypted(maybe_encrypted_data_.begin(), maybe_encrypted_data_.end());
+    DecryptedStringType decrypted(maybe_encrypted_data_.begin(),
+                                  maybe_encrypted_data_.end());
     // Attempt to avoid Small String Optimization (SSO) by reserving a larger
     // allocation than the SSO default, forcing a dynamic allocation to occur,
     // before any decrypted data is written to the string. This value was
@@ -109,13 +165,8 @@ class CRYPTO_EXPORT ProcessBound {
     return decrypted;
   }
 
-  size_t size() const { return original_size_; }
-  bool empty() const { return size() == 0; }
-
- private:
-  FRIEND_TEST_ALL_PREFIXES(ProcessBoundEncryptionTest, Encryption);
   std::vector<CharType> maybe_encrypted_data_;
-  size_t original_size_;
+  size_t original_size_ = 0;
   bool encrypted_ = false;
 };
 

@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.init;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
@@ -19,6 +21,7 @@ import android.view.WindowManager;
 import androidx.annotation.CallSuper;
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.SysUtils;
@@ -26,6 +29,8 @@ import org.chromium.base.TraceEvent;
 import org.chromium.base.library_loader.LoaderErrors;
 import org.chromium.base.library_loader.ProcessInitException;
 import org.chromium.base.supplier.OneshotSupplier;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
 import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.Initializer;
@@ -119,7 +124,6 @@ public abstract class AsyncInitializationActivity extends ChromeBaseAppCompatAct
     private boolean mFirstDrawComplete;
 
     private @Nullable Runnable mOnInflationCompleteCallback;
-    private boolean mInitialLayoutInflationComplete;
 
     // See enableHardwareAcceleration()
     private boolean mSetWindowHWA;
@@ -646,13 +650,23 @@ public abstract class AsyncInitializationActivity extends ChromeBaseAppCompatAct
 
     @EnsuresNonNullIf("mWindowAndroid")
     private boolean isSelfOcclusionTrackingEnabled() {
-        return mWindowAndroid != null
-                && mWindowAndroid.isOcclusionTrackingAllowed()
-                && UiAndroidFeatureList.sAndroidWindowOcclusion.isEnabled()
-                && "self_occlusion"
-                        .equals(
-                                UiAndroidFeatureList.sAndroidWindowOcclusionTrackingMode
-                                        .getValue());
+        if (mWindowAndroid == null
+                || !mWindowAndroid.isOcclusionTrackingAllowed()
+                || !UiAndroidFeatureList.sAndroidWindowOcclusion.isEnabled()) {
+            return false;
+        }
+
+        String mode = UiAndroidFeatureList.sAndroidWindowOcclusionTrackingMode.getValue();
+        if ("self_occlusion".equals(mode)) {
+            return true;
+        }
+
+        if ("auto".equals(mode)) {
+            AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+            return delegate == null || !delegate.isStrictOcclusionAvailable();
+        }
+
+        return false;
     }
 
     @CallSuper
@@ -784,7 +798,13 @@ public abstract class AsyncInitializationActivity extends ChromeBaseAppCompatAct
         assert mFirstDrawComplete;
         assert !mStartupDelayed;
         TraceEvent.instant("onFirstDrawComplete");
-        mNativeInitializationController.firstDrawComplete();
+        if (ChromeFeatureList.sAsyncFirstFrameDrawn.isEnabled()) {
+            PostTask.postTask(
+                    TaskTraits.UI_USER_BLOCKING,
+                    mNativeInitializationController::firstDrawComplete);
+        } else {
+            mNativeInitializationController.firstDrawComplete();
+        }
     }
 
     @Override
@@ -821,6 +841,12 @@ public abstract class AsyncInitializationActivity extends ChromeBaseAppCompatAct
         // TODO(crbug.com/40275690): Convert to a thrown exception if no asserts are discovered.
         assert mProfileProviderSupplier != null;
         return mProfileProviderSupplier;
+    }
+
+    /** Convenience wrapper. */
+    public Profile getOriginalProfile() {
+        var profileProvider = assumeNonNull(mProfileProviderSupplier).get();
+        return assumeNonNull(profileProvider).getOriginalProfile();
     }
 
     /**
@@ -965,12 +991,6 @@ public abstract class AsyncInitializationActivity extends ChromeBaseAppCompatAct
         if (mOnInflationCompleteCallback == null) return;
         mOnInflationCompleteCallback.run();
         mOnInflationCompleteCallback = null;
-        mInitialLayoutInflationComplete = true;
-    }
-
-    /** Returns whether initial inflation is complete. */
-    public boolean isInitialLayoutInflationComplete() {
-        return mInitialLayoutInflationComplete;
     }
 
     /**

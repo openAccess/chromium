@@ -353,20 +353,15 @@ ${this.items.map(item => html`...`)}
 
 ### Formatting
 
-Wrap the return statement of your `getHtml` function or `render` method in `//
-clang-format off` and `// clang-format on` comments. This prevents
-`clang-format` from mangling the HTML template string, ensuring it remains
-readable.
+A [Lit template formatter](../../ui/webui/resources/tools/lit_template_formatter/README.md)
+is currently being rolled out on an opt-in basis to format `.html.ts` template
+files via `git cl format`. Developers can either opt in for their folders (by
+adding a `.style.lit_template_formatter` file to the folder) or run the
+formatter manually on individual `.html.ts` files:
 
-```ts
-export function getHtml(this: MyCrLitElement) {
-  // clang-format off
-  return html`
-    <!--_html_template_start_-->
-    <div>...</div>
-    <!--_html_template_end_-->`;
-  // clang-format on
-}
+```bash
+./third_party/node/linux/node-linux-x64/bin/node \
+  ui/webui/resources/tools/lit_template_formatter/main.js <path/to/file.html.ts>
 ```
 
 ### Templatized UI elements
@@ -473,20 +468,56 @@ rendering), prefer `this.$.<id>` to access them. This provides a strictly typed
 and consistent way to access elements compared to
 `this.shadowRoot.querySelector`.
 
+Because elements accessed via `this.$` are expected to always exist in the DOM,
+member properties on the `$` interface must not be optional or nullable (e.g.,
+`conditionalButton?: CrButtonElement` or
+`conditionalButton: CrButtonElement|null` are disallowed). For conditionally
+rendered elements that may not always be present in the DOM, use
+`this.shadowRoot.querySelector` instead.
+
 **Do not:**
+
+Don't add conditional/nullable/undefineable elements via the `$` interface.
+
+```html
+export function getHtml(this: MyElement) {
+  return html`
+${this.someCondition ? html`
+  <cr-button id="conditionalButton"></cr-button>
+` : ''}
+`;
+}
+```
+
 ```ts
-const button = this.shadowRoot.querySelector('#submitButton');
+// Declaring optional or nullable properties on the $ interface:
+export interface MyElement {
+  $: {
+    conditionalButton?: CrButtonElement, // <-- This is incorrect
+  }
+}
 ```
 
 **Do:**
+
+Do add elements that are guaranteed to always exist in the DOM to the `$`
+interface.
+
+```html
+export function getHtml(this: MyElement) {
+  return html`
+<cr-button id="submitButton">Submit</cr-button>
+`;
+}
+```
+
 ```ts
-// In your class definition
 export interface MyElement {
   $: {
-    submitButton: CrButtonElement,
+    submitButton: CrButtonElement, // <-- This is correct!
   }
 }
 
-// In your code
+// Later in your code
 const button = this.$.submitButton;
 ```

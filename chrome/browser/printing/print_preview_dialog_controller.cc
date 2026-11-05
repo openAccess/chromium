@@ -17,7 +17,6 @@
 #include "chrome/browser/printing/print_view_manager.h"
 #include "chrome/browser/printing/print_view_manager_base.h"
 #include "chrome/browser/task_manager/web_contents_tags.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/webui/constrained_web_dialog_ui.h"
@@ -26,7 +25,10 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/guest_view/browser/guest_view_base.h"
 #include "components/web_modal/web_contents_modal_dialog_host.h"
+#include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
 #include "content/public/browser/host_zoom_map.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
@@ -35,10 +37,12 @@
 #include "content/public/common/url_constants.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/web_dialogs/web_dialog_delegate.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/arc/print_spooler/print_session_impl.h"  // nogncheck crbug.com/40147906
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #endif
 
 using content::NavigationController;
@@ -119,7 +123,7 @@ GURL PrintPreviewDialogDelegate::GetDialogContentURL() const {
 }
 
 void PrintPreviewDialogDelegate::GetDialogSize(gfx::Size* size) const {
-  DCHECK(size);
+  CHECK(size, base::NotFatalUntil::M162);
   const gfx::Size kMinDialogSize(800, 480);
   const int kBorder = 25;
   *size = kMinDialogSize;
@@ -177,6 +181,17 @@ void PrintPreviewDialogDelegate::OnCloseContents(WebContents* /* source */,
 
 bool PrintPreviewDialogDelegate::ShouldShowDialogTitle() const {
   return false;
+}
+
+// Returns whether `initiator` currently has somewhere to show a tab-modal
+// dialog.
+bool HasWebContentsModalDialogHost(WebContents* initiator) {
+  WebContents* top_level = guest_view::GuestViewBase::GetTopLevelWebContents(
+      initiator->GetResponsibleWebContents());
+  auto* manager =
+      web_modal::WebContentsModalDialogManager::FromWebContents(top_level);
+  return manager && manager->delegate() &&
+         manager->delegate()->GetWebContentsModalDialogHost(top_level);
 }
 
 }  // namespace
@@ -237,7 +252,7 @@ WebContents* PrintPreviewDialogController::GetOrCreatePreviewDialog(
     WebContents* initiator,
     const mojom::RequestPrintPreviewParams& params,
     bool is_pdf) {
-  DCHECK(initiator);
+  CHECK(initiator, base::NotFatalUntil::M162);
 
   // Get the print preview dialog for `initiator`.
   WebContents* preview_dialog = GetPrintPreviewForContents(initiator);
@@ -245,12 +260,27 @@ WebContents* PrintPreviewDialogController::GetOrCreatePreviewDialog(
     return preview_dialog;
   }
 
+#if BUILDFLAG(IS_CHROMEOS)
+  // Do not allow print preview for non-user BrowserContexts, such as the Login,
+  // OOBE, and Lock screens, even if `initiator` has a
+  // WebContentsModalDialogHost.
+  if (!ash::IsUserBrowserContext(initiator->GetBrowserContext())) {
+    return nullptr;
+  }
+#endif
+
   // TODO(https://crbug.com/372062070: It's currently probably possible to
   // invoke print-preview on non-tab web contents. There are currently tests
   // that allow this for extension guest-views and chrome apps. For now allow
   // these through. In the future we may want to restrict printing to tabs.
   tabs::TabInterface* tab = tabs::TabInterface::MaybeGetFromContents(initiator);
   if (tab && !tab->CanShowModalUI()) {
+    return nullptr;
+  }
+
+  // Do nothing if a non-tab initiator has no WebContentsModalDialogHost to
+  // host the print preview dialog.
+  if (!tab && !HasWebContentsModalDialogHost(initiator)) {
     return nullptr;
   }
 
@@ -273,6 +303,13 @@ WebContents* PrintPreviewDialogController::GetPrintPreviewForContents(
     }
   }
   return nullptr;
+}
+
+void PrintPreviewDialogController::CancelPrintPreview(WebContents* initiator) {
+  CHECK(initiator);
+  if (GetPrintPreviewForContents(initiator)) {
+    RemoveInitiator(initiator);
+  }
 }
 
 WebContents* PrintPreviewDialogController::GetInitiator(
@@ -509,7 +546,7 @@ void PrintPreviewDialogController::SaveInitiatorTitle(
 void PrintPreviewDialogController::RemoveInitiator(
     WebContents* initiator) {
   WebContents* preview_dialog = GetPrintPreviewForContents(initiator);
-  DCHECK(preview_dialog);
+  CHECK(preview_dialog, base::NotFatalUntil::M162);
   // Update the map entry first, so when the print preview dialog gets destroyed
   // and reaches RemovePreviewDialog(), it does not attempt to also remove the
   // initiator's observers.

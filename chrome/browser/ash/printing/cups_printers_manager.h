@@ -28,6 +28,10 @@ namespace chromeos {
 class PpdProvider;
 }
 
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
+
 namespace user_prefs {
 class PrefRegistrySyncable;
 }  // namespace user_prefs
@@ -80,10 +84,11 @@ class CupsPrintersManager : public PrinterInstallationManager,
 
   // Factory function.
   // `application_locale_storage` must be non-null and must outlive the returned
-  // object.
+  // object. `url_loader_factory` must be non-null.
   static std::unique_ptr<CupsPrintersManager> Create(
       PrefService& local_state,
       const ApplicationLocaleStorage* application_locale_storage,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       Profile* profile);
 
   // Factory function that allows injected dependencies, for testing.  Ownership
@@ -95,7 +100,7 @@ class CupsPrintersManager : public PrinterInstallationManager,
       SyncedPrintersManager* synced_printers_manager,
       std::unique_ptr<PrinterDetector> usb_printer_detector,
       std::unique_ptr<PrinterDetector> zeroconf_printer_detector,
-      scoped_refptr<chromeos::PpdProvider> ppd_provider,
+      std::unique_ptr<chromeos::PpdProvider> ppd_provider,
       DlcserviceClient* dlc_service_client,
       std::unique_ptr<UsbPrinterNotificationController>
           usb_notification_controller,

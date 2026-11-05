@@ -7,13 +7,14 @@
 #include <string>
 
 #include "ash/constants/ash_pref_names.h"
+#include "base/check.h"
 #include "base/functional/callback.h"
 #include "base/sequence_checker.h"
 #include "chrome/browser/ash/account_manager/account_manager_edu_coexistence_controller.h"
 #include "chrome/browser/ash/account_manager/account_manager_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/account_manager_core/chromeos/account_manager.h"
-#include "components/account_manager_core/pref_names.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "google_apis/gaia/gaia_id.h"
 
@@ -33,13 +34,11 @@ AccountManagerPolicyController::~AccountManagerPolicyController() {
 
 void AccountManagerPolicyController::Start() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  if (!IsAccountManagerAvailable(profile_))
-    return;
+  CHECK(IsAccountManagerAvailable(profile_));
 
   pref_change_registrar_.Init(profile_->GetPrefs());
   pref_change_registrar_.Add(
-      ::account_manager::prefs::kSecondaryGoogleAccountSigninAllowed,
+      policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed,
       base::BindRepeating(&AccountManagerPolicyController::
                               OnSecondaryAccountsSigninAllowedPrefChanged,
                           weak_factory_.GetWeakPtr()));
@@ -96,7 +95,7 @@ void AccountManagerPolicyController::
     OnSecondaryAccountsSigninAllowedPrefChanged() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (profile_->GetPrefs()->GetBoolean(
-          ::account_manager::prefs::kSecondaryGoogleAccountSigninAllowed)) {
+          policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed)) {
     return;
   }
 

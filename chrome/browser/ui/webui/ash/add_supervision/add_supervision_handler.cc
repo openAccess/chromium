@@ -8,23 +8,24 @@
 #include <utility>
 #include <vector>
 
-#include "base/feature_list.h"
+#include "base/check.h"
+#include "base/check_deref.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/supervised_user/supervised_user_service_factory.h"
 #include "chrome/browser/ui/webui/ash/add_supervision/add_supervision.mojom.h"
 #include "chrome/browser/ui/webui/ash/add_supervision/add_supervision_handler_utils.h"
 #include "chrome/browser/ui/webui/ash/add_supervision/add_supervision_metrics_recorder.h"
 #include "components/services/app_service/public/cpp/app_registry_cache.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/access_token_fetcher.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/supervised_user/core/browser/supervised_user_service.h"
-#include "components/sync/base/features.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/web_ui.h"
 #include "google_apis/gaia/gaia_constants.h"
@@ -38,9 +39,13 @@ AddSupervisionHandler::AddSupervisionHandler(
         receiver,
     content::WebUI* web_ui,
     signin::IdentityManager* identity_manager,
+    supervised_user::SupervisedUserService* supervised_user_service,
     Delegate* delegate)
     : web_ui_(web_ui),
       identity_manager_(identity_manager),
+      // The handler is only created for a supervised account, which always has
+      // a SupervisedUserService.
+      supervised_user_service_(CHECK_DEREF(supervised_user_service)),
       receiver_(this, std::move(receiver)),
       delegate_(delegate) {
   identity_manager_observation_.Observe(identity_manager_);
@@ -102,11 +107,7 @@ void AddSupervisionHandler::GetOAuthToken(GetOAuthTokenCallback callback) {
 
   oauth2_access_token_fetcher_ =
       identity_manager_->CreateAccessTokenFetcherForAccount(
-          identity_manager_->GetPrimaryAccountId(
-              base::FeatureList::IsEnabled(
-                  syncer::kReplaceSyncPromosWithSignInPromos)
-                  ? signin::ConsentLevel::kSignin
-                  : signin::ConsentLevel::kSync),
+          identity_manager_->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
           signin::OAuthConsumerId::kAddSupervision,
           base::BindOnce(&AddSupervisionHandler::OnAccessTokenFetchComplete,
                          weak_ptr_factory_.GetWeakPtr(), std::move(callback)),
@@ -118,15 +119,15 @@ void AddSupervisionHandler::LogOut() {
 }
 
 void AddSupervisionHandler::NotifySupervisionEnabled() {
-  supervised_user::SupervisedUserService* service =
-      supervised_user::SupervisedUserServiceFactory::GetForProfile(Profile::FromWebUI(web_ui_));
-  service->set_signout_required_after_supervision_enabled();
+  supervised_user_service_->set_signout_required_after_supervision_enabled();
 
   // Force full sign-in the next time the user is at the login screen.
   // Gellerization can only be triggered by the primary user.
   user_manager::UserManager* manager = user_manager::UserManager::Get();
-  manager->SaveForceOnlineSignin(manager->GetPrimaryUser()->GetAccountId(),
-                                 true /* force signin */);
+  manager->SaveForceOnlineSignin(
+      CHECK_DEREF(session_manager::SessionManager::Get()->GetPrimarySession())
+          .account_id(),
+      true /* force signin */);
 
   // Record UMA metric that user has completed Add Supervision process.
   AddSupervisionMetricsRecorder::GetInstance()->RecordAddSupervisionEnrollment(

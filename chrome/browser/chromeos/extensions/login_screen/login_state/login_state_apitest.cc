@@ -4,7 +4,6 @@
 
 #include "ash/constants/ash_switches.h"
 #include "base/path_service.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/extensions/authentication_screen_extensions_external_loader.h"
 #include "chrome/browser/ash/login/lock/screen_locker_tester.h"
@@ -16,11 +15,9 @@
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/policy/extension_force_install_mixin.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/api/test/test_api.h"
 #include "extensions/browser/test_extension_registry_observer.h"
@@ -122,8 +119,6 @@ class AuthenticationScreenLoginStateApiTest
     extensions::TestGetConfigFunction::set_test_config_state(&config_);
   }
 
-  base::test::ScopedFeatureList scoped_feature_list_{
-      chromeos::features::kLockScreenBadgeAuth};
   ash::DeviceStateMixin device_state_mixin_{
       &mixin_host_,
       ash::DeviceStateMixin::State::OOBE_COMPLETED_CLOUD_ENROLLED};

@@ -9,11 +9,11 @@ import android.content.Context;
 import org.chromium.base.PathUtils;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LibraryProcessType;
-import org.chromium.chrome.browser.ProductConfig;
 import org.chromium.chrome.browser.app.notifications.ContextualNotificationPermissionRequesterImpl;
+import org.chromium.chrome.browser.app.tab_activity_glue.PopupCreatorImpl;
+import org.chromium.chrome.browser.customtabs.PopupCreatorFactory;
 import org.chromium.chrome.browser.metrics.UmaUtils;
 import org.chromium.native_test.NativeBrowserTestApplication;
-import org.chromium.ui.base.ResourceBundle;
 
 /** A basic chrome.browser.tests {@link android.app.Application}. */
 public class ChromeBrowserTestsApplication extends NativeBrowserTestApplication {
@@ -34,12 +34,12 @@ public class ChromeBrowserTestsApplication extends NativeBrowserTestApplication 
         if (isBrowserProcess) {
             // Test-only stuff, see also NativeUnitTest.java.
             PathUtils.setPrivateDataDirectorySuffix(PRIVATE_DATA_DIRECTORY_SUFFIX);
-            ResourceBundle.setAvailablePakLocales(ProductConfig.LOCALES);
-            // Some browser tests trigger access to ContextualNotificationPermissionRequester. It
-            // is normally initialized as part of Chrome startup.
+            // Some browser tests access process singletons that are normally initialized as part
+            // of Chrome startup.
             // TODO(crbug.com/454692653): This class should share more code with the production
             // ChromeApplicationImpl so test startup would be more similar to production.
             ContextualNotificationPermissionRequesterImpl.initialize();
+            PopupCreatorFactory.setInstance(new PopupCreatorImpl());
         }
     }
 }

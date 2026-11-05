@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
@@ -72,7 +73,9 @@ ALWAYS_INLINE String SmallStringCacheGetOrInsert(uint64_t sig_low,
                                                  Generator generator) {
   // Fibonacci hash using the golden ratio constant to distribute strings
   // evenly across the cache.
-  uint64_t hash_key = sig_low ^ sig_high ^ length;
+  // Rotate `sig_high` so `sig_low ^ sig_high` does not cancel to 0 when
+  // `length == 8` (`first<8>()` == `last<8>()`).
+  uint64_t hash_key = sig_low ^ std::rotr(sig_high, 27) ^ length;
   const size_t index =
       (hash_key * kGoldenRatio64) >> SmallStringCache::kHashShift;
 
@@ -113,22 +116,13 @@ ALWAYS_INLINE static uint16_t Compress2UCharsToUint16(
 
 ALWAYS_INLINE static uint32_t Compress4UCharsToUint32(
     base::span<const UChar, 4> chars) {
-  return static_cast<uint32_t>(static_cast<uint8_t>(chars[0])) |
-         (static_cast<uint32_t>(static_cast<uint8_t>(chars[1])) << 8) |
-         (static_cast<uint32_t>(static_cast<uint8_t>(chars[2])) << 16) |
-         (static_cast<uint32_t>(static_cast<uint8_t>(chars[3])) << 24);
+  return static_cast<uint32_t>(
+      ConvertTo8BitHashReader::Read32(base::as_bytes(chars)));
 }
 
 ALWAYS_INLINE static uint64_t Compress8UCharsToUint64(
     base::span<const UChar, 8> chars) {
-  return static_cast<uint64_t>(static_cast<uint8_t>(chars[0])) |
-         (static_cast<uint64_t>(static_cast<uint8_t>(chars[1])) << 8) |
-         (static_cast<uint64_t>(static_cast<uint8_t>(chars[2])) << 16) |
-         (static_cast<uint64_t>(static_cast<uint8_t>(chars[3])) << 24) |
-         (static_cast<uint64_t>(static_cast<uint8_t>(chars[4])) << 32) |
-         (static_cast<uint64_t>(static_cast<uint8_t>(chars[5])) << 40) |
-         (static_cast<uint64_t>(static_cast<uint8_t>(chars[6])) << 48) |
-         (static_cast<uint64_t>(static_cast<uint8_t>(chars[7])) << 56);
+  return ConvertTo8BitHashReader::Read64(base::as_bytes(chars));
 }
 
 ALWAYS_INLINE static std::pair<uint64_t, uint64_t> ComputeSmallStringSignature(
@@ -173,53 +167,22 @@ ALWAYS_INLINE static std::pair<uint64_t, uint64_t> ComputeSmallStringSignature(
   return {static_cast<uint8_t>(chars[0]), 0};
 }
 
-// The compiler will conveniently combine this into a single 64-bit load for us,
-// as long as it is reasonably obvious that it can elide the bounds checks.
-ALWAYS_INLINE static uint64_t Read4Chars(base::span<const UChar> chars,
-                                         size_t start) {
-  static_assert(std::is_unsigned_v<UChar>);
-  return static_cast<uint64_t>(chars[start]) |
-         (static_cast<uint64_t>(chars[start + 1]) << 16) |
-         (static_cast<uint64_t>(chars[start + 2]) << 32) |
-         (static_cast<uint64_t>(chars[start + 3]) << 48);
-}
-
-ALWAYS_INLINE static bool IsOnly8Bit(base::span<const UChar> chars) {
-  if (chars.size() >= 4) {
-    for (size_t i = 0; i + 3 < chars.size(); i += 4) {
-      if (Read4Chars(chars, i) & 0xFF00FF00FF00FF00ULL) {
-        return false;
-      }
-    }
-    // NOTE: The tail will overlap already-tested characters,
-    // but that is completely OK.
-    return !(Read4Chars(chars, chars.size() - 4) & 0xFF00FF00FF00FF00ULL);
-  } else {
-    return !std::ranges::any_of(chars, [](UChar ch) { return ch & 0xFF00; });
-  }
-}
-
 class UCharBuffer {
  public:
-  ALWAYS_INLINE static unsigned ComputeHashAndMaskTop8Bits(
+  ALWAYS_INLINE static uint32_t HashString24(
       base::span<const UChar> chars,
       AtomicStringUCharEncoding encoding) {
-    base::span<const char> bytes = base::as_chars(chars);
+    base::span<const uint8_t> bytes = base::as_bytes(chars);
     switch (encoding) {
       case AtomicStringUCharEncoding::kUnknown:
         // encoding is always resolved in the constructor.
         NOTREACHED();
-      case AtomicStringUCharEncoding::kIs8Bit: {
-        using Reader = ConvertTo8BitHashReader;
+      case AtomicStringUCharEncoding::kIs8Bit:
         // This is a very common case from HTML parsing, so we take
         // the size penalty from inlining.
-        return StringHasher::ComputeHashAndMaskTop8BitsInline<Reader>(
-            UNSAFE_TODO({base::unchecked, base::as_bytes(bytes).data(),
-                         bytes.size() / Reader::kCompressionFactor}));
-      }
+        return HashString24Inline<ConvertTo8BitHashReader>(bytes);
       case AtomicStringUCharEncoding::kIs16Bit:
-        return StringHasher::ComputeHashAndMaskTop8Bits(bytes.data(),
-                                                        bytes.size());
+        return blink::HashString24(bytes);
     }
   }
 
@@ -227,26 +190,26 @@ class UCharBuffer {
                             AtomicStringUCharEncoding encoding)
       : characters_(chars),
         encoding_(encoding == AtomicStringUCharEncoding::kUnknown
-                      ? (IsOnly8Bit(chars)
+                      ? (ContainsOnlyLatin1(chars)
                              ? AtomicStringUCharEncoding::kIs8Bit
                              : AtomicStringUCharEncoding::kIs16Bit)
                       : encoding),
-        hash_(ComputeHashAndMaskTop8Bits(chars, encoding_)) {}
+        hash_(HashString24(chars, encoding_)) {}
 
   ALWAYS_INLINE UCharBuffer(base::span<const UChar> chars,
-                            unsigned hash,
+                            uint32_t hash,
                             AtomicStringUCharEncoding encoding)
       : characters_(chars),
         encoding_(encoding == AtomicStringUCharEncoding::kUnknown
-                      ? (IsOnly8Bit(chars)
+                      ? (ContainsOnlyLatin1(chars)
                              ? AtomicStringUCharEncoding::kIs8Bit
                              : AtomicStringUCharEncoding::kIs16Bit)
                       : encoding),
         hash_(hash) {}
 
-  base::span<const UChar> characters() const { return characters_; }
-  unsigned hash() const { return hash_; }
-  AtomicStringUCharEncoding encoding() const { return encoding_; }
+  base::span<const UChar> Characters() const { return characters_; }
+  uint32_t Hash() const { return hash_; }
+  AtomicStringUCharEncoding Encoding() const { return encoding_; }
 
   scoped_refptr<StringImpl> CreateStringImpl() const {
     switch (encoding_) {
@@ -263,19 +226,19 @@ class UCharBuffer {
  private:
   const base::span<const UChar> characters_;
   const AtomicStringUCharEncoding encoding_;
-  const unsigned hash_;
+  const uint32_t hash_;
 };
 
 struct UCharBufferTranslator {
-  static unsigned GetHash(const UCharBuffer& buf) { return buf.hash(); }
+  static uint32_t GetHash(const UCharBuffer& buf) { return buf.Hash(); }
 
   static bool Equal(StringImpl* const& str, const UCharBuffer& buf) {
-    return blink::Equal(str, buf.characters());
+    return blink::Equal(str, buf.Characters());
   }
 
   static void Store(StringImpl*& location,
                     const UCharBuffer& buf,
-                    unsigned hash) {
+                    uint32_t hash) {
     location = buf.CreateStringImpl().release();
     location->SetHash(hash);
     location->SetIsAtomic();
@@ -283,24 +246,14 @@ struct UCharBufferTranslator {
 };
 
 struct StringViewLookupTranslator {
-  static unsigned GetHash(const StringView& buf) {
+  static uint32_t GetHash(const StringView& buf) {
     StringImpl* shared_impl = buf.SharedImpl();
     if (shared_impl) [[likely]] {
       return shared_impl->GetHash();
     }
 
-    base::span<const char> bytes = base::as_chars(buf.RawByteSpan());
-    if (buf.Is8Bit()) {
-      return StringHasher::ComputeHashAndMaskTop8Bits(bytes.data(),
-                                                      bytes.size());
-    } else if (IsOnly8Bit(buf.Span16())) {
-      using Reader = ConvertTo8BitHashReader;
-      return StringHasher::ComputeHashAndMaskTop8Bits<Reader>(
-          bytes.data(), bytes.size() / Reader::kCompressionFactor);
-    } else {
-      return StringHasher::ComputeHashAndMaskTop8Bits(bytes.data(),
-                                                      bytes.size());
-    }
+    return buf.Is8Bit() ? HashString24(buf.Span8())
+                        : HashWideString24(buf.Span16());
   }
 
   static bool Equal(StringImpl* const& str, const StringView& buf) {
@@ -319,35 +272,30 @@ class HashTranslatorLowercaseBuffer {
     // We expect already lowercase strings to take another path in
     // Element::WeakLowercaseIfNecessary.
     DCHECK(!impl_->ContainsNoAsciiUpper());
-    base::span<const char> bytes = base::as_chars(impl->RawByteSpan());
+    base::span<const uint8_t> bytes = impl->RawByteSpan();
     if (impl_->Is8Bit()) {
-      hash_ =
-          StringHasher::ComputeHashAndMaskTop8Bits<AsciiLowerHashReader<LChar>>(
-              bytes.data(), bytes.size());
+      hash_ = HashString24<AsciiLowerHashReader<LChar>>(bytes);
     } else {
-      if (IsOnly8Bit(impl_->Span16())) {
-        using Reader = AsciiConvertTo8AndLowerHashReader;
-        hash_ = StringHasher::ComputeHashAndMaskTop8Bits<Reader>(
-            bytes.data(), bytes.size() / Reader::kCompressionFactor);
+      if (ContainsOnlyLatin1(impl_->Span16())) {
+        hash_ = HashString24<AsciiConvertTo8AndLowerHashReader>(bytes);
       } else {
-        hash_ = StringHasher::ComputeHashAndMaskTop8Bits<
-            AsciiLowerHashReader<UChar>>(bytes.data(), bytes.size());
+        hash_ = HashString24<AsciiLowerHashReader<UChar>>(bytes);
       }
     }
   }
 
-  const StringImpl* impl() const { return impl_; }
-  unsigned hash() const { return hash_; }
+  const StringImpl* Impl() const { return impl_; }
+  uint32_t Hash() const { return hash_; }
 
  private:
   const StringImpl* impl_;
-  unsigned hash_;
+  uint32_t hash_;
 };
 struct LowercaseLookupTranslator {
   // Computes the hash that |query| would have if it were first converted to
   // ASCII lowercase.
-  static unsigned GetHash(const HashTranslatorLowercaseBuffer& buf) {
-    return buf.hash();
+  static uint32_t GetHash(const HashTranslatorLowercaseBuffer& buf) {
+    return buf.Hash();
   }
 
   // Returns true if the hashtable |bucket| contains a string which is the ASCII
@@ -363,7 +311,7 @@ struct LowercaseLookupTranslator {
     //
     // However, similar optimizations are used here as there, so these should
     // have generally similar correctness and performance constraints.
-    const StringImpl* query = buf.impl();
+    const StringImpl* query = buf.Impl();
     if (bucket->length() != query->length())
       return false;
     if (bucket->RawByteSpan().data() == query->RawByteSpan().data() &&
@@ -399,7 +347,7 @@ AtomicStringTable::AtomicStringTable() {
   }
 }
 
-void AtomicStringTable::ReserveCapacity(unsigned size) {
+void AtomicStringTable::ReserveCapacity(wtf_size_t size) {
   base::AutoLock auto_lock(lock_);
   table_.ReserveCapacityForSize(size);
 }
@@ -430,8 +378,8 @@ String AtomicStringTable::Add(base::span<const UChar> chars,
   }
 
   if (encoding == AtomicStringUCharEncoding::kUnknown) {
-    encoding = IsOnly8Bit(chars) ? AtomicStringUCharEncoding::kIs8Bit
-                                 : AtomicStringUCharEncoding::kIs16Bit;
+    encoding = ContainsOnlyLatin1(chars) ? AtomicStringUCharEncoding::kIs8Bit
+                                         : AtomicStringUCharEncoding::kIs16Bit;
   }
 
   const auto length = chars.size();
@@ -455,30 +403,30 @@ class LCharBuffer {
   ALWAYS_INLINE explicit LCharBuffer(base::span<const LChar> chars)
       : characters_(chars),
         // This is a common path from V8 strings, so inlining is worth it.
-        hash_(StringHasher::ComputeHashAndMaskTop8BitsInline(chars)) {}
+        hash_(HashString24Inline(chars)) {}
 
-  ALWAYS_INLINE LCharBuffer(base::span<const LChar> chars, unsigned hash)
+  ALWAYS_INLINE LCharBuffer(base::span<const LChar> chars, uint32_t hash)
       : characters_(chars), hash_(hash) {}
 
-  base::span<const LChar> characters() const { return characters_; }
-  unsigned hash() const { return hash_; }
+  base::span<const LChar> Characters() const { return characters_; }
+  uint32_t Hash() const { return hash_; }
 
  private:
   const base::span<const LChar> characters_;
-  const unsigned hash_;
+  const uint32_t hash_;
 };
 
 struct LCharBufferTranslator {
-  static unsigned GetHash(const LCharBuffer& buf) { return buf.hash(); }
+  static uint32_t GetHash(const LCharBuffer& buf) { return buf.Hash(); }
 
   static bool Equal(StringImpl* const& str, const LCharBuffer& buf) {
-    return blink::Equal(str, buf.characters());
+    return blink::Equal(str, buf.Characters());
   }
 
   static void Store(StringImpl*& location,
                     const LCharBuffer& buf,
-                    unsigned hash) {
-    auto string = StringImpl::Create(buf.characters());
+                    uint32_t hash) {
+    auto string = StringImpl::Create(buf.Characters());
     location = string.release();
     location->SetHash(hash);
     location->SetIsAtomic();
@@ -494,6 +442,10 @@ String AtomicStringTable::Add(const StringView& string_view) {
 
   if (string_view.empty()) {
     return StringImpl::empty_;
+  }
+
+  if (StringImpl* impl = string_view.SharedImpl(); impl && impl->IsAtomic()) {
+    return String(impl);
   }
 
   const auto length = string_view.length();
@@ -579,7 +531,7 @@ String AtomicStringTable::AddUtf8(base::span<const uint8_t> characters_span) {
   bool seen_non_ascii = false;
   bool seen_non_latin1 = false;
 
-  unsigned utf16_length = blink::unicode::CalculateStringLengthFromUtf8(
+  wtf_size_t utf16_length = unicode::CalculateStringLengthFromUtf8(
       characters_span, seen_non_ascii, seen_non_latin1);
   if (!seen_non_ascii) {
     return Add(characters_span);

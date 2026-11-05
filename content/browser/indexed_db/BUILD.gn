@@ -7,7 +7,10 @@ import("//mojo/public/tools/bindings/mojom.gni")
 import("//testing/libfuzzer/fuzzer_test.gni")
 
 source_set("indexed_db") {
-  public = [ "indexed_db_control_wrapper.h" ]
+  public = [
+    "indexed_db_client_state_checker.h",
+    "indexed_db_control_wrapper.h",
+  ]
 
   sources = [
     "file_path_util.cc",
@@ -182,6 +185,7 @@ content_mojolpm_fuzzer_test("idb_factory_mojolpm_fuzzer") {
     "fuzzer_corpus/idb_factory_mojolpm_fuzzer/basic_put_get.textproto",
     "fuzzer_corpus/idb_factory_mojolpm_fuzzer/idb_factory.textproto",
     "fuzzer_corpus/idb_factory_mojolpm_fuzzer/index_cursor.textproto",
+    "fuzzer_corpus/idb_factory_mojolpm_fuzzer/migration.textproto",
     "fuzzer_corpus/idb_factory_mojolpm_fuzzer/object_store_cursor.textproto",
   ]
 }
@@ -207,6 +211,7 @@ source_set("unit_tests") {
     "instance/backing_store_test_base.cc",
     "instance/backing_store_test_base.h",
     "instance/backing_store_unittest.cc",
+    "instance/blob_reader_unittest.cc",
     "instance/bucket_context_unittest.cc",
     "instance/database_unittest.cc",
     "instance/fake_transaction.cc",
@@ -219,6 +224,7 @@ source_set("unit_tests") {
     "instance/mock_blob_storage_context.h",
     "instance/mock_file_system_access_context.cc",
     "instance/mock_file_system_access_context.h",
+    "instance/sqlite/active_blob_streamer_unittest.cc",
     "instance/sqlite/backing_store_sqlite_unittest.cc",
     "instance/sqlite/database_connection_unittest.cc",
     "instance/sqlite_backing_store_rollout_stage_unittest.cc",
@@ -255,17 +261,13 @@ source_set("unit_tests") {
     "//third_party/fuzztest",
     "//third_party/leveldatabase",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 mojom("internals_mojo_bindings") {
   sources = [ "indexed_db_internals.mojom" ]
   public_deps = [
-    "//components/services/storage/privileged/mojom",
-    "//components/services/storage/public/mojom",
+    "//components/services/storage/privileged/mojom:mojom_webui",
+    "//components/services/storage/public/mojom/buckets",
     "//mojo/public/mojom/base",
   ]
   webui_module_path = "/"

@@ -12,10 +12,8 @@ import static org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabT
 import static org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsProperties.ICON;
 import static org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsProperties.IS_INCOGNITO;
 import static org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsProperties.MINIMIZE_BUTTON;
-import static org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsProperties.OMNIBOX_ENABLED;
 import static org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsProperties.OPTIONAL_BUTTON_VISIBLE;
 import static org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsProperties.TINT;
-import static org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsProperties.TITLE_VISIBLE;
 import static org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsProperties.TOOLBAR_WIDTH;
 
 import android.app.Activity;
@@ -42,7 +40,6 @@ import org.chromium.chrome.browser.customtabs.features.minimizedcustomtab.Minimi
 import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbar.OnNewWidthMeasuredListener;
 import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbarButtonsProperties.MinimizeButtonData;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.ConfigurationChangedObserver;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
@@ -68,7 +65,7 @@ class CustomTabToolbarButtonsMediator
     private final PropertyModel mModel;
     private final CustomTabToolbar mView;
     private final Activity mActivity;
-    private final CustomTabMinimizeDelegate mMinimizeDelegate;
+    private final @Nullable CustomTabMinimizeDelegate mMinimizeDelegate;
     private final ActivityLifecycleDispatcher mLifecycleDispatcher;
     private final ActivityTabProvider mTabProvider;
 
@@ -84,7 +81,7 @@ class CustomTabToolbarButtonsMediator
             PropertyModel model,
             CustomTabToolbar view,
             Activity activity,
-            CustomTabMinimizeDelegate minimizeDelegate,
+            @Nullable CustomTabMinimizeDelegate minimizeDelegate,
             BrowserServicesIntentDataProvider intentDataProvider,
             ActivityLifecycleDispatcher lifecycleDispatcher,
             ActivityTabProvider tabProvider) {
@@ -164,8 +161,6 @@ class CustomTabToolbarButtonsMediator
     // Display a (blue) dot on the overflow menu icon for the optional button that cannot be
     // shown on the toolbar to indicate that the action is available through the menu.
     private void maybeShowActionMenuIndicator(@AdaptiveToolbarButtonVariant int buttonVariant) {
-        if (mModel.get(OMNIBOX_ENABLED)) return;
-
         mView.setUpOptionalButtonFallbackUi(buttonVariant);
     }
 
@@ -216,13 +211,6 @@ class CustomTabToolbarButtonsMediator
                     CustomTabMtbHiddenReason.COUNT);
             return false;
         }
-        if (mModel.get(OMNIBOX_ENABLED)) {
-            RecordHistogram.recordEnumeratedHistogram(
-                    "CustomTabs.AdaptiveToolbarButton.HiddenReason",
-                    CustomTabMtbHiddenReason.OMNIBOX_ENABLED,
-                    CustomTabMtbHiddenReason.COUNT);
-            return false;
-        }
         View optionalButton = mView.ensureOptionalButtonInflated();
         mOptionalButtonCoordinator =
                 new OptionalButtonCoordinator(
@@ -269,22 +257,6 @@ class CustomTabToolbarButtonsMediator
                         locationBar.setLayoutParams(locationBarLp);
                     }
                 });
-        if (ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
-                ChromeFeatureList.CCT_ADAPTIVE_BUTTON_TEST_SWITCH, "always-animate", false)) {
-            mOptionalButtonCoordinator.setAlwaysShowActionChip(true);
-        }
-        if (ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
-                ChromeFeatureList.CCT_ADAPTIVE_BUTTON_TEST_SWITCH, "hide-button", false)) {
-            // Simulate the toolbar that barely contains close, menu, 1 custom action button, and
-            // the minimum location bar, which ends up with no space for the MTB.
-            mModel.set(
-                    TOOLBAR_WIDTH,
-                    width * 3
-                            + CustomTabToolbarButtonsViewBinder.getLocationBarMinWidth(
-                                    mActivity.getResources(),
-                                    mModel.get(OMNIBOX_ENABLED),
-                                    mModel.get(TITLE_VISIBLE)));
-        }
         return true;
     }
 
@@ -326,7 +298,7 @@ class CustomTabToolbarButtonsMediator
 
     private static boolean getMinimizeButtonAvailable(
             Activity activity,
-            CustomTabMinimizeDelegate minimizeDelegate,
+            @Nullable CustomTabMinimizeDelegate minimizeDelegate,
             BrowserServicesIntentDataProvider intentDataProvider) {
         return MinimizedFeatureUtils.isMinimizedCustomTabAvailable(activity)
                 && MinimizedFeatureUtils.shouldEnableMinimizedCustomTabs(intentDataProvider)

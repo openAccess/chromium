@@ -4,7 +4,7 @@
 
 package org.chromium.chrome.browser.ui;
 
-import android.content.Context;
+import android.app.Activity;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.NativeMethods;
@@ -20,7 +20,9 @@ import org.chromium.chrome.browser.fullscreen.FullscreenOptions;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManagerProvider;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.WindowAndroid;
 
 /**
  * This class is the Java counterpart of ExclusiveAccessContextAndroid responsible for forwarding
@@ -31,7 +33,7 @@ import org.chromium.content_public.browser.WebContents;
 public class ExclusiveAccessContext implements Destroyable {
     private static final String TAG = "ExclusiveAccessCtx";
 
-    private final Context mContext;
+    private final WindowAndroid mWindowAndroid;
     private final FullscreenManager mFullscreenManager;
     final ActivityTabProvider.ActivityTabTabObserver mActiveTabObserver;
     @Nullable private Tab mActiveTab;
@@ -50,23 +52,23 @@ public class ExclusiveAccessContext implements Destroyable {
     @CalledByNative
     public static ExclusiveAccessContext create(
             long nativeExclusiveAccessContextAndroid,
-            Context context,
+            WindowAndroid windowAndroid,
             FullscreenManager fullscreenManager,
             ActivityTabProvider activityTabProvider) {
         return new ExclusiveAccessContext(
                 nativeExclusiveAccessContextAndroid,
-                context,
+                windowAndroid,
                 fullscreenManager,
                 activityTabProvider);
     }
 
     public ExclusiveAccessContext(
             long nativeExclusiveAccessContextAndroid,
-            Context context,
+            WindowAndroid windowAndroid,
             FullscreenManager fullscreenManager,
             ActivityTabProvider activityTabProvider) {
         mNativeExclusiveAccessContextAndroid = nativeExclusiveAccessContextAndroid;
-        mContext = context;
+        mWindowAndroid = windowAndroid;
         mFullscreenManager = fullscreenManager;
         mActiveTabObserver =
                 new ActivityTabProvider.ActivityTabTabObserver(
@@ -99,20 +101,19 @@ public class ExclusiveAccessContext implements Destroyable {
                 };
     }
 
-    Context getAppContext() {
-        return mContext;
+    /**
+     * @return The Activity associated with this window, or null if unavailable.
+     */
+    public @Nullable Activity getActivity() {
+        return mWindowAndroid.getActivity().get();
     }
 
     /**
-     * @return The SnackbarManager for this context, or null if the context does not support
-     *     snackbars (e.g. application context, or activity that doesn't implement
-     *     SnackbarManageable).
+     * @return The SnackbarManager attached to this activity's window, or null if it has not been
+     *     attached yet.
      */
     public @Nullable SnackbarManager getSnackbarManager() {
-        if (mContext instanceof SnackbarManager.SnackbarManageable manageable) {
-            return manageable.getSnackbarManager();
-        }
-        return null;
+        return SnackbarManagerProvider.from(mWindowAndroid);
     }
 
     @Override

@@ -7,14 +7,16 @@
 #include <string_view>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "components/actor/core/actor_features.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
+#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
+#include "components/page_content_annotations/content/page_context_fetcher_metrics.h"
 
 namespace actor {
 
@@ -42,6 +44,8 @@ std::string_view ToString(ActorTask::StoppedReason stopped_reason) {
       return "UserNavigatedAway";
     case ActorTask::StoppedReason::kTimeout:
       return "Timeout";
+    case ActorTask::StoppedReason::kAbortedByPolicy:
+      return "AbortedByPolicy";
   }
   NOTREACHED();
 }
@@ -170,9 +174,19 @@ void RecordPageContextApcDuration(base::TimeDelta duration) {
   base::UmaHistogramMediumTimes("Actor.PageContext.APC.Duration", duration);
 }
 
+void RecordPageContextApcStatus(
+    optimization_guide::AIPageContentExtractionStatus status) {
+  base::UmaHistogramEnumeration(kActorPageContextApcStatus, status);
+}
+
 void RecordPageContextScreenshotDuration(base::TimeDelta duration) {
   base::UmaHistogramMediumTimes("Actor.PageContext.Screenshot.Duration",
                                 duration);
+}
+
+void RecordPageContextScreenshotStatus(
+    page_content_annotations::ScreenshotCaptureStatus status) {
+  base::UmaHistogramEnumeration(kActorPageContextScreenshotStatus, status);
 }
 
 void RecordPageContextTabCount(size_t tab_count) {
@@ -217,6 +231,21 @@ void RecordNavigationGatingDecision(ExecutionEngine::GatingDecision decision) {
                                 decision);
 }
 
+void RecordPageActionTargetFrameType(PageActionTargetFrameType type) {
+  base::UmaHistogramEnumeration("Actor.OriginGating.TargetFrameType", type);
+}
+
+void RecordSubframeGatingDryRunOutcome(SubframeGatingDryRunOutcome outcome) {
+  base::UmaHistogramEnumeration("Actor.OriginGating.SubframeDryRun.Outcome",
+                                outcome);
+}
+
+void RecordSubframeGatingDryRunBlockReason(
+    MayActOnUrlBlockReason block_reason) {
+  base::UmaHistogramEnumeration("Actor.OriginGating.SubframeDryRun.BlockReason",
+                                block_reason);
+}
+
 // Records the outcome of an post-performActions observation fetch.
 void RecordObservationOutcomeHistogram(
     const optimization_guide::proto::ActionsResult& result,
@@ -225,7 +254,7 @@ void RecordObservationOutcomeHistogram(
 
   bool success = true;
   for (const TabObservation& tab_observation : result.tabs()) {
-    CHECK(tab_observation.has_result(), base::NotFatalUntil::M147);
+    CHECK(tab_observation.has_result());
     if (tab_observation.result() != TabObservation::TAB_OBSERVATION_OK) {
       success = false;
       break;
@@ -251,7 +280,7 @@ void RecordTabObservationResultHistogram(
 
   for (const TabObservation& tab_observation : result.tabs()) {
     std::optional<ActorTabObservationResult> tab_result;
-    CHECK(tab_observation.has_result(), base::NotFatalUntil::M147);
+    CHECK(tab_observation.has_result());
     switch (tab_observation.result()) {
       case TabObservation::TAB_OBSERVATION_OK:
         tab_result = ActorTabObservationResult::kSuccess;
@@ -261,8 +290,7 @@ void RecordTabObservationResultHistogram(
         break;
       case TabObservation::TAB_OBSERVATION_SCREENSHOT_TIMEOUT:
         // Deprecated and unused
-        NOTREACHED(base::NotFatalUntil::M147);
-        break;
+        NOTREACHED();
       case TabObservation::TAB_OBSERVATION_PAGE_CRASHED:
         tab_result = ActorTabObservationResult::kPageCrashed;
         break;
@@ -276,10 +304,8 @@ void RecordTabObservationResultHistogram(
         tab_result = ActorTabObservationResult::kPageContextNotEligible;
         break;
       case TabObservation::TAB_OBSERVATION_FETCH_ERROR: {
-        CHECK(tab_observation.has_annotated_page_content_result(),
-              base::NotFatalUntil::M147);
-        CHECK(tab_observation.has_screenshot_result(),
-              base::NotFatalUntil::M147);
+        CHECK(tab_observation.has_annotated_page_content_result());
+        CHECK(tab_observation.has_screenshot_result());
         TabObservation::AnnotatedPageContentResult apc_result =
             tab_observation.annotated_page_content_result();
         TabObservation::ScreenshotResult screenshot_result =
@@ -304,8 +330,7 @@ void RecordTabObservationResultHistogram(
                 TabObservation_AnnotatedPageContentResult_TabObservation_AnnotatedPageContentResult_INT_MIN_SENTINEL_DO_NOT_USE_:
             case optimization_guide::proto::
                 TabObservation_AnnotatedPageContentResult_TabObservation_AnnotatedPageContentResult_INT_MAX_SENTINEL_DO_NOT_USE_:
-              NOTREACHED(base::NotFatalUntil::M147);
-              break;
+              NOTREACHED();
           }
 
           switch (screenshot_result) {
@@ -321,12 +346,11 @@ void RecordTabObservationResultHistogram(
                 TabObservation_ScreenshotResult_TabObservation_ScreenshotResult_INT_MIN_SENTINEL_DO_NOT_USE_:
             case optimization_guide::proto::
                 TabObservation_ScreenshotResult_TabObservation_ScreenshotResult_INT_MAX_SENTINEL_DO_NOT_USE_:
-              NOTREACHED(base::NotFatalUntil::M147);
-              break;
+              NOTREACHED();
           }
 
           // We already ensured one of APC and screenshot has a failure.
-          CHECK(tab_result.has_value(), base::NotFatalUntil::M147);
+          CHECK(tab_result.has_value());
         }
         break;
       }
@@ -334,11 +358,10 @@ void RecordTabObservationResultHistogram(
           TabObservation_TabObservationResult_TabObservation_TabObservationResult_INT_MIN_SENTINEL_DO_NOT_USE_:
       case optimization_guide::proto::
           TabObservation_TabObservationResult_TabObservation_TabObservationResult_INT_MAX_SENTINEL_DO_NOT_USE_:
-        NOTREACHED(base::NotFatalUntil::M147);
-        break;
+        NOTREACHED();
     }
 
-    CHECK(tab_result.has_value(), base::NotFatalUntil::M147);
+    CHECK(tab_result.has_value());
     base::UmaHistogramEnumeration(kActorPageContextTabObservationResult,
                                   *tab_result);
   }

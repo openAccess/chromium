@@ -103,14 +103,16 @@ void LoadRiskDataHelper(uint64_t obfuscated_gaia_id,
   base::Time install_time = base::Time::FromTimeT(
       g_browser_process->local_state()->GetInt64(metrics::prefs::kInstallDate));
 
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  risk::GetFingerprint(
-      obfuscated_gaia_id, window_bounds, web_contents,
-      std::string(version_info::GetVersionNumber()), charset, accept_languages,
-      install_time,
-      g_browser_process->GetFeatures()->application_locale_storage()->Get(),
-      embedder_support::GetUserAgent(),
-      base::BindOnce(PassRiskData, std::move(callback)));
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  risk::GetFingerprint(obfuscated_gaia_id, window_bounds, web_contents,
+                       std::string(version_info::GetVersionNumber()), charset,
+                       accept_languages, install_time,
+                       std::string(g_browser_process->GetFeatures()
+                                       ->application_locale_storage()
+                                       ->GetTag()
+                                       .tag_string()),
+                       embedder_support::GetUserAgent(),
+                       base::BindOnce(PassRiskData, std::move(callback)));
 }
 
 }  // namespace autofill::risk_util

@@ -60,16 +60,20 @@ namespace {
 void UpdateRefreshTokenForAccount(
     ProfileOAuth2TokenService* token_service,
     AccountTrackerService* account_tracker_service,
+    GaiaCookieManagerService* gaia_cookie_manager_service,
     IdentityManager* identity_manager,
     const CoreAccountId& account_id,
     const std::string& new_token,
     const TokenBindingInfo& token_binding_info,
     signin_metrics::SourceForRefreshTokenOperation source =
         signin_metrics::SourceForRefreshTokenOperation::kUnknown) {
-  DCHECK_EQ(account_tracker_service->GetAccountInfo(account_id).account_id,
+  DCHECK_EQ(account_tracker_service->GetAccountInfo(account_id).GetAccountId(),
             account_id)
       << "To set the refresh token for an unknown account, use "
          "MakeAccountAvailable()";
+  // Tests that make accounts available don't set Gaia cookies.
+  gaia_cookie_manager_service->set_ignore_missing_gaia_cookies_for_testing(
+      true);
 
   // Ensure that refresh tokens are loaded; some platforms enforce the invariant
   // that refresh token mutation cannot occur until refresh tokens are loaded,
@@ -86,8 +90,8 @@ void UpdateRefreshTokenForAccount(
   const AccountInfo& account_info =
       account_tracker_service->GetAccountInfo(account_id);
   account_manager::Account account{
-      account_manager::AccountKey::FromGaiaId(account_info.gaia),
-      account_info.email};
+      account_manager::AccountKey::FromGaiaId(account_info.GetGaiaId()),
+      std::string(account_info.GetEmail())};
   GetAccountManagerFacade(identity_manager)
       ->UpsertAccountForTesting(account, new_token);
 #else
@@ -225,7 +229,9 @@ AccountAvailabilityOptions AccountAvailabilityOptionsBuilder::Build(
 // -----------------------------------------------------------------------------
 
 void WaitForRefreshTokensLoaded(IdentityManager* identity_manager) {
-  base::RunLoop run_loop;
+  // See the comment in `SetCookieAccounts()` for why this run loop has to
+  // allow nestable tasks.
+  base::RunLoop run_loop{base::RunLoop::Type::kNestableTasksAllowed};
   TestIdentityManagerObserver load_credentials_observer(identity_manager);
   load_credentials_observer.SetOnRefreshTokensLoadedCallback(
       run_loop.QuitClosure());
@@ -263,7 +269,8 @@ CoreAccountInfo SetPrimaryAccount(IdentityManager* identity_manager,
                               AccountAvailabilityOptionsBuilder()
                                   .AsPrimary(consent_level)
                                   .WithoutRefreshToken()
-                                  .Build(email));
+                                  .Build(email))
+      .GetCoreAccountInfo();
 }
 
 void SetAutomaticIssueOfAccessTokens(IdentityManager* identity_manager,
@@ -312,7 +319,8 @@ AccountInfo MakePrimaryAccountAvailable(IdentityManager* identity_manager,
   CoreAccountInfo account_info =
       MakeAccountAvailable(identity_manager, AccountAvailabilityOptionsBuilder()
                                                  .AsPrimary(consent_level)
-                                                 .Build(email));
+                                                 .Build(email))
+          .GetCoreAccountInfo();
   AccountInfo primary_account_info =
       identity_manager->FindExtendedAccountInfo(account_info);
   // Ensure that extended information for the account is available after setting
@@ -399,6 +407,10 @@ void WaitForPrimaryAccount(IdentityManager* identity_manager,
 
 AccountInfo MakeAccountAvailable(IdentityManager* identity_manager,
                                  const AccountAvailabilityOptions& options) {
+  // Tests that make accounts available don't set Gaia cookies.
+  identity_manager->GetGaiaCookieManagerService()
+      ->set_ignore_missing_gaia_cookies_for_testing(true);
+
   if (options.refresh_token.has_value()) {
     // Wait until tokens are loaded, otherwise the account will be removed as
     // soon as tokens finish loading.
@@ -426,30 +438,32 @@ AccountInfo MakeAccountAvailable(IdentityManager* identity_manager,
 
   AccountInfo account_info =
       account_tracker_service->FindAccountInfoByEmail(options.email);
-  CHECK(!account_info.account_id.empty());
-  CHECK(options.gaia_id.empty() || account_info.gaia == options.gaia_id)
+  CHECK(!account_info.GetAccountId().empty());
+  CHECK(options.gaia_id.empty() || account_info.GetGaiaId() == options.gaia_id)
       << "The already available account does not match the requested gaia: '"
-      << account_info.gaia << "' instead of '" << options.gaia_id << "'.";
+      << account_info.GetGaiaId() << "' instead of '" << options.gaia_id
+      << "'.";
 
   if (options.consent_level.has_value()) {
     auto consent_level = options.consent_level.value();
     PrimaryAccountManager* primary_account_manager =
         identity_manager->GetPrimaryAccountManager();
-    primary_account_manager->SetPrimaryAccountInfo(account_info, consent_level,
-                                                   options.access_point);
-    CHECK_EQ(account_info.gaia,
+    primary_account_manager->SetPrimaryAccountInfo(
+        account_info.GetCoreAccountInfo(), consent_level, options.access_point);
+    CHECK_EQ(account_info.GetGaiaId(),
              identity_manager->GetPrimaryAccountInfo(consent_level).gaia);
   }
 
   if (options.refresh_token.has_value()) {
-    SetRefreshTokenForAccount(identity_manager, account_info.account_id,
+    SetRefreshTokenForAccount(identity_manager, account_info.GetAccountId(),
                               options.refresh_token.value(),
                               options.token_binding_info);
   }
 
   if (options.url_loader_factory_for_cookies) {
-    AddCookieAccount(identity_manager, options.url_loader_factory_for_cookies,
-                     {account_info.email, account_info.gaia});
+    AddCookieAccount(
+        identity_manager, options.url_loader_factory_for_cookies,
+        {std::string(account_info.GetEmail()), account_info.GetGaiaId()});
   }
 
   return account_info;
@@ -467,7 +481,8 @@ void SetRefreshTokenForAccount(IdentityManager* identity_manager,
                                const TokenBindingInfo& token_binding_info) {
   UpdateRefreshTokenForAccount(
       identity_manager->GetTokenService(),
-      identity_manager->GetAccountTrackerService(), identity_manager,
+      identity_manager->GetAccountTrackerService(),
+      identity_manager->GetGaiaCookieManagerService(), identity_manager,
       account_id,
       token_value.empty()
           ? "refresh_token_for_" + account_id.ToString() + "_" +
@@ -482,6 +497,7 @@ void SetInvalidRefreshTokenForAccount(
     signin_metrics::SourceForRefreshTokenOperation source) {
   UpdateRefreshTokenForAccount(identity_manager->GetTokenService(),
                                identity_manager->GetAccountTrackerService(),
+                               identity_manager->GetGaiaCookieManagerService(),
                                identity_manager, account_id,
                                GaiaConstants::kInvalidRefreshToken,
                                TokenBindingInfo(), source);
@@ -503,7 +519,7 @@ void RemoveRefreshTokenForAccount(IdentityManager* identity_manager,
       identity_manager->GetAccountTrackerService()->GetAccountInfo(account_id);
   GetAccountManagerFacade(identity_manager)
       ->RemoveAccountForTesting(
-          account_manager::AccountKey::FromGaiaId(account_info.gaia));
+          account_manager::AccountKey::FromGaiaId(account_info.GetGaiaId()));
 #else
   identity_manager->GetTokenService()->RevokeCredentials(account_id);
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -546,7 +562,13 @@ void SetCookieAccounts(
                                     /*verified=*/true});
   }
 
-  base::RunLoop run_loop;
+  // `kNestableTasksAllowed` is required because this helper is also called
+  // from within a nested run loop (e.g. from test code driven by a browser
+  // test's own run loop, or from a fake that runs while a production flow is
+  // on the stack). A `kDefault` run loop only processes application tasks
+  // when it is the outermost one, so the `/ListAccounts` response below would
+  // never be delivered and this would hang. See `RunLoop::Run()`.
+  base::RunLoop run_loop{base::RunLoop::Type::kNestableTasksAllowed};
   TestIdentityManagerObserver cookie_observer(identity_manager);
   cookie_observer.SetOnAccountsInCookieUpdatedCallback(run_loop.QuitClosure());
 
@@ -556,6 +578,7 @@ void SetCookieAccounts(
   GaiaCookieManagerService* cookie_manager =
       identity_manager->GetGaiaCookieManagerService();
   cookie_manager->set_list_accounts_stale_for_testing(true);
+  cookie_manager->set_ignore_missing_gaia_cookies_for_testing(true);
   // Clears cached LIST_ACCOUNTS requests, so that the new request can trigger
   // the observers instead of being assumed as having an identical result as the
   // previous one.
@@ -614,8 +637,9 @@ void UpdateAccountInfoForAccount(IdentityManager* identity_manager,
       identity_manager->GetAccountTrackerService();
 
   DCHECK(account_tracker_service);
-  DCHECK(!account_tracker_service->GetAccountInfo(account_info.account_id)
-              .account_id.empty());
+  DCHECK(!account_tracker_service->GetAccountInfo(account_info.GetAccountId())
+              .GetAccountId()
+              .empty());
 
   account_tracker_service->SeedAccountInfo(account_info);
 }
@@ -634,6 +658,7 @@ void SetFreshnessOfAccountsInGaiaCookie(IdentityManager* identity_manager,
                                         bool accounts_are_fresh) {
   GaiaCookieManagerService* cookie_manager =
       identity_manager->GetGaiaCookieManagerService();
+  cookie_manager->set_ignore_missing_gaia_cookies_for_testing(true);
   cookie_manager->set_list_accounts_stale_for_testing(!accounts_are_fresh);
 }
 

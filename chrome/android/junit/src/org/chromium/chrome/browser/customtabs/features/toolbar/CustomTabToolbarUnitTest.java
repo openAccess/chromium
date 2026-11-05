@@ -26,6 +26,8 @@ import android.view.View;
 import android.widget.ImageButton;
 import android.widget.TextView;
 
+import androidx.core.widget.ImageViewCompat;
+
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -41,6 +43,7 @@ import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
@@ -54,9 +57,11 @@ import org.chromium.chrome.browser.customtabs.features.minimizedcustomtab.Minimi
 import org.chromium.chrome.browser.customtabs.features.toolbar.CustomTabToolbar.CustomTabLocationBar;
 import org.chromium.chrome.browser.omnibox.UrlBarData;
 import org.chromium.chrome.browser.omnibox.status.PageInfoIphController;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.IncognitoStateProvider;
 import org.chromium.chrome.browser.theme.ThemeColorProvider;
+import org.chromium.chrome.browser.theme.ThemeUtils;
 import org.chromium.chrome.browser.toolbar.LocationBarModel;
 import org.chromium.chrome.browser.toolbar.ToolbarDataProvider;
 import org.chromium.chrome.browser.toolbar.ToolbarProgressBar;
@@ -66,7 +71,7 @@ import org.chromium.chrome.browser.toolbar.top.CaptureReadinessResult;
 import org.chromium.chrome.browser.toolbar.top.NavigationPopup.HistoryDelegate;
 import org.chromium.chrome.browser.toolbar.top.ToggleTabStackButtonCoordinator;
 import org.chromium.chrome.browser.toolbar.top.ToolbarSnapshotDifference;
-import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityClient;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.feature_engagement.Tracker;
@@ -104,15 +109,15 @@ public class CustomTabToolbarUnitTest {
     @Mock Tracker mTracker;
     @Mock Tab mTab;
     @Mock Callback<Integer> mContainerVisibilityChangeObserver;
-    @Mock View mParentView;
     @Mock WindowAndroid mWindowAndroid;
     private @Mock PageInfoIphController mPageInfoIphController;
     @Mock private ThemeColorProvider mThemeColorProvider;
     @Mock private IncognitoStateProvider mIncognitoStateProvider;
-    @Mock private SearchActivityClient mSearchActivityClient;
 
+    private final View mParentView = new View(ContextUtils.getApplicationContext());
     private BrowserStateBrowserControlsVisibilityDelegate mControlsVisibleDelegate;
     private Activity mActivity;
+    private OmniboxResourceProvider mOmniboxResourceProvider;
     private CustomTabToolbar mToolbar;
     private CustomTabLocationBar mLocationBar;
     private TextView mTitleBar;
@@ -141,6 +146,8 @@ public class CustomTabToolbarUnitTest {
         MinimizedFeatureUtils.setDeviceEligibleForMinimizedCustomTabForTesting(true);
 
         mActivity = Robolectric.buildActivity(TestActivity.class).get();
+        mOmniboxResourceProvider =
+                new OmniboxResourceProvider(mActivity, BrandedColorScheme.APP_DEFAULT);
         mToolbar =
                 (CustomTabToolbar)
                         LayoutInflater.from(mActivity)
@@ -163,10 +170,12 @@ public class CustomTabToolbarUnitTest {
                 null,
                 /* homeButtonCoordinator= */ null,
                 /* signinButtonCoordinator= */ null,
+                /* downloadButtonCoordinator= */ null,
                 mThemeColorProvider,
                 mIncognitoStateProvider,
                 /* incognitoWindowCountSupplier= */ null,
-                mWindowAndroid);
+                mWindowAndroid,
+                mOmniboxResourceProvider);
         mLocationBar =
                 (CustomTabLocationBar)
                         mToolbar.createLocationBar(
@@ -215,16 +224,6 @@ public class CustomTabToolbarUnitTest {
         verifyBrowserControlVisibleForRequiredDuration();
         // URL bar truncates trailing /.
         assertUrlBarShowingText(UrlUtilities.stripTrailingSlash(TEST_URL.getSpec()));
-    }
-
-    @Test
-    public void testOmniboxUrlBarVisibility() {
-        mLocationBar.showEmptyLocationBar();
-        CustomTabToolbar.OmniboxParams params =
-                new CustomTabToolbar.OmniboxParams(mSearchActivityClient, null, null, tab -> false);
-        mLocationBar.setOmniboxParams(params);
-        mLocationBar.showRegularToolbar();
-        assertUrlAndTitleVisible(/* titleVisible= */ false, /* urlVisible= */ true);
     }
 
     @Test
@@ -385,6 +384,36 @@ public class CustomTabToolbarUnitTest {
 
         var incognitoImageView = mToolbar.ensureIncognitoImageViewInflated();
         assertEquals(View.VISIBLE, incognitoImageView.getVisibility());
+    }
+
+    @Test
+    public void testOnTintChanged_NotifiesColorSchemeChanged() {
+        var observer = Mockito.mock(CustomTabToolbar.OnColorSchemeChangedObserver.class);
+        mToolbar.setOnColorSchemeChangedObserver(observer);
+
+        int initialColor = mToolbar.getBackground().getColor();
+        var tint =
+                ThemeUtils.getThemedToolbarIconTint(
+                        mActivity, BrandedColorScheme.LIGHT_BRANDED_THEME);
+        mToolbar.onTintChanged(tint, tint, BrandedColorScheme.LIGHT_BRANDED_THEME);
+
+        assertEquals(BrandedColorScheme.LIGHT_BRANDED_THEME, mToolbar.getBrandedColorScheme());
+        assertEquals(
+                BrandedColorScheme.LIGHT_BRANDED_THEME,
+                mOmniboxResourceProvider.getBrandedColorScheme());
+        assertEquals(tint, ImageViewCompat.getImageTintList(mSecurityIcon));
+        verify(observer).onColorSchemeChanged(initialColor, BrandedColorScheme.LIGHT_BRANDED_THEME);
+    }
+
+    @Test
+    public void testOnPrimaryColorChanged_UpdatesOmniboxResourceProviderScheme() {
+        when(mToolbarDataProvider.getPrimaryColor()).thenReturn(Color.BLACK);
+        mToolbar.onPrimaryColorChanged(/* shouldAnimate= */ false);
+
+        assertEquals(BrandedColorScheme.DARK_BRANDED_THEME, mToolbar.getBrandedColorScheme());
+        assertEquals(
+                BrandedColorScheme.DARK_BRANDED_THEME,
+                mOmniboxResourceProvider.getBrandedColorScheme());
     }
 
     private void assertUrlAndTitleVisible(boolean titleVisible, boolean urlVisible) {

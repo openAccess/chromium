@@ -29,6 +29,7 @@ class GURL;
 
 namespace content {
 class RenderFrameHost;
+class WebContents;
 }
 
 enum class WebShareMethod { kShare = 0, kMaxValue = kShare };
@@ -42,6 +43,9 @@ inline constexpr uint64_t kMaxSharedFileBytes = 50 * 1024 * 1024;
 class ShareServiceImpl
     : public content::DocumentService<blink::mojom::ShareService> {
  public:
+  ShareServiceImpl(content::RenderFrameHost& render_frame_host,
+                   mojo::PendingReceiver<blink::mojom::ShareService> receiver,
+                   base::SelfDeletingPassKey key);
   ShareServiceImpl(const ShareServiceImpl&) = delete;
   ShareServiceImpl& operator=(const ShareServiceImpl&) = delete;
 
@@ -52,6 +56,11 @@ class ShareServiceImpl
   static bool IsDangerousFilename(const base::FilePath& path);
   static bool IsDangerousMimeType(std::string_view content_type);
 
+  // Returns true if `web_contents` is visible and, if it is a tab, the tab is
+  // active in its window.
+  static bool IsWebContentsForegroundAndVisible(
+      content::WebContents* web_contents);
+
   // blink::mojom::ShareService:
   void Share(const std::string& title,
              const std::string& text,
@@ -60,16 +69,14 @@ class ShareServiceImpl
              ShareCallback callback) override;
 
  private:
+  ~ShareServiceImpl() override;
+
   void RunShareOperation(const std::string& title,
                          const std::string& text,
                          const GURL& share_url,
                          std::vector<blink::mojom::SharedFilePtr> files,
                          ShareCallback callback,
                          bool is_safe);
-
-  ShareServiceImpl(content::RenderFrameHost& render_frame_host,
-                   mojo::PendingReceiver<blink::mojom::ShareService> receiver);
-  ~ShareServiceImpl() override;
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   std::optional<SafeBrowsingRequest> safe_browsing_request_;

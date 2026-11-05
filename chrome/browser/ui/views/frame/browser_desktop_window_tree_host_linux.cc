@@ -10,10 +10,13 @@
 #include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_init_state.h"
+#include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
+#include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view_linux.h"
 #include "chrome/browser/ui/views/frame/browser_native_widget_aura_linux.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
 #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
@@ -46,12 +49,9 @@ absl::flat_hash_set<std::string>& SentStartupIds() {
 
 // Returns the event source for the active tab drag session.
 std::optional<ui::mojom::DragEventSource> GetCurrentTabDragEventSource() {
-  if (auto* source_context = TabDragController::GetSourceContext()) {
-    if (auto* drag_controller = source_context->GetDragController()) {
-      return drag_controller->event_source();
-    }
-  }
-  return std::nullopt;
+  return SafeInvoke(TabDragController::GetSourceContext())
+      .Then(&TabDragContext::GetDragController)
+      .Then(&TabDragController::event_source);
 }
 
 bool IsShowingFrame(bool use_custom_frame,
@@ -286,9 +286,28 @@ void BrowserDesktopWindowTreeHostLinux::OnWindowStateChanged(
 
   DesktopWindowTreeHostLinux::OnWindowStateChanged(old_state, new_state);
 
-  bool fullscreen_changed = new_state == ui::PlatformWindowState::kFullScreen ||
-                            old_state == ui::PlatformWindowState::kFullScreen;
-  if (old_state != new_state && fullscreen_changed) {
+  // Minimizing a fullscreen window does not exit fullscreen. This way it can
+  // be properly restored to fullscreen when unminimized.
+  bool fullscreen_to_minimized =
+      old_state == ui::PlatformWindowState::kFullScreen &&
+      new_state == ui::PlatformWindowState::kMinimized;
+
+  ExclusiveAccessManager* manager =
+      browser_view_->browser()
+          ? ExclusiveAccessManager::From(browser_view_->browser())
+          : nullptr;
+
+  bool minimized_fullscreen_to_non_fullscreen =
+      old_state == ui::PlatformWindowState::kMinimized &&
+      new_state != ui::PlatformWindowState::kFullScreen && manager &&
+      manager->fullscreen_controller()->IsControllerInitiatedFullscreen();
+
+  bool notify_fullscreen_changed =
+      new_state == ui::PlatformWindowState::kFullScreen ||
+      (old_state == ui::PlatformWindowState::kFullScreen &&
+       !fullscreen_to_minimized) ||
+      minimized_fullscreen_to_non_fullscreen;
+  if (old_state != new_state && notify_fullscreen_changed) {
     // If the browser view initiated this state change,
     // BrowserView::ProcessFullscreen will no-op, so this call is harmless.
     browser_view_->FullscreenStateChanging();

@@ -117,7 +117,7 @@ class MEDIA_EXPORT MediaDrmBridge : public ContentDecryptionModule,
 
   using MediaCryptoReadyCB = MediaCryptoContext::MediaCryptoReadyCB;
   using CdmCreationResult =
-      CreateCdmTypedStatus::Or<scoped_refptr<MediaDrmBridge>>;
+      base::expected<scoped_refptr<MediaDrmBridge>, CreateCdmStatus>;
   using GetVersionResult = base::expected<base::Version, CreateCdmStatus>;
 
   // Checks whether |key_system| is supported.
@@ -130,10 +130,6 @@ class MEDIA_EXPORT MediaDrmBridge : public ContentDecryptionModule,
   static SupportedContainers GetSupportedContainers(
       const std::string& key_system,
       SecurityLevel security_level = SECURITY_LEVEL_UNKNOWN);
-
-  // Returns true if this device supports per-application provisioning, false
-  // otherwise.
-  static bool IsPerApplicationProvisioningSupported();
 
   static bool IsPersistentLicenseTypeSupported(const std::string& key_system);
 

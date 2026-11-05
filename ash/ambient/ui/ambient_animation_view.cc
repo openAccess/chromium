@@ -18,7 +18,6 @@
 #include "ash/ambient/resources/ambient_animation_static_resources.h"
 #include "ash/ambient/ui/ambient_animation_attribution_transformer.h"
 #include "ash/ambient/ui/ambient_animation_background_color.h"
-#include "ash/ambient/ui/ambient_animation_frame_rate_controller.h"
 #include "ash/ambient/ui/ambient_animation_player.h"
 #include "ash/ambient/ui/ambient_animation_resizer.h"
 #include "ash/ambient/ui/ambient_animation_shield_controller.h"
@@ -47,6 +46,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/compositor.h"
+#include "ui/compositor/layer.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/outsets.h"
@@ -183,12 +183,10 @@ std::unique_ptr<views::Border> CreateMediaStringBorder(
 AmbientAnimationView::AmbientAnimationView(
     AmbientViewDelegateImpl* view_delegate,
     AmbientAnimationProgressTracker* progress_tracker,
-    std::unique_ptr<const AmbientAnimationStaticResources> static_resources,
-    AmbientAnimationFrameRateController* frame_rate_controller)
+    std::unique_ptr<const AmbientAnimationStaticResources> static_resources)
     : view_delegate_(view_delegate),
       progress_tracker_(progress_tracker),
       static_resources_(std::move(static_resources)),
-      frame_rate_controller_(frame_rate_controller),
       add_glanceable_info_text_shadow_(
           static_resources_->GetUiSettings().theme() !=
           personalization_app::mojom::AmbientTheme::kFeelTheBreeze),
@@ -197,7 +195,6 @@ AmbientAnimationView::AmbientAnimationView(
       animation_jitter_calculator_(
           AmbientUiModel::Get()->GetAnimationJitterConfig()) {
   DCHECK(view_delegate_);
-  DCHECK(frame_rate_controller_);
   SetID(AmbientViewID::kAmbientAnimationView);
   Init();
 }
@@ -212,6 +209,8 @@ void AmbientAnimationView::Init() {
   animation_container_view->SetUseDefaultFillLayout(true);
   // Purely for performance reasons. Gains 3-4 fps.
   animation_container_view->SetPaintToLayer();
+  animation_container_view->layer()->SetName(
+      "AmbientAnimationView:AnimationContainer");
   // In portrait mode, the landscape animation file is currently being used. Its
   // width is scaled down to match the width of the portrait screen, and it's
   // center-aligned leaving empty space on the top and bottom of the screen. To
@@ -372,20 +371,6 @@ void AmbientAnimationView::OnViewBoundsChanged(View* observed_view) {
         FROM_HERE, kThroughputTrackerRestartPeriod, this,
         &AmbientAnimationView::RestartThroughputTracking);
   }
-}
-
-void AmbientAnimationView::OnViewAddedToWidget(View* observed_view) {
-  DCHECK_EQ(observed_view, static_cast<View*>(animated_image_view_));
-  DCHECK(observed_view->GetWidget());
-  // Frame throttling requires a window with a valid FrameSinkId. Keep searching
-  // up the window tree until one is found.
-  auto* window_to_throttle = animated_image_view_->GetWidget()->GetNativeView();
-  while (!window_to_throttle->GetFrameSinkId().is_valid()) {
-    window_to_throttle = window_to_throttle->parent();
-    DCHECK(window_to_throttle) << "Search for window to throttle failed";
-  }
-  frame_rate_controller_->AddWindowToThrottle(
-      window_to_throttle, animated_image_view_->animated_image());
 }
 
 SkColor AmbientAnimationView::GetTimeTemperatureFontColor() {

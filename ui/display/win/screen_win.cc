@@ -58,6 +58,11 @@ namespace {
 // resolved with Desktop Aura and WindowTreeHost.
 ScreenWin* g_instance = nullptr;
 
+HMONITOR GetPrimaryMonitor() {
+  constexpr POINT origin = {0, 0};
+  return ::MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+}
+
 // Gets the DPI for a particular monitor.
 std::optional<int> GetPerMonitorDPI(HMONITOR monitor) {
   UINT dpi_x, dpi_y;
@@ -66,7 +71,7 @@ std::optional<int> GetPerMonitorDPI(HMONITOR monitor) {
     return std::nullopt;
   }
 
-  DCHECK_EQ(dpi_x, dpi_y);
+  CHECK_EQ(dpi_x, dpi_y, base::NotFatalUntil::M163);
   return static_cast<int>(dpi_x);
 }
 
@@ -91,7 +96,7 @@ ScaleFactors GetScaleFactorsForDPI(int dpi, bool include_accessibility) {
 // scale factor if per-monitor DPI is not supported.
 ScaleFactors GetMonitorScaleFactors(HMONITOR monitor,
                                     bool include_accessibility = true) {
-  DCHECK(monitor);
+  CHECK(monitor, base::NotFatalUntil::M163);
   if (Display::HasForceDeviceScaleFactor()) {
     return {Display::GetForcedDeviceScaleFactor(), 1.0f};
   }
@@ -439,18 +444,22 @@ std::optional<MONITORINFOEX> GetMonitorInfoFromHMONITOR(HMONITOR monitor) {
   return monitor_info;
 }
 
-std::optional<gfx::Vector2dF> GetPixelsPerInchForPointerDevice(
+std::optional<gfx::Vector2dF> GetPixelsPerInchForPointerDeviceImpl(
     HANDLE source_device) {
   static const auto get_pointer_device_rects =
       reinterpret_cast<decltype(&::GetPointerDeviceRects)>(
           base::win::GetUser32FunctionPointer("GetPointerDeviceRects"));
   RECT device_rect, screen_rect;
-  if (!get_pointer_device_rects ||
-      !get_pointer_device_rects(source_device, &device_rect, &screen_rect))
+  if (!source_device || !get_pointer_device_rects ||
+      !get_pointer_device_rects(source_device, &device_rect, &screen_rect)) {
     return std::nullopt;
+  }
 
   const gfx::RectF device{gfx::Rect(device_rect)};
   const gfx::RectF screen{gfx::Rect(screen_rect)};
+  if (device.IsEmpty() || screen.IsEmpty()) {
+    return std::nullopt;
+  }
   constexpr float kHimetricPerInch = 2540.0f;
   const float himetric_per_pixel_x = device.width() / screen.width();
   const float himetric_per_pixel_y = device.height() / screen.height();
@@ -472,7 +481,7 @@ std::optional<gfx::Vector2dF> GetMonitorPixelsPerInch(HMONITOR monitor) {
     for (const auto& device : *pointer_devices) {
       if (device.pointerDeviceType == POINTER_DEVICE_TYPE_TOUCH &&
           device.monitor == monitor) {
-        return GetPixelsPerInchForPointerDevice(device.device);
+        return GetPixelsPerInchForPointerDeviceImpl(device.device);
       }
     }
   }
@@ -794,10 +803,15 @@ gfx::Vector2dF ScreenWin::GetPixelsPerInch(const gfx::PointF& point) const {
   return screen_win_display.pixels_per_inch();
 }
 
+std::optional<gfx::Vector2dF> ScreenWin::GetPixelsPerInchForPointerDevice(
+    HANDLE source_device) const {
+  return GetPixelsPerInchForPointerDeviceImpl(source_device);
+}
+
 int ScreenWin::GetSystemMetricsForMonitor(HMONITOR monitor, int metric) const {
   // Fall back to the primary display's HMONITOR.
   if (!monitor)
-    monitor = ::MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY);
+    monitor = GetPrimaryMonitor();
 
   // We don't include fudge factors stemming from accessibility features when
   // dealing with system metrics associated with window elements drawn by the
@@ -1037,7 +1051,7 @@ void ScreenWin::UpdateFromDisplayInfosImpl(
   // Retrieve the primary monitor info here, instead of later below. This is a
   // speculative workaround for the issue observed on older version of Windows
   // 10.  See crbug.com/394622418 for more detail.
-  auto primary_monitor = ::MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY);
+  auto primary_monitor = GetPrimaryMonitor();
 
   // Get a new list of displays. This will replace `screen_win_displays_` if any
   // displays are found.
@@ -1078,15 +1092,15 @@ void ScreenWin::UpdateFromDisplayInfosImpl(
 
   // This primary information is used only to detect if another monitor has
   // became the primary monitor.
-  primary_monitor_ = primary_monitor;
-
   const std::optional<MONITORINFOEX> primary_monitor_info =
-      MonitorInfoFromHMONITOR(primary_monitor_);
-  // Primary monitor, if it exists, has 0,0 origin. Guard the CHECK with kill
-  // switch in case this caused the problem in the field.
+      MonitorInfoFromHMONITOR(primary_monitor);
+  // Only trust the primary handle when the OS reports it at the (0,0) origin;
+  // otherwise reset so the next change-check forces a re-sync.
   if (primary_monitor_info &&
-      base::FeatureList::IsEnabled(features::kSkipEmptyDisplayHotplugEvent)) {
-    CHECK(gfx::Rect(primary_monitor_info->rcMonitor).origin().IsOrigin());
+      gfx::Rect(primary_monitor_info->rcMonitor).origin().IsOrigin()) {
+    primary_monitor_ = primary_monitor;
+  } else {
+    primary_monitor_ = nullptr;
   }
 
   screen_win_displays_ = std::move(new_screen_win_displays);
@@ -1211,7 +1225,7 @@ void ScreenWin::UpdateAllDisplaysAndNotify() {
 }
 
 void ScreenWin::UpdateAllDisplaysIfPrimaryMonitorChanged() {
-  HMONITOR monitor = ::MonitorFromWindow(nullptr, MONITOR_DEFAULTTOPRIMARY);
+  HMONITOR monitor = GetPrimaryMonitor();
   if (monitor != primary_monitor_) {
     UpdateAllDisplaysAndNotify();
   }

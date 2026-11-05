@@ -8,6 +8,7 @@
 
 #include <stddef.h>
 
+#include <string_view>
 #include <utility>
 
 #include "base/command_line.h"
@@ -38,6 +39,7 @@
 #include "extensions/common/api/types.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/mojom/api_permission_id.mojom.h"
+#include "ui/gfx/font_list.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "ui/gfx/win/direct_write.h"
@@ -59,6 +61,7 @@ const char kScriptKey[] = "script";
 
 const char kSetFromIncognitoError[] =
     "Can't modify regular settings from an incognito context.";
+const char kInvalidFontIdError[] = "Invalid font ID.";
 
 // Gets the font name preference path for |generic_family| and |script|. If
 // |script| is NULL, uses prefs::kWebKitCommonScript.
@@ -101,7 +104,43 @@ void MaybeUnlocalizeFontName(std::string* font_name) {
 #endif  // BUILDFLAG(IS_WIN)
 }
 
+// Resolves a comma-separated default font list (starting with ',') to the first
+// available font on the system.
+std::string ResolveFontNameIfNeeded(std::string font_name) {
+  if (font_name.starts_with(',')) {
+    return gfx::FontList::FirstAvailableOrFirst(font_name);
+  }
+  return font_name;
+}
+
 }  // namespace
+
+bool IsValidFontName(std::string_view font_name) {
+  if (font_name.empty()) {
+    return true;
+  }
+
+  if (font_name.size() > 256) {
+    return false;
+  }
+
+  if (!base::IsStringUTF8(font_name)) {
+    return false;
+  }
+
+  for (char c : font_name) {
+    if (static_cast<unsigned char>(c) >= 0x80) {
+      continue;
+    }
+
+    if (!(base::IsAsciiAlphaNumeric(c) || c == ' ' || c == '-' || c == '_' ||
+          c == '.' || c == '+')) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 // This class observes pref changed events on a profile and dispatches the
 // corresponding extension API events to extensions.
@@ -215,7 +254,8 @@ void FontSettingsEventRouter::OnFontNamePrefChanged(
   if (!pref->GetValue()->is_string()) {
     NOTREACHED();
   }
-  std::string font_name = pref->GetValue()->GetString();
+  std::string font_name =
+      ResolveFontNameIfNeeded(pref->GetValue()->GetString());
   base::ListValue args;
   base::DictValue dict;
   dict.Set(kFontIdKey, font_name);
@@ -298,7 +338,8 @@ ExtensionFunction::ResponseAction FontSettingsGetFontFunction::Run() {
       prefs->FindPreference(pref_path);
 
   EXTENSION_FUNCTION_VALIDATE(pref && pref->GetValue()->is_string());
-  std::string font_name = pref->GetValue()->GetString();
+  std::string font_name =
+      ResolveFontNameIfNeeded(pref->GetValue()->GetString());
 
   // Legacy code was using the localized font name for fontId. These values may
   // have been stored in prefs. For backward compatibility, we are converting
@@ -327,6 +368,10 @@ ExtensionFunction::ResponseAction FontSettingsSetFontFunction::Run() {
   std::optional<fonts::SetFont::Params> params =
       fonts::SetFont::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
+
+  if (!IsValidFontName(params->details.font_id)) {
+    return RespondNow(Error(kInvalidFontIdError));
+  }
 
   std::string pref_path = GetFontNamePrefPath(params->details.generic_family,
                                               params->details.script);

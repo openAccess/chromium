@@ -13,7 +13,6 @@
 #include "ash/session/session_controller_impl.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shell.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/system/session/logout_confirmation_controller.h"
 #include "ash/system/status_area_widget.h"
 #include "ash/system/tray/tray_constants.h"
@@ -27,6 +26,7 @@
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
+#include "ui/compositor/layer.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -51,7 +51,11 @@ LogoutButtonTray::LogoutButtonTray(Shelf* shelf)
           base::BindRepeating(&LogoutButtonTray::ButtonPressed,
                               base::Unretained(this)),
           std::u16string(), CONTEXT_LAUNCHER_BUTTON));
+  button_->SetPaintToLayer();
+  button_->layer()->SetFillsBoundsOpaquely(false);
   button_->SetStyle(ui::ButtonStyle::kProminent);
+  button_->SetBgColorIdOverride(cros_tokens::kColorAlert);
+  button_->SetEnabledTextColors(cros_tokens::kColorPrimaryInverted);
   set_use_bounce_in_animation(false);
 
   SetFocusBehavior(FocusBehavior::NEVER);
@@ -100,14 +104,6 @@ void LogoutButtonTray::OnActiveUserPrefServiceChanged(PrefService* prefs) {
 std::u16string LogoutButtonTray::GetLoginStatusString() {
   LoginStatus login_status = shelf()->GetStatusAreaWidget()->login_status();
   return user::GetLocalizedSignOutStringForStatus(login_status, false);
-}
-
-void LogoutButtonTray::OnThemeChanged() {
-  TrayBackgroundView::OnThemeChanged();
-  const auto* color_provider = GetColorProvider();
-  button_->SetBgColorIdOverride(cros_tokens::kColorAlert);
-  button_->SetEnabledTextColors(
-      color_provider->GetColor(cros_tokens::kColorPrimaryInverted));
 }
 
 void LogoutButtonTray::UpdateShowLogoutButtonInTray() {

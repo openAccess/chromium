@@ -32,6 +32,7 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
+#include "components/autofill/android/main_autofill_jni_headers/AtMemoryPayload_jni.h"
 #include "components/autofill/android/main_autofill_jni_headers/AutofillAiPayload_jni.h"
 #include "components/autofill/android/main_autofill_jni_headers/AutofillProfilePayload_jni.h"
 #include "components/autofill/android/main_autofill_jni_headers/PaymentsPayload_jni.h"
@@ -139,12 +140,18 @@ std::string_view ConvertIconToPrintableString(Suggestion::Icon icon) {
       return "kLocation";
     case Suggestion::Icon::kLocationSpark:
       return "kLocationSpark";
-    case Suggestion::Icon::kLoyalty:
-      return "kLoyalty";
+    case Suggestion::Icon::kLoyaltyPrograms:
+      return "kLoyaltyPrograms";
+    case Suggestion::Icon::kLoyaltyProgramsSpark:
+      return "kLoyaltyProgramsSpark";
     case Suggestion::Icon::kMagic:
       return "kMagic";
+    case Suggestion::Icon::kMailAsterisk:
+      return "kMailAsterisk";
     case Suggestion::Icon::kOfferTag:
       return "kOfferTag";
+    case Suggestion::Icon::kOpenInNew:
+      return "kOpenInNew";
     case Suggestion::Icon::kOrder:
       return "kOrder";
     case Suggestion::Icon::kOrderSpark:
@@ -270,11 +277,47 @@ Suggestion::PasswordSuggestionDetails::operator=(PasswordSuggestionDetails&&) =
     default;
 Suggestion::PasswordSuggestionDetails::~PasswordSuggestionDetails() = default;
 
+Suggestion::PersonalContextSourceCitation::PersonalContextSourceCitation() =
+    default;
+
+Suggestion::PersonalContextSourceCitation::PersonalContextSourceCitation(
+    GURL url,
+    gfx::Range range,
+    std::u16string accessible_name)
+    : url(std::move(url)),
+      range(range),
+      accessible_name(std::move(accessible_name)) {}
+
+Suggestion::PersonalContextSourceCitation::PersonalContextSourceCitation(
+    const PersonalContextSourceCitation&) = default;
+
+Suggestion::PersonalContextSourceCitation::PersonalContextSourceCitation(
+    PersonalContextSourceCitation&&) = default;
+
+Suggestion::PersonalContextSourceCitation&
+Suggestion::PersonalContextSourceCitation::operator=(
+    const PersonalContextSourceCitation&) = default;
+
+Suggestion::PersonalContextSourceCitation&
+Suggestion::PersonalContextSourceCitation::operator=(
+    PersonalContextSourceCitation&&) = default;
+
+Suggestion::PersonalContextSourceCitation::~PersonalContextSourceCitation() =
+    default;
+
 Suggestion::AutofillAiPayload::AutofillAiPayload() = default;
 
 Suggestion::AutofillAiPayload::AutofillAiPayload(EntityInstance::EntityId guid,
                                                  bool requires_server_fetch)
     : guid(std::move(guid)), requires_server_fetch(requires_server_fetch) {}
+
+Suggestion::AutofillAiPayload::AutofillAiPayload(
+    EntityInstance::EntityId guid,
+    std::vector<PersonalContextSourceCitation> citations,
+    bool requires_server_fetch)
+    : guid(std::move(guid)),
+      citations(std::move(citations)),
+      requires_server_fetch(requires_server_fetch) {}
 
 Suggestion::AutofillAiPayload::AutofillAiPayload(const AutofillAiPayload&) =
     default;
@@ -368,6 +411,14 @@ Suggestion::AtMemoryPayload& Suggestion::AtMemoryPayload::operator=(
     AtMemoryPayload&&) = default;
 
 Suggestion::AtMemoryPayload::~AtMemoryPayload() = default;
+
+#if BUILDFLAG(IS_ANDROID)
+base::android::ScopedJavaLocalRef<jobject>
+Suggestion::AtMemoryPayload::CreateJavaObject() const {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  return Java_AtMemoryPayload_Constructor(env, type_name);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 Suggestion::OpenGeminiPayload::OpenGeminiPayload() = default;
 Suggestion::OpenGeminiPayload::OpenGeminiPayload(std::u16string prompt)
@@ -502,7 +553,7 @@ bool Suggestion::IsAcceptable() const {
   // LINT.IfChange(UnacceptableSuggestionTypes)
   static constexpr auto kUnacceptableItemIds =
       DenseSet({kSeparator, kInsecureContextPaymentDisabledMessage, kTitle,
-                kAtMemorySourceAttribution});
+                kAtMemorySourceAttribution, kAutofillAiSourceAttribution});
   // LINT.ThenChange(/components/autofill/android/java/src/org/chromium/components/autofill/AutofillSuggestion.java:UnacceptableSuggestionTypes)
   if (kUnacceptableItemIds.contains(type)) {
     return false;
@@ -545,6 +596,7 @@ void PrintTo(const Suggestion& suggestion, std::ostream* os) {
 }  // namespace autofill
 
 #if BUILDFLAG(IS_ANDROID)
+DEFINE_JNI(AtMemoryPayload)
 DEFINE_JNI(AutofillProfilePayload)
 DEFINE_JNI(PaymentsPayload)
 #endif

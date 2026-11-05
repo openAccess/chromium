@@ -13,8 +13,6 @@ import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -38,9 +36,7 @@ import org.chromium.ui.widget.ButtonCompat;
 
 /** Test relating to {@link DefaultBrowserPromoCoordinator} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowAppCompatResources.class})
+@Config(shadows = {ShadowAppCompatResources.class})
 public class DefaultBrowserPromoCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -66,7 +62,6 @@ public class DefaultBrowserPromoCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDefaultBrowserPromoCardBottomSheet_NonSetupList() {
         var histogramWatcher =
                 HistogramWatcher.newBuilder()
@@ -86,7 +81,6 @@ public class DefaultBrowserPromoCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDefaultBrowserPromoCardBottomSheet_RoleManagerFails() {
         var histogramWatcher =
                 HistogramWatcher.newBuilder()
@@ -114,7 +108,6 @@ public class DefaultBrowserPromoCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDefaultBrowserPromoCard_RoleManagerSucceeds() {
         when(mSetupListManager.isSetupListModule(ModuleType.DEFAULT_BROWSER_PROMO))
                 .thenReturn(true);
@@ -128,7 +121,6 @@ public class DefaultBrowserPromoCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDefaultBrowserPromoCard_MarksComplete() {
         when(mSetupListManager.isSetupListModule(ModuleType.DEFAULT_BROWSER_PROMO))
                 .thenReturn(true);

@@ -29,6 +29,7 @@
 #import "components/policy/core/common/configuration_policy_provider.h"
 #import "components/policy/core/common/policy_bundle.h"
 #import "components/policy/core/common/policy_loader_ios_constants.h"
+#import "components/policy/core/common/policy_logger.h"
 #import "components/policy/core/common/policy_map.h"
 #import "components/policy/core/common/policy_namespace.h"
 #import "components/policy/core/common/policy_types.h"
@@ -78,6 +79,35 @@ std::optional<base::Value> DeserializeValue(NSString* json_value) {
                                 base::JSON_PARSE_CHROMIUM_EXTENSIONS);
 }
 
+// Merges the policy `policyKey` with value `jsonValue` into the policies
+// already installed in the test platform policy provider, using the given
+// `scope` and `source`. Some policies are only applied when they come from a
+// cloud user policy source (see policy::CloudUserOnlyPolicyChecker), so tests
+// exercising those have to be able to pick something other than the
+// machine/platform defaults.
+void MergePolicyValue(NSString* jsonValue,
+                      NSString* policyKey,
+                      policy::PolicyScope scope,
+                      policy::PolicySource source) {
+  // Get the policy bundle.
+  policy::MockConfigurationPolicyProvider* platformProvider =
+      GetTestPlatformPolicyProvider();
+  policy::PolicyBundle mutablePolicyBundle;
+  mutablePolicyBundle.MergeFrom(platformProvider->policies());
+  // Get the policy map.
+  policy::PolicyNamespace chromePolicyNamespace(
+      policy::PolicyDomain::POLICY_DOMAIN_CHROME, std::string());
+  policy::PolicyMap& chromePolicyMap =
+      mutablePolicyBundle.Get(chromePolicyNamespace);
+  // Add the value.
+  std::optional<base::Value> value = DeserializeValue(jsonValue);
+  chromePolicyMap.Set(base::SysNSStringToUTF8(policyKey),
+                      policy::POLICY_LEVEL_MANDATORY, scope, source,
+                      std::move(value), /*external_data_fetcher=*/nullptr);
+  // Update the policy.
+  platformProvider->UpdatePolicy(std::move(mutablePolicyBundle));
+}
+
 }  // namespace
 
 @implementation PolicyAppInterface
@@ -114,24 +144,14 @@ std::optional<base::Value> DeserializeValue(NSString* json_value) {
 }
 
 + (void)mergePolicyValue:(NSString*)jsonValue forKey:(NSString*)policyKey {
-  // Get the policy bundle.
-  policy::MockConfigurationPolicyProvider* platformProvider =
-      GetTestPlatformPolicyProvider();
-  policy::PolicyBundle mutablePolicyBundle;
-  mutablePolicyBundle.MergeFrom(platformProvider->policies());
-  // Get the policy map.
-  policy::PolicyNamespace chromePolicyNamespace(
-      policy::PolicyDomain::POLICY_DOMAIN_CHROME, std::string());
-  policy::PolicyMap& chromePolicyMap =
-      mutablePolicyBundle.Get(chromePolicyNamespace);
-  // Add the value.
-  std::optional<base::Value> value = DeserializeValue(jsonValue);
-  chromePolicyMap.Set(
-      base::SysNSStringToUTF8(policyKey), policy::POLICY_LEVEL_MANDATORY,
-      policy::POLICY_SCOPE_MACHINE, policy::POLICY_SOURCE_PLATFORM,
-      std::move(value), /*external_data_fetcher=*/nullptr);
-  // Update the policy.
-  platformProvider->UpdatePolicy(std::move(mutablePolicyBundle));
+  MergePolicyValue(jsonValue, policyKey, policy::POLICY_SCOPE_MACHINE,
+                   policy::POLICY_SOURCE_PLATFORM);
+}
+
++ (void)mergeCloudUserPolicyValue:(NSString*)jsonValue
+                           forKey:(NSString*)policyKey {
+  MergePolicyValue(jsonValue, policyKey, policy::POLICY_SCOPE_USER,
+                   policy::POLICY_SOURCE_CLOUD);
 }
 
 + (void)clearPolicies {
@@ -184,6 +204,11 @@ std::optional<base::Value> DeserializeValue(NSString* json_value) {
 
   policy::CloudPolicyStore* store = manager->core()->store();
   DCHECK(store);
+
+  if (!domain) {
+    store->set_policy_data_for_testing(nullptr);
+    return;
+  }
 
   auto policy_data = std::make_unique<enterprise_management::PolicyData>();
   policy_data->set_managed_by(base::SysNSStringToUTF8(domain));
@@ -265,6 +290,14 @@ std::optional<base::Value> DeserializeValue(NSString* json_value) {
       base::SysNSStringToUTF8(policyName), base::Value::Type::INTEGER);
 
   return value && value->GetInt() == expectedValue;
+}
+
++ (void)logErrorPolicy:(NSString*)message {
+  LOG_POLICY(ERROR, PLATFORM_POLICY) << base::SysNSStringToUTF8(message);
+}
+
++ (void)clearPolicyLogs {
+  policy::PolicyLogger::GetInstance()->ResetLoggerForTesting();
 }
 
 @end

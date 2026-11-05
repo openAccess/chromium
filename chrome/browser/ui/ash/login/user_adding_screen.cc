@@ -19,6 +19,7 @@
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
 #include "components/user_manager/user_manager.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash {
 namespace {
@@ -52,17 +53,34 @@ class UserAddingScreenImpl : public UserAddingScreen {
 void UserAddingScreenImpl::Start() {
   // TODO(crbug.com/403154552): Avoid g_browser_process.
   PrefService* local_state = g_browser_process->local_state();
+  ::metrics::MetricsService* metrics_service =
+      g_browser_process->metrics_service();
   ApplicationLocaleStorage* application_locale_storage =
       g_browser_process->GetFeatures()->application_locale_storage();
   scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory =
       g_browser_process->shared_url_loader_factory();
   policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash =
       g_browser_process->platform_part()->browser_policy_connector_ash();
+  scoped_refptr<component_updater::ComponentManagerAsh> component_manager_ash =
+      g_browser_process->platform_part()->component_manager_ash();
+  policy::DeviceRestrictionScheduleController*
+      device_restriction_schedule_controller =
+          g_browser_process->platform_part()
+              ->device_restriction_schedule_controller();
+  const user_manager::MultiUserSignInPolicyController*
+      multi_user_sign_in_policy_controller =
+          g_browser_process->platform_part()
+              ->multi_user_sign_in_policy_controller();
+  system::SystemClock* system_clock =
+      g_browser_process->platform_part()->GetSystemClock();
 
   CHECK(!IsRunning());
   display_host_ = new LoginDisplayHostMojo(
-      local_state, application_locale_storage, shared_url_loader_factory,
-      browser_policy_connector_ash, DisplayedScreen::USER_ADDING_SCREEN,
+      local_state, metrics_service, application_locale_storage,
+      shared_url_loader_factory, browser_policy_connector_ash,
+      component_manager_ash, device_restriction_schedule_controller,
+      multi_user_sign_in_policy_controller, system_clock,
+      DisplayedScreen::USER_ADDING_SCREEN,
       /*update_geolocation_usage_allowed=*/false);
 
   // This triggers input method manager to filter login screen methods. This

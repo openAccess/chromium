@@ -4,9 +4,13 @@
 
 #include "third_party/blink/renderer/platform/peerconnection/webrtc_encoding_info_handler.h"
 
+#include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
@@ -15,19 +19,30 @@
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/platform/peerconnection/audio_codec_factory.h"
 #include "third_party/blink/renderer/platform/peerconnection/video_codec_factory.h"
+#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 #include "third_party/webrtc/api/audio_codecs/audio_encoder_factory.h"
 #include "third_party/webrtc/api/audio_codecs/audio_format.h"
 #include "third_party/webrtc/api/scoped_refptr.h"
+#include "third_party/webrtc/api/video/resolution.h"
 #include "third_party/webrtc/api/video_codecs/sdp_video_format.h"
 #include "third_party/webrtc/api/video_codecs/video_encoder_factory.h"
 #include "third_party/webrtc/media/engine/internal_encoder_factory.h"
+#include "ui/gfx/geometry/size.h"
 
 namespace blink {
 
 WebrtcEncodingInfoHandler* WebrtcEncodingInfoHandler::Instance() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(WebrtcEncodingInfoHandler, instance, ());
-  return &instance;
+  if (!IsMainThread()) {
+    DEFINE_THREAD_SAFE_STATIC_LOCAL(WebrtcEncodingInfoHandler, worker_instance,
+                                    (nullptr));
+    return &worker_instance;
+  }
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(WebrtcEncodingInfoHandler,
+                                  main_thread_instance, ());
+  return &main_thread_instance;
 }
 
 WebrtcEncodingInfoHandler::WebrtcEncodingInfoHandler()

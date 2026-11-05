@@ -13,6 +13,7 @@
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/app_bar/ui/app_bar_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_constants.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/autofill/model/form_suggestion_constants.h"
 #import "ios/chrome/browser/bookmarks/public/bookmarks_ui_constants.h"
 #import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
@@ -26,11 +27,11 @@
 #import "ios/chrome/browser/omnibox/public/omnibox_constants.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_popup_accessibility_identifier_constants.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_ui_features.h"
-#import "ios/chrome/browser/omnibox/ui/keyboard_assist/omnibox_assistive_keyboard_views_utils.h"
 #import "ios/chrome/browser/omnibox/ui/omnibox_text_field_ios.h"
 #import "ios/chrome/browser/omnibox/ui/omnibox_text_view_ios.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
 #import "ios/chrome/browser/recent_tabs/public/recent_tabs_constants.h"
+#import "ios/chrome/browser/settings/autofill/autofill_and_passwords/ui/autofill_and_passwords_table_view_controller.h"
 #import "ios/chrome/browser/settings/autofill/payments/ui/autofill_add_credit_card_view_controller.h"
 #import "ios/chrome/browser/settings/clear_browsing_data/public/quick_delete_constants.h"
 #import "ios/chrome/browser/settings/google_services/public/google_services_settings_constants.h"
@@ -502,14 +503,30 @@ UIWindow* WindowWithAccessibilityIdentifier(NSString* accessibility_id) {
 }
 
 + (id<GREYMatcher>)closeButton {
+  if (@available(iOS 26, *)) {
+    return grey_allOf(
+        grey_anyOf(
+            [ChromeMatchersAppInterface
+                buttonWithAccessibilityLabelID:(IDS_CLOSE)],
+            [ChromeMatchersAppInterface buttonWithAccessibilityLabel:@"close"],
+            nil),
+        grey_userInteractionEnabled(), nil);
+  }
   return
       [ChromeMatchersAppInterface buttonWithAccessibilityLabelID:(IDS_CLOSE)];
 }
 
 + (id<GREYMatcher>)navigationBarCancelButton {
+  NSMutableArray<id<GREYMatcher>>* ancestors = [NSMutableArray
+      arrayWithObject:grey_ancestor(grey_kindOfClass([UINavigationBar class]))];
+  Class floatingBarClass = NSClassFromString(@"_UIFloatingBarContainerView");
+  if (floatingBarClass) {
+    [ancestors addObject:grey_ancestor(grey_kindOfClass(floatingBarClass))];
+  }
+
   return grey_allOf(
-      grey_ancestor(grey_kindOfClass([UINavigationBar class])),
-      [self cancelButton], grey_userInteractionEnabled(),
+      grey_anyOfMatchers(ancestors), [self cancelButton],
+      grey_userInteractionEnabled(),
       grey_not(grey_accessibilityTrait(UIAccessibilityTraitNotEnabled)), nil);
 }
 
@@ -518,9 +535,16 @@ UIWindow* WindowWithAccessibilityIdentifier(NSString* accessibility_id) {
 }
 
 + (id<GREYMatcher>)navigationBarSaveButton {
+  NSMutableArray<id<GREYMatcher>>* ancestors = [NSMutableArray
+      arrayWithObject:grey_ancestor(grey_kindOfClass([UINavigationBar class]))];
+  Class floatingBarClass = NSClassFromString(@"_UIFloatingBarContainerView");
+  if (floatingBarClass) {
+    [ancestors addObject:grey_ancestor(grey_kindOfClass(floatingBarClass))];
+  }
+
   return grey_allOf(
-      grey_ancestor(grey_kindOfClass([UINavigationBar class])),
-      [self saveButton], grey_userInteractionEnabled(),
+      grey_anyOfMatchers(ancestors), [self saveButton],
+      grey_userInteractionEnabled(),
       grey_not(grey_accessibilityTrait(UIAccessibilityTraitNotEnabled)), nil);
 }
 
@@ -753,11 +777,9 @@ UIWindow* WindowWithAccessibilityIdentifier(NSString* accessibility_id) {
 }
 
 + (id<GREYMatcher>)tabShareButton {
-  NSString* shareID = IsChromeNextIaEnabled()
-                          ? kToolbarShareButtonIdentifier
-                          : kLegacyToolbarShareButtonIdentifier;
   return grey_allOf(
-      grey_anyOf(grey_accessibilityID(shareID),
+      grey_anyOf(grey_accessibilityID(kLegacyToolbarShareButtonIdentifier),
+                 grey_accessibilityID(kToolbarShareButtonIdentifier),
                  grey_accessibilityID(kOmniboxShareButtonIdentifier), nil),
       grey_sufficientlyVisible(), nil);
 }
@@ -868,6 +890,9 @@ UIWindow* WindowWithAccessibilityIdentifier(NSString* accessibility_id) {
 }
 
 + (id<GREYMatcher>)navigationBarCloseButton {
+  if (@available(iOS 26, *)) {
+    return grey_allOf([self closeButton], grey_sufficientlyVisible(), nil);
+  }
   return grey_allOf(grey_accessibilityLabel(@"Close"),
                     grey_sufficientlyVisible(), nil);
 }
@@ -952,10 +977,17 @@ UIWindow* WindowWithAccessibilityIdentifier(NSString* accessibility_id) {
 }
 
 + (id<GREYMatcher>)settingsDoneButton {
-  return grey_allOf(
-      grey_ancestor([ChromeMatchersAppInterface settingsNavigationBar]),
-      grey_accessibilityID(kSettingsDoneButtonId), grey_sufficientlyVisible(),
-      nil);
+  NSMutableArray<id<GREYMatcher>>* ancestors = [NSMutableArray
+      arrayWithObject:grey_ancestor(
+                          [ChromeMatchersAppInterface settingsNavigationBar])];
+  Class floatingBarClass = NSClassFromString(@"_UIFloatingBarContainerView");
+  if (floatingBarClass) {
+    [ancestors addObject:grey_ancestor(grey_kindOfClass(floatingBarClass))];
+  }
+
+  return grey_allOf(grey_anyOfMatchers(ancestors),
+                    grey_accessibilityID(kSettingsDoneButtonId),
+                    grey_sufficientlyVisible(), nil);
 }
 
 + (id<GREYMatcher>)autofillCreditCardEditTableView {
@@ -1127,25 +1159,22 @@ UIWindow* WindowWithAccessibilityIdentifier(NSString* accessibility_id) {
     buttonTitle = @"Back";
   }
 
-  if (@available(iOS 26, *)) {
-    return grey_allOf(
-        grey_anyOf(grey_accessibilityLabel(buttonTitle),
-                   grey_accessibilityLabel(@"Back"), grey_buttonTitle(@"Back"),
-                   grey_descendant(grey_buttonTitle(buttonTitle)), nil),
-        grey_anyOf(grey_kindOfClassName(@"_UIButtonBarButton"),
-                   grey_kindOfClassName(
-                       @"_TtCC5UIKit29ButtonBarButtonVisualProviderP33_"
-                       @"A98CD29F4F6ECA17AFECE41BBB264E596Button"),
-                   nil),
-        grey_ancestor(grey_kindOfClass([UINavigationBar class])), nil);
-  } else {
-    return grey_allOf(
-        grey_anyOf(grey_accessibilityLabel(buttonTitle),
-                   grey_accessibilityLabel(@"Back"), grey_buttonTitle(@"Back"),
-                   grey_descendant(grey_buttonTitle(buttonTitle)), nil),
-        grey_kindOfClassName(@"_UIButtonBarButton"),
-        grey_ancestor(grey_kindOfClass([UINavigationBar class])), nil);
+  NSMutableArray<id<GREYMatcher>>* ancestors = [NSMutableArray
+      arrayWithObject:grey_ancestor(grey_kindOfClass([UINavigationBar class]))];
+  Class floatingBarClass = NSClassFromString(@"_UIFloatingBarContainerView");
+  if (floatingBarClass) {
+    [ancestors addObject:grey_ancestor(grey_kindOfClass(floatingBarClass))];
   }
+
+  return grey_allOf(
+      grey_anyOf(grey_accessibilityID(@"BackButton"),
+                 grey_accessibilityLabel(buttonTitle),
+                 grey_accessibilityLabel(@"Back"), grey_buttonTitle(@"Back"),
+                 grey_descendant(grey_buttonTitle(buttonTitle)),
+                 grey_descendant(grey_accessibilityLabel(@"Back")),
+                 grey_descendant(grey_accessibilityLabel(buttonTitle)), nil),
+      grey_kindOfClassName(@"_UIButtonBarButton"),
+      grey_anyOfMatchers(ancestors), grey_interactable(), nil);
 }
 
 + (id<GREYMatcher>)settingsMenuBackButton {
@@ -1188,10 +1217,6 @@ UIWindow* WindowWithAccessibilityIdentifier(NSString* accessibility_id) {
 + (id<GREYMatcher>)voiceSearchButton {
   return grey_allOf(grey_accessibilityID(kSettingsVoiceSearchCellId),
                     grey_accessibilityTrait(UIAccessibilityTraitButton), nil);
-}
-
-+ (id<GREYMatcher>)voiceSearchInputAccessoryButton {
-  return grey_accessibilityID(kVoiceSearchInputAccessoryViewID);
 }
 
 + (id<GREYMatcher>)settingsCollectionView {
@@ -1737,6 +1762,10 @@ UIWindow* WindowWithAccessibilityIdentifier(NSString* accessibility_id) {
 + (id<GREYMatcher>)safetyCheckTableViewMatcher {
   return grey_accessibilityID(
       SafetyCheckTableViewController.accessibilityIdentifier);
+}
+
++ (id<GREYMatcher>)autofillAndPasswordsTableViewMatcher {
+  return grey_accessibilityID(kAutofillAndPasswordsTableViewIdentifier);
 }
 
 + (id<GREYMatcher>)toolbarButtonWithID:(NSString*)buttonID {

@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 
-#include "build/build_config.h"
+#include "base/numerics/angle_conversions.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "third_party/blink/renderer/core/css/css_length_resolver.h"
 #include "third_party/blink/renderer/core/css/css_value_clamping_utils.h"
 #include "third_party/blink/renderer/core/css/css_value_pool.h"
@@ -99,7 +100,7 @@ double CSSNumericLiteralValue::ComputeDegrees() const {
     case UnitType::kDegrees:
       return num_;
     case UnitType::kRadians:
-      return Rad2deg(num_);
+      return base::RadToDeg(num_);
     case UnitType::kGradians:
       return Grad2deg(num_);
     case UnitType::kTurns:
@@ -189,14 +190,12 @@ bool CSSNumericLiteralValue::IsComputationallyIndependent() const {
 }
 
 static String FormatNumber(double number, const char* suffix) {
-#if BUILDFLAG(IS_WIN) && _MSC_VER < 1900
-  unsigned oldFormat = _set_output_format(_TWO_DIGIT_EXPONENT);
-#endif
-  String result = UNSAFE_TODO(String::Format("%.6g%s", number, suffix));
-#if BUILDFLAG(IS_WIN) && _MSC_VER < 1900
-  _set_output_format(oldFormat);
-#endif
-  return result;
+  // https://www.w3.org/TR/cssom-1/#serialize-a-css-component-value specifies
+  // rounding, but does not specify the rounding mode.
+  // This function has historically used round-to-even, whereas blink::Format()
+  // rounds half away from zero. We use absl::StrFormat() for round-to-even
+  // to maintain compatibility.
+  return String(absl::StrFormat("%.6g%s", number, suffix));
 }
 
 static String FormatInfinityOrNaN(double number, StringView suffix) {
@@ -219,14 +218,15 @@ static String FormatInfinityOrNaN(double number, StringView suffix) {
   return result;
 }
 
-String CSSNumericLiteralValue::CustomCSSText() const {
+// static
+String CSSNumericLiteralValue::Serialize(double value, UnitType type) {
   String text;
-  switch (GetType()) {
+  switch (type) {
     case UnitType::kUnknown:
       // FIXME
       break;
     case UnitType::kInteger:
-      text = String::Number(ComputeInteger());
+      text = String::Number(ClampTo<int>(value));
       break;
     case UnitType::kNumber:
     case UnitType::kPercentage:
@@ -298,20 +298,18 @@ String CSSNumericLiteralValue::CustomCSSText() const {
       // be represented in non-exponential format with 6 digit precision.
       constexpr int kMinInteger = -999999;
       constexpr int kMaxInteger = 999999;
-      double value = DoubleValue();
       // If the value is small integer, go the fast path.
       if (value < kMinInteger || value > kMaxInteger ||
           std::trunc(value) != value) {
         if (!std::isfinite(value)) {
-          text = FormatInfinityOrNaN(value, UnitTypeToString(GetType()));
+          text = FormatInfinityOrNaN(value, UnitTypeToString(type));
         } else {
-          text =
-              FormatNumber(value, UnitTypeToString(GetType()).Utf8().c_str());
+          text = FormatNumber(value, UnitTypeToString(type).Utf8().c_str());
         }
       } else {
         StringBuilder builder;
         int int_value = value;
-        StringView unit_type = UnitTypeToString(GetType());
+        StringView unit_type = UnitTypeToString(type);
         builder.AppendNumber(int_value);
         builder.Append(unit_type);
         text = builder.ReleaseString();
@@ -321,6 +319,10 @@ String CSSNumericLiteralValue::CustomCSSText() const {
       NOTREACHED();
   }
   return text;
+}
+
+String CSSNumericLiteralValue::CustomCSSText() const {
+  return Serialize(DoubleValue(), GetType());
 }
 
 bool CSSNumericLiteralValue::Equals(const CSSNumericLiteralValue& other) const {
@@ -404,11 +406,11 @@ bool CSSNumericLiteralValue::Equals(const CSSNumericLiteralValue& other) const {
   }
 }
 
-unsigned CSSNumericLiteralValue::CustomHash() const {
+uint32_t CSSNumericLiteralValue::CustomHash() const {
   uint64_t val = base::bit_cast<uint64_t>(num_);
   return HashInts(
-      static_cast<unsigned>(GetType()),
-      HashInts(static_cast<unsigned>(val >> 32), static_cast<unsigned>(val)));
+      static_cast<uint32_t>(GetType()),
+      HashInts(static_cast<uint32_t>(val >> 32), static_cast<uint32_t>(val)));
 }
 
 CSSPrimitiveValue::UnitType CSSNumericLiteralValue::CanonicalUnit() const {

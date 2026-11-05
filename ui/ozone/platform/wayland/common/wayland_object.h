@@ -65,7 +65,7 @@ class Object : public std::unique_ptr<T, Deleter> {
 
 template <typename T>
 wl::Object<T> Bind(wl_registry* registry, uint32_t name, uint32_t version) {
-  DCHECK(ObjectTraits<T>::interface);
+  CHECK(ObjectTraits<T>::interface, base::NotFatalUntil::M163);
   return wl::Object<T>(wl::bind_registry<T>(
       registry, name, ObjectTraits<T>::interface, version));
 }
@@ -103,6 +103,8 @@ bool CanBind(const std::string& interface,
   }  // namespace wl
 
 // For convenience, keep aphabetical order in this list.
+DECLARE_WAYLAND_OBJECT_TRAITS(ext_idle_notifier_v1)
+DECLARE_WAYLAND_OBJECT_TRAITS(ext_idle_notification_v1)
 DECLARE_WAYLAND_OBJECT_TRAITS(gtk_primary_selection_device)
 DECLARE_WAYLAND_OBJECT_TRAITS(gtk_primary_selection_device_manager)
 DECLARE_WAYLAND_OBJECT_TRAITS(gtk_primary_selection_offer)

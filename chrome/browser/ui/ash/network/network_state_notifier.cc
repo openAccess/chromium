@@ -115,7 +115,7 @@ void ShowErrorNotification(const std::string& identifier,
                  << base::UTF16ToUTF8(title);
   auto notification = CreateSystemNotificationPtr(
       message_center::NOTIFICATION_TYPE_SIMPLE, notification_id, title, message,
-      std::u16string() /* display_source */, GURL(),
+      std::u16string() /* display_source */,
       message_center::NotifierId(message_center::NotifierType::SYSTEM_COMPONENT,
                                  kNotifierNetworkError, catalog_name),
       message_center::RichNotificationData(),
@@ -417,7 +417,7 @@ void NetworkStateNotifier::UpdateCellularActivating(
       l10n_util::GetStringUTF16(IDS_NETWORK_CELLULAR_ACTIVATED_TITLE),
       l10n_util::GetStringFUTF16(IDS_NETWORK_CELLULAR_ACTIVATED,
                                  base::UTF8ToUTF16((cellular->name()))),
-      std::u16string() /* display_source */, GURL(),
+      std::u16string() /* display_source */,
       message_center::NotifierId(
           message_center::NotifierType::SYSTEM_COMPONENT, kNotifierNetwork,
           NotificationCatalogName::kNetworkCellularActivated),
@@ -461,7 +461,7 @@ void NetworkStateNotifier::ShowMobileActivationErrorForGuid(
       l10n_util::GetStringUTF16(IDS_NETWORK_ACTIVATION_ERROR_TITLE),
       l10n_util::GetStringFUTF16(IDS_NETWORK_ACTIVATION_NEEDS_CONNECTION,
                                  base::UTF8ToUTF16((cellular->name()))),
-      std::u16string() /* display_source */, GURL(),
+      std::u16string() /* display_source */,
       message_center::NotifierId(
           message_center::NotifierType::SYSTEM_COMPONENT, kNotifierNetworkError,
           NotificationCatalogName::kNetworkActivationError),
@@ -612,8 +612,7 @@ void NetworkStateNotifier::ShowConnectErrorNotification(
   if (IsSimLockConnectionFailure(error_name, network)) {
     on_click = base::BindRepeating(&NetworkStateNotifier::ShowSimUnlockSettings,
                                    weak_ptr_factory_.GetWeakPtr());
-  } else if (features::IsApnRevampEnabled() && network &&
-             network->GetError() == shill::kErrorInvalidAPN) {
+  } else if (network && network->GetError() == shill::kErrorInvalidAPN) {
     on_click = base::BindRepeating(&NetworkStateNotifier::ShowApnSettings,
                                    weak_ptr_factory_.GetWeakPtr(), guid);
   } else {
@@ -630,7 +629,7 @@ void NetworkStateNotifier::ShowConnectErrorNotification(
 }
 
 void NetworkStateNotifier::ShowVpnDisconnectedNotification(VpnDetails* vpn) {
-  DCHECK(vpn);
+  CHECK(vpn, base::NotFatalUntil::M162);
   std::u16string error_msg = l10n_util::GetStringFUTF16(
       IDS_NETWORK_VPN_CONNECTION_LOST_BODY, base::UTF8ToUTF16(vpn->name));
   ShowErrorNotification(
@@ -650,7 +649,7 @@ void NetworkStateNotifier::ShowCarrierUnlockNotification() {
       kNetworkCarrierUnlockNotificationId,
       l10n_util::GetStringFUTF16(IDS_NETWORK_CARRIER_UNLOCK_TITLE,
                                  ui::GetChromeOSDeviceName()),
-      message, std::u16string() /* display_source */, GURL(),
+      message, std::u16string() /* display_source */,
       message_center::NotifierId(
           message_center::NotifierType::SYSTEM_COMPONENT, kNotifierNetworkError,
           NotificationCatalogName::kNetworkCarrierUnlock),
@@ -705,7 +704,6 @@ void NetworkStateNotifier::ShowMobileDataSubpage() {
 }
 
 void NetworkStateNotifier::ShowApnSettings(const std::string& network_id) {
-  CHECK(features::IsApnRevampEnabled());
   if (!system_tray_client_) {
     return;
   }

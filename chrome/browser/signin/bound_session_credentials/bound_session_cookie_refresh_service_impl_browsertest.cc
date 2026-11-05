@@ -29,6 +29,7 @@
 #include "chrome/browser/signin/bound_session_credentials/bound_session_cookie_refresh_service_factory.h"
 #include "chrome/browser/signin/bound_session_credentials/bound_session_test_cookie_manager.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/renderer_configuration.mojom.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -44,7 +45,7 @@
 #include "content/public/test/browsing_data_remover_test_util.h"
 #include "content/public/test/btm_service_test_utils.h"
 #include "crypto/scoped_fake_unexportable_key_provider.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "google_apis/gaia/gaia_switches.h"
 #include "net/base/url_util.h"
 #include "net/cookies/canonical_cookie.h"
@@ -57,6 +58,7 @@
 #include "services/network/public/cpp/network_switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace {
 using ::net::CanonicalCookie;
@@ -134,12 +136,12 @@ std::string CreateBoundSessionParamsValidJson(const std::string& session_id,
                             cookie_name2.c_str(), domain.c_str(), path.c_str());
 }
 
-std::optional<crypto::SignatureVerifier::SignatureAlgorithm>
-SignatureAlgorithmFromString(std::string_view algorithm) {
+std::optional<crypto::sign::SignatureKind> SignatureAlgorithmFromString(
+    std::string_view algorithm) {
   if (algorithm == "ES256") {
-    return crypto::SignatureVerifier::ECDSA_SHA256;
+    return crypto::sign::ECDSA_SHA256;
   } else if (algorithm == "RS256") {
-    return crypto::SignatureVerifier::RSA_PKCS1_SHA256;
+    return crypto::sign::RSA_PKCS1_SHA256;
   }
 
   return std::nullopt;
@@ -181,7 +183,7 @@ struct CookieRotationResponseParams {
       const std::string& cookie_name2,
       bool block_server_response = false,
       base::TimeDelta expiry_offset = base::Minutes(10)) {
-    static const std::string kSetCookieHeaderKey = "Set-Cookie";
+    static constexpr std::string_view kSetCookieHeaderKey = "Set-Cookie";
     HeaderVector headers;
     for (const std::string& cookie_attribute_line :
          GetTwoCookiesAttributesLines(url, cookie_name1, cookie_name2,
@@ -195,7 +197,7 @@ struct CookieRotationResponseParams {
   static CookieRotationResponseParams CreateChallengeRequired(
       const std::string& session_id,
       bool block_server_response = false) {
-    static const std::string kChallengeHeaderKey =
+    static constexpr std::string_view kChallengeHeaderKey =
         "Sec-Session-Google-Challenge";
     HeaderVector headers;
     headers.emplace_back(
@@ -373,7 +375,7 @@ class FakeServer {
     if (!algorithm_str) {
       return AssertionFailure() << "\"alg\" field is missing";
     }
-    std::optional<crypto::SignatureVerifier::SignatureAlgorithm> algorithm =
+    std::optional<crypto::sign::SignatureKind> algorithm =
         SignatureAlgorithmFromString(*algorithm_str);
     if (!algorithm) {
       return AssertionFailure()
@@ -505,7 +507,8 @@ testing::AssertionResult SimulateBtmBounce(BrowserWindowInterface* browser,
                                            const GURL& bounce_url,
                                            const GURL& final_url) {
   if (!ui_test_utils::NavigateToURLWithDisposition(
-          browser, initial_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          browser, initial_url,
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB |
               ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP)) {
     return testing::AssertionFailure()

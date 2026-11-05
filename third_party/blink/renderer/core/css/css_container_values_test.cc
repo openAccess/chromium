@@ -25,7 +25,7 @@ class CSSContainerValuesTest : public PageTestBase {
   void SetContainerWritingDirection(WritingMode writing_mode,
                                     TextDirection direction) {
     ComputedStyleBuilder builder(
-        *GetDocument().GetStyleResolver().InitialStyleForElement());
+        GetDocument().GetStyleResolver().InitialStyleForElement());
     builder.SetWritingMode(writing_mode);
     builder.SetDirection(direction);
     ContainerElement().SetComputedStyle(builder.TakeStyle());
@@ -81,9 +81,7 @@ class CSSContainerValuesTest : public PageTestBase {
   }
 
  private:
-  Element& ContainerElement() {
-    return *GetDocument().getElementById(AtomicString("container"));
-  }
+  Element& ContainerElement() { return *GetElementById("container"); }
 };
 
 TEST_F(CSSContainerValuesTest, StickyHorizontalTbLtr) {

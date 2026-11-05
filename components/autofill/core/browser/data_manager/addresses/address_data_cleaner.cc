@@ -171,7 +171,9 @@ void DeduplicateProfiles(const std::string& app_locale,
         continue;
       }
 
-      ++removed_profiles_count;
+      if (profile_action != ProfileAction::kRemove) {
+        ++removed_profiles_count;
+      }
       profile_action = ProfileAction::kRemove;
       superset_action = ProfileAction::kUpdate;
       superset.usage_history().MergeUsageHistories(profile.usage_history());
@@ -370,23 +372,14 @@ void AddressDataCleaner::MaybeCleanupAddressData() {
                               version_info::GetMajorVersionNumberAsInt());
   }
 
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillEnableDeduplicationOnBackgroundThread)) {
-    // Profiles deduplication is moved to the background thread since it is an
-    // expensive operation, known to cause ANRs and shutdown hangs.
-    base::ThreadPool::PostTaskAndReplyWithResult(
-        FROM_HERE, {base::TaskPriority::BEST_EFFORT},
-        base::BindOnce(&CleanupAddressData, address_data_manager_->app_locale(),
-                       should_run_deduplication,
-                       std::move(profiles_with_action)),
-        base::BindOnce(&ApplyProfileActions,
-                       address_data_manager_->GetWeakPtr()));
-  } else {
-    ApplyProfileActions(address_data_manager_->GetWeakPtr(),
-                        CleanupAddressData(address_data_manager_->app_locale(),
-                                           should_run_deduplication,
-                                           std::move(profiles_with_action)));
-  }
+  // Profiles deduplication is moved to the background thread since it is an
+  // expensive operation, known to cause ANRs and shutdown hangs.
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::TaskPriority::BEST_EFFORT},
+      base::BindOnce(&CleanupAddressData, address_data_manager_->app_locale(),
+                     should_run_deduplication, std::move(profiles_with_action)),
+      base::BindOnce(&ApplyProfileActions,
+                     address_data_manager_->GetWeakPtr()));
 }
 
 // static

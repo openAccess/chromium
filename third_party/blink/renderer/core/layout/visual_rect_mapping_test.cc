@@ -448,8 +448,7 @@ TEST_P(VisualRectMappingTest, SkipAncestorAndViewportClipsInSubframe) {
 
   UpdateAllLifecyclePhasesForTest();
 
-  auto* iframe_element = To<HTMLIFrameElement>(
-      GetDocument().getElementById(AtomicString("child")));
+  auto* iframe_element = To<HTMLIFrameElement>(GetElementById("child"));
   ASSERT_TRUE(iframe_element);
   auto* child_frame = DynamicTo<LocalFrame>(iframe_element->ContentFrame());
   ASSERT_TRUE(child_frame);
@@ -2142,15 +2141,16 @@ TEST_P(VisualRectMappingTest,
 }
 
 TEST_P(VisualRectMappingTest, ElementCanvasTransformVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   SetBodyInnerHTML(R"HTML(
     <style>body { margin: 0; }</style>
-    <canvas layoutsubtree id="canvas" style="width: 200px; height: 200px">
-      <div id="target" style="width: 100px; height: 100px"></div>
+    <canvas content=drawable id="canvas" style="width: 200px; height: 200px">
+      <div id="target" drawable style="width: 100px; height: 100px"></div>
     </canvas>
   )HTML");
 
-  auto* target_element = GetDocument().getElementById(AtomicString("target"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* target_element = GetElementById("target");
+  auto* canvas_element = GetElementById("canvas");
   auto* target = target_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
@@ -2170,18 +2170,19 @@ TEST_P(VisualRectMappingTest, ElementCanvasTransformVisualRectMapping) {
 }
 
 TEST_P(VisualRectMappingTest, NestedElementCanvasTransformVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   SetBodyInnerHTML(R"HTML(
     <style>body { margin: 0; }</style>
-    <canvas layoutsubtree id="canvas" style="width: 400px; height: 200px">
+    <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
       <div id="a" drawable style="width: 100px; height: 100px; background: blue;">
         <div id="b" drawable style="width: 50px; height: 50px; background: green;"></div>
       </div>
     </canvas>
   )HTML");
 
-  auto* a_element = GetDocument().getElementById(AtomicString("a"));
-  auto* b_element = GetDocument().getElementById(AtomicString("b"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* a_element = GetElementById("a");
+  auto* b_element = GetElementById("b");
+  auto* canvas_element = GetElementById("canvas");
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
@@ -2199,28 +2200,23 @@ TEST_P(VisualRectMappingTest, NestedElementCanvasTransformVisualRectMapping) {
       To<LayoutBoxModelObject>(canvas), slow_rect, {}));
   EXPECT_EQ(mapper_rect, PhysicalRect(0, 100, 50, 50));
   EXPECT_EQ(mapper_rect, slow_rect);
-  EXPECT_EQ(PhysicalOffset(0, 100),
-            b->LocalToAncestorPoint(PhysicalOffset(),
-                                    To<LayoutBoxModelObject>(canvas)));
-  EXPECT_EQ(PhysicalOffset(0, 0),
-            b->AncestorToLocalPoint(To<LayoutBoxModelObject>(canvas),
-                                    PhysicalOffset(0, 100)));
 }
 
 TEST_P(VisualRectMappingTest,
        NestedElementCanvasTransformWithOffsetVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   SetBodyInnerHTML(R"HTML(
     <style>body { margin: 0; }</style>
-    <canvas layoutsubtree id="canvas" style="width: 400px; height: 200px">
+    <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
       <div id="a" drawable style="width: 100px; height: 100px; background: blue;">
         <div id="b" drawable style="margin-top: 20px; width: 50px; height: 50px; background: green;"></div>
       </div>
     </canvas>
   )HTML");
 
-  auto* a_element = GetDocument().getElementById(AtomicString("a"));
-  auto* b_element = GetDocument().getElementById(AtomicString("b"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* a_element = GetElementById("a");
+  auto* b_element = GetElementById("b");
+  auto* canvas_element = GetElementById("canvas");
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
@@ -2238,29 +2234,24 @@ TEST_P(VisualRectMappingTest,
       To<LayoutBoxModelObject>(canvas), slow_rect, {}));
   EXPECT_EQ(mapper_rect, PhysicalRect(0, 100, 50, 50));
   EXPECT_EQ(mapper_rect, slow_rect);
-  EXPECT_EQ(PhysicalOffset(0, 100),
-            b->LocalToAncestorPoint(PhysicalOffset(),
-                                    To<LayoutBoxModelObject>(canvas)));
-  EXPECT_EQ(PhysicalOffset(0, 0),
-            b->AncestorToLocalPoint(To<LayoutBoxModelObject>(canvas),
-                                    PhysicalOffset(0, 100)));
 }
 
 TEST_P(
     VisualRectMappingTest,
     NestedElementCanvasTransformChildWithoutCanvasTransformVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   SetBodyInnerHTML(R"HTML(
     <style>body { margin: 0; }</style>
-    <canvas layoutsubtree id="canvas" style="width: 400px; height: 200px">
+    <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
       <div id="a" drawable style="width: 100px; height: 100px; background: blue;">
         <div id="b" drawable style="width: 50px; height: 50px; background: green;"></div>
       </div>
     </canvas>
   )HTML");
 
-  auto* a_element = GetDocument().getElementById(AtomicString("a"));
-  auto* b_element = GetDocument().getElementById(AtomicString("b"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* a_element = GetElementById("a");
+  auto* b_element = GetElementById("b");
+  auto* canvas_element = GetElementById("canvas");
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
@@ -2277,28 +2268,23 @@ TEST_P(
       To<LayoutBoxModelObject>(canvas), slow_rect, {}));
   EXPECT_EQ(mapper_rect, PhysicalRect(0, 0, 50, 50));
   EXPECT_EQ(mapper_rect, slow_rect);
-  EXPECT_EQ(PhysicalOffset(0, 0),
-            b->LocalToAncestorPoint(PhysicalOffset(),
-                                    To<LayoutBoxModelObject>(canvas)));
-  EXPECT_EQ(PhysicalOffset(0, 0),
-            b->AncestorToLocalPoint(To<LayoutBoxModelObject>(canvas),
-                                    PhysicalOffset(0, 0)));
 }
 
 TEST_P(VisualRectMappingTest,
        NestedElementCanvasTransformNonDrawableChildVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   SetBodyInnerHTML(R"HTML(
     <style>body { margin: 0; }</style>
-    <canvas layoutsubtree id="canvas" style="width: 400px; height: 200px">
+    <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
       <div id="a" drawable style="width: 100px; height: 100px; background: blue;">
         <div id="b" style="width: 50px; height: 50px; background: green;"></div>
       </div>
     </canvas>
   )HTML");
 
-  auto* a_element = GetDocument().getElementById(AtomicString("a"));
-  auto* b_element = GetDocument().getElementById(AtomicString("b"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* a_element = GetElementById("a");
+  auto* b_element = GetElementById("b");
+  auto* canvas_element = GetElementById("canvas");
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
@@ -2315,32 +2301,27 @@ TEST_P(VisualRectMappingTest,
       To<LayoutBoxModelObject>(canvas), slow_rect, {}));
   EXPECT_EQ(mapper_rect, PhysicalRect(100, 0, 50, 50));
   EXPECT_EQ(mapper_rect, slow_rect);
-  EXPECT_EQ(PhysicalOffset(100, 0),
-            b->LocalToAncestorPoint(PhysicalOffset(),
-                                    To<LayoutBoxModelObject>(canvas)));
-  EXPECT_EQ(PhysicalOffset(0, 0),
-            b->AncestorToLocalPoint(To<LayoutBoxModelObject>(canvas),
-                                    PhysicalOffset(100, 0)));
 }
 
 TEST_P(VisualRectMappingTest,
        NestedElementCanvasTransformInlineVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   LoadAhem();
   SetBodyInnerHTML(R"HTML(
     <style>
       body { margin: 0; }
       span { font: 50px/1 Ahem; }
     </style>
-    <canvas layoutsubtree id="canvas" style="width: 400px; height: 200px">
+    <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
       <div id="a" drawable style="width: 100px; height: 100px; background: blue;">
         <span id="b" drawable style="color: green;">X</span>
       </div>
     </canvas>
   )HTML");
 
-  auto* a_element = GetDocument().getElementById(AtomicString("a"));
-  auto* b_element = GetDocument().getElementById(AtomicString("b"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* a_element = GetElementById("a");
+  auto* b_element = GetElementById("b");
+  auto* canvas_element = GetElementById("canvas");
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
@@ -2358,12 +2339,6 @@ TEST_P(VisualRectMappingTest,
       To<LayoutBoxModelObject>(canvas), slow_rect, {}));
   EXPECT_EQ(mapper_rect, PhysicalRect(0, 100, 50, 50));
   EXPECT_EQ(mapper_rect, slow_rect);
-  EXPECT_EQ(PhysicalOffset(0, 100),
-            b->LocalToAncestorPoint(PhysicalOffset(),
-                                    To<LayoutBoxModelObject>(canvas)));
-  EXPECT_EQ(PhysicalOffset(0, 0),
-            b->AncestorToLocalPoint(To<LayoutBoxModelObject>(canvas),
-                                    PhysicalOffset(0, 100)));
 }
 
 }  // namespace blink

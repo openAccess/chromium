@@ -28,6 +28,7 @@
 #include "content/browser/ssl/ssl_manager.h"
 #include "content/common/content_export.h"
 #include "content/common/navigation_client.mojom-forward.h"
+#include "content/public/browser/invalidate_type.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/reload_type.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
@@ -37,6 +38,7 @@
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/navigation/navigation_api_history_entry_arrays.mojom-forward.h"
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom-forward.h"
+#include "url/gurl.h"
 
 namespace blink {
 struct NavigationDownloadPolicy;
@@ -123,8 +125,8 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       const Referrer& referrer,
       ui::PageTransition type,
       const std::string& extra_headers) override;
-  base::WeakPtr<NavigationHandle> LoadURLWithParams(
-      const LoadURLParams& params) override;
+  base::expected<base::WeakPtr<NavigationHandle>, NavigationNotStartedReason>
+  LoadURLWithParamsForResult(const LoadURLParams& params) override;
   void LoadIfNecessary() override;
   void LoadOriginalRequestURL() override;
   base::WeakPtr<NavigationHandle> LoadPostCommitErrorPage(
@@ -145,8 +147,9 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   void GoToOffset(int offset) override;
   bool RemoveEntryAtIndex(int index) override;
   void PruneForwardEntries() override;
-  const SessionStorageNamespaceMap& GetSessionStorageNamespaceMap() override;
-  SessionStorageNamespace* GetDefaultSessionStorageNamespace() override;
+  const SessionStorageNamespaceHandleMap& GetSessionStorageNamespaceMap()
+      override;
+  SessionStorageNamespaceHandle* GetDefaultSessionStorageNamespace() override;
   bool NeedsReload() override;
   void SetNeedsReload() override;
   void CancelPendingReload() override;
@@ -249,7 +252,9 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       bool is_unfenced_top_navigation = false,
       bool force_new_browsing_instance = false,
       bool is_container_initiated = false,
-      bool has_rel_opener = false);
+      bool has_rel_opener = false,
+      network::mojom::CSPDisposition should_check_main_world_csp =
+          network::mojom::CSPDisposition::CHECK);
 
   // Navigates to the history entry associated with the given navigation API
   // |key|. Searches |entries_| for a FrameNavigationEntry associated with
@@ -283,7 +288,7 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
 
   // The session storage namespace that all child `blink::WebView`s associated
   // with `partition_config` should use.
-  SessionStorageNamespace* GetSessionStorageNamespace(
+  SessionStorageNamespaceHandle* GetSessionStorageNamespace(
       const StoragePartitionConfig& partition_config);
 
   // Returns the index of the specified entry, or -1 if entry is not contained
@@ -347,16 +352,25 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   // provisional load starts.
   void SetPendingEntry(std::unique_ptr<NavigationEntryImpl> entry);
 
+  struct CommitResult {
+    bool did_navigate = false;
+    scoped_refptr<FrameNavigationEntry> frame_entry;
+  };
+
   // Handles updating the navigation state after the renderer has navigated.
   // This is used by the WebContentsImpl.
   //
-  // If a new entry is created, it will return true and will have filled the
-  // given details structure and broadcast the NOTIFY_NAV_ENTRY_COMMITTED
-  // notification. The caller can then use the details without worrying about
-  // listening for the notification.
+  // If a new entry is created, it will return a CommitResult with
+  // `did_navigate` = true and will have filled the given details structure and
+  // broadcast the NOTIFY_NAV_ENTRY_COMMITTED notification. The caller can then
+  // use the details without worrying about listening for the notification.
   //
   // In the case that nothing has changed, the details structure is undefined
-  // and it will return false.
+  // and it will return a CommitResult with `did_navigate` = false.
+  //
+  // The CommitResult's `frame_entry` is the FrameNavigationEntry committed in
+  // `rfh`, set either way. It can be null (see
+  // RenderFrameHostImpl::last_committed_frame_entry).
   //
   // |was_on_initial_empty_document| indicates whether the document being
   // navigated away from was an initial empty document.
@@ -376,7 +390,7 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   // the new NavigationEntry, which will further determine whether these entries
   // should be skipped due to the back-to-ad intervention during back/forward UI
   // navigation.
-  bool RendererDidNavigate(
+  CommitResult RendererDidNavigate(
       RenderFrameHostImpl* rfh,
       const mojom::DidCommitProvisionalLoadParams& params,
       LoadCommittedDetails* details,
@@ -400,7 +414,7 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   // associated with a |partition_id| will CHECK() fail.
   void SetSessionStorageNamespace(
       const StoragePartitionConfig& partition_config,
-      SessionStorageNamespace* session_storage_namespace);
+      SessionStorageNamespaceHandle* session_storage_namespace);
 
   // Random data ---------------------------------------------------------------
 
@@ -609,24 +623,33 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   };
 
   // In most but not all navigation commits, the RendererDidNavigate logic needs
-  // to notify the delegate of navigation state changes (using
+  // to notify the delegate of navigation state changes (usually using
   // INVALIDATE_TYPE_ALL), so that the address bar and other UI can be updated.
   // There are several places in that function and its helper functions that
   // must ensure a notification is sent, but it is redundant and expensive to
   // send multiple notifications. This scoped object ensures that, at most, one
   // notification will be sent at the end of RendererDidNavigate (when it is
-  // deallocated) and only if RequestDeferredNotification has been called.
+  // deallocated) and only if RequestDeferredNotification has been called. The
+  // notification uses the union of all requested InvalidateTypes.
   class ScopedDeferredNavigationStateChangeNotifier {
    public:
-    explicit ScopedDeferredNavigationStateChangeNotifier(
-        raw_ptr<NavigationControllerDelegate> delegate);
+    // `previous_virtual_url` is the virtual URL of the last committed entry
+    // before the navigation commits.
+    ScopedDeferredNavigationStateChangeNotifier(
+        raw_ptr<NavigationControllerDelegate> delegate,
+        const GURL& previous_virtual_url);
     ~ScopedDeferredNavigationStateChangeNotifier();
 
-    void RequestDeferredNotification();
+    void RequestDeferredNotification(
+        InvalidateTypes changed_flags = INVALIDATE_TYPE_ALL);
+
+    const GURL& previous_virtual_url() const { return previous_virtual_url_; }
 
    private:
     raw_ptr<NavigationControllerDelegate> delegate_;
-    bool requested_ = false;
+    const GURL previous_virtual_url_;
+    // Union of the InvalidateTypes passed to RequestDeferredNotification().
+    int changed_flags_ = 0;
   };
 
   // Records which navigation API keys are associated with live frames.
@@ -726,9 +749,9 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   // Starts a new navigation based on |load_params|, that doesn't correspond to
   // an existing NavigationEntry.
   // |actual_navigation_start| is the time the navigation began, for metrics.
-  base::WeakPtr<NavigationHandle> NavigateWithoutEntry(
-      const LoadURLParams& load_params,
-      base::TimeTicks actual_navigation_start);
+  base::expected<base::WeakPtr<NavigationHandle>, NavigationNotStartedReason>
+  NavigateWithoutEntry(const LoadURLParams& load_params,
+                       base::TimeTicks actual_navigation_start);
 
   // Handles a navigation to a renderer-debug URL.
   void HandleRendererDebugURL(FrameTreeNode* frame_tree_node, const GURL& url);
@@ -760,7 +783,8 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   //
   // TODO(clamy): Remove the dependency on NavigationEntry and
   // FrameNavigationEntry.
-  std::unique_ptr<NavigationRequest> CreateNavigationRequestFromLoadParams(
+  base::expected<std::unique_ptr<NavigationRequest>, NavigationNotStartedReason>
+  CreateNavigationRequestFromLoadParams(
       FrameTreeNode* node,
       const LoadURLParams& load_params,
       bool override_user_agent,
@@ -774,7 +798,9 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       bool from_frame_proxy,
       bool is_embedder_initiated_fenced_frame_navigation = false,
       bool is_unfenced_top_navigation = false,
-      bool is_container_initiated = false);
+      bool is_container_initiated = false,
+      network::mojom::CSPDisposition should_check_main_world_csp =
+          network::mojom::CSPDisposition::CHECK);
 
   // Creates and returns a NavigationRequest for a navigation to |entry|. Will
   // return nullptr if the parameters are invalid and the navigation cannot
@@ -821,7 +847,13 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   // replace the current one (e.g., for location.replace or successful loads
   // after net errors), in contrast to updating a NavigationEntry in place
   // (e.g., for history.replaceState).
-  void RendererDidNavigateToNewEntry(
+  //
+  // Each returns the FrameNavigationEntry committed in `rfh`. These return a
+  // scoped_refptr, unlike UpdateNavigationEntryDetails(), because
+  // RendererDidNavigateNewSubframe() can create a FrameNavigationEntry that no
+  // NavigationEntry holds, if CloneAndReplace() can't place it in the tree (see
+  // https://crbug.com/607205).
+  scoped_refptr<FrameNavigationEntry> RendererDidNavigateToNewEntry(
       RenderFrameHostImpl* rfh,
       const mojom::DidCommitProvisionalLoadParams& params,
       bool is_same_document,
@@ -831,7 +863,7 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       NavigationRequest* request,
       LoadCommittedDetails* details,
       ScopedDeferredNavigationStateChangeNotifier* deferred_notifier);
-  void RendererDidNavigateToExistingEntry(
+  scoped_refptr<FrameNavigationEntry> RendererDidNavigateToExistingEntry(
       RenderFrameHostImpl* rfh,
       const mojom::DidCommitProvisionalLoadParams& params,
       bool is_same_document,
@@ -841,7 +873,7 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       bool keep_pending_entry,
       LoadCommittedDetails* details,
       ScopedDeferredNavigationStateChangeNotifier* deferred_notifier);
-  void RendererDidNavigateNewSubframe(
+  scoped_refptr<FrameNavigationEntry> RendererDidNavigateNewSubframe(
       RenderFrameHostImpl* rfh,
       const mojom::DidCommitProvisionalLoadParams& params,
       bool is_same_document,
@@ -851,7 +883,8 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
       NavigationRequest* request,
       LoadCommittedDetails* details,
       ScopedDeferredNavigationStateChangeNotifier* deferred_notifier);
-  bool RendererDidNavigateAutoSubframe(
+  // `did_navigate` is false if no commit notification is needed.
+  CommitResult RendererDidNavigateAutoSubframe(
       RenderFrameHostImpl* rfh,
       const mojom::DidCommitProvisionalLoadParams& params,
       bool is_same_document,
@@ -1059,8 +1092,10 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
                                               const GURL& url);
 
   // Adds details from a committed navigation to `entry` and the
-  // FrameNavigationEntry corresponding to `rfh`.
-  void UpdateNavigationEntryDetails(
+  // FrameNavigationEntry corresponding to `rfh`, and returns that
+  // FrameNavigationEntry, which `entry` holds. Returns null if it couldn't be
+  // added.
+  FrameNavigationEntry* UpdateNavigationEntryDetails(
       NavigationEntryImpl* entry,
       RenderFrameHostImpl* rfh,
       const mojom::DidCommitProvisionalLoadParams& params,
@@ -1187,14 +1222,14 @@ class CONTENT_EXPORT NavigationControllerImpl : public NavigationController {
   // Prevent unsafe re-entrant calls to NavigateToPendingEntry.
   bool in_navigate_to_pending_entry_ = false;
 
-  // Used to find the appropriate SessionStorageNamespace for the storage
+  // Used to find the appropriate SessionStorageNamespaceHandle for the storage
   // partition of a NavigationEntry.
   //
   // A NavigationController may contain NavigationEntries that correspond to
   // different StoragePartitions. Even though they are part of the same
   // NavigationController, only entries in the same StoragePartition may
   // share session storage state with one another.
-  SessionStorageNamespaceMap session_storage_namespace_map_;
+  SessionStorageNamespaceHandleMap session_storage_namespace_map_;
 
   // The maximum number of entries that a navigation controller can store.
   static size_t max_entry_count_for_testing_;

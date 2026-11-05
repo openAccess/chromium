@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.autofill.settings;
 
-import static org.chromium.chrome.browser.flags.ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID;
-
 import android.content.Context;
 import android.os.Bundle;
 
@@ -13,6 +11,7 @@ import androidx.annotation.IntDef;
 import androidx.lifecycle.Lifecycle;
 import androidx.preference.Preference;
 
+import org.chromium.base.CallbackController;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -137,6 +136,7 @@ public class AutofillAndPasswordsFragment extends ChromeBaseSettingsFragment {
 
     private final SettableMonotonicObservableSupplier<String> mPageTitle =
             ObservableSuppliers.createMonotonic();
+    private final CallbackController mSignInPromoCallbackController = new CallbackController();
     private MonotonicObservableSupplier<ModalDialogManager> mModalDialogManagerSupplier;
     private OneshotSupplier<WindowAndroid> mWindowAndroidSupplier;
     private ActivityResultTracker mActivityResultTracker;
@@ -179,8 +179,7 @@ public class AutofillAndPasswordsFragment extends ChromeBaseSettingsFragment {
                     RecordUserAction.record(
                             AutofillPersonalContextFragment
                                     .ACTION_ENTRY_FROM_AUTOFILL_AND_PASSWORDS);
-                    SettingsNavigationHelper.showAutofillPersonalContextSettings(
-                            getActivity(), AutofillOptionsReferrer.AUTOFILL_AND_PASSWORDS_FRAGMENT);
+                    SettingsNavigationHelper.showAutofillPersonalContextSettings(getActivity());
                     return true;
                 });
 
@@ -243,7 +242,7 @@ public class AutofillAndPasswordsFragment extends ChromeBaseSettingsFragment {
         autofillSettingsPref.setTitle(AutofillOptionsMediator.getFragmentTitle(getContext()));
         autofillSettingsPref.setOnPreferenceClickListener(
                 preference -> {
-                    SettingsNavigationFactory.createSettingsNavigation()
+                    SettingsNavigationFactory.createSettingsNavigation(getContext())
                             .startSettings(
                                     getContext(),
                                     AutofillOptionsFragment.class,
@@ -274,19 +273,23 @@ public class AutofillAndPasswordsFragment extends ChromeBaseSettingsFragment {
         if (mSigninPromoCoordinator != null) {
             mSigninPromoCoordinator.destroy();
         }
+        mSignInPromoCallbackController.destroy();
         super.onDestroy();
     }
 
     private void setupSignInPromo() {
         SupplierUtils.waitForAll(
-                () -> {
-                    if (getLifecycle().getCurrentState().isAtLeast(Lifecycle.State.INITIALIZED)) {
-                        mSigninPromoCoordinator = createSigninPromoCoordinator();
-                        ((SigninPromoPreference) findPreference(PREF_SIGNIN_PROMO))
-                                .setCoordinator(mSigninPromoCoordinator);
-                        updateSignInPromo();
-                    }
-                },
+                mSignInPromoCallbackController.makeCancelable(
+                        () -> {
+                            if (getLifecycle()
+                                    .getCurrentState()
+                                    .isAtLeast(Lifecycle.State.INITIALIZED)) {
+                                mSigninPromoCoordinator = createSigninPromoCoordinator();
+                                ((SigninPromoPreference) findPreference(PREF_SIGNIN_PROMO))
+                                        .setCoordinator(mSigninPromoCoordinator);
+                                updateSignInPromo();
+                            }
+                        }),
                 mWindowAndroidSupplier,
                 mBottomSheetControllerSupplier,
                 mSnackbarManagerSupplier,
@@ -341,8 +344,7 @@ public class AutofillAndPasswordsFragment extends ChromeBaseSettingsFragment {
     }
 
     private static boolean shouldShowAutofillAiSettings() {
-        return ChromeFeatureList.isEnabled(YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
-                && ChromeFeatureList.isEnabled(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA);
+        return ChromeFeatureList.isEnabled(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA);
     }
 
     private static boolean shouldShowShopping() {
@@ -395,48 +397,32 @@ public class AutofillAndPasswordsFragment extends ChromeBaseSettingsFragment {
                     // - we don't want it to be indexed.
                     indexData.removeEntry(getUniqueId(PREF_SIGNIN_PROMO));
 
-                    boolean featureDisabled =
-                            !ChromeFeatureList.isEnabled(YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID);
-                    if (featureDisabled) {
-                        indexData.removeEntry(getUniqueId(PREF_PASSWORDS));
-                        indexData.removeEntry(getUniqueId(PREF_AUTOFILL_PAYMENTS));
-                        indexData.removeEntry(getUniqueId(PREF_AUTOFILL_ADDRESSES));
-                        indexData.removeEntry(getUniqueId(PREF_AUTOFILL_SETTINGS));
+                    String autofillSettingsEntryId = getUniqueId(PREF_AUTOFILL_SETTINGS);
+                    SettingsIndexData.Entry autofillSettingsEntry =
+                            indexData.getEntry(autofillSettingsEntryId);
+                    if (autofillSettingsEntry != null) {
+                        indexData.updateEntry(
+                                autofillSettingsEntryId,
+                                new SettingsIndexData.Entry.Builder(autofillSettingsEntry)
+                                        // TODO(crbug.com/440022435): Remove the title update
+                                        // once Autofill AI is launched.
+                                        .setTitle(AutofillOptionsMediator.getFragmentTitle(context))
+                                        .setFragment(AutofillOptionsFragment.class.getName())
+                                        .setArguments(
+                                                AutofillOptionsFragment.createRequiredArgs(
+                                                        AutofillOptionsReferrer.SETTINGS_SEARCH))
+                                        .build());
+                    }
+
+                    if (!shouldShowAutofillAiSettings()) {
                         indexData.removeEntry(getUniqueId(PREF_AUTOFILL_IDENTITY_DOCS));
                         indexData.removeEntry(getUniqueId(PREF_AUTOFILL_TRAVEL));
+                    }
+                    if (!shouldShowShopping()) {
                         indexData.removeEntry(getUniqueId(PREF_AUTOFILL_SHOPPING));
+                    }
+                    if (!AutofillPersonalContextFragment.shouldShowPersonalContext(profile)) {
                         indexData.removeEntry(getUniqueId(PREF_AUTOFILL_PERSONAL_CONTEXT));
-                    } else {
-                        String autofillSettingsEntryId = getUniqueId(PREF_AUTOFILL_SETTINGS);
-                        SettingsIndexData.Entry autofillSettingsEntry =
-                                indexData.getEntry(autofillSettingsEntryId);
-                        if (autofillSettingsEntry != null) {
-                            indexData.updateEntry(
-                                    autofillSettingsEntryId,
-                                    new SettingsIndexData.Entry.Builder(autofillSettingsEntry)
-                                            // TODO(crbug.com/440022435): Remove the title update
-                                            // once Autofill AI is launched.
-                                            .setTitle(
-                                                    AutofillOptionsMediator.getFragmentTitle(
-                                                            context))
-                                            .setFragment(AutofillOptionsFragment.class.getName())
-                                            .setArguments(
-                                                    AutofillOptionsFragment.createRequiredArgs(
-                                                            AutofillOptionsReferrer
-                                                                    .SETTINGS_SEARCH))
-                                            .build());
-                        }
-
-                        if (!shouldShowAutofillAiSettings()) {
-                            indexData.removeEntry(getUniqueId(PREF_AUTOFILL_IDENTITY_DOCS));
-                            indexData.removeEntry(getUniqueId(PREF_AUTOFILL_TRAVEL));
-                        }
-                        if (!shouldShowShopping()) {
-                            indexData.removeEntry(getUniqueId(PREF_AUTOFILL_SHOPPING));
-                        }
-                        if (!AutofillPersonalContextFragment.shouldShowPersonalContext(profile)) {
-                            indexData.removeEntry(getUniqueId(PREF_AUTOFILL_PERSONAL_CONTEXT));
-                        }
                     }
                 }
             };

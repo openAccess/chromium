@@ -22,6 +22,7 @@
 #include "components/search/ntp_features.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "services/network/test/test_utils.h"
@@ -342,23 +343,6 @@ TEST_F(MicrosoftFilesPageHandlerTestForTrending,
 
   EXPECT_EQ(suggestions.size(), 0u);
   histogram_tester().ExpectBucketCount(kResponseResultHistogramName, 1, 1);
-}
-
-// Verifies that prefs are accurately set on dismissal and restoring of module.
-TEST_F(MicrosoftFilesPageHandlerTestForTrending, DismissAndRestoreModule) {
-  EXPECT_EQ(profile().GetPrefs()->GetTime(
-                prefs::kNtpMicrosoftFilesModuleLastDismissedTime),
-            base::Time());
-
-  handler().DismissModule();
-  EXPECT_EQ(profile().GetPrefs()->GetTime(
-                prefs::kNtpMicrosoftFilesModuleLastDismissedTime),
-            base::Time::Now());
-
-  handler().RestoreModule();
-  EXPECT_EQ(profile().GetPrefs()->GetTime(
-                prefs::kNtpMicrosoftFilesModuleLastDismissedTime),
-            base::Time());
 }
 
 TEST_F(MicrosoftFilesPageHandlerTestForFakeNonInsights,

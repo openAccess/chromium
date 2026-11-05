@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.customtabs;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.browser.flags.CustomTabProfileType.INCOGNITO;
 
 import android.app.Activity;
@@ -13,6 +12,7 @@ import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
 import org.chromium.chrome.browser.customtabs.content.CustomTabActivityNavigationController;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
@@ -23,6 +23,7 @@ import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tabmodel.IncognitoTabHost;
 import org.chromium.chrome.browser.tabmodel.IncognitoTabHostRegistry;
+import org.chromium.chrome.browser.tabmodel.IncognitoTabHostUtils;
 
 /**
  * Implements incognito tab host for the given instance of Custom Tab activity. This class exists
@@ -50,12 +51,23 @@ public class CustomTabIncognitoManager implements NativeInitObserver, DestroyObs
         mProfileProviderSupplier = profileProviderSupplier;
 
         lifecycleDispatcher.register(this);
+
+        // Only incognito popups opened by Chrome share the primary OTR profile; hold it from
+        // creation rather than from native init.
+        if (mIntentDataProvider.getCustomTabMode() == INCOGNITO
+                && mIntentDataProvider.getUiType() == CustomTabsUiType.POPUP
+                && mIntentDataProvider.isOpenedByChrome()) {
+            mIncognitoTabHost = new IncognitoCustomTabHost();
+            IncognitoTabHostRegistry.getInstance().register(mIncognitoTabHost);
+        }
     }
 
     @Override
     public void onFinishNativeInitialization() {
-        if (mIntentDataProvider.getCustomTabMode() == INCOGNITO) {
-            initializeIncognito();
+        if (mIntentDataProvider.getCustomTabMode() == INCOGNITO
+                && !ChromeFeatureList.sEnableAndroidEnterpriseScreenshotProtection.isEnabled()) {
+            new IncognitoCustomTabSnapshotController(
+                    mActivity, () -> mIntentDataProvider.getCustomTabMode() == INCOGNITO);
         }
     }
 
@@ -65,31 +77,26 @@ public class CustomTabIncognitoManager implements NativeInitObserver, DestroyObs
             IncognitoTabHostRegistry.getInstance().unregister(mIncognitoTabHost);
         }
 
-        Profile otrProfile = assumeNonNull(mProfileProviderSupplier.get()).getOffTheRecordProfile();
-        if (otrProfile != null) {
+        // Do not destroy the profile if the activity is just being recreated (e.g. on
+        // configuration change), because the tab and its profile will be reused.
+        if (!mActivity.isFinishing()) {
+            return;
+        }
+
+        ProfileProvider profileProvider = mProfileProviderSupplier.get();
+        if (profileProvider == null) return;
+        Profile otrProfile = profileProvider.getOffTheRecordProfile();
+        if (otrProfile != null
+                && (!otrProfile.isPrimaryOtrProfile()
+                        || (!IncognitoTabHostUtils.doIncognitoTabsExist()
+                                && !IncognitoTabHostUtils.isIncognitoTabModelActive()))) {
             ProfileManager.destroyWhenAppropriate(otrProfile);
-        }
-    }
-
-    private void initializeIncognito() {
-        if (mIntentDataProvider.isOpenedByChrome()) {
-            mIncognitoTabHost = new IncognitoCustomTabHost();
-            IncognitoTabHostRegistry.getInstance().register(mIncognitoTabHost);
-        }
-
-        maybeCreateIncognitoTabSnapshotController();
-    }
-
-    private void maybeCreateIncognitoTabSnapshotController() {
-        if (!ChromeFeatureList.sEnableAndroidEnterpriseScreenshotProtection.isEnabled()) {
-            new IncognitoCustomTabSnapshotController(
-                    mActivity, () -> mIntentDataProvider.getCustomTabMode() == INCOGNITO);
         }
     }
 
     /**
      * This class registers itself with {@link IncognitoTabHostRegistry} only if the Incognito
-     * custom tab was opened by Chrome.
+     * custom tab was opened by Chrome as a popup.
      */
     private class IncognitoCustomTabHost implements IncognitoTabHost {
         @Override

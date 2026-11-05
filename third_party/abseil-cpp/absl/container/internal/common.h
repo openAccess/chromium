@@ -22,6 +22,7 @@
 #include <tuple>
 #include <type_traits>
 
+#include "absl/base/config.h"
 #include "absl/meta/type_traits.h"
 #include "absl/types/optional.h"
 
@@ -88,6 +89,9 @@ struct KeyArg {
 template <>
 struct KeyArg<false> {
   // Not transparent. Always use `key_type`.
+  // TODO(ezb): use AddConstRefIfExpensiveToCopy for non-transparent key
+  // arguments. Also experiment with using it more widely within non-user-facing
+  // functions in raw_hash_set.
   template <typename K, typename key_type>
   using type = key_type;
 };

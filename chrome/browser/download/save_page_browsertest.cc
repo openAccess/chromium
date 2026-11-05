@@ -68,6 +68,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/shell_dialogs/fake_select_file_dialog.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -651,9 +652,9 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest,
 
   // Navigate, unblocking with new tab.
   GURL url = embedded_test_server()->GetURL("/save_page/b.htm");
-  NavigateToURLWithDisposition(incognito, url,
-                               WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                               ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
+  NavigateToURLWithDisposition(
+      incognito, url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
   // Save the page before completion.
   base::FilePath full_file_name, dir;
@@ -1336,7 +1337,7 @@ class SavePageOriginalVsSavedComparisonTest
     // See https://crbug.com/41450468.
     ASSERT_TRUE(
         ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,foo")));
-    chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+    chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
     EXPECT_TRUE(content::WaitForLoadStop(GetCurrentTab(browser())));
     DLOG(INFO) << "Verifying test expectations after history navigation...";
     AssertExpectationsAboutCurrentTab(expected_number_of_frames_in_saved_page,
@@ -1856,5 +1857,35 @@ IN_PROC_BROWSER_TEST_F(SavePageBrowserTest, SaveMHTMLWithDlp) {
 }
 
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+IN_PROC_BROWSER_TEST_F(SavePageBrowserTest,
+                       SavePageAsBlocksConcurrentFullscreen) {
+  NavigateToMockURL("a");
+  WebContents* web_contents = GetCurrentTab(browser());
+  auto request_fullscreen = [&]() {
+    return content::EvalJs(web_contents,
+                           "document.documentElement.requestFullscreen()"
+                           ".then(() => 'entered', () => 'rejected')");
+  };
+
+  SavePackageFilePicker::SetShouldPromptUser(true);
+  FakeSelectFileDialog::Factory* dialog_factory =
+      FakeSelectFileDialog::RegisterFactory();
+  base::ScopedClosureRunner reset_factory(
+      base::BindOnce([]() { ui::SelectFileDialog::SetFactory(nullptr); }));
+
+  base::RunLoop run_loop;
+  dialog_factory->SetOpenCallback(run_loop.QuitClosure());
+  chrome::SavePage(browser());
+  run_loop.Run();
+
+  EXPECT_EQ("rejected", request_fullscreen());
+  EXPECT_FALSE(web_contents->IsFullscreen());
+
+  ASSERT_NE(nullptr, dialog_factory->GetLastDialog());
+  dialog_factory->GetLastDialog()->CallFileSelectionCanceled();
+
+  EXPECT_EQ("entered", request_fullscreen());
+}
 
 }  // namespace

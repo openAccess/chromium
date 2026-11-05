@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_coordinator.h"
 
 #import "base/apple/foundation_util.h"
+#import "base/memory/weak_ptr.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_mock_clock_override.h"
@@ -12,7 +13,11 @@
 #import "base/time/time.h"
 #import "components/bookmarks/test/bookmark_test_helpers.h"
 #import "components/sync/test/test_sync_service.h"
+#import "components/tab_groups/tab_group_color.h"
+#import "components/tab_groups/tab_group_id.h"
+#import "components/tab_groups/tab_group_visual_data.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_model_factory.h"
+#import "ios/chrome/browser/bring_android_tabs/model/bring_android_tabs_to_ios_service_factory.h"
 #import "ios/chrome/browser/browser_view/ui_bundled/fake_browser_view_controller.h"
 #import "ios/chrome/browser/browser_view/ui_bundled/safe_area_provider.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_scene_agent.h"
@@ -24,20 +29,20 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/quick_delete_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
+#import "ios/chrome/browser/shared/public/commands/tab_groups_commands.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_browser_agent.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_coordinator_delegate.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_view_controller.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
 #import "ios/chrome/test/block_cleanup_test.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/scoped_key_window.h"
@@ -90,8 +95,7 @@ class TabGridCoordinatorTest : public BlockCleanupTest {
         IOSChromeTabRestoreServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(ios::BookmarkModelFactory::GetInstance(),
                               ios::BookmarkModelFactory::GetDefaultFactory());
     builder.AddTestingFactory(
@@ -99,6 +103,11 @@ class TabGridCoordinatorTest : public BlockCleanupTest {
         tab_groups::TabGroupSyncServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
+    builder.AddTestingFactory(
+        BringAndroidTabsToIOSServiceFactory::GetInstance(),
+        base::BindRepeating([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
+          return nullptr;
+        }));
     profile_ = std::move(builder).Build();
 
     scene_state_ = [[SceneState alloc] init];
@@ -110,18 +119,18 @@ class TabGridCoordinatorTest : public BlockCleanupTest {
     browser_ = std::make_unique<TestBrowser>(profile_.get(), scene_state_);
 
     // Set up SceneCommands mock.
-    id mock_application_handler = OCMProtocolMock(@protocol(SceneCommands));
+    mock_application_handler_ = OCMProtocolMock(@protocol(SceneCommands));
     CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
-    [dispatcher startDispatchingToTarget:mock_application_handler
+    [dispatcher startDispatchingToTarget:mock_application_handler_
                              forProtocol:@protocol(SceneCommands)];
 
     // Set up GeminiCommands mock.
-    id mock_gemini_handler = OCMProtocolMock(@protocol(GeminiCommands));
-    [dispatcher startDispatchingToTarget:mock_gemini_handler
+    mock_gemini_handler_ = OCMProtocolMock(@protocol(GeminiCommands));
+    [dispatcher startDispatchingToTarget:mock_gemini_handler_
                              forProtocol:@protocol(GeminiCommands)];
 
     // Set up QuickDeleteCommands mock.
-    id mock_quick_delete_handler_ =
+    mock_quick_delete_handler_ =
         OCMStrictProtocolMock(@protocol(QuickDeleteCommands));
     [dispatcher startDispatchingToTarget:mock_quick_delete_handler_
                              forProtocol:@protocol(QuickDeleteCommands)];
@@ -133,17 +142,17 @@ class TabGridCoordinatorTest : public BlockCleanupTest {
 
     AddAgentsToBrowser(incognito_browser_.get());
 
-    id mockSceneHandler = OCMProtocolMock(@protocol(SceneCommands));
+    mock_scene_handler_ = OCMProtocolMock(@protocol(SceneCommands));
     LayoutGuideSceneAgent* layout_guide_scene_agent =
         [[LayoutGuideSceneAgent alloc] init];
     [scene_state_ addAgent:layout_guide_scene_agent];
 
-    IncognitoReauthSceneAgent* reauth_agent = [[IncognitoReauthSceneAgent alloc]
-        initWithReauthModule:[[ReauthenticationModule alloc] init]];
+    IncognitoReauthSceneAgent* reauth_agent =
+        [[IncognitoReauthSceneAgent alloc] init];
     [scene_state_ addAgent:reauth_agent];
 
     coordinator_ = [[TabGridCoordinator alloc]
-        initWithSceneCommandsEndpoint:mockSceneHandler
+        initWithSceneCommandsEndpoint:mock_scene_handler_
                        regularBrowser:browser_.get()
                       inactiveBrowser:browser_->CreateInactiveBrowser()
                      incognitoBrowser:incognito_browser_.get()];
@@ -172,9 +181,7 @@ class TabGridCoordinatorTest : public BlockCleanupTest {
         incognito_safe_area_provider_;
   }
 
-  void TearDown() override {
-    [coordinator_ stop];
-  }
+  void TearDown() override { [coordinator_ stop]; }
 
   UIViewController* GetViewController() { return coordinator_.viewController; }
 
@@ -185,6 +192,14 @@ class TabGridCoordinatorTest : public BlockCleanupTest {
 
   // Browser for the coordinator.
   std::unique_ptr<Browser> browser_;
+
+  // Command handler mocks. Kept alive by the fixture because the dispatcher
+  // only holds weak references to its targets.
+  id mock_application_handler_;
+  id mock_gemini_handler_;
+  id mock_quick_delete_handler_;
+  // `SceneCommands` endpoint registered on the coordinator's own dispatcher.
+  id mock_scene_handler_;
 
   // Incognito browser for the coordinator.
   std::unique_ptr<Browser> incognito_browser_;
@@ -238,6 +253,20 @@ TEST_F(TabGridCoordinatorTest, BrowserLayoutViewControllerBeforeTabSwitcher) {
         return GetViewController() == coordinator_.activeViewController;
       });
   EXPECT_TRUE(tab_switcher_active);
+}
+
+// Test that on initial presentation, `showBrowserLayoutViewController` invokes
+// the completion block.
+TEST_F(TabGridCoordinatorTest, InitialShowBrowserLayoutInvokesCompletion) {
+  layout_view_controller_.browserViewController = normal_tab_view_controller_;
+  __block BOOL completion_called = NO;
+  [coordinator_ showBrowserLayoutViewController:layout_view_controller_
+                                      incognito:NO
+                                     completion:^{
+                                       completion_called = YES;
+                                     }];
+  EXPECT_TRUE(completion_called);
+  EXPECT_EQ(normal_tab_view_controller_, coordinator_.activeViewController);
 }
 
 // Tests that it is possible to set a BrowserLayoutViewController after setting
@@ -413,6 +442,44 @@ TEST_F(TabGridCoordinatorTest, ActivityReporting) {
 
   [coordinator_ setValue:nil forKey:@"activityReporter"];
   [mockInstance stopMocking];
+}
+
+// Tests that transitioning to the regular tab grid from an active incognito
+// browser layout view controller completes cleanly without issues.
+TEST_F(TabGridCoordinatorTest, CrossModeTransitionFromIncognitoToRegular) {
+  [coordinator_ showTabGridPage:TabGridPageIncognitoTabs];
+  incognito_layout_view_controller_.browserViewController =
+      incognito_tab_view_controller_;
+  [coordinator_
+      showBrowserLayoutViewController:incognito_layout_view_controller_
+                            incognito:YES
+                           completion:nil];
+  EXPECT_FALSE(coordinator_.tabGridActive);
+
+  [coordinator_ showTabGridPage:TabGridPageRegularTabs];
+  EXPECT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool() {
+        return coordinator_.tabGridActive;
+      }));
+}
+
+// Tests that requesting the recent activity of a tab group that has already
+// been destroyed doesn't present anything.
+TEST_F(TabGridCoordinatorTest, ShowRecentActivityForDestroyedGroup) {
+  auto tab_group = std::make_unique<TabGroup>(
+      tab_groups::TabGroupId::GenerateNew(),
+      tab_groups::TabGroupVisualData(u"Group",
+                                     tab_groups::TabGroupColorId::kGrey));
+  base::WeakPtr<const TabGroup> weak_tab_group = tab_group->GetWeakPtr();
+  tab_group.reset();
+  ASSERT_FALSE(weak_tab_group);
+  ASSERT_FALSE(GetViewController().presentedViewController);
+
+  id<TabGroupsCommands> tab_groups_handler =
+      HandlerForProtocol(browser_->GetCommandDispatcher(), TabGroupsCommands);
+  [tab_groups_handler showRecentActivityForGroup:weak_tab_group];
+
+  EXPECT_FALSE(GetViewController().presentedViewController);
 }
 
 }  // namespace

@@ -21,37 +21,29 @@ constexpr base::TimeDelta kReminderNotificationsDefaultOffset = base::Hours(24);
 
 namespace send_tab_to_self {
 
-BASE_FEATURE(kSendTabToSelfEnableNotificationTimeOut,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kSendTabToSelfPropagateFormFields,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kSendTabToSelfPropagateScrollPosition,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kSendTabToSelfImprovedLastActiveLabels,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kSendTabToSelfPropagateNavigationHistory,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kSendTabToSelfAutoOpen, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kSendTabToSelfSupportAutoOpenInTabGrid,
              base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
 
-BASE_FEATURE(kSendTabToSelfEnhancedDesktopUI,
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// Guarded to Windows, Mac, and Linux because it relies on
+// `switches::kCrossDeviceSigninFromDesktopUrl` in
+// `components/signin/public/base/signin_switches.h`.
+BASE_FEATURE(kSendTabToSelfNoTargetDeviceQrCode,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kSendTabToSelfPostSendToast, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kSendTabToSelfExtraEntryPoints, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 BASE_FEATURE(kSendTabToSelfEnhancedDesktopUIv2,
-             "SendTabToSelfEnhancedDesktopUIv2",
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSendTabToSelfSubmenuSigninPromos,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSendTabToSelfAnchorPromosToProfilePill,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSendTabToSelfMultiTabShare, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -61,22 +53,14 @@ BASE_FEATURE(kSendTabToSelfGesture, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSendTabToSelfOpenNativeApp, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kSendTabToSelfRecordSnackbarActivation,
+BASE_FEATURE(kSendTabToSelfSwitchToParentOnBack,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
-
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-BASE_FEATURE(kSendTabToSelfEnhancedBottomsheet,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 #if BUILDFLAG(IS_IOS)
 
 BASE_FEATURE(kSendTabToSelfIOSShareSheetDeviceList,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kSendTabToSelfIOSLimitToRegularBrowsers,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIOSTabReminders, base::FEATURE_DISABLED_BY_DEFAULT);
 

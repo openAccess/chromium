@@ -384,6 +384,16 @@ class CONTENT_EXPORT MediaStreamManager
   void NotifyDevicesChanged(blink::mojom::MediaDeviceType stream_type,
                             const blink::WebMediaDeviceInfoArray& devices);
 
+  // Updates the audio or video input devices cached by MediaCaptureDevicesImpl.
+  // NotifyDevicesChanged() calls this before notifying observers of a
+  // device-list change.
+  // MediaDevicesManager also invokes it through a callback when a
+  // `kDevicesWithCapabilities` enumeration changes only camera control
+  // support for the existing devices.
+  void UpdateMediaCaptureDevicesCache(
+      blink::mojom::MediaDeviceType device_type,
+      const blink::WebMediaDeviceInfoArray& devices);
+
   // This method is called when an audio or video device is removed. It makes
   // sure all MediaStreams that use a removed device are stopped and that the
   // render process is notified. Must be called on the IO thread.
@@ -482,9 +492,6 @@ class CONTENT_EXPORT MediaStreamManager
       mojo::PendingReceiver<media::mojom::VideoCaptureHost> receiver);
   size_t num_video_capture_hosts() const { return video_capture_hosts_.size(); }
 
-  std::optional<url::Origin> GetOriginByVideoSessionId(
-      const base::UnguessableToken& session_id);
-
   bool IsSessionAllowedOnLockScreen(const base::UnguessableToken& session_id);
 
   // Validates that the renderer-supplied `session_id` is authorized for use by
@@ -518,6 +525,10 @@ class CONTENT_EXPORT MediaStreamManager
   FRIEND_TEST_ALL_PREFIXES(MediaStreamManagerTest, DesktopCaptureDeviceChanged);
   FRIEND_TEST_ALL_PREFIXES(MediaStreamManagerTest,
                            DesktopCaptureDeviceChangeDeniedThenCancel);
+  FRIEND_TEST_ALL_PREFIXES(MediaStreamManagerTest,
+                           DesktopCaptureCancelDuringPendingChangeSource);
+  FRIEND_TEST_ALL_PREFIXES(MediaStreamManagerTest,
+                           DesktopCaptureStopDeviceDuringPendingChangeSource);
   FRIEND_TEST_ALL_PREFIXES(MediaStreamManagerTest,
                            MultiCaptureOnMediaStreamUIWindowId);
   FRIEND_TEST_ALL_PREFIXES(MediaStreamManagerTest,

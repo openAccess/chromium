@@ -10,12 +10,14 @@
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/startup/startup_tab.h"
 #include "chrome/browser/ui/tabs/pinned_tab_test_utils.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
 
 using PinnedTabCodecBrowserTest = InProcessBrowserTest;
@@ -25,7 +27,7 @@ IN_PROC_BROWSER_TEST_F(PinnedTabCodecBrowserTest, NoPinnedTabs) {
   GURL url1("https://www.google.com");
 
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   PinnedTabCodec::WritePinnedTabs(browser()->GetProfile());
@@ -41,10 +43,10 @@ IN_PROC_BROWSER_TEST_F(PinnedTabCodecBrowserTest, PinnedAndNonPinned) {
   GURL url1("https://www.google.com");
   GURL url2("https://www.google.com/2");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url1, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), url1, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Close about:blank since we don't need it.

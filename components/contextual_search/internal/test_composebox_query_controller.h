@@ -79,6 +79,7 @@ class TestComposeboxQueryController : public ComposeboxQueryController {
   using ComposeboxQueryController::ClearClusterInfo;
   using ComposeboxQueryController::
       CreateFileUploadRequestProtoWithImageDataAndContinue;
+  using ComposeboxQueryController::HandleUploadResponse;
 
   // Mutators.
   void set_fake_cluster_info_response(
@@ -100,14 +101,40 @@ class TestComposeboxQueryController : public ComposeboxQueryController {
         set_next_cluster_info_request_should_return_error;
   }
 
+  void set_all_cluster_info_requests_should_return_unauthorized(
+      bool all_cluster_info_requests_should_return_unauthorized) {
+    all_cluster_info_requests_should_return_unauthorized_ =
+        all_cluster_info_requests_should_return_unauthorized;
+  }
+
+  void set_reject_requests_with_auth_header_with_401(bool reject) {
+    reject_requests_with_auth_header_with_401_ = reject;
+  }
+
   void set_next_file_upload_request_should_return_error(
       bool set_next_file_upload_request_should_return_error) {
     next_file_upload_request_should_return_error_ =
         set_next_file_upload_request_should_return_error;
   }
 
+  void set_disable_file_upload_response(bool disable) {
+    disable_file_upload_response_ = disable;
+  }
+
+  void set_fake_server_response_net_error_code(int net_error_code) {
+    fake_server_response_net_error_code_ = net_error_code;
+  }
+
+  void set_fake_server_response_http_status_code(int http_status_code) {
+    fake_server_response_http_status_code_ = http_status_code;
+  }
+
   void set_enable_cluster_info_ttl(bool enable_cluster_info_ttl) {
     enable_cluster_info_ttl_ = enable_cluster_info_ttl;
+  }
+
+  void set_is_google_chrome_api_key_used(bool is_google_chrome_api_key_used) {
+    is_google_chrome_api_key_used_ = is_google_chrome_api_key_used;
   }
 
   void set_on_query_controller_state_changed_callback(
@@ -179,6 +206,12 @@ class TestComposeboxQueryController : public ComposeboxQueryController {
     return last_sent_cors_exempt_headers_;
   }
 
+  // Gets the history of request headers sent across all requests.
+  const std::vector<std::vector<std::string>>& sent_request_headers_history()
+      const {
+    return sent_request_headers_history_;
+  }
+
   // Gets the client context used for the requests.
   lens::LensOverlayClientContext client_context() const {
     return ComposeboxQueryController::CreateClientContext();
@@ -219,6 +252,8 @@ class TestComposeboxQueryController : public ComposeboxQueryController {
 
   void ResetRequestClusterInfoState() override;
 
+  bool IsGoogleChromeApiKeyUsed() const override;
+
   // The fake response to return for cluster info requests.
   lens::LensOverlayServerClusterInfoResponse fake_cluster_info_response_;
 
@@ -237,13 +272,32 @@ class TestComposeboxQueryController : public ComposeboxQueryController {
   // If true, the next cluster info request will return an error.
   bool next_cluster_info_request_should_return_error_ = false;
 
+  // If true, all cluster info requests will return HTTP 401 Unauthorized.
+  bool all_cluster_info_requests_should_return_unauthorized_ = false;
+
+  // If true, any request containing an Authorization header will return HTTP
+  // 401 Unauthorized.
+  bool reject_requests_with_auth_header_with_401_ = false;
+
   // If true, the next file upload request will return an error.
   bool next_file_upload_request_should_return_error_ = false;
+
+  // If true, file upload requests will not respond.
+  bool disable_file_upload_response_ = false;
+
+  // The net error code to return in fake responses.
+  int fake_server_response_net_error_code_ = 0;
+
+  // The HTTP status code to return in fake responses, if explicitly set.
+  std::optional<int> fake_server_response_http_status_code_;
 
   // If true, the cluster info will expire when the TTL expires as normal.
   // Set to false by default to prevent flakiness in tests that expect the
   // cluster info to be available.
   bool enable_cluster_info_ttl_;
+
+  // Whether official Google Chrome API keys are simulated as being used.
+  bool is_google_chrome_api_key_used_ = true;
 
   // The last url for which a fetch request was sent by the query controller.
   GURL last_sent_fetch_url_;
@@ -264,6 +318,9 @@ class TestComposeboxQueryController : public ComposeboxQueryController {
 
   // The last sent cors exempt headers.
   std::vector<std::string> last_sent_cors_exempt_headers_;
+
+  // History of request headers sent across all requests.
+  std::vector<std::vector<std::string>> sent_request_headers_history_;
 };
 
 }  // namespace contextual_search

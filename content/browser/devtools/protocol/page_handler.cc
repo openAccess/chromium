@@ -19,6 +19,7 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/process/process_handle.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
@@ -29,6 +30,7 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/timer/timer.h"
 #include "base/trace_event/trace_event.h"
+#include "base/types/optional_ref.h"
 #include "components/back_forward_cache/disabled_reason_id.h"
 #include "content/browser/back_forward_cache/back_forward_cache_can_store_document_result.h"
 #include "content/browser/back_forward_cache/back_forward_cache_disable.h"
@@ -64,8 +66,9 @@
 #include "content/public/common/result_codes.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/common/url_utils.h"
+#include "media/base/limits.h"
 #include "net/base/filename_util.h"
-#include "third_party/blink/public/common/manifest/manifest_util.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/mojom/back_forward_cache_not_restored_reasons.mojom.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
 #include "third_party/blink/public/mojom/frame/back_forward_cache_controller.mojom.h"
@@ -125,9 +128,10 @@ std::optional<std::vector<uint8_t>> EncodeBitmapAsJpeg(int quality,
 }
 
 std::optional<std::vector<uint8_t>> EncodeBitmapAsWebp(int quality,
+                                                       int method,
                                                        const SkBitmap& bitmap) {
   TRACE_EVENT0("devtools", "EncodeBitmapAsWebp");
-  return gfx::WebpCodec::Encode(bitmap, quality);
+  return gfx::WebpCodec::Encode(bitmap, quality, method);
 }
 
 std::variant<protocol::Response, BitmapEncoder>
@@ -144,9 +148,25 @@ GetEncoder(const std::string& format, int quality, bool optimize_for_speed) {
     return base::BindRepeating(&EncodeBitmapAsJpeg, quality);
   }
   if (format == protocol::Page::CaptureScreenshot::FormatEnum::Webp) {
-    return base::BindRepeating(&EncodeBitmapAsWebp, quality);
+    // Quality 100 is lossless. There, method 1 is several times smaller than
+    // method 0 at a small cost. For lossy, method 2 takes about half the time
+    // of method 3 and is a few percent bigger. Higher methods are much slower
+    // for little or no gain.
+    int method;
+    if (quality == 100) {
+      method = optimize_for_speed ? 0 : 1;
+    } else {
+      method = optimize_for_speed ? 2 : 3;
+    }
+    return base::BindRepeating(&EncodeBitmapAsWebp, quality, method);
   }
   return protocol::Response::InvalidParams("Invalid image format");
+}
+
+// Returns the time at which |frame| was expected to be displayed, which the
+// capturer records as |reference_time|.
+base::TimeTicks ScreencastFrameTimestamp(const media::VideoFrame& frame) {
+  return frame.metadata().reference_time.value_or(base::TimeTicks::Now());
 }
 
 std::unique_ptr<Page::ScreencastFrameMetadata> BuildScreencastFrameMetadata(
@@ -154,10 +174,14 @@ std::unique_ptr<Page::ScreencastFrameMetadata> BuildScreencastFrameMetadata(
     float device_scale_factor,
     float page_scale_factor,
     const gfx::PointF& root_scroll_offset,
-    float top_controls_visible_height) {
+    float top_controls_visible_height,
+    base::TimeTicks timestamp) {
   if (surface_size.IsEmpty() || device_scale_factor == 0) {
     return nullptr;
   }
+
+  const base::Time wall_timestamp =
+      base::Time::Now() - (base::TimeTicks::Now() - timestamp);
 
   const gfx::SizeF content_size_dip =
       gfx::ScaleSize(gfx::SizeF(surface_size), 1 / device_scale_factor);
@@ -173,7 +197,8 @@ std::unique_ptr<Page::ScreencastFrameMetadata> BuildScreencastFrameMetadata(
           .SetDeviceHeight(content_size_dip.height())
           .SetScrollOffsetX(root_scroll_offset_dip.x())
           .SetScrollOffsetY(root_scroll_offset_dip.y())
-          .SetTimestamp(base::Time::Now().InSecondsFSinceUnixEpoch())
+          .SetTimestamp(wall_timestamp.InSecondsFSinceUnixEpoch())
+          .SetMonotonicTimestamp(timestamp.since_origin().InSecondsF())
           .Build();
   return page_metadata;
 }
@@ -227,13 +252,14 @@ bool CanExecuteGlobalCommands(
 void GotManifest(std::optional<std::string> manifest_id,
                  std::unique_ptr<PageHandler::GetAppManifestCallback> callback,
                  const GURL& manifest_url,
-                 ::blink::mojom::ManifestPtr input_manifest,
+                 base::optional_ref<const blink::Manifest> input_manifest,
                  blink::mojom::ManifestDebugInfoPtr debug_info) {
   if (manifest_id &&
-      manifest_id.value() != input_manifest->id.possibly_invalid_spec()) {
+      (!input_manifest ||
+       manifest_id.value() != input_manifest->id().possibly_invalid_spec())) {
     std::move(callback)->sendFailure(protocol::Response::InvalidParams(
         std::string("Page manifest id ") +
-        input_manifest->id.possibly_invalid_spec() +
+        (input_manifest ? input_manifest->id().possibly_invalid_spec() : "") +
         " does not match the input " + manifest_id.value()));
     return;
   }
@@ -253,6 +279,14 @@ void GotManifest(std::optional<std::string> manifest_id,
         failed = true;
       }
     }
+  }
+
+  if (!input_manifest) {
+    std::move(callback)->sendSuccess(
+        manifest_url.possibly_invalid_spec(), std::move(errors),
+        failed ? std::optional<std::string>() : debug_info->raw_manifest,
+        /*parsed=*/nullptr, Page::WebAppManifest::Create().Build());
+    return;
   }
 
   auto convert_icon = [](const blink::Manifest::ImageResource& input_icon)
@@ -278,31 +312,32 @@ void GotManifest(std::optional<std::string> manifest_id,
   };
 
   auto manifest = Page::WebAppManifest::Create();
-  if (input_manifest->background_color.has_value()) {
+  if (input_manifest->background_color().has_value()) {
     manifest.SetBackgroundColor(color_utils::SkColorToRgbaString(
-        static_cast<SkColor>(input_manifest->background_color.value())));
+        input_manifest->background_color().value()));
   }
-  if (input_manifest->description) {
+  if (input_manifest->description()) {
     manifest.SetDescription(
-        base::UTF16ToUTF8(input_manifest->description.value()));
+        base::UTF16ToUTF8(input_manifest->description().value()));
   }
   // TODO(crbug.com/331214986): Fill the WebAppManifest.dir (direction).
-  manifest.SetDisplay(base::ToString(input_manifest->display));
-  if (!input_manifest->display_override.empty()) {
+  manifest.SetDisplay(base::ToString(input_manifest->display()));
+  if (!input_manifest->display_override().empty()) {
     auto display_overrides = std::make_unique<protocol::Array<std::string>>();
-    for (const auto& display_override : input_manifest->display_override) {
+    for (const auto& display_override : input_manifest->display_override()) {
       display_overrides->push_back(base::ToString(display_override.display()));
     }
-    // TODO(crbug.com/469012990): Extend CDP for display override URL patterns.
+    // TODO(crbug.com/469012990): Extend CDP for display override URL
+    // patterns.
     manifest.SetDisplayOverrides(std::move(display_overrides));
   }
-  if (!input_manifest->file_handlers.empty()) {
+  if (!input_manifest->file_handlers().empty()) {
     auto file_handlers = std::make_unique<protocol::Array<Page::FileHandler>>();
-    for (const auto& input_file_handler : input_manifest->file_handlers) {
+    for (const auto& input_file_handler : input_manifest->file_handlers()) {
       auto file_handler = Page::FileHandler::Create();
-      if (!input_file_handler->accept.empty()) {
+      if (!input_file_handler.accept.empty()) {
         auto accepts = std::make_unique<protocol::Array<Page::FileFilter>>();
-        for (const auto& input_accept : input_file_handler->accept) {
+        for (const auto& input_accept : input_file_handler.accept) {
           auto accept = Page::FileFilter::Create();
           accept.SetName(base::UTF16ToUTF8(input_accept.first));
           if (!input_accept.second.empty()) {
@@ -318,71 +353,72 @@ void GotManifest(std::optional<std::string> manifest_id,
       }
       file_handlers->push_back(
           file_handler
-              .SetAction(input_file_handler->action.possibly_invalid_spec())
-              .SetName(base::UTF16ToUTF8(input_file_handler->name))
-              .SetLaunchType(base::ToString(input_file_handler->launch_type))
+              .SetAction(input_file_handler.action.possibly_invalid_spec())
+              .SetName(base::UTF16ToUTF8(input_file_handler.name))
+              .SetLaunchType(base::ToString(input_file_handler.launch_type))
               .Build());
     }
   }
-  if (!input_manifest->icons.empty()) {
-    manifest.SetIcons(convert_icons(input_manifest->icons));
+  if (!input_manifest->icons().empty()) {
+    manifest.SetIcons(convert_icons(input_manifest->icons()));
   }
-  manifest.SetId(input_manifest->id.possibly_invalid_spec());
+  manifest.SetId(input_manifest->id().possibly_invalid_spec());
   // TODO(crbug.com/331214986): Fill the WebAppManifest.lang.
-  if (input_manifest->launch_handler) {
+  if (input_manifest->launch_handler()) {
     manifest.SetLaunchHandler(
         Page::LaunchHandler::Create()
             .SetClientMode(base::ToString(
-                input_manifest->launch_handler.value().parsed_client_mode()))
+                input_manifest->launch_handler()->parsed_client_mode()))
             .Build());
   }
-  if (input_manifest->name) {
-    manifest.SetName(base::UTF16ToUTF8(input_manifest->name.value()));
+  if (input_manifest->name()) {
+    manifest.SetName(base::UTF16ToUTF8(input_manifest->name().value()));
   }
-  manifest.SetOrientation(base::ToString(input_manifest->orientation));
+  manifest.SetOrientation(base::ToString(input_manifest->orientation()));
   manifest.SetPreferRelatedApplications(
-      input_manifest->prefer_related_applications);
-  if (!input_manifest->protocol_handlers.empty()) {
+      input_manifest->prefer_related_applications());
+  if (!input_manifest->protocol_handlers().empty()) {
     auto protocol_handlers =
         std::make_unique<protocol::Array<Page::ProtocolHandler>>();
     for (const auto& input_protocol_handler :
-         input_manifest->protocol_handlers) {
+         input_manifest->protocol_handlers()) {
       protocol_handlers->push_back(
           Page::ProtocolHandler::Create()
-              .SetProtocol(base::UTF16ToUTF8(input_protocol_handler->protocol))
-              .SetUrl(input_protocol_handler->url.possibly_invalid_spec())
+              .SetProtocol(base::UTF16ToUTF8(input_protocol_handler.protocol))
+              .SetUrl(input_protocol_handler.url.possibly_invalid_spec())
               .Build());
     }
     manifest.SetProtocolHandlers(std::move(protocol_handlers));
   }
-  if (!input_manifest->scope_extensions.empty()) {
+  if (!input_manifest->scope_extensions().empty()) {
     auto scope_extensions =
         std::make_unique<protocol::Array<Page::ScopeExtension>>();
-    for (const auto& input_scope_extension : input_manifest->scope_extensions) {
+    for (const auto& input_scope_extension :
+         input_manifest->scope_extensions()) {
       scope_extensions->push_back(
           Page::ScopeExtension::Create()
-              .SetOrigin(input_scope_extension->origin.Serialize())
-              .SetHasOriginWildcard(input_scope_extension->has_origin_wildcard)
+              .SetOrigin(input_scope_extension.origin.Serialize())
+              .SetHasOriginWildcard(input_scope_extension.has_origin_wildcard)
               .Build());
     }
     manifest.SetScopeExtensions(std::move(scope_extensions));
   }
-  if (!input_manifest->screenshots.empty()) {
+  if (!input_manifest->screenshots().empty()) {
     auto screenshots = std::make_unique<protocol::Array<Page::Screenshot>>();
-    for (const auto& input_screenshot : input_manifest->screenshots) {
+    for (const auto& input_screenshot : input_manifest->screenshots()) {
       auto screenshot = Page::Screenshot::Create();
-      if (input_screenshot->label) {
-        screenshot.SetLabel(base::UTF16ToUTF8(input_screenshot->label.value()));
+      if (input_screenshot.label) {
+        screenshot.SetLabel(base::UTF16ToUTF8(input_screenshot.label.value()));
       }
       screenshots->push_back(
-          screenshot.SetImage(convert_icon(input_screenshot->image))
-              .SetFormFactor(base::ToString(input_screenshot->form_factor))
+          screenshot.SetImage(convert_icon(input_screenshot.image))
+              .SetFormFactor(base::ToString(input_screenshot.form_factor))
               .Build());
     }
     manifest.SetScreenshots(std::move(screenshots));
   }
-  if (input_manifest->share_target) {
-    const auto& input_share_target = input_manifest->share_target.value();
+  if (input_manifest->share_target()) {
+    const auto& input_share_target = input_manifest->share_target().value();
     auto share_target = Page::ShareTarget::Create();
     if (input_share_target.params.title) {
       share_target.SetTitle(
@@ -398,16 +434,16 @@ void GotManifest(std::optional<std::string> manifest_id,
     }
     manifest.SetShareTarget(
         share_target
-            .SetAction(
-                input_manifest->share_target->action.possibly_invalid_spec())
-            .SetMethod(base::ToString(input_manifest->share_target->method))
-            .SetEnctype(base::ToString(input_manifest->share_target->action))
+            .SetAction(input_share_target.action.possibly_invalid_spec())
+            .SetMethod(base::ToString(input_share_target.method))
+            .SetEnctype(base::ToString(input_share_target.action))
             .Build());
   }
-  if (!input_manifest->related_applications.empty()) {
+  if (!input_manifest->related_applications().empty()) {
     auto related_apps =
         std::make_unique<protocol::Array<Page::RelatedApplication>>();
-    for (const auto& input_related_app : input_manifest->related_applications) {
+    for (const auto& input_related_app :
+         input_manifest->related_applications()) {
       auto related_app = Page::RelatedApplication::Create();
       if (input_related_app.id) {
         related_app.SetId(base::UTF16ToUTF8(input_related_app.id.value()));
@@ -418,10 +454,10 @@ void GotManifest(std::optional<std::string> manifest_id,
     }
     manifest.SetRelatedApplications(std::move(related_apps));
   }
-  manifest.SetScope(input_manifest->scope.possibly_invalid_spec());
-  if (!input_manifest->shortcuts.empty()) {
+  manifest.SetScope(input_manifest->scope().possibly_invalid_spec());
+  if (!input_manifest->shortcuts().empty()) {
     auto shortcuts = std::make_unique<protocol::Array<Page::Shortcut>>();
-    for (const auto& input_shortcut : input_manifest->shortcuts) {
+    for (const auto& input_shortcut : input_manifest->shortcuts()) {
       shortcuts->push_back(
           Page::Shortcut::Create()
               .SetName(base::UTF16ToUTF8(input_shortcut.name))
@@ -430,18 +466,16 @@ void GotManifest(std::optional<std::string> manifest_id,
     }
     manifest.SetShortcuts(std::move(shortcuts));
   }
-  manifest.SetStartUrl(input_manifest->start_url.possibly_invalid_spec());
-  if (input_manifest->theme_color.has_value()) {
+  manifest.SetStartUrl(input_manifest->start_url().possibly_invalid_spec());
+  if (input_manifest->theme_color().has_value()) {
     manifest.SetThemeColor(color_utils::SkColorToRgbaString(
-        static_cast<SkColor>(input_manifest->theme_color.value())));
+        input_manifest->theme_color().value()));
   }
 
-  std::unique_ptr<Page::AppManifestParsedProperties> parsed;
-  if (!blink::IsEmptyManifest(input_manifest)) {
-    parsed = Page::AppManifestParsedProperties::Create()
-                 .SetScope(input_manifest->scope.possibly_invalid_spec())
-                 .Build();
-  }
+  std::unique_ptr<Page::AppManifestParsedProperties> parsed =
+      Page::AppManifestParsedProperties::Create()
+          .SetScope(input_manifest->scope().possibly_invalid_spec())
+          .Build();
 
   std::move(callback)->sendSuccess(
       manifest_url.possibly_invalid_spec(), std::move(errors),
@@ -523,7 +557,7 @@ PageHandler::PageHandler(
   video_consumer_ = std::make_unique<DevToolsVideoConsumer>(base::BindRepeating(
       &PageHandler::OnFrameFromVideoConsumer, weak_factory_.GetWeakPtr()));
   video_consumer_->SetFormat(kScreencastPixelFormat);
-  DCHECK(emulation_handler_);
+  CHECK(emulation_handler_, base::NotFatalUntil::M159);
 }
 
 PageHandler::~PageHandler() = default;
@@ -591,7 +625,7 @@ void PageHandler::RenderWidgetHostVisibilityChanged(
 }
 
 void PageHandler::RenderWidgetHostDestroyed(RenderWidgetHost* widget_host) {
-  DCHECK(observation_.IsObservingSource(widget_host));
+  CHECK(observation_.IsObservingSource(widget_host), base::NotFatalUntil::M159);
   observation_.Reset();
 }
 
@@ -619,6 +653,8 @@ void PageHandler::DidRunJavaScriptDialog(const GURL& url,
   if (!enabled_) {
     return;
   }
+  // TODO(crbug.com/571032889): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(pending_dialog_.is_null());
   pending_dialog_ = std::move(callback);
   std::string type = Page::DialogTypeEnum::Alert;
@@ -641,6 +677,8 @@ void PageHandler::DidRunBeforeUnloadConfirm(
   if (!enabled_) {
     return;
   }
+  // TODO(crbug.com/573951894): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(pending_dialog_.is_null());
   pending_dialog_ = std::move(callback);
   frontend_->JavascriptDialogOpening(url.spec(), frame_id.ToString(),
@@ -671,11 +709,17 @@ Response PageHandler::Enable(
     FrameTreeNode* frame_tree_node = host_->frame_tree_node();
     NavigationRequest* navigation_request =
         host_->frame_tree_node()->navigation_request();
+    // A client that is not allowed to navigate the page to a URL must not
+    // learn it either (see GetNavigationHistory()). Redact the URL rather
+    // than omitting the event, so that navigation bookkeeping in clients
+    // keeps working.
+    const GURL& pending_url = navigation_request->common_params().url;
+    const bool may_disclose = !CheckNavigationAllowed(pending_url).IsError();
     frontend_->FrameStartedNavigating(
         frame_tree_node->current_frame_host()
             ->devtools_frame_token()
             .ToString(),
-        navigation_request->common_params().url.spec(),
+        may_disclose ? pending_url.spec() : std::string(),
         navigation_request->devtools_navigation_token().ToString(),
         GetFrameStartedNavigatingNavigationTypeString(
             navigation_request->common_params().navigation_type));
@@ -694,6 +738,8 @@ Response PageHandler::Disable() {
   if (!pending_dialog_.is_null()) {
     ResponseOrWebContents result = GetWebContentsForTopLevelActiveFrame();
     // Only a top level frame can have a dialog.
+    // TODO(crbug.com/558971359): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(std::holds_alternative<WebContentsImpl*>(result));
     WebContentsImpl* web_contents = std::get<WebContentsImpl*>(result);
     // Leave dialog hanging if there is a manager that can take care of it,
@@ -927,6 +973,47 @@ void DispatchNavigateCallback(
 
 }  // namespace
 
+Response PageHandler::CheckNavigationAllowed(const GURL& url) {
+  CHECK(host_);
+
+  GURL inner_url = url;
+  if (url.SchemeIs(content::kViewSourceScheme)) {
+    inner_url = GURL(url.GetContent());
+  }
+
+  bool is_file = inner_url.SchemeIsFile();
+#if BUILDFLAG(IS_CHROMEOS)
+  // The "externalfile" scheme is ChromeOS-specific.
+  is_file |= inner_url.SchemeIs(content::kExternalFileScheme);
+#endif
+
+  if (is_file && !may_read_local_files_) {
+    return Response::ServerError("Navigating to local URL is not allowed");
+  }
+
+  // chrome-untrusted:// WebUIs might perform high-privileged actions on
+  // navigation, disallow navigation to them unless the client is trusted.
+  if ((inner_url.SchemeIs(kChromeUIUntrustedScheme) ||
+       inner_url.SchemeIs(kChromeDevToolsScheme)) &&
+      !is_trusted_) {
+    return Response::ServerError(
+        "Navigating to a URL with a privileged scheme is not allowed");
+  }
+
+  if (!session()->GetClient()->MayAttachToURL(url,
+                                              host_->web_ui() != nullptr)) {
+    url::Origin origin = url::Origin::Create(url);
+    if (!origin.scheme().empty() &&
+        origin.scheme() != content::kChromeUIScheme &&
+        origin.scheme() != content::kChromeUIUntrustedScheme &&
+        origin.scheme() != content::kChromeDevToolsScheme) {
+      return Response::ServerError("Not allowed");
+    }
+  }
+
+  return Response::Success();
+}
+
 void PageHandler::Navigate(const std::string& url,
                            std::optional<std::string> referrer,
                            std::optional<std::string> maybe_transition_type,
@@ -940,48 +1027,15 @@ void PageHandler::Navigate(const std::string& url,
     return;
   }
 
-  GURL inner_url = gurl;
-  if (gurl.SchemeIs(content::kViewSourceScheme)) {
-    inner_url = GURL(gurl.GetContent());
-  }
-
-  bool is_file = inner_url.SchemeIsFile();
-#if BUILDFLAG(IS_CHROMEOS)
-  // The "externalfile" scheme is ChromeOS-specific.
-  is_file |= inner_url.SchemeIs(content::kExternalFileScheme);
-#endif
-
-  if (is_file && !may_read_local_files_) {
-    callback->sendFailure(
-        Response::ServerError("Navigating to local URL is not allowed"));
-    return;
-  }
-
   if (!host_) {
     callback->sendFailure(Response::InternalError());
     return;
   }
 
-  // chrome-untrusted:// WebUIs might perform high-priviledged actions on
-  // navigation, disallow navigation to them unless the client is trusted.
-  if ((inner_url.SchemeIs(kChromeUIUntrustedScheme) ||
-       inner_url.SchemeIs(kChromeDevToolsScheme)) &&
-      !is_trusted_) {
-    callback->sendFailure(Response::ServerError(
-        "Navigating to a URL with a privileged scheme is not allowed"));
+  Response response = CheckNavigationAllowed(gurl);
+  if (response.IsError()) {
+    callback->sendFailure(std::move(response));
     return;
-  }
-
-  if (!session()->GetClient()->MayAttachToURL(gurl,
-                                              host_->web_ui() != nullptr)) {
-    url::Origin origin = url::Origin::Create(gurl);
-    if (!origin.scheme().empty() &&
-        origin.scheme() != content::kChromeUIScheme &&
-        origin.scheme() != content::kChromeUIUntrustedScheme &&
-        origin.scheme() != content::kChromeDevToolsScheme) {
-      callback->sendFailure(Response::ServerError("Not allowed"));
-      return;
-    }
   }
 
   ui::PageTransition type;
@@ -1083,45 +1137,6 @@ void PageHandler::Navigate(const std::string& url,
   navigate_callbacks_[navigation_token] = std::move(callback);
 }
 
-namespace optimization_guide::proto {
-class AnnotatedPageContent;
-}
-
-void PageHandler::GetAnnotatedPageContent(
-    std::optional<bool> include_actionable_information,
-    std::unique_ptr<GetAnnotatedPageContentCallback> callback) {
-  ResponseOrWebContents result = GetWebContentsForTopLevelActiveFrame();
-  if (std::holds_alternative<Response>(result)) {
-    callback->sendFailure(std::get<Response>(result));
-    return;
-  }
-  WebContentsImpl* web_contents = std::get<WebContentsImpl*>(result);
-  if (!web_contents) {
-    callback->sendFailure(Response::ServerError("WebContents not found."));
-    return;
-  }
-
-  if (WebContentsDelegate* delegate = web_contents->GetDelegate()) {
-    delegate->GetAIPageContent(
-        web_contents, include_actionable_information.value_or(true),
-        base::BindOnce(
-            [](std::unique_ptr<GetAnnotatedPageContentCallback> callback,
-               const std::string& serialized_proto) {
-              if (!serialized_proto.empty()) {
-                callback->sendSuccess(
-                    protocol::Binary::fromString(serialized_proto));
-              } else {
-                callback->sendFailure(Response::ServerError(
-                    "Failed to get annotated page content"));
-              }
-            },
-            std::move(callback)));
-  } else {
-    callback->sendFailure(Response::ServerError(
-        "No WebContentsDelegate available to get annotated page content"));
-  }
-}
-
 void PageHandler::NavigationReset(NavigationRequest* navigation_request) {
   auto it =
       navigate_callbacks_.find(navigation_request->devtools_navigation_token());
@@ -1166,9 +1181,16 @@ void PageHandler::DidStartNavigating(
     return;
   }
 
+  // A client that is not allowed to navigate the page to a URL must not
+  // learn it either (see GetNavigationHistory()). Redact the URL rather than
+  // omitting the event, so that navigation bookkeeping in clients keeps
+  // working. This event fires at FrameTreeNode::TakeNavigationRequest() time,
+  // BEFORE NavigationRequest::OnStartChecksComplete() force-detaches sessions
+  // whose client fails MayAttachToURL(), so it must gate disclosure itself.
+  const bool may_disclose = host_ && !CheckNavigationAllowed(url).IsError();
   frontend_->FrameStartedNavigating(
-      ftn.current_frame_host()->devtools_frame_token().ToString(), url.spec(),
-      loader_id.ToString(),
+      ftn.current_frame_host()->devtools_frame_token().ToString(),
+      may_disclose ? url.spec() : std::string(), loader_id.ToString(),
       GetFrameStartedNavigatingNavigationTypeString(navigation_type));
 }
 
@@ -1266,12 +1288,22 @@ Response PageHandler::GetNavigationHistory(
   *entries = std::make_unique<NavigationEntries>();
   for (int i = 0; i != controller.GetEntryCount(); ++i) {
     auto* entry = controller.GetEntryAtIndex(i);
+    // A client that is not allowed to navigate the page to a URL must not
+    // learn it either, so the same check gates disclosure. Redact such entries
+    // rather than omitting them, so that `currentIndex` and the entry ids keep
+    // matching the actual history. Navigating to a redacted entry is rejected
+    // by NavigateToHistoryEntry().
+    const bool may_disclose =
+        !CheckNavigationAllowed(entry->GetURL()).IsError() &&
+        !CheckNavigationAllowed(entry->GetUserTypedURL()).IsError();
     (*entries)->emplace_back(
         Page::NavigationEntry::Create()
             .SetId(entry->GetUniqueID())
-            .SetUrl(entry->GetURL().spec())
-            .SetUserTypedURL(entry->GetUserTypedURL().spec())
-            .SetTitle(base::UTF16ToUTF8(entry->GetTitle()))
+            .SetUrl(may_disclose ? entry->GetURL().spec() : std::string())
+            .SetUserTypedURL(may_disclose ? entry->GetUserTypedURL().spec()
+                                          : std::string())
+            .SetTitle(may_disclose ? base::UTF16ToUTF8(entry->GetTitle())
+                                   : std::string())
             .SetTransitionType(TransitionTypeName(entry->GetTransitionType()))
             .Build());
   }
@@ -1286,10 +1318,18 @@ Response PageHandler::NavigateToHistoryEntry(int entry_id) {
 
   NavigationController& controller = host_->frame_tree()->controller();
   for (int i = 0; i != controller.GetEntryCount(); ++i) {
-    if (controller.GetEntryAtIndex(i)->GetUniqueID() == entry_id) {
-      controller.GoToIndex(i);
-      return Response::Success();
+    NavigationEntry* entry = controller.GetEntryAtIndex(i);
+    if (entry->GetUniqueID() != entry_id) {
+      continue;
     }
+    // Traversing to an entry navigates the page to the entry's URL, so apply
+    // the same restrictions Navigate() applies.
+    response = CheckNavigationAllowed(entry->GetURL());
+    if (response.IsError()) {
+      return response;
+    }
+    controller.GoToIndex(i);
+    return Response::Success();
   }
 
   return Response::InvalidParams("No entry with passed id");
@@ -1326,7 +1366,7 @@ void PageHandler::CaptureSnapshot(
     return;
   }
 
-  DCHECK(host_);
+  CHECK(host_, base::NotFatalUntil::M159);
   DevToolsMHTMLHelper::Capture(
       base::BindRepeating(&WebContents::FromFrameTreeNodeId,
                           host_->frame_tree_node()->frame_tree_node_id()),
@@ -1530,23 +1570,37 @@ void PageHandler::CaptureScreenshot(
   // Set view size for the screenshot right after emulating.
   if (clip) {
     double scale = dpfactor * clip->GetScale();
+    // Round the temporary view outward so resizable platforms provide enough
+    // source pixels after the widget's device scale factor is applied. This
+    // prevents double rounding from leaving the source too small.
     widget_host->GetView()->SetSize(
-        gfx::Size(base::ClampRound(clip->GetWidth() * scale),
-                  base::ClampRound(clip->GetHeight() * scale)));
+        gfx::Size(base::ClampCeil(clip->GetWidth() * scale),
+                  base::ClampCeil(clip->GetHeight() * scale)));
   } else if (emulation_enabled) {
     widget_host->GetView()->SetSize(
         gfx::ScaleToFlooredSize(emulated_view_size, dpfactor));
   }
   if (emulation_enabled || clip) {
-    const gfx::Size requested_image_size =
-        clip ? gfx::Size(clip->GetWidth(), clip->GetHeight())
-             : emulated_view_size;
     double scale = widget_host_device_scale_factor * dpfactor;
     if (clip) {
       scale *= clip->GetScale();
+      // CDP clip dimensions are double-precision DIPs. Preserve their
+      // fractions until conversion to the integral physical bitmap size. A
+      // positive dimension must remain nonempty because an empty requested
+      // size means that no cropping is needed in ScreenshotCaptured().
+      auto round_clip_dimension = [scale](double dimension) {
+        if (!(dimension > 0 && scale > 0)) {
+          return 0;
+        }
+        return std::max(1, base::ClampRound(dimension * scale));
+      };
+      pending_request->requested_image_size =
+          gfx::Size(round_clip_dimension(clip->GetWidth()),
+                    round_clip_dimension(clip->GetHeight()));
+    } else {
+      pending_request->requested_image_size =
+          gfx::ScaleToRoundedSize(emulated_view_size, scale);
     }
-    pending_request->requested_image_size =
-        gfx::ScaleToRoundedSize(requested_image_size, scale);
   }
 
   // TODO(crbug.com/377715191): this should check RenderWidgetHostViewBase
@@ -1635,22 +1689,72 @@ Response PageHandler::StartScreencast(std::optional<std::string> format,
   return Response::Success();
 }
 
-Response PageHandler::StartScreenRecording(std::optional<bool> audio,
-                                           std::optional<int> max_width,
-                                           std::optional<int> max_height,
-                                           std::optional<int> frame_rate,
-                                           std::string* out_stream) {
+void PageHandler::StartScreenRecording(
+    std::optional<bool> audio,
+    std::optional<int> max_width,
+    std::optional<int> max_height,
+    std::optional<int> frame_rate,
+    std::optional<std::string> capture_area,
+    std::unique_ptr<StartScreenRecordingCallback> callback) {
   if (screencast_encoder_ || media_recorder_) {
-    return Response::ServerError("Screencast is already active");
+    callback->sendFailure(
+        Response::ServerError("Screencast is already active"));
+    return;
+  }
+
+  const std::string area = capture_area.value_or(
+      Page::StartScreenRecording::CaptureAreaEnum::Target);
+  const bool record_browser_window =
+      area == Page::StartScreenRecording::CaptureAreaEnum::BrowserWindow;
+  if (area != Page::StartScreenRecording::CaptureAreaEnum::Target &&
+      !record_browser_window) {
+    callback->sendFailure(Response::InvalidParams("Unknown captureArea"));
+    return;
+  }
+  // Invalid sizes or frame rates would fail checks in the capture device and
+  // the encoder.
+  const int width = max_width.value_or(800);
+  const int height = max_height.value_or(600);
+  if (width <= 0 || height <= 0 || width > media::limits::kMaxDimension ||
+      height > media::limits::kMaxDimension ||
+      static_cast<int64_t>(width) * height > media::limits::kMaxCanvas) {
+    callback->sendFailure(Response::InvalidParams(
+        base::StrCat({"maxWidth and maxHeight must be between 1 and ",
+                      base::NumberToString(media::limits::kMaxDimension),
+                      ", and their product at most ",
+                      base::NumberToString(media::limits::kMaxCanvas)})));
+    return;
+  }
+  if (frame_rate.value_or(0) > media::limits::kMaxFramesPerSecond) {
+    callback->sendFailure(Response::InvalidParams(base::StrCat(
+        {"frameRate must be at most ",
+         base::NumberToString(media::limits::kMaxFramesPerSecond)})));
+    return;
+  }
+  // The browser window shows more than the target page, for example the tab
+  // strip and the omnibox. Thus only trusted clients can record it.
+  if (record_browser_window && !is_trusted_) {
+    callback->sendFailure(
+        Response::ServerError("Recording the browser window is not allowed."));
+    return;
   }
 
   Response response = AssureTopLevelActiveFrame();
   if (response.IsError()) {
-    return response;
+    callback->sendFailure(std::move(response));
+    return;
   }
   RenderWidgetHostImpl* widget_host = host_->GetRenderWidgetHost();
   if (!widget_host) {
-    return Response::InternalError();
+    callback->sendFailure(Response::InternalError());
+    return;
+  }
+
+  // No embedder supports the browser window yet.
+  if (record_browser_window) {
+    callback->sendFailure(Response::ServerError(
+        "Recording the browser window is not supported for this target."));
+    return;
   }
 
   media_recorder_ = std::make_unique<MediaRecorder>(
@@ -1663,15 +1767,15 @@ Response PageHandler::StartScreenRecording(std::optional<bool> audio,
     fps = 30;
   }
 
-  Response result = media_recorder_->Start(
-      host_, has_audio, max_width.value_or(800), max_height.value_or(600), fps);
+  Response result =
+      media_recorder_->Start(host_, has_audio, width, height, fps);
   if (result.IsError()) {
     media_recorder_.reset();
-    return result;
+    callback->sendFailure(std::move(result));
+    return;
   }
 
-  *out_stream = media_recorder_->GetStream();
-  return Response::Success();
+  callback->sendSuccess(media_recorder_->GetStream());
 }
 
 void PageHandler::StopScreenRecording(
@@ -1866,7 +1970,8 @@ void PageHandler::OnFrameFromVideoConsumer(
   std::unique_ptr<Page::ScreencastFrameMetadata> page_metadata =
       BuildScreencastFrameMetadata(surface_size, device_scale_factor,
                                    page_scale_factor, root_scroll_offset,
-                                   top_controls_visible_height);
+                                   top_controls_visible_height,
+                                   ScreencastFrameTimestamp(*frame));
   if (!page_metadata) {
     return;
   }
@@ -1926,8 +2031,11 @@ void PageHandler::ScreenshotCaptured(
     std::unique_ptr<PendingScreenshotRequest> request,
     const gfx::Image& image) {
   if (request->original_view_size.width()) {
-    RenderWidgetHostImpl* widget_host = host_->GetRenderWidgetHost();
-    widget_host->GetView()->SetSize(request->original_view_size);
+    // The view is gone if the renderer exited before the capture completed.
+    if (RenderWidgetHostViewBase* view =
+            host_->GetRenderWidgetHost()->GetView()) {
+      view->SetSize(request->original_view_size);
+    }
     emulation_handler_->SetDeviceEmulationParams(
         request->original_emulation_params);
   }
@@ -1962,8 +2070,8 @@ void PageHandler::ScreenshotCaptured(
         Binary::fromVector(std::move(encoded_bitmap).value()));
     return;
   }
-  // TODO(caseq): send failure if we fail to encode?
-  request->callback->sendSuccess(Binary());
+  request->callback->sendFailure(
+      Response::ServerError("Unable to encode screenshot"));
 }
 
 Response PageHandler::StopLoading() {
@@ -2020,7 +2128,18 @@ void PageHandler::GetManifestIcons(
 void PageHandler::GetAppId(std::unique_ptr<GetAppIdCallback> callback) {
   // TODO: Use InstallableManager once it moves into content/.
   // Until then, this code is only used to return no image data in the tests.
-  callback->sendSuccess(std::nullopt, std::nullopt);
+  callback->sendSuccess(std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+}
+
+void PageHandler::GetSubApps(std::unique_ptr<GetSubAppsCallback> callback) {
+  callback->sendSuccess(
+      std::make_unique<protocol::Array<protocol::Page::SubApp>>());
+}
+
+void PageHandler::GetSiblingSubApps(
+    std::unique_ptr<GetSiblingSubAppsCallback> callback) {
+  callback->sendSuccess(
+      std::make_unique<protocol::Array<protocol::Page::SubApp>>());
 }
 
 Response PageHandler::SetBypassCSP(bool enabled) {
@@ -2178,7 +2297,9 @@ Page::BackForwardCacheNotRestoredReason NotRestoredReasonToProtocol(
     case Reason::kRfhEnforceInsecureNavigationsSet:
     case Reason::kRfhEnforceInsecureRequestPolicy:
     case Reason::kRfhHadStickyUserActivationBeforeNavigationChanged:
-    case Reason::kRfhUpdateIsAdFrame:
+    case Reason::kRfhUpdateAdFrameStatus:
+    case Reason::kRfhDidChangeName:
+    case Reason::kRfhDidChangeOpener:
       return Page::BackForwardCacheNotRestoredReasonEnum::Unknown;
     case Reason::kCacheControlNoStoreDeviceBoundSessionTerminated:
       return Page::BackForwardCacheNotRestoredReasonEnum::
@@ -2302,6 +2423,7 @@ Page::BackForwardCacheNotRestoredReason BlocklistedFeatureToProtocol(
       return Page::BackForwardCacheNotRestoredReasonEnum::
           JsNetworkRequestReceivedCacheControlNoStoreResource;
     case WebSchedulerTrackedFeature::kWebSerial:
+    case WebSchedulerTrackedFeature::kWebUSB:
       // These features only disable aggressive throttling.
       NOTREACHED();
     case WebSchedulerTrackedFeature::kSmartCard:
@@ -2508,7 +2630,9 @@ Page::BackForwardCacheNotRestoredReasonType MapNotRestoredReasonToType(
     case Reason::kRfhEnforceInsecureNavigationsSet:
     case Reason::kRfhEnforceInsecureRequestPolicy:
     case Reason::kRfhHadStickyUserActivationBeforeNavigationChanged:
-    case Reason::kRfhUpdateIsAdFrame:
+    case Reason::kRfhUpdateAdFrameStatus:
+    case Reason::kRfhDidChangeName:
+    case Reason::kRfhDidChangeOpener:
     case Reason::kUnknown:
       return Page::BackForwardCacheNotRestoredReasonTypeEnum::SupportPending;
     case Reason::kBlocklistedFeatures:
@@ -2573,6 +2697,7 @@ Page::BackForwardCacheNotRestoredReasonType MapBlocklistedFeatureToType(
     case WebSchedulerTrackedFeature::kWebSocketSticky:
       return Page::BackForwardCacheNotRestoredReasonTypeEnum::Circumstantial;
     case WebSchedulerTrackedFeature::kWebSerial:
+    case WebSchedulerTrackedFeature::kWebUSB:
       NOTREACHED();
   }
 }
@@ -2602,7 +2727,7 @@ CreateNotRestoredExplanation(
        not_restored_reasons) {
     if (not_restored_reason ==
         BackForwardCacheMetrics::NotRestoredReason::kBlocklistedFeatures) {
-      DCHECK(!blocklisted_features.empty());
+      CHECK(!blocklisted_features.empty(), base::NotFatalUntil::M159);
       for (blink::scheduler::WebSchedulerTrackedFeature feature :
            blocklisted_features) {
         // Details are not always present for blocklisted features, because the
@@ -2699,9 +2824,13 @@ void PageHandler::ReadyToCommitNavigation(
     have_pending_reload_ = false;
     pending_script_to_evaluate_on_load_.clear();
   } else if (have_pending_reload_) {
-    if (navigation_request->WasServerRedirect() &&
-        !initiating_origin_.IsSameOriginWith(
-            navigation_request->GetOriginToCommit().value_or(url::Origin()))) {
+    // Drop the pending script if the reload encountered an error or if the
+    // navigation was redirected to a different origin.
+    if (navigation_request->DidEncounterError() ||
+        (navigation_request->WasServerRedirect() &&
+         !initiating_origin_.IsSameOriginWith(
+             navigation_request->GetOriginToCommit().value_or(
+                 url::Origin())))) {
       pending_script_to_evaluate_on_load_.clear();
     }
     prepare_for_reload_callback_.Run(

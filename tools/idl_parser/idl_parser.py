@@ -26,8 +26,6 @@
 # Disable check for line length and Member as Function due to how grammar rules
 # are defined with PLY
 #
-# pylint: disable=R0201
-# pylint: disable=C0301
 
 import os.path
 import sys
@@ -944,6 +942,7 @@ class IDLParser(object):
     """DistinguishableType : PrimitiveType Null
     | identifier Null
     | SEQUENCE '<' TypeWithExtendedAttributes '>' Null
+    | ASYNC_SEQUENCE '<' TypeWithExtendedAttributes '>' Null
     | FROZENARRAY '<' TypeWithExtendedAttributes '>' Null
     | OBSERVABLEARRAY '<' TypeWithExtendedAttributes '>' Null
     | RecordType Null
@@ -960,6 +959,8 @@ class IDLParser(object):
     if len(p) == 6:
       if p[1] == 'sequence':
         cls = 'Sequence'
+      elif p[1] == 'async_sequence':
+        cls = 'AsyncSequence'
       elif p[1] == 'FrozenArray':
         cls = 'FrozenArray'
       elif p[1] == 'ObservableArray':
@@ -1332,7 +1333,6 @@ class IDLParser(object):
 
   def GetErrors(self):
     # Access lexer errors, despite being private
-    # pylint: disable=W0212
     return self._parse_errors + self.lexer._lex_errors
 
   #

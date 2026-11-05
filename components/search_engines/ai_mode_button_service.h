@@ -39,9 +39,9 @@ struct AiModeButtonUiConfig {
   std::u16string a11y_label;
   std::u16string context_menu_label;
   std::u16string placeholder_text;
-  std::string_view favicon_url;
-  std::string_view navigation_url;
-  std::string_view navigation_url_empty;
+  std::string favicon_url;
+  std::string navigation_url;
+  std::string navigation_url_empty;
 };
 
 class AiModeButtonService : public KeyedService,
@@ -65,6 +65,13 @@ class AiModeButtonService : public KeyedService,
     return current_ui_config_.has_value() ? &current_ui_config_.value()
                                           : nullptr;
   }
+
+  // Returns the UI config describing the AI Mode entry point offered by
+  // `template_url`, or `std::nullopt` if that search engine offers none.
+  // `search_terms_data` is used to classify `template_url`.
+  static std::optional<AiModeButtonUiConfig> GetUiConfigForTemplateUrl(
+      const TemplateURL& template_url,
+      const SearchTermsData& search_terms_data);
 
  private:
   friend class TestAiModeButtonService;

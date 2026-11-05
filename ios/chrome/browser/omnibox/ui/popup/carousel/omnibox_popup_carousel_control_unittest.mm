@@ -5,10 +5,13 @@
 #import "ios/chrome/browser/omnibox/ui/popup/carousel/omnibox_popup_carousel_control.h"
 
 #import "ios/chrome/browser/net/model/crurl.h"
+#import "ios/chrome/browser/omnibox/public/omnibox_popup_accessibility_identifier_constants.h"
 #import "ios/chrome/browser/omnibox/ui/popup/carousel/carousel_item.h"
 #import "ios/chrome/browser/omnibox/ui/popup/carousel/carousel_item_menu_provider.h"
-#import "ios/chrome/browser/omnibox/ui/popup/carousel/omnibox_popup_carousel_control_unittest_util.h"
+#import "ios/chrome/browser/omnibox/ui/popup/carousel/omnibox_popup_carousel_cell.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/favicon/favicon_view.h"
+#import "ios/chrome/test/app/uikit_test_util.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
@@ -56,7 +59,8 @@ TEST_F(OmniboxPopupCarouselControlTest, AccessibilityText) {
 
 // Tests that the label of CarouselItem is present and correct.
 TEST_F(OmniboxPopupCarouselControlTest, LabelIsPresentAndCorrect) {
-  UILabel* label = GetLabelFromCarouselControl(carousel_control_);
+  UILabel* label = chrome_test_util::FindViewById<UILabel>(
+      carousel_control_, kOmniboxCarouselControlLabelAccessibilityIdentifier);
   EXPECT_TRUE(label);
   EXPECT_EQ(label.text, carousel_item_.title);
 }
@@ -66,6 +70,32 @@ TEST_F(OmniboxPopupCarouselControlTest, DelegateCarouselControlSelection) {
   [[delegate_ expect] carouselControlDidBecomeFocused:carousel_control_];
   carousel_control_.selected = YES;
   [delegate_ verify];
+}
+
+// Tests that OmniboxPopupCarouselCell updates its background color when size
+// class traits change between compact and regular.
+TEST_F(OmniboxPopupCarouselControlTest,
+       CarouselCellUpdatesBackgroundColorOnTraitChange) {
+  UIWindow* window =
+      [[UIWindow alloc] initWithFrame:CGRectMake(0, 0, 400, 800)];
+  window.traitOverrides.horizontalSizeClass = UIUserInterfaceSizeClassCompact;
+  window.traitOverrides.verticalSizeClass = UIUserInterfaceSizeClassRegular;
+
+  OmniboxPopupCarouselCell* cell = [[OmniboxPopupCarouselCell alloc]
+        initWithStyle:UITableViewCellStyleDefault
+      reuseIdentifier:@"OmniboxPopupCarouselCell"];
+  [window addSubview:cell];
+  [window layoutIfNeeded];
+
+  EXPECT_NSEQ([UIColor colorNamed:kGroupedSecondaryBackgroundColor],
+              cell.backgroundColor);
+
+  window.traitOverrides.horizontalSizeClass = UIUserInterfaceSizeClassRegular;
+  window.traitOverrides.verticalSizeClass = UIUserInterfaceSizeClassRegular;
+  [window layoutIfNeeded];
+
+  EXPECT_NSEQ([UIColor colorNamed:kPrimaryBackgroundColor],
+              cell.backgroundColor);
 }
 
 }  // namespace

@@ -5,6 +5,8 @@
 #include "chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view.h"
 
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
@@ -22,14 +24,20 @@
 #include "chrome/browser/picture_in_picture/picture_in_picture_widget_fade_animator.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/location_bar/location_bar_view.h"
+#include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_dashboard_controller.h"
-#include "chrome/browser/ui/views/permissions/chip/permission_dashboard_view.h"
+#include "chrome/browser/ui/views/permissions/chip/permission_dashboard_interface.h"
+#include "chrome/browser/ui/views/picture_in_picture/document_pip_frame_view.h"
+#include "chrome/browser/ui/views/picture_in_picture/document_pip_host.h"
+#include "chrome/browser/ui/views/picture_in_picture/pip_top_bar_animation_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -49,9 +57,14 @@
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/animation/animation_test_api.h"
 #include "ui/views/animation/widget_fade_animator.h"
+#include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/label.h"
+#include "ui/views/view_utils.h"
+#include "ui/views/widget/widget_delegate.h"
 #include "ui/views/widget/widget_observer.h"
 #include "ui/views/widget/widget_utils.h"
+#include "ui/views/window/frame_view.h"
+#include "ui/views/window/non_client_view.h"
 
 #if BUILDFLAG(IS_LINUX)
 #include "chrome/browser/themes/theme_service.h"
@@ -68,6 +81,46 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #endif  // BUILDFLAG(IS_MAC)
+
+class DocumentPipFrameViewTestApi {
+ public:
+  static bool HasAnyVisibleContentSettingViews(
+      DocumentPipFrameView* frame_view) {
+    for (ContentSettingImageView* view : frame_view->content_setting_views_) {
+      if (view->GetVisible()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool ShowPageInfo(DocumentPipFrameView* frame_view) {
+    return frame_view->ShowPageInfo();
+  }
+
+  static PipTopBarAnimationController* GetAnimationController(
+      DocumentPipFrameView* frame_view) {
+    return frame_view->animation_controller_.get();
+  }
+};
+
+class DocumentPipHostTestApi {
+ public:
+#if !BUILDFLAG(IS_WIN)
+  static PictureInPictureWidgetFadeAnimator* GetFadeAnimator(
+      DocumentPipHost* host) {
+    return host->fade_animator_.get();
+  }
+#endif
+
+  static void RunPendingChildResize(DocumentPipHost* host) {
+    host->RunPendingChildResizeForTesting();
+  }
+
+  static bool IsChildResizePending(DocumentPipHost* host) {
+    return host->IsChildResizePendingForTesting();
+  }
+};
 
 namespace {
 
@@ -99,7 +152,20 @@ struct AnimationTimingTestCase {
   std::vector<ExpectationsAtTimeDelta> hide_expectations;
 };
 
-using AnimationTimingTest = WithParamInterface<AnimationTimingTestCase>;
+struct AnimationTimingTestParam {
+  bool standalone;
+  AnimationTimingTestCase test_case;
+};
+
+std::vector<AnimationTimingTestParam> WithBothBackends(
+    const std::vector<AnimationTimingTestCase>& test_cases) {
+  std::vector<AnimationTimingTestParam> params;
+  for (const auto& test_case : test_cases) {
+    params.push_back({false, test_case});
+    params.push_back({true, test_case});
+  }
+  return params;
+}
 
 constexpr base::TimeDelta kFirstAnimationInterval = base::Milliseconds(25);
 constexpr base::TimeDelta kSecondAnimationInterval = base::Milliseconds(75);
@@ -278,15 +344,14 @@ class PictureInPictureWidgetVisibilityTracker : public views::WidgetObserver {
 };
 #endif  // BUILDFLAG(IS_MAC)
 
-class PictureInPictureBrowserFrameViewTest : public WebRtcTestBase,
-                                             public AnimationTimingTest {
+class PictureInPictureBrowserFrameViewTestBase : public WebRtcTestBase {
  public:
-  PictureInPictureBrowserFrameViewTest() = default;
+  PictureInPictureBrowserFrameViewTestBase() = default;
 
-  PictureInPictureBrowserFrameViewTest(
-      const PictureInPictureBrowserFrameViewTest&) = delete;
-  PictureInPictureBrowserFrameViewTest& operator=(
-      const PictureInPictureBrowserFrameViewTest&) = delete;
+  PictureInPictureBrowserFrameViewTestBase(
+      const PictureInPictureBrowserFrameViewTestBase&) = delete;
+  PictureInPictureBrowserFrameViewTestBase& operator=(
+      const PictureInPictureBrowserFrameViewTestBase&) = delete;
 
   void SetUpOnMainThread() override {
     host_resolver()->AddRule("8", "127.0.0.1");
@@ -297,11 +362,12 @@ class PictureInPictureBrowserFrameViewTest : public WebRtcTestBase,
   void SetUp() override {
     // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox is
     // enabled and then remove the two omnibox features.
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{blink::features::kDocumentPictureInPictureAPI,
-                              media::kPictureInPictureOcclusionTracking},
-        /*disabled_features=*/{omnibox::internal::kWebUIOmniboxPopup,
-                               omnibox::internal::kWebUIOmniboxAimPopup});
+    scoped_feature_list_.InitWithFeatureStates(
+        {{blink::features::kDocumentPictureInPictureAPI, true},
+         {media::kPictureInPictureOcclusionTracking, true},
+         {features::kDocumentPipStandaloneWindow, UseStandaloneDocumentPip()},
+         {omnibox::internal::kWebUIOmniboxPopup, false},
+         {omnibox::internal::kWebUIOmniboxAimPopup, false}});
     InProcessBrowserTest::SetUp();
   }
 
@@ -372,18 +438,25 @@ class PictureInPictureBrowserFrameViewTest : public WebRtcTestBase,
     auto* child_web_contents = pip_window_controller_->GetChildWebContents();
     ASSERT_TRUE(child_web_contents);
 
-    auto* browser_view = static_cast<BrowserView*>(
-        BrowserWindow::FindBrowserWindowWithWebContents(child_web_contents));
-    ASSERT_TRUE(browser_view);
-    ASSERT_EQ(browser_view->browser()->GetType(),
-              BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE);
+    if (UseStandaloneDocumentPip()) {
+      auto* host = DocumentPipHost::FromChildWebContents(child_web_contents);
+      ASSERT_TRUE(host);
+      ASSERT_TRUE(host->GetWidget());
+    } else {
+      auto* browser_view = BrowserView::GetBrowserViewForBrowser(
+          GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+              child_web_contents));
+      ASSERT_TRUE(browser_view);
+      ASSERT_EQ(browser_view->browser()->GetType(),
+                BrowserWindowInterface::Type::TYPE_FLOATING);
 
-    pip_frame_view_ = static_cast<PictureInPictureBrowserFrameView*>(
-        browser_view->browser_widget()->GetFrameView());
-    ASSERT_TRUE(pip_frame_view_);
+      pip_frame_view_ = static_cast<PictureInPictureBrowserFrameView*>(
+          browser_view->browser_widget()->GetFrameView());
+      ASSERT_TRUE(pip_frame_view_);
+    }
 
     event_generator_ = std::make_unique<ui::test::EventGenerator>(
-        views::GetRootWindow(pip_frame_view_->GetWidget()));
+        views::GetRootWindow(GetPipWidget()));
   }
 
   void WaitForTopBarAnimations(
@@ -430,7 +503,7 @@ class PictureInPictureBrowserFrameViewTest : public WebRtcTestBase,
     delegate_ = std::make_unique<ModalWidgetDelegate>(modal_type);
     auto dialog = OpenChildDialogWithDelegate(
         size, delegate_.get(), std::move(initial_size), widget_type);
-    pip_frame_view()->RunPendingChildResizeForTesting();
+    RunPendingChildResizeForTesting();
     return dialog;
   }
 
@@ -446,7 +519,7 @@ class PictureInPictureBrowserFrameViewTest : public WebRtcTestBase,
     views::Widget::InitParams init_params(
         views::Widget::InitParams::CLIENT_OWNS_WIDGET, widget_type);
     init_params.child = true;
-    init_params.parent = pip_frame_view_->GetWidget()->GetNativeView();
+    init_params.parent = GetPipWidget()->GetNativeView();
     init_params.delegate = delegate;
 
     auto child_dialog = std::make_unique<views::Widget>(std::move(init_params));
@@ -458,7 +531,37 @@ class PictureInPictureBrowserFrameViewTest : public WebRtcTestBase,
 
   PictureInPictureBrowserFrameView* pip_frame_view() { return pip_frame_view_; }
 
+  views::Widget* GetPipWidget() {
+    return UseStandaloneDocumentPip() ? GetStandaloneHost()->GetWidget()
+                                      : pip_frame_view()->GetWidget();
+  }
+
+  void RunPendingChildResizeForTesting() {
+    if (UseStandaloneDocumentPip()) {
+      DocumentPipHostTestApi::RunPendingChildResize(GetStandaloneHost());
+    } else {
+      pip_frame_view()->RunPendingChildResizeForTesting();
+    }
+  }
+
+  bool IsChildResizePendingForTesting() {
+    return UseStandaloneDocumentPip()
+               ? DocumentPipHostTestApi::IsChildResizePending(
+                     GetStandaloneHost())
+               : pip_frame_view()->IsChildResizePendingForTesting();
+  }
+
+ protected:
+  virtual bool UseStandaloneDocumentPip() const { return false; }
+
  private:
+  DocumentPipHost* GetStandaloneHost() {
+    auto* host = DocumentPipHost::FromWebContents(
+        browser()->GetTabStripModel()->GetActiveWebContents());
+    CHECK(host);
+    return host;
+  }
+
   // TODO(https://crbug.com/423465927): Explore a better approach to make the
   // existing tests run with the prewarm feature enabled.
   test::ScopedPrewarmFeatureList scoped_prewarm_feature_list_{
@@ -470,6 +573,116 @@ class PictureInPictureBrowserFrameViewTest : public WebRtcTestBase,
   std::unique_ptr<ModalWidgetDelegate> delegate_;
 };
 
+class PictureInPictureBrowserFrameViewTest
+    : public PictureInPictureBrowserFrameViewTestBase {};
+
+class PictureInPictureChildDialogResizeTest
+    : public PictureInPictureBrowserFrameViewTestBase,
+      public testing::WithParamInterface<bool> {
+ protected:
+  bool UseStandaloneDocumentPip() const override { return GetParam(); }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PictureInPictureChildDialogResizeTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Standalone" : "BrowserBacked";
+                         });
+
+class PictureInPictureFrameControlsTestBase
+    : public PictureInPictureBrowserFrameViewTestBase {
+ protected:
+  views::View* GetPipFrameView() {
+    return GetPipWidget()->non_client_view()->frame_view();
+  }
+
+  bool IsPointInPIPFrameView(gfx::Point point_in_screen) {
+    views::View::ConvertPointFromScreen(GetPipFrameView(), &point_in_screen);
+    return GetPipFrameView()->GetLocalBounds().Contains(point_in_screen);
+  }
+
+  bool HasAnyVisibleContentSettingViews() {
+    return UseStandaloneDocumentPip()
+               ? DocumentPipFrameViewTestApi::HasAnyVisibleContentSettingViews(
+                     GetStandaloneFrameView())
+               : pip_frame_view()->HasAnyVisibleContentSettingViews();
+  }
+
+  views::View* GetBackToTabButton() {
+    return UseStandaloneDocumentPip()
+               ? GetStandaloneFrameView()->GetBackToTabButtonForTesting()
+               : pip_frame_view()->GetBackToTabButtonForTesting();
+  }
+
+  views::View* GetCloseButton() {
+    return UseStandaloneDocumentPip()
+               ? GetStandaloneFrameView()->GetCloseButtonForTesting()
+               : pip_frame_view()->GetCloseButtonForTesting();
+  }
+
+  views::Label* GetWindowTitle() {
+    return UseStandaloneDocumentPip()
+               ? GetStandaloneFrameView()->GetWindowTitleForTesting()
+               : pip_frame_view()->GetWindowTitleForTesting();
+  }
+
+  void UpdateTopBarView(bool active) {
+    if (UseStandaloneDocumentPip()) {
+      GetStandaloneAnimationController()->SetTopBarActiveStatus(active);
+    } else {
+      pip_frame_view()->UpdateTopBarView(active);
+    }
+  }
+
+  bool WaitForTopBarActiveStatus(bool active) {
+    return base::test::RunUntil([&] {
+      return (UseStandaloneDocumentPip()
+                  ? GetStandaloneAnimationController()->is_top_bar_active()
+                  : pip_frame_view()->IsTopBarActiveForTesting()) == active;
+    });
+  }
+
+  std::vector<raw_ptr<gfx::Animation>> GetTopBarAnimations(bool active) {
+    if (!UseStandaloneDocumentPip()) {
+      return active ? pip_frame_view()->GetRenderActiveAnimationsForTesting()
+                    : pip_frame_view()->GetRenderInactiveAnimationsForTesting();
+    }
+    auto* controller = GetStandaloneAnimationController();
+    const auto animations =
+        active ? controller->GetActiveTransitionAnimationsForTesting()
+               : controller->GetInactiveTransitionAnimationsForTesting();
+    return {animations.begin(), animations.end()};
+  }
+
+ private:
+  DocumentPipFrameView* GetStandaloneFrameView() {
+    auto* frame_view =
+        views::AsViewClass<DocumentPipFrameView>(GetPipFrameView());
+    CHECK(frame_view);
+    return frame_view;
+  }
+
+  PipTopBarAnimationController* GetStandaloneAnimationController() {
+    return DocumentPipFrameViewTestApi::GetAnimationController(
+        GetStandaloneFrameView());
+  }
+};
+
+class PictureInPictureTitleActivationTest
+    : public PictureInPictureFrameControlsTestBase,
+      public testing::WithParamInterface<bool> {
+ protected:
+  bool UseStandaloneDocumentPip() const override { return GetParam(); }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PictureInPictureTitleActivationTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Standalone" : "BrowserBacked";
+                         });
+
 #if BUILDFLAG(IS_WIN) && defined(NDEBUG)
 // TODO(jazzhsu): Fix test on MAC and Wayland. Test currently not working on
 // those platforms because if we send mouse move event outside of the pip window
@@ -480,19 +693,18 @@ class PictureInPictureBrowserFrameViewTest : public WebRtcTestBase,
 #else
 #define MAYBE_TitleActivation DISABLED_TitleActivation
 #endif
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureTitleActivationTest,
                        MAYBE_TitleActivation) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
   // Move mouse to the center of the pip window should activate title.
-  gfx::Point center = pip_frame_view()->GetLocalBounds().CenterPoint();
-  views::View::ConvertPointToScreen(pip_frame_view(), &center);
+  gfx::Point center = GetPipFrameView()->GetLocalBounds().CenterPoint();
+  views::View::ConvertPointToScreen(GetPipFrameView(), &center);
   ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(center));
-  WaitForTopBarAnimations(
-      pip_frame_view()->GetRenderActiveAnimationsForTesting());
-  ASSERT_TRUE(
-      IsButtonVisible(pip_frame_view()->GetBackToTabButtonForTesting()));
-  ASSERT_TRUE(IsButtonVisible(pip_frame_view()->GetCloseButtonForTesting()));
+  ASSERT_TRUE(WaitForTopBarActiveStatus(/*active=*/true));
+  WaitForTopBarAnimations(GetTopBarAnimations(/*active=*/true));
+  ASSERT_TRUE(IsButtonVisible(GetBackToTabButton()));
+  ASSERT_TRUE(IsButtonVisible(GetCloseButton()));
 
   // Move mouse to the top-left corner of the main browser window (out side of
   // the pip window) should deactivate the title.
@@ -501,56 +713,47 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
       BrowserView::GetBrowserViewForBrowser(browser()), &outside);
   ASSERT_FALSE(IsPointInPIPFrameView(outside));
   ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(outside));
-  WaitForTopBarAnimations(
-      pip_frame_view()->GetRenderInactiveAnimationsForTesting());
-  ASSERT_FALSE(
-      IsButtonVisible(pip_frame_view()->GetBackToTabButtonForTesting()));
-  ASSERT_FALSE(IsButtonVisible(pip_frame_view()->GetCloseButtonForTesting()));
+  ASSERT_TRUE(WaitForTopBarActiveStatus(/*active=*/false));
+  WaitForTopBarAnimations(GetTopBarAnimations(/*active=*/false));
+  ASSERT_FALSE(IsButtonVisible(GetBackToTabButton()));
+  ASSERT_FALSE(IsButtonVisible(GetCloseButton()));
 
   // Move mouse back in pip window should activate title.
   ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(center));
-  WaitForTopBarAnimations(
-      pip_frame_view()->GetRenderActiveAnimationsForTesting());
-  ASSERT_TRUE(
-      IsButtonVisible(pip_frame_view()->GetBackToTabButtonForTesting()));
-  ASSERT_TRUE(IsButtonVisible(pip_frame_view()->GetCloseButtonForTesting()));
+  ASSERT_TRUE(WaitForTopBarActiveStatus(/*active=*/true));
+  WaitForTopBarAnimations(GetTopBarAnimations(/*active=*/true));
+  ASSERT_TRUE(IsButtonVisible(GetBackToTabButton()));
+  ASSERT_TRUE(IsButtonVisible(GetCloseButton()));
 }
 
 // Verifies that PipTopBarAnimationController::Delegate is wired up correctly:
-// activating/deactivating the top bar via UpdateTopBarView() should drive
+// activating/deactivating the top bar should drive
 // ApplyTopBarForegroundColor() through to the window title, changing its
 // enabled color between the active and inactive steady states.
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureTitleActivationTest,
                        TopBarForegroundColorChangesWithActivation) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  pip_frame_view()->UpdateTopBarView(/*render_active=*/false);
-  WaitForTopBarAnimations(
-      pip_frame_view()->GetRenderInactiveAnimationsForTesting());
-  const SkColor inactive_color =
-      pip_frame_view()->GetWindowTitleForTesting()->GetEnabledColor();
+  UpdateTopBarView(/*active=*/false);
+  WaitForTopBarAnimations(GetTopBarAnimations(/*active=*/false));
+  const SkColor inactive_color = GetWindowTitle()->GetEnabledColor();
 
-  pip_frame_view()->UpdateTopBarView(/*render_active=*/true);
-  WaitForTopBarAnimations(
-      pip_frame_view()->GetRenderActiveAnimationsForTesting());
-  const SkColor active_color =
-      pip_frame_view()->GetWindowTitleForTesting()->GetEnabledColor();
+  UpdateTopBarView(/*active=*/true);
+  WaitForTopBarAnimations(GetTopBarAnimations(/*active=*/true));
+  const SkColor active_color = GetWindowTitle()->GetEnabledColor();
 
   EXPECT_NE(inactive_color, active_color);
 
-  pip_frame_view()->UpdateTopBarView(/*render_active=*/false);
-  WaitForTopBarAnimations(
-      pip_frame_view()->GetRenderInactiveAnimationsForTesting());
-  EXPECT_EQ(inactive_color,
-            pip_frame_view()->GetWindowTitleForTesting()->GetEnabledColor());
+  UpdateTopBarView(/*active=*/false);
+  WaitForTopBarAnimations(GetTopBarAnimations(/*active=*/false));
+  EXPECT_EQ(inactive_color, GetWindowTitle()->GetEnabledColor());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        ResizesToFitModalChildDialogs) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a child dialog that is smaller than the pip window, but has a
   // preferred size that is larger.  Since some dialogs try to match the pip
@@ -564,29 +767,26 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
                       gfx::ScaleToFlooredSize(child_dialog_size, 0.5f));
 
   // The pip window should increase its size to contain the child dialog.
-  gfx::Rect new_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect new_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_NE(initial_pip_bounds, new_pip_bounds);
   EXPECT_GE(new_pip_bounds.width(), child_dialog_size.width());
   EXPECT_GE(new_pip_bounds.height(), child_dialog_size.height());
 
   // Close the dialog.
   child_dialog->CloseNow();
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The pip window should return to its original bounds.
-  EXPECT_EQ(initial_pip_bounds,
-            pip_frame_view()->GetWidget()->GetWindowBoundsInScreen());
+  EXPECT_EQ(initial_pip_bounds, GetPipWidget()->GetWindowBoundsInScreen());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        MultipleChildDialogsRespectPendingBounds) {
   // If a resize is pending due to a child dialog when a second child dialog
   // opens, make sure that the result considers both.
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open one child dialog that's wider and one that's taller.
   const gfx::Size child_dialog_size_1(initial_pip_bounds.width() + 100,
@@ -598,18 +798,17 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
   auto child_dialog_1 =
       OpenChildDialogWithDelegate(child_dialog_size_1, delegate_1.get());
   // Should resize immediately, not pending.
-  EXPECT_FALSE(pip_frame_view()->IsChildResizePendingForTesting());
+  EXPECT_FALSE(IsChildResizePendingForTesting());
 
   auto delegate_2 =
       std::make_unique<ModalWidgetDelegate>(ui::mojom::ModalType::kWindow);
   auto child_dialog_2 =
       OpenChildDialogWithDelegate(child_dialog_size_2, delegate_2.get());
   // Should resize immediately, not pending.
-  EXPECT_FALSE(pip_frame_view()->IsChildResizePendingForTesting());
+  EXPECT_FALSE(IsChildResizePendingForTesting());
 
   // The pip window should increase its size to contain both child dialogs.
-  gfx::Rect new_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect new_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_GE(new_pip_bounds.width(), child_dialog_size_1.width());
   EXPECT_GE(new_pip_bounds.height(), child_dialog_size_2.height());
 }
@@ -618,12 +817,11 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
 // Aura platforms support child widgets that are not desktop widgets. These
 // child widgets are clipped to the bounds of the parent pip window. This test
 // ensures the pip window resizes to contain the child dialog.
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        ResizesToFitNonModalChildDialogs) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a child dialog that is larger than the pip window.
   const gfx::Size child_dialog_size(initial_pip_bounds.width() + 20,
@@ -633,8 +831,7 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
   EXPECT_FALSE(child_dialog->GetIsDesktopWidget());
 
   // The pip window should increase its size to contain the child dialog.
-  gfx::Rect new_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect new_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Most Aura platforms clip non-desktop widgets to the parent bounds. To
   // ensure the child dialog is visible, the pip window needs to resize on those
@@ -650,20 +847,18 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
 
   // Close the dialog.
   child_dialog->CloseNow();
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The pip window should still have its original bounds.
-  EXPECT_EQ(initial_pip_bounds,
-            pip_frame_view()->GetWidget()->GetWindowBoundsInScreen());
+  EXPECT_EQ(initial_pip_bounds, GetPipWidget()->GetWindowBoundsInScreen());
 }
 #endif
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        NoResizeForDesktopChildDialogs) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a desktop child dialog that is larger than the pip window.
   const gfx::Size child_dialog_size(initial_pip_bounds.width() + 20,
@@ -679,18 +874,16 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
 
   // The pip window should not increase in size as the child dialog can draw
   // outside the bounds of the pip window.
-  gfx::Rect new_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect new_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   EXPECT_EQ(initial_pip_bounds, new_pip_bounds);
 
   // Close the dialog.
   child_dialog->CloseNow();
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The pip window should still have its original bounds.
-  EXPECT_EQ(initial_pip_bounds,
-            pip_frame_view()->GetWidget()->GetWindowBoundsInScreen());
+  EXPECT_EQ(initial_pip_bounds, GetPipWidget()->GetWindowBoundsInScreen());
 }
 
 // When a child dialog opens, causing a resize of the pip window, verify that
@@ -699,7 +892,7 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
 // capturing the size properly even if we don't get a widget resize message.  We
 // sometimes don't on ChromeOS when the size is unspecified.  Other platforms
 // seem to get a resize either way.
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        UnsizedWindowResizesProperly) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP({}, kPictureInPictureDocumentPipPage,
                                            SizingMode::kUnsized));
@@ -707,35 +900,32 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
   // Ignore the origin, since the window might be pushed around on the screen
   // when the child dialog causes it to become bigger.  We still want a rect
   // rather than size, since size doesn't support "approximately equal".
-  const auto initial_pip_bounds = gfx::Rect(
-      gfx::Point(),
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen().size());
+  const auto initial_pip_bounds =
+      gfx::Rect(gfx::Point(), GetPipWidget()->GetWindowBoundsInScreen().size());
   const gfx::Size child_dialog_size(initial_pip_bounds.width() + 20,
                                     initial_pip_bounds.height() + 10);
   auto child_dialog =
       OpenChildDialog(child_dialog_size, ui::mojom::ModalType::kWindow);
   child_dialog->CloseNow();
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The pip window should return to its original bounds.  Allow some
   // verification because wayland can be off by one and windows can be off by
   // four.  We're mostly concerned that it's not minimum sized at the origin, so
   // anything close is fine.
-  const auto final_pip_bounds = gfx::Rect(
-      gfx::Point(),
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen().size());
+  const auto final_pip_bounds =
+      gfx::Rect(gfx::Point(), GetPipWidget()->GetWindowBoundsInScreen().size());
   EXPECT_TRUE(initial_pip_bounds.ApproximatelyEqual(final_pip_bounds, 5));
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        RespectsUserLocationChangesAfterChildDialogCloses) {
   if (!PlatformSupportsScreenCoordinates()) {
     GTEST_SKIP() << "Global screen coordinates unavailable";
   }
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a child dialog that is larger than the pip window.
   const gfx::Size child_dialog_size(initial_pip_bounds.width() + 20,
@@ -744,8 +934,7 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
       OpenChildDialog(child_dialog_size, ui::mojom::ModalType::kWindow);
 
   // The pip window should increase its size to contain the child dialog.
-  gfx::Rect new_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect new_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_NE(initial_pip_bounds, new_pip_bounds);
   EXPECT_GE(new_pip_bounds.width(), child_dialog_size.width());
   EXPECT_GE(new_pip_bounds.height(), child_dialog_size.height());
@@ -754,27 +943,25 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
   gfx::Rect moved_bounds = new_pip_bounds;
   moved_bounds.set_x(moved_bounds.x() - 10);
   moved_bounds.set_y(moved_bounds.y() - 10);
-  pip_frame_view()->GetWidget()->SetBounds(moved_bounds);
+  GetPipWidget()->SetBounds(moved_bounds);
 
   // Close the dialog.
   child_dialog->CloseNow();
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // Since the user moved the window but did not resize, it should return to
   // its original size but keep the new position.
   gfx::Rect expected_final_bounds = moved_bounds;
   expected_final_bounds.set_width(initial_pip_bounds.width());
   expected_final_bounds.set_height(initial_pip_bounds.height());
-  EXPECT_EQ(expected_final_bounds,
-            pip_frame_view()->GetWidget()->GetWindowBoundsInScreen());
+  EXPECT_EQ(expected_final_bounds, GetPipWidget()->GetWindowBoundsInScreen());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        RespectsUserBoundsChangesAfterChildDialogCloses) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a child dialog that is larger than the pip window.
   const gfx::Size child_dialog_size(initial_pip_bounds.width() + 20,
@@ -783,8 +970,7 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
       OpenChildDialog(child_dialog_size, ui::mojom::ModalType::kWindow);
 
   // The pip window should increase its size to contain the child dialog.
-  gfx::Rect new_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect new_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_NE(initial_pip_bounds, new_pip_bounds);
   EXPECT_GE(new_pip_bounds.width(), child_dialog_size.width());
   EXPECT_GE(new_pip_bounds.height(), child_dialog_size.height());
@@ -798,30 +984,28 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
     moved_bounds.set_x(moved_bounds.x() - 10);
     moved_bounds.set_y(moved_bounds.y() - 10);
   }
-  pip_frame_view()->GetWidget()->SetBounds(moved_bounds);
+  GetPipWidget()->SetBounds(moved_bounds);
 
   // Close the dialog.
   child_dialog->CloseNow();
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // Since the user both moved and resized the window, it should not change back
   // when the child dialog closes.  We allow a pixel either way because this
   // sometimes rounds from DIP to pixels (wayland).
-  const auto actual_final_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  const auto actual_final_bounds = GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_TRUE(actual_final_bounds.ApproximatelyEqual(moved_bounds, 1));
 }
 
-IN_PROC_BROWSER_TEST_F(
-    PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(
+    PictureInPictureChildDialogResizeTest,
     MoveDuringPendingResizeForChildDialog_SingleChildDialog) {
   if (!PlatformSupportsScreenCoordinates()) {
     GTEST_SKIP() << "Global screen coordinates unavailable";
   }
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a child dialog that is larger than the pip window.
   const gfx::Size child_dialog_size(initial_pip_bounds.width() + 50,
@@ -836,16 +1020,15 @@ IN_PROC_BROWSER_TEST_F(
   // Move the window before the resize timer fires.
   gfx::Rect moved_bounds = initial_pip_bounds;
   moved_bounds.Offset(-100, -100);
-  pip_frame_view()->GetWidget()->SetBounds(moved_bounds);
+  GetPipWidget()->SetBounds(moved_bounds);
 
   // Now, let the timer fire. On Mac, the timer may have already fired at this
   // point, however we call `RunPendingChildResizeForTesting` regardless since
   // if the timer is not running this will be a no-op.
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The pip window should have the same origin as `moved_bounds`.
-  gfx::Rect final_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect final_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_EQ(final_pip_bounds.origin(), moved_bounds.origin());
 
   // The pip window should have greater or equal size than the `moved_bounds`.
@@ -855,16 +1038,15 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_GE(final_pip_bounds.height(), moved_bounds.height());
 }
 
-IN_PROC_BROWSER_TEST_F(
-    PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(
+    PictureInPictureChildDialogResizeTest,
     MoveDuringPendingResizeForChildDialog_MultipleChildDialogs) {
   if (!PlatformSupportsScreenCoordinates()) {
     GTEST_SKIP() << "Global screen coordinates unavailable";
   }
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a child dialog that is larger than the pip window.
   const gfx::Size child_dialog_size(initial_pip_bounds.width() + 50,
@@ -879,22 +1061,21 @@ IN_PROC_BROWSER_TEST_F(
   // Move the window before the resize timer fires.
   gfx::Rect moved_bounds = initial_pip_bounds;
   moved_bounds.Offset(-100, -100);
-  pip_frame_view()->GetWidget()->SetBounds(moved_bounds);
+  GetPipWidget()->SetBounds(moved_bounds);
 
   // Now, let the timer fire. On Mac, the timer may have already fired at this
   // point, however we call `RunPendingChildResizeForTesting` regardless since
   // if the timer is not running this will be a no-op.
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // Opening a second dialog, that is larger than the pip window, should resize
   // the pip window.
   auto child_dialog_2 =
       OpenChildDialog(child_dialog_size, ui::mojom::ModalType::kWindow);
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The pip window should have the same origin as `moved_bounds`.
-  gfx::Rect final_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect final_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_EQ(final_pip_bounds.origin(), moved_bounds.origin());
 
   // The pip window should have greater or equal size than the `moved_bounds`.
@@ -904,15 +1085,14 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_GE(final_pip_bounds.height(), moved_bounds.height());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        MoveDuringPendingResizeForChildDialogAndClose) {
   if (!PlatformSupportsScreenCoordinates()) {
     GTEST_SKIP() << "Global screen coordinates unavailable";
   }
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a child dialog that fits in the pip window.
   const gfx::Size small_child_dialog_size(100, 100);
@@ -921,7 +1101,7 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
   auto child_dialog =
       OpenChildDialogWithDelegate(small_child_dialog_size, delegate.get());
   // Should not be pending yet.
-  EXPECT_FALSE(pip_frame_view()->IsChildResizePendingForTesting());
+  EXPECT_FALSE(IsChildResizePendingForTesting());
 
   // Now resize the child dialog to be larger than the pip window.
   const gfx::Size large_child_dialog_size(initial_pip_bounds.width() + 50,
@@ -930,36 +1110,34 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
   child_dialog->SetSize(large_child_dialog_size);
 
   // Now it should be pending.
-  ASSERT_TRUE(pip_frame_view()->IsChildResizePendingForTesting());
+  ASSERT_TRUE(IsChildResizePendingForTesting());
 
   // Move the window before the resize timer fires.
   gfx::Rect moved_bounds = initial_pip_bounds;
   moved_bounds.Offset(-100, -100);
-  pip_frame_view()->GetWidget()->SetBounds(moved_bounds);
+  GetPipWidget()->SetBounds(moved_bounds);
 
   // Now, let the timer fire.
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // Close the dialog.
   child_dialog->CloseNow();
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The window should return to its original size, but at the new location.
   gfx::Rect expected_final_bounds = moved_bounds;
   expected_final_bounds.set_size(initial_pip_bounds.size());
-  EXPECT_EQ(expected_final_bounds,
-            pip_frame_view()->GetWidget()->GetWindowBoundsInScreen());
+  EXPECT_EQ(expected_final_bounds, GetPipWidget()->GetWindowBoundsInScreen());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        ResizeDuringPendingResizeForChildDialogAndClose) {
   if (!PlatformSupportsScreenCoordinates()) {
     GTEST_SKIP() << "Global screen coordinates unavailable";
   }
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a child dialog that fits.
   const gfx::Size small_child_dialog_size(100, 100);
@@ -967,40 +1145,38 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
       std::make_unique<ModalWidgetDelegate>(ui::mojom::ModalType::kWindow);
   auto child_dialog =
       OpenChildDialogWithDelegate(small_child_dialog_size, delegate.get());
-  EXPECT_FALSE(pip_frame_view()->IsChildResizePendingForTesting());
+  EXPECT_FALSE(IsChildResizePendingForTesting());
 
   // Resize child dialog to be larger.
   const gfx::Size large_child_dialog_size(initial_pip_bounds.width() + 50,
                                           initial_pip_bounds.height() + 50);
   child_dialog->GetContentsView()->SetPreferredSize(large_child_dialog_size);
   child_dialog->SetSize(large_child_dialog_size);
-  ASSERT_TRUE(pip_frame_view()->IsChildResizePendingForTesting());
+  ASSERT_TRUE(IsChildResizePendingForTesting());
 
   // Manually resize the window before the timer fires.
   gfx::Rect user_resized_bounds = initial_pip_bounds;
   user_resized_bounds.Outset(1);
-  pip_frame_view()->GetWidget()->SetBounds(user_resized_bounds);
+  GetPipWidget()->SetBounds(user_resized_bounds);
 
   // The pip window should have the user-defined size.
-  gfx::Rect final_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect final_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_EQ(user_resized_bounds.size(), final_pip_bounds.size());
 
   // Close the dialog.
   child_dialog->CloseNow();
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The size should not change, since the user took control.
   EXPECT_EQ(user_resized_bounds.size(),
-            pip_frame_view()->GetWidget()->GetWindowBoundsInScreen().size());
+            GetPipWidget()->GetWindowBoundsInScreen().size());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        ChildDialogClosureResizesPipWindowToOriginalSize) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a child dialog that is larger than the pip window.
   const gfx::Size child_dialog_size(initial_pip_bounds.width() + 50,
@@ -1009,30 +1185,28 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
       OpenChildDialog(child_dialog_size, ui::mojom::ModalType::kWindow);
 
   // Now, let the timer fire.
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The pip window should increase its size to contain the child dialog.
-  gfx::Rect new_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect new_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_NE(initial_pip_bounds, new_pip_bounds);
   EXPECT_GE(new_pip_bounds.width(), child_dialog_size.width());
   EXPECT_GE(new_pip_bounds.height(), child_dialog_size.height());
 
   // Close the dialog.
   child_dialog->CloseNow();
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The pip window should return to its original size.
   EXPECT_EQ(initial_pip_bounds.size(),
-            pip_frame_view()->GetWidget()->GetWindowBoundsInScreen().size());
+            GetPipWidget()->GetWindowBoundsInScreen().size());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        NoResizeForInvisibleChildDialog) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Create a child dialog that is larger than the pip window, but do not show
   // it.
@@ -1045,7 +1219,7 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
       views::Widget::InitParams::CLIENT_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW);
   init_params.child = true;
-  init_params.parent = pip_frame_view()->GetWidget()->GetNativeView();
+  init_params.parent = GetPipWidget()->GetNativeView();
   init_params.delegate = delegate.get();
 
   auto child_dialog = std::make_unique<views::Widget>(std::move(init_params));
@@ -1053,29 +1227,26 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
   child_dialog->SetSize(child_dialog_size);
 
   // The pip window should not have resized, and no resize should be pending.
-  EXPECT_EQ(initial_pip_bounds,
-            pip_frame_view()->GetWidget()->GetWindowBoundsInScreen());
-  EXPECT_FALSE(pip_frame_view()->IsChildResizePendingForTesting());
+  EXPECT_EQ(initial_pip_bounds, GetPipWidget()->GetWindowBoundsInScreen());
+  EXPECT_FALSE(IsChildResizePendingForTesting());
 
   // Now show the dialog.
   child_dialog->Show();
 
   // The pip window should now resize to contain the child dialog.
   // Since it resizes immediately, it shouldn't be pending.
-  EXPECT_FALSE(pip_frame_view()->IsChildResizePendingForTesting());
+  EXPECT_FALSE(IsChildResizePendingForTesting());
 
-  gfx::Rect new_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect new_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_GE(new_pip_bounds.width(), child_dialog_size.width());
   EXPECT_GE(new_pip_bounds.height(), child_dialog_size.height());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        OneDipFluctuationsDoNotPolluteUserDesiredBounds) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a child dialog.
   const gfx::Size child_dialog_size(initial_pip_bounds.width() + 50,
@@ -1086,64 +1257,60 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
       OpenChildDialogWithDelegate(child_dialog_size, delegate.get());
 
   // PiP window resizes to forced bounds.
-  gfx::Rect forced_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect forced_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Simulate a 1-DIP fluctuation in PiP window bounds (e.g. during drag).
   gfx::Rect fluctuated_bounds = forced_bounds;
   fluctuated_bounds.set_width(forced_bounds.width() + 1);
   fluctuated_bounds.set_height(forced_bounds.height() + 1);
-  pip_frame_view()->GetWidget()->SetBounds(fluctuated_bounds);
+  GetPipWidget()->SetBounds(fluctuated_bounds);
 
   // Close the dialog.
   child_dialog->CloseNow();
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The PiP window should return to its original user-desired bounds,
   // not the fluctuated bounds.
   EXPECT_EQ(initial_pip_bounds.size(),
-            pip_frame_view()->GetWidget()->GetWindowBoundsInScreen().size());
+            GetPipWidget()->GetWindowBoundsInScreen().size());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        ResizesToFitChildDialogThatLaterResizes) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Open a child dialog that is smaller than the pip window.
   const gfx::Size small_child_dialog_size(initial_pip_bounds.width() - 100,
                                           initial_pip_bounds.height() - 100);
   auto child_dialog =
       OpenChildDialog(small_child_dialog_size, ui::mojom::ModalType::kWindow);
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The pip window should not have changed size.
   gfx::Rect pip_bounds_after_small_dialog =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+      GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_EQ(initial_pip_bounds, pip_bounds_after_small_dialog);
 
   // Now, resize the dialog to be larger than the pip window.
   const gfx::Size large_child_dialog_size(initial_pip_bounds.width() + 100,
                                           initial_pip_bounds.height() + 100);
   child_dialog->SetSize(large_child_dialog_size);
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The pip window should increase its size to contain the child dialog.
-  gfx::Rect new_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect new_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
   EXPECT_NE(initial_pip_bounds, new_pip_bounds);
   EXPECT_GE(new_pip_bounds.width(), large_child_dialog_size.width());
   EXPECT_GE(new_pip_bounds.height(), large_child_dialog_size.height());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureChildDialogResizeTest,
                        ChildDialogDoesNotProcessEventsDuringResize) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  gfx::Rect initial_pip_bounds =
-      pip_frame_view()->GetWidget()->GetWindowBoundsInScreen();
+  gfx::Rect initial_pip_bounds = GetPipWidget()->GetWindowBoundsInScreen();
 
   // Create a child dialog that is larger than the pip window.
   const gfx::Size child_dialog_size(initial_pip_bounds.width() + 50,
@@ -1154,14 +1321,13 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
       views::Widget::InitParams::CLIENT_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW);
   init_params.child = true;
-  init_params.parent = pip_frame_view()->GetWidget()->GetNativeView();
+  init_params.parent = GetPipWidget()->GetNativeView();
   init_params.delegate = delegate.get();
   auto child_dialog = std::make_unique<views::Widget>(std::move(init_params));
   child_dialog->GetContentsView()->SetPreferredSize(child_dialog_size);
 
   // Open the dialog but do not run the pending resize yet.
-  EventProcessingBlockedWaiter waiter(child_dialog.get(),
-                                      pip_frame_view()->GetWidget());
+  EventProcessingBlockedWaiter waiter(child_dialog.get(), GetPipWidget());
   child_dialog->Show();
 
   // Wait for the child dialog to not have been able to process events at some
@@ -1176,38 +1342,57 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
   EXPECT_TRUE(waiter.was_event_processing_blocked().value());
 
   // Now, let the timer fire.
-  pip_frame_view()->RunPendingChildResizeForTesting();
+  RunPendingChildResizeForTesting();
 
   // The child dialog should now be able to process events.
   EXPECT_TRUE(
       child_dialog->GetContentsView()->GetCanProcessEventsWithinSubtree());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureTitleActivationTest,
                        TitleActivatesWithOverlayView) {
   // Verify that the title bar is on when the overlay view is shown.
 
   // Pretend that we're in auto-pip so that we get an overlay view.
   content::WebContents* web_contents =
       browser()->GetTabStripModel()->GetActiveWebContents();
-  // Ensure that there is a helper for `web_contents`.  This will no-op if
-  // something has already created it, but right now it's dependent on having
-  // the feature enabled.
-  AutoPictureInPictureTabHelper::CreateForWebContents(web_contents);
   auto* auto_pip_tab_helper =
       AutoPictureInPictureTabHelper::FromWebContents(web_contents);
+  ASSERT_TRUE(auto_pip_tab_helper);
   auto_pip_tab_helper->set_is_in_auto_picture_in_picture_for_testing(true);
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
   // The title buttons should be visible.
-  WaitForTopBarAnimations(
-      pip_frame_view()->GetRenderActiveAnimationsForTesting());
-  ASSERT_TRUE(
-      IsButtonVisible(pip_frame_view()->GetBackToTabButtonForTesting()));
-  ASSERT_TRUE(IsButtonVisible(pip_frame_view()->GetCloseButtonForTesting()));
+  WaitForTopBarAnimations(GetTopBarAnimations(/*active=*/true));
+  ASSERT_TRUE(IsButtonVisible(GetBackToTabButton()));
+  ASSERT_TRUE(IsButtonVisible(GetCloseButton()));
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+class PictureInPictureNativeWindowTest
+    : public PictureInPictureBrowserFrameViewTestBase,
+      public testing::WithParamInterface<bool> {
+ protected:
+  bool UseStandaloneDocumentPip() const override { return GetParam(); }
+
+  bool ShowPageInfoDialog() {
+    if (!UseStandaloneDocumentPip()) {
+      return pip_frame_view()->ShowPageInfoDialog();
+    }
+    auto* frame_view = views::AsViewClass<DocumentPipFrameView>(
+        GetPipWidget()->non_client_view()->frame_view());
+    CHECK(frame_view);
+    return DocumentPipFrameViewTestApi::ShowPageInfo(frame_view);
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PictureInPictureNativeWindowTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Standalone" : "BrowserBacked";
+                         });
+
+IN_PROC_BROWSER_TEST_P(PictureInPictureNativeWindowTest,
                        IsTrackedByTheOcclusionObserver) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
@@ -1221,15 +1406,15 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
 
     // Check that the PictureInPictureOcclusionTracker is observing the
     // document picture-in-picture window.
-    EXPECT_EQ(1u, pip_widgets.size());
-    EXPECT_EQ(pip_frame_view()->GetWidget(), pip_widgets[0]);
+    ASSERT_EQ(1u, pip_widgets.size());
+    EXPECT_EQ(GetPipWidget(), pip_widgets[0]);
   }
 
   // Open the PageInfo dialog and ensure that it's being tracked as well. We
   // don't have a handle to the widget, but we can reasonably assume it's being
   // tracked if the number of tracked widgets is now 2.
   {
-    pip_frame_view()->ShowPageInfoDialog();
+    ASSERT_TRUE(ShowPageInfoDialog());
     std::vector<views::Widget*> pip_widgets =
         occlusion_tracker->GetPictureInPictureWidgetsForTesting();
     EXPECT_EQ(2u, pip_widgets.size());
@@ -1237,24 +1422,44 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
 
   // Close both widgets and ensure they're no longer being tracked.
   {
-    pip_frame_view()->GetWidget()->CloseNow();
+    GetPipWidget()->CloseNow();
     std::vector<views::Widget*> pip_widgets =
         occlusion_tracker->GetPictureInPictureWidgetsForTesting();
     EXPECT_EQ(0u, pip_widgets.size());
   }
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+class PictureInPictureWindowTitleTest
+    : public PictureInPictureBrowserFrameViewTestBase,
+      public testing::WithParamInterface<bool> {
+ protected:
+  bool UseStandaloneDocumentPip() const override { return GetParam(); }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PictureInPictureWindowTitleTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Standalone" : "BrowserBacked";
+                         });
+
+IN_PROC_BROWSER_TEST_P(PictureInPictureWindowTitleTest,
                        WindowTitleUsesOpenersTitle) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
+  std::u16string window_title;
+  if (UseStandaloneDocumentPip()) {
+    window_title = GetPipWidget()->widget_delegate()->GetWindowTitle();
+  } else {
+    window_title =
+        WindowMetadataController::From(
+            pip_frame_view()->GetBrowserView()->browser())
+            ->GetWindowTitleForCurrentTab(/*include_app_name=*/false);
+  }
+
   // The window title for the document picture-in-picture window should use the
   // title from the opener page.
-  EXPECT_EQ(u"Document Picture-in-Picture",
-            WindowMetadataController::From(
-                pip_frame_view()->GetBrowserView()->browser())
-                ->GetWindowTitleForCurrentTab(
-                    /*include_app_name=*/false));
+  EXPECT_EQ(u"Document Picture-in-Picture", window_title);
 }
 
 IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
@@ -1281,17 +1486,15 @@ IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
 // When a Chrome window goes into fullscreen while a document picture-in-picture
 // window is open, the document picture-in-picture window should show up on top
 // of the fullscreen Chrome window.
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureNativeWindowTest,
                        WindowDisplaysOnFullscreenSpaces) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
-  browser()
-      ->GetFeatures()
-      .exclusive_access_manager()
+  ExclusiveAccessManager::From(browser())
       ->fullscreen_controller()
       ->ToggleBrowserFullscreenMode(/*user_initiated=*/true);
 
-  PictureInPictureWidgetVisibilityTracker(pip_frame_view()->GetWidget())
+  PictureInPictureWidgetVisibilityTracker(GetPipWidget())
       .WaitForVisibilityState(true);
 }
 #endif  // BUILDFLAG(IS_MAC)
@@ -1330,7 +1533,7 @@ class FakeLinuxUiGetter : public ui::LinuxUiGetter {
 };
 
 class PictureInPictureBrowserFrameViewLinuxNoClientNativeDecorationsTest
-    : public PictureInPictureBrowserFrameViewTest {
+    : public PictureInPictureNativeWindowTest {
  public:
   void SetUpOnMainThread() override {
     // Create a fake UI getter, which will automatically set itself as the
@@ -1339,17 +1542,25 @@ class PictureInPictureBrowserFrameViewLinuxNoClientNativeDecorationsTest
     linux_ui_getter_ = std::make_unique<FakeLinuxUiGetter>();
     ThemeServiceFactory::GetForProfile(browser()->GetProfile())
         ->UseSystemTheme();
-    PictureInPictureBrowserFrameViewTest::SetUpOnMainThread();
+    PictureInPictureNativeWindowTest::SetUpOnMainThread();
   }
 
  private:
   std::unique_ptr<ui::LinuxUiGetter> linux_ui_getter_;
 };
 
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    PictureInPictureBrowserFrameViewLinuxNoClientNativeDecorationsTest,
+    testing::Bool(),
+    [](const testing::TestParamInfo<bool>& info) {
+      return info.param ? "Standalone" : "BrowserBacked";
+    });
+
 // Regression test for https://crbug.com/325459394:
 // PiP should not crash if the Linux native theme does not draw client-side
 // frame decorations.
-IN_PROC_BROWSER_TEST_F(
+IN_PROC_BROWSER_TEST_P(
     PictureInPictureBrowserFrameViewLinuxNoClientNativeDecorationsTest,
     DoesNotCrash) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
@@ -1357,50 +1568,92 @@ IN_PROC_BROWSER_TEST_F(
 
 #endif
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+class PictureInPictureReturnToOpenerTest
+    : public PictureInPictureTitleActivationTest {};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PictureInPictureReturnToOpenerTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Standalone" : "BrowserBacked";
+                         });
+
+IN_PROC_BROWSER_TEST_P(PictureInPictureReturnToOpenerTest,
                        RespectsDisallowReturnToOpenerWhenDefault) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
   // The back-to-tab button should exist when `disallowReturnToOpener` is not
   // specified.
-  EXPECT_NE(nullptr, pip_frame_view()->GetBackToTabButtonForTesting());
+  EXPECT_NE(nullptr, GetBackToTabButton());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureReturnToOpenerTest,
                        RespectsDisallowReturnToOpenerWhenTrue) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP(/*disallow_return_to_opener=*/true));
 
   // The back-to-tab button should not exist when `disallowReturnToOpener` is
   // true.
-  EXPECT_EQ(nullptr, pip_frame_view()->GetBackToTabButtonForTesting());
+  EXPECT_EQ(nullptr, GetBackToTabButton());
 }
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureReturnToOpenerTest,
                        RespectsDisallowReturnToOpenerWhenFalse) {
   ASSERT_NO_FATAL_FAILURE(
       SetUpDocumentPIP(/*disallow_return_to_opener=*/false));
 
   // The back-to-tab button should exist when `disallowReturnToOpener` is false.
-  EXPECT_NE(nullptr, pip_frame_view()->GetBackToTabButtonForTesting());
+  EXPECT_NE(nullptr, GetBackToTabButton());
 }
 
 #if !BUILDFLAG(IS_WIN)
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+class PictureInPictureFadeAnimationTest
+    : public PictureInPictureBrowserFrameViewTestBase,
+      public testing::WithParamInterface<bool> {
+ protected:
+  bool UseStandaloneDocumentPip() const override { return GetParam(); }
+
+  PictureInPictureWidgetFadeAnimator* GetFadeAnimator() {
+    if (!UseStandaloneDocumentPip()) {
+      return pip_frame_view()->GetFadeAnimatorForTesting();
+    }
+    auto* host = DocumentPipHost::FromWebContents(
+        browser()->GetTabStripModel()->GetActiveWebContents());
+    CHECK(host);
+    return DocumentPipHostTestApi::GetFadeAnimator(host);
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PictureInPictureFadeAnimationTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Standalone" : "BrowserBacked";
+                         });
+
+IN_PROC_BROWSER_TEST_P(PictureInPictureFadeAnimationTest,
                        FadeInAnimationIsUsedOnWindowShow) {
   // Set up document PiP.
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
   // Get the PiP fade animator and verify the expected fade in calls count.
-  PictureInPictureWidgetFadeAnimator* pip_fade_animator =
-      pip_frame_view()->GetFadeAnimatorForTesting();
-  EXPECT_NE(nullptr, pip_fade_animator);
+  PictureInPictureWidgetFadeAnimator* pip_fade_animator = GetFadeAnimator();
+  ASSERT_NE(nullptr, pip_fade_animator);
   EXPECT_EQ(1, pip_fade_animator->GetFadeInCallsCountForTesting());
 }
 #endif
 
-IN_PROC_BROWSER_TEST_P(PictureInPictureBrowserFrameViewTest,
+class PictureInPictureAnimationTimingTest
+    : public PictureInPictureFrameControlsTestBase,
+      public WithParamInterface<AnimationTimingTestParam> {
+ protected:
+  bool UseStandaloneDocumentPip() const override {
+    return GetParam().standalone;
+  }
+};
+
+IN_PROC_BROWSER_TEST_P(PictureInPictureAnimationTimingTest,
                        TestAnimationTiming) {
-  const AnimationTimingTestCase& test_case = GetParam();
+  const AnimationTimingTestCase& test_case = GetParam().test_case;
   test_case.has_content_settings_view
       ? SetUpDocumentPIP(
             /*disallow_return_to_opener=*/test_case.disallow_return_to_opener,
@@ -1408,14 +1661,11 @@ IN_PROC_BROWSER_TEST_P(PictureInPictureBrowserFrameViewTest,
       : SetUpDocumentPIP(
             /*disallow_return_to_opener=*/test_case.disallow_return_to_opener);
 
-  // Move mouse to the center of the pip window should activate title.
-  gfx::Point center = pip_frame_view()->GetLocalBounds().CenterPoint();
-  views::View::ConvertPointToScreen(pip_frame_view(), &center);
-  ASSERT_TRUE(IsPointInPIPFrameView(center));
-  UpdateTopBarView(center);
+  // Drive the transition directly: Wayland has no global screen coordinates
+  // for moving the pointer outside the window. TitleActivation covers input.
+  UpdateTopBarView(/*active=*/true);
 
-  AnimationWaiter show_animation_waiter(
-      pip_frame_view()->GetRenderActiveAnimationsForTesting());
+  AnimationWaiter show_animation_waiter(GetTopBarAnimations(/*active=*/true));
   for (size_t i = 0; i < test_case.show_expectations.size(); ++i) {
     const auto& show_expectations = test_case.show_expectations[i];
 
@@ -1426,33 +1676,22 @@ IN_PROC_BROWSER_TEST_P(PictureInPictureBrowserFrameViewTest,
     show_animation_waiter.WaitForAnimationInterval(
         show_expectations.time_delta);
     if (test_case.disallow_return_to_opener) {
-      DCHECK(!show_expectations.expected_back_to_tab_button_is_visible);
-      ASSERT_EQ(nullptr, pip_frame_view()->GetBackToTabButtonForTesting());
+      CHECK(!show_expectations.expected_back_to_tab_button_is_visible,
+            base::NotFatalUntil::M162);
+      ASSERT_EQ(nullptr, GetBackToTabButton());
     } else {
-      ASSERT_EQ(
-          show_expectations.expected_back_to_tab_button_is_visible,
-          IsButtonVisible(pip_frame_view()->GetBackToTabButtonForTesting()));
+      ASSERT_EQ(show_expectations.expected_back_to_tab_button_is_visible,
+                IsButtonVisible(GetBackToTabButton()));
     }
     ASSERT_EQ(show_expectations.expected_close_button_is_visible,
-              IsButtonVisible(pip_frame_view()->GetCloseButtonForTesting()));
+              IsButtonVisible(GetCloseButton()));
     ASSERT_EQ(show_expectations.expected_has_any_visible_content_setting_views,
-              pip_frame_view()->HasAnyVisibleContentSettingViews());
+              HasAnyVisibleContentSettingViews());
   }
 
-  // Move mouse to the top-left corner of the main browser window (out side of
-  // the pip window) should deactivate the title.
-  gfx::Point outside = gfx::Point();
-  if (PlatformSupportsScreenCoordinates()) {
-    views::View::ConvertPointToScreen(
-        BrowserView::GetBrowserViewForBrowser(browser()), &outside);
-    // This check only makes sense in platforms that support global screen
-    // coordinates.
-    ASSERT_FALSE(IsPointInPIPFrameView(outside));
-  }
-  UpdateTopBarView(outside);
+  UpdateTopBarView(/*active=*/false);
 
-  AnimationWaiter hide_animation_waiter(
-      pip_frame_view()->GetRenderInactiveAnimationsForTesting());
+  AnimationWaiter hide_animation_waiter(GetTopBarAnimations(/*active=*/false));
   for (size_t i = 0; i < test_case.hide_expectations.size(); ++i) {
     const auto& hide_expectations = test_case.hide_expectations[i];
 
@@ -1463,24 +1702,24 @@ IN_PROC_BROWSER_TEST_P(PictureInPictureBrowserFrameViewTest,
     hide_animation_waiter.WaitForAnimationInterval(
         hide_expectations.time_delta);
     if (test_case.disallow_return_to_opener) {
-      DCHECK(!hide_expectations.expected_back_to_tab_button_is_visible);
-      ASSERT_EQ(nullptr, pip_frame_view()->GetBackToTabButtonForTesting());
+      CHECK(!hide_expectations.expected_back_to_tab_button_is_visible,
+            base::NotFatalUntil::M162);
+      ASSERT_EQ(nullptr, GetBackToTabButton());
     } else {
-      ASSERT_EQ(
-          hide_expectations.expected_back_to_tab_button_is_visible,
-          IsButtonVisible(pip_frame_view()->GetBackToTabButtonForTesting()));
+      ASSERT_EQ(hide_expectations.expected_back_to_tab_button_is_visible,
+                IsButtonVisible(GetBackToTabButton()));
     }
     ASSERT_EQ(hide_expectations.expected_close_button_is_visible,
-              IsButtonVisible(pip_frame_view()->GetCloseButtonForTesting()));
+              IsButtonVisible(GetCloseButton()));
     ASSERT_EQ(hide_expectations.expected_has_any_visible_content_setting_views,
-              pip_frame_view()->HasAnyVisibleContentSettingViews());
+              HasAnyVisibleContentSettingViews());
   }
 }
 
 INSTANTIATE_TEST_SUITE_P(
     AnimationTimingTestSuiteInstantiation,
-    PictureInPictureBrowserFrameViewTest,
-    testing::ValuesIn<AnimationTimingTestCase>({
+    PictureInPictureAnimationTimingTest,
+    testing::ValuesIn(WithBothBackends({
         {.test_name = "WithoutContentSettingView_WithBackToTabButton",
          .has_content_settings_view = false,
          .disallow_return_to_opener = false,
@@ -1741,25 +1980,28 @@ INSTANTIATE_TEST_SUITE_P(
                   .expected_back_to_tab_button_is_visible = std::nullopt,
                   .expected_close_button_is_visible = false,
                   .expected_has_any_visible_content_setting_views = true}}},
-    }),
-    [](const testing::TestParamInfo<AnimationTimingTest::ParamType>& info) {
-      return info.param.test_name;
+    })),
+    [](const testing::TestParamInfo<AnimationTimingTestParam>& info) {
+      return info.param.test_case.test_name +
+             (info.param.standalone ? "_Standalone" : "_BrowserBacked");
     });
 
-IN_PROC_BROWSER_TEST_F(PictureInPictureBrowserFrameViewTest,
+IN_PROC_BROWSER_TEST_P(PictureInPictureNativeWindowTest,
                        GetNonDecoratedClientAreaBoundsInScreen) {
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
-  auto* pip_widget = pip_frame_view()->GetWidget();
+  auto* pip_widget = GetPipWidget();
 
-  gfx::Rect bounds =
-      pip_frame_view()->GetNonDecoratedClientAreaBoundsInScreen();
+  gfx::Rect bounds = pip_widget->non_client_view()
+                         ->frame_view()
+                         ->GetNonDecoratedClientAreaBoundsInScreen();
   EXPECT_FALSE(bounds.IsEmpty());
 
   // The bounds should be contained within the widget bounds in screen.
   EXPECT_TRUE(pip_widget->GetWindowBoundsInScreen().Contains(bounds));
 }
 
-class PiPIndicatorsBrowsertest : public PictureInPictureBrowserFrameViewTest {
+class PiPIndicatorsBrowsertest : public PictureInPictureFrameControlsTestBase,
+                                 public testing::WithParamInterface<bool> {
  public:
   PiPIndicatorsBrowsertest() = default;
 
@@ -1772,26 +2014,36 @@ class PiPIndicatorsBrowsertest : public PictureInPictureBrowserFrameViewTest {
   const gfx::AnimationTestApi::RenderModeResetter disable_rich_animations_ =
       gfx::AnimationTestApi::SetRichAnimationRenderMode(
           gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED);
+
+ protected:
+  bool UseStandaloneDocumentPip() const override { return GetParam(); }
 };
 
-IN_PROC_BROWSER_TEST_F(PiPIndicatorsBrowsertest, TestMediaBlockedIndicators) {
+INSTANTIATE_TEST_SUITE_P(All,
+                         PiPIndicatorsBrowsertest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Standalone" : "BrowserBacked";
+                         });
+
+IN_PROC_BROWSER_TEST_P(PiPIndicatorsBrowsertest, TestMediaBlockedIndicators) {
   ASSERT_NO_FATAL_FAILURE(
       SetUpDocumentPIP({}, kPictureInPictureDocumentPipPage));
 
-  content::WebContents* pip_web_contents = pip_frame_view()
-                                               ->GetBrowserView()
-                                               ->browser()
-                                               ->GetTabStripModel()
-                                               ->GetActiveWebContents();
+  content::WebContents* pip_web_contents =
+      PictureInPictureWindowManager::GetInstance()->GetChildWebContents();
   ASSERT_TRUE(pip_web_contents);
 
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
   ASSERT_TRUE(browser_view);
-  ASSERT_TRUE(browser_view->GetLocationBarView());
-  PermissionDashboardView* permission_dashboard_view =
-      browser_view->GetLocationBarView()->permission_dashboard_view();
-
-  ASSERT_TRUE(permission_dashboard_view);
+  LocationBar* location_bar = browser_view->GetLocationBar();
+  ASSERT_TRUE(location_bar);
+  PermissionDashboardController* permission_dashboard_controller =
+      location_bar->GetPermissionDashboardController();
+  ASSERT_TRUE(permission_dashboard_controller);
+  PermissionDashboardInterface* permission_dashboard =
+      permission_dashboard_controller->permission_dashboard();
+  ASSERT_TRUE(permission_dashboard);
 
   permissions::PermissionRequestManager::FromWebContents(pip_web_contents)
       ->set_auto_response_for_test(
@@ -1800,7 +2052,7 @@ IN_PROC_BROWSER_TEST_F(PiPIndicatorsBrowsertest, TestMediaBlockedIndicators) {
   // Request microphone permission and wait for the mic indicator to expand.
   {
     ChipAnimationObserver chip_animation_observer(
-        permission_dashboard_view->GetIndicatorChip());
+        permission_dashboard->GetIndicatorChip());
     chip_animation_observer.quit_on_event =
         ChipAnimationObserver::QuitOnEvent::kExpand;
 
@@ -1825,15 +2077,15 @@ resolve('denied')
   }
 
   // Blocked LHS indicator should be visible.
-  EXPECT_TRUE(permission_dashboard_view->GetVisible());
+  EXPECT_TRUE(permission_dashboard->GetVisible());
   // Blocked media indicator is not supported by PiP window, hence it should not
   // be shown.
-  EXPECT_FALSE(pip_frame_view()->HasAnyVisibleContentSettingViews());
+  EXPECT_FALSE(HasAnyVisibleContentSettingViews());
 
   // Wait for the LHS indicator to disappear.
   {
     ChipAnimationObserver chip_animation_observer(
-        permission_dashboard_view->GetIndicatorChip());
+        permission_dashboard->GetIndicatorChip());
     chip_animation_observer.quit_on_event =
         ChipAnimationObserver::QuitOnEvent::kVisibilityFalse;
 
@@ -1842,10 +2094,10 @@ resolve('denied')
   }
 
   // Blocked LHS indicator is hidden.
-  EXPECT_FALSE(permission_dashboard_view->GetVisible());
+  EXPECT_FALSE(permission_dashboard->GetVisible());
   // The indicator should not be visible in PiP window because it is not
   // supported.
-  EXPECT_FALSE(pip_frame_view()->HasAnyVisibleContentSettingViews());
+  EXPECT_FALSE(HasAnyVisibleContentSettingViews());
 }
 
 }  // namespace

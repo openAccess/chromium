@@ -27,7 +27,6 @@
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/settings/device_settings_service.h"
 #include "chrome/browser/first_run/first_run.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chromeos/ash/components/channel/channel_info.h"
 #include "chromeos/ash/components/report/device_metrics/use_case/real_psm_client_manager.h"
 #include "chromeos/ash/components/report/proto/fresnel_service.pb.h"
@@ -257,7 +256,7 @@ void ReportControllerInitializer::OwnershipStatusChanged() {
 void ReportControllerInitializer::OnFirstRunSentinelCreationTimeRead(
     base::Time first_chrome_run_time) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(state_, State::kWaitingForStartupDelay);
+  CHECK_EQ(state_, State::kWaitingForStartupDelay, base::NotFatalUntil::M160);
 
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
@@ -271,7 +270,7 @@ void ReportControllerInitializer::OnFirstRunSentinelCreationTimeRead(
 base::TimeDelta ReportControllerInitializer::DetermineStartUpDelay(
     base::Time chrome_first_run_ts) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(state_, State::kWaitingForStartupDelay);
+  CHECK_EQ(state_, State::kWaitingForStartupDelay, base::NotFatalUntil::M160);
 
   // Wait at least 1 hour from the first chrome run sentinel file creation
   // time. This creation time is used as an indicator of when the device last
@@ -323,7 +322,7 @@ void ReportControllerInitializer::OnOobeFileWritten(
     base::RepeatingCallback<base::TimeDelta()> check_oobe_completed_callback,
     base::TimeDelta time_since_oobe_file_written) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(state_, State::kWaitingForOobeCompleted);
+  CHECK_EQ(state_, State::kWaitingForOobeCompleted, base::NotFatalUntil::M160);
 
   // If the OOBE completed file isn't created yet,
   // time_since_oobe_file_written returns base::TimeDelta().
@@ -358,7 +357,8 @@ void ReportControllerInitializer::OnOobeFileWritten(
 void ReportControllerInitializer::CheckTrustedStatus() {
   SetState(State::kWaitingForDeviceSettingsTrusted);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(state_, State::kWaitingForDeviceSettingsTrusted);
+  CHECK_EQ(state_, State::kWaitingForDeviceSettingsTrusted,
+           base::NotFatalUntil::M160);
 
   // Device is owned, confirm the settings can be trusted.
   CrosSettingsProvider::TrustedStatus status =
@@ -398,7 +398,8 @@ void ReportControllerInitializer::CheckTrustedStatus() {
 void ReportControllerInitializer::OnLastPowerwashTimeRead(
     base::Time last_powerwash_gmt) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(state_, State::kWaitingForLastPowerwashTime);
+  CHECK_EQ(state_, State::kWaitingForLastPowerwashTime,
+           base::NotFatalUntil::M160);
 
   // Default values before handling last powerwash time.
   // Variable is based off GMT YYYY-WW just like ActivateDate VPD field.

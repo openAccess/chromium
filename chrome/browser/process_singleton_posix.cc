@@ -167,7 +167,7 @@ void CloseSocket(int fd) {
 
 // Write a message to a socket fd.
 bool WriteToSocket(int fd, std::string_view message) {
-  DCHECK(!message.empty());
+  CHECK(!message.empty(), base::NotFatalUntil::M162);
   while (!message.empty()) {
     ssize_t rv = HANDLE_EINTR(write(fd, message.data(), message.size()));
     if (rv < 0) {
@@ -296,7 +296,9 @@ int SetupSocketOnly() {
   int sock = socket(PF_UNIX, SOCK_STREAM, 0);
   PCHECK(sock >= 0) << "socket() failed";
 
-  DCHECK(base::SetNonBlocking(sock)) << "Failed to make non-blocking socket.";
+  if (!base::SetNonBlocking(sock)) {
+    PLOG(ERROR) << "Failed to make non-blocking socket.";
+  }
   int rv = SetCloseOnExec(sock);
   DCHECK_EQ(0, rv) << "Failed to set CLOEXEC on socket.";
 
@@ -532,7 +534,7 @@ class ProcessSingleton::LinuxWatcher
           ui_task_runner_(ui_task_runner),
           fd_(fd),
           bytes_read_(0) {
-      DCHECK_CURRENTLY_ON(BrowserThread::IO);
+      CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M162);
       // Wait for reads.
       fd_watch_controller_ = base::FileDescriptorWatcher::WatchReadable(
           fd, base::BindRepeating(&SocketReader::OnSocketCanReadWithoutBlocking,
@@ -555,7 +557,7 @@ class ProcessSingleton::LinuxWatcher
     void OnSocketCanReadWithoutBlocking();
 
     void CleanupAndDeleteSelf() {
-      DCHECK_CURRENTLY_ON(BrowserThread::IO);
+      CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M162);
 
       parent_->RemoveSocketReader(this);
       // We're deleted beyond this point.
@@ -613,7 +615,7 @@ class ProcessSingleton::LinuxWatcher
   friend class base::DeleteHelper<ProcessSingleton::LinuxWatcher>;
 
   ~LinuxWatcher() {
-    DCHECK_CURRENTLY_ON(BrowserThread::IO);
+    CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M162);
   }
 
   void OnSocketCanReadWithoutBlocking(int socket);
@@ -635,7 +637,7 @@ class ProcessSingleton::LinuxWatcher
 
 void ProcessSingleton::LinuxWatcher::OnSocketCanReadWithoutBlocking(
     int socket) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M162);
   // Accepting incoming client.
   SockaddrUn from;
   socklen_t from_len = sizeof(from);
@@ -645,14 +647,15 @@ void ProcessSingleton::LinuxWatcher::OnSocketCanReadWithoutBlocking(
     PLOG(ERROR) << "accept() failed";
     return;
   }
-  DCHECK(base::SetNonBlocking(connection_socket))
-      << "Failed to make non-blocking socket.";
+  if (!base::SetNonBlocking(connection_socket)) {
+    PLOG(ERROR) << "Failed to make non-blocking socket.";
+  }
   readers_.insert(
       std::make_unique<SocketReader>(this, ui_task_runner_, connection_socket));
 }
 
 void ProcessSingleton::LinuxWatcher::StartListening(int socket) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M162);
   // Watch for client connections on this socket.
   socket_watcher_ = base::FileDescriptorWatcher::WatchReadable(
       socket, base::BindRepeating(&LinuxWatcher::OnSocketCanReadWithoutBlocking,
@@ -662,8 +665,8 @@ void ProcessSingleton::LinuxWatcher::StartListening(int socket) {
 void ProcessSingleton::LinuxWatcher::HandleMessage(
     const std::string& current_dir, const std::vector<std::string>& argv,
     SocketReader* reader) {
-  DCHECK(ui_task_runner_->BelongsToCurrentThread());
-  DCHECK(reader);
+  CHECK(ui_task_runner_->BelongsToCurrentThread(), base::NotFatalUntil::M162);
+  CHECK(reader, base::NotFatalUntil::M162);
 
   if (parent_ && parent_->notification_callback_.Run(
                      base::CommandLine(argv), base::FilePath(current_dir))) {
@@ -680,8 +683,8 @@ void ProcessSingleton::LinuxWatcher::HandleMessage(
 }
 
 void ProcessSingleton::LinuxWatcher::RemoveSocketReader(SocketReader* reader) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(reader);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M162);
+  CHECK(reader, base::NotFatalUntil::M162);
   auto it = readers_.find(reader);
   readers_.erase(it);
 }
@@ -692,7 +695,7 @@ void ProcessSingleton::LinuxWatcher::RemoveSocketReader(SocketReader* reader) {
 
 void ProcessSingleton::LinuxWatcher::SocketReader::
     OnSocketCanReadWithoutBlocking() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M162);
   bytes_read_ += ReadFromSocketWithTimeout(
       fd_, base::span(buf_).subspan(bytes_read_), base::Seconds(0));
 
@@ -788,8 +791,8 @@ ProcessSingleton::NotifyResult ProcessSingleton::NotifyOtherProcessWithTimeout(
     int retry_attempts,
     const base::TimeDelta& timeout,
     bool kill_unresponsive) {
-  DCHECK_GE(retry_attempts, 0);
-  DCHECK_GE(timeout.InMicroseconds(), 0);
+  CHECK_GE(retry_attempts, 0, base::NotFatalUntil::M162);
+  CHECK_GE(timeout.InMicroseconds(), 0, base::NotFatalUntil::M162);
 
   base::TimeDelta sleep_interval = timeout / retry_attempts;
 
@@ -1090,10 +1093,11 @@ bool ProcessSingleton::Create() {
 }
 
 void ProcessSingleton::StartWatching() {
-  DCHECK_GE(sock_, 0);
-  DCHECK(!watcher_);
+  CHECK_GE(sock_, 0, base::NotFatalUntil::M162);
+  CHECK(!watcher_, base::NotFatalUntil::M162);
   watcher_ = base::MakeRefCounted<LinuxWatcher>(this);
-  DCHECK(BrowserThread::IsThreadInitialized(BrowserThread::IO));
+  CHECK(BrowserThread::IsThreadInitialized(BrowserThread::IO),
+        base::NotFatalUntil::M162);
   content::GetIOThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce(&ProcessSingleton::LinuxWatcher::StartListening,
                                 watcher_, sock_));

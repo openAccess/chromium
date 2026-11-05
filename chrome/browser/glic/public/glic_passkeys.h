@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_GLIC_PUBLIC_GLIC_PASSKEYS_H_
 
 #include "base/types/pass_key.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "chrome/browser/glic/public/glic_context_menu_invocation_helper.h"
 
 namespace tabs {
@@ -16,16 +16,22 @@ class TabInterface;
 namespace extensions {
 class GlicPrivateInvokeFunction;
 class PdfViewerPrivateGlicSummarizeFunction;
-}
+}  // namespace extensions
 
 namespace indigo {
 class IndigoPageActionController;
 }
 
+class ContextHubPageHandler;
 class GlicPasswordChangeActuator;
+
+namespace actor {
+class ActorGeminiPanelToolBrowserTest;
+}
 
 namespace ttc {
 class AiOverlayTools;
+class ToolController;
 }
 
 namespace skills {
@@ -37,6 +43,8 @@ namespace glic {
 
 class GlicExperimentalTriggeringCoordinator;
 class GlicInternalsPageHandler;
+class SelectionOverlayController;
+class SelectionSuggestion;
 
 template <mojom::InvocationSource Source>
 class AndroidAutoSubmitPasskeyHelper;
@@ -54,10 +62,12 @@ class InvokeWithAutoSubmitPasskeyProvider {
   // friend class SomeClassThatNeedsAutoSubmit;
   // friend void SomeClass::SomeFunctionThatNeedsAutoSubmit();
   friend void GlicContextMenuInvocationHelper::HandleContextualMenuClick(
-      tabs::TabInterface* tab, const std::u16string& selection_text,
+      tabs::TabInterface* tab,
+      const std::u16string& selection_text,
       content::GlobalRenderFrameHostId rfh_id);
   friend class extensions::GlicPrivateInvokeFunction;
   friend class extensions::PdfViewerPrivateGlicSummarizeFunction;
+  friend class ::ContextHubPageHandler;
   friend class ::GlicPasswordChangeActuator;
   friend class GlicInternalsPageHandler;
   friend class GlicInstanceCoordinatorBrowserTest;
@@ -66,9 +76,13 @@ class InvokeWithAutoSubmitPasskeyProvider {
   friend class GlicApiTestPasskeys;
   friend class GlicExperimentalTriggeringCoordinator;
   friend class GlicCueTarget;
-  friend class GlicSelectionObserver;
+  friend class GlicSelectionWidgetController;
+  friend class SelectionOverlayController;
+  friend class SelectionSuggestion;
   friend class ::indigo::IndigoPageActionController;
+  friend class ::actor::ActorGeminiPanelToolBrowserTest;
   friend class ::ttc::AiOverlayTools;
+  friend class ::ttc::ToolController;
   friend class ::skills::SkillsUiTabController;
   friend class ::skills::SkillsInvocationInteractiveUiTest;
   friend class AndroidAutoSubmitPasskeyHelper<

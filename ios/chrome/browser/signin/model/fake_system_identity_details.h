@@ -11,9 +11,7 @@
 
 #import "base/containers/flat_map.h"
 #import "base/functional/callback_forward.h"
-#import "components/signin/public/identity_manager/account_capabilities.h"
 #import "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
-#import "ios/chrome/browser/signin/model/capabilities_types.h"
 #import "ios/chrome/browser/signin/model/refresh_access_token_error.h"
 #import "ios/chrome/browser/signin/model/system_identity_manager.h"
 
@@ -42,6 +40,9 @@ using GetAccessTokenRequestCallback = base::RepeatingCallback<void(
 
 // The avatar cached for the associated SystemIdentity. May be nil.
 @property(nonatomic, strong) UIImage* cachedAvatar;
+
+// The hosted domain cached for the associated SystemIdentity. May be nil.
+@property(nonatomic, copy) NSString* cachedHostedDomain;
 
 // Returns YES when `cachedAvatar` has been updated. This property needs to be
 // reset to NO after the avatar has been fetched (see

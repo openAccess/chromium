@@ -38,12 +38,12 @@
 #import "ios/chrome/browser/shared/public/commands/credential_provider_promo_commands.h"
 #import "ios/chrome/browser/shared/public/commands/promos_manager_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/commands/whats_new_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
@@ -69,8 +69,7 @@ class TipsNotificationClientTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
@@ -346,18 +345,20 @@ TEST_F(TipsNotificationClientTest, DefaultBrowserHandle) {
 
 // Tests that the client handles a SignIn notification response.
 TEST_F(TipsNotificationClientTest, SigninHandle) {
-  id mock_handler = StubPrepareToPresentModal();
-  OCMExpect([mock_handler showSignin:[OCMArg any] baseViewController:nil]);
+  StubPrepareToPresentModal();
+  id mock_scene_sign_in_handler = MockHandler(@protocol(SceneSignInCommands));
+  OCMExpect([mock_scene_sign_in_handler showSignin:[OCMArg any]
+                                baseViewController:nil]);
 
   mock_response_ = MockRequestResponse(TipsNotificationType::kSignin);
   client_->HandleNotificationInteraction(mock_response_);
 
-  EXPECT_OCMOCK_VERIFY(mock_handler);
+  EXPECT_OCMOCK_VERIFY(mock_scene_sign_in_handler);
   histogram_tester_.ExpectUniqueSample("IOS.Notifications.Tips.Interaction",
                                        TipsNotificationType::kSignin, 1);
 
   SigninWithFakeIdentity();
-  mock_handler = MockHandler(@protocol(SettingsCommands));
+  id mock_handler = MockHandler(@protocol(SettingsCommands));
   OCMExpect([mock_handler showAccountsSettingsFromViewController:nil
                                             skipIfUINotAvailable:NO]);
   client_->HandleNotificationInteraction(mock_response_);
@@ -741,7 +742,7 @@ TEST_F(TipsNotificationClientTest,
 // Tests that the client handles a CPE Promo notification response.
 TEST_F(TipsNotificationClientTest, CPEHandle) {
   StubPrepareToPresentModal();
-  id mock_handler = MockHandler(@protocol(CredentialProviderPromoCommands));
+  id mock_handler = MockHandler(@protocol(PromosManagerCommands));
   OCMExpect(
       [mock_handler showCredentialProviderPromoWithTrigger:
                         CredentialProviderPromoTrigger::TipsNotification]);

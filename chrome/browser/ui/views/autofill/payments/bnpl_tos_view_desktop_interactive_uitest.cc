@@ -2,13 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/autofill/payments/bnpl_tos_view_desktop.h"
+
 #include "base/json/json_reader.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "chrome/browser/ui/autofill/payments/payments_view_factory.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/autofill/payments/bnpl_tos_dialog.h"
-#include "chrome/browser/ui/views/autofill/payments/bnpl_tos_view_desktop.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/autofill/content/browser/content_autofill_client.h"
@@ -42,9 +44,6 @@ class BnplTosViewDesktopInteractiveUiTest : public InteractiveBrowserTest {
   InteractiveBrowserTestApi::MultiStep InvokeUiAndWaitForShow(
       BnplIssuer::IssuerId bnpl_issuer_id) {
     return Steps(
-        ObserveState(
-            views::test::kCurrentFocusedViewId,
-            BrowserView::GetBrowserViewForBrowser(browser())->GetWidget()),
         Do([this, bnpl_issuer_id]() {
           payments::BnplTosModel model;
           model.issuer = BnplIssuer(
@@ -141,16 +140,7 @@ IN_PROC_BROWSER_TEST_F(BnplTosViewDesktopInteractiveUiTest, EscKeyPress) {
   RunTestSequence(
       InvokeUiAndWaitForShow(BnplIssuer::IssuerId::kBnplAffirm),
       InAnyContext(
-// Dialogs are already in focus for Mac builds and focusing again causes a
-// button click.
-#if !BUILDFLAG(IS_MAC)
-          // Focus on an element in the dialog as the dialog's `kTopViewId`
-          // view can't be focused on with `RequestFocus()`.
-          WithView(views::DialogClientView::kOkButtonElementId,
-                   [](views::View* view) { view->RequestFocus(); }),
-          WaitForState(views::test::kCurrentFocusedViewId,
-                       views::DialogClientView::kOkButtonElementId),
-#endif
+          FocusElement(views::DialogClientView::kOkButtonElementId),
           SendAccelerator(views::DialogClientView::kTopViewId,
                           ui::Accelerator(ui::VKEY_ESCAPE, ui::MODIFIER_NONE)),
           WaitForHide(views::DialogClientView::kTopViewId)));

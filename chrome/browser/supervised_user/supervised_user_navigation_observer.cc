@@ -39,6 +39,7 @@
 #include "components/supervised_user/core/browser/supervised_user_url_filtering_service.h"
 #include "components/supervised_user/core/browser/web_content_handler.h"
 #include "components/supervised_user/core/common/features.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
@@ -50,6 +51,7 @@
 #include "services/metrics/public/cpp/metrics_utils.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -96,14 +98,16 @@ static constexpr supervised_user::WebFilterMetricsOptions
 
 using content::NavigationEntry;
 
+DEFINE_USER_DATA(SupervisedUserNavigationObserver);
+
 SupervisedUserNavigationObserver::~SupervisedUserNavigationObserver() = default;
 
 SupervisedUserNavigationObserver::SupervisedUserNavigationObserver(
+    tabs::TabInterface& tab,
     content::WebContents* web_contents)
-    : content::WebContentsUserData<SupervisedUserNavigationObserver>(
-          *web_contents),
-      content::WebContentsObserver(web_contents),
-      receivers_(web_contents, this) {
+    : content::WebContentsObserver(web_contents),
+      receivers_(web_contents, this),
+      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
   url_filtering_service_observation_.Observe(
       supervised_user_url_filtering_service());
 
@@ -122,6 +126,12 @@ SupervisedUserNavigationObserver::SupervisedUserNavigationObserver(
 }
 
 // static
+SupervisedUserNavigationObserver* SupervisedUserNavigationObserver::From(
+    tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
+
+// static
 void SupervisedUserNavigationObserver::BindSupervisedUserCommands(
     mojo::PendingAssociatedReceiver<
         supervised_user::mojom::SupervisedUserCommands> receiver,
@@ -130,8 +140,10 @@ void SupervisedUserNavigationObserver::BindSupervisedUserCommands(
   if (!web_contents) {
     return;
   }
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents);
   auto* navigation_observer =
-      SupervisedUserNavigationObserver::FromWebContents(web_contents);
+      tab ? SupervisedUserNavigationObserver::From(tab) : nullptr;
   if (!navigation_observer) {
     return;
   }
@@ -145,8 +157,10 @@ void SupervisedUserNavigationObserver::OnRequestBlocked(
     int64_t navigation_id,
     content::FrameTreeNodeId frame_id,
     const OnInterstitialResultCallback& callback) {
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents);
   SupervisedUserNavigationObserver* navigation_observer =
-      SupervisedUserNavigationObserver::FromWebContents(web_contents);
+      tab ? SupervisedUserNavigationObserver::From(tab) : nullptr;
 
   // Cancel the navigation if there is no navigation observer.
   if (!navigation_observer) {
@@ -467,6 +481,11 @@ void SupervisedUserNavigationObserver::FilterRenderFrame(
 supervised_user::SupervisedUserInterstitial*
 SupervisedUserNavigationObserver::GetInterstitialForFrame() {
   content::RenderFrameHost& target_frame = receivers_.CurrentTargetFrame();
+
+  if (!target_frame.IsActive()) {
+    return nullptr;
+  }
+
   content::FrameTreeNodeId frame_id = target_frame.GetFrameTreeNodeId();
 
   if (auto it = supervised_user_interstitials_.find(frame_id);
@@ -563,5 +582,3 @@ SupervisedUserNavigationObserver::supervised_user_url_filtering_service()
       GetForProfile(
           Profile::FromBrowserContext(web_contents()->GetBrowserContext()));
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(SupervisedUserNavigationObserver);

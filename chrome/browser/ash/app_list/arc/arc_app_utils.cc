@@ -34,7 +34,6 @@
 #include "chrome/browser/ash/arc/boot_phase_monitor/arc_boot_phase_monitor_bridge.h"
 #include "chrome/browser/ash/arc/notification/arc_management_transition_notification.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
-#include "chrome/browser/ash/arc/vmm/arc_vmm_manager.h"
 #include "chrome/browser/ash/arc/window_predictor/window_predictor.h"
 #include "chrome/browser/ash/arc/window_predictor/window_predictor_utils.h"
 #include "chrome/browser/profiles/profile.h"
@@ -46,7 +45,6 @@
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_launch_notifier.h"
-#include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/ash/experiences/arc/intent_helper/arc_intent_helper_bridge.h"
@@ -65,6 +63,7 @@
 #include "content/public/browser/browser_context.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/events/event_constants.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -230,12 +229,6 @@ std::string ConstructArcAppShortcutUrl(const std::string& app_id,
   return "appshortcutsearch://" + app_id + "/" + shortcut_id;
 }
 
-bool IsArcVmAndSwappedOut(content::BrowserContext* context) {
-  return IsArcVmEnabled() &&
-         base::FeatureList::IsEnabled(arc::kVmmSwapoutGhostWindow) &&
-         ArcVmmManager::GetForBrowserContext(context)->IsSwapped();
-}
-
 }  // namespace
 
 bool ShouldShowInLauncher(const std::string& app_id) {
@@ -329,7 +322,8 @@ bool LaunchAppWithIntent(content::BrowserContext* context,
         // is here to prevent possible mistake.
         if (!SetArcPlayStoreEnabledForProfile(profile, true))
           return false;
-        DCHECK(IsArcPlayStoreEnabledForProfile(profile));
+        CHECK(IsArcPlayStoreEnabledForProfile(profile),
+              base::NotFatalUntil::M160);
 
         // PlayStore item has special handling for shelf controllers. In order
         // to avoid unwanted initial animation for PlayStore item do not create
@@ -341,7 +335,7 @@ bool LaunchAppWithIntent(content::BrowserContext* context,
         }
       } else {
         // Only reachable when ARC always starts.
-        DCHECK(arc::ShouldArcAlwaysStart());
+        CHECK(arc::ShouldArcAlwaysStart(), base::NotFatalUntil::M160);
       }
     } else {
       // Handle the case when default app tries to re-activate OptIn flow.
@@ -414,19 +408,6 @@ bool LaunchAppWithIntent(content::BrowserContext* context,
     }
     prefs->SetLastLaunchTime(app_id);
     return true;
-  } else if (IsArcVmAndSwappedOut(context) &&
-             !WindowPredictor::GetInstance()->IsAppPendingLaunch(profile,
-                                                                 app_id)) {
-    // Assume this condition branch will never be triggered in ARCVM launch (ARC
-    // booting) stage. It should be trigger after ARCVM idle for a while.
-    if (WindowPredictor::GetInstance()->LaunchArcAppWithGhostWindow(
-            profile, app_id, *app_info, launch_intent_to_send, event_flags,
-            GhostWindowType::kAppLaunch, WindowPredictorUseCase::kArcVmmSwapped,
-            window_info)) {
-      return true;
-    }
-    VLOG(2) << "Failed to launch ghost window for swapped state, fallback to "
-               "launch directly.";
   } else if (app_id == kPlayStoreAppId) {
     // Record launch request time in order to track Play Store default launch
     // performance.
@@ -554,7 +535,7 @@ void UninstallPackage(const std::string& package_name) {
 
 void UninstallArcApp(const std::string& app_id, Profile* profile) {
   ArcAppListPrefs* arc_prefs = ArcAppListPrefs::Get(profile);
-  DCHECK(arc_prefs);
+  CHECK(arc_prefs, base::NotFatalUntil::M160);
   std::unique_ptr<ArcAppListPrefs::AppInfo> app_info =
       arc_prefs->GetApp(app_id);
   if (!app_info) {
@@ -603,7 +584,7 @@ bool ShowPackageInfo(const std::string& package_name,
 }
 
 bool IsArcItem(content::BrowserContext* context, const std::string& id) {
-  DCHECK(context);
+  CHECK(context, base::NotFatalUntil::M160);
 
   // Some unit tests use empty ids, some app ids are not valid ARC app ids.
   const ArcAppShelfId arc_app_shelf_id = ArcAppShelfId::FromString(id);
@@ -625,9 +606,12 @@ void GetLocaleAndPreferredLanguages(
   const PrefService::Preference* locale_pref =
       profile->GetPrefs()->FindPreference(
           ::language::prefs::kApplicationLocale);
-  DCHECK(locale_pref);
+  CHECK(locale_pref, base::NotFatalUntil::M160);
   const std::string& locale = locale_pref->GetValue()->GetString();
-  *out_locale = locale.empty() ? application_locale_storage.Get() : locale;
+  *out_locale =
+      locale.empty()
+          ? std::string(application_locale_storage.GetTag().tag_string())
+          : locale;
 
   // |preferredLanguages| consists of comma separated locale strings. It may be
   // empty or contain empty items, but those are ignored on ARC.  If an item
@@ -663,7 +647,7 @@ std::string AppIdToArcPackageName(const std::string& app_id, Profile* profile) {
 
 std::string ArcPackageNameToAppId(const std::string& package_name,
                                   Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
   ArcAppListPrefs* arc_prefs = ArcAppListPrefs::Get(profile);
   return arc_prefs ? arc_prefs->GetAppIdByPackageName(package_name)
                    : std::string();
@@ -677,13 +661,13 @@ const std::string GetAppFromAppOrGroupId(content::BrowserContext* context,
     return app_shelf_id.app_id();
 
   const ArcAppListPrefs* const prefs = ArcAppListPrefs::Get(context);
-  DCHECK(prefs);
+  CHECK(prefs, base::NotFatalUntil::M160);
 
   // Try to find a shortcut with requested shelf group id.
   const std::vector<std::string> app_ids = prefs->GetAppIds();
   for (const auto& app_id : app_ids) {
     std::unique_ptr<ArcAppListPrefs::AppInfo> app_info = prefs->GetApp(app_id);
-    DCHECK(app_info);
+    CHECK(app_info, base::NotFatalUntil::M160);
     if (!app_info || !app_info->shortcut)
       continue;
     const arc::ArcAppShelfId shortcut_shelf_id =
@@ -704,7 +688,7 @@ void ExecuteArcShortcutCommand(content::BrowserContext* context,
                                const std::string& shortcut_id,
                                int64_t display_id) {
   const arc::ArcAppShelfId arc_shelf_id = arc::ArcAppShelfId::FromString(id);
-  DCHECK(arc_shelf_id.valid());
+  CHECK(arc_shelf_id.valid(), base::NotFatalUntil::M160);
   arc::LaunchAppShortcutItem(context, arc_shelf_id.app_id(), shortcut_id,
                              display_id);
 

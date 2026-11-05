@@ -19,7 +19,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
 #include "chrome/browser/browser_features.h"
-#include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
+#include "chrome/browser/page_load_metrics/chrome_navigation_initiator.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
 #include "chrome/browser/preloading/prefetch/search_prefetch/cache_alias_search_prefetch_url_loader.h"
 #include "chrome/browser/preloading/prefetch/search_prefetch/field_trial_settings.h"
@@ -42,10 +42,12 @@
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_result.h"
 #include "components/page_load_metrics/browser/navigation_handle_user_data.h"
+#include "components/page_load_metrics/browser/navigation_initiator.h"
 #include "components/page_load_metrics/browser/page_load_metrics_test_waiter.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_service.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/preloading.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
@@ -67,6 +69,8 @@
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/browser_window.h"
@@ -90,30 +94,33 @@ class TestNavigationObserver : public content::WebContentsObserver {
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override {
     if (navigation_handle->HasCommitted()) {
+      navigation_initiator_ =
+          page_load_metrics::GetNavigationInitiator(*navigation_handle);
+
+      // Note: This mirrors how
+      // `PreloadServingMetricsPageLoadMetricsObserver` reads the flag: the
+      // user data is absent unless the navigation was served by DSEv1 search
+      // prefetch.
       auto* user_data =
           page_load_metrics::NavigationHandleUserData::GetForNavigationHandle(
               *navigation_handle);
-      if (user_data) {
-        navigation_type_ = user_data->navigation_type();
-        is_served_by_legacy_search_prefetch_ =
-            user_data->is_served_by_legacy_search_prefetch();
-      }
+      is_served_by_legacy_search_prefetch_ =
+          user_data && user_data->is_served_by_legacy_search_prefetch();
     }
   }
 
-  std::optional<page_load_metrics::NavigationHandleUserData::InitiatorLocation>
-  navigation_type() const {
-    return navigation_type_;
+  std::optional<page_load_metrics::NavigationInitiator> navigation_initiator()
+      const {
+    return navigation_initiator_;
   }
 
-  std::optional<bool> is_served_by_legacy_search_prefetch() const {
+  bool is_served_by_legacy_search_prefetch() const {
     return is_served_by_legacy_search_prefetch_;
   }
 
  private:
-  std::optional<page_load_metrics::NavigationHandleUserData::InitiatorLocation>
-      navigation_type_;
-  std::optional<bool> is_served_by_legacy_search_prefetch_;
+  std::optional<page_load_metrics::NavigationInitiator> navigation_initiator_;
+  bool is_served_by_legacy_search_prefetch_ = false;
 };
 
 }  // namespace page_load_metrics
@@ -615,10 +622,10 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
     ukm::SourceId ukm_source_id = activation_observer.next_page_ukm_source_id();
     auto attempt_ukm_entries = test_ukm_recorder()->GetEntries(
         Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
+        content::test::GetPreloadingAttemptUkmMetrics());
     auto prediction_ukm_entries = test_ukm_recorder()->GetEntries(
         Preloading_Prediction::kEntryName,
-        content::test::kPreloadingPredictionUkmMetrics);
+        content::test::GetPreloadingPredictionUkmMetrics());
     EXPECT_EQ(attempt_ukm_entries.size(), 2u);
     EXPECT_EQ(prediction_ukm_entries.size(), 2u);
 
@@ -679,8 +686,16 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
 
 // Tests that the SearchSuggestionService can trigger prerendering if it
 // receives prerender hints after the previous prefetch request succeeds.
+// TODO(crbug.com/578809890): Deflake and re-enable on Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_PrerenderHintReceivedAfterSucceed \
+  DISABLED_PrerenderHintReceivedAfterSucceed
+#else
+#define MAYBE_PrerenderHintReceivedAfterSucceed \
+  PrerenderHintReceivedAfterSucceed
+#endif
 IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
-                       PrerenderHintReceivedAfterSucceed) {
+                       MAYBE_PrerenderHintReceivedAfterSucceed) {
   base::HistogramTester histogram_tester;
   const GURL kInitialUrl = embedded_test_server()->GetURL("/empty.html");
   ASSERT_TRUE(GetActiveWebContents());
@@ -736,7 +751,7 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
     ukm::SourceId ukm_source_id = activation_observer.next_page_ukm_source_id();
     auto ukm_entries = test_ukm_recorder()->GetEntries(
         Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
+        content::test::GetPreloadingAttemptUkmMetrics());
     EXPECT_EQ(ukm_entries.size(), 3u);
 
     // Prerender should succeed and should be used for the next navigation.
@@ -998,7 +1013,7 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
         GetActiveWebContents()->GetPrimaryMainFrame()->GetPageUkmSourceId();
     auto ukm_entries = test_ukm_recorder()->GetEntries(
         Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
+        content::test::GetPreloadingAttemptUkmMetrics());
     EXPECT_EQ(ukm_entries.size(), 2u);
 
     // DispatchDelayedResponseTask will dispatch
@@ -1145,7 +1160,7 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest, DoNotRefetchSameTerms) {
     // Check that we log the correct PreloadingEligibility metrics.
     auto ukm_entries = test_ukm_recorder()->GetEntries(
         Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
+        content::test::GetPreloadingAttemptUkmMetrics());
     EXPECT_EQ(ukm_entries.size(), 4u);
 
     ukm::SourceId ukm_source_id =
@@ -1257,7 +1272,7 @@ class HoldbackSearchPreloadUnifiedBrowserTest
           activation_observer.next_page_ukm_source_id();
       auto ukm_entries = test_ukm_recorder()->GetEntries(
           Preloading_Attempt::kEntryName,
-          content::test::kPreloadingAttemptUkmMetrics);
+          content::test::GetPreloadingAttemptUkmMetrics());
       EXPECT_EQ(ukm_entries.size(), 3u);
 
       // Prerender should be under holdback and not succeed.
@@ -1428,6 +1443,10 @@ IN_PROC_BROWSER_TEST_P(HTTPCacheSearchPreloadUnifiedBrowserTest,
   histogram_tester.ExpectTotalCount(
       "PreloadServingMetrics.PageLoad.Clients.PaintTiming."
       "NavigationToFirstContentfulPaint.All.All.NoInstantLoad",
+      0);
+  histogram_tester.ExpectTotalCount(
+      "PreloadServingMetrics.PageLoad.Clients.PaintTiming."
+      "NavigationToFirstContentfulPaint.All.All.NoInstantLoadDiskCache",
       1);
   histogram_tester.ExpectTotalCount(
       "PreloadServingMetrics.PageLoad.Clients.PaintTiming."
@@ -1444,6 +1463,10 @@ IN_PROC_BROWSER_TEST_P(HTTPCacheSearchPreloadUnifiedBrowserTest,
   histogram_tester.ExpectTotalCount(
       "PreloadServingMetrics.PageLoad.Clients.PaintTiming."
       "NavigationToFirstContentfulPaint.Backward.All.NoInstantLoad",
+      0);
+  histogram_tester.ExpectTotalCount(
+      "PreloadServingMetrics.PageLoad.Clients.PaintTiming."
+      "NavigationToFirstContentfulPaint.Backward.All.NoInstantLoadDiskCache",
       1);
   histogram_tester.ExpectTotalCount(
       "PreloadServingMetrics.PageLoad.Clients.PaintTiming."
@@ -1671,7 +1694,7 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
     ukm::SourceId ukm_source_id = activation_observer.next_page_ukm_source_id();
     auto ukm_entries = test_ukm_recorder()->GetEntries(
         Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
+        content::test::GetPreloadingAttemptUkmMetrics());
     EXPECT_EQ(ukm_entries.size(), 2u);
 
     // Prerender should be used for the next navigation as it won't be cancelled
@@ -2453,12 +2476,11 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
   // when users open a suggestion in another tab. Prerender will be canceled in
   // this case.
   content::WebContents* new_prefetch_tab = GetActiveWebContents()->OpenURL(
-      content::OpenURLParams(
-          expected_prerender_url, content::Referrer(),
-          WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      content::OpenURLParams::CreateBrowserInitiated(
+          expected_prerender_url,
+          ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-          /*is_renderer_initiated=*/false),
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR)),
       /*navigation_handle_callback=*/{});
   WaitUntilStatusChangesTo(GetCanonicalSearchURL(expected_prerender_url), {});
 
@@ -2715,10 +2737,9 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
   prerender_helper().WaitForPrerenderLoadCompletion(*GetActiveWebContents(),
                                                     expected_prerender_url);
 
-  EXPECT_TRUE(omnibox_observer.navigation_type().has_value());
-  EXPECT_EQ(omnibox_observer.navigation_type().value(),
-            GetInitiatorLocation(
-                ChromeInitiatorLocation::kOmniboxDefaultSearchEngine));
+  ASSERT_TRUE(omnibox_observer.navigation_initiator().has_value());
+  EXPECT_EQ(omnibox_observer.navigation_initiator().value(),
+            chrome_navigation_initiator::kOmniboxDefaultSearchEngine);
 }
 
 // TODO(crbug.com/517725655): Flaky on Android due to the wait mechanism,
@@ -2765,16 +2786,15 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
                                 TimingField::kFirstContentfulPaint);
 
   base::RepeatingCallback<void(content::NavigationHandle&)>
-      navigation_handle_callback = base::BindRepeating(
-          &AttachOmniboxDefaultSearchEngineNavigationHandleUserData);
+      navigation_handle_callback =
+          page_load_metrics::NavigationInitiatorHolder::AttacherCallback(
+              chrome_navigation_initiator::kOmniboxDefaultSearchEngine);
 
   GetActiveWebContents()->OpenURL(
-      content::OpenURLParams(
-          expected_real_url, content::Referrer(),
-          WindowOpenDisposition::CURRENT_TAB,
+      content::OpenURLParams::CreateBrowserInitiated(
+          expected_real_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-          /*is_renderer_initiated=*/false),
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR)),
       std::move(navigation_handle_callback));
   waiter.Wait();
 
@@ -2782,13 +2802,10 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
       "Omnibox.SearchPrefetch.PrefetchFinalStatus.SuggestionPrefetch",
       SearchPrefetchStatus::kPrefetchServedForRealNavigation, 1);
 
-  EXPECT_TRUE(omnibox_observer.navigation_type().has_value());
-  EXPECT_EQ(omnibox_observer.navigation_type().value(),
-            GetInitiatorLocation(
-                ChromeInitiatorLocation::kOmniboxDefaultSearchEngine));
-  EXPECT_TRUE(
-      omnibox_observer.is_served_by_legacy_search_prefetch().has_value());
-  EXPECT_TRUE(omnibox_observer.is_served_by_legacy_search_prefetch().value());
+  ASSERT_TRUE(omnibox_observer.navigation_initiator().has_value());
+  EXPECT_EQ(omnibox_observer.navigation_initiator().value(),
+            chrome_navigation_initiator::kOmniboxDefaultSearchEngine);
+  EXPECT_TRUE(omnibox_observer.is_served_by_legacy_search_prefetch());
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(
@@ -2891,16 +2908,15 @@ IN_PROC_BROWSER_TEST_F(
                                 TimingField::kFirstContentfulPaint);
 
   base::RepeatingCallback<void(content::NavigationHandle&)>
-      navigation_handle_callback = base::BindRepeating(
-          &AttachOmniboxDefaultSearchEngineNavigationHandleUserData);
+      navigation_handle_callback =
+          page_load_metrics::NavigationInitiatorHolder::AttacherCallback(
+              chrome_navigation_initiator::kOmniboxDefaultSearchEngine);
 
   GetActiveWebContents()->OpenURL(
-      content::OpenURLParams(
-          expected_real_url, content::Referrer(),
-          WindowOpenDisposition::CURRENT_TAB,
+      content::OpenURLParams::CreateBrowserInitiated(
+          expected_real_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-          /*is_renderer_initiated=*/false),
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR)),
       std::move(navigation_handle_callback));
   waiter.Wait();
 
@@ -2908,13 +2924,10 @@ IN_PROC_BROWSER_TEST_F(
       "Omnibox.SearchPrefetch.PrefetchFinalStatus.SuggestionPrefetch",
       SearchPrefetchStatus::kPrefetchServedForRealNavigation, 1);
 
-  EXPECT_TRUE(omnibox_observer.navigation_type().has_value());
-  EXPECT_EQ(omnibox_observer.navigation_type().value(),
-            GetInitiatorLocation(
-                ChromeInitiatorLocation::kOmniboxDefaultSearchEngine));
-  EXPECT_TRUE(
-      omnibox_observer.is_served_by_legacy_search_prefetch().has_value());
-  EXPECT_FALSE(omnibox_observer.is_served_by_legacy_search_prefetch().value());
+  ASSERT_TRUE(omnibox_observer.navigation_initiator().has_value());
+  EXPECT_EQ(omnibox_observer.navigation_initiator().value(),
+            chrome_navigation_initiator::kOmniboxDefaultSearchEngine);
+  EXPECT_FALSE(omnibox_observer.is_served_by_legacy_search_prefetch());
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(
@@ -3003,13 +3016,10 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
   prerender_helper().WaitForPrerenderLoadCompletion(*GetActiveWebContents(),
                                                     expected_prerender_url);
 
-  EXPECT_TRUE(omnibox_observer.navigation_type().has_value());
-  EXPECT_EQ(omnibox_observer.navigation_type().value(),
-            GetInitiatorLocation(
-                ChromeInitiatorLocation::kOmniboxDefaultSearchEngine));
-  EXPECT_TRUE(
-      omnibox_observer.is_served_by_legacy_search_prefetch().has_value());
-  EXPECT_TRUE(omnibox_observer.is_served_by_legacy_search_prefetch().value());
+  ASSERT_TRUE(omnibox_observer.navigation_initiator().has_value());
+  EXPECT_EQ(omnibox_observer.navigation_initiator().value(),
+            chrome_navigation_initiator::kOmniboxDefaultSearchEngine);
+  EXPECT_TRUE(omnibox_observer.is_served_by_legacy_search_prefetch());
 
   content::test::PrerenderHostObserver prerender_observer(
       *GetActiveWebContents(), expected_prerender_url);
@@ -3018,16 +3028,15 @@ IN_PROC_BROWSER_TEST_F(SearchPreloadUnifiedBrowserTest,
                                 TimingField::kFirstContentfulPaint);
 
   base::RepeatingCallback<void(content::NavigationHandle&)>
-      navigation_handle_callback = base::BindRepeating(
-          &AttachOmniboxDefaultSearchEngineNavigationHandleUserData);
+      navigation_handle_callback =
+          page_load_metrics::NavigationInitiatorHolder::AttacherCallback(
+              chrome_navigation_initiator::kOmniboxDefaultSearchEngine);
 
   GetActiveWebContents()->OpenURL(
-      content::OpenURLParams(
-          expected_prerender_url, content::Referrer(),
-          WindowOpenDisposition::CURRENT_TAB,
+      content::OpenURLParams::CreateBrowserInitiated(
+          expected_prerender_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-          /*is_renderer_initiated=*/false),
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR)),
       std::move(navigation_handle_callback));
   prerender_observer.WaitForActivation();
   waiter.Wait();

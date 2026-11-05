@@ -5,44 +5,28 @@
 #include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_wallet_util.h"
 
 #include <optional>
-#include <string>
 #include <utility>
 
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/escape.h"
-#include "base/strings/stringprintf.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/consent_auditor/consent_auditor.h"
+#include "components/google/core/common/google_util.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/sync/protocol/user_consent_types.pb.h"
 #include "components/wallet/core/common/wallet_features.h"
 #include "google_apis/gaia/gaia_id.h"
+#include "url/gurl.h"
+#include "url/url_constants.h"
 
 namespace autofill {
 
 namespace {
-
-// The URL to the overview of all passes stored in Google Wallet.
-// TODO(crbug.com/454899556): Remove once Wallet deep links are launched.
-constexpr char kWalletPassesPageURL[] =
-    "https://wallet.google.com/wallet/passes";
-
-// The URL to the management page of a specific private pass stored in Google
-// Wallet. The pass is identified by its pass ID, which needs to be URL encoded
-// into the placeholder in this URL.
-constexpr char kWalletPrivatePassPageURL[] =
-    "https://wallet.google.com/"
-    "wallet?p=walletpass&ppid=%s&utm_source=chrome&utm_medium=settings&utm_"
-    "campaign=enhanced_autofill";
-
-constexpr char kWalletTransactionsPageURL[] =
-    "https://wallet.google.com/wallet/transactions";
 
 // Defines UI actions that can be taken after a Wallet upsert response.
 enum class UiAction {
@@ -125,35 +109,11 @@ void HandleWalletUpsertResponse(
   UpdateUi(client, kNoNotification);
 }
 
-std::string GetWalletManagementURL(const EntityInstance& entity) {
-  CHECK_EQ(entity.record_type(), EntityInstance::RecordType::kServerWallet);
-  switch (entity.type().name()) {
-    case EntityTypeName::kVehicle:
-    case EntityTypeName::kFlightReservation:
-      // TODO(crbug.com/454899556): Implement a deep link for public passes.
-      // This is not supported by the backend yet.
-      return kWalletPassesPageURL;
-    case EntityTypeName::kOrder:
-    case EntityTypeName::kShipment:
-      // TODO(crbug.com/542052269): Implement a deep link.
-      return kWalletTransactionsPageURL;
-    case EntityTypeName::kPassport:
-    case EntityTypeName::kDriversLicense:
-    case EntityTypeName::kNationalIdCard:
-    case EntityTypeName::kKnownTravelerNumber:
-    case EntityTypeName::kRedressNumber:
-      // Only deep link for private passes if the corresponding feature is
-      // enabled.
-      if (!base::FeatureList::IsEnabled(
-              features::kAutofillAiWalletPrivatePassesDeepLink)) {
-        return kWalletPassesPageURL;
-      }
-      return base::StringPrintf(
-          kWalletPrivatePassPageURL,
-          base::EscapeQueryParamValue(entity.guid().value(),
-                                      /*use_plus=*/false));
-  }
-  NOTREACHED();
+bool IsValidWalletManagementUrl(const GURL& url) {
+  return url.SchemeIs(url::kHttpsScheme) &&
+         google_util::IsGoogleDomainUrl(
+             url, google_util::ALLOW_SUBDOMAIN,
+             google_util::DISALLOW_NON_STANDARD_PORTS);
 }
 
 consent_auditor::ConsentAuditor::SessionId RecordWalletPrivatePassConsent(
@@ -177,6 +137,23 @@ consent_auditor::ConsentAuditor::SessionId RecordWalletPrivatePassConsent(
   consent.set_confirmation_grd_id(accept_button_string_id);
   consent_auditor.RecordWalletPrivatePassConsent(gaia_id, session_id, consent);
   return session_id;
+}
+
+bool IsEligibleForWalletNotice(const EntityType& type,
+                               const EntityInstance::RecordType& record_type) {
+  return GetWalletPassType(type, record_type) ==
+             EntityInstance::WalletPassType::kPublic &&
+         !type.read_only();
+}
+
+bool IsValidUpsertPassDetailsResponse(
+    const WalletPassAccessManager::GetDetailsForUpsertPassResponse& response) {
+  const bool should_see_legal_message_notice =
+      response.user_eligibility ==
+      WalletPassAccessManager::UserEligibility::kEligible;
+  return !should_see_legal_message_notice ||
+         (!response.legal_message_lines.empty() &&
+          !response.legal_message_token.empty());
 }
 
 }  // namespace autofill

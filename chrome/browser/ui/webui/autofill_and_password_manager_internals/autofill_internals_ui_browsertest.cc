@@ -2,18 +2,33 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <optional>
+#include <string>
+
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/run_until.h"
+#include "base/values.h"
 #include "chrome/browser/autofill/autofill_entity_data_manager_factory.h"
+#include "chrome/browser/autofill/personal_context_entity_metadata_manager_factory.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/autofill_and_password_manager_internals/internals_ui_handler.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/autofill/content/browser/autofill_log_router_factory.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/personal_context_entity_metadata_manager.h"
+#include "components/autofill/core/browser/logging/log_router.h"
 #include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/common/autofill_internals/logging_scope.h"
+#include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/autofill_test_util.h"
+#include "components/autofill/core/common/logging/log_buffer.h"
 #include "components/device_reauth/mock_device_authenticator.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -25,8 +40,11 @@ class AutofillInternalsWebUIBrowserTest : public InProcessBrowserTest {
  public:
   AutofillInternalsWebUIBrowserTest() {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{autofill::features::kAutofillAiServerModel,
-                              autofill::features::kAutofillAiWithDataSchema},
+        /*enabled_features=*/
+        {autofill::features::kAutofillAiServerModel,
+         autofill::features::kAutofillAiWithDataSchema,
+         autofill::features::kAutofillAmbientAutofillSuppression,
+         autofill::features::kAutofillShowGmailOtpSuggestions},
         /*disabled_features=*/{});
   }
 
@@ -96,6 +114,185 @@ IN_PROC_BROWSER_TEST_F(AutofillInternalsWebUIBrowserTest, ResetCache) {
   while (EvalJs(kDialogTextVisible).ExtractBool()) {
     SpinRunLoop();
   }
+}
+
+// Tests that every LoggingScope renders a filter checkbox and styled log entry,
+// and that toggling a scope checkbox hides and restores both its log entry and
+// preceding <hr> separator without affecting other scopes.
+IN_PROC_BROWSER_TEST_F(AutofillInternalsWebUIBrowserTest, ScopeFiltering) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL("chrome://autofill-internals")));
+
+  static constexpr char kIsReadyScript[] =
+      "document.body.dataset.incognito === 'false' && "
+      "document.querySelectorAll("
+      "'#scopes-checkbox-placeholder input[type=checkbox]').length > 0";
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return EvalJs(kIsReadyScript).ExtractBool(); }));
+
+  static constexpr int kScopeCount =
+      static_cast<int>(autofill::LoggingScope::kLastScope);
+  EXPECT_EQ(
+      kScopeCount,
+      EvalJs("document.querySelectorAll("
+             "'#scopes-checkbox-placeholder input[type=checkbox]').length"));
+
+  ASSERT_TRUE(
+      ExecJs("document.getElementById('log-entries').replaceChildren();"));
+
+  autofill::LogRouter* log_router =
+      autofill::AutofillLogRouterFactory::GetForBrowserContext(GetProfile());
+  ASSERT_TRUE(log_router);
+  for (int i = 0; i < kScopeCount; ++i) {
+    const auto scope = static_cast<autofill::LoggingScope>(i);
+    autofill::LogBuffer buffer;
+    buffer << scope << autofill::LoggingScopeToString(scope);
+    std::optional<base::DictValue> entry = buffer.RetrieveResult();
+    ASSERT_TRUE(entry.has_value());
+    log_router->ProcessLog(*entry);
+  }
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return EvalJs("document.querySelectorAll('#log-entries .log-entry').length")
+               .ExtractInt() == kScopeCount;
+  }));
+
+  static constexpr char kVerifyScopeFilterScript[] = R"(
+    (() => {
+      const scope = $1;
+      const checkbox = document.getElementById(scope);
+      const entry = document.querySelector(
+          '#log-entries .log-entry[scope="' + scope + '"]');
+      if (!checkbox || !checkbox.checked || !entry) {
+        return 'missing or unchecked initial state for ' + scope;
+      }
+      const hr = entry.previousElementSibling;
+      if (!hr || hr.tagName !== 'HR') {
+        return 'missing preceding <hr> for ' + scope;
+      }
+      if (getComputedStyle(entry).backgroundColor === 'rgba(0, 0, 0, 0)') {
+        return 'missing background-color style for ' + scope;
+      }
+      if (!entry.checkVisibility() || !hr.checkVisibility()) {
+        return 'initially hidden for ' + scope;
+      }
+
+      checkbox.click();
+      if (entry.checkVisibility() || hr.checkVisibility()) {
+        return 'still visible after unchecking ' + scope;
+      }
+      for (const other of document.querySelectorAll(
+               '#log-entries .log-entry')) {
+        if (other.getAttribute('scope') === scope) {
+          continue;
+        }
+        const otherHr = other.previousElementSibling;
+        if (!other.checkVisibility() || !otherHr.checkVisibility()) {
+          return 'unchecking ' + scope + ' hid ' + other.getAttribute('scope');
+        }
+      }
+
+      checkbox.click();
+      if (!entry.checkVisibility() || !hr.checkVisibility()) {
+        return 'failed to restore ' + scope + ' after re-checking';
+      }
+      return 'ok';
+    })()
+  )";
+
+  for (int i = 0; i < kScopeCount; ++i) {
+    const char* scope_name =
+        autofill::LoggingScopeToString(static_cast<autofill::LoggingScope>(i));
+    EXPECT_EQ("ok",
+              EvalJs(content::JsReplace(kVerifyScopeFilterScript, scope_name)))
+        << "Failed for scope: " << scope_name;
+  }
+}
+
+// TODO(crbug.com/501036619): Failing after being wired.
+IN_PROC_BROWSER_TEST_F(AutofillInternalsWebUIBrowserTest,
+                       DISABLED_ClearAutofillAiEntitySuppressions) {
+  autofill::PersonalContextEntityMetadataManager* entity_metadata_manager =
+      autofill::PersonalContextEntityMetadataManagerFactory::GetForProfile(
+          GetProfile());
+  ASSERT_TRUE(entity_metadata_manager);
+
+  autofill::EntityInstance passport =
+      autofill::test::GetPassportEntityInstance();
+  ASSERT_TRUE(entity_metadata_manager->SuppressEntity(passport));
+  ASSERT_TRUE(entity_metadata_manager->IsSuppressed(passport));
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL("chrome://autofill-internals")));
+
+  // Wait for clear-autofill-ai-entity-suppressions-fake-button to become
+  // visible.
+  constexpr char kGetButtonDisplayStyle[] =
+      "document.getElementById("
+      "'clear-autofill-ai-entity-suppressions-fake-button').style.display";
+  while ("inline" != EvalJs(kGetButtonDisplayStyle)) {
+    SpinRunLoop();
+  }
+
+  // Trigger clear entity suppressions button.
+  constexpr char kClickButton[] =
+      "document.getElementById("
+      "'clear-autofill-ai-entity-suppressions-fake-button').click();";
+  EXPECT_TRUE(ExecJs(kClickButton));
+
+  // Wait for dialog to appear.
+  constexpr char kDialogTextVisible[] =
+      "document.getElementsByClassName('modal-dialog-text').length > 0";
+  while (!EvalJs(kDialogTextVisible).ExtractBool()) {
+    SpinRunLoop();
+  }
+
+  // Check result text and verify suppression was removed.
+  constexpr char kDialogText[] =
+      "document.getElementsByClassName('modal-dialog-text')[0].innerText";
+  EXPECT_EQ(autofill::kClearAutofillAiEntitySuppressionsDone,
+            EvalJs(kDialogText));
+  EXPECT_FALSE(entity_metadata_manager->IsSuppressed(passport));
+}
+
+IN_PROC_BROWSER_TEST_F(AutofillInternalsWebUIBrowserTest,
+                       ClearGmailOtpOptInPrefs) {
+  PrefService* prefs = GetProfile()->GetPrefs();
+  ASSERT_TRUE(prefs);
+
+  autofill::prefs::SetAutofillGmailOtpFillingEnabled(prefs, true);
+  autofill::prefs::SetAutofillGmailOtpFillingActivationDismissalTimestamp(
+      prefs, base::Time::Now());
+  ASSERT_TRUE(
+      prefs->HasPrefPath(autofill::prefs::kAutofillGmailOtpFillingEnabled));
+  ASSERT_TRUE(prefs->HasPrefPath(
+      autofill::prefs::kAutofillGmailOtpFillingActivationDismissalTimestamp));
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL("chrome://autofill-internals")));
+
+  // Wait for clear-gmail-otp-opt-in-prefs-fake-button to become visible.
+  constexpr char kGetButtonDisplayStyle[] =
+      "document.getElementById("
+      "'clear-gmail-otp-opt-in-prefs-fake-button').style.display";
+  while ("inline" != EvalJs(kGetButtonDisplayStyle)) {
+    SpinRunLoop();
+  }
+
+  // Trigger clear Gmail OTP opt-in prefs button.
+  constexpr char kClickButton[] =
+      "document.getElementById("
+      "'clear-gmail-otp-opt-in-prefs-fake-button').click();";
+  EXPECT_TRUE(ExecJs(kClickButton));
+
+  // Wait for the preferences to be cleared.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !prefs->HasPrefPath(
+               autofill::prefs::kAutofillGmailOtpFillingEnabled) &&
+           !prefs->HasPrefPath(
+               autofill::prefs::
+                   kAutofillGmailOtpFillingActivationDismissalTimestamp);
+  }));
 }
 
 // Tests the "Check AtMemory permissions" button works as expected.

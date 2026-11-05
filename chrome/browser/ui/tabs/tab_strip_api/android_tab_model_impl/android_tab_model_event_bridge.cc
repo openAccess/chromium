@@ -7,6 +7,7 @@
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/android_tab_model_impl/android_tab_strip_model_adapter.h"
 #include "components/browser_apis/tab_strip/adapters/translation_adapter.h"
+#include "components/tab_groups/tab_group_id.h"
 
 namespace tabs_api {
 
@@ -47,8 +48,7 @@ void AndroidTabModelEventBridge::Notify(events::Event event) const {
   }
 }
 
-void AndroidTabModelEventBridge::DidSelectTab(TabAndroid* tab,
-                                              TabModel::TabSelectionType type) {
+void AndroidTabModelEventBridge::DidSelectTab(TabAndroid* tab) {
   // Note that the inputs for this event are dropped. The API does not
   // currently need it, but this may change in the future.
   HandleSelectionAndActivationChange();

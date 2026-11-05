@@ -14,6 +14,7 @@
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_data.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/views/tabs/fake_base_tab_strip_controller.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
@@ -395,6 +396,7 @@ TEST_P(TabStripTest, TabCloseButtonVisibility) {
   controller_->AddTab(1, TabActive::kActive);
   controller_->AddTab(2, TabActive::kInactive);
   ASSERT_EQ(3, tab_strip_->GetTabCount());
+  CompleteAnimationAndLayout();
 
   Tab* tab0 = tab_strip_->tab_at(0);
   ASSERT_FALSE(tab0->IsActive());
@@ -413,6 +415,7 @@ TEST_P(TabStripTest, TabCloseButtonVisibility) {
   // big enough to accommodate 3 icons, so it should not show its
   // tab close button.
   controller_->AddTab(3, TabActive::kInactive);
+  CompleteAnimationAndLayout();
   Tab* tab3 = tab_strip_->tab_at(3);
   EXPECT_FALSE(tab3->showing_close_button_);
 
@@ -428,6 +431,7 @@ TEST_P(TabStripTest, TabCloseButtonVisibility) {
   // An active tab added to the tabstrip should show its tab close
   // button.
   controller_->AddTab(4, TabActive::kActive);
+  CompleteAnimationAndLayout();
   Tab* tab4 = tab_strip_->tab_at(4);
   ASSERT_TRUE(tab4->IsActive());
   EXPECT_TRUE(tab4->showing_close_button_);
@@ -440,6 +444,7 @@ TEST_P(TabStripTest, TabCloseButtonVisibility) {
   // tab close button hidden and the newly-active tab should show
   // its tab close button.
   tab_strip_->SelectTab(tab2, dummy_event_);
+  CompleteAnimationAndLayout();
   ASSERT_FALSE(tab4->IsActive());
   ASSERT_TRUE(tab2->IsActive());
   EXPECT_FALSE(tab0->showing_close_button_);
@@ -711,39 +716,43 @@ TEST_P(TabStripTest, HeaderOnCollapseChangeAccessibilityProperties) {
   controller_->MoveTabIntoGroup(0, group);
   CompleteAnimationAndLayout();
 
+  TabGroupHeader* header = tab_strip_->group_header(group.value());
   ASSERT_FALSE(controller_->IsGroupCollapsed(group.value()));
-  EXPECT_TRUE(tab_strip_->group_header(group.value())->GetVisible());
+  EXPECT_TRUE(header->GetVisible());
 
-  // Initially the tab group is expanded
-  ui::AXNodeData node_data;
-  tab_strip_->group_header(group.value())
-      ->GetViewAccessibility()
-      .GetAccessibleNodeData(&node_data);
-  EXPECT_TRUE(node_data.HasState(ax::mojom::State::kExpanded));
-  EXPECT_FALSE(node_data.HasState(ax::mojom::State::kCollapsed));
+  for (views::View* view :
+       {static_cast<views::View*>(header), header->title_chip_for_testing()}) {
+    // Initially the tab group is expanded
+    ui::AXNodeData node_data;
+    view->GetViewAccessibility().GetAccessibleNodeData(&node_data);
+    EXPECT_TRUE(node_data.HasState(ax::mojom::State::kExpanded));
+    EXPECT_FALSE(node_data.HasState(ax::mojom::State::kCollapsed));
+  }
 
   // Using controller to change the collapsed state of the tab group .
   controller_->ToggleTabGroupCollapsedState(
       group.value(), ToggleTabGroupCollapsedStateOrigin::kMenuAction);
-  tab_strip_->group_header(group.value())->VisualsChanged();
+  header->VisualsChanged();
 
-  node_data = ui::AXNodeData();
-  tab_strip_->group_header(group.value())
-      ->GetViewAccessibility()
-      .GetAccessibleNodeData(&node_data);
-  EXPECT_FALSE(node_data.HasState(ax::mojom::State::kExpanded));
-  EXPECT_TRUE(node_data.HasState(ax::mojom::State::kCollapsed));
+  for (views::View* view :
+       {static_cast<views::View*>(header), header->title_chip_for_testing()}) {
+    ui::AXNodeData node_data;
+    view->GetViewAccessibility().GetAccessibleNodeData(&node_data);
+    EXPECT_FALSE(node_data.HasState(ax::mojom::State::kExpanded));
+    EXPECT_TRUE(node_data.HasState(ax::mojom::State::kCollapsed));
+  }
 
   controller_->ToggleTabGroupCollapsedState(
       group.value(), ToggleTabGroupCollapsedStateOrigin::kMenuAction);
-  tab_strip_->group_header(group.value())->VisualsChanged();
+  header->VisualsChanged();
 
-  node_data = ui::AXNodeData();
-  tab_strip_->group_header(group.value())
-      ->GetViewAccessibility()
-      .GetAccessibleNodeData(&node_data);
-  EXPECT_TRUE(node_data.HasState(ax::mojom::State::kExpanded));
-  EXPECT_FALSE(node_data.HasState(ax::mojom::State::kCollapsed));
+  for (views::View* view :
+       {static_cast<views::View*>(header), header->title_chip_for_testing()}) {
+    ui::AXNodeData node_data;
+    view->GetViewAccessibility().GetAccessibleNodeData(&node_data);
+    EXPECT_TRUE(node_data.HasState(ax::mojom::State::kExpanded));
+    EXPECT_FALSE(node_data.HasState(ax::mojom::State::kCollapsed));
+  }
 }
 
 namespace {
@@ -782,7 +791,7 @@ TEST_P(TabStripTest, RelayoutAfterDraggedTabBoundsUpdate) {
   dragged_tab->set_dragging(true);
 
   constexpr int kXOffset = 20;
-  std::vector<TabSlotView*> tabs{dragged_tab};
+  std::vector<views::View*> tabs{dragged_tab};
   std::vector<gfx::Rect> bounds{gfx::Rect({kXOffset, 0}, dragged_tab->size())};
   SizeChangeObserver view_observer(tab_strip_);
   tab_strip_->GetDragContext()->GetPositioningDelegate()->SetBoundsForDrag(

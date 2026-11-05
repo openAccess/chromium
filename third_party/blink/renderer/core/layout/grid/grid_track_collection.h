@@ -6,31 +6,13 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_GRID_GRID_TRACK_COLLECTION_H_
 
 #include "base/check_op.h"
+#include "base/dcheck_is_on.h"
+#include "base/memory/raw_ptr.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
 namespace blink {
-
-// |GridTrackCollectionBase| provides an implementation for some shared
-// functionality on grid collections, specifically binary search on the
-// collection to get the range that contains a specific grid line.
-class CORE_EXPORT GridTrackCollectionBase {
- public:
-  virtual ~GridTrackCollectionBase() = default;
-
-  // Returns the number of track ranges in the collection.
-  virtual wtf_size_t RangeCount() const = 0;
-  // Returns the start line of a given track range.
-  virtual wtf_size_t RangeStartLine(wtf_size_t range_index) const = 0;
-  // Returns the number of tracks in a given track range.
-  virtual wtf_size_t RangeTrackCount(wtf_size_t range_index) const = 0;
-
-  // Returns the end line of a given track range.
-  wtf_size_t RangeEndLine(wtf_size_t range_index) const;
-  // Gets the index of the range that contains the given grid line.
-  wtf_size_t RangeIndexFromGridLine(wtf_size_t grid_line) const;
-};
 
 class CORE_EXPORT TrackSpanProperties {
  public:
@@ -147,7 +129,8 @@ class CORE_EXPORT GridRangeBuilder {
         : grid_line(grid_line),
           grid_item_range_index_to_cache(grid_item_range_index_to_cache) {}
     wtf_size_t grid_line;
-    wtf_size_t* grid_item_range_index_to_cache;
+    raw_ptr<wtf_size_t, UnprotectedInRelease | DanglingUntriaged>
+        grid_item_range_index_to_cache;
   };
 
   GridRangeBuilder(const GridTrackList& explicit_tracks,
@@ -172,8 +155,7 @@ class CORE_EXPORT GridRangeBuilder {
 };
 
 class CORE_EXPORT GridLayoutTrackCollection
-    : public GarbageCollected<GridLayoutTrackCollection>,
-      public GridTrackCollectionBase {
+    : public GarbageCollected<GridLayoutTrackCollection> {
  public:
   struct SetGeometry {
     explicit SetGeometry(LayoutUnit offset, wtf_size_t track_count = 0)
@@ -187,16 +169,23 @@ class CORE_EXPORT GridLayoutTrackCollection
       : track_direction_(track_direction) {}
 
   GridLayoutTrackCollection() = delete;
+  virtual ~GridLayoutTrackCollection() = default;
 
   // Don't allow this class to be used for grid sizing.
   virtual bool IsForSizing() const { return false; }
 
   bool operator==(const GridLayoutTrackCollection& other) const;
 
-  // GridTrackCollectionBase overrides.
-  wtf_size_t RangeCount() const override { return ranges_.size(); }
-  wtf_size_t RangeStartLine(wtf_size_t range_index) const override;
-  wtf_size_t RangeTrackCount(wtf_size_t range_index) const override;
+  // Returns the number of track ranges in the collection.
+  wtf_size_t RangeCount() const { return ranges_.size(); }
+  // Returns the start line of a given track range.
+  wtf_size_t RangeStartLine(wtf_size_t range_index) const;
+  // Returns the number of tracks in a given track range.
+  wtf_size_t RangeTrackCount(wtf_size_t range_index) const;
+  // Returns the end line of a given track range.
+  wtf_size_t RangeEndLine(wtf_size_t range_index) const;
+  // Gets the index of the range that contains the given grid line.
+  wtf_size_t RangeIndexFromGridLine(wtf_size_t grid_line) const;
 
   // Returns the number of sets spanned by a given track range.
   wtf_size_t RangeSetCount(wtf_size_t range_index) const;
@@ -283,6 +272,29 @@ class CORE_EXPORT GridLayoutTrackCollection
     return collapsed_track_indexes_;
   }
 
+  virtual void ReleaseTrackSizingData() {
+    // `FinalizeSetsGeometry` empties this vector but only shrinks its size, so
+    // clearing here releases the backing buffer.
+    if (last_indefinite_index_.empty()) {
+      last_indefinite_index_.clear();
+    }
+#if DCHECK_IS_ON()
+    sizing_data_released_ = true;
+#endif
+  }
+
+  void ValidateSizingData() const {
+#if DCHECK_IS_ON()
+    DCHECK(!sizing_data_released_);
+#endif
+  }
+
+  void RestoreSizingData() {
+#if DCHECK_IS_ON()
+    sizing_data_released_ = false;
+#endif
+  }
+
   virtual void Trace(Visitor* visitor) const {}
 
  protected:
@@ -329,6 +341,10 @@ class CORE_EXPORT GridLayoutTrackCollection
   // Collapsed track indexes from auto-fit ranges, populated when
   // `should_store_collapsed_track_indexes` is true at construction.
   Vector<wtf_size_t> collapsed_track_indexes_;
+
+#if DCHECK_IS_ON()
+  bool sizing_data_released_ = false;
+#endif
 };
 
 // |GridRangeBuilder::EnsureTrackCoverage| may introduce a range start and/or
@@ -487,6 +503,11 @@ class CORE_EXPORT GridSizingTrackCollection final
   void BuildSets(const ComputedStyle& container_style,
                  const LogicalSize& container_available_size);
   void SetIndefiniteGrowthLimitsToBaseSize();
+
+  void ReleaseTrackSizingData() override {
+    sets_.clear();
+    GridLayoutTrackCollection::ReleaseTrackSizingData();
+  }
 
   // Caches the geometry of definite sets; this is useful when building the sets
   // of a subgrid since we need to determine whether its available size (i.e.,

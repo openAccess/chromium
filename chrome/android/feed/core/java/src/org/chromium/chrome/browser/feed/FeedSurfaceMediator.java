@@ -12,7 +12,6 @@ import android.content.res.Resources;
 import android.os.Handler;
 import android.view.View;
 import android.view.View.OnLayoutChangeListener;
-import android.view.ViewGroup;
 
 import androidx.annotation.VisibleForTesting;
 import androidx.recyclerview.widget.RecyclerView;
@@ -22,6 +21,7 @@ import androidx.recyclerview.widget.RecyclerView.OnScrollListener;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
 import org.chromium.base.DeviceInfo;
+import org.chromium.base.MemoryPressureLevel;
 import org.chromium.base.MemoryPressureListener;
 import org.chromium.base.ObserverList;
 import org.chromium.base.memory.MemoryPressureCallback;
@@ -34,32 +34,22 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.feed.FeedSurfaceProvider.RestoringState;
 import org.chromium.chrome.browser.feed.Stream.ContentChangedListener;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.gesturenav.GestureNavigationUtils;
-import org.chromium.chrome.browser.new_tab_url.DseNewTabUrlManager;
-import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
-import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.preferences.PrefServiceUtil;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
-import org.chromium.chrome.browser.setup_list.SetupListModuleUtils;
-import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
-import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
 import org.chromium.chrome.browser.ui.native_page.TouchEnabledDelegate;
-import org.chromium.chrome.browser.ui.signin.signin_promo.NtpSigninPromoDelegate;
-import org.chromium.chrome.browser.ui.signin.signin_promo.SigninPromoCoordinator;
 import org.chromium.chrome.browser.xsurface.ListLayoutHelper;
 import org.chromium.chrome.browser.xsurface.feed.FeedUserInteractionReliabilityLogger.ClosedReason;
 import org.chromium.components.prefs.PrefChangeRegistrar;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.search_engines.TemplateUrlService.TemplateUrlServiceObserver;
-import org.chromium.components.signin.SigninFeatureMap;
-import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
+import org.chromium.content_public.browser.BackForwardTransitionAnimationManager;
 import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.ArrayList;
@@ -77,103 +67,6 @@ public class FeedSurfaceMediator
                 TouchEnabledDelegate,
                 TemplateUrlServiceObserver,
                 IdentityManager.Observer {
-
-    /**
-     * Wrapper class on top of {@link SigninPromoCoordinator} to also account for suggestions
-     * available signal. TODO(crbug.com/448227402): remove this class once Seamless Sign-in is
-     * launched.
-     */
-    private class FeedSigninPromo {
-        private final SigninPromoCoordinator mSigninPromoCoordinator;
-        private @Nullable View mPromoView;
-        private boolean mCanShowPersonalizedSuggestions;
-        private boolean mCanShowPromo;
-
-        FeedSigninPromo(boolean canShowPersonalizedSuggestions) {
-            mSigninPromoCoordinator =
-                    new SigninPromoCoordinator(
-                            mContext,
-                            mProfile,
-                            new NtpSigninPromoDelegate(
-                                    mContext,
-                                    mProfile,
-                                    SigninAndHistorySyncActivityLauncherImpl.get(),
-                                    this::onPromoStateChange,
-                                    SetupListModuleUtils::isSetupListActive));
-            mCanShowPersonalizedSuggestions = canShowPersonalizedSuggestions;
-            mCanShowPromo =
-                    mSigninPromoCoordinator.canShowPromo() && mCanShowPersonalizedSuggestions;
-
-            if (mCanShowPromo) {
-                // The view is created lazily to avoid increasing the browser memory footprint by
-                // keeping the view in memory even when it's never shown to the user.
-                initializePromoView();
-            }
-        }
-
-        boolean canShowPromo() {
-            return mCanShowPromo;
-        }
-
-        @Nullable View getPromoView() {
-            return mPromoView;
-        }
-
-        void setCanShowPersonalizedSuggestions(boolean canShow) {
-            mCanShowPersonalizedSuggestions = canShow;
-            onPromoStateChange();
-        }
-
-        void destroy() {
-            mSigninPromoCoordinator.destroy();
-            mCoordinator.updateHeaderViews(/* signinPromoView= */ null);
-        }
-
-        void onPromoStateChange() {
-            boolean canShowPromo =
-                    mSigninPromoCoordinator.canShowPromo() && mCanShowPersonalizedSuggestions;
-            if (mCanShowPromo == canShowPromo) {
-                return;
-            }
-
-            mCanShowPromo = canShowPromo;
-            if (mPromoView == null && mCanShowPromo) {
-                initializePromoView();
-            }
-            mCoordinator.updateHeaderViews(mCanShowPromo ? mPromoView : null);
-        }
-
-        private void initializePromoView() {
-            mPromoView = mSigninPromoCoordinator.buildPromoView((ViewGroup) mCoordinator.getView());
-            mSigninPromoCoordinator.setView(mPromoView);
-        }
-
-        /**
-         * @return Whether the {@link FeedSignInPromo} should be created.
-         */
-        public static boolean shouldCreatePromo() {
-            NtpSigninPromoDelegate.resetNtpSyncPromoLimitsIfHiddenForTooLong();
-            return !ChromeSharedPreferences.getInstance()
-                            .readBoolean(
-                                    ChromePreferenceKeys.SIGNIN_PROMO_NTP_PROMO_DISMISSED, false)
-                    && !getSuppressionStatus();
-        }
-
-        private static boolean getSuppressionStatus() {
-            long suppressedFrom =
-                    SigninPreferencesManager.getInstance()
-                            .getNewTabPageSigninPromoSuppressionPeriodStart();
-            if (suppressedFrom == 0) return false;
-            long currentTime = System.currentTimeMillis();
-            long suppressedTo = suppressedFrom + NtpSigninPromoDelegate.getSuppressionPeriodMs();
-            if (suppressedFrom <= currentTime && currentTime < suppressedTo) {
-                return true;
-            }
-            SigninPreferencesManager.getInstance()
-                    .clearNewTabPageSigninPromoSuppressionPeriodStart();
-            return false;
-        }
-    }
 
     /** Internal implementation of Stream.StreamsMediator. */
     @VisibleForTesting
@@ -214,7 +107,6 @@ public class FeedSurfaceMediator
     private final ObserverList<ScrollListener> mScrollListeners = new ObserverList<>();
     private @Nullable ContentChangedListener mStreamContentChangedListener;
     private @Nullable MemoryPressureCallback mMemoryPressureCallback;
-    private @Nullable FeedSigninPromo mSigninPromo;
     private @Nullable RecyclerViewAnimationFinishDetector mRecyclerViewAnimationFinishDetector;
 
     private boolean mFeedEnabled;
@@ -237,7 +129,6 @@ public class FeedSurfaceMediator
     // Whether we're currently adding the streams. If this is true, streams should not be bound yet.
     // This avoids automatically binding the first stream when it's added.
     private boolean mSettingUpStreams;
-    private final boolean mIsNewTabSearchEngineUrlAndroidEnabled;
     private final boolean mUseResponsiveLayoutForFoldables;
     private boolean mIsPropertiesInitializedForStream;
     private @ClosedReason int mClosedReason = ClosedReason.SUSPEND_APP;
@@ -263,18 +154,15 @@ public class FeedSurfaceMediator
         mSigninManager = signinManager;
         mTemplateUrlService = TemplateUrlServiceFactory.getForProfile(mProfile);
         mActionDelegate = actionDelegate;
-        mIsNewTabSearchEngineUrlAndroidEnabled =
-                DseNewTabUrlManager.isNewTabSearchEngineUrlAndroidEnabled();
         mUseResponsiveLayoutForFoldables =
                 DeviceInfo.isFoldable()
                         && ChromeFeatureList.isEnabled(
                                 ChromeFeatureList.WIDE_SCREEN_FEED_FOR_FOLDABLES);
 
         /*
-         * When feature flag isNewTabSearchEngineUrlAndroidEnabled is enabled, the Feeds may be
-         * hidden without showing its header. Therefore, FeedSurfaceMediator needs to observe
-         * whether the DSE is changed and update Pref.ENABLE_SNIPPETS_BY_DSE even when Feeds isn't
-         * visible.
+         * The Feeds may be hidden without showing its header when the DSE isn't Google. Therefore,
+         * FeedSurfaceMediator needs to observe whether the DSE is changed and update
+         * Pref.ENABLE_SNIPPETS_BY_DSE even when Feeds isn't visible.
          */
         mTemplateUrlService.addObserver(this);
         // It is possible that the default search engine has been changed before any NTP or
@@ -284,8 +172,7 @@ public class FeedSurfaceMediator
         getPrefService()
                 .setBoolean(
                         Pref.ENABLE_SNIPPETS_BY_DSE,
-                        !mIsNewTabSearchEngineUrlAndroidEnabled
-                                || mTemplateUrlService.isDefaultSearchEngineGoogle());
+                        mTemplateUrlService.isDefaultSearchEngineGoogle());
 
         if (sTestPrefChangeRegistar != null) {
             mPrefChangeRegistrar = sTestPrefChangeRegistar;
@@ -455,12 +342,16 @@ public class FeedSurfaceMediator
     /** Restores a previously saved state. */
     void restoreSavedInstanceState(@Nullable String json) {
         FeedScrollState state = FeedScrollState.fromJson(json);
-        if (state == null) {
+        if (state == null
+                || state.position == RecyclerView.NO_POSITION
+                || (state.position == 0 && state.offset == 0)) {
             mPositionToRestore = RecyclerView.NO_POSITION;
+            mRestoreScrollState = null;
             mGetRestoringStateSupplier.set(RestoringState.NO_STATE_TO_RESTORE);
             return;
         }
         mPositionToRestore = state.position;
+        mGetRestoringStateSupplier.set(RestoringState.WAITING_TO_RESTORE);
         if (mCurrentStream == null) {
             mRestoreScrollState = state;
         } else {
@@ -496,7 +387,12 @@ public class FeedSurfaceMediator
 
         initStreamHeaderViews();
 
-        mMemoryPressureCallback = pressure -> view.getRecycledViewPool().clear();
+        mMemoryPressureCallback =
+                pressure -> {
+                    if (pressure != MemoryPressureLevel.NONE) {
+                        view.getRecycledViewPool().clear();
+                    }
+                };
         MemoryPressureListener.addCallback(mMemoryPressureCallback);
 
         mIsPropertiesInitializedForStream = true;
@@ -530,7 +426,11 @@ public class FeedSurfaceMediator
         assumeNonNull(mStreamContentChangedListener);
         mCurrentStream.addOnContentChangedListener(mStreamContentChangedListener);
 
-        mGetRestoringStateSupplier.set(RestoringState.WAITING_TO_RESTORE);
+        if (mRestoreScrollState != null || mPositionToRestore != RecyclerView.NO_POSITION) {
+            mGetRestoringStateSupplier.set(RestoringState.WAITING_TO_RESTORE);
+        } else {
+            mGetRestoringStateSupplier.set(RestoringState.NO_STATE_TO_RESTORE);
+        }
         FeedReliabilityLogger reliabilityLogger = mCoordinator.getReliabilityLogger();
         mCurrentStream.bind(
                 mCoordinator.getRecyclerView(),
@@ -625,31 +525,7 @@ public class FeedSurfaceMediator
     }
 
     private void initStreamHeaderViews() {
-        boolean signInPromoVisible = shouldShowSigninPromo();
-        if (signInPromoVisible && mSigninPromo != null) {
-            mCoordinator.updateHeaderViews(mSigninPromo.getPromoView());
-        } else {
-            mCoordinator.updateHeaderViews(/* signinPromoView= */ null);
-        }
-    }
-
-    /**
-     * Determines whether a signin promo should be shown.
-     *
-     * @return Whether the FeedSigninPromo should be visible.
-     */
-    private boolean shouldShowSigninPromo() {
-        if (SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)) {
-            return false;
-        }
-        boolean shouldCreatePromo = FeedSigninPromo.shouldCreatePromo();
-        if (!shouldCreatePromo) {
-            return false;
-        }
-        if (mSigninPromo == null) {
-            mSigninPromo = new FeedSigninPromo(isSuggestionsVisible());
-        }
-        return mSigninPromo.canShowPromo();
+        mCoordinator.updateHeaderViews();
     }
 
     /** Clear any dependencies related to the {@link Stream}. */
@@ -663,11 +539,6 @@ public class FeedSurfaceMediator
         if (mMemoryPressureCallback != null) {
             MemoryPressureListener.removeCallback(mMemoryPressureCallback);
             mMemoryPressureCallback = null;
-        }
-
-        if (mSigninPromo != null) {
-            mSigninPromo.destroy();
-            mSigninPromo = null;
         }
 
         if (mStreamHolder != null) {
@@ -704,9 +575,6 @@ public class FeedSurfaceMediator
 
         boolean suggestionsVisible = isSuggestionsVisible();
 
-        if (mSigninPromo != null) {
-            mSigninPromo.setCanShowPersonalizedSuggestions(suggestionsVisible);
-        }
         if (suggestionsVisible) {
             assumeNonNull(mCoordinator.getSurfaceLifecycleManager()).show();
         }
@@ -774,7 +642,12 @@ public class FeedSurfaceMediator
     @Override
     public boolean isScrollViewInitialized() {
         RecyclerView recyclerView = mCoordinator.getRecyclerView();
-        return recyclerView != null && (!mFeedEnabled || recyclerView.getHeight() > 0);
+        if (!mFeedEnabled) return true;
+        if (recyclerView.getHeight() <= 0) return false;
+        // The Litho/xsurface renderer binds item layouts asynchronously. A RecyclerView with
+        // height but no laid-out children must not be considered initialized (otherwise it is
+        // treated as 'scrolled past the header' incorrectly).
+        return recyclerView.getChildCount() > 0;
     }
 
     @Override
@@ -854,14 +727,10 @@ public class FeedSurfaceMediator
 
     @Override
     public void onTemplateURLServiceChanged() {
-        if (mIsNewTabSearchEngineUrlAndroidEnabled) {
-            getPrefService()
-                    .setBoolean(
-                            Pref.ENABLE_SNIPPETS_BY_DSE,
-                            mTemplateUrlService.isDefaultSearchEngineGoogle());
-            return;
-        }
-        showOrHideFeed();
+        getPrefService()
+                .setBoolean(
+                        Pref.ENABLE_SNIPPETS_BY_DSE,
+                        mTemplateUrlService.isDefaultSearchEngineGoogle());
     }
 
     // IdentityManager.Observer interface.
@@ -1031,7 +900,8 @@ public class FeedSurfaceMediator
                                 listener.onScrolled(dx, dy);
                             }
                             // Null if the stream has not been binded yet.
-                            if (GestureNavigationUtils.shouldAnimateBackForwardTransitions()
+                            if (BackForwardTransitionAnimationManager
+                                            .shouldAnimateBackForwardTransitions()
                                     && mCoordinator.getHybridListRenderer() != null
                                     && mCoordinator.getHybridListRenderer().getListLayoutHelper()
                                             != null
@@ -1049,9 +919,21 @@ public class FeedSurfaceMediator
                                     mPositionToRestore = RecyclerView.NO_POSITION;
                                     final var originalAnimator =
                                             mCoordinator.getRecyclerView().getItemAnimator();
-                                    mCoordinator
-                                            .getRecyclerView()
-                                            .setItemAnimator(new ItemAnimatorWithoutAnimation());
+                                    // Skip item animations until the restore completes. With a
+                                    // null ItemAnimator, RecyclerView skips its animation steps,
+                                    // so removed items can't be left behind as stale views, as
+                                    // happens with ItemAnimatorWithoutAnimation, which never
+                                    // reports its items as finished. See b/517926260.
+                                    if (ChromeFeatureList.isEnabled(
+                                            ChromeFeatureList
+                                                    .FEED_NULL_ITEM_ANIMATOR_ON_SCROLL_RESTORE)) {
+                                        mCoordinator.getRecyclerView().setItemAnimator(null);
+                                    } else {
+                                        mCoordinator
+                                                .getRecyclerView()
+                                                .setItemAnimator(
+                                                        new ItemAnimatorWithoutAnimation());
+                                    }
                                     final Runnable onComplete =
                                             () -> {
                                                 mGetRestoringStateSupplier.set(

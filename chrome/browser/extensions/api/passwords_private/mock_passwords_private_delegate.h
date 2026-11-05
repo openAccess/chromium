@@ -102,7 +102,7 @@ class MockPasswordsPrivateDelegate
       (base::OnceCallback<void(ExportPasswordsResult)> accepted_callback,
        content::WebContents* web_contents),
       (override));
-  MOCK_METHOD(extensions::api::passwords_private::ExportProgressStatus,
+  MOCK_METHOD(password_manager::ExportProgressStatus,
               GetExportProgressStatus,
               (),
               (override));
@@ -116,16 +116,8 @@ class MockPasswordsPrivateDelegate
       GetCredentialsWithReusedPassword,
       (),
       (override));
-  MOCK_METHOD(
-      bool,
-      MuteInsecureCredential,
-      (const extensions::api::passwords_private::PasswordUiEntry& credential),
-      (override));
-  MOCK_METHOD(
-      bool,
-      UnmuteInsecureCredential,
-      (const extensions::api::passwords_private::PasswordUiEntry& credential),
-      (override));
+  MOCK_METHOD(bool, MuteInsecureCredential, (int id), (override));
+  MOCK_METHOD(bool, UnmuteInsecureCredential, (int id), (override));
   MOCK_METHOD(void,
               StartPasswordCheck,
               (StartPasswordCheckCallback callback),

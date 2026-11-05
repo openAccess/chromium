@@ -4,14 +4,27 @@
 
 package org.chromium.chrome.browser.glic;
 
+import android.app.Activity;
+import android.text.TextUtils;
+
 import androidx.annotation.IntDef;
 
+import org.jni_zero.JniPtr;
+
+import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask.NativeBrowserWindowInterface;
+import org.chromium.content_public.browser.RenderFrameHost;
+import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.List;
 
 /**
  * GlicKeyedService is the core class for managing Glic flows. It represents a native
@@ -26,8 +39,13 @@ public interface GlicKeyedService {
         GlicInvocationSource.TOP_CHROME_BUTTON,
         GlicInvocationSource.NUDGE,
         GlicInvocationSource.THREE_DOTS_MENU,
-        GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU,
+        GlicInvocationSource.SHARED_IMAGE,
         GlicInvocationSource.TOOLBAR_BUTTON,
+        GlicInvocationSource.TAB_CONTEXT_MENU,
+        GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_LINK,
+        GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_PAGE,
+        GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_TEXT_SELECTION,
+        GlicInvocationSource.ACTOR_TOOL,
         GlicInvocationSource.MAX_VALUE,
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -36,23 +54,29 @@ public interface GlicKeyedService {
         int TOP_CHROME_BUTTON = 3;
         int NUDGE = 6;
         int THREE_DOTS_MENU = 7;
-        int WEB_CONTENTS_CONTEXT_MENU = 23;
+        int SHARED_IMAGE = 13;
         int TOOLBAR_BUTTON = 31;
-        int MAX_VALUE = 34;
+        int TAB_CONTEXT_MENU = 41;
+        int WEB_CONTENTS_CONTEXT_MENU_LINK = 46;
+        int WEB_CONTENTS_CONTEXT_MENU_PAGE = 47;
+        int WEB_CONTENTS_CONTEXT_MENU_TEXT_SELECTION = 48;
+        int ACTOR_TOOL = 49;
+        // Must match the largest mojom value, since MAX_VALUE + 1 bounds Glic.EntryPoint.Click.
+        int MAX_VALUE = 49;
     }
 
-    // LINT.ThenChange(//chrome/browser/glic/host/glic.mojom:InvocationSource)
+    // LINT.ThenChange(//chrome/common/glic_enums.mojom:InvocationSource)
 
     /**
      * Toggles the Glic user interface.
      *
-     * @param browserWindowPtr The native pointer (long) to the BrowserWindowInterface.
+     * @param browserWindow The native {@code BrowserWindowInterface}.
      * @param preventClose Whether to prevent closing the UI if it's already open.
      * @param profile The {@link Profile} associated with this service instance.
      * @param invocationSource How the UI was triggered.
      */
     void toggleUI(
-            long browserWindowPtr,
+            JniPtr<NativeBrowserWindowInterface> browserWindow,
             boolean preventClose,
             Profile profile,
             @GlicInvocationSource int invocationSource);
@@ -74,10 +98,17 @@ public interface GlicKeyedService {
      * Invokes the Glic service with a prompt prepopulated in the input box.
      *
      * @param tab The {@link Tab} to target.
+     * @param frame The {@link RenderFrameHost} the prompt was taken from.
      * @param text The text prompt to populate.
      * @param invocationSource How the UI was triggered.
+     * @return true if Glic was invoked with the prompt attached. Enterprise policy checks run
+     *     afterwards and may still fail the invocation.
      */
-    void invokeWithPrompt(Tab tab, String text, @GlicInvocationSource int invocationSource);
+    boolean invokeWithPrompt(
+            Tab tab,
+            @Nullable RenderFrameHost frame,
+            String text,
+            @GlicInvocationSource int invocationSource);
 
     /**
      * Invokes the Glic service, opening the panel attached to the given tab without
@@ -87,6 +118,86 @@ public interface GlicKeyedService {
      * @param invocationSource How the UI was triggered.
      */
     void invoke(Tab tab, @GlicInvocationSource int invocationSource);
+
+    /**
+     * Invokes the Glic service with a specific conversation ID.
+     *
+     * @param tab The {@link Tab} to target, or null if no specific tab.
+     * @param glicConversationId The conversation ID to reconnect to.
+     * @param invocationSource How the UI was triggered.
+     */
+    void invokeWithConversation(
+            @Nullable Tab tab,
+            String glicConversationId,
+            @GlicInvocationSource int invocationSource);
+
+    /**
+     * Invokes Glic with the given conversation ID if present, switching away from incognito model
+     * if needed, and guarding against activity and tab destruction during asynchronous profile
+     * resolution.
+     *
+     * @param activity The host {@link Activity}.
+     * @param selector The {@link TabModelSelector} to act on.
+     * @param profileProviderSupplier Supplier for {@link ProfileProvider}.
+     * @param tab The target {@link Tab}, or null to target the active tab.
+     * @param glicConversationId The conversation ID to route to Glic.
+     */
+    static void maybeInvokeGlic(
+            @Nullable Activity activity,
+            @Nullable TabModelSelector selector,
+            OneshotSupplier<ProfileProvider> profileProviderSupplier,
+            @Nullable Tab tab,
+            @Nullable String glicConversationId) {
+        if (TextUtils.isEmpty(glicConversationId)) {
+            return;
+        }
+        Tab targetTab = tab != null ? tab : (selector != null ? selector.getCurrentTab() : null);
+        if (targetTab != null && targetTab.isIncognito() && selector != null) {
+            selector.selectModel(/* incognito= */ false);
+            targetTab = selector.getCurrentTab();
+        }
+        if (targetTab == null || targetTab.isIncognito()) {
+            return;
+        }
+        // TODO(b/546096305): Add and use an InvocationSource for Notifications before launch to
+        // ensure accurate metrics.
+        final Tab finalTargetTab = targetTab;
+        profileProviderSupplier.runSyncOrOnAvailable(
+                profileProvider -> {
+                    if (activity == null
+                            || activity.isFinishing()
+                            || activity.isDestroyed()
+                            || finalTargetTab.isDestroyed()) {
+                        return;
+                    }
+                    GlicKeyedService service =
+                            GlicKeyedServiceFactory.getForProfile(
+                                    profileProvider.getOriginalProfile());
+                    if (service != null) {
+                        service.invokeWithConversation(
+                                finalTargetTab,
+                                glicConversationId,
+                                GlicInvocationSource.TOOLBAR_BUTTON);
+                    }
+                });
+    }
+
+    /**
+     * Shows the experimental triggering opt-in dialog for testing.
+     *
+     * @param tab The target {@link Tab}.
+     */
+    void showExperimentalOptInDialogForTesting(Tab tab); // IN-TEST
+
+    /**
+     * Shares the image at {@code srcUrl} (hosted in {@code renderFrameHost}) with Glic, opening the
+     * panel with the image attached as context (no auto-submit).
+     *
+     * @param tab The {@link Tab} to target.
+     * @param renderFrameHost The {@link RenderFrameHost} that hosts the image.
+     * @param srcUrl The source URL of the image.
+     */
+    void shareContextImage(Tab tab, @Nullable RenderFrameHost renderFrameHost, GURL srcUrl);
 
     /** Observer for global show/hide events. */
     interface GlobalShowHideObserver {
@@ -111,6 +222,17 @@ public interface GlicKeyedService {
     /** Removes an observer for user enabled actuation on web changes. */
     void removeUserEnabledActuationOnWebObserver(UserEnabledActuationOnWebObserver observer);
 
+    /** Observer for experimental triggering (Gemini Spark) enabled changes. */
+    interface ExperimentalTriggeringObserver {
+        void onExperimentalTriggeringEnabledChanged(boolean enabled);
+    }
+
+    /** Adds an observer for experimental triggering enabled changes. */
+    void addExperimentalTriggeringObserver(ExperimentalTriggeringObserver observer);
+
+    /** Removes an observer for experimental triggering enabled changes. */
+    void removeExperimentalTriggeringObserver(ExperimentalTriggeringObserver observer);
+
     /** Observer for allowed changes. */
     interface AllowedChangedObserver {
         void onAllowedStateChanged();
@@ -125,10 +247,10 @@ public interface GlicKeyedService {
     /**
      * Checks if the panel is showing for a specific browser window.
      *
-     * @param browserWindowPtr The native pointer (long) to the BrowserWindowInterface.
+     * @param browserWindow The native {@code BrowserWindowInterface}.
      * @return true if the panel is showing for the specified browser window.
      */
-    boolean isPanelShowingForBrowser(long browserWindowPtr);
+    boolean isPanelShowingForBrowser(JniPtr<NativeBrowserWindowInterface> browserWindow);
 
     /**
      * Checks if the user has enabled actuation on web.
@@ -145,6 +267,20 @@ public interface GlicKeyedService {
     void setUserEnabledActuationOnWeb(boolean enabled);
 
     /**
+     * Checks if the user has enabled experimental triggering (Gemini Spark).
+     *
+     * @return true if experimental triggering is enabled.
+     */
+    boolean getExperimentalTriggeringEnabled();
+
+    /**
+     * Sets whether the user has enabled experimental triggering (Gemini Spark).
+     *
+     * @param enabled true to enable experimental triggering.
+     */
+    void setExperimentalTriggeringEnabled(boolean enabled);
+
+    /**
      * Checks if the Glic toolbar button is currently active/pinned.
      *
      * @param profile The current profile.
@@ -158,4 +294,40 @@ public interface GlicKeyedService {
      * @return true if the bottom bar is enabled.
      */
     boolean isBottomBarEnabled();
+
+    /**
+     * Shares (pins) the given tabs with a Glic conversation, invoked from the tab strip context
+     * menu.
+     *
+     * @param tabs The tabs to share.
+     * @param instanceId The target conversation's instance id, or null to start a new conversation.
+     * @param newConversation Whether to start a brand new conversation.
+     * @param invocationSource How the share was triggered.
+     */
+    void shareTabs(
+            List<Tab> tabs,
+            @Nullable String instanceId,
+            boolean newConversation,
+            @GlicInvocationSource int invocationSource);
+
+    /**
+     * Unshares (unpins) the given tabs from all Glic conversations.
+     *
+     * @param tabs The tabs to unshare.
+     */
+    void unshareTabs(List<Tab> tabs);
+
+    /**
+     * Returns whether any of the given tabs is currently shared (pinned) with a Glic conversation.
+     *
+     * @param tabs The tabs to check.
+     */
+    boolean isTabPinnedToAnyInstance(List<Tab> tabs);
+
+    /**
+     * Returns up to {@code limit} recently active Glic conversations, most recent first.
+     *
+     * @param limit The maximum number of conversations to return.
+     */
+    List<ConversationInfo> getRecentlyActiveInstances(int limit);
 }

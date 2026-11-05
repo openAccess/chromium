@@ -39,13 +39,15 @@ class WebState;
 // Shows the payments suggestion bottom sheet view controller.
 - (void)showPaymentsBottomSheet:(const autofill::FormActivityParams&)params;
 
+// Dismisses the payments suggestion bottom sheet.
+- (void)dismissPaymentsBottomSheet;
+
 // Shows the scan card save and fill suggestion bottom sheet view controller.
 - (void)showScanCardSaveAndFillBottomSheet:
     (const autofill::FormActivityParams&)params;
 
-// Dismisses the sheets shown through `showPaymentsBottomSheet` and
-// `showScanCardSaveAndFillBottomSheet`.
-- (void)dismissPaymentAndScanCardSheets;
+// Dismisses the scan card save and fill suggestion bottom sheet.
+- (void)dismissScanCardSaveAndFillBottomSheet;
 
 // Commands to manage save card bottomsheet.
 - (void)showSaveCardBottomSheetOnOriginWebState:(web::WebState*)originWebState;
@@ -70,10 +72,6 @@ class WebState;
 // Sends a command to stop showing the bottom sheet to edit an address provided
 // it's shown.
 - (void)dismissEditAddressBottomSheet;
-
-// Command to reset the autofill suggestions loading states.
-// Deprecated: use BrowserCoordinatorCommands instead.
-- (void)legacyResetAutofillSuggestionsLoadingStates;
 
 // Commands to manage the Autofill error dialog.
 - (void)showAutofillErrorDialog:

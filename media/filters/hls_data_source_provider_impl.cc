@@ -12,7 +12,9 @@
 #include "base/types/pass_key.h"
 #include "media/base/cross_origin_data_source.h"
 #include "media/formats/hls/types.h"
+#include "net/base/data_url.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
+#include "url/url_constants.h"
 
 namespace media {
 
@@ -39,12 +41,12 @@ void OnMultiBufferReadComplete(
     case DataSource::kReadError: {
       stream->UnlockStreamPostWrite(0, true);
       return std::move(callback).Run(
-          HlsDataSourceProvider::ReadStatus::Codes::kError);
+          base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadError));
     }
     case DataSource::kAborted: {
       stream->UnlockStreamPostWrite(0, true);
       return std::move(callback).Run(
-          HlsDataSourceProvider::ReadStatus::Codes::kAborted);
+          base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadAborted));
     }
     default: {
       CHECK_GE(read_size, 0);
@@ -95,6 +97,34 @@ void HlsDataSourceProviderImpl::ReadFromExistingStream(
   if (stream->RequiresInit()) {
     auto [new_uri, cache_mode, range_mode, encoding_mode] =
         stream->GetSegmentInfo();
+    if (new_uri.SchemeIs(url::kDataScheme)) {
+      // If the stream points to a data-schemed URL load it directly.
+      std::string mime_type, charset, data;
+      if (!net::DataURL::Parse(new_uri, &mime_type, &charset, &data) ||
+          data.empty()) {
+        std::move(callback).Run(
+            base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadError));
+        return;
+      }
+      base::span<const uint8_t> bytes = base::as_byte_span(data);
+      if (range_mode == DataSource::RangeMode::kRangeRequest) {
+        stream->set_requires_range_request();
+        const size_t start = stream->read_position();
+        const size_t end = stream->max_read_position().value();
+        if (start >= end || end > bytes.size()) {
+          std::move(callback).Run(
+              base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadError));
+          return;
+        }
+        bytes = bytes.subspan(start, end - start);
+      }
+      stream->LockStreamForWriting(bytes.size()).copy_from(bytes);
+      stream->UnlockStreamPostWrite(bytes.size(), true);
+      stream->SetPostRedirectUri(std::move(new_uri));
+      std::move(callback).Run(std::move(stream));
+      return;
+    }
+
     TRACE_EVENT_BEGIN("media", "HLS::CreateDataSource", GetTracingTrack(this),
                       "uri", new_uri);
     data_source_factory_->Create(
@@ -118,7 +148,8 @@ void HlsDataSourceProviderImpl::ReadFromExistingStream(
   auto it = data_source_map_.find(stream->stream_id());
   if (it == data_source_map_.end()) {
     TRACE_EVENT_END("media", GetTracingTrack(this));
-    std::move(callback).Run(ReadStatus::Codes::kError);
+    std::move(callback).Run(
+        base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadError));
     return;
   }
 
@@ -160,9 +191,10 @@ void HlsDataSourceProviderImpl::OnDataSourceCreated(
   }
 
   if (stream->SecurityInfo().HasIncompatibleRangeAndOrigin()) {
-    std::move(callback).Run(
-        {ReadStatus::Codes::kError,
-         "Range requests are not allowed for cross-origin content"});
+    HlsDemuxerStatus error = {
+        HlsDemuxerStatus::Codes::kNetworkReadError,
+        "Range requests are not allowed for cross-origin content"};
+    std::move(callback).Run(base::unexpected(std::move(error)));
     TRACE_EVENT_END("media", perfetto::Track::FromPointer(this));
     return;
   }
@@ -182,7 +214,8 @@ void HlsDataSourceProviderImpl::DataSourceInitialized(
     auto it = data_source_map_.find(stream->stream_id());
     CHECK(it != data_source_map_.end());
     data_source_map_.erase(it);
-    std::move(callback).Run(ReadStatus::Codes::kStopped);
+    std::move(callback).Run(
+        base::unexpected(HlsDemuxerStatus::Codes::kNetworkReadStopped));
     TRACE_EVENT_END("media", GetTracingTrack(this));
     return;
   }
@@ -195,24 +228,43 @@ void HlsDataSourceProviderImpl::DataSourceInitialized(
     if (it->second->DidRedirect()) {
       stream->set_did_redirect();
     }
-    const auto& response_uri = it->second->GetUrlAfterRedirects();
+    const auto& response_uri = it->second->GetUrlDataOrigin();
     if (!response_uri.is_empty()) {
       if (!response_uri.SchemeIs("data")) {
         stream->TrackOrigin(url::Origin::Create(response_uri));
       }
+      if (response_uri.SchemeIs("file")) {
+        // For a base page loaded via the file:// protocol, the chrome network
+        // stack allows media content loaded directly via src=, but for security
+        // reasons, does not allow arbitrary reads from other file:// urls (ie,
+        // via JS using `fetch()`).
+        // Since HLS provides the ability to play local manifests with variable
+        // substitution, a file:// hosted playlist could theoretically make
+        // range requests to any arbitrary other file:// uri and test for
+        // playback.
+
+        // As a result, the only thing we can do is block HLS from using the
+        // file:// protocol entirely.
+        std::move(callback).Run(base::unexpected(
+            HlsDemuxerStatus{HlsDemuxerStatus::Codes::kInvalidContentScheme}));
+        TRACE_EVENT_END("media", GetTracingTrack(this));
+        return;
+      }
       stream->SetPostRedirectUri(response_uri);
     } else {
-      std::move(callback).Run({ReadStatus::Codes::kError,
-                               "Invalid security origin for non-existent URL"});
+      HlsDemuxerStatus error = {HlsDemuxerStatus::Codes::kNetworkReadError,
+                                "Invalid security origin for non-existent URL"};
+      std::move(callback).Run(base::unexpected(std::move(error)));
       TRACE_EVENT_END("media", GetTracingTrack(this));
       return;
     }
   }
 
   if (stream->SecurityInfo().HasIncompatibleRangeAndOrigin()) {
-    std::move(callback).Run(
-        {ReadStatus::Codes::kError,
-         "Range requests are not allowed for cross-origin content"});
+    HlsDemuxerStatus error = {
+        HlsDemuxerStatus::Codes::kNetworkReadError,
+        "Range requests are not allowed for cross-origin content"};
+    std::move(callback).Run(base::unexpected(std::move(error)));
     TRACE_EVENT_END("media", GetTracingTrack(this));
     return;
   }

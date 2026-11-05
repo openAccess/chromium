@@ -22,7 +22,6 @@
 #include "components/browsing_data/core/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
-#include "components/sync/base/features.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace {
@@ -60,7 +59,7 @@ std::u16string CreatePasswordDomainExamples(
 std::u16string CreateHistoryCounterString(
     const browsing_data::HistoryCounter::HistoryResult* history_result) {
   CHECK(history_result->source()->GetPrefName() ==
-            browsing_data::prefs::kDeleteBrowsingHistory);
+        browsing_data::prefs::kDeleteBrowsingHistory);
 
   if (!history_result->Finished()) {
     // The counter is still counting.
@@ -281,10 +280,19 @@ std::u16string GetCounterTextFromResult(
                                             count);
   }
 
+  if (pref_name == prefs::kDeleteSkills) {
+    const BrowsingDataCounter::SyncResult* skills_result =
+        static_cast<const BrowsingDataCounter::SyncResult*>(result);
+    return l10n_util::GetPluralStringFUTF16(skills_result->is_sync_enabled()
+                                                ? IDS_DEL_SKILLS_COUNTER_SYNCED
+                                                : IDS_DEL_SKILLS_COUNTER,
+                                            skills_result->Value());
+  }
+
   if (pref_name == prefs::kDeleteBrowsingHistory) {
     // History counter.
     return CreateHistoryCounterString(
-          static_cast<const HistoryCounter::HistoryResult*>(result));
+        static_cast<const HistoryCounter::HistoryResult*>(result));
   }
 
   if (pref_name == prefs::kDeleteFormData) {
@@ -296,6 +304,8 @@ std::u16string GetCounterTextFromResult(
         autofill_result->num_credit_cards();
     AutofillCounter::ResultInt num_addresses = autofill_result->num_addresses();
     AutofillCounter::ResultInt num_entities = autofill_result->num_entities();
+    AutofillCounter::ResultInt num_suppressions =
+        autofill_result->num_suppressions();
 
     std::vector<std::u16string> displayed_strings;
 
@@ -308,35 +318,15 @@ std::u16string GetCounterTextFromResult(
           IDS_DEL_AUTOFILL_COUNTER_ADDRESSES, num_addresses));
     }
 
-    auto num_suggestions_and_entities = num_suggestions + num_entities;
-    if (num_suggestions_and_entities > 0) {
-      // We use a different wording for autocomplete suggestions based on the
-      // length of the entire string.
-      switch (displayed_strings.size()) {
-        case 0:
-          displayed_strings.push_back(l10n_util::GetPluralStringFUTF16(
-              IDS_DEL_AUTOFILL_COUNTER_SUGGESTIONS,
-              num_suggestions_and_entities));
-          break;
-        case 1:
-          displayed_strings.push_back(l10n_util::GetPluralStringFUTF16(
-              IDS_DEL_AUTOFILL_COUNTER_SUGGESTIONS_LONG,
-              num_suggestions_and_entities));
-          break;
-        case 2:
-          displayed_strings.push_back(l10n_util::GetPluralStringFUTF16(
-              IDS_DEL_AUTOFILL_COUNTER_SUGGESTIONS_SHORT,
-              num_suggestions_and_entities));
-          break;
-        default:
-          NOTREACHED();
-      }
+    // Autocomplete suggestions, Autofill AI entities and entity suppressions
+    // are not enumerated with a count. They are either shown as "Other data"
+    // on their own, or appended as "and more" to the enumeration of payment
+    // methods and addresses.
+    if (num_suggestions + num_entities + num_suppressions > 0) {
+      displayed_strings.push_back(l10n_util::GetStringUTF16(
+          displayed_strings.empty() ? IDS_DEL_AUTOFILL_COUNTER_OTHER_DATA
+                                    : IDS_DEL_AUTOFILL_COUNTER_AND_MORE));
     }
-
-    // TODO(crbug.com/40066949): Clean this up once Sync-the-feature is gone on
-    // all platforms.
-    bool synced = !syncer::IsReplaceSyncPromosWithSignInPromosEnabled() &&
-                  autofill_result->is_sync_enabled();
 
     // TODO(crbug.com/371539581): Exclude payment methods from this part,
     // because it can be attributed as "synced", while payment methods are
@@ -349,25 +339,19 @@ std::u16string GetCounterTextFromResult(
         break;
       case 1:
         payment_methods_addresses_autocomplete_entries_part =
-            synced ? l10n_util::GetStringFUTF16(
-                         IDS_DEL_AUTOFILL_COUNTER_ONE_TYPE_SYNCED,
-                         displayed_strings[0])
-                   : displayed_strings[0];
+            displayed_strings[0];
         break;
       case 2:
         payment_methods_addresses_autocomplete_entries_part =
-            l10n_util::GetStringFUTF16(
-                synced ? IDS_DEL_AUTOFILL_COUNTER_TWO_TYPES_SYNCED
-                       : IDS_DEL_AUTOFILL_COUNTER_TWO_TYPES,
-                displayed_strings[0], displayed_strings[1]);
+            l10n_util::GetStringFUTF16(IDS_DEL_AUTOFILL_COUNTER_TWO_TYPES,
+                                       displayed_strings[0],
+                                       displayed_strings[1]);
         break;
       case 3:
         payment_methods_addresses_autocomplete_entries_part =
             l10n_util::GetStringFUTF16(
-                synced ? IDS_DEL_AUTOFILL_COUNTER_THREE_TYPES_SYNCED
-                       : IDS_DEL_AUTOFILL_COUNTER_THREE_TYPES,
-                displayed_strings[0], displayed_strings[1],
-                displayed_strings[2]);
+                IDS_DEL_AUTOFILL_COUNTER_THREE_TYPES, displayed_strings[0],
+                displayed_strings[1], displayed_strings[2]);
         break;
       default:
         NOTREACHED();
@@ -383,9 +367,8 @@ const char* GetTimePeriodPreferenceName() {
   return prefs::kDeleteTimePeriod;
 }
 
-bool GetDeletionPreferenceFromDataType(
-    BrowsingDataType data_type,
-    std::string* out_pref) {
+bool GetDeletionPreferenceFromDataType(BrowsingDataType data_type,
+                                       std::string* out_pref) {
   switch (data_type) {
     case BrowsingDataType::HISTORY:
       *out_pref = prefs::kDeleteBrowsingHistory;
@@ -414,6 +397,9 @@ bool GetDeletionPreferenceFromDataType(
     case BrowsingDataType::TABS:
       *out_pref = prefs::kCloseTabs;
       return true;
+    case BrowsingDataType::SKILLS:
+      *out_pref = prefs::kDeleteSkills;
+      return true;
   }
   NOTREACHED();
 }
@@ -431,6 +417,7 @@ std::optional<BrowsingDataType> GetDataTypeFromDeletionPreference(
           {prefs::kDeleteSiteSettings, BrowsingDataType::SITE_SETTINGS},
           {prefs::kDeleteDownloadHistory, BrowsingDataType::DOWNLOADS},
           {prefs::kDeleteHostedAppsData, BrowsingDataType::HOSTED_APPS_DATA},
+          {prefs::kDeleteSkills, BrowsingDataType::SKILLS},
       });
 
   auto iter = preference_to_datatype->find(pref_name);

@@ -305,7 +305,7 @@ TEST_F(ComposeboxMetricsRecorderTest, ToolSelected) {
 }
 
 TEST_F(ComposeboxMetricsRecorderTest, ModelSelected) {
-  [recorder_ recordModelSelected:ComposeboxModelOption::kThinking];
+  [recorder_ recordModelSelected:omnibox::ModelMode::MODEL_MODE_GEMINI_PRO];
   histogram_tester_.ExpectBucketCount(
       "ContextualSearch.Models.Selected.Unknown",
       static_cast<int>(omnibox::ModelMode::MODEL_MODE_GEMINI_PRO), 1);
@@ -348,4 +348,13 @@ TEST_F(ComposeboxMetricsRecorderTest, PickerOutcome) {
   histogram_tester_.ExpectBucketCount(
       "Omnibox.MobileFusebox.PickerOutcome.Drive",
       static_cast<int>(MobileFuseboxPickerOutcome::kLocalError), 1);
+
+  [recorder_ recordPickerOutcome:MobileFuseboxPickerOutcome::kAttachmentAdded
+               forAttachmentType:MobileFuseboxPickerAttachmentType::kTabs];
+  histogram_tester_.ExpectBucketCount(
+      "Omnibox.MobileFusebox.PickerOutcome",
+      static_cast<int>(MobileFuseboxPickerOutcome::kAttachmentAdded), 2);
+  histogram_tester_.ExpectBucketCount(
+      "Omnibox.MobileFusebox.PickerOutcome.Tabs",
+      static_cast<int>(MobileFuseboxPickerOutcome::kAttachmentAdded), 1);
 }

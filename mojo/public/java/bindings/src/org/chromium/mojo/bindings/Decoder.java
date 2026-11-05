@@ -34,23 +34,16 @@ public class Decoder {
         /** Minimal value of the start of the next memory to claim. */
         private long mMinNextMemory;
 
-        /** The current nesting level when decoding. */
-        private long mStackDepth;
-
         /** The maximal memory accessible. */
         private final long mMaxMemory;
 
         /** The number of handles in the message. */
         private final long mNumberOfHandles;
 
-        /** The maximum nesting level when decoding. */
-        private static final int MAX_RECURSION_DEPTH = 100;
-
         /** Constructor. */
         Validator(long maxMemory, int numberOfHandles) {
             mMaxMemory = maxMemory;
             mNumberOfHandles = numberOfHandles;
-            mStackDepth = 0;
         }
 
         public void claimHandle(int handle) throws DeserializationException {
@@ -78,18 +71,16 @@ public class Decoder {
             }
             mMinNextMemory = BindingsHelper.align(end);
         }
-
-        public void increaseStackDepth() throws DeserializationException {
-            ++mStackDepth;
-            if (mStackDepth >= MAX_RECURSION_DEPTH) {
-                throw new DeserializationException("Recursion depth limit exceeded.");
-            }
-        }
-
-        public void decreaseStackDepth() {
-            --mStackDepth;
-        }
     }
+
+    /** The maximum nesting level of structs when decoding. */
+    private static final int MAX_RECURSION_DEPTH = 100;
+
+    private static final String UNKNOWN_VERSION_MESSAGE =
+            "Header doesn't correspond to any known version.";
+    private static final String NEWER_VERSION_TOO_SHORT_MESSAGE =
+            "Message newer than the last known version"
+                    + " cannot be shorter than required by the last known version.";
 
     /** The message to deserialize from. */
     private final Message mMessage;
@@ -101,19 +92,27 @@ public class Decoder {
     private final Validator mValidator;
 
     /**
+     * The number of structs being decoded that contain the data at this position (including the
+     * struct at this position once its header has been read). Since every struct is decoded with
+     * its own Decoder, this does not need to be decremented after decoding a struct.
+     */
+    private int mStructDepth;
+
+    /**
      * Constructor.
      *
      * @param message The message to decode.
      */
     public Decoder(Message message) {
-        this(message, new Validator(message.getData().limit(), message.getHandles().size()), 0);
+        this(message, new Validator(message.getData().limit(), message.getHandles().size()), 0, 0);
     }
 
-    private Decoder(Message message, Validator validator, int baseOffset) {
+    private Decoder(Message message, Validator validator, int baseOffset, int structDepth) {
         mMessage = message;
         mMessage.getData().order(ByteOrder.LITTLE_ENDIAN);
         mBaseOffset = baseOffset;
         mValidator = validator;
+        mStructDepth = structDepth;
     }
 
     /** Deserializes a {@link DataHeader} at the current position. */
@@ -168,31 +167,54 @@ public class Decoder {
         return new DataHeader(size, elementsOrVersion);
     }
 
-    public DataHeader readAndValidateDataHeader(DataHeader[] versionArray)
-            throws DeserializationException {
+    /**
+     * Deserializes and validates the header of a struct that has only a single version (version 0).
+     *
+     * <p>Also enforces the struct nesting limit.
+     *
+     * @param size the size of the struct, in bytes.
+     * @return the version of the received struct.
+     */
+    public int readAndValidateStructHeader(int size) throws DeserializationException {
+        increaseStructDepth();
         DataHeader header = readDataHeader();
-        int maxVersionIndex = versionArray.length - 1;
-        if (header.elementsOrVersion <= versionArray[maxVersionIndex].elementsOrVersion) {
-            DataHeader referenceHeader = null;
-            for (int index = maxVersionIndex; index >= 0; index--) {
-                DataHeader dataHeader = versionArray[index];
-                if (header.elementsOrVersion >= dataHeader.elementsOrVersion) {
-                    referenceHeader = dataHeader;
-                    break;
-                }
+        int version = header.elementsOrVersion;
+        if (version == 0) {
+            if (header.size != size) {
+                throw new DeserializationException(UNKNOWN_VERSION_MESSAGE);
             }
-            if (referenceHeader == null || referenceHeader.size != header.size) {
-                throw new DeserializationException(
-                        "Header doesn't correspond to any known version.");
-            }
-        } else {
-            if (header.size < versionArray[maxVersionIndex].size) {
-                throw new DeserializationException(
-                        "Message newer than the last known version"
-                                + " cannot be shorter than required by the last known version.");
-            }
+        } else if (header.size < size) {
+            throw new DeserializationException(NEWER_VERSION_TOO_SHORT_MESSAGE);
         }
-        return header;
+        return version;
+    }
+
+    /**
+     * Deserializes and validates the header of a struct that has multiple versions.
+     *
+     * <p>Also enforces the struct nesting limit.
+     *
+     * @param versionArray flattened (size, version) pairs for each known version of the struct,
+     *     ordered by increasing version.
+     * @return the version of the received struct.
+     */
+    public int readAndValidateStructHeader(int[] versionArray) throws DeserializationException {
+        increaseStructDepth();
+        DataHeader header = readDataHeader();
+        int version = header.elementsOrVersion;
+        int maxVersionIndex = versionArray.length - 2;
+        if (version <= versionArray[maxVersionIndex + 1]) {
+            int index = maxVersionIndex;
+            while (index >= 0 && version < versionArray[index + 1]) {
+                index -= 2;
+            }
+            if (index < 0 || versionArray[index] != header.size) {
+                throw new DeserializationException(UNKNOWN_VERSION_MESSAGE);
+            }
+        } else if (header.size < versionArray[maxVersionIndex]) {
+            throw new DeserializationException(NEWER_VERSION_TOO_SHORT_MESSAGE);
+        }
+        return version;
     }
 
     /**
@@ -663,6 +685,48 @@ public class Decoder {
         return new String(bytes, Charset.forName("utf8"));
     }
 
+    /** Deserializes an array of strings at the given offset. */
+    public @Nullable String @Nullable [] readStrings(
+            int offset, int arrayNullability, int expectedLength) throws DeserializationException {
+        Decoder d = readPointer(offset, BindingsHelper.isArrayNullable(arrayNullability));
+        if (d == null) {
+            return null;
+        }
+        DataHeader si = d.readDataHeaderForPointerArray(expectedLength);
+        @Nullable String[] result = new String[si.elementsOrVersion];
+        boolean elementNullable = BindingsHelper.isElementNullable(arrayNullability);
+        for (int i = 0; i < result.length; ++i) {
+            result[i] =
+                    d.readString(
+                            DataHeader.HEADER_SIZE + BindingsHelper.POINTER_SIZE * i,
+                            elementNullable);
+        }
+        return result;
+    }
+
+    /**
+     * Deserializes an array of pointers (e.g. to structs) at the given offset, and returns a
+     * Decoder for each element (or null for null elements). The elements themselves are not read,
+     * and must be decoded in order.
+     */
+    public @Nullable Decoder @Nullable [] readPointers(
+            int offset, int arrayNullability, int expectedLength) throws DeserializationException {
+        Decoder d = readPointer(offset, BindingsHelper.isArrayNullable(arrayNullability));
+        if (d == null) {
+            return null;
+        }
+        DataHeader si = d.readDataHeaderForPointerArray(expectedLength);
+        @Nullable Decoder[] result = new Decoder[si.elementsOrVersion];
+        boolean elementNullable = BindingsHelper.isElementNullable(arrayNullability);
+        for (int i = 0; i < result.length; ++i) {
+            result[i] =
+                    d.readPointer(
+                            DataHeader.HEADER_SIZE + BindingsHelper.POINTER_SIZE * i,
+                            elementNullable);
+        }
+        return result;
+    }
+
     /** Deserializes an array of |Handle| at the given offset. */
     public Handle @Nullable [] readHandles(int offset, int arrayNullability, int expectedLength)
             throws DeserializationException {
@@ -836,9 +900,15 @@ public class Decoder {
         return null;
     }
 
+    private void increaseStructDepth() throws DeserializationException {
+        if (++mStructDepth >= MAX_RECURSION_DEPTH) {
+            throw new DeserializationException("Recursion depth limit exceeded.");
+        }
+    }
+
     /** Returns a view of this decoder at the offset |offset|. */
     private Decoder getDecoderAtPosition(int offset) {
-        return new Decoder(mMessage, mValidator, offset);
+        return new Decoder(mMessage, mValidator, offset, mStructDepth);
     }
 
     /**
@@ -918,13 +988,5 @@ public class Decoder {
         if (mMessage.getData().limit() < offset + size) {
             throw new DeserializationException("Buffer is smaller than expected.");
         }
-    }
-
-    public void increaseStackDepth() throws DeserializationException {
-        mValidator.increaseStackDepth();
-    }
-
-    public void decreaseStackDepth() {
-        mValidator.decreaseStackDepth();
     }
 }

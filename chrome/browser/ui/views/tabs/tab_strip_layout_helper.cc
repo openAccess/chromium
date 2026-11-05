@@ -19,6 +19,7 @@
 #include "chrome/browser/ui/views/tabs/tab_style_views.h"
 #include "chrome/browser/ui/views/tabs/tab_width_constraints.h"
 #include "components/split_tabs/split_tab_id.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "tab_container_controller.h"
 #include "ui/gfx/range/range.h"
 #include "ui/views/view_model.h"
@@ -199,7 +200,7 @@ int TabStripLayoutHelper::CalculatePreferredWidth() {
 
 int TabStripLayoutHelper::UpdateIdealBounds(int available_width) {
   auto [bounds, layout_domain] = CalculateIdealBounds(available_width);
-  DCHECK_EQ(slots_.size(), bounds.size());
+  CHECK_EQ(slots_.size(), bounds.size(), base::NotFatalUntil::M162);
   tab_strip_layout_domain_ = layout_domain;
 
   views::ViewModelT<Tab>* tabs = get_tabs_callback_.Run();

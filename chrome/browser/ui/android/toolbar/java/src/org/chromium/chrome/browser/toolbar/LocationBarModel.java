@@ -19,6 +19,10 @@ import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ObserverList;
@@ -28,11 +32,11 @@ import org.chromium.build.annotations.EnsuresNonNullIf;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
-import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.omnibox.ChromeAutocompleteSchemeClassifier;
 import org.chromium.chrome.browser.omnibox.FuseboxSessionState;
 import org.chromium.chrome.browser.omnibox.LocationBarDataProvider;
+import org.chromium.chrome.browser.omnibox.LocationBarDataProvider.AppInstallState;
 import org.chromium.chrome.browser.omnibox.NewTabPageDelegate;
 import org.chromium.chrome.browser.omnibox.UrlBarData;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
@@ -51,6 +55,7 @@ import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteSchemeClassifier;
+import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.omnibox.OmniboxUrlEmphasizer;
 import org.chromium.components.omnibox.SecurityStatusIcon;
 import org.chromium.components.security_state.ConnectionMaliciousContentStatus;
@@ -83,6 +88,9 @@ import java.util.function.Supplier;
  */
 @NullMarked
 public class LocationBarModel implements ToolbarDataProvider, LocationBarDataProvider {
+    @JniType("::LocationBarModelAndroid")
+    interface NativeLocationBarModelAndroid extends JniTypeToken {}
+
     private static final int LRU_CACHE_SIZE = 10;
 
     static class SpannableDisplayTextCacheKey {
@@ -184,7 +192,7 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
     private boolean mIsOffTheRecord;
     private boolean mIsUsingBrandColor;
 
-    private long mNativeLocationBarModelAndroid;
+    private @Nullable JniUniquePtr<NativeLocationBarModelAndroid> mNativeLocationBarModelAndroid;
     private final ObserverList<LocationBarDataProvider.Observer> mLocationBarDataObservers =
             new ObserverList<>();
     private final ObserverList<ToolbarDataProvider.Observer> mToolbarDataObservers =
@@ -279,9 +287,9 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
 
         setAppInstalledDelegate(null);
 
-        if (mNativeLocationBarModelAndroid == 0) return;
-        LocationBarModelJni.get().destroy(mNativeLocationBarModelAndroid);
-        mNativeLocationBarModelAndroid = 0;
+        if (mNativeLocationBarModelAndroid == null) return;
+        mNativeLocationBarModelAndroid.destroy();
+        mNativeLocationBarModelAndroid = null;
     }
 
     /**
@@ -289,9 +297,15 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
      */
     @Override
     @CalledByNative
-    public @Nullable WebContents getWebContents() {
+    public @JniType("content::WebContents*") @Nullable WebContents getWebContents() {
         if (!hasTab()) return null;
         return mTab.getWebContents();
+    }
+
+    /** Returns whether the toolbar UI refactor (AndroidBottomBar) is enabled for this context. */
+    @CalledByNative
+    private boolean isToolbarUiRefactorEnabled() {
+        return ToolbarVariationUtils.isToolbarUiRefactorEnabled(mContext);
     }
 
     /**
@@ -307,6 +321,9 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
 
         boolean isTabChanging = mTab != tab;
         Tab previousTab = mTab;
+        if (isTabChanging) {
+            resetSameDocNavFlags();
+        }
         mTab = tab;
         mProfile = profile;
         performProfileDependentInitializationIfRequired();
@@ -460,29 +477,7 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
             }
 
             GURL gurl = getCurrentGurl();
-            if (ContextualTasksUtils.isContextualTasksUrl(gurl)) {
-                String urlForDisplay = getUrlForDisplay();
-                String formattedUrl = getFormattedFullUrl();
-                if (isUrlRewritten(gurl, urlForDisplay, formattedUrl)) {
-                    return buildUrlBarData(gurl, false, urlForDisplay);
-                }
-                return UrlBarData.EMPTY;
-            }
-
-            boolean shouldShowUrl = UrlBarData.shouldShowUrl(gurl, isOffTheRecord());
-
-            if (!shouldShowUrl) {
-                // If the URL has been rewritten (e.g. AI Mode origin-swapping), show it even if
-                // the underlying URL would normally be suppressed.
-                String urlForDisplay = getUrlForDisplay();
-                String formattedUrl = getFormattedFullUrl();
-                if (isUrlRewritten(gurl, urlForDisplay, formattedUrl)) {
-                    // Use urlForDisplay for both display and editing to avoid exposing the
-                    // underlying URL (e.g. chrome://contextual-tasks).
-                    return buildUrlBarData(
-                            gurl, /* isOfflinePage= */ false, urlForDisplay, formattedUrl);
-                }
-
+            if (!UrlBarData.shouldShowUrl(gurl, isOffTheRecord())) {
                 // Handle chrome-native:// URLs.
                 if (isNonMultiDisplayContextOnTablet()
                         && NativePage.isChromePageUrl(gurl, isOffTheRecord())
@@ -533,27 +528,6 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
         }
     }
 
-    /**
-     * Determines whether the URL has been rewritten (e.g. AI Mode origin-swapping) by comparing the
-     * base page URL, display URL, and formatted URL.
-     *
-     * @param basePageUrl The underlying, un-rewritten GURL of the page.
-     * @param displayUrl The URL string intended to be displayed in the omnibox.
-     * @param formattedUrl The formatted URL string used for editing or full representation.
-     * @return True if the display URL represents a rewritten URL, false otherwise.
-     */
-    private boolean isUrlRewritten(GURL basePageUrl, String displayUrl, String formattedUrl) {
-        boolean rewritten = false;
-        if (ContextualTasksUtils.isContextualTasksUrl(basePageUrl)) {
-            rewritten =
-                    !TextUtils.isEmpty(displayUrl)
-                            && !displayUrl.contains(ContextualTasksUtils.CONTEXTUAL_TASKS_HOST);
-        } else {
-            rewritten = !TextUtils.isEmpty(displayUrl) && !displayUrl.equals(formattedUrl);
-        }
-        return rewritten;
-    }
-
     private UrlBarData buildUrlBarData(GURL url, boolean isOfflinePage) {
         return buildUrlBarData(url, isOfflinePage, url.getSpec());
     }
@@ -565,7 +539,7 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
     @VisibleForTesting
     UrlBarData buildUrlBarData(
             GURL url, boolean isOfflinePage, String displayText, String editingText) {
-        if (mNativeLocationBarModelAndroid == 0
+        if (mNativeLocationBarModelAndroid == null
                 || TextUtils.isEmpty(displayText)
                 || !shouldEmphasizeUrl()) {
             return UrlBarData.forUrl(url);
@@ -766,7 +740,7 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
 
     @Override
     public @PageClassification int getPageClassification(boolean prefetch) {
-        if (mNativeLocationBarModelAndroid == 0) return PageClassification.INVALID_SPEC;
+        if (mNativeLocationBarModelAndroid == null) return PageClassification.INVALID_SPEC;
 
         return LocationBarModelJni.get()
                 .getPageClassification(mNativeLocationBarModelAndroid, prefetch);
@@ -854,26 +828,26 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
         // ready if the toolbar refactor is enabled.
         if ((securityLevel == ConnectionSecurityLevel.NONE
                         || securityLevel == ConnectionSecurityLevel.WARNING)
-                && mNativeLocationBarModelAndroid == 0) {
+                && mNativeLocationBarModelAndroid == null) {
             return ToolbarVariationUtils.isToolbarUiRefactorEnabled(mContext)
                     ? Resources.ID_NULL
                     : R.drawable.omnibox_info;
         }
 
         // Suppress neutral/info icon during page load to avoid transition jank before
-        // SSL state is resolved for HTTP/HTTPS URLs if the toolbar refactor is enabled.
+        // SSL state is resolved for HTTP/HTTPS URLs.
         // Non-HTTP(S) schemes (e.g. chrome://, file://) never transition to SECURE and
         // should show their neutral icon immediately.
-        // TODO(crbug.com/553488661): We are now doing suppression by default in
-        // LocationBarMediator#updateLocationBarIcon. See about removing suppression here then.
-        if (ToolbarVariationUtils.isToolbarUiRefactorEnabled(mContext)
+        if ((ToolbarVariationUtils.isToolbarUiRefactorEnabled(mContext)
+                        || OmniboxFeatures.sSuppressStatusIconDuringHttpNavigation.isEnabled())
                 && securityLevel == ConnectionSecurityLevel.NONE
                 && isLoading()
                 && UrlUtilities.isHttpOrHttps(getCurrentGurl())) {
             return Resources.ID_NULL;
         }
 
-        boolean skipIconForNeutralState = mNtpDelegate.isCurrentlyVisible();
+        boolean skipIconForNeutralState =
+                mNtpDelegate.isCurrentlyVisible() && UrlUtilities.isNtpUrl(getCurrentGurl());
         boolean isShowingHttpsFirstWarning =
                 ChromeFeatureList.isEnabled(ChromeFeatureList.HTTPS_FIRST_DIALOG_UI)
                         && SecurityStateModel.isHttpsOnlyModeUpgradedForWebContents(
@@ -919,11 +893,11 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
             boolean isIncognito) {
         // Return regular color scheme if the website does not show warning.
         if (connectionSecurityLevel == ConnectionSecurityLevel.DANGEROUS) {
+            // Suspicious sites display a themed neutral icon (on-surface-variant) in the Omnibox
+            // rather than a danger/error red tint.
             if (getMaliciousContentStatus()
                     == ConnectionMaliciousContentStatus.WARNABLE_SUSPICIOUS_SITE) {
-                // Return Resources.ID_NULL to skip color tinting so the shield_question icon
-                // retains its internal red fill and white question mark vector colors.
-                return Resources.ID_NULL;
+                return ThemeUtils.getThemedToolbarIconTintRes(brandedColorScheme);
             }
             // Assign red color only on light or dark background including Incognito mode.
             // We will not change the security icon to red when BrandedColorScheme is
@@ -973,7 +947,7 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
      * @return The formatted URL suitable for editing.
      */
     protected String calculateFormattedFullUrl() {
-        if (mNativeLocationBarModelAndroid == 0) return "";
+        if (mNativeLocationBarModelAndroid == null) return "";
         return LocationBarModelJni.get().getFormattedFullURL(mNativeLocationBarModelAndroid);
     }
 
@@ -981,13 +955,13 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
      * @return The formatted URL suitable for display only.
      */
     protected String calculateUrlForDisplay() {
-        if (mNativeLocationBarModelAndroid == 0) return "";
+        if (mNativeLocationBarModelAndroid == null) return "";
         return LocationBarModelJni.get().getURLForDisplay(mNativeLocationBarModelAndroid);
     }
 
     @SuppressWarnings("NullAway")
     protected GURL getUrlOfVisibleNavigationEntry() {
-        if (mNativeLocationBarModelAndroid == 0) return GURL.emptyGURL();
+        if (mNativeLocationBarModelAndroid == null) return GURL.emptyGURL();
         if (mNtpDelegate.isCurrentlyVisible()) {
             return getTab().getUrl();
         }
@@ -1042,18 +1016,19 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
 
     @NativeMethods
     interface Natives {
-        long init(LocationBarModel self);
+        JniUniquePtr<NativeLocationBarModelAndroid> init(LocationBarModel self);
 
-        void destroy(long nativeLocationBarModelAndroid);
+        @JniType("std::u16string")
+        String getFormattedFullURL(JniPtr<NativeLocationBarModelAndroid> self);
 
-        String getFormattedFullURL(long nativeLocationBarModelAndroid);
+        @JniType("std::u16string")
+        String getURLForDisplay(JniPtr<NativeLocationBarModelAndroid> self);
 
-        String getURLForDisplay(long nativeLocationBarModelAndroid);
-
-        GURL getUrlOfVisibleNavigationEntry(long nativeLocationBarModelAndroid);
+        @JniType("GURL")
+        GURL getUrlOfVisibleNavigationEntry(JniPtr<NativeLocationBarModelAndroid> self);
 
         @PageClassification
-        int getPageClassification(long nativeLocationBarModelAndroid, boolean isPrefetch);
+        int getPageClassification(JniPtr<NativeLocationBarModelAndroid> self, boolean isPrefetch);
     }
 
     @VisibleForTesting
@@ -1089,8 +1064,9 @@ public class LocationBarModel implements ToolbarDataProvider, LocationBarDataPro
     }
 
     @Override
-    public boolean currentUrlHasInstalledApp() {
-        GURL url = getCurrentGurl();
-        return mAppInstalledDelegate != null && mAppInstalledDelegate.isAppInstalled(url);
+    public @AppInstallState int getAppInstallState() {
+        return mAppInstalledDelegate != null
+                ? mAppInstalledDelegate.getAppInstallState(getTab())
+                : AppInstallState.NOT_INSTALLED;
     }
 }

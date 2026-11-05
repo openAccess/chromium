@@ -20,7 +20,6 @@ android_library("enterprise_reporting_java") {
     "//components/background_task_scheduler:background_task_scheduler_task_ids_java",
     "//components/background_task_scheduler:factory_java",
     "//components/background_task_scheduler:public_java",
-    "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/jni_zero:jni_zero_java",
   ]
 }
@@ -34,8 +33,6 @@ source_set("signals_reporting_scheduler") {
     "signals_reporting_scheduler_bridge.cc",
     "signals_reporting_scheduler_bridge.h",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   deps = [
     ":jni_headers",
@@ -54,7 +51,6 @@ robolectric_library("junit") {
     "//base:base_junit_test_support",
     "//chrome/test/android:chrome_java_unit_test_support",
     "//components/background_task_scheduler:background_task_scheduler_task_ids_java",
-    "//components/background_task_scheduler:factory_java",
     "//components/background_task_scheduler:public_java",
     "//third_party/jni_zero:jni_zero_java",
     "//third_party/junit",

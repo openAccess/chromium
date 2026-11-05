@@ -23,20 +23,26 @@
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_tab_helper.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_features.h"
 #include "chrome/browser/ui/toasts/toast_view.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/browser/ui/views/test/split_view_interactive_test_mixin.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
+#include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
@@ -49,6 +55,7 @@
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/interaction/interactive_views_test.h"
 #include "ui/views/view.h"
@@ -56,6 +63,10 @@
 
 #if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/ozone_platform.h"
+#endif
+
+#if BUILDFLAG(IS_MAC)
+#include "ui/base/test/scoped_fake_full_keyboard_access.h"
 #endif
 
 namespace {
@@ -129,6 +140,10 @@ class ToastControllerInteractiveTest
  public:
   void SetUpOnMainThread() override {
     SplitViewInteractiveTestMixin::SetUpOnMainThread();
+    if (features::IsWebUILocationBarEnabled()) {
+      WaitForInitialWebUIToolbar(browser());
+      WaitForOmniboxFocus();
+    }
     host_resolver()->AddRule("*", "127.0.0.1");
     ASSERT_TRUE(embedded_test_server()->Start());
   }
@@ -146,7 +161,7 @@ class ToastControllerInteractiveTest
   }
 
   ToastController* GetToastController() {
-    return browser()->GetFeatures().toast_controller();
+    return ToastController::From(browser());
   }
 
   auto ShowToast(ToastParams params) {
@@ -250,10 +265,40 @@ class ToastControllerInteractiveTest
             })));
   }
 
+  void SettleWebUIToolbarFocus(bool focused) {
+    views::WebView* const toolbar_web_view =
+        GetWebUIToolbarWebView(browser())->GetWebViewForTesting();
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      return content::EvalJs(toolbar_web_view->web_contents(),
+                             "document.hasFocus()")
+                 .ExtractBool() == focused;
+    }));
+    ASSERT_TRUE(FlushWebUIToolbarPipes(browser()));
+  }
+
   void RemoveOmniboxFocus() {
     BrowserView::GetBrowserViewForBrowser(browser())
         ->GetFocusManager()
         ->ClearFocus();
+    if (features::IsWebUILocationBarEnabled()) {
+      ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX,
+                                      /*focused=*/false);
+      SettleWebUIToolbarFocus(/*focused=*/false);
+    }
+  }
+
+  void WaitForOmniboxFocus() {
+    ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX,
+                                    /*focused=*/true);
+    if (features::IsWebUILocationBarEnabled()) {
+      SettleWebUIToolbarFocus(/*focused=*/true);
+    }
+  }
+
+  void FocusOmnibox(bool is_user_initiated) {
+    BrowserView::GetBrowserViewForBrowser(browser())->SetFocusToLocationBar(
+        is_user_initiated);
+    WaitForOmniboxFocus();
   }
 
  private:
@@ -516,7 +561,7 @@ IN_PROC_BROWSER_TEST_F(ToastControllerInteractiveTest,
   ASSERT_TRUE(location_bar);
   OmniboxView* const omnibox_view = location_bar->GetOmniboxView();
   ASSERT_TRUE(omnibox_view);
-  BrowserView::GetBrowserViewForBrowser(browser())->SetFocusToLocationBar(true);
+  FocusOmnibox(/*is_user_initiated=*/true);
   ASSERT_FALSE(location_bar->GetOmniboxController()->IsPopupOpen());
 
   // Even though the omnibox is focused, the toast should still show because
@@ -535,12 +580,9 @@ IN_PROC_BROWSER_TEST_F(ToastControllerInteractiveTest,
 
   // Focus the omnibox again should cause the toast to no longer be visible
   // because we are focusing after the toast is already shown.
-  BrowserView::GetBrowserViewForBrowser(browser())->SetFocusToLocationBar(true);
+  FocusOmnibox(/*is_user_initiated=*/true);
   EXPECT_TRUE(toast_controller->IsShowingToast());
-  // ... that may happen asynchronously, however.
-  EXPECT_TRUE(base::test::RunUntil([&]() {
-    return toast_controller->GetToastWidgetForTesting()->IsVisible() == false;
-  }));
+  EXPECT_FALSE(toast_controller->GetToastWidgetForTesting()->IsVisible());
 }
 
 IN_PROC_BROWSER_TEST_F(ToastControllerInteractiveTest,
@@ -580,7 +622,7 @@ IN_PROC_BROWSER_TEST_F(ToastControllerInteractiveTest,
 
 IN_PROC_BROWSER_TEST_F(ToastControllerInteractiveTest,
                        HidesWhenTypingInOmnibox) {
-  BrowserView::GetBrowserViewForBrowser(browser())->SetFocusToLocationBar(true);
+  FocusOmnibox(/*is_user_initiated=*/true);
 
   // Even though the omnibox is focused, the toast should still show because
   // the omnibox doesn't have a popup and the user isn't interacting with the
@@ -645,10 +687,7 @@ IN_PROC_BROWSER_TEST_F(ToastControllerInteractiveTest,
                        ToastRendersOverWebContents) {
 #if BUILDFLAG(IS_MAC)
   FullscreenController* const fullscreen_controller =
-      browser()
-          ->GetFeatures()
-          .exclusive_access_manager()
-          ->fullscreen_controller();
+      ExclusiveAccessManager::From(browser())->fullscreen_controller();
   fullscreen_controller->set_is_tab_fullscreen_for_testing(true);
 #else
   ui_test_utils::FullscreenWaiter waiter(browser(), {.tab_fullscreen = true});
@@ -716,3 +755,60 @@ IN_PROC_BROWSER_TEST_F(ToastControllerInteractiveTest,
       WaitForHide(toasts::ToastView::kToastViewId),
       CheckResult([&]() { return browser()->tab_strip_model()->count(); }, 1));
 }
+
+#if BUILDFLAG(IS_MAC)
+class ToastControllerNoFullKeyboardAccessInteractiveTest
+    : public ToastControllerInteractiveTest {
+ public:
+  ToastControllerNoFullKeyboardAccessInteractiveTest()
+      : original_full_keyboard_access_state_(
+            ui::test::ScopedFakeFullKeyboardAccess::GetInstance()
+                ->full_keyboard_access_state()) {
+    // The test suite already fakes Full Keyboard Access.
+    ui::test::ScopedFakeFullKeyboardAccess::GetInstance()
+        ->set_full_keyboard_access_state(false);
+  }
+
+  ~ToastControllerNoFullKeyboardAccessInteractiveTest() override {
+    ui::test::ScopedFakeFullKeyboardAccess::GetInstance()
+        ->set_full_keyboard_access_state(original_full_keyboard_access_state_);
+  }
+
+ private:
+  const bool original_full_keyboard_access_state_;
+};
+
+// Tests that clicking a toast's close button with Full Keyboard Access off
+// doesn't move focus into the page by tab traversal, which would focus the
+// page's first focusable element. Regression test for crbug.com/576344604.
+IN_PROC_BROWSER_TEST_F(ToastControllerNoFullKeyboardAccessInteractiveTest,
+                       ClickingCloseButtonDoesNotMoveFocusIntoPage) {
+  RunTestSequence(
+      InstrumentTab(kFirstTab), NavigateWebContents(kFirstTab, GetURL()),
+      // Make a link the page's first focusable element, like Wikipedia's
+      // "Jump to content" skip link.
+      ExecuteJs(kFirstTab, R"(() => {
+        const link = document.createElement('a');
+        link.id = 'skip';
+        link.href = '#target';
+        link.textContent = 'Skip';
+        document.body.prepend(link);
+      })"),
+      Do([this]() {
+        browser()->tab_strip_model()->GetActiveWebContents()->Focus();
+      }),
+      CheckJsResult(kFirstTab,
+                    "() => document.activeElement === document.body"),
+      ShowToast(ToastParams(ToastId::kAddedToReadingList)),
+      WaitForShow(toasts::ToastView::kToastCloseButton),
+      MoveMouseTo(toasts::ToastView::kToastCloseButton), ClickMouse(),
+      WaitForHide(toasts::ToastView::kToastViewId),
+      // Wait a couple of frames so that any focus change in the page lands.
+      CheckJsResult(kFirstTab,
+                    R"(() => new Promise(resolve => {
+                         requestAnimationFrame(() => requestAnimationFrame(
+                             () => resolve(document.activeElement.id)));
+                       }))",
+                    ""));
+}
+#endif  // BUILDFLAG(IS_MAC)

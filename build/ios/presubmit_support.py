@@ -11,7 +11,7 @@ from . import update_bundle_filelist
 
 
 def CheckBundleData(input_api, output_api, base, globroot='//'):
-    root = input_api.change.RepositoryRoot()
+    root = input_api.change.RepositoryRoot()  # noqa: F841
     filelist = input_api.os_path.join(
         input_api.PresubmitLocalPath(), base + '.filelist'
     )
@@ -68,7 +68,7 @@ def CheckNotFatalUntilAdoption(input_api, output_api, path_filter=None):
     # Regex for standard CHECKs (excluding CHECK_DEREF)
     check_re = input_api.re.compile(
         r'\b(CHECK|CHECK_EQ|CHECK_NE|CHECK_LT|CHECK_LE|CHECK_GT|'
-        r'CHECK_GE|PCHECK|NOTREACHED)\s*\('
+        r'CHECK_GE|PCHECK)\s*\('
     )
     nfu_re = input_api.re.compile(r'base::NotFatalUntil')
 

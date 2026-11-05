@@ -22,10 +22,11 @@
 #include "build/build_config.h"
 #include "components/services/storage/dom_storage/local_storage_impl.h"
 #include "components/services/storage/dom_storage/session_storage_impl.h"
+#include "components/services/storage/dom_storage/session_storage_metadata.h"
 #include "components/services/storage/public/mojom/storage_policy_update.mojom.h"
 #include "components/services/storage/public/mojom/storage_service.mojom.h"
 #include "components/services/storage/public/mojom/storage_usage_info.mojom.h"
-#include "content/browser/dom_storage/session_storage_namespace_impl.h"
+#include "content/browser/dom_storage/session_storage_namespace_handle_impl.h"
 #include "content/browser/renderer_host/frame_tree.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/storage_partition_impl.h"
@@ -200,10 +201,10 @@ void DOMStorageContextWrapper::PerformSessionStorageCleanup(
   session_storage_control_->CleanUpStorage(std::move(callback));
 }
 
-scoped_refptr<SessionStorageNamespace>
+scoped_refptr<SessionStorageNamespaceHandle>
 DOMStorageContextWrapper::RecreateSessionStorage(
     const std::string& namespace_id) {
-  return SessionStorageNamespaceImpl::Create(this, namespace_id);
+  return SessionStorageNamespaceHandleImpl::Create(this, namespace_id);
 }
 
 void DOMStorageContextWrapper::StartScavengingUnusedSessionStorage() {
@@ -267,6 +268,10 @@ void DOMStorageContextWrapper::BindNamespace(
     const std::string& namespace_id,
     mojo::ReportBadMessageCallback bad_message_callback,
     mojo::PendingReceiver<blink::mojom::SessionStorageNamespace> receiver) {
+  if (!storage::IsNamespaceIdValid(namespace_id)) {
+    std::move(bad_message_callback).Run(storage::kInvalidNamespaceIdError);
+    return;
+  }
   CHECK(session_storage_control_, base::NotFatalUntil::M158);
   session_storage_control_->BindNamespace(namespace_id, std::move(receiver));
 }
@@ -278,6 +283,10 @@ void DOMStorageContextWrapper::BindStorageArea(
     mojo::PendingReceiver<blink::mojom::StorageArea> receiver,
     ChildProcessSecurityPolicyImpl::Handle security_policy_handle,
     mojo::ReportBadMessageCallback bad_message_callback) {
+  if (!storage::IsNamespaceIdValid(namespace_id)) {
+    std::move(bad_message_callback).Run(storage::kInvalidNamespaceIdError);
+    return;
+  }
   if (!IsRequestValid(StorageType::kSessionStorage, storage_key,
                       local_frame_token, std::move(security_policy_handle),
                       std::move(bad_message_callback))) {
@@ -380,7 +389,7 @@ void DOMStorageContextWrapper::MaybeBindLocalStorageControl() {
                      base::Unretained(this)));
 }
 
-scoped_refptr<SessionStorageNamespaceImpl>
+scoped_refptr<SessionStorageNamespaceHandleImpl>
 DOMStorageContextWrapper::MaybeGetExistingNamespace(
     const std::string& namespace_id) const {
   base::AutoLock lock(alive_namespaces_lock_);
@@ -390,7 +399,7 @@ DOMStorageContextWrapper::MaybeGetExistingNamespace(
 
 void DOMStorageContextWrapper::AddNamespace(
     const std::string& namespace_id,
-    SessionStorageNamespaceImpl* session_namespace) {
+    SessionStorageNamespaceHandleImpl* session_namespace) {
   base::AutoLock lock(alive_namespaces_lock_);
   CHECK(!alive_namespaces_.contains(namespace_id), base::NotFatalUntil::M158);
   alive_namespaces_[namespace_id] = session_namespace;
@@ -399,7 +408,9 @@ void DOMStorageContextWrapper::AddNamespace(
 void DOMStorageContextWrapper::RemoveNamespace(
     const std::string& namespace_id) {
   base::AutoLock lock(alive_namespaces_lock_);
-  CHECK(alive_namespaces_.contains(namespace_id), base::NotFatalUntil::M158);
+  // TODO(crbug.com/559061670): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(alive_namespaces_.contains(namespace_id));
   alive_namespaces_.erase(namespace_id);
 }
 

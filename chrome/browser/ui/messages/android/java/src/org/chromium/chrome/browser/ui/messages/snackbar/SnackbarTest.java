@@ -25,6 +25,8 @@ import org.junit.ClassRule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.ActivityState;
+import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
@@ -43,6 +45,7 @@ import org.chromium.ui.accessibility.AccessibilityStateTestHelper;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 /** Tests for {@link SnackbarManager}. */
@@ -117,15 +120,15 @@ public class SnackbarTest {
                     sMainParent = sActivity.findViewById(android.R.id.content);
                     sAlternateParent1 = sActivity.findViewById(R.id.alternate_parent_1);
                     sAlternateParent2 = sActivity.findViewById(R.id.alternate_parent_2);
-                    SnackbarManager.setDurationForTesting(1000);
                 });
+        CriteriaHelper.pollUiThread(
+                () -> sAlternateParent1.getWidth() > 0, "Activity layout did not complete");
     }
 
     @AfterClass
     public static void teardownSuite() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    SnackbarManager.resetDurationForTesting();
                     sActivity = null;
                     sMainParent = null;
                     sAlternateParent1 = null;
@@ -861,6 +864,147 @@ public class SnackbarTest {
 
     @Test
     @SmallTest
+    public void testSnackbarPersistsWithActivityPaused() throws Exception {
+        int timeout = 400;
+        SnackbarManager.setDurationForTesting(timeout);
+        final Snackbar snackbar =
+                Snackbar.make(
+                        "stack",
+                        mDismissController,
+                        Snackbar.TYPE_ACTION,
+                        Snackbar.UMA_TEST_SNACKBAR);
+        mDismissed = false;
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mManager.showSnackbar(snackbar);
+                    // Simulate activity being paused (e.g. obscured by external/OS dialog).
+                    mManager.onActivityStateChange(sActivity, ActivityState.PAUSED);
+                });
+
+        // Wait for the duration of the timeout.
+        TimeUnit.MILLISECONDS.sleep(timeout + 100);
+
+        // Simulate activity being resumed.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> mManager.onActivityStateChange(sActivity, ActivityState.RESUMED));
+
+        // Should not immediately time out.
+        Assert.assertFalse(
+                "Snackbar should not immediately time out after activity was resumed.", mDismissed);
+
+        // Now it should time out. This must be run from outside UI thread.
+        TimeUnit.MILLISECONDS.sleep(timeout + 200);
+
+        pollSnackbarCondition(
+                "Snackbar should eventually time out", () -> !mManager.isShowing() && mDismissed);
+    }
+
+    @Test
+    @SmallTest
+    public void testSnackbarShownDuringActivityPaused() throws Exception {
+        int timeout = 400;
+        SnackbarManager.setDurationForTesting(timeout);
+        final Snackbar snackbar =
+                Snackbar.make(
+                        "stack",
+                        mDismissController,
+                        Snackbar.TYPE_ACTION,
+                        Snackbar.UMA_TEST_SNACKBAR);
+        mDismissed = false;
+
+        // Simulate activity being paused before the snackbar is shown.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mManager.onActivityStateChange(sActivity, ActivityState.PAUSED);
+                    mManager.showSnackbar(snackbar);
+                });
+
+        // Wait for the duration of the timeout.
+        TimeUnit.MILLISECONDS.sleep(timeout + 100);
+
+        // Simulate activity being resumed.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> mManager.onActivityStateChange(sActivity, ActivityState.RESUMED));
+
+        // Should not immediately time out.
+        Assert.assertFalse(
+                "Snackbar should not immediately time out after activity was resumed.", mDismissed);
+
+        // Now it should time out. This must be run from outside UI thread.
+        TimeUnit.MILLISECONDS.sleep(timeout + 100);
+        pollSnackbarCondition(
+                "Snackbar should eventually time out", () -> !mManager.isShowing() && mDismissed);
+    }
+
+    @Test
+    @SmallTest
+    public void testSnackbarManagerInitializedWhilePaused() throws Exception {
+        int timeout = 400;
+        SnackbarManager.setDurationForTesting(timeout);
+        int originalState =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> ApplicationStatus.getStateForActivity(sActivity));
+        AtomicReference<SnackbarManager> managerHolder = new AtomicReference<>();
+        try {
+            final Snackbar snackbar =
+                    Snackbar.make(
+                            "stack",
+                            mDismissController,
+                            Snackbar.TYPE_ACTION,
+                            Snackbar.UMA_TEST_SNACKBAR);
+            mDismissed = false;
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        ApplicationStatus.onStateChangeForTesting(sActivity, ActivityState.PAUSED);
+                        managerHolder.set(
+                                new SnackbarManager(
+                                        sActivity,
+                                        sMainParent,
+                                        null,
+                                        null,
+                                        null,
+                                        ObservableSuppliers.createNonNull(false)));
+                        Assert.assertTrue(
+                                "Manager should be able to show snackbars when paused.",
+                                managerHolder.get().canShowSnackbar());
+                        managerHolder.get().showSnackbar(snackbar);
+                    });
+
+            // Wait for the duration of the timeout.
+            TimeUnit.MILLISECONDS.sleep(timeout + 100);
+
+            // Simulate activity being resumed.
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        ApplicationStatus.onStateChangeForTesting(sActivity, ActivityState.RESUMED);
+                        Assert.assertTrue(
+                                "Manager should be able to show snackbars after resumed.",
+                                managerHolder.get().canShowSnackbar());
+                    });
+
+            // Should not immediately time out.
+            Assert.assertFalse(
+                    "Snackbar should not immediately time out after activity was resumed.",
+                    mDismissed);
+
+            // Now it should time out. This must be run from outside UI thread.
+            TimeUnit.MILLISECONDS.sleep(timeout + 100);
+            pollSnackbarCondition(
+                    "Snackbar should eventually time out",
+                    () -> !managerHolder.get().isShowing() && mDismissed);
+        } finally {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        if (managerHolder.get() != null) {
+                            managerHolder.get().destroy();
+                        }
+                        ApplicationStatus.onStateChangeForTesting(sActivity, originalState);
+                    });
+        }
+    }
+
+    @Test
+    @SmallTest
     public void testSnackbarResizeOnParentOverrideResize() {
         final Snackbar snackbar =
                 Snackbar.make(
@@ -877,7 +1021,9 @@ public class SnackbarTest {
                     mManager.pushParentViewOverride(
                             ParentOverrideSlot.ONE_OFF, sAlternateParent1, null);
                 });
-        pollSnackbarCondition("Snackbar not shown", () -> mManager.isShowing());
+        pollSnackbarCondition(
+                "Snackbar not shown",
+                () -> mManager.isShowing() && sAlternateParent1.getWidth() > 0);
 
         // Get initial width of alternate parent
         final int[] originalWidth = new int[1];
@@ -886,52 +1032,54 @@ public class SnackbarTest {
                     originalWidth[0] = sAlternateParent1.getWidth();
                 });
 
-        // Simulate resize of alternate parent
-        PostTask.runOrPostTask(
-                TaskTraits.UI_DEFAULT,
-                () -> {
-                    ViewGroup.LayoutParams lp = sAlternateParent1.getLayoutParams();
-                    lp.width = originalWidth[0] / 2;
-                    sAlternateParent1.setLayoutParams(lp);
-                });
+        try {
+            // Simulate resize of alternate parent
+            PostTask.runOrPostTask(
+                    TaskTraits.UI_DEFAULT,
+                    () -> {
+                        ViewGroup.LayoutParams lp = sAlternateParent1.getLayoutParams();
+                        lp.width = originalWidth[0] / 2;
+                        sAlternateParent1.setLayoutParams(lp);
+                    });
 
-        // Wait for layout and verify snackbar width matches the new parent width (minus margins)
-        pollSnackbarCondition(
-                "Snackbar did not resize to fit new parent width",
-                () -> {
-                    SnackbarView view = mManager.getCurrentSnackbarViewForTesting();
-                    if (view == null) return false;
-                    View containerView = view.getContainerViewForTesting();
-                    if (containerView == null) return false;
+            // Wait for layout and verify snackbar width matches the new parent width (minus
+            // margins)
+            pollSnackbarCondition(
+                    "Snackbar did not resize to fit new parent width",
+                    () -> {
+                        SnackbarView view = mManager.getCurrentSnackbarViewForTesting();
+                        if (view == null) return false;
+                        View containerView = view.getContainerViewForTesting();
+                        if (containerView == null) return false;
 
-                    int maxSnackbarWidth =
-                            sActivity
-                                    .getResources()
-                                    .getDimensionPixelSize(
-                                            org.chromium.chrome.ui.messages.R.dimen
-                                                    .snackbar_width_max);
-                    int floatingMargin =
-                            sActivity
-                                    .getResources()
-                                    .getDimensionPixelSize(
-                                            org.chromium.chrome.ui.messages.R.dimen
-                                                    .snackbar_floating_margin);
-                    int expectedWidth =
-                            Math.min(
-                                    maxSnackbarWidth,
-                                    sAlternateParent1.getWidth() - 2 * floatingMargin);
-                    return containerView.getWidth() == expectedWidth;
-                });
-
-        // Clean up: restore alternate parent width
-        PostTask.runOrPostTask(
-                TaskTraits.UI_DEFAULT,
-                () -> {
-                    ViewGroup.LayoutParams lp = sAlternateParent1.getLayoutParams();
-                    lp.width = originalWidth[0];
-                    sAlternateParent1.setLayoutParams(lp);
-                    mManager.popParentViewOverride(ParentOverrideSlot.ONE_OFF);
-                });
+                        int maxSnackbarWidth =
+                                sActivity
+                                        .getResources()
+                                        .getDimensionPixelSize(
+                                                org.chromium.chrome.ui.messages.R.dimen
+                                                        .snackbar_width_max);
+                        int floatingMargin =
+                                sActivity
+                                        .getResources()
+                                        .getDimensionPixelSize(
+                                                org.chromium.chrome.ui.messages.R.dimen
+                                                        .snackbar_floating_margin);
+                        int expectedWidth =
+                                Math.min(
+                                        maxSnackbarWidth,
+                                        sAlternateParent1.getWidth() - 2 * floatingMargin);
+                        return containerView.getWidth() == expectedWidth;
+                    });
+        } finally {
+            // Clean up: restore alternate parent width
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        ViewGroup.LayoutParams lp = sAlternateParent1.getLayoutParams();
+                        lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                        sAlternateParent1.setLayoutParams(lp);
+                        mManager.popParentViewOverride(ParentOverrideSlot.ONE_OFF);
+                    });
+        }
     }
 
     @Test

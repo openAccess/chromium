@@ -37,6 +37,8 @@
 
     <application android:name="org.chromium.android_browsertests_apk.ChromeBrowserTestsApplication"
             android:label="ChromeBrowserTests"
+            android:zygotePreloadName="org.chromium.content_public.app.ZygotePreload"
+            android:zygotePreloadNativeLib="lib{{ library_name }}.so"
             android:requestLegacyExternalStorage="true">
 
         <!--
@@ -182,14 +184,13 @@
 
         <!-- NOTE: If you change the values of "android:process" for any of the below services,
              you also need to update kHelperProcessExecutableName in chrome_constants.cc. -->
-        {% set num_sandboxed_services = 40 %}
-        <meta-data android:name="org.chromium.content.browser.NUM_SANDBOXED_SERVICES"
-                   android:value="{{ num_sandboxed_services }}"/>
-
-        {% for i in range(num_sandboxed_services) %}
+        {% for i in range(2) %}
         <service android:name="org.chromium.content.app.SandboxedProcessService{{ i }}"
                  android:process=":sandboxed_process{{ i }}"
                  android:isolatedProcess="true"
+                 {% if (i == 0) %}
+                 android:useAppZygote="true"
+                 {% endif %}
                  android:exported="false" />
         {% endfor %}
 
@@ -218,6 +219,9 @@
             android:process=":sandboxed_process{{ i }}"
             android:permission="{{ manifest_package|default(default_manifest_package) }}.permission.CHILD_SERVICE"
             android:isolatedProcess="true"
+            {% if (i == 0) %}
+            android:useAppZygote="true"
+            {% endif %}
             android:exported="false" >
             <property android:name="android.app.PROPERTY_NATIVE_SERVICE_LIBRARY_NAME"
                 android:value="lib{{ library_name }}.so" />

@@ -34,6 +34,10 @@ public abstract class NtpBackgroundDataImageBase extends NtpBackgroundDataBase {
     private @Nullable String mLastUploadImageFilePath;
     private @Nullable Bitmap mBitmap;
     private boolean mIsBitmapSaved;
+    // The primary seed color of this background. Excluded from NtpBackgroundDataImageBase#equals
+    // so that theme collection entries with the same image share the same identity when color is
+    // lazily computed or updated from sync; use #hasSameThemeAndColor when comparing whether the
+    // visual color has changed.
     private @Nullable @ColorInt Integer mPrimaryColor;
 
     /**
@@ -156,7 +160,7 @@ public abstract class NtpBackgroundDataImageBase extends NtpBackgroundDataBase {
                 NtpCustomizationConfigManager.getInstance().getNtpBackgroundData();
         if (currentBackgroundData instanceof NtpBackgroundDataImageBase imageBaseData
                 && Objects.equals(currentBackgroundData, this)) {
-            mBitmap = imageBaseData.getBitmap();
+            borrowFromCurrentBackground(imageBaseData);
             onImageLoadedCallback.onResult(mBitmap);
         } else if (getPreviewBitmap() != null) {
             onImageLoadedCallback.onResult(getPreviewBitmap());
@@ -167,6 +171,27 @@ public abstract class NtpBackgroundDataImageBase extends NtpBackgroundDataBase {
                         onImageLoadedCallback.onResult(mBitmap);
                     },
                     mLastUploadImageFilePath);
+        }
+    }
+
+    /**
+     * Borrows the bitmap of the current background, which equals this one, as well as its {@link
+     * BackgroundImageInfo}, primary color and file ID hash if this one doesn't have them yet. This
+     * completes e.g. a recommended theme collection card, which only has a preview bitmap, so that
+     * it can be applied without fetching the image.
+     *
+     * @param currentBackgroundData The current background, which equals this one.
+     */
+    private void borrowFromCurrentBackground(NtpBackgroundDataImageBase currentBackgroundData) {
+        mBitmap = currentBackgroundData.getBitmap();
+        if (mBackgroundImageInfo == null) {
+            mBackgroundImageInfo = currentBackgroundData.getBackgroundImageInfo();
+        }
+        if (mPrimaryColor == null) {
+            mPrimaryColor = currentBackgroundData.getPrimaryColor();
+        }
+        if (mFileIdHash == null) {
+            setFileIdHash(currentBackgroundData.getFileIdHash());
         }
     }
 
@@ -189,19 +214,6 @@ public abstract class NtpBackgroundDataImageBase extends NtpBackgroundDataBase {
     /** Reads the isBitmapSaved value from the given JSON and sets it on this object. */
     public void setIsBitmapSavedFromJson(JSONObject json) {
         setIsBitmapSaved(json.optBoolean(IS_BITMAP_SAVED_KEY, false));
-    }
-
-    @Override
-    public boolean equals(Object obj) {
-        if (obj instanceof NtpBackgroundDataImageBase other) {
-            return super.equals(obj) && Objects.equals(mPrimaryColor, other.mPrimaryColor);
-        }
-        return false;
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(super.hashCode(), mPrimaryColor);
     }
 
     @Override

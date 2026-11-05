@@ -9,10 +9,12 @@
 #include <memory>
 #include <vector>
 
+#include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_multi_source_observation.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
@@ -23,12 +25,15 @@
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/animations/common_animation_values.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
+#include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/frame/custom_corners_background.h"
 #include "chrome/browser/ui/views/frame/layout/browser_view_layout.h"
 #include "chrome/browser/ui/views/frame/multi_contents_resize_area.h"
@@ -45,6 +50,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/search/ntp_features.h"
 #include "components/user_prefs/user_prefs.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -65,6 +71,12 @@
 #include "ui/views/view_utils.h"
 #include "url/gurl.h"
 
+#if BUILDFLAG(IS_LINUX)
+#include "chrome/browser/ui/views/frame/browser_native_widget.h"
+#include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "ui/ozone/public/ozone_platform.h"
+#endif
+
 class BrowserViewTabbedLayoutImplUiTest : public InteractiveBrowserTest {
  public:
   static constexpr char kBaselineCl[] = "7635098";
@@ -73,14 +85,21 @@ class BrowserViewTabbedLayoutImplUiTest : public InteractiveBrowserTest {
       : render_mode_resetter_(gfx::AnimationTestApi::SetRichAnimationRenderMode(
             disable_animations
                 ? gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED
-                : gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED)) {}
+                : gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED)) {
+    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+            switches::kVerifyPixels)) {
+      // TODO(crbug.com/579025166): Update pixel test baselines for
+      // OrganizerPanel.
+      scoped_feature_list_.InitAndDisableFeature(
+          organizer_panel::kOrganizerPanel);
+    }
+  }
 
   ~BrowserViewTabbedLayoutImplUiTest() override = default;
 
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSidePanelTestElement);
 
   void SetUp() override {
-    feature_list_.InitAndEnableFeature(features::kSidePanelFlyoverAnimation);
     set_open_about_blank_on_browser_launch(true);
     InteractiveBrowserTest::SetUp();
   }
@@ -120,7 +139,7 @@ class BrowserViewTabbedLayoutImplUiTest : public InteractiveBrowserTest {
                 return content_view;
               }),
               /*default_content_width_callback=*/base::NullCallback())));
-          browser()->GetFeatures().side_panel_ui()->Show(
+          SidePanelUI::From(browser())->Show(
               SidePanelEntry::Id::kCustomizeChrome);
         }),
         WaitForShow(kSidePanelElementId),
@@ -138,6 +157,26 @@ class BrowserViewTabbedLayoutImplUiTest : public InteractiveBrowserTest {
         WaitForShow(kSidePanelTestElement),
         // Ensure that the browser gets a full layout.
         Do([this] { RunScheduledLayouts(); }));
+  }
+
+  auto ToggleVerticalTabStripCollapsed(bool should_be_collapsed) {
+    auto steps = Steps(
+        PressButton(kVerticalTabStripCollapseButtonElementId),
+        WaitForEvent(kTabStripRegionElementId,
+                     VerticalTabStripRegionView::kAnimationCompletedEvent),
+        Do([this]() { RunScheduledLayouts(); }),
+        CheckView(
+            kTabStripRegionElementId,
+            [](VerticalTabStripRegionView* region) {
+              return region->GetTabStripCollectionController()
+                  ->GetStateController()
+                  ->IsCollapsed();
+            },
+            should_be_collapsed));
+    AddDescriptionPrefix(
+        steps, base::StringPrintf("ToggleVerticalTabStripCollapsed(%s)",
+                                  should_be_collapsed ? "true" : "false"));
+    return steps;
   }
 
   auto SaveBounds(ElementSpecifier spec,
@@ -366,7 +405,7 @@ class BrowserViewTabbedLayoutImplUiTest : public InteractiveBrowserTest {
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_;
   const gfx::AnimationTestApi::RenderModeResetter render_mode_resetter_;
 };
 
@@ -465,7 +504,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
       ->SetVerticalTabsEnabled(true);
   RunScheduledLayouts();
   RunTestSequence(
-      PressButton(kVerticalTabStripCollapseButtonElementId),
+      ToggleVerticalTabStripCollapsed(true),
       SetOnIncompatibleAction(OnIncompatibleAction::kSkipTest,
                               "Test is screenshot-only."),
       ScreenshotTop(kTabStripRegionElementId, "tabstrip_top", 3),
@@ -631,6 +670,47 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
                   VerifyLayout());
 }
 
+#if BUILDFLAG(IS_LINUX)
+// Regression test for https://crbug.com/574427664. When the system title bar
+// is used, there are no caption buttons, so no grab handle padding should be
+// inserted between the vertical tab strip and the toolbar.
+IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
+                       VerticalTabsWithSystemTitleBarHaveNoToolbarGap) {
+  if (!ui::OzonePlatform::GetInstance()
+           ->GetPlatformRuntimeProperties()
+           .supports_server_side_window_decorations) {
+    GTEST_SKIP() << "The platform does not support server-side decorations.";
+  }
+
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kUseCustomChromeFrame,
+                                                  false);
+  tabs::VerticalTabStripStateController::From(browser())
+      ->SetVerticalTabsEnabled(true);
+  RunScheduledLayouts();
+
+  BrowserView* const browser_view =
+      BrowserView::GetBrowserViewForBrowser(browser());
+  ASSERT_FALSE(browser_view->browser_widget()
+                   ->browser_native_widget()
+                   ->UseCustomFrame());
+
+  gfx::Rect tab_strip_bounds;
+  RunTestSequence(
+      WaitForShow(kTabStripRegionElementId),
+      WithView(kTabStripRegionElementId,
+               [&](views::View* tab_strip) {
+                 tab_strip_bounds = tab_strip->GetBoundsInScreen();
+               }),
+      CheckView(ToolbarView::kToolbarElementId, [&](views::View* toolbar) {
+        // The toolbar should start right where the vertical tab strip ends
+        // (it may overlap by 1 DIP on fractional scale factors).
+        const int toolbar_x = toolbar->GetBoundsInScreen().x();
+        return toolbar_x <= tab_strip_bounds.right() &&
+               toolbar_x >= tab_strip_bounds.right() - 1;
+      }));
+}
+#endif  // BUILDFLAG(IS_LINUX)
+
 enum class TopContainerBackgroundTestMode {
   kDefault,
   kTouch,
@@ -761,26 +841,6 @@ class BrowserViewTabbedLayoutImplContentLayoutUiTest
         .SetDescription("CheckResizeCounts()");
   }
 
-  auto ToggleVerticalTabStripCollapsed(bool should_be_collapsed) {
-    auto steps = Steps(
-        PressButton(kVerticalTabStripCollapseButtonElementId),
-        WaitForEvent(kTabStripRegionElementId,
-                     VerticalTabStripRegionView::kAnimationCompletedEvent),
-        Do([this]() { RunScheduledLayouts(); }),
-        CheckView(
-            kTabStripRegionElementId,
-            [](VerticalTabStripRegionView* region) {
-              return region->GetTabStripCollectionController()
-                  ->GetStateController()
-                  ->IsCollapsed();
-            },
-            should_be_collapsed));
-    AddDescriptionPrefix(
-        steps, base::StringPrintf("ToggleVerticalTabStripCollapsed(%s)",
-                                  should_be_collapsed ? "true" : "false"));
-    return steps;
-  }
-
   auto EnterSplitView() {
     return Steps(
         Do([this]() {
@@ -823,7 +883,8 @@ class BrowserViewTabbedLayoutImplContentLayoutUiTest
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        HorizontalTabsSinglePaneOpenSidePanel) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   RunScheduledLayouts();
@@ -833,7 +894,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        HorizontalTabsSinglePaneCloseSidePanel) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   RunScheduledLayouts();
@@ -843,7 +905,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        VerticalTabsSinglePaneOpenSidePanel) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   tabs::VerticalTabStripStateController::From(browser())
@@ -855,7 +918,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        VerticalTabsSinglePaneCloseSidePanel) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   tabs::VerticalTabStripStateController::From(browser())
@@ -867,7 +931,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        VerticalTabsSinglePaneCollapse) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   tabs::VerticalTabStripStateController::From(browser())
@@ -879,7 +944,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        VerticalTabsSinglePaneExpand) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   tabs::VerticalTabStripStateController::From(browser())
@@ -892,7 +958,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        HorizontalTabsSplitViewOpenSidePanel) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   RunScheduledLayouts();
@@ -902,7 +969,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        HorizontalTabsSplitViewCloseSidePanel) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   RunScheduledLayouts();
@@ -912,7 +980,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        VerticalTabsSplitViewOpenSidePanel) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   tabs::VerticalTabStripStateController::From(browser())
@@ -924,7 +993,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        VerticalTabsSplitViewCloseSidePanel) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   tabs::VerticalTabStripStateController::From(browser())
@@ -936,7 +1006,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        VerticalTabsSplitViewCollapse) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   tabs::VerticalTabStripStateController::From(browser())
@@ -949,7 +1020,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
 
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplContentLayoutUiTest,
                        VerticalTabsSplitViewExpand) {
-  if (!features::UseSidePanelFlyoverAnimation()) {
+  if (browser_animations::GetPanelAnimationType() !=
+      browser_animations::PanelAnimationType::kClipAndSingleReflow) {
     GTEST_SKIP();
   }
   tabs::VerticalTabStripStateController::From(browser())
@@ -964,9 +1036,7 @@ class BrowserViewHorizontalTabStripOldLayoutUiTest
     : public BrowserViewTabbedLayoutImplUiTest {
  public:
   void SetUp() override {
-    test_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kSidePanelFlyoverAnimation},
-        /*disabled_features=*/{tabs::kTabStripUnification});
+    test_feature_list_.InitAndDisableFeature(tabs::kTabStripUnification);
     set_open_about_blank_on_browser_launch(true);
     InteractiveBrowserTest::SetUp();
   }

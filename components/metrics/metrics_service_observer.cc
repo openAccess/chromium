@@ -91,6 +91,8 @@ std::string CreateReasonToString(
       return "Reason: Manually triggered by client";
     case MetricsLogsEventManager::CreateReason::kFlush:
       return "Reason: Flush";
+    case MetricsLogsEventManager::CreateReason::kRuntimeMutability:
+      return "Reason: Runtime mutations applied";
   }
 }
 
@@ -162,6 +164,12 @@ void MetricsServiceObserver::OnLogEvent(MetricsLogsEventManager::LogEvent event,
 void MetricsServiceObserver::OnLogType(
     std::optional<MetricsLog::LogType> log_type) {
   uma_log_type_ = log_type;
+}
+
+void MetricsServiceObserver::OnLogsCleared() {
+  indexed_logs_.clear();
+  logs_.clear();
+  notified_callbacks_.Notify();
 }
 
 bool MetricsServiceObserver::ExportLogsAsJson(bool include_log_proto_data,

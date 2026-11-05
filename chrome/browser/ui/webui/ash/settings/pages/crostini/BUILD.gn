@@ -16,7 +16,6 @@ static_library("crostini") {
 
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ash/crostini",
     "//chrome/browser/ash/guest_os",
     "//chrome/browser/ui/webui/settings",
@@ -31,10 +30,10 @@ static_library("crostini") {
     "//ash/constants",
     "//ash/webui/settings/public/constants:mojom",
     "//chrome/app:generated_resources",
-    "//chrome/browser:browser_process",
     "//chrome/browser/ash/bruschetta",
     "//chrome/browser/ash/crostini:crostini_installer_types_mojom",
     "//chrome/browser/ash/file_manager",
+    "//chrome/browser/policy",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui/views/bruschetta",
     "//chrome/browser/ui/views/crostini",
@@ -67,6 +66,7 @@ source_set("unit_tests") {
     "//chrome/browser/ash/guest_os",
     "//chrome/browser/profiles:profile",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//content/test:test_support",
     "//testing/gtest",
   ]

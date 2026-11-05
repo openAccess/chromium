@@ -31,6 +31,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accelerated_widget_mac/display_ca_layer_tree.h"
 #import "ui/base/cocoa/base_view.h"
+#import "ui/base/cocoa/nsmenu_additions.h"
 #include "ui/base/cocoa/remote_layer_api.h"
 #include "ui/compositor/recyclable_compositor_mac.h"
 #include "ui/display/display.h"
@@ -38,6 +39,7 @@
 #include "ui/events/blink/blink_event_util.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/dip_util.h"
+#include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/mac/coordinate_conversion.h"
 #include "ui/latency/latency_info.h"
 
@@ -107,25 +109,86 @@
 
 namespace content {
 
+namespace {
+
+// Returns true if the first responder of the window receiving `event` is the
+// `RenderWidgetHostViewCocoa` of `owner_view`, or a descendant of it.
+bool IsOwnerFirstResponder(NSEvent* event,
+                           RenderWidgetHostViewBase* owner_view) {
+  if (!owner_view) {
+    return false;
+  }
+  NSView* owner_ns_view =
+      static_cast<RenderWidgetHostViewMac*>(owner_view)->GetInProcessNSView();
+  if (!owner_ns_view) {
+    return false;
+  }
+  NSView* responder =
+      base::apple::ObjCCast<NSView>(event.window.firstResponder);
+  return responder && [responder isDescendantOf:owner_ns_view];
+}
+
+bool IsEditingAction(SEL action) {
+  return action == @selector(copy:) || action == @selector(cut:) ||
+         action == @selector(paste:) ||
+         action == @selector(pasteAndMatchStyle:) ||
+         action == @selector(selectAll:) || action == @selector(undo:) ||
+         action == @selector(redo:) || action == @selector(delete:);
+}
+
+// Returns true if `event`, seen by the local event monitor, should dismiss
+// the unbounded surface shown in `surface_window` for `owner_view`.
+bool ShouldDismissForLocalEvent(NSEvent* event,
+                                RenderWidgetHostViewBase* owner_view,
+                                NSWindow* surface_window) {
+  if (event.window == surface_window) {
+    return false;
+  }
+  if (event.type == NSEventTypeKeyDown) {
+    if (!IsOwnerFirstResponder(event, owner_view)) {
+      return true;
+    }
+    // Reserved browser shortcuts on macOS (e.g. Cmd+T, Cmd+W) are intercepted
+    // by ChromeCommandDispatcherDelegate::prePerformKeyEquivalent during
+    // -[NSWindow performKeyEquivalent:] before reaching
+    // RenderWidgetHostViewCocoa or RenderWidgetHostImpl. When a menu item in
+    // the main menu matches this event, dismiss the surface for browser
+    // commands, but avoid dismissing on text editing commands (e.g. Cmd+C,
+    // Cmd+V, Cmd+X, Cmd+A, Cmd+Z) or unhandled shortcuts.
+    if ((event.modifierFlags & NSEventModifierFlagCommand) != 0) {
+      NSMenuItem* item =
+          [[NSApp mainMenu] cr_menuItemForKeyEquivalentEvent:event];
+      if (item && !IsEditingAction(item.action)) {
+        return true;
+      }
+      return false;
+    }
+    return false;
+  }
+  // Avoid dismissing when clicking inside a child popup window (such as an
+  // <input type=date> picker) opened from the owning RenderWidgetHostView.
+  auto* parent_view_mac = static_cast<RenderWidgetHostViewMac*>(owner_view);
+  if (parent_view_mac && parent_view_mac->PopupChildHostView()) {
+    NSView* popup_view =
+        parent_view_mac->PopupChildHostView()->GetInProcessNSView();
+    if (popup_view && event.window == [popup_view window]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 UnboundedSurfaceWindowMac::UnboundedSurfaceWindowMac(
     RenderWidgetHostViewMac* parent_view,
-    mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-    mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient> client,
     const gfx::Rect& bounds_in_screen,
     base::WeakPtr<RenderWidgetHostViewBase> subframe_view)
-    : parent_view_(parent_view),
-      subframe_view_(std::move(subframe_view)),
+    : UnboundedSurfaceWindow(parent_view ? parent_view->GetWeakPtr() : nullptr,
+                             std::move(subframe_view)),
       frame_sink_id_(content::AllocateFrameSinkId()) {
   CHECK(base::FeatureList::IsEnabled(blink::features::kUnboundedElement),
         base::NotFatalUntil::M152);
-  if (host.is_valid()) {
-    receiver_.Bind(std::move(host));
-    receiver_.set_disconnect_handler(base::BindOnce(
-        &UnboundedSurfaceWindowMac::OnConnectionError, base::Unretained(this)));
-  }
-  if (client.is_valid()) {
-    client_remote_.Bind(std::move(client));
-  }
   InitWindow(bounds_in_screen);
 }
 
@@ -151,6 +214,11 @@ UnboundedSurfaceWindowMac::~UnboundedSurfaceWindowMac() {
   }
   display_ca_layer_tree_.reset();
   root_layer_.reset();
+
+  if (local_event_monitor_) {
+    [NSEvent removeMonitor:local_event_monitor_];
+    local_event_monitor_ = nil;
+  }
 
   if (window_) {
     UnboundedNSView* view =
@@ -236,6 +304,7 @@ void UnboundedSurfaceWindowMac::InitWindow(const gfx::Rect& bounds_in_screen) {
       content::GetContextFactory());
 
   root_layer_ = std::make_unique<ui::LayerSurface>();
+  root_layer_->SetName("UnboundedSurfaceWindowMac:Root");
   root_layer_->SetFallbackBackgroundColor(SkColors::kTransparent);
   root_layer_->SetFillsBoundsOpaquely(false);
   root_layer_->SetBounds(gfx::Rect(bounds_in_screen.size()));
@@ -266,17 +335,45 @@ void UnboundedSurfaceWindowMac::InitWindow(const gfx::Rect& bounds_in_screen) {
       bounds_in_screen.size(), cc::DeadlinePolicy::UseDefaultDeadline(),
       /*stretch_content_to_fill_bounds=*/false);
 
-  if (parent_view_ && parent_view_->GetInProcessNSView()) {
-    if (NSWindow* parent_window = [parent_view_->GetInProcessNSView() window]) {
+  auto* parent_view_mac =
+      static_cast<RenderWidgetHostViewMac*>(parent_view_.get());
+  if (parent_view_mac && parent_view_mac->GetInProcessNSView()) {
+    if (NSWindow* parent_window =
+            [parent_view_mac->GetInProcessNSView() window]) {
       [parent_window addChildWindow:window_ ordered:NSWindowAbove];
       [window_ setLevel:[parent_window level] + 1];
     }
   }
   [window_ orderFront:nil];
-
-  if (client_remote_.is_bound()) {
-    client_remote_->OnSurfaceAllocated(GetFrameSinkId(), GetLocalSurfaceId());
-  }
+  // Dismiss when clicking anywhere in the application outside `window_` (such
+  // as the browser tab strip, toolbar, or another web contents) that does not
+  // route through the owning `RenderWidgetHostImpl`, or when pressing a key
+  // while `firstResponder` is outside the owning `RenderWidgetHostViewCocoa`
+  // (e.g. a browser shortcut while focus is in the omnibox or another tab). If
+  // a click lands on the owning `RenderWidgetHostViewCocoa` outside `window_`,
+  // both this monitor and
+  // `RenderWidgetHostImpl::ForwardMouseEventWithLatencyInfo()` call
+  // `Dismiss()`; that is safe because
+  // `UnboundedSurfaceHostImpl::OnDismissRequested()` is idempotent while
+  // `dismiss_pending_` is true, and if `beforetoggle` is canceled,
+  // `local_event_monitor_` remains installed for subsequent events. The
+  // handler always returns `event` so that it is never swallowed.
+  base::WeakPtr<UnboundedSurfaceWindow> weak_this = GetWeakPtr();
+  base::WeakPtr<RenderWidgetHostViewBase> weak_parent_view = parent_view_;
+  NSEvent* (^handler)(NSEvent*) = ^NSEvent*(NSEvent* event) {
+    if (weak_this && ShouldDismissForLocalEvent(
+                         event, weak_parent_view.get(),
+                         weak_this->GetNativeWindow().GetNativeNSWindow())) {
+      weak_this->Dismiss();
+    }
+    return event;
+  };
+  local_event_monitor_ =
+      [NSEvent addLocalMonitorForEventsMatchingMask:(NSEventMaskLeftMouseDown |
+                                                     NSEventMaskRightMouseDown |
+                                                     NSEventMaskOtherMouseDown |
+                                                     NSEventMaskKeyDown)
+                                            handler:handler];
 }
 
 void UnboundedSurfaceWindowMac::SetBounds(const gfx::Rect& bounds_in_screen) {
@@ -383,18 +480,30 @@ void UnboundedSurfaceWindowMac::EnsureSurfaceSynchronizedForWebTest() {
   }
 }
 
-RenderWidgetHostViewBase* UnboundedSurfaceWindowMac::GetParentView() const {
-  return parent_view_;
-}
-
 void UnboundedSurfaceWindowMac::RouteMouseEvent(NSEvent* ns_event) {
-  RouteMouseEvent(
-      input::WebMouseEventBuilder::Build(ns_event, window_.contentView));
+  blink::WebMouseEvent web_event =
+      input::WebMouseEventBuilder::Build(ns_event, window_.contentView);
+  RenderWidgetHostViewBase* target_view = GetTargetView();
+  if (!target_view || !target_view->host()) {
+    return;
+  }
+  if (!TransformEventCoordinatesToView(target_view, web_event)) {
+    return;
+  }
+  target_view->ProcessMouseEvent(web_event, ui::LatencyInfo());
 }
 
 void UnboundedSurfaceWindowMac::RouteWheelEvent(NSEvent* ns_event) {
-  RouteMouseWheelEvent(
-      input::WebMouseWheelEventBuilder::Build(ns_event, window_.contentView));
+  blink::WebMouseWheelEvent web_event =
+      input::WebMouseWheelEventBuilder::Build(ns_event, window_.contentView);
+  RenderWidgetHostViewBase* target_view = GetTargetView();
+  if (!target_view || !target_view->host()) {
+    return;
+  }
+  if (!TransformEventCoordinatesToView(target_view, web_event)) {
+    return;
+  }
+  target_view->ProcessMouseWheelEvent(web_event, ui::LatencyInfo());
 }
 
 void UnboundedSurfaceWindowMac::RouteKeyboardEvent(NSEvent* ns_event) {
@@ -407,19 +516,9 @@ void UnboundedSurfaceWindowMac::RouteKeyboardEvent(NSEvent* ns_event) {
     return;
   }
 
-  if (parent_view_ && parent_view_->host()) {
-    parent_view_->host()->ForwardKeyboardEvent(web_event);
-  }
-}
-
-void UnboundedSurfaceWindowMac::UpdateBounds(const gfx::Rect& bounds) {
-  if (!parent_view_) {
-    return;
-  }
-  parent_view_->UpdateUnboundedSurfaceBoundsInSubframeContext(
-      bounds, subframe_view_.get());
-  if (client_remote_.is_bound()) {
-    client_remote_->OnSurfaceAllocated(GetFrameSinkId(), GetLocalSurfaceId());
+  RenderWidgetHostViewBase* target_view = GetTargetView();
+  if (target_view && target_view->host()) {
+    target_view->host()->ForwardKeyboardEvent(web_event);
   }
 }
 
@@ -427,11 +526,6 @@ void UnboundedSurfaceWindowMac::TeardownAndDestroy() {
   if (parent_view_) {
     parent_view_->DestroyUnboundedSurface(GetWeakPtr());
   }
-}
-
-void UnboundedSurfaceWindowMac::OnConnectionError() {
-  dismiss_pending_ = true;
-  ScheduleDeferredDestroy();
 }
 
 void UnboundedSurfaceWindowMac::AcceleratedWidgetCALayerParamsUpdated(

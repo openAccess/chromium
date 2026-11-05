@@ -13,6 +13,7 @@ import org.chromium.chrome.browser.tab.TabAttributeKeys;
 import org.chromium.chrome.browser.tab.TabAttributes;
 import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabLaunchTypeUtils;
 
 /**
  * Implementation of the TabModelOrderController based off of tab_strip_model_order_controller.cc
@@ -32,7 +33,7 @@ class TabModelOrderControllerImpl implements TabModelOrderController {
 
     @Override
     public int determineInsertionIndex(@TabLaunchType int type, int position, Tab newTab) {
-        if (type == TabLaunchType.FROM_BROWSER_ACTIONS || type == TabLaunchType.FROM_RECENT_TABS) {
+        if (TabLaunchTypeUtils.bypassesInsertionOrderCalculation(type)) {
             return TabList.INVALID_TAB_INDEX;
         }
         if (newTab.getIsPinned() && type != TabLaunchType.FROM_RESTORE) {
@@ -60,7 +61,9 @@ class TabModelOrderControllerImpl implements TabModelOrderController {
             return TabList.INVALID_TAB_INDEX;
         }
 
-        if (mightBeAdjacent(type)) {
+        if (type == TabLaunchType.FROM_OMNIBOX_BACKGROUND) {
+            position = mTabModelSelector.getModel(newTab.isIncognitoBranded()).getCount();
+        } else if (TabLaunchTypeUtils.shouldOpenAdjacent(type)) {
             position = determineInsertionIndexIfMaybeAdjacent(type, newTab);
         }
 
@@ -69,14 +72,6 @@ class TabModelOrderControllerImpl implements TabModelOrderController {
             // too confusing by having multiple groups active at the same time.
             forgetAllOpeners();
         }
-
-        // TODO(crbug.com/40877620): This is a bandaid fix to ensure tab groups are contiguous such
-        // that no tabs within a group are separate from one another and that no tab that is not
-        // part of a group can be added in-between members of a group. This doesn't address the
-        // issue of moving tabs to be between members of a group, however when a group is moved it
-        // is moved tab-by-tab so it is difficult to enforce anything there without significant
-        // refactoring.
-        position = getValidPositionConsideringRelatedTabs(newTab, position);
 
         return position;
     }
@@ -87,8 +82,7 @@ class TabModelOrderControllerImpl implements TabModelOrderController {
         if (sameModelType(currentModel, newTab)) {
             Tab currentTab = TabModelUtils.getCurrentTab(currentModel);
             if (currentTab == null) {
-                assert (currentModel.getCount() == 0);
-                return 0;
+                return currentModel.getCount();
             }
             int currentId = currentTab.getId();
             int currentIndex = currentModel.indexOf(currentTab);
@@ -149,29 +143,12 @@ class TabModelOrderControllerImpl implements TabModelOrderController {
         return NO_TAB;
     }
 
-    private int getValidPositionConsideringRelatedTabs(Tab newTab, int position) {
-        TabModel tabModel = mTabModelSelector.getModel(newTab.isIncognito());
-        return tabModel.getValidPosition(newTab, position);
-    }
-
     /** Clear the opener attribute on all tabs in the model. */
-    void forgetAllOpeners() {
+    private void forgetAllOpeners() {
         TabModel currentModel = mTabModelSelector.getCurrentModel();
         for (Tab tab : currentModel) {
             TabAttributes.from(tab).set(TabAttributeKeys.GROUPED_WITH_PARENT, false);
         }
-    }
-
-    /** Determine if a launch type requires calculation to determine the position of the new tab. */
-    static boolean mightBeAdjacent(@TabLaunchType int type) {
-        return type == TabLaunchType.FROM_LINK
-                || type == TabLaunchType.FROM_LONGPRESS_FOREGROUND
-                || type == TabLaunchType.FROM_LONGPRESS_FOREGROUND_IN_GROUP
-                || type == TabLaunchType.FROM_LONGPRESS_BACKGROUND
-                || type == TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP
-                || type == TabLaunchType.FROM_LONGPRESS_INCOGNITO
-                || type == TabLaunchType.FROM_HISTORY_NAVIGATION_BACKGROUND
-                || type == TabLaunchType.FROM_HISTORY_NAVIGATION_FOREGROUND;
     }
 
     @Override
@@ -187,20 +164,10 @@ class TabModelOrderControllerImpl implements TabModelOrderController {
             boolean isNewTabIncognitoBranded,
             boolean isCurrentModelIncognitoBranded) {
         // Restore is handling the active index by itself.
-        if (type == TabLaunchType.FROM_RESTORE
-                || type == TabLaunchType.FROM_BROWSER_ACTIONS
-                || type == TabLaunchType.FROM_RESTORE_TABS_UI) {
+        if (TabLaunchTypeUtils.isRestoreLaunch(type)) {
             return false;
         }
-        return (type != TabLaunchType.FROM_LONGPRESS_BACKGROUND
-                        && type != TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP
-                        && type != TabLaunchType.FROM_RECENT_TABS
-                        && type != TabLaunchType.FROM_SYNC_BACKGROUND
-                        && type != TabLaunchType.FROM_COLLABORATION_BACKGROUND_IN_GROUP
-                        && type != TabLaunchType.FROM_BOOKMARK_BAR_BACKGROUND
-                        && type != TabLaunchType.FROM_REPARENTING_BACKGROUND
-                        && type != TabLaunchType.FROM_HISTORY_NAVIGATION_BACKGROUND
-                        && type != TabLaunchType.FROM_TAB_LIST_INTERFACE_BACKGROUND)
+        return !TabLaunchTypeUtils.isBackgroundLaunch(type)
                 || isCurrentModelIncognitoBranded != isNewTabIncognitoBranded;
     }
 

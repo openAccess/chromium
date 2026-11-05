@@ -20,17 +20,17 @@ source_set("browser_ui_controller") {
 source_set("impl") {
   sources = [ "browser_ui_controller.cc" ]
 
-  public_deps = [
-    ":browser_ui_controller",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ ":browser_ui_controller" ]
 
   deps = [
     "//base",
     "//chrome/browser/app_mode",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui:browser_command_controller",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui:status_bubble",
     "//chrome/browser/ui:tab_ui_helper",
+    "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/bookmarks",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/location_bar",

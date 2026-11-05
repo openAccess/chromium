@@ -10,6 +10,7 @@
 #include <memory>
 
 #include "base/logging.h"
+#include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "base/system/system_monitor.h"
 #include "base/win/wrapped_window_proc.h"
@@ -79,13 +80,13 @@ class SystemMessageWindowWin::DeviceNotifications {
     for (size_t i = 0; i < notifications_.size(); ++i) {
       if (notifications_[i]) {
         UnregisterDeviceNotification(notifications_[i]);
-        notifications_[i] = NULL;
+        notifications_[i] = nullptr;
       }
     }
   }
 
  private:
-  std::vector<HDEVNOTIFY> notifications_;
+  std::vector<base::RawPtrIfPtrT<HDEVNOTIFY>> notifications_;
 };
 
 SystemMessageWindowWin::SystemMessageWindowWin() {
@@ -118,6 +119,16 @@ LRESULT SystemMessageWindowWin::OnDeviceChange(UINT event_type, LPARAM data) {
         return TRUE;
       for (const auto& map_entry : GetDeviceCategoryToType()) {
         if (map_entry.device_category == device_interface->dbcc_classguid) {
+          // When Core Audio is supported, AudioDeviceListenerWin reports audio
+          // device changes and DeviceNotifications does not register for
+          // KSCATEGORY_AUDIO. Audio interface events can still arrive through
+          // other registrations on the shared gfx::SingletonHwnd (e.g.
+          // device::DeviceMonitorWin::GetForAllInterfaces()), so ignore them
+          // to avoid redundant DEVTYPE_AUDIO notifications.
+          if (CoreAudioUtil::IsSupported() &&
+              map_entry.device_category == KSCATEGORY_AUDIO) {
+            return TRUE;
+          }
           device_type = map_entry.device_type;
           break;
         }

@@ -8,17 +8,34 @@ found in the LICENSE file.
 
 <histograms>
 
+<!-- LINT.IfChange(AttemptOtpFillingPredictedOtpType) -->
+
+<variants name="AttemptOtpFillingPredictedOtpType">
+  <variant name="AuthenticatorApp" summary="an authenticator app code"/>
+  <variant name="Email" summary="an email code"/>
+  <variant name="Sms" summary="an SMS code"/>
+  <variant name="Unknown" summary="of an unknown type"/>
+</variants>
+
+<!-- LINT.ThenChange(//chrome/browser/autofill/actor/one_time_tokens/actor_one_time_token_filling_service_metrics.cc:AttemptOtpFillingPredictedOtpTypeSuffix) -->
+
+<variants name="GmailOtpTokenSource">
+  <variant name="Cached" summary="a cached"/>
+  <variant name="Received" summary="a received (fresh)"/>
+</variants>
+
 <histogram
     name="OneTimeTokens.Actor.AttemptOtpFilling.GmailOtpConfirmationDialogInteraction"
     enum="GmailOtpConfirmationDialogInteraction" expires_after="2027-06-30">
   <owner>ioanap@chromium.org</owner>
   <owner>trangm@google.com</owner>
   <summary>
-    Records user interactions with the Gmail OTP confirmation dialog during the
-    AttemptOtpFilling tool execution, such as whether permission was granted,
-    denied, or if an error occurred. Recorded once when the dialog is requested
-    to be shown, when there's an error, the user approves or declines the
-    confirmation dialog.
+    Records the user's interaction with the Gmail OTP confirmation dialog during
+    the AttemptOtpFilling tool execution: permission granted, permission denied,
+    an error response, or Cancelled when the tool is destroyed after the dialog
+    is requested and before a response is received (e.g. the task is stopped,
+    paused or cancelled, or the tab is closed). Recorded once per dialog
+    request. Nothing is recorded if the tool never requests the dialog.
   </summary>
 </histogram>
 
@@ -28,11 +45,12 @@ found in the LICENSE file.
   <owner>ioanap@chromium.org</owner>
   <owner>sdrab@google.com</owner>
   <summary>
-    Records user interactions with the Gmail OTP opt-in dialog card during the
-    AttemptOtpFilling tool execution, such as whether permission was granted,
-    denied, or if an error occurred. Recorded once when the dialog is requested
-    to be shown, when there's an error, the user approves or declines the opt-in
-    dialog.
+    Records the user's interaction with the Gmail OTP opt-in card during the
+    AttemptOtpFilling tool execution: permission granted, permission denied, an
+    error response, or Cancelled when the tool is destroyed after the card is
+    requested and before a response is received (e.g. the task is stopped,
+    paused or cancelled, or the tab is closed). Recorded once per card request.
+    Nothing is recorded if the tool never requests the card.
   </summary>
 </histogram>
 
@@ -53,10 +71,13 @@ found in the LICENSE file.
   <owner>ioanap@chromium.org</owner>
   <owner>sdrab@google.com</owner>
   <summary>
-    Records events during the execution of the AttemptOtpFilling tool by the
-    actor, such as the start of an attempt, OTP retrieval status, consent
-    checks, and whether OTP filling succeeded or failed. This metric spans
-    across the lifecycle methods Validate, TimeOfUseValidation and Invoke.
+    Records the terminal outcome of a single AttemptOtpFilling tool attempt by
+    the actor: success, a specific failure (e.g. OTP retrieval, consent checks
+    or filling), or the step during which the attempt was cancelled. This metric
+    spans across the lifecycle methods Validate, TimeOfUseValidation and Invoke.
+    The CancelledDuring* buckets are recorded when the tool is destroyed (e.g.
+    the task is stopped, paused or cancelled, or the tab is closed) before the
+    named asynchronous step completes. Recorded at most once per attempt.
   </summary>
 </histogram>
 
@@ -78,10 +99,13 @@ found in the LICENSE file.
   <owner>ioanap@chromium.org</owner>
   <owner>sdrab@google.com</owner>
   <summary>
-    Records events during OTP filling operations of the
-    ActorOneTimeTokenFillingService. Recorded at the start of FillOtp
-    invocations, and when filling outcomes or error conditions (e.g. invalid
-    tab, missing form structure, or successful fill) are determined.
+    Records the outcome of a single FillOtp request in
+    ActorOneTimeTokenFillingService: a pre-fill error (e.g. a null tab, no
+    trigger fields, a concurrent call, no autofill manager, a missing form or
+    trigger field, or empty fill data), the renderer fill result (success or
+    error), or Cancelled if the service is destroyed while the fill is pending
+    (e.g. the actor task ends or the browser shuts down). Recorded once per
+    request.
   </summary>
 </histogram>
 
@@ -91,11 +115,34 @@ found in the LICENSE file.
   <owner>ioanap@chromium.org</owner>
   <owner>sdrab@google.com</owner>
   <summary>
-    Records events during OTP retrieval operations of the
-    ActorOneTimeTokenFillingService. Recorded at the start of RetrieveOtp
-    invocations, and when retrieval outcomes or error conditions (e.g. cache
-    hits, mock OTPs, or superseded callbacks) are determined.
+    Records the outcome of a single OTP retrieval request in
+    ActorOneTimeTokenFillingService: a null tab, no backend, a mock OTP, a cache
+    or received match, a timeout, a sender-domain mismatch, a backend error, or
+    Cancelled if the service is destroyed while the retrieval is pending (e.g.
+    the actor task ends or the browser shuts down). Recorded once per request.
+    Not recorded for a request that is superseded by a newer request.
+    GmailOtpSenderDomainMismatch is recorded when the subscription timed out
+    after at least one token delivered via the subscription was rejected for
+    sender-domain mismatch. If the AttemptOtpFilling tool is destroyed while a
+    retrieval is pending, the retrieval continues and its outcome is still
+    recorded.
   </summary>
+</histogram>
+
+<histogram
+    name="OneTimeTokens.Actor.OneTimeTokenFillingService.RetrieveOtp.{PredictedOtpType}"
+    enum="ActorOneTimeTokenFillingServiceRetrieveOtpEvent"
+    expires_after="2027-06-30">
+  <owner>salmaabdelaziz@google.com</owner>
+  <owner>passwordmanager-mobile-eng@google.com</owner>
+  <summary>
+    Records the outcome of a single OTP retrieval request in
+    ActorOneTimeTokenFillingService for a request where the model predicted the
+    OTP to be {PredictedOtpType}. Uses the outcome buckets of
+    OneTimeTokens.Actor.OneTimeTokenFillingService.RetrieveOtp and is recorded
+    alongside it, once per request when the request ends.
+  </summary>
+  <token key="PredictedOtpType" variants="AttemptOtpFillingPredictedOtpType"/>
 </histogram>
 
 <histogram
@@ -112,26 +159,39 @@ found in the LICENSE file.
   </summary>
 </histogram>
 
-<histogram
-    name="OneTimeTokens.GmailOtpRetriever.SenderDomainMatchRejectionReason.Cached"
-    enum="GmailOtpSenderDomainMatchRejectionReason" expires_after="2027-06-30">
-  <owner>ioanap@chromium.org</owner>
-  <owner>sdrab@google.com</owner>
+<histogram name="OneTimeTokens.Gmail.OptIn.BubbleResult"
+    enum="GmailOtpOptInResult" expires_after="2027-08-01">
+  <owner>kazinova@google.com</owner>
+  <owner>trangm@google.com</owner>
+  <owner>src/components/one_time_tokens/OWNERS</owner>
   <summary>
-    Records the reason why a sender domain match was rejected for a cached OTP
-    in GmailOtpRetriever. Recorded only when a token is rejected.
+    Records the outcome of the Gmail OTP opt-in bubble. Recorded once when the
+    opt-in bubble finishes its lifecycle (without being re-queued for reshow) or
+    is discarded.
   </summary>
 </histogram>
 
 <histogram
-    name="OneTimeTokens.GmailOtpRetriever.SenderDomainMatchRejectionReason.Received"
-    enum="GmailOtpSenderDomainMatchRejectionReason" expires_after="2027-06-30">
+    name="OneTimeTokens.Gmail.SenderDomainMatchAcceptedMatchType.{Source}"
+    enum="GmailOtpSenderDomainMatchType" expires_after="2027-06-30">
   <owner>ioanap@chromium.org</owner>
   <owner>sdrab@google.com</owner>
   <summary>
-    Records the reason why a sender domain match was rejected for a received
-    (fresh) OTP in GmailOtpRetriever. Recorded only when a token is rejected.
+    Records the match type for an accepted sender domain match for {Source} OTP
+    in GmailOtpRetriever. Recorded only when a token is accepted.
   </summary>
+  <token key="Source" variants="GmailOtpTokenSource"/>
+</histogram>
+
+<histogram name="OneTimeTokens.Gmail.SenderDomainMatchRejectionReason.{Source}"
+    enum="GmailOtpSenderDomainMatchType" expires_after="2027-06-30">
+  <owner>ioanap@chromium.org</owner>
+  <owner>sdrab@google.com</owner>
+  <summary>
+    Records the reason why a sender domain match was rejected for {Source} OTP
+    in GmailOtpRetriever. Recorded only when a token is rejected.
+  </summary>
+  <token key="Source" variants="GmailOtpTokenSource"/>
 </histogram>
 
 </histograms>

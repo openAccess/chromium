@@ -7,21 +7,14 @@ package org.chromium.chrome.browser.omnibox.suggestions.base;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 
 import android.content.Context;
 import android.view.View;
 import android.view.View.MeasureSpec;
 
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.junit.MockitoJUnit;
-import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
@@ -39,13 +32,25 @@ import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
  */
 @RunWith(BaseRobolectricTestRunner.class)
 public class SuggestionLayoutUnitTest {
+    private static class TestSuggestionLayout extends SuggestionLayout {
+        int mInvalidateOutlineCalls;
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+        TestSuggestionLayout(Context context) {
+            super(context);
+            mInvalidateOutlineCalls = 0;
+        }
+
+        @Override
+        public void invalidateOutline() {
+            mInvalidateOutlineCalls++;
+            super.invalidateOutline();
+        }
+    }
 
     private final Context mContext = ContextUtils.getApplicationContext();
     private final View mDecorationView = new View(mContext);
     private final View mContentView = new View(mContext);
-    private SuggestionLayout mLayout = new SuggestionLayout(mContext);
+    private TestSuggestionLayout mLayout = new TestSuggestionLayout(mContext);
     private OmniboxResourceProvider mResourceProvider;
 
     @Before
@@ -60,58 +65,57 @@ public class SuggestionLayoutUnitTest {
 
     @Test
     public void setRoundingEdges_redrawViewOnChange() {
-        SuggestionLayout spy = spy(mLayout);
         // This test verifies whether View properly rounds its edges and that it redraws itself when
         // the new configuration differs from the old one.
 
         // By default, no edges are rounded.
         assertFalse(
                 "Unexpected default value of the top edge rounding",
-                spy.mOutlineProvider.isTopEdgeRounded());
+                mLayout.mOutlineProvider.isTopEdgeRounded());
         assertFalse(
                 "Unexpected default value of the bottom edge rounding",
-                spy.mOutlineProvider.isBottomEdgeRounded());
+                mLayout.mOutlineProvider.isBottomEdgeRounded());
 
-        spy.setRoundingEdges(false, false);
+        mLayout.setRoundingEdges(/* roundTopEdge= */ false, /* roundBottomEdge= */ false);
         assertFalse(
                 "Top edge rounding does not reflect the requested state: false",
-                spy.mOutlineProvider.isTopEdgeRounded());
+                mLayout.mOutlineProvider.isTopEdgeRounded());
         assertFalse(
                 "Bottom edge rounding does not reflect the requested state: false",
-                spy.mOutlineProvider.isBottomEdgeRounded());
+                mLayout.mOutlineProvider.isBottomEdgeRounded());
         // No invalidate calls, because nothing has changed.
-        verify(spy, times(0)).invalidateOutline();
+        assertEquals(0, mLayout.mInvalidateOutlineCalls);
 
         // Enable rounding of bottom corners only. Observe redraw.
-        spy.setRoundingEdges(false, true);
+        mLayout.setRoundingEdges(/* roundTopEdge= */ false, /* roundBottomEdge= */ true);
         assertFalse(
                 "Top edge rounding does not reflect the requested state: false",
-                spy.mOutlineProvider.isTopEdgeRounded());
+                mLayout.mOutlineProvider.isTopEdgeRounded());
         assertTrue(
                 "Bottom edge rounding does not reflect the requested state: true",
-                spy.mOutlineProvider.isBottomEdgeRounded());
-        verify(spy, times(1)).invalidateOutline();
-        clearInvocations(spy);
+                mLayout.mOutlineProvider.isBottomEdgeRounded());
+        assertEquals(1, mLayout.mInvalidateOutlineCalls);
+        mLayout.mInvalidateOutlineCalls = 0;
 
         // Apply the same configuration as previously. Observe no redraw.
-        spy.setRoundingEdges(false, true);
+        mLayout.setRoundingEdges(/* roundTopEdge= */ false, /* roundBottomEdge= */ true);
         assertFalse(
                 "Top edge rounding does not reflect the requested state: false",
-                spy.mOutlineProvider.isTopEdgeRounded());
+                mLayout.mOutlineProvider.isTopEdgeRounded());
         assertTrue(
                 "Bottom edge rounding does not reflect the requested state: true",
-                spy.mOutlineProvider.isBottomEdgeRounded());
-        verify(spy, times(0)).invalidateOutline();
+                mLayout.mOutlineProvider.isBottomEdgeRounded());
+        assertEquals(0, mLayout.mInvalidateOutlineCalls);
 
         // Enable rounding of all corners. Observe redraw.
-        spy.setRoundingEdges(true, true);
+        mLayout.setRoundingEdges(/* roundTopEdge= */ true, /* roundBottomEdge= */ true);
         assertTrue(
                 "Top edge rounding does not reflect the requested state: true",
-                spy.mOutlineProvider.isTopEdgeRounded());
+                mLayout.mOutlineProvider.isTopEdgeRounded());
         assertTrue(
                 "Bottom edge rounding does not reflect the requested state: true",
-                spy.mOutlineProvider.isBottomEdgeRounded());
-        verify(spy, times(1)).invalidateOutline();
+                mLayout.mOutlineProvider.isBottomEdgeRounded());
+        assertEquals(1, mLayout.mInvalidateOutlineCalls);
     }
 
     @Test
@@ -128,21 +132,21 @@ public class SuggestionLayoutUnitTest {
                 mLayout.getClipToOutline());
 
         // When any of the edges are rounded, we should also enable clipping.
-        mLayout.setRoundingEdges(true, false);
+        mLayout.setRoundingEdges(/* roundTopEdge= */ true, /* roundBottomEdge= */ false);
         assertTrue(
                 "Clipping should be enabled when rounding only top edge corners",
                 mLayout.getClipToOutline());
-        mLayout.setRoundingEdges(false, true);
+        mLayout.setRoundingEdges(/* roundTopEdge= */ false, /* roundBottomEdge= */ true);
         assertTrue(
                 "Clipping should be enabled when rounding only bottom edge corners",
                 mLayout.getClipToOutline());
-        mLayout.setRoundingEdges(true, true);
+        mLayout.setRoundingEdges(/* roundTopEdge= */ true, /* roundBottomEdge= */ true);
         assertTrue(
                 "Clipping should be enabled when rounding both top and bottom edge corners",
                 mLayout.getClipToOutline());
 
         // Revert back to no rounding. Observe that we're not clipping any longer.
-        mLayout.setRoundingEdges(false, false);
+        mLayout.setRoundingEdges(/* roundTopEdge= */ false, /* roundBottomEdge= */ false);
         assertFalse(
                 "Clipping should be disabled when rounding is not in use",
                 mLayout.getClipToOutline());
@@ -152,7 +156,7 @@ public class SuggestionLayoutUnitTest {
     @Config(qualifiers = "sw600dp")
     public void suggestionPadding_modernUiEnabled() {
         // Re-create layout with new feature flags and overrides.
-        mLayout = new SuggestionLayout(mContext);
+        mLayout = new TestSuggestionLayout(mContext);
 
         int endSpace =
                 mContext.getResources()
@@ -227,5 +231,63 @@ public class SuggestionLayoutUnitTest {
                                 .getDimensionPixelSize(
                                         R.dimen.omnibox_suggestion_end_padding_no_action_button),
                 mContentView.getRight());
+    }
+
+    @Test
+    public void testMeasureContentView_avoidsDoubleMeasureWhenHeightMatches() {
+        mLayout.setSuggestionDimensions(
+                mResourceProvider.getSuggestionDecorationIconSizeWidth(),
+                /* contentHeightPx= */ 48,
+                /* compactContentHeightPx= */ 48,
+                /* contentVerticalPaddingPx= */ 0);
+
+        int[] measureCount = new int[1];
+        View contentView =
+                new View(mContext) {
+                    @Override
+                    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                        measureCount[0]++;
+                        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+                    }
+                };
+        contentView.setMinimumHeight(48);
+        mLayout.addView(
+                contentView, SuggestionLayout.LayoutParams.forViewType(SuggestionViewType.CONTENT));
+
+        mLayout.measure(
+                MeasureSpec.makeMeasureSpec(200, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+
+        assertEquals(48, contentView.getMeasuredHeight());
+        assertEquals(1, measureCount[0]);
+    }
+
+    @Test
+    public void testMeasureContentView_remeasuresWhenHeightDiffers() {
+        mLayout.setSuggestionDimensions(
+                mResourceProvider.getSuggestionDecorationIconSizeWidth(),
+                /* contentHeightPx= */ 56,
+                /* compactContentHeightPx= */ 48,
+                /* contentVerticalPaddingPx= */ 8);
+
+        int[] measureCount = new int[1];
+        View contentView =
+                new View(mContext) {
+                    @Override
+                    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                        measureCount[0]++;
+                        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+                    }
+                };
+        contentView.setMinimumHeight(40);
+        mLayout.addView(
+                contentView, SuggestionLayout.LayoutParams.forViewType(SuggestionViewType.CONTENT));
+
+        mLayout.measure(
+                MeasureSpec.makeMeasureSpec(200, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+
+        assertEquals(56, contentView.getMeasuredHeight());
+        assertEquals(2, measureCount[0]);
     }
 }

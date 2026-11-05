@@ -6,6 +6,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_split.h"
@@ -164,10 +165,6 @@ bool ContainsForbiddenSecurityHeader(net::HttpRequestHeaders& headers,
     if (base::EqualsCaseInsensitiveASCII(name, "Sec-GPC")) {
       return value == "1";
     }
-    // Browsing Topics API headers contain structured interest tokens.
-    if (base::EqualsCaseInsensitiveASCII(name, "Sec-Browsing-Topics")) {
-      return value.size() < 1024;
-    }
     // Shared Storage fetch headers use structured boolean "?1".
     if (base::EqualsCaseInsensitiveASCII(name, "Sec-Shared-Storage-Writable")) {
       return value == "?1";
@@ -214,6 +211,30 @@ bool ContainsForbiddenSecurityHeader(net::HttpRequestHeaders& headers,
   }
 
   return false;
+}
+
+bool ValidateRemovedHeaders(const std::vector<std::string>& removed_headers,
+                            std::string* out_forbidden_header_name) {
+  for (const auto& name : removed_headers) {
+    if (base::EqualsCaseInsensitiveASCII(name,
+                                         net::HttpRequestHeaders::kOrigin)) {
+      if (out_forbidden_header_name) {
+        *out_forbidden_header_name = name;
+      }
+      return false;
+    }
+
+    if (base::StartsWith(name, "Sec-", base::CompareCase::INSENSITIVE_ASCII) &&
+        !base::StartsWith(name, "Sec-CH-",
+                          base::CompareCase::INSENSITIVE_ASCII)) {
+      if (out_forbidden_header_name) {
+        *out_forbidden_header_name = name;
+      }
+      return false;
+    }
+  }
+
+  return true;
 }
 
 mojom::ReferrerPolicy ParseReferrerPolicy(

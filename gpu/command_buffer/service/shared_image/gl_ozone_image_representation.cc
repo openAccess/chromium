@@ -52,7 +52,6 @@ GLTexturePassthroughOzoneImageRepresentation::GetTexturePassthrough(
 
 bool GLTexturePassthroughOzoneImageRepresentation::BeginAccess(GLenum mode) {
   DCHECK(!current_access_mode_);
-  current_access_mode_ = mode;
 
   auto* ozone_backing = GetOzoneBacking();
   bool readonly = mode != GL_SHARED_IMAGE_ACCESS_MODE_READWRITE_CHROMIUM;
@@ -67,12 +66,17 @@ bool GLTexturePassthroughOzoneImageRepresentation::BeginAccess(GLenum mode) {
   // synchronize with GL.
   if (gl::GLFence::IsGpuFenceSupported()) {
     for (auto& fence : fences) {
-      gfx::GpuFence gpu_fence = gfx::GpuFence(std::move(fence));
       std::unique_ptr<gl::GLFence> gl_fence =
-          gl::GLFence::CreateFromGpuFence(gpu_fence);
+          gl::GLFence::CreateFromGpuFenceHandle(std::move(fence));
+
+      // Adding a CHECK instead of returning false since we can not gracefully
+      // recover in these cases.
+      CHECK(gl_fence);
       gl_fence->ServerWait();
     }
   }
+
+  current_access_mode_ = mode;
   return true;
 }
 
@@ -82,9 +86,8 @@ void GLTexturePassthroughOzoneImageRepresentation::EndAccess() {
   // synchronize with GL.
   if (gl::GLFence::IsGpuFenceSupported() && need_end_fence_) {
     if (auto gl_fence = gl::GLFence::CreateForGpuFence()) {
-      auto gpu_fence = gl_fence->GetGpuFence();
-      CHECK(gpu_fence);
-      fence = gpu_fence->GetGpuFenceHandle().Clone();
+      fence = gl_fence->GetGpuFenceHandle();
+      CHECK(!fence.is_null());
     } else {
       DLOG(ERROR) << "Failed to create GPU fence";
     }

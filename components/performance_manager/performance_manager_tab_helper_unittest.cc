@@ -9,6 +9,8 @@
 #include <utility>
 
 #include "base/test/scoped_feature_list.h"
+#include "base/test/simple_test_tick_clock.h"
+#include "base/time/time.h"
 #include "components/performance_manager/graph/frame_node_impl.h"
 #include "components/performance_manager/graph/graph_impl.h"
 #include "components/performance_manager/graph/page_node_impl.h"
@@ -32,6 +34,7 @@
 #include "content/public/test/permissions_test_utils.h"
 #include "content/public/test/render_frame_host_test_support.h"
 #include "content/public/test/web_contents_tester.h"
+#include "net/base/net_errors.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
@@ -48,14 +51,9 @@ const char kGrandchildUrl[] = "https://grandchild.com/";
 const char kNewGrandchildUrl[] = "https://newgrandchild.com/";
 const char kCousinFreddyUrl[] = "https://cousinfreddy.com/";
 
-class PerformanceManagerTabHelperTest
-    : public PerformanceManagerTestHarness,
-      public testing::WithParamInterface<bool> {
+class PerformanceManagerTabHelperTest : public PerformanceManagerTestHarness {
  public:
-  PerformanceManagerTabHelperTest() {
-    scoped_feature_list_.InitWithFeatureState(
-        features::kSeamlessRenderFrameSwap, GetParam());
-  }
+  PerformanceManagerTabHelperTest() = default;
 
   void TearDown() override {
     // Clean up the web contents, which should dispose of the page and frame
@@ -91,8 +89,6 @@ class PerformanceManagerTabHelperTest
     }
     return num_hosts;
   }
-
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 void PerformanceManagerTabHelperTest::CheckGraphTopology(
@@ -120,10 +116,10 @@ void PerformanceManagerTabHelperTest::CheckGraphTopology(
   EXPECT_GE(num_hosts, CountAllRenderProcessNodes(graph));
   EXPECT_EQ(4u, graph->GetAllFrameNodes().size());
 
-  // Expect all frame nodes to be current. This fails if our
+  // Expect all frame nodes to be active. This fails if our
   // implementation of RenderFrameHostChanged is borked.
   for (auto* frame : graph->GetAllFrameNodes()) {
-    EXPECT_TRUE(frame->IsCurrent());
+    EXPECT_TRUE(frame->IsActive());
   }
 
   ASSERT_EQ(1u, graph->GetAllPageNodes().size());
@@ -161,9 +157,7 @@ void PerformanceManagerTabHelperTest::CheckGraphTopology(
 
 }  // namespace
 
-INSTANTIATE_TEST_SUITE_P(All, PerformanceManagerTabHelperTest, testing::Bool());
-
-TEST_P(PerformanceManagerTabHelperTest, FrameHierarchyReflectsToGraph) {
+TEST_F(PerformanceManagerTabHelperTest, FrameHierarchyReflectsToGraph) {
   SetContents(CreateTestWebContents());
 
   auto* parent = content::NavigationSimulator::NavigateAndCommitFromBrowser(
@@ -241,7 +235,7 @@ void ExpectNotificationPermissionStatus(
 
 }  // namespace
 
-TEST_P(PerformanceManagerTabHelperTest, PageIsAudible) {
+TEST_F(PerformanceManagerTabHelperTest, PageIsAudible) {
   SetContents(CreateTestWebContents());
 
   ExpectPageIsAudible(false);
@@ -252,7 +246,7 @@ TEST_P(PerformanceManagerTabHelperTest, PageIsAudible) {
 }
 
 #if !BUILDFLAG(IS_ANDROID)
-TEST_P(PerformanceManagerTabHelperTest, NotificationPermission) {
+TEST_F(PerformanceManagerTabHelperTest, NotificationPermission) {
   auto owned_permission_controller =
       std::make_unique<testing::NiceMock<content::MockPermissionController>>();
   auto* permission_controller = owned_permission_controller.get();
@@ -286,7 +280,9 @@ TEST_P(PerformanceManagerTabHelperTest, NotificationPermission) {
                         blink::PermissionType::NOTIFICATIONS),
                     testing::_, testing::_, testing::_, testing::_, testing::_))
         .WillOnce(testing::DoAll(testing::SaveArg<2>(&rfh_arg_2),
-                                 testing::Return(kFirstSubscriptionId)));
+                                 testing::Return(testing::ByMove(
+                                     permission_controller->CreateSubscription(
+                                         kFirstSubscriptionId)))));
 
     content::NavigationSimulator::NavigateAndCommitFromBrowser(
         web_contents(), GURL(kParentUrl));
@@ -320,9 +316,11 @@ TEST_P(PerformanceManagerTabHelperTest, NotificationPermission) {
                     PermissionDescriptorToPermissionTypeMatcher(
                         blink::PermissionType::NOTIFICATIONS),
                     testing::_, testing::_, testing::_, testing::_, testing::_))
-        .WillOnce(testing::DoAll(testing::SaveArg<1>(&rph_arg),
-                                 testing::SaveArg<5>(&callback_arg),
-                                 testing::Return(kSecondSubscriptionId)));
+        .WillOnce(testing::DoAll(
+            testing::SaveArg<1>(&rph_arg), testing::SaveArg<5>(&callback_arg),
+            testing::Return(
+                testing::ByMove(permission_controller->CreateSubscription(
+                    kSecondSubscriptionId)))));
 
     content::NavigationSimulator::NavigateAndCommitFromBrowser(
         web_contents(), GURL(kCousinFreddyUrl));
@@ -344,7 +342,7 @@ TEST_P(PerformanceManagerTabHelperTest, NotificationPermission) {
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 
-TEST_P(PerformanceManagerTabHelperTest, GetFrameNode) {
+TEST_F(PerformanceManagerTabHelperTest, GetFrameNode) {
   SetContents(CreateTestWebContents());
 
   auto* tab_helper =
@@ -368,7 +366,7 @@ TEST_P(PerformanceManagerTabHelperTest, GetFrameNode) {
   EXPECT_TRUE(new_frame_node);
 }
 
-TEST_P(PerformanceManagerTabHelperTest,
+TEST_F(PerformanceManagerTabHelperTest,
        NotificationsFromInactiveFrameTreeAreIgnored) {
   // When this feature is enabled, PerformanceManagerTabHelper does not ignore
   // the first favicon/title update.
@@ -415,6 +413,232 @@ TEST_P(PerformanceManagerTabHelperTest,
 
   testing::Mock::VerifyAndClear(&observer);
   graph->RemovePageNodeObserver(&observer);
+}
+
+namespace {
+
+bool IsUserOrBrowserInitiatedLoad(content::WebContents* web_contents) {
+  base::WeakPtr<PageNode> page_node =
+      PerformanceManager::GetPrimaryPageNodeForWebContents(web_contents);
+  CHECK(page_node);
+  return page_node->IsUserOrBrowserInitiatedLoad();
+}
+
+// Longer than the window during which a renderer-initiated navigation is
+// treated as a client redirect of the current document.
+constexpr base::TimeDelta kLongerThanClientRedirectWindow = base::Seconds(11);
+
+// Shorter than that window.
+constexpr base::TimeDelta kShorterThanClientRedirectWindow = base::Seconds(5);
+
+class PerformanceManagerTabHelperUserOrBrowserInitiatedLoadTest
+    : public PerformanceManagerTabHelperTest {
+ protected:
+  void SetUp() override {
+    PerformanceManagerTabHelperTest::SetUp();
+    SetContents(CreateTestWebContents());
+    PerformanceManagerTabHelper::FromWebContents(web_contents())
+        ->SetTickClockForTesting(&tick_clock_);
+  }
+
+  base::SimpleTestTickClock tick_clock_;
+};
+
+}  // namespace
+
+TEST_F(PerformanceManagerTabHelperUserOrBrowserInitiatedLoadTest,
+       UserOrBrowserInitiatedLoad) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents(),
+                                                             GURL(kParentUrl));
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  tick_clock_.Advance(kLongerThanClientRedirectWindow);
+
+  // A renderer-initiated navigation without user activation is not
+  // user-initiated, as soon as it starts.
+  auto navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kChild1Url), main_rfh());
+  navigation->SetHasUserGesture(false);
+  navigation->Start();
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  navigation->Commit();
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  // A renderer-initiated navigation with user activation is user-initiated.
+  navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kChild2Url), main_rfh());
+  navigation->SetHasUserGesture(true);
+  navigation->Start();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  navigation->Commit();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  // A browser-initiated navigation is user-initiated, even without a gesture.
+  tick_clock_.Advance(kLongerThanClientRedirectWindow);
+  navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kGrandchildUrl), main_rfh());
+  navigation->SetHasUserGesture(false);
+  navigation->Commit();
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      GURL(kCousinFreddyUrl), web_contents());
+  navigation->SetHasUserGesture(false);
+  navigation->Commit();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+}
+
+TEST_F(PerformanceManagerTabHelperUserOrBrowserInitiatedLoadTest,
+       UserOrBrowserInitiatedLoadRevertsOnAbort) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents(),
+                                                             GURL(kParentUrl));
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  tick_clock_.Advance(kLongerThanClientRedirectWindow);
+
+  // An aborted navigation restores the value of the current document.
+  auto navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kChild1Url), main_rfh());
+  navigation->SetHasUserGesture(false);
+  navigation->Start();
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  navigation->AbortFromRenderer();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+}
+
+// Tests that when navigations overlap, the page follows the most recently
+// started one, even if an older one commits in the meantime.
+TEST_F(PerformanceManagerTabHelperUserOrBrowserInitiatedLoadTest,
+       UserOrBrowserInitiatedLoadFollowsLatestNavigation) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents(),
+                                                             GURL(kParentUrl));
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  tick_clock_.Advance(kLongerThanClientRedirectWindow);
+
+  // An unsolicited renderer-initiated navigation gets ready to commit.
+  auto older_navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kChild1Url), main_rfh());
+  older_navigation->SetHasUserGesture(false);
+  older_navigation->ReadyToCommit();
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  // A browser-initiated navigation starts before the older one commits.
+  auto newer_navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      GURL(kChild2Url), web_contents());
+  newer_navigation->Start();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  // The older navigation committing doesn't affect the newer navigation's
+  // value.
+  older_navigation->Commit();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  // When the newer navigation doesn't commit, the page reverts to the value of
+  // the document committed by the older navigation.
+  newer_navigation->Fail(net::ERR_ABORTED);
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+}
+
+// Tests that when the newest of overlapping navigations fails while an older
+// one is still pending, the page follows the older one.
+TEST_F(PerformanceManagerTabHelperUserOrBrowserInitiatedLoadTest,
+       UserOrBrowserInitiatedLoadFallsBackToOlderPendingNavigation) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents(),
+                                                             GURL(kParentUrl));
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  tick_clock_.Advance(kLongerThanClientRedirectWindow);
+
+  // An unsolicited renderer-initiated navigation gets ready to commit.
+  auto older_navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kChild1Url), main_rfh());
+  older_navigation->SetHasUserGesture(false);
+  older_navigation->ReadyToCommit();
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  // A browser-initiated navigation starts, then fails while the older one is
+  // still pending.
+  auto newer_navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      GURL(kChild2Url), web_contents());
+  newer_navigation->Start();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  newer_navigation->Fail(net::ERR_ABORTED);
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  older_navigation->Commit();
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+}
+
+TEST_F(PerformanceManagerTabHelperUserOrBrowserInitiatedLoadTest,
+       UserOrBrowserInitiatedLoadIgnoresSameDocumentAndSubframes) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents(),
+                                                             GURL(kParentUrl));
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  tick_clock_.Advance(kLongerThanClientRedirectWindow);
+
+  // A same-document navigation without user activation doesn't load a page.
+  auto navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(std::string(kParentUrl) + "#ref"), main_rfh());
+  navigation->SetHasUserGesture(false);
+  navigation->CommitSameDocument();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  // Neither does a subframe navigation.
+  content::RenderFrameHost* child =
+      content::RenderFrameHostTester::For(main_rfh())->AppendChild("child");
+  navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kChild1Url), child);
+  navigation->SetHasUserGesture(false);
+  navigation->Commit();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+}
+
+// Tests that a renderer-initiated navigation without user activation that
+// starts shortly after a user- or browser-initiated document committed is
+// treated as a client redirect, and inherits that document's value. This also
+// applies to each hop of a chain of client redirects.
+TEST_F(PerformanceManagerTabHelperUserOrBrowserInitiatedLoadTest,
+       UserOrBrowserInitiatedLoadInheritedByClientRedirects) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents(),
+                                                             GURL(kParentUrl));
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  // First hop.
+  tick_clock_.Advance(kShorterThanClientRedirectWindow);
+  auto navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kChild1Url), main_rfh());
+  navigation->SetHasUserGesture(false);
+  navigation->Start();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  navigation->Commit();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  // Second hop. The window restarts when each hop commits.
+  tick_clock_.Advance(kShorterThanClientRedirectWindow);
+  navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kChild2Url), main_rfh());
+  navigation->SetHasUserGesture(false);
+  navigation->Start();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  navigation->Commit();
+  EXPECT_TRUE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  // A navigation that starts after the window isn't a client redirect.
+  tick_clock_.Advance(kLongerThanClientRedirectWindow);
+  navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kGrandchildUrl), main_rfh());
+  navigation->SetHasUserGesture(false);
+  navigation->Start();
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  navigation->Commit();
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+
+  // A client redirect of a document that wasn't user- or browser-initiated
+  // inherits that document's value.
+  tick_clock_.Advance(kShorterThanClientRedirectWindow);
+  navigation = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kCousinFreddyUrl), main_rfh());
+  navigation->SetHasUserGesture(false);
+  navigation->Start();
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
+  navigation->Commit();
+  EXPECT_FALSE(IsUserOrBrowserInitiatedLoad(web_contents()));
 }
 
 }  // namespace performance_manager

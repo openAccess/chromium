@@ -9,6 +9,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "base/callback_list.h"
 #include "base/containers/span.h"
@@ -23,7 +24,7 @@
 #include "services/network/public/mojom/web_sandbox_flags.mojom-shared.h"
 #include "third_party/blink/public/common/context_menu_data/untrustworthy_context_menu_params.h"
 #include "third_party/blink/public/common/frame/frame_ad_evidence.h"
-#include "third_party/blink/public/common/frame/user_activation_update_source.h"
+#include "third_party/blink/public/common/frame/user_activation_update_scope.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/back_forward_cache_not_restored_reasons.mojom-forward.h"
 #include "third_party/blink/public/mojom/blob/blob_url_store.mojom-shared.h"
@@ -62,6 +63,9 @@
 namespace base {
 class Location;
 class SingleThreadTaskRunner;
+#if BUILDFLAG(IS_ANDROID)
+class UnsafeSharedMemoryRegion;
+#endif
 }
 
 namespace cc {
@@ -84,6 +88,8 @@ namespace scheduler {
 class WebAgentGroupScheduler;
 }  // namespace scheduler
 
+enum class DetachReason;
+
 class BrowserInterfaceBrokerProxy;
 class FrameScheduler;
 class InterfaceRegistry;
@@ -103,6 +109,7 @@ class WebPerformanceMetricsForNestedContexts;
 class WebPlugin;
 class WebPrintClient;
 class WebRange;
+class WebSecurityOrigin;
 class WebSpellCheckPanelHostClient;
 class WebString;
 class WebTextCheckClient;
@@ -112,11 +119,16 @@ struct FramePolicy;
 struct WebAssociatedURLLoaderOptions;
 struct WebConsoleMessage;
 struct WebIsolatedWorldInfo;
+struct WebPerformanceTimings;
 struct WebPolicyContainer;
 struct WebPrintPageDescription;
 struct WebPrintParams;
 struct WebPrintPresetOptions;
 struct WebScriptSource;
+
+#if BUILDFLAG(IS_ANDROID)
+class MessagePortDescriptor;
+#endif
 
 #if BUILDFLAG(IS_WIN)
 struct WebFontFamilyNames;
@@ -144,7 +156,7 @@ class BLINK_EXPORT WebLocalFrame : public WebFrame {
       CrossVariantMojoRemote<mojom::BrowserInterfaceBrokerInterfaceBase>,
       const LocalFrameToken& frame_token,
       const DocumentToken& document_token,
-      const base::UnguessableToken& initiator_state_token,
+      const InitiatorStateToken& initiator_state_token,
       std::unique_ptr<blink::WebPolicyContainer> policy_container,
       WebFrame* opener = nullptr,
       const WebString& name = WebString(),
@@ -192,6 +204,11 @@ class BLINK_EXPORT WebLocalFrame : public WebFrame {
       InterfaceRegistry*,
       const LocalFrameToken& frame_token) = 0;
 
+  // This method closes and deletes the WebLocalFrame. This is typically called
+  // by the embedder in response to a frame detached callback to the
+  // WebLocalFrameClient.
+  virtual void Close(DetachReason detach_reason) = 0;
+
   // Returns the WebFrame associated with the current V8 context. This
   // function can return 0 if the context is associated with a Document that
   // is not currently being displayed in a Frame.
@@ -227,7 +244,7 @@ class BLINK_EXPORT WebLocalFrame : public WebFrame {
   }
 
   virtual WebDocument GetDocument() const = 0;
-  virtual base::UnguessableToken GetInitiatorStateToken() const = 0;
+  virtual InitiatorStateToken GetInitiatorStateToken() const = 0;
 
   // The name of this frame. If no name is given, empty string is returned.
   virtual WebString AssignedName() const = 0;
@@ -253,6 +270,9 @@ class BLINK_EXPORT WebLocalFrame : public WebFrame {
   // Tests whether the policy-controlled feature is enabled in this frame.
   virtual bool IsFeatureEnabled(
       const network::mojom::PermissionsPolicyFeature&) const = 0;
+
+  // Returns true if this frame's page is currently in the BackForwardCache.
+  virtual bool IsInBackForwardCache() const = 0;
 
   // Hierarchy ----------------------------------------------------------
 
@@ -457,10 +477,10 @@ class BLINK_EXPORT WebLocalFrame : public WebFrame {
                                         v8::Local<v8::Value> argv[],
                                         WebScriptExecutionCallback) = 0;
 
-  // Executes the script in the main world of the page.
+  // Executes the script in the specified world of the page.
   // Use kMainDOMWorldId to execute in the main world; otherwise,
   // `world_id` must be a positive integer and less than kEmbedderWorldIdLimit.
-  // If `is_injected_extension_script` is true, the script is marked by the
+  // If `script_injector_id` is non-empty, the script is marked by the
   // ExtensionScriptTracker.
   virtual void RequestExecuteScript(int32_t world_id,
                                     base::span<const WebScriptSource> sources,
@@ -471,7 +491,7 @@ class BLINK_EXPORT WebLocalFrame : public WebFrame {
                                     BackForwardCacheAware,
                                     mojom::WantResultOption,
                                     mojom::PromiseResultOption,
-                                    bool is_injected_extension_script) = 0;
+                                    const WebString& script_injector_id) = 0;
 
   // Returns if devtools is connected to the frame.
   virtual bool IsInspectorConnected() = 0;
@@ -746,6 +766,28 @@ class BLINK_EXPORT WebLocalFrame : public WebFrame {
   // cache, or unloaded).
   virtual bool DispatchedPagehideAndStillHidden() const = 0;
 
+#if BUILDFLAG(IS_ANDROID)
+  // Dispatches a `message` event targeting the frame's window on behalf of
+  // the embedder. This is used to support passing a SharedArrayBuffer
+  // (constructed from `region`) from an app embedding an Android WebView to
+  // the page. `region` must be valid; `ports` may be empty.
+  //
+  // If `target_origin` is not null and it does not match the window's
+  // origin, the event will be dropped, similar to a regular `postMessage()`.
+  // Specifying a null `target_origin` means the message will always be
+  // delivered; use caution as this can potentially race with navigations in
+  // the frame.
+  //
+  // Note that the `message` event will always be treated as originating from
+  // the target window's agent cluster; there are no additional safety checks
+  // beyond `target_origin`, so the caller must ensure that the target window
+  // is the intended recipient of `ports` and `region`.
+  virtual void PostEmbedderMessageEvent(
+      const WebSecurityOrigin& target_origin,
+      std::vector<MessagePortDescriptor> ports,
+      base::UnsafeSharedMemoryRegion region) = 0;
+#endif
+
   // Scheduling ---------------------------------------------------------------
 
   // Returns FrameScheduler
@@ -877,6 +919,7 @@ class BLINK_EXPORT WebLocalFrame : public WebFrame {
       const = 0;
   virtual WebPerformanceMetricsForNestedContexts
   PerformanceMetricsForNestedContexts() const = 0;
+  virtual WebPerformanceTimings PerformanceTimings() const = 0;
 
   // Ad Tagging ---------------------------------------------------------
 
@@ -894,10 +937,6 @@ class BLINK_EXPORT WebLocalFrame : public WebFrame {
   // stack. This is the same method used to compute the below bit which will
   // persist.
   virtual bool IsAdScriptInStack() const = 0;
-
-  // This is used to check if a script tagged as an extension is currently on
-  // the v8 stack.
-  virtual bool IsExtensionScriptInStack() const = 0;
 
   // True iff a script tagged as an ad was on the v8 stack when the frame was
   // created. This is not currently propagated when a frame navigates
@@ -917,8 +956,8 @@ class BLINK_EXPORT WebLocalFrame : public WebFrame {
 
   // See |blink::LocalFrame::ConsumeTransientUserActivation()|.
   virtual bool ConsumeTransientUserActivation(
-      UserActivationUpdateSource update_source =
-          UserActivationUpdateSource::kRenderer) = 0;
+      UserActivationUpdateScope update_scope =
+          UserActivationUpdateScope::kDefault) = 0;
 
   // See |blink::Frame::LastActivationWasRestricted()|.
   virtual bool LastActivationWasRestricted() const = 0;

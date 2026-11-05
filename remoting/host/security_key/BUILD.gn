@@ -4,7 +4,7 @@
 
 import("//remoting/build/config/remoting_build.gni")
 
-source_set("security_key") {
+static_library("security_key") {
   sources = [
     "security_key_auth_handler.cc",
     "security_key_auth_handler.h",
@@ -79,8 +79,6 @@ if (is_win) {
   }
 
   executable("remote_security_key") {
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
     defines =
         host_predefines + [ "REMOTING_HOST_BINARY=BINARY_REMOTE_SECURITY_KEY" ]
 

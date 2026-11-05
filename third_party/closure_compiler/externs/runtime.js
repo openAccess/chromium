@@ -166,6 +166,29 @@ chrome.runtime.OnInstalledReason = {
 
 /**
  * @enum {string}
+ * @see https://developer.chrome.com/extensions/runtime#type-OnLoadedReason
+ */
+chrome.runtime.OnLoadedReason = {
+  INSTALL: 'install',
+  UPDATE: 'update',
+  BROWSER_UPDATE: 'browser_update',
+  ENABLE: 'enable',
+  STARTUP: 'startup',
+  RELOAD: 'reload',
+};
+
+/**
+ * Details about the extension load event.
+ * @typedef {{
+ *   reason: !chrome.runtime.OnLoadedReason,
+ *   previousVersion: (string|undefined)
+ * }}
+ * @see https://developer.chrome.com/extensions/runtime#type-ExtensionLoadDetails
+ */
+chrome.runtime.ExtensionLoadDetails;
+
+/**
+ * @enum {string}
  * @see https://developer.chrome.com/extensions/runtime#type-OnRestartRequiredReason
  */
 chrome.runtime.OnRestartRequiredReason = {
@@ -291,6 +314,29 @@ chrome.runtime.getVersion = function() {};
 chrome.runtime.getURL = function(path) {};
 
 /**
+ * Returns the document ID of the specified window or frame element.
+ * @param {*} target A WindowProxy or frame element (iframe, frame, embed, or
+ *     object) for the target frame.
+ * @return {string} The document ID of the target.
+ * @see https://developer.chrome.com/extensions/runtime#method-getDocumentId
+ */
+chrome.runtime.getDocumentId = function(target) {};
+
+/**
+ * Signals that the extension has finished registering its event listeners for
+ * the current service worker instance. The browser replaces persisted listener
+ * registrations with the newly registered listeners and dispatches any queued
+ * events. Only available in the service worker of extensions declaring
+ * <code>"background.async_listener_registration": true</code>.
+ * @param {function(): void=} callback Called once the browser has committed the
+ *     listener registration. The promise is rejected if the extension is not
+ *     opted in, the caller is not the service worker, or no listener
+ *     registration is in progress.
+ * @see https://developer.chrome.com/extensions/runtime#method-markListenerRegistrationComplete
+ */
+chrome.runtime.markListenerRegistrationComplete = function(callback) {};
+
+/**
  * Sets the URL to be visited upon uninstallation. This may be used to clean up
  * server-side data, do analytics, and implement surveys. Maximum 1023
  * characters.
@@ -383,7 +429,7 @@ chrome.runtime.connect = function(extensionId, connectInfo) {};
  * href="develop/concepts/native-messaging">Native Messaging</a> for more
  * information.
  * @param {(string|!chrome.runtime.NativeMessageTarget)} application The name of
- *     the registered application to connect to, or target details.
+ *     the registered application to connect to.
  * @return {!chrome.runtime.Port} Port through which messages can be sent and
  *     received with the application
  * @see https://developer.chrome.com/extensions/runtime#method-connectNative
@@ -470,6 +516,24 @@ chrome.runtime.onStartup;
  * @see https://developer.chrome.com/extensions/runtime#event-onInstalled
  */
 chrome.runtime.onInstalled;
+
+/**
+ * Fired when an extension goes from being in a disabled state to an enabled
+ * state.
+ * @type {!ChromeEvent}
+ * @see https://developer.chrome.com/extensions/runtime#event-onEnabled
+ */
+chrome.runtime.onEnabled;
+
+/**
+ * Fired when the extension is added to the set of active extensions. This can
+ * occur in multiple scenarios: when an extension is first installed, updated to
+ * a new version, re-enabled after being disabled, reloaded, loaded during
+ * browser startup, or loaded when the browser is updated to a new version.
+ * @type {!ChromeEvent}
+ * @see https://developer.chrome.com/extensions/runtime#event-onExtensionLoaded
+ */
+chrome.runtime.onExtensionLoaded;
 
 /**
  * Sent to the event page just before it is unloaded. This gives the extension

@@ -65,6 +65,7 @@ mojom::ScriptType MapToMojoScriptType(UScriptCode script_code, bool is_emoji) {
     case USCRIPT_KATAKANA:
       return mojom::ScriptType::kKatakana;
     case USCRIPT_ARABIC:
+    case USCRIPT_ARABIC_NASTALIQ:
       return mojom::ScriptType::kArabic;
     case USCRIPT_BENGALI:
       return mojom::ScriptType::kBengali;
@@ -199,14 +200,15 @@ void MetricsRenderFrameObserver::DidObserveUserInteraction(
       performance_timeline_navigation_id);
 }
 
-void MetricsRenderFrameObserver::DidChangeCpuTiming(base::TimeDelta time) {
+void MetricsRenderFrameObserver::DidChangeCpuTiming(base::TimeDelta time,
+                                                    base::TimeDelta ad_time) {
   if (!page_timing_metrics_sender_) {
     return;
   }
   if (HasNoRenderFrame()) {
     return;
   }
-  page_timing_metrics_sender_->UpdateCpuTiming(time);
+  page_timing_metrics_sender_->UpdateCpuTiming(time, ad_time);
 }
 
 void MetricsRenderFrameObserver::DidObserveLoadingBehavior(

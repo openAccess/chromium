@@ -177,6 +177,9 @@ class DownloadProtectionService {
   // Returns the timeout that is used by CheckClientDownload().
   base::TimeDelta GetDownloadRequestTimeout() const;
 
+  // Overrides the download request timeout for testing.
+  void SetDownloadRequestTimeoutForTesting(base::TimeDelta timeout);
+
   // Checks the user permissions, and submits the downloaded file if
   // appropriate. Returns whether the submission was successful.
   bool MaybeBeginFeedbackForDownload(Profile* profile,
@@ -200,7 +203,8 @@ class DownloadProtectionService {
       download::DownloadItem* item,
       const std::string& token,
       const ClientDownloadResponse::Verdict& verdict,
-      const ClientDownloadResponse::TailoredVerdict& tailored_verdict);
+      const ClientDownloadResponse::TailoredVerdict& tailored_verdict,
+      bool is_registered_app_store = false);
 
   static std::string GetDownloadPingToken(const download::DownloadItem* item);
 
@@ -214,6 +218,10 @@ class DownloadProtectionService {
 
   static ClientDownloadResponse::TailoredVerdict
   GetDownloadProtectionTailoredVerdict(const download::DownloadItem* item);
+
+  // Returns whether the download is from a registered app store, or false by
+  // default if no DownloadProtectionData is found.
+  static bool WasFromRegisteredAppStore(const download::DownloadItem* item);
 
   // Sends dangerous download opened report when download is opened or
   // shown in folder.
@@ -296,17 +304,20 @@ class DownloadProtectionService {
   static const void* const kDownloadProtectionDataKey;
 
   // Helper class for easy setting and getting data related to download
-  // protection. The data is only set when the server returns an unsafe verdict
-  // (i.e. not safe or unknown).
+  // protection. The data is set when the server returns an unsafe verdict
+  // (i.e. not safe or unknown) or when the download is from a registered app
+  // store.
   class DownloadProtectionData : public base::SupportsUserData::Data {
    public:
     explicit DownloadProtectionData(
         const std::string& token,
         const ClientDownloadResponse::Verdict& verdict,
-        const ClientDownloadResponse::TailoredVerdict& tailored_verdict)
+        const ClientDownloadResponse::TailoredVerdict& tailored_verdict,
+        bool is_registered_app_store = false)
         : token_string_(token),
           verdict_(verdict),
-          tailored_verdict_(tailored_verdict) {}
+          tailored_verdict_(tailored_verdict),
+          is_registered_app_store_(is_registered_app_store) {}
 
     DownloadProtectionData(const DownloadProtectionData&) = delete;
     DownloadProtectionData& operator=(const DownloadProtectionData&) = delete;
@@ -316,11 +327,13 @@ class DownloadProtectionService {
     ClientDownloadResponse::TailoredVerdict tailored_verdict() {
       return tailored_verdict_;
     }
+    bool is_registered_app_store() const { return is_registered_app_store_; }
 
    private:
     std::string token_string_;
     ClientDownloadResponse::Verdict verdict_;
     ClientDownloadResponse::TailoredVerdict tailored_verdict_;
+    bool is_registered_app_store_;
   };
 
   // Cancels all requests in |download_requests_|, and empties it, releasing
@@ -433,6 +446,9 @@ class DownloadProtectionService {
   // Rate of allowlisted downloads we sample to send out download ping.
   // Overrides the value provided by the delegate. Intended for testing only.
   std::optional<double> allowlist_sample_rate_;
+
+  // Download request timeout. Can be overridden for testing.
+  base::TimeDelta download_request_timeout_ = base::Milliseconds(7000);
 
   // DownloadProtectionObserver to send real time reports for dangerous download
   // events and handle special user actions on the download.

@@ -22,14 +22,15 @@ public final class PolicyFeatureMap extends FeatureMap {
     // Do not instantiate this class.
     private PolicyFeatureMap() {}
 
-    public static final CachedFlag sAndroidUseAdminsForEnterpriseInfo =
+    public static final CachedFlag sUseRestrictionsManagerInAppRestrictionsProvider =
             new CachedFlag(
                     sInstance,
-                    PolicyFeatures.ANDROID_USE_ADMINS_FOR_ENTERPRISE_INFO,
-                    /* defaultValue= */ true,
+                    PolicyFeatures.USE_RESTRICTIONS_MANAGER_IN_APP_RESTRICTIONS_PROVIDER,
+                    /* defaultValue= */ false,
                     /* defaultValueInTests= */ true);
 
-    public static final List<CachedFlag> sCachedFlags = List.of(sAndroidUseAdminsForEnterpriseInfo);
+    public static final List<CachedFlag> sCachedFlags =
+            List.of(sUseRestrictionsManagerInAppRestrictionsProvider);
 
     public static PolicyFeatureMap getInstance() {
         return sInstance;

@@ -14,6 +14,7 @@
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/ec_signing_key.h"
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/persistence/metrics_utils.h"
 #include "chrome/installer/util/install_util.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 
 using BPKUR = enterprise_management::BrowserPublicKeyUploadRequest;
@@ -42,9 +43,9 @@ std::unique_ptr<crypto::UnexportableSigningKey> CreateSigningKey(
     provider = std::make_unique<ECSigningKeyProvider>();
   }
 
-  static constexpr std::array<crypto::SignatureVerifier::SignatureAlgorithm, 2>
-      kAcceptableAlgorithms = {crypto::SignatureVerifier::ECDSA_SHA256,
-                               crypto::SignatureVerifier::RSA_PKCS1_SHA256};
+  static constexpr std::array<crypto::sign::SignatureKind, 2>
+      kAcceptableAlgorithms = {crypto::sign::ECDSA_SHA256,
+                               crypto::sign::RSA_PKCS1_SHA256};
   return provider ? provider->GenerateSigningKeySlowly(kAcceptableAlgorithms)
                   : nullptr;
 }
@@ -74,7 +75,7 @@ bool WinKeyPersistenceDelegate::StoreKeyPair(
   }
 
   if (trust_level == BPKUR::KEY_TRUST_LEVEL_UNSPECIFIED) {
-    DCHECK_EQ(wrapped.size(), 0u);
+    CHECK_EQ(wrapped.size(), 0u, base::NotFatalUntil::M161);
     if (key.DeleteValue(signingkey_name.c_str()) == ERROR_SUCCESS &&
         key.DeleteValue(trustlevel_name.c_str()) == ERROR_SUCCESS) {
       return true;
@@ -168,7 +169,8 @@ scoped_refptr<SigningKeyPair> WinKeyPersistenceDelegate::LoadKeyPair(
     return ReturnLoadKeyError(LoadPersistedKeyResult::kMalformedKey, result);
   }
 
-  auto signing_key = provider->FromWrappedSigningKeySlowly(wrapped);
+  std::unique_ptr<crypto::UnexportableSigningKey> signing_key =
+      provider ? provider->FromWrappedSigningKeySlowly(wrapped) : nullptr;
   if (!signing_key) {
     RecordFailure(
         KeyPersistenceOperation::kLoadKeyPair,

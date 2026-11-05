@@ -39,7 +39,6 @@
 #include "base/timer/elapsed_timer.h"
 #include "base/values.h"
 #include "base/version.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/arc/arc_util.h"
@@ -64,13 +63,10 @@
 #include "chrome/browser/ash/policy/core/device_local_account.h"
 #include "chrome/browser/ash/policy/core/device_local_account_policy_service.h"
 #include "chrome/browser/ash/policy/handlers/minimum_version_policy_handler.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/system/device_disabling_manager.h"
 #include "chrome/browser/enterprise/browser_management/management_identity.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/chrome_device_id_helper.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_display_host_mojo.h"
 #include "chrome/browser/ui/ash/login/signin_ui.h"
@@ -82,7 +78,7 @@
 #include "chrome/browser/ui/webui/ash/login/l10n_util.h"
 #include "chrome/browser/ui/webui/ash/login/tpm_error_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/update_required_screen_handler.h"
-#include "chrome/common/chrome_switches.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
@@ -111,6 +107,7 @@
 #include "components/policy/proto/cloud_policy.pb.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session_manager.h"
+#include "components/signin/public/base/device_id_helper.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_names.h"
@@ -122,6 +119,7 @@
 #include "content/public/browser/storage_partition.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/google_service_auth_error.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_features.h"
@@ -185,10 +183,10 @@ void TransferHttpAuthCaches(policy::PolicyService* policy_service) {
             &TransferHttpAuthCacheToSystemNetworkContext, completion_callback));
   }
 
+  auto* signin_profile = Profile::FromBrowserContext(
+      BrowserContextHelper::Get()->GetSigninBrowserContext());
   network::mojom::NetworkContext* default_network_context =
-      ProfileHelper::GetSigninProfile()
-          ->GetDefaultStoragePartition()
-          ->GetNetworkContext();
+      signin_profile->GetDefaultStoragePartition()->GetNetworkContext();
   default_network_context->SaveHttpAuthCacheProxyEntries(base::BindOnce(
       &TransferHttpAuthCacheToSystemNetworkContext, completion_callback));
 }
@@ -234,9 +232,10 @@ void SetLoginExtensionApiCanLockManagedGuestSessionPref(
     bool can_lock_managed_guest_session) {
   const user_manager::User* user =
       user_manager::UserManager::Get()->FindUser(account_id);
-  DCHECK(user);
-  Profile* profile = ProfileHelper::Get()->GetProfileByUser(user);
-  DCHECK(profile);
+  CHECK(user, base::NotFatalUntil::M160);
+  Profile* profile = Profile::FromBrowserContext(
+      BrowserContextHelper::Get()->GetBrowserContextByUser(user));
+  CHECK(profile, base::NotFatalUntil::M160);
   PrefService* prefs = profile->GetPrefs();
   prefs->SetBoolean(ash::prefs::kLoginExtensionApiCanLockManagedGuestSession,
                     can_lock_managed_guest_session);
@@ -940,7 +939,7 @@ void ExistingUserController::FinalizeAuthAndStartSession(
     user_manager::User* user =
         user_manager::UserManager::Get()->FindUserAndModify(
             user_context.GetAccountId());
-    DCHECK(user);
+    CHECK(user, base::NotFatalUntil::M160);
     user->AddProfileCreatedObserver(
         base::BindOnce(&SetLoginExtensionApiCanLockManagedGuestSessionPref,
                        user_context.GetAccountId(), true));
@@ -985,7 +984,8 @@ void ExistingUserController::FinalizeAuthAndStartSession(
 }
 
 void ExistingUserController::ShowAutoLaunchManagedGuestSessionNotification() {
-  DCHECK(ash::InstallAttributes::Get()->IsEnterpriseManaged());
+  CHECK(ash::InstallAttributes::Get()->IsEnterpriseManaged(),
+        base::NotFatalUntil::M160);
   message_center::RichNotificationData data;
   data.buttons.emplace_back(
       l10n_util::GetStringUTF16(IDS_AUTO_LAUNCH_NOTIFICATION_BUTTON));
@@ -998,12 +998,12 @@ void ExistingUserController::ShowAutoLaunchManagedGuestSessionNotification() {
   auto delegate =
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
           base::BindRepeating([](std::optional<int> button_index) {
-            DCHECK(button_index);
+            CHECK(button_index, base::NotFatalUntil::M160);
             SystemTrayClientImpl::Get()->ShowEnterpriseInfo();
           }));
   auto notification = CreateSystemNotificationPtr(
       message_center::NOTIFICATION_TYPE_SIMPLE, kAutoLaunchNotificationId,
-      title, message, std::u16string(), GURL(),
+      title, message, std::u16string(),
       message_center::NotifierId(message_center::NotifierType::SYSTEM_COMPONENT,
                                  kAutoLaunchNotifierId,
                                  NotificationCatalogName::kAutoLaunch),
@@ -1028,8 +1028,8 @@ void ExistingUserController::OnProfilePrepared(Profile* profile,
 
   profile_prepared_ = true;
 
-  UserContext user_context =
-      UserContext(*ProfileHelper::Get()->GetUserByProfile(profile));
+  UserContext user_context(
+      *BrowserContextHelper::Get()->GetUserByBrowserContext(profile));
   auto* profile_connector = profile->GetProfilePolicyConnector();
   bool is_enterprise_managed =
       profile_connector->IsManaged() &&
@@ -1125,7 +1125,7 @@ void ExistingUserController::OnOnlinePasswordUnusable(
 void ExistingUserController::OnOnlinePasswordUnusableImpl(
     std::unique_ptr<UserContext> user_context,
     bool online_password_mismatch) {
-  DCHECK(user_context);
+  CHECK(user_context, base::NotFatalUntil::M160);
   is_login_in_progress_ = false;
 
   if (online_password_mismatch) {
@@ -1308,7 +1308,7 @@ void ExistingUserController::LoginAsPublicSession(
   policy::DeviceLocalAccountPolicyService* policy_service =
       browser_policy_connector_ash_->GetDeviceLocalAccountPolicyService();
   const auto& user_id = user_context.GetAccountId().GetUserEmail();
-  DCHECK(policy_service);
+  CHECK(policy_service, base::NotFatalUntil::M160);
   if (!policy_service->IsPolicyAvailableForUser(user_id)) {
     SYSLOG(INFO) << "MGS: Policies are not available yet, will wait";
     policy_waiter_ = std::make_unique<DeviceLocalAccountPolicyWaiter>(
@@ -1538,7 +1538,8 @@ void ExistingUserController::ShowError(SigninError error,
   VLOG(1) << details;
   auto* signin_ui = GetLoginDisplayHost()->GetSigninUI();
   if (!signin_ui) {
-    DCHECK(session_manager::SessionManager::Get()->IsInSecondaryLoginScreen());
+    CHECK(session_manager::SessionManager::Get()->IsInSecondaryLoginScreen(),
+          base::NotFatalUntil::M160);
     // Silently ignore the error on the secondary login screen. The screen is
     // being deprecated anyway.
     return;
@@ -1552,7 +1553,8 @@ void ExistingUserController::ShowOobeNotCompletedError() {
          "called when OobeAutoEnrollmentCheckForced is enabled";
   auto* signin_ui = GetLoginDisplayHost()->GetSigninUI();
   if (!signin_ui) {
-    DCHECK(session_manager::SessionManager::Get()->IsInSecondaryLoginScreen());
+    CHECK(session_manager::SessionManager::Get()->IsInSecondaryLoginScreen(),
+          base::NotFatalUntil::M160);
     // Silently ignore the error on the secondary login screen. The screen is
     // being deprecated anyway.
     return;
@@ -1584,7 +1586,7 @@ void ExistingUserController::SetPublicSessionKeyboardLayoutAndLogin(
       break;
     }
   }
-  DCHECK(!keyboard_layout.empty());
+  CHECK(!keyboard_layout.empty());
   SYSLOG(INFO) << "MGS: Setting keyboard layout '" << keyboard_layout << "'";
   new_user_context.SetPublicSessionInputMethod(keyboard_layout);
 
@@ -1742,7 +1744,7 @@ void ExistingUserController::DoCompleteLogin(
       const bool is_ephemeral =
           user_manager::UserManager::Get()->IsEphemeralAccountId(
               user_context.GetAccountId());
-      device_id = GenerateSigninScopedDeviceId(is_ephemeral);
+      device_id = signin::GenerateSigninScopedDeviceId(is_ephemeral);
     }
     user_context.SetDeviceId(device_id);
   }
@@ -1783,7 +1785,8 @@ void ExistingUserController::DoLogin(const UserContext& user_context,
       guest_mode_url_ = GURL(specifics.guest_mode_url);
       if (specifics.guest_mode_url_append_locale) {
         guest_mode_url_ = google_util::AppendGoogleLocaleParam(
-            guest_mode_url_, application_locale_storage_->Get());
+            guest_mode_url_,
+            std::string(application_locale_storage_->GetTag().tag_string()));
       }
     }
     LoginAsGuest();

@@ -7,7 +7,7 @@ import 'chrome://settings/lazy_load.js';
 
 import {SiteSettingsBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
 import type {Route, SettingsPrivacyPageIndexElement} from 'chrome://settings/settings.js';
-import {CrSettingsPrefs, loadTimeData, resetPageVisibilityForTesting, resetRouterForTesting, Router, routes} from 'chrome://settings/settings.js';
+import {loadTimeData, PrefService, resetPageVisibilityForTesting, resetRouterForTesting, Router, routes} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks, waitBeforeNextRender} from 'chrome://webui-test/polymer_test_util.js';
 
@@ -27,7 +27,6 @@ suite('PrivacyPageIndex', function() {
 
     loadTimeData.overrideValues(Object.assign(
         {
-          enableBundledSecuritySettings: false,
           enableCapturedSurfaceControl: false,
           enableExperimentalWebPlatformFeatures: false,
           enableFederatedIdentityApiContentSetting: false,
@@ -38,8 +37,10 @@ suite('PrivacyPageIndex', function() {
           enablePersistentPermissions: false,
           enableSafeBrowsingSubresourceFilter: false,
           enableSecurityKeysSubpage: false,
-          // <if expr="is_chromeos">
+          // <if expr="enable_smart_card">
           enableSmartCardReadersContentSetting: false,
+          // </if>
+          // <if expr="is_chromeos">
           enableWebPrintingContentSetting: false,
           // </if>
           enableWebAppInstallation: false,
@@ -51,17 +52,13 @@ suite('PrivacyPageIndex', function() {
     resetPageVisibilityForTesting();
     resetRouterForTesting();
 
-    const settingsPrefs = document.createElement('settings-prefs');
-    document.body.appendChild(settingsPrefs);
-    await CrSettingsPrefs.initialized;
-
     SiteSettingsBrowserProxyImpl.setInstance(
         new TestSiteSettingsBrowserProxy());
 
     index = document.createElement('settings-privacy-page-index');
-    index.prefs = settingsPrefs.prefs!;
     Router.getInstance().navigateTo(routes.BASIC);
     document.body.appendChild(index);
+    await PrefService.getInstance().whenInitialized();
     return flushTasks();
   }
 
@@ -128,26 +125,6 @@ suite('PrivacyPageIndex', function() {
       await waitBeforeNextRender(index);
       assertFalse(!!index.$.viewManager.querySelector('#privacy'));
       await testViewsForRoute(routes.PRIVACY, ['privacy']);
-    });
-
-    // TODO(crbug.com/417690232): Delete once kBundledSecuritySettings is
-    // launched.
-    test('RoutingSecurityV2', async function() {
-      assertFalse(loadTimeData.getBoolean('enableBundledSecuritySettings'));
-
-      // Case where old UI should exist.
-      await createPrivacyPageIndex();
-      await testViewsForRoute(routes.SECURITY, ['security'], 'privacy');
-      assertTrue(!!index.shadowRoot!.querySelector('settings-security-page'));
-      assertFalse(
-          !!index.shadowRoot!.querySelector('settings-security-page-v2'));
-
-      // Case where new UI should exist.
-      await createPrivacyPageIndex({enableBundledSecuritySettings: true});
-      await testViewsForRoute(routes.SECURITY, ['security'], 'privacy');
-      assertFalse(!!index.shadowRoot!.querySelector('settings-security-page'));
-      assertTrue(
-          !!index.shadowRoot!.querySelector('settings-security-page-v2'));
     });
 
     test('RoutingSecurityKeys', async function() {
@@ -484,7 +461,7 @@ suite('PrivacyPageIndex', function() {
           'privacy');
     });
 
-    // <if expr="is_chromeos">
+    // <if expr="enable_smart_card">
     test('RoutingSmartCardReaders', async function() {
       assertFalse(
           loadTimeData.getBoolean('enableSmartCardReadersContentSetting'));
@@ -495,7 +472,9 @@ suite('PrivacyPageIndex', function() {
           routes.SITE_SETTINGS_SMART_CARD_READERS,
           ['siteSettingsSmartCardReaders'], 'privacy');
     });
+    // </if>
 
+    // <if expr="is_chromeos">
     test('RoutingWebPrinting', async function() {
       assertFalse(loadTimeData.getBoolean('enableWebPrintingContentSetting'));
       await createPrivacyPageIndex({enableWebPrintingContentSetting: true});

@@ -33,13 +33,14 @@ extension UIView {
   ///
   /// The view is passed as argument to the closure. Use it to avoid retaining the view in the
   /// closure, otherwise the view will leak and never get deinitialized.
+  // swift-format-ignore: AlwaysUseLowerCamelCase
   @objc public var cr_onWindowCoordinatesChanged: ((UIView) -> Void)? {
     get {
-      objc_getAssociatedObject(self, UIView.OnWindowCoordinatesChangedKey) as? (UIView) -> Void
+      objc_getAssociatedObject(self, UIView.onWindowCoordinatesChangedKey) as? (UIView) -> Void
     }
     set {
       objc_setAssociatedObject(
-        self, UIView.OnWindowCoordinatesChangedKey, newValue, .OBJC_ASSOCIATION_COPY)
+        self, UIView.onWindowCoordinatesChangedKey, newValue, .OBJC_ASSOCIATION_COPY)
       if newValue != nil {
         // Make sure UIView supports window observing.
         Self.cr_supportsWindowObserving = true
@@ -57,6 +58,7 @@ extension UIView {
         }
       } else {
         observation = nil
+        removeMirrorViewInWindow()
       }
     }
   }
@@ -71,14 +73,15 @@ extension UIView {
   /// its constraints and perform the screen rotation animation.
   /// If A updates the layout asynchronously, B cannot perform the screen
   /// rotation animation correctly.
+  // swift-format-ignore: AlwaysUseLowerCamelCase
   @objc public var cr_forcesSynchronousLayoutUpdates: Bool {
     get {
-      (objc_getAssociatedObject(self, UIView.ForcesSynchronousLayoutUpdatesKey) as? NSNumber)?
+      (objc_getAssociatedObject(self, UIView.forcesSynchronousLayoutUpdatesKey) as? NSNumber)?
         .boolValue ?? false
     }
     set {
       objc_setAssociatedObject(
-        self, UIView.ForcesSynchronousLayoutUpdatesKey, NSNumber.init(value: newValue),
+        self, UIView.forcesSynchronousLayoutUpdatesKey, NSNumber.init(value: newValue),
         .OBJC_ASSOCIATION_COPY)
     }
   }
@@ -88,11 +91,11 @@ extension UIView {
   /// The currently set observation of the window property.
   private var observation: NSKeyValueObservation? {
     get {
-      objc_getAssociatedObject(self, UIView.ObservationKey) as? NSKeyValueObservation
+      objc_getAssociatedObject(self, UIView.observationKey) as? NSKeyValueObservation
     }
     set {
       objc_setAssociatedObject(
-        self, UIView.ObservationKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        self, UIView.observationKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     }
   }
 
@@ -103,7 +106,7 @@ extension UIView {
       // Additionally, call the closure here as the view moved to a window.
       self.cr_onWindowCoordinatesChanged?(self)
     } else {
-      self.removeMirrorViewInWindow()
+      self.mirrorViewInWindow?.removeFromSuperview()
     }
   }
 
@@ -111,26 +114,19 @@ extension UIView {
   /// always has the same window coordinates as the receiver. The mirror view calls the
   /// `onWindowCoordinatesChanged` closure when its bounds change.
   private func addMirrorViewInWindow() {
-    let mirrorViewInWindow = NotifyingView()
+    guard let window = window else { fatalError() }
+    if let mirrorViewInWindow = self.mirrorViewInWindow, mirrorViewInWindow.superview == window {
+      return
+    }
+
+    let mirrorViewInWindow = self.mirrorViewInWindow ?? NotifyingView()
     mirrorViewInWindow.backgroundColor = .clear
     mirrorViewInWindow.isUserInteractionEnabled = false
     mirrorViewInWindow.translatesAutoresizingMaskIntoConstraints = false
     mirrorViewInWindow.onLayoutChanged = { [weak self] _ in
-      guard let self = self else { return }
-      if self.cr_forcesSynchronousLayoutUpdates == true {
-        self.cr_onWindowCoordinatesChanged?(self)
-      } else {
-        // Callback on the next turn of the run loop to wait for AutoLayout to have updated the
-        // entire hierarchy. (It can happen that AutoLayout updates the mirror view before the
-        // mirrored view.)
-        DispatchQueue.main.async { [weak self] in
-          guard let self = self else { return }
-          self.cr_onWindowCoordinatesChanged?(self)
-        }
-      }
+      self?.onMirrorViewLayoutChanged()
     }
 
-    guard let window = window else { fatalError() }
     window.insertSubview(mirrorViewInWindow, at: 0)
     NSLayoutConstraint.activate([
       mirrorViewInWindow.topAnchor.constraint(equalTo: topAnchor),
@@ -140,6 +136,21 @@ extension UIView {
     ])
 
     self.mirrorViewInWindow = mirrorViewInWindow
+  }
+
+  /// Called when the mirror view's layout changes.
+  private func onMirrorViewLayoutChanged() {
+    if cr_forcesSynchronousLayoutUpdates {
+      cr_onWindowCoordinatesChanged?(self)
+    } else {
+      // Callback on the next turn of the run loop to wait for AutoLayout to have updated the
+      // entire hierarchy. (It can happen that AutoLayout updates the mirror view before the
+      // mirrored view.)
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
+        self.cr_onWindowCoordinatesChanged?(self)
+      }
+    }
   }
 
   /// Removes the mirror view added by a call to `addMirrorViewInWindow`.
@@ -152,11 +163,11 @@ extension UIView {
   /// The currently set mirror view.
   private var mirrorViewInWindow: NotifyingView? {
     get {
-      objc_getAssociatedObject(self, UIView.MirrorViewInWindowKey) as? NotifyingView
+      objc_getAssociatedObject(self, UIView.mirrorInWindowKey) as? NotifyingView
     }
     set {
       objc_setAssociatedObject(
-        self, UIView.MirrorViewInWindowKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        self, UIView.mirrorInWindowKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     }
   }
 
@@ -178,10 +189,10 @@ extension UIView {
   }
 
   /// Keys for storing associated objects.
-  @UniqueAddress private static var OnWindowCoordinatesChangedKey
-  @UniqueAddress private static var ObservationKey
-  @UniqueAddress private static var MirrorViewInWindowKey
-  @UniqueAddress private static var ForcesSynchronousLayoutUpdatesKey
+  @UniqueAddress private static var onWindowCoordinatesChangedKey
+  @UniqueAddress private static var observationKey
+  @UniqueAddress private static var mirrorInWindowKey
+  @UniqueAddress private static var forcesSynchronousLayoutUpdatesKey
 }
 
 /// A property wrapper to more safely support associated object keys.

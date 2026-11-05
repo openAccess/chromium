@@ -13,10 +13,13 @@ static_library("nearby_share") {
     "shared_resources.cc",
     "shared_resources.h",
   ]
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
+  public_deps = [
+    "//chrome/common",
+    "//ui/views/controls/webview",
+  ]
   deps = [
+    "//chrome/app:generated_resources",
+    "//chrome/app/theme:theme_resources",
     "//chrome/browser/nearby_sharing",
     "//chrome/browser/nearby_sharing:share_target",
     "//chrome/browser/nearby_sharing/common",
@@ -24,6 +27,7 @@ static_library("nearby_share") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/chromeos/nearby_share:resources",
     "//chrome/browser/sharesheet",
+    "//chrome/browser/ui:scoped_tabbed_browser_displayer",
     "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/webui",
     "//chrome/browser/ui/webui:metrics_handler",
@@ -46,7 +50,6 @@ source_set("browser_tests") {
     "//chrome/browser",
     "//chrome/browser/nearby_sharing/common",
     "//chrome/browser/sharesheet",
-    "//chrome/browser/ui",
     "//chrome/test:test_support_ui",
   ]
 }

@@ -6,6 +6,8 @@
 
 #import <Cocoa/Cocoa.h>
 
+#include <cmath>
+#include <cstdlib>
 #include <memory>
 #include <utility>
 
@@ -17,31 +19,26 @@
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
-#include "base/timer/timer.h"
 #include "remoting/base/string_resources.h"
 #include "remoting/host/client_session_control.h"
 #include "remoting/host/host_window.h"
+#include "remoting/host/input_monitor/local_input_monitor.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 
 namespace {
 
 constexpr int kMaximumConnectedNameWidthInPixels = 600;
 
-enum class WindowAnchor {
-  kBottom,
-  kTop,
-};
-
-// Remembers the last selected anchor position across dialog instances.
-WindowAnchor g_current_anchor = WindowAnchor::kBottom;
-
-// The amount of time to wait before allowing another position toggle.
-constexpr base::TimeDelta kToggleCooldown = base::Seconds(3);
-
 // Margins from screen edges to ensure the dialog is not obscured by the menu
 // bar at the top or an auto-hiding Dock at the bottom.
 constexpr CGFloat kTopMargin = 40.0;
 constexpr CGFloat kBottomMargin = 80.0;
+
+// The amount of time to wait before hiding the disconnect window.
+constexpr base::TimeDelta kAutoHideTimeout = base::Seconds(10);
+
+// The duration of the hide and show animations.
+constexpr NSTimeInterval kAnimationDuration = 0.2;
 
 bool IsDarkMode() {
   NSAppearanceName appearance =
@@ -59,31 +56,16 @@ bool IsDarkMode() {
 - (void)updateToggleButtonText;
 - (void)setDialogPosition;
 - (void)onScreenParametersChanged:(NSNotification*)notification;
+- (void)onWindowDidMove:(NSNotification*)notification;
 - (void)onCooldownExpired;
 - (IBAction)toggleAlignment:(id)sender;
+@property(nonatomic, assign) BOOL isHidden;
 @property(nonatomic, strong) NSButton* toggleButton;
 @property(nonatomic, strong) NSTextField* connectedToField;
 @property(nonatomic, strong) NSButton* disconnectButton;
 @end
 
 namespace remoting {
-
-class DisconnectWindowMac : public HostWindow {
- public:
-  DisconnectWindowMac();
-
-  DisconnectWindowMac(const DisconnectWindowMac&) = delete;
-  DisconnectWindowMac& operator=(const DisconnectWindowMac&) = delete;
-
-  ~DisconnectWindowMac() override;
-
-  // HostWindow overrides.
-  void Start(const base::WeakPtr<ClientSessionControl>& client_session_control)
-      override;
-
- private:
-  DisconnectWindowController* __strong window_controller_;
-};
 
 DisconnectWindowMac::DisconnectWindowMac() = default;
 
@@ -93,18 +75,18 @@ DisconnectWindowMac::~DisconnectWindowMac() {
   window_controller_ = nil;
 }
 
+void DisconnectWindowMac::EnableAutoHide(
+    std::unique_ptr<LocalInputMonitor> local_input_monitor) {
+  local_input_monitor_ = std::move(local_input_monitor);
+}
+
 void DisconnectWindowMac::Start(
     const base::WeakPtr<ClientSessionControl>& client_session_control) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(client_session_control);
   DCHECK(window_controller_ == nil);
 
-  // Create the window.
-  base::OnceClosure disconnect_callback = base::BindOnce(
-      &ClientSessionControl::DisconnectSession, client_session_control,
-      ErrorCode::OK, "Disconnect button was clicked.", FROM_HERE);
-  std::string client_jid = client_session_control->client_jid();
-  std::string username = client_jid.substr(0, client_jid.find('/'));
+  DisconnectWindowBase::Start(client_session_control);
 
   NSRect frame = NSMakeRect(0, 0, 466, 40);
   DisconnectWindow* window =
@@ -114,11 +96,77 @@ void DisconnectWindowMac::Start(
                                               defer:NO];
   window.releasedWhenClosed = NO;
   window_controller_ = [[DisconnectWindowController alloc]
-      initWithCallback:std::move(disconnect_callback)
-              username:username
-                window:window];
+      initWithDisconnectWindow:weak_factory_.GetWeakPtr()
+                        window:window];
   [window_controller_ initializeWindow];
   [window_controller_ showWindow:nil];
+
+  if (local_input_monitor_) {
+    local_input_monitor_->StartMonitoring(
+        base::BindRepeating(&DisconnectWindowMac::OnLocalMouseEvent,
+                            weak_factory_.GetWeakPtr()),
+        base::BindRepeating(&DisconnectWindowMac::OnLocalKeyPressed,
+                            weak_factory_.GetWeakPtr()),
+        base::BindRepeating(&DisconnectWindowMac::StopAutoHideBehavior,
+                            weak_factory_.GetWeakPtr()));
+
+    auto_hide_timer_.Start(FROM_HERE, kAutoHideTimeout,
+                           base::BindOnce(&DisconnectWindowMac::HideDialog,
+                                          base::Unretained(this)));
+  }
+}
+
+void DisconnectWindowMac::OnCooldownExpired() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  [window_controller_ onCooldownExpired];
+}
+
+void DisconnectWindowMac::ShowDialog() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Always reset the hide timer when this method is called.
+  if (local_input_monitor_) {
+    auto_hide_timer_.Start(FROM_HERE, kAutoHideTimeout,
+                           base::BindOnce(&DisconnectWindowMac::HideDialog,
+                                          base::Unretained(this)));
+  }
+
+  if (!was_auto_hidden_) {
+    return;
+  }
+  was_auto_hidden_ = false;
+  [window_controller_ showDialog];
+}
+
+void DisconnectWindowMac::HideDialog() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (was_auto_hidden_ || !local_input_monitor_ || !window_controller_) {
+    return;
+  }
+  was_auto_hidden_ = true;
+  [window_controller_ hideDialog];
+}
+
+void DisconnectWindowMac::StopAutoHideBehavior() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  auto_hide_timer_.Stop();
+  local_input_monitor_.reset();
+  ShowDialog();
+}
+
+void DisconnectWindowMac::OnLocalMouseEvent(
+    const webrtc::DesktopVector& position,
+    ui::EventType /*type*/) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (std::abs(position.x() - mouse_position_.x()) > 1 ||
+      std::abs(position.y() - mouse_position_.y()) > 1) {
+    mouse_position_ = position;
+    ShowDialog();
+  }
+}
+
+void DisconnectWindowMac::OnLocalKeyPressed(uint32_t /*usb_keycode*/) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  ShowDialog();
 }
 
 // static
@@ -126,30 +174,41 @@ std::unique_ptr<HostWindow> HostWindow::CreateDisconnectWindow() {
   return std::make_unique<DisconnectWindowMac>();
 }
 
+// static
+std::unique_ptr<HostWindow> HostWindow::CreateAutoHidingDisconnectWindow(
+    std::unique_ptr<LocalInputMonitor> local_input_monitor) {
+  auto disconnect_window = std::make_unique<DisconnectWindowMac>();
+  disconnect_window->EnableAutoHide(std::move(local_input_monitor));
+  return disconnect_window;
+}
+
 }  // namespace remoting
 
 @implementation DisconnectWindowController {
-  base::OnceClosure _disconnect_callback;
-  std::u16string _username;
-  base::OneShotTimer _cooldown_timer;
+  base::WeakPtr<remoting::DisconnectWindowMac> _disconnect_window;
 }
 
+@synthesize isHidden = _isHidden;
 @synthesize toggleButton = _toggleButton;
 @synthesize connectedToField = _connectedToField;
 @synthesize disconnectButton = _disconnectButton;
 
-- (instancetype)initWithCallback:(base::OnceClosure)disconnect_callback
-                        username:(const std::string&)username
-                          window:(NSWindow*)window {
+- (instancetype)initWithDisconnectWindow:
+                    (base::WeakPtr<remoting::DisconnectWindowMac>)
+                        disconnect_window
+                                  window:(NSWindow*)window {
   self = [super initWithWindow:window];
   if (self) {
-    _disconnect_callback = std::move(disconnect_callback);
-    _username = base::UTF8ToUTF16(username);
+    _disconnect_window = std::move(disconnect_window);
     [NSNotificationCenter.defaultCenter
         addObserver:self
            selector:@selector(onScreenParametersChanged:)
                name:NSApplicationDidChangeScreenParametersNotification
              object:nil];
+    [NSNotificationCenter.defaultCenter addObserver:self
+                                           selector:@selector(onWindowDidMove:)
+                                               name:NSWindowDidMoveNotification
+                                             object:window];
   }
   return self;
 }
@@ -159,21 +218,18 @@ std::unique_ptr<HostWindow> HostWindow::CreateDisconnectWindow() {
 }
 
 - (IBAction)stopSharing:(id)sender {
-  if (_disconnect_callback) {
-    std::move(_disconnect_callback).Run();
+  if (_disconnect_window) {
+    _disconnect_window->DisconnectSession();
   }
 }
 
 - (IBAction)toggleAlignment:(id)sender {
-  g_current_anchor = (g_current_anchor == WindowAnchor::kBottom)
-                         ? WindowAnchor::kTop
-                         : WindowAnchor::kBottom;
+  if (!_disconnect_window || _disconnect_window->is_cooldown_active()) {
+    return;
+  }
+  _disconnect_window->ToggleAlignment();
   [self updateToggleButtonText];
   self.toggleButton.enabled = NO;
-  __weak __typeof__(self) weakSelf = self;
-  _cooldown_timer.Start(FROM_HERE, kToggleCooldown, base::BindOnce(^{
-                          [weakSelf onCooldownExpired];
-                        }));
   [self setDialogPosition];
 }
 
@@ -182,9 +238,16 @@ std::unique_ptr<HostWindow> HostWindow::CreateDisconnectWindow() {
 }
 
 - (void)updateToggleButtonText {
+  if (!_disconnect_window) {
+    return;
+  }
   self.toggleButton.title =
-      (g_current_anchor == WindowAnchor::kBottom) ? @"▲" : @"▼";
-  int string_id = (g_current_anchor == WindowAnchor::kBottom)
+      (_disconnect_window->current_anchor() ==
+       remoting::DisconnectWindowBase::WindowAnchor::kBottom)
+          ? @"▲"
+          : @"▼";
+  int string_id = (_disconnect_window->current_anchor() ==
+                   remoting::DisconnectWindowBase::WindowAnchor::kBottom)
                       ? IDS_MOVE_TO_TOP_BUTTON
                       : IDS_MOVE_TO_BOTTOM_BUTTON;
   NSString* tooltip_text = l10n_util::GetNSString(string_id);
@@ -198,9 +261,33 @@ std::unique_ptr<HostWindow> HostWindow::CreateDisconnectWindow() {
 
 - (void)hide {
   [NSNotificationCenter.defaultCenter removeObserver:self];
-  _cooldown_timer.Stop();
-  _disconnect_callback.Reset();
+  _disconnect_window.reset();
   [self close];
+}
+
+- (void)hideDialog {
+  self.isHidden = YES;
+  __weak __typeof(self) weakSelf = self;
+  [NSAnimationContext
+      runAnimationGroup:^(NSAnimationContext* context) {
+        context.duration = kAnimationDuration;
+        self.window.animator.alphaValue = 0.0;
+      }
+      completionHandler:^{
+        if (weakSelf.isHidden) {
+          [weakSelf.window orderOut:nil];
+        }
+      }];
+}
+
+- (void)showDialog {
+  self.isHidden = NO;
+  [self setDialogPosition];
+  [self.window orderFrontRegardless];
+  [NSAnimationContext runAnimationGroup:^(NSAnimationContext* context) {
+    context.duration = kAnimationDuration;
+    self.window.animator.alphaValue = 1.0;
+  }];
 }
 
 - (void)initializeWindow {
@@ -223,6 +310,8 @@ std::unique_ptr<HostWindow> HostWindow::CreateDisconnectWindow() {
   self.connectedToField.bezeled = NO;
   self.connectedToField.editable = NO;
   self.connectedToField.font = [NSFont systemFontOfSize:11];
+  self.connectedToField.cell.lineBreakMode = NSLineBreakByTruncatingMiddle;
+  self.connectedToField.cell.usesSingleLineMode = YES;
   [self.window.contentView addSubview:self.connectedToField];
 
   self.disconnectButton =
@@ -234,8 +323,10 @@ std::unique_ptr<HostWindow> HostWindow::CreateDisconnectWindow() {
   self.disconnectButton.target = self;
   [self.window.contentView addSubview:self.disconnectButton];
 
-  self.connectedToField.stringValue =
-      l10n_util::GetNSStringF(IDS_MESSAGE_SHARED, _username);
+  self.connectedToField.stringValue = l10n_util::GetNSStringF(
+      IDS_MESSAGE_SHARED, _disconnect_window
+                              ? _disconnect_window->formatted_email()
+                              : std::u16string());
   self.disconnectButton.title = l10n_util::GetNSString(IDS_STOP_SHARING_BUTTON);
 
   // Resize the window dynamically based on the content.
@@ -296,18 +387,45 @@ std::unique_ptr<HostWindow> HostWindow::CreateDisconnectWindow() {
 }
 
 - (void)setDialogPosition {
-  NSRect screenRect = NSScreen.mainScreen.frame;
+  if (!_disconnect_window) {
+    return;
+  }
+  NSScreen* primaryScreen = NSScreen.screens.firstObject;
+  if (!primaryScreen) {
+    return;
+  }
+  NSRect screenRect = primaryScreen.frame;
   NSRect windowRect = self.window.frame;
-  CGFloat x =
-      NSMinX(screenRect) + (NSWidth(screenRect) - NSWidth(windowRect)) / 2;
-  CGFloat y = (g_current_anchor == WindowAnchor::kTop)
-                  ? NSMaxY(screenRect) - NSHeight(windowRect) - kTopMargin
-                  : NSMinY(screenRect) + kBottomMargin;
+  CGFloat x = std::round(NSMinX(screenRect) +
+                         (NSWidth(screenRect) - NSWidth(windowRect)) / 2.0);
+  CGFloat y =
+      std::round((_disconnect_window->current_anchor() ==
+                  remoting::DisconnectWindowBase::WindowAnchor::kTop)
+                     ? NSMaxY(screenRect) - NSHeight(windowRect) - kTopMargin
+                     : NSMinY(screenRect) + kBottomMargin);
+  _disconnect_window->SetExpectedPosition(static_cast<int>(x),
+                                          static_cast<int>(y));
   [self.window setFrameOrigin:NSMakePoint(x, y)];
 }
 
 - (void)onScreenParametersChanged:(NSNotification*)notification {
+  if (!_disconnect_window) {
+    return;
+  }
+  _disconnect_window->ResetRepositionAttempts();
   [self setDialogPosition];
+}
+
+- (void)onWindowDidMove:(NSNotification*)notification {
+  if (!_disconnect_window) {
+    return;
+  }
+  NSRect frame = self.window.frame;
+  if (_disconnect_window->ShouldRepositionOnDisplacement(
+          static_cast<int>(std::round(frame.origin.x)),
+          static_cast<int>(std::round(frame.origin.y)))) {
+    [self setDialogPosition];
+  }
 }
 
 - (void)windowWillClose:(NSNotification*)notification {
@@ -335,6 +453,12 @@ std::unique_ptr<HostWindow> HostWindow::CreateDisconnectWindow() {
 
     // Pull the window up to Status Level so that it always displays.
     [self setLevel:NSStatusWindowLevel];
+
+    // Allow the window to join all spaces, appear with full-screen windows, and
+    // remain stationary during Mission Control / Exposé.
+    self.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
+                              NSWindowCollectionBehaviorFullScreenAuxiliary |
+                              NSWindowCollectionBehaviorStationary;
   }
   return self;
 }

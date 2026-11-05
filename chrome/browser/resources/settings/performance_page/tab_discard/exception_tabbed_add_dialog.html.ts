@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import {html} from '//resources/lit/v3_0/lit.rollup.js';
+
 import type {ExceptionTabbedAddDialogElement} from './exception_tabbed_add_dialog.js';
 
 export function getHtml(this: ExceptionTabbedAddDialogElement) {
@@ -16,7 +17,7 @@ export function getHtml(this: ExceptionTabbedAddDialogElement) {
     </cr-tabs>
   </div>
   <div id="body" slot="body">
-    <cr-page-selector .selected="${this.selectedTab_}">
+    <cr-page-selector .selected="${this.selectedTab_.toString()}">
       <tab-discard-exception-current-sites-list id="list"
           @sites-populated="${this.onSitesPopulated_}"
           .visible="${this.isAddCurrentSitesTabSelected_()}"

@@ -161,10 +161,11 @@ ListMarker::MarkerTextType ListMarker::MarkerText(
     StringBuilder* text,
     MarkerTextFormat format) const {
   DCHECK_EQ(Get(&marker), this);
-  if (!marker.StyleRef().ContentBehavesAsNormal())
+  if (!marker.Style().ContentBehavesAsNormal()) {
     return kNotText;
+  }
   LayoutObject* list_item = ListItem(marker);
-  const ComputedStyle& style = list_item->StyleRef();
+  const ComputedStyle& style = list_item->Style();
   if (style.GeneratesMarkerImage()) {
     if (format == kWithPrefixSuffix)
       text->Append(' ');
@@ -266,7 +267,7 @@ String ListMarker::TextAlternative(const LayoutObject& marker) const {
 
 void ListMarker::UpdateMarkerContentIfNeeded(LayoutObject& marker) {
   DCHECK_EQ(Get(&marker), this);
-  if (!marker.StyleRef().ContentBehavesAsNormal()) {
+  if (!marker.Style().ContentBehavesAsNormal()) {
     marker_text_type_ = kNotText;
     return;
   }
@@ -274,7 +275,7 @@ void ListMarker::UpdateMarkerContentIfNeeded(LayoutObject& marker) {
   // There should be at most one child.
   LayoutObject* child = GetContentChild(marker);
 
-  const ComputedStyle& style = ListItem(marker)->StyleRef();
+  const ComputedStyle& style = ListItem(marker)->Style();
   if (style.GeneratesMarkerImage()) {
     StyleImage* list_style_image = style.ListStyleImage();
     if (child) {
@@ -293,10 +294,10 @@ void ListMarker::UpdateMarkerContentIfNeeded(LayoutObject& marker) {
     if (!child) {
       LayoutListMarkerImage* image =
           LayoutListMarkerImage::CreateAnonymous(marker.GetDocument());
-      const ComputedStyle* image_style =
+      const ComputedStyle& image_style =
           marker.GetDocument()
               .GetStyleResolver()
-              .CreateAnonymousStyleWithDisplay(marker.StyleRef(),
+              .CreateAnonymousStyleWithDisplay(marker.Style(),
                                                EDisplay::kInline);
       image->SetStyle(image_style);
       image->SetImageResource(
@@ -318,9 +319,9 @@ void ListMarker::UpdateMarkerContentIfNeeded(LayoutObject& marker) {
   // |LayoutObject::PropagateStyleToAnonymousChildren()| to avoid unexpected
   // full layout due by style difference. See http://crbug.com/980399
   const auto& style_parent = child ? *child->Parent() : marker;
-  const ComputedStyle* text_style =
+  const ComputedStyle& text_style =
       marker.GetDocument().GetStyleResolver().CreateAnonymousStyleWithDisplay(
-          style_parent.StyleRef(), marker.StyleRef().Display());
+          style_parent.Style(), marker.Style().Display());
   if (IsA<LayoutTextFragment>(child))
     return child->SetStyle(text_style);
   if (child) {
@@ -329,7 +330,7 @@ void ListMarker::UpdateMarkerContentIfNeeded(LayoutObject& marker) {
 
   auto* const new_text = LayoutTextFragment::CreateAnonymous(
       marker.GetDocument(), StringImpl::empty_, 0, 0);
-  new_text->SetStyle(std::move(text_style));
+  new_text->SetStyle(text_style);
   marker.AddChild(new_text);
   marker_text_type_ = kUnresolved;
 }

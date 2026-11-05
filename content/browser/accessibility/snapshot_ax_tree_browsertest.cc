@@ -6,7 +6,6 @@
 #include "base/functional/callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
-#include "content/browser/fenced_frame/fenced_frame.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
@@ -111,8 +110,7 @@ class SnapshotAXTreeFencedFrameBrowserTest : public SnapshotAXTreeBrowserTest {
     scoped_feature_list_.InitWithFeaturesAndParameters(
         {{blink::features::kFencedFrames, {{"implementation_type", "mparch"}}},
          {features::kPrivacySandboxAdsAPIsOverride, {}},
-         {blink::features::kFencedFramesAPIChanges, {}},
-         {blink::features::kFencedFramesDefaultMode, {}}},
+         {blink::features::kFencedFramesAPIChanges, {}}},
         {/* disabled_features */});
   }
 
@@ -133,98 +131,6 @@ class SnapshotAXTreeFencedFrameBrowserTest : public SnapshotAXTreeBrowserTest {
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
 };
 
-IN_PROC_BROWSER_TEST_F(SnapshotAXTreeFencedFrameBrowserTest,
-                       SnapshotAccessibilityTreeFromMultipleFrames) {
-  EXPECT_TRUE(NavigateToURL(
-      shell(), https_server()->GetURL("a.test", "/fenced_frames/basic.html")));
-
-  WebContentsImpl* web_contents =
-      static_cast<WebContentsImpl*>(shell()->web_contents());
-
-  RenderFrameHostImpl* primary_rfh = web_contents->GetPrimaryMainFrame();
-  std::vector<FencedFrame*> fenced_frames = primary_rfh->GetFencedFrames();
-  EXPECT_EQ(1u, fenced_frames.size());
-
-  const GURL fenced_frame_url =
-      https_server()->GetURL("a.test", "/fenced_frames/title1.html");
-  EXPECT_TRUE(
-      ExecJs(primary_rfh, JsReplace("document.querySelector('fencedframe')."
-                                    "config = new FencedFrameConfig($1);",
-                                    fenced_frame_url.spec())));
-  EXPECT_TRUE(WaitForLoadStop(web_contents));
-
-  AXTreeSnapshotWaiter waiter;
-  web_contents->RequestAXTreeSnapshot(
-      base::BindOnce(&AXTreeSnapshotWaiter::ReceiveSnapshot,
-                     base::Unretained(&waiter)),
-      ui::kAXModeComplete,
-      /* max_nodes= */ 0,
-      /* timeout= */ {}, WebContents::AXTreeSnapshotPolicy::kAll);
-  waiter.Wait();
-
-  // Dump the whole tree if one of the assertions below fails
-  // to aid in debugging why it failed.
-  SCOPED_TRACE(waiter.snapshot().ToString());
-
-  ui::AXTree tree(waiter.snapshot());
-  ui::AXNode* root = tree.root();
-  std::string dump;
-  DumpRolesAndNamesAsText(root, 0, &dump);
-  EXPECT_EQ(
-      "rootWebArea\n"
-      "  genericContainer\n"
-      "    iframe\n"
-      "      rootWebArea\n"
-      "        genericContainer\n"
-      "          staticText 'This page has no title.'\n",
-      dump);
-}
-
-IN_PROC_BROWSER_TEST_F(
-    SnapshotAXTreeFencedFrameBrowserTest,
-    SnapshotAccessibilityTreeFromMultipleFramesLimitedToNonFencedFrames) {
-  EXPECT_TRUE(NavigateToURL(
-      shell(), https_server()->GetURL("a.test", "/fenced_frames/basic.html")));
-
-  WebContentsImpl* web_contents =
-      static_cast<WebContentsImpl*>(shell()->web_contents());
-
-  RenderFrameHostImpl* primary_rfh = web_contents->GetPrimaryMainFrame();
-  std::vector<FencedFrame*> fenced_frames = primary_rfh->GetFencedFrames();
-  EXPECT_EQ(1u, fenced_frames.size());
-
-  const GURL fenced_frame_url =
-      https_server()->GetURL("a.test", "/fenced_frames/title1.html");
-  EXPECT_TRUE(
-      ExecJs(primary_rfh, JsReplace("document.querySelector('fencedframe')."
-                                    "config = new FencedFrameConfig($1);",
-                                    fenced_frame_url.spec())));
-  EXPECT_TRUE(WaitForLoadStop(web_contents));
-
-  AXTreeSnapshotWaiter waiter;
-  web_contents->RequestAXTreeSnapshot(
-      base::BindOnce(&AXTreeSnapshotWaiter::ReceiveSnapshot,
-                     base::Unretained(&waiter)),
-      ui::kAXModeComplete,
-      /* max_nodes= */ 0,
-      /* timeout= */ {},
-      WebContents::AXTreeSnapshotPolicy::kSameOriginDirectDescendants);
-  waiter.Wait();
-
-  // Dump the whole tree if one of the assertions below fails
-  // to aid in debugging why it failed.
-  SCOPED_TRACE(waiter.snapshot().ToString());
-
-  ui::AXTree tree(waiter.snapshot());
-  ui::AXNode* root = tree.root();
-  std::string dump;
-  DumpRolesAndNamesAsText(root, 0, &dump);
-  EXPECT_EQ(
-      "rootWebArea\n"
-      "  genericContainer\n"
-      "    iframe\n",
-      dump);
-}
 
 IN_PROC_BROWSER_TEST_F(SnapshotAXTreeBrowserTest,
                        SnapshotAccessibilityTreeFromMultipleFrames) {
@@ -636,7 +542,7 @@ IN_PROC_BROWSER_TEST_F(SnapshotAXTreeBrowserTest, SnapshotPDFMode) {
   ui::AXNode* td = tr->GetUnignoredChildAtIndex(0);
   ASSERT_TRUE(td);
   ASSERT_EQ(ax::mojom::Role::kCell, td->GetRole());
-  EXPECT_EQ(2, *td->GetTableCellColSpan());
+  EXPECT_EQ(2, *td->GetTableCellDomColSpan());
 }
 
 IN_PROC_BROWSER_TEST_F(SnapshotAXTreeBrowserTest, MaxNodes) {

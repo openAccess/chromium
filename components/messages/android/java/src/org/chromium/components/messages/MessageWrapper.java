@@ -120,6 +120,17 @@ public final class MessageWrapper implements ListMenu.Delegate {
     }
 
     @CalledByNative
+    @PrimaryWidgetAppearance
+    int getPrimaryWidgetAppearance() {
+        return mMessageProperties.get(MessageBannerProperties.PRIMARY_WIDGET_APPEARANCE);
+    }
+
+    @CalledByNative
+    void setPrimaryWidgetAppearance(@PrimaryWidgetAppearance int appearance) {
+        mMessageProperties.set(MessageBannerProperties.PRIMARY_WIDGET_APPEARANCE, appearance);
+    }
+
+    @CalledByNative
     String getSecondaryButtonMenuText() {
         return mMessageProperties.get(MessageBannerProperties.SECONDARY_BUTTON_MENU_TEXT);
     }

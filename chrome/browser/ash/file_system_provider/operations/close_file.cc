@@ -6,8 +6,8 @@
 
 #include <string>
 
-#include "chrome/common/extensions/api/file_system_provider.h"
-#include "chrome/common/extensions/api/file_system_provider_internal.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider_internal.h"
 
 namespace ash::file_system_provider::operations {
 
@@ -29,12 +29,14 @@ bool CloseFile::Execute(int request_id) {
   options.request_id = request_id;
   options.open_request_id = open_request_id_;
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      extensions::api::file_system_provider::OnCloseFileRequested::Create(
+          options));
   return SendEvent(
       request_id,
       extensions::events::FILE_SYSTEM_PROVIDER_ON_CLOSE_FILE_REQUESTED,
       extensions::api::file_system_provider::OnCloseFileRequested::kEventName,
-      extensions::api::file_system_provider::OnCloseFileRequested::Create(
-          options));
+      std::move(event_args));
 }
 
 void CloseFile::OnSuccess(/*request_id=*/int,

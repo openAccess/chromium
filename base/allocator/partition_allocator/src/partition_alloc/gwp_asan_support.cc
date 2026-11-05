@@ -16,6 +16,7 @@
 #include "partition_alloc/page_allocator_constants.h"
 #include "partition_alloc/partition_alloc_base/no_destructor.h"
 #include "partition_alloc/partition_alloc_check.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/partition_bucket.h"
 #include "partition_alloc/partition_lock.h"
 
@@ -49,7 +50,7 @@ void* GwpAsanSupport::MapRegion(size_t slot_count,
   const size_t kSlotSize = 2 * internal::SystemPageSize();
   uint16_t bucket_index = PartitionRoot::SizeToBucketIndex(
       kSlotSize, root->GetBucketDistribution());
-  auto* bucket = PA_UNSAFE_TODO(root->buckets_ + bucket_index);
+  auto* bucket = &root->buckets_[bucket_index];
 
   const size_t kSuperPagePayloadStartOffset =
       internal::SuperPagePayloadStartOffset();

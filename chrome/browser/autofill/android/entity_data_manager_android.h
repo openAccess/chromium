@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_AUTOFILL_ANDROID_ENTITY_DATA_MANAGER_ANDROID_H_
 #define CHROME_BROWSER_AUTOFILL_ANDROID_ENTITY_DATA_MANAGER_ANDROID_H_
 
+#include <optional>
+
 #include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/memory/raw_ref.h"
@@ -15,6 +17,7 @@
 #include "chrome/browser/autofill/android/entity_type_android.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#include "components/autofill/core/browser/network/autofill_ai/wallet_pass_access_manager.h"
 #include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
 #include "third_party/jni_zero/jni_zero.h"
 
@@ -51,8 +54,6 @@ class PersonalContextEligibilityService;
 }
 
 namespace autofill {
-
-class WalletPassAccessManager;
 
 // Android wrapper of the EntityDataManager which provides access from the
 // Java layer.
@@ -115,11 +116,26 @@ class EntityDataManagerAndroid : public EntityDataManager::Observer {
   // to accept it. Note that these resources IDs are only used for logging
   // purposes, in the case of adding a new private entity that will stored in
   // Google Wallet.
-  void AddOrUpdateEntityInstance(JNIEnv* env,
-                                 const jni_zero::JavaRef<jobject>& jEntity,
-                                 int32_t description_string_id,
-                                 int32_t accept_button_string_id,
-                                 base::OnceClosure on_local_save_fallback);
+  void AddOrUpdateEntityInstance(
+      JNIEnv* env,
+      const jni_zero::JavaRef<jobject>& jEntity,
+      int32_t description_string_id,
+      int32_t accept_button_string_id,
+      const jni_zero::JavaRef<jbyteArray>& j_legal_message_token,
+      base::OnceClosure on_local_save_fallback);
+
+  // Pre-fetches the details (legal message and legal message token) required to
+  // upsert a pass from Wallet servers and populates an internal cache.
+  void PreloadDetailsForUpsertPass(JNIEnv* env, int entity_type);
+
+  // Synchronously extracts and removes the cached details for `entity_type`
+  // from a previous `PreloadDetailsForUpsertPass` call. Returns an empty
+  // `GetDetailsForUpsertPassResponse` if the user does not need to see the
+  // legal disclosure notice, or `std::nullopt` if saving must fall back to
+  // local storage (e.g. nothing is cached or required details for an eligible
+  // user are missing).
+  std::optional<WalletPassAccessManager::GetDetailsForUpsertPassResponse>
+  ExtractPreloadedDetailsForUpsertPass(JNIEnv* env, int entity_type);
 
   // Gets information about all entities to be displayed in the management
   // service.
@@ -134,7 +150,7 @@ class EntityDataManagerAndroid : public EntityDataManager::Observer {
       JNIEnv* env) const;
 
   // Checks whether Autofill AI is disabled by enterprise policy.
-  // TODO(crbug.com/468236777): Return `ModelExecutionEnterprisePolicyValue`
+  // TODO(crbug.com/468236777): Return `EnterprisePolicyValue`
   // enum instead of having a specific method to check the policy pref state.
   bool GetIsAutofillAiDisabledByEnterprisePolicy(JNIEnv* env);
 
@@ -165,6 +181,12 @@ class EntityDataManagerAndroid : public EntityDataManager::Observer {
   // Returns true if the user can store and read public passes on Google Wallet
   // servers. Used to display a notice in the management UI.
   bool IsWalletPublicPassStorageEnabled(JNIEnv* env);
+
+  // Returns true if an entity with `entity_type` and `record_type` is eligible
+  // for the Google Wallet public pass disclosure notice.
+  bool IsEligibleForWalletNotice(JNIEnv* env,
+                                 int entity_type,
+                                 int record_type) const;
 
   // Returns whether the personal context preference is visible.
   bool IsPersonalContextPreferenceVisible(JNIEnv* env);
@@ -227,6 +249,7 @@ class EntityDataManagerAndroid : public EntityDataManager::Observer {
       EntityInstance::RecordType targeted_record_type,
       int description_string_id,
       int accept_button_string_id,
+      std::optional<std::string> legal_message_token,
       base::OnceClosure on_local_save_fallback);
 
   // Called after an attempt to save a private pass to Google Wallet.

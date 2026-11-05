@@ -10,6 +10,7 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
+#import "base/test/test_future.h"
 #import "base/time/time.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/web/model/image_fetch/image_fetch_java_script_feature.h"
@@ -22,7 +23,6 @@
 #import "ios/web/public/test/scoped_testing_web_client.h"
 #import "ios/web/public/test/web_state_test_util.h"
 #import "ios/web/public/test/web_task_environment.h"
-#import "ios/web/web_state/ui/crw_web_controller.h"
 #import "net/http/http_util.h"
 #import "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #import "services/network/public/mojom/url_response_head.mojom.h"
@@ -50,7 +50,10 @@ class ImageFetchTabHelperTest : public PlatformTest {
  protected:
   ImageFetchTabHelperTest()
       : web_client_(std::make_unique<web::FakeWebClient>()) {
-    profile_ = TestProfileIOS::Builder().Build();
+    TestProfileIOS::Builder builder;
+    builder.SetSharedURLLoaderFactory(
+        test_url_loader_factory_.GetSafeWeakWrapper());
+    profile_ = std::move(builder).Build();
 
     web::WebState::CreateParams params(profile_.get());
     web_state_ = web::WebState::Create(params);
@@ -72,10 +75,6 @@ class ImageFetchTabHelperTest : public PlatformTest {
 
   // Sets up the network::TestURLLoaderFactory to handle download request.
   void SetUpTestSharedURLLoaderFactory() {
-    profile_->SetSharedURLLoaderFactory(
-        base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
-            &test_url_loader_factory_));
-
     network::mojom::URLResponseHeadPtr head =
         network::mojom::URLResponseHead::New();
     std::string raw_header = "HTTP/1.1 200 OK\n"
@@ -310,9 +309,11 @@ TEST_F(ImageFetchTabHelperTest, GetImageDataWithWebStateNavigate) {
 }
 
 // Tests that ImageFetchTabHelper::GetImageData falls back to using ImageFetcher
-// when the origin is mismatched (wrong domain).
+// with an opaque initiator when the origin is mismatched (wrong domain).
 TEST_F(ImageFetchTabHelperTest,
        GetImageDataWithMismatchedOriginFallsbackToImageFetcher) {
+  base::test::TestFuture<const network::ResourceRequest&> future;
+  test_url_loader_factory_.SetInterceptor(future.GetRepeatingCallback());
   url::Origin mismatched_origin =
       url::Origin::Create(GURL("https://mismatch.origin/"));
   base::RunLoop run_loop;
@@ -327,12 +328,21 @@ TEST_F(ImageFetchTabHelperTest,
 
   run_loop.Run();
   histogram_tester_.ExpectTotalCount(kUmaGetImageDataByJsResult, 0);
+  ASSERT_TRUE(future.IsReady());
+  network::ResourceRequest intercepted_request = future.Take();
+  EXPECT_EQ(network::mojom::CredentialsMode::kSameOrigin,
+            intercepted_request.credentials_mode);
+  ASSERT_TRUE(intercepted_request.request_initiator.has_value());
+  EXPECT_TRUE(intercepted_request.request_initiator->opaque());
+  EXPECT_TRUE(intercepted_request.site_for_cookies.IsNull());
 }
 
 // Tests that ImageFetchTabHelper::GetImageData falls back to using ImageFetcher
 // when the frame is null.
 TEST_F(ImageFetchTabHelperTest,
        GetImageDataWithNullFrameFallsbackToImageFetcher) {
+  base::test::TestFuture<const network::ResourceRequest&> future;
+  test_url_loader_factory_.SetInterceptor(future.GetRepeatingCallback());
   base::RunLoop run_loop;
   __block base::RepeatingClosure quit_closure = run_loop.QuitClosure();
   image_fetch_tab_helper()->GetImageData(GURL(kImageUrl), web::Referrer(),
@@ -345,6 +355,13 @@ TEST_F(ImageFetchTabHelperTest,
 
   run_loop.Run();
   histogram_tester_.ExpectTotalCount(kUmaGetImageDataByJsResult, 0);
+  ASSERT_TRUE(future.IsReady());
+  network::ResourceRequest intercepted_request = future.Take();
+  EXPECT_EQ(network::mojom::CredentialsMode::kSameOrigin,
+            intercepted_request.credentials_mode);
+  EXPECT_EQ(main_frame_origin(), intercepted_request.request_initiator);
+  EXPECT_TRUE(intercepted_request.site_for_cookies.IsEquivalent(
+      net::SiteForCookies::FromOrigin(main_frame_origin())));
 }
 
 // Tests that ImageFetchTabHelper::GetImageData can successfully get image data
@@ -408,4 +425,54 @@ TEST_F(ImageFetchTabHelperTest, GetImageDataFromSubframeSucceeds) {
   histogram_tester_.ExpectUniqueSample(
       kUmaGetImageDataByJsResult,
       ContextMenuGetImageDataByJsResult::kCanvasSucceed, 1);
+}
+
+// Tests that ImageFetchTabHelper::GetImageData falls back to using ImageFetcher
+// with CredentialsMode::kSameOrigin and sets request_initiator to the frame
+// origin.
+TEST_F(ImageFetchTabHelperTest,
+       GetImageDataWithCrossOriginFallbackOmitsCredentials) {
+  base::test::TestFuture<const network::ResourceRequest&> request_future;
+  test_url_loader_factory_.SetInterceptor(
+      request_future.GetRepeatingCallback());
+  url::Origin caller_origin =
+      url::Origin::Create(GURL("https://untrusted-cross-origin.test/"));
+  __block base::test::TestFuture<NSData*> future;
+
+  image_fetch_tab_helper()->GetImageData(GURL(kImageUrl), web::Referrer(),
+                                         "invalid-frame-id", caller_origin,
+                                         ^(NSData* data) {
+                                           future.SetValue(data);
+                                         });
+  NSData* data = future.Get();
+  ASSERT_TRUE(data);
+  EXPECT_NSEQ(GetExpectedData(), data);
+  ASSERT_TRUE(request_future.IsReady());
+  network::ResourceRequest intercepted_request = request_future.Take();
+  EXPECT_EQ(network::mojom::CredentialsMode::kSameOrigin,
+            intercepted_request.credentials_mode);
+  EXPECT_EQ(caller_origin, intercepted_request.request_initiator);
+  EXPECT_TRUE(intercepted_request.site_for_cookies.IsEquivalent(
+      net::SiteForCookies::FromOrigin(caller_origin)));
+}
+
+// Tests that ImageFetchTabHelper::GetImageData with fallback correctly handles
+// custom referrer policies.
+TEST_F(ImageFetchTabHelperTest,
+       GetImageDataWithCustomReferrerPolicyFallsbackToImageFetcher) {
+  base::RunLoop run_loop;
+  __block base::RepeatingClosure quit_closure = run_loop.QuitClosure();
+  web::Referrer referrer(GURL("https://source.example.com/page?query=secret"),
+                         web::ReferrerPolicyNever);
+  image_fetch_tab_helper()->GetImageData(GURL(kImageUrl), referrer,
+                                         "invalid-frame-id",
+                                         main_frame_origin(), ^(NSData* data) {
+                                           ASSERT_TRUE(data);
+                                           EXPECT_NSEQ(GetExpectedData(), data);
+                                           quit_closure.Run();
+                                         });
+
+  run_loop.Run();
+  EXPECT_EQ(1u, test_url_loader_factory_.total_requests());
+  histogram_tester_.ExpectTotalCount(kUmaGetImageDataByJsResult, 0);
 }

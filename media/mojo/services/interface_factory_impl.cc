@@ -65,8 +65,8 @@ class InterfaceFactoryImpl::AudioDecoderReceivers {
         mojo_media_client_(mojo_media_client),
         mojo_cdm_service_context_(mojo_cdm_service_context),
         disconnect_handler_(disconnect_handler) {
-    DCHECK(mojo_media_client_);
-    DCHECK(mojo_cdm_service_context_);
+    CHECK(mojo_media_client_, base::NotFatalUntil::M163);
+    CHECK(mojo_cdm_service_context_, base::NotFatalUntil::M163);
 
     base::RepeatingClosure disconnect_cb =
         base::BindRepeating(&AudioDecoderReceivers::OnReceiverDisconnect,
@@ -137,7 +137,7 @@ InterfaceFactoryImpl::InterfaceFactoryImpl(
     : frame_interfaces_(std::move(frame_interfaces)),
       mojo_media_client_(mojo_media_client) {
   DVLOG(1) << __func__;
-  DCHECK(mojo_media_client_);
+  CHECK(mojo_media_client_, base::NotFatalUntil::M163);
 
   SetReceiverDisconnectHandler();
 }
@@ -171,7 +171,7 @@ void InterfaceFactoryImpl::CreateVideoDecoder(
     mojo::PendingRemote<media::mojom::VideoDecoder> dst_video_decoder) {
   DVLOG(2) << __func__;
 #if BUILDFLAG(ENABLE_MOJO_VIDEO_DECODER)
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   // When out-of-process video decoding is enabled, we need to ensure that we
   // know the supported video decoder configurations prior to creating the
   // MojoVideoDecoderService. That way, the MojoVideoDecoderService won't need
@@ -188,18 +188,18 @@ void InterfaceFactoryImpl::CreateVideoDecoder(
                                    mojo_media_client_, &cdm_service_context_,
                                    std::move(dst_video_decoder)),
                                std::move(receiver));
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #endif  // BUILDFLAG(ENABLE_MOJO_VIDEO_DECODER)
 }
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 void InterfaceFactoryImpl::CreateVideoDecoderWithTracker(
     mojo::PendingReceiver<mojom::VideoDecoder> receiver,
     mojo::PendingRemote<mojom::VideoDecoderTracker> tracker) {
   // The browser process ensures that this is not called in the GPU process.
   NOTREACHED();
 }
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 void InterfaceFactoryImpl::CreateAudioEncoder(
     mojo::PendingReceiver<mojom::AudioEncoder> receiver) {
@@ -298,7 +298,8 @@ void InterfaceFactoryImpl::CreateCdm(const CdmConfig& cdm_config,
   auto mojo_cdm_service =
       std::make_unique<MojoCdmService>(&cdm_service_context_);
   auto* raw_mojo_cdm_service = mojo_cdm_service.get();
-  DCHECK(!pending_mojo_cdm_services_.count(raw_mojo_cdm_service));
+  CHECK(!pending_mojo_cdm_services_.count(raw_mojo_cdm_service),
+        base::NotFatalUntil::M163);
   pending_mojo_cdm_services_[raw_mojo_cdm_service] =
       std::move(mojo_cdm_service);
   raw_mojo_cdm_service->Initialize(
@@ -414,10 +415,11 @@ void InterfaceFactoryImpl::OnCdmServiceInitialized(
     CreateCdmCallback callback,
     mojom::CdmContextPtr cdm_context,
     CreateCdmStatus status) {
-  DCHECK(raw_mojo_cdm_service);
+  CHECK(raw_mojo_cdm_service, base::NotFatalUntil::M163);
 
   // Remove pending MojoCdmService from the mapping in all cases.
-  DCHECK(pending_mojo_cdm_services_.count(raw_mojo_cdm_service));
+  CHECK(pending_mojo_cdm_services_.count(raw_mojo_cdm_service),
+        base::NotFatalUntil::M163);
   auto mojo_cdm_service =
       std::move(pending_mojo_cdm_services_[raw_mojo_cdm_service]);
   pending_mojo_cdm_services_.erase(raw_mojo_cdm_service);
@@ -436,7 +438,7 @@ void InterfaceFactoryImpl::OnCdmServiceInitialized(
 
 #endif  // BUILDFLAG(ENABLE_MOJO_CDM)
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 void InterfaceFactoryImpl::FinishCreatingVideoDecoder(
     mojo::PendingReceiver<mojom::VideoDecoder> receiver,
     mojo::PendingRemote<media::mojom::VideoDecoder> dst_video_decoder) {
@@ -449,6 +451,6 @@ void InterfaceFactoryImpl::FinishCreatingVideoDecoder(
   NOTREACHED();
 #endif  // BUILDFLAG(ENABLE_MOJO_VIDEO_DECODER)
 }
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 }  // namespace media

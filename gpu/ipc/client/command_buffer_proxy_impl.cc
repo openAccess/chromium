@@ -10,6 +10,7 @@
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted_delete_on_sequence.h"
@@ -73,7 +74,6 @@ class CommandBufferClientMessageFilter
 
   // mojom::CommandBufferClient:
   void OnConsoleMessage(const std::string& message) override;
-  void OnGpuSwitched() override;
   void OnDestroyed(gpu::error::ContextLostReason reason,
                    gpu::error::Error error) override;
   void OnReturnData(const std::vector<uint8_t>& data) override;
@@ -140,13 +140,6 @@ void CommandBufferClientMessageFilter::OnConsoleMessage(
   base::AutoLock auto_lock(proxy_lock_);
   if (proxy_) {
     proxy_->OnConsoleMessage(message);
-  }
-}
-
-void CommandBufferClientMessageFilter::OnGpuSwitched() {
-  base::AutoLock auto_lock(proxy_lock_);
-  if (proxy_) {
-    proxy_->OnGpuSwitched();
   }
 }
 
@@ -328,15 +321,9 @@ void CommandBufferProxyImpl::OnDestroyed(gpu::error::ContextLostReason reason,
 }
 
 void CommandBufferProxyImpl::OnConsoleMessage(const std::string& message) {
-  base::AutoLock shared_state_lock(shared_state_lock_);
+  base::AutoLock gpu_control_client_lock(gpu_control_client_lock_);
   if (gpu_control_client_)
     gpu_control_client_->OnGpuControlErrorMessage(message.c_str(), /*id=*/0);
-}
-
-void CommandBufferProxyImpl::OnGpuSwitched() {
-  base::AutoLock shared_state_lock(shared_state_lock_);
-  if (gpu_control_client_)
-    gpu_control_client_->OnGpuSwitched();
 }
 
 void CommandBufferProxyImpl::AddDeletionObserver(DeletionObserver* observer) {
@@ -575,7 +562,7 @@ void CommandBufferProxyImpl::ForceLostContext(error::ContextLostReason reason) {
 
 void CommandBufferProxyImpl::SetGpuControlClient(GpuControlClient* client) {
   CheckLock();
-  base::AutoLock shared_state_lock(shared_state_lock_);
+  base::AutoLock gpu_control_client_lock(gpu_control_client_lock_);
   gpu_control_client_ = client;
 }
 
@@ -713,6 +700,9 @@ void CommandBufferProxyImpl::CreateGpuFence(uint32_t gpu_fence_id,
   }
 
   gfx::GpuFence* gpu_fence = gfx::GpuFence::FromClientGpuFence(source);
+  if (!gpu_fence) {
+    return;
+  }
   command_buffer_->CreateGpuFenceFromHandle(
       gpu_fence_id, gpu_fence->GetGpuFenceHandle().Clone());
 }
@@ -744,7 +734,7 @@ void CommandBufferProxyImpl::OnGetGpuFenceHandleComplete(
 }
 
 void CommandBufferProxyImpl::OnReturnData(const std::vector<uint8_t>& data) {
-  base::AutoLock shared_state_lock(shared_state_lock_);
+  base::AutoLock gpu_control_client_lock(gpu_control_client_lock_);
   if (gpu_control_client_) {
     gpu_control_client_->OnGpuControlReturnData(data);
   }
@@ -811,8 +801,7 @@ void CommandBufferProxyImpl::TryUpdateStateDontReportError() {
 
 const gpu::CommandBufferSharedState* CommandBufferProxyImpl::shared_state()
     const {
-  return reinterpret_cast<const gpu::CommandBufferSharedState*>(
-      shared_state_mapping_.memory());
+  return shared_state_mapping_.GetMemoryAs<gpu::CommandBufferSharedState>();
 }
 
 base::HistogramBase*
@@ -944,37 +933,23 @@ void CommandBufferProxyImpl::DisconnectChannel() {
   if (!channel_ || disconnected_)
     return;
   disconnected_ = true;
-  // This used to be a call to VerifyFlush which is a synchronous call.
-  // We changed it to EnsureFlush because DestroyCommandBuffer below is
-  // synchronous and so EnsureFlush is enough.
+  // Flush any pending deferred requests on the channel before sending
+  // DestroyCommandBuffer (which is synchronous unless the channel is shutting
+  // down).
   channel_->EnsureFlush(UINT32_MAX);
 
-  mojo::SyncCallRestrictions::ScopedAllowSyncCall allow_sync;
-  channel_->GetGpuChannel().DestroyCommandBuffer(route_id_);
-
-  // Copy the client pointer under the lock and invoke the callback outside the
-  // lock to avoid deadlocks.
-  //
-  // Why: Holding `shared_state_lock_` during `OnGpuControlLostContext` causes
-  // deadlocks in WebGPU/Dawn context loss teardown. In WebGPU, the context loss
-  // callback synchronously calls `Finish()` on the helper to flush pending
-  // commands before teardown. This helper calls `WaitForGetOffsetInRange()`
-  // which attempts to re-acquire `shared_state_lock_` on the same thread. Since
-  // `base::Lock` is non-recursive in Chromium, this results in a deadlock.
-  //
-  // Safety: Releasing the lock before calling `OnGpuControlLostContext` is safe
-  // from because Blink (via `DawnControlClientHolder::Destroy`) explicitly
-  // defers the destruction of the context provider and its command buffer proxy
-  // by posting a no-op task to the task runner. This guarantees that the client
-  // pointer and the command buffer proxy will remain alive and valid until this
-  // entire call stack has fully unwound.
-  gpu::GpuControlClient* client = nullptr;
-  {
-    base::AutoLock shared_state_lock(shared_state_lock_);
-    client = gpu_control_client_;
+  if (is_channel_shutting_down_.load(std::memory_order_relaxed)) {
+    channel_->GetGpuChannel().DestroyCommandBuffer(route_id_,
+                                                   base::DoNothing());
+  } else {
+    mojo::SyncCallRestrictions::ScopedAllowSyncCall allow_sync;
+    channel_->GetGpuChannel().DestroyCommandBuffer(route_id_);
   }
-  if (client) {
-    client->OnGpuControlLostContext();
+
+  // `shared_state_lock_` must not be held here: the WebGPU context loss
+  // callback calls Finish(), which re-acquires it in WaitForGetOffsetInRange().
+  if (gpu_control_client_) {
+    gpu_control_client_->OnGpuControlLostContext();
   }
 }
 

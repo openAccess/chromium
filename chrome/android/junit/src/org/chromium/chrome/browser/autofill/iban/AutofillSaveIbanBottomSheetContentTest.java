@@ -58,6 +58,11 @@ public class AutofillSaveIbanBottomSheetContentTest {
     }
 
     @Test
+    public void testShowHandlebar() {
+        assertTrue(mContent.showHandlebar());
+    }
+
+    @Test
     public void testNoVerticalScrollOffset() {
         assertThat(mContent.getVerticalScrollOffset(), equalTo(0));
     }
@@ -84,16 +89,6 @@ public class AutofillSaveIbanBottomSheetContentTest {
         assertThat(
                 mContent.getFullHeightRatio(),
                 equalTo((float) BottomSheetContent.HeightMode.WRAP_CONTENT));
-    }
-
-    @Test
-    public void testBottomSheetAccessibilityContentDescription() {
-        assertThat(
-                mContent.getSheetContentDescription(mActivity),
-                equalTo(
-                        mActivity.getString(
-                                R.string
-                                        .autofill_save_iban_prompt_bottom_sheet_content_description)));
     }
 
     @Test

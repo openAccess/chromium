@@ -14,6 +14,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "components/sessions/core/session_id.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
 #include "content/public/browser/web_contents_delegate.h"
@@ -24,6 +25,7 @@
 #include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/frame.mojom-forward.h"
 #include "third_party/blink/public/mojom/page/draggable_region.mojom-forward.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/gfx/image/image.h"
 
@@ -50,6 +52,7 @@ namespace extensions {
 class AppDelegate;
 class AppWebContentsHelper;
 class Extension;
+class ExtensionRegistry;
 class PlatformAppBrowserTest;
 
 // Manages the web contents for app windows. The implementation for this
@@ -58,12 +61,12 @@ class PlatformAppBrowserTest;
 // native window.
 class AppWindowContents {
  public:
-  AppWindowContents() {}
+  AppWindowContents() = default;
 
   AppWindowContents(const AppWindowContents&) = delete;
   AppWindowContents& operator=(const AppWindowContents&) = delete;
 
-  virtual ~AppWindowContents() {}
+  virtual ~AppWindowContents() = default;
 
   // Called to initialize the WebContents, before the app window is created.
   virtual void Initialize(content::BrowserContext* context,
@@ -237,6 +240,10 @@ class AppWindow : public content::WebContentsDelegate,
   AppWindow& operator=(const AppWindow&) = delete;
 
   // Initializes the render interface, web contents, and native window.
+  // Note: Initial window state transitions (such as entering fullscreen) may
+  // synchronously close the native window and destroy `this` (e.g., if a
+  // nested run loop spins during the transition). Callers that access the
+  // AppWindow after calling Init() must check liveness via GetWeakPtr().
   void Init(const GURL& url,
             std::unique_ptr<AppWindowContents> app_window_contents,
             content::RenderFrameHost* creator_frame,
@@ -307,6 +314,9 @@ class AppWindow : public content::WebContentsDelegate,
   // not exit fullscreen mode because a window may have a different type of
   // fullscreen enabled). If `type` is not FORCED, checks that the extension has
   // the required permission.
+  // Note: Transitioning fullscreen state may synchronously close the native
+  // window and destroy `this`. Callers that access the AppWindow after this
+  // call must check liveness via GetWeakPtr().
   void SetFullscreen(FullscreenType type, bool enable);
 
   // Returns true if the app window is in a fullscreen state.
@@ -324,16 +334,26 @@ class AppWindow : public content::WebContentsDelegate,
 
   // Transitions window into fullscreen, maximized, minimized or restores based
   // on chrome.app.window API.
+  // Note: Fullscreen() and Restore() (when exiting fullscreen) may
+  // synchronously close the native window and destroy `this`. Callers that
+  // access the AppWindow after these calls must check liveness via
+  // GetWeakPtr().
   void Fullscreen();
   void Maximize();
   void Minimize();
   void Restore();
 
   // Transitions to OS fullscreen. See FULLSCREEN_TYPE_OS for more details.
+  // Note: May synchronously close the native window and destroy `this`.
+  // Callers that access the AppWindow after this call must check liveness via
+  // GetWeakPtr().
   void OSFullscreen();
 
   // Transitions to forced fullscreen. See FULLSCREEN_TYPE_FORCED for more
   // details.
+  // Note: May synchronously close the native window and destroy `this`.
+  // Callers that access the AppWindow after this call must check liveness via
+  // GetWeakPtr().
   void ForcedFullscreen();
 
   // Set the minimum and maximum size of the content bounds.
@@ -344,10 +364,16 @@ class AppWindow : public content::WebContentsDelegate,
 
   // Shows the window if its contents have been painted; otherwise flags the
   // window to be shown as soon as its contents are painted for the first time.
+  // Note: May synchronously close the native window and destroy `this`.
+  // Callers that access the AppWindow after this call must check liveness via
+  // GetWeakPtr().
   void Show(ShowType show_type);
 
   // Hides the window. If the window was previously flagged to be shown on
   // first paint, it will be unflagged.
+  // Note: May synchronously close the native window and destroy `this`.
+  // Callers that access the AppWindow after this call must check liveness via
+  // GetWeakPtr().
   void Hide();
 
   AppWindowContents* app_window_contents_for_test() {
@@ -401,6 +427,10 @@ class AppWindow : public content::WebContentsDelegate,
 
   bool DidFinishFirstNavigation() { return did_finish_first_navigation_; }
 
+  base::WeakPtr<AppWindow> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
  protected:
   ~AppWindow() override;
 
@@ -444,7 +474,7 @@ class AppWindow : public content::WebContentsDelegate,
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
@@ -499,6 +529,9 @@ class AppWindow : public content::WebContentsDelegate,
   CreateParams LoadDefaults(CreateParams params) const;
 
   // Set the fullscreen state in the native app window.
+  // Note: May synchronously close the native window and destroy `this`.
+  // Callers that access `this` after this call must check liveness via
+  // `weak_ptr_factory_`.
   void SetNativeWindowFullscreen();
 
   // Returns true if there is any overlap between the window and the taskbar
@@ -601,6 +634,9 @@ class AppWindow : public content::WebContentsDelegate,
 
   // Allows tests to wait for draggable regions to be sent from the renderer.
   base::OnceClosure on_update_draggable_regions_callback_for_testing_;
+
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
   base::WeakPtrFactory<AppWindow> image_loader_ptr_factory_{this};
   base::WeakPtrFactory<AppWindow> weak_ptr_factory_{this};

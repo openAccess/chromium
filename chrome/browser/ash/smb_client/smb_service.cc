@@ -20,7 +20,6 @@
 #include "base/time/default_tick_clock.h"
 #include "base/unguessable_token.h"
 #include "base/values.h"
-#include "chrome/browser/ash/file_manager/file_manager_pref_names.h"
 #include "chrome/browser/ash/file_system_provider/mount_path_util.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system_info.h"
 #include "chrome/browser/ash/kerberos/kerberos_credentials_manager.h"
@@ -29,6 +28,7 @@
 #include "chrome/browser/ash/smb_client/discovery/mdns_host_locator.h"
 #include "chrome/browser/ash/smb_client/discovery/netbios_client.h"
 #include "chrome/browser/ash/smb_client/discovery/netbios_host_locator.h"
+#include "chrome/browser/ash/smb_client/smb_constants.h"
 #include "chrome/browser/ash/smb_client/smb_file_system.h"
 #include "chrome/browser/ash/smb_client/smb_file_system_id.h"
 #include "chrome/browser/ash/smb_client/smb_kerberos_credentials_updater.h"
@@ -39,7 +39,6 @@
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/ui/webui/ash/smb_shares/smb_credentials_dialog.h"
 #include "chrome/browser/ui/webui/ash/smb_shares/smb_handler.h"
-#include "chrome/common/chrome_features.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
@@ -99,12 +98,12 @@ enum class AuthMethod {
 };
 
 void RecordMountResult(SmbMountResult result) {
-  DCHECK_LE(result, SmbMountResult::kMaxValue);
+  CHECK_LE(result, SmbMountResult::kMaxValue, base::NotFatalUntil::M160);
   UMA_HISTOGRAM_ENUMERATION("NativeSmbFileShare.MountResult", result);
 }
 
 void RecordAuthenticationMethod(AuthMethod method) {
-  DCHECK_LE(method, AuthMethod::kMaxValue);
+  CHECK_LE(method, AuthMethod::kMaxValue, base::NotFatalUntil::M160);
   UMA_HISTOGRAM_ENUMERATION("NativeSmbFileShare.AuthenticationMethod", method);
 }
 
@@ -116,9 +115,9 @@ SmbService::SmbService(Profile* profile,
                        std::unique_ptr<base::TickClock> tick_clock)
     : provider_id_(file_system_provider::ProviderId::CreateFromNativeId("smb")),
       profile_(profile),
-      registry_(profile) {
+      registry_(CHECK_DEREF(profile->GetPrefs())) {
   user_manager::User* user = ProfileHelper::Get()->GetUserByProfile(profile_);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M160);
 
   SmbProviderClient* client = GetSmbProviderClient();
   if (!client) {
@@ -157,12 +156,34 @@ SmbService::SmbService(Profile* profile,
 
 SmbService::~SmbService() {
   net::NetworkChangeNotifier::RemoveNetworkChangeObserver(this);
+  smbfs_shares_.clear();
 }
 
 void SmbService::Shutdown() {
   // Unmount and destroy all smbfs instances explicitly before destruction,
   // since SmbFsShare accesses KeyedServices on destruction.
   smbfs_shares_.clear();
+}
+
+void SmbService::AddObserver(Observer* observer) {
+  observers_.AddObserver(observer);
+}
+
+void SmbService::RemoveObserver(Observer* observer) {
+  observers_.RemoveObserver(observer);
+}
+
+void SmbService::OnSmbFsMounted(const base::FilePath& mount_path,
+                                const std::string& display_name) {
+  for (auto& observer : observers_) {
+    observer.OnSmbFsMounted(mount_path, display_name);
+  }
+}
+
+void SmbService::OnSmbFsUnmounted(const base::FilePath& mount_path) {
+  for (auto& observer : observers_) {
+    observer.OnSmbFsUnmounted(mount_path);
+  }
 }
 
 // static
@@ -176,11 +197,12 @@ void SmbService::RegisterProfilePrefs(
   registry->RegisterListPref(ash::prefs::kNetworkFileSharesPreconfiguredShares);
   registry->RegisterStringPref(ash::prefs::kMostRecentlyUsedNetworkFileShareURL,
                                "");
+  registry->RegisterBooleanPref(kSmbfsEnableVerboseLogging, false);
   SmbPersistedShareRegistry::RegisterProfilePrefs(registry);
 }
 
 void SmbService::UnmountSmbFs(const base::FilePath& mount_path) {
-  DCHECK(!mount_path.empty());
+  CHECK(!mount_path.empty(), base::NotFatalUntil::M160);
 
   for (auto it = smbfs_shares_.begin(); it != smbfs_shares_.end(); ++it) {
     SmbFsShare* share = it->second.get();
@@ -202,7 +224,7 @@ void SmbService::UnmountSmbFs(const base::FilePath& mount_path) {
 
 void SmbService::OnSmbfsRemoveSavedCredentialsDone(const std::string& mount_id,
                                                    bool success) {
-  DCHECK(!mount_id.empty());
+  CHECK(!mount_id.empty(), base::NotFatalUntil::M160);
 
   auto it = smbfs_shares_.find(mount_id);
   if (it == smbfs_shares_.end()) {
@@ -217,6 +239,8 @@ void SmbService::OnSmbfsRemoveSavedCredentialsDone(const std::string& mount_id,
 }
 
 SmbFsShare* SmbService::GetSmbFsShareForPath(const base::FilePath& path) {
+  // TODO(crbug.com/577749850): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!path.empty());
   DCHECK(path.IsAbsolute());
 
@@ -287,7 +311,7 @@ void SmbService::Mount(const std::string& display_name,
   std::string workgroup;
 
   user_manager::User* user = ProfileHelper::Get()->GetUserByProfile(profile_);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M160);
 
   if (use_kerberos) {
     // Differentiate between AD and KerberosEnabled via policy in metrics.
@@ -349,7 +373,7 @@ void SmbService::OnUserInitiatedMountDone(
     return;
   }
 
-  DCHECK(!mount_path.empty());
+  CHECK(!mount_path.empty(), base::NotFatalUntil::M160);
   if (should_open_file_manager_after_mount) {
     platform_util::ShowItemInFolder(profile_, mount_path);
   }
@@ -372,7 +396,7 @@ void SmbService::MountInternal(const SmbShareInfo& info,
   }
 
   user_manager::User* user = ProfileHelper::Get()->GetUserByProfile(profile_);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M160);
 
   SmbFsShare::MountOptions smbfs_options;
   smbfs_options.resolved_host =
@@ -382,8 +406,8 @@ void SmbService::MountInternal(const SmbShareInfo& info,
   smbfs_options.password = password;
   smbfs_options.allow_ntlm = IsNTLMAuthenticationEnabled();
   smbfs_options.skip_connect = skip_connect;
-  smbfs_options.enable_verbose_logging = profile_->GetPrefs()->GetBoolean(
-      file_manager::prefs::kSmbfsEnableVerboseLogging);
+  smbfs_options.enable_verbose_logging =
+      profile_->GetPrefs()->GetBoolean(kSmbfsEnableVerboseLogging);
   if (save_credentials && !info.password_salt().empty()) {
     smbfs_options.save_restore_password = true;
     smbfs_options.account_hash = user->username_hash();
@@ -404,6 +428,7 @@ void SmbService::MountInternal(const SmbShareInfo& info,
 
   std::unique_ptr<SmbFsShare> mount = std::make_unique<SmbFsShare>(
       profile_, info.share_url(), info.display_name(), smbfs_options);
+  mount->AddMountObserver(this);
   if (smbfs_mounter_creation_callback_) {
     mount->SetMounterCreationCallbackForTest(smbfs_mounter_creation_callback_);
   }
@@ -567,7 +592,7 @@ void SmbService::CompleteSetup() {
 }
 
 void SmbService::OnSetupCompleteForTesting(base::OnceClosure callback) {
-  DCHECK(!setup_complete_callback_);
+  CHECK(!setup_complete_callback_, base::NotFatalUntil::M160);
   if (share_finder_) {
     std::move(callback).Run();
     return;
@@ -626,7 +651,7 @@ bool SmbService::IsShareMounted(const SmbUrl& share) const {
     base::FilePath share_path =
         GetSharePathFromFileSystemId(info.file_system_id());
     SmbUrl parsed_url(share_path.value());
-    DCHECK(parsed_url.IsValid());
+    CHECK(parsed_url.IsValid(), base::NotFatalUntil::M160);
     if (parsed_url.ToString() == share.ToString()) {
       return true;
     }

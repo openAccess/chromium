@@ -23,6 +23,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_runner.h"
 #include "base/values.h"
+#include "url/gurl.h"
 
 class PrefService;
 class PrefRegistrySimple;
@@ -33,34 +34,56 @@ namespace enterprise_auth {
 // notification system and reading com.apple.extensiblesso from CFPreferences.
 class CFPreferencesObserver {
  public:
-  class Config {
-   public:
-    Config(base::apple::ScopedCFTypeRef<CFPropertyListRef> extension_id,
-           base::apple::ScopedCFTypeRef<CFPropertyListRef> team_id,
-           base::apple::ScopedCFTypeRef<CFPropertyListRef> hosts);
-    Config(const Config&);
-    Config(Config&&);
-    Config& operator=(const Config&);
-    Config& operator=(Config&&);
-    ~Config();
+  // This struct is a raw snapshot of the `com.apple.extensiblesso` MDM payload.
+  // Compared to the ExtensibleEnterpriseSSOPrefsHandler::Config it makes no
+  // assumptions about the type, format and validity of its fields.
+  struct RawConfig {
     base::apple::ScopedCFTypeRef<CFPropertyListRef> extension_id;
     base::apple::ScopedCFTypeRef<CFPropertyListRef> team_id;
     base::apple::ScopedCFTypeRef<CFPropertyListRef> hosts;
+    base::apple::ScopedCFTypeRef<CFPropertyListRef> urls;
   };
 
   virtual ~CFPreferencesObserver() = default;
   virtual void Subscribe(base::RepeatingClosure on_update) = 0;
   virtual void Unsubscribe() = 0;
-  virtual base::OnceCallback<Config()> GetReadConfigCallback() = 0;
+  virtual base::OnceCallback<RawConfig()> GetReadConfigCallback() = 0;
 };
 
 // Responsible for syncing 'Hosts' field of Apple's com.apple.extensiblesso
 // property with Chrome's kExtensibleEnterpriseSSOConfiguredHosts pref.
 // On construction it subscribes to the Darwin notification center to observe
 // changes to said property. Unsubscribes on destruction.
+//
+// There should ever be only a single instance of this class.
 class ExtensibleEnterpriseSSOPrefsHandler {
  public:
   explicit ExtensibleEnterpriseSSOPrefsHandler(PrefService* local_state);
+
+  // Represents the `com.apple.extensiblesso` MDM payload installed on the
+  // device.
+  struct Config {
+    // `ExtensionIdentifier` entry of the payload. Never empty.
+    std::string extension_id;
+
+    // `TeamIdentifier` entry of the payload. Never empty.
+    std::string team_id;
+
+    // `Hosts` entry of the payload. Non-string and empty entries are dropped.
+    // Required for `Credential` payloads. Ignored for `Redirect` payloads.
+    // Host names that begin with a "." are wildcard suffixes that match all
+    // subdomains; otherwise the host name needs to be an exact match.
+    std::optional<std::vector<std::string>> hosts;
+
+    // `URLs` entry of the payload. `std::nullopt` if the entry is missing or
+    // malformed, can be empty.
+    // Host and schema are normalized to lowercase.
+    // Entries that are not HTTP or HTTPS, have query parameters or refs are
+    // dropped.
+    std::optional<std::vector<GURL>> urls;
+
+    friend bool operator==(const Config&, const Config&) = default;
+  };
 
   ~ExtensibleEnterpriseSSOPrefsHandler();
 
@@ -77,12 +100,20 @@ class ExtensibleEnterpriseSSOPrefsHandler {
   // Must be called on the main thread.
   void UpdatePrefs();
 
-  static const CFStringRef kOktaSSOExtensionID;
-  static const CFStringRef kOktaSSOTeamID;
+  // Returns the most up-to-date config. If the config was never read or the
+  // last config read was invalid returns std::nullopt.
+  static std::optional<Config> GetCurrentConfig();
 
  private:
-  void OnConfigRead(base::ListValue res);
+  void OnConfigRead(std::optional<Config> config);
 
+  // Validates `raw_config` and converts it into a `Config`. Returns
+  // `std::nullopt` if a required entry is missing or malformed, or if the
+  // payload doesn't belong to a supported IdP.
+  static std::optional<Config> ParseConfig(
+      CFPreferencesObserver::RawConfig raw_config);
+
+  friend class ExtensibleEnterpriseSSOPrefsHandlerTest;
   friend class ScopedCFPreferenceObserverOverride;
   static void OverrideCFPreferenceObserverForTesting(
       base::RepeatingCallback<std::unique_ptr<CFPreferencesObserver>()>
@@ -90,6 +121,8 @@ class ExtensibleEnterpriseSSOPrefsHandler {
 
   std::unique_ptr<CFPreferencesObserver> cf_preferences_observer_;
   raw_ptr<PrefService> local_state_{nullptr};
+  std::optional<Config> current_config_;
+  scoped_refptr<base::SequencedTaskRunner> read_config_task_runner_;
 
   SEQUENCE_CHECKER(sequence_checker_);
   base::WeakPtrFactory<ExtensibleEnterpriseSSOPrefsHandler> weak_ptr_factory_{

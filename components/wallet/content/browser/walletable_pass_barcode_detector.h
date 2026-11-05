@@ -9,8 +9,10 @@
 #include <vector>
 
 #include "base/functional/callback_forward.h"
+#include "components/wallet/content/common/mojom/image_extractor.mojom-forward.h"
 #include "components/wallet/core/browser/data_models/wallet_barcode.h"
 #include "content/public/browser/web_contents.h"
+#include "services/shape_detection/public/mojom/barcodedetection.mojom-forward.h"
 
 namespace wallet {
 
@@ -18,14 +20,33 @@ namespace wallet {
 // contents.
 class WalletablePassBarcodeDetector {
  public:
+  // Why a detection returned the barcodes it did, so that callers can tell a
+  // page without barcodes apart from one that could not be scanned.
+  enum class BarcodeDetectionStatus {
+    // The images were decoded. The barcodes may still be empty.
+    kSuccess,
+    // No image on the page passed the extraction filters, so nothing was
+    // decoded.
+    kImagesNotFound,
+    // Image extraction or barcode decoding could not run, or its connection
+    // was lost.
+    kDetectorUnavailable,
+  };
+
   using WalletBarcodeDetectionDetectCallback =
-      base::OnceCallback<void(std::vector<WalletBarcode>)>;
+      base::OnceCallback<void(BarcodeDetectionStatus,
+                              std::vector<WalletBarcode>)>;
 
   virtual ~WalletablePassBarcodeDetector() = default;
 
-  // Detects barcodes in images on current `web_contents`.
-  virtual void Detect(content::WebContents* web_contents,
-                      WalletBarcodeDetectionDetectCallback callback) = 0;
+  // Detects barcodes in the images on the current `web_contents` that pass the
+  // caller's `extraction_options` filters. Only `barcode_formats` are decoded;
+  // an empty list decodes every format, and `UNKNOWN` is ignored.
+  virtual void Detect(
+      content::WebContents* web_contents,
+      mojom::ImageExtractionOptionsPtr extraction_options,
+      std::vector<shape_detection::mojom::BarcodeFormat> barcode_formats,
+      WalletBarcodeDetectionDetectCallback callback) = 0;
 };
 
 }  // namespace wallet

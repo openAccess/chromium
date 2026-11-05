@@ -18,7 +18,6 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -46,9 +45,7 @@ import java.util.List;
 
 /** Test relating to {@link EducationalTipModuleTwoCellBuilder} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowAppCompatResources.class})
+@Config(shadows = {ShadowAppCompatResources.class})
 public class EducationalTipModuleTwoCellBuilderUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -79,7 +76,6 @@ public class EducationalTipModuleTwoCellBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBuild() {
         mModuleBuilder = new EducationalTipModuleTwoCellBuilder(MODULE_TYPE, mActionDelegate);
         assertTrue(mModuleBuilder.build(mModuleDelegate, mBuildCallback));
@@ -87,7 +83,6 @@ public class EducationalTipModuleTwoCellBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateView() {
         mModuleBuilder = new EducationalTipModuleTwoCellBuilder(MODULE_TYPE, mActionDelegate);
         ViewGroup parentView = new FrameLayout(mContext);
@@ -97,7 +92,6 @@ public class EducationalTipModuleTwoCellBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetManualRank_SetupListActive() {
         when(mSetupListManager.shouldShowTwoCellLayout()).thenReturn(true);
         mModuleBuilder = new EducationalTipModuleTwoCellBuilder(MODULE_TYPE, mActionDelegate);
@@ -107,7 +101,6 @@ public class EducationalTipModuleTwoCellBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetManualRank_SetupListInActive() {
         when(mSetupListManager.isSetupListActive()).thenReturn(false);
         when(mSetupListManager.shouldShowTwoCellLayout()).thenReturn(true);
@@ -118,7 +111,6 @@ public class EducationalTipModuleTwoCellBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateInputContext() {
         mModuleBuilder = new EducationalTipModuleTwoCellBuilder(MODULE_TYPE, mActionDelegate);
         InputContext inputContext = mModuleBuilder.createInputContext();

@@ -34,6 +34,7 @@
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/ozone/events_ozone.h"
 #include "ui/events/types/event_type.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/range/range.h"
 #include "ui/ozone/platform/wayland/common/wayland_util.h"
 #include "ui/ozone/platform/wayland/host/span_style.h"
@@ -70,8 +71,9 @@ std::optional<size_t> OffsetFromUTF8Offset(std::string_view text,
 bool IsImeEnabled() {
   base::CommandLine* cmd_line = base::CommandLine::ForCurrentProcess();
   // We do not expect both switches are set at the same time.
-  DCHECK(!cmd_line->HasSwitch(switches::kEnableWaylandIme) ||
-         !cmd_line->HasSwitch(switches::kDisableWaylandIme));
+  CHECK(!cmd_line->HasSwitch(switches::kEnableWaylandIme) ||
+            !cmd_line->HasSwitch(switches::kDisableWaylandIme),
+        base::NotFatalUntil::M163);
   // Force enable/disable wayland IMEs, when explictly specified via commandline
   // arguments.
   if (cmd_line->HasSwitch(switches::kEnableWaylandIme))
@@ -413,6 +415,12 @@ void WaylandInputMethodContext::UpdateFocus(
     TextInputClient::FocusReason reason) {
   attributes_ = new_client_attributes;
 
+  // Cached surrounding text and cursor rect belong to the previously focused
+  // text input client, so they must not be sent when re-enabling.
+  if (text_input_v3_) {
+    text_input_v3_->ClearCachedState();
+  }
+
   // This prevents unnecessarily hiding/showing the virtual keyboard.
   TextInputType new_type = new_client_attributes.input_type;
   bool skip_vk_update =
@@ -442,15 +450,27 @@ void WaylandInputMethodContext::SetCursorLocation(const gfx::Rect& rect) {
       text_input_v3_
           ? connection_->window_manager()->GetCurrentTextInputFocusedWindow()
           : connection_->window_manager()->GetCurrentKeyboardFocusedWindow();
+  if (!focused_window && text_input_v3_ && focused_ && window_) {
+    // The text input client may be focused before the compositor sends
+    // zwp_text_input_v3.enter (e.g. when the window regains focus). The cursor
+    // rect is still needed so that it can be sent along with the enable
+    // request, which resets all state on the compositor side. Compute it
+    // relative to the root window of this context, which is the surface that
+    // will receive text input focus.
+    focused_window = window_->GetRootParentWindow();
+  }
   if (!focused_window) {
     return;
   }
+  // The protocol expects surface-local coordinates, which are window-local
+  // DIP scaled by the window's ui_scale.
+  const gfx::Rect rect_in_surface = gfx::ScaleToEnclosingRectIgnoringError(
+      rect - focused_window->GetBoundsInDIP().OffsetFromOrigin(),
+      focused_window->applied_state().ui_scale);
   if (text_input_v3_) {
-    text_input_v3_->SetCursorRect(
-        rect - focused_window->GetBoundsInDIP().OffsetFromOrigin());
+    text_input_v3_->SetCursorRect(rect_in_surface);
   } else {
-    text_input_v1_->SetCursorRect(
-        rect - focused_window->GetBoundsInDIP().OffsetFromOrigin());
+    text_input_v1_->SetCursorRect(rect_in_surface);
   }
 }
 
@@ -733,7 +753,7 @@ void WaylandInputMethodContext::OnDeleteSurroundingText(int32_t index,
                                                         uint32_t length) {
   const auto& [surrounding_text, utf16_offset, selection, unsused_composition] =
       surrounding_text_tracker_.predicted_state();
-  DCHECK(selection.IsValid());
+  CHECK(selection.IsValid(), base::NotFatalUntil::M163);
 
   // TODO(crbug.com/40189286): Currently data sent from delete surrounding text
   // from exo is broken. Currently this broken behavior is supported to prevent

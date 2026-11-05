@@ -42,6 +42,7 @@
 #include "content/browser/worker_host/dedicated_worker_service_impl.h"
 #include "content/browser/worker_host/worker_script_fetcher.h"
 #include "content/browser/worker_host/worker_util.h"
+#include "content/common/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/network_service_util.h"
@@ -117,10 +118,11 @@ DedicatedWorkerHost::DedicatedWorkerHost(
       network_restrictions_id_(base::UnguessableToken::Create()),
       creator_network_restrictions_id_(creator_network_restrictions_id),
       creator_policies_(creator_policies.Clone()) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(worker_process_host_);
-  DCHECK(worker_process_host_->IsInitializedAndNotDead());
-  DCHECK(creator_client_security_state_);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(worker_process_host_, base::NotFatalUntil::M160);
+  CHECK(worker_process_host_->IsInitializedAndNotDead(),
+        base::NotFatalUntil::M160);
+  CHECK(creator_client_security_state_, base::NotFatalUntil::M160);
 
   // This function is known to be heap allocation heavy and performance
   // critical. Extra memory safety checks can introduce regression
@@ -201,8 +203,8 @@ RenderFrameHostImpl* DedicatedWorkerHost::GetAncestorRenderFrameHost() const {
 
 void DedicatedWorkerHost::BindBrowserInterfaceBrokerReceiver(
     mojo::PendingReceiver<blink::mojom::BrowserInterfaceBroker> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(receiver.is_valid());
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(receiver.is_valid(), base::NotFatalUntil::M160);
   broker_receiver_.Bind(std::move(receiver));
   broker_receiver_.set_disconnect_handler(base::BindOnce(
       &DedicatedWorkerHost::OnMojoDisconnect, base::Unretained(this)));
@@ -210,7 +212,7 @@ void DedicatedWorkerHost::BindBrowserInterfaceBrokerReceiver(
 
 void DedicatedWorkerHost::CreateContentSecurityNotifier(
     mojo::PendingReceiver<blink::mojom::ContentSecurityNotifier> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   auto* ancestor_render_frame_host = GetAncestorRenderFrameHost();
   if (!ancestor_render_frame_host) {
     // The ancestor frame may have already been closed. In that case, the worker
@@ -226,8 +228,8 @@ void DedicatedWorkerHost::CreateLockManager(
     mojo::PendingReceiver<blink::mojom::LockManager> receiver) {
   GetStoragePartitionImpl()->BindLockManager(
       GetWorkerStorageKey(), GetToken().value(), std::move(receiver));
-  GetStoragePartitionImpl()->GetLockManager()->AddLockObserver(GetToken().value(),
-                                                            this);
+  GetStoragePartitionImpl()->GetLockManager()->AddLockObserver(
+      GetToken().value(), this);
 }
 
 bool DedicatedWorkerHost::OnLockContention() {
@@ -263,7 +265,8 @@ void DedicatedWorkerHost::RenderProcessExited(
   // (https://crbug.com/414710225) and these are disabled here.
   base::ScopedSafetyChecksExclusion scoped_unsafe;
 
-  DCHECK_EQ(worker_process_host_, render_process_host);
+  CHECK_EQ(worker_process_host_, render_process_host,
+           base::NotFatalUntil::M160);
 
   delete this;
 }
@@ -275,7 +278,8 @@ void DedicatedWorkerHost::InProcessRendererExiting(
   // (https://crbug.com/414710225) and these are disabled here.
   base::ScopedSafetyChecksExclusion scoped_unsafe;
 
-  DCHECK_EQ(worker_process_host_, render_process_host);
+  CHECK_EQ(worker_process_host_, render_process_host,
+           base::NotFatalUntil::M160);
 
   delete this;
 }
@@ -299,10 +303,10 @@ void DedicatedWorkerHost::StartScriptLoad(
   script_request_url_ = script_url;
   TRACE_EVENT("loading", "DedicatedWorkerHost::StartScriptLoad", "script_url",
               script_url);
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
-  DCHECK(!client_);
-  DCHECK(client);
+  CHECK(!client_, base::NotFatalUntil::M160);
+  CHECK(client, base::NotFatalUntil::M160);
   client_ = std::move(client);
 
   auto* storage_partition_impl = GetStoragePartitionImpl();
@@ -357,7 +361,8 @@ void DedicatedWorkerHost::StartScriptLoad(
   // following invariant holds. If and when this changes, conditionals below
   // should be revisited to account for the novel possibility of a creator
   // shared worker.
-  DCHECK_NE(creator_render_frame_host == nullptr, creator_worker == nullptr);
+  CHECK_NE(creator_render_frame_host == nullptr, creator_worker == nullptr,
+           base::NotFatalUntil::M160);
 
   // Set if the subresource loader factories support file URLs so that we can
   // recreate the factories after Network Service crashes.
@@ -382,8 +387,7 @@ void DedicatedWorkerHost::StartScriptLoad(
     parent_service_worker_client =
         creator_render_frame_host->GetLastCommittedServiceWorkerClient();
   } else {
-    parent_service_worker_client =
-        creator_worker->service_worker_handle()->service_worker_client();
+    parent_service_worker_client = creator_worker->GetServiceWorkerClient();
   }
   std::string fetch_event_client_id;
   if (parent_service_worker_client) {
@@ -438,7 +442,7 @@ void DedicatedWorkerHost::ReportNoBinderForInterface(const std::string& error) {
 
 void DedicatedWorkerHost::DidStartScriptLoad(
     std::optional<WorkerScriptFetcherResult> result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // WorkerScriptFetcher CreateAndStart
   TRACE_EVENT_END("loading", perfetto::NamedTrack::FromPointer(
                                  "content::DedicatedWorkerHost", this));
@@ -494,8 +498,10 @@ void DedicatedWorkerHost::DidStartScriptLoad(
     worker_client_security_state_ = creator_client_security_state_->Clone();
   } else {
     CHECK(result->main_script_load_params);
-    DCHECK(result->main_script_load_params->response_head);
-    DCHECK(result->main_script_load_params->response_head->parsed_headers);
+    CHECK(result->main_script_load_params->response_head,
+          base::NotFatalUntil::M160);
+    CHECK(result->main_script_load_params->response_head->parsed_headers,
+          base::NotFatalUntil::M160);
 
     if (SiteIsolationPolicy::ShouldUrlUseApplicationIsolationLevel(
             ancestor_render_frame_host->GetBrowserContext(),
@@ -541,7 +547,6 @@ void DedicatedWorkerHost::DidStartScriptLoad(
     worker_client_security_state_->cross_origin_embedder_policy =
         result->main_script_load_params->response_head->parsed_headers
             ->cross_origin_embedder_policy;
-
   }
 
   // The worker global scope's document isolation policy is the same as its
@@ -593,6 +598,9 @@ void DedicatedWorkerHost::DidStartScriptLoad(
     ObserveNetworkServiceCrash(GetStoragePartitionImpl());
   }
 
+  policy_container_host_ = base::MakeRefCounted<PolicyContainerHost>(
+      std::move(result->policy_container_policies));
+
   // Set up the default network loader factory.
   bool bypass_redirect_checks = false;
   result->subresource_loader_factories->pending_default_factory() =
@@ -601,12 +609,21 @@ void DedicatedWorkerHost::DidStartScriptLoad(
   result->subresource_loader_factories->set_bypass_redirect_checks(
       bypass_redirect_checks);
 
-  auto policy_container_host = base::MakeRefCounted<PolicyContainerHost>(
-      std::move(result->policy_container_policies));
+  // A worker sandboxed without `allow-same-origin` has an opaque origin and
+  // is not eligible to use service workers (mirroring
+  // `NavigationRequest::CommitNavigation()`).
+  if (base::FeatureList::IsEnabled(
+          features::kServiceWorkerDropHandleForCSPSandboxedWorker) &&
+      service_worker_handle_ &&
+      (policy_container_host_->policies().sandbox_flags &
+       network::mojom::WebSandboxFlags::kOrigin) ==
+          network::mojom::WebSandboxFlags::kOrigin) {
+    service_worker_handle_.reset();
+  }
 
   blink::mojom::ServiceWorkerContainerInfoForClientPtr container_info;
   blink::mojom::ControllerServiceWorkerInfoPtr controller;
-  if (service_worker_handle_->service_worker_client()) {
+  if (GetServiceWorkerClient()) {
     // TODO(crbug.com/40153087): Propagate dedicated worker ukm::SourceId
     // here.
     mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>
@@ -624,7 +641,7 @@ void DedicatedWorkerHost::DidStartScriptLoad(
     std::tie(container_info, controller) =
         service_worker_handle_->scoped_service_worker_client()
             ->CommitResponseAndRelease(
-                /*rfh_id=*/std::nullopt, policy_container_host->policies(),
+                /*rfh_id=*/std::nullopt, policy_container_host_->policies(),
                 std::move(coep_reporter), std::move(dip_reporter),
                 ukm::kInvalidSourceId);
   }
@@ -635,10 +652,10 @@ void DedicatedWorkerHost::DidStartScriptLoad(
       subresource_loader_updater_.BindNewPipeAndPassReceiver(),
       std::move(controller),
       BindAndPassRemoteForBackForwardCacheControllerHost(),
-      policy_container_host->CreatePolicyContainerForBlink(),
+      policy_container_host_->CreatePolicyContainerForBlink(),
       std::move(coep_reporting_observer), std::move(dip_reporting_observer));
-  if (service_worker_handle_->service_worker_client()) {
-    service_worker_handle_->service_worker_client()->SetContainerReady();
+  if (auto service_worker_client = GetServiceWorkerClient()) {
+    service_worker_client->SetContainerReady();
   }
 }
 
@@ -667,9 +684,9 @@ mojo::PendingRemote<network::mojom::URLLoaderFactory>
 DedicatedWorkerHost::CreateNetworkFactoryForSubresources(
     RenderFrameHostImpl* ancestor_render_frame_host,
     bool* bypass_redirect_checks) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(ancestor_render_frame_host);
-  DCHECK(bypass_redirect_checks);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(ancestor_render_frame_host, base::NotFatalUntil::M160);
+  CHECK(bypass_redirect_checks, base::NotFatalUntil::M160);
 
   mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>
       coep_reporter;
@@ -705,6 +722,7 @@ DedicatedWorkerHost::CreateNetworkFactoryForSubresources(
               : network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
           ancestor_render_frame_host->GetCookieSettingOverrides(),
           network_restrictions_id_,
+          /*renderer_accessible_http_cache_write_enabled=*/false,
           "DedicatedWorkerHost::CreateNetworkFactoryForSubresources");
   // Worker subresources are not outermost-main-frame requests even when their
   // creator frame is outermost.
@@ -741,7 +759,7 @@ DedicatedWorkerHost::CreateNetworkFactoryForSubresources(
 // [spec]
 // https://html.spec.whatwg.org/C/#check-a-global-object's-embedder-policy
 bool DedicatedWorkerHost::CheckCOEP() {
-  DCHECK(final_response_url_);
+  CHECK(final_response_url_, base::NotFatalUntil::M160);
 
   if (!creator_coep_reporter_) {
     return false;
@@ -790,7 +808,7 @@ bool DedicatedWorkerHost::CheckCOEP() {
 #if !BUILDFLAG(IS_ANDROID)
 void DedicatedWorkerHost::CreateDirectSocketsService(
     mojo::PendingReceiver<blink::mojom::DirectSocketsService> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   RenderFrameHostImpl* ancestor_render_frame_host =
       GetAncestorRenderFrameHost();
   // The ancestor frame may have already been closed. In that case, the worker
@@ -806,7 +824,7 @@ void DedicatedWorkerHost::CreateDirectSocketsService(
 
 void DedicatedWorkerHost::CreateWebUsbService(
     mojo::PendingReceiver<blink::mojom::WebUsbService> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   RenderFrameHostImpl* ancestor_render_frame_host =
       GetAncestorRenderFrameHost();
   // The ancestor frame may have already been closed. In that case, the worker
@@ -820,7 +838,7 @@ void DedicatedWorkerHost::CreateWebUsbService(
 
 void DedicatedWorkerHost::CreateWebSocketConnector(
     mojo::PendingReceiver<blink::mojom::WebSocketConnector> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   RenderFrameHostImpl* ancestor_render_frame_host =
       GetAncestorRenderFrameHost();
   if (!ancestor_render_frame_host) {
@@ -835,14 +853,14 @@ void DedicatedWorkerHost::CreateWebSocketConnector(
           ancestor_render_frame_host->GetGlobalId(), ancestor_document_,
           GetWorkerStorageKey().origin(),
           ancestor_render_frame_host->GetIsolationInfoForSubresources(),
-          worker_client_security_state_->Clone(), network_restrictions_id_,
-          GetToken().value()),
+          worker_client_security_state_->Clone(), storage_access_api_status_,
+          network_restrictions_id_, GetToken().value()),
       std::move(receiver));
 }
 
 void DedicatedWorkerHost::CreateWebTransportConnector(
     mojo::PendingReceiver<blink::mojom::WebTransportConnector> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   RenderFrameHostImpl* ancestor_render_frame_host =
       GetAncestorRenderFrameHost();
   if (!ancestor_render_frame_host) {
@@ -863,7 +881,7 @@ void DedicatedWorkerHost::CreateWebTransportConnector(
 
 void DedicatedWorkerHost::CreateWakeLockService(
     mojo::PendingReceiver<blink::mojom::WakeLockService> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // Unconditionally disallow wake locks from workers until
   // WakeLockPermissionContext has been updated to no longer force the
   // permission to "denied" and WakeLockServiceImpl checks permissions on
@@ -873,7 +891,7 @@ void DedicatedWorkerHost::CreateWakeLockService(
 
 void DedicatedWorkerHost::BindCacheStorage(
     mojo::PendingReceiver<blink::mojom::CacheStorage> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   BindCacheStorageInternal(
       std::move(receiver),
       storage::BucketLocator::ForDefaultBucket(GetWorkerStorageKey()));
@@ -881,7 +899,17 @@ void DedicatedWorkerHost::BindCacheStorage(
 
 void DedicatedWorkerHost::CreateNestedDedicatedWorker(
     mojo::PendingReceiver<blink::mojom::DedicatedWorkerHostFactory> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  if (!policy_container_host_) {
+    // A non-compromised worker will always set its `policy_container_host_` in
+    // DidStartScriptLoad before it starts executing its script, and therefore
+    // will never create a nested worker without first setting
+    // `policy_container_host_`.
+    broker_receiver_.ReportBadMessage(
+        "CreateNestedDedicatedWorker called before policy_container_host_ was "
+        "set");
+    return;
+  }
   RenderFrameHost* ancestor_render_frame_host =
       ancestor_document_.AsRenderFrameHostIfValid();
   if (!ancestor_render_frame_host) {
@@ -897,13 +925,14 @@ void DedicatedWorkerHost::CreateNestedDedicatedWorker(
       *ancestor_render_frame_host, std::move(receiver),
       worker_process_host_->GetID(), /*creator=*/token_, ancestor_document_,
       GetWorkerStorageKey(), isolation_info_,
-      worker_client_security_state_->Clone(), creator_policies_,
-      creator_coep_reporter, network_restrictions_id_);
+      worker_client_security_state_->Clone(),
+      policy_container_host_->policies(), creator_coep_reporter,
+      network_restrictions_id_);
 }
 
 void DedicatedWorkerHost::CreateIdleManager(
     mojo::PendingReceiver<blink::mojom::IdleManager> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   RenderFrameHostImpl* ancestor_render_frame_host =
       GetAncestorRenderFrameHost();
   if (!ancestor_render_frame_host) {
@@ -917,7 +946,7 @@ void DedicatedWorkerHost::CreateIdleManager(
 
 void DedicatedWorkerHost::CreateBroadcastChannelProvider(
     mojo::PendingReceiver<blink::mojom::BroadcastChannelProvider> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   auto* storage_partition_impl = GetStoragePartitionImpl();
 
@@ -940,7 +969,7 @@ bool DedicatedWorkerHost::WasStorageAccessGranted() {
 
 void DedicatedWorkerHost::CreateBlobUrlStoreProvider(
     mojo::PendingReceiver<blink::mojom::BlobURLStore> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   auto* storage_partition_impl = GetStoragePartitionImpl();
 
   storage_partition_impl->GetBlobUrlRegistry()->AddReceiver(
@@ -965,10 +994,12 @@ void DedicatedWorkerHost::CreateBlobUrlStoreProvider(
           weak_factory_.GetWeakPtr()),
       !(GetContentClient()->browser()->IsBlobUrlPartitioningEnabled(
           GetProcessHost()->GetBrowserContext())),
-      base::FeatureList::IsEnabled(blink::features::kDataUrlWorkerOpaqueOrigin)
-          ? storage::BlobURLValidityCheckBehavior::DEFAULT
-          : storage::BlobURLValidityCheckBehavior::
-                ALLOW_OPAQUE_ORIGIN_STORAGE_KEY_MISMATCH);
+      (!base::FeatureList::IsEnabled(
+           blink::features::kDataUrlWorkerOpaqueOrigin) &&
+       renderer_origin_.opaque())
+          ? storage::BlobURLValidityCheckBehavior::
+                ALLOW_OPAQUE_ORIGIN_STORAGE_KEY_MISMATCH
+          : storage::BlobURLValidityCheckBehavior::DEFAULT);
 }
 
 void DedicatedWorkerHost::CreateCodeCacheHost(
@@ -982,7 +1013,7 @@ void DedicatedWorkerHost::CreateCodeCacheHost(
 
 void DedicatedWorkerHost::BindSerialService(
     mojo::PendingReceiver<blink::mojom::SerialService> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   RenderFrameHostImpl* ancestor_render_frame_host =
       GetAncestorRenderFrameHost();
   if (!ancestor_render_frame_host) {
@@ -994,10 +1025,9 @@ void DedicatedWorkerHost::BindSerialService(
   ancestor_render_frame_host->BindSerialService(std::move(receiver));
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 void DedicatedWorkerHost::BindHidService(
     mojo::PendingReceiver<blink::mojom::HidService> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   RenderFrameHostImpl* ancestor_render_frame_host =
       GetAncestorRenderFrameHost();
   // The ancestor frame may have already been closed. In that case, the worker
@@ -1008,7 +1038,6 @@ void DedicatedWorkerHost::BindHidService(
 
   ancestor_render_frame_host->GetHidService(std::move(receiver));
 }
-#endif
 
 void DedicatedWorkerHost::CreateBucketManagerHost(
     mojo::PendingReceiver<blink::mojom::BucketManagerHost> receiver) {
@@ -1017,7 +1046,7 @@ void DedicatedWorkerHost::CreateBucketManagerHost(
 
 void DedicatedWorkerHost::GetFileSystemAccessManager(
     mojo::PendingReceiver<blink::mojom::FileSystemAccessManager> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   auto* storage_partition_impl = GetStoragePartitionImpl();
   auto* manager = storage_partition_impl->GetFileSystemAccessManager();
   manager->BindReceiver(FileSystemAccessManagerImpl::BindingContext(
@@ -1035,7 +1064,7 @@ void DedicatedWorkerHost::GetFileSystemAccessManager(
 #if BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
 void DedicatedWorkerHost::BindPressureService(
     mojo::PendingReceiver<blink::mojom::WebPressureManager> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (!network::IsOriginPotentiallyTrustworthy(
           GetWorkerStorageKey().origin())) {
@@ -1085,10 +1114,12 @@ void DedicatedWorkerHost::ObserveNetworkServiceCrash(
 }
 
 void DedicatedWorkerHost::OnNetworkServiceCrash() {
-  DCHECK(IsOutOfProcessNetworkService());
-  DCHECK(subresource_loader_updater_.is_bound());
-  DCHECK(network_service_connection_error_handler_holder_);
-  DCHECK(!network_service_connection_error_handler_holder_.is_connected());
+  CHECK(IsOutOfProcessNetworkService(), base::NotFatalUntil::M160);
+  CHECK(subresource_loader_updater_.is_bound(), base::NotFatalUntil::M160);
+  CHECK(network_service_connection_error_handler_holder_,
+        base::NotFatalUntil::M160);
+  CHECK(!network_service_connection_error_handler_holder_.is_connected(),
+        base::NotFatalUntil::M160);
 
   auto* storage_partition_impl = GetStoragePartitionImpl();
   // Start observing Network Service crash again.
@@ -1147,7 +1178,7 @@ void DedicatedWorkerHost::UpdateSubresourceLoaderFactories() {
 
 base::WeakPtr<CrossOriginEmbedderPolicyReporter>
 DedicatedWorkerHost::GetWorkerCoepReporter() {
-  DCHECK(coep_reporter_);
+  CHECK(coep_reporter_, base::NotFatalUntil::M160);
   return coep_reporter_->GetWeakPtr();
 }
 
@@ -1194,7 +1225,7 @@ blink::mojom::PermissionStatus DedicatedWorkerHost::GetPermissionStatus(
 void DedicatedWorkerHost::BindCacheStorageForBucket(
     const storage::BucketInfo& bucket,
     mojo::PendingReceiver<blink::mojom::CacheStorage> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   BindCacheStorageInternal(std::move(receiver), bucket.ToBucketLocator());
 }
 

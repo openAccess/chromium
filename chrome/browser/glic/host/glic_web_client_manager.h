@@ -6,11 +6,13 @@
 #define CHROME_BROWSER_GLIC_HOST_GLIC_WEB_CLIENT_MANAGER_H_
 
 #include <memory>
+#include <optional>
 
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/process/kill.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 #include "chrome/browser/glic/host/glic_web_client_access.h"
 #include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "content/public/browser/navigation_handle.h"
@@ -23,6 +25,8 @@ class WebContents;
 }  // namespace content
 
 namespace glic {
+
+BASE_DECLARE_FEATURE(kGlicShowSecurityInterstitials);
 
 class Host;
 
@@ -43,19 +47,25 @@ enum class GlicWebClientLifecycleEvent {
 class GlicWebClientManager : public content::WebContentsObserver {
  public:
   // Interface to the owner of GlicWebClientManager. Note, the owner will differ
-  // depending on whether `kGlicNoWebview` is enabled.
+  // depending on whether `GlicKeyedService::IsNoWebviewEnabled()` is true.
   class Delegate {
    public:
     virtual ~Delegate() = default;
     // The guest contents started navigating.
     virtual void OnGuestNavigationStarted() {}
-    // The guest contents finished navigating.
+    // The guest contents finished navigating, or a primary main frame
+    // navigation was blocked before commit.
     virtual void OnGuestNavigated(const GURL& url,
                                   bool is_api_allowed,
                                   mojom::GuestPageType page_type,
                                   bool is_initial_commit) {}
+    // The guest main frame completed its onload event for a regular allowed
+    // page (when kGlicShowLoaderUntilMainPageOnload is enabled).
+    virtual void OnGuestMainPageLoaded() {}
     // The guest process was terminated.
     virtual void OnGuestProcessGone(base::TerminationStatus status) {}
+    // The web client receiver was created/bound.
+    virtual void OnWebClientCreated() {}
     // The web client state was changed.
     virtual void OnWebClientStateChanged(mojom::WebClientState state) {}
   };
@@ -71,37 +81,58 @@ class GlicWebClientManager : public content::WebContentsObserver {
   void AttachGuestContents(content::WebContents* guest_contents);
   void AttachToHost(Host* host);
 
-  void OnGuestNavigationBlocked(
-      mojom::GuestPageType page_type = mojom::GuestPageType::kLoadError);
+  // Sets whether the guest WebContents is currently shown in the panel, used
+  // to know when an actionable guest is on screen.
+  void SetGuestMounted(bool mounted);
+
+  // Called when a guest navigation is cancelled before it commits. `page_type`
+  // says why: kDisabledByAdmin or kOriginBlocked.
+  void OnGuestNavigationBlocked(mojom::GuestPageType page_type);
 
   content::RenderFrameHost* GetGuestMainFrame() const;
   content::WebContents* web_client_contents() const;
+  std::optional<mojom::GuestPageType> last_committed_page_type() const {
+    return last_committed_page_type_;
+  }
+  bool guest_main_page_loaded() const { return guest_main_page_loaded_; }
 
   GlicWebClientAccess* web_client_access() const { return web_client_; }
+  bool has_pending_web_client_receiver_for_testing() const {
+    return pending_web_client_receiver_.is_valid();
+  }
 
+  void SetPendingWebClientReceiver(
+      mojo::PendingReceiver<glic::mojom::WebClientHandler> web_client_receiver);
   void CreateWebClient(
       mojo::PendingReceiver<glic::mojom::WebClientHandler> web_client_receiver);
   void WebClientInitialized();
   void UnsetWebClient(
       std::optional<GlicWebClientLifecycleEvent> event = std::nullopt);
 
+  void OnWebClientStateChangedForTesting(mojom::WebClientState state) {
+    OnWebClientStateChanged(state);
+  }
+
   // content::WebContentsObserver:
   void DidStartNavigation(
       content::NavigationHandle* navigation_handle) override;
   void DidFinishNavigation(
       content::NavigationHandle* navigation_handle) override;
+  void DocumentOnLoadCompletedInPrimaryMainFrame() override;
   void PrimaryMainFrameRenderProcessGone(
       base::TerminationStatus status) override;
-  void RenderFrameHostChanged(content::RenderFrameHost* old_host,
-                              content::RenderFrameHost* new_host) override;
-  void RenderFrameDeleted(content::RenderFrameHost* render_frame_host) override;
 
  private:
+  class GuestPresentationTracker;
+  class Metrics;
+
   void OnWebClientStateChanged(mojom::WebClientState state);
+
+  std::unique_ptr<Metrics> metrics_;
+  std::unique_ptr<GuestPresentationTracker> guest_presentation_tracker_;
 
   raw_ptr<Host> host_ = nullptr;
   raw_ptr<Delegate> delegate_ = nullptr;
-  raw_ptr<content::RenderFrameHost> guest_main_frame_ = nullptr;
 
   // Host owns at most one web client access. If a new access is created,
   // the old one is destroyed synchronously. This should usually not be used
@@ -114,6 +145,16 @@ class GlicWebClientManager : public content::WebContentsObserver {
 
   // Whether the guest frame has completed at least one navigation commit.
   bool has_navigation_committed_ = false;
+  // Whether the current primary main frame navigation has already been handled
+  // as blocked, avoiding duplicate notifications when multiple throttles or
+  // observers detect the same blocked navigation.
+  bool current_navigation_blocked_ = false;
+  std::optional<mojom::GuestPageType> last_committed_page_type_;
+  bool last_committed_is_api_allowed_ = false;
+  bool guest_main_page_loaded_ = false;
+
+  mojo::PendingReceiver<glic::mojom::WebClientHandler>
+      pending_web_client_receiver_;
 };
 
 }  // namespace glic

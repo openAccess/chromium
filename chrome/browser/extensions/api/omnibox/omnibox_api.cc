@@ -15,6 +15,7 @@
 
 #include "base/functional/bind.h"
 #include "base/lazy_instance.h"
+#include "base/memory/weak_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -39,6 +40,7 @@
 #include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/api_permission_id.mojom.h"
 #include "extensions/common/permissions/permissions_data.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia.h"
 
@@ -119,7 +121,7 @@ void ExtensionOmniboxEventRouter::OnInputStarted(
     const ExtensionId& extension_id) {
   auto event = std::make_unique<Event>(events::OMNIBOX_ON_INPUT_STARTED,
                                        omnibox::OnInputStarted::kEventName,
-                                       base::ListValue(), profile);
+                                       nullptr, profile);
   EventRouter::Get(profile)
       ->DispatchEventToExtension(extension_id, std::move(event));
 }
@@ -135,9 +137,9 @@ bool ExtensionOmniboxEventRouter::OnInputChanged(
           extension_id, omnibox::OnInputChanged::kEventName))
     return false;
 
-  base::ListValue args;
-  args.Append(input);
-  args.Append(suggest_id);
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(input);
+  args->data.Append(suggest_id);
 
   auto event = std::make_unique<Event>(events::OMNIBOX_ON_INPUT_CHANGED,
                                        omnibox::OnInputChanged::kEventName,
@@ -151,7 +153,7 @@ void ExtensionOmniboxEventRouter::OnInputEntered(
     content::WebContents* web_contents,
     const ExtensionId& extension_id,
     const std::string& input,
-    WindowOpenDisposition disposition) {
+    ui::mojom::WindowOpenDisposition disposition) {
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
 
@@ -159,25 +161,39 @@ void ExtensionOmniboxEventRouter::OnInputEntered(
       ExtensionRegistry::Get(profile)->enabled_extensions().GetByID(
           extension_id);
   CHECK(extension);
-  extensions::ActiveTabPermissionGranter::FromWebContents(web_contents)
-      ->GrantIfRequested(extension);
 
-  base::ListValue args;
-  args.Append(input);
-  if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB) {
-    args.Append(kForegroundTabDisposition);
-  } else if (disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB) {
-    args.Append(kBackgroundTabDisposition);
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(input);
+  if (disposition == ui::mojom::WindowOpenDisposition::kNewForegroundTab) {
+    args->data.Append(kForegroundTabDisposition);
+  } else if (disposition ==
+             ui::mojom::WindowOpenDisposition::kNewBackgroundTab) {
+    args->data.Append(kBackgroundTabDisposition);
   } else {
-    args.Append(kCurrentTabDisposition);
+    args->data.Append(kCurrentTabDisposition);
   }
 
   auto event = std::make_unique<Event>(events::OMNIBOX_ON_INPUT_ENTERED,
                                        omnibox::OnInputEntered::kEventName,
                                        std::move(args), profile);
   event->user_gesture = EventRouter::UserGestureState::kEnabled;
-  EventRouter::Get(profile)
-      ->DispatchEventToExtension(extension_id, std::move(event));
+
+  // Dispatch the event only after the activeTab grant takes effect, so that the
+  // extension can use the grant right away.
+  extensions::ActiveTabPermissionGranter::FromWebContents(web_contents)
+      ->GrantIfRequested(
+          extension,
+          base::BindOnce(
+              [](base::WeakPtr<content::WebContents> web_contents,
+                 const ExtensionId& extension_id,
+                 std::unique_ptr<Event> event) {
+                if (!web_contents) {
+                  return;
+                }
+                EventRouter::Get(web_contents->GetBrowserContext())
+                    ->DispatchEventToExtension(extension_id, std::move(event));
+              },
+              web_contents->GetWeakPtr(), extension_id, std::move(event)));
 
   OmniboxInputWatcherFactory::GetForBrowserContext(profile)
       ->NotifyInputEntered();
@@ -189,7 +205,7 @@ void ExtensionOmniboxEventRouter::OnInputCancelled(
     const ExtensionId& extension_id) {
   auto event = std::make_unique<Event>(events::OMNIBOX_ON_INPUT_CANCELLED,
                                        omnibox::OnInputCancelled::kEventName,
-                                       base::ListValue(), profile);
+                                       nullptr, profile);
   EventRouter::Get(profile)
       ->DispatchEventToExtension(extension_id, std::move(event));
 }
@@ -198,8 +214,8 @@ void ExtensionOmniboxEventRouter::OnDeleteSuggestion(
     Profile* profile,
     const ExtensionId& extension_id,
     const std::string& suggestion_text) {
-  base::ListValue args;
-  args.Append(suggestion_text);
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(suggestion_text);
 
   auto event = std::make_unique<Event>(events::OMNIBOX_ON_DELETE_SUGGESTION,
                                        omnibox::OnDeleteSuggestion::kEventName,
@@ -224,9 +240,11 @@ void ExtensionOmniboxEventRouter::OnActionExecuted(
   omnibox::ActionExecution action_execution;
   action_execution.action_name = action_name;
   action_execution.content = content;
-  auto event = std::make_unique<Event>(
-      events::OMNIBOX_ON_ACTION_EXECUTED, omnibox::OnActionExecuted::kEventName,
-      omnibox::OnActionExecuted::Create(std::move(action_execution)), profile);
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      omnibox::OnActionExecuted::Create(std::move(action_execution)));
+  auto event = std::make_unique<Event>(events::OMNIBOX_ON_ACTION_EXECUTED,
+                                       omnibox::OnActionExecuted::kEventName,
+                                       std::move(event_args), profile);
   event->user_gesture = EventRouter::UserGestureState::kEnabled;
   event_router->DispatchEventToExtension(extension_id, std::move(event));
 }
@@ -423,7 +441,7 @@ ExtensionFunction::ResponseAction OmniboxSendSuggestionsFunction::Run() {
 
 void OmniboxSendSuggestionsFunction::OnParsedDescriptionsAndStyles(
     DescriptionAndStylesResult result) {
-  DCHECK_NE(0u, extension_suggestions_.size());
+  CHECK_NE(0u, extension_suggestions_.size(), base::NotFatalUntil::M161);
   // Since the XML parsing happens asynchronously, the browser context can be
   // torn down in the interim. If this happens, early-out.
   if (!browser_context()) {
@@ -497,7 +515,8 @@ void OmniboxSetDefaultSuggestionFunction::OnParsedDescriptionAndStyles(
     return;
   }
 
-  DCHECK_EQ(1u, result.descriptions_and_styles.size());
+  CHECK_EQ(1u, result.descriptions_and_styles.size(),
+           base::NotFatalUntil::M161);
   DescriptionAndStyles& single_result = result.descriptions_and_styles[0];
 
   omnibox::DefaultSuggestResult default_suggestion;
@@ -574,7 +593,8 @@ void ApplyDefaultSuggestionForExtensionKeyword(
     const TemplateURL* keyword,
     const std::u16string& remaining_input,
     AutocompleteMatch* match) {
-  DCHECK(keyword->type() == TemplateURL::OMNIBOX_API_EXTENSION);
+  CHECK(keyword->type() == TemplateURL::OMNIBOX_API_EXTENSION,
+        base::NotFatalUntil::M161);
 
   std::optional<omnibox::SuggestResult> suggestion(
       GetOmniboxDefaultSuggestion(profile, keyword->GetExtensionId()));

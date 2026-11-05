@@ -25,10 +25,12 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.autofill.autofill_ai.AutofillAiOptInStatus;
+import org.chromium.components.autofill.autofill_ai.DetailsForUpsertPass;
 import org.chromium.components.autofill.autofill_ai.EntityInstance;
 import org.chromium.components.autofill.autofill_ai.EntityInstanceWithLabels;
 import org.chromium.components.autofill.autofill_ai.EntityType;
 import org.chromium.components.autofill.autofill_ai.EntityTypeName;
+import org.chromium.components.autofill.autofill_ai.RecordType;
 import org.chromium.components.autofill.autofill_ai.utils.TestUtils;
 
 import java.util.ArrayList;
@@ -87,14 +89,75 @@ public class EntityDataManagerTest {
         int descriptionStringId = 123;
         int acceptButtonStringId = 456;
         mEntityDataManager.addOrUpdateEntityInstance(
-                mEntityInstance, descriptionStringId, acceptButtonStringId, localSaveFallback);
+                mEntityInstance,
+                descriptionStringId,
+                acceptButtonStringId,
+                /* legalMessageToken= */ null,
+                localSaveFallback);
         verify(mEntityDataManagerJniMock)
                 .addOrUpdateEntityInstance(
                         NATIVE_PTR,
                         mEntityInstance,
                         descriptionStringId,
                         acceptButtonStringId,
+                        null,
                         localSaveFallback);
+    }
+
+    @Test
+    public void testAddOrUpdateEntityInstance_withLegalMessageToken() {
+        Runnable localSaveFallback = () -> {};
+        int descriptionStringId = 123;
+        int acceptButtonStringId = 456;
+        byte[] legalMessageToken = new byte[] {1, 2, 3};
+        mEntityDataManager.addOrUpdateEntityInstance(
+                mEntityInstance,
+                descriptionStringId,
+                acceptButtonStringId,
+                legalMessageToken,
+                localSaveFallback);
+        verify(mEntityDataManagerJniMock)
+                .addOrUpdateEntityInstance(
+                        NATIVE_PTR,
+                        mEntityInstance,
+                        descriptionStringId,
+                        acceptButtonStringId,
+                        legalMessageToken,
+                        localSaveFallback);
+    }
+
+    @Test
+    public void testIsEligibleForWalletNotice() {
+        when(mEntityDataManagerJniMock.isEligibleForWalletNotice(
+                        NATIVE_PTR, EntityTypeName.VEHICLE, RecordType.SERVER_WALLET))
+                .thenReturn(true);
+        assertTrue(
+                mEntityDataManager.isEligibleForWalletNotice(
+                        EntityTypeName.VEHICLE, RecordType.SERVER_WALLET));
+        verify(mEntityDataManagerJniMock)
+                .isEligibleForWalletNotice(
+                        NATIVE_PTR, EntityTypeName.VEHICLE, RecordType.SERVER_WALLET);
+    }
+
+    @Test
+    public void testPreloadDetailsForUpsertPass() {
+        mEntityDataManager.preloadDetailsForUpsertPass(EntityTypeName.VEHICLE);
+        verify(mEntityDataManagerJniMock)
+                .preloadDetailsForUpsertPass(NATIVE_PTR, EntityTypeName.VEHICLE);
+    }
+
+    @Test
+    public void testExtractPreloadedDetailsForUpsertPass() {
+        DetailsForUpsertPass details =
+                new DetailsForUpsertPass(Collections.emptyList(), new byte[] {1, 2, 3});
+        when(mEntityDataManagerJniMock.extractPreloadedDetailsForUpsertPass(
+                        NATIVE_PTR, EntityTypeName.VEHICLE))
+                .thenReturn(details);
+        assertEquals(
+                details,
+                mEntityDataManager.extractPreloadedDetailsForUpsertPass(EntityTypeName.VEHICLE));
+        verify(mEntityDataManagerJniMock)
+                .extractPreloadedDetailsForUpsertPass(NATIVE_PTR, EntityTypeName.VEHICLE);
     }
 
     @Test

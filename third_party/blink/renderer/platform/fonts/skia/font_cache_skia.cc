@@ -42,6 +42,7 @@
 #include "skia/ext/font_utils.h"
 #include "third_party/blink/public/platform/linux/web_sandbox_support.h"
 #include "third_party/blink/public/platform/platform.h"
+#include "third_party/blink/public/platform/web_font_prewarmer.h"
 #include "third_party/blink/renderer/platform/font_family_names.h"
 #include "third_party/blink/renderer/platform/fonts/alternate_font_family.h"
 #include "third_party/blink/renderer/platform/fonts/bitmap_glyphs_block_list.h"
@@ -53,6 +54,7 @@
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
 #include "third_party/blink/renderer/platform/fonts/skia/sktypeface_factory.h"
 #include "third_party/blink/renderer/platform/language.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 #include "third_party/skia/include/core/SkFontMgr.h"
@@ -245,6 +247,18 @@ const SimpleFontData* FontCache::GetLastResortFallbackFont(
     ++last_resort_fallback_attempt;
   }
 
+#if BUILDFLAG(IS_WIN)
+  if (RuntimeEnabledFeatures::FontPrewarmerShutdownFallbackEnabled() &&
+      !font_platform_data &&
+      (!prewarmer_ || !prewarmer_->IsFontServiceConnected())) {
+    // If font lookup failed completely because the browser process has shut
+    // down and disconnected the font proxy IPC, use a safe empty fallback
+    // typeface to avoid a fatal crash on DCHECK during process teardown.
+    font_platform_data =
+        CreateFontPlatformDataForTypeface(skia::DefaultTypeface(), description);
+  }
+#endif
+
   // 0 <= last_resort_fallback_attempt <= 10 (9 on linux), so set the max to 11
   // and put failed attempts in that bucket.
   static const int kMaxAttempts = 11;
@@ -266,12 +280,13 @@ sk_sp<SkTypeface> FontCache::CreateTypeface(
 #if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_FUCHSIA)
   // TODO(fuchsia): Revisit this and other font code for Fuchsia.
 
-  if (creation_params.CreationType() == kCreateFontByFciIdAndTtcIndex) {
+  if (creation_params.CreationType() ==
+      FontFaceCreationType::kFciIdAndTtcIndex) {
     if (Platform::Current()->GetSandboxSupport()) {
-      return SkTypeface_Factory::FromFontConfigInterfaceIdAndTtcIndex(
+      return CreateSkTypefaceFromFontConfigInterfaceIdAndTtcIndex(
           creation_params.FontconfigInterfaceId(), creation_params.TtcIndex());
     }
-    return SkTypeface_Factory::FromFilenameAndTtcIndex(
+    return CreateSkTypefaceFromFilenameAndTtcIndex(
         creation_params.Filename().data(), creation_params.TtcIndex());
   }
 #endif
@@ -313,8 +328,7 @@ const FontPlatformData* FontCache::CreateFontPlatformData(
   // provides better emoji coverage and emoji sequence support than the firmware
   // Noto Color Emoji font.
   noto_color_emoji_from_gmscore =
-      (creation_params.CreationType() ==
-           FontFaceCreationType::kCreateFontByFamily &&
+      (creation_params.CreationType() == FontFaceCreationType::kFamily &&
        creation_params.Family() == kNotoColorEmojiCompat);
 #endif
   if (alternate_name == AlternateFontName::kLocalUniqueFace ||
@@ -350,7 +364,7 @@ const FontPlatformData* FontCache::CreateFontPlatformData(
       font_description.Orientation());
 
   font_platform_data->SetAvoidEmbeddedBitmaps(
-      BitmapGlyphsBlockList::ShouldAvoidEmbeddedBitmapsForTypeface(*typeface));
+      ShouldAvoidEmbeddedBitmapsForTypeface(*typeface));
 
   return font_platform_data;
 }

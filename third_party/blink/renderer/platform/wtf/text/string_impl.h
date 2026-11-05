@@ -24,7 +24,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_STRING_IMPL_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_STRING_IMPL_H_
 
-#include <hwy/highway.h>
 #include <limits.h>
 #include <string.h>
 
@@ -42,7 +41,7 @@
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "build/build_config.h"
-#include "partition_alloc/partition_alloc_constants.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
@@ -57,7 +56,7 @@
 #if BUILDFLAG(IS_APPLE)
 #include "base/apple/scoped_cftyperef.h"
 
-typedef const struct __CFString* CFStringRef;
+using CFStringRef = const struct __CFString*;
 #endif
 
 #ifdef __OBJC__
@@ -73,21 +72,11 @@ enum TextCaseSensitivity {
   kTextCaseAsciiInsensitive,
 };
 
-// Computes a standard StringHasher string for the given buffer,
-// with the caveat that the buffer may contain 8-bit data only.
-// In that case, it is converted from UChar to LChar on the fly,
-// so that we return the same hash as if we hashed the string as
-// LChar to begin with. This ensures that the same code points
-// are hashed to the same value, even if someone called e.g.
-// Ensure16Bit() on the string at some point.
-WTF_EXPORT unsigned ComputeHashForWideString(base::span<const UChar> str);
-
 enum StripBehavior { kStripExtraWhiteSpace, kDoNotStripWhiteSpace };
 
-typedef bool (*CharacterMatchFunctionPtr)(UChar);
-typedef bool (*IsWhiteSpaceFunctionPtr)(UChar);
-typedef HashMap<wtf_size_t, StringImpl*, AlreadyHashedTraits>
-    StaticStringsTable;
+using CharacterMatchFunctionPtr = bool (*)(UChar);
+using IsWhiteSpaceFunctionPtr = bool (*)(UChar);
+using StaticStringsTable = HashMap<uint32_t, StringImpl*, AlreadyHashedTraits>;
 
 // You can find documentation about this class in this doc:
 // https://chromium.googlesource.com/chromium/src/+/HEAD/third_party/blink/renderer/platform/wtf/text/README.md
@@ -137,7 +126,7 @@ class WTF_EXPORT StringImpl {
   }
 
   enum StaticStringTag { kStaticString };
-  StringImpl(size_type length, wtf_size_t hash, StaticStringTag)
+  StringImpl(size_type length, uint32_t hash, StaticStringTag)
       : length_(length),
         hash_and_flags_(hash << kHashShift | LengthToAsciiFlags(length) |
                         kIs8Bit | kIsStatic) {}
@@ -246,28 +235,26 @@ class WTF_EXPORT StringImpl {
   // flags in the low bits because it makes them slightly more efficient to
   // access.  So, we shift left and right when setting and getting our hash
   // code.
-  void SetHash(wtf_size_t hash) const {
-    // Multiple clients assume that StringHasher is the canonical string
-    // hash function.
-    DCHECK_EQ(
-        hash,
-        (Is8Bit() ? StringHasher::ComputeHashAndMaskTop8Bits(
-                        reinterpret_cast<const char*>(Span8().data()), length_)
-                  : ComputeHashForWideString(Span16())));
+  void SetHash(uint32_t hash) const {
+    // Multiple clients assume that blink::HashString24() and
+    // blink::HashWideString24() are the canonical string hash functions.
+    DCHECK_EQ(hash,
+              (Is8Bit() ? HashString24(Span8()) : HashWideString24(Span16())));
     DCHECK(hash);  // Verify that 0 is a valid sentinel hash value.
     SetHashRaw(hash);
   }
 
   bool HasHash() const { return GetHashRaw() != 0; }
 
-  wtf_size_t ExistingHash() const {
+  uint32_t ExistingHash() const {
     DCHECK(HasHash());
     return GetHashRaw();
   }
 
-  wtf_size_t GetHash() const {
-    if (wtf_size_t hash = GetHashRaw())
+  uint32_t GetHash() const {
+    if (uint32_t hash = GetHashRaw()) {
       return hash;
+    }
     return HashSlowCase();
   }
 
@@ -340,7 +327,7 @@ class WTF_EXPORT StringImpl {
   }
 
 #if DCHECK_IS_ON()
-  unsigned int RefCountChangeCountForTesting() const {
+  wtf_size_t RefCountChangeCountForTesting() const {
     return ref_count_change_count_;
   }
   void ResetRefCountChangeCountForTesting() { ref_count_change_count_ = 0; }
@@ -354,51 +341,31 @@ class WTF_EXPORT StringImpl {
     destination.copy_from(source);
   }
 
-#if HWY_TARGET != HWY_SCALAR
-  ALWAYS_INLINE static void SimdCopyChars(base::span<UChar> destination,
-                                          base::span<const LChar> source) {
-    namespace hw = hwy::HWY_NAMESPACE;
+  // CopyChars() and EqualIgnoringAsciiCase() are vectorized. The vectorized
+  // code is outlined because <hwy/highway.h> is expensive to include.
+  static constexpr size_t kMinLengthForSimd8 = 16;  // Lanes of 16x uint8_t.
+  static constexpr size_t kMinLengthForSimd16 = 8;  // Lanes of 8x uint16_t.
 
-    constexpr hw::FixedTag<uint16_t, 8> d16;
-    constexpr hw::FixedTag<uint8_t, 16> d8;
-    HWY_LANES_CONSTEXPR size_t kLanes = hw::Lanes(d8);
-
-    const size_t length = source.size();
-    const LChar* src = source.data();
-    UChar* dst = destination.data();
-
-    // SAFETY: The SIMD code requires raw buffer access.
-    UNSAFE_BUFFERS({
-      size_t i = 0;
-      if (length >= kLanes) {
-        for (; i + kLanes <= length; i += kLanes) {
-          const auto v8 = hw::LoadU(d8, src + i);
-          const auto v16_low = hw::PromoteLowerTo(d16, v8);
-          const auto v16_high = hw::PromoteUpperTo(d16, v8);
-          hw::StoreU(v16_low, d16, reinterpret_cast<uint16_t*>(dst + i));
-          hw::StoreU(v16_high, d16,
-                     reinterpret_cast<uint16_t*>(dst + i + hw::Lanes(d16)));
-        }
-      }
-
-      for (; i < length; ++i) {
-        dst[i] = src[i];
-      }
-    });
-  }
-#endif  // HWY_TARGET != HWY_SCALAR
+  // Same as CopyChars(), for `source.size() >= kMinLengthForSimd8`.
+  static void CopyCharsSimd(base::span<UChar> destination,
+                            base::span<const LChar> source);
 
   ALWAYS_INLINE static void CopyChars(base::span<UChar> destination,
                                       base::span<const LChar> source) {
     CHECK_EQ(destination.size(), source.size());
 
-#if HWY_TARGET != HWY_SCALAR
-    return SimdCopyChars(destination, source);
-#else
-    for (size_t i = 0; i < source.size(); ++i) {
-      destination[i] = source[i];
+    if (source.size() >= kMinLengthForSimd8) {
+      CopyCharsSimd(destination, source);
+      return;
     }
-#endif  // HWY_TARGET != HWY_SCALAR
+    const LChar* src = source.data();
+    UChar* dst = destination.data();
+    // SAFETY: `destination` and `source` have the same size, see above.
+    UNSAFE_BUFFERS({
+      for (size_t i = 0; i < source.size(); ++i) {
+        dst[i] = src[i];
+      }
+    });
   }
 
   // It is no longer required to create isolated copies for thread-safety
@@ -563,7 +530,7 @@ class WTF_EXPORT StringImpl {
   };
 
   // Hash value is 24 bits.
-  constexpr static int kHashShift = (sizeof(unsigned) * 8) - 24;
+  constexpr static int kHashShift = (sizeof(uint32_t) * 8) - 24;
 
   static inline constexpr uint32_t LengthToAsciiFlags(int length) {
     return length
@@ -581,16 +548,16 @@ class WTF_EXPORT StringImpl {
     return flags;
   }
 
-  void SetHashRaw(unsigned hash_val) const {
+  void SetHashRaw(uint32_t hash_val) const {
     // Setting the hash is idempotent so fetch_or() is sufficient. DCHECK()
     // as a sanity check.
-    unsigned previous_value = hash_and_flags_.fetch_or(
+    uint32_t previous_value = hash_and_flags_.fetch_or(
         hash_val << kHashShift, std::memory_order_relaxed);
     DCHECK(((previous_value >> kHashShift) == 0) ||
            ((previous_value >> kHashShift) == hash_val));
   }
 
-  unsigned GetHashRaw() const {
+  uint32_t GetHashRaw() const {
     return hash_and_flags_.load(std::memory_order_relaxed) >> kHashShift;
   }
 
@@ -637,13 +604,13 @@ class WTF_EXPORT StringImpl {
       base::span<const CharType>,
       UCharPredicate,
       StripBehavior);
-  NOINLINE wtf_size_t HashSlowCase() const;
+  NOINLINE uint32_t HashSlowCase() const;
 
   void DestroyIfNeeded();
 
   // Calculates the kContainsOnlyAscii and kIsLowerAscii flags. Returns
   // a bitfield with those 2 values.
-  unsigned ComputeAsciiFlags() const;
+  uint32_t ComputeAsciiFlags() const;
 
 #if DCHECK_IS_ON()
   std::string AsciiForDebugging() const;
@@ -654,14 +621,12 @@ class WTF_EXPORT StringImpl {
 #if DCHECK_IS_ON()
   void AssertHashIsCorrect() {
     DCHECK(HasHash());
-    DCHECK_EQ(ExistingHash(),
-              StringHasher::ComputeHashAndMaskTop8Bits(
-                  reinterpret_cast<const char*>(Span8().data()), length()));
+    DCHECK_EQ(ExistingHash(), HashString24(Span8()));
   }
 #endif
 
 #if DCHECK_IS_ON()
-  mutable std::atomic<unsigned> ref_count_change_count_{0};
+  mutable std::atomic<wtf_size_t> ref_count_change_count_{0};
 #endif
   // TODO (crbug.com/1083392): Use base::AtomicRefCount.
   mutable std::atomic_uint32_t ref_count_{1};
@@ -766,132 +731,31 @@ inline bool EqualIgnoringAsciiCase(base::span<const CharacterTypeA> a,
   return true;
 }
 
-#if HWY_TARGET != HWY_SCALAR
-ALWAYS_INLINE bool SimdEqualIgnoringAsciiCase(base::span<const LChar> a,
-                                              base::span<const LChar> b) {
-  namespace hw = hwy::HWY_NAMESPACE;
-  constexpr hw::FixedTag<uint8_t, 16> d;
-  HWY_LANES_CONSTEXPR size_t kLanes = hw::Lanes(d);
-
-  // SAFETY: The SIMD code requires raw buffer access.
-  UNSAFE_BUFFERS({
-    size_t i = 0;
-    if (a.size() >= kLanes) {
-      const auto upper_A = hw::Set(d, 'A');
-      const auto upper_Z = hw::Set(d, 'Z');
-      const auto case_bit = hw::Set(d, 0x20);
-      for (; i + kLanes <= a.size(); i += kLanes) {
-        auto va = hw::LoadU(d, reinterpret_cast<const uint8_t*>(a.data() + i));
-        auto vb = hw::LoadU(d, reinterpret_cast<const uint8_t*>(b.data() + i));
-        auto is_upper_a = hw::And(hw::Ge(va, upper_A), hw::Le(va, upper_Z));
-        va = hw::IfThenElse(is_upper_a, hw::Or(va, case_bit), va);
-        auto is_upper_b = hw::And(hw::Ge(vb, upper_A), hw::Le(vb, upper_Z));
-        vb = hw::IfThenElse(is_upper_b, hw::Or(vb, case_bit), vb);
-        if (!hw::AllTrue(d, hw::Eq(va, vb))) {
-          return false;
-        }
-      }
-    }
-    for (; i < a.size(); ++i) {
-      if (ToAsciiLower(a.data()[i]) != ToAsciiLower(b.data()[i])) {
-        return false;
-      }
-    }
-  });
-  return true;
-}
-
-ALWAYS_INLINE bool SimdEqualIgnoringAsciiCase(base::span<const UChar> a,
-                                              base::span<const LChar> b) {
-  namespace hw = hwy::HWY_NAMESPACE;
-  constexpr hw::FixedTag<uint16_t, 8> d16;
-  constexpr hw::FixedTag<uint8_t, 8> d8;
-  HWY_LANES_CONSTEXPR size_t kLanes = hw::Lanes(d16);
-
-  // SAFETY: The SIMD code requires raw buffer access.
-  UNSAFE_BUFFERS({
-    size_t i = 0;
-    if (a.size() >= kLanes) {
-      const auto upper_A = hw::Set(d16, 'A');
-      const auto upper_Z = hw::Set(d16, 'Z');
-      const auto case_bit = hw::Set(d16, 0x20);
-      for (; i + kLanes <= a.size(); i += kLanes) {
-        auto va =
-            hw::LoadU(d16, reinterpret_cast<const uint16_t*>(a.data() + i));
-        auto vb_8 =
-            hw::LoadU(d8, reinterpret_cast<const uint8_t*>(b.data() + i));
-        auto vb = hw::PromoteTo(d16, vb_8);
-        auto is_upper_a = hw::And(hw::Ge(va, upper_A), hw::Le(va, upper_Z));
-        va = hw::IfThenElse(is_upper_a, hw::Or(va, case_bit), va);
-        auto is_upper_b = hw::And(hw::Ge(vb, upper_A), hw::Le(vb, upper_Z));
-        vb = hw::IfThenElse(is_upper_b, hw::Or(vb, case_bit), vb);
-        if (!hw::AllTrue(d16, hw::Eq(va, vb))) {
-          return false;
-        }
-      }
-    }
-    for (; i < a.size(); ++i) {
-      if (ToAsciiLower(a.data()[i]) != ToAsciiLower(b.data()[i])) {
-        return false;
-      }
-    }
-  });
-  return true;
-}
-
-ALWAYS_INLINE bool SimdEqualIgnoringAsciiCase(base::span<const UChar> a,
-                                              base::span<const UChar> b) {
-  namespace hw = hwy::HWY_NAMESPACE;
-  constexpr hw::FixedTag<uint16_t, 8> d;
-  HWY_LANES_CONSTEXPR size_t kLanes = hw::Lanes(d);
-
-  // SAFETY: The SIMD code requires raw buffer access.
-  UNSAFE_BUFFERS({
-    size_t i = 0;
-    if (a.size() >= kLanes) {
-      const auto upper_A = hw::Set(d, 'A');
-      const auto upper_Z = hw::Set(d, 'Z');
-      const auto case_bit = hw::Set(d, 0x20);
-      for (; i + kLanes <= a.size(); i += kLanes) {
-        auto va = hw::LoadU(d, reinterpret_cast<const uint16_t*>(a.data() + i));
-        auto vb = hw::LoadU(d, reinterpret_cast<const uint16_t*>(b.data() + i));
-        auto is_upper_a = hw::And(hw::Ge(va, upper_A), hw::Le(va, upper_Z));
-        va = hw::IfThenElse(is_upper_a, hw::Or(va, case_bit), va);
-        auto is_upper_b = hw::And(hw::Ge(vb, upper_A), hw::Le(vb, upper_Z));
-        vb = hw::IfThenElse(is_upper_b, hw::Or(vb, case_bit), vb);
-        if (!hw::AllTrue(d, hw::Eq(va, vb))) {
-          return false;
-        }
-      }
-    }
-    for (; i < a.size(); ++i) {
-      if (ToAsciiLower(a.data()[i]) != ToAsciiLower(b.data()[i])) {
-        return false;
-      }
-    }
-  });
-  return true;
-}
-#endif  // HWY_TARGET != HWY_SCALAR
+// Same as EqualIgnoringAsciiCase(), for inputs that are at least one SIMD
+// vector long. See the comment at StringImpl::kMinLengthForSimd8.
+WTF_EXPORT bool EqualIgnoringAsciiCaseSimd(base::span<const LChar> a,
+                                           base::span<const LChar> b);
+WTF_EXPORT bool EqualIgnoringAsciiCaseSimd(base::span<const UChar> a,
+                                           base::span<const LChar> b);
+WTF_EXPORT bool EqualIgnoringAsciiCaseSimd(base::span<const UChar> a,
+                                           base::span<const UChar> b);
 
 ALWAYS_INLINE bool EqualIgnoringAsciiCase(base::span<const LChar> a,
                                           base::span<const LChar> b) {
   CHECK_EQ(a.size(), b.size());
-#if HWY_TARGET != HWY_SCALAR
-  return SimdEqualIgnoringAsciiCase(a, b);
-#else
+  if (a.size() >= StringImpl::kMinLengthForSimd8) {
+    return EqualIgnoringAsciiCaseSimd(a, b);
+  }
   return EqualIgnoringAsciiCase<LChar, LChar>(a, b);
-#endif  // HWY_TARGET != HWY_SCALAR
 }
 
 ALWAYS_INLINE bool EqualIgnoringAsciiCase(base::span<const UChar> a,
                                           base::span<const LChar> b) {
   CHECK_EQ(a.size(), b.size());
-#if HWY_TARGET != HWY_SCALAR
-  return SimdEqualIgnoringAsciiCase(a, b);
-#else
+  if (a.size() >= StringImpl::kMinLengthForSimd16) {
+    return EqualIgnoringAsciiCaseSimd(a, b);
+  }
   return EqualIgnoringAsciiCase<UChar, LChar>(a, b);
-#endif  // HWY_TARGET != HWY_SCALAR
 }
 
 ALWAYS_INLINE bool EqualIgnoringAsciiCase(base::span<const LChar> a,
@@ -902,11 +766,10 @@ ALWAYS_INLINE bool EqualIgnoringAsciiCase(base::span<const LChar> a,
 ALWAYS_INLINE bool EqualIgnoringAsciiCase(base::span<const UChar> a,
                                           base::span<const UChar> b) {
   CHECK_EQ(a.size(), b.size());
-#if HWY_TARGET != HWY_SCALAR
-  return SimdEqualIgnoringAsciiCase(a, b);
-#else
+  if (a.size() >= StringImpl::kMinLengthForSimd16) {
+    return EqualIgnoringAsciiCaseSimd(a, b);
+  }
   return EqualIgnoringAsciiCase<UChar, UChar>(a, b);
-#endif  // HWY_TARGET != HWY_SCALAR
 }
 
 template <typename CharType>
@@ -996,17 +859,6 @@ inline StringImpl::size_type StringImpl::Find(UChar character,
   if (Is8Bit())
     return blink::Find(Span8(), character, start);
   return blink::Find(Span16(), character, start);
-}
-
-// Null-terminated strings is generally discouraged as it has high chance to
-// cause Buffer overflow.
-UNSAFE_BUFFER_USAGE inline wtf_size_t LengthOfNullTerminatedString(
-    const UChar* string) {
-  size_t length = 0;
-  while (string[length] != 0) {
-    ++length;
-  }
-  return base::checked_cast<wtf_size_t>(length);
 }
 
 template <typename CharacterType1,

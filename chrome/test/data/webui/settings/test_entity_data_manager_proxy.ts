@@ -7,13 +7,16 @@ import {PromiseResolver} from 'chrome://resources/js/promise_resolver.js';
 import type {EntityDataManagerProxy, EntityInstancesChangedListener} from 'chrome://settings/lazy_load.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 
+type AccountInfo = chrome.autofillPrivate.AccountInfo;
 type AttributeType = chrome.autofillPrivate.AttributeType;
 type EntityInstance = chrome.autofillPrivate.EntityInstance;
 type EntityInstanceWithLabels = chrome.autofillPrivate.EntityInstanceWithLabels;
 type EntityType = chrome.autofillPrivate.EntityType;
+type UpsertPassDetails = chrome.autofillPrivate.UpsertPassDetails;
 
 export class TestEntityDataManagerProxy extends TestBrowserProxy implements
     EntityDataManagerProxy {
+  private accountInfo_: AccountInfo|undefined;
   private entityInstancesWithLabels_: EntityInstanceWithLabels[] = [];
   private attributeTypes_: AttributeType[] = [];
   private requiredAttributeTypes_: AttributeType[] = [];
@@ -28,18 +31,22 @@ export class TestEntityDataManagerProxy extends TestBrowserProxy implements
   private authenticateUserBeforeViewingEntityDataResponse_: boolean = true;
   private saveResolver_: PromiseResolver<void>|null = null;
   private autoResolveSave_: boolean = true;
+  private upsertPassDetails_: UpsertPassDetails|null = null;
 
   constructor() {
     super([
       'addEntityInstancesChangedListener',
       'addOrUpdateEntityInstance',
       'authenticateUserBeforeViewingEntityData',
+      'getAccountInfo',
       'getAllAttributeTypesForEntityTypeName',
       'getRequiredAttributeTypesForEntityTypeName',
       'getEntityInstanceByGuid',
       'getOptInStatus',
       'getWalletablePassDetectionOptInStatus',
       'getWritableEntityTypes',
+      'getDetailsForUpsertPass',
+      'preloadDetailsForUpsertPass',
       'loadEntityInstances',
       'removeEntityInstance',
       'removeEntityInstancesChangedListener',
@@ -47,6 +54,10 @@ export class TestEntityDataManagerProxy extends TestBrowserProxy implements
       'setWalletablePassDetectionOptInStatus',
       'toggleAutofillAiReauthRequirement',
     ]);
+  }
+
+  setGetAccountInfoResponse(accountInfo: AccountInfo|undefined): void {
+    this.accountInfo_ = accountInfo;
   }
 
   setLoadEntityInstancesResponse(
@@ -88,6 +99,10 @@ export class TestEntityDataManagerProxy extends TestBrowserProxy implements
     this.setWalletablePassDetectionOptInStatusResponse_ = success;
   }
 
+  setGetDetailsForUpsertPassResponse(details: UpsertPassDetails|null): void {
+    this.upsertPassDetails_ = details;
+  }
+
   callEntityInstancesChangedListener(
       entityInstancesWithLabels: EntityInstanceWithLabels[]): void {
     assert(this.entityInstancesChangedListener_);
@@ -109,6 +124,11 @@ export class TestEntityDataManagerProxy extends TestBrowserProxy implements
    */
   setAutoResolveSave(autoResolve: boolean) {
     this.autoResolveSave_ = autoResolve;
+  }
+
+  getAccountInfo(): Promise<AccountInfo|undefined> {
+    this.methodCalled('getAccountInfo');
+    return Promise.resolve(structuredClone(this.accountInfo_));
   }
 
   addOrUpdateEntityInstance(entityInstance: EntityInstance): Promise<void> {
@@ -195,5 +215,15 @@ export class TestEntityDataManagerProxy extends TestBrowserProxy implements
 
   toggleAutofillAiReauthRequirement(): void {
     this.methodCalled('toggleAutofillAiReauthRequirement');
+  }
+
+  getDetailsForUpsertPass(entityTypeName: number):
+      Promise<UpsertPassDetails|null> {
+    this.methodCalled('getDetailsForUpsertPass', entityTypeName);
+    return Promise.resolve(this.upsertPassDetails_);
+  }
+
+  preloadDetailsForUpsertPass(entityTypeName: number): void {
+    this.methodCalled('preloadDetailsForUpsertPass', entityTypeName);
   }
 }

@@ -4,16 +4,18 @@
 
 module blink.mojom;
 
-import "cc/mojom/render_frame_metadata.mojom";
 import "cc/mojom/touch_action.mojom";
 import "mojo/public/mojom/base/string16.mojom";
 import "mojo/public/mojom/base/time.mojom";
 import "mojo/public/mojom/base/unguessable_token.mojom";
+import "services/network/public/mojom/content_security_policy.mojom";
 import "services/network/public/mojom/source_location.mojom";
 import "services/network/public/mojom/storage_access_api.mojom";
 import "services/network/public/mojom/url_request.mojom";
 import "services/network/public/mojom/web_sandbox_flags.mojom";
 import "services/viz/public/mojom/compositing/frame_sink_id.mojom";
+import "services/viz/public/mojom/compositing/local_surface_id.mojom";
+import "third_party/blink/public/mojom/ad_tagging/ad_evidence.mojom";
 import "third_party/blink/public/mojom/blob/blob_url_store.mojom";
 import "third_party/blink/public/mojom/frame/frame_owner_properties.mojom";
 import "third_party/blink/public/mojom/frame/frame_policy.mojom";
@@ -91,6 +93,8 @@ struct OpenURLParams {
   // The main URL to open.
   url.mojom.Url url;
   url.mojom.Origin initiator_origin;
+  blink.mojom.InitiatorStateToken initiator_state_token;
+  blink.mojom.DocumentToken initiator_document_token;
   // While `initiator_origin` is always required, `initiator_base_url` should
   // only be sent for about:blank and about:srcdoc navigations, and be nullopt
   // otherwise.
@@ -165,6 +169,23 @@ struct OpenURLParams {
   // True if the initiator explicitly asked for opener relationships to be
   // preserved, via rel="opener".
   bool has_rel_opener = false;
+
+  // Whether or not the CSP of the main world should apply to this navigation.
+  // When the navigation is initiated from a content script in an isolated
+  // world, the CSP defined in the main world should not apply. This mirrors
+  // `CommonNavigationParams::should_check_main_world_csp`, which covers the
+  // same case for navigations of local frames (see
+  // FrameLoader::StartNavigation()). Without this, navigating a remote frame
+  // from an isolated world would be subject to the main world's CSP, which
+  // would make CSP enforcement depend on the process model.
+  // Note: this is set by the initiator's renderer process, and it is only
+  // honored when the initiator is in the same SiteInstanceGroup as the parent
+  // frame, whose 'frame-src' would otherwise be enforced. See
+  // RenderFrameProxyHost::OpenURL().
+  // TODO(crbug.com/40511241): Instead of this enum, the origin of the isolated
+  // world which has initiated the navigation should be passed.
+  network.mojom.CSPDisposition should_check_main_world_csp =
+      network.mojom.CSPDisposition.CHECK;
 };
 
 // Implemented in Browser, this interface defines frame-specific methods that
@@ -324,9 +345,9 @@ interface RemoteFrame {
   SetReplicatedOrigin(url.mojom.Origin origin,
     bool is_potentially_trustworthy_unique_origin);
 
-  // Update the replicated ad status. Used when the frame is tagged or untagged
-  // as an ad frame by Ad Tagging.
-  SetReplicatedIsAdFrame(bool is_ad_frame);
+  // Update the replicated ad status. A frame's ad status can only be upgraded
+  // monotonically, and this constraint is enforced at API boundaries.
+  SetReplicatedAdFrameStatus(blink.mojom.FrameAdStatus ad_frame_status);
 
   // Update the replicated is-secure-context-root bit. Sourced from
   // `ContentBrowserClient::IsSecureContextRoot()` at navigation commit;
@@ -437,7 +458,7 @@ interface RemoteFrame {
 
   // Informs the completion of an autoresize transaction from the parent
   // renderer and updates with the provided viz::LocalSurfaceId.
-  DidUpdateVisualProperties(cc.mojom.RenderFrameMetadata metadata);
+  DidUpdateChildLocalSurfaceId(viz.mojom.LocalSurfaceId local_surface_id);
 
   // Notifies this remote frame that its associated compositing
   // destination (RenderWidgetHostView) has changed.

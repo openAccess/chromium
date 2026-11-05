@@ -13,6 +13,7 @@
 #include "base/command_line.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "content/common/features.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
@@ -21,6 +22,7 @@
 #include "services/network/public/mojom/ip_address_space.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 namespace content {
 namespace {
@@ -54,6 +56,8 @@ std::string_view RequestContextToStringPiece(RequestContext request_context) {
       return "subframe-navigation";
     case RequestContext::kFencedFrameNavigation:
       return "fenced-frame-navigation";
+    case RequestContext::kNoStatePrefetch:
+      return "no-state-prefetch";
   }
 }
 
@@ -186,6 +190,43 @@ std::vector<std::pair<DerivePolicyInput, Policy>> DefaultPolicyMap() {
       {
           {kSecure, AddressSpace::kLoopback,
            RequestContext::kMainFrameNavigation},
+          Policy::kAllow,
+      },
+      //
+      // `RequestContext::kNoStatePrefetch`
+      //
+      {
+          {kNonSecure, AddressSpace::kUnknown,
+           RequestContext::kNoStatePrefetch},
+          Policy::kAllow,
+      },
+      {
+          {kNonSecure, AddressSpace::kPublic, RequestContext::kNoStatePrefetch},
+          Policy::kAllow,
+      },
+      {
+          {kNonSecure, AddressSpace::kLocal, RequestContext::kNoStatePrefetch},
+          Policy::kAllow,
+      },
+      {
+          {kNonSecure, AddressSpace::kLoopback,
+           RequestContext::kNoStatePrefetch},
+          Policy::kAllow,
+      },
+      {
+          {kSecure, AddressSpace::kUnknown, RequestContext::kNoStatePrefetch},
+          Policy::kAllow,
+      },
+      {
+          {kSecure, AddressSpace::kPublic, RequestContext::kNoStatePrefetch},
+          Policy::kAllow,
+      },
+      {
+          {kSecure, AddressSpace::kLocal, RequestContext::kNoStatePrefetch},
+          Policy::kAllow,
+      },
+      {
+          {kSecure, AddressSpace::kLoopback, RequestContext::kNoStatePrefetch},
           Policy::kAllow,
       },
   };
@@ -390,6 +431,46 @@ std::vector<std::pair<DerivePolicyInput, Policy>> LNAPolicyMap() {
            RequestContext::kFencedFrameNavigation},
           Policy::kPermissionBlock,
       },
+      //
+      // `RequestContext::kNoStatePrefetch`
+      //
+      // Requests made on behalf of a no-state prefetch have no visible
+      // document, so there is no surface for a permission prompt; they are
+      // blocked outright, regardless of the secure context bit.
+      {
+          {kNonSecure, AddressSpace::kUnknown,
+           RequestContext::kNoStatePrefetch},
+          Policy::kBlock,
+      },
+      {
+          {kNonSecure, AddressSpace::kPublic, RequestContext::kNoStatePrefetch},
+          Policy::kBlock,
+      },
+      {
+          {kNonSecure, AddressSpace::kLocal, RequestContext::kNoStatePrefetch},
+          Policy::kBlock,
+      },
+      {
+          {kNonSecure, AddressSpace::kLoopback,
+           RequestContext::kNoStatePrefetch},
+          Policy::kBlock,
+      },
+      {
+          {kSecure, AddressSpace::kUnknown, RequestContext::kNoStatePrefetch},
+          Policy::kBlock,
+      },
+      {
+          {kSecure, AddressSpace::kPublic, RequestContext::kNoStatePrefetch},
+          Policy::kBlock,
+      },
+      {
+          {kSecure, AddressSpace::kLocal, RequestContext::kNoStatePrefetch},
+          Policy::kBlock,
+      },
+      {
+          {kSecure, AddressSpace::kLoopback, RequestContext::kNoStatePrefetch},
+          Policy::kBlock,
+      },
   };
 }
 
@@ -436,6 +517,31 @@ TEST(LocalNetworkAccessUtilTest, DerivePolicyLocalNetworkAccess) {
   TestPolicyMap(expected);
 }
 
+// Trusted UI schemes are manually classified as `loopback`, since their
+// contents ship with the browser. chrome-untrusted:// hosts untrustworthy
+// content in an ordinary renderer, so it gets no special classification and
+// stays `unknown`, which is treated as `public` by request checks.
+TEST(LocalNetworkAccessUtilTest, CalculateIPAddressSpaceSpecialSchemes) {
+  EXPECT_EQ(CalculateIPAddressSpace(GURL("chrome://example"),
+                                    /*response_head=*/nullptr,
+                                    /*client=*/nullptr),
+            AddressSpace::kLoopback);
+  EXPECT_EQ(CalculateIPAddressSpace(GURL("devtools://example"),
+                                    /*response_head=*/nullptr,
+                                    /*client=*/nullptr),
+            AddressSpace::kLoopback);
+#if BUILDFLAG(IS_CHROMEOS)
+  EXPECT_EQ(CalculateIPAddressSpace(GURL("externalfile://example"),
+                                    /*response_head=*/nullptr,
+                                    /*client=*/nullptr),
+            AddressSpace::kLoopback);
+#endif
+  EXPECT_EQ(CalculateIPAddressSpace(GURL("chrome-untrusted://example"),
+                                    /*response_head=*/nullptr,
+                                    /*client=*/nullptr),
+            AddressSpace::kUnknown);
+}
+
 // Test the configuration in LNA warning-only mode.
 TEST(LocalNetworkAccessUtilTest, DerivePolicyLocalNetworkAccessWarn) {
   base::test::ScopedFeatureList feature_list;
@@ -445,9 +551,13 @@ TEST(LocalNetworkAccessUtilTest, DerivePolicyLocalNetworkAccessWarn) {
       network::features::kLocalNetworkAccessChecks, params);
 
   // Warning-only LNA should just be the LNA policy map but k*Block
-  // is downgraded to kPermissionWarn.
+  // is downgraded to kPermissionWarn. No-state prefetch requests have no
+  // surface on which to show a warning or a prompt, so they stay blocked.
   std::vector<std::pair<DerivePolicyInput, Policy>> expected = LNAPolicyMap();
   for (auto& entry : expected) {
+    if (entry.first.request_context == RequestContext::kNoStatePrefetch) {
+      continue;
+    }
     if (entry.second == Policy::kPermissionBlock) {
       entry.second = Policy::kPermissionWarn;
     } else if (entry.second == Policy::kBlock) {

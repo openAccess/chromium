@@ -12,6 +12,9 @@ import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
+
+import checkstyle
 
 _THIS_DIR = os.path.dirname(__file__)
 _SRC_ROOT = os.path.normpath(os.path.join(_THIS_DIR, '..', '..', '..'))
@@ -48,7 +51,10 @@ class CheckstyleTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls._executor = ThreadPoolExecutor()
+        # Cap workers to prevent excessive parallel JVM processes from
+        # exhausting system memory or causing severe CPU contention.
+        max_workers = min(8, os.cpu_count() or 1)
+        cls._executor = ThreadPoolExecutor(max_workers=max_workers)
         # Run checkstyle on all tests at once to not be too slow.
         for name, method in inspect.getmembers(cls, inspect.isfunction):
             if hasattr(method, '_java_content'):
@@ -222,6 +228,19 @@ public class A {
         self._check()
 
     @java("""
+/**
+ * @see {@link #test()}
+ */
+public class A {
+    /** Calls {@link #test)}. */
+    public void test() {
+    }
+}
+""")
+    def test_JavadocParseError(self):
+        self._check()
+
+    @java("""
 package MyPackage;
 class A {
 }
@@ -366,6 +385,25 @@ class A {
 """)
     def test_FallThrough(self):
         self._check('Fall through from previous branch')
+
+    @java("""
+class A {
+    void test(int a) {
+        switch (a) {
+            case 1:
+                a++;
+                // Intentional fall through.
+            case 2:
+                a++;
+                /* Also intentional. */
+            case 3:
+                a++;
+        }
+    }
+}
+""")
+    def test_FallThrough_comment(self):
+        self._check()
 
     @java("""
 class A {
@@ -791,10 +829,162 @@ class MarkImportsAsUsed<T extends @Nullable Object> {}
         self._check()
 
     @java("""
-class MarkImportsAsUsed<T extends @NonNull Object> {}
+import org.chromium.build.annotations.NullMarked;
+@NullMarked class MarkImportsAsUsed<T extends @NonNull Object> {}
 """)
     def test_NonNull(self):
         self._check('Values are @NonNull by default. Use @NonNull')
+
+    @java("""
+class MarkImportsAsUsed<T extends @NonNull Object> {}
+""")
+    def test_NonNull_NonNullMarked(self):
+        self._check()
+
+
+class _MockAffectedFile:
+    def __init__(self, path):
+        self._path = path
+
+    def AbsoluteLocalPath(self):
+        return self._path
+
+    def LocalPath(self):
+        return os.path.basename(self._path)
+
+
+class _MockInputApi:
+    cpu_count = 4
+
+    def __init__(self, files):
+        self.os_path = os.path
+        self._files = [_MockAffectedFile(f) for f in files]
+        self.commands = []
+
+    def PresubmitLocalPath(self):
+        return _SRC_ROOT
+
+    def FilterSourceFile(self, f, files_to_skip=None):
+        return True
+
+    def AffectedSourceFiles(self, filter_fn):
+        return [f for f in self._files if filter_fn(f)]
+
+    def Command(self, name, cmd, kwargs, output_parser=None):
+        command = {
+            'name': name,
+            'cmd': cmd,
+            'kwargs': kwargs,
+            'output_parser': output_parser,
+        }
+        self.commands.append(command)
+        return command
+
+    def RunTests(self, commands):
+        results = []
+        for cmd in commands:
+            proc = subprocess.run(
+                cmd['cmd'],
+                capture_output=True,
+                text=True,
+                cwd=self.PresubmitLocalPath(),
+            )
+            results.extend(
+                cmd['output_parser'](proc.returncode, proc.stdout, proc.stderr)
+            )
+        return results
+
+
+class _MockOutputApi:
+    def PresubmitError(self, msg):
+        return ('error', msg)
+
+    def PresubmitPromptWarning(self, msg):
+        return ('warning', msg)
+
+
+class PresubmitTest(unittest.TestCase):
+    def _run_presubmit(self, java_content):
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding='utf-8', suffix='.java'
+        ) as f:
+            f.write(java_content)
+            f.flush()
+            input_api = _MockInputApi([f.name])
+            output_api = _MockOutputApi()
+            results = checkstyle.run_presubmit(input_api, output_api)
+            self.assertEqual(len(input_api.commands), 1)
+            self.assertEqual(input_api.commands[0]['name'], 'checkstyle')
+            return results
+
+    def test_presubmit_clean(self):
+        results = self._run_presubmit('class A {}\n')
+        self.assertEqual(results, [])
+
+    def test_presubmit_error(self):
+        results = self._run_presubmit('import java.util.List;\nclass A {}\n')
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0][0], 'error')
+        self.assertIn('Unused import: java.util.List.', results[0][1])
+        self.assertIn('To remove unused imports:', results[0][1])
+
+    def test_presubmit_warning(self):
+        results = self._run_presubmit('class A {\n    // dummy\n}\n')
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0][0], 'warning')
+        self.assertIn('Please use inclusive language', results[0][1])
+
+    def test_presubmit_syntax_error(self):
+        results = self._run_presubmit('class A { syntax error }\n')
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0][0], 'error')
+        self.assertIn('This might mean you have a syntax error', results[0][1])
+
+
+class CheckstyleCommandFlagsTest(unittest.TestCase):
+    @mock.patch('checkstyle._use_native_binary', return_value=False)
+    @mock.patch('subprocess.run')
+    def test_run_checkstyle_small_batch_flags(self, mock_run, mock_native):
+        mock_run.return_value = mock.Mock(
+            returncode=0, stdout='<checkstyle/>', stderr=''
+        )
+        files = ['Foo.java', 'Bar.java']
+        checkstyle.run_checkstyle('/fake/path', 'fake_style.xml', files)
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertIn('-Xmx512m', cmd)
+        self.assertIn('-XX:TieredStopAtLevel=1', cmd)
+        self.assertEqual(cmd[-len(files) :], files)
+
+    @mock.patch('checkstyle._use_native_binary', return_value=False)
+    @mock.patch('subprocess.run')
+    def test_run_checkstyle_large_batch_flags(self, mock_run, mock_native):
+        mock_run.return_value = mock.Mock(
+            returncode=0, stdout='<checkstyle/>', stderr=''
+        )
+        files = [
+            f'File{i}.java' for i in range(checkstyle._LARGE_BATCH_THRESHOLD)
+        ]
+        checkstyle.run_checkstyle('/fake/path', 'fake_style.xml', files)
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertIn('-Xmx512m', cmd)
+        self.assertNotIn('-XX:TieredStopAtLevel=1', cmd)
+        self.assertEqual(cmd[-len(files) :], files)
+
+    @mock.patch('checkstyle._use_native_binary', return_value=True)
+    @mock.patch('subprocess.run')
+    def test_run_checkstyle_native_binary(self, mock_run, mock_native):
+        mock_run.return_value = mock.Mock(
+            returncode=0, stdout='<checkstyle/>', stderr=''
+        )
+        files = ['Foo.java']
+        checkstyle.run_checkstyle('/fake/path', 'fake_style.xml', files)
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd[0], checkstyle._CHECKSTYLE_BINARY)
+        self.assertNotIn('-Xmx512m', cmd)
+        self.assertEqual(cmd[-len(files) :], files)
 
 
 if __name__ == '__main__':

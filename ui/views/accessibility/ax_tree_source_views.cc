@@ -21,12 +21,13 @@ AXTreeSourceViews::AXTreeSourceViews(ui::AXNodeID root_id,
                                      const ui::AXTreeID& tree_id,
                                      views::AXAuraObjCache* cache)
     : root_id_(root_id), tree_id_(tree_id), cache_(cache) {
-  DCHECK_NE(tree_id_, ui::AXTreeIDUnknown());
+  CHECK_NE(tree_id_, ui::AXTreeIDUnknown(), base::NotFatalUntil::M163);
 }
 
 AXTreeSourceViews::~AXTreeSourceViews() = default;
 
-void AXTreeSourceViews::HandleAccessibleAction(const ui::AXActionData& action) {
+AXAuraObjWrapper* AXTreeSourceViews::GetActionTarget(
+    const ui::AXActionData& action) const {
   int id = action.target_node_id;
 
   // In Views, we only support setting the selection within a single node,
@@ -36,7 +37,11 @@ void AXTreeSourceViews::HandleAccessibleAction(const ui::AXActionData& action) {
     id = action.anchor_node_id;
   }
 
-  AXAuraObjWrapper* obj = GetFromId(id);
+  return GetFromId(id);
+}
+
+void AXTreeSourceViews::HandleAccessibleAction(const ui::AXActionData& action) {
+  AXAuraObjWrapper* obj = GetActionTarget(action);
   if (obj) {
     obj->HandleAccessibleAction(action);
   }
@@ -67,9 +72,9 @@ AXAuraObjWrapper* AXTreeSourceViews::GetFromId(int32_t id) const {
 
   // We must do a lookup in AXVirtualView as well if the main cache doesn't hold
   // this node.
-  if (!wrapper && AXVirtualView::GetFromId(id)) {
+  if (!wrapper) {
     AXVirtualView* virtual_view = AXVirtualView::GetFromId(id);
-    return virtual_view->GetOrCreateWrapper(cache_);
+    return virtual_view ? virtual_view->GetOrCreateWrapper(cache_) : nullptr;
   }
 
   return wrapper;

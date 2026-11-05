@@ -24,6 +24,7 @@
 #include "content/test/test_render_frame_host.h"
 #include "content/test/test_render_view_host.h"
 #include "third_party/blink/public/mojom/loader/pause_subresource_loading_handle.mojom-forward.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/page_transition_types.h"
 
 class GURL;
@@ -92,6 +93,8 @@ class TestWebContents : public WebContentsImpl, public WebContentsTester {
   void TestSetIsLoading(bool value) override;
   void SetOpener(WebContents* opener) override;
   void SetOriginalOpener(WebContents* opener) override;
+  void SetOriginalWindowOpenDisposition(
+      ui::mojom::WindowOpenDisposition disposition) override;
   void SetIsCrashed(base::TerminationStatus status, int error_code) override;
   const std::string& GetSaveFrameHeaders() override;
   const std::u16string& GetSuggestedFileName() override;
@@ -239,7 +242,7 @@ class TestWebContents : public WebContentsImpl, public WebContentsTester {
       const mojom::CreateNewWindowParams& params,
       bool is_new_browsing_instance,
       bool has_user_gesture,
-      SessionStorageNamespace* session_storage_namespace) override;
+      SessionStorageNamespaceHandle* session_storage_namespace) override;
   RenderWidgetHostImpl* CreateNewPopupWidget(
       base::SafeRef<SiteInstanceGroup> site_instance_group,
       int32_t route_id,
@@ -252,7 +255,7 @@ class TestWebContents : public WebContentsImpl, public WebContentsTester {
   WebContents* ShowCreatedWindow(
       RenderFrameHostImpl* opener,
       int route_id,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture) override;
   void ShowCreatedWidget(ChildProcessId process_id,

@@ -176,6 +176,13 @@ interface FrameSinkVideoCapturer {
   SetAnimationFpsLockIn(bool enabled,
                         float majority_damaged_pixel_min_ratio);
 
+  // Sets whether the capture is secure.
+  // A capture is considered secure if the captured content is not easily
+  // accessible to JavaScript or users, and cannot be trivially shared or
+  // streamed out of the device. Used for capture prevention, e.g. for protected
+  // content or by enterprise policy.
+  SetIsSecure(bool secure);
+
   // Targets a different compositor frame sink. This may be called anytime,
   // before or after Start().
   //
@@ -218,8 +225,11 @@ interface FrameSinkVideoCapturer {
   // stream" signal provided by FrameSinkVideoConsumer.OnStopped().
   Stop();
 
-  // Requests the capturer send a duplicate of the last frame. This is used to
-  // resolve occasional "picture loss" issues consumer-side.
+  // Requests that the capturer send a frame with the current source content to
+  // the consumer. If the source content has not changed, the capturer can
+  // reuse the last captured frame without a new GPU readback. If the oracle
+  // rate-limits the capture or the target is not ready, the capturer schedules
+  // a retry within 1 second (`kMaxRefreshDelay`).
   RequestRefreshFrame();
 
   // Invalidates all used buffers.

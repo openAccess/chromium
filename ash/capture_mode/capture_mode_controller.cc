@@ -76,6 +76,8 @@
 #include "capture_mode_util.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_type.h"
 #include "components/vector_icons/vector_icons.h"
 #include "components/viz/host/host_frame_sink_manager.h"
@@ -297,7 +299,6 @@ void ShowNotification(
       CreateSystemNotificationPtr(
           type, notification_id, l10n_util::GetStringUTF16(title_id), message,
           l10n_util::GetStringUTF16(IDS_ASH_SCREEN_CAPTURE_DISPLAY_SOURCE),
-          GURL(),
           message_center::NotifierId(
               message_center::NotifierType::SYSTEM_COMPONENT,
               kScreenCaptureNotifierId,
@@ -331,7 +332,7 @@ void ShowGifProgressNotification() {
       message_center::NOTIFICATION_TYPE_PROGRESS, kScreenCaptureNotificationId,
       l10n_util::GetStringUTF16(IDS_ASH_SCREEN_CAPTURE_GIF_PROGRESS_TITLE),
       l10n_util::GetStringUTF16(IDS_ASH_SCREEN_CAPTURE_GIF_PROGRESS_MESSAGE),
-      l10n_util::GetStringUTF16(IDS_ASH_SCREEN_CAPTURE_DISPLAY_SOURCE), GURL(),
+      l10n_util::GetStringUTF16(IDS_ASH_SCREEN_CAPTURE_DISPLAY_SOURCE),
       message_center::NotifierId(message_center::NotifierType::SYSTEM_COMPONENT,
                                  kScreenCaptureNotifierId,
                                  NotificationCatalogName::kScreenCapture),
@@ -1141,7 +1142,8 @@ CaptureModeController::GetCurrentCaptureFolder() const {
             /*is_default_downloads_folder=*/policy_path.path ==
                 default_downloads_folder};
   }
-  // Otherwise use user chosen custom one, if present.
+  // Otherwise use user chosen custom one, if present, or the one recommended
+  // by admin.
   if (pref_service &&
       !pref_service->GetBoolean(kUsesDefaultCapturePathPrefName)) {
     const auto custom_path =
@@ -1151,13 +1153,12 @@ CaptureModeController::GetCurrentCaptureFolder() const {
               /*is_default_downloads_folder=*/custom_path ==
                   default_downloads_folder};
     }
-  }
-  // Otherwise use the recommended by admin.
-  if (policy_path.enforcement ==
-      CaptureModeDelegate::CapturePathEnforcement::kRecommended) {
-    return {policy_path.path,
-            /*is_default_downloads_folder=*/policy_path.path ==
-                default_downloads_folder};
+    if (policy_path.enforcement ==
+        CaptureModeDelegate::CapturePathEnforcement::kRecommended) {
+      return {policy_path.path,
+              /*is_default_downloads_folder=*/policy_path.path ==
+                  default_downloads_folder};
+    }
   }
 
   // By default - downloads folder.
@@ -2056,9 +2057,28 @@ void CaptureModeController::OnImageCapturedForSearch(
     VLOG(1) << "Image search token invalid after capturing image.";
     return;
   }
-  capture_mode_session_->OnPerformCaptureForSearchEnded(capture_type);
+
+  // Handle capture failure where snapshotting returned a null or empty buffer.
+  // We must notify the session to restore UI widgets without starting the glow
+  // animation or proceeding to decode and dispatch search requests.
+  if (!jpeg_bytes || !jpeg_bytes->size()) {
+    LOG(ERROR) << "Failed to capture image for search: empty buffer.";
+    image_search_token->OnPerformCaptureForSearchEnded(
+        capture_type, /*capture_succeeded=*/false);
+    return;
+  }
 
   const SkBitmap bitmap = gfx::JPEGCodec::Decode(*jpeg_bytes);
+  // Handle corrupted or un-decodable JPEG bytes.
+  if (bitmap.drawsNothing()) {
+    LOG(ERROR) << "Failed to decode captured image for search.";
+    image_search_token->OnPerformCaptureForSearchEnded(
+        capture_type, /*capture_succeeded=*/false);
+    return;
+  }
+
+  image_search_token->OnPerformCaptureForSearchEnded(
+      capture_type, /*capture_succeeded=*/true);
   if (ShouldPerformTextDetection(capture_type)) {
     delegate_->DetectTextInImage(
         bitmap, base::BindOnce(&CaptureModeController::OnTextDetectionComplete,
@@ -2104,12 +2124,23 @@ void CaptureModeController::OnImageCapturedForSearch(
     return;
   }
 
+  // TODO(crbug.com/546860700): Thread the desk/session owner's account
+  // instead of assuming the active session, once available.
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  if (!active_session) {
+    OnLensWebError(image_search_token,
+                   CaptureModeImageSearchResult::kFailureIdentityManager,
+                   CaptureModeTextDetectionResult::kUnreached);
+    return;
+  }
+
     const gfx::Image image = gfx::Image::CreateFrom1xBitmap(bitmap);
     const bool is_standalone_session =
         capture_mode_session_->active_behavior()->behavior_type() ==
         BehaviorType::kSunfish;
     delegate_->SendLensWebRegionSearch(
-        image, is_standalone_session,
+        image, is_standalone_session, active_session->account_id(),
         base::BindRepeating(&CaptureModeController::OnSearchUrlFetched,
                             weak_ptr_factory_.GetWeakPtr(),
                             user_capture_region_, gfx::ImageSkia()),
@@ -2990,8 +3021,7 @@ void CaptureModeController::OnDlpRestrictionCheckedAtCaptureScreenshot(
 void CaptureModeController::PerformScreenshotsOfAllDisplays(
     BehaviorType behavior_type) {
   // Get a vector of RootWindowControllers with primary root window at first.
-  const std::vector<RootWindowController*> controllers =
-      RootWindowController::root_window_controllers();
+  const auto controllers = RootWindowController::root_window_controllers();
   // Capture screenshot for each individual display.
   int display_index = 1;
   for (RootWindowController* controller : controllers) {

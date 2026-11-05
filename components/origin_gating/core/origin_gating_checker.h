@@ -14,15 +14,30 @@
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
-#include "components/origin_gating/core/actor_container_config_slot.h"
+#include "base/types/pass_key.h"
+#include "components/origin_gating/core/decision.h"
+#include "components/origin_gating/core/decision_attribution.h"
+#include "components/origin_gating/core/decision_source.h"
+#include "components/origin_gating/core/gateable_event.h"
+#include "components/origin_gating/core/gating_decision.h"
 #include "components/origin_gating/core/origin_gating_cache.h"
 #include "components/origin_gating/core/origin_gating_configuration.h"
-#include "components/origin_gating/core/types.h"
+#include "components/origin_gating/core/task_policy_config_slot.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 namespace origin_gating {
 
+class OriginGatingService;
+
+// Evaluates origin gating decisions for navigations and page actions against a
+// configured pipeline of predicates and embedder delegate callbacks.
+//
+// NOTE: When configured with cache predicates (`kCacheWithUserConfirmation` or
+// `kCacheWithoutUserConfirmation`), this is a stateful object that caches
+// approved origins across evaluations. Its registration should therefore be
+// scoped to a single logical "task" rather than shared globally across
+// unrelated tasks.
 class OriginGatingChecker {
  public:
   // Pure virtual interface for embedder-specific checks.
@@ -42,14 +57,11 @@ class OriginGatingChecker {
 
     using DoesOriginRequireUserConfirmationCallback =
         base::OnceCallback<void(bool)>;
-    // Evaluates whether the given destination URL requires confirmation from
-    // the user when navigating from the source URL. Invokes the callback with
-    // the result.
+    // Evaluates whether the given event requires confirmation from the user.
+    // Invokes the callback with the result.
     virtual void DoesOriginRequireUserConfirmation(
         GatingDecisionContext* context,
-        GateableEvent event,
-        const GURL& source,
-        const GURL& destination,
+        const GateableEvent& event,
         DoesOriginRequireUserConfirmationCallback callback) const = 0;
 
     struct DecisionWithMetadata {
@@ -71,15 +83,21 @@ class OriginGatingChecker {
     // Defers the final decision from the OriginGatingChecker to the delegate.
     virtual void OnNoVerdict(
         GatingDecisionContext* context,
-        GateableEvent event,
-        const GURL& source,
-        const GURL& destination,
+        const GateableEvent& event,
         bool requires_user_confirmation,
         base::OnceCallback<void(NoVerdictResult)> callback) = 0;
   };
 
-  // The delegate must outlive this OriginGatingChecker instance.
-  OriginGatingChecker(Delegate& delegate, OriginGatingConfiguration config);
+  static std::unique_ptr<OriginGatingChecker> CreateForTesting(
+      base::WeakPtr<Delegate> delegate,
+      OriginGatingConfiguration config);
+
+  OriginGatingChecker(base::PassKey<OriginGatingChecker>,
+                      base::WeakPtr<Delegate> delegate,
+                      OriginGatingConfiguration config);
+  OriginGatingChecker(base::PassKey<OriginGatingService>,
+                      base::WeakPtr<Delegate> delegate,
+                      OriginGatingConfiguration config);
   ~OriginGatingChecker();
 
   OriginGatingChecker(const OriginGatingChecker&) = delete;
@@ -90,42 +108,56 @@ class OriginGatingChecker {
   // sequence.
   void ComputeGatingDecision(std::unique_ptr<GatingDecisionContext> context,
                              GateableEvent event,
-                             const GURL& source,
-                             const GURL& destination,
                              GatingDecisionCallback callback);
 
-  // Exposes mutation methods to manage allowed origins in the cache.
+  // Exposes mutation methods to manage allowed origins in the cache. No-op if
+  // `config_` does not include any predicates that consult the cache.
   void AllowNavigationTo(url::Origin origin, bool is_user_confirmed) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    cache_.AllowNavigationTo(std::move(origin), is_user_confirmed);
+    if (cache_) {
+      cache_->AllowNavigationTo(std::move(origin), is_user_confirmed);
+    }
   }
   void AllowNavigationTo(const absl::flat_hash_set<url::Origin>& origins) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    cache_.AllowNavigationTo(origins);
+    if (cache_) {
+      cache_->AllowNavigationTo(origins);
+    }
   }
 
-  const OriginGatingCache& cache() const { return cache_; }
-
-  // Returns references to the container config slot.
-  const ActorContainerConfigSlot& actor_container_config_slot() const {
+  OriginGatingCache::SizeMetrics GetCacheSizeMetrics() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    return actor_container_config_slot_;
+    if (cache_) {
+      return cache_->GetSizeMetrics();
+    }
+    return {};
   }
-  ActorContainerConfigSlot& actor_container_config_slot() {
+
+  // Returns references to the task policy config slot.
+  const TaskPolicyConfigSlot& task_policy_config_slot() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    return actor_container_config_slot_;
+    return task_policy_config_slot_;
+  }
+  TaskPolicyConfigSlot& task_policy_config_slot() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return task_policy_config_slot_;
   }
 
  private:
+  OriginGatingChecker(base::WeakPtr<Delegate> delegate,
+                      OriginGatingConfiguration config);
+
   // Holds various inputs provided by the delegate (and data derived thereof),
   // to avoid needless recomputations.
   struct DelegateInputs {
     GateableEvent event;
-    GURL source;
-    url::Origin source_origin;
-    GURL destination;
+    std::optional<url::Origin> source_origin;
     url::Origin destination_origin;
     std::optional<bool> requires_user_confirmation;
+    // The decision from the TaskPolicyConfig, or `kNoDecision` if there is
+    // no config. This is `std::nullopt` until a predicate that involves the
+    // TaskPolicyConfig is consulted.
+    std::optional<Decision> task_policy_config_decision;
   };
 
   void EvaluatePredicates(
@@ -198,16 +230,16 @@ class OriginGatingChecker {
   Decision IsCachedWithUserConfirmation(const url::Origin& origin) const
       VALID_CONTEXT_REQUIRED(sequence_checker_);
 
-  Decision EvaluateActorContainerConfig(GateableEvent event,
-                                        const url::Origin& source,
-                                        const url::Origin& destination) const
+  Decision EvaluateTaskPolicyConfigWithCache(DelegateInputs& input) const
       VALID_CONTEXT_REQUIRED(sequence_checker_);
 
   SEQUENCE_CHECKER(sequence_checker_);
-  const raw_ref<Delegate> delegate_ GUARDED_BY_CONTEXT(sequence_checker_);
+  const base::WeakPtr<Delegate> delegate_ GUARDED_BY_CONTEXT(sequence_checker_);
   OriginGatingConfiguration config_ GUARDED_BY_CONTEXT(sequence_checker_);
-  OriginGatingCache cache_ GUARDED_BY_CONTEXT(sequence_checker_);
-  ActorContainerConfigSlot actor_container_config_slot_
+  // Cache for origin gating decisions. This is nullopt if the list of
+  // predicates never consults the cache.
+  std::optional<OriginGatingCache> cache_ GUARDED_BY_CONTEXT(sequence_checker_);
+  TaskPolicyConfigSlot task_policy_config_slot_
       GUARDED_BY_CONTEXT(sequence_checker_);
   base::WeakPtrFactory<OriginGatingChecker> weak_ptr_factory_
       GUARDED_BY_CONTEXT(sequence_checker_){this};

@@ -7,6 +7,7 @@
 #import <algorithm>
 #import <memory>
 #import <string_view>
+#import <utility>
 
 #import "base/functional/bind.h"
 #import "base/functional/callback.h"
@@ -38,13 +39,13 @@ namespace {
 // Builds the service.
 std::unique_ptr<KeyedService> BuildService(
     SyntheticFieldTrialHelper* synthetic_field_trial_helper,
-    ProfileIOS* profile) {
-  CHECK(!profile->IsOffTheRecord());
+    ProfileIOS& profile) {
+  CHECK(!profile.IsOffTheRecord());
 
   // Give the opportunity for the test hook to override the factory from
   // the provider (allowing EG tests to use a fake TabGroupSyncService).
   if (auto tab_group_sync_service =
-          tests_hook::CreateTabGroupSyncService(profile)) {
+          tests_hook::CreateTabGroupSyncService(&profile)) {
     return tab_group_sync_service;
   }
 
@@ -67,7 +68,7 @@ std::unique_ptr<KeyedService> BuildService(
   std::unique_ptr<TabGroupSyncService> tab_group_sync_service =
       CreateTabGroupSyncService(
           ::GetChannel(), DataTypeStoreServiceFactory::GetForProfile(profile),
-          profile->GetPrefs(), device_info_tracker, opt_guide, identity_manager,
+          profile.GetPrefs(), device_info_tracker, opt_guide, identity_manager,
           personal_collaboration_data_service, std::move(collaboration_finder),
           synthetic_field_trial_helper, data_sharing_service->GetLogger());
 
@@ -88,36 +89,21 @@ std::unique_ptr<KeyedService> BuildService(
 }  // namespace
 
 // static
-TabGroupSyncService* TabGroupSyncServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<TabGroupSyncService>(
-      profile, /*create=*/true);
-}
-
-// static
-TabGroupSyncServiceFactory* TabGroupSyncServiceFactory::GetInstance() {
-  static base::NoDestructor<TabGroupSyncServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-TabGroupSyncServiceFactory::TestingFactory
+TabGroupSyncServiceFactory::TestingFactoryByRef
 TabGroupSyncServiceFactory::GetDefaultFactory() {
-  // KeyedService factories are never destroyed, to base::Unretained(...)
-  // is safe. See the implementation of GetInstance() for details.
+  // GetSyntheticFieldTrialHelper() returns a pointer to a singleton that is
+  // never deallocated, so it is safe to use base::Unretained(...) here.
   return base::BindOnce(
-      &TabGroupSyncServiceFactory::BuildServiceInstanceFor,
-      base::Unretained(TabGroupSyncServiceFactory::GetInstance()));
+      &BuildService,
+      base::Unretained(
+          TabGroupSyncServiceFactory::GetSyntheticFieldTrialHelper()));
 }
 
-TabGroupSyncServiceFactory::TabGroupSyncServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("TabGroupSyncServiceFactory",
-                                    TestingCreation::kNoServiceForTests,
-                                    ServiceCreation::kCreateWithProfile),
-      synthetic_field_trial_helper_(std::make_unique<SyntheticFieldTrialHelper>(
-          base::BindRepeating(&TabGroupSyncServiceFactory::OnHadSyncedTabGroup),
-          base::BindRepeating(
-              &TabGroupSyncServiceFactory::OnHadSharedTabGroup))) {
+TabGroupSyncServiceFactory::TabGroupSyncServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "TabGroupSyncServiceFactory",
+                                         TestingCreation::kNoServiceForTests,
+                                         ServiceCreation::kCreateWithProfile) {
   DependsOn(BrowserListFactory::GetInstance());
   DependsOn(DataTypeStoreServiceFactory::GetInstance());
   DependsOn(DeviceInfoSyncServiceFactory::GetInstance());
@@ -131,11 +117,9 @@ TabGroupSyncServiceFactory::TabGroupSyncServiceFactory()
                 PersonalCollaborationDataServiceFactory::GetInstance());
 }
 
-TabGroupSyncServiceFactory::~TabGroupSyncServiceFactory() = default;
-
 std::unique_ptr<KeyedService>
-TabGroupSyncServiceFactory::BuildServiceInstanceFor(ProfileIOS* profile) const {
-  return BuildService(synthetic_field_trial_helper_.get(), profile);
+TabGroupSyncServiceFactory::BuildServiceInstanceFor(ProfileIOS& profile) const {
+  return BuildService(GetSyntheticFieldTrialHelper(), profile);
 }
 
 // static
@@ -160,4 +144,14 @@ void TabGroupSyncServiceFactory::OnHadSharedTabGroup(bool had_shared_group) {
                      had_shared_group ? kHasOwnedTabGroupTypeName
                                       : kHasNotOwnedTabGroupTypeName);
 }
+
+// static
+SyntheticFieldTrialHelper*
+TabGroupSyncServiceFactory::GetSyntheticFieldTrialHelper() {
+  static base::NoDestructor<SyntheticFieldTrialHelper> kInstance(
+      base::BindRepeating(&TabGroupSyncServiceFactory::OnHadSyncedTabGroup),
+      base::BindRepeating(&TabGroupSyncServiceFactory::OnHadSharedTabGroup));
+  return kInstance.get();
+}
+
 }  // namespace tab_groups

@@ -74,6 +74,7 @@ enum DeviceBoundSessionDeletionReason {
   kInvalidSessionParams = 6,  // Refresh provided invalid params.
   kRefreshFatalError = 7,  // Fatal error during refresh.
   kDevTools = 8,  // Deleted via DevTools.
+  kReplaced = 9,  // Session was replaced by a new session.
 };
 
 // LINT.ThenChange(//net/device_bound_sessions/deletion_reason.h:DeletionReason)
@@ -212,6 +213,7 @@ enum DeviceBoundSessionError {
   kPreProvisionedKeyNotFound = 87,
   kAttestationCertificationError = 88,
   kAttestationSigningError = 89,
+  kFederatedRegistrationRedirected = 90,
 };
 
 // LINT.ThenChange(//net/device_bound_sessions/session_error.h:DeviceBoundSessionError)
@@ -228,6 +230,7 @@ enum DeviceBoundSessionRefreshResult {
   kRefreshedAsWaiter = 7,
   kTransientSigningError = 8,
   kInScopeRefreshNotYetNeeded = 9,
+  kCanceled = 10,
 };
 
 // LINT.ThenChange(//net/device_bound_sessions/refresh_result.h:DeviceBoundSessionRefreshResult)

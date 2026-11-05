@@ -16,6 +16,7 @@
 #include "base/auto_reset.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/types/optional_ref.h"
 #include "cc/base/protected_sequence_synchronizer.h"
 #include "cc/base/region.h"
 #include "cc/cc_export.h"
@@ -363,6 +364,7 @@ class CC_EXPORT Layer : public base::RefCounted<Layer>,
   // Set or get the list of filter effects to be applied to the contents of the
   // layer and its subtree (together as a single composited entity) when
   // drawing them into their target.
+  // Filters must not be set on the root layer.
   void SetFilters(const FilterOperations& filters);
   FilterOperations filters() const {
     return layer_tree_inputs() ? layer_tree_inputs()->filters
@@ -373,6 +375,7 @@ class CC_EXPORT Layer : public base::RefCounted<Layer>,
   // Set or get the list of filters that should be applied to the content this
   // layer and its subtree will be drawn into. The effect is clipped by
   // backdrop_filter_bounds.
+  // Backdrop filters must not be set on the root layer.
   void SetBackdropFilters(const FilterOperations& filters);
   FilterOperations backdrop_filters() const {
     return layer_tree_inputs() ? layer_tree_inputs()->backdrop_filters
@@ -380,6 +383,7 @@ class CC_EXPORT Layer : public base::RefCounted<Layer>,
   }
 
   // For layer tree mode only.
+  // Backdrop filter bounds must not be set on the root layer.
   void SetBackdropFilterBounds(const SkPath& backdrop_filter_bounds);
   void SetBackdropFilterBounds(const gfx::RRectF& backdrop_filter_bounds) {
     SetBackdropFilterBounds(SkPath::RRect(SkRRect(backdrop_filter_bounds)));
@@ -534,11 +538,12 @@ class CC_EXPORT Layer : public base::RefCounted<Layer>,
   // Set or get data for tracked elements on this layer. The geometry provided
   // is in layer space.
   void SetTrackedElementRects(viz::TrackedElementRects rects);
-  const viz::TrackedElementRects& tracked_element_rects() const {
+  base::optional_ref<const viz::TrackedElementRects> tracked_element_rects()
+      const {
     if (const auto& rare_inputs = inputs_.Read(*this).rare_inputs) {
       return rare_inputs->tracked_element_rects;
     }
-    return viz::TrackedElementRectsEmpty();
+    return std::nullopt;
   }
 
   // Set or get the set of blocking wheel rects of this layer. The
@@ -563,12 +568,13 @@ class CC_EXPORT Layer : public base::RefCounted<Layer>,
   }
 #endif
 
-  // Set or get the ElementId used to identify this layer as the direct child
-  // of a canvas with layoutsubtree, which can be used for DrawElementImage.
-  void SetCanvasChildId(ElementId id);
-  ElementId canvas_child_id() const {
+  // Set or get the ElementId used to identify this layer as a drawable
+  // descendant of a canvas with content=drawable, which can be used for
+  // DrawElementImage.
+  void SetCanvasDrawableId(ElementId id);
+  ElementId canvas_drawable_id() const {
     if (const auto& rare_inputs = inputs_.Read(*this).rare_inputs) {
-      return rare_inputs->canvas_child_id;
+      return rare_inputs->canvas_drawable_id;
     }
     return ElementId();
   }
@@ -780,6 +786,11 @@ class CC_EXPORT Layer : public base::RefCounted<Layer>,
   // (unless it is being scaled). Layers may override this to return true, by
   // default layers are not snapped.
   virtual bool IsSnappedToPixelGridInTarget() const;
+
+  // Disconnects any external client held by a subclass. When called while
+  // attached to a LayerTreeHost during `in_will_commit()`, subclasses must only
+  // clear their main-thread client pointer without modifying commit state.
+  virtual void ClearClient() {}
 
   // Internal method that is called when a Layer is attached to a LayerTreeHost.
   // This would happen when
@@ -1057,7 +1068,7 @@ class CC_EXPORT Layer : public base::RefCounted<Layer>,
     // Rare because only used on Android XR platform
     std::vector<ElementId> xr_hit_test_order;
 #endif
-    ElementId canvas_child_id;
+    ElementId canvas_drawable_id;
     PaintFlags::FilterQuality filter_quality = PaintFlags::FilterQuality::kLow;
     PaintFlags::DynamicRangeLimitMixture dynamic_range_limit{
         PaintFlags::DynamicRangeLimit::kHigh};

@@ -20,6 +20,7 @@
 #include "ui/base/x/x11_desktop_window_move_client.h"
 #include "ui/base/x/x11_drag_drop_client.h"
 #include "ui/base/x/x11_move_loop_delegate.h"
+#include "ui/base/x/x11_whole_screen_move_loop.h"
 #include "ui/events/platform/platform_event_dispatcher.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/x/connection.h"
@@ -90,6 +91,18 @@ class X11Window : public PlatformWindow,
   // pointer is inside the window, so has_pointer() is not yet meaningful.
   bool IsMapPending() const { return map_pending_; }
 
+  // Dispatches a touch cancel for each touch sequence that an
+  // X11WholeScreenMoveLoop ended without its end reaching any window: those
+  // whose release or cancel the loop consumed (`consumed_touches`) and, if the
+  // loop grabbed the pointer itself (`grabbed_pointer`), all touch sequences
+  // that were still active, since releasing that grab ends them. Each cancel
+  // goes to the window the touch sequence was dispatched to. Without this,
+  // aura would consider those touches active indefinitely. May destroy any
+  // window.
+  static void CancelTouchesEndedByMoveLoop(
+      std::vector<PointerId> consumed_touches,
+      bool grabbed_pointer);
+
   // PlatformWindow:
   void Show(bool inactive) override;
   void Hide() override;
@@ -101,6 +114,9 @@ class X11Window : public PlatformWindow,
   void SetBoundsInDIP(const gfx::Rect& bounds) override;
   gfx::Rect GetBoundsInDIP() const override;
   void SetTitle(const std::u16string& title) override;
+  void SetWindowClass(const std::string& wm_class_name,
+                      const std::string& wm_class_class,
+                      const std::string& wayland_app_id) override;
   void SetCapture() override;
   void ReleaseCapture() override;
   bool HasCapture() const override;

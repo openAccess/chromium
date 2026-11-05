@@ -4,9 +4,10 @@
 
 #include "ios/chrome/browser/autocomplete/model/autocomplete_classifier_factory.h"
 
+#include <utility>
+
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
-#include "base/no_destructor.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
 #include "components/omnibox/browser/autocomplete_controller_config.h"
@@ -20,10 +21,10 @@
 namespace ios {
 namespace {
 
-std::unique_ptr<KeyedService> BuildAutocompleteClassifier(ProfileIOS* profile) {
+std::unique_ptr<KeyedService> BuildAutocompleteClassifier(ProfileIOS& profile) {
   return std::make_unique<AutocompleteClassifier>(
       std::make_unique<AutocompleteController>(
-          std::make_unique<AutocompleteProviderClientImpl>(profile),
+          std::make_unique<AutocompleteProviderClientImpl>(&profile),
           AutocompleteControllerConfig{
               .provider_types =
                   AutocompleteClassifier::DefaultOmniboxProviders()}),
@@ -33,38 +34,25 @@ std::unique_ptr<KeyedService> BuildAutocompleteClassifier(ProfileIOS* profile) {
 }  // namespace
 
 // static
-AutocompleteClassifier* AutocompleteClassifierFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<AutocompleteClassifier>(
-      profile, /*create=*/true);
-}
-
-// static
-AutocompleteClassifierFactory* AutocompleteClassifierFactory::GetInstance() {
-  static base::NoDestructor<AutocompleteClassifierFactory> instance;
-  return instance.get();
-}
-
-// static
-AutocompleteClassifierFactory::TestingFactory
+AutocompleteClassifierFactory::TestingFactoryByRef
 AutocompleteClassifierFactory::GetDefaultFactory() {
   return base::BindOnce(&BuildAutocompleteClassifier);
 }
 
-AutocompleteClassifierFactory::AutocompleteClassifierFactory()
-    : ProfileKeyedServiceFactoryIOS("AutocompleteClassifier",
-                                    ProfileSelection::kRedirectedInIncognito,
-                                    TestingCreation::kNoServiceForTests) {
+AutocompleteClassifierFactory::AutocompleteClassifierFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "AutocompleteClassifier",
+          ProfileSelection::kRedirectedInIncognito,
+          TestingCreation::kNoServiceForTests) {
   DependsOn(ios::InMemoryURLIndexFactory::GetInstance());
   DependsOn(ios::TemplateURLServiceFactory::GetInstance());
   DependsOn(ios::ShortcutsBackendFactory::GetInstance());
 }
 
-AutocompleteClassifierFactory::~AutocompleteClassifierFactory() = default;
-
 std::unique_ptr<KeyedService>
 AutocompleteClassifierFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   return BuildAutocompleteClassifier(profile);
 }
 

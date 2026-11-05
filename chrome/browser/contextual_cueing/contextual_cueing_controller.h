@@ -23,9 +23,12 @@
 #include "components/optimization_guide/proto/features/contextual_cueing.pb.h"
 #include "components/page_content_annotations/core/page_content_annotations_service.h"
 #include "components/sessions/core/session_id.h"
+#include "components/sync/service/sync_service.h"
+#include "components/sync/service/sync_service_observer.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "url/gurl.h"
 
 class BrowserWindowInterface;
@@ -36,6 +39,11 @@ class TemplateURLService;
 namespace favicon {
 class FaviconService;
 }  // namespace favicon
+
+namespace history {
+class HistoryService;
+class QueryResults;
+}  // namespace history
 
 namespace optimization_guide {
 class ModelQualityLogEntry;
@@ -52,10 +60,6 @@ namespace signin {
 class IdentityManager;
 }  // namespace signin
 
-namespace syncer {
-class SyncService;
-}  // namespace syncer
-
 namespace tabs {
 class TabInterface;
 }  // namespace tabs
@@ -68,17 +72,18 @@ struct CueTabMetrics;
 class ContextualCueingController
     : public page_content_annotations::PageContentAnnotationsService::
           PageContentAnnotationsObserver,
+      public syncer::SyncServiceObserver,
       public TabListInterfaceObserver {
  public:
+  DECLARE_USER_DATA(ContextualCueingController);
+
   explicit ContextualCueingController(tabs::TabInterface* tab);
   ContextualCueingController(const ContextualCueingController&) = delete;
   ContextualCueingController& operator=(const ContextualCueingController&) =
       delete;
   ~ContextualCueingController() override;
 
-  // Get contents' browser's ContextualCueingController if it exists.
-  static ContextualCueingController* GetForWebContents(
-      content::WebContents& contents);
+  static ContextualCueingController* From(tabs::TabInterface* tab);
 
   // Register a cue type. Feature code provides a CueTarget for reporting the
   // feature's cue eligibility and handling clicks. Calling this function for a
@@ -94,6 +99,10 @@ class ContextualCueingController
       const page_content_annotations::PageContentAnnotationsResult& result)
       override;
 
+  // syncer::SyncServiceObserver:
+  void OnStateChanged(syncer::SyncService* sync) override;
+  void OnSyncShutdown(syncer::SyncService* sync) override;
+
   // TabListInterfaceObserver:
   void OnTabRemoved(TabListInterface& tab_list,
                     tabs::TabInterface* tab,
@@ -108,12 +117,18 @@ class ContextualCueingController
 
   void OnUrlChanged(const GURL& url);
 
-  // Hide the cue for this tab if it's showing.
+  // Hide the cue for this tab if it's showing (both the anchored message and
+  // omnibox chip).
   void HideCue();
+
+  // Hide the anchored message for this tab if it's showing, leaving the omnibox
+  // chip visible.
+  void HideAnchoredMessage();
 
   // Returns the CueTarget for the given CueTargetType, or nullptr if there is
   // none.
   CueTarget* GetTarget(CueTargetType type);
+  bool ShouldRecordUcbStats(CueTargetType type) const;
 
   void OnCueInteraction(
       ContextualCueingInteraction interaction_type,
@@ -132,6 +147,13 @@ class ContextualCueingController
   // Initiates a model execution request to MES for the current window state,
   // requesting only surfaces for the winning target.
   void InitiateModelExecutionRequest(CueTargetType winning_target_type);
+
+  // Callback for when the history query completes. Populates `historical_tabs`
+  // on `request` and initiates model execution.
+  void OnHistoryQueryComplete(
+      optimization_guide::proto::Tab active_tab,
+      optimization_guide::proto::ContextualCueingRequest request,
+      history::QueryResults results);
 
   // The V1 single-source evaluation path, triggered by page content
   // annotations. Performs URL eligibility checks, category classification
@@ -246,6 +268,14 @@ class ContextualCueingController
                           const favicon_base::FaviconImageResult& image_result);
   void OnShowCueFailed(ContextualCueingDecision decision);
 
+  // Logs and records a contextual cueing decision for this tab to UKM.
+  void RecordContextualCueingDecision(ContextualCueingDecision decision);
+
+  // Launches the HaTS dismiss survey if eligible and not previously shown for
+  // this cue's category.
+  void MaybeLaunchDismissHatsSurvey(CueTargetType cue_type,
+                                    const std::string& cuj);
+
   void OnSidePanelShown();
 
   void OnTabActivated(tabs::TabInterface* tab);
@@ -261,11 +291,18 @@ class ContextualCueingController
   absl::flat_hash_set<optimization_guide::proto::ContextualCueingSurface>
   GetEligibleCueSurfaces();
 
+  void UpdateCategoryClassifierObservation();
+  bool IsHistorySyncEnabled() const;
+
   // Not owned. Guaranteed to outlive `this`.
   const raw_ptr<tabs::TabInterface> tab_;
   std::vector<base::CallbackListSubscription> tab_subscriptions_;
   std::set<SessionID> dependencies_;
   std::optional<ActiveCueData> active_cue_data_;
+  // Watches the window's tab list only while a shown cue depends on other
+  // tabs (`dependencies_`), so that closing one of them hides the cue. Every
+  // tab has a controller, so observing the list unconditionally would make
+  // each tab insertion notify every other tab.
   base::ScopedObservation<TabListInterface, TabListInterfaceObserver>
       tab_list_observation_{this};
   raw_ptr<ContextualCueingService> contextual_cueing_service_;
@@ -277,6 +314,10 @@ class ContextualCueingController
   raw_ptr<TemplateURLService> template_url_service_;
   raw_ptr<signin::IdentityManager> identity_manager_;
   raw_ptr<favicon::FaviconService> favicon_service_;
+  bool is_observing_category_classifier_ = false;
+  base::ScopedObservation<syncer::SyncService, syncer::SyncServiceObserver>
+      sync_service_observation_{this};
+  raw_ptr<history::HistoryService> history_service_;
   absl::flat_hash_map<CueTargetType, std::unique_ptr<CueTarget>> cue_targets_;
   base::CallbackListSubscription side_panel_shown_subscription_;
   base::TimeTicks cue_shown_time_;
@@ -292,6 +333,9 @@ class ContextualCueingController
 #endif
 
   GURL last_logged_active_url_;
+
+  ui::ScopedUnownedUserData<ContextualCueingController>
+      scoped_unowned_user_data_;
 
   base::WeakPtrFactory<ContextualCueingController> weak_ptr_factory_{this};
 };

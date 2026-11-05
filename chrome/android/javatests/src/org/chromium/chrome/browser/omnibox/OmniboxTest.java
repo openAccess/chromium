@@ -7,36 +7,42 @@ package org.chromium.chrome.browser.omnibox;
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
-import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
+import static org.hamcrest.Matchers.allOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+
+import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import android.annotation.SuppressLint;
 import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.widget.ImageView;
 
+import androidx.annotation.StringRes;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
-import org.junit.Assert;
+import org.hamcrest.Matchers;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.params.SkipCommandLineParameterization;
+import org.chromium.base.test.transit.Triggers;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.EnormousTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
@@ -44,28 +50,38 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Manual;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.layouts.LayoutTestUtils;
+import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.omnibox.status.StatusCoordinator;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
+import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
-import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
-import org.chromium.chrome.browser.theme.ThemeColorProvider.ThemeColorObserver;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.omnibox.OmniboxFacility;
+import org.chromium.chrome.test.transit.page.PageLoadStartedCondition;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
+import org.chromium.components.omnibox.AutocompleteMatch;
+import org.chromium.components.omnibox.AutocompleteMatchBuilder;
+import org.chromium.components.omnibox.AutocompleteResult;
+import org.chromium.components.omnibox.OmniboxCapabilities;
+import org.chromium.components.omnibox.OmniboxSuggestionType;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
+import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.net.test.ServerCertificate;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.test.util.DeviceRestriction;
 
 import java.util.List;
 
@@ -79,26 +95,31 @@ import java.util.List;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @SuppressLint("SetTextI18n")
 @Batch(Batch.PER_CLASS)
+// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
+@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class OmniboxTest {
+    private static final String SUGGESTION_TEXT = "suggestion text";
+
     @Rule
     public FreshCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.freshChromeTabbedActivityRule();
+
+    /** Keyword of the default search engine, captured before the test swaps it out. */
+    private String mDefaultSearchEngineKeyword;
 
     @Test
     @EnormousTest
     @Feature({"Omnibox"})
     public void testSimpleUse() throws InterruptedException {
-        mActivityTestRule.startOnBlankPage();
+        WebPageStation page = mActivityTestRule.startOnBlankPage();
         OmniboxTestUtils omnibox = new OmniboxTestUtils(mActivityTestRule.getActivity());
         omnibox.requestFocus();
         omnibox.typeText("aaaaaaa", false);
         omnibox.checkSuggestionsShown();
 
-        ChromeTabUtils.waitForTabPageLoadStart(
-                mActivityTestRule.getActivityTab(),
-                null,
-                () -> omnibox.sendKey(KeyEvent.KEYCODE_ENTER),
-                20L);
+        Triggers.runTo(() -> omnibox.sendKey(KeyEvent.KEYCODE_ENTER))
+                .withTimeout(20000L)
+                .waitFor(new PageLoadStartedCondition(page.loadedTabElement));
     }
 
     /**
@@ -114,16 +135,20 @@ public class OmniboxTest {
         final UrlBar urlBar = (UrlBar) mActivityTestRule.getActivity().findViewById(R.id.url_bar);
 
         // Omnibox on NTP shows the hint text.
-        Assert.assertNotNull(urlBar);
+        assertNotNull(urlBar);
         assertEquals("Location bar has text.", "", urlBar.getText().toString());
 
+        @StringRes
+        int expectedHintRes =
+                OmniboxCapabilities.isDesktopPlatform()
+                        ? R.string.omnibox_empty_ask_hint_with_dse_name
+                        : R.string.omnibox_empty_hint_with_dse_name;
         CriteriaHelper.pollUiThread(
                 () -> {
                     assertEquals(
                             "Location bar has incorrect hint.",
-                            OmniboxResourceProvider.getString(
-                                    mActivityTestRule.getActivity(),
-                                    R.string.omnibox_empty_hint_with_dse_name,
+                            OmniboxResourceProvider.expandString(
+                                    mActivityTestRule.getActivity().getString(expectedHintRes),
                                     "Google"),
                             urlBar.getHint().toString());
                 });
@@ -156,7 +181,7 @@ public class OmniboxTest {
         omnibox.sendKey(KeyEvent.KEYCODE_ENTER, KeyEvent.META_ALT_ON);
 
         Tab resultTab = mActivityTestRule.getActivityTab();
-        Assert.assertNotEquals(
+        assertNotEquals(
                 "The result should be loaded in a new tab that is brought to the foreground.",
                 currentTab,
                 resultTab);
@@ -164,6 +189,36 @@ public class OmniboxTest {
                 "Tab count should reflect new tab.",
                 tabCount + 1,
                 ChromeTabUtils.getNumOpenTabs(mActivityTestRule.getActivity()));
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"Omnibox"})
+    public void testTabSelectsFirstSuggestionUpdatesUrlBarText() {
+        mActivityTestRule.startOnBlankPage();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    UserPrefs.get(ProfileManager.getLastUsedRegularProfile())
+                            .setBoolean(Pref.SHOW_AI_MODE_OMNIBOX_BUTTON, false);
+                });
+        OmniboxTestUtils omnibox = new OmniboxTestUtils(mActivityTestRule.getActivity());
+        omnibox.requestFocus();
+
+        AutocompleteMatch match =
+                AutocompleteMatchBuilder.searchWithType(OmniboxSuggestionType.SEARCH_SUGGEST)
+                        .setDisplayText(SUGGESTION_TEXT)
+                        .setFillIntoEdit(SUGGESTION_TEXT)
+                        .build();
+
+        omnibox.setSuggestions(AutocompleteResult.fromCache(List.of(match), null));
+        omnibox.checkSuggestionsShown();
+
+        // Navigate into the suggestions list.
+        omnibox.sendKey(KeyEvent.KEYCODE_TAB);
+
+        // Verify the first suggestion is selected and reflected in the URL bar.
+        omnibox.checkSuggestionSelected(0);
+        omnibox.checkText(SUGGESTION_TEXT);
     }
 
     /**
@@ -320,7 +375,6 @@ public class OmniboxTest {
     @MediumTest
     @SkipCommandLineParameterization
     @DisableFeatures({ChromeFeatureList.ANDROID_PAGE_INFO_AS_APP_MENU_ITEM})
-    @DisabledTest(message = "https://crbug.com/524704358")
     public void testSecurityIconOnHTTPSFocusAndBack() throws Exception {
         mActivityTestRule.startOnBlankPage();
         setNonDefaultSearchEngine();
@@ -396,6 +450,7 @@ public class OmniboxTest {
                     List<TemplateUrl> searchEngines = templateUrlService.getTemplateUrls();
                     TemplateUrl defaultEngine =
                             templateUrlService.getDefaultSearchEngineTemplateUrl();
+                    mDefaultSearchEngineKeyword = defaultEngine.getKeyword();
 
                     TemplateUrl notDefault = null;
                     for (TemplateUrl searchEngine : searchEngines) {
@@ -405,7 +460,7 @@ public class OmniboxTest {
                         }
                     }
 
-                    Assert.assertNotNull(notDefault);
+                    assertNotNull(notDefault);
 
                     templateUrlService.setSearchEngine(notDefault.getKeyword());
                 });
@@ -413,151 +468,19 @@ public class OmniboxTest {
 
     private void restoreDefaultSearchEngine() {
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    TemplateUrlService service =
-                            TemplateUrlServiceFactory.getForProfile(
-                                    ProfileManager.getLastUsedRegularProfile());
-                    TemplateUrl defaultEngine = service.getDefaultSearchEngineTemplateUrl();
-                    service.setSearchEngine(defaultEngine.getKeyword());
-                });
-    }
-
-    /** Test whether the color of the Location bar is correct for HTTPS scheme. */
-    @Test
-    @SmallTest
-    @SkipCommandLineParameterization
-    @DisableFeatures({ChromeFeatureList.ANDROID_PAGE_INFO_AS_APP_MENU_ITEM})
-    public void testHttpsLocationBarColor() throws Exception {
-        mActivityTestRule.startOnBlankPage();
-        EmbeddedTestServer testServer =
-                EmbeddedTestServer.createAndStartHTTPSServer(
-                        InstrumentationRegistry.getInstrumentation().getContext(),
-                        ServerCertificate.CERT_OK);
-        CallbackHelper didThemeColorChangedCallbackHelper = new CallbackHelper();
-        CallbackHelper onSSLStateUpdatedCallbackHelper = new CallbackHelper();
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    new TabModelSelectorTabObserver(
-                            mActivityTestRule.getActivity().getTabModelSelector()) {
-                        @Override
-                        public void onSSLStateUpdated(Tab tab) {
-                            onSSLStateUpdatedCallbackHelper.notifyCalled();
-                        }
-                    };
-
-                    mActivityTestRule
-                            .getActivity()
-                            .getRootUiCoordinatorForTesting()
-                            .getTopUiThemeColorProvider()
-                            .addThemeColorObserver(
-                                    new ThemeColorObserver() {
-                                        @Override
-                                        public void onThemeColorChanged(
-                                                int color, boolean shouldAnimate) {
-                                            didThemeColorChangedCallbackHelper.notifyCalled();
-                                        }
-                                    });
-                });
-
-        final String testHttpsUrl =
-                testServer.getURL("/chrome/test/data/android/theme_color_test.html");
-        ImageView securityView =
-                (ImageView)
-                        mActivityTestRule.getActivity().findViewById(R.id.location_bar_status_icon);
-        mActivityTestRule.loadUrl(testHttpsUrl);
-        // Tablets don't have website theme colors.
-        if (!mActivityTestRule.getActivity().isTablet()) {
-            didThemeColorChangedCallbackHelper.waitForCallback(0);
-        }
-        onSSLStateUpdatedCallbackHelper.waitForCallback(0);
-        LocationBarLayout locationBarLayout =
-                (LocationBarLayout) mActivityTestRule.getActivity().findViewById(R.id.location_bar);
-        boolean securityIcon =
-                locationBarLayout.getStatusCoordinatorForTesting().isSecurityViewShown();
-        assertTrue("Omnibox should have a Security icon", securityIcon);
-        assertEquals(
-                "location_bar_status_icon with wrong resource-id",
-                R.id.location_bar_status_icon,
-                securityView.getId());
-        if (mActivityTestRule.getActivity().isTablet()) {
-            assertTrue(
-                    mActivityTestRule
-                            .getActivity()
-                            .getToolbarManager()
-                            .getLocationBarModelForTesting()
-                            .shouldEmphasizeHttpsScheme());
-        } else {
-            assertFalse(
-                    mActivityTestRule
-                            .getActivity()
-                            .getToolbarManager()
-                            .getLocationBarModelForTesting()
-                            .shouldEmphasizeHttpsScheme());
-        }
+                () ->
+                        TemplateUrlServiceFactory.getForProfile(
+                                        ProfileManager.getLastUsedRegularProfile())
+                                .setSearchEngine(mDefaultSearchEngineKeyword));
     }
 
     @Test
     @SmallTest
-    @SkipCommandLineParameterization
-    @EnableFeatures({ChromeFeatureList.ANDROID_PAGE_INFO_AS_APP_MENU_ITEM})
-    public void testHttpsLocationBarColor_PageInfoAsAppMenuItemFlagEnabled() throws Exception {
-        mActivityTestRule.startOnBlankPage();
-        EmbeddedTestServer testServer =
-                EmbeddedTestServer.createAndStartHTTPSServer(
-                        InstrumentationRegistry.getInstrumentation().getContext(),
-                        ServerCertificate.CERT_OK);
-        CallbackHelper didThemeColorChangedCallbackHelper = new CallbackHelper();
-        CallbackHelper onSSLStateUpdatedCallbackHelper = new CallbackHelper();
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    new TabModelSelectorTabObserver(
-                            mActivityTestRule.getActivity().getTabModelSelector()) {
-                        @Override
-                        public void onSSLStateUpdated(Tab tab) {
-                            onSSLStateUpdatedCallbackHelper.notifyCalled();
-                        }
-                    };
-
-                    mActivityTestRule
-                            .getActivity()
-                            .getRootUiCoordinatorForTesting()
-                            .getTopUiThemeColorProvider()
-                            .addThemeColorObserver(
-                                    new ThemeColorObserver() {
-                                        @Override
-                                        public void onThemeColorChanged(
-                                                int color, boolean shouldAnimate) {
-                                            didThemeColorChangedCallbackHelper.notifyCalled();
-                                        }
-                                    });
-                });
-
-        final String testHttpsUrl =
-                testServer.getURL("/chrome/test/data/android/theme_color_test.html");
-        mActivityTestRule.loadUrl(testHttpsUrl);
-        if (!mActivityTestRule.getActivity().isTablet()) {
-            didThemeColorChangedCallbackHelper.waitForCallback(0);
-        }
-        onSSLStateUpdatedCallbackHelper.waitForCallback(0);
-        LocationBarLayout locationBarLayout =
-                mActivityTestRule.getActivity().findViewById(R.id.location_bar);
-        boolean securityIcon =
-                locationBarLayout.getStatusCoordinatorForTesting().isSecurityViewShown();
-
-        if (mActivityTestRule.getActivity().isTablet()) {
-            assertTrue("Omnibox should have a Security icon", securityIcon);
-        } else {
-            assertFalse("Omnibox should not have a Security icon", securityIcon);
-        }
-    }
-
-    @Test
-    @SmallTest
-    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @Restriction({DeviceFormFactor.TABLET_OR_DESKTOP, DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     public void testClickStatusIcon_OnNTPDoesNothing() {
         mActivityTestRule.startOnNtp();
 
-        onView(withId(R.id.location_bar_status_icon)).perform(click());
+        onViewWaiting(withId(R.id.location_bar_status_icon)).perform(click());
         onView(withId(R.id.page_info_url_wrapper)).check(doesNotExist());
     }
 
@@ -572,8 +495,8 @@ public class OmniboxTest {
                         .getURL("/chrome/test/data/android/omnibox/one.html");
         mActivityTestRule.loadUrl(testUrl);
 
-        onView(withId(R.id.location_bar_status_icon)).perform(click());
-        onView(withId(R.id.page_info_url_wrapper)).check(matches(isDisplayed()));
+        onViewWaiting(withId(R.id.location_bar_status_icon)).perform(click());
+        onViewWaiting(allOf(withId(R.id.page_info_url_wrapper), isDisplayed()));
     }
 
     @Test
@@ -584,17 +507,19 @@ public class OmniboxTest {
         OmniboxTestUtils omnibox = new OmniboxTestUtils(mActivityTestRule.getActivity());
 
         // 1. In Tab 1, focus omnibox and type first text without committing.
+        Tab tab1 = getActivityTab();
         omnibox.requestFocus();
         omnibox.typeText("first query", false);
         omnibox.checkText("first query");
 
-        // 2. Open another tab using Ctrl+T keyboard shortcut.
-        int initialTabCount = ChromeTabUtils.getNumOpenTabs(mActivityTestRule.getActivity());
+        // 2. Open another tab using Ctrl+T keyboard shortcut. Wait for it to become the active tab
+        // and for the browsing layout to settle, so that Tab 1 has handed over its editing state.
         omnibox.sendShortcut(KeyEvent.KEYCODE_T, KeyEvent.META_CTRL_ON);
         CriteriaHelper.pollUiThread(
-                () ->
-                        ChromeTabUtils.getNumOpenTabs(mActivityTestRule.getActivity())
-                                == initialTabCount + 1);
+                () -> mActivityTestRule.getActivity().getActivityTab() != tab1,
+                "The new tab never became the active tab.");
+        Tab tab2 = getActivityTab();
+        waitForTabSelectedAndRestored(tab2);
 
         // 3. In Tab 2, focus omnibox and type second text without committing.
         omnibox.requestFocus();
@@ -603,16 +528,42 @@ public class OmniboxTest {
 
         // 4. Send Ctrl+PageUp to switch back to Tab 1.
         omnibox.sendShortcut(KeyEvent.KEYCODE_PAGE_UP, KeyEvent.META_CTRL_ON);
+        waitForTabSelectedAndRestored(tab1);
         omnibox.checkText("first query");
 
         // 5. Send Ctrl+PageDown to switch back to Tab 2.
         omnibox.sendShortcut(KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.META_CTRL_ON);
+        waitForTabSelectedAndRestored(tab2);
         omnibox.checkText("second query");
+    }
+
+    private Tab getActivityTab() {
+        return ThreadUtils.runOnUiThreadBlocking(
+                () -> mActivityTestRule.getActivity().getActivityTab());
+    }
+
+    private void waitForTabSelectedAndRestored(Tab expected) {
+        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
+        // Not waitForBrowsingLayout(): the restored Omnibox is focused, which hides toolbar
+        // buttons that CtaPageStation expects.
+        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.BROWSING);
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            "ActivityTabProvider tab mismatch",
+                            cta.getActivityTabProvider().get(),
+                            Matchers.is(expected));
+                    Criteria.checkThat(
+                            "LocationBarModel tab mismatch",
+                            cta.getToolbarManager().getLocationBarModelForTesting().getTab(),
+                            Matchers.is(expected));
+                });
     }
 
     @Test
     @MediumTest
     @Feature({"Omnibox"})
+    @Restriction(DeviceFormFactor.DESKTOP)
     public void testFastTypingWithLatency() {
         mActivityTestRule.startOnBlankPage();
         OmniboxTestUtils omnibox = new OmniboxTestUtils(mActivityTestRule.getActivity());

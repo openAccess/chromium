@@ -75,10 +75,14 @@ class VIEWS_EXPORT Background : public ui::SafeCastable {
   // color).
   ui::ColorVariant color() const { return color_; }
 
-  // Set a solid color to be used when drawing backgrounds.
-  virtual void SetColor(ui::ColorVariant color);
-
   virtual void SetInternalName(const std::string& name);
+
+ protected:
+  // Set a solid color to be used when drawing backgrounds. Restricted to
+  // subclasses: callers holding a generic `Background*` cannot know how the
+  // concrete subclass uses the color, if at all. To change a view's
+  // background, install a new one with `View::SetBackground()`.
+  void set_color(ui::ColorVariant color);
 
  private:
   ui::ColorVariant color_;
@@ -140,12 +144,17 @@ VIEWS_EXPORT std::unique_ptr<Background> CreateBackgroundFromPainter(
 VIEWS_EXPORT std::unique_ptr<Background> CreateThemedVectorIconBackground(
     const ui::ThemedVectorIcon& icon);
 
-// Creates a background that fills the canvas in a pill/capsule shape,
-// where the corner radius is dynamically computed as half of the minimum
-// of the view's height and width.
+// Creates a background that fills the canvas in a pill/capsule shape, where
+// the corner radius is dynamically computed as half of the minimum of the
+// height and width of the region being filled.
 VIEWS_EXPORT std::unique_ptr<Background> CreatePillBackground(
     ui::ColorVariant color,
     int for_border_thickness = 0);
+
+// Same as above except the background is inset by the specified insets.
+VIEWS_EXPORT std::unique_ptr<Background> CreatePillBackground(
+    ui::ColorVariant color,
+    const gfx::Insets& insets);
 
 }  // namespace views
 

@@ -23,7 +23,7 @@ MachBootstrapAcceptor::MachBootstrapAcceptor(const std::string& name_fragment,
     : server_name_(
           base::StrCat({base::apple::BaseBundleID(), ".", name_fragment})),
       delegate_(delegate) {
-  DCHECK(delegate_);
+  CHECK(delegate_, base::NotFatalUntil::M161);
 }
 
 MachBootstrapAcceptor::~MachBootstrapAcceptor() {
@@ -48,8 +48,12 @@ void MachBootstrapAcceptor::Start() {
 }
 
 void MachBootstrapAcceptor::Stop() {
-  endpoint_.reset();
+  // `dispatch_source_` runs `HandleRequest()` on a background dispatch queue,
+  // which accesses `endpoint_` via `port()`. Reset `dispatch_source_` first
+  // (which cancels the source and waits for any in-flight event handler to
+  // finish) before resetting `endpoint_`.
   dispatch_source_.reset();
+  endpoint_.reset();
 }
 
 void MachBootstrapAcceptor::HandleRequest() {
@@ -88,7 +92,7 @@ void MachBootstrapAcceptor::HandleRequest() {
 }
 
 mach_port_t MachBootstrapAcceptor::port() {
-  DCHECK(endpoint_.is_valid());
+  CHECK(endpoint_.is_valid(), base::NotFatalUntil::M161);
   return endpoint_.platform_handle().GetMachReceiveRight().get();
 }
 

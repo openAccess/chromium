@@ -6,7 +6,6 @@ import 'chrome://contextual-tasks/app.js';
 
 import {BrowserProxyImpl} from 'chrome://contextual-tasks/contextual_tasks_browser_proxy.js';
 import {isFullWebView} from 'chrome://contextual-tasks/web_view_type.js';
-import type {WebViewType} from 'chrome://contextual-tasks/web_view_type.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
@@ -26,9 +25,7 @@ suite('ContextualTasksWebviewTest', function() {
     document.body.appendChild(appElement);
     await microtasksFinished();
 
-    const threadFrame =
-        appElement.shadowRoot.querySelector<WebViewType>('#threadFrame');
-    assertTrue(!!threadFrame, 'Thread frame not found');
+    const threadFrame = appElement.$.threadFrame;
 
     if (!isFullWebView(threadFrame)) {
       return;
@@ -61,9 +58,7 @@ suite('ContextualTasksWebviewTest', function() {
     document.body.appendChild(appElement);
     await microtasksFinished();
 
-    const threadFrame =
-        appElement.shadowRoot.querySelector<WebViewType>('#threadFrame');
-    assertTrue(!!threadFrame, 'Thread frame not found');
+    const threadFrame = appElement.$.threadFrame;
 
     if (!isFullWebView(threadFrame)) {
       return;
@@ -96,9 +91,7 @@ suite('ContextualTasksWebviewTest', function() {
     document.body.appendChild(appElement);
     await microtasksFinished();
 
-    const threadFrame =
-        appElement.shadowRoot.querySelector<WebViewType>('#threadFrame');
-    assertTrue(!!threadFrame, 'Thread frame not found');
+    const threadFrame = appElement.$.threadFrame;
 
     if (!isFullWebView(threadFrame)) {
       return;
@@ -125,8 +118,6 @@ suite('ContextualTasksWebviewTest', function() {
     const proxy = new TestContextualTasksBrowserProxy(fixtureUrl);
     BrowserProxyImpl.setInstance(proxy);
 
-    loadTimeData.overrideValues({userAgentSuffix: 'Cobrowsing/'});
-
     const appElement = document.createElement('contextual-tasks-app');
     document.body.appendChild(appElement);
     // Wait for app to finish initializing, which includes setting the initial
@@ -134,9 +125,7 @@ suite('ContextualTasksWebviewTest', function() {
     await microtasksFinished();
 
     // Get the webview element.
-    const threadFrame =
-        appElement.shadowRoot.querySelector<WebViewType>('#threadFrame');
-    assertTrue(!!threadFrame, 'Thread frame not found');
+    const threadFrame = appElement.$.threadFrame;
 
     if (!isFullWebView(threadFrame)) {
       return;
@@ -147,16 +136,12 @@ suite('ContextualTasksWebviewTest', function() {
     const headersPromise =
         new Promise<chrome.webRequest.HttpHeaders|undefined>(resolve => {
           const listener = (details: any) => {
-            if (!details.url.includes('/search')) {
-              return {};
-            }
             // Remove listener to avoid capturing other requests.
-            threadFrame.request.onBeforeSendHeaders.removeListener(listener);
+            threadFrame.request.onSendHeaders.removeListener(listener);
             resolve(details.requestHeaders);
-            return {};
           };
 
-          threadFrame.request.onBeforeSendHeaders.addListener(
+          threadFrame.request.onSendHeaders.addListener(
               listener, {urls: ['<all_urls>']}, ['requestHeaders']);
         });
 
@@ -164,7 +149,7 @@ suite('ContextualTasksWebviewTest', function() {
     // else the request will not actually trigger the listener. However, this
     // does not actually load a URL in the webview, because browsertests use a
     // mock server implementation.
-    threadFrame.src = 'https://www.google.com/search?udm=50';
+    threadFrame.src = 'https://www.google.com';
 
     // Verify that the OAuth token was added to the request headers.
     const headers = await headersPromise;
@@ -190,7 +175,6 @@ suite('ContextualTasksWebviewTest', function() {
     await microtasksFinished();
 
     const threadFrame = appElement.$.threadFrame;
-    assertTrue(!!threadFrame, 'Thread frame not found');
 
     if (!isFullWebView(threadFrame)) {
       return;
@@ -225,9 +209,7 @@ suite('ContextualTasksWebviewTest', function() {
     document.body.appendChild(appElement);
     await microtasksFinished();
 
-    const threadFrame =
-        appElement.shadowRoot.querySelector<WebViewType>('#threadFrame');
-    assertTrue(!!threadFrame, 'Thread frame not found');
+    const threadFrame = appElement.$.threadFrame;
 
     if (!isFullWebView(threadFrame)) {
       return;

@@ -43,8 +43,10 @@ std::unique_ptr<base::i18n::BreakIterator> CreateSentenceBreakIterator(
   return iter;
 }
 
-// Trims leading/trailing whitespace from the sentence boundary range [start, end)
-// and appends a TextChunk with its absolute character offset to `chunks` if non-empty.
+// Trims leading/trailing whitespace from the sentence boundary range [start,
+// end) and, if non-empty, appends it to `chunks`. The first chunk starts at 0;
+// each later chunk follows the previous chunk plus exactly one separator code
+// unit (see `TextChunk::start_code_unit_offset`).
 void ProcessNextSentence(std::u16string_view text,
                          size_t start,
                          size_t end,
@@ -58,12 +60,10 @@ void ProcessNextSentence(std::u16string_view text,
     return;
   }
 
-  CHECK_GE(trimmed_sentence.data(), text.data());
-  size_t absolute_start =
-      static_cast<size_t>(std::distance(text.data(), trimmed_sentence.data()));
-  CHECK_LE(absolute_start + trimmed_sentence.size(), text.size());
-
-  chunks.emplace_back(trimmed_sentence, absolute_start);
+  const size_t offset = chunks.empty() ? 0
+                                       : chunks.back().start_code_unit_offset +
+                                             chunks.back().text.size() + 1;
+  chunks.emplace_back(trimmed_sentence, offset);
 }
 
 void GetSurroundingWhitespace(std::u16string_view sentence,

@@ -13,6 +13,8 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
+#include "base/types/expected.h"
+#include "remoting/host/terminal_error.h"
 
 namespace remoting {
 
@@ -31,6 +33,11 @@ class TerminalSessionManager {
   using ProcessInfoCallback = base::RepeatingCallback<
       void(int32_t terminal_id, bool is_active, std::string_view process_name)>;
 
+  using RestoredCallback = base::RepeatingCallback<void(int32_t)>;
+
+  using CreateTerminalCallback =
+      base::OnceCallback<void(base::expected<int32_t, TerminalError>)>;
+
   TerminalSessionManager();
   ~TerminalSessionManager();
 
@@ -47,7 +54,8 @@ class TerminalSessionManager {
   // Behavior:
   // - GetTerminalSessionIds() returns the list of terminal session IDs that
   //   have been restored so far.
-  // - GetTerminalSession(id) returns the TerminalSession pointer for any session
+  // - GetTerminalSession(id) returns the TerminalSession pointer for any
+  // session
   //   that has already been restored. It is safe to call with any ID returned
   //   by GetTerminalSessionIds().
   // - If CreateTerminal() is called while restoration is in progress, it will
@@ -56,11 +64,16 @@ class TerminalSessionManager {
   //   not yet been restored, it will fail.
   void Start(OutputCallback output_callback,
              ExitCallback exit_callback,
-             ProcessInfoCallback process_info_callback);
+             ProcessInfoCallback process_info_callback,
+             RestoredCallback restored_callback);
 
   // Spawns a new terminal session using the stored output and exit callbacks.
-  // Returns the ID of the new session, or -1 if the terminal could not be created.
-  int32_t CreateTerminal();
+  // `callback` is run with the ID of the new session once it has started, or
+  // with an error describing why the terminal could not be created. It may be
+  // run synchronously. On success, it is run before any output is delivered
+  // for the new session. It is not run if the manager is detached, or the
+  // session is closed, before the session has started.
+  void CreateTerminal(CreateTerminalCallback callback);
 
   // Writes data to the terminal session.
   void WriteTerminal(const int32_t terminal_id, const std::string& data);
@@ -86,6 +99,20 @@ class TerminalSessionManager {
   // Intercepts the exit callback from the TerminalSession.
   void OnTerminalExited(int32_t terminal_id);
 
+  // Called when a session created by CreateTerminal() has started.
+  void OnTerminalStarted(int32_t terminal_id,
+                         CreateTerminalCallback callback,
+                         base::expected<void, TerminalError> result);
+
+  // Called when a session created by RestoreTerminal() has started.
+  void OnRestoredTerminalStarted(int32_t terminal_id,
+                                 base::expected<void, TerminalError> result);
+
+  // Removes the session from `terminal_sessions_` and deletes it
+  // asynchronously, so that it is not deleted while running one of its own
+  // callbacks.
+  void RemoveSessionSoon(int32_t terminal_id);
+
   void OnPersistentTerminalIdsRetrieved(
       const std::vector<int32_t>& restored_ids);
 
@@ -95,6 +122,7 @@ class TerminalSessionManager {
   OutputCallback output_callback_;
   ExitCallback exit_callback_;
   ProcessInfoCallback process_info_callback_;
+  RestoredCallback restored_callback_;
   std::map<int32_t, std::unique_ptr<TerminalSession>> terminal_sessions_;
   int32_t next_id_ = 1;
   bool is_restoring_ = false;

@@ -52,30 +52,17 @@ template("msvc_toolchain") {
       toolchain_is_clang = is_clang
     }
 
-    # When the invoker has explicitly overridden use_reclient or cc_wrapper in
-    # the toolchain args, use those values, otherwise default to the global one.
+    # When the invoker has explicitly overridden cc_wrapper in the
+    # toolchain args, use those values, otherwise default to the global one.
     # This works because the only reasonable override that toolchains might
     # supply for these values are to force-disable them.
-    if (defined(toolchain_args.use_reclient)) {
-      toolchain_uses_reclient = toolchain_args.use_reclient
-    } else {
-      toolchain_uses_reclient = use_reclient
-    }
     if (defined(toolchain_args.cc_wrapper)) {
       toolchain_cc_wrapper = toolchain_args.cc_wrapper
     } else {
       toolchain_cc_wrapper = cc_wrapper
     }
-    assert(!(toolchain_cc_wrapper != "" && toolchain_uses_reclient),
-           "re-client and cc_wrapper can't be used together.")
 
-    if (toolchain_uses_reclient) {
-      if (toolchain_is_clang) {
-        cl_prefix = "${reclient_bin_dir}/rewrapper -cfg=${reclient_cc_cfg_file}${rbe_bug_326584510_missing_inputs} -exec_root=${rbe_exec_root} -labels=type=compile,compiler=clang-cl,lang=cpp "
-      } else {
-        cl_prefix = ""
-      }
-    } else if (toolchain_cc_wrapper != "" && toolchain_is_clang) {
+    if (toolchain_cc_wrapper != "" && toolchain_is_clang) {
       cl_prefix = toolchain_cc_wrapper + " "
     } else {
       cl_prefix = ""
@@ -688,6 +675,7 @@ template("msvc_toolchain") {
       description = stamp_description
       pool = "//build/toolchain:action_pool($default_toolchain)"
     }
+
     tool("copy") {
       command = copy_command
       description = copy_description
@@ -819,6 +807,7 @@ template("win_toolchains") {
     } else {
       cl_toolchain_prefix = ""
     }
+
     msvc_toolchain(cl_toolchain_prefix + target_name) {
       environment = "environment." + toolchain_arch
       cl = "\"${win_toolchain_data.vc_bin_dir}/cl.exe\""
@@ -833,6 +822,7 @@ template("win_toolchains") {
         current_cpu = toolchain_arch
       }
     }
+
     msvc_system_allocator_toolchain(
         cl_toolchain_prefix + target_name + "_host_with_system_allocator") {
       environment = "environment." + rust_host_toolchain_arch
@@ -848,6 +838,7 @@ template("win_toolchains") {
         current_cpu = rust_host_toolchain_arch
       }
     }
+
     msvc_system_allocator_toolchain(
         cl_toolchain_prefix + target_name + "_with_system_allocator") {
       environment = "environment." + toolchain_arch
@@ -863,6 +854,7 @@ template("win_toolchains") {
         current_cpu = toolchain_arch
       }
     }
+
     msvc_rust_host_build_tools_toolchain(
         cl_toolchain_prefix + target_name + "_for_rust_host_build_tools") {
       environment = "environment." + rust_host_toolchain_arch
@@ -911,6 +903,7 @@ template("win_toolchains") {
       current_cpu = toolchain_arch
     }
   }
+
   msvc_system_allocator_toolchain(
       clang_toolchain_prefix + target_name + "_host_with_system_allocator") {
     environment = "environment." + rust_host_toolchain_arch
@@ -931,6 +924,7 @@ template("win_toolchains") {
       current_cpu = rust_host_toolchain_arch
     }
   }
+
   msvc_system_allocator_toolchain(
       clang_toolchain_prefix + target_name + "_with_system_allocator") {
     environment = "environment." + toolchain_arch
@@ -951,6 +945,7 @@ template("win_toolchains") {
       current_cpu = toolchain_arch
     }
   }
+
   msvc_rust_host_build_tools_toolchain(
       clang_toolchain_prefix + target_name + "_for_rust_host_build_tools") {
     environment = "environment." + rust_host_toolchain_arch

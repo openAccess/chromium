@@ -43,7 +43,10 @@ CONTENT_EXPORT base::cstring_view BtmDataAccessTypeToString(
 // read+write.
 using CookieOperation = network::mojom::CookieAccessDetails::Type;
 
-// The filename for the DIPS database.
+// The filename for the BTM database.
+//
+// Chromium's BTM implementation was originally called "DIPS"; the DB filepath
+// is an artifact of the original naming.
 const base::FilePath::CharType kBtmFilename[] = FILE_PATH_LITERAL("DIPS");
 
 // The FilePath for the ON-DISK BtmDatabase associated with a BrowserContext,
@@ -127,14 +130,6 @@ struct StateValue {
   TimestampRange web_authn_assertion_times;
 };
 
-// Values for a 1P/3P site pair in the `popups` table.
-struct PopupsStateValue {
-  uint64_t access_id;
-  base::Time last_popup_time;
-  bool is_current_interaction;
-  bool is_authentication_interaction;
-};
-
 inline bool operator==(const StateValue& lhs, const StateValue& rhs) {
   return std::tie(lhs.user_activation_times, lhs.bounce_times,
                   lhs.web_authn_assertion_times) ==
@@ -151,10 +146,6 @@ CONTENT_EXPORT int64_t BucketizeBtmBounceDelay(base::TimeDelta delta);
 // and may change.
 CONTENT_EXPORT std::string GetSiteForBtm(const GURL& url);
 CONTENT_EXPORT std::string GetSiteForBtm(const url::Origin& origin);
-
-// Returns true iff `web_contents` contains an iframe whose committed URL
-// belongs to the same site as `url`.
-bool HasSameSiteIframe(WebContents* web_contents, const GURL& url);
 
 CONTENT_EXPORT bool HasCHIPS(
     const net::CookieAccessResultList& cookie_access_result_list);
@@ -205,8 +196,8 @@ inline const GURL& GetFirstPartyURL(RenderFrameHost& rfh) {
 }
 
 // The amount of time since a page last received user activation before a
-// subsequent user activation event may be recorded to DIPS Storage for the
-// same page.
+// subsequent user activation event may be recorded to BTM Storage for the same
+// page.
 inline constexpr base::TimeDelta kBtmTimestampUpdateInterval = base::Minutes(1);
 
 [[nodiscard]] CONTENT_EXPORT bool UpdateTimestamp(
@@ -267,7 +258,7 @@ enum class BtmErrorCode {
 };
 
 // BtmDeletionAction is used in UMA enum histograms to record the actual
-// deletion action taken on DIPS-eligible (incidental) site.
+// deletion action taken on BTM-eligible (incidental) site.
 //
 // When adding an action to this enum, update the DIPSDeletionAction enum in
 // tools/metrics/histograms/enums.xml as well.
@@ -282,12 +273,6 @@ enum class BtmDeletionAction {
   kIgnored = 4,
   kExcepted = 5,
   kMaxValue = kExcepted,
-};
-
-enum class BtmDatabaseTable {
-  kBounces = 1,
-  kPopups = 2,
-  kMaxValue = kPopups,
 };
 
 }  // namespace content

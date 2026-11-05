@@ -17,7 +17,6 @@
 #include "chrome/browser/signin/signin_promo.h"
 #include "chrome/browser/ui/views/profiles/profile_management_types.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_sign_in_provider.h"
-#include "chrome/browser/ui/views/profiles/profile_picker_view.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_web_contents_host.h"
 #include "chrome/browser/ui/webui/signin/signin_ui_error.h"
 #include "chrome/common/webui_url_constants.h"
@@ -36,8 +35,8 @@ void RecordReauthResult(ProfilePickerReauthResult result) {
 }
 
 GURL GetLoadingScreenURL() {
-  GURL url = GURL(chrome::kChromeUISyncConfirmationURL);
-  return url.Resolve(chrome::kChromeUISyncConfirmationLoadingPath);
+  return GURL(chrome::kChromeUIHistorySyncOptinURL)
+      .Resolve(chrome::kChromeUIHistorySyncOptinLoadingPath);
 }
 
 ForceSigninUIError ComputeReauthUIError(ProfilePickerReauthResult result,
@@ -70,8 +69,8 @@ ProfilePickerReauthProvider::ProfilePickerReauthProvider(
       gaia_id_to_reauth_(gaia_id_to_reauth),
       email_to_reauth_(email_to_reauth),
       on_reauth_completed_(std::move(on_reauth_completed)) {
-  DCHECK(!gaia_id_to_reauth_.empty());
-  DCHECK(!email_to_reauth_.empty());
+  CHECK(!gaia_id_to_reauth_.empty(), base::NotFatalUntil::M162);
+  CHECK(!email_to_reauth_.empty(), base::NotFatalUntil::M162);
 }
 
 ProfilePickerReauthProvider::~ProfilePickerReauthProvider() = default;
@@ -183,7 +182,6 @@ void ProfilePickerReauthProvider::ShowReauth() {
       reauth_url, signin_metrics::AccessPoint::kForcedSignin,
       signin_metrics::Reason::kReauthentication,
       signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO, GURL(), false,
-      DiceTabHelper::EnableSyncCallback(),
       DiceTabHelper::EnableHistorySyncOptinCallback(),
       base::BindRepeating(
           &ProfilePickerReauthProvider::OnDiceSigninHeaderReceived,

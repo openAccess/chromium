@@ -9,7 +9,6 @@
 #include "base/feature_list.h"
 #include "third_party/blink/public/common/buildflags.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/common/input/web_touch_event.h"
 #include "third_party/blink/public/common/loader/network_utils.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -441,11 +440,9 @@ protocol::Response InspectorEmulationAgent::setTouchEmulationEnabled(
   if (!response.IsSuccess())
     return response;
   int max_points = max_touch_points.value_or(1);
-  if (max_points < 1 || max_points > WebTouchEvent::kTouchesLengthCap) {
-    String msg = StrCat({"Touch points must be between 1 and ",
-                         String::Number(static_cast<uint16_t>(
-                             WebTouchEvent::kTouchesLengthCap))});
-    return protocol::Response::InvalidParams(msg.Utf8());
+  if (max_points < 1) {
+    return protocol::Response::InvalidParams(
+        "Touch points must be greater than 0");
   }
   touch_event_emulation_enabled_.Set(enabled);
   max_touch_points_.Set(max_points);
@@ -875,7 +872,9 @@ protocol::Response InspectorEmulationAgent::setDeviceMetricsOverride(
     std::unique_ptr<protocol::Emulation::DisplayFeature>,
     std::unique_ptr<protocol::Emulation::DevicePosture>,
     std::optional<String> scrollbar_type,
-    std::optional<bool> screen_orientation_lock_emulation) {
+    std::optional<bool> screen_orientation_lock_emulation,
+    std::optional<String> viewport_meta,
+    std::optional<String> text_layout_mode) {
   // We don't have to do anything other than reply to the client, as the
   // emulation parameters should have already been updated by the handling of
   // blink::mojom::FrameWidget::EnableDeviceEmulation.
@@ -1050,6 +1049,10 @@ protocol::Response InspectorEmulationAgent::setUserAgentOverride(
 
 protocol::Response InspectorEmulationAgent::setLocaleOverride(
     std::optional<String> maybe_locale) {
+  if (!IsTrustedClient()) {
+    return protocol::Response::ServerError(
+        "Locale override is only available to trusted clients");
+  }
   String locale = maybe_locale.value_or(String());
   String error = LocaleController::instance().SetLocaleOverride(
       locale, locale_override_.Get().empty());
@@ -1061,6 +1064,10 @@ protocol::Response InspectorEmulationAgent::setLocaleOverride(
 
 protocol::Response InspectorEmulationAgent::setTimezoneOverride(
     const String& timezone_id) {
+  if (!IsTrustedClient()) {
+    return protocol::Response::ServerError(
+        "Timezone override is only available to trusted clients");
+  }
   if (timezone_id.empty()) {
     timezone_override_.reset();
   } else {

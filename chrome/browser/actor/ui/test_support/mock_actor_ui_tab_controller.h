@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_ACTOR_UI_TEST_SUPPORT_MOCK_ACTOR_UI_TAB_CONTROLLER_H_
 #define CHROME_BROWSER_ACTOR_UI_TEST_SUPPORT_MOCK_ACTOR_UI_TAB_CONTROLLER_H_
 
+#include <string>
+
 #include "chrome/browser/actor/ui/actor_ui_tab_controller_interface.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "components/tabs/public/mock_tab_interface.h"
@@ -42,6 +44,18 @@ class MockActorUiTabController : public ActorUiTabControllerInterface {
 
   MOCK_METHOD(UiTabState, GetCurrentUiTabState, (), (const, override));
 
+  MOCK_METHOD(bool,
+              MaybeDeferNavigation,
+              (tabs::TabInterface*,
+               const GURL&,
+               ActorNavigationThrottle::Delegate::NavigationConfirmedCallback),
+              (override));
+
+  MOCK_METHOD(void,
+              CancelNavigationConfirmation,
+              (tabs::TabInterface*),
+              (override));
+
 #if !BUILDFLAG(IS_ANDROID)
   MOCK_METHOD(void, OnWebContentsAttached, (), (override));
   MOCK_METHOD(void, OnViewBoundsChanged, (), (override));
@@ -74,6 +88,13 @@ class MockActorUiTabController : public ActorUiTabControllerInterface {
   MOCK_METHOD(base::ScopedClosureRunner,
               RegisterActorOverlayBackgroundChange,
               (ActorOverlayBackgroundChangeCallback callback),
+              (override));
+
+  MOCK_METHOD(void, SetCursorChipText, (const std::string& text), (override));
+  MOCK_METHOD(std::string, GetCursorChipText, (), (const, override));
+  MOCK_METHOD(base::ScopedClosureRunner,
+              RegisterCursorChipTextChange,
+              (CursorChipTextChangeCallback callback),
               (override));
 #endif  // !BUILDFLAG(IS_ANDROID)
 

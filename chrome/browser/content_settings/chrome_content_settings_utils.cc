@@ -12,6 +12,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
+#include "chrome/browser/ui/location_bar/location_bar_override_data.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view.h"
@@ -31,6 +32,21 @@ void UpdateLocationBarUiForWebContents(content::WebContents* web_contents) {
   if (!web_contents) {
     return;
   }
+
+  // Secondary UI surfaces (e.g. the Contextual Tasks side panel) host a
+  // `WebContents` that is not backed by a tab, so the browser/tab-strip lookup
+  // below would not find them. They register their own `LocationBar` via
+  // `LocationBarOverrideData`; route the refresh straight to it.
+  if (auto* override_data =
+          location_bar::LocationBarOverrideData::FromWebContents(
+              web_contents)) {
+    LocationBar* location_bar = override_data->GetLocationBar();
+    if (location_bar && location_bar->GetWebContents() == web_contents) {
+      location_bar->UpdateContentSettingsIcons();
+    }
+    return;
+  }
+
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
   if (!browser) {
@@ -53,10 +69,10 @@ void UpdateLocationBarUiForWebContents(content::WebContents* web_contents) {
   if (location_bar)
     location_bar->UpdateContentSettingsIcons();
 
-  // The document PiP window does not have a location bar, but has some content
-  // setting views that need to be updated too.
-  if (browser->GetType() ==
-      BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE) {
+  // Floating windows (such as document PiP and always-on-top popups) do not
+  // have a location bar, but have some content setting views that need to be
+  // updated too.
+  if (browser->GetType() == BrowserWindowInterface::Type::TYPE_FLOATING) {
     BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
     auto* frame_view = static_cast<PictureInPictureBrowserFrameView*>(
         browser_view->browser_widget()->GetFrameView());

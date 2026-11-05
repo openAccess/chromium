@@ -82,6 +82,7 @@ class CONTENT_EXPORT AccountsFetcher {
     bool should_delay_callback = false;
     bool is_mismatch = false;
     bool show_active_mode_modal_dialog = false;
+    bool use_native_app_ui = false;
     base::TimeTicks accounts_fetched_time;
     base::TimeTicks client_metadata_fetched_time;
   };
@@ -229,7 +230,7 @@ class CONTENT_EXPORT AccountsFetcher {
   // Populated in OnAllConfigAndWellKnownFetched().
   base::flat_map<GURL, GURL> metrics_endpoints_;
 
-  // Owned by Request.
+  // Owned by RequestHandler.
   raw_ref<RenderFrameHost> render_frame_host_;
   raw_ptr<IdpNetworkRequestManager> network_manager_;
   raw_ptr<FederatedIdentityApiPermissionContextDelegate>

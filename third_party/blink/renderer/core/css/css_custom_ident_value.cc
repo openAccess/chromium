@@ -19,13 +19,13 @@ namespace blink {
 
 CSSCustomIdentValue::CSSCustomIdentValue(const AtomicString& str)
     : CSSValue(kCustomIdentClass),
-      string_(str),
-      property_id_(CSSPropertyID::kInvalid) {
+      property_id_(CSSPropertyID::kInvalid),
+      string_(str) {
   needs_tree_scope_population_ = true;
 }
 
 CSSCustomIdentValue::CSSCustomIdentValue(CSSPropertyID id)
-    : CSSValue(kCustomIdentClass), string_(), property_id_(id) {
+    : CSSValue(kCustomIdentClass), property_id_(id), string_() {
   DCHECK(IsKnownPropertyID());
 }
 
@@ -95,7 +95,7 @@ String CSSCustomIdentValue::CustomCSSText() const {
   return builder.ReleaseString();
 }
 
-unsigned CSSCustomIdentValue::CustomHash() const {
+uint32_t CSSCustomIdentValue::CustomHash() const {
   if (IsKnownPropertyID()) {
     return HashInt(property_id_);
   } else if (ident_function_) {

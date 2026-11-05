@@ -12,8 +12,6 @@ static_library("events") {
     "shortcut_mapping_pref_service.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash",
     "//ash/constants",
@@ -58,6 +56,7 @@ source_set("unit_tests") {
     "//chrome/browser/ash/notifications",
     "//chrome/browser/ash/preferences",
     "//chrome/test:test_support_unit",
+    "//chrome/test/base:testing_browser_process",
     "//components/prefs",
     "//components/session_manager/test:test_support",
     "//components/sync_preferences:test_support",

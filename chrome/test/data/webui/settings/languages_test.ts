@@ -4,8 +4,8 @@
 
 // clang-format off
 import type {LanguageHelper} from 'chrome://settings/lazy_load.js';
-import {LanguagesBrowserProxyImpl, getLanguageHelperInstance} from 'chrome://settings/lazy_load.js';
-import {CrSettingsPrefs, isTranslateBaseLanguage, getBaseLanguage, convertLanguageCodeForTranslate, convertLanguageCodeForChrome, PrefsBrowserProxy, PrefService} from 'chrome://settings/settings.js';
+import {LanguageHelperImpl, LanguagesBrowserProxyImpl, getLanguageHelperInstance} from 'chrome://settings/lazy_load.js';
+import {isTranslateBaseLanguage, getBaseLanguage, convertLanguageCodeForTranslate, convertLanguageCodeForChrome, PrefsBrowserProxy, PrefService} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
 import type {FakeLanguageSettingsPrivate} from './fake_language_settings_private.js';
@@ -28,10 +28,6 @@ suite('settings-languages', function() {
   let languageHelper: LanguageHelper;
   let languageSettingsPrivate: FakeLanguageSettingsPrivate;
 
-  suiteSetup(function() {
-    CrSettingsPrefs.deferInitialization = true;
-  });
-
   setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     const prefsBrowserProxy = new TestPrefsBrowserProxy(getFakeLanguagePrefs());
@@ -47,11 +43,8 @@ suite('settings-languages', function() {
     languageSettingsPrivate = browserProxy.getLanguageSettingsPrivate() as
         unknown as FakeLanguageSettingsPrivate;
 
-    const settingsLanguages = document.createElement('settings-languages');
-    document.body.appendChild(settingsLanguages);
-
+    LanguageHelperImpl.resetInstanceForTesting();
     languageHelper = getLanguageHelperInstance();
-    assertEquals(languageHelper, settingsLanguages);
 
     await languageHelper.whenReady();
     // <if expr="is_win">

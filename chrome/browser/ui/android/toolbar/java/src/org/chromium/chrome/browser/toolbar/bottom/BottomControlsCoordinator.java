@@ -5,11 +5,10 @@
 package org.chromium.chrome.browser.toolbar.bottom;
 
 import android.annotation.SuppressLint;
-import android.content.res.Resources;
 import android.view.View;
 import android.view.ViewGroup;
 
-import androidx.annotation.DimenRes;
+import androidx.annotation.Px;
 
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
@@ -24,6 +23,7 @@ import org.chromium.cc.input.BrowserControlsState;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker.LayerType;
 import org.chromium.chrome.browser.browser_controls.BrowserStateBrowserControlsVisibilityDelegate;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.layouts.LayoutManager;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
@@ -42,7 +42,6 @@ import org.chromium.ui.resources.ResourceManager;
 import org.chromium.ui.resources.dynamics.ViewResourceAdapter;
 import org.chromium.ui.widget.Toast;
 
-import java.util.HashSet;
 import java.util.Set;
 import java.util.function.Supplier;
 
@@ -58,6 +57,8 @@ public class BottomControlsCoordinator implements BackPressHandler {
     /** Interface for the BottomControls component to hide and show itself. */
     public interface BottomControlsVisibilityController {
         void setBottomControlsVisible(boolean isVisible);
+
+        default void setBottomControlsHeight(@Px int height) {}
     }
 
     /** The mediator that handles events from outside the bottom controls. */
@@ -90,13 +91,16 @@ public class BottomControlsCoordinator implements BackPressHandler {
      * @param layoutManager A {@link LayoutManager} to attach overlays to.
      * @param resourceManager A {@link ResourceManager} for loading textures into the compositor.
      * @param controlsStacker A {@link BottomControlsStacker} to update the bottom controls.
+     * @param browserControlsVisibilityDelegate Delegate for browser controls visibility.
      * @param fullscreenManager A {@link FullscreenManager} to listen for fullscreen changes.
      * @param edgeToEdgeControllerSupplier A supplier to control drawing to the edge of the screen.
+     * @param tabSupplier Supplier of the current tab.
      * @param root The parent {@link ViewGroup} for the bottom controls.
      * @param layerType The layer type of the bottom controls.
+     * @param height The height of the bottom controls in pixels.
      * @param contentDelegateSupplier Supplier of delegate for bottom controls UI operations.
      * @param tabObscuringHandler Delegate object handling obscuring views.
-     * @param overlayPanelVisibilitySupplier Notifies overlay panel visibility event.
+     * @param overlayPanelStateSupplier Notifies overlay panel state event.
      * @param constraintsSupplier Used to access current constraints of the browser controls.
      * @param readAloudRestoringSupplier Supplier that returns true if Read Aloud is currently
      *     restoring its player, e.g. after theme change.
@@ -113,7 +117,7 @@ public class BottomControlsCoordinator implements BackPressHandler {
             NullableObservableSupplier<Tab> tabSupplier,
             ScrollingBottomViewResourceFrameLayout root,
             @LayerType int layerType,
-            @DimenRes int heightResId,
+            @Px int height,
             OneshotSupplier<BottomControlsContentDelegate> contentDelegateSupplier,
             TabObscuringHandler tabObscuringHandler,
             NonNullObservableSupplier<@PanelState Integer> overlayPanelStateSupplier,
@@ -127,17 +131,20 @@ public class BottomControlsCoordinator implements BackPressHandler {
         mSceneLayer = new ScrollingBottomViewSceneLayer(root, root.getTopShadowHeight());
         PropertyModelChangeProcessor.create(
                 model, new ViewHolder(root, mSceneLayer), BottomControlsViewBinder::bind);
-        Set<PropertyKey> exclusions = new HashSet<>();
-        exclusions.add(BottomControlsProperties.ANDROID_VIEW_VISIBLE);
+        Set<PropertyKey> exclusions =
+                ChromeFeatureList.sBottomControlsJankImprovement.isEnabled()
+                        ? Set.of(
+                                BottomControlsProperties.ANDROID_VIEW_VISIBLE,
+                                BottomControlsProperties.Y_OFFSET,
+                                BottomControlsProperties.ANDROID_VIEW_TRANSLATE_Y,
+                                BottomControlsProperties.SHOW_SHADOW)
+                        : Set.of(BottomControlsProperties.ANDROID_VIEW_VISIBLE);
         layoutManager.createCompositorMCPWithExclusions(
                 model, mSceneLayer, BottomControlsViewBinder::bindCompositorMCP, exclusions);
 
         View container = root.findViewById(R.id.bottom_container_slot);
         ViewGroup.LayoutParams params = container.getLayoutParams();
-
-        Resources res = root.getResources();
-        int bottomControlsHeight = res.getDimensionPixelOffset(heightResId);
-        params.height = bottomControlsHeight;
+        params.height = height;
 
         mMediator =
                 new BottomControlsMediator(
@@ -149,18 +156,19 @@ public class BottomControlsCoordinator implements BackPressHandler {
                         layerType,
                         contentDelegateSupplier,
                         tabObscuringHandler,
-                        bottomControlsHeight,
+                        height,
                         root.getTopShadowHeight(),
                         overlayPanelStateSupplier,
                         edgeToEdgeControllerSupplier,
                         tabSupplier,
-                        readAloudRestoringSupplier);
+                        readAloudRestoringSupplier,
+                        layoutManager::requestUpdate);
         mResourceManager
                 .getDynamicResourceLoader()
                 .registerResource(root.getId(), root.getResourceAdapter());
 
         mContentDelegateSupplier = contentDelegateSupplier;
-        Toast.setGlobalExtraYOffset(res.getDimensionPixelSize(heightResId));
+        Toast.setGlobalExtraYOffset(height);
 
         // Set the visibility of BottomControls to false by default. Components within
         // BottomControls should update the visibility explicitly if needed.
@@ -181,6 +189,11 @@ public class BottomControlsCoordinator implements BackPressHandler {
                                 @Override
                                 public void setBottomControlsVisible(boolean isVisible) {
                                     mMediator.setBottomControlsVisible(isVisible);
+                                }
+
+                                @Override
+                                public void setBottomControlsHeight(@Px int height) {
+                                    mMediator.setBottomControlsHeight(height);
                                 }
                             },
                             root::onModelTokenChange);

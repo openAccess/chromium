@@ -25,7 +25,6 @@ import '../os_search_page/magic_boost_review_terms_banner.js';
 import '../os_settings_page/os_settings_animated_pages.js';
 import 'chrome://resources/ash/common/shortcut_input_ui/shortcut_input_key.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import type {CrButtonElement} from 'chrome://resources/ash/common/cr_elements/cr_button/cr_button.js';
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import type {ShortcutLabelProperties} from 'chrome://resources/ash/common/shortcut_input_ui/shortcut_utils.js';
@@ -46,7 +45,8 @@ import type {AcceleratorFetcherInterface} from '../mojom-webui/accelerator_fetch
 import {AcceleratorFetcher, AcceleratorFetcherObserverReceiver} from '../mojom-webui/accelerator_fetcher.mojom-webui.js';
 import type {StandardAcceleratorProperties} from '../mojom-webui/accelerator_info.mojom-webui.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
-import type {Route} from '../router.js';
+import type {Route} from '../os_settings_routes.js';
+import {PrefsMixin} from '../prefs/prefs_mixin.js';
 import {Router, routes} from '../router.js';
 
 import {hasOptionsPageInSettings} from './input_method_util.js';
@@ -156,8 +156,8 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
     this.isShortcutCustomizationEnabled_ =
         loadTimeData.getBoolean('isShortcutCustomizationEnabled');
     this.metaKey_ = MetaKey.kSearch;
-    this.languagePacksInSettingsEnabled_ =
-        loadTimeData.getBoolean('languagePacksInSettingsEnabled');
+    // TODO: crbug.com/335232633 - Inline this and remove it.
+    this.languagePacksInSettingsEnabled_ = false;
   }
 
   // Public API: Bidirectional data flow.
@@ -190,12 +190,13 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
   declare private isShortcutCustomizationEnabled_: boolean;
   declare private lastUsedImeAccelerator_?: StandardAcceleratorProperties;
   declare private nextImeAccelerator_?: StandardAcceleratorProperties;
-  declare private acceleratorFetcherObserverReceiver_:
-      AcceleratorFetcherObserverReceiver;
+  private acceleratorFetcherObserverReceiver_:
+      AcceleratorFetcherObserverReceiver|null = null;
   declare private metaKey_: MetaKey;
 
   // loadTimeData flags.
   declare private onDeviceGrammarCheckEnabled_: boolean;
+  // TODO: crbug.com/335232633 - Inline this and remove it.
   declare private languagePacksInSettingsEnabled_: boolean;
 
   // Computed properties.
@@ -296,16 +297,17 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
         allowedInputMethodsPref.value.length > 0;
   }
 
-  private inputMethodsEnabledByPolicy_(): boolean {
+  private inputMethodsForceEnabledByPolicy_(): boolean {
     const allowedInputMethodsForceEnabled = this.getPref<boolean>(
         'settings.language.allowed_input_methods_force_enabled');
     return !!allowedInputMethodsForceEnabled &&
-        allowedInputMethodsForceEnabled.value;
+        allowedInputMethodsForceEnabled.value &&
+        this.inputMethodsLimitedByPolicy_();
   }
 
   private addInputMethodButtonDisabled_(): boolean {
     // Disable if all input methods are enabled by policy.
-    if (this.inputMethodsEnabledByPolicy_()) {
+    if (this.inputMethodsForceEnabledByPolicy_()) {
       return true;
     }
     // Disable if all allowed input methods are already enabled.
@@ -460,7 +462,7 @@ export class OsSettingsInputPageElement extends OsSettingsInputPageElementBase {
 
   private disableRemoveInputMethod_(
       targetInputMethod: chrome.languageSettingsPrivate.InputMethod): boolean {
-    if (this.inputMethodsEnabledByPolicy_()) {
+    if (this.inputMethodsForceEnabledByPolicy_()) {
       return true;
     }
 

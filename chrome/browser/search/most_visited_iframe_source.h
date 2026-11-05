@@ -5,12 +5,11 @@
 #ifndef CHROME_BROWSER_SEARCH_MOST_VISITED_IFRAME_SOURCE_H_
 #define CHROME_BROWSER_SEARCH_MOST_VISITED_IFRAME_SOURCE_H_
 
+#include <string>
+#include <string_view>
+
 #include "build/build_config.h"
 #include "content/public/browser/url_data_source.h"
-
-#if BUILDFLAG(IS_ANDROID)
-#error "Instant is only used on desktop";
-#endif
 
 // Serves HTML for displaying suggestions for 3P remote NTPs using iframes
 // of chrome-search://most-visited/title.html.
@@ -40,7 +39,7 @@ class MostVisitedIframeSource : public content::URLDataSource {
 
  protected:
   // Returns whether this source should serve data for a particular path.
-  virtual bool ServesPath(const std::string& path) const;
+  virtual bool ServesPath(std::string_view path) const;
 
   // Sends unmodified resource bytes.
   void SendResource(int resource_id,

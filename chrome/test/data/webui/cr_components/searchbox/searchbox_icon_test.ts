@@ -14,6 +14,9 @@ import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test
 import {TestSearchboxBrowserProxy} from './test_searchbox_browser_proxy.js';
 
 const HISTORY_URL: string = 'history-url';
+const DSE_FAVICON_URL: string = 'chrome://favicon2/?iconUrl=' +
+    'https%3A%2F%2Fbing.com%2Ffavicon.ico&size=16&scaleFactor=1x&' +
+    'forceEmptyDefaultFavicon=1';
 
 function assertFaviconUrl(
     faviconImageUrl: URL, destinationUrl: string, scaleFactor: number,
@@ -53,9 +56,16 @@ suite('CrComponentsSearchboxIconTest', () => {
     document.body.appendChild(icon);
   });
 
+  test('container has aria-hidden and empty alt on images', () => {
+    assertEquals('true', icon.$.container.getAttribute('aria-hidden'));
+    assertEquals('', icon.$.image.getAttribute('alt'));
+    assertEquals('', icon.$.faviconImage.getAttribute('alt'));
+    assertEquals('', icon.$.iconImg.getAttribute('alt'));
+  });
+
   test('entity image shown on load', async () => {
     const match = createAutocompleteMatch();
-    match.imageUrl = '#';
+    match.suggestTemplate.image = {url: '#', dominantColor: ''};
     icon.match = match;
 
     await microtasksFinished();
@@ -73,7 +83,7 @@ suite('CrComponentsSearchboxIconTest', () => {
     // Regression test for crbug.com/501729582.
     const match = createAutocompleteMatch();
     const unsafeUrl = 'https://example.com/image.png?a=b&c=d';
-    match.imageUrl = unsafeUrl;
+    match.suggestTemplate.image = {url: unsafeUrl, dominantColor: ''};
     match.iconUrl = unsafeUrl;
     icon.match = match;
 
@@ -92,7 +102,7 @@ suite('CrComponentsSearchboxIconTest', () => {
 
   test('entity image hidden on error', async () => {
     const match = createAutocompleteMatch();
-    match.imageUrl = '#';
+    match.suggestTemplate.image = {url: '#', dominantColor: ''};
     icon.match = match;
 
     await microtasksFinished();
@@ -229,7 +239,24 @@ suite('CrComponentsSearchboxIconTest', () => {
     await microtasksFinished();
     assertTrue(isVisible(icon.$.icon));
     assertFalse(isVisible(icon.$.faviconImage));
+    assertEquals('', icon.$.faviconImage.getAttribute('src'));
+    assertTrue(icon.hasIconContainerBackground);
+    assertTrue(icon.isFeaturedSearch);
   });
+
+  test(
+      'sets isFeaturedSearch for featured enterprise search match',
+      async () => {
+        const match = createAutocompleteMatch();
+        match.isSearchType = false;
+        match.type = 'featured-enterprise-search';
+        match.iconPath = 'enterprise.svg';
+        icon.match = match;
+
+        await microtasksFinished();
+        assertTrue(icon.hasIconContainerBackground);
+        assertTrue(icon.isFeaturedSearch);
+      });
 
   test('suppresses favicon image for pedal match', async () => {
     const match = createAutocompleteMatch();
@@ -241,6 +268,7 @@ suite('CrComponentsSearchboxIconTest', () => {
     await microtasksFinished();
     assertTrue(isVisible(icon.$.icon));
     assertFalse(isVisible(icon.$.faviconImage));
+    assertEquals('', icon.$.faviconImage.getAttribute('src'));
   });
 
   test(
@@ -261,6 +289,7 @@ suite('CrComponentsSearchboxIconTest', () => {
         await microtasksFinished();
         assertTrue(isVisible(icon.$.icon));
         assertFalse(isVisible(icon.$.faviconImage));
+        assertEquals('', icon.$.faviconImage.getAttribute('src'));
       });
 
   suite('inSearchbox', () => {
@@ -272,6 +301,7 @@ suite('CrComponentsSearchboxIconTest', () => {
       });
       document.body.innerHTML = window.trustedTypes!.emptyHTML;
       icon = document.createElement('cr-searchbox-icon');
+      icon.style.setProperty('--cr-searchbox-icon-size-in-searchbox', '16px');
       icon.defaultIcon = 'search_loupe.svg';
       icon.inSearchbox = true;
       document.body.appendChild(icon);
@@ -338,7 +368,7 @@ suite('CrComponentsSearchboxIconTest', () => {
       match.isSearchType = false;
       match.type = 'document';
       match.iconPath =
-          '//resources/cr_components/searchbox/icons/drive_docs.svg';
+          '//resources/cr_components/searchbox/icons/drive_docs_custom.svg';
       icon.match = match;
 
       await microtasksFinished();
@@ -375,6 +405,154 @@ suite('CrComponentsSearchboxIconTest', () => {
           assertTrue(isVisible(faviconImage));
         });
 
+    test(
+        'renders Google G for search match when `defaultIcon` is ' +
+            '`google_g_gradient`',
+        async () => {
+          icon.defaultIcon =
+              '//resources/cr_components/searchbox/icons/google_g_gradient.svg';
+          const match = createAutocompleteMatch();
+          match.isSearchType = true;
+          match.type = 'search-what-you-typed';
+          match.iconPath = 'search_cr23.svg';
+          icon.match = match;
+
+          await microtasksFinished();
+
+          const faviconImage = icon.$.faviconImage;
+          assertEquals(
+              faviconImage.getAttribute('src'),
+              '//resources/cr_components/searchbox/icons/' +
+                  'google_g_gradient.svg');
+
+          const loadPromise = eventToPromise('load', faviconImage);
+          faviconImage.dispatchEvent(new Event('load'));
+          await loadPromise;
+          await icon.updateComplete;
+
+          assertTrue(isVisible(faviconImage));
+        });
+
+    for (const isTopChromeSearchbox of [true, false]) {
+      const suffix = ` w/ isTopChromeSearchbox=${isTopChromeSearchbox}`;
+
+      function createSearchboxIcon(defaultIcon: string) {
+        loadTimeData.overrideValues({isTopChromeSearchbox});
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
+        icon = document.createElement('cr-searchbox-icon');
+        icon.defaultIcon = defaultIcon;
+        icon.inSearchbox = true;
+        document.body.appendChild(icon);
+      }
+
+      // While the DSE favicon loads or after it fails to load, the search
+      // loupe is drawn as a mask instead; the favicon is never a mask.
+      function assertSearchLoupeShown() {
+        assertFalse(isVisible(icon.$.faviconImage));
+        assertTrue(isVisible(icon.$.icon));
+        const mask = window.getComputedStyle(icon.$.icon).webkitMaskImage;
+        assertTrue(mask.includes('search_cr23.svg'));
+        assertFalse(mask.includes('favicon2'));
+      }
+
+      async function loadFaviconAndAssertShown() {
+        const faviconImage = icon.$.faviconImage;
+        const loadPromise = eventToPromise('load', faviconImage);
+        faviconImage.dispatchEvent(new Event('load'));
+        await loadPromise;
+        await icon.updateComplete;
+        assertTrue(isVisible(faviconImage));
+        assertFalse(isVisible(icon.$.icon));
+      }
+
+      test(
+          'renders non-Google DSE favicon when `defaultIcon` is a favicon URL' +
+              suffix,
+          async () => {
+            createSearchboxIcon(DSE_FAVICON_URL);
+            await microtasksFinished();
+
+            assertEquals(
+                DSE_FAVICON_URL, icon.$.faviconImage.getAttribute('src'));
+            assertSearchLoupeShown();
+            await loadFaviconAndAssertShown();
+          });
+
+      test(
+          'renders non-Google DSE favicon for search match when ' +
+              '`defaultIcon` is a favicon URL' + suffix,
+          async () => {
+            createSearchboxIcon(DSE_FAVICON_URL);
+            const match = createAutocompleteMatch();
+            match.isSearchType = true;
+            match.type = 'search-what-you-typed';
+            match.iconPath = 'search_cr23.svg';
+            icon.match = match;
+            await microtasksFinished();
+
+            assertEquals(
+                DSE_FAVICON_URL, icon.$.faviconImage.getAttribute('src'));
+            assertSearchLoupeShown();
+            await loadFaviconAndAssertShown();
+          });
+
+      test(
+          'reacts to `defaultIcon` property updates dynamically' + suffix,
+          async () => {
+            createSearchboxIcon(
+                '//resources/cr_components/searchbox/icons/search_cr23.svg');
+            await microtasksFinished();
+
+            // Initially SVG mask icon, so mask image is used.
+            assertFalse(isVisible(icon.$.faviconImage));
+            assertTrue(isVisible(icon.$.icon));
+
+            // Dynamically update defaultIcon to DSE favicon URL.
+            icon.defaultIcon = DSE_FAVICON_URL;
+            await microtasksFinished();
+
+            assertEquals(
+                DSE_FAVICON_URL, icon.$.faviconImage.getAttribute('src'));
+            assertSearchLoupeShown();
+            await loadFaviconAndAssertShown();
+          });
+
+      test(
+          'falls back to search mask icon when `defaultIcon` favicon fails ' +
+              'to load' + suffix,
+          async () => {
+            createSearchboxIcon(DSE_FAVICON_URL);
+            await microtasksFinished();
+
+            // Fail to load favicon.
+            const faviconImage = icon.$.faviconImage;
+            const errorPromise = eventToPromise('error', faviconImage);
+            faviconImage.dispatchEvent(new Event('error'));
+            await errorPromise;
+            await icon.updateComplete;
+
+            assertSearchLoupeShown();
+          });
+
+      // Only top chrome shows the current page's favicon for an unedited
+      // page URL; other searchboxes keep showing the DSE favicon.
+      if (!isTopChromeSearchbox) {
+        test(
+            'renders DSE favicon instead of page favicon for pageUrl' + suffix,
+            async () => {
+              createSearchboxIcon(DSE_FAVICON_URL);
+              icon.pageUrl = 'https://example.com';
+              await microtasksFinished();
+
+              assertEquals(
+                  DSE_FAVICON_URL, icon.$.faviconImage.getAttribute('src'));
+              assertFalse(window.getComputedStyle(icon.$.icon)
+                              .webkitMaskImage.includes('page_cr23.svg'));
+              await loadFaviconAndAssertShown();
+            });
+      }
+    }
+
     test('renders page favicon when pageUrl is set without match', async () => {
       icon.defaultIcon =
           '//resources/cr_components/searchbox/icons/google_g_gradient.svg';
@@ -404,5 +582,86 @@ suite('CrComponentsSearchboxIconTest', () => {
       assertTrue(window.getComputedStyle(icon.$.icon)
                      .webkitMaskImage.includes('page_cr23.svg'));
     });
+
+    test(
+        'renders keyword search loupe when inKeywordMode is set in searchbox',
+        async () => {
+          icon.defaultIcon =
+              '//resources/cr_components/searchbox/icons/search_cr23.svg';
+          icon.inSearchbox = true;
+          icon.inKeywordMode = true;
+          icon.pageUrl = 'https://example.com';
+          icon.match = createAutocompleteMatch({
+            isSearchType: false,
+            destinationUrl: 'https://example.com',
+          });
+
+          await microtasksFinished();
+          await icon.updateComplete;
+
+          assertFalse(isVisible(icon.$.faviconImage));
+          assertTrue(window.getComputedStyle(icon.$.icon)
+                         .webkitMaskImage.includes('search_cr23.svg'));
+        });
+
+    test(
+        'renders custom keyword vector icon when defaultIcon is set in ' +
+            'keyword mode',
+        async () => {
+          icon.inSearchbox = true;
+          icon.inKeywordMode = true;
+          icon.defaultIcon =
+              '//resources/cr_components/searchbox/icons/spark.svg';
+
+          await microtasksFinished();
+          await icon.updateComplete;
+
+          assertFalse(isVisible(icon.$.faviconImage));
+          assertFalse(isVisible(icon.$.iconImg));
+          assertTrue(isVisible(icon.$.icon));
+          assertTrue(window.getComputedStyle(icon.$.icon)
+                         .webkitMaskImage.includes('spark.svg'));
+        });
+
+    test(
+        'renders fallback search loupe when defaultIcon is empty in keyword ' +
+            'mode',
+        async () => {
+          icon.inSearchbox = true;
+          icon.inKeywordMode = true;
+          icon.defaultIcon = '';
+
+          await microtasksFinished();
+          await icon.updateComplete;
+
+          assertFalse(isVisible(icon.$.faviconImage));
+          assertTrue(window.getComputedStyle(icon.$.icon)
+                         .webkitMaskImage.includes('search_cr23.svg'));
+        });
+
+    test(
+        'falls back to default icon when match iconPath is empty', async () => {
+          loadTimeData.overrideValues({
+            isTopChromeSearchbox: true,
+          });
+          document.body.innerHTML = window.trustedTypes!.emptyHTML;
+          icon = document.createElement('cr-searchbox-icon');
+          icon.defaultIcon =
+              '//resources/cr_components/searchbox/icons/search_cr23.svg';
+          const match = createAutocompleteMatch();
+          match.isSearchType = true;
+          match.type = 'search-suggest-infinite';
+          match.iconPath = '';
+          icon.match = match;
+          icon.inSearchbox = true;
+          document.body.appendChild(icon);
+
+          await microtasksFinished();
+
+          assertFalse(isVisible(icon.$.faviconImage));
+          assertTrue(isVisible(icon.$.icon));
+          assertTrue(window.getComputedStyle(icon.$.icon)
+                         .webkitMaskImage.includes('search_cr23.svg'));
+        });
   });
 });

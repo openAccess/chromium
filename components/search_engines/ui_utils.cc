@@ -16,7 +16,6 @@ namespace internal {
 
 namespace {
 
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 constexpr size_t kMaxCustomSearchEngines = 3;
 
 base::TimeDelta GetMaxVisitAge() {
@@ -26,7 +25,6 @@ base::TimeDelta GetMaxVisitAge() {
   }
   return base::Days(2);
 }
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 // Helper function to create and configure an icu::Collator.
 std::unique_ptr<icu::Collator> CreateCollator() {
@@ -68,13 +66,10 @@ std::string GetShortNameSortKey(const icu::Collator& collator,
   return std::string(reinterpret_cast<const char*>(buffer), sort_key_length);
 }
 
-// Helper function that returns the base sort key tuple used by
-// OrderTemplateUrlsByManagedAndAlphabetically.
-auto GetBaseManagedAndAlphaSortKey(const TemplateURL* engine,
-                                   const icu::Collator* collator) {
+// Helper function that returns the sort key tuple used by
+// OrderTemplateUrlsAlphabetically.
+auto GetAlphaSortKey(const TemplateURL* engine, const icu::Collator* collator) {
   return std::make_tuple(
-      // Enterprise search engines are shown before other engines.
-      !engine->CreatedByNonDefaultSearchProviderPolicy(),
       // Try to compare short names ignoring case and diacriticals.
       collator ? GetShortNameSortKey(*collator, engine->short_name())
                : std::string(),
@@ -85,7 +80,33 @@ auto GetBaseManagedAndAlphaSortKey(const TemplateURL* engine,
       engine->keyword());
 }
 
+// Helper function that returns the base sort key tuple used by
+// OrderTemplateUrlsByManagedAndAlphabetically.
+auto GetBaseManagedAndAlphaSortKey(const TemplateURL* engine,
+                                   const icu::Collator* collator) {
+  return std::tuple_cat(
+      // Enterprise search engines are shown before other engines.
+      std::make_tuple(!engine->CreatedByNonDefaultSearchProviderPolicy()),
+      GetAlphaSortKey(engine, collator));
+}
+
 }  // namespace
+
+// --- OrderTemplateUrlsAlphabetically ---
+OrderTemplateUrlsAlphabetically::OrderTemplateUrlsAlphabetically()
+    : collator_(CreateCollator()) {}
+
+OrderTemplateUrlsAlphabetically::OrderTemplateUrlsAlphabetically(
+    const OrderTemplateUrlsAlphabetically& other)
+    : collator_(other.collator_ ? other.collator_->clone() : nullptr) {}
+
+OrderTemplateUrlsAlphabetically::~OrderTemplateUrlsAlphabetically() = default;
+
+bool OrderTemplateUrlsAlphabetically::operator()(const TemplateURL* lhs,
+                                                 const TemplateURL* rhs) const {
+  return GetAlphaSortKey(lhs, collator_.get()) <
+         GetAlphaSortKey(rhs, collator_.get());
+}
 
 // --- OrderTemplateUrlsByManagedAndAlphabetically ---
 OrderTemplateUrlsByManagedAndAlphabetically::
@@ -168,7 +189,6 @@ bool OrderTemplateUrlsByPrepopulatedAndManagedAndAlphabetically::operator()(
   return get_extended_sort_key(lhs) < get_extended_sort_key(rhs);
 }
 
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 void SortAndFilterRecentlyVisitedURLs(
     TemplateURL::TemplateURLVector& recently_visited) {
   // Partially sort `recently_visited` by TemplateURL's last_visited time.
@@ -185,7 +205,6 @@ void SortAndFilterRecentlyVisitedURLs(
       std::ranges::greater_equal(), &TemplateURL::last_visited);
   recently_visited.erase(cut_begin, end);
 }
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 template_url_starter_pack_data::StarterPackIdSet GetDisabledStarterPackIds(
     bool ai_mode_enabled,

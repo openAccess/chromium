@@ -1,7 +1,7 @@
 bot,repeat,shard,flags
-linux-nvidia-dgx-spark-arm-perf,1,1,
 linux-perf,1,1,
-mac-intel-perf,1,1,
+linux-rtx4070-perf,1,1,
+mac-intel-perf,1,1,--timeout-unit=2s
 mac-m1_mini_2020-perf,1,1,
 mac-m2-pro-perf,1,1,
 mac-m4-mini-perf,1,1,

@@ -23,7 +23,6 @@
 #include "url/gurl.h"
 
 namespace net {
-class FirstPartySetMetadata;
 struct CookieWithAccessResult;
 }  // namespace net
 
@@ -99,7 +98,6 @@ class NET_EXPORT Session {
   // will be `base::TimeDelta::Max()`
   base::TimeDelta MinimumBoundCookieLifetime(
       DbscRequest& request,
-      const FirstPartySetMetadata& first_party_set_metadata,
       const SessionKey& session_key);
   // Evaluates the minimum remaining lifetime across all bound cookie cravings
   // satisfied by `cookies`. Returns base::TimeDelta() if any craving is
@@ -145,6 +143,9 @@ class NET_EXPORT Session {
   // Whether the URL is in-scope for the session.
   bool IncludesUrl(const GURL& url) const;
 
+  // Whether `origin` has any URL that is in-scope for the session.
+  bool IsVisibleToOrigin(const url::Origin& origin) const;
+
   // Whether a request initiated by `initiator` is allowed to trigger a
   // refresh for this session.
   bool AllowedToInitiateRefresh(
@@ -160,9 +161,7 @@ class NET_EXPORT Session {
   // Returns whether `request` would be allowed to set any bound
   // cookies. This is a prerequisite for certain kinds of changes to
   // session config.
-  bool CanSetBoundCookie(
-      DbscRequest& request,
-      const FirstPartySetMetadata& first_party_set_metadata) const;
+  bool CanSetBoundCookie(DbscRequest& request) const;
 
   const url::Origin& origin() const { return inclusion_rules_.origin(); }
 

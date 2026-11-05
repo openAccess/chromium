@@ -83,20 +83,16 @@ void SpeculationRulesHeader::ParseSpeculationRulesHeader(
 
   for (auto const& parsed_item : parsed_header.value()) {
     // Inner lists are not allowed, only individual strings.
-    const std::string* str =
-        (parsed_item.member_is_inner_list || parsed_item.member.size() != 1u)
-            ? nullptr
-            : parsed_item.member.front().item.GetIfString();
+    const net::structured_headers::ParameterizedItem* item =
+        parsed_item.GetIfItem();
+    const std::string* str = item ? item->item.GetIfString() : nullptr;
 
     // Only strings are valid list members.
     if (!str) {
       String message =
           "Only strings are valid in Speculation-Rules header value "
           "and inner lists are ignored.";
-      const std::string* token_str =
-          (parsed_item.member_is_inner_list || parsed_item.member.size() != 1u)
-              ? nullptr
-              : parsed_item.member.front().item.GetIfToken();
+      const std::string* token_str = item ? item->item.GetIfToken() : nullptr;
       if (token_str) {
         String token = String::FromUtf8(*token_str);
         if (KURL(base_url, token).IsValid()) {

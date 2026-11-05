@@ -23,10 +23,28 @@ BASE_FEATURE_PARAM(base::TimeDelta,
                    base::Hours(1));
 
 BASE_FEATURE_PARAM(base::TimeDelta,
+                   kTabLoadTimeout,
+                   &browser::context_hub::mojom::kAutoTodos,
+                   "tab_load_timeout",
+                   base::Seconds(7));
+
+BASE_FEATURE_PARAM(base::TimeDelta,
                    kFirstPartyAutoTodosInterval,
                    &browser::context_hub::mojom::kAutoTodos,
                    "first_party_auto_todos_interval",
                    base::Days(1));
+
+BASE_FEATURE_PARAM(int,
+                   kFirstPartyAutoTodosMaxRetries,
+                   &browser::context_hub::mojom::kAutoTodos,
+                   "first_party_auto_todos_max_retries",
+                   2);
+
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kFirstPartyAutoTodosRetryDelay,
+                   &browser::context_hub::mojom::kAutoTodos,
+                   "first_party_auto_todos_retry_delay",
+                   base::Seconds(5));
 
 BASE_FEATURE_PARAM(size_t,
                    kMaxTodoFeedbackCacheSize,
@@ -48,6 +66,13 @@ BASE_FEATURE_PARAM(size_t,
                    "max_memory_bank_entries",
                    100);
 
+BASE_FEATURE_PARAM(size_t,
+                   kMaxMemoryBankChatHistoryTurns,
+                   &kMemoryBanks,
+                   20);
+
+BASE_FEATURE_PARAM(size_t, kMaxMemoryBankChatImages, &kMemoryBanks, 10);
+
 BASE_FEATURE_PARAM(int,
                    kMaxTabGroups,
                    &browser::context_hub::mojom::kAutoTabGroups,
@@ -64,5 +89,23 @@ BASE_FEATURE(kContextHubDatabaseStorage, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kContextHubTabContextSyncStorage,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kSmartSearchTimeout,
+                   &browser::context_hub::mojom::kSmartSearch,
+                   "smart_search_timeout",
+                   base::Seconds(15));
+
+BASE_FEATURE_PARAM(bool,
+                   kTopicsFishfoodFeedback,
+                   &browser::context_hub::mojom::kTopics,
+                   "fishfood_feedback",
+                   false);
+
+BASE_FEATURE_PARAM(std::string,
+                   kTopicsFeedbackFormUrl,
+                   &browser::context_hub::mojom::kTopics,
+                   "feedback_form_url",
+                   "https://goto.google.com/jbi-fishfood-feedback-form");
 
 }  // namespace context_hub::features

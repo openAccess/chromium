@@ -6,11 +6,13 @@
 
 #include <algorithm>
 #include <functional>
+#include <optional>
 #include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "base/barrier_callback.h"
 #include "base/compiler_specific.h"
 #include "base/containers/extend.h"
 #include "base/containers/flat_map.h"
@@ -18,33 +20,39 @@
 #include "base/containers/map_util.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/json/json_writer.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/types/expected.h"
+#include "base/types/expected_macros.h"
 #include "components/actor/core/aggregated_journal.h"
 #include "components/actor/core/journal_details_builder.h"
+#include "components/actor/core/safety_list_manager.h"
 #include "components/actor/core/shared_types.h"
 #include "components/autofill/core/browser/actor/actor_autofill_manager.h"
 #include "components/autofill/core/browser/actor/actor_filling_observer.h"
 #include "components/autofill/core/browser/actor/actor_key_metrics_recorder.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
+#include "components/autofill/core/browser/data_model/payments/credit_card.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/filling/field_filling_skip_reason.h"
 #include "components/autofill/core/browser/filling/form_filler.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/integrators/actor/actor_form_filling_types.h"
-#include "components/autofill/core/browser/integrators/optimization_guide/autofill_optimization_guide_decider.h"
 #include "components/autofill/core/browser/logging/log_manager.h"
 #include "components/autofill/core/browser/payments/amount_extraction_manager.h"
+#include "components/autofill/core/browser/payments/credit_card_access_manager.h"
 #include "components/autofill/core/browser/suggestions/addresses/address_suggestion_generator.h"
 #include "components/autofill/core/browser/suggestions/payments/credit_card_suggestion_generator.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
@@ -96,10 +104,10 @@ void RecordFillSuggestionsMetrics(
 
 // Records the latency and result of getting suggestions.
 // It returns the unmodified `result` to enable usage in chained callbacks.
-base::expected<std::vector<ActorFormFillingRequest>, ActorFormFillingError>
-RecordGetSuggestionsMetrics(base::TimeTicks start_time,
-                            base::expected<std::vector<ActorFormFillingRequest>,
-                                           ActorFormFillingError> result) {
+template <typename T>
+base::expected<T, ActorFormFillingError> RecordGetSuggestionsMetrics(
+    base::TimeTicks start_time,
+    base::expected<T, ActorFormFillingError> result) {
   RecordMetrics("Autofill.Actor.GetSuggestions", start_time,
                 result.error_or(kActorFormFillingSuccessForMetrics));
   return result;
@@ -272,36 +280,134 @@ std::optional<ActorSuggestionWithFillData> GetActorCreditCardSuggestion(
   return {autofill_field->global_id(), result};
 }
 
+// Returns the credit card number fields in `form` that belong to the same
+// section as `trigger_field`.
+std::vector<const AutofillField*> GetCreditCardNumberFieldsInSection(
+    const FormStructure& form,
+    const AutofillField& trigger_field) {
+  std::vector<const AutofillField*> fields;
+  for (const std::unique_ptr<AutofillField>& field : form.fields()) {
+    if (field->section() == trigger_field.section() &&
+        field->Type().GetCreditCardType() == CREDIT_CARD_NUMBER) {
+      fields.push_back(field.get());
+    }
+  }
+  return fields;
+}
+
+// Extracts the origins of cross-origin credit card fields in the same section
+// as `trigger_field_id`.
+void ExtractPaymentIframeCrossOriginsInSection(
+    const AutofillManager& autofill_manager,
+    FieldGlobalId trigger_field_id,
+    base::flat_set<url::Origin>& origins) {
+  const FormStructure* const form =
+      autofill_manager.FindCachedFormById(trigger_field_id);
+  const AutofillField* const trigger_field =
+      form ? form->GetFieldById(trigger_field_id) : nullptr;
+  if (!trigger_field) {
+    return;
+  }
+  for (const AutofillField* field :
+       GetCreditCardNumberFieldsInSection(*form, *trigger_field)) {
+    if (!field->origin().IsSameOriginWith(trigger_field->origin())) {
+      origins.insert(field->origin());
+    }
+  }
+}
+
+// Returns the origins of cross-origin credit card fields across
+// `fill_requests`.
+base::flat_set<url::Origin> GetPaymentIframeCrossOrigins(
+    const AutofillManager& autofill_manager,
+    base::span<const ActorFormFillingService::FillRequest> fill_requests) {
+  if (!base::FeatureList::IsEnabled(
+          features::kActorFormFillingServiceEnableCreditCard) ||
+      !base::FeatureList::IsEnabled(
+          features::kAutofillActorRewriteCreditCardTriggerField)) {
+    return {};
+  }
+
+  base::flat_set<url::Origin> origins;
+  for (const ActorFormFillingService::FillRequest& fill_request :
+       fill_requests) {
+    if (fill_request.requested_data ==
+        ActorFormFillingRequest::RequestedData::kCreditCard) {
+      for (FieldGlobalId field_id : fill_request.trigger_fields) {
+        ExtractPaymentIframeCrossOriginsInSection(autofill_manager, field_id,
+                                                  origins);
+      }
+    }
+  }
+  return origins;
+}
+
+// Filters `candidate_origins` to the subset of origins allowed by
+// `SafetyListManager` and invokes `callback` with the allowed origins.
+void FilterAllowedPaymentIframeOrigins(
+    const base::flat_set<url::Origin>& candidate_origins,
+    base::OnceCallback<void(base::flat_set<url::Origin>)> callback) {
+  if (candidate_origins.empty()) {
+    std::move(callback).Run({});
+    return;
+  }
+
+  // Callback that is executed once all `IsPaymentIframeOriginAllowed()` checks
+  // are done.
+  auto on_all_checked =
+      base::BindOnce([](std::vector<std::optional<url::Origin>> results) {
+        std::vector<url::Origin> allowed;
+        allowed.reserve(results.size());
+        for (auto& origin : results) {
+          if (origin) {
+            allowed.emplace_back(std::move(*origin));
+          }
+        }
+        return base::flat_set<url::Origin>(std::move(allowed));
+      }).Then(std::move(callback));
+
+  // `IsPaymentIframeOriginAllowed()` is asynchronous because the first check
+  // may lazily trigger loading and parsing the safety lists in
+  // `SafetyListManager` (queuing subsequent checks until parsing finishes). In
+  // the common case where the safety lists are already parsed, all checks
+  // complete synchronously. `BarrierCallback()` collects the results of
+  // checking each candidate origin in either case.
+  auto barrier_callback = base::BarrierCallback<std::optional<url::Origin>>(
+      candidate_origins.size(), std::move(on_all_checked));
+
+  for (const url::Origin& origin : candidate_origins) {
+    ::actor::SafetyListManager::GetInstance()->IsPaymentIframeOriginAllowed(
+        origin, base::BindOnce(
+                    [](url::Origin origin, bool is_allowed) {
+                      return is_allowed ? std::make_optional(std::move(origin))
+                                        : std::nullopt;
+                    },
+                    origin)
+                    .Then(barrier_callback));
+  }
+}
+
 // Returns the first credit card number field in the same section as
-// `initial_trigger_field` that has a safe origin. An origin is considered safe
+// `trigger_field_id` that has a safe origin. An origin is considered safe
 // if it has the same origin as the initial trigger field or the origin is
 // explicitly allowlisted.
 std::optional<FieldGlobalId> GetSafeCreditCardNumberField(
-    const AutofillOptimizationGuideDecider* decider,
     const FormStructure& form,
-    const FieldGlobalId& trigger_field_id) {
+    const FieldGlobalId& trigger_field_id,
+    const base::flat_set<url::Origin>& allowed_iframe_origins) {
   const AutofillField* const trigger_field =
       form.GetFieldById(trigger_field_id);
   if (!trigger_field) {
     return std::nullopt;
   }
-  const Section& section = trigger_field->section();
-  auto it = std::ranges::find_if(
-      form.fields(), [&](const std::unique_ptr<AutofillField>& field) {
-        if (field->section() != section) {
-          return false;
-        }
-        if (field->Type().GetCreditCardType() != CREDIT_CARD_NUMBER) {
-          return false;
-        }
-        const url::Origin& origin = field->origin();
-        return origin.IsSameOriginWith(trigger_field->origin()) ||
-               (decider &&
-                decider->IsIframeUrlAllowlistedForActor(origin.GetURL()));
-      });
-
-  return it == form.fields().end() ? std::optional<FieldGlobalId>()
-                                   : (*it)->global_id();
+  for (const AutofillField* field :
+       GetCreditCardNumberFieldsInSection(form, *trigger_field)) {
+    if (field->origin().IsSameOriginWith(trigger_field->origin()) ||
+        allowed_iframe_origins.contains(field->origin())) {
+      return field->global_id();
+    }
+  }
+  return std::nullopt;
 }
 
 // Generates credit card suggestions and the data needed for filling them.
@@ -315,7 +421,8 @@ std::optional<FieldGlobalId> GetSafeCreditCardNumberField(
 [[nodiscard]] ActorSuggestions GetCreditCardSuggestions(
     base::span<const FieldGlobalId> fields,
     AutofillManager& autofill_manager,
-    LogManager* log_manager) {
+    LogManager* log_manager,
+    const base::flat_set<url::Origin>& allowed_iframe_origins) {
   if (fields.empty()) {
     LOG_AF(log_manager)
         << LoggingScope::kAutofillActor
@@ -345,9 +452,8 @@ std::optional<FieldGlobalId> GetSafeCreditCardNumberField(
     if (base::FeatureList::IsEnabled(
             features::kAutofillActorRewriteCreditCardTriggerField)) {
       std::optional<FieldGlobalId> safe_credit_card_number_field =
-          GetSafeCreditCardNumberField(
-              autofill_manager.client().GetAutofillOptimizationGuideDecider(),
-              *form_structure, field);
+          GetSafeCreditCardNumberField(*form_structure, field,
+                                       allowed_iframe_origins);
       updated_fields.push_back(safe_credit_card_number_field.value_or(field));
       if (safe_credit_card_number_field && !autofill_field_for_labels) {
         autofill_field_for_labels =
@@ -482,17 +588,11 @@ void ActorFormFillingServiceImpl::GetSuggestions(
     base::span<const FillRequest> fill_requests,
     GetSuggestionsCallback callback) {
   auto callback_with_metrics =
-      base::BindOnce(&RecordGetSuggestionsMetrics, base::TimeTicks::Now())
+      base::BindOnce(
+          &RecordGetSuggestionsMetrics<std::vector<ActorFormFillingRequest>>,
+          base::TimeTicks::Now())
           .Then(std::move(callback));
 
-  auto log_actor_error = [&](std::string_view error_message) {
-    journal_->Log(
-        client.GetLastCommittedPrimaryMainFrameURL(), task_id_,
-        "ActorFormFillingServiceImpl::GetSuggestions",
-        ::actor::JournalDetailsBuilder().AddError(error_message).Build());
-  };
-
-  using enum ActorFormFillingError;
   base::expected<std::reference_wrapper<BrowserAutofillManager>,
                  ActorFormFillingError>
       maybe_manager = GetAutofillManager(client);
@@ -501,17 +601,50 @@ void ActorFormFillingServiceImpl::GetSuggestions(
         .Run(base::unexpected(maybe_manager.error()));
     return;
   }
-  AutofillManager& autofill_manager = maybe_manager.value();
-  LogManager* const log_manager =
-      autofill_manager.client().GetCurrentLogManager();
+
+  FilterAllowedPaymentIframeOrigins(
+      GetPaymentIframeCrossOrigins(maybe_manager.value(), fill_requests),
+      base::BindOnce(
+          [](base::WeakPtr<ActorFormFillingServiceImpl> service,
+             base::WeakPtr<AutofillClient> client,
+             std::vector<FillRequest> fill_requests,
+             base::flat_set<url::Origin> allowed_iframe_origins) {
+            return service ? service->GetSuggestionsWithAllowedIframeOrigins(
+                                 client, fill_requests, allowed_iframe_origins)
+                           : base::unexpected(ActorFormFillingError::kOther);
+          },
+          weak_ptr_factory_.GetWeakPtr(), client.GetWeakPtr(),
+          base::ToVector(fill_requests))
+          .Then(std::move(callback_with_metrics)));
+}
+
+base::expected<std::vector<ActorFormFillingRequest>, ActorFormFillingError>
+ActorFormFillingServiceImpl::GetSuggestionsWithAllowedIframeOrigins(
+    base::WeakPtr<AutofillClient> client,
+    base::span<const FillRequest> fill_requests,
+    const base::flat_set<url::Origin>& allowed_iframe_origins) {
+  using enum ActorFormFillingError;
+  if (!client) {
+    return base::unexpected(kAutofillNotAvailable);
+  }
+  ASSIGN_OR_RETURN(BrowserAutofillManager & autofill_manager,
+                   GetAutofillManager(*client));
+
+  auto log_actor_error = [&](std::string_view error_message) {
+    journal_->Log(
+        client->GetLastCommittedPrimaryMainFrameURL(), task_id_,
+        "ActorFormFillingServiceImpl::GetSuggestions",
+        ::actor::JournalDetailsBuilder().AddError(error_message).Build());
+  };
+
+  LogManager* const log_manager = client->GetCurrentLogManager();
 
   // Fill requests should not be empty.
   if (fill_requests.empty()) {
     LOG_AF(log_manager) << LoggingScope::kAutofillActor
                         << "Fill requests are empty.";
     log_actor_error("Fill requests are empty.");
-    std::move(callback_with_metrics).Run(base::unexpected(kOther));
-    return;
+    return base::unexpected(kOther);
   }
 
   sections_.clear();
@@ -544,9 +677,7 @@ void ActorFormFillingServiceImpl::GetSuggestions(
           LOG_AF(log_manager) << LoggingScope::kAutofillActor
                               << "Actor is disabled for address autofill.";
           log_actor_error("Actor is disabled for address autofill.");
-          std::move(callback_with_metrics)
-              .Run(base::unexpected(kAutofillNotAvailable));
-          return;
+          return base::unexpected(kAutofillNotAvailable);
         }
 
         if (actor::ShouldSplitOutContactInfo(fill_request.trigger_fields,
@@ -574,9 +705,7 @@ void ActorFormFillingServiceImpl::GetSuggestions(
           LOG_AF(log_manager) << LoggingScope::kAutofillActor
                               << "Actor is disabled for credit card autofill.";
           log_actor_error("Actor is disabled for credit card autofill.");
-          std::move(callback_with_metrics)
-              .Run(base::unexpected(kAutofillNotAvailable));
-          return;
+          return base::unexpected(kAutofillNotAvailable);
         }
         sub_requests.push_back(
             {kCreditCard, actor::SectionSplitPart::kNoSplit});
@@ -586,11 +715,10 @@ void ActorFormFillingServiceImpl::GetSuggestions(
         LOG_AF(log_manager)
             << LoggingScope::kAutofillActor << "The request type is invalid.";
         log_actor_error("The request type is invalid.");
-        std::move(callback_with_metrics).Run(base::unexpected(kOther));
-        return;
+        return base::unexpected(kOther);
       }
     }
-    url::Origin origin = client.GetLastCommittedPrimaryMainFrameOrigin();
+    url::Origin origin = client->GetLastCommittedPrimaryMainFrameOrigin();
 
     for (const SubRequest& sub_request : sub_requests) {
       ActorSuggestions suggestion_data;
@@ -607,14 +735,14 @@ void ActorFormFillingServiceImpl::GetSuggestions(
           break;
         case kCreditCard:
           suggestion_data = GetCreditCardSuggestions(
-              fill_request.trigger_fields, autofill_manager, log_manager);
+              fill_request.trigger_fields, autofill_manager, log_manager,
+              allowed_iframe_origins);
           break;
         default:
           LOG_AF(log_manager)
               << LoggingScope::kAutofillActor << "The request type is invalid.";
           log_actor_error("The request type is invalid.");
-          std::move(callback_with_metrics).Run(base::unexpected(kOther));
-          return;
+          return base::unexpected(kOther);
       }
 
       // For now, we require that every form is fillable.
@@ -623,8 +751,7 @@ void ActorFormFillingServiceImpl::GetSuggestions(
         LOG_AF(log_manager)
             << LoggingScope::kAutofillActor << "No suggestions were generated.";
         log_actor_error("No suggestions were generated.");
-        std::move(callback_with_metrics).Run(base::unexpected(kNoSuggestions));
-        return;
+        return base::unexpected(kNoSuggestions);
       }
 
       if (const FormStructure* form_structure =
@@ -642,30 +769,247 @@ void ActorFormFillingServiceImpl::GetSuggestions(
       request.request_origin = origin;
       // TODO(crbug.com/502158215): Integrate form-splitting with section label.
       request.section_label = fill_request.section_label;
-      request.suggestions.reserve(
-          suggestion_data.suggestions_with_fill_data.size());
       sections_.emplace_back(suggestion_data.trigger_field_id,
                              fill_request.section_label,
                              fill_request.requested_data);
-      for (ActorSuggestionWithFillData& entry :
-           suggestion_data.suggestions_with_fill_data) {
-        entry.suggestion.id =
-            ActorSuggestionId(suggestion_id_generator_.GenerateNextId());
-        fill_data_[entry.suggestion.id] = std::move(entry.filling_payload);
-        request.suggestions.emplace_back(std::move(entry.suggestion));
-      }
+      request.suggestions = base::ToVector(
+          suggestion_data.suggestions_with_fill_data,
+          [this](ActorSuggestionWithFillData& entry) {
+            entry.suggestion.id =
+                ActorSuggestionId(suggestion_id_generator_.GenerateNextId());
+            fill_data_[entry.suggestion.id] = std::move(entry.filling_payload);
+            return std::move(entry.suggestion);
+          });
     }
   }
 
-  if (ActorAutofillManager* manager =
-          autofill_manager.client().GetActorAutofillManager()) {
+  if (ActorAutofillManager* manager = client->GetActorAutofillManager()) {
     ActorKeyMetricsRecorder& recorder = manager->key_metrics_recorder();
     for (const auto& [form_id, products] : products_by_form) {
       recorder.OnSuggestionsGenerated(form_id, products);
     }
   }
 
-  std::move(callback_with_metrics).Run(std::move(requests));
+  return requests;
+}
+
+void ActorFormFillingServiceImpl::RetrieveSuggestionForCreditCardOpaqueToken(
+    AutofillClient& client,
+    base::span<const FillRequest> fill_requests,
+    const std::string& credit_card_opaque_token,
+    RetrieveSuggestionCallback callback) {
+  auto callback_with_metrics =
+      base::BindOnce(&RecordGetSuggestionsMetrics<ActorSuggestionId>,
+                     base::TimeTicks::Now())
+          .Then(std::move(callback));
+
+  base::expected<std::reference_wrapper<BrowserAutofillManager>,
+                 ActorFormFillingError>
+      maybe_manager = GetAutofillManager(client);
+  if (!maybe_manager.has_value()) {
+    std::move(callback_with_metrics)
+        .Run(base::unexpected(maybe_manager.error()));
+    return;
+  }
+
+  FilterAllowedPaymentIframeOrigins(
+      GetPaymentIframeCrossOrigins(maybe_manager.value(), fill_requests),
+      base::BindOnce(
+          [](base::WeakPtr<ActorFormFillingServiceImpl> service,
+             base::WeakPtr<AutofillClient> client,
+             std::vector<FillRequest> fill_requests,
+             std::string credit_card_opaque_token,
+             RetrieveSuggestionCallback callback_with_metrics,
+             base::flat_set<url::Origin> allowed_iframe_origins) {
+            if (!service) {
+              std::move(callback_with_metrics)
+                  .Run(base::unexpected(ActorFormFillingError::kOther));
+              return;
+            }
+            service
+                ->RetrieveSuggestionForCreditCardOpaqueTokenWithAllowedIframeOrigins(
+                    client, std::move(fill_requests),
+                    std::move(credit_card_opaque_token),
+                    std::move(callback_with_metrics), allowed_iframe_origins);
+          },
+          weak_ptr_factory_.GetWeakPtr(), client.GetWeakPtr(),
+          base::ToVector(fill_requests), credit_card_opaque_token,
+          std::move(callback_with_metrics)));
+}
+
+void ActorFormFillingServiceImpl::
+    RetrieveSuggestionForCreditCardOpaqueTokenWithAllowedIframeOrigins(
+        base::WeakPtr<AutofillClient> client,
+        std::vector<FillRequest> fill_requests,
+        std::string credit_card_opaque_token,
+        RetrieveSuggestionCallback callback_with_metrics,
+        const base::flat_set<url::Origin>& allowed_iframe_origins) {
+  using enum ActorFormFillingError;
+  if (!client) {
+    std::move(callback_with_metrics)
+        .Run(base::unexpected(kAutofillNotAvailable));
+    return;
+  }
+  base::expected<std::reference_wrapper<BrowserAutofillManager>,
+                 ActorFormFillingError>
+      maybe_manager = GetAutofillManager(*client);
+  if (!maybe_manager.has_value()) {
+    std::move(callback_with_metrics)
+        .Run(base::unexpected(maybe_manager.error()));
+    return;
+  }
+  BrowserAutofillManager& autofill_manager = maybe_manager.value();
+
+  auto log_actor_error = [&](std::string_view error_message) {
+    journal_->Log(
+        client->GetLastCommittedPrimaryMainFrameURL(), task_id_,
+        "ActorFormFillingServiceImpl::"
+        "RetrieveSuggestionForCreditCardOpaqueToken",
+        ::actor::JournalDetailsBuilder().AddError(error_message).Build());
+  };
+
+  LogManager* const log_manager = client->GetCurrentLogManager();
+
+  if (fill_requests.empty()) {
+    LOG_AF(log_manager) << LoggingScope::kAutofillActor
+                        << "Fill requests are empty.";
+    log_actor_error("Fill requests are empty.");
+    std::move(callback_with_metrics).Run(base::unexpected(kOther));
+    return;
+  }
+
+  if (fill_requests.size() > 1) {
+    LOG_AF(log_manager)
+        << LoggingScope::kAutofillActor
+        << "Only the first of multiple fill requests will be executed";
+    log_actor_error(
+        "Only the first of multiple fill requests will be executed");
+    // We gracefully handle this and don't exit early.
+  }
+
+  const bool has_non_credit_card =
+      std::ranges::any_of(fill_requests, [](const FillRequest& req) {
+        return req.requested_data != ActorFormFillingRequestedData::kCreditCard;
+      });
+  if (has_non_credit_card) {
+    LOG_AF(log_manager)
+        << LoggingScope::kAutofillActor
+        << "Credit card opaque token cannot be combined with address requests.";
+    log_actor_error(
+        "Credit card opaque token cannot be combined with address requests.");
+    std::move(callback_with_metrics).Run(base::unexpected(kOther));
+    return;
+  }
+
+  std::vector<FieldGlobalId>& fields = fill_requests[0].trigger_fields;
+  if (fields.empty()) {
+    LOG_AF(log_manager) << LoggingScope::kAutofillActor
+                        << "Trigger fields are empty.";
+    log_actor_error("Trigger fields are empty.");
+    std::move(callback_with_metrics).Run(base::unexpected(kNoSuggestions));
+    return;
+  }
+
+  CreditCardAccessManager* access_manager =
+      autofill_manager.GetCreditCardAccessManager();
+  if (!access_manager) {
+    LOG_AF(log_manager) << LoggingScope::kAutofillActor
+                        << "CreditCardAccessManager not available.";
+    log_actor_error("CreditCardAccessManager not available.");
+    std::move(callback_with_metrics)
+        .Run(base::unexpected(kAutofillNotAvailable));
+    return;
+  }
+
+  // Use the credit card number field for the label/trigger field if available.
+  FieldGlobalId trigger_field_id = fields.front();
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillActorRewriteCreditCardTriggerField)) {
+    for (const FieldGlobalId& field : fields) {
+      if (const FormStructure* form_structure =
+              autofill_manager.FindCachedFormById(field)) {
+        if (std::optional<FieldGlobalId> safe_field =
+                GetSafeCreditCardNumberField(*form_structure, field,
+                                             allowed_iframe_origins)) {
+          trigger_field_id = *safe_field;
+          break;
+        }
+      }
+    }
+  }
+
+  // Clear sections_ before starting the async card retrieval to prevent stale
+  // state from lingering.
+  sections_.clear();
+
+  std::string& section_label = fill_requests[0].section_label;
+  const url::Origin origin = client->GetLastCommittedPrimaryMainFrameOrigin();
+  const FormStructure* form_structure =
+      autofill_manager.FindCachedFormById(trigger_field_id);
+  const std::optional<FormGlobalId> form_id =
+      form_structure ? std::make_optional(form_structure->global_id())
+                     : std::nullopt;
+
+  access_manager->RetrieveCreditCardForOpaqueToken(
+      credit_card_opaque_token,
+      base::BindOnce(
+          [](base::WeakPtr<ActorFormFillingServiceImpl> service,
+             base::WeakPtr<AutofillClient> client,
+             std::optional<FormGlobalId> form_id,
+             std::vector<FieldGlobalId> fields, std::string section_label,
+             FieldGlobalId trigger_field_id, url::Origin origin,
+             std::optional<CreditCard> card) {
+            return service
+                       ? service->OnRetrievedSuggestionForCreditCardOpaqueToken(
+                             client, form_id, std::move(fields),
+                             std::move(section_label), trigger_field_id,
+                             std::move(origin), std::move(card))
+                       : base::unexpected(ActorFormFillingError::kOther);
+          },
+          weak_ptr_factory_.GetWeakPtr(), client, form_id, std::move(fields),
+          std::move(section_label), trigger_field_id, origin)
+          .Then(std::move(callback_with_metrics)));
+}
+
+base::expected<ActorSuggestionId, ActorFormFillingError>
+ActorFormFillingServiceImpl::OnRetrievedSuggestionForCreditCardOpaqueToken(
+    base::WeakPtr<AutofillClient> client,
+    std::optional<FormGlobalId> form_id,
+    std::vector<FieldGlobalId> fields,
+    std::string section_label,
+    FieldGlobalId trigger_field_id,
+    url::Origin origin,
+    std::optional<CreditCard> card) {
+  if (!card) {
+    if (client) {
+      if (LogManager* log_manager = client->GetCurrentLogManager()) {
+        LOG_AF(log_manager) << LoggingScope::kAutofillActor
+                            << "No credit card found for opaque token.";
+      }
+    }
+    journal_->Log(origin.GetURL(), task_id_,
+                  "ActorFormFillingServiceImpl::"
+                  "RetrieveSuggestionForCreditCardOpaqueToken",
+                  ::actor::JournalDetailsBuilder()
+                      .AddError("No credit card found for opaque token.")
+                      .Build());
+    return base::unexpected(ActorFormFillingError::kNoSuggestions);
+  }
+
+  sections_.emplace_back(trigger_field_id, std::move(section_label),
+                         ActorFormFillingRequestedData::kCreditCard);
+
+  ActorSuggestionId suggestion_id(suggestion_id_generator_.GenerateNextId());
+  fill_data_[suggestion_id] = FillData(std::move(fields), *std::move(card));
+
+  if (client && form_id) {
+    if (ActorAutofillManager* manager = client->GetActorAutofillManager()) {
+      manager->key_metrics_recorder().OnSuggestionsGenerated(
+          *form_id, {FillingProduct::kCreditCard});
+    }
+  }
+
+  return suggestion_id;
 }
 
 void ActorFormFillingServiceImpl::FillSuggestions(
@@ -737,6 +1081,10 @@ void ActorFormFillingServiceImpl::FillSuggestions(
 
   // filling_observer_->Activate() waits for all fill operations to conclude
   // and then calls the callback chain.
+  if (!filling_observer_) {
+    std::move(callback).Run(base::unexpected(ActorFormFillingError::kOther));
+    return;
+  }
   filling_observer_->Activate(std::move(chain).Then(std::move(callback)));
 }
 
@@ -877,13 +1225,17 @@ ActorFormFillingServiceImpl::FillOrPreviewFormImpl(
                        autofill_manager.FillOrPreviewForm(
                            action_persistence, form_structure->global_id(),
                            trigger_field_id, &autofill_profile,
-                           AutofillTriggerSource::kGlic, blocked_fields);
+                           AutofillTriggerSource::kGlic,
+                           /*require_user_confirmation=*/false, blocked_fields);
                      },
                      [&](const CreditCard& credit_card) {
+                       // TODO(crbug.com/561395976): Figure out if additional
+                       // authentication can be required here.
                        autofill_manager.FillOrPreviewForm(
                            action_persistence, form_structure->global_id(),
                            trigger_field_id, &credit_card,
                            AutofillTriggerSource::kGlic,
+                           /*require_user_confirmation=*/false,
                            /*blocked_fields=*/{});
                      },
                      [&](const std::monostate&) {
@@ -919,8 +1271,8 @@ void ActorFormFillingServiceImpl::LogSkipReasonsToJournal(
               {"field_", base::ToString(field_id.renderer_id.value())}),
           base::JoinString(base::ToVector(reasons,
                                           [](FieldFillingSkipReason reason) {
-                                            return base::ToString(
-                                                static_cast<int>(reason));
+                                            return base::NumberToString(
+                                                std::to_underlying(reason));
                                           }),
                            ", "));
     }

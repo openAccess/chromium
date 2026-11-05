@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -30,6 +31,7 @@
 #include "components/spellcheck/renderer/hunspell_engine.h"
 #include "components/spellcheck/renderer/spellcheck_language.h"
 #include "components/spellcheck/renderer/spellcheck_provider_test.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/web/web_text_checking_completion.h"
 #include "third_party/blink/public/web/web_text_checking_result.h"
@@ -47,6 +49,24 @@ base::FilePath GetHunspellDirectory() {
   hunspell_directory = hunspell_directory.AppendASCII("hunspell_dictionaries");
   return hunspell_directory;
 }
+
+#if !BUILDFLAG(IS_APPLE)
+class ZeroLengthResultSpellCheck : public SpellCheck {
+ public:
+  using SpellCheck::SpellCheck;
+  using SpellCheck::SpellCheckWord;
+
+  bool SpellCheckWord(std::u16string_view,
+                      spellcheck::mojom::SpellCheckHost&,
+                      size_t* misspelling_start,
+                      size_t* misspelling_length,
+                      std::nullptr_t) override {
+    *misspelling_start = 0;
+    *misspelling_length = 0;
+    return false;
+  }
+};
+#endif  // !BUILDFLAG(IS_APPLE)
 
 }  // namespace
 
@@ -1073,6 +1093,54 @@ TEST_P(SpellCheckTest, SpellCheckParagraphMultipleMisspellings) {
   TestSpellCheckParagraph(text, expected);
 }
 
+// Regression test for crbug.com/574469799. Override SpellCheckWord() to
+// simulate a false return with a zero-length range, verifying that paragraph
+// checking terminates even if other platforms produce this result in the
+// future.
+TEST_P(SpellCheckTest, SpellCheckParagraphWithZeroLengthResult) {
+  spellcheck::EmptyLocalInterfaceProvider embedder_provider;
+  ZeroLengthResultSpellCheck checker(&embedder_provider);
+
+  std::vector<blink::WebTextCheckingResult> results;
+  EXPECT_FALSE(checker.SpellCheckParagraph(
+      u"unchecked", provider_.GetSpellCheckHost(), &results));
+  EXPECT_TRUE(results.empty());
+}
+
+#if BUILDFLAG(IS_WIN)
+// Regression test for crbug.com/574469799. SpellCheckWord() can currently
+// return false with a zero-length range during Windows hybrid checks.
+// SpellCheckParagraph() must stop without adding a zero-length spelling
+// marker and preserve any earlier misspellings.
+TEST_P(SpellCheckTest, SpellCheckParagraphWithDisabledLanguage) {
+  // Model a hybrid check: en-US uses Hunspell, while ru-RU uses the browser.
+  spell_check()->AddSpellcheckLanguage(base::File(), "ru-RU");
+  ASSERT_EQ(2u, spell_check()->LanguageCount());
+  ASSERT_EQ(1u, spell_check()->EnabledLanguageCount());
+
+  // "privet" ("hello" in Russian), written in Cyrillic. Expect a false/zero
+  // word result and no paragraph markers because en-US skips this script.
+  const std::u16string text = u"\u043f\u0440\u0438\u0432\u0435\u0442";
+  size_t misspelling_start = 1;
+  size_t misspelling_length = 1;
+  ASSERT_FALSE(spell_check()->SpellCheckWord(
+      text, provider_.GetSpellCheckHost(), &misspelling_start,
+      &misspelling_length, nullptr));
+  ASSERT_EQ(0u, misspelling_start);
+  ASSERT_EQ(0u, misspelling_length);
+  std::vector<blink::WebTextCheckingResult> results;
+  EXPECT_FALSE(spell_check()->SpellCheckParagraph(
+      text, provider_.GetSpellCheckHost(), &results));
+  EXPECT_TRUE(results.empty());
+
+  // Prepend "zz, zz " to the Cyrillic text and preserve both "zz" markers.
+  std::vector<SpellCheckResult> expected;
+  expected.emplace_back(spellcheck::Decoration::SPELLING, 0, 2);
+  expected.emplace_back(spellcheck::Decoration::SPELLING, 4, 2);
+  TestSpellCheckParagraph(u"zz, zz " + text, expected);
+}
+#endif  // BUILDFLAG(IS_WIN)
+
 // Make sure a relatively long (correct) sentence can be spellchecked.
 TEST_P(SpellCheckTest, SpellCheckParagraphLongSentence) {
   std::vector<SpellCheckResult> expected;
@@ -1705,3 +1773,127 @@ TEST_P(SpellCheckTest, FillSuggestions_ThreeLanguages) {
 }
 
 INSTANTIATE_TEST_SUITE_P(All, SpellCheckTest, testing::Bool());
+
+namespace {
+
+class FakeInitializationHostProvider
+    : public service_manager::LocalInterfaceProvider,
+      public spellcheck::mojom::SpellCheckInitializationHost {
+ public:
+  FakeInitializationHostProvider() = default;
+  ~FakeInitializationHostProvider() override = default;
+
+  void GetInterface(const std::string& name,
+                    mojo::ScopedMessagePipeHandle request_handle) override {
+    if (name == spellcheck::mojom::SpellCheckInitializationHost::Name_) {
+      if (receiver_.is_bound()) {
+        receiver_.reset();
+      }
+      receiver_.Bind(mojo::PendingReceiver<
+                     spellcheck::mojom::SpellCheckInitializationHost>(
+          std::move(request_handle)));
+    }
+  }
+
+  void RequestDictionary() override {
+    request_dictionary_called_ = true;
+    ++request_dictionary_count_;
+    if (quit_closure_) {
+      std::move(quit_closure_).Run();
+    }
+  }
+
+  void WaitForRequestDictionary() {
+    if (request_dictionary_called_) {
+      return;
+    }
+    base::RunLoop run_loop;
+    quit_closure_ = run_loop.QuitClosure();
+    run_loop.Run();
+  }
+
+  bool request_dictionary_called() const { return request_dictionary_called_; }
+  int request_dictionary_count() const { return request_dictionary_count_; }
+
+ private:
+  mojo::Receiver<spellcheck::mojom::SpellCheckInitializationHost> receiver_{
+      this};
+  bool request_dictionary_called_ = false;
+  int request_dictionary_count_ = 0;
+  base::OnceClosure quit_closure_;
+};
+
+}  // namespace
+
+TEST(SpellCheckOnDemandTest, InitializeIfNeededRequestsDictionaryWhenEmpty) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      spellcheck::kOnDemandSpellcheckInitialization);
+
+  base::test::TaskEnvironment task_environment;
+  FakeInitializationHostProvider provider;
+  SpellCheck spell_check(&provider);
+
+  EXPECT_FALSE(provider.request_dictionary_called());
+
+  // Calling InitializeIfNeeded when no languages have been set should request
+  // dictionary from the browser when feature is enabled.
+  EXPECT_TRUE(spell_check.InitializeIfNeeded());
+  provider.WaitForRequestDictionary();
+  EXPECT_TRUE(provider.request_dictionary_called());
+  EXPECT_EQ(1, provider.request_dictionary_count());
+}
+
+TEST(SpellCheckOnDemandTest,
+     InitializeIfNeededDoesNotRequestDictionaryWhenFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      spellcheck::kOnDemandSpellcheckInitialization);
+
+  base::test::TaskEnvironment task_environment;
+  FakeInitializationHostProvider provider;
+  SpellCheck spell_check(&provider);
+
+  EXPECT_FALSE(provider.request_dictionary_called());
+
+  // When feature is disabled, calling InitializeIfNeeded should not send IPC.
+  EXPECT_TRUE(spell_check.InitializeIfNeeded());
+  EXPECT_FALSE(provider.request_dictionary_called());
+  EXPECT_EQ(0, provider.request_dictionary_count());
+}
+
+TEST(SpellCheckOnDemandTest,
+     InitializeWithEmptyDictionariesMarksInitializedAndReturnsFalse) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      spellcheck::kOnDemandSpellcheckInitialization);
+
+  base::test::TaskEnvironment task_environment;
+  FakeInitializationHostProvider provider;
+  SpellCheck spell_check(&provider);
+
+  // Calling Initialize with empty dictionaries simulates the browser responding
+  // with no dictionaries (e.g. spellchecking disabled or no languages enabled).
+  spell_check.Initialize(
+      std::vector<spellcheck::mojom::SpellCheckBDictLanguagePtr>(), {}, false);
+
+  // InitializeIfNeeded should return false because initialization is complete.
+  EXPECT_FALSE(spell_check.InitializeIfNeeded());
+  EXPECT_EQ(0, provider.request_dictionary_count());
+}
+
+TEST(SpellCheckOnDemandTest, InitializeIfNeededOnlyRequestsDictionaryOnce) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      spellcheck::kOnDemandSpellcheckInitialization);
+
+  base::test::TaskEnvironment task_environment;
+  FakeInitializationHostProvider provider;
+  SpellCheck spell_check(&provider);
+
+  EXPECT_TRUE(spell_check.InitializeIfNeeded());
+  EXPECT_TRUE(spell_check.InitializeIfNeeded());
+  EXPECT_TRUE(spell_check.InitializeIfNeeded());
+  provider.WaitForRequestDictionary();
+  EXPECT_EQ(1, provider.request_dictionary_count());
+}

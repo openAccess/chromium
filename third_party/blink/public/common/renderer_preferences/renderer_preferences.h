@@ -98,10 +98,11 @@ struct BLINK_COMMON_EXPORT RendererPreferences {
   bool view_source_line_wrap_enabled{false};
   bool system_color_chooser_is_modal{false};
   bool is_global_privacy_control_setting_enabled{false};
+  std::optional<bool> global_privacy_control_devtools_override;
 
   ui::KeyboardCode autofill_shortcut_key_code = ui::VKEY_UNKNOWN;
   int autofill_shortcut_modifiers = 0;
-  std::u16string autofill_trigger_string;
+  bool autofill_at_memory_double_ctrl_trigger_enabled = false;
 
   RendererPreferences();
   RendererPreferences(const RendererPreferences& other);

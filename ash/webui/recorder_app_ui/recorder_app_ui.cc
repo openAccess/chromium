@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "ash/constants/ash_features.h"
@@ -18,6 +19,7 @@
 #include "ash/webui/recorder_app_ui/resources/grit/recorder_app_resources.h"
 #include "ash/webui/recorder_app_ui/resources/grit/recorder_app_resources_map.h"
 #include "ash/webui/recorder_app_ui/url_constants.h"
+#include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/feature_list.h"
 #include "base/strings/string_number_conversions.h"
@@ -114,21 +116,28 @@ void GotSalt(
       FROM_HERE, std::move(callback_on_io_thread));
 }
 
+// Where the salt for translating media device IDs comes from: either the
+// browser context's salt service, or, when the context has none, the ephemeral
+// salt the renderer-visible IDs were produced with. See the comment on the
+// RecorderAppUI constructor parameter.
+using SaltSource =
+    std::variant<media_device_salt::MediaDeviceSaltService*, std::string>;
+
 void TranslateAudioDeviceId(
-    content::BrowserContext* browser_context,
-    media_device_salt::MediaDeviceSaltService* salt_service,
+    const SaltSource& salt_source,
     const url::Origin& origin,
     const std::string& source_id,
     base::OnceCallback<void(const std::optional<std::string>&)> callback) {
-  if (salt_service) {
-    salt_service->GetSalt(
-        blink::StorageKey::CreateFirstParty(origin),
-        base::BindOnce(&GotSalt, origin, source_id, std::move(callback)));
+  if (const auto* salt_service =
+          std::get_if<media_device_salt::MediaDeviceSaltService*>(
+              &salt_source)) {
+    (*salt_service)
+        ->GetSalt(
+            blink::StorageKey::CreateFirstParty(origin),
+            base::BindOnce(&GotSalt, origin, source_id, std::move(callback)));
   } else {
-    // If the embedder does not provide a salt service, use the browser
-    // context's unique ID as salt.
     GotSalt(origin, source_id, std::move(callback),
-            browser_context->UniqueId());
+            std::get<std::string>(salt_source));
   }
 }
 
@@ -143,6 +152,23 @@ int GetResourceIdFromStringName(const std::string& name) {
 std::string GetDeviceTypeString() {
   std::string device_type = ash::DeviceTypeToString(chromeos::GetDeviceType());
   return device_type.empty() ? kDefaultDeviceTypeName : device_type;
+}
+
+void DoInstallSoda(PrefService& local_state,
+                   speech::LanguageCode language_code) {
+  CHECK(speech::IsOnDeviceSpeechRecognitionSupported());
+
+  auto* soda_installer = speech::SodaInstaller::GetInstance();
+  // InstallSoda and InstallLanguage calls DLC download, which will ignore
+  // duplicate request, so this is safe without checking if an ongoing install
+  // is in progress.
+  // TODO: b/369730074 - Ideally we should also remember whether user enabled
+  // transcription in a user pref, and ask SODA to preload on ash launch (in
+  // `IsAnyFeatureUsingSodaEnabled`) if it's enabled so the app can get
+  // transcription faster.
+  soda_installer->InstallSoda(&local_state);
+  soda_installer->InstallLanguage(speech::GetLanguageName(language_code),
+                                  &local_state);
 }
 
 }  // namespace
@@ -201,9 +227,14 @@ bool RecorderAppUIConfig::IsWebUIEnabled(
              speech::kFeatureManagementCrosSodaConchLanguages);
 }
 
-RecorderAppUI::RecorderAppUI(content::WebUI* web_ui,
-                             std::unique_ptr<RecorderAppUIDelegate> delegate)
-    : ui::MojoWebUIController(web_ui), delegate_(std::move(delegate)) {
+RecorderAppUI::RecorderAppUI(
+    PrefService* local_state,
+    content::WebUI* web_ui,
+    std::unique_ptr<RecorderAppUIDelegate> delegate,
+    media_device_salt::MediaDeviceSaltService* media_device_salt_service)
+    : ui::MojoWebUIController(web_ui),
+      local_state_(CHECK_DEREF(local_state)),
+      delegate_(std::move(delegate)) {
   content::BrowserContext* browser_context =
       web_ui->GetWebContents()->GetBrowserContext();
 
@@ -269,11 +300,15 @@ RecorderAppUI::RecorderAppUI(content::WebUI* web_ui,
     }
   }
 
-  // Add salt translator
-  device_id_mapping_callback_ =
-      base::BindRepeating(&TranslateAudioDeviceId, browser_context,
-                          delegate_->GetMediaDeviceSaltService(browser_context),
-                          url::Origin::Create(GURL(kChromeUIRecorderAppURL)));
+  // Add salt translator. Without a salt service the renderer-side IDs are
+  // salted with the browser context's unique ID, so the translation back has
+  // to use the same value; see
+  // ChromeContentBrowserClient::GetMediaDeviceIDSalt().
+  device_id_mapping_callback_ = base::BindRepeating(
+      &TranslateAudioDeviceId,
+      media_device_salt_service ? SaltSource(media_device_salt_service)
+                                : SaltSource(browser_context->UniqueId()),
+      url::Origin::Create(GURL(kChromeUIRecorderAppURL)));
 
   auto* message_center = message_center::MessageCenter::Get();
   message_center->AddObserver(this);
@@ -687,7 +722,7 @@ void RecorderAppUI::InstallSoda(const std::string& language,
     // immediately, since the DLC download might start later.
     UpdateSodaState(language_code,
                     {recorder_app::mojom::ModelStateType::kInstalling, 0});
-    delegate_->InstallSoda(language_code);
+    DoInstallSoda(local_state_.get(), language_code);
   } else if (soda_state != GetCachedSodaState(language_code)) {
     // Update cached state when it's outdated.
     UpdateSodaState(language_code, soda_state);

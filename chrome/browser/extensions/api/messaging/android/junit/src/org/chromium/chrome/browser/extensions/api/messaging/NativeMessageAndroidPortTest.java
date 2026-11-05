@@ -28,7 +28,6 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.ContextUtils;
@@ -44,7 +43,6 @@ import java.util.concurrent.TimeUnit;
 
 /** Unit tests for {@link NativeMessageAndroidPort}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class NativeMessageAndroidPortTest {
     private static final String TARGET_PACKAGE = "com.example.extensionreceiver";
     private static final String EXTENSION_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -143,7 +141,7 @@ public class NativeMessageAndroidPortTest {
     public void setUp() {
         NativeMessagingManagerJni.setInstanceForTesting(mNativeMessagingManagerJni);
         Mockito.when(mProfile.getOriginalProfile()).thenReturn(mProfile);
-        mTestContext = new TestContext(RuntimeEnvironment.application);
+        mTestContext = new TestContext(RuntimeEnvironment.getApplication());
         ContextUtils.initApplicationContextForTests(mTestContext);
 
         mFakeBrowserService =

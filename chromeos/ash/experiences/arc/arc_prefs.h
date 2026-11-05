@@ -35,6 +35,11 @@ inline constexpr char kArcAppRequestedInSession[] =
 // A preference to keep list of Android apps and their state.
 inline constexpr char kArcApps[] = "arc.apps";
 
+// Package names of Android apps to launch automatically after sign-in, once
+// installed. Currently only the first entry is used. Backs the
+// AutoLaunchAndroidApps policy.
+inline constexpr char kArcAutoLaunchApps[] = "arc.auto_launch_apps";
+
 // A preference to store backup and restore state for Android apps.
 inline constexpr char kArcBackupRestoreEnabled[] = "arc.backup_restore.enabled";
 
@@ -243,11 +248,6 @@ inline constexpr char kArcSerialNumberSalt[] = "arc.serialno_salt";
 
 // A preferece to keep ARC snapshot related info in dictionary.
 inline constexpr char kArcSnapshotInfo[] = "arc.snapshot";
-
-// A time pref indicating the time in microseconds when ARCVM success executed
-// vmm swap out. If it never swapped out, the pref holds the default value
-// base::Time().
-inline constexpr char kArcVmmSwapOutTime[] = "arc_vmm_swap_out_time";
 
 // Indicates that the user has requested that ARC APK Sideloading be enabled.
 inline constexpr char kEnableAdbSideloadingRequested[] =

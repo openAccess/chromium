@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/ash/login/login_web_dialog.h"
 
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/test/browser_test.h"
@@ -52,6 +51,7 @@ IN_PROC_BROWSER_TEST_F(LoginWebDialogTest, NoParentWindow) {
   dialog->Show();
   aura::Window* window = dialog->get_dialog_window_for_test();
   ASSERT_TRUE(window);
+  EXPECT_EQ((gfx::Size{1024, 752}), window->bounds().size());
 }
 
 }  // namespace ash

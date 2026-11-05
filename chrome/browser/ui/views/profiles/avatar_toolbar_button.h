@@ -18,10 +18,10 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/events/event.h"
 
-class BrowserWindowInterface;
-struct AccountInfo;
-class StateProvider;
+class AccountInfo;
 class AvatarToolbarButtonTestAccessor;
+class BrowserWindowInterface;
+class StateProvider;
 
 // This class takes care the Profile Avatar Button.
 // Primarily applies UI configuration.
@@ -59,21 +59,16 @@ class AvatarToolbarButton : public ToolbarButton,
           explicit_action,
       bool should_announce) override;
   bool HasExplicitButtonState() const override;
+  bool IsReadyForIPH() const override;
   void AddObserver(Observer* observer) override;
   void RemoveObserver(Observer* observer) override;
   // void UpdateIcon() also overrides ToolbarButton
   void UpdateText() override;
   void SetAnnounceCallbackForTesting(
       base::OnceCallback<void(std::u16string)> callback) override;
-  void MaybeShowProfileSwitchIPH() override;
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  void MaybeShowSupervisedUserSignInIPH() override;
-  void MaybeShowSignInBenefitsIPH() override;
-#endif
   void ClearActiveStateForTesting() override;
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
   void ForceShowingPromoForTesting() override;
-  bool GetStateAndFireSignedOutTriggerDelayTimerForTesting() override;
 #endif
 
   // ToolbarButton:

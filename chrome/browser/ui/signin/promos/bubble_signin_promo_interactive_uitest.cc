@@ -70,11 +70,13 @@
 #include "components/sync/service/local_data_description.h"
 #include "components/sync/test/test_sync_service.h"
 #include "components/sync_bookmarks/switches.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/install_verifier.h"
 #include "extensions/common/extension.h"
 #include "google_apis/gaia/gaia_auth_consumer.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/window/dialog_client_view.h"
 

@@ -45,7 +45,8 @@ void CompressTask(
   std::optional<std::vector<uint8_t>> data =
       gfx::JPEGCodec::Encode(ResizeBitmap(bitmap), kCompressionQuality);
 
-  std::move(post_processing_task).Run(std::move(data.value()));
+  std::move(post_processing_task)
+      .Run(data.has_value() ? std::move(*data) : std::vector<uint8_t>());
 }
 
 void WriteTask(base::FilePath file_path,
@@ -117,7 +118,7 @@ void JpegThumbnailHelper::Compress(
   DCHECK(default_task_runner_->RunsTasksInCurrentSequence());
   base::ThreadPool::PostTask(
       FROM_HERE,
-      {base::TaskPriority::BEST_EFFORT,
+      {base::TaskPriority::USER_VISIBLE,
        base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
       base::BindOnce(&CompressTask, bitmap,
                      base::BindPostTask(default_task_runner_,
@@ -132,7 +133,7 @@ void JpegThumbnailHelper::Write(
   base::FilePath file_path = GetJpegFilePath(tab_id);
   file_task_runner_->PostTask(
       FROM_HERE,
-      base::BindOnce(&WriteTask, file_path, compressed_data,
+      base::BindOnce(&WriteTask, file_path, std::move(compressed_data),
                      base::BindPostTask(default_task_runner_,
                                         std::move(post_write_task))));
 }

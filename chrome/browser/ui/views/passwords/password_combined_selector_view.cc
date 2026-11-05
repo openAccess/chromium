@@ -25,15 +25,18 @@
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
-#include "components/keyed_service/core/service_access_type.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/favicon_base/favicon_types.h"
+#include "components/keyed_service/core/service_access_type.h"
 #include "components/password_manager/core/browser/password_form.h"
-#include "components/vector_icons/vector_icons.h"
 #include "components/password_manager/core/browser/password_manager_util.h"
 #include "components/url_formatter/elide_url.h"
+#include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "skia/ext/image_operations.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
@@ -41,6 +44,8 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/events/event.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/geometry/size.h"
+#include "ui/gfx/image/canvas_image_source.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -50,6 +55,7 @@
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/separator.h"
+#include "ui/views/controls/styled_label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/fill_layout.h"
@@ -57,6 +63,12 @@
 #include "ui/views/layout/table_layout_view.h"
 #include "ui/views/style/typography.h"
 #include "ui/views/widget/widget.h"
+#include "url/gurl.h"
+#include "url/origin.h"
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+#include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
+#endif
 
 namespace {
 
@@ -308,18 +320,8 @@ class PasswordCombinedSelectorRowView : public AccountAvatarFetcherDelegate,
     if (!image_view_) {
       return;
     }
-    gfx::ImageSkia skia_image = image;
-    gfx::Size size = skia_image.size();
-    if (size.height() != size.width()) {
-      gfx::Rect target(size);
-      int side = std::min(size.height(), size.width());
-      target.ClampToCenteredSize(gfx::Size(side, side));
-      skia_image = gfx::ImageSkiaOperations::ExtractSubset(skia_image, target);
-    }
     image_view_->SetImage(ui::ImageModel::FromImageSkia(
-        gfx::ImageSkiaOperations::CreateResizedImage(
-            skia_image, skia::ImageOperations::RESIZE_BEST,
-            gfx::Size(kFluxFederatedAvatarSize, kFluxFederatedAvatarSize))));
+        ScaleImageForAccountAvatar(image, kFluxFederatedAvatarSize)));
   }
 
   // views::TableLayoutView:
@@ -533,6 +535,69 @@ class PasswordCombinedSelectorListView : public views::View {
 BEGIN_METADATA(PasswordCombinedSelectorListView)
 END_METADATA
 
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)  // nocheck
+// Composites the remote actor header banner inline, stamping `actor_icon` into
+// the [228..264 dp] agent icon slot when non-empty.
+class RemoteActorHeaderImageSource : public gfx::CanvasImageSource {
+ public:
+  RemoteActorHeaderImageSource(const gfx::ImageSkia& base_banner,
+                               const gfx::ImageSkia& actor_icon)
+      : gfx::CanvasImageSource(base_banner.size()),
+        base_banner_(base_banner),
+        actor_icon_(actor_icon) {}
+
+  RemoteActorHeaderImageSource(const RemoteActorHeaderImageSource&) = delete;
+  RemoteActorHeaderImageSource& operator=(const RemoteActorHeaderImageSource&) =
+      delete;
+  ~RemoteActorHeaderImageSource() override = default;
+
+  // gfx::CanvasImageSource:
+  void Draw(gfx::Canvas* canvas) override {
+    static constexpr int kLeftSliceWidth = 228;
+    static constexpr int kActorSlotWidth = 36;
+    const int banner_height = base_banner_.height();
+    const int right_x = kLeftSliceWidth + kActorSlotWidth;
+    const int right_slice_width = std::max(0, base_banner_.width() - right_x);
+
+    canvas->DrawImageInt(base_banner_, 0, 0, kLeftSliceWidth, banner_height, 0,
+                         0, kLeftSliceWidth, banner_height, /*filter=*/false);
+    if (!actor_icon_.isNull()) {
+      const int x =
+          kLeftSliceWidth + (kActorSlotWidth - actor_icon_.width()) / 2;
+      const int y = (banner_height - actor_icon_.height()) / 2;
+      canvas->DrawImageInt(actor_icon_, x, y);
+    }
+    canvas->DrawImageInt(base_banner_, right_x, 0, right_slice_width,
+                         banner_height, right_x, 0, right_slice_width,
+                         banner_height, /*filter=*/false);
+  }
+
+ private:
+  const gfx::ImageSkia base_banner_;
+  const gfx::ImageSkia actor_icon_;
+};
+
+ui::ImageModel CreateRemoteActorHeaderImageModel(
+    const gfx::ImageSkia& actor_icon) {
+  const gfx::ImageSkia* full_banner =
+      ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+          IDR_REMOTE_ACTOR_SHARING_ILLUSTRATION);
+  return ui::ImageModel::FromImageSkia(
+      gfx::CanvasImageSource::MakeImageSkia<RemoteActorHeaderImageSource>(
+          *full_banner, actor_icon));
+}
+
+gfx::ImageSkia GetDefaultRemoteActorIcon() {
+  static constexpr int kDefaultGeminiIconSize = 36;
+  const gfx::ImageSkia* gemini_icon =
+      ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+          IDR_GEIC_BUTTON_ICON);
+  return gfx::ImageSkiaOperations::CreateResizedImage(
+      *gemini_icon, skia::ImageOperations::RESIZE_BEST,
+      gfx::Size(kDefaultGeminiIconSize, kDefaultGeminiIconSize));
+}
+#endif
+
 }  // namespace
 
 PasswordCombinedSelectorView::PasswordCombinedSelectorView(
@@ -553,7 +618,7 @@ PasswordCombinedSelectorView::~PasswordCombinedSelectorView() = default;
 
 void PasswordCombinedSelectorView::ShowAccountChooser() {
   InitWindow();
-  DCHECK(!widget_);
+  CHECK(!widget_, base::NotFatalUntil::M162);
   SetOwnershipOfNewWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
   widget_ = base::WrapUnique(
       constrained_window::ShowWebModalDialogViews(this, web_contents_));
@@ -581,6 +646,7 @@ ui::mojom::ModalType PasswordCombinedSelectorView::GetModalType() const {
 }
 
 void PasswordCombinedSelectorView::WindowClosing() {
+  header_image_view_ = nullptr;
   list_view_ = nullptr;
   selected_form_ = nullptr;
   if (controller_) {
@@ -633,12 +699,24 @@ void PasswordCombinedSelectorView::InitWindow() {
             views::DISTANCE_RELATED_CONTROL_VERTICAL)));
 
     auto* subtitle_label =
-        main_view->AddChildView(std::make_unique<views::Label>(
-            subtitle, views::style::CONTEXT_LABEL, views::style::STYLE_BODY_4));
-    subtitle_label->SetEnabledColor(ui::kColorLabelForegroundSecondary);
-    subtitle_label->SetMultiLine(true);
+        main_view->AddChildView(std::make_unique<views::StyledLabel>());
+    subtitle_label->SetText(subtitle);
+    subtitle_label->SetTextContext(views::style::CONTEXT_LABEL);
+    subtitle_label->SetDefaultTextStyle(views::style::STYLE_BODY_4);
+    subtitle_label->SetDefaultEnabledColorId(
+        ui::kColorLabelForegroundSecondary);
     subtitle_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     subtitle_label->SetID(PasswordCombinedSelectorView::kSubtitleLabelId);
+
+    gfx::Range link_range = controller_->GetSubtitleLinkRange();
+    if (!link_range.is_empty()) {
+      views::StyledLabel::RangeStyleInfo link_style =
+          views::StyledLabel::RangeStyleInfo::CreateForLink(base::BindRepeating(
+              &PasswordCombinedSelectorController::OnSubtitleLinkClicked,
+              base::Unretained(controller_.get())));
+      link_style.text_style = views::style::STYLE_LINK_4;
+      subtitle_label->AddStyleRange(link_range, link_style);
+    }
   }
 
   auto list_view = std::make_unique<PasswordCombinedSelectorListView>(
@@ -678,16 +756,43 @@ void PasswordCombinedSelectorView::OnWidgetInitialized() {
   }
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)  // nocheck
-  ui::ResourceBundle& bundle = ui::ResourceBundle::GetSharedInstance();
-  auto image_view = std::make_unique<views::ImageView>();
-  image_view->SetImage(ui::ImageModel::FromImageSkia(
-      *bundle.GetImageSkiaNamed(IDR_REMOTE_ACTOR_SHARING_ILLUSTRATION)));
-  image_view->SetVerticalAlignment(views::ImageView::Alignment::kLeading);
+  // Initialize the header slot with the default Gemini icon so that a broken or
+  // slow custom icon URL never leaves the slot blank. If a valid custom icon
+  // URL is provided, `UpdateAvatar()` will replace it once fetched.
+  auto header_view = std::make_unique<views::ImageView>(
+      CreateRemoteActorHeaderImageModel(GetDefaultRemoteActorIcon()));
+  header_view->SetVerticalAlignment(views::ImageView::Alignment::kLeading);
+  header_view->SetID(kHeaderActorIconId);
+
   if (auto* frame_view = GetBubbleFrameView()) {
-    frame_view->SetHeaderView(std::move(image_view));
+    header_image_view_ = header_view.get();
+    frame_view->SetHeaderView(std::move(header_view));
+  }
+
+  const GURL actor_icon_url = controller_->GetActorIconUrl();
+  content::RenderFrameHost* main_frame =
+      web_contents_ ? web_contents_->GetPrimaryMainFrame() : nullptr;
+  if (actor_icon_url.is_valid() && main_frame) {
+    mojo::Remote<network::mojom::URLLoaderFactory> url_loader_factory =
+        GetURLLoaderForMainFrame(web_contents_);
+    const url::Origin initiator = main_frame->GetLastCommittedOrigin();
+    auto* fetcher = new AccountAvatarFetcher(actor_icon_url,
+                                             weak_ptr_factory_.GetWeakPtr());
+    fetcher->Start(url_loader_factory.get(), initiator);
   }
 #else
   // TODO(crbug.com/532482932): Add unbranded header.
+#endif
+}
+
+void PasswordCombinedSelectorView::UpdateAvatar(const gfx::ImageSkia& image) {
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)  // nocheck
+  if (!header_image_view_ || image.isNull() || image.size().IsEmpty()) {
+    return;
+  }
+  static constexpr int kFetchedActorIconSize = 24;
+  header_image_view_->SetImage(CreateRemoteActorHeaderImageModel(
+      ScaleImageForAccountAvatar(image, kFetchedActorIconSize)));
 #endif
 }
 

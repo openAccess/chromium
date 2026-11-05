@@ -10,8 +10,6 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
-import static org.chromium.chrome.browser.omnibox.suggestions.CachedZeroSuggestionsManager.KEY_JUMP_START_PAGE_CLASS;
-import static org.chromium.chrome.browser.omnibox.suggestions.CachedZeroSuggestionsManager.KEY_JUMP_START_URL;
 import static org.chromium.components.omnibox.GroupConfigTestSupport.SECTION_1_NO_HEADER;
 import static org.chromium.components.omnibox.GroupConfigTestSupport.SECTION_2_WITH_HEADER;
 import static org.chromium.components.omnibox.GroupConfigTestSupport.SECTION_3_WITH_HEADER;
@@ -21,6 +19,8 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.omnibox.suggestions.CachedZeroSuggestionsManager.SearchEngineMetadata;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
@@ -28,6 +28,7 @@ import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatchBuilder;
 import org.chromium.components.omnibox.AutocompleteResult;
 import org.chromium.components.omnibox.GroupsProto.GroupsInfo;
+import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.omnibox.OmniboxSuggestionType;
 import org.chromium.url.GURL;
 
@@ -37,6 +38,7 @@ import java.util.List;
 
 /** Unit tests for {@link CachedZeroSuggestionsManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
+@EnableFeatures(OmniboxFeatureList.SERVE_JAVA_CACHED_ZERO_SUGGEST)
 public class CachedZeroSuggestionsManagerUnitTest {
     private static final @PageClassification int PAGE_CLASS = PageClassification.INVALID_SPEC;
     private static final AutocompleteResult EMPTY_RESULT = AutocompleteResult.fromCache(null, null);
@@ -110,7 +112,7 @@ public class CachedZeroSuggestionsManagerUnitTest {
     }
 
     @Test
-    public void saveToCache_DoNotCacheClipboardSuggestions() {
+    public void saveToCache_DoNotCacheClipboardAndCrossDeviceTabSuggestions() {
         var mixList =
                 Arrays.asList(
                         createSuggestionBuilder("test", 1, OmniboxSuggestionType.CLIPBOARD_IMAGE)
@@ -120,6 +122,8 @@ public class CachedZeroSuggestionsManagerUnitTest {
                         createSuggestionBuilder("test", 3, OmniboxSuggestionType.CLIPBOARD_TEXT)
                                 .build(),
                         createSuggestionBuilder("test", 4, OmniboxSuggestionType.SEARCH_HISTORY)
+                                .build(),
+                        createSuggestionBuilder("test", 5, OmniboxSuggestionType.CROSS_DEVICE_TAB)
                                 .build());
         var expectedList =
                 Arrays.asList(
@@ -246,81 +250,6 @@ public class CachedZeroSuggestionsManagerUnitTest {
         assertAutocompleteResultEquals(dataToCache, dataFromCache);
     }
 
-    private void saveJumpStartContext(String url, @PageClassification int pageClass) {
-        CachedZeroSuggestionsManager.saveJumpStartContext(
-                new CachedZeroSuggestionsManager.JumpStartContext(new GURL(url), pageClass));
-    }
-
-    @Test
-    public void jumpStartContext_saveRestoreValidContext() {
-        var prefs = ContextUtils.getAppSharedPreferences();
-
-        saveJumpStartContext("https://abc.xyz", 123);
-
-        assertEquals("https://abc.xyz/", prefs.getString(KEY_JUMP_START_URL, null));
-        assertEquals(123, prefs.getInt(KEY_JUMP_START_PAGE_CLASS, 0));
-
-        var jsContext = CachedZeroSuggestionsManager.readJumpStartContext();
-        assertEquals("https://abc.xyz/", jsContext.url.getSpec());
-        assertEquals(123, jsContext.pageClass);
-    }
-
-    @Test
-    public void jumpStartContext_saveRestoreEmptyUrl() {
-        var prefs = ContextUtils.getAppSharedPreferences();
-
-        // Initialize with valid context to verify data being erased.
-        saveJumpStartContext("https://abc.xyz", 123);
-        assertTrue(prefs.contains(KEY_JUMP_START_URL));
-
-        // Preserve empty URL
-        saveJumpStartContext("", 456);
-        assertFalse(prefs.contains(KEY_JUMP_START_URL));
-        assertFalse(prefs.contains(KEY_JUMP_START_PAGE_CLASS));
-    }
-
-    @Test
-    public void jumpStartContext_saveRestoreInvalidUrl() {
-        var prefs = ContextUtils.getAppSharedPreferences();
-
-        // Initialize with valid context to verify data being erased.
-        saveJumpStartContext("https://abc.xyz", 123);
-        assertTrue(prefs.contains(KEY_JUMP_START_URL));
-
-        // Preserve invalid URL
-        saveJumpStartContext("asdf", 456);
-        assertFalse(prefs.contains(KEY_JUMP_START_URL));
-        assertFalse(prefs.contains(KEY_JUMP_START_PAGE_CLASS));
-    }
-
-    @Test
-    public void jumpStartContext_saveRestoreNullContext() {
-        var prefs = ContextUtils.getAppSharedPreferences();
-
-        // Initialize with valid context to verify data being erased.
-        saveJumpStartContext("https://abc.xyz", 123);
-        assertTrue(prefs.contains(KEY_JUMP_START_URL));
-
-        // Preserve invalid URL
-        CachedZeroSuggestionsManager.saveJumpStartContext(null);
-        assertFalse(prefs.contains(KEY_JUMP_START_URL));
-        assertFalse(prefs.contains(KEY_JUMP_START_PAGE_CLASS));
-    }
-
-    @Test
-    public void jumpStartContext_eraseCachedData() {
-        var prefs = ContextUtils.getAppSharedPreferences();
-
-        // Initialize with valid context to verify data being erased.
-        saveJumpStartContext("https://abc.xyz", 123);
-        assertTrue(prefs.contains(KEY_JUMP_START_URL));
-
-        // Preserve invalid URL
-        CachedZeroSuggestionsManager.eraseCachedData();
-        assertFalse(prefs.contains(KEY_JUMP_START_URL));
-        assertFalse(prefs.contains(KEY_JUMP_START_PAGE_CLASS));
-    }
-
     @Test
     public void dseMetadata_restoreFromEmptyCache() {
         var prefs = ContextUtils.getAppSharedPreferences();
@@ -348,5 +277,21 @@ public class CachedZeroSuggestionsManagerUnitTest {
         var persisted = CachedZeroSuggestionsManager.readSearchEngineMetadata();
         assertNotNull(persisted);
         assertEquals("keyword", persisted.keyword);
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.SERVE_JAVA_CACHED_ZERO_SUGGEST)
+    public void featureDisabled_allOperationsAreNoOp() {
+        var prefs = ContextUtils.getAppSharedPreferences();
+        prefs.edit().clear().apply();
+
+        var dataToCache = AutocompleteResult.fromCache(buildSimpleSuggestionsList("test", 2), null);
+        CachedZeroSuggestionsManager.saveToCache(PAGE_CLASS, dataToCache);
+        assertFalse(prefs.contains(CachedZeroSuggestionsManager.getCacheKey(PAGE_CLASS)));
+        assertAutocompleteResultEquals(
+                EMPTY_RESULT, CachedZeroSuggestionsManager.readFromCache(PAGE_CLASS));
+
+        CachedZeroSuggestionsManager.saveSearchEngineMetadata(new SearchEngineMetadata("keyword"));
+        assertNull(CachedZeroSuggestionsManager.readSearchEngineMetadata());
     }
 }

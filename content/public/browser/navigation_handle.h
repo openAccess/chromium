@@ -10,9 +10,10 @@
 #include <string_view>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/functional/callback.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/safe_ref.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/supports_user_data.h"
 #include "base/unguessable_token.h"
@@ -36,6 +37,7 @@
 #include "net/http/http_connection_info.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/network/public/mojom/declarative_performance_observer.mojom-forward.h"
+#include "services/network/public/mojom/device_bound_sessions.mojom-forward.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-forward.h"
 #include "third_party/blink/public/common/runtime_feature_state/runtime_feature_state_context.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
@@ -89,7 +91,7 @@ class WebContents;
 class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
   // Do not remove this macro!
   // The macro is maintained by the memory safety team.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   // Execution mode for the beforeunload handling.
@@ -200,7 +202,7 @@ class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
 
   // If the navigation was triggered by a script tool, this contains the
   // ID of the tool invocation.
-  virtual const std::optional<base::UnguessableToken>&
+  virtual const std::optional<blink::ToolInvocationToken>&
   GetScriptToolInvocationId() const = 0;
 
   // Whether the navigation is taking place in a main frame which does not have
@@ -357,15 +359,18 @@ class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
   // Whether the navigation was initiated by a user gesture.
   //
   // Differences from `StartedWithTransientActivation()`:
-  // 1. This returns `true` for browser-initiated navigations.
-  // 2. For renderer-initiated navigations, this is filtered out during proxy
-  //    navigations, to prevent it from being exposed to the committed document.
+  // 1. This can return `true` for browser-initiated navigations. (Note that
+  //    some browser-initiated navigations won't have a user gesture, such as
+  //    from session restore or extensions.)
+  // 2. For renderer-initiated navigations, this is filtered out if the
+  //    navigation went through NavigateFromFrameProxy(), to prevent it from
+  //    being exposed to the committed document.
   virtual bool HasUserGesture() = 0;
 
   // Whether the navigation started with a transient user activation.
   //
   // Differences from `HasUserGesture()`:
-  // 1. This returns `false` for browser-initiated navigations.
+  // 1. This always returns `false` for browser-initiated navigations.
   // 2. For renderer-initiated navigations, this provides the raw, unfiltered
   //    initiator state.
   virtual bool StartedWithTransientActivation() = 0;
@@ -573,6 +578,11 @@ class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
   // will not be reflected in the network stack.
   virtual const net::HttpResponseHeaders* GetResponseHeaders() = 0;
 
+  // Returns the device bound session usage for the request, or kUnknown if
+  // response headers haven't been received yet.
+  virtual network::mojom::DeviceBoundSessionUsage GetDeviceBoundSessionUsage()
+      const = 0;
+
   // Returns the parsed Declarative Performance Observer policy for the request,
   // or nullptr if it hasn't been received yet.
   virtual const network::mojom::DeclarativePerformanceObserverPolicy*
@@ -648,6 +658,11 @@ class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
   virtual const std::optional<blink::LocalFrameToken>&
   GetInitiatorFrameToken() = 0;
 
+  // The host of the entity that injected the script initiating this
+  // navigation, or empty if none. This is only populated when the initiator
+  // document's ScriptInjectionPolicy is kNavigationProtection.
+  virtual const std::string& GetScriptInjectorHost() const = 0;
+
   // Return the ID of the renderer process of the frame host that initiated the
   // navigation. This is defined if and only if GetInitiatorFrameToken above is,
   // and it is only valid in conjunction with it.
@@ -676,7 +691,7 @@ class CONTENT_EXPORT NavigationHandle : public base::SupportsUserData {
   // Retrieves any DNS aliases for the requested URL. Includes all known
   // aliases, e.g. from A, AAAA, or HTTPS, not just from the address used for
   // the connection, in no particular order.
-  virtual const std::vector<std::string>& GetDnsAliases() = 0;
+  virtual base::span<const std::string> GetDnsAliases() = 0;
 
   // Whether the new document will be hosted in the same process as the current
   // document or not. Set only when the navigation commits.

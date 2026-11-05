@@ -23,6 +23,7 @@
 namespace blink {
 
 class ColumnSpannerPath;
+class FragmentedOofContainer;
 class Hyphenation;
 class InlineBreakToken;
 class InlineItem;
@@ -51,6 +52,7 @@ class CORE_EXPORT LineBreaker {
               const LeadingFloats& leading_floats,
               const InlineBreakToken*,
               const ColumnSpannerPath*,
+              const FragmentedOofContainer*,
               ExclusionSpace*);
   ~LineBreaker();
 
@@ -135,6 +137,9 @@ class CORE_EXPORT LineBreaker {
 
  private:
   Document& GetDocument() const { return node_.GetDocument(); }
+
+  // Returns true if this LineBreaker is computing min/max content size.
+  bool IsComputingContentSize() const;
 
   // True if `this` is for a part of an IFC. Used by Ruby.
   bool IsSubLineBreaker() const { return end_item_index_ != Items().size(); }
@@ -448,6 +453,7 @@ class CORE_EXPORT LineBreaker {
   // BreakLine consumes it.
   const RubyBreakTokenData* ruby_break_token_ = nullptr;
   const ColumnSpannerPath* column_spanner_path_;
+  const FragmentedOofContainer* fragmented_oof_container_ = nullptr;
   const ComputedStyle* current_style_ = nullptr;
 
   LazyLineBreakIterator break_iterator_;

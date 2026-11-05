@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -19,8 +20,11 @@
 #include <vector>
 
 #include "base/base_paths.h"
+#include "base/check.h"
 #include "base/command_line.h"
+#include "base/containers/flat_set.h"
 #include "base/environment.h"
+#include "base/feature_list.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -28,6 +32,7 @@
 #include "base/i18n/file_util_icu.h"
 #include "base/logging.h"
 #include "base/nix/xdg_util.h"
+#include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/path_service.h"
 #include "base/process/launch.h"
@@ -40,14 +45,17 @@
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/browser/shell_integration.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/web_applications/os_integration/web_app_shortcut.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_constants.h"
+#include "chrome/common/chrome_paths_internal.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/grit/branded_strings.h"
 #include "components/version_info/version_info.h"
+#include "content/public/browser/browser_thread.h"
 #include "third_party/libxml/chromium/xml_writer.h"
 #include "third_party/re2/src/re2/re2.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -69,6 +77,21 @@ const char kXdgSettings[] = "xdg-settings";
 const char kXdgSettingsDefaultBrowser[] = "default-web-browser";
 const char kXdgSettingsDefaultSchemeHandler[] = "default-url-scheme-handler";
 const char kWebAppDesktopIdPrefixEnvVar[] = "CHROME_WEB_APP_DESKTOP_ID_PREFIX";
+
+// Paths of profiles for which a desktop entry with the profile's per-profile
+// desktop entry ID is known to be installed. Only accessed on the UI thread.
+base::flat_set<base::FilePath>& ProfilesWithInstalledDesktopEntry() {
+  static base::NoDestructor<base::flat_set<base::FilePath>> profiles;
+  return *profiles;
+}
+
+base::RepeatingCallbackList<void(const base::FilePath&)>&
+PerProfileDesktopEntryChangedCallbacks() {
+  static base::NoDestructor<
+      base::RepeatingCallbackList<void(const base::FilePath&)>>
+      callbacks;
+  return *callbacks;
+}
 
 #if defined(USE_GLIB)
 struct GKeyFileDataDeleter {
@@ -369,6 +392,8 @@ std::string GetWMClassFromAppName(std::string app_name) {
 
 std::string GetXdgAppIdForWebApp(std::string app_name,
                                  const base::FilePath& profile_path) {
+  CHECK(!app_name.empty());
+  CHECK(!profile_path.empty());
   auto remainder = base::RemovePrefix(app_name, web_app::kCrxAppPrefix);
   if (remainder) {
     app_name = std::string(*remainder);
@@ -385,6 +410,70 @@ std::string GetXdgAppIdForWebApp(std::string app_name,
   }
 
   return app_id;
+}
+
+std::string GetPerProfileDesktopId(const base::FilePath& profile_path) {
+  base::FilePath default_user_data_dir;
+  if (!chrome::GetDefaultUserDataDirectory(&default_user_data_dir)) {
+    return std::string();
+  }
+  base::Environment env;
+  return internal::GetPerProfileDesktopId(profile_path, default_user_data_dir,
+                                          chrome::GetDesktopName(&env));
+}
+
+std::string GetInstalledPerProfileDesktopId(
+    const base::FilePath& profile_path) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
+  if (!base::FeatureList::IsEnabled(features::kLinuxPerProfileAppId) ||
+      !ProfilesWithInstalledDesktopEntry().contains(profile_path)) {
+    return std::string();
+  }
+  return GetPerProfileDesktopId(profile_path);
+}
+
+void SetPerProfileDesktopEntryInstalled(const base::FilePath& profile_path,
+                                        bool installed) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
+  const bool changed =
+      installed
+          ? ProfilesWithInstalledDesktopEntry().insert(profile_path).second
+          : ProfilesWithInstalledDesktopEntry().erase(profile_path) > 0;
+  if (changed) {
+    PerProfileDesktopEntryChangedCallbacks().Notify(profile_path);
+  }
+}
+
+base::CallbackListSubscription RegisterPerProfileDesktopEntryChangedCallback(
+    base::RepeatingCallback<void(const base::FilePath&)> callback) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
+  return PerProfileDesktopEntryChangedCallbacks().Add(std::move(callback));
+}
+
+void DetectInstalledPerProfileDesktopEntries(
+    const std::vector<base::FilePath>& profile_paths) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
+  if (!base::FeatureList::IsEnabled(features::kLinuxPerProfileAppId)) {
+    return;
+  }
+  base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
+                                                base::BlockingType::MAY_BLOCK);
+  base::Environment env;
+  const std::vector<base::FilePath> search_paths =
+      base::nix::GetXDGDataSearchLocations(&env);
+  for (const base::FilePath& profile_path : profile_paths) {
+    const std::string desktop_id = GetPerProfileDesktopId(profile_path);
+    if (desktop_id.empty()) {
+      continue;
+    }
+    const base::FilePath desktop_file(desktop_id + ".desktop");
+    const bool installed =
+        std::ranges::any_of(search_paths, [&](const base::FilePath& dir) {
+          return base::PathExists(
+              dir.Append("applications").Append(desktop_file));
+        });
+    SetPerProfileDesktopEntryInstalled(profile_path, installed);
+  }
 }
 
 namespace internal {
@@ -453,6 +542,30 @@ std::string GetProgramClassClass(const base::CommandLine& command_line,
   return desktop_base_name;
 }
 
+std::string GetPerProfileDesktopId(const base::FilePath& profile_path,
+                                   const base::FilePath& default_user_data_dir,
+                                   const std::string& desktop_file_name) {
+  // Like the AppUserModelID on Windows, the default profile in the default
+  // user data directory keeps the browser's main identity. This keeps pinned
+  // launchers and user-defined window manager rules working for the common
+  // single-profile case.
+  if (profile_path.empty() || profile_path.DirName() != default_user_data_dir ||
+      profile_path.BaseName().value() == chrome::kInitialProfile) {
+    return std::string();
+  }
+  // The ID is used as a .desktop file name, X11 WM_CLASS res_name (a Latin-1
+  // string) and Wayland app_id. None of these limit the length, but profile
+  // directory names are arbitrary with --profile-directory, so restrict them
+  // to the characters that are valid in D-Bus names, which the desktop entry
+  // spec recommends for desktop entry IDs. Spaces in particular break
+  // xdg-desktop-menu (see https://bugs.freedesktop.org/show_bug.cgi?id=66605).
+  std::string profile_id = profile_path.BaseName().value();
+  std::ranges::replace_if(
+      profile_id,
+      [](char c) { return !base::IsAsciiAlphaNumeric(c) && c != '-'; }, '_');
+  return base::StrCat({GetDesktopBaseName(desktop_file_name), "-", profile_id});
+}
+
 }  // namespace internal
 
 std::string GetProgramClassName() {
@@ -518,7 +631,8 @@ std::optional<base::SafeBaseName> GetUniqueWebShortcutFilename(
 
   // Using DCHECK because this is a slightly expensive check. This should be
   // guaranteed by `ReplaceIllegalCharactersInPath`.
-  DCHECK(base::i18n::IsFilenameLegal(base_name_no_extension.AsUTF16Unsafe()));
+  CHECK(base::i18n::IsFilenameLegal(base_name_no_extension.AsUTF16Unsafe()),
+        base::NotFatalUntil::M162);
 
   base::FilePath filepath =
       desktop_path.Append(base_name_no_extension.AddExtension(".desktop"));
@@ -570,22 +684,32 @@ std::string GetDesktopFileContents(
   base::CommandLine cmd_line = shell_integration::CommandLineArgsForLauncher(
       url, extension_id, profile_path, run_on_os_login_mode);
   cmd_line.SetProgram(chrome_exe_path);
+  const std::string wmclass =
+      extension_id.empty() ? GetWMClassFromAppName(app_name)
+                           : GetXdgAppIdForWebApp(app_name, profile_path);
   return GetDesktopFileContentsForCommand(
-      cmd_line, app_name, url, title, icon_name, categories, mime_type,
+      cmd_line, app_name, url, title, icon_name, wmclass, categories, mime_type,
       no_display, GetDirectLaunchMimeTypeHandler(), std::move(action_info));
 }
 
-std::string GetDesktopFileContentsForCommand(
+namespace {
+
+// Implements GetDesktopFileContentsForCommand(). If `accepts_uris` is true,
+// the Exec key gets a %U placeholder even if there are no MIME types, so that
+// URLs and files dropped onto the launcher are passed to the browser.
+std::string GetDesktopFileContentsForCommandImpl(
     const base::CommandLine& command_line,
     const std::string& app_name,
     const GURL& url,
     const std::u16string& title,
     const std::string& icon_name,
+    const std::string& wmclass,
     const std::string& categories,
     const std::string& mime_type,
     bool no_display,
     std::string_view extra_mime_types,
-    std::set<web_app::DesktopActionInfo> action_info) {
+    std::set<web_app::DesktopActionInfo> action_info,
+    bool accepts_uris) {
 #if defined(USE_GLIB)
   // See http://standards.freedesktop.org/desktop-entry-spec/latest/
   GKeyFile* key_file = g_key_file_new();
@@ -610,7 +734,7 @@ std::string GetDesktopFileContentsForCommand(
   base::CommandLine modified_command_line(command_line);
 
   // Set the "MimeType" key.
-  bool include_U = false;
+  bool include_U = accepts_uris;
   if (!mime_type.empty() && mime_type.find("\n") == std::string::npos &&
       mime_type.find("\r") == std::string::npos) {
     std::string full_mime_type = mime_type;
@@ -657,7 +781,6 @@ std::string GetDesktopFileContentsForCommand(
   if (no_display)
     g_key_file_set_string(key_file, kDesktopEntry, "NoDisplay", "true");
 
-  std::string wmclass = GetWMClassFromAppName(app_name);
   g_key_file_set_string(key_file, kDesktopEntry, "StartupWMClass",
                         wmclass.c_str());
 
@@ -675,6 +798,46 @@ std::string GetDesktopFileContentsForCommand(
   NOTIMPLEMENTED();
   return std::string();
 #endif
+}
+
+}  // namespace
+
+std::string GetDesktopFileContentsForCommand(
+    const base::CommandLine& command_line,
+    const std::string& app_name,
+    const GURL& url,
+    const std::u16string& title,
+    const std::string& icon_name,
+    const std::string& wmclass,
+    const std::string& categories,
+    const std::string& mime_type,
+    bool no_display,
+    std::string_view extra_mime_types,
+    std::set<web_app::DesktopActionInfo> action_info) {
+  return GetDesktopFileContentsForCommandImpl(
+      command_line, app_name, url, title, icon_name, wmclass, categories,
+      mime_type, no_display, extra_mime_types, std::move(action_info),
+      /*accepts_uris=*/false);
+}
+
+std::string GetDesktopFileContentsForProfile(const base::FilePath& chrome_exe,
+                                             const base::FilePath& profile_path,
+                                             const std::string& desktop_id,
+                                             const std::u16string& title,
+                                             const base::FilePath& icon_path) {
+  base::CommandLine command_line(chrome_exe);
+  command_line.AppendSwitchPath(switches::kProfileDirectory,
+                                profile_path.BaseName());
+  // StartupWMClass is derived from the app name, which matches the X11
+  // res_name and Wayland app_id of the profile's browser windows. No MIME types
+  // are registered, so the entry doesn't compete with the main browser entry as
+  // a handler, but URLs dropped onto the launcher still open in the profile.
+  return GetDesktopFileContentsForCommandImpl(
+      command_line, /*app_name=*/desktop_id, /*url=*/GURL(), title,
+      icon_path.value(), GetWMClassFromAppName(desktop_id),
+      /*categories=*/"Network;WebBrowser;",
+      /*mime_type=*/"", /*no_display=*/false, /*extra_mime_types=*/"",
+      /*action_info=*/{}, /*accepts_uris=*/true);
 }
 
 std::string GetDesktopFileContentsForUrlShortcut(
@@ -760,7 +923,7 @@ std::string GetDirectoryFileContents(const std::u16string& title,
 base::FilePath GetMimeTypesRegistrationFilename(
     const base::FilePath& profile_path,
     const webapps::AppId& app_id) {
-  DCHECK(!profile_path.empty() && !app_id.empty());
+  CHECK(!profile_path.empty() && !app_id.empty(), base::NotFatalUntil::M162);
 
   // Use a prefix to clearly group files created by Chrome.
   std::string filename = base::StringPrintf(
@@ -785,6 +948,16 @@ std::string GetMimeTypesRegistrationFileContents(
 
   for (const auto& file_handler : file_handlers) {
     for (const auto& accept_entry : file_handler.accept) {
+      // FreeDesktop URL scheme associations use "x-scheme-handler/*"
+      // pseudo-MIME types in .desktop entries, which belong to protocol
+      // handlers rather than file handlers. Skip them here so they are
+      // filtered out from shared MIME-info registration XML files.
+      if (base::EqualsCaseInsensitiveASCII(accept_entry.mime_type,
+                                           "x-scheme-handler") ||
+          base::StartsWith(accept_entry.mime_type, "x-scheme-handler/",
+                           base::CompareCase::INSENSITIVE_ASCII)) {
+        continue;
+      }
       writer.StartElement("mime-type");
       writer.AddAttribute("type", accept_entry.mime_type);
 

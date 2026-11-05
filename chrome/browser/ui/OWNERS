@@ -9,10 +9,11 @@
 # criteria, reach out to owners with specific criteria as to why you should be
 # an owner.
 #
+corising@chromium.org
 dfried@chromium.org
 dljames@chromium.org
 dpenning@chromium.org
-ellyjones@chromium.org
+emshack@chromium.org
 estalin@chromium.org
 jkeitel@google.com
 koretadaniel@chromium.org
@@ -27,8 +28,6 @@ tluk@chromium.org
 # This is for the common case of adding or renaming files. If you're doing
 # structural changes, use usual OWNERS rules.
 per-file BUILD.gn=*
-
-per-file tab_helpers.*=avi@chromium.org
 
 # Instant/Search files.
 per-file browser_instant_controller*=file://chrome/browser/search/OWNERS

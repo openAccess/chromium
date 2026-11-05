@@ -20,7 +20,10 @@ source_set("permissions_common") {
     "//base",
     "//components/content_settings/core/common",
   ]
-  public_deps = [ "//printing/buildflags" ]
+  public_deps = [
+    "//printing/buildflags",
+    "//third_party/blink/public:buildflags",
+  ]
 }
 
 source_set("permissions") {
@@ -157,6 +160,7 @@ source_set("permissions") {
     "//components/vector_icons",
     "//components/webrtc:media_stream_device_enumerator",
     "//content/public/browser",
+    "//device/base/public/cpp",
     "//device/bluetooth",
     "//device/bluetooth/public/cpp",
     "//extensions/buildflags",
@@ -271,9 +275,8 @@ source_set("permissions") {
   public_deps = [
     ":permissions_common",
     "//components/permissions/prediction_service",
+    "//ui/base/unowned_user_data",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 source_set("test_support") {
@@ -346,6 +349,7 @@ source_set("unit_tests") {
     "permission_indicators_tab_data_unittest.cc",
     "permission_request_data_unittest.cc",
     "permission_request_queue_unittest.cc",
+    "permission_request_unittest.cc",
     "resolvers/geolocation_permission_resolver_unittest.cc",
   ]
   if (!is_ios) {
@@ -363,6 +367,7 @@ source_set("unit_tests") {
       "permission_manager_unittest.cc",
       "permission_request_manager_unittest.cc",
       "permission_uma_util_unittest.cc",
+      "permission_util_unittest.cc",
       "resolvers/content_setting_permission_resolver_unittest.cc",
     ]
   }
@@ -406,6 +411,7 @@ source_set("unit_tests") {
     "//components/security_state/core",
     "//components/strings:components_strings_grit",
     "//components/sync_preferences:test_support",
+    "//components/tabs:test_support",
     "//components/ukm:test_support",
     "//components/ukm/content",
     "//components/unified_consent",
@@ -413,6 +419,7 @@ source_set("unit_tests") {
     "//components/variations",
     "//components/webrtc",
     "//content/test:test_support",
+    "//device/base/public/cpp",
     "//services/device/public/cpp:device_features",
     "//services/device/public/cpp:test_support",
     "//sql",

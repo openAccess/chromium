@@ -25,6 +25,9 @@ include_rules = [
 ]
 
 specific_include_rules = {
+  'AppThemeColorProvider.java': [
+    "+chrome/android/java/src/org/chromium/chrome/browser/multiwindow",
+  ],
   'ToolbarManager.java': [
     "+chrome/android/features/tab_ui",
     "+chrome/android/features/vr",
@@ -37,6 +40,7 @@ specific_include_rules = {
     "+components/omnibox/browser/android/java/src/org/chromium/components/omnibox/AutocompleteRequestType.java",
     "+components/embedder_support/android/java/src/org/chromium/components/embedder_support/contextmenu",
     "+components/embedder_support/android/java/src/org/chromium/components/embedder_support/util/Origin.java",
+    "+components/saved_tab_groups/public/android/java/src/org/chromium/components/tab_group_sync/TabGroupSyncService.java",
   ],
   'ToolbarButtonInProductHelpController.java': [
     "+chrome/android/java/src/org/chromium/chrome/browser",
@@ -50,6 +54,7 @@ specific_include_rules = {
   ],
   '.*Test\\.java': [
     "+chrome/android",
+    "+chrome/test/android",
     "+ui/android",
     "+components",
     "+base",

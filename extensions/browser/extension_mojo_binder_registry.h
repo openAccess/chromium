@@ -7,8 +7,6 @@
 
 #include <memory>
 
-#include "base/sequence_checker.h"
-#include "base/thread_annotations.h"
 #include "base/types/pass_key.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "extensions/common/extension_id.h"
@@ -36,6 +34,14 @@ class ExtensionMojoBinderProvider {
 
   // Returns the ID of the component extension supported by this provider.
   const ExtensionId& extension_id() const { return extension_id_; }
+
+  // Returns true if Mojo JS bindings should be enabled in this extension's
+  // document contexts. Defaults to false.
+  virtual bool IsMojoJsEnabledForFrame() const;
+
+  // Returns true if Mojo JS bindings should be enabled in this extension's
+  // service worker contexts. Defaults to false.
+  virtual bool IsMojoJsEnabledForServiceWorker() const;
 
   // Registers Mojo interface binders for document frames belonging to this
   // extension.
@@ -77,7 +83,7 @@ class ExtensionMojoBinderRegistry : public KeyedService {
                         std::unique_ptr<ExtensionMojoBinderProvider> provider);
 
   // Populates the binder map with Mojo binders provided by the registered
-  // extension provider for the given render frame.
+  // extension provider for the given document.
   void PopulateFrameBinders(
       mojo::BinderMapWithContext<content::RenderFrameHost*>* binder_map,
       content::RenderFrameHost* render_frame_host,
@@ -91,8 +97,13 @@ class ExtensionMojoBinderRegistry : public KeyedService {
       content::BrowserContext* browser_context,
       const Extension& extension);
 
-  // Returns true if `extension` is allowed to use MojoJS bindings.
-  bool IsMojoJsEnabled(const Extension& extension) const;
+  // Returns true if `extension` is allowed to use MojoJS bindings in document
+  // contexts.
+  bool IsMojoJsEnabledForFrame(const Extension& extension) const;
+
+  // Returns true if `extension` is allowed to use MojoJS bindings in service
+  // worker contexts.
+  bool IsMojoJsEnabledForServiceWorker(const Extension& extension) const;
 
   void ClearProvidersForTesting();
 
@@ -103,9 +114,8 @@ class ExtensionMojoBinderRegistry : public KeyedService {
   ExtensionMojoBinderProvider* GetProviderIfAllowed(
       const Extension& extension) const;
 
-  SEQUENCE_CHECKER(sequence_checker_);
   absl::flat_hash_map<ExtensionId, std::unique_ptr<ExtensionMojoBinderProvider>>
-      providers_ GUARDED_BY_CONTEXT(sequence_checker_);
+      providers_map_;
 };
 
 }  // namespace extensions

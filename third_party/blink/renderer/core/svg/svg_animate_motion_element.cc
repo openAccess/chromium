@@ -21,6 +21,7 @@
 
 #include "third_party/blink/renderer/core/svg/svg_animate_motion_element.h"
 
+#include "base/numerics/angle_conversions.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/svg/animation/smil_animation_effect_parameters.h"
@@ -48,7 +49,7 @@
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
-#include "third_party/blink/renderer/platform/wtf/math_extras.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
 
@@ -116,6 +117,9 @@ base::expected<gfx::PointF, SVGParseStatus> ParsePoint(const String& string) {
 
 // Used to collect the points of each path segment for discrete calcMode.
 struct PointCollector {
+  STACK_ALLOCATED();
+
+ public:
   Vector<gfx::PointF>& points;
   gfx::PointF subpath_start;
 
@@ -197,6 +201,8 @@ void SVGAnimateMotionElement::UpdateAnimationPath() {
   animation_path_ = Path();
   SetAlwaysRevalidateAnimationValue(false);
 
+  // TODO(crbug.com/576326793): Invalidate <animateMotion> when a referenced
+  // <mpath> target's display lock state changes.
   for (SVGMPathElement* mpath = Traversal<SVGMPathElement>::FirstChild(*this);
        mpath; mpath = Traversal<SVGMPathElement>::NextSibling(*mpath)) {
     if (SVGPathElement* path_element = mpath->PathElement()) {
@@ -327,7 +333,7 @@ void SVGAnimateMotionElement::CalculateAnimationValue(
                                           from_point.y(), to_point.y(),
                                           to_point_at_end_of_duration.y()));
     position.tangent_in_degrees =
-        Rad2deg((to_point - from_point).SlopeAngleRadians());
+        base::RadToDeg((to_point - from_point).SlopeAngleRadians());
   } else {
     DCHECK(!animation_path_.IsEmpty());
 

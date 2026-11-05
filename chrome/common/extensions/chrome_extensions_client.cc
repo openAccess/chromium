@@ -13,6 +13,7 @@
 #include "base/files/file_path.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/common/chrome_resource_request_blocked_reason.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/extensions/chrome_extensions_api_provider.h"
@@ -24,6 +25,7 @@
 #include "extensions/common/api/extension_action/action_info.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/core_extensions_api_provider.h"
+#include "extensions/common/csp_validator.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_api.h"
 #include "extensions/common/extension_urls.h"
@@ -39,6 +41,10 @@
 #include "services/network/public/mojom/cors_origin_pattern.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/webui/os_feedback_ui/url_constants.h"
+#endif
 
 namespace extensions {
 
@@ -159,6 +165,25 @@ bool ChromeExtensionsClient::IsScriptableURL(const GURL& url,
   return true;
 }
 
+bool ChromeExtensionsClient::IsCapturableURL(const GURL& url,
+                                             std::string* error) const {
+  // Feedback is more of a native surface that shouldn't be accessible to (or
+  // triggerable by) extensions.
+  // See also https://crbug.com/477664550.
+  if (url.SchemeIs(content::kChromeUIScheme) &&
+      (url.host() == chrome::kChromeUIFeedbackHost
+#if BUILDFLAG(IS_CHROMEOS)
+       || url.host() == ash::kChromeUIOSFeedbackHost
+#endif
+       )) {
+    if (error) {
+      *error = manifest_errors::kCannotAccessChromeUrl;
+    }
+    return false;
+  }
+  return true;
+}
+
 const GURL& ChromeExtensionsClient::GetWebstoreBaseURL() const {
   return webstore_base_url_;
 }
@@ -222,11 +247,22 @@ void ChromeExtensionsClient::AddOriginAccessPermissions(
   // allowlist entry.
   if (extensions::Manifest::IsComponentLocation(extension.location()) &&
       is_extension_active) {
-    origin_patterns->push_back(network::mojom::CorsOriginPattern::New(
-        content::kChromeUIScheme, chrome::kChromeUIThemeHost, /*port=*/0,
-        network::mojom::CorsDomainMatchMode::kDisallowSubdomains,
-        network::mojom::CorsPortMatchMode::kAllowAnyPort,
-        network::mojom::CorsOriginAccessMatchPriority::kMaxPriority));
+    std::vector<const char*> hosts = {chrome::kChromeUIThemeHost};
+    // chrome://webui-test only exists in browser tests, and is only granted
+    // when the test-only switch is set. WebUI test helpers served from it
+    // import from chrome://resources, so that host is granted alongside it.
+    if (extensions::csp_validator::IsWebUITestAllowedForLocation(
+            extension.location())) {
+      hosts.push_back(content::kChromeUIResourcesHost);
+      hosts.push_back(chrome::kChromeUIWebUITestHost);
+    }
+    for (const char* host : hosts) {
+      origin_patterns->push_back(network::mojom::CorsOriginPattern::New(
+          content::kChromeUIScheme, host, /*port=*/0,
+          network::mojom::CorsDomainMatchMode::kDisallowSubdomains,
+          network::mojom::CorsPortMatchMode::kAllowAnyPort,
+          network::mojom::CorsOriginAccessMatchPriority::kMaxPriority));
+    }
   }
 
   // TODO(jstritar): We should try to remove this special case. Also, these

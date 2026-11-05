@@ -48,7 +48,6 @@
 #include "chrome/browser/web_applications/os_integration/mac/web_app_auto_login_util.h"
 #include "chrome/browser/web_applications/os_integration/mac/web_app_shortcut_mac.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_test_override.h"
-#include "chrome/common/chrome_features.h"
 #import "chrome/common/mac/app_mode_common.h"
 #include "components/variations/active_field_trials.h"
 #include "components/variations/variations_switches.h"
@@ -452,7 +451,7 @@ WebAppShortcutCreator::WebAppShortcutCreator(
       info_(shortcut_info),
       use_ad_hoc_signing_for_web_app_shims_(
           use_ad_hoc_signing_for_web_app_shims) {
-  DCHECK(shortcut_info);
+  CHECK(shortcut_info, base::NotFatalUntil::M162);
 }
 
 WebAppShortcutCreator::~WebAppShortcutCreator() = default;
@@ -549,8 +548,8 @@ std::string WebAppShortcutCreator::GetAppBundleId() const {
 bool WebAppShortcutCreator::CreateShortcuts(
     ShortcutCreationReason creation_reason,
     ShortcutLocations creation_locations) {
-  DCHECK_NE(creation_locations.applications_menu_location,
-            APP_MENU_LOCATION_HIDDEN);
+  CHECK_NE(creation_locations.applications_menu_location,
+           APP_MENU_LOCATION_HIDDEN, base::NotFatalUntil::M162);
   std::vector<base::FilePath> updated_app_paths;
   if (!UpdateShortcuts(/*create_if_needed=*/true, &updated_app_paths)) {
     return false;
@@ -560,8 +559,7 @@ bool WebAppShortcutCreator::CreateShortcuts(
     WebAppAutoLoginUtil::GetInstance()->AddToLoginItems(updated_app_paths[0],
                                                         false);
   }
-  if (creation_reason == SHORTCUT_CREATION_BY_USER &&
-      !base::FeatureList::IsEnabled(features::kWebAppInstallDialog)) {
+  if (creation_reason == SHORTCUT_CREATION_BY_USER) {
     RevealAppShimInFinder(updated_app_paths[0]);
   }
   RecordCreateShortcut(CreateShortcutResult::kSuccess);
@@ -571,7 +569,7 @@ bool WebAppShortcutCreator::CreateShortcuts(
 bool WebAppShortcutCreator::UpdateShortcuts(
     bool create_if_needed,
     std::vector<base::FilePath>* updated_paths) {
-  DCHECK(updated_paths && updated_paths->empty());
+  CHECK(updated_paths && updated_paths->empty(), base::NotFatalUntil::M162);
 
   if (create_if_needed) {
     const base::FilePath applications_dir = chrome_apps_dir_;
@@ -766,8 +764,8 @@ bool WebAppShortcutCreator::BuildShortcut(
 void WebAppShortcutCreator::CreateShortcutsAt(
     const std::vector<base::FilePath>& dst_app_paths,
     std::vector<base::FilePath>* updated_paths) const {
-  DCHECK(updated_paths && updated_paths->empty());
-  DCHECK(!dst_app_paths.empty());
+  CHECK(updated_paths && updated_paths->empty(), base::NotFatalUntil::M162);
+  CHECK(!dst_app_paths.empty(), base::NotFatalUntil::M162);
 
   // CreateShortcutsAt() modifies the app shim on disk, first by deleting
   // the destination app shim (if it exists), then by copying a new app shim

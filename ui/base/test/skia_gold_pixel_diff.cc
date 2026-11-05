@@ -5,6 +5,7 @@
 #include "ui/base/test/skia_gold_pixel_diff.h"
 
 #include <memory>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -15,6 +16,7 @@
 
 #include "base/auto_reset.h"
 #include "base/base_paths.h"
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/containers/lru_cache.h"
 #include "base/containers/span.h"
@@ -73,6 +75,8 @@ constexpr char kIssueKey[] = "gerrit-issue";
 constexpr char kPatchSetKey[] = "gerrit-patchset";
 constexpr char kJobIdKey[] = "buildbucket-id";
 constexpr char kCodeReviewSystemKey[] = "code-review-system";
+constexpr char kContinuousIntegrationSystemKey[] =
+    "continuous-integration-system";
 
 constexpr char kNoLuciAuth[] = "no-luci-auth";
 constexpr char kBypassSkiaGoldFunctionality[] =
@@ -94,6 +98,18 @@ constexpr char kAshSeparator[] = ".";
 constexpr char kNonAshSeparator[] = "_";
 
 namespace {
+
+// Non-empty test corpus and environment map. Intentionally leaked at process
+// exit to avoid an exit-time destructor (cleared in unit tests via
+// ScopedSessionCacheForTesting).
+using SessionCacheKey = std::pair<std::string, TestEnvironmentMap>;
+using SessionCache =
+    base::LRUCache<SessionCacheKey, std::unique_ptr<SkiaGoldPixelDiff>>;
+SessionCache* g_sessions = nullptr;
+
+// If present, overrides |LaunchProcess|. Intentionally leaked at process exit
+// if not already cleared by ScopedSessionCacheForTesting.
+SkiaGoldPixelDiff::LaunchProcessCallback* g_custom_launch_process = nullptr;
 
 base::FilePath GetAbsoluteSrcRelativePath(base::FilePath::StringType path) {
   base::FilePath root_path;
@@ -202,18 +218,9 @@ const char* GetDiffGoldInstance() {
   return kSkiaGoldPublicInstance;
 }
 
-// Non-empty test corpus and environment map.
-using SessionCacheKey = std::pair<std::string, TestEnvironmentMap>;
-using SessionCache =
-    base::LRUCache<SessionCacheKey, std::unique_ptr<SkiaGoldPixelDiff>>;
-SessionCache g_sessions(SessionCache::NO_AUTO_EVICT);
-
-// If present, overrides |LaunchProcess|.
-SkiaGoldPixelDiff::LaunchProcessCallback g_custom_launch_process;
-
 int LaunchProcess(const base::CommandLine& cmdline) {
-  if (g_custom_launch_process) {
-    return g_custom_launch_process.Run(cmdline);
+  if (g_custom_launch_process && *g_custom_launch_process) {
+    return g_custom_launch_process->Run(cmdline);
   }
 
   std::string output;
@@ -244,12 +251,15 @@ SkiaGoldPixelDiff::~SkiaGoldPixelDiff() = default;
 
 SkiaGoldPixelDiff::ScopedSessionCacheForTesting::
     ScopedSessionCacheForTesting() {
-  g_sessions.Clear();
+  delete std::exchange(g_sessions, nullptr);
 }
 
 SkiaGoldPixelDiff::ScopedSessionCacheForTesting::
     ~ScopedSessionCacheForTesting() {
-  g_sessions.Clear();
+  delete std::exchange(g_sessions, nullptr);
+  if (g_custom_launch_process && g_custom_launch_process->is_null()) {
+    delete std::exchange(g_custom_launch_process, nullptr);
+  }
 }
 
 // static
@@ -260,16 +270,19 @@ SkiaGoldPixelDiff* SkiaGoldPixelDiff::GetSession(
   const std::string corpus_name = corpus.value_or("gtest-pixeltests");
   CHECK(!corpus_name.empty());
 
+  if (!g_sessions) {
+    g_sessions = new SessionCache(SessionCache::NO_AUTO_EVICT);
+  }
   SessionCacheKey key(corpus_name, std::move(test_environment));
-  auto it = g_sessions.Get(key);
-  if (it == g_sessions.end()) {
+  auto it = g_sessions->Get(key);
+  if (it == g_sessions->end()) {
     // private ctor.
     auto pixel_diff = base::WrapUnique(new SkiaGoldPixelDiff());
     pixel_diff->Init(corpus_name, key.second);
-    it = g_sessions.Put(std::move(key), std::move(pixel_diff));
+    it = g_sessions->Put(std::move(key), std::move(pixel_diff));
   }
 
-  CHECK(it != g_sessions.end());
+  CHECK(it != g_sessions->end());
   return it->second.get();
 }
 
@@ -277,7 +290,10 @@ SkiaGoldPixelDiff* SkiaGoldPixelDiff::GetSession(
 base::AutoReset<SkiaGoldPixelDiff::LaunchProcessCallback>
 SkiaGoldPixelDiff::OverrideLaunchProcessForTesting(
     SkiaGoldPixelDiff::LaunchProcessCallback custom_launch_process) {
-  base::AutoReset auto_reset(&g_custom_launch_process,
+  if (!g_custom_launch_process) {
+    g_custom_launch_process = new LaunchProcessCallback();
+  }
+  base::AutoReset auto_reset(g_custom_launch_process,
                              std::move(custom_launch_process));
   return auto_reset;
 }
@@ -324,7 +340,7 @@ void SkiaGoldPixelDiff::InitSkiaGold() const {
     cmd.AppendSwitchASCII("patchset", patchset_);
     cmd.AppendSwitchASCII("jobid", job_id_);
     cmd.AppendSwitchASCII("crs", code_review_system_);
-    cmd.AppendSwitchASCII("cis", "buildbucket");
+    cmd.AppendSwitchASCII("cis", continuous_integration_system_);
   }
 
   AppendArgsJustAfterProgram(
@@ -365,6 +381,11 @@ void SkiaGoldPixelDiff::Init(const std::string& corpus,
     code_review_system_ = cmd_line->GetSwitchValueASCII(kCodeReviewSystemKey);
     if (code_review_system_.empty()) {
       code_review_system_ = "gerrit";
+    }
+    continuous_integration_system_ =
+        cmd_line->GetSwitchValueASCII(kContinuousIntegrationSystemKey);
+    if (continuous_integration_system_.empty()) {
+      continuous_integration_system_ = "buildbucket";
     }
   }
   if (cmd_line->HasSwitch(kNoLuciAuth) || is_dry_run_) {

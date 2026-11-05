@@ -78,9 +78,8 @@ std::unique_ptr<message_center::Notification> CreateNotification(
                       : IDS_NEW_PORTAL_DETECTION_NOTIFICATION_TITLE_WIRED),
           l10n_util::GetStringFUTF16(message,
                                      base::UTF8ToUTF16(network->name())),
-          /*display_source=*/std::u16string(), /*origin_url=*/GURL(),
-          notifier_id, data, std::move(delegate),
-          ash::kNotificationCaptivePortalIcon,
+          /*display_source=*/std::u16string(), notifier_id, data,
+          std::move(delegate), ash::kNotificationCaptivePortalIcon,
           message_center::SystemNotificationWarningLevel::NORMAL);
   notification->set_never_timeout(true);
   return notification;
@@ -125,7 +124,7 @@ NetworkPortalNotificationController::NetworkPortalNotificationController() {
   if (NetworkHandler::IsInitialized()) {  // May be null in tests.
     NetworkHandler::Get()->network_state_handler()->AddObserver(this);
   }
-  DCHECK(session_manager::SessionManager::Get());
+  CHECK(session_manager::SessionManager::Get(), base::NotFatalUntil::M162);
   session_manager::SessionManager::Get()->AddObserver(this);
 }
 

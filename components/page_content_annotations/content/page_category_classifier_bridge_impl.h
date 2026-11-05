@@ -5,58 +5,49 @@
 #ifndef COMPONENTS_PAGE_CONTENT_ANNOTATIONS_CONTENT_PAGE_CATEGORY_CLASSIFIER_BRIDGE_IMPL_H_
 #define COMPONENTS_PAGE_CONTENT_ANNOTATIONS_CONTENT_PAGE_CATEGORY_CLASSIFIER_BRIDGE_IMPL_H_
 
+#include <optional>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ref.h"
-#include "base/scoped_observation.h"
-#include "components/page_content_annotations/content/page_embeddings_service.h"
-#include "components/page_content_annotations/core/on_device_category_classifier.h"
+#include "components/page_content_annotations/content/producer.h"
 #include "components/page_content_annotations/core/page_category_classifier_bridge.h"
-#include "components/page_content_annotations/core/page_content_annotation_type.h"
-#include "services/metrics/public/cpp/ukm_source_id.h"
+#include "components/page_content_annotations/core/page_embeddings_common.h"
 
-class OptimizationGuideLogger;
+namespace content {
+class Page;
+}  // namespace content
 
 namespace page_content_annotations {
 
-// A bridge that observes the PageEmbeddingsService and forwards available
-// embeddings to the OnDeviceCategoryClassifier.
-class PageCategoryClassifierBridgeImpl
-    : public PageCategoryClassifierBridge,
-      public PageEmbeddingsService::Observer,
-      public OnDeviceCategoryClassifier::Observer {
+class OnDeviceCategoryClassifier;
+
+// A bridge that subscribes to a passage-embeddings producer and forwards
+// available embeddings to the OnDeviceCategoryClassifier when demand is active.
+class PageCategoryClassifierBridgeImpl : public PageCategoryClassifierBridge {
  public:
   PageCategoryClassifierBridgeImpl(
-      PageEmbeddingsService& page_embeddings_service,
-      OnDeviceCategoryClassifier& category_classifier,
-      OptimizationGuideLogger* optimization_guide_logger);
+      Producer<std::vector<PassageEmbedding>>& page_embeddings_producer,
+      OnDeviceCategoryClassifier& category_classifier);
   ~PageCategoryClassifierBridgeImpl() override;
   PageCategoryClassifierBridgeImpl(const PageCategoryClassifierBridgeImpl&) =
       delete;
   PageCategoryClassifierBridgeImpl& operator=(
       const PageCategoryClassifierBridgeImpl&) = delete;
 
-  // PageEmbeddingsService::Observer:
-  PageEmbeddingsService::UsageMode GetUsageMode() const override;
-  void OnPageEmbeddingsAvailable(content::Page& page) override;
-
-  // OnDeviceCategoryClassifier::Observer:
-  void OnCategoriesClassified(const GURL& url,
-                              ukm::SourceId source_id,
-                              const std::vector<Category>& categories) override;
+  // PageCategoryClassifierBridge:
+  void SetDemandActive(bool active) override;
 
  private:
-  const raw_ref<PageEmbeddingsService> page_embeddings_service_;
+  void OnPageEmbeddingsAvailable(
+      content::Page& page,
+      const std::vector<PassageEmbedding>& embeddings);
+
+  const raw_ref<Producer<std::vector<PassageEmbedding>>>
+      page_embeddings_producer_;
   const raw_ref<OnDeviceCategoryClassifier> category_classifier_;
-  raw_ptr<OptimizationGuideLogger> optimization_guide_logger_;
 
-  base::ScopedObservation<PageEmbeddingsService,
-                          PageEmbeddingsService::Observer>
-      scoped_observation_{this};
-
-  base::ScopedObservation<OnDeviceCategoryClassifier,
-                          OnDeviceCategoryClassifier::Observer>
-      category_classifier_observation_{this};
+  std::optional<base::CallbackListSubscription> embeddings_subscription_;
 };
 
 }  // namespace page_content_annotations

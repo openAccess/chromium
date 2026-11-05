@@ -20,8 +20,6 @@
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ash/app_list/extension_app_utils.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
-#include "chrome/browser/ash/browser_delegate/browser_type.h"
 #include "chrome/browser/ash/eche_app/app_id.h"
 #include "chrome/browser/ash/login/demo_mode/demo_session.h"
 #include "chrome/browser/profiles/profile.h"
@@ -31,9 +29,8 @@
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_item_factory.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_prefs.h"
 #include "chrome/browser/web_applications/policy/web_app_policy_manager.h"
-#include "chrome/browser/web_applications/web_app_constants.h"
-#include "chrome/browser/web_applications/web_app_helpers.h"
-#include "chrome/browser/web_applications/web_app_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
+#include "chromeos/ash/components/browser_delegate/browser_type.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session.h"
@@ -142,9 +139,9 @@ bool IsAppPinEditable(apps::AppType app_type,
     case apps::AppType::kArc: {
       const arc::ArcAppShelfId& arc_shelf_id =
           arc::ArcAppShelfId::FromString(app_id);
-      DCHECK(arc_shelf_id.valid());
+      CHECK(arc_shelf_id.valid(), base::NotFatalUntil::M162);
       const ArcAppListPrefs* arc_list_prefs = ArcAppListPrefs::Get(profile);
-      DCHECK(arc_list_prefs);
+      CHECK(arc_list_prefs, base::NotFatalUntil::M162);
       std::unique_ptr<ArcAppListPrefs::AppInfo> app_info =
           arc_list_prefs->GetApp(arc_shelf_id.app_id());
       if (!arc_shelf_id.has_shelf_group_id() && app_info &&

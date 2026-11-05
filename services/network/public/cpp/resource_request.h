@@ -137,10 +137,6 @@ struct COMPONENT_EXPORT(NETWORK_CPP_BASE) ResourceRequest {
     scoped_refptr<net::HttpResponseHeaders>
         expected_response_headers_for_synthetic_response;
 
-    // No new consumers should use this. It will be removed once the deprecated
-    // Protected Audiences code is removed.
-    bool is_ad_auction_trusted_signals_request = false;
-
     // The WARC capture a navigation in an archived tab records into.
     std::optional<base::UnguessableToken> warc_capture_id;
   };

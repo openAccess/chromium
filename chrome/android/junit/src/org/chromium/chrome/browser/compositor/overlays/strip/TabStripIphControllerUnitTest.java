@@ -5,6 +5,8 @@
 package org.chromium.chrome.browser.compositor.overlays.strip;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
@@ -29,6 +31,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
@@ -57,7 +60,6 @@ public class TabStripIphControllerUnitTest {
     @Mock private UserEducationHelper mUserEducationHelper;
     @Mock private Resources mResources;
     @Mock private Tracker mTracker;
-    @Mock private View mContainerView;
     @Mock private StripLayoutView.StripLayoutViewOnClickHandler mClickHandler;
     @Mock private StripLayoutView.StripLayoutViewOnLongClickHandler mLongClickHandler;
     @Mock private StripLayoutView.StripLayoutViewOnKeyboardFocusHandler mKeyboardFocusHandler;
@@ -67,6 +69,7 @@ public class TabStripIphControllerUnitTest {
     @Mock
     private StripLayoutGroupTitle.StripLayoutGroupTitleDelegate mStripLayoutGroupTitleDelegate;
 
+    private final View mContainerView = new View(ContextUtils.getApplicationContext());
     private StripLayoutGroupTitle mGroupTitle;
     private StripLayoutTab mTab;
     private TabStripIphController mController;
@@ -327,5 +330,12 @@ public class TabStripIphControllerUnitTest {
         // Assert: anchor rect bounds.
         Rect anchorRect = cmd.anchorRect;
         assertEquals("Iph anchor rect bottom bound is incorrect ", 40, anchorRect.bottom);
+
+        // Assert: show and dismiss callbacks update isVerticalTabsIphShowing().
+        assertFalse(mController.isVerticalTabsIphShowing());
+        cmd.onShowCallback.run();
+        assertTrue(mController.isVerticalTabsIphShowing());
+        cmd.onDismissCallback.run();
+        assertFalse(mController.isVerticalTabsIphShowing());
     }
 }

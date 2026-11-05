@@ -12,16 +12,19 @@
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/strings/stringprintf.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_view_host.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/view.h"
 #include "ui/views/view_observer.h"
@@ -81,7 +84,8 @@ using ash::AshWebViewFactory;
                                                                           \
     base::RunLoop run_loop;                                               \
     EXPECT_CALL(mock, DidSuppressNavigation)                              \
-        .WillOnce([&](const GURL& url, WindowOpenDisposition disposition, \
+        .WillOnce([&](const GURL& url,                                    \
+                      ui::mojom::WindowOpenDisposition disposition,       \
                       bool from_user_gesture) {                           \
           EXPECT_EQ(expected_url_, url);                                  \
           EXPECT_EQ(expected_disposition_, disposition);                  \
@@ -161,7 +165,7 @@ class MockAshWebViewObserver : public testing::NiceMock<AshWebView::Observer> {
   MOCK_METHOD(void,
               DidSuppressNavigation,
               (const GURL& url,
-               WindowOpenDisposition disposition,
+               ui::mojom::WindowOpenDisposition disposition,
                bool from_user_gesture),
               (override));
 
@@ -259,13 +263,13 @@ IN_PROC_BROWSER_TEST_F(AshWebViewImplBrowserTest,
   // Expect suppression of the first click event.
   EXPECT_DID_SUPPRESS_NAVIGATION(
       web_view, /*url=*/GURL("https://google.com/"),
-      /*disposition=*/WindowOpenDisposition::CURRENT_TAB,
+      /*disposition=*/ui::mojom::WindowOpenDisposition::kCurrentTab,
       /*from_user_gesture=*/false);
 
   // Expect suppression of the second click event.
   EXPECT_DID_SUPPRESS_NAVIGATION(
       web_view, /*url=*/GURL("https://assistant.google.com/"),
-      /*disposition=*/WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      /*disposition=*/ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       /*from_user_gesture=*/true);
 }
 
@@ -345,7 +349,7 @@ IN_PROC_BROWSER_TEST_F(AshWebViewImplBrowserTest, ShouldOpenNewWindow) {
   // Activate the web contents and wait for the browser tab to load.
   ASSERT_TRUE(browser());
   content::TestNavigationObserver navigation_observer(
-      browser()->tab_strip_model()->GetActiveWebContents());
+      browser()->GetActiveTabInterface()->GetContents());
   navigation_observer.StartWatchingNewWebContents();
   content::WebContents* web_contents = web_view_impl->web_contents();
   web_contents->GetDelegate()->ActivateContents(web_contents);
@@ -353,7 +357,6 @@ IN_PROC_BROWSER_TEST_F(AshWebViewImplBrowserTest, ShouldOpenNewWindow) {
 
   // Verify that the browser was launched with the correct url as the active
   // tab.
-  EXPECT_EQ(
-      destination_url,
-      browser()->tab_strip_model()->GetActiveWebContents()->GetVisibleURL());
+  EXPECT_EQ(destination_url,
+            browser()->GetActiveTabInterface()->GetContents()->GetVisibleURL());
 }

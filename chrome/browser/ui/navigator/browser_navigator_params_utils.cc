@@ -21,10 +21,14 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if BUILDFLAG(ENABLE_CAPTIVE_PORTAL_DETECTION)
 #include "components/captive_portal/content/captive_portal_tab_helper.h"
+#endif
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/android/tab_android.h"
 #endif
 
 content::NavigationController::LoadURLParams LoadURLParamsFromNavigateParams(
@@ -73,7 +77,7 @@ content::NavigationController::LoadURLParams LoadURLParamsFromNavigateParams(
   auto load_url_params = LoadURLParamsFromNavigateParams(params);
 
   // |frame_tree_node_id| is invalid for main frame navigations.
-  if (params->frame_tree_node_id.is_null()) {
+  if (params->frame_tree_node_id.is_null() && target_contents) {
     bool force_no_https_upgrade =
         params->url_typed_with_http_scheme ||
         params->captive_portal_window_type !=
@@ -88,6 +92,14 @@ content::NavigationController::LoadURLParams LoadURLParamsFromNavigateParams(
         params->navigation_initiated_from_sync);
 #endif
     load_url_params.navigation_ui_data = std::move(navigation_ui_data);
+
+#if BUILDFLAG(IS_ANDROID)
+    TabAndroid* tab_android = TabAndroid::FromWebContents(target_contents);
+    if (tab_android) {
+      load_url_params.override_user_agent =
+          tab_android->CalculateUserAgentOverrideOption(params->url);
+    }
+#endif
   }
 
   return load_url_params;
@@ -115,8 +127,8 @@ bool CompareURLsWithReplacements(const GURL& url,
 
 int GetIndexOfExistingTabMatchingURL(BrowserWindowInterface* browser,
                                      const NavigateParams& params) {
-  if (params.disposition != WindowOpenDisposition::SINGLETON_TAB &&
-      params.disposition != WindowOpenDisposition::SWITCH_TO_TAB) {
+  if (params.disposition != ui::mojom::WindowOpenDisposition::kSingletonTab &&
+      params.disposition != ui::mojom::WindowOpenDisposition::kSwitchToTab) {
     return -1;
   }
 

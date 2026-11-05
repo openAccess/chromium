@@ -15,7 +15,6 @@ source_set("window_name_prompt") {
     "//chrome/browser/ui/window_metadata",
     "//ui/base/interaction",
   ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("browser_tests") {
@@ -26,7 +25,7 @@ source_set("browser_tests") {
   sources = [ "window_name_prompt_browsertest.cc" ]
   deps = [
     "//base",
-    "//chrome/browser/ui/",
+    "//chrome/browser/ui/dialogs:browser_dialogs",
     "//chrome/browser/ui/window_metadata",
     "//chrome/test:test_support_ui",
     "//content/test:test_support",

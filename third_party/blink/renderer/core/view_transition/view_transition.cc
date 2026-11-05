@@ -242,9 +242,12 @@ ViewTransition::ViewTransition(PassKey,
       has_document_scope_(true),
       delegate_(delegate),
       transition_token_(transition_token),
-      style_tracker_(
-          MakeGarbageCollected<ViewTransitionStyleTracker>(*document_,
-                                                           transition_token_)),
+      style_tracker_(MakeGarbageCollected<ViewTransitionStyleTracker>(
+          *document_,
+          transition_token_,
+          /*generates_pseudo_element_tree=*/
+          !RuntimeEnabledFeatures::
+              ViewTransitionSkipPseudoTreeForNavigationCaptureEnabled())),
       transition_state_callback_(std::move(callback)),
       script_delegate_(MakeGarbageCollected<DOMViewTransition>(
           document_->GetExecutionContext(),
@@ -297,9 +300,10 @@ ViewTransition::ViewTransition(PassKey,
       document_(document),
       has_document_scope_(true),
       delegate_(delegate),
-      style_tracker_(
-          MakeGarbageCollected<ViewTransitionStyleTracker>(*document_,
-                                                           transition_token_)),
+      style_tracker_(MakeGarbageCollected<ViewTransitionStyleTracker>(
+          *document_,
+          transition_token_,
+          /*generates_pseudo_element_tree=*/true)),
       script_delegate_(MakeGarbageCollected<DOMViewTransition>(
           document_->GetExecutionContext(),
           *this)) {
@@ -608,10 +612,23 @@ void ViewTransition::ProcessCurrentState() {
         // If we're capturing during a navigation, browser controls will be
         // forced to show via animation. Ensure they're fully showing when
         // performing the capture.
+        //
+        // Skip this if there are no browser controls (e.g. on desktop):
+        // snapping zero-height controls has no effect on layout, but changing
+        // the shown ratio changes the frame's browser controls metadata, which
+        // forces the capture frame into a new LocalSurfaceId. Viz can then
+        // only draw the capture frame (and fulfill its copy requests) after
+        // the browser has embedded the new surface, which puts the browser
+        // main thread on the critical path of the navigation.
+        const BrowserControls& browser_controls =
+            document_->GetPage()->GetBrowserControls();
         bool snap_browser_controls =
             document_->GetFrame()->IsOutermostMainFrame() &&
-            document_->GetPage()->GetBrowserControls().PermittedState() !=
+            browser_controls.PermittedState() !=
                 cc::BrowserControlsState::kHidden &&
+            (browser_controls.TotalHeight() > 0 ||
+             !RuntimeEnabledFeatures::
+                 ViewTransitionSkipZeroHeightControlsSnapEnabled()) &&
             creation_type_ == CreationType::kForSnapshot;
         if (!style_tracker_->Capture(snap_browser_controls)) {
           SkipTransition(PromiseResponse::kRejectInvalidState,
@@ -663,6 +680,10 @@ void ViewTransition::ProcessCurrentState() {
           break;
         }
 
+        if (style_tracker_->IsOldSnapshotFrozen()) {
+          style_tracker_->CaptureResolved();
+        }
+
         switch (creation_type_) {
           case CreationType::kScript: {
             CHECK(script_delegate_);
@@ -689,12 +710,6 @@ void ViewTransition::ProcessCurrentState() {
             DCHECK(transition_state_callback_);
             CHECK(capture_rects_received_)
                 << "Capture rects must arrive before snapshot serialization!";
-            if (!RuntimeEnabledFeatures::
-                    SkipViewTransitionSnapshotResumeRenderingEnabled()) {
-              // TODO(crbug.com/502616235): Remove killswitch after verifying
-              // stability.
-              ResumeRendering();
-            }
 
             ViewTransitionState view_transition_state =
                 style_tracker_->GetViewTransitionState();
@@ -939,6 +954,7 @@ void ViewTransition::Trace(Visitor* visitor) const {
   visitor->Trace(types_);
   visitor->Trace(blocked_on_);
   visitor->Trace(blocking_);
+  visitor->Trace(delegate_);
 
   ExecutionContextLifecycleObserver::Trace(visitor);
 }
@@ -1070,8 +1086,20 @@ void ViewTransition::SaveRememberedSizeIfNeeded(State old_state,
       }
     }
   } else if (old_needs_containment && !new_needs_containment) {
-    scope_->SetLastRememberedInlineSize(std::nullopt);
-    scope_->SetLastRememberedBlockSize(std::nullopt);
+    // If the author style itself has `contain-intrinsic-size: auto` in an axis,
+    // then the last remembered size in that axis is also maintained by the
+    // intrinsic size resize observer, so we must not clear it: the observer
+    // only reports size changes, so it would not record it again if the size
+    // stays the same. Note that the size we saved is the size the element had
+    // when we started the containment, which is also what the observer would
+    // have recorded.
+    const auto* style = scope_->GetComputedStyle();
+    if (style && !style->ContainIntrinsicInlineSize().HasAuto()) {
+      scope_->SetLastRememberedInlineSize(std::nullopt);
+    }
+    if (style && !style->ContainIntrinsicBlockSize().HasAuto()) {
+      scope_->SetLastRememberedBlockSize(std::nullopt);
+    }
   }
 
   scope_->SetNeedsStyleRecalc(kLocalStyleChange,
@@ -1404,22 +1432,18 @@ void ViewTransition::OnRenderingPausedTimeout() {
 }
 
 bool ViewTransition::UnsupportedCapture() {
-  CHECK(!scope_ || scope_ != scope_->GetDocument().documentElement());
   if (scope_) {
+    // Skip if the scope was disconnected, moved documents, or became the
+    // document element.
+    if (!scope_->isConnected() || &scope_->GetDocument() != document_ ||
+        scope_->IsDocumentElement()) {
+      return true;
+    }
+
     const LayoutObject* layout_object = scope_->GetLayoutObject();
     if (!layout_object || !layout_object->ShouldApplyLayoutContainment()) {
       LogMessageToConsole(
           "Scoped view-transitions require layout containment.");
-      return true;
-    }
-    const ComputedStyle* style = scope_->GetComputedStyle();
-    if (style && style->HasMask()) {
-      // TODO(crbug.com/429763389): image masks are not currently supported on
-      // the scoped element. This restriction may be resolved by making the
-      // view-transition's layout object a sibling of the scoped element's
-      // layout object. For now, skip the transition.
-      LogMessageToConsole(
-          "Scoped view-transitions do not currently support mask-image.");
       return true;
     }
   }
@@ -1502,6 +1526,10 @@ bool ViewTransition::MaybeCrossFrameSink() const {
 bool ViewTransition::IsGeneratingPseudo(
     const ViewTransitionPseudoElementBase& pseudo_element) const {
   return pseudo_element.IsBoundTo(style_tracker_.Get());
+}
+
+bool ViewTransition::GeneratesPseudoElementTree() const {
+  return style_tracker_ && style_tracker_->GeneratesPseudoElementTree();
 }
 
 Element* ViewTransition::Scope() const {

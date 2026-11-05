@@ -3,10 +3,9 @@
 // found in the LICENSE file.
 
 import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 
 import {assertExhaustive} from '../assert_extras.js';
-import type {Route} from '../router.js';
+import type {Route} from '../os_settings_routes.js';
 import {routes} from '../router.js';
 
 import {JapaneseInputMode, JapaneseKeymapStyle, JapanesePunctuationStyle, JapaneseSelectionShortcut, JapaneseShiftKeyModeStyle, JapaneseSpaceInputStyle, JapaneseSymbolStyle, KoreanKeyboardLayout, OptionType, PinyinXkbLayout, ZhuyinKeyboardLayout, ZhuyinPageSize, ZhuyinSelectKeys} from './input_method_prefs_consts.js';
@@ -38,11 +37,6 @@ export enum UiOptionType {
 export function getDefaultValue<T extends keyof typeof OPTION_DEFAULT>(
     optionName: T, overrides: {[K in T]?: (typeof OPTION_DEFAULT)[K]}):
     (typeof OPTION_DEFAULT)[T] {
-  // Overrides are only coming from the following flag, let's be safe here and
-  // only enable this branch if the flag is also enabled.
-  if (!loadTimeData.getBoolean('autocorrectEnableByDefault')) {
-    return OPTION_DEFAULT[optionName];
-  }
   return overrides[optionName] ?? OPTION_DEFAULT[optionName];
 }
 

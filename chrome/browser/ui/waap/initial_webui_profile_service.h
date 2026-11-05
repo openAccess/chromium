@@ -30,6 +30,17 @@ class InitialWebUIProfileService : public KeyedService {
   // Returns nullptr if it has already been taken or prewarming is disabled.
   std::unique_ptr<content::WebContents> TakeToolbarContents();
 
+  // KeyedService:
+  void Shutdown() override;
+
+  bool has_toolbar_contents_for_testing() const {
+    return toolbar_web_contents_ != nullptr;
+  }
+
+  content::WebContents* toolbar_web_contents_for_testing() {
+    return toolbar_web_contents_.get();
+  }
+
  private:
   void PrewarmWebUI();
 

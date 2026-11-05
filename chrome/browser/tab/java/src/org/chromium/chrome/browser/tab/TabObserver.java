@@ -122,14 +122,6 @@ public interface TabObserver {
     default void onFaviconUpdated(Tab tab, @Nullable Bitmap icon, @Nullable GURL iconUrl) {}
 
     /**
-     * Called when the media state changes
-     *
-     * @param tab The notifying {@link Tab}.
-     * @param mediaState The {@link MediaState} of the tab.
-     */
-    default void onMediaStateChanged(Tab tab, @MediaState int mediaState) {}
-
-    /**
      * Called when the title of a {@link Tab} changes.
      *
      * @param tab The notifying {@link Tab}.
@@ -347,6 +339,22 @@ public interface TabObserver {
     default void onNavigationEntriesDeleted(Tab tab) {}
 
     /**
+     * Called when a {@code beforeunload} dispatch for this tab has completed, including the
+     * completion Content posts for a page with no {@code beforeunload} handler to run.
+     *
+     * <p>Not every dispatch reports. One that is abandoned -- the primary page changed, the {@link
+     * WebContents} left the tab or was destroyed, among others -- never arrives here. An observer
+     * waiting for an answer needs its own fallback, and cannot treat that list as closed.
+     *
+     * <p>Content is still using the frame that reported, so an observer must not destroy this tab
+     * or its {@link WebContents} before returning.
+     *
+     * @param tab The notifying {@link Tab}.
+     * @param proceed Whether the page agreed to be unloaded.
+     */
+    default void onBeforeUnloadFired(Tab tab, boolean proceed) {}
+
+    /**
      * Called when a find result is received.
      *
      * @param result Detail information on the find result.
@@ -453,7 +461,7 @@ public interface TabObserver {
     /**
      * Broadcast that tab group ID on a {@link Tab} has changed.
      *
-     * @param tab The {@link Tab} root identifier has changed on
+     * @param tab The {@link Tab} tab group ID has changed on.
      * @param tabGroupId The new tab group ID, may be null.
      */
     default void onTabGroupIdChanged(Tab tab, @Nullable Token tabGroupId) {}

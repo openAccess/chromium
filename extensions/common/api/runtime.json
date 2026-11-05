@@ -177,6 +177,35 @@
         "description": "The reason that this event is being dispatched."
       },
       {
+        "id": "OnLoadedReason",
+        "type": "string",
+        "enum": [
+          {"name": "install", "description": "The extension was newly installed."},
+          {"name": "update", "description": "The extension was reloaded after an update."},
+          {"name": "browser_update", "description": "The browser was updated to a new version."},
+          {"name": "enable", "description": "The extension was re-enabled from a disabled state."},
+          {"name": "startup", "description": "The extension is being loaded during browser startup."},
+          {"name": "reload", "description": "The extension was reloaded (e.g. via chrome.runtime.reload() or the user manually reloaded the extension)."}
+        ],
+        "description": "The reason that this event is being dispatched."
+      },
+      {
+        "id": "ExtensionLoadDetails",
+        "type": "object",
+        "description": "Details about the extension load event.",
+        "properties": {
+          "reason": {
+            "$ref": "OnLoadedReason",
+            "description": "The reason that this event is being dispatched."
+          },
+          "previousVersion": {
+            "type": "string",
+            "optional": true,
+            "description": "Indicates the previous version of the extension. This is present only if 'reason' is 'update' or 'enable'. If 'reason' is 'update', this is the version of the extension before it was updated. If 'reason' is 'enable', this is the current version of the extension."
+          }
+        }
+      },
+      {
         "id": "OnRestartRequiredReason",
         "type": "string",
         "description": "The reason that the event is being dispatched. 'app_update' is used when the restart is needed because the application is updated to a newer version. 'os_update' is used when the restart is needed because the browser/OS is updated to a newer version. 'periodic' is used when the system runs for more than the permitted uptime set in the enterprise policy.",
@@ -390,6 +419,37 @@
         }
       },
       {
+        "name": "getDocumentId",
+        "type": "function",
+        "nocompile": true,
+        "nodoc": true,
+        "description": "Returns the document ID of the specified window or frame element.",
+        "parameters": [
+          {
+            "name": "target",
+            "type": "any",
+            "description": "A WindowProxy or frame element (iframe, frame, embed, or object) for the target frame."
+          }
+        ],
+        "returns": {
+          "type": "string",
+          "description": "The document ID of the target."
+        }
+      },
+      {
+        "name": "markListenerRegistrationComplete",
+        "type": "function",
+        "nodoc": true,
+        "description": "Signals that the extension has finished registering its event listeners for the current service worker instance. The browser replaces persisted listener registrations with the newly registered listeners and dispatches any queued events. Only available in the service worker of extensions declaring <code>\"background.async_listener_registration\": true</code>.",
+        "parameters": [],
+        "returns_async": {
+          "name": "callback",
+          "optional": true,
+          "description": "Called once the browser has committed the listener registration. The promise is rejected if the extension is not opted in, the caller is not the service worker, or no listener registration is in progress.",
+          "parameters": []
+        }
+      },
+      {
         "name": "setUninstallURL",
         "type": "function",
         "description": "Sets the URL to be visited upon uninstallation. This may be used to clean up server-side data, do analytics, and implement surveys. Maximum 1023 characters.",
@@ -495,11 +555,11 @@
         "parameters": [
           {
             "name": "application",
-            "description": "The name of the registered application to connect to, or target details.",
+            "description": "The name of the registered application to connect to.",
             "choices": [
               {
                 "type": "string",
-                "description": "The name of the registered application to connect to, or external Android app's package name. Packed extensions on Android must specify a $(ref:runtime.NativeMessageTarget)."
+                "description": "The name of the registered application to connect to."
               },
               {
                 "$ref": "NativeMessageTarget",
@@ -675,6 +735,22 @@
                 "description": "Indicates the ID of the imported shared module extension which updated. This is present only if 'reason' is 'shared_module_update'."
               }
             }
+          }
+        ]
+      },
+      {
+        "name": "onEnabled",
+        "type": "function",
+        "description": "Fired when an extension goes from being in a disabled state to an enabled state."
+      },
+      {
+        "name": "onExtensionLoaded",
+        "type": "function",
+        "description": "Fired when the extension is added to the set of active extensions. This can occur in multiple scenarios: when an extension is first installed, updated to a new version, re-enabled after being disabled, reloaded, loaded during browser startup, or loaded when the browser is updated to a new version.",
+        "parameters": [
+          {
+            "name": "details",
+            "$ref": "ExtensionLoadDetails"
           }
         ]
       },

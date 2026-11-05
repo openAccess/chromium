@@ -10,8 +10,9 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabLaunchTypeUtils;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 
 /** Helper class to track creating new tabs with a NewTabPage. */
@@ -31,17 +32,24 @@ public class NewTabPageCreationTracker {
 
     /** Starts tracking new NTPs opened in a new tab. */
     public void monitorNtpCreation() {
-        mTabCreationRecorder = new TabCreationRecorder();
-        mTabModelSelector.addObserver(mTabCreationRecorder);
+        mTabCreationRecorder = new TabCreationRecorder(mTabModelSelector);
     }
 
     /**
      * Tracks new NTPs opened in a new tab. Use through {@link
      * NewTabPageCreationTracker#monitorNtpCreation(TabModelSelector)}.
      */
-    private static class TabCreationRecorder implements TabModelSelectorObserver {
+    private static class TabCreationRecorder extends TabModelSelectorTabModelObserver {
+        TabCreationRecorder(TabModelSelector tabModelSelector) {
+            super(tabModelSelector);
+        }
+
         @Override
-        public void onNewTabCreated(Tab tab, @TabCreationState int creationState) {
+        public void didAddTab(
+                Tab tab,
+                @TabLaunchType int type,
+                @TabCreationState int creationState,
+                boolean markedForSelection) {
             if (tab.isOffTheRecord() || !UrlUtilities.isNtpUrl(tab.getUrl())) {
                 return;
             }
@@ -49,18 +57,15 @@ public class NewTabPageCreationTracker {
             RecordHistogram.recordEnumeratedHistogram(
                     "NewTabPage.OpenedInNewTab", tab.getLaunchType(), TabLaunchType.SIZE);
 
-            if (tab.getLaunchType() == TabLaunchType.FROM_CHROME_UI
-                    || tab.getLaunchType() == TabLaunchType.FROM_TAB_GROUP_UI
-                    || tab.getLaunchType() == TabLaunchType.FROM_TAB_SWITCHER_UI
-                    || tab.getLaunchType() == TabLaunchType.FROM_TIPS_NOTIFICATIONS) {
+            if (TabLaunchTypeUtils.isExplicitUserNtpLaunch(tab.getLaunchType())) {
                 var state = NewTabPageCreationState.from(tab);
-                if (state != null) state.onNewTabCreated();
+                if (state != null) state.didAddTab();
             }
         }
     }
 
     /** Destroy and unhook objects at destruction. */
     public void destroy() {
-        if (mTabCreationRecorder != null) mTabModelSelector.removeObserver(mTabCreationRecorder);
+        if (mTabCreationRecorder != null) mTabCreationRecorder.destroy();
     }
 }

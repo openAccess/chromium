@@ -177,9 +177,9 @@ void VideoToolboxFrameConverter::Convert(
     // Chrome and macOS do not agree on the color space; force compositing to
     // ensure a consistent result. See crbug.com/343014700.
     shared_image_usage.RemoveAll(gpu::SHARED_IMAGE_USAGE_SCANOUT);
-    // Always use limited range since we request a limited range output format.
     color_space = metadata->color_space.GetWithMatrixAndRange(
-        metadata->color_space.GetMatrixID(), gfx::ColorSpace::RangeID::LIMITED);
+        metadata->color_space.GetMatrixID(),
+        gfx::IOSurfacePixelFormatRangeID(pixel_format));
   }
 
   auto shared_image = shared_image_interface->CreateSharedImage(
@@ -209,7 +209,6 @@ void VideoToolboxFrameConverter::Convert(
     return;
   }
 
-  frame->set_color_space(shared_image->color_space());
   frame->set_hdr_metadata(metadata->hdr_metadata);
   if (metadata->duration != kNoTimestamp && !metadata->duration.is_zero()) {
     frame->metadata().frame_duration = metadata->duration;
@@ -217,8 +216,6 @@ void VideoToolboxFrameConverter::Convert(
   // Releasing |image| must happen after command buffer commands are complete
   // (not just submitted).
   frame->metadata().read_lock_fences_enabled = true;
-  frame->metadata().is_webgpu_compatible =
-      shared_image->usage().Has(gpu::SHARED_IMAGE_USAGE_WEBGPU_READ);
 
   // TODO(crbug.com/40227557): VideoToolbox can report software usage, should
   // we plumb that through?
@@ -246,7 +243,7 @@ void VideoToolboxFrameConverter::OnVideoFrameReleased(
   // Release |image|.
   stub_->channel()->scheduler()->ScheduleTask(gpu::Scheduler::Task(
       wait_sequence_id_, base::DoNothingWithBoundArgs(std::move(image)),
-      std::vector<gpu::SyncToken>({sync_token})));
+      client_shared_image->GetSyncTokensForVideoFrame(sync_token)));
 }
 
 }  // namespace media

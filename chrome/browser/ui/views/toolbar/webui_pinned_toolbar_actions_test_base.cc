@@ -37,6 +37,11 @@
 #include "ui/actions/actions.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
+#include "ui/views/controls/webview/webview.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chromeos/constants/chromeos_features.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 WebUIPinnedToolbarActionsTestBase::WebUIPinnedToolbarActionsTestBase()
     : WebUIToolbarWebViewTestBase(
@@ -54,7 +59,12 @@ WebUIPinnedToolbarActionsTestBase::WebUIPinnedToolbarActionsTestBase()
            contextual_tasks::kContextualTasks,
            contextual_tasks::kContextualTasksForceEntryPointEligibility,
            // Facilitate testing kActionSendSharedTabGroupFeedback
-           data_sharing::features::kDataSharingFeature},
+           data_sharing::features::kDataSharingFeature,
+// Facilitate testing kActionSidePanelShowGlic
+#if BUILDFLAG(IS_CHROMEOS)
+           chromeos::features::kFeatureManagementGlic,
+#endif  // BUILDFLAG(IS_CHROMEOS)
+           features::kGlic},
           {}),
       kActionMappings{
           {kActionNewIncognitoWindow,
@@ -126,6 +136,8 @@ WebUIPinnedToolbarActionsTestBase::WebUIPinnedToolbarActionsTestBase()
                kSendSharedTabGroupFeedback},
           {kActionSidePanelShowComments,
            toolbar_ui_api::mojom::PinnedToolbarAction::kSidePanelShowComments},
+          {kActionSidePanelShowGlic,
+           toolbar_ui_api::mojom::PinnedToolbarAction::kSidePanelShowGlic},
       } {
 }
 
@@ -136,11 +148,11 @@ void WebUIPinnedToolbarActionsTestBase::SetUpOnMainThread() {
   WebUIToolbarWebViewTestBase::SetUpOnMainThread();
   // Make everything pinnable and visible by default to facilitate testing.
   for (const auto& mapping : kActionMappings) {
-    SetPinnableProperty(mapping.first, true);
     if (actions::ActionItem* action_item =
             actions::ActionManager::Get().FindAction(
                 mapping.first,
                 BrowserActions::From(browser())->root_action_item())) {
+      SetPinnableProperty(mapping.first, true);
       action_item->SetVisible(true);
     }
   }
@@ -172,41 +184,10 @@ WebUIPinnedToolbarActionsTestBase::GetPinnedToolbarActions() {
       webui_toolbar_view->GetPinnedToolbarActions());
 }
 
-content::EvalJsResult WebUIPinnedToolbarActionsTestBase::EvalJsOnPinnedButton(
-    content::WebContents* web_contents,
-    toolbar_ui_api::mojom::PinnedToolbarAction action,
-    const std::string& script_body) {
-  return content::EvalJs(
-      web_contents,
-      base::StringPrintf(R"(
-    (() => {
-      const container = %s?.shadowRoot;
-      if (!container) return false;
-      const actionEl = Array.from(container.querySelectorAll(
-                               'pinned-toolbar-action'))
-                      .find(el => el.state && el.state.action === %d);
-      if (!actionEl) return false;
-      const btn = actionEl.shadowRoot.querySelector('cr-icon-button');
-      %s
-    })();
-  )",
-                         GetButtonAppJS("#pinnedToolbarActions").c_str(),
-                         static_cast<int>(action), script_body.c_str()));
-}
-
-bool WebUIPinnedToolbarActionsTestBase::IsPinnedButtonVisible(
-    content::WebContents* web_contents,
+bool WebUIPinnedToolbarActionsTestBase::ClickPinnedAction(
     toolbar_ui_api::mojom::PinnedToolbarAction action) {
-  return EvalJsOnPinnedButton(web_contents, action,
-                              "return !!btn && btn.checkVisibility();")
-      .ExtractBool();
-}
-
-bool WebUIPinnedToolbarActionsTestBase::ClickPinnedButton(
-    content::WebContents* web_contents,
-    toolbar_ui_api::mojom::PinnedToolbarAction action) {
-  return EvalJsOnPinnedButton(
-             web_contents, action,
+  return EvalJsOnPinnedAction(
+             action,
              "if (!btn || !btn.checkVisibility()) return false; btn.click(); "
              "return true;")
       .ExtractBool();
@@ -239,7 +220,6 @@ views::BubbleAnchor WebUIPinnedToolbarActionsTestBase::GetToolbarBubbleAnchor(
 void WebUIPinnedToolbarActionsTestBase::PinAction(
     actions::ActionId action_id,
     toolbar_ui_api::mojom::PinnedToolbarAction mojom_action) {
-  auto* web_contents = GetWebContents();
   auto* pinned_actions = GetPinnedToolbarActions();
   ui::ElementIdentifier id =
       pinned_toolbar_actions::GetElementIdentifierForAction(action_id);
@@ -282,11 +262,10 @@ void WebUIPinnedToolbarActionsTestBase::PinAction(
         found_anchor = true;
       }));
   EXPECT_TRUE(found_anchor);
-  ASSERT_TRUE(base::test::RunUntil(
-      [&]() { return IsPinnedButtonVisible(web_contents, mojom_action); }));
+  ASSERT_TRUE(WaitForPinnedActionVisible(mojom_action));
 
   // Verify it's not highlighted.
-  EXPECT_TRUE(EvalJsOnPinnedButton(web_contents, mojom_action,
+  EXPECT_TRUE(EvalJsOnPinnedAction(mojom_action,
                                    "return !!btn && "
                                    "!btn.hasAttribute('is-menu-open');")
                   .ExtractBool());
@@ -302,14 +281,12 @@ void WebUIPinnedToolbarActionsTestBase::PinAction(
 void WebUIPinnedToolbarActionsTestBase::UnpinAction(
     actions::ActionId action_id,
     toolbar_ui_api::mojom::PinnedToolbarAction mojom_action) {
-  auto* web_contents = GetWebContents();
   auto* pinned_actions = GetPinnedToolbarActions();
   ui::ElementIdentifier id =
       pinned_toolbar_actions::GetElementIdentifierForAction(action_id);
 
   model_->UpdatePinnedState(action_id, false);
-  ASSERT_TRUE(base::test::RunUntil(
-      [&]() { return !IsPinnedButtonVisible(web_contents, mojom_action); }));
+  ASSERT_TRUE(WaitForPinnedActionHidden(mojom_action));
 
   if (id) {
     EXPECT_TRUE(base::test::RunUntil([&]() {

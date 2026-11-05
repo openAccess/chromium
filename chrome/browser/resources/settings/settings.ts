@@ -6,7 +6,6 @@ import './settings_ui/settings_ui.js';
 
 export {CrPolicyPrefIndicatorElement} from '/shared/settings/controls/cr_policy_pref_indicator.js';
 export {ExtensionControlledIndicatorElement} from '/shared/settings/controls/extension_controlled_indicator.js';
-export {DEFAULT_CHECKED_VALUE, DEFAULT_UNCHECKED_VALUE} from '/shared/settings/controls/settings_boolean_control_mixin.js';
 export {ExtensionControlBrowserProxyImpl} from '/shared/settings/extension_control_browser_proxy.js';
 export type {ExtensionControlBrowserProxy} from '/shared/settings/extension_control_browser_proxy.js';
 export {LifetimeBrowserProxyImpl} from '/shared/settings/lifetime_browser_proxy.js';
@@ -16,10 +15,6 @@ export type {ProfileInfo, ProfileInfoBrowserProxy} from '/shared/settings/people
 export {ChromeSigninAccessPoint, ChromeSigninUserChoice, PageStatus, SignedInState, StatusAction, SyncBrowserProxyImpl, syncPrefsIndividualDataTypes, TrustedVaultBannerState, UserSelectableType} from '/shared/settings/people_page/sync_browser_proxy.js';
 export type {ChromeSigninUserChoiceInfo, StoredAccount, SyncBrowserProxy, SyncPrefs, SyncStatus} from '/shared/settings/people_page/sync_browser_proxy.js';
 export {prefToString, stringToPrefValue} from '/shared/settings/prefs/pref_util.js';
-export {SettingsPrefsElement} from '/shared/settings/prefs/prefs.js';
-export {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
-export type {PrefsMixinInterface} from '/shared/settings/prefs/prefs_mixin.js';
-export {CrSettingsPrefs} from '/shared/settings/prefs/prefs_types.js';
 export {PrefService} from '/shared/settings/prefs2/pref_service.js';
 export {PrefServiceObserverMixin} from '/shared/settings/prefs2/pref_service_observer_mixin.js';
 export type {PrefServiceObserverMixinInterface} from '/shared/settings/prefs2/pref_service_observer_mixin.js';
@@ -30,6 +25,8 @@ export {PrivacyPageBrowserProxyImpl} from '/shared/settings/privacy_page/privacy
 export type {MetricsReporting, PrivacyPageBrowserProxy} from '/shared/settings/privacy_page/privacy_page_browser_proxy.js';
 export {SecureDnsMode, SecureDnsUiManagementMode, SecurityPageBrowserProxyImpl} from '/shared/settings/security_page/security_page_browser_proxy.js';
 export type {ResolverOption, SecureDnsSetting, SecurityPageBrowserProxy} from '/shared/settings/security_page/security_page_browser_proxy.js';
+export {WebUiListenerMixin} from '/shared/settings/web_ui_listener_mixin.js';
+export type {WebUiListenerMixinInterface} from '/shared/settings/web_ui_listener_mixin.js';
 export {browserProxyFactory as customizeColorSchemeModeBrowserProxyFactory, ColorSchemeMode, CustomizeColorSchemeModeClientCallbackRouter, CustomizeColorSchemeModeClientRemote, CustomizeColorSchemeModeHandlerRemote} from 'chrome://resources/cr_components/customize_color_scheme_mode/customize_color_scheme_mode.mojom-webui.js';
 export type {BrowserProxy as CustomizeColorSchemeModeBrowserProxy} from 'chrome://resources/cr_components/customize_color_scheme_mode/customize_color_scheme_mode.mojom-webui.js';
 export {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
@@ -48,6 +45,7 @@ export {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.j
 export {getTrustedHTML} from 'chrome://resources/js/static_types.js';
 export {SettingsAboutPageElement} from './about_page/about_page.js';
 export {ControlledRadioButtonElement} from './controls/controlled_radio_button.js';
+export {DEFAULT_CHECKED_VALUE, DEFAULT_UNCHECKED_VALUE} from './controls/settings_boolean_control_mixin.js';
 export {SettingsDropdownMenuElement} from './controls/settings_dropdown_menu.js';
 export {SettingsRadioGroupElement} from './controls/settings_radio_group.js';
 export {SettingsToggleButtonElement} from './controls/settings_toggle_button.js';
@@ -61,8 +59,9 @@ export type {AboutPageBrowserProxy} from './about_page/about_page_browser_proxy.
 export type {PromoteUpdaterStatus} from './about_page/about_page_browser_proxy.js';
 // </if>
 // clang-format on
+export {ActiveTimer} from './active_timer.js';
 export {SettingsAiInfoCardElement} from './ai_page/ai_info_card.js';
-export {SettingsAiLoggingInfoBullet} from './ai_page/ai_logging_info_bullet.js';
+export {SettingsAiLoggingInfoBulletElement} from './ai_page/ai_logging_info_bullet.js';
 export {SettingsAiPageElement} from './ai_page/ai_page.js';
 export {SettingsAiPageIndexElement} from './ai_page/ai_page_index.js';
 export {ChromeSuggestionsSettingsValue, ModelExecutionEnterprisePolicyValue} from './ai_page/constants.js';
@@ -74,8 +73,9 @@ export {HomeUrlInputElement} from './appearance_page/home_url_input.js';
 export {SettingsAutofillAiEntriesListElement} from './autofill_page/autofill_ai_entries_list.js';
 export {SettingsAutofillPageElement} from './autofill_page/autofill_page.js';
 export {SettingsAutofillPageIndexElement} from './autofill_page/autofill_page_index.js';
-export {CollapsibleCardElement} from './autofill_page/collapsible_autofill_settings_card.js';
-export {PasswordCheckReferrer, PasswordManagerImpl, PasswordManagerPage} from './autofill_page/passwords/password_manager_proxy.js';
+export {SettingsAutofillPageV2Element} from './autofill_page/autofill_page_v2.js';
+export {CollapsibleAutofillSettingsCardElement} from './autofill_page/collapsible_autofill_settings_card.js';
+export {PasswordManagerImpl, PasswordManagerPage} from './autofill_page/passwords/password_manager_proxy.js';
 export type {PasswordManagerProxy} from './autofill_page/passwords/password_manager_proxy.js';
 export {BaseMixin} from './base_mixin.js';
 // <if expr="not is_chromeos">
@@ -83,6 +83,8 @@ export {DefaultBrowserBrowserProxyImpl} from './default_browser_page/default_bro
 export type {DefaultBrowserBrowserProxy, DefaultBrowserInfo} from './default_browser_page/default_browser_browser_proxy.js';
 export {SettingsDefaultBrowserPageElement} from './default_browser_page/default_browser_page.js';
 // </if>
+export {SettingsFocusListContainerElement} from './focus_list_container.js';
+export {SettingsGeicSubpageElement} from './geic_page/geic_subpage.js';
 export {GlicBrowserProxyImpl} from './glic_page/glic_browser_proxy.js';
 export type {GlicBrowserProxy, LoginPermission} from './glic_page/glic_browser_proxy.js';
 export {SettingsGlicPageElement} from './glic_page/glic_page.js';
@@ -91,7 +93,7 @@ export {loadTimeData} from './i18n_setup.js';
 // <if expr="not is_chromeos">
 export {convertLanguageCodeForChrome, convertLanguageCodeForTranslate, getBaseLanguage, isTranslateBaseLanguage} from './languages_page/languages_util.js';
 // </if>
-export {AiPageComposeInteractions, AiPageHistorySearchInteractions, AiPageInteractions, AiPageSuggestionsInteractions, AutofillSettingsReferrer, CardBenefitsUserAction, CvcDeletionUserAction, DeleteBrowsingDataAction, MetricsBrowserProxyImpl, PrivacyElementInteractions, PrivacyGuideInteractions, PrivacyGuideSettingsStates, PrivacyGuideStepsEligibleAndReached, SafeBrowsingInteractions, SafetyCheckNotificationsModuleInteractions, SafetyCheckUnusedSitePermissionsModuleInteractions, SafetyHubCardState, SafetyHubEntryPoint, SafetyHubModuleType, SafetyHubSurfaces, SuggestionsFromGeminiAction, SuggestionsFromGeminiEntryPoint, YourSavedInfoDataCategory, YourSavedInfoDataChip, YourSavedInfoRelatedService} from './metrics_browser_proxy.js';
+export {AiPageComposeInteractions, AiPageInteractions, AiPageSuggestionsInteractions, AutofillSettingsReferrer, CardBenefitsUserAction, CvcDeletionUserAction, DeleteBrowsingDataAction, MetricsBrowserProxyImpl, PrivacyElementInteractions, PrivacyGuideInteractions, PrivacyGuideSettingsStates, PrivacyGuideStepsEligibleAndReached, SafeBrowsingInteractions, SafetyCheckUnusedSitePermissionsModuleInteractions, SafetyHubCardState, SafetyHubEntryPoint, SafetyHubModuleType, SafetyHubSurfaces, SettingsSearchExitReasonDesktop, SuggestionsFromGeminiAction, SuggestionsFromGeminiEntryPoint, YourSavedInfoDataCategory, YourSavedInfoDataChip, YourSavedInfoRelatedService} from './metrics_browser_proxy.js';
 export type {MetricsBrowserProxy} from './metrics_browser_proxy.js';
 export {OnStartupBrowserProxyImpl} from './on_startup_page/on_startup_browser_proxy.js';
 export type {NtpExtension, OnStartupBrowserProxy} from './on_startup_page/on_startup_browser_proxy.js';
@@ -124,21 +126,24 @@ export {ExceptionEntryElement} from './performance_page/tab_discard/exception_en
 export {ExceptionListElement, TAB_DISCARD_EXCEPTIONS_OVERFLOW_SIZE} from './performance_page/tab_discard/exception_list.js';
 export {ExceptionAddDialogTabs, ExceptionTabbedAddDialogElement} from './performance_page/tab_discard/exception_tabbed_add_dialog.js';
 export {MAX_TAB_DISCARD_EXCEPTION_RULE_LENGTH, TAB_DISCARD_EXCEPTIONS_MANAGED_PREF, TAB_DISCARD_EXCEPTIONS_PREF} from './performance_page/tab_discard/exception_validation_mixin.js';
-export {HatsBrowserProxyImpl, SecurityPageInteraction, SecurityPageV2Interaction, SecuritySettingsBundleSetting, TrustSafetyInteraction} from './privacy_page/hats_browser_proxy.js';
+export {HOVER_CARD_IMAGES_PREF, HOVER_CARD_MEMORY_USAGE_PREF, SettingsTabHoverPreviewPageElement} from './performance_page/tab_hover_preview_page.js';
+export {HatsBrowserProxyImpl, SecurityPageInteraction, TrustSafetyInteraction} from './privacy_page/hats_browser_proxy.js';
 export type {HatsBrowserProxy} from './privacy_page/hats_browser_proxy.js';
 export {PrivacyGuideBrowserProxyImpl} from './privacy_page/privacy_guide/privacy_guide_browser_proxy.js';
 export type {PrivacyGuideBrowserProxy} from './privacy_page/privacy_guide/privacy_guide_browser_proxy.js';
 export {SettingsPrivacyPageElement} from './privacy_page/privacy_page.js';
 export {SettingsPrivacyPageIndexElement} from './privacy_page/privacy_page_index.js';
 export {SafeBrowsingSetting} from './privacy_page/security/safe_browsing_types.js';
-export {RelaunchMixin, RestartType} from './relaunch_mixin.js';
+export {RelaunchMixinLit, RestartType} from './relaunch_mixin_lit.js';
 export {ResetBrowserProxyImpl} from './reset_page/reset_browser_proxy.js';
 export type {ResetBrowserProxy} from './reset_page/reset_browser_proxy.js';
 export {SettingsResetProfileBannerElement} from './reset_page/reset_profile_banner.js';
-export {buildRouter, resetRouterForTesting, routes} from './route.js';
+export {AiSettingsSection, buildRouter, getTopLevelRoute, resetRouterForTesting, routes} from './route.js';
 export {Route, Router} from './router.js';
 export type {SettingsRoutes} from './router.js';
-export {ScrollableMixin} from './scrollable_mixin.js';
+export {MAX_SEARCH_RESULTS, setSettingsSearchManagerForTesting, SettingsSearchManagerImpl} from './search/settings_search_manager.js';
+export type {SettingsSearchManager, SettingsSearchRequest} from './search/settings_search_manager.js';
+export {MAX_DWELL_TIME_MS, QUERY_SUBMITTED_DELAY_MS, SearchMetricsRecorder} from './search_metrics_recorder.js';
 export {ExtensionControlledMessageElement} from './search_page/extension_controlled_message.js';
 export {FeatureShortcutsPageElement} from './search_page/feature_shortcuts_page.js';
 export {KeyboardShortcutPageElement} from './search_page/keyboard_shortcut_page.js';
@@ -146,13 +151,15 @@ export {OmniboxEverywhereBrowserProxyImpl} from './search_page/omnibox_everywher
 export type {OmniboxEverywhereBrowserProxy} from './search_page/omnibox_everywhere_browser_proxy.js';
 export {SettingsOmniboxEverywhereSectionElement} from './search_page/omnibox_everywhere_section.js';
 export {SettingsSearchEngineListDialogElement} from './search_page/search_engine_list_dialog.js';
+export {SettingsSearchEngineMoreEnginesDialogElement} from './search_page/search_engine_more_engines_dialog.js';
 export {ChoiceMadeLocation, SearchEnginesBrowserProxyImpl, SearchEnginesInteractions} from './search_page/search_engines_browser_proxy.js';
-export type {CategorizedTemplateUrls, SearchEngine, SearchEnginesBrowserProxy, SearchEnginesInfo} from './search_page/search_engines_browser_proxy.js';
+export type {CategorizedTemplateUrls, DefaultSearchEnginePickerData, SearchEngine, SearchEngineId, SearchEnginesBrowserProxy, SearchEnginesInfo} from './search_page/search_engines_browser_proxy.js';
 export {SettingsSearchPageElement} from './search_page/search_page.js';
 export {SettingsSearchPageIndexElement} from './search_page/search_page_index.js';
 export {SiteShortcutsPageElement} from './search_page/site_shortcuts_page.js';
 export {getSearchManager, SearchRequest, setSearchManagerForTesting, showBubble} from './search_settings.js';
 export type {SearchManager} from './search_settings.js';
+export {SettingId} from './setting_id.mojom-webui.js';
 export {SettingsMainElement} from './settings_main/settings_main.js';
 export {SettingsMenuElement} from './settings_menu/settings_menu.js';
 export {SearchableViewContainerMixin} from './settings_page/searchable_view_container_mixin.js';
@@ -160,8 +167,12 @@ export {SearchableViewContainerMixinLit} from './settings_page/searchable_view_c
 export {SettingsSectionElement} from './settings_page/settings_section.js';
 export {SettingsViewMixin} from './settings_page/settings_view_mixin.js';
 export {SettingsViewMixinLit} from './settings_page/settings_view_mixin_lit.js';
+export {browserProxyFactory as settingsSearchBrowserProxyFactory} from './settings_search.mojom-webui.js';
+export type {SearchResult, SettingsSearchHandlerInterface} from './settings_search.mojom-webui.js';
 export {MAX_QUERY_LENGTH, SettingsUiElement} from './settings_ui/settings_ui.js';
 export {SiteFaviconElement} from './site_favicon.js';
 export {convertDateToWindowsEpoch} from './time.js';
 export {TooltipMixin} from './tooltip_mixin.js';
 export type {TooltipMixinInterface} from './tooltip_mixin.js';
+export {WindowProxyImpl} from './window_proxy.js';
+export type {WindowProxy} from './window_proxy.js';

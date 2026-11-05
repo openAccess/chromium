@@ -52,6 +52,7 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/ui/fullscreen_util_mac.h"
+#include "ui/views/views_features.h"
 #endif
 
 DEFINE_USER_DATA(ToastController);
@@ -106,7 +107,7 @@ ToastController* ToastController::MaybeGetForTabInterface(
     return nullptr;
   }
 
-  return bwi->GetFeatures().toast_controller();
+  return ToastController::From(bwi);
 }
 
 void ToastController::Init() {
@@ -158,6 +159,14 @@ bool ToastController::MaybeShowToast(ToastParams params) {
 #if BUILDFLAG(IS_MAC)
 void ToastController::OnWidgetActivationChanged(views::Widget* widget,
                                                 bool active) {
+  // These workarounds are only needed when focusing a View in an inactive
+  // widget does not activate the widget.
+  // TODO(crbug.com/40486728): Remove once kMacActivateWidgetOnFocusRequest is
+  // removed.
+  if (base::FeatureList::IsEnabled(
+          views::features::kMacActivateWidgetOnFocusRequest)) {
+    return;
+  }
   if (active) {
     // Clears the stored focus view so that after widget activation occurs,
     // focus will not advance out of the widget and into the ContentsWebView.
@@ -253,7 +262,11 @@ void ToastController::OnOmniboxPopupVisibilityChanged(bool popup_is_open) {
 void ToastController::UpdateToastWidgetVisibility(bool show_toast_widget) {
   if (toast_widget_) {
     if (show_toast_widget) {
-      toast_widget_->ShowInactive();
+      // Avoid calling ShowInactive() if the toast is already visible, as doing
+      // so could deactivate an already-active toast widget.
+      if (!toast_widget_->IsVisible()) {
+        toast_widget_->ShowInactive();
+      }
     } else {
       toast_widget_->Hide();
     }
@@ -285,6 +298,8 @@ void ToastController::ShowToast(ToastParams params) {
       toast_registry_->GetToastSpecification(params.toast_id);
   CHECK(current_toast_spec);
   CHECK_EQ(current_toast_spec->has_menu(), !!params.menu_model);
+  CHECK_EQ(current_toast_spec->has_action_button_data_callback(),
+           params.action_button_callback_data.has_value());
   CHECK(current_toast_spec->body_string_id() != 0 ||
         params.body_string_override.has_value());
 
@@ -305,6 +320,9 @@ void ToastController::ShowToast(ToastParams params) {
 }
 
 void ToastController::CloseToast(toasts::ToastCloseReason reason) {
+  // Stop the auto-dismiss timer to prevent it from firing while the toast view
+  // is closing or animating out.
+  toast_close_timer_.Stop();
   if (toast_view_) {
     toast_view_->Close(reason);
   }
@@ -330,10 +348,24 @@ void ToastController::CreateToast(ToastParams params,
           : FormatString(spec->body_string_id(),
                          params.body_string_replacement_params,
                          params.body_string_cardinality_param);
-  auto toast_view = std::make_unique<toasts::ToastView>(
-      anchor_view, body_string, spec->icon(), params.image_override,
-      ShouldRenderToastOverWebContents(),
-      base::BindRepeating(&RecordToastDismissReason, params.toast_id));
+  std::unique_ptr<toasts::ToastView> toast_view;
+  // Toasts have either a static vector icon or an animated throbber. For
+  // throbber toasts, instantiate an iconless ToastView and add the throbber
+  // child view below.
+  if (spec->has_icon()) {
+    toast_view = std::make_unique<toasts::ToastView>(
+        anchor_view, body_string, spec->icon(), params.image_override,
+        ShouldRenderToastOverWebContents(),
+        base::BindRepeating(&RecordToastDismissReason, params.toast_id));
+  } else {
+    toast_view = std::make_unique<toasts::ToastView>(
+        anchor_view, body_string, ShouldRenderToastOverWebContents(),
+        base::BindRepeating(&RecordToastDismissReason, params.toast_id));
+  }
+
+  if (spec->has_throbber()) {
+    toast_view->AddThrobber();
+  }
 
   if (spec->has_close_button()) {
     toast_view->AddCloseButton(
@@ -345,8 +377,11 @@ void ToastController::CreateToast(ToastParams params,
         FormatString(spec->action_button_string_id().value(),
                      params.action_button_string_replacement_params,
                      std::nullopt),
-        spec->action_button_callback().Then(base::BindRepeating(
-            &RecordToastActionButtonClicked, params.toast_id)));
+        spec->GetActionButtonCallback(
+                browser_window_interface_,
+                std::move(params.action_button_callback_data))
+            .Then(base::BindRepeating(&RecordToastActionButtonClicked,
+                                      params.toast_id)));
   }
 
   if (spec->has_menu()) {
@@ -477,7 +512,6 @@ void ToastController::ClearTabScopedToasts(bool is_navigation) {
     const bool should_persist =
         is_navigation && specification->persist_on_navigation();
     if (!specification->is_global_scope() && !should_persist) {
-      toast_close_timer_.Stop();
       CloseToast(toasts::ToastCloseReason::kAbort);
     }
   }

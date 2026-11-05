@@ -30,7 +30,6 @@ class MockAutofillManager : public AutofillManager {
   ~MockAutofillManager() override;
 
   MOCK_METHOD(bool, ShouldClearPreviewedForm, (), (override));
-  MOCK_METHOD(void, ReparseKnownForms, (), (override));
   MOCK_METHOD(void, OnFocusOnNonFormFieldImpl, (), (override));
   MOCK_METHOD(void, OnDidAutofillFormImpl, (const FormData& form), (override));
   MOCK_METHOD(void,
@@ -55,7 +54,8 @@ class MockAutofillManager : public AutofillManager {
       OnDidDetectJavaScriptAutofillImpl,
       (const FormData& form,
        const FieldGlobalId& trigger_field_id,
-       const std::vector<JavaScriptFieldModification>& field_modifications),
+       const std::vector<JavaScriptFieldModification>& field_modifications,
+       base::TimeTicks detection_start_timestamp),
       (override));
   MOCK_METHOD(void,
               OnLoadedServerPredictionsImpl,
@@ -127,7 +127,7 @@ class MockAutofillManager : public AutofillManager {
   MOCK_METHOD(const CreditCardAccessManager*,
               GetCreditCardAccessManager,
               (),
-              (const override));
+              (const, override));
 
   base::WeakPtr<AutofillManager> GetWeakPtr() override;
 

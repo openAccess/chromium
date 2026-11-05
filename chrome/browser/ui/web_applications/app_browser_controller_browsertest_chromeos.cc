@@ -7,7 +7,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/test_support/test_system_web_app_installation.h"
 #include "chrome/browser/devtools/protocol/browser_handler.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
@@ -36,6 +35,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -43,6 +43,7 @@
 #include "content/public/test/theme_change_waiter.h"
 #include "extensions/browser/extension_registry.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/display/types/display_constants.h"
 
 namespace {
@@ -135,7 +136,7 @@ class AppBrowserControllerBrowserTestCrOs : public InProcessBrowserTest {
         profile(), test_system_web_app_installation_->GetType(),
         display::kInvalidDisplayId);
     EXPECT_TRUE(params.has_value());
-    params->disposition = WindowOpenDisposition::NEW_POPUP;
+    params->disposition = ui::mojom::WindowOpenDisposition::kNewPopup;
 
     ash::BrowserDelegate* delegate = ash::LaunchSystemWebAppImpl(
         profile(), test_system_web_app_installation_->GetType(),
@@ -148,7 +149,7 @@ class AppBrowserControllerBrowserTestCrOs : public InProcessBrowserTest {
         profile(), test_system_web_app_installation_->GetType(),
         display::kInvalidDisplayId);
     EXPECT_TRUE(params.has_value());
-    params->disposition = WindowOpenDisposition::NEW_WINDOW;
+    params->disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
 
     ash::BrowserDelegate* delegate = ash::LaunchSystemWebAppImpl(
         profile(), test_system_web_app_installation_->GetType(),

@@ -202,7 +202,7 @@ void KeystoreService::ChallengeAttestationOnlyKeystore(
     bool migrate,
     KeystoreAlgorithmName algorithm,
     ChallengeAttestationOnlyKeystoreCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   ::attestation::KeyType key_crypto_type;
   switch (algorithm) {
@@ -258,7 +258,7 @@ void KeystoreService::DidChallengeAttestationOnlyKeystore(
     ChallengeAttestationOnlyKeystoreCallback callback,
     void* challenge_key_ptr,
     const attestation::TpmChallengeKeyResult& result) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   chromeos::ChallengeAttestationOnlyKeystoreResult result_to_return;
   if (result.IsSuccess()) {
     result_to_return = std::vector<uint8_t>(result.challenge_response.begin(),
@@ -278,13 +278,13 @@ void KeystoreService::DidChallengeAttestationOnlyKeystore(
       break;
     }
   }
-  DCHECK(found);
+  CHECK(found, base::NotFatalUntil::M160);
 }
 
 //------------------------------------------------------------------------------
 
 void KeystoreService::GetKeyStores(GetKeyStoresCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   platform_keys_service_->GetTokens(
       base::BindOnce(&KeystoreService::DidGetKeyStores, std::move(callback)));
 }
@@ -294,7 +294,7 @@ void KeystoreService::DidGetKeyStores(
     GetKeyStoresCallback callback,
     std::vector<TokenId> platform_keys_token_ids,
     chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   chromeos::GetKeyStoresResult result;
 
@@ -324,7 +324,7 @@ void KeystoreService::DidGetKeyStores(
 void KeystoreService::SelectClientCertificates(
     const std::vector<std::vector<uint8_t>>& certificate_authorities,
     SelectClientCertificatesCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   std::vector<std::string> cert_authorities_str;
   cert_authorities_str.reserve(certificate_authorities.size());
@@ -343,7 +343,7 @@ void KeystoreService::DidSelectClientCertificates(
     SelectClientCertificatesCallback callback,
     std::unique_ptr<net::CertificateList> matches,
     chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   chromeos::KeystoreSelectClientCertificatesResult result;
 
@@ -369,7 +369,7 @@ void KeystoreService::DidSelectClientCertificates(
 
 void KeystoreService::GetCertificates(KeystoreType keystore,
                                       GetCertificatesCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   platform_keys_service_->GetCertificates(
       KeystoreToToken(keystore),
       base::BindOnce(&KeystoreService::DidGetCertificates,
@@ -381,7 +381,7 @@ void KeystoreService::DidGetCertificates(
     GetCertificatesCallback callback,
     std::unique_ptr<net::CertificateList> certs,
     chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   chromeos::GetCertificatesResult result;
 
@@ -408,7 +408,7 @@ void KeystoreService::DidGetCertificates(
 void KeystoreService::AddCertificate(KeystoreType keystore,
                                      const std::vector<uint8_t>& certificate,
                                      AddCertificateCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   scoped_refptr<net::X509Certificate> cert_x509 = ParseCertificate(certificate);
   if (!cert_x509.get()) {
     std::move(callback).Run(/*is_error=*/true,
@@ -425,7 +425,7 @@ void KeystoreService::AddCertificate(KeystoreType keystore,
 void KeystoreService::DidImportCertificate(
     AddCertificateCallback callback,
     chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (status == chromeos::platform_keys::Status::kSuccess) {
     std::move(callback).Run(/*is_error=*/false, KeystoreError::kUnknown);
   } else {
@@ -440,7 +440,7 @@ void KeystoreService::DidImportCertificate(
 void KeystoreService::RemoveCertificate(KeystoreType keystore,
                                         const std::vector<uint8_t>& certificate,
                                         RemoveCertificateCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   scoped_refptr<net::X509Certificate> cert_x509 = ParseCertificate(certificate);
   if (!cert_x509.get()) {
     std::move(callback).Run(/*is_error=*/true,
@@ -457,7 +457,7 @@ void KeystoreService::RemoveCertificate(KeystoreType keystore,
 void KeystoreService::DidRemoveCertificate(
     RemoveCertificateCallback callback,
     chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (status == chromeos::platform_keys::Status::kSuccess) {
     std::move(callback).Run(/*is_error=*/false, KeystoreError::kUnknown);
   } else {
@@ -472,7 +472,7 @@ void KeystoreService::DidRemoveCertificate(
 void KeystoreService::GetPublicKey(const std::vector<uint8_t>& certificate,
                                    KeystoreAlgorithmName algorithm_name,
                                    GetPublicKeyCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!IsSigningAlgorithm(algorithm_name)) {
     std::move(callback).Run(
@@ -510,7 +510,7 @@ void KeystoreService::GetPublicKey(const std::vector<uint8_t>& certificate,
 void KeystoreService::GenerateKey(KeystoreType keystore,
                                   KeystoreAlgorithm algorithm,
                                   GenerateKeyCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   TokenId token_id = KeystoreToToken(keystore);
 
   if (auto* params = std::get_if<RsassaPkcs115Params>(&algorithm)) {
@@ -540,7 +540,7 @@ void KeystoreService::GenerateKey(KeystoreType keystore,
 void KeystoreService::DidGenerateKey(GenerateKeyCallback callback,
                                      std::vector<uint8_t> public_key,
                                      chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   chromeos::KeystoreBinaryResult result;
   if (status == chromeos::platform_keys::Status::kSuccess) {
     result = std::move(public_key);
@@ -556,7 +556,7 @@ void KeystoreService::DidGenerateKey(GenerateKeyCallback callback,
 void KeystoreService::RemoveKey(KeystoreType keystore,
                                 const std::vector<uint8_t>& public_key,
                                 RemoveKeyCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   platform_keys_service_->RemoveKey(
       KeystoreToToken(keystore), public_key,
       base::BindOnce(&KeystoreService::DidRemoveKey, std::move(callback)));
@@ -565,7 +565,7 @@ void KeystoreService::RemoveKey(KeystoreType keystore,
 // static
 void KeystoreService::DidRemoveKey(RemoveKeyCallback callback,
                                    chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (status == chromeos::platform_keys::Status::kSuccess) {
     std::move(callback).Run(/*is_error=*/false, KeystoreError::kUnknown);
   } else {
@@ -582,7 +582,7 @@ void KeystoreService::Sign(std::optional<KeystoreType> keystore,
                            SigningScheme scheme,
                            const std::vector<uint8_t>& data,
                            SignCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   std::optional<TokenId> token_id;
   if (keystore.has_value()) {
@@ -623,7 +623,7 @@ void KeystoreService::Sign(std::optional<KeystoreType> keystore,
 void KeystoreService::DidSign(SignCallback callback,
                               std::vector<uint8_t> signature,
                               chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (status == chromeos::platform_keys::Status::kSuccess) {
     std::move(callback).Run(std::move(signature));
@@ -637,7 +637,7 @@ void KeystoreService::DidSign(SignCallback callback,
 
 void KeystoreService::GetKeyTags(const std::vector<uint8_t>& public_key,
                                  GetKeyTagsCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   key_permissions_service_->IsCorporateKey(
       public_key,
@@ -648,13 +648,13 @@ void KeystoreService::GetKeyTags(const std::vector<uint8_t>& public_key,
 void KeystoreService::DidGetKeyTags(GetKeyTagsCallback callback,
                                     std::optional<bool> corporate,
                                     chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   using KeyTag = chromeos::KeyTag;
 
   chromeos::GetKeyTagsResult result;
 
   if (status == chromeos::platform_keys::Status::kSuccess) {
-    DCHECK(corporate.has_value());
+    CHECK(corporate.has_value(), base::NotFatalUntil::M161);
     static_assert(sizeof(uint64_t) >= sizeof(KeyTag),
                   "Too many enum values for uint64_t");
 
@@ -676,7 +676,7 @@ void KeystoreService::DidGetKeyTags(GetKeyTagsCallback callback,
 void KeystoreService::AddKeyTags(const std::vector<uint8_t>& public_key,
                                  uint64_t tags,
                                  AddKeyTagsCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (tags == static_cast<uint64_t>(chromeos::KeyTag::kNoTags)) {
     std::move(callback).Run(/*is_error=*/false, KeystoreError::kUnknown);
@@ -696,7 +696,7 @@ void KeystoreService::AddKeyTags(const std::vector<uint8_t>& public_key,
 // static
 void KeystoreService::DidAddKeyTags(AddKeyTagsCallback callback,
                                     chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (status == chromeos::platform_keys::Status::kSuccess) {
     std::move(callback).Run(/*is_error=*/false, KeystoreError::kUnknown);
   } else {
@@ -711,7 +711,7 @@ void KeystoreService::DidAddKeyTags(AddKeyTagsCallback callback,
 void KeystoreService::CanUserGrantPermissionForKey(
     const std::vector<uint8_t>& public_key,
     CanUserGrantPermissionForKeyCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   key_permissions_service_->CanUserGrantPermissionForKey(public_key,
                                                          std::move(callback));
 }
@@ -724,7 +724,7 @@ void KeystoreService::SetAttributeForKey(
     KeystoreKeyAttributeType keystore_attribute_type,
     const std::vector<uint8_t>& attribute_value,
     SetAttributeForKeyCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   auto attribute_type = UnpackKeystoreKeyAttributeType(keystore_attribute_type);
   if (!attribute_type.has_value()) {
@@ -745,7 +745,7 @@ void KeystoreService::SetAttributeForKey(
 void KeystoreService::DidSetAttributeForKey(
     SetAttributeForKeyCallback callback,
     chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (status == chromeos::platform_keys::Status::kSuccess) {
     std::move(callback).Run(/*is_error=*/false, KeystoreError::kUnknown);
   } else {

@@ -16,6 +16,7 @@
 #include "base/test/mock_callback.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "crypto/sign.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -113,8 +114,7 @@ class MockOAuth2MintTokenFlow : public OAuth2MintTokenFlow {
     result.bound_token_upgrade_challenge = upgrade_challenge;
     if (!upgrade_challenge.empty()) {
       result.bound_token_upgrade_supported_algorithms = {
-          crypto::SignatureVerifier::ECDSA_SHA256,
-          crypto::SignatureVerifier::RSA_PKCS1_SHA256};
+          crypto::sign::ECDSA_SHA256, crypto::sign::RSA_PKCS1_SHA256};
     }
     delegate_->OnMintTokenSuccess(result);
   }
@@ -464,6 +464,43 @@ TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, Failure) {
   VerifyBoundFetchAuthErrorHistograms(
       GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS,
       kChallengeSentinelHistogramSuffix);
+}
+
+TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, FailureWithSignedAssertion) {
+  auto fetcher = CreateFetcher();
+  fetcher->SetBindingKeyAssertion(kTestAssertion);
+  fetcher->Start(kTestClientId, kTestClientSecret, {kTestScope});
+  EXPECT_CALL(*mock_consumer(),
+              OnGetTokenFailure(
+                  GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+                      GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                          TOKEN_BINDING_ASSERTION_REJECTED_BY_SERVER)));
+  mock_flow()->SimulateMintTokenFailure(
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
+  VerifyBoundFetchAuthErrorHistograms(
+      GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS,
+      kSignedAssertionHistogramSuffix);
+}
+
+TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, FailureWithFailedAssertion) {
+  auto fetcher = CreateFetcher();
+  fetcher->SetBindingKeyAssertion(
+      std::string(GaiaConstants::kTokenBindingAssertionFailedPlaceholder));
+  fetcher->Start(kTestClientId, kTestClientSecret, {kTestScope});
+  EXPECT_CALL(*mock_consumer(),
+              OnGetTokenFailure(
+                  GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+                      GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                          TOKEN_BINDING_ASSERTION_GENERATION_FAILED)));
+  mock_flow()->SimulateMintTokenFailure(
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
+  VerifyBoundFetchAuthErrorHistograms(
+      GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS,
+      kAssertionFailedHistogramSuffix);
 }
 
 TEST_F(OAuth2MintAccessTokenFetcherAdapterTest, FailureUnbound) {

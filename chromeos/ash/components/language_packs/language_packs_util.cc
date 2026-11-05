@@ -35,11 +35,14 @@ const std::string ResolveLocaleForHandwriting(const std::string& input_locale) {
 
 const std::string ResolveLocaleForTts(const std::string& input_locale) {
   // Consider exceptions first.
-  if (base::EqualsCaseInsensitiveASCII(input_locale, "en-au") ||
+  if (base::EqualsCaseInsensitiveASCII(input_locale, "bn-in") ||
+      base::EqualsCaseInsensitiveASCII(input_locale, "en-au") ||
       base::EqualsCaseInsensitiveASCII(input_locale, "en-gb") ||
+      base::EqualsCaseInsensitiveASCII(input_locale, "en-in") ||
       base::EqualsCaseInsensitiveASCII(input_locale, "en-us") ||
       base::EqualsCaseInsensitiveASCII(input_locale, "es-es") ||
       base::EqualsCaseInsensitiveASCII(input_locale, "es-us") ||
+      base::EqualsCaseInsensitiveASCII(input_locale, "fr-ca") ||
       base::EqualsCaseInsensitiveASCII(input_locale, "pt-br") ||
       base::EqualsCaseInsensitiveASCII(input_locale, "pt-pt")) {
     return base::ToLowerASCII(input_locale);
@@ -49,7 +52,7 @@ const std::string ResolveLocaleForTts(const std::string& input_locale) {
 
 }  // namespace
 
-FeatureIdsEnum GetFeatureIdValueForUma(const std::string& feature_id) {
+FeatureIdsEnum GetFeatureIdValueForUma(std::string_view feature_id) {
   if (feature_id == kHandwritingFeatureId) {
     return FeatureIdsEnum::kHandwriting;
   }

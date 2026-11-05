@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "base/values.h"
 #include "components/content_settings/core/common/content_settings_types.h"
@@ -49,13 +50,6 @@ class WebsiteSettingsInfo {
     // to get right and often result in surprising UX.
     REQUESTING_AND_TOP_SCHEMEFUL_SITE_SCOPE,
 
-    // Settings scoped to the origin of the requesting frame and the
-    // schemeful site of the top-level frame.
-    // Use only after strongly considering if this is the right choice;
-    // presenting settings that are scoped on two schemeful sites is difficult
-    // to get right and often result in surprising UX.
-    REQUESTING_ORIGIN_AND_TOP_SCHEMEFUL_SITE_SCOPE,
-
     // Setting scoped to the origin of the requesting frame only.
     REQUESTING_ORIGIN_ONLY_SCOPE,
 
@@ -91,7 +85,7 @@ class WebsiteSettingsInfo {
   };
 
   WebsiteSettingsInfo(ContentSettingsType type,
-                      const std::string& name,
+                      std::string_view name,
                       base::Value initial_default_value,
                       SyncStatus sync_status,
                       LossyStatus lossy_status,

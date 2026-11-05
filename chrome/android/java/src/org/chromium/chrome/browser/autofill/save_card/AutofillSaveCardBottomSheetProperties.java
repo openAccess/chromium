@@ -4,40 +4,15 @@
 
 package org.chromium.chrome.browser.autofill.save_card;
 
-
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.components.autofill.payments.LegalMessageLine;
+import org.chromium.components.autofill.payments.LegalMessage;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.ReadableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.ReadableObjectPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 
-import java.util.List;
-import java.util.Objects;
-import java.util.function.Consumer;
-
 @NullMarked
 /*package*/ class AutofillSaveCardBottomSheetProperties {
-    /** Legal messages. */
-    static class LegalMessage {
-        /** Legal message lines. */
-        final List<LegalMessageLine> mLines;
-
-        /** The link for the legal message. */
-        final Consumer<String> mLink;
-
-        /**
-         * Constructs legal messages.
-         *
-         * @param lines The legal message lines. Must not be {@code null}.
-         * @param link The link for the legal message. Must not be {@code null}.
-         */
-        LegalMessage(List<LegalMessageLine> lines, Consumer<String> link) {
-            mLines = Objects.requireNonNull(lines, "List of legal message lines can't be null");
-            mLink = Objects.requireNonNull(link, "Link consumer can't be null");
-        }
-    }
-
     /** The prompt message for the bottom sheet. */
     static final ReadableObjectPropertyKey<String> TITLE = new ReadableObjectPropertyKey<>();
 
@@ -66,8 +41,8 @@ import java.util.function.Consumer;
             new ReadableObjectPropertyKey<>();
 
     /** Legal messages. */
-    static final ReadableObjectPropertyKey<AutofillSaveCardBottomSheetProperties.LegalMessage>
-            LEGAL_MESSAGE = new ReadableObjectPropertyKey<>();
+    static final ReadableObjectPropertyKey<LegalMessage> LEGAL_MESSAGE =
+            new ReadableObjectPropertyKey<>();
 
     /** The label for the button that saves a card to the server. */
     static final ReadableObjectPropertyKey<String> ACCEPT_BUTTON_LABEL =
@@ -75,6 +50,14 @@ import java.util.function.Consumer;
 
     /** The label for the button that declines the card save. */
     static final ReadableObjectPropertyKey<String> CANCEL_BUTTON_LABEL =
+            new ReadableObjectPropertyKey<>();
+
+    /** The callback to run when the button that saves a card to the server is clicked. */
+    static final ReadableObjectPropertyKey<Runnable> ON_ACCEPT_BUTTON_CLICK_ACTION =
+            new ReadableObjectPropertyKey<>();
+
+    /** The callback to run when the button that declines the card save is clicked. */
+    static final ReadableObjectPropertyKey<Runnable> ON_CANCEL_BUTTON_CLICK_ACTION =
             new ReadableObjectPropertyKey<>();
 
     /** Indicates whether the bottom sheet is in a loading state. */
@@ -99,6 +82,8 @@ import java.util.function.Consumer;
         LEGAL_MESSAGE,
         ACCEPT_BUTTON_LABEL,
         CANCEL_BUTTON_LABEL,
+        ON_ACCEPT_BUTTON_CLICK_ACTION,
+        ON_CANCEL_BUTTON_CLICK_ACTION,
         SHOW_LOADING_STATE,
         LOADING_DESCRIPTION,
         GOOGLE_PAY_PILL_LOGO,

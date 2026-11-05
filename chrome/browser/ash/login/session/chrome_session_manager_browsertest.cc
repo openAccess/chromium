@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_switches.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "base/command_line.h"
@@ -38,7 +39,6 @@
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/sync/base/features.h"
 #include "content/public/test/browser_test.h"
 #include "google_apis/gaia/fake_gaia.h"
 #include "rlz/buildflags/buildflags.h"
@@ -50,7 +50,6 @@
 #if BUILDFLAG(ENABLE_RLZ)
 #include "chrome/browser/ash/login/session/user_session_initializer.h"
 #include "chrome/browser/google/google_brand_chromeos.h"  // nogncheck
-#include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/install_attributes/stub_install_attributes.h"  // nogncheck
 #include "components/user_manager/user_names.h"
 #endif  // BUILDFLAG(ENABLE_RLZ)
@@ -467,7 +466,7 @@ class GuestSessionRlzTest : public InProcessBrowserTest,
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     command_line->AppendSwitch(switches::kGuestSession);
-    command_line->AppendSwitch(::switches::kIncognito);
+    command_line->AppendSwitch(ash::chrome_switches::kIncognito);
     command_line->AppendSwitchASCII(switches::kLoginProfile, "hash");
     command_line->AppendSwitchASCII(
         switches::kLoginUser, user_manager::GuestAccountId().GetUserEmail());
@@ -513,8 +512,7 @@ class ChromeSessionManagerConsentLevelMigrationTest
       // Enabling kChromeOsUseConsentLevelSigninForNewUsers ensures that the
       // initial login signs the user in at kSignin.
       feature_list_.InitWithFeatures(
-          /*enabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos,
-                                ::switches::
+          /*enabled_features=*/{::switches::
                                     kChromeOsUseConsentLevelSigninForNewUsers},
           /*disabled_features=*/{});
     } else {
@@ -523,8 +521,7 @@ class ChromeSessionManagerConsentLevelMigrationTest
       // the migration of the existing kSignin profile to kSync.
       feature_list_.InitWithFeatures(
           /*enabled_features=*/
-          {syncer::kReplaceSyncPromosWithSignInPromos,
-           ::switches::kUndoChromeOsUseConsentLevelSignin},
+          {::switches::kUndoChromeOsUseConsentLevelSignin},
           /*disabled_features=*/{
               ::switches::kChromeOsUseConsentLevelSigninForNewUsers});
     }

@@ -19,7 +19,7 @@ namespace task_manager {
 namespace {
 
 bool HostsExtension(content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
 #if BUILDFLAG(IS_ANDROID)
   return false;
 #else   // BUILDFLAG(IS_ANDROID)
@@ -32,9 +32,10 @@ bool HostsExtension(content::WebContents* web_contents) {
 
 TabContentsTask::TabContentsTask(content::WebContents* web_contents)
     : RendererTask(std::u16string(),
-                   RendererTask::GetFaviconFromWebContents(web_contents).get(),
+                   /*icon=*/nullptr,
                    web_contents) {
   set_title(GetCurrentTitle());
+  DefaultUpdateFaviconImpl();
 }
 
 TabContentsTask::~TabContentsTask() = default;

@@ -98,15 +98,16 @@ WebString WebInputElement::LocalizeValue(
 }
 
 void WebInputElement::SetShouldRevealPassword(bool value) {
-  Unwrap<HTMLInputElement>()->SetShouldRevealPassword(value);
+  // These visibility changes are part of another operation, such as password
+  // generation, rather than an explicit user request to show/hide the password.
+  // Keep them silent so the UI driving that operation controls its
+  // accessibility feedback.
+  Unwrap<HTMLInputElement>()->SetShouldRevealPassword(
+      value, PasswordVisibilityAnnouncement::kSilent);
 }
 
 bool WebInputElement::ShouldRevealPassword() const {
   return ConstUnwrap<HTMLInputElement>()->ShouldRevealPassword();
-}
-
-void WebInputElement::SetEmailVerificationState(EmailVerificationState state) {
-  Unwrap<HTMLInputElement>()->SetEmailVerificationState(state);
 }
 
 void WebInputElement::DispatchSimulatedEnter() {

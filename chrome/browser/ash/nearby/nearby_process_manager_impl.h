@@ -33,20 +33,8 @@ class NearbyDependenciesProvider;
 // Mojo connection, which results in the process getting killed.
 class NearbyProcessManagerImpl : public NearbyProcessManager {
  public:
-  class Factory {
-   public:
-    static std::unique_ptr<NearbyProcessManager> Create(
-        NearbyDependenciesProvider* nearby_dependencies_provider,
-        std::unique_ptr<base::OneShotTimer> timer =
-            std::make_unique<base::OneShotTimer>());
-    static void SetFactoryForTesting(Factory* factory);
-    virtual ~Factory() = default;
-
-   private:
-    virtual std::unique_ptr<NearbyProcessManager> BuildInstance(
-        NearbyDependenciesProvider* nearby_dependencies_provider,
-        std::unique_ptr<base::OneShotTimer> timer) = 0;
-  };
+  static std::unique_ptr<NearbyProcessManager> Create(
+      NearbyDependenciesProvider* nearby_dependencies_provider);
 
   ~NearbyProcessManagerImpl() override;
 
@@ -59,8 +47,6 @@ class NearbyProcessManagerImpl : public NearbyProcessManager {
     NearbyReferenceImpl(
         const mojo::SharedRemote<
             ::nearby::connections::mojom::NearbyConnections>& connections,
-        const mojo::SharedRemote<
-            ::ash::nearby::presence::mojom::NearbyPresence>& presence,
         const mojo::SharedRemote<sharing::mojom::NearbySharingDecoder>& decoder,
         const mojo::SharedRemote<quick_start::mojom::QuickStartDecoder>&
             quick_start_decoder,
@@ -71,8 +57,6 @@ class NearbyProcessManagerImpl : public NearbyProcessManager {
     // NearbyProcessManager::NearbyProcessReference:
     const mojo::SharedRemote<::nearby::connections::mojom::NearbyConnections>&
     GetNearbyConnections() const override;
-    const mojo::SharedRemote<::ash::nearby::presence::mojom::NearbyPresence>&
-    GetNearbyPresence() const override;
     const mojo::SharedRemote<sharing::mojom::NearbySharingDecoder>&
     GetNearbySharingDecoder() const override;
     const mojo::SharedRemote<quick_start::mojom::QuickStartDecoder>&
@@ -80,8 +64,6 @@ class NearbyProcessManagerImpl : public NearbyProcessManager {
 
     mojo::SharedRemote<::nearby::connections::mojom::NearbyConnections>
         connections_;
-    mojo::SharedRemote<::ash::nearby::presence::mojom::NearbyPresence>
-        presence_;
     mojo::SharedRemote<sharing::mojom::NearbySharingDecoder> decoder_;
     mojo::SharedRemote<quick_start::mojom::QuickStartDecoder>
         quick_start_decoder_;
@@ -124,7 +106,6 @@ class NearbyProcessManagerImpl : public NearbyProcessManager {
   // by multiple clients.
   mojo::SharedRemote<::nearby::connections::mojom::NearbyConnections>
       connections_;
-  mojo::SharedRemote<::ash::nearby::presence::mojom::NearbyPresence> presence_;
   mojo::SharedRemote<sharing::mojom::NearbySharingDecoder> decoder_;
   mojo::SharedRemote<quick_start::mojom::QuickStartDecoder>
       quick_start_decoder_;

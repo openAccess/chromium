@@ -22,6 +22,7 @@
 #include "chrome/browser/password_manager/password_change/change_password_form_waiter.h"
 #include "chrome/browser/password_manager/password_change/model_quality_logs_uploader.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/autofill/core/common/autofill_test_util.h"
 #include "components/password_manager/core/browser/fake_form_fetcher.h"
 #include "components/password_manager/core/browser/mock_password_form_cache.h"
@@ -83,8 +84,8 @@ class MockStubPasswordManagerDriver
       (autofill::FieldRendererId,
        autofill::FieldRendererId,
        autofill::FieldRendererId,
-       const std::u16string&,
-       const std::u16string&,
+       const password_manager::PasswordString&,
+       const password_manager::PasswordString&,
        base::OnceCallback<void(const std::optional<autofill::FormData>&)>),
       (override));
   MOCK_METHOD(void,
@@ -150,8 +151,7 @@ class ChangePasswordFormFillerTest : public ChromeRenderViewHostTestHarness {
     existing_credential_.password_value =
         password_manager::PasswordString(std::u16string(kOldPassword));
     existing_credential_.url = url();
-    existing_credential_.match_type =
-        password_manager::PasswordForm::MatchType::kExact;
+    existing_credential_.match_type = affiliations::MatchType::kExact;
     existing_credential_.in_store =
         password_manager::PasswordForm::Store::kProfileStore;
     existing_credential_.scheme = password_manager::PasswordForm::Scheme::kHtml;
@@ -197,11 +197,16 @@ class ChangePasswordFormFillerTest : public ChromeRenderViewHostTestHarness {
                            std::optional<autofill::FormData> result,
                            base::OnceCallback<void(FillingResult)> callback) {
     base::RunLoop run_loop;
-    EXPECT_CALL(driver(), FillChangePasswordForm)
+    EXPECT_CALL(driver(),
+                FillChangePasswordForm(_, _, _, testing::Eq(kOldPassword),
+                                       testing::Eq(kNewPassword), _))
         .WillOnce(DoAll(Invoke(&run_loop, &base::RunLoop::Quit),
                         base::test::RunOnceCallback<5>(result)));
-    filler->FillForm(manager, kUsername, kOldPassword, kNewPassword,
-                     std::move(callback));
+    filler->FillForm(
+        manager, kUsername,
+        password_manager::PasswordString(std::u16string(kOldPassword)),
+        password_manager::PasswordString(std::u16string(kNewPassword)),
+        std::move(callback));
     run_loop.Run();
   }
 
@@ -237,6 +242,30 @@ class ChangePasswordFormFillerTest : public ChromeRenderViewHostTestHarness {
   password_manager::PasswordForm existing_credential_;
   std::vector<std::unique_ptr<password_manager::PasswordFormManager>> managers_;
 };
+
+TEST_F(ChangePasswordFormFillerTest, PostedFillingOwnsProtectedPasswords) {
+  password_manager::PasswordFormManager* const form_manager =
+      CreateFormManager(/*credentials_to_seed=*/{});
+  std::unique_ptr<ChangePasswordFormFiller> filler = CreateFiller();
+  password_manager::PasswordString old_password{std::u16string(kOldPassword)};
+  password_manager::PasswordString new_password{std::u16string(kNewPassword)};
+  base::test::TestFuture<FillingResult> filling_future;
+
+  EXPECT_CALL(driver(), FillChangePasswordForm).Times(0);
+  filler->FillForm(form_manager, kUsername, old_password, new_password,
+                   filling_future.GetCallback());
+  testing::Mock::VerifyAndClearExpectations(&driver());
+
+  old_password.clear();
+  new_password.clear();
+  EXPECT_CALL(driver(),
+              FillChangePasswordForm(_, _, _, testing::Eq(kOldPassword),
+                                     testing::Eq(kNewPassword), _))
+      .WillOnce(
+          base::test::RunOnceCallback<5>(CreateFilledTestPasswordFormData()));
+
+  EXPECT_TRUE(filling_future.Get().has_value());
+}
 
 TEST_F(ChangePasswordFormFillerTest, SucceededForExistingCredential) {
   auto* form_manager =
@@ -380,7 +409,9 @@ TEST_F(ChangePasswordFormFillerTest, ProvisionallySaveFailed) {
   autofill::FormData filled_form = CreateFilledTestPasswordFormData();
   filled_form.set_renderer_id(new_form_data.renderer_id());
 
-  EXPECT_CALL(driver(), FillChangePasswordForm)
+  EXPECT_CALL(driver(),
+              FillChangePasswordForm(_, _, _, testing::Eq(kOldPassword),
+                                     testing::Eq(kNewPassword), _))
       .WillOnce(base::test::RunOnceCallback<5>(filled_form));
   static_cast<password_manager::PasswordFormManagerObserver*>(
       filler->form_waiter())
@@ -409,13 +440,27 @@ TEST_F(ChangePasswordFormFillerTest,
   autofill::FormData filled_form = CreateFilledTestPasswordFormData();
   filled_form.set_renderer_id(new_form_data.renderer_id());
 
-  EXPECT_CALL(driver(), FillChangePasswordForm)
+  EXPECT_CALL(driver(), FillChangePasswordForm).Times(0);
+  static_cast<password_manager::PasswordFormManagerObserver*>(
+      filler->form_waiter())
+      ->OnPasswordFormParsed(form_manager);
+  testing::Mock::VerifyAndClearExpectations(&driver());
+
+  EXPECT_CALL(driver(),
+              FillChangePasswordForm(_, _, _, testing::Eq(kOldPassword),
+                                     testing::Eq(kNewPassword), _))
       .WillOnce(base::test::RunOnceCallback<5>(filled_form));
   static_cast<password_manager::PasswordFormManagerObserver*>(
       filler->form_waiter())
       ->OnPasswordFormParsed(new_form_manager);
 
   EXPECT_TRUE(filling_future.Get().has_value());
+  const auto& quality =
+      logs_uploader()->GetFinalLog().password_change_submission().quality();
+  ASSERT_EQ(quality.discarded_forms_data_size(), 1);
+  EXPECT_EQ(quality.discarded_forms_data(0).discard_reason(),
+            optimization_guide::proto::
+                PasswordChangeQuality_FormData_DiscardReason_FIELD_TO_IGNORE);
 }
 
 TEST_F(ChangePasswordFormFillerTest,
@@ -435,4 +480,14 @@ TEST_F(ChangePasswordFormFillerTest,
       filler->form_waiter())
       ->OnPasswordFormParsed(form_manager);
   testing::Mock::VerifyAndClearExpectations(&driver());
+
+  // Destroy `filler` while `form_waiter()` is still active to flush buffered
+  // discarded forms to `logs_uploader()`.
+  filler.reset();
+  const auto& quality =
+      logs_uploader()->GetFinalLog().password_change_submission().quality();
+  ASSERT_EQ(quality.discarded_forms_data_size(), 1);
+  EXPECT_EQ(quality.discarded_forms_data(0).discard_reason(),
+            optimization_guide::proto::
+                PasswordChangeQuality_FormData_DiscardReason_FIELD_TO_IGNORE);
 }

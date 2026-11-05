@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 import org.junit.After;
 import org.junit.Before;
@@ -25,6 +26,7 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -59,8 +61,6 @@ public class TabGroupUiOneshotSupplierUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private TabModelSelector mTabModelSelector;
-    @Mock private Activity mActivity;
-    @Mock private ViewGroup mViewGroup;
     @Mock private BrowserControlsStateProvider mBrowserControlsStateProvider;
     @Mock private ScrimManager mScrimManager;
     @Mock private BottomSheetController mBottomSheetController;
@@ -72,7 +72,7 @@ public class TabGroupUiOneshotSupplierUnitTest {
 
     @Mock private Tab mTab;
     @Mock private TabModel mTabModel;
-    @Mock private TabManagementDelegate mTabManagementDelegate;
+    @Mock private TabGroupUiFactory.Factory mTabGroupUiFactory;
     @Mock private TabGroupUi mTabGroupUi;
     @Mock private ThemeColorProvider mThemeColorProvider;
     @Mock private Supplier<ShareDelegate> mShareDelegateSupplier;
@@ -87,10 +87,14 @@ public class TabGroupUiOneshotSupplierUnitTest {
     private final OneshotSupplier<LayoutStateProvider> mLayoutStateProviderSupplier =
             new OneshotSupplierImpl<>();
 
+    private Activity mActivity;
+    private ViewGroup mViewGroup;
     private TabGroupUiOneshotSupplier mTabGroupUiOneshotSupplier;
 
     @Before
     public void setUp() {
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
+        mViewGroup = new FrameLayout(mActivity);
         when(mTabModelSelector.getModel(anyBoolean())).thenReturn(mTabModel);
         when(mTab.isIncognito()).thenReturn(false);
         mTabGroupUiOneshotSupplier =
@@ -112,11 +116,11 @@ public class TabGroupUiOneshotSupplierUnitTest {
                         mUndoBarThrottle,
                         mTabBookmarkerSupplier,
                         mShareDelegateSupplier);
-        when(mTabManagementDelegate.createTabGroupUi(
+        when(mTabGroupUiFactory.createTabGroupUi(
                         any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
                         any(), any(), any(), any(), any()))
                 .thenReturn(mTabGroupUi);
-        TabManagementDelegateProvider.setTabManagementDelegateForTesting(mTabManagementDelegate);
+        TabGroupUiFactory.setFactoryForTesting(mTabGroupUiFactory);
     }
 
     @After
@@ -131,7 +135,7 @@ public class TabGroupUiOneshotSupplierUnitTest {
 
         mActivityTabProvider.setForTesting(mTab);
         verify(mTab).addObserver(mTabObserverCaptor.capture());
-        verifyNoInteractions(mTabManagementDelegate);
+        verifyNoInteractions(mTabGroupUiFactory);
         assertNull(mTabGroupUiOneshotSupplier.get());
 
         when(mTabModel.isTabInTabGroup(mTab)).thenReturn(true);
@@ -139,7 +143,7 @@ public class TabGroupUiOneshotSupplierUnitTest {
 
         RobolectricUtil.runAllBackgroundAndUi();
 
-        verify(mTabManagementDelegate)
+        verify(mTabGroupUiFactory)
                 .createTabGroupUi(
                         mActivity,
                         mViewGroup,
@@ -166,12 +170,12 @@ public class TabGroupUiOneshotSupplierUnitTest {
 
         mActivityTabProvider.setForTesting(mTab);
         verify(mTab).addObserver(mTabObserverCaptor.capture());
-        verifyNoInteractions(mTabManagementDelegate);
+        verifyNoInteractions(mTabGroupUiFactory);
         assertNull(mTabGroupUiOneshotSupplier.get());
 
         RobolectricUtil.runAllBackgroundAndUi();
 
-        verify(mTabManagementDelegate)
+        verify(mTabGroupUiFactory)
                 .createTabGroupUi(
                         mActivity,
                         mViewGroup,

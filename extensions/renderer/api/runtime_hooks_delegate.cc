@@ -37,9 +37,15 @@
 #include "extensions/renderer/get_script_context.h"
 #include "extensions/renderer/renderer_extension_registry.h"
 #include "extensions/renderer/script_context.h"
+#include "extensions/renderer/service_worker_data.h"
 #include "extensions/renderer/v8_helpers.h"
+#include "extensions/renderer/worker_thread_dispatcher.h"
 #include "gin/converter.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_frame.h"
 #include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_node.h"
 #include "v8/include/v8-function-callback.h"
 #include "v8/include/v8-function.h"
 #include "v8/include/v8-isolate.h"
@@ -98,12 +104,15 @@ void EmptySetter(v8::Local<v8::Name> name,
 constexpr char kGetManifest[] = "runtime.getManifest";
 constexpr char kGetVersion[] = "runtime.getVersion";
 constexpr char kGetURL[] = "runtime.getURL";
+constexpr char kGetDocumentId[] = "runtime.getDocumentId";
 constexpr char kConnect[] = "runtime.connect";
 constexpr char kConnectNative[] = "runtime.connectNative";
 constexpr char kSendMessage[] = "runtime.sendMessage";
 constexpr char kSendNativeMessage[] = "runtime.sendNativeMessage";
 constexpr char kGetBackgroundPage[] = "runtime.getBackgroundPage";
 constexpr char kGetPackageDirectoryEntry[] = "runtime.getPackageDirectoryEntry";
+constexpr char kMarkListenerRegistrationComplete[] =
+    "runtime.markListenerRegistrationComplete";
 constexpr char kRequestUpdateCheck[] = "runtime.requestUpdateCheck";
 
 // The custom callback supplied to runtime.getBackgroundPage to find and return
@@ -414,6 +423,7 @@ RequestResult RuntimeHooksDelegate::HandleRequest(
       {&RuntimeHooksDelegate::HandleSendMessage, kSendMessage},
       {&RuntimeHooksDelegate::HandleConnect, kConnect},
       {&RuntimeHooksDelegate::HandleGetURL, kGetURL},
+      {&RuntimeHooksDelegate::HandleGetDocumentId, kGetDocumentId},
       {&RuntimeHooksDelegate::HandleGetManifest, kGetManifest},
       {&RuntimeHooksDelegate::HandleGetVersion, kGetVersion},
       {&RuntimeHooksDelegate::HandleConnectNative, kConnectNative},
@@ -422,6 +432,8 @@ RequestResult RuntimeHooksDelegate::HandleRequest(
       {&RuntimeHooksDelegate::HandleGetPackageDirectoryEntryCallback,
        kGetPackageDirectoryEntry},
       {&RuntimeHooksDelegate::HandleRequestUpdateCheck, kRequestUpdateCheck},
+      {&RuntimeHooksDelegate::HandleMarkListenerRegistrationComplete,
+       kMarkListenerRegistrationComplete},
   };
 
   ScriptContext* script_context = GetScriptContextFromV8ContextChecked(context);
@@ -507,6 +519,46 @@ RequestResult RuntimeHooksDelegate::HandleGetURL(
     const APISignature::V8ParseResult& parse_result) {
   DCHECK_EQ(binding::AsyncResponseType::kNone, parse_result.async_type);
   return GetURL(script_context, *parse_result.arguments);
+}
+
+RequestResult RuntimeHooksDelegate::HandleGetDocumentId(
+    ScriptContext* script_context,
+    const APISignature::V8ParseResult& parse_result) {
+  DCHECK_EQ(binding::AsyncResponseType::kNone, parse_result.async_type);
+  CHECK_EQ(1u, parse_result.arguments->size());
+
+  v8::Isolate* isolate = script_context->isolate();
+  v8::Local<v8::Value> target = (*parse_result.arguments)[0];
+
+  blink::WebFrame* target_frame = nullptr;
+  if (target->IsObject()) {
+    target_frame = blink::WebFrame::FromWindow(isolate, target);
+    if (!target_frame) {
+      blink::WebNode node = blink::WebNode::FromV8Value(isolate, target);
+      if (!node.IsNull()) {
+        target_frame = blink::WebFrame::FromFrameOwnerElement(node);
+      }
+    }
+  }
+
+  // TODO(crbug.com/574047677): Add support for out-of-process frames.
+  if (!target_frame || !target_frame->IsWebLocalFrame()) {
+    RequestResult result(RequestResult::INVALID_INVOCATION);
+    result.error =
+        "Invalid target: expected an attached Window or frame element.";
+    return result;
+  }
+
+  blink::WebDocument document = target_frame->ToWebLocalFrame()->GetDocument();
+  if (document.IsNull()) {
+    RequestResult result(RequestResult::INVALID_INVOCATION);
+    result.error = "Target frame does not have an active document.";
+    return result;
+  }
+
+  RequestResult result(RequestResult::HANDLED);
+  result.return_value = gin::StringToV8(isolate, document.Token().ToString());
+  return result;
 }
 
 RequestResult RuntimeHooksDelegate::HandleSendMessage(
@@ -817,6 +869,23 @@ RequestResult RuntimeHooksDelegate::HandleRequestUpdateCheck(
   return RequestResult(RequestResult::NOT_HANDLED,
                        v8::Local<v8::Function>() /*custom_callback*/,
                        base::BindOnce(MassageRequestUpdateCheckResults));
+}
+
+RequestResult RuntimeHooksDelegate::HandleMarkListenerRegistrationComplete(
+    ScriptContext* script_context,
+    const APISignature::V8ParseResult& parse_result) {
+  // Complete the renderer-side phase to flush queued events.
+  if (script_context->IsForServiceWorker()) {
+    ServiceWorkerData* worker_data =
+        WorkerThreadDispatcher::GetServiceWorkerData();
+    CHECK(worker_data);
+    worker_data->MarkListenerRegistrationComplete();
+  }
+
+  // Forward the request to the browser to validate and commit the phase.
+  // Because this request shares an associated pipe with preceding listener
+  // registrations, it is guaranteed to arrive after them.
+  return RequestResult(RequestResult::NOT_HANDLED);
 }
 
 }  // namespace extensions

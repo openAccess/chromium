@@ -69,7 +69,7 @@ namespace {
 // Helper function to run a callback on a profile once it's initialized.
 void ProfileLoadedCallback(base::OnceCallback<void(Profile*)> callback,
                            Profile* profile) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (!profile) {
     return;
   }
@@ -88,13 +88,13 @@ void FindOrCreateNewWindowForProfile(
     chrome::startup::IsFirstRun is_first_run,
     bool always_create,
     bool open_command_line_urls) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   TRACE_EVENT1("browser", "FindOrCreateNewWindowForProfile", "profile_path",
                profile->GetPath());
 
   if (!always_create) {
     const bool match_original_profiles =
-        IncognitoModePrefs::GetAvailability(profile->GetPrefs()) ==
+        IncognitoModePrefs::GetAvailability(profile) ==
         policy::IncognitoModeAvailability::kForced;
     BrowserWindowInterface* browser =
         ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser(
@@ -135,7 +135,7 @@ void OpenBrowserWindowForProfile(
     bool is_new_profile,
     bool open_command_line_urls,
     Profile* profile) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   TRACE_EVENT1("browser", "OpenBrowserWindowForProfile", "profile_path",
                profile->GetPath().AsUTF8Unsafe());
   // `error_closure_runner` runs the callback  with nullptr to signal an error
@@ -178,7 +178,7 @@ void OpenBrowserWindowForProfile(
   // a false positive.
   if (!always_create) {
     const bool match_original_profiles =
-        IncognitoModePrefs::GetAvailability(profile->GetPrefs()) ==
+        IncognitoModePrefs::GetAvailability(profile) ==
         policy::IncognitoModeAvailability::kForced;
     BrowserWindowInterface* browser =
         ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser(
@@ -247,7 +247,7 @@ bool HasProfileSwitchTargets(Profile* profile) {
 }
 
 void CloseProfileWindows(Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   chrome::CloseAllBrowsersWithProfile(profile, /*skip_beforeunload=*/false);
 }
 
@@ -255,7 +255,7 @@ BrowserAddedForProfileObserver::BrowserAddedForProfileObserver(
     Profile* profile,
     base::OnceCallback<void(BrowserWindowInterface*)> callback)
     : profile_(profile->GetWeakPtr()), callback_(std::move(callback)) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M162);
   browser_collection_observation_.Observe(
       GlobalBrowserCollection::GetInstance());
   profile_observation_.Observe(profile);
@@ -280,7 +280,7 @@ void BrowserAddedForProfileObserver::OnBrowserCreated(
   // browser is an off-the-record window for that original profile.
   const bool is_matching_browser =
       (browser->GetProfile() == profile_.get()) ||
-      (IncognitoModePrefs::GetAvailability(profile_->GetPrefs()) ==
+      (IncognitoModePrefs::GetAvailability(profile_.get()) ==
            policy::IncognitoModeAvailability::kForced &&
        browser->GetProfile()->GetOriginalProfile() ==
            profile_->GetOriginalProfile());

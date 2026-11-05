@@ -10,7 +10,7 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
-#include "components/guest_contents/browser/guest_contents_handle.h"
+#include "components/surface_embed/browser/surface_embed_handle.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
 #include "content/public/browser/document_user_data.h"
 #include "content/public/browser/render_frame_host.h"
@@ -112,17 +112,29 @@ void SurfaceEmbedHost::SetSurfaceEmbed(
 }
 
 void SurfaceEmbedHost::AttachConnector(const base::UnguessableToken& content_id,
-                                       bool is_embed_element_focused) {
+                                       bool is_embed_element_focused,
+                                       bool allow_pinch_zoom) {
+  has_received_attach_connector_for_testing_ = true;
+
   // Should never call attach without having a valid SurfaceEmbed remote already
   // bound.
   CHECK(surface_embed_);
 
   CHECK(!content_id.is_empty());
-  guest_contents::GuestContentsHandle* guest_handle =
-      guest_contents::GuestContentsHandle::FromID(content_id);
-  CHECK(guest_handle);
 
-  content::WebContents* web_contents_to_attach = guest_handle->web_contents();
+  // If this host already has a child attached, we need to detach it first. Note
+  // that this request comes from the parent side, so we don't notify the
+  // SurfaceEmbed as it initiated the detachment.
+  DetachConnector();
+
+  SurfaceEmbedHandle* handle = SurfaceEmbedHandle::FromID(content_id);
+  if (!handle) {
+    // The child may have been destroyed while the renderer was asynchronously
+    // creating the embed element.
+    return;
+  }
+
+  content::WebContents* web_contents_to_attach = handle->web_contents();
   CHECK(web_contents_to_attach);
 
   // If the child WebContents is already attached to a SurfaceEmbedConnector, we
@@ -134,11 +146,6 @@ void SurfaceEmbedHost::AttachConnector(const base::UnguessableToken& content_id,
     CHECK(!web_contents_to_attach->GetSurfaceEmbedConnector());
   }
 
-  // If this host already has a child attached, we need to detach it first. Note
-  // that this request comes from the parent side, so we don't notify the
-  // SurfaceEmbed as it initiated the detachment.
-  DetachConnector();
-
   if (web_contents_to_attach->IsCrashed()) {
     // The child process may have crashed before the renderer for the parent
     // got the chance to attach it. We want to handle this early since attaching
@@ -148,8 +155,14 @@ void SurfaceEmbedHost::AttachConnector(const base::UnguessableToken& content_id,
   }
 
   child_contents_ = web_contents_to_attach->GetWeakPtr();
-  content::SurfaceEmbedConnector::Attach(
-      web_contents_to_attach, &collection_->render_frame_host(), this);
+  const auto pinch_gesture_mode =
+      allow_pinch_zoom ? content::SurfaceEmbedConnector::PinchGestureMode::
+                             kScaleChildWebContents
+                       : content::SurfaceEmbedConnector::PinchGestureMode::
+                             kDelegateToParentWebContents;
+  content::SurfaceEmbedConnector::Attach(web_contents_to_attach,
+                                         &collection_->render_frame_host(),
+                                         this, pinch_gesture_mode);
 
   // If accessibility info was received before the connector was attached,
   // pass it to the connector now.
@@ -160,6 +173,18 @@ void SurfaceEmbedHost::AttachConnector(const base::UnguessableToken& content_id,
   if (is_embed_element_focused) {
     FocusChildWebContents();
   }
+}
+
+void SurfaceEmbedHost::SetAllowPinchZoom(bool allow_pinch_zoom) {
+  content::SurfaceEmbedConnector* connector = GetConnector();
+  if (!connector) {
+    return;
+  }
+  connector->SetPinchGestureMode(
+      allow_pinch_zoom ? content::SurfaceEmbedConnector::PinchGestureMode::
+                             kScaleChildWebContents
+                       : content::SurfaceEmbedConnector::PinchGestureMode::
+                             kDelegateToParentWebContents);
 }
 
 void SurfaceEmbedHost::FocusChildWebContents() {

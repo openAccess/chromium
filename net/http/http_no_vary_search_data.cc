@@ -7,8 +7,11 @@
 #include <algorithm>
 #include <optional>
 #include <string_view>
+#include <variant>
 
 #include "base/containers/flat_set.h"
+#include "base/containers/map_util.h"
+#include "base/containers/to_vector.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
@@ -16,13 +19,14 @@
 #include "base/strings/escape.h"
 #include "base/strings/string_util.h"
 #include "base/types/expected.h"
+#include "base/types/expected_macros.h"
 #include "net/base/features.h"
 #include "net/base/pickle.h"
-#include "net/base/url_search_params.h"
 #include "net/base/url_search_params_view.h"
 #include "net/base/url_util.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/structured_headers.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "url/gurl.h"
 
 namespace net {
@@ -51,6 +55,15 @@ std::optional<std::vector<std::string>> ParseStringList(
   return keys;
 }
 
+std::vector<structured_headers::ParameterizedItem> ToParameterizedItems(
+    const base::flat_set<std::string>& affected_params) {
+  return base::ToVector(affected_params, [](const std::string& param) {
+    return structured_headers::ParameterizedItem(structured_headers::Item(
+        structured_headers::Item::string,
+        base::EscapeQueryParamValue(param, /*use_plus=*/true)));
+  });
+}
+
 // Extracts the "base URL" (everything before the query or fragment) from `url`.
 // It relies on the fact that GURL canonicalizes http(s) URLs to not contain '?'
 // or '#' before the start of the query. It's a lot faster than using
@@ -63,34 +76,7 @@ std::string_view ExtractBaseUrl(const GURL& url) {
   return view.substr(0, end_of_base);
 }
 
-std::optional<bool>& GetHttpNoVarySearchDataUseNewAreEquivalentOverride() {
-  static constinit std::optional<bool> override_value;
-  return override_value;
-}
-
-bool IsHttpNoVarySearchDataUseNewAreEquivalentEnabled() {
-  if (GetHttpNoVarySearchDataUseNewAreEquivalentOverride().has_value()) {
-    return *GetHttpNoVarySearchDataUseNewAreEquivalentOverride();
-  }
-
-  static const bool kEnabled = base::FeatureList::IsEnabled(
-      features::kHttpNoVarySearchDataUseNewAreEquivalent);
-
-  return kEnabled;
-}
-
 }  // namespace
-
-ScopedHttpNoVarySearchDataEquivalentImplementationOverrideForTesting::
-    ScopedHttpNoVarySearchDataEquivalentImplementationOverrideForTesting(
-        bool use_new_implementation) {
-  GetHttpNoVarySearchDataUseNewAreEquivalentOverride() = use_new_implementation;
-}
-
-ScopedHttpNoVarySearchDataEquivalentImplementationOverrideForTesting::
-    ~ScopedHttpNoVarySearchDataEquivalentImplementationOverrideForTesting() {
-  GetHttpNoVarySearchDataUseNewAreEquivalentOverride() = std::nullopt;
-}
 
 HttpNoVarySearchData::HttpNoVarySearchData() = default;
 HttpNoVarySearchData::HttpNoVarySearchData(const HttpNoVarySearchData&) =
@@ -107,8 +93,8 @@ std::vector<std::string> HttpNoVarySearchData::GetAffectedParams() const {
                                   affected_params_.end());
 }
 
-template <typename ParamsType>
-void HttpNoVarySearchData::ApplyRulesToParams(ParamsType& params) const {
+void HttpNoVarySearchData::ApplyRulesToParams(
+    UrlSearchParamsView& params) const {
   if (vary_by_default_) {
     params.DeleteAllWithNames(affected_params_);
   } else {
@@ -122,11 +108,18 @@ void HttpNoVarySearchData::ApplyRulesToParams(ParamsType& params) const {
 bool HttpNoVarySearchData::AreEquivalent(const GURL& a, const GURL& b) const {
   CHECK(a.is_valid());
   CHECK(b.is_valid());
-  if (IsHttpNoVarySearchDataUseNewAreEquivalentEnabled()) {
-    return AreEquivalentNewImpl(a, b);
+  if (ExtractBaseUrl(a) != ExtractBaseUrl(b)) {
+    return false;
   }
 
-  return AreEquivalentOldImpl(a, b);
+  // If equal, look at how the rules stored in `this` affect search params
+  // variance.
+  UrlSearchParamsView a_search_params(a);
+  UrlSearchParamsView b_search_params(b);
+  ApplyRulesToParams(a_search_params);
+  ApplyRulesToParams(b_search_params);
+
+  return a_search_params == b_search_params;
 }
 
 std::string HttpNoVarySearchData::CanonicalizeQuery(const GURL& url) const {
@@ -196,33 +189,22 @@ bool HttpNoVarySearchData::HasBooleanParamsMember(
   if (!dict.has_value()) {
     return false;
   }
-  auto it = dict->find(keys::kParams);
-  if (it == dict->end()) {
+  const structured_headers::ParameterizedMember* member =
+      base::FindOrNull(*dict, keys::kParams);
+  if (!member) {
     return false;
   }
-  const auto& member = it->second;
-  if (member.member_is_inner_list) {
+  const structured_headers::ParameterizedItem* item = member->GetIfItem();
+  if (!item) {
     return false;
   }
-  // This is guaranteed by the structured headers parser API.
-  CHECK_EQ(member.member.size(), 1u);
-  return member.member[0].item.is_boolean();
+  return item->item.is_boolean();
 }
 
 bool HttpNoVarySearchData::operator==(const HttpNoVarySearchData& rhs) const =
     default;
 std::strong_ordering HttpNoVarySearchData::operator<=>(
     const HttpNoVarySearchData& rhs) const = default;
-
-bool HttpNoVarySearchData::AreEquivalentOldImplForTesting(const GURL& a,
-                                                          const GURL& b) const {
-  return AreEquivalentOldImpl(a, b);
-}
-
-bool HttpNoVarySearchData::AreEquivalentNewImplForTesting(const GURL& a,
-                                                          const GURL& b) const {
-  return AreEquivalentNewImpl(a, b);
-}
 
 // static
 base::expected<HttpNoVarySearchData, HttpNoVarySearchData::ParseErrorEnum>
@@ -250,12 +232,10 @@ HttpNoVarySearchData::ParseNoVarySearchDictionary(
   }
 
   // Populate `vary_on_key_order` based on the `key-order` key.
-  if (auto keyorder_it = dict.find(keys::kKeyOrder);
-      keyorder_it != dict.end()) {
-    const auto& key_order = keyorder_it->second;
-    const bool* boolean = key_order.member_is_inner_list
-                              ? nullptr
-                              : key_order.member[0].item.GetIfBoolean();
+  if (const structured_headers::ParameterizedMember* member =
+          base::FindOrNull(dict, keys::kKeyOrder)) {
+    const structured_headers::ParameterizedItem* item = member->GetIfItem();
+    const bool* boolean = item ? item->item.GetIfBoolean() : nullptr;
     if (!boolean) {
       return base::unexpected(ParseErrorEnum::kNonBooleanKeyOrder);
     }
@@ -263,17 +243,24 @@ HttpNoVarySearchData::ParseNoVarySearchDictionary(
   }
 
   // Populate `affected_params` or `vary_by_default` based on the "params" key.
-  if (auto params_it = dict.find(keys::kParams); params_it != dict.end()) {
-    const auto& params = params_it->second;
-    if (params.member_is_inner_list) {
-      auto keys = ParseStringList(params.member);
-      if (!keys.has_value()) {
-        return base::unexpected(ParseErrorEnum::kParamsNotStringList);
-      }
-      affected_params = std::move(*keys);
-    } else if (const bool* boolean = params.member[0].item.GetIfBoolean()) {
-      vary_by_default = !*boolean;
-    } else {
+  if (const structured_headers::ParameterizedMember* member =
+          base::FindOrNull(dict, keys::kParams)) {
+    const bool valid = member->Visit(absl::Overload{
+        [&](const structured_headers::InnerList& inner_list) -> bool {
+          ASSIGN_OR_RETURN(affected_params, ParseStringList(inner_list.items),
+                           [] { return false; });
+          return true;
+        },
+        [&](const structured_headers::ParameterizedItem& item) {
+          if (const bool* boolean = item.item.GetIfBoolean()) {
+            vary_by_default = !*boolean;
+            return true;
+          }
+          return false;
+        },
+        [](std::monostate) { return false; },
+    });
+    if (!valid) {
       return base::unexpected(ParseErrorEnum::kParamsNotStringList);
     }
   }
@@ -281,15 +268,16 @@ HttpNoVarySearchData::ParseNoVarySearchDictionary(
   // Populate `affected_params` based on the "except" key.
   // This should be present only if "params" was true
   // (i.e., params don't vary by default).
-  if (auto except_it = dict.find(keys::kExcept); except_it != dict.end()) {
-    const auto& excepted_params = except_it->second;
+  if (const structured_headers::ParameterizedMember* member =
+          base::FindOrNull(dict, keys::kExcept)) {
     if (vary_by_default) {
       return base::unexpected(ParseErrorEnum::kExceptWithoutTrueParams);
     }
-    if (!excepted_params.member_is_inner_list) {
+    const structured_headers::InnerList* inner_list = member->GetIfInnerList();
+    if (!inner_list) {
       return base::unexpected(ParseErrorEnum::kExceptNotStringList);
     }
-    auto keys = ParseStringList(excepted_params.member);
+    auto keys = ParseStringList(inner_list->items);
     if (!keys.has_value()) {
       return base::unexpected(ParseErrorEnum::kExceptNotStringList);
     }
@@ -307,46 +295,7 @@ HttpNoVarySearchData::ParseNoVarySearchDictionary(
   no_vary_search.vary_on_key_order_ = vary_on_key_order;
   no_vary_search.vary_by_default_ = vary_by_default;
 
-  return base::ok(no_vary_search);
-}
-
-bool HttpNoVarySearchData::AreEquivalentOldImpl(const GURL& a,
-                                                const GURL& b) const {
-  // Check urls without query and reference (fragment) for equality first.
-  GURL::Replacements replacements;
-  replacements.ClearRef();
-  replacements.ClearQuery();
-  if (a.ReplaceComponents(replacements) != b.ReplaceComponents(replacements)) {
-    return false;
-  }
-
-  // If equal, look at how HttpNoVarySearchData argument affects
-  // search params variance.
-  UrlSearchParams a_search_params(a);
-  UrlSearchParams b_search_params(b);
-  ApplyRulesToParams(a_search_params);
-  ApplyRulesToParams(b_search_params);
-
-  // Check Search Params for equality
-  // All search params, in order, need to have the same keys and the same
-  // values.
-  return a_search_params.params() == b_search_params.params();
-}
-
-bool HttpNoVarySearchData::AreEquivalentNewImpl(const GURL& a,
-                                                const GURL& b) const {
-  if (ExtractBaseUrl(a) != ExtractBaseUrl(b)) {
-    return false;
-  }
-
-  // If equal, look at how HttpNoVarySearchData argument affects
-  // search params variance.
-  UrlSearchParamsView a_search_params(a);
-  UrlSearchParamsView b_search_params(b);
-  ApplyRulesToParams(a_search_params);
-  ApplyRulesToParams(b_search_params);
-
-  return a_search_params == b_search_params;
+  return no_vary_search;
 }
 
 // LINT.IfChange(Serialization)
@@ -409,42 +358,20 @@ std::optional<std::string> HttpNoVarySearchData::SerializeToString() const {
   std::vector<structured_headers::DictionaryMember> members;
 
   if (!vary_on_key_order_) {
-    members.emplace_back(keys::kKeyOrder,
-                         structured_headers::ParameterizedMember(
-                             structured_headers::Item(true), {}));
+    members.emplace_back(keys::kKeyOrder, structured_headers::Item(true));
   }
 
   if (vary_by_default_) {
     if (!affected_params_.empty()) {
-      std::vector<structured_headers::ParameterizedItem> param_items;
-      for (const auto& param : affected_params_) {
-        param_items.push_back(structured_headers::ParameterizedItem(
-            structured_headers::Item(
-                base::EscapeQueryParamValue(param, /*use_plus=*/true),
-                structured_headers::Item::kStringType),
-            {}));
-      }
-      members.emplace_back(
-          keys::kParams,
-          structured_headers::ParameterizedMember(param_items, {}));
+      members.emplace_back(keys::kParams,
+                           ToParameterizedItems(affected_params_));
     }
   } else {
-    members.emplace_back(keys::kParams,
-                         structured_headers::ParameterizedMember(
-                             structured_headers::Item(true), {}));
+    members.emplace_back(keys::kParams, structured_headers::Item(true));
 
     if (!affected_params_.empty()) {
-      std::vector<structured_headers::ParameterizedItem> except_items;
-      for (const auto& param : affected_params_) {
-        except_items.push_back(structured_headers::ParameterizedItem(
-            structured_headers::Item(
-                base::EscapeQueryParamValue(param, /*use_plus=*/true),
-                structured_headers::Item::kStringType),
-            {}));
-      }
-      members.emplace_back(
-          keys::kExcept,
-          structured_headers::ParameterizedMember(except_items, {}));
+      members.emplace_back(keys::kExcept,
+                           ToParameterizedItems(affected_params_));
     }
   }
 

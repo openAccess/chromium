@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TABS_SHARED_TAB_STRIP_COMBO_BUTTON_H_
 #define CHROME_BROWSER_UI_VIEWS_TABS_SHARED_TAB_STRIP_COMBO_BUTTON_H_
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/timer/timer.h"
@@ -31,6 +32,7 @@ class MenuRunner;
 }  // namespace views
 
 class BrowserWindowInterface;
+class OrganizerPanelController;
 class TabSearchBubbleHost;
 class TabStripFlatEdgeButton;
 class ExpandOnHoverLock;
@@ -78,7 +80,6 @@ class TabStripComboButton : public views::View,
   void OnHostDestroying() override;
 
   void SetTabSearchBubbleHost(TabSearchBubbleHost* host);
-  void MaybeShowIPH();
 
   // gfx::AnimationDelegate:
   void AnimationProgressed(const gfx::Animation* animation) override;
@@ -86,6 +87,11 @@ class TabStripComboButton : public views::View,
 
   gfx::Size GetPreferredSizeForOrientation(
       views::LayoutOrientation orientation);
+
+  void OnMenuClosedForTesting() { OnMenuClosed(); }
+  const base::OneShotTimer& hide_tab_search_timer_for_testing() const {
+    return hide_tab_search_timer_;
+  }
 
  protected:
   // views::View:
@@ -96,8 +102,8 @@ class TabStripComboButton : public views::View,
 
   void UpdateButtonsVisibility();
 
-  void OnTabSearchBubbleShown();
-
+  std::unique_ptr<TabStripFlatEdgeButton> CreateFlatEdgeButtonFor(
+      ui::ElementIdentifier element_id);
   std::unique_ptr<TabStripFlatEdgeButton> CreateFlatEdgeButtonFor(
       actions::ActionId action_id,
       ui::ElementIdentifier element_id);
@@ -108,8 +114,12 @@ class TabStripComboButton : public views::View,
 
   void MaybeHideTabSearchButton();
 
+  void OnOrganizerPanelStateChanged(OrganizerPanelController* controller);
+  bool IsOrganizerPanelEmbeddedInVerticalTabStrip() const;
+
   bool IsTabSearchPinned();
 
+  actions::ActionId GetEndButtonActionId() const;
   actions::ActionItem* GetStartButtonActionItem();
   actions::ActionItem* GetEndButtonActionItem();
 
@@ -138,6 +148,7 @@ class TabStripComboButton : public views::View,
   base::OneShotTimer hide_tab_search_timer_;
   base::ScopedObservation<TabSearchBubbleHost, TabSearchBubbleHostObserver>
       tab_search_bubble_host_observation_{this};
+  base::CallbackListSubscription organizer_panel_subscription_;
 
   std::unique_ptr<ExpandOnHoverLock> expand_on_hover_lock_;
 };

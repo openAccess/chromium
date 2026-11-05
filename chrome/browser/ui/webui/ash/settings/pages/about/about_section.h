@@ -6,16 +6,22 @@
 #define CHROME_BROWSER_UI_WEBUI_ASH_SETTINGS_PAGES_ABOUT_ABOUT_SECTION_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/values.h"
 #include "build/branding_buildflags.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/crostini/crostini_section.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/os_settings_section.h"
 #include "components/prefs/pref_change_registrar.h"
-#include "components/user_manager/user_manager.h"
+
+class AccountId;
 
 namespace content {
 class WebUIDataSource;
 }  // namespace content
+
+namespace policy {
+class BrowserPolicyConnectorAsh;
+}  // namespace policy
 
 namespace ash::settings {
 
@@ -24,7 +30,11 @@ class SearchTagRegistry;
 // Provides UI strings and search tags for the settings "About Chrome OS" page.
 class AboutSection : public OsSettingsSection {
  public:
-  AboutSection(Profile* profile,
+  // `local_state` and `browser_policy_connector_ash` must be non-null and must
+  // outlive `this`.
+  AboutSection(PrefService* local_state,
+               policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+               Profile* profile,
                SearchTagRegistry* search_tag_registry,
                PrefService* pref_service);
   ~AboutSection() override;
@@ -41,9 +51,11 @@ class AboutSection : public OsSettingsSection {
   void RegisterHierarchy(HierarchyGenerator* generator) const override;
 
  private:
-  // Returns if the auto update toggle should be shown for the active user.
-  bool ShouldShowAUToggle(user_manager::User* active_user);
+  // Returns if the auto update toggle should be shown for `account_id`.
+  bool ShouldShowAUToggle(const AccountId& account_id);
 
+  const raw_ref<policy::BrowserPolicyConnectorAsh>
+      browser_policy_connector_ash_;
   raw_ptr<PrefService> pref_service_;
   CrostiniSection crostini_subsection_;
 

@@ -220,7 +220,7 @@ class D3D12VideoEncodeDelegateTest : public D3D12VideoEncodeDelegateTestBase {
 
 TEST_F(D3D12VideoEncodeDelegateTest, Initialize) {
   EXPECT_TRUE(encoder_delegate_->Initialize(GetDefaultH264Config()).is_ok());
-  EXPECT_EQ(encoder_delegate_->GetFormatForTesting(), DXGI_FORMAT_NV12);
+  EXPECT_EQ(encoder_delegate_->GetInputFormat(), DXGI_FORMAT_NV12);
 }
 
 TEST_F(D3D12VideoEncodeDelegateTest, P010InputFormatFor10BitProfile) {
@@ -228,7 +228,7 @@ TEST_F(D3D12VideoEncodeDelegateTest, P010InputFormatFor10BitProfile) {
   config.input_format = PIXEL_FORMAT_P010LE;
   config.output_profile = H264PROFILE_HIGH10PROFILE;
   EXPECT_TRUE(encoder_delegate_->Initialize(config).is_ok());
-  EXPECT_EQ(encoder_delegate_->GetFormatForTesting(), DXGI_FORMAT_P010);
+  EXPECT_EQ(encoder_delegate_->GetInputFormat(), DXGI_FORMAT_P010);
 }
 
 TEST_F(D3D12VideoEncodeDelegateTest,
@@ -242,7 +242,7 @@ TEST_F(D3D12VideoEncodeDelegateTest,
     config.input_format = rgb_format;
     config.output_profile = H264PROFILE_HIGH10PROFILE;
     EXPECT_TRUE(encoder_delegate_->Initialize(config).is_ok());
-    EXPECT_EQ(encoder_delegate_->GetFormatForTesting(), DXGI_FORMAT_P010)
+    EXPECT_EQ(encoder_delegate_->GetInputFormat(), DXGI_FORMAT_P010)
         << "Unexpected input format for RGB pixel format "
         << VideoPixelFormatToString(rgb_format);
   }
@@ -590,7 +590,8 @@ TEST_F(D3D12VideoEncodeDelegateTest, EncodeWithTooManyReferenceBuffersFails) {
 
   // Expect an error indicating too many reference buffers.
   EXPECT_FALSE(result_or_error.has_value());
-  EXPECT_EQ(result_or_error.code(), EncoderStatus::Codes::kBadReferenceBuffer);
+  EXPECT_EQ(result_or_error.error().code(),
+            EncoderStatus::Codes::kBadReferenceBuffer);
 }
 
 TEST_F(D3D12VideoEncodeDelegateTest,
@@ -615,7 +616,8 @@ TEST_F(D3D12VideoEncodeDelegateTest,
                                 bitstream_buffer, options);
 
   EXPECT_FALSE(result_or_error.has_value());
-  EXPECT_EQ(result_or_error.code(), EncoderStatus::Codes::kBadReferenceBuffer);
+  EXPECT_EQ(result_or_error.error().code(),
+            EncoderStatus::Codes::kBadReferenceBuffer);
 }
 
 TEST_F(D3D12VideoEncodeDelegateTest,
@@ -640,7 +642,8 @@ TEST_F(D3D12VideoEncodeDelegateTest,
                                 bitstream_buffer, options);
 
   EXPECT_FALSE(result_or_error.has_value());
-  EXPECT_EQ(result_or_error.code(), EncoderStatus::Codes::kBadReferenceBuffer);
+  EXPECT_EQ(result_or_error.error().code(),
+            EncoderStatus::Codes::kBadReferenceBuffer);
 }
 
 TEST_F(D3D12VideoEncodeDelegateTest, EncodeWithEmptyRefsOnNonKeyframeFails) {
@@ -677,7 +680,8 @@ TEST_F(D3D12VideoEncodeDelegateTest, EncodeWithEmptyRefsOnNonKeyframeFails) {
       encoder_delegate_->Encode(input_frame, gfx::Rect(input_size), color_space,
                                 bitstream_buffer, options);
   EXPECT_FALSE(result_or_error.has_value());
-  EXPECT_EQ(result_or_error.code(), EncoderStatus::Codes::kBadReferenceBuffer);
+  EXPECT_EQ(result_or_error.error().code(),
+            EncoderStatus::Codes::kBadReferenceBuffer);
 }
 
 }  // namespace media

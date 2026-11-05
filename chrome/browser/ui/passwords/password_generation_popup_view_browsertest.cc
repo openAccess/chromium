@@ -19,6 +19,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/password_manager/content/browser/content_password_manager_driver.h"
 #include "components/password_manager/content/browser/content_password_manager_driver_factory.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/scoped_accessibility_mode_override.h"
@@ -136,8 +137,9 @@ IN_PROC_BROWSER_TEST_F(PasswordGenerationPopupViewTest,
                        DoNotCrashInCaseOfInsuffucientVerticalSpace) {
   auto* client = ChromePasswordManagerClient::FromWebContents(WebContents());
   client->SetCurrentTargetFrameForTesting(WebContents()->GetPrimaryMainFrame());
-  client->ShowPasswordEditingPopup(gfx::RectF(0, -20, 10, 10), FormData(),
-                                   FieldRendererId(100), u"password123");
+  client->ShowPasswordEditingPopup(
+      gfx::RectF(gfx::Rect({}, WebContents()->GetSize())), FormData(),
+      FieldRendererId(100), u"password123");
   EXPECT_FALSE(client->generation_popup_controller());
   // Avoid dangling pointers on shutdown.
   client->SetCurrentTargetFrameForTesting(nullptr);
@@ -242,8 +244,9 @@ IN_PROC_BROWSER_TEST_F(PasswordGenerationPopupViewTest,
               IDS_PASSWORD_BUBBLES_PASSWORD_MANAGER_LINK_TEXT_SYNCED_TO_ACCOUNT),
           u""));
   EXPECT_EQ(accept_button.GetCachedName(),
-            base::JoinString(
-                {controller->SuggestedText(), controller->password()}, u" "));
+            base::JoinString({controller->SuggestedText(),
+                              controller->password().secure_value()},
+                             u" "));
   EXPECT_EQ(
       cancel_button.GetCachedName(),
       l10n_util::GetStringUTF16(IDS_PASSWORD_GENERATION_NUDGE_CANCEL_BUTTON));

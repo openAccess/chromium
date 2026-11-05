@@ -6,12 +6,13 @@
 
 #include <algorithm>
 #include <iterator>
+#include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/containers/flat_map.h"
-#include "base/containers/flat_set.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -20,15 +21,18 @@
 #include "base/observer_list.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool.h"
+#include "base/timer/elapsed_timer.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/leak_detection/bulk_leak_check.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/ui/affiliated_group.h"
 #include "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #include "components/password_manager/core/browser/ui/credential_utils.h"
 #include "components/password_manager/core/browser/ui/reuse_check_utility.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #include "components/password_manager/core/browser/ui/weak_check_utility.h"
-
+#include "crypto/process_bound_string.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace password_manager {
 
@@ -39,10 +43,16 @@ bool SupportsMuteOperation(InsecureType insecure_type) {
           insecure_type == InsecureType::kPhished);
 }
 
-base::flat_set<std::u16string> ExtractPasswords(
-    const std::vector<CredentialUIEntry>& credentials) {
-  return base::MakeFlatSet<std::u16string>(credentials, {},
-                                           &CredentialUIEntry::password);
+absl::flat_hash_set<PasswordString> ExtractPasswords(
+    std::vector<CredentialUIEntry>&& credentials) {
+  // Reserve up front so the table never grows: each growth would re-hash every
+  // element, and hashing a PasswordString decrypts it.
+  absl::flat_hash_set<PasswordString> passwords;
+  passwords.reserve(credentials.size());
+  for (CredentialUIEntry& credential : credentials) {
+    passwords.insert(std::move(credential.password));
+  }
+  return passwords;
 }
 
 bool ChangesRequireRerunningReuseCheck(const PasswordStoreChangeList& changes) {
@@ -60,11 +70,33 @@ bool ChangeRequiresRerunningWeakCheck(const PasswordStoreChange& change) {
           change.password_changed());
 }
 
+using TimedCheckResult = InsecureCredentialsManager::TimedCheckResult;
+
+// Runs the given check on the task runner thread and measures how long the
+// check itself takes, excluding any time it spent waiting in the task queue.
+TimedCheckResult RunTimedReuseCheck(
+    const std::vector<CredentialUIEntry>& credentials,
+    const std::vector<AffiliatedGroup>& affiliated_groups) {
+  base::ElapsedTimer timer;
+  absl::flat_hash_set<PasswordString> reused_passwords =
+      BulkReuseCheck(credentials, affiliated_groups);
+  return {timer.Elapsed(), std::move(reused_passwords)};
+}
+
+TimedCheckResult RunTimedWeakCheck(std::vector<CredentialUIEntry> credentials) {
+  base::ElapsedTimer timer;
+  absl::flat_hash_set<PasswordString> weak_passwords =
+      BulkWeakCheck(ExtractPasswords(std::move(credentials)));
+  return {timer.Elapsed(), std::move(weak_passwords)};
+}
+
 }  // namespace
 
 InsecureCredentialsManager::InsecureCredentialsManager(
     SavedPasswordsPresenter* presenter)
-    : presenter_(presenter) {
+    : presenter_(presenter),
+      check_task_runner_(base::ThreadPool::CreateSequencedTaskRunner(
+          {base::MayBlock(), base::TaskPriority::USER_VISIBLE})) {
   observed_saved_password_presenter_.Observe(presenter_.get());
 }
 
@@ -72,23 +104,30 @@ InsecureCredentialsManager::~InsecureCredentialsManager() = default;
 
 void InsecureCredentialsManager::StartReuseCheck(
     base::OnceClosure on_check_done) {
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
-      base::BindOnce(&BulkReuseCheck, presenter_->GetSavedPasswords(),
+  // Note that this must run on a sequence (rather than in parallel) so that
+  // `OnReuseCheckDone()` is invoked in the same order as checks are started.
+  // Otherwise a check over an older set of saved passwords could complete
+  // after a newer one and clobber `reused_passwords_` with stale results.
+  check_task_runner_->PostTaskAndReplyWithResult(
+      FROM_HERE,
+      base::BindOnce(&RunTimedReuseCheck, presenter_->GetSavedPasswords(),
                      presenter_->GetAffiliatedGroups()),
       base::BindOnce(&InsecureCredentialsManager::OnReuseCheckDone,
-                     weak_ptr_factory_.GetWeakPtr(), base::ElapsedTimer())
+                     weak_ptr_factory_.GetWeakPtr())
           .Then(std::move(on_check_done)));
 }
 
 void InsecureCredentialsManager::StartWeakCheck(
     base::OnceClosure on_check_done) {
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
-      base::BindOnce(&BulkWeakCheck,
-                     ExtractPasswords(presenter_->GetSavedPasswords())),
+  // See `StartReuseCheck()` for why this is sequenced. In addition, this
+  // shares a sequence with the partial weak checks posted from
+  // `OnSavedPasswordsChanged()` so that a full and a partial weak check cannot
+  // race and overwrite each other's contribution to `weak_passwords_`.
+  check_task_runner_->PostTaskAndReplyWithResult(
+      FROM_HERE,
+      base::BindOnce(&RunTimedWeakCheck, presenter_->GetSavedPasswords()),
       base::BindOnce(&InsecureCredentialsManager::OnWeakCheckDone,
-                     weak_ptr_factory_.GetWeakPtr(), base::ElapsedTimer())
+                     weak_ptr_factory_.GetWeakPtr())
           .Then(std::move(on_check_done)));
 }
 
@@ -99,17 +138,24 @@ void InsecureCredentialsManager::SaveInsecureCredential(
   // that have the same canonicalized username and password.
   const std::u16string canonicalized_username =
       CanonicalizeUsername(leak.username());
+  std::optional<crypto::SecureU16String> leak_password;
   for (const auto& credential : presenter_->GetSavedPasswords()) {
-    if (credential.password == leak.password() &&
-        CanonicalizeUsername(credential.username) == canonicalized_username &&
-        !credential.password_issues.contains(InsecureType::kLeaked)) {
-      CredentialUIEntry credential_to_update = credential;
-      credential_to_update.password_issues.insert_or_assign(
-          InsecureType::kLeaked,
-          InsecurityMetadata(base::Time::Now(), IsMuted(false),
-                             should_trigger_notification));
-      presenter_->EditSavedCredentials(credential, credential_to_update);
+    if (credential.password_issues.contains(InsecureType::kLeaked) ||
+        CanonicalizeUsername(credential.username) != canonicalized_username) {
+      continue;
     }
+    if (!leak_password) {
+      leak_password.emplace(leak.password().secure_value());
+    }
+    if (credential.password != *leak_password) {
+      continue;
+    }
+    CredentialUIEntry credential_to_update = credential;
+    credential_to_update.password_issues.insert_or_assign(
+        InsecureType::kLeaked,
+        InsecurityMetadata(base::Time::Now(), IsMuted(false),
+                           should_trigger_notification));
+    presenter_->EditSavedCredentials(credential, credential_to_update);
   }
 }
 
@@ -152,13 +198,25 @@ InsecureCredentialsManager::GetInsecureCredentialEntries() const {
            InsecurityMetadata(base::Time(), IsMuted(false),
                               TriggerBackendNotification(false))});
     }
-    if (weak_passwords_.contains(credential.password)) {
+    if (credential.password.empty()) {
+      continue;
+    }
+
+    if (weak_passwords_.empty() && reused_passwords_.empty()) {
+      continue;
+    }
+
+    crypto::SecureU16String credential_password =
+        credential.password.secure_value();
+    if (!weak_passwords_.empty() &&
+        weak_passwords_.contains(credential_password)) {
       credential.password_issues.insert(
           {InsecureType::kWeak,
            InsecurityMetadata(base::Time(), IsMuted(false),
                               TriggerBackendNotification(false))});
     }
-    if (reused_passwords_.contains(credential.password)) {
+    if (!reused_passwords_.empty() &&
+        reused_passwords_.contains(credential_password)) {
       credential.password_issues.insert(
           {InsecureType::kReused,
            InsecurityMetadata(base::Time(), IsMuted(false),
@@ -180,31 +238,28 @@ void InsecureCredentialsManager::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
-void InsecureCredentialsManager::OnReuseCheckDone(
-    base::ElapsedTimer timer_since_reuse_check_start,
-    base::flat_set<std::u16string> reused_passwords) {
-  base::UmaHistogramTimes("PasswordManager.ReuseCheck.Time",
-                          timer_since_reuse_check_start.Elapsed());
+void InsecureCredentialsManager::OnReuseCheckDone(TimedCheckResult result) {
+  auto& [duration, reused_passwords] = result;
+  base::UmaHistogramTimes("PasswordManager.ReuseCheck.Time", duration);
   reused_passwords_ = std::move(reused_passwords);
   NotifyInsecureCredentialsChanged();
 }
 
-void InsecureCredentialsManager::OnWeakCheckDone(
-    base::ElapsedTimer timer_since_weak_check_start,
-    base::flat_set<std::u16string> weak_passwords) {
-  base::UmaHistogramTimes("PasswordManager.WeakCheck.Time",
-                          timer_since_weak_check_start.Elapsed());
+void InsecureCredentialsManager::OnWeakCheckDone(TimedCheckResult result) {
+  auto& [duration, weak_passwords] = result;
+  base::UmaHistogramTimes("PasswordManager.WeakCheck.Time", duration);
   weak_passwords_ = std::move(weak_passwords);
   NotifyInsecureCredentialsChanged();
 }
 
 void InsecureCredentialsManager::OnPartialWeakCheckDone(
-    base::flat_set<std::u16string> weak_passwords) {
+    absl::flat_hash_set<PasswordString> weak_passwords) {
   if (weak_passwords.empty()) {
     return;
   }
 
-  weak_passwords_.insert(weak_passwords.begin(), weak_passwords.end());
+  weak_passwords_.reserve(weak_passwords_.size() + weak_passwords.size());
+  weak_passwords_.merge(weak_passwords);
   NotifyInsecureCredentialsChanged();
 }
 
@@ -212,15 +267,21 @@ void InsecureCredentialsManager::OnPartialWeakCheckDone(
 // new list of saved passwords.
 void InsecureCredentialsManager::OnSavedPasswordsChanged(
     const PasswordStoreChangeList& changes) {
-  base::flat_set<std::u16string> passwords_to_recheck;
+  absl::flat_hash_set<PasswordString> passwords_to_recheck;
+  // Reserve so the table does not grow mid-insert: each growth
+  // re-hashes every stored element, and hashing a PasswordString decrypts it.
+  passwords_to_recheck.reserve(changes.size());
   for (const auto& change : changes) {
     if (ChangeRequiresRerunningWeakCheck(change)) {
-      passwords_to_recheck.insert(change.credential().password_value.value());
+      passwords_to_recheck.insert(change.credential().password_value);
     }
   }
   if (!passwords_to_recheck.empty()) {
-    base::ThreadPool::PostTaskAndReplyWithResult(
-        FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+    // Posted to the same sequence as `StartWeakCheck()` so that a partial
+    // check cannot complete out of order with respect to a full check and
+    // overwrite its results (or vice versa).
+    check_task_runner_->PostTaskAndReplyWithResult(
+        FROM_HERE,
         base::BindOnce(&BulkWeakCheck, std::move(passwords_to_recheck)),
         base::BindOnce(&InsecureCredentialsManager::OnPartialWeakCheckDone,
                        weak_ptr_factory_.GetWeakPtr()));

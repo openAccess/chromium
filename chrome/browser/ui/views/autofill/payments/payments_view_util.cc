@@ -24,6 +24,7 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
+#include "ui/color/color_variant.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image_skia.h"
@@ -61,17 +62,26 @@ constexpr int kTextWithIconViewIconSize = 24;
 
 std::unique_ptr<views::ImageView> CreateIconView(
     TitleWithIconAfterLabelView::Icon icon_to_show,
-    const base::RepeatingCallback<ui::ColorVariant()>&
-        get_background_color_callback) {
+    ui::ColorVariant background_color) {
   ui::ImageModel model;
   std::optional<ui::ImageModel> model_dark;
   switch (icon_to_show) {
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
     case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY:
-      model = ui::ImageModel::FromImageGenerator(
-          base::BindRepeating(&CreateTiledGooglePayLogo, kGooglePayLogoWidth,
-                              kIconHeight),
-          gfx::Size(kGooglePayLogoWidth, kIconHeight));
+      if (base::FeatureList::IsEnabled(
+              features::kAutofillEnableGradientGoogleLogos)) {
+        model = ui::ImageModel::FromImageSkia(
+            *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+                IDR_AUTOFILL_GOOGLE_PAY_WITH_GRADIENT));
+        model_dark = ui::ImageModel::FromImageSkia(
+            *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+                IDR_AUTOFILL_GOOGLE_PAY_WITH_GRADIENT_DARK));
+      } else {
+        model = ui::ImageModel::FromImageGenerator(
+            base::BindRepeating(&CreateTiledGooglePayLogo, kGooglePayLogoWidth,
+                                kIconHeight),
+            gfx::Size(kGooglePayLogoWidth, kIconHeight));
+      }
       break;
     case TitleWithIconAfterLabelView::Icon::GOOGLE_PAY_AND_AFFIRM:
       model = ui::ImageModel::FromImageSkia(
@@ -168,7 +178,7 @@ std::unique_ptr<views::ImageView> CreateIconView(
     }
   }
   return std::make_unique<views::ThemeTrackingImageView>(
-      model, model_dark.value_or(model), get_background_color_callback);
+      model, model_dark.value_or(model), background_color);
 }
 
 }  // namespace
@@ -196,22 +206,30 @@ views::Textfield& LabeledTextfieldWithErrorMessage::GetInputTextField() const {
   return *input;
 }
 
-void LabeledTextfieldWithErrorMessage::SetErrorState(bool is_valid) {
+void LabeledTextfieldWithErrorMessage::MaybeShowError() {
   CHECK(input);
-  is_valid_input = is_valid;
-  input->SetInvalid(!is_valid);
+  const bool show_error = !input->GetText().empty() && !is_valid_input;
+  input->SetInvalid(show_error);
   if (error_label) {
-    error_label->SetVisible(!is_valid);
+    error_label->SetVisible(show_error);
+    if (show_error) {
+      error_label->GetViewAccessibility().AnnouncePolitely(
+          error_label->GetText());
+    }
   }
   if (error_label_placeholder) {
-    error_label_placeholder->SetVisible(is_valid);
+    error_label_placeholder->SetVisible(!show_error);
   }
 }
 
-void LabeledTextfieldWithErrorMessage::MaybeAnnounceError() {
-  if (!GetInputTextField().GetText().empty() && !is_valid_input) {
-    error_label->GetViewAccessibility().AnnouncePolitely(
-        error_label->GetText());
+void LabeledTextfieldWithErrorMessage::HideError() {
+  CHECK(input);
+  input->SetInvalid(false);
+  if (error_label) {
+    error_label->SetVisible(false);
+  }
+  if (error_label_placeholder) {
+    error_label_placeholder->SetVisible(true);
   }
 }
 
@@ -258,14 +276,8 @@ TitleWithIconAfterLabelView::TitleWithIconAfterLabelView(
       window_title, views::style::CONTEXT_DIALOG_TITLE));
   title_label->SetHorizontalAlignment(gfx::ALIGN_TO_HEAD);
   title_label->SetMultiLine(true);
-  auto* icon_view = AddChildView(CreateIconView(
-      icon_to_show,
-      base::BindRepeating(
-          [](views::View* view) {
-            return ui::ColorVariant(
-                view->GetColorProvider()->GetColor(ui::kColorDialogBackground));
-          },
-          base::Unretained(this))));
+  auto* icon_view =
+      AddChildView(CreateIconView(icon_to_show, ui::kColorDialogBackground));
   icon_view->SetID(DialogViewId::BUBBLE_TITLE_ICON);
 
   // Center the icon against the first line of the title label. This needs to be
@@ -304,7 +316,7 @@ END_METADATA
 
 PaymentsUiClosedReason GetPaymentsUiClosedReasonFromWidget(
     const views::Widget* widget) {
-  DCHECK(widget);
+  CHECK(widget, base::NotFatalUntil::M162);
   if (!widget->IsClosed()) {
     return PaymentsUiClosedReason::kUnknown;
   }
@@ -329,8 +341,10 @@ std::unique_ptr<views::View> CreateLegalMessageView(
     const std::u16string& user_email,
     const ui::ImageModel& user_avatar,
     base::RepeatingCallback<void(const GURL&)> callback) {
-  auto result =
-      CreateLegalMessageView(legal_message_lines, std::move(callback));
+  auto result = CreateLegalMessageView(
+      legal_message_lines, /*text_style=*/std::nullopt,
+      /*text_color_id=*/std::nullopt, /*link_text_style=*/std::nullopt,
+      std::move(callback));
   if (user_email.empty() || user_avatar.IsEmpty()) {
     return result;
   }

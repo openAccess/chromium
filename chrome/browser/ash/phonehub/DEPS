@@ -21,16 +21,18 @@ include_rules = [
   "+chrome/browser/ash/profiles",
   "+chrome/browser/ash/secure_channel",
   "+chrome/browser/download",
-  "+chrome/browser/favicon",
   "+chrome/browser/profiles",
-  "+chrome/browser/sync",
   "+chrome/browser/ui/ash/holding_space",
   "+chrome/browser/ui/webui/ash/multidevice_setup",
   "+chrome/test/base",
-
-  # Dependencies outside of //chrome:
-  "+components/favicon",
-  "+components/sessions/core",
-  "+components/sync_sessions",
-  "+third_party/skia/include/core",
 ]
+
+specific_include_rules = {
+  # The keyed service factory is the //chrome seam for the sync and favicon
+  # services that PhoneHubManager takes by constructor.
+  "phone_hub_manager_factory\\.cc": [
+    "+chrome/browser/favicon/history_ui_favicon_request_handler_factory.h",
+    "+chrome/browser/sync/session_sync_service_factory.h",
+    "+chrome/browser/sync/sync_service_factory.h",
+  ],
+}

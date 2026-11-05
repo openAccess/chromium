@@ -11,7 +11,6 @@ import android.content.Context;
 import android.view.ContextThemeWrapper;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -21,7 +20,6 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.ServiceLoaderUtil;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -34,7 +32,6 @@ import org.chromium.chrome.browser.magic_stack.ModuleDelegate;
 
 /** Unit tests for {@link AuxiliarySearchModuleCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AuxiliarySearchModuleCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -58,7 +55,6 @@ public class AuxiliarySearchModuleCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     @DisableFeatures({ChromeFeatureList.AUXILIARY_SEARCH_HISTORY_DONATION})
     public void testGetModuleContextMenuHideText_Default() {
         assertEquals(
@@ -67,7 +63,6 @@ public class AuxiliarySearchModuleCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({ChromeFeatureList.AUXILIARY_SEARCH_HISTORY_DONATION})
     public void testGetModuleContextMenuHideText_BrowsingDataDonation() {
         when(mHooks.isBrowsingDataDonationSupported()).thenReturn(true);
@@ -78,7 +73,6 @@ public class AuxiliarySearchModuleCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({ChromeFeatureList.AUXILIARY_SEARCH_HISTORY_DONATION})
     public void testGetModuleContextMenuHideText_BrowsingDataDonationNotSupported() {
         when(mHooks.isBrowsingDataDonationSupported()).thenReturn(false);

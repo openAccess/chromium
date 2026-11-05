@@ -121,6 +121,10 @@ suite('SyncSettings', function() {
 
   setup(async function() {
     browserProxy = new TestSyncBrowserProxy();
+    browserProxy.testSyncStatus = {
+      signedInState: SignedInState.SYNCING,
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(browserProxy);
 
     await setupSyncPage();
@@ -862,7 +866,7 @@ suite('EEAChoiceCountry', function() {
   suiteSetup(function() {
     loadTimeData.overrideValues({
       signinAllowed: true,
-      isEeaChoiceCountry: true,
+      mayShowLinkedGoogleServicesSetting: true,
     });
   });
 
@@ -873,6 +877,10 @@ suite('EEAChoiceCountry', function() {
     await PrefService.getInstance().whenInitialized();
 
     browserProxy = new TestSyncBrowserProxy();
+    browserProxy.testSyncStatus = {
+      signedInState: SignedInState.SYNCING,
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(browserProxy);
 
     metricsBrowserProxy = new TestMetricsBrowserProxy();

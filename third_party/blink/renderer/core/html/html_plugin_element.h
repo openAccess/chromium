@@ -67,7 +67,8 @@ class CORE_EXPORT HTMLPlugInElement
 
   bool HasPendingActivity() const final;
 
-  void SetFocused(bool, mojom::blink::FocusType) override;
+  using HTMLFrameOwnerElement::SetFocused;
+  void SetFocused(bool, mojom::blink::FocusType, BlurEventBehavior) override;
   void ResetInstance();
   WebPluginContainerImpl* OwnedPlugin() const;
   bool CanProcessDrag() const;
@@ -105,6 +106,7 @@ class CORE_EXPORT HTMLPlugInElement
   void AttachLayoutTree(AttachContext&) override;
 
   // Element functions:
+  void ParseAttribute(const AttributeModificationParams&) override;
   bool IsPresentationAttribute(const QualifiedName&) const override;
   void CollectStyleForPresentationAttribute(
       const QualifiedName&,

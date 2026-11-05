@@ -24,7 +24,6 @@
 #include "components/cbor/writer.h"
 #include "crypto/hash.h"
 #include "crypto/random.h"
-#include "crypto/sha2.h"
 #include "device/fido/attestation_statement.h"
 #include "device/fido/attested_credential_data.h"
 #include "device/fido/authenticator_data.h"
@@ -289,9 +288,9 @@ HRESULT FakeWinWebAuthnApi::AuthenticatorMakeCredential(
 
   std::unique_ptr<PublicKey> public_key = private_key->GetPublicKey();
   std::vector<uint8_t> credential_id =
-      base::ToVector(crypto::SHA256Hash(public_key->cose_key_bytes));
+      base::ToVector(crypto::hash::Sha256(public_key->cose_key_bytes));
   std::string rp_id = base::WideToUTF8(rp->pwszId);
-  std::array<uint8_t, crypto::kSHA256Length> rp_id_hash =
+  std::array<uint8_t, crypto::hash::kSha256Size> rp_id_hash =
       crypto::hash::Sha256(rp_id);
   std::vector<uint8_t> user_id =
       base::ToVector(UNSAFE_TODO(base::span(user->pbId, user->cbId)));
@@ -332,7 +331,7 @@ HRESULT FakeWinWebAuthnApi::AuthenticatorMakeCredential(
                            cbor::Value(true));
   }
 
-  std::array<uint8_t, 2> credential_id_length = {0, crypto::kSHA256Length};
+  std::array<uint8_t, 2> credential_id_length = {0, crypto::hash::kSha256Size};
   AttestedCredentialData credential_data(
       kTestWindowsAaguid, credential_id_length, credential_id,
       registration.private_key->GetPublicKey());
@@ -349,6 +348,10 @@ HRESULT FakeWinWebAuthnApi::AuthenticatorMakeCredential(
                         registration.counter.value_or(0),
                         std::move(credential_data), std::move(extensions))
           .SerializeToByteArray();
+  if (corrupt_authenticator_data_) {
+    // Too short to be valid authenticator data.
+    attestation->authenticator_data = {0x00};
+  }
   attestation->credential_id = credential_id;
   // For now, only support none attestation.
   attestation->attestation =
@@ -483,9 +486,14 @@ HRESULT FakeWinWebAuthnApi::AuthenticatorGetAssertion(
   base::Extend(sign_data, result->authenticator_data);
   base::Extend(
       sign_data,
-      crypto::SHA256Hash(UNSAFE_TODO(base::span(
+      crypto::hash::Sha256(UNSAFE_TODO(base::span(
           client_data->pbClientDataJSON, client_data->cbClientDataJSON))));
   result->signature = registration->private_key->Sign(sign_data);
+
+  if (corrupt_authenticator_data_) {
+    // Too short to be valid authenticator data.
+    result->authenticator_data = {0x00};
+  }
 
   // Fill in the WEBAUTHN_ASSERTION struct returned to the caller.
   result->assertion = {};

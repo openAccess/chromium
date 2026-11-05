@@ -5,6 +5,7 @@
 #include "chrome/browser/apps/app_shim/web_app_shim_manager_delegate_mac.h"
 
 #include <algorithm>
+#include <optional>
 
 #include "base/barrier_closure.h"
 #include "base/check.h"
@@ -13,6 +14,7 @@
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
+#include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
 #include "chrome/browser/web_applications/extensions/launch.h"
@@ -26,9 +28,13 @@
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/common/chrome_switches.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/content_settings_types.h"
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "net/base/filename_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace web_app {
 
@@ -128,7 +134,7 @@ void UserChoiceDialogCompleted(
           app_id, protocol_url->GetScheme(), approval_state,
           std::move(persist_done));
     } else {
-      DCHECK(is_file_launch);
+      CHECK(is_file_launch, base::NotFatalUntil::M161);
       provider->scheduler().PersistFileHandlersUserChoice(
           app_id, allowed, std::move(persist_done));
     }
@@ -241,6 +247,8 @@ void WebAppShimManagerDelegate::LaunchApp(
     const GURL& override_url,
     chrome::mojom::AppShimLoginItemRestoreState login_item_restore_state,
     base::OnceClosure launch_finished_callback) {
+  // TODO(crbug.com/578137790): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(AppIsInstalled(profile, app_id));
   if (UseFallback(profile, app_id)) {
     fallback_delegate_->LaunchApp(profile, app_id, files, urls, override_url,
@@ -266,9 +274,9 @@ void WebAppShimManagerDelegate::LaunchApp(
     launch_source = apps::LaunchSource::kFromOsLogin;
   }
 
-  apps::AppLaunchParams params(app_id, launch_container,
-                               WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                               launch_source);
+  apps::AppLaunchParams params(
+      app_id, launch_container,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab, launch_source);
   // Don't assign `files` to `params.launch_files` until we're sure this is a
   // permitted file launch.
   std::vector<base::FilePath> launch_files = files;
@@ -352,7 +360,7 @@ void WebAppShimManagerDelegate::LaunchApp(
   // disabled), fall back to a normal app launch.
   if (!file_launches.empty()) {
     const WebApp* web_app = provider->registrar_unsafe().GetAppById(app_id);
-    DCHECK(web_app);
+    CHECK(web_app, base::NotFatalUntil::M161);
 
     if (web_app->file_handler_approval_state() ==
         ApiApprovalState::kRequiresPrompt) {
@@ -364,8 +372,8 @@ void WebAppShimManagerDelegate::LaunchApp(
       return;
     }
 
-    DCHECK_EQ(ApiApprovalState::kAllowed,
-              web_app->file_handler_approval_state());
+    CHECK_EQ(ApiApprovalState::kAllowed, web_app->file_handler_approval_state(),
+             base::NotFatalUntil::M161);
   }
 
   LaunchAppWithParams(profile, std::move(params), file_launches,
@@ -379,7 +387,7 @@ void WebAppShimManagerDelegate::LaunchShim(
     web_app::ShimLaunchMode launch_mode,
     apps::ShimLaunchedCallback launched_callback,
     apps::ShimTerminatedCallback terminated_callback) {
-  DCHECK(AppIsInstalled(profile, app_id));
+  CHECK(AppIsInstalled(profile, app_id), base::NotFatalUntil::M161);
   if (UseFallback(profile, app_id)) {
     fallback_delegate_->LaunchShim(profile, app_id, update_behavior,
                                    launch_mode, std::move(launched_callback),
@@ -433,13 +441,14 @@ WebAppShimManagerDelegate::GetAppShortcutsMenuItemInfos(
 
   std::vector<chrome::mojom::ApplicationDockMenuItemPtr> dock_menu_items;
 
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   auto shortcuts_menu_item_infos = WebAppProvider::GetForWebApps(profile)
                                        ->registrar_unsafe()
                                        .GetAppShortcutsMenuItemInfos(app_id);
 
-  DCHECK_LE(shortcuts_menu_item_infos.size(), kMaxApplicationDockMenuItems);
+  CHECK_LE(shortcuts_menu_item_infos.size(), kMaxApplicationDockMenuItems,
+           base::NotFatalUntil::M161);
   for (const auto& shortcuts_menu_item_info : shortcuts_menu_item_infos) {
     auto mojo_item = chrome::mojom::ApplicationDockMenuItem::New();
     mojo_item->name = shortcuts_menu_item_info.name;
@@ -448,6 +457,37 @@ WebAppShimManagerDelegate::GetAppShortcutsMenuItemInfos(
   }
 
   return dock_menu_items;
+}
+
+std::optional<ContentSetting>
+WebAppShimManagerDelegate::GetChromeNotificationPermission(
+    Profile* profile,
+    const webapps::AppId& app_id) {
+  if (!profile || !AreWebAppsEnabled(profile)) {
+    return std::nullopt;
+  }
+  WebAppProvider* provider = WebAppProvider::GetForWebApps(profile);
+  if (!provider || !provider->on_registry_ready().is_signaled()) {
+    return std::nullopt;
+  }
+  // Safe to use `registrar_unsafe()` here for a synchronous read-only query on
+  // the UI thread to look up the app's start URL for notification permission
+  // metrics.
+  if (!provider->registrar_unsafe().AppMatches(
+          app_id, WebAppFilter::SupportsOsNotifications())) {
+    return std::nullopt;
+  }
+  const GURL start_url = provider->registrar_unsafe().GetAppStartUrl(app_id);
+  if (!start_url.is_valid()) {
+    return std::nullopt;
+  }
+  HostContentSettingsMap* settings_map =
+      HostContentSettingsMapFactory::GetForProfile(profile);
+  if (!settings_map) {
+    return std::nullopt;
+  }
+  return settings_map->GetContentSetting(start_url, start_url,
+                                         ContentSettingsType::NOTIFICATIONS);
 }
 
 }  // namespace web_app

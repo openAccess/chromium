@@ -168,11 +168,13 @@ class PageHandler : public DevToolsDomainHandler,
                            std::optional<int> every_nth_frame,
                            std::optional<int> max_frames_in_flight,
                            std::optional<bool> send_last_frame) override;
-  Response StartScreenRecording(std::optional<bool> audio,
-                                std::optional<int> max_width,
-                                std::optional<int> max_height,
-                                std::optional<int> frame_rate,
-                                std::string* out_stream) override;
+  void StartScreenRecording(
+      std::optional<bool> audio,
+      std::optional<int> max_width,
+      std::optional<int> max_height,
+      std::optional<int> frame_rate,
+      std::optional<std::string> capture_area,
+      std::unique_ptr<StartScreenRecordingCallback> callback) override;
   void StopScreenRecording(
       std::unique_ptr<StopScreenRecordingCallback> callback) override;
   void OnMediaRecorderFlushed();
@@ -201,15 +203,15 @@ class PageHandler : public DevToolsDomainHandler,
       std::unique_ptr<GetManifestIconsCallback> callback) override;
 
   void GetAppId(std::unique_ptr<GetAppIdCallback> callback) override;
+  void GetSubApps(std::unique_ptr<GetSubAppsCallback> callback) override;
+  void GetSiblingSubApps(
+      std::unique_ptr<GetSiblingSubAppsCallback> callback) override;
 
   Response SetBypassCSP(bool enabled) override;
   Response AddCompilationCache(const std::string& url,
                                const Binary& data) override;
 
   Response SetPrerenderingAllowed(bool is_allowed) override;
-  void GetAnnotatedPageContent(
-      std::optional<bool> include_actionable_information,
-      std::unique_ptr<GetAnnotatedPageContentCallback> callback) override;
 
   Response AddScriptToEvaluateOnNewDocument(
       const std::string& source,
@@ -265,6 +267,11 @@ class PageHandler : public DevToolsDomainHandler,
   // returns Response with an error.
   using ResponseOrWebContents = std::variant<Response, WebContentsImpl*>;
   ResponseOrWebContents GetWebContentsForTopLevelActiveFrame();
+
+  // Returns an error response if the client's trust level or local file access
+  // permission does not allow it to navigate the page to `url`. `host_` must
+  // not be null.
+  Response CheckNavigationAllowed(const GURL& url);
 
   const bool allow_unsafe_operations_;
   const bool is_trusted_;

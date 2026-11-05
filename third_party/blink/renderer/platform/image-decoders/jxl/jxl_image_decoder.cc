@@ -5,29 +5,37 @@
 #include "third_party/blink/renderer/platform/image-decoders/jxl/jxl_image_decoder.h"
 
 #include <cstdint>
+#include <limits>
 
 #include "base/check_op.h"
 #include "base/containers/span.h"
+#include "base/containers/span_rust.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
+#include "skia/ext/codec_utils.h"
 #include "third_party/blink/renderer/platform/image-decoders/fast_shared_buffer_reader.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_frame.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
-#include "third_party/rust/jxl/v0_6/wrapper/lib.rs.h"
+#include "third_party/rust/jxl/v0_8/wrapper/lib.rs.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
+#include "third_party/skia/include/core/SkData.h"
 #include "third_party/skia/include/core/SkTypes.h"
+#include "third_party/skia/include/private/SkGainmapInfo.h"
 
 namespace blink {
 
 using jxl_rs::jxl_rs_decoder_create;
+using jxl_rs::jxl_rs_probe_decode_start;
 using jxl_rs::jxl_rs_scan_decoder_create;
 using jxl_rs::jxl_rs_seek_decoder_to_frame;
 using jxl_rs::jxl_rs_signature_check;
 using jxl_rs::JxlRsBasicInfo;
 using jxl_rs::JxlRsDecoder;
+using jxl_rs::JxlRsGainMap;
 using jxl_rs::JxlRsPixelFormat;
 using jxl_rs::JxlRsProcessResult;
 using jxl_rs::JxlRsStatus;
@@ -44,6 +52,12 @@ constexpr uint64_t kMaxDecodedSamples = 64ULL * 1024 * 1024;
 // limits specify ~268M pixels, so we allow ~1B samples to support that.
 constexpr uint64_t kMaxDecodedSamples = 1024ULL * 1024 * 1024;
 #endif
+
+skcms_TFType TransferFunctionType(const skia::ColorProfile& profile) {
+  skcms_TransferFunction trfn;
+  profile.GetSkColorSpace()->transferFn(&trfn);
+  return skcms_TransferFunction_getType(&trfn);
+}
 
 }  // namespace
 
@@ -89,7 +103,11 @@ bool JXLImageDecoder::MatchesJXLSignature(
 // Shared basic-info processing
 // ---------------------------------------------------------------------------
 
-void JXLImageDecoder::SetPixelFormat(JxlRsDecoder* decoder) {
+bool JXLImageDecoder::HasBlackChannel() const {
+  return basic_info_.has_value() && basic_info_->has_black_channel;
+}
+
+bool JXLImageDecoder::SetPixelFormat(JxlRsDecoder* decoder) {
   CHECK(basic_info_.has_value());
   bool decode_to_half_float =
       ImageIsHighBitDepth() &&
@@ -105,7 +123,26 @@ void JXLImageDecoder::SetPixelFormat(JxlRsDecoder* decoder) {
 #endif
   JxlRsPixelFormat pixel_format =
       decode_to_half_float ? JxlRsPixelFormat::RgbaF16 : kNativePixelFormat;
-  decoder->set_pixel_format(pixel_format, basic_info_->num_extra_channels);
+  return decoder->set_pixel_format(pixel_format,
+                                   basic_info_->num_extra_channels);
+}
+
+void JXLImageDecoder::ApplyColorTransform(ImageFrame& frame) {
+  if (!HasBlackChannel()) {
+    return;
+  }
+
+  CHECK(cmyk_color_profile_);
+  SkPixmap pixmap;
+  CHECK(frame.Bitmap().peekPixels(&pixmap));
+  // skcms expects interleaved C,M,Y,K samples in RGBA channel order.
+  const SkIRect rect = SkIRect::MakeWH(pixmap.width(), pixmap.height());
+  if (frame.GetPixelFormat() == ImageFrame::PixelFormat::kRGBA_F16) {
+    cmyk_color_profile_->TransformInPlace(pixmap, rect);
+  } else {
+    CHECK_EQ(frame.GetPixelFormat(), ImageFrame::PixelFormat::kN32);
+    cmyk_color_profile_->TransformInPlace(pixmap, rect, kRGBA_8888_SkColorType);
+  }
 }
 
 bool JXLImageDecoder::SetBasicInfo() {
@@ -122,15 +159,41 @@ bool JXLImageDecoder::SetBasicInfo() {
 
   // The output ICC profile may depend on the pixel format. Thus, let's ensure
   // that we set the pixel format here.
-  SetPixelFormat(&**scanner_);
+  if (!SetPixelFormat(&**scanner_)) {
+    SetFailed();
+    return false;
+  }
 
   // Extract ICC color profile.
   rust::Slice<const uint8_t> icc_data = (*scanner_)->get_icc_profile();
-  if (!IgnoresColorSpace() && !icc_data.empty()) {
-    auto profile = skia::ColorProfile::Make(icc_data);
-    if (profile) {
-      SetEmbeddedColorProfile(std::move(profile));
+  sk_sp<skia::ColorProfile> profile = skia::ColorProfile::Make(icc_data);
+  if (HasBlackChannel()) {
+    // A Black extra channel without a valid CMYK ICC profile is invalid.
+    if (!profile || !profile->IsCMYK()) {
+      SetFailed();
+      return false;
     }
+    cmyk_color_profile_ = profile;
+  }
+  // intensity_target is a JPEG XL codestream's only statement of its peak
+  // luminance, which is what CLLI MaxCLL states in other formats. Content
+  // light level metadata is only consumed when tone mapping PQ or HLG. 255 is
+  // the codestream default when the field is absent, and 10000 cd/m2 is PQ's
+  // own peak, which encoders write for PQ regardless of the content; neither
+  // states the content's peak.
+  const skcms_TFType tf_type =
+      profile ? TransferFunctionType(*profile) : skcms_TFType_Invalid;
+  if (tf_type == skcms_TFType_PQ || tf_type == skcms_TFType_HLG) {
+    const float intensity_target = basic_info_->intensity_target;
+    const bool states_no_content_peak =
+        intensity_target == 255.0f ||
+        (tf_type == skcms_TFType_PQ && intensity_target == 10000.0f);
+    if (!states_no_content_peak) {
+      hdr_metadata_.SetCLLI({.fMaxCLL = intensity_target});
+    }
+  }
+  if (!IgnoresColorSpace() && profile) {
+    SetEmbeddedColorProfile(std::move(profile));
   }
 
   // Record bpp information only for 8-bit, color, still images without
@@ -150,8 +213,17 @@ bool JXLImageDecoder::SetBasicInfo() {
 // ---------------------------------------------------------------------------
 
 void JXLImageDecoder::ScanFrames() {
-  if (scanner_done_ || Failed()) {
+  if (Failed()) {
     return;
+  }
+  if (scanner_done_) {
+    CollectGainMapIfComplete();
+    return;
+  }
+
+  if (scanner_needs_replay_) {
+    scanner_needs_replay_ = false;
+    scanner_.reset();
   }
 
   if (!scanner_.has_value()) {
@@ -236,6 +308,7 @@ void JXLImageDecoder::ScanFrames() {
 
   for (size_t i = frame_infos_.size(); i < scanned_count; i++) {
     frame_infos_.push_back((*scanner_)->get_frame_info(i));
+    frame_decode_start_offsets_.emplace_back(std::nullopt);
 
     FrameTiming timing;
     timing.duration = base::Milliseconds(frame_infos_.back().duration_ms);
@@ -251,6 +324,40 @@ void JXLImageDecoder::ScanFrames() {
     cumulative_time = next_cumulative_time;
     frame_timings_.push_back(timing);
   }
+
+  if (scanner_done_) {
+    CollectGainMapIfComplete();
+  }
+}
+
+void JXLImageDecoder::CollectGainMapIfComplete() {
+  if (gain_map_.has_value() || !IsAllDataReceived()) {
+    return;
+  }
+
+  size_t offset = scanner_input_offset_;
+  FastSharedBufferReader reader(data_.get());
+  const size_t data_size = reader.size();
+  while (offset < data_size) {
+    base::span<const uint8_t> data_span = reader.GetSomeData(offset);
+    const JxlRsProcessResult result = (*scanner_)->process(
+        rust::Slice<const uint8_t>(data_span.data(), data_span.size()),
+        rust::Slice<uint8_t>(), 0, 0, 0);
+    if (result.status == JxlRsStatus::Error || result.bytes_consumed == 0) {
+      break;
+    }
+    offset += result.bytes_consumed;
+  }
+
+  // A box whose size extends to the end of the file is never consumed, so the
+  // parser needs its tail to complete the box.
+  Vector<uint8_t> buffer;
+  base::span<const uint8_t> trailing_input;
+  if (offset < data_size) {
+    buffer.resize(base::checked_cast<wtf_size_t>(data_size - offset));
+    trailing_input = reader.GetConsecutiveData(offset, buffer.size(), buffer);
+  }
+  gain_map_ = (*scanner_)->gain_map(base::SpanToRustSlice(trailing_input));
 }
 
 void JXLImageDecoder::DecodeSize() {
@@ -261,6 +368,13 @@ void JXLImageDecoder::DecodeSize() {
 
 wtf_size_t JXLImageDecoder::DecodeFrameCount() {
   ScanFrames();
+
+  // A failed optional gain map has no image to expose. Reporting the
+  // still-image fallback of one frame would let Blink build a zero-size
+  // auxiliary decoder and hit a DCHECK while preparing lazy decoding.
+  if (aux_image_ == cc::AuxImage::kGainmap && Failed()) {
+    return 0;
+  }
 
   if (!basic_info_.has_value() || !basic_info_->have_animation) {
     return 1;
@@ -284,7 +398,8 @@ void JXLImageDecoder::InitializeNewFrame(wtf_size_t index) {
   }
 
   frame.SetPremultiplyAlpha(premultiply_alpha_);
-  frame.SetHasAlpha(basic_info_.has_value() && basic_info_->has_alpha);
+  frame.SetHasAlpha(basic_info_.has_value() && basic_info_->has_alpha &&
+                    !HasBlackChannel());
   frame.SetOriginalFrameRect(gfx::Rect(Size()));
   frame.SetRequiredPreviousFrameIndex(kNotFound);
 
@@ -299,6 +414,17 @@ void JXLImageDecoder::InitializeNewFrame(wtf_size_t index) {
 
 void JXLImageDecoder::Decode(wtf_size_t index) {
   Decode(index, false);
+
+  // A gain map is only usable once fully decoded, whereas the base image may
+  // expose the partial frame of a truncated input.
+  if (aux_image_ == cc::AuxImage::kGainmap &&
+      index < frame_buffer_cache_.size()) {
+    ImageFrame& frame = frame_buffer_cache_[index];
+    if (Failed() || frame.GetStatus() != ImageFrame::kFrameComplete) {
+      frame.ClearPixelData();
+      SetFailed();
+    }
+  }
 }
 
 void JXLImageDecoder::Decode(wtf_size_t index, bool only_size) {
@@ -324,10 +450,10 @@ void JXLImageDecoder::Decode(wtf_size_t index, bool only_size) {
     }
   }
 
-  // If we want to decode a frame that is *not* the next frame, seek to that
-  // frame.
-  if (basic_info_->have_animation && index != next_frame_to_decode_) {
-    CHECK_GE(decoder_state_, DecoderState::kHaveBasicInfo);
+  // A new decoder must process the image header before it can seek.
+  if (basic_info_->have_animation &&
+      decoder_state_ >= DecoderState::kHaveBasicInfo &&
+      index != next_frame_to_decode_ && !CanDecodeForwardTo(index)) {
     SeekToFrame(index);
   }
 
@@ -402,7 +528,12 @@ void JXLImageDecoder::Decode(wtf_size_t index, bool only_size) {
     const uint32_t height = basic_info_->height;
     size_t row_stride = 0;
 
-    if (decoder_state_ >= DecoderState::kHaveBasicInfo) {
+    // When decoding forward to the requested frame, the frames before it are
+    // decoded without output: the decoder still updates its reference frames,
+    // but no pixels are produced or stored for them.
+    const bool skip_output = next_frame_to_decode_ < index;
+
+    if (decoder_state_ >= DecoderState::kHaveBasicInfo && !skip_output) {
       if (frame_buffer_cache_.size() <= next_frame_to_decode_) {
         frame_buffer_cache_.resize(next_frame_to_decode_ + 1);
       }
@@ -419,7 +550,9 @@ void JXLImageDecoder::Decode(wtf_size_t index, bool only_size) {
         }
       }
 
-      frame.SetHasAlpha(basic_info_->has_alpha);
+      // CMYK uses the fourth frame-buffer channel for K; the color transform
+      // replaces it with opaque alpha.
+      frame.SetHasAlpha(basic_info_->has_alpha && !HasBlackChannel());
 
       // Get direct access to the frame buffer's backing store.
       const SkBitmap& bitmap = frame.Bitmap();
@@ -484,7 +617,10 @@ void JXLImageDecoder::Decode(wtf_size_t index, bool only_size) {
 
     switch (decoder_state_) {
       case DecoderState::kInitial: {
-        SetPixelFormat(&**decoder_);
+        if (!SetPixelFormat(&**decoder_)) {
+          SetFailed();
+          return;
+        }
         decoder_state_ = DecoderState::kHaveBasicInfo;
         break;
       }
@@ -493,7 +629,16 @@ void JXLImageDecoder::Decode(wtf_size_t index, bool only_size) {
         break;
       }
       case DecoderState::kHaveFrameHeader: {
+        if (skip_output) {
+          current_frame_decode_time_ = base::TimeDelta();
+          next_frame_to_decode_++;
+          decoder_state_ = (*decoder_)->has_more_frames()
+                               ? DecoderState::kHaveBasicInfo
+                               : DecoderState::kDone;
+          break;
+        }
         ImageFrame& frame = frame_buffer_cache_[next_frame_to_decode_];
+        ApplyColorTransform(frame);
         frame.SetPixelsChanged(true);
         frame.SetStatus(ImageFrame::kFrameComplete);
 
@@ -546,16 +691,54 @@ void JXLImageDecoder::Decode(wtf_size_t index, bool only_size) {
 void JXLImageDecoder::SeekToFrame(wtf_size_t index) {
   CHECK_LT(index, frame_infos_.size());
   CHECK(scanner_.has_value());
+  CHECK(decoder_.has_value());
 
   // Position the decoder at the start of the frame group containing
   // the target frame. The full seek target (including internal jxl-rs
   // state) is looked up from the scanner. Visible frame skipping (for
-  // non-keyframes) is handled automatically by jxl-rs.
-  jxl_rs_seek_decoder_to_frame(**scanner_, **decoder_, index);
-  decoder_input_offset_ = frame_infos_[index].decode_start_file_offset;
+  // non-keyframes) is handled automatically by jxl-rs. The seek returns the
+  // file offset to feed input from.
+  const uint64_t feed_offset =
+      jxl_rs_seek_decoder_to_frame(**scanner_, **decoder_, index);
+  // u64::MAX signals a failed seek; cannot happen for a scanned frame index.
+  CHECK_NE(feed_offset, std::numeric_limits<uint64_t>::max());
+  decoder_input_offset_ = feed_offset;
 
   decoder_state_ = DecoderState::kHaveBasicInfo;
   next_frame_to_decode_ = index;
+}
+
+bool JXLImageDecoder::CanDecodeForwardTo(wtf_size_t index) {
+  if (!decoder_.has_value() || decoder_state_ != DecoderState::kHaveBasicInfo ||
+      index <= next_frame_to_decode_ || index >= frame_infos_.size()) {
+    return false;
+  }
+
+  if (!frame_decode_start_offsets_[index].has_value()) {
+    CHECK(scanner_.has_value());
+    const uint64_t decode_start = jxl_rs_probe_decode_start(**scanner_, index);
+    CHECK_NE(decode_start, std::numeric_limits<uint64_t>::max());
+    frame_decode_start_offsets_[index] = decode_start;
+    if (!scanner_done_) {
+      // The probe rewound the scanner's parser state. Its frame list is
+      // intact, but it must be replayed from the start before it can
+      // process new data.
+      scanner_needs_replay_ = true;
+      scanner_input_offset_ = 0;
+    }
+  }
+
+  // A seek restarts the decode at the target's decode start (the earliest frame
+  // that the target's reference frames depend on) and decodes forward from
+  // there. If that is at or before where the decoder is now, between two
+  // frames, the decoder already has everything the target needs, and decoding
+  // forward from here does less work. This is the usual case when an animation
+  // falls behind and the frame it asks for is a few frames ahead. For
+  // animations whose frames all use reference frames from the start of the
+  // file (e.g. sprite sheets drawn with patches), every decode start is the
+  // first frame, so a seek would decode the whole file up to the target, and
+  // each late frame would make the next one later.
+  return *frame_decode_start_offsets_[index] <= decoder_input_offset_;
 }
 
 bool JXLImageDecoder::CanReusePreviousFrameBuffer(
@@ -614,6 +797,40 @@ void JXLImageDecoder::OnSetData(scoped_refptr<SegmentReader> data) {
     // Ensure frame metadata is fully up to date.
     ScanFrames();
   }
+}
+
+bool JXLImageDecoder::GetGainmapInfoAndData(
+    SkGainmapInfo& out_gainmap_info,
+    scoped_refptr<SegmentReader>& out_gainmap_data) const {
+  if (!IsDecodedSizeAvailable() || !gain_map_.has_value() ||
+      gain_map_->gain_map.empty()) {
+    return false;
+  }
+
+  const JxlRsGainMap& gain_map = *gain_map_;
+  sk_sp<SkData> metadata =
+      SkData::MakeWithCopy(gain_map.metadata.data(), gain_map.metadata.size());
+  SkGainmapInfo gainmap_info;
+  if (!skia::ParseGainmapInfo(metadata.get(), gainmap_info)) {
+    return false;
+  }
+
+  if (gainmap_info.fGainmapMathColorSpace) {
+    // Skia leaves a placeholder profile behind when the metadata selects the
+    // alternate image's color space, which only the container provides.
+    sk_sp<skia::ColorProfile> alternate_profile =
+        skia::ColorProfile::Make(base::span(gain_map.alternate_icc));
+    if (!alternate_profile || !alternate_profile->IsSkColorSpaceExact() ||
+        !alternate_profile->GetSkColorSpace()) {
+      return false;
+    }
+    gainmap_info.fGainmapMathColorSpace = alternate_profile->GetSkColorSpace();
+  }
+
+  out_gainmap_info = gainmap_info;
+  out_gainmap_data = SegmentReader::CreateFromSkData(
+      SkData::MakeWithCopy(gain_map.gain_map.data(), gain_map.gain_map.size()));
+  return true;
 }
 
 }  // namespace blink

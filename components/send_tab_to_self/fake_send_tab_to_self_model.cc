@@ -12,14 +12,14 @@
 #include <utility>
 #include <vector>
 
-#include "base/auto_reset.h"
 #include "base/containers/to_vector.h"
+#include "base/functional/callback_helpers.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
 #include "components/send_tab_to_self/page_context.h"
 #include "components/send_tab_to_self/send_tab_to_self_entry.h"
 #include "components/send_tab_to_self/send_tab_to_self_model_observer.h"
-#include "components/send_tab_to_self/target_device_info.h"
+#include "components/sync_device_info/remote_device_info.h"
 #include "url/gurl.h"
 
 namespace send_tab_to_self {
@@ -83,6 +83,9 @@ const SendTabToSelfEntry* FakeSendTabToSelfModel::SendEntry(
     base::OnceCallback<void(SendTabToSelfResult)> commit_confirmation,
     ShareEntryPoint entry_point) {
   if (!IsReady()) {
+    if (send_entry_callback_) {
+      send_entry_callback_.Run(nullptr);
+    }
     if (commit_confirmation) {
       std::move(commit_confirmation)
           .Run(SendTabToSelfResult::kFailureNotTrackingMetadata);
@@ -93,7 +96,7 @@ const SendTabToSelfEntry* FakeSendTabToSelfModel::SendEntry(
   std::string guid = base::Uuid::GenerateRandomV4().AsLowercaseString();
   std::unique_ptr<SendTabToSelfEntry> entry =
       std::make_unique<SendTabToSelfEntry>(
-          guid, url, title, base::Time::Now(), local_device_name_,
+          guid, url, title, base::Time::Now(), "device",
           target_device_cache_guid, context, std::move(navigation_history));
 
   const SendTabToSelfEntry* result = entry.get();
@@ -114,7 +117,7 @@ const SendTabToSelfEntry* FakeSendTabToSelfModel::SendEntry(
   return result;
 }
 
-void FakeSendTabToSelfModel::DismissEntry(std::string_view guid) {
+void FakeSendTabToSelfModel::DismissEntryNotification(std::string_view guid) {
   last_dismissed_guid_ = std::string(guid);
   auto it = entries_.find(guid);
   if (it != entries_.end()) {
@@ -140,6 +143,9 @@ void FakeSendTabToSelfModel::MarkEntryActivated(
   if (it != entries_.end()) {
     it->second->MarkActivated(base::Time::Now());
   }
+  if (mark_entry_activated_callback_) {
+    mark_entry_activated_callback_.Run(last_activated_guid_, entry_point);
+  }
 }
 
 bool FakeSendTabToSelfModel::IsReady() {
@@ -150,15 +156,15 @@ bool FakeSendTabToSelfModel::HasValidTargetDevice() {
   return has_valid_target_device_;
 }
 
-std::vector<TargetDeviceInfo>
+std::vector<syncer::RemoteDeviceInfo>
 FakeSendTabToSelfModel::GetTargetDeviceInfoSortedList() {
   return devices_;
 }
 
-std::optional<TargetDeviceInfo> FakeSendTabToSelfModel::GetTargetDeviceInfo(
-    std::string_view cache_guid) {
-  auto it =
-      std::ranges::find(devices_, cache_guid, &TargetDeviceInfo::cache_guid);
+std::optional<syncer::RemoteDeviceInfo>
+FakeSendTabToSelfModel::GetTargetDeviceInfo(std::string_view cache_guid) {
+  auto it = std::ranges::find(devices_, cache_guid,
+                              &syncer::RemoteDeviceInfo::cache_guid);
   return it != devices_.end() ? std::make_optional(*it) : std::nullopt;
 }
 
@@ -185,16 +191,13 @@ void FakeSendTabToSelfModel::SetHasValidTargetDevice(
 }
 
 void FakeSendTabToSelfModel::SetTargetDeviceInfoSortedList(
-    const std::vector<TargetDeviceInfo>& devices) {
+    const std::vector<syncer::RemoteDeviceInfo>& devices) {
   devices_ = devices;
 }
 
-void FakeSendTabToSelfModel::AddTargetDevice(const TargetDeviceInfo& device) {
+void FakeSendTabToSelfModel::AddTargetDevice(
+    const syncer::RemoteDeviceInfo& device) {
   devices_.push_back(device);
-}
-
-void FakeSendTabToSelfModel::SetLocalDeviceName(std::string_view device_name) {
-  local_device_name_ = std::string(device_name);
 }
 
 void FakeSendTabToSelfModel::SetLocalCacheGuid(std::string_view cache_guid) {
@@ -207,6 +210,18 @@ void FakeSendTabToSelfModel::SetSendResult(SendTabToSelfResult result) {
 
 void FakeSendTabToSelfModel::SetSendEntryCallback(SendEntryCallback callback) {
   send_entry_callback_ = std::move(callback);
+}
+
+void FakeSendTabToSelfModel::SetMarkEntryActivatedCallback(
+    MarkEntryActivatedCallback callback) {
+  mark_entry_activated_callback_ = std::move(callback);
+}
+
+void FakeSendTabToSelfModel::SetMarkEntryActivatedCallback(
+    base::RepeatingClosure callback) {
+  mark_entry_activated_callback_ =
+      base::IgnoreArgs<const std::string&, ShareActivatedEntryPoint>(
+          std::move(callback));
 }
 
 const SendTabToSelfEntry* FakeSendTabToSelfModel::AddEntryRemotely(

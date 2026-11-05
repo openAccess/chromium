@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/platform/image-decoders/jpeg/jpeg_image_decoder.h"
 
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -23,6 +24,7 @@
 #include "third_party/blink/public/platform/web_data.h"
 #include "third_party/blink/renderer/platform/graphics/bitmap_image_metrics.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_animation.h"
+#include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
 #include "third_party/blink/renderer/platform/image-decoders/image_decoder_test_helpers.h"
 #include "third_party/blink/renderer/platform/image-decoders/jpeg/jpeg_decoder_factory.h"
 #include "third_party/blink/renderer/platform/image-decoders/jpeg/jpeg_rust_image_decoder.h"
@@ -40,10 +42,12 @@ static const size_t kLargeEnoughSize = 1000 * 1000;
 
 namespace {
 
-std::unique_ptr<JPEGImageDecoder> CreateJPEGDecoder(size_t max_decoded_bytes) {
+std::unique_ptr<JPEGImageDecoder> CreateJPEGDecoder(
+    wtf_size_t max_decoded_bytes,
+    const gfx::Size& desired_size = gfx::Size()) {
   return std::make_unique<JPEGImageDecoder>(
       ImageDecoder::kAlphaNotPremultiplied, ColorBehavior::kTransformToSRGB,
-      cc::AuxImage::kDefault, max_decoded_bytes);
+      cc::AuxImage::kDefault, max_decoded_bytes, desired_size);
 }
 
 std::unique_ptr<ImageDecoder> CreateJPEGDecoder() {
@@ -150,7 +154,7 @@ void Downsample(size_t max_decoded_bytes,
   EXPECT_EQ(expected_size, decoder->DecodedSize());
 }
 
-void ReadYUV(size_t max_decoded_bytes,
+void ReadYUV(ImageDecoder* decoder,
              const char* image_file_path,
              const gfx::Size& expected_y_size,
              const gfx::Size& expected_uv_size,
@@ -158,8 +162,6 @@ void ReadYUV(size_t max_decoded_bytes,
   scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(image_file_path);
   ASSERT_TRUE(data);
 
-  std::unique_ptr<JPEGImageDecoder> decoder =
-      CreateJPEGDecoder(max_decoded_bytes);
   decoder->SetData(data.get(), true);
 
   ASSERT_TRUE(decoder->IsSizeAvailable());
@@ -201,6 +203,25 @@ void ReadYUV(size_t max_decoded_bytes,
 
   EXPECT_EQ(expect_decoding_failure, decoder->Failed());
   EXPECT_TRUE(decoder->HasDisplayableYUVData());
+  decoder->SetImagePlanes(nullptr);
+}
+
+void ReadYUV(std::unique_ptr<ImageDecoder> decoder,
+             const char* image_file_path,
+             const gfx::Size& expected_y_size,
+             const gfx::Size& expected_uv_size,
+             const bool expect_decoding_failure = false) {
+  ReadYUV(decoder.get(), image_file_path, expected_y_size, expected_uv_size,
+          expect_decoding_failure);
+}
+
+void ReadYUV(size_t max_decoded_bytes,
+             const char* image_file_path,
+             const gfx::Size& expected_y_size,
+             const gfx::Size& expected_uv_size,
+             const bool expect_decoding_failure = false) {
+  ReadYUV(CreateJPEGDecoder(max_decoded_bytes), image_file_path,
+          expected_y_size, expected_uv_size, expect_decoding_failure);
 }
 
 void TestJpegBppHistogram(const char* image_name,
@@ -214,8 +235,9 @@ void TestJpegBppHistogram(const char* image_name,
 
 // Tests failure on a too big image.
 TEST(JPEGImageDecoderTest, tooBig) {
-  std::unique_ptr<ImageDecoder> decoder = CreateJPEGDecoder(100);
-  EXPECT_FALSE(decoder->SetSize(10000u, 10000u));
+  std::unique_ptr<ImageDecoder> decoder =
+      CreateJPEGDecoder(std::numeric_limits<wtf_size_t>::max());
+  EXPECT_FALSE(decoder->SetSize(100000u, 100000u));
   EXPECT_TRUE(decoder->Failed());
 }
 
@@ -766,6 +788,20 @@ TEST(JPEGImageDecoderTest, exifWithInitialIfdLast) {
   EXPECT_EQ(test_decoder->DensityCorrectedSize(), gfx::Size(32, 32));
 }
 
+TEST(JPEGImageDecoderTest, ExifDensityWithRustEnabled) {
+  base::test::ScopedFeatureList features(skia::kRustyJpegFeature);
+  scoped_refptr<SharedBuffer> test_data =
+      ReadFileToSharedBuffer(kDecodersTestingDir, "green-exif-ifd-last.jpg");
+  ASSERT_TRUE(test_data);
+
+  std::unique_ptr<ImageDecoder> test_decoder = CreateFactoryJPEGDecoder();
+  test_decoder->SetData(test_data.get(), true);
+  EXPECT_EQ(1u, test_decoder->FrameCount());
+  ASSERT_TRUE(test_decoder->DecodeFrameBufferAtIndex(0));
+  EXPECT_EQ(test_decoder->Orientation(), ImageOrientationEnum::kOriginTopRight);
+  EXPECT_EQ(test_decoder->DensityCorrectedSize(), gfx::Size(32, 32));
+}
+
 TEST(JPEGImageDecoderTest, SupportedSizesSquare) {
   const char* jpeg_file = "/images/resources/gracehopper.jpg";  // 256x256
   scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(jpeg_file);
@@ -917,6 +953,43 @@ TEST(JPEGImageDecoderTest, SupportedScaleNumeratorBound) {
   auto numerator_overflow =
       JPEGImageDecoder::DesiredScaleNumerator(0x4000000, 0x4100000, 8);
   ASSERT_EQ(numerator_overflow, static_cast<unsigned>(7));
+
+  // When max_decoded_bytes is smaller than 1/64 of original_bytes, numerator
+  // should clamp to 1 (the lowest supported size) instead of 0.
+  auto numerator_small = JPEGImageDecoder::DesiredScaleNumerator(1, 1000, 8);
+  ASSERT_EQ(numerator_small, 1u);
+}
+
+// Regression test for crbug.com/562384494.
+TEST(JPEGImageDecoderTest,
+     SupportedSizesSmallDesiredSizeUsesLowestSupportedSize) {
+  const char* jpeg_file = "/images/resources/gracehopper.jpg";  // 256x256
+  scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(jpeg_file);
+  ASSERT_TRUE(data);
+
+  // Request a desired size so small that floor(sqrt(desired/orig)*8) would be
+  // 0.
+  std::unique_ptr<ImageDecoder> decoder = CreateJPEGDecoder(
+      ImageDecoder::kNoDecodedImageByteLimit, gfx::Size(10, 10));
+  decoder->SetData(data.get(), true);
+  ASSERT_TRUE(decoder->IsSizeAvailable());
+  EXPECT_FALSE(decoder->Failed());
+  EXPECT_EQ(gfx::Size(32, 32), decoder->DecodedSize());
+  Vector<SkISize> expected_sizes = {SkISize::Make(32, 32)};
+  auto sizes = decoder->GetSupportedDecodeSizes();
+  ASSERT_EQ(expected_sizes.size(), sizes.size());
+  EXPECT_EQ(expected_sizes[0], sizes[0]);
+
+  auto* frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(frame);
+  EXPECT_EQ(ImageFrame::kFrameComplete, frame->GetStatus());
+  EXPECT_EQ(SkISize::Make(32, 32), frame->Bitmap().dimensions());
+}
+
+TEST(JPEGImageDecoderTest, TooBigDesiredSize) {
+  std::unique_ptr<ImageDecoder> decoder = CreateJPEGDecoder(
+      ImageDecoder::kNoDecodedImageByteLimit, gfx::Size(100000, 100000));
+  EXPECT_TRUE(decoder->Failed());
 }
 
 // Regression test for crbug.com/500104917.
@@ -1082,6 +1155,331 @@ TEST(JPEGImageDecoderTest, PartialRgbDecodeBlocksYuvDecoding) {
   EXPECT_FALSE(decoder->CanDecodeToYUV());
 }
 
+class RustJPEGYuvTest : public testing::TestWithParam<const char*> {};
+
+TEST_P(RustJPEGYuvTest, MatchesLegacyPlanesWithPadding) {
+  base::test::ScopedFeatureList features(skia::kRustyJpegFeature);
+  auto data = ReadFileToSharedBuffer(GetParam());
+  ASSERT_TRUE(data);
+  std::array<std::unique_ptr<ImageDecoder>, 2> decoders = {
+      CreateCppJPEGDecoder(), CreateFactoryJPEGDecoder()};
+  std::array<std::array<Vector<uint8_t>, cc::kNumYUVPlanes>, 2> storage;
+  std::array<std::array<wtf_size_t, cc::kNumYUVPlanes>, 2> strides;
+  std::array<std::array<gfx::Size, cc::kNumYUVPlanes>, 2> plane_sizes;
+  std::array<cc::YUVSubsampling, 2> subsampling;
+  constexpr uint8_t kPadding = 0xa5;
+  constexpr wtf_size_t kExtraRowBytes = 7;
+
+  for (size_t decoder_index = 0; decoder_index < decoders.size();
+       ++decoder_index) {
+    SCOPED_TRACE(decoder_index);
+    ImageDecoder& decoder = *decoders[decoder_index];
+    decoder.SetData(data.get(), true);
+    ASSERT_TRUE(decoder.IsSizeAvailable());
+    ASSERT_TRUE(decoder.CanDecodeToYUV());
+    EXPECT_EQ(decoder.GetYUVBitDepth(), 8u);
+    EXPECT_EQ(decoder.GetYUVColorSpace(), kJPEG_Full_SkYUVColorSpace);
+    subsampling[decoder_index] = decoder.GetYUVSubsampling();
+    std::array<void*, cc::kNumYUVPlanes> planes;
+    for (int plane = 0; plane < cc::kNumYUVPlanes; ++plane) {
+      const auto index = static_cast<cc::YUVIndex>(plane);
+      const gfx::Size size = decoder.DecodedYUVSize(index);
+      plane_sizes[decoder_index][plane] = size;
+      strides[decoder_index][plane] =
+          decoder.DecodedYUVWidthBytes(index) + kExtraRowBytes;
+      storage[decoder_index][plane] = Vector<uint8_t>(
+          strides[decoder_index][plane] * size.height(), kPadding);
+      planes[plane] = storage[decoder_index][plane].data();
+    }
+    decoder.SetImagePlanes(std::make_unique<ImagePlanes>(
+        planes, strides[decoder_index], kGray_8_SkColorType));
+    decoder.DecodeToYUV();
+    ASSERT_FALSE(decoder.Failed());
+    ASSERT_TRUE(decoder.HasDisplayableYUVData());
+  }
+
+  EXPECT_EQ(subsampling[0], subsampling[1]);
+  for (int plane = 0; plane < cc::kNumYUVPlanes; ++plane) {
+    const gfx::Size size = plane_sizes[0][plane];
+    ASSERT_EQ(size, plane_sizes[1][plane]);
+    for (int row = 0; row < size.height(); ++row) {
+      for (int column = 0; column < size.width(); ++column) {
+        const uint8_t cpp_sample =
+            storage[0][plane][row * strides[0][plane] + column];
+        const uint8_t rust_sample =
+            storage[1][plane][row * strides[1][plane] + column];
+        ASSERT_LE(ChannelDelta(cpp_sample, rust_sample), 2)
+            << "plane " << plane << ", row " << row << ", column " << column;
+      }
+      for (wtf_size_t column = size.width(); column < strides[1][plane];
+           ++column) {
+        ASSERT_EQ(storage[1][plane][row * strides[1][plane] + column],
+                  kPadding);
+      }
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    JPEGImageDecoderTest,
+    RustJPEGYuvTest,
+    testing::Values(
+        "/images/resources/ycbcr-420.jpg",
+        "/images/resources/ycbcr-422.jpg",
+        "/images/resources/ycbcr-444.jpg",
+        "/images/resources/ycbcr-420-progressive.jpg",
+        "/images/jpeg-suite/baseline/32x32x8_ycbcr_2x2_1x1_1x1.jpg",
+        "/external/wpt/webcodecs/four-colors-limited-range-420-8bpc.jpg"));
+
+TEST(JPEGImageDecoderTest, RustYuvDecodesDcOnlyProgressive) {
+  // libjpeg's block smoothing synthesizes AC detail for this DC-only image.
+  ReadYUV(CreateRustJPEGDecoder(),
+          "/images/resources/cs-uma-ycbcr-420-non-interleaved.jpg",
+          gfx::Size(64, 64), gfx::Size(32, 32));
+}
+
+TEST(JPEGImageDecoderTest, RustYuvRequiresCompleteData) {
+  auto data = ReadFileToSharedBuffer("/images/resources/ycbcr-420.jpg");
+  ASSERT_TRUE(data);
+  auto decoder = CreateRustJPEGDecoder();
+  decoder->SetData(data.get(), false);
+  ASSERT_TRUE(decoder->IsSizeAvailable());
+  EXPECT_FALSE(decoder->CanDecodeToYUV());
+  EXPECT_EQ(decoder->FrameCount(), 1u);
+  decoder->SetData(data.get(), true);
+  EXPECT_TRUE(decoder->CanDecodeToYUV());
+}
+
+TEST(JPEGImageDecoderTest, RustYuvDoesNotDisturbPartialRgbDecode) {
+  const char* path = "/images/resources/ycbcr-420-progressive.jpg";
+  Vector<char> data = ReadFile(path);
+  ASSERT_FALSE(data.empty());
+  auto partial_data =
+      SharedBuffer::Create(base::span(data).first((data.size() + 1) / 2));
+  auto decoder = CreateRustJPEGDecoder();
+  decoder->SetData(partial_data.get(), false);
+  ASSERT_TRUE(decoder->IsSizeAvailable());
+  ASSERT_FALSE(decoder->CanDecodeToYUV());
+  const auto* partial_frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(partial_frame);
+  ASSERT_NE(partial_frame->GetStatus(), ImageFrame::kFrameComplete);
+  decoder->SetData(SharedBuffer::Create(std::move(data)), true);
+  ASSERT_TRUE(decoder->CanDecodeToYUV());
+  ASSERT_NO_FATAL_FAILURE(ReadYUV(decoder.get(), path,
+                                  decoder->DecodedYUVSize(cc::YUVIndex::kY),
+                                  decoder->DecodedYUVSize(cc::YUVIndex::kU)));
+  const auto* frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(frame);
+  ASSERT_EQ(frame->GetStatus(), ImageFrame::kFrameComplete);
+  EXPECT_FALSE(decoder->Failed());
+
+  auto reference = CreateRustJPEGDecoder();
+  reference->SetData(ReadFileToSharedBuffer(path), true);
+  const auto* expected = reference->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(expected);
+  ASSERT_EQ(expected->GetStatus(), ImageFrame::kFrameComplete);
+  ASSERT_EQ(frame->Bitmap().dimensions(), expected->Bitmap().dimensions());
+  for (int row = 0; row < frame->Bitmap().height(); ++row) {
+    for (int column = 0; column < frame->Bitmap().width(); ++column) {
+      ASSERT_EQ(frame->Bitmap().getColor(column, row),
+                expected->Bitmap().getColor(column, row))
+          << "row " << row << ", column " << column;
+    }
+  }
+}
+
+TEST(JPEGImageDecoderTest, RustYuvPreservesCachedRgbPixels) {
+  const char* path = "/images/resources/ycbcr-420.jpg";
+  auto data = ReadFileToSharedBuffer(path);
+  ASSERT_TRUE(data);
+  auto decoder = CreateRustJPEGDecoder();
+  decoder->SetData(data.get(), true);
+  ASSERT_TRUE(decoder->CanDecodeToYUV());
+  const auto* frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(frame);
+  ASSERT_EQ(frame->GetStatus(), ImageFrame::kFrameComplete);
+  Vector<uint32_t> expected;
+  for (int row = 0; row < frame->Bitmap().height(); ++row) {
+    for (int column = 0; column < frame->Bitmap().width(); ++column) {
+      expected.push_back(frame->Bitmap().getColor(column, row));
+    }
+  }
+  const void* pixels = frame->Bitmap().getPixels();
+  decoder->ClearCacheExceptFrame(kNotFound);
+  decoder->SetData(data.get(), true);
+  ASSERT_TRUE(decoder->CanDecodeToYUV());
+  ASSERT_NO_FATAL_FAILURE(ReadYUV(decoder.get(), path,
+                                  decoder->DecodedYUVSize(cc::YUVIndex::kY),
+                                  decoder->DecodedYUVSize(cc::YUVIndex::kU)));
+  frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(frame);
+  ASSERT_EQ(frame->GetStatus(), ImageFrame::kFrameComplete);
+  EXPECT_EQ(frame->Bitmap().getPixels(), pixels);
+  EXPECT_FALSE(decoder->Failed());
+  wtf_size_t offset = 0;
+  for (int row = 0; row < frame->Bitmap().height(); ++row) {
+    for (int column = 0; column < frame->Bitmap().width(); ++column) {
+      ASSERT_EQ(frame->Bitmap().getColor(column, row), expected[offset++])
+          << "row " << row << ", column " << column;
+    }
+  }
+}
+
+TEST(JPEGImageDecoderTest, RustYuvRejectsUnsupportedColorAndSubsampling) {
+  for (const char* path : {
+           "/images/resources/cs-uma-grayscale.jpg",
+           "/images/resources/cs-uma-rgb.jpg",
+           "/images/resources/cs-uma-cmyk.jpg",
+           "/images/resources/cs-uma-ycbcr-410.jpg",
+           "/images/resources/cs-uma-ycbcr-411.jpg",
+           "/images/resources/cs-uma-ycbcr-440.jpg",
+           "/images/resources/ycbcr-420-custom-color-profile.jpg",
+       }) {
+    SCOPED_TRACE(path);
+    auto data = ReadFileToSharedBuffer(path);
+    ASSERT_TRUE(data);
+    auto decoder = CreateRustJPEGDecoder();
+    decoder->SetData(data.get(), true);
+    ASSERT_TRUE(decoder->IsSizeAvailable());
+    EXPECT_FALSE(decoder->Failed());
+    EXPECT_FALSE(decoder->CanDecodeToYUV());
+  }
+}
+
+TEST(JPEGImageDecoderTest, RustYuvRejectsInvalidStride) {
+  auto data = ReadFileToSharedBuffer("/images/resources/ycbcr-420.jpg");
+  ASSERT_TRUE(data);
+  auto decoder = CreateRustJPEGDecoder();
+  decoder->SetData(data.get(), true);
+  ASSERT_TRUE(decoder->CanDecodeToYUV());
+  std::array<Vector<uint8_t>, cc::kNumYUVPlanes> storage;
+  std::array<void*, cc::kNumYUVPlanes> planes;
+  std::array<wtf_size_t, cc::kNumYUVPlanes> strides;
+  for (int plane = 0; plane < cc::kNumYUVPlanes; ++plane) {
+    const auto index = static_cast<cc::YUVIndex>(plane);
+    const gfx::Size size = decoder->DecodedYUVSize(index);
+    strides[plane] = size.width() - 1;
+    storage[plane] = Vector<uint8_t>(strides[plane] * size.height(), 0);
+    planes[plane] = storage[plane].data();
+  }
+  decoder->SetImagePlanes(
+      std::make_unique<ImagePlanes>(planes, strides, kGray_8_SkColorType));
+  decoder->DecodeToYUV();
+  EXPECT_TRUE(decoder->Failed());
+  EXPECT_FALSE(decoder->CanDecodeToYUV());
+  EXPECT_FALSE(decoder->HasDisplayableYUVData());
+}
+
+TEST(JPEGImageDecoderTest, RustYuvDisplaysTruncatedProgressiveInput) {
+  struct TestCase {
+    const char* path;
+    gfx::Size y_size;
+    gfx::Size uv_size;
+  };
+  for (const auto& test : {
+           TestCase{"/images/resources/missing-eoi.jpg", gfx::Size(1599, 899),
+                    gfx::Size(800, 450)},
+           TestCase{"/images/resources/half_scan.jpg", gfx::Size(750, 550),
+                    gfx::Size(750, 550)},
+           TestCase{"/images/resources/half_scan-2.jpg", gfx::Size(720, 540),
+                    gfx::Size(720, 540)},
+           TestCase{"/images/resources/non-interleaved_progressive.jpg",
+                    gfx::Size(640, 480), gfx::Size(640, 480)},
+       }) {
+    SCOPED_TRACE(test.path);
+    ReadYUV(CreateRustJPEGDecoder(), test.path, test.y_size, test.uv_size);
+  }
+}
+
+TEST(JPEGImageDecoderTest, RustYuvDoesNotPublishUnseenColorComponents) {
+  auto data = ReadFileToSharedBuffer(
+      "/images/resources/non-interleaved_progressive-1.jpg");
+  ASSERT_TRUE(data);
+  auto decoder = CreateRustJPEGDecoder();
+  decoder->SetData(data.get(), true);
+  ASSERT_TRUE(decoder->CanDecodeToYUV());
+  std::array<Vector<uint8_t>, cc::kNumYUVPlanes> storage;
+  std::array<void*, cc::kNumYUVPlanes> planes;
+  std::array<wtf_size_t, cc::kNumYUVPlanes> strides;
+  constexpr uint8_t kSentinel = 0xa5;
+  for (int plane = 0; plane < cc::kNumYUVPlanes; ++plane) {
+    const auto index = static_cast<cc::YUVIndex>(plane);
+    const gfx::Size size = decoder->DecodedYUVSize(index);
+    strides[plane] = decoder->DecodedYUVWidthBytes(index);
+    storage[plane] = Vector<uint8_t>(strides[plane] * size.height(), kSentinel);
+    planes[plane] = storage[plane].data();
+  }
+  decoder->SetImagePlanes(
+      std::make_unique<ImagePlanes>(planes, strides, kGray_8_SkColorType));
+  decoder->DecodeToYUV();
+  EXPECT_TRUE(decoder->Failed());
+  EXPECT_FALSE(decoder->HasDisplayableYUVData());
+  for (const auto& plane : storage) {
+    EXPECT_TRUE(std::ranges::all_of(
+        plane, [](uint8_t value) { return value == kSentinel; }));
+  }
+}
+
+TEST(JPEGImageDecoderTest, RustYuvPreservesExifOrientation) {
+  constexpr char kPath[] =
+      "/external/wpt/webcodecs/four-colors-limited-range-420-8bpc.jpg";
+  const gfx::Size coded_size(320, 240);
+  const gfx::Size chroma_size(160, 120);
+  std::array<Vector<uint8_t>, cc::kNumYUVPlanes> expected_planes;
+  for (int orientation = 1; orientation <= 8; ++orientation) {
+    SCOPED_TRACE(orientation);
+    Vector<char> data = ReadFile(kPath);
+    ASSERT_GT(data.size(), 0x31u);
+    ASSERT_EQ(data[0x31], 1);
+    data[0x31] = orientation;
+    auto decoder = CreateRustJPEGDecoder();
+    decoder->SetData(SharedBuffer::Create(std::move(data)), true);
+    ASSERT_TRUE(decoder->IsSizeAvailable());
+    ASSERT_EQ(decoder->Size(), coded_size);
+    EXPECT_EQ(decoder->Orientation(),
+              static_cast<ImageOrientationEnum>(orientation));
+    if (orientation >= 5) {
+      // Axis-swapping EXIF orientations use RGB for this non-square image.
+      EXPECT_FALSE(decoder->CanDecodeToYUV());
+      const auto* frame = decoder->DecodeFrameBufferAtIndex(0);
+      ASSERT_TRUE(frame);
+      EXPECT_EQ(frame->GetStatus(), ImageFrame::kFrameComplete);
+      EXPECT_EQ(frame->Bitmap().width(), coded_size.width());
+      EXPECT_EQ(frame->Bitmap().height(), coded_size.height());
+    } else {
+      ASSERT_TRUE(decoder->CanDecodeToYUV());
+      std::array<Vector<uint8_t>, cc::kNumYUVPlanes> storage;
+      std::array<void*, cc::kNumYUVPlanes> planes;
+      std::array<wtf_size_t, cc::kNumYUVPlanes> strides;
+      for (int plane = 0; plane < cc::kNumYUVPlanes; ++plane) {
+        const auto index = static_cast<cc::YUVIndex>(plane);
+        const gfx::Size size = decoder->DecodedYUVSize(index);
+        EXPECT_EQ(size, plane == 0 ? coded_size : chroma_size);
+        strides[plane] = decoder->DecodedYUVWidthBytes(index);
+        storage[plane] = Vector<uint8_t>(strides[plane] * size.height(), 0);
+        planes[plane] = storage[plane].data();
+      }
+      decoder->SetImagePlanes(
+          std::make_unique<ImagePlanes>(planes, strides, kGray_8_SkColorType));
+      decoder->DecodeToYUV();
+      ASSERT_FALSE(decoder->Failed());
+      ASSERT_TRUE(decoder->HasDisplayableYUVData());
+      for (int plane = 0; plane < cc::kNumYUVPlanes; ++plane) {
+        if (orientation == 1) {
+          expected_planes[plane] = storage[plane];
+        } else {
+          EXPECT_EQ(storage[plane], expected_planes[plane])
+              << "plane " << plane;
+        }
+      }
+      decoder->SetImagePlanes(nullptr);
+    }
+    EXPECT_FALSE(decoder->Failed());
+    EXPECT_EQ(decoder->Orientation(),
+              static_cast<ImageOrientationEnum>(orientation));
+  }
+}
+
 TEST(JPEGImageDecoderTest, Gainmap) {
   base::test::ScopedFeatureList features(skia::kRustyJpegFeature);
   const char* jpeg_file = "/images/resources/gainmap-trattore0.jpg";
@@ -1227,7 +1625,8 @@ TEST(JPEGImageDecoderTest, c2paManifestPresent) {
 
   std::unique_ptr<ImageDecoder> test_decoder = CreateJPEGDecoder();
   test_decoder->SetData(test_data.get(), true);
-  EXPECT_TRUE(test_decoder->HasC2PAManifest());
+  EXPECT_EQ(test_decoder->GetC2PAManifestStatus(),
+            C2PAManifestStatus::kDetected);
 }
 
 // Decode a JPEG without C2PA metadata, verify that none is found
@@ -1238,7 +1637,14 @@ TEST(JPEGImageDecoderTest, c2paManifestNotPresent) {
 
   std::unique_ptr<ImageDecoder> test_decoder = CreateJPEGDecoder();
   test_decoder->SetData(test_data.get(), true);
-  EXPECT_FALSE(test_decoder->HasC2PAManifest());
+  EXPECT_EQ(test_decoder->GetC2PAManifestStatus(),
+            C2PAManifestStatus::kNotDetected);
+}
+
+TEST(JPEGImageDecoderTest, c2paManifestUnknownWithoutData) {
+  std::unique_ptr<ImageDecoder> test_decoder = CreateJPEGDecoder();
+  EXPECT_EQ(test_decoder->GetC2PAManifestStatus(),
+            C2PAManifestStatus::kUnknown);
 }
 
 // JPEG Suite parameterized tests, modeled after BMPImageDecoderSuiteTest.

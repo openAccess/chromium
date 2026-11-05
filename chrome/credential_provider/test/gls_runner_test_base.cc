@@ -10,11 +10,13 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/multiprocess_test.h"
 #include "base/win/ntsecapi_shim.h"
+#include "chrome/credential_provider/gaiacp/device_policies_manager.h"
 #include "chrome/credential_provider/gaiacp/gaia_credential_provider_filter.h"
 #include "chrome/credential_provider/gaiacp/scoped_lsa_policy.h"
 #include "chrome/credential_provider/test/test_credential.h"
@@ -83,12 +85,15 @@ MULTIPROCESS_TEST_MAIN(gls_main) {
   std::string expected_email =
       command_line->GetSwitchValueASCII(kPrefillEmailSwitch);
   if (expected_email.empty()) {
-    expected_email = gls_email;
-  } else {
-    EXPECT_EQ(gls_email, std::string());
+    expected_email = gls_email.empty() ? kDefaultEmail : gls_email;
   }
-  if (expected_gaia_id.empty())
-    expected_gaia_id = GaiaId(kDefaultGaiaId);
+  if (expected_gaia_id.empty()) {
+    if (!gaia_id_override.empty()) {
+      expected_gaia_id = gaia_id_override;
+    } else {
+      expected_gaia_id = GaiaId(kDefaultGaiaId);
+    }
+  }
 
   if (gaia_password.empty())
     gaia_password = "password";
@@ -155,6 +160,16 @@ void GlsRunnerTestBase::SetUp() {
   // the tests.
   InitializeRegistryOverrideForTesting(&registry_override_);
 
+  ASSERT_EQ(S_OK, SetGlobalFlagForTesting(L"email_domains", L"gmail.com"));
+
+  WinHttpUrlFetcher::SetCreatorForTesting(
+      fake_http_url_fetcher_factory_.GetCreatorCallback());
+
+  // Isolate tests by default from invoking the host OS Updater COM server.
+  DevicePoliciesManager::SetUpdaterCreatorForTesting(base::BindRepeating(
+      [](IUpdaterSystem** updater) -> HRESULT { return E_FAIL; }));
+  DevicePoliciesManager::SetPolicyFetchTimeoutForTesting(base::Seconds(3));
+
   // Override location of "Program Files" system folder and its x86 version so
   // we don't modify local machine settings.
   ASSERT_TRUE(scoped_temp_program_files_dir_.CreateUniqueTempDir());
@@ -176,6 +191,10 @@ void GlsRunnerTestBase::SetUp() {
 }
 
 void GlsRunnerTestBase::TearDown() {
+  DevicePoliciesManager::SetUpdaterCreatorForTesting({});
+  DevicePoliciesManager::SetPolicyFetchTimeoutForTesting(base::Seconds(3));
+  WinHttpUrlFetcher::SetCreatorForTesting(WinHttpUrlFetcher::CreatorCallback());
+
   // If credential has not been explicitly completed and the logon process
   // was started, then complete here under the assumption that it will
   // complete successfully.
@@ -414,6 +433,13 @@ HRESULT GlsRunnerTestBase::InternalInitializeProvider(
           current_credential.Get(), fieldID, cpfs);
       if (FAILED(hr))
         return hr;
+
+      hr = fake_credential_provider_credential_events()
+               ->SetFieldInteractiveState(current_credential.Get(), fieldID,
+                                          cpfis);
+      if (FAILED(hr)) {
+        return hr;
+      }
     }
   }
 

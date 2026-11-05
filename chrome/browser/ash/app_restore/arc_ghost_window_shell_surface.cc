@@ -20,6 +20,7 @@
 #include "components/exo/buffer.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "ui/display/screen.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/caption_button_types.h"
@@ -73,6 +74,8 @@ std::unique_ptr<ArcGhostWindowShellSurface> ArcGhostWindowShellSurface::Create(
   // unnecessary. Here set it as display size to ensure the content render is
   // correct.
   if (local_bounds.IsEmpty()) {
+    // TODO(crbug.com/569049969): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(chromeos::IsMaximizedOrFullscreenWindowStateType(window_state) ||
            chromeos::IsMinimizedWindowStateType(window_state));
     display::Display disp;
@@ -230,7 +233,7 @@ void ArcGhostWindowShellSurface::SetShellAppId(
 
 void ArcGhostWindowShellSurface::SetWindowType(
     arc::GhostWindowType window_type) {
-  DCHECK(view_observer_);
+  CHECK(view_observer_, base::NotFatalUntil::M160);
   view_observer_->SetGhostWindowViewType(window_type);
 }
 

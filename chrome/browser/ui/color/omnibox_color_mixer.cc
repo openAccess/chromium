@@ -66,10 +66,14 @@ void ApplyCR2023OmniboxIconColors(ui::ColorMixer& mixer,
                                   const ui::ColorProviderKey& key) {
   mixer[kColorOmniboxActionIcon] = {ui::kColorSysOnSurfaceSubtle};
   mixer[kColorOmniboxActionIconHover] = {ui::kColorSysStateHoverOnSubtle};
+  mixer[kColorOmniboxActionIconInactive] = ui::GetResultingPaintColor(
+      {ui::kColorSysStateDisabled}, {kColorLocationBarBackground});
   mixer[kColorOmniboxIconBackground] = {ui::kColorSysBaseContainerElevated};
   mixer[kColorOmniboxIconBackgroundTonal] = {ui::kColorSysTonalContainer};
   mixer[kColorOmniboxIconForeground] = {ui::kColorSysOnSurface};
   mixer[kColorOmniboxIconForegroundTonal] = {ui::kColorSysOnTonalContainer};
+  mixer[kColorOmniboxIconForegroundTonalInactive] = ui::GetResultingPaintColor(
+      {ui::kColorSysStateDisabled}, {kColorOmniboxIconBackgroundTonal});
   mixer[kColorOmniboxIconHover] = {ui::kColorSysStateHoverDimBlendProtection};
   mixer[kColorOmniboxIconPressed] = {ui::kColorSysStateRippleNeutralOnSubtle};
 
@@ -163,6 +167,9 @@ void ApplyCR2023OmniboxExpandedStateColors(ui::ColorMixer& mixer,
   mixer[kColorOmniboxComposeboxSubmitButtonBackground] = {
       kColorOmniboxComposeboxPrimaryAction};
   mixer[kColorOmniboxComposeboxSubmitButtonIcon] = {ui::kColorSysOnPrimary};
+  mixer[kColorOmniboxComposeboxContextEntrypointBackground] = ui::AlphaBlend(
+      {ui::kColorSysStateHoverOnSubtle}, {kColorOmniboxResultsBackground},
+      0xFF);
 }
 
 // Apply fallback Omnibox color mappings for CR2023 clients who are not eligible
@@ -192,6 +199,9 @@ void ApplyOmniboxCR2023FallbackColors(ui::ColorMixer& mixer,
       kColorOmniboxResultsButtonInkDropSelected, std::ceil(0.16f * 255.0f))};
 
   // Context entrypoint fallbacks.
+  mixer[kColorOmniboxComposeboxContextEntrypointBackground] = {
+      ui::SetAlpha(ui::GetColorWithMaxContrast(kColorOmniboxResultsBackground),
+                   std::ceil(0.08f * 255.0f))};
   mixer[kColorOmniboxContextEntrypointText] =
       ui::GetColorWithMaxContrast(kColorToolbarBackgroundSubtleEmphasis);
 
@@ -312,9 +322,6 @@ void AddOmniboxColorMixer(ui::ColorProvider* provider,
       ui::GetColorWithMaxContrast(kColorOmniboxResultsTextSelected),
       gfx::kGoogleGreyAlpha200);
   mixer[kColorOmniboxResultsChipBackground] = {ui::kColorSysNeutralContainer};
-  mixer[kColorOmniboxComposeboxContextEntrypointBackground] =
-      ui::AlphaBlend({ui::kColorSysStateHoverOnSubtle},
-                     {kColorOmniboxResultsBackground}, 0xFF);
   mixer[kColorOmniboxResultsButtonBorder] = ui::BlendTowardMaxContrast(
       kColorToolbarBackgroundSubtleEmphasis, gfx::kGoogleGreyAlpha400);
   mixer[kColorOmniboxResultsButtonIcon] = {kColorOmniboxResultsIcon};
@@ -481,6 +488,9 @@ void AddOmniboxColorMixer(ui::ColorProvider* provider,
   mixer[kColorOmniboxIconForeground] = {
       ui::GetColorWithMaxContrast(kColorToolbar)};
   mixer[kColorOmniboxIconForegroundTonal] = {kColorOmniboxIconForeground};
+  mixer[kColorOmniboxIconForegroundTonalInactive] = ui::GetResultingPaintColor(
+      ui::SetAlpha(kColorOmniboxIconForegroundTonal, gfx::kGoogleGreyAlpha500),
+      kColorOmniboxIconBackgroundTonal);
 
   // PageInfo text colors.
   mixer[kColorPageInfoForeground] = {ui::kColorSysOnSurface};
@@ -492,6 +502,9 @@ void AddOmniboxColorMixer(ui::ColorProvider* provider,
   // in-code as they have different opacity requirements.
   mixer[kColorOmniboxActionIconHover] = {kColorOmniboxIconHover};
   mixer[kColorOmniboxActionIcon] = {kColorOmniboxResultsIcon};
+  mixer[kColorOmniboxActionIconInactive] = ui::GetResultingPaintColor(
+      ui::SetAlpha(kColorOmniboxActionIcon, gfx::kGoogleGreyAlpha500),
+      kColorLocationBarBackground);
   mixer[kColorOmniboxIconHover] = {
       ui::SetAlpha(kColorOmniboxText, std::ceil(0.10f * 255.0f))};
   mixer[kColorOmniboxIconPressed] = {

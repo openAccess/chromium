@@ -4,9 +4,11 @@
 
 #include "services/network/web_transport.h"
 
+#include <array>
 #include <set>
 #include <vector>
 
+#include "base/barrier_closure.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file_util.h"
@@ -17,10 +19,12 @@
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "mojo/public/cpp/bindings/message.h"
+#include "mojo/public/cpp/system/simple_watcher.h"
 #include "mojo/public/cpp/test_support/fake_message_dispatch_context.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "net/cert/mock_cert_verifier.h"
@@ -29,8 +33,10 @@
 #include "net/log/net_log_event_type.h"
 #include "net/log/test_net_log.h"
 #include "net/quic/quic_context.h"
+#include "net/quic/web_transport_client.h"
 #include "net/test/test_data_directory.h"
 #include "net/third_party/quiche/src/quiche/quic/core/crypto/proof_source_x509.h"
+#include "net/third_party/quiche/src/quiche/quic/core/web_transport_interface.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/crypto_test_utils.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/quic_test_backend.h"
 #include "net/tools/quic/quic_simple_server.h"
@@ -47,11 +53,13 @@
 #include "services/network/test/test_url_loader_network_observer.h"
 #include "services/network/url_request_context_builder_mojo.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/boringssl/src/pki/pem.h"
 
 namespace network {
 namespace {
 
+using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::Pointee;
 using ::testing::SizeIs;
@@ -139,8 +147,14 @@ std::string Read(mojo::ScopedDataPipeConsumerHandle readable) {
                                            actually_read_bytes);
     if (result == MOJO_RESULT_SHOULD_WAIT) {
       base::RunLoop run_loop;
-      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-          FROM_HERE, run_loop.QuitClosure());
+      mojo::SimpleWatcher watcher(FROM_HERE,
+                                  mojo::SimpleWatcher::ArmingPolicy::AUTOMATIC);
+      watcher.Watch(
+          readable.get(),
+          MOJO_HANDLE_SIGNAL_READABLE | MOJO_HANDLE_SIGNAL_PEER_CLOSED,
+          MOJO_WATCH_CONDITION_SATISFIED,
+          base::IgnoreArgs<MojoResult, const mojo::HandleSignalsState&>(
+              run_loop.QuitClosure()));
       run_loop.Run();
       continue;
     }
@@ -150,6 +164,36 @@ std::string Read(mojo::ScopedDataPipeConsumerHandle readable) {
     DCHECK_EQ(result, MOJO_RESULT_OK);
     output.append(std::string_view(buffer).substr(0, actually_read_bytes));
   }
+}
+
+struct AcceptedBidirectionalStream {
+  uint32_t stream_id;
+  mojo::ScopedDataPipeConsumerHandle readable_for_incoming;
+  mojo::ScopedDataPipeProducerHandle writable_for_outgoing;
+};
+
+AcceptedBidirectionalStream AcceptBidirectionalStream(
+    mojo::Remote<mojom::WebTransport>& transport_remote) {
+  base::test::TestFuture<uint32_t, mojo::ScopedDataPipeConsumerHandle,
+                         mojo::ScopedDataPipeProducerHandle>
+      stream_future;
+  transport_remote->AcceptBidirectionalStream(stream_future.GetCallback());
+  auto [stream_id, readable_for_incoming, writable_for_outgoing] =
+      stream_future.Take();
+  return {stream_id, std::move(readable_for_incoming),
+          std::move(writable_for_outgoing)};
+}
+
+std::optional<net::WebTransportSendStreamStats> GetSendStreamStats(
+    mojo::Remote<mojom::WebTransport>& transport_remote,
+    uint32_t stream_id) {
+  base::test::TestFuture<
+      const std::vector<std::optional<net::WebTransportSendStreamStats>>&>
+      stats_future;
+  transport_remote->GetSendStreamStats({stream_id}, stats_future.GetCallback());
+  auto stats = stats_future.Take();
+  CHECK_EQ(stats.size(), 1u);
+  return stats.front();
 }
 
 class TestHandshakeClient final : public mojom::WebTransportHandshakeClient {
@@ -171,12 +215,14 @@ class TestHandshakeClient final : public mojom::WebTransportHandshakeClient {
       mojo::PendingReceiver<mojom::WebTransportClient> client_receiver,
       const scoped_refptr<net::HttpResponseHeaders>& response_headers,
       const std::optional<std::string>& selected_application_protocol,
-      mojom::WebTransportStatsPtr initial_stats) override {
+      mojom::WebTransportStatsPtr initial_stats,
+      std::optional<uint32_t> max_datagram_size) override {
     transport_ = std::move(transport);
     client_receiver_ = std::move(client_receiver);
     has_seen_connection_establishment_ = true;
     receiver_.reset();
     selected_application_protocol_ = selected_application_protocol;
+    max_datagram_size_ = max_datagram_size;
     response_headers_ = response_headers;
     std::move(callback_).Run();
   }
@@ -217,6 +263,9 @@ class TestHandshakeClient final : public mojom::WebTransportHandshakeClient {
   std::optional<std::string> selected_application_protocol() const {
     return selected_application_protocol_;
   }
+  std::optional<uint32_t> max_datagram_size() const {
+    return max_datagram_size_;
+  }
   const scoped_refptr<net::HttpResponseHeaders>& response_headers() const {
     return response_headers_;
   }
@@ -232,6 +281,7 @@ class TestHandshakeClient final : public mojom::WebTransportHandshakeClient {
   bool has_seen_mojo_connection_error_ = false;
   std::optional<net::WebTransportError> handshake_error_;
   std::optional<std::string> selected_application_protocol_;
+  std::optional<uint32_t> max_datagram_size_;
   scoped_refptr<net::HttpResponseHeaders> response_headers_;
 };
 
@@ -248,20 +298,36 @@ class TestClient final : public mojom::WebTransportClient {
   void OnDatagramReceived(base::span<const uint8_t> data) override {
     received_datagrams_.emplace_back(data.begin(), data.end());
   }
-  void OnIncomingStreamClosed(uint32_t stream_id, bool fin_received) override {
+  void OnIncomingStreamClosed(uint32_t stream_id,
+                              bool fin_received,
+                              uint64_t bytes_received) override {
     closed_incoming_streams_.insert(std::make_pair(stream_id, fin_received));
+    final_bytes_received_.insert(std::make_pair(stream_id, bytes_received));
     if (quit_closure_for_incoming_stream_closure_) {
       std::move(quit_closure_for_incoming_stream_closure_).Run();
     }
   }
-  void OnOutgoingStreamClosed(uint32_t stream_id) override {
+  void OnOutgoingStreamClosed(
+      uint32_t stream_id,
+      std::optional<net::WebTransportSendStreamStats> final_stats) override {
     closed_outgoing_streams_.insert(stream_id);
+    final_send_stream_stats_.insert_or_assign(stream_id, final_stats);
     if (quit_closure_for_outgoing_stream_closure_) {
       std::move(quit_closure_for_outgoing_stream_closure_).Run();
     }
   }
-  void OnReceivedResetStream(uint32_t stream_id, uint32_t) override {}
-  void OnReceivedStopSending(uint32_t stream_id, uint32_t) override {}
+  void OnOutgoingStreamStatsFinalized(
+      uint32_t stream_id,
+      std::optional<net::WebTransportSendStreamStats> final_stats) override {
+    final_send_stream_stats_.insert_or_assign(stream_id, final_stats);
+  }
+  void OnReceivedResetStream(uint32_t stream_id, uint32_t, uint64_t) override {}
+  void OnReceivedStopSending(
+      uint32_t stream_id,
+      uint32_t,
+      std::optional<net::WebTransportSendStreamStats> final_stats) override {
+    final_send_stream_stats_.insert_or_assign(stream_id, final_stats);
+  }
   void OnDraining() override {
     has_seen_draining_ = true;
     if (quit_closure_for_draining_) {
@@ -305,6 +371,11 @@ class TestClient final : public mojom::WebTransportClient {
     auto it = closed_incoming_streams_.find(stream_id);
     return it != closed_incoming_streams_.end() && it->second;
   }
+  uint64_t final_bytes_received_for(uint32_t stream_id) {
+    auto it = final_bytes_received_.find(stream_id);
+    CHECK(it != final_bytes_received_.end());
+    return it->second;
+  }
   bool stream_is_closed_as_incoming_stream(uint32_t stream_id) {
     return closed_incoming_streams_.find(stream_id) !=
            closed_incoming_streams_.end();
@@ -312,6 +383,13 @@ class TestClient final : public mojom::WebTransportClient {
   bool stream_is_closed_as_outgoing_stream(uint32_t stream_id) {
     return closed_outgoing_streams_.find(stream_id) !=
            closed_outgoing_streams_.end();
+  }
+  const std::optional<net::WebTransportSendStreamStats>&
+  final_send_stream_stats_for(uint32_t stream_id) const {
+    return final_send_stream_stats_.at(stream_id);
+  }
+  bool has_final_send_stream_stats_for(uint32_t stream_id) const {
+    return final_send_stream_stats_.contains(stream_id);
   }
   bool has_seen_mojo_connection_error() const {
     return has_seen_mojo_connection_error_;
@@ -347,7 +425,10 @@ class TestClient final : public mojom::WebTransportClient {
 
   std::vector<std::vector<uint8_t>> received_datagrams_;
   std::map<uint32_t, bool> closed_incoming_streams_;
+  absl::flat_hash_map<uint32_t, uint64_t> final_bytes_received_;
   std::set<uint32_t> closed_outgoing_streams_;
+  absl::flat_hash_map<uint32_t, std::optional<net::WebTransportSendStreamStats>>
+      final_send_stream_stats_;
   bool has_seen_mojo_connection_error_ = false;
   bool has_seen_draining_ = false;
   bool has_seen_closed_ = false;
@@ -358,6 +439,81 @@ quic::ParsedQuicVersion GetTestVersion() {
   quic::QuicEnableVersion(version);
   return version;
 }
+
+}  // namespace
+
+class WebTransportTestPeer {
+ public:
+  static void SetDatagramBlocked(WebTransport* transport, bool blocked) {
+    transport->datagram_blocked_ = blocked;
+    if (!blocked) {
+      transport->ScheduleDatagramPump();
+    }
+  }
+
+  static size_t PendingDatagramCount(const WebTransport* transport) {
+    return transport->pending_datagram_count_;
+  }
+
+  static size_t RegisteredDatagramWritableCount(const WebTransport* transport) {
+    return transport->datagram_writables_.size();
+  }
+
+  static bool DatagramExpirationTimerIsRunning(const WebTransport* transport) {
+    return transport->datagram_expiration_timer_.IsRunning();
+  }
+
+  static base::TimeDelta OutgoingDatagramExpirationDuration(
+      const WebTransport* transport) {
+    return transport->GetOutgoingDatagramExpirationDuration();
+  }
+
+  static void SetInFlightDatagramWritable(WebTransport* transport,
+                                          size_t index) {
+    transport->in_flight_datagram_writable_ =
+        transport->datagram_writables_[index].get();
+  }
+
+  static void ClearInFlightDatagramWritable(WebTransport* transport) {
+    transport->in_flight_datagram_writable_ = nullptr;
+  }
+
+  static void MovePendingDatagramToInFlight(WebTransport* transport,
+                                            size_t index) {
+    transport->MovePendingDatagramToInFlightForTesting(index);
+  }
+
+  static size_t MaxPendingDatagrams() {
+    return WebTransport::kMaxPendingDatagrams;
+  }
+
+  static size_t MaxDatagramWritables() {
+    return WebTransport::kMaxDatagramWritables;
+  }
+
+  static size_t MaxPendingDatagramBytes() {
+    return WebTransport::kMaxPendingDatagramBytes;
+  }
+
+  // Expires the Datagram at the head of the writable at `index`, in creation
+  // order.
+  static void ExpireNextDatagram(WebTransport* transport, size_t index) {
+    transport->ExpireNextDatagramForTesting(index);
+  }
+
+  static void ReceiveStopSending(WebTransport* transport,
+                                 uint32_t stream_id,
+                                 quic::WebTransportStreamError error) {
+    quic::WebTransportSession* session = transport->transport_->session();
+    CHECK(session);
+    quic::WebTransportStream* stream = session->GetStreamById(stream_id);
+    CHECK(stream);
+    CHECK(stream->visitor());
+    stream->visitor()->OnStopSendingReceived(error);
+  }
+};
+
+namespace {
 
 class WebTransportTest : public testing::TestWithParam<std::string_view> {
  public:
@@ -499,6 +655,39 @@ class WebTransportTest : public testing::TestWithParam<std::string_view> {
     run_loop.Run();
   }
 
+  // Creates a Datagram writable on `transport_remote` and returns its bound
+  // remote. Dropping the returned remote removes the writable from the
+  // session.
+  mojo::Remote<mojom::WebTransportDatagramWritable> CreateDatagramWritable(
+      mojo::Remote<mojom::WebTransport>& transport_remote,
+      std::optional<uint32_t> send_group_id,
+      int64_t send_order) {
+    mojo::Remote<mojom::WebTransportDatagramWritable> writable;
+    transport_remote->CreateDatagramWritable(
+        writable.BindNewPipeAndPassReceiver(),
+        mojom::WebTransportStreamPriority::New(send_group_id, send_order));
+    return writable;
+  }
+
+  bool WaitForDatagramRoundTrip(
+      mojo::Remote<mojom::WebTransport>& transport_remote,
+      TestClient& client) {
+    std::set<std::vector<uint8_t>> sent_data;
+    // Datagrams are not retransmitted, so retry until one is echoed.
+    while (client.received_datagrams().empty()) {
+      base::test::TestFuture<bool> send_future;
+      std::vector<uint8_t> data = base::RandBytesAsVector(4);
+      transport_remote->SendDatagram(base::span(data),
+                                     send_future.GetCallback());
+      const bool sent = send_future.Get();
+      if (sent_data.empty() && !sent) {
+        return false;
+      }
+      sent_data.insert(std::move(data));
+    }
+    return sent_data.contains(client.received_datagrams()[0]);
+  }
+
  private:
   quic::test::QuicFlagSaver flags_;  // Save/restore all QUIC flag values.
   quic::ParsedQuicVersion version_;
@@ -533,6 +722,8 @@ TEST_F(WebTransportTest, ConnectSuccessfully) {
   EXPECT_FALSE(test_handshake_client.has_seen_mojo_connection_error());
   EXPECT_EQ(test_handshake_client.selected_application_protocol(),
             std::nullopt);
+  ASSERT_TRUE(test_handshake_client.max_datagram_size().has_value());
+  EXPECT_GT(*test_handshake_client.max_datagram_size(), 0u);
   EXPECT_EQ(1u, network_context().NumOpenWebTransports());
 }
 
@@ -716,28 +907,673 @@ TEST_F(WebTransportTest, SendDatagram) {
       test_handshake_client.PassTransport());
   TestClient client(test_handshake_client.PassClientReceiver());
 
-  std::set<std::vector<uint8_t>> sent_data;
-  // Both sending and receiving datagrams are flaky due to lack of
-  // retransmission, and we cannot expect a specific message to be echoed back.
-  // Instead, we expect one of sent messages to be echoed back.
-  while (client.received_datagrams().empty()) {
-    base::RunLoop run_loop_for_datagram;
-    bool result;
-    std::vector<uint8_t> data = base::RandBytesAsVector(4);
-    transport_remote->SendDatagram(base::span(data),
-                                   base::BindLambdaForTesting([&](bool r) {
-                                     result = r;
-                                     run_loop_for_datagram.Quit();
-                                   }));
-    run_loop_for_datagram.Run();
-    if (sent_data.empty()) {
-      // We expect that the first data went to the network successfully.
-      ASSERT_TRUE(result);
+  ASSERT_TRUE(WaitForDatagramRoundTrip(transport_remote, client));
+}
+
+TEST_F(WebTransportTest, SendDatagramsInPriorityOrder) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"),
+                     url::Origin::Create(GURL("https://example.org/")),
+                     std::move(handshake_client));
+
+  run_loop_for_handshake.Run();
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+
+  constexpr uint32_t kSendGroupId = 1;
+  mojo::Remote<mojom::WebTransportDatagramWritable> low_priority_writable =
+      CreateDatagramWritable(transport_remote, kSendGroupId, /*send_order=*/0);
+  mojo::Remote<mojom::WebTransportDatagramWritable> high_priority_writable =
+      CreateDatagramWritable(transport_remote, kSendGroupId, /*send_order=*/10);
+  transport_remote->SetOutgoingDatagramExpirationDuration(base::Minutes(1));
+  transport_remote.FlushForTesting();
+  // Queue both Datagrams before the scheduler runs; the writables have
+  // independent pipes, so their order in the queue is not otherwise
+  // guaranteed.
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  std::vector<std::string_view> completion_order;
+  base::RunLoop run_loop_for_datagrams;
+  base::RepeatingClosure completion_barrier =
+      base::BarrierClosure(2, run_loop_for_datagrams.QuitClosure());
+  const std::array<uint8_t, 1> low_priority_data = {1};
+  const std::array<uint8_t, 1> high_priority_data = {2};
+  low_priority_writable->SendDatagram(
+      low_priority_data, base::BindLambdaForTesting([&](bool result) {
+        EXPECT_TRUE(result);
+        completion_order.push_back("low");
+        completion_barrier.Run();
+      }));
+  high_priority_writable->SendDatagram(
+      high_priority_data, base::BindLambdaForTesting([&](bool result) {
+        EXPECT_TRUE(result);
+        completion_order.push_back("high");
+        completion_barrier.Run();
+      }));
+  low_priority_writable.FlushForTesting();
+  high_priority_writable.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, false);
+
+  run_loop_for_datagrams.Run();
+  EXPECT_THAT(completion_order, ElementsAre("high", "low"));
+}
+
+TEST_F(WebTransportTest, SendDatagramsRoundRobin) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+
+  // Two writables in each of two send groups. The labels match the creation
+  // order, which breaks scheduling ties.
+  std::vector<mojo::Remote<mojom::WebTransportDatagramWritable>> writables;
+  for (uint32_t send_group_id : {1u, 1u, 2u, 2u}) {
+    writables.push_back(CreateDatagramWritable(transport_remote, send_group_id,
+                                               /*send_order=*/0));
+  }
+  transport_remote->SetOutgoingDatagramExpirationDuration(base::Minutes(1));
+  transport_remote.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  std::vector<int> completion_order;
+  base::RunLoop run_loop_for_datagrams;
+  base::RepeatingClosure completion_barrier =
+      base::BarrierClosure(8, run_loop_for_datagrams.QuitClosure());
+  for (int label = 1; label <= 4; ++label) {
+    for (uint8_t value = 0; value < 2; ++value) {
+      writables[label - 1]->SendDatagram(
+          std::array<uint8_t, 1>{value},
+          base::BindLambdaForTesting([&, label](bool result) {
+            EXPECT_TRUE(result);
+            completion_order.push_back(label);
+            completion_barrier.Run();
+          }));
     }
-    sent_data.insert(std::move(data));
+    writables[label - 1].FlushForTesting();
+  }
+  WebTransportTestPeer::SetDatagramBlocked(transport, false);
+
+  run_loop_for_datagrams.Run();
+  EXPECT_THAT(completion_order, ElementsAre(1, 3, 2, 4, 1, 3, 2, 4));
+}
+
+TEST_F(WebTransportTest, ReprioritizeQueuedDatagramWritable) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"),
+                     url::Origin::Create(GURL("https://example.org/")),
+                     std::move(handshake_client));
+
+  run_loop_for_handshake.Run();
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+
+  constexpr uint32_t kSendGroupId = 1;
+  mojo::Remote<mojom::WebTransportDatagramWritable> reprioritized_writable =
+      CreateDatagramWritable(transport_remote, kSendGroupId, /*send_order=*/0);
+  mojo::Remote<mojom::WebTransportDatagramWritable>
+      initially_higher_priority_writable = CreateDatagramWritable(
+          transport_remote, kSendGroupId, /*send_order=*/10);
+  transport_remote->SetOutgoingDatagramExpirationDuration(base::Minutes(1));
+  transport_remote.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  std::vector<std::string_view> completion_order;
+  base::RunLoop run_loop_for_datagrams;
+  base::RepeatingClosure completion_barrier =
+      base::BarrierClosure(2, run_loop_for_datagrams.QuitClosure());
+  const std::array<uint8_t, 1> reprioritized_data = {1};
+  const std::array<uint8_t, 1> initially_higher_priority_data = {2};
+  reprioritized_writable->SendDatagram(
+      reprioritized_data, base::BindLambdaForTesting([&](bool result) {
+        EXPECT_TRUE(result);
+        completion_order.push_back("reprioritized");
+        completion_barrier.Run();
+      }));
+  initially_higher_priority_writable->SendDatagram(
+      initially_higher_priority_data,
+      base::BindLambdaForTesting([&](bool result) {
+        EXPECT_TRUE(result);
+        completion_order.push_back("initially higher priority");
+        completion_barrier.Run();
+      }));
+  reprioritized_writable->SetPriority(
+      mojom::WebTransportStreamPriority::New(kSendGroupId, 20));
+  reprioritized_writable.FlushForTesting();
+  initially_higher_priority_writable.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, false);
+
+  run_loop_for_datagrams.Run();
+  EXPECT_THAT(completion_order,
+              ElementsAre("reprioritized", "initially higher priority"));
+}
+
+TEST_F(WebTransportTest, ReassignQueuedDatagramWritableToSendGroup) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+
+  mojo::Remote<mojom::WebTransportDatagramWritable> writable =
+      CreateDatagramWritable(transport_remote, /*send_group_id=*/1,
+                             /*send_order=*/0);
+  transport_remote->SetOutgoingDatagramExpirationDuration(base::Minutes(1));
+  transport_remote.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  base::test::TestFuture<bool> send_future;
+  const std::array<uint8_t, 1> data = {1};
+  writable->SendDatagram(data, send_future.GetCallback());
+  writable->SetPriority(mojom::WebTransportStreamPriority::New(2, 0));
+  writable.FlushForTesting();
+
+  EXPECT_FALSE(send_future.IsReady());
+  EXPECT_EQ(1u, WebTransportTestPeer::PendingDatagramCount(transport));
+
+  WebTransportTestPeer::SetDatagramBlocked(transport, false);
+  EXPECT_TRUE(send_future.Get());
+}
+
+TEST_F(WebTransportTest, DatagramWritableExpirationUpdatesStats) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+  EXPECT_LT(WebTransportTestPeer::OutgoingDatagramExpirationDuration(transport),
+            base::Seconds(1));
+
+  mojo::Remote<mojom::WebTransportDatagramWritable> writable =
+      CreateDatagramWritable(transport_remote, /*send_group_id=*/0,
+                             /*send_order=*/0);
+  transport_remote.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  base::test::TestFuture<bool> send_future;
+  const std::array<uint8_t, 1> data = {1};
+  writable->SendDatagram(data, send_future.GetCallback());
+  writable.FlushForTesting();
+  EXPECT_FALSE(send_future.IsReady());
+  EXPECT_EQ(1u, WebTransportTestPeer::PendingDatagramCount(transport));
+
+  WebTransportTestPeer::ExpireNextDatagram(transport, /*index=*/0);
+  EXPECT_FALSE(send_future.Get());
+  EXPECT_EQ(0u, WebTransportTestPeer::PendingDatagramCount(transport));
+
+  base::test::TestFuture<mojom::WebTransportStatsPtr> stats_future;
+  transport_remote->GetStats(stats_future.GetCallback());
+  mojom::WebTransportStatsPtr stats = stats_future.Take();
+  ASSERT_FALSE(stats.is_null());
+  EXPECT_EQ(1u, stats->datagrams_expired_outgoing);
+}
+
+TEST_F(WebTransportTest, DatagramWritableQueueLimit) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+
+  const size_t max_pending_datagrams =
+      WebTransportTestPeer::MaxPendingDatagrams();
+  mojo::Remote<mojom::WebTransportDatagramWritable> writable =
+      CreateDatagramWritable(transport_remote, /*send_group_id=*/0,
+                             /*send_order=*/0);
+  transport_remote->SetOutgoingDatagramExpirationDuration(base::Minutes(1));
+  transport_remote.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  for (size_t i = 0; i < max_pending_datagrams; ++i) {
+    writable->SendDatagram({}, base::DoNothing());
   }
 
-  EXPECT_TRUE(sent_data.contains(client.received_datagrams()[0]));
+  base::test::TestFuture<bool> rejected_send_future;
+  writable->SendDatagram({}, rejected_send_future.GetCallback());
+  EXPECT_FALSE(rejected_send_future.Get());
+  EXPECT_EQ(max_pending_datagrams,
+            WebTransportTestPeer::PendingDatagramCount(transport));
+
+  // Dropping the writable discards everything it has queued.
+  writable.reset();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return WebTransportTestPeer::RegisteredDatagramWritableCount(transport) ==
+           0u;
+  }));
+  EXPECT_EQ(0u, WebTransportTestPeer::PendingDatagramCount(transport));
+  WebTransportTestPeer::SetDatagramBlocked(transport, false);
+}
+
+TEST_F(WebTransportTest, DatagramWritableByteLimit) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+
+  mojo::Remote<mojom::WebTransportDatagramWritable> writable =
+      CreateDatagramWritable(transport_remote, /*send_group_id=*/0,
+                             /*send_order=*/0);
+  transport_remote->SetOutgoingDatagramExpirationDuration(base::Minutes(1));
+  transport_remote.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  std::vector<uint8_t> maximum_data(
+      WebTransportTestPeer::MaxPendingDatagramBytes());
+  base::test::TestFuture<bool> maximum_send_future;
+  writable->SendDatagram(maximum_data, maximum_send_future.GetCallback());
+
+  const std::array<uint8_t, 1> extra_data = {1};
+  base::test::TestFuture<bool> rejected_send_future;
+  writable->SendDatagram(extra_data, rejected_send_future.GetCallback());
+
+  EXPECT_FALSE(rejected_send_future.Get());
+  EXPECT_FALSE(maximum_send_future.IsReady());
+  EXPECT_EQ(1u, WebTransportTestPeer::PendingDatagramCount(transport));
+
+  writable.reset();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return WebTransportTestPeer::RegisteredDatagramWritableCount(transport) ==
+           0u;
+  }));
+  EXPECT_EQ(0u, WebTransportTestPeer::PendingDatagramCount(transport));
+  WebTransportTestPeer::SetDatagramBlocked(transport, false);
+}
+
+TEST_F(WebTransportTest, DisconnectedDatagramWritableResumesBlockedPump) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+  transport_remote->SetOutgoingDatagramExpirationDuration(base::Minutes(1));
+
+  // A writable whose remote is retained until its Datagram completes drains,
+  // which is how the renderer implements a graceful close.
+  mojo::Remote<mojom::WebTransportDatagramWritable> retained_writable =
+      CreateDatagramWritable(transport_remote, /*send_group_id=*/0,
+                             /*send_order=*/0);
+  transport_remote.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  base::test::TestFuture<bool> retained_send_future;
+  const std::array<uint8_t, 1> retained_data = {1};
+  retained_writable->SendDatagram(retained_data,
+                                  retained_send_future.GetCallback());
+  retained_writable.FlushForTesting();
+  EXPECT_FALSE(retained_send_future.IsReady());
+  EXPECT_EQ(1u, WebTransportTestPeer::PendingDatagramCount(transport));
+
+  WebTransportTestPeer::SetDatagramBlocked(transport, false);
+  EXPECT_TRUE(retained_send_future.Get());
+  EXPECT_EQ(0u, WebTransportTestPeer::PendingDatagramCount(transport));
+  retained_writable.reset();
+
+  // A writable whose remote is dropped while a Datagram is queued discards it
+  // and stops being scheduled.
+  mojo::Remote<mojom::WebTransportDatagramWritable> discarded_writable =
+      CreateDatagramWritable(transport_remote, /*send_group_id=*/0,
+                             /*send_order=*/0);
+  transport_remote.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  const std::array<uint8_t, 1> discarded_data = {2};
+  discarded_writable->SendDatagram(discarded_data, base::DoNothing());
+  discarded_writable.FlushForTesting();
+  EXPECT_EQ(1u, WebTransportTestPeer::PendingDatagramCount(transport));
+
+  discarded_writable.reset();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return WebTransportTestPeer::RegisteredDatagramWritableCount(transport) ==
+           0u;
+  }));
+  EXPECT_EQ(0u, WebTransportTestPeer::PendingDatagramCount(transport));
+
+  // The pump is not stuck: the legacy path still completes its callback.
+  // Datagram delivery is unreliable, so the result itself may be false.
+  WebTransportTestPeer::SetDatagramBlocked(transport, false);
+  base::test::TestFuture<bool> legacy_send_future;
+  transport_remote->SendDatagram(std::array<uint8_t, 1>{3},
+                                 legacy_send_future.GetCallback());
+  ASSERT_TRUE(legacy_send_future.Wait());
+}
+
+TEST_F(WebTransportTest,
+       DisconnectedInFlightDatagramWritablePreservesCallbackOrder) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+
+  mojo::Remote<mojom::WebTransportDatagramWritable> first_writable =
+      CreateDatagramWritable(transport_remote, /*send_group_id=*/0,
+                             /*send_order=*/0);
+  mojo::Remote<mojom::WebTransportDatagramWritable> second_writable =
+      CreateDatagramWritable(transport_remote, /*send_group_id=*/0,
+                             /*send_order=*/0);
+  transport_remote->SetOutgoingDatagramExpirationDuration(base::Minutes(1));
+  transport_remote.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  base::test::TestFuture<bool> first_send_future;
+  base::test::TestFuture<bool> second_send_future;
+  first_writable->SendDatagram(std::array<uint8_t, 1>{1},
+                               first_send_future.GetCallback());
+  second_writable->SendDatagram(std::array<uint8_t, 1>{2},
+                                second_send_future.GetCallback());
+  first_writable.FlushForTesting();
+  second_writable.FlushForTesting();
+  ASSERT_EQ(2u, WebTransportTestPeer::PendingDatagramCount(transport));
+
+  WebTransportTestPeer::MovePendingDatagramToInFlight(transport, /*index=*/0);
+  WebTransportTestPeer::MovePendingDatagramToInFlight(transport, /*index=*/1);
+  first_writable.reset();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return WebTransportTestPeer::RegisteredDatagramWritableCount(transport) ==
+           1u;
+  }));
+
+  transport->OnDatagramProcessed(quic::DATAGRAM_STATUS_SUCCESS);
+  EXPECT_FALSE(second_send_future.IsReady());
+
+  WebTransportTestPeer::SetInFlightDatagramWritable(transport, /*index=*/0);
+  transport->OnDatagramProcessed(quic::DATAGRAM_STATUS_SUCCESS);
+  EXPECT_TRUE(second_send_future.Get());
+}
+
+TEST_F(WebTransportTest, BlockedWritableDoesNotSpinExpirationTimer) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+
+  mojo::Remote<mojom::WebTransportDatagramWritable> writable =
+      CreateDatagramWritable(transport_remote, /*send_group_id=*/0,
+                             /*send_order=*/0);
+  transport_remote.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  base::test::TestFuture<bool> send_future;
+  const std::array<uint8_t, 1> data = {1};
+  writable->SendDatagram(data, send_future.GetCallback());
+  writable.FlushForTesting();
+  WebTransportTestPeer::SetInFlightDatagramWritable(transport, /*index=*/0);
+
+  WebTransportTestPeer::ExpireNextDatagram(transport, /*index=*/0);
+  EXPECT_FALSE(send_future.IsReady());
+  EXPECT_EQ(1u, WebTransportTestPeer::PendingDatagramCount(transport));
+  EXPECT_FALSE(
+      WebTransportTestPeer::DatagramExpirationTimerIsRunning(transport));
+
+  WebTransportTestPeer::ClearInFlightDatagramWritable(transport);
+  WebTransportTestPeer::ExpireNextDatagram(transport, /*index=*/0);
+  EXPECT_FALSE(send_future.Get());
+  EXPECT_EQ(0u, WebTransportTestPeer::PendingDatagramCount(transport));
+}
+
+TEST_F(WebTransportTest, DatagramWritableLimitClosesExcessWritables) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+
+  const size_t max_writables = WebTransportTestPeer::MaxDatagramWritables();
+  std::vector<mojo::Remote<mojom::WebTransportDatagramWritable>> writables;
+  for (size_t i = 0; i < max_writables; ++i) {
+    writables.push_back(CreateDatagramWritable(
+        transport_remote, /*send_group_id=*/0, /*send_order=*/0));
+  }
+  transport_remote.FlushForTesting();
+  EXPECT_EQ(max_writables,
+            WebTransportTestPeer::RegisteredDatagramWritableCount(transport));
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  mojo::Remote<mojom::WebTransportDatagramWritable> refused_writable =
+      CreateDatagramWritable(transport_remote, /*send_group_id=*/0,
+                             /*send_order=*/0);
+  uint32_t disconnect_reason = 0;
+  base::RunLoop disconnect_run_loop;
+  refused_writable.set_disconnect_with_reason_handler(
+      base::BindLambdaForTesting(
+          [&](uint32_t custom_reason, const std::string&) {
+            disconnect_reason = custom_reason;
+            disconnect_run_loop.Quit();
+          }));
+
+  // Exceeding the limit closes the writable's pipe instead of killing the
+  // renderer.
+  disconnect_run_loop.Run();
+  EXPECT_EQ(
+      mojom::WebTransportDatagramWritable::kCreationRejectedDisconnectReason,
+      disconnect_reason);
+  EXPECT_EQ(max_writables,
+            WebTransportTestPeer::RegisteredDatagramWritableCount(transport));
+  EXPECT_FALSE(bad_message_observer.got_bad_message());
+}
+
+TEST_F(WebTransportTest, SessionCloseClosesDatagramWritables) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+  TestClient client(test_handshake_client.PassClientReceiver());
+  WebTransport* const transport =
+      mutable_network_context().GetWebTransportForTesting();
+
+  mojo::Remote<mojom::WebTransportDatagramWritable> writable =
+      CreateDatagramWritable(transport_remote, /*send_group_id=*/0,
+                             /*send_order=*/0);
+  uint32_t disconnect_reason = 0;
+  base::RunLoop disconnect_run_loop;
+  writable.set_disconnect_with_reason_handler(base::BindLambdaForTesting(
+      [&](uint32_t custom_reason, const std::string&) {
+        disconnect_reason = custom_reason;
+        disconnect_run_loop.Quit();
+      }));
+  transport_remote->SetOutgoingDatagramExpirationDuration(base::Minutes(1));
+  transport_remote.FlushForTesting();
+  WebTransportTestPeer::SetDatagramBlocked(transport, true);
+
+  const std::array<uint8_t, 1> data = {1};
+  writable->SendDatagram(data, base::DoNothing());
+  writable.FlushForTesting();
+  EXPECT_EQ(1u, WebTransportTestPeer::PendingDatagramCount(transport));
+
+  // Closing the session closes the writable's pipe and drops the Datagrams it
+  // still has queued. `transport` is destroyed as part of the close, so it must
+  // not be used below.
+  transport_remote->Close(nullptr);
+  disconnect_run_loop.Run();
+  EXPECT_EQ(mojom::WebTransportDatagramWritable::kSessionClosedDisconnectReason,
+            disconnect_reason);
+}
+
+TEST_F(WebTransportTest, ExportKeyingMaterial) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"),
+                     url::Origin::Create(GURL("https://example.org/")),
+                     std::move(handshake_client));
+  run_loop_for_handshake.Run();
+
+  ASSERT_TRUE(test_handshake_client.has_seen_connection_establishment());
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+
+  const auto export_keying_material = [&transport_remote](
+                                          std::vector<uint8_t> label,
+                                          std::vector<uint8_t> context,
+                                          uint32_t output_length) {
+    std::optional<std::vector<uint8_t>> result;
+    base::RunLoop run_loop;
+    WebTransportKeyingMaterialParams params{std::move(label),
+                                            std::move(context), output_length};
+    transport_remote->ExportKeyingMaterial(
+        params,
+        base::BindOnce(
+            [](std::optional<std::vector<uint8_t>>* result,
+               base::RunLoop* run_loop,
+               const std::optional<std::vector<uint8_t>>& keying_material) {
+              *result = keying_material;
+              run_loop->Quit();
+            },
+            &result, &run_loop));
+    run_loop.Run();
+    return result;
+  };
+
+  auto result = export_keying_material(std::vector<uint8_t>{1, 2, 3},
+                                       std::vector<uint8_t>{4, 5}, 32);
+  ASSERT_TRUE(result);
+  EXPECT_EQ(result->size(), 32u);
+}
+
+TEST_F(WebTransportTest, ExportKeyingMaterialRejectsInvalidParameters) {
+  const auto expect_bad_message = [this](std::vector<uint8_t> label,
+                                         std::vector<uint8_t> context,
+                                         uint32_t output_length) {
+    mojo::FakeMessageDispatchContext dispatch_context;
+    mojo::test::BadMessageObserver bad_message_observer;
+    base::RunLoop run_loop_for_handshake;
+    mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+    TestHandshakeClient test_handshake_client(
+        handshake_client.InitWithNewPipeAndPassReceiver(),
+        run_loop_for_handshake.QuitClosure());
+
+    CreateWebTransport(GetURL("/echo"),
+                       url::Origin::Create(GURL("https://example.org/")),
+                       std::move(handshake_client));
+    run_loop_for_handshake.Run();
+
+    ASSERT_TRUE(test_handshake_client.has_seen_connection_establishment());
+    mojo::Remote<mojom::WebTransport> transport_remote(
+        test_handshake_client.PassTransport());
+    WebTransportKeyingMaterialParams params{std::move(label),
+                                            std::move(context), output_length};
+    transport_remote->ExportKeyingMaterial(params, base::DoNothing());
+    EXPECT_FALSE(bad_message_observer.WaitForBadMessage().empty());
+  };
+
+  expect_bad_message(std::vector<uint8_t>{1}, std::vector<uint8_t>{2}, 0);
+  expect_bad_message(
+      std::vector<uint8_t>(mojom::kWebTransportExporterMaxInputLength + 1),
+      std::vector<uint8_t>{2}, 1);
+  expect_bad_message(
+      std::vector<uint8_t>{1},
+      std::vector<uint8_t>(mojom::kWebTransportExporterMaxInputLength + 1), 1);
+  expect_bad_message(std::vector<uint8_t>{1}, std::vector<uint8_t>{2},
+                     mojom::kWebTransportExporterMaxOutputLength + 1);
 }
 
 TEST_F(WebTransportTest, SendToolargeDatagram) {
@@ -821,6 +1657,11 @@ TEST_F(WebTransportTest, EchoOnUnidirectionalStreams) {
 
   client.WaitUntilOutgoingStreamIsClosed(stream_id);
 
+  EXPECT_EQ(client.final_send_stream_stats_for(stream_id),
+            (net::WebTransportSendStreamStats{.bytes_sent = 5,
+                                              .bytes_acknowledged = 5}));
+  EXPECT_FALSE(GetSendStreamStats(transport_remote, stream_id).has_value());
+
   mojo::ScopedDataPipeConsumerHandle readable_for_incoming;
   uint32_t incoming_stream_id = stream_id;
   base::RunLoop run_loop_for_incoming_stream;
@@ -848,6 +1689,108 @@ TEST_F(WebTransportTest, EchoOnUnidirectionalStreams) {
       net_log_observer().GetEntriesWithType(
           net::NetLogEventType::QUIC_SESSION_RST_STREAM_FRAME_SENT);
   EXPECT_EQ(0u, resets_sent.size());
+}
+
+TEST_F(WebTransportTest, SendStreamStatsUnavailableAfterLocalAbort) {
+  base::test::TestFuture<void> handshake_future;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      handshake_future.GetCallback());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+
+  ASSERT_TRUE(handshake_future.Wait());
+  ASSERT_TRUE(test_handshake_client.has_seen_connection_establishment());
+
+  TestClient client(test_handshake_client.PassClientReceiver());
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+
+  mojo::ScopedDataPipeConsumerHandle readable;
+  mojo::ScopedDataPipeProducerHandle writable;
+  ASSERT_EQ(MOJO_RESULT_OK,
+            mojo::CreateDataPipe(/*options=*/nullptr, writable, readable));
+
+  base::test::TestFuture<bool, uint32_t> stream_creation_future;
+  transport_remote->CreateStream(std::move(readable), /*writable=*/{},
+                                 /*priority=*/nullptr,
+                                 stream_creation_future.GetCallback());
+  auto [stream_created, stream_id] = stream_creation_future.Take();
+  ASSERT_TRUE(stream_created);
+
+  constexpr std::string_view kData = "hello";
+  ASSERT_EQ(MOJO_RESULT_OK, writable->WriteAllData(base::as_byte_span(kData)));
+
+  std::optional<net::WebTransportSendStreamStats> stats;
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    stats = GetSendStreamStats(transport_remote, stream_id);
+    return stats && stats->bytes_sent == kData.size() &&
+           stats->bytes_acknowledged == kData.size();
+  }));
+  EXPECT_EQ(stats->bytes_sent, kData.size());
+  EXPECT_EQ(stats->bytes_acknowledged, kData.size());
+
+  base::test::TestFuture<std::optional<net::WebTransportSendStreamStats>>
+      abort_future;
+  transport_remote->AbortStream(stream_id, /*code=*/0,
+                                abort_future.GetCallback());
+  auto final_stats = abort_future.Take();
+  ASSERT_TRUE(final_stats);
+  EXPECT_EQ(final_stats->bytes_sent, kData.size());
+  EXPECT_EQ(final_stats->bytes_acknowledged, kData.size());
+
+  EXPECT_FALSE(GetSendStreamStats(transport_remote, stream_id).has_value());
+
+  base::test::TestFuture<std::optional<net::WebTransportSendStreamStats>>
+      second_abort_future;
+  transport_remote->AbortStream(stream_id, /*code=*/0,
+                                second_abort_future.GetCallback());
+  EXPECT_FALSE(second_abort_future.Take().has_value());
+}
+
+TEST_F(WebTransportTest, StopSendingDeliversFinalSendStreamStats) {
+  base::test::TestFuture<void> handshake_future;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      handshake_future.GetCallback());
+
+  CreateWebTransport(GetURL("/echo"), origin(), std::move(handshake_client));
+  ASSERT_TRUE(handshake_future.Wait());
+
+  TestClient client(test_handshake_client.PassClientReceiver());
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+
+  mojo::ScopedDataPipeConsumerHandle readable;
+  mojo::ScopedDataPipeProducerHandle writable;
+  ASSERT_EQ(MOJO_RESULT_OK,
+            mojo::CreateDataPipe(/*options=*/nullptr, writable, readable));
+
+  base::test::TestFuture<bool, uint32_t> stream_creation_future;
+  transport_remote->CreateStream(std::move(readable), /*writable=*/{},
+                                 /*priority=*/nullptr,
+                                 stream_creation_future.GetCallback());
+  auto [stream_created, stream_id] = stream_creation_future.Take();
+  ASSERT_TRUE(stream_created);
+
+  constexpr std::string_view kData = "hello";
+  ASSERT_EQ(MOJO_RESULT_OK, writable->WriteAllData(base::as_byte_span(kData)));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    auto stats = GetSendStreamStats(transport_remote, stream_id);
+    return stats && stats->bytes_sent == kData.size() &&
+           stats->bytes_acknowledged == kData.size();
+  }));
+  WebTransportTestPeer::ReceiveStopSending(
+      mutable_network_context().GetWebTransportForTesting(), stream_id,
+      /*error=*/0);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return client.has_final_send_stream_stats_for(stream_id); }));
+  const auto& final_stats = client.final_send_stream_stats_for(stream_id);
+  ASSERT_TRUE(final_stats);
+  EXPECT_EQ(final_stats->bytes_sent, kData.size());
+  EXPECT_EQ(final_stats->bytes_acknowledged, kData.size());
 }
 
 TEST_F(WebTransportTest, SetStreamPriority) {
@@ -1139,6 +2082,124 @@ TEST_F(WebTransportTest, Stats) {
   ASSERT_FALSE(stats.is_null());
   EXPECT_GT(stats->min_rtt, base::Microseconds(0));
   EXPECT_LT(stats->min_rtt, base::Seconds(5));
+}
+
+TEST_F(WebTransportTest, ReceiveStreamStats) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"),
+                     url::Origin::Create(GURL("https://example.org/")),
+                     std::move(handshake_client));
+
+  run_loop_for_handshake.Run();
+  ASSERT_TRUE(test_handshake_client.has_seen_connection_establishment());
+
+  TestClient client(test_handshake_client.PassClientReceiver());
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+
+  ASSERT_TRUE(WaitForDatagramRoundTrip(transport_remote, client));
+
+  auto [stream_id, readable_for_incoming, writable_for_outgoing] =
+      AcceptBidirectionalStream(transport_remote);
+  ASSERT_TRUE(readable_for_incoming);
+  ASSERT_TRUE(writable_for_outgoing);
+
+  constexpr std::string_view kLiveData = "hello";
+  ASSERT_EQ(MOJO_RESULT_OK,
+            writable_for_outgoing->WriteAllData(base::as_byte_span(kLiveData)));
+
+  std::string echo_back(kLiveData.size(), '\0');
+  size_t total_read_bytes = 0;
+  MojoResult read_result = MOJO_RESULT_SHOULD_WAIT;
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    size_t actually_read_bytes = 0;
+    read_result = readable_for_incoming->ReadData(
+        MOJO_READ_DATA_FLAG_NONE,
+        base::as_writable_byte_span(echo_back).subspan(total_read_bytes),
+        actually_read_bytes);
+    if (read_result == MOJO_RESULT_OK) {
+      total_read_bytes += actually_read_bytes;
+      return total_read_bytes >= echo_back.size();
+    }
+    return read_result != MOJO_RESULT_SHOULD_WAIT;
+  }));
+  ASSERT_EQ(MOJO_RESULT_OK, read_result);
+  EXPECT_EQ(kLiveData.size(), total_read_bytes);
+  EXPECT_EQ(kLiveData, echo_back);
+
+  base::test::TestFuture<mojom::WebTransportReceiveStreamStatsPtr> stats_future;
+  transport_remote->GetReceiveStreamStats(stream_id,
+                                          stats_future.GetCallback());
+  auto stats = stats_future.Take();
+  ASSERT_FALSE(stats.is_null());
+  EXPECT_EQ(stats->bytes_received, kLiveData.size());
+
+  constexpr std::string_view kFinalData = "world";
+  ASSERT_EQ(MOJO_RESULT_OK, writable_for_outgoing->WriteAllData(
+                                base::as_byte_span(kFinalData)));
+  transport_remote->SendFin(stream_id);
+  writable_for_outgoing.reset();
+  EXPECT_EQ(Read(std::move(readable_for_incoming)), kFinalData);
+
+  client.WaitUntilIncomingStreamIsClosed(stream_id);
+  EXPECT_EQ(client.final_bytes_received_for(stream_id),
+            kLiveData.size() + kFinalData.size());
+}
+
+TEST_F(WebTransportTest, ReceiveStreamStatsAfterDataPipeClosed) {
+  base::RunLoop run_loop_for_handshake;
+  mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client;
+  TestHandshakeClient test_handshake_client(
+      handshake_client.InitWithNewPipeAndPassReceiver(),
+      run_loop_for_handshake.QuitClosure());
+
+  CreateWebTransport(GetURL("/echo"),
+                     url::Origin::Create(GURL("https://example.org/")),
+                     std::move(handshake_client));
+
+  run_loop_for_handshake.Run();
+  ASSERT_TRUE(test_handshake_client.has_seen_connection_establishment());
+
+  TestClient client(test_handshake_client.PassClientReceiver());
+  mojo::Remote<mojom::WebTransport> transport_remote(
+      test_handshake_client.PassTransport());
+
+  ASSERT_TRUE(WaitForDatagramRoundTrip(transport_remote, client));
+
+  auto [stream_id, readable_for_incoming, writable_for_outgoing] =
+      AcceptBidirectionalStream(transport_remote);
+  ASSERT_TRUE(readable_for_incoming);
+  ASSERT_TRUE(writable_for_outgoing);
+
+  constexpr std::string_view kData = "hello";
+  readable_for_incoming.reset();
+  ASSERT_EQ(MOJO_RESULT_OK,
+            writable_for_outgoing->WriteAllData(base::as_byte_span(kData)));
+
+  transport_remote->SendFin(stream_id);
+  writable_for_outgoing.reset();
+  client.WaitUntilOutgoingStreamIsClosed(stream_id);
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return mutable_network_context()
+        .GetWebTransportForTesting()
+        ->HasFinalReceiveStreamStatsForTesting(stream_id);
+  }));
+
+  base::test::TestFuture<mojom::WebTransportReceiveStreamStatsPtr> stats_future;
+  transport_remote->GetReceiveStreamStats(stream_id,
+                                          stats_future.GetCallback());
+  auto stats = stats_future.Take();
+  ASSERT_FALSE(stats.is_null());
+  // Pipe closure races with delivery of the echo. The cancellation snapshot
+  // includes the contiguous prefix received when closure is observed, but is
+  // not required to include bytes that arrive afterward.
+  EXPECT_GT(stats->bytes_received, 0u);
+  EXPECT_LE(stats->bytes_received, kData.size());
 }
 
 // Test that Dispose() handles properly when transport exists but session is

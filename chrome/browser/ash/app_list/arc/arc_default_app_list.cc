@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "ash/constants/ash_paths.h"
 #include "base/barrier_closure.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
@@ -26,7 +27,6 @@
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_paths.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "components/pref_registry/pref_registry_syncable.h"
@@ -43,17 +43,6 @@ constexpr char kPackageName[] = "package_name";
 
 constexpr char kDefaultApps[] = "arc.apps.default";
 constexpr char kHidden[] = "hidden";
-
-// Sub-directory wher ARC apps forward declarations are stored.
-const base::FilePath::CharType kArcDirectory[] = FILE_PATH_LITERAL("arc");
-const base::FilePath::CharType kArcTestDirectory[] =
-    FILE_PATH_LITERAL("arc_default_apps");
-const base::FilePath::CharType kArcTestBoardDirectory[] =
-    FILE_PATH_LITERAL("arc_board_default_apps");
-const base::FilePath::CharType kArcTestNonAdaptiveDirectory[] =
-    FILE_PATH_LITERAL("arc_non_adaptive_default_apps");
-
-bool use_test_apps_directory = false;
 
 std::unique_ptr<ArcDefaultAppList::AppInfoMap> ReadAppsFromFileThread(
     const base::FilePath& base_path) {
@@ -153,11 +142,6 @@ std::string GetBoardName(const base::FilePath& build_prop_path) {
 }  // namespace
 
 // static
-void ArcDefaultAppList::UseTestAppsDirectory() {
-  use_test_apps_directory = true;
-}
-
-// static
 void ArcDefaultAppList::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterDictionaryPref(kDefaultApps);
@@ -172,7 +156,8 @@ std::string ArcDefaultAppList::GetBoardNameForTesting(
 ArcDefaultAppList::ArcDefaultAppList(Profile* profile,
                                      base::OnceClosure ready_callback)
     : profile_(profile), ready_callback_(std::move(ready_callback)) {
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M160);
   arc::ArcSessionManager::Get()->AddObserver(this);
 }
 
@@ -183,6 +168,11 @@ ArcDefaultAppList::~ArcDefaultAppList() {
 }
 
 void ArcDefaultAppList::OnPropertyFilesExpanded(bool result) {
+  if (!arc::IsArcAllowedForProfile(profile_)) {
+    OnAppsReady();
+    return;
+  }
+
   if (!result) {
     // Failed to generate |kGeneratedPropertyFilesPath[Vm]| for whatever reason.
     // Continue anyway not to stall the launcher initialization. In this case,
@@ -205,26 +195,22 @@ void ArcDefaultAppList::OnPropertyFilesExpanded(bool result) {
 }
 
 void ArcDefaultAppList::LoadDefaultApps(std::string board_name) {
+  if (!arc::IsArcAllowedForProfile(profile_)) {
+    OnAppsReady();
+    return;
+  }
+
   VLOG(1) << "Start loading default apps. Board name is "
           << (board_name.empty() ? "<unknown>" : board_name);
   std::vector<base::FilePath> sources;
 
-  base::FilePath base_path;
-  if (!use_test_apps_directory) {
-    const bool valid_path = base::PathService::Get(
-        chrome::DIR_STANDALONE_EXTERNAL_EXTENSIONS, &base_path);
-    DCHECK(valid_path);
-    const base::FilePath base_arc_path = base_path.Append(kArcDirectory);
-    sources.push_back(base_arc_path);
-    if (!board_name.empty())
-      sources.push_back(base_arc_path.Append(board_name));
-  } else {
-    const bool valid_path =
-        base::PathService::Get(chrome::DIR_TEST_DATA, &base_path);
-    DCHECK(valid_path);
-    sources.push_back(base_path.Append(kArcTestDirectory));
-    sources.push_back(base_path.Append(kArcTestBoardDirectory));
-    sources.push_back(base_path.Append(kArcTestNonAdaptiveDirectory));
+  base::FilePath base_arc_path;
+  const bool valid_path =
+      base::PathService::Get(ash::DIR_ARC_DEFAULT_APPS, &base_arc_path);
+  CHECK(valid_path, base::NotFatalUntil::M160);
+  sources.push_back(base_arc_path);
+  if (!board_name.empty()) {
+    sources.push_back(base_arc_path.Append(board_name));
   }
 
   // Using base::Unretained(this) here is safe since we own barrier_closure_.
@@ -243,7 +229,8 @@ void ArcDefaultAppList::LoadDefaultApps(std::string board_name) {
 }
 
 void ArcDefaultAppList::OnAppsRead(std::unique_ptr<AppInfoMap> apps) {
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M160);
 
   const PrefService* const prefs = profile_->GetPrefs();
   for (auto& entry : *apps.get()) {

@@ -4,8 +4,8 @@
 
 #include "chrome/browser/web_applications/commands/set_user_display_mode_command.h"
 
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom-shared.h"
 #include "chrome/browser/web_applications/test/fake_web_app_origin_association_manager.h"
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
@@ -17,7 +17,6 @@
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/common/web_app_id.h"
-#include "third_party/blink/public/common/features.h"
 
 namespace web_app {
 
@@ -76,8 +75,6 @@ class SetUserDisplayModeCommandTest : public WebAppTest {
  private:
   std::unique_ptr<OsIntegrationTestOverrideImpl::BlockingRegistration>
       test_override_;
-  base::test::ScopedFeatureList scoped_feature_list_{
-      blink::features::kWebAppMigrationApi};
 };
 
 TEST_F(SetUserDisplayModeCommandTest, SetUserDisplayMode) {

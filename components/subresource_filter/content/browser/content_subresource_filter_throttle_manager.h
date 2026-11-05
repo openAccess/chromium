@@ -10,7 +10,6 @@
 #include <optional>
 #include <vector>
 
-#include "base/containers/flat_set.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
@@ -214,8 +213,7 @@ class ContentSubresourceFilterThrottleManager
 
   static void LogAction(SubresourceFilterAction action);
 
-  void SetIsAdFrameForTesting(content::RenderFrameHost* render_frame_host,
-                              bool is_ad_frame);
+  void UpdateToAdFrameForTesting(content::RenderFrameHost* render_frame_host);
 
   // Returns the matching FrameAdEvidence for the frame indicated by
   // `render_frame_host` or `std::nullopt` if there is none (i.e. the frame is
@@ -321,8 +319,6 @@ class ContentSubresourceFilterThrottleManager
   void DidDisallowFirstSubresource() override;
   void FrameIsAd() override;
   void FrameWasCreatedByAdScript() override;
-  void AdScriptDidCreateFencedFrame(
-      const blink::RemoteFrameToken& placeholder_token) override;
   void SetDocumentLoadStatistics(
       mojom::DocumentLoadStatisticsPtr statistics) override;
   void OnAdsViolationTriggered(mojom::AdsViolation violation) override;
@@ -345,10 +341,9 @@ class ContentSubresourceFilterThrottleManager
       const mojom::SubresourceFilterDisabledReason& disabled_reason,
       bool did_inherit_opener_activation);
 
-  // Sets whether the frame is considered an ad frame. If the value has changed,
-  // we also update the replication state and inform observers.
-  void SetIsAdFrame(content::RenderFrameHost* render_frame_host,
-                    bool is_ad_frame);
+  // Marks the frame as an ad frame. If the frame was not already marked as
+  // an ad frame, we update the replication state and inform observers.
+  void UpdateToAdFrame(content::RenderFrameHost* render_frame_host);
 
   // For each RenderFrameHost where the last committed load (or the initial load
   // if no committed load has occurred) has subresource filtering activated,
@@ -371,22 +366,26 @@ class ContentSubresourceFilterThrottleManager
   mojom::SubresourceFilterDisabledReason root_navigation_disabled_reason_ =
       mojom::SubresourceFilterDisabledReason::kUnknown;
 
-  // Set of frames that have been identified as ads, identified by FrameTreeNode
-  // ID. A RenderFrameHost is an ad frame iff the FrameAdEvidence
-  // corresponding to the frame indicates that it is.
-  base::flat_set<content::FrameTreeNodeId> ad_frames_;
+  struct TrackedFrame {
+    explicit TrackedFrame(bool parent_is_ad);
+    TrackedFrame(TrackedFrame&&);
+    TrackedFrame& operator=(TrackedFrame&&);
+    ~TrackedFrame();
 
-  // Map of child frames, keyed by FrameTreeNode ID, with value being the
-  // evidence for or against the frames being ads. This evidence is updated
-  // whenever a navigation's LoadPolicy is calculated.
-  std::map<content::FrameTreeNodeId, blink::FrameAdEvidence>
-      tracked_ad_evidence_;
+    // Evidence for or against the child frame being an ad. Updated whenever a
+    // navigation's LoadPolicy is calculated.
+    blink::FrameAdEvidence ad_evidence;
 
-  // Map of frames whose navigations have been identified as ads, keyed by
-  // FrameTreeNode ID. Contains information on the most current completed
-  // navigation for any given frames. If a frame is not present in the map, it
-  // has not had a navigation evaluated by the filter list.
-  std::map<content::FrameTreeNodeId, LoadPolicy> navigation_load_policies_;
+    // Most current completed navigation LoadPolicy evaluated by the filter
+    // list for this frame, if any.
+    std::optional<LoadPolicy> load_policy;
+
+    // Whether this frame has been identified as an ad.
+    bool is_ad = false;
+  };
+
+  // Per-frame ad tracking state, keyed by FrameTreeNode ID.
+  std::map<content::FrameTreeNodeId, TrackedFrame> tracked_frames_;
 
   // Receiver set for all RenderFrames in this throttle manager's page.
   content::RenderFrameHostReceiverSet<mojom::SubresourceFilterHost> receiver_;

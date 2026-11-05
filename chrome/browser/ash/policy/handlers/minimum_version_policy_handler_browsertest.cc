@@ -13,6 +13,7 @@
 #include "ash/public/cpp/login_screen_test_api.h"
 #include "ash/public/cpp/system_tray_test_api.h"
 #include "base/auto_reset.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/json/json_writer.h"
 #include "base/memory/raw_ptr.h"
@@ -42,11 +43,11 @@
 #include "chrome/browser/ash/policy/handlers/minimum_version_policy_test_helpers.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/lifetime/termination_notification.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/ash/login/app_launch_splash_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/gaia_screen_handler.h"
@@ -63,6 +64,10 @@
 #include "chromeos/dbus/constants/dbus_switches.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_type.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -124,6 +129,11 @@ class MinimumVersionPolicyTestBase : public ash::LoginManagerTest {
     version_info_.emplace(lsb_release, base::Time::Now());
   }
 
+  void TearDownOnMainThread() override {
+    fake_update_engine_client_ = nullptr;
+    LoginManagerTest::TearDownOnMainThread();
+  }
+
   // Set new value for policy and wait till setting is changed.
   void SetDevicePolicyAndWaitForSettingChange(const base::DictValue& value);
 
@@ -137,8 +147,7 @@ class MinimumVersionPolicyTestBase : public ash::LoginManagerTest {
 
   DevicePolicyCrosTestHelper helper_;
   base::test::ScopedFeatureList feature_list_;
-  raw_ptr<ash::FakeUpdateEngineClient, DanglingUntriaged>
-      fake_update_engine_client_ = nullptr;
+  raw_ptr<ash::FakeUpdateEngineClient> fake_update_engine_client_ = nullptr;
   ash::DeviceStateMixin device_state_{
       &mixin_host_,
       ash::DeviceStateMixin::State::OOBE_COMPLETED_CLOUD_ENROLLED};
@@ -880,7 +889,18 @@ IN_PROC_BROWSER_TEST_F(MinimumVersionBeforeLoginHost, DeadlineReached) {
   EXPECT_EQ(ash::LoginDisplayHost::default_host(), nullptr);
   EXPECT_TRUE(GetMinimumVersionPolicyHandler());
   EXPECT_TRUE(GetMinimumVersionPolicyHandler()->DeadlineReached());
-  ShowLoginWizard(ash::OOBE_SCREEN_UNKNOWN);
+  ShowLoginWizard(
+      g_browser_process->local_state(), g_browser_process->metrics_service(),
+      g_browser_process->GetFeatures()->application_locale_storage(),
+      g_browser_process->shared_url_loader_factory(),
+      g_browser_process->platform_part()->browser_policy_connector_ash(),
+      g_browser_process->platform_part()->component_manager_ash(),
+      g_browser_process->platform_part()
+          ->device_restriction_schedule_controller(),
+      g_browser_process->platform_part()
+          ->multi_user_sign_in_policy_controller(),
+      g_browser_process->platform_part()->GetSystemClock(),
+      ash::OOBE_SCREEN_UNKNOWN);
   EXPECT_EQ(session_manager::SessionManager::Get()->session_state(),
             session_manager::SessionState::LOGIN_PRIMARY);
   ash::OobeScreenWaiter(ash::UpdateRequiredView::kScreenId).Wait();
@@ -1008,7 +1028,13 @@ class MinimumVersionPolicyChildUser : public MinimumVersionPolicyTestBase {
     login_manager_.LoginAsNewChildUser();
     login_manager_.WaitForActiveSession();
     EXPECT_EQ(user_manager::UserManager::Get()->GetLoggedInUsers().size(), 1u);
-    EXPECT_EQ(user_manager::UserManager::Get()->GetActiveUser()->GetType(),
+    const session_manager::Session* active_session =
+        session_manager::SessionManager::Get()->GetActiveSession();
+    CHECK(active_session);
+    EXPECT_EQ(active_session->account_id(), child_user.account_id);
+    EXPECT_EQ(CHECK_DEREF(user_manager::UserManager::Get()->FindUser(
+                              child_user.account_id))
+                  .GetType(),
               user_manager::UserType::kChild);
     EXPECT_EQ(session_manager::SessionManager::Get()->session_state(),
               session_manager::SessionState::ACTIVE);

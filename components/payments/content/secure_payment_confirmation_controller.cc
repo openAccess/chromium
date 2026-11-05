@@ -29,10 +29,10 @@
 namespace {
 
 constexpr char kTransactionOutcomeHistogramName[] =
-    "SecurePaymentRequest.Transaction.Outcome";
+    "PaymentRequest.SecurePaymentConfirmation.Transaction.Outcome";
 
 constexpr char kFallbackOutcomeHistogramName[] =
-    "SecurePaymentRequest.Fallback.Outcome";
+    "PaymentRequest.SecurePaymentConfirmation.Fallback.Outcome";
 
 }  // namespace
 
@@ -102,6 +102,7 @@ bool SecurePaymentConfirmationController::IsInteractive() const {
 
 void SecurePaymentConfirmationController::ShowPaymentHandlerScreen(
     const GURL& url,
+    const std::optional<gfx::Size>& preferred_web_contents_size,
     PaymentHandlerOpenWindowCallback callback) {
   // Payment handler screen is not supported.
   NOTREACHED();
@@ -127,7 +128,7 @@ void SecurePaymentConfirmationController::OnInitialized(
 void SecurePaymentConfirmationController::OnConfirm() {
   if (is_error_dialog_) {
     base::UmaHistogramEnumeration(kFallbackOutcomeHistogramName,
-                                  SecurePaymentRequestOutcome::kAccept);
+                                  SecurePaymentRequestOutcome::kAnotherWay);
 
     is_dialog_showing_ = false;
     // CloseDialog() -> Widget::Close() can potentially synchronously trigger

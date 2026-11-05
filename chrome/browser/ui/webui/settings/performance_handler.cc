@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/webui/settings/performance_handler.h"
 
+#include <string_view>
+
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/values.h"
@@ -62,7 +64,7 @@ void PerformanceHandler::OnJavascriptDisallowed() {
 }
 
 void PerformanceHandler::OnDeviceHasBatteryChanged(bool device_has_battery) {
-  DCHECK(IsJavascriptAllowed());
+  CHECK(IsJavascriptAllowed(), base::NotFatalUntil::M162);
   FireWebUIListener("device-has-battery-changed", device_has_battery);
 }
 
@@ -128,7 +130,7 @@ void PerformanceHandler::HandleOpenFeedbackDialog(const base::ListValue& args) {
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
           web_ui()->GetWebContents());
-  DCHECK(browser);
+  CHECK(browser, base::NotFatalUntil::M162);
   std::string unused;
   chrome::ShowFeedbackPage(browser,
                            feedback::kFeedbackSourceSettingsPerformancePage,
@@ -139,15 +141,11 @@ void PerformanceHandler::HandleValidateTabDiscardExceptionRule(
     const base::ListValue& args) {
   CHECK_EQ(2U, args.size());
   const base::Value& callback_id = args[0];
-  const std::string rule = args[1].GetString();
+  std::string_view rule = args[1].GetString();
 
   AllowJavascript();
 
-  url_matcher::util::FilterComponents components;
-
-  bool is_valid = url_matcher::util::FilterToComponents(
-      rule, &components.scheme, &components.host, &components.match_subdomains,
-      &components.port, &components.path, &components.query);
+  bool is_valid = url_matcher::util::FilterToComponents(rule).has_value();
 
   ResolveJavascriptCallback(callback_id, base::Value(is_valid));
 }

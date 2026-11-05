@@ -36,10 +36,8 @@ class TwoClientUserEventsSyncTest
  public:
   TwoClientUserEventsSyncTest() : SyncTest(TWO_CLIENT) {
     if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitWithFeatures(
-          {syncer::kReplaceSyncPromosWithSignInPromos,
-           switches::kSyncEnableBookmarksInTransportMode},
-          {});
+      scoped_feature_list_.InitAndEnableFeature(
+          switches::kSyncEnableBookmarksInTransportMode);
     }
   }
 
@@ -100,8 +98,7 @@ IN_PROC_BROWSER_TEST_P(TwoClientUserEventsSyncTest,
   // knowing it will be encrypted). This event should not get recorded while
   // starting up sync because the user has custom passphrase setup.
   syncer::UserEventService* event_service =
-      browser_sync::UserEventServiceFactory::GetForProfile(
-          GetProfile(kDecryptingClientId));
+      UserEventServiceFactory::GetForProfile(GetProfile(kDecryptingClientId));
   event_service->RecordUserEvent(std::make_unique<sync_pb::UserEventSpecifics>(
       user_events_helper::CreateTestEvent(base::Time() +
                                           base::Microseconds(1))));

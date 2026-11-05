@@ -141,8 +141,8 @@ class CONTENT_EXPORT DownloadManagerImpl
       bool opened,
       base::Time last_access_time,
       bool transient,
-      const std::vector<download::DownloadItem::ReceivedSlice>& received_slices)
-      override;
+      const std::vector<download::DownloadItem::ReceivedSlice>& received_slices,
+      const base::FilePath& display_name) override;
   void PostInitialization(DownloadInitializationDependency dependency) override;
   bool IsManagerInitialized() override;
   int InProgressCount() override;
@@ -297,6 +297,7 @@ class CONTENT_EXPORT DownloadManagerImpl
       network::mojom::URLResponseHeadPtr response_head,
       mojo::ScopedDataPipeConsumerHandle response_body,
       network::mojom::URLLoaderClientEndpointsPtr url_loader_client_endpoints,
+      const StoragePartitionConfig& storage_partition_config,
       bool is_download_allowed);
   void BeginResourceDownloadOnChecksComplete(
       std::unique_ptr<download::DownloadUrlParameters> params,

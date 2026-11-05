@@ -50,9 +50,7 @@ class SyncSessionsClientImpl final : public sync_sessions::SyncSessionsClient {
       : profile_(profile), session_sync_prefs_(profile->GetPrefs()) {
     window_delegates_getter_ =
 #if BUILDFLAG(IS_ANDROID)
-        // Android doesn't have multi-profile support, so no need to pass the
-        // profile in.
-        std::make_unique<browser_sync::SyncedWindowDelegatesGetterAndroid>();
+        std::make_unique<SyncedWindowDelegatesGetterAndroid>(profile);
 #else   // BUILDFLAG(IS_ANDROID)
         std::make_unique<browser_sync::BrowserSyncedWindowDelegatesGetter>(
             profile);
@@ -73,12 +71,12 @@ class SyncSessionsClientImpl final : public sync_sessions::SyncSessionsClient {
     const syncer::DeviceInfoTracker* tracker = service->GetDeviceInfoTracker();
     CHECK(tracker);
 
-    const syncer::DeviceInfo* device_info = tracker->GetDeviceInfo(session_tag);
+    const syncer::DeviceInfo* device_info =
+        tracker->GetChromeDeviceInfo(session_tag);
     if (!device_info) {
       return std::nullopt;
     }
-    return syncer::GetDisplayNameCandidates(device_info)
-        .preferred_name_if_unique;
+    return syncer::GetDeviceDisplayName(device_info);
   }
 
   // SyncSessionsClient implementation.
@@ -157,9 +155,8 @@ SessionSyncServiceFactory* SessionSyncServiceFactory::GetInstance() {
   return instance.get();
 }
 
-// static - exposed for testing and metrics.
-bool SessionSyncServiceFactory::ShouldSyncURLForTestingAndMetrics(
-    const GURL& url) {
+// static
+bool SessionSyncServiceFactory::ShouldSyncURL(const GURL& url) {
   return ShouldSyncURLImpl(url);
 }
 

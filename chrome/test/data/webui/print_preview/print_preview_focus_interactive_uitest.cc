@@ -66,6 +66,21 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewPagesSettingsFocusTest,
   RunTestCase("EnterOnInputTriggersPrint");
 }
 
+class PrintPreviewScalingSettingsFocusTest : public PrintPreviewFocusTest {
+ protected:
+  void RunTestCase(const std::string& testCase) {
+    PrintPreviewFocusTest::RunTest(
+        "print_preview/scaling_settings_test.js",
+        base::StringPrintf("runMochaTest('ScalingSettingsTest', '%s');",
+                           testCase.c_str()));
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewScalingSettingsFocusTest,
+                       InputNotDisabledOnValidityChange) {
+  RunTestCase("InputNotDisabledOnValidityChange");
+}
+
 class PrintPreviewDestinationDialogFocusTest : public PrintPreviewFocusTest {
  protected:
   void RunTestCase(const std::string& testCase) {
@@ -89,4 +104,10 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationDialogFocusTest,
 IN_PROC_BROWSER_TEST_F(PrintPreviewDestinationDialogFocusTest,
                        SearchDestinationsKorean) {
   RunTestCase("SearchDestinationsKorean");
+}
+
+IN_PROC_BROWSER_TEST_F(PrintPreviewFocusTest,
+                       RestoreFocusAfterDestinationChange) {
+  RunTest("print_preview/destination_settings_interactive_test.js",
+          "mocha.run()");
 }

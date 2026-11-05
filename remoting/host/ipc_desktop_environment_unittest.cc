@@ -21,6 +21,7 @@
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/task/thread_pool.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
 #include "base/test/run_until.h"
@@ -50,6 +51,7 @@
 #include "remoting/host/fake_mouse_cursor_monitor.h"
 #include "remoting/host/host_mock_objects.h"
 #include "remoting/host/mojom/desktop_session.mojom.h"
+#include "remoting/proto/audio.pb.h"
 #include "remoting/proto/event.pb.h"
 #include "remoting/proto/url_forwarder_control.pb.h"
 #include "remoting/protocol/capability_names.h"
@@ -317,7 +319,7 @@ class IpcDesktopEnvironmentTest : public testing::Test {
   std::unique_ptr<ScreenControls> screen_controls_;
 
   // The IPC screen capturer.
-  std::unique_ptr<webrtc::DesktopCapturer> video_capturer_;
+  std::unique_ptr<DesktopCapturer> video_capturer_;
 
   // Represents the desktop process running in a user session.
   std::unique_ptr<DesktopProcess> desktop_process_;
@@ -325,6 +327,11 @@ class IpcDesktopEnvironmentTest : public testing::Test {
   // Input injector owned by |desktop_process_|.
   raw_ptr<MockInputInjector, AcrossTasksDanglingUntriaged>
       remote_input_injector_;
+
+  // Clipboard stub passed by the desktop session agent to
+  // `remote_input_injector_`. It holds a reference to the desktop process's
+  // caller task runner, so it must be released in DestroyDesktopProcess().
+  std::unique_ptr<protocol::ClipboardStub> remote_clipboard_stub_;
 
   base::WeakPtr<protocol::FakeDesktopCapturer> remote_desktop_capturer_;
 
@@ -529,7 +536,10 @@ IpcDesktopEnvironmentTest::CreateInputInjector() {
   EXPECT_TRUE(remote_input_injector_ == nullptr);
   remote_input_injector_ = remote_input_injector.get();
 
-  EXPECT_CALL(*remote_input_injector_, Start(_));
+  EXPECT_CALL(*remote_input_injector_, Start(_))
+      .WillOnce([this](std::unique_ptr<protocol::ClipboardStub> stub) {
+        remote_clipboard_stub_ = std::move(stub);
+      });
   return remote_input_injector;
 }
 
@@ -626,6 +636,7 @@ void IpcDesktopEnvironmentTest::DestroyDesktopProcess() {
   }
   desktop_listener_.Disconnect();
   remote_input_injector_ = nullptr;
+  remote_clipboard_stub_.reset();
 }
 
 void IpcDesktopEnvironmentTest::ResetRemoteUrlForwarderConfigurator() {
@@ -892,6 +903,35 @@ TEST_F(IpcDesktopEnvironmentTest, InjectClipboardEvent) {
   event.set_mime_type(kMimeTypeTextUtf8);
   event.set_data("a");
   input_injector_->InjectClipboardEvent(event);
+}
+
+// Tests that local clipboard events reported by the desktop's input injector on
+// a different thread (e.g. `ClipboardX11` on the input thread) are forwarded to
+// the network process.
+TEST_F(IpcDesktopEnvironmentTest, InjectClipboardEventFromAnotherThread) {
+  auto clipboard_stub = std::make_unique<protocol::MockClipboardStub>();
+
+  // Stop the test when a clipboard event is received from the desktop process.
+  EXPECT_CALL(*clipboard_stub, InjectClipboardEvent(_))
+      .WillOnce(InvokeWithoutArgs(
+          this, &IpcDesktopEnvironmentTest::DeleteDesktopEnvironment));
+
+  // Start the input injector and screen capturer.
+  input_injector_->Start(std::move(clipboard_stub));
+  video_capturer_->Start(&desktop_capturer_callback_);
+
+  // Run the message loop until the desktop is attached.
+  setup_run_loop_->Run();
+  ASSERT_TRUE(remote_clipboard_stub_);
+
+  // Report a local clipboard event from the IO thread.
+  protocol::ClipboardEvent event;
+  event.set_mime_type(kMimeTypeTextUtf8);
+  event.set_data("a");
+  io_task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(&protocol::ClipboardStub::InjectClipboardEvent,
+                     base::Unretained(remote_clipboard_stub_.get()), event));
 }
 
 // Tests injection of key events.
@@ -1163,6 +1203,69 @@ TEST_F(IpcDesktopEnvironmentTest, OnTerminalDisconnectedWithError) {
 
   desktop_environment_factory_.reset();
   DestroyDesktopProcess();
+}
+
+TEST_F(IpcDesktopEnvironmentTest, AudioPacketDeliveryAndTeardownSafety) {
+  auto clipboard_stub = std::make_unique<protocol::MockClipboardStub>();
+  input_injector_->Start(std::move(clipboard_stub));
+
+  setup_run_loop_->Run();
+
+  int id = terminal_id_;
+  auto* connection = GetConnection(id);
+  ASSERT_NE(connection, nullptr);
+  DesktopSessionProxy* proxy = connection->desktop_session_proxy;
+  ASSERT_NE(proxy, nullptr);
+
+  auto audio_capturer = desktop_environment_->CreateAudioCapturer();
+  ASSERT_NE(audio_capturer, nullptr);
+
+  auto audio_task_runner = base::ThreadPool::CreateSingleThreadTaskRunner({});
+
+  base::test::TestFuture<std::unique_ptr<AudioPacket>> received_packet_future;
+  base::test::TestFuture<void> start_future;
+  audio_task_runner->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](AudioCapturer* capturer,
+                        AudioCapturer::PacketCapturedCallback callback,
+                        base::OnceClosure done) {
+                       capturer->Start(std::move(callback));
+                       std::move(done).Run();
+                     },
+                     audio_capturer.get(),
+                     received_packet_future.GetSequenceBoundRepeatingCallback(),
+                     start_future.GetSequenceBoundCallback()));
+  EXPECT_TRUE(start_future.Wait());
+
+  // Deliver an audio packet via DesktopSessionProxy::OnAudioPacket.
+  auto packet = std::make_unique<AudioPacket>();
+  packet->add_data("test_audio_data");
+  proxy->OnAudioPacket(std::move(packet));
+
+  auto received_packet = received_packet_future.Take();
+  ASSERT_NE(received_packet, nullptr);
+  ASSERT_EQ(received_packet->data_size(), 1);
+  EXPECT_EQ(received_packet->data(0), "test_audio_data");
+
+  // Destroy the audio capturer on the audio sequence as WebRTC does.
+  base::test::TestFuture<void> destroy_future;
+  audio_task_runner->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](std::unique_ptr<AudioCapturer> capturer, base::OnceClosure done) {
+            capturer.reset();
+            std::move(done).Run();
+          },
+          std::move(audio_capturer),
+          destroy_future.GetSequenceBoundCallback()));
+  EXPECT_TRUE(destroy_future.Wait());
+
+  // Stray audio packet arriving after capturer was destroyed.
+  auto stray_packet = std::make_unique<AudioPacket>();
+  stray_packet->add_data("stray_audio_data");
+  proxy->OnAudioPacket(std::move(stray_packet));
+
+  DeleteDesktopEnvironment();
 }
 
 }  // namespace remoting

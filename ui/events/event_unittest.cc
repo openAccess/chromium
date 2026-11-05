@@ -859,10 +859,10 @@ TEST(EventTest, ToStringNotEmpty) {
 #if BUILDFLAG(IS_WIN)
 namespace {
 
-const struct AltGraphEventTestCase {
+constexpr struct AltGraphEventTestCase {
   KeyboardCode key_code;
   KeyboardLayout layout;
-  std::vector<KeyboardCode> modifier_key_codes;
+  std::array<KeyboardCode, 4> modifier_key_codes;
   int expected_flags;
 } kAltGraphEventTestCases[] = {
     // US English -> AltRight never behaves as AltGraph.
@@ -903,23 +903,23 @@ class AltGraphEventTest
       : msg_({nullptr, message_type(),
               static_cast<WPARAM>(test_case().key_code)}) {
     // Save the current keyboard layout and state, to restore later.
-    CHECK(GetKeyboardState(original_keyboard_state_));
+    CHECK(GetKeyboardState(original_keyboard_state_.data()));
     original_keyboard_layout_ = GetKeyboardLayout(0);
 
     // Configure specified layout, and update keyboard state for specified
     // modifier keys.
     CHECK(ActivateKeyboardLayout(GetPlatformKeyboardLayout(test_case().layout),
                                  0));
-    BYTE test_keyboard_state[256] = {};
+    std::array<BYTE, 256> test_keyboard_state = {};
     for (const auto& key_code : test_case().modifier_key_codes)
-      UNSAFE_TODO(test_keyboard_state[key_code]) = 0x80;
-    CHECK(SetKeyboardState(test_keyboard_state));
+      test_keyboard_state[key_code] = 0x80;
+    CHECK(SetKeyboardState(test_keyboard_state.data()));
   }
 
   ~AltGraphEventTest() {
     // Restore the original keyboard layout & key states.
     CHECK(ActivateKeyboardLayout(original_keyboard_layout_, 0));
-    CHECK(SetKeyboardState(original_keyboard_state_));
+    CHECK(SetKeyboardState(original_keyboard_state_.data()));
   }
 
  protected:
@@ -929,7 +929,7 @@ class AltGraphEventTest
   }
 
   const CHROME_MSG msg_;
-  BYTE original_keyboard_state_[256] = {};
+  std::array<BYTE, 256> original_keyboard_state_ = {};
   HKL original_keyboard_layout_ = nullptr;
 };
 
@@ -1240,6 +1240,98 @@ TEST(EventTest, CreateCharcterEvent) {
   EXPECT_EQ(0x5A, key_event.GetCharacter());
   EXPECT_EQ(VKEY_Z, key_event.key_code());
   EXPECT_EQ(EF_NONE, key_event.flags());
+}
+
+TEST(EventTest, GestureEventDetailsRailingGetters) {
+  // GestureScrollBegin - Horizontal
+  {
+    GestureEventDetails details(EventType::kGestureScrollBegin, 10.0f, 20.0f);
+    details.set_scroll_begin_rails_mode(GestureScrollRailsMode::kHorizontal);
+    EXPECT_EQ(10.0f, details.scroll_x_hint());
+    EXPECT_EQ(0.0f, details.scroll_y_hint());
+    EXPECT_EQ(10.0f, details.scroll_x_hint_unconstrained());
+    EXPECT_EQ(20.0f, details.scroll_y_hint_unconstrained());
+  }
+
+  // GestureScrollBegin - Vertical
+  {
+    GestureEventDetails details(EventType::kGestureScrollBegin, 10.0f, 20.0f);
+    details.set_scroll_begin_rails_mode(GestureScrollRailsMode::kVertical);
+    EXPECT_EQ(0.0f, details.scroll_x_hint());
+    EXPECT_EQ(20.0f, details.scroll_y_hint());
+    EXPECT_EQ(10.0f, details.scroll_x_hint_unconstrained());
+    EXPECT_EQ(20.0f, details.scroll_y_hint_unconstrained());
+  }
+
+  // GestureScrollBegin - None
+  {
+    GestureEventDetails details(EventType::kGestureScrollBegin, 10.0f, 20.0f);
+    details.set_scroll_begin_rails_mode(GestureScrollRailsMode::kNone);
+    EXPECT_EQ(10.0f, details.scroll_x_hint());
+    EXPECT_EQ(20.0f, details.scroll_y_hint());
+    EXPECT_EQ(10.0f, details.scroll_x_hint_unconstrained());
+    EXPECT_EQ(20.0f, details.scroll_y_hint_unconstrained());
+  }
+
+  // GestureScrollUpdate - Horizontal
+  {
+    GestureEventDetails details(EventType::kGestureScrollUpdate, 15.0f, 25.0f);
+    details.set_scroll_update_rails_mode(GestureScrollRailsMode::kHorizontal);
+    EXPECT_EQ(15.0f, details.scroll_x());
+    EXPECT_EQ(0.0f, details.scroll_y());
+    EXPECT_EQ(15.0f, details.scroll_x_unconstrained());
+    EXPECT_EQ(25.0f, details.scroll_y_unconstrained());
+  }
+
+  // GestureScrollUpdate - Vertical
+  {
+    GestureEventDetails details(EventType::kGestureScrollUpdate, 15.0f, 25.0f);
+    details.set_scroll_update_rails_mode(GestureScrollRailsMode::kVertical);
+    EXPECT_EQ(0.0f, details.scroll_x());
+    EXPECT_EQ(25.0f, details.scroll_y());
+    EXPECT_EQ(15.0f, details.scroll_x_unconstrained());
+    EXPECT_EQ(25.0f, details.scroll_y_unconstrained());
+  }
+
+  // GestureScrollUpdate - None
+  {
+    GestureEventDetails details(EventType::kGestureScrollUpdate, 15.0f, 25.0f);
+    details.set_scroll_update_rails_mode(GestureScrollRailsMode::kNone);
+    EXPECT_EQ(15.0f, details.scroll_x());
+    EXPECT_EQ(25.0f, details.scroll_y());
+    EXPECT_EQ(15.0f, details.scroll_x_unconstrained());
+    EXPECT_EQ(25.0f, details.scroll_y_unconstrained());
+  }
+
+  // ScrollFlingStart - Horizontal
+  {
+    GestureEventDetails details(EventType::kScrollFlingStart, 100.0f, 200.0f);
+    details.set_fling_rails_mode(GestureScrollRailsMode::kHorizontal);
+    EXPECT_EQ(100.0f, details.velocity_x());
+    EXPECT_EQ(0.0f, details.velocity_y());
+    EXPECT_EQ(100.0f, details.velocity_x_unconstrained());
+    EXPECT_EQ(200.0f, details.velocity_y_unconstrained());
+  }
+
+  // ScrollFlingStart - Vertical
+  {
+    GestureEventDetails details(EventType::kScrollFlingStart, 100.0f, 200.0f);
+    details.set_fling_rails_mode(GestureScrollRailsMode::kVertical);
+    EXPECT_EQ(0.0f, details.velocity_x());
+    EXPECT_EQ(200.0f, details.velocity_y());
+    EXPECT_EQ(100.0f, details.velocity_x_unconstrained());
+    EXPECT_EQ(200.0f, details.velocity_y_unconstrained());
+  }
+
+  // ScrollFlingStart - None
+  {
+    GestureEventDetails details(EventType::kScrollFlingStart, 100.0f, 200.0f);
+    details.set_fling_rails_mode(GestureScrollRailsMode::kNone);
+    EXPECT_EQ(100.0f, details.velocity_x());
+    EXPECT_EQ(200.0f, details.velocity_y());
+    EXPECT_EQ(100.0f, details.velocity_x_unconstrained());
+    EXPECT_EQ(200.0f, details.velocity_y_unconstrained());
+  }
 }
 
 }  // namespace ui

@@ -15,7 +15,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/desks_storage/core/desk_model.h"
 #include "components/desks_storage/core/desk_sync_service.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/time.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
 #include "components/sync/protocol/workspace_desk_specifics.pb.h"
@@ -67,11 +66,6 @@ class SingleClientWorkspaceDeskSyncTest
   SingleClientWorkspaceDeskSyncTest() : SyncTest(SINGLE_CLIENT) {
     kTestUuid1_ =
         base::Uuid::ParseCaseInsensitive(base::StringPrintf(kUuidFormat, 1));
-
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      features_.InitAndEnableFeature(
-          syncer::kReplaceSyncPromosWithSignInPromos);
-    }
   }
 
   SingleClientWorkspaceDeskSyncTest(const SingleClientWorkspaceDeskSyncTest&) =
@@ -106,7 +100,6 @@ class SingleClientWorkspaceDeskSyncTest
   base::Uuid kTestUuid1_;
 
  private:
-  base::test::ScopedFeatureList features_;
   base::SimpleTestClock clock_;
 };
 
@@ -147,11 +140,12 @@ IN_PROC_BROWSER_TEST_P(SingleClientWorkspaceDeskSyncTest,
 IN_PROC_BROWSER_TEST_P(SingleClientWorkspaceDeskSyncTest,
                        PRE_DownloadDeskTemplateWhenUpToDate) {
   ASSERT_TRUE(SetupSync());
-}
 
-IN_PROC_BROWSER_TEST_P(SingleClientWorkspaceDeskSyncTest,
-                       DownloadDeskTemplateWhenUpToDate) {
-  // Inject a test desk template to Sync.
+  // Simulate going offline and receiving a server-side desk template update
+  // while offline, so the invalidation is delivered upon browser restart in
+  // the main test.
+  DisableNetwork();
+
   sync_pb::EntitySpecifics specifics;
   WorkspaceDeskSpecifics* desk = specifics.mutable_workspace_desk();
   desk->CopyFrom(CreateWorkspaceDeskSpecifics(1, AdvanceAndGetTime()));
@@ -161,7 +155,10 @@ IN_PROC_BROWSER_TEST_P(SingleClientWorkspaceDeskSyncTest,
           "non_unique_name", kTestUuid1_.AsLowercaseString(), specifics,
           /*creation_time=*/syncer::TimeToProtoTime(AdvanceAndGetTime()),
           /*last_modified_time=*/syncer::TimeToProtoTime(AdvanceAndGetTime())));
+}
 
+IN_PROC_BROWSER_TEST_P(SingleClientWorkspaceDeskSyncTest,
+                       DownloadDeskTemplateWhenUpToDate) {
   ASSERT_TRUE(SetupClients());
   ASSERT_TRUE(DownloadStatusChecker(GetSyncService(0)).Wait());
 

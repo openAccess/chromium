@@ -27,15 +27,19 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/text_constants.h"
+#include "ui/views/border.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/metadata/view_factory.h"
@@ -124,15 +128,11 @@ class IOSPromoBubbleHeaderView : public views::View {
                     .SetHorizontalAlignment(
                         gfx::HorizontalAlignment::ALIGN_TO_HEAD))
             .Build());
+
+    SetBorder(views::CreateSolidSidedBorder(gfx::Insets::TLBR(0, 0, 1, 0),
+                                            ui::kColorSeparator));
   }
   ~IOSPromoBubbleHeaderView() override = default;
-
-  void OnThemeChanged() override {
-    views::View::OnThemeChanged();
-    SetBorder(views::CreateSolidSidedBorder(
-        gfx::Insets::TLBR(0, 0, 1, 0),
-        GetColorProvider()->GetColor(ui::kColorSeparator)));
-  }
 };
 
 BEGIN_METADATA(IOSPromoBubbleHeaderView)
@@ -162,7 +162,7 @@ std::unique_ptr<IOSPromoBubbleView> IOSPromoBubbleView::Create(
   auto* const anchor_element = params.anchor_element.get();
   return std::make_unique<IOSPromoBubbleView>(
       &browser_view, profile, promo_type, promo_bubble_type,
-      anchor_element->AsA<views::TrackedElementViews>()->view(),
+      views::BubbleAnchor(anchor_element),
       user_education::HelpBubbleViews::TranslateArrow(params.arrow));
 }
 
@@ -170,9 +170,9 @@ IOSPromoBubbleView::IOSPromoBubbleView(BrowserView* browser_view,
                                        Profile* profile,
                                        PromoType promo_type,
                                        BubbleType promo_bubble_type,
-                                       views::View* anchor_view,
+                                       views::BubbleAnchor anchor,
                                        views::BubbleBorder::Arrow arrow)
-    : views::BubbleDialogDelegateView(anchor_view, arrow),
+    : views::BubbleDialogDelegateView(anchor, arrow),
       browser_view_(browser_view),
       profile_(profile),
       promo_type_(promo_type),
@@ -283,23 +283,20 @@ bool IOSPromoBubbleView::Accept() {
       return false;
     }
     case BubbleType::kQRCode: {
-      content::OpenURLParams params(GURL(config_.qr_code_url),
-                                    content::Referrer(),
-                                    WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                    ui::PAGE_TRANSITION_LINK, false);
+      content::OpenURLParams params =
+          content::OpenURLParams::CreateBrowserInitiated(
+              GURL(config_.qr_code_url),
+              ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+              ui::PAGE_TRANSITION_LINK);
 
       if (open_url_callback_) {
         open_url_callback_.Run(params);
         return true;
       }
 
-      if (views::View* anchor_view = GetAnchorView()) {
-        if (BrowserView* browser_view =
-                BrowserView::GetBrowserViewForNativeWindow(
-                    anchor_view->GetWidget()->GetNativeWindow())) {
-          browser_view->browser()->OpenURL(params,
-                                           /*navigation_handle_callback=*/{});
-        }
+      if (browser_view_) {
+        browser_view_->browser()->OpenURL(params,
+                                          /*navigation_handle_callback=*/{});
       }
       return true;
     }

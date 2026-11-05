@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
@@ -157,79 +158,6 @@ TEST_F(SupervisedUserMetricsServiceTest,
                                      /*expected_count=*/0);
 }
 
-using FieldTrialName = std::string;
-// Test suite to check correct association with synthetic field trials
-class SupervisedUserMetricsServiceFieldTrialTest
-    : public testing::TestWithParam<FieldTrialName> {
- protected:
-  ~SupervisedUserMetricsServiceFieldTrialTest() override {
-    test_environment_->Shutdown();
-  }
-
-  void ToggleContentFilter(bool enabled) {
-    CHECK(test_environment_)
-        << "Create test environment first with CreateTestEnvironment().";
-
-    if (GetFieldTrialName() == "AndroidDeviceSearchContentFilters") {
-      test_environment_->device_parental_controls()
-          .SetSearchContentFiltersEnabledForTesting(enabled);
-      return;
-    } else if (GetFieldTrialName() == "AndroidDeviceBrowserContentFilters") {
-      test_environment_->device_parental_controls()
-          .SetBrowserContentFiltersEnabledForTesting(enabled);
-      return;
-    }
-
-    NOTREACHED() << "Unsupported field trial name: " << GetFieldTrialName();
-  }
-
-  void CreateTestEnvironment(std::unique_ptr<SynteticFieldTrialDelegateMock>
-                                 synthetic_field_trial_delegate) {
-    test_environment_ = std::make_unique<SupervisedUserTestEnvironment>(
-        std::move(synthetic_field_trial_delegate));
-  }
-
-  static FieldTrialName GetFieldTrialName() { return GetParam(); }
-
- private:
-  base::test::TaskEnvironment task_environment;
-  std::unique_ptr<SupervisedUserTestEnvironment> test_environment_;
-};
-
-TEST_P(SupervisedUserMetricsServiceFieldTrialTest,
-       SyntheticFieldTrialRegistered) {
-  // Register calls before environment's created, because the metrics service
-  // calls field trial registration on creation.
-  auto mock = std::make_unique<SynteticFieldTrialDelegateMock>();
-  // Current filter it disabled on mock registration (when the environment is
-  // created), and then once for each toggle.
-  EXPECT_CALL(*mock, RegisterSyntheticFieldTrial(Eq(GetParam()), "Disabled"))
-      .Times(2);
-  // Tested filter is registered as enabled when it's toggled on.
-  EXPECT_CALL(*mock, RegisterSyntheticFieldTrial(Eq(GetParam()), "Enabled"))
-      .Times(1);
-
-  // Other filter is interacted similarly: subscribe, enable, disable.
-  EXPECT_CALL(*mock, RegisterSyntheticFieldTrial(Ne(GetParam()), _)).Times(3);
-  CreateTestEnvironment(std::move(mock));
-
-  // This cycles all possible combinations of states for each filter:
-  // off -> on -> off.
-  // There should be a all-disabled initial registration when the metrics
-  // service is created.
-  ToggleContentFilter(/*enabled=*/true);
-  ToggleContentFilter(/*enabled=*/false);
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    SupervisedUserMetricsServiceFieldTrialTest,
-    testing::Values("AndroidDeviceSearchContentFilters",
-                    "AndroidDeviceBrowserContentFilters"),
-    [](const testing::TestParamInfo<FieldTrialName>& info) {
-      return info.param;
-    });
-
 #endif  // BUILDFLAG(IS_ANDROID)
 
 struct PeriodicalWebFilterTypeTestParams {
@@ -284,31 +212,34 @@ TEST_P(SupervisedUserMetricsServiceWebFilterTypePeriodicalTest,
   }
 }
 
-const PeriodicalWebFilterTypeTestParams kPeriodicalWebFilterTypeTestParams[] = {
-    {"Unsupervised",
-     InitialSupervisionState::kUnsupervised,
-     {kWebFilterTypeHistogramName,
+std::vector<PeriodicalWebFilterTypeTestParams>
+GetPeriodicalWebFilterTypeTestParams() {
+  return {
+      {"Unsupervised",
+       InitialSupervisionState::kUnsupervised,
+       {kWebFilterTypeHistogramName,
 #if BUILDFLAG(IS_ANDROID)
-      kWebFilterTypeForLocallySupervisedHistogramName,
+        kWebFilterTypeForLocallySupervisedHistogramName,
 #endif  // BUILDFLAG(IS_ANDROID)
-      kWebFilterTypeForFamilyUserHistogramName},
-     /*expect_emissions=*/false},
-    {"SupervisedWithParentalControls",
-     InitialSupervisionState::kFamilyLinkDefault,
-     {kWebFilterTypeHistogramName, kWebFilterTypeForFamilyUserHistogramName},
-     /*expect_emissions=*/true},
+        kWebFilterTypeForFamilyUserHistogramName},
+       /*expect_emissions=*/false},
+      {"SupervisedWithParentalControls",
+       InitialSupervisionState::kFamilyLinkDefault,
+       {kWebFilterTypeHistogramName, kWebFilterTypeForFamilyUserHistogramName},
+       /*expect_emissions=*/true},
 #if BUILDFLAG(IS_ANDROID)
-    {"SupervisedLocally",
-     InitialSupervisionState::kSupervisedWithAllContentFilters,
-     {kWebFilterTypeForLocallySupervisedHistogramName},
-     /*expect_emissions=*/true},
+      {"SupervisedLocally",
+       InitialSupervisionState::kSupervisedWithAllContentFilters,
+       {kWebFilterTypeForLocallySupervisedHistogramName},
+       /*expect_emissions=*/true},
 #endif  // BUILDFLAG(IS_ANDROID)
-};
+  };
+}
 
 INSTANTIATE_TEST_SUITE_P(
     ,
     SupervisedUserMetricsServiceWebFilterTypePeriodicalTest,
-    testing::ValuesIn(kPeriodicalWebFilterTypeTestParams),
+    testing::ValuesIn(GetPeriodicalWebFilterTypeTestParams()),
     [](const testing::TestParamInfo<
         SupervisedUserMetricsServiceWebFilterTypePeriodicalTest::ParamType>&
            info) { return info.param.test_name; });

@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-
 #include "media/gpu/windows/d3d12_video_decoder_wrapper.h"
 
 #include <Windows.h>
@@ -19,19 +18,19 @@
 #include "base/notreached.h"
 #include "base/trace_event/trace_event.h"
 #include "base/win/scoped_handle.h"
-#include "media/gpu/windows/d3d11_picture_buffer.h"
 #include "media/gpu/windows/d3d12_fence.h"
 #include "media/gpu/windows/d3d12_helpers.h"
 #include "media/gpu/windows/d3d12_video_decode_task.h"
+#include "media/gpu/windows/d3d_picture_buffer.h"
 #include "media/gpu/windows/scoped_d3d_buffers.h"
 #include "media/gpu/windows/supported_profile_helpers.h"
 
-#define RETURN_IF_FAILED(message, status_code, hr)                            \
-  do {                                                                        \
-    if (FAILED(hr)) {                                                         \
-      media_log_->NotifyError<D3D11StatusTraits>({status_code, message, hr}); \
-      return false;                                                           \
-    }                                                                         \
+#define RETURN_IF_FAILED(message, status_code, hr)                          \
+  do {                                                                      \
+    if (FAILED(hr)) {                                                       \
+      media_log_->NotifyError<D3DStatusTraits>({status_code, message, hr}); \
+      return false;                                                         \
+    }                                                                       \
   } while (0)
 
 #define STATIC_RETURN_IF_FAILED(hr, message)       \
@@ -81,44 +80,37 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
     bitstream_buffer_.reset();
   }
 
-  D3D11Status SetPictureBuffers(
-      base::span<scoped_refptr<D3D11PictureBuffer>> picture_buffers) override {
+  D3DStatus SetPictureBuffers(
+      base::span<scoped_refptr<D3DPictureBuffer>> picture_buffers) override {
     reference_frame_list_.SetPictureBuffers(picture_buffers);
     for (size_t i = 0; i < picture_buffers.size(); ++i) {
-      auto result = picture_buffers[i]->ToD3D12Resource(device_.Get());
+      auto result = picture_buffers[i]->GetOrCreateD3D12Resource(device_.Get());
       if (!result.has_value()) {
         return std::move(result).error();
       }
       reference_frame_list_.emplace(i, std::move(result).value(),
                                     picture_buffers[i]->array_slice());
     }
-    return D3D11StatusCode::kOk;
+    return D3DStatusCode::kOk;
   }
 
-  bool WaitForFrameBegins(D3D11PictureBuffer* output_picture) override {
+  bool WaitForFrameBegins(D3DPictureBuffer* output_picture) override {
     TRACE_EVENT("gpu", "D3D12VideoDecoderWrapperImpl::WaitForFrameBegins");
     Reset();
 
-    auto result = output_picture->AcquireOutputView();
-    if (!result.has_value()) {
-      media_log_->NotifyError<D3D11StatusTraits>(std::move(result).error());
+    D3DStatus result = output_picture->BeginSharedImageAccess();
+    if (!result.is_ok()) {
+      media_log_->NotifyError<D3DStatusTraits>(std::move(result));
       return false;
     }
 
-    ComD3D11Texture2D d3d11_texture2d = output_picture->Texture();
-    D3D11_TEXTURE2D_DESC desc;
-    d3d11_texture2d->GetDesc(&desc);
-    CHECK(desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE)
-        << "Cannot create shared handle for d3d11 texture2d without "
-           "D3D11_RESOURCE_MISC_SHARED_NTHANDLE flag.";
-
-    auto d3d12_resource_or_error =
-        output_picture->ToD3D12Resource(device_.Get());
-    if (!d3d12_resource_or_error.has_value()) {
+    auto d3d12_resource =
+        output_picture->GetOrCreateD3D12Resource(device_.Get());
+    if (!d3d12_resource.has_value()) {
       return false;
     }
     output_stream_arguments_ = {
-        .pOutputTexture2D = std::move(d3d12_resource_or_error).value(),
+        .pOutputTexture2D = std::move(d3d12_resource).value(),
         .OutputSubresource = output_picture->array_slice(),
     };
 
@@ -129,8 +121,8 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
     // can reuse the buffers. In this way we have at most |max_decode_requests|
     // ongoing decoding tasks.
     if (bool ok = task->WaitForCompletion(); !ok) {
-      media_log_->NotifyError<D3D11StatusTraits>(
-          {D3D11StatusCode::kDecoderBeginFrameFailed,
+      media_log_->NotifyError<D3DStatusTraits>(
+          {D3DStatusCode::kDecoderBeginFrameFailed,
            "WaitForCompletion failed"});
       return false;
     }
@@ -191,8 +183,8 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator> command_allocator =
         tasks_[current_task_index_].ResetAndGetCommandAllocator(device_.Get());
     if (!command_allocator) {
-      media_log_->NotifyError<D3D11StatusTraits>(
-          {D3D11StatusCode::kDecoderBeginFrameFailed,
+      media_log_->NotifyError<D3DStatusTraits>(
+          {D3DStatusCode::kDecoderBeginFrameFailed,
            "ResetAndGetCommandAllocator failed"});
       return false;
     }
@@ -203,13 +195,13 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
                                       command_allocator.Get(), nullptr,
                                       IID_PPV_ARGS(&command_list_));
       RETURN_IF_FAILED("Failed to create command list",
-                       D3D11StatusCode::kDecoderBeginFrameFailed, hr);
+                       D3DStatusCode::kDecoderBeginFrameFailed, hr);
     } else {
       TRACE_EVENT("gpu", "ResetCommandList");
       hr = command_list_->Reset(command_allocator.Get());
     }
     RETURN_IF_FAILED("Failed to reset command list",
-                     D3D11StatusCode::kDecoderBeginFrameFailed, hr);
+                     D3DStatusCode::kDecoderBeginFrameFailed, hr);
 
     auto barriers = reference_frame_list_.GetTransitionsToDecodeState(
         output_stream_arguments_.pOutputTexture2D,
@@ -226,7 +218,7 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
 
     hr = command_list_->Close();
     RETURN_IF_FAILED("Failed to close command list",
-                     D3D11Status::Codes::kSubmitDecoderBuffersFailed, hr);
+                     D3DStatus::Codes::kSubmitDecoderBuffersFailed, hr);
 
     ID3D12CommandList* command_lists[] = {command_list_.Get()};
     command_queue_->ExecuteCommandLists(std::size(command_lists),
@@ -234,7 +226,7 @@ class D3D12VideoDecoderWrapperImpl : public D3D12VideoDecoderWrapper {
 
     auto fence_value_or_error = fence_->Signal(*command_queue_.Get());
     if (!fence_value_or_error.has_value()) {
-      media_log_->NotifyError<D3D11StatusTraits>(
+      media_log_->NotifyError<D3DStatusTraits>(
           std::move(fence_value_or_error).error());
       return false;
     }

@@ -16,21 +16,21 @@ import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.RecentlyClosedEntriesManager;
 import org.chromium.chrome.browser.app.appmenu.AppMenuItemTheme;
 import org.chromium.chrome.browser.app.appmenu.AppMenuItemUtils;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
-import org.chromium.chrome.browser.ntp.RecentlyClosedBulkEvent;
-import org.chromium.chrome.browser.ntp.RecentlyClosedEntry;
-import org.chromium.chrome.browser.ntp.RecentlyClosedGroup;
-import org.chromium.chrome.browser.ntp.RecentlyClosedTab;
-import org.chromium.chrome.browser.ntp.RecentlyClosedWindow;
 import org.chromium.chrome.browser.ntp.TitleUtil;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSession;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSessionTab;
 import org.chromium.chrome.browser.recent_tabs.ForeignSessionHelper.ForeignSessionWindow;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedBulkEvent;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedEntriesManager;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedEntry;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedGroup;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedTab;
+import org.chromium.chrome.browser.recent_tabs.RecentlyClosedWindow;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuItemProperties;
@@ -53,7 +53,8 @@ public class HistoryItemBuilder implements Destroyable {
     private final AppMenuItemTheme mAppMenuItemTheme;
     private final TabModelSelector mTabModelSelector;
     private final Supplier<FaviconHelper> mFaviconHelperSupplier;
-    private final Supplier<RecentlyClosedEntriesManager> mRecentlyClosedEntriesManagerSupplier;
+    private final Supplier<@Nullable RecentlyClosedEntriesManager>
+            mRecentlyClosedEntriesManagerSupplier;
     private final boolean mIsMenuIconAtStart;
     private final boolean mShouldShowIconBeforeItem;
     private final RoundedIconGenerator mRoundedIconGenerator;
@@ -79,7 +80,7 @@ public class HistoryItemBuilder implements Destroyable {
             AppMenuItemTheme appMenuItemTheme,
             TabModelSelector tabModelSelector,
             Supplier<FaviconHelper> faviconHelperSupplier,
-            Supplier<RecentlyClosedEntriesManager> recentlyClosedEntriesManagerSupplier,
+            Supplier<@Nullable RecentlyClosedEntriesManager> recentlyClosedEntriesManagerSupplier,
             boolean isMenuIconAtStart,
             boolean shouldShowIconBeforeItem,
             RoundedIconGenerator roundedIconGenerator,
@@ -415,11 +416,7 @@ public class HistoryItemBuilder implements Destroyable {
                         mContext,
                         mAppMenuItemTheme,
                         R.id.recent_entry_menu_item,
-                        getRecentEntrySubmenuTitle(
-                                window.getTitle().equals(RecentlyClosedWindow.WINDOW_DEFAULT_TITLE)
-                                        ? null
-                                        : window.getTitle(),
-                                window.getTabCount()),
+                        getRecentEntrySubmenuTitle(window.getTitle(), window.getTabCount()),
                         mShouldShowIconBeforeItem ? R.drawable.ic_window_24dp : Resources.ID_NULL,
                         submenuItemsSupplier,
                         mIsMenuIconAtStart);

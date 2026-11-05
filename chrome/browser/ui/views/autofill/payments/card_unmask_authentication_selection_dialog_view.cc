@@ -10,6 +10,7 @@
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
+#include "chrome/browser/ui/views/extensions/security_dialog_tracker.h"
 #include "components/autofill/core/browser/ui/payments/card_unmask_authentication_selection_dialog_controller.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/tabs/public/tab_interface.h"
@@ -109,7 +110,7 @@ void CardUnmaskAuthenticationSelectionDialogView::UpdateContent() {
 }
 
 bool CardUnmaskAuthenticationSelectionDialogView::Accept() {
-  DCHECK(!controller_->GetChallengeOptions().empty());
+  CHECK(!controller_->GetChallengeOptions().empty(), base::NotFatalUntil::M162);
   controller_->OnOkButtonClicked();
   return false;
 }
@@ -126,7 +127,7 @@ void CardUnmaskAuthenticationSelectionDialogView::AddedToWidget() {
 }
 
 void CardUnmaskAuthenticationSelectionDialogView::InitViews() {
-  DCHECK(children().empty());
+  CHECK(children().empty(), base::NotFatalUntil::M162);
   // Sets the layout manager for the top level view.
   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets(),
@@ -284,11 +285,13 @@ CreateAndShowCardUnmaskAuthenticationSelectionDialog(
   CardUnmaskAuthenticationSelectionDialogView* dialog_view =
       new CardUnmaskAuthenticationSelectionDialogView(controller);
   auto* tab_interface = tabs::TabInterface::GetFromContents(web_contents);
-  tab_interface->GetTabFeatures()
-      ->tab_dialog_manager()
-      ->CreateAndShowDialog(dialog_view,
-                            std::make_unique<tabs::TabDialogManager::Params>())
-      .release();
+  views::Widget* widget =
+      tab_interface->GetTabFeatures()
+          ->tab_dialog_manager()
+          ->CreateAndShowDialog(
+              dialog_view, std::make_unique<tabs::TabDialogManager::Params>())
+          .release();
+  extensions::SecurityDialogTracker::GetInstance()->AddSecurityDialog(widget);
   return dialog_view;
 }
 

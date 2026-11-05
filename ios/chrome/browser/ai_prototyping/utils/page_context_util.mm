@@ -15,13 +15,15 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
 #import "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/default_page_context_wrapper_factory.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper_factory.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_observer.h"
 
 namespace {
 // Limit the lengh of sanitized url used as filename to prevent error from
 // filename being too long.
-NSUInteger kUrlLengthLimit = 50;
+constexpr NSUInteger kUrlLengthLimit = 50;
 
 // Self-deleting observer that waits for a page to finish loading.
 class SelfDestructivePageLoadObserver : public web::WebStateObserver {
@@ -132,6 +134,26 @@ base::FilePath GetDirectoryPath() {
   return base::apple::NSStringToFilePath([NSSearchPathForDirectoriesInDomains(
       NSDocumentDirectory, NSAllDomainsMask, YES) firstObject]);
 }
+
+// Sanitizes given `url` to be used as file name.
+NSString* SanitizeUrl(NSString* url) {
+  NSCharacterSet* illegalFileNameCharacters =
+      [NSCharacterSet characterSetWithCharactersInString:@"/\\?%*|\"<>:"];
+  return [[url componentsSeparatedByCharactersInSet:illegalFileNameCharacters]
+      componentsJoinedByString:@""];
+}
+
+std::string FileNameForPageContext(
+    const optimization_guide::proto::PageContext& page_context) {
+  NSString* urlString = base::SysUTF8ToNSString(page_context.url());
+  if ([urlString length] > kUrlLengthLimit) {
+    urlString = [urlString substringToIndex:kUrlLengthLimit];
+  }
+  NSString* fileName =
+      [SanitizeUrl(urlString) stringByAppendingString:@".txtpb"];
+  return base::SysNSStringToUTF8(fileName);
+}
+
 }  // namespace
 
 SavePageContextResult::SavePageContextResult() = default;
@@ -143,8 +165,8 @@ SavePageContextResult& SavePageContextResult::operator=(
 PageContextWrapper* CreatePageContextWrapper(
     web::WebState* web_state,
     bool rich_extraction,
-    base::OnceCallback<void(PageContextWrapperCallbackResponse)>
-        completion_callback) {
+    PageContextWrapperFactory::CompletionCallback completion,
+    PageContextWrapperFactory* factory) {
   PageContextWrapperConfigBuilder builder;
   if (rich_extraction) {
     builder.SetUseRichExtraction(true)
@@ -152,11 +174,11 @@ PageContextWrapper* CreatePageContextWrapper(
         .SetGraftCrossOriginFrameContent(true)
         .SetExtractPaidContent(true);
   }
-  PageContextWrapperConfig config = builder.Build();
-  PageContextWrapper* page_context_wrapper = [[PageContextWrapper alloc]
-        initWithWebState:web_state
-                  config:config
-      completionCallback:std::move(completion_callback)];
+  if (!factory) {
+    factory = &DefaultPageContextWrapperFactory::GetInstance();
+  }
+  PageContextWrapper* page_context_wrapper =
+      factory->Create(web_state, builder.Build(), std::move(completion));
   [page_context_wrapper setShouldGetAnnotatedPageContent:YES];
   [page_context_wrapper setShouldGetSnapshot:YES];
   [page_context_wrapper setShouldGetFullPagePDF:YES];
@@ -209,22 +231,4 @@ SavePageContextResult SaveSerializedPageContextToDisk(
   std::string file_name = FileNameForPageContext(page_context);
   base::FilePath file_path = directory_path.Append(file_name);
   return SaveProtoToPath(page_context, file_path);
-}
-
-std::string FileNameForPageContext(
-    const optimization_guide::proto::PageContext& page_context) {
-  NSString* urlString = base::SysUTF8ToNSString(page_context.url());
-  if ([urlString length] > kUrlLengthLimit) {
-    urlString = [urlString substringToIndex:kUrlLengthLimit];
-  }
-  NSString* fileName =
-      [SanitizeUrl(urlString) stringByAppendingString:@".txtpb"];
-  return base::SysNSStringToUTF8(fileName);
-}
-
-NSString* SanitizeUrl(NSString* url) {
-  NSCharacterSet* illegalFileNameCharacters =
-      [NSCharacterSet characterSetWithCharactersInString:@"/\\?%*|\"<>:"];
-  return [[url componentsSeparatedByCharactersInSet:illegalFileNameCharacters]
-      componentsJoinedByString:@""];
 }

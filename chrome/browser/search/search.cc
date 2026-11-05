@@ -7,6 +7,7 @@
 #include <stddef.h>
 
 #include <string>
+#include <string_view>
 
 #include "base/check_deref.h"
 #include "base/feature_list.h"
@@ -32,6 +33,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/webui/buildflags.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -39,17 +41,20 @@
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/common/webui_url_constants.h"
 #else
+#include "chrome/browser/ui/webui/new_tab_page_third_party/new_tab_page_third_party_ui.h"
+#endif
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
 #include "chrome/browser/search/instant_service.h"
 #include "chrome/browser/search/instant_service_factory.h"
 #include "chrome/browser/ui/webui/new_tab_page/new_tab_page_ui.h"
-#include "chrome/browser/ui/webui/new_tab_page_third_party/new_tab_page_third_party_ui.h"
 #endif
 
 namespace search {
 
 namespace {
 
-const char kServiceWorkerFileName[] = "newtab-serviceworker.js";
+constexpr std::string_view kServiceWorkerFileName = "newtab-serviceworker.js";
 
 bool MatchesOrigin(const GURL& my_url, const GURL& other_url) {
   return my_url.scheme() == other_url.scheme() &&
@@ -120,13 +125,11 @@ bool IsMatchingServiceWorker(const GURL& my_url, const GURL& document_url) {
   }
 
   // The paths up to the filenames should be the same.
-  std::string my_path_without_filename = my_url.GetPath();
-  my_path_without_filename.erase(my_path_without_filename.length() -
-                                 my_filename.length());
+  std::string_view my_path_without_filename = my_url.path();
+  my_path_without_filename.remove_suffix(my_filename.length());
   std::string document_filename = document_url.ExtractFileName();
-  std::string document_path_without_filename = document_url.GetPath();
-  document_path_without_filename.erase(document_path_without_filename.length() -
-                                       document_filename.length());
+  std::string_view document_path_without_filename = document_url.path();
+  document_path_without_filename.remove_suffix(document_filename.length());
 
   return my_path_without_filename == document_path_without_filename;
 }
@@ -172,10 +175,26 @@ struct NewTabURLDetails {
       return NewTabURLDetails(GURL(), NEW_TAB_URL_INCOGNITO);
     }
 
-#if BUILDFLAG(IS_ANDROID)
-    const GURL local_url;
-#else
     const bool default_is_google = DefaultSearchProviderIsGoogle(profile);
+
+#if BUILDFLAG(IS_ANDROID)
+    const bool is_desktop_android = IsWebUiNtpEnabledForDesktopAndroid();
+    GURL local_url(
+        is_desktop_android ? chrome::ChromeUINewTabPageURLAsGURL() : GURL());
+    if (is_desktop_android) {
+      if (default_is_google) {
+        return NewTabURLDetails(local_url, NEW_TAB_URL_VALID);
+      } else {
+        // If the WebUI NTP 3PDSE flag is not enabled, then fallback to using
+        // the native Java NTP.
+        if (!base::FeatureList::IsEnabled(chrome::android::kUseWebUiNtp3PDSE)) {
+          return NewTabURLDetails(GURL(chrome::kChromeUINativeNewTabURL),
+                                  NEW_TAB_URL_VALID);
+        }
+        local_url = GURL(chrome::kChromeUINewTabPageThirdPartyURL);
+      }
+    }
+#else
     const GURL local_url(default_is_google
                              ? chrome::ChromeUINewTabPageURLAsGURL()
                              : GURL(chrome::kChromeUINewTabPageThirdPartyURL));
@@ -214,9 +233,7 @@ struct NewTabURLDetails {
 
 bool IsRenderedInInstantProcess(content::WebContents* contents,
                                 Profile* profile) {
-#if BUILDFLAG(IS_ANDROID)
-  return false;
-#else
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
   content::RenderProcessHost* process_host =
       contents->GetPrimaryMainFrame()->GetProcess();
   if (!process_host) {
@@ -230,6 +247,8 @@ bool IsRenderedInInstantProcess(content::WebContents* contents,
   }
 
   return instant_service->IsInstantProcess(process_host->GetDeprecatedID());
+#else
+  return false;
 #endif
 }
 
@@ -258,8 +277,14 @@ bool IsNTPURL(const GURL& url) {
     return true;
   }
 #if BUILDFLAG(IS_ANDROID)
-  return (url.SchemeIs(chrome::kChromeNativeScheme) &&
-          url.host() == chrome::kChromeUINewTabHost);
+  if (IsWebUiNtpEnabledForDesktopAndroid()) {
+    if (MatchesOrigin(url, chrome::ChromeUINewTabPageURLAsGURL()) ||
+        MatchesOrigin(url, GURL(chrome::kChromeUINewTabPageThirdPartyURL))) {
+      return true;
+    }
+  }
+  return url.SchemeIs(chrome::kChromeNativeScheme) &&
+         url.host() == chrome::kChromeUINewTabHost;
 #else
   return NewTabPageUI::IsNewTabPageOrigin(url) ||
          NewTabPageThirdPartyUI::IsNewTabPageOrigin(url);
@@ -322,8 +347,6 @@ bool IsSplitViewNewTabPage(const GURL& url) {
 GURL GetNewTabPageURL(Profile* profile) {
   return NewTabURLDetails::ForProfile(profile).url;
 }
-
-#if !BUILDFLAG(IS_ANDROID)
 
 bool ShouldAssignURLToInstantRenderer(const GURL& url, Profile* profile) {
   if (!url.is_valid() || !profile || !IsInstantExtendedAPIEnabled() ||
@@ -413,7 +436,7 @@ bool HandleNewTabURLReverseRewrite(GURL* url,
 
   // Do nothing in incognito.
   Profile* profile = Profile::FromBrowserContext(browser_context);
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   if (profile->IsOffTheRecord()) {
     return false;
   }
@@ -425,8 +448,6 @@ bool HandleNewTabURLReverseRewrite(GURL* url,
 
   return false;
 }
-
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 const void* const kIsNTPProcessKey = &kIsNTPProcessKey;
 

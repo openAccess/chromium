@@ -13,6 +13,8 @@
 #include "base/logging.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/pass_key.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "ui/base/interaction/element_events.h"
@@ -123,6 +125,22 @@ gfx::Rect TrackedElementWebUI::GetBoundsInWebContents() const {
   if (result.height() < 1) {
     result.set_height(1);
   }
+
+  if (visible()) {
+    content::RenderFrameHost* const rfh = handler_->render_frame_host();
+    if (rfh && rfh->GetParentOrOuterDocument()) {
+      // Out-of-process subframes (OOPIFs) report element bounds relative to
+      // their own RenderWidgetHostView origin. Offset by the subframe view's
+      // position relative to the WebContents container.
+      content::RenderWidgetHostView* const rfh_view = rfh->GetView();
+      content::WebContents* const contents = handler_->web_contents();
+      if (rfh_view && contents) {
+        result.Offset(rfh_view->GetViewBounds().OffsetFromOrigin() -
+                      contents->GetContainerBounds().OffsetFromOrigin());
+      }
+    }
+  }
+
   return result;
 }
 
@@ -160,7 +178,7 @@ std::string TrackedElementWebUI::ToString() const {
 
 scoped_refptr<TrackedElementWebUI::HighlightHandle>
 TrackedElementWebUI::GetOrMakeHighlightHandle() {
-  DCHECK(can_highlight_);
+  CHECK(can_highlight_, base::NotFatalUntil::M163);
 
   if (highlight_handle_) {
     return highlight_handle_.get();
@@ -174,7 +192,7 @@ TrackedElementWebUI::GetOrMakeHighlightHandle() {
 }
 
 void TrackedElementWebUI::ReleaseHighlightHandle() {
-  DCHECK(highlight_handle_);
+  CHECK(highlight_handle_, base::NotFatalUntil::M163);
   highlight_handle_ = nullptr;
   handler_->SetHighlightState(*this, false,
                               base::PassKey<TrackedElementWebUI>());
@@ -192,7 +210,7 @@ void TrackedElementWebUI::AddVisibilityLock() {
 }
 
 void TrackedElementWebUI::RemoveVisibilityLock() {
-  DCHECK_GT(visibility_lock_count_, 0);
+  CHECK_GT(visibility_lock_count_, 0, base::NotFatalUntil::M163);
   --visibility_lock_count_;
   UpdateEffectiveVisibility();
 }
@@ -231,12 +249,12 @@ void TrackedElementWebUI::UpdateEffectiveVisibility(bool bounds_changed) {
 }
 
 void TrackedElementWebUI::Activate() {
-  DCHECK(visible_);
+  CHECK(visible_, base::NotFatalUntil::M163);
   ui::ElementTracker::GetFrameworkDelegate()->NotifyElementActivated(this);
 }
 
 void TrackedElementWebUI::CustomEvent(ui::CustomElementEventType event_type) {
-  DCHECK(visible_);
+  CHECK(visible_, base::NotFatalUntil::M163);
   ui::ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(this,
                                                                 event_type);
 }

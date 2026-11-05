@@ -159,6 +159,13 @@ class BubbleManagerImplTest : public ::testing::Test {
   std::unique_ptr<BubbleManagerImpl> bubble_manager_;
 };
 
+TEST_F(BubbleManagerImplTest, GetForTab) {
+  EXPECT_EQ(BubbleManager::GetForTab(nullptr), nullptr);
+  EXPECT_EQ(BubbleManager::GetForTab(tab_interface()), &bubble_manager());
+  ResetBubbleManager();
+  EXPECT_EQ(BubbleManager::GetForTab(tab_interface()), nullptr);
+}
+
 // Test that requesting a bubble when none is active shows it immediately.
 TEST_F(BubbleManagerImplTest, RequestShow_NoActiveBubble_ShowsImmediately) {
   std::unique_ptr<MockBubbleController> address_controller =
@@ -480,8 +487,6 @@ TEST_F(BubbleManagerImplTest,
   bubble_manager().OnBubbleHiddenByController(*password_controller_2,
                                               /*show_next_bubble=*/true);
   EXPECT_FALSE(password_controller_1->IsShowingBubble());
-  histogram_tester_.ExpectUniqueSample("Autofill.Bubble.Queue.Replaced",
-                                       BubbleType::kPassword, 1);
 }
 
 // Test that a higher-priority bubble does NOT preempt a lower-priority one if

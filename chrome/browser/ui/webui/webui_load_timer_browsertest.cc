@@ -8,12 +8,14 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/prerender_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace {
@@ -31,7 +33,7 @@ IN_PROC_BROWSER_TEST_F(WebuiLoadTimerTest, Timers) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kTestUrl)));
   WebuiLoadTimer timer(browser()->tab_strip_model()->GetActiveWebContents(),
                        kDocumentInitialLoadUmaId, kDocumentLoadCompletedUmaId);
-  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(content::WaitForLoadStop(
       browser()->tab_strip_model()->GetActiveWebContents()));
 

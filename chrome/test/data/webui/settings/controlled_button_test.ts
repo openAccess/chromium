@@ -5,7 +5,6 @@
 // clang-format off
 import 'chrome://settings/lazy_load.js';
 
-import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import type {ControlledButtonElement} from 'chrome://settings/lazy_load.js';
 import {PrefService, PrefsBrowserProxy} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertGT, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
@@ -16,109 +15,17 @@ import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 
 suite('controlled button', function() {
   let controlledButton: ControlledButtonElement;
-
-  const uncontrolledPref: chrome.settingsPrivate.PrefObject = {
-    key: 'test',
-    type: chrome.settingsPrivate.PrefType.BOOLEAN,
-    value: true,
-  };
-
-  /** @type {!chrome.settingsPrivate.PrefObject} */
-  const extensionControlledPref = Object.assign(
-      {
-        controlledBy: chrome.settingsPrivate.ControlledBy.EXTENSION,
-        enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
-      },
-      uncontrolledPref);
-
-  /** @type {!chrome.settingsPrivate.PrefObject} */
-  const policyControlledPref = Object.assign(
-      {
-        controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
-        enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
-      },
-      uncontrolledPref);
-
-  function queryCrButton() {
-    return controlledButton.shadowRoot!.querySelector('cr-button')!;
-  }
-
-  setup(function() {
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    controlledButton = document.createElement('controlled-button');
-    controlledButton.pref = uncontrolledPref;
-    document.body.appendChild(controlledButton);
-    flush();
-  });
-
-  test('controlled prefs', function() {
-    assertFalse(queryCrButton().disabled);
-    assertFalse(!!controlledButton.shadowRoot!.querySelector(
-        'cr-policy-pref-indicator'));
-
-    controlledButton.pref = extensionControlledPref;
-    flush();
-    assertTrue(queryCrButton().disabled);
-    assertTrue(!!controlledButton.shadowRoot!.querySelector(
-        'cr-policy-pref-indicator'));
-
-    controlledButton.pref = policyControlledPref;
-    flush();
-    assertTrue(queryCrButton().disabled);
-    const indicator =
-        controlledButton.shadowRoot!.querySelector('cr-policy-pref-indicator');
-    assertTrue(!!indicator);
-    assertGT(indicator.clientHeight, 0);
-
-    controlledButton.pref = uncontrolledPref;
-    flush();
-    assertFalse(queryCrButton().disabled);
-    assertFalse(!!controlledButton.shadowRoot!.querySelector(
-        'cr-policy-pref-indicator'));
-  });
-
-  test('null pref', function() {
-    controlledButton.pref = extensionControlledPref;
-    flush();
-    assertTrue(queryCrButton().disabled);
-    assertTrue(!!controlledButton.shadowRoot!.querySelector(
-        'cr-policy-pref-indicator'));
-
-    controlledButton.pref = undefined;
-    flush();
-    assertFalse(queryCrButton().disabled);
-    assertFalse(!!controlledButton.shadowRoot!.querySelector(
-        'cr-policy-pref-indicator'));
-  });
-
-  test('action-button', function() {
-    assertNotEquals('action-button', queryCrButton().className);
-
-    const controlledActionButton = document.createElement('controlled-button');
-    controlledActionButton.pref = uncontrolledPref;
-    controlledActionButton.className = 'action-button';
-    document.body.appendChild(controlledActionButton);
-    flush();
-    assertEquals(
-        'action-button',
-        controlledActionButton.shadowRoot!.querySelector(
-                                              'cr-button')!.className);
-  });
-});
-
-suite('ControlledButtonPrefKey', () => {
-  let controlledButton: ControlledButtonElement;
   let prefsBrowserProxy: TestPrefsBrowserProxy;
 
   const initialPrefs = [
     {
-      key: 'test_boolean',
+      key: 'test',
       type: chrome.settingsPrivate.PrefType.BOOLEAN,
       value: true,
     },
   ];
 
-  setup(async () => {
+  setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
     prefsBrowserProxy = new TestPrefsBrowserProxy(initialPrefs);
@@ -127,28 +34,60 @@ suite('ControlledButtonPrefKey', () => {
     await PrefService.getInstance().whenInitialized();
 
     controlledButton = document.createElement('controlled-button');
-    controlledButton.prefKey = 'test_boolean';
+    controlledButton.prefKey = 'test';
     document.body.appendChild(controlledButton);
+    await microtasksFinished();
   });
 
-  test('disablesWhenPrefIsManaged', async () => {
-    assertFalse(
-        controlledButton.shadowRoot!.querySelector('cr-button')!.disabled);
-    assertFalse(!!controlledButton.shadowRoot!.querySelector(
+  test('controlled prefs', async function() {
+    assertFalse(controlledButton.$.button.disabled);
+    assertFalse(!!controlledButton.shadowRoot.querySelector(
         'cr-policy-pref-indicator'));
 
     prefsBrowserProxy.fakeApi.sendPrefChanges([{
-      key: 'test_boolean',
+      key: 'test',
       value: true,
+      controlledBy: chrome.settingsPrivate.ControlledBy.EXTENSION,
       enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
-      controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
     }]);
     await microtasksFinished();
-
-    const button = controlledButton.shadowRoot!.querySelector('cr-button');
-    assertTrue(!!button);
-    assertTrue(button.disabled);
-    assertTrue(!!controlledButton.shadowRoot!.querySelector(
+    assertTrue(controlledButton.$.button.disabled);
+    assertTrue(!!controlledButton.shadowRoot.querySelector(
         'cr-policy-pref-indicator'));
+
+    prefsBrowserProxy.fakeApi.sendPrefChanges([{
+      key: 'test',
+      value: true,
+      controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
+      enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
+    }]);
+    await microtasksFinished();
+    assertTrue(controlledButton.$.button.disabled);
+    const indicator =
+        controlledButton.shadowRoot.querySelector('cr-policy-pref-indicator');
+    assertTrue(!!indicator);
+    assertGT(indicator.clientHeight, 0);
+
+    prefsBrowserProxy.fakeApi.sendPrefChanges([{
+      key: 'test',
+      value: true,
+      controlledBy: undefined,
+      enforcement: undefined,
+    }]);
+    await microtasksFinished();
+    assertFalse(controlledButton.$.button.disabled);
+    assertFalse(!!controlledButton.shadowRoot.querySelector(
+        'cr-policy-pref-indicator'));
+  });
+
+  test('action-button', async function() {
+    assertNotEquals('action-button', controlledButton.$.button.className);
+
+    const controlledActionButton = document.createElement('controlled-button');
+    controlledActionButton.prefKey = 'test';
+    controlledActionButton.className = 'action-button';
+    document.body.appendChild(controlledActionButton);
+    await microtasksFinished();
+    assertEquals('action-button', controlledActionButton.$.button.className);
   });
 });

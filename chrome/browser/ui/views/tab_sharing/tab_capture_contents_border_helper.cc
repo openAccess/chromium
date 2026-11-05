@@ -19,17 +19,35 @@ constexpr int kMinContentsBorderWidth = 20;
 constexpr int kMinContentsBorderHeight = 20;
 }  // namespace
 
+DEFINE_USER_DATA(TabCaptureContentsBorderHelper);
+
 TabCaptureContentsBorderHelper::TabCaptureContentsBorderHelper(
-    content::WebContents* web_contents)
-    : content::WebContentsUserData<TabCaptureContentsBorderHelper>(
-          *web_contents) {}
+    tabs::TabInterface& tab)
+    : tab_(tab),
+      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {}
 
 TabCaptureContentsBorderHelper::~TabCaptureContentsBorderHelper() = default;
 
+// static
+TabCaptureContentsBorderHelper* TabCaptureContentsBorderHelper::From(
+    tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
+
+// static
+TabCaptureContentsBorderHelper* TabCaptureContentsBorderHelper::FromWebContents(
+    content::WebContents* web_contents) {
+  if (!web_contents) {
+    return nullptr;
+  }
+  return From(tabs::TabInterface::MaybeGetFromContents(web_contents));
+}
+
 void TabCaptureContentsBorderHelper::OnCapturerAdded(
     CaptureSessionId capture_session_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!session_to_bounds_.contains(capture_session_id));
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(!session_to_bounds_.contains(capture_session_id),
+        base::NotFatalUntil::M162);
 
   session_to_bounds_[capture_session_id] = std::nullopt;
 
@@ -38,7 +56,7 @@ void TabCaptureContentsBorderHelper::OnCapturerAdded(
 
 void TabCaptureContentsBorderHelper::OnCapturerRemoved(
     CaptureSessionId capture_session_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   // TODO(crbug.com/40213800): Destroy widget when the size of
   // `session_to_bounds_` hits 0. Same for `this`.
@@ -48,7 +66,7 @@ void TabCaptureContentsBorderHelper::OnCapturerRemoved(
 }
 
 void TabCaptureContentsBorderHelper::VisibilityUpdated() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   Update();
 }
@@ -56,8 +74,9 @@ void TabCaptureContentsBorderHelper::VisibilityUpdated() {
 void TabCaptureContentsBorderHelper::OnRegionCaptureRectChanged(
     CaptureSessionId capture_session_id,
     const std::optional<gfx::Rect>& region_capture_rect) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(session_to_bounds_.contains(capture_session_id));
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(session_to_bounds_.contains(capture_session_id),
+        base::NotFatalUntil::M162);
 
   if (region_capture_rect &&
       region_capture_rect->width() >= kMinContentsBorderWidth &&
@@ -101,20 +120,13 @@ TabCaptureContentsBorderHelper::AddOnTabCaptureLocationChangeCallback(
 
 void TabCaptureContentsBorderHelper::Update() {
 #if !BUILDFLAG(IS_CHROMEOS)
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
-  content::WebContents* const web_contents = &GetWebContents();
-
-  BrowserWindowInterface* const browser =
-      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
-  if (!browser) {
+  if (!tab_->GetBrowserWindowInterface()) {
     return;
   }
 
-  tabs::TabInterface* const tab_interface =
-      tabs::TabInterface::GetFromContents(web_contents);
-  const bool contents_border_needed =
-      tab_interface->IsVisible() && IsTabCapturing();
+  const bool contents_border_needed = tab_->IsVisible() && IsTabCapturing();
 
   if (contents_border_needed) {
     capture_location_change_callbacks_.Notify(GetBlueBorderLocation());
@@ -126,7 +138,7 @@ void TabCaptureContentsBorderHelper::Update() {
 
 std::optional<gfx::Rect> TabCaptureContentsBorderHelper::GetBlueBorderLocation()
     const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   DCHECK(IsTabCapturing()) << "No blue border should be shown.";
 
   // The border should only track the cropped-to contents when there is exactly
@@ -135,5 +147,3 @@ std::optional<gfx::Rect> TabCaptureContentsBorderHelper::GetBlueBorderLocation()
   return (session_to_bounds_.size() == 1u) ? session_to_bounds_.begin()->second
                                            : std::nullopt;
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(TabCaptureContentsBorderHelper);

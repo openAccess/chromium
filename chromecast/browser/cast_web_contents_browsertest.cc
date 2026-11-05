@@ -9,6 +9,7 @@
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
+#include "base/files/file_path.h"
 #include "base/functional/callback_helpers.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
@@ -16,18 +17,24 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
-#include "chromecast/base/chromecast_switches.h"
 #include "chromecast/base/metrics/cast_metrics_helper.h"
 #include "chromecast/browser/cast_browser_context.h"
 #include "chromecast/browser/cast_browser_process.h"
+#include "chromecast/browser/cast_content_window.h"
 #include "chromecast/browser/cast_web_contents_impl.h"
 #include "chromecast/browser/cast_web_contents_observer.h"
+#include "chromecast/browser/cast_web_service.h"
+#include "chromecast/browser/cast_web_view_default.h"
 #include "chromecast/browser/mojom/cast_web_service.mojom.h"
 #include "chromecast/browser/test/cast_browser_test.h"
 #include "chromecast/browser/test_interfaces.test-mojom.h"
 #include "chromecast/common/feature_constants.h"
+#include "chromecast/common/mojom/activity_window.mojom.h"
+#include "chromecast/common/mojom/cast_demo.mojom.h"
 #include "chromecast/common/mojom/gesture.mojom.h"
+#include "chromecast/common/mojom/settings_ui.mojom.h"
 #include "chromecast/mojo/interface_bundle.h"
+#include "components/input/native_web_keyboard_event.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
@@ -48,6 +55,8 @@
 #include "services/service_manager/public/mojom/interface_provider.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/input/web_input_event.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 #include "url/gurl.h"
 
 using ::testing::_;
@@ -57,7 +66,6 @@ using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::Expectation;
 using ::testing::InSequence;
-using ::testing::InvokeWithoutArgs;
 using ::testing::Mock;
 using ::testing::NiceMock;
 using ::testing::Property;
@@ -308,7 +316,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, Lifecycle) {
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   cast_web_contents_->LoadUrl(GURL(url::kAboutBlankURL));
@@ -322,7 +330,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, Lifecycle) {
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   web_contents_->GetController().LoadURL(GURL(url::kAboutBlankURL),
@@ -358,7 +366,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, Lifecycle) {
   EXPECT_CALL(mock_wc_delegate_, CloseContents(web_contents_.get()))
       .Times(AtLeast(1));
   EXPECT_CALL(mock_cast_wc_observer_, PageStopped(PageState::CLOSED, net::OK))
-      .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+      .WillOnce([&]() { QuitRunLoop(); });
   cast_web_contents_->ClosePage();
   run_loop_->Run();
 
@@ -367,7 +375,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, Lifecycle) {
   // ===========================================================================
   run_loop_ = std::make_unique<base::RunLoop>();
   EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::DESTROYED))
-      .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+      .WillOnce([&]() { QuitRunLoop(); });
   web_contents_.reset();
   run_loop_->Run();
   cast_web_contents_.reset();
@@ -379,7 +387,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, WebContentsDestroyed) {
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   cast_web_contents_->LoadUrl(GURL(url::kAboutBlankURL));
@@ -391,7 +399,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, WebContentsDestroyed) {
   run_loop_ = std::make_unique<base::RunLoop>();
   EXPECT_CALL(mock_cast_wc_observer_,
               PageStopped(PageState::DESTROYED, net::OK))
-      .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+      .WillOnce([&]() { QuitRunLoop(); });
   web_contents_.reset();
   run_loop_->Run();
 }
@@ -405,7 +413,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, ErrorPageCrash) {
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   cast_web_contents_->LoadUrl(GURL(url::kAboutBlankURL));
@@ -414,7 +422,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, ErrorPageCrash) {
   run_loop_ = std::make_unique<base::RunLoop>();
   EXPECT_CALL(mock_cast_wc_observer_,
               PageStopped(PageState::ERROR, net::ERR_UNEXPECTED))
-      .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+      .WillOnce([&]() { QuitRunLoop(); });
   CrashTab(web_contents_.get());
   run_loop_->Run();
 }
@@ -428,7 +436,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, ErrorLocalFileMissing) {
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStopped(PageState::ERROR, _))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   base::FilePath path = GetTestDataFilePath("this_file_does_not_exist.html");
@@ -445,7 +453,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, ErrorLoadFailSubFrames) {
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   cast_web_contents_->LoadUrl(GURL(url::kAboutBlankURL));
@@ -486,7 +494,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, ErrorLoadFailSubFrames) {
   run_loop_ = std::make_unique<base::RunLoop>();
   EXPECT_CALL(mock_cast_wc_observer_,
               PageStopped(PageState::ERROR, net::ERR_FAILED))
-      .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+      .WillOnce([&]() { QuitRunLoop(); });
   cast_web_contents_->DidFailLoad(
       web_contents_->GetPrimaryMainFrame(),
       web_contents_->GetPrimaryMainFrame()->GetLastCommittedURL(),
@@ -510,7 +518,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, ErrorHttp4XX) {
     EXPECT_CALL(
         mock_cast_wc_observer_,
         PageStopped(PageState::ERROR, net::ERR_HTTP_RESPONSE_CODE_FAILURE))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   cast_web_contents_->LoadUrl(embedded_test_server()->GetURL("/dummy.html"));
@@ -544,7 +552,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, ErrorLoadFailed) {
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_,
                 PageStopped(PageState::ERROR, net::ERR_ADDRESS_UNREACHABLE))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   cast_web_contents_->LoadUrl(gurl);
@@ -565,7 +573,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, LoadCanceledByApp) {
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   cast_web_contents_->LoadUrl(
@@ -589,7 +597,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, LocationRedirectLifecycle) {
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   cast_web_contents_->LoadUrl(
@@ -606,7 +614,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, NotifyMissingResource) {
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
   EXPECT_CALL(mock_cast_wc_observer_, ResourceLoadFailed());
 
@@ -911,7 +919,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest, ExecuteJavaScript) {
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
   cast_web_contents_->LoadUrl(gurl);
   run_loop_->Run();
@@ -972,19 +980,18 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest,
   MockApiBindings mock_api_bindings;
   EXPECT_CALL(mock_api_bindings, GetAll(_))
       .Times(1)
-      .WillOnce(
-          WithArgs<0>([](MockApiBindings::GetAllCallback callback) {
-            std::vector<chromecast::mojom::ApiBindingPtr> bindings_vector;
-            bindings_vector.emplace_back(
-                chromecast::mojom::ApiBinding::New("let res = 0;"));
-            bindings_vector.emplace_back(
-                chromecast::mojom::ApiBinding::New("res += 1;"));
-            bindings_vector.emplace_back(
-                chromecast::mojom::ApiBinding::New("res += 2;"));
-            bindings_vector.emplace_back(
-                chromecast::mojom::ApiBinding::New("res += 3;"));
-            std::move(callback).Run(std::move(bindings_vector));
-          }));
+      .WillOnce(WithArgs<0>([](MockApiBindings::GetAllCallback callback) {
+        std::vector<chromecast::mojom::ApiBindingPtr> bindings_vector;
+        bindings_vector.emplace_back(
+            chromecast::mojom::ApiBinding::New("let res = 0;"));
+        bindings_vector.emplace_back(
+            chromecast::mojom::ApiBinding::New("res += 1;"));
+        bindings_vector.emplace_back(
+            chromecast::mojom::ApiBinding::New("res += 2;"));
+        bindings_vector.emplace_back(
+            chromecast::mojom::ApiBinding::New("res += 3;"));
+        std::move(callback).Run(std::move(bindings_vector));
+      }));
 
   // Binds mocked |mojom::ApiBindings|.
   cast_web_contents_->ConnectToBindingsService(
@@ -995,7 +1002,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest,
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   // Loads a blank page.
@@ -1032,7 +1039,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest,
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
 
   EXPECT_CALL(mock_cast_wc_observer_,
@@ -1229,7 +1236,7 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest,
     InSequence seq;
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
     EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
-        .WillOnce(InvokeWithoutArgs([&]() { QuitRunLoop(); }));
+        .WillOnce([&]() { QuitRunLoop(); });
   }
   cast_web_contents_->LoadUrl(GURL(url::kAboutBlankURL));
   run_loop_->Run();
@@ -1267,6 +1274,324 @@ IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest,
   // The main frame's renderer must still be responsive.
   EXPECT_EQ(true, content::EvalJs(web_contents_.get(),
                                   "document.querySelector('iframe') === null"));
+}
+
+IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest,
+                       FeatureGatedInterfacesRequireRendererFeature) {
+  // ===========================================================================
+  // Test: PopulateCastFrameBinders() registers several interfaces behind a
+  // renderer feature. The browser must drop incoming receivers for those
+  // interfaces unless the corresponding feature was configured via
+  // AddRendererFeatures(), mirroring the renderer-side checks in
+  // FeatureManager and CastWindowManagerBindings.
+  //
+  // Requests are issued from the page through Mojo JS so that they travel the
+  // real frame binder map. Calling TryBindReceiver() directly would bypass the
+  // feature gate entirely and pass regardless of this CL.
+  // ===========================================================================
+  int num_activity_window = 0;
+  int num_gesture_source = 0;
+  int num_settings_platform = 0;
+  int num_cast_demo = 0;
+
+  auto* bundle = cast_web_contents_->local_interfaces();
+  bundle->AddBinder<::chromecast::mojom::ActivityWindow>(
+      base::BindLambdaForTesting(
+          [&](mojo::PendingReceiver<::chromecast::mojom::ActivityWindow>) {
+            ++num_activity_window;
+          }));
+  bundle->AddBinder<::chromecast::mojom::GestureSource>(
+      base::BindLambdaForTesting(
+          [&](mojo::PendingReceiver<::chromecast::mojom::GestureSource>) {
+            ++num_gesture_source;
+          }));
+  bundle->AddBinder<::chromecast::mojom::SettingsPlatform>(
+      base::BindLambdaForTesting(
+          [&](mojo::PendingReceiver<::chromecast::mojom::SettingsPlatform>) {
+            ++num_settings_platform;
+          }));
+  bundle->AddBinder<::chromecast::shell::mojom::CastDemo>(
+      base::BindLambdaForTesting(
+          [&](mojo::PendingReceiver<::chromecast::shell::mojom::CastDemo>) {
+            ++num_cast_demo;
+          }));
+
+  // TestAdder is not in PopulateCastFrameBinders(), so it reaches the bundle
+  // through the ungated default binder. It is requested last and serves as a
+  // barrier: frame interface requests share one pipe and are dispatched in
+  // order, so once it arrives every gated request before it has been handled.
+  base::RunLoop canary_loop;
+  bundle->AddBinder<mojom::TestAdder>(base::BindLambdaForTesting(
+      [&](mojo::PendingReceiver<mojom::TestAdder>) { canary_loop.Quit(); }));
+
+  run_loop_ = std::make_unique<base::RunLoop>();
+  {
+    InSequence seq;
+    EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADING));
+    EXPECT_CALL(mock_cast_wc_observer_, PageStateChanged(PageState::LOADED))
+        .WillOnce([&]() { QuitRunLoop(); });
+  }
+  cast_web_contents_->LoadUrl(GURL(url::kAboutBlankURL));
+  run_loop_->Run();
+
+  constexpr const char* kGatedInterfaces[] = {
+      "chromecast.mojom.ActivityWindow",
+      "chromecast.mojom.GestureSource",
+      "chromecast.mojom.SettingsPlatform",
+      "chromecast.shell.mojom.CastDemo",
+  };
+
+  // No renderer features are configured yet, so every receiver must be
+  // dropped by BindFromCastWebContentsWithFeature().
+  for (const char* interface_name : kGatedInterfaces) {
+    ASSERT_TRUE(
+        ExecJs(web_contents_.get(),
+               content::JsReplace(
+                   "Mojo.bindInterface($1, Mojo.createMessagePipe().handle0);",
+                   interface_name)));
+  }
+
+  // Enable all four features, then request each interface again.
+  base::DictValue features;
+  features.Set(feature::kEnableWindowControls, base::DictValue());
+  features.Set(feature::kEnableSystemGestures, base::DictValue());
+  features.Set(feature::kEnableSettingsUiMojo, base::DictValue());
+  features.Set(feature::kEnableDemoStandaloneMode, base::DictValue());
+  cast_web_contents_->AddRendererFeatures(std::move(features));
+
+  for (const char* interface_name : kGatedInterfaces) {
+    ASSERT_TRUE(
+        ExecJs(web_contents_.get(),
+               content::JsReplace(
+                   "Mojo.bindInterface($1, Mojo.createMessagePipe().handle0);",
+                   interface_name)));
+  }
+
+  // Wait for the canary rather than for the gated binds themselves. Waiting
+  // for four binds could be satisfied by the first batch alone if the gate were
+  // broken, letting the assertions below run before the second batch arrives.
+  ASSERT_TRUE(ExecJs(web_contents_.get(),
+                     "Mojo.bindInterface('chromecast.mojom.TestAdder', "
+                     "Mojo.createMessagePipe().handle0);"));
+  canary_loop.Run();
+
+  // Exactly one bind per interface: the gated request was dropped, the enabled
+  // one was routed. A broken gate yields 2, an over-eager one yields 0.
+  EXPECT_EQ(1, num_activity_window);
+  EXPECT_EQ(1, num_gesture_source);
+  EXPECT_EQ(1, num_settings_platform);
+  EXPECT_EQ(1, num_cast_demo);
+}
+
+namespace {
+
+class BrowserTestCastContentWindow : public CastContentWindow {
+ public:
+  explicit BrowserTestCastContentWindow(mojom::CastWebViewParamsPtr params)
+      : CastContentWindow(std::move(params)) {}
+  ~BrowserTestCastContentWindow() override = default;
+
+  void CreateWindow(mojom::ZOrder z_order,
+                    VisibilityPriority visibility_priority) override {}
+  void GrantScreenAccess() override {}
+  void RevokeScreenAccess() override {}
+  void RequestVisibility(VisibilityPriority visibility_priority) override {}
+  void EnableTouchInput(bool enabled) override {}
+};
+
+class WindowDestroyWaiter : public CastContentWindow::Observer {
+ public:
+  explicit WindowDestroyWaiter(CastContentWindow* window) : window_(window) {
+    window_->AddObserver(this);
+  }
+
+  ~WindowDestroyWaiter() override {
+    if (window_) {
+      window_->RemoveObserver(this);
+    }
+  }
+
+  void OnVisibilityChange(VisibilityType visibility_type) override {}
+
+  void OnWindowDestroyed() override {
+    destroyed_ = true;
+    if (window_) {
+      window_->RemoveObserver(this);
+      window_ = nullptr;
+    }
+    run_loop_.Quit();
+  }
+
+  void Wait() {
+    if (!destroyed_) {
+      run_loop_.Run();
+    }
+  }
+
+  bool destroyed() const { return destroyed_; }
+
+ private:
+  raw_ptr<CastContentWindow> window_;
+  bool destroyed_ = false;
+  base::RunLoop run_loop_;
+};
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest,
+                       BackPressConsumedByActiveShadowElementThenExits) {
+  content::BrowserContext* browser_context =
+      shell::CastBrowserProcess::GetInstance()->browser_context();
+  auto web_service = std::make_unique<CastWebService>(browser_context, nullptr);
+  mojom::CastWebViewParamsPtr params = mojom::CastWebViewParams::New();
+  auto window = std::make_unique<BrowserTestCastContentWindow>(params->Clone());
+  auto web_view = std::make_unique<CastWebViewDefault>(
+      std::move(params), web_service.get(), browser_context, std::move(window));
+
+  WindowDestroyWaiter destroy_waiter(web_view->window());
+  MockCastWebContentsObserver observer;
+  observer.Observe(web_view->cast_web_contents());
+
+  auto load_loop = std::make_unique<base::RunLoop>();
+  EXPECT_CALL(observer, PageStateChanged(PageState::LOADING));
+  EXPECT_CALL(observer, PageStateChanged(PageState::LOADED)).WillOnce([&]() {
+    load_loop->Quit();
+  });
+
+  web_view->cast_web_contents()->LoadUrl(GURL(url::kAboutBlankURL));
+  load_loop->Run();
+
+  // Set up an element with an open shadowRoot whose host unconditionally calls
+  // preventDefault() (matching CAF's <touch-controls> KeyEventHandler) and a
+  // focused inner element whose keydown listener consumes BrowserBack only
+  // while controlsActive is true.
+  ASSERT_TRUE(content::ExecJs(web_view->web_contents(), R"(
+    window.controlsActive = true;
+    window.hideCount = 0;
+    const host = document.createElement('div');
+    host.tabIndex = 0;
+    host.addEventListener('keydown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    const sr = host.attachShadow({mode: 'open'});
+    const layer = document.createElement('div');
+    layer.tabIndex = 0;
+    layer.addEventListener('keydown', (e) => {
+      if (e.key === 'BrowserBack' && window.controlsActive) {
+        window.controlsActive = false;
+        window.hideCount++;
+        e.preventDefault();
+      }
+    });
+    sr.appendChild(layer);
+    document.body.appendChild(host);
+    host.focus();
+    layer.focus();
+  )"));
+
+  content::WebContentsDelegate* delegate =
+      web_view->web_contents()->GetDelegate();
+  input::NativeWebKeyboardEvent back_event(
+      blink::WebInputEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kNoModifiers, base::TimeTicks::Now());
+  back_event.windows_key_code = ui::VKEY_ESCAPE;
+
+  // First Back press while controlsActive is true: consumed by the shadow DOM
+  // listener without closing the window.
+  EXPECT_EQ(
+      delegate->PreHandleKeyboardEvent(web_view->web_contents(), back_event),
+      content::KeyboardEventProcessingResult::HANDLED);
+  EXPECT_EQ(true, content::EvalJs(web_view->web_contents(),
+                                  "window.controlsActive === false && "
+                                  "window.hideCount === 1"));
+  EXPECT_FALSE(destroy_waiter.destroyed());
+  EXPECT_NE(web_view->window(), nullptr);
+
+  // Second Back press while controlsActive is false: defaultPrevented is false,
+  // closing the window.
+  auto stop_loop = std::make_unique<base::RunLoop>();
+  EXPECT_CALL(observer, PageStopped(PageState::CLOSED, net::OK))
+      .WillOnce([&]() { stop_loop->Quit(); });
+  EXPECT_EQ(
+      delegate->PreHandleKeyboardEvent(web_view->web_contents(), back_event),
+      content::KeyboardEventProcessingResult::HANDLED);
+  destroy_waiter.Wait();
+  stop_loop->Run();
+  EXPECT_TRUE(destroy_waiter.destroyed());
+  EXPECT_EQ(web_view->window(), nullptr);
+}
+
+IN_PROC_BROWSER_TEST_F(CastWebContentsBrowserTest,
+                       BackPressHandledByWindowListenerThenExits) {
+  content::BrowserContext* browser_context =
+      shell::CastBrowserProcess::GetInstance()->browser_context();
+  auto web_service = std::make_unique<CastWebService>(browser_context, nullptr);
+  mojom::CastWebViewParamsPtr params = mojom::CastWebViewParams::New();
+  auto window = std::make_unique<BrowserTestCastContentWindow>(params->Clone());
+  auto web_view = std::make_unique<CastWebViewDefault>(
+      std::move(params), web_service.get(), browser_context, std::move(window));
+
+  WindowDestroyWaiter destroy_waiter(web_view->window());
+  MockCastWebContentsObserver observer;
+  observer.Observe(web_view->cast_web_contents());
+
+  auto load_loop = std::make_unique<base::RunLoop>();
+  EXPECT_CALL(observer, PageStateChanged(PageState::LOADING));
+  EXPECT_CALL(observer, PageStateChanged(PageState::LOADED)).WillOnce([&]() {
+    load_loop->Quit();
+  });
+
+  web_view->cast_web_contents()->LoadUrl(GURL(url::kAboutBlankURL));
+  load_loop->Run();
+
+  ASSERT_TRUE(content::ExecJs(web_view->web_contents(), R"(
+    window.shouldConsumeBack = true;
+    window.backEventsReceived = 0;
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'BrowserBack') {
+        window.backEventsReceived++;
+        if (window.shouldConsumeBack) {
+          window.shouldConsumeBack = false;
+          e.preventDefault();
+        }
+      }
+    });
+  )"));
+
+  content::WebContentsDelegate* delegate =
+      web_view->web_contents()->GetDelegate();
+  input::NativeWebKeyboardEvent browser_back_event(
+      blink::WebInputEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kNoModifiers, base::TimeTicks::Now());
+  browser_back_event.windows_key_code = ui::VKEY_BROWSER_BACK;
+
+  // First Back press (VKEY_BROWSER_BACK): bubbles to window listener, which
+  // calls preventDefault() and keeps the window open.
+  EXPECT_EQ(delegate->PreHandleKeyboardEvent(web_view->web_contents(),
+                                             browser_back_event),
+            content::KeyboardEventProcessingResult::HANDLED);
+  EXPECT_EQ(1, content::EvalJs(web_view->web_contents(),
+                               "window.backEventsReceived"));
+  EXPECT_FALSE(destroy_waiter.destroyed());
+
+  // Second Back press (VKEY_ESCAPE): window listener does not call
+  // preventDefault(), closing the window cleanly.
+  input::NativeWebKeyboardEvent back_key_event(
+      blink::WebInputEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kNoModifiers, base::TimeTicks::Now());
+  back_key_event.windows_key_code = ui::VKEY_ESCAPE;
+
+  auto stop_loop = std::make_unique<base::RunLoop>();
+  EXPECT_CALL(observer, PageStopped(PageState::CLOSED, net::OK))
+      .WillOnce([&]() { stop_loop->Quit(); });
+  EXPECT_EQ(delegate->PreHandleKeyboardEvent(web_view->web_contents(),
+                                             back_key_event),
+            content::KeyboardEventProcessingResult::HANDLED);
+  destroy_waiter.Wait();
+  stop_loop->Run();
+  EXPECT_TRUE(destroy_waiter.destroyed());
+  EXPECT_EQ(web_view->window(), nullptr);
 }
 
 }  // namespace chromecast

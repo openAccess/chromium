@@ -6,6 +6,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -17,6 +18,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "content/public/browser/browser_context.h"
@@ -33,11 +35,15 @@
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_api.h"
 #include "extensions/common/extension_builder.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/features/feature_provider.h"
 #include "extensions/common/features/simple_feature.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/common/mojom/event_dispatcher.mojom.h"
+#include "extensions/common/permissions/permissions_data.h"
+#include "extensions/common/url_pattern.h"
+#include "extensions/common/url_pattern_set.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_database.mojom-blink-forward.h"
 
@@ -110,7 +116,7 @@ class MockEventDispatcher : public mojom::EventDispatcher {
 
   // mojom::EventDispatcher:
   void DispatchEvent(mojom::DispatchEventParamsPtr params,
-                     base::ListValue event_args,
+                     const scoped_refptr<const EventArgs>& event_args,
                      DispatchEventCallback callback) override {
     std::move(callback).Run(
         /*event_will_run_in_lazy_background_page_script=*/false);
@@ -227,9 +233,6 @@ class EventRouterTest : public ExtensionsTest {
     ExtensionsTest::SetUp();
     render_process_host_ =
         std::make_unique<content::MockRenderProcessHost>(browser_context());
-    // Tests below call EventRouter::Get(), so install the EventRouter
-    // explicitly rather than depending on whether the factory creates one
-    // in testing contexts.
     EventRouterFactory::GetInstance()->SetTestingFactory(
         browser_context(), base::BindRepeating(&BuildEventRouter));
   }
@@ -481,16 +484,16 @@ TEST_F(EventRouterTest, WebUIEventsDoNotCrossIncognitoBoundaries) {
       incognito_context(), base::BindRepeating(&BuildProcessMap));
 
   // Create a SimpleFeature to allow this API call to be routed to our test URL.
-  FeatureProvider provider;
   static constexpr auto kMatches =
       std::to_array<std::string_view>({"chrome://settings/*"});
   static constexpr SimpleFeatureData kFeatureData = {
       .feature = {.name = kTestEventName},
       .config = {.match_patterns = StaticSpan(kMatches)},
   };
-  auto feature =
-      std::make_unique<SimpleFeature>(StaticFeatureData(kFeatureData));
-  provider.AddFeature(kTestEventName, std::move(feature));
+  SimpleFeature feature{StaticFeatureData(kFeatureData)};
+  std::array<Feature*, 1> features = {&feature};
+  FeatureProvider provider;
+  provider.AddStaticFeatures(features);
 
   ExtensionAPI api;
   api.RegisterDependencyProvider("api", &provider);
@@ -519,15 +522,14 @@ TEST_F(EventRouterTest, WebUIEventsDoNotCrossIncognitoBoundaries) {
   // Sending an otr event should not trigger the regular observer.
   auto otr_event =
       std::make_unique<Event>(extensions::events::FOR_TEST, kTestEventName,
-                              base::ListValue(), incognito_context());
+                              nullptr, incognito_context());
   router.BroadcastEvent(std::move(otr_event));
   EXPECT_EQ(0, regular_counter.dispatch_count);
   EXPECT_EQ(1, otr_counter.dispatch_count);
 
   // Setting a regular event should not trigger the otr observer.
-  std::unique_ptr<Event> regular_event =
-      std::make_unique<Event>(extensions::events::FOR_TEST, kTestEventName,
-                              base::ListValue(), browser_context());
+  std::unique_ptr<Event> regular_event = std::make_unique<Event>(
+      extensions::events::FOR_TEST, kTestEventName, nullptr, browser_context());
   router.BroadcastEvent(std::move(regular_event));
   EXPECT_EQ(1, regular_counter.dispatch_count);
   EXPECT_EQ(1, otr_counter.dispatch_count);
@@ -618,9 +620,8 @@ TEST_F(EventRouterTest, TestReportEvent) {
 // crbug.com/484218883.
 TEST_F(EventRouterTest, DispatchPendingEvent_NullContext) {
   EventRouter* router = EventRouter::Get(browser_context());
-  auto event =
-      std::make_unique<Event>(extensions::events::FOR_TEST, "test.event",
-                              base::ListValue(), browser_context());
+  auto event = std::make_unique<Event>(
+      extensions::events::FOR_TEST, "test.event", nullptr, browser_context());
   base::RunLoop run_loop;
   event->cannot_dispatch_callback = run_loop.QuitClosure();
 
@@ -1064,14 +1065,16 @@ class EventRouterDispatchTest : public ExtensionsTest {
 
  protected:
   void RegisterTestApiFeature(StaticFeatureData<SimpleFeatureData> data) {
-    auto feature = std::make_unique<SimpleFeature>(data);
-    provider_.AddFeature(data.get()->feature.name, std::move(feature));
+    test_api_feature_.emplace(data);
+    std::array<Feature*, 1> features = {&*test_api_feature_};
+    provider_.AddStaticFeatures(features);
     api_.RegisterDependencyProvider("api", &provider_);
     api_scope_ =
         std::make_unique<ExtensionAPI::OverrideSharedInstanceForTest>(&api_);
   }
 
  private:
+  std::optional<SimpleFeature> test_api_feature_;
   FeatureProvider provider_;
   ExtensionAPI api_;
   std::unique_ptr<ExtensionAPI::OverrideSharedInstanceForTest> api_scope_;
@@ -1107,7 +1110,7 @@ TEST_F(EventRouterDispatchTest, TestDispatch) {
   add_extension(ext2);
   auto event = [](std::string name) {
     return std::make_unique<extensions::Event>(extensions::events::FOR_TEST,
-                                               name, base::ListValue());
+                                               name, nullptr);
   };
 
   // Register both extensions and both URLs for event.
@@ -1175,7 +1178,7 @@ TEST_F(EventRouterDispatchTest, ActiveDispatchTargetRestrictsToWorker) {
   std::vector<extensions::EventTarget> dispatched;
   auto create_restricted_event = [&](int64_t sw_version_id, int sw_thread_id) {
     auto event = std::make_unique<extensions::Event>(
-        extensions::events::FOR_TEST, kTestEventName, base::ListValue());
+        extensions::events::FOR_TEST, kTestEventName, nullptr);
     event->restrict_to_dispatch_target =
         Event::DispatchTarget{.render_process_id = process()->GetID(),
                               .worker_thread_id = sw_thread_id,
@@ -1226,8 +1229,8 @@ TEST_F(EventRouterDispatchTest,
   // registered.
   auto other_process =
       std::make_unique<content::MockRenderProcessHost>(browser_context());
-  auto event = std::make_unique<extensions::Event>(
-      extensions::events::FOR_TEST, kTestEventName, base::ListValue());
+  auto event = std::make_unique<extensions::Event>(extensions::events::FOR_TEST,
+                                                   kTestEventName, nullptr);
   event->restrict_to_dispatch_target =
       Event::DispatchTarget{.render_process_id = other_process->GetID()};
 
@@ -1260,7 +1263,7 @@ TEST_F(EventRouterDispatchTest, TestDispatchCallback) {
   std::vector<extensions::EventTarget> dispatched;
   auto create_event = [&](const std::string& name) {
     auto event = std::make_unique<extensions::Event>(
-        extensions::events::FOR_TEST, name, base::ListValue());
+        extensions::events::FOR_TEST, name, nullptr);
     return event;
   };
 
@@ -1271,7 +1274,7 @@ TEST_F(EventRouterDispatchTest, TestDispatchCallback) {
           dispatched.push_back(target);
         });
     // To ensure did_dispatch_callback is copied properly.
-    return e->DeepCopy();
+    return e->Clone();
   };
 
   auto process1 =
@@ -1357,8 +1360,8 @@ TEST_F(EventRouterDispatchTest, TestDispatchCallback_NoListeners) {
 
   // A dispatch restricted to `ext1` should still trigger the callback when
   // EventRouter has no listener to receive the event.
-  auto event = std::make_unique<extensions::Event>(
-      extensions::events::FOR_TEST, kTestEventName, base::ListValue());
+  auto event = std::make_unique<extensions::Event>(extensions::events::FOR_TEST,
+                                                   kTestEventName, nullptr);
   base::RunLoop run_loop;
   bool callback_ran = false;
   event->cannot_dispatch_callback = base::BindLambdaForTesting([&]() {
@@ -1395,8 +1398,8 @@ TEST_F(EventRouterDispatchTest, TestDispatchCallback_OtherExtensionListener) {
       /*service_worker_context=*/nullptr, base::DictValue(),
       /*add_lazy_listener=*/false);
 
-  auto event = std::make_unique<extensions::Event>(
-      extensions::events::FOR_TEST, kTestEventName, base::ListValue());
+  auto event = std::make_unique<extensions::Event>(extensions::events::FOR_TEST,
+                                                   kTestEventName, nullptr);
   base::RunLoop run_loop;
   bool callback_ran = false;
   event->cannot_dispatch_callback = base::BindLambdaForTesting([&]() {
@@ -1409,6 +1412,447 @@ TEST_F(EventRouterDispatchTest, TestDispatchCallback_OtherExtensionListener) {
 
   EXPECT_TRUE(callback_ran);
   EXPECT_EQ(0u, observer.dispatched_events().size());
+}
+
+TEST_F(EventRouterDispatchTest, CopySelectivelyAndClone_Enabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      extensions_features::kShareEventArgsOnDispatch);
+
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append("test_arg");
+
+  auto info = mojom::EventFilteringInfo::New();
+  info->instance_id = 42;
+
+  auto event = std::make_unique<Event>(
+      events::FOR_TEST, "test.event", std::move(args), browser_context(),
+      std::nullopt, GURL(), EventRouter::UserGestureState::kUnknown,
+      std::move(info));
+  ASSERT_TRUE(event->args_ptr());
+  ASSERT_TRUE(event->filter_info);
+
+  // Verify Clone shares ref-counted args_ptr, while filter_info is
+  // value-cloned (different pointer addresses, equal values).
+  auto cloned = event->Clone();
+  EXPECT_EQ(event->args_ptr(), cloned->args_ptr());
+  EXPECT_EQ(event->args(), cloned->args());
+  ASSERT_TRUE(cloned->filter_info);
+  EXPECT_NE(event->filter_info.get(), cloned->filter_info.get());
+  EXPECT_EQ(*event->filter_info, *cloned->filter_info);
+
+  // Verify CopySelectively with default arguments (no modifications) behaves
+  // like Clone: shares ref-counted args_ptr, clones filter_info.
+  auto default_copied = event->CopySelectively();
+  EXPECT_EQ(event->args_ptr(), default_copied->args_ptr());
+  EXPECT_EQ(event->args(), default_copied->args());
+  ASSERT_TRUE(default_copied->filter_info);
+  EXPECT_NE(event->filter_info.get(), default_copied->filter_info.get());
+  EXPECT_EQ(*event->filter_info, *default_copied->filter_info);
+
+  // Verify CopySelectively with modified_args replaces the arguments reference
+  // while cloning filter_info.
+  base::ListValue modified_args;
+  modified_args.Append("modified_arg");
+  auto args_copied = event->CopySelectively(std::move(modified_args));
+  EXPECT_NE(event->args_ptr(), args_copied->args_ptr());
+  ASSERT_EQ(1u, args_copied->args().size());
+  EXPECT_EQ("modified_arg", args_copied->args()[0].GetString());
+  ASSERT_TRUE(args_copied->filter_info);
+  EXPECT_NE(event->filter_info.get(), args_copied->filter_info.get());
+  EXPECT_EQ(*event->filter_info, *args_copied->filter_info);
+
+  // Verify CopySelectively with modified_filter_info replaces filter_info
+  // while sharing the arguments reference.
+  auto modified_info = mojom::EventFilteringInfo::New();
+  modified_info->instance_id = 99;
+  auto filter_copied = event->CopySelectively(
+      /*modified_event_args=*/std::nullopt, std::move(modified_info));
+  EXPECT_EQ(event->args_ptr(), filter_copied->args_ptr());
+  EXPECT_EQ(event->args(), filter_copied->args());
+  ASSERT_TRUE(filter_copied->filter_info);
+  EXPECT_EQ(99, filter_copied->filter_info->instance_id);
+
+  auto event_args = base::MakeRefCounted<EventArgs>();
+  // Verify empty event args and default empty filter_info.
+  auto empty_event1 = std::make_unique<Event>(events::FOR_TEST, "test.event",
+                                              std::move(event_args));
+  auto empty_event2 = std::make_unique<Event>(events::FOR_TEST, "test.event",
+                                              scoped_refptr<const EventArgs>());
+  EXPECT_TRUE(empty_event1->args().empty());
+  ASSERT_TRUE(empty_event1->filter_info);
+  EXPECT_EQ(*mojom::EventFilteringInfo::New(), *empty_event1->filter_info);
+  EXPECT_TRUE(empty_event2->args().empty());
+  ASSERT_TRUE(empty_event2->filter_info);
+  EXPECT_EQ(*mojom::EventFilteringInfo::New(), *empty_event2->filter_info);
+}
+
+TEST_F(EventRouterDispatchTest, CopySelectivelyAndClone_Disabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      extensions_features::kShareEventArgsOnDispatch);
+
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append("test_arg");
+
+  auto info = mojom::EventFilteringInfo::New();
+  info->instance_id = 42;
+
+  auto event = std::make_unique<Event>(
+      events::FOR_TEST, "test.event", std::move(args), browser_context(),
+      std::nullopt, GURL(), EventRouter::UserGestureState::kUnknown,
+      std::move(info));
+  ASSERT_TRUE(event->args_ptr());
+  ASSERT_TRUE(event->filter_info);
+
+  // Verify Clone creates deep copies of args (distinct pointers, equal
+  // values) and filter_info is value-cloned (distinct pointer, equal values).
+  auto cloned = event->Clone();
+  EXPECT_NE(event->args_ptr(), cloned->args_ptr());
+  EXPECT_EQ(event->args(), cloned->args());
+  ASSERT_TRUE(cloned->filter_info);
+  EXPECT_NE(event->filter_info.get(), cloned->filter_info.get());
+  EXPECT_EQ(*event->filter_info, *cloned->filter_info);
+
+  // Verify CopySelectively with default arguments (no modifications) creates
+  // deep copies when sharing is disabled.
+  auto default_copied = event->CopySelectively();
+  EXPECT_NE(event->args_ptr(), default_copied->args_ptr());
+  EXPECT_EQ(event->args(), default_copied->args());
+  ASSERT_TRUE(default_copied->filter_info);
+  EXPECT_NE(event->filter_info.get(), default_copied->filter_info.get());
+  EXPECT_EQ(*event->filter_info, *default_copied->filter_info);
+
+  // Verify CopySelectively with modified_args replaces the arguments.
+  base::ListValue modified_args;
+  modified_args.Append("modified_arg");
+  auto args_copied = event->CopySelectively(std::move(modified_args));
+  EXPECT_NE(event->args_ptr(), args_copied->args_ptr());
+  ASSERT_EQ(1u, args_copied->args().size());
+  EXPECT_EQ("modified_arg", args_copied->args()[0].GetString());
+  ASSERT_TRUE(args_copied->filter_info);
+  EXPECT_NE(event->filter_info.get(), args_copied->filter_info.get());
+  EXPECT_EQ(*event->filter_info, *args_copied->filter_info);
+
+  // Verify CopySelectively with modified_filter_info replaces filter_info
+  // and deep-copies args.
+  auto modified_info = mojom::EventFilteringInfo::New();
+  modified_info->instance_id = 99;
+  auto filter_copied = event->CopySelectively(
+      /*modified_event_args=*/std::nullopt, std::move(modified_info));
+  EXPECT_NE(event->args_ptr(), filter_copied->args_ptr());
+  EXPECT_EQ(event->args(), filter_copied->args());
+  ASSERT_TRUE(filter_copied->filter_info);
+  EXPECT_EQ(99, filter_copied->filter_info->instance_id);
+}
+
+TEST_F(EventRouterDispatchTest,
+       BroadcastEventSharesArgumentsAcrossDispatchedEvents) {
+  std::string ext1 = "ext1";
+  std::string ext2 = "ext2";
+  RegisterTestApiFeature(StaticFeatureData(kTestEventFeatureData));
+
+  auto add_extension = [&](const std::string& id) {
+    scoped_refptr<const Extension> extension =
+        ExtensionBuilder("test extension").SetID(id).Build();
+    ExtensionRegistry::Get(browser_context())->AddEnabled(extension);
+  };
+  add_extension(ext1);
+  add_extension(ext2);
+
+  auto process1 =
+      std::make_unique<content::MockRenderProcessHost>(browser_context());
+  auto process2 =
+      std::make_unique<content::MockRenderProcessHost>(browser_context());
+
+  event_router()->AddFilteredEventListener(
+      kTestEventName, process1.get(),
+      mojom::EventListenerOwner::NewExtensionId(ext1),
+      /*service_worker_context=*/nullptr, base::DictValue(),
+      /*add_lazy_listener=*/false);
+  event_router()->AddFilteredEventListener(
+      kTestEventName, process2.get(),
+      mojom::EventListenerOwner::NewExtensionId(ext2),
+      /*service_worker_context=*/nullptr, base::DictValue(),
+      /*add_lazy_listener=*/false);
+
+  // 1. When kShareEventArgsOnDispatch is ENABLED: pointer equality.
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(
+        extensions_features::kShareEventArgsOnDispatch);
+
+    TestEventRouterObserver observer(event_router());
+
+    auto broadcast_args = base::MakeRefCounted<EventArgs>();
+    broadcast_args->data.Append("broadcast_payload");
+    auto broadcast_event = std::make_unique<Event>(
+        events::FOR_TEST, kTestEventName, std::move(broadcast_args));
+    scoped_refptr<const EventArgs> original_args_ptr =
+        broadcast_event->args_ptr();
+
+    event_router()->BroadcastEvent(std::move(broadcast_event));
+
+    ASSERT_EQ(2u, observer.all_dispatched_events().size());
+    EXPECT_EQ(original_args_ptr,
+              observer.all_dispatched_events()[0]->args_ptr());
+    EXPECT_EQ(original_args_ptr,
+              observer.all_dispatched_events()[1]->args_ptr());
+  }
+
+  // 2. When kShareEventArgsOnDispatch is DISABLED: distinct pointers, equal
+  // values.
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(
+        extensions_features::kShareEventArgsOnDispatch);
+
+    TestEventRouterObserver observer(event_router());
+
+    auto broadcast_args = base::MakeRefCounted<EventArgs>();
+    broadcast_args->data.Append("broadcast_payload");
+    auto broadcast_event = std::make_unique<Event>(
+        events::FOR_TEST, kTestEventName, std::move(broadcast_args));
+    scoped_refptr<const EventArgs> original_args_ptr =
+        broadcast_event->args_ptr();
+    base::ListValue original_args_copy = original_args_ptr->data.Clone();
+
+    event_router()->BroadcastEvent(std::move(broadcast_event));
+
+    ASSERT_EQ(2u, observer.all_dispatched_events().size());
+    EXPECT_NE(original_args_ptr,
+              observer.all_dispatched_events()[0]->args_ptr());
+    EXPECT_NE(original_args_ptr,
+              observer.all_dispatched_events()[1]->args_ptr());
+    EXPECT_NE(observer.all_dispatched_events()[0]->args_ptr(),
+              observer.all_dispatched_events()[1]->args_ptr());
+    EXPECT_EQ(original_args_copy, observer.all_dispatched_events()[0]->args());
+    EXPECT_EQ(original_args_copy, observer.all_dispatched_events()[1]->args());
+  }
+}
+
+TEST_F(EventRouterDispatchTest,
+       WillDispatchCallbackModifiesArgsReferenceReplacement) {
+  std::string ext1 = "ext1";
+  std::string ext2 = "ext2";
+  RegisterTestApiFeature(StaticFeatureData(kTestEventFeatureData));
+
+  auto add_extension = [&](const std::string& id) {
+    scoped_refptr<const Extension> extension =
+        ExtensionBuilder("test extension").SetID(id).Build();
+    ExtensionRegistry::Get(browser_context())->AddEnabled(extension);
+  };
+  add_extension(ext1);
+  add_extension(ext2);
+
+  auto process1 =
+      std::make_unique<content::MockRenderProcessHost>(browser_context());
+  auto process2 =
+      std::make_unique<content::MockRenderProcessHost>(browser_context());
+
+  event_router()->AddFilteredEventListener(
+      kTestEventName, process1.get(),
+      mojom::EventListenerOwner::NewExtensionId(ext1),
+      /*service_worker_context=*/nullptr, base::DictValue(),
+      /*add_lazy_listener=*/false);
+  event_router()->AddFilteredEventListener(
+      kTestEventName, process2.get(),
+      mojom::EventListenerOwner::NewExtensionId(ext2),
+      /*service_worker_context=*/nullptr, base::DictValue(),
+      /*add_lazy_listener=*/false);
+
+  // 1. When kShareEventArgsOnDispatch is ENABLED:
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(
+        extensions_features::kShareEventArgsOnDispatch);
+
+    TestEventRouterObserver observer(event_router());
+
+    auto event_args = base::MakeRefCounted<EventArgs>();
+    event_args->data.Append("original_val");
+    auto broadcast_event = std::make_unique<Event>(
+        events::FOR_TEST, kTestEventName, std::move(event_args));
+    scoped_refptr<const EventArgs> original_args_ptr =
+        broadcast_event->args_ptr();
+
+    // Set will_dispatch_callback to modify arguments for ext1 only.
+    broadcast_event->will_dispatch_callback = base::BindRepeating(
+        [](content::BrowserContext* context,
+           mojom::ContextType target_context_type, const Extension* extension,
+           const base::DictValue* listener_filter,
+           std::optional<base::ListValue>& event_args_out,
+           mojom::EventFilteringInfoPtr& event_filtering_info_out,
+           bool* dispatch_separate_event_out) {
+          if (extension && extension->id() == "ext1") {
+            base::ListValue modified;
+            modified.Append("modified_val_for_ext1");
+            event_args_out = std::move(modified);
+          }
+          return true;
+        });
+
+    event_router()->BroadcastEvent(std::move(broadcast_event));
+
+    ASSERT_EQ(2u, observer.all_dispatched_events().size());
+
+    const Event* dispatched_ext1 = nullptr;
+    const Event* dispatched_ext2 = nullptr;
+
+    for (const auto& dispatched : observer.all_dispatched_events()) {
+      if (!dispatched->args().empty() && dispatched->args()[0].is_string() &&
+          dispatched->args()[0].GetString() == "modified_val_for_ext1") {
+        dispatched_ext1 = dispatched.get();
+      } else {
+        dispatched_ext2 = dispatched.get();
+      }
+    }
+
+    ASSERT_TRUE(dispatched_ext1);
+    ASSERT_TRUE(dispatched_ext2);
+
+    // The modified listener received a new reference.
+    EXPECT_NE(original_args_ptr, dispatched_ext1->args_ptr());
+    EXPECT_EQ("modified_val_for_ext1", dispatched_ext1->args()[0].GetString());
+
+    // The unmodified listener retained the original reference.
+    EXPECT_EQ(original_args_ptr, dispatched_ext2->args_ptr());
+    EXPECT_EQ("original_val", dispatched_ext2->args()[0].GetString());
+  }
+
+  // 2. When kShareEventArgsOnDispatch is DISABLED:
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(
+        extensions_features::kShareEventArgsOnDispatch);
+
+    TestEventRouterObserver observer(event_router());
+
+    auto event_args = base::MakeRefCounted<EventArgs>();
+    event_args->data.Append("original_val");
+    auto broadcast_event = std::make_unique<Event>(
+        events::FOR_TEST, kTestEventName, std::move(event_args));
+    scoped_refptr<const EventArgs> original_args_ptr =
+        broadcast_event->args_ptr();
+
+    // Set will_dispatch_callback to modify arguments for ext1 only.
+    broadcast_event->will_dispatch_callback = base::BindRepeating(
+        [](content::BrowserContext* context,
+           mojom::ContextType target_context_type, const Extension* extension,
+           const base::DictValue* listener_filter,
+           std::optional<base::ListValue>& event_args_out,
+           mojom::EventFilteringInfoPtr& event_filtering_info_out,
+           bool* dispatch_separate_event_out) {
+          if (extension && extension->id() == "ext1") {
+            base::ListValue modified;
+            modified.Append("modified_val_for_ext1");
+            event_args_out = std::move(modified);
+          }
+          return true;
+        });
+
+    event_router()->BroadcastEvent(std::move(broadcast_event));
+
+    ASSERT_EQ(2u, observer.all_dispatched_events().size());
+
+    const Event* dispatched_ext1 = nullptr;
+    const Event* dispatched_ext2 = nullptr;
+
+    for (const auto& dispatched : observer.all_dispatched_events()) {
+      if (!dispatched->args().empty() && dispatched->args()[0].is_string() &&
+          dispatched->args()[0].GetString() == "modified_val_for_ext1") {
+        dispatched_ext1 = dispatched.get();
+      } else {
+        dispatched_ext2 = dispatched.get();
+      }
+    }
+
+    ASSERT_TRUE(dispatched_ext1);
+    ASSERT_TRUE(dispatched_ext2);
+
+    // The modified listener received a new reference with modified value.
+    EXPECT_NE(original_args_ptr, dispatched_ext1->args_ptr());
+    EXPECT_EQ("modified_val_for_ext1", dispatched_ext1->args()[0].GetString());
+
+    // The unmodified listener received a deep copy (distinct reference, same
+    // value).
+    EXPECT_NE(original_args_ptr, dispatched_ext2->args_ptr());
+    EXPECT_EQ("original_val", dispatched_ext2->args()[0].GetString());
+  }
+}
+
+TEST_F(EventRouterDispatchTest, DispatchedEventPreservesFilterInfo) {
+  std::string ext1 = "ext1";
+  RegisterTestApiFeature(StaticFeatureData(kTestEventFeatureData));
+
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("test extension").SetID(ext1).Build();
+  ExtensionRegistry::Get(browser_context())->AddEnabled(extension);
+
+  TestEventRouterObserver observer(event_router());
+  event_router()->AddEventListenerForTesting(kTestEventName, process(), ext1);
+
+  auto info = mojom::EventFilteringInfo::New();
+  info->url = GURL("https://example.com/test");
+  info->service_type = "test_service";
+  info->instance_id = 42;
+
+  auto event = std::make_unique<extensions::Event>(
+      events::FOR_TEST, kTestEventName, nullptr, browser_context(),
+      std::nullopt, GURL(), EventRouter::UserGestureState::kEnabled,
+      std::move(info));
+
+  event_router()->DispatchEventToExtension(ext1, std::move(event));
+
+  ASSERT_EQ(1u, observer.dispatched_events().size());
+  ASSERT_TRUE(observer.dispatched_events().contains(kTestEventName));
+  const Event* dispatched_event =
+      observer.dispatched_events().at(kTestEventName).get();
+  ASSERT_TRUE(dispatched_event);
+  ASSERT_TRUE(dispatched_event->filter_info);
+  EXPECT_EQ(GURL("https://example.com/test"),
+            dispatched_event->filter_info->url);
+  EXPECT_EQ("test_service", dispatched_event->filter_info->service_type);
+  EXPECT_EQ(42, dispatched_event->filter_info->instance_id);
+  EXPECT_EQ(EventRouter::UserGestureState::kEnabled,
+            dispatched_event->user_gesture);
+}
+
+// Tests that an event scoped to a URL isn't dispatched for hosts blocked by
+// enterprise policy, even if the extension has host permissions for them.
+// Regression test for https://crbug.com/517094892.
+TEST_F(EventRouterDispatchTest, EventURLRespectsPolicyBlockedHosts) {
+  const ExtensionId ext1 = "ext1";
+  RegisterTestApiFeature(StaticFeatureData(kTestEventFeatureData));
+
+  scoped_refptr<const Extension> extension =
+      ExtensionBuilder("test extension")
+          .SetID(ext1)
+          .AddHostPermission("<all_urls>")
+          .Build();
+  ExtensionRegistry::Get(browser_context())->AddEnabled(extension);
+
+  URLPatternSet policy_blocked_hosts;
+  policy_blocked_hosts.AddPattern(
+      URLPattern(URLPattern::SCHEME_ALL, "*://blocked.example/*"));
+  extension->permissions_data()->SetPolicyHostRestrictions(
+      policy_blocked_hosts, /*policy_allowed_hosts=*/URLPatternSet());
+
+  TestEventRouterObserver observer(event_router());
+  event_router()->AddEventListenerForTesting(kTestEventName, process(), ext1);
+
+  auto create_event = [&](const char* url) {
+    auto event = std::make_unique<Event>(events::FOR_TEST, kTestEventName,
+                                         nullptr, browser_context());
+    event->event_url = GURL(url);
+    return event;
+  };
+
+  event_router()->BroadcastEvent(create_event("http://blocked.example/"));
+  EXPECT_EQ(0u, observer.dispatched_events().size());
+
+  event_router()->BroadcastEvent(create_event("http://allowed.example/"));
+  EXPECT_EQ(1u, observer.dispatched_events().size());
 }
 
 }  // namespace extensions

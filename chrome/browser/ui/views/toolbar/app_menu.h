@@ -23,7 +23,7 @@
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/views/controls/menu/menu_delegate.h"
 
-class BookmarkMenuDelegate;
+class AppMenuBookmarkDelegate;
 class BrowserWindowInterface;
 
 namespace views {
@@ -140,7 +140,7 @@ class AppMenu final : public views::MenuDelegate,
   // GlobalErrorObserver:
   void OnGlobalErrorsChanged() override;
 
-  views::View* GetZoomAppMenuViewForTest();
+  static views::View* GetZoomAppMenuViewForTest(views::MenuItemView* root);
 
  private:
   class CutCopyPasteView;
@@ -199,15 +199,14 @@ class AppMenu final : public views::MenuDelegate,
   // If |selected_menu_model_| is non-null after the menu completes
   // ActivatedAt is invoked. This is done so that ActivatedAt isn't invoked
   // while the message loop is nested.
-  raw_ptr<ui::ButtonMenuItemModel, DanglingUntriaged> selected_menu_model_ =
-      nullptr;
+  raw_ptr<ui::ButtonMenuItemModel> selected_menu_model_ = nullptr;
   size_t selected_index_ = 0;
 
   std::vector<base::CallbackListSubscription>
       profile_menu_item_selected_subscription_list_;
 
   // Used for managing the bookmark menu items.
-  std::unique_ptr<BookmarkMenuDelegate> bookmark_menu_delegate_;
+  std::unique_ptr<AppMenuBookmarkDelegate> bookmark_menu_delegate_;
 
   // Menu corresponding to IDC_BOOKMARKS_MENU.
   raw_ptr<views::MenuItemView, DanglingUntriaged> bookmark_menu_ = nullptr;
@@ -227,6 +226,10 @@ class AppMenu final : public views::MenuDelegate,
 
   // Used for managing "Recent tabs" menu items.
   std::unique_ptr<RecentTabsMenuModelDelegate> recent_tabs_menu_model_delegate_;
+
+  // Used for managing "Other device tabs" menu items.
+  std::unique_ptr<RecentTabsMenuModelDelegate>
+      other_device_tabs_menu_model_delegate_;
 
   base::ScopedObservation<GlobalErrorService, GlobalErrorObserver>
       global_error_observation_{this};

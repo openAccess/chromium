@@ -14,7 +14,10 @@
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
+#include "base/i18n/tag_converters.h"
+#include "base/i18n/test/scoped_icu_locale.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/rand_util.h"
@@ -5158,7 +5161,8 @@ TEST_F(ViewTest, AddExistingChild) {
 }
 
 TEST_F(ViewTest, UseMirroredLayoutDisableMirroring) {
-  base::i18n::SetICUDefaultLocale("ar");
+  base::i18n::ScopedDefaultIcuLocale scoped_locale(
+      base::i18n::GetKnownLanguageTag("ar"));
   ASSERT_TRUE(base::i18n::IsRTL());
 
   View parent, child1, child2;
@@ -5186,7 +5190,8 @@ TEST_F(ViewTest, UseMirroredLayoutDisableMirroring) {
 }
 
 TEST_F(ViewTest, UseMirroredLayoutEnableMirroring) {
-  base::i18n::SetICUDefaultLocale("en");
+  base::i18n::ScopedDefaultIcuLocale scoped_locale(
+      base::i18n::GetKnownLanguageTag("en"));
   ASSERT_FALSE(base::i18n::IsRTL());
 
   View parent, child1, child2;
@@ -6101,6 +6106,105 @@ TEST_F(ViewLayerTest, ReorderUnderWidget) {
   EXPECT_EQ(c2->layer(), parent_layer->children()[0]);
 }
 
+TEST_F(ViewLayerTest, ReorderChildLayers) {
+  View* content = widget()->SetContentsView(std::make_unique<View>());
+  View* c1 = content->AddChildView(std::make_unique<View>());
+  View* c2 = content->AddChildView(std::make_unique<View>());
+  View* c3 = content->AddChildView(std::make_unique<View>());
+  c1->SetPaintToLayer();
+  c2->SetPaintToLayer();
+  c3->SetPaintToLayer();
+
+  ui::Layer* parent_layer = widget()->GetLayer();
+  ASSERT_EQ(3u, parent_layer->children().size());
+  EXPECT_EQ(c1->layer(), parent_layer->children()[0]);
+  EXPECT_EQ(c2->layer(), parent_layer->children()[1]);
+  EXPECT_EQ(c3->layer(), parent_layer->children()[2]);
+
+  // Move c3 to the back (index 0).
+  content->ReorderChildView(c3, 0);
+  EXPECT_EQ(c3->layer(), parent_layer->children()[0]);
+  EXPECT_EQ(c1->layer(), parent_layer->children()[1]);
+  EXPECT_EQ(c2->layer(), parent_layer->children()[2]);
+
+  // Move c1 to the front (end).
+  content->ReorderChildView(c1, content->children().size());
+  EXPECT_EQ(c3->layer(), parent_layer->children()[0]);
+  EXPECT_EQ(c2->layer(), parent_layer->children()[1]);
+  EXPECT_EQ(c1->layer(), parent_layer->children()[2]);
+
+  // Add child without layer between c3 and c2. Layer order should not change.
+  View* c4 = content->AddChildViewAt(std::make_unique<View>(), 1);
+  EXPECT_EQ(c3->layer(), parent_layer->children()[0]);
+  EXPECT_EQ(c2->layer(), parent_layer->children()[1]);
+  EXPECT_EQ(c1->layer(), parent_layer->children()[2]);
+
+  // Reorder c4 without layer. Layer order should not change.
+  content->ReorderChildView(c4, 0);
+  EXPECT_EQ(c3->layer(), parent_layer->children()[0]);
+  EXPECT_EQ(c2->layer(), parent_layer->children()[1]);
+  EXPECT_EQ(c1->layer(), parent_layer->children()[2]);
+}
+
+TEST_F(ViewLayerTest, ReorderChildLayersWithMultipleRegionLayers) {
+  View* content = widget()->SetContentsView(std::make_unique<View>());
+  View* v1 = content->AddChildView(std::make_unique<View>());
+  View* v2 = content->AddChildView(std::make_unique<View>());
+  v1->SetPaintToLayer();
+  v2->SetPaintToLayer();
+
+  auto b1 = std::make_unique<ui::LayerTextured>();
+  auto b2 = std::make_unique<ui::LayerTextured>();
+  auto a1 = std::make_unique<ui::LayerTextured>();
+  auto a2 = std::make_unique<ui::LayerTextured>();
+
+  v1->AddLayerToRegion(b1.get(), LayerRegion::kBelow);
+  v1->AddLayerToRegion(b2.get(), LayerRegion::kBelow);
+  v1->AddLayerToRegion(a1.get(), LayerRegion::kAbove);
+  v1->AddLayerToRegion(a2.get(), LayerRegion::kAbove);
+
+  ui::Layer* parent_layer = widget()->GetLayer();
+  // Under parent_layer, the bottom-to-top order must preserve insertion order
+  // within each region: b1, b2, v1->layer(), a1, a2, v2->layer().
+  EXPECT_THAT(parent_layer->children(),
+              testing::ElementsAre(b1.get(), b2.get(), v1->layer(), a1.get(),
+                                   a2.get(), v2->layer()));
+
+  // Reorder v2 to the bottom (index 0).
+  content->ReorderChildView(v2, 0);
+  EXPECT_THAT(parent_layer->children(),
+              testing::ElementsAre(v2->layer(), b1.get(), b2.get(), v1->layer(),
+                                   a1.get(), a2.get()));
+
+  // Move v2 back to the front (end).
+  content->ReorderChildView(v2, content->children().size());
+  EXPECT_THAT(parent_layer->children(),
+              testing::ElementsAre(b1.get(), b2.get(), v1->layer(), a1.get(),
+                                   a2.get(), v2->layer()));
+
+  v1->RemoveLayerFromRegions(b1.get());
+  v1->RemoveLayerFromRegions(b2.get());
+  v1->RemoveLayerFromRegions(a1.get());
+  v1->RemoveLayerFromRegions(a2.get());
+}
+
+TEST_F(ViewLayerTest, ReorderChildLayersWithMaskLayer) {
+  View* content = widget()->SetContentsView(std::make_unique<View>());
+  content->SetPaintToLayer();
+  content->SetClipPath(SkPath::Rect(SkRect::MakeWH(100, 100)));
+  ASSERT_TRUE(content->layer()->layer_mask_layer());
+
+  View* c1 = content->AddChildView(std::make_unique<View>());
+  View* c2 = content->AddChildView(std::make_unique<View>());
+  c1->SetPaintToLayer();
+  c2->SetPaintToLayer();
+
+  // Reordering child views under a view with a mask layer should not crash.
+  content->ReorderChildView(c2, 0);
+  EXPECT_EQ(c2->layer(), content->layer()->children()[0]);
+  EXPECT_EQ(c1->layer(), content->layer()->children()[1]);
+}
+
 // Verifies that the layer of a view can be acquired properly.
 TEST_F(ViewLayerTest, AcquireLayer) {
   View* content = widget()->SetContentsView(std::make_unique<View>());
@@ -6347,6 +6451,51 @@ TEST_F(ViewLayerTest, RemoveLayerFromRegionsWhenNoViewLayer) {
 
   // Removing layer from regions should not crash even if view has no layer.
   view->RemoveLayerFromRegions(layer.get());
+}
+
+TEST_F(ViewLayerTest, RecreateRegionLayers) {
+  View root;
+  root.SetPaintToLayer();
+
+  View* v1 = root.AddChildView(std::make_unique<View>());
+  View* v2 = root.AddChildView(std::make_unique<View>());
+  v1->SetPaintToLayer();
+  v2->SetPaintToLayer();
+
+  ui::LayerOwner below_owner(std::make_unique<ui::LayerTextured>());
+  ui::LayerOwner above_owner(std::make_unique<ui::LayerTextured>());
+  v2->AddLayerToRegion(below_owner.layer(), LayerRegion::kBelow);
+  v2->AddLayerToRegion(above_owner.layer(), LayerRegion::kAbove);
+
+  std::unique_ptr<ui::Layer> old_below = below_owner.RecreateLayer();
+  std::unique_ptr<ui::Layer> old_above = above_owner.RecreateLayer();
+
+  // Recreated layers should replace old layers in `layers_below_` and
+  // `layers_above_`.
+  EXPECT_THAT(v2->GetLayersInOrder(),
+              testing::ElementsAre(below_owner.layer(), v2->layer(),
+                                   above_owner.layer()));
+
+  // Move old layers to a separate parent (as wm::RecreateLayers does).
+  // Reordering while `old_below` and `old_above` are still alive in `old_root`
+  // must restack the new layers under `root.layer()` rather than attempting to
+  // stack `old_below` / `old_above` (which would crash in StackRelativeTo).
+  std::unique_ptr<ui::Layer> old_root = ui::Layer::Create(ui::LAYER_NOT_DRAWN);
+  old_root->Add(old_below.get());
+  old_root->Add(old_above.get());
+
+  root.ReorderChildView(v1, 1);
+  EXPECT_THAT(root.layer()->children(),
+              testing::ElementsAre(below_owner.layer(), v2->layer(),
+                                   above_owner.layer(), v1->layer()));
+
+  // Destroying the old layers afterward should not remove the new layers from
+  // `v2`'s regions.
+  old_below.reset();
+  old_above.reset();
+  EXPECT_THAT(v2->GetLayersInOrder(),
+              testing::ElementsAre(below_owner.layer(), v2->layer(),
+                                   above_owner.layer()));
 }
 
 // View::OrphanLayers() captures a bare ui::Layer* `parent` local and loops

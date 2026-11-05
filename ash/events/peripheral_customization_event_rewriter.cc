@@ -17,7 +17,6 @@
 #include "ash/public/mojom/input_device_settings.mojom.h"
 #include "ash/shell.h"
 #include "ash/system/input_device_settings/input_device_settings_controller_impl.h"
-#include "ash/system/input_device_settings/input_device_settings_logging.h"
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/containers/fixed_flat_map.h"
@@ -30,6 +29,7 @@
 #include "ui/base/accelerators/ash/quick_insert_event_property.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/display/manager/display_manager.h"
+#include "ui/display/manager/managed_display_info.h"
 #include "ui/display/screen.h"
 #include "ui/events/ash/mojom/modifier_key.mojom-shared.h"
 #include "ui/events/event.h"
@@ -378,13 +378,14 @@ gfx::PointF GetCurrentCursorLocation() {
                                      physical_screen_location.y());
       break;
   }
-  // Scale the location to match the users chosen scaling factor then apply
-  // overscan insets. Overscan insets are stored as post-scaled values so they
-  // must be applied after scaling the original location.
+  // Scale the location to match the user's chosen scaling factor then apply
+  // pixel overscan insets.
   auto scaled_location =
       gfx::ScalePoint(physical_screen_location, display.device_scale_factor());
-  auto overscan_insets =
-      Shell::Get()->display_manager()->GetOverscanInsets(display.id());
+  const gfx::Insets overscan_insets = Shell::Get()
+                                          ->display_manager()
+                                          ->GetDisplayInfo(display.id())
+                                          .GetOverscanInsetsInPixel();
   scaled_location.set_x(scaled_location.x() + overscan_insets.left());
   scaled_location.set_y(scaled_location.y() + overscan_insets.top());
   return scaled_location;
@@ -923,28 +924,6 @@ bool PeripheralCustomizationEventRewriter::RewriteEventFromButton(
       event.type() == ui::EventType::kMousePressed) {
     metrics_manager_->RecordRemappingActionWhenButtonPressed(
         *remapping_action, remapping_action_result->peripheral_kind);
-  }
-
-  auto id = event.source_device_id();
-  switch (remapping_action_result->peripheral_kind) {
-    case InputDeviceSettingsMetricsManager::PeripheralCustomizationMetricsType::
-        kMouse:
-      PR_LOG(INFO, Feature::IDS) << GetMouseSettingsLog(
-          "Mouse button is pressed",
-          *(input_device_settings_controller_->GetMouse(id)));
-      break;
-    case InputDeviceSettingsMetricsManager::PeripheralCustomizationMetricsType::
-        kGraphicsTablet:
-      PR_LOG(INFO, Feature::IDS) << GetGraphicsTabletSettingsLog(
-          "Graphics tablet button is pressed",
-          *(input_device_settings_controller_->GetGraphicsTablet(id)));
-      break;
-    case InputDeviceSettingsMetricsManager::PeripheralCustomizationMetricsType::
-        kGraphicsTabletPen:
-      PR_LOG(INFO, Feature::IDS) << GetGraphicsTabletSettingsLog(
-          "Graphics tablet pen button is pressed",
-          *(input_device_settings_controller_->GetGraphicsTablet(id)));
-      break;
   }
 
   if (remapping_action->is_accelerator_action()) {

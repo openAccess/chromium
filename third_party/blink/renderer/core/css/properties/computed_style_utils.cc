@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 #include "third_party/blink/renderer/core/css/properties/computed_style_utils.h"
 
+#include "base/containers/span.h"
 #include "base/memory/values_equivalent.h"
 #include "third_party/blink/renderer/core/css/basic_shape_functions.h"
 #include "third_party/blink/renderer/core/css/counter_style.h"
@@ -65,8 +66,11 @@
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/layout/grid/layout_grid.h"
 #include "third_party/blink/renderer/core/layout/grid_lanes/layout_grid_lanes.h"
+#include "third_party/blink/renderer/core/layout/inline/inline_cursor.h"
 #include "third_party/blink/renderer/core/layout/layout_block.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
+#include "third_party/blink/renderer/core/layout/layout_inline.h"
+#include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
 #include "third_party/blink/renderer/core/layout/svg/transform_helper.h"
 #include "third_party/blink/renderer/core/page/scrolling/sticky_position_scrolling_constraints.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
@@ -108,7 +112,9 @@ const CSSValue* ConvertFontPaletteToCSSValue(const FontPalette& palette) {
     case FontPalette::kInterpolablePalette: {
       const CSSValue* start = ConvertFontPaletteToCSSValue(*palette.GetStart());
       const CSSValue* end = ConvertFontPaletteToCSSValue(*palette.GetEnd());
-      if (*start == *end) {
+      // Equal endpoints simplify to a single palette, unless the alpha
+      // multiplier must be preserved (e.g. a zero combined percentage).
+      if (*start == *end && palette.GetAlphaMultiplier() == 1.0) {
         return start;
       }
       return MakeGarbageCollected<cssvalue::CSSPaletteMixValue>(
@@ -224,8 +230,7 @@ const blink::Color ComputedStyleUtils::BorderSideColor(
              border_style == EBorderStyle::kOutset ||
              border_style == EBorderStyle::kRidge ||
              border_style == EBorderStyle::kGroove) {
-    if (RuntimeEnabledFeatures::TableDefaultBorderColorCurrentColorEnabled() &&
-        style.IsDisplayTableType()) {
+    if (style.IsDisplayTableType()) {
       current_color = style.GetCurrentColor();
     } else {
       // FIXME: Treating styled borders with initial color differently causes
@@ -246,7 +251,8 @@ const CSSValue* ComputedStyleUtils::BackgroundImageOrMaskImage(
     CSSValuePhase value_phase) {
   CSSValueList* list = CSSValueList::CreateCommaSeparated();
   const FillLayer* curr_layer = &fill_layer;
-  for (; curr_layer; curr_layer = curr_layer->Next()) {
+  for (; curr_layer; curr_layer = curr_layer->NextForComputedValue(
+                         FillLayer::Property::kImage)) {
     if (curr_layer->GetImage()) {
       list->Append(*curr_layer->GetImage()->ComputedCSSValue(
           style, allow_visited_style, value_phase));
@@ -287,7 +293,8 @@ const CSSValue* ComputedStyleUtils::BackgroundSizeOrMaskSize(
     const FillLayer& fill_layer) {
   CSSValueList* list = CSSValueList::CreateCommaSeparated();
   const FillLayer* curr_layer = &fill_layer;
-  for (; curr_layer; curr_layer = curr_layer->Next()) {
+  for (; curr_layer; curr_layer = curr_layer->NextForComputedValue(
+                         FillLayer::Property::kSize)) {
     list->Append(*ValueForFillSize(curr_layer->Size(), style));
   }
   return list;
@@ -333,7 +340,8 @@ const CSSValue* ComputedStyleUtils::ValueForFillRepeat(
 const CSSValue* ComputedStyleUtils::RepeatStyle(const FillLayer* curr_layer) {
   CSSValueList* list = CSSValueList::CreateCommaSeparated();
 
-  for (; curr_layer; curr_layer = curr_layer->Next()) {
+  for (; curr_layer; curr_layer = curr_layer->NextForComputedValue(
+                         FillLayer::Property::kRepeat)) {
     list->Append(*ValueForFillRepeat(curr_layer));
   }
 
@@ -528,7 +536,8 @@ const CSSValue* ComputedStyleUtils::BackgroundPositionOrMaskPosition(
     const ComputedStyle& style,
     const FillLayer* curr_layer) {
   CSSValueList* list = CSSValueList::CreateCommaSeparated();
-  for (; curr_layer; curr_layer = curr_layer->Next()) {
+  for (; curr_layer; curr_layer = curr_layer->NextForComputedValue(
+                         FillLayer::Property::kPosition)) {
     list->Append(
         *CreatePositionListForLayer(resolved_property, *curr_layer, style));
   }
@@ -539,7 +548,8 @@ const CSSValue* ComputedStyleUtils::BackgroundPositionXOrWebkitMaskPositionX(
     const ComputedStyle& style,
     const FillLayer* curr_layer) {
   CSSValueList* list = CSSValueList::CreateCommaSeparated();
-  for (; curr_layer; curr_layer = curr_layer->Next()) {
+  for (; curr_layer; curr_layer = curr_layer->NextForComputedValue(
+                         FillLayer::Property::kPositionX)) {
     const Length& from_edge = curr_layer->PositionX();
     if (curr_layer->BackgroundXOrigin() == BackgroundEdgeOrigin::kRight) {
       list->Append(*ZoomAdjustedPixelValueForLength(
@@ -555,7 +565,8 @@ const CSSValue* ComputedStyleUtils::BackgroundPositionYOrWebkitMaskPositionY(
     const ComputedStyle& style,
     const FillLayer* curr_layer) {
   CSSValueList* list = CSSValueList::CreateCommaSeparated();
-  for (; curr_layer; curr_layer = curr_layer->Next()) {
+  for (; curr_layer; curr_layer = curr_layer->NextForComputedValue(
+                         FillLayer::Property::kPositionY)) {
     const Length& from_edge = curr_layer->PositionY();
     if (curr_layer->BackgroundYOrigin() == BackgroundEdgeOrigin::kBottom) {
       list->Append(*ZoomAdjustedPixelValueForLength(
@@ -760,32 +771,20 @@ CSSValue* ComputedStyleUtils::ValueForPositionOffset(
     const CSSProperty& property,
     const LayoutObject* layout_object,
     CSSValuePhase value_phase) {
-  std::pair<const Length*, const Length*> positions;
-  bool is_horizontal_property;
-  switch (property.PropertyID()) {
-    case CSSPropertyID::kLeft:
-      positions = std::make_pair(&style.Left(), &style.Right());
-      is_horizontal_property = true;
-      break;
-    case CSSPropertyID::kRight:
-      positions = std::make_pair(&style.Right(), &style.Left());
-      is_horizontal_property = true;
-      break;
-    case CSSPropertyID::kTop:
-      positions = std::make_pair(&style.Top(), &style.Bottom());
-      is_horizontal_property = false;
-      break;
-    case CSSPropertyID::kBottom:
-      positions = std::make_pair(&style.Bottom(), &style.Top());
-      is_horizontal_property = false;
-      break;
-    default:
-      NOTREACHED();
-  }
-  DCHECK(positions.first && positions.second);
-
-  const Length& offset = *positions.first;
-  const Length& opposite = *positions.second;
+  const Length& offset = ([&]() {
+    switch (property.PropertyID()) {
+      case CSSPropertyID::kLeft:
+        return style.Left();
+      case CSSPropertyID::kRight:
+        return style.Right();
+      case CSSPropertyID::kTop:
+        return style.Top();
+      case CSSPropertyID::kBottom:
+        return style.Bottom();
+      default:
+        NOTREACHED();
+    }
+  })();
 
   // Just return the computed-value if:
   //  - We don't have a layout-object.
@@ -801,42 +800,7 @@ CSSValue* ComputedStyleUtils::ValueForPositionOffset(
     return ZoomAdjustedPixelValueForLength(offset, style);
   }
 
-  auto& document = layout_object->GetDocument();
-  const auto* box = DynamicTo<LayoutBox>(layout_object);
-  if (layout_object->IsOutOfFlowPositioned()) {
-    // LayoutBox::OutOfFlowInsetsForGetComputedStyle() requires there to be
-    // layout results to get the right insets. If there are none, return early
-    // as this is considered an error case.
-    CHECK(box);
-    if (!box->PhysicalFragmentCount()) {
-      return ZoomAdjustedPixelValueForLength(offset, style);
-    }
-
-    // LayoutBox::OutOfFlowInsetsForGetComputedStyle() are relative to the
-    // container's writing direction. Convert it to physical.
-    const PhysicalBoxStrut& insets =
-        box->OutOfFlowInsetsForGetComputedStyle().ConvertToPhysical(
-            box->ContainingBlock()->StyleRef().GetWritingDirection());
-    LayoutUnit inset;
-    switch (property.PropertyID()) {
-      case CSSPropertyID::kLeft:
-        inset = insets.left;
-        break;
-      case CSSPropertyID::kTop:
-        inset = insets.top;
-        break;
-      case CSSPropertyID::kRight:
-        inset = insets.right;
-        break;
-      case CSSPropertyID::kBottom:
-        inset = insets.bottom;
-        break;
-      default:
-        NOTREACHED();
-    }
-    return ZoomAdjustedPixelValue(inset, style);
-  }
-
+  // Used sticky insets are stored on the sticky-constraints object.
   if (layout_object->IsStickyPositioned()) {
     const auto sticky_constraints =
         To<LayoutBoxModelObject>(layout_object)->StickyConstraints();
@@ -862,12 +826,74 @@ CSSValue* ComputedStyleUtils::ValueForPositionOffset(
     return ZoomAdjustedPixelValueForLength(offset, style);
   }
 
+  DCHECK(layout_object->IsOutOfFlowPositioned() ||
+         layout_object->IsRelPositioned());
+  if (layout_object->IsOutOfFlowPositioned() ||
+      RuntimeEnabledFeatures::UsedPositionRelativeInsetsEnabled()) {
+    const auto* box_fragment = ([&]() -> const PhysicalBoxFragment* {
+      if (const auto* box = DynamicTo<LayoutBox>(layout_object)) {
+        if (box->PhysicalFragmentCount()) {
+          return box->GetPhysicalFragment(0);
+        }
+      } else if (const auto* layout_inline =
+                     DynamicTo<LayoutInline>(layout_object)) {
+        InlineCursor cursor;
+        cursor.MoveTo(*layout_inline);
+        if (cursor) {
+          return cursor.Current().BoxFragment();
+        }
+      }
+      return nullptr;
+    })();
+
+    if (box_fragment) {
+      const LayoutUnit inset = ([&]() {
+        const PhysicalBoxStrut insets = box_fragment->UsedPositionInsets();
+        switch (property.PropertyID()) {
+          case CSSPropertyID::kLeft:
+            return insets.left;
+          case CSSPropertyID::kTop:
+            return insets.top;
+          case CSSPropertyID::kRight:
+            return insets.right;
+          case CSSPropertyID::kBottom:
+            return insets.bottom;
+          default:
+            NOTREACHED();
+        }
+      })();
+      return ZoomAdjustedPixelValue(inset, style);
+    }
+
+    return ZoomAdjustedPixelValueForLength(offset, style);
+  }
+
   DCHECK(layout_object->IsRelPositioned());
+
+  auto& document = layout_object->GetDocument();
+  const auto* box = DynamicTo<LayoutBox>(layout_object);
+  const bool is_horizontal_property =
+      property.PropertyID() == CSSPropertyID::kLeft ||
+      property.PropertyID() == CSSPropertyID::kRight;
+  const Length& opposite = ([&]() {
+    switch (property.PropertyID()) {
+      case CSSPropertyID::kLeft:
+        return style.Right();
+      case CSSPropertyID::kRight:
+        return style.Left();
+      case CSSPropertyID::kTop:
+        return style.Bottom();
+      case CSSPropertyID::kBottom:
+        return style.Top();
+      default:
+        NOTREACHED();
+    }
+  })();
 
   if ((offset.IsPercent() || offset.IsCalculated()) && box) {
     const LayoutUnit containing_block_size =
         is_horizontal_property ==
-                box->ContainingBlock()->IsHorizontalWritingMode()
+                box->ContainingBox()->IsHorizontalWritingMode()
             ? box->ContainingBlockLogicalWidthForContent()
             : box->ContainingBlockLogicalHeightForRelPositioned();
     UseCounter::Count(box->GetDocument(),
@@ -890,7 +916,7 @@ CSSValue* ComputedStyleUtils::ValueForPositionOffset(
       if (box) {
         LayoutUnit containing_block_size =
             is_horizontal_property ==
-                    layout_object->ContainingBlock()->IsHorizontalWritingMode()
+                    layout_object->ContainingBox()->IsHorizontalWritingMode()
                 ? box->ContainingBlockLogicalWidthForContent()
                 : box->ContainingBlockLogicalHeightForRelPositioned();
         return ZoomAdjustedPixelValue(
@@ -912,33 +938,37 @@ CSSValue* ComputedStyleUtils::ValueForPositionOffset(
 
 CSSValue* ComputedStyleUtils::ValueForItemPositionWithOverflowAlignment(
     const StyleSelfAlignmentData& data) {
+  const ItemPosition item_position =
+      RuntimeEnabledFeatures::CSSFlowStartAndEndSerializationEnabled()
+          ? data.GetUsedPosition()
+          : data.GetComputedPosition();
   if (data.PositionType() == ItemPositionType::kLegacy) {
     // Legacy is only for justify-items and may only be created with the
     // positions "left", "right", or "center". See
     // JustifyItems::ParseSingleValue.
-    DCHECK(data.GetPosition() == ItemPosition::kLeft ||
-           data.GetPosition() == ItemPosition::kRight ||
-           data.GetPosition() == ItemPosition::kCenter)
-        << "Unexpected position: " << static_cast<unsigned>(data.GetPosition());
+    DCHECK(item_position == ItemPosition::kLeft ||
+           item_position == ItemPosition::kRight ||
+           item_position == ItemPosition::kCenter)
+        << "Unexpected position: " << static_cast<unsigned>(item_position);
     DCHECK_EQ(data.Overflow(), OverflowAlignment::kDefault);
     return MakeGarbageCollected<CSSValuePair>(
         CSSIdentifierValue::Create(CSSValueID::kLegacy),
-        CSSIdentifierValue::Create(data.GetPosition()),
+        CSSIdentifierValue::Create(item_position),
         CSSValuePair::kDropIdenticalValues);
   }
 
-  if (data.GetPosition() == ItemPosition::kBaseline) {
+  if (item_position == ItemPosition::kBaseline) {
     return CSSIdentifierValue::Create(CSSValueID::kBaseline);
-  } else if (data.GetPosition() == ItemPosition::kLastBaseline) {
+  } else if (item_position == ItemPosition::kLastBaseline) {
     return MakeGarbageCollected<CSSValuePair>(
         CSSIdentifierValue::Create(CSSValueID::kLast),
         CSSIdentifierValue::Create(CSSValueID::kBaseline),
         CSSValuePair::kDropIdenticalValues);
   } else {
-    auto* position = data.GetPosition() == ItemPosition::kLegacy
+    auto* position = item_position == ItemPosition::kLegacy
                          ? CSSIdentifierValue::Create(CSSValueID::kNormal)
-                         : CSSIdentifierValue::Create(data.GetPosition());
-    if (data.GetPosition() >= ItemPosition::kCenter &&
+                         : CSSIdentifierValue::Create(item_position);
+    if (item_position >= ItemPosition::kCenter &&
         data.Overflow() != OverflowAlignment::kDefault) {
       return MakeGarbageCollected<CSSValuePair>(
           CSSIdentifierValue::Create(data.Overflow()), position,
@@ -954,6 +984,10 @@ ComputedStyleUtils::ValueForContentPositionAndDistributionWithOverflowAlignment(
   CSSValueID distribution = CSSValueID::kInvalid;
   CSSValueID position = CSSValueID::kInvalid;
   CSSValueID overflow = CSSValueID::kInvalid;
+  const ContentPosition content_position =
+      RuntimeEnabledFeatures::CSSFlowStartAndEndSerializationEnabled()
+          ? data.GetUsedPosition()
+          : data.GetComputedPosition();
 
   // Handle content-distribution values
   if (data.Distribution() != ContentDistributionType::kDefault) {
@@ -961,7 +995,7 @@ ComputedStyleUtils::ValueForContentPositionAndDistributionWithOverflowAlignment(
   }
 
   // Handle content-position values (either as fallback or actual value)
-  switch (data.GetPosition()) {
+  switch (content_position) {
     case ContentPosition::kNormal:
       // Handle 'normal' value, not valid as content-distribution fallback.
       if (data.Distribution() == ContentDistributionType::kDefault) {
@@ -973,12 +1007,12 @@ ComputedStyleUtils::ValueForContentPositionAndDistributionWithOverflowAlignment(
       break;
     default:
       // Handle overflow-alignment (only allowed for content-position values)
-      if ((data.GetPosition() >= ContentPosition::kCenter ||
+      if ((content_position >= ContentPosition::kCenter ||
            data.Distribution() != ContentDistributionType::kDefault) &&
           data.Overflow() != OverflowAlignment::kDefault) {
         overflow = CSSIdentifierValue::Create(data.Overflow())->GetValueID();
       }
-      position = CSSIdentifierValue::Create(data.GetPosition())->GetValueID();
+      position = CSSIdentifierValue::Create(content_position)->GetValueID();
   }
 
   return MakeGarbageCollected<cssvalue::CSSContentDistributionValue>(
@@ -1364,9 +1398,9 @@ CSSIdentifierValue* ComputedStyleUtils::ValueForFontOpticalSizing(
     const ComputedStyle& style) {
   OpticalSizing optical_sizing = style.GetFontDescription().FontOpticalSizing();
   switch (optical_sizing) {
-    case kAutoOpticalSizing:
+    case OpticalSizing::kAuto:
       return CSSIdentifierValue::Create(CSSValueID::kAuto);
-    case kNoneOpticalSizing:
+    case OpticalSizing::kNone:
       return CSSIdentifierValue::Create(CSSValueID::kNone);
     default:
       return CSSIdentifierValue::Create(CSSValueID::kAuto);
@@ -1583,7 +1617,7 @@ CSSValue* ComputedStyleUtils::ValueForFont(const ComputedStyle& style) {
   OpticalSizing optical_sizing = style.GetFontDescription().FontOpticalSizing();
 
   if (kerning != FontDescription::kAutoKerning ||
-      optical_sizing != kAutoOpticalSizing ||
+      optical_sizing != OpticalSizing::kAuto ||
       (RuntimeEnabledFeatures::CSSFontSizeAdjustEnabled() &&
        style.GetFontDescription().HasSizeAdjust()) ||
       variant_position != FontDescription::kNormalVariantPosition ||
@@ -2309,15 +2343,15 @@ CSSValue* ComputedStyleUtils::ValueForHangingPunctuation(
   return list;
 }
 
-CSSValue* ComputedStyleUtils::ValueForFlowTolerance(
-    const FlowTolerance& flow_tolerance,
+CSSValue* ComputedStyleUtils::ValueForFitTolerance(
+    const FitTolerance& fit_tolerance,
     const ComputedStyle& style) {
-  if (flow_tolerance.IsNormal()) {
+  if (fit_tolerance.IsNormal()) {
     return CSSIdentifierValue::Create(CSSValueID::kNormal);
-  } else if (flow_tolerance.IsInfinite()) {
+  } else if (fit_tolerance.IsInfinite()) {
     return CSSIdentifierValue::Create(CSSValueID::kInfinite);
   }
-  return ZoomAdjustedPixelValueForLength(flow_tolerance.GetLength(), style);
+  return ZoomAdjustedPixelValueForLength(fit_tolerance.GetLength(), style);
 }
 
 CSSValue* ComputedStyleUtils::ValueForGridLanesDirection(
@@ -2370,12 +2404,12 @@ std::optional<gfx::SizeF> ComputedStyleUtils::UsedBoxSize(
       // Under SvgNewZoom, ObjectBoundingBox() is already in zoomed CSS pixels
       // (since SVG element layout absorbs EffectiveZoom). Under the old model,
       // the bbox is in CSS pixels, so we must multiply by zoom.
-      size.Scale(layout_object.StyleRef().EffectiveZoom());
+      size.Scale(layout_object.Style().EffectiveZoom());
     }
     return size;
   }
   if (const auto* box = DynamicTo<LayoutBox>(layout_object)) {
-    if (box->StyleRef().BoxSizing() == EBoxSizing::kBorderBox) {
+    if (box->Style().BoxSizing() == EBoxSizing::kBorderBox) {
       return gfx::SizeF(box->PhysicalBorderBoxRect().size);
     }
     // For "content-box", use the "computed" padding, instead of the "used".
@@ -2547,12 +2581,12 @@ CSSValue* ComputedStyleUtils::ValueForWillChange(
 
 namespace {
 
-template <typename T, wtf_size_t C, typename Func, typename... Args>
-CSSValue* CreateAnimationValueList(const Vector<T, C>& values,
+template <typename Container, typename Func, typename... Args>
+CSSValue* CreateAnimationValueList(const Container& values,
                                    Func item_func,
                                    Args&&... args) {
   CSSValueList* list = CSSValueList::CreateCommaSeparated();
-  for (const T& value : values) {
+  for (const auto& value : values) {
     list->Append(*item_func(value, args...));
   }
   return list;
@@ -2878,11 +2912,13 @@ CSSValue* ComputedStyleUtils::ValueForAnimationTimeline(
 CSSValue* ComputedStyleUtils::ValueForAnimationTimelineList(
     const CSSAnimationData* animation_data,
     const ComputedStyle& style) {
-  return CreateAnimationValueList(
-      animation_data
-          ? animation_data->TimelineList()
-          : Vector<StyleTimeline>{CSSAnimationData::InitialTimeline()},
-      &ValueForAnimationTimeline, style);
+  if (animation_data) {
+    return CreateAnimationValueList(animation_data->TimelineList(),
+                                    &ValueForAnimationTimeline, style);
+  }
+  StyleTimeline initial_timeline = CSSAnimationData::InitialTimeline();
+  return CreateAnimationValueList(base::span_from_ref(initial_timeline),
+                                  &ValueForAnimationTimeline, style);
 }
 
 CSSValue* ComputedStyleUtils::ValueForTimelineInset(
@@ -2974,12 +3010,14 @@ CSSValue* ComputedStyleUtils::ValueForTimelineTriggerActiveRangeEndList(
 CSSValue* ComputedStyleUtils::ValueForTimelineTriggerTimelineList(
     const CSSAnimationData* animation_data,
     const ComputedStyle& style) {
-  return CreateAnimationValueList(
-      animation_data
-          ? animation_data->TimelineTriggerSourceList()
-          : Vector<StyleTimeline>{CSSAnimationData::
-                                      InitialTimelineTriggerSource()},
-      &ValueForAnimationTimeline, style);
+  if (animation_data) {
+    return CreateAnimationValueList(animation_data->TimelineTriggerSourceList(),
+                                    &ValueForAnimationTimeline, style);
+  }
+  StyleTimeline initial_timeline =
+      CSSAnimationData::InitialTimelineTriggerSource();
+  return CreateAnimationValueList(base::span_from_ref(initial_timeline),
+                                  &ValueForAnimationTimeline, style);
 }
 
 CSSValue* ComputedStyleUtils::ValueForAnimationName(const AtomicString& name) {
@@ -3622,6 +3660,56 @@ CSSValue* ComputedStyleUtils::ValueForShape(const ComputedStyle& style,
   if (shape_value->CssBox() != ShapeBox::kMarginBox) {
     list->Append(*CSSIdentifierValue::Create(shape_value->CssBox()));
   }
+  return list;
+}
+
+const CSSValue* ComputedStyleUtils::ValueForBorderRadiusCornerShorthand(
+    const CSSProperty& first_corner,
+    const CSSProperty& second_corner,
+    const ComputedStyle& style,
+    const LayoutObject* layout_object,
+    bool allow_visited_style,
+    CSSValuePhase value_phase) {
+  const CSSValue* first_corner_value = first_corner.CSSValueFromComputedStyle(
+      style, layout_object, allow_visited_style, value_phase);
+  const CSSValue* second_corner_value = second_corner.CSSValueFromComputedStyle(
+      style, layout_object, allow_visited_style, value_phase);
+
+  const auto& first_corner_pair = To<CSSValuePair>(*first_corner_value);
+  const auto& second_corner_pair = To<CSSValuePair>(*second_corner_value);
+
+  CSSValueList* list = CSSValueList::CreateSlashSeparated();
+
+  CSSValueList* horizontal_radii = CSSValueList::CreateSpaceSeparated();
+  horizontal_radii->Append(first_corner_pair.First());
+  if (!base::ValuesEquivalent(&first_corner_pair.First(),
+                              &second_corner_pair.First())) {
+    horizontal_radii->Append(second_corner_pair.First());
+  }
+
+  list->Append(*horizontal_radii);
+
+  CSSValueList* vertical_radii = CSSValueList::CreateSpaceSeparated();
+  vertical_radii->Append(first_corner_pair.Second());
+  if (!base::ValuesEquivalent(&first_corner_pair.Second(),
+                              &second_corner_pair.Second())) {
+    vertical_radii->Append(second_corner_pair.Second());
+  }
+
+  if (!vertical_radii->Equals(To<CSSValueList>(list->Item(0)))) {
+    list->Append(*vertical_radii);
+  }
+
+  // If it's a single value without `/`, we can just return that value, e.g.,
+  // "10px"
+  if (list->length() == 1) {
+    const auto& first_list = To<CSSValueList>(list->Item(0));
+    if (first_list.length() == 1) {
+      return &first_list.Item(0);
+    }
+    return &first_list;
+  }
+
   return list;
 }
 

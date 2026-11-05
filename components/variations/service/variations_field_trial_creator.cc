@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -255,7 +256,7 @@ bool VariationsFieldTrialCreator::SetUpFieldTrials(
     metrics::MetricsStateManager* metrics_state_manager,
     PlatformFieldTrials* platform_field_trials,
     SafeSeedManager* safe_seed_manager,
-    bool add_entropy_source_to_variations_ids,
+    std::optional<int> low_entropy_source_value,
     const EntropyProviders& entropy_providers) {
   DCHECK(feature_list);
   DCHECK(metrics_state_manager);
@@ -367,12 +368,11 @@ bool VariationsFieldTrialCreator::SetUpFieldTrials(
     variations_source_.type = VariationsSourceType::kVariationsServer;
   }
 
-  if (add_entropy_source_to_variations_ids &&
+  if (low_entropy_source_value.has_value() &&
       !create_trials_result.AppliedSeedHasActiveLimitedLayer()) {
     // TODO(crbug.com/424154785): Consider no longer transmitting LES values
     // alongside VariationsIDs.
-    http_header_provider->SetLowEntropySourceValue(
-        metrics_state_manager->GetLowEntropySource());
+    http_header_provider->SetLowEntropySourceValue(low_entropy_source_value);
   }
 
   platform_field_trials->SetUpClientSideFieldTrials(
@@ -591,10 +591,6 @@ base::Time VariationsFieldTrialCreator::GetSeedFetchTime() {
              : GetSeedStore()->GetLatestSeedFetchTime();
 }
 
-base::Time VariationsFieldTrialCreator::GetLatestSeedFetchTime() {
-  return GetSeedStore()->GetLatestSeedFetchTime();
-}
-
 Study::Platform VariationsFieldTrialCreator::GetPlatform() {
   if (platform_override_.has_value()) {
     return platform_override_.value();
@@ -808,8 +804,8 @@ CreateTrialsResult VariationsFieldTrialCreator::CreateTrialsFromSeed(
   if (!run_in_safe_mode) {
     safe_seed_manager->SetActiveSeedState(
         std::move(seed_data), std::move(base64_seed_signature),
-        local_state()->GetInteger(prefs::kVariationsSeedMilestone),
-        std::move(client_state), seed_store_->GetLatestSeedFetchTime());
+        GetSeedStore()->GetLatestMilestone(), std::move(client_state),
+        GetSeedStore()->GetLatestSeedFetchTime());
   }
 
   base::UmaHistogramCounts1M("Variations.AppliedSeed.Size", applied_seed_size);
@@ -871,7 +867,7 @@ void VariationsFieldTrialCreator::LoadSeedFromJsonFile(
   seed_store_->StoreSeedData(/*done_callback=*/base::DoNothing(), decoded_seed,
                              seed_signature->GetString(), /*country_code=*/"",
                              /*geo_level1=*/"",
-                             /*date_fetched=*/base::Time(),
+                             /*seed_date=*/base::Time(),
                              /*is_delta_compressed=*/false,
                              /*is_gzip_compressed=*/true,
                              /*require_synchronous=*/true);

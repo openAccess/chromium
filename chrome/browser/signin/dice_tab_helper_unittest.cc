@@ -4,29 +4,48 @@
 
 #include "chrome/browser/signin/dice_tab_helper.h"
 
+#include <vector>
+
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/task/current_thread.h"
 #include "base/test/bind.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
+#include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/metrics/profile_metrics_service_factory.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/dice_web_signin_interceptor.h"
+#include "chrome/browser/signin/dice_web_signin_interceptor_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
+#include "chrome/browser/signin/web_signin_interceptor.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/metrics/profile_metrics_service.h"
 #include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "components/signin/public/identity_manager/tribool.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
+#include "device/bluetooth/bluetooth_adapter.h"
+#include "device/bluetooth/bluetooth_adapter_factory.h"
+#include "device/bluetooth/test/mock_bluetooth_adapter.h"
+#include "google_apis/gaia/core_account_id.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/gaia_urls.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 
@@ -37,6 +56,66 @@ constexpr char kDiceSyncHeaderArrivalTimeWindowHistogramName[] =
     "Signin.SigninManager.SyncHeaderArrivalTimeWindowAfterLst";
 constexpr char kDiceUnexpectedSyncHeaderProcessingBeforeLstHistogramName[] =
     "Signin.SigninManager.UnexpectedSyncHeaderProcessingBeforeLST";
+
+CoreAccountId GetTestAccountId() {
+  return CoreAccountId::FromGaiaId(GaiaId("test_gaia_id"));
+}
+
+class FakeWebSigninInterceptorDelegate : public WebSigninInterceptor::Delegate {
+ public:
+  bool IsSigninInterceptionSupported(
+      const content::WebContents& web_contents) override {
+    return true;
+  }
+  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle>
+  ShowSigninInterceptionBubble(
+      content::WebContents* web_contents,
+      const BubbleParameters& bubble_parameters,
+      base::OnceCallback<void(SigninInterceptionResult)> callback) override {
+    return nullptr;
+  }
+  std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle>
+  ShowOidcInterceptionDialog(
+      content::WebContents* web_contents,
+      const BubbleParameters& bubble_parameters,
+      signin::SigninChoiceWithConfirmAndRetryCallback callback,
+      base::OnceClosure dialog_closed_closure,
+      base::RepeatingClosure retry_callback) override {
+    return nullptr;
+  }
+  void ShowFirstRunExperienceInNewProfile(
+      BrowserWindowInterface* browser,
+      const CoreAccountId& account_id,
+      WebSigninInterceptor::SigninInterceptionType interception_type) override {
+  }
+  void ShowSigninError(content::WebContents* web_contents,
+                       const SigninUIError& error) override {}
+};
+
+class MockDiceWebSigninInterceptor : public DiceWebSigninInterceptor {
+ public:
+  explicit MockDiceWebSigninInterceptor(Profile* profile)
+      : DiceWebSigninInterceptor(
+            profile,
+            std::make_unique<FakeWebSigninInterceptorDelegate>(),
+            ProfileMetricsServiceFactory::GetForProfile(profile)) {}
+  ~MockDiceWebSigninInterceptor() override = default;
+
+  MOCK_METHOD(void,
+              MaybeInterceptWebSignin,
+              (content::WebContents * web_contents,
+               CoreAccountId account_id,
+               signin_metrics::AccessPoint access_point,
+               bool is_new_account,
+               bool is_chrome_signin,
+               signin::Tribool primary_is_connected),
+              (override));
+  MOCK_METHOD(void,
+              OnDiceSigninSessionComplete,
+              (const CoreAccountId& initiator_account_id,
+               std::vector<CoreAccountId> secondary_accounts),
+              (override));
+};
 }  // namespace
 
 class DiceTabHelperTest : public ChromeRenderViewHostTestHarness {
@@ -72,7 +151,20 @@ class DiceTabHelperTest : public ChromeRenderViewHostTestHarness {
               metrics::ProfileMetricsContext(1));
         })});
 
+    testing_factories.emplace_back(TestingProfile::TestingFactory{
+        DiceWebSigninInterceptorFactory::GetInstance(),
+        base::BindRepeating([](content::BrowserContext* context)
+                                -> std::unique_ptr<KeyedService> {
+          return std::make_unique<MockDiceWebSigninInterceptor>(
+              Profile::FromBrowserContext(context));
+        })});
+
     return testing_factories;
+  }
+
+  MockDiceWebSigninInterceptor* mock_interceptor() {
+    return static_cast<MockDiceWebSigninInterceptor*>(
+        DiceWebSigninInterceptorFactory::GetForProfile(profile()));
   }
 
   // Does a navigation to Gaia and initializes the tab helper.
@@ -88,7 +180,6 @@ class DiceTabHelperTest : public ChromeRenderViewHostTestHarness {
         signin_url_, access_point, reason,
         signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO, GURL(),
         /*record_signin_started_metrics=*/true,
-        DiceTabHelper::EnableSyncCallback(),
         DiceTabHelper::EnableHistorySyncOptinCallback(),
         DiceTabHelper::OnSigninHeaderReceived(),
         DiceTabHelper::ShowSigninErrorCallback());
@@ -208,7 +299,6 @@ TEST_F(DiceTabHelperTest, SigninPrimaryAccountMetrics) {
       signin_metrics::Reason::kSigninPrimaryAccount,
       signin_metrics::PromoAction::PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT,
       GURL(), /*record_signin_started_metrics=*/true,
-      DiceTabHelper::EnableSyncCallback(),
       DiceTabHelper::EnableHistorySyncOptinCallback(),
       DiceTabHelper::OnSigninHeaderReceived(),
       DiceTabHelper::ShowSigninErrorCallback());
@@ -245,7 +335,6 @@ TEST_F(DiceTabHelperTest, SigninPrimaryAccountMetrics) {
       signin_metrics::Reason::kSigninPrimaryAccount,
       signin_metrics::PromoAction::PROMO_ACTION_WITH_DEFAULT, GURL(),
       /*record_signin_started_metrics=*/true,
-      DiceTabHelper::EnableSyncCallback(),
       DiceTabHelper::EnableHistorySyncOptinCallback(),
       DiceTabHelper::OnSigninHeaderReceived(),
       DiceTabHelper::ShowSigninErrorCallback());
@@ -270,7 +359,6 @@ TEST_F(DiceTabHelperTest, SigninPrimaryAccountMetrics) {
       signin_metrics::Reason::kSigninPrimaryAccount,
       signin_metrics::PromoAction::PROMO_ACTION_WITH_DEFAULT, GURL(),
       /*record_signin_started_metrics=*/false,
-      DiceTabHelper::EnableSyncCallback(),
       DiceTabHelper::EnableHistorySyncOptinCallback(),
       DiceTabHelper::OnSigninHeaderReceived(),
       DiceTabHelper::ShowSigninErrorCallback());
@@ -304,7 +392,6 @@ TEST_F(DiceTabHelperTest, AddSecondaryAccountMetrics) {
       signin_metrics::Reason::kAddSecondaryAccount,
       signin_metrics::PromoAction::PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT,
       GURL(), /*record_signin_started_metrics=*/true,
-      DiceTabHelper::EnableSyncCallback(),
       DiceTabHelper::EnableHistorySyncOptinCallback(),
       DiceTabHelper::OnSigninHeaderReceived(),
       DiceTabHelper::ShowSigninErrorCallback());
@@ -337,12 +424,15 @@ TEST_F(DiceTabHelperTest, SyncHeaderMetricsWhenLstHasArrived) {
   InitializeDiceTabHelper(dice_tab_helper,
                           signin_metrics::AccessPoint::kSettings,
                           signin_metrics::Reason::kSigninPrimaryAccount);
-  EXPECT_TRUE(dice_tab_helper->IsSyncSigninInProgress());
-  dice_tab_helper->OnTokenExchangeSuccess(
-      /*retry_interception_bubble_callback=*/base::DoNothing());
-  dice_tab_helper->OnSyncSigninFlowComplete();
+  EXPECT_TRUE(dice_tab_helper->IsChromeSigninInProgress());
+  EXPECT_CALL(*mock_interceptor(), MaybeInterceptWebSignin).Times(0);
+  dice_tab_helper->OnTokenExchangeSuccess(DiceTabHelper::TokenExchangeInfo{
+      .account_id = GetTestAccountId(),
+      .is_new_account = true,
+      .primary_is_connected = signin::Tribool::kFalse});
+  dice_tab_helper->OnSigninFlowComplete();
 
-  EXPECT_FALSE(dice_tab_helper->IsSyncSigninInProgress());
+  EXPECT_FALSE(dice_tab_helper->IsChromeSigninInProgress());
   h_tester.ExpectTotalCount(
       kDiceUnexpectedSyncHeaderProcessingBeforeLstHistogramName, 0);
   h_tester.ExpectBucketCount(kDiceSyncHeaderTimeoutHistogramNameHistogramName,
@@ -365,23 +455,113 @@ TEST_F(DiceTabHelperTest, SyncHeaderMetricsOnTimeoutFromLst) {
   InitializeDiceTabHelper(dice_tab_helper,
                           signin_metrics::AccessPoint::kSettings,
                           signin_metrics::Reason::kSigninPrimaryAccount);
-  EXPECT_TRUE(dice_tab_helper->IsSyncSigninInProgress());
+  EXPECT_TRUE(dice_tab_helper->IsChromeSigninInProgress());
 
   base::test::TestFuture<void> future;
-  dice_tab_helper->OnTokenExchangeSuccess(
-      /*retry_interception_bubble_callback=*/future.GetCallback());
+  // The interception is retried as a web sign-in.
+  EXPECT_CALL(*mock_interceptor(),
+              MaybeInterceptWebSignin(web_contents(), GetTestAccountId(),
+                                      signin_metrics::AccessPoint::kWebSignin,
+                                      /*is_new_account=*/true,
+                                      /*is_chrome_signin=*/false,
+                                      signin::Tribool::kFalse))
+      .WillOnce(base::test::RunOnceClosure(future.GetCallback()));
+  // The Dice sign-in session is not complete, so it is not replayed.
+  EXPECT_CALL(*mock_interceptor(), OnDiceSigninSessionComplete).Times(0);
+  dice_tab_helper->OnTokenExchangeSuccess(DiceTabHelper::TokenExchangeInfo{
+      .account_id = GetTestAccountId(),
+      .is_new_account = true,
+      .primary_is_connected = signin::Tribool::kFalse});
   EXPECT_TRUE(future.Wait());
 
   h_tester.ExpectUniqueSample(kDiceSyncHeaderTimeoutHistogramNameHistogramName,
                               true, 1);
   h_tester.ExpectTotalCount(kDiceSyncHeaderArrivalTimeWindowHistogramName, 0);
 
-  // Now complete the sync flow.
-  dice_tab_helper->OnSyncSigninFlowComplete();
-  EXPECT_FALSE(dice_tab_helper->IsSyncSigninInProgress());
+  // Now complete the sign in to chrome flow.
+  dice_tab_helper->OnSigninFlowComplete();
+  EXPECT_FALSE(dice_tab_helper->IsChromeSigninInProgress());
   h_tester.ExpectTotalCount(kDiceSyncHeaderTimeoutHistogramNameHistogramName,
                             1);
   h_tester.ExpectTotalCount(kDiceSyncHeaderArrivalTimeWindowHistogramName, 1);
+}
+
+// Tests that the interception is not retried when the tab is not used for a
+// Chrome sign-in.
+TEST_F(DiceTabHelperTest, NoInterceptionRetryWhenNotChromeSignin) {
+  base::HistogramTester h_tester;
+  auto scoped_interception_bubble_delay =
+      DiceTabHelper::SetScopedInterceptionBubbleTimerForTesting(
+          base::Milliseconds(1));
+
+  DiceTabHelper::CreateForWebContents(web_contents());
+  DiceTabHelper* dice_tab_helper =
+      DiceTabHelper::FromWebContents(web_contents());
+  InitializeDiceTabHelper(dice_tab_helper,
+                          signin_metrics::AccessPoint::kExtensions,
+                          signin_metrics::Reason::kAddSecondaryAccount);
+  EXPECT_FALSE(dice_tab_helper->IsChromeSigninInProgress());
+
+  EXPECT_CALL(*mock_interceptor(), MaybeInterceptWebSignin).Times(0);
+  dice_tab_helper->OnTokenExchangeSuccess(DiceTabHelper::TokenExchangeInfo{
+      .account_id = GetTestAccountId(),
+      .is_new_account = true,
+      .primary_is_connected = signin::Tribool::kFalse});
+  // Wait for the timer to fire.
+  EXPECT_TRUE(base::test::RunUntil([&h_tester]() {
+    return h_tester.GetBucketCount(
+               kDiceSyncHeaderTimeoutHistogramNameHistogramName, true) == 1;
+  }));
+}
+
+// Tests that the Dice sign-in session completion is replayed to the
+// interceptor when the interception bubble is retried, if the session completed
+// before the retry.
+TEST_F(DiceTabHelperTest, RetryInterceptionBubbleWithSecondaryAccounts) {
+  auto scoped_interception_bubble_delay =
+      DiceTabHelper::SetScopedInterceptionBubbleTimerForTesting(
+          base::Milliseconds(1));
+
+  DiceTabHelper::CreateForWebContents(web_contents());
+  DiceTabHelper* dice_tab_helper =
+      DiceTabHelper::FromWebContents(web_contents());
+  InitializeDiceTabHelper(dice_tab_helper,
+                          signin_metrics::AccessPoint::kSettings,
+                          signin_metrics::Reason::kSigninPrimaryAccount);
+
+  const std::vector<CoreAccountId> secondary_accounts = {
+      CoreAccountId::FromGaiaId(GaiaId("secondary"))};
+  base::test::TestFuture<void> future;
+  {
+    testing::InSequence sequence;
+    EXPECT_CALL(*mock_interceptor(),
+                MaybeInterceptWebSignin(web_contents(), GetTestAccountId(),
+                                        signin_metrics::AccessPoint::kWebSignin,
+                                        /*is_new_account=*/true,
+                                        /*is_chrome_signin=*/false,
+                                        signin::Tribool::kFalse));
+    EXPECT_CALL(
+        *mock_interceptor(),
+        OnDiceSigninSessionComplete(GetTestAccountId(), secondary_accounts))
+        .WillOnce(base::test::RunOnceClosure(future.GetCallback()));
+  }
+
+  // Session completion before the token exchange is ignored.
+  dice_tab_helper->OnDiceSigninSessionComplete(
+      GetTestAccountId(), {CoreAccountId::FromGaiaId(GaiaId("ignored"))});
+
+  dice_tab_helper->OnTokenExchangeSuccess(DiceTabHelper::TokenExchangeInfo{
+      .account_id = GetTestAccountId(),
+      .is_new_account = true,
+      .primary_is_connected = signin::Tribool::kFalse});
+  dice_tab_helper->OnDiceSigninSessionComplete(GetTestAccountId(),
+                                               secondary_accounts);
+  // Session completion for another initiator account is ignored.
+  dice_tab_helper->OnDiceSigninSessionComplete(
+      CoreAccountId::FromGaiaId(GaiaId("other_initiator")),
+      {CoreAccountId::FromGaiaId(GaiaId("other_secondary"))});
+
+  EXPECT_TRUE(future.Wait());
 }
 
 // Histogram test for the unlikely edge case where the Sync Header arrives and
@@ -397,35 +577,35 @@ TEST_F(DiceTabHelperTest,
   InitializeDiceTabHelper(dice_tab_helper,
                           signin_metrics::AccessPoint::kSettings,
                           signin_metrics::Reason::kSigninPrimaryAccount);
-  EXPECT_TRUE(dice_tab_helper->IsSyncSigninInProgress());
-  dice_tab_helper->OnSyncSigninFlowComplete();
+  EXPECT_TRUE(dice_tab_helper->IsChromeSigninInProgress());
+  dice_tab_helper->OnSigninFlowComplete();
 
-  EXPECT_FALSE(dice_tab_helper->IsSyncSigninInProgress());
+  EXPECT_FALSE(dice_tab_helper->IsChromeSigninInProgress());
   h_tester.ExpectUniqueSample(
       kDiceUnexpectedSyncHeaderProcessingBeforeLstHistogramName, true, 1);
   h_tester.ExpectBucketCount(kDiceSyncHeaderTimeoutHistogramNameHistogramName,
                              false, 1);
 }
 
-TEST_F(DiceTabHelperTest, IsSyncSigninInProgress) {
+TEST_F(DiceTabHelperTest, IsChromeSigninInProgress) {
   DiceTabHelper::CreateForWebContents(web_contents());
   DiceTabHelper* dice_tab_helper =
       DiceTabHelper::FromWebContents(web_contents());
-  EXPECT_FALSE(dice_tab_helper->IsSyncSigninInProgress());
+  EXPECT_FALSE(dice_tab_helper->IsChromeSigninInProgress());
 
-  // Non-sync signin.
+  // Non-browser signin.
   InitializeDiceTabHelper(dice_tab_helper,
                           signin_metrics::AccessPoint::kExtensions,
                           signin_metrics::Reason::kAddSecondaryAccount);
-  EXPECT_FALSE(dice_tab_helper->IsSyncSigninInProgress());
+  EXPECT_FALSE(dice_tab_helper->IsChromeSigninInProgress());
 
-  // Sync signin
+  // Browser signin flow.
   InitializeDiceTabHelper(dice_tab_helper,
                           signin_metrics::AccessPoint::kSettings,
                           signin_metrics::Reason::kSigninPrimaryAccount);
-  EXPECT_TRUE(dice_tab_helper->IsSyncSigninInProgress());
-  dice_tab_helper->OnSyncSigninFlowComplete();
-  EXPECT_FALSE(dice_tab_helper->IsSyncSigninInProgress());
+  EXPECT_TRUE(dice_tab_helper->IsChromeSigninInProgress());
+  dice_tab_helper->OnSigninFlowComplete();
+  EXPECT_FALSE(dice_tab_helper->IsChromeSigninInProgress());
 }
 
 TEST_F(DiceTabHelperTest, SigninPendingResolutionStarted) {
@@ -436,7 +616,7 @@ TEST_F(DiceTabHelperTest, SigninPendingResolutionStarted) {
 
   base::HistogramTester h_tester;
   signin_metrics::AccessPoint access_point =
-      signin_metrics::AccessPoint::kAvatarBubbleSignIn;
+      signin_metrics::AccessPoint::kProfileMenuPrimaryButton;
   {
     DiceTabHelper::CreateForWebContents(web_contents());
     DiceTabHelper* dice_tab_helper =
@@ -460,6 +640,68 @@ TEST_F(DiceTabHelperTest, SigninPendingResolutionStarted) {
   }
   h_tester.ExpectUniqueSample("Signin.SigninPending.ResolutionSourceStarted",
                               access_point, 1);
+}
+
+class DiceTabHelperBluetoothTest : public DiceTabHelperTest {
+ public:
+  void SetUp() override {
+    DiceTabHelperTest::SetUp();
+    bluetooth_override_values_ =
+        device::BluetoothAdapterFactory::Get()->InitGlobalOverrideValues();
+    bluetooth_override_values_->SetLESupported(true);
+    mock_adapter_ =
+        base::MakeRefCounted<testing::NiceMock<device::MockBluetoothAdapter>>();
+    ON_CALL(*mock_adapter_, IsPresent()).WillByDefault(testing::Return(true));
+    device::BluetoothAdapterFactory::SetAdapterForTesting(mock_adapter_);
+  }
+
+  void InitializeSigninTab() {
+    DiceTabHelper::CreateForWebContents(web_contents());
+    InitializeDiceTabHelper(DiceTabHelper::FromWebContents(web_contents()),
+                            signin_metrics::AccessPoint::kSettings,
+                            signin_metrics::Reason::kSigninPrimaryAccount);
+  }
+
+ protected:
+  std::unique_ptr<device::BluetoothAdapterFactory::GlobalOverrideValues>
+      bluetooth_override_values_;
+  scoped_refptr<testing::NiceMock<device::MockBluetoothAdapter>> mock_adapter_;
+};
+
+TEST_F(DiceTabHelperBluetoothTest, KeepsAdapterWhileOnSigninPage) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      switches::kMagiChromePasskeySignIn, {{"flow_type", "autofill"}});
+  EXPECT_CALL(*mock_adapter_, IsPowered());
+
+  InitializeSigninTab();
+  EXPECT_FALSE(mock_adapter_->HasOneRef());
+
+  // Navigating away from the signin page releases the adapter.
+  content::NavigationSimulator::NavigateAndCommitFromDocument(
+      signin_url_.Resolve("/foo"), main_rfh());
+  EXPECT_TRUE(mock_adapter_->HasOneRef());
+}
+
+TEST_F(DiceTabHelperBluetoothTest, NoPowerStateReadWithoutPermission) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      switches::kMagiChromePasskeySignIn, {{"flow_type", "autofill"}});
+  ON_CALL(*mock_adapter_, GetOsPermissionStatus())
+      .WillByDefault(testing::Return(
+          device::BluetoothAdapter::PermissionStatus::kUndetermined));
+  EXPECT_CALL(*mock_adapter_, IsPowered()).Times(0);
+
+  InitializeSigninTab();
+}
+
+TEST_F(DiceTabHelperBluetoothTest, NoAdapterWithoutMagiChromeAutofill) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(switches::kMagiChromePasskeySignIn);
+  EXPECT_CALL(*mock_adapter_, IsPowered()).Times(0);
+
+  InitializeSigninTab();
+  EXPECT_TRUE(mock_adapter_->HasOneRef());
 }
 
 class DiceTabHelperPrerenderTest : public DiceTabHelperTest {

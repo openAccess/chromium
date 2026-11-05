@@ -31,6 +31,7 @@
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "components/services/app_service/public/cpp/types_util.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/display/screen.h"
 
 namespace {
@@ -105,10 +106,10 @@ AppServiceAppItem::AppServiceAppItem(
 
     // Crostini and Bruschetta apps start in their respective folders.
     if (app_type_ == apps::AppType::kCrostini) {
-      DCHECK(folder_id().empty());
+      CHECK(folder_id().empty(), base::NotFatalUntil::M160);
       SetChromeFolderId(ash::kCrostiniFolderId);
     } else if (app_type_ == apps::AppType::kBruschetta) {
-      DCHECK(folder_id().empty());
+      CHECK(folder_id().empty(), base::NotFatalUntil::M160);
       SetChromeFolderId(ash::kBruschettaFolderId);
     }
   }

@@ -44,12 +44,15 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/webview/web_dialog_view.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/web_dialogs/web_dialog_delegate.h"
+#include "url/origin.h"
 
 constexpr gfx::Size HatsNextWebDialog::kMinSize;
 constexpr gfx::Size HatsNextWebDialog::kMaxSize;
@@ -118,24 +121,28 @@ class HatsNextWebDialog::HatsWebView : public views::WebView {
       const GURL& opener_url,
       const std::string& frame_name,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       const content::StoragePartitionConfig& partition_config,
-      content::SessionStorageNamespace* session_storage_namespace) override {
+      content::SessionStorageNamespaceHandle* session_storage_namespace)
+      override {
     // The HaTS Next WebDialog runs with a non-primary OTR profile. This profile
     // cannot open new browser windows, so they are instead opened in the
     // regular browser that initiated the HaTS survey.
-    content::OpenURLParams params =
-        content::OpenURLParams(target_url, content::Referrer(),
-                               WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                               ui::PAGE_TRANSITION_LINK, false);
+    content::OpenURLParams params(
+        target_url, content::Referrer(),
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+        ui::PAGE_TRANSITION_LINK,
+        /*is_renderer_initiated=*/true);
+    params.initiator_origin = url::Origin();
+    params.user_gesture = true;
 
     // For the case where we are showing a survey in an undocked DevTools
     // window, we open the URL in the browser of the inspected page.
     if (browser_->GetType() == BrowserWindowInterface::Type::TYPE_DEVTOOLS) {
       DevToolsWindow* devtools_window =
           DevToolsWindow::AsDevToolsWindow(browser_);
-      DCHECK(devtools_window);
+      CHECK(devtools_window, base::NotFatalUntil::M162);
       devtools_window->OpenURLFromInspectedTab(params);
     } else {
       browser_->OpenURL(params, /*navigation_handle_callback=*/{});
@@ -194,7 +201,7 @@ gfx::Size HatsNextWebDialog::CalculatePreferredSize(
 }
 
 void HatsNextWebDialog::OnProfileWillBeDestroyed(Profile* profile) {
-  DCHECK_EQ(profile, otr_profile_);
+  CHECK_EQ(profile, otr_profile_, base::NotFatalUntil::M162);
   otr_profile_ = nullptr;
 }
 
@@ -212,7 +219,7 @@ void HatsNextWebDialog::OnSurveyLoaded() {
   // Record that the survey was shown, and display the widget.
   auto* service =
       HatsServiceFactory::GetForProfile(browser_->GetProfile(), false);
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M162);
   service->RecordSurveyAsShown(trigger_id_);
   received_survey_loaded_ = true;
   ShowWidget();
@@ -388,7 +395,7 @@ HatsNextWebDialog::HatsNextWebDialog(
                             ->GetContents()
                             ->GetPrimaryMainFrame()
                             ->GetPageUkmSourceId()) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   otr_profile_->AddObserver(this);
   set_close_on_deactivate(false);
 
@@ -426,14 +433,14 @@ HatsNextWebDialog::~HatsNextWebDialog() {
 #if IS_ANDROID
   NOTIMPLEMENTED();  // This class is for desktop only. Enforce assumption.
 #endif
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (otr_profile_) {
     otr_profile_->RemoveObserver(this);
     ProfileDestroyer::DestroyOTRProfileWhenAppropriate(otr_profile_);
   }
   HatsServiceDesktop* service = static_cast<HatsServiceDesktop*>(
       HatsServiceFactory::GetForProfile(browser_->GetProfile(), false));
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M162);
   service->HatsNextDialogClosed();
 
   // Explicitly clear the delegate to ensure it is not invalid between now and

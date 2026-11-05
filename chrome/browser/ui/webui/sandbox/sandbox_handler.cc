@@ -8,6 +8,7 @@
 
 #include "base/functional/bind.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/process/process.h"
 #include "base/values.h"
 #include "content/public/browser/browser_child_process_host_iterator.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -27,18 +28,18 @@ namespace sandbox_handler {
 namespace {
 
 base::ListValue FetchBrowserChildProcesses() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   base::ListValue browser_processes;
 
   for (BrowserChildProcessHostIterator itr; !itr.Done(); ++itr) {
     const ChildProcessData& process_data = itr.GetData();
+    const base::Process& process = itr.GetProcess();
     // Only add processes that have already started, i.e. with valid handles.
-    if (!process_data.GetProcess().IsValid()) {
+    if (!process.IsValid()) {
       continue;
     }
     base::DictValue proc;
-    proc.Set("processId",
-             base::strict_cast<double>(process_data.GetProcess().Pid()));
+    proc.Set("processId", base::strict_cast<double>(process.Pid()));
     proc.Set("processType",
              content::GetProcessTypeNameInEnglish(process_data.process_type));
     proc.Set("name", process_data.name);
@@ -53,7 +54,7 @@ base::ListValue FetchBrowserChildProcesses() {
 }
 
 base::ListValue FetchRenderHostProcesses() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   base::ListValue renderer_processes;
 
   for (RenderProcessHost::iterator it(RenderProcessHost::AllHostsIterator());
@@ -106,7 +107,7 @@ SandboxHandler::SandboxHandler() = default;
 SandboxHandler::~SandboxHandler() = default;
 
 void SandboxHandler::RegisterMessages() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   web_ui()->RegisterMessageCallback(
       "requestSandboxDiagnostics",
@@ -116,7 +117,7 @@ void SandboxHandler::RegisterMessages() {
 
 void SandboxHandler::HandleRequestSandboxDiagnostics(
     const base::ListValue& args) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   CHECK_EQ(1U, args.size());
   sandbox_diagnostics_callback_id_ = args[0].Clone();
@@ -140,7 +141,7 @@ void SandboxHandler::FetchSandboxDiagnosticsCompleted(
 }
 
 void SandboxHandler::GetRendererProcessesAndFinish() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   auto renderer_processes = FetchRenderHostProcesses();
   base::DictValue results;

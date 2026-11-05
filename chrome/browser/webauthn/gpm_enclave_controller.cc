@@ -27,6 +27,7 @@
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/default_tick_clock.h"
@@ -85,7 +86,7 @@
 #endif
 
 #if BUILDFLAG(IS_MAC)
-#include "chrome/common/chrome_version.h"
+#include "chrome/browser/webauthn/icloud_recovery.h"
 #include "components/trusted_vault/icloud_recovery_key_mac.h"
 #endif  // BUILDFLAG(IS_MAC)
 
@@ -231,11 +232,6 @@ using Step = AuthenticatorRequestDialogModel::Step;
 
 namespace {
 
-#if BUILDFLAG(IS_MAC)
-constexpr char kICloudKeychainRecoveryKeyAccessGroup[] =
-    MAC_TEAM_IDENTIFIER_STRING ".com.google.common.folsom";
-#endif  // BUILDFLAG(IS_MAC)
-
 // Pick an enclave user verification method for a specific request.
 EnclaveUserVerificationMethod PickEnclaveUserVerificationMethod(
     device::UserVerificationRequirement uv,
@@ -348,9 +344,8 @@ GpmTrustedVaultConnectionProvider::GetConnection(
   }
 
   // Default creation logic
-  return trusted_vault::NewFrontendTrustedVaultConnection(
-      trusted_vault::SecurityDomainId::kPasskeys, identity_manager,
-      url_loader_factory);
+  return trusted_vault::NewFrontendTrustedVaultConnection(identity_manager,
+                                                          url_loader_factory);
 }
 
 DOCUMENT_USER_DATA_KEY_IMPL(GpmTrustedVaultConnectionProvider);
@@ -414,6 +409,10 @@ GPMEnclaveController::GPMEnclaveController(
       model_(model),
       loading_timeout_(
           GpmTickAndTaskRunnerProvider::GetTickClock(render_frame_host)) {
+  if (scoped_refptr<base::SequencedTaskRunner> task_runner =
+          GpmTickAndTaskRunnerProvider::GetTaskRunner(render_frame_host)) {
+    loading_timeout_.SetTaskRunner(std::move(task_runner));
+  }
   enclave_manager_observer_.Observe(enclave_manager_);
   model_observer_.Observe(model_);
 
@@ -452,9 +451,14 @@ GPMEnclaveController::GPMEnclaveController(
   SetActive(EnclaveEnabledStatus::kEnabled);
 
   if (cmtg_key_requested) {
+    const auto operation =
+        request_type_ == device::FidoRequestType::kMakeCredential
+            ? webauthn::CmtgDeviceKeyProvider::Operation::kMakeCredential
+            : webauthn::CmtgDeviceKeyProvider::Operation::kGetAssertion;
     cmtg_key_fetcher_ = std::make_unique<CmtgKeyFetcher>(
-        CmtgDeviceKeyProviderFactory::GetForProfile(profile),
-        GpmTickAndTaskRunnerProvider::GetTickClock(render_frame_host));
+        CmtgDeviceKeyProviderFactory::GetForProfile(profile), operation,
+        GpmTickAndTaskRunnerProvider::GetTickClock(render_frame_host),
+        GpmTickAndTaskRunnerProvider::GetTaskRunner(render_frame_host));
     cmtg_key_fetcher_->Start();
   }
 
@@ -601,6 +605,10 @@ GPMEnclaveController::account_state_for_testing() const {
   return account_state_;
 }
 
+bool GPMEnclaveController::is_waiting_for_cmtg_keys_for_testing() const {
+  return cmtg_key_fetcher_ && cmtg_key_fetcher_->is_waiting_for_keys();
+}
+
 GPMEnclaveController::AccountReadyState
 GPMEnclaveController::account_ready_state() const {
   switch (account_state_) {
@@ -678,7 +686,7 @@ void GPMEnclaveController::OnEnclaveLoaded() {
       identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
   download_account_state_request_ =
       conn->DownloadAuthenticationFactorsRegistrationState(
-          account,
+          account, trusted_vault::SecurityDomainId::kPasskeys,
           base::BindOnce(&GPMEnclaveController::OnAccountStateDownloaded,
                          weak_ptr_factory_.GetWeakPtr(), account.gaia,
                          std::move(trusted_vault_conn)),
@@ -856,11 +864,11 @@ void GPMEnclaveController::OnDeviceAdded(bool success) {
 void GPMEnclaveController::RecoverSecurityDomain() {
 #if BUILDFLAG(IS_MAC)
   model_->DisableUiOrShowLoadingDialog();
-  trusted_vault::ICloudRecoveryKey::Retrieve(
-      base::BindOnce(&GPMEnclaveController::OnICloudKeysRetrievedForRecovery,
-                     weak_ptr_factory_.GetWeakPtr()),
-      trusted_vault::SecurityDomainId::kPasskeys,
-      kICloudKeychainRecoveryKeyAccessGroup);
+  icloud_recovery_ = std::make_unique<webauthn::ICloudRecovery>(
+      security_domain_icloud_recovery_keys_,
+      base::BindOnce(&GPMEnclaveController::OnICloudKeychainRecoveryComplete,
+                     weak_ptr_factory_.GetWeakPtr()));
+  icloud_recovery_->Start();
 #else
   ShowSecurityDomainRecoveryUI();
 #endif  // BUILDFLAG(IS_MAC)
@@ -873,7 +881,7 @@ void GPMEnclaveController::MaybeAddICloudRecoveryKey() {
       base::BindOnce(&GPMEnclaveController::OnICloudKeysRetrievedForEnrollment,
                      weak_ptr_factory_.GetWeakPtr()),
       trusted_vault::SecurityDomainId::kPasskeys,
-      kICloudKeychainRecoveryKeyAccessGroup);
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
 }
 
 void GPMEnclaveController::OnICloudKeysRetrievedForEnrollment(
@@ -905,7 +913,7 @@ void GPMEnclaveController::OnICloudKeysRetrievedForEnrollment(
       base::BindOnce(&GPMEnclaveController::EnrollICloudRecoveryKey,
                      weak_ptr_factory_.GetWeakPtr()),
       trusted_vault::SecurityDomainId::kPasskeys,
-      kICloudKeychainRecoveryKeyAccessGroup);
+      webauthn::kICloudKeychainRecoveryKeyAccessGroup);
 }
 
 void GPMEnclaveController::EnrollICloudRecoveryKey(
@@ -921,49 +929,17 @@ void GPMEnclaveController::EnrollICloudRecoveryKey(
                           weak_ptr_factory_.GetWeakPtr())));
 }
 
-void GPMEnclaveController::OnICloudKeysRetrievedForRecovery(
-    std::vector<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
-        local_icloud_keys) {
-  // Find the matching pair of local iCloud private key and the SDS recovery
-  // member.
-  auto local_icloud_key_it = local_icloud_keys.end();
-  auto recovery_icloud_key_it = std::ranges::find_if(
-      security_domain_icloud_recovery_keys_,
-      [&local_icloud_key_it,
-       &local_icloud_keys](const auto& recovery_icloud_key) {
-        std::vector<uint8_t> public_key =
-            recovery_icloud_key.public_key->ExportToBytes();
-        local_icloud_key_it = std::ranges::find_if(
-            local_icloud_keys,
-            [&public_key](const auto& key) { return key->id() == public_key; });
-        return local_icloud_key_it != local_icloud_keys.end();
-      });
-  if (local_icloud_key_it == local_icloud_keys.end()) {
-    FIDO_LOG(DEBUG) << "Could not find matching iCloud recovery key";
+void GPMEnclaveController::OnICloudKeychainRecoveryComplete(
+    webauthn::ICloudRecoveryResult result) {
+  icloud_recovery_.reset();
+  if (!result.has_value()) {
     ShowSecurityDomainRecoveryUI();
     return;
   }
-  const auto member_key_it = std::ranges::max_element(
-      recovery_icloud_key_it->member_keys,
-      [](const auto& k1, const auto& k2) { return k1.version < k2.version; });
-  std::optional<std::vector<uint8_t>> security_domain_secret =
-      trusted_vault::DecryptTrustedVaultWrappedKey(
-          (*local_icloud_key_it)->key()->private_key(),
-          member_key_it->wrapped_key);
-  if (!security_domain_secret) {
-    FIDO_LOG(ERROR)
-        << "Could not decrypt security domain secret with iCloud key";
-    ShowSecurityDomainRecoveryUI();
-    return;
-  }
-  FIDO_LOG(EVENT) << "Successful recovery from iCloud recovery key";
   recovered_with_icloud_keychain_ = true;
   store_keys_lock_ = enclave_manager_->GetStoreKeysLock();
-  enclave_manager_->StoreKeys(
-      user_gaia_id_,
-      {trusted_vault::TrustedVaultKeyAndVersion(
-          std::move(*security_domain_secret), member_key_it->version)},
-      std::nullopt);
+  enclave_manager_->StoreKeys(user_gaia_id_, {std::move(*result)},
+                              std::nullopt);
 }
 
 #endif  // BUILDFLAG(IS_MAC)
@@ -1051,9 +1027,12 @@ void GPMEnclaveController::OnGpmSelectedWhileLoading() {
     model_->DisableUiOrShowLoadingDialog();
     return;
   }
+  // The timeout may be posted to an injected task runner, so bounce the
+  // handler back to the current sequence.
   loading_timeout_.Start(FROM_HERE, kLoadingTimeout,
-                         base::BindOnce(&GPMEnclaveController::OnLoadingTimeout,
-                                        weak_ptr_factory_.GetWeakPtr()));
+                         base::BindPostTaskToCurrentDefault(base::BindOnce(
+                             &GPMEnclaveController::OnLoadingTimeout,
+                             weak_ptr_factory_.GetWeakPtr())));
   return;
 }
 

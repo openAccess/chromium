@@ -5,10 +5,10 @@
 #include "ui/views/window/default_frame_view.h"
 
 #include <algorithm>
+#include <ranges>
 #include <utility>
 #include <vector>
 
-#include "base/containers/adapters.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "third_party/skia/include/core/SkPath.h"
@@ -173,7 +173,7 @@ int DefaultFrameView::NonClientHitTest(const gfx::Point& point) {
 
 void DefaultFrameView::GetWindowMask(const gfx::Size& size,
                                      SkPath* window_mask) {
-  DCHECK(window_mask);
+  CHECK(window_mask, base::NotFatalUntil::M163);
   if (widget_->IsMaximized() || !ShouldShowTitleBarAndBorder()) {
     return;
   }
@@ -513,7 +513,7 @@ void DefaultFrameView::LayoutWindowControls() {
 
   // Trailing buttions are laid out in a RTL fashion
   next_button_x = width() - FrameBorderThickness();
-  for (auto frame_button : base::Reversed(trailing_buttons)) {
+  for (auto frame_button : std::views::reverse(trailing_buttons)) {
     button = GetImageButton(frame_button);
     if (!button) {
       continue;
@@ -531,7 +531,7 @@ void DefaultFrameView::LayoutWindowControls() {
 }
 
 void DefaultFrameView::LayoutTitleBar() {
-  DCHECK_GE(maximum_title_bar_x_, 0);
+  CHECK_GE(maximum_title_bar_x_, 0, base::NotFatalUntil::M163);
   // The window title position is calculated based on the icon position, even
   // when there is no icon.
   gfx::Rect icon_bounds(IconBounds());

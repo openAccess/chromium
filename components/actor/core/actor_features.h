@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_ACTOR_CORE_ACTOR_FEATURES_H_
 #define COMPONENTS_ACTOR_CORE_ACTOR_FEATURES_H_
 
+#include <string>
+
 #include "base/feature.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/time/time.h"
@@ -12,8 +14,14 @@
 
 namespace actor {
 
-BASE_DECLARE_FEATURE(kGlicActionUseOptimizationGuide);
 BASE_DECLARE_FEATURE(kActorBypassTOUValidationForGuestView);
+
+// Temporary migration flag: when enabled, a tab-backed ActorSurface uses its
+// TabHandle value as its ActorSurfaceHandle (> 0), and headless surfaces
+// allocate negative handles (< 0) so the two ranges never collide. When
+// disabled, every surface takes the next positive handle (> 0) from one shared
+// counter, independent of TabHandle.
+BASE_DECLARE_FEATURE(kUseTabHandleAsSurfaceHandle);
 
 BASE_DECLARE_FEATURE(kGlicExternalProtocolActionResultCode);
 
@@ -29,12 +37,16 @@ BASE_DECLARE_FEATURE(kGlicDeferDownloadFilePickerToUserTakeover);
 // When disabled: localhost URLs are treated as safe.
 BASE_DECLARE_FEATURE(kGlicActorLocalhostIsSensitive);
 
+// When enabled, page actions that have passed main-frame origin gating and
+// target a subframe that is cross-origin to the tab's main frame (or has a
+// cross-origin ancestor) are evaluated against page-action origin gating as a
+// dry run (never blocking the action or prompting the user), and the outcome is
+// recorded to UMA.
+BASE_DECLARE_FEATURE(kGlicActorSubframeGatingDryRun);
+
 BASE_DECLARE_FEATURE(kGlicCrossOriginNavigationGating);
 // Feature params to kGlicCrossOriginNavigationGating to enable individual
 // checks for debugging.
-// Toggles if we prompt users for navigation to sensitive sites (true) or we
-// just fail the navigation (false).
-BASE_DECLARE_FEATURE_PARAM(bool, kGlicPromptUserForSensitiveNavigations);
 // Toggles confirming actor navigations to new origins.
 BASE_DECLARE_FEATURE_PARAM(bool, kGlicConfirmNavigationToNewOrigins);
 // Toggles displaying a user confirmation to confirm the navigation instead of
@@ -47,7 +59,7 @@ BASE_DECLARE_FEATURE_PARAM(bool, kGlicPromptUserForNavigationToNewOrigins);
 // and performs active gating (blocking the navigation).
 BASE_DECLARE_FEATURE_PARAM(bool, kGlicConfirmNavigationToNewOriginsDarkLaunch);
 // Toggles whether novel origin gating is based on site (true) or origin
-// (false). Note that gating sensitive sites will still be origin based.
+// (false).
 BASE_DECLARE_FEATURE_PARAM(bool, kGlicNavigationGatingUseSiteNotOrigin);
 // Controls whether the component updater provided blocklist should be enforced.
 BASE_DECLARE_FEATURE_PARAM(bool, kGlicEnforceComponentUpdaterBlockListEntries);
@@ -81,9 +93,6 @@ BASE_DECLARE_FEATURE(kGlicPerformActionsReturnsBeforeStateChange);
 
 BASE_DECLARE_FEATURE(kGlicDeferActUntilUninterrupted);
 
-// Kill switch for adding tabs to an ActorTask earlier during action handling.
-BASE_DECLARE_FEATURE(kGlicEarlyAddTaskTabs);
-
 // Enables a full page screenshot to be taken rather than only the viewport.
 extern const base::FeatureParam<bool> kFullPageScreenshot;
 
@@ -109,6 +118,10 @@ BASE_DECLARE_FEATURE(kActorLoginObservationStartDelay);
 extern const base::FeatureParam<base::TimeDelta>
     kActorLoginObservationStartDelayDuration;
 
+BASE_DECLARE_FEATURE(kActorTypeToolObservationStartDelay);
+extern const base::FeatureParam<base::TimeDelta>
+    kActorTypeToolObservationStartDelayDuration;
+
 // Kill switch to disable sending a browser signal (which is used for user
 // interaction) before sending action to renderer.
 BASE_DECLARE_FEATURE(kActorSendBrowserSignalForAction);
@@ -116,6 +129,24 @@ BASE_DECLARE_FEATURE(kActorSendBrowserSignalForAction);
 BASE_DECLARE_FEATURE(kGlicActorLoadAndExtractContentTool);
 extern const base::FeatureParam<base::TimeDelta>
     kGlicActorLoadAndExtractContentToolTimeout;
+
+// Enables the file upload tool, which lets the actor fulfill a page's file
+// chooser request with files downloaded from model-provided URLs instead of
+// showing the native file picker.
+BASE_DECLARE_FEATURE(kGlicActorFileUploadTool);
+// Maximum size, in bytes, of a single downloaded file. Capped by
+// network::SimpleURLLoader::kMaxBoundedStringDownloadSize.
+extern const base::FeatureParam<int> kGlicActorFileUploadToolMaxFileSizeBytes;
+// How long the tool waits for the page to open a file chooser after the target
+// element is clicked before giving up and tearing down the staged files.
+extern const base::FeatureParam<base::TimeDelta>
+    kGlicActorFileUploadToolTimeout;
+// Comma-separated list of hosts whose files are downloaded with the user's
+// credentials (cookies). These hosts only serve a file to the user who uploaded
+// it, so an anonymous request is rejected. Files on any other host are
+// downloaded without credentials.
+extern const base::FeatureParam<std::string>
+    kGlicActorFileUploadToolCredentialedHosts;
 
 BASE_DECLARE_FEATURE(kGlicActorTransientTasks);
 extern const base::FeatureParam<bool> kGlicActorTransientTasksForceTransient;
@@ -130,19 +161,46 @@ extern const base::FeatureParam<base::TimeDelta>
 BASE_DECLARE_FEATURE(kActorScriptToolDelayObservation);
 extern const base::FeatureParam<int> kActorScriptToolDelayObservationMillis;
 
-// TODO(crbug.com/484367299): Implement a proper actor task state for
-// interrupt-with-user-control.
-BASE_DECLARE_FEATURE(kActorFormScriptToolInterrupt);
-
 BASE_DECLARE_FEATURE(kActorObserveScreenshotDefault);
 BASE_DECLARE_FEATURE(kActorObservePageContentDefault);
 
 BASE_DECLARE_FEATURE(kActorScriptToolSkipScreenshot);
 BASE_DECLARE_FEATURE(kActorScriptToolSkipPageContent);
 BASE_DECLARE_FEATURE(kActorScriptToolTransientUserActivation);
+// When enabled, a script tool action is pinned to the internal ID of the tool
+// with that name in the last observed page content, so that the action fails
+// instead of running a different tool that the page registered under the same
+// name since the observation.
+BASE_DECLARE_FEATURE(kActorScriptToolIdValidation);
 
 // Guards the new Actor Task invocation source completion metrics.
 BASE_DECLARE_FEATURE(kActorRecordInvocationSourceCompletionMetrics);
+
+// Page stability parameters for Actor.
+BASE_DECLARE_FEATURE(kActorPageStability);
+extern const base::FeatureParam<base::TimeDelta> kActorPageStabilityTimeout;
+extern const base::FeatureParam<base::TimeDelta> kActorPageStabilityMinWait;
+extern const base::FeatureParam<base::TimeDelta>
+    kActorPaintStabilityInitialPaintTimeout;
+extern const base::FeatureParam<base::TimeDelta>
+    kActorPaintStabilitySubsequentPaintTimeout;
+
+// Observation delay parameters for Actor.
+BASE_DECLARE_FEATURE(kActorObservationDelay);
+extern const base::FeatureParam<base::TimeDelta> kActorObservationDelayTimeout;
+extern const base::FeatureParam<base::TimeDelta> kActorObservationDelayLcp;
+extern const base::FeatureParam<base::TimeDelta>
+    kActorObservationDelayAutofillPredictionsTimeout;
+
+// Tool execution delay and timeout parameters for Actor.
+BASE_DECLARE_FEATURE(kActorPageToolTimeout);
+extern const base::FeatureParam<base::TimeDelta> kActorPageToolTimeoutParam;
+
+BASE_DECLARE_FEATURE(kActorClickDelay);
+extern const base::FeatureParam<base::TimeDelta> kActorClickDelayParam;
+
+BASE_DECLARE_FEATURE(kActorTypeToolEnterDelay);
+extern const base::FeatureParam<base::TimeDelta> kActorTypeToolEnterDelayParam;
 
 }  // namespace actor
 

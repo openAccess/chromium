@@ -22,6 +22,7 @@
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/base/clipboard/clipboard_metadata.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/gfx/native_ui_types.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -120,14 +121,14 @@ FrameTree* RenderFrameHostDelegate::CreateNewWindow(
     const mojom::CreateNewWindowParams& params,
     bool is_new_browsing_instance,
     bool has_user_gesture,
-    SessionStorageNamespace* session_storage_namespace) {
+    SessionStorageNamespaceHandle* session_storage_namespace) {
   return nullptr;
 }
 
 WebContents* RenderFrameHostDelegate::ShowCreatedWindow(
     RenderFrameHostImpl* opener,
     int main_frame_widget_route_id,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture) {
   return nullptr;
@@ -171,7 +172,9 @@ RenderFrameHostDelegate::GetClipboardTypesIfPolicyApplied(
   return std::nullopt;
 }
 
-bool RenderFrameHostDelegate::IsTransientActivationRequiredForHtmlFullscreen() {
+bool RenderFrameHostDelegate::IsTransientActivationRequiredForHtmlFullscreen(
+    RenderFrameHostImpl* requesting_frame,
+    bool is_xr_overlay) {
   return true;
 }
 

@@ -7,12 +7,12 @@
 
 #import <tuple>
 
-#import "base/strings/strcat.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "base/time/time.h"
 #import "components/autofill/core/browser/field_types.h"
+#import "components/autofill/core/browser/filling/field_filling_util.h"
 #import "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #import "components/autofill/core/common/autofill_debug_features.h"
 #import "components/autofill/core/common/autofill_features.h"
@@ -46,6 +46,7 @@
 #import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/base/apple/url_conversions.h"
 #import "net/test/embedded_test_server/default_handlers.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -126,32 +127,35 @@ constexpr std::string_view kVehicleOverrideParam =
     "3343056218385819478_3849212670_177";
 
 NSString* PassportSuggestionAccessibilityLabel() {
-  constexpr std::u16string_view kDots = u"\u2022\u2060\u2006\u2060";
-
-  NSString* last_four =
-      [kPassportNumber substringFromIndex:[kPassportNumber length] - 4];
-  std::u16string last_four_u16 = base::SysNSStringToUTF16(last_four);
-
   std::u16string obfuscated_number =
-      base::StrCat({kDots, kDots, kDots, kDots, kDots, last_four_u16});
-  NSString* obfuscated_number_ns = base::SysUTF16ToNSString(obfuscated_number);
-
-  return [NSString stringWithFormat:@"%@, %@ · %@", obfuscated_number_ns,
+      autofill::GetObfuscatedValue(base::SysNSStringToUTF16(kPassportNumber),
+                                   /*visible_suffix_length=*/4);
+  return [NSString stringWithFormat:@"%@, %@ · %@",
+                                    base::SysUTF16ToNSString(obfuscated_number),
                                     kPassportEntityType, kPassportOwnerName];
 }
 
 // Matcher for the autofill password suggestion chip in the keyboard accessory.
 id<GREYMatcher> KeyboardAccessoryPasswordSuggestion(NSString* realm) {
-  NSString* chip_text = kExampleUsername;
+  id<GREYMatcher> text_matcher;
   if ([ChromeEarlGrey isIPadIdiom]) {
     // On iPad, the suggestion text is an attributed string containing the
-    // signon realm on the 2nd line.
-    chip_text = [NSString stringWithFormat:@"%@\n%@", chip_text, realm];
+    // signon realm or "Password" on the 2nd line, depending on whether passkey
+    // conditional login is enabled.
+    NSString* realm_text =
+        [NSString stringWithFormat:@"%@\n%@", kExampleUsername, realm];
+    NSString* password_subtext = [NSString
+        stringWithFormat:@"%@\n%@", kExampleUsername,
+                         l10n_util::GetNSString(IDS_IOS_PASSWORD_SUBTEXT)];
+    text_matcher =
+        grey_anyOf(grey_text(realm_text), grey_text(password_subtext), nil);
+  } else {
+    text_matcher = grey_text(kExampleUsername);
   }
-  return grey_allOf(grey_text(chip_text),
+  return grey_allOf(text_matcher,
                     grey_ancestor(grey_accessibilityID(
                         kFormInputAccessoryViewAccessibilityID)),
-                    grey_interactable(), nil);
+                    nil);
 }
 
 // Matcher for the autofill backup password suggestion chip in the keyboard
@@ -160,9 +164,15 @@ id<GREYMatcher> KeyboardAccessoryBackupPasswordSuggestion(NSString* realm) {
   NSString* label = l10n_util::GetNSString(
       IDS_IOS_KEYBOARD_ACCESSORY_RECOVERY_PASSWORD_ACCESSIBILITY_LABEL);
 
+  NSString* realm_label =
+      [NSString stringWithFormat:@"%@, %@, %@", kExampleUsername, realm, label];
+  NSString* password_subtext = l10n_util::GetNSString(IDS_IOS_PASSWORD_SUBTEXT);
+  NSString* passkey_label =
+      [NSString stringWithFormat:@"%@, %@, %@", kExampleUsername,
+                                 password_subtext, label];
   id<GREYMatcher> accessibility_label_matcher =
-      grey_accessibilityLabel([NSString
-          stringWithFormat:@"%@, %@, %@", kExampleUsername, realm, label]);
+      grey_anyOf(grey_accessibilityLabel(realm_label),
+                 grey_accessibilityLabel(passkey_label), nil);
   id<GREYMatcher> backup_icon = grey_accessibilityID(
       kRecoveryPasswordSuggestionIconAccessibilityIdentifier);
   return grey_allOf(accessibility_label_matcher,
@@ -369,10 +379,6 @@ void SlowlyTypeText(NSString* text) {
     config.features_enabled.push_back(
         autofill::features::kAutofillAiReauthRequired);
   }
-  if ([self isRunningTest:@selector(testFillXframeCreditCardFormThrottled)]) {
-    config.features_enabled.push_back(
-        autofill::features::kAutofillAcrossIframesIosThrottling);
-  }
   if ([self isRunningTest:@selector(testAddressHomeAndWorkIPH)]) {
     config.iph_feature_enabled =
         feature_engagement::kIPHAutofillHomeWorkProfileSuggestionFeature.name;
@@ -387,10 +393,7 @@ void SlowlyTypeText(NSString* text) {
             (testPasswordSuggestionsSubtext_ConditionalPasskeyLoginEnabled)]) {
     config.features_enabled.push_back(kIOSPasskeyShim);
     config.features_enabled.push_back(kIOSPasskeyConditionalLoginWithShim);
-  } else {
-    config.features_disabled.push_back(kIOSPasskeyConditionalLoginWithShim);
   }
-  config.features_disabled.push_back(kIOSPasskeyModalLoginWithShim);
 
   return config;
 }
@@ -592,11 +595,18 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
   [ChromeEarlGrey waitForWebStateContainingText:"Vehicle"];
 }
 
+// Loads simple contenteditable page on localhost.
+- (void)loadContentEditablePage {
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/contenteditable.html")];
+  [ChromeEarlGrey waitForWebStateContainingText:"contenteditable"];
+}
+
 #pragma mark - Tests
 
 // Tests that tapping on a password related field opens the keyboard accessory
 // with the proper suggestion visible and that tapping on that suggestion
 // properly fills the related fields on the form.
+TAG_SMOKE_TEST(FormInputAccessoryEGTest, testFillPasswordFieldsOnForm);
 - (void)testFillPasswordFieldsOnForm {
   // Disable the credential bottom sheet.
   [CredentialSuggestionBottomSheetAppInterface disableBottomSheet];
@@ -691,6 +701,7 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
 // Tests that tapping on a credit card related field opens the keyboard
 // accessory with the proper suggestions visible and that tapping on a
 // suggestion properly fills the related fields on the form.
+TAG_SMOKE_TEST(FormInputAccessoryEGTest, testFillCreditCardFieldsOnForm);
 - (void)testFillCreditCardFieldsOnForm {
   [ReauthenticationAppInterface mockReauthenticationModuleCanAttempt:YES];
   [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
@@ -928,6 +939,7 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
 
   // Tap on another address field, below the first address field, and verify
   // that the keyboard pops up and offers address suggestions.
+  [ChromeEarlGrey scrollWebStateElementIntoViewWithID:"city"];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId("city")];
   id<GREYMatcher> address_chip =
@@ -938,6 +950,7 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
   // credit card fields.
 
   // Tap a credit card field to open the bottom sheet.
+  [ChromeEarlGrey scrollWebStateElementIntoViewWithID:kFormCardName];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId(kFormCardName)];
   id<GREYMatcher> useKeyboardButton = PaymentsBottomSheetUseKeyboardButton();
@@ -981,12 +994,11 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
 // Tests that tapping on an address related field opens the keyboard
 // accessory with the proper suggestion visible and that tapping on that
 // suggestion properly fills the related fields on the form.
+TAG_SMOKE_TEST(FormInputAccessoryEGTest, testFillAddressFieldsOnForm);
 - (void)testFillAddressFieldsOnForm {
   [self loadAddressPage];
 
-  [ChromeEarlGrey
-      evaluateJavaScriptForSideEffect:@"document.getElementById('form_zip')."
-                                      @"scrollIntoView();"];
+  [ChromeEarlGrey scrollWebStateElementIntoViewWithID:kFormZip];
 
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId(kFormZip)];
@@ -1371,6 +1383,32 @@ id<GREYMatcher> PaymentsBottomSheetUseKeyboardButton() {
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId(kFormUsername)];
   [ChromeEarlGrey closeCurrentTab];
+}
+
+// Tests navigation buttons are available for a `contenteditable` element.
+- (void)testDefaultInputViewEnabled {
+  if ([ChromeEarlGrey isIPadIdiom]) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Skipped for iPad since this feature is iPhone only.");
+  }
+  [self loadContentEditablePage];
+
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElementWithId("editor")];
+  id<GREYMatcher> previousButton = grey_allOf(
+      grey_accessibilityLabel(
+          l10n_util::GetNSString(IDS_IOS_AUTOFILL_ACCNAME_PREVIOUS_FIELD)),
+      grey_ancestor(
+          grey_accessibilityID(kFormInputAccessoryViewAccessibilityID)),
+      nil);
+  id<GREYMatcher> nextButton = grey_allOf(
+      grey_accessibilityLabel(
+          l10n_util::GetNSString(IDS_IOS_AUTOFILL_ACCNAME_NEXT_FIELD)),
+      grey_ancestor(
+          grey_accessibilityID(kFormInputAccessoryViewAccessibilityID)),
+      nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:previousButton];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:nextButton];
 }
 
 @end

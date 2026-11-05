@@ -10,12 +10,14 @@
 #include <string_view>
 #include <vector>
 
+#include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
 #include "base/types/expected_macros.h"
 #include "components/services/storage/dom_storage/leveldb/dom_storage_batch_operation_leveldb.h"
 #include "components/services/storage/dom_storage/leveldb/dom_storage_database_leveldb.h"
+#include "components/services/storage/dom_storage/session_storage_metadata.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
 
@@ -42,6 +44,9 @@ StatusOr<DomStorageDatabase::MapMetadata> ParseMapMetadata(
   }
   std::string session_id =
       std::string(key.substr(0, blink::kSessionStorageNamespaceIdLength));
+  if (!IsNamespaceIdValid(session_id)) {
+    return base::unexpected(DbStatus::Corruption(kInvalidNamespaceIdError));
+  }
 
   // '-' must separate the session id and storage key.
   key = key.substr(blink::kSessionStorageNamespaceIdLength);
@@ -281,6 +286,10 @@ DbStatus SessionStorageLevelDB::DeleteSessions(
 
   // Delete each session's metadata.
   for (const std::string& session_id : session_ids) {
+    // To prevent the unintentional deletion of other session prefixes, the
+    // namespace ID must be a valid UUID with a fixed length.
+    CHECK(IsNamespaceIdValid(session_id));
+
     DB_RETURN_IF_ERROR(batch->DeletePrefixed(GetSessionPrefix(session_id)));
   }
 
@@ -302,6 +311,14 @@ DbStatus SessionStorageLevelDB::PurgeOrigins(std::set<url::Origin> origins) {
 
 DbStatus SessionStorageLevelDB::CleanUpStaleData() {
   return leveldb_->RewriteDB();
+}
+
+void SessionStorageLevelDB::Close() {
+  leveldb_.reset();
+}
+
+void SessionStorageLevelDB::DetachFromSequence() {
+  NOTREACHED();
 }
 
 DbStatus SessionStorageLevelDB::PutVersionForTesting(int64_t version) {

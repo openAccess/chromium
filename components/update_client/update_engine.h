@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_UPDATE_CLIENT_UPDATE_ENGINE_H_
 #define COMPONENTS_UPDATE_CLIENT_UPDATE_ENGINE_H_
 
+#include <stdint.h>
+
 #include <map>
 #include <memory>
 #include <optional>
@@ -79,6 +81,10 @@ class UpdateEngine : public base::RefCountedThreadSafe<UpdateEngine> {
   void SendPing(const CrxComponent& crx_component,
                 UpdateClient::PingParams ping_params,
                 Callback update_callback);
+
+  // Cancels the in-progress update of the CRX with `id` in every active update
+  // context. Other CRXs in those contexts are not affected.
+  void Cancel(const std::string& id);
 
  private:
   friend class base::RefCountedThreadSafe<UpdateEngine>;

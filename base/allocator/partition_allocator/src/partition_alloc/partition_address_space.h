@@ -7,9 +7,7 @@
 
 #include <bit>
 #include <cstddef>
-#include <utility>
 
-#include "partition_alloc/address_pool_manager_types.h"
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
 #include "partition_alloc/page_allocator_constants.h"
@@ -17,13 +15,17 @@
 #include "partition_alloc/partition_alloc_base/component_export.h"
 #include "partition_alloc/partition_alloc_check.h"
 #include "partition_alloc/partition_alloc_config.h"
-#include "partition_alloc/partition_alloc_constants.h"
-#include "partition_alloc/partition_alloc_forward.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "partition_alloc/tagging.h"
 #include "partition_alloc/thread_isolation/alignment.h"
+#include "partition_alloc/thread_isolation/pkey.h"
 
 #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
 #include "partition_alloc/thread_isolation/thread_isolation.h"
+#endif
+
+#if PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)
+#include <array>
 #endif
 
 // The feature is not applicable to 32-bit address space.
@@ -116,9 +118,13 @@ class PA_COMPONENT_EXPORT(PARTITION_ALLOC) PartitionAddressSpace {
   // Initialize the ConfigurablePool at the given address |pool_base|. It must
   // be aligned to the size of the pool. The size must be a power of two and
   // must be within [kConfigurablePoolMinSize, kConfigurablePoolMaxSize].
+  // If |pkey| is provided, the pool is tagged with that memory protection key
+  // and freed regions are re-tagged with it upon decommit.
   //
   // This function must only be called from the main thread.
-  static void InitConfigurablePool(uintptr_t pool_base, size_t size);
+  static void InitConfigurablePool(uintptr_t pool_base,
+                                   size_t size,
+                                   int pkey = kInvalidPkey);
 #if PA_BUILDFLAG(ENABLE_THREAD_ISOLATION)
   static void InitThreadIsolatedPool(ThreadIsolationOption thread_isolation);
   static void UninitThreadIsolatedPoolForTesting();

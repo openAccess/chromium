@@ -9,6 +9,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/browser_test.h"
+#include "ui/base/page_transition_types.h"
 
 using content::WebContents;
 using ui::PAGE_TRANSITION_TYPED;
@@ -185,4 +186,37 @@ IN_PROC_BROWSER_TEST_F(PointerLockControllerTest,
   ASSERT_TRUE(GetExclusiveAccessManager()
                   ->pointer_lock_controller()
                   ->IsPointerLocked());
+}
+
+IN_PROC_BROWSER_TEST_F(PointerLockControllerTest,
+                       PointerLockInFullscreenRequiresUserGesture) {
+  EnterActiveTabFullscreen();
+
+  // A pointer lock request without user gesture must be rejected even while
+  // in tab fullscreen (crbug.com/506148052).
+  RequestToLockPointer(/*user_gesture=*/false,
+                       /*last_unlocked_by_target=*/false);
+  EXPECT_FALSE(GetExclusiveAccessManager()
+                   ->pointer_lock_controller()
+                   ->IsPointerLocked());
+
+  // With a user gesture, pointer lock is granted.
+  RequestToLockPointer(/*user_gesture=*/true,
+                       /*last_unlocked_by_target=*/false);
+  EXPECT_TRUE(GetExclusiveAccessManager()
+                  ->pointer_lock_controller()
+                  ->IsPointerLocked());
+
+  // An immediate re-lock attempt within the post-escape cooldown period
+  // must be rejected even with a user gesture while in fullscreen.
+  SendEscapeToExclusiveAccessManager();
+  EXPECT_FALSE(GetExclusiveAccessManager()
+                   ->pointer_lock_controller()
+                   ->IsPointerLocked());
+
+  RequestToLockPointer(/*user_gesture=*/true,
+                       /*last_unlocked_by_target=*/false);
+  EXPECT_FALSE(GetExclusiveAccessManager()
+                   ->pointer_lock_controller()
+                   ->IsPointerLocked());
 }

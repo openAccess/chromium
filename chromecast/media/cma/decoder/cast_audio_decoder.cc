@@ -4,7 +4,6 @@
 
 #include "chromecast/media/api/cast_audio_decoder.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -19,11 +18,11 @@
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chromecast/media/api/decoder_buffer_base.h"
 #include "chromecast/media/cma/base/decoder_buffer_adapter.h"
 #include "chromecast/media/cma/base/decoder_config_adapter.h"
-#include "chromecast/media/cma/decoder/external_audio_decoder_wrapper.h"
 #include "chromecast/media/common/base/decoder_config_logging.h"
 #include "media/base/audio_buffer.h"
 #include "media/base/audio_bus.h"
@@ -73,7 +72,7 @@ class CastAudioDecoderImpl : public CastAudioDecoder {
         output_format_(output_format),
         weak_factory_(this) {
     weak_this_ = weak_factory_.GetWeakPtr();
-    DCHECK(task_runner_);
+    CHECK(task_runner_, base::NotFatalUntil::M163);
 
     input_config_ = config;
     input_config_.encryption_scheme = EncryptionScheme::kUnencrypted;
@@ -114,8 +113,9 @@ class CastAudioDecoderImpl : public CastAudioDecoder {
 
   void Decode(scoped_refptr<media::DecoderBufferBase> data,
               DecodeCallback decode_callback) override {
-    DCHECK(decode_callback);
-    DCHECK(task_runner_->RunsTasksInCurrentSequence());
+    CHECK(decode_callback, base::NotFatalUntil::M163);
+    CHECK(task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M163);
 
     if (data->decrypt_context() != nullptr || error_) {
       if (data->decrypt_context() != nullptr) {
@@ -178,7 +178,7 @@ class CastAudioDecoderImpl : public CastAudioDecoder {
   }
 
   void OnInitialized(::media::DecoderStatus status) {
-    DCHECK(!initialized_);
+    CHECK(!initialized_, base::NotFatalUntil::M163);
     initialized_ = true;
     if (status.is_ok()) {
       if (!decode_queue_.empty()) {
@@ -206,7 +206,7 @@ class CastAudioDecoderImpl : public CastAudioDecoder {
 
   void OnDecodeStatus(base::TimeDelta buffer_timestamp,
                       ::media::DecoderStatus status) {
-    DCHECK(pending_decode_callback_);
+    CHECK(pending_decode_callback_, base::NotFatalUntil::M163);
 
     Status result_status = kDecodeOk;
     scoped_refptr<media::DecoderBufferBase> decoded;
@@ -267,7 +267,7 @@ class CastAudioDecoderImpl : public CastAudioDecoder {
   }
 
   scoped_refptr<media::DecoderBufferBase> ConvertDecoded() {
-    DCHECK(!decoded_chunks_.empty());
+    CHECK(!decoded_chunks_.empty(), base::NotFatalUntil::M163);
     int num_frames = 0;
     for (auto& chunk : decoded_chunks_)
       num_frames += chunk->frame_count();
@@ -292,23 +292,26 @@ class CastAudioDecoderImpl : public CastAudioDecoder {
       int num_frames) {
     int size =
         num_frames * bus->channels() * OutputFormatSizeInBytes(output_format_);
-    auto result = base::MakeRefCounted<::media::DecoderBuffer>(size);
+    auto output_data = base::HeapArray<uint8_t>::Uninit(size);
 
     if (output_format_ == kOutputSigned16) {
       bus->ToInterleavedBytesPartial<::media::SignedInt16SampleTypeTraits>(
-          0, result->writable_span());
+          0, output_data);
     } else if (output_format_ == kOutputPlanarFloat) {
       // Data in an AudioBus is already in planar float format; just copy each
       // channel into the result buffer in order.
-      float* ptr = reinterpret_cast<float*>(result->writable_data());
+      auto dest = output_data.as_span();
       for (auto channel : bus->AllChannels()) {
-        std::copy_n(channel.data(), num_frames, ptr);
-        UNSAFE_TODO(ptr += num_frames);
+        auto channel_data = base::as_byte_span(
+            base::allow_nonunique_obj,
+            channel.first(base::checked_cast<size_t>(num_frames)));
+        dest.take_first(channel_data.size()).copy_from(channel_data);
       }
     } else {
       NOTREACHED();
     }
 
+    auto result = ::media::DecoderBuffer::FromArray(std::move(output_data));
     result->set_duration(
         base::Microseconds(num_frames * base::Time::kMicrosecondsPerSecond /
                            output_config_.samples_per_second));
@@ -344,15 +347,6 @@ std::unique_ptr<CastAudioDecoder> CastAudioDecoder::Create(
     scoped_refptr<base::SingleThreadTaskRunner> task_runner,
     const media::AudioConfig& config,
     OutputFormat output_format) {
-  if (ExternalAudioDecoderWrapper::IsSupportedConfig(config)) {
-    auto external_decoder = std::make_unique<ExternalAudioDecoderWrapper>(
-        std::move(task_runner), config, output_format);
-    if (!external_decoder->initialized()) {
-      return nullptr;
-    }
-    return external_decoder;
-  }
-
   return std::make_unique<CastAudioDecoderImpl>(std::move(task_runner), config,
                                                 output_format);
 }

@@ -79,7 +79,8 @@ class CONTENT_EXPORT FileSystemAccessDirectoryHandleImpl
 
   // Calculates a FileSystemURL for a (direct) child of this directory with the
   // given basename.  Returns an error when `basename` includes invalid input
-  // like "/".
+  // like "/", or when the child's URL can't be cracked, e.g. because this
+  // directory is on an external mount point that has since been revoked.
   [[nodiscard]] blink::mojom::FileSystemAccessErrorPtr GetChildURL(
       const std::string& basename,
       storage::FileSystemURL* result);
@@ -105,9 +106,7 @@ class CONTENT_EXPORT FileSystemAccessDirectoryHandleImpl
   void DoGetFile(const std::string& basename,
                  bool create,
                  storage::FileSystemURL child_url,
-                 GetFileCallback callback,
-                 FileSystemAccessPermissionContext::SensitiveEntryResult
-                     sensitive_entry_result);
+                 GetFileCallback callback);
 #if BUILDFLAG(IS_ANDROID)
   void DidGetFileQueryUri(const std::string& basename,
                           GetFileCallback callback,
@@ -129,6 +128,9 @@ class CONTENT_EXPORT FileSystemAccessDirectoryHandleImpl
       GetDirectoryCallback callback,
       blink::mojom::FileSystemAccessErrorPtr get_child_url_result,
       storage::FileSystemURL child_url);
+  void DoGetDirectory(bool create,
+                      storage::FileSystemURL child_url,
+                      GetDirectoryCallback callback);
   // This method creates the directory if it does not currently exists. I.e. it
   // is the implementation for passing create=true to GetDirectory.
   void GetDirectoryWithWritePermission(const storage::FileSystemURL& child_url,
@@ -171,9 +173,7 @@ class CONTENT_EXPORT FileSystemAccessDirectoryHandleImpl
       std::string display_name,
       storage::FileSystemURL child_url,
       base::OnceCallback<void(blink::mojom::FileSystemAccessEntryPtr)>
-          barrier_callback,
-      FileSystemAccessPermissionContext::SensitiveEntryResult
-          sensitive_entry_result);
+          barrier_callback);
 
   void MergeCurrentBatchEntries(
       base::OnceCallback<void(

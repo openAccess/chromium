@@ -13,16 +13,14 @@
 #include "build/build_config.h"
 #include "chrome/browser/engagement/site_engagement_service_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
 #include "chrome/browser/site_protection/site_familiarity_heuristic_name.h"
 #include "chrome/browser/site_protection/site_protection_metrics.h"
-#include "chrome/browser/ui/safety_hub/mock_safe_browsing_database_manager.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
-#include "chrome/test/base/testing_browser_process.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/prefs/pref_registry_simple.h"
+#include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/site_engagement/content/site_engagement_helper.h"
 #include "components/site_engagement/content/site_engagement_service.h"
@@ -40,10 +38,18 @@
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/page_transition_types.h"
+
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"  // nogncheck
+#include "chrome/browser/ui/safety_hub/mock_safe_browsing_database_manager.h"  // nogncheck
+#include "chrome/test/base/testing_browser_process.h"
+#endif
 
 namespace site_protection {
 namespace {
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 // MockSafeBrowsingDatabaseManager which enables adding URL to high confidence
 // allowlist.
 class TestSafeBrowsingDatabaseManager : public MockSafeBrowsingDatabaseManager {
@@ -69,6 +75,7 @@ class TestSafeBrowsingDatabaseManager : public MockSafeBrowsingDatabaseManager {
  private:
   GURL url_on_high_confidence_allowlist_;
 };
+#endif
 
 }  // anonymous namespace
 
@@ -87,10 +94,13 @@ class SiteProtectionMetricsObserverTest
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     browser_process_ = TestingBrowserProcess::GetGlobal();
+#endif
 
     SetUpForNewWebContents();
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     safe_browsing_database_manager_ =
         base::MakeRefCounted<TestSafeBrowsingDatabaseManager>();
     safe_browsing_factory_ =
@@ -101,11 +111,16 @@ class SiteProtectionMetricsObserverTest
     browser_process_->SetSafeBrowsingService(
         safe_browsing_factory_->CreateSafeBrowsingService());
     browser_process_->safe_browsing_service()->Initialize();
+#endif
   }
 
   void TearDown() override {
+    site_protection_observer_.reset();
+    site_engagement_helper_.reset();
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     browser_process_->safe_browsing_service()->ShutDown();
     browser_process_->SetSafeBrowsingService(nullptr);
+#endif
 
     ChromeRenderViewHostTestHarness::TearDown();
   }
@@ -117,6 +132,8 @@ class SiteProtectionMetricsObserverTest
   }
 
   void SetIncognito() {
+    site_protection_observer_.reset();
+    site_engagement_helper_.reset();
     Profile* const otr_profile =
         profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
     EXPECT_TRUE(otr_profile->IsIncognitoProfile());
@@ -130,9 +147,11 @@ class SiteProtectionMetricsObserverTest
 
   void SetUpForNewWebContents() {
     // Create services which observe page navigation.
-    site_engagement::SiteEngagementService::Helper::CreateForWebContents(
-        web_contents());
-    SiteProtectionMetricsObserver::CreateForWebContents(web_contents());
+    site_engagement_helper_ =
+        std::make_unique<site_engagement::SiteEngagementService::Helper>(
+            web_contents());
+    site_protection_observer_ =
+        std::make_unique<SiteProtectionMetricsObserver>(web_contents());
   }
 
   history::HistoryService* GetRegularProfileHistoryService() {
@@ -218,12 +237,17 @@ class SiteProtectionMetricsObserverTest
   }
 
  protected:
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   raw_ptr<TestingBrowserProcess> browser_process_;
 
   scoped_refptr<TestSafeBrowsingDatabaseManager>
       safe_browsing_database_manager_;
   std::unique_ptr<safe_browsing::TestSafeBrowsingServiceFactory>
       safe_browsing_factory_;
+#endif
+  std::unique_ptr<site_engagement::SiteEngagementService::Helper>
+      site_engagement_helper_;
+  std::unique_ptr<SiteProtectionMetricsObserver> site_protection_observer_;
 };
 
 // Test that SiteProtectionMetricsObserver logs the correct histogram and UKM if
@@ -373,6 +397,7 @@ TEST_F(SiteProtectionMetricsObserverTest, SiteEngagementScoreUkm) {
 
 // Test that SiteProtectionMetricsObserver logs the correct histograms and UKM
 // if the site is on the safe browsing global allowlist.
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 TEST_F(SiteProtectionMetricsObserverTest, GlobalAllowlistMatch) {
   AddPageVisitedYesterdayToRegularProfile(GURL("https://baz.com"));
 
@@ -398,6 +423,7 @@ TEST_F(SiteProtectionMetricsObserverTest, GlobalAllowlistMatch) {
                          ukm_recorder, "OnHighConfidenceAllowlist"));
   }
 }
+#endif
 
 // Test that SiteProtectionMetricsObserver logs the correct histograms and UKM
 // if the SiteFamiliarityHeuristicName::kVisitedMoreThanADayAgo heuristic
@@ -500,20 +526,17 @@ TEST_F(SiteProtectionMetricsObserverTest, FileUrlNoMetricsLogged) {
   GURL kFileUrlVisitedNever("file:///usr/");
   GURL kUrlVisitedNever("https://bar.com");
 
-  SiteProtectionMetricsObserver* site_protection_observer =
-      SiteProtectionMetricsObserver::FromWebContents(web_contents());
-
   base::HistogramTester histogram_tester;
 
   // Check that there are no pending asynchronous tasks which would perhaps log
   // UMA when run.
   NavigateAndCommit(kFileUrlVisitedNever);
-  EXPECT_FALSE(site_protection_observer->HasPendingTasksForTesting());
+  EXPECT_FALSE(site_protection_observer_->HasPendingTasksForTesting());
 
   // Check that there are pending asynchronous tasks which would log UMA when
   // run.
   NavigateAndCommit(kUrlVisitedNever);
-  EXPECT_TRUE(site_protection_observer->HasPendingTasksForTesting());
+  EXPECT_TRUE(site_protection_observer_->HasPendingTasksForTesting());
 
   histogram_tester.ExpectTotalCount(
       "SafeBrowsing.SiteProtection.FamiliarityHeuristic", 0u);
@@ -572,12 +595,14 @@ TEST_F(SiteProtectionMetricsObserverTest, MatchesHeuristicCandidate) {
   NavigateAndCheckCandidate1HeuristicHistogram(kUrlVisitedYesterday,
                                                /*expected_value=*/true);
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   GURL kUrlVisitedNeverHighConfidenceAllowlist("https://hi.com");
   safe_browsing_database_manager_->SetUrlOnHighConfidenceAllowlist(
       kUrlVisitedNeverHighConfidenceAllowlist);
   NavigateAndCheckCandidate1HeuristicHistogram(
       kUrlVisitedNeverHighConfidenceAllowlist,
       /*expected_value=*/true);
+#endif
 }
 
 // MockRenderProcessHost subclass with custom v8-optimizer state.
@@ -684,6 +709,8 @@ class SiteProtectionMetricsObserverV8OptTest
   }
 
   void TearDown() override {
+    site_protection_observer_.reset();
+    site_engagement_helper_.reset();
     DeleteContents();
     SetRenderProcessHostFactory(nullptr);
     test_render_process_host_factory_.reset();

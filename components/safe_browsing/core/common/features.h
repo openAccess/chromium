@@ -89,6 +89,13 @@ extern const base::FeatureParam<std::string> kCsdClipboardCopyApiRemoteRunners;
 extern const base::FeatureParam<std::string> kCsdClipboardCopyApiDecoders;
 extern const base::FeatureParam<bool> kCSDClipboardCopyApiSuspiciousTokenFilter;
 
+// Runs client-side phishing visual classification and image embedding in the
+// browser process, capturing page pixels via
+// `RenderWidgetHostView::CopyFromSurface`, instead of in the renderer process.
+// When enabled, the browser process owns the `Scorer` instead of distributing
+// the phishing models to renderers.
+BASE_DECLARE_FEATURE(kClientSideDetectionCopyFromSurface);
+
 // Enables sending a CSD ping on the detection of a credit card form.
 BASE_DECLARE_FEATURE(kClientSideDetectionCreditCardForm);
 // Sets the high-confidence allowlist acceptance rate for determining whether
@@ -151,11 +158,6 @@ BASE_DECLARE_FEATURE(kClientSideDetectionLocalResourceCheckFix);
 BASE_DECLARE_FEATURE(kClientSideDetectionNewObservers);
 extern const base::FeatureParam<double> kCsdClassificationDelay;
 
-#if BUILDFLAG(IS_ANDROID)
-// Instead of starting model download on startup, do it lazily during inference.
-BASE_DECLARE_FEATURE(kClientSideDetectionOnDeviceModelLazyDownloadAndroid);
-#endif
-
 // Deprecation of page load triggers for SSB users.
 BASE_DECLARE_FEATURE(kClientSideDetectionOnlyESBClassification);
 
@@ -165,23 +167,35 @@ BASE_DECLARE_FEATURE(kClientSideDetectionRedirectChainKillswitch);
 BASE_DECLARE_FEATURE(kClientSideDetectionRetryLimit);
 extern const base::FeatureParam<int> kClientSideDetectionRetryLimitTime;
 
+// Controls whether the URL is included in ScamDetectionRequest for
+// intelligent scan.
+BASE_DECLARE_FEATURE(kClientSideDetectionScamDetectionRequestWithUrl);
+
 // Controls whether the scam score is included in IntelligentScanInfo.
 BASE_DECLARE_FEATURE(kClientSideDetectionScamScore);
-#if BUILDFLAG(IS_ANDROID)
-// Inquire the server-side model instead of the on-device model for scam
-// detection.
-BASE_DECLARE_FEATURE(kClientSideDetectionServerModelForScamDetectionAndroid);
-extern const base::FeatureParam<int>
-    kClientSideDetectionServerModelMaxScansPerDay;
-#endif
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 // Inquire the server-side model instead of the on-device model for scam
 // detection on Desktop.
 BASE_DECLARE_FEATURE(kClientSideDetectionServerModelForScamDetectionDesktop);
 extern const base::FeatureParam<int>
     kClientSideDetectionServerModelMaxScansPerDayDesktop;
 #endif
+
+#if BUILDFLAG(IS_IOS)
+// Controls whether scam detection via the server-side model is enabled on iOS.
+BASE_DECLARE_FEATURE(kClientSideDetectionServerModelForScamDetectionIos);
+extern const base::FeatureParam<int>
+    kClientSideDetectionServerModelMaxScansPerDayIos;
+#endif
+
+// Controls whether screenshots are captured and sent to the server-side model
+// for scam detection.
+BASE_DECLARE_FEATURE(kClientSideDetectionServerModelMultimodal);
+// Controls whether low-end devices are excluded from capturing screenshots for
+// multimodal scam detection.
+extern const base::FeatureParam<bool>
+    kClientSideDetectionServerModelMultimodalExcludeLowEndDevices;
 
 #if BUILDFLAG(IS_ANDROID)
 // Dedicated long-lived feature flag to control future server model rollout and
@@ -195,7 +209,7 @@ extern const base::FeatureParam<int>
     kClientSideDetectionServerModelRolloutVersionAndroid;
 #endif
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 // Dedicated long-lived feature flag to control future server model rollout and
 // set the model version for Desktop. This flag should not be cleaned up after
 // the server model is launched. See go/mes-config-rollouts#roll-out-via-finch
@@ -207,9 +221,25 @@ extern const base::FeatureParam<int>
     kClientSideDetectionServerModelRolloutVersionDesktop;
 #endif
 
+#if BUILDFLAG(IS_IOS)
+// Dedicated long-lived feature flag to control future server model rollout and
+// set the model version for iOS. This flag should not be cleaned up after
+// the server model is launched. See go/mes-config-rollouts#roll-out-via-finch
+// on the recommended way to control rollouts.
+BASE_DECLARE_FEATURE(kClientSideDetectionServerModelRolloutIos);
+// Note for future finch config: Set an arbitrary integer value associated with
+// the model version (e.g. 1001). Update go/slams-mapping accordingly.
+extern const base::FeatureParam<int>
+    kClientSideDetectionServerModelRolloutVersionIos;
+#endif
+
 BASE_DECLARE_FEATURE(kClientSideDetectionSkipErrorPage);
 
 BASE_DECLARE_FEATURE(kClientSideDetectionTierSystem);
+
+// Enables showing the trick-to-bill (billing) interstitial when the
+// intelligent scan returns a SCAM_EXPERIMENT_VERDICT_BILLING verdict.
+BASE_DECLARE_FEATURE(kClientSideDetectionTrickToBill);
 
 // Set a RESIZE_BEST preference for image resizing algorithm in Client Side
 // Detection renderer processes for both image classification and image
@@ -273,6 +303,11 @@ BASE_DECLARE_FEATURE(kEnterprisePasswordReuseUiRefresh);
 // Use a new URL for the enterprise real-time URL check.
 BASE_DECLARE_FEATURE(kEnterpriseRealTimeUrlCheckNewUrl);
 
+// Skips enterprise real-time URL lookups for URLs in
+// `ChromeEnterpriseRealTimeUrlLookupService::CanCheckUrl` (about:blank on
+// Android, chrome-native://newtab/ and the search warmup URL).
+BASE_DECLARE_FEATURE(kEnterpriseRealTimeUrlCheckUrlSkiplist);
+
 // Makes the Enhanced Protection a syncable setting.
 // Check the design doc (go/esb-as-a-synced-setting-dd) for further details.
 BASE_DECLARE_FEATURE(kEsbAsASyncedSetting);
@@ -306,9 +341,6 @@ extern const base::FeatureParam<int>
 // results in a heuristic match.
 extern const base::FeatureParam<int>
     kExtensionTelemetrySearchHijackingSignalHeuristicThreshold;
-
-// Enables reporting of external app redirects
-BASE_DECLARE_FEATURE(kExternalAppRedirectTelemetry);
 
 // Enables querying server-side Gemini model for scam detection.
 BASE_DECLARE_FEATURE(kGeminiAntiscamProtectionForMetricsCollection);
@@ -407,17 +439,16 @@ BASE_DECLARE_FEATURE_PARAM(
 BASE_DECLARE_FEATURE_PARAM(bool,
                            kMigrateToBlockV8OptimizerOnUnfamiliarSitesDryRun);
 
-// When enabled, the Password Leak detection toggle is moved out from under the
-// 'Standard protection' Safe Browsing option to the top-level 'Privacy and
-// security' page.
-BASE_DECLARE_FEATURE(kMovePasswordLeakDetectionToggleIos);
-
 // Enables the notice queue integration for the ESB notice.
 BASE_DECLARE_FEATURE(kNoticeQueueForEsb);
 
 // Enable the collection of Notification Telemetry to track potentially abusive
 // notifications.
 BASE_DECLARE_FEATURE(kNotificationTelemetry);
+
+// Routes synchronous navigation SafeBrowsing database lookup replies onto the
+// high-priority kNavigationNetworkResponse UI task runner.
+BASE_DECLARE_FEATURE(kPrioritizeSafeBrowsingNavigationCallbacks);
 
 // Enables proactive password protection, which triggers a CSD scan when
 // focusing on a password field.
@@ -464,18 +495,36 @@ BASE_DECLARE_FEATURE(kReportNotificationContentDetectionData);
 extern const base::FeatureParam<int>
     kReportNotificationContentDetectionDataRate;
 
+// Enables the Rust implementation of mojom::PhishingModelSetter in the
+// renderer process.
+BASE_DECLARE_FEATURE(kRustPhishingModelSetter);
+
 // Enables client side phishing daily reports limit to be configured via Finch
 // for ESB and SBER users
 BASE_DECLARE_FEATURE(kSafeBrowsingDailyPhishingReportsLimit);
 // Specifies the CSD-Phishing daily reports limit for ESB users
 extern const base::FeatureParam<int> kSafeBrowsingDailyPhishingReportsLimitESB;
 
-#if BUILDFLAG(IS_ANDROID)
-// Enables sync checker to check allowlist first on Chrome on Android. This is
-// an optimization to improve the speed of Safe Browsing checks.
-// See go/skip-sync-hpd-allowlist-android for details.
-BASE_DECLARE_FEATURE(kSafeBrowsingSyncCheckerCheckAllowlist);
-#endif
+// Enables automatic cleanup of unrecognized or deprecated Safe Browsing stores
+// and stale hash files on disk during database startup.
+BASE_DECLARE_FEATURE(kSafeBrowsingDeleteUnusedStores);
+
+// Suppresses dangerous file warnings when Safe Browsing is in No Protection
+// mode.
+BASE_DECLARE_FEATURE(kSafeBrowsingNoProtectionSuppressWarnings);
+
+// Enables temporary (24-hour) Safe Browsing opt-out by default.
+BASE_DECLARE_FEATURE(kSafeBrowsingNoProtectionTemporary);
+// Specifies the temporary No Protection reversion duration in seconds.
+extern const base::FeatureParam<int>
+    kSafeBrowsingNoProtectionTemporaryDurationInSeconds;
+
+// Uses the Rust implementation of the macOS DMG (UDIF/HFS+) parser in place of
+// the C++ implementation.
+BASE_DECLARE_FEATURE(kSafeBrowsingRustDmgParser);
+
+// Skips Safe Browsing Real-Time URL lookups when the device is offline.
+BASE_DECLARE_FEATURE(kSafeBrowsingSkipRealTimeLookupIfOffline);
 
 // Allows Safe Browsing Real-Time URL lookups to wait for DNS resolution of the
 // main frame URL.
@@ -487,6 +536,12 @@ BASE_DECLARE_FEATURE(kSavePasswordHashFromProfilePicker);
 // Enables showing manual notification auto-revocations in Safety Hub, allowing
 // users to review and manage the revoked permissions.
 BASE_DECLARE_FEATURE(kShowManualNotificationRevocationsSafetyHub);
+
+// Controls whether the checked URLs are displayed for V5 GetHash lookups on
+// the chrome://safe-browsing debugging page.
+// TODO(crbug.com/564637472): enabling this is blocked on making the debugging
+// page chrome://safe-browsing be profile-specific to avoid regressing privacy.
+BASE_DECLARE_FEATURE(kShowUrlsInV5GetHashLookupsWebUI);
 
 // Enables replacing notification contents with a Chrome warning when the
 // on-device model returns a sufficiently suspicious verdict.

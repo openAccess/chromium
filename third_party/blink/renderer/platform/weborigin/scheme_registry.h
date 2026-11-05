@@ -84,7 +84,7 @@ class PLATFORM_EXPORT SchemeRegistry {
   static void RegisterURLSchemeAsNotAllowingJavascriptURLs(
       const String& scheme);
   static void RemoveURLSchemeAsNotAllowingJavascriptURLsForTest(
-      const String& schemeForTest);
+      const String& scheme_for_test);
   static bool ShouldTreatURLSchemeAsNotAllowingJavascriptURLs(
       const String& scheme);
 
@@ -206,9 +206,6 @@ class PLATFORM_EXPORT SchemeRegistry {
   static void RegisterURLSchemeAsDirectLaunch(const String& scheme);
   static void RemoveURLSchemeAsDirectLaunchForTest(const String& scheme);
   static bool IsDirectLaunchScheme(const String& scheme);
-
- private:
-  static const URLSchemesSet& LocalSchemes();
 };
 
 }  // namespace blink

@@ -56,8 +56,8 @@ DesktopMediaListController::DesktopMediaListController(
               switches::kThisTabCaptureAutoReject)),
       auto_reject_capture_(base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kCaptureAutoReject)) {
-  DCHECK(dialog_);
-  DCHECK(media_list_);
+  CHECK(dialog_, base::NotFatalUntil::M162);
+  CHECK(media_list_, base::NotFatalUntil::M162);
 }
 
 DesktopMediaListController::~DesktopMediaListController() = default;
@@ -67,11 +67,11 @@ std::unique_ptr<views::View> DesktopMediaListController::CreateView(
     DesktopMediaSourceViewStyle single_style,
     const std::u16string& accessible_name,
     DesktopMediaList::Type type) {
-  DCHECK(!view_);
+  CHECK(!view_, base::NotFatalUntil::M162);
 
 #if BUILDFLAG(IS_MAC)
   if (media_list_->IsSourceListDelegated()) {
-    DCHECK(!view_);
+    CHECK(!view_, base::NotFatalUntil::M162);
     auto view = std::make_unique<DesktopMediaDelegatedSourceListView>(
         weak_factory_.GetWeakPtr(), accessible_name, type);
     view_ = view.get();
@@ -89,7 +89,7 @@ std::unique_ptr<views::View> DesktopMediaListController::CreateView(
 
 std::unique_ptr<views::View> DesktopMediaListController::CreateTabListView(
     const std::u16string& accessible_name) {
-  DCHECK(!view_);
+  CHECK(!view_, base::NotFatalUntil::M162);
 
   auto view = std::make_unique<DesktopMediaTabList>(this, accessible_name);
   view_ = view.get();
@@ -104,7 +104,29 @@ void DesktopMediaListController::StartUpdating(
   // until the first time they are focused.
   if (!media_list_->IsSourceListDelegated()) {
     StartUpdatingInternal();
+    return;
   }
+
+#if BUILDFLAG(IS_MAC)
+  // If auto-selection is enabled for a delegated source list, immediately
+  // start updating and trigger the delegated picker (FakeScreenCapturePickerMac
+  // if --use-fake-native-screen-capture-picker is set). Once the picker returns
+  // a source, it will be automatically accepted by
+  // DesktopMediaListController::ShouldAutoAccept.
+  const DesktopMediaList::Type type = media_list_->GetMediaListType();
+  const bool auto_select_screen =
+      (!auto_select_source_.empty() || auto_select_any_screen_) &&
+      type == DesktopMediaList::Type::kScreen;
+  const bool auto_select_window =
+      !auto_select_window_.empty() && type == DesktopMediaList::Type::kWindow;
+  if (auto_select_screen || auto_select_window) {
+    StartUpdatingInternal();
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE,
+        base::BindOnce(&DesktopMediaListController::ShowDelegatedList,
+                       weak_factory_.GetWeakPtr()));
+  }
+#endif
 }
 
 void DesktopMediaListController::StartUpdatingInternal() {
@@ -183,6 +205,7 @@ DesktopMediaListController::GetSelection() const {
 }
 
 void DesktopMediaListController::ClearSelection() {
+  selected_source_sharing_blocked_ = std::nullopt;
   if (view_) {
     view_->ClearSelection();
   }
@@ -193,6 +216,11 @@ void DesktopMediaListController::OnSourceListLayoutChanged() {
 }
 
 void DesktopMediaListController::OnSourceSelectionChanged() {
+  if (std::optional<content::DesktopMediaID> selection = GetSelection()) {
+    selected_source_sharing_blocked_ = IsSourceSharingBlocked(*selection);
+  } else {
+    selected_source_sharing_blocked_ = std::nullopt;
+  }
   dialog_->OnSelectionChanged();
 }
 
@@ -218,6 +246,17 @@ size_t DesktopMediaListController::GetSourceCount() const {
 const DesktopMediaList::Source& DesktopMediaListController::GetSource(
     size_t index) const {
   return media_list_->GetSource(index);
+}
+
+bool DesktopMediaListController::IsSourceSharingBlocked(
+    const content::DesktopMediaID& id) const {
+  for (size_t i = 0; i < GetSourceCount(); ++i) {
+    const DesktopMediaList::Source& source = GetSource(i);
+    if (source.id == id) {
+      return source.is_sharing_blocked;
+    }
+  }
+  return false;
 }
 
 void DesktopMediaListController::SetThumbnailSize(const gfx::Size& size) {
@@ -280,6 +319,12 @@ void DesktopMediaListController::OnSourceThumbnailChanged(int index) {
   if (view_) {
     view_->GetSourceListListener()->OnSourceThumbnailChanged(
         base::checked_cast<size_t>(index));
+    const DesktopMediaList::Source& source = GetSource(index);
+    if (GetSelection() == source.id &&
+        selected_source_sharing_blocked_ != source.is_sharing_blocked) {
+      selected_source_sharing_blocked_ = source.is_sharing_blocked;
+      dialog_->OnSelectionChanged();
+    }
   }
 }
 
@@ -290,7 +335,7 @@ void DesktopMediaListController::OnSourcePreviewChanged(size_t index) {
 }
 
 void DesktopMediaListController::OnDelegatedSourceListSelection() {
-  DCHECK(media_list_->IsSourceListDelegated());
+  CHECK(media_list_->IsSourceListDelegated(), base::NotFatalUntil::M162);
   if (view_) {
     view_->GetSourceListListener()->OnDelegatedSourceListSelection();
   }
@@ -299,7 +344,7 @@ void DesktopMediaListController::OnDelegatedSourceListSelection() {
 }
 
 void DesktopMediaListController::OnDelegatedSourceListDismissed() {
-  DCHECK(media_list_->IsSourceListDelegated());
+  CHECK(media_list_->IsSourceListDelegated(), base::NotFatalUntil::M162);
   dialog_->OnDelegatedSourceListDismissed();
 }
 

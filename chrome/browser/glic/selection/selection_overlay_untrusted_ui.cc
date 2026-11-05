@@ -5,6 +5,7 @@
 #include "chrome/browser/glic/selection/selection_overlay_untrusted_ui.h"
 
 #include "base/feature_list.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
 #include "chrome/browser/glic/selection/selection_overlay_controller.h"
@@ -13,6 +14,7 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/branded_strings.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/grit/glic_untrusted_resources.h"
 #include "chrome/grit/glic_untrusted_resources_map.h"
 #include "chrome/grit/lens_untrusted_resources_map.h"
@@ -20,7 +22,9 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
+#include "ui/base/webui/web_ui_util.h"
 #include "ui/webui/webui_util.h"
+#include "url/gurl.h"
 
 namespace glic {
 
@@ -40,9 +44,26 @@ SelectionOverlayUntrustedUI::SelectionOverlayUntrustedUI(content::WebUI* web_ui)
   CHECK(html_source);
   webui::SetupWebUIDataSource(html_source, kGlicUntrustedResources,
                               IDR_GLIC_UNTRUSTED_SELECTION_OVERLAY_HTML);
-  html_source->AddLocalizedString(
-      "searchScreenshot",
-      IDS_LENS_OVERLAY_SEARCH_SCREENSHOT_ACCESSIBILITY_LABEL);
+  static constexpr webui::LocalizedString kLocalizedStrings[] = {
+      {"searchScreenshot",
+       IDS_LENS_OVERLAY_SEARCH_SCREENSHOT_ACCESSIBILITY_LABEL},
+      {"topLeftSliderAriaLabel",
+       IDS_LENS_OVERLAY_TOP_LEFT_CORNER_SLIDER_ACCESSIBILITY_LABEL},
+      {"topRightSliderAriaLabel",
+       IDS_LENS_OVERLAY_TOP_RIGHT_CORNER_SLIDER_ACCESSIBILITY_LABEL},
+      {"bottomRightSliderAriaLabel",
+       IDS_LENS_OVERLAY_BOTTOM_RIGHT_CORNER_SLIDER_ACCESSIBILITY_LABEL},
+      {"bottomLeftSliderAriaLabel",
+       IDS_LENS_OVERLAY_BOTTOM_LEFT_CORNER_SLIDER_ACCESSIBILITY_LABEL},
+      {"close", IDS_CLOSE},
+      {"settings", IDS_SETTINGS_SETTINGS},
+      {"sendFeedback", IDS_LENS_SEND_FEEDBACK},
+      {"askGemini", IDS_GLIC_BUTTON_ENTRYPOINT_ASK_GEMINI_LABEL},
+      {"askGeminiMore", IDS_GLIC_SELECTION_ASK_GEMINI_MORE},
+      {"submitPrompt", IDS_GLIC_SELECTION_SUBMIT_PROMPT},
+      {"sharingDisclaimer", IDS_GLIC_SELECTION_SHARING_DISCLAIMER},
+  };
+  html_source->AddLocalizedStrings(kLocalizedStrings);
   html_source->AddBoolean("enableShimmer", true);
   html_source->AddBoolean("enableBorderGlow", true);
   html_source->AddBoolean("enableKeyboardSelection", false);
@@ -79,25 +100,25 @@ SelectionOverlayUntrustedUI::SelectionOverlayUntrustedUI(content::WebUI* web_ui)
                           lens::kColorFallbackSurfaceContainerHighestDark);
   html_source->AddInteger("colorFallbackSelectionElement",
                           lens::kColorFallbackSelectionElement);
-  html_source->AddLocalizedString(
-      "topLeftSliderAriaLabel",
-      IDS_LENS_OVERLAY_TOP_LEFT_CORNER_SLIDER_ACCESSIBILITY_LABEL);
-  html_source->AddLocalizedString(
-      "topRightSliderAriaLabel",
-      IDS_LENS_OVERLAY_TOP_RIGHT_CORNER_SLIDER_ACCESSIBILITY_LABEL);
-  html_source->AddLocalizedString(
-      "bottomRightSliderAriaLabel",
-      IDS_LENS_OVERLAY_BOTTOM_RIGHT_CORNER_SLIDER_ACCESSIBILITY_LABEL);
-  html_source->AddLocalizedString(
-      "bottomLeftSliderAriaLabel",
-      IDS_LENS_OVERLAY_BOTTOM_LEFT_CORNER_SLIDER_ACCESSIBILITY_LABEL);
   html_source->AddBoolean("enableMultiRegionSelection", true);
-  html_source->AddLocalizedString("close", IDS_CLOSE);
   html_source->AddResourcePath("glic_region_selection_cursor_icon.svg",
                                IDR_GLIC_REGION_SELECTION_CURSOR_ICON);
   html_source->AddBoolean(
       "lineSelection",
       base::FeatureList::IsEnabled(features::kGlicRegionSelectionLine));
+  html_source->AddBoolean(
+      "enableSelectionOverlayPrompt",
+      base::FeatureList::IsEnabled(features::kGlicSelectionOverlayPrompt));
+  html_source->AddBoolean(
+      "enableSelectionOverlayPromptBox",
+      base::FeatureList::IsEnabled(features::kGlicSelectionOverlayPromptBox));
+  const GURL dogfood_feedback_url(
+      features::kGlicSelectionOverlayDogfoodFeedbackUrl.Get());
+  html_source->AddBoolean("enableSelectionOverlayDogfoodFeedback",
+                          base::FeatureList::IsEnabled(
+                              features::kGlicSelectionOverlayDogfoodFeedback) &&
+                              dogfood_feedback_url.is_valid() &&
+                              dogfood_feedback_url.SchemeIsHTTPOrHTTPS());
 
   // TODO(b/489801993): Refactor shared resources into a common directory to
   // avoid manual path concatenation for Lens and the Glic selection overlay.

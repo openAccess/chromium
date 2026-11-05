@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_PAYMENTS_WALLET_REMINDER_NOTICE_METRICS_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_PAYMENTS_WALLET_REMINDER_NOTICE_METRICS_H_
 
+#include "components/autofill/core/browser/payments/payments_request_details.h"
+
 namespace autofill::autofill_metrics {
 
 // The user's interaction on the Wallet Reminder Notice bottom sheet or dialog.
@@ -39,7 +41,8 @@ enum class WalletReminderNoticeShowResult {
   // Not shown because the user already acknowledged the notice according to the
   // pref, meaning a server call was not made.
   kNotShownAlreadyAcknowledgedAccordingToPref = 2,
-  // Not shown due to network or server error.
+  // Not shown because the user is ineligible according to the server (or a
+  // network/server error).
   kNotShownNetworkOrServerError = 3,
   // Not shown due to Mandatory Reauth.
   kNotShownDueToMandatoryReauth = 4,
@@ -55,9 +58,12 @@ enum class WalletReminderNoticeShowResult {
 void LogWalletReminderNoticeInteraction(
     WalletReminderNoticeInteraction interaction);
 
-// Logs the outcome of attempting to show the Wallet Reminder Notice.
+// Logs the outcome of attempting to show the Wallet Reminder Notice, both in
+// aggregate and broken down by `flow_type`.
 void LogWalletReminderNoticeShowResult(
-    WalletReminderNoticeShowResult show_result);
+    WalletReminderNoticeShowResult show_result,
+    payments::RecordLegalReminderAcknowledgmentRequestDetails::FlowType
+        flow_type);
 
 }  // namespace autofill::autofill_metrics
 

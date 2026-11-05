@@ -1,7 +1,6 @@
 // Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_manager.h"
 
 #include <utility>
@@ -10,7 +9,7 @@
 #include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_functions.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_view_util.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/glic/actor/glic_actor_task_manager.h"
@@ -20,9 +19,12 @@
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_instance.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_features.h"
 #include "components/gcm_driver/crypto/rfc8291_util.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/web_contents.h"
 #include "crypto/keypair.h"
 #include "crypto/secure_util.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
@@ -87,25 +89,40 @@ void GlicExperimentalTriggeringManager::GetExperimentalTriggeringUpdates(
                                             std::move(success_status_callback));
 }
 
+void GlicExperimentalTriggeringManager::SubmitConfirmationResponse(
+    const std::vector<uint8_t>& response,
+    base::OnceCallback<void(bool)> callback) {
+  if (!client_.is_bound()) {
+    std::move(callback).Run(false);
+    return;
+  }
+  client_->SubmitExperimentalTriggeringConfirmationResponse(
+      response,
+      mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(callback), false));
+}
+
 void GlicExperimentalTriggeringManager::CaptureAndUploadEncryptedScreenshot(
     const std::vector<uint8_t>& public_key,
     const std::vector<uint8_t>& auth_secret,
-    base::OnceCallback<void(const std::optional<std::string>&)> callback) {
+    base::OnceCallback<
+        void(base::expected<std::string, ScreenshotResult::Status>)> callback) {
   if (!base::FeatureList::IsEnabled(
           features::kGlicExperimentalTriggeringScreenshot)) {
-    std::move(callback).Run(std::nullopt);
+    std::move(callback).Run(
+        base::unexpected(ScreenshotResult::Status::kErrorDisabled));
     return;
   }
 
   if (!client_.is_bound()) {
-    std::move(callback).Run(std::nullopt);
+    std::move(callback).Run(
+        base::unexpected(ScreenshotResult::Status::kErrorServer));
     return;
   }
 
   tabs::TabInterface* tab = nullptr;
   if (glic::GlicActorTaskManager* task_manager =
           instance_->GetActorTaskManager()) {
-    std::vector<tabs::TabInterface*> target_tabs =
+    std::vector<raw_ptr<tabs::TabInterface>> target_tabs =
         task_manager->GetLastActedTabs();
     if (!target_tabs.empty()) {
       tab = glic::GetMostRecentlyActiveTab(target_tabs);
@@ -113,35 +130,42 @@ void GlicExperimentalTriggeringManager::CaptureAndUploadEncryptedScreenshot(
   }
 
   if (!tab) {
-    std::move(callback).Run(std::nullopt);
+    std::move(callback).Run(
+        base::unexpected(ScreenshotResult::Status::kErrorCapture));
     return;
   }
 
   glic::mojom::TabContextOptions options;
   options.viewport_screenshot = true;
 
+  GlicMetricReporter reporter(
+      Profile::FromBrowserContext(tab->GetContents()->GetBrowserContext()));
   sharing_manager_->GetContextForActorFromTab(
       tab->GetHandle(), options,
       base::BindOnce(
           &GlicExperimentalTriggeringManager::OnPageContextFetchedForEncryption,
-          weak_ptr_factory_.GetWeakPtr(), public_key, auth_secret,
+          weak_ptr_factory_.GetWeakPtr(), reporter, public_key, auth_secret,
           std::move(callback)));
 }
 
 void GlicExperimentalTriggeringManager::OnPageContextFetchedForEncryption(
+    GlicMetricReporter reporter,
     std::vector<uint8_t> public_key,
     std::vector<uint8_t> auth_secret,
-    base::OnceCallback<void(const std::optional<std::string>&)> callback,
+    base::OnceCallback<
+        void(base::expected<std::string, ScreenshotResult::Status>)> callback,
     glic::GlicGetContextResult result) {
   if (!result.has_value() || !result.value() ||
       !result.value()->is_tab_context()) {
-    std::move(callback).Run(std::nullopt);
+    std::move(callback).Run(
+        base::unexpected(ScreenshotResult::Status::kErrorCapture));
     return;
   }
 
   const auto& tab_context = result.value()->get_tab_context();
   if (!tab_context || !tab_context->viewport_screenshot) {
-    std::move(callback).Run(std::nullopt);
+    std::move(callback).Run(
+        base::unexpected(ScreenshotResult::Status::kErrorCapture));
     return;
   }
 
@@ -159,20 +183,23 @@ void GlicExperimentalTriggeringManager::OnPageContextFetchedForEncryption(
                      std::move(jpeg_data), std::move(public_key),
                      std::move(auth_secret)),
       base::BindOnce(&GlicExperimentalTriggeringManager::OnScreenshotEncrypted,
-                     weak_ptr_factory_.GetWeakPtr(), width_pixels,
+                     weak_ptr_factory_.GetWeakPtr(), reporter, width_pixels,
                      height_pixels, std::move(mime_type),
                      std::move(origin_annotations), std::move(callback)));
 }
 
 void GlicExperimentalTriggeringManager::OnScreenshotEncrypted(
+    GlicMetricReporter reporter,
     uint32_t width_pixels,
     uint32_t height_pixels,
     std::string mime_type,
     glic::mojom::ImageOriginAnnotationsPtr origin_annotations,
-    base::OnceCallback<void(const std::optional<std::string>&)> callback,
+    base::OnceCallback<
+        void(base::expected<std::string, ScreenshotResult::Status>)> callback,
     std::optional<std::vector<uint8_t>> encrypted_payload_bytes) {
   if (!encrypted_payload_bytes.has_value()) {
-    std::move(callback).Run(std::nullopt);
+    std::move(callback).Run(
+        base::unexpected(ScreenshotResult::Status::kErrorCapture));
     return;
   }
 
@@ -186,7 +213,8 @@ void GlicExperimentalTriggeringManager::OnScreenshotEncrypted(
       glic::mojom::ScreenshotEncryptionScheme::kRfc8291;
 
   if (!client_.is_bound()) {
-    std::move(callback).Run(std::nullopt);
+    std::move(callback).Run(
+        base::unexpected(ScreenshotResult::Status::kErrorServer));
     return;
   }
 
@@ -194,18 +222,25 @@ void GlicExperimentalTriggeringManager::OnScreenshotEncrypted(
       std::move(screenshot_ptr),
       mojo::WrapCallbackWithDefaultInvokeIfNotRun(
           base::BindOnce(
-              [](base::OnceCallback<void(const std::optional<std::string>&)>
+              [](GlicMetricReporter reporter,
+                 base::OnceCallback<void(
+                     base::expected<std::string, ScreenshotResult::Status>)>
                      callback,
                  const std::optional<std::string>& file_token) {
-                bool success =
-                    file_token && file_token->size() <= kMaxFileTokenBytes;
-                base::UmaHistogramBoolean(
-                    "Glic.Actor.EncryptedScreenshotUploadSuccess", success);
+                bool success = file_token && !file_token->empty() &&
+                               file_token->size() <= kMaxFileTokenBytes;
+                reporter.RecordBoolean("Actor.EncryptedScreenshotUploadSuccess",
+                                       success);
                 if (!success) {
                   if (!file_token) {
                     DLOG(WARNING)
                         << "Glic Web Client failed to upload encrypted "
-                           "screenshot (null token returned).";
+                           "screenshot (null token returned or callback "
+                           "dropped).";
+                  } else if (file_token->empty()) {
+                    DLOG(WARNING)
+                        << "Glic Web Client returned an empty file token upon "
+                           "screenshot upload.";
                   } else if (file_token->size() > kMaxFileTokenBytes) {
                     DLOG(ERROR)
                         << "Excessively long file token received from Glic Web "
@@ -213,12 +248,13 @@ void GlicExperimentalTriggeringManager::OnScreenshotEncrypted(
                         << file_token->size() << " bytes (max "
                         << kMaxFileTokenBytes << ").";
                   }
-                  std::move(callback).Run(std::nullopt);
+                  std::move(callback).Run(
+                      base::unexpected(ScreenshotResult::Status::kErrorServer));
                   return;
                 }
-                std::move(callback).Run(file_token);
+                std::move(callback).Run(base::ok(*file_token));
               },
-              std::move(callback)),
+              reporter, std::move(callback)),
           std::nullopt));
 }
 

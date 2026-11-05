@@ -16,7 +16,6 @@ static_library("storage") {
 
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ash/arc/session",
     "//chrome/browser/ui/webui/ash/settings/calculator",
     "//chrome/browser/ui/webui/settings",
@@ -42,9 +41,6 @@ static_library("storage") {
     "//content/public/browser",
     "//ui/base",
   ]
-
-  allow_circular_includes_from =
-      [ "//chrome/browser/ui/webui/ash/settings/pages/device" ]
 }
 
 source_set("unit_tests") {
@@ -69,6 +65,7 @@ source_set("unit_tests") {
     "//chrome/common:chrome_features",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/dbus/concierge",
     "//chromeos/ash/components/dbus/concierge:concierge_proto",
     "//chromeos/ash/components/dbus/spaced",

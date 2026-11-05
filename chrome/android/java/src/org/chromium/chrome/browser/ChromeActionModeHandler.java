@@ -26,11 +26,14 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsUtils;
 import org.chromium.chrome.browser.enterprise.util.DataProtectionBridge;
 import org.chromium.chrome.browser.firstrun.FirstRunStatus;
 import org.chromium.chrome.browser.locale.LocaleManager;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.readaloud.ReadAloudController;
 import org.chromium.chrome.browser.selection.ChromeSelectionDropdownMenuDelegate;
+import org.chromium.chrome.browser.selection.GlicSelectionMenuTracker;
 import org.chromium.chrome.browser.share.ChromeShareExtras;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.share.ShareDelegate.ShareOrigin;
@@ -46,6 +49,7 @@ import org.chromium.content_public.browser.ActionModeCallbackHelper;
 import org.chromium.content_public.browser.SelectionMenuItem;
 import org.chromium.content_public.browser.SelectionPopupController;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.ViewUtils;
 import org.chromium.url.GURL;
 
 import java.util.HashSet;
@@ -79,18 +83,24 @@ public class ChromeActionModeHandler {
             Supplier<@Nullable ReadAloudController> readAloudControllerSupplier) {
         mInitWebContentsObserver =
                 (webContents) -> {
+                    Tab tab = assertNonNull(mActiveTab);
+                    Supplier<@Nullable Profile> profileSupplier =
+                            () -> !tab.isDestroyed() ? tab.getProfile() : null;
                     SelectionPopupController spc =
                             SelectionPopupController.fromWebContents(webContents);
                     spc.setActionModeCallback(
                             new ChromeActionModeCallback(
-                                    assertNonNull(mActiveTab),
+                                    tab,
                                     webContents,
                                     searchCallback,
                                     showWebSearch,
                                     shareDelegateSupplier,
                                     controlsState,
-                                    readAloudControllerSupplier));
-                    spc.setDropdownMenuDelegate(new ChromeSelectionDropdownMenuDelegate());
+                                    readAloudControllerSupplier,
+                                    new GlicSelectionMenuTracker(profileSupplier)));
+                    spc.setDropdownMenuDelegate(
+                            new ChromeSelectionDropdownMenuDelegate(
+                                    new GlicSelectionMenuTracker(profileSupplier)));
                 };
 
         new ActivityTabProvider.ActivityTabTabObserver(activityTabProvider) {
@@ -138,6 +148,7 @@ public class ChromeActionModeHandler {
         private final Supplier<@Nullable ShareDelegate> mShareDelegateSupplier;
         private final Supplier<@Nullable ReadAloudController> mReadAloudControllerSupplier;
         private final BrowserControlsStateProvider mControlsState;
+        private final GlicSelectionMenuTracker mGlicSelectionMenuTracker;
 
         // Used for recording UMA histograms.
         private long mContextMenuStartTime;
@@ -149,7 +160,8 @@ public class ChromeActionModeHandler {
                 boolean showWebSearch,
                 Supplier<@Nullable ShareDelegate> shareDelegateSupplier,
                 BrowserControlsStateProvider controlsState,
-                Supplier<@Nullable ReadAloudController> readAloudControllerSupplier) {
+                Supplier<@Nullable ReadAloudController> readAloudControllerSupplier,
+                GlicSelectionMenuTracker glicSelectionMenuTracker) {
             mTab = tab;
             mHelper = getActionModeCallbackHelper(webContents);
             mShowWebSearch = showWebSearch;
@@ -157,6 +169,7 @@ public class ChromeActionModeHandler {
             mShareDelegateSupplier = shareDelegateSupplier;
             mControlsState = controlsState;
             mReadAloudControllerSupplier = readAloudControllerSupplier;
+            mGlicSelectionMenuTracker = glicSelectionMenuTracker;
         }
 
         @VisibleForTesting
@@ -189,6 +202,7 @@ public class ChromeActionModeHandler {
         public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
             recordUserAction();
             boolean res = mHelper.onPrepareActionMode(mode, menu);
+            mGlicSelectionMenuTracker.onFloatingMenuPrepared(menu);
             Set<String> browsers = getPackageNames(PackageManagerUtils.queryAllWebBrowsersInfo());
             Set<String> launchers = getPackageNames(PackageManagerUtils.queryAllLaunchersInfo());
             for (int i = 0; i < menu.size(); i++) {
@@ -238,6 +252,8 @@ public class ChromeActionModeHandler {
         @Override
         public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
             if (!mHelper.isActionModeValid()) return true;
+
+            mGlicSelectionMenuTracker.onFloatingItemClicked(item.getItemId());
 
             ReadAloudController readAloud = mReadAloudControllerSupplier.get();
             if (readAloud != null) {
@@ -299,21 +315,46 @@ public class ChromeActionModeHandler {
         @Override
         public void onDestroyActionMode(ActionMode mode) {
             mHelper.onDestroyActionMode();
+            mGlicSelectionMenuTracker.onFloatingMenuDestroyed(mHelper::isActionModeValid);
         }
 
         @Override
         public void onGetContentRect(ActionMode mode, View view, Rect outRect) {
             mHelper.onGetContentRect(mode, view, outRect);
-            boolean controlsVisible = mControlsState.getTopControlHiddenRatio() < 1.f;
-            int controlsHeight = mControlsState.getTopControlsHeight();
-            if (controlsVisible && outRect.top < 2 * controlsHeight) {
-                // Make |outRect| taller to so the framework thinks there is not enough space
-                // above the selected text to place the floating action mode. This helps the action
-                // mode and the top controls avoid overlapping - the action mode will be positioned
-                // below the text.
-                // The right condition should be |outRect.top < controlsHeight + actionModeHeight|
-                // but we do not know |actionModeHeight|. Assume actionModeHeight ~= controlsHeight.
-                outRect.top -= controlsHeight;
+            if (mControlsState == null || view.getHeight() <= 0) return;
+
+            int visibleTopControlsHeight =
+                    mControlsState.getTopControlHiddenRatio() < 1.f
+                            ? (int) Math.max(0, mControlsState.getTopVisibleContentOffset())
+                            : 0;
+            int visibleBottomControlsHeight =
+                    mControlsState.getBottomControlHiddenRatio() < 1.f
+                            ? Math.max(
+                                    0, BrowserControlsUtils.getBottomContentOffset(mControlsState))
+                            : 0;
+
+            if (visibleTopControlsHeight == 0 && visibleBottomControlsHeight == 0) {
+                return;
+            }
+
+            // Standard floating action mode toolbar height is ~48dp + margins (~56dp).
+            int estimatedActionModeHeight = ViewUtils.dpToPx(view.getContext(), 56f);
+            int viewHeight = view.getHeight();
+            int maxBottom = viewHeight - visibleBottomControlsHeight - estimatedActionModeHeight;
+
+            if (visibleTopControlsHeight > 0
+                    && outRect.top < visibleTopControlsHeight + estimatedActionModeHeight) {
+                // Insufficient space between selection and top controls; prevent action mode
+                // from placing above by setting top to 0.
+                outRect.top = 0;
+                if (outRect.bottom > maxBottom || outRect.bottom < visibleTopControlsHeight) {
+                    // For large selections or selections under top controls, anchor bottom to
+                    // the visible top controls edge so the toolbar appears immediately below them.
+                    outRect.bottom = visibleTopControlsHeight;
+                }
+            } else if (visibleBottomControlsHeight > 0 && outRect.bottom > maxBottom) {
+                // Constrained near bottom controls; ensure bottom does not extend into them.
+                outRect.bottom = Math.min(outRect.bottom, viewHeight - visibleBottomControlsHeight);
             }
         }
 

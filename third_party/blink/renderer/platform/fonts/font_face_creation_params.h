@@ -34,25 +34,21 @@
 #include "base/check_op.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/hash_functions_memory.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/case_folding_hash.h"
-#include "third_party/blink/renderer/platform/wtf/text/string_hasher.h"
 
 namespace blink {
 
-enum FontFaceCreationType {
-  kCreateFontByFamily,
-  kCreateFontByFciIdAndTtcIndex
-};
+enum class FontFaceCreationType { kFamily, kFciIdAndTtcIndex };
 
 class FontFaceCreationParams {
   USING_FAST_MALLOC(FontFaceCreationParams);
 
  public:
-  FontFaceCreationParams() : creation_type_(kCreateFontByFamily) {}
+  FontFaceCreationParams() = default;
 
-  explicit FontFaceCreationParams(AtomicString family)
-      : creation_type_(kCreateFontByFamily), family_(family) {
+  explicit FontFaceCreationParams(AtomicString family) : family_(family) {
 #if BUILDFLAG(IS_WIN)
     // Leading "@" in the font name enables Windows vertical flow flag for the
     // font.  Because we do vertical flow by ourselves, we don't want to use the
@@ -67,18 +63,18 @@ class FontFaceCreationParams {
   FontFaceCreationParams(const std::string& filename,
                          int fontconfig_interface_id,
                          int ttc_index = 0)
-      : creation_type_(kCreateFontByFciIdAndTtcIndex),
+      : creation_type_(FontFaceCreationType::kFciIdAndTtcIndex),
         filename_(filename),
         fontconfig_interface_id_(fontconfig_interface_id),
         ttc_index_(ttc_index) {}
 
   FontFaceCreationType CreationType() const { return creation_type_; }
   const AtomicString& Family() const {
-    DCHECK_EQ(creation_type_, kCreateFontByFamily);
+    DCHECK_EQ(creation_type_, FontFaceCreationType::kFamily);
     return family_;
   }
   const std::string& Filename() const {
-    DCHECK_EQ(creation_type_, kCreateFontByFciIdAndTtcIndex);
+    DCHECK_EQ(creation_type_, FontFaceCreationType::kFciIdAndTtcIndex);
 #if defined(ADDRESS_SANITIZER)
     DCHECK(filename_.has_value());
     return *filename_;
@@ -88,16 +84,16 @@ class FontFaceCreationParams {
   }
 
   int FontconfigInterfaceId() const {
-    DCHECK_EQ(creation_type_, kCreateFontByFciIdAndTtcIndex);
+    DCHECK_EQ(creation_type_, FontFaceCreationType::kFciIdAndTtcIndex);
     return fontconfig_interface_id_;
   }
   int TtcIndex() const {
-    DCHECK_EQ(creation_type_, kCreateFontByFciIdAndTtcIndex);
+    DCHECK_EQ(creation_type_, FontFaceCreationType::kFciIdAndTtcIndex);
     return ttc_index_;
   }
 
-  unsigned GetHash() const {
-    if (creation_type_ == kCreateFontByFciIdAndTtcIndex) {
+  uint32_t GetHash() const {
+    if (creation_type_ == FontFaceCreationType::kFciIdAndTtcIndex) {
       // Hashing the filename and ints in this way is sensitive to character
       // encoding and endianness. However, since the hash is not transferred
       // over a network or permanently stored and only used for the runtime of
@@ -106,11 +102,10 @@ class FontFaceCreationParams {
         int index;
         int id;
         uint64_t filename_hash;
-      } hash_data = {ttc_index_, fontconfig_interface_id_,
-                     HasFilename() ? StringHasher::HashMemory64(
-                                         base::as_byte_span(Filename()))
-                                   : 0};
-      return StringHasher::HashMemory32(base::byte_span_from_ref(hash_data));
+      } hash_data = {
+          ttc_index_, fontconfig_interface_id_,
+          HasFilename() ? HashMemory64(base::as_byte_span(Filename())) : 0};
+      return HashMemory32(base::byte_span_from_ref(hash_data));
     }
     return DeprecatedCaseFoldingHash::GetHash(family_.empty() ? g_empty_atom
                                                               : family_);
@@ -125,7 +120,7 @@ class FontFaceCreationParams {
   }
 
  private:
-  FontFaceCreationType creation_type_;
+  FontFaceCreationType creation_type_ = FontFaceCreationType::kFamily;
   AtomicString family_;
 
   void SetFilename(std::string& filename) {

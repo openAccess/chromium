@@ -24,8 +24,8 @@ namespace media {
 
 // Validate that the SineWaveAudioSource writes the expected values.
 TEST(SimpleSources, SineWaveAudioSource) {
-  static const uint32_t samples = 1024;
-  static const int freq = 200;
+  constexpr uint32_t samples = 1024;
+  constexpr int freq = 200;
 
   AudioParameters params(AudioParameters::AUDIO_PCM_LINEAR,
                          ChannelLayoutConfig::Mono(),
@@ -58,7 +58,7 @@ TEST(SimpleSources, SineWaveAudioSource) {
 TEST(SimpleSources, SineWaveAudioCapped) {
   SineWaveAudioSource source(1, 200, AudioParameters::kTelephoneSampleRate);
 
-  static const int kSampleCap = 100;
+  constexpr int kSampleCap = 100;
   source.CapSamples(kSampleCap);
 
   std::unique_ptr<AudioBus> audio_bus = AudioBus::Create(1, 2 * kSampleCap);
@@ -89,7 +89,7 @@ TEST(SimpleSources, OnError) {
 void VerifyContainsTestFile(const AudioBus* audio_bus) {
   // Convert the test data (little-endian) into floats and compare. We need to
   // index past the first bytes in the data, which contain the wav header.
-  const int kFirstSampleIndex = 12 + 8 + 16 + 8;
+  constexpr int kFirstSampleIndex = 12 + 8 + 16 + 8;
   std::array<int16_t, 2> data;
   data[0] = kTestAudioData[kFirstSampleIndex];
   data[0] |= (kTestAudioData[kFirstSampleIndex + 1] << 8);
@@ -112,7 +112,7 @@ void VerifyContainsTestFile(const AudioBus* audio_bus) {
 }
 
 TEST(SimpleSources, FileSourceTestDataWithoutLooping) {
-  const int kNumFrames = 10;
+  constexpr int kNumFrames = 10;
 
   // Create a temporary file filled with WAV data.
   base::FilePath temp_path;
@@ -147,7 +147,7 @@ TEST(SimpleSources, FileSourceTestDataWithoutLooping) {
 }
 
 TEST(SimpleSources, FileSourceTestDataWithLooping) {
-  const int kNumFrames = 10;
+  constexpr int kNumFrames = 10;
 
   // Create a temporary file filled with WAV data.
   base::FilePath temp_path;

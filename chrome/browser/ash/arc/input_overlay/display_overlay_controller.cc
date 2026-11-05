@@ -76,7 +76,8 @@ std::unique_ptr<views::Widget> CreateTransientWidget(
   widget->Init(std::move(params));
 
   auto* widget_window = widget->GetNativeWindow();
-  DCHECK_EQ(parent_window, wm::GetTransientParent(widget_window));
+  CHECK_EQ(parent_window, wm::GetTransientParent(widget_window),
+           base::NotFatalUntil::M160);
   wm::TransientWindowManager::GetOrCreate(widget_window)
       ->set_parent_controls_visibility(false);
   widget->SetVisibilityAnimationTransition(views::Widget::ANIMATE_NONE);
@@ -132,9 +133,11 @@ void DisplayOverlayController::SetDisplayMode(DisplayMode mode) {
       break;
 
     case DisplayMode::kView: {
-      DCHECK(!rich_nudge_widget_);
+      CHECK(!rich_nudge_widget_, base::NotFatalUntil::M160);
+      // TODO(crbug.com/578062293): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
       DCHECK(!target_widget_);
-      DCHECK(!button_options_widget_);
+      CHECK(!button_options_widget_, base::NotFatalUntil::M160);
       RemoveActionHighlightWidget();
       RemoveDeleteEditShortcutWidget();
       RemoveEditingListWidget();
@@ -222,9 +225,9 @@ void DisplayOverlayController::OnApplyMenuState() {
 
 InputOverlayWindowStateType DisplayOverlayController::GetWindowStateType()
     const {
-  DCHECK(touch_injector_);
+  CHECK(touch_injector_, base::NotFatalUntil::M160);
   auto* window = touch_injector_->window();
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M160);
   auto* state = ash::WindowState::Get(window);
   InputOverlayWindowStateType type = InputOverlayWindowStateType::kInvalid;
   if (state) {
@@ -490,7 +493,7 @@ void DisplayOverlayController::OnWindowBoundsChanged(
     const gfx::Rect& old_bounds,
     const gfx::Rect& new_bounds,
     ui::PropertyChangeReason reason) {
-  DCHECK_EQ(window, touch_injector_->window());
+  CHECK_EQ(window, touch_injector_->window(), base::NotFatalUntil::M160);
   // Disregard the bounds from animation and only care final window bounds.
   if (reason == ui::PropertyChangeReason::FROM_ANIMATION) {
     return;
@@ -502,7 +505,7 @@ void DisplayOverlayController::OnWindowBoundsChanged(
 void DisplayOverlayController::OnWindowPropertyChanged(aura::Window* window,
                                                        const void* key,
                                                        intptr_t old) {
-  DCHECK_EQ(window, touch_injector_->window());
+  CHECK_EQ(window, touch_injector_->window(), base::NotFatalUntil::M160);
   if (key == chromeos::kImmersiveIsActive) {
     bool is_immersive = window->GetProperty(chromeos::kImmersiveIsActive);
     // This is to catch the corner case that when an app is launched as
@@ -582,7 +585,7 @@ void DisplayOverlayController::SetInputMappingVisible(
 }
 
 bool DisplayOverlayController::GetInputMappingViewVisible() const {
-  DCHECK(touch_injector_);
+  CHECK(touch_injector_, base::NotFatalUntil::M160);
   if (!touch_injector_) {
     return false;
   }
@@ -590,7 +593,7 @@ bool DisplayOverlayController::GetInputMappingViewVisible() const {
 }
 
 void DisplayOverlayController::SetTouchInjectorEnable(bool enable) {
-  DCHECK(touch_injector_);
+  CHECK(touch_injector_, base::NotFatalUntil::M160);
   if (!touch_injector_) {
     return;
   }
@@ -598,7 +601,7 @@ void DisplayOverlayController::SetTouchInjectorEnable(bool enable) {
 }
 
 bool DisplayOverlayController::GetTouchInjectorEnable() {
-  DCHECK(touch_injector_);
+  CHECK(touch_injector_, base::NotFatalUntil::M160);
   if (!touch_injector_) {
     return false;
   }
@@ -617,16 +620,16 @@ void DisplayOverlayController::ProcessPressedEvent(
 
 void DisplayOverlayController::EnsureTaskWindowToFrontForViewMode(
     views::Widget* overlay_widget) {
-  DCHECK(overlay_widget);
-  DCHECK(overlay_widget->GetNativeWindow());
-  DCHECK_EQ(overlay_widget->GetNativeWindow()->event_targeting_policy(),
-            aura::EventTargetingPolicy::kNone);
+  CHECK(overlay_widget, base::NotFatalUntil::M160);
+  CHECK(overlay_widget->GetNativeWindow(), base::NotFatalUntil::M160);
+  CHECK_EQ(overlay_widget->GetNativeWindow()->event_targeting_policy(),
+           aura::EventTargetingPolicy::kNone, base::NotFatalUntil::M160);
 
   auto* shell_surface_base =
       exo::GetShellSurfaceBaseForWindow(touch_injector_->window());
-  DCHECK(shell_surface_base);
+  CHECK(shell_surface_base, base::NotFatalUntil::M160);
   auto* host_window = shell_surface_base->host_window();
-  DCHECK(host_window);
+  CHECK(host_window, base::NotFatalUntil::M160);
   if (const auto& children = host_window->children(); children.size() > 0u) {
     // First child is the root ExoSurface window. Focus on the root surface
     // window can bring the task window to the front of the task stack.
@@ -796,6 +799,8 @@ void DisplayOverlayController::UpdateButtonPlacementNudgeAnchorRect() {
 }
 
 void DisplayOverlayController::AddTargetWidget(ActionType action_type) {
+  // TODO(crbug.com/574592580): CHECK-exclusion: Convert to a CHECK once we
+  // are confident it won't be triggered.
   DCHECK(!target_widget_);
 
   target_widget_ = CreateTransientWidget(touch_injector_->window(),

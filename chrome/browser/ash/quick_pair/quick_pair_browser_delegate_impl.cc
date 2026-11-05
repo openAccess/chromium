@@ -11,7 +11,6 @@
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/image_fetcher/image_decoder_impl.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
 #include "chromeos/ash/services/quick_pair/public/mojom/quick_pair_service.mojom.h"
@@ -19,8 +18,8 @@
 #include "components/image_fetcher/core/image_fetcher.h"
 #include "components/image_fetcher/core/image_fetcher_impl.h"
 #include "components/services/app_service/public/cpp/types_util.h"
-#include "components/user_manager/user.h"
-#include "components/user_manager/user_manager.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "content/public/browser/service_process_host.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
@@ -43,15 +42,6 @@ QuickPairBrowserDelegateImpl::GetURLLoaderFactory() {
   }
 
   return profile->GetURLLoaderFactory();
-}
-
-signin::IdentityManager* QuickPairBrowserDelegateImpl::GetIdentityManager() {
-  Profile* profile = GetActiveProfile();
-  if (!profile) {
-    return nullptr;
-  }
-
-  return IdentityManagerFactory::GetForProfile(profile);
 }
 
 std::unique_ptr<image_fetcher::ImageFetcher>
@@ -112,15 +102,16 @@ void QuickPairBrowserDelegateImpl::OpenPlayStorePage(GURL play_store_uri) {
 }
 
 Profile* QuickPairBrowserDelegateImpl::GetActiveProfile() {
-  if (!user_manager::UserManager::Get()->IsUserLoggedIn())
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  // No active session before login.
+  if (!session) {
     return nullptr;
-
-  user_manager::User* active_user =
-      user_manager::UserManager::Get()->GetActiveUser();
-  DCHECK(active_user);
+  }
 
   return Profile::FromBrowserContext(
-      BrowserContextHelper::Get()->GetBrowserContextByUser(active_user));
+      BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id()));
 }
 
 }  // namespace quick_pair

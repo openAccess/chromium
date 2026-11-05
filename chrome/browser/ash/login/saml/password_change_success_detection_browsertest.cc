@@ -14,7 +14,7 @@
 #include "chrome/browser/ash/login/test/js_checker.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
@@ -158,21 +158,19 @@ class PasswordChangeSuccessDetectionTest
   void SetUpOnMainThread() override {
     MixinBasedInProcessBrowserTest::SetUpOnMainThread();
 
-    content::WebContents* web_contents =
-        browser()->tab_strip_model()->GetActiveWebContents();
-    Profile* profile =
-        Profile::FromBrowserContext(web_contents->GetBrowserContext());
+    Profile* profile = browser()->GetProfile();
     profile->GetPrefs()->SetBoolean(prefs::kSamlInSessionPasswordChangeEnabled,
                                     true);
 
+    // BrowserProcessPlatformPart created no manager at login, because the pref
+    // was off then, so this one can register itself as the instance returned
+    // by InSessionPasswordChangeManager::Get().
     password_change_manager_ = std::make_unique<InSessionPasswordChangeManager>(
-        g_browser_process->local_state(), profile);
-    InSessionPasswordChangeManager::SetForTesting(
-        password_change_manager_.get());
+        g_browser_process->local_state(), profile,
+        IdentityManagerFactory::GetForProfile(profile));
   }
 
   void TearDownOnMainThread() override {
-    InSessionPasswordChangeManager::ResetForTesting();
     password_change_manager_.reset();
     MixinBasedInProcessBrowserTest::TearDownOnMainThread();
   }

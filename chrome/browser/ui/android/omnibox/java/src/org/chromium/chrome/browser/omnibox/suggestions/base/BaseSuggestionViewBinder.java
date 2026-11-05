@@ -10,18 +10,13 @@ import android.annotation.SuppressLint;
 import android.content.res.ColorStateList;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Drawable.ConstantState;
-import android.os.Bundle;
+import android.text.TextUtils;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.View.AccessibilityDelegate;
 import android.view.ViewGroup;
-import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction;
 import android.widget.ImageView;
 
 import androidx.annotation.ColorInt;
-import androidx.annotation.ColorRes;
 import androidx.annotation.VisibleForTesting;
 import androidx.appcompat.widget.TooltipCompat;
 import androidx.core.view.ViewCompat;
@@ -38,10 +33,12 @@ import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonPropertie
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties.RoundSides;
 import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewProperties.Action;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
-import org.chromium.components.browser_ui.styles.ChromeColors;
+import org.chromium.components.browser_ui.widget.chips.ChipView;
+import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor.ViewBinder;
+import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 import org.chromium.ui.util.ColorUtils;
 
 import java.util.List;
@@ -77,162 +74,237 @@ public abstract class BaseSuggestionViewBinder<T extends View>
     }
 
     @Override
-    @SuppressLint("ClickableViewAccessibility")
     public void bind(PropertyModel model, BaseSuggestionView<T> view, PropertyKey propertyKey) {
-        view.setSuggestionDimensions(
-                getResourceProvider(model).getSuggestionDecorationIconSizeWidth(),
-                getResourceProvider(model).getSuggestionContentHeight(),
-                getResourceProvider(model).getSuggestionCompactContentHeight(),
-                getResourceProvider(model).getSuggestionContentVerticalPadding());
-
-        bindContent(model, view.contentView, propertyKey);
-        ActionChipsBinder.bind(model, view.actionChipsView, propertyKey);
-
-        if (BaseSuggestionViewProperties.ACTION_CHIP_LEAD_IN_SPACING == propertyKey) {
+        if (BaseSuggestionViewProperties.ACTION_BUTTONS == propertyKey) {
+            bindActionButtons(model, view, model.get(BaseSuggestionViewProperties.ACTION_BUTTONS));
+        } else if (BaseSuggestionViewProperties.ACTION_CHIPS == propertyKey) {
+            bindActionChips(model, view);
+        } else if (BaseSuggestionViewProperties.ACTION_CHIP_LEAD_IN_SPACING == propertyKey) {
             view.setActionChipLeadInSpacing(
                     model.get(BaseSuggestionViewProperties.ACTION_CHIP_LEAD_IN_SPACING));
         } else if (SuggestionCommonProperties.APPLY_SIDE_SPACING == propertyKey) {
             view.applySideSpacing(
                     model.get(SuggestionCommonProperties.APPLY_SIDE_SPACING),
                     getResourceProvider(model).getSideSpacing());
+        } else if (SuggestionCommonProperties.BG_POSITIONAL_MODE == propertyKey
+                || SuggestionCommonProperties.BG_ROUND_SIDES == propertyKey) {
+            updateRounding(model, view);
+        } else if (SuggestionCommonProperties.COLOR_SCHEME == propertyKey) {
+            updateColorScheme(model, view);
+            bindContent(model, view.contentView, propertyKey);
+        } else if (SuggestionCommonProperties.DEVICE_FORM_FACTOR == propertyKey) {
+            view.setActionChipsHorizontalFadingEdgeEnabled(
+                    model.get(SuggestionCommonProperties.DEVICE_FORM_FACTOR)
+                            == SuggestionCommonProperties.FormFactor.TABLET);
+        } else if (SuggestionCommonProperties.FUSEBOX_LAYOUT_MODE == propertyKey
+                || SuggestionCommonProperties.GROUP_SEPARATOR_TYPE == propertyKey
+                || SuggestionCommonProperties.HEADER_TITLE == propertyKey
+                || SuggestionCommonProperties.INDEX_IN_GROUP == propertyKey
+                || SuggestionCommonProperties.SHOW_DIVIDER == propertyKey
+                || SuggestionCommonProperties.TOTAL_IN_GROUP == propertyKey) {
+            // Properties read by item decorations; not bound to BaseSuggestionView.
         } else if (BaseSuggestionViewProperties.ICON == propertyKey) {
             updateSuggestionIcon(model, view);
         } else if (SuggestionCommonProperties.LAYOUT_DIRECTION == propertyKey) {
             ViewCompat.setLayoutDirection(
                     view, model.get(SuggestionCommonProperties.LAYOUT_DIRECTION));
-        } else if (SuggestionCommonProperties.COLOR_SCHEME == propertyKey) {
-            updateColorScheme(model, view);
-        } else if (SuggestionCommonProperties.BG_POSITIONAL_MODE == propertyKey
-                || SuggestionCommonProperties.BG_ROUND_SIDES == propertyKey) {
-            updateRounding(model, view);
-        } else if (BaseSuggestionViewProperties.ACTION_BUTTONS == propertyKey) {
-            bindActionButtons(model, view, model.get(BaseSuggestionViewProperties.ACTION_BUTTONS));
+        } else if (BaseSuggestionViewProperties.ON_ACTIVATE == propertyKey) {
+            view.setOnActivateListener(model.get(BaseSuggestionViewProperties.ON_ACTIVATE));
         } else if (BaseSuggestionViewProperties.ON_FOCUS_VIA_SELECTION == propertyKey) {
             view.setOnFocusViaSelectionListener(
                     model.get(BaseSuggestionViewProperties.ON_FOCUS_VIA_SELECTION));
-        } else if (BaseSuggestionViewProperties.ON_ACTIVATE == propertyKey) {
-            view.setOnActivateListener(model.get(BaseSuggestionViewProperties.ON_ACTIVATE));
         } else if (BaseSuggestionViewProperties.ON_LONG_CLICK == propertyKey) {
-            Runnable listener = model.get(BaseSuggestionViewProperties.ON_LONG_CLICK);
-            if (listener == null) {
-                view.setOnLongClickListener(null);
-            } else {
-                view.setOnLongClickListener(
-                        v -> {
-                            listener.run();
-                            return true;
-                        });
-            }
+            bindOnLongClick(model, view);
         } else if (BaseSuggestionViewProperties.ON_TOUCH_DOWN_EVENT == propertyKey) {
-            Callback<Long> listener = model.get(BaseSuggestionViewProperties.ON_TOUCH_DOWN_EVENT);
-            if (listener == null) {
-                view.setOnTouchListener(null);
-            } else {
-                view.setOnTouchListener(
-                        (v, event) -> {
-                            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                                listener.onResult(event.getEventTime());
-                            }
-                            return false;
-                        });
-            }
+            bindOnTouchDownEvent(model, view);
+        } else if (SuggestionCommonProperties.RESOURCE_PROVIDER == propertyKey) {
+            bindResourceProvider(model, view);
         } else if (BaseSuggestionViewProperties.SHOW_DECORATION == propertyKey) {
             view.setShowDecorationIcon(model.get(BaseSuggestionViewProperties.SHOW_DECORATION));
         } else if (BaseSuggestionViewProperties.TOP_PADDING == propertyKey) {
-            view.setPaddingRelative(
-                    view.getPaddingStart(),
-                    model.get(BaseSuggestionViewProperties.TOP_PADDING),
-                    view.getPaddingEnd(),
-                    view.getPaddingBottom());
+            bindTopPadding(model, view);
         } else if (BaseSuggestionViewProperties.USE_LARGE_DECORATION == propertyKey) {
             view.setUseLargeDecorationIcon(
                     model.get(BaseSuggestionViewProperties.USE_LARGE_DECORATION));
+        } else {
+            bindContent(model, view.contentView, propertyKey);
         }
     }
 
-    /** Bind Action Icons for the suggestion view. */
-    private static <T extends View> void bindActionButtons(
-            PropertyModel model, BaseSuggestionView<T> view, List<Action> actions) {
-        final int actionCount = actions != null ? actions.size() : 0;
-        view.setActionButtonsCount(actionCount);
-
-        // Drawable retrieved once here (expensive) and will be copied multiple times (cheap).
-        final List<ActionButtonView> actionViews = view.getActionButtons();
-        for (int index = 0; index < actionCount; index++) {
-            final ActionButtonView actionView = actionViews.get(index);
-            final Action action = actions.get(index);
-            actionView.setOnClickListener(v -> action.callback.run());
-            actionView.setContentDescription(action.accessibilityDescription);
-            actionView.enableShowOnlyOnFocus(action.showOnlyOnFocus);
-            TooltipCompat.setTooltipText(actionView, action.accessibilityDescription);
-            updateIcon(
-                    actionView,
-                    action.icon,
-                    ChromeColors.getPrimaryIconTintRes(isIncognito(model)));
-
-            actionView.setAccessibilityDelegate(
-                    new AccessibilityDelegate() {
-                        @Override
-                        public void onInitializeAccessibilityNodeInfo(
-                                View host, AccessibilityNodeInfo info) {
-                            super.onInitializeAccessibilityNodeInfo(host, info);
-                            info.addAction(AccessibilityAction.ACTION_CLICK);
-                        }
-
-                        @Override
-                        public boolean performAccessibilityAction(
-                                View host, int accessibilityAction, @Nullable Bundle arguments) {
-                            if (accessibilityAction == AccessibilityNodeInfo.ACTION_CLICK
-                                    && action.onClickAnnouncement != null) {
-                                actionView.setContentDescription(action.onClickAnnouncement);
-                                actionView.sendAccessibilityEvent(
-                                        AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED);
-                            }
-                            return super.performAccessibilityAction(
-                                    host, accessibilityAction, arguments);
-                        }
+    private static <T extends View> void bindOnLongClick(
+            PropertyModel model, BaseSuggestionView<T> view) {
+        Runnable listener = model.get(BaseSuggestionViewProperties.ON_LONG_CLICK);
+        if (listener == null) {
+            view.setOnLongClickListener(null);
+        } else {
+            view.setOnLongClickListener(
+                    v -> {
+                        listener.run();
+                        return true;
                     });
         }
     }
 
+    @SuppressLint("ClickableViewAccessibility")
+    private static <T extends View> void bindOnTouchDownEvent(
+            PropertyModel model, BaseSuggestionView<T> view) {
+        Callback<Long> listener = model.get(BaseSuggestionViewProperties.ON_TOUCH_DOWN_EVENT);
+        if (listener == null) {
+            view.setOnTouchListener(null);
+        } else {
+            view.setOnTouchListener(
+                    (v, event) -> {
+                        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                            listener.onResult(event.getEventTime());
+                        }
+                        return false;
+                    });
+        }
+    }
+
+    private static <T extends View> void bindResourceProvider(
+            PropertyModel model, BaseSuggestionView<T> view) {
+        OmniboxResourceProvider provider = getResourceProvider(model);
+        view.setSuggestionDimensions(
+                provider.getSuggestionDecorationIconSizeWidth(),
+                provider.getSuggestionContentHeight(),
+                provider.getSuggestionCompactContentHeight(),
+                provider.getSuggestionContentVerticalPadding());
+    }
+
+    private static <T extends View> void bindTopPadding(
+            PropertyModel model, BaseSuggestionView<T> view) {
+        int topPadding = model.get(BaseSuggestionViewProperties.TOP_PADDING);
+        if (view.getPaddingTop() != topPadding) {
+            view.setPaddingRelative(
+                    view.getPaddingStart(),
+                    topPadding,
+                    view.getPaddingEnd(),
+                    view.getPaddingBottom());
+        }
+    }
+
+    /**
+     * Binds the action chips carousel. The carousel view is created lazily on first use, and its
+     * adapter observes the model-owned {@link BaseSuggestionViewProperties#ACTION_CHIPS} list
+     * directly: it is reused when the bound list instance is unchanged, swapped when it changes,
+     * and detached when the suggestion has no chips. The view itself holds no model state.
+     */
+    private static <T extends View> void bindActionChips(
+            PropertyModel model, BaseSuggestionView<T> view) {
+        ModelList chips = model.get(BaseSuggestionViewProperties.ACTION_CHIPS);
+        if (chips == null) {
+            // Nothing to hide if the carousel was never created for this view.
+            if (view.actionChipsView == null) return;
+            detachChipsAdapter(view.actionChipsView);
+            view.actionChipsView.setSelected(false);
+            view.actionChipsView.setVisibility(View.GONE);
+            return;
+        }
+
+        ActionChipsView carousel = view.ensureActionChipsView();
+        attachChipsAdapter(carousel, chips);
+        carousel.setSelected(false);
+        carousel.setVisibility(View.VISIBLE);
+    }
+
+    /**
+     * Ensures {@code carousel} presents {@code chips}. Reuses the attached adapter when it already
+     * does; otherwise swaps in a new one, retaining the RecycledViewPool.
+     */
+    private static void attachChipsAdapter(ActionChipsView carousel, ModelList chips) {
+        var current = (SimpleRecyclerViewAdapter) carousel.getAdapter();
+        if (current != null && current.getModelList() == chips) return;
+
+        if (current != null) current.destroy();
+        var adapter = new SimpleRecyclerViewAdapter(chips);
+        adapter.registerType(
+                ActionChipProperties.ViewType.CHIP,
+                BaseSuggestionViewBinder::createChipView,
+                ActionChipViewBinder::bind);
+        // swapAdapter (unlike setAdapter) keeps the RecycledViewPool populated.
+        carousel.swapAdapter(adapter, /* removeAndRecycleExistingViews= */ false);
+    }
+
+    /**
+     * Detaches any adapter from {@code carousel}, so it stops observing a suggestion's chip list.
+     * Chip views are returned to the pool for reuse.
+     */
+    private static void detachChipsAdapter(ActionChipsView carousel) {
+        var current = (SimpleRecyclerViewAdapter) carousel.getAdapter();
+        if (current == null) return;
+        current.destroy();
+        carousel.swapAdapter(null, /* removeAndRecycleExistingViews= */ true);
+    }
+
+    private static ChipView createChipView(ViewGroup parent) {
+        return new ChipView(parent.getContext(), R.style.OmniboxActionChipThemeOverlay);
+    }
+
+    /** Binds action icons for the suggestion view. */
+    private static <T extends View> void bindActionButtons(
+            PropertyModel model, BaseSuggestionView<T> view, @Nullable List<Action> actions) {
+        final int actionCount = actions != null ? actions.size() : 0;
+        view.setActionButtonsCount(actionCount);
+        if (actions == null || actionCount == 0) return;
+
+        final ColorStateList primaryIconTint = getResourceProvider(model).getPrimaryIconTintList();
+        final List<ActionButtonView> actionViews = view.getActionButtons();
+        for (int index = 0; index < actionCount; index++) {
+            final ActionButtonView actionView = actionViews.get(index);
+            final Action action = actions.get(index);
+            actionView.setTag(action);
+            if (!TextUtils.equals(
+                    actionView.getContentDescription(), action.accessibilityDescription)) {
+                actionView.setContentDescription(action.accessibilityDescription);
+                TooltipCompat.setTooltipText(actionView, action.accessibilityDescription);
+            }
+            actionView.enableShowOnlyOnFocus(action.showOnlyOnFocus);
+            updateIcon(actionView, action.icon, primaryIconTint);
+        }
+    }
+
     private void updateColorScheme(PropertyModel model, BaseSuggestionView<T> view) {
+        OmniboxResourceProvider resourceProvider = getResourceProvider(model);
         maybeResetCachedFocusableDrawableState(model, view);
-        updateSuggestionIcon(model, view);
-        applySelectableBackground(model, view, getResourceProvider(model));
+        applySelectableBackground(model, view, resourceProvider);
+
+        OmniboxDrawableState sds = model.get(BaseSuggestionViewProperties.ICON);
+        if (sds != null && sds.allowTint) {
+            ColorStateList tint = resourceProvider.getSecondaryIconTintList();
+            if (ImageViewCompat.getImageTintList(view.decorationIcon) != tint) {
+                view.decorationIcon.setForegroundTintList(tint);
+                ImageViewCompat.setImageTintList(view.decorationIcon, tint);
+            }
+        }
 
         final List<Action> actions = model.get(BaseSuggestionViewProperties.ACTION_BUTTONS);
         // Setting ACTION_BUTTONS and updating actionViews can happen later. Appropriate color
         // scheme will be applied then.
         if (actions == null) return;
 
+        ColorStateList actionTint = resourceProvider.getPrimaryIconTintList();
         final List<ActionButtonView> actionViews = view.getActionButtons();
-        for (int index = 0; index < actionViews.size(); index++) {
+        int actionCount = Math.min(actionViews.size(), actions.size());
+        for (int index = 0; index < actionCount; index++) {
+            if (!actions.get(index).icon.allowTint) continue;
             ImageView actionView = actionViews.get(index);
-
-            updateIcon(
-                    actionView,
-                    actions.get(index).icon,
-                    ChromeColors.getPrimaryIconTintRes(isIncognito(model)));
+            if (ImageViewCompat.getImageTintList(actionView) != actionTint) {
+                actionView.setForegroundTintList(actionTint);
+                ImageViewCompat.setImageTintList(actionView, actionTint);
+            }
         }
     }
 
-    /**
-     * @param model Property model containing suggestion view properties.
-     * @return Whether the current {@link BrandedColorScheme} is INCOGNITO.
-     */
-    private static boolean isIncognito(PropertyModel model) {
-        return model.get(SuggestionCommonProperties.COLOR_SCHEME) == BrandedColorScheme.INCOGNITO;
-    }
-
-    /** Update attributes of decorated suggestion icon. */
+    /** Updates attributes of decorated suggestion icon. */
     private static <T extends View> void updateSuggestionIcon(
             PropertyModel model, BaseSuggestionView<T> baseView) {
         final ImageView rciv = baseView.decorationIcon;
         final OmniboxDrawableState sds = model.get(BaseSuggestionViewProperties.ICON);
+        final OmniboxResourceProvider resourceProvider = getResourceProvider(model);
 
         if (sds != null) {
             // Ensure the decoration icon size does not exceed the maximum edge size.
-            OmniboxResourceProvider resourceProvider = getResourceProvider(model);
             int edgeSize =
                     sds.isLarge
                             ? resourceProvider.getEdgeSizeLargeIcon()
@@ -257,7 +329,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
         }
 
         rciv.setVisibility(sds == null ? View.GONE : View.VISIBLE);
-        updateIcon(rciv, sds, ChromeColors.getSecondaryIconTintRes(isIncognito(model)));
+        updateIcon(rciv, sds, resourceProvider.getSecondaryIconTintList());
     }
 
     /**
@@ -333,23 +405,22 @@ public abstract class BaseSuggestionViewBinder<T extends View>
         }
     }
 
-    /** Update image view using supplied drawable state object. */
+    /** Updates image view using supplied drawable state object. */
     private static void updateIcon(
-            ImageView view, OmniboxDrawableState sds, @ColorRes int tintRes) {
+            ImageView view, @Nullable OmniboxDrawableState sds, ColorStateList tintList) {
         if (sds == null) {
             // Release any drawable that is still attached to this view to reclaim memory.
             view.setImageDrawable(null);
             return;
         }
 
-        ColorStateList tint = null;
-        if (sds.allowTint) {
-            tint = view.getContext().getColorStateList(tintRes);
-        }
+        ColorStateList tint = sds.allowTint ? tintList : null;
 
         view.setImageDrawable(sds.drawable);
-        view.setForegroundTintList(tint);
-        ImageViewCompat.setImageTintList(view, tint);
+        if (ImageViewCompat.getImageTintList(view) != tint) {
+            view.setForegroundTintList(tint);
+            ImageViewCompat.setImageTintList(view, tint);
+        }
     }
 
     private static void updateRounding(PropertyModel model, BaseSuggestionView<?> view) {
@@ -371,13 +442,11 @@ public abstract class BaseSuggestionViewBinder<T extends View>
         sFocusableDrawableState = null;
     }
 
-    /**
-     * @return Cached ConstantState for testing.
-     */
+    protected abstract void bindContent(
+            PropertyModel model, T contentView, PropertyKey propertyKey);
+
+    /** Returns the cached ConstantState for testing. */
     public static @Nullable ConstantState getFocusableDrawableStateForTesting() {
         return sFocusableDrawableState;
     }
-
-    protected abstract void bindContent(
-            PropertyModel model, T contentView, PropertyKey propertyKey);
 }

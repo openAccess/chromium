@@ -12,18 +12,17 @@
 #include "chrome/browser/enterprise/signin/enterprise_signin_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_command_controller.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/singleton_tabs.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "components/prefs/pref_service.h"
 #include "components/sync/service/sync_service.h"
 #include "google_apis/gaia/gaia_urls.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 namespace enterprise_signin {
@@ -33,7 +32,7 @@ namespace {
 bool IsNormalBrowserWithProfile(BrowserWindowInterface* browser,
                                 Profile* profile) {
   return profile == browser->GetProfile() && !browser->IsDeleteScheduled() &&
-         browser->GetType() == Browser::TYPE_NORMAL;
+         browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL;
 }
 
 // Returns the Browser associated with `profile` that was most recently
@@ -89,9 +88,10 @@ void EnterpriseSigninService::OnStateChanged(syncer::SyncService* sync) {
 
 void EnterpriseSigninService::OnBrowserActivated(
     BrowserWindowInterface* browser) {
-  DCHECK(browser);
+  CHECK(browser, base::NotFatalUntil::M161);
   VLOG(2) << "Browser just became active.";
-  DCHECK(last_transport_state_ == TransportState::PAUSED);
+  CHECK(last_transport_state_ == TransportState::PAUSED,
+        base::NotFatalUntil::M161);
   OpenOrActivateGaiaReauthTab();
 }
 
@@ -140,11 +140,10 @@ void EnterpriseSigninService::OpenOrActivateGaiaReauthTab() {
     VLOG(2) << "Focused tab is a login page, nothing to do.";
   } else {
     VLOG(2) << "Focused tab is not a login page, opening a new one.";
-    browser->GetFeatures()
-        .browser_command_controller()
+    chrome::BrowserCommandController::From(browser)
         ->ExecuteCommandWithDisposition(
             IDC_SHOW_SIGNIN_WHEN_PAUSED,
-            WindowOpenDisposition::NEW_FOREGROUND_TAB);
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab);
   }
 }
 

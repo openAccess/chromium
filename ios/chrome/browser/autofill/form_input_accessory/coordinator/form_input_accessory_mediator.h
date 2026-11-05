@@ -7,6 +7,9 @@
 
 #import <Foundation/Foundation.h>
 
+#import <optional>
+
+#import "components/autofill/core/common/unique_ids.h"
 #import "components/password_manager/core/browser/password_store/password_store_interface.h"
 #import "ios/chrome/browser/autofill/manual_fill/coordinator/form_input_interaction_delegate.h"
 #import "ios/chrome/browser/autofill/model/form_suggestion_client.h"
@@ -14,7 +17,7 @@
 @protocol FormInputAccessoryConsumer;
 @protocol FormInputAccessoryMediatorHandler;
 @protocol FormInputSuggestionsProvider;
-@class ReauthenticationModule;
+@protocol ReauthenticationProtocol;
 @protocol SecurityAlertCommands;
 
 namespace autofill {
@@ -50,7 +53,7 @@ class WebStateList;
           (scoped_refptr<password_manager::PasswordStoreInterface>)
               accountPasswordStore
       securityAlertHandler:(id<SecurityAlertCommands>)securityAlertHandler
-    reauthenticationModule:(ReauthenticationModule*)reauthenticationModule
+    reauthenticationModule:(id<ReauthenticationProtocol>)reauthenticationModule
          engagementTracker:(feature_engagement::Tracker*)engagementTracker;
 
 // Unavailable, use initWithConsumer:webStateList: instead.
@@ -71,6 +74,10 @@ class WebStateList;
 
 // Returns YES if the last focused field is of type 'password'.
 - (BOOL)lastFocusedFieldWasObfuscated;
+
+// Returns the global ID of the last focused field, or std::nullopt if no valid
+// field is focused or if the frame is non-cryptographic.
+- (std::optional<autofill::FieldGlobalId>)lastFocusedFieldGlobalId;
 
 // Returns the main filling product of the current FormInputSuggestionsProvider.
 - (autofill::FillingProduct)currentProviderMainFillingProduct;

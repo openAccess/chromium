@@ -9,6 +9,7 @@
 #include "base/observer_list_types.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
+#include "build/build_config.h"
 #include "chrome/browser/trusted_vault/trusted_vault_encryption_keys_tab_helper.h"
 #include "chrome/browser/webauthn/enclave_manager.h"
 #include "chrome/browser/webauthn/enclave_manager_interface.h"
@@ -79,12 +80,6 @@ class PasskeyUnlockManager : public KeyedService,
       BrowserWindowInterface* browser,
       trusted_vault::TrustedVaultUserActionTriggerForUMA trigger);
 
-  // Methods providing the UI strings. Results depend on the experiment arms
-  // configured by the feature parameter `kPasskeyUnlockErrorUiExperimentArm`.
-  std::u16string GetPasskeyErrorProfilePillTitle() const;
-  std::u16string GetPasskeyErrorProfileMenuDetails() const;
-  std::u16string GetPasskeyErrorProfileMenuButtonLabel() const;
-
   // Returns true if the passkey unlock error UI is enabled, depending on the
   // feature flags.
   static bool IsPasskeyUnlockErrorUiEnabled();
@@ -95,6 +90,10 @@ class PasskeyUnlockManager : public KeyedService,
   static void RecordErrorUIEventType(ErrorUIEventType event_type);
 
  private:
+#if BUILDFLAG(IS_MAC)
+  enum class ICloudRecoveryState { kNotStarted, kInProgress, kDone };
+#endif  // BUILDFLAG(IS_MAC)
+
   // Returns the PasskeyModel provided at construction.
   PasskeyModel* passkey_model();
 
@@ -107,12 +106,17 @@ class PasskeyUnlockManager : public KeyedService,
   // Updates the cached value of `has_passkeys_`.
   void UpdateHasPasskeys();
 
-  // Updates the cached value of `sync_active_`. Checks the sync state and
-  // user actionable errors.
+  // Updates the cached values of `syncing_webauthn_enabled_` and
+  // `no_sync_errors_`.
   void UpdateSyncState();
 
-  // Recomputes `should_display_error_ui_` and notifies observers if its value
-  // changed.
+  // Called whenever an input to the passkey unlock state changes. On macOS,
+  // first starts iCloud Keychain recovery if needed, then recomputes whether
+  // to display the error UI.
+  void OnPasskeyUnlockStateChanged();
+
+  // Recomputes `should_display_error_ui_` and `passkeys_locked_for_sync_`, and
+  // notifies observers / Sync if their values changed.
   void ComputeShouldDisplayErrorUiAndNotifyObservers();
 
   // Used for notifying observers.
@@ -126,10 +130,22 @@ class PasskeyUnlockManager : public KeyedService,
   void AsynchronouslyCheckSystemUVAvailability();
   // Callback for `AsynchronouslyCheckSystemUVAvailability`.
   void OnHaveSystemUVAvailability(bool has_system_uv);
+  // Returns whether opportunistic iCloud Keychain recovery on startup is
+  // enabled and has not completed yet. Always false on platforms other than
+  // macOS.
+  bool IsOpportunisticRecoveryOnStartupUnfinished() const;
+#if BUILDFLAG(IS_MAC)
+  // Starts iCloud Keychain recovery at most once when passkeys are locked and
+  // the feature is enabled.
+  void MaybeStartICloudRecovery();
+  void OnICloudRecoveryComplete();
+#endif  // BUILDFLAG(IS_MAC)
 
-  // A helper for `ComputeShouldDisplayErrorUi()`. Checks whether passkeys are
-  // in the locked state. If this information can't be computed returns
-  // `std::nullopt`.
+  // A helper for `ComputeShouldDisplayErrorUiAndNotifyObservers()` and
+  // `MaybeStartICloudRecovery()`. Checks whether passkeys are in the locked
+  // state; when `kPasskeyUnlockIdentityErrorUi` is disabled, also requires Sync
+  // to have no actionable error (`no_sync_errors_`). Returns `std::nullopt` if
+  // this information can't be computed yet.
   std::optional<bool> ArePasskeysLocked() const;
   // A helper for `ComputeShouldDisplayErrorUi()`. Checks whether passkeys could
   // be unlocked. If this information can't be computed returns `std::nullopt`.
@@ -182,8 +198,10 @@ class PasskeyUnlockManager : public KeyedService,
   std::optional<bool> enclave_ready_;
   std::optional<bool> has_gpm_pin_;
   std::optional<bool> has_system_uv_;
-  bool sync_active_ = false;
+  bool syncing_webauthn_enabled_ = false;
+  bool no_sync_errors_ = false;
   bool should_display_error_ui_ = false;
+  bool passkeys_locked_for_sync_ = false;
 
   base::ObserverList<Observer> observer_list_;
 
@@ -206,6 +224,9 @@ class PasskeyUnlockManager : public KeyedService,
 
   std::unique_ptr<trusted_vault::TrustedVaultConnection::Request>
       download_account_state_request_;
+#if BUILDFLAG(IS_MAC)
+  ICloudRecoveryState icloud_recovery_state_ = ICloudRecoveryState::kNotStarted;
+#endif  // BUILDFLAG(IS_MAC)
 
   SEQUENCE_CHECKER(sequence_checker_);
 

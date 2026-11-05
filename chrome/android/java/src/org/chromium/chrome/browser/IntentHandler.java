@@ -40,19 +40,25 @@ import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.actor.ActorBackgroundActuationManager;
+import org.chromium.chrome.browser.actor.foreground_service.ActorForegroundServiceController;
+import org.chromium.chrome.browser.actor.notifications.ActorNotificationFactory;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.browserservices.SessionDataHolder;
 import org.chromium.chrome.browser.browserservices.intents.SessionHolder;
 import org.chromium.chrome.browser.browserservices.intents.WebappConstants;
+import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.CustomTabsConnection;
-import org.chromium.chrome.browser.customtabs.EphemeralCustomTabIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.IncognitoCustomTabIntentDataProvider;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.externalnav.IntentWithRequestMetadataHandler;
 import org.chromium.chrome.browser.externalnav.IntentWithRequestMetadataHandler.RequestMetadata;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicIntentConstants;
 import org.chromium.chrome.browser.gsa.GSAUtils;
+import org.chromium.chrome.browser.intents.BrowserIntentUtils;
+import org.chromium.chrome.browser.notifications.NotificationConstants;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
 import org.chromium.chrome.browser.pdf.PdfUtils;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -60,6 +66,7 @@ import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.renderer_host.ChromeNavigationUiData;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabIdManager;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.AsyncTabCreationParams;
@@ -334,7 +341,7 @@ public class IntentHandler {
 
     /** An extra to disable initialization of the renderer when creating a new tab context. */
     public static final String EXTRA_DISABLE_INITIALIZE_RENDERER =
-            "org.chromium.chrome.browser.disable_initialize_renderer";
+            BrowserIntentUtils.EXTRA_DISABLE_INITIALIZE_RENDERER;
 
     public static final String EXTRA_CCT_EARLY_NAV = "org.chromium.chrome.browser.cct_early_nav";
 
@@ -384,7 +391,7 @@ public class IntentHandler {
     private static final String NEWS_LINK_PREFIX = "http://news.google.com/news/url?";
     private static final String YOUTUBE_LINK_PREFIX_HTTPS = "https://www.youtube.com/redirect?";
     private static final String YOUTUBE_LINK_PREFIX_HTTP = "http://www.youtube.com/redirect?";
-    private static final String BRING_TAB_TO_FRONT_EXTRA = "BRING_TAB_TO_FRONT";
+    public static final String BRING_TAB_TO_FRONT_EXTRA = "BRING_TAB_TO_FRONT";
     private static final String BRING_TAB_GROUP_TO_FRONT_EXTRA = "BRING_TAB_GROUP_TO_FRONT";
     public static final String BRING_TAB_TO_FRONT_SOURCE_EXTRA = "BRING_TAB_TO_FRONT_SOURCE";
     public static final String BRING_TAB_GROUP_TO_FRONT_SOURCE_EXTRA =
@@ -681,7 +688,7 @@ public class IntentHandler {
      */
     private static @Nullable String getReferrerUrl(Intent intent) {
         Uri referrerExtra = getReferrer(intent);
-        SessionHolder<?> session = SessionHolder.getSessionHolderFromIntent(intent);
+        SessionHolder session = SessionHolder.getSessionHolderFromIntent(intent);
         if (referrerExtra == null && session != null) {
             Referrer referrer =
                     CustomTabsConnection.getInstance().getDefaultReferrerForSession(session);
@@ -750,7 +757,12 @@ public class IntentHandler {
             params.setReferrer(new Referrer(referrer, getReferrerPolicyFromIntent(intent)));
         }
         String headers = getExtraHeadersFromIntent(intent, params.getUrl());
-        if (headers != null) params.setVerbatimHeaders(headers);
+        if (headers != null) {
+            params.setVerbatimHeaders(headers);
+            if (ChromeFeatureList.sRemoveExtraHeadersOnCrossOriginRedirect.isEnabled()) {
+                params.setRemoveExtraHeadersOnCrossOriginRedirect(true);
+            }
+        }
     }
 
     public static int getReferrerPolicyFromIntent(Intent intent) {
@@ -820,7 +832,7 @@ public class IntentHandler {
         // The logic in this method should be moved to ChromeTabbedActivity eventually. We should
         // support async handling of voice search when native finishes initializing.
         if (results == null
-                || results.size() == 0
+                || results.isEmpty()
                 || !BrowserStartupController.getInstance().isFullBrowserStarted()) {
             return null;
         }
@@ -830,18 +842,23 @@ public class IntentHandler {
         AutocompleteMatch match = AutocompleteCoordinator.classify(profile, query);
         assert match != null;
 
-        if (!match.isSearchSuggestion()) return match.getUrl().getSpec();
+        if (!match.isSearchSuggestion()
+                && !ExternalIntentUrlChecker.isUnsafeExternalIntentUrl(match.getUrl())) {
+            return match.getUrl().getSpec();
+        }
 
         List<String> urls =
                 IntentUtils.safeGetStringArrayListExtra(
                         intent, RecognizerResultsIntent.EXTRA_VOICE_SEARCH_RESULT_URLS);
-        if (urls != null && urls.size() > 0) {
-            return urls.get(0);
-        } else {
-            return TemplateUrlServiceFactory.getForProfile(profile)
-                    .getUrlForVoiceSearchQuery(query)
-                    .getSpec();
+        if (urls != null && !urls.isEmpty()) {
+            String url = urls.get(0);
+            if (!TextUtils.isEmpty(url) && !isUrlUnsafe(url)) {
+                return url;
+            }
         }
+        return TemplateUrlServiceFactory.getForProfile(profile)
+                .getUrlForVoiceSearchQuery(query)
+                .getSpec();
     }
 
     /**
@@ -956,7 +973,7 @@ public class IntentHandler {
             String value = bundleExtraHeaders.getString(key);
 
             if (!HttpUtil.isAllowedHeader(key, value)) {
-                Log.w(TAG, "Ignoring forbidden header " + key + " in EXTRA_HEADERS.");
+                Log.w(TAG, "Ignoring forbidden header %s in EXTRA_HEADERS.", key);
                 continue;
             }
 
@@ -965,13 +982,13 @@ public class IntentHandler {
 
             if (!fromChrome) {
                 if (key.toLowerCase(Locale.US).startsWith("x-chrome-")) {
-                    Log.w(TAG, "Ignoring x-chrome header " + key + " in EXTRA_HEADERS.");
+                    Log.w(TAG, "Ignoring x-chrome header %s in EXTRA_HEADERS.", key);
                     continue;
                 }
 
                 if (!shouldAllowNonSafelistedHeaders
                         && !IntentHandlerJni.get().isCorsSafelistedHeader(key, value)) {
-                    Log.w(TAG, "Ignoring non-CORS-safelisted header " + key + " in EXTRA_HEADERS.");
+                    Log.w(TAG, "Ignoring non-CORS-safelisted header %s in EXTRA_HEADERS.", key);
                     continue;
                 }
             }
@@ -1063,10 +1080,10 @@ public class IntentHandler {
                 }
                 setTabGroupMetadata(intent, tabGroupMetadata);
 
-                return tabIdsToUrls.size() == 0;
+                return tabIdsToUrls.isEmpty();
             } else {
                 return shouldIgnoreIntentUrl(
-                        intent, context, getUrlFromIntent(intent), isCustomTab);
+                        intent, context, getTargetUrlFromIntent(intent), isCustomTab);
             }
         } catch (Throwable t) {
             return true;
@@ -1269,6 +1286,20 @@ public class IntentHandler {
     }
 
     /**
+     * Extracts the target URL from the intent, unwrapping googlechrome:// if present.
+     *
+     * @param intent Intent to examine.
+     * @return Target URL from the Intent, or null if a valid URL couldn't be found.
+     */
+    private static @Nullable String getTargetUrlFromIntent(@Nullable Intent intent) {
+        String url = extractUrlFromIntent(intent);
+        if (isGoogleChromeScheme(url)) {
+            url = ExternalNavigationHandler.getUrlFromSelfSchemeUrl(GOOGLECHROME_SCHEME, url);
+        }
+        return url;
+    }
+
+    /**
      * Retrieve the URL from the Intent, which may be in multiple locations. If the URL is
      * googlechrome:// scheme, parse the actual navigation URL.
      *
@@ -1276,10 +1307,7 @@ public class IntentHandler {
      * @return URL from the Intent, or null if a valid URL couldn't be found.
      */
     public static @Nullable String getUrlFromIntent(@Nullable Intent intent) {
-        String url = extractUrlFromIntent(intent);
-        if (isGoogleChromeScheme(url)) {
-            url = ExternalNavigationHandler.getUrlFromSelfSchemeUrl(GOOGLECHROME_SCHEME, url);
-        }
+        String url = getTargetUrlFromIntent(intent);
         // To display a PDF in Chrome, the content URI must be encoded.
         String encodedPdfUrl =
                 PdfUtils.getEncodedContentUri(url, ContextUtils.getApplicationContext());
@@ -1331,44 +1359,64 @@ public class IntentHandler {
     }
 
     /**
-     * Extract a raw URL from the Share intent text.
+     * Extract all raw URLs from the Share intent text.
      *
-     * <p>This first try to extract raw http/https URLs. In the case of multiple URLs being present,
-     * picks the last one. If no explicit URLs are found, try using autocomplete to resembles the
-     * URL. If not, it will construct a search query with the default search engine.
+     * <p>This first tries to extract raw http/https URLs. If no explicit URLs are found, tries
+     * using autocomplete to convert the text to a URL. If that still fails, constructs a search
+     * query with the default search engine.
      *
      * @param intent Intent to examine.
-     * @return URL from the intent, or null if no URL could be found.
+     * @return List of URLs from the intent, or an empty list if no URL could be found.
      */
-    public static @Nullable String getUrlFromShareIntent(Intent intent) {
+    public static List<String> getAllUrlsFromShareIntent(Intent intent) {
+        List<String> urls = new ArrayList<>();
         if (!Intent.ACTION_SEND.equals(intent.getAction())
                 || !"text/plain".equals(intent.getType())) {
-            return null;
+            return urls;
         }
 
         String text = IntentUtils.safeGetStringExtra(intent, Intent.EXTRA_TEXT);
-        List<String> urls = new ArrayList<>();
         if (!TextUtils.isEmpty(text)) {
             extractStringsWithPrefix(text, UrlConstants.HTTP_URL_PREFIX, urls);
             extractStringsWithPrefix(text, UrlConstants.HTTPS_URL_PREFIX, urls);
         }
 
         if (!urls.isEmpty()) {
-            // If multiple URLs are present, somewhat arbitrarily pick the last one (preferring
-            // https) - share actions seem to usually put the URL at the end.
-            return urls.get(urls.size() - 1);
+            return urls;
         }
 
         if (TextUtils.isEmpty(text)
                 || !BrowserStartupController.getInstance().isFullBrowserStarted()) {
-            return null;
+            return urls;
         }
 
         Profile profile = ProfileManager.getLastUsedRegularProfile();
         AutocompleteMatch match = AutocompleteCoordinator.classify(profile, text);
-        if (match != null) return match.getUrl().getSpec();
+        if (match != null && !ExternalIntentUrlChecker.isUnsafeExternalIntentUrl(match.getUrl())) {
+            urls.add(match.getUrl().getSpec());
+            return urls;
+        }
 
-        return TemplateUrlServiceFactory.getForProfile(profile).getUrlForSearchQuery(text);
+        urls.add(TemplateUrlServiceFactory.getForProfile(profile).getUrlForSearchQuery(text));
+        return urls;
+    }
+
+    /**
+     * Extract a raw URL from the Share intent text.
+     *
+     * <p>Like {@link #getAllUrlsFromShareIntent(Intent)}, but returns a single URL.
+     *
+     * @param intent Intent to examine.
+     * @return URL from the intent, or null if no URL could be found.
+     */
+    public static @Nullable String getUrlFromShareIntent(Intent intent) {
+        List<String> urls = getAllUrlsFromShareIntent(intent);
+        if (urls.isEmpty()) {
+            return null;
+        }
+        // If multiple URLs are present, somewhat arbitrarily pick the last one (preferring
+        // https) - share actions seem to usually put the URL at the end.
+        return urls.get(urls.size() - 1);
     }
 
     private static @Nullable String getUrlForWebapp(@Nullable Intent intent) {
@@ -1412,7 +1460,8 @@ public class IntentHandler {
 
     /** Return true if the type is one of the Mime types used for MHTML */
     static boolean isMhtmlMimeType(String type) {
-        return type.equals("multipart/related") || type.equals("message/rfc822");
+        return type.equalsIgnoreCase("multipart/related")
+                || type.equalsIgnoreCase("message/rfc822");
     }
 
     /**
@@ -1590,11 +1639,11 @@ public class IntentHandler {
      *
      * @param intent The Intent to be set.
      */
-    public static void setDestTabId(Intent intent, int destTabId) {
+    public static void setDestTabId(Intent intent, @TabId int destTabId) {
         intent.putExtra(EXTRA_DEST_TAB_ID, destTabId);
     }
 
-    public static int getDestTabId(Intent intent) {
+    public static @TabId int getDestTabId(Intent intent) {
         return IntentUtils.safeGetIntExtra(intent, EXTRA_DEST_TAB_ID, Tab.INVALID_TAB_ID);
     }
 
@@ -1674,7 +1723,7 @@ public class IntentHandler {
         if (tab == null) return null;
 
         Context tabContext = tab.getContext();
-        return (tabContext instanceof Activity) ? (Activity) tabContext : null;
+        return (tabContext instanceof Activity activity) ? activity : null;
     }
 
     /**
@@ -1759,7 +1808,7 @@ public class IntentHandler {
      * @return Created Intent or null if this operation isn't possible.
      */
     public static Intent createTrustedBringTabToFrontIntent(
-            int tabId, @BringToFrontSource int bringToFrontSource) {
+            @TabId int tabId, @BringToFrontSource int bringToFrontSource) {
         Context context = ContextUtils.getApplicationContext();
         Intent intent = new Intent(context, ChromeLauncherActivity.class);
         intent.putExtra(Browser.EXTRA_APPLICATION_ID, context.getPackageName());
@@ -1789,19 +1838,41 @@ public class IntentHandler {
         return intent;
     }
 
-    public static int getBringTabToFrontId(Intent intent) {
+    public static @TabId int getBringTabToFrontId(Intent intent) {
         if (!wasIntentSenderChrome(intent)) return Tab.INVALID_TAB_ID;
-        return IntentUtils.safeGetIntExtra(intent, BRING_TAB_TO_FRONT_EXTRA, Tab.INVALID_TAB_ID);
+        final @TabId int tabId =
+                IntentUtils.safeGetIntExtra(intent, BRING_TAB_TO_FRONT_EXTRA, Tab.INVALID_TAB_ID);
+        if (tabId != Tab.INVALID_TAB_ID) return tabId;
+        return ActorForegroundServiceController.resolveActorIntentTabId(intent);
     }
 
     /** Sets the Bring Tab to Front ID extra for a given intent. */
-    public static void setBringTabToFrontId(Intent intent, int tabId) {
+    public static void setBringTabToFrontId(Intent intent, @TabId int tabId) {
         intent.putExtra(BRING_TAB_TO_FRONT_EXTRA, tabId);
     }
 
     public static @Nullable String getBringTabGroupToFrontId(Intent intent) {
         if (!wasIntentSenderChrome(intent)) return null;
         return IntentUtils.safeGetStringExtra(intent, BRING_TAB_GROUP_TO_FRONT_EXTRA);
+    }
+
+    /**
+     * @return The Glic conversation ID extra from an intent, or null if not present or if the
+     *     intent is not trusted from Chrome.
+     */
+    public static @Nullable String getGlicConversationId(@Nullable Intent intent) {
+        if (!wasIntentSenderChrome(intent)) return null;
+        return IntentUtils.safeGetStringExtra(intent, GlicIntentConstants.EXTRA_CONVERSATION_ID);
+    }
+
+    /**
+     * @return True if the intent is a trusted Chrome intent containing the Glic pending actor task
+     *     extra.
+     */
+    public static boolean hasPendingActorTaskExtra(@Nullable Intent intent) {
+        if (intent == null || !wasIntentSenderChrome(intent)) return false;
+        return IntentUtils.safeGetBooleanExtra(
+                intent, GlicIntentConstants.EXTRA_GLIC_PENDING_ACTOR_TASK, false);
     }
 
     /** Sets the Tab Id extra for a given intent. Will only be usable by trusted Chrome intents. */
@@ -1830,6 +1901,21 @@ public class IntentHandler {
     public static boolean getPinnedState(Intent intent) {
         if (!wasIntentSenderChrome(intent)) return false;
         return IntentUtils.safeGetBooleanExtra(intent, IntentHandler.EXTRA_PINNED_STATE, false);
+    }
+
+    /**
+     * @param intent The intent to check.
+     * @return Whether the intent originated from an Actor notification.
+     */
+    public static boolean isActorNotificationIntent(@Nullable Intent intent) {
+        if (!wasIntentSenderChrome(intent)) return false;
+        return IntentUtils.safeGetBooleanExtra(
+                        intent, ActorNotificationFactory.EXTRA_SHOW_ACTOR_CONTROL, false)
+                || IntentUtils.safeGetIntExtra(
+                                intent,
+                                NotificationConstants.EXTRA_ACTOR_TASK_ID,
+                                ActorBackgroundActuationManager.INVALID_TASK_ID)
+                        != ActorBackgroundActuationManager.INVALID_TASK_ID;
     }
 
     /**
@@ -1913,9 +1999,7 @@ public class IntentHandler {
         int transitionType = PageTransition.LINK | PageTransition.FROM_API;
         loadUrlParams.setTransitionType(getTransitionTypeFromIntent(intent, transitionType));
 
-        if (IntentUtils.isTrustedIntentFromSelf(intent)
-                && ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)) {
+        if (IntentUtils.isTrustedIntentFromSelf(intent)) {
             @Nullable String scrollToTextFragment =
                     IntentUtils.safeGetStringExtra(intent, EXTRA_SCROLL_TO_TEXT_FRAGMENT);
             if (!TextUtils.isEmpty(scrollToTextFragment)) {
@@ -1929,7 +2013,7 @@ public class IntentHandler {
                     new Referrer(referrer, IntentHandler.getReferrerPolicyFromIntent(intent)));
         }
 
-        String headers = getExtraHeadersFromIntent(intent);
+        String headers = getExtraHeadersFromIntent(intent, url);
         headers = maybeAddAdditionalContentHeaders(intent, url, headers);
 
         if (IntentHandler.wasIntentSenderChrome(intent)) {
@@ -1967,6 +2051,10 @@ public class IntentHandler {
             loadUrlParams.setInitiatorOrigin(Origin.createOpaqueOrigin());
         }
         loadUrlParams.setVerbatimHeaders(headers);
+        if (!TextUtils.isEmpty(headers)
+                && ChromeFeatureList.sRemoveExtraHeadersOnCrossOriginRedirect.isEnabled()) {
+            loadUrlParams.setRemoveExtraHeadersOnCrossOriginRedirect(true);
+        }
         loadUrlParams.setIsRendererInitiated(
                 metadata == null ? false : metadata.isRendererInitiated());
 
@@ -1992,7 +2080,7 @@ public class IntentHandler {
                 intent, /* recordMetrics= */ false)) {
             return true;
         }
-        if (EphemeralCustomTabIntentDataProvider.isValidEphemeralTabIntent(intent)) {
+        if (CustomTabIntentDataProvider.isValidEphemeralTabIntent(intent)) {
             return true;
         }
         return false;

@@ -11,6 +11,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
@@ -21,6 +22,7 @@
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -165,8 +167,21 @@ GlicExperimentalTriggeringMessageHandler::
 }
 
 void GlicExperimentalTriggeringMessageHandler::CancelAllPendingMessages() {
+#if BUILDFLAG(IS_ANDROID)
+  if (profile_) {
+    if (actor::ActorKeyedService* actor_service =
+            actor::ActorKeyedService::Get(profile_)) {
+      for (const auto& [context_id, _] : pending_messages_) {
+        actor_service->RemovePendingTask(context_id);
+      }
+    }
+  }
+#endif
   for (auto& [context_id, message_list] : pending_messages_) {
     for (auto& pending_message : message_list) {
+      base::UmaHistogramMediumTimes(
+          "Glic.ExperimentalTriggering.Android.BackgroundSetupLatency.Shutdown",
+          base::TimeTicks::Now() - pending_message.queued_time);
       if (pending_message.done_callback) {
         std::move(pending_message.done_callback)
             .Run(CreateResponseMessage(
@@ -213,6 +228,7 @@ void GlicExperimentalTriggeringMessageHandler::OnMessage(
   CHECK(message.has_glic_experimental_triggering());
 
   glic::ScopedIncomingMessageResultLogger result_logger(
+      glic::GlicMetricReporter(profile_),
       glic::ScopedIncomingMessageResultLogger::Channel::kSharingMessage);
 
   // If no `context_id` is present in the request, we generate one that
@@ -282,10 +298,21 @@ void GlicExperimentalTriggeringMessageHandler::OnMessage(
       VLOG(1) << "GlicTrigger: Received StopActuationRequest, intercepting to "
                  "clear pending messages before routing to Domain logic.";
 
+      if (profile_) {
+        if (actor::ActorKeyedService* actor_service =
+                actor::ActorKeyedService::Get(profile_)) {
+          actor_service->RemovePendingTask(context_id);
+        }
+      }
+
       // Delete any pending requests waiting for an offscreen tab
       auto it = pending_messages_.find(context_id);
       if (it != pending_messages_.end()) {
         for (auto& pending_message : it->second) {
+          base::UmaHistogramMediumTimes(
+              "Glic.ExperimentalTriggering.Android.BackgroundSetupLatency."
+              "Cancelled",
+              base::TimeTicks::Now() - pending_message.queued_time);
           if (pending_message.done_callback) {
             std::move(pending_message.done_callback)
                 .Run(CreateResponseMessage(
@@ -301,30 +328,30 @@ void GlicExperimentalTriggeringMessageHandler::OnMessage(
       if (pending_messages_.empty()) {
         actor_service_observation_.Reset();
       }
-    } else if (profile_) {
-      actor::ActorKeyedService* actor_service =
-          actor::ActorKeyedService::Get(profile_);
-      if (actor_service) {
-        VLOG(1) << "GlicTrigger: Triggering ActorForegroundService from native";
-        if (!actor_service_observation_.IsObserving()) {
-          actor_service_observation_.Observe(actor_service);
+    } else if (pending_messages_.contains(context_id)) {
+      // Tab preparation is already in flight for this context. Queue the
+      // message.
+      pending_messages_[context_id].push_back(
+          MessageData{std::move(message), std::move(done_callback),
+                      std::move(result_logger)});
+      return;
+    } else if (request.has_request() &&
+               request.request().has_trigger_actuation_request()) {
+      if (profile_) {
+        actor::ActorKeyedService* actor_service =
+            actor::ActorKeyedService::Get(profile_);
+        if (actor_service) {
+          VLOG(1)
+              << "GlicTrigger: Registering pending task in ActorKeyedService";
+          if (!actor_service_observation_.IsObserving()) {
+            actor_service_observation_.Observe(actor_service);
+          }
+          pending_messages_[context_id].push_back(
+              MessageData{std::move(message), std::move(done_callback),
+                          std::move(result_logger)});
+          actor_service->AddPendingTask(context_id);
+          return;
         }
-        bool already_pending = pending_messages_.contains(context_id);
-        pending_messages_[context_id].push_back(
-            MessageData{std::move(message), std::move(done_callback),
-                        std::move(result_logger)});
-        if (!already_pending) {
-          // TODO(b/540892797): Avoid starting an Android Foreground
-          // Service (FGS) if it is redundant or unnecessary:
-          // 1. If Chrome is already in the foreground, starting an FGS is
-          //    unnecessary and adds asynchronous JNI/IPC overhead.
-          // 2. If a task is already active and executing (meaning the initial
-          //    tab preparation is complete and the queue is cleared),
-          //    subsequent control messages (e.g., INTERRUPT or STOP) should not
-          //    trigger EnsureForegroundServiceStarted() again.
-          actor_service->EnsureForegroundServiceStarted(context_id);
-        }
-        return;
       }
     }
   } else {
@@ -436,6 +463,9 @@ void GlicExperimentalTriggeringMessageHandler::OnBackgroundTabPrepared(
   }
 
   for (auto& pending_message : messages) {
+    base::UmaHistogramMediumTimes(
+        "Glic.ExperimentalTriggering.Android.BackgroundSetupLatency.Success",
+        base::TimeTicks::Now() - pending_message.queued_time);
     ProcessValidatedMessage(std::move(pending_message.message), context_id,
                             std::move(pending_message.done_callback),
                             std::move(pending_message.result_logger), tab);
@@ -444,6 +474,14 @@ void GlicExperimentalTriggeringMessageHandler::OnBackgroundTabPrepared(
 
 void GlicExperimentalTriggeringMessageHandler::OnBackgroundSetupFailed(
     const std::string& context_id) {
+#if BUILDFLAG(IS_ANDROID)
+  if (profile_) {
+    if (actor::ActorKeyedService* actor_service =
+            actor::ActorKeyedService::Get(profile_)) {
+      actor_service->RemovePendingTask(context_id);
+    }
+  }
+#endif
   auto it = pending_messages_.find(context_id);
   if (it == pending_messages_.end()) {
     return;
@@ -456,6 +494,9 @@ void GlicExperimentalTriggeringMessageHandler::OnBackgroundSetupFailed(
   }
 
   for (auto& pending_message : messages) {
+    base::UmaHistogramMediumTimes(
+        "Glic.ExperimentalTriggering.Android.BackgroundSetupLatency.Failed",
+        base::TimeTicks::Now() - pending_message.queued_time);
     const auto& request =
         pending_message.message.glic_experimental_triggering();
     const components_sharing_message::GlicExperimentalTriggering::TaskMetadata*

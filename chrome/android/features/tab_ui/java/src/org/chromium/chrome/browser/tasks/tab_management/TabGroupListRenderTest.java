@@ -4,12 +4,10 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
-import static androidx.test.espresso.assertion.ViewAssertions.matches;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.chromium.base.test.transit.TransitAsserts.assertFinalDestination;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.filters.LargeTest;
@@ -23,9 +21,7 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
@@ -46,7 +42,6 @@ import org.chromium.ui.test.util.RenderTestRule.Component;
 
 /** Render tests for {@link TabGroupListView}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@EnableFeatures(ChromeFeatureList.GRID_TAB_SWITCHER_SURFACE_COLOR_UPDATE)
 @DisableFeatures({TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS})
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
@@ -106,7 +101,7 @@ public class TabGroupListRenderTest {
                     model.setTabGroupTitle(tab.getTabGroupId(), title);
                 });
         if (wait) {
-            onViewWaiting(withText(title)).check(matches(isDisplayed()));
+            waitForView(withText(title));
             // Despite waiting on the view to be visible for some reason only a blank render is
             // captured. Sleep a bit to let drawing finish.
             Thread.sleep(300);

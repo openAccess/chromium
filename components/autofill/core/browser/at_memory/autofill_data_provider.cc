@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -17,6 +18,7 @@
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/containers/extend.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/strings/string_util.h"
@@ -27,6 +29,8 @@
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
+#include "components/autofill/core/browser/data_manager/valuables/valuables_data_manager.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_normalization_util.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
@@ -34,14 +38,17 @@
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
 #include "components/autofill/core/browser/data_model/usage_history_information.h"
+#include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/filling/field_filling_util.h"
+#include "components/autofill/core/browser/integrators/at_memory/at_memory_string_filtering_util.h"
 #include "components/autofill/core/browser/integrators/at_memory/memory_data_type.h"
 #include "components/autofill/core/browser/integrators/at_memory/memory_data_type_util.h"
 #include "components/autofill/core/browser/integrators/at_memory/memory_search_result.h"
 #include "components/autofill/core/browser/suggestions/payments/payments_suggestion_generator_util.h"
 #include "components/autofill/core/browser/ui/addresses/autofill_address_util.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/common/dense_set.h"
 #include "components/personal_context/proto/features/at_memory.pb.h"
 #include "components/strings/grit/components_strings.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
@@ -54,6 +61,20 @@ namespace {
 using ::personal_context::proto::TypedValue;
 
 constexpr size_t kVisibleSuffixLength = 4;
+
+// Returns whether a record whose raw value of `type` is `value` yields an
+// entry: the value must be non-empty and, for content-based search (i.e. if
+// `query` is set), match the query (see `MatchesRawValueQuery()`).
+bool YieldsEntry(MemoryDataType type,
+                 std::u16string_view value,
+                 base::optional_ref<const RawValueQuery> query) {
+  if (value.empty()) {
+    return false;
+  }
+  return !query ||
+         MatchesRawValueQuery(
+             type, normalization::NormalizeForComparison(value), *query);
+}
 
 // Extracts a `TypedValue` from `attribute` if there is a non-empty one.
 std::optional<TypedValue> GetAttributeTypedValue(
@@ -92,23 +113,29 @@ std::optional<TypedValue> GetHomeCountryTypedValue(
   return typed_val;
 }
 
-// Adds metadata from `form_group` to `entry` if `metadata_entry_type` maps to
-// a `FieldType` and differs from `primary_field_type`.
+// Adds `value` of type `metadata_type` to `entry` as metadata, unless it is
+// empty or `metadata_type` is the `primary_type` of `entry`.
 void AddMetadataToResult(MemorySearchResult& entry,
-                         const FormGroup& form_group,
-                         MemoryDataType metadata_entry_type,
-                         FieldType primary_field_type,
-                         const std::string& app_locale) {
-  std::optional<FieldType> other_field_type = ToFieldType(metadata_entry_type);
-  if (!other_field_type || other_field_type == primary_field_type) {
+                         MemoryDataType metadata_type,
+                         MemoryDataType primary_type,
+                         std::u16string value) {
+  if (metadata_type == primary_type || value.empty()) {
     return;
   }
-  std::u16string metadata_value =
-      form_group.GetInfo(*other_field_type, app_locale);
-  if (!metadata_value.empty()) {
-    entry.metadata_list.emplace_back(
-        metadata_entry_type, GetMemoryDataTypeNameForI18n(metadata_entry_type),
-        std::move(metadata_value));
+  entry.metadata_list.emplace_back(metadata_type,
+                                   GetMemoryDataTypeNameForI18n(metadata_type),
+                                   std::move(value));
+}
+// Same as `AddMetadataToResult()`, with the value read from `form_group`, if
+// `metadata_type` maps to a `FieldType`.
+void AddMetadataToResult(MemorySearchResult& entry,
+                         const FormGroup& form_group,
+                         MemoryDataType metadata_type,
+                         MemoryDataType primary_type,
+                         const std::string& app_locale) {
+  if (std::optional<FieldType> field_type = ToFieldType(metadata_type)) {
+    AddMetadataToResult(entry, metadata_type, primary_type,
+                        form_group.GetInfo(*field_type, app_locale));
   }
 }
 
@@ -167,16 +194,6 @@ MemorySearchResult CreateMemorySearchResultForEntity(
   entry.identifier = *entity.guid();
   entry.metadata_list = GetMetadataFromEntityAttributes(entity, app_locale,
                                                         primary_attribute_type);
-  entry.is_local = [&] {
-    switch (entity.record_type()) {
-      case EntityInstance::RecordType::kLocal:
-        return true;
-      case EntityInstance::RecordType::kServerWallet:
-      case EntityInstance::RecordType::kPersonalContext:
-        return false;
-    }
-    NOTREACHED();
-  }();
   if (base::optional_ref<const AttributeInstance> attribute =
           entity.attribute(primary_attribute_type)) {
     entry.typed_value = GetAttributeTypedValue(*attribute);
@@ -189,39 +206,23 @@ MemorySearchResult CreateResultFromAddressProfile(
     const AutofillProfile& profile,
     std::u16string value,
     MemoryDataType memory_data_type,
-    FieldType field_type,
     const std::string& app_locale) {
   MemorySearchResult entry = MemorySearchResult(
       memory_data_type, GetMemoryDataTypeNameForI18n(memory_data_type),
       std::move(value), profile.GetRankingScore(base::Time::Now()));
 
   entry.identifier = profile.guid();
-  entry.is_local = [&] {
-    switch (profile.record_type()) {
-      case AutofillProfile::RecordType::kLocalOrSyncable:
-      case AutofillProfile::RecordType::kAccount:
-        return true;
-      case AutofillProfile::RecordType::kAccountHome:
-      case AutofillProfile::RecordType::kAccountWork:
-      case AutofillProfile::RecordType::kAccountNameEmail:
-        return false;
-    }
-    NOTREACHED();
-  }();
 
-  // Add other address fields as metadata.
-  AddMetadataToResult(entry, profile, MemoryDataType::kNameFull, field_type,
-                      app_locale);
-  AddMetadataToResult(entry, profile, MemoryDataType::kAddressStreetAddress,
-                      field_type, app_locale);
-  AddMetadataToResult(entry, profile, MemoryDataType::kAddressCity, field_type,
-                      app_locale);
-  AddMetadataToResult(entry, profile, MemoryDataType::kAddressState, field_type,
-                      app_locale);
-  AddMetadataToResult(entry, profile, MemoryDataType::kAddressZip, field_type,
-                      app_locale);
-  AddMetadataToResult(entry, profile, MemoryDataType::kAddressCountry,
-                      field_type, app_locale);
+  // Add other profile fields as metadata.
+  for (MemoryDataType metadata_type :
+       {MemoryDataType::kNameFull, MemoryDataType::kAddressStreetAddress,
+        MemoryDataType::kAddressCity, MemoryDataType::kAddressState,
+        MemoryDataType::kAddressZip, MemoryDataType::kAddressCountry,
+        MemoryDataType::kCompanyName, MemoryDataType::kEmail,
+        MemoryDataType::kPhone}) {
+    AddMetadataToResult(entry, profile, metadata_type, memory_data_type,
+                        app_locale);
+  }
 
   if (std::optional<TypedValue> typed_home_country =
           GetHomeCountryTypedValue(profile)) {
@@ -236,61 +237,44 @@ MemorySearchResult CreateResultFromAddressProfile(
     }
   }
 
-  entry.confidence_score = profile.GetRankingScore(base::Time::Now());
   return entry;
 }
 
-// Fetches data for a specific field type from all available address profiles.
+// Fetches data of `memory_data_type` from all address profiles. For
+// `kAddressFull`, the value is the envelope-style address.
 std::vector<MemorySearchResult> FetchDataFromAddressProfiles(
     const PersonalDataManager& personal_data_manager,
     FieldType field_type,
-    MemoryDataType memory_data_type) {
+    MemoryDataType memory_data_type,
+    base::optional_ref<const RawValueQuery> query) {
   std::vector<MemorySearchResult> entries;
   std::string app_locale =
       personal_data_manager.address_data_manager().app_locale();
 
   for (const AutofillProfile* profile :
        personal_data_manager.address_data_manager().GetProfiles()) {
-    std::u16string value = profile->GetInfo(field_type, app_locale);
-    if (value.empty()) {
+    std::u16string value;
+    if (memory_data_type == MemoryDataType::kAddressFull) {
+      // Profiles without a street address (e.g. name, email and country only)
+      // are not useful as full address suggestions.
+      if (!profile->HasRawInfo(ADDRESS_HOME_STREET_ADDRESS)) {
+        continue;
+      }
+      value = GetEnvelopeStyleAddress(*profile, app_locale,
+                                      /*include_recipient=*/false,
+                                      /*include_country=*/true);
+      base::ReplaceChars(
+          value, u"\n",
+          l10n_util::GetStringUTF16(IDS_AUTOFILL_ADDRESS_SUMMARY_SEPARATOR),
+          &value);
+    } else {
+      value = profile->GetInfo(field_type, app_locale);
+    }
+    if (!YieldsEntry(memory_data_type, value, query)) {
       continue;
     }
-
     entries.push_back(CreateResultFromAddressProfile(
-        *profile, std::move(value), memory_data_type, field_type, app_locale));
-  }
-  return entries;
-}
-
-// Fetches full address representation from all profiles.
-std::vector<MemorySearchResult> FetchFullAddressData(
-    const PersonalDataManager& personal_data_manager) {
-  std::vector<MemorySearchResult> entries;
-  std::string app_locale =
-      personal_data_manager.address_data_manager().app_locale();
-  for (const AutofillProfile* profile :
-       personal_data_manager.address_data_manager().GetProfiles()) {
-    // Profiles that don't have at least a street address are not useful for
-    // full address suggestions (e.g. profiles with only name, email, and
-    // country).
-    if (!profile->HasRawInfo(ADDRESS_HOME_STREET_ADDRESS)) {
-      continue;
-    }
-
-    std::u16string full_address = GetEnvelopeStyleAddress(
-        *profile, app_locale, /*include_recipient=*/false,
-        /*include_country=*/true);
-    if (full_address.empty()) {
-      continue;
-    }
-
-    std::u16string separator =
-        l10n_util::GetStringUTF16(IDS_AUTOFILL_ADDRESS_SUMMARY_SEPARATOR);
-    base::ReplaceChars(full_address, u"\n", separator, &full_address);
-
-    entries.push_back(CreateResultFromAddressProfile(
-        *profile, std::move(full_address), MemoryDataType::kAddressFull,
-        ADDRESS_HOME_ADDRESS, app_locale));
+        *profile, std::move(value), memory_data_type, app_locale));
   }
   return entries;
 }
@@ -300,15 +284,16 @@ std::vector<MemorySearchResult> FetchFullAddressData(
 std::vector<MemorySearchResult> FetchAutofillAiAttributeData(
     const EntityDataManager* entity_data_manager,
     AttributeType attribute_type,
-    std::string_view app_locale) {
+    std::string_view app_locale,
+    base::optional_ref<const RawValueQuery> query) {
   std::vector<MemorySearchResult> entries;
   if (!entity_data_manager) {
     return entries;
   }
-  entries.reserve(entity_data_manager->GetEntityInstances().size());
   for (const EntityInstance& entity :
        entity_data_manager->GetEntityInstances()) {
-    if (entity.type() != attribute_type.entity_type()) {
+    if (entity.type() != attribute_type.entity_type() ||
+        entity.record_type() == EntityInstance::RecordType::kPersonalContext) {
       continue;
     }
     base::optional_ref<const AttributeInstance> attr =
@@ -318,7 +303,8 @@ std::vector<MemorySearchResult> FetchAutofillAiAttributeData(
     }
 
     std::u16string attr_value = attr->GetCompleteInfo(app_locale);
-    if (attr_value.empty()) {
+    if (!YieldsEntry(AttributeTypeToMemoryDataType(attribute_type), attr_value,
+                     query)) {
       continue;
     }
 
@@ -328,129 +314,226 @@ std::vector<MemorySearchResult> FetchAutofillAiAttributeData(
   return entries;
 }
 
+// Extracts the string value for a given `type` from `loyalty_card`.
+std::u16string GetLoyaltyCardAttributeValue(const LoyaltyCard& loyalty_card,
+                                            MemoryDataType type) {
+  if (type == MemoryDataType::kLoyaltyMembershipId) {
+    return base::UTF8ToUTF16(loyalty_card.loyalty_card_number());
+  }
+  if (type == MemoryDataType::kLoyaltyMembershipProgram) {
+    return base::UTF8ToUTF16(loyalty_card.program_name());
+  }
+  if (type == MemoryDataType::kLoyaltyMembershipProvider) {
+    return base::UTF8ToUTF16(loyalty_card.merchant_name());
+  }
+  NOTREACHED();
+}
+
+// Creates a data entry from a loyalty card for a specific `memory_data_type`.
+MemorySearchResult CreateResultFromLoyaltyCard(
+    const LoyaltyCard& loyalty_card,
+    std::u16string value,
+    MemoryDataType memory_data_type) {
+  MemorySearchResult entry(
+      memory_data_type, GetMemoryDataTypeNameForI18n(memory_data_type),
+      std::move(value),
+      CalculateRankingScore(loyalty_card.use_count(), loyalty_card.use_date()));
+  entry.identifier = *loyalty_card.id();
+
+  for (MemoryDataType other_type :
+       {MemoryDataType::kLoyaltyMembershipId,
+        MemoryDataType::kLoyaltyMembershipProgram,
+        MemoryDataType::kLoyaltyMembershipProvider}) {
+    if (other_type == memory_data_type) {
+      continue;
+    }
+    std::u16string other_value =
+        GetLoyaltyCardAttributeValue(loyalty_card, other_type);
+    if (!other_value.empty()) {
+      entry.metadata_list.emplace_back(other_type,
+                                       GetMemoryDataTypeNameForI18n(other_type),
+                                       std::move(other_value));
+    }
+  }
+  return entry;
+}
+
+// Fetches loyalty card data from `valuables_data_manager`.
+std::vector<MemorySearchResult> FetchLoyaltyCardData(
+    const ValuablesDataManager* valuables_data_manager,
+    MemoryDataType memory_data_type,
+    base::optional_ref<const RawValueQuery> query) {
+  if (!valuables_data_manager) {
+    return {};
+  }
+
+  std::vector<MemorySearchResult> entries;
+  entries.reserve(valuables_data_manager->GetLoyaltyCards().size());
+  for (const LoyaltyCard& loyalty_card :
+       valuables_data_manager->GetLoyaltyCards()) {
+    std::u16string value =
+        GetLoyaltyCardAttributeValue(loyalty_card, memory_data_type);
+    if (!YieldsEntry(memory_data_type, value, query)) {
+      continue;
+    }
+    entries.push_back(CreateResultFromLoyaltyCard(
+        loyalty_card, std::move(value), memory_data_type));
+  }
+  return entries;
+}
+
+// The types that content-based search fetches, in order of priority: a record
+// yields an entry per matching type, of which callers typically keep the first.
+// A match of a code (e.g. a zip code) is less ambiguous than a match within
+// free text (e.g. a street address containing the same digits), so code types
+// precede text types; within each, the order of `MemoryDataType` applies.
+// TODO(crbug.com/566991902): Support searching by nickname. Nicknames are not
+// matched yet: the credit card nickname has no `FieldType`, and
+// `FetchIbanData()` only matches the IBAN value.
+constexpr auto kContentSearchTypes = [] {
+  constexpr auto kAllTypes = DenseSet<MemoryDataType>::all();
+  constexpr auto is_searchable = [](MemoryDataType type) {
+    return GetRawValueMatchMode(type) != RawValueMatchMode::kNone;
+  };
+  std::array<MemoryDataType, std::ranges::count_if(kAllTypes, is_searchable)>
+      types;
+  std::ranges::copy_if(kAllTypes, types.begin(), is_searchable);
+  // Code types precede text types; within each, `MemoryDataType` order applies.
+  std::ranges::sort(types, {}, [](MemoryDataType type) {
+    return std::pair(GetRawValueMatchMode(type), type);
+  });
+  return types;
+}();
+
 }  // namespace
 
 AutofillDataProvider::AutofillDataProvider(
     const PersonalDataManager* personal_data_manager,
-    const EntityDataManager* entity_data_manager)
+    const EntityDataManager* entity_data_manager,
+    const ValuablesDataManager* valuables_data_manager)
     : personal_data_manager_(personal_data_manager),
-      entity_data_manager_(entity_data_manager) {}
+      entity_data_manager_(entity_data_manager),
+      valuables_data_manager_(valuables_data_manager) {}
 
 AutofillDataProvider::~AutofillDataProvider() = default;
 
 void AutofillDataProvider::RetrieveAll(
     const std::vector<MemoryDataType>& types,
     base::OnceCallback<void(std::vector<MemorySearchResult>)> callback) {
-  std::vector<MemorySearchResult> combined_results;
-  for (MemoryDataType memory_data_type : types) {
-    if (memory_data_type == MemoryDataType::kUnknown) {
-      continue;
-    }
-    base::Extend(combined_results, GetAutofillData(memory_data_type));
+  std::move(callback).Run(GetAutofillData(types, /*query=*/std::nullopt));
+}
+
+void AutofillDataProvider::RetrieveAllByContent(
+    std::u16string_view query,
+    base::OnceCallback<void(std::vector<MemorySearchResult>)> callback) {
+  std::vector<MemorySearchResult> results;
+  const RawValueQuery raw_value_query(query);
+  if (raw_value_query.CanMatch()) {
+    results = GetAutofillData(kContentSearchTypes, raw_value_query);
   }
-  std::move(callback).Run(std::move(combined_results));
+  std::move(callback).Run(std::move(results));
 }
 
 std::vector<MemorySearchResult> AutofillDataProvider::GetAutofillData(
-    MemoryDataType memory_data_type) {
+    base::span<const MemoryDataType> memory_data_types,
+    base::optional_ref<const RawValueQuery> query) {
+  // TODO(crbug.com/566991902): Do not bail out entirely without a
+  // `PersonalDataManager`: `entity_data_manager_` and `valuables_data_manager_`
+  // may still provide data.
   if (!personal_data_manager_) {
     return {};
   }
   std::vector<MemorySearchResult> entries;
-  switch (GetMemoryDataTypeCategory(memory_data_type)) {
-    case MemoryDataTypeCategory::kContactInfo: {
-      if (memory_data_type == MemoryDataType::kAddressFull) {
-        entries = FetchFullAddressData(*personal_data_manager_);
-      } else {
-        std::optional<FieldType> field_type = ToFieldType(memory_data_type);
-        if (field_type) {
-          entries = FetchDataFromAddressProfiles(*personal_data_manager_,
-                                                 *field_type, memory_data_type);
+  for (MemoryDataType memory_data_type : memory_data_types) {
+    std::vector<MemorySearchResult> type_entries;
+    switch (GetMemoryDataTypeCategory(memory_data_type)) {
+      case MemoryDataTypeCategory::kContactInfo: {
+        if (std::optional<FieldType> field_type =
+                ToFieldType(memory_data_type)) {
+          type_entries = FetchDataFromAddressProfiles(
+              *personal_data_manager_, *field_type, memory_data_type, query);
         }
+        break;
       }
-      break;
-    }
-    case MemoryDataTypeCategory::kCreditCard: {
-      std::optional<FieldType> field_type = ToFieldType(memory_data_type);
-      if (field_type) {
-        entries = FetchCreditCardData(*field_type, memory_data_type);
+      case MemoryDataTypeCategory::kCreditCard: {
+        if (std::optional<FieldType> field_type =
+                ToFieldType(memory_data_type)) {
+          type_entries =
+              FetchCreditCardData(*field_type, memory_data_type, query);
+        }
+        break;
       }
-      break;
-    }
-    case MemoryDataTypeCategory::kIban: {
-      entries = FetchIbanData();
-      break;
-    }
-    case MemoryDataTypeCategory::kPassport:
-    case MemoryDataTypeCategory::kDriversLicense:
-    case MemoryDataTypeCategory::kNationalIdCard:
-    case MemoryDataTypeCategory::kFlightReservation:
-    case MemoryDataTypeCategory::kKnownTravelerNumber:
-    case MemoryDataTypeCategory::kRedressNumber:
-    case MemoryDataTypeCategory::kVehicle:
-    case MemoryDataTypeCategory::kOrder:
-    case MemoryDataTypeCategory::kShipment: {
-      std::optional<AttributeType> attribute_type =
-          ToAttributeType(memory_data_type);
-      if (attribute_type) {
-        entries = FetchAutofillAiAttributeData(
-            entity_data_manager_, *attribute_type,
-            personal_data_manager_->address_data_manager().app_locale());
+      case MemoryDataTypeCategory::kIban: {
+        type_entries = FetchIbanData(query);
+        break;
       }
-      break;
+      case MemoryDataTypeCategory::kPassport:
+      case MemoryDataTypeCategory::kDriversLicense:
+      case MemoryDataTypeCategory::kNationalIdCard:
+      case MemoryDataTypeCategory::kFlightReservation:
+      case MemoryDataTypeCategory::kKnownTravelerNumber:
+      case MemoryDataTypeCategory::kRedressNumber:
+      case MemoryDataTypeCategory::kVehicle:
+      case MemoryDataTypeCategory::kOrder:
+      case MemoryDataTypeCategory::kShipment: {
+        if (std::optional<AttributeType> attribute_type =
+                ToAttributeType(memory_data_type)) {
+          type_entries = FetchAutofillAiAttributeData(
+              entity_data_manager_, *attribute_type,
+              personal_data_manager_->address_data_manager().app_locale(),
+              query);
+        }
+        break;
+      }
+      case MemoryDataTypeCategory::kLoyaltyCard:
+        type_entries = FetchLoyaltyCardData(valuables_data_manager_,
+                                            memory_data_type, query);
+        break;
+      case MemoryDataTypeCategory::kUnknown:
+        break;
     }
-    case MemoryDataTypeCategory::kUnknown:
-      break;
+    base::Extend(entries, std::move(type_entries));
   }
-
   std::ranges::stable_sort(
       entries, [](const MemorySearchResult& a, const MemorySearchResult& b) {
         return a.confidence_score > b.confidence_score;
       });
-
   for (MemorySearchResult& entry : entries) {
     entry.sources.emplace_back(MemoryEntrySourceType::kAutofill);
   }
   return entries;
 }
 
-// Fetches IBAN data from PersonalDataManager.
-std::vector<MemorySearchResult> AutofillDataProvider::FetchIbanData() {
+std::vector<MemorySearchResult> AutofillDataProvider::FetchIbanData(
+    base::optional_ref<const RawValueQuery> query) {
   std::vector<MemorySearchResult> entries;
   for (const Iban* iban :
        personal_data_manager_->payments_data_manager().GetIbans()) {
-    std::u16string obfuscated_value =
-        iban->GetIdentifierStringForAutofillDisplay();
+    // Content queries are matched against the full IBAN value, which is only
+    // known for local IBANs. Server IBANs have an empty value and are always
+    // returned for typed retrievals.
+    if (query && (iban->record_type() != Iban::kLocalIban ||
+                  !YieldsEntry(MemoryDataType::kIban, iban->value(), query))) {
+      continue;
+    }
     MemorySearchResult entry(
         MemoryDataType::kIban,
-        GetMemoryDataTypeNameForI18n(MemoryDataType::kIban), obfuscated_value,
+        GetMemoryDataTypeNameForI18n(MemoryDataType::kIban),
+        iban->GetIdentifierStringForAutofillDisplay(),
         iban->usage_history().GetRankingScore(base::Time::Now()));
     entry.is_obfuscated = true;
-    entry.is_local = [&] {
-      switch (iban->record_type()) {
-        case Iban::kLocalIban:
-          return true;
-        case Iban::kServerIban:
-        case Iban::kUnknown:
-          return false;
-      }
-      NOTREACHED();
-    }();
     switch (iban->record_type()) {
       case Iban::kLocalIban:
         entry.identifier = iban->guid();
         break;
-      default:
+      case Iban::kServerIban:
+      case Iban::kUnknown:
         entry.identifier = iban->instrument_id();
         break;
     }
 
-    if (!iban->nickname().empty()) {
-      entry.metadata_list.emplace_back(
-          MemoryDataType::kIbanNickname,
-          GetMemoryDataTypeNameForI18n(MemoryDataType::kIbanNickname),
-          std::u16string(iban->nickname()));
-    }
+    AddMetadataToResult(entry, MemoryDataType::kIbanNickname,
+                        MemoryDataType::kIban, iban->nickname());
     entries.push_back(std::move(entry));
   }
   return entries;
@@ -458,14 +541,21 @@ std::vector<MemorySearchResult> AutofillDataProvider::FetchIbanData() {
 
 std::vector<MemorySearchResult> AutofillDataProvider::FetchCreditCardData(
     FieldType field_type,
-    MemoryDataType memory_data_type) {
+    MemoryDataType memory_data_type,
+    base::optional_ref<const RawValueQuery> query) {
   std::vector<MemorySearchResult> entries;
+  const std::string& app_locale =
+      personal_data_manager_->address_data_manager().app_locale();
   for (const CreditCard* credit_card : GetCreditCardsToSuggest(
            personal_data_manager_->payments_data_manager())) {
-    std::u16string value = credit_card->GetInfo(
-        field_type,
-        personal_data_manager_->address_data_manager().app_locale());
-    if (value.empty()) {
+    // Content queries are matched against the raw values, which are only
+    // known for local cards.
+    if (query &&
+        credit_card->record_type() != CreditCard::RecordType::kLocalCard) {
+      continue;
+    }
+    std::u16string value = credit_card->GetInfo(field_type, app_locale);
+    if (!YieldsEntry(memory_data_type, value, query)) {
       continue;
     }
 
@@ -483,53 +573,23 @@ std::vector<MemorySearchResult> AutofillDataProvider::FetchCreditCardData(
     entry.is_obfuscated = (field_type == CREDIT_CARD_NUMBER ||
                            field_type == CREDIT_CARD_VERIFICATION_CODE);
     entry.identifier = credit_card->guid();
-    entry.is_local = [&] {
-      switch (credit_card->record_type()) {
-        case CreditCard::RecordType::kLocalCard:
-          return true;
-        case CreditCard::RecordType::kMaskedServerCard:
-        case CreditCard::RecordType::kFullServerCard:
-        case CreditCard::RecordType::kVirtualCard:
-          return false;
-      }
-      NOTREACHED();
-    }();
-
-    std::string app_locale =
-        personal_data_manager_->address_data_manager().app_locale();
 
     // All of the non-empty types different than the one being requested are
     // added as metadata.
-    if (memory_data_type != MemoryDataType::kCreditCardNumber) {
-      std::u16string card_number =
-          credit_card->ObfuscatedNumberWithVisibleLastFourDigits();
-      if (!card_number.empty()) {
-        entry.metadata_list.emplace_back(
-            MemoryDataType::kCreditCardNumber,
-            GetMemoryDataTypeNameForI18n(MemoryDataType::kCreditCardNumber),
-            std::move(card_number));
-      }
-    }
-    if (memory_data_type != MemoryDataType::kCreditCardSecurityCode &&
-        !credit_card->cvc().empty()) {
-      entry.metadata_list.emplace_back(
-          MemoryDataType::kCreditCardSecurityCode,
-          GetMemoryDataTypeNameForI18n(MemoryDataType::kCreditCardSecurityCode),
-          CreditCard::GetMidlineEllipsisPlainDots(credit_card->cvc().length()));
-    }
-
+    AddMetadataToResult(
+        entry, MemoryDataType::kCreditCardNumber, memory_data_type,
+        credit_card->ObfuscatedNumberWithVisibleLastFourDigits());
+    AddMetadataToResult(
+        entry, MemoryDataType::kCreditCardSecurityCode, memory_data_type,
+        CreditCard::GetMidlineEllipsisPlainDots(credit_card->cvc().length()));
     AddMetadataToResult(entry, *credit_card,
-                        MemoryDataType::kCreditCardNameOnCard, field_type,
+                        MemoryDataType::kCreditCardNameOnCard, memory_data_type,
                         app_locale);
     AddMetadataToResult(entry, *credit_card,
-                        MemoryDataType::kCreditCardExpirationDate, field_type,
-                        app_locale);
-    if (!credit_card->nickname().empty()) {
-      entry.metadata_list.emplace_back(
-          MemoryDataType::kCreditCardNickname,
-          GetMemoryDataTypeNameForI18n(MemoryDataType::kCreditCardNickname),
-          std::u16string(credit_card->nickname()));
-    }
+                        MemoryDataType::kCreditCardExpirationDate,
+                        memory_data_type, app_locale);
+    AddMetadataToResult(entry, MemoryDataType::kCreditCardNickname,
+                        memory_data_type, credit_card->nickname());
 
     if (std::optional<TypedValue> typed_value =
             GetExpirationDateTypedValue(*credit_card)) {

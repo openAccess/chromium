@@ -40,6 +40,8 @@ std::string GetToolModeString(omnibox::ToolMode mode) {
       return "AimGenPrompt";
     case omnibox::TOOL_MODE_AGENT_TASK:
       return "AgentTask";
+    case omnibox::TOOL_MODE_SEARCH_MORE:
+      return "SearchMore";
     default:
       return "Unspecified";
   }
@@ -66,6 +68,26 @@ std::string GetModelModeString(omnibox::ModelMode mode) {
       return "GeminiProLatest";
     case omnibox::MODEL_MODE_GEMINI_PREVIEW:
       return "GeminiPreview";
+    case omnibox::MODEL_MODE_AIM_MODEL_ALFA:
+      return "AimModelAlfa";
+    case omnibox::MODEL_MODE_AIM_MODEL_BRAVO:
+      return "AimModelBravo";
+    case omnibox::MODEL_MODE_AIM_MODEL_CHARLIE:
+      return "AimModelCharlie";
+    case omnibox::MODEL_MODE_AIM_MODEL_DELTA:
+      return "AimModelDelta";
+    case omnibox::MODEL_MODE_AIM_MODEL_ECHO:
+      return "AimModelEcho";
+    case omnibox::MODEL_MODE_AIM_MODEL_FOXTROT:
+      return "AimModelFoxtrot";
+    case omnibox::MODEL_MODE_AIM_MODEL_GOLF:
+      return "AimModelGolf";
+    case omnibox::MODEL_MODE_AIM_MODEL_HOTEL:
+      return "AimModelHotel";
+    case omnibox::MODEL_MODE_AIM_MODEL_INDIA:
+      return "AimModelIndia";
+    case omnibox::MODEL_MODE_AIM_MODEL_JULIETT:
+      return "AimModelJuliett";
     default:
       return "Unspecified";
   }

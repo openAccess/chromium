@@ -5,12 +5,17 @@
 #include "chrome/browser/devtools/devtools_availability_checker.h"
 
 #include "base/test/scoped_feature_list.h"
+#include "base/types/expected.h"
 #include "build/build_config.h"
 #include "chrome/browser/devtools/features.h"
 #include "chrome/browser/policy/developer_tools_policy_handler.h"
+#include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/policy/core/browser/url_list/url_list_policy_pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
@@ -30,8 +35,14 @@
 #endif
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_profile.h"
+#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/test/fake_web_app_provider.h"
+#include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/test/web_app_test_utils.h"
 #include "chrome/browser/web_applications/web_app.h"
+#include "chrome/browser/web_applications/web_app_constants.h"
+#include "chrome/browser/web_applications/web_app_registrar.h"
 #include "components/webapps/common/web_app_id.h"
 #endif
 
@@ -163,17 +174,19 @@ TEST_F(DevToolsAvailabilityCheckerTest,
 TEST_F(DevToolsAvailabilityCheckerTest, DeveloperToolsDisallowedByPolicy) {
   profile_->GetPrefs()->SetInteger(
       prefs::kDevToolsAvailability,
-      static_cast<int>(
-          policy::DeveloperToolsAvailability::kDisallowed));
+      static_cast<int>(policy::DeveloperToolsAvailability::kDisallowed));
   content::WebContentsTester::For(web_contents_.get())
       ->NavigateAndCommit(GURL("https://example.com/page"));
   EXPECT_FALSE(IsInspectionAllowed(profile_.get(), web_contents_.get()));
 }
 
 TEST_F(DevToolsAvailabilityCheckerTest, IsInspectionAllowedNullWebContents) {
-  // Passing nullptr for WebContents should default to allowed.
+  // Passing nullptr for WebContents or RenderFrameHost should default to
+  // allowed.
   EXPECT_TRUE(IsInspectionAllowed(profile_.get(),
                                   static_cast<content::WebContents*>(nullptr)));
+  EXPECT_TRUE(IsInspectionAllowed(
+      profile_.get(), static_cast<content::RenderFrameHost*>(nullptr)));
 }
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -300,8 +313,7 @@ TEST_F(DevToolsAvailabilityCheckerTest,
        DisallowedForNullExtensionButAllowlistIsNotEmpty) {
   profile_->GetPrefs()->SetInteger(
       prefs::kDevToolsAvailability,
-      static_cast<int>(
-          policy::DeveloperToolsAvailability::kDisallowed));
+      static_cast<int>(policy::DeveloperToolsAvailability::kDisallowed));
 
   base::ListValue allowlist;
   allowlist.Append("foo.com");
@@ -316,8 +328,7 @@ TEST_F(DevToolsAvailabilityCheckerTest,
        DisallowedForNullExtensionAndAllowlistIsEmpty) {
   profile_->GetPrefs()->SetInteger(
       prefs::kDevToolsAvailability,
-      static_cast<int>(
-          policy::DeveloperToolsAvailability::kDisallowed));
+      static_cast<int>(policy::DeveloperToolsAvailability::kDisallowed));
 
   EXPECT_FALSE(IsInspectionAllowed(
       profile_.get(), static_cast<extensions::Extension*>(nullptr)));
@@ -526,8 +537,7 @@ TEST_F(DevToolsAvailabilityCheckerTest, WebAppBlockedByPolicy) {
 TEST_F(DevToolsAvailabilityCheckerTest, WebAppDisallowedByPolicy) {
   profile_->GetPrefs()->SetInteger(
       prefs::kDevToolsAvailability,
-      static_cast<int>(
-          policy::DeveloperToolsAvailability::kDisallowed));
+      static_cast<int>(policy::DeveloperToolsAvailability::kDisallowed));
 
   auto web_app = web_app::test::CreateWebApp(GURL("https://example.com/"));
   EXPECT_FALSE(IsInspectionAllowed(profile_.get(), web_app.get()));
@@ -536,8 +546,7 @@ TEST_F(DevToolsAvailabilityCheckerTest, WebAppDisallowedByPolicy) {
 TEST_F(DevToolsAvailabilityCheckerTest, WebAppAllowedWhenPolicyIsAllowed) {
   profile_->GetPrefs()->SetInteger(
       prefs::kDevToolsAvailability,
-      static_cast<int>(
-          policy::DeveloperToolsAvailability::kAllowed));
+      static_cast<int>(policy::DeveloperToolsAvailability::kAllowed));
 
   auto web_app = web_app::test::CreateWebApp(GURL("https://example.com/"));
   EXPECT_TRUE(IsInspectionAllowed(profile_.get(), web_app.get()));
@@ -548,6 +557,137 @@ TEST_F(DevToolsAvailabilityCheckerTest, IsInspectionAllowedNullWebApp) {
   EXPECT_TRUE(IsInspectionAllowed(profile_.get(),
                                   static_cast<web_app::WebApp*>(nullptr)));
 }
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       PolicyInstalledIwaServiceWorkerDisallowedByPolicy) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::
+                           kDisallowedForForceInstalledExtensions));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+
+  const GURL iwa_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/");
+  base::expected<web_app::IsolatedWebAppUrlInfo, std::string> url_info =
+      web_app::IsolatedWebAppUrlInfo::Create(iwa_url);
+  ASSERT_TRUE(url_info.has_value());
+
+  auto web_app = web_app::test::CreateWebApp(
+      url_info->origin().GetURL(), web_app::WebAppManagement::kIwaPolicy);
+
+  auto* fake_provider = web_app::FakeWebAppProvider::Get(profile_.get());
+  fake_provider->GetRegistrarMutable().registry().emplace(url_info->app_id(),
+                                                          std::move(web_app));
+
+  const GURL sw_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/sw.js");
+  EXPECT_FALSE(IsInspectionAllowed(profile_.get(), sw_url));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       UserInstalledIwaServiceWorkerAllowedByPolicy) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::
+                           kDisallowedForForceInstalledExtensions));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+
+  const GURL iwa_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/");
+  base::expected<web_app::IsolatedWebAppUrlInfo, std::string> url_info =
+      web_app::IsolatedWebAppUrlInfo::Create(iwa_url);
+  ASSERT_TRUE(url_info.has_value());
+
+  auto web_app =
+      web_app::test::CreateWebApp(url_info->origin().GetURL(),
+                                  web_app::WebAppManagement::kIwaUserInstalled);
+
+  auto* fake_provider = web_app::FakeWebAppProvider::Get(profile_.get());
+  fake_provider->GetRegistrarMutable().registry().emplace(url_info->app_id(),
+                                                          std::move(web_app));
+
+  const GURL sw_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/sw.js");
+  EXPECT_TRUE(IsInspectionAllowed(profile_.get(), sw_url));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       UninstalledIwaServiceWorkerAllowedByPolicy) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::
+                           kDisallowedForForceInstalledExtensions));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+
+  const GURL sw_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/sw.js");
+  EXPECT_TRUE(IsInspectionAllowed(profile_.get(), sw_url));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       PolicyInstalledIwaServiceWorkerAllowedWhenDevToolsAllowed) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::kAllowed));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+
+  const GURL iwa_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/");
+  base::expected<web_app::IsolatedWebAppUrlInfo, std::string> url_info =
+      web_app::IsolatedWebAppUrlInfo::Create(iwa_url);
+  ASSERT_TRUE(url_info.has_value());
+
+  auto web_app = web_app::test::CreateWebApp(
+      url_info->origin().GetURL(), web_app::WebAppManagement::kIwaPolicy);
+
+  auto* fake_provider = web_app::FakeWebAppProvider::Get(profile_.get());
+  fake_provider->GetRegistrarMutable().registry().emplace(url_info->app_id(),
+                                                          std::move(web_app));
+
+  const GURL sw_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/sw.js");
+  EXPECT_TRUE(IsInspectionAllowed(profile_.get(), sw_url));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       PolicyInstalledIwaServiceWorkerDisallowedWhenDevToolsDisallowed) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::kDisallowed));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+
+  const GURL iwa_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/");
+  base::expected<web_app::IsolatedWebAppUrlInfo, std::string> url_info =
+      web_app::IsolatedWebAppUrlInfo::Create(iwa_url);
+  ASSERT_TRUE(url_info.has_value());
+
+  auto web_app = web_app::test::CreateWebApp(
+      url_info->origin().GetURL(), web_app::WebAppManagement::kIwaPolicy);
+
+  auto* fake_provider = web_app::FakeWebAppProvider::Get(profile_.get());
+  fake_provider->GetRegistrarMutable().registry().emplace(url_info->app_id(),
+                                                          std::move(web_app));
+
+  const GURL sw_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/sw.js");
+  EXPECT_FALSE(IsInspectionAllowed(profile_.get(), sw_url));
+}
+
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(DevToolsAvailabilityCheckerTest, TargetLevelSubframeBlocked) {
@@ -563,14 +703,19 @@ TEST_F(DevToolsAvailabilityCheckerTest, TargetLevelSubframeBlocked) {
           ->AppendChild("subframe");
   content::RenderFrameHostTester::For(subframe)
       ->InitializeRenderFrameIfNeeded();
-  content::NavigationSimulator::NavigateAndCommitFromDocument(
+  subframe = content::NavigationSimulator::NavigateAndCommitFromDocument(
       GURL("https://blocked.com/iframe"), subframe);
 
   // The main page should still be inspectable.
   EXPECT_TRUE(IsInspectionAllowed(profile_.get(), web_contents_.get()));
+  EXPECT_TRUE(IsInspectionAllowed(profile_.get(),
+                                  web_contents_->GetPrimaryMainFrame()));
 
-  // But if we specifically check the blocked subframe's URL, it should be
+  // But if we specifically check the blocked subframe or its URL, it should be
   // blocked.
+  EXPECT_FALSE(IsInspectionAllowed(profile_.get(), subframe));
+  EXPECT_EQ(DevToolsBlockReason::kUrlAllowlistOrBlocklist,
+            GetDevToolsBlockReason(profile_.get(), subframe));
   EXPECT_FALSE(
       IsInspectionAllowed(profile_.get(), GURL("https://blocked.com/iframe")));
 }
@@ -603,8 +748,401 @@ TEST_F(DevToolsAvailabilityCheckerTargetLevelDisabledTest,
           ->AppendChild("subframe");
   content::RenderFrameHostTester::For(subframe)
       ->InitializeRenderFrameIfNeeded();
-  content::NavigationSimulator::NavigateAndCommitFromDocument(
+  subframe = content::NavigationSimulator::NavigateAndCommitFromDocument(
       GURL("https://blocked.com/iframe"), subframe);
 
   EXPECT_FALSE(IsInspectionAllowed(profile_.get(), web_contents_.get()));
+  EXPECT_FALSE(IsInspectionAllowed(profile_.get(),
+                                   web_contents_->GetPrimaryMainFrame()));
+  EXPECT_FALSE(IsInspectionAllowed(profile_.get(), subframe));
 }
+
+TEST_F(DevToolsAvailabilityCheckerTargetLevelDisabledTest,
+       BlockReasonForSubframeOnBlocklist) {
+  base::ListValue blocklist;
+  blocklist.Append("blocked.com");
+  profile_->GetPrefs()->SetList(prefs::kDeveloperToolsAvailabilityBlocklist,
+                                std::move(blocklist));
+
+  content::WebContentsTester::For(web_contents_.get())
+      ->NavigateAndCommit(GURL("https://allowed.com/page"));
+  content::RenderFrameHost* subframe =
+      content::RenderFrameHostTester::For(web_contents_->GetPrimaryMainFrame())
+          ->AppendChild("subframe");
+  content::RenderFrameHostTester::For(subframe)
+      ->InitializeRenderFrameIfNeeded();
+  subframe = content::NavigationSimulator::NavigateAndCommitFromDocument(
+      GURL("https://blocked.com/iframe"), subframe);
+
+  EXPECT_EQ(DevToolsBlockReason::kUrlAllowlistOrBlocklist,
+            GetDevToolsBlockReason(profile_.get(), web_contents_.get()));
+  EXPECT_EQ(DevToolsBlockReason::kUrlAllowlistOrBlocklist,
+            GetDevToolsBlockReason(profile_.get(),
+                                   web_contents_->GetPrimaryMainFrame()));
+  EXPECT_EQ(DevToolsBlockReason::kUrlAllowlistOrBlocklist,
+            GetDevToolsBlockReason(profile_.get(), subframe));
+}
+
+// GetDevToolsBlockReason() names the check that blocked inspection. It is
+// recorded in UMA when the user is told that DevTools are blocked, so each
+// reason must come from the check it describes.
+
+TEST_F(DevToolsAvailabilityCheckerTest, BlockReasonNotBlockedByDefault) {
+  content::WebContentsTester::For(web_contents_.get())
+      ->NavigateAndCommit(GURL("https://example.com/page"));
+  EXPECT_EQ(DevToolsBlockReason::kNotBlocked,
+            GetDevToolsBlockReason(profile_.get(), web_contents_.get()));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest, BlockReasonForUrlOnBlocklist) {
+  base::ListValue blocklist;
+  blocklist.Append("blocked.com");
+  profile_->GetPrefs()->SetList(prefs::kDeveloperToolsAvailabilityBlocklist,
+                                std::move(blocklist));
+
+  content::WebContentsTester::For(web_contents_.get())
+      ->NavigateAndCommit(GURL("https://blocked.com/panel"));
+  EXPECT_EQ(DevToolsBlockReason::kUrlAllowlistOrBlocklist,
+            GetDevToolsBlockReason(profile_.get(), web_contents_.get()));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest, BlockReasonForUrlNotOnAllowlist) {
+  base::ListValue allowlist;
+  allowlist.Append("allowed.com");
+  profile_->GetPrefs()->SetList(prefs::kDeveloperToolsAvailabilityAllowlist,
+                                std::move(allowlist));
+
+  content::WebContentsTester::For(web_contents_.get())
+      ->NavigateAndCommit(GURL("https://example.com/page"));
+  EXPECT_EQ(DevToolsBlockReason::kUrlAllowlistOrBlocklist,
+            GetDevToolsBlockReason(profile_.get(), web_contents_.get()));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest, BlockReasonForPolicyDisallowed) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::kDisallowed));
+
+  content::WebContentsTester::For(web_contents_.get())
+      ->NavigateAndCommit(GURL("https://example.com/page"));
+  EXPECT_EQ(DevToolsBlockReason::kPolicyDisallowed,
+            GetDevToolsBlockReason(profile_.get(), web_contents_.get()));
+  // The general policy also applies to contexts without WebContents or
+  // RenderFrameHost.
+  EXPECT_EQ(DevToolsBlockReason::kPolicyDisallowed,
+            GetDevToolsBlockReason(
+                profile_.get(), static_cast<content::WebContents*>(nullptr)));
+  EXPECT_EQ(
+      DevToolsBlockReason::kPolicyDisallowed,
+      GetDevToolsBlockReason(profile_.get(),
+                             static_cast<content::RenderFrameHost*>(nullptr)));
+}
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+TEST_F(DevToolsAvailabilityCheckerTest, BlockReasonForExtensionOnBlocklist) {
+  base::ListValue blocklist;
+  blocklist.Append("abc");
+  profile_->GetPrefs()->SetList(prefs::kDeveloperToolsAvailabilityBlocklist,
+                                std::move(blocklist));
+
+  scoped_refptr<const extensions::Extension> extension =
+      extensions::ExtensionBuilder("Test Extension").SetID("abc").Build();
+  EXPECT_EQ(DevToolsBlockReason::kUrlAllowlistOrBlocklist,
+            GetDevToolsBlockReason(profile_.get(), extension.get()));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest, BlockReasonForForceInstalledExtension) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::
+                           kDisallowedForForceInstalledExtensions));
+
+  scoped_refptr<const extensions::Extension> extension =
+      extensions::ExtensionBuilder("Test Extension")
+          .SetID("abc")
+          .SetLocation(
+              extensions::mojom::ManifestLocation::kExternalPolicyDownload)
+          .Build();
+  EXPECT_EQ(DevToolsBlockReason::kForceInstalledExtension,
+            GetDevToolsBlockReason(profile_.get(), extension.get()));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       BlockReasonForComponentExtensionInManagedProfile) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::
+                           kDisallowedForForceInstalledExtensions));
+
+  scoped_refptr<const extensions::Extension> extension =
+      extensions::ExtensionBuilder("Test Extension")
+          .SetID("abc")
+          .SetLocation(extensions::mojom::ManifestLocation::kComponent)
+          .Build();
+
+  // Component extensions are only restricted in managed profiles.
+  EXPECT_EQ(DevToolsBlockReason::kNotBlocked,
+            GetDevToolsBlockReason(profile_.get(), extension.get()));
+
+  profile_->GetProfilePolicyConnector()->OverrideIsManagedForTesting(true);
+  EXPECT_EQ(DevToolsBlockReason::kComponentExtensionInManagedProfile,
+            GetDevToolsBlockReason(profile_.get(), extension.get()));
+}
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(DevToolsAvailabilityCheckerTest, BlockReasonForKioskWebApp) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::
+                           kDisallowedForForceInstalledExtensions));
+
+  auto web_app = web_app::test::CreateWebApp(GURL("https://example.com/"),
+                                             web_app::WebAppManagement::kKiosk);
+  EXPECT_EQ(DevToolsBlockReason::kKioskWebApp,
+            GetDevToolsBlockReason(profile_.get(), web_app.get()));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       BlockReasonForPolicyInstalledIsolatedWebApp) {
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::
+                           kDisallowedForForceInstalledExtensions));
+
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+
+  const GURL iwa_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/");
+  base::expected<web_app::IsolatedWebAppUrlInfo, std::string> url_info =
+      web_app::IsolatedWebAppUrlInfo::Create(iwa_url);
+  ASSERT_TRUE(url_info.has_value());
+
+  auto web_app = web_app::test::CreateWebApp(
+      url_info->origin().GetURL(), web_app::WebAppManagement::kIwaPolicy);
+
+  auto* fake_provider = web_app::FakeWebAppProvider::Get(profile_.get());
+  fake_provider->GetRegistrarMutable().registry().emplace(url_info->app_id(),
+                                                          std::move(web_app));
+
+  const GURL sw_url(
+      "isolated-app://"
+      "aerugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaac/sw.js");
+  EXPECT_EQ(DevToolsBlockReason::kPolicyInstalledIsolatedWebApp,
+            GetDevToolsBlockReason(profile_.get(), sw_url));
+}
+
+// DevTools are disallowed for TopChromeWebUIProfile, since its renderers are
+// shared by the windows of all profiles.
+TEST_F(DevToolsAvailabilityCheckerTest, TopChromeWebUIProfileDisallowed) {
+  webui::ScopedTopChromeWebUIProfileForTesting scoped_profile;
+  Profile* profile = webui::GetTopChromeWebUIProfile();
+  EXPECT_EQ(DevToolsBlockReason::kPolicyDisallowed,
+            GetDevToolsBlockReason(profile,
+                                   GURL("chrome://webui-toolbar.top-chrome/")));
+  EXPECT_EQ(DevToolsBlockReason::kPolicyDisallowed,
+            GetDevToolsBlockReason(
+                profile, static_cast<content::WebContents*>(nullptr)));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       TopChromeWebUIProfileAllowedForDebugging) {
+  // Enabled before the profile is created, since the profile reads it on
+  // creation.
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kDebugTopChromeWebUI);
+  webui::ScopedTopChromeWebUIProfileForTesting scoped_profile;
+  EXPECT_EQ(DevToolsBlockReason::kNotBlocked,
+            GetDevToolsBlockReason(webui::GetTopChromeWebUIProfile(),
+                                   GURL("chrome://webui-toolbar.top-chrome/")));
+  EXPECT_FALSE(HasDevToolsPolicyCheck(webui::GetTopChromeWebUIProfile()));
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+TEST_F(DevToolsAvailabilityCheckerTest, HasDevToolsPolicyCheck) {
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+
+  // Non-managed user pref does not count as an enabled enterprise policy.
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::kAllowed));
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+
+  // Reset back to default (kDisallowedForForceInstalledExtensions).
+  profile_->GetPrefs()->ClearPref(prefs::kDevToolsAvailability);
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+
+  // Managed DeveloperToolsAvailability policy counts even at the default enum
+  // value or Allowed.
+  profile_->GetTestingPrefService()->SetManagedPref(
+      prefs::kDevToolsAvailability,
+      base::Value(
+          static_cast<int>(policy::DeveloperToolsAvailability::
+                               kDisallowedForForceInstalledExtensions)));
+  EXPECT_TRUE(HasDevToolsPolicyCheck(profile_.get()));
+
+  profile_->GetTestingPrefService()->RemoveManagedPref(
+      prefs::kDevToolsAvailability);
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+
+  // Non-empty allowlist or blocklist counts as an enabled policy. Unlike
+  // kDevToolsAvailability, the lists are not required to be managed: they are
+  // enforced by DeveloperToolsPolicyChecker regardless of their pref source
+  // (see UrlBlockedByPolicy above), and the metric slice must match
+  // enforcement.
+  base::ListValue allowlist;
+  allowlist.Append("allowed.example");
+  profile_->GetPrefs()->SetList(prefs::kDeveloperToolsAvailabilityAllowlist,
+                                std::move(allowlist));
+  EXPECT_FALSE(profile_->GetPrefs()->IsManagedPreference(
+      prefs::kDeveloperToolsAvailabilityAllowlist));
+  EXPECT_TRUE(HasDevToolsPolicyCheck(profile_.get()));
+
+  profile_->GetPrefs()->SetList(prefs::kDeveloperToolsAvailabilityAllowlist,
+                                base::ListValue());
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+
+  base::ListValue blocklist;
+  blocklist.Append("blocked.example");
+  profile_->GetPrefs()->SetList(prefs::kDeveloperToolsAvailabilityBlocklist,
+                                std::move(blocklist));
+  EXPECT_TRUE(HasDevToolsPolicyCheck(profile_.get()));
+
+  profile_->GetPrefs()->SetList(prefs::kDeveloperToolsAvailabilityBlocklist,
+                                base::ListValue());
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       HasDevToolsPolicyCheckWithUrlBlocklist) {
+  auto set_url_lists = [&](base::ListValue blocklist,
+                           base::ListValue allowlist = {}) {
+    profile_->GetPrefs()->SetList(policy::policy_prefs::kUrlBlocklist,
+                                  std::move(blocklist));
+    profile_->GetPrefs()->SetList(policy::policy_prefs::kUrlAllowlist,
+                                  std::move(allowlist));
+    // `URLBlocklistManager` rebuilds its matcher asynchronously on pref
+    // updates once `PolicyBlocklistService` has been created.
+    task_environment_.RunUntilIdle();
+  };
+
+  // Blocking an unrelated origin via the generic URLBlocklist does not affect
+  // DevTools availability.
+  set_url_lists(base::ListValue().Append("blocked.example"));
+  EXPECT_FALSE(IsDevToolsUrlBlockedByPolicy(profile_.get()));
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+
+  // Blocking `devtools://*` prevents the DevTools UI from loading and counts as
+  // an active DevTools policy check on the profile.
+  set_url_lists(base::ListValue().Append("devtools://*"));
+  EXPECT_TRUE(IsDevToolsUrlBlockedByPolicy(profile_.get()));
+  EXPECT_TRUE(HasDevToolsPolicyCheck(profile_.get()));
+
+  // URLBlocklist still blocks the DevTools UI—and therefore still counts—when
+  // effective DeveloperToolsAvailability is overridden away from the default
+  // without a managed DeveloperTools* policy.
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::kAllowed));
+  EXPECT_TRUE(HasDevToolsPolicyCheck(profile_.get()));
+  profile_->GetPrefs()->ClearPref(prefs::kDevToolsAvailability);
+
+  // Allowlisting `devtools://devtools` via URLAllowlist lifts the block.
+  set_url_lists(/*blocklist=*/base::ListValue().Append("devtools://*"),
+                /*allowlist=*/base::ListValue().Append("devtools://devtools"));
+  EXPECT_FALSE(IsDevToolsUrlBlockedByPolicy(profile_.get()));
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+
+  set_url_lists(/*blocklist=*/{});
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+}
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+TEST_F(DevToolsAvailabilityCheckerTest,
+       HasDevToolsPolicyCheckOnManagedProfile) {
+  // Production profiles load built-in component extensions via
+  // ComponentLoader::AddDefaultComponentExtensions(), which are restricted in
+  // managed profiles under the default DeveloperToolsAvailability value.
+  // HasDevToolsPolicyCheck() checks IsManaged() directly so a TestingProfile
+  // without manually registered component extensions behaves the same way.
+  profile_->GetProfilePolicyConnector()->OverrideIsManagedForTesting(true);
+  EXPECT_TRUE(HasDevToolsPolicyCheck(profile_.get()));
+
+  // Not applicable when effective availability is overridden away from
+  // kDisallowedForForceInstalledExtensions without an active policy.
+  profile_->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::kAllowed));
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+  profile_->GetPrefs()->ClearPref(prefs::kDevToolsAvailability);
+
+  profile_->GetProfilePolicyConnector()->OverrideIsManagedForTesting(false);
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+}
+
+TEST_F(DevToolsAvailabilityCheckerTest,
+       HasDevToolsPolicyCheckWithInstalledExtensions) {
+  auto* registry = extensions::ExtensionRegistry::Get(profile_.get());
+  ASSERT_TRUE(registry);
+
+  // Regular user-installed and component extensions are not restricted on an
+  // unmanaged profile under the default DeveloperToolsAvailability value.
+  scoped_refptr<const extensions::Extension> user_extension =
+      extensions::ExtensionBuilder("User Extension").SetID("a").Build();
+  registry->AddEnabled(user_extension);
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+
+  scoped_refptr<const extensions::Extension> component_extension =
+      extensions::ExtensionBuilder("Component Extension")
+          .SetID("b")
+          .SetLocation(extensions::mojom::ManifestLocation::kComponent)
+          .Build();
+  registry->AddEnabled(component_extension);
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+
+  // Policy-installed extension triggers a policy check even when the profile is
+  // unmanaged and no DeveloperTools* policy is explicitly configured.
+  scoped_refptr<const extensions::Extension> policy_extension =
+      extensions::ExtensionBuilder("Policy Extension")
+          .SetID("c")
+          .SetLocation(
+              extensions::mojom::ManifestLocation::kExternalPolicyDownload)
+          .Build();
+  registry->AddEnabled(policy_extension);
+  EXPECT_TRUE(HasDevToolsPolicyCheck(profile_.get()));
+}
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(DevToolsAvailabilityCheckerTest,
+       HasDevToolsPolicyCheckWithInstalledWebApps) {
+  web_app::test::AwaitStartWebAppProviderAndSubsystems(profile_.get());
+  auto* fake_provider = web_app::FakeWebAppProvider::Get(profile_.get());
+
+  auto user_app = web_app::test::CreateWebApp(GURL("https://user-app.example/"),
+                                              web_app::WebAppManagement::kSync);
+  const webapps::AppId user_app_id = user_app->app_id();
+  fake_provider->GetRegistrarMutable().registry().emplace(user_app_id,
+                                                          std::move(user_app));
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+
+  auto kiosk_app = web_app::test::CreateWebApp(
+      GURL("https://kiosk-app.example/"), web_app::WebAppManagement::kKiosk);
+  const webapps::AppId kiosk_app_id = kiosk_app->app_id();
+  fake_provider->GetRegistrarMutable().registry().emplace(kiosk_app_id,
+                                                          std::move(kiosk_app));
+  EXPECT_TRUE(HasDevToolsPolicyCheck(profile_.get()));
+
+  fake_provider->GetRegistrarMutable().registry().erase(kiosk_app_id);
+  EXPECT_FALSE(HasDevToolsPolicyCheck(profile_.get()));
+
+  auto policy_iwa =
+      web_app::test::CreateWebApp(GURL("https://policy-iwa.example/"),
+                                  web_app::WebAppManagement::kIwaPolicy);
+  const webapps::AppId policy_iwa_id = policy_iwa->app_id();
+  fake_provider->GetRegistrarMutable().registry().emplace(
+      policy_iwa_id, std::move(policy_iwa));
+  EXPECT_TRUE(HasDevToolsPolicyCheck(profile_.get()));
+}
+#endif  // !BUILDFLAG(IS_ANDROID)

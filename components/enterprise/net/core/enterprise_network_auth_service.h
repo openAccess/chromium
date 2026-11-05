@@ -21,8 +21,10 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/signin/public/base/oauth_consumer_id.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/version_info/channel.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/http/http_request_headers.h"
+#include "url/gurl.h"
 
 namespace signin {
 struct AccessTokenInfo;
@@ -50,9 +52,12 @@ enum class TokenFetchError {
   kTransientError = 5,
   kAuthError = 6,
   kCanceled = 7,
-  kMaxValue = kCanceled,
+  kInapplicableServer = 8,
+  kMaxValue = kInapplicableServer,
 };
 // LINT.ThenChange(//tools/metrics/histograms/enums.xml:EnterpriseNetworkTokenFetchError)
+
+std::string_view TokenFetchErrorToString(TokenFetchError error);
 
 inline constexpr TokenFetchError kNoErrorForMetrics =
     static_cast<TokenFetchError>(0);
@@ -74,10 +79,10 @@ class EnterpriseNetworkAuthService : public KeyedService,
   using AccessTokenCallback =
       base::OnceCallback<void(AccessTokenResult result)>;
 
-  EnterpriseNetworkAuthService(
-      signin::IdentityManager* identity_manager,
-      PrefService* pref_service,
-      enterprise::ProfileIdService* profile_id_service);
+  EnterpriseNetworkAuthService(signin::IdentityManager* identity_manager,
+                               PrefService* pref_service,
+                               enterprise::ProfileIdService* profile_id_service,
+                               version_info::Channel channel);
   EnterpriseNetworkAuthService(const EnterpriseNetworkAuthService&) = delete;
   EnterpriseNetworkAuthService& operator=(const EnterpriseNetworkAuthService&) =
       delete;
@@ -103,10 +108,13 @@ class EnterpriseNetworkAuthService : public KeyedService,
   // KeyedService:
   void Shutdown() override;
 
-  // Asynchronously requests an access token for the given auth `scope`.
+  // Asynchronously requests an access token for the given auth `scope` to be
+  // sent to `destination_url`.
   // Calls `callback` with the token string on success, or a TokenFetchError on
   // failure.
-  virtual void FetchAccessToken(AuthScope scope, AccessTokenCallback callback);
+  virtual void FetchAccessToken(AuthScope scope,
+                                const GURL& destination_url,
+                                AccessTokenCallback callback);
 
   // Resolves extra headers specified by `extra_headers` using identity and user
   // preferences. Supported variable placeholders: `${profile_id}` and
@@ -171,6 +179,7 @@ class EnterpriseNetworkAuthService : public KeyedService,
   const raw_ptr<signin::IdentityManager> identity_manager_;
   const raw_ptr<PrefService> pref_service_;
   const raw_ptr<enterprise::ProfileIdService> profile_id_service_;
+  const version_info::Channel channel_;
 
   // In-flight account managed status checks.
   base::IDMap<std::unique_ptr<PendingManagedStatusCheck>>

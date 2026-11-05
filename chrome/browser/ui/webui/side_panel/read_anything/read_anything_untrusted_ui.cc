@@ -11,14 +11,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/side_panel/read_anything/read_anything_untrusted_page_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/side_panel_read_anything_resources.h"
 #include "chrome/grit/side_panel_read_anything_resources_map.h"
-#include "chrome/grit/side_panel_shared_resources.h"
 #include "chrome/grit/side_panel_shared_resources_map.h"
 #include "ui/webui/tracked_element/tracked_element_handler_document_singleton.h"
 #if BUILDFLAG(IS_MAC)
@@ -31,11 +29,9 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "ui/accessibility/accessibility_features.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/webui/web_ui_util.h"
 #include "ui/strings/grit/ui_strings.h"
-#include "ui/views/style/platform_style.h"
 #include "ui/webui/resources/grit/webui_resources.h"
 #include "ui/webui/webui_util.h"
 
@@ -63,6 +59,7 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       {"audioTitle", IDS_READING_MODE_AUDIO_LABEL},
       {"textSettingsTitle", IDS_READING_MODE_TEXT_STYLE_LABEL},
       {"mediaTitle", IDS_READING_MODE_MEDIA_LABEL},
+      {"toolsLabel", IDS_READING_MODE_TOOLS_LABEL},
       {"themeTitle", IDS_READING_MODE_COLORS_COMBOBOX_LABEL},
       {"letterSpacingTitle", IDS_READING_MODE_LETTER_SPACING_COMBOBOX_LABEL},
       {"fontSizeTitle", IDS_READING_MODE_FONT_SIZE},
@@ -139,6 +136,7 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       {"nextSentenceLabel", IDS_READING_MODE_NAVIGATE_NEXT_SENTENCE},
       {"settingsLabel", IDS_READING_MODE_SETTINGS},
       {"translateLabel", IDS_READING_MODE_TRANSLATE},
+      {"sendFeedbackLabel", IDS_READING_MODE_SEND_FEEDBACK_LABEL},
       {"voiceSpeedLabel", IDS_READING_MODE_VOICE_SPEED},
       {"voiceHighlightLabel", IDS_READING_MODE_VOICE_HIGHLIGHT},
       {"voiceSpeedWithRateLabel", IDS_READING_MODE_VOICE_SPEED_WITH_RATE},
@@ -218,6 +216,9 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       {"voiceLabel", IDS_READING_MODE_VOICE_LABEL},
       {"accentMenuLabel", IDS_READING_MODE_ACCENT_MENU_LABEL},
       {"accentMenuClose", IDS_READING_MODE_ACCENT_MENU_CLOSE},
+      {"menuItemOpensDialogLabel", IDS_READING_MODE_MENU_ITEM_OPENS_DIALOG},
+      {"cancel", IDS_CANCEL},
+      {"save", IDS_SAVE},
   };
   for (const auto& str : kLocalizedStrings) {
     webui::AddLocalizedString(source, str.name, str.id);
@@ -259,7 +260,7 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
   source->OverrideContentSecurityPolicy(
       network::mojom::CSPDirectiveName::StyleSrc,
       "style-src 'self' chrome-untrusted://resources chrome-untrusted://theme "
-      "https://fonts.googleapis.com 'unsafe-inline';");
+      "https://fonts.googleapis.com https://www.gstatic.com 'unsafe-inline';");
   source->OverrideContentSecurityPolicy(
       network::mojom::CSPDirectiveName::FontSrc,
       "font-src 'self' chrome-untrusted://resources "
@@ -270,7 +271,7 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       "chrome-untrusted://resources;");
   source->OverrideContentSecurityPolicy(
       network::mojom::CSPDirectiveName::TrustedTypes,
-      "trusted-types goog#html reader-mode-policy lit-html-desktop "
+      "trusted-types goog#html lit-html-desktop "
       "static-types "
       "parse-html-subset polymer-html-literal "
       "polymer-template-event-attribute-policy;");
@@ -284,8 +285,9 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
 
   ui::TrackedElementHandlerDocumentSingleton::Register(
       this,
-      std::vector<ui::ElementIdentifier>{kReadAnythingViewModeElementId,
-                                         kReadAnythingSettingsButtonElementId});
+      std::vector<ui::ElementIdentifier>{
+          kReadAnythingViewModeElementId, kReadAnythingSettingsButtonElementId,
+          kReadAnythingAiPlaybackToggleElementId});
 }
 
 ReadAnythingUntrustedUI::~ReadAnythingUntrustedUI() = default;
@@ -334,7 +336,7 @@ void ReadAnythingUntrustedUI::CreateUntrustedPageHandler(
     mojo::PendingRemote<read_anything::mojom::UntrustedPage> page,
     mojo::PendingReceiver<read_anything::mojom::UntrustedPageHandler>
         receiver) {
-  DCHECK(page);
+  CHECK(page, base::NotFatalUntil::M162);
   read_anything_untrusted_page_handler_ =
       std::make_unique<ReadAnythingUntrustedPageHandler>(
           std::move(page), std::move(receiver), web_ui(),

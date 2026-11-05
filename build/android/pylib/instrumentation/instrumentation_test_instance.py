@@ -71,6 +71,8 @@ _BUNDLE_STACK_ID = 'stack'
 
 # The ID of the bundle value Chrome uses to report the test duration.
 _BUNDLE_DURATION_ID = 'duration_ms'
+_BUNDLE_BEFORE_CLASS_DURATION_ID = 'before_class_duration_ms'
+_BUNDLE_AFTER_CLASS_DURATION_ID = 'after_class_duration_ms'
 
 # The following error messages are too general to be useful in failure
 # clustering. The runner doesn't report failure reason when such failure
@@ -142,7 +144,14 @@ def GenerateTestResults(
             results.append(result)
 
     current_result = None
+    last_executed_result = None
     cumulative_duration = 0
+    pending_before_class_duration = 0
+    current_reported_duration = False
+    has_class_durations = any(
+        code == instrumentation_parser.STATUS_CODE_CLASS_DURATION
+        for code, _ in statuses
+    )
 
     for status_code, bundle in statuses:
         # If the last test was a failure already, don't override that failure with
@@ -155,15 +164,41 @@ def GenerateTestResults(
             _MaybeSetLog(bundle, current_result, symbolizer, device_abi)
             continue
 
-        if status_code == instrumentation_parser.STATUS_CODE_TEST_DURATION:
-            # For the first result, duration will be set below to the difference
-            # between the reported and actual durations to account for overhead like
-            # starting instrumentation.
-            if results:
-                current_duration = int(
-                    bundle.get(_BUNDLE_DURATION_ID, duration_ms)
+        if status_code == instrumentation_parser.STATUS_CODE_CLASS_DURATION:
+            if _BUNDLE_BEFORE_CLASS_DURATION_ID in bundle:
+                pending_before_class_duration += int(
+                    bundle[_BUNDLE_BEFORE_CLASS_DURATION_ID]
                 )
-                current_result.SetDuration(current_duration)
+                last_executed_result = None
+            if _BUNDLE_AFTER_CLASS_DURATION_ID in bundle:
+                after_duration = int(bundle[_BUNDLE_AFTER_CLASS_DURATION_ID])
+                if last_executed_result:
+                    last_executed_result.SetDuration(
+                        last_executed_result.GetDuration() + after_duration
+                    )
+                    cumulative_duration += after_duration
+                pending_before_class_duration = 0
+                last_executed_result = None
+            continue
+
+        if status_code == instrumentation_parser.STATUS_CODE_TEST_DURATION:
+            current_duration = int(bundle.get(_BUNDLE_DURATION_ID, duration_ms))
+            current_reported_duration = True
+            if current_result:
+                last_executed_result = current_result
+            if has_class_durations:
+                if pending_before_class_duration:
+                    current_duration += pending_before_class_duration
+                    pending_before_class_duration = 0
+                if current_result:
+                    current_result.SetDuration(current_duration)
+                cumulative_duration += current_duration
+            elif results:
+                # For the first result, duration will be set below to the
+                # difference between the reported and actual durations to
+                # account for overhead like starting instrumentation.
+                if current_result:
+                    current_result.SetDuration(current_duration)
                 cumulative_duration += current_duration
             continue
 
@@ -177,8 +212,11 @@ def GenerateTestResults(
         if status_code == instrumentation_parser.STATUS_CODE_START:
             if current_result:
                 add_result(current_result)
+            current_reported_duration = False
             current_result = test_result.InstrumentationTestResult(
-                test_name, base_test_result.ResultType.UNKNOWN, duration_ms
+                test_name,
+                base_test_result.ResultType.UNKNOWN,
+                0 if has_class_durations else duration_ms,
             )
         else:
             if status_code == instrumentation_parser.STATUS_CODE_OK:
@@ -189,6 +227,7 @@ def GenerateTestResults(
                     current_result.SetType(base_test_result.ResultType.PASS)
             elif status_code == instrumentation_parser.STATUS_CODE_SKIP:
                 current_result.SetType(base_test_result.ResultType.SKIP)
+                current_result.SetDuration(0)
             elif (
                 status_code
                 == instrumentation_parser.STATUS_CODE_ASSUMPTION_FAILURE
@@ -209,20 +248,34 @@ def GenerateTestResults(
     if current_result:
         if current_result.GetType() == base_test_result.ResultType.UNKNOWN:
             crashed = result_code == _ACTIVITY_RESULT_CANCELED and any(
-                _NATIVE_CRASH_RE.search(l) for l in result_bundle.values()
+                _NATIVE_CRASH_RE.search(l)
+                for l in result_bundle.values()  # noqa: E741
             )
             if crashed:
                 current_result.SetType(base_test_result.ResultType.CRASH)
 
         add_result(current_result)
 
-    if results:
+    if not has_class_durations and results:
         logging.info(
             'Adding cumulative overhead to test %s: %dms',
             results[0].GetName(),
             duration_ms - cumulative_duration,
         )
         results[0].SetDuration(duration_ms - cumulative_duration)
+    elif (
+        has_class_durations
+        and current_result
+        and not current_reported_duration
+        and current_result.GetType() != base_test_result.ResultType.SKIP
+    ):
+        current_result.SetDuration(max(duration_ms - cumulative_duration, 0))
+    elif results and cumulative_duration > 0:
+        logging.info(
+            'Unattributed instrumentation overhead for %d test(s): %dms',
+            len(results),
+            max(duration_ms - cumulative_duration, 0),
+        )
 
     # Copy failures from @BeforeClass / @AfterClass into all tests that are
     # marked as passing.
@@ -342,11 +395,11 @@ def FilterTests(
         unique_test_name = GetUniqueTestName(test, sep='.')
         test_names.add(unique_test_name)
 
-        junit4_test_name = GetTestNameWithoutParameterSuffix(test, sep='.')
+        junit4_test_name = GetTestNameWithoutParameterSuffix(test)
         test_names.add(junit4_test_name)
 
         unqualified_junit4_test_name = GetTestNameWithoutParameterSuffix(
-            unqualified_class_test, sep='.'
+            unqualified_class_test
         )
         test_names.add(unqualified_junit4_test_name)
         return test_names
@@ -563,25 +616,23 @@ def GetTestName(test, sep='#'):
     return test_name
 
 
-def GetTestNameWithoutParameterSuffix(test, sep='#', parameterization_sep='__'):
+def GetTestNameWithoutParameterSuffix(test):
     """Gets the name of the given JUnit4 test without parameter suffix.
 
     For most WebView JUnit4 javatests, each test is parameterizatized with
     "__sandboxed_mode" to run in both non-sandboxed mode and sandboxed mode.
+    JUnit4 @RunWith(Parameterized.class) tests carry a "[...]" suffix instead.
 
     This function returns the name of the test without parameterization
     so test filters can match both parameterized and non-parameterized tests.
 
     Args:
       test: the instrumentation test dict.
-      sep: the character(s) that should join the class name and the method name.
-      parameterization_sep: the character(s) that separate method name and method
-                            parameterization suffix.
     Returns:
-      The test name without parameter suffix as a string.
+      The '.'-joined test name without parameter suffix as a string.
     """
-    name = GetTestName(test, sep=sep)
-    return name.split(parameterization_sep)[0]
+    name = GetTestName(test, sep='.')
+    return name.split('__')[0].split('[')[0]
 
 
 def GetUniqueTestName(test, sep='#'):
@@ -616,17 +667,13 @@ class InstrumentationTestInstance(test_instance.TestInstance):
         self._additional_apks = []
         self._additional_apexs = []
         self._forced_queryable_additional_apks = []
-        self._instant_additional_apks = []
         self._apk_under_test = None
-        self._apk_under_test_incremental_install_json = None
         self._modules = None
         self._fake_modules = None
         self._additional_locales = None
         self._package_info = None
         self._suite = None
         self._test_apk = None
-        self._test_apk_as_instant = False
-        self._test_apk_incremental_install_json = None
         self._test_package = None
         self._junit4_runner_class = None
         self._uses_base_instrumentation = None
@@ -753,19 +800,6 @@ class InstrumentationTestInstance(test_instance.TestInstance):
         self._test_apk = apk_helper.ToHelper(test_apk_path)
         self._suite = os.path.splitext(os.path.basename(args.test_apk))[0]
 
-        self._test_apk_as_instant = args.test_apk_as_instant
-
-        self._apk_under_test_incremental_install_json = (
-            args.apk_under_test_incremental_install_json
-        )
-        self._test_apk_incremental_install_json = (
-            args.test_apk_incremental_install_json
-        )
-
-        if self._test_apk_incremental_install_json:
-            assert self._suite.endswith('_incremental')
-            self._suite = self._suite[: -len('_incremental')]
-
         self._modules = args.modules
         self._fake_modules = args.fake_modules
         self._additional_locales = args.additional_locales
@@ -798,19 +832,9 @@ class InstrumentationTestInstance(test_instance.TestInstance):
             test_apk_metadata.get('org.chromium.useNativeCoverageListener')
         )
         if self._junit4_runner_class:
-            if self._test_apk_incremental_install_json:
-                for name, value in test_apk_metadata.items():
-                    if (
-                        name.startswith('incremental-install-instrumentation-')
-                        and value == _BASE_INSTRUMENTATION_CLASS_NAME
-                    ):
-                        self._uses_base_instrumentation = True
-                        break
-            else:
-                self._uses_base_instrumentation = (
-                    self._junit4_runner_class
-                    == _BASE_INSTRUMENTATION_CLASS_NAME
-                )
+            self._uses_base_instrumentation = (
+                self._junit4_runner_class == _BASE_INSTRUMENTATION_CLASS_NAME
+            )
 
         self._package_info = None
         if self._apk_under_test:
@@ -828,9 +852,7 @@ class InstrumentationTestInstance(test_instance.TestInstance):
             )
 
         for x in set(
-            args.additional_apks
-            + args.forced_queryable_additional_apks
-            + args.instant_additional_apks
+            args.additional_apks + args.forced_queryable_additional_apks
         ):
             if not os.path.exists(x):
                 error_func('Unable to find additional APK: %s' % x)
@@ -840,9 +862,6 @@ class InstrumentationTestInstance(test_instance.TestInstance):
 
             if x in args.forced_queryable_additional_apks:
                 self._forced_queryable_additional_apks.append(apk)
-
-            if x in args.instant_additional_apks:
-                self._instant_additional_apks.append(apk)
 
         self._additional_apexs = args.additional_apexs
 
@@ -912,7 +931,7 @@ class InstrumentationTestInstance(test_instance.TestInstance):
             self._flags.extend(args.command_line_flags)
         if args.device_flags_file:
             with open(args.device_flags_file) as device_flags_file:
-                stripped_lines = (l.strip() for l in device_flags_file)
+                stripped_lines = (l.strip() for l in device_flags_file)  # noqa: E741
                 self._flags.extend(flag for flag in stripped_lines if flag)
         if (
             args.strict_mode
@@ -1010,10 +1029,6 @@ class InstrumentationTestInstance(test_instance.TestInstance):
     @property
     def apk_under_test(self):
         return self._apk_under_test
-
-    @property
-    def apk_under_test_incremental_install_json(self):
-        return self._apk_under_test_incremental_install_json
 
     @property
     def approve_app_links_package(self):
@@ -1140,14 +1155,6 @@ class InstrumentationTestInstance(test_instance.TestInstance):
     @property
     def test_apk(self):
         return self._test_apk
-
-    @property
-    def test_apk_as_instant(self):
-        return self._test_apk_as_instant
-
-    @property
-    def test_apk_incremental_install_json(self):
-        return self._test_apk_incremental_install_json
 
     @property
     def test_filters(self):
@@ -1281,10 +1288,6 @@ class InstrumentationTestInstance(test_instance.TestInstance):
     def IsApkForceQueryable(self, apk):
         return apk in self._forced_queryable_additional_apks
 
-    def IsApkInstant(self, apk):
-        return apk in self._instant_additional_apks
-
-    # pylint: disable=no-self-use
     def _InflateTests(self, tests):
         inflated_tests = []
         for clazz in tests:

@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.autofill.iban;
 
-import android.content.Context;
 import android.view.View;
 import android.widget.ScrollView;
 
@@ -14,10 +13,17 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
 
 /** This class is responsible for rendering the content for the Autofill save IBAN bottomsheet. */
 @NullMarked
 /*package*/ class AutofillSaveIbanBottomSheetContent implements BottomSheetContent {
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder()
+                    .setUserCritical(UserCriticalFeature.AUTOFILL_SAVE_IBAN)
+                    .build();
+
     private final ScrollView mScrollView;
     private final View mContentView;
 
@@ -51,8 +57,18 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
     }
 
     @Override
+    public boolean showHandlebar() {
+        return true;
+    }
+
+    @Override
     public int getVerticalScrollOffset() {
         return mScrollView.getScrollY();
+    }
+
+    @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
     }
 
     @Override
@@ -68,12 +84,6 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
     @Override
     public float getFullHeightRatio() {
         return HeightMode.WRAP_CONTENT;
-    }
-
-    @Override
-    public String getSheetContentDescription(Context context) {
-        return context.getString(
-                R.string.autofill_save_iban_prompt_bottom_sheet_content_description);
     }
 
     @Override

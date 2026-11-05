@@ -9,6 +9,7 @@
 
 #include "base/functional/callback.h"
 #include "base/synchronization/lock.h"
+#include "base/time/time.h"
 #include "gpu/command_buffer/common/constants.h"
 #include "gpu/gpu_gles2_export.h"
 #include "third_party/skia/include/core/SkImage.h"
@@ -17,6 +18,10 @@
 #include "third_party/skia/include/gpu/graphite/Recorder.h"
 
 class SkTraceMemoryDump;
+
+namespace skgpu {
+class MutableTextureState;
+}  // namespace skgpu
 
 namespace skgpu ::graphite {
 class BackendTexture;
@@ -44,16 +49,30 @@ class GPU_GLES2_EXPORT GraphiteSharedContext {
     virtual void FlushBackend() = 0;
     virtual void MarkContextLost(error::ContextLostReason reason) = 0;
     virtual bool IsContextLost() const = 0;
+    // Tells the GPU watchdog that the GPU thread is making progress.
+    virtual void ReportProgress() = 0;
+
+    // Returns a closure to run once all GPU work submitted has finished. Called
+    // every submit when in single threaded mode. Returning a null closure means
+    // there is nothing to clean up.
+    //
+    // If a submit fails the associated callback will never be run. This must
+    // not result in leaked resources.
+    virtual base::OnceClosure CreateSubmitCleanupCallback();
   };
 
   using SkImageReadPixelsCallback = base::OnceCallback<
       void(void* ctx, std::unique_ptr<const SkSurface::AsyncReadResult>)>;
 
+  // insertRecording() forces a submit once |max_pending_recordings| recordings
+  // are pending, or once |max_time_between_submits| has passed since the last
+  // submit.
   GraphiteSharedContext(
       std::unique_ptr<skgpu::graphite::Context> graphite_context,
       GpuProcessShmCount* use_shader_cache_shm_count,
       bool is_thread_safe,
       size_t max_pending_recordings,
+      base::TimeDelta max_time_between_submits,
       Delegate* delegate = nullptr);
 
   GraphiteSharedContext(const GraphiteSharedContext&) = delete;
@@ -74,6 +93,16 @@ class GPU_GLES2_EXPORT GraphiteSharedContext {
       const skgpu::graphite::RecorderOptions& = {});
 
   std::unique_ptr<skgpu::graphite::PrecompileContext> makePrecompileContext();
+
+  // Enqueues `semaphore` to be waited on / signaled by the next submission.
+  // Returns the submit generation current at enqueue time. The caller can
+  // compare it against submit_generation() to know if the semaphore has been
+  // submitted.
+  uint64_t AddPendingWaitSemaphore(
+      const skgpu::graphite::BackendSemaphore& semaphore);
+  uint64_t AddPendingSignalSemaphore(
+      const skgpu::graphite::BackendSemaphore& semaphore);
+  uint64_t submit_generation() const;
 
   bool insertRecording(const skgpu::graphite::InsertRecordingInfo& info);
   void submit(skgpu::graphite::SubmitInfo = {});
@@ -201,6 +230,9 @@ class GPU_GLES2_EXPORT GraphiteSharedContext {
 
   void deleteBackendTexture(const skgpu::graphite::BackendTexture&);
 
+  bool setMutableState(const skgpu::graphite::BackendTexture& texture,
+                       const skgpu::MutableTextureState& state);
+
   void freeGpuResources();
 
   void performDeferredCleanup(std::chrono::milliseconds msNotUsed);
@@ -234,8 +266,9 @@ class GPU_GLES2_EXPORT GraphiteSharedContext {
   class AutoLock;
 
   bool InsertRecordingImpl(const skgpu::graphite::InsertRecordingInfo&);
-  bool SubmitImpl(const skgpu::graphite::SubmitInfo&);
+  bool SubmitImpl(skgpu::graphite::SubmitInfo);
   void SubmitAndFlushBackendImpl(const skgpu::graphite::SubmitInfo&);
+  void InsertSemaphoreOnlyRecording();
 
   // The lock for protecting skgpu::graphite::Context.
   // Valid only when |is_thread_safe| is set to true in Ctor.
@@ -257,10 +290,31 @@ class GPU_GLES2_EXPORT GraphiteSharedContext {
   const size_t max_pending_recordings_;
   size_t num_pending_recordings_ = 0;
 
+  // The number of pending commands in the graphite::Context's command buffer,
+  // as reported by the last successful insertRecording() since last submit.
+  int num_pending_commands_ = 0;
+
+  // The max of pending commands across all non-skipped submits since creation.
+  int max_pending_commands_ = 0;
+
+  const base::TimeDelta max_time_between_submits_;
+  base::TimeTicks last_submit_time_;
+
   raw_ptr<Delegate> delegate_ = nullptr;
 
   skgpu::graphite::InsertStatus simulated_insert_status_ =
       skgpu::graphite::InsertStatus::kSuccess;
+
+  // Used to produce empty recordings to submit semaphores.
+  // TODO(crbug.com/552951905): Add a way to insert semaphores without a
+  // recording.
+  std::unique_ptr<skgpu::graphite::Recorder> semaphore_recorder_;
+
+  std::vector<skgpu::graphite::BackendSemaphore> pending_wait_semaphores_;
+  std::vector<skgpu::graphite::BackendSemaphore> pending_signal_semaphores_;
+
+  // Incremented after each context submit.
+  std::atomic<uint64_t> submit_generation_{0};
 };
 
 }  // namespace gpu

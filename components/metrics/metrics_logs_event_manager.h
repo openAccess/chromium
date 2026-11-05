@@ -61,7 +61,9 @@ class MetricsLogsEventManager {
     kOutOfBand = 10,
     // The log was created due to a flush from the client.
     kFlush = 11,
-    kMaxValue = kFlush,
+    // The log was created due to runtime mutable changes being applied.
+    kRuntimeMutability = 12,
+    kMaxValue = kRuntimeMutability,
   };
   // LINT.ThenChange(/tools/metrics/histograms/metadata/uma/enums.xml:MetricsLogCreateReason)
 
@@ -75,6 +77,7 @@ class MetricsLogsEventManager {
                             std::string_view log_hash,
                             std::string_view message) = 0;
     virtual void OnLogType(std::optional<MetricsLog::LogType> log_type) {}
+    virtual void OnLogsCleared() {}
 
    protected:
     Observer() = default;
@@ -141,6 +144,10 @@ class MetricsLogsEventManager {
   // Note: Typically, this should not be called directly. Consider using
   // ScopedNotifyLogType.
   void NotifyLogType(std::optional<MetricsLog::LogType> log_type);
+
+  // Notifies observers that in-memory logs should be cleared (e.g., on user
+  // profile switch to prevent cross-user leakage in debug UIs).
+  void NotifyLogsCleared();
 
  private:
   base::ObserverList<Observer> observers_;

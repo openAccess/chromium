@@ -43,6 +43,7 @@ targets.builder_defaults.set(
 
 ci.builder(
     name = "fuchsia-x64-accessibility-rel",
+    description_html = "Runs Fuchsia accessibility browser tests on x64 release builds.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -73,6 +74,7 @@ ci.builder(
         targets = "fuchsia_accessibility_browsertests",
         additional_compile_targets = "content_browsertests",
         mixins = [
+            "fuchsia-large-device-spec",
             "linux-jammy",
             targets.mixin(
                 swarming = targets.swarming(
@@ -83,6 +85,7 @@ ci.builder(
             ),
         ],
     ),
+    ssd = None,
     console_view_entry = [
         consoles.console_view_entry(
             category = "rel",
@@ -99,6 +102,7 @@ ci.builder(
 
 ci.builder(
     name = "linux-blink-web-tests-force-accessibility-rel",
+    description_html = "Runs Blink web tests and accessibility gtests on Linux with --force-renderer-accessibility enabled.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -157,6 +161,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     gardener_rotations = gardener_rotations.CHROMIUM,
     console_view_entry = consoles.console_view_entry(
         category = "rel",

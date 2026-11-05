@@ -16,7 +16,6 @@
 #include "base/system/sys_info.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
-#include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -29,9 +28,10 @@
 #include "components/autofill/core/browser/integrators/at_memory/memory_search_result.h"
 #include "components/autofill/core/browser/logging/log_receiver.h"
 #include "components/autofill/core/browser/logging/log_router.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_util.h"
+#include "components/autofill/core/common/autofill_debug_features.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/device_reauth/device_authenticator.h"
-#include "components/device_reauth/mock_device_authenticator.h"
+#include "components/autofill/core/common/autofill_prefs.h"
 #include "components/personal_context/core/context_memory_error.h"
 #include "components/personal_context/core/mock_personal_context_eligibility_service.h"
 #include "components/personal_context/core/mock_personal_context_service.h"
@@ -53,7 +53,6 @@ namespace autofill {
 
 namespace {
 
-using ::base::test::ErrorIs;
 using ::base::test::RunOnceCallback;
 using ::base::test::TestFuture;
 using ::personal_context::proto::Any;
@@ -63,8 +62,6 @@ using ::personal_context::proto::Attribute;
 using ::personal_context::proto::AutofillFetchPlan;
 using ::personal_context::proto::AutofillFetchSpecification;
 using ::personal_context::proto::Date;
-using ::personal_context::proto::Entity;
-using ::personal_context::proto::FetchPiiEntitiesResponse;
 using ::personal_context::proto::TypedValue;
 using Filter = ::personal_context::proto::AutofillFetchSpecification::Filter;
 using StringFilter =
@@ -74,6 +71,7 @@ using TypedValueFilter =
 using ::testing::_;
 using ::testing::AllOf;
 using ::testing::ByMove;
+using ::testing::ContainsRegex;
 using ::testing::DoubleEq;
 using ::testing::ElementsAre;
 using ::testing::ElementsAreArray;
@@ -128,7 +126,7 @@ TypedValue CreateDateTimeTypedValue(int year,
 
 class FakeMemoryDataProvider : public AutofillDataProvider {
  public:
-  FakeMemoryDataProvider() : AutofillDataProvider(nullptr, nullptr) {}
+  FakeMemoryDataProvider() : AutofillDataProvider(nullptr, nullptr, nullptr) {}
   void RetrieveAll(const std::vector<MemoryDataType>& types,
                    base::OnceCallback<void(std::vector<MemorySearchResult>)>
                        callback) override {
@@ -150,7 +148,8 @@ class FakeMemoryDataProvider : public AutofillDataProvider {
 
 class DelayedMemoryDataProvider : public AutofillDataProvider {
  public:
-  DelayedMemoryDataProvider() : AutofillDataProvider(nullptr, nullptr) {}
+  DelayedMemoryDataProvider()
+      : AutofillDataProvider(nullptr, nullptr, nullptr) {}
   void RetrieveAll(const std::vector<MemoryDataType>& types,
                    base::OnceCallback<void(std::vector<MemorySearchResult>)>
                        callback) override {
@@ -286,6 +285,12 @@ class AtMemoryQueryServiceTest : public testing::Test,
         proto_type = personal_context::proto::MEMORY_DATA_TYPE_PHONE;
       } else if (local_result.type == MemoryDataType::kAddressFull) {
         proto_type = personal_context::proto::MEMORY_DATA_TYPE_ADDRESS_FULL;
+      } else if (local_result.type == MemoryDataType::kIban) {
+        proto_type = personal_context::proto::MEMORY_DATA_TYPE_IBAN;
+      } else if (local_result.type ==
+                 MemoryDataType::kShipmentDeliveryAddress) {
+        proto_type =
+            personal_context::proto::MEMORY_DATA_TYPE_SHIPMENT_DELIVERY_ADDRESS;
       }
       plan->add_fetch_specifications()->set_data_type(proto_type);
     }
@@ -416,6 +421,7 @@ TEST_F(AtMemoryQueryServiceTest, Query_LocalResultsPrecedeRemoteResults) {
 
   MemorySearchResult local_name(MemoryDataType::kNameFull, u"Name",
                                 u"Local Name");
+  local_name.sources.emplace_back(MemoryEntrySourceType::kAutofill);
   fake_data_provider->SetResults({local_name});
 
   TestFuture<MemorySearchResults> future;
@@ -454,15 +460,32 @@ TEST_F(AtMemoryQueryServiceTest, Query_PersonalContextResolverError) {
   EXPECT_TRUE(result.entries.empty());
 }
 
-// Tests that the query service does not send results for a query that has been
-// superseded by a newer query.
-TEST_F(AtMemoryQueryServiceTest, StaleResultsAreNotSent) {
-  AtMemoryQueryResponse response;
+// Tests that the query service returns kInternalFailure when the personal
+// context fetch is cancelled.
+TEST_F(AtMemoryQueryServiceTest, Query_PersonalContextCancelled) {
+  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
+
+  StubFetchContextError(
+      personal_context::ContextMemoryError::FromExecutionError(
+          personal_context::ContextMemoryError::ExecutionError::kCancelled));
+
+  TestFuture<MemorySearchResults> future;
+  service->Query(u"random query", GURL("https://example.com"), u"Page Title",
+                 future.GetRepeatingCallback());
+
+  ASSERT_TRUE(future.Wait());
+  const auto& result = future.Get();
+  EXPECT_EQ(result.status, MemorySearchStatus::kInternalFailure);
+  EXPECT_TRUE(result.entries.empty());
+}
+
+// Tests that the query service supports multiple concurrent queries, and both
+// callbacks are called when data retrieval completes.
+TEST_F(AtMemoryQueryServiceTest, ConcurrentQueriesBothReceiveResults) {
+  AtMemoryQueryResponse response = CreateQueryResponse();
   AutofillFetchPlan* plan = response.mutable_autofill_fetch_plan();
   plan->add_fetch_specifications()->set_data_type(
       personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
-  response.set_query_classification(
-      AtMemoryQueryResponse::QUERY_CLASSIFICATION_AT_MEMORY);
 
   Any serialized_response1;
   serialized_response1.set_value(response.SerializeAsString());
@@ -514,14 +537,71 @@ TEST_F(AtMemoryQueryServiceTest, StaleResultsAreNotSent) {
   // Complete the first query's data retrieval.
   fake_data_provider->CompleteNext({});
 
-  // The first query's callback should NOT be called.
-  EXPECT_FALSE(future1.IsReady());
+  // The first query's callback should be called.
+  ASSERT_TRUE(future1.Wait());
+  EXPECT_EQ(future1.Get().status, MemorySearchStatus::kFinalResponseSuccess);
 
   // Complete the second query's data retrieval.
   fake_data_provider->CompleteNext({});
 
   // The second query's callback should be called.
   ASSERT_TRUE(future2.Wait());
+  EXPECT_EQ(future2.Get().status, MemorySearchStatus::kFinalResponseSuccess);
+}
+
+// Tests that when PersonalContextService cancels an older query upon receiving
+// a newer one (due to single-concurrency limit), the first query's callback
+// receives kInternalFailure while the second query succeeds.
+TEST_F(AtMemoryQueryServiceTest, FirstQueryCancelledWhenSecondStarted) {
+  AtMemoryQueryResponse response = CreateQueryResponse();
+  AutofillFetchPlan* plan = response.mutable_autofill_fetch_plan();
+  plan->add_fetch_specifications()->set_data_type(
+      personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
+
+  Any serialized_response;
+  serialized_response.set_value(response.SerializeAsString());
+  personal_context::FetchContextResult success_result(
+      std::move(serialized_response));
+
+  EXPECT_CALL(
+      mock_service(),
+      FetchContext(personal_context::proto::CONTEXT_MEMORY_FEATURE_AT_MEMORY, _,
+                   _, _))
+      .WillOnce([](personal_context::proto::ContextMemoryFeature feature,
+                   const google::protobuf::MessageLite& request_metadata,
+                   const personal_context::ContextMemoryRequestOptions& options,
+                   personal_context::FetchContextCallback callback) {
+        std::move(callback).Run(
+            personal_context::FetchContextResult(base::unexpected(
+                personal_context::ContextMemoryError::FromExecutionError(
+                    personal_context::ContextMemoryError::ExecutionError::
+                        kCancelled))));
+      })
+      .WillOnce(
+          [&](personal_context::proto::ContextMemoryFeature feature,
+              const google::protobuf::MessageLite& request_metadata,
+              const personal_context::ContextMemoryRequestOptions& options,
+              personal_context::FetchContextCallback callback) {
+            std::move(callback).Run(std::move(success_result));
+          });
+
+  auto data_provider = std::make_unique<FakeMemoryDataProvider>();
+  std::unique_ptr<AtMemoryQueryService> service =
+      CreateQueryService(std::move(data_provider));
+
+  TestFuture<MemorySearchResults> future1;
+  service->Query(u"query 1", GURL("https://example.com"), u"Page Title",
+                 future1.GetRepeatingCallback());
+
+  TestFuture<MemorySearchResults> future2;
+  service->Query(u"query 2", GURL("https://example.com"), u"Page Title",
+                 future2.GetRepeatingCallback());
+
+  ASSERT_TRUE(future1.Wait());
+  EXPECT_EQ(future1.Get().status, MemorySearchStatus::kInternalFailure);
+
+  ASSERT_TRUE(future2.Wait());
+  EXPECT_EQ(future2.Get().status, MemorySearchStatus::kFinalResponseSuccess);
 }
 
 // Tests that deduplication preserves the original insertion order.
@@ -626,7 +706,6 @@ TEST_F(AtMemoryQueryServiceTest,
 
   MemorySearchResult result1(MemoryDataType::kNameFull, u"Name", u"John Doe",
                              /*confidence_score=*/0.9);
-  result1.is_local = true;
   result1.metadata_list.push_back(metadata);
   result1.sources.push_back(
       MemoryEntrySource(MemoryEntrySourceType::kAutofill));
@@ -652,7 +731,6 @@ TEST_F(AtMemoryQueryServiceTest,
       ElementsAre(
           AllOf(Field(&MemorySearchResult::value, u"John Doe"),
                 Field(&MemorySearchResult::confidence_score, DoubleEq(0.9)),
-                Field(&MemorySearchResult::is_local, true),
                 Field(&MemorySearchResult::sources,
                       ElementsAre(Field(&MemoryEntrySource::type,
                                         MemoryEntrySourceType::kAutofill))))));
@@ -700,33 +778,19 @@ TEST_F(AtMemoryQueryServiceTest,
                     ElementsAre(Field(&EntryMetadata::value, u"San Diego"))))));
 }
 
-// Tests that deduplication prefers explicitly saved local Autofill results.
-TEST_F(AtMemoryQueryServiceTest,
-       Query_DeduplicatesResults_PrefersLocalAutofill) {
-  MemorySearchResult remote_result(MemoryDataType::kNameFull, u"Name",
-                                   u"John Doe", /*confidence_score=*/0.9);
-  remote_result.is_local = false;
-
-  MemorySearchResult local_result(MemoryDataType::kNameFull, u"Name",
-                                  u"John Doe", /*confidence_score=*/0.5);
-  local_result.is_local = true;
-
-  // Insert remote first to test tiebreaker overriding the first entry.
-  const MemorySearchResults& result =
-      RunDeduplicationQueryWithLocalResults({remote_result, local_result});
-  EXPECT_THAT(result.entries, testing::ElementsAre(local_result));
-}
-
-// Tests that deduplication prefers results with more non-empty metadata fields.
+// Tests that deduplication prefers results with more non-empty metadata fields,
+// even over Autofill-sourced results with higher confidence scores.
 TEST_F(AtMemoryQueryServiceTest,
        Query_DeduplicatesResults_PrefersMoreMetadata) {
   MemorySearchResult less_meta(MemoryDataType::kNameFull, u"Name", u"John Doe",
                                /*confidence_score=*/0.9);
+  less_meta.sources.emplace_back(MemoryEntrySourceType::kAutofill);
   less_meta.metadata_list.emplace_back(MemoryDataType::kAddressCity, u"City",
                                        u"San Diego");
 
   MemorySearchResult more_meta(MemoryDataType::kNameFull, u"Name", u"John Doe",
                                /*confidence_score=*/0.5);
+  more_meta.sources.emplace_back(MemoryEntrySourceType::kGmail);
   more_meta.metadata_list.emplace_back(MemoryDataType::kAddressCity, u"City",
                                        u"San Diego");
   more_meta.metadata_list.emplace_back(MemoryDataType::kAddressState, u"State",
@@ -734,10 +798,11 @@ TEST_F(AtMemoryQueryServiceTest,
 
   const MemorySearchResults& result =
       RunDeduplicationQueryWithLocalResults({less_meta, more_meta});
-  EXPECT_THAT(result.entries, testing::ElementsAre(more_meta));
+  EXPECT_THAT(result.entries, ElementsAre(more_meta));
 }
 
-// Tests that deduplication prefers results sourced from Autofill.
+// Tests that deduplication prefers results sourced from Autofill when metadata
+// counts are equal.
 TEST_F(AtMemoryQueryServiceTest,
        Query_DeduplicatesResults_PrefersAutofillSource) {
   MemorySearchResult gmail_result(MemoryDataType::kNameFull, u"Name",
@@ -751,7 +816,24 @@ TEST_F(AtMemoryQueryServiceTest,
   // We check the entry was replaced based on confidence score changing to 0.5.
   const MemorySearchResults& result =
       RunDeduplicationQueryWithLocalResults({gmail_result, autofill_result});
-  EXPECT_THAT(result.entries, testing::ElementsAre(autofill_result));
+  EXPECT_THAT(result.entries, ElementsAre(autofill_result));
+}
+
+// Tests that deduplication prefers higher ranking (confidence score) when
+// metadata counts and sources are equal.
+TEST_F(AtMemoryQueryServiceTest,
+       Query_DeduplicatesResults_PrefersHigherRankingScore) {
+  MemorySearchResult higher_score(MemoryDataType::kNameFull, u"Name",
+                                  u"John Doe", /*confidence_score=*/0.9);
+  higher_score.sources.emplace_back(MemoryEntrySourceType::kAutofill);
+
+  MemorySearchResult lower_score(MemoryDataType::kNameFull, u"Name",
+                                 u"John Doe", /*confidence_score=*/0.5);
+  lower_score.sources.emplace_back(MemoryEntrySourceType::kAutofill);
+
+  const MemorySearchResults& result =
+      RunDeduplicationQueryWithLocalResults({lower_score, higher_score});
+  EXPECT_THAT(result.entries, ElementsAre(higher_score));
 }
 
 // Tests that deduplication for Autofill AI entities is determined by merge
@@ -776,29 +858,165 @@ TEST_F(AtMemoryQueryServiceTest,
   EXPECT_EQ(result.entries.size(), 1u);
 }
 
-// Tests that deduplication works when the local data is obfuscated with dots
-// and the remote one is a raw suffix.
+// Tests that deduplication resolves `EntityType` merge constraints even for
+// entity-backed `MemoryDataType` values without a 1:1 `AttributeType` mapping
+// (such as `kShipmentDeliveryAddress`).
+TEST_F(AtMemoryQueryServiceTest,
+       Query_DeduplicatesResults_ShipmentMergeConstraints) {
+  MemorySearchResult result1(MemoryDataType::kShipmentDeliveryAddress, u"",
+                             u"1600 Amphitheatre Pkwy");
+  result1.metadata_list.emplace_back(MemoryDataType::kShipmentTrackingNumber,
+                                     u"Tracking number", u"1Z999AA10123456784");
+  result1.metadata_list.emplace_back(MemoryDataType::kShipmentCarrierName,
+                                     u"Carrier", u"UPS");
+
+  MemorySearchResult result2(MemoryDataType::kShipmentDeliveryAddress, u"",
+                             u"1600 Amphitheatre Pkwy");
+  result2.metadata_list.emplace_back(MemoryDataType::kShipmentTrackingNumber,
+                                     u"Tracking number", u"1Z999AA10123456784");
+  result2.metadata_list.emplace_back(MemoryDataType::kShipmentCarrierName,
+                                     u"Carrier", u"UPS Ground");
+
+  // The merge constraint for Shipment is `kShipmentTrackingNumber`. Both
+  // results share the same tracking number and delivery address, so they
+  // deduplicate despite the differing carrier strings. `result1` is kept
+  // because it comes first among otherwise equally preferable results.
+  const MemorySearchResults& result =
+      RunDeduplicationQueryWithLocalResults({result1, result2});
+  EXPECT_THAT(result.entries, ElementsAre(result1));
+}
+
+// Tests that results of an entity-backed `MemoryDataType` without a 1:1
+// `AttributeType` mapping are not merged if the merge constraints contradict
+// each other.
+TEST_F(AtMemoryQueryServiceTest,
+       Query_DeduplicatesResults_ShipmentMergeConstraintsContradict) {
+  MemorySearchResult result1(MemoryDataType::kShipmentDeliveryAddress, u"",
+                             u"1600 Amphitheatre Pkwy");
+  result1.metadata_list.emplace_back(MemoryDataType::kShipmentTrackingNumber,
+                                     u"Tracking number", u"1Z999AA10123456784");
+
+  MemorySearchResult result2(MemoryDataType::kShipmentDeliveryAddress, u"",
+                             u"1600 Amphitheatre Pkwy");
+  result2.metadata_list.emplace_back(MemoryDataType::kShipmentTrackingNumber,
+                                     u"Tracking number", u"1Z999AA10199999999");
+
+  // Two shipments to the same address with different tracking numbers are
+  // different real-world entities.
+  const MemorySearchResults& result =
+      RunDeduplicationQueryWithLocalResults({result1, result2});
+  EXPECT_EQ(result.entries.size(), 2u);
+}
+
+// Tests that results of an entity-backed `MemoryDataType` without a 1:1
+// `AttributeType` mapping fall back to the contradicting metadata check if the
+// merge constraint attribute is missing.
+TEST_F(AtMemoryQueryServiceTest,
+       Query_DeduplicatesResults_ShipmentMergeConstraintsMissing) {
+  MemorySearchResult result1(MemoryDataType::kShipmentDeliveryAddress, u"",
+                             u"1600 Amphitheatre Pkwy");
+  result1.metadata_list.emplace_back(MemoryDataType::kShipmentTrackingNumber,
+                                     u"Tracking number", u"1Z999AA10123456784");
+  result1.metadata_list.emplace_back(MemoryDataType::kShipmentCarrierName,
+                                     u"Carrier", u"UPS");
+
+  MemorySearchResult result2(MemoryDataType::kShipmentDeliveryAddress, u"",
+                             u"1600 Amphitheatre Pkwy");
+  result2.metadata_list.emplace_back(MemoryDataType::kShipmentCarrierName,
+                                     u"Carrier", u"UPS Ground");
+
+  // Without a tracking number on `result2`, the merge constraints cannot be
+  // evaluated and the contradicting carrier names keep both results.
+  const MemorySearchResults& result =
+      RunDeduplicationQueryWithLocalResults({result1, result2});
+  EXPECT_EQ(result.entries.size(), 2u);
+}
+
+// Tests that deduplication works when the local Autofill data is obfuscated
+// with dots and the remote Sian entry is unmasked.
 TEST_F(AtMemoryQueryServiceTest, Query_DeduplicatesResults_ObfuscatedValues) {
-  // Local, obfuscated result.
+  // Local, obfuscated Autofill result.
   std::u16string raw_value = u"DL123456789012";
   std::u16string obfuscated_value = GetObfuscatedValue(raw_value, 4);
 
   MemorySearchResult result1(MemoryDataType::kDriversLicenseNumber,
                              u"Driver's license number", obfuscated_value);
-  result1.is_local = true;
+  result1.sources = {MemoryEntrySource(MemoryEntrySourceType::kAutofill)};
   result1.metadata_list.emplace_back(MemoryDataType::kDriversLicenseName,
                                      u"Name", u"John Doe");
 
-  // Remote result with last 4 digits.
+  // Remote Sian result with unmasked value.
   MemorySearchResult result2(MemoryDataType::kDriversLicenseNumber,
-                             u"Driver's license number", u"9012");
-  result2.is_local = false;
+                             u"Driver's license number", raw_value);
+  result2.sources = {MemoryEntrySource(MemoryEntrySourceType::kGmail)};
   result2.metadata_list.emplace_back(MemoryDataType::kDriversLicenseName,
                                      u"Name", u"John Doe");
 
   const MemorySearchResults& result =
       RunDeduplicationQueryWithLocalResults({result1, result2});
   EXPECT_EQ(result.entries.size(), 1u);
+}
+
+// Tests that deduplication works for IBANs when local Autofill data is masked
+// (prefix + middle dots + suffix) and remote Sian data is unmasked and
+// formatted with spaces.
+TEST_F(AtMemoryQueryServiceTest,
+       Query_DeduplicatesResults_ObfuscatedIbanWithUnmaskedSianIban) {
+  std::u16string raw_iban = u"DE91100000000123456789";
+  std::u16string obfuscated_iban = GetObfuscatedIban(raw_iban);
+
+  MemorySearchResult result1(MemoryDataType::kIban, u"IBAN", obfuscated_iban);
+  result1.sources = {MemoryEntrySource(MemoryEntrySourceType::kAutofill)};
+
+  MemorySearchResult result2(MemoryDataType::kIban, u"IBAN",
+                             u"DE91 1000 0000 0123 4567 89");
+  result2.sources = {MemoryEntrySource(MemoryEntrySourceType::kGmail)};
+
+  const MemorySearchResults& result =
+      RunDeduplicationQueryWithLocalResults({result1, result2});
+  EXPECT_EQ(result.entries.size(), 1u);
+}
+
+// Tests that deduplication works when an unmasked Sian SPII attribute appears
+// in metadata (e.g., passport number merge constraint on a passport name
+// query).
+TEST_F(AtMemoryQueryServiceTest,
+       Query_DeduplicatesResults_UnmaskedSianSpiiInMergeConstraintMetadata) {
+  MemorySearchResult result1(MemoryDataType::kPassportName, u"Name",
+                             u"John Doe");
+  result1.sources = {MemoryEntrySource(MemoryEntrySourceType::kAutofill)};
+  result1.metadata_list.emplace_back(MemoryDataType::kPassportNumber,
+                                     u"Passport number",
+                                     GetObfuscatedValue(u"123456789", 4));
+
+  MemorySearchResult result2(MemoryDataType::kPassportName, u"Name",
+                             u"John Doe");
+  result2.sources = {MemoryEntrySource(MemoryEntrySourceType::kGmail)};
+  result2.metadata_list.emplace_back(MemoryDataType::kPassportNumber,
+                                     u"Passport number", u"123456789");
+
+  const MemorySearchResults& result =
+      RunDeduplicationQueryWithLocalResults({result1, result2});
+  EXPECT_EQ(result.entries.size(), 1u);
+}
+
+// Tests that two distinct unmasked remote Sian SPII entries that share the
+// same trailing 4 digits are compared using their full unmasked values and are
+// not falsely deduplicated.
+TEST_F(
+    AtMemoryQueryServiceTest,
+    Query_DeduplicatesResults_TwoUnmaskedSianSpiiWithSameSuffix_NotDeduplicated) {
+  MemorySearchResult result1(MemoryDataType::kPassportNumber,
+                             u"Passport number", u"AA11116789");
+  result1.sources = {MemoryEntrySource(MemoryEntrySourceType::kGmail)};
+
+  MemorySearchResult result2(MemoryDataType::kPassportNumber,
+                             u"Passport number", u"BB22226789");
+  result2.sources = {MemoryEntrySource(MemoryEntrySourceType::kGmail)};
+
+  const MemorySearchResults& result =
+      RunDeduplicationQueryWithLocalResults({result1, result2});
+  EXPECT_EQ(result.entries.size(), 2u);
 }
 
 // Tests that results with matching metadata `TypedValue`s are deduplicated,
@@ -1021,29 +1239,40 @@ TEST_F(AtMemoryQueryServiceTest,
   EXPECT_EQ(fake_data_provider->last_type(), MemoryDataType::kAddressFull);
 }
 
-// Tests that the query service correctly identifies and marks SPII data types
-// as obfuscated, while leaving non-SPII data types set to unobfuscated.
+// Tests that the query service returns obfuscated SPII data types when sourced
+// from Autofill, while leaving non-SPII remote data types set to unobfuscated.
 TEST_F(AtMemoryQueryServiceTest, Query_SetsIsObfuscated) {
+  CreditCard card = test::GetCreditCard();
+  autofill_client()
+      .GetPersonalDataManager()
+      .payments_data_manager()
+      .AddCreditCard(card);
+
   // Prepare a fake server response.
   AtMemoryQueryResponse response;
   response.set_query_classification(
       AtMemoryQueryResponse::QUERY_CLASSIFICATION_AT_MEMORY);
 
-  // 1. Non-SPII: Full Name
+  // 1. Non-SPII: Full Name (remote)
   AtMemorySearchResult* result1 = response.add_results();
   result1->mutable_primary_attribute()->set_schemaful_key(
       personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
   result1->mutable_primary_attribute()->set_value("John Doe");
 
-  // 2. SPII: Credit Card Number
-  AtMemorySearchResult* result2 = response.add_results();
-  result2->mutable_primary_attribute()->set_schemaful_key(
-      personal_context::proto::MEMORY_DATA_TYPE_CREDIT_CARD_NUMBER);
-  result2->mutable_primary_attribute()->set_value("1111222233334444");
+  // 2. SPII: Credit Card Number (fetched from Autofill)
+  response.mutable_autofill_fetch_plan()
+      ->add_fetch_specifications()
+      ->set_data_type(
+          personal_context::proto::MEMORY_DATA_TYPE_CREDIT_CARD_NUMBER);
 
   StubFetchContextResponse(std::move(response));
 
-  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
+  auto data_provider = std::make_unique<AutofillDataProvider>(
+      &autofill_client().GetPersonalDataManager(),
+      autofill_client().GetEntityDataManager(),
+      autofill_client().GetValuablesDataManager());
+  std::unique_ptr<AtMemoryQueryService> service =
+      CreateQueryService(std::move(data_provider));
 
   TestFuture<MemorySearchResults> future;
   service->Query(u"some query", GURL("https://example.com"), u"Page Title",
@@ -1060,13 +1289,20 @@ TEST_F(AtMemoryQueryServiceTest, Query_SetsIsObfuscated) {
                 Field(&MemorySearchResult::is_obfuscated, true))));
 }
 
-// Tests that Autofill results are presented before remote results for
-// non-dynamic types, and Autofill results are sorted by ranking score
-// descending.
+// Tests that local Autofill results are presented before remote results, and
+// within each group results are sorted by confidence score descending.
 TEST_F(AtMemoryQueryServiceTest,
-       Query_Ranking_AutofillPrioritizedForNonDynamicTypes) {
+       Query_Ranking_AutofillPrioritizedAndSortedByConfidence) {
   AtMemoryQueryResponse response = CreateQueryResponseWithSchemafulKey(
-      personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL, "Remote Name");
+      personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL, "Remote Name B",
+      /*relevance_score=*/0.6);
+  AtMemorySearchResult* remote_result_a = response.add_results();
+  remote_result_a->set_relevance_score(0.95);
+  Attribute* primary_a = remote_result_a->mutable_primary_attribute();
+  primary_a->set_schemaful_key(
+      personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
+  primary_a->set_value("Remote Name A");
+
   response.mutable_autofill_fetch_plan()
       ->add_fetch_specifications()
       ->set_data_type(personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
@@ -1078,8 +1314,10 @@ TEST_F(AtMemoryQueryServiceTest,
 
   MemorySearchResult local_b(MemoryDataType::kNameFull, u"Name",
                              u"Local Name B", /*confidence_score=*/0.5);
+  local_b.sources.emplace_back(MemoryEntrySourceType::kAutofill);
   MemorySearchResult local_a(MemoryDataType::kNameFull, u"Name",
                              u"Local Name A", /*confidence_score=*/0.9);
+  local_a.sources.emplace_back(MemoryEntrySourceType::kAutofill);
   fake_data_provider->SetResults({local_b, local_a});
 
   std::unique_ptr<AtMemoryQueryService> service =
@@ -1095,80 +1333,65 @@ TEST_F(AtMemoryQueryServiceTest,
   EXPECT_THAT(result.entries,
               ElementsAre(Field(&MemorySearchResult::value, u"Local Name A"),
                           Field(&MemorySearchResult::value, u"Local Name B"),
-                          Field(&MemorySearchResult::value, u"Remote Name")));
+                          Field(&MemorySearchResult::value, u"Remote Name A"),
+                          Field(&MemorySearchResult::value, u"Remote Name B")));
 }
 
-// Tests that remote results are presented before Autofill results when all
-// results are dynamic transaction types.
+// Tests that local Autofill results precede remote results even when a remote
+// duplicate replaces an earlier Autofill result during deduplication.
 TEST_F(AtMemoryQueryServiceTest,
-       Query_Ranking_RemotePrioritizedForDynamicTransactionTypes) {
-  AtMemoryQueryResponse response = CreateQueryResponseWithSchemafulKey(
-      personal_context::proto::MEMORY_DATA_TYPE_SHIPMENT_TRACKING_NUMBER,
-      "Remote 1Z12345");
+       Query_Ranking_AutofillPrioritizedAfterDeduplication) {
+  AtMemoryQueryResponse response = CreateQueryResponse();
   response.mutable_autofill_fetch_plan()
       ->add_fetch_specifications()
-      ->set_data_type(
-          personal_context::proto::MEMORY_DATA_TYPE_SHIPMENT_TRACKING_NUMBER);
+      ->set_data_type(personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
+
+  AtMemorySearchResult* remote_result = response.add_results();
+  remote_result->set_relevance_score(0.95);
+  Attribute* primary = remote_result->mutable_primary_attribute();
+  primary->set_schemaful_key(
+      personal_context::proto::MEMORY_DATA_TYPE_NAME_FULL);
+  primary->set_value("Alice");
+  Attribute* meta1 = remote_result->add_secondary_attributes();
+  meta1->set_schemaful_key(
+      personal_context::proto::MEMORY_DATA_TYPE_ADDRESS_CITY);
+  meta1->set_value("San Diego");
+  Attribute* meta2 = remote_result->add_secondary_attributes();
+  meta2->set_schemaful_key(
+      personal_context::proto::MEMORY_DATA_TYPE_ADDRESS_STATE);
+  meta2->set_value("California");
 
   StubFetchContextResponse(std::move(response));
 
+  MemorySearchResult local_alice(MemoryDataType::kNameFull, u"Name", u"Alice",
+                                 /*confidence_score=*/0.9);
+  local_alice.sources.emplace_back(MemoryEntrySourceType::kAutofill);
+  local_alice.metadata_list.emplace_back(MemoryDataType::kAddressCity, u"City",
+                                         u"San Diego");
+
+  MemorySearchResult local_bob(MemoryDataType::kNameFull, u"Name", u"Bob",
+                               /*confidence_score=*/0.8);
+  local_bob.sources.emplace_back(MemoryEntrySourceType::kAutofill);
+  local_bob.metadata_list.emplace_back(MemoryDataType::kAddressCity, u"City",
+                                       u"New York");
+
   auto data_provider = std::make_unique<FakeMemoryDataProvider>();
   FakeMemoryDataProvider* fake_data_provider = data_provider.get();
-
-  MemorySearchResult local_shipment(MemoryDataType::kShipmentTrackingNumber,
-                                    u"Tracking", u"Local 1Z67890",
-                                    /*confidence_score=*/0.8);
-  fake_data_provider->SetResults({local_shipment});
+  fake_data_provider->SetResults({local_alice, local_bob});
 
   std::unique_ptr<AtMemoryQueryService> service =
       CreateQueryService(std::move(data_provider));
 
   TestFuture<MemorySearchResults> future;
-  service->Query(u"tracking number", GURL("https://example.com"), u"Page Title",
+  service->Query(u"what is my name", GURL("https://example.com"), u"Page Title",
                  future.GetRepeatingCallback());
 
   ASSERT_TRUE(future.Wait());
   const MemorySearchResults& result = future.Get();
   EXPECT_EQ(result.status, MemorySearchStatus::kFinalResponseSuccess);
   EXPECT_THAT(result.entries,
-              ElementsAre(Field(&MemorySearchResult::value, u"Remote 1Z12345"),
-                          Field(&MemorySearchResult::value, u"Local 1Z67890")));
-}
-
-// Tests that Autofill results are prioritized when mixed types contain at
-// least one non-dynamic transaction type.
-TEST_F(AtMemoryQueryServiceTest,
-       Query_Ranking_MixedTypesNotAllDynamic_AutofillPrioritized) {
-  AtMemoryQueryResponse response = CreateQueryResponseWithSchemafulKey(
-      personal_context::proto::MEMORY_DATA_TYPE_SHIPMENT_TRACKING_NUMBER,
-      "Remote 1Z12345");
-  response.mutable_autofill_fetch_plan()
-      ->add_fetch_specifications()
-      ->set_data_type(personal_context::proto::MEMORY_DATA_TYPE_ADDRESS_FULL);
-
-  StubFetchContextResponse(std::move(response));
-
-  auto data_provider = std::make_unique<FakeMemoryDataProvider>();
-  FakeMemoryDataProvider* fake_data_provider = data_provider.get();
-
-  MemorySearchResult local_address(MemoryDataType::kAddressFull, u"Address",
-                                   u"123 Main St", /*confidence_score=*/0.7);
-  fake_data_provider->SetResults({local_address});
-
-  std::unique_ptr<AtMemoryQueryService> service =
-      CreateQueryService(std::move(data_provider));
-
-  TestFuture<MemorySearchResults> future;
-  service->Query(u"where is my package", GURL("https://example.com"),
-                 u"Page Title", future.GetRepeatingCallback());
-
-  ASSERT_TRUE(future.Wait());
-  const MemorySearchResults& result = future.Get();
-  EXPECT_EQ(result.status, MemorySearchStatus::kFinalResponseSuccess);
-  EXPECT_THAT(
-      result.entries,
-      ElementsAre(Field(&MemorySearchResult::value, u"123 Main St"),
-                  Field(&MemorySearchResult::value, u"Remote 1Z12345")));
+              ElementsAre(Field(&MemorySearchResult::value, u"Bob"),
+                          Field(&MemorySearchResult::value, u"Alice")));
 }
 
 struct QueryClassificationTestCase {
@@ -1257,243 +1480,6 @@ TEST_F(AtMemoryQueryServiceTest, Query_PopulatesUrlAndTitle) {
 
   service->Query(u"Alice", GURL("https://example.com/"), u"Example Title",
                  base::DoNothing());
-}
-
-// Tests that when there is no device authenticator,
-// `AuthenticateAndFetchPiiEntity(..)` returns a `kReauthFailed` error and does
-// not fetch from `PersonalContextService`.
-TEST_F(AtMemoryQueryServiceTest,
-       AuthenticateAndFetchPiiEntity_NoAuthenticator) {
-  autofill_client().set_device_authenticator(nullptr);
-  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
-
-  EXPECT_CALL(mock_service(), FetchPiiEntities).Times(0);
-
-  TestFuture<AtMemoryQueryService::SpiiRetrievalResult> future;
-  service->AuthenticateAndFetchPiiEntity(
-      autofill_client(), u"auth message", u"1234",
-      MemoryDataType::kPassportNumber, {}, future.GetCallback());
-
-  EXPECT_THAT(
-      future.Get(),
-      ErrorIs(AtMemoryQueryService::SpiiRetrievalFailureReason::kReauthFailed));
-}
-
-// Tests that when `CanAuthenticateWithBiometricOrScreenLock()` returns false,
-// `AuthenticateAndFetchPiiEntity(..)` returns a `kReauthFailed` error and does
-// not trigger authentication or fetch from `PersonalContextService`.
-TEST_F(AtMemoryQueryServiceTest,
-       AuthenticateAndFetchPiiEntity_CannotAuthenticate) {
-  auto mock_authenticator =
-      std::make_unique<device_reauth::MockDeviceAuthenticator>();
-  EXPECT_CALL(*mock_authenticator, CanAuthenticateWithBiometricOrScreenLock())
-      .WillOnce(Return(false));
-  EXPECT_CALL(*mock_authenticator, AuthenticateWithMessage).Times(0);
-
-  autofill_client().set_device_authenticator(std::move(mock_authenticator));
-
-  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
-
-  EXPECT_CALL(mock_service(), FetchPiiEntities).Times(0);
-
-  TestFuture<AtMemoryQueryService::SpiiRetrievalResult> future;
-  service->AuthenticateAndFetchPiiEntity(
-      autofill_client(), u"auth message", u"1234",
-      MemoryDataType::kPassportNumber, {}, future.GetCallback());
-
-  EXPECT_THAT(
-      future.Get(),
-      ErrorIs(AtMemoryQueryService::SpiiRetrievalFailureReason::kReauthFailed));
-}
-
-// Tests that when authentication fails, `AuthenticateAndFetchPiiEntity(..)`
-// returns a `kReauthFailed` error and does not fetch from
-// `PersonalContextService`.
-TEST_F(AtMemoryQueryServiceTest, AuthenticateAndFetchPiiEntity_AuthFails) {
-  auto mock_authenticator =
-      std::make_unique<device_reauth::MockDeviceAuthenticator>();
-  EXPECT_CALL(*mock_authenticator, CanAuthenticateWithBiometricOrScreenLock())
-      .WillOnce(Return(true));
-  EXPECT_CALL(*mock_authenticator, AuthenticateWithMessage)
-      .WillOnce(RunOnceCallback<1>(/*auth_succeeded=*/false));
-
-  autofill_client().set_device_authenticator(std::move(mock_authenticator));
-
-  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
-
-  EXPECT_CALL(mock_service(), FetchPiiEntities).Times(0);
-
-  TestFuture<AtMemoryQueryService::SpiiRetrievalResult> future;
-  service->AuthenticateAndFetchPiiEntity(
-      autofill_client(), u"auth message", u"1234",
-      MemoryDataType::kPassportNumber, {}, future.GetCallback());
-
-  EXPECT_THAT(
-      future.Get(),
-      ErrorIs(AtMemoryQueryService::SpiiRetrievalFailureReason::kReauthFailed));
-}
-
-// Tests that when `PersonalContextService` returns a fetch error,
-// `AuthenticateAndFetchPiiEntity(..)` returns a `kFetchFailed` error.
-TEST_F(AtMemoryQueryServiceTest, AuthenticateAndFetchPiiEntity_FetchFails) {
-  auto mock_authenticator =
-      std::make_unique<device_reauth::MockDeviceAuthenticator>();
-  EXPECT_CALL(*mock_authenticator, CanAuthenticateWithBiometricOrScreenLock())
-      .WillOnce(Return(true));
-  EXPECT_CALL(*mock_authenticator, AuthenticateWithMessage)
-      .WillOnce(RunOnceCallback<1>(/*auth_succeeded=*/true));
-
-  autofill_client().set_device_authenticator(std::move(mock_authenticator));
-
-  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
-
-  personal_context::FetchPiiEntitiesResult result(
-      base::unexpected(personal_context::ContextMemoryError::FromExecutionError(
-          personal_context::ContextMemoryError::ExecutionError::
-              kGenericFailure)));
-
-  EXPECT_CALL(mock_service(), FetchPiiEntities)
-      .WillOnce(RunOnceCallback<2>(std::move(result)));
-
-  TestFuture<AtMemoryQueryService::SpiiRetrievalResult> future;
-  service->AuthenticateAndFetchPiiEntity(
-      autofill_client(), u"auth message", u"1234",
-      MemoryDataType::kPassportNumber, {}, future.GetCallback());
-
-  EXPECT_THAT(
-      future.Get(),
-      ErrorIs(AtMemoryQueryService::SpiiRetrievalFailureReason::kFetchFailed));
-}
-
-// Tests that when `PersonalContextService` returns an entity that fails
-// conversion, `AuthenticateAndFetchPiiEntity(..)` returns a `kParseFailed`
-// error.
-TEST_F(AtMemoryQueryServiceTest, AuthenticateAndFetchPiiEntity_ParseFails) {
-  auto mock_authenticator =
-      std::make_unique<device_reauth::MockDeviceAuthenticator>();
-  EXPECT_CALL(*mock_authenticator, CanAuthenticateWithBiometricOrScreenLock())
-      .WillOnce(Return(true));
-  EXPECT_CALL(*mock_authenticator, AuthenticateWithMessage)
-      .WillOnce(RunOnceCallback<1>(/*auth_succeeded=*/true));
-
-  autofill_client().set_device_authenticator(std::move(mock_authenticator));
-
-  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
-
-  FetchPiiEntitiesResponse response;
-  Entity* entity = response.add_entities();
-  // Set an unsupported entity case to trigger std::nullopt conversion safely.
-  entity->mutable_sensitive_pii_presence();
-
-  personal_context::FetchPiiEntitiesResult result(std::move(response));
-
-  EXPECT_CALL(mock_service(), FetchPiiEntities)
-      .WillOnce(RunOnceCallback<2>(std::move(result)));
-
-  TestFuture<AtMemoryQueryService::SpiiRetrievalResult> future;
-  service->AuthenticateAndFetchPiiEntity(
-      autofill_client(), u"auth message", u"1234",
-      MemoryDataType::kPassportNumber, {}, future.GetCallback());
-
-  EXPECT_THAT(
-      future.Get(),
-      ErrorIs(AtMemoryQueryService::SpiiRetrievalFailureReason::kParseFailed));
-}
-
-// Tests a successful end-to-end unmasking flow: authenticates the user,
-// fetches from `PersonalContextService`, and returns the raw unmasked value
-// string.
-TEST_F(AtMemoryQueryServiceTest, AuthenticateAndFetchPiiEntity_Success) {
-  auto mock_authenticator =
-      std::make_unique<device_reauth::MockDeviceAuthenticator>();
-  EXPECT_CALL(*mock_authenticator, CanAuthenticateWithBiometricOrScreenLock())
-      .WillOnce(Return(true));
-  EXPECT_CALL(*mock_authenticator, AuthenticateWithMessage)
-      .WillOnce(RunOnceCallback<1>(/*auth_succeeded=*/true));
-
-  autofill_client().set_device_authenticator(std::move(mock_authenticator));
-
-  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
-
-  FetchPiiEntitiesResponse response;
-  Entity* entity = response.add_entities();
-  entity->mutable_passport()->set_number("987654321");
-  entity->mutable_passport()->set_name("John Doe");
-
-  personal_context::FetchPiiEntitiesResult result(std::move(response));
-
-  EntryMetadata metadata(MemoryDataType::kPassportExpirationDate,
-                         u"Expiration Date", u"2030-01-01");
-
-  EXPECT_CALL(mock_service(), FetchPiiEntities)
-      .WillOnce(RunOnceCallback<2>(std::move(result)));
-
-  TestFuture<AtMemoryQueryService::SpiiRetrievalResult> future;
-  service->AuthenticateAndFetchPiiEntity(
-      autofill_client(), u"auth message", u"4321",
-      MemoryDataType::kPassportNumber, {{metadata}}, future.GetCallback());
-
-  ASSERT_TRUE(future.Get().has_value());
-  EXPECT_EQ(future.Get().value(), u"987654321");
-}
-
-// Tests that calling `AuthenticateAndFetchPiiEntity(..)` when the network is
-// offline returns a `kNoConnection` error immediately without authentication or
-// calling the service.
-TEST_F(AtMemoryQueryServiceTest, AuthenticateAndFetchPiiEntity_Offline) {
-  net::test::ScopedMockNetworkChangeNotifier notifier;
-  notifier.mock_network_change_notifier()->SetConnectionType(
-      net::NetworkChangeNotifier::CONNECTION_NONE);
-
-  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
-
-  EXPECT_CALL(mock_service(), FetchPiiEntities).Times(0);
-
-  TestFuture<AtMemoryQueryService::SpiiRetrievalResult> future;
-  service->AuthenticateAndFetchPiiEntity(
-      autofill_client(), u"auth message", u"1234",
-      MemoryDataType::kPassportNumber, {}, future.GetCallback());
-
-  EXPECT_THAT(
-      future.Get(),
-      ErrorIs(AtMemoryQueryService::SpiiRetrievalFailureReason::kNoConnection));
-}
-
-// Tests that calling `AuthenticateAndFetchPiiEntity(..)` while authentication
-// is already in progress returns `kReauthInProgress` immediately and doesn't
-// trigger a new authentication request.
-TEST_F(AtMemoryQueryServiceTest, AuthenticateAndFetchPiiEntity_AuthInProgress) {
-  auto mock_authenticator =
-      std::make_unique<device_reauth::MockDeviceAuthenticator>();
-  EXPECT_CALL(*mock_authenticator, CanAuthenticateWithBiometricOrScreenLock())
-      .WillOnce(Return(true));
-  // AuthenticateWithMessage is called but we DO NOT run its callback
-  // immediately, leaving authentication in progress.
-  base::OnceCallback<void(bool)> first_auth_callback;
-  EXPECT_CALL(*mock_authenticator, AuthenticateWithMessage)
-      .WillOnce([&](const std::u16string& message,
-                    base::OnceCallback<void(bool)> callback) {
-        first_auth_callback = std::move(callback);
-      });
-
-  autofill_client().set_device_authenticator(std::move(mock_authenticator));
-
-  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
-
-  service->AuthenticateAndFetchPiiEntity(
-      autofill_client(), u"auth message", u"1234",
-      MemoryDataType::kPassportNumber, {}, base::DoNothing());
-
-  // Second call should return `kReauthInProgress` immediately.
-  TestFuture<AtMemoryQueryService::SpiiRetrievalResult> second_future;
-  service->AuthenticateAndFetchPiiEntity(
-      autofill_client(), u"auth message 2", u"1234",
-      MemoryDataType::kPassportNumber, {}, second_future.GetCallback());
-
-  EXPECT_THAT(
-      second_future.Get(),
-      ErrorIs(
-          AtMemoryQueryService::SpiiRetrievalFailureReason::kReauthInProgress));
 }
 
 // Tests that secondary metadata attributes are reordered by uniqueness across
@@ -1739,6 +1725,45 @@ TEST_F(AtMemoryQueryServiceTest,
 
   EXPECT_THAT(future.Get(), SuccessfulSearchResults(
                                 SearchResultWithValue(u"123 Main St Home")));
+}
+
+// Tests that a record is shown once if several of its types are requested,
+// under the first type whose fetch specification it matches.
+TEST_F(AtMemoryQueryServiceTest,
+       Query_FiltersLocalDataUsingFetchSpecifications_OneEntryPerRecord) {
+  AtMemoryQueryResponse response = CreateQueryResponse();
+  auto add_spec = [&](personal_context::proto::MemoryDataType type,
+                      std::string_view filter) {
+    auto* spec =
+        response.mutable_autofill_fetch_plan()->add_fetch_specifications();
+    spec->set_data_type(type);
+    spec->add_filters()->mutable_string_filter()->set_value(filter);
+  };
+  add_spec(personal_context::proto::MEMORY_DATA_TYPE_ADDRESS_CITY, "paris");
+  add_spec(personal_context::proto::MEMORY_DATA_TYPE_ADDRESS_ZIP, "94043");
+  StubFetchContextResponse(std::move(response));
+
+  auto entry = [](MemoryDataType type, std::u16string_view value,
+                  std::string_view guid) {
+    MemorySearchResult result(type, u"Type", std::u16string(value));
+    result.identifier = std::string(guid);
+    return result;
+  };
+  // Profile 1 matches both specifications, profile 2 only the second one.
+  std::unique_ptr<AtMemoryQueryService> service =
+      CreateQueryProviderWithResults(
+          {entry(MemoryDataType::kAddressCity, u"Paris", "guid-1"),
+           entry(MemoryDataType::kAddressCity, u"Mountain View", "guid-2"),
+           entry(MemoryDataType::kAddressZip, u"94043", "guid-1"),
+           entry(MemoryDataType::kAddressZip, u"94043", "guid-2")});
+
+  TestFuture<MemorySearchResults> future;
+  service->Query(u"address", GURL("https://example.com"), u"Title",
+                 future.GetRepeatingCallback());
+
+  EXPECT_THAT(future.Get(),
+              SuccessfulSearchResults(SearchResultWithValue(u"Paris"),
+                                      SearchResultWithValue(u"94043")));
 }
 
 // Tests that exact string filter mode requires the full string to match
@@ -2459,6 +2484,11 @@ TEST_F(AtMemoryQueryServiceTest, LogsLocalResultsWhenRetrieved) {
     EXPECT_THAT(entry.DebugString(), HasSubstr("VehiclePlateNumber"));
     EXPECT_THAT(entry.DebugString(), HasSubstr("12345"));
   });
+  EXPECT_CALL(receiver, LogEntry).WillOnce([](const base::DictValue& entry) {
+    EXPECT_THAT(entry.DebugString(), HasSubstr("Combined results:"));
+    EXPECT_THAT(entry.DebugString(), HasSubstr("VehiclePlateNumber"));
+    EXPECT_THAT(entry.DebugString(), HasSubstr("12345"));
+  });
 
   TestFuture<MemorySearchResults> future;
   service->Query(u"query", GURL("https://example.com"), u"Title",
@@ -2478,7 +2508,6 @@ TEST_F(AtMemoryQueryServiceTest, LogsDiscardedDuplicatesWhenFound) {
   auto provider = std::make_unique<FakeMemoryDataProvider>();
   MemorySearchResult local_result(MemoryDataType::kVehiclePlateNumber, u"Plate",
                                   u"12345");
-  local_result.is_local = true;
   local_result.sources = {MemoryEntrySource(MemoryEntrySourceType::kPhotos),
                           MemoryEntrySource(MemoryEntrySourceType::kGmail,
                                             "https://gmail.com/123")};
@@ -2523,7 +2552,9 @@ TEST_F(AtMemoryQueryServiceTest, LogsDiscardedDuplicatesWhenFound) {
     EXPECT_THAT(log_str, HasSubstr("12345"));
     EXPECT_THAT(log_str, HasSubstr("PHOTOS"));
     EXPECT_THAT(log_str, HasSubstr("GMAIL (URL: https://gmail.com/123)"));
-    EXPECT_THAT(log_str, HasSubstr("Is locally stored:"));
+  });
+  EXPECT_CALL(receiver, LogEntry).WillOnce([](const base::DictValue& entry) {
+    EXPECT_THAT(entry.DebugString(), HasSubstr("Combined results:"));
   });
 
   TestFuture<MemorySearchResults> future;
@@ -2544,7 +2575,6 @@ TEST_F(AtMemoryQueryServiceTest,
   auto provider = std::make_unique<FakeMemoryDataProvider>();
   MemorySearchResult local_result(MemoryDataType::kPassportNumber, u"Passport",
                                   u"PASS123");
-  local_result.is_local = true;
   provider->SetResults({local_result});
 
   auto service = CreateQueryService(std::move(provider), &log_router);
@@ -2583,6 +2613,9 @@ TEST_F(AtMemoryQueryServiceTest,
     EXPECT_THAT(log_str, HasSubstr("\"data-pii\": \"true\""));
     EXPECT_THAT(log_str, HasSubstr("\"value\": \"PASS123\""));
   });
+  EXPECT_CALL(receiver, LogEntry).WillOnce([](const base::DictValue& entry) {
+    EXPECT_THAT(entry.DebugString(), HasSubstr("Combined results:"));
+  });
 
   TestFuture<MemorySearchResults> future;
   service->Query(u"query", GURL("https://example.com"), u"Title",
@@ -2590,6 +2623,104 @@ TEST_F(AtMemoryQueryServiceTest,
   EXPECT_TRUE(future.Wait());
 
   log_router.UnregisterReceiver(&receiver);
+}
+
+// Tests that disambiguation metadata reordering is logged when the original
+// metadata attribute order is changed.
+TEST_F(AtMemoryQueryServiceTest,
+       LogsDisambiguationReorderingWhenMetadataOrderChanged) {
+  LogRouter log_router;
+  MockLogReceiver receiver;
+  log_router.RegisterReceiver(&receiver);
+
+  std::unique_ptr<FakeMemoryDataProvider> provider =
+      std::make_unique<FakeMemoryDataProvider>();
+  MemorySearchResult local_result(MemoryDataType::kVehiclePlateNumber, u"Plate",
+                                  u"CX100");
+  // "Country" (shared) comes before "City" (unique).
+  local_result.metadata_list = {
+      EntryMetadata(MemoryDataType::kUnknown, u"Country", u"US"),
+      EntryMetadata(MemoryDataType::kUnknown, u"City", u"NYC")};
+  provider->SetResults({local_result});
+
+  std::unique_ptr<AtMemoryQueryService> service =
+      CreateQueryService(std::move(provider), &log_router);
+
+  AtMemoryQueryResponse response;
+  response.set_query_classification(
+      AtMemoryQueryResponse::QUERY_CLASSIFICATION_AT_MEMORY);
+  AutofillFetchPlan* plan = response.mutable_autofill_fetch_plan();
+  AutofillFetchSpecification* spec = plan->add_fetch_specifications();
+  spec->set_data_type(
+      personal_context::proto::MEMORY_DATA_TYPE_VEHICLE_PLATE_NUMBER);
+
+  AtMemorySearchResult* remote_result = response.add_results();
+  Attribute* primary = remote_result->mutable_primary_attribute();
+  primary->set_schemaful_key(
+      personal_context::proto::MEMORY_DATA_TYPE_VEHICLE_PLATE_NUMBER);
+  primary->set_value("CX200");
+  Attribute* meta1 = remote_result->add_secondary_attributes();
+  meta1->set_schemaless_key("Country");
+  meta1->set_value("US");
+  Attribute* meta2 = remote_result->add_secondary_attributes();
+  meta2->set_schemaless_key("City");
+  meta2->set_value("LA");
+
+  StubFetchContextResponse(std::move(response));
+
+  InSequence seq;
+  EXPECT_CALL(receiver, LogEntry).WillOnce([](const base::DictValue& entry) {
+    EXPECT_THAT(entry.DebugString(),
+                HasSubstr("Evaluating Autofill fetch plan"));
+  });
+  EXPECT_CALL(receiver, LogEntry).WillOnce([](const base::DictValue& entry) {
+    EXPECT_THAT(entry.DebugString(),
+                HasSubstr("Retrieved local data results (unfiltered)"));
+  });
+  EXPECT_CALL(receiver, LogEntry).WillOnce([](const base::DictValue& entry) {
+    EXPECT_THAT(entry.DebugString(), HasSubstr("Filtered local data results"));
+  });
+  // Disambiguation reorders metadata so "City" (freq 1) comes before "Country"
+  // (freq 2). Both suggestions should log the reordering with their former
+  // order before the final combined results are logged.
+  EXPECT_CALL(receiver, LogEntry).WillOnce([](const base::DictValue& entry) {
+    EXPECT_THAT(
+        entry.DebugString(),
+        ContainsRegex(
+            R"(Reordering disambiguation metadata:[\s\S]*CX100[\s\S]*Country[\s\S]*City)"));
+  });
+  EXPECT_CALL(receiver, LogEntry).WillOnce([](const base::DictValue& entry) {
+    EXPECT_THAT(
+        entry.DebugString(),
+        ContainsRegex(
+            R"(Reordering disambiguation metadata:[\s\S]*CX200[\s\S]*Country[\s\S]*City)"));
+  });
+  EXPECT_CALL(receiver, LogEntry).WillOnce([](const base::DictValue& entry) {
+    EXPECT_THAT(entry.DebugString(),
+                ContainsRegex(R"(Combined results:[\s\S]*CX100[\s\S]*CX200)"));
+  });
+
+  TestFuture<MemorySearchResults> future;
+  service->Query(u"query", GURL("https://example.com"), u"Title",
+                 future.GetRepeatingCallback());
+  EXPECT_TRUE(future.Wait());
+
+  log_router.UnregisterReceiver(&receiver);
+}
+
+TEST_F(AtMemoryQueryServiceTest, ResetsShortcutPromoPrefOnStartup) {
+  base::test::ScopedFeatureList feature_list(
+      features::debug::kAtMemoryResetShortcutPromoPrefOnStartup);
+  pref_service().registry()->RegisterIntegerPref(
+      prefs::kAutofillAtMemoryShortcutPromoImpressionCount, 0);
+  pref_service().SetInteger(
+      prefs::kAutofillAtMemoryShortcutPromoImpressionCount, 2);
+
+  std::unique_ptr<AtMemoryQueryService> service = CreateQueryService();
+
+  EXPECT_EQ(pref_service().GetInteger(
+                prefs::kAutofillAtMemoryShortcutPromoImpressionCount),
+            0);
 }
 
 }  // namespace

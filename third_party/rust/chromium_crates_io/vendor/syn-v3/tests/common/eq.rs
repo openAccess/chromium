@@ -36,7 +36,6 @@ use rustc_ast::ast::ClosureBinder;
 use rustc_ast::ast::Const;
 use rustc_ast::ast::ConstBlockItem;
 use rustc_ast::ast::ConstItem;
-use rustc_ast::ast::ConstItemKind;
 use rustc_ast::ast::CoroutineKind;
 use rustc_ast::ast::CoroutineMarker;
 use rustc_ast::ast::Crate;
@@ -123,7 +122,6 @@ use rustc_ast::ast::ModKind;
 use rustc_ast::ast::ModSpans;
 use rustc_ast::ast::Movability;
 use rustc_ast::ast::MutRestriction;
-use rustc_ast::ast::MutTy;
 use rustc_ast::ast::Mutability;
 use rustc_ast::ast::NodeId;
 use rustc_ast::ast::NormalAttr;
@@ -155,6 +153,12 @@ use rustc_ast::ast::StructExpr;
 use rustc_ast::ast::StructRest;
 use rustc_ast::ast::SyntheticAttr;
 use rustc_ast::ast::Term;
+use rustc_ast::ast::TestBinderBody;
+use rustc_ast::ast::TestBinderBoundTypeConstraint;
+use rustc_ast::ast::TestBinderConstraint;
+use rustc_ast::ast::TestBinderConstraints;
+use rustc_ast::ast::TestBinderExists;
+use rustc_ast::ast::TestBinderForall;
 use rustc_ast::ast::Trait;
 use rustc_ast::ast::TraitAlias;
 use rustc_ast::ast::TraitBoundModifiers;
@@ -172,6 +176,7 @@ use rustc_ast::ast::UnsafeBinderCastKind;
 use rustc_ast::ast::UnsafeBinderTy;
 use rustc_ast::ast::UnsafeSource;
 use rustc_ast::ast::UseTree;
+use rustc_ast::ast::UseTreeAndId;
 use rustc_ast::ast::UseTreeKind;
 use rustc_ast::ast::Variant;
 use rustc_ast::ast::VariantData;
@@ -185,7 +190,7 @@ use rustc_ast::ast::WherePredicateKind;
 use rustc_ast::ast::WhereRegionPredicate;
 use rustc_ast::ast::YieldKind;
 use rustc_ast::attr::data_structures::CfgEntry;
-use rustc_ast::token::{self, CommentKind, Delimiter, IdentIsRaw, Lit, Token, TokenKind};
+use rustc_ast::token::{self, CommentKind, Delimiter, IdentKind, Lit, Token, TokenKind};
 use rustc_ast::tokenstream::{
     AttrTokenStream, AttrTokenTree, AttrsTarget, DelimSpacing, DelimSpan, LazyAttrTokenStream,
     Spacing, TokenStream, TokenTree,
@@ -501,7 +506,7 @@ spanless_eq_struct!(BindingMode; 0 1);
 spanless_eq_struct!(Block; stmts id rules span);
 spanless_eq_struct!(Closure; binder capture_clause constness coroutine_marker movability fn_decl body !fn_decl_span !fn_arg_span);
 spanless_eq_struct!(ConstBlockItem; id span block);
-spanless_eq_struct!(ConstItem; defaultness ident generics ty body kind define_opaque);
+spanless_eq_struct!(ConstItem; defaultness ident generics ty body define_opaque);
 spanless_eq_struct!(CoroutineMarker; kind span closure_id return_impl_trait_id);
 spanless_eq_struct!(Crate; attrs items spans id is_placeholder);
 spanless_eq_struct!(Delegation; id qself path ident rename body source);
@@ -525,7 +530,7 @@ spanless_eq_struct!(ForLoop; pat iter body label kind);
 spanless_eq_struct!(ForeignMod; extern_span safety abi items);
 spanless_eq_struct!(FormatArgPosition; index kind span);
 spanless_eq_struct!(FormatArgs; span template arguments uncooked_fmt_str is_source_literal);
-spanless_eq_struct!(FormatArgument; kind expr);
+spanless_eq_struct!(FormatArgument; original_span kind expr);
 spanless_eq_struct!(FormatOptions; width precision alignment fill sign alternate zero_pad debug_hex);
 spanless_eq_struct!(FormatPlaceholder; argument span format_trait format_options);
 spanless_eq_struct!(GenericParam; id ident attrs bounds is_placeholder kind !colon_span);
@@ -548,7 +553,6 @@ spanless_eq_struct!(MetaItemLit; symbol suffix kind span);
 spanless_eq_struct!(MethodCall; seg receiver args !span);
 spanless_eq_struct!(ModSpans; !inner_span !inject_use_span);
 spanless_eq_struct!(MutRestriction; kind span);
-spanless_eq_struct!(MutTy; ty mutbl);
 spanless_eq_struct!(NormalAttr; item tokens);
 spanless_eq_struct!(ParenthesizedArgs; span inputs inputs_span output);
 spanless_eq_struct!(Pat; id kind span);
@@ -561,6 +565,11 @@ spanless_eq_struct!(StaticItem; ident ty safety mutability expr define_opaque ei
 spanless_eq_struct!(Stmt; id kind span);
 spanless_eq_struct!(StrLit; symbol suffix symbol_unescaped style span);
 spanless_eq_struct!(StructExpr; qself path fields rest);
+spanless_eq_struct!(TestBinderBody; foralls exists constraints predicates);
+spanless_eq_struct!(TestBinderBoundTypeConstraint; span node_id params lhs rhs);
+spanless_eq_struct!(TestBinderConstraints; generics body);
+spanless_eq_struct!(TestBinderExists; span node_id params body);
+spanless_eq_struct!(TestBinderForall; span node_id generics body assert_on_exit);
 spanless_eq_struct!(Token; kind span);
 spanless_eq_struct!(Trait; constness safety is_auto impl_restriction ident generics bounds items);
 spanless_eq_struct!(TraitAlias; constness ident generics bounds);
@@ -572,6 +581,7 @@ spanless_eq_struct!(TyAlias; defaultness ident generics after_where_clause bound
 spanless_eq_struct!(TyPat; id kind span);
 spanless_eq_struct!(UnsafeBinderTy; generic_params inner_ty);
 spanless_eq_struct!(UseTree; prefix kind);
+spanless_eq_struct!(UseTreeAndId; inner id);
 spanless_eq_struct!(Variant; attrs id span !vis ident data disr_expr is_placeholder);
 spanless_eq_struct!(Visibility; kind span);
 spanless_eq_struct!(WhereBoundPredicate; bound_generic_params bounded_ty bounds);
@@ -596,7 +606,7 @@ spanless_eq_enum!(ByRef; Yes(0 1) No);
 spanless_eq_enum!(CaptureBy; Value(move_kw) Ref Use(use_kw));
 spanless_eq_enum!(ClosureBinder; NotPresent For(span generic_params));
 spanless_eq_enum!(Const; Yes(0) No);
-spanless_eq_enum!(ConstItemKind; Body TypeConst);
+spanless_eq_enum!(CoroutineKind; Async Gen AsyncGen);
 spanless_eq_enum!(Defaultness; Implicit Default(0) Final(0));
 spanless_eq_enum!(DelegationSource; Single List(0) Glob);
 spanless_eq_enum!(DelegationSuffixes; List(0) Glob(0));
@@ -613,7 +623,6 @@ spanless_eq_enum!(FormatCount; Literal(0) Argument(0));
 spanless_eq_enum!(FormatDebugHex; Lower Upper);
 spanless_eq_enum!(FormatSign; Plus Minus);
 spanless_eq_enum!(FormatTrait; Display Debug LowerExp UpperExp Octal Pointer Binary LowerHex UpperHex);
-spanless_eq_enum!(CoroutineKind; Async Gen AsyncGen);
 spanless_eq_enum!(GenericArg; Lifetime(0) Type(0) Const(0));
 spanless_eq_enum!(GenericArgs; AngleBracketed(0) Parenthesized(0) ParenthesizedElided(0));
 spanless_eq_enum!(GenericBound; Trait(0) Outlives(0) Use(0 1));
@@ -670,24 +679,27 @@ spanless_eq_enum!(ExprKind; Array(0) ConstBlock(0) Call(0 1) MethodCall(0)
     Range(0 1 2) Path(0 1) AddrOf(0 1 2) Break(0 1) Continue(0) Ret(0)
     InlineAsm(0) OffsetOf(0 1) MacCall(0) Struct(0) Repeat(0 1) Paren(0) Try(0)
     Yield(0) Yeet(0) Become(0) IncludedBytes(0) FormatArgs(0)
-    UnsafeBinderCast(0 1 2) DirectConstArg(0) Err(0) Dummy);
+    UnsafeBinderCast(0 1 2) GcaMacro(0) Err(0) Dummy);
 spanless_eq_enum!(InlineAsmOperand; In(reg expr) Out(reg late expr)
     InOut(reg late expr) SplitInOut(reg late in_expr out_expr) Const(anon_const)
     Sym(sym) Label(block));
 spanless_eq_enum!(ItemKind; ExternCrate(0 1) Use(0) Static(0) Const(0)
     ConstBlock(0) Fn(0) Mod(0 1 2) ForeignMod(0) GlobalAsm(0) TyAlias(0)
     Enum(0 1 2) Struct(0 1 2) Union(0 1 2) Trait(0) TraitAlias(0) Impl(0)
-    MacCall(0) MacroDef(0 1) Delegation(0) DelegationMac(0));
+    MacCall(0) MacroDef(0 1) Delegation(0) DelegationMac(0)
+    TestBinderConstraints(0));
 spanless_eq_enum!(LitKind; Str(0 1) ByteStr(0 1) CStr(0 1) Byte(0) Char(0)
     Int(0 1) Float(0 1) Bool(0) Err(0));
 spanless_eq_enum!(PatKind; Missing Wild Ident(0 1 2) Struct(0 1 2 3)
-    TupleStruct(0 1 2) Or(0) Path(0 1) Tuple(0) Box(0) Deref(0) Ref(0 1 2)
-    Expr(0) Range(0 1 2) Slice(0) Rest Never Guard(0 1) Paren(0) MacCall(0)
-    Err(0));
-spanless_eq_enum!(TyKind; Slice(0) Array(0 1) Ptr(0) Ref(0 1) PinnedRef(0 1)
-    FnPtr(0) UnsafeBinder(0) Never Tup(0) Path(0 1) TraitObject(0 1)
-    ImplTrait(0 1) Paren(0) Infer ImplicitSelf MacCall(0) CVarArgs Pat(0 1)
-    FieldOf(0 1 2) View(0 1) DirectConstArg(0) Dummy Err(0));
+    TupleStruct(0 1 2) Or(0) Path(0 1) Tuple(0) Deref(0) Ref(0 1 2) Expr(0)
+    Range(0 1 2) Slice(0) Rest Never Guard(0 1) Paren(0) MacCall(0) Err(0));
+spanless_eq_enum!(TestBinderConstraint; And(items) Or(items) Ambiguity(span)
+    Lifetime(lhs rhs) PlaceholderOutlives(lhs rhs)
+    AliasOutlives(bound_type_constraint));
+spanless_eq_enum!(TyKind; Slice(0) Array(0 1) Ptr(0 1) Ref(0 1 2)
+    PinnedRef(0 1 2) FnPtr(0) UnsafeBinder(0) Never Tup(0) Path(0 1)
+    TraitObject(0 1) ImplTrait(0 1) Paren(0) Infer ImplicitSelf MacCall(0)
+    CVarArgs Pat(0 1) FieldOf(0 1 2) View(0 1) GcaMacro(0) Dummy Err(0));
 
 impl SpanlessEq for Ident {
     fn eq(&self, other: &Self) -> bool {
@@ -807,7 +819,7 @@ fn doc_comment<'a>(
     match trees.next() {
         Some(TokenTree::Token(
             Token {
-                kind: TokenKind::Ident(symbol, IdentIsRaw::No),
+                kind: TokenKind::Ident(symbol, IdentKind::Normal),
                 span: _,
             },
             _spacing,

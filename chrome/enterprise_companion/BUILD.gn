@@ -275,6 +275,8 @@ test("enterprise_companion_tests") {
 
   if (is_mac) {
     sources += [ "app/app_net_worker_unittest.cc" ]
+  } else if (is_win) {
+    sources += [ "ipc_security_win_unittest.cc" ]
   }
 }
 
@@ -373,7 +375,7 @@ static_library("installer_paths") {
 
   visibility = [
     ":*",
-    "//chrome/browser/ui:*",
+    "//chrome/browser:*",
     "//chrome/browser/ui/webui/updater:*",
     "//chrome/updater:*",
   ]
@@ -399,7 +401,7 @@ static_library("constants_prod") {
   ]
   visibility = [
     ":*",
-    "//chrome/browser/ui:*",
+    "//chrome/browser:*",
     "//chrome/browser/ui/webui/updater:*",
     "//chrome/enterprise_companion/mac:*",
     "//chrome/test:*",
@@ -499,6 +501,7 @@ group("all") {
 
 if (is_mac && !is_component_build && enable_dsyms) {
   _symbols_sources = [ "$root_out_dir/$enterprise_companion_product_full_name.app/Contents/MacOS/$enterprise_companion_product_full_name" ]
+
   action("syms") {
     script = "//build/redirect_stdout.py"
     sources = _symbols_sources

@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
@@ -26,11 +27,11 @@
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_wallpaper_provider_impl.h"
 #include "chrome/browser/ash/wallpaper_handlers/wallpaper_fetcher_delegate.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/manta/manta_service_factory.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
+#include "chromeos/ash/components/manta/manta_service_provider.h"
 #include "components/account_id/account_id.h"
 #include "components/language/core/common/locale_util.h"
 #include "components/manta/manta_service.h"
@@ -39,6 +40,7 @@
 #include "components/user_manager/user_type.h"
 #include "components/variations/service/variations_service.h"
 #include "google_apis/gaia/gaia_auth_util.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "url/gurl.h"
 
 namespace ash::personalization_app {
@@ -47,7 +49,8 @@ namespace {
 bool CanAccessMantaFeaturesWithoutMinorRestrictions(Profile* profile) {
   // Only users who can access manta features without minor restrictions will
   // have SeaPen enabled.
-  auto* manta_service = manta::MantaServiceFactory::GetForProfile(profile);
+  const AccountId account_id = GetAccountId(profile);
+  auto* manta_service = MantaServiceProvider::Get().Find(account_id);
   const bool canAccessMantaFeaturesWithoutMinorRestrictions =
       manta_service &&
       manta_service->CanAccessMantaFeaturesWithoutMinorRestrictions() ==
@@ -73,8 +76,12 @@ std::optional<std::string> GetCountryCode() {
 }  // namespace
 
 std::unique_ptr<content::WebUIController> CreatePersonalizationAppUI(
+    PrefService* local_state,
+    const ApplicationLocaleStorage* application_locale_storage,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     content::WebUI* web_ui,
-    const GURL& url) {
+    const GURL& url,
+    manta::MantaService* manta_service) {
   auto ambient_provider = std::make_unique<
       ash::personalization_app::PersonalizationAppAmbientProviderImpl>(web_ui);
   auto keyboard_backlight_provider =
@@ -85,15 +92,17 @@ std::unique_ptr<content::WebUIController> CreatePersonalizationAppUI(
       ash::personalization_app::PersonalizationAppThemeProviderImpl>(web_ui);
   auto user_provider = std::make_unique<
       ash::personalization_app::PersonalizationAppUserProviderImpl>(web_ui);
-  // TODO(crbug.com/404133902): Avoid using g_browser_process.
   auto wallpaper_provider = std::make_unique<
       ash::personalization_app::PersonalizationAppWallpaperProviderImpl>(
-      g_browser_process->local_state(), web_ui,
-      std::make_unique<wallpaper_handlers::WallpaperFetcherDelegateImpl>());
+      local_state, web_ui,
+      std::make_unique<wallpaper_handlers::WallpaperFetcherDelegateImpl>(
+          application_locale_storage, shared_url_loader_factory));
   auto sea_pen_provider = std::make_unique<
       ash::personalization_app::PersonalizationAppSeaPenProviderImpl>(
       web_ui,
-      std::make_unique<wallpaper_handlers::WallpaperFetcherDelegateImpl>());
+      std::make_unique<wallpaper_handlers::WallpaperFetcherDelegateImpl>(
+          application_locale_storage, std::move(shared_url_loader_factory)),
+      manta_service);
   return std::make_unique<ash::personalization_app::PersonalizationAppUI>(
       web_ui, std::move(ambient_provider),
       std::move(keyboard_backlight_provider), std::move(sea_pen_provider),

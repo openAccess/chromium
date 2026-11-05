@@ -37,6 +37,7 @@ import org.chromium.ui.modelutil.PropertyModel;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Unit tests for {@link ListItemBuilder}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -72,6 +73,7 @@ public class ListItemBuilderUnitTest {
 
         assertNull(model.get(ListMenuItemProperties.TITLE));
         assertEquals(0, model.get(ListMenuItemProperties.TITLE_ID));
+        assertNull(model.get(ListMenuItemProperties.SHORTCUT_TEXT));
         assertFalse(model.get(ListMenuItemProperties.IS_TEXT_ELLIPSIZED_AT_END));
         assertNull(model.get(ListMenuItemProperties.CONTENT_DESCRIPTION));
     }
@@ -138,6 +140,9 @@ public class ListItemBuilderUnitTest {
         assertEquals(
                 R.style.TextAppearance_DensityAdaptive_TextLarge_Primary_Baseline_Light,
                 model.get(ListMenuItemProperties.TEXT_APPEARANCE_ID));
+        assertEquals(
+                R.style.TextAppearance_TextMedium_Secondary_Baseline_Light,
+                model.get(ListMenuItemProperties.SHORTCUT_TEXT_APPEARANCE_ID));
         assertEquals(
                 R.color.default_icon_color_light_tint_list,
                 model.get(ListMenuItemProperties.ICON_TINT_COLOR_STATE_LIST_ID));
@@ -212,6 +217,29 @@ public class ListItemBuilderUnitTest {
     }
 
     @Test
+    public void testBuild_withSubmenuProvider() {
+        AtomicInteger callCount = new AtomicInteger();
+        List<ListItem> submenuItems = Collections.singletonList(new ListItemBuilder().build());
+        ListItem listItem =
+                new ListItemBuilder()
+                        .withTitle(FAKE_TITLE_STRING)
+                        .withSubmenuProvider(
+                                () -> {
+                                    callCount.incrementAndGet();
+                                    return submenuItems;
+                                })
+                        .build();
+
+        assertEquals(0, callCount.get());
+        assertEquals(ListItemType.MENU_ITEM_WITH_SUBMENU, listItem.type);
+        assertEquals(FAKE_TITLE_STRING, listItem.model.get(ListMenuItemProperties.TITLE));
+        assertEquals(
+                submenuItems,
+                listItem.model.get(ListMenuSubmenuItemProperties.SUBMENU_PROVIDER).get());
+        assertEquals(1, callCount.get());
+    }
+
+    @Test
     public void testBuild_submenu_incognito() {
         List<ListItem> submenuItems = Collections.singletonList(new ListItemBuilder().build());
         ListItem listItem =
@@ -261,5 +289,12 @@ public class ListItemBuilderUnitTest {
         int width = 12;
         ListItem listItem = new ListItemBuilder().withStartIconWidth(width).build();
         assertEquals(width, (int) listItem.model.get(ListMenuItemProperties.START_ICON_WIDTH));
+    }
+
+    @Test
+    public void testBuild_withShortcutText() {
+        String shortcutText = "Ctrl+T";
+        ListItem listItem = new ListItemBuilder().withShortcutText(shortcutText).build();
+        assertEquals(shortcutText, listItem.model.get(ListMenuItemProperties.SHORTCUT_TEXT));
     }
 }

@@ -50,12 +50,8 @@ reviewer.
   <variant name="GetSitesThatUsedStorage" summary="GetSitesThatUsedStorage"/>
   <variant name="Init" summary="Init"/>
   <variant name="Read" summary="Read"/>
-  <variant name="ReadPopup" summary="ReadPopup"/>
-  <variant name="ReadRecentPopupsWithInteraction"
-      summary="ReadRecentPopupsWithInteraction"/>
   <variant name="RemoveRows" summary="RemoveRows"/>
   <variant name="Write" summary="Write"/>
-  <variant name="WritePopup" summary="WritePopup"/>
 </variants>
 
 <variants name="DIPSRedirectType">
@@ -144,7 +140,7 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
 </histogram>
 
 <histogram name="Privacy.DeleteBrowsingData.Dialog"
-    enum="DeleteBrowsingDataDialogAction" expires_after="2027-01-24">
+    enum="DeleteBrowsingDataDialogAction" expires_after="2027-03-28">
   <owner>fsenra@google.com</owner>
   <owner>alimariam@google.com</owner>
   <owner>chrome-browser-privacy-team@google.com</owner>
@@ -171,24 +167,6 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
   </summary>
 </histogram>
 
-<histogram name="Privacy.DeleteBrowsingData.MigratedToNewDefaults"
-    enum="Boolean" expires_after="2026-11-01">
-  <owner>fsenra@chromium.org</owner>
-  <owner>alimariam@chromium.org</owner>
-  <owner>chrome-browser-privacy-team@google.com</owner>
-  <component>1456716</component>
-  <summary>
-    Whether a user's pref values for Delete Browsing Data selection in iOS have
-    been migrated to the new defaults. Only users who have never changed their
-    pref values, i.e. never changed their selection in DBD, are eligible to be
-    migrated to the new defaults.
-
-    For the new version of Delete Browsing Data in iOS, each user will go
-    through the migration of pref values that represent the selection in Delete
-    Browsing Data once. iOS only.
-  </summary>
-</histogram>
-
 <histogram name="Privacy.DIPS.BounceCategory{DIPSRedirectType}{DIPSCookieMode}"
     enum="DIPSRedirectCategory" expires_after="2027-01-03">
   <owner>liu@chromium.org</owner>
@@ -198,9 +176,10 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
     origin previously had user engagement. Recorded when redirecting between
     different sites, {DIPSCookieMode}.
 
-    In M-109, the DIPS Service was updated to explicitly not collect metrics for
-    non-user profiles, such as system profiles and ChromeOS Signin, LockScreen,
-    and LockScreenApp profiles.
+    In M109, the bounce tracking mitigations (previously &quot;DIPS&quot;)
+    service was updated to explicitly not collect metrics for non-user profiles,
+    such as system profiles and ChromeOS Signin, LockScreen, and LockScreenApp
+    profiles.
   </summary>
   <token key="DIPSCookieMode" variants="DIPSCookieMode"/>
   <token key="DIPSRedirectType" variants="DIPSRedirectType"/>
@@ -211,18 +190,19 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
   <owner>liu@chromium.org</owner>
   <owner>src/content/browser/btm/OWNERS</owner>
   <summary>
-    The number of sites that may have had their storage cleared by DIPS.
+    The number of sites that may have had their storage cleared by bounce
+    tracking mitigations (BTM, previously &quot;DIPS&quot;).
 
-    If DIPS deletion is on, third-party cookies are blocked, and there are no
-    url-specific exemptions by the user for the latter, then, this is the number
-    of sites that have had storage cleared by DIPS. Otherwise, this number is
-    the sites that would've had their storage cleared if the above conditions
-    were met for all the sites.
+    If BTM deletion is on, third-party cookies are blocked, and there are no
+    URL-specific exemptions by the user for the latter, then, this is the number
+    of sites that have had storage cleared by BTM. Otherwise, this number is the
+    sites that would've had their storage cleared if the above conditions were
+    met for all the sites.
 
-    This is recorded every time the DIPS timer is fired, which is determined by
-    the `timer_delay` parameter of the DIPS feature.
+    This is recorded every time the BTM timer is fired, which is determined by
+    the `timer_delay` parameter of the BTM feature.
 
-    This is only logged for site-data clearing that occurs as a result of DIPS.
+    This is only logged for site-data clearing that occurs as a result of BTM.
     If a site contributes to this count then it has performed a potential
     tracking action (e.g. writing to storage, bouncing the user, or both)
     without the user interacting with that site before, or soon after, the
@@ -237,8 +217,8 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
   <owner>jdh@chromium.org</owner>
   <owner>src/content/browser/btm/OWNERS</owner>
   <summary>
-    The time taken to execute the {DIPSDatabaseOperation} DIPS database
-    operation.
+    The time taken to execute the {DIPSDatabaseOperation} bounce tracking
+    mitigations (previously &quot;DIPS&quot;) database operation.
 
     Recorded for each call to the operation.
   </summary>
@@ -250,36 +230,23 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
   <owner>liu@chromium.org</owner>
   <owner>src/content/browser/btm/OWNERS</owner>
   <summary>
-    Number of entries present in the `bounces` table of the user's DIPS database
-    (where there is 1 entry per eTLD+1). For each user profile, reported at
-    profile open (which usually happens at startup). Also reported approximately
-    once every 24 hours thereafter, while the profile remains open and active.
-    If the database is new and therefore empty at startup, such as when a Guest
-    or other OTR profile is opened, a count of 0 will be reported.
+    Number of entries present in the `bounces` table of the user's bounce
+    tracking mitigation (previously &quot;DIPS&quot;) database (where there is 1
+    entry per eTLD+1). For each user profile, reported at profile open (which
+    usually happens at startup). Also reported approximately once every 24 hours
+    thereafter, while the profile remains open and active. If the database is
+    new and therefore empty at startup, such as when a Guest or other OTR
+    profile is opened, a count of 0 will be reported.
   </summary>
 </histogram>
 
 <histogram name="Privacy.DIPS.DatabaseErrors" enum="SqliteLoggedResultCode"
-    expires_after="2026-11-01">
+    expires_after="2027-11-01">
   <owner>liu@chromium.org</owner>
   <owner>src/content/browser/btm/OWNERS</owner>
   <summary>
-    Errors reported by SQLite while initializing or using the DIPS database.
-  </summary>
-</histogram>
-
-<histogram name="Privacy.DIPS.DatabaseHealthMetricsTime" units="ms"
-    expires_after="2025-05-27">
-  <owner>liu@chromium.org</owner>
-  <owner>src/content/browser/btm/OWNERS</owner>
-  <summary>
-    The time taken to gather DIPS database health metrics. For each user
-    profile, these metrics are reported at profile open (which usually happens
-    at startup). They are also reported approximately once every 24 hours
-    thereafter, while the profile remains open and active. Note that Guest and
-    other OTR profiles (e.g. Incognito) will always startup with empty
-    databases, so that may explain why some databases collect health metrics so
-    quickly.
+    Errors reported by SQLite while initializing or using the bounce tracking
+    mitigations (previously &quot;DIPS&quot;) database.
   </summary>
 </histogram>
 
@@ -288,8 +255,9 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
   <owner>liu@chromium.org</owner>
   <owner>src/content/browser/btm/OWNERS</owner>
   <summary>
-    Logs how many attempts it took to initialize the DIPS database. Logs a value
-    of 0 if all attempts failed.
+    Logs how many attempts it took to initialize the bounce tracking migitations
+    (previously &quot;DIPS&quot;) database. Logs a value of 0 if all attempts
+    failed.
   </summary>
 </histogram>
 
@@ -298,12 +266,12 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
   <owner>liu@chromium.org</owner>
   <owner>src/content/browser/btm/OWNERS</owner>
   <summary>
-    The size of the DIPS database file. For each user profile, reported at
-    profile open (which usually happens at startup). Also reported approximately
-    once every 24 hours thereafter, while the profile remains open and active.
-    Note that Guest and other OTR profiles (e.g. Incognito) will always startup
-    with empty databases, so that may explain why some database files are very
-    small.
+    The size of the bounce tracking mitigations (previously &quot;DIPS&quot;)
+    database file. For each user profile, reported at profile open (which
+    usually happens at startup). Also reported approximately once every 24 hours
+    thereafter, while the profile remains open and active. Note that Guest and
+    other OTR profiles (e.g. Incognito) will always startup with empty
+    databases, so that may explain why some database files are very small.
   </summary>
 </histogram>
 
@@ -312,13 +280,14 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
   <owner>liu@chromium.org</owner>
   <owner>src/content/browser/btm/OWNERS</owner>
   <summary>
-    The amount of time it takes to complete the DIPS deletion process.
+    The amount of time it takes to complete the bounce tracking mitigations
+    (BTM, previously &quot;DIPS&quot;) deletion process.
 
-    This is recorded each time the deletion of DIPS-eligible sites begins. For
+    This is recorded each time the deletion of BTM-eligible sites begins. For
     the case where the deletion is posted to the UI thread, this is the creation
     time of the StateClearer; otherwise, it is before the call to
-    DIPSStorage::RemoveRows. This metric will be the result of |time when DIPS
-    deletion completed - time when DIPS deletion begins|.
+    BtmStorage::RemoveRows. This metric will be the result of |time when BTM
+    deletion completed - time when BTM deletion begins|.
   </summary>
 </histogram>
 
@@ -328,8 +297,9 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
   <owner>src/content/browser/btm/OWNERS</owner>
   <summary>
     This is recorded each time we initiate a possible deletion of state on
-    DIPS-eligible (incidental) sites. This metric will represents the action
-    taken based on multiple conditions gating the actual deletion.
+    bounce tracking mitigations (previously &quot;DIPS&quot;)-eligible
+    (incidental) sites. This metric will represents the action taken based on
+    multiple conditions gating the actual deletion.
 
     This is recorded with {DIPSCookieMode} profiles.
   </summary>
@@ -337,15 +307,16 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
 </histogram>
 
 <histogram name="Privacy.DIPS.DIPSErrorCodes" enum="DIPSErrorCode"
-    expires_after="2026-11-17">
+    expires_after="2027-10-06">
   <owner>liu@chromium.org</owner>
   <owner>src/content/browser/btm/OWNERS</owner>
   <summary>
-    Tracks certain errors that DIPS may encounter when running on a client.
+    Tracks certain errors that bounce tracking mitigations (previously
+    &quot;DIPS&quot;) may encounter when running on a client.
 
     This is currently recorded when expected invariants are violated, such as
-    there being an open-ended time range in the database. See `DIPSErrorCode`
-    for all possible codes this histogram can output.
+    there being an open-ended time range in the database. See the
+    `DIPSErrorCode` enum for all possible codes this histogram can output.
 
     Since these error codes can be recorded several times by a client, using
     per-client aggregation when analyzing this metric is recommended.
@@ -353,7 +324,7 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
 </histogram>
 
 <histogram name="Privacy.DIPS.TimeFromNavigationCommitToClientBounce"
-    units="ms" expires_after="2026-11-02">
+    units="ms" expires_after="2027-11-02">
   <owner>liu@chromium.org</owner>
   <owner>src/content/browser/btm/OWNERS</owner>
   <summary>
@@ -362,9 +333,10 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
     site. Not recorded if the redirecting site does not access state (e.g.
     cookies) or takes longer than 10 seconds to initiate the redirect (bounce).
 
-    In M-109, the DIPS Service was updated to explicitly not collect metrics for
-    non-user profiles, such as system profiles and ChromeOS Signin, LockScreen,
-    and LockScreenApp profiles.
+    In M109, the bounce tracking mitigations (previously &quot;DIPS&quot;)
+    service was updated to explicitly not collect metrics for non-user profiles,
+    such as system profiles and ChromeOS Signin, LockScreen, and LockScreenApp
+    profiles.
   </summary>
 </histogram>
 
@@ -409,7 +381,7 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
 </histogram>
 
 <histogram name="Privacy.QuickDelete" enum="QuickDeleteAction"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>fsenra@google.com</owner>
   <owner>zalmashni@google.com</owner>
   <owner>chrome-browser-privacy-team@google.com</owner>
@@ -510,8 +482,30 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
   </summary>
 </histogram>
 
+<histogram name="Privacy.UniversalOptOut.SettingsVisibility"
+    enum="BooleanVisible" expires_after="2027-08-01">
+  <owner>azamatmz@google.com</owner>
+  <owner>zalmashni@google.com</owner>
+  <owner>chrome-browser-privacy-team@google.com</owner>
+  <summary>
+    Recorded when a user navigates to the Privacy settings page, logging whether
+    the Universal Opt-Out settings are visible.
+  </summary>
+</histogram>
+
+<histogram name="Privacy.UniversalOptOut.ToggleState.Startup"
+    enum="BooleanToggled" expires_after="2027-08-01">
+  <owner>azamatmz@google.com</owner>
+  <owner>zalmashni@google.com</owner>
+  <owner>chrome-browser-privacy-team@google.com</owner>
+  <summary>
+    Tracks whether the Universal Opt-Out toggle is ON or OFF at profile startup.
+    Recorded for all users when UniversalOptOutService is initialized.
+  </summary>
+</histogram>
+
 <histogram name="PrivacyGuide.CanShowNTPPromo" enum="Boolean"
-    expires_after="2026-10-25">
+    expires_after="2027-02-28">
   <owner>msramek@chromium.org</owner>
   <owner>rainhard@chromium.org</owner>
   <owner>chrome-browser-privacy-team@google.com</owner>
@@ -528,55 +522,6 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
   <owner>xiaochenzh@chromium.org</owner>
   <summary>
     Records the estimated dynamic memory usage by the parsed attestations map.
-  </summary>
-</histogram>
-
-<histogram
-    name="PrivacySandbox.Attestations.InitializationDuration.ComponentReadyFromApplicationStart"
-    units="ms" expires_after="2027-01-17">
-  <owner>shivanisha@chromium.org</owner>
-  <owner>xiaochenzh@chromium.org</owner>
-  <summary>
-    Records the amount of time taken for the downloaded attestations file to be
-    detected from application starts. The measurement ends when `ComponentReady`
-    is invoked with valid inputs.
-
-    On ChromeOS: Before M129, the login screen counted as an interruption, so
-    most initialization times were being logged under
-    &quot;ComponentReadyFromApplicationStartWithInterruption&quot;. This was
-    fixed in M129 to count as &quot;ComponentReadyFromApplicationStart&quot;.
-  </summary>
-</histogram>
-
-<histogram
-    name="PrivacySandbox.Attestations.InitializationDuration.ComponentReadyFromApplicationStartWithInterruption"
-    units="ms" expires_after="2027-01-17">
-  <owner>shivanisha@chromium.org</owner>
-  <owner>xiaochenzh@chromium.org</owner>
-  <summary>
-    Records the amount of time taken for the downloaded attestations file to be
-    detected from application starts with interruption during startup. For
-    example, if the user has multiple profiles, a profile picker will appear
-    during the startup. This is a non-browser UI that interrupts the startup
-    process. The measurement ends when `ComponentReady` is invoked with valid
-    inputs.
-
-    On ChromeOS: Before M129, the login screen counted as an interruption, so
-    most initialization times were being logged under
-    &quot;ComponentReadyFromApplicationStartWithInterruption&quot;. This was
-    fixed in M129 to count as &quot;ComponentReadyFromApplicationStart&quot;.
-  </summary>
-</histogram>
-
-<histogram
-    name="PrivacySandbox.Attestations.InitializationDuration.ComponentReadyFromBrowserWindowFirstPaint"
-    units="ms" expires_after="2027-01-17">
-  <owner>shivanisha@chromium.org</owner>
-  <owner>xiaochenzh@chromium.org</owner>
-  <summary>
-    Records the amount of time taken for the downloaded attestations file to be
-    detected from first browser window paint. The measurement ends when
-    `ComponentReady` is invoked with valid inputs.
   </summary>
 </histogram>
 
@@ -617,20 +562,8 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
   </summary>
 </histogram>
 
-<histogram name="PrivacySandbox.Attestations.IsSiteAttested.FirstCheckTime"
-    units="ms" expires_after="2026-09-22">
-  <owner>shivanisha@chromium.org</owner>
-  <owner>xiaochenzh@chromium.org</owner>
-  <summary>
-    Records the duration from Chrome startup to the first Privacy Sandbox API
-    attestation check. This metric should be recorded at most once per Chrome
-    session. Here the measurement is taken from the time Chrome application
-    starts.
-  </summary>
-</histogram>
-
 <histogram name="PrivacySandbox.Attestations.IsSiteAttestedStatus"
-    enum="PrivacySandboxApiAllowed" expires_after="2027-01-03">
+    enum="PrivacySandboxApiAllowed" expires_after="2027-03-07">
   <owner>shivanisha@chromium.org</owner>
   <owner>xiaochenzh@chromium.org</owner>
   <summary>
@@ -665,7 +598,7 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
 </histogram>
 
 <histogram name="PrivacySandbox.Attestations.Parsing.Status"
-    enum="PrivacySandboxAttestationParsingStatus" expires_after="2027-01-31">
+    enum="PrivacySandboxAttestationParsingStatus" expires_after="2027-04-04">
   <owner>shivanisha@chromium.org</owner>
   <owner>xiaochenzh@chromium.org</owner>
   <summary>

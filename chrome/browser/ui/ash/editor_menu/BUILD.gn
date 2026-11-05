@@ -21,6 +21,7 @@ source_set("utils") {
 
   deps = [
     "//base",
+    "//base/i18n:language_tag",
     "//chromeos/ash/components/editor_menu/public/cpp",
     "//ui/aura",
     "//ui/display",
@@ -76,8 +77,6 @@ source_set("views") {
     "editor_menu_badge_view.h",
     "editor_menu_chip_view.cc",
     "editor_menu_chip_view.h",
-    "editor_menu_promo_card_view.cc",
-    "editor_menu_promo_card_view.h",
     "editor_menu_strings.cc",
     "editor_menu_strings.h",
     "editor_menu_textfield_view.cc",
@@ -110,8 +109,57 @@ source_set("views") {
       "//chromeos/ash/resources/internal/strings:strings_grit",
     ]
   }
+}
 
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [
+    "editor_menu_card_context_unittest.cc",
+    "editor_menu_view_unittest.cc",
+    "utils/pre_target_handler_unittest.cc",
+    "utils/utils_unittest.cc",
+  ]
+
+  deps = [
+    ":editor_menu",
+    ":utils",
+    ":views",
+    "//base",
+    "//base/i18n:language_tag",
+    "//base/test:test_support",
+    "//chrome/browser:global_features",
+    "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
+    "//chromeos/ash/components/editor_menu/public/cpp",
+    "//chromeos/constants",
+    "//components/application_locale_storage",
+    "//testing/gmock",
+    "//testing/gtest",
+    "//ui/base",
+    "//ui/display:test_support",
+    "//ui/events",
+    "//ui/events:test_support",
+  ]
+}
+
+source_set("browser_tests") {
+  testonly = true
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  sources = [
+    # TODO(crbug.com/510716187): Enable for other platforms once macOS
+    # native window ID translation is implemented.
+    "editor_menu_browsertest.cc",
+  ]
+
+  deps = [
+    ":editor_menu",
+    ":utils",
+    ":views",
+    "//base",
+    "//chrome/browser/ui/ash/read_write_cards:read_write_cards_manager",
+    "//chrome/test:test_support",
+    "//chromeos/ash/components/editor_menu/public/cpp",
+  ]
 }

@@ -5,6 +5,7 @@
 #include "base/i18n/number_formatting.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
@@ -23,6 +24,7 @@
 #include "chrome/browser/ui/views/find_bar_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_web_view.h"
+#include "chrome/browser/ui/views/toolbar/webui_and_views_toolbar_interactive_uitest_base.h"
 #include "chrome/test/base/find_result_waiter.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
@@ -48,6 +50,7 @@
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/test/clipboard_test_util.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/base/interaction/element_tracker.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/base/ui_base_features.h"
@@ -56,6 +59,7 @@
 #include "ui/events/event_modifiers.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/interaction/view_focus_observer.h"
@@ -64,6 +68,8 @@
 #include "ui/views/test/widget_activation_waiter.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/view_utils.h"
+#include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
 #if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/ozone_platform.h"
@@ -85,7 +91,8 @@ std::unique_ptr<net::test_server::HttpResponse> HandleHttpRequest(
   return response;
 }
 
-DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTabId);
+const ui::ElementIdentifier kTabId =
+    WebUIAndViewsToolbarInteractiveUiTestBase::TabId();
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTabBId);
 DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ui::test::PollingStateObserver<bool>,
                                     kTextCopiedState);
@@ -149,6 +156,8 @@ DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(FindResulStateObserver, kFindResultState);
 class LegacyFindInPageTest : public InProcessBrowserTest {
  public:
   LegacyFindInPageTest() = default;
+  base::test::ScopedFeatureList feature_list_{
+      features::kFindInPageSkipViewport};
   base::AutoReset<bool> enable_animation_for_test_ =
       FindBarHost::SetEnableAnimationsForTesting(false);
 
@@ -162,8 +171,7 @@ class LegacyFindInPageTest : public InProcessBrowserTest {
   }
 
   FindBarHost* GetFindBarHost() {
-    FindBar* find_bar =
-        browser()->GetFeatures().GetFindBarController()->find_bar();
+    FindBar* find_bar = FindBarController::From(browser())->find_bar();
     return static_cast<FindBarHost*>(find_bar);
   }
 
@@ -191,6 +199,17 @@ class LegacyFindInPageTest : public InProcessBrowserTest {
         base::TimeTicks(), ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
   }
 
+  // Sends a Return key press with `flags` to the find bar text field.
+  void PressReturnInFindBar(int flags) {
+    FindBarView* find_bar_view = GetFindBarView();
+    const ui::KeyEvent key_event(ui::EventType::kKeyPressed, ui::VKEY_RETURN,
+                                 flags);
+    EXPECT_TRUE(find_bar_view->HandleKeyEvent(
+        views::AsViewClass<views::Textfield>(
+            find_bar_view->GetViewByID(VIEW_ID_FIND_IN_PAGE_TEXT_FIELD)),
+        key_event));
+  }
+
   void TapOnView(views::View* view) {
     // EventGenerator and ui_test_utils can't target the find bar (on Windows).
     ui::GestureEvent event(0, 0, 0, base::TimeTicks(),
@@ -216,16 +235,19 @@ class LegacyFindInPageTest : public InProcessBrowserTest {
   }
 };
 
-class FindBarViewsUiTest : public InteractiveBrowserTest,
+class FindBarViewsUiTest : public WebUIAndViewsToolbarInteractiveUiTestBase,
                            public ::testing::WithParamInterface<bool> {
  public:
   FindBarViewsUiTest() {
-    feature_list_.InitAndDisableFeature(features::kNonBlockingOsClipboardReads);
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kFindInPageSkipViewport,
+                              features::kFindInPageMatchCase},
+        /*disabled_features=*/{features::kNonBlockingOsClipboardReads});
   }
 
   void SetUp() override {
     ASSERT_TRUE(embedded_test_server()->InitializeAndListen());
-    InteractiveBrowserTest::SetUp();
+    WebUIAndViewsToolbarInteractiveUiTestBase::SetUp();
   }
 
   void SetUpOnMainThread() override {
@@ -234,7 +256,7 @@ class FindBarViewsUiTest : public InteractiveBrowserTest,
         base::BindRepeating(&HandleHttpRequest));
     embedded_test_server()->StartAcceptingConnections();
 
-    InteractiveBrowserTest::SetUpOnMainThread();
+    WebUIAndViewsToolbarInteractiveUiTestBase::SetUpOnMainThread();
   }
 
   ui::InteractionSequence::StepBuilder BringBrowserWindowToFront() {
@@ -246,22 +268,19 @@ class FindBarViewsUiTest : public InteractiveBrowserTest,
 
   auto ShowFindBar() {
     auto result =
-        Steps(Do([this]() {
-                browser()->GetFeatures().GetFindBarController()->Show();
-              }),
+        Steps(Do([this]() { FindBarController::From(browser())->Show(); }),
               WaitForShow(FindBarView::kElementId));
     AddDescriptionPrefix(result, "ShowFindBar()");
     return result;
   }
 
   auto HideFindBar() {
-    auto result =
-        Steps(Do([this]() {
-                browser()->GetFeatures().GetFindBarController()->EndFindSession(
-                    find_in_page::SelectionAction::kKeep,
-                    find_in_page::ResultAction::kKeep);
-              }),
-              WaitForHide(FindBarView::kElementId));
+    auto result = Steps(Do([this]() {
+                          FindBarController::From(browser())->EndFindSession(
+                              find_in_page::SelectionAction::kKeep,
+                              find_in_page::ResultAction::kKeep);
+                        }),
+                        WaitForHide(FindBarView::kElementId));
     AddDescriptionPrefix(result, "HideFindBar()");
     return result;
   }
@@ -279,7 +298,7 @@ class FindBarViewsUiTest : public InteractiveBrowserTest,
         ObserveState(
             views::test::kCurrentFocusedViewId,
             BrowserView::GetBrowserViewForBrowser(browser())->GetWidget()),
-        ObserveState(views::test::kCurrentWidgetFocus), InstrumentTab(kTabId),
+        ObserveState(views::test::kCurrentWidgetFocus), InstrumentToolbar(),
         NavigateWebContents(kTabId, url));
   }
 
@@ -308,18 +327,67 @@ class FindBarViewsUiTest : public InteractiveBrowserTest,
 
 #define CheckHasFocus(matcher) CheckHasFocusImpl(matcher, #matcher)
 
-  static auto Focus(ui::ElementIdentifier view) {
-    auto result =
-        Steps(WithView(view, [](views::View* view) { view->RequestFocus(); }),
-              WaitForState(views::test::kCurrentFocusedViewId, view));
-    AddDescriptionPrefix(result, "Focus()");
-    return result;
+  // Version that also works with WebUI; CheckHasFocus is more efficient,
+  // though. Succeeds if any of the elements in `ids` has focus.
+  auto CheckElementFocus(std::vector<ui::ElementIdentifier> ids) {
+    std::vector<std::string> id_names;
+    for (const auto& id : ids) {
+      id_names.push_back(id.GetName());
+    }
+    return Steps(
+        Log("Waiting for focus " + base::JoinString(id_names, ", ")),
+        PollUntil(
+            [ids]() {
+              const char kCheckFocusScriptTemplate[] = R"(
+                (function() {
+                    const manager = window._trackedElementManager;
+                    if (!manager) return false;
+                    const tracked = manager.getElementWithId({
+                      nativeIdentifier: $1,
+                      secondaryIdentifier: $2
+                    });
+                    const el = tracked?.element;
+                    if (!el) {
+                      return false;
+                    }
+                    return el.matches(':focus');
+                })();
+              )";
+              for (auto id : ids) {
+                auto* element = ui::ElementTracker::GetElementTracker()
+                                    ->GetElementInAnyContext(id);
+                if (!element) {
+                  continue;
+                }
+                if (auto* view_el =
+                        element->AsA<views::TrackedElementViews>()) {
+                  if (view_el->view()->HasFocus()) {
+                    return true;
+                  }
+                }
+                if (auto* webui_el = element->AsA<ui::TrackedElementWebUI>()) {
+                  // Must have both WebView and DOM focus.
+                  if (!webui_el->GetWebView()->HasFocus()) {
+                    continue;
+                  }
+                  auto result = content::EvalJs(
+                      webui_el->GetWebView()->GetWebContents(),
+                      content::JsReplace(kCheckFocusScriptTemplate,
+                                         webui_el->identifier().GetName(),
+                                         webui_el->GetSecondaryIdentifier()));
+                  if (result.is_bool() && result.ExtractBool()) {
+                    return true;
+                  }
+                }
+              }
+              return false;
+            },
+            "CheckElementFocus"));
   }
 
  protected:
   FindBarHost* GetFindBarHost() {
-    FindBar* find_bar =
-        browser()->GetFeatures().GetFindBarController()->find_bar();
+    FindBar* find_bar = FindBarController::From(browser())->find_bar();
     return static_cast<FindBarHost*>(find_bar);
   }
 
@@ -348,7 +416,7 @@ IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, CrashEscHandlers) {
             1, TabCloseTypes::CLOSE_NONE);
       }),
       // Set focus to the omnibox.
-      Focus(kOmniboxElementId),
+      FocusElement(kOmniboxElementId),
       // This used to crash until bug 1303709 was fixed.
       SendKeyPress(ui::VKEY_ESCAPE, false, false));
 }
@@ -394,7 +462,7 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, AccessibleName) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL(kSimplePage)));
   // Show the Find bar.
-  browser()->GetFeatures().GetFindBarController()->Show();
+  FindBarController::From(browser())->Show();
 
   FindBarView* find_bar_view = GetFindBarView();
   gfx::Rect clip_rect;
@@ -445,7 +513,7 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, ButtonsDoNotAlterFocus) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL(kSimplePage)));
   // Show the Find bar.
-  browser()->GetFeatures().GetFindBarController()->Show();
+  FindBarController::From(browser())->Show();
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
   const int match_count = ui_test_utils::FindInPage(
       browser()->GetTabStripModel()->GetActiveWebContents(), u"e", true, false,
@@ -488,10 +556,63 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, ButtonsDoNotAlterFocus) {
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_PREVIOUS_BUTTON));
 }
 
+IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, SkipViewportButtonsAndAltEnter) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(),
+      GURL("data:text/html,"
+           "<body style='margin:0;white-space:nowrap'>"
+           "<span>needle</span> <span>needle</span> <span>needle</span>"
+           "<div style='height:200vh'></div>"
+           "<span>needle</span> <span>needle</span>"
+           "<div style='height:200vh'></div>"
+           "<iframe srcdoc='<span>needle</span>'></iframe>"
+           "</body>")));
+
+  FindBarController::From(browser())->Show();
+  int ordinal = 0;
+  const int match_count = ui_test_utils::FindInPage(
+      browser()->GetTabStripModel()->GetActiveWebContents(), u"needle", true,
+      false, &ordinal, nullptr);
+  ASSERT_EQ(6, match_count);
+  EXPECT_EQ(1, ordinal);
+
+  FindBarView* find_bar_view = GetFindBarView();
+  views::View* next_outside_button = find_bar_view->GetViewByID(
+      VIEW_ID_FIND_IN_PAGE_NEXT_OUTSIDE_VIEWPORT_BUTTON);
+  views::View* previous_outside_button = find_bar_view->GetViewByID(
+      VIEW_ID_FIND_IN_PAGE_PREVIOUS_OUTSIDE_VIEWPORT_BUTTON);
+  ASSERT_TRUE(next_outside_button);
+  ASSERT_TRUE(previous_outside_button);
+  EXPECT_TRUE(next_outside_button->GetVisible());
+  EXPECT_TRUE(previous_outside_button->GetVisible());
+
+  // Clicking "Next outside view" from match 1 skips matches 2 and 3 in the top
+  // viewport and jumps directly to match 4.
+  ClickOnView(next_outside_button);
+  EXPECT_EQ(4, WaitForFinalFindResult().active_match_ordinal());
+
+  // Alt+Enter from match 4 skips match 5 (in the same viewport) and advances
+  // across the end of the main frame to match 6 in the iframe below the fold.
+  PressReturnInFindBar(ui::EF_ALT_DOWN);
+  EXPECT_EQ(6, WaitForFinalFindResult().active_match_ordinal());
+
+  // Clicking "Previous outside view" from match 6 in the iframe jumps back to
+  // match 5 in the main frame.
+  ClickOnView(previous_outside_button);
+  EXPECT_EQ(5, WaitForFinalFindResult().active_match_ordinal());
+
+  // Alt+Shift+Enter from match 5 skips match 4 and jumps back to match 3.
+  PressReturnInFindBar(ui::EF_ALT_DOWN | ui::EF_SHIFT_DOWN);
+  EXPECT_EQ(3, WaitForFinalFindResult().active_match_ordinal());
+
+  // Enter without Alt advances to the immediate next match as usual.
+  PressReturnInFindBar(ui::EF_NONE);
+  EXPECT_EQ(4, WaitForFinalFindResult().active_match_ordinal());
+}
+
 IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, ButtonsDisabledWithoutText) {
-  if (browser()
-          ->GetFeatures()
-          .GetFindBarController()
+  if (FindBarController::From(browser())
           ->find_bar()
           ->HasGlobalFindPasteboard()) {
     // The presence of a global find pasteboard does not guarantee the find bar
@@ -501,13 +622,20 @@ IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, ButtonsDisabledWithoutText) {
 
   const GURL page_a = embedded_test_server()->GetURL("/a.html");
 
-  RunTestSequence(Init(page_a), ShowFindBar(),
-                  CheckViewProperty(FindBarView::kPreviousButtonElementId,
-                                    &views::View::GetEnabled, false),
-                  CheckViewProperty(FindBarView::kNextButtonElementId,
-                                    &views::View::GetEnabled, false),
-                  SendKeyPress(ui::VKEY_TAB, false, false),
-                  CheckHasFocus(FindBarView::kCloseButtonElementId));
+  RunTestSequence(
+      Init(page_a), ShowFindBar(),
+      CheckViewProperty(FindBarView::kPreviousButtonElementId,
+                        &views::View::GetEnabled, false),
+      CheckViewProperty(FindBarView::kNextButtonElementId,
+                        &views::View::GetEnabled, false),
+      CheckViewProperty(FindBarView::kPreviousOutsideViewportButtonElementId,
+                        &views::View::GetEnabled, false),
+      CheckViewProperty(FindBarView::kNextOutsideViewportButtonElementId,
+                        &views::View::GetEnabled, false),
+      SendKeyPress(ui::VKEY_TAB, false, false),
+      CheckHasFocus(FindBarView::kMatchCaseButtonElementId),
+      SendKeyPress(ui::VKEY_TAB, false, false),
+      CheckHasFocus(FindBarView::kCloseButtonElementId));
 }
 
 // TODO(crbug.com/361216144): Re-enable on Mac.
@@ -524,11 +652,11 @@ IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, MAYBE_FocusRestore) {
       Init(page_a),
 
       // Set focus to the omnibox.
-      Focus(kOmniboxElementId),
+      FocusElement(kOmniboxElementId),
       // Show the Find bar.
       ShowFindBar(), CheckHasFocus(FindBarView::kTextField),
       // Dismiss the Find bar, the omnibox view should get focus.
-      HideFindBar(), CheckHasFocus(kOmniboxElementId),
+      HideFindBar(), CheckElementFocus({kOmniboxElementId}),
 
       // Show the Find bar and search for "a".
       ShowFindBar(),
@@ -550,15 +678,15 @@ IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, MAYBE_FocusRestore) {
       // Focus the location bar, open and close the find box, focus should
       // return to the location bar (same as before, just checking that
       // http://crbug.com/41009575 is fixed).
-      Focus(kOmniboxElementId),
+      FocusElement(kOmniboxElementId),
       // Show the Find bar.
       ShowFindBar(), CheckHasFocus(FindBarView::kTextField),
       // Dismiss the Find bar, the omnibox or web contents should get focus.
       // Since there is still text in the box, it's possible that the contents
       // pane will receive focus instead.
       HideFindBar(),
-      CheckHasFocus(testing::Matcher<ui::ElementIdentifier>(testing::AnyOf(
-          kOmniboxElementId, ContentsWebView::kContentsWebViewElementId))));
+      CheckElementFocus(
+          {kOmniboxElementId, ContentsWebView::kContentsWebViewElementId}));
 }
 
 IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, SelectionRestoreOnTabSwitch) {
@@ -634,11 +762,11 @@ IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, FocusRestoreOnTabSwitch) {
       CheckViewProperty(FindBarView::kElementId, &FindBarView::GetFindText,
                         kSearchB),
       // Set focus away from the Find bar (to the omnibox).
-      Focus(kOmniboxElementId),
+      FocusElement(kOmniboxElementId),
       // Select tab A, Find bar should get focus.
       SelectTab(kTabStripElementId, 0), CheckHasFocus(FindBarView::kTextField),
       // Select tab B, Omnibox should get focus.
-      SelectTab(kTabStripElementId, 1), CheckHasFocus(kOmniboxElementId));
+      SelectTab(kTabStripElementId, 1), CheckElementFocus({kOmniboxElementId}));
 }
 
 // TODO(crbug.com/361216144): Re-enable on Mac.
@@ -682,7 +810,7 @@ IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest,
       Init(page_a), ShowFindBar(), EnsurePresent(FindBarView::kElementId),
       CheckHasFocus(FindBarView::kTextField),
       // Focus tab A content.
-      Focus(ContentsWebView::kContentsWebViewElementId),
+      FocusElement(ContentsWebView::kContentsWebViewElementId),
       CheckHasFocus(ContentsWebView::kContentsWebViewElementId),
       // Open tab B.
       AddInstrumentedTab(kTabBId, page_b), WaitForHide(FindBarView::kTextField),
@@ -716,7 +844,7 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, PrepopulateRespectBlank) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
   // Show the Find bar.
-  browser()->GetFeatures().GetFindBarController()->Show();
+  FindBarController::From(browser())->Show();
 
   // Search for "a".
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_A, false,
@@ -737,7 +865,7 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, PrepopulateRespectBlank) {
                                               false, false, false));
 
   // Show the Find bar.
-  browser()->GetFeatures().GetFindBarController()->Show();
+  FindBarController::From(browser())->Show();
 
   // After the Find box has been reopened, it should not have been prepopulated
   // with "a" again.
@@ -757,13 +885,7 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, PrepopulateRespectBlank) {
 }
 #endif
 
-// TODO(crbug.com/540863131): Flaky on Linux ARM64.
-#if BUILDFLAG(IS_LINUX) && defined(ARCH_CPU_ARM64)
-#define MAYBE_PasteWithoutTextChange DISABLED_PasteWithoutTextChange
-#else
-#define MAYBE_PasteWithoutTextChange PasteWithoutTextChange
-#endif
-IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, MAYBE_PasteWithoutTextChange) {
+IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, PasteWithoutTextChange) {
   constexpr char16_t kSearchA[] = u"a";
   const GURL page_a = embedded_test_server()->GetURL("/a.html");
 
@@ -782,21 +904,7 @@ IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, MAYBE_PasteWithoutTextChange) {
       CheckViewProperty(FindBarView::kElementId, &FindBarView::GetFindText,
                         kSearchA),
       // Reload the page to clear the matching result.
-      // TODO(crbug.com/479732140): improve the test method to simplify the
-      // call.
-      MoveMouseTo(kReloadButtonElementId,
-#if !BUILDFLAG(IS_ANDROID)
-                  features::IsWebUIReloadButtonEnabled()
-                      ? RelativePositionSpecifier(
-                            base::BindOnce([](ui::TrackedElement* el) {
-                              return el->GetScreenBounds().CenterPoint();
-                            }))
-                      : CenterPoint()
-#else
-                  CenterPoint()
-#endif  // !BUILDFLAG(IS_ANDROID)
-                      ),
-      ClickMouse(), WaitForWebContentsNavigation(kTabId),
+      ClickReloadButton(), WaitForWebContentsNavigation(kTabId),
       WaitForState(views::test::kCurrentFocusedViewId,
                    ContentsWebView::kContentsWebViewElementId),
       // Focus the Find bar again to make sure the text is selected.
@@ -808,15 +916,16 @@ IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, MAYBE_PasteWithoutTextChange) {
       // Press Ctrl-C to copy the content.
       SendAccelerator(kTabId, ctrl_c_accelerator),
       // Make sure the text is copied successfully.
-      PollState(
-          kTextCopiedState,
-          [&]() {
-            ui::Clipboard* clipboard = ui::Clipboard::GetForCurrentThread();
-            std::u16string clipboard_text = ui::clipboard_test_util::ReadText(
-                clipboard, ui::ClipboardBuffer::kCopyPaste,
-                /* data_dst = */ nullptr);
-            return base::EqualsASCII(clipboard_text, "a");
-          }),
+      PollState(kTextCopiedState,
+                [&]() {
+                  ui::Clipboard* clipboard =
+                      ui::Clipboard::GetForCurrentThread();
+                  std::u16string clipboard_text =
+                      ui::clipboard_test_util::ReadText(
+                          clipboard, ui::ClipboardBuffer::kCopyPaste,
+                          /* data_dst = */ nullptr);
+                  return base::EqualsASCII(clipboard_text, "a");
+                }),
       WaitForState(kTextCopiedState, true),
       // Press Ctrl-V to paste the content back, it should start finding even if
       // the content is not changed.
@@ -842,7 +951,7 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, MAYBE_CtrlEnter) {
   auto* web_contents = browser()->GetTabStripModel()->GetActiveWebContents();
   auto* host = web_contents->GetRenderWidgetHostView()->GetRenderWidgetHost();
 
-  browser()->GetFeatures().GetFindBarController()->Show();
+  FindBarController::From(browser())->Show();
 
   // Search for "link".
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_L, false,
@@ -885,7 +994,7 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, ActiveMatchAfterNoResults) {
   // This bug does not reproduce when using ui_test_utils::FindInPage here;
   // sending keystrokes like this is required. Also note that the text must
   // contain a space.
-  browser()->GetFeatures().GetFindBarController()->Show();
+  FindBarController::From(browser())->Show();
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_A, false,
                                               false, false, false));
   ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_SPACE, false,
@@ -900,13 +1009,13 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, ActiveMatchAfterNoResults) {
                                               false, false, false));
   EXPECT_EQ(u"a link", GetFindBarText());
 
-  browser()->GetFeatures().GetFindBarController()->EndFindSession(
+  FindBarController::From(browser())->EndFindSession(
       find_in_page::SelectionAction::kKeep, find_in_page::ResultAction::kKeep);
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL("/find_in_page/link.html")));
 
-  browser()->GetFeatures().GetFindBarController()->Show();
+  FindBarController::From(browser())->Show();
   auto details = WaitForFindResult();
   EXPECT_EQ(1, details.number_of_matches());
   EXPECT_EQ(0, details.active_match_ordinal());
@@ -936,7 +1045,7 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, DISABLED_SelectionDuringFind) {
 
   observer.Wait();
 
-  auto* find_bar_controller = browser()->GetFeatures().GetFindBarController();
+  auto* find_bar_controller = FindBarController::From(browser());
   find_bar_controller->Show();
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
 
@@ -1006,7 +1115,7 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest, GlobalEscapeClosesFind) {
       browser(), embedded_test_server()->GetURL(kSimplePage)));
 
   // Open find.
-  browser()->GetFeatures().GetFindBarController()->Show(false, true);
+  FindBarController::From(browser())->Show(false, true);
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
 
   // Put focus to the bookmarks' toolbar, which won't consume the escape key.
@@ -1031,7 +1140,7 @@ IN_PROC_BROWSER_TEST_F(LegacyFindInPageTest,
       browser(), embedded_test_server()->GetURL(kSimplePage)));
 
   // Open find.
-  browser()->GetFeatures().GetFindBarController()->Show(false, true);
+  FindBarController::From(browser())->Show(false, true);
   EXPECT_TRUE(IsViewFocused(browser(), VIEW_ID_FIND_IN_PAGE_TEXT_FIELD));
 
   // Put focus into location bar, which will consume escape presses.
@@ -1092,7 +1201,7 @@ IN_PROC_BROWSER_TEST_P(FindBarViewsUiTest, SelectionDuringFindPolicy) {
                     testing::HasSubstr(base::UTF16ToUTF8(kExpectedText))),
 
       ShowFindBar(), EnterText(FindBarView::kTextField, u"42"), HideFindBar(),
-      Focus(ContentsWebView::kContentsWebViewElementId),
+      FocusElement(ContentsWebView::kContentsWebViewElementId),
 
       // Select all text.
       Do([this]() {
@@ -1151,7 +1260,7 @@ IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, FindBarWidgetIsNotActivatable) {
       browser(), embedded_test_server()->GetURL(kSimplePage)));
 
   // Show the find bar.
-  browser()->GetFeatures().GetFindBarController()->Show();
+  FindBarController::From(browser())->Show();
   ASSERT_TRUE(IsFindBarVisible());
 
   // Get the find bar widget.
@@ -1190,7 +1299,7 @@ IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest,
       browser_a, embedded_test_server()->GetURL(kSimplePage)));
 
   // Show the find bar in browser A.
-  browser_a->GetFeatures().GetFindBarController()->Show();
+  FindBarController::From(browser_a)->Show();
   ASSERT_TRUE(GetFindBarHost()->IsFindBarVisible());
 
   // Clear any existing text in the find bar.
@@ -1324,15 +1433,16 @@ IN_PROC_BROWSER_TEST_P(FindBarViewsUiTest, DISABLED_CopyBlockedByPolicy) {
                      std::to_underlying(ui::TouchEditable::MenuCommands::kCopy),
                      0);
                }),
-      PollState(
-          kTextCopiedState,
-          [&]() {
-            ui::Clipboard* clipboard = ui::Clipboard::GetForCurrentThread();
-            std::u16string clipboard_text = ui::clipboard_test_util::ReadText(
-                clipboard, ui::ClipboardBuffer::kCopyPaste,
-                /* data_dst = */ nullptr);
-            return base::EqualsASCII(clipboard_text, kExpectedText);
-          }),
+      PollState(kTextCopiedState,
+                [&]() {
+                  ui::Clipboard* clipboard =
+                      ui::Clipboard::GetForCurrentThread();
+                  std::u16string clipboard_text =
+                      ui::clipboard_test_util::ReadText(
+                          clipboard, ui::ClipboardBuffer::kCopyPaste,
+                          /* data_dst = */ nullptr);
+                  return base::EqualsASCII(clipboard_text, kExpectedText);
+                }),
       WaitForState(kTextCopiedState, true),
       // When copying to the clipboard is restricted, we have to wait for the
       // internal data tracking to identify the sequence number that will need
@@ -1357,4 +1467,39 @@ IN_PROC_BROWSER_TEST_P(FindBarViewsUiTest, DISABLED_CopyBlockedByPolicy) {
           }),
       WaitForViewProperty(FindBarView::kTextField, views::Textfield, Text,
                           u"some text"));
+}
+
+IN_PROC_BROWSER_TEST_F(FindBarViewsUiTest, MatchCaseToggle) {
+  const GURL page_a = embedded_test_server()->GetURL("/a.html");
+
+  RunTestSequence(
+      Init(page_a),
+      Do([this]() {
+        // Clear any text prepopulated from a global find pasteboard (e.g. on
+        // macOS across repeated test runs).
+        FindBarController::From(browser())->SetText(std::u16string());
+      }),
+      ShowFindBar(),
+      ObserveState(kFindResultState,
+                   [this]() {
+                     return find_in_page::FindTabHelper::FromWebContents(
+                         browser()->GetTabStripModel()->GetActiveWebContents());
+                   }),
+      CheckViewProperty(FindBarView::kElementId, &FindBarView::IsMatchCase,
+                        false),
+      // "/a.html" serves "This is some text with a link.", which has 1
+      // uppercase 'T' ("This") and 3 lowercase 't's ("text", "with").
+      EnterText(FindBarView::kTextField, u"T"),
+      WaitForState(kFindResultState, []() { return FindResultState(1, 4); }),
+      // Enable Match Case: only "This" should match.
+      PressButton(FindBarView::kMatchCaseButtonElementId),
+      CheckViewProperty(FindBarView::kElementId, &FindBarView::IsMatchCase,
+                        true),
+      WaitForState(kFindResultState, []() { return FindResultState(1, 1); }),
+      // Disable Match Case: all 4 occurrences of 'T'/'t' should match again.
+      PressButton(FindBarView::kMatchCaseButtonElementId),
+      CheckViewProperty(FindBarView::kElementId, &FindBarView::IsMatchCase,
+                        false),
+      WaitForState(kFindResultState, []() { return FindResultState(1, 4); }),
+      StopObservingState(kFindResultState));
 }

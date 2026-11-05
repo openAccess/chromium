@@ -7,6 +7,7 @@
 #import <algorithm>
 
 #import "base/metrics/histogram_functions.h"
+#import "ios/web/public/navigation/navigation_context.h"
 
 WebPerformanceMetricsTabHelper::WebPerformanceMetricsTabHelper(
     web::WebState* web_state) {
@@ -18,10 +19,32 @@ WebPerformanceMetricsTabHelper::~WebPerformanceMetricsTabHelper() = default;
 void WebPerformanceMetricsTabHelper::DidStartNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
-  FlushInteractionToNextPaintMetrics();
+  // Same-document navigations (fragment changes, `history.pushState()`) keep
+  // the current document alive, so its metrics must keep accumulating and must
+  // not be reset.
+  if (navigation_context->IsSameDocument()) {
+    return;
+  }
+
+  // TODO(crbug.com/573269319): Move these state resets to
+  // `DidFinishNavigation` alongside INP.
   SetAggregateAbsoluteFirstContentfulPaint(std::numeric_limits<double>::max());
   SetFirstInputDelayLoggingStatus(false);
   has_been_hidden_since_navigation_started_ = !web_state->IsVisible();
+}
+
+void WebPerformanceMetricsTabHelper::DidFinishNavigation(
+    web::WebState* web_state,
+    web::NavigationContext* navigation_context) {
+  // Only flush on committed cross-document navigations; uncommitted and
+  // same-document navigations keep the current document alive, so it can still
+  // receive data.
+  if (!navigation_context->HasCommitted() ||
+      navigation_context->IsSameDocument()) {
+    return;
+  }
+
+  FlushInteractionToNextPaintMetrics();
 }
 
 void WebPerformanceMetricsTabHelper::WasHidden(web::WebState* web_state) {

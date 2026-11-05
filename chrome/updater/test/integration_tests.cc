@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <cstdlib>
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -1071,6 +1072,11 @@ class IntegrationLowerVersionTest
 INSTANTIATE_TEST_SUITE_P(IntegrationLowerVersionTestCases,
                          IntegrationLowerVersionTest,
                          ::testing::ValuesIn(GetRealUpdaterLowerVersions()));
+#if BUILDFLAG(IS_WIN)
+// TODO(crbug.com/579543435): Remove once `old_updater` is rolled; see
+// `GetRealUpdaterLowerVersions()`.
+GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(IntegrationLowerVersionTest);
+#endif
 
 TEST_P(IntegrationLowerVersionTest, OverinstallWorking) {
   ASSERT_NO_FATAL_FAILURE(SetupRealUpdater(GetParam().updater_setup_path));
@@ -1662,7 +1668,7 @@ TEST_F(IntegrationTest, GetUpdaterState) {
           std::vector<uint32_t> components =
               base::Version(kUpdaterVersion).components();
           const base::CheckedNumeric<uint32_t> new_version = components[0] + 1;
-          ASSERT_TRUE(new_version.AssignIfValid(&components[0]));
+          ASSERT_TRUE(new_version.AssignIfValid(components.data()));
 
           EXPECT_THAT(result.inactive_versions,
                       testing::UnorderedElementsAre(
@@ -3270,6 +3276,13 @@ TEST_F(IntegrationTestDeviceManagement, ForceInstall) {
 }
 
 TEST_F(IntegrationTestDeviceManagement, QualifyUpdaterWhenUpdateDisabled) {
+#if BUILDFLAG(IS_WIN)
+  // TODO(crbug.com/579543435): Remove once `old_updater` is rolled; see
+  // `GetRealUpdaterLowerVersions()`.
+  if (GetRealUpdaterLowerVersions().empty()) {
+    GTEST_SKIP();
+  }
+#endif
   // This test depends on the companion app to provide CBCM policies. On macOS
   // the companion app requires a valid ksadmin to install, which the fake
   // updater does not provide.
@@ -3322,6 +3335,13 @@ TEST_F(IntegrationTestDeviceManagement, QualifyUpdaterWhenUpdateDisabled) {
 
 TEST_F(IntegrationTestDeviceManagement,
        QualifyUpdaterWhenNextCheckDelayIsZero) {
+#if BUILDFLAG(IS_WIN)
+  // TODO(crbug.com/579543435): Remove once `old_updater` is rolled; see
+  // `GetRealUpdaterLowerVersions()`.
+  if (GetRealUpdaterLowerVersions().empty()) {
+    GTEST_SKIP();
+  }
+#endif
   // This test depends on the companion app to provide CBCM policies. On macOS
   // the companion app requires a valid ksadmin to install, which the fake
   // updater does not provide.
@@ -4787,7 +4807,8 @@ TEST_F(IntegrationTestKSAdminFourApps, XCPathMismatchUser) {
 
 TEST_F(IntegrationTestKSAdminFourApps, KSAdminRegisterWithTaggedPkg) {
   base::FilePath tagged_pkg_path =
-      test::GetTestFilePath("tagged_pkg").AppendASCII("sample.pkg");
+      test::GetTestFilePath("tagged_pkg")
+          .AppendASCII("sample_no_notarization_trailer_brand_tagged.pkg");
 
   // Define a temp file path for the brand file, but do not populate it, so
   // "ifneeded" mode will decide a brand file is needed.
@@ -4795,7 +4816,8 @@ TEST_F(IntegrationTestKSAdminFourApps, KSAdminRegisterWithTaggedPkg) {
   ASSERT_TRUE(brand_file.Create());
   ASSERT_TRUE(base::DeleteFile(brand_file.path()));
   // `--brand-value` flag is a fallback; thus, the "WRONG" brand code should
-  // be ignored in favor of the "GGLZ" brand tagged onto `sample.pkg`.
+  // be ignored in favor of the "GGLZ" brand tagged onto
+  // `sample_no_notarization_trailer_brand_tagged.pkg`.
   ASSERT_NO_FATAL_FAILURE(ExpectKSAdminRegister(
       UpdaterScope::kUser, kUserAppID, tagged_pkg_path, brand_file.path(),
       "KSBrandID", "WRONG", "ifneeded"));
@@ -5085,7 +5107,7 @@ INSTANTIATE_TEST_SUITE_P(IntegrationLegacyAppCommandWebTestCases,
                          ::testing::ValuesIn(GetRealUpdaterVersions()));
 
 TEST_P(IntegrationLegacyAppCommandWebTest, NoUsageStats_NoPing) {
-  const char kAppId[] = "test1";
+  static constexpr char kAppId[] = "test1";
   if (GetParam().version > base::Version("137.0.0.0")) {
     ExpectInstallEvent(*test_server_, kAppId);
   }
@@ -6746,13 +6768,13 @@ TEST_F(EventLoggingIntegrationTest, SendsLogs) {
                                 UpdateService::Priority::kForeground, v1, v1));
   test_event_logging_server.ExpectOnce(
       {request::GetPathMatcher(test_event_logging_server.event_logging_path()),
-       base::BindRepeating([](const HttpRequest& request) {
+       base::BindRepeating([](const HttpRequest& request)
+                               -> testing::AssertionResult {
          enterprise_companion::telemetry_logger::proto::LogRequest log_request;
          if (!log_request.ParseFromString(request.decoded_content)) {
-           ADD_FAILURE() << "Failed to parse log request";
-           return false;
+           return testing::AssertionFailure() << "Failed to parse log request";
          }
-         return true;
+         return testing::AssertionSuccess();
        })},
       enterprise_companion::telemetry_logger::proto::LogResponse()
           .SerializeAsString(),

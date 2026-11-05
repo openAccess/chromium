@@ -7,9 +7,13 @@
 
 // Icons.
 #define IDI_APP 101
+// IDI_INSTALLER_BADGE aliases IDI_APP to provide the installer overlay badge
+// without duplicating the .ico payload in the resource table.
+#define IDI_INSTALLER_BADGE IDI_APP
 #define IDB_ERROR_ILLUSTRATION 1000
 #define IDB_BACKGROUND_LIGHT 1001
 #define IDB_BACKGROUND_DARK 1002
+#define IDB_ERROR_ILLUSTRATION_DARK 1003
 #define IDD_PROGRESS 2000
 #define IDC_TITLE_BAR_SPACER 2001
 #define IDC_GET_HELP 2002
@@ -28,6 +32,9 @@
 #define IDC_INSTALL_STOPPED_TEXT 2017
 #define IDD_YES_NO 2018
 #define IDC_YES_NO_TEXT 2020
+
+// WebView2 pages.
+#define IDR_WEBVIEW2_PROGRESS_HTML 3000
 
 // Typelibs.
 #define TYPELIB_UPDATER_IDL_USER               1

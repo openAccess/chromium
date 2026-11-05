@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "components/skills/internal/enterprise_skills_provider.h"
+#include "components/skills/public/skills_constants.h"
 
 #include <algorithm>
 #include <iterator>
@@ -115,10 +116,12 @@ EnterpriseSkillsProvider::EnterpriseSkillsProvider(
                             base::Unretained(this)));
 
     // Initial fetch if policy is already set.
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE,
-        base::BindOnce(&EnterpriseSkillsProvider::OnPolicyPrefChanged,
-                       weak_ptr_factory_.GetWeakPtr()));
+    if (!pref_service_->GetList(prefs::kEnterprisePublishedSkills).empty()) {
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(&EnterpriseSkillsProvider::OnPolicyPrefChanged,
+                         weak_ptr_factory_.GetWeakPtr()));
+    }
   }
 }
 EnterpriseSkillsProvider::~EnterpriseSkillsProvider() = default;
@@ -143,6 +146,7 @@ void EnterpriseSkillsProvider::OnPolicyPrefChanged() {
 }
 
 void EnterpriseSkillsProvider::FetchSkillsFromUrls() {
+  weak_ptr_factory_.InvalidateWeakPtrs();
   barrier_closure_.Cancel();
   url_loaders_.clear();
   pending_skills_.clear();
@@ -280,6 +284,7 @@ std::unique_ptr<Skill> EnterpriseSkillsProvider::ParseAndValidateSkill(
   new_skill->curated_by = "your organization";
   new_skill->icon = kDefaultEnterpriseSkillIcon;
   new_skill->prompt = prompt_content;
+  new_skill->category = kFromYourOrganizationCategory;
   new_skill->source = sync_pb::SkillSource::SKILL_SOURCE_ENTERPRISE;
   return new_skill;
 }

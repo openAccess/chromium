@@ -15,53 +15,39 @@ class TimeDelta;
 
 namespace send_tab_to_self {
 
-// If this feature is enabled, the notification shown to users will disapear
-// after a fixed timeout. When disabled, instead it will remain until the
-// user interacts with it either by dismissing or openning it.
-BASE_DECLARE_FEATURE(kSendTabToSelfEnableNotificationTimeOut);
-
-// If this feature is enabled, form fields will be extracted from the outgoing
-// tab and propagated to the target device.
-BASE_DECLARE_FEATURE(kSendTabToSelfPropagateFormFields);
-
-// If this feature is enabled, the scroll position will be captured and
-// propagated to the target device using a text fragment selector.
-BASE_DECLARE_FEATURE(kSendTabToSelfPropagateScrollPosition);
-
-// If this feature is enabled, more granular "last active" timestamps will be
-// shown in the device picker.
-BASE_DECLARE_FEATURE(kSendTabToSelfImprovedLastActiveLabels);
-
 // If this feature is enabled, the back/forward history of the shared tab will
 // be captured and propagated to the target device.
 BASE_DECLARE_FEATURE(kSendTabToSelfPropagateNavigationHistory);
 
-// If this feature is enabled, received tabs will be automatically opened
-// in the foreground if Chrome is currently being used.
-BASE_DECLARE_FEATURE(kSendTabToSelfAutoOpen);
-
 #if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
-// If this feature is enabled along with kSendTabToSelfAutoOpen, received tabs
-// will be automatically opened in the background even while in the Tab Grid.
+// If this feature is enabled, received tabs will be automatically opened in the
+// background even while in the Tab Grid.
 BASE_DECLARE_FEATURE(kSendTabToSelfSupportAutoOpenInTabGrid);
 #endif  // BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
 
-// If this feature is enabled, several UIs on desktop are enhanced, like showing
-// a list of devices directly in the context menu, the new Desktop device picker
-// flow, and the visually enhanced STTS target device picker bubble.
-BASE_DECLARE_FEATURE(kSendTabToSelfEnhancedDesktopUI);
-
-// If this feature is enabled, a toast will be shown after a tab is successfully
-// sent.
-BASE_DECLARE_FEATURE(kSendTabToSelfPostSendToast);
-
-// If this feature is enabled, "Send to your device" entry points will be added
-// to the Omnibox context menu.
-BASE_DECLARE_FEATURE(kSendTabToSelfExtraEntryPoints);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// If this feature is enabled, a QR code promo is shown in the Send Tab to Self
+// bubble on desktop when no target devices are found. Guarded to Windows, Mac,
+// and Linux because it relies on `switches::kCrossDeviceSigninFromDesktopUrl`
+// in `components/signin/public/base/signin_switches.h`.
+BASE_DECLARE_FEATURE(kSendTabToSelfNoTargetDeviceQrCode);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 // If this feature is enabled, desktop entry points get submenu treatment as
 // part of the enhanced desktop UI v2.
 BASE_DECLARE_FEATURE(kSendTabToSelfEnhancedDesktopUIv2);
+
+// If this feature is enabled, desktop entry points show a submenu with a
+// sign-in promo for the signed-out, sign-in pending (reauth), and
+// no-target-device (when `kSendTabToSelfNoTargetDeviceQrCode` is also enabled)
+// states instead of a single command item.
+BASE_DECLARE_FEATURE(kSendTabToSelfSubmenuSigninPromos);
+
+// If this feature is enabled, Send Tab to Self promo bubbles on desktop
+// (sign-in, reauth, and no-target-device) anchor to the profile pill and stay
+// open across tab navigations instead of popping out and anchoring to the
+// Send Tab to Self toolbar icon.
+BASE_DECLARE_FEATURE(kSendTabToSelfAnchorPromosToProfilePill);
 
 // If this feature is enabled, multi-tab sharing via Send Tab to Self is
 // supported.
@@ -76,28 +62,16 @@ BASE_DECLARE_FEATURE(kSendTabToSelfGesture);
 // the appropriate native app if it is available.
 BASE_DECLARE_FEATURE(kSendTabToSelfOpenNativeApp);
 
-// If this feature is enabled, activating a received tab via the mobile snackbar
-// will be recorded as ShareActivatedEntryPoint::kMobileMessageBanner (instead
-// of ShareActivatedEntryPoint::kTabStrip) and drop the tab label immediately.
-BASE_DECLARE_FEATURE(kSendTabToSelfRecordSnackbarActivation);
+// If this feature is enabled, pressing back on an incoming tab opened via the
+// message banner switches back to the parent tab instead of minimizing Chrome.
+BASE_DECLARE_FEATURE(kSendTabToSelfSwitchToParentOnBack);
 #endif  // BUILDFLAG(IS_ANDROID)
-
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-// If this feature is enabled, the target device picker will use an enhanced
-// bottom sheet UI.
-BASE_DECLARE_FEATURE(kSendTabToSelfEnhancedBottomsheet);
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 #if BUILDFLAG(IS_IOS)
 
 // If this feature is enabled, target devices are displayed as individual
 // actions in the native iOS Share Sheet.
 BASE_DECLARE_FEATURE(kSendTabToSelfIOSShareSheetDeviceList);
-
-// If this feature is enabled, prevents duplicate SendTabToSelfBrowserAgent
-// instances from logging outcomes for the same entry (e.g. regular vs inactive
-// browser).
-BASE_DECLARE_FEATURE(kSendTabToSelfIOSLimitToRegularBrowsers);
 
 // If this feature is enabled, users can schedule tab reminder iOS push
 // notifications.

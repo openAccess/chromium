@@ -58,8 +58,6 @@ class GlicInstanceCoordinator {
     kNoBoundTabs,
     kTabNotInWindow,
   };
-
-  using StateObserver = PanelStateObserver;
   GlicInstanceCoordinator(const GlicInstanceCoordinator&) = delete;
   GlicInstanceCoordinator& operator=(const GlicInstanceCoordinator&) = delete;
   GlicInstanceCoordinator() = default;
@@ -70,6 +68,9 @@ class GlicInstanceCoordinator {
       const std::string& conversation_id) const = 0;
   virtual ActivateTabResult ActivateTabWithConversation(
       const std::string& conversation_id) = 0;
+  virtual GlicInstance* GetInstanceForConversationId(
+      const std::string& conversation_id) const = 0;
+  virtual GlicInstance* GetInstanceForTaskId(int task_id) const = 0;
   virtual GlicInstance* GetInstanceForTab(
       const tabs::TabInterface* tab) const = 0;
   virtual GlicInstance* GetInstanceForTabGroup(
@@ -129,6 +130,10 @@ class GlicInstanceCoordinator {
   // tab.
   virtual bool IsPanelShowingForBrowser(
       const BrowserWindowInterface& bwi) const = 0;
+
+  // Returns whether toggling `browser` (or Floaty if null) would close a panel
+  // rather than open one. Best-effort snapshot for labelling UI affordances.
+  virtual bool WouldToggleClose(BrowserWindowInterface* browser) const = 0;
 
   // Registers a callback to be run when any instance opens or closes.
   virtual base::CallbackListSubscription AddGlobalShowHideCallback(

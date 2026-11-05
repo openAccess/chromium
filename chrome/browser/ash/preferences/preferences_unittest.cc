@@ -17,14 +17,13 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
-#include "chrome/browser/ash/input_method/input_method_configuration.h"
+#include "chrome/browser/ash/input_method/test_ime_controller.h"
 #include "chrome/browser/ash/login/session/user_session_manager.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/common/chrome_constants.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -44,6 +43,7 @@
 #include "components/user_manager/scoped_user_manager.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_utils.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -52,6 +52,7 @@
 #include "ui/base/ime/ash/extension_ime_util.h"
 #include "ui/base/ime/ash/mock_component_extension_ime_manager_delegate.h"
 #include "ui/base/ime/ash/mock_input_method_manager_impl.h"
+#include "ui/base/ime/ash/scoped_input_method_manager_for_testing.h"
 #include "url/gurl.h"
 
 namespace ash {
@@ -199,9 +200,9 @@ class PreferencesTest : public testing::Test {
                                       g_browser_process->local_state());
     consumer_auto_update_toggle_.SetValue(true);
 
-    mock_manager_ = new input_method::MyMockInputMethodManager(
-        &previous_input_method_, &current_input_method_);
-    input_method::InitializeForTesting(mock_manager_);
+    input_method_manager_.emplace(&previous_input_method_,
+                                  &current_input_method_);
+    mock_manager_ = input_method_manager_->get();
 
     prefs_ = std::make_unique<Preferences>(
         TestingBrowserProcess::GetGlobal()->local_state(),
@@ -222,7 +223,7 @@ class PreferencesTest : public testing::Test {
     profile_manager_.reset();
 
     mock_manager_ = nullptr;
-    input_method::Shutdown();
+    input_method_manager_.reset();
 
     // UserSessionManager doesn't listen to profile destruction, so make sure
     // the default IME state isn't still cached in case test_profile_ is
@@ -262,6 +263,9 @@ class PreferencesTest : public testing::Test {
   StringPrefMember previous_input_method_;
   StringPrefMember current_input_method_;
   BooleanPrefMember consumer_auto_update_toggle_;
+  std::optional<input_method::ScopedInputMethodManagerForTesting<
+      input_method::MyMockInputMethodManager>>
+      input_method_manager_;
 
   // Not owned.
   raw_ptr<const user_manager::User> test_user_ = nullptr;
@@ -485,6 +489,7 @@ class InputMethodPreferencesTest : public PreferencesTest {
   StringPrefMember preload_engines_syncable_;
   StringPrefMember enabled_imes_;
   StringPrefMember enabled_imes_syncable_;
+  TestImeController ime_controller_;
 };
 
 // Tests that the server values are added to the values chosen at OOBE.
@@ -778,6 +783,7 @@ TEST_F(InputMethodPreferencesTest, ConfiguredByPolicyPrefs) {
   EXPECT_EQ(
       1U,
       mock_manager_->GetActiveIMEState()->GetEnabledInputMethodIds().size());
+  EXPECT_FALSE(ime_controller_.managed_by_policy_);
 
   // Setting only AllowedInputMethodsForceEnabled does nothing.
   pref_service_->SetManagedPref(prefs::kLanguageAllowedInputMethodsForceEnabled,
@@ -788,6 +794,7 @@ TEST_F(InputMethodPreferencesTest, ConfiguredByPolicyPrefs) {
   EXPECT_EQ(
       1U,
       mock_manager_->GetActiveIMEState()->GetEnabledInputMethodIds().size());
+  EXPECT_FALSE(ime_controller_.managed_by_policy_);
 
   // Setting only AllowedInputMethods enforces allowed, but doesn't enable them.
   pref_service_->SetManagedPref(prefs::kLanguageAllowedInputMethodsForceEnabled,
@@ -799,6 +806,7 @@ TEST_F(InputMethodPreferencesTest, ConfiguredByPolicyPrefs) {
   EXPECT_EQ(
       1U,
       mock_manager_->GetActiveIMEState()->GetEnabledInputMethodIds().size());
+  EXPECT_FALSE(ime_controller_.managed_by_policy_);
 
   // Setting AllowedInputMethodsForceEnabled enforces all currently allowed
   // input methods.
@@ -808,6 +816,7 @@ TEST_F(InputMethodPreferencesTest, ConfiguredByPolicyPrefs) {
               testing::ElementsAre("xkb:us::eng", "xkb:jp::jpn"));
   EXPECT_THAT(mock_manager_->GetActiveIMEState()->GetEnabledInputMethodIds(),
               testing::ElementsAre("xkb:us::eng", "xkb:jp::jpn"));
+  EXPECT_TRUE(ime_controller_.managed_by_policy_);
 }
 
 }  // namespace ash

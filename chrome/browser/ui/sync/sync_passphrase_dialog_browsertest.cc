@@ -25,6 +25,7 @@
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
+#include "ui/views/window/dialog_delegate.h"
 #include "url/gurl.h"
 
 namespace {
@@ -130,8 +131,8 @@ IN_PROC_BROWSER_TEST_F(SyncPassphraseDialogBrowserTest, FooterLink) {
   // The sync settings page is open and active.
   GURL active_url =
       browser()->GetTabStripModel()->GetActiveWebContents()->GetVisibleURL();
-  EXPECT_TRUE(base::StartsWith(active_url.spec(),
-                               chrome::kNewSyncGoogleDashboardURL))
+  EXPECT_TRUE(
+      base::StartsWith(active_url.spec(), chrome::kSyncGoogleDashboardURL))
       << "active_url: " << active_url;
 }
 

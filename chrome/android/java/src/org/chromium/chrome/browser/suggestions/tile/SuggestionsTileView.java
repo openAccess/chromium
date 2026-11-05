@@ -11,6 +11,7 @@ import android.util.AttributeSet;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.ntp.NewTabPageUtils;
 import org.chromium.chrome.browser.ntp.TitleUtil;
 import org.chromium.chrome.browser.suggestions.SiteSuggestion;
 import org.chromium.components.browser_ui.widget.tile.TileView;
@@ -33,7 +34,7 @@ public class SuggestionsTileView extends TileView {
     // TileView override.
     @Override
     public boolean isDraggable() {
-        return mData.source == TileSource.CUSTOM_LINKS;
+        return mData.isCustomLink() || mData.isAiMode();
     }
 
     /**
@@ -45,7 +46,7 @@ public class SuggestionsTileView extends TileView {
      */
     @Initializer
     public void initialize(Tile tile, int titleLines) {
-        boolean showPinnedShortcutBadge = tile.getSource() == TileSource.CUSTOM_LINKS;
+        boolean showPinnedShortcutBadge = tile.isCustomLink() || tile.isAiMode();
         super.initialize(
                 TitleUtil.getTitleForDisplay(tile.getTitle(), tile.getUrl()),
                 tile.isOfflineAvailable(),
@@ -54,6 +55,11 @@ public class SuggestionsTileView extends TileView {
                 titleLines);
         mData = tile.getData();
         setIconViewLayoutParams(tile);
+
+        if (mIconBackgroundView != null) {
+            mIconBackgroundView.setVisibility(
+                    NewTabPageUtils.isBesideMvtModuleEnabled() ? GONE : VISIBLE);
+        }
     }
 
     /** Retrieves data associated with this view. */

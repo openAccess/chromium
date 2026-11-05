@@ -226,48 +226,101 @@ bool Action::ParseFromJson(const base::DictValue& value) {
 }
 
 bool Action::ParseUserAddedActionFromProto(const ActionProto& proto) {
-  id_ = proto.id();
   if (!proto.has_input_element()) {
     return false;
   }
 
-  original_input_ = InputElement::ConvertFromProto(proto.input_element());
-  current_input_ = std::make_unique<InputElement>(*original_input_);
+  auto input_element = InputElement::ConvertFromProto(proto.input_element());
+  if (!IsInputElementValid(*input_element)) {
+    return false;
+  }
 
-  if (!proto.positions().empty()) {
-    std::vector<Position> positions;
-    for (const auto& pos_proto : proto.positions()) {
-      auto position = Position::ConvertFromProto(pos_proto);
-      if (!position) {
-        return false;
-      }
-      positions.emplace_back(*position);
+  // A user-added action is always saved with at least one position.
+  if (proto.positions().empty()) {
+    return false;
+  }
+  std::vector<Position> positions;
+  for (const auto& pos_proto : proto.positions()) {
+    auto position = Position::ConvertFromProto(pos_proto);
+    if (!position) {
+      return false;
     }
-    original_positions_ = positions;
-    current_positions_ = std::move(positions);
+    positions.emplace_back(*position);
+  }
+
+  id_ = proto.id();
+  original_input_ = std::move(input_element);
+  current_input_ = std::make_unique<InputElement>(*original_input_);
+  original_positions_ = positions;
+  current_positions_ = std::move(positions);
+  name_label_index_ = proto.name_index();
+  return true;
+}
+
+bool Action::OverwriteDefaultActionFromProto(const ActionProto& proto) {
+  CHECK(IsDefaultAction(), base::NotFatalUntil::M160);
+  std::unique_ptr<InputElement> input_element;
+  if (proto.has_input_element()) {
+    input_element = InputElement::ConvertFromProto(proto.input_element());
+    if (!IsInputElementValid(*input_element)) {
+      return false;
+    }
+  }
+  // The action must end up with an input element. `current_input_` is not set
+  // yet if this action is newly created by `InitByChangingActionType()`.
+  if (!current_input_ && !input_element) {
+    return false;
+  }
+
+  std::unique_ptr<Position> position;
+  if (!proto.positions().empty()) {
+    // A position can only be customized for an action which has positions.
+    if (current_positions_.empty()) {
+      return false;
+    }
+    position = Position::ConvertFromProto(proto.positions()[0]);
+    if (!position) {
+      return false;
+    }
+  }
+
+  // A keyboard-bound action simulates touch events at its touch positions, so
+  // it must have positions.
+  if (const InputElement& result_input =
+          input_element ? *input_element : *current_input_;
+      IsKeyboardBound(result_input) && IsInputBound(result_input) &&
+      current_positions_.empty()) {
+    return false;
+  }
+
+  if (input_element) {
+    current_input_ = std::move(input_element);
+  }
+  if (position) {
+    current_positions_[0] = *position;
   }
   name_label_index_ = proto.name_index();
   return true;
 }
 
-void Action::OverwriteDefaultActionFromProto(const ActionProto& proto) {
-  DCHECK(IsDefaultAction());
-  if (proto.has_input_element()) {
-    auto input_element = InputElement::ConvertFromProto(proto.input_element());
-    DCHECK(input_element);
-    current_input_ = std::move(input_element);
+bool Action::IsInputElementValid(const InputElement& input_element) const {
+  if (IsKeyboardBound(input_element)) {
+    // A keyboard-bound tap action has one key and a keyboard-bound move
+    // action has `kActionMoveKeysSize` keys.
+    const size_t expected_keys_size =
+        GetType() == ActionType::MOVE ? kActionMoveKeysSize : 1u;
+    if (input_element.keys().size() != expected_keys_size) {
+      LOG(ERROR) << "Require " << expected_keys_size
+                 << " key(s) for the keyboard-bound action. But got "
+                 << input_element.keys().size() << " keys.";
+      return false;
+    }
   }
-  if (!proto.positions().empty()) {
-    auto position = Position::ConvertFromProto(proto.positions()[0]);
-    DCHECK(position);
-    current_positions_[0] = *position;
-    position.reset();
-  }
-  name_label_index_ = proto.name_index();
+  return true;
 }
 
 bool Action::InitByAddingNewAction(const gfx::Point& target_pos) {
-  DCHECK(touch_injector_);
+  CHECK(touch_injector_, base::NotFatalUntil::M160);
   id_ = touch_injector_->GetNextNewActionID();
   is_new_ = true;
 
@@ -321,7 +374,7 @@ void Action::BindPosition(const gfx::Point& new_touch_center) {
 }
 
 const InputElement& Action::GetCurrentDisplayedInput() {
-  DCHECK(current_input_);
+  CHECK(current_input_, base::NotFatalUntil::M160);
   return *current_input_;
 }
 
@@ -334,7 +387,7 @@ bool Action::IsOverlapped(const InputElement& input_element) {
 }
 
 const Position& Action::GetCurrentDisplayedPosition() {
-  DCHECK(!original_positions_.empty());
+  CHECK(!original_positions_.empty(), base::NotFatalUntil::M160);
 
   return (!current_positions_.empty() ? current_positions_[0]
                                       : original_positions_[0]);
@@ -443,11 +496,11 @@ bool Action::IsRepeatedKeyEvent(const ui::KeyEvent& key_event) {
 bool Action::VerifyOnKeyRelease(ui::DomCode code) {
   if (!touch_id_) {
     // The simulated touch events may be released by other events forcely.
-    DCHECK_EQ(keys_pressed_.size(), 0u);
+    CHECK_EQ(keys_pressed_.size(), 0u, base::NotFatalUntil::M160);
     return false;
   }
 
-  DCHECK_NE(keys_pressed_.size(), 0u);
+  CHECK_NE(keys_pressed_.size(), 0u, base::NotFatalUntil::M160);
   if (keys_pressed_.size() == 0 || !keys_pressed_.contains(code)) {
     return false;
   }
@@ -464,7 +517,7 @@ std::unique_ptr<ActionProto> Action::ConvertToProtoIfCustomized() const {
     // Check if the default action is customized.
     bool customized = false;
 
-    DCHECK(original_type_);
+    CHECK(original_type_, base::NotFatalUntil::M160);
     if (*original_type_ != GetType()) {
       customized = true;
     }
@@ -537,13 +590,14 @@ void Action::UpdateTouchDownPositions() {
   on_left_or_middle_side_ =
       touch_down_positions_[0].x() <= content_bounds.width() / 2;
 
-  DCHECK_EQ(touch_down_positions_.size(), original_positions_.size());
+  CHECK_EQ(touch_down_positions_.size(), original_positions_.size(),
+           base::NotFatalUntil::M160);
 }
 
 void Action::OnTouchReleased() {
   last_touch_root_location_.set_x(0);
   last_touch_root_location_.set_y(0);
-  DCHECK(touch_id_);
+  CHECK(touch_id_, base::NotFatalUntil::M160);
   TouchIdManager::GetInstance()->ReleaseTouchID(*touch_id_);
   touch_id_ = std::nullopt;
   keys_pressed_.clear();
@@ -562,7 +616,7 @@ void Action::OnTouchCancelled() {
 void Action::CreateTouchEvent(ui::EventType type,
                               const base::TimeTicks& time_stamp,
                               std::list<ui::TouchEvent>& touch_events) {
-  DCHECK(touch_id_);
+  CHECK(touch_id_, base::NotFatalUntil::M160);
   touch_events.emplace_back(
       type, last_touch_root_location_, last_touch_root_location_, time_stamp,
       ui::PointerDetails(ui::EventPointerType::kTouch, *touch_id_));

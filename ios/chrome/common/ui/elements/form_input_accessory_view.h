@@ -128,6 +128,9 @@ extern NSString* const
 // Whether touches in blank areas should pass through to the underlying UI.
 @property(nonatomic, assign) BOOL passThroughTouchesEnabled;
 
+// Symbol image displayed on `manualFillButton`.
+@property(nonatomic, strong) UIImage* manualFillSymbol;
+
 // Sets up the view with the given `leadingView`. Navigation controls are shown
 // on the trailing side and use `delegate` for actions.
 - (void)setUpWithLeadingView:(UIView*)leadingView
@@ -143,7 +146,8 @@ extern NSString* const
 // - The background color is set to grey.
 // If `closeButtonSymbol` is nil, the close button will use the default text.
 // Otherwise, it will use `closeButtonSymbol` as the image instead.
-// `isTabletFormFactor` modifies the appearance of the manual fill button.
+// `isTabletFormFactor` determines whether the close button is hidden.
+// `isCompact` modifies the appearance of the manual fill button.
 - (void)setUpWithLeadingView:(UIView*)leadingView
             navigationDelegate:(id<FormInputAccessoryViewDelegate>)delegate
               manualFillSymbol:(UIImage*)manualFillSymbol
@@ -152,7 +156,8 @@ extern NSString* const
        addressManualFillSymbol:(UIImage*)addressManualFillSymbol
       atMemoryManualFillSymbol:(UIImage*)atMemoryManualFillSymbol
              closeButtonSymbol:(UIImage*)closeButtonSymbol
-            isTabletFormFactor:(BOOL)isTabletFormFactor;
+            isTabletFormFactor:(BOOL)isTabletFormFactor
+                     isCompact:(BOOL)isCompact;
 
 // Sets the height of the omnibox typing shield. Set a height of 0 to hide the
 // typing shield. The omnibox typing shield is a transparent view on the top

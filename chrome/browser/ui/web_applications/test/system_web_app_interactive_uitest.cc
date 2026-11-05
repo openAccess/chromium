@@ -28,7 +28,6 @@
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/app_list/app_service/app_service_app_item.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/login/login_manager_test.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
@@ -65,6 +64,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/web_contents_user_data.h"
@@ -73,6 +73,8 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "ui/base/models/menu_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/display/screen.h"
 #include "ui/wm/public/activation_change_observer.h"
 #include "ui/wm/public/activation_client.h"
@@ -568,7 +570,7 @@ class SystemWebAppManagerMultiDesktopLaunchBrowserTest
 
     auto launch_params = apps::AppLaunchParams(
         app_id, apps::LaunchContainer::kLaunchContainerWindow,
-        WindowOpenDisposition::CURRENT_TAB,
+        ui::mojom::WindowOpenDisposition::kCurrentTab,
         apps::LaunchSource::kFromAppListGrid);
 
     content::TestNavigationObserver navigation_observer(
@@ -707,7 +709,7 @@ IN_PROC_BROWSER_TEST_F(SystemWebAppManagerMultiDesktopLaunchBrowserTest,
     provider->scheduler().LaunchAppWithCustomParams(
         apps::AppLaunchParams(app_id2,
                               apps::LaunchContainer::kLaunchContainerWindow,
-                              WindowOpenDisposition::CURRENT_TAB,
+                              ui::mojom::WindowOpenDisposition::kCurrentTab,
                               apps::LaunchSource::kFromAppListGrid),
         future.GetCallback());
     EXPECT_FALSE(future.template Get<1>().get());
@@ -723,7 +725,7 @@ IN_PROC_BROWSER_TEST_F(SystemWebAppManagerMultiDesktopLaunchBrowserTest,
     provider->scheduler().LaunchAppWithCustomParams(
         apps::AppLaunchParams(app_id1,
                               apps::LaunchContainer::kLaunchContainerWindow,
-                              WindowOpenDisposition::CURRENT_TAB,
+                              ui::mojom::WindowOpenDisposition::kCurrentTab,
                               apps::LaunchSource::kFromAppListGrid),
         future.GetCallback());
     EXPECT_TRUE(future.template Get<1>().get());

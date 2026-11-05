@@ -11,20 +11,23 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/safe_browsing_policy_test.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
+#include "chrome/browser/safe_browsing/password_protection/chrome_password_protection_service.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/core/common/features.h"
+#include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "url/gurl.h"
 
-using safe_browsing::ReusedPasswordAccountType;
 using testing::Return;
+
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+using safe_browsing::ReusedPasswordAccountType;
+#endif
 
 namespace policy {
 
@@ -53,48 +56,6 @@ int IsEnhancedProtectionMessageVisibleOnInterstitial(
                      "protection message.";
   }
   return content::EvalJs(tab->GetPrimaryMainFrame(), command).ExtractInt();
-}
-
-// Test extended reporting is managed by policy.
-IN_PROC_BROWSER_TEST_F(SafeBrowsingPolicyTest,
-                       SafeBrowsingExtendedReportingPolicyManaged) {
-  // Set the extended reporting pref to True and ensure the enterprise policy
-  // can overwrite it.
-  PrefService* prefs = chrome_test_utils::GetProfile(this)->GetPrefs();
-  prefs->SetBoolean(prefs::kSafeBrowsingScoutReportingEnabled, true);
-
-  // Set the enterprise policy to disable extended reporting.
-  EXPECT_TRUE(
-      prefs->GetBoolean(prefs::kSafeBrowsingExtendedReportingOptInAllowed));
-  PolicyMap policies;
-  policies.Set(key::kSafeBrowsingExtendedReportingEnabled,
-               POLICY_LEVEL_MANDATORY, POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD,
-               base::Value(false), nullptr);
-  UpdateProviderPolicy(policies);
-  // Policy should have overwritten the pref, and it should be managed.
-  EXPECT_FALSE(prefs->GetBoolean(prefs::kSafeBrowsingScoutReportingEnabled));
-  EXPECT_TRUE(
-      prefs->IsManagedPreference(prefs::kSafeBrowsingScoutReportingEnabled));
-
-  // Also make sure the SafeBrowsing prefs helper functions agree with the
-  // policy.
-  if (base::FeatureList::IsEnabled(
-          safe_browsing::kExtendedReportingRemovePrefDependency)) {
-    EXPECT_FALSE(safe_browsing::IsExtendedReportingPolicyManaged(*prefs));
-  } else {
-    EXPECT_TRUE(safe_browsing::IsExtendedReportingPolicyManaged(*prefs));
-  }
-
-  // Note that making SBER policy managed does NOT affect the SBEROptInAllowed
-  // setting, which is intentionally kept distinct for now. When the latter is
-  // deprecated, then SBER's policy management will imply whether the checkbox
-  // is visible.
-  if (base::FeatureList::IsEnabled(
-          safe_browsing::kExtendedReportingRemovePrefDependency)) {
-    EXPECT_FALSE(safe_browsing::IsExtendedReportingOptInAllowed(*prefs));
-  } else {
-    EXPECT_TRUE(safe_browsing::IsExtendedReportingOptInAllowed(*prefs));
-  }
 }
 
 // Test that when safe browsing allowlist domains are set by policy, safe
@@ -246,6 +207,8 @@ IN_PROC_BROWSER_TEST_F(SafeBrowsingPolicyTest, PasswordProtectionLoginURLs) {
 
 // Test that when password protection change password URL is set by policy,
 // password protection service gets the correct value.
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+
 IN_PROC_BROWSER_TEST_F(SafeBrowsingPolicyTest,
                        PasswordProtectionChangePasswordURL) {
   // Without setting up the enterprise policy,
@@ -296,9 +259,8 @@ class MockPasswordProtectionService
   MOCK_CONST_METHOD0(IsPrimaryAccountGmail, bool());
 
   AccountInfo GetAccountInfo() const override {
-    AccountInfo info;
-    info.email = "user@mycompany.com";
-    return info;
+    return AccountInfo::Builder(GaiaId("test_gaia_id"), "user@mycompany.com")
+        .Build();
   }
 };
 
@@ -420,6 +382,8 @@ IN_PROC_BROWSER_TEST_F(SafeBrowsingPolicyTest,
             mock_service.GetPasswordProtectionWarningTriggerPref(
                 ReusedPasswordAccountType()));
 }
+
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace policy

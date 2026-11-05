@@ -15,18 +15,17 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/feature_engagement/tracker_factory.h"
-#include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/google_one/google_one_offer_iph_tab_helper_constants.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/feature_engagement/feature_engagement_tracker_provider.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ui/vector_icons/vector_icons.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/feature_engagement/public/tracker.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/browser/web_contents_user_data.h"
 #include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_delegate.h"
@@ -128,7 +127,7 @@ std::unique_ptr<message_center::Notification> CreateGoogleOneOfferNotification(
       message_center::NOTIFICATION_TYPE_SIMPLE,
       kIPHGoogleOneOfferNotificationId, base::UTF8ToUTF16(notification_title),
       base::UTF8ToUTF16(notification_message),
-      base::UTF8ToUTF16(notification_display_source), GURL(), notifier_id,
+      base::UTF8ToUTF16(notification_display_source), notifier_id,
       rich_notification_data,
       base::MakeRefCounted<DriveIphTabHelperNotificationDelegate>(tracker),
       chromeos::kRedeemIcon,
@@ -166,18 +165,21 @@ void GoogleOneOfferIphTabHelper::PrimaryPageChanged(content::Page& page) {
     return;
   }
 
-  if (profile->GetProfilePolicyConnector()->IsManaged()) {
-    return;
-  }
-
   auto* user =
       ash::BrowserContextHelper::Get()->GetUserByBrowserContext(profile);
   if (!user_manager::UserManager::Get()->IsOwnerUser(user)) {
     return;
   }
 
+  // The user's policy status is known once its Profile has been added, which
+  // happened before it could open a page. If it isn't, treat the user as
+  // unmanaged, matching ProfileUserManagerController's default.
+  if (user->is_managed().value_or(false)) {
+    return;
+  }
+
   feature_engagement::Tracker* tracker =
-      feature_engagement::TrackerFactory::GetForBrowserContext(profile);
+      ash::FeatureEngagementTrackerProvider::Get().Find(user->GetAccountId());
 
   if (!tracker->ShouldTriggerHelpUI(
           feature_engagement::kIPHGoogleOneOfferNotificationFeature)) {
@@ -193,7 +195,4 @@ void GoogleOneOfferIphTabHelper::PrimaryPageChanged(content::Page& page) {
 
 GoogleOneOfferIphTabHelper::GoogleOneOfferIphTabHelper(
     content::WebContents* web_contents)
-    : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<GoogleOneOfferIphTabHelper>(*web_contents) {}
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(GoogleOneOfferIphTabHelper);
+    : content::WebContentsObserver(web_contents) {}

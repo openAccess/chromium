@@ -14,12 +14,19 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/upgrade_detector/upgrade_detector.h"
 #include "chrome/common/channel_info.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/version_info/channel.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/strings/grit/ui_strings.h"
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/global_features.h"
+#include "chrome/browser/lifetime/scheduled_restart_manager.h"
+#endif
 
 namespace {
 
@@ -62,7 +69,8 @@ AppMenuIconController::Severity SeverityFromUpgradeLevel(
         return AppMenuIconController::Severity::kHigh;
     }
   }
-  DCHECK_EQ(level, UpgradeDetector::UPGRADE_ANNOYANCE_NONE);
+  CHECK_EQ(level, UpgradeDetector::UPGRADE_ANNOYANCE_NONE,
+           base::NotFatalUntil::M162);
 
   return AppMenuIconController::Severity::kNone;
 }
@@ -93,6 +101,14 @@ bool IsUnstableChannel() {
          channel == version_info::Channel::CANARY;
 }
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+scheduled_restart::ScheduledRestartManager* GetScheduledRestartManager() {
+  return g_browser_process && g_browser_process->GetFeatures()
+             ? g_browser_process->GetFeatures()->scheduled_restart_manager()
+             : nullptr;
+}
+#endif
+
 }  // namespace
 
 AppMenuIconController::AppMenuIconController(Profile* profile,
@@ -107,11 +123,19 @@ AppMenuIconController::AppMenuIconController(UpgradeDetector* upgrade_detector,
       upgrade_detector_(upgrade_detector),
       profile_(profile),
       delegate_(delegate) {
-  DCHECK(profile_);
-  DCHECK(delegate_);
+  CHECK(profile_, base::NotFatalUntil::M162);
+  CHECK(delegate_, base::NotFatalUntil::M162);
 
   global_error_observation_.Observe(
       GlobalErrorServiceFactory::GetForProfile(profile_));
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  if (auto* srm = GetScheduledRestartManager()) {
+    schedule_subscription_ =
+        srm->AddScheduleChangedCallback(base::BindRepeating(
+            &AppMenuIconController::UpdateDelegate, base::Unretained(this)));
+  }
+#endif
 
   upgrade_detector_->AddObserver(this);
 }
@@ -127,6 +151,20 @@ void AppMenuIconController::UpdateDelegate() {
 AppMenuIconController::TypeAndSeverity
 AppMenuIconController::GetTypeAndSeverity() const {
 #if !BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  // Display the badge immediately if a restart is scheduled. By default in
+  // production, the first nudge interval (14 days) occurs well after upgrade
+  // annoyance is reached, but testing environments or Finch trial configs can
+  // use shorter nudge intervals, scheduling a restart while annoyance is still
+  // NONE.
+  if (browser_defaults::kShowUpgradeMenuItem &&
+      base::FeatureList::IsEnabled(features::kScheduledRestart)) {
+    if (auto* srm = GetScheduledRestartManager(); srm && srm->is_scheduled()) {
+      return {IconType::kUpgradeNotification, Severity::kLow};
+    }
+  }
+#endif
+
   if (browser_defaults::kShowUpgradeMenuItem &&
       upgrade_detector_->notify_upgrade()) {
     UpgradeDetector::UpgradeNotificationAnnoyanceLevel level =
@@ -165,6 +203,14 @@ std::u16string AppMenuIconController::GetIconLabel(IconType type,
   if (severity == Severity::kNone) {
     return std::u16string();
   } else if (type == IconType::kUpgradeNotification) {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+    if (base::FeatureList::IsEnabled(features::kScheduledRestart)) {
+      if (auto* srm = GetScheduledRestartManager();
+          srm && srm->is_scheduled()) {
+        return l10n_util::GetStringUTF16(IDS_APP_MENU_BUTTON_RESTART_SCHEDULED);
+      }
+    }
+#endif
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING) && \
     (BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX))
     int message_id = IDS_APP_MENU_BUTTON_UPDATE;
@@ -206,6 +252,14 @@ std::u16string AppMenuIconController::GetIconTooltip(IconType type,
   if (severity == Severity::kNone) {
     return l10n_util::GetStringUTF16(IDS_APPMENU_TOOLTIP);
   } else if (type == IconType::kUpgradeNotification) {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+    if (base::FeatureList::IsEnabled(features::kScheduledRestart)) {
+      if (auto* srm = GetScheduledRestartManager();
+          srm && srm->is_scheduled()) {
+        return l10n_util::GetStringUTF16(IDS_APP_MENU_BUTTON_RESTART_SCHEDULED);
+      }
+    }
+#endif
     return l10n_util::GetStringUTF16(IDS_APPMENU_TOOLTIP_UPDATE_AVAILABLE);
   } else {
     return l10n_util::GetStringUTF16(IDS_APPMENU_TOOLTIP_ALERT);

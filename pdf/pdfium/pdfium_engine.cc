@@ -205,6 +205,10 @@ void AddMetadataToTextObject(FPDF_DOCUMENT doc,
                                     attributes.is_bold));
   CHECK(FPDFPageObjMark_SetIntParam(doc, text_object, mark, "IsItalic",
                                     attributes.is_italic));
+  CHECK(FPDFPageObjMark_SetIntParam(doc, text_object, mark, "IsStrikethrough",
+                                    attributes.is_strikethrough));
+  CHECK(FPDFPageObjMark_SetIntParam(doc, text_object, mark, "IsUnderline",
+                                    attributes.is_underline));
 
   CHECK(FPDFPageObjMark_SetStringParam(doc, text_object, mark, "Text",
                                        attributes.text.c_str()));
@@ -247,11 +251,11 @@ gfx::PointF CalculateCanonicalTextRunOrigin(
 // Calculates the text object origin transform (relative to the textbox origin)
 // within a text annotation in PDF points.
 FS_MATRIX CalculateTextObjectOriginTransform(
-    const InkTextInfo& item,
+    const gfx::RectF& location,
     double pdf_zoom,
     const InkTextBoxAttributes& attributes,
     float ascent) {
-  gfx::RectF text_run_textbox_rect = item.location;
+  gfx::RectF text_run_textbox_rect = location;
   text_run_textbox_rect.InvScale(pdf_zoom);
 
   gfx::SizeF canonical_textbox_size = attributes.rect.size();
@@ -272,6 +276,101 @@ FS_MATRIX CalculateTextObjectOriginTransform(
   baseline_origin.Scale(printing::kUnitConversionFactorPixelsToPoints);
   return FS_MATRIX{
       1.0f, 0.0f, 0.0f, 1.0f, baseline_origin.x(), -baseline_origin.y()};
+}
+
+float GetLineDecorationStrokeWidth(float css_font_size) {
+  const float pdf_font_size = CSSFontSizeToPdfFontSize(css_font_size);
+
+  // Matches Blink's text-decoration auto thickness.
+  const float auto_thickness = pdf_font_size / 10.0f;
+
+  // Unlike Blink which enforces a 1.0f CSS pixel floor on screen rasterization,
+  // use a smaller safety floor in PDF points so that the stroke scales down
+  // proportionally with small glyphs and does not become thick when zoomed in
+  // or on high DPI.
+  return std::max(0.25f, auto_thickness);
+}
+
+// Creates a horizontal line path page object for a single text line at
+// `text_line_rect` and vertical offset `line_y` in local coordinates (relative
+// to the baseline origin) in PDF points.
+ScopedFPDFPageObject CreateLineDecorationPath(
+    const gfx::RectF& text_line_rect,
+    double pdf_zoom,
+    const InkTextBoxAttributes& attributes,
+    float stroke_width,
+    float line_y) {
+  const int total_rotations =
+      GetClockwiseRotationSteps(attributes.viewport_orientation) +
+      attributes.orientation;
+  const float run_length = (total_rotations % 2 == 0) ? text_line_rect.width()
+                                                      : text_line_rect.height();
+  const float run_width_pt = CSSFontSizeToPdfFontSize(run_length / pdf_zoom);
+
+  ScopedFPDFPageObject line_path(FPDFPageObj_CreateNewPath(0, line_y));
+  CHECK(line_path);
+  CHECK(FPDFPath_LineTo(line_path.get(), run_width_pt, line_y));
+  CHECK(FPDFPath_SetDrawMode(line_path.get(), FPDF_FILLMODE_NONE,
+                             /*stroke=*/1));
+  CHECK(FPDFPageObj_SetLineCap(line_path.get(), FPDF_LINECAP_BUTT));
+  const SkColor color = attributes.color;
+  CHECK(FPDFPageObj_SetStrokeColor(line_path.get(),
+                                   /*R=*/SkColorGetR(color),
+                                   /*G=*/SkColorGetG(color),
+                                   /*B=*/SkColorGetB(color),
+                                   /*A=*/255));
+  CHECK(FPDFPageObj_SetStrokeWidth(line_path.get(), stroke_width));
+  return line_path;
+}
+
+// Creates a strikethrough path page object for a single text line at
+// `text_line_rect` in local coordinates (relative to the baseline origin) in
+// PDF points.
+ScopedFPDFPageObject CreateStrikethroughPath(
+    const gfx::RectF& text_line_rect,
+    double pdf_zoom,
+    const InkTextBoxAttributes& attributes,
+    float ascent) {
+  const float stroke_width =
+      GetLineDecorationStrokeWidth(attributes.css_font_size);
+
+  // Use the ascent calculated at the textbox level so the line remains
+  // continuous across multiple different fonts on the same baseline.
+  // Position is centered at 1/3 ascent above the baseline. This matches Blink's
+  // text-decoration line-through calculation.
+  // Note that on very small font sizes (e.g. 6-8px), Blink's screen rendering
+  // snaps the line to the nearest integer pixel boundary, whereas the PDF
+  // stores exact float vector coordinates.
+  const float line_y = CSSFontSizeToPdfFontSize(ascent) / 3.0f;
+  return CreateLineDecorationPath(text_line_rect, pdf_zoom, attributes,
+                                  stroke_width, line_y);
+}
+
+// Creates an underline path page object for a single text line at
+// `text_line_rect` in local coordinates (relative to the baseline origin) in
+// PDF points.
+ScopedFPDFPageObject CreateUnderlinePath(
+    const gfx::RectF& text_line_rect,
+    double pdf_zoom,
+    const InkTextBoxAttributes& attributes) {
+  const float stroke_width =
+      GetLineDecorationStrokeWidth(attributes.css_font_size);
+
+  // Position line_y below the baseline in baseline-relative PDF points.
+  const float line_y = -stroke_width;
+  return CreateLineDecorationPath(text_line_rect, pdf_zoom, attributes,
+                                  stroke_width, line_y);
+}
+
+void TransformAndMarkLineDecoration(FPDF_PAGEOBJECT decoration_path,
+                                    const FS_MATRIX& line_origin_matrix,
+                                    const FS_MATRIX& textbox_matrix,
+                                    FPDF_PAGEOBJECTMARK mark) {
+  CHECK(FPDFPageObj_TransformF(decoration_path, &line_origin_matrix));
+  CHECK(FPDFPageObj_TransformF(decoration_path, &textbox_matrix));
+  // Mark should have already been created after text object creation.
+  CHECK(mark);
+  CHECK(FPDFPageObj_AddExistingMark(decoration_path, mark));
 }
 
 // Creates a text object for a single typeface run at `item` in PDF points.
@@ -332,8 +431,8 @@ ScopedFPDFPageObject CreateTextObjectForRun(
     CHECK(FPDFPageObj_TransformF(text_object.get(), &skew_matrix));
   }
 
-  FS_MATRIX text_origin_matrix =
-      CalculateTextObjectOriginTransform(item, pdf_zoom, attributes, ascent);
+  FS_MATRIX text_origin_matrix = CalculateTextObjectOriginTransform(
+      item.location, pdf_zoom, attributes, ascent);
   // Local translation must be applied before the textbox's global transform
   // to ensure correct rotation/scaling of the offset.
   CHECK(FPDFPageObj_TransformF(text_object.get(), &text_origin_matrix));
@@ -733,6 +832,9 @@ std::string GetXYZParamsString(FPDF_DEST dest, PDFiumPage* page) {
     return xyz_params;
   }
 
+  // WARNING: Do not use `dest` below this point, as `page` access can
+  // invalidate it.
+
   // Generate a string of the parameters
   if (has_x_coord) {
     // Handle out-of-range PDF coordinates and convert PDF coordinates to screen
@@ -881,8 +983,11 @@ void CheckBitmapProperties(const SkBitmap& sk_bitmap, FPDF_BITMAP fpdf_bitmap) {
 }  // namespace
 
 void InitializeSDK(bool enable_v8,
+                   bool enable_xfa,
                    bool use_skia,
                    FontMappingMode font_mapping_mode) {
+  CHECK(enable_v8 || !enable_xfa);
+
   FPDF_LIBRARY_CONFIG config;
   config.version = 6;
   config.m_pUserFontPaths = nullptr;
@@ -1141,6 +1246,15 @@ void PDFiumEngine::Paint(const gfx::Rect& rect,
       if (ContinuePaint(progressive_index.value(), image_data)) {
         FinishPaint(progressive_index.value(), image_data);
         ready.push_back(dirty_in_screen);
+
+        // Reaching here means a page whose data was available finished
+        // rasterizing, so this rect holds real document content. The
+        // `PaintUnavailablePage()` branch below also pushes to `ready`, but
+        // paints a blank placeholder, so it deliberately does not count.
+        if (!first_content_paint_reported_ && !client_->IsPrintPreview()) {
+          first_content_paint_reported_ = true;
+          client_->OnFirstContentPainted();
+        }
       } else {
         pending.push_back(dirty_in_screen);
       }
@@ -2035,6 +2149,9 @@ bool PDFiumEngine::OnLeftMouseDown(const blink::WebMouseEvent& event) {
       FORM_OnLButtonDoubleClick(form(), page, event.GetModifiers(),
                                 point_data.pdf_point.x(),
                                 point_data.pdf_point.y());
+      if (point_data.area == PDFiumPage::FORM_TEXT_AREA) {
+        SetFormSelectedText(form(), page);
+      }
     }
     if (point_data.form_type != FPDF_FORMFIELD_UNKNOWN) {
       return true;  // Return now before we get into the selection code.
@@ -2158,7 +2275,7 @@ bool PDFiumEngine::NavigateToLinkDestination(
       return true;
     }
 
-    if (disposition == WindowOpenDisposition::CURRENT_TAB) {
+    if (disposition == WindowOpenDisposition::kCurrentTab) {
       client_->NavigateToDestination(target.page,
                                      base::OptionalToPtr(target.x_in_pixels),
                                      base::OptionalToPtr(target.y_in_pixels),
@@ -2994,7 +3111,7 @@ void PDFiumEngine::HandleAccessibilityAction(
               pages_[action_data.page_index]->GetLinkTargetAtIndex(
                   action_data.annotation_index, &target);
           NavigateToLinkDestination(area, target,
-                                    WindowOpenDisposition::CURRENT_TAB);
+                                    WindowOpenDisposition::kCurrentTab);
         }
       }
       return;
@@ -3004,8 +3121,8 @@ void PDFiumEngine::HandleAccessibilityAction(
       return;
     }
     case AccessibilityAction::kSetSelection: {
-      if (IsPageCharacterIndexInBounds(action_data.selection_start_index) &&
-          IsPageCharacterIndexInBounds(action_data.selection_end_index)) {
+      if (IsSelectionBoundaryInBounds(action_data.selection_start_index) &&
+          IsSelectionBoundaryInBounds(action_data.selection_end_index)) {
         SetSelection(action_data.selection_start_index,
                      action_data.selection_end_index);
         gfx::Rect target_rect = action_data.target_rect;
@@ -3253,31 +3370,30 @@ std::optional<PDFiumEngine::NamedDestination> PDFiumEngine::GetNamedDestination(
     }
   }
 
-  if (!dest) {
-    return {};
-  }
-
-  int page = FPDFDest_GetDestPageIndex(doc(), dest);
-  if (!PageIndexInBounds(page)) {
-    return {};
+  // Implicitly checks for null `dest` and returns -1, which is out of bounds.
+  int dest_page_index = FPDFDest_GetDestPageIndex(doc(), dest);
+  if (!PageIndexInBounds(dest_page_index)) {
+    return std::nullopt;
   }
 
   NamedDestination result;
-  result.page = page;
   unsigned long view_int =
       FPDFDest_GetView(dest, &result.num_params, result.params.data());
+  result.page_index = dest_page_index;
+  result.view = ConvertViewIntToViewString(view_int);
+  PDFiumPage* dest_page_ptr = pages_[dest_page_index].get();
+
+  if (view_int == PDFDEST_VIEW_XYZ) {
+    result.xyz_params = GetXYZParamsString(dest, dest_page_ptr);
+  }
+
+  // WARNING: Do not use `dest` below this point, as GetXYZParamsString() may
+  // have invalidated it. Or ParamsTransformPageToScreen() may invalidate it.
 
   // FPDFDest_GetView() gets the PDF coordinates directly from the PDF document.
   // The PDF coordinates need to be transformed into screen coordinates before
   // getting sent to the viewport.
-  PDFiumPage* page_ptr = pages_[page].get();
-  ParamsTransformPageToScreen(view_int, page_ptr, result.params);
-
-  if (view_int == PDFDEST_VIEW_XYZ) {
-    result.xyz_params = GetXYZParamsString(dest, page_ptr);
-  }
-
-  result.view = ConvertViewIntToViewString(view_int);
+  ParamsTransformPageToScreen(view_int, dest_page_ptr, result.params);
   return result;
 }
 
@@ -4692,6 +4808,7 @@ void PDFiumEngine::OnSelectionPositionChanged() {
   gfx::Rect left(std::numeric_limits<int32_t>::max(),
                  std::numeric_limits<int32_t>::max(), 0, 0);
   gfx::Rect right;
+  gfx::Rect bounding_box;
   for (const auto& sel : selection_) {
     const std::vector<gfx::Rect>& screen_rects = sel.GetScreenRects(
         GetVisibleRect().origin(), current_zoom_, GetCurrentOrientation());
@@ -4702,6 +4819,7 @@ void PDFiumEngine::OnSelectionPositionChanged() {
       if (IsAboveOrDirectlyLeftOf(right, rect)) {
         right = rect;
       }
+      bounding_box.Union(rect);
     }
   }
   right.set_x(right.x() + right.width());
@@ -4709,7 +4827,7 @@ void PDFiumEngine::OnSelectionPositionChanged() {
     left.set_x(0);
     left.set_y(0);
   }
-  client_->SelectionChanged(left, right);
+  client_->SelectionChanged(left, right, bounding_box);
 }
 
 gfx::Size PDFiumEngine::ApplyDocumentLayout(
@@ -4784,6 +4902,7 @@ void PDFiumEngine::SetFieldFocus(PDFiumEngineClient::FocusFieldType type) {
   // is set to `FocusFieldType::kText`, this is the Renderer. After it flips,
   // the MimeHandler is notified.
   if (focus_field_type_ == FocusFieldType::kText) {
+    selected_form_text_.clear();
     client_->SetSelectedText("");
   }
 
@@ -4832,10 +4951,17 @@ void PDFiumEngine::KillTouchTimer() {
   touch_timer_.Stop();
 }
 
-bool PDFiumEngine::IsPageCharacterIndexInBounds(
+bool PDFiumEngine::IsSelectionBoundaryInBounds(
     const PageCharacterIndex& index) const {
-  return PageIndexInBounds(index.page_index) &&
-         pages_[index.page_index]->IsCharIndexInBounds(index.char_index);
+  if (!PageIndexInBounds(index.page_index)) {
+    return false;
+  }
+  // Selection boundaries are between characters, so the index just past the
+  // last character is valid, e.g. for a selection that ends at the end of a
+  // page's text. SetSelection() treats the end index as exclusive.
+  int char_count = pages_[index.page_index]->GetCharCount();
+  return char_count >= 0 &&
+         index.char_index <= static_cast<uint32_t>(char_count);
 }
 
 FPDF_BOOL PDFiumEngine::Pause_NeedToPauseNow(IFSDK_PAUSE* param) {
@@ -5539,7 +5665,7 @@ void PDFiumEngine::DiscardText(InkTextId id) {
 
 void PDFiumEngine::DrawText(int page_index,
                             InkTextId id,
-                            base::span<const InkTextInfo> text_info,
+                            base::span<const InkTextLine> text_lines,
                             float ascent,
                             double pdf_zoom,
                             const InkTextBoxAttributes& attributes) {
@@ -5558,44 +5684,102 @@ void PDFiumEngine::DrawText(int page_index,
 
   ascent /= pdf_zoom;
 
+  size_t num_page_objects = 0;
+  for (const InkTextLine& line : text_lines) {
+    num_page_objects += line.text_info.size();
+  }
+  // Strikethrough and underline each generate one path page object per line in
+  // addition to the text objects.
+  if (attributes.is_strikethrough) {
+    num_page_objects += text_lines.size();
+  }
+  if (attributes.is_underline) {
+    num_page_objects += text_lines.size();
+  }
+
   PageObjectVector page_objects;
-  page_objects.reserve(text_info.size());
+  page_objects.reserve(num_page_objects);
   FPDF_PAGEOBJECTMARK mark = nullptr;
-  for (const InkTextInfo& item : text_info) {
-    FPDF_FONT font = GetAddedFont(item.font_id);
-    if (!font) {
-      // Only possible for emoji fonts.
-      // TODO(crbug.com/502468286): Change to a CHECK once emoji fonts are
-      // supported.
-      continue;
+  FPDF_PAGEOBJECTMARK actualtext_span = nullptr;
+
+  // 1. Create text objects for all lines.
+  for (const InkTextLine& line : text_lines) {
+    for (const InkTextInfo& item : line.text_info) {
+      FPDF_FONT font = GetAddedFont(item.font_id);
+      if (!font) {
+        // Only possible for emoji fonts.
+        // TODO(crbug.com/502468286): Change to a CHECK once emoji fonts are
+        // supported.
+        continue;
+      }
+
+      ScopedFPDFPageObject text_object =
+          CreateTextObjectForRun(doc(), font, pdf_font_size, item, attributes,
+                                 pdf_zoom, ascent, textbox_matrix);
+
+      // The metadata mark must be attached to every text object in the
+      // annotation. Initialize it on the first successfully created text
+      // object.
+      if (!mark) {
+        mark = FPDFPageObj_AddMark(text_object.get(),
+                                   kInkTextAnnotationIdentifierKey);
+        CHECK(mark);
+        AddMetadataToTextObject(doc(), text_object.get(), mark,
+                                GetNextTextboxId(), attributes);
+      } else {
+        CHECK(FPDFPageObj_AddExistingMark(text_object.get(), mark));
+      }
+
+      if (item.join_prev_actualtext) {
+        if (actualtext_span) {
+          CHECK(
+              FPDFPageObj_AddExistingMark(text_object.get(), actualtext_span));
+        }
+      } else {
+        if (base::IsStringASCII(item.text)) {
+          actualtext_span = nullptr;
+        } else {
+          actualtext_span = FPDFPageObj_AddMark(text_object.get(), "Span");
+          CHECK(actualtext_span);
+          std::vector<unsigned char> blob = ToUTF16BEBlob(item.text);
+          FPDFPageObjMark_SetBlobParam(doc(), text_object.get(),
+                                       actualtext_span, "ActualText",
+                                       blob.data(), blob.size());
+        }
+      }
+
+      page_objects.push_back(text_object.get());
+      CHECK(FPDFPage_InsertObject(page, text_object.release()));
     }
+  }
 
-    ScopedFPDFPageObject text_object =
-        CreateTextObjectForRun(doc(), font, pdf_font_size, item, attributes,
-                               pdf_zoom, ascent, textbox_matrix);
+  // 2. Create line decorations (strikethrough and underline).
+  if ((attributes.is_strikethrough || attributes.is_underline) &&
+      !page_objects.empty()) {
+    for (const InkTextLine& line : text_lines) {
+      if (line.text_info.empty()) {
+        continue;
+      }
 
-    // The metadata mark must be attached to every text object in the
-    // annotation. Initialize it on the first successfully created text object.
-    if (!mark) {
-      mark = FPDFPageObj_AddMark(text_object.get(),
-                                 kInkTextAnnotationIdentifierKey);
-      CHECK(mark);
-      AddMetadataToTextObject(doc(), text_object.get(), mark,
-                              GetNextTextboxId(), attributes);
-    } else {
-      CHECK(FPDFPageObj_AddExistingMark(text_object.get(), mark));
+      FS_MATRIX line_origin_matrix = CalculateTextObjectOriginTransform(
+          line.location, pdf_zoom, attributes, ascent);
+      if (attributes.is_strikethrough) {
+        ScopedFPDFPageObject strikethrough_path = CreateStrikethroughPath(
+            line.location, pdf_zoom, attributes, ascent);
+        TransformAndMarkLineDecoration(
+            strikethrough_path.get(), line_origin_matrix, textbox_matrix, mark);
+        page_objects.push_back(strikethrough_path.get());
+        CHECK(FPDFPage_InsertObject(page, strikethrough_path.release()));
+      }
+      if (attributes.is_underline) {
+        ScopedFPDFPageObject underline_path =
+            CreateUnderlinePath(line.location, pdf_zoom, attributes);
+        TransformAndMarkLineDecoration(underline_path.get(), line_origin_matrix,
+                                       textbox_matrix, mark);
+        page_objects.push_back(underline_path.get());
+        CHECK(FPDFPage_InsertObject(page, underline_path.release()));
+      }
     }
-
-    if (!base::IsStringASCII(item.text)) {
-      FPDF_PAGEOBJECTMARK span = FPDFPageObj_AddMark(text_object.get(), "Span");
-      CHECK(span);
-      std::vector<unsigned char> blob = ToUTF16BEBlob(item.text);
-      FPDFPageObjMark_SetBlobParam(doc(), text_object.get(), span, "ActualText",
-                                   blob.data(), blob.size());
-    }
-
-    page_objects.push_back(text_object.get());
-    CHECK(FPDFPage_InsertObject(page, text_object.release()));
   }
 
   ink_edited_pages_needing_regeneration_.insert(page_index);

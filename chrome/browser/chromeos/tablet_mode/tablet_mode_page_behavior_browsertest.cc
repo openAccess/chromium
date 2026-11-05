@@ -6,7 +6,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -16,6 +15,7 @@
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "ui/base/base_window.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 

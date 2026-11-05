@@ -23,6 +23,7 @@
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/signin/model/account_preview_data_service_factory.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
@@ -76,6 +77,8 @@
                               authService:AuthenticationServiceFactory::
                                               GetForProfile(profile)
                               prefService:profile->GetPrefs()
+                accountPreviewDataService:AccountPreviewDataServiceFactory::
+                                              GetForProfile(profile)
                               syncService:syncService
                               accessPoint:signin_metrics::AccessPoint::
                                               kBookmarkManager
@@ -143,7 +146,7 @@
     // The user signed in, but not opted into account bookmarks storage - show
     // review account settings promo.
     signinPromoAction = SigninPromoAction::kReviewAccountSettings;
-  } else if (self.signinPromoViewMediator.showSpinner) {
+  } else if (self.signinPromoViewMediator.spinnerVisible) {
     // The user is opted into syncing bookmarks, but the first sync is not
     // finished yet - keep the promo visible with the same action to show the
     // spinner.
@@ -215,7 +218,7 @@
     (const signin::PrimaryAccountChangeEvent&)event {
   switch (event.GetEventTypeFor(signin::ConsentLevel::kSignin)) {
     case signin::PrimaryAccountChangeEvent::Type::kSet:
-      if (!self.signinPromoViewMediator.showSpinner) {
+      if (!self.signinPromoViewMediator.spinnerVisible) {
         self.shouldShowSigninPromo = NO;
       }
       break;

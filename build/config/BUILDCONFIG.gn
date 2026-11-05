@@ -383,10 +383,12 @@ default_compiler_configs = [
   "//build/config/compiler:runtime_library",
   "//build/config/compiler:sanitize_c_array_bounds",
   "//build/config/compiler:sanitize_return",
+  "//build/config/compiler:sanitize_unreachable",
   "//build/config/compiler:thin_archive",
   "//build/config/compiler:thinlto_optimize_default",
   "//build/config/compiler:tot_warnings",
   "//build/config/coverage:default_coverage",
+  "//build/config/sanitizers:alloc_token",
   "//build/config/sanitizers:default_sanitizer_flags",
   "//build/config:feature_flags",
 ]
@@ -446,9 +448,11 @@ if (current_os == "zos") {
 set_defaults("static_library") {
   configs = default_compiler_configs
 }
+
 set_defaults("source_set") {
   configs = default_compiler_configs
 }
+
 set_defaults("rust_library") {
   configs = default_compiler_configs
 }
@@ -524,9 +528,11 @@ if (is_fuchsia) {
   default_shared_library_configs +=
       [ "//build/config/fuchsia:rustc_no_pie_warning" ]
 }
+
 set_defaults("shared_library") {
   configs = default_shared_library_configs
 }
+
 set_defaults("loadable_module") {
   configs = default_shared_library_configs
 
@@ -592,6 +598,13 @@ foreach(_target_type,
         public_deps = []
       }
 
+      if (_target_type == "static_library" && defined(complete_static_lib) &&
+          complete_static_lib &&
+          filter_include(configs,
+                         [ "//build/config/sanitizers:alloc_token" ]) != []) {
+        deps += [ "//build/config:alloc_token_aliases" ]
+      }
+
       if (!defined(use_libcxx_modules)) {
         use_libcxx_modules = is_clang
       }
@@ -635,9 +648,6 @@ foreach(_target_type,
       }
 
       # Consumed by the unsafe-buffers plugin during compile.
-      #
-      # TODO(crbug.com/326584510): Reclient doesn't respect this variable, see
-      # rbe_bug_326584510_missing_inputs in //build/config/clang/clang.gni
       _uses_cflags = false
       if (defined(sources)) {
         foreach(f, sources) {
@@ -680,6 +690,7 @@ foreach(_target_type,
   template(_target_type) {
     # Alias "target_name" because it is clobbered by forward_variables_from().
     _target_name = target_name
+
     target(_target_type, _target_name) {
       forward_variables_from(invoker,
                              "*",
@@ -690,9 +701,6 @@ foreach(_target_type,
       }
 
       # Consumed by the unsafe-buffers plugin during compile.
-      #
-      # TODO(crbug.com/326584510): Reclient doesn't respect this variable, see
-      # rbe_bug_326584510_missing_inputs in //build/config/clang/clang.gni
       _uses_cflags = false
       if (defined(sources)) {
         foreach(f, sources) {
@@ -722,6 +730,16 @@ foreach(_target_type,
         # (This explicit list is so that grepping for these configs finds where
         # they are used.)
         deps += [ "//build/config:${_target_type}_deps" ]
+
+        if (filter_include(configs,
+                           [ "//build/config/sanitizers:alloc_token" ]) != []) {
+          deps += [ "//build/config:alloc_token_aliases" ]
+        }
+      } else {
+        # The default deps provide the __alloc_token_* fallbacks, so don't
+        # instrument the sources of binaries without them.
+        configs -=
+            filter_include(configs, [ "//build/config/sanitizers:alloc_token" ])
       }
 
       if (!defined(public_deps)) {
@@ -843,14 +861,10 @@ template("component") {
   } else {
     _component_mode = "static_library"
   }
+
   target(_component_mode, target_name) {
     if (defined(_output_name)) {
       output_name = _output_name
-    }
-    if (is_component_build && is_android) {
-      # By appending .cr, we prevent name collisions with libraries already
-      # loaded by the Android zygote.
-      output_extension = "cr.so"
     }
     forward_variables_from(invoker, TESTONLY_AND_VISIBILITY)
     forward_variables_from(invoker, "*", TESTONLY_AND_VISIBILITY)

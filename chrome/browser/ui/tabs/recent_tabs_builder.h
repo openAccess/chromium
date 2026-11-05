@@ -10,16 +10,16 @@
 #include <vector>
 
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "components/sessions/core/session_id.h"
 #include "components/sync/protocol/device_info_specifics.pb.h"
 #include "components/sync_device_info/device_info.h"
 #include "ui/actions/action_id.h"
+#include "ui/base/accelerators/accelerator.h"
 #include "ui/base/models/image_model.h"
 #include "url/gurl.h"
 
-// Represents a single item in the Recent Tabs hierarchy (header, command,
-// tab, window, group, split, or device).
+// Represents a single item in the Recent Tabs or Other Device Tabs hierarchy
+// (header, command, tab, window, group, split, or device).
 class RecentTabItem {
  public:
   enum class Type {
@@ -30,6 +30,7 @@ class RecentTabItem {
     kGroup,    // Recently closed tab group
     kSplit,    // Recently closed split view
     kDevice,   // Remote device session
+    kDivider,  // Divider / separator
   };
 
   RecentTabItem(Type type, std::u16string title);
@@ -73,6 +74,13 @@ class RecentTabItem {
     device_form_factor_ = factor;
   }
 
+  const std::optional<ui::Accelerator>& accelerator() const {
+    return accelerator_;
+  }
+  void set_accelerator(std::optional<ui::Accelerator> accelerator) {
+    accelerator_ = std::move(accelerator);
+  }
+
   const std::vector<RecentTabItem>& children() const { return children_; }
   std::vector<RecentTabItem>& children() { return children_; }
   void add_child(RecentTabItem child) { children_.push_back(std::move(child)); }
@@ -88,24 +96,33 @@ class RecentTabItem {
   bool is_local_ = true;
   ui::ImageModel icon_;
   ui::ImageModel minor_icon_;
+  std::optional<ui::Accelerator> accelerator_;
   syncer::DeviceInfo::FormFactor device_form_factor_ =
       syncer::DeviceInfo::FormFactor::kUnknown;
   std::vector<RecentTabItem> children_;
 };
+
+class BrowserWindowInterface;
 
 class RecentTabsBuilder {
  public:
   // Builds and returns the complete list of recent tabs entries for a browser.
   static std::vector<RecentTabItem> BuildRecentTabs(
       Profile* profile,
-      BrowserWindowFeatures* feature);
+      BrowserWindowInterface* browser);
 
   // Helper methods for building subsets of entries:
   static std::vector<RecentTabItem> BuildHistoryEntries(
       Profile* profile,
-      BrowserWindowFeatures* feature);
+      BrowserWindowInterface* browser);
   static std::vector<RecentTabItem> BuildLocalEntries(Profile* profile);
   static std::vector<RecentTabItem> BuildRemoteEntries(Profile* profile);
+
+  // Builds the items (`kHeader` device titles, `kTab` rows, and `kDivider`
+  // separators between devices) for the "Other device tabs" submenu, ordered by
+  // recency. Returns an empty vector if `profile` is ineligible or has no
+  // foreign sessions with open tabs.
+  static std::vector<RecentTabItem> BuildOtherDeviceTabs(Profile* profile);
 };
 
 #endif  // CHROME_BROWSER_UI_TABS_RECENT_TABS_BUILDER_H_

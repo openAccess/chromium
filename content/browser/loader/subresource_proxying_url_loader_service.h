@@ -7,8 +7,10 @@
 
 #include <string>
 
+#include "base/containers/hashing_lru_cache.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/unguessable_token.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/frame_tree_node_id.h"
 #include "content/public/browser/weak_document_ptr.h"
@@ -29,13 +31,13 @@ class RenderFrameHostImpl;
 // A URLLoaderFactory that can be passed to a renderer to intercept subresource
 // requests.
 //
-// The renderer uses it for:
-// - Prefetch requests including <link rel="prefetch">
-// - Topics requests including fetch(<url>, {browsingTopics: true})
+// The renderer uses it for prefetch requests including <link rel="prefetch">.
 class CONTENT_EXPORT SubresourceProxyingURLLoaderService final
     : public network::mojom::URLLoaderFactory {
  public:
   struct CONTENT_EXPORT BindContext : public base::RefCounted<BindContext> {
+    static constexpr size_t kMaxPrefetchIsolationInfoEntries = 16;
+
     // `factory` is a clone of the default factory bundle for document
     // subresource requests.
     BindContext(FrameTreeNodeId frame_tree_node_id,
@@ -44,8 +46,14 @@ class CONTENT_EXPORT SubresourceProxyingURLLoaderService final
                 scoped_refptr<PrefetchedSignedExchangeCache>
                     prefetched_signed_exchange_cache);
 
-    // Set `document` to `committed_document`.
+    // Binds the committed document to this context upon navigation commit.
     void OnDidCommitNavigation(WeakDocumentPtr committed_document);
+
+    // Returns true if `OnDidCommitNavigation()` was called for this context but
+    // the document it referenced has since navigated away or been destroyed.
+    bool WasInitiatorDocumentDestroyed() const {
+      return did_commit_navigation && !document.AsRenderFrameHostIfValid();
+    }
 
     const FrameTreeNodeId frame_tree_node_id;
     scoped_refptr<network::SharedURLLoaderFactory> factory;
@@ -58,14 +66,24 @@ class CONTENT_EXPORT SubresourceProxyingURLLoaderService final
         prefetched_signed_exchange_cache;
 
     // This maps recursive prefetch tokens to IsolationInfos that they should be
-    // fetched with.
-    std::map<base::UnguessableToken, net::IsolationInfo>
-        prefetch_isolation_infos;
+    // fetched with. Bounded to a small LRU cache to limit memory usage while
+    // allowing in-flight / recent cross-origin document prefetches to resolve
+    // their recursive preload subresources.
+    base::HashingLRUCache<base::UnguessableToken, net::IsolationInfo>
+        prefetch_isolation_infos{kMaxPrefetchIsolationInfoEntries};
 
     // Upon NavigationRequest::DidCommitNavigation(), `document` will be set to
     // the document that this `BindContext` is associated with. It will become
     // null whenever the document navigates away.
     WeakDocumentPtr document;
+
+    // Whether `OnDidCommitNavigation()` has been called for this context. Used
+    // to distinguish `document` never having been set from it having been
+    // invalidated.
+    bool did_commit_navigation = false;
+
+    // Total number of recursive prefetch tokens generated for this document.
+    size_t total_tokens_generated = 0;
 
     // This must be the last member.
     base::WeakPtrFactory<SubresourceProxyingURLLoaderService::BindContext>

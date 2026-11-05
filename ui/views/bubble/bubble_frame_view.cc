@@ -236,8 +236,8 @@ gfx::Rect BubbleFrameView::GetWindowBoundsForClientBounds(
 bool BubbleFrameView::GetClientMask(const gfx::Size& size, SkPath* path) const {
   // NonClientView calls this after setting the client view size from the return
   // of GetBoundsForClientView(); feeding it back in |size|.
-  DCHECK_EQ(GetBoundsForClientView().size(), size);
-  DCHECK_EQ(GetWidget()->client_view()->size(), size);
+  CHECK_EQ(GetBoundsForClientView().size(), size, base::NotFatalUntil::M163);
+  CHECK_EQ(GetWidget()->client_view()->size(), size, base::NotFatalUntil::M163);
 
   // BubbleFrameView only returns a SkPath for the purpose of clipping the
   // client view's corners so that it fits within the borders of its rounded
@@ -254,14 +254,8 @@ bool BubbleFrameView::GetClientMask(const gfx::Size& size, SkPath* path) const {
     return false;
   }
 
-  // Format is upper-left, upper-right, lower-right, and lower-left.
-  const SkVector radii[4]{
-      {corner_radii.upper_left(),  corner_radii.upper_left()},
-      {corner_radii.upper_right(), corner_radii.upper_right()},
-      {corner_radii.lower_right(), corner_radii.lower_right()},
-      {corner_radii.lower_left(),  corner_radii.lower_left()}};
-  *path = SkPath::RRect(SkRRect::MakeRectRadii(
-      SkRect::MakeIWH(size.width(), size.height()), radii));
+  *path =
+      SkPath::RRect(gfx::RoundedRectToSkRRect(gfx::Rect(size), corner_radii));
   return true;
 }
 
@@ -341,11 +335,8 @@ void BubbleFrameView::GetWindowMask(const gfx::Size& size,
                     kBorderStrokeSize)};
 
   if (bubble_border_->shadow() == BubbleBorder::NO_SHADOW) {
-    SkVector radii[4]{{border_radii.upper_left(),  border_radii.upper_left()},
-                      {border_radii.upper_right(), border_radii.upper_right()},
-                      {border_radii.lower_right(), border_radii.lower_right()},
-                      {border_radii.lower_left(),  border_radii.lower_left()}};
-    *window_mask = SkPath::RRect(SkRRect::MakeRectRadii(rect, radii));
+    *window_mask = SkPath::RRect(
+        gfx::RoundedRectFToSkRRect(gfx::SkRectToRectF(rect), border_radii));
   } else {
     static const int kBottomBorderShadowSize = 2;
     rect.fBottom += SkIntToScalar(kBottomBorderShadowSize);
@@ -378,7 +369,7 @@ void BubbleFrameView::ResetWindowControls() {
 }
 
 void BubbleFrameView::UpdateWindowIcon() {
-  DCHECK(GetWidget());
+  CHECK(GetWidget(), base::NotFatalUntil::M163);
   ui::ImageModel image;
   if (GetWidget()->widget_delegate()->ShouldShowWindowIcon()) {
     image = GetWidget()->widget_delegate()->GetWindowIcon();
@@ -439,7 +430,7 @@ bool BubbleFrameView::IsWindowTitleVisible() const {
 }
 
 void BubbleFrameView::SetTitleView(std::unique_ptr<View> title_view) {
-  DCHECK(title_view);
+  CHECK(title_view, base::NotFatalUntil::M163);
   if (default_title_) {
     title_container_->RemoveChildViewT(default_title_.ExtractAsDangling());
   }
@@ -586,8 +577,9 @@ gfx::Size BubbleFrameView::GetMaximumSize() const {
 void BubbleFrameView::Layout(PassKey) {
   // The title margins may not be set, but make sure that's only the case when
   // there's no title.
-  DCHECK(!title_margins_.IsEmpty() ||
-         (!custom_title_ && !default_title_->GetVisible()));
+  CHECK(!title_margins_.IsEmpty() ||
+            (!custom_title_ && !default_title_->GetVisible()),
+        base::NotFatalUntil::M163);
 
   const gfx::Rect contents_bounds = GetContentsBounds();
 
@@ -627,7 +619,8 @@ void BubbleFrameView::Layout(PassKey) {
                            0, 0));
   }
 
-  DCHECK_EQ(button_area_rect.size(), GetButtonAreaSize());
+  CHECK_EQ(button_area_rect.size(), GetButtonAreaSize(),
+           base::NotFatalUntil::M163);
 
   // Lay out the header.
   gfx::Rect header_rect = contents_bounds;
@@ -656,8 +649,9 @@ void BubbleFrameView::Layout(PassKey) {
   if (DCHECK_IS_ON() && HasTitle() && !bounds.IsEmpty()) {
     const gfx::Insets title_insets =
         GetTitleLabelInsetsFromFrame() + GetInsets();
-    DCHECK_EQ(title_insets.left(), title_label_x);
-    DCHECK_EQ(title_insets.right(), width() - title_label_right);
+    CHECK_EQ(title_insets.left(), title_label_x, base::NotFatalUntil::M163);
+    CHECK_EQ(title_insets.right(), width() - title_label_right,
+             base::NotFatalUntil::M163);
   }
 
   const int title_available_width =
@@ -708,13 +702,16 @@ void BubbleFrameView::Layout(PassKey) {
 }
 
 void BubbleFrameView::OnThemeChanged() {
+  // Call the base class before the early return below:
+  // View::PropagateThemeChanged() DCHECKs that View::OnThemeChanged() ran.
+  FrameView::OnThemeChanged();
+
   // TODO(crbug.com/445859201): investigate which widget's delegate is null.
   // This seems to happen on ChromeOS on a scheduled change of color mode.
   if (!GetWidget() || !GetWidget()->widget_delegate()) {
     return;
   }
 
-  FrameView::OnThemeChanged();
   UpdateWindowTitle();
   UpdateSubtitle();
   ResetWindowControls();
@@ -827,7 +824,8 @@ View* BubbleFrameView::GetFootnoteView() const {
     return nullptr;
   }
 
-  DCHECK_EQ(1u, footnote_container_->children().size());
+  CHECK_EQ(1u, footnote_container_->children().size(),
+           base::NotFatalUntil::M163);
   return footnote_container_->children()[0];
 }
 
@@ -876,7 +874,16 @@ BubbleBorder::Arrow BubbleFrameView::GetArrow() const {
 }
 
 void BubbleFrameView::SetDisplayVisibleArrow(bool display_visible_arrow) {
+  if (bubble_border_->visible_arrow() == display_visible_arrow) {
+    return;
+  }
   bubble_border_->set_visible_arrow(display_visible_arrow);
+  if (GetWidget() && GetWidget()->widget_delegate()) {
+    if (auto* bubble_delegate =
+            GetWidget()->widget_delegate()->AsBubbleDialogDelegate()) {
+      bubble_delegate->SizeToContents();
+    }
+  }
 }
 
 bool BubbleFrameView::GetDisplayVisibleArrow() const {
@@ -884,7 +891,7 @@ bool BubbleFrameView::GetDisplayVisibleArrow() const {
 }
 
 void BubbleFrameView::SetBackgroundColor(ui::ColorVariant color) {
-  bubble_border_->SetColor(color);
+  bubble_border_->set_background_color(color);
   if (!GetWidget()) {
     return;
   }
@@ -991,7 +998,16 @@ gfx::Rect BubbleFrameView::GetUpdatedWindowBounds(
     SchedulePaint();
   }
 
-  return bubble_border_->GetBounds(anchor_rect, size);
+  gfx::Rect bounds = bubble_border_->GetBounds(anchor_rect, size);
+  if (adjust_to_fit_available_bounds &&
+      BubbleBorder::has_arrow(delegate_arrow)) {
+    const gfx::Rect available_bounds = GetAvailableScreenBounds(anchor_rect);
+    if (!available_bounds.IsEmpty()) {
+      bubble_border_->AdjustBoundsToFitAvailableBounds(bounds,
+                                                       available_bounds);
+    }
+  }
+  return bounds;
 }
 
 void BubbleFrameView::UpdateInputProtectorTimeStamp() {
@@ -1147,8 +1163,9 @@ void BubbleFrameView::OffsetArrowIfOutOfBounds(
     const gfx::Size& client_size,
     const gfx::Rect& available_bounds) {
   BubbleBorder::Arrow arrow = bubble_border_->arrow();
-  DCHECK(BubbleBorder::is_arrow_at_center(arrow) ||
-         preferred_arrow_adjustment_ == PreferredArrowAdjustment::kOffset);
+  CHECK(BubbleBorder::is_arrow_at_center(arrow) ||
+            preferred_arrow_adjustment_ == PreferredArrowAdjustment::kOffset,
+        base::NotFatalUntil::M163);
 
   gfx::Rect window_bounds(bubble_border_->GetBounds(anchor_rect, client_size));
   if (available_bounds.IsEmpty() || available_bounds.Contains(window_bounds)) {
@@ -1217,7 +1234,7 @@ gfx::Size BubbleFrameView::GetFrameSizeForClientSize(
     const gfx::Size& client_size) const {
   const int frame_width = GetFrameWidthForClientWidth(client_size.width());
   const gfx::Insets client_insets = GetClientInsetsForFrameWidth(frame_width);
-  DCHECK_GE(frame_width, client_size.width());
+  CHECK_GE(frame_width, client_size.width(), base::NotFatalUntil::M163);
   gfx::Size size(frame_width, client_size.height() + client_insets.height());
 
   // Only account for footnote_container_'s height if it's visible, because
@@ -1348,7 +1365,8 @@ gfx::Point BubbleFrameView::GetButtonAreaTopRight() const {
   }
 
   // If the buttons are positioned at the end of the title row.
-  DCHECK_EQ(GetButtonsPositioning(), ButtonsPositioning::kInTitleRow);
+  CHECK_EQ(GetButtonsPositioning(), ButtonsPositioning::kInTitleRow,
+           base::NotFatalUntil::M163);
 
   gfx::Rect inner_bounds = contents_bounds;
   inner_bounds.Inset(title_margins_);

@@ -83,7 +83,7 @@ void FakeNetworkContext::CreateTCPConnectedSocket(
 
   // Only bind the receiver if TCP connection is successful.
   if (tcp_connect_code_ == net::OK) {
-    DCHECK(fake_tcp_connected_socket_);
+    CHECK(fake_tcp_connected_socket_, base::NotFatalUntil::M160);
     fake_tcp_connected_socket_->BindReceiver(std::move(socket));
     fake_tcp_connected_socket_->set_disconnect_during_tls_upgrade_attempt(
         tls_upgrade_attempt_disconnect_);
@@ -104,7 +104,7 @@ void FakeNetworkContext::CreateUDPSocket(
 
   // Bind the receiver if UDP connection is successful.
   if (udp_connect_code_ == net::OK) {
-    DCHECK(fake_udp_socket_);
+    CHECK(fake_udp_socket_, base::NotFatalUntil::M160);
 
     fake_udp_socket_->BindReceiver(std::move(receiver));
     fake_udp_socket_->BindRemote(std::move(listener));
@@ -122,7 +122,7 @@ void FakeNetworkContext::SetTCPConnectCode(
 void FakeNetworkContext::SetTLSUpgradeCode(
     std::optional<net::Error>& tls_upgrade_code) {
   if (tls_upgrade_code.has_value()) {
-    DCHECK(fake_tcp_connected_socket_);
+    CHECK(fake_tcp_connected_socket_, base::NotFatalUntil::M160);
 
     fake_tcp_connected_socket_->set_tls_upgrade_code(tls_upgrade_code.value());
   }
@@ -134,32 +134,32 @@ void FakeNetworkContext::SetUdpConnectCode(net::Error udp_connect_code) {
 }
 
 void FakeNetworkContext::SetUdpSendCode(net::Error udp_send_code) {
-  DCHECK(fake_udp_socket_);
+  CHECK(fake_udp_socket_, base::NotFatalUntil::M160);
 
   fake_udp_socket_->set_udp_send_code(udp_send_code);
 }
 
 void FakeNetworkContext::SetDisconnectDuringUdpSendAttempt(bool disconnect) {
-  DCHECK(fake_udp_socket_);
+  CHECK(fake_udp_socket_, base::NotFatalUntil::M161);
 
   fake_udp_socket_->set_disconnect_during_udp_send_attempt(disconnect);
 }
 
 void FakeNetworkContext::SetUdpOnReceivedCode(net::Error udp_on_received_code) {
-  DCHECK(fake_udp_socket_);
+  CHECK(fake_udp_socket_, base::NotFatalUntil::M161);
 
   fake_udp_socket_->set_udp_on_received_code(udp_on_received_code);
 }
 
 void FakeNetworkContext::SetUdpOnReceivedData(
     base::span<const uint8_t> udp_on_received_data) {
-  DCHECK(fake_udp_socket_);
+  CHECK(fake_udp_socket_, base::NotFatalUntil::M161);
 
   fake_udp_socket_->set_udp_on_received_data(std::move(udp_on_received_data));
 }
 
 void FakeNetworkContext::SetDisconnectDuringUdpReceiveAttempt(bool disconnect) {
-  DCHECK(fake_udp_socket_);
+  CHECK(fake_udp_socket_, base::NotFatalUntil::M161);
 
   fake_udp_socket_->set_disconnect_during_udp_receive_attempt(disconnect);
 }

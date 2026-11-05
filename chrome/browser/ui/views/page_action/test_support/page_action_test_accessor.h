@@ -5,11 +5,14 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_PAGE_ACTION_TEST_SUPPORT_PAGE_ACTION_TEST_ACCESSOR_H_
 #define CHROME_BROWSER_UI_VIEWS_PAGE_ACTION_TEST_SUPPORT_PAGE_ACTION_TEST_ACCESSOR_H_
 
+#include <optional>
 #include <string>
 #include <string_view>
 
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/page_action/page_action_triggers.h"
+#include "content/public/test/browser_test_utils.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/actions/action_id.h"
 #include "ui/base/models/image_model.h"
 
@@ -27,6 +30,7 @@ class WebUIPageActionControl;
 }  // namespace page_actions
 
 namespace ui {
+class TrackedElement;
 class TrackedElementWebUI;
 }
 
@@ -44,27 +48,59 @@ class PageActionTestAccessor {
   PageActionTestAccessor& operator=(const PageActionTestAccessor&) = default;
   ~PageActionTestAccessor();
 
-  bool GetVisible();
-  bool IsChipVisible();
-  bool IsIconVisible();
-  bool IsAnimating();
-  bool HasFocus();
-  std::u16string GetText();
-  std::u16string GetTooltipText();
-  std::u16string GetAccessibleName();
-  ui::ImageModel GetImage();
+  // Returns true if the page action is visible.
+  bool GetVisible() const;
+
+  // Returns true if the page action is in suggestion chip mode (i.e. configured
+  // or requested to show as a suggestion chip with label + icon). This reflects
+  // the intended chip mode immediately (synchronously), including while
+  // expanding or collapsing animations are still in progress.
+  bool ShouldShowSuggestionChip() const;
+
+  // Returns true if the suggestion chip is currently expanded and showing on
+  // screen (i.e. chip mode is active and not currently animating or collapsed).
+  // In WebUI, this reflects the asynchronous state after frontend animations
+  // finish.
+  bool IsChipShowing() const;
+
+  // Returns true if the page action is visible as an icon only (not a chip).
+  bool IsIconVisible() const;
+  bool IsLabelVisible() const;
+  bool IsAtMinimumSize() const;
+  bool IsIconCentered() const;
+  bool IsAnimating() const;
+  bool HasFocus() const;
+  bool HasIconHighlight() const;
+  std::u16string GetText() const;
+  std::u16string GetTooltipText() const;
+  std::u16string GetAccessibleName() const;
+  SkColor GetBackgroundColor() const;
+  SkColor GetForegroundColor() const;
+  ui::ImageModel GetImage() const;
+  ui::TrackedElement* GetElement() const;
+  void RequestFocus();
+  std::optional<size_t> GetIndex() const;
+  double GetSlideAnimationValue() const;
+  void FinishAnimation() const;
   void Click(page_actions::PageActionTrigger trigger =
                  page_actions::PageActionTrigger::kMouse);
+  void SetSuppressionThreshold(base::TimeDelta threshold);
 
  private:
-  page_actions::PageActionViewInterface* GetInterface();
-  const page_actions::PageActionModelInterface* GetModel();
-  page_actions::PageActionView* GetPageActionView();
-  page_actions::WebUIPageActionControl* GetWebUIPageActionControl();
-  bool EvaluateWebUI(std::string_view element_predicate_js);
-  ui::TrackedElementWebUI* GetTrackedElement();
-  views::View* GetView();
-  content::WebContents* GetWebContents();
+  page_actions::PageActionViewInterface* GetInterface() const;
+  const page_actions::PageActionModelInterface* GetModel() const;
+  page_actions::PageActionView* GetPageActionView() const;
+  page_actions::WebUIPageActionControl* GetWebUIPageActionControl() const;
+  bool EvaluateWebUI(std::string_view element_predicate_js) const;
+  std::optional<std::string> EvaluateWebUIString(
+      std::string_view element_extractor_js) const;
+  std::optional<double> EvaluateWebUIDouble(
+      std::string_view element_extractor_js) const;
+  std::optional<content::EvalJsResult> EvaluateWebUIResult(
+      std::string_view element_fn_js) const;
+  ui::TrackedElementWebUI* GetTrackedElement() const;
+  views::View* GetView() const;
+  content::WebContents* GetWebContents() const;
 
   raw_ptr<BrowserWindowInterface> browser_;
   actions::ActionId action_id_;

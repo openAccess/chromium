@@ -104,8 +104,9 @@ std::optional<ConnectionAllowlist> ParseConnectionAllowlist(
   }
 
   // The single item we process must be an InnerList.
-  net::structured_headers::ParameterizedMember& inner_list = list->front();
-  if (!inner_list.member_is_inner_list) {
+  net::structured_headers::InnerList* inner_list =
+      list->front().GetIfInnerList();
+  if (!inner_list) {
     parsed.issues.push_back(mojom::ConnectionAllowlistIssue::kItemNotInnerList);
     return parsed;
   }
@@ -113,7 +114,7 @@ std::optional<ConnectionAllowlist> ParseConnectionAllowlist(
   // Process the list, adding patterns to the allowlist as we go. If we hit an
   // invalid value (e.g. not a `URLPattern` string or the `response-origin`
   // token, we'll ignore it and continue.
-  for (auto& pattern : inner_list.member) {
+  for (auto& pattern : inner_list->items) {
     std::string* value = ParsePattern(pattern.item, parsed.issues);
     if (!value) {
       continue;
@@ -135,7 +136,7 @@ std::optional<ConnectionAllowlist> ParseConnectionAllowlist(
 
   // Process the list's parameters, ignoring any other than `report-to` or
   // special global tokens like `redirection-allowed` or `webrtc-allowed`.
-  for (auto& [key, value] : inner_list.params) {
+  for (auto& [key, value] : inner_list->params) {
     if (key == kReportToParam) {
       if (std::string* token = value.GetIfToken()) {
         parsed.reporting_endpoint = std::move(*token);

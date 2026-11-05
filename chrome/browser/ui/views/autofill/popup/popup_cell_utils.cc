@@ -14,6 +14,7 @@
 
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
@@ -22,6 +23,7 @@
 #include "cc/paint/skia_paint_canvas.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/autofill/autofill_suggestion_controller_utils.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/passwords/ui_utils.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_base_view.h"
@@ -37,6 +39,8 @@
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/browser/ui/autofill_resource_util.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
+#include "components/grit/components_scaled_resources.h"
 #include "components/omnibox/browser/vector_icons.h"
 #include "components/qr_code_generator/bitmap_generator.h"
 #include "components/strings/grit/components_strings.h"
@@ -47,6 +51,7 @@
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
+#include "ui/color/color_provider.h"
 #include "ui/color/color_provider_manager.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/size.h"
@@ -92,11 +97,7 @@ constexpr int kAutofillPopupAdditionalDoubleRowHeight = 16;
 constexpr int kAutofillPopupAdditionalTripleRowHeight = 24;
 
 // The additional padding of the row in case it has three lines of text.
-constexpr int kAutofillPopupAdditionalVerticalPadding = 16;
-
-// The additional padding of the row in case it is an Autofill AI suggestion
-// and has three lines of text.
-constexpr int kAutofillAiPopupAdditionalVerticalPadding = 8;
+constexpr int kAutofillPopupAdditionalVerticalPadding = 8;
 
 // The additional right padding of the row in case it is an Autofill AI
 // suggestion and has three lines of text.
@@ -172,9 +173,12 @@ std::u16string GetIconAccessibleName(Suggestion::Icon icon) {
     case Suggestion::Icon::kKey:
     case Suggestion::Icon::kLocation:
     case Suggestion::Icon::kLocationSpark:
-    case Suggestion::Icon::kLoyalty:
+    case Suggestion::Icon::kLoyaltyPrograms:
+    case Suggestion::Icon::kLoyaltyProgramsSpark:
     case Suggestion::Icon::kMagic:
+    case Suggestion::Icon::kMailAsterisk:
     case Suggestion::Icon::kOfferTag:
+    case Suggestion::Icon::kOpenInNew:
     case Suggestion::Icon::kOrder:
     case Suggestion::Icon::kOrderSpark:
     case Suggestion::Icon::kPassport:
@@ -366,6 +370,7 @@ bool IsPaymentMethodSuggestion(const Suggestion& suggestion) {
     case SuggestionType::kAtMemoryOpenGemini:
     case SuggestionType::kAtMemorySearchAffordance:
     case SuggestionType::kAtMemorySearchResult:
+    case SuggestionType::kAtMemoryShortcutSettingsPromo:
     case SuggestionType::kAtMemorySourceAttribution:
     case SuggestionType::kAutocompleteAtMemoryButton:
     case SuggestionType::kAutocompleteEntry:
@@ -391,6 +396,7 @@ bool IsPaymentMethodSuggestion(const Suggestion& suggestion) {
     case SuggestionType::kFillPassword:
     case SuggestionType::kFreeformFooter:
     case SuggestionType::kGeneratePasswordEntry:
+    case SuggestionType::kGmailOneTimePasswordEntry:
     case SuggestionType::kIdentityCredential:
     case SuggestionType::kInsecureContextPaymentDisabledMessage:
     case SuggestionType::kLoadingThrobber:
@@ -403,15 +409,17 @@ bool IsPaymentMethodSuggestion(const Suggestion& suggestion) {
     case SuggestionType::kManageCreditCard:
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
+    case SuggestionType::kManageOffers:
     case SuggestionType::kManageEnhancedAutofill:
     case SuggestionType::kMerchantPromoCodeEntry:
     case SuggestionType::kOneTimePasswordEntry:
+    case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
+    case SuggestionType::kPendingStateTrustedVaultError:
     case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kScanCreditCard:
-    case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kSeparator:
     case SuggestionType::kTitle:
     case SuggestionType::kTroubleSigningInEntry:
@@ -583,15 +591,22 @@ std::optional<ui::ImageModel> GetIconImageModelFromIcon(Suggestion::Icon icon) {
     case Suggestion::Icon::kLocationSpark:
       return ImageModelFromVectorIcon(vector_icons::kLocationOnSparkIcon,
                                       kChromeRefreshIconSize);
-    case Suggestion::Icon::kLoyalty:
-      return ImageModelFromVectorIcon(::features::IsRoundedIconsEnabled()
-                                          ? vector_icons::kLoyaltyIcon
-                                          : vector_icons::kLoyaltyOldIcon,
+    case Suggestion::Icon::kLoyaltyPrograms:
+      return ImageModelFromVectorIcon(vector_icons::kLoyaltyProgramsIcon,
+                                      kChromeRefreshIconSize);
+    case Suggestion::Icon::kLoyaltyProgramsSpark:
+      return ImageModelFromVectorIcon(vector_icons::kLoyaltyProgramsSparkIcon,
                                       kChromeRefreshIconSize);
     case Suggestion::Icon::kMagic:
       return ImageModelFromVectorIcon(::features::IsRoundedIconsEnabled()
                                           ? vector_icons::kButtonMagicIcon
                                           : vector_icons::kMagicButtonOldIcon,
+                                      kIconSize);
+    case Suggestion::Icon::kMailAsterisk:
+      return ImageModelFromVectorIcon(vector_icons::kMailAsteriskIcon,
+                                      kIconSize);
+    case Suggestion::Icon::kOpenInNew:
+      return ImageModelFromVectorIcon(vector_icons::kOpenInNewFlippableIcon,
                                       kIconSize);
     case Suggestion::Icon::kOrder:
       return ImageModelFromVectorIcon(vector_icons::kShoppingBagIcon,
@@ -658,6 +673,20 @@ std::optional<ui::ImageModel> GetIconImageModelFromIcon(Suggestion::Icon icon) {
                                       kGooglePasswordManagerIconSize);
     case Suggestion::Icon::kGooglePay:
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+      if (base::FeatureList::IsEnabled(
+              features::kAutofillEnableGradientGoogleLogos)) {
+        return ui::ImageModel::FromImageGenerator(
+            base::BindRepeating([](const ui::ColorProvider* provider) {
+              return *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+                  provider->GetColor(kColorPaymentsGooglePayLogo) ==
+                          SK_ColorWHITE
+                      ? IDR_AUTOFILL_GOOGLE_PAY_WITH_GRADIENT_DARK
+                      : IDR_AUTOFILL_GOOGLE_PAY_WITH_GRADIENT);
+            }),
+            ui::ResourceBundle::GetSharedInstance()
+                .GetImageSkiaNamed(IDR_AUTOFILL_GOOGLE_PAY_WITH_GRADIENT)
+                ->size());
+      }
       return ui::ImageModel::FromImageGenerator(
           base::BindRepeating(&CreateTiledGooglePayLogo, kGooglePayLogoWidth,
                               kIconSize),
@@ -670,6 +699,12 @@ std::optional<ui::ImageModel> GetIconImageModelFromIcon(Suggestion::Icon icon) {
 #endif
     case Suggestion::Icon::kGoogleWallet:
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+      if (base::FeatureList::IsEnabled(
+              features::kAutofillEnableGradientGoogleLogos)) {
+        return ImageModelFromImageSkia(
+            *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
+                IDR_AUTOFILL_GOOGLE_WALLET_ICON_WITH_GRADIENT));
+      }
       return ImageModelFromVectorIcon(vector_icons::kGoogleWalletIcon,
                                       kGoogleWalletIconSize);
 #else
@@ -682,8 +717,9 @@ std::optional<ui::ImageModel> GetIconImageModelFromIcon(Suggestion::Icon icon) {
 #else
       return std::nullopt;
 #endif
-    case Suggestion::Icon::kIban:
     case Suggestion::Icon::kOfferTag:
+      return ImageModelFromVectorIcon(vector_icons::kSellIcon, kIconSize);
+    case Suggestion::Icon::kIban:
     case Suggestion::Icon::kScanCreditCard:
     case Suggestion::Icon::kCardGeneric:
     case Suggestion::Icon::kCardAmericanExpress:
@@ -705,7 +741,7 @@ std::optional<ui::ImageModel> GetIconImageModelFromIcon(Suggestion::Icon icon) {
     case Suggestion::Icon::kAndroidMessages: {
       // For other suggestion entries, get the icon from PNG files.
       int icon_id = GetIconResourceID(icon);
-      DCHECK_NE(icon_id, 0);
+      CHECK_NE(icon_id, 0, base::NotFatalUntil::M162);
       return ImageModelFromImageSkia(
           *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(icon_id));
     }
@@ -887,7 +923,7 @@ void AddSuggestionContentToView(
   }
 
   // If there are three rows in total, add extra padding to avoid cramming.
-  DCHECK_LE(subtext_views.size(), 2u);
+  CHECK_LE(subtext_views.size(), 2u, base::NotFatalUntil::M162);
   int vertical_padding = 0;
   const int left_padding = content_view.GetInsideBorderInsets().left();
   int right_padding = left_padding;
@@ -895,12 +931,7 @@ void AddSuggestionContentToView(
     if (should_show_new_fop_format) {
       row_height += kAutofillPopupAdditionalTripleRowHeight;
     } else {
-      // TODO(crbug.com/535568421): Investigate if these spacing adjustments
-      // should be applied to all 3-row suggestions rather than special-casing
-      // Autofill AI.
-      vertical_padding = (suggestion.type == SuggestionType::kFillAutofillAi)
-                             ? kAutofillAiPopupAdditionalVerticalPadding
-                             : kAutofillPopupAdditionalVerticalPadding;
+      vertical_padding = kAutofillPopupAdditionalVerticalPadding;
     }
     if (suggestion.type == SuggestionType::kFillAutofillAi) {
       right_padding += kAutofillAiPopupAdditionalRightPadding;

@@ -4,9 +4,11 @@
 
 #include "components/webapps/browser/android/webapk/webapk_single_icon_hasher.h"
 
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/barrier_closure.h"
 #include "base/containers/span.h"
@@ -15,6 +17,7 @@
 #include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "components/favicon_base/select_favicon_frames.h"
 #include "components/webapps/browser/android/webapps_icon_utils.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/data_url.h"
@@ -112,6 +115,8 @@ void WebApkSingleIconHasher::OnSimpleLoaderComplete(
     return;
   }
 
+  // TODO(crbug.com/566319139): Ensure WebAPK minting receives padded
+  // non-square icon bytes.
   // If the image is png/jpg/jpeg, send the raw data to server to decode,
   // otherwise decode the image using Blink's image decoder.
   auto simple_url_loader = std::move(simple_url_loader_);
@@ -147,11 +152,13 @@ void WebApkSingleIconHasher::OnSimpleLoaderComplete(
       std::numeric_limits<int>::max(),  // max size
       false,                            // normal cache policy
       base::BindOnce(&WebApkSingleIconHasher::OnImageDownloaded,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(response_body)));
+                     weak_ptr_factory_.GetWeakPtr(), std::move(response_body),
+                     ideal_icon_size));
 }
 
 void WebApkSingleIconHasher::OnImageDownloaded(
     std::optional<std::string> response_body,
+    int ideal_icon_size,
     int id,
     int http_status_code,
     const GURL& url,
@@ -163,7 +170,11 @@ void WebApkSingleIconHasher::OnImageDownloaded(
     return;
   }
 
-  SetIconDataAndHashFromSkBitmap(icon_, bitmaps[0], std::move(response_body));
+  std::vector<size_t> best_indices;
+  SelectFaviconFrameIndices(sizes, {ideal_icon_size}, &best_indices, nullptr);
+  DCHECK_EQ(1u, best_indices.size());
+  SetIconDataAndHashFromSkBitmap(icon_, bitmaps[best_indices[0]],
+                                 std::move(response_body));
 
   RunCallbackAndFinish();
 }

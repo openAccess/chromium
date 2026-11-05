@@ -9,6 +9,9 @@
 
 #include "base/check_deref.h"
 #include "base/containers/to_vector.h"
+#include "base/functional/bind.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/devtools/protocol/autofill.h"
@@ -126,10 +129,10 @@ void AutofillHandler::Trigger(
   // not be finished yet, so we need to trigger it and to wait for it to finish
   // before continuing. See https://crbug.com/442016685.
   autofill_driver->GetAutofillManager().TriggerFormExtractionInAllFrames(
-      base::BindOnce(&AutofillHandler::ContinueTrigger,
-                     weak_ptr_factory_.GetWeakPtr(), frame_rfh, field_id,
-                     frame_id, std::move(card), std::move(address),
-                     std::move(callback)));
+      /*force=*/false, base::BindOnce(&AutofillHandler::ContinueTrigger,
+                                      weak_ptr_factory_.GetWeakPtr(), frame_rfh,
+                                      field_id, frame_id, std::move(card),
+                                      std::move(address), std::move(callback)));
 }
 
 void AutofillHandler::ContinueTrigger(
@@ -203,6 +206,7 @@ void AutofillHandler::ContinueTrigger(
         .FillOrPreviewForm(autofill::mojom::ActionPersistence::kFill, *form_id,
                            global_field_id, &tmp_autofill_card,
                            autofill::AutofillTriggerSource::kDevtools,
+                           /*require_user_confirmation=*/false,
                            /*blocked_fields=*/{});
   }
   if (address) {
@@ -236,10 +240,21 @@ void AutofillHandler::ContinueTrigger(
         .FillOrPreviewForm(autofill::mojom::ActionPersistence::kFill, *form_id,
                            global_field_id, &tmp_autofill_profile,
                            autofill::AutofillTriggerSource::kDevtools,
+                           /*require_user_confirmation=*/false,
                            /*blocked_fields=*/{});
   }
 
-  callback->sendSuccess();
+  // `FillOrPreviewForm()` has sent the values to the renderers over the same
+  // `mojom::AutofillAgent` pipes that form extraction uses. Hence, once form
+  // extraction has finished in all frames, the values have been applied to the
+  // fields. Only respond then, so that clients can read the filled values as
+  // soon as the command returns. Whether form extraction succeeded doesn't
+  // matter for that.
+  autofill_driver->GetAutofillManager().TriggerFormExtractionInAllFrames(
+      /*force=*/false,
+      base::BindOnce([](std::unique_ptr<TriggerCallback> callback,
+                        bool) { callback->sendSuccess(); },
+                     std::move(callback)));
 }
 
 void AutofillHandler::SetAddresses(
@@ -361,7 +376,8 @@ void AutofillHandler::OnFillOrPreviewForm(
       std::string failure_to_fill;
       filled_value =
           autofill::GetFillingValueAndTypeForProfile(
-              *profile_used_to_fill_form, locale, field->Type(), *field,
+              *profile_used_to_fill_form, locale,
+              field->Type().GetAddressType(), *field,
               manager.client().GetAddressNormalizer(), &failure_to_fill)
               .value;
     }
@@ -390,9 +406,10 @@ void AutofillHandler::OnFillOrPreviewForm(
   // We use the same format we see in the settings page.
   std::vector<std::vector<autofill::AutofillAddressUIComponent>> components;
   autofill::GetAddressComponents(
-      base::UTF16ToUTF8(profile_used_to_fill_form->GetInfo(
-          autofill::FieldType::ADDRESS_HOME_COUNTRY, locale)),
-      locale,
+      base::UTF16ToUTF8(profile_used_to_fill_form->GetRawInfo(
+          autofill::ADDRESS_HOME_COUNTRY)),
+      base::i18n::GetLanguageTagFromString(locale).value_or(
+          base::i18n::GetKnownLanguageTag("und")),
       /*include_literals=*/false, &components, nullptr);
 
   // `profile_address_fields` is used to represent a profile as seen in the

@@ -11,15 +11,17 @@
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_ids.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/views/view_class_properties.h"
 
@@ -62,8 +64,11 @@ void SharedTabGroupFeedbackController::TearDown() {
 
 void SharedTabGroupFeedbackController::UpdateFeedbackButtonVisibility(
     bool should_show_button) {
+  // Driven by tab-group changes, which include groups closing as the window
+  // goes away.
+  BrowserWindow* const browser_window = BrowserWindow::FromBrowser(browser_);
   PinnedToolbarActions* controller =
-      browser_->GetFeatures().pinned_toolbar_actions();
+      browser_window ? browser_window->GetPinnedToolbarActions() : nullptr;
   if (!controller) {
     // Can be null when dragging a tab / group into a new window.
     return;

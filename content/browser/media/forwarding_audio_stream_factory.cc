@@ -13,6 +13,7 @@
 #include "base/no_destructor.h"
 #include "base/trace_event/trace_event.h"
 #include "content/browser/guest_page_holder_impl.h"
+#include "content/browser/media/audio_output_stream_broker.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/audio_service.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -38,7 +39,7 @@ GetAudioStreamFactoryBinderOverride() {
 
 void BindStreamFactoryFromUIThread(
     mojo::PendingReceiver<media::mojom::AudioStreamFactory> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   const auto& binder_override = GetAudioStreamFactoryBinderOverride();
   if (binder_override) {
     binder_override.Run(std::move(receiver));
@@ -56,15 +57,16 @@ ForwardingAudioStreamFactory::Core::Core(
     : owner_(std::move(owner)),
       broker_factory_(std::move(broker_factory)),
       group_id_(base::UnguessableToken::Create()) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(owner_);
-  DCHECK(broker_factory_);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(owner_, base::NotFatalUntil::M160);
+  CHECK(broker_factory_, base::NotFatalUntil::M160);
 }
 
 ForwardingAudioStreamFactory::Core::~Core() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  for (AudioStreamBroker::LoopbackSink* sink : loopback_sinks_)
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  for (AudioStreamBroker::LoopbackSink* sink : loopback_sinks_) {
     sink->OnSourceGone();
+  }
 }
 
 base::WeakPtr<ForwardingAudioStreamFactory::Core>
@@ -75,6 +77,7 @@ ForwardingAudioStreamFactory::Core::AsWeakPtr() {
 void ForwardingAudioStreamFactory::Core::CreateInputStream(
     int render_process_id,
     int render_frame_id,
+    const base::UnguessableToken& session_id,
     const std::string& device_id,
     const media::AudioParameters& params,
     uint32_t shared_memory_count,
@@ -82,24 +85,26 @@ void ForwardingAudioStreamFactory::Core::CreateInputStream(
     media::mojom::AudioProcessingConfigPtr processing_config,
     mojo::PendingRemote<blink::mojom::RendererAudioInputStreamFactoryClient>
         renderer_factory_client) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK(!session_id.is_empty());
 
   // |this| owns |inputs_|, so Unretained is safe.
   inputs_
-      .insert(broker_factory_->CreateAudioInputStreamBroker(
-          render_process_id, render_frame_id, device_id, params, group_id_,
-          shared_memory_count, enable_agc, std::move(processing_config),
-          base::BindOnce(&ForwardingAudioStreamFactory::Core::RemoveInput,
-                         base::Unretained(this)),
-          std::move(renderer_factory_client)))
-      .first->get()
-      ->CreateStream(GetFactory());
+      .emplace(
+          broker_factory_->CreateAudioInputStreamBroker(
+              render_process_id, render_frame_id, device_id, params, group_id_,
+              shared_memory_count, enable_agc, std::move(processing_config),
+              base::BindOnce(&ForwardingAudioStreamFactory::Core::RemoveInput,
+                             base::Unretained(this)),
+              std::move(renderer_factory_client)),
+          session_id)
+      .first->first->CreateStream(GetFactory());
 }
 
 void ForwardingAudioStreamFactory::Core::AssociateInputAndOutputForAec(
     const base::UnguessableToken& input_stream_id,
     const std::string& raw_output_device_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   // Avoid spawning a factory if this for some reason gets called with an
   // invalid |input_stream_id| before any streams are created.
   if (!inputs_.empty()) {
@@ -115,7 +120,7 @@ void ForwardingAudioStreamFactory::Core::CreateOutputStream(
     const std::string& device_id,
     const media::AudioParameters& params,
     mojo::PendingRemote<media::mojom::AudioOutputStreamProviderClient> client) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
   // |this| owns |outputs_|, so Unretained is safe.
   outputs_
@@ -132,35 +137,49 @@ void ForwardingAudioStreamFactory::Core::CreateOutputStream(
 void ForwardingAudioStreamFactory::Core::CreateLoopbackStream(
     int render_process_id,
     int render_frame_id,
+    const base::UnguessableToken& session_id,
     AudioStreamBroker::LoopbackSource* loopback_source,
     const media::AudioParameters& params,
     uint32_t shared_memory_count,
     bool mute_source,
     mojo::PendingRemote<blink::mojom::RendererAudioInputStreamFactoryClient>
         renderer_factory_client) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(loopback_source);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK(!session_id.is_empty());
+  CHECK(loopback_source, base::NotFatalUntil::M160);
 
   TRACE_EVENT_BEGIN("audio", "CreateLoopbackStream", "group",
                     group_id_.GetLowForSerialization());
 
   // |this| owns |inputs_|, so Unretained is safe.
   inputs_
-      .insert(broker_factory_->CreateAudioLoopbackStreamBroker(
-          render_process_id, render_frame_id, loopback_source, params,
-          shared_memory_count, mute_source,
-          base::BindOnce(&ForwardingAudioStreamFactory::Core::RemoveInput,
-                         base::Unretained(this)),
-          std::move(renderer_factory_client)))
-      .first->get()
-      ->CreateStream(GetFactory());
+      .emplace(
+          broker_factory_->CreateAudioLoopbackStreamBroker(
+              render_process_id, render_frame_id, loopback_source, params,
+              shared_memory_count, mute_source,
+              base::BindOnce(&ForwardingAudioStreamFactory::Core::RemoveInput,
+                             base::Unretained(this)),
+              std::move(renderer_factory_client)),
+          session_id)
+      .first->first->CreateStream(GetFactory());
   TRACE_EVENT_END("audio", "source",
                   loopback_source->GetGroupID().GetLowForSerialization());
 }
 
+void ForwardingAudioStreamFactory::Core::CloseInputStreamsForSession(
+    const base::UnguessableToken& session_id) {
+  CHECK_CURRENTLY_ON(BrowserThread::IO);
+
+  base::EraseIf(inputs_, [&session_id](const auto& pair) {
+    return pair.second == session_id;
+  });
+
+  ResetRemoteFactoryPtrIfIdle();
+}
+
 void ForwardingAudioStreamFactory::Core::SetMuted(bool muted) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK_NE(muted, !!muter_);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK_NE(muted, !!muter_, base::NotFatalUntil::M160);
   TRACE_EVENT_INSTANT("audio", "SetMuted", "group",
                       group_id_.GetLowForSerialization(), "muted", muted);
 
@@ -170,13 +189,14 @@ void ForwardingAudioStreamFactory::Core::SetMuted(bool muted) {
   }
 
   muter_.emplace(group_id_);
-  if (remote_factory_)
+  if (remote_factory_) {
     muter_->Connect(remote_factory_.get());
+  }
 }
 
 void ForwardingAudioStreamFactory::Core::AddLoopbackSink(
     AudioStreamBroker::LoopbackSink* sink) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   loopback_sinks_.insert(sink);
   GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
@@ -186,7 +206,7 @@ void ForwardingAudioStreamFactory::Core::AddLoopbackSink(
 
 void ForwardingAudioStreamFactory::Core::RemoveLoopbackSink(
     AudioStreamBroker::LoopbackSink* sink) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   loopback_sinks_.erase(sink);
   GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
@@ -195,14 +215,14 @@ void ForwardingAudioStreamFactory::Core::RemoveLoopbackSink(
 }
 
 const base::UnguessableToken& ForwardingAudioStreamFactory::Core::GetGroupID() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   return group_id();
 }
 
 // static
 ForwardingAudioStreamFactory* ForwardingAudioStreamFactory::ForFrame(
     RenderFrameHost* frame) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   if (!frame) {
     return nullptr;
   }
@@ -225,7 +245,7 @@ ForwardingAudioStreamFactory* ForwardingAudioStreamFactory::ForFrame(
 // static
 ForwardingAudioStreamFactory::Core* ForwardingAudioStreamFactory::CoreForFrame(
     RenderFrameHost* frame) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   ForwardingAudioStreamFactory* forwarding_factory =
       ForwardingAudioStreamFactory::ForFrame(frame);
   return forwarding_factory ? forwarding_factory->core() : nullptr;
@@ -235,13 +255,13 @@ ForwardingAudioStreamFactory::ForwardingAudioStreamFactory(
     WebContents* web_contents,
     std::unique_ptr<AudioStreamBrokerFactory> broker_factory)
     : WebContentsObserver(web_contents), core_() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   core_ = std::make_unique<Core>(weak_ptr_factory_.GetWeakPtr(),
                                  std::move(broker_factory));
 }
 
 ForwardingAudioStreamFactory::~ForwardingAudioStreamFactory() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // Ensure |core_| is deleted on the right thread. DeleteOnIOThread isn't used
   // as it doesn't post in case it is already executed on the right thread. That
   // causes issues in unit tests where the UI thread and the IO thread are the
@@ -251,19 +271,19 @@ ForwardingAudioStreamFactory::~ForwardingAudioStreamFactory() {
 }
 
 void ForwardingAudioStreamFactory::LoopbackStreamStarted() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   capture_handle_ = web_contents()->IncrementCapturerCount(
       gfx::Size(), /*stay_hidden=*/false,
       /*stay_awake=*/true, /*is_activity=*/true);
 }
 
 void ForwardingAudioStreamFactory::LoopbackStreamStopped() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   capture_handle_.RunAndReset();
 }
 
 void ForwardingAudioStreamFactory::SetMuted(bool muted) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   if (is_muted_ != muted) {
     is_muted_ = muted;
 
@@ -276,23 +296,59 @@ void ForwardingAudioStreamFactory::SetMuted(bool muted) {
 }
 
 bool ForwardingAudioStreamFactory::IsMuted() const {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   return is_muted_;
 }
 
 void ForwardingAudioStreamFactory::RenderFrameDeleted(
     RenderFrameHost* render_frame_host) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(render_frame_host);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(render_frame_host, base::NotFatalUntil::M160);
+
+  // Default-device audio output streams in a renderer process are shared across
+  // all frames belonging to the same main frame via AudioRendererMixerManager.
+  // When the main frame is in the same process, AudioRendererMixerManager
+  // already binds shared mixer sinks directly to the main frame. However, when
+  // the main frame is remote to those subframes' process, the mixer sink is
+  // initially created through whichever subframe requested audio first. If that
+  // subframe is deleted while other subframes in the same process and main
+  // frame remain alive, reparent the shared stream broker to a surviving frame
+  // instead of tearing down audio for the remaining subframes.
+  //
+  // Note: This reparents all mixable default-device output brokers of the
+  // deleted frame regardless of whether the sink is currently active/playing
+  // (since a surviving subframe may hold a paused mixer input that will later
+  // resume playback on the shared sink). If the deleted frame was the only
+  // consumer of the sink, the renderer will close the sink once its input is
+  // removed, bounding the broker's lifetime.
+  std::optional<int> fallback_render_frame_id;
+  RenderFrameHost* main_frame = render_frame_host->GetMainFrame();
+  RenderProcessHost* process = render_frame_host->GetProcess();
+  if (render_frame_host != main_frame && main_frame->GetProcess() != process) {
+    main_frame->ForEachRenderFrameHostWithAction(
+        [render_frame_host, main_frame, process,
+         &fallback_render_frame_id](RenderFrameHost* rfh) {
+          if (rfh->GetMainFrame() != main_frame) {
+            return RenderFrameHost::FrameIterationAction::kSkipChildren;
+          }
+          if (rfh != render_frame_host && rfh->IsRenderFrameLive() &&
+              rfh->IsActive() && rfh->GetProcess() == process) {
+            fallback_render_frame_id = rfh->GetRoutingID();
+            return RenderFrameHost::FrameIterationAction::kStop;
+          }
+          return RenderFrameHost::FrameIterationAction::kContinue;
+        });
+  }
 
   // Unretained is safe since the destruction of |core_| will be posted to the
   // IO thread later.
   GetIOThreadTaskRunner({})->PostTask(
       FROM_HERE,
-      base::BindOnce(&Core::CleanupStreamsBelongingTo,
+      base::BindOnce(&Core::CleanupOrReparentStreamsBelongingTo,
                      base::Unretained(core_.get()),
                      render_frame_host->GetProcess()->GetDeprecatedID(),
-                     render_frame_host->GetRoutingID()));
+                     render_frame_host->GetRoutingID(),
+                     fallback_render_frame_id));
 }
 
 void ForwardingAudioStreamFactory::OverrideAudioStreamFactoryBinderForTesting(
@@ -300,23 +356,38 @@ void ForwardingAudioStreamFactory::OverrideAudioStreamFactoryBinderForTesting(
   GetAudioStreamFactoryBinderOverride() = std::move(binder);
 }
 
-void ForwardingAudioStreamFactory::Core::CleanupStreamsBelongingTo(
+void ForwardingAudioStreamFactory::Core::CleanupOrReparentStreamsBelongingTo(
     int render_process_id,
-    int render_frame_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+    int render_frame_id,
+    std::optional<int> fallback_render_frame_id) {
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
-  TRACE_EVENT_BEGIN("audio", "CleanupStreamsBelongingTo", "group",
+  TRACE_EVENT_BEGIN("audio", "CleanupOrReparentStreamsBelongingTo", "group",
                     group_id_.GetLowForSerialization(), "process id",
                     render_process_id);
 
-  auto match_rfh =
-      [render_process_id, render_frame_id](
-          const std::unique_ptr<AudioStreamBroker>& broker) -> bool {
-    return broker->render_process_id() == render_process_id &&
-           broker->render_frame_id() == render_frame_id;
+  auto match_rfh = [render_process_id,
+                    render_frame_id](const auto& pair) -> bool {
+    return pair.first->render_process_id() == render_process_id &&
+           pair.first->render_frame_id() == render_frame_id;
   };
 
-  base::EraseIf(outputs_, match_rfh);
+  auto match_or_reparent_output =
+      [render_process_id, render_frame_id, fallback_render_frame_id](
+          const std::unique_ptr<AudioStreamBroker>& broker) -> bool {
+    if (broker->render_process_id() != render_process_id ||
+        broker->render_frame_id() != render_frame_id) {
+      return false;
+    }
+    if (fallback_render_frame_id.has_value() &&
+        static_cast<AudioOutputStreamBroker*>(broker.get())
+            ->Reparent(*fallback_render_frame_id)) {
+      return false;
+    }
+    return true;
+  };
+
+  base::EraseIf(outputs_, match_or_reparent_output);
   base::EraseIf(inputs_, match_rfh);
 
   ResetRemoteFactoryPtrIfIdle();
@@ -326,25 +397,25 @@ void ForwardingAudioStreamFactory::Core::CleanupStreamsBelongingTo(
 
 void ForwardingAudioStreamFactory::Core::RemoveInput(
     AudioStreamBroker* broker) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   size_t removed = inputs_.erase(broker);
-  DCHECK_EQ(1u, removed);
+  CHECK_EQ(1u, removed, base::NotFatalUntil::M160);
 
   ResetRemoteFactoryPtrIfIdle();
 }
 
 void ForwardingAudioStreamFactory::Core::RemoveOutput(
     AudioStreamBroker* broker) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   size_t removed = outputs_.erase(broker);
-  DCHECK_EQ(1u, removed);
+  CHECK_EQ(1u, removed, base::NotFatalUntil::M160);
 
   ResetRemoteFactoryPtrIfIdle();
 }
 
 media::mojom::AudioStreamFactory*
 ForwardingAudioStreamFactory::Core::GetFactory() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   if (!remote_factory_) {
     TRACE_EVENT_INSTANT("audio",
                         "ForwardingAudioStreamFactory: Binding new factory",
@@ -359,21 +430,23 @@ ForwardingAudioStreamFactory::Core::GetFactory() {
         base::Unretained(this)));
 
     // Restore the muting session on reconnect.
-    if (muter_)
+    if (muter_) {
       muter_->Connect(remote_factory_.get());
+    }
   }
 
   return remote_factory_.get();
 }
 
 void ForwardingAudioStreamFactory::Core::ResetRemoteFactoryPtrIfIdle() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  if (inputs_.empty() && outputs_.empty())
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
+  if (inputs_.empty() && outputs_.empty()) {
     ResetRemoteFactoryPtr();
+  }
 }
 
 void ForwardingAudioStreamFactory::Core::ResetRemoteFactoryPtr() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   if (remote_factory_) {
     TRACE_EVENT_INSTANT("audio",
                         "ForwardingAudioStreamFactory: Resetting factory",

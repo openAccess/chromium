@@ -11,6 +11,7 @@
 #include "base/check.h"
 #include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
+#include "chrome/browser/infobars/confirm_infobar_creation_allowlist.h"
 #include "chrome/browser/ui/views/infobars/confirm_infobar.h"
 #include "chrome/browser/win/installer_downloader/installer_downloader_constants.h"
 #include "chrome/grit/branded_strings.h"
@@ -35,8 +36,9 @@ infobars::InfoBar* InstallerDownloaderInfoBarDelegate::Show(
   std::unique_ptr<InstallerDownloaderInfoBarDelegate> delegate =
       std::make_unique<InstallerDownloaderInfoBarDelegate>(std::move(accept_cb),
                                                            std::move(close_cb));
-  return infobar_manager->AddInfoBar(
-      ConfirmInfoBar::Create(std::move(delegate)));
+  return infobar_manager->AddInfoBar(ConfirmInfoBar::Create(
+      ConfirmInfoBarCreationAllowlist::GetPassKeyForMigration(),
+      std::move(delegate)));
 }
 
 InstallerDownloaderInfoBarDelegate::InstallerDownloaderInfoBarDelegate(
@@ -81,7 +83,13 @@ std::u16string InstallerDownloaderInfoBarDelegate::GetMessageText() const {
 }
 
 std::u16string InstallerDownloaderInfoBarDelegate::GetLinkText() const {
-  return l10n_util::GetStringUTF16(IDS_INSTALLER_DOWNLOADER_LINK);
+  return l10n_util::GetStringUTF16(IDS_INSTALLER_DOWNLOADER_LINK_TEXT);
+}
+
+std::optional<std::u16string>
+InstallerDownloaderInfoBarDelegate::GetLinkAccessibleText() const {
+  return l10n_util::GetStringUTF16(
+      IDS_INSTALLER_DOWNLOADER_LINK_ACCESSIBLE_TEXT);
 }
 
 int InstallerDownloaderInfoBarDelegate::GetButtons() const {

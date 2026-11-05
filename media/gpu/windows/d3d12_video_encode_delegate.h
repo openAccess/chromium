@@ -11,6 +11,7 @@
 #include <wrl.h>
 
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "media/base/bitstream_buffer.h"
 #include "media/base/encoder_status.h"
@@ -68,7 +69,7 @@ class MEDIA_GPU_EXPORT D3D12VideoEncodeDelegate {
   // of |picture_buffer| that holds picture content, i.e. the region that should
   // be encoded. It must be non-empty and contained in |picture_buffer|; callers
   // that do not crop pass the whole texture rather than an empty rectangle.
-  virtual EncoderStatus::Or<EncodeResult> Encode(
+  virtual base::expected<EncodeResult, EncoderStatus> Encode(
       D3D12PictureBuffer picture_buffer,
       const gfx::Rect& input_visible_rect,
       const gfx::ColorSpace& input_frame_color_space,
@@ -106,7 +107,17 @@ class MEDIA_GPU_EXPORT D3D12VideoEncodeDelegate {
     return video_processor_wrapper_.get();
   }
 
-  DXGI_FORMAT GetFormatForTesting() const { return input_format_; }
+  // The DXGI format the underlying D3D12 video encoder consumes. Valid after
+  // a successful |Initialize()|.
+  DXGI_FORMAT GetInputFormat() const { return input_format_; }
+
+  // The output buffer size the client must provide, which is also the floor
+  // for the encoder's own bitstream buffer. Computed once here so the two can
+  // never disagree on the capacity of a frame. Valid after a successful
+  // |Initialize()|.
+  uint64_t GetMinBitstreamBufferSize() const {
+    return min_bitstream_buffer_size_;
+  }
 
  protected:
   class D3D12VideoEncoderRateControl {
@@ -154,11 +165,17 @@ class MEDIA_GPU_EXPORT D3D12VideoEncodeDelegate {
   virtual EncoderStatus InitializeVideoEncoder(
       const VideoEncodeAccelerator::Config& config) = 0;
 
-  virtual EncoderStatus::Or<size_t> GetEncodedBitstreamWrittenBytesCount(
-      const ScopedD3D12ResourceMap& metadata);
+  virtual base::expected<size_t, EncoderStatus>
+  GetEncodedBitstreamWrittenBytesCount(const ScopedD3D12ResourceMap& metadata);
 
-  virtual EncoderStatus::Or<size_t> ReadbackBitstream(
+  virtual base::expected<size_t, EncoderStatus> ReadbackBitstream(
       base::span<uint8_t> bitstream_buffer);
+
+  // Returns the size the D3D12 encoder driver expects the reference-only DPB
+  // textures holding |texture_size| pictures in |input_format_| to have; see
+  // the implementation in the .cc file. Only valid after |input_format_| has
+  // been determined by |Initialize()|.
+  gfx::Size GetAdjustedReferenceTextureSize(gfx::Size texture_size) const;
 
   Microsoft::WRL::ComPtr<ID3D12Device> device_;
   Microsoft::WRL::ComPtr<ID3D12VideoDevice3> video_device_;
@@ -173,6 +190,14 @@ class MEDIA_GPU_EXPORT D3D12VideoEncodeDelegate {
   DXGI_FORMAT input_format_ = DXGI_FORMAT_UNKNOWN;
 
   D3D12VideoEncoderRateControl rate_control_;
+
+  // The bitstream buffer capacity advertised to the client and passed to
+  // |video_encoder_wrapper_| for its own buffer, exposed via
+  // GetMinBitstreamBufferSize(). Computed once in |Initialize()| as the max of
+  // the bitrate-based estimate and one uncompressed frame in the encoder's
+  // input format, so the client's buffers and the encoder's buffer cannot
+  // disagree.
+  uint64_t min_bitstream_buffer_size_ = 0;
 
   // Output profile requested by |config| in |Initialize()|.
   // The implementation may use a different profile for compatibility.
@@ -250,7 +275,9 @@ class D3D12VideoEncodeDecodedPictureBuffers {
   size_t size_ = 0;
   absl::InlinedVector<Microsoft::WRL::ComPtr<ID3D12Resource>, maxDpbSize + 1>
       resources_;
-  absl::InlinedVector<ID3D12Resource*, maxDpbSize + 1> raw_resources_;
+  // Exclusion: Used for OS structure interop with D3D12 API.
+  RAW_PTR_EXCLUSION absl::InlinedVector<ID3D12Resource*, maxDpbSize + 1>
+      raw_resources_;
   absl::InlinedVector<UINT, maxDpbSize + 1> subresources_;
 };
 

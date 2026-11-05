@@ -95,9 +95,9 @@ constexpr auto kDumpProviderAllowlist =
         "Skia",
         "Sql",
         "TabRestoreServiceHelper",
-        "TextureOwner"
-        "URLRequestContext",
+        "TextureOwner",
         "V8Isolate",
+        "viz::SkiaRenderer",
         "WebGL",
         "WebMediaPlayer_MainThread",
         "WebMediaPlayer_MediaThread",
@@ -189,6 +189,7 @@ constexpr auto kAllocatorDumpNameAllowlist =
         "gpu/transfer_buffer_memory/buffer_0x?",
         "gpu/transfer_cache/cache_0x?",
         "gpu/transfer_cache/cache_0x?/avg_image_size",
+        "gpu/viz_buffer_queue/queue_0x?",
         "gpu/vulkan/vma_allocator_0x?",
         "gpu/vulkan/graphite_allocator",
         "history/delta_file_service/leveldb_0x?",
@@ -209,13 +210,16 @@ constexpr auto kAllocatorDumpNameAllowlist =
         "leveldatabase/memenv_0x?",
         "malloc",
         "malloc/allocated_objects",
+        "malloc/metadata_fragmentation_caches",
+        // Also reported without PartitionAlloc-as-malloc, which mallinfo(3)
+        // backs instead.
+        "malloc/allocated_objects/sys_malloc",
+        "malloc/sys_malloc",
 #if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+        "malloc/allocated_objects/partitions",
         "malloc/extreme_lud",
         "malloc/extreme_lud/small_objects",
         "malloc/extreme_lud/large_objects",
-#endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
-        "malloc/metadata_fragmentation_caches",
-#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
         "malloc/partitions",
         "malloc/partitions/allocator",
         "malloc/partitions/allocator/scheduler_loop_quarantine",
@@ -224,7 +228,6 @@ constexpr auto kAllocatorDumpNameAllowlist =
         "malloc/partitions/aligned",
         "malloc/partitions/leaked",
         "malloc/partitions/original",
-        "malloc/sys_malloc",
         "malloc/win_heap",
         "partition_alloc/partitions/buffer/",
         "partition_alloc/partitions/buffer/scheduler_loop_quarantine",

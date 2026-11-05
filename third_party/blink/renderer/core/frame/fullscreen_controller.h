@@ -72,6 +72,11 @@ class CORE_EXPORT FullscreenController {
   void DidEnterFullscreen();
   void DidExitFullscreen();
 
+  // Called when a pending fullscreen request was not granted by the browser
+  // (e.g. if an entry and exit coalesced while visual property updates were
+  // being throttled). Rejects any pending request and resets state to kInitial.
+  void DidFailToEnterFullscreen();
+
   // Called by Fullscreen (via ChromeClient) to notify that the fullscreen
   // element has changed.
   void FullscreenElementChanged(Element* old_element,
@@ -100,8 +105,27 @@ class CORE_EXPORT FullscreenController {
     kFullscreen,
     kChangingFullscreenDisplays,
     kExitingFullscreen,
+    // Fullscreen exit is in flight to the browser, and a new EnterFullscreen
+    // request has been sent before the browser acknowledged the exit.
+    kReenteringFullscreen,
   };
   State state_ = State::kInitial;
+
+  // Returns true if an EnterFullscreen request is currently in flight to the
+  // browser.
+  bool IsEnteringFullscreen() const {
+    return state_ == State::kEnteringFullscreen ||
+           state_ == State::kChangingFullscreenDisplays ||
+           state_ == State::kReenteringFullscreen;
+  }
+
+  // Returns true if fullscreen has been entered and not yet exited by the
+  // browser (including while an exit or exit+re-enter is in flight).
+  bool IsFullscreenOrExiting() const {
+    return state_ == State::kFullscreen ||
+           state_ == State::kExitingFullscreen ||
+           state_ == State::kReenteringFullscreen;
+  }
 
   using PendingFullscreenSet = GCedHeapLinkedHashSet<WeakMember<LocalFrame>>;
   Persistent<PendingFullscreenSet> pending_frames_;

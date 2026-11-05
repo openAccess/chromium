@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/observer_list.h"
+#include "base/sequence_checker.h"
 #include "base/win/windows_types.h"
 #include "device/base/device_base_export.h"
 
@@ -15,6 +16,11 @@ namespace device {
 
 // Use an instance of this class to observe devices being added and removed
 // from the system, matched by device interface GUID.
+//
+// Notifications are delivered through the process-wide gfx::SingletonHwnd, so
+// the getters below must be called from a thread running a UI message pump.
+// They return nullptr if the shared window is unavailable, in which case no
+// notifications can be observed.
 class DEVICE_BASE_EXPORT DeviceMonitorWin {
  public:
   class DEVICE_BASE_EXPORT Observer {
@@ -42,6 +48,10 @@ class DEVICE_BASE_EXPORT DeviceMonitorWin {
                          const std::wstring& device_path);
   void NotifyDeviceRemoved(const GUID& class_guid,
                            const std::wstring& device_path);
+
+  // `observer_list_` is not thread-safe, so observers must be added and
+  // removed on the sequence that delivers notifications.
+  SEQUENCE_CHECKER(sequence_checker_);
 
   base::ObserverList<Observer>::Unchecked observer_list_;
 };

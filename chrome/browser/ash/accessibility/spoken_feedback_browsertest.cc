@@ -14,6 +14,7 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_switches.h"
 #include "ash/display/display_configuration_controller.h"
 #include "ash/public/cpp/accelerators.h"
 #include "ash/public/cpp/event_rewriter_controller.h"
@@ -45,9 +46,9 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/test/task_environment.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/accessibility/caption_bubble_context_browser.h"
 #include "chrome/browser/accessibility/live_caption/live_caption_controller_factory.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
@@ -70,10 +71,9 @@
 #include "chrome/browser/ui/ash/shelf/app_shortcut_shelf_item_controller.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/aura/accessibility/automation_manager_aura.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/common/chrome_switches.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "components/constrained_window/constrained_window_views.h"
@@ -507,9 +507,7 @@ class CaptionSpokenFeedbackTest : public LoggedInSpokenFeedbackTest {
     LoggedInSpokenFeedbackTest::SetUpCommandLine(command_line);
 
     scoped_feature_list_.InitWithFeatures(
-        {ash::features::kOnDeviceSpeechRecognition,
-         ::features::kAccessibilityCaptionsOnBrailleDisplay},
-        {});
+        {ash::features::kOnDeviceSpeechRecognition}, {});
   }
 
   void SetCaptionText(const std::string& text) {
@@ -753,7 +751,7 @@ class SpokenFeedbackTest : public LoggedInSpokenFeedbackTest {
 
     if (GetParam().variant() == kTestAsGuestUser) {
       command_line->AppendSwitch(switches::kGuestSession);
-      command_line->AppendSwitch(::switches::kIncognito);
+      command_line->AppendSwitch(ash::chrome_switches::kIncognito);
       command_line->AppendSwitchASCII(switches::kLoginProfile, "user");
       command_line->AppendSwitchASCII(
           switches::kLoginUser, user_manager::GuestAccountId().GetUserEmail());
@@ -2992,12 +2990,6 @@ class SpokenFeedbackWithMagnifierTest : public SpokenFeedbackTest {
  protected:
   SpokenFeedbackWithMagnifierTest() = default;
 
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    SpokenFeedbackTest::SetUpCommandLine(command_line);
-    scoped_feature_list_.InitAndEnableFeature(
-        ::features::kAccessibilityMagnifierFollowsChromeVox);
-  }
-
   void SetUpOnMainThread() override {
     SpokenFeedbackTest::SetUpOnMainThread();
 
@@ -3075,7 +3067,6 @@ class SpokenFeedbackWithMagnifierTest : public SpokenFeedbackTest {
 
  private:
   std::unique_ptr<AutomationTestUtils> test_utils_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(

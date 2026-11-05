@@ -23,6 +23,7 @@
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/command_buffer/client/client_shared_image.h"
 #include "gpu/command_buffer/common/shared_image_capabilities.h"
+#include "gpu/ipc/client/gpu_channel_observer.h"
 #include "gpu/ipc/common/command_buffer_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/gpu_fence.h"
@@ -127,10 +128,7 @@ class TestBufferCollection {
 };
 #endif
 
-TestSharedImageInterface::TestSharedImageInterface() {
-  InitializeSharedImageCapabilities();
-}
-
+TestSharedImageInterface::TestSharedImageInterface() = default;
 TestSharedImageInterface::~TestSharedImageInterface() = default;
 
 // static
@@ -210,6 +208,9 @@ scoped_refptr<ClientSharedImage> TestSharedImageInterface::CreateSharedImage(
   // sampling is set only with a native GMB handle.
   if (si_info_copy.format.PrefersExternalSampler()) {
     si_info_copy.format.ClearPrefersExternalSampler();
+    if (si_info_copy.alpha_type == kPremul_SkAlphaType) {
+      si_info_copy.alpha_type = kUnpremul_SkAlphaType;
+    }
   }
 
   auto gmb_handle = CreateGMBHandle(si_info.format, si_info_copy.size);
@@ -245,6 +246,9 @@ TestSharedImageInterface::CreateSharedImage(
   if (buffer_handle.type == gfx::SHARED_MEMORY_BUFFER &&
       si_info_copy.format.PrefersExternalSampler()) {
     si_info_copy.format.ClearPrefersExternalSampler();
+    if (si_info_copy.alpha_type == kPremul_SkAlphaType) {
+      si_info_copy.alpha_type = kUnpremul_SkAlphaType;
+    }
   }
 
   return base::MakeRefCounted<ClientSharedImage>(
@@ -326,12 +330,15 @@ scoped_refptr<ClientSharedImage> TestSharedImageInterface::ImportSharedImage(
     ExportedSharedImage exported_shared_image) {
   shared_images_.insert(exported_shared_image.mailbox_);
 
+  // No pool: this interface has no readback implementation to back one, so an
+  // imported image here serves premapped mappings only.
   return base::WrapRefCounted<ClientSharedImage>(
-      new ClientSharedImage(std::move(exported_shared_image), holder_));
+      new ClientSharedImage(std::move(exported_shared_image), holder_,
+                            /*shared_memory_pool=*/nullptr));
 }
 
 void TestSharedImageInterface::DestroySharedImage(
-    const SyncToken& sync_token,
+    std::vector<SyncToken> sync_tokens,
     const Mailbox& mailbox) {
   base::AutoLock locked(lock_);
   if (most_recent_mappable_shared_image_ &&
@@ -340,18 +347,11 @@ void TestSharedImageInterface::DestroySharedImage(
   }
 
   shared_images_.erase(mailbox);
-  most_recent_destroy_token_ = sync_token;
+  most_recent_destroy_tokens_ = std::move(sync_tokens);
 
   if (test_client_) {
     test_client_->DidDestroySharedImage();
   }
-}
-
-void TestSharedImageInterface::DestroySharedImage(
-    const SyncToken& sync_token,
-    scoped_refptr<ClientSharedImage> client_shared_image) {
-  CHECK(client_shared_image->HasOneRef());
-  client_shared_image->UpdateDestructionSyncToken(sync_token);
 }
 
 #if BUILDFLAG(IS_FUCHSIA)
@@ -482,21 +482,38 @@ TestSharedImageInterface::GetCapabilities() {
 void TestSharedImageInterface::SetCapabilities(
     const SharedImageCapabilities& caps) {
   shared_image_capabilities_ = caps;
-  InitializeSharedImageCapabilities();
 }
 
-void TestSharedImageInterface::InitializeSharedImageCapabilities() {
-#if BUILDFLAG(IS_MAC)
-  // Initialize `texture_target_for_io_surfaces` to a value that is valid for
-  // ClientSharedImage to use, as unittests broadly create and use
-  // SharedImageCapabilities instances without initializing this field. The
-  // specific value is chosen to match the historical default value that was
-  // used when this state was accessed via a global variable.
-  if (!shared_image_capabilities_.texture_target_for_io_surfaces) {
-    shared_image_capabilities_.texture_target_for_io_surfaces =
-        GL_TEXTURE_RECTANGLE_ARB;
+bool TestSharedImageInterface::IsLost() const {
+  base::AutoLock locked(lock_);
+  return is_lost_;
+}
+
+bool TestSharedImageInterface::AddGpuChannelLostObserver(
+    GpuChannelLostObserver* observer) {
+  base::AutoLock locked(lock_);
+
+  if (is_lost_) {
+    return false;
   }
-#endif
+  observer_list_.push_back(observer);
+  return true;
+}
+void TestSharedImageInterface::RemoveGpuChannelLostObserver(
+    GpuChannelLostObserver* observer) {
+  base::AutoLock locked(lock_);
+
+  std::erase(observer_list_, observer);
+}
+
+void TestSharedImageInterface::MarkAsLost() {
+  base::AutoLock locked(lock_);
+
+  is_lost_ = true;
+  for (GpuChannelLostObserver* observer : observer_list_) {
+    observer->OnGpuChannelLost();
+  }
+  observer_list_.clear();
 }
 
 }  // namespace gpu

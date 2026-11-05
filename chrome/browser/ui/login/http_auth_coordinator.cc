@@ -10,9 +10,10 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/login/login_handler.h"
 #include "chrome/browser/ui/login/login_tab_helper.h"
-#include "components/enterprise/net/content/enterprise_proxy_navigation_error_data.h"
+#include "components/enterprise/net/content/enterprise_proxy_tab_helper.h"
 #include "components/enterprise/net/core/enterprise_proxy_error_service.h"
 #include "components/no_state_prefetch/browser/no_state_prefetch_contents.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/common/content_features.h"
 #include "extensions/buildflags/buildflags.h"
@@ -40,15 +41,20 @@ HttpAuthCoordinator::CreateLoginDelegate(
     bool is_request_for_navigation,
     const GURL& url,
     scoped_refptr<net::HttpResponseHeaders> response_headers,
+    bool do_not_prompt_for_login,
     content::GuestPageHolder* guest,
     content::LoginDelegate::LoginAuthRequiredCallback auth_required_callback) {
   auto flow_owned = std::make_unique<Flow>(
       this, web_contents, auth_info, request_id,
       is_request_for_primary_main_frame_navigation, is_request_for_navigation,
-      url, response_headers, std::move(auth_required_callback));
+      url, response_headers, do_not_prompt_for_login,
+      std::move(auth_required_callback));
   Flow* flow = flow_owned.get();
   flows_[flow] = std::move(flow_owned);
 
+  // The enterprise proxy error service and extensions don't show login UI, so
+  // they may also answer requests with `do_not_prompt_for_login`. ShowDialog()
+  // never shows UI for such requests.
   if (flow->ForwardToEnterpriseProxy(browser_context)) {
     return std::make_unique<LoginDelegateWrapper>(flow);
   }
@@ -89,6 +95,7 @@ HttpAuthCoordinator::Flow::Flow(
     bool is_request_for_navigation,
     const GURL& url,
     scoped_refptr<net::HttpResponseHeaders> response_headers,
+    bool do_not_prompt_for_login,
     content::LoginDelegate::LoginAuthRequiredCallback auth_required_callback)
     : coordinator_(coordinator),
       auth_info_(auth_info),
@@ -98,6 +105,7 @@ HttpAuthCoordinator::Flow::Flow(
       is_request_for_navigation_(is_request_for_navigation),
       url_(url),
       response_headers_(response_headers),
+      do_not_prompt_for_login_(do_not_prompt_for_login),
       callback_(std::move(auth_required_callback)) {
   if (web_contents) {
     web_contents_ = web_contents->GetWeakPtr();
@@ -127,14 +135,31 @@ bool HttpAuthCoordinator::Flow::ForwardToEnterpriseProxy(
     return false;
   }
 
-  auto callback = base::BindOnce(&Flow::OnCredentials, GetWeakPtr());
-  // TODO(crbug.com/543015664): Pass the actual navigation handle instead of
-  // nullptr here.
-  return error_service->InterceptProxyAuthChallenge(
-      auth_info_, url_, response_headers_,
-      std::make_unique<enterprise_net::EnterpriseProxyErrorDataDelegate>(
-          /*navigation_handle=*/nullptr),
-      std::move(callback));
+  // For primary main frame navigations, retrieve the active NavigationID from
+  // the tab's EnterpriseProxyTabHelper to correlate this 407 challenge with the
+  // impending error page commit.
+  //
+  // For subresources, iframes, or background requests, the disguised error is
+  // still intercepted and auth is aborted but without login dialog/top-level
+  // error page. (`navigation_id` defaults to 0)
+  int64_t navigation_id = 0;
+  if (is_request_for_primary_main_frame_navigation_ && web_contents_) {
+    if (auto* tab_helper = enterprise_net::EnterpriseProxyTabHelper::From(
+            tabs::TabInterface::MaybeGetFromContents(web_contents_.get()))) {
+      navigation_id = tab_helper->active_navigation_id();
+    }
+  }
+
+  auto interception = error_service->EvaluateProxyAuthChallenge(
+      auth_info_, url_, response_headers_, navigation_id);
+  if (!interception) {
+    return false;
+  }
+
+  error_service->ResolveProxyAuthChallenge(
+      *std::move(interception),
+      base::BindOnce(&Flow::OnCredentials, GetWeakPtr()));
+  return true;
 }
 
 bool HttpAuthCoordinator::Flow::ForwardToExtension(
@@ -176,6 +201,14 @@ void HttpAuthCoordinator::Flow::ShowDialog() {
   // If we're being asked to show a dialog, then the callback must still be
   // valid.
   CHECK(callback_);
+
+  // Requests that must not prompt for login never show a dialog, nor create a
+  // LoginTabHelper (which would prompt once the navigation commits). Only
+  // non-UI sources may provide credentials for them, and none did.
+  if (do_not_prompt_for_login_) {
+    std::move(callback_).Run(std::nullopt);
+    return;
+  }
 
   // If the WebContents is no longer valid, then we cannot show a dialog.
   if (!web_contents_) {
@@ -223,9 +256,23 @@ void HttpAuthCoordinator::Flow::ShowDialog() {
 
   // For subresources, create a LoginHandler which will show a login prompt.
   auto wrapped_callback = base::BindOnce(&Flow::OnCredentials, GetWeakPtr());
-  login_handler_ = coordinator_->CreateLoginDelegateFromLoginHandler(
-      web_contents_.get(), auth_info_, request_id_, url_, response_headers_,
-      std::move(wrapped_callback));
+  // Showing the login prompt synchronously blocks the WebContents, which
+  // drops HTML fullscreen. Exiting fullscreen can spin a nested message loop
+  // (see the comment in WebContentsImpl::ExitFullscreenMode(),
+  // crbug.com/1506535, crbug.com/498752242) in which the auth challenge can
+  // be cancelled, synchronously destroying `this`. Check liveness before
+  // touching any member.
+  base::WeakPtr<Flow> weak_this = GetWeakPtr();
+  std::unique_ptr<content::LoginDelegate> login_handler =
+      coordinator_->CreateLoginDelegateFromLoginHandler(
+          web_contents_.get(), auth_info_, request_id_, url_, response_headers_,
+          std::move(wrapped_callback));
+  if (!weak_this) {
+    // `this` was destroyed while the prompt was being shown. Dropping
+    // `login_handler` closes the just-created prompt.
+    return;
+  }
+  login_handler_ = std::move(login_handler);
 }
 
 base::WeakPtr<HttpAuthCoordinator::Flow>

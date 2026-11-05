@@ -8,25 +8,16 @@
 #include <initializer_list>
 #include <optional>
 #include <string>
+#include <vector>
 
-#include "components/optimization_guide/core/model_execution/test/substitution_builder.h"
+#include "components/optimization_guide/core/model_execution/configs/substitution_builder.h"
 #include "components/optimization_guide/proto/descriptors.pb.h"
 #include "components/optimization_guide/proto/features/example_for_testing.pb.h"
-#include "components/optimization_guide/proto/on_device_base_model_metadata.pb.h"
 #include "components/optimization_guide/proto/on_device_model_execution_config.pb.h"
 #include "components/optimization_guide/proto/redaction.pb.h"
 #include "components/optimization_guide/proto/substitution.pb.h"
-#include "components/optimization_guide/proto/text_safety_model_metadata.pb.h"
 
 namespace optimization_guide {
-
-// Sets a threshold that will reject text containing "unsafe"  when used with
-// FakeOnDeviceModel::ClassifyTextSafety.
-proto::SafetyCategoryThreshold ForbidUnsafe();
-
-// Sets a threshold that will reject text without "reasonable" when used with
-// FakeOnDeviceModel::ClassifyTextSafety.
-proto::SafetyCategoryThreshold RequireReasonable();
 
 // Reference ComposeRequest::page_metadata.page_url
 proto::ProtoField PageUrlField();
@@ -57,9 +48,6 @@ proto::RedactRules SimpleRedactRule(
 // Generates "ctx:{user input}" and "execute:{user input}{page_url}".
 // Outputs to a ComposeResponse::output field.
 proto::OnDeviceModelExecutionFeatureConfig SimpleComposeConfig();
-
-// Trivial safety config for compose with no checks.
-proto::FeatureTextSafetyConfiguration ComposeSafetyConfig();
 
 // Returns a validation config that passes with the default model settings.
 inline proto::OnDeviceModelValidationConfig WillPassValidationConfig() {
@@ -116,27 +104,10 @@ inline proto::SubstitutedString ForEachRepeated(proto::SubstitutedString sub) {
 // A StringSubstitution that formats an ExampleForTestingMessage.
 proto::SubstitutedString FormatTestMessage();
 
-// Construct a TextSafetyModelMetadata that composes the feature configs.
-proto::TextSafetyModelMetadata SafetyMetadata(
-    std::initializer_list<proto::FeatureTextSafetyConfiguration> configs);
-
 // Constructs a simple config for the Test feature.
 // Formats inputs from ExampleForTestingMessage.
 // Outputs to a ComposeResponse::output field.
 proto::OnDeviceModelExecutionFeatureConfig SimpleTestFeatureConfig();
-
-// Constructs OnDeviceBaseModelMetadata for test assets.
-inline proto::OnDeviceBaseModelMetadata CreateOnDeviceBaseModelMetadata(
-    const std::string& base_model_name,
-    const std::string& base_model_version,
-    std::vector<proto::OnDeviceModelPerformanceHint> hints) {
-  proto::OnDeviceBaseModelMetadata model_metadata;
-  model_metadata.set_base_model_name(base_model_name);
-  model_metadata.set_base_model_version(base_model_version);
-  *model_metadata.mutable_supported_performance_hints() = {hints.begin(),
-                                                           hints.end()};
-  return model_metadata;
-}
 
 }  // namespace optimization_guide
 

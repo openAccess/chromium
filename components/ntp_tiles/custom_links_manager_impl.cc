@@ -13,10 +13,10 @@
 #include "base/auto_reset.h"
 #include "base/functional/bind.h"
 #include "components/ntp_tiles/constants.h"
+#include "components/ntp_tiles/custom_links_pref_names.h"
 #include "components/ntp_tiles/custom_links_util.h"
 #include "components/ntp_tiles/metrics.h"
 #include "components/ntp_tiles/most_visited_sites.h"
-#include "components/ntp_tiles/pref_names.h"
 #include "components/ntp_tiles/tile_type.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
@@ -25,12 +25,16 @@
 namespace ntp_tiles {
 
 CustomLinksManagerImpl::CustomLinksManagerImpl(const Options& options)
-    : prefs_(options.prefs),
+    : custom_links_initialized_pref_(
+          options.scope == CustomLinksScope::kDesktop
+              ? prefs::kCustomLinksInitialized
+              : prefs::kCustomLinksInitializedMobile),
+      prefs_(options.prefs),
       max_links_(
           base::FeatureList::IsEnabled(ntp_features::kNtpShortcutsRedesign)
               ? ntp_features::GetMaxShortcutsInExpandedState()
               : options.max_links),
-      store_(options.prefs) {
+      store_(options.prefs, options.scope) {
   DCHECK(prefs_);
   if (options.history_service) {
     history_service_observation_.Observe(options.history_service.get());
@@ -44,8 +48,8 @@ CustomLinksManagerImpl::CustomLinksManagerImpl(const Options& options)
       base::BindRepeating(&CustomLinksManagerImpl::OnPreferenceChanged,
                           weak_ptr_factory_.GetWeakPtr());
   pref_change_registrar_.Init(prefs_);
-  pref_change_registrar_.Add(prefs::kCustomLinksInitialized, callback);
-  pref_change_registrar_.Add(prefs::kCustomLinksList, callback);
+  pref_change_registrar_.Add(custom_links_initialized_pref_, callback);
+  pref_change_registrar_.Add(store_.list_pref_name(), callback);
 }
 
 CustomLinksManagerImpl::~CustomLinksManagerImpl() = default;
@@ -61,7 +65,7 @@ bool CustomLinksManagerImpl::Initialize(const NTPTilesVector& tiles) {
 
   {
     base::AutoReset<bool> auto_reset(&updating_preferences_, true);
-    prefs_->SetBoolean(prefs::kCustomLinksInitialized, true);
+    prefs_->SetBoolean(custom_links_initialized_pref_, true);
   }
   StoreLinks();
   return true;
@@ -70,13 +74,13 @@ bool CustomLinksManagerImpl::Initialize(const NTPTilesVector& tiles) {
 void CustomLinksManagerImpl::Uninitialize() {
   {
     base::AutoReset<bool> auto_reset(&updating_preferences_, true);
-    prefs_->SetBoolean(prefs::kCustomLinksInitialized, false);
+    prefs_->SetBoolean(custom_links_initialized_pref_, false);
   }
   ClearLinks();
 }
 
 bool CustomLinksManagerImpl::IsInitialized() const {
-  return prefs_->GetBoolean(prefs::kCustomLinksInitialized);
+  return prefs_->GetBoolean(custom_links_initialized_pref_);
 }
 
 const std::vector<CustomLinksManager::Link>& CustomLinksManagerImpl::GetLinks()
@@ -284,8 +288,13 @@ void CustomLinksManagerImpl::OnPreferenceChanged() {
 // static
 void CustomLinksManagerImpl::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* user_prefs) {
+  // Register both desktop and mobile pref keys so that sync works correctly
+  // regardless of which NTP type is active.
   user_prefs->RegisterBooleanPref(
       prefs::kCustomLinksInitialized, false,
+      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  user_prefs->RegisterBooleanPref(
+      prefs::kCustomLinksInitializedMobile, false,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
   user_prefs->RegisterBooleanPref(prefs::kCustomLinksForPreinstalledAppsRemoved,
                                   false);

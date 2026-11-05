@@ -19,6 +19,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "components/google/core/common/google_util.h"
 #include "components/omnibox/browser/actions/omnibox_action_in_suggest.h"
 #include "components/omnibox/browser/aim_eligibility_service.h"
 #include "components/omnibox/browser/autocomplete_provider_client.h"
@@ -42,9 +43,9 @@
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/metrics_proto/omnibox_input_type.pb.h"
 #include "third_party/omnibox_proto/navigational_intent.pb.h"
-#include "third_party/omnibox_proto/rich_answer_template.pb.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+#include "url/url_constants.h"
 
 namespace {
 constexpr bool is_android = !!BUILDFLAG(IS_ANDROID);
@@ -53,6 +54,25 @@ constexpr bool is_ios = !!BUILDFLAG(IS_IOS);
 bool MatchTypeAndContentsAreEqual(const AutocompleteMatch& lhs,
                                   const AutocompleteMatch& rhs) {
   return lhs.contents == rhs.contents && lhs.type == rhs.type;
+}
+
+// Ensure an image returned by the the search suggestion API (`image_url`) is
+// valid for a given search engine (`template_url`).
+//
+// Images for an entity in the search suggestion are expected to be coming from
+// the same domain as the search engine. The hosting for those images could be
+// on a dedicated subdomain (img.domain.com), so this compares registrable
+// domains rather than origins. Private registries are included so that engines
+// sharing a hosting suffix are still treated as separate sites.
+bool CanFetchSuggestionImage(const GURL& image_url,
+                             const TemplateURL& template_url,
+                             const SearchTermsData& search_terms_data) {
+  if (!image_url.is_valid() || !image_url.SchemeIs(url::kHttpsScheme)) {
+    return false;
+  }
+  return net::registry_controlled_domains::SameDomainOrHost(
+      image_url, template_url.GenerateSearchURL(search_terms_data),
+      net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
 }
 
 std::u16string GetMatchContentsForOnDeviceTailSuggestion(
@@ -128,27 +148,26 @@ AutocompleteMatch BaseSearchProvider::CreateSearchSuggestion(
     return match;
   match.keyword = template_url->keyword();
   bool is_google = search::TemplateURLIsGoogle(template_url, search_terms_data);
-  // If SuggestTemplateInfo is available, use it. Otherwise, continue
-  // populating information from EntityInfo.
   const auto& suggest_template_info = suggestion.suggest_template_info();
   if (suggest_template_info) {
     match.suggest_template = suggest_template_info;
   }
   if (is_google) {
     if (suggest_template_info) {
-      if (suggest_template_info->has_image()) {
-        match.image_dominant_color =
-            suggest_template_info->image().dominant_color();
-        match.image_url = GURL(suggest_template_info->image().url());
-      }
-    } else {
-      match.image_dominant_color = suggestion.entity_info().dominant_color();
-      match.image_url = GURL(suggestion.entity_info().image_url());
+      match.image_dominant_color =
+          suggest_template_info->image().dominant_color();
+      match.image_url = GURL(suggest_template_info->image().url());
     }
-    match.answer_template = suggestion.answer_template();
+  } else if (suggest_template_info) {
+    // Non-Google engines can also provide an entity image, but only ones they
+    // hosted on the same domain.
+    const GURL image_url(suggest_template_info->image().url());
+    if (CanFetchSuggestionImage(image_url, *template_url, search_terms_data)) {
+      match.image_dominant_color =
+          suggest_template_info->image().dominant_color();
+      match.image_url = image_url;
+    }
   }
-  match.entity_id = suggestion.entity_info().entity_id();
-  match.website_uri = suggestion.entity_info().website_uri();
   match.contents = suggestion.match_contents();
   match.contents_class = suggestion.match_contents_class();
   match.suggestion_group_id = suggestion.suggestion_group_id();
@@ -156,7 +175,7 @@ AutocompleteMatch BaseSearchProvider::CreateSearchSuggestion(
   for (const int subtype : suggestion.subtypes()) {
     match.subtypes.insert(SuggestSubtypeForNumber(subtype));
   }
-  if (suggestion.type() == AutocompleteMatchType::SEARCH_SUGGEST_TAIL) {
+  if (suggestion.type() == omnibox::AutocompleteMatchType::kSearchSuggestTail) {
     match.RecordAdditionalInfo(kACMatchPropertySuggestionText,
                                suggestion.suggestion());
     match.RecordAdditionalInfo(kACMatchPropertyContentsPrefix,
@@ -169,9 +188,7 @@ AutocompleteMatch BaseSearchProvider::CreateSearchSuggestion(
 
   if (!suggestion.annotation().empty()) {
     match.description = suggestion.annotation();
-    // Descriptions should always have dimmed text.
-    AutocompleteMatch::AddLastClassificationIfNecessary(
-        &match.description_class, 0, ACMatchClassification::DIM);
+    match.description_class = suggestion.ClassifyAnnotation();
   }
 
   const std::u16string input_text = input.IsZeroSuggest() ? u"" : input.text();
@@ -202,7 +219,7 @@ AutocompleteMatch BaseSearchProvider::CreateSearchSuggestion(
   DCHECK(search_url.SupportsReplacement(search_terms_data));
   std::u16string query(suggestion.suggestion());
   std::u16string original_query(input_text);
-  if (suggestion.type() == AutocompleteMatchType::CALCULATOR) {
+  if (suggestion.type() == omnibox::AutocompleteMatchType::kCalculator) {
     // Use query text, rather than the calculator answer suggestion, to search.
     query = original_query;
     original_query.clear();
@@ -219,9 +236,6 @@ AutocompleteMatch BaseSearchProvider::CreateSearchSuggestion(
     match.search_terms_args->additional_query_params =
         CreateQueryParamStringFromMap(
             suggest_template_info->default_search_parameters());
-  } else {
-    match.search_terms_args->additional_query_params =
-        suggestion.entity_info().suggest_search_parameters();
   }
   match.search_terms_args->append_extra_query_params_from_command_line =
       append_extra_query_params_from_command_line;
@@ -243,26 +257,6 @@ AutocompleteMatch BaseSearchProvider::CreateSearchSuggestion(
            suggest_template_info->action_suggestions()) {
         auto suggest_action = CreateActionInSuggest(
             action, search_url, *match.search_terms_args, search_terms_data);
-        if (suggest_action) {
-          match.actions.emplace_back(std::move(suggest_action));
-        }
-      }
-    } else {
-      // TODO(crbug.com/417745802): Remove once actions are migrated from
-      // EntityInfo to SuggestTemplateInfo.
-      for (const omnibox::ActionInfo& action_info :
-           suggestion.entity_info().action_suggestions()) {
-        omnibox::SuggestTemplateInfo::TemplateAction template_action;
-        template_action.set_action_uri(action_info.action_uri());
-        template_action.set_logs_action_type(action_info.logs_action_type());
-        template_action.set_action_type(
-            static_cast<omnibox::SuggestTemplateInfo_TemplateAction_ActionType>(
-                action_info.action_type()));
-        *template_action.mutable_search_parameters() =
-            action_info.search_parameters();
-        auto suggest_action =
-            CreateActionInSuggest(template_action, search_url,
-                                  *match.search_terms_args, search_terms_data);
         if (suggest_action) {
           match.actions.emplace_back(std::move(suggest_action));
         }
@@ -312,7 +306,7 @@ std::string BaseSearchProvider::CreateQueryParamStringFromMap(
 // static
 AutocompleteMatch BaseSearchProvider::CreateShortcutSearchSuggestion(
     const std::u16string& suggestion,
-    AutocompleteMatchType::Type type,
+    omnibox::AutocompleteMatchType type,
     const TemplateURL* template_url,
     const SearchTermsData& search_terms_data) {
   // These calls use a number of default values.  For instance, they assume the
@@ -340,12 +334,12 @@ AutocompleteMatch BaseSearchProvider::CreateOnDeviceSearchSuggestion(
     const SearchTermsData& search_terms_data,
     int accepted_suggestion,
     bool is_tail_suggestion) {
-  AutocompleteMatchType::Type match_type;
+  omnibox::AutocompleteMatchType match_type;
   omnibox::SuggestType suggest_type = omnibox::TYPE_NATIVE_CHROME;
   std::u16string match_contents, match_contents_prefix;
 
   if (is_tail_suggestion) {
-    match_type = AutocompleteMatchType::SEARCH_SUGGEST_TAIL;
+    match_type = omnibox::AutocompleteMatchType::kSearchSuggestTail;
     suggest_type = omnibox::TYPE_TAIL;
     std::u16string sanitized_suggestion =
         AutocompleteMatch::SanitizeString(suggestion);
@@ -356,7 +350,7 @@ AutocompleteMatch BaseSearchProvider::CreateOnDeviceSearchSuggestion(
     match_contents_prefix = sanitized_suggestion.substr(
         0, sanitized_suggestion.size() - match_contents.size());
   } else {
-    match_type = AutocompleteMatchType::SEARCH_SUGGEST;
+    match_type = omnibox::AutocompleteMatchType::kSearchSuggest;
     suggest_type = omnibox::TYPE_QUERY;
     match_contents = suggestion;
   }
@@ -366,7 +360,6 @@ AutocompleteMatch BaseSearchProvider::CreateOnDeviceSearchSuggestion(
       /*subtypes=*/{omnibox::SUBTYPE_SUGGEST_2G_LITE}, match_contents,
       match_contents_prefix,
       /*annotation=*/std::u16string(),
-      /*entity_info=*/omnibox::EntityInfo(),
       /*deletion_url=*/"",
       /*from_keyword=*/false,
       /*navigational_intent=*/omnibox::NAV_INTENT_NONE, relevance,
@@ -473,8 +466,12 @@ bool BaseSearchProvider::CanSendSuggestRequestWithPageURL(
   // Forbid sending the current page URL to the suggest endpoint if
   // URL data collection is off; unless the current page is the provider's
   // Search Results Page; or for the Lens searchboxes.
-  if (!client->IsUrlDataCollectionActive() &&
-      !template_url->IsSearchURL(current_page_url, search_terms_data) &&
+  const bool is_srp =
+      google_util::IsGoogleDomainUrl(current_page_url,
+                                     google_util::DISALLOW_SUBDOMAIN,
+                                     google_util::ALLOW_NON_STANDARD_PORTS) &&
+      template_url->IsSearchURL(current_page_url, search_terms_data);
+  if (!client->IsUrlDataCollectionActive() && !is_srp &&
       !omnibox::IsLensSearchbox(page_classification)) {
     return false;
   }
@@ -694,15 +691,8 @@ void BaseSearchProvider::AddMatchToMap(
     // this requires the lower-ranking duplicate being added last. See the use
     // of push_back above:
 
-    // This is to avoid losing the Answers in Suggest information.
     const auto& less_relevant_duplicate_match =
         existing_match.duplicate_matches.back();
-    if (less_relevant_duplicate_match.answer_template &&
-        !existing_match.answer_template) {
-      existing_match.actions = less_relevant_duplicate_match.actions;
-      existing_match.answer_template =
-          less_relevant_duplicate_match.answer_template;
-    }
     // This is to avoid having shopping categorical queries lose their images to
     // higher-relevance local history and verbatim matches. This works for the
     // shopping categorical queries because they only provide images at the
@@ -710,12 +700,11 @@ void BaseSearchProvider::AddMatchToMap(
     // Ideally the entire `entity_info`, when available on a suggestion, should
     // be copied over. However `entity_info` is broken down to its constituents
     // in the constructor of SearchSuggestionParser::SuggestResult and used to
-    // set individual fields on the AutocompleteMatch. This is in contrast to
-    // Answers in Suggest which is kept on the match in its entirety. This is
-    // partly because the entity name is used to set and classify the match
-    // contents. Ideally `entity_info` should also be kept on the match in its
-    // entirety so it can be carried over when deduplicating the matches here or
-    // later in the Autocomplete process.
+    // set individual fields on the AutocompleteMatch. This is partly because
+    // the entity name is used to set and classify the match contents. Ideally
+    // `entity_info` should also be kept on the match in its entirety so it can
+    // be carried over when deduplicating the matches here or later in the
+    // Autocomplete process.
     // TODO(crbug.com/40276602): rework how `entity_info` is used in the match.
     if (!less_relevant_duplicate_match.image_url.is_empty() &&
         existing_match.image_url.is_empty()) {

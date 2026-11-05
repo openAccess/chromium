@@ -12,15 +12,16 @@
 
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
-#include "third_party/khronos/EGL/egl.h"
+#include "third_party/angle/include/EGL/egl.h"
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/extension_set.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/size.h"
 #include "ui/gfx/linux/drm_util_linux.h"
 #include "ui/gfx/linux/gbm_defines.h"
 #include "ui/gfx/linux/scoped_gbm_device.h"
@@ -147,8 +148,8 @@ class GLOzoneEGLGbm : public GLOzoneEGL {
   scoped_refptr<gl::GLSurface> CreateOffscreenGLSurface(
       gl::GLDisplay* display,
       const gfx::Size& size) override {
-    DCHECK_EQ(size.width(), 0);
-    DCHECK_EQ(size.height(), 0);
+    CHECK_EQ(size.width(), 0, base::NotFatalUntil::M163);
+    CHECK_EQ(size.height(), 0, base::NotFatalUntil::M163);
     return gl::InitializeGLSurface(
         new gl::SurfacelessEGL(display->GetAs<gl::GLDisplayEGL>(), size));
   }
@@ -190,15 +191,14 @@ class GLOzoneEGLGbm : public GLOzoneEGL {
  private:
   std::unique_ptr<NativePixmapGLBinding> ImportNativePixmap(
       scoped_refptr<gfx::NativePixmap> pixmap,
-      viz::SharedImageFormat plane_format,
+      viz::SharedImageFormat format,
       std::optional<int> plane_index,
-      gfx::Size plane_size,
+      gfx::Size size,
       const gfx::ColorSpace& color_space,
       GLenum target,
       GLuint texture_id) override {
-    return NativePixmapEGLBinding::Create(pixmap, plane_format, plane_index,
-                                          plane_size, color_space, target,
-                                          texture_id);
+    return NativePixmapEGLBinding::Create(pixmap, format, plane_index, size,
+                                          color_space, target, texture_id);
   }
 
   raw_ptr<GbmSurfaceFactory> surface_factory_;
@@ -226,23 +226,23 @@ GbmSurfaceFactory::GbmSurfaceFactory(DrmThreadProxy* drm_thread_proxy)
       drm_thread_proxy_(drm_thread_proxy) {}
 
 GbmSurfaceFactory::~GbmSurfaceFactory() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M163);
 }
 
 void GbmSurfaceFactory::RegisterSurface(gfx::AcceleratedWidget widget,
                                         GbmSurfaceless* surface) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M163);
   widget_to_surface_map_.emplace(widget, surface);
 }
 
 void GbmSurfaceFactory::UnregisterSurface(gfx::AcceleratedWidget widget) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M163);
   widget_to_surface_map_.erase(widget);
 }
 
 GbmSurfaceless* GbmSurfaceFactory::GetSurface(
     gfx::AcceleratedWidget widget) const {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M163);
   auto it = widget_to_surface_map_.find(widget);
   CHECK(it != widget_to_surface_map_.end());
   return it->second;
@@ -250,7 +250,7 @@ GbmSurfaceless* GbmSurfaceFactory::GetSurface(
 
 std::vector<gl::GLImplementationParts>
 GbmSurfaceFactory::GetAllowedGLImplementations() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M163);
   return std::vector<gl::GLImplementationParts>{
       gl::GLImplementationParts(gl::kGLImplementationEGLANGLE),
       gl::GLImplementationParts(gl::ANGLEImplementation::kSwiftShader)};
@@ -304,16 +304,17 @@ scoped_refptr<gfx::NativePixmap> GbmSurfaceFactory::CreateNativePixmapForVulkan(
     return nullptr;
   }
 
-  DCHECK(buffer->AreFdsValid());
-  DCHECK_EQ(buffer->GetNumPlanes(), 1U);
+  CHECK(buffer->AreFdsValid(), base::NotFatalUntil::M163);
+  CHECK_EQ(buffer->GetNumPlanes(), 1U, base::NotFatalUntil::M163);
 
   base::ScopedFD vk_image_fd(dup(buffer->GetPlaneFd(0)));
-  DCHECK(vk_image_fd.is_valid());
+  CHECK(vk_image_fd.is_valid(), base::NotFatalUntil::M163);
 
   // TODO(spang): Fix this for formats other than
   // viz::SinglePlaneFormat::kBGRA_8888
-  DCHECK_EQ(viz::SinglePlaneFormat::kBGRA_8888,
-            display::DisplaySnapshot::PrimaryFormat());
+  CHECK_EQ(viz::SinglePlaneFormat::kBGRA_8888,
+           display::DisplaySnapshot::PrimaryFormat(),
+           base::NotFatalUntil::M163);
   VkFormat vk_format = VK_FORMAT_B8G8R8A8_SRGB;
 
   VkDmaBufImageCreateInfo dma_buf_image_create_info = {
@@ -352,7 +353,7 @@ std::unique_ptr<OverlaySurface> GbmSurfaceFactory::CreateOverlaySurface(
 
 std::unique_ptr<SurfaceOzoneCanvas> GbmSurfaceFactory::CreateCanvasForWidget(
     gfx::AcceleratedWidget widget) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M163);
   LOG(ERROR) << "Software rendering mode is not supported with GBM platform";
   return nullptr;
 }
@@ -416,15 +417,17 @@ GbmSurfaceFactory::CreateNativePixmapFromHandle(
     auto protected_pixmap = get_protected_native_pixmap_callback_.Run(handle);
     if (protected_pixmap) {
       // The substituted pixmap is used in place of the supplied handle, so it
-      // must match the geometry the caller will use to bind it.
-      // See https://crbug.com/501762862
-      if (protected_pixmap->GetBufferSize() != size ||
+      // must be able to contain the geometry the caller will use to bind it
+      // (the backing pixmap may be larger due to hardware decoder alignment).
+      // See https://crbug.com/501762862 and https://crbug.com/575535958
+      if (!gfx::Rect(protected_pixmap->GetBufferSize())
+               .Contains(gfx::Rect(size)) ||
           protected_pixmap->GetSharedImageFormat() != format) {
         LOG(ERROR) << "Protected pixmap ("
                    << protected_pixmap->GetBufferSize().ToString() << ", "
                    << protected_pixmap->GetSharedImageFormat().ToString()
-                   << ") does not match requested geometry (" << size.ToString()
-                   << ", " << format.ToString() << ")";
+                   << ") is incompatible with requested geometry ("
+                   << size.ToString() << ", " << format.ToString() << ")";
         return nullptr;
       }
       return protected_pixmap;
@@ -499,8 +502,6 @@ bool GbmSurfaceFactory::IsFormatSupportedForTexturing(
           GbmDeviceAndFile(std::move(dev_path_file), std::move(device)));
     }
     gbm_devices_initialized_ = true;
-    base::UmaHistogramCounts100("Ozone.Drm.GbmDeviceCount",
-                                gbm_devices_.size());
   }
 
   for (const auto& device_and_file : gbm_devices_) {

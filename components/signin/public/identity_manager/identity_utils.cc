@@ -30,7 +30,7 @@ namespace signin {
 
 namespace {
 
-bool IsAccountAllowed(const PrefService* prefs, const std::string& email) {
+bool IsAccountAllowed(const PrefService* prefs, std::string_view email) {
   return !prefs || IsUsernameAllowedByPatternFromPrefs(prefs, email);
 }
 
@@ -106,6 +106,19 @@ base::flat_set<GaiaId> GetAllGaiaIdsForKeyedPreferences(
     gaia_ids.insert(primary_account_gaia_id);
   }
 
+  // Also keep the accounts with refresh tokens, even when they are not the
+  // primary account nor in the cookie jar (e.g. after sign-out on platforms
+  // where accounts are tied to the OS, like Android), so that their preferences
+  // survive until the account is removed from Chrome.
+  if (identity_manager) {
+    for (const CoreAccountInfo& account :
+         identity_manager->GetAccountsWithRefreshTokens()) {
+      if (!account.gaia.empty()) {
+        gaia_ids.insert(account.gaia);
+      }
+    }
+  }
+
   return gaia_ids;
 }
 
@@ -123,8 +136,8 @@ std::vector<AccountInfo> GetOrderedAccountsForDisplay(
   if (!primary_account_id.empty()) {
     AccountInfo primary_account = identity_manager->FindExtendedAccountInfo(
         identity_manager->GetPrimaryAccountInfo(ConsentLevel::kSignin));
-    if (!primary_account.email.empty() &&
-        IsAccountAllowed(local_state, primary_account.email)) {
+    if (!primary_account.GetEmail().empty() &&
+        IsAccountAllowed(local_state, primary_account.GetEmail())) {
       accounts.push_back(std::move(primary_account));
     }
   }
@@ -132,15 +145,15 @@ std::vector<AccountInfo> GetOrderedAccountsForDisplay(
 #if BUILDFLAG(IS_IOS)
   // 2. On iOS: Device accounts are returned in system keychain order.
   for (const AccountInfo& account : identity_manager->GetAccountsOnDevice()) {
-    if (account.account_id == primary_account_id) {
+    if (account.GetAccountId() == primary_account_id) {
       continue;
     }
     AccountInfo extended_info =
-        identity_manager->FindExtendedAccountInfo(account);
+        identity_manager->FindExtendedAccountInfo(account.GetCoreAccountInfo());
     // Some device accounts may not be in Chrome.
     const AccountInfo& account_to_use =
         extended_info.IsEmpty() ? account : extended_info;
-    if (IsAccountAllowed(local_state, account_to_use.email)) {
+    if (IsAccountAllowed(local_state, account_to_use.GetEmail())) {
       accounts.push_back(account_to_use);
     }
   }
@@ -154,10 +167,10 @@ std::vector<AccountInfo> GetOrderedAccountsForDisplay(
   // (with the device's primary/default Google account at index 0).
   for (const AccountInfo& account :
        identity_manager->GetExtendedAccountInfoForAccountsWithRefreshToken()) {
-    if (account.account_id == primary_account_id) {
+    if (account.GetAccountId() == primary_account_id) {
       continue;
     }
-    if (IsAccountAllowed(local_state, account.email)) {
+    if (IsAccountAllowed(local_state, account.GetEmail())) {
       accounts.push_back(account);
     }
   }
@@ -178,7 +191,7 @@ std::vector<AccountInfo> GetOrderedAccountsForDisplay(
       continue;
     }
     auto it = std::ranges::find(accounts_with_tokens, listed_account.id,
-                                &AccountInfo::account_id);
+                                &AccountInfo::GetAccountId);
     if (it != accounts_with_tokens.end()) {
       accounts.push_back(*it);
     }

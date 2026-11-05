@@ -60,19 +60,20 @@ class EffectTreeLayerListIteratorTest : public LayerTreeImplTestBase,
   void IterateFrontToBack() {
     ResetCounts();
     int count = 0;
-    for (EffectTreeLayerListIterator it(host_impl()->active_tree());
+    LayerTreeImpl& tree = *host_impl()->active_tree();
+    for (EffectTreeLayerListIterator it(tree);
          it.state() != EffectTreeLayerListIterator::State::kEnd;
-         ++it, ++count) {
+         it.Advance(tree), ++count) {
       switch (it.state()) {
         case EffectTreeLayerListIterator::State::kLayer:
-          static_cast<TestLayerImpl*>(it.current_layer())->count_ = count;
+          static_cast<TestLayerImpl*>(it.CurrentLayer(tree))->count_ = count;
           break;
         case EffectTreeLayerListIterator::State::kTargetSurface:
-          target_surface_count_[it.target_render_surface()->EffectTreeIndex()] =
-              count;
+          target_surface_count_[it.TargetRenderSurface(tree)
+                                    ->EffectTreeIndex()] = count;
           break;
         case EffectTreeLayerListIterator::State::kContributingSurface:
-          contributing_surface_count_[it.current_render_surface()
+          contributing_surface_count_[it.CurrentRenderSurface(tree)
                                           ->EffectTreeIndex()] = count;
           break;
         default:
@@ -170,6 +171,52 @@ TEST_F(EffectTreeLayerListIteratorTest, ComplexTreeMultiSurface) {
   EXPECT_COUNT(root23, 3, 4, 2);
   EXPECT_COUNT(root231, 3, 4, 1);
   EXPECT_COUNT(root3, 14, -1, 0);
+}
+
+// Regression test for https://crbug.com/549165467: verify that
+// EffectTreeLayerListIterator accessors correctly expose integer node IDs,
+// that state() is const-callable, and that objects resolved on demand match
+// direct tree lookups.
+TEST_F(EffectTreeLayerListIteratorTest, NodeIndices) {
+  auto* root = static_cast<TestLayerImpl*>(root_layer());
+  auto* child = AddLayerInActiveTree<TestLayerImpl>();
+  CopyProperties(root, child);
+  CreateEffectNode(child).render_surface_reason = RenderSurfaceReason::kTest;
+  auto* grand_child = AddLayerInActiveTree<TestLayerImpl>();
+  CopyProperties(child, grand_child);
+
+  UpdateActiveTreeDrawProperties();
+
+  int steps_visited = 0;
+  LayerTreeImpl& tree = *host_impl()->active_tree();
+  const LayerTreeImpl& const_tree = tree;
+  for (EffectTreeLayerListIterator it(tree);
+       it.state() != EffectTreeLayerListIterator::State::kEnd;
+       it.Advance(tree)) {
+    ++steps_visited;
+    const EffectTreeLayerListIterator& const_it = it;
+    EXPECT_EQ(it.state(), const_it.state());
+    EXPECT_EQ(it.TargetRenderSurface(tree),
+              tree.property_trees()->effect_tree().GetRenderSurface(
+                  it.TargetEffectTreeIndex(tree)));
+    EXPECT_EQ(it.TargetRenderSurface(tree),
+              const_it.TargetRenderSurface(const_tree));
+
+    switch (it.state()) {
+      case EffectTreeLayerListIterator::State::kLayer:
+        EXPECT_NE(it.CurrentLayer(tree), nullptr);
+        break;
+      case EffectTreeLayerListIterator::State::kTargetSurface:
+        break;
+      case EffectTreeLayerListIterator::State::kContributingSurface:
+        EXPECT_EQ(it.current_effect_tree_index(),
+                  it.CurrentRenderSurface(tree)->EffectTreeIndex());
+        break;
+      case EffectTreeLayerListIterator::State::kEnd:
+        NOTREACHED();
+    }
+  }
+  EXPECT_GT(steps_visited, 0);
 }
 
 }  // namespace

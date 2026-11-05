@@ -27,8 +27,9 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/events/event.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -104,7 +105,7 @@ void ForceInstalledPreinstalledDeprecatedAppDialogView::CreateAndShowDialog(
   const extensions::Extension* extension =
       extensions::ExtensionRegistry::Get(browser_context)
           ->GetInstalledExtension(extension_id);
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M162);
   std::u16string app_name = base::UTF8ToUTF16(extension->name());
   LinkConfig link_config;
   if (GetLinkConfigForTesting()) {                    // IN-TEST
@@ -130,10 +131,9 @@ void ForceInstalledPreinstalledDeprecatedAppDialogView::CreateAndShowDialog(
         base::UmaHistogramEnumeration(
             "Extensions.ForceInstalledPreInstalledDeprecatedAppOpenUrl", site);
         web_contents->OpenURL(
-            content::OpenURLParams(url, content::Referrer(),
-                                   WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                   ui::PAGE_TRANSITION_LINK,
-                                   /*is_renderer_initiated=*/false),
+            content::OpenURLParams::CreateBrowserInitiated(
+                url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                ui::PAGE_TRANSITION_LINK),
             /*navigation_handle_callback=*/{});
       },
       web_contents->GetWeakPtr(), link_config.link, link_config.site));
@@ -179,7 +179,7 @@ ForceInstalledPreinstalledDeprecatedAppDialogView::
   content_label->SetText(l10n_util::GetStringFUTF16(
       IDS_FORCE_INSTALLED_PREINSTALLED_DEPRECATED_APPS_CONTENT, link_string,
       app_name, &offsets));
-  DCHECK_EQ(2u, offsets.size());
+  CHECK_EQ(2u, offsets.size(), base::NotFatalUntil::M162);
   content_label->AddStyleRange(
       gfx::Range(offsets[0], offsets[0] + link_string.length()),
       views::StyledLabel::RangeStyleInfo::CreateForLink(base::BindRepeating(
@@ -189,12 +189,12 @@ ForceInstalledPreinstalledDeprecatedAppDialogView::
               return;
             }
             web_contents->OpenURL(
-                content::OpenURLParams(
-                    url, content::Referrer(),
+                content::OpenURLParams::CreateBrowserInitiated(
+                    url,
                     ui::DispositionFromEventFlags(
                         event.flags(),
-                        WindowOpenDisposition::NEW_FOREGROUND_TAB),
-                    ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false),
+                        ui::mojom::WindowOpenDisposition::kNewForegroundTab),
+                    ui::PAGE_TRANSITION_LINK),
                 /*navigation_handle_callback=*/{});
           },
           web_contents->GetWeakPtr(), app_link)));
@@ -208,12 +208,12 @@ ForceInstalledPreinstalledDeprecatedAppDialogView::
           return;
         }
         web_contents->OpenURL(
-            content::OpenURLParams(
+            content::OpenURLParams::CreateBrowserInitiated(
                 GURL(chrome::kChromeAppsDeprecationLearnMoreURL),
-                content::Referrer(),
                 ui::DispositionFromEventFlags(
-                    event.flags(), WindowOpenDisposition::NEW_FOREGROUND_TAB),
-                ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false),
+                    event.flags(),
+                    ui::mojom::WindowOpenDisposition::kNewForegroundTab),
+                ui::PAGE_TRANSITION_LINK),
             /*navigation_handle_callback=*/{});
       },
       web_contents->GetWeakPtr()));

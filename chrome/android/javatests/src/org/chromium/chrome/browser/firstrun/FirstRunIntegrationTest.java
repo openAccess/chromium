@@ -76,11 +76,9 @@ import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
-import org.chromium.base.test.util.ScalableTimeout;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.DeferredStartupHandler;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
 import org.chromium.chrome.browser.customtabs.CustomTabsIntentTestUtils;
@@ -100,7 +98,8 @@ import org.chromium.chrome.browser.search_engines.SearchEnginePromoType;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.signin.SigninFirstRunFragment;
 import org.chromium.chrome.browser.ui.signin.DialogWhenLargeContentLayout;
-import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninMediator;
+import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninCoordinator;
+import org.chromium.chrome.test.ChromeActivityTestRule;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
@@ -113,6 +112,7 @@ import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
+import org.chromium.components.signin.metrics.SigninFunnelEvent;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.ui.edge_to_edge.EdgeToEdgeSystemBarColorHelper;
@@ -208,7 +208,7 @@ public class FirstRunIntegrationTest {
         }
 
         // Disable animations by default.
-        FullscreenSigninMediator.disableAnimationsForTesting();
+        FullscreenSigninCoordinator.disableAnimationsForTesting();
     }
 
     @After
@@ -259,8 +259,13 @@ public class FirstRunIntegrationTest {
 
     private FirstRunActivity launchFirstRunActivityAndWaitForNativeInitialization() {
         FirstRunActivity firstRunActivity = launchFirstRunActivity();
+        // Each test method cold-starts native in a fresh process (@DoNotBatch), which can exceed
+        // the default poll timeout on loaded emulators.
         CriteriaHelper.pollUiThread(
-                () -> firstRunActivity.getNativeInitializationPromise().isFulfilled());
+                () -> firstRunActivity.getNativeInitializationPromise().isFulfilled(),
+                "FirstRunActivity native initialization did not complete",
+                CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL_LONG,
+                CriteriaHelper.DEFAULT_POLLING_INTERVAL);
         return firstRunActivity;
     }
 
@@ -496,6 +501,32 @@ public class FirstRunIntegrationTest {
     @MediumTest
     // Sign-in is not supported on automotive devices.
     @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    public void testSkipWelcomePageUpdatedWhenNavigatingThroughWelcomePage() throws Exception {
+        mSigninTestRule.addAccount(TestAccounts.AADC_ADULT_ACCOUNT);
+        initializePreferences(FirstRunPagesTestCase.createWithShowAllPromos());
+
+        FirstRunActivity firstRunActivity = launchFirstRunActivity();
+        FirstRunNavigationHelper navigationHelper =
+                new FirstRunNavigationHelper(firstRunActivity)
+                        .ensurePagesCreationSucceeded()
+                        .ensureWelcomePageIsCurrentPage();
+        Assert.assertFalse(FirstRunStatus.shouldSkipWelcomePage());
+
+        // Moving past the welcome page should mark it as skippable.
+        navigationHelper
+                .continueAndSignIn(TestAccounts.AADC_ADULT_ACCOUNT)
+                .ensureDefaultSearchEnginePromoIsCurrentPage();
+        Assert.assertTrue(FirstRunStatus.shouldSkipWelcomePage());
+
+        // Going back to the welcome page should make it shown again.
+        navigationHelper.goBackToPreviousPage().ensureWelcomePageIsCurrentPage();
+        Assert.assertFalse(FirstRunStatus.shouldSkipWelcomePage());
+    }
+
+    @Test
+    @MediumTest
+    // Sign-in is not supported on automotive devices.
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     public void testFirstRunPages_WithCctPolicy_OnBackPressed() throws Exception {
         mSigninTestRule.addAccount(TestAccounts.AADC_ADULT_ACCOUNT);
         initializePreferences(FirstRunPagesTestCase.createWithShowAllPromos().withCctTosDisabled());
@@ -659,6 +690,12 @@ public class FirstRunIntegrationTest {
         HistogramWatcher signinStartedWatcher =
                 HistogramWatcher.newBuilder()
                         .expectIntRecord("Signin.SignIn.Started", SigninAccessPoint.START_PAGE)
+                        .expectIntRecord(
+                                "Signin.SigninFunnel.StartPage",
+                                SigninFunnelEvent.PROMO_SHOWN_NO_ACCOUNT)
+                        .expectIntRecord(
+                                "Signin.SigninFunnel.StartPage",
+                                SigninFunnelEvent.SIGNIN_DECLINED_BUTTON_CLICKED)
                         .build();
 
         initializePreferences(new FirstRunPagesTestCase().setShouldShowHistorySyncPromo(true));
@@ -699,6 +736,36 @@ public class FirstRunIntegrationTest {
         new FirstRunNavigationHelper(firstRunActivity)
                 .continueAndSignIn(TestAccounts.AADC_ADULT_ACCOUNT)
                 .ensureHistorySyncIsCurrentPage();
+    }
+
+    @Test
+    @MediumTest
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    public void signinFunnelPromoShownRecordedAgainWhenGoingBackFromHistorySync() throws Exception {
+        mSigninTestRule.addAccount(TestAccounts.AADC_ADULT_ACCOUNT);
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        // Signin.SignIn.Started is recorded only once for the whole FRE.
+                        .expectIntRecord("Signin.SignIn.Started", SigninAccessPoint.START_PAGE)
+                        .expectIntRecord(
+                                "Signin.SigninFunnel.StartPage",
+                                SigninFunnelEvent.SIGNIN_BUTTON_CLICKED)
+                        // The promo shown event is recorded every time the promo is shown.
+                        .expectIntRecordTimes(
+                                "Signin.SigninFunnel.StartPage",
+                                SigninFunnelEvent.PROMO_SHOWN_WITH_ACCOUNT,
+                                /* times= */ 2)
+                        .build();
+        initializePreferences(new FirstRunPagesTestCase().setShouldShowHistorySyncPromo(true));
+        FirstRunActivity firstRunActivity = launchFirstRunActivityAndWaitForNativeInitialization();
+
+        new FirstRunNavigationHelper(firstRunActivity)
+                .continueAndSignIn(TestAccounts.AADC_ADULT_ACCOUNT)
+                .ensureHistorySyncIsCurrentPage()
+                .goBackToPreviousPage()
+                .ensureWelcomePageIsCurrentPage();
+
+        histogramWatcher.assertExpected();
     }
 
     @Test
@@ -892,13 +959,9 @@ public class FirstRunIntegrationTest {
         CriteriaHelper.pollUiThreadLongTimeout(
                 "Native init never completed", activity::didFinishNativeInitialization);
 
-        // DeferredStartupHandler could not finish with CriteriaHelper#DEFAULT_MAX_TIME_TO_POLL.
-        // Use longer timeout here to avoid flakiness. See https://crbug.com/40736538.
-        CriteriaHelper.pollUiThread(activity::deferredStartupPostedForTesting);
         Assert.assertTrue(
                 "Deferred startup never completed",
-                DeferredStartupHandler.waitForDeferredStartupCompleteForTesting(
-                        ScalableTimeout.scaleTimeout(ACTIVITY_WAIT_LONG_MS)));
+                ChromeActivityTestRule.waitForDeferredStartup(activity));
 
         // FirstRun status should be refreshed by TosDialogBehaviorSharedPrefInvalidator in deferred
         // start up task.

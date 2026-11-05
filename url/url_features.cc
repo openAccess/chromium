@@ -14,7 +14,7 @@ bool IsDisallowingSpaceCharacterInURLHostParsing() {
   // If the FeatureList isn't available yet, fall back to the feature's default
   // state. This may happen during early startup, see crbug.com/1441956.
   if (!base::FeatureList::GetInstance()) {
-    return kDisallowSpaceCharacterInURLHostParsing.default_state ==
+    return kDisallowSpaceCharacterInURLHostParsing.GetDefaultState() ==
            base::FEATURE_ENABLED_BY_DEFAULT;
   }
   return base::FeatureList::IsEnabled(kDisallowSpaceCharacterInURLHostParsing);
@@ -26,7 +26,7 @@ bool IsUsingIDNAContextJRules() {
   // If the FeatureList isn't available yet, fall back to the feature's default
   // state. This may happen during early startup, see crbug.com/1441956.
   if (!base::FeatureList::GetInstance()) {
-    return kUseIDNAContextJRules.default_state ==
+    return kUseIDNAContextJRules.GetDefaultState() ==
            base::FEATURE_ENABLED_BY_DEFAULT;
   }
   return base::FeatureList::IsEnabled(kUseIDNAContextJRules);
@@ -36,7 +36,7 @@ BASE_FEATURE(kNonSpecialLeadingSlashHandling, base::FEATURE_ENABLED_BY_DEFAULT);
 
 bool IsNonSpecialLeadingSlashHandlingEnabled() {
   if (!base::FeatureList::GetInstance()) {
-    return kNonSpecialLeadingSlashHandling.default_state ==
+    return kNonSpecialLeadingSlashHandling.GetDefaultState() ==
            base::FEATURE_ENABLED_BY_DEFAULT;
   }
   return base::FeatureList::IsEnabled(kNonSpecialLeadingSlashHandling);
@@ -49,7 +49,7 @@ bool IsPreservingPercentEncodedDotInPath() {
   // If the FeatureList isn't available yet, fall back to the feature's default
   // state. This may happen during early startup, see crbug.com/1441956.
   if (!base::FeatureList::GetInstance()) {
-    return kPreservePercentEncodedDotInPath.default_state ==
+    return kPreservePercentEncodedDotInPath.GetDefaultState() ==
            base::FEATURE_ENABLED_BY_DEFAULT;
   }
   return base::FeatureList::IsEnabled(kPreservePercentEncodedDotInPath);
@@ -57,15 +57,5 @@ bool IsPreservingPercentEncodedDotInPath() {
 
 BASE_FEATURE(kCacheGurlSchemeIsHttpOrHttpsResult,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-bool IsCacheGurlSchemeIsHttpOrHttpsResultEnabled() {
-  if (!base::FeatureList::GetInstance()) {
-    return kCacheGurlSchemeIsHttpOrHttpsResult.default_state ==
-           base::FEATURE_ENABLED_BY_DEFAULT;
-  }
-  static const bool enabled =
-      base::FeatureList::IsEnabled(kCacheGurlSchemeIsHttpOrHttpsResult);
-  return enabled;
-}
 
 }  // namespace url

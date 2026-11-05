@@ -6,19 +6,15 @@ package org.chromium.chrome.browser.supervised_user.website_approval;
 
 import static org.junit.Assert.assertEquals;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.url.GURL;
 
 /** Unit tests for {@link WebsiteApprovalSheetContent}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class WebsiteApprovalSheetContentTest {
     private static final String PREFIX = "https://www.";
 
@@ -29,7 +25,6 @@ public class WebsiteApprovalSheetContentTest {
                     + "path7/path8/path9/path10/path11/path12/path13/path14/path15";
 
     @Test
-    @SmallTest
     public void testTruncateLongUrlNoTruncation() {
         // Url within MAX_HOST_SIZE test case.
         String expectedUri = BASE_URL + PATH_WITHIN_LIMIT;
@@ -43,7 +38,6 @@ public class WebsiteApprovalSheetContentTest {
     }
 
     @Test
-    @SmallTest
     public void testTruncateLongUrlNoTruncationNoEllipsis() {
         String urlWithPathWithElipsisLimit = BASE_URL;
         int elipsisSize = 3;
@@ -67,7 +61,6 @@ public class WebsiteApprovalSheetContentTest {
         assertEquals(urlWithPathWithElipsisLimit, specs.mFormattedString);
     }
 
-    @SmallTest
     @Test
     public void testTruncateLongUrlWithPathTruncationWithEllipsis() {
         // Truncate url with long path.

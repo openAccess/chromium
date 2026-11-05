@@ -47,6 +47,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_context_snapshot.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_initializer.h"
 #include "third_party/blink/renderer/controller/blink_leak_detector.h"
+#include "third_party/blink/renderer/controller/crash_memory_metrics_reporter_impl.h"
 #include "third_party/blink/renderer/controller/dev_tools_frontend_impl.h"
 #include "third_party/blink/renderer/controller/javascript_call_stack_generator.h"
 #include "third_party/blink/renderer/controller/memory_coordinator/v8_heap_memory_signal_generator.h"
@@ -75,7 +76,7 @@
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-#include "third_party/blink/renderer/controller/crash_memory_metrics_reporter_impl.h"
+#include "third_party/blink/renderer/controller/memory_usage_monitor.h"
 #include "third_party/blink/renderer/controller/oom_intervention_impl.h"
 #include "third_party/blink/renderer/controller/private_memory_footprint_provider.h"
 #include "third_party/blink/renderer/controller/user_level_memory_pressure_signal_generator.h"
@@ -253,12 +254,12 @@ void BlinkInitializer::RegisterInterfaces(mojo::BinderMap& binders) {
           &OomInterventionImpl::BindReceiver,
           blink::RetainedRef(main_thread_task_runner))),
       main_thread_task_runner);
+#endif
 
   binders.Add<mojom::blink::CrashMemoryMetricsReporter>(
       ConvertToBaseRepeatingCallback(
           CrossThreadBindRepeating(&CrashMemoryMetricsReporterImpl::Bind)),
       main_thread_task_runner);
-#endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   binders.Add<mojom::blink::MemoryUsageMonitorLinux>(
@@ -300,10 +301,16 @@ void BlinkInitializer::RegisterInterfaces(mojo::BinderMap& binders) {
 void BlinkInitializer::RegisterMemoryWatchers(Platform* platform) {
   scoped_refptr<base::SingleThreadTaskRunner> main_thread_task_runner =
       Thread::MainThread()->GetTaskRunner(MainThreadTaskRunnerRestricted());
-#if BUILDFLAG(IS_ANDROID)
   // Initialize CrashMemoryMetricsReporterImpl in order to assure that memory
   // allocation does not happen in OnOOMCallback.
   CrashMemoryMetricsReporterImpl::Instance();
+
+#if BUILDFLAG(IS_ANDROID)
+  // RenderProcessHostImpl initializes applied_priority_.visible to false
+  // (!kLaunchingProcessIsBackgrounded) on Android and only sends
+  // SetProcessState when visibility or priority changes from that initial
+  // state.
+  MemoryUsageMonitor::Instance().SetRendererVisible(false);
 
   // Initialize UserLevelMemoryPressureSignalGenerator so it starts monitoring.
   if (platform->IsUserLevelMemoryPressureSignalEnabled()) {

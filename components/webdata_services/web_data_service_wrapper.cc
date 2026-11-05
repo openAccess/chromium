@@ -24,7 +24,6 @@
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
 #include "components/autofill/core/browser/webdata/payments/autofill_wallet_credential_sync_bridge.h"
 #include "components/autofill/core/browser/webdata/payments/autofill_wallet_metadata_sync_bridge.h"
-#include "components/autofill/core/browser/webdata/payments/autofill_wallet_offer_sync_bridge.h"
 #include "components/autofill/core/browser/webdata/payments/autofill_wallet_sync_bridge.h"
 #include "components/autofill/core/browser/webdata/payments/autofill_wallet_usage_data_sync_bridge.h"
 #include "components/autofill/core/browser/webdata/payments/payments_autofill_table.h"
@@ -42,9 +41,9 @@
 #include "components/webdata/common/webdata_constants.h"
 
 #if BUILDFLAG(USE_BLINK)
-#include "components/payments/content/web_app_manifest_section_table.h"
-#include "components/payments/content/web_payments_table.h"
-#include "components/payments/content/web_payments_web_data_service.h"
+#include "components/payments/core/web_app_manifest_section_table.h"
+#include "components/payments/core/web_payments_table.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #endif
 
 namespace {
@@ -80,22 +79,14 @@ void InitWalletSyncBridgesOnDBSequence(
       app_locale, autofill_backend, autofill_web_data.get());
 }
 
-void InitWalletOfferSyncBridgeOnDBSequence(
-    scoped_refptr<base::SequencedTaskRunner> db_task_runner,
-    const scoped_refptr<autofill::AutofillWebDataService>& autofill_web_data,
-    autofill::AutofillWebDataBackend* autofill_backend) {
-  DCHECK(db_task_runner->RunsTasksInCurrentSequence());
-  autofill::AutofillWalletOfferSyncBridge::CreateForWebDataServiceAndBackend(
-      autofill_backend, autofill_web_data.get());
-}
-
 void InitValuableSyncBridgeOnDBSequence(
     scoped_refptr<base::SequencedTaskRunner> db_task_runner,
     const scoped_refptr<autofill::AutofillWebDataService>& autofill_web_data,
+    const std::string& app_locale,
     autofill::AutofillWebDataBackend* autofill_backend) {
   DCHECK(db_task_runner->RunsTasksInCurrentSequence());
   autofill::ValuableSyncBridge::CreateForWebDataServiceAndBackend(
-      autofill_backend, autofill_web_data.get());
+      app_locale, autofill_backend, autofill_web_data.get());
 }
 
 void InitValuableMetadataSyncBridgeOnDBSequence(
@@ -201,9 +192,6 @@ WebDataServiceWrapper::WebDataServiceWrapper(
   profile_autofill_web_data_->GetAutofillBackend(
       base::BindOnce(&InitWalletSyncBridgesOnDBSequence, db_task_runner,
                      profile_autofill_web_data_, application_locale));
-  profile_autofill_web_data_->GetAutofillBackend(
-      base::BindOnce(&InitWalletOfferSyncBridgeOnDBSequence, db_task_runner,
-                     profile_autofill_web_data_));
 #if !BUILDFLAG(IS_IOS)
   profile_autofill_web_data_->GetAutofillBackend(
       base::BindOnce(&InitWalletUsageDataSyncBridgeOnDBSequence, db_task_runner,
@@ -215,7 +203,7 @@ WebDataServiceWrapper::WebDataServiceWrapper(
   {
     profile_autofill_web_data_->GetAutofillBackend(
         base::BindOnce(&InitValuableSyncBridgeOnDBSequence, db_task_runner,
-                       profile_autofill_web_data_));
+                       profile_autofill_web_data_, application_locale));
   }
 
   if (base::FeatureList::IsEnabled(syncer::kSyncAutofillValuableMetadata)) {
@@ -249,9 +237,6 @@ WebDataServiceWrapper::WebDataServiceWrapper(
   account_autofill_web_data_->GetAutofillBackend(
       base::BindOnce(&InitWalletSyncBridgesOnDBSequence, db_task_runner,
                      account_autofill_web_data_, application_locale));
-  account_autofill_web_data_->GetAutofillBackend(
-      base::BindOnce(&InitWalletOfferSyncBridgeOnDBSequence, db_task_runner,
-                     account_autofill_web_data_));
 #if !BUILDFLAG(IS_IOS)
   account_autofill_web_data_->GetAutofillBackend(
       base::BindOnce(&InitWalletUsageDataSyncBridgeOnDBSequence, db_task_runner,

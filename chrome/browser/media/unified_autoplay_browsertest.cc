@@ -7,11 +7,13 @@
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/speech/extension_api/tts_engine_extension_api.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -29,6 +31,8 @@
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/mojom/autoplay/autoplay.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
@@ -83,20 +87,21 @@ class UnifiedAutoplayBrowserTest : public InProcessBrowserTest {
   }
 
   content::WebContents* OpenNewTab(const GURL& url, bool from_context_menu) {
-    return OpenInternal(
-        url, from_context_menu, WindowOpenDisposition::NEW_FOREGROUND_TAB,
-        false /* is_renderer_initiated */, true /* user_gesture */);
+    return OpenInternal(url, from_context_menu,
+                        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                        false /* is_renderer_initiated */,
+                        true /* user_gesture */);
   }
 
   content::WebContents* OpenNewWindow(const GURL& url, bool from_context_menu) {
     return OpenInternal(
-        url, from_context_menu, WindowOpenDisposition::NEW_WINDOW,
+        url, from_context_menu, ui::mojom::WindowOpenDisposition::kNewWindow,
         false /* is_renderer_initiated */, true /* user_gesture */);
   }
 
   content::WebContents* OpenFromRenderer(const GURL& url, bool user_gesture) {
     return OpenInternal(url, false /* from_context_menu */,
-                        WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
                         true /* is_renderer_initiated */, user_gesture);
   }
 
@@ -131,20 +136,28 @@ class UnifiedAutoplayBrowserTest : public InProcessBrowserTest {
   }
 
  private:
-  content::WebContents* OpenInternal(const GURL& url,
-                                     bool from_context_menu,
-                                     WindowOpenDisposition disposition,
-                                     bool is_renderer_initiated,
-                                     bool user_gesture) {
+  content::WebContents* OpenInternal(
+      const GURL& url,
+      bool from_context_menu,
+      ui::mojom::WindowOpenDisposition disposition,
+      bool is_renderer_initiated,
+      bool user_gesture) {
     content::WebContents* active_contents =
         browser()->tab_strip_model()->GetActiveWebContents();
 
     content::Referrer referrer(active_contents->GetLastCommittedURL(),
                                network::mojom::ReferrerPolicy::kAlways);
 
-    content::OpenURLParams open_url_params(
-        url, referrer, disposition, ui::PAGE_TRANSITION_LINK,
-        is_renderer_initiated, from_context_menu);
+    content::OpenURLParams open_url_params =
+        is_renderer_initiated
+            ? content::OpenURLParams::CreateRendererInitiated(
+                  url, disposition, ui::PAGE_TRANSITION_LINK, referrer,
+                  active_contents->GetPrimaryMainFrame()
+                      ->GetCurrentInitiatorNavigationState(),
+                  from_context_menu)
+            : content::OpenURLParams::CreateBrowserInitiated(
+                  url, disposition, ui::PAGE_TRANSITION_LINK, referrer,
+                  from_context_menu);
 
     open_url_params.initiator_origin =
         active_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();

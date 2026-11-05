@@ -41,9 +41,6 @@ class UnboundedSurfaceWindowMac : public UnboundedSurfaceWindow,
  public:
   UnboundedSurfaceWindowMac(
       RenderWidgetHostViewMac* parent_view,
-      mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-      mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient>
-          client,
       const gfx::Rect& bounds_in_screen,
       base::WeakPtr<RenderWidgetHostViewBase> subframe_view);
   ~UnboundedSurfaceWindowMac() override;
@@ -68,11 +65,6 @@ class UnboundedSurfaceWindowMac : public UnboundedSurfaceWindow,
       base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
       override;
   void EnsureSurfaceSynchronizedForWebTest() override;
-
-  // blink::mojom::UnboundedSurfaceHost overrides:
-  void UpdateBounds(const gfx::Rect& bounds) override;
-
-  RenderWidgetHostViewBase* GetParentView() const override;
 
   // Event Routing:
   using UnboundedSurfaceWindow::RouteMouseEvent;
@@ -104,17 +96,15 @@ class UnboundedSurfaceWindowMac : public UnboundedSurfaceWindow,
 
   DisplayInfo GetDisplayInfo() const;
   void InitWindow(const gfx::Rect& bounds_in_screen);
-  void OnConnectionError();
 
-  raw_ptr<RenderWidgetHostViewMac> parent_view_;
-  base::WeakPtr<RenderWidgetHostViewBase> subframe_view_;
   viz::FrameSinkId frame_sink_id_;
   viz::ParentLocalSurfaceIdAllocator local_surface_id_allocator_;
-  mojo::AssociatedReceiver<blink::mojom::UnboundedSurfaceHost> receiver_{this};
 #ifdef __OBJC__
   NSWindow* __strong window_ = nil;
+  id __strong local_event_monitor_ = nil;
 #else
   raw_ptr<void> window_ = nullptr;
+  raw_ptr<void> local_event_monitor_ = nullptr;
 #endif
 
   std::unique_ptr<ui::RecyclableCompositorMac> recyclable_compositor_;

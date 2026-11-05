@@ -13,6 +13,7 @@
 
 #import "base/memory/raw_ptr.h"
 #import "base/observer_list.h"
+#import "base/types/pass_key.h"
 #import "build/blink_buildflags.h"
 #import "content/public/browser/web_contents_delegate.h"
 #import "content/public/browser/web_contents_observer.h"
@@ -22,6 +23,7 @@
 #import "ios/web/public/session/session_certificate_policy_cache.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_id.h"
+#import "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 @class CRCWebViewportContainerView;
 @class CRWWebViewProxy;
@@ -52,7 +54,14 @@ class ContentWebState : public WebState,
                         public content::WebContentsObserver,
                         public content::WebContentsDelegate {
  public:
-  explicit ContentWebState(const CreateParams& params);
+  using PassKey = base::PassKey<WebState>;
+
+  // For compatibility with WebStateImpl.
+  template <typename... Args>
+  ContentWebState(PassKey pass_key, Args&&... args)
+      : ContentWebState(std::forward<Args>(args)...) {}
+
+  ContentWebState(const CreateParams& params);
 
   // Constructor for ContentWebState created for deserialized sessions.
   ContentWebState(BrowserState* browser_state,
@@ -201,7 +210,7 @@ class ContentWebState : public WebState,
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;

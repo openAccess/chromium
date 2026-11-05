@@ -32,10 +32,12 @@ using base::android::ScopedJavaLocalRef;
 
 namespace favicon {
 
+BASE_FEATURE(kDontCacheNullFavicons, base::FEATURE_ENABLED_BY_DEFAULT);
+
 namespace {
 
 void OnLargeIconAvailable(const JavaRef<jobject>& j_callback,
-                          const favicon_base::LargeIconResult& result) {
+                          favicon_base::LargeIconResult result) {
   // Convert the result to a Java Bitmap.
   ScopedJavaLocalRef<jobject> j_bitmap;
   if (result.bitmap.is_valid()) {
@@ -57,6 +59,10 @@ void OnLargeIconAvailable(const JavaRef<jobject>& j_callback,
 }
 
 }  // namespace
+
+static bool JNI_LargeIconBridge_IsDontCacheNullFaviconsEnabled(JNIEnv* env) {
+  return base::FeatureList::IsEnabled(kDontCacheNullFavicons);
+}
 
 static int64_t JNI_LargeIconBridge_Init(JNIEnv* env) {
   return reinterpret_cast<intptr_t>(new LargeIconBridge());

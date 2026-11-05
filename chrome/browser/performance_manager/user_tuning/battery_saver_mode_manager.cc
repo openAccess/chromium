@@ -18,6 +18,7 @@
 #include "base/power_monitor/battery_state_sampler.h"
 #include "base/power_monitor/power_monitor.h"
 #include "base/power_monitor/power_observer.h"
+#include "base/process/process.h"
 #include "base/run_loop.h"
 #include "base/scoped_multi_source_observation.h"
 #include "base/values.h"
@@ -42,6 +43,10 @@
 #endif
 
 namespace performance_manager::user_tuning {
+
+BASE_FEATURE(kBatterySaverModeFollowsSystemPowerSaver,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 namespace {
 
 BatterySaverModeManager* g_battery_saver_mode_manager = nullptr;
@@ -99,7 +104,7 @@ class ChildProcessTuningDelegateImpl
  private:
   void SetBatterySaverModeForAllChildProcessHosts(bool enabled) override {
     for (content::BrowserChildProcessHostIterator iter; !iter.Done(); ++iter) {
-      if (!iter.GetData().GetProcess().IsValid()) {
+      if (!iter.GetProcess().IsValid()) {
         continue;
       }
 
@@ -139,14 +144,15 @@ class ChildProcessTuningDelegateImpl
 
   // content::BrowserChildProcessObserver:
   void BrowserChildProcessLaunchedAndConnected(
-      const content::ChildProcessData& data) override {
+      const content::ChildProcessData& data,
+      const base::Process& process) override {
     // TODO(etiennep): Replace this by a CHECK.
-    if (!data.GetProcess().IsValid()) {
+    if (!process.IsValid()) {
       return;
     }
     if (battery_saver_mode_enabled_) {
       content::BrowserChildProcessHost* host =
-          content::BrowserChildProcessHost::FromID(data.id);
+          content::BrowserChildProcessHost::FromID(data.GetChildProcessId());
       if (!host) {
         return;
       }
@@ -211,6 +217,12 @@ class DesktopBatterySaverProvider
         base::PowerMonitor::GetInstance()
             ->AddPowerStateObserverAndReturnBatteryPowerStatus(this) ==
         base::PowerStateObserver::BatteryPowerStatus::kBatteryPower;
+    // Read after adding the observer, so that a change in between is still
+    // delivered via OnPowerSaverModeChange().
+    if (base::PowerMonitor::GetInstance()->IsInitialized()) {
+      system_power_saver_mode_ =
+          base::PowerMonitor::GetInstance()->IsPowerSaverModeEnabled();
+    }
 
     base::BatteryStateSampler* battery_state_sampler =
         base::BatteryStateSampler::Get();
@@ -287,11 +299,13 @@ class DesktopBatterySaverProvider
           battery_saver_mode_enabled_ = true;
           break;
         case BatterySaverModeState::kEnabledOnBattery:
-          battery_saver_mode_enabled_ = on_battery_power_;
+          battery_saver_mode_enabled_ =
+              on_battery_power_ || ShouldFollowSystemPowerSaverMode();
           break;
         case BatterySaverModeState::kEnabledBelowThreshold:
           battery_saver_mode_enabled_ =
-              on_battery_power_ && is_below_low_battery_threshold_;
+              (on_battery_power_ && is_below_low_battery_threshold_) ||
+              ShouldFollowSystemPowerSaverMode();
           break;
         default:
           battery_saver_mode_enabled_ = false;
@@ -321,6 +335,17 @@ class DesktopBatterySaverProvider
     manager_->NotifyOnExternalPowerConnectedChanged(on_battery_power_);
 
     UpdateBatterySaverModeState();
+  }
+
+  void OnPowerSaverModeChange(bool enabled) override {
+    system_power_saver_mode_ = enabled;
+    UpdateBatterySaverModeState();
+  }
+
+  bool ShouldFollowSystemPowerSaverMode() const {
+    return system_power_saver_mode_ &&
+           base::FeatureList::IsEnabled(
+               kBatterySaverModeFollowsSystemPowerSaver);
   }
 
   // base::BatteryStateSampler::Observer:
@@ -355,7 +380,7 @@ class DesktopBatterySaverProvider
       // multiple batteries connected (in which case their units may not match
       // so they don't report a charge). We're not under the threshold for any
       // battery.
-      DCHECK_NE(1, battery_state->battery_count);
+      CHECK_NE(1, battery_state->battery_count, base::NotFatalUntil::M163);
 
       is_below_low_battery_threshold_ = false;
       return;
@@ -392,6 +417,7 @@ class DesktopBatterySaverProvider
   bool has_battery_ = false;
   bool force_has_battery_ = false;
   bool on_battery_power_ = false;
+  bool system_power_saver_mode_ = false;
   bool is_below_low_battery_threshold_ = false;
   int battery_percentage_ = -1;
 
@@ -503,12 +529,12 @@ bool BatterySaverModeManager::HasInstance() {
 
 // static
 BatterySaverModeManager* BatterySaverModeManager::GetInstance() {
-  DCHECK(g_battery_saver_mode_manager);
+  CHECK(g_battery_saver_mode_manager, base::NotFatalUntil::M163);
   return g_battery_saver_mode_manager;
 }
 
 BatterySaverModeManager::~BatterySaverModeManager() {
-  DCHECK_EQ(this, g_battery_saver_mode_manager);
+  CHECK_EQ(this, g_battery_saver_mode_manager, base::NotFatalUntil::M163);
   g_battery_saver_mode_manager = nullptr;
   observers_.Notify(&Observer::OnBatterySaverModeManagerDestroyed);
 }
@@ -584,7 +610,7 @@ BatterySaverModeManager::BatterySaverModeManager(
       freezing_delegate_(freezing_delegate
                              ? std::move(freezing_delegate)
                              : std::make_unique<FreezingDelegateImpl>()) {
-  DCHECK(!g_battery_saver_mode_manager);
+  CHECK(!g_battery_saver_mode_manager, base::NotFatalUntil::M163);
   g_battery_saver_mode_manager = this;
 
   pref_change_registrar_.Init(local_state);

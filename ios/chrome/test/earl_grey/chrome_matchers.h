@@ -444,9 +444,6 @@ id<GREYMatcher> SettingsMenuNotificationsButton();
 // Returns a matcher for the voice search button on the main Settings screen.
 id<GREYMatcher> VoiceSearchButton();
 
-// Returns a matcher for the voice search button on the omnibox input accessory.
-id<GREYMatcher> VoiceSearchInputAccessoryButton();
-
 // Returns a matcher for the settings main menu view.
 id<GREYMatcher> SettingsCollectionView();
 
@@ -752,6 +749,9 @@ id<GREYMatcher> DefaultBrowserSettingsTableViewMatcher();
 
 // Returns a matcher for safety check table view.
 id<GREYMatcher> SafetyCheckTableViewMatcher();
+
+// Returns a matcher for autofill and passwords table view.
+id<GREYMatcher> AutofillAndPasswordsTableViewMatcher();
 
 // Returns a matcher for action in an AlertCoordinator.
 id<GREYMatcher> AlertAction(NSString* title);

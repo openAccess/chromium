@@ -16,7 +16,6 @@ import static org.mockito.Mockito.verify;
 import android.app.Activity;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -94,7 +93,6 @@ public class BookmarkBarContextMenuMediatorTest {
     // Tests for the layout of the context menu.
 
     @Test
-    @SmallTest
     public void testBookmarkItem() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
 
@@ -127,7 +125,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testBookmarkItem_NtpFeatureEnabled() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
@@ -164,7 +161,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({
         ChromeFeatureList.BOOKMARKS_BAR_NTP,
         ChromeFeatureList.FLYOUT_IN_BOOKMARKS_BAR
@@ -213,6 +209,7 @@ public class BookmarkBarContextMenuMediatorTest {
                 submenuItems.get(0).model.get(ListMenuItemProperties.END_ICON_ID));
         assertTrue(submenuItems.get(0).model.get(ListMenuItemProperties.CHECKABLE));
         assertTrue(submenuItems.get(0).model.get(ListMenuItemProperties.CHECKED));
+        assertEquals(0, submenuItems.get(0).model.get(ListMenuItemProperties.POSITION));
         assertEquals(
                 mActivity.getString(R.string.contextmenu_always_show_bookmarks_bar),
                 submenuItems.get(1).model.get(ListMenuItemProperties.TITLE));
@@ -221,6 +218,7 @@ public class BookmarkBarContextMenuMediatorTest {
                 submenuItems.get(1).model.get(ListMenuItemProperties.END_ICON_ID));
         assertTrue(submenuItems.get(1).model.get(ListMenuItemProperties.CHECKABLE));
         assertFalse(submenuItems.get(1).model.get(ListMenuItemProperties.CHECKED));
+        assertEquals(1, submenuItems.get(1).model.get(ListMenuItemProperties.POSITION));
         assertEquals(
                 mActivity.getString(R.string.contextmenu_only_show_bookmarks_bar_on_ntp),
                 submenuItems.get(2).model.get(ListMenuItemProperties.TITLE));
@@ -229,10 +227,10 @@ public class BookmarkBarContextMenuMediatorTest {
                 submenuItems.get(2).model.get(ListMenuItemProperties.END_ICON_ID));
         assertTrue(submenuItems.get(2).model.get(ListMenuItemProperties.CHECKABLE));
         assertFalse(submenuItems.get(2).model.get(ListMenuItemProperties.CHECKED));
+        assertEquals(2, submenuItems.get(2).model.get(ListMenuItemProperties.POSITION));
     }
 
     @Test
-    @SmallTest
     public void testFolder_Empty() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
 
@@ -265,7 +263,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testFolder_Empty_NtpFeatureEnabled() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
@@ -302,7 +299,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testFolder_SingleBookmark() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
 
@@ -336,7 +332,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testFolder_SingleBookmark_NtpFeatureEnabled() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
@@ -374,7 +369,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testFolder_MultipleBookmarks() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
 
@@ -409,7 +403,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testFolder_MultipleBookmarks_NtpFeatureEnabled() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
@@ -448,7 +441,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testDesktopRootFolder_DisabledActions() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
 
@@ -480,7 +472,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testDesktopRootFolder_DisabledActions_NtpFeatureEnabled() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
@@ -516,7 +507,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testEmptySpaceContextMenu_NtpFeatureDisabled() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
 
@@ -537,7 +527,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testEmptySpaceContextMenu_NtpFeatureEnabled() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
@@ -562,7 +551,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({
         ChromeFeatureList.BOOKMARKS_BAR_NTP,
         ChromeFeatureList.FLYOUT_IN_BOOKMARKS_BAR
@@ -596,22 +584,24 @@ public class BookmarkBarContextMenuMediatorTest {
                 submenuItems.get(0).model.get(ListMenuItemProperties.TITLE));
         assertTrue(submenuItems.get(0).model.get(ListMenuItemProperties.CHECKABLE));
         assertTrue(submenuItems.get(0).model.get(ListMenuItemProperties.CHECKED));
+        assertEquals(0, submenuItems.get(0).model.get(ListMenuItemProperties.POSITION));
         assertEquals(
                 mActivity.getString(R.string.contextmenu_always_show_bookmarks_bar),
                 submenuItems.get(1).model.get(ListMenuItemProperties.TITLE));
         assertTrue(submenuItems.get(1).model.get(ListMenuItemProperties.CHECKABLE));
         assertFalse(submenuItems.get(1).model.get(ListMenuItemProperties.CHECKED));
+        assertEquals(1, submenuItems.get(1).model.get(ListMenuItemProperties.POSITION));
         assertEquals(
                 mActivity.getString(R.string.contextmenu_only_show_bookmarks_bar_on_ntp),
                 submenuItems.get(2).model.get(ListMenuItemProperties.TITLE));
         assertTrue(submenuItems.get(2).model.get(ListMenuItemProperties.CHECKABLE));
         assertFalse(submenuItems.get(2).model.get(ListMenuItemProperties.CHECKED));
+        assertEquals(2, submenuItems.get(2).model.get(ListMenuItemProperties.POSITION));
     }
 
     // Tests for actions of the items in the context menu.
 
     @Test
-    @SmallTest
     public void testClickOpenInNewTab() {
         BookmarkId bookmarkId =
                 mBookmarkModel.addBookmark(
@@ -629,7 +619,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickOpenInNewWindow() {
         BookmarkId bookmarkId =
                 mBookmarkModel.addBookmark(
@@ -647,7 +636,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickOpenInIncognitoWindow() {
         BookmarkId bookmarkId =
                 mBookmarkModel.addBookmark(
@@ -665,7 +653,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickOpenAll() {
         BookmarkId folderId =
                 mBookmarkModel.addFolder(
@@ -685,7 +672,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickOpenAllInNewWindow() {
         BookmarkId folderId =
                 mBookmarkModel.addFolder(
@@ -705,7 +691,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickOpenAllInIncognitoWindow() {
         BookmarkId folderId =
                 mBookmarkModel.addFolder(
@@ -725,7 +710,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickOpenAllInNewTabGroup() {
         BookmarkId folderId =
                 mBookmarkModel.addFolder(
@@ -745,7 +729,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickEdit() {
         BookmarkId bookmarkId =
                 mBookmarkModel.addBookmark(
@@ -763,7 +746,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickMove() {
         BookmarkId bookmarkId =
                 mBookmarkModel.addBookmark(
@@ -781,7 +763,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickDelete() {
         BookmarkId bookmarkId =
                 mBookmarkModel.addBookmark(
@@ -799,7 +780,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickAddPage() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
         BookmarkId folderId =
@@ -818,7 +798,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickAddFolder() {
         BookmarkId folderId =
                 mBookmarkModel.addFolder(
@@ -836,7 +815,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickOpenBookmarksManager() {
         BookmarkId folderId =
                 mBookmarkModel.addFolder(
@@ -854,7 +832,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testClickShowBookmarksBar() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
         ModelList list = mMediator.buildBookmarksBarEmptySpaceContextMenuModelList(mBookmarkModel);
@@ -865,7 +842,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testClickOnlyShowBookmarkBarOnNTP() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
@@ -877,7 +853,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testClickAlwaysHideBookmarksBar() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
@@ -889,7 +864,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     public void testClickAlwaysShowBookmarksBar() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
@@ -901,7 +875,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({
         ChromeFeatureList.BOOKMARKS_BAR_NTP,
         ChromeFeatureList.FLYOUT_IN_BOOKMARKS_BAR
@@ -921,7 +894,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({
         ChromeFeatureList.BOOKMARKS_BAR_NTP,
         ChromeFeatureList.FLYOUT_IN_BOOKMARKS_BAR
@@ -941,7 +913,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({
         ChromeFeatureList.BOOKMARKS_BAR_NTP,
         ChromeFeatureList.FLYOUT_IN_BOOKMARKS_BAR
@@ -961,7 +932,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testEmptySpaceClickOpenAll() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
         BookmarkId bookmarkId =
@@ -975,7 +945,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testEmptySpaceClickOpenAllInNewWindow() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
         BookmarkId bookmarkId =
@@ -989,7 +958,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testEmptySpaceClickOpenAllInIncognitoWindow() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
         BookmarkId bookmarkId =
@@ -1003,7 +971,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testEmptySpaceClickOpenAllInNewTabGroup() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
         BookmarkId bookmarkId =
@@ -1151,7 +1118,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testRecordMetrics_EmptySpace() {
         doReturn(JUnitTestGURLs.URL_1).when(mCurrentTab).getUrl();
 
@@ -1169,7 +1135,6 @@ public class BookmarkBarContextMenuMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testRecordActionMetric() {
         BookmarkId bookmarkId =
                 mBookmarkModel.addBookmark(

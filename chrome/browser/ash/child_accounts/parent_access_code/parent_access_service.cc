@@ -17,6 +17,8 @@
 #include "base/timer/timer.h"
 #include "base/values.h"
 #include "components/prefs/pref_registry_simple.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 
@@ -70,14 +72,18 @@ bool ParentAccessService::IsApprovalRequired(SupervisedAction action) {
   switch (action) {
     case SupervisedAction::kUpdateClock:
     case SupervisedAction::kUpdateTimezone:
-      if (user_manager::UserManager::Get()->IsUserLoggedIn()) {
-        return user_manager::UserManager::Get()->GetActiveUser()->IsChild();
+      if (const auto* active_session =
+              session_manager::SessionManager::Get()->GetActiveSession()) {
+        return CHECK_DEREF(user_manager::UserManager::Get()->FindUser(
+                               active_session->account_id()))
+            .IsChild();
       }
       return IsDeviceOwnedByChild();
     case SupervisedAction::kAddUser:
       return IsDeviceOwnedByChild();
     case SupervisedAction::kUnlockTimeLimits:
-      DCHECK(user_manager::UserManager::Get()->IsUserLoggedIn());
+      CHECK(user_manager::UserManager::Get()->IsUserLoggedIn(),
+            base::NotFatalUntil::M160);
       return true;
   }
 }
@@ -139,6 +145,20 @@ void ParentAccessService::AddObserver(Observer* observer) {
 
 void ParentAccessService::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
+}
+
+bool ParentAccessService::IsTimezoneChangeApproved(
+    const AccountId& account_id) const {
+  return timezone_change_approved_users_.contains(account_id);
+}
+
+void ParentAccessService::SetTimezoneChangeApproved(const AccountId& account_id,
+                                                    bool is_approved) {
+  if (is_approved) {
+    timezone_change_approved_users_.insert(account_id);
+  } else {
+    timezone_change_approved_users_.erase(account_id);
+  }
 }
 
 void ParentAccessService::NotifyObservers(

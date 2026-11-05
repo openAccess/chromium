@@ -9,6 +9,7 @@ export enum AnnotationMode {
   OFF = 'off',
   DRAW = 'draw',
   TEXT = 'text',
+  SIGNATURE = 'signature',
 }
 
 // The different types of annotation brushes.
@@ -36,6 +37,12 @@ export interface AnnotationBrush {
   type: AnnotationBrushType;
   color?: Color;
   size?: number;
+}
+
+export interface DeleteTextAnnotationMessageData {
+  id: number;
+  pageIndex: number;
+  source: TextAnnotationSource;
 }
 
 export interface TextAnnotation {
@@ -81,6 +88,7 @@ export enum TextAlignment {
 export enum TextStyle {
   BOLD = 'bold',
   ITALIC = 'italic',
+  UNDERLINE = 'underline',
   STRIKETHROUGH = 'strikethrough',
 }
 
@@ -163,7 +171,7 @@ export enum FormFieldFocusType {
 
 export interface NamedDestinationMessageData {
   messageId: string;
-  pageNumber: number;
+  pageIndex: number;
   namedDestinationView?: string;
 }
 

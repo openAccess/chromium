@@ -16,6 +16,7 @@
 #include "content/common/content_export.h"
 #include "content/public/browser/child_process_host.h"
 #include "content/public/browser/child_process_termination_info.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/common/process_type.h"
 #include "mojo/public/cpp/bindings/generic_pending_receiver.h"
 
@@ -46,6 +47,10 @@ class CONTENT_EXPORT BrowserChildProcessHost {
   // Returns the child process host with unique id |child_process_id|, or
   // nullptr if it doesn't exist. |child_process_id| is NOT the process ID, but
   // is the same unique ID as |ChildProcessData::id|.
+  static BrowserChildProcessHost* FromID(ChildProcessId child_process_id);
+
+  // TODO(crbug.com/379869738): Deprecated, please use the ChildProcessId
+  // version above.
   static BrowserChildProcessHost* FromID(int child_process_id);
 
   virtual ~BrowserChildProcessHost() = default;
@@ -54,6 +59,10 @@ class CONTENT_EXPORT BrowserChildProcessHost {
 
   // Returns the ChildProcessHost object used by this object.
   virtual ChildProcessHost* GetHost() = 0;
+
+  // Returns the child process. May be invalid if the process has not started
+  // yet or has terminated.
+  virtual const base::Process& GetProcess() = 0;
 
   // Returns the termination info of a child.
   // |known_dead| indicates that the child is already dead. On Linux, this

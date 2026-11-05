@@ -8,13 +8,13 @@
 #include <stdint.h>
 
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "base/byte_size.h"
 #include "base/compiler_specific.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
@@ -52,14 +52,15 @@ struct HttpRequestInfo;
 enum {
   TEST_MODE_NORMAL = 0,
   TEST_MODE_SYNC_NET_START = 1 << 0,
-  TEST_MODE_SYNC_NET_READ  = 1 << 1,
+  TEST_MODE_SYNC_NET_READ = 1 << 1,
   TEST_MODE_SYNC_CACHE_START = 1 << 2,
-  TEST_MODE_SYNC_CACHE_READ  = 1 << 3,
-  TEST_MODE_SYNC_CACHE_WRITE  = 1 << 4,
+  TEST_MODE_SYNC_CACHE_READ = 1 << 3,
+  TEST_MODE_SYNC_CACHE_WRITE = 1 << 4,
   TEST_MODE_SYNC_ALL = (TEST_MODE_SYNC_NET_START | TEST_MODE_SYNC_NET_READ |
                         TEST_MODE_SYNC_CACHE_START | TEST_MODE_SYNC_CACHE_READ |
                         TEST_MODE_SYNC_CACHE_WRITE),
-  TEST_MODE_SLOW_READ = 1 << 5
+  TEST_MODE_SLOW_READ = 1 << 5,
+  TEST_MODE_STUCK_READ = 1 << 6
 };
 
 using MockTransactionReadHandler = base::RepeatingCallback<
@@ -71,7 +72,8 @@ using MockTransactionHandler =
                                  std::string* response_headers,
                                  std::string* response_data)>;
 using MockTransactionStartHandler =
-    base::RepeatingCallback<Error(const HttpRequestInfo* request)>;
+    base::RepeatingCallback<Error(const HttpRequestInfo* request,
+                                  CompletionOnceCallback callback)>;
 
 // Default TransportInfo suitable for most MockTransactions.
 // Describes a direct connection to (127.0.0.1, 80).
@@ -94,9 +96,7 @@ struct MockTransaction {
   // Any aliases for the requested URL, as read from DNS records. Includes all
   // known aliases, e.g. from A, AAAA, or HTTPS, not just from the address used
   // for the connection, in no particular order.
-  std::set<std::string> dns_aliases;
-  std::optional<int64_t> fps_cache_filter;
-  std::optional<int64_t> browser_run_id;
+  base::flat_set<std::string> dns_aliases;
   int test_mode;
   MockTransactionHandler handler;
   MockTransactionReadHandler read_handler;
@@ -263,6 +263,10 @@ class MockNetworkTransaction final : public HttpTransaction {
   }
 
   RequestPriority priority() const { return priority_; }
+
+  const ConnectedCallback& connected_callback() const {
+    return connected_callback_;
+  }
 
   base::WeakPtr<MockNetworkTransaction> AsWeakPtr() {
     return weak_factory_.GetWeakPtr();

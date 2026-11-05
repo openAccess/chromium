@@ -16,6 +16,7 @@
 #import "url/origin.h"
 
 namespace web {
+class WebFramesManager;
 class WebState;
 }
 
@@ -92,14 +93,18 @@ void PopulateAutofillInformation(
 // placeholders to their content in `grafter`, fulfilling matching placeholder
 // nodes in `apc`'s content tree. Unregistered/orphan frame content that does
 // not match any placeholder in the tree is dropped to prevent node ID
-// collisions. If `include_same_site_only` is true, cross-site frame content is
-// redacted with REASON_CROSS_SITE rather than grafted into the
-// AnnotatedPageContent tree.
+// collisions. Also populates `apc`'s `screenshot_info` (`screenshot_size` and
+// `iframe_info`) for server-side screenshot redaction. If
+// `include_same_site_only` is true, cross-site frame content is redacted with
+// REASON_CROSS_SITE rather than grafted into the AnnotatedPageContent tree.
+// `web_frames_manager` must correspond to the content world used by the
+// `registrar`'s frame tokens (e.g., `kPageContentWorld`).
 void ResolveCrossSiteFrameContent(
     FrameGrafter& grafter,
     autofill::ChildFrameRegistrar* registrar,
     bool include_same_site_only,
-    optimization_guide::proto::AnnotatedPageContent* apc);
+    optimization_guide::proto::AnnotatedPageContent* apc,
+    web::WebFramesManager* web_frames_manager);
 
 // Resolves the focused frame by mapping local tokens to remote tokens and
 // sets the focused_frame in `apc`.
@@ -107,6 +112,16 @@ void ResolveFocusedFrame(
     std::vector<FrameFocusInfo>& focused_frame_infos,
     const std::vector<autofill::RemoteFrameToken>& remote_frames,
     autofill::ChildFrameRegistrar* registrar,
+    optimization_guide::proto::AnnotatedPageContent* apc);
+
+// Converts node geometry inside iframes in `apc` to main frame coordinates,
+// clipped to the visible area of the ancestor iframes. Mutates `apc` in place
+// and must be called at most once on the assembled tree, since calling it again
+// would apply the iframe offsets twice. Must run after screenshot redaction and
+// screenshot info.
+// TODO(crbug.com/573337154): Unify iframe offset calculation with
+// `FrameGrafter` once password screenshot redaction is fully launched.
+void TranslateIframeNodeGeometries(
     optimization_guide::proto::AnnotatedPageContent* apc);
 
 #endif  // IOS_CHROME_BROWSER_INTELLIGENCE_PROTO_WRAPPERS_ANNOTATED_PAGE_CONTENT_EXTRACTION_UTILS_H_

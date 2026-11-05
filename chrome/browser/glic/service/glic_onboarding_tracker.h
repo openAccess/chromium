@@ -7,7 +7,7 @@
 
 #include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "chrome/browser/glic/service/glic_onboarding_status.h"
 #include "chrome/browser/glic/service/metrics/metrics_types.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
@@ -45,6 +45,7 @@ class GlicOnboardingTracker {
                         ukm::SourceId source_id);
 
   GlicOnboardingStatus onboarding_status_;
+  raw_ptr<Profile> profile_;
   raw_ptr<PrefService> pref_service_;
   raw_ptr<GlicEnabling> enabling_;
   base::CallbackListSubscription consent_subscription_;

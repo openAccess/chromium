@@ -24,9 +24,9 @@
 #include "chrome/browser/extensions/api/braille_display_private/braille_controller.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_observer.h"
-#include "chrome/common/extensions/api/accessibility_private.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
 #include "chromeos/ash/components/login/session/session_termination_manager.h"
+#include "chromeos/ash/experiences/extensions/common/api/accessibility_private.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/core/session_manager_observer.h"
@@ -50,6 +50,10 @@
 
 class ApplicationLocaleStorage;
 class PrefService;
+
+namespace base::i18n {
+class LanguageTag;
+}  // namespace base::i18n
 
 namespace content {
 struct FocusedNodeDetails;
@@ -420,7 +424,7 @@ class AccessibilityManager
   // Gets the default locale for the active profile.
   // If this is a |new_user|, it returns the application language.
   // Otherwise, it returns the Dictation language with default IME language.
-  std::string GetDictationDefaultLocale(bool new_user);
+  base::i18n::LanguageTag GetDictationDefaultLocale(bool new_user);
 
   // Sets the focus ring with the given ID based on |focus_ring|.
   void SetFocusRing(std::string focus_ring_id,

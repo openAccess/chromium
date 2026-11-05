@@ -31,6 +31,15 @@ class PrefService;
 namespace contextual_cueing {
 
 enum class ContextualCueingDecision;
+enum class ContextualCueSurveyCategory;
+
+// Determines the HaTS survey category for a given cue target type and CUJ.
+ContextualCueSurveyCategory GetSurveyCategory(CueTargetType cue_type,
+                                              const std::string& cuj);
+
+// Returns the sanitized CUJ name to log in the HaTS survey metadata, converting
+// internal code names (e.g. "Indigo") to external identifiers.
+std::string GetSurveyCujName(const std::string& cuj);
 
 class ContextualCueingService : public KeyedService {
  public:
@@ -50,14 +59,15 @@ class ContextualCueingService : public KeyedService {
   };
 
   // Called when the user clicks the cue action button.
-  void OnCueClicked(CueTargetType type);
+  void OnCueClicked(CueTargetType type, bool record_ucb_stats);
 
   // Called when the user dismisses the cue.
-  void OnCueDismissed(CueTargetType type);
+  void OnCueDismissed(CueTargetType type, bool record_ucb_stats);
 
   // Called when the cue is shown to the user.
   void OnCueShown(const GURL& url,
                   CueTargetType type,
+                  bool record_ucb_stats,
                   CueIntrusiveness intrusiveness = CueIntrusiveness::kLoud);
 
   // Returns true if a nudge can be shown at the specified intrusiveness level.

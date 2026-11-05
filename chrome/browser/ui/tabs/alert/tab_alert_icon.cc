@@ -5,10 +5,10 @@
 #include "chrome/browser/ui/tabs/alert/tab_alert_icon.h"
 
 #include "chrome/app/vector_icons/vector_icons.h"
-#include "chrome/browser/actor/resources/grit/actor_browser_resources.h"
 #include "chrome/browser/glic/browser_ui/glic_vector_icon_manager.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/common/chrome_features.h"
 #include "components/tabs/public/tab_alert.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/models/image_model.h"
@@ -31,6 +31,7 @@ ui::ColorId GetAlertIndicatorColor(TabAlert state,
     case tabs::TabAlert::kPipPlaying:
     case tabs::TabAlert::kGlicAccessing:
     case tabs::TabAlert::kGlicSharing:
+    case tabs::TabAlert::kAiModeSharing:
     case tabs::TabAlert::kActorWaitingOnUser:
     case tabs::TabAlert::kActorAccessing:
       group = 1;
@@ -115,10 +116,10 @@ const gfx::VectorIcon& GetAlertIcon(TabAlert alert_state) {
                  : vector_icons::kCardboardOldIcon;
     case TabAlert::kActorWaitingOnUser:
     case TabAlert::kActorAccessing:
-      return glic::GlicVectorIconManager::GetVectorIcon(
-          IDR_ACTOR_AUTO_BROWSE_ICON);
+      return kCursorSparkIcon;
     case TabAlert::kGlicAccessing:
     case TabAlert::kGlicSharing:
+    case TabAlert::kAiModeSharing:
       return glic::GlicVectorIconManager::GetVectorIcon(
           IDR_GLIC_ACCESSING_ICON);
     case TabAlert::kNone:

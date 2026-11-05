@@ -7,7 +7,9 @@ source_set("complex_tasks") {
   public_deps = [
     "//base",
     "//components/sessions",
+    "//components/tabs:public",
     "//content/public/browser",
+    "//ui/base/unowned_user_data",
   ]
 }
 
@@ -25,8 +27,6 @@ source_set("impl") {
       "//chrome/browser/android:tabs_public",
     ]
   }
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("unit_tests") {
@@ -35,6 +35,8 @@ source_set("unit_tests") {
   deps = [
     ":complex_tasks",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//components/tabs:test_support",
     "//content/test:test_support",
     "//testing/gmock",
     "//testing/gtest",

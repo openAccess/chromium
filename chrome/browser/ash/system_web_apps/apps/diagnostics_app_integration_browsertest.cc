@@ -7,21 +7,22 @@
 #include "base/check_deref.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/test_support/system_web_app_integration_test.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/ash/diagnostics_dialog/diagnostics_dialog.h"
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace {
@@ -217,7 +218,7 @@ IN_PROC_BROWSER_TEST_P(DiagnosticsAppIntegrationTest,
   const GURL url(ash::kChromeUIDiagnosticsAppUrl);
   ui_test_utils::NavigateToURLWithDispositionBlockUntilNavigationsComplete(
       browser(), url, /*number_of_navigations=*/2,
-      WindowOpenDisposition::CURRENT_TAB, /*browser_test_flags=*/0);
+      ui::mojom::WindowOpenDisposition::kCurrentTab, /*browser_test_flags=*/0);
 
   auto* browser_web_contents =
       browser()->GetTabStripModel()->GetActiveWebContents();

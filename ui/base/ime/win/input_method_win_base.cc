@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -103,9 +104,10 @@ bool IsRTLKeyboardLayoutInstalled() {
 // Returns true if only a Ctrl key and a Shift key are down. The desired text
 // direction will be stored in |*direction|.
 bool IsCtrlShiftPressed(base::i18n::TextDirection* direction) {
-  uint8_t keystate[256];
-  if (!::GetKeyboardState(&keystate[0]))
+  std::array<uint8_t, 256> keystate;
+  if (!::GetKeyboardState(keystate.data())) {
     return false;
+  }
 
   // To check if a user is pressing only a control key and a right-shift key
   // (or a left-shift key), we use the steps below:
@@ -116,15 +118,15 @@ bool IsCtrlShiftPressed(base::i18n::TextDirection* direction) {
   //    To ignore the keys checked in 1, we set their status to 0 before
   //    checking the key status.
   const int kKeyDownMask = 0x80;
-  if ((UNSAFE_TODO(keystate[VK_CONTROL]) & kKeyDownMask) == 0) {
+  if ((keystate[VK_CONTROL] & kKeyDownMask) == 0) {
     return false;
   }
 
-  if (UNSAFE_TODO(keystate[VK_RSHIFT]) & kKeyDownMask) {
-    UNSAFE_TODO(keystate[VK_RSHIFT]) = 0;
+  if (keystate[VK_RSHIFT] & kKeyDownMask) {
+    keystate[VK_RSHIFT] = 0;
     *direction = base::i18n::RIGHT_TO_LEFT;
-  } else if (UNSAFE_TODO(keystate[VK_LSHIFT]) & kKeyDownMask) {
-    UNSAFE_TODO(keystate[VK_LSHIFT]) = 0;
+  } else if (keystate[VK_LSHIFT] & kKeyDownMask) {
+    keystate[VK_LSHIFT] = 0;
     *direction = base::i18n::LEFT_TO_RIGHT;
   } else {
     return false;
@@ -136,16 +138,16 @@ bool IsCtrlShiftPressed(base::i18n::TextDirection* direction) {
   // right-shift key (or a left-shift key), i.e. we should ignore the status of
   // the keys: VK_SHIFT, VK_CONTROL, VK_RCONTROL, and VK_LCONTROL.
   // So, we reset their status to 0 and ignore them.
-  UNSAFE_TODO(keystate[VK_SHIFT]) = 0;
-  UNSAFE_TODO(keystate[VK_CONTROL]) = 0;
-  UNSAFE_TODO(keystate[VK_RCONTROL]) = 0;
-  UNSAFE_TODO(keystate[VK_LCONTROL]) = 0;
+  keystate[VK_SHIFT] = 0;
+  keystate[VK_CONTROL] = 0;
+  keystate[VK_RCONTROL] = 0;
+  keystate[VK_LCONTROL] = 0;
   // Oddly, pressing F10 in another application seemingly breaks all subsequent
   // calls to GetKeyboardState regarding the state of the F22 key. Perhaps this
   // defect is limited to my keyboard driver, but ignoring F22 should be okay.
-  UNSAFE_TODO(keystate[VK_F22]) = 0;
+  keystate[VK_F22] = 0;
   for (int i = 0; i <= VK_PACKET; ++i) {
-    if (UNSAFE_TODO(keystate[i]) & kKeyDownMask) {
+    if (keystate[i] & kKeyDownMask) {
       return false;
     }
   }
@@ -377,7 +379,7 @@ LRESULT InputMethodWinBase::OnDocumentFeed(RECONVERTSTRING* reconv) {
   std::u16string text;
   if (!GetTextInputClient()->GetTextFromRange(text_range, &text))
     return 0;
-  DCHECK_EQ(text_range.length(), text.length());
+  CHECK_EQ(text_range.length(), text.length(), base::NotFatalUntil::M163);
 
   reconv->dwVersion = 0;
   reconv->dwStrLen = len;
@@ -417,7 +419,7 @@ LRESULT InputMethodWinBase::OnReconvertString(RECONVERTSTRING* reconv) {
     return 0;
   }
 
-  DCHECK(text_range.Contains(selection_range));
+  CHECK(text_range.Contains(selection_range), base::NotFatalUntil::M163);
 
   size_t len = selection_range.length();
   size_t need_size = sizeof(RECONVERTSTRING) + len * sizeof(WCHAR);
@@ -433,7 +435,7 @@ LRESULT InputMethodWinBase::OnReconvertString(RECONVERTSTRING* reconv) {
   std::u16string text;
   if (!GetTextInputClient()->GetTextFromRange(selection_range, &text))
     return 0;
-  DCHECK_EQ(selection_range.length(), text.length());
+  CHECK_EQ(selection_range.length(), text.length(), base::NotFatalUntil::M163);
 
   reconv->dwVersion = 0;
   reconv->dwStrLen = len;
@@ -500,7 +502,7 @@ void InputMethodWinBase::ProcessKeyEventDone(
 ui::EventDispatchDetails InputMethodWinBase::ProcessUnhandledKeyEvent(
     ui::KeyEvent* event,
     const std::vector<CHROME_MSG>* char_msgs) {
-  DCHECK(event);
+  CHECK(event, base::NotFatalUntil::M163);
   ui::EventDispatchDetails details = DispatchKeyEventPostIME(event);
   if (details.dispatcher_destroyed || details.target_destroyed ||
       event->stopped_propagation()) {

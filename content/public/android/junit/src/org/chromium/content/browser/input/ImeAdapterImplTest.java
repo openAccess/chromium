@@ -4,6 +4,8 @@
 
 package org.chromium.content.browser.input;
 
+import static android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE;
+
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
@@ -13,22 +15,25 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNotNull;
 import static org.mockito.ArgumentMatchers.isNull;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.app.Activity;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.SystemClock;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.SuggestionSpan;
 import android.view.KeyEvent;
-import android.view.ViewGroup;
+import android.view.View;
 import android.view.inputmethod.CorrectionInfo;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.FrameLayout;
 
 import androidx.test.core.app.ApplicationProvider;
 
@@ -42,6 +47,8 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
+import org.robolectric.Robolectric;
+import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
@@ -50,17 +57,24 @@ import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.blink.mojom.EventType;
 import org.chromium.blink.mojom.InputCursorAnchorInfo;
 import org.chromium.blink_public.web.WebInputEventModifier;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.content.browser.RenderCoordinatesImpl;
 import org.chromium.content.browser.webcontents.WebContentsImpl;
+import org.chromium.content.common.ContentInternalFeatures;
 import org.chromium.content_public.browser.ContentFeatureList;
+import org.chromium.content_public.browser.GlobalRenderFrameHostId;
 import org.chromium.content_public.browser.ImeEventObserver;
 import org.chromium.content_public.browser.InputMethodManagerWrapper;
+import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.ui.accessibility.AccessibilityFeatures;
 import org.chromium.ui.base.DeviceInput;
+import org.chromium.ui.base.EventForwarder;
 import org.chromium.ui.base.ime.TextInputType;
 import org.chromium.ui.mojom.ImeTextSpanType;
+import org.chromium.ui.mojom.VirtualKeyboardPolicy;
+import org.chromium.ui.mojom.VirtualKeyboardVisibilityRequest;
 import org.chromium.ui.test.util.TestViewAndroidDelegate;
 
 /** Unit tests for {@link ImeAdapterImpl}. */
@@ -68,21 +82,59 @@ import org.chromium.ui.test.util.TestViewAndroidDelegate;
 @DisableFeatures({
     ContentFeatures.ANDROID_PK_AUTOCORRECT_UNDERLINE,
     ContentFeatures.ANDROID_PK_AUTOCORRECT_UNDERLINE_V2,
-    ContentFeatureList.ANDROID_BLOCK_GRAMMAR_SUGGESTION_SPAN_IN_COMPOSITION_MODE,
-    ContentFeatureList.ANDROID_BLOCK_MISSPELLING_SUGGESTION_SPAN_IN_COMPOSITION_MODE,
     ContentFeatureList.ANDROID_MEDIA_INSERTION,
-    ContentFeatures.ANDROID_REPLAY_DEL_KEY_EVENT
+    ContentFeatures.ANDROID_REPLAY_DEL_KEY_EVENT,
+    ContentFeatures.RESTRICT_INTERACTIONS_IN_SWIPE_REGION_ON_FULLSCREEN
 })
 public class ImeAdapterImplTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
+    private static class TestContainerView extends FrameLayout {
+        int mRequestRectangleOnScreen1ArgCount;
+        int mRequestRectangleOnScreen3ArgCount;
+        boolean mLastRequestRectangleOnScreenImmediate;
+        int mLastRequestRectangleOnScreenSource;
+        @Nullable Rect mWindowVisibleDisplayFrame;
+
+        TestContainerView() {
+            super(ApplicationProvider.getApplicationContext());
+        }
+
+        @Override
+        public void getWindowVisibleDisplayFrame(Rect outRect) {
+            if (mWindowVisibleDisplayFrame != null) {
+                outRect.set(mWindowVisibleDisplayFrame);
+            } else {
+                super.getWindowVisibleDisplayFrame(outRect);
+            }
+        }
+
+        @Override
+        public boolean requestRectangleOnScreen(Rect rectangle) {
+            mRequestRectangleOnScreen1ArgCount++;
+            return false;
+        }
+
+        @Override
+        public boolean requestRectangleOnScreen(Rect rectangle, boolean immediate, int source) {
+            mRequestRectangleOnScreen3ArgCount++;
+            mLastRequestRectangleOnScreenImmediate = immediate;
+            mLastRequestRectangleOnScreenSource = source;
+            return false;
+        }
+    }
+
     @Mock private WebContentsImpl mWebContentsImpl;
-    @Mock private ViewGroup mContainerView;
     @Mock private ImeEventObserver mImeEventObserver;
     @Mock private ImeAdapterImpl.Natives mImeAdapterImplJni;
     @Mock private CorrectionInfo mCorrectionInfo;
     @Mock private AutocorrectManager mAutocorrectManager;
     @Mock private InputMethodManagerWrapper mInputMethodManagerWrapper;
+    @Mock private EventForwarder mEventForwarder;
+    @Mock private RenderFrameHost mRenderFrameHost;
+    @Mock private RenderCoordinatesImpl mRenderCoordinatesImpl;
+
+    private final TestContainerView mContainerView = new TestContainerView();
 
     @Before
     public void setUp() {
@@ -97,11 +149,9 @@ public class ImeAdapterImplTest {
                 .when(mWebContentsImpl)
                 .getOrSetUserData(any(), any());
 
-        when(mContainerView.getContext()).thenReturn(ApplicationProvider.getApplicationContext());
-        when(mContainerView.getResources())
-                .thenReturn(ApplicationProvider.getApplicationContext().getResources());
         when(mWebContentsImpl.getViewAndroidDelegate())
                 .thenReturn(new TestViewAndroidDelegate(mContainerView));
+        when(mWebContentsImpl.getEventForwarder()).thenReturn(mEventForwarder);
     }
 
     @Test
@@ -148,7 +198,399 @@ public class ImeAdapterImplTest {
                 /* replyToRequest= */ false,
                 /* lastVkVisibilityRequest= */ 0,
                 /* vkPolicy= */ 0,
+                /* nodeId= */ 0,
                 /* imeTextSpans= */ null);
+    }
+
+    private void updateTextInputTypeWithShow(
+            ImeAdapterImpl adapter, @TextInputType int textInputType) {
+        adapter.updateState(
+                /* textInputType= */ textInputType,
+                /* textInputFlags= */ 0,
+                /* textInputMode= */ 0,
+                /* textInputAction= */ 0,
+                /* showIfNeeded= */ true,
+                /* alwaysHide= */ false,
+                /* text= */ "",
+                /* selectionStart= */ 0,
+                /* selectionEnd= */ 0,
+                /* compositionStart= */ 0,
+                /* compositionEnd= */ 0,
+                /* replyToRequest= */ false,
+                /* lastVkVisibilityRequest= */ 0,
+                /* vkPolicy= */ 0,
+                /* nodeId= */ 0,
+                /* imeTextSpans= */ null);
+    }
+
+    @Test
+    @EnableFeatures({
+        ContentInternalFeatures.SCROLL_AFTER_OSK_VIEWPORT_SHRINK_FIX,
+        ContentInternalFeatures.SCROLL_FOCUSED_NODE_ON_OSK_VIEWPORT_RESHRINK
+    })
+    public void testResizeScrollableViewport_keyboardHeightExpandsAfterInitialShow() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Focus on an editable node (e.g. Chat input field) and show keyboard.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 2400);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_SHOWN);
+
+        // 2. Keyboard appears initially, reducing viewport height to 1800.
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 1800);
+        adapter.onResizeScrollableViewport(true);
+
+        // Verify the initial scroll into view occurred.
+        verify(mWebContentsImpl, times(1)).scrollFocusedEditableNodeIntoView();
+
+        // 3. User enables translate tool in Gboard (or docks from floating mode), expanding
+        // keyboard height and reducing visible viewport height further to 1400.
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 1400);
+        adapter.onResizeScrollableViewport(true);
+
+        // The focused node should be scrolled into view again so it isn't hidden by the expanded
+        // keyboard.
+        verify(mWebContentsImpl, times(2)).scrollFocusedEditableNodeIntoView();
+    }
+
+    @Test
+    @EnableFeatures({
+        ContentInternalFeatures.SCROLL_AFTER_OSK_VIEWPORT_SHRINK_FIX,
+        ContentInternalFeatures.SCROLL_FOCUSED_NODE_ON_OSK_VIEWPORT_RESHRINK
+    })
+    public void testResizeScrollableViewport_dockFromFloatingAfterInitialShow() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Focus on an editable node (e.g. Chat input field) and show keyboard.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 2400);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_SHOWN);
+
+        // 2. Keyboard appears initially, reducing viewport height to 1800.
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 1800);
+        adapter.onResizeScrollableViewport(true);
+        verify(mWebContentsImpl, times(1)).scrollFocusedEditableNodeIntoView();
+
+        // 3. User switches to floating window mode (viewport expands back).
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 2400);
+        adapter.onResizeScrollableViewport(false);
+
+        // 4. User switches back to docked mode (viewport height reduces again).
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 1800);
+        adapter.onResizeScrollableViewport(true);
+
+        // The focused node should be scrolled into view again upon re-docking.
+        verify(mWebContentsImpl, times(2)).scrollFocusedEditableNodeIntoView();
+    }
+
+    @Test
+    @EnableFeatures(ContentInternalFeatures.SCROLL_AFTER_OSK_VIEWPORT_SHRINK_FIX)
+    public void testResizeScrollableViewport_widthChangeCancelsPendingScroll() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Focus on an editable node and request keyboard.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 2400);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_SHOWN);
+        Assert.assertFalse(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+
+        // 2. Device rotates (width changes from 1080 to 2400).
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 2400, 1080);
+
+        // 3. Viewport resize arrives with contentsHeightReduced=true.
+        adapter.onResizeScrollableViewport(true);
+
+        // Width mismatch should cancel the pending scroll request without scrolling.
+        verify(mWebContentsImpl, never()).scrollFocusedEditableNodeIntoView();
+        Assert.assertTrue(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+
+        // 4. Also verify width mismatch cancels when contentsHeightReduced=false.
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 2400);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_SHOWN);
+        Assert.assertFalse(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 2400, 1080);
+        adapter.onResizeScrollableViewport(false);
+
+        verify(mWebContentsImpl, never()).scrollFocusedEditableNodeIntoView();
+        Assert.assertTrue(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+    }
+
+    @Test
+    public void testResizeScrollableViewport_cancelledRequestDoesNotScroll() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Focus on an editable node and request keyboard.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 2400);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_SHOWN);
+
+        // 2. Simulate touch down or cancelled scroll request which clears mFocusPreOSKViewportRect.
+        adapter.cancelRequestToScrollFocusedEditableNodeIntoView();
+
+        // 3. Viewport height reduces (e.g. keyboard expands or docks).
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 1800);
+        adapter.onResizeScrollableViewport(true);
+
+        // Should NOT scroll into view because the request was cancelled (mFocusPreOSKViewportRect
+        // is empty).
+        verify(mWebContentsImpl, never()).scrollFocusedEditableNodeIntoView();
+    }
+
+    @Test
+    public void testResizeScrollableViewport_resetAndHideKeyboardCancelsScroll() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Focus on an editable node and request keyboard.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 2400);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_SHOWN);
+
+        // 2. Reset and hide keyboard, which clears mFocusPreOSKViewportRect.
+        adapter.resetAndHideKeyboard();
+
+        // 3. Viewport height reduces.
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 1800);
+        adapter.onResizeScrollableViewport(true);
+
+        // Should NOT scroll into view because resetAndHideKeyboard cancelled the request.
+        verify(mWebContentsImpl, never()).scrollFocusedEditableNodeIntoView();
+    }
+
+    @Test
+    public void testResizeScrollableViewport_invalidAdapterReturnsEarly() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        // Do not call onConnectedToRenderProcess(), so isValid() is false.
+        Assert.assertFalse(adapter.isValid());
+
+        adapter.onResizeScrollableViewport(true);
+        verify(mWebContentsImpl, never()).scrollFocusedEditableNodeIntoView();
+    }
+
+    @Test
+    public void testResizeScrollableViewport_nullContainerViewReturnsEarly() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        updateTextInputType(adapter, TextInputType.TEXT);
+        when(mWebContentsImpl.getViewAndroidDelegate()).thenReturn(null);
+
+        adapter.onResizeScrollableViewport(true);
+        verify(mWebContentsImpl, never()).scrollFocusedEditableNodeIntoView();
+    }
+
+    @Test
+    public void testResizeScrollableViewport_emptyPreOSKViewportRectWhenNodeNotEditable() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Not focused on an editable node.
+        updateTextInputType(adapter, TextInputType.NONE);
+        Assert.assertFalse(adapter.focusedNodeEditable());
+
+        // 2. Viewport height reduces.
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 1800);
+        adapter.onResizeScrollableViewport(true);
+
+        // Should not scroll into view when node is not editable.
+        verify(mWebContentsImpl, never()).scrollFocusedEditableNodeIntoView();
+    }
+
+    @Test
+    public void testResizeScrollableViewport_nodeNotEditableCancelsPendingScroll() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Focus on an editable node and request keyboard.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 2400);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_SHOWN);
+        Assert.assertFalse(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+
+        // 2. Node becomes non-editable before viewport resize completes. Use the MANUAL
+        // virtualkeyboardpolicy path so that updateState() does not call hideKeyboard() (which
+        // would itself cancel the pending scroll request) and the rect stays armed.
+        adapter.updateState(
+                /* textInputType= */ TextInputType.NONE,
+                /* textInputFlags= */ 0,
+                /* textInputMode= */ 0,
+                /* textInputAction= */ 0,
+                /* showIfNeeded= */ false,
+                /* alwaysHide= */ false,
+                /* text= */ "",
+                /* selectionStart= */ 0,
+                /* selectionEnd= */ 0,
+                /* compositionStart= */ 0,
+                /* compositionEnd= */ 0,
+                /* replyToRequest= */ false,
+                /* lastVkVisibilityRequest= */ VirtualKeyboardVisibilityRequest.NONE,
+                /* vkPolicy= */ VirtualKeyboardPolicy.MANUAL,
+                /* nodeId= */ 0,
+                /* imeTextSpans= */ null);
+        Assert.assertFalse(adapter.focusedNodeEditable());
+        Assert.assertFalse(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+
+        // 3. Viewport height reduces. This should cancel the pending scroll request.
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 1800);
+        adapter.onResizeScrollableViewport(true);
+        verify(mWebContentsImpl, never()).scrollFocusedEditableNodeIntoView();
+        Assert.assertTrue(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+
+        // 4. Even if the node becomes editable again later without a new keyboard show result,
+        // a subsequent resize should not scroll because the pending request was cancelled.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 1400);
+        adapter.onResizeScrollableViewport(true);
+        verify(mWebContentsImpl, never()).scrollFocusedEditableNodeIntoView();
+    }
+
+    @Test
+    @DisableFeatures(ContentInternalFeatures.SCROLL_AFTER_OSK_VIEWPORT_SHRINK_FIX)
+    public void testResizeScrollableViewport_legacyGrowthCancelsPendingScroll() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Focus on an editable node and request keyboard.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 2400);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_SHOWN);
+        Assert.assertFalse(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+
+        // 2. Viewport grows. With the legacy behaviour this cancels the pending request.
+        adapter.onResizeScrollableViewport(false);
+        Assert.assertTrue(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+
+        // 3. Viewport subsequently shrinks; nothing is pending so no scroll happens.
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 1800);
+        adapter.onResizeScrollableViewport(true);
+        verify(mWebContentsImpl, never()).scrollFocusedEditableNodeIntoView();
+    }
+
+    @Test
+    @EnableFeatures(ContentInternalFeatures.SCROLL_AFTER_OSK_VIEWPORT_SHRINK_FIX)
+    @DisableFeatures(ContentInternalFeatures.SCROLL_FOCUSED_NODE_ON_OSK_VIEWPORT_RESHRINK)
+    public void testResizeScrollableViewport_reshrinkDisabledScrollsOnlyOncePerShow() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Focus on an editable node and show keyboard.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 2400);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_SHOWN);
+
+        // 2. Keyboard appears initially, reducing viewport height to 1800.
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 1800);
+        adapter.onResizeScrollableViewport(true);
+        verify(mWebContentsImpl, times(1)).scrollFocusedEditableNodeIntoView();
+        // Legacy behaviour: the request is consumed after the first scroll.
+        Assert.assertTrue(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+
+        // 3. Keyboard grows further (e.g. Gboard Translate); no further scroll happens.
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 1400);
+        adapter.onResizeScrollableViewport(true);
+        verify(mWebContentsImpl, times(1)).scrollFocusedEditableNodeIntoView();
+
+        // 4. Re-arm, then grow the display frame. With the kill switch off the baseline is not
+        // raised, so a subsequent shrink that is still taller than the baseline does not scroll.
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 2400);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_SHOWN);
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 2600);
+        adapter.onResizeScrollableViewport(false);
+        Assert.assertEquals(
+                new Rect(0, 0, 1080, 2400), adapter.getFocusPreOSKViewportRectForTesting());
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 2500);
+        adapter.onResizeScrollableViewport(true);
+        verify(mWebContentsImpl, times(1)).scrollFocusedEditableNodeIntoView();
+        Assert.assertTrue(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+    }
+
+    @Test
+    @DisableFeatures(ContentInternalFeatures.SCROLL_FOCUSED_NODE_ON_OSK_VIEWPORT_RESHRINK)
+    public void testShowKeyboardReceiveResult_reshrinkDisabledUnchangedShownDoesNotArm() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Focus on an editable node when keyboard is already shown.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 1800);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_UNCHANGED_SHOWN);
+
+        // Immediate scroll into view still happens, but no baseline is recorded.
+        verify(mWebContentsImpl, times(1)).scrollFocusedEditableNodeIntoView();
+        Assert.assertTrue(adapter.getFocusPreOSKViewportRectForTesting().isEmpty());
+
+        // 2. Keyboard height expands further; no additional scroll.
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 1400);
+        adapter.onResizeScrollableViewport(true);
+        verify(mWebContentsImpl, times(1)).scrollFocusedEditableNodeIntoView();
+    }
+
+    @Test
+    @EnableFeatures({
+        ContentInternalFeatures.SCROLL_AFTER_OSK_VIEWPORT_SHRINK_FIX,
+        ContentInternalFeatures.SCROLL_FOCUSED_NODE_ON_OSK_VIEWPORT_RESHRINK
+    })
+    public void
+            testShowKeyboardReceiveResult_unchangedShownRecordsFrameAndSubsequentResizeScrolls() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Focus on an editable node when keyboard is already shown.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 1800);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_UNCHANGED_SHOWN);
+
+        // Immediate scroll into view happens on RESULT_UNCHANGED_SHOWN.
+        verify(mWebContentsImpl, times(1)).scrollFocusedEditableNodeIntoView();
+
+        // 2. Keyboard height expands further (e.g. translate tool), reducing viewport to 1400.
+        mContainerView.mWindowVisibleDisplayFrame.set(0, 0, 1080, 1400);
+        adapter.onResizeScrollableViewport(true);
+
+        // Should scroll into view again because RESULT_UNCHANGED_SHOWN recorded the display frame
+        // baseline.
+        verify(mWebContentsImpl, times(2)).scrollFocusedEditableNodeIntoView();
+    }
+
+    @Test
+    @EnableFeatures({
+        ContentInternalFeatures.SCROLL_AFTER_OSK_VIEWPORT_SHRINK_FIX,
+        ContentInternalFeatures.SCROLL_FOCUSED_NODE_ON_OSK_VIEWPORT_RESHRINK
+    })
+    public void
+            testShowKeyboardReceiveResult_unchangedShownDoesNotOverwritePendingPreOSKViewportRect() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        // 1. Initial keyboard show sets pending pre-OSK viewport rect.
+        updateTextInputType(adapter, TextInputType.TEXT);
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 2400);
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_SHOWN);
+        Assert.assertEquals(
+                new Rect(0, 0, 1080, 2400), adapter.getFocusPreOSKViewportRectForTesting());
+
+        // 2. Window display frame updates before resize event arrives.
+        mContainerView.mWindowVisibleDisplayFrame = new Rect(0, 0, 1080, 1800);
+
+        // 3. Secondary show request returns RESULT_UNCHANGED_SHOWN while resize is still pending.
+        adapter.onShowKeyboardReceiveResult(InputMethodManager.RESULT_UNCHANGED_SHOWN);
+
+        // Pre-OSK viewport rect should NOT be overwritten by RESULT_UNCHANGED_SHOWN.
+        Assert.assertEquals(
+                new Rect(0, 0, 1080, 2400), adapter.getFocusPreOSKViewportRectForTesting());
+        // Immediate scroll occurs on RESULT_UNCHANGED_SHOWN.
+        verify(mWebContentsImpl, times(1)).scrollFocusedEditableNodeIntoView();
+
+        // 4. Subsequent viewport resize arrives with reduced height relative to the initial rect.
+        adapter.onResizeScrollableViewport(true);
+
+        // The resize still triggers scroll because the original baseline (2400) was preserved.
+        verify(mWebContentsImpl, times(2)).scrollFocusedEditableNodeIntoView();
     }
 
     @Test
@@ -159,6 +601,97 @@ public class ImeAdapterImplTest {
 
         adapter.onViewFocusChanged(/* gainFocus= */ true, /* hideKeyboardOnBlur= */ true);
         verify(mImeAdapterImplJni).requestTextInputStateUpdate(anyLong());
+    }
+
+    @Test
+    @EnableFeatures(ContentFeatureList.ANDROID_FORCE_TEXT_INPUT_STATE_UPDATE_UPON_FOCUS)
+    public void testOnWindowFocusChangedGainedCallsRequestTextInputStateUpdate() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        adapter.onWindowFocusChanged(/* gainFocus= */ true);
+        verify(mImeAdapterImplJni).requestTextInputStateUpdate(anyLong());
+    }
+
+    private void updateTextInputState(
+            ImeAdapterImpl adapter, @TextInputType int textInputType, int nodeId) {
+        adapter.updateState(
+                /* textInputType= */ textInputType,
+                /* textInputFlags= */ 0,
+                /* textInputMode= */ 0,
+                /* textInputAction= */ 0,
+                /* showIfNeeded= */ textInputType != TextInputType.NONE,
+                /* alwaysHide= */ false,
+                /* text= */ "",
+                /* selectionStart= */ 0,
+                /* selectionEnd= */ 0,
+                /* compositionStart= */ -1,
+                /* compositionEnd= */ -1,
+                /* replyToRequest= */ false,
+                /* lastVkVisibilityRequest= */ 0,
+                /* vkPolicy= */ 0,
+                /* nodeId= */ nodeId,
+                /* imeTextSpans= */ null);
+    }
+
+    @Test
+    @EnableFeatures(ContentFeatureList.ANDROID_FORCE_TEXT_INPUT_STATE_UPDATE_UPON_FOCUS)
+    public void testOnWindowFocusChangedLostResetsWithoutHidingKeyboard() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.setInputMethodManagerWrapper(mInputMethodManagerWrapper);
+        adapter.onConnectedToRenderProcess();
+
+        // Focus an editable text field.
+        adapter.focusedNodeChanged(/* isEditable= */ true, 0, 0, 100, 100);
+        updateTextInputState(adapter, TextInputType.TEXT, /* nodeId= */ 42);
+        reset(mInputMethodManagerWrapper);
+
+        // Window focus is lost (e.g. IME picker dialog, notification shade, power menu).
+        adapter.onWindowFocusChanged(/* gainFocus= */ false);
+
+        // Verify that the soft keyboard is NOT hidden and input is reset.
+        verify(mInputMethodManagerWrapper, never()).hideSoftInputFromWindow(any(), anyInt(), any());
+        verify(mInputMethodManagerWrapper, never()).restartInput(any());
+    }
+
+    @Test
+    @EnableFeatures(ContentFeatureList.ANDROID_FORCE_TEXT_INPUT_STATE_UPDATE_UPON_FOCUS)
+    public void testOnWindowFocusChangedGainedRestartsInputOnNextStateUpdateWhenTextInputActive() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.setInputMethodManagerWrapper(mInputMethodManagerWrapper);
+        adapter.onConnectedToRenderProcess();
+
+        // Initial focus on node 42.
+        adapter.focusedNodeChanged(/* isEditable= */ true, 0, 0, 100, 100);
+        updateTextInputState(adapter, TextInputType.TEXT, /* nodeId= */ 42);
+        verify(mInputMethodManagerWrapper, times(1)).restartInput(mContainerView);
+        reset(mInputMethodManagerWrapper);
+
+        // Window loses focus then gains focus.
+        adapter.onWindowFocusChanged(/* gainFocus= */ false);
+        verify(mInputMethodManagerWrapper, never()).restartInput(any());
+
+        adapter.onWindowFocusChanged(/* gainFocus= */ true);
+        verify(mImeAdapterImplJni).requestTextInputStateUpdate(anyLong());
+
+        // Subsequent updateState for the same node 42 should restart input.
+        updateTextInputState(adapter, TextInputType.TEXT, /* nodeId= */ 42);
+        verify(mInputMethodManagerWrapper, times(1)).restartInput(mContainerView);
+    }
+
+    @Test
+    @EnableFeatures(ContentFeatureList.ANDROID_FORCE_TEXT_INPUT_STATE_UPDATE_UPON_FOCUS)
+    public void testOnWindowFocusChangedGainedDoesNotRestartInputWhenNoActiveTextInput() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.setInputMethodManagerWrapper(mInputMethodManagerWrapper);
+        adapter.onConnectedToRenderProcess();
+
+        adapter.onWindowFocusChanged(/* gainFocus= */ true);
+        verify(mImeAdapterImplJni).requestTextInputStateUpdate(anyLong());
+
+        // Subsequent updateState for TextInputType.NONE does not restart input.
+        updateTextInputState(adapter, TextInputType.NONE, /* nodeId= */ 0);
+        verify(mInputMethodManagerWrapper, never()).restartInput(any());
     }
 
     @Test
@@ -454,8 +987,22 @@ public class ImeAdapterImplTest {
     }
 
     @Test
+    public void testGetFocusedFrameId() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        Assert.assertNull(adapter.getFocusedFrameId());
+
+        GlobalRenderFrameHostId frameId = new GlobalRenderFrameHostId(1, 2);
+        when(mRenderFrameHost.getGlobalRenderFrameHostId()).thenReturn(frameId);
+        when(mWebContentsImpl.getFocusedFrame()).thenReturn(mRenderFrameHost);
+
+        Assert.assertEquals(frameId, adapter.getFocusedFrameId());
+    }
+
+    @Test
     public void testCommitContent() {
-        when(mImeAdapterImplJni.insertMediaFromBytes(anyLong(), any(), any())).thenReturn(true);
+        GlobalRenderFrameHostId frameId = new GlobalRenderFrameHostId(1, 2);
+        when(mImeAdapterImplJni.insertMediaFromBytes(anyLong(), eq(1), eq(2), any(), any()))
+                .thenReturn(true);
         HistogramWatcher watcher =
                 HistogramWatcher.newBuilder()
                         .expectIntRecord(
@@ -466,16 +1013,39 @@ public class ImeAdapterImplTest {
         adapter.onConnectedToRenderProcess();
 
         Assert.assertTrue(
-                adapter.commitContent(/* bytes= */ new byte[] {1, 2, 3}, /* extension= */ "png"));
+                adapter.commitContent(
+                        frameId, /* bytes= */ new byte[] {1, 2, 3}, /* extension= */ "png"));
 
         verify(mImeAdapterImplJni)
-                .insertMediaFromBytes(anyLong(), eq(new byte[] {1, 2, 3}), eq("png"));
+                .insertMediaFromBytes(anyLong(), eq(1), eq(2), eq(new byte[] {1, 2, 3}), eq("png"));
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testCommitContent_NullTargetFrame() {
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                "Input.CommitContent.Failure", ImeMetricsUtils.ExtensionFormat.PNG)
+                        .build();
+
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.onConnectedToRenderProcess();
+
+        Assert.assertFalse(
+                adapter.commitContent(
+                        null, /* bytes= */ new byte[] {1, 2, 3}, /* extension= */ "png"));
+
+        verify(mImeAdapterImplJni, never())
+                .insertMediaFromBytes(anyLong(), anyInt(), anyInt(), any(), any());
         watcher.assertExpected();
     }
 
     @Test
     public void testCommitContent_Failure() {
-        when(mImeAdapterImplJni.insertMediaFromBytes(anyLong(), any(), any())).thenReturn(false);
+        GlobalRenderFrameHostId frameId = new GlobalRenderFrameHostId(1, 2);
+        when(mImeAdapterImplJni.insertMediaFromBytes(anyLong(), eq(1), eq(2), any(), any()))
+                .thenReturn(false);
         HistogramWatcher watcher =
                 HistogramWatcher.newBuilder()
                         .expectIntRecord(
@@ -486,7 +1056,7 @@ public class ImeAdapterImplTest {
         ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
         adapter.onConnectedToRenderProcess();
 
-        Assert.assertFalse(adapter.commitContent(new byte[] {1, 2, 3}, "unknown_ext"));
+        Assert.assertFalse(adapter.commitContent(frameId, new byte[] {1, 2, 3}, "unknown_ext"));
         watcher.assertExpected();
     }
 
@@ -661,61 +1231,6 @@ public class ImeAdapterImplTest {
     }
 
     @Test
-    @EnableFeatures(
-            ContentFeatureList.ANDROID_BLOCK_MISSPELLING_SUGGESTION_SPAN_IN_COMPOSITION_MODE)
-    public void testPopulateImeTextSpansFromJava_MisspellingSpanBlocked() {
-        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
-        SpannableString text = new SpannableString("hello");
-        SuggestionSpan span =
-                new SuggestionSpan(
-                        ApplicationProvider.getApplicationContext(),
-                        new String[] {"suggestion"},
-                        SuggestionSpan.FLAG_MISSPELLED);
-        text.setSpan(span, 0, 5, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-
-        adapter.populateImeTextSpansFromJava(text, 123L);
-
-        verify(mImeAdapterImplJni, never())
-                .appendSuggestionSpan(
-                        /* spanPtr= */ anyLong(),
-                        /* start= */ anyInt(),
-                        /* end= */ anyInt(),
-                        /* type= */ anyInt(),
-                        /* removeOnFinishComposing= */ anyBoolean(),
-                        /* underlineColor= */ anyInt(),
-                        /* suggestionHighlightColor= */ anyInt(),
-                        /* suggestions= */ any(),
-                        /* shouldHideSuggestionMenu= */ anyBoolean());
-    }
-
-    @Test
-    @EnableFeatures(ContentFeatureList.ANDROID_BLOCK_GRAMMAR_SUGGESTION_SPAN_IN_COMPOSITION_MODE)
-    public void testPopulateImeTextSpansFromJava_GrammarSpanBlocked() {
-        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
-        SpannableString text = new SpannableString("hello");
-        SuggestionSpan span =
-                new SuggestionSpan(
-                        ApplicationProvider.getApplicationContext(),
-                        new String[] {"suggestion"},
-                        SuggestionSpan.FLAG_GRAMMAR_ERROR);
-        text.setSpan(span, 0, 5, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-
-        adapter.populateImeTextSpansFromJava(text, 123L);
-
-        verify(mImeAdapterImplJni, never())
-                .appendSuggestionSpan(
-                        /* spanPtr= */ anyLong(),
-                        /* start= */ anyInt(),
-                        /* end= */ anyInt(),
-                        /* type= */ anyInt(),
-                        /* removeOnFinishComposing= */ anyBoolean(),
-                        /* underlineColor= */ anyInt(),
-                        /* suggestionHighlightColor= */ anyInt(),
-                        /* suggestions= */ any(),
-                        /* shouldHideSuggestionMenu= */ anyBoolean());
-    }
-
-    @Test
     public void testOnCreateInputConnection_Default() {
         ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
         updateTextInputType(adapter, TextInputType.TEXT);
@@ -761,6 +1276,7 @@ public class ImeAdapterImplTest {
                 /* replyToRequest= */ false,
                 /* lastVkVisibilityRequest= */ 0,
                 /* vkPolicy= */ 0,
+                /* nodeId= */ 0,
                 /* imeTextSpans= */ null);
 
         verify(mInputMethodManagerWrapper, never()).showSoftInput(any(), anyInt(), any());
@@ -821,19 +1337,11 @@ public class ImeAdapterImplTest {
     }
 
     private void doUpdateCursorAnchorInfoTest(boolean shouldExpectRequestRectangleOnScreen) {
-        RenderCoordinatesImpl renderCoordinates = mock(RenderCoordinatesImpl.class);
-        when(mWebContentsImpl.getRenderCoordinates()).thenReturn(renderCoordinates);
-        when(renderCoordinates.getDeviceScaleFactor()).thenReturn(1.0f);
-        when(renderCoordinates.getContentOffsetYPixInt()).thenReturn(0);
+        when(mWebContentsImpl.getRenderCoordinates()).thenReturn(mRenderCoordinatesImpl);
+        when(mRenderCoordinatesImpl.getDeviceScaleFactor()).thenReturn(1.0f);
+        when(mRenderCoordinatesImpl.getContentOffsetYPixInt()).thenReturn(0);
 
-        when(mContainerView.getLocalVisibleRect(any(Rect.class)))
-                .thenAnswer(
-                        (Answer<Boolean>)
-                                invocation -> {
-                                    Rect rect = invocation.getArgument(0);
-                                    rect.set(0, 0, Integer.MAX_VALUE, Integer.MAX_VALUE);
-                                    return true;
-                                });
+        mContainerView.layout(0, 0, Integer.MAX_VALUE, Integer.MAX_VALUE);
 
         ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
         adapter.onConnectedToRenderProcess();
@@ -845,8 +1353,22 @@ public class ImeAdapterImplTest {
         anchorInfo.insertionMarker.height = 10;
         adapter.updateCursorAnchorInfo(anchorInfo);
 
-        verify(mContainerView, times(shouldExpectRequestRectangleOnScreen ? 1 : 0))
-                .requestRectangleOnScreen(any(Rect.class));
+        int expectedCalls = shouldExpectRequestRectangleOnScreen ? 1 : 0;
+        // Matches the API selection in ImeAdapterImpl#updateCursorAnchorInfo().
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA
+                && Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1) {
+            Assert.assertEquals(0, mContainerView.mRequestRectangleOnScreen1ArgCount);
+            Assert.assertEquals(expectedCalls, mContainerView.mRequestRectangleOnScreen3ArgCount);
+            if (shouldExpectRequestRectangleOnScreen) {
+                Assert.assertFalse(mContainerView.mLastRequestRectangleOnScreenImmediate);
+                Assert.assertEquals(
+                        View.RECTANGLE_ON_SCREEN_REQUEST_SOURCE_TEXT_CURSOR,
+                        mContainerView.mLastRequestRectangleOnScreenSource);
+            }
+        } else {
+            Assert.assertEquals(expectedCalls, mContainerView.mRequestRectangleOnScreen1ArgCount);
+            Assert.assertEquals(0, mContainerView.mRequestRectangleOnScreen3ArgCount);
+        }
     }
 
     @Test
@@ -877,5 +1399,242 @@ public class ImeAdapterImplTest {
     public void testUpdateCursorAnchorInfo_MagnificationFollowsFocusDisabled_NoKeyboard() {
         DeviceInput.setSupportsKeyboardForTesting(false);
         doUpdateCursorAnchorInfoTest(/* shouldExpectRequestRectangleOnScreen= */ false);
+    }
+
+    @Test
+    @EnableFeatures(ContentFeatures.RESTRICT_INTERACTIONS_IN_SWIPE_REGION_ON_FULLSCREEN)
+    public void testRestrictInteractionsInSwipeRegion_fullscreen_touchInInsets_deferredUntilTap() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.setInputMethodManagerWrapper(mInputMethodManagerWrapper);
+        adapter.onConnectedToRenderProcess();
+
+        when(mWebContentsImpl.isFullscreenForCurrentTab()).thenReturn(true);
+
+        // Simulate touch down inside gesture insets (rawX = 20 < 50)
+        when(mEventForwarder.hasTouchOriginatingInGestureInsets(mContainerView)).thenReturn(true);
+
+        updateTextInputTypeWithShow(adapter, TextInputType.TEXT);
+
+        // Verify IME show is suppressed while touch is down in gesture insets and observer added
+        verify(mEventForwarder).addTouchSequenceObserver(adapter);
+        verify(mInputMethodManagerWrapper, never()).showSoftInput(any(), anyInt(), any());
+
+        // Simulate touch release as a tap (not exceeding touch slop)
+        when(mEventForwarder.hasTouchOriginatingInGestureInsets(mContainerView)).thenReturn(false);
+        adapter.onTouchSequenceEnded(/* hasExceededTouchSlop= */ false);
+
+        // Verify deferred IME show executes upon tap release and observer is removed
+        verify(mEventForwarder).removeTouchSequenceObserver(adapter);
+        verify(mInputMethodManagerWrapper, times(1)).showSoftInput(any(), anyInt(), any());
+    }
+
+    @Test
+    @EnableFeatures(ContentFeatures.RESTRICT_INTERACTIONS_IN_SWIPE_REGION_ON_FULLSCREEN)
+    public void testRestrictInteractionsInSwipeRegion_fullscreen_touchInInsets_swipeDiscarded() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.setInputMethodManagerWrapper(mInputMethodManagerWrapper);
+        adapter.onConnectedToRenderProcess();
+
+        when(mWebContentsImpl.isFullscreenForCurrentTab()).thenReturn(true);
+
+        // Simulate touch down inside gesture insets
+        when(mEventForwarder.hasTouchOriginatingInGestureInsets(mContainerView)).thenReturn(true);
+
+        updateTextInputTypeWithShow(adapter, TextInputType.TEXT);
+
+        // Verify IME show suppressed
+        verify(mInputMethodManagerWrapper, never()).showSoftInput(any(), anyInt(), any());
+
+        // Simulate swipe exceeding touch slop
+        adapter.onTouchSequenceEnded(/* hasExceededTouchSlop= */ true);
+
+        // Verify discarded (never shown)
+        verify(mInputMethodManagerWrapper, never()).showSoftInput(any(), anyInt(), any());
+    }
+
+    @Test
+    @EnableFeatures(ContentFeatures.RESTRICT_INTERACTIONS_IN_SWIPE_REGION_ON_FULLSCREEN)
+    public void testRestrictInteractionsInSwipeRegion_fullscreen_touchCenter_immediate() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.setInputMethodManagerWrapper(mInputMethodManagerWrapper);
+        adapter.onConnectedToRenderProcess();
+
+        when(mWebContentsImpl.isFullscreenForCurrentTab()).thenReturn(true);
+
+        // Simulate touch down outside gesture insets
+        when(mEventForwarder.hasTouchOriginatingInGestureInsets(mContainerView)).thenReturn(false);
+
+        updateTextInputTypeWithShow(adapter, TextInputType.TEXT);
+
+        // Verify IME shows immediately
+        verify(mInputMethodManagerWrapper, times(1)).showSoftInput(any(), anyInt(), any());
+
+        // Touch release does not trigger another show
+        adapter.onTouchSequenceEnded(/* hasExceededTouchSlop= */ false);
+        verify(mInputMethodManagerWrapper, times(1)).showSoftInput(any(), anyInt(), any());
+    }
+
+    @Test
+    @EnableFeatures(ContentFeatures.RESTRICT_INTERACTIONS_IN_SWIPE_REGION_ON_FULLSCREEN)
+    public void testRestrictInteractionsInSwipeRegion_notFullscreen_immediate() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.setInputMethodManagerWrapper(mInputMethodManagerWrapper);
+        adapter.onConnectedToRenderProcess();
+
+        when(mWebContentsImpl.isFullscreenForCurrentTab()).thenReturn(false);
+
+        // Simulate touch down in gesture insets (rawX = 20)
+        when(mEventForwarder.hasTouchOriginatingInGestureInsets(mContainerView)).thenReturn(true);
+
+        updateTextInputTypeWithShow(adapter, TextInputType.TEXT);
+
+        // Not in fullscreen -> immediately shown
+        verify(mInputMethodManagerWrapper, times(1)).showSoftInput(any(), anyInt(), any());
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.R)
+    @EnableFeatures(ContentFeatures.RESTRICT_INTERACTIONS_IN_SWIPE_REGION_ON_FULLSCREEN)
+    public void
+            testRestrictInteractionsInSwipeRegion_stickyImmersiveWithoutFullscreenTab_deferred() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.setInputMethodManagerWrapper(mInputMethodManagerWrapper);
+        adapter.onConnectedToRenderProcess();
+
+        when(mWebContentsImpl.isFullscreenForCurrentTab()).thenReturn(false);
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        activity.setContentView(mContainerView);
+        mContainerView
+                .getWindowInsetsController()
+                .setSystemBarsBehavior(BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+
+        // Simulate touch down inside gesture insets
+        when(mEventForwarder.hasTouchOriginatingInGestureInsets(mContainerView)).thenReturn(true);
+
+        updateTextInputTypeWithShow(adapter, TextInputType.TEXT);
+
+        // Verify IME show is suppressed because sticky immersive mode is active on container view
+        verify(mInputMethodManagerWrapper, never()).showSoftInput(any(), anyInt(), any());
+
+        // Simulate touch release as tap
+        when(mEventForwarder.hasTouchOriginatingInGestureInsets(mContainerView)).thenReturn(false);
+        adapter.onTouchSequenceEnded(/* hasExceededTouchSlop= */ false);
+        verify(mInputMethodManagerWrapper, times(1)).showSoftInput(any(), anyInt(), any());
+    }
+
+    @Test
+    @EnableFeatures(ContentFeatures.RESTRICT_INTERACTIONS_IN_SWIPE_REGION_ON_FULLSCREEN)
+    public void testRestrictInteractionsInSwipeRegion_hideKeyboardCancelsPendingShow() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.setInputMethodManagerWrapper(mInputMethodManagerWrapper);
+        adapter.onConnectedToRenderProcess();
+
+        when(mWebContentsImpl.isFullscreenForCurrentTab()).thenReturn(true);
+        when(mEventForwarder.hasTouchOriginatingInGestureInsets(mContainerView)).thenReturn(true);
+
+        updateTextInputTypeWithShow(adapter, TextInputType.TEXT);
+        verify(mInputMethodManagerWrapper, never()).showSoftInput(any(), anyInt(), any());
+
+        adapter.resetAndHideKeyboard();
+
+        when(mEventForwarder.hasTouchOriginatingInGestureInsets(mContainerView)).thenReturn(false);
+        adapter.onTouchSequenceEnded(/* hasExceededTouchSlop= */ false);
+        verify(mInputMethodManagerWrapper, never()).showSoftInput(any(), anyInt(), any());
+    }
+
+    @Test
+    @EnableFeatures(ContentFeatures.RESTRICT_INTERACTIONS_IN_SWIPE_REGION_ON_FULLSCREEN)
+    public void testDestroy_removesTouchSequenceObserver() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.setInputMethodManagerWrapper(mInputMethodManagerWrapper);
+        adapter.onConnectedToRenderProcess();
+
+        when(mWebContentsImpl.isFullscreenForCurrentTab()).thenReturn(true);
+        when(mEventForwarder.hasTouchOriginatingInGestureInsets(mContainerView)).thenReturn(true);
+
+        updateTextInputTypeWithShow(adapter, TextInputType.TEXT);
+        verify(mEventForwarder).addTouchSequenceObserver(adapter);
+
+        adapter.destroyFromNative();
+        verify(mEventForwarder).removeTouchSequenceObserver(adapter);
+    }
+
+    @Test
+    public void testUpdateState_SameNodeIdDoesNotRestartInputOnRefocus() {
+        ImeAdapterImpl adapter = new ImeAdapterImpl(mWebContentsImpl);
+        adapter.setInputMethodManagerWrapper(mInputMethodManagerWrapper);
+        adapter.onConnectedToRenderProcess();
+
+        // Initial focus on node 42.
+        adapter.focusedNodeChanged(/* isEditable= */ true, 0, 0, 100, 100);
+        adapter.updateState(
+                /* textInputType= */ TextInputType.TEXT_AREA,
+                /* textInputFlags= */ 0,
+                /* textInputMode= */ 0,
+                /* textInputAction= */ 0,
+                /* showIfNeeded= */ true,
+                /* alwaysHide= */ false,
+                /* text= */ "hello",
+                /* selectionStart= */ 5,
+                /* selectionEnd= */ 5,
+                /* compositionStart= */ -1,
+                /* compositionEnd= */ -1,
+                /* replyToRequest= */ false,
+                /* lastVkVisibilityRequest= */ 0,
+                /* vkPolicy= */ 0,
+                /* nodeId= */ 42,
+                /* imeTextSpans= */ null);
+        verify(mInputMethodManagerWrapper, times(1)).restartInput(mContainerView);
+        reset(mInputMethodManagerWrapper);
+
+        // Simulate a active InputConnection being created.
+        EditorInfo outAttrs = new EditorInfo();
+        adapter.onCreateInputConnection(outAttrs);
+
+        // Simulate synchronous blur() + focus() on the same node 42 without an intervening
+        // TextInputType.NONE state update.
+        adapter.focusedNodeChanged(/* isEditable= */ false, 0, 0, 0, 0);
+        adapter.focusedNodeChanged(/* isEditable= */ true, 0, 0, 100, 100);
+        adapter.updateState(
+                /* textInputType= */ TextInputType.TEXT_AREA,
+                /* textInputFlags= */ 0,
+                /* textInputMode= */ 0,
+                /* textInputAction= */ 0,
+                /* showIfNeeded= */ true,
+                /* alwaysHide= */ false,
+                /* text= */ "hell",
+                /* selectionStart= */ 4,
+                /* selectionEnd= */ 4,
+                /* compositionStart= */ -1,
+                /* compositionEnd= */ -1,
+                /* replyToRequest= */ false,
+                /* lastVkVisibilityRequest= */ 0,
+                /* vkPolicy= */ 0,
+                /* nodeId= */ 42,
+                /* imeTextSpans= */ null);
+        verify(mInputMethodManagerWrapper, never()).restartInput(any());
+
+        // Moving focus to a different editable node (node 43) with the same TextInputType
+        // should restart input.
+        adapter.focusedNodeChanged(/* isEditable= */ false, 0, 0, 0, 0);
+        adapter.focusedNodeChanged(/* isEditable= */ true, 0, 0, 100, 100);
+        adapter.updateState(
+                /* textInputType= */ TextInputType.TEXT_AREA,
+                /* textInputFlags= */ 0,
+                /* textInputMode= */ 0,
+                /* textInputAction= */ 0,
+                /* showIfNeeded= */ true,
+                /* alwaysHide= */ false,
+                /* text= */ "",
+                /* selectionStart= */ 0,
+                /* selectionEnd= */ 0,
+                /* compositionStart= */ -1,
+                /* compositionEnd= */ -1,
+                /* replyToRequest= */ false,
+                /* lastVkVisibilityRequest= */ 0,
+                /* vkPolicy= */ 0,
+                /* nodeId= */ 43,
+                /* imeTextSpans= */ null);
+        verify(mInputMethodManagerWrapper, times(1)).restartInput(mContainerView);
     }
 }

@@ -21,7 +21,6 @@
 #include "components/skills/proto/skill.pb.h"
 #include "components/skills/public/skills_types.h"
 #include "components/sync/protocol/skill_specifics.pb.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace syncer {
 class DataTypeControllerDelegate;
@@ -145,7 +144,8 @@ class SkillsService : public KeyedService {
       std::string_view description,
       base::Time creation_time,
       base::Time last_update_time,
-      sync_pb::SkillSource source) = 0;
+      sync_pb::SkillSource source,
+      bool enabled = true) = 0;
 
   // Updates an existing skill locally. Returns a skill if exists, nullptr
   // otherwise.
@@ -157,6 +157,12 @@ class SkillsService : public KeyedService {
   // Deletes a skill if exists (locally or from sync).
   virtual void DeleteSkill(std::string_view skill_id,
                            UpdateSource update_source) = 0;
+
+  // Deletes all user skills whose last update time is within
+  // [`delete_begin`, `delete_end`). First-party and provided skills are not
+  // affected. The deletions are local and are propagated to sync.
+  virtual void DeleteSkillsModifiedBetween(base::Time delete_begin,
+                                           base::Time delete_end) = 0;
 
   // Returns the skill with the given ID or nullptr if not found (including
   // when the service is not in kReady state).

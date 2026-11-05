@@ -7,9 +7,23 @@
 #import <QuartzCore/QuartzCore.h>
 
 #import <algorithm>
-#import <cmath>
 
 #import "base/check.h"
+#import "ios/web/common/critically_damped_spring.h"
+
+namespace {
+
+// Returns a UIEdgeInsets with each edge clamped to be non-negative.
+UIEdgeInsets MakeSanitizedInsets(CGFloat top,
+                                 CGFloat left,
+                                 CGFloat bottom,
+                                 CGFloat right) {
+  return UIEdgeInsetsMake(
+      std::max<CGFloat>(0.0, top), std::max<CGFloat>(0.0, left),
+      std::max<CGFloat>(0.0, bottom), std::max<CGFloat>(0.0, right));
+}
+
+}  // namespace
 
 @implementation CRWViewportInsetsAnimator {
   NSTimeInterval _duration;
@@ -94,20 +108,10 @@
     return;
   }
 
-  double easedProgress = 0.0;
-  if (_duration > 0) {
-    // Matches UIKit's critically damped spring curve so viewport insets
-    // interpolate in lockstep with UIKit-animated browser toolbars.
-    // 9.2334 is the empirical settling factor for UIKit springs.
-    constexpr double kSpringSettlingFactor = 9.233414;
-    double omega = kSpringSettlingFactor / _duration;
-    easedProgress = 1.0 - (1.0 + (omega - _initialVelocity) * elapsed) *
-                              std::exp(-omega * elapsed);
-  } else {
-    easedProgress = 1.0;
-  }
+  double easedProgress =
+      web::CriticallyDampedSpringProgress(elapsed, _duration, _initialVelocity);
 
-  UIEdgeInsets currentInsets = UIEdgeInsetsMake(
+  UIEdgeInsets currentInsets = MakeSanitizedInsets(
       _startInsets.top + easedProgress * (_targetInsets.top - _startInsets.top),
       _startInsets.left +
           easedProgress * (_targetInsets.left - _startInsets.left),

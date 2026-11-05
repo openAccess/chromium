@@ -13,7 +13,6 @@
 #include "base/run_loop.h"
 #include "base/unguessable_token.h"
 #include "base/uuid.h"
-#include "content/browser/fenced_frame/fenced_frame.h"
 #include "content/browser/renderer_host/frame_tree.h"
 #include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/navigator.h"
@@ -83,8 +82,8 @@ TestRenderFrameHost::TestRenderFrameHost(
     const blink::LocalFrameToken& frame_token,
     const blink::DocumentToken& document_token,
     base::UnguessableToken devtools_frame_token,
-    const base::UnguessableToken& initiator_state_token,
-    RenderFrameHostImpl::LifecycleStateImpl lifecycle_state,
+    const blink::InitiatorStateToken& initiator_state_token,
+    RenderFrameHostLifecycleStateImpl lifecycle_state,
     scoped_refptr<BrowsingContextState> browsing_context_state)
     : RenderFrameHostImpl(site_instance,
                           render_view_host,
@@ -148,6 +147,9 @@ void TestRenderFrameHost::AddMessageToConsole(
 
 void TestRenderFrameHost::ReportInspectorIssue(
     blink::mojom::InspectorIssueInfoPtr issue) {
+  if (report_inspector_issue_callback_) {
+    report_inspector_issue_callback_.Run(issue);
+  }
   if (issue->code == blink::mojom::InspectorIssueCode::kHeavyAdIssue) {
     switch (issue->details->heavy_ad_issue_details->reason) {
       case blink::mojom::HeavyAdReason::kNetworkTotalLimit:
@@ -208,13 +210,18 @@ TestRenderFrameHost* TestRenderFrameHost::AppendChildWithPolicy(
       CreateStubAssociatedInterfaceProviderReceiver(),
       blink::mojom::TreeScopeType::kDocument, frame_name, frame_unique_name,
       false, blink::LocalFrameToken(), base::UnguessableToken::Create(),
-      blink::DocumentToken(), base::UnguessableToken::Create(),
+      blink::DocumentToken(), blink::InitiatorStateToken(),
       blink::FramePolicy({network::mojom::WebSandboxFlags::kNone,
                           allow,
                           {},
                           blink::mojom::DeferredFetchPolicy::kDisabled}),
       blink::mojom::FrameOwnerProperties(),
-      blink::FrameOwnerElementType::kIframe, ukm::kInvalidSourceId);
+      blink::FrameOwnerElementType::kIframe, ukm::kInvalidSourceId,
+      // The renderer always sends a sandbox origin token for new child frames
+      // (see FrameRoutingInfo), which the browser uses if the child's initial
+      // empty document is sandboxed. Do the same here.
+      std::make_unique<base::UnguessableToken>(
+          base::UnguessableToken::Create()));
   return static_cast<TestRenderFrameHost*>(
       child_creation_observer_.last_created_frame());
 }
@@ -366,22 +373,7 @@ void TestRenderFrameHost::SimulateManifestURLUpdate(const GURL& manifest_url) {
 }
 
 TestRenderFrameHost* TestRenderFrameHost::AppendFencedFrame() {
-  fenced_frames_.push_back(std::make_unique<FencedFrame>(
-      weak_ptr_factory_.GetSafeRef(), /* was_discarded= */ false));
-  FencedFrame* fenced_frame = fenced_frames_.back().get();
-  // Create stub RemoteFrameInterfaces.
-  auto remote_frame_interfaces =
-      blink::mojom::RemoteFrameInterfacesFromRenderer::New();
-  remote_frame_interfaces->frame_host_receiver =
-      mojo::AssociatedRemote<blink::mojom::RemoteFrameHost>()
-          .BindNewEndpointAndPassDedicatedReceiver();
-  mojo::AssociatedRemote<blink::mojom::RemoteFrame> frame;
-  std::ignore = frame.BindNewEndpointAndPassDedicatedReceiver();
-  remote_frame_interfaces->frame = frame.Unbind();
-  fenced_frame->InitInnerFrameTreeAndReturnProxyToOuterFrameTree(
-      std::move(remote_frame_interfaces), blink::RemoteFrameToken(),
-      base::UnguessableToken::Create());
-  return static_cast<TestRenderFrameHost*>(fenced_frame->GetInnerRoot());
+  return AppendChild("fenced_frame");
 }
 
 void TestRenderFrameHost::SendNavigate(int nav_entry_id,
@@ -505,7 +497,8 @@ void TestRenderFrameHost::SendRendererInitiatedNavigationRequest(
           false /* started_with_transient_activation */,
           false /* started_by_ad */, false /* is_container_initiated */,
           false /* has_rel_opener */,
-          std::nullopt /* script_tool_invocation_id */);
+          std::nullopt /* script_tool_invocation_id */,
+          /*script_injector_host=*/"");
   auto common_params = blink::CreateCommonNavigationParams();
   common_params->url = url;
   common_params->initiator_origin = GetLastCommittedOrigin();

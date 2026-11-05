@@ -19,6 +19,7 @@ source_set("magic_boost") {
   deps = [
     ":magic_boost_constants",
     "//base",
+    "//base/i18n:language_tag",
     "//chrome/browser/ash/magic_boost",
     "//chrome/browser/resources:component_extension_resources",
     "//chrome/browser/ui/ash/editor_menu:utils",
@@ -37,10 +38,6 @@ source_set("magic_boost") {
   if (is_chrome_branded) {
     deps += [ "//chromeos/ash/resources/internal/strings" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("test_support") {
@@ -56,6 +53,39 @@ source_set("test_support") {
     "//base",
     "//chrome/browser/ash/magic_boost",
     "//testing/gmock",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [
+    "magic_boost_card_controller_unittest.cc",
+    "magic_boost_opt_in_card_unittest.cc",
+  ]
+
+  deps = [
+    ":magic_boost",
+    ":magic_boost_constants",
+    ":test_support",
+    "//base",
+    "//base/i18n:language_tag",
+    "//chrome/browser/ash/magic_boost",
+    "//chrome/browser/ash/magic_boost:test_support",
+    "//chrome/browser/ui/ash/editor_menu:utils",
+    "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
+    "//chromeos/components/magic_boost/public/cpp",
+    "//chromeos/components/magic_boost/test:fake_magic_boost_state",
+    "//chromeos/components/mahi/public/cpp",
+    "//chromeos/strings",
+    "//components/metrics",
+    "//components/metrics:test_support",
+    "//components/variations:test_support",
+    "//testing/gmock",
+    "//testing/gtest",
+    "//ui/events:test_support",
+    "//ui/views",
   ]
 }
 

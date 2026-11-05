@@ -121,7 +121,7 @@ void TabFavicon::RemoveObserver(TabAndroid* tab_android, Observer* observer) {
 void TabFavicon::GetBitmapForTabOrFallback(
     TabAndroid* tab_android,
     base::OnceCallback<void(const SkBitmap&)> callback) {
-  SkBitmap bitmap = GetBitmapForTab(tab_android, /*allow_fallback=*/false);
+  SkBitmap bitmap = GetBitmapForTab(tab_android, /*allow_fallback=*/true);
   if (!bitmap.empty()) {
     std::move(callback).Run(bitmap);
     return;
@@ -129,8 +129,7 @@ void TabFavicon::GetBitmapForTabOrFallback(
   GetFaviconOrFallback(tab_android, std::move(callback));
 }
 
-TabFavicon::TabFavicon(JNIEnv* env,
-                       TabAndroid* tab_android,
+TabFavicon::TabFavicon(TabAndroid* tab_android,
                        int navigation_transition_favicon_size)
     : navigation_transition_favicon_size_(navigation_transition_favicon_size),
       tab_android_(tab_android) {}
@@ -142,8 +141,7 @@ TabFavicon::~TabFavicon() {
   }
 }
 
-void TabFavicon::SetWebContents(JNIEnv* env,
-                                content::WebContents* web_contents) {
+void TabFavicon::SetWebContents(content::WebContents* web_contents) {
   if (favicon_driver_) {
     favicon_driver_->RemoveObserver(this);
   }
@@ -157,7 +155,7 @@ void TabFavicon::SetWebContents(JNIEnv* env,
   }
 }
 
-void TabFavicon::ResetWebContents(JNIEnv* env) {
+void TabFavicon::ResetWebContents() {
   active_web_contents_ = nullptr;
   if (favicon_driver_) {
     favicon_driver_->RemoveObserver(this);
@@ -165,29 +163,31 @@ void TabFavicon::ResetWebContents(JNIEnv* env) {
   }
 }
 
-void TabFavicon::OnDestroyed(JNIEnv* env) {
+void TabFavicon::OnDestroyed() {
   delete this;
 }
 
-ScopedJavaLocalRef<jobject> TabFavicon::GetFavicon(JNIEnv* env) {
+float TabFavicon::GetDeviceScaleFactor() const {
+  if (active_web_contents_ && active_web_contents_->GetNativeView()) {
+    return active_web_contents_->GetNativeView()->GetDipScale();
+  }
+  return display::Screen::Get()->GetPrimaryDisplay().device_scale_factor();
+}
+
+ScopedJavaLocalRef<jobject> TabFavicon::GetFavicon() {
   ScopedJavaLocalRef<jobject> bitmap;
 
   if (!favicon_driver_ || !favicon_driver_->FaviconIsValid()) {
     return bitmap;
   }
 
+  float device_scale_factor = GetDeviceScaleFactor();
   // Always return the default favicon in Android.
-  SkBitmap favicon = favicon_driver_->GetFavicon().AsBitmap();
+  SkBitmap favicon = favicon_driver_->GetFavicon()
+                         .AsImageSkia()
+                         .GetRepresentation(device_scale_factor)
+                         .GetBitmap();
   if (!favicon.empty()) {
-    float device_scale_factor = 1.0f;
-    if (active_web_contents_ && active_web_contents_->GetNativeView()) {
-      device_scale_factor =
-          active_web_contents_->GetNativeView()->GetDipScale();
-    } else {
-      device_scale_factor =
-          display::Screen::Get()->GetPrimaryDisplay().device_scale_factor();
-    }
-
     int target_size_dip = device_scale_factor * gfx::kFaviconSize;
     if (favicon.width() != target_size_dip ||
         favicon.height() != target_size_dip) {
@@ -206,7 +206,8 @@ void TabFavicon::OnFaviconUpdated(favicon::FaviconDriver* favicon_driver,
                                   const GURL& icon_url,
                                   bool icon_url_changed,
                                   const gfx::Image& image) {
-  SkBitmap favicon = image.AsImageSkia().GetRepresentation(1.0f).GetBitmap();
+  SkBitmap favicon =
+      image.AsImageSkia().GetRepresentation(GetDeviceScaleFactor()).GetBitmap();
   if (favicon.empty()) {
     return;
   }
@@ -220,8 +221,8 @@ void TabFavicon::OnFaviconUpdated(favicon::FaviconDriver* favicon_driver,
 
   JNIEnv* env = base::android::AttachCurrentThread();
 
-  auto new_width = image.Width();
-  auto new_height = image.Height();
+  auto new_width = favicon.width();
+  auto new_height = favicon.height();
   if (static_cast<bool>(Java_TabFavicon_shouldUpdateFaviconForBrowserUi(
           env, tab_android_, new_width, new_height))) {
     Java_TabFavicon_onFaviconAvailable(
@@ -243,12 +244,11 @@ void TabFavicon::OnFaviconUpdated(favicon::FaviconDriver* favicon_driver,
   }
 }
 
-static int64_t JNI_TabFavicon_Init(JNIEnv* env,
-                                   TabAndroid* tab_android,
+static int64_t JNI_TabFavicon_Init(TabAndroid* tab_android,
                                    int navigation_transition_favicon_size) {
   CHECK(tab_android);
   return reinterpret_cast<intptr_t>(
-      new TabFavicon(env, tab_android, navigation_transition_favicon_size));
+      new TabFavicon(tab_android, navigation_transition_favicon_size));
 }
 
 DEFINE_JNI(TabFavicon)

@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/signin/signout_confirmation/signout_confirmation_ui.h"
 #include "chrome/browser/ui/webui/test_support/webui_interactive_test_mixin.h"
 #include "chrome/common/webui_url_constants.h"
@@ -145,8 +146,6 @@ class SyncSettingsInteractiveTest
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_{
-      syncer::kReplaceSyncPromosWithSignInPromos};
   net::EmbeddedTestServer gaia_signin_page_test_server_;
   scoped_refptr<testing::NiceMock<device::MockBluetoothAdapter>> mock_adapter_;
 };
@@ -242,8 +241,9 @@ IN_PROC_BROWSER_TEST_F(SyncSettingsInteractiveTest,
       StopObservingState(kTabCountState),
       InstrumentTab(kDiceSignInTabId, 1, browser()), Do([&]() {
         // Simulate adding the account from the web.
-        CoreAccountInfo account_info =
-            identity_test_env()->MakeAccountAvailable(kTestEmail);
+        CoreAccountInfo account_info = identity_test_env()
+                                           ->MakeAccountAvailable(kTestEmail)
+                                           .GetCoreAccountInfo();
         content::WebContents* signin_tab =
             signin_ui_util::GetSignInTabWithAccessPoint(
                 browser(), signin_metrics::AccessPoint::kSettings);

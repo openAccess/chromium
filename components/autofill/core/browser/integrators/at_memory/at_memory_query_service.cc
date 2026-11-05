@@ -5,6 +5,8 @@
 #include "components/autofill/core/browser/integrators/at_memory/at_memory_query_service.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -12,42 +14,49 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/containers/extend.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/containers/to_vector.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/break_iterator.h"
 #include "base/i18n/case_conversion.h"
+#include "base/i18n/rtl.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/sequenced_task_runner.h"
 #include "components/autofill/core/browser/at_memory/autofill_data_provider.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_normalization_util.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
-#include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/integrators/at_memory/at_memory_eligibility_metrics_tracker.h"
 #include "components/autofill/core/browser/integrators/at_memory/at_memory_string_filtering_util.h"
 #include "components/autofill/core/browser/integrators/at_memory/logging_util.h"
 #include "components/autofill/core/browser/integrators/at_memory/memory_data_type.h"
 #include "components/autofill/core/browser/integrators/at_memory/memory_data_type_util.h"
 #include "components/autofill/core/browser/logging/log_manager.h"
+#include "components/autofill/core/common/autofill_debug_features.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_internals/log_message.h"
 #include "components/autofill/core/common/autofill_internals/logging_scope.h"
+#include "components/autofill/core/common/autofill_prefs.h"
 #include "components/autofill/core/common/dense_set.h"
-#include "components/device_reauth/device_authenticator.h"
+#include "components/personal_context/core/context_memory_error.h"
 #include "components/personal_context/core/personal_context_debug_features.h"
 #include "components/personal_context/core/personal_context_service.h"
 #include "components/personal_context/proto/context_memory_service.pb.h"
 #include "components/personal_context/proto/features/at_memory.pb.h"
+#include "components/prefs/pref_service.h"
 #include "net/base/network_change_notifier.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "url/gurl.h"
 
@@ -91,9 +100,11 @@ personal_context::proto::AtMemoryQueryRequest BuildAtMemoryQueryRequest(
   return request;
 }
 
-// Trims any obfuscating dots and formatting characters from `value`.
-std::u16string_view TrimObfuscatingDots(std::u16string_view value) {
-  return base::TrimString(value, kMidlineEllipsisDot, base::TRIM_LEADING);
+// Removes any obfuscating dots and formatting characters from `value`.
+std::u16string RemoveObfuscatingDots(std::u16string_view value) {
+  std::u16string result = base::i18n::StripWrappingBidiControlCharacters(value);
+  base::RemoveChars(result, kMidlineEllipsisDot, &result);
+  return result;
 }
 
 // Returns whether two values are equivalent for deduplication, comparing typed
@@ -102,18 +113,38 @@ bool AreValuesEquivalent(
     MemoryDataType type,
     std::u16string_view a_value,
     const std::optional<personal_context::proto::TypedValue>& a_typed_value,
+    bool is_a_autofill_sourced,
     std::u16string_view b_value,
-    const std::optional<personal_context::proto::TypedValue>& b_typed_value) {
+    const std::optional<personal_context::proto::TypedValue>& b_typed_value,
+    bool is_b_autofill_sourced) {
   if (a_typed_value && b_typed_value) {
     return *a_typed_value == *b_typed_value;
   }
-  bool is_obfuscated = IsSpiiMemoryDataType(type);
-  std::u16string_view clean_a =
-      is_obfuscated ? TrimObfuscatingDots(a_value) : a_value;
-  std::u16string_view clean_b =
-      is_obfuscated ? TrimObfuscatingDots(b_value) : b_value;
-  return normalization::NormalizeForComparison(clean_a) ==
-         normalization::NormalizeForComparison(clean_b);
+
+  const normalization::WhitespaceSpec whitespace_spec =
+      IsSpiiMemoryDataType(type) ? normalization::WhitespaceSpec::kDiscard
+                                 : normalization::WhitespaceSpec::kRetain;
+  const std::u16string a_normalized_value =
+      normalization::NormalizeForComparison(a_value, whitespace_spec);
+  const std::u16string b_normalized_value =
+      normalization::NormalizeForComparison(b_value, whitespace_spec);
+
+  if (!IsSpiiMemoryDataType(type)) {
+    return a_normalized_value == b_normalized_value;
+  }
+
+  if (is_a_autofill_sourced && !is_b_autofill_sourced) {
+    return RemoveObfuscatingDots(a_normalized_value) ==
+           RemoveObfuscatingDots(ObfuscateSpiiValue(type, b_normalized_value));
+  }
+
+  if (!is_a_autofill_sourced && is_b_autofill_sourced) {
+    return RemoveObfuscatingDots(
+               ObfuscateSpiiValue(type, a_normalized_value)) ==
+           RemoveObfuscatingDots(b_normalized_value);
+  }
+
+  return a_normalized_value == b_normalized_value;
 }
 
 // Returns an `EntryMetadata` for the given `type` in `result`, or
@@ -131,6 +162,12 @@ std::optional<EntryMetadata> GetMetadataForMemoryDataType(
     return *it;
   }
   return std::nullopt;
+}
+
+// Returns whether the result has Autofill as a source.
+bool IsAutofillSourced(const MemorySearchResult& result) {
+  return std::ranges::contains(result.sources, MemoryEntrySourceType::kAutofill,
+                               &MemoryEntrySource::type);
 }
 
 // Returns whether two results are considered duplicates and should be merged.
@@ -158,17 +195,16 @@ bool AreResultsDuplicates(const MemorySearchResult& a,
       (a.type_name != b.type_name || a.type_name.empty())) {
     return false;
   }
-  if (!AreValuesEquivalent(a.type, a.value, a.typed_value, b.value,
-                           b.typed_value)) {
+
+  const bool is_a_autofill_sourced = IsAutofillSourced(a);
+  const bool is_b_autofill_sourced = IsAutofillSourced(b);
+  if (!AreValuesEquivalent(a.type, a.value, a.typed_value,
+                           is_a_autofill_sourced, b.value, b.typed_value,
+                           is_b_autofill_sourced)) {
     return false;
   }
 
-  std::optional<EntityType> entity_type;
-  if (std::optional<AttributeType> attribute_type = ToAttributeType(a.type)) {
-    entity_type = attribute_type->entity_type();
-  }
-
-  if (entity_type) {
+  if (std::optional<EntityType> entity_type = ToEntityType(a.type)) {
     // For Autofill AI entities, we can use merge constraints to evaluate if
     // `a` and `b` correspond to the same entity.
     for (const DenseSet<AttributeType>& constraint :
@@ -180,34 +216,28 @@ bool AreResultsDuplicates(const MemorySearchResult& a,
             std::optional<EntryMetadata> meta_b =
                 GetMetadataForMemoryDataType(b, mem_type);
             return meta_a && meta_b &&
-                   AreValuesEquivalent(mem_type, meta_a->value,
-                                       meta_a->typed_value, meta_b->value,
-                                       meta_b->typed_value);
+                   AreValuesEquivalent(
+                       mem_type, meta_a->value, meta_a->typed_value,
+                       is_a_autofill_sourced, meta_b->value,
+                       meta_b->typed_value, is_b_autofill_sourced);
           })) {
         return true;
       }
     }
   }
 
-  auto has_contradicting_metadata = [](const MemorySearchResult& result,
-                                       const EntryMetadata& meta) {
-    return std::ranges::any_of(
-        result.metadata_list, [&](const EntryMetadata& result_meta) {
-          return result_meta.type == meta.type &&
-                 result_meta.type_name == meta.type_name &&
-                 !AreValuesEquivalent(meta.type, result_meta.value,
-                                      result_meta.typed_value, meta.value,
-                                      meta.typed_value);
-        });
-  };
-
-  return std::ranges::all_of(a.metadata_list,
-                             [&](const EntryMetadata& meta_a) {
-                               return !has_contradicting_metadata(b, meta_a);
-                             }) &&
-         std::ranges::all_of(b.metadata_list, [&](const EntryMetadata& meta_b) {
-           return !has_contradicting_metadata(a, meta_b);
-         });
+  return std::ranges::none_of(
+      a.metadata_list, [&](const EntryMetadata& meta_a) {
+        return std::ranges::any_of(
+            b.metadata_list, [&](const EntryMetadata& meta_b) {
+              return meta_a.type == meta_b.type &&
+                     meta_a.type_name == meta_b.type_name &&
+                     !AreValuesEquivalent(
+                         meta_a.type, meta_a.value, meta_a.typed_value,
+                         is_a_autofill_sourced, meta_b.value,
+                         meta_b.typed_value, is_b_autofill_sourced);
+            });
+      });
 }
 
 // Returns the number of metadata fields in the result that have a non-empty
@@ -218,48 +248,34 @@ int CountNonEmptyMetadata(const MemorySearchResult& result) {
       [](const EntryMetadata& meta) { return !meta.value.empty(); });
 }
 
-// Returns whether the result has Autofill as a source.
-bool IsAutofillSourced(const MemorySearchResult& result) {
-  return std::ranges::contains(result.sources, MemoryEntrySourceType::kAutofill,
-                               &MemoryEntrySource::type);
-}
-
 // Primary logic for resolving duplicates.
 // Returns `true` if `first` should be preferred over `second`.
 // Specifically:
-// 1. Pick explicitly saved local Autofill entities first.
-// 2. Otherwise pick the one with more valid metadata fields.
-// 3. In case of a tie, prioritize Autofill-sourced provider if possible.
+// 1. Pick the one with more valid metadata fields.
+// 2. Prioritize Autofill-sourced provider if possible.
+// 3. In case of a tie, pick the result with higher confidence score.
 bool PreferFirstResult(const MemorySearchResult& first,
                        const MemorySearchResult& second) {
-  bool first_is_local = first.is_local;
-  bool second_is_local = second.is_local;
-  if (first_is_local != second_is_local) {
-    return first_is_local;
-  }
-
   int first_metadata = CountNonEmptyMetadata(first);
   int second_metadata = CountNonEmptyMetadata(second);
   if (first_metadata != second_metadata) {
     return first_metadata > second_metadata;
   }
 
-  bool first_is_autofill = IsAutofillSourced(first);
-  bool second_is_autofill = IsAutofillSourced(second);
+  const bool first_is_autofill = IsAutofillSourced(first);
+  const bool second_is_autofill = IsAutofillSourced(second);
   if (first_is_autofill != second_is_autofill) {
     return first_is_autofill;
   }
 
-  return true;
+  return first.confidence_score >= second.confidence_score;
 }
 
 // Deduplicates search results in `MemorySearchResults`.
 // For Autofill AI entities, we use merge constraints to evaluate if results
 // correspond to the same underlying entity. When duplicates are found, only the
 // "better" result is kept. The better result is determined by
-// `PreferFirstResult()`, which prioritizes locally stored entities (like
-// addresses or credit cards) and falls back to comparing which result has
-// more complete metadata. The `sources` from the discarded duplicate are
+// `PreferFirstResult()`. The `sources` from the discarded duplicate are
 // intentionally not merged, as we only want to keep the actually relevant
 // sources that link to the correct "manage" UI surface for the kept entry.
 void DeduplicateResults(std::vector<MemorySearchResult>& results,
@@ -319,7 +335,8 @@ MetadataAttributeKey GetMetadataAttributeKey(const EntryMetadata& metadata) {
 // attributes are identified by their `MemoryDataType`, while schemaless
 // attributes (`MemoryDataType::kUnknown`) are identified by their `type_name`.
 // Ties preserve their original relative order.
-void ReorderMetadataByUniqueness(std::vector<MemorySearchResult>& results) {
+void ReorderMetadataByUniqueness(std::vector<MemorySearchResult>& results,
+                                 LogManager& log_manager) {
   absl::flat_hash_map<MetadataAttributeKey, size_t> frequency_map;
   for (const MemorySearchResult& result : results) {
     for (const EntryMetadata& metadata : result.metadata_list) {
@@ -327,13 +344,21 @@ void ReorderMetadataByUniqueness(std::vector<MemorySearchResult>& results) {
     }
   }
 
+  auto proj = [&frequency_map](const EntryMetadata& m) {
+    return frequency_map.at(GetMetadataAttributeKey(m));
+  };
+
   for (MemorySearchResult& result : results) {
-    std::ranges::stable_sort(
-        result.metadata_list,
-        /*comp=*/{},
-        /*proj=*/[&frequency_map](const EntryMetadata& m) {
-          return frequency_map.at(GetMetadataAttributeKey(m));
-        });
+    if (log_manager.IsLoggingActive()) {
+      const bool is_reordered =
+          !std::ranges::is_sorted(result.metadata_list, /*comp=*/{}, proj);
+      if (is_reordered) {
+        LOG_AF(log_manager)
+            << LoggingScope::kAtMemory << LogMessage::kAtMemory
+            << "Reordering disambiguation metadata:" << Br{} << result;
+      }
+    }
+    std::ranges::stable_sort(result.metadata_list, /*comp=*/{}, proj);
   }
 }
 
@@ -357,37 +382,35 @@ MemorySearchStatus MapContextMemoryError(
   }
 }
 
-// Ranks `local_results` and `remote_results` search results.
-// - Local and remote results are sorted by confidence score descending.
-// - If all results are dynamic transaction types, remote
-//   results are prioritized on top of local results.
-// - Otherwise, local results take priority over remote results.
-std::vector<MemorySearchResult> RankResults(
+// Ranks search results in `results`. Autofill-sourced results take priority
+// over remote results, and within each group results are sorted by confidence
+// score descending.
+void RankResults(std::vector<MemorySearchResult>& results) {
+  std::ranges::stable_sort(
+      results, [](const MemorySearchResult& a, const MemorySearchResult& b) {
+        const bool is_a_autofill = IsAutofillSourced(a);
+        const bool is_b_autofill = IsAutofillSourced(b);
+        if (is_a_autofill != is_b_autofill) {
+          return is_a_autofill;
+        }
+        return a.confidence_score > b.confidence_score;
+      });
+}
+
+// Combines `local_results` and `remote_results`, deduplicates them, ranks them,
+// and reorders secondary metadata attributes by uniqueness.
+std::vector<MemorySearchResult> CombineAndProcessResults(
     std::vector<MemorySearchResult> local_results,
-    std::vector<MemorySearchResult> remote_results) {
-  auto compare_confidence = [](const MemorySearchResult& a,
-                               const MemorySearchResult& b) {
-    return a.confidence_score > b.confidence_score;
-  };
-  std::ranges::stable_sort(local_results, compare_confidence);
-  std::ranges::stable_sort(remote_results, compare_confidence);
-
-  bool all_dynamic =
-      std::ranges::all_of(local_results, IsDynamicTransactionType,
-                          &MemorySearchResult::type) &&
-      std::ranges::all_of(remote_results, IsDynamicTransactionType,
-                          &MemorySearchResult::type);
-
-  std::vector<MemorySearchResult> ranked_results;
-  if (all_dynamic) {
-    ranked_results = std::move(remote_results);
-    base::Extend(ranked_results, std::move(local_results));
-  } else {
-    ranked_results = std::move(local_results);
-    base::Extend(ranked_results, std::move(remote_results));
-  }
-
-  return ranked_results;
+    std::vector<MemorySearchResult> remote_results,
+    LogManager& log_manager) {
+  std::vector<MemorySearchResult> combined_results = std::move(local_results);
+  base::Extend(combined_results, std::move(remote_results));
+  DeduplicateResults(combined_results, log_manager);
+  RankResults(combined_results);
+  ReorderMetadataByUniqueness(combined_results, log_manager);
+  LOG_AF(log_manager) << LoggingScope::kAtMemory << LogMessage::kAtMemory
+                      << "Combined results:" << Br{} << combined_results;
+  return combined_results;
 }
 
 // For debugging purposes only. Runs a debug query that directly retrieves
@@ -409,50 +432,12 @@ void QueryPersonalContextDebug(
       base::BindOnce(
           [](base::RepeatingCallback<void(MemorySearchResults)> update_cb,
              LogManager& log_mgr, std::vector<MemorySearchResult> results) {
-            DeduplicateResults(results, log_mgr);
-            ReorderMetadataByUniqueness(results);
             update_cb.Run(MemorySearchResults(
-                MemorySearchStatus::kFinalResponseSuccess, std::move(results)));
+                MemorySearchStatus::kFinalResponseSuccess,
+                CombineAndProcessResults(std::move(results),
+                                         /*remote_results=*/{}, log_mgr)));
           },
           std::move(update_callback), std::ref(log_manager)));
-}
-
-// Runs the callback asynchronously on the current sequenced task runner.
-// Used to ensure consistently asynchronous callback execution across all paths,
-// including fast-fail and cancellation paths.
-void RunCallbackAsync(
-    AtMemoryQueryService::FetchUnmaskedPiiEntitiesCallback callback,
-    AtMemoryQueryService::SpiiRetrievalResult result) {
-  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(std::move(callback), std::move(result)));
-}
-
-// Called when `PersonalContextService` returns the unmasked PII entities.
-// Extracts the unmasked string matching `data_type` and runs the `callback`
-// with the result or a failure reason.
-void OnFetchPiiEntityCompleted(
-    MemoryDataType data_type,
-    AtMemoryQueryService::FetchUnmaskedPiiEntitiesCallback callback,
-    personal_context::FetchPiiEntitiesResult result) {
-  if (!result.response.has_value() || result.response->entities().empty()) {
-    RunCallbackAsync(
-        std::move(callback),
-        base::unexpected(
-            AtMemoryQueryService::SpiiRetrievalFailureReason::kFetchFailed));
-    return;
-  }
-
-  std::optional<std::u16string> unmasked_value =
-      GetUnmaskedPiiFromEntity(result.response->entities(0), data_type);
-  if (!unmasked_value || unmasked_value->empty()) {
-    RunCallbackAsync(
-        std::move(callback),
-        base::unexpected(
-            AtMemoryQueryService::SpiiRetrievalFailureReason::kParseFailed));
-    return;
-  }
-
-  RunCallbackAsync(std::move(callback), std::move(*unmasked_value));
 }
 
 bool MatchesStringFilter(
@@ -476,8 +461,8 @@ bool MatchesStringFilter(
     case AutofillFetchSpecification::StringFilter::
         STRING_FILTER_MODE_UNSPECIFIED:
     default:
-      return FuzzyMatchesOrderedTokens(normalized_target_tokens,
-                                       normalized_filter_tokens);
+      return TokenizeAndFuzzyMatchOrderedTokens(normalized_target_tokens,
+                                                normalized_filter_tokens);
   }
 }
 
@@ -711,19 +696,21 @@ AtMemoryQueryService::AtMemoryQueryService(
       locale_(locale),
       eligibility_metrics_tracker_(personal_context_eligibility_service,
                                    subscription_eligibility_service,
-                                   pref_service) {}
+                                   pref_service) {
+  if (pref_service &&
+      base::FeatureList::IsEnabled(
+          features::debug::kAtMemoryResetShortcutPromoPrefOnStartup)) {
+    pref_service->ClearPref(
+        prefs::kAutofillAtMemoryShortcutPromoImpressionCount);
+  }
+}
 
 AtMemoryQueryService::~AtMemoryQueryService() = default;
 
 void AtMemoryQueryService::Shutdown() {
   query_weak_ptr_factory_.InvalidateWeakPtrs();
-  pii_unmasking_weak_ptr_factory_.InvalidateWeakPtrs();
   data_provider_.reset();
   personal_context_service_ = nullptr;
-  if (device_authenticator_) {
-    device_authenticator_->Cancel();
-    device_authenticator_.reset();
-  }
 }
 
 void AtMemoryQueryService::Query(
@@ -731,9 +718,6 @@ void AtMemoryQueryService::Query(
     const GURL& url,
     std::u16string_view title,
     base::RepeatingCallback<void(MemorySearchResults)> callback) {
-  // Invalidate any in-flight queries.
-  query_weak_ptr_factory_.InvalidateWeakPtrs();
-
   if (net::NetworkChangeNotifier::IsOffline()) {
     callback.Run(MemorySearchResults(MemorySearchStatus::kNoConnectionFailure));
     return;
@@ -761,46 +745,6 @@ void AtMemoryQueryService::Query(
                      query_weak_ptr_factory_.GetWeakPtr(), callback));
 }
 
-void AtMemoryQueryService::AuthenticateAndFetchPiiEntity(
-    const AutofillClient& client,
-    const std::u16string& auth_message,
-    std::u16string_view masked_value,
-    MemoryDataType data_type,
-    base::span<const EntryMetadata> metadata_list,
-    FetchUnmaskedPiiEntitiesCallback callback) {
-  if (device_authenticator_) {
-    RunCallbackAsync(
-        std::move(callback),
-        base::unexpected(SpiiRetrievalFailureReason::kReauthInProgress));
-    return;
-  }
-
-  if (net::NetworkChangeNotifier::IsOffline()) {
-    RunCallbackAsync(
-        std::move(callback),
-        base::unexpected(SpiiRetrievalFailureReason::kNoConnection));
-    return;
-  }
-
-  device_authenticator_ =
-      client.GetDeviceAuthenticator("Autofill.AtMemory.ReauthToUnmask");
-  if (!device_authenticator_ ||
-      !device_authenticator_->CanAuthenticateWithBiometricOrScreenLock()) {
-    device_authenticator_.reset();
-    RunCallbackAsync(
-        std::move(callback),
-        base::unexpected(SpiiRetrievalFailureReason::kReauthFailed));
-    return;
-  }
-
-  device_authenticator_->AuthenticateWithMessage(
-      auth_message,
-      base::BindOnce(&AtMemoryQueryService::OnAuthenticationCompleted,
-                     pii_unmasking_weak_ptr_factory_.GetWeakPtr(),
-                     std::u16string(masked_value), data_type,
-                     base::ToVector(metadata_list), std::move(callback)));
-}
-
 void AtMemoryQueryService::OnPersonalContextRetrieved(
     base::RepeatingCallback<void(MemorySearchResults)> callback,
     personal_context::FetchContextResult result) {
@@ -812,13 +756,7 @@ void AtMemoryQueryService::OnPersonalContextRetrieved(
   };
 
   if (!result.response.has_value()) {
-    personal_context::ContextMemoryError::ExecutionError error =
-        result.response.error().error();
-    if (error ==
-        personal_context::ContextMemoryError::ExecutionError::kCancelled) {
-      return;
-    }
-    run_callback(MapContextMemoryError(error));
+    run_callback(MapContextMemoryError(result.response.error().error()));
     return;
   }
 
@@ -863,12 +801,10 @@ void AtMemoryQueryService::OnPersonalContextRetrieved(
   }
 
   if (local_data_types.empty() || !data_provider_) {
-    std::vector<MemorySearchResult> ranked_results =
-        RankResults(/*local_results=*/{}, std::move(remote_results));
-    DeduplicateResults(ranked_results, *log_manager_);
-    ReorderMetadataByUniqueness(ranked_results);
+    std::vector<MemorySearchResult> combined_results = CombineAndProcessResults(
+        /*local_results=*/{}, std::move(remote_results), *log_manager_);
     run_callback(MemorySearchStatus::kFinalResponseSuccess,
-                 std::move(ranked_results));
+                 std::move(combined_results));
     return;
   }
 
@@ -899,55 +835,27 @@ void AtMemoryQueryService::OnLocalDataRetrieved(
           ? FilterResults(std::move(local_results), fetch_specifications)
           : std::move(local_results);
 
+  // Keep only the first entry of each record, identified by
+  // `MemorySearchResult::identifier`. `AutofillDataProvider` yields an entry
+  // per requested type a record has a value for, but a record should be shown
+  // once.
+  absl::flat_hash_set<decltype(MemorySearchResult::identifier)>
+      seen_identifiers;
+  std::erase_if(filtered_local_results, [&](const MemorySearchResult& entry) {
+    return !std::holds_alternative<std::monostate>(entry.identifier) &&
+           !seen_identifiers.insert(entry.identifier).second;
+  });
+
   LOG_AF(*log_manager_) << LoggingScope::kAtMemory << LogMessage::kAtMemory
                         << "Filtered local data results:" << Br{}
                         << filtered_local_results;
-  std::vector<MemorySearchResult> ranked_results =
-      RankResults(std::move(filtered_local_results), std::move(remote_results));
-  DeduplicateResults(ranked_results, *log_manager_);
-  ReorderMetadataByUniqueness(ranked_results);
-
+  std::vector<MemorySearchResult> combined_results =
+      CombineAndProcessResults(std::move(filtered_local_results),
+                               std::move(remote_results), *log_manager_);
   MemorySearchResults search_results(MemorySearchStatus::kFinalResponseSuccess,
-                                     std::move(ranked_results));
+                                     std::move(combined_results));
   search_results.server_request_id = std::move(server_request_id);
   callback.Run(std::move(search_results));
-}
-
-void AtMemoryQueryService::OnAuthenticationCompleted(
-    std::u16string masked_value,
-    MemoryDataType data_type,
-    std::vector<EntryMetadata> metadata_list,
-    FetchUnmaskedPiiEntitiesCallback callback,
-    bool auth_succeeded) {
-  device_authenticator_.reset();
-  if (!auth_succeeded) {
-    RunCallbackAsync(
-        std::move(callback),
-        base::unexpected(SpiiRetrievalFailureReason::kReauthFailed));
-    return;
-  }
-
-  if (!personal_context_service_) {
-    RunCallbackAsync(
-        std::move(callback),
-        base::unexpected(SpiiRetrievalFailureReason::kFetchFailed));
-    return;
-  }
-
-  personal_context::proto::FetchPiiEntitiesRequest request;
-  request.set_feature(
-      personal_context::proto::CONTEXT_MEMORY_FEATURE_AT_MEMORY);
-  *request.add_masked_entities() =
-      ToPersonalContextEntity(masked_value, /*typed_value=*/std::nullopt,
-                              data_type, metadata_list);
-
-  personal_context::ContextMemoryRequestOptions options;
-  options.request_timeout = features::kAutofillAtMemoryRequestTimeout.Get();
-
-  personal_context_service_->FetchPiiEntities(
-      request, options,
-      base::BindOnce(OnFetchPiiEntityCompleted, data_type,
-                     std::move(callback)));
 }
 
 }  // namespace autofill

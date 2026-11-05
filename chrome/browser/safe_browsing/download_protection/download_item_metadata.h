@@ -29,6 +29,7 @@ class DownloadItemMetadata : public DeepScanningMetadata {
   const GURL& GetTabUrl() const override;
   bool HasUserGesture() const override;
   bool IsObfuscated() const override;
+  void MarkDeobfuscated() override;
   bool IsTopLevelEncryptedArchive() const override;
   download::DownloadDangerType GetDangerType() const override;
   enterprise_connectors::EventResult GetPreScanEventResult(
@@ -55,6 +56,8 @@ class DownloadItemMetadata : public DeepScanningMetadata {
   google::protobuf::RepeatedPtrField<std::string> CollectFrameUrls()
       const override;
   content::WebContents* web_contents() const override;
+  std::optional<ExtensionTelemetryReportRequest::ExtensionInfo>
+  extension_initiator() const override;
   base::WeakPtr<DownloadItemMetadata> GetWeakPtr();
 
  private:

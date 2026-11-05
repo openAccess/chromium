@@ -271,11 +271,10 @@ void PrepareSvgPaints(const TextPainter::SvgTextPaintState& state,
   }
 
   std::optional<SelectionStyleScope> paint_resource_scope;
-  const ComputedStyle& style = layout_parent.StyleRef();
+  const ComputedStyle& style = layout_parent.Style();
   const ComputedStyle* pseudo_selection_style = nullptr;
   if (state.IsPaintingSelection()) {
-    pseudo_selection_style =
-        layout_parent.StyleRef().HighlightData().Selection();
+    pseudo_selection_style = layout_parent.Style().HighlightData().Selection();
     if (pseudo_selection_style) {
       paint_resource_scope.emplace(layout_parent, style,
                                    *pseudo_selection_style);
@@ -523,21 +522,12 @@ void TextPainter::SetEmphasisMark(const AtomicString& emphasis_mark,
   LayoutUnit under = font_data->GetFontMetrics().FixedDescent();
 
   if (text_item) {
-    if (RuntimeEnabledFeatures::TextEmphasisAsRubyEnabled()) {
-      UsedFont used_font = text_item->GetUsedFont();
-      const auto metrics = text_item->AnnotationMetrics();
-      over = LayoutUnit((-used_font.FixedAscent() - metrics.ascent) /
-                        used_font.ScalingFactor());
-      under = LayoutUnit((used_font.FixedDescent() + metrics.descent) /
-                         used_font.ScalingFactor());
-    } else if (RuntimeEnabledFeatures::TextEmphasisWithRubyEnabled()) {
-      if (text_item->HasOverAnnotation()) {
-        over -= text_item->AnnotationMetrics().ascent;
-      }
-      if (text_item->HasUnderAnnotation()) {
-        under += text_item->AnnotationMetrics().descent;
-      }
-    }
+    UsedFont used_font = text_item->GetUsedFont();
+    const auto metrics = text_item->AnnotationMetrics();
+    over = LayoutUnit((-used_font.FixedAscent() - metrics.ascent) /
+                      used_font.ScalingFactor());
+    under = LayoutUnit((used_font.FixedDescent() + metrics.descent) /
+                       used_font.ScalingFactor());
   }
 
   if (emphasis_line_side == LineLogicalSide::kOver) {
@@ -592,11 +582,11 @@ void TextPainter::ClipDecorationLine(
   const float upper = decoration_bounds.y() - text_baseline;
   const float stripe_width = decoration_bounds.height();
 
-  Font::InkSkipCJKHandling ink_skip_cjk_handling =
-      Font::InkSkipCJKHandling::kExcludeCJK;
+  Font::InkSkipCjkHandling ink_skip_cjk_handling =
+      Font::InkSkipCjkHandling::kExcludeCjk;
   if (skip_ink == ETextDecorationSkipInk::kAll &&
       RuntimeEnabledFeatures::CSSTextDecorationSkipInkAllEnabled()) {
-    ink_skip_cjk_handling = Font::InkSkipCJKHandling::kIncludeCJK;
+    ink_skip_cjk_handling = Font::InkSkipCjkHandling::kIncludeCjk;
   }
   Vector<Font::TextIntercept> text_intercepts;
   font_.GetTextIntercepts(
@@ -747,13 +737,12 @@ const LayoutObject& TextPainter::SvgTextPaintState::TextDecorationObject()
   const LayoutObject* result = InlineText().Parent();
   while (result) {
     if (style_variant_ == StyleVariant::kFirstLine) {
-      if (result->FirstLineStyleRef().GetTextDecorationLine() !=
+      if (result->FirstLineStyle().GetTextDecorationLine() !=
           TextDecorationLine::kNone) {
         break;
       }
     }
-    if (result->StyleRef().GetTextDecorationLine() !=
-        TextDecorationLine::kNone) {
+    if (result->Style().GetTextDecorationLine() != TextDecorationLine::kNone) {
       break;
     }
 

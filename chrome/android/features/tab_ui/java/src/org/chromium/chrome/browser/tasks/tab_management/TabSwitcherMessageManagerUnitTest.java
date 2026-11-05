@@ -16,7 +16,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
@@ -52,11 +51,11 @@ import org.chromium.chrome.browser.multiwindow.MultiWindowModeStateDispatcher;
 import org.chromium.chrome.browser.price_tracking.PriceTrackingFeatures;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.MockTab;
+import org.chromium.chrome.browser.tab.TabArchiveSettings;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tab_ui.OnTabSelectingListener;
 import org.chromium.chrome.browser.tab_ui.SuggestionLifecycleObserverHandler;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
-import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
@@ -64,6 +63,7 @@ import org.chromium.chrome.browser.tasks.tab_management.PriceMessageService.Pric
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageUpdateObserver;
+import org.chromium.chrome.browser.tasks.tab_management.labels.TabListHighlighter;
 import org.chromium.chrome.browser.ui.desktop_windowing.AppHeaderUtils;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -104,7 +104,6 @@ public class TabSwitcherMessageManagerUnitTest {
     @Mock private MessageUpdateObserver mMessageUpdateObserver;
     @Mock private BrowserControlsStateProvider mBrowserControlsStateProvider;
     @Mock private TabContentManager mTabContentManager;
-    @Mock private ViewGroup mRootView;
     @Mock private TabCreator mRegularTabCreator;
     @Mock private BackPressManager mBackPressManager;
     @Mock private OnTabSelectingListener mOnTabSelectingListener;
@@ -112,6 +111,7 @@ public class TabSwitcherMessageManagerUnitTest {
     @Mock private Supplier<PaneManager> mPaneManagerSupplier;
     @Mock private Supplier<TabGroupUiActionHandler> mTabGroupUiActionHandlerSupplier;
     @Mock private ArchivedTabModelOrchestrator mArchivedTabModelOrchestrator;
+    @Mock private TabArchiveSettings mTabArchiveSettings;
     @Mock private Supplier<LayoutStateProvider> mLayoutStateProviderSupplier;
     @Captor private ArgumentCaptor<TabModelObserver> mTabModelObserverCaptor;
 
@@ -150,7 +150,8 @@ public class TabSwitcherMessageManagerUnitTest {
         doReturn(mProfile).when(mProfile).getOriginalProfile();
 
         mCurrentTabModelSupplier.set(mTabModel);
-        when(mArchivedTabModelOrchestrator.getTabCountSupplier()).thenReturn(mTabCountSupplier);
+        when(mTabArchiveSettings.getArchivedTabCountSupplier()).thenReturn(mTabCountSupplier);
+        when(mArchivedTabModelOrchestrator.getTabArchiveSettings()).thenReturn(mTabArchiveSettings);
 
         ReauthenticatorBridge.setInstanceForTesting(mReauthenticatorBridge);
         mActivityScenarioRule.getScenario().onActivity(this::onActivityReady);
@@ -170,8 +171,7 @@ public class TabSwitcherMessageManagerUnitTest {
                         mModalDialogManager,
                         mBrowserControlsStateProvider,
                         mTabContentManager,
-                        TabListMode.GRID,
-                        mRootView,
+                        new FrameLayout(activity),
                         mRegularTabCreator,
                         mBackPressManager,
                         /* desktopWindowStateManager= */ null,
@@ -187,7 +187,7 @@ public class TabSwitcherMessageManagerUnitTest {
                 mPriceWelcomeMessageReviewActionProvider,
                 mOnTabSelectingListener);
         mMessageManager.addObserver(mMessageUpdateObserver);
-        mMessageManager.initWithNative(mProfile, TabListMode.GRID);
+        mMessageManager.initWithNative(mProfile);
         verify(mTabModel, times(2)).addObserver(mTabModelObserverCaptor.capture());
 
         assertTrue(mCurrentTabModelSupplier.hasObservers());
@@ -198,6 +198,7 @@ public class TabSwitcherMessageManagerUnitTest {
         AppHeaderUtils.setAppInDesktopWindowForTesting(false);
         mMessageManager.removeObserver(mMessageUpdateObserver);
         mMessageManager.destroy();
+        ArchivedTabModelOrchestrator.setInstanceForTesting(null);
         assertFalse(mCurrentTabModelSupplier.hasObservers());
     }
 

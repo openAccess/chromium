@@ -33,6 +33,7 @@
 #include "third_party/blink/renderer/platform/mediastream/media_stream_descriptor.h"
 #include "third_party/blink/renderer/platform/network/mime/content_type.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
@@ -104,16 +105,16 @@ uint32_t ClampAudioBitRate(ExecutionContext* context, uint32_t audio_bps) {
   if (audio_bps > kLargestPossibleOpusBitRate) {
     LogConsoleMessage(
         context,
-        String::Format(
-            "Clamping calculated audio bitrate (%dbps) to the maximum (%dbps)",
+        Format(
+            "Clamping calculated audio bitrate ({}bps) to the maximum ({}bps)",
             audio_bps, kLargestPossibleOpusBitRate));
     return kLargestPossibleOpusBitRate;
   }
   if (audio_bps < kSmallestPossibleOpusBitRate) {
     LogConsoleMessage(
         context,
-        String::Format(
-            "Clamping calculated audio bitrate (%dbps) to the minimum (%dbps)",
+        Format(
+            "Clamping calculated audio bitrate ({}bps) to the minimum ({}bps)",
             audio_bps, kSmallestPossibleOpusBitRate));
     return kSmallestPossibleOpusBitRate;
   }
@@ -124,8 +125,8 @@ uint32_t ClampVideoBitRate(ExecutionContext* context, uint32_t video_bps) {
   if (video_bps < kSmallestPossibleVpxBitRate) {
     LogConsoleMessage(
         context,
-        String::Format(
-            "Clamping calculated video bitrate (%dbps) to the minimum (%dbps)",
+        Format(
+            "Clamping calculated video bitrate ({}bps) to the minimum ({}bps)",
             video_bps, kSmallestPossibleVpxBitRate));
     return kSmallestPossibleVpxBitRate;
   }
@@ -216,7 +217,7 @@ MediaRecorder::MediaRecorder(ExecutionContext* context,
   }
   recorder_handler_ = MakeGarbageCollected<MediaRecorderHandler>(
       context->GetTaskRunner(TaskType::kInternalMediaRealTime),
-      key_frame_config);
+      key_frame_config, context->CrossOriginIsolatedCapability());
   if (!recorder_handler_) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
@@ -305,9 +306,11 @@ void MediaRecorder::start(int time_slice, ExceptionState& exception_state) {
   if (!recorder_handler_->Start(time_slice, content_type.GetType(),
                                 audio_bits_per_second_,
                                 video_bits_per_second_)) {
+    state_ = State::kInactive;
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
         "There was an error starting the MediaRecorder.");
+    return;
   }
 }
 
@@ -391,7 +394,8 @@ bool MediaRecorder::isTypeSupported(ExecutionContext* context,
                                     const String& type) {
   MediaRecorderHandler* handler = MakeGarbageCollected<MediaRecorderHandler>(
       context->GetTaskRunner(TaskType::kInternalMediaRealTime),
-      KeyFrameRequestProcessor::Configuration());
+      KeyFrameRequestProcessor::Configuration(),
+      /*cross_origin_isolated_capability=*/false);
   if (!handler)
     return false;
 

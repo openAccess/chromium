@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/containers/flat_map.h"
@@ -61,6 +62,9 @@ class Extension;
 // requests. This prevents a registration request for every restart of the
 // browser. If there’s a registration record the registration is still verified
 // with the //content layer).
+//
+// The registration state of each activation is tracked in its
+// `ServiceWorkerState`, and only registered workers are started.
 //
 // Worker Started/Stopped:
 //
@@ -118,7 +122,8 @@ class Extension;
 //         mojom pipe. In classic listener registration, all listeners must be
 //         registered at this point; with async listener registration,
 //         listeners can continue to be registered until calling
-//         `runtime.markListenerRegistrationComplete()`.
+//         `runtime.markListenerRegistrationComplete()`
+//         (`RendererDidCompleteListenerRegistrationPhase()`).
 //   * `worker_id_.has_value()`: this signal confirms that
 //     the class is populated with the running service worker’s information
 //     (render process and thread id, and worker version id) . This confirms
@@ -192,6 +197,7 @@ class ServiceWorkerTaskQueue
       int64_t service_worker_version_id,
       int thread_id,
       const blink::ServiceWorkerToken& service_worker_token);
+
   // Called once an extension Service Worker started running.
   // This can be thought as "loadstop", i.e. the global JS script of the worker
   // has completed executing.
@@ -203,6 +209,15 @@ class ServiceWorkerTaskQueue
       int64_t service_worker_version_id,
       int thread_id,
       const blink::ServiceWorkerToken& service_worker_token);
+
+  // Called when extension service worker `worker_id` calls
+  // `runtime.markListenerRegistrationComplete()`, completing its listener
+  // registration phase. Only extensions opting into
+  // `background.async_listener_registration` have this phase. Returns false if
+  // `worker_id` is not the tracked worker of the current activation or has no
+  // started phase.
+  bool RendererDidCompleteListenerRegistrationPhase(const WorkerId& worker_id);
+
   // Called once an extension Service Worker was destroyed.
   void RendererDidStopServiceWorkerContext(
       content::ChildProcessId render_process_id,
@@ -212,6 +227,7 @@ class ServiceWorkerTaskQueue
       int64_t service_worker_version_id,
       int thread_id,
       const blink::ServiceWorkerToken& service_worker_token);
+
   // Called when the extension renderer process that was running an extension
   // Service Worker has exited.
   void RenderProcessForWorkerExited(const WorkerId& worker_id);
@@ -260,6 +276,7 @@ class ServiceWorkerTaskQueue
       const GURL& scope,
       const content::ConsoleMessage& message) override;
   void OnDestructSync(content::ServiceWorkerContext* context) override;
+  void OnStorageWipedSync(content::ServiceWorkerContext* context) override;
 
   // Worker unregistrations can fail in expected and unexpected ways, this
   // determines if the unregistration can be accepted as successful from the
@@ -335,6 +352,11 @@ class ServiceWorkerTaskQueue
     // `extension_id` has been unregistered in the //content layer.
     virtual void WorkerUnregistered(const ExtensionId& extension_id) {}
 
+    // Called when the service worker for the extension with the `extension_id`
+    // is marked as `kRegistering`, before it is registered in the //content
+    // layer.
+    virtual void OnWorkerRegistrationStarted(const ExtensionId& extension_id) {}
+
     // Called when a service worker registered for the extension with the
     // `extension_id` has been registered in the //content layer. It is always
     // called, even if the registration request fails.
@@ -365,6 +387,7 @@ class ServiceWorkerTaskQueue
     REGISTER_ON_EXTENSION_LOAD,
     RE_REGISTER_ON_STATE_MISMATCH,
     RE_REGISTER_ON_TRANSIENT_FAILURE,
+    RE_REGISTER_ON_STORAGE_WIPE,
   };
 
   // Manages registration/start retry attempts with exponential backoff.
@@ -379,6 +402,8 @@ class ServiceWorkerTaskQueue
       int64_t version_id,
       const content::ServiceWorkerRunningInfo& worker_info);
 
+  // Registers the worker in //content. The worker is `kRegistering` until
+  // `DidRegisterServiceWorker()` gets the result.
   void RegisterServiceWorker(RegistrationReason reason,
                              const SequencedContextId& context_id,
                              const Extension& extension);
@@ -501,20 +526,27 @@ class ServiceWorkerTaskQueue
   using RetryMap =
       std::map<base::UnguessableToken, std::unique_ptr<RetryState>>;
 
-  // Schedules a retry attempt using the provided map. Returns true if a retry
-  // was scheduled, false if retries are exhausted.
-  bool ScheduleRetry(const base::UnguessableToken& token,
-                     RetryMap& retry_map,
-                     base::OnceClosure retry_callback);
+  // Schedules a retry attempt in `retry_map`, saving `failure_status` on the
+  // first attempt so it can be logged when the retry sequence ends. Pass
+  // std::nullopt if the retry is not caused by a failure. Returns false if
+  // retries are exhausted.
+  bool ScheduleRetry(
+      const base::UnguessableToken& token,
+      RetryMap& retry_map,
+      std::optional<blink::ServiceWorkerStatusCode> failure_status,
+      base::OnceClosure retry_callback);
 
-  // Clears retry state from the given map and logs metrics.
+  // Clears retry state for `token` from `retry_map` and, if any retries were
+  // attempted after a failure, logs the initial failure status to
+  // "<histogram_prefix>.{Success,Failure}.InitialStatus".
   void ClearRetryState(const base::UnguessableToken& token,
                        RetryMap& retry_map,
-                       const char* histogram_name,
+                       std::string_view histogram_prefix,
                        bool success);
 
   // Whether the task queue (as a keyed service) has been informed that the
-  // browser context is shutting down. Used for metrics purposes.
+  // browser context is shutting down. Used for metrics purposes and to check
+  // that extensions are not activated during shutdown.
   bool browser_context_shutting_down_ = false;
 
   std::map<content::ServiceWorkerContext*, int> observing_worker_contexts_;
@@ -570,12 +602,6 @@ class ServiceWorkerTaskQueue
   // New requests to register a service worker for the same extension will get
   // retried to allow the unregistration to complete first.
   std::set<ExtensionId> pending_unregistrations_;
-
-  // TODO(crbug.com/40276609): Do we need to track this by `SequencedContextId`
-  // or could we used `ExtensionId` instead?
-  // The activated extensions that have workers that are registered with the
-  // //content layer.
-  std::set<SequencedContextId> worker_registered_;
 
   base::WeakPtrFactory<ServiceWorkerTaskQueue> weak_factory_{this};
 };

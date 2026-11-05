@@ -25,6 +25,7 @@
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 /// Fake LensWebProvider.
 @interface FakeLensWebProvider : NSObject <LensWebProvider>
@@ -59,8 +60,8 @@ class LensOmniboxClientTest : public PlatformTest {
                             const AutocompleteMatch& match) {
     lens_omnibox_client_->OnAutocompleteAccept(
         match.destination_url, match.post_content.get(),
-        WindowOpenDisposition::CURRENT_TAB, match.transition, match.type,
-        base::TimeTicks(), false, false, input_text, match, match);
+        ui::mojom::WindowOpenDisposition::kCurrentTab, match.transition,
+        match.type, base::TimeTicks(), false, false, input_text, match, match);
   }
 
  protected:
@@ -79,9 +80,10 @@ class LensOmniboxClientTest : public PlatformTest {
 // Tests that the delegate is called on AutocompleteAccept.
 TEST_F(LensOmniboxClientTest, AutocompleteAccept) {
   const std::u16string& input_text = u"search terms";
-  AutocompleteMatch match{/*provider=*/nullptr, /*relevance=*/1000,
-                          /*deletable=*/false,
-                          /*type=*/AutocompleteMatchType::SEARCH_SUGGEST};
+  AutocompleteMatch match{
+      /*provider=*/nullptr, /*relevance=*/1000,
+      /*deletable=*/false,
+      /*type=*/omnibox::AutocompleteMatchType::kSearchSuggest};
   match.fill_into_edit = input_text;
   match.destination_url = GURL("https://www.google.com/search?q=search+terms");
 

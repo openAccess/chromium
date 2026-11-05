@@ -4,18 +4,12 @@
 
 
 import groovy.json.JsonOutput
-import groovy.text.SimpleTemplateEngine
-import groovy.text.Template
-import groovy.transform.SourceURI
 import org.gradle.api.DefaultTask
 import org.gradle.api.Project
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.TaskAction
-
-import java.nio.file.Path
-import java.nio.file.Paths
 import java.util.concurrent.*
 import java.time.*
 import java.util.regex.Matcher
@@ -53,25 +47,16 @@ class BuildConfigGenerator extends DefaultTask {
             "${BUILD_GN_TOKEN_START}(.*)${BUILD_GN_TOKEN_END}", Pattern.DOTALL)
     private static final String GEN_REMINDER =
             '# This is generated, do not edit. Update BuildConfigGenerator.groovy instead.\n'
-    private static final String DEPS_TOKEN_START = '# === ANDROID_DEPS Generated Code Start ==='
-    private static final String DEPS_TOKEN_END = '# === ANDROID_DEPS Generated Code End ==='
-    private static final Pattern DEPS_GEN_PATTERN = Pattern.compile(
-            "${DEPS_TOKEN_START}(.*)${DEPS_TOKEN_END}", Pattern.DOTALL)
     private static final String LIBS_DIRECTORY = 'libs'
 
     private static final String ANDROIDX_PROJECT_PATH = 'third_party/androidx'
-    private static final String AUTOROLLED_PROJECT_PATH = 'third_party/android_deps/autorolled'
     private static final String MAIN_PROJECT_PATH = 'third_party/android_deps'
-    private static final List<String> ALLOWED_PROJECT_PATHS = [ANDROIDX_PROJECT_PATH, AUTOROLLED_PROJECT_PATH, MAIN_PROJECT_PATH]
+    private static final List<String> ALLOWED_PROJECT_PATHS = [ANDROIDX_PROJECT_PATH, MAIN_PROJECT_PATH]
 
     // The 3pp bot now adds an epoch to the version tag, this needs to be kept in sync with 3pp epoch at:
     /* groovylint-disable-next-line LineLength */
     // https://source.chromium.org/chromium/infra/infra/+/master:recipes/recipe_modules/support_3pp/resolved_spec.py?q=symbol:PACKAGE_EPOCH&ss=chromium
     private static final String THREEPP_EPOCH = '2'
-
-    // Used to disable breaking changes while the migration to autorolling
-    // portions of android_deps is complete. See http://crbug.com/40774645
-    private static final boolean AUTOROLL_MIGRATION_IN_PROGRESS = false
 
     // Use this to exclude a dep from being depended upon but keep the target.
     private static final List<String> DISALLOW_DEPS = [
@@ -91,11 +76,10 @@ class BuildConfigGenerator extends DefaultTask {
             org_hamcrest_hamcrest_core: '//third_party/hamcrest:hamcrest_core_java',
             org_hamcrest_hamcrest_integration: '//third_party/hamcrest:hamcrest_integration_java',
             org_hamcrest_hamcrest_library: '//third_party/hamcrest:hamcrest_library_java',
-            org_jetbrains_annotations: '//third_party/kotlin_stdlib:kotlin_stdlib_java',
-            org_jetbrains_kotlin_kotlin_stdlib_jdk7: '//third_party/kotlin_stdlib:kotlin_stdlib_java',
-            org_jetbrains_kotlin_kotlin_stdlib_jdk8: '//third_party/kotlin_stdlib:kotlin_stdlib_java',
-            org_jetbrains_kotlin_kotlin_stdlib_common: '//third_party/kotlin_stdlib:kotlin_stdlib_java',
-            org_jetbrains_kotlin_kotlin_stdlib: '//third_party/kotlin_stdlib:kotlin_stdlib_java',
+            // These are empty as of Kotlin 1.8 (contents moved into kotlin-stdlib).
+            org_jetbrains_kotlin_kotlin_stdlib_common: '//third_party/android_deps:kotlin_stdlib_java',
+            org_jetbrains_kotlin_kotlin_stdlib_jdk7: '//third_party/android_deps:kotlin_stdlib_java',
+            org_jetbrains_kotlin_kotlin_stdlib_jdk8: '//third_party/android_deps:kotlin_stdlib_java',
     ]
 
     // Some libraries have such long names they'll create a path that exceeds the 200 char path limit, which is
@@ -112,17 +96,21 @@ class BuildConfigGenerator extends DefaultTask {
             // Use fully-qualified labels here since androidx might refer to them.
             androidx_media3_media3_exoplayer: '//third_party/androidx:exoplayer_java',
             com_google_android_material_material: '//third_party/android_deps:material_design_java',
+            com_google_android_play_app_update: '//third_party/android_deps:playcore_app_update_java',
             com_google_android_play_feature_delivery: '//third_party/android_deps:playcore_java',
             com_google_guava_failureaccess: '//third_party/android_deps:guava_java',
             com_google_guava_guava: '//third_party/android_deps:guava_java',
             com_google_protobuf_protobuf_javalite: '//third_party/android_deps:protobuf_lite_runtime_java',
             net_bytebuddy_byte_buddy: '//third_party/byte_buddy:byte_buddy_android_java',
+            org_jetbrains_annotations: '//third_party/android_deps:kotlin_stdlib_java',
+            org_jetbrains_kotlin_kotlin_stdlib: '//third_party/android_deps:kotlin_stdlib_java',
             // Logic for google_play_services_package added below.
     ]
 
     // Targets that are disabled when enable_chrome_android_internal=true.
     static final Map<String, String> CONDITIONAL_LIBS = [
             com_google_android_material_material: '!defined(material_design_target)',
+            com_google_android_play_app_update: '!defined(playcore_app_update_target)',
             com_google_android_play_feature_delivery: '!defined(playcore_target)',
             com_google_protobuf_protobuf_javalite: '!defined(android_proto_runtime)',
             com_google_guava_guava: '!defined(guava_android_target)',
@@ -132,12 +120,6 @@ class BuildConfigGenerator extends DefaultTask {
             com_google_mlkit: '!defined(mlkit_target)',
             androidx_media3: '!defined(media3_target)',
     ]
-
-    static final String COPYRIGHT_HEADER = '''\
-        # Copyright 2021 The Chromium Authors
-        # Use of this source code is governed by a BSD-style license that can be
-        # found in the LICENSE file.
-    '''.stripIndent(/* forceGroovyBehavior */ true)
 
     // This cache allows us to download license files from the same URL at most once.
     static final ConcurrentMap<String, String> URL_TO_STRING_CACHE = new ConcurrentHashMap<>()
@@ -149,22 +131,6 @@ class BuildConfigGenerator extends DefaultTask {
     String pathToBuildGradle
 
     /**
-     * Directory where autorolled dep binary files will live (.aar/.jar)
-     * when rolled. This is used to inform filepaths in BUILD.gn and the
-     * like.
-     */
-    @Optional @Input
-    String artifactSubdir
-
-    /**
-     * Directory where autorolled dep text files will live when rolled
-     * (and extracted from to_commit.zip). This is used to inform
-     * filepaths in additional_readme_paths and the like.
-     */
-    @Optional @Input
-    String committedSubdir
-
-    /**
      * cipd package prefix where artifacts are uploaded.
      */
     @Optional @Input
@@ -174,18 +140,9 @@ class BuildConfigGenerator extends DefaultTask {
     @Input
     String[] internalTargetVisibility
 
-    /** Whether to ignore DEPS file. */
-    @Input
-    boolean ignoreDEPS
-
     /** Whether to write a bill_of_materials.json file. */
     @Input
     boolean writeBoM
-
-    /** The URI of the file BuildConfigGenerator.groovy */
-    @Input
-    @SourceURI
-    URI sourceUri
 
     static String translateTargetName(String targetName) {
         if (isPlayServicesTarget(targetName)) {
@@ -214,24 +171,6 @@ class BuildConfigGenerator extends DefaultTask {
             }
         }
         return null
-    }
-
-    static String makeRootOwners() {
-        return """\
-# This restriction is in place so that new third-party libraries go through
-# full third-party review:
-# https://chromium.googlesource.com/chromium/src.git/+/master/docs/adding_to_third_party.md#Get-a-review
-set noparent
-
-file://third_party/OWNERS
-
-# The following OWNERS are only for adding / removing / renaming directories
-# that are conceptually the same as existing ones (which would have already gone
-# through third_party review). E.g. robolectric is partiationed into multiple
-# directories, but they are all conceptually the same dependency.
-agrieve@chromium.org
-wnwen@chromium.org
-"""
     }
 
     static String makeLibraryOwners() {
@@ -410,38 +349,6 @@ No modifications.
         }
     }
 
-    static String make3ppPb(String cipdPackagePrefix) {
-        String pkgPrefix = "${cipdPackagePrefix}/${LIBS_DIRECTORY}"
-
-        return COPYRIGHT_HEADER + '\n' + GEN_REMINDER + """
-            create {
-              source {
-                script { name: "fetch.py" }
-              }
-            }
-
-            upload {
-              pkg_prefix: "${pkgPrefix}"
-              universal: true
-            }
-            """.stripIndent(/* forceGroovyBehavior */ true)
-    }
-
-    static String make3ppFetch(Template fetchTemplate, ChromiumDepGraph.DependencyDescription dependency) {
-        String fileExt = dependency.extension
-        if (dependency.id == 'org_mockito_mockito_android') {
-            // In mockito-andorid 5.23, the artifact went from a jar to an aar, but 5.23 is a breaking change
-            // that we don't support yet. When we update our version to 5.23 we can remove this special case.
-            fileExt = 'aar'
-        }
-        Map bindMap = [
-                copyrightHeader: COPYRIGHT_HEADER,
-                dependency: dependency,
-                fileExt: fileExt,
-        ]
-        return fetchTemplate.make(bindMap).toString()
-    }
-
     static String jsonDump(Object obj) {
         return JsonOutput.prettyPrint(JsonOutput.toJson(obj))
     }
@@ -464,6 +371,8 @@ No modifications.
         HttpURLConnection connection
         for (int i = 0; i < 10; ++i) {
             connection = urlObj.openConnection()
+            connection.connectTimeout = ChromiumDepGraph.HTTP_TIMEOUT_MS
+            connection.readTimeout = ChromiumDepGraph.HTTP_TIMEOUT_MS
             connection.setRequestProperty("Accept", "text/plain");
             switch (connection.responseCode) {
                 case HttpURLConnection.HTTP_MOVED_PERM:
@@ -503,22 +412,14 @@ No modifications.
 
         boolean skipLicenses = project.hasProperty('skipLicenses')
 
-        Path fetchTemplatePath = Paths.get(sourceUri).resolveSibling('3ppFetch.template')
-        Template fetchTemplate = new SimpleTemplateEngine().createTemplate(fetchTemplatePath.toFile())
-
         Set<Project> allProjects = [] as Set
         allProjects.add(project)
         allProjects.addAll(project.subprojects)
 
-        // During the migration, when processing the main project, do not tag
-        // autorolled deps as such since they should be treated normally until
-        // the migration is complete.
-        boolean tagTargetsAsAutorolled = !AUTOROLL_MIGRATION_IN_PROGRESS || pathToBuildGradle == AUTOROLLED_PROJECT_PATH
-
         ChromiumDepGraph graph = new ChromiumDepGraph(
                 projects: allProjects, logger: project.logger, skipLicenses: skipLicenses,
                 warnOnStaleDeps: pathToBuildGradle == MAIN_PROJECT_PATH,
-                tagTargetsAsAutorolled: tagTargetsAsAutorolled)
+                currentProjectPath: pathToBuildGradle)
 
         // 1. Parse the dependency data
         graph.timeIt("** Collecting all dependencies info") {
@@ -527,7 +428,7 @@ No modifications.
 
         // 2. Import artifacts into the local repository
         List<String> dependencyDirectories = []
-        ExecutorService downloadExecutor = Executors.newCachedThreadPool()
+        ExecutorService downloadExecutor = Executors.newFixedThreadPool(ChromiumDepGraph.CONCURRENT_HTTP_TASKS)
         List<Future> downloadTasks = []
         List<ChromiumDepGraph.DependencyDescription> mergeLicensesDeps = []
         graph.dependencies.values().each { dependency ->
@@ -547,8 +448,22 @@ No modifications.
                 logger.debug("${dependency.id} has no artifact, skipping.")
                 return
             }
+            // POM metadata is fetched only for deps that pass ignoreForCurrentProject()
+            // in ChromiumDepGraph.collectDependencies(). Fail loudly if the two drift.
+            if (!dependency.fileUrl) {
+                throw new IllegalStateException(
+                        "${dependency.id} is generated by ${pathToBuildGradle} but its POM was not fetched")
+            }
 
-            dependencyDirectories.add(dependency.committedDirectoryPath)
+            // tools/licenses/licenses.py reads README.chromium and LICENSE from
+            // here. For androidx and autorolled deps that is the cipd package
+            // (committed/ no longer carries LICENSE), which only exists on
+            // Android checkouts; licenses.py skips listed directories that are
+            // absent. For the main project the cipd package holds only the
+            // artifact and the metadata stays in libs/<dep>.
+            dependencyDirectories.add(dependency.committedPrefix
+                    ? dependency.artifactDirectoryPath
+                    : dependency.committedDirectoryPath)
 
             if (project.file("${dependency.directoryPath}/${dependency.fileName}").exists()) {
                 logger.quiet("${dependency.id} exists, skipping.")
@@ -562,21 +477,6 @@ No modifications.
             // fetch_all.py parses cipd.yaml to get information about each dep, even if cipd.yaml isn't needed (e.g. androidx).
             new File(depDir, 'cipd.yaml').write(makeCipdYaml(dependency, cipdPackagePrefix))
             new File(depDir, 'OWNERS').write(makeLibraryOwners())
-
-            // Enable 3pp flow for //third_party/android_deps only.
-            // TODO(crbug.com/1132368): Enable 3pp flow for subprojects as well.
-            if (pathToBuildGradle == MAIN_PROJECT_PATH) {
-                if (dependency.fileUrl) {
-                    File dependency3ppDir = new File(depDir, '3pp')
-                    dependency3ppDir.mkdirs()
-                    new File(dependency3ppDir, "3pp.pb").write(make3ppPb(cipdPackagePrefix))
-                    File fetchFile = new File(dependency3ppDir, 'fetch.py')
-                    fetchFile.write(make3ppFetch(fetchTemplate, dependency))
-                    fetchFile.setExecutable(true, false)
-                } else {
-                    throw new RuntimeException("Failed to generate 3pp files for ${dependency.id} with empty fileUrl.")
-                }
-            }
 
             if (!skipLicenses) {
                 validateLicenses(dependency)
@@ -596,13 +496,8 @@ No modifications.
 
         // 3. Generate the root level build files
         updateBuildTargetDeclaration(graph)
-        if (!ignoreDEPS) {
-            updateDepsDeclaration(graph, cipdPackagePrefix, fromSourceRoot("DEPS"))
-        }
         dependencyDirectories.sort { path1, path2 -> return path1 <=> path2 }
         updateReadmeReferenceFile(dependencyDirectories, project.file("additional_readme_paths.json"))
-
-        project.file("${LIBS_DIRECTORY}/OWNERS").write(makeRootOwners())
         if (writeBoM) {
             project.file("bill_of_materials.json").write(makeBillOfMaterials(graph.dependencies.values()))
         }
@@ -662,6 +557,10 @@ No modifications.
 
             if (targetName.contains('guava') && gnTarget == '//third_party/android_deps:guava_java') {
                 // Prevent circular dep caused by having listenablefuture aliased to guava_android.
+                return
+            }
+            if (gnTarget == ALIASED_LIBS.get(dependency.id)) {
+                // Prevent circular deps between libraries that share an alias (e.g. kotlin_stdlib_java).
                 return
             }
             // Target aliases can cause dupes.
@@ -762,22 +661,17 @@ No modifications.
     }
 
     boolean ignoreForCurrentProject(ChromiumDepGraph.DependencyDescription dependency) {
+        return ignoreForCurrentProject(dependency, pathToBuildGradle)
+    }
+
+    // When currentProjectPath is null, cross-project filtering is skipped so
+    // callers default to not ignoring the dependency.
+    static boolean ignoreForCurrentProject(
+            ChromiumDepGraph.DependencyDescription dependency, String currentProjectPath) {
         if (dependency.exclude || EXISTING_LIBS.containsKey(dependency.id)) {
             return true
         }
-        return !partOfCurrentProject(dependency)
-    }
-
-    boolean partOfCurrentProject(ChromiumDepGraph.DependencyDescription dependency) {
-        if (AUTOROLL_MIGRATION_IN_PROGRESS) {
-            if (pathToBuildGradle == MAIN_PROJECT_PATH
-                && dependency.projectPath == AUTOROLLED_PROJECT_PATH) {
-                // During the migration, keep the autorolled targets in the main
-                // BUILD.gn until the migration is complete.
-                return true
-            }
-        }
-        return dependency.projectPath == pathToBuildGradle
+        return currentProjectPath && dependency.projectPath != currentProjectPath
     }
 
     private static String reducedDependencyId(String dependencyId) {
@@ -862,7 +756,8 @@ No modifications.
                 sb.append('\n')
                 sb.append('  # This target does not come with most of its dependencies and is\n')
                 sb.append('  # only meant to be used by the resources shrinker. If you wish to use\n')
-                sb.append('  # this for other purposes, change buildCompileNoDeps in build.gradle.\n')
+                sb.append('  # this for other purposes, change buildCompileNoDepsLatest in\n')
+                sb.append('  # build.gradle.template.\n')
                 sb.append('  visibility = [ "//build/android/unused_resources:*" ]\n')
                 break
             case 'com_google_android_gms_play_services_basement':
@@ -960,6 +855,13 @@ No modifications.
                 sb.append('    "io/grpc/binder/internal/IntentNameResolver*",\n')
                 sb.append('  ]\n')
                 break
+            case 'com_google_mlkit_genai_prompt':
+                // Duplicate of META-INF/services in kotlinx_coroutines_android_java (which is in
+                // the base split), causing R8 ServiceLoader inlining to fail across splits.
+                sb.append('  jar_excluded_patterns = [\n')
+                sb.append('    "META-INF/services/kotlinx.coroutines*",\n')
+                sb.append('  ]\n')
+                break
         }
     }
 
@@ -1009,7 +911,9 @@ No modifications.
     }
 
     private static void updateReadmeReferenceFile(List<String> directories, File refFile) {
-        refFile.write(JsonOutput.prettyPrint(JsonOutput.toJson(directories)) + '\n')
+        // prettyPrint renders an empty list as "[\n    \n]" (trailing whitespace).
+        String json = directories ? JsonOutput.prettyPrint(JsonOutput.toJson(directories)) : '[]'
+        refFile.write(json + '\n')
     }
 
     private void updateBuildTargetDeclaration(ChromiumDepGraph depGraph) {
@@ -1051,59 +955,6 @@ No modifications.
         }
         String out = "${BUILD_GN_TOKEN_START}\n$sb\n${BUILD_GN_TOKEN_END}"
         buildFile.write(matcher.replaceFirst(Matcher.quoteReplacement(out)))
-    }
-
-    private void updateDepsDeclaration(ChromiumDepGraph depGraph, String cipdPackagePrefix,
-                                       File depsFile) {
-        StringBuilder sb = new StringBuilder()
-        // Note: The string we're inserting is nested 1 level, hence the 2 leading spaces. Same
-        // applies to the multiline package declaration string below.
-        sb.append('  # Generated by //third_party/android_deps/fetch_all.py')
-
-        // Comparator to sort the dependencies in alphabetical order.
-        Closure dependencyComparator = { dependency1, dependency2 ->
-            dependency1.id <=> dependency2.id
-        }
-
-        depGraph.dependencies.values().sort(dependencyComparator).each { dependency ->
-            if (ignoreForCurrentProject(dependency) || dependency.extension == 'group') {
-                return
-            }
-            if (!dependency.artifact) {
-                logger.debug("Skipping ${dependency.id} because it has no artifact")
-                return
-            }
-            String cipdPath = "${cipdPackagePrefix}/${dependency.directoryPath}"
-            sb.append("""\
-            |
-            |  'src/${pathToBuildGradle}/${dependency.artifactDirectoryPath}': {
-            |      'packages': [
-            |          {
-            |              'package': '${cipdPath}',
-            |              'version': 'version:${THREEPP_EPOCH}@${dependency.version}.${dependency.cipdSuffix}',
-            |          },
-            |      ],
-            |      'condition': 'checkout_android and non_git_source',
-            |      'dep_type': 'cipd',
-            |  },
-            |""".stripMargin())
-        }
-
-        Matcher matcher = DEPS_GEN_PATTERN.matcher(depsFile.text)
-        if (!matcher.find()) {
-            throw new IllegalStateException('DEPS insertion point not found.')
-        }
-        depsFile.write(matcher.replaceFirst("${DEPS_TOKEN_START}\n${sb}\n  ${DEPS_TOKEN_END}"))
-    }
-
-    private int countPathSegments(String path) {
-        // third_party/android_deps/autorolled -> 3
-        return path.split('/').length
-    }
-
-    private File fromSourceRoot(String pathRelativeToChromiumRoot) {
-        File sourceRoot = project.file('../'.multiply(countPathSegments(pathToBuildGradle)))
-        return new File(sourceRoot, pathRelativeToChromiumRoot)
     }
 
 }

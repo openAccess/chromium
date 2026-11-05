@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//base/allocator/partition_allocator/partition_alloc.gni")
 import("//build/buildflag_header.gni")
 import("//build/config/avx512.gni")
 import("//build/config/compiler/compiler.gni")
@@ -9,6 +10,7 @@ import("//build/config/features.gni")
 import("//build/config/freetype/freetype.gni")
 import("//build/config/rust.gni")
 import("//build/config/sanitizers/sanitizers.gni")
+import("//build/rust/cargo_crate.gni")
 import("//build/rust/rust_static_library.gni")
 import("//gpu/vulkan/features.gni")
 import("//testing/libfuzzer/fuzzer_test.gni")
@@ -30,6 +32,7 @@ buildflag_header("buildflags") {
   flags = [
     "SKIA_SUPPORT_SKOTTIE=$skia_support_skottie",
     "SKIA_USE_DAWN=$skia_use_dawn",
+    "SKIA_USE_GRAPHITE_VULKAN=$skia_use_graphite_vulkan",
   ]
 }
 
@@ -45,8 +48,8 @@ rust_static_library("bridge_rust_side") {
   deps = [
     ":path_bridge",
     "//third_party/rust/font_types/v0_12:lib",
-    "//third_party/rust/read_fonts/v0_43:lib",
-    "//third_party/rust/skrifa/v0_46:lib",
+    "//third_party/rust/read_fonts/v0_45:lib",
+    "//third_party/rust/skrifa/v0_48:lib",
   ]
   configs -= [ "//build/config/compiler:chromium_code" ]
   configs += [
@@ -60,7 +63,6 @@ rust_static_library("bridge_rust_side") {
 config("skia_config") {
   defines = [
     "SK_ENABLE_SKSL",
-    "SK_UNTIL_CRBUG_1187654_IS_FIXED",
     "SK_USER_CONFIG_HEADER=\"../../skia/config/SkUserConfig.h\"",
     "SK_USE_PARTITION_ALLOC",
     "SK_WIN_FONTMGR_NO_SIMULATIONS",
@@ -83,6 +85,10 @@ config("skia_config") {
     "SK_CODEC_COLOR_PROFILE_PARSE_WITH_RUST",
     "SK_EXIF_PARSE_WITH_RUST",
   ]
+
+  if (use_partition_alloc_as_malloc) {
+    defines += [ "SK_USE_PARTITION_ALLOC_AS_MALLOC" ]
+  }
 
   if (!allow_avx512) {
     defines += [ "SK_DISABLE_AVX512_OPTS" ]
@@ -258,6 +264,7 @@ component("skia") {
     "ext/legacy_display_globals.h",
     "ext/opacity_filter_canvas.h",
     "ext/pmcolor_utils.h",
+    "ext/region_ops.h",
     "ext/rgba_to_yuva.h",
     "ext/skcms_ext.h",
     "ext/skcolorspace_ext.h",
@@ -289,6 +296,7 @@ component("skia") {
     "ext/image_operations.cc",
     "ext/legacy_display_globals.cc",
     "ext/opacity_filter_canvas.cc",
+    "ext/region_ops.cc",
     "ext/rgba_to_yuva.cc",
     "ext/skcms_ext.cc",
     "ext/skcolorspace_ext.cc",
@@ -377,7 +385,6 @@ component("skia") {
     "//third_party/skia/src/sfnt/SkOTUtils.cpp",
   ]
   if (use_blink) {
-    sources += skia_codec_decode_bmp
     sources += skia_encode_jpeg_srcs
     public += skia_encode_jpeg_public
     sources += [
@@ -495,24 +502,35 @@ component("skia") {
   all_dependent_configs = [ ":skia_config" ]
 
   deps += [
+    ":rust_bmp_ffi",
     ":rust_common_ffi",
+    ":rust_common_ffi_cpp",
+    ":rust_exif_ffi",
+    ":rust_icc_ffi",
+    ":rust_ico_ffi",
+    ":rust_jpeg_ffi",
     ":rust_png_ffi",
+    ":rust_png_ffi_cpp",
     ":skcms",
     ":skia_opts",
     ":skia_switches",
     "//base",
+    "//base/allocator/partition_allocator:buildflags",
     "//base/allocator/partition_allocator:raw_ptr",
     "//third_party/libwebp",
     "//third_party/libwebp:libwebp_webp",
     "//ui/base:features",
   ]
+  if (use_partition_alloc_as_malloc) {
+    deps += [ "//base/allocator/partition_allocator:partition_alloc" ]
+  }
   public_deps = [
     ":buildflags",
-    ":rust_bmp_ffi",
-    ":rust_exif_ffi",
-    ":rust_icc_ffi",
-    ":rust_ico_ffi",
-    ":rust_jpeg_ffi",
+    ":rust_bmp_ffi_cpp",
+    ":rust_exif_ffi_cpp",
+    ":rust_icc_ffi_cpp",
+    ":rust_ico_ffi_cpp",
+    ":rust_jpeg_ffi_cpp",
     ":skia_core_and_effects",
     ":skia_core_public_headers",
   ]
@@ -644,20 +662,19 @@ component("skia_switches") {
   deps = [ "//base" ]
 }
 
-rust_static_library("rust_common_ffi") {
+cargo_crate("rust_common_ffi") {
   visibility = [ ":*" ]
   crate_name = "skia_rust_common"
   allow_unsafe = true  # For FFI
   crate_root = skia_rust_common_ffi_crate_root
   sources = skia_rust_common_ffi_rs_srcs
   cxx_bindings = skia_rust_common_ffi_cxx_bridge_srcs
-  public_deps = [ ":rust_common_ffi_cpp" ]
-  configs -= [ "//build/config/compiler:chromium_code" ]
-  configs += [
+  library_configs -= [ "//build/config/compiler:chromium_code" ]
+  library_configs += [
     ":skia_config",
     "//build/config/compiler:no_chromium_code",
   ]
-  no_clippy = true  # TODO(https://crbug.com/472355480)
+  build_native_rust_unit_tests = false
 }
 
 source_set("rust_common_ffi_cpp") {
@@ -684,7 +701,6 @@ rust_static_library("rust_png_ffi") {
   crate_root = skia_codec_rust_png_ffi_crate_root
   sources = skia_codec_rust_png_ffi_rs_srcs
   cxx_bindings = skia_codec_rust_png_ffi_cxx_bridge_srcs
-  public_deps = [ ":rust_png_ffi_cpp" ]
   deps = [
     ":rust_common_ffi",
     "//third_party/rust/png/v0_18:lib",
@@ -714,7 +730,6 @@ rust_static_library("rust_bmp_ffi") {
   crate_root = skia_codec_rust_bmp_ffi_crate_root
   sources = skia_codec_rust_bmp_ffi_rs_srcs
   cxx_bindings = skia_codec_rust_bmp_ffi_cxx_bridge_srcs
-  public_deps = [ ":rust_bmp_ffi_cpp" ]
   deps = [
     ":rust_common_ffi",
     "//third_party/rust/image/v0_25:lib",
@@ -739,7 +754,13 @@ source_set("rust_bmp_ffi_cpp") {
     ":skia_core_public_headers",
     "//build/rust:cxx_cppdeps",
   ]
-  deps = [ ":rust_bmp_ffi_cxx_generated_gen" ]
+
+  # Compiles private Skia files that include raw_ptr.h. ":skia" depends on
+  # partition_alloc privately, so this needs the dep directly.
+  deps = [
+    ":rust_bmp_ffi_cxx_generated_gen",
+    "//base/allocator/partition_allocator:raw_ptr",
+  ]
   check_includes =
       false  # Logically part of skia, but split out for build reasons
   configs -= [ "//build/config/compiler:chromium_code" ]
@@ -756,7 +777,6 @@ rust_static_library("rust_ico_ffi") {
   crate_root = skia_codec_rust_ico_ffi_crate_root
   sources = skia_codec_rust_ico_ffi_rs_srcs
   cxx_bindings = skia_codec_rust_ico_ffi_cxx_bridge_srcs
-  public_deps = [ ":rust_ico_ffi_cpp" ]
   deps = [
     ":rust_common_ffi",
     "//third_party/rust/image/v0_25:lib",
@@ -786,9 +806,10 @@ source_set("rust_ico_ffi_cpp") {
   # embedded images, so it needs their generated cxx bridge headers and
   # C++ glue code.
   deps = [
-    ":rust_bmp_ffi",
+    ":rust_bmp_ffi_cpp",
     ":rust_ico_ffi_cxx_generated_gen",
-    ":rust_png_ffi",
+    ":rust_png_ffi_cpp",
+    ":rust_png_ffi_cxx_generated_gen",
   ]
   check_includes =
       false  # Logically part of skia, but split out for build reasons
@@ -806,7 +827,6 @@ rust_static_library("rust_jpeg_ffi") {
   crate_root = skia_codec_rust_jpeg_ffi_crate_root
   sources = skia_codec_rust_jpeg_ffi_rs_srcs
   cxx_bindings = skia_codec_rust_jpeg_ffi_cxx_bridge_srcs
-  public_deps = [ ":rust_jpeg_ffi_cpp" ]
   deps = [
     ":rust_common_ffi",
     "//third_party/rust/jpeg_encoder/v0_7:lib",
@@ -836,7 +856,13 @@ source_set("rust_jpeg_ffi_cpp") {
     ":skia_core_public_headers",
     "//build/rust:cxx_cppdeps",
   ]
-  deps = [ ":rust_jpeg_ffi_cxx_generated_gen" ]
+
+  # Compiles private Skia files that include raw_ptr.h. ":skia" depends on
+  # partition_alloc privately, so this needs the dep directly.
+  deps = [
+    ":rust_jpeg_ffi_cxx_generated_gen",
+    "//base/allocator/partition_allocator:raw_ptr",
+  ]
   check_includes =
       false  # Logically part of skia, but split out for build reasons
   configs -= [ "//build/config/compiler:chromium_code" ]
@@ -853,7 +879,6 @@ rust_static_library("rust_icc_ffi") {
   crate_root = skia_rust_icc_ffi_crate_root
   sources = skia_rust_icc_ffi_rs_srcs
   cxx_bindings = skia_rust_icc_ffi_cxx_bridge_srcs
-  public_deps = [ ":rust_icc_ffi_cpp" ]
   deps = [
     ":rust_common_ffi",
     "//third_party/rust/moxcms/v0_8:lib",
@@ -895,7 +920,6 @@ rust_static_library("rust_exif_ffi") {
   crate_root = skia_rust_exif_ffi_crate_root
   sources = skia_rust_exif_ffi_rs_srcs
   cxx_bindings = skia_rust_exif_ffi_cxx_bridge_srcs
-  public_deps = [ ":rust_exif_ffi_cpp" ]
   deps = [ ":rust_common_ffi" ]
   configs -= [ "//build/config/compiler:chromium_code" ]
   configs += [
@@ -984,6 +1008,7 @@ template("skia_source_set") {
     }
   }
 }
+
 set_defaults("skia_source_set") {
   # Match the defaults for `source_set`
   # (as defined in `build/config/BUILDCONFIG.gn`).
@@ -1059,6 +1084,7 @@ if (current_cpu == "x86" || current_cpu == "x64") {
     }
     visibility = [ ":skia_opts" ]
   }
+
   skia_source_set("skia_opts_ml4") {
     sources = skia_opts.ml4_sources
     configs += [ ":skia_avx512_flags" ]
@@ -1171,6 +1197,7 @@ if (current_cpu == "x64") {
     }
     visibility = [ ":skcms" ]
   }
+
   skia_source_set("skcms_TransformSkx") {
     sources = skcms_TransformSkx
     configs += [
@@ -1184,6 +1211,7 @@ if (current_cpu == "x64") {
     sources = []
     visibility = [ ":skcms" ]
   }
+
   skia_source_set("skcms_TransformSkx") {
     sources = []
     visibility = [ ":skcms" ]
@@ -1232,6 +1260,9 @@ if (skia_support_gpu) {
         "//third_party/dawn/src/dawn:proc",
       ]
     }
+    if (skia_use_graphite_vulkan) {
+      public += skia_graphite_vk_public
+    }
     deps = [ "//gpu/config:workaround_list" ]
   }
 
@@ -1240,12 +1271,13 @@ if (skia_support_gpu) {
   skia_source_set("skia_graphite_private") {
     sources = skia_graphite_sources + skia_graphite_precompile_sources +
               skia_sksl_graphite_modules_sources
-    if (skia_use_dawn) {
-      sources += skia_graphite_dawn_sources
-    }
     deps = [ "//gpu/config:workaround_list" ]
     if (skia_use_dawn) {
+      sources += skia_graphite_dawn_sources
       deps += [ "//third_party/dawn/include/dawn:cpp_headers" ]
+    }
+    if (skia_use_graphite_vulkan) {
+      sources += skia_graphite_vk_sources
     }
     visibility = [ ":skia" ]
   }
@@ -1326,10 +1358,13 @@ source_set("test_fonts") {
 test("skia_unittests") {
   sources = [
     "ext/codec_utils_unittest.cc",
+    "ext/color_profile_unittest.cc",
     "ext/convolver_unittest.cc",
+    "ext/font_utils_unittest.cc",
     "ext/geometry_unittest.cc",
     "ext/image_operations_unittest.cc",
     "ext/platform_canvas_unittest.cc",
+    "ext/region_ops_unittest.cc",
     "ext/rgba_to_yuva_unittest.cc",
     "ext/skcolorspace_primaries_unittest.cc",
     "ext/skcolorspace_trfn_unittest.cc",
@@ -1340,7 +1375,10 @@ test("skia_unittests") {
     sources += [ "ext/skia_utils_ios_unittest.mm" ]
   }
   if (is_mac) {
-    sources += [ "ext/skia_utils_mac_unittest.mm" ]
+    sources += [
+      "ext/font_utils_mac_unittest.mm",
+      "ext/skia_utils_mac_unittest.mm",
+    ]
   }
 
   if (!is_win) {
@@ -1362,6 +1400,7 @@ test("skia_unittests") {
     "//ui/gfx/geometry",
   ]
 
+  data = [ "//third_party/test_fonts/test_fonts/Ahem.ttf" ]
   data_deps = [ "//testing/buildbot/filters:skia_unittests_filters" ]
 
   if (!is_ios) {

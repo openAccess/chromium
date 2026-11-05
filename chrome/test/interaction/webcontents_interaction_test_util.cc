@@ -53,8 +53,8 @@
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/safe_castable.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/interaction/element_tracker_views.h"
@@ -1160,9 +1160,9 @@ void TabWebContentsInteractionTestUtil::LoadPageInNewTab(const GURL& url,
       new_tab_watcher_ ? new_tab_watcher_->browser()
                        : GetBrowserWindowForWebContentsInTab(web_contents());
   NavigateParams navigate_params(browser, url, ui::PAGE_TRANSITION_TYPED);
-  navigate_params.disposition = activate_tab
-                                    ? WindowOpenDisposition::NEW_FOREGROUND_TAB
-                                    : WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  navigate_params.disposition =
+      activate_tab ? ui::mojom::WindowOpenDisposition::kNewForegroundTab
+                   : ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   auto navigate_result = Navigate(&navigate_params);
   CHECK(navigate_result);
 }
@@ -1181,7 +1181,7 @@ views::WebView* TabWebContentsInteractionTestUtil::GetWebView() const {
     return nullptr;
   }
 
-  return browser_view->contents_web_view();
+  return browser_view->contents_web_view_for_testing();
 }
 
 ui::ElementContext TabWebContentsInteractionTestUtil::GetElementContext()
@@ -1265,7 +1265,28 @@ class WebViewWebContentsInteractionTestUtil::WebViewData
     }
     context_ = views::ElementTrackerViews::GetContextForView(web_view_);
     CHECK(context_);
+    SubscribeToContext();
+  }
 
+  ui::ElementContext context() const { return context_; }
+
+  bool visible() const { return visible_; }
+
+  views::WebView* web_view() const { return web_view_; }
+
+ private:
+  struct MinimumSizeData {
+    ui::CustomElementEventType event_type;
+    gfx::Size webview_size;
+    DeepQuery element;
+    gfx::Size element_size;
+  };
+
+  // Listens for the tracked view being shown or hidden in `context_`, and
+  // picks up the element immediately if it is already present.
+  void SubscribeToContext() {
+    const ui::ElementIdentifier id =
+        web_view_->GetProperty(views::kElementIdentifierKey);
     shown_subscription_ =
         ui::ElementTracker::GetElementTracker()->AddElementShownCallback(
             id, context_,
@@ -1283,20 +1304,6 @@ class WebViewWebContentsInteractionTestUtil::WebViewData
       OnElementShown(element);
     }
   }
-
-  ui::ElementContext context() const { return context_; }
-
-  bool visible() const { return visible_; }
-
-  views::WebView* web_view() const { return web_view_; }
-
- private:
-  struct MinimumSizeData {
-    ui::CustomElementEventType event_type;
-    gfx::Size webview_size;
-    DeepQuery element;
-    gfx::Size element_size;
-  };
 
   void OnElementShown(ui::TrackedElement* element) {
     if (visible_) {
@@ -1325,6 +1332,20 @@ class WebViewWebContentsInteractionTestUtil::WebViewData
   }
 
   // views::ViewObserver:
+  void OnViewAddedToWidget(views::View* view) override {
+    // A tracked view can move between widgets; the omnibox popup, for example,
+    // discards and rebuilds its widget between shows while keeping the WebView
+    // and its WebContents alive. Each widget is its own element context, so
+    // re-target the subscriptions or the view would never be seen again.
+    const ui::ElementContext context =
+        views::ElementTrackerViews::GetContextForView(web_view_);
+    if (!context || context == context_) {
+      return;
+    }
+    context_ = context;
+    SubscribeToContext();
+  }
+
   void OnViewIsDeleting(views::View* view) override {
     visible_ = false;
     web_view_ = nullptr;

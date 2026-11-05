@@ -6,27 +6,20 @@
 #define CHROME_BROWSER_GLIC_PUBLIC_GLIC_INSTANCE_METRICS_BACKWARDS_COMPATIBILITY_H_
 
 #include "base/time/time.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
-
-namespace tabs {
-class TabInterface;
-}
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 
 namespace glic {
 
-// Interface that's compatible for both `GlicInstanceMetrics` and
-// `GlicMetrics`. This interface will be removed when the single-instance
-// codepath is deprecated. Only intended for APIs that are either used in
-// MultiInstance or in single-instance.
+// Per-instance metrics APIs that `Host` forwards to the instance's metrics
+// recorder. Originally shared with the single-instance `GlicMetrics`; now
+// only implemented by `GlicInstanceMetrics`.
+// TODO(b/468097191): Fold this interface into `GlicInstanceMetrics`.
 class GlicInstanceMetricsBackwardsCompatibility {
  public:
   virtual ~GlicInstanceMetricsBackwardsCompatibility() = default;
 
   virtual void OnUserInputSubmitted(mojom::WebClientMode mode,
                                     mojom::PromptType prompt_type) = 0;
-  virtual void DidRequestContextFromTab(tabs::TabInterface& tab) = 0;
-  virtual void OnResponseStarted() = 0;
-  virtual void OnResponseStopped(mojom::ResponseStopCause cause) = 0;
 };
 
 }  // namespace glic

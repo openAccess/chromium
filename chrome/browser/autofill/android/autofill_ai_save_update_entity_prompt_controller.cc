@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/android/scoped_java_ref.h"
@@ -45,12 +46,14 @@ AutofillAiSaveUpdateEntityPromptController::
         std::unique_ptr<AutofillAiSaveUpdateEntityPromptView> prompt_view,
         EntityInstance entity_instance,
         std::optional<EntityInstance> old_entity_instance,
+        LegalMessageLines public_passes_notice,
         std::string app_locale,
         AutofillClient::EntityImportPromptResultCallback prompt_result_callback)
     : web_contents_(web_contents),
       prompt_view_(std::move(prompt_view)),
       entity_instance_(std::move(entity_instance)),
       old_entity_instance_(std::move(old_entity_instance)),
+      public_passes_notice_(std::move(public_passes_notice)),
       app_locale_(std::move(app_locale)),
       prompt_result_callback_(std::move(prompt_result_callback)),
       java_object_(Java_AutofillAiSaveUpdateEntityPromptController_create(
@@ -59,7 +62,9 @@ AutofillAiSaveUpdateEntityPromptController::
   CHECK(prompt_view_);
   ui_context_.accepted_consent_string_id =
       IsWalletableEntity()
-          ? IDS_AUTOFILL_AI_SAVE_OR_UPDATE_ENTITY_IN_WALLET_SOURCE_NOTICE
+          ? (IsUpdatePrompt()
+                 ? IDS_AUTOFILL_AI_UPDATE_ENTITY_TO_WALLET_DIALOG_SUBTITLE
+                 : IDS_AUTOFILL_AI_SAVE_ENTITY_IN_WALLET_SOURCE_NOTICE)
           : IDS_AUTOFILL_AI_SAVE_OR_UPDATE_LOCAL_ENTITY_SOURCE_NOTICE;
   ui_context_.accept_button_string_id =
       IDS_AUTOFILL_PREDICTION_IMPROVEMENTS_SAVE_DIALOG_SAVE_BUTTON;
@@ -115,10 +120,18 @@ std::u16string AutofillAiSaveUpdateEntityPromptController::GetSourceNotice()
   }
   const std::u16string google_wallet_text =
       l10n_util::GetStringUTF16(IDS_AUTOFILL_GOOGLE_WALLET_TITLE);
+  if (IsUpdatePrompt()) {
+    // Since this string resource is used across all platforms, it does not
+    // include unique XML tags for the contained links (required by Java's
+    // `SpanApplier.applySpans()`), making necessary to manually wrap them.
+    return l10n_util::GetStringFUTF16(
+        IDS_AUTOFILL_AI_UPDATE_ENTITY_TO_WALLET_DIALOG_SUBTITLE,
+        base::StrCat({u"<link>", google_wallet_text, u"</link>"}),
+        base::UTF8ToUTF16(account->GetEmail()));
+  }
   return l10n_util::GetStringFUTF16(
-      IDS_AUTOFILL_AI_SAVE_OR_UPDATE_ENTITY_IN_WALLET_SOURCE_NOTICE,
-      google_wallet_text, google_wallet_text,
-      base::UTF8ToUTF16(account->email));
+      IDS_AUTOFILL_AI_SAVE_ENTITY_IN_WALLET_SOURCE_NOTICE, google_wallet_text,
+      google_wallet_text, base::UTF8ToUTF16(account->GetEmail()));
 }
 
 bool AutofillAiSaveUpdateEntityPromptController::IsWalletableEntity() const {
@@ -128,6 +141,17 @@ bool AutofillAiSaveUpdateEntityPromptController::IsWalletableEntity() const {
 
 bool AutofillAiSaveUpdateEntityPromptController::IsUpdatePrompt() const {
   return old_entity_instance_.has_value();
+}
+
+const LegalMessageLines&
+AutofillAiSaveUpdateEntityPromptController::GetPublicPassesNotice() const {
+  return public_passes_notice_;
+}
+
+bool AutofillAiSaveUpdateEntityPromptController::
+    IsEligibleForWalletPassDisclosure() const {
+  return autofill::IsEligibleForWalletPassDisclosure(
+      /*is_save_prompt=*/!IsUpdatePrompt(), entity_instance_);
 }
 
 const EntityInstance&

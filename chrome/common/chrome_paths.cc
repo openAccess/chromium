@@ -17,7 +17,9 @@
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_constants.h"
 #include "chrome/common/chrome_paths_internal.h"
+#include "extensions/buildflags/buildflags.h"
 #include "media/media_buildflags.h"
+#include "ui/webui/buildflags.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/path_utils.h"
@@ -45,11 +47,14 @@
 
 namespace {
 
+bool g_user_data_dir_set_by_policy = false;
 std::optional<bool> g_override_using_default_data_directory_for_testing;
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 // The path to the external extension <id>.json files.
 // /usr/share seems like a good choice, see: http://www.pathname.com/fhs/
+// On ChromeOS, the "arc" sub directory is also exposed as
+// ash::DIR_ARC_DEFAULT_APPS (ash/constants/ash_paths.cc). Keep them in sync.
 const base::FilePath::CharType kFilepathSinglePrefExtensions[] =
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
     FILE_PATH_LITERAL("/usr/share/google-chrome/extensions");
@@ -68,9 +73,6 @@ const base::FilePath::CharType kComponentUpdatedWidevineCdmHint[] =
 #endif  // BUILDFLAG(ENABLE_WIDEVINE)
 
 #if BUILDFLAG(IS_CHROMEOS)
-const base::FilePath::CharType kDeviceRefreshTokenFilePath[] =
-    FILE_PATH_LITERAL("/home/chronos/device_refresh_token");
-
 bool GetChromeOsCrdDataDirInternal(base::FilePath* result,
                                    bool* should_be_created) {
 #if BUILDFLAG(IS_CHROMEOS_DEVICE)
@@ -356,6 +358,14 @@ bool PathProvider(int key, base::FilePath* result) {
 #endif
       break;
 
+#if BUILDFLAG(IS_MAC) && BUILDFLAG(ENABLE_WEBUI_GENERATE_CODE_CACHE)
+    case chrome::FILE_WEBUI_CODE_CACHE_PACK:
+      cur = base::apple::FrameworkBundlePath()
+                .Append(FILE_PATH_LITERAL("Resources"))
+                .Append(BUILDFLAG(WEBUI_CODE_CACHE_PAK_FILENAME));
+      break;
+#endif
+
 #if BUILDFLAG(IS_CHROMEOS)
     case chrome::DIR_CHROMEOS_CRD_DATA:
       if (!GetChromeOsCrdDataDirInternal(&cur,
@@ -492,12 +502,6 @@ bool PathProvider(int key, base::FilePath* result) {
       break;
 #endif  // !BUILDFLAG(IS_ANDROID)
 
-#if BUILDFLAG(IS_CHROMEOS)
-    case chrome::FILE_CHROME_OS_DEVICE_REFRESH_TOKEN:
-      cur = base::FilePath(kDeviceRefreshTokenFilePath);
-      break;
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
     case chrome::DIR_OPTIMIZATION_GUIDE_PREDICTION_MODELS:
       if (!base::PathService::Get(chrome::DIR_USER_DATA, &cur)) {
         return false;
@@ -520,6 +524,14 @@ bool PathProvider(int key, base::FilePath* result) {
   return true;
 }
 
+void SetUserDataDirSetByPolicy() {
+  g_user_data_dir_set_by_policy = true;
+}
+
+void ClearUserDataDirSetByPolicyForTesting() {
+  g_user_data_dir_set_by_policy = false;
+}
+
 std::optional<bool> IsUsingDefaultDataDirectory() {
   if (g_override_using_default_data_directory_for_testing.has_value()) {
     return g_override_using_default_data_directory_for_testing.value();
@@ -536,6 +548,19 @@ std::optional<bool> IsUsingDefaultDataDirectory() {
   }
 
   return user_data_dir == default_user_data_dir;
+}
+
+std::optional<bool> IsUsingDefaultOrEnforcedDataDirectory() {
+  if (g_override_using_default_data_directory_for_testing.has_value()) {
+    return g_override_using_default_data_directory_for_testing.value();
+  }
+
+  if (g_user_data_dir_set_by_policy) {
+    // The policy-provided value is the admin-enforced directory.
+    return true;
+  }
+
+  return IsUsingDefaultDataDirectory();
 }
 
 void SetUsingDefaultUserDataDirectoryForTesting(

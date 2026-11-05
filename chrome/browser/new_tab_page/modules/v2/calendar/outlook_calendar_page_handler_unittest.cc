@@ -24,6 +24,7 @@
 #include "components/search/ntp_features.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "services/network/test/test_utils.h"
@@ -833,25 +834,6 @@ TEST_F(OutlookCalendarPageHandlerTest, MakeRequestAfterRetryTimeout) {
       OutlookCalendarRequestResult::kSuccess, 1);
   histogram_tester().ExpectBucketCount(
       "NewTabPage.OutlookCalendar.ResponseResult", 3, 1);
-}
-
-// Verifies that prefs are accurately set on dismissal and restoring of module.
-TEST_F(OutlookCalendarPageHandlerTest, DismissAndRestoreModule) {
-  std::unique_ptr<OutlookCalendarPageHandler> handler = CreateHandler();
-
-  EXPECT_EQ(profile().GetPrefs()->GetTime(
-                prefs::kNtpOutlookCalendarLastDismissedTime),
-            base::Time());
-
-  handler->DismissModule();
-  EXPECT_EQ(profile().GetPrefs()->GetTime(
-                prefs::kNtpOutlookCalendarLastDismissedTime),
-            base::Time::Now());
-
-  handler->RestoreModule();
-  EXPECT_EQ(profile().GetPrefs()->GetTime(
-                prefs::kNtpOutlookCalendarLastDismissedTime),
-            base::Time());
 }
 
 // Verifies that an event isn't created if the event has been declined.

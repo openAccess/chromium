@@ -187,6 +187,9 @@ SharedImageInterfaceInProcessBase::CreateSharedImage(
       (handle_info.handle.type ==
        gfx::GpuMemoryBufferType::SHARED_MEMORY_BUFFER)) {
     si_info_copy.format.ClearPrefersExternalSampler();
+    if (si_info_copy.alpha_type == kPremul_SkAlphaType) {
+      si_info_copy.alpha_type = kUnpremul_SkAlphaType;
+    }
   }
 
   return base::MakeRefCounted<ClientSharedImage>(
@@ -414,29 +417,22 @@ void SharedImageInterfaceInProcessBase::UpdateSharedImageOnGpuThread(
   }
 
   SharedImageFactory* shared_image_factory = GetSharedImageFactoryOnGpuThread();
-  if (!shared_image_factory ||
-      !shared_image_factory->UpdateSharedImage(mailbox, /*in_fence=*/nullptr)) {
+  if (!shared_image_factory || !shared_image_factory->UpdateSharedImage(
+                                   mailbox, gfx::GpuFenceHandle())) {
     MarkContextLostOnGpuThread();
   }
 }
 
 void SharedImageInterfaceInProcessBase::DestroySharedImage(
-    const SyncToken& sync_token,
+    std::vector<SyncToken> sync_tokens,
     const Mailbox& mailbox) {
   // Use sync token dependency to ensure that the destroy task does not run
-  // before sync token is released.
+  // before sync tokens are released.
   ScheduleGpuTask(
       base::BindOnce(
           &SharedImageInterfaceInProcessBase::DestroySharedImageOnGpuThread,
           this, mailbox),
-      /*sync_token_fences=*/{sync_token}, SyncToken());
-}
-
-void SharedImageInterfaceInProcessBase::DestroySharedImage(
-    const SyncToken& sync_token,
-    scoped_refptr<ClientSharedImage> client_shared_image) {
-  CHECK(client_shared_image->HasOneRef());
-  client_shared_image->UpdateDestructionSyncToken(sync_token);
+      /*sync_token_fences=*/std::move(sync_tokens), SyncToken());
 }
 
 void SharedImageInterfaceInProcessBase::DestroySharedImageOnGpuThread(

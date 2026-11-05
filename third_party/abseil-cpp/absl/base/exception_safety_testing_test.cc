@@ -20,7 +20,10 @@
 #include <exception>
 #include <iostream>
 #include <list>
+#include <memory>
+#include <sstream>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "gtest/gtest-spi.h"
@@ -839,7 +842,7 @@ struct ExhaustivenessTester {
     return true;
   }
 
-  static unsigned char successes;
+  static unsigned char successes [[maybe_unused]];
 };
 
 struct {

@@ -12,15 +12,18 @@ import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
+import android.os.Binder;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.os.SystemClock;
 import android.provider.OpenableColumns;
 import android.webkit.MimeTypeMap;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.base.TimeUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -44,12 +47,15 @@ public class DropDataProviderImpl {
     public static final String CACHE_METHOD_NAME = "cache";
     public static final String SET_INTERVAL_METHOD_NAME = "setClearCachedDataIntervalMs";
     public static final String ON_DRAG_END_METHOD_NAME = "onDragEnd";
+    public static final String GET_IMAGE_METHOD_NAME = "getImage";
 
     public static final String CLEAR_CACHE_PARAM = "clearCacheDelayedMs";
     public static final String IMAGE_USAGE_PARAM = "imageIsInUse";
     public static final String BYTES_PARAM = "bytes";
     public static final String IMAGE_CONTENT_EXTENSION_PARAM = "imageContentExtension";
     public static final String IMAGE_FILE_PARAM = "imageFilename";
+    public static final String DRAG_ID_PARAM = "dragId";
+    public static final String URI_PARAM = "uri";
     public static final int DEFAULT_CLEAR_CACHED_DATA_INTERVAL_MS = 60_000;
 
     /**
@@ -97,7 +103,11 @@ public class DropDataProviderImpl {
     private byte @Nullable [] mImageBytes;
 
     private @Nullable String mImageFilename;
+    private @Nullable String mImageContentExtension;
     private @Nullable String mMimeType;
+
+    /** The drag ID (DropDataAndroid#dragId) of the drag that the cached image belongs to. */
+    private @Nullable String mDragId;
 
     /** The URI handled by this content provider. */
     private @Nullable Uri mContentProviderUri;
@@ -118,7 +128,7 @@ public class DropDataProviderImpl {
     }
 
     private Uri generateUri() {
-        String timestamp = String.valueOf(System.currentTimeMillis());
+        String timestamp = String.valueOf(TimeUtils.currentTimeMillis());
         return new Uri.Builder()
                 .scheme(ContentResolver.SCHEME_CONTENT)
                 .authority(
@@ -132,6 +142,15 @@ public class DropDataProviderImpl {
      * Cache the passed-in image data of Drag and Drop. It is expected for filename to be non-empty.
      */
     public Uri cache(byte[] imageBytes, String encodingFormat, String filename) {
+        return cache(imageBytes, encodingFormat, filename, /* dragId= */ null);
+    }
+
+    /**
+     * Cache the passed-in image data of Drag and Drop, along with the drag ID of the drag it
+     * belongs to. It is expected for filename to be non-empty.
+     */
+    public Uri cache(
+            byte[] imageBytes, String encodingFormat, String filename, @Nullable String dragId) {
         String mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(encodingFormat);
         Uri newUri = generateUri();
 
@@ -141,7 +160,9 @@ public class DropDataProviderImpl {
             // Set new data.
             this.mImageBytes = imageBytes;
             mImageFilename = filename;
+            mImageContentExtension = encodingFormat;
             mMimeType = mimeType;
+            mDragId = dragId;
             mDragEndTime = 0;
             mOpenFileLastAccessTime = 0;
             mContentProviderUri = newUri;
@@ -191,7 +212,9 @@ public class DropDataProviderImpl {
     private void clearCacheData() {
         mImageBytes = null;
         mImageFilename = null;
+        mImageContentExtension = null;
         mMimeType = null;
+        mDragId = null;
         if (mContentProviderUri != null) {
             mLastUri = mContentProviderUri;
             mLastUriClearedTimestamp = SystemClock.elapsedRealtime();
@@ -251,9 +274,12 @@ public class DropDataProviderImpl {
         }
 
         int idx1 = mimeType.indexOf('/');
+        int idx2 = mimeTypeFilter.indexOf('/');
+        if (idx1 == -1 || idx2 == -1) {
+            return false;
+        }
         String type = mimeType.substring(0, idx1);
         String subtype = mimeType.substring(idx1 + 1);
-        int idx2 = mimeTypeFilter.indexOf('/');
         String typeFilter = mimeTypeFilter.substring(0, idx2);
         String subtypeFilter = mimeTypeFilter.substring(idx2 + 1);
         if (!typeFilter.equals("*") && !typeFilter.equals(type)) {
@@ -356,36 +382,91 @@ public class DropDataProviderImpl {
     }
 
     /**
-     * @see ContentProvider#call(String, String, Bundle)
+     * Returns the cached image data if {@code uri} is the URI currently served by this provider,
+     * {@code dragId} is the drag ID of the drag the image was cached for, and that drag is still in
+     * progress, so that a drop target in this process can take the image bytes directly instead of
+     * reading them back through {@link #openFile}. Returns null otherwise, including for a stale
+     * URI, a missing or different drag ID, or once the drag has ended. This binds the bytes to the
+     * drag that produced them: a later drag that replays the URI and drag ID, for example one
+     * started by another app that received them, gets nothing.
      */
-    public @Nullable Bundle call(String method, @Nullable String arg, @Nullable Bundle extras) {
+    private @Nullable Bundle getImage(@Nullable Uri uri, @Nullable String dragId) {
+        synchronized (LOCK) {
+            // `mDragEndTime` is set once the source has seen ACTION_DRAG_ENDED. A drop
+            // onto a target in this process arrives before that, so only an image of a
+            // drag still in progress is served; afterwards the URI and drag ID can't be
+            // replayed to get the bytes delivered again.
+            if (uri == null
+                    || !uri.equals(mContentProviderUri)
+                    || mDragEndTime != 0
+                    || dragId == null
+                    || !dragId.equals(mDragId)) {
+                return null;
+            }
+            Bundle bundle = new Bundle();
+            bundle.putByteArray(BYTES_PARAM, mImageBytes);
+            bundle.putString(IMAGE_CONTENT_EXTENSION_PARAM, mImageContentExtension);
+            bundle.putString(IMAGE_FILE_PARAM, mImageFilename);
+            return bundle;
+        }
+    }
+
+    /**
+     * @see ContentProvider#call(String, String, Bundle)
+     *     <p>Note: Although ContentProvider#call specifies `method` as @NonNull, it is
+     *     marked @Nullable here to defensively handle crafted IPC calls. A malicious app bypassing
+     *     the ContentResolver could send a null method via Binder, which would otherwise cause a
+     *     NullPointerException when switching on the method name.
+     */
+    public @Nullable Bundle call(
+            @Nullable String method, @Nullable String arg, @Nullable Bundle extras) {
+        if (Binder.getCallingUid() != Process.myUid()) {
+            throw new SecurityException("Calling UID does not match process UID.");
+        }
+        if (method == null || extras == null) {
+            return null;
+        }
+        // All methods below are called only from Chromium code (via DropDataProviderUtils,
+        // enforced by the UID check above). They go through ContentProvider#call IPC rather than
+        // direct Java method calls here because Android WebView embedders may host
+        // DropDataContentProvider in a separate process of the same app (crbug.com/578693518).
         switch (method) {
             case CACHE_METHOD_NAME:
-                assumeNonNull(extras);
-                byte[] imageBytes = (byte[]) extras.getSerializable(BYTES_PARAM);
+                byte[] imageBytes = extras.getByteArray(BYTES_PARAM);
                 String encodingFormat = extras.getString(IMAGE_CONTENT_EXTENSION_PARAM);
                 String filename = extras.getString(IMAGE_FILE_PARAM);
-                assert imageBytes != null;
-                assert encodingFormat != null;
-                assert filename != null;
-                Uri uri = cache(imageBytes, encodingFormat, filename);
+                if (imageBytes == null || encodingFormat == null || filename == null) {
+                    return null;
+                }
+                Uri uri =
+                        cache(
+                                imageBytes,
+                                encodingFormat,
+                                filename,
+                                extras.getString(DRAG_ID_PARAM));
                 Bundle bundleToReturn = new Bundle();
-                bundleToReturn.putParcelable("uri", uri);
+                bundleToReturn.putParcelable(URI_PARAM, uri);
                 return bundleToReturn;
             case SET_INTERVAL_METHOD_NAME:
-                assumeNonNull(extras);
                 setClearCachedDataIntervalMs(
                         extras.getInt(
                                 CLEAR_CACHE_PARAM,
                                 DropDataProviderImpl.DEFAULT_CLEAR_CACHED_DATA_INTERVAL_MS));
                 break;
             case ON_DRAG_END_METHOD_NAME:
-                assumeNonNull(extras);
                 onDragEnd(extras.getBoolean(IMAGE_USAGE_PARAM));
                 break;
+            case GET_IMAGE_METHOD_NAME:
+                return getImage(extras.getParcelable(URI_PARAM), extras.getString(DRAG_ID_PARAM));
         }
 
         return null;
+    }
+
+    int getClearCachedDataIntervalMsForTesting() {
+        synchronized (LOCK) {
+            return mClearCachedDataIntervalMs;
+        }
     }
 
     byte @Nullable [] getImageBytesForTesting() {

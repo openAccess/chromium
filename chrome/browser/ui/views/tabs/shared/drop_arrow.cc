@@ -35,8 +35,9 @@ const gfx::VectorIcon& GetDropArrowIcon(DropArrow::Direction direction) {
       return features::IsRoundedIconsEnabled() ? kArrowUpwardIcon
                                                : kArrowUpwardOldIcon;
     case DropArrow::Direction::kDown:
-      return features::IsRoundedIconsEnabled() ? kArrowDownwardIcon
-                                               : kArrowDownwardOldIcon;
+      return features::IsRoundedIconsEnabled()
+                 ? vector_icons::kArrowDownwardIcon
+                 : kArrowDownwardOldIcon;
     case DropArrow::Direction::kLeft:
       return features::IsRoundedIconsEnabled() ? vector_icons::kArrowBackIcon
                                                : kArrowBackOldIcon;
@@ -100,7 +101,8 @@ void DropArrow::SetIndex(const BrowserRootView::DropIndex& index) {
 }
 
 void DropArrow::OnWidgetDestroying(views::Widget* widget) {
-  DCHECK(scoped_observation_.IsObservingSource(arrow_widget_.get()));
+  CHECK(scoped_observation_.IsObservingSource(arrow_widget_.get()),
+        base::NotFatalUntil::M162);
   scoped_observation_.Reset();
   arrow_view_ = nullptr;
   arrow_widget_ = nullptr;

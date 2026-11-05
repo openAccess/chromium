@@ -441,7 +441,9 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
   void PruneChildFrameNavigationEntries(NavigationEntryImpl* entry);
 
   using FencedFrameStatus = RenderFrameHostImpl::FencedFrameStatus;
-  FencedFrameStatus fenced_frame_status() const { return fenced_frame_status_; }
+  FencedFrameStatus fenced_frame_status() const {
+    return FencedFrameStatus::kNotNestedInFencedFrame;
+  }
 
   blink::FrameOwnerElementType frame_owner_element_type() const {
     return frame_owner_element_type_;
@@ -627,30 +629,6 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
     return fenced_frame_properties_.has_value();
   }
 
-  // Returns the number of fenced frame boundaries above this frame. The
-  // outermost main frame's frame tree has fenced frame depth 0, a topmost
-  // fenced frame tree embedded in the outermost main frame has fenced frame
-  // depth 1, etc.
-  //
-  // Also, sets `shared_storage_fenced_frame_root_count` to the
-  // number of fenced frame boundaries (roots) above this frame that originate
-  // from shared storage. This is used to check whether a fenced frame
-  // originates from shared storage only (i.e. not from FLEDGE).
-  // TODO(crbug.com/40233168): Remove this check once we put permissions inside
-  // FencedFrameConfig.
-  size_t GetFencedFrameDepth(size_t& shared_storage_fenced_frame_root_count);
-
-  // Traverse up from this node. Return all valid
-  // `node->fenced_frame_properties_->shared_storage_budget_metadata` (i.e. this
-  // node is subjected to the shared storage budgeting associated with those
-  // metadata). Every node that originates from sharedStorage.selectURL() will
-  // have an associated metadata. This indicates that the metadata can only
-  // possibly be associated with a fenced frame root, unless when
-  // `kAllowURNsInIframes` is enabled in which case they could be be associated
-  // with any node.
-  std::vector<const SharedStorageBudgetMetadata*>
-  FindSharedStorageBudgetMetadata();
-
   // Accessor to BrowsingContextState for subframes only. Only main frame
   // navigations can change BrowsingInstances and BrowsingContextStates,
   // therefore for subframes associated BrowsingContextState never changes. This
@@ -792,8 +770,9 @@ class CONTENT_EXPORT FrameTreeNode : public RenderFrameHostOwner {
   // Verify that the renderer process is allowed to set user activation on this
   // frame by checking whether this frame's RenderWidgetHost had previously seen
   // an input event that might lead to user activation. If user activation
-  // should be allowed, this returns true and also clears corresponding pending
-  // user activation state in the widget. Otherwise, this returns false.
+  // should be allowed, this returns true and also decrements
+  // `expected_user_activation_notifications_` in the widget. Otherwise, this
+  // returns false.
   bool VerifyUserActivation();
 
   // See `RestartBackForwardCachedNavigationAsync()`.

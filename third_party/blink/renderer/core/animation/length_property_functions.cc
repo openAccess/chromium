@@ -16,8 +16,8 @@ Length::ValueRange LengthPropertyFunctions::GetValueRange(
     case CSSPropertyID::kBorderLeftWidth:
     case CSSPropertyID::kBorderRightWidth:
     case CSSPropertyID::kBorderTopWidth:
+    case CSSPropertyID::kFitTolerance:
     case CSSPropertyID::kFlexBasis:
-    case CSSPropertyID::kFlowTolerance:
     case CSSPropertyID::kHeight:
     case CSSPropertyID::kLineHeight:
     case CSSPropertyID::kMaxHeight:
@@ -179,16 +179,16 @@ bool LengthPropertyFunctions::GetLength(const CSSProperty& property,
       result = style.Cy();
       success = true;
       break;
+    case CSSPropertyID::kFitTolerance:
+      if (!style.GetFitTolerance().IsNormal() &&
+          !style.GetFitTolerance().IsInfinite()) {
+        result = style.GetFitTolerance().GetLength();
+        success = true;
+      }
+      break;
     case CSSPropertyID::kFlexBasis:
       result = style.FlexBasis();
       success = true;
-      break;
-    case CSSPropertyID::kFlowTolerance:
-      if (!style.GetFlowTolerance().IsNormal() &&
-          !style.GetFlowTolerance().IsInfinite()) {
-        result = style.GetFlowTolerance().GetLength();
-        success = true;
-      }
       break;
     case CSSPropertyID::kHeight:
       result = style.Height();
@@ -277,6 +277,12 @@ bool LengthPropertyFunctions::GetLength(const CSSProperty& property,
     case CSSPropertyID::kStrokeDashoffset:
       result = style.StrokeDashOffset();
       success = true;
+      break;
+    case CSSPropertyID::kTextDecorationThickness:
+      if (!style.GetTextDecorationThickness().IsFromFont()) {
+        result = style.GetTextDecorationThickness().Thickness();
+        success = true;
+      }
       break;
     case CSSPropertyID::kTextIndent:
       result = style.TextIndent();
@@ -490,6 +496,30 @@ bool LengthPropertyFunctions::SetLength(const CSSProperty& property,
       return true;
     case CSSPropertyID::kBottom:
       builder.SetBottom(value);
+      return true;
+    case CSSPropertyID::kColumnRuleInsetCapEnd:
+      builder.SetColumnRuleInsetCapEnd(value);
+      return true;
+    case CSSPropertyID::kRowRuleInsetCapEnd:
+      builder.SetRowRuleInsetCapEnd(value);
+      return true;
+    case CSSPropertyID::kColumnRuleInsetCapStart:
+      builder.SetColumnRuleInsetCapStart(value);
+      return true;
+    case CSSPropertyID::kRowRuleInsetCapStart:
+      builder.SetRowRuleInsetCapStart(value);
+      return true;
+    case CSSPropertyID::kColumnRuleInsetJunctionEnd:
+      builder.SetColumnRuleInsetJunctionEnd(value);
+      return true;
+    case CSSPropertyID::kRowRuleInsetJunctionEnd:
+      builder.SetRowRuleInsetJunctionEnd(value);
+      return true;
+    case CSSPropertyID::kColumnRuleInsetJunctionStart:
+      builder.SetColumnRuleInsetJunctionStart(value);
+      return true;
+    case CSSPropertyID::kRowRuleInsetJunctionStart:
+      builder.SetRowRuleInsetJunctionStart(value);
       return true;
     case CSSPropertyID::kCx:
       builder.SetCx(value);

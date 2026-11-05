@@ -9,7 +9,6 @@ source_set("public") {
     ":android",
     "//base",
     "//chrome/browser/autofill",
-    "//chrome/browser/keyboard_accessory/android",
     "//chrome/browser/password_manager/android:utils",
     "//components/password_manager/content/browser",
     "//components/password_manager/core/browser",
@@ -33,6 +32,7 @@ source_set("android") {
 
   deps = [
     "//chrome/browser/touch_to_fill/password_manager/password_generation/android/internal:jni",
+    "//components/password_manager/core/browser:password_string",
     "//components/password_manager/core/common:features",
     "//components/prefs",
     "//content/public/browser",
@@ -67,9 +67,9 @@ source_set("unit_tests") {
     ":public",
     ":test_support",
     "//base",
-    "//chrome/browser/keyboard_accessory/test_utils/android",
     "//chrome/browser/password_manager/android:utils",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/password_manager/content/browser",
     "//content/test:test_support",
   ]

@@ -7,12 +7,11 @@
 
 #import <Foundation/Foundation.h>
 
-#import <string_view>
-
 @class UIOpenURLContext;
 @class NSUserActivity;
 @class UIApplicationShortcutItem;
 @class SceneState;
+@class UIScene;
 
 // Defines the point at which a task can be executed. These stages should be
 // specific to a scene.
@@ -38,11 +37,22 @@ using ShortcutCompletionHandler = void (^)(BOOL succeeded);
 // Gaia ID associated with the task, if any.
 @property(nonatomic, readonly) NSString* gaiaID;
 
+// URL associated with the task, if any.
+@property(nonatomic, readonly) NSURL* URL;
+
+// Whether the task is an X-Callback `/app-group-command` URL with a recent App
+// Group command, which only Chrome extensions can write. Such requests are
+// attributed to the share extension, the only extension requesting account
+// switches. Computed when the task is created, because the App Group command
+// is consumed at that time and is no longer available when the task is
+// executed.
+@property(nonatomic, readonly) BOOL isFromShareExtension;
+
 // Minimum execution stage for a task.
 @property(nonatomic, assign) TaskExecutionStage minimumStage;
 
-// Scene session ID on which the task should be executed.
-@property(nonatomic, readonly) std::string_view sceneSessionID;
+// Scene on which the task should be executed.
+@property(nonatomic, weak, readonly) UIScene* scene;
 
 // True if the task was created during a cold start.
 @property(nonatomic, readonly) BOOL isColdStart;

@@ -32,6 +32,7 @@
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/prefs/pref_service.h"
+#include "components/safe_browsing/buildflags.h"
 #include "components/variations/variations_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -39,18 +40,33 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/common/chrome_features.h"
 #else
 #include "components/enterprise/browser/controller/fake_browser_dm_token_storage.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+#if BUILDFLAG(IS_WIN)
+#include "base/test/test_reg_util_win.h"
+#endif  // BUILDFLAG(IS_WIN)
+
 namespace policy {
 
+#if BUILDFLAG(IS_ANDROID)
+// Android browser tests spawn a full Activity and browser process per test
+// case; 8 chunks eliminate extra browser startups while keeping each chunk
+// fast.
+const size_t kNumChunks = 8;
+#else
 const size_t kNumChunks = 32;
+#endif
 
 namespace {
+
+constexpr PolicyPrefMappingBuildFlag kPolicyPrefMappingBuildFlags[] = {
+    {"SAFE_BROWSING_AVAILABLE", BUILDFLAG(SAFE_BROWSING_AVAILABLE)},
+};
 
 base::FilePath GetTestCaseDir() {
   base::ScopedAllowBlockingForTesting allow_blocking;
@@ -90,6 +106,17 @@ class PolicyPrefsTest : public PlatformBrowserTest {
 
  protected:
   void SetUpInProcessBrowserTestFixture() override {
+#if BUILDFLAG(IS_WIN)
+    // Override HKCU to isolate from and prevent writing to real registry keys.
+    // On Windows, the metrics reporting consent is stored in the registry and
+    // is used to determine the default value for
+    // `metrics::prefs::kMetricsReportingEnabled` on startup. Without this,
+    // tests may flake if the registry already has metrics reporting enabled or
+    // if policy changes during the test write to the real registry.
+    ASSERT_NO_FATAL_FAILURE(
+        registry_override_manager_.OverrideRegistry(HKEY_CURRENT_USER));
+#endif  // BUILDFLAG(IS_WIN)
+
     // Some policies default value might depend on features, enforce use of
     // field trial testing config to avoid having unexpected results based on
     // new feature flags coming from the server (e.g. on Chrome-branded CI
@@ -140,6 +167,9 @@ class PolicyPrefsTest : public PlatformBrowserTest {
 #if !BUILDFLAG(IS_ANDROID)
   testing::NiceMock<MockConfigurationPolicyProvider> provider_;
 #endif  // !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_WIN)
+  registry_util::RegistryOverrideManager registry_override_manager_;
+#endif  // BUILDFLAG(IS_WIN)
 };
 
 // Splits the test cases into `kNumChunks` and the testing parameter determines
@@ -150,7 +180,7 @@ class ChunkedPolicyPrefsTest : public PolicyPrefsTest,
  public:
   ChunkedPolicyPrefsTest() {
 #if BUILDFLAG(IS_CHROMEOS)
-    feature_list_.InitAndEnableFeature(features::kCameraCloudStorage);
+    feature_list_.InitAndEnableFeature(ash::features::kCameraCloudStorage);
 #endif
   }
   ChunkedPolicyPrefsTest(const ChunkedPolicyPrefsTest&) = delete;
@@ -161,6 +191,8 @@ class ChunkedPolicyPrefsTest : public PolicyPrefsTest,
   PrefMappingChunkInfo chunk_info_{GetParam(), GetNumChunks()};
 #if BUILDFLAG(IS_CHROMEOS)
   base::test::ScopedFeatureList feature_list_;
+#else
+  policy::FakeBrowserDMTokenStorage storage_;
 #endif
 };
 
@@ -175,8 +207,7 @@ IN_PROC_BROWSER_TEST_P(ChunkedPolicyPrefsTest, PolicyToPrefsMapping) {
   base::ScopedAllowBlockingForTesting allow_blocking;
 
 #if !BUILDFLAG(IS_CHROMEOS)
-  policy::FakeBrowserDMTokenStorage storage;
-  policy::BrowserDMTokenStorage::SetForTesting(&storage);
+  policy::BrowserDMTokenStorage::SetForTesting(&storage_);
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
   PrefService* local_state = g_browser_process->local_state();
@@ -186,7 +217,8 @@ IN_PROC_BROWSER_TEST_P(ChunkedPolicyPrefsTest, PolicyToPrefsMapping) {
 
   VerifyPolicyToPrefMappings(GetTestCaseDir(), local_state, user_prefs,
                              /* signin_profile_prefs= */ nullptr,
-                             GetMockPolicyProvider(), &chunk_info_);
+                             GetMockPolicyProvider(), &chunk_info_,
+                             kPolicyPrefMappingBuildFlags);
 }
 
 INSTANTIATE_TEST_SUITE_P(Chunked,
@@ -222,7 +254,8 @@ IN_PROC_BROWSER_TEST_F(SigninPolicyPrefsTest, PolicyToPrefsMapping) {
   // checked by PolicyPrefsTest.PolicyToPrefsMapping test.
   VerifyPolicyToPrefMappings(GetTestCaseDir(), /* local_state= */ nullptr,
                              /* user_prefs= */ nullptr, signin_profile_prefs,
-                             GetMockPolicyProvider());
+                             GetMockPolicyProvider(), /*chunk_info=*/nullptr,
+                             kPolicyPrefMappingBuildFlags);
 }
 
 #endif  // BUILDFLAG(IS_CHROMEOS)

@@ -5,7 +5,7 @@
 #include "services/webnn/webnn_utils.h"
 
 #include <algorithm>
-#include <set>
+#include <bitset>
 
 #include "base/check.h"
 #include "base/feature_list.h"
@@ -71,14 +71,16 @@ bool ValidateAxes(base::span<const uint32_t> axes) {
     return false;
   }
 
-  // TODO(crbug.com/40206287): Replace `std::set` with `std::bitset` for
-  // duplication check after the maximum number of operand dimensions has been
-  // settled and validated before using this function. Use `std::set` here at
-  // present to avoid dimensions count check. Dimensions number issue tracked in
-  // https://github.com/webmachinelearning/webnn/issues/456.
-  if (rank != std::set<uint32_t>(axes.begin(), axes.end()).size()) {
-    // Axes should not contain duplicate values.
-    return false;
+  std::bitset<kMaxTensorRank> seen_axes;
+  for (uint32_t axis : axes) {
+    if (axis >= kMaxTensorRank) {
+      return false;
+    }
+    if (seen_axes.test(axis)) {
+      // Axes should not contain duplicate values.
+      return false;
+    }
+    seen_axes.set(axis);
   }
 
   return true;
@@ -331,24 +333,10 @@ std::string NotSupportedOperatorError(const mojom::ElementWiseUnary& op) {
   return base::StrCat({"Unsupported operator ", OpKindToString(op.kind), "."});
 }
 
-std::string NotSupportedArgumentTypeError(std::string_view op_name,
-                                          std::string_view argument_name,
-                                          OperandDataType type) {
-  return base::StrCat({"Unsupported data type ", DataTypeToString(type),
-                       " for ", op_name, " argument ", argument_name, "."});
-}
-
 std::string NotSupportedInputArgumentTypeError(std::string_view op_name,
                                                OperandDataType type) {
   return base::StrCat({"Unsupported data type ", DataTypeToString(type),
                        " for ", op_name, " argument input."});
-}
-
-std::string NotSupportedOptionTypeError(std::string_view op_name,
-                                        std::string_view option_name,
-                                        OperandDataType type) {
-  return base::StrCat({"Unsupported data type ", DataTypeToString(type),
-                       " for ", op_name, " option ", option_name});
 }
 
 std::vector<uint32_t> PermuteArray(base::span<const uint32_t> array,

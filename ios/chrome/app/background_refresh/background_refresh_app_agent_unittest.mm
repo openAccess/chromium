@@ -7,6 +7,8 @@
 #import <BackgroundTasks/BackgroundTasks.h>
 
 #import "base/strings/sys_string_conversions.h"
+#import "base/synchronization/waitable_event.h"
+#import "base/task/bind_post_task.h"
 #import "base/task/sequenced_task_runner.h"
 #import "base/task/thread_pool.h"
 #import "base/test/ios/wait_util.h"
@@ -14,13 +16,15 @@
 #import "base/test/run_until.h"
 #import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
+#import "base/threading/thread_restrictions.h"
 #import "components/test/ios/test_utils.h"
-#import "crypto/features.h"
 #import "ios/chrome/app/application_delegate/app_init_stage.h"
 #import "ios/chrome/app/application_delegate/app_init_stage_test_utils.h"
 #import "ios/chrome/app/application_delegate/app_state+Testing.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
+#import "ios/chrome/app/application_delegate/fake_startup_information.h"
 #import "ios/chrome/app/background_refresh/app_refresh_provider.h"
+#import "ios/chrome/app/background_refresh/background_refresh_app_agent+Testing.h"
 #import "ios/chrome/app/background_refresh/background_refresh_app_agent_audience.h"
 #import "ios/chrome/app/background_refresh/background_refresh_metrics.h"
 #import "ios/chrome/app/background_refresh_constants.h"
@@ -60,13 +64,20 @@ typedef void (^TaskExpirationBlock)();
 }
 @end
 
-// Refresh provider task that delays execution long enough to be canceled.
+// Refresh provider task that blocks execution until halted, allowing
+// cancellation to be tested deterministically.
 @interface ProlongedTask : VerifiableTask
+- (void)halt;
 @end
-@implementation ProlongedTask
+@implementation ProlongedTask {
+  base::WaitableEvent _haltEvent;
+}
 - (void)execute {
-  sleep(1);
-  [super execute];
+  base::ScopedAllowBaseSyncPrimitivesForTesting allow_wait;
+  _haltEvent.Wait();
+}
+- (void)halt {
+  _haltEvent.Signal();
 }
 @end
 
@@ -128,6 +139,12 @@ typedef void (^TaskExpirationBlock)();
 }
 - (id<AppRefreshProviderTask>)task {
   return self.injectedTask;
+}
+- (void)cancelRefresh {
+  [super cancelRefresh];
+  if ([self.injectedTask isKindOfClass:[ProlongedTask class]]) {
+    [(ProlongedTask*)self.injectedTask halt];
+  }
 }
 @end
 
@@ -217,10 +234,6 @@ typedef void (^TaskExpirationBlock)();
 class BackgroundRefreshAppAgentTest : public PlatformTest {
  protected:
   BackgroundRefreshAppAgentTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {kEnableAppBackgroundRefresh,
-         crypto::features::kMigrateIOSKeychainAccessibility},
-        {});
     TestingApplicationContext* application_context =
         TestingApplicationContext::GetGlobal();
 
@@ -241,15 +254,17 @@ class BackgroundRefreshAppAgentTest : public PlatformTest {
     BuildMockTaskScheduler();
     BuildMockTask();
 
-    // Set up mock app state and configure its -initStage method to return
-    // `init_stage_`. This is done instead of stubbing so that the return value
-    // can be changed.
-    app_state_ = [[AppState alloc] initWithStartupInformation:nil];
+    // Set up mock app state with FakeStartupInformation and configure its
+    // -initStage method to return `init_stage_`.
+    startup_information_ = [[FakeStartupInformation alloc] init];
+    app_state_ =
+        [[AppState alloc] initWithStartupInformation:startup_information_];
     [app_state_ updateInitStage:
                     NextAppInitStage(
                         AppInitStage::kBrowserObjectsForBackgroundHandlers)];
 
     agent_ = [[BackgroundRefreshAppAgent alloc] init];
+    agent_.startupInformation = startup_information_;
     audience_ = [[TestRefreshAudience alloc] init];
     agent_.audience = audience_;
     agent_.appState = app_state_;
@@ -317,12 +332,14 @@ class BackgroundRefreshAppAgentTest : public PlatformTest {
   }
 
   // Call the handler passed as the `launchHandler` into `BGTaskScheduler` on
-  // the callback runner thread,  and then call `thenCallback` on the main
+  // the callback runner thread, and then call `thenCallback` on the main
   // thread.
   void InvokeTaskHandlerThen(base::OnceClosure thenCallback) {
     base::OnceCallback callback = base::BindOnce(task_handler_, task_mock_);
     scheduler_callback_runner_->PostTask(
-        FROM_HERE, std::move(callback).Then(std::move(thenCallback)));
+        FROM_HERE,
+        std::move(callback).Then(base::BindPostTask(
+            web::GetUIThreadTaskRunner({}), std::move(thenCallback))));
   }
 
   // Call the handler passed as the `expirationHandler` into `BGTask`.
@@ -347,7 +364,8 @@ class BackgroundRefreshAppAgentTest : public PlatformTest {
   }
 
   // By default, enable background refresh for all tests.
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      kEnableAppBackgroundRefresh};
   // Local state for test application context.
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   // Threads.
@@ -365,6 +383,7 @@ class BackgroundRefreshAppAgentTest : public PlatformTest {
   id task_mock_;
   TaskExpirationBlock task_expiration_handler_;
   AppState* app_state_;
+  FakeStartupInformation* startup_information_;
   int task_request_count_ = 0;
 
   // Object under test and its audience.
@@ -567,8 +586,7 @@ TEST_F(BackgroundRefreshAppAgentTest, HandleNotDueTask) {
   EXPECT_FALSE([notDueProvider injectedTask].executed);
 }
 
-// TODO(crbug.com/377624966): Flaky-failing on ios-simulator
-TEST_F(BackgroundRefreshAppAgentTest, DISABLED_ExpireTask) {
+TEST_F(BackgroundRefreshAppAgentTest, ExpireTask) {
   // Test that when a task is running and the OS expiration method is called,
   // the task is terminated, and the task is *not* marked successful.
   // Note: The current implementation doesn't terminate the prolonged task;
@@ -578,7 +596,7 @@ TEST_F(BackgroundRefreshAppAgentTest, DISABLED_ExpireTask) {
   long_provider.injectedTask = [[ProlongedTask alloc] init];
   [agent_ addAppRefreshProvider:long_provider];
 
-  OCMStub([task_mock_ setTaskCompletedWithSuccess:YES]);
+  OCMStub([task_mock_ setTaskCompletedWithSuccess:NO]);
 
   SimulateAppBackgrounding();
   InvokeTaskHandlerThen(run_loop_.QuitClosure());
@@ -735,12 +753,16 @@ TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecutionMetrics) {
   SimulateAppBackgrounding();
   InvokeTaskHandlerThen(run_loop_.QuitClosure());
   run_loop_.Run();
+  base::HistogramTester* histogram_tester_ptr = &histogram_tester;
   // Ensure the dispatched handleExecutionForTask block runs on the main thread.
-  // This is signaled by the task request count being incremented (once for
-  // SimulateAppBackgrounding, once for handleExecutionForTask).
+  // This is signaled by the launch type histogram being recorded for
+  // kLaunchTypePreBrowserObjects.
   ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForUIElementTimeout, ^bool {
-        return task_request_count_ >= 2;
+        return histogram_tester_ptr->GetBucketCount(
+                   kLaunchTypeForBackgroundRefreshHistogram,
+                   LaunchTypeForBackgroundRefreshActions::
+                       kLaunchTypePreBrowserObjects) == 1;
       }));
 
   histogram_tester.ExpectTotalCount(kStartupWaitDurationCompletedHistogram, 0);
@@ -756,6 +778,8 @@ TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecutionMetrics) {
   second_run_loop.Run();
 
   histogram_tester.ExpectTotalCount(kStartupWaitDurationCompletedHistogram, 1);
+  // Rescheduled once when executing the deferred task after browser objects.
+  EXPECT_EQ(task_request_count_, 2);
 }
 
 TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecutionNeverStartedMetrics) {
@@ -774,12 +798,16 @@ TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecutionNeverStartedMetrics) {
   SimulateAppBackgrounding();
   InvokeTaskHandlerThen(run_loop_.QuitClosure());
   run_loop_.Run();
+  base::HistogramTester* histogram_tester_ptr = &histogram_tester;
   // Ensure the dispatched handleExecutionForTask block runs on the main thread.
-  // This is signaled by the task request count being incremented (once for
-  // SimulateAppBackgrounding, once for handleExecutionForTask).
+  // This is signaled by the launch type histogram being recorded for
+  // kLaunchTypePreBrowserObjects.
   ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForUIElementTimeout, ^bool {
-        return task_request_count_ >= 2;
+        return histogram_tester_ptr->GetBucketCount(
+                   kLaunchTypeForBackgroundRefreshHistogram,
+                   LaunchTypeForBackgroundRefreshActions::
+                       kLaunchTypePreBrowserObjects) == 1;
       }));
 
   histogram_tester.ExpectTotalCount(kStartupWaitDurationNeverStartedHistogram,
@@ -792,6 +820,9 @@ TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecutionNeverStartedMetrics) {
 
   histogram_tester.ExpectTotalCount(kStartupWaitDurationNeverStartedHistogram,
                                     1);
+  // The task never started, so it was never rescheduled after the initial
+  // backgrounding request.
+  EXPECT_EQ(task_request_count_, 1);
 }
 
 TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecutionTimeoutMetrics) {
@@ -812,12 +843,16 @@ TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecutionTimeoutMetrics) {
   SimulateAppBackgrounding();
   InvokeTaskHandlerThen(run_loop_.QuitClosure());
   run_loop_.Run();
+  base::HistogramTester* histogram_tester_ptr = &histogram_tester;
   // Ensure the dispatched handleExecutionForTask block runs on the main thread.
-  // This is signaled by the task request count being incremented (once for
-  // SimulateAppBackgrounding, once for handleExecutionForTask).
+  // This is signaled by the launch type histogram being recorded for
+  // kLaunchTypePreBrowserObjects.
   ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForUIElementTimeout, ^bool {
-        return task_request_count_ >= 2;
+        return histogram_tester_ptr->GetBucketCount(
+                   kLaunchTypeForBackgroundRefreshHistogram,
+                   LaunchTypeForBackgroundRefreshActions::
+                       kLaunchTypePreBrowserObjects) == 1;
       }));
 
   histogram_tester.ExpectTotalCount(kStartupWaitDurationTimeoutHistogram, 0);
@@ -837,4 +872,43 @@ TEST_F(BackgroundRefreshAppAgentTest, TestDelayedExecutionTimeoutMetrics) {
   second_run_loop.Run();
 
   histogram_tester.ExpectTotalCount(kStartupWaitDurationTimeoutHistogram, 1);
+  // Rescheduled once when executing the deferred task after browser objects.
+  EXPECT_EQ(task_request_count_, 2);
+}
+
+// Tests that when BGTaskScheduler triggers a background task launch handler,
+// `maybeSetLaunchReason:` is called and latches `launchReason` to
+// `IOSLaunchReason::kBackgroundRefresh` and `isLaunchedInBackground` to YES.
+TEST_F(BackgroundRefreshAppAgentTest, TestBackgroundLaunchViaBGTask) {
+  // 1. Initial state is unset before task execution.
+  EXPECT_FALSE([startup_information_ launchReason].has_value());
+  EXPECT_FALSE([startup_information_ isLaunchedInBackground]);
+
+  OCMStub([task_mock_ setTaskCompletedWithSuccess:YES]);
+
+  // 2. Simulate backgrounding and BGTaskScheduler invoking the launch handler.
+  SimulateAppBackgrounding();
+  InvokeTaskHandler();
+  run_loop_.Run();
+
+  // 3. Verify launchReason is latched to kBackgroundRefresh and
+  // isLaunchedInBackground is YES.
+  ASSERT_TRUE([startup_information_ launchReason].has_value());
+  EXPECT_EQ(*[startup_information_ launchReason],
+            IOSLaunchReason::kBackgroundRefresh);
+  EXPECT_TRUE([startup_information_ isLaunchedInBackground]);
+}
+
+// Tests that `-simulateRefreshWithTask:` synchronously sets `launchReason` to
+// `IOSLaunchReason::kBackgroundRefresh` before returning.
+TEST_F(BackgroundRefreshAppAgentTest, TestSimulateRefreshWithTask) {
+  EXPECT_FALSE([startup_information_ launchReason].has_value());
+  OCMStub([task_mock_ setTaskCompletedWithSuccess:YES]);
+
+  [agent_ simulateRefreshWithTask:task_mock_];
+
+  ASSERT_TRUE([startup_information_ launchReason].has_value());
+  EXPECT_EQ(*[startup_information_ launchReason],
+            IOSLaunchReason::kBackgroundRefresh);
+  EXPECT_TRUE([startup_information_ isLaunchedInBackground]);
 }

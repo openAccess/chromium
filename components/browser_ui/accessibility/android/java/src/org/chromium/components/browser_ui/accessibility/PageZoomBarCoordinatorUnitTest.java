@@ -17,7 +17,6 @@ import android.view.View;
 import android.view.ViewGroup.MarginLayoutParams;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -38,7 +37,6 @@ import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
 
 /** Unit tests for {@link PageZoomBarCoordinator}. */
-@SmallTest
 @RunWith(BaseRobolectricTestRunner.class)
 public class PageZoomBarCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -76,10 +74,7 @@ public class PageZoomBarCoordinatorUnitTest {
 
         mCoordinator =
                 new PageZoomBarCoordinator(
-                        mDelegateMock,
-                        mPageZoomManagerMock,
-                        /* useSlider= */ true,
-                        mBottomSheetControllerSupplier);
+                        mDelegateMock, mPageZoomManagerMock, mBottomSheetControllerSupplier);
 
         // Initialize the supplier
         mBottomSheetControllerSupplier.set(mBottomSheetControllerMock);
@@ -137,7 +132,7 @@ public class PageZoomBarCoordinatorUnitTest {
                 ObservableSuppliers.createMonotonic();
 
         PageZoomBarCoordinator coordinator =
-                new PageZoomBarCoordinator(mDelegateMock, mPageZoomManagerMock, true, supplier);
+                new PageZoomBarCoordinator(mDelegateMock, mPageZoomManagerMock, supplier);
 
         // Trigger supplier initialization
         supplier.set(mockController);

@@ -12,17 +12,15 @@ static_library("smart_charging") {
     "smart_charging_ukm_logger.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//base",
     "//chrome/browser/ash/power/ml",
-    "//chrome/browser/profiles:profile",
-    "//chrome/browser/profiles:profile_manager",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/constants",
     "//chromeos/dbus/power",
     "//chromeos/dbus/power:power_manager_proto",
     "//components/session_manager/core",
+    "//components/user_manager",
     "//components/viz/host",
     "//mojo/public/cpp/bindings",
     "//services/metrics/public/cpp:ukm_builders",
@@ -43,13 +41,12 @@ source_set("unit_tests") {
   deps = [
     ":smart_charging",
     "//base/test:test_support",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/tabs:test_support",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//chromeos/components/sensors",
     "//chromeos/dbus/power:power_manager_proto",
     "//chromeos/services/machine_learning/public/cpp:stub",
-    "//components/assist_ranker/proto",
     "//components/session_manager/core",
     "//components/session_manager/core:test_support",
     "//services/data_decoder/public/cpp:test_support",

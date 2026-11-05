@@ -44,7 +44,6 @@ source_set("impl") {
     "//services/network/public/mojom:mojom_permissions_policy",
     "//skia",
   ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("unit_tests") {
@@ -58,6 +57,7 @@ source_set("unit_tests") {
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/history",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/content_settings/core/browser",
     "//components/history/core/browser",
     "//components/history/core/test",
@@ -66,7 +66,10 @@ source_set("unit_tests") {
     "//content/test:test_support",
     "//services/metrics/public/cpp:gen_ukm_builders",
     "//services/metrics/public/cpp:ukm_builders",
+    "//skia",
+    "//testing/gmock",
     "//testing/gtest",
+    "//third_party/blink/public/mojom:mojom_platform_headers",
     "//url",
   ]
 }
@@ -83,9 +86,9 @@ if (!is_android) {
       "//chrome/browser/content_settings:content_settings_factory",
       "//chrome/browser/offline_items_collection",
       "//chrome/browser/profiles",
-      "//chrome/browser/ui",
       "//chrome/browser/ui/tabs:tab_strip",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/base:in_process_browser_test",
+      "//chrome/test/base:ui_test_utils",
       "//components/content_settings/core/browser",
       "//components/ukm:test_support",
       "//content/public/browser",
@@ -95,6 +98,34 @@ if (!is_android) {
       "//services/metrics/public/cpp:gen_ukm_builders",
       "//services/metrics/public/cpp:ukm_builders",
       "//services/network/public/cpp:ip_address_space_overrides_test_utils",
+      "//url",
+    ]
+  }
+}
+
+if (is_android) {
+  source_set("android_browsertests") {
+    testonly = true
+    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+    sources = [ "background_fetch_browsertest_android.cc" ]
+    deps = [
+      ":background_fetch",
+      "//chrome/browser/content_settings:content_settings_factory",
+      "//chrome/browser/offline_items_collection",
+      "//chrome/browser/profiles",
+      "//chrome/test:test_support",
+      "//chrome/test/base:chrome_test_utils",
+      "//components/background_fetch",
+      "//components/content_settings/core/browser",
+      "//components/content_settings/core/common",
+      "//components/download/public/background_service:public",
+      "//components/offline_items_collection/core",
+      "//content/public/browser",
+      "//content/public/common",
+      "//content/test:test_support",
+      "//net:test_support",
+      "//services/network/public/cpp",
+      "//third_party/blink/public/common:headers",
       "//url",
     ]
   }

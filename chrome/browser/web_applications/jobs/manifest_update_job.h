@@ -21,9 +21,7 @@
 #include "components/webapps/browser/install_result_code.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/common/web_app_id.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
-#include "url/gurl.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 
 namespace base {
 class DictValue;
@@ -97,7 +95,7 @@ class ManifestUpdateJob {
       WithAppResources* lock_resources,
       content::WebContents* web_contents,
       base::DictValue* debug_value,
-      blink::mojom::ManifestPtr manifest,
+      blink::Manifest manifest,
       WebAppDataRetriever* data_retriever,
       base::Clock* clock,
       ManifestUpdateJobCallback callback,
@@ -111,7 +109,7 @@ class ManifestUpdateJob {
                     WithAppResources* lock_resources,
                     content::WebContents* web_contents,
                     base::DictValue* debug_value,
-                    blink::mojom::ManifestPtr manifest,
+                    blink::Manifest manifest,
                     WebAppDataRetriever* data_retriever,
                     base::Clock* clock,
                     ManifestUpdateJobCallback callback,
@@ -154,7 +152,7 @@ class ManifestUpdateJob {
   const raw_ref<WithAppResources> lock_resources_;
   const base::WeakPtr<content::WebContents> web_contents_;
   const raw_ref<base::DictValue> debug_value_;
-  const blink::mojom::ManifestPtr manifest_;
+  const blink::Manifest manifest_;
   const raw_ref<WebAppDataRetriever> data_retriever_;
   const raw_ref<base::Clock> clock_;
   const webapps::AppId app_id_;

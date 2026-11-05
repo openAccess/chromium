@@ -44,11 +44,12 @@
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/pref_names.h"
 #include "components/crx_file/id_util.h"
+#include "components/policy/core/common/policy_logger.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
+#include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/external_install_info.h"
 #include "extensions/browser/external_provider_interface.h"
@@ -60,27 +61,31 @@
 #include "extensions/common/manifest.h"
 #include "ui/base/l10n/l10n_util.h"
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#include "chrome/browser/extensions/policy_dse_ntp_override_metrics_reporter.h"
+#endif
+
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/web_applications/preinstalled_app_install_features.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_paths.h"
 #include "ash/constants/ash_switches.h"
 #include "base/path_service.h"
+#include "chrome/browser/ash/app_mode/kiosk_app_external_loader.h"
 #include "chrome/browser/ash/customization/customization_document.h"
 #include "chrome/browser/ash/extensions/authentication_screen_extensions_external_loader.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_local_account_policy_service.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/chromeos/app_mode/kiosk_app_external_loader.h"
 #include "chrome/browser/chromeos/extensions/external_loader/device_local_account_external_policy_loader.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
 #include "chromeos/components/mgs/managed_guest_session_utils.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #else
 #include "chrome/browser/extensions/preinstalled_extensions.h"
@@ -155,12 +160,12 @@ ExternalProviderImpl::ExternalProviderImpl(
       loader_(loader),
       profile_(profile),
       creation_flags_(creation_flags) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M161);
   loader_->Init(this);
 }
 
 ExternalProviderImpl::~ExternalProviderImpl() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   loader_->OwnerShutdown();
 }
 
@@ -170,7 +175,7 @@ void ExternalProviderImpl::VisitRegisteredExtension() {
 }
 
 void ExternalProviderImpl::SetPrefs(base::DictValue prefs) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Check if the service is still alive. It is possible that it went
   // away while |loader_| was working on the FILE thread.
@@ -192,7 +197,7 @@ void ExternalProviderImpl::SetPrefs(base::DictValue prefs) {
 }
 
 void ExternalProviderImpl::TriggerOnExternalExtensionFound() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Check if the service is still alive. It is possible that it went
   // away while |loader_| was working on the FILE thread. The prefs can be
@@ -220,7 +225,7 @@ void ExternalProviderImpl::NotifyServiceOnExternalExtensionsFound() {
 }
 
 void ExternalProviderImpl::UpdatePrefs(base::DictValue prefs) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   CHECK(allow_updates_);
 
   // Check if the service is still alive. It is possible that it went
@@ -262,9 +267,34 @@ void ExternalProviderImpl::RetrieveExtensionsFromPrefs(
   InstallStageTracker* install_stage_tracker =
       InstallStageTrackerFactory::GetForBrowserContext(profile_);
 
+  // Restrict this check to enterprise policy download providers (where
+  // crx_location_ is kInvalidLocation and download_location_ is a policy
+  // download location for forced or recommended extensions).
+  bool is_download_policy_provider =
+      crx_location_ == ManifestLocation::kInvalidLocation &&
+      (download_location_ == ManifestLocation::kExternalPolicyDownload ||
+       download_location_ == ManifestLocation::kExternalPrefDownload);
+  ExtensionManagement* extension_management =
+      ExtensionManagementFactory::GetForBrowserContext(profile_);
+  CHECK(extension_management);
+
   // Discover all the extensions this provider has.
   for (auto pref : *prefs_) {
     const std::string& extension_id = pref.first;
+
+    if (is_download_policy_provider &&
+        extension_management->IsExtensionBlockedByLowTrust(extension_id)) {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+      PolicyDseNtpOverrideMetricsReporter::LogBlockAction(
+          LowTrustPolicyBlockAction::kSkippedDownload);
+#endif
+      LOG_POLICY(INFO, POLICY_PROCESSING)
+          << "[BlockLowTrustExtension] Skipped update download for policy "
+             "extension "
+          << extension_id
+          << ": Extension is blocked in a low-trust environment.";
+      continue;
+    }
 
 #if BUILDFLAG(IS_CHROMEOS)
     if (extension_id == kCameraAppId) {
@@ -566,7 +596,7 @@ bool ExternalProviderImpl::IsReady() const {
 
 bool ExternalProviderImpl::HasExtension(
     const std::string& id) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   CHECK(prefs_);
   CHECK(ready_);
   return prefs_->contains(id);
@@ -575,7 +605,7 @@ bool ExternalProviderImpl::HasExtension(
 bool ExternalProviderImpl::HasExtensionWithLocation(
     const std::string& id,
     mojom::ManifestLocation location) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   CHECK(prefs_);
   CHECK(ready_);
   const base::DictValue* dict = prefs_->FindDict(id);
@@ -599,7 +629,7 @@ bool ExternalProviderImpl::GetExtensionDetails(
     const std::string& id,
     ManifestLocation* location,
     std::unique_ptr<base::Version>* version) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   CHECK(prefs_);
   CHECK(ready_);
   const base::DictValue* dict = prefs_->FindDict(id);
@@ -690,10 +720,8 @@ void ExternalProviderImpl::CreateExternalProviders(
       ManifestLocation::kInvalidLocation;
 
 #if BUILDFLAG(IS_CHROMEOS)
-  const bool install_on_lock_screen =
-      chromeos::features::IsLockScreenBadgeAuthEnabled() &&
-      ash::IsLockScreenBrowserContext(profile);
-  if (ash::IsSigninBrowserContext(profile) || install_on_lock_screen) {
+  if (ash::IsSigninBrowserContext(profile) ||
+      ash::IsLockScreenBrowserContext(profile)) {
     // Download extensions/apps installed by policy in the login and lock screen
     // profiles. Extensions (not apps) installed through this path will have
     // type |TYPE_LOGIN_SCREEN_EXTENSION| with limited API capabilities.
@@ -712,7 +740,7 @@ void ExternalProviderImpl::CreateExternalProviders(
 
   policy::BrowserPolicyConnectorAsh* const connector =
       g_browser_process->platform_part()->browser_policy_connector_ash();
-  DCHECK(connector);
+  CHECK(connector, base::NotFatalUntil::M161);
   bool is_chrome_os_public_session = false;
   const user_manager::User* user =
       ash::ProfileHelper::Get()->GetUserByProfile(profile);

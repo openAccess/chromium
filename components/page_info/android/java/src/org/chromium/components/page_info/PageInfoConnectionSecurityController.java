@@ -8,6 +8,10 @@ import android.view.View;
 import android.view.ViewGroup;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
@@ -23,23 +27,33 @@ import org.chromium.content_public.browser.WebContents;
  */
 @NullMarked
 public class PageInfoConnectionSecurityController implements PageInfoSubpageController {
+    @JniType("::ConnectionSecurityControllerAndroid")
+    public interface NativeConnectionSecurityControllerAndroid extends JniTypeToken {}
+
     private final PageInfoMainController mMainController;
     private final WebContents mWebContents;
     private final ConnectionSecurityView mView;
     private final PageInfoRowView mRowView;
     private @Nullable ConnectionSecurityView mActiveView;
     private final ConnectionSecurityView.ViewParams mViewParams;
-    private long mNativeConnectionSecurityController;
+    private final PageInfoControllerDelegate mDelegate;
+    private final @Nullable String mContentPublisher;
+    private @Nullable JniUniquePtr<NativeConnectionSecurityControllerAndroid>
+            mNativeConnectionSecurityController;
 
     public PageInfoConnectionSecurityController(
             PageInfoMainController mainController,
             ConnectionSecurityView view,
             PageInfoRowView rowView,
-            WebContents webContents) {
+            WebContents webContents,
+            PageInfoControllerDelegate delegate,
+            @Nullable String publisher) {
         mMainController = mainController;
         mView = view;
         mRowView = rowView;
         mWebContents = webContents;
+        mDelegate = delegate;
+        mContentPublisher = publisher;
 
         mViewParams = new ConnectionSecurityView.ViewParams();
 
@@ -75,7 +89,7 @@ public class PageInfoConnectionSecurityController implements PageInfoSubpageCont
     }
 
     private void loadIdentityInfo() {
-        if (mNativeConnectionSecurityController == 0) return;
+        if (mNativeConnectionSecurityController == null) return;
 
         PageInfoConnectionSecurityControllerJni.get()
                 .loadIdentityInfo(mNativeConnectionSecurityController);
@@ -88,10 +102,29 @@ public class PageInfoConnectionSecurityController implements PageInfoSubpageCont
     public void showSecurityPageButton(String summary) {
         loadIdentityInfo();
         PageInfoRowView.ViewParams rowParams = new PageInfoRowView.ViewParams();
-        rowParams.title = summary;
-        rowParams.iconResId = R.drawable.ic_lock_24dp;
-        rowParams.visible = summary != null;
-        rowParams.clickCallback = this::launchSubpage;
+        String pdfMessage = mDelegate.getPdfPageConnectionMessage();
+        if (mContentPublisher != null) {
+            rowParams.title =
+                    mRowView.getContext()
+                            .getString(R.string.page_info_domain_hidden, mContentPublisher);
+            rowParams.clickCallback = null;
+            rowParams.iconResId = R.drawable.ic_lock_24dp;
+        } else if (mDelegate.isShowingPaintPreviewPage()
+                && mDelegate.getPaintPreviewPageConnectionMessage() != null) {
+            rowParams.title = mDelegate.getPaintPreviewPageConnectionMessage();
+            rowParams.clickCallback = null;
+            rowParams.iconResId = R.drawable.ic_lock_24dp;
+        } else if (mDelegate.getPdfPageType() != 0 && pdfMessage != null) {
+            // If its a PDF page type, show the PDF message and don't allow clicking.
+            rowParams.title = pdfMessage;
+            rowParams.clickCallback = null;
+            rowParams.iconResId = R.drawable.omnibox_info;
+        } else {
+            rowParams.title = summary;
+            rowParams.clickCallback = this::launchSubpage;
+            rowParams.iconResId = R.drawable.ic_lock_24dp;
+        }
+        rowParams.visible = rowParams.title != null;
         mRowView.setParams(rowParams);
         mMainController.updateConnectionWrapperVisibility();
     }
@@ -116,8 +149,29 @@ public class PageInfoConnectionSecurityController implements PageInfoSubpageCont
             String qwacIdentity) {
         mViewParams.iconResId = iconResId;
         mViewParams.iconTint = iconTint;
-        mViewParams.summary = summary;
-        mViewParams.details = details;
+
+        if (mContentPublisher != null) {
+            mViewParams.summary = "";
+            mViewParams.details =
+                    mView.getContext()
+                            .getString(R.string.page_info_domain_hidden, mContentPublisher);
+        } else if (mDelegate.isShowingPaintPreviewPage()
+                && mDelegate.getPaintPreviewPageConnectionMessage() != null) {
+            mViewParams.summary = "";
+            mViewParams.details = mDelegate.getPaintPreviewPageConnectionMessage();
+        } else if (mDelegate.getPdfPageType() != 0
+                && mDelegate.getPdfPageConnectionMessage() != null) {
+            mViewParams.summary = "";
+            mViewParams.details = mDelegate.getPdfPageConnectionMessage();
+            mViewParams.iconResId = R.drawable.omnibox_info;
+        } else if (mDelegate.getOfflinePageConnectionMessage() != null) {
+            mViewParams.summary = "";
+            mViewParams.details = mDelegate.getOfflinePageConnectionMessage();
+            mViewParams.iconResId = R.drawable.omnibox_info;
+        } else {
+            mViewParams.summary = summary;
+            mViewParams.details = details;
+        }
         if (showResetDecisionsLabel) {
             mViewParams.resetDecisionsCallback = this::resetCertDecision;
         }
@@ -144,7 +198,7 @@ public class PageInfoConnectionSecurityController implements PageInfoSubpageCont
     public void updateSubpageIfNeeded() {}
 
     public void resetCertDecision() {
-        if (mNativeConnectionSecurityController == 0) return;
+        if (mNativeConnectionSecurityController == null) return;
 
         PageInfoConnectionSecurityControllerJni.get()
                 .resetCertDecisions(mNativeConnectionSecurityController);
@@ -152,19 +206,18 @@ public class PageInfoConnectionSecurityController implements PageInfoSubpageCont
     }
 
     public void destroy() {
-        if (mNativeConnectionSecurityController == 0) return;
-        PageInfoConnectionSecurityControllerJni.get().destroy(mNativeConnectionSecurityController);
-        mNativeConnectionSecurityController = 0;
+        if (mNativeConnectionSecurityController == null) return;
+        mNativeConnectionSecurityController.destroy();
+        mNativeConnectionSecurityController = null;
     }
 
     @NativeMethods
-    interface Natives {
-        long init(PageInfoConnectionSecurityController controller, WebContents webContents);
+    public interface Natives {
+        JniUniquePtr<NativeConnectionSecurityControllerAndroid> init(
+                PageInfoConnectionSecurityController controller, WebContents webContents);
 
-        void destroy(long nativeConnectionSecurityControllerAndroid);
+        void loadIdentityInfo(JniPtr<NativeConnectionSecurityControllerAndroid> self);
 
-        void loadIdentityInfo(long nativeConnectionSecurityControllerAndroid);
-
-        void resetCertDecisions(long nativeConnectionSecurityControllerAndroid);
+        void resetCertDecisions(JniPtr<NativeConnectionSecurityControllerAndroid> self);
     }
 }

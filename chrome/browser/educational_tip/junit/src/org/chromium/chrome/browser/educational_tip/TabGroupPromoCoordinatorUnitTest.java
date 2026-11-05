@@ -6,8 +6,6 @@ package org.chromium.chrome.browser.educational_tip;
 
 import static org.mockito.Mockito.verify;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -24,9 +22,7 @@ import org.chromium.ui.shadows.ShadowAppCompatResources;
 
 /** Test relating to {@link TabGroupPromoCoordinator} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowAppCompatResources.class})
+@Config(shadows = {ShadowAppCompatResources.class})
 public class TabGroupPromoCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Runnable mOnModuleClickedCallback;
@@ -42,7 +38,6 @@ public class TabGroupPromoCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testClickTabGroupPromoCard() {
         mTabGroupPromoCoordinator.onCardClicked();
         verify(mActionDelegate).openTabGroupIphDialog();

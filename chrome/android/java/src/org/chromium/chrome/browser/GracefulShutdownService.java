@@ -5,8 +5,6 @@
 package org.chromium.chrome.browser;
 
 import android.app.Activity;
-import android.content.Context;
-import android.content.Intent;
 
 import androidx.annotation.IntDef;
 
@@ -16,7 +14,6 @@ import org.chromium.base.SplitCompatService;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.IdentifierNameString;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -35,7 +32,8 @@ public class GracefulShutdownService extends SplitCompatService {
         Status.LAUNCH_FAILED,
         Status.STARTED,
         Status.START_FOREGROUND_FAILED,
-        Status.TIMED_OUT
+        Status.TIMED_OUT,
+        Status.OS_TIMED_OUT
     })
     @Retention(RetentionPolicy.SOURCE)
     @Target(ElementType.TYPE_USE)
@@ -45,7 +43,8 @@ public class GracefulShutdownService extends SplitCompatService {
         int STARTED = 2;
         int START_FOREGROUND_FAILED = 3;
         int TIMED_OUT = 4;
-        int NUM_ENTRIES = 5;
+        int OS_TIMED_OUT = 5;
+        int NUM_ENTRIES = 6;
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/tab/enums.xml:GracefulShutdownStatus)
@@ -87,25 +86,6 @@ public class GracefulShutdownService extends SplitCompatService {
                         + finishingCount
                         + ")");
         return result;
-    }
-
-    /** Starts the GracefulShutdownService ONLY if the last open activity is dying. */
-    public static void maybeStartGracefulShutdown(Context context) {
-        if (!ChromeFeatureList.sTabAndroidGracefulShutdown.isEnabled()) {
-            return;
-        }
-        if (!isLastActivityDying()) {
-            return;
-        }
-        Log.i(TAG, "Starting GracefulShutdownService.");
-        try {
-            Intent intent = new Intent(context, GracefulShutdownService.class);
-            context.startForegroundService(intent);
-            recordStatus(Status.LAUNCH_ATTEMPTED);
-        } catch (Throwable e) {
-            recordStatus(Status.LAUNCH_FAILED);
-            Log.e(TAG, "Failed to start GracefulShutdownService", e);
-        }
     }
 
     public static void recordStatus(@Status int status) {

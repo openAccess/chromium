@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "base/feature.h"
 #include "net/base/net_export.h"
@@ -16,6 +17,7 @@
 namespace net::structured_headers {
 
 using Item = quiche::structured_headers::Item;
+using ItemView = quiche::structured_headers::ItemView;
 using ParameterisedIdentifier =
     quiche::structured_headers::ParameterisedIdentifier;
 using ParameterizedItem = quiche::structured_headers::ParameterizedItem;
@@ -26,12 +28,37 @@ using ParameterisedList = quiche::structured_headers::ParameterisedList;
 using ListOfLists = quiche::structured_headers::ListOfLists;
 using List = quiche::structured_headers::List;
 using Parameters = quiche::structured_headers::Parameters;
+using InnerList = quiche::structured_headers::InnerList;
 
 // See crbug.com/377941140 for details of this migration.
 NET_EXPORT BASE_DECLARE_FEATURE(kStructuredHeadersInRust);
 
+// Parses an Item strictly according to RFC 8941.
+NET_EXPORT std::optional<ParameterizedItem> ParseItemStrict(std::string_view);
+
+// Parses a List strictly according to RFC 8941.
+NET_EXPORT std::optional<List> ParseListStrict(std::string_view);
+
+// Parses a Dictionary strictly according to RFC 8941.
+NET_EXPORT std::optional<Dictionary> ParseDictionaryStrict(std::string_view);
+
+// Parses an Item according to RFC 8941, but deviates from the specification by
+// allowing trailing decimal points and non-conformant byte sequences.
+//
+// Deprecated: New users should use `ParseItemStrict`.
 NET_EXPORT std::optional<ParameterizedItem> ParseItem(std::string_view str);
+
+// Parses a List according to RFC 8941, but deviates from the specification by
+// allowing trailing decimal points and non-conformant byte sequences.
+//
+// Deprecated: New users should use `ParseListStrict`.
 NET_EXPORT std::optional<List> ParseList(std::string_view str);
+
+// Parses a Dictionary according to RFC 8941, but deviates from the
+// specification by allowing trailing decimal points and non-conformant byte
+// sequences.
+//
+// Deprecated: New users should use `ParseDictionaryStrict`.
 NET_EXPORT std::optional<Dictionary> ParseDictionary(std::string_view str);
 
 inline std::optional<ParameterisedList> ParseParameterisedList(
@@ -42,7 +69,7 @@ inline std::optional<ListOfLists> ParseListOfLists(std::string_view str) {
   return quiche::structured_headers::ParseListOfLists(str);
 }
 
-inline std::optional<std::string> SerializeItem(const Item& value) {
+inline std::optional<std::string> SerializeItem(ItemView value) {
   return quiche::structured_headers::SerializeItem(value);
 }
 inline std::optional<std::string> SerializeItem(

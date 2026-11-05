@@ -25,6 +25,7 @@
 #include "ui/actions/actions.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/models/image_model.h"
+#include "ui/color/color_variant.h"
 #include "ui/events/event.h"
 #include "ui/gfx/animation/slide_animation.h"
 #include "ui/views/view.h"
@@ -58,7 +59,6 @@ class PageActionView : public IconLabelBubbleView,
   std::u16string GetTooltipText() const override;
   std::u16string GetAccessibleName() const override;
   void SetVisible(bool visible) override;
-  IconLabelBubbleView* GetIconLabelBubbleViewNotMigrated() override;
 
   // Sets the controller for this view, and attaches this view in the
   // controller.
@@ -73,7 +73,8 @@ class PageActionView : public IconLabelBubbleView,
   // expanding and collapsing).
   bool IsChipVisible() const;
 
-  // Indicates whether this view is showing an anchored message
+  // Indicates whether this view is showing an anchored message. A message is
+  // not considered showing while it animates out.
   bool IsAnchoredMessageVisible() const;
 
   // Returns whether this view is declared visible in its model.
@@ -110,6 +111,8 @@ class PageActionView : public IconLabelBubbleView,
       base::RepeatingClosure callback) override;
   void SetClickCallback(
       base::RepeatingCallback<void(PageActionTrigger)> callback) override;
+  void SetAnchoredMessageDowngradeCallback(
+      base::RepeatingClosure callback) override;
 
   // PageActionModelObserver:
   void OnPageActionModelChanged(const PageActionModelInterface& model) override;
@@ -159,6 +162,8 @@ class PageActionView : public IconLabelBubbleView,
 
   // IconLabelBubbleView:
   SkColor GetBackgroundColor() const override;
+  SkColor GetForegroundColor() const override;
+  std::optional<ui::ColorVariant> GetDisabledForegroundColor() const override;
   bool PaintedOnSolidBackground() const override;
 
  private:
@@ -184,8 +189,10 @@ class PageActionView : public IconLabelBubbleView,
   void MaybeRecordCollapsedMetrics(int label_width);
 
   void OnAnchoredMessageWidgetClose(views::Widget::ClosedReason closed_reason);
+  void OnAnchoredMessageClosed();
   void SetIsShowingBubble(bool showing);
 
+  void UpdateAnchoredMessage(const PageActionModelInterface& model);
   void CreateAndShowAnchoredMessage(const PageActionModelInterface& model);
 
   void UpdateAnimationState(const PageActionModelInterface& model);
@@ -194,6 +201,7 @@ class PageActionView : public IconLabelBubbleView,
   void CloseWidgetDeferred(base::WeakPtr<views::Widget> widget_to_close);
 
   base::WeakPtr<actions::ActionItem> action_item_ = nullptr;
+  raw_ptr<PageActionController> current_controller_ = nullptr;
   base::ScopedObservation<PageActionModelInterface, PageActionModelObserver>
       observation_{this};
 
@@ -247,13 +255,17 @@ class PageActionView : public IconLabelBubbleView,
   // If set, ensures this view is highlighted.
   std::optional<views::Button::ScopedAnchorHighlight> highlight_;
 
-  raw_ptr<AnchoredMessageBubbleView> anchored_message_ = nullptr;
-  std::unique_ptr<views::Widget> anchored_message_widget_;
-
   base::RepeatingClosure anchored_message_close_callback_ = base::DoNothing();
   base::RepeatingClosure anchored_message_expand_callback_ = base::DoNothing();
   base::RepeatingClosure anchored_message_collapse_callback_ =
       base::DoNothing();
+  base::RepeatingClosure anchored_message_downgrade_callback_ =
+      base::DoNothing();
+
+  // Declared after the callbacks above so the widget is destroyed first, since
+  // destroying it can run them.
+  raw_ptr<AnchoredMessageBubbleView> anchored_message_ = nullptr;
+  std::unique_ptr<views::Widget> anchored_message_widget_;
 
   base::WeakPtrFactory<PageActionView> weak_factory_{this};
 };

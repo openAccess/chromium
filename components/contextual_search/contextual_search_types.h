@@ -8,7 +8,7 @@
 #include <optional>
 #include <string>
 
-#include "base/memory/advanced_memory_safety_checks.h"
+#include "base/memory/sanitized_object.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "components/lens/contextual_input.h"
@@ -57,6 +57,11 @@ enum class ContextUploadStatus {
 // Returns true if the upload status is considered terminal.
 bool IsTerminalContextStatus(ContextUploadStatus status);
 
+// Returns true if the context upload status is valid to include in the
+// multimodal request.
+bool IsValidContextUploadStatusForMultimodalRequest(
+    ContextUploadStatus upload_status);
+
 // LINT.IfChange(ContextUploadErrorType)
 // For upload error notifications and metrics.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.contextual_search
@@ -99,10 +104,28 @@ enum class ContextUploadErrorType {
 //   //tools/metrics/histograms/metadata/omnibox/enums.xml:ContextUploadErrorType
 // )
 
+// LINT.IfChange(ContextualTasksRemovedContextReason)
+// Reasons why an active tab or context was removed from a session or
+// composebox. Recorded in the `ContextualTasks.RemovedContext.Reason`
+// histogram.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class ContextualTasksRemovedContextReason {
+  kUserDeselected = 0,
+  kBrowserTabClosed = 1,
+  kBrowserTabNavigated = 2,
+  kSmartTabSharingDisabled = 3,
+  kMaxValue = kSmartTabSharingDisabled,
+};
+// LINT.ThenChange(
+//   //tools/metrics/histograms/metadata/contextual_tasks/enums.xml:ContextualTasksRemovedContextReason
+// )
+
 // Struct containing file information for a file upload.
 struct FileInfo {
   // TODO(crbug.com/497396516): after fixing the issue, remove this macro.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   FileInfo();
@@ -153,6 +176,10 @@ struct FileInfo {
   // The request ID for this request. Updated by the context
   // controller when the file upload is started.
   std::optional<lens::LensOverlayRequestId> request_id;
+
+  // The request ID for the viewport image associated with this request, if
+  // separate viewport request IDs are enabled.
+  std::optional<lens::LensOverlayRequestId> viewport_request_id;
 
   // The raw response bodies from the upload requests.
   std::vector<std::string> response_bodies;

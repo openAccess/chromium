@@ -6,6 +6,7 @@
 
 #include <map>
 #include <memory>
+#include <vector>
 
 #include "base/metrics/statistics_recorder.h"
 #include "base/run_loop.h"
@@ -13,22 +14,24 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "chrome/browser/page_load_metrics/page_load_metrics_initialize.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
 #include "chrome/browser/ui/waap/waap_ui_metrics_service.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter_service.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
-#include "chrome/browser/ui/webui/webui_toolbar/adapters/navigation_controls_state_fetcher_impl.h"
+#include "chrome/browser/ui/webui/webui_toolbar/adapters/toolbar_state_fetcher_impl.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_test_utils.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_ui.h"
 #include "chrome/common/chrome_features.h"
@@ -39,6 +42,7 @@
 #include "components/page_load_metrics/browser/page_load_metrics_test_waiter.h"
 #include "components/ukm/gmock_matchers.h"
 #include "components/ukm/test_ukm_recorder.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
@@ -54,7 +58,13 @@
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_source.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "ui/base/ui_base_features.h"
+#endif  // BUILDFLAG(IS_WIN)
 
 namespace {
 
@@ -116,11 +126,10 @@ class ToolbarDependencyProvider : public WebUIToolbarUI::DependencyProvider {
     return nullptr;
   }
 
-  std::unique_ptr<toolbar_ui_api::NavigationControlsStateFetcher>
-  GetNavigationControlsStateFetcher() override {
-    return std::make_unique<toolbar_ui_api::NavigationControlsStateFetcherImpl>(
-        base::BindLambdaForTesting(
-            []() { return CreateValidNavigationControlsState(); }));
+  std::unique_ptr<toolbar_ui_api::ToolbarStateFetcher> GetToolbarStateFetcher()
+      override {
+    return std::make_unique<toolbar_ui_api::ToolbarStateFetcherImpl>(
+        base::BindLambdaForTesting([]() { return CreateValidToolbarState(); }));
   }
 
   std::unique_ptr<toolbar_ui_api::IconTableFetcher> GetIconTableFetcher()
@@ -130,7 +139,7 @@ class ToolbarDependencyProvider : public WebUIToolbarUI::DependencyProvider {
 
   CommandUpdater* GetCommandUpdater() override {
     return reinterpret_cast<CommandUpdater*>(
-        browser_->GetFeatures().browser_command_controller());
+        chrome::BrowserCommandController::From(browser_));
   }
 
   OmniboxController* GetOmniboxController() override { return nullptr; }
@@ -164,8 +173,16 @@ class InitialWebUIPageLoadMetricsObserverBrowserTest
     : public InProcessBrowserTest {
  public:
   InitialWebUIPageLoadMetricsObserverBrowserTest() {
+    std::vector<base::test::FeatureRef> disabled_features;
+#if BUILDFLAG(IS_WIN)
+    // Native window occlusion is calculated asynchronously, so an occlusion
+    // update can arrive after a test calls WasHidden() and make the tab visible
+    // again via WebContents::UpdateWebContentsVisibility().
+    disabled_features.push_back(features::kCalculateNativeWinOcclusion);
+#endif  // BUILDFLAG(IS_WIN)
     feature_list_.InitWithFeatures(
-        {features::kInitialWebUI, features::kWebUIReloadButton}, {});
+        {features::kInitialWebUI, features::kWebUIReloadButton},
+        disabled_features);
   }
 
   InitialWebUIPageLoadMetricsObserverBrowserTest(
@@ -687,7 +704,7 @@ IN_PROC_BROWSER_TEST_F(InitialWebUIPageLoadMetricsObserverBrowserTest,
   content::WebContents* contents =
       NavigateAndWaitForMetrics(url, /*close_tab=*/false);
   content::TestNavigationObserver reload_observer(contents);
-  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   reload_observer.Wait();
 
   browser()->GetTabStripModel()->CloseWebContents(contents, 0);
@@ -761,8 +778,8 @@ IN_PROC_BROWSER_TEST_F(InitialWebUIPageLoadMetricsObserverBrowserTest,
   auto* manager = InitialWebUIWindowMetricsManager::From(new_browser);
   ASSERT_TRUE(manager);
   manager->SkipStartupForTesting();
-  manager->SetWindowCreationInfo(
-      waap::NewWindowCreationSource::kBrowserInitiated, base::TimeTicks::Now());
+  manager->SetWindowCreationInfo(waap::NewWindowCreationSource::kNewEmptyWindow,
+                                 base::TimeTicks::Now());
 
   // Define expected metrics
   const std::string first_paint_metric =

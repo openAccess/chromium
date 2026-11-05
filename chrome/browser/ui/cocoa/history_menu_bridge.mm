@@ -36,8 +36,10 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/history/core/browser/history_types.h"
+#include "components/sessions/core/session_id.h"
 #include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tab_groups/tab_group_visual_data.h"
+#import "ui/base/cocoa/macos27_sdk.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/resource/resource_bundle.h"
@@ -74,7 +76,7 @@ HistoryMenuBridge::HistoryItem::~HistoryItem() = default;
 HistoryMenuBridge::HistoryMenuBridge(Profile* profile)
     : controller_([[HistoryMenuCocoaController alloc] initWithBridge:this]),
       profile_(profile) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M162);
   profile_dir_ = profile_->GetPath();
 
   if (auto* profile_manager = g_browser_process->profile_manager()) {
@@ -133,7 +135,13 @@ HistoryMenuBridge::HistoryMenuBridge(Profile* profile)
 // Note that all requests sent to either the history service or the favicon
 // service will be automatically cancelled by their respective Consumers, so
 // task cancellation is not done manually here in the dtor.
-HistoryMenuBridge::~HistoryMenuBridge() = default;
+HistoryMenuBridge::~HistoryMenuBridge() {
+  NSMenu* historyMenu = HistoryMenu();
+  if ([historyMenu delegate] == controller_) {
+    [historyMenu setDelegate:nil];
+  }
+  [controller_ clearBridge];
+}
 
 void HistoryMenuBridge::TabRestoreServiceChanged(
     sessions::TabRestoreService* service) {
@@ -201,7 +209,7 @@ void HistoryMenuBridge::TabRestoreServiceChanged(
 
 void HistoryMenuBridge::TabRestoreServiceDestroyed(
     sessions::TabRestoreService* service) {
-  DCHECK_EQ(service, tab_restore_service_);
+  CHECK_EQ(service, tab_restore_service_, base::NotFatalUntil::M162);
   tab_restore_service_observation_.Reset();
   tab_restore_service_ = nullptr;
 }
@@ -218,7 +226,7 @@ void HistoryMenuBridge::ResetMenu() {
   NSMenu* menu = HistoryMenu();
   ClearMenuSection(menu, kVisited);
   ClearMenuSection(menu, kRecentlyClosed);
-  DCHECK(menu_item_map_.empty());
+  CHECK(menu_item_map_.empty(), base::NotFatalUntil::M162);
 }
 
 void HistoryMenuBridge::BuildMenu() {
@@ -307,27 +315,29 @@ NSMenuItem* HistoryMenuBridge::AddItemToMenu(std::unique_ptr<HistoryItem> item,
       [[NSMenuItem alloc] initWithTitle:base::SysUTF16ToNSString(display_title)
                                  action:nil
                           keyEquivalent:@""];
-  [item->menu_item setTarget:controller_];
-  [item->menu_item setAction:@selector(openHistoryMenuItem:)];
-  [item->menu_item setTag:tag];
+  NSMenuItem* menu_item = item->menu_item;
+  menu_item.target = controller_;
+  menu_item.action = @selector(openHistoryMenuItem:);
+  menu_item.tag = tag;
   if (item->icon) {
-    [item->menu_item setImage:item->icon];
+    menu_item.image = item->icon;
   } else if (item->tabs.empty()) {
-    [item->menu_item setImage:default_favicon_];
+    menu_item.image = default_favicon_;
   }
-
+  if (@available(macOS 27, *)) {
+    menu_item.preferredImageVisibility = NSMenuItemImageVisibilityVisible;
+  }
 
   // Add a tooltip if the history item is for a single tab.
   if (item->tabs.empty()) {
     NSString* tooltip = [NSString
         stringWithFormat:@"%@\n%@", base::SysUTF16ToNSString(full_title),
                          base::SysUTF8ToNSString(url)];
-    [item->menu_item setToolTip:tooltip];
+    menu_item.toolTip = tooltip;
   }
 
-  [menu insertItem:item->menu_item atIndex:index];
+  [menu insertItem:menu_item atIndex:index];
 
-  NSMenuItem* menu_item = item->menu_item;
   auto it = menu_item_map_.emplace(menu_item, std::move(item));
   CHECK(it.second);
   return menu_item;
@@ -414,7 +424,10 @@ bool HistoryMenuBridge::AddGroupEntryToMenu(sessions::tab_restore::Group* group,
 
   NSImage* image = NSImageFromImageSkia(group_icon);
   item->icon = image;
-  [item->menu_item setImage:item->icon];
+  item->menu_item.image = item->icon;
+  if (@available(macOS 27, *)) {
+    item->menu_item.preferredImageVisibility = NSMenuItemImageVisibilityVisible;
+  }
 
   // Create the menu item parent.
   NSMenuItem* parent_item = AddItemToMenu(std::move(item), menu, tag, index);
@@ -510,7 +523,7 @@ int HistoryMenuBridge::AddTabsToSubmenu(
 }
 
 void HistoryMenuBridge::Init() {
-  DCHECK(history_service_);
+  CHECK(history_service_, base::NotFatalUntil::M162);
   need_recreate_ = true;
   CreateMenu();
 }
@@ -615,7 +628,7 @@ void HistoryMenuBridge::OnVisitedHistoryResults(history::QueryResults results) {
 std::unique_ptr<HistoryMenuBridge::HistoryItem>
 HistoryMenuBridge::HistoryItemForTab(const sessions::tab_restore::Tab& entry,
                                      bool attach_group_icon) {
-  DCHECK(!entry.navigations.empty());
+  CHECK(!entry.navigations.empty(), base::NotFatalUntil::M162);
 
   const sessions::SerializedNavigationEntry& current_navigation =
       entry.navigations.at(entry.current_navigation_index);
@@ -648,21 +661,25 @@ void HistoryMenuBridge::GotFaviconData(
     HistoryItem* item,
     const favicon_base::FaviconImageResult& image_result) {
   // Since we're going to do Cocoa-y things, make sure this is the main thread.
-  DCHECK([NSThread isMainThread]);
+  CHECK([NSThread isMainThread], base::NotFatalUntil::M162);
 
-  DCHECK(item);
+  CHECK(item, base::NotFatalUntil::M162);
   item->icon_requested = false;
   item->icon_task_id = base::CancelableTaskTracker::kBadTaskId;
 
   NSImage* image = image_result.image.AsNSImage();
   if (image) {
     item->icon = image;
-    [item->menu_item setImage:item->icon];
+    item->menu_item.image = item->icon;
+    if (@available(macOS 27, *)) {
+      item->menu_item.preferredImageVisibility =
+          NSMenuItemImageVisibilityVisible;
+    }
   }
 }
 
 void HistoryMenuBridge::CancelFaviconRequest(HistoryItem* item) {
-  DCHECK(item);
+  CHECK(item, base::NotFatalUntil::M162);
   if (item->icon_requested) {
     cancelable_task_tracker_.TryCancel(item->icon_task_id);
     item->icon_requested = false;

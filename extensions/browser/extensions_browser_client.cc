@@ -63,6 +63,11 @@ void ExtensionsBrowserClient::AddAPIProvider(
 
 void ExtensionsBrowserClient::StartTearDown() {}
 
+bool ExtensionsBrowserClient::IsolatedModeReplacesIncognito(
+    content::BrowserContext* context) const {
+  return false;
+}
+
 scoped_refptr<update_client::UpdateClient>
 ExtensionsBrowserClient::CreateUpdateClient(
     scoped_refptr<update_client::Configurator> configurator) {
@@ -291,8 +296,8 @@ ExtensionsBrowserClient::GetSafeBrowsingDatabaseManager() const {
   return nullptr;
 }
 
-std::optional<safe_browsing::V4ProtocolConfig>
-ExtensionsBrowserClient::GetV4ProtocolConfig() const {
+std::optional<safe_browsing::SBProtocolConfig>
+ExtensionsBrowserClient::GetSBProtocolConfig() const {
   return std::nullopt;
 }
 
@@ -401,6 +406,33 @@ ExtensionsBrowserClient::CreateInstallPrompt(
     content::WebContents* web_contents,
     std::unique_ptr<InstallPromptData> prompt) {
   return nullptr;
+}
+
+std::unique_ptr<ExtensionInstallPromptClient>
+ExtensionsBrowserClient::CreateInstallPromptForNativeWindow(
+    gfx::NativeWindow native_window,
+    content::BrowserContext& browser_context,
+    std::unique_ptr<InstallPromptData> prompt) {
+  return nullptr;
+}
+
+gfx::NativeWindow ExtensionsBrowserClient::GetNativeWindowForFunction(
+    ExtensionFunction& function) {
+  return gfx::NativeWindow();
+}
+
+bool ExtensionsBrowserClient::IsLazyKeyedServiceInstantiationEnabled() const {
+  return false;
+}
+
+bool ExtensionsBrowserClient::
+    IsLazySocketAndUsbKeyedServiceInstantiationEnabled() const {
+  return false;
+}
+
+bool ExtensionsBrowserClient::
+    IsLazyChromeOSResourceKeyedServiceInstantiationEnabled() const {
+  return false;
 }
 
 }  // namespace extensions

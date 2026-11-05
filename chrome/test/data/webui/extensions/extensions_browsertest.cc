@@ -66,16 +66,10 @@ IN_PROC_BROWSER_TEST_F(CrExtensionsTest, HostPermissionsToggleList) {
   RunTest("extensions/host_permissions_toggle_list_test.js", "mocha.run()");
 }
 
-#if BUILDFLAG(IS_MAC)
-#define MAYBE(test) DISABLED_##test
-#else
-#define MAYBE(test) test
-#endif
-
 // V2 is not supported on desktop android, so tests are disabled.
 #if !BUILDFLAG(IS_ANDROID)
 IN_PROC_BROWSER_TEST_F(CrExtensionsTest,
-                       MAYBE(ExtensionsMV2DeprecationPanelUnsupportedStage)) {
+                       ExtensionsMV2DeprecationPanelUnsupportedStage) {
   RunTest("extensions/mv2_deprecation_panel_unsupported_test.js",
           "mocha.run()");
 }
@@ -130,6 +124,10 @@ class CrExtensionsSidebarTest : public ExtensionsBrowserTest {
                            testCase.c_str()));
   }
 };
+
+IN_PROC_BROWSER_TEST_F(CrExtensionsSidebarTest, DeveloperPromo) {
+  RunTestCase("DeveloperPromo");
+}
 
 IN_PROC_BROWSER_TEST_F(CrExtensionsSidebarTest, HrefVerification) {
   RunTestCase("HrefVerification");
@@ -212,6 +210,10 @@ IN_PROC_BROWSER_TEST_F(CrExtensionsItemsTest, FailedReloadFiresLoadError) {
   RunTestCase("FailedReloadFiresLoadError");
 }
 
+IN_PROC_BROWSER_TEST_F(CrExtensionsItemsTest, Description) {
+  RunTestCase("Description");
+}
+
 IN_PROC_BROWSER_TEST_F(CrExtensionsItemsTest, Warnings) {
   RunTestCase("Warnings");
 }
@@ -219,6 +221,11 @@ IN_PROC_BROWSER_TEST_F(CrExtensionsItemsTest, Warnings) {
 IN_PROC_BROWSER_TEST_F(CrExtensionsItemsTest,
                        UnsupportedDeveloperExtensionWarning) {
   RunTestCase("UnsupportedDeveloperExtensionWarning");
+}
+
+IN_PROC_BROWSER_TEST_F(CrExtensionsItemsTest,
+                       DisabledByAnotherExtensionWarning) {
+  RunTestCase("DisabledByAnotherExtensionWarning");
 }
 
 IN_PROC_BROWSER_TEST_F(CrExtensionsItemsTest, SourceIndicator) {
@@ -375,6 +382,10 @@ IN_PROC_BROWSER_TEST_F(CrExtensionsDetailViewTest,
 
 IN_PROC_BROWSER_TEST_F(CrExtensionsDetailViewTest, RateExtensionLinkClick) {
   RunTestCase("RateExtensionLinkClick");
+}
+
+IN_PROC_BROWSER_TEST_F(CrExtensionsDetailViewTest, IsolatedModeStrings) {
+  RunTestCase("IsolatedModeStrings");
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -4,8 +4,8 @@
 
 import type {BrowserProxy, HistoryIdentityState} from 'chrome://history/history.js';
 import {HistorySignInState, SyncState} from 'chrome://history/history.js';
-import {PageCallbackRouter, PageHandlerRemote} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
-import type {PageRemote} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
+import {OpenConversationResult, PageCallbackRouter, PageHandlerRemote} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
+import type {AccessPoint, Device, PageRemote, TimePeriodOption} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
 import {assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestBrowserProxy as BaseTestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
@@ -31,6 +31,7 @@ export class TestHistoryBrowserProxy extends BaseTestBrowserProxy implements
       'recordHistogram',
       'recordLongTime',
       'recordSigninPendingOffered',
+      'recordTime',
       'startTurnOnSyncFlow',
     ]);
 
@@ -51,6 +52,15 @@ export class TestHistoryBrowserProxy extends BaseTestBrowserProxy implements
       },
     }));
 
+    // Pages that don't fill the viewport request more results without
+    // scrolling, so provide a default empty, finished continuation.
+    this.handler.setResultFor('queryHistoryContinuation', Promise.resolve({
+      results: {
+        info: createHistoryInfo(''),
+        value: [],
+      },
+    }));
+
     this.handler.setResultFor('requestAccountInfo', Promise.resolve({
       accountInfo: {
         name: 'Test User',
@@ -58,6 +68,18 @@ export class TestHistoryBrowserProxy extends BaseTestBrowserProxy implements
         accountImageSrc: 'http://example.com/image.png',
       },
     }));
+
+    this.handler.setResultFor(
+        'openCriticalActionConversation', Promise.resolve({
+          result: OpenConversationResult.kSuccess,
+        }));
+
+    this.handler.setResultFor('getSyncedDevicesForFiltering', Promise.resolve({
+      devices: [],
+    }));
+
+    this.handler.setResultFor(
+        'getTimePeriodOptions', Promise.resolve({options: []}));
 
     // <if expr="not is_chromeos">
     this.handler.setResultFor(
@@ -113,17 +135,27 @@ export class TestHistoryBrowserProxy extends BaseTestBrowserProxy implements
     this.methodCalled('recordBooleanHistogram', [histogram, value]);
   }
 
-  recordTime() {}
+  recordTime(histogram: string, value: number) {
+    this.methodCalled('recordTime', [histogram, value]);
+  }
 
   recordLongTime(histogram: string, value: number) {
     this.methodCalled('recordLongTime', histogram, value);
   }
 
-  recordSigninPendingOffered() {
-    this.methodCalled('recordSigninPendingOffered');
+  recordSigninPendingOffered(accessPoint: AccessPoint) {
+    this.methodCalled('recordSigninPendingOffered', accessPoint);
   }
 
   startTurnOnSyncFlow() {
     this.methodCalled('startTurnOnSyncFlow');
+  }
+
+  getSyncedDevicesForFiltering(): Promise<{devices: Device[]}> {
+    return this.handler.getSyncedDevicesForFiltering();
+  }
+
+  getTimePeriodOptions(): Promise<{options: TimePeriodOption[]}> {
+    return this.handler.getTimePeriodOptions();
   }
 }

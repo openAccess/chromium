@@ -17,6 +17,7 @@
 #include "chrome/common/buildflags.h"
 #include "components/password_manager/content/browser/content_password_manager_driver.h"
 #include "components/password_manager/content/browser/content_password_manager_driver_factory.h"
+#include "components/password_manager/core/browser/actor_login/actor_login_quality_logger_interface.h"
 #include "components/password_manager/core/browser/actor_login/internal/actor_login_web_content_interface.h"
 #include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_interface.h"
@@ -27,6 +28,12 @@
 #include "content/public/browser/webid/federated_embedder_login_request.h"
 #include "content/public/browser/webid/identity_credential_source.h"
 #include "content/public/common/content_features.h"
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/tab_list/tab_list_interface.h"
+#include "chrome/browser/ui/android/tab_model/tab_model.h"
+#include "components/password_manager/core/browser/features/password_features.h"
+#include "ui/base/base_window.h"
+#endif
 
 namespace actor_login {
 
@@ -92,7 +99,7 @@ ChromeActorLoginDelegateClient::GetPermissionCleaningService() {
 
 std::unique_ptr<ActorLoginCredentialsFetcher>
 ChromeActorLoginDelegateClient::CreateFederatedCredentialsFetcher(
-    base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger,
+    scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger,
     ActorLoginMetricsHelper* metrics_helper) {
   ActorLoginPermissionService* permission_service =
       ActorLoginPermissionServiceFactory::GetForProfile(
@@ -124,7 +131,7 @@ ChromeActorLoginDelegateClient::CreateSiwgController(
     bool should_store_permission,
     LoginStatusResultOrErrorReply on_finished_callback,
     base::WeakPtr<ActionSequenceDelegate> action_sequence_delegate,
-    base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger,
+    scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger,
     base::TimeTicks attempt_login_tool_start_time,
     base::OnceCallback<void(bool)> post_button_click_login_result_callback) {
   ActorLoginPermissionService* permission_service =
@@ -148,16 +155,47 @@ bool ChromeActorLoginDelegateClient::IsTaskInFocus() {
   CHECK(tab_interface);
 // TODO(crbug.com/482430429): Reconsider the use of BrowserWindowInterface on
 // Android.
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
+  BrowserWindowInterface* browser_window =
+      tab_interface->GetBrowserWindowInterface();
+  if (base::FeatureList::IsEnabled(
+          password_manager::features::kBiometricTouchToFill)) {
+    ui::BaseWindow* window =
+        browser_window ? browser_window->GetWindow() : nullptr;
+    if (!window || !window->IsActive()) {
+      return false;
+    }
+    TabListInterface* tab_list =
+        browser_window ? TabListInterface::From(browser_window) : nullptr;
+    if (!tab_list) {
+      return false;
+    }
+    // Verify that the `TabModel` is active. This avoids considering the tab
+    // active when switching between normal and incognito models.
+    TabModel* tab_model = static_cast<TabModel*>(tab_list);
+    if (!tab_model->IsActiveModel()) {
+      return false;
+    }
+    // Verify that our tab is the currently selected tab in the active model.
+    if (tab_list->GetActiveTab() == tab_interface) {
+      return true;
+    }
+  } else {
+    if (tab_interface->IsActivated()) {
+      return true;
+    }
+  }
+#else
   BrowserWindowInterface* browser_window =
       tab_interface->GetBrowserWindowInterface();
   if (!browser_window->IsActive()) {
     return false;
   }
-#endif
   if (tab_interface->IsActivated()) {
     return true;
   }
+#endif
+
   glic::GlicKeyedService* glic_service =
       glic::GlicKeyedService::Get(GetWebContents().GetBrowserContext());
   CHECK(glic_service);

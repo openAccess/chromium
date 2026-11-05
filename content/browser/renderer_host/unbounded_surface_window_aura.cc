@@ -9,7 +9,6 @@
 #include "base/memory/ptr_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "components/input/native_web_keyboard_event.h"
-#include "components/input/render_widget_host_input_event_router.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "components/viz/host/host_frame_sink_manager.h"
@@ -25,6 +24,7 @@
 #include "ui/aura/client/screen_position_client.h"
 #include "ui/aura/client/transient_window_client.h"
 #include "ui/aura/client/window_parenting_client.h"
+#include "ui/aura/env.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer_surface.h"
 #include "ui/compositor/layer_textured.h"
@@ -35,6 +35,8 @@
 #include "ui/events/blink/web_input_event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/wm/core/window_util.h"
+#include "ui/wm/public/activation_client.h"
 
 namespace content {
 
@@ -56,6 +58,29 @@ gfx::Rect ConvertRectFromScreen(aura::Window* window,
     }
   }
   return gfx::Rect(relative_origin, bounds_in_screen.size());
+}
+
+// Returns true for modifier keys, which do not dismiss the surface on their
+// own so that a shortcut aimed at the surface can still be typed.
+bool IsModifierKey(ui::KeyboardCode key_code) {
+  switch (key_code) {
+    case ui::VKEY_SHIFT:
+    case ui::VKEY_LSHIFT:
+    case ui::VKEY_RSHIFT:
+    case ui::VKEY_CONTROL:
+    case ui::VKEY_LCONTROL:
+    case ui::VKEY_RCONTROL:
+    case ui::VKEY_MENU:
+    case ui::VKEY_LMENU:
+    case ui::VKEY_RMENU:
+    case ui::VKEY_LWIN:
+    case ui::VKEY_RWIN:
+    case ui::VKEY_ALTGR:
+    case ui::VKEY_CAPITAL:
+      return true;
+    default:
+      return false;
+  }
 }
 
 }  // namespace
@@ -83,13 +108,10 @@ class UnboundedSurfaceWindowAura::DebugBorderDelegate
 // static
 std::unique_ptr<UnboundedSurfaceWindowAura> UnboundedSurfaceWindowAura::Create(
     RenderWidgetHostViewAura* parent_view,
-    mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-    mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient> client,
     const gfx::Rect& bounds_in_screen,
     base::WeakPtr<RenderWidgetHostViewBase> subframe_view) {
-  auto window = base::WrapUnique(new UnboundedSurfaceWindowAura(
-      parent_view, std::move(host), std::move(client),
-      std::move(subframe_view)));
+  auto window = base::WrapUnique(
+      new UnboundedSurfaceWindowAura(parent_view, std::move(subframe_view)));
   if (!window->InitWindow(bounds_in_screen)) {
     return nullptr;
   }
@@ -98,27 +120,17 @@ std::unique_ptr<UnboundedSurfaceWindowAura> UnboundedSurfaceWindowAura::Create(
 
 UnboundedSurfaceWindowAura::UnboundedSurfaceWindowAura(
     RenderWidgetHostViewAura* parent_view,
-    mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-    mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient> client,
     base::WeakPtr<RenderWidgetHostViewBase> subframe_view)
-    : parent_view_(parent_view), subframe_view_(std::move(subframe_view)) {
-  if (host.is_valid()) {
-    receiver_.Bind(std::move(host));
-    receiver_.set_disconnect_handler(
-        base::BindOnce(&UnboundedSurfaceWindowAura::OnConnectionError,
-                       base::Unretained(this)));
-  }
-  if (client.is_valid()) {
-    client_remote_.Bind(std::move(client));
-  }
+    : UnboundedSurfaceWindow(parent_view ? parent_view->GetWeakPtr() : nullptr,
+                             std::move(subframe_view)) {
 }
 
 UnboundedSurfaceWindowAura::~UnboundedSurfaceWindowAura() {
-  if (root_window_) {
-    root_window_->RemovePreTargetHandler(this);
-    root_window_->RemoveObserver(this);
-    root_window_ = nullptr;
+  // `aura::Env` may already be gone during shutdown.
+  if (aura::Env::HasInstance()) {
+    aura::Env::GetInstance()->RemovePreTargetHandler(this);
   }
+  StopObservingRootWindow();
   if (window_) {
     window_.reset();
   }
@@ -238,11 +250,44 @@ void UnboundedSurfaceWindowAura::OnWindowDestroying(aura::Window* window) {
     // is destructed, it does not attempt to double-free or re-entrantly destroy
     // the aura::Window.
     window_.release();
+    NotifyWindowDestroyed();
+    // The native window is gone, so `this` is useless: remove it from the
+    // root view, so that it no longer reports an active surface.
+    ScheduleDeferredDestroy();
   } else if (window == root_window_) {
-    root_window_->RemovePreTargetHandler(this);
-    root_window_->RemoveObserver(this);
-    root_window_ = nullptr;
+    StopObservingRootWindow();
   }
+}
+
+void UnboundedSurfaceWindowAura::StopObservingRootWindow() {
+  if (!root_window_) {
+    return;
+  }
+  // The activation client may have been destroyed by the time we get here.
+  if (wm::ActivationClient* activation_client =
+          wm::GetActivationClient(root_window_)) {
+    activation_client->RemoveObserver(this);
+  }
+  root_window_->RemoveObserver(this);
+  root_window_ = nullptr;
+}
+
+bool UnboundedSurfaceWindowAura::IsInOwnerView(aura::Window* window) const {
+  if (!window) {
+    return false;
+  }
+  if (window_ && (window_->Contains(window) ||
+                  wm::HasTransientAncestor(window, window_.get()))) {
+    return true;
+  }
+  aura::Window* parent_native_view =
+      parent_view_ ? parent_view_->GetNativeView() : nullptr;
+  if (parent_native_view &&
+      (parent_native_view->Contains(window) ||
+       wm::HasTransientAncestor(window, parent_native_view))) {
+    return true;
+  }
+  return false;
 }
 
 bool UnboundedSurfaceWindowAura::HasHitTestMask() const {
@@ -265,7 +310,16 @@ bool UnboundedSurfaceWindowAura::InitWindow(const gfx::Rect& bounds_in_screen) {
 
   root_window_ = root;
   root_window_->AddObserver(this);
-  root_window_->AddPreTargetHandler(this);
+  // Dismiss when the window hosting the owner view is deactivated.
+  if (wm::ActivationClient* activation_client =
+          wm::GetActivationClient(root_window_)) {
+    activation_client->AddObserver(this);
+  }
+  // Observe events for all root windows, not only `root_window_`, so that a
+  // click or key press in another window (e.g. another browser window) also
+  // dismisses the surface. This matches `MenuPreTargetHandlerAura`.
+  aura::Env::GetInstance()->AddPreTargetHandler(
+      this, ui::EventTarget::Priority::kSystem);
 
   frame_sink_id_ = content::AllocateFrameSinkId();
 
@@ -316,6 +370,7 @@ bool UnboundedSurfaceWindowAura::InitWindow(const gfx::Rect& bounds_in_screen) {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kUnboundedWindowDebug)) {
     debug_border_layer_ = std::make_unique<ui::LayerTextured>();
+    debug_border_layer_->SetName("UnboundedSurfaceWindow:DebugBorder");
     debug_border_delegate_ =
         std::make_unique<DebugBorderDelegate>(debug_border_layer_.get());
     debug_border_layer_->set_delegate(debug_border_delegate_.get());
@@ -326,10 +381,6 @@ bool UnboundedSurfaceWindowAura::InitWindow(const gfx::Rect& bounds_in_screen) {
   }
 
   window_->Show();
-
-  if (client_remote_.is_bound()) {
-    client_remote_->OnSurfaceAllocated(GetFrameSinkId(), GetLocalSurfaceId());
-  }
   return true;
 }
 
@@ -350,26 +401,10 @@ void UnboundedSurfaceWindowAura::SetBounds(const gfx::Rect& bounds_in_screen) {
   }
 }
 
-void UnboundedSurfaceWindowAura::UpdateBounds(const gfx::Rect& bounds) {
-  if (!parent_view_) {
-    return;
-  }
-  parent_view_->UpdateUnboundedSurfaceBoundsInSubframeContext(
-      bounds, subframe_view_.get());
-  if (client_remote_.is_bound()) {
-    client_remote_->OnSurfaceAllocated(GetFrameSinkId(), GetLocalSurfaceId());
-  }
-}
-
 void UnboundedSurfaceWindowAura::TeardownAndDestroy() {
   if (parent_view_) {
     parent_view_->DestroyUnboundedSurface(GetWeakPtr());
   }
-}
-
-void UnboundedSurfaceWindowAura::OnConnectionError() {
-  dismiss_pending_ = true;
-  ScheduleDeferredDestroy();
 }
 
 void UnboundedSurfaceWindowAura::GetCompositorFrameSink(
@@ -380,30 +415,42 @@ void UnboundedSurfaceWindowAura::GetCompositorFrameSink(
       /*render_input_router_config=*/nullptr);
 }
 
-RenderWidgetHostViewBase* UnboundedSurfaceWindowAura::GetParentView() const {
-  return parent_view_;
-}
-
 void UnboundedSurfaceWindowAura::OnKeyEvent(ui::KeyEvent* event) {
+  auto* target = static_cast<aura::Window*>(event->target());
   if (event->type() == ui::EventType::kKeyPressed &&
       event->key_code() == ui::VKEY_ESCAPE) {
+    // Only consume Escape in the window that hosts the surface, so that
+    // Escape still reaches unrelated windows (e.g. another browser window).
+    bool in_root_window = root_window_ && root_window_->Contains(target);
     Dismiss();
+    if (in_root_window) {
+      event->SetHandled();
+    }
+    return;
+  }
+
+  RenderWidgetHostViewBase* target_view = GetTargetView();
+  if (window_ && target == window_.get() && target_view &&
+      target_view->host()) {
+    input::NativeWebKeyboardEvent web_event(*event);
+    target_view->host()->ForwardKeyboardEvent(web_event);
     event->SetHandled();
     return;
   }
 
-  if (window_ && event->target() == window_.get() && parent_view_ &&
-      parent_view_->host()) {
-    input::NativeWebKeyboardEvent web_event(*event);
-    parent_view_->host()->ForwardKeyboardEvent(web_event);
-    event->SetHandled();
+  // Dismiss on a key press aimed outside the owner view (e.g. a browser
+  // shortcut while focus is in the omnibox or another tab), but let the event
+  // continue to its target. Key presses inside the owner view are handled by
+  // `RenderWidgetHostImpl`, which dismisses only for consumed shortcuts.
+  if (event->type() == ui::EventType::kKeyPressed &&
+      !IsModifierKey(event->key_code()) && !IsInOwnerView(target)) {
+    Dismiss();
   }
 }
 
 void UnboundedSurfaceWindowAura::OnMouseEvent(ui::MouseEvent* event) {
   if (event->type() == ui::EventType::kMousePressed &&
-      (!window_ ||
-       !window_->Contains(static_cast<aura::Window*>(event->target())))) {
+      !IsInOwnerView(static_cast<aura::Window*>(event->target()))) {
     Dismiss();
     return;
   }
@@ -434,11 +481,20 @@ void UnboundedSurfaceWindowAura::OnScrollEvent(ui::ScrollEvent* event) {
 }
 
 void UnboundedSurfaceWindowAura::OnTouchEvent(ui::TouchEvent* event) {
-  if (event->type() == ui::EventType::kTouchPressed &&
-      (!window_ ||
-       !window_->Contains(static_cast<aura::Window*>(event->target())))) {
-    Dismiss();
-    return;
+  if (event->type() == ui::EventType::kTouchPressed) {
+    auto* target = static_cast<aura::Window*>(event->target());
+    if (!IsInOwnerView(target)) {
+      Dismiss();
+      return;
+    }
+    aura::Window* parent_native_view =
+        parent_view_ ? parent_view_->GetNativeView() : nullptr;
+    if (window_ && target == parent_native_view) {
+      if (!window_->GetBoundsInRootWindow().Contains(event->root_location())) {
+        Dismiss();
+        return;
+      }
+    }
   }
 
   if (!window_ ||
@@ -446,21 +502,17 @@ void UnboundedSurfaceWindowAura::OnTouchEvent(ui::TouchEvent* event) {
     return;
   }
 
-  if (!parent_view_ || !parent_view_->host() ||
-      !parent_view_->host()->delegate() ||
-      !parent_view_->host()->delegate()->GetInputEventRouter()) {
+  RenderWidgetHostViewBase* target_view = GetTargetView();
+  if (!target_view || !target_view->host()) {
     return;
   }
-  input::RenderWidgetHostInputEventRouter* router =
-      parent_view_->host()->delegate()->GetInputEventRouter();
 
   if (!pointer_state_.OnTouch(*event)) {
     event->StopPropagation();
     return;
   }
 
-  aura::Window* parent_window = parent_view_->GetNativeView();
-  if (!parent_window || !parent_window->GetRootWindow()) {
+  if (!target_view->GetRootView()) {
     return;
   }
   blink::WebTouchEvent touch_event = ui::CreateWebTouchEventFromMotionEvent(
@@ -469,22 +521,41 @@ void UnboundedSurfaceWindowAura::OnTouchEvent(ui::TouchEvent* event) {
 
   for (unsigned int i = 0; i < touch_event.touches_length; ++i) {
     blink::WebTouchPoint& touch_point = touch_event.touches[i];
-    gfx::PointF parent_local_point = touch_point.PositionInScreen();
-    // Since the touch event's PositionInScreen is populated from the
-    // MotionEvent's raw coordinates which are in root window space, not screen
-    // space, we must convert from root window coordinates to parent local
-    // coordinates.
-    aura::Window::ConvertPointToTarget(parent_window->GetRootWindow(),
-                                       parent_window, &parent_local_point);
-    touch_point.SetPositionInWidget(parent_local_point.x(),
-                                    parent_local_point.y());
+    if (std::optional<gfx::PointF> local_point =
+            TransformScreenPointToViewCoordSpace(
+                target_view, touch_point.PositionInScreen())) {
+      touch_point.SetPositionInWidget(local_point->x(), local_point->y());
+    }
   }
 
   ui::LatencyInfo latency_info =
       event->latency() ? *event->latency() : ui::LatencyInfo();
-  router->RouteTouchEvent(parent_view_, &touch_event, latency_info);
+  target_view->ProcessTouchEvent(touch_event, latency_info);
   // Disable synchronous handling to allow gesture generation after ACK.
   event->DisableSynchronousHandling();
+}
+
+void UnboundedSurfaceWindowAura::OnCancelMode(ui::CancelModeEvent* event) {
+  Dismiss();
+}
+
+void UnboundedSurfaceWindowAura::OnWindowActivated(
+    wm::ActivationChangeObserver::ActivationReason reason,
+    aura::Window* gained_active,
+    aura::Window* lost_active) {
+  if (!window_) {
+    return;
+  }
+  // Keep the surface open while activation stays within the window hosting
+  // the owner view (e.g. the browser window), or moves into the surface.
+  aura::Window* parent_native_view =
+      parent_view_ ? parent_view_->GetNativeView() : nullptr;
+  if (gained_active &&
+      (IsInOwnerView(gained_active) ||
+       (parent_native_view && gained_active->Contains(parent_native_view)))) {
+    return;
+  }
+  Dismiss();
 }
 
 }  // namespace content

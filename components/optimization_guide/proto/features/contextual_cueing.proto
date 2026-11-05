@@ -47,6 +47,14 @@ message ContextualCueingRequest {
   // The history of contextual cueing shown to the user sorted in
   // reverse-chronological order.
   repeated ContextualCueingHistory contextual_cueing_history = 4 [deprecated = true];
+
+  // The historical tabs for the user.
+  //
+  // Only the URL and title will be populated for each historical tab.
+  //
+  // It is guaranteed that tabs in active_tab_page_context and
+  // background_tabs will not be in historical_tabs.
+  repeated Tab historical_tabs = 5;
 }
 
 message ContextualCueingHistory {
@@ -103,14 +111,26 @@ message ContextualCue {
 
   oneof fulfillment_surface {
     GeminiInChromeSurface gemini_in_chrome_surface = 3;
+
+    ContextualSearchSurface contextual_search_surface = 4;
   }
 
   // The suggested user journey to show the cue for.
   string suggested_cuj = 1 [features = { field_presence: EXPLICIT }];
 }
 
+message ContextualSearchSurface {
+  // The query to use for the contextual search surface.
+  string query = 1 [features = { field_presence: EXPLICIT }];
+
+  // The tabs that should be shared with the contextual search surface on click.
+  repeated Tab tabs_to_share = 2;
+}
+
 enum ContextualCueingSurface {
   CONTEXTUAL_CUEING_SURFACE_UNSPECIFIED = 0;
 
   CONTEXTUAL_CUEING_SURFACE_GEMINI_IN_CHROME = 1;
+
+  CONTEXTUAL_CUEING_SURFACE_CONTEXTUAL_SEARCH = 2;
 }

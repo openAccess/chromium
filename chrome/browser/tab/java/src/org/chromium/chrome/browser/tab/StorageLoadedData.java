@@ -106,10 +106,6 @@ public class StorageLoadedData implements Destroyable {
 
     @Override
     public void destroy() {
-        for (TabGroupCollectionData groupData : getGroupsData()) {
-            groupData.destroy();
-        }
-
         for (LoadedTabState loadedTabState : mLoadedTabStates) {
             loadedTabState.destroy();
         }
@@ -128,7 +124,7 @@ public class StorageLoadedData implements Destroyable {
     public static StorageLoadedData createData(
             long nativePtr,
             @JniType("std::vector<tabs_pb::TabState>") LoadedTabState[] loadedTabStates,
-            @JniType("std::vector<tabs::TabGroupCollectionDataAndroid*>")
+            @JniType("std::vector<std::unique_ptr<tabs::TabGroupCollectionData>>")
                     TabGroupCollectionData[] groups,
             int activeTabIndex,
             @JniType("std::vector<tabs::StorageLoadingContext::Warning>")
@@ -148,17 +144,16 @@ public class StorageLoadedData implements Destroyable {
     }
 
     @CalledByNative
-    public static TabState createTabState(
-            int parentTabId,
-            int rootId,
+    private static TabState createTabState(
+            @TabId int parentTabId,
             long timestampMillis,
             @Nullable ByteBuffer webContentsStateBuffer,
             int webContentsStateVersion,
             long webContentsStateStringPointer,
             @Nullable @JniType("std::string") String openerAppId,
             int themeColor,
-            int launchTypeAtCreation,
-            int userAgent,
+            @TabLaunchType int launchTypeAtCreation,
+            @TabUserAgent int userAgent,
             long lastNavigationCommittedTimestampMillis,
             @Nullable Token tabGroupId,
             boolean tabHasSensitiveContent,
@@ -166,7 +161,6 @@ public class StorageLoadedData implements Destroyable {
             @Nullable @JniType("std::string") String url) {
         TabState tabState = new TabState();
         tabState.parentId = parentTabId;
-        tabState.rootId = rootId;
         tabState.timestampMillis = timestampMillis;
         if (webContentsStateBuffer != null) {
             assert webContentsStateStringPointer != 0;

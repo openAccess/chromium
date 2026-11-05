@@ -71,6 +71,7 @@ class WebGLConformanceIntegrationTestBase(
   gpu_integration_test.GpuIntegrationTest
 ):
   _webgl_version: int | None = None
+  _webgl_on_webgpu = False
   _crash_count = 0
   _original_environ: Mapping | None = None
   page_loaded = False
@@ -152,6 +153,7 @@ class WebGLConformanceIntegrationTestBase(
   def _SetClassVariablesFromOptions(cls, options: ct.ParsedCmdArgs) -> None:
     super()._SetClassVariablesFromOptions(options)
     cls._webgl_version = int(options.webgl_conformance_version.split('.')[0])
+    cls._webgl_on_webgpu = _IsWebGLOnWebGPUEnabled(options.browser_options)
     if not cls._conformance_harness_script:
       with open(
         os.path.join(
@@ -266,7 +268,7 @@ class WebGLConformanceIntegrationTestBase(
       retry_on_amd64_generic = (
         'chromeos-board-amd64-generic' in self.GetPlatformTags(self.browser)
       )
-    except Exception:  # pylint: disable=broad-except
+    except Exception:
       logging.warning(
         'Failed to determine if running on a ChromeOS VM, assuming no'
       )
@@ -450,7 +452,7 @@ class WebGLConformanceIntegrationTestBase(
     if self._is_asan:
       # Asan runs much slower and needs a longer timeout
       timeout *= 2
-    return timeout
+    return int(timeout * self._GetSlowMultiplier())
 
   def _GetExtensionHarnessScript(self) -> str:
     assert self._conformance_harness_script is not None
@@ -629,7 +631,7 @@ class WebGLConformanceIntegrationTestBase(
           continue
         if (
           webgl2_only
-          and not '.txt' in test_name
+          and '.txt' not in test_name
           and (
             not min_version_to_compare
             or not min_version_to_compare.startswith('2')
@@ -657,3 +659,11 @@ class WebGLConformanceIntegrationTestBase(
   @classmethod
   def ExpectationsFiles(cls) -> list[str]:
     raise NotImplementedError()
+
+
+def _IsWebGLOnWebGPUEnabled(browser_options: Any) -> bool:
+  for arg in getattr(browser_options, 'extra_browser_args', None) or []:
+    if arg.startswith('--enable-features='):
+      if 'WebGLOnWebGPU' in arg.removeprefix('--enable-features=').split(','):
+        return True
+  return False

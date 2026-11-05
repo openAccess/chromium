@@ -38,6 +38,7 @@
 
 namespace blink {
 
+class Animation;
 class DOMOrigin;
 class DOMWrapperWorld;
 class EventDispatcher;
@@ -171,6 +172,7 @@ class CORE_EXPORT Event : public ScriptWrappable, public DOMOriginUtils {
 
   virtual EventTarget* relatedTarget() const { return nullptr; }
   virtual void SetRelatedTarget(EventTarget*) {}
+  virtual Animation* GetAnimation() const { return nullptr; }
 
   PhaseType eventPhase() const { return event_phase_; }
   void SetEventPhase(PhaseType event_phase) { event_phase_ = event_phase; }
@@ -286,6 +288,12 @@ class CORE_EXPORT Event : public ScriptWrappable, public DOMOriginUtils {
 
   // Events that must not leak across isolated world, similar to how
   // ErrorEvent behaves, can override this method.
+  //
+  // Every path that surfaces an `Event` to script must consult this. Ordinary
+  // event listeners do so in `JSBasedEventListener::Invoke()`, but
+  // `EventTarget::FireEventListeners()` itself does not, so a
+  // `NativeEventListener` that forwards the raw `Event` on to script (e.g. the
+  // one backing `EventTarget#when()`) is responsible for checking it directly.
   virtual bool CanBeDispatchedInWorld(const DOMWrapperWorld&) const {
     return true;
   }

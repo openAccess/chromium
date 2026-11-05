@@ -18,7 +18,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
@@ -76,14 +75,14 @@ void ShowLowDiskSpaceErrorNotification(content::BrowserContext* context) {
       l10n_util::GetStringUTF16(IDS_ARC_CRITICALLY_LOW_DISK_NOTIFICATION_TITLE),
       l10n_util::GetStringUTF16(
           IDS_ARC_CRITICALLY_LOW_DISK_NOTIFICATION_MESSAGE),
-      l10n_util::GetStringUTF16(IDS_ARC_NOTIFICATION_DISPLAY_SOURCE), GURL(),
+      l10n_util::GetStringUTF16(IDS_ARC_NOTIFICATION_DISPLAY_SOURCE),
       notifier_id, optional_fields,
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
           base::BindRepeating(
               [](const user_manager::User* user,
                  std::optional<int> button_index) {
                 if (button_index) {
-                  DCHECK_EQ(0, *button_index);
+                  CHECK_EQ(0, *button_index, base::NotFatalUntil::M160);
                   ash::SettingsAppManager::Get()->Open(
                       CHECK_DEREF(user),
                       {.sub_page =

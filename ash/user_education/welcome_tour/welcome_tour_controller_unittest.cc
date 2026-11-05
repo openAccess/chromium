@@ -338,14 +338,6 @@ void ExpectNotificationCounts(size_t total_notifications,
 
 // Base class for tests of the `WelcomeTourController`.
 class WelcomeTourControllerTest : public UserEducationAshTestBase {
- public:
-  WelcomeTourControllerTest() {
-    // NOTE: The `WelcomeTourController` exists only when the Welcome Tour
-    // feature is enabled. Controller existence is verified in test coverage
-    // for the controller's owner.
-    scoped_feature_list_.InitAndEnableFeature(features::kWelcomeTour);
-  }
-
  protected:
   // UserEducationAshTestBase:
   void SetUp() override {
@@ -358,9 +350,6 @@ class WelcomeTourControllerTest : public UserEducationAshTestBase {
     ON_CALL(*user_education_delegate(), IsNewUser)
         .WillByDefault(ReturnRefOfCopy(std::make_optional(true)));
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Tests -----------------------------------------------------------------------
@@ -391,8 +380,8 @@ TEST_F(WelcomeTourControllerTest, StartsTourAndPropagatesEvents) {
   // Add a primary and secondary user session for the first time. This should
   // *not* trigger the Welcome Tour to start.
   auto* const session_controller_client = GetSessionControllerClient();
-  SimulateUserLogin({.is_new_profile = true, .activate_session = false},
-                    primary_account_id);
+  SimulateUserLogin({.account_id = primary_account_id, .is_new_profile = true},
+                    /*activate_session=*/false);
 
   // Activate the primary user session. This *should* trigger the Welcome Tour
   // to be registered and started as well as notify observers. Note that
@@ -425,7 +414,8 @@ TEST_F(WelcomeTourControllerTest, StartsTourAndPropagatesEvents) {
 
   // Switch to the secondary user session and back again. This should *not*
   // trigger the Welcome Tour to start.
-  SimulateUserLogin({.is_new_profile = true}, secondary_account_id);
+  SimulateUserLogin(
+      {.account_id = secondary_account_id, .is_new_profile = true});
   SwitchActiveUser(primary_account_id);
 
   // Deactivate and then reactivate the primary user session. This should *not*
@@ -768,9 +758,10 @@ TEST_P(WelcomeTourControllerChromeVoxTest,
 TEST_P(WelcomeTourControllerChromeVoxTest,
        MaybePreventTourFromStartingIfChromeVoxEnabled) {
   base::HistogramTester histogram_tester;
-  auto primary_account_id = SimulateUserLogin({.display_email = "primary@test",
-                                               .is_new_profile = true,
-                                               .activate_session = false});
+  auto primary_account_id =
+      SimulateUserLogin({.account_id = AccountId::FromUserEmail("primary@test"),
+                         .is_new_profile = true},
+                        /*activate_session=*/false);
 
   // Enable the spoken feedback after the pref service is ready and before the
   // session becomes active.
@@ -1001,7 +992,7 @@ TEST_P(WelcomeTourControllerUserEligibilityTest, EnforcesUserEligibility) {
       .WillByDefault(ReturnRefOfCopy(IsNewUserCrossDevice()));
 
   // Login into the user session and verify expectations.
-  SimulateUserLogin({.display_email = "primary@test",
+  SimulateUserLogin({.account_id = AccountId::FromUserEmail("primary@test"),
                      .user_type = GetUserType(),
                      .is_new_profile = IsNewUserLocally(),
                      .is_account_managed = IsManagedUser()});

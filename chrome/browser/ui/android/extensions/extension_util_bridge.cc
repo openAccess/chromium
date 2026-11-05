@@ -16,7 +16,7 @@
 #include "content/public/browser/web_contents.h"
 #include "extensions/buildflags/buildflags.h"
 #include "net/base/url_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/gfx/android/java_bitmap.h"
 #include "ui/gfx/image/image.h"
 #include "url/gurl.h"
@@ -88,20 +88,28 @@ void JNI_ExtensionUtilBridge_OnOmniboxExtensionInputEntered(
     const std::string& url_str,
     bool open_in_new_tab,
     bool open_in_new_window) {
+  CHECK(web_contents);
+
   GURL url(url_str);
-  std::string extension_id(url.host());
   std::string input_text;
   net::GetValueForKeyInQuery(url, "q", &input_text);
+  // When an extension keyword is entered with empty remaining input (e.g.
+  // user typed keyword + space and pressed Enter), the template URL leaves
+  // "{searchTerms}" unreplaced. Clear it so empty input is passed.
+  if (input_text == "{searchTerms}") {
+    input_text.clear();
+  }
 
-  WindowOpenDisposition disposition = WindowOpenDisposition::CURRENT_TAB;
+  ui::mojom::WindowOpenDisposition disposition =
+      ui::mojom::WindowOpenDisposition::kCurrentTab;
   if (open_in_new_window) {
-    disposition = WindowOpenDisposition::NEW_WINDOW;
+    disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
   } else if (open_in_new_tab) {
-    disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   }
 
   extensions::ExtensionOmniboxEventRouter::OnInputEntered(
-      web_contents, extension_id, input_text, disposition);
+      web_contents, std::string(url.host()), input_text, disposition);
 }
 
 DEFINE_JNI(ExtensionUtilBridge)

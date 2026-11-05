@@ -7,14 +7,11 @@ import '/strings.m.js';
 import {CustomElement} from 'chrome://resources/js/custom_element.js';
 
 import {getTemplate} from './connectors_tabs.html.js';
-// <if expr="not is_android and not is_ios">
 import {DeviceTrustConnectorElement} from './device_trust_connector.js';
-// </if>
 import {ManagedClientCertificateElement} from './managed_client_certificate.js';
 import {ProvisioningDomainConfigElement} from './provisioning_domain_config.js';
-// <if expr="not is_ios">
 import {SignalsReportingElement} from './signals_reporting.js';
-// </if>
+
 
 interface ConnectorTab {
   // Title used as the tab button's text.
@@ -32,28 +29,22 @@ interface ConnectorTab {
 // Set of all connector tabs. Adding a new entry here will make it automatically
 // show in the UI.
 const connectorTabs: ConnectorTab[] = [
-  // Device Trust Connector is not supported on Android
-  // <if expr="not is_android and not is_ios">
   {
     title: 'Device Trust',
     directive: DeviceTrustConnectorElement.is,
     isEnabled: true,
   },
-
-  // </if>
   {
     title: 'Managed Client Certificate',
     directive: ManagedClientCertificateElement.is,
     isEnabled: true,
   },
-  // <if expr="not is_ios">
   {
     title: 'Signals Reporting',
     directive: SignalsReportingElement.is,
     isEnabled: true,
   },
-  // </if>
-    {
+  {
     title: 'Provisioning Domain Config',
     directive: ProvisioningDomainConfigElement.is,
     isEnabled: true,

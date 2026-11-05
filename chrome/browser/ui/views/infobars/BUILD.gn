@@ -16,6 +16,7 @@ source_set("infobars") {
   ]
 
   sources = [
+    "confirm_infobar_with_custom_view.h",
     "confirm_infobar_with_normal_label.h",
     "confirm_infobar_with_styled_label.h",
   ]
@@ -31,6 +32,7 @@ source_set("impl") {
   sources = [
     "alternate_nav_infobar_view.cc",
     "confirm_infobar.cc",
+    "confirm_infobar_with_custom_view.cc",
     "confirm_infobar_with_normal_label.cc",
     "confirm_infobar_with_styled_label.cc",
     "infobar_container_view.cc",
@@ -40,11 +42,13 @@ source_set("impl") {
   deps = [
     ":infobars",
     "//chrome/app:generated_resources_grit",
-    "//chrome/browser/ui",
+    "//chrome/browser/infobars",
+    "//chrome/browser/ui:browser_element_identifiers",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui:view_ids",
     "//chrome/browser/ui/omnibox",
     "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//components/infobars/core",
     "//components/strings:components_strings_grit",
     "//ui/accessibility:ax_base",
@@ -59,6 +63,7 @@ source_set("browser_tests") {
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 
   sources = [
+    "confirm_infobar_custom_layout_browsertest.cc",
     "infobar_container_view_browsertest.cc",
     "infobar_view_browsertest.cc",
   ]
@@ -66,8 +71,11 @@ source_set("browser_tests") {
   deps = [
     ":impl",
     ":infobars",
-    "//chrome/browser/ui",
+    "//chrome/browser",
+    "//chrome/browser/infobars",
+    "//chrome/browser/ui:browser_commands",
     "//chrome/browser/ui:ui_features",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/test:test_support",
     "//chrome/test:test_support_ui",
     "//components/infobars/content",
@@ -82,12 +90,16 @@ source_set("browser_tests") {
 source_set("unit_tests") {
   testonly = true
 
-  sources = [ "confirm_infobar_unittest.cc" ]
+  sources = [
+    "confirm_infobar_unittest.cc",
+    "infobar_view_unittest.cc",
+  ]
 
   deps = [
     ":impl",
     ":infobars",
     "//base/test:test_support",
+    "//chrome/browser/infobars",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/views:layout_provider",
     "//chrome/test:test_support",

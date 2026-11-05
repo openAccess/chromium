@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.password_manager;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniType;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.url.GURL;
@@ -33,25 +34,24 @@ public class PasswordStoreCredential {
     }
 
     @CalledByNative
-    public GURL getUrl() {
+    public @JniType("GURL") GURL getUrl() {
         return mUrl;
     }
 
     @CalledByNative
-    public String getUsername() {
+    public @JniType("std::u16string") String getUsername() {
         return mUsername;
     }
 
     @CalledByNative
-    public String getPassword() {
+    public @JniType("std::u16string") String getPassword() {
         return mPassword;
     }
 
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (!(o instanceof PasswordStoreCredential)) return false;
-        PasswordStoreCredential that = (PasswordStoreCredential) o;
+        if (!(o instanceof PasswordStoreCredential that)) return false;
         return mUrl.equals(that.mUrl)
                 && mUsername.equals(that.mUsername)
                 && mPassword.equals(that.mPassword);

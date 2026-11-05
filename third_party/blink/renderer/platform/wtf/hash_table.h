@@ -20,11 +20,6 @@
  *
  */
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_HASH_TABLE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_HASH_TABLE_H_
 
@@ -32,6 +27,7 @@
 #include <memory>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/dcheck_is_on.h"
 #include "base/memory/stack_allocated.h"
 #include "base/numerics/checked_math.h"
@@ -128,7 +124,7 @@ struct WTF_EXPORT HashTableStats {
 };
 
 #if DUMP_HASHTABLE_STATS_PER_TABLE
-template <typename Allocator, bool isGCType = Allocator::kIsGarbageCollected>
+template <typename Allocator, bool kIsGcType = Allocator::kIsGarbageCollected>
 class HashTableStatsPtr;
 
 template <typename Allocator>
@@ -210,7 +206,7 @@ template <WeakHandlingFlag x,
           typename Y>
 struct WeakProcessingHashTableHelper;
 
-typedef enum { kHashItemKnownGood } HashItemKnownGoodTag;
+enum HashItemKnownGoodTag { kHashItemKnownGood };
 
 // Base class that is marked as stack allocated if Allocator is a garbage
 // collected allocator. Used as a base for hash table iterators to mark
@@ -236,20 +232,19 @@ template <typename Key,
           typename Allocator>
 class HashTableConstIterator final
     : public ConditionallyStackAllocatedHashTableIteratorBase<Allocator> {
-  typedef HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>
-      HashTableType;
-  typedef HashTableIterator<Key, Value, Extractor, Traits, KeyTraits, Allocator>
-      iterator;
-  typedef HashTableConstIterator<Key,
-                                 Value,
-                                 Extractor,
-                                 Traits,
-                                 KeyTraits,
-                                 Allocator>
-      const_iterator;
+  using HashTableType =
+      HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>;
+  using iterator =
+      HashTableIterator<Key, Value, Extractor, Traits, KeyTraits, Allocator>;
+  using const_iterator = HashTableConstIterator<Key,
+                                                Value,
+                                                Extractor,
+                                                Traits,
+                                                KeyTraits,
+                                                Allocator>;
   using value_type = Value;
-  typedef typename Traits::IteratorConstGetType GetType;
-  typedef const value_type* PointerType;
+  using GetType = typename Traits::IteratorConstGetType;
+  using PointerType = const value_type*;
 
   friend class HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>;
   friend class HashTableIterator<Key,
@@ -260,19 +255,21 @@ class HashTableConstIterator final
                                  Allocator>;
 
   void SkipEmptyBuckets() {
+    // SAFETY: Advances `position_` until reaching `end_position_`.
     while (position_ != end_position_ &&
-           HashTableType::IsEmptyOrDeletedBucket(*position_))
-      ++position_;
+           HashTableType::IsEmptyOrDeletedBucket(*position_)) {
+      UNSAFE_BUFFERS(++position_);
+    }
   }
 
   void ReverseSkipEmptyBuckets() {
-    // Don't need to check for out-of-bounds positions, as begin position is
-    // always going to be a non-empty bucket.
+    // SAFETY: Don't need to check for out-of-bounds positions, as
+    // `begin_position_` is always going to be a non-empty bucket.
     while (HashTableType::IsEmptyOrDeletedBucket(*position_)) {
 #if DCHECK_IS_ON()
       DCHECK_NE(position_, begin_position_);
 #endif
-      --position_;
+      UNSAFE_BUFFERS(--position_);
     }
   }
 
@@ -311,20 +308,20 @@ class HashTableConstIterator final
 #endif
   }
 
+ public:
+  constexpr HashTableConstIterator() = default;
+
   void CheckModifications() const {
 #if DCHECK_IS_ON()
     // HashTable and collections that build on it do not support
     // modifications while there is an iterator in use. The exception is
-    // LinkedHashSet, which has its own iterators that tolerate modification
-    // of the underlying set.
+    // non-weak LinkedHashSet, which has its own iterators that tolerate
+    // modification of the underlying set.
 
     DCHECK_EQ(container_modifications_, container_->Modifications());
     DCHECK(!container_->AccessForbidden());
 #endif
   }
-
- public:
-  constexpr HashTableConstIterator() = default;
 
   GetType Get() const {
     CheckModifications();
@@ -338,7 +335,7 @@ class HashTableConstIterator final
   const_iterator& operator++() {
     DCHECK_NE(position_, end_position_);
     CheckModifications();
-    ++position_;
+    UNSAFE_TODO(++position_);
     SkipEmptyBuckets();
     return *this;
   }
@@ -354,7 +351,7 @@ class HashTableConstIterator final
     DCHECK_NE(position_, begin_position_);
 #endif
     CheckModifications();
-    --position_;
+    UNSAFE_TODO(--position_);
     ReverseSkipEmptyBuckets();
     return *this;
   }
@@ -415,20 +412,19 @@ template <typename Key,
           typename Allocator>
 class HashTableIterator final
     : public ConditionallyStackAllocatedHashTableIteratorBase<Allocator> {
-  typedef HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>
-      HashTableType;
-  typedef HashTableIterator<Key, Value, Extractor, Traits, KeyTraits, Allocator>
-      iterator;
-  typedef HashTableConstIterator<Key,
-                                 Value,
-                                 Extractor,
-                                 Traits,
-                                 KeyTraits,
-                                 Allocator>
-      const_iterator;
+  using HashTableType =
+      HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>;
+  using iterator =
+      HashTableIterator<Key, Value, Extractor, Traits, KeyTraits, Allocator>;
+  using const_iterator = HashTableConstIterator<Key,
+                                                Value,
+                                                Extractor,
+                                                Traits,
+                                                KeyTraits,
+                                                Allocator>;
   using value_type = Value;
-  typedef typename Traits::IteratorGetType GetType;
-  typedef value_type* PointerType;
+  using GetType = typename Traits::IteratorGetType;
+  using PointerType = value_type*;
 
   friend class HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>;
 
@@ -511,7 +507,7 @@ std::ostream& operator<<(std::ostream& stream,
 template <typename T,
           typename Allocator,
           typename Traits,
-          bool enterGCForbiddenScope>
+          bool kEnterGcForbiddenScope>
 struct Mover {
   STATIC_ONLY(Mover);
   static void Move(T&& from, T& to) {
@@ -537,7 +533,7 @@ class IdentityHashTranslator {
 
  public:
   template <typename T>
-  static unsigned GetHash(const T& key) {
+  static uint32_t GetHash(const T& key) {
     return KeyTraits::GetHash(key);
   }
   template <typename T, typename U>
@@ -592,11 +588,11 @@ struct HashTableAddResult final {
 
 template <typename HashTranslator,
           typename KeyTraits,
-          bool safeToCompareToEmptyOrDeleted>
+          bool kSafeToCompareToEmptyOrDeleted>
 struct HashTableKeyChecker {
   STATIC_ONLY(HashTableKeyChecker);
   // There's no simple generic way to make this check if
-  // safeToCompareToEmptyOrDeleted is false, so the check always passes.
+  // kSafeToCompareToEmptyOrDeleted is false, so the check always passes.
   template <typename T>
   static bool CheckKey(const T&) {
     return true;
@@ -626,23 +622,22 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") HashTable final {
   DISALLOW_NEW();
 
  public:
-  typedef HashTableIterator<Key, Value, Extractor, Traits, KeyTraits, Allocator>
-      iterator;
-  typedef HashTableConstIterator<Key,
-                                 Value,
-                                 Extractor,
-                                 Traits,
-                                 KeyTraits,
-                                 Allocator>
-      const_iterator;
-  typedef Traits ValueTraits;
-  typedef Key KeyType;
-  typedef typename KeyTraits::PeekInType KeyPeekInType;
-  typedef Value ValueType;
-  typedef Extractor ExtractorType;
-  typedef KeyTraits KeyTraitsType;
-  typedef IdentityHashTranslator<KeyTraits> IdentityTranslatorType;
-  typedef HashTableAddResult<HashTable, ValueType> AddResult;
+  using iterator =
+      HashTableIterator<Key, Value, Extractor, Traits, KeyTraits, Allocator>;
+  using const_iterator = HashTableConstIterator<Key,
+                                                Value,
+                                                Extractor,
+                                                Traits,
+                                                KeyTraits,
+                                                Allocator>;
+  using ValueTraits = Traits;
+  using KeyType = Key;
+  using KeyPeekInType = typename KeyTraits::PeekInType;
+  using ValueType = Value;
+  using ExtractorType = Extractor;
+  using KeyTraitsType = KeyTraits;
+  using IdentityTranslatorType = IdentityHashTranslator<KeyTraits>;
+  using AddResult = HashTableAddResult<HashTable, ValueType>;
 
   HashTable();
 
@@ -673,13 +668,11 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") HashTable final {
   // empty and deleted buckets, and iterating an empty table is a common case
   // that's worth optimizing.
   iterator begin() { return empty() ? end() : MakeIterator(table_); }
-  iterator end() { return MakeKnownGoodIterator(table_ + table_size_); }
+  iterator end() { return MakeKnownGoodIterator(TableEnd()); }
   const_iterator begin() const {
     return empty() ? end() : MakeConstIterator(table_);
   }
-  const_iterator end() const {
-    return MakeKnownGoodConstIterator(table_ + table_size_);
-  }
+  const_iterator end() const { return MakeKnownGoodConstIterator(TableEnd()); }
 
   wtf_size_t size() const {
     DCHECK(!AccessForbidden());
@@ -706,14 +699,14 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") HashTable final {
   // comparing with some other type, to avoid the cost of type conversion if the
   // object is already in the table.
   // HashTranslator must have the following function members:
-  //   static unsigned GetHash(const T&);
+  //   static uint32_t GetHash(const T&);
   //   static bool Equal(const ValueType&, const T&);
   //   static void Store(T& location, KeyType&&, ValueType&&);
   template <typename HashTranslator, typename T, typename Extra>
   AddResult insert(T&& key, Extra&&);
-  // Similar to the above, but passes additional `unsigned hash_code`, which
+  // Similar to the above, but passes additional `uint32_t hash_code`, which
   // is computed from `HashTranslator::GetHash(key)`, to HashTranslator method
-  //   static Store(T&, KeyType&&, ValueType&&, unsigned hash_code);
+  //   static Store(T&, KeyType&&, ValueType&&, uint32_t hash_code);
   // to avoid recomputation of the hash code when needed in the method.
   template <typename HashTranslator, typename T, typename Extra>
   AddResult InsertPassingHashCode(T&& key, Extra&&);
@@ -729,7 +722,7 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") HashTable final {
   // A special version of find() that finds the object by hashing and
   // comparing with some other type, to avoid the cost of type conversion.
   // HashTranslator must have the following function members:
-  //   static unsigned GetHash(const T&);
+  //   static uint32_t GetHash(const T&);
   //   static bool Equal(const ValueType&, const T&);
   template <typename HashTranslator, typename T>
   iterator Find(const T&);
@@ -784,8 +777,8 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") HashTable final {
   void RegisterModification() { modifications_++; }
   // HashTable and collections that build on it do not support modifications
   // while there is an iterator in use. The exception is
-  // LinkedHashSet, which has its own iterators that tolerate modification
-  // of the underlying set.
+  // non-weak LinkedHashSet, which has its own iterators that tolerate
+  // modification of the underlying set.
   void CheckModifications(int64_t mods) const {
     DCHECK_EQ(mods, modifications_);
   }
@@ -809,7 +802,7 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") HashTable final {
   struct LookupResult {
     ValueType* entry;
     bool found;
-    unsigned hash;
+    uint32_t hash;
   };
   template <typename HashTranslator, typename T>
   LookupResult LookupForWriting(const T&);
@@ -855,26 +848,30 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") HashTable final {
     }
   }
 
+  ValueType* TableEnd() const {
+    // SAFETY: Points to one past the end of the allocated `table_` of capacity
+    // `table_size_`. Used as a sentinel.
+    return UNSAFE_BUFFERS(table_ + table_size_);
+  }
+
   iterator MakeIterator(ValueType* pos) {
-    return iterator(pos, table_, table_ + table_size_, this);
+    return iterator(pos, table_, TableEnd(), this);
   }
   const_iterator MakeConstIterator(const ValueType* pos) const {
-    return const_iterator(pos, table_, table_ + table_size_, this);
+    return const_iterator(pos, table_, TableEnd(), this);
   }
   iterator MakeKnownGoodIterator(ValueType* pos) {
-    return iterator(pos, table_, table_ + table_size_, this,
-                    kHashItemKnownGood);
+    return iterator(pos, table_, TableEnd(), this, kHashItemKnownGood);
   }
   const_iterator MakeKnownGoodConstIterator(const ValueType* pos) const {
-    return const_iterator(pos, table_, table_ + table_size_, this,
-                          kHashItemKnownGood);
+    return const_iterator(pos, table_, TableEnd(), this, kHashItemKnownGood);
   }
 
-  static const unsigned kMaxLoad = 2;
-  static const unsigned kMinLoad = 6;
+  static constexpr wtf_size_t kMaxLoad = 2;
+  static constexpr wtf_size_t kMinLoad = 6;
 
-  unsigned TableSizeMask() const {
-    unsigned mask = table_size_ - 1;
+  wtf_size_t TableSizeMask() const {
+    wtf_size_t mask = table_size_ - 1;
     DCHECK_EQ((mask & table_size_), 0u);
     return mask;
   }
@@ -884,8 +881,8 @@ class GC_PLUGIN_IGNORE("crbug.com/428987863") HashTable final {
   HashTable(RawStorageTag, ValueType* table, wtf_size_t size)
       : table_(table), table_size_(size) {}
 
-  ValueType* table_;
-  wtf_size_t table_size_;
+  ValueType* table_ = nullptr;
+  wtf_size_t table_size_ = 0;
   wtf_size_t key_count_ = 0;
 #if DCHECK_IS_ON()
   wtf_size_t deleted_count_ : 30 = 0;
@@ -945,22 +942,7 @@ inline HashTable<Key,
 
                  Traits,
                  KeyTraits,
-                 Allocator>::HashTable()
-    : table_(nullptr),
-      table_size_(0),
-      key_count_(0),
-      deleted_count_(0)
-#if DCHECK_IS_ON()
-      ,
-      access_forbidden_(false),
-      modifications_(0)
-#endif
-#if DUMP_HASHTABLE_STATS_PER_TABLE
-      ,
-      stats_(nullptr)
-#endif
-{
-}
+                 Allocator>::HashTable() = default;
 
 inline wtf_size_t CalculateCapacity(wtf_size_t size) {
   for (wtf_size_t mask = size; mask; mask >>= 1) {
@@ -1023,14 +1005,15 @@ HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::Lookup(
     return nullptr;
 
   size_t size_mask = TableSizeMask();
-  unsigned h = HashTranslator::GetHash(key);
+  uint32_t h = HashTranslator::GetHash(key);
   size_t i = h & size_mask;
   size_t probe_count = 0;
 
   UPDATE_ACCESS_COUNTS();
 
   while (true) {
-    const ValueType* entry = table + i;
+    // SAFETY: `i` is bounded by `size_mask` (< `table_size_`).
+    const ValueType* entry = UNSAFE_BUFFERS(table + i);
 
     if (KeyTraits::kSafeToCompareToEmptyOrDeleted) {
       if (HashTranslator::Equal(Extractor::ExtractKey(*entry), key)) {
@@ -1071,7 +1054,7 @@ inline typename HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::
 
   ValueType* table = table_;
   size_t size_mask = TableSizeMask();
-  unsigned h = HashTranslator::GetHash(key);
+  uint32_t h = HashTranslator::GetHash(key);
   size_t i = h & size_mask;
   size_t probe_count = 0;
 
@@ -1083,7 +1066,8 @@ inline typename HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::
   ValueType* deleted_entry = nullptr;
 
   while (true) {
-    ValueType* entry = table + i;
+    // SAFETY: `i` is bounded by `size_mask` (< `table_size_`).
+    ValueType* entry = UNSAFE_BUFFERS(table + i);
 
     if (IsEmptyBucket(*entry))
       return LookupResult{deleted_entry ? deleted_entry : entry, false, h};
@@ -1130,11 +1114,16 @@ struct HashTableBucketInitializer {
     Value* result =
         Allocator::template AllocateHashTableBacking<Value, HashTable>(
             alloc_size);
-    InitializeTable(result, size);
+    // SAFETY: `result` has been allocated with capacity `size`.
+    UNSAFE_BUFFERS(InitializeTable(result, size));
     return result;
   }
 
-  static void InitializeTable(Value* table, wtf_size_t size) {
+  // PRECONDITIONS: `table` must point to an allocated buffer of at least `size`
+  // elements. Passing a `base::span` would be preferable, but would increase
+  // binary size due to extra template instantiations.
+  UNSAFE_BUFFER_USAGE static void InitializeTable(Value* table,
+                                                  wtf_size_t size) {
     for (wtf_size_t i = 0; i < size; i++) {
       Reinitialize(table[i]);
     }
@@ -1151,11 +1140,14 @@ struct HashTableBucketInitializer<Traits, Allocator, Value, true> {
     // compilers.
     if (!Allocator::kIsGarbageCollected) {
       // NOLINTNEXTLINE(bugprone-undefined-memory-manipulation)
-      memset(&bucket, 0, sizeof(bucket));
+      // SAFETY: Zeroes the single object `bucket` of size `sizeof(bucket)`.
+      UNSAFE_BUFFERS(memset(&bucket, 0, sizeof(bucket)));
     } else {
-      AtomicMemzero<sizeof(bucket), alignof(Value)>(&bucket);
+      // SAFETY: Zeroes the single object `bucket` of size `sizeof(bucket)`.
+      UNSAFE_BUFFERS((AtomicMemzero<sizeof(bucket), alignof(Value)>(&bucket)));
     }
-    CheckEmptyValues(&bucket, 1);
+    // SAFETY: Single element pointer `&bucket` is valid for size 1.
+    UNSAFE_BUFFERS(CheckEmptyValues(&bucket, 1));
   }
 
   template <typename HashTable>
@@ -1163,17 +1155,26 @@ struct HashTableBucketInitializer<Traits, Allocator, Value, true> {
     Value* result =
         Allocator::template AllocateZeroedHashTableBacking<Value, HashTable>(
             alloc_size);
-    CheckEmptyValues(result, size);
+    // SAFETY: `result` has been allocated with capacity `size`.
+    UNSAFE_BUFFERS(CheckEmptyValues(result, size));
     return result;
   }
 
-  static void InitializeTable(Value* table, wtf_size_t size) {
+  // PRECONDITIONS: `table` must point to an allocated buffer of at least `size`
+  // elements. Passing a `base::span` would be preferable, but would increase
+  // binary size due to extra template instantiations.
+  UNSAFE_BUFFER_USAGE static void InitializeTable(Value* table,
+                                                  wtf_size_t size) {
     AtomicMemzero(table, size * sizeof(Value));
     CheckEmptyValues(table, size);
   }
 
  private:
-  static void CheckEmptyValues(Value* values, wtf_size_t size) {
+  // PRECONDITIONS: `values` must point to an allocated buffer of at least
+  // `size` elements. Passing a `base::span` would be preferable, but would
+  // increase binary size due to extra template instantiations.
+  UNSAFE_BUFFER_USAGE static void CheckEmptyValues(Value* values,
+                                                   wtf_size_t size) {
 #if EXPENSIVE_DCHECKS_ARE_ON()
     for (wtf_size_t i = 0; i < size; i++) {
       DCHECK(IsHashTraitsEmptyValue<Traits>(values[i]));
@@ -1217,7 +1218,7 @@ typename HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::
 
   ValueType* table = table_;
   size_t size_mask = TableSizeMask();
-  unsigned h = HashTranslator::GetHash(key);
+  uint32_t h = HashTranslator::GetHash(key);
   size_t i = h & size_mask;
   size_t probe_count = 0;
 
@@ -1229,7 +1230,8 @@ typename HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::
   ValueType* deleted_entry = nullptr;
   ValueType* entry;
   while (true) {
-    entry = table + i;
+    // SAFETY: `i` is bounded by `size_mask` (< `table_size_`).
+    entry = UNSAFE_BUFFERS(table + i);
 
     if (IsEmptyBucket(*entry))
       break;
@@ -1362,13 +1364,14 @@ Value* HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::Reinsert(
   ValueType* table = table_;
   size_t size_mask = TableSizeMask();
   const auto& key = Extractor::ExtractKey(entry);
-  unsigned h = KeyTraits::GetHash(key);
+  uint32_t h = KeyTraits::GetHash(key);
   size_t i = h & size_mask;
   size_t probe_count = 0;
 
   UPDATE_ACCESS_COUNTS();
 
-  ValueType* new_entry = table + i;
+  // SAFETY: `i` is bounded by `size_mask` (< `table_size_`).
+  ValueType* new_entry = UNSAFE_BUFFERS(table + i);
   while (!IsEmptyBucket(*new_entry)) {
     DCHECK(!IsDeletedBucket(*new_entry));
     DCHECK(!KeyTraits::Equal(Extractor::ExtractKey(*new_entry), key));
@@ -1376,7 +1379,8 @@ Value* HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::Reinsert(
     ++probe_count;
     UPDATE_PROBE_COUNTS();
     i = (i + probe_count) & size_mask;
-    new_entry = table + i;
+    // SAFETY: `i` is bounded by `size_mask` (< `table_size_`).
+    new_entry = UNSAFE_BUFFERS(table + i);
   }
 
   Mover<ValueType, Allocator, Traits,
@@ -1474,8 +1478,11 @@ void HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::erase_if(
   EnterAccessForbiddenScope();
 
   for (wtf_size_t i = 0; i < table_size_; ++i) {
-    if (!IsEmptyOrDeletedBucket(table_[i]) && pred(table_[i])) {
-      DeleteBucket(table_[i]);
+    // SAFETY: `i` is bounded by `table_size_`, the allocated capacity of
+    // `table_`.
+    ValueType& bucket = UNSAFE_BUFFERS(table_[i]);
+    if (!IsEmptyOrDeletedBucket(bucket) && pred(bucket)) {
+      DeleteBucket(bucket);
 #if DUMP_HASHTABLE_STATS
       HashTableStats::Instance().num_removes.fetch_add(
           1, std::memory_order_relaxed);
@@ -1593,12 +1600,16 @@ void HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::
       // GC finds the backing store. With the default allocator it's
       // enough to call the destructor, since we will free the memory
       // explicitly and we won't see the memory with the bucket again.
+      // SAFETY: `i` is bounded by `size`, the allocated capacity of `table`.
+      ValueType& bucket = UNSAFE_BUFFERS(table[i]);
       if (Allocator::kIsGarbageCollected) {
-        if (!IsEmptyOrDeletedBucket(table[i]))
-          DeleteBucket(table[i]);
+        if (!IsEmptyOrDeletedBucket(bucket)) {
+          DeleteBucket(bucket);
+        }
       } else {
-        if (!IsDeletedBucket(table[i]))
-          table[i].~ValueType();
+        if (!IsDeletedBucket(bucket)) {
+          bucket.~ValueType();
+        }
       }
     }
   }
@@ -1653,24 +1664,32 @@ HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::ExpandBuffer(
 
   ValueType* temporary_table = AllocateTable(old_table_size);
   for (wtf_size_t i = 0; i < old_table_size; i++) {
-    if (&table_[i] == entry)
-      new_entry = &temporary_table[i];
-    if (IsEmptyOrDeletedBucket(table_[i])) {
-      DCHECK_NE(&table_[i], entry);
+    // SAFETY: `i` is bounded by `old_table_size`, the allocated capacity of
+    // both `table_` and `temporary_table`.
+    ValueType& old_bucket = UNSAFE_BUFFERS(table_[i]);
+    ValueType& temp_bucket = UNSAFE_BUFFERS(temporary_table[i]);
+    if (&old_bucket == entry) {
+      new_entry = &temp_bucket;
+    }
+    if (IsEmptyOrDeletedBucket(old_bucket)) {
+      DCHECK_NE(&old_bucket, entry);
       // All entries are initially empty. See AllocateTable().
-      DCHECK(IsEmptyBucket(temporary_table[i]));
+      DCHECK(IsEmptyBucket(temp_bucket));
     } else {
       Mover<ValueType, Allocator, Traits,
             Traits::template NeedsToForbidGCOnMove<>::value>::
-          Move(std::move(table_[i]), temporary_table[i]);
-      table_[i].~ValueType();
+          Move(std::move(old_bucket), temp_bucket);
+      old_bucket.~ValueType();
     }
   }
   table_ = temporary_table;
   Allocator::BackingWriteBarrier(&table_);
 
-  HashTableBucketInitializer<Traits, Allocator, Value>::InitializeTable(
-      original_table, new_table_size);
+  // SAFETY: `original_table` has capacity `new_table_size` after in-place
+  // reallocation.
+  UNSAFE_BUFFERS(
+      (HashTableBucketInitializer<Traits, Allocator, Value>::InitializeTable(
+          original_table, new_table_size)));
   new_entry = RehashTo(original_table, new_table_size, new_entry);
 
   return new_entry;
@@ -1706,18 +1725,21 @@ Value* HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::RehashTo(
 
   Value* new_entry = nullptr;
   for (wtf_size_t i = 0; i != table_size_; ++i) {
-    if (IsEmptyOrDeletedBucket(table_[i])) {
-      DCHECK_NE(&table_[i], entry);
+    // SAFETY: `i` is bounded by `table_size_`, the allocated capacity of
+    // `table_`.
+    ValueType& bucket = UNSAFE_BUFFERS(table_[i]);
+    if (IsEmptyOrDeletedBucket(bucket)) {
+      DCHECK_NE(&bucket, entry);
       continue;
     }
-    Value* reinserted_entry = new_hash_table.Reinsert(std::move(table_[i]));
-    if (&table_[i] == entry) {
+    Value* reinserted_entry = new_hash_table.Reinsert(std::move(bucket));
+    if (&bucket == entry) {
       DCHECK(!new_entry);
       new_entry = reinserted_entry;
     }
   }
 
-  Allocator::TraceBackingStoreIfMarked(new_hash_table.table_);
+  Allocator::TraceBackingStoreStrongly(new_hash_table.table_);
 
   ValueType* old_table = table_;
   wtf_size_t old_table_size = table_size_;
@@ -1813,18 +1835,8 @@ template <typename Key,
           typename Allocator>
 HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::HashTable(
     const HashTable& other)
-    : table_(nullptr),
-      table_size_(0),
-      key_count_(0),
-      deleted_count_(0)
-#if DCHECK_IS_ON()
-      ,
-      access_forbidden_(false),
-      modifications_(0)
-#endif
 #if DUMP_HASHTABLE_STATS_PER_TABLE
-      ,
-      stats_(HashTableStatsPtr<Allocator>::Copy(other.stats_))
+    : stats_(HashTableStatsPtr<Allocator>::Copy(other.stats_))
 #endif
 {
   DCHECK(!other.AccessForbidden());
@@ -1837,15 +1849,17 @@ HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::HashTable(
   deleted_count_ = other.deleted_count_;
 
   for (wtf_size_t i = 0; i < table_size_; i++) {
-    if (other.IsEmptyBucket(other.table_[i])) {
+    // SAFETY: `i` is bounded by `table_size_`, the allocated capacity of
+    // both `table_` and `other.table_`.
+    ValueType& bucket = UNSAFE_BUFFERS(table_[i]);
+    const ValueType& other_bucket = UNSAFE_BUFFERS(other.table_[i]);
+    if (other.IsEmptyBucket(other_bucket)) {
       // Do nothing. All entries are initially empty by AllocateTable().
-    } else if (other.IsDeletedBucket(other.table_[i])) {
-      ConstructHashTraitsDeletedValue<KeyTraits>(
-          Extractor::ExtractKey(table_[i]));
+    } else if (other.IsDeletedBucket(other_bucket)) {
+      ConstructHashTraitsDeletedValue<KeyTraits>(Extractor::ExtractKey(bucket));
     } else {
-      new (&table_[i]) ValueType(other.table_[i]);
-      ConstructTraits<ValueType, Traits, Allocator>::NotifyNewElement(
-          &table_[i]);
+      new (&bucket) ValueType(other_bucket);
+      ConstructTraits<ValueType, Traits, Allocator>::NotifyNewElement(&bucket);
     }
   }
 }
@@ -1858,18 +1872,8 @@ template <typename Key,
           typename Allocator>
 HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::HashTable(
     HashTable&& other)
-    : table_(nullptr),
-      table_size_(0),
-      key_count_(0),
-      deleted_count_(0)
-#if DCHECK_IS_ON()
-      ,
-      access_forbidden_(false),
-      modifications_(0)
-#endif
 #if DUMP_HASHTABLE_STATS_PER_TABLE
-      ,
-      stats_(HashTableStatsPtr<Allocator>::Copy(other.stats_))
+    : stats_(HashTableStatsPtr<Allocator>::Copy(other.stats_))
 #endif
 {
   swap(other);
@@ -1897,9 +1901,9 @@ void HashTable<Key, Value, Extractor, Traits, KeyTraits, Allocator>::swap(
     // Weak processing is omitted when no backing store is present. In case such
     // an empty table is later on used it needs to be strongified.
     if (table_)
-      Allocator::TraceBackingStoreIfMarked(table_);
+      Allocator::TraceBackingStoreStrongly(table_);
     if (other.table_)
-      Allocator::TraceBackingStoreIfMarked(other.table_);
+      Allocator::TraceBackingStoreStrongly(other.table_);
   }
   std::swap(table_size_, other.table_size_);
   std::swap(key_count_, other.key_count_);
@@ -1987,8 +1991,9 @@ struct WeakProcessingHashTableHelper<WeakHandlingFlag::kWeakHandling,
 
     // Weak processing: If the backing was accessible through an iterator and
     // thus marked strongly this loop will find all buckets as non-empty.
-    for (ValueType* element = table->table_ + table->table_size_ - 1;
-         element >= table->table_; element--) {
+    for (ValueType* element =
+             UNSAFE_TODO(table->table_ + table->table_size_ - 1);
+         element >= table->table_; UNSAFE_TODO(element--)) {
       if (!HashTableType::IsEmptyOrDeletedBucket(*element)) {
         if (!TraceInCollectionTrait<WeakHandlingFlag::kWeakHandling, ValueType,
                                     Traits>::IsAlive(info, *element)) {
@@ -2066,9 +2071,9 @@ struct HashTableConstIteratorAdapter {
   HashTableConstIteratorAdapter(
       const typename HashTableType::const_iterator& impl)
       : impl_(impl) {}
-  typedef typename Traits::IteratorConstGetType GetType;
-  typedef
-      typename HashTableType::ValueTraits::IteratorConstGetType SourceGetType;
+  using GetType = typename Traits::IteratorConstGetType;
+  using SourceGetType =
+      typename HashTableType::ValueTraits::IteratorConstGetType;
 
   GetType Get() const {
     return const_cast<GetType>(SourceGetType(impl_.Get()));
@@ -2115,9 +2120,9 @@ struct HashTableConstIteratorAdapter<HashTableType, Traits> {
   HashTableConstIteratorAdapter(
       const typename HashTableType::const_iterator& impl)
       : impl_(impl) {}
-  typedef typename Traits::IteratorConstGetType GetType;
-  typedef
-      typename HashTableType::ValueTraits::IteratorConstGetType SourceGetType;
+  using GetType = typename Traits::IteratorConstGetType;
+  using SourceGetType =
+      typename HashTableType::ValueTraits::IteratorConstGetType;
 
   GetType Get() const {
     return const_cast<GetType>(SourceGetType(impl_.Get()));
@@ -2165,8 +2170,8 @@ struct HashTableIteratorAdapter {
   using pointer = value_type*;
   using reference = value_type&;
 
-  typedef typename Traits::IteratorGetType GetType;
-  typedef typename HashTableType::ValueTraits::IteratorGetType SourceGetType;
+  using GetType = typename Traits::IteratorGetType;
+  using SourceGetType = typename HashTableType::ValueTraits::IteratorGetType;
 
   constexpr HashTableIteratorAdapter() = default;
   HashTableIteratorAdapter(const typename HashTableType::iterator& impl)
@@ -2218,8 +2223,8 @@ struct HashTableIteratorAdapter<HashTableType, Traits> {
   using pointer = value_type*;
   using reference = value_type&;
 
-  typedef typename Traits::IteratorGetType GetType;
-  typedef typename HashTableType::ValueTraits::IteratorGetType SourceGetType;
+  using GetType = typename Traits::IteratorGetType;
+  using SourceGetType = typename HashTableType::ValueTraits::IteratorGetType;
 
   constexpr HashTableIteratorAdapter() = default;
   HashTableIteratorAdapter(const typename HashTableType::iterator& impl)
@@ -2296,10 +2301,9 @@ inline void RemoveAll(Collection1& collection,
                       const Collection2& to_be_removed) {
   if (collection.empty() || to_be_removed.empty())
     return;
-  typedef typename Collection2::const_iterator CollectionIterator;
-  CollectionIterator end(to_be_removed.end());
-  for (CollectionIterator it(to_be_removed.begin()); it != end; ++it)
-    collection.erase(*it);
+  for (const auto& item : to_be_removed) {
+    collection.erase(item);
+  }
 }
 
 }  // namespace blink

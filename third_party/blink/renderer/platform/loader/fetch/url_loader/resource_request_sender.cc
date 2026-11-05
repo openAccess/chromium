@@ -64,9 +64,6 @@
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/sync_load_response.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_mojo.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 
@@ -138,7 +135,6 @@ void ResourceRequestSender::SendSync(
   CheckSchemeForReferrerPolicy(*request);
 
   DCHECK(loader_options & network::mojom::kURLLoadOptionSynchronous);
-  DCHECK(request->load_flags & net::LOAD_IGNORE_LIMITS);
 
   std::unique_ptr<network::PendingSharedURLLoaderFactory> pending_factory =
       url_loader_factory->Clone();
@@ -505,14 +501,16 @@ void ResourceRequestSender::OnReceivedResponse(
   CHECK(!response_sent_to_client_);
   response_sent_to_client_ = true;
 
+  auto head_without_side_data_writer = response_head.Clone();
   request_info_->client->OnReceivedResponse(
-      response_head.Clone(), std::move(body), std::move(cached_metadata));
+      std::move(response_head), std::move(body), std::move(cached_metadata));
   if (!request_info_) {
     return;
   }
 
   request_info_->resource_load_info_notifier_wrapper
-      ->NotifyResourceResponseReceived(std::move(response_head));
+      ->NotifyResourceResponseReceived(
+          std::move(head_without_side_data_writer));
 }
 
 void ResourceRequestSender::OnReceivedRedirect(

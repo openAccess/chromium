@@ -74,6 +74,37 @@ _DEFAULT_VALUE_BY_PRIMITIVE_TYPE = {
 
 PRIMITIVES = frozenset(_DEFAULT_VALUE_BY_PRIMITIVE_TYPE)
 
+# The inverse of kotlin_parse's type maps, used to render Kotlin source.
+_KOTLIN_NAME_BY_PRIMITIVE_TYPE = {
+    'boolean': 'Boolean',
+    'byte': 'Byte',
+    'char': 'Char',
+    'double': 'Double',
+    'float': 'Float',
+    'int': 'Int',
+    'long': 'Long',
+    'short': 'Short',
+    'void': 'Unit',
+}
+
+# Classes that Kotlin spells differently and imports implicitly.
+KOTLIN_NAME_BY_CLASS = {
+    'java/lang/Boolean': 'Boolean',
+    'java/lang/Byte': 'Byte',
+    'java/lang/Character': 'Char',
+    'java/lang/Double': 'Double',
+    'java/lang/Float': 'Float',
+    'java/lang/Integer': 'Int',
+    'java/lang/Long': 'Long',
+    'java/lang/Object': 'Any',
+    'java/lang/Short': 'Short',
+    'java/lang/String': 'String',
+    'java/util/Collection': 'Collection',
+    'java/util/List': 'List',
+    'java/util/Map': 'Map',
+    'java/util/Set': 'Set',
+}
+
 
 @dataclasses.dataclass(frozen=True, order=True)
 class JavaClass:
@@ -170,6 +201,9 @@ class JavaClass:
 
   def is_nested(self):
     return '$' in self.name
+
+  def is_safe_pointer(self):
+    return self in SAFE_POINTER_CLASSES
 
   def get_outer_class(self):
     return JavaClass(f'{self.package_with_slashes}/{self.outer_class_name}',
@@ -291,8 +325,35 @@ class JavaType:
     return CPP_UNDERLYING_TYPE_BY_JAVA_TYPE.get(
         self.non_array_full_name_with_slashes, 'jobject')
 
+  def to_boundary_cpp_type(self):
+    if self.is_safe_pointer():
+      return 'jlong'
+    return self.to_cpp()
+
+  def to_backend_cpp_type(self):
+    if self.converted_type:
+      return self.converted_type
+    if not self.is_safe_pointer():
+      return self.to_cpp()
+
+    assert self.generics and len(self.generics) == 1
+    inner_type = self.generics[0]
+    inner_cpp = inner_type.converted_type
+    assert inner_cpp, f'Missing C++ mapping for safe pointer: {inner_type}'
+
+    if self.java_class == JNI_PTR_CLASS:
+      return f'{inner_cpp}*'
+    if self.java_class == JNI_UNIQUE_PTR_CLASS:
+      return f'::jni_zero::JniUniquePtr<{inner_cpp}>'
+    if self.java_class == JNI_RAW_PTR_CLASS:
+      return f'::jni_zero::JniRawPtr<{inner_cpp}>'
+    raise ValueError(f'Unknown safe pointer type: {self.java_class}')
+
   def is_collection(self):
     return not self.is_array() and self.java_class in COLLECTION_CLASSES
+
+  def is_safe_pointer(self):
+    return bool(self.java_class and self.java_class.is_safe_pointer())
 
   def is_void(self):
     return self.primitive_name == 'void'
@@ -348,6 +409,34 @@ class JavaType:
       ret += '[]' * self.array_dimensions
     return ret
 
+  def to_kotlin(self, type_resolver=None):
+    """Like to_java(), but renders Kotlin syntax."""
+    if self.is_primitive_array() and self.array_dimensions == 1:
+      ret = _KOTLIN_NAME_BY_PRIMITIVE_TYPE[self.primitive_name] + 'Array'
+    elif self.array_dimensions:
+      # Element nullability is not tracked, so render as Array<T> not Array<T?>.
+      element_type = dataclasses.replace(
+          self, array_dimensions=self.array_dimensions - 1, nullable=False)
+      ret = f'Array<{element_type.to_kotlin(type_resolver)}>'
+    elif self.primitive_name:
+      return _KOTLIN_NAME_BY_PRIMITIVE_TYPE[self.primitive_name]
+    else:
+      ret = KOTLIN_NAME_BY_CLASS.get(self.java_class.full_name_with_slashes)
+      if ret is None:
+        ret = self.java_class.to_java(type_resolver)
+      # Like FooJni.java, FooJni.kt is compiled against raw placeholder types.
+      # Star projections are Kotlin's raw types. Placeholders are not generic.
+      num_generics = self.num_generics
+      if self.java_class == CLASS_CLASS:
+        num_generics = 1  # Parser drops Class<T> generics.
+      if num_generics and (
+          self.java_class.full_name_with_slashes.startswith('java/')
+          or self.java_class in (JNI_PTR_CLASS, JNI_RAW_PTR_CLASS)):
+        ret += '<' + ', '.join(['*'] * num_generics) + '>'
+    if self.nullable:
+      ret += '?'
+    return ret
+
   def to_mirror_cpp(self, fully_qualified=True):
     if not self.enable_mirror():
       return self.to_cpp()
@@ -375,6 +464,8 @@ class JavaType:
 
   def enable_mirror(self):
     """Whether to use a jobject subclass e.g. JMyClass."""
+    if self.is_safe_pointer():
+      return False
     return (((self.java_class and self.java_class.enable_mirror())
              or self.array_dimensions > 0) and not self.converted_type)
 
@@ -421,8 +512,10 @@ class JavaParam:
   java_type: JavaType
   name: str
 
-  def to_proxy(self):
+  def to_proxy(self, *, unwrap_safe_pointers=False):
     """Converts to types used over JNI boundary."""
+    if unwrap_safe_pointers and self.java_type.is_safe_pointer():
+      return JavaParam(LONG, self.name)
     return JavaParam(self.java_type.to_proxy(), self.name)
 
   def cpp_name(self):
@@ -433,6 +526,9 @@ class JavaParam:
   def to_java_declaration(self, type_resolver=None):
     return '%s %s' % (self.java_type.to_java(type_resolver), self.name)
 
+  def to_kotlin_declaration(self, type_resolver=None):
+    return '%s: %s' % (self.name, self.java_type.to_kotlin(type_resolver))
+
 
 class JavaParamList(tuple):
   """Represents a parameter list."""
@@ -440,13 +536,18 @@ class JavaParamList(tuple):
   def get_types(self):
     return tuple(p.java_type for p in self)
 
-  def to_proxy(self):
+  def to_proxy(self, *, unwrap_safe_pointers=False):
     """Converts to types used over JNI boundary."""
-    return JavaParamList(p.to_proxy() for p in self)
+    return JavaParamList(
+        p.to_proxy(unwrap_safe_pointers=unwrap_safe_pointers) for p in self)
 
   def to_java_declaration(self, type_resolver=None):
     return ', '.join(
         p.to_java_declaration(type_resolver=type_resolver) for p in self)
+
+  def to_kotlin_declaration(self, type_resolver=None):
+    return ', '.join(
+        p.to_kotlin_declaration(type_resolver=type_resolver) for p in self)
 
 
 @dataclasses.dataclass(frozen=True, order=True)
@@ -477,10 +578,14 @@ class JavaSignature:
     sb += [self.return_type.to_descriptor()]
     return ''.join(sb)
 
-  def to_proxy(self):
+  def to_proxy(self, *, unwrap_safe_pointers=False):
     """Converts to types used over JNI boundary."""
-    return_type = self.return_type.to_proxy()
-    param_list = self.param_list.to_proxy()
+    if unwrap_safe_pointers and self.return_type.java_class == JNI_RAW_PTR_CLASS:
+      return_type = LONG
+    else:
+      return_type = self.return_type.to_proxy()
+    param_list = self.param_list.to_proxy(
+        unwrap_safe_pointers=unwrap_safe_pointers)
     return JavaSignature.from_params(return_type, param_list)
 
 
@@ -493,7 +598,9 @@ class TypeResolver:
                parent_resolver=None,
                null_marked=False,
                package_prefix=None,
-               package_prefix_filter=None):
+               package_prefix_filter=None,
+               type_catalog=None,
+               enable_safe_pointers=False):
     self.java_class = java_class
     self.type_params = type_params or EMPTY_TYPE_PARAM_LIST
     self.parent_resolver = parent_resolver
@@ -502,7 +609,15 @@ class TypeResolver:
     self.nested_classes = []
     self.package_prefix = package_prefix
     self.package_prefix_filter = package_prefix_filter
+    self.enable_safe_pointers = (parent_resolver.enable_safe_pointers
+                                 if parent_resolver else enable_safe_pointers)
     self._cache = {}
+    if type_catalog is not None:
+      self.type_catalog = type_catalog
+    elif parent_resolver:
+      self.type_catalog = parent_resolver.type_catalog
+    else:
+      self.type_catalog = {}
 
     assert self.java_class == self._maybe_prefix(
         self.java_class.class_without_prefix)
@@ -555,7 +670,7 @@ class TypeResolver:
 
     return java_class.full_name_with_dots
 
-  # Test coverage for this is in parse_test.py.
+  # Test coverage for this is in test/parse_test.py.
   def resolve(self, name):
     """Resolves the given string to a JavaClass.
 
@@ -644,13 +759,27 @@ OBJECT_CLASS = JavaClass('java/lang/Object')
 STRING_CLASS = JavaClass('java/lang/String')
 LIST_CLASS = JavaClass('java/util/List')
 MAP_CLASS = JavaClass('java/util/Map')
+COLLECTION_CLASS = JavaClass('java/util/Collection')
+SET_CLASS = JavaClass('java/util/Set')
+
+JNI_PTR_CLASS = JavaClass('org/jni_zero/JniPtr')
+JNI_PTR_IMPL_BASE_CLASS = JavaClass('org/jni_zero/JniPtrImplBase')
+JNI_ZERO_INTERNAL_CLASS = JavaClass('org/jni_zero/JniZeroInternal')
+JNI_UNIQUE_PTR_CLASS = JavaClass('org/jni_zero/JniUniquePtr')
+JNI_RAW_PTR_CLASS = JavaClass('org/jni_zero/JniRawPtr')
+
+SAFE_POINTER_CLASSES = (
+    JNI_PTR_CLASS,
+    JNI_UNIQUE_PTR_CLASS,
+    JNI_RAW_PTR_CLASS,
+)
 
 # Collection and types that extend it (for use with toArray()).
 # More can be added here if the need arises.
 COLLECTION_CLASSES = (
     LIST_CLASS,
-    JavaClass('java/util/Collection'),
-    JavaClass('java/util/Set'),
+    COLLECTION_CLASS,
+    SET_CLASS,
 )
 
 # Classes provided by jni_zero.h (and used by

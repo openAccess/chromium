@@ -13,8 +13,6 @@ import static org.mockito.Mockito.when;
 import android.app.ActivityManager;
 import android.app.ApplicationExitInfo;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -43,9 +41,8 @@ import java.util.concurrent.TimeoutException;
 
 /** Junit tests for TrackExitReasons. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(sdk = 30, manifest = Config.NONE)
+@Config(sdk = 30)
 public class TrackExitReasonsTest {
-    private static final String TAG = "ExitReasonsTest";
     private final MockAwContentsLifecycleNotifier mMockNotifier =
             new MockAwContentsLifecycleNotifier();
 
@@ -73,7 +70,6 @@ public class TrackExitReasonsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testAppStateDataConstructor() {
         int pid = 42;
@@ -87,7 +83,6 @@ public class TrackExitReasonsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testReadDataWhenThereIsNoFile() {
         assertFalse("File should initially not exist", TrackExitReasons.getFile().exists());
@@ -96,7 +91,6 @@ public class TrackExitReasonsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testWriteThenReadAppStateData() {
         int pid = 42;
@@ -116,7 +110,6 @@ public class TrackExitReasonsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testWriteLargeThenSmallData() throws IOException, FileNotFoundException {
         List<AppStateData> largeDataList = new ArrayList<>();
@@ -146,7 +139,6 @@ public class TrackExitReasonsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testValidSystemReasonsAndStatesAreLogged() {
         int previousPid = 42;
@@ -194,7 +186,6 @@ public class TrackExitReasonsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testUnexpectedSystemReasonsAreNotLogged() {
         int pid = 1;
@@ -217,7 +208,6 @@ public class TrackExitReasonsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testUpdateAppStateWritesFileOnlyIfAppStateChanged() throws TimeoutException {
         TrackExitReasons.setStateSupplier(mMockNotifier::getAppState);
@@ -266,7 +256,6 @@ public class TrackExitReasonsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testStartTrackingStartupMultipleTimes() throws TimeoutException, IOException {
         // If an app exits during early startup repeatedly, new data keeps getting added to the file
@@ -301,7 +290,6 @@ public class TrackExitReasonsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testStartAndFinishTrackingStartup() throws TimeoutException {
         int previousPid = 42;

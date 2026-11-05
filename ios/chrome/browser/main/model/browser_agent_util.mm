@@ -8,7 +8,7 @@
 #import "base/feature_list.h"
 #import "components/breadcrumbs/core/breadcrumbs_status.h"
 #import "components/data_sharing/public/features.h"
-#import "components/send_tab_to_self/features.h"
+#import "components/enterprise/net/core/features.h"
 #import "ios/chrome/browser/app_launcher/model/app_launcher_browser_agent.h"
 #import "ios/chrome/browser/autocomplete/model/autocomplete_browser_agent.h"
 #import "ios/chrome/browser/browser_view/model/browser_view_visibility_notifier_browser_agent.h"
@@ -21,20 +21,25 @@
 #import "ios/chrome/browser/device_sharing/model/device_sharing_browser_agent.h"
 #import "ios/chrome/browser/device_sharing/model/device_sharing_manager_factory.h"
 #import "ios/chrome/browser/discover_feed/model/discover_feed_visibility_browser_agent.h"
+#import "ios/chrome/browser/enterprise/data_protection/model/data_protection_browser_agent.h"
+#import "ios/chrome/browser/enterprise/data_protection/public/features.h"
+#import "ios/chrome/browser/enterprise/proxy/model/enterprise_proxy_browser_agent.h"
 #import "ios/chrome/browser/favicon/model/favicon_browser_agent.h"
 #import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
 #import "ios/chrome/browser/infobars/model/overlays/browser_agent/infobar_overlay_browser_agent_util.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_browser_agent.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_browser_agent.h"
+#import "ios/chrome/browser/intelligence/contextual_cueing/contextual_cueing_browser_agent.h"
+#import "ios/chrome/browser/intelligence/contextual_cueing/features.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/intelligence/persist_tab_context/model/persist_tab_context_browser_agent.h"
 #import "ios/chrome/browser/intents/model/user_activity_browser_agent.h"
+#import "ios/chrome/browser/lens/model/lens_browser_agent.h"
 #import "ios/chrome/browser/metrics/model/tab_usage_recorder_browser_agent.h"
 #import "ios/chrome/browser/omnibox/model/omnibox_focus/omnibox_focus_browser_agent.h"
 #import "ios/chrome/browser/policy/model/policy_watcher_browser_agent.h"
 #import "ios/chrome/browser/prerender/model/prerender_browser_agent.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_browser_agent.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_browser_agent.h"
 #import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_browser_agent.h"
@@ -47,6 +52,7 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/signin/model/signin_disabled_browser_agent.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_browser_agent.h"
 #import "ios/chrome/browser/start_surface/ui_bundled/start_surface_recent_tab_browser_agent.h"
 #import "ios/chrome/browser/sync/model/sync_error_browser_agent.h"
@@ -144,6 +150,8 @@ void AttachBrowserAgentsForActiveBrowser(Browser* browser) {
     ReaderModeBrowserAgent::CreateForBrowser(browser);
   }
 
+  // LensBrowserAgent must be created before WebNavigationBrowserAgent.
+  LensBrowserAgent::CreateForBrowser(browser);
   WebNavigationBrowserAgent::CreateForBrowser(browser);
 
   if (!browser_is_off_record) {
@@ -155,15 +163,8 @@ void AttachBrowserAgentsForActiveBrowser(Browser* browser) {
     PolicyWatcherBrowserAgent::CreateForBrowser(browser);
   }
 
-  // Send Tab To Self is non-OTR only.
-  bool should_create_send_tab_to_self = !browser_is_off_record;
-  if (base::FeatureList::IsEnabled(
-          send_tab_to_self::kSendTabToSelfIOSLimitToRegularBrowsers)) {
-    should_create_send_tab_to_self = should_create_send_tab_to_self &&
-                                     !browser_is_inactive &&
-                                     !browser_is_temporary;
-  }
-  if (should_create_send_tab_to_self) {
+  // Send Tab To Self is for regular Browsers only.
+  if (!browser_is_off_record && !browser_is_inactive && !browser_is_temporary) {
     SendTabToSelfBrowserAgent::CreateForBrowser(browser);
   }
 
@@ -208,6 +209,10 @@ void AttachBrowserAgentsForActiveBrowser(Browser* browser) {
     DiscoverFeedVisibilityBrowserAgent::CreateForBrowser(browser);
   }
 
+  if (!browser_is_off_record && IsEnableEnterpriseWatermarkingIOS()) {
+    DataProtectionBrowserAgent::CreateForBrowser(browser);
+  }
+
 #if BUILDFLAG(IOS_CREDENTIAL_PROVIDER_ENABLED)
   CredentialProviderBrowserAgent::CreateForBrowser(browser);
 #endif
@@ -219,6 +224,15 @@ void AttachBrowserAgentsForActiveBrowser(Browser* browser) {
   if (!browser_is_inactive && !browser_is_temporary && !browser_is_off_record &&
       IsPageActionMenuEnabled()) {
     GeminiBrowserAgent::CreateForBrowser(browser);
+  }
+
+  // Must be attached after `GeminiBrowserAgent`, which it observes. Mirrors
+  // the gating used to attach `ContextualCueingTabHelper`.
+  if (!browser_is_inactive && !browser_is_temporary && !browser_is_off_record &&
+      (contextual_cueing::IsGeminiContextualSuggestionsCuesEnabled() ||
+       contextual_cueing::
+           IsGeminiContextualSuggestionsCuesOnDeviceClassifierEnabled())) {
+    contextual_cueing::ContextualCueingBrowserAgent::CreateForBrowser(browser);
   }
 
   if (!browser_is_inactive && !browser_is_temporary && !browser_is_off_record) {
@@ -236,12 +250,22 @@ void AttachBrowserAgentsForActiveBrowser(Browser* browser) {
     PrerenderBrowserAgent::CreateForBrowser(
         browser,
         AuthenticationServiceFactory::GetForProfile(browser->GetProfile()));
+    SigninDisabledBrowserAgent::CreateForBrowser(browser);
   }
 
   if (IsCleanupPersistedTabContextsEnabled() && !browser_is_off_record &&
       !browser_is_inactive && !browser_is_temporary) {
     PersistTabContextBrowserAgent::CreateForBrowser(browser);
   }
+
+  // Mirrors the gating used to attach `EnterpriseProxyTabHelper`, whose
+  // delegate it is.
+  // LINT.IfChange(EnterpriseProxyBrowserAgentGating)
+  if (!browser_is_inactive && !browser_is_temporary && !browser_is_off_record &&
+      enterprise_net::IsDynamicRouteFetchingEnabled()) {
+    EnterpriseProxyBrowserAgent::CreateForBrowser(browser);
+  }
+  // LINT.ThenChange(//ios/chrome/browser/tabs/model/tab_helper_util.mm:EnterpriseProxyTabHelperGating)
 
   // This needs to be called last in case any downstream browser agents need to
   // access upstream agents created earlier in this function.

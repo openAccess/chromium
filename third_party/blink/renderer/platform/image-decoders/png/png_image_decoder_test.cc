@@ -251,7 +251,7 @@ void TestProgressiveDecodingContinuesAfterFullData(
   const ImageFrame* const frame_upfront =
       decoder_upfront->DecodeFrameBufferAtIndex(0);
   ASSERT_EQ(ImageFrame::kFrameComplete, frame_upfront->GetStatus());
-  const unsigned hash_upfront = HashBitmap(frame_upfront->Bitmap());
+  const uint32_t hash_upfront = HashBitmap(frame_upfront->Bitmap());
 
   auto decoder = CreatePNGDecoder();
   scoped_refptr<SharedBuffer> partial_data =
@@ -261,12 +261,12 @@ void TestProgressiveDecodingContinuesAfterFullData(
   EXPECT_EQ(1u, decoder->FrameCount());
   const ImageFrame* frame = decoder->DecodeFrameBufferAtIndex(0);
   EXPECT_EQ(frame->GetStatus(), ImageFrame::kFramePartial);
-  const unsigned hash_partial = HashBitmap(frame->Bitmap());
+  const uint32_t hash_partial = HashBitmap(frame->Bitmap());
 
   decoder->SetData(SharedBuffer::Create(full_data), true);
   frame = decoder->DecodeFrameBufferAtIndex(0);
   EXPECT_EQ(frame->GetStatus(), ImageFrame::kFrameComplete);
-  const unsigned hash_full = HashBitmap(frame->Bitmap());
+  const uint32_t hash_full = HashBitmap(frame->Bitmap());
 
   EXPECT_FALSE(decoder->Failed());
   EXPECT_NE(hash_full, hash_partial);
@@ -1159,7 +1159,7 @@ TEST(AnimatedPNGTests, Offset) {
   Vector<char> original_data = ReadFile(png_file);
   ASSERT_FALSE(original_data.empty());
 
-  Vector<unsigned> baseline_hashes;
+  Vector<uint32_t> baseline_hashes;
   scoped_refptr<SharedBuffer> original_data_buffer =
       SharedBuffer::Create(original_data);
   CreateDecodingBaseline(CreatePNGDecoder, original_data_buffer.get(),
@@ -1192,7 +1192,7 @@ TEST(AnimatedPNGTests, ExtraChunksBeforeIHDR) {
   Vector<char> original_data = ReadFile(png_file);
   ASSERT_FALSE(original_data.empty());
 
-  Vector<unsigned> baseline_hashes;
+  Vector<uint32_t> baseline_hashes;
   scoped_refptr<SharedBuffer> original_data_buffer =
       SharedBuffer::Create(original_data);
   CreateDecodingBaseline(CreatePNGDecoder, original_data_buffer.get(),
@@ -1753,6 +1753,22 @@ TEST(PNGTests, HDRMetadata) {
                   .01f);
 }
 
+TEST(PNGTests, ParseSmpte209450FromICC) {
+  const char* png_file = "/images/resources/smpte209450.png";
+  scoped_refptr<SharedBuffer> data = ReadFileToSharedBuffer(png_file);
+  ASSERT_TRUE(data);
+
+  auto decoder = CreatePNGDecoder(ImageDecoder::kAlphaNotPremultiplied,
+                                  ColorBehavior::kTag);
+  decoder->SetData(data.get(), true);
+  auto* frame = decoder->DecodeFrameBufferAtIndex(0);
+  ASSERT_TRUE(frame);
+  ASSERT_FALSE(decoder->Failed());
+
+  const gfx::HDRMetadata& hdr_metadata = decoder->GetHDRMetadata();
+  ASSERT_TRUE(hdr_metadata.HasAgtm());
+}
+
 TEST(AnimatedPNGTests, TrnsMeansAlpha) {
   const char* png_file =
       "/images/resources/"
@@ -1798,17 +1814,17 @@ TEST(AnimatedPNGTests, ApngTestSuiteDisposeOpNoneBasic) {
     auto* frame = decoder->DecodeFrameBufferAtIndex(i);
     ASSERT_TRUE(frame);
     ASSERT_FALSE(decoder->Failed());
-    SkColor actualColor = frame->Bitmap().getColor(0, 0);
+    SkColor actual_color = frame->Bitmap().getColor(0, 0);
     if (i == 0) {
-      EXPECT_EQ(SkColorGetA(actualColor), 0xFFu);
-      EXPECT_GE(SkColorGetR(actualColor), 0xFEu);
-      EXPECT_EQ(SkColorGetG(actualColor), 0x00u);
-      EXPECT_EQ(SkColorGetB(actualColor), 0x00u);
+      EXPECT_EQ(SkColorGetA(actual_color), 0xFFu);
+      EXPECT_GE(SkColorGetR(actual_color), 0xFEu);
+      EXPECT_EQ(SkColorGetG(actual_color), 0x00u);
+      EXPECT_EQ(SkColorGetB(actual_color), 0x00u);
     } else if ((i == 1) || (i == 2)) {
-      EXPECT_EQ(SkColorGetA(actualColor), 0xFFu);
-      EXPECT_EQ(SkColorGetR(actualColor), 0x00u);
-      EXPECT_GE(SkColorGetG(actualColor), 0xFEu);
-      EXPECT_EQ(SkColorGetB(actualColor), 0x00u);
+      EXPECT_EQ(SkColorGetA(actual_color), 0xFFu);
+      EXPECT_EQ(SkColorGetR(actual_color), 0x00u);
+      EXPECT_GE(SkColorGetG(actual_color), 0xFEu);
+      EXPECT_EQ(SkColorGetB(actual_color), 0x00u);
     }
   }
   EXPECT_FALSE(decoder->Failed());

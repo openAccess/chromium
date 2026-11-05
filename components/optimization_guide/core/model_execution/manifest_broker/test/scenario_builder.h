@@ -9,7 +9,8 @@
 #include <string>
 
 #include "base/memory/raw_ref.h"
-#include "components/optimization_guide/core/model_execution/manifest_broker/test/manifest_builder.h"
+#include "components/optimization_guide/core/model_execution/configs/manifest_builder.h"
+#include "components/optimization_guide/core/model_execution/manifest_broker/test/manifest_component_directory.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/test_manifest_asset_manager_component_state.h"
 #include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
 #include "components/optimization_guide/proto/manifest.pb.h"
@@ -27,23 +28,24 @@ class ScenarioBuilder final {
 
   ScenarioBuilder& AddBaseModel(const std::string& name);
   ScenarioBuilder& AddBaseModel(const std::string& name,
+                                const FakeBaseModelAsset::Content& content);
+  ScenarioBuilder& AddBaseModel(const std::string& name,
                                 BaseModelRecipeArgs args);
   ScenarioBuilder& AddBaseModel(const std::string& name,
                                 BaseModelRecipeArgs args,
                                 const FakeBaseModelAsset::Content& content,
                                 const std::string& version);
-  ScenarioBuilder& AddSafetyModel(const std::string& name);
   ScenarioBuilder& AddAdaptation(const std::string& name,
                                  const std::string& base_model);
+  ScenarioBuilder& AddPostprocessedModel(
+      const std::string& name,
+      const std::string& base_model,
+      const std::string& postprocessor_model);
   ScenarioBuilder& AddUnsafeSolution(const std::string& use_case,
                                      const std::string& model);
   ScenarioBuilder& AddUnsafeSolution(const std::string& use_case,
                                      const std::string& model,
                                      proto::SolutionConfig config);
-  ScenarioBuilder& AddSafeSolution(const std::string& use_case,
-                                   const std::string& model,
-                                   const std::string& safety_model,
-                                   proto::SolutionConfig config);
   ScenarioBuilder& SetFeatureConfig(DeviceCategory category,
                                     const std::string& use_case,
                                     const proto::Any& config);

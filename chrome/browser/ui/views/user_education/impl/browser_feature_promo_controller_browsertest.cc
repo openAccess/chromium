@@ -63,6 +63,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
@@ -1075,9 +1076,9 @@ IN_PROC_BROWSER_TEST_F(BrowserFeaturePromoControllerTrackerInitializedTest,
   waiter.Wait();
 
   // We should be running the tutorial now.
-  auto& tutorial_service =
-      UserEducationServiceFactory::GetForBrowserContext(browser()->GetProfile())
-          ->tutorial_service();
+  auto& tutorial_service = *UserEducationServiceFactory::GetForBrowserContext(
+                                browser()->GetProfile())
+                                ->tutorial_service();
   EXPECT_TRUE(tutorial_service.IsRunningTutorial());
   tutorial_service.CancelTutorialIfRunning();
 }

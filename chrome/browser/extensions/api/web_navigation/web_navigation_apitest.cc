@@ -28,6 +28,11 @@
 #include "chrome/browser/ssl/https_upgrades_util.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "components/tabs/public/tab_interface.h"
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+#endif
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/navigation_handle.h"
@@ -38,13 +43,13 @@
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
+#include "content/public/common/content_switches.h"
 #include "content/public/common/isolated_world_ids.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/no_renderer_crashes_assertion.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_throttle_inserter.h"
@@ -69,11 +74,14 @@
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/scoped_multi_source_observation.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+#include "chrome/browser/ui/android/tab_model/tab_model_list_observer.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_observer.h"
 #else
 #include "chrome/browser/download/download_browsertest_utils.h"
@@ -101,14 +109,31 @@ namespace {
 class DelayLoadStartAndExecuteJavascript : public content::WebContentsObserver {
  public:
 #if BUILDFLAG(IS_ANDROID)
-  // Notifies DelayLoadStartAndExecuteJavascript when a tab is added.
-  class TabHelper : public TabModelObserver {
+  // Notifies DelayLoadStartAndExecuteJavascript when a tab is added. Observes
+  // every TabModel, including ones registered after construction, because
+  // additional models (e.g. headless models for other persisted windows) can be
+  // registered asynchronously during startup on desktop Android.
+  class TabHelper : public TabModelListObserver, public TabModelObserver {
    public:
     explicit TabHelper(DelayLoadStartAndExecuteJavascript* owner)
         : owner_(owner) {
-      // Assumes only one window open, which is fine for these tests.
-      CHECK_EQ(1u, TabModelList::models().size());
-      TabModelList::models().front()->AddObserver(this);
+      TabModelList::AddObserver(this);
+      for (TabModel* model : TabModelList::models()) {
+        OnTabModelAdded(model);
+      }
+    }
+
+    ~TabHelper() override { StopObserving(); }
+
+    // TabModelListObserver:
+    void OnTabModelAdded(TabModel* tab_model) override {
+      tab_model_observations_.AddObservation(tab_model);
+    }
+
+    void OnTabModelRemoved(TabModel* tab_model) override {
+      if (tab_model_observations_.IsObservingSource(tab_model)) {
+        tab_model_observations_.RemoveObservation(tab_model);
+      }
     }
 
     // TabModelObserver:
@@ -117,13 +142,19 @@ class DelayLoadStartAndExecuteJavascript : public content::WebContentsObserver {
         return;
       }
 
-      CHECK_EQ(1u, TabModelList::models().size());
-      TabModelList::models().front()->RemoveObserver(this);
-
+      StopObserving();
       owner_->OnTabAdded(tab->GetContents());
     }
 
+   private:
+    void StopObserving() {
+      tab_model_observations_.RemoveAllObservations();
+      TabModelList::RemoveObserver(this);
+    }
+
     raw_ptr<DelayLoadStartAndExecuteJavascript> owner_;
+    base::ScopedMultiSourceObservation<TabModel, TabModelObserver>
+        tab_model_observations_{this};
   };
 #else
   // Notifies DelayLoadStartAndExecuteJavascript when a tab is added.
@@ -246,7 +277,7 @@ class DelayLoadStartAndExecuteJavascript : public content::WebContentsObserver {
     }
 
     void Unblock() {
-      DCHECK(throttled_);
+      CHECK(throttled_, base::NotFatalUntil::M161);
       Resume();
     }
 
@@ -760,7 +791,7 @@ IN_PROC_BROWSER_TEST_F(WebNavigationApiTest, TargetBlankIncognito) {
       "/extensions/api_test/webnavigation/targetBlank/a.html");
 
   BrowserWindowInterface* otr_browser = OpenURLOffTheRecord(profile(), url);
-  WebContents* tab = otr_browser->GetTabStripModel()->GetActiveWebContents();
+  WebContents* tab = otr_browser->GetActiveTabInterface()->GetContents();
   content::SimulateEndOfPaintHoldingOnPrimaryMainFrame(tab);
 
   // There's a link with target=_blank on a.html. Click on it to open it in a
@@ -863,6 +894,12 @@ IN_PROC_BROWSER_TEST_F(WebNavigationApiTest, PendingDeletion) {
 // in behavior between ExtensionBrowserTest::NavigateToURL() and
 // ui_test_utils::NavigateToURL().
 IN_PROC_BROWSER_TEST_F(WebNavigationApiTest, Crash) {
+#if BUILDFLAG(IS_WIN)
+  // Avoid timeouts symbolizing stack traces in the intentionally crashed
+  // renderer process on Windows.
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(
+      ::switches::kDisableInProcessStackTraces);
+#endif
   // TODO(crbug.com/40248833): Use https in the test and remove this allowlist
   // entry.
   ScopedAllowHttpForHostnamesForTesting scoped_allow_http(
@@ -912,29 +949,6 @@ IN_PROC_BROWSER_TEST_F(WebNavigationApiTest, MAYBE_Xslt) {
   content::IsolateAllSitesForTesting(base::CommandLine::ForCurrentProcess());
   ASSERT_TRUE(StartEmbeddedTestServer());
   ASSERT_TRUE(RunExtensionTest("webnavigation/xslt")) << message_;
-}
-
-class WebNavigationApiFencedFrameTest : public WebNavigationApiTest {
- protected:
-  WebNavigationApiFencedFrameTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        /*enabled_features=*/{{blink::features::kFencedFrames, {}},
-                              {blink::features::kFencedFramesAPIChanges, {}},
-                              {blink::features::kFencedFramesDefaultMode, {}},
-                              {features::kPrivacySandboxAdsAPIsOverride, {}}},
-        /*disabled_features=*/{features::kSpareRendererForSitePerProcess});
-    // Fenced frames are only allowed in a secure context.
-    UseHttpsTestServer();
-  }
-  ~WebNavigationApiFencedFrameTest() override = default;
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(WebNavigationApiFencedFrameTest, Load) {
-  ASSERT_TRUE(StartEmbeddedTestServer());
-  ASSERT_TRUE(RunExtensionTest("webnavigation/fencedFrames")) << message_;
 }
 
 }  // namespace extensions

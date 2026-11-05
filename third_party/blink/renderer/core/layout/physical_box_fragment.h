@@ -46,7 +46,8 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
   // Creates a shallow copy of |other| but uses the "post-layout" fragments to
   // ensure fragment-tree consistency.
   static const PhysicalBoxFragment* CloneWithPostLayoutFragments(
-      const PhysicalBoxFragment& other);
+      const PhysicalBoxFragment& other,
+      const std::optional<PhysicalRect> new_scrollable_overflow = std::nullopt);
 
   using PassKey = base::PassKey<PhysicalBoxFragment>;
   PhysicalBoxFragment(PassKey,
@@ -277,6 +278,14 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
     return PhysicalBoxStrut();
   }
 
+  const PhysicalBoxStrut& UsedPositionInsets() const {
+    if (!used_position_insets_) {
+      DEFINE_STATIC_LOCAL(const PhysicalBoxStrut, zero_insets, ());
+      return zero_insets;
+    }
+    return used_position_insets_->insets;
+  }
+
   PhysicalOffset ContentOffset() const {
     if (!HasBorders() && !HasPadding())
       return PhysicalOffset();
@@ -361,10 +370,6 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
   PhysicalRect OverflowClipRect(
       const BlockBreakToken* incoming_break_token,
       OverlayScrollbarClipBehavior = kIgnoreOverlayScrollbarSize) const;
-  // Returns the total offset of all overscroll area parents. This is used to
-  // shift content which is not within an overscroll area.
-  gfx::Vector2d PixelSnappedOverscrollContentOffset() const;
-  gfx::Vector2d PixelSnappedScrolledContentOffset() const;
   PhysicalSize ScrollSize() const;
 
   InkOverflow::Type InkOverflowType() const {
@@ -467,6 +472,12 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
     return bit_field_.get<HasMovedChildrenFlag>();
   }
 
+  // Returns true if this is a float which must be clipped to the bottom-end
+  // content edge of its line-clamp container.
+  bool IsLineClampClippedFloat() const {
+    return bit_field_.get<IsLineClampClippedFloatFlag>();
+  }
+
 #if DCHECK_IS_ON()
   void CheckSameForSimplifiedLayout(const PhysicalBoxFragment&,
                                     bool check_no_fragmentation) const;
@@ -486,19 +497,6 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
     return *rare_data_->mathml_paint_info_;
   }
 
-  class MutableForStyleRecalc {
-    STACK_ALLOCATED();
-
-   public:
-    MutableForStyleRecalc(base::PassKey<PhysicalBoxFragment>,
-                          PhysicalBoxFragment& fragment);
-    void SetScrollableOverflow(const PhysicalRect& scrollable_overflow);
-
-   private:
-    PhysicalBoxFragment& fragment_;
-  };
-  MutableForStyleRecalc GetMutableForStyleRecalc() const;
-
   class MutableForContainerLayout {
     STACK_ALLOCATED();
 
@@ -513,6 +511,26 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
   };
 
   MutableForContainerLayout GetMutableForContainerLayout() const;
+
+  class MutableForPositioned {
+    STACK_ALLOCATED();
+
+   public:
+    void SetUsedPositionInsets(const PhysicalBoxStrut& insets) {
+      fragment_.used_position_insets_ =
+          insets.IsZero() ? nullptr : MakeGarbageCollected<UsedInsets>(insets);
+    }
+
+   private:
+    friend class PhysicalBoxFragment;
+    explicit MutableForPositioned(const PhysicalBoxFragment& fragment)
+        : fragment_(const_cast<PhysicalBoxFragment&>(fragment)) {}
+
+    PhysicalBoxFragment& fragment_;
+  };
+  MutableForPositioned GetMutableForPositioned() const {
+    return MutableForPositioned(*this);
+  }
 
   // Painters can use const methods only, except for these explicitly declared
   // methods.
@@ -658,6 +676,8 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
       IsMonolithicFlag::DefineNextValue<bool, 1>;
   using HasMovedChildrenFlag =
       IsMonolithicOverflowPropagationDisabledFlag::DefineNextValue<bool, 1>;
+  using IsLineClampClippedFloatFlag =
+      HasMovedChildrenFlag::DefineNextValue<bool, 1>;
 
   bool IncludeBorderTop() const {
     return bit_field_.get<IncludeBorderTopFlag>();
@@ -672,7 +692,7 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
     return bit_field_.get<IncludeBorderLeftFlag>();
   }
 
-  static size_t AdditionalByteSize(bool has_fragment_items);
+  static uint32_t AdditionalByteSize(bool has_fragment_items);
 
   using FieldId = PhysicalFragmentRareData::FieldId;
   ALWAYS_INLINE const PhysicalFragmentRareData::RareField* GetRareField(
@@ -742,11 +762,18 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
   void CheckIntegrity() const;
 #endif
 
+  struct UsedInsets : public GarbageCollected<UsedInsets> {
+    explicit UsedInsets(const PhysicalBoxStrut& insets) : insets(insets) {}
+    void Trace(Visitor*) const {}
+    PhysicalBoxStrut insets;
+  };
+
   BitField bit_field_;
 
   LayoutUnit first_baseline_;
   LayoutUnit last_baseline_;
   Member<PhysicalFragmentRareData> rare_data_;
+  Member<UsedInsets> used_position_insets_;
   InkOverflow ink_overflow_;
   HeapVector<PhysicalFragmentLink> children_;
   // fragment_items is after |children_| if they are not empty/initial.

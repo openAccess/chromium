@@ -78,6 +78,7 @@ public class MediaSessionTest {
     @After
     public void tearDown() {
         MediaNotificationManager.resetForTesting();
+        ThreadUtils.runOnUiThreadBlocking(AudioBecomingNoisyReceiver::resetForTesting);
     }
 
     @Test
@@ -130,7 +131,7 @@ public class MediaSessionTest {
 
         Tab tab = mActivityTestRule.getActivityTab();
         mActivityTestRule.loadUrl(getOriginalNativeNtpUrl());
-        NewTabPageTestUtils.waitForNtpLoaded(tab);
+        NewTabPageTestUtils.waitForNativeNtpLoaded(tab);
 
         Assert.assertTrue(tab.getNativePage() instanceof NewTabPage);
 
@@ -156,6 +157,7 @@ public class MediaSessionTest {
     @Before
     public void setUp() {
         mTestServer = mActivityTestRule.getTestServer();
+        ThreadUtils.runOnUiThreadBlocking(AudioBecomingNoisyReceiver::resetForTesting);
     }
 
     private void waitForNotificationReady() {

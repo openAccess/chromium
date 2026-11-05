@@ -117,6 +117,10 @@ class AimEligibilityService
     // The value for the `Sec-CH-UA-Full-Version-List` HTTP Header. The header
     // is skipped if it is empty.
     std::string full_version_list;
+
+    // The value for the `Chrome-Search-Capabilities-Version` HTTP Header. The
+    // header is skipped if it is empty.
+    std::string search_capabilities_version;
   };
 
   // Returns the current server eligibility request mode based on the feature
@@ -218,6 +222,9 @@ class AimEligibilityService
   // Checks if the user is eligible for AIM Fuseboxes.
   virtual bool IsFuseboxEligible() const;
 
+  // Checks if the user is eligible for Contextual Search Box (CSB).
+  virtual bool IsCsbEligible() const;
+
   // Returns whether `url` is a valid AIM URL (i.e. would navigate a user to the
   // AIM feature). All of the host, path, and URL params are checked to
   // determine this. This method does not incorporate checks for params that
@@ -268,6 +275,10 @@ class AimEligibilityService
   // Returns the `SearchboxConfig` from the AIMEligibilityResponse.
   virtual const omnibox::SearchboxConfig* GetSearchboxConfig() const;
 
+  // Returns the `LhsRailConfig` from the AIMEligibilityResponse, or nullptr if
+  // not present.
+  virtual const omnibox::LhsRailConfig* GetLhsRailConfig() const;
+
   // NOTE: Following methods are intended for chrome://aim-eligibility-internals
   // for debugging purposes only:
   // Triggers a server request to fetch eligibility from the server.
@@ -292,8 +303,7 @@ class AimEligibilityService
     kRefreshTokenRemoved = 7,
     kRefreshTokenError = 8,
     kOAuthFallbackCookieChange = 9,
-    kLocaleChange = 10,
-    kMaxValue = kLocaleChange,
+    kMaxValue = kOAuthFallbackCookieChange,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/histograms.xml:AimEligibilityRequestSource)
 

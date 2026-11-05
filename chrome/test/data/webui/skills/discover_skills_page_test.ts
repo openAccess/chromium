@@ -4,6 +4,7 @@
 
 import 'chrome://skills/discover_skills_page.js';
 
+import type {CrButtonElement} from '//resources/cr_elements/cr_button/cr_button.js';
 import type {CrToastElement} from '//resources/cr_elements/cr_toast/cr_toast.js';
 import {CrRouter} from 'chrome://resources/js/cr_router.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
@@ -12,19 +13,24 @@ import type {DiscoverSkillsPageElement} from 'chrome://skills/discover_skills_pa
 import type {Skill} from 'chrome://skills/skill.mojom-webui.js';
 import {SkillSource} from 'chrome://skills/skill.mojom-webui.js';
 import {SkillsManagementAction, SkillsManagementPage} from 'chrome://skills/skill_metrics.mojom-webui.js';
-import {SkillsPageBrowserProxy} from 'chrome://skills/skills_page_browser_proxy.js';
+import type {PageHandlerRemote, SkillsPageRemote} from 'chrome://skills/skills.mojom-webui.js';
+import {browserProxyFactory} from 'chrome://skills/skills.mojom-webui.js';
 import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import type {TestMock} from 'chrome://webui-test/test_mock.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {TestSkillsBrowserProxy} from './test_skills_browser_proxy.js';
+import {createTestSkillsPageHandler} from './test_skills_browser_proxy.js';
 
 suite('DiscoverSkillsPage', function() {
   let page: DiscoverSkillsPageElement;
-  let browserProxy: TestSkillsBrowserProxy;
+  let handler: TestMock<PageHandlerRemote>&PageHandlerRemote;
+  let callbackRouterRemote: SkillsPageRemote;
 
   setup(async function() {
-    browserProxy = new TestSkillsBrowserProxy();
-    SkillsPageBrowserProxy.setInstance(browserProxy);
+    handler = createTestSkillsPageHandler();
+    const {instance, remote} = browserProxyFactory.createForTest(handler);
+    browserProxyFactory.setInstance(instance);
+    callbackRouterRemote = remote;
     window.history.replaceState({}, '', '/');
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     CrRouter.resetForTesting();
@@ -45,6 +51,7 @@ suite('DiscoverSkillsPage', function() {
       curatedBy: '',
       imageUrl: '',
       source: SkillSource.kFirstParty,
+      enabled: true,
       creationTime: {internalValue: 0n},
       lastUpdateTime: {internalValue: 0n},
       category: '',
@@ -66,7 +73,7 @@ suite('DiscoverSkillsPage', function() {
                                                     displayName: topic,
                                                   }));
 
-    browserProxy.callbackRouterRemote.update1PSkills({
+    callbackRouterRemote.update1PSkills({
       skillMap: fullSkillsMap,
       topicsInfoList: topicsInfoList,
     });
@@ -177,7 +184,7 @@ suite('DiscoverSkillsPage', function() {
 
   test('SaveButtonClickDisablesCardsSaveFunctionality', async function() {
     const saveResolver = new PromiseResolver();
-    browserProxy.handler.setResultFor('maybeSave1PSkill', saveResolver.promise);
+    handler.setResultFor('maybeSave1PSkill', saveResolver.promise);
 
     await setFirstPartySkills({
       'Shopping': [{id: '1', name: 'Shopping'}, {id: '2', name: 'Shopping2'}],
@@ -189,13 +196,17 @@ suite('DiscoverSkillsPage', function() {
     assertTrue(!!cards[0]);
     const card = cards[0];
     await card.updateComplete;
-    const saveButton1 = card.$.saveButton;
+    const saveButton1 =
+        card.shadowRoot.querySelector<CrButtonElement>('#saveButton');
+    assertTrue(!!saveButton1);
     assertFalse(saveButton1.disabled);
 
     assertTrue(!!cards[1]);
     const card1 = cards[1];
     await card1.updateComplete;
-    const saveButton2 = card1.$.saveButton;
+    const saveButton2 =
+        card1.shadowRoot.querySelector<CrButtonElement>('#saveButton');
+    assertTrue(!!saveButton2);
     assertFalse(saveButton2.disabled);
 
     saveButton1.click();
@@ -224,25 +235,25 @@ suite('DiscoverSkillsPage', function() {
     const card = cards[0];
     await card.updateComplete;
 
-    const saveButton1 = card.$.saveButton;
+    const saveButton1 =
+        card.shadowRoot.querySelector<CrButtonElement>('#saveButton');
+    assertTrue(!!saveButton1);
     assertFalse(saveButton1.disabled);
 
     saveButton1.click();
     await microtasksFinished();
 
-    const callCount = browserProxy.handler.getCallCount('openSkillsDialog');
+    const callCount = handler.getCallCount('openSkillsDialog');
     assertEquals(1, callCount);
 
-    await browserProxy.handler.whenCalled('recordSkillsManagementAction')
-        .then((args) => {
-          assertEquals(SkillsManagementPage.kBrowseSkills, args[0]);
-          assertEquals(SkillsManagementAction.kClickedAddSkill, args[1]);
-        });
+    await handler.whenCalled('recordSkillsManagementAction').then((args) => {
+      assertEquals(SkillsManagementPage.kBrowseSkills, args[0]);
+      assertEquals(SkillsManagementAction.kClickedAddSkill, args[1]);
+    });
   });
 
   test('SaveButtonFailureShowsToast', async function() {
-    browserProxy.handler.setResultFor(
-        'maybeSave1PSkill', Promise.resolve({success: false}));
+    handler.setResultFor('maybeSave1PSkill', Promise.resolve({success: false}));
 
     await setFirstPartySkills({
       'Shopping': [{id: '1', name: 'Shopping'}],
@@ -253,7 +264,9 @@ suite('DiscoverSkillsPage', function() {
     const card = cards[0];
     await card.updateComplete;
 
-    const saveButton1 = card.$.saveButton;
+    const saveButton1 =
+        card.shadowRoot.querySelector<CrButtonElement>('#saveButton');
+    assertTrue(!!saveButton1);
     assertFalse(saveButton1.disabled);
 
     saveButton1.click();
@@ -340,7 +353,7 @@ suite('DiscoverSkillsPage', function() {
     assertTrue(!!card);
     await microtasksFinished();
 
-    const img = card.$.illustrationImage;
+    const img = card.shadowRoot.querySelector('#illustrationImage');
     assertTrue(!!img);
     assertEquals(imageUrl, img.getAttribute('auto-src'));
   });
@@ -352,8 +365,7 @@ suite('DiscoverSkillsPage', function() {
     page.onSearchChanged('Apple');
     await microtasksFinished();
 
-    const args =
-        await browserProxy.handler.whenCalled('recordSkillsManagementAction');
+    const args = await handler.whenCalled('recordSkillsManagementAction');
     assertEquals(SkillsManagementPage.kBrowseSkills, args[0]);
     assertEquals(SkillsManagementAction.kNonEmptySearch, args[1]);
   });
@@ -366,8 +378,7 @@ suite('DiscoverSkillsPage', function() {
     page.onSearchChanged('Banana');
     await microtasksFinished();
 
-    const args =
-        await browserProxy.handler.whenCalled('recordSkillsManagementAction');
+    const args = await handler.whenCalled('recordSkillsManagementAction');
     assertEquals(SkillsManagementPage.kBrowseSkills, args[0]);
     assertEquals(SkillsManagementAction.kEmptySearch, args[1]);
   });

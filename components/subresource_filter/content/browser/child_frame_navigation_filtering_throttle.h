@@ -5,12 +5,13 @@
 #ifndef COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_CHILD_FRAME_NAVIGATION_FILTERING_THROTTLE_H_
 #define COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_CHILD_FRAME_NAVIGATION_FILTERING_THROTTLE_H_
 
+#include <stddef.h>
+
 #include <optional>
 #include <string>
 
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
-#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "components/subresource_filter/core/browser/async_document_subresource_filter.h"
@@ -90,6 +91,7 @@ class ChildFrameNavigationFilteringThrottle
 
   void OnCalculatedLoadPolicy(LoadPolicy policy);
   void OnCalculatedLoadPolicyForUrl(
+      size_t redirect_chain_size,
       AsyncDocumentSubresourceFilter::LoadPolicyResult result);
   void OnCalculatedLoadPoliciesFromAliasUrls(
       std::vector<AsyncDocumentSubresourceFilter::LoadPolicyResult> results);
@@ -101,9 +103,9 @@ class ChildFrameNavigationFilteringThrottle
   void CancelNavigation();
   void ResumeNavigation();
 
-  // Must outlive this class.
-  raw_ptr<AsyncDocumentSubresourceFilter, DanglingUntriaged>
-      parent_frame_filter_;
+  // The filter is owned by an ancestor frame, which can be deleted before this
+  // throttle. Navigations fail open if the filter is no longer available.
+  base::WeakPtr<AsyncDocumentSubresourceFilter> parent_frame_filter_;
 
   int pending_load_policy_calculations_ = 0;
   DeferStage defer_stage_ = DeferStage::kNotDeferring;

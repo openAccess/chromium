@@ -5,15 +5,20 @@
 #import "ios/chrome/app/application_delegate/fake_startup_information.h"
 
 #import "base/time/time.h"
+#import "base/timer/elapsed_timer.h"
 #import "ios/chrome/app/app_startup_parameters.h"
 
 @implementation FakeStartupInformation
 
-@synthesize appLaunchTime = _appLaunchTime;
+@synthesize appLaunchTimer = _appLaunchTimer;
+@synthesize preMainDuration = _preMainDuration;
 @synthesize didFinishLaunchingTime = _didFinishLaunchingTime;
 @synthesize firstSceneConnectionTime = _firstSceneConnectionTime;
+@synthesize coldStartFromMainDuration = _coldStartFromMainDuration;
+@synthesize startupMemoryFootprintBytes = _startupMemoryFootprintBytes;
 @synthesize isFirstRun = _isFirstRun;
 @synthesize isColdStart = _isColdStart;
+@synthesize launchReason = _launchReason;
 @synthesize isTerminating = _isTerminating;
 
 - (FirstUserActionRecorder*)firstUserActionRecorder {
@@ -48,6 +53,16 @@
 
 - (void)startChromeMain {
   // Stub.
+}
+
+- (BOOL)isLaunchedInBackground {
+  return _launchReason.has_value() && IsBackgroundLaunchReason(*_launchReason);
+}
+
+- (void)maybeSetLaunchReason:(IOSLaunchReason)launchReason {
+  if (!_launchReason.has_value()) {
+    _launchReason = launchReason;
+  }
 }
 
 @end

@@ -6,9 +6,9 @@
 
 #include "chrome/browser/bitmap_fetcher/bitmap_fetcher.h"
 #include "chrome/browser/bitmap_fetcher/bitmap_fetcher_delegate.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "components/account_id/account_id.h"
+#include "content/public/browser/browser_context.h"
 #include "net/url_request/referrer_policy.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/fetch_api.mojom-shared.h"
@@ -46,10 +46,10 @@ class DownloadTask : public BitmapFetcherDelegate {
                  const net::NetworkTrafficAnnotationTag& annotation_tag,
                  const AccountId& account_id,
                  const net::HttpRequestHeaders& additional_headers) {
-    Profile* profile = Profile::FromBrowserContext(
+    content::BrowserContext* const browser_context =
         ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
-            account_id));
-    if (!profile) {
+            account_id);
+    if (!browser_context) {
       std::move(callback_).Run(gfx::ImageSkia());
       return;
     }
@@ -61,7 +61,7 @@ class DownloadTask : public BitmapFetcherDelegate {
                           network::mojom::CredentialsMode::kOmit,
                           additional_headers);
 
-    bitmap_fetcher_->Start(profile->GetURLLoaderFactory().get());
+    bitmap_fetcher_->Start(browser_context->GetURLLoaderFactory().get());
   }
 
   ash::ImageDownloader::DownloadCallback callback_;
@@ -91,7 +91,7 @@ void ImageDownloaderImpl::Download(
     const AccountId& account_id,
     const net::HttpRequestHeaders& additional_headers,
     ash::ImageDownloader::DownloadCallback callback) {
-  DCHECK(account_id.is_valid());
+  CHECK(account_id.is_valid(), base::NotFatalUntil::M161);
   // The download task will delete itself upon task completion.
   new DownloadTask(url, annotation_tag, account_id, additional_headers,
                    std::move(callback));

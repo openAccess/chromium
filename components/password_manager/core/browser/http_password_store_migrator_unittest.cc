@@ -8,7 +8,10 @@
 #include <memory>
 
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
+#include "base/types/expected.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/mock_password_store_interface.h"
@@ -43,7 +46,17 @@ PasswordForm CreateTestForm() {
   form.action = GURL("https://example.org/action.html");
   form.username_value = u"user";
   form.password_value = PasswordString(u"password");
-  form.match_type = PasswordForm::MatchType::kExact;
+  form.match_type = affiliations::MatchType::kExact;
+  return form;
+}
+
+// Creates a dummy http blocklisted form.
+PasswordForm CreateBlockedForm() {
+  PasswordForm form;
+  form.url = GURL(kTestHttpURL);
+  form.signon_realm = form.url.DeprecatedGetOriginAsURL().spec();
+  form.blocked_by_user = true;
+  form.match_type = affiliations::MatchType::kExact;
   return form;
 }
 
@@ -55,7 +68,7 @@ PasswordForm CreateTestPSLForm() {
   form.action = GURL(kTestSubdomainHttpURL);
   form.username_value = u"user2";
   form.password_value = PasswordString(u"password2");
-  form.match_type = PasswordForm::MatchType::kPSL;
+  form.match_type = affiliations::MatchType::kPSL;
   return form;
 }
 
@@ -67,7 +80,7 @@ PasswordForm CreateAndroidCredential() {
   form.signon_realm = "android://hash@com.example.android/";
   form.url = GURL(form.signon_realm);
   form.action = GURL();
-  form.match_type = PasswordForm::MatchType::kPSL;
+  form.match_type = affiliations::MatchType::kPSL;
   return form;
 }
 
@@ -80,7 +93,7 @@ PasswordForm CreateLocalFederatedCredential() {
   form.action = GURL("http://localhost/");
   form.federation_origin =
       url::SchemeHostPort(GURL("https://federation.example.com"));
-  form.match_type = PasswordForm::MatchType::kExact;
+  form.match_type = affiliations::MatchType::kExact;
   return form;
 }
 
@@ -161,7 +174,9 @@ void HttpPasswordStoreMigratorTest::TestEmptyStore(bool is_hsts) {
                                      &consumer());
 
   EXPECT_CALL(consumer(), ProcessMigratedForms(IsEmpty()));
-  migrator.OnGetPasswordStoreResultsOrErrorFrom(nullptr, LoginsResultOrError());
+  migrator.OnGetPasswordStoreResultsOrErrorFrom(
+      nullptr, base::expected<std::vector<StoredCredential>,
+                              PasswordStoreBackendError>());
 }
 
 void HttpPasswordStoreMigratorTest::TestFullStore(bool is_hsts) {
@@ -237,8 +252,9 @@ void HttpPasswordStoreMigratorTest::TestMigratorDeletionByConsumer(
   EXPECT_CALL(consumer(), ProcessMigratedForms(_))
       .WillOnce([&migrator](Unused) { migrator.reset(); });
 
-  migrator->OnGetPasswordStoreResultsOrErrorFrom(nullptr,
-                                                 LoginsResultOrError());
+  migrator->OnGetPasswordStoreResultsOrErrorFrom(
+      nullptr, base::expected<std::vector<StoredCredential>,
+                              PasswordStoreBackendError>());
 }
 
 void HttpPasswordStoreMigratorTest::TestMigratorReceivesBackendError(
@@ -263,9 +279,9 @@ void HttpPasswordStoreMigratorTest::TestMigratorReceivesBackendError(
                                      &consumer());
 
   EXPECT_CALL(consumer(), ProcessMigratedForms(IsEmpty()));
-  PasswordStoreBackendError error_results = PasswordStoreBackendError(
-      PasswordStoreBackendErrorType::kAuthErrorResolvable);
-  migrator.OnGetPasswordStoreResultsOrErrorFrom(nullptr, error_results);
+  migrator.OnGetPasswordStoreResultsOrErrorFrom(
+      nullptr, base::unexpected(PasswordStoreBackendError(
+                   PasswordStoreBackendErrorType::kAuthErrorResolvable)));
 }
 
 TEST_F(HttpPasswordStoreMigratorTest, EmptyStoreWithHSTS) {
@@ -298,6 +314,53 @@ TEST_F(HttpPasswordStoreMigratorTest, MigratorReceivesBackendErrorWithHSTS) {
 
 TEST_F(HttpPasswordStoreMigratorTest, MigratorReceivesBackendErrorWithoutHSTS) {
   TestMigratorReceivesBackendError(false);
+}
+
+TEST_F(HttpPasswordStoreMigratorTest, SkipsBlocklistedFormsDuringMigration) {
+  PasswordForm http_form = CreateTestForm();
+  PasswordForm expected_https_form = http_form;
+  expected_https_form.url = GURL(kTestHttpsURL);
+  expected_https_form.signon_realm =
+      expected_https_form.url.DeprecatedGetOriginAsURL().spec();
+
+  EXPECT_CALL(store(), GetLogins);
+  EXPECT_CALL(mock_network_context(), IsHSTSActiveForHost(kTestHost, _, _))
+      .WillOnce(testing::WithArg<2>([](auto cb) { std::move(cb).Run(true); }));
+  EXPECT_CALL(store(), GetSmartBubbleStatsStore)
+      .WillOnce(Return(&smart_bubble_stats_store()));
+  HttpPasswordStoreMigrator migrator(url::Origin::Create(GURL(kTestHttpsURL)),
+                                     &store(), &mock_network_context(),
+                                     &consumer());
+
+  // `store()` is a `StrictMock`, so any `AddLogin` or `RemoveLogin` call for
+  // the blocklisted form fails the test.
+  EXPECT_CALL(store(), AddLogin(EqStoredCredential(expected_https_form), _));
+  EXPECT_CALL(store(), RemoveLogin(_, EqStoredCredential(http_form)));
+  EXPECT_CALL(consumer(),
+              ProcessMigratedForms(ElementsAre(expected_https_form)));
+  migrator.OnGetPasswordStoreResultsOrErrorFrom(
+      nullptr, FromPasswordForms({CreateBlockedForm(), http_form}));
+}
+
+TEST_F(HttpPasswordStoreMigratorTest,
+       DoesNotRecordMigrationMetricsForBlocklistedForm) {
+  base::HistogramTester histogram_tester;
+
+  EXPECT_CALL(store(), GetLogins);
+  EXPECT_CALL(mock_network_context(), IsHSTSActiveForHost(kTestHost, _, _))
+      .WillOnce(testing::WithArg<2>([](auto cb) { std::move(cb).Run(false); }));
+  HttpPasswordStoreMigrator migrator(url::Origin::Create(GURL(kTestHttpsURL)),
+                                     &store(), &mock_network_context(),
+                                     &consumer());
+
+  EXPECT_CALL(consumer(), ProcessMigratedForms(IsEmpty()));
+  migrator.OnGetPasswordStoreResultsOrErrorFrom(
+      nullptr, FromPasswordForms({CreateBlockedForm()}));
+
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.HttpPasswordMigrationCount2", 0);
+  histogram_tester.ExpectTotalCount(
+      "PasswordManager.HttpPasswordMigrationMode2", 0);
 }
 
 TEST(HttpPasswordStoreMigrator, MigrateHttpFormToHttpsTestSignonRealm) {

@@ -14,7 +14,6 @@
 #import "components/password_manager/core/common/password_manager_pref_names.h"
 #import "components/policy/core/common/cloud/cloud_policy_constants.h"
 #import "components/policy/core/common/policy_loader_ios_constants.h"
-#import "components/policy/core/common/policy_switches.h"
 #import "components/policy/policy_constants.h"
 #import "components/policy/test_support/embedded_policy_test_server.h"
 #import "components/policy/test_support/signature_provider.h"
@@ -189,6 +188,8 @@ const char kTestPageText[] = "pony";
   // app, this policy data will appear under the
   // "com.apple.configuration.managed" key.
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
+  config.additional_args.push_back(
+      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
   config.relaunch_policy = NoForceRelaunchAndResetState;
   return config;
 }
@@ -463,8 +464,7 @@ const char kTestPageText[] = "pony";
 
 // Tests whether the managed item will be shown if UserPolicy is enabled and
 // the browser is signed in with a managed account.
-// TODO(crbug.com/435333773): Reenable this test.
-- (void)FLAKY_testPopupMenuItemWithUserPolicy {
+- (void)testPopupMenuItemWithUserPolicy {
   // Sign in with a managed account.
   NSString* managedAccountEmail = base::SysUTF8ToNSString(
       base::StrCat({"enterprise@", policy::SignatureProvider::kTestDomain1}));
@@ -480,13 +480,12 @@ const char kTestPageText[] = "pony";
       performAction:grey_scrollToContentEdge(kGREYContentEdgeBottom)];
   [ChromeEarlGreyUI
       tapToolsMenuAction:grey_accessibilityID(kTextMenuEnterpriseInfo)];
+
+  // Check the navigation before waiting for the page content.
+  [ChromeEarlGrey waitForWebStateVisibleURL:GURL(kChromeUIManagementURL)];
   [ChromeEarlGrey
       waitForWebStateContainingText:l10n_util::GetStringUTF8(
                                         IDS_IOS_MANAGEMENT_UI_DESC)];
-
-  // Check the navigation without assert the content (which is done in another
-  // test case).
-  [ChromeEarlGrey waitForWebStateVisibleURL:GURL(kChromeUIManagementURL)];
 }
 
 // Tests the chrome://management page when no machine level policy is set.
@@ -519,20 +518,11 @@ const char kTestPageText[] = "pony";
   _server = std::make_unique<policy::EmbeddedPolicyTestServer>();
   _server->Start();
 
-  // Enable machine level (browser) cloud policies.
+  // Enable machine level (browser) cloud policies. Use an enrollment token that
+  // will start chrome browser cloud management without making network calls.
   AppLaunchConfiguration config;
-  config.additional_args.push_back(
-      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
-  config.additional_args.push_back("-com.apple.configuration.managed");
-  // Use an enrollment token that will start chrome browser cloud management
-  // without making network calls.
-  config.additional_args.push_back(
-      base::StrCat({"<dict><key>CloudManagementEnrollmentToken</key><string>",
-                    policy::kInvalidEnrollmentToken, "</string></dict>"}));
-  // Use the embedded test server as the policy server.
-  config.additional_args.push_back(
-      base::StrCat({"--", policy::switches::kDeviceManagementUrl, "=",
-                    _server->GetServiceURL().spec()}));
+  policy_test_utils::AddCBCMEnrollmentArguments(
+      config, policy::kInvalidEnrollmentToken, _server->GetServiceURL());
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
   [PolicyAppInterface setBrowserCloudPolicyDataWithDomain:kDomain1];
@@ -626,20 +616,11 @@ const char kTestPageText[] = "pony";
   _server = std::make_unique<policy::EmbeddedPolicyTestServer>();
   _server->Start();
 
-  // Enable browser cloud policies.
+  // Enable browser cloud policies. Use a CBCM enrollment token that will start
+  // chrome browser cloud management without making network calls.
   AppLaunchConfiguration config;
-  config.additional_args.push_back(
-      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
-  config.additional_args.push_back("-com.apple.configuration.managed");
-  // Use a CBCM enrollment token that will start chrome browser cloud management
-  // without making network calls.
-  config.additional_args.push_back(
-      base::StrCat({"<dict><key>CloudManagementEnrollmentToken</key><string>",
-                    policy::kInvalidEnrollmentToken, "</string></dict>"}));
-  // Use the embedded test server as the policy server.
-  config.additional_args.push_back(
-      base::StrCat({"--", policy::switches::kDeviceManagementUrl, "=",
-                    _server->GetServiceURL().spec()}));
+  policy_test_utils::AddCBCMEnrollmentArguments(
+      config, policy::kInvalidEnrollmentToken, _server->GetServiceURL());
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
   // Set CBCM policies.
@@ -669,20 +650,11 @@ const char kTestPageText[] = "pony";
   _server = std::make_unique<policy::EmbeddedPolicyTestServer>();
   _server->Start();
 
-  // Enable browser cloud policies.
+  // Enable browser cloud policies. Use a CBCM enrollment token that will start
+  // chrome browser cloud management without making network calls.
   AppLaunchConfiguration config;
-  config.additional_args.push_back(
-      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
-  config.additional_args.push_back("-com.apple.configuration.managed");
-  // Use a CBCM enrollment token that will start chrome browser cloud management
-  // without making network calls.
-  config.additional_args.push_back(
-      base::StrCat({"<dict><key>CloudManagementEnrollmentToken</key><string>",
-                    policy::kInvalidEnrollmentToken, "</string></dict>"}));
-  // Use the embedded test server as the policy server.
-  config.additional_args.push_back(
-      base::StrCat({"--", policy::switches::kDeviceManagementUrl, "=",
-                    _server->GetServiceURL().spec()}));
+  policy_test_utils::AddCBCMEnrollmentArguments(
+      config, policy::kInvalidEnrollmentToken, _server->GetServiceURL());
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
   // Set CBCM policies.
@@ -714,17 +686,8 @@ const char kTestPageText[] = "pony";
   CHECK(_server->Start());
 
   AppLaunchConfiguration config;
-
-  config.additional_args.push_back(
-      base::StrCat({"--", switches::kEnableChromeBrowserCloudManagement}));
-  config.additional_args.push_back(base::StrCat(
-      {"-", base::SysNSStringToUTF8(kPolicyLoaderIOSConfigurationKey)}));
-  config.additional_args.push_back(
-      base::StrCat({"<dict><key>", policy::key::kCloudManagementEnrollmentToken,
-                    "</key><string>", kEnrollmentToken, "</string></dict>"}));
-  config.additional_args.push_back(
-      base::StrCat({"--", policy::switches::kDeviceManagementUrl, "=",
-                    _server->GetServiceURL().spec()}));
+  policy_test_utils::AddCBCMEnrollmentArguments(config, kEnrollmentToken,
+                                                _server->GetServiceURL());
 
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
 
@@ -735,6 +698,12 @@ const char kTestPageText[] = "pony";
       waitForWebStateContainingText:
           l10n_util::GetStringFUTF8(
               IDS_MANAGEMENT_THREAT_PROTECTION_DESCRIPTION_BY, u"example.com")];
+
+  // Tap the button to show more info.
+  [ChromeEarlGrey
+      waitForWebStateContainingElement:VisibleElementSelector(
+                                           @"threat-protection-more")];
+  [ChromeEarlGrey tapWebStateElementWithID:@"threat-protection-more"];
 
   // Validate that the Connectors section is visible.
   GREYAssertTrue(
@@ -798,6 +767,32 @@ const char kTestPageText[] = "pony";
 - (void)testBrowserSignInDisabledWhileAppVisible {
   FakeSystemIdentity* fakeIdentity = [FakeSystemIdentity fakeIdentity1];
   [SigninEarlGrey signinWithFakeIdentity:fakeIdentity];
+
+  // Force sign out.
+  SetPolicy(0, policy::key::kBrowserSignin);
+
+  // Check that the sign out pop up is presented.
+  ConditionBlock condition = ^{
+    NSError* error = nil;
+    [[EarlGrey
+        selectElementWithMatcher:grey_accessibilityLabel(l10n_util::GetNSString(
+                                     IDS_IOS_ENTERPRISE_SIGNED_OUT))]
+        assertWithMatcher:grey_sufficientlyVisible()
+                    error:&error];
+    return error == nil;
+  };
+  bool promptPresented = base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, condition);
+  GREYAssertTrue(promptPresented, @"'Signed Out' prompt not shown");
+}
+
+// Tests that the UI notifying the user of their sign out is displayed when the
+// policy changes while the app is launched.
+- (void)testBrowserSignInDisabledWhileAppVisibleFromManagedAccount {
+  FakeSystemIdentity* fakeManagedIdentity =
+      [FakeSystemIdentity fakeManagedIdentity];
+  [SigninEarlGrey
+      signinWithFakeManagedIdentityInPersonalProfile:fakeManagedIdentity];
 
   // Force sign out.
   SetPolicy(0, policy::key::kBrowserSignin);

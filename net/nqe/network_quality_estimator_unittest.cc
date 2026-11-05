@@ -13,12 +13,12 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/adapters.h"
 #include "base/metrics/histogram_samples.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/run_loop.h"
@@ -169,7 +169,7 @@ class TestRTTObserver : public NetworkQualityEstimator::RTTObserver {
 
   // Returns the last received RTT observation that has source set to `source`.
   base::TimeDelta last_rtt(NetworkQualityObservationSource source) {
-    for (const auto& observation : base::Reversed(observations_)) {
+    for (const auto& observation : std::views::reverse(observations_)) {
       if (observation.source == source)
         return base::Milliseconds(observation.rtt_ms);
     }
@@ -1226,16 +1226,9 @@ TEST_F(NetworkQualityEstimatorTest, TestGetMetricsSince) {
   }
 }
 
-#if BUILDFLAG(IS_IOS)
-// Flaky on iOS: crbug.com/672917.
-#define MAYBE_TestThroughputNoRequestOverlap \
-  DISABLED_TestThroughputNoRequestOverlap
-#else
-#define MAYBE_TestThroughputNoRequestOverlap TestThroughputNoRequestOverlap
-#endif
 // Tests if the throughput observation is taken correctly when local and network
 // requests do not overlap.
-TEST_F(NetworkQualityEstimatorTest, MAYBE_TestThroughputNoRequestOverlap) {
+TEST_F(NetworkQualityEstimatorTest, TestThroughputNoRequestOverlap) {
   base::HistogramTester histogram_tester;
   std::map<std::string, std::string> variation_params;
   variation_params["throughput_min_requests_in_flight"] = "1";
@@ -1290,18 +1283,9 @@ TEST_F(NetworkQualityEstimatorTest, MAYBE_TestThroughputNoRequestOverlap) {
   }
 }
 
-#if BUILDFLAG(IS_IOS)
-// Flaky on iOS: crbug.com/672917.
-#define MAYBE_TestEffectiveConnectionTypeObserver \
-  DISABLED_TestEffectiveConnectionTypeObserver
-#else
-#define MAYBE_TestEffectiveConnectionTypeObserver \
-  TestEffectiveConnectionTypeObserver
-#endif
-
 // Tests that the effective connection type is computed at the specified
 // interval, and that the observers are notified of any change.
-TEST_F(NetworkQualityEstimatorTest, MAYBE_TestEffectiveConnectionTypeObserver) {
+TEST_F(NetworkQualityEstimatorTest, TestEffectiveConnectionTypeObserver) {
   base::HistogramTester histogram_tester;
   base::SimpleTestTickClock tick_clock;
 

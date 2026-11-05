@@ -84,7 +84,7 @@ suite('ExtensionDetailViewTest', function() {
 
   test('BackButton', () => {
     assertTrue(testIsVisible('#closeButton'));
-    const closeButton = item.shadowRoot.querySelector('#closeButton')!;
+    const closeButton = item.$.closeButton;
     assertTrue(closeButton.classList.contains('icon-arrow-back'));
 
     const computedStyle = getComputedStyle(closeButton);
@@ -826,7 +826,7 @@ suite('ExtensionDetailViewTest', function() {
     const id = 'a'.repeat(32);
     const recommendationsUrl =
         `https://chromewebstore.google.com/detail/${id}` +
-        `/related-recommendations`;
+        '/related-recommendations';
     await updateItemData({recommendationsUrl: recommendationsUrl});
 
     // Action menu is visible when the extension has a recommendations url.
@@ -907,27 +907,22 @@ suite('ExtensionDetailViewTest', function() {
   });
 
   test('RateExtensionLinkVisibility', async () => {
-    // Hidden when feature flag is disabled.
-    loadTimeData.overrideValues({cwsReviewPromptingEnabled: false});
+    // Hidden when canShowReviewPrompt is false.
     await updateItemData({
-      webStoreUrl: 'https://chromewebstore.google.com/detail/foo',
-      location: chrome.developerPrivate.Location.FROM_STORE,
+      canShowReviewPrompt: false,
     });
     assertFalse(testIsVisible('#rateLink'));
 
-    // Visible when feature flag is enabled for CWS store extensions.
-    loadTimeData.overrideValues({cwsReviewPromptingEnabled: true});
+    // Visible when canShowReviewPrompt is true.
     await updateItemData({
-      webStoreUrl: 'https://chromewebstore.google.com/detail/foo',
-      location: chrome.developerPrivate.Location.FROM_STORE,
-      mustRemainInstalled: false,
+      canShowReviewPrompt: true,
     });
     assertTrue(testIsVisible('#rateLink'));
 
     // Positioned directly below #viewInStore in DOM order.
     const viewInStore =
         item.shadowRoot.querySelector<HTMLElement>('#viewInStore')!;
-    const rateLink = item.shadowRoot.querySelector<HTMLElement>('#rateLink')!;
+    const rateLink = item.$.rateLink;
     assertEquals(viewInStore.nextElementSibling, rateLink);
 
     // Visible in developer mode as well.
@@ -938,27 +933,64 @@ suite('ExtensionDetailViewTest', function() {
     item.inDevMode = false;
     await microtasksFinished();
     assertTrue(testIsVisible('#rateLink'));
-
-    // Hidden when ineligible (e.g. unpacked).
-    await updateItemData({
-      location: chrome.developerPrivate.Location.UNPACKED,
-    });
-    assertFalse(testIsVisible('#rateLink'));
   });
 
   test('RateExtensionLinkClick', async () => {
-    loadTimeData.overrideValues({cwsReviewPromptingEnabled: true});
     await updateItemData({
-      webStoreUrl: 'https://chromewebstore.google.com/detail/foo',
-      location: chrome.developerPrivate.Location.FROM_STORE,
-      mustRemainInstalled: false,
+      canShowReviewPrompt: true,
     });
     assertTrue(testIsVisible('#rateLink'));
 
-    const rateLink = item.shadowRoot.querySelector<HTMLElement>('#rateLink')!;
-    assertTrue(!!rateLink);
+    const rateLink = item.$.rateLink;
     await mockDelegate.testClickingCalls(
         rateLink, 'openReviewPage', [extensionData.id]);
   });
 
+  test('IsolatedModeStrings', async () => {
+    const view = {
+      type: chrome.developerPrivate.ViewType.EXTENSION_BACKGROUND_PAGE,
+      url: `chrome-extension://${
+          extensionData.id}/_generated_background_page.html`,
+      renderProcessId: 0,
+      renderViewId: 0,
+      incognito: true,
+      isIframe: false,
+    };
+
+    // Default (Incognito mode).
+    loadTimeData.overrideValues({isolatedModeEnabled: false});
+    setupElement();
+    item.inDevMode = true;
+    await updateItemData({views: [view]});
+
+    let allowIncognitoText =
+        item.shadowRoot.querySelector<HTMLElement>(
+                           '#allow-incognito')!.textContent;
+    assertTrue(allowIncognitoText.includes(
+        loadTimeData.getString('itemAllowIncognito')));
+    assertTrue(allowIncognitoText.includes(
+        loadTimeData.getString('incognitoInfoWarning')));
+    assertEquals(
+        'background page (Incognito)',
+        item.shadowRoot.querySelector<HTMLElement>(
+                           '.inspectable-view')!.textContent.trim());
+
+    // Isolated mode.
+    loadTimeData.overrideValues({isolatedModeEnabled: true});
+    setupElement();
+    item.inDevMode = true;
+    await updateItemData({views: [view]});
+
+    allowIncognitoText =
+        item.shadowRoot.querySelector<HTMLElement>(
+                           '#allow-incognito')!.textContent;
+    assertTrue(allowIncognitoText.includes(
+        loadTimeData.getString('itemAllowIsolatedMode')));
+    assertTrue(allowIncognitoText.includes(
+        loadTimeData.getString('isolatedModeInfoWarning')));
+    assertEquals(
+        'background page (Isolated mode)',
+        item.shadowRoot.querySelector<HTMLElement>(
+                           '.inspectable-view')!.textContent.trim());
+  });
 });

@@ -16,7 +16,7 @@
 #include "base/test/test_future.h"
 #include "base/values.h"
 #include "chrome/browser/affiliations/affiliation_service_factory.h"
-#include "chrome/browser/autofill/one_time_token_service_factory.h"
+#include "chrome/browser/autofill/gmail_otp_backend_factory.h"
 #include "chrome/browser/glic/actor/glic_actor_test_util.h"
 #include "chrome/browser/glic/actor/new_glic_actor_functional_browsertest.h"
 #include "chrome/browser/glic/host/host.h"
@@ -24,13 +24,14 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
-#include "components/actor/core/actor_switches.h"
 #include "components/actor/core/shared_types.h"
 #include "components/affiliations/core/browser/mock_affiliation_service.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
-#include "components/one_time_tokens/core/browser/mock_one_time_token_service.h"
+#include "components/one_time_tokens/core/browser/fake_gmail_otp_backend.h"
 #include "components/one_time_tokens/core/browser/one_time_token.h"
+#include "components/one_time_tokens/core/browser/one_time_token_retrieval_error.h"
+#include "components/one_time_tokens/core/browser/user_data_processing_consent_states.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/render_frame_host.h"
@@ -69,32 +70,11 @@ class GlicActorAttemptOtpFillingBrowserTest
         "components/test/data");
     GlicActorFunctionalBrowserTestBase::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
-    ASSERT_TRUE(embedded_https_test_server().Start());
 
-    // Allow default calls to Subscribe (e.g. from Autofill OtpManager on
-    // Android).
-    EXPECT_CALL(GetMockOtpService(), Subscribe(_, _, _, _))
-        .WillRepeatedly(
-            [](one_time_tokens::OneTimeTokenSource source,
-               base::Time expiration,
-               one_time_tokens::OneTimeTokenService::Callback callback,
-               base::OnceClosure expiration_callback) {
-              return one_time_tokens::ExpiringSubscription();
-            });
-    // Allow default calls to GetRecentOneTimeTokens.
-    EXPECT_CALL(GetMockOtpService(), GetRecentOneTimeTokens(_))
-        .WillRepeatedly(
-            [](one_time_tokens::OneTimeTokenService::Callback callback) {});
-    // Allow default calls to GetCachedOneTimeTokens.
-    EXPECT_CALL(GetMockOtpService(), GetCachedOneTimeTokens())
-        .WillRepeatedly(
-            []() { return std::vector<one_time_tokens::OneTimeToken>(); });
-  }
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    GlicActorFunctionalBrowserTestBase::SetUpCommandLine(command_line);
-    command_line->AppendSwitch(
-        ::actor::switches::kAttemptOtpFillingBypassLoginCheck);
+    GetFakeGmailOtpBackend().SetUserDataProcessingConsentStates(
+        one_time_tokens::UserDataProcessingConsentStates{
+            .comms_apps = one_time_tokens::ConsentState::kEnabled,
+            .google_apps = one_time_tokens::ConsentState::kEnabled});
   }
 
   void SetUpBrowserContextKeyedServices(
@@ -106,12 +86,10 @@ class GlicActorAttemptOtpFillingBrowserTest
     profile->GetPrefs()->SetBoolean(
         autofill::prefs::kAutofillThirdPartyPasswordManagersAllowed, false);
 #endif
-    autofill::OneTimeTokenServiceFactory::GetInstance()
-        ->SetTestingSubclassFactoryAndUse<
-            one_time_tokens::MockOneTimeTokenService>(
-            context,
-            base::BindOnce(
-                &GlicActorAttemptOtpFillingBrowserTest::CreateMockOtpService));
+    GmailOtpBackendFactory::GetInstance()->SetTestingFactoryAndUse(
+        context,
+        base::BindRepeating(
+            &GlicActorAttemptOtpFillingBrowserTest::CreateFakeGmailOtpBackend));
     AffiliationServiceFactory::GetInstance()->SetTestingFactoryAndUse(
         context, base::BindRepeating(&GlicActorAttemptOtpFillingBrowserTest::
                                          CreateMockAffiliationService));
@@ -131,18 +109,16 @@ class GlicActorAttemptOtpFillingBrowserTest
     return *service;
   }
 
-  static std::unique_ptr<one_time_tokens::MockOneTimeTokenService>
-  CreateMockOtpService(content::BrowserContext* context) {
-    return std::make_unique<
-        testing::NiceMock<one_time_tokens::MockOneTimeTokenService>>();
+  static std::unique_ptr<KeyedService> CreateFakeGmailOtpBackend(
+      content::BrowserContext* context) {
+    return std::make_unique<one_time_tokens::FakeGmailOtpBackend>();
   }
 
-  one_time_tokens::MockOneTimeTokenService& GetMockOtpService() {
-    auto* mock_otp_service =
-        static_cast<one_time_tokens::MockOneTimeTokenService*>(
-            autofill::OneTimeTokenServiceFactory::GetForProfile(GetProfile()));
-    CHECK(mock_otp_service);
-    return *mock_otp_service;
+  one_time_tokens::FakeGmailOtpBackend& GetFakeGmailOtpBackend() {
+    auto* backend = static_cast<one_time_tokens::FakeGmailOtpBackend*>(
+        GmailOtpBackendFactory::GetForProfile(GetProfile()));
+    CHECK(backend);
+    return *backend;
   }
 
   // Synchronously fetches APC for the active tab.
@@ -264,22 +240,10 @@ IN_PROC_BROWSER_TEST_F(GlicActorAttemptOtpFillingBrowserTest,
         std::move(callback).Run(affiliated_facets, /*success=*/true);
       });
 
-  // Mock OTP Service to succeed.
-  EXPECT_CALL(GetMockOtpService(),
-              Subscribe(one_time_tokens::OneTimeTokenSource::kGmail, _, _, _))
-      .WillOnce([](one_time_tokens::OneTimeTokenSource source,
-                   base::Time expiration,
-                   one_time_tokens::OneTimeTokenService::Callback callback,
-                   base::OnceClosure expiration_callback) {
-        std::move(callback).Run(
-            one_time_tokens::OneTimeTokenSource::kGmail,
-            base::expected<one_time_tokens::OneTimeToken,
-                           one_time_tokens::OneTimeTokenRetrievalError>(
-                one_time_tokens::OneTimeToken(
-                    one_time_tokens::OneTimeTokenType::kGmail, "123456",
-                    base::TimeTicks::Now(), "sender@example.com")));
-        return one_time_tokens::ExpiringSubscription();
-      });
+  // Fake OTP Backend to succeed via cached token.
+  GetFakeGmailOtpBackend().ProcessCallbacks(one_time_tokens::OneTimeToken(
+      one_time_tokens::OneTimeTokenType::kGmail, "123456",
+      base::TimeTicks::Now(), "sender@example.com"));
 
   SetupTestAndSubmitOtpField();
 
@@ -305,20 +269,9 @@ IN_PROC_BROWSER_TEST_F(GlicActorAttemptOtpFillingBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(GlicActorAttemptOtpFillingBrowserTest,
                        testOptInAcceptedButRetrievalFails) {
-  // Mock OTP Service to fail.
-  EXPECT_CALL(GetMockOtpService(),
-              Subscribe(one_time_tokens::OneTimeTokenSource::kGmail, _, _, _))
-      .WillOnce([](one_time_tokens::OneTimeTokenSource source,
-                   base::Time expiration,
-                   one_time_tokens::OneTimeTokenService::Callback callback,
-                   base::OnceClosure expiration_callback) {
-        std::move(callback).Run(
-            one_time_tokens::OneTimeTokenSource::kGmail,
-            base::unexpected(one_time_tokens::OneTimeTokenRetrievalError::
-                                 kGmailOtpBackendServerError));
-        return one_time_tokens::ExpiringSubscription();
-      });
-
+  GetFakeGmailOtpBackend().ProcessCallbacks(
+      base::unexpected(one_time_tokens::OneTimeTokenRetrievalError::
+                           kGmailOtpBackendServerError));
   SetupTestAndSubmitOtpField();
 
   // TS performs actions, accepts dialog, performActions fails with retrieval

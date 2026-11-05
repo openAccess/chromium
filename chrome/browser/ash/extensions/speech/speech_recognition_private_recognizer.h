@@ -10,8 +10,8 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/speech/speech_recognition_constants.h"
 #include "chrome/browser/speech/speech_recognizer_delegate.h"
+#include "chromeos/ash/experiences/extensions/browser/speech/speech_recognition_constants.h"
 #include "components/soda/constants.h"
 
 class SpeechRecognizer;
@@ -69,6 +69,10 @@ class SpeechRecognitionPrivateRecognizer : public SpeechRecognizerDelegate {
 
   // Turns the speech recognizer off.
   void RecognizerOff();
+
+  // Runs `on_start_callback_` with `kSpeechRecognitionNeverStartedError` if a
+  // start callback is still pending.
+  void MaybeRunStartCallbackWithNeverStartedError();
 
   // Updates properties used for speech recognition.
   void MaybeUpdateProperties(std::optional<std::string> locale,

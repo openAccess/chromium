@@ -25,9 +25,9 @@
 #include "content/public/browser/web_ui_message_handler.h"
 #include "google_apis/gaia/core_account_id.h"
 
+class AccountInfo;
 class BrowserWindowInterface;
 class Profile;
-struct AccountInfo;
 
 namespace base {
 class FilePath;
@@ -87,6 +87,10 @@ class ManagedUserProfileNoticeHandler
   void CallProceedCallbackForTesting(signin::SigninChoice choice);
   void set_web_ui_for_test(content::WebUI* web_ui) { set_web_ui(web_ui); }
   void SetJavaScriptAllowedCallbackForTesting(base::OnceClosure callback) {
+    if (IsJavascriptAllowed()) {
+      std::move(callback).Run();
+      return;
+    }
     javascript_allowed_callback_ = std::move(callback);
   }
 

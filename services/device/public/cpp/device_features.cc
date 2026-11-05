@@ -68,6 +68,12 @@ BASE_FEATURE(kWebUsbEnforceStandardRequestAllowlist,
 // See crbug.com/513167952.
 BASE_FEATURE(kWebUsbHardenEndpointAliasing, base::FEATURE_ENABLED_BY_DEFAULT);
 
+// When enabled, resetting a USB device drops the active configuration back to
+// 0 (unconfigured) and clears claimed interfaces, endpoints, and detached
+// interface state.
+BASE_FEATURE(kWebUsbResetInvalidatesConfiguration,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // When enabled, accessing the navigator.hid attribute does not prevent the
 // frame from entering the back forward cache.
 BASE_FEATURE(kWebHidAttributeAllowsBackForwardCache,
@@ -121,17 +127,20 @@ BASE_FEATURE(kBatteryStatusManagerBroadcastReceiverInBackground,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
 
-#if !BUILDFLAG(IS_ANDROID)
 // Modifies the internal allowlist behavior that enables privileged extensions
 // to bypass the HID blocklist when accessing FIDO devices. When enabled,
 // privileged extensions can access non-FIDO interfaces on known security keys.
 BASE_FEATURE(kSecurityKeyHidInterfacesAreFido,
              base::FEATURE_ENABLED_BY_DEFAULT);
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 // Enables recursive filtering of nested HID collections to prevent WebHID
 // security bypasses (e.g., nested keyboards or FIDO keys).
 BASE_FEATURE(kWebHidRecursiveFiltering, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, feature reports are checked to verify that the buffer size does
+// not exceed the device's maximum feature report size plus the report ID
+// prefix.
+BASE_FEATURE(kHidValidateFeatureReportSize, base::FEATURE_ENABLED_BY_DEFAULT);
 
 const base::FeatureParam<device::mojom::LocationProviderManagerMode>::Option
     location_provider_manager_mode_options[] = {
@@ -226,6 +235,13 @@ BASE_FEATURE(kAutomaticUsbDetach, base::FEATURE_DISABLED_BY_DEFAULT);
 // over the HID_NAME in the WebHID API.
 BASE_FEATURE(kProductNameOverHidName, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_LINUX)
+// When running in a Flatpak or Snap sandbox, acquire wake locks through the
+// org.freedesktop.portal.Inhibit portal before falling back to the session bus
+// APIs. Can be disabled as a kill switch if needed.
+BASE_FEATURE(kWakeLockInhibitPortal, base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_LINUX)
 
 #if !BUILDFLAG(IS_WIN)
 // Splits DTR and RTS control signals. See crbug.com/420689824.

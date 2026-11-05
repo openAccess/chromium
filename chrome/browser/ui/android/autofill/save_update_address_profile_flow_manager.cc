@@ -16,9 +16,9 @@
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/autofill/ui/ui_util.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/ui/android/autofill/autofill_message_controller.h"
+#include "chrome/browser/ui/android/autofill/autofill_message_model.h"
 #include "chrome/browser/ui/android/autofill/save_update_address_profile_prompt_view_android.h"
-#include "chrome/browser/ui/autofill/autofill_message_controller.h"
-#include "chrome/browser/ui/autofill/autofill_message_model.h"
 #include "components/autofill/content/browser/content_autofill_client.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
@@ -42,7 +42,7 @@ void SaveUpdateAddressProfileFlowManager::OfferSave(
     const AutofillProfile* original_profile,
     SaveUpdateAddressProfilePromptMode prompt_mode,
     AutofillClient::AddressProfileSavePromptCallback callback) {
-  DCHECK(callback);
+  CHECK(callback, base::NotFatalUntil::M162);
 
   // If the message is already shown, suppress the incoming offer.
   if (is_message_displayed_ || save_update_address_profile_prompt_controller_) {

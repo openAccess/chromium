@@ -16,13 +16,15 @@
 #include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/memory/raw_ptr.h"
+#include "base/sequence_checker.h"
 #include "base/synchronization/lock.h"
-#include "base/threading/thread_checker.h"
+#include "base/thread_annotations.h"
 #include "base/time/time.h"
 #include "media/audio/android/muteable_audio_output_stream.h"
 #include "media/audio/android/opensles_util.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/audio_timestamp_helper.h"
+#include "media/base/media_export.h"
 
 namespace media {
 
@@ -32,9 +34,9 @@ class AudioManagerAndroid;
 // This class is created and lives on the Audio Manager thread but recorded
 // audio buffers are given to us from an internal OpenSLES audio thread.
 // All public methods should be called on the Audio Manager thread.
-class OpenSLESOutputStream : public MuteableAudioOutputStream {
+class MEDIA_EXPORT OpenSLESOutputStream : public MuteableAudioOutputStream {
  public:
-  static const int kMaxNumOfBuffersInQueue = 2;
+  static constexpr int kMaxNumOfBuffersInQueue = 2;
 
   OpenSLESOutputStream(AudioManagerAndroid* manager,
                        const AudioParameters& params,
@@ -59,6 +61,8 @@ class OpenSLESOutputStream : public MuteableAudioOutputStream {
   void SetMute(bool muted) override;
 
  private:
+  friend class OpenSLESOutputStreamTest;
+
   bool CreatePlayer();
 
   // Called from OpenSLES specific audio worker thread.
@@ -70,24 +74,29 @@ class OpenSLESOutputStream : public MuteableAudioOutputStream {
   // Called from OpenSLES specific audio worker thread.
   void FillBufferQueue();
 
-  // Called from the audio manager thread.
-  void FillBufferQueueNoLock();
+  // Called from OpenSLES specific audio worker thread while holding |lock_|.
+  void FillBufferQueueLocked() EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // Called in Open();
   void SetupAudioBuffer();
 
   // If OpenSLES reports an error this function handles it and passes it to
   // the attached AudioOutputCallback::OnError().
-  void HandleError(SLresult error);
+  void HandleError(SLresult error) EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // Cache |hardware_latency_in_ms_| by asking |audio_manager_| for it, if the
   // kUseAudioLatencyFromHAL is enabled.
   void CacheHardwareLatencyIfNeeded();
 
-  // Adjust |position_in_ms| for hardware latency, and return the result.
-  base::TimeDelta AdjustPositionForHardwareLatency(uint32_t position_in_ms);
+  // Adjust |position| for hardware latency, and return the result.
+  base::TimeDelta AdjustPositionForHardwareLatency(
+      base::TimeDelta position) const;
 
-  base::ThreadChecker thread_checker_;
+  // Computes the playback delay in frames for |position|, clamped to
+  // [0, kMaxNumOfBuffersInQueue * audio_bus_->frames()].
+  int CalculateDelayFrames(base::TimeDelta position) const;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 
   // Protects |callback_|, |active_buffer_index_|, |audio_data_|,
   // |buffer_size_bytes_| and |simple_buffer_queue_|.
@@ -99,7 +108,7 @@ class OpenSLESOutputStream : public MuteableAudioOutputStream {
   // See SLES/OpenSLES_Android.h for details.
   SLint32 stream_type_;
 
-  raw_ptr<AudioSourceCallback> callback_ = nullptr;
+  raw_ptr<AudioSourceCallback> callback_ GUARDED_BY(lock_) = nullptr;
 
   // Shared engine interfaces for the app.
   media::ScopedSLObjectItf engine_object_;

@@ -18,6 +18,7 @@
 #import "ios/net/url_test_util.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/web/common/features.h"
 #import "net/test/embedded_test_server/default_handlers.h"
 #import "net/test/embedded_test_server/http_request.h"
@@ -143,13 +144,7 @@ std::unique_ptr<net::test_server::HttpResponse> CountResponse(
 
 // Navigates to a set of cross-domains, chrome URLs and error pages, and then
 // tests that they are properly restored.
-// TODO(crbug.com/435144099): Reenable test.
-#if TARGET_OS_SIMULATOR
-#define MAYBE_testRestoreHistory testRestoreHistory
-#else
-#define MAYBE_testRestoreHistory FLAKY_testRestoreHistory
-#endif
-- (void)MAYBE_testRestoreHistory {
+- (void)testRestoreHistory {
   [self setUpRestoreServers];
   [self loadTestPages];
   [self verifyRestoredTestPages:YES];
@@ -189,6 +184,7 @@ std::unique_ptr<net::test_server::HttpResponse> CountResponse(
 
 // Tests that only the selected web state is loaded Restore-after-Crash.  This
 // is only possible in EG2.
+TAG_SMOKE_TEST(RestoreWithCacheTestCase, testRestoreOneWebstateOnlyAfterCrash);
 - (void)testRestoreOneWebstateOnlyAfterCrash {
   // Visit the background page.
   int visitCounter = 0;
@@ -357,6 +353,9 @@ std::unique_ptr<net::test_server::HttpResponse> CountResponse(
 @end
 
 @implementation RestoreWithSynthesizedTestCase
+
+TAG_SMOKE_TEST(RestoreWithSynthesizedTestCase,
+               testRestoreOneWebstateOnlyAfterCrash);
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];

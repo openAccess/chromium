@@ -65,18 +65,9 @@ class GLTextureImageBackingFactoryTestBase : public SharedImageTestBase {
     supports_r_rg_ =
         feature_info->validators()->texture_format.IsValid(GL_RED_EXT) &&
         feature_info->validators()->texture_format.IsValid(GL_RG_EXT);
-    supports_rg16_ =
-        supports_r_rg_ &&
-        feature_info->validators()->texture_internal_format.IsValid(
-            GL_R16_EXT) &&
-        feature_info->validators()->texture_internal_format.IsValid(
-            GL_RG16_EXT);
     supports_rgba_f16_ =
         feature_info->validators()->pixel_type.IsValid(GL_HALF_FLOAT_OES) ||
         feature_info->gl_version_info().IsAtLeastGLES(3, 0);
-    supports_etc1_ =
-        feature_info->validators()->compressed_texture_format.IsValid(
-            GL_ETC1_RGB8_OES);
     supports_ar30_ = feature_info->feature_flags().chromium_image_ar30;
     supports_ab30_ = feature_info->feature_flags().chromium_image_ab30;
 
@@ -102,13 +93,8 @@ class GLTextureImageBackingFactoryTestBase : public SharedImageTestBase {
       }
       return supports_r_rg_;
     }
-    if (format == viz::SinglePlaneFormat::kR_8 ||
-        format == viz::SinglePlaneFormat::kRG_88) {
+    if (format == viz::SinglePlaneFormat::kR_8) {
       return supports_r_rg_;
-    }
-    if (format == viz::SinglePlaneFormat::kR_16 ||
-        format == viz::SinglePlaneFormat::kRG_1616) {
-      return supports_rg16_;
     }
     if (format == viz::SinglePlaneFormat::kRGBA_F16) {
       return supports_rgba_f16_;
@@ -116,9 +102,6 @@ class GLTextureImageBackingFactoryTestBase : public SharedImageTestBase {
     if (format == viz::SinglePlaneFormat::kBGRA_1010102 ||
         format == viz::SinglePlaneFormat::kRGBA_1010102) {
       return supports_ar30_ || supports_ab30_;
-    }
-    if (format == viz::SinglePlaneFormat::kETC1) {
-      return supports_etc1_;
     }
     if (format == viz::SinglePlaneFormat::kBGRA_8888) {
       return supports_bgra_;
@@ -130,9 +113,7 @@ class GLTextureImageBackingFactoryTestBase : public SharedImageTestBase {
  protected:
   ::testing::NiceMock<MockProgressReporter> progress_reporter_;
   bool supports_r_rg_ = false;
-  bool supports_rg16_ = false;
   bool supports_rgba_f16_ = false;
-  bool supports_etc1_ = false;
   bool supports_ar30_ = false;
   bool supports_ab30_ = false;
   bool supports_bgra_ = false;
@@ -326,63 +307,6 @@ TEST_F(GLTextureImageBackingFactoryTest, TexImageTexStorageEquivalence) {
   }
 }
 
-#if BUILDFLAG(IS_WIN)
-TEST_F(GLTextureImageBackingFactoryTest, ProduceVideo) {
-  auto format = viz::SinglePlaneFormat::kRGBA_8888;
-  auto mailbox = Mailbox::Generate();
-  gfx::Size size(256, 256);
-  auto color_space = gfx::ColorSpace::CreateSRGB();
-  GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
-  gpu::SurfaceHandle surface_handle = gpu::kNullSurfaceHandle;
-  // Note: The specific usage doesn't matter here as long as it's supported by
-  // GLTextureImageBacking.
-  gpu::SharedImageUsageSet usage = SHARED_IMAGE_USAGE_GLES2_READ;
-
-  bool supported = backing_factory_->CanCreateSharedImage(
-      usage, format, size, /*thread_safe=*/false, gfx::EMPTY_BUFFER,
-      GrContextType::kGL, {});
-  ASSERT_TRUE(supported);
-
-  auto backing = backing_factory_->CreateSharedImage(
-      mailbox,
-      {format, size, color_space, surface_origin, alpha_type, usage,
-       "TestLabel"},
-      surface_handle, /*is_thread_safe=*/false);
-  ASSERT_TRUE(backing);
-  std::unique_ptr<SharedImageRepresentationFactoryRef> shared_image =
-      shared_image_manager_.Register(std::move(backing), &memory_type_tracker_);
-
-  Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device;
-  UINT creation_flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-  static const D3D_FEATURE_LEVEL feature_levels[] = {
-      D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
-      D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_9_3,  D3D_FEATURE_LEVEL_9_2,
-      D3D_FEATURE_LEVEL_9_1};
-  HRESULT hr =
-      D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, 0, creation_flags,
-                        feature_levels, std::size(feature_levels),
-                        D3D11_SDK_VERSION, &d3d11_device, nullptr, nullptr);
-  if (FAILED(hr)) {
-    hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, 0, creation_flags,
-                           feature_levels, std::size(feature_levels),
-                           D3D11_SDK_VERSION, &d3d11_device, nullptr, nullptr);
-  }
-  if (FAILED(hr)) {
-    GTEST_SKIP()
-        << " cannot produce a d3d video representation on this platform";
-  }
-
-  auto representation = shared_image_manager_.ProduceVideo(
-      d3d11_device, mailbox, &memory_type_tracker_);
-  EXPECT_NE(representation, nullptr);
-  auto read_access = representation->BeginScopedReadAccess();
-  D3D11TextureAndArrayIndex input_texture = read_access->GetD3D11Texture();
-  EXPECT_NE(input_texture.texture, nullptr);
-  EXPECT_EQ(input_texture.array_index, 0u);
-}
-#endif
-
 TEST_P(GLTextureImageBackingFactoryWithFormatTest, IsSupported) {
   auto format = get_format();
   gfx::Size size(256, 256);
@@ -415,7 +339,7 @@ TEST_P(GLTextureImageBackingFactoryWithFormatTest, Basic) {
   gfx::Size size(256, 256);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   SharedImageUsageSet usage = {SHARED_IMAGE_USAGE_GLES2_READ,
                                SHARED_IMAGE_USAGE_RASTER_READ,
                                SHARED_IMAGE_USAGE_RASTER_WRITE};
@@ -488,12 +412,9 @@ TEST_P(GLTextureImageBackingFactoryWithFormatTest, Basic) {
   // We use |supports_ar30_| and |supports_ab30_| to detect RGB10A2/BGR10A2
   // support. It's possible Skia might support these formats even if the Chrome
   // feature flags are false. We just check here that the feature flags don't
-  // allow Chrome to do something that Skia doesn't support. Skia also doesn't
-  // support using R16/RG16 SkSurfaces with Ganesh so disallow those too.
+  // allow Chrome to do something that Skia doesn't support.
   if ((format != viz::SinglePlaneFormat::kBGRA_1010102 || supports_ar30_) &&
-      (format != viz::SinglePlaneFormat::kRGBA_1010102 || supports_ab30_) &&
-      format != viz::SinglePlaneFormat::kR_16 &&
-      format != viz::SinglePlaneFormat::kRG_1616) {
+      (format != viz::SinglePlaneFormat::kRGBA_1010102 || supports_ab30_)) {
     ASSERT_TRUE(scoped_write_access);
     auto* surface = scoped_write_access->surface(/*plane_index=*/0);
     ASSERT_TRUE(surface);
@@ -554,7 +475,7 @@ TEST_P(GLTextureImageBackingFactoryInitialDataTest, InitialData) {
   gfx::Size size(256, 256);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   gpu::SharedImageUsageSet usage = SHARED_IMAGE_USAGE_GLES2_READ;
   size_t required_size = format.MaybeEstimatedSizeInBytes(size).value();
   std::vector<uint8_t> initial_data(required_size);
@@ -659,7 +580,7 @@ TEST_P(GLTextureImageBackingFactoryWithUploadTest, UploadFromMemory) {
   gfx::Size size(9, 9);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   gpu::SharedImageUsageSet usage = SHARED_IMAGE_USAGE_CPU_UPLOAD;
   gpu::SurfaceHandle surface_handle = gpu::kNullSurfaceHandle;
 
@@ -703,7 +624,7 @@ TEST_P(GLTextureImageBackingFactoryWithReadbackTest, ReadbackToMemory) {
   gfx::Size size(9, 9);
   auto color_space = gfx::ColorSpace::CreateSRGB();
   GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-  SkAlphaType alpha_type = kPremul_SkAlphaType;
+  SkAlphaType alpha_type = GetAlphaType(format);
   gpu::SharedImageUsageSet usage =
       SHARED_IMAGE_USAGE_GLES2_READ | SHARED_IMAGE_USAGE_CPU_UPLOAD;
   gpu::SurfaceHandle surface_handle = gpu::kNullSurfaceHandle;
@@ -778,12 +699,10 @@ std::string TestParamToString(
 }
 
 const auto kInitialDataFormats =
-    ::testing::Values(viz::SinglePlaneFormat::kETC1,
-                      viz::SinglePlaneFormat::kRGBA_8888,
+    ::testing::Values(viz::SinglePlaneFormat::kRGBA_8888,
                       viz::SinglePlaneFormat::kBGRA_8888,
                       viz::SinglePlaneFormat::kRGBA_4444,
                       viz::SinglePlaneFormat::kR_8,
-                      viz::SinglePlaneFormat::kRG_88,
                       viz::SinglePlaneFormat::kBGRA_1010102,
                       viz::SinglePlaneFormat::kRGBA_1010102);
 
@@ -797,13 +716,10 @@ const auto kSharedImageFormats =
                       viz::SinglePlaneFormat::kBGRA_8888,
                       viz::SinglePlaneFormat::kRGBA_4444,
                       viz::SinglePlaneFormat::kR_8,
-                      viz::SinglePlaneFormat::kRG_88,
                       viz::SinglePlaneFormat::kBGRA_1010102,
                       viz::SinglePlaneFormat::kRGBA_1010102,
                       viz::SinglePlaneFormat::kRGBX_8888,
                       viz::SinglePlaneFormat::kBGRX_8888,
-                      viz::SinglePlaneFormat::kR_16,
-                      viz::SinglePlaneFormat::kRG_1616,
                       viz::SinglePlaneFormat::kRGBA_F16,
                       viz::MultiPlaneFormat::kNV12,
                       viz::MultiPlaneFormat::kYV12,
@@ -822,7 +738,6 @@ const auto kReadbackFormats =
     ::testing::Values(viz::SinglePlaneFormat::kRGBA_8888,
                       viz::SinglePlaneFormat::kBGRA_8888,
                       viz::SinglePlaneFormat::kR_8,
-                      viz::SinglePlaneFormat::kRG_88,
                       viz::SinglePlaneFormat::kRGBX_8888,
                       viz::SinglePlaneFormat::kBGRX_8888,
                       viz::MultiPlaneFormat::kNV12,

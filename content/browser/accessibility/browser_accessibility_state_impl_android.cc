@@ -428,10 +428,25 @@ void BrowserAccessibilityStateImplAndroid::
 void BrowserAccessibilityStateImplAndroid::OnAnimatorDurationScaleChanged() {
   // We need to call into gfx::Animation and WebContentsImpl on the UI thread,
   // so ensure that we setup the notification on the correct thread.
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
 
   gfx::Animation::UpdatePrefersReducedMotion();
   NotifyWebContentsPreferencesChanged();
+}
+
+// On Android, platform accessibility modes are scoped per `WebContents` rather
+// than process-wide. `GetAccessibilityMode()` combines the process mode with
+// all active `WebContents` modes, and `OnAnyModeChanged()` uses this to update
+// process-level histograms, assistive tech state, and crash keys.
+ui::AXMode BrowserAccessibilityStateImplAndroid::GetAccessibilityMode() {
+  ui::AXMode mode = BrowserAccessibilityStateImpl::GetAccessibilityMode();
+  for (WebContentsImpl* wc : WebContentsImpl::GetAllWebContents()) {
+    if (!wc->IsBeingDestroyed() && !wc->IsNeverComposited()) {
+      mode |= wc->GetAccessibilityMode();
+    }
+  }
+  mode.set_mode(ui::AXMode::kNativeAdaptedWebContents, false);
+  return mode;
 }
 
 void BrowserAccessibilityStateImplAndroid::RefreshAssistiveTech() {

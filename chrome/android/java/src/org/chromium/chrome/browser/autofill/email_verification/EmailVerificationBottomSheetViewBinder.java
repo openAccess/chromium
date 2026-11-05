@@ -10,11 +10,13 @@ import static org.chromium.chrome.browser.autofill.email_verification.EmailVerif
 import static org.chromium.chrome.browser.autofill.email_verification.EmailVerificationBottomSheetProperties.DRAG_HANDLE_VISIBLE;
 import static org.chromium.chrome.browser.autofill.email_verification.EmailVerificationBottomSheetProperties.ON_CANCEL_CLICKED;
 import static org.chromium.chrome.browser.autofill.email_verification.EmailVerificationBottomSheetProperties.ON_CONFIRM_CLICKED;
+import static org.chromium.chrome.browser.autofill.email_verification.EmailVerificationBottomSheetProperties.SHOW_LOADING_STATE;
 import static org.chromium.chrome.browser.autofill.email_verification.EmailVerificationBottomSheetProperties.TITLE;
 
 import android.view.View;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.R;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
@@ -38,6 +40,20 @@ import org.chromium.ui.modelutil.PropertyModel;
             view.mConfirmButton.setOnClickListener(_ -> model.get(ON_CONFIRM_CLICKED).run());
         } else if (propertyKey == ON_CANCEL_CLICKED) {
             view.mCancelButton.setOnClickListener(_ -> model.get(ON_CANCEL_CLICKED).run());
+        } else if (propertyKey == SHOW_LOADING_STATE) {
+            boolean isLoading = model.get(SHOW_LOADING_STATE);
+            // Keep the confirm button's size and color while loading: hide its label and show a
+            // spinner inside it instead of disabling it (which would grey it out).
+            view.mConfirmButton.setClickable(!isLoading);
+            view.mConfirmButton.setTextScaleX(isLoading ? 0f : 1f);
+            view.mConfirmButton.setContentDescription(
+                    isLoading
+                            ? view.mContentView
+                                    .getContext()
+                                    .getString(R.string.email_verification_loading)
+                            : null);
+            view.mConfirmButtonSpinner.setVisibility(isLoading ? View.VISIBLE : View.GONE);
+            view.mCancelButton.setEnabled(!isLoading);
         } else {
             assert false : "Unhandled property key: " + propertyKey;
         }

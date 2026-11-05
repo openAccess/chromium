@@ -18,6 +18,7 @@
 #include "components/history/core/browser/history_types.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/base/l10n/l10n_util.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -58,7 +59,7 @@ QuickDeleteBridge::QuickDeleteBridge(const base::android::JavaRef<jobject>& obj,
   history_counter_ = std::make_unique<browsing_data::HistoryCounter>(
       HistoryServiceFactory::GetForProfile(profile_,
                                            ServiceAccessType::EXPLICIT_ACCESS),
-      browsing_data::HistoryCounter::GetUpdatedWebHistoryServiceCallback(),
+      /*web_history_service=*/nullptr,
       SyncServiceFactory::GetForProfile(profile_));
 
   base::Time begin_time =
@@ -71,10 +72,6 @@ QuickDeleteBridge::QuickDeleteBridge(const base::android::JavaRef<jobject>& obj,
 }
 
 QuickDeleteBridge::~QuickDeleteBridge() = default;
-
-void QuickDeleteBridge::Destroy() {
-  delete this;
-}
 
 void QuickDeleteBridge::RestartCounterForTimePeriod(const int32_t time_period) {
   browsing_data::TimePeriod period =
@@ -101,11 +98,10 @@ void QuickDeleteBridge::OnHistoryCounterResult(
       quickDeleteResult.domain_count);
 }
 
-static int64_t JNI_QuickDeleteBridge_Init(
+static jni_zero::JniUniquePtr<QuickDeleteBridge> JNI_QuickDeleteBridge_Init(
     const base::android::JavaRef<jobject>& obj,
     Profile* profile) {
-  QuickDeleteBridge* bridge = new QuickDeleteBridge(obj, profile);
-  return reinterpret_cast<intptr_t>(bridge);
+  return jni_zero::MakeUnique<QuickDeleteBridge>(obj, profile);
 }
 
 DEFINE_JNI(QuickDeleteBridge)

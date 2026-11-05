@@ -26,7 +26,6 @@ using aidl::org::chromium::base::IDeviceInfo;
 #endif
 
 namespace base::android::device_info {
-namespace {
 #if __ANDROID_API__ < 29
 struct IDeviceInfo {
   std::string gmsVersionCode;
@@ -41,9 +40,16 @@ struct IDeviceInfo {
 };
 #endif
 
+namespace {
+
 static std::optional<IDeviceInfo>& get_holder() {
   static base::NoDestructor<std::optional<IDeviceInfo>> holder;
   return *holder;
+}
+
+static base::Lock& get_device_info_lock() {
+  static base::NoDestructor<base::Lock> lock;
+  return *lock;
 }
 
 IDeviceInfo& get_device_info() {
@@ -56,23 +62,23 @@ IDeviceInfo& get_device_info() {
 
 }  // namespace
 
+#if __ANDROID_API__ < 29
+static
+#endif
 void Set(const IDeviceInfo& info) {
-  static base::NoDestructor<base::Lock> lock;
-  base::AutoLock l(*lock);
-
-  std::optional<IDeviceInfo>& holder = get_holder();
-  holder.emplace(info);
+  base::AutoLock lock(get_device_info_lock());
+  get_holder().emplace(info);
 }
 
-static void JNI_DeviceInfo_FillFields(const std::string& gmsVersionCode,
-                                      bool isTV,
+static void JNI_DeviceInfo_FillFields(bool isTV,
                                       bool isAutomotive,
                                       bool isFoldable,
                                       bool isDesktop,
                                       int32_t vulkanDeqpLevel,
                                       bool isXr,
                                       bool wasLaunchedOnLargeDisplay) {
-  Set(IDeviceInfo{.gmsVersionCode = gmsVersionCode,
+  Set(
+      IDeviceInfo{.gmsVersionCode = {},
                   .isAutomotive = isAutomotive,
                   .isDesktop = isDesktop,
                   .isFoldable = isFoldable,
@@ -83,13 +89,28 @@ static void JNI_DeviceInfo_FillFields(const std::string& gmsVersionCode,
 }
 
 const std::string& gms_version_code() {
-  return get_device_info().gmsVersionCode;
+  IDeviceInfo& info = get_device_info();
+  base::AutoLock lock(get_device_info_lock());
+  if (info.gmsVersionCode.empty()) {
+    info.gmsVersionCode =
+        IsJavaAvailable()
+            ? Java_DeviceInfo_getGmsVersionCodeForNative(AttachCurrentThread())
+            : "gms versionCode not available.";
+  }
+  return info.gmsVersionCode;
+}
+
+static void JNI_DeviceInfo_SetGmsVersionCode(
+    const std::string& gms_version_code) {
+  IDeviceInfo& info = get_device_info();
+  base::AutoLock lock(get_device_info_lock());
+  info.gmsVersionCode = gms_version_code;
 }
 
 void set_gms_version_code_for_test(const std::string& gms_version_code) {
-  get_device_info().gmsVersionCode = gms_version_code;
   Java_DeviceInfo_setGmsVersionCodeForTest(AttachCurrentThread(),
                                            gms_version_code);
+  JNI_DeviceInfo_SetGmsVersionCode(gms_version_code);
 }
 
 bool is_tv() {
@@ -136,6 +157,10 @@ std::string device_name() {
   return Java_DeviceInfo_getDeviceName(AttachCurrentThread());
 }
 
+bool is_retail_demo_mode() {
+  return Java_DeviceInfo_isRetailDemoMode(AttachCurrentThread());
+}
+
 void set_is_xr_for_testing() {
   Java_DeviceInfo_setIsXrForTesting(AttachCurrentThread(), true);  // IN-TEST
   get_holder().reset();
@@ -166,6 +191,15 @@ void set_is_foldable_for_testing(bool is_foldable) {
 void reset_is_foldable_for_testing() {
   Java_DeviceInfo_resetIsFoldableForTesting(AttachCurrentThread());  // IN-TEST
   get_holder().reset();
+}
+
+void set_device_name_for_testing(const std::string& device_name) {
+  Java_DeviceInfo_setDeviceNameForTesting(AttachCurrentThread(),  // IN-TEST
+                                          device_name);
+}
+
+void reset_device_name_for_testing() {
+  Java_DeviceInfo_resetDeviceNameForTesting(AttachCurrentThread());  // IN-TEST
 }
 
 }  // namespace base::android::device_info

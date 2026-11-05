@@ -4,21 +4,16 @@
 
 package org.chromium.chrome.browser.supervised_user;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
 
 /** Tests the recording of the metrics within the local parent approval flow. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ParentApprovalMetricsTest {
     @Test
-    @SmallTest
     public void recordWebOutcomeMetrics() {
         final String histogramName = "FamilyLinkUser.LocalApprovalOutcome.Web";
 
@@ -50,7 +45,6 @@ public class ParentApprovalMetricsTest {
     }
 
     @Test
-    @SmallTest
     public void recordWebParentAuthenticationErrorMetrics() {
         final String histogramName =
                 "Android.FamilyLinkUser.LocalApprovalParentAuthenticationError.Web";
@@ -74,7 +68,6 @@ public class ParentApprovalMetricsTest {
     }
 
     @Test
-    @SmallTest
     public void recordExtensionOutcomeMetrics() {
         final String histogramName = "FamilyLinkUser.LocalApprovalOutcome.Extension";
 
@@ -106,7 +99,6 @@ public class ParentApprovalMetricsTest {
     }
 
     @Test
-    @SmallTest
     public void recordExtensionParentAuthenticationErrorMetrics() {
         final String histogramName =
                 "Android.FamilyLinkUser.LocalApprovalParentAuthenticationError.Extension";

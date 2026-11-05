@@ -3,11 +3,11 @@
 // found in the LICENSE file.
 
 import {html} from '//resources/lit/v3_0/lit.rollup.js';
-import {State} from './managed_user_profile_notice_browser_proxy.js';
+
 import type {ManagedUserProfileNoticeAppRefreshElement} from './managed_user_profile_notice_app_refresh.js';
+import {State} from './managed_user_profile_notice_browser_proxy.js';
 
 export function getHtml(this: ManagedUserProfileNoticeAppRefreshElement) {
-  // clang-format off
   return html`<!--_html_template_start_-->
 <div class="main-container">
   ${this.isState_(State.VALUE_PROPOSITION) ? html`
@@ -29,59 +29,47 @@ export function getHtml(this: ManagedUserProfileNoticeAppRefreshElement) {
         ?show-enterprise-badge="${this.profileInfo_.showEnterpriseBadge}">
     </managed-user-profile-notice-disclosure-refresh>
   ` : ''}
-  ${this.isState_(State.PROCESSING) ? html`
-    <managed-user-profile-notice-state id="processing"
-        subtitle="${this.processingSubtitle_}" icon="cr:domain">
-      <div class="spinner"></div>
-    </managed-user-profile-notice-state>
-  ` : ''}
-  ${this.isState_(State.SUCCESS) ? html`
-    <managed-user-profile-notice-state id="success" icon="cr:domain"
-        title="$i18n{successTitle}" subtitle="$i18n{successSubtitle}">
-      <img class="success-icon" alt="">
-    </managed-user-profile-notice-state>
-  ` : ''}
-  ${this.isState_(State.TIMEOUT) ? html`
-    <managed-user-profile-notice-state id="timeout" icon="cr:domain"
-        title="$i18n{timeoutTitle}" subtitle="$i18n{timeoutSubtitle}">
-      <img class="timeout-icon" alt="">
-    </managed-user-profile-notice-state>
-  ` : ''}
-  ${this.isState_(State.ERROR) ? html`
-    <managed-user-profile-notice-state id="error" icon="cr:domain"
-        title="${this.errorTitle_}" subtitle="${this.errorSubtitle_}">
-      <img class="error-icon" alt="">
-    </managed-user-profile-notice-state>
+  ${this.isAnyState_(
+      [State.PROCESSING, State.SUCCESS, State.TIMEOUT, State.ERROR]) ? html`
+    <managed-user-profile-notice-state-refresh id="state"
+        .state="${this.currentState_}">
+    </managed-user-profile-notice-state-refresh>
   ` : ''}
   ${this.isState_(State.USER_DATA_HANDLING) ? html`
     <managed-user-profile-notice-data-handling id="user-data-handling"
         title="${this.i18n('separateBrowsingDataTitle')}"
-        separate-data-choice-title="${this.i18n('separateBrowsingDataChoiceTitle')}"
-        separate-data-choice-details="${this.i18n('separateBrowsingDataChoiceDetails')}"
+        separate-data-choice-title="${
+            this.i18n('separateBrowsingDataChoiceTitle')}"
+        separate-data-choice-details="${
+            this.i18n('separateBrowsingDataChoiceDetails')}"
         merge-data-choice-title="${this.i18n('mergeBrowsingDataChoiceTitle')}"
-        merge-data-choice-details="${this.i18n('mergeBrowsingDataChoiceDetails')}"
+        merge-data-choice-details="${
+            this.i18n('mergeBrowsingDataChoiceDetails')}"
         .selectedDataHandling="${this.selectedDataHandling_}"
-        @selected-data-handling-changed="${this.onSelectedDataHandlingChanged_}">
+        @selected-data-handling-changed="${
+            this.onSelectedDataHandlingChanged_}">
     </managed-user-profile-notice-data-handling>
+  ` : ''}
+  ${this.isState_(State.SIGNALS_DISCLAIMER) ? html`
+    <signals-disclaimer-refresh id="signals-disclaimer"
+        picture-url="${this.profileInfo_.pictureUrl}">
+    </signals-disclaimer-refresh>
   ` : ''}
 </div>
 <div class="action-container">
-  <cr-button id="proceedButton"
-      aria-label="${this.proceedLabel_}"
-      class="action-button tangible-button"
+  <cr-button id="proceedButton" aria-label="${this.proceedLabel_}"
+      class="action-button"
       @click="${this.onProceedButtonClick_}"
       ?disabled="${this.shouldDisableProceedButton_()}"
       ?hidden="${this.isState_(State.PROCESSING)}">
     ${this.proceedLabel_}
   </cr-button>
-  <cr-button id="cancelButton"
-      aria-label="${this.getCancelLabel_()}"
-      class="tangible-button tonal-button"
+  <cr-button id="cancelButton" aria-label="${this.getCancelLabel_()}"
+      class="tonal-button"
       @click="${this.onCancelButtonClick_}"
       ?hidden="${!this.allowCancel_()}">
     ${this.getCancelLabel_()}
   </cr-button>
 </div>
 <!--_html_template_end_-->`;
-  // clang-format on
 }

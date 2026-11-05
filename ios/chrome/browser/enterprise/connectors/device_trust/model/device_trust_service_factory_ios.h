@@ -7,39 +7,25 @@
 
 #import <memory>
 
-#import "base/no_destructor.h"
-#import "ios/chrome/browser/shared/model/profile/profile_keyed_service_factory_ios.h"
-
-class ProfileIOS;
-
-namespace enterprise_connectors {
-class DeviceTrustService;
-}  // namespace enterprise_connectors
+#import "components/enterprise/device_trust/core/device_trust_service.h"
+#import "ios/chrome/browser/shared/model/profile/typed_profile_keyed_service_factory_ios.h"
 
 // Factory for creating `DeviceTrustService` instances on iOS.
-class DeviceTrustServiceFactoryIOS : public ProfileKeyedServiceFactoryIOS {
+class DeviceTrustServiceFactoryIOS final
+    : public TypedProfileKeyedServiceFactoryIOS<
+          DeviceTrustServiceFactoryIOS,
+          enterprise_connectors::DeviceTrustService> {
  public:
-  static enterprise_connectors::DeviceTrustService* GetForProfile(
-      ProfileIOS* profile);
-  static DeviceTrustServiceFactoryIOS* GetInstance();
+  explicit DeviceTrustServiceFactoryIOS(PassKey key);
 
   // Returns the production factory for tests that explicitly need the real
   // `DeviceTrustService` object graph.
-  static TestingFactory GetDefaultFactory();
-
-  DeviceTrustServiceFactoryIOS(const DeviceTrustServiceFactoryIOS&) = delete;
-  DeviceTrustServiceFactoryIOS& operator=(const DeviceTrustServiceFactoryIOS&) =
-      delete;
+  static TestingFactoryByRef GetDefaultFactory();
 
  private:
-  friend class base::NoDestructor<DeviceTrustServiceFactoryIOS>;
-
-  DeviceTrustServiceFactoryIOS();
-  ~DeviceTrustServiceFactoryIOS() override;
-
   // ProfileKeyedServiceFactoryIOS:
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      ProfileIOS* profile) const override;
+      ProfileIOS& profile) const final;
 };
 
 #endif  // IOS_CHROME_BROWSER_ENTERPRISE_CONNECTORS_DEVICE_TRUST_MODEL_DEVICE_TRUST_SERVICE_FACTORY_IOS_H_

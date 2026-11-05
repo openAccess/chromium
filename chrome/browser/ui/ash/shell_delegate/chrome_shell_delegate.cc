@@ -11,7 +11,9 @@
 
 #include "ash/accelerators/accelerator_prefs_delegate.h"
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_paths.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_switches.h"
 #include "ash/game_dashboard/game_dashboard_delegate.h"
 #include "ash/public/cpp/app_types_util.h"
 #include "ash/public/cpp/new_window_delegate.h"
@@ -30,14 +32,10 @@
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
 #include "cc/input/touch_action.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/api/tasks/chrome_tasks_delegate.h"
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/locked_fullscreen/arc_locked_fullscreen_manager.h"
 #include "chrome/browser/ash/arc/session/arc_service_launcher.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/multidevice_setup/multidevice_setup_service_factory.h"
 #include "chrome/browser/ash/scanner/chrome_scanner_delegate.h"
@@ -63,16 +61,15 @@
 #include "chrome/browser/ui/ash/global_media_controls/media_notification_provider_impl.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_ui.h"
 #include "chrome/browser/ui/ash/session/session_util.h"
-#include "chrome/browser/ui/ash/shell_delegate/tab_scrubber.h"
 #include "chrome/browser/ui/ash/user_education/chrome_user_education_delegate.h"
 #include "chrome/browser/ui/ash/wm/coral_delegate_impl.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/chromeos/tab_scrubber/tab_scrubber.h"
 #include "chrome/browser/ui/webui/ash/diagnostics_dialog/diagnostics_dialog.h"
-#include "chrome/browser/web_applications/web_app_provider.h"
-#include "chrome/common/chrome_paths.h"
-#include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/audio/system_sounds_delegate_impl.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/channel/channel_info.h"
 #include "chromeos/ash/components/specialized_features/feedback.h"
 #include "chromeos/ash/experiences/clipboard/clipboard_history_controller_delegate_impl.h"
@@ -89,11 +86,13 @@
 #include "content/public/browser/device_service.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/media_session_service.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "extensions/browser/app_window/app_window.h"
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/common/constants.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window.h"
@@ -247,7 +246,7 @@ ChromeShellDelegate::CreateScannerDelegate() const {
 }
 
 scoped_refptr<network::SharedURLLoaderFactory>
-ChromeShellDelegate::GetBrowserProcessUrlLoaderFactory() const {
+ChromeShellDelegate::GetBrowserProcessUrlLoaderFactory() {
   return g_browser_process->shared_url_loader_factory();
 }
 
@@ -265,7 +264,9 @@ bool ChromeShellDelegate::CanGoBack(gfx::NativeWindow window) const {
 }
 
 void ChromeShellDelegate::SetTabScrubberEnabled(bool enabled) {
-  ash::TabScrubber::GetInstance()->SetEnabled(enabled);
+  if (ash::TabScrubber* tab_scrubber = ash::TabScrubber::GetInstance()) {
+    tab_scrubber->SetEnabled(enabled);
+  }
 }
 
 bool ChromeShellDelegate::AllowDefaultTouchActions(gfx::NativeWindow window) {
@@ -328,18 +329,20 @@ ChromeShellDelegate::GetMediaSessionService() {
 
 bool ChromeShellDelegate::IsSessionRestoreInProgress() const {
   // Must be called with an active user.
-  const user_manager::User* active_user =
-      user_manager::UserManager::Get()->GetActiveUser();
-  CHECK(active_user);
+  const session_manager::Session* const active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session);
+  const user_manager::User& active_user = CHECK_DEREF(
+      user_manager::UserManager::Get()->FindUser(active_session->account_id()));
 
   // User profile is not yet loaded. Consider loading user profile is part of
   // session restore.
-  if (!active_user->is_profile_created()) {
+  if (!active_user.is_profile_created()) {
     return true;
   }
 
   return SessionRestore::IsRestoring(Profile::FromBrowserContext(
-      ash::BrowserContextHelper::Get()->GetBrowserContextByUser(active_user)));
+      ash::BrowserContextHelper::Get()->GetBrowserContextByUser(&active_user)));
 }
 
 void ChromeShellDelegate::SetUpEnvironmentForLockedFullscreen(
@@ -392,8 +395,8 @@ bool ChromeShellDelegate::IsUiDevToolsStarted() const {
 
 void ChromeShellDelegate::StartUiDevTools() {
   base::FilePath output_dir;
-  bool result = base::PathService::Get(chrome::DIR_USER_DATA, &output_dir);
-  DCHECK(result);
+  bool result = base::PathService::Get(ash::DIR_USER_DATA, &output_dir);
+  CHECK(result, base::NotFatalUntil::M162);
 
   return ui_devtools::ServerHolder::GetInstance()->CreateUiDevTools(output_dir);
 }
@@ -418,14 +421,15 @@ bool ChromeShellDelegate::IsLoggingRedirectDisabled() const {
 }
 
 base::FilePath ChromeShellDelegate::GetPrimaryUserDownloadsFolder() const {
-  const user_manager::User* primary_user =
-      user_manager::UserManager::Get()->GetPrimaryUser();
-  if (!primary_user) {
+  const session_manager::Session* const primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  if (!primary_session) {
     return base::FilePath();
   }
 
   content::BrowserContext* browser_context =
-      ash::BrowserContextHelper::Get()->GetBrowserContextByUser(primary_user);
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          primary_session->account_id());
   if (browser_context) {
     return file_manager::util::GetDownloadsFolderForProfile(
         Profile::FromBrowserContext(browser_context));
@@ -619,5 +623,5 @@ void ChromeShellDelegate::OpenMultitaskingSettings() {
 
 bool ChromeShellDelegate::IsNoFirstRunSwitchOn() const {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
-      ::switches::kNoFirstRun);
+      ash::chrome_switches::kNoFirstRun);
 }

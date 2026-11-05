@@ -12,7 +12,6 @@
 #import "base/functional/callback_helpers.h"
 #import "base/location.h"
 #import "base/logging.h"
-#import "base/memory/ptr_util.h"
 #import "base/path_service.h"
 #import "base/task/sequenced_task_runner.h"
 #import "base/task/single_thread_task_runner.h"
@@ -28,7 +27,9 @@
 #import "ios/chrome/browser/prefs/model/ios_chrome_pref_service_factory.h"
 #import "ios/chrome/browser/profile/model/keyed_service_factories.h"
 #import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
-#import "ios/chrome/browser/shared/model/profile/profile_dependency_manager_ios.h"
+#import "ios/chrome/browser/shared/model/profile/internal/profile_dependency_manager_ios.h"
+#import "ios/chrome/browser/shared/model/profile/internal/profile_keyed_service_factory_ios.h"
+#import "ios/chrome/browser/shared/model/profile/internal/refcounted_profile_keyed_service_factory_ios.h"
 #import "ios/chrome/browser/supervised_user/model/family_link_settings_service_factory.h"
 #import "ios/web/public/thread/web_task_traits.h"
 #import "ios/web/public/thread/web_thread.h"
@@ -41,11 +42,11 @@ using PassKey = base::PassKey<TestProfileIOS>;
 // Assigns `testing_factories` to `profile`.
 void AssignTestingFactories(
     PassKey pass_key,
-    TestProfileIOS* profile,
+    TestProfileIOS& profile,
     TestProfileIOS::TestingFactories testing_factories) {
   for (auto& item : testing_factories) {
     std::visit(
-        [pass_key, profile](auto& p) {
+        [pass_key, &profile](auto& p) {
           p.first->SetTestingFactory(pass_key, profile, std::move(p.second));
         },
         item.service_factory_and_testing_factory);
@@ -56,13 +57,25 @@ void AssignTestingFactories(
 
 TestProfileIOS::TestingFactory::TestingFactory(
     ProfileKeyedServiceFactoryIOS* service_factory,
-    ProfileKeyedServiceFactoryIOS::TestingFactory testing_factory)
+    KeyedServiceTestingFactoryIOSByPtr testing_factory)
+    : service_factory_and_testing_factory(
+          std::make_pair(service_factory, std::move(testing_factory))) {}
+
+TestProfileIOS::TestingFactory::TestingFactory(
+    ProfileKeyedServiceFactoryIOS* service_factory,
+    KeyedServiceTestingFactoryIOSByRef testing_factory)
     : service_factory_and_testing_factory(
           std::make_pair(service_factory, std::move(testing_factory))) {}
 
 TestProfileIOS::TestingFactory::TestingFactory(
     RefcountedProfileKeyedServiceFactoryIOS* service_factory,
-    RefcountedProfileKeyedServiceFactoryIOS::TestingFactory testing_factory)
+    RefcountedKeyedServiceTestingFactoryIOSByPtr testing_factory)
+    : service_factory_and_testing_factory(
+          std::make_pair(service_factory, std::move(testing_factory))) {}
+
+TestProfileIOS::TestingFactory::TestingFactory(
+    RefcountedProfileKeyedServiceFactoryIOS* service_factory,
+    RefcountedKeyedServiceTestingFactoryIOSByRef testing_factory)
     : service_factory_and_testing_factory(
           std::make_pair(service_factory, std::move(testing_factory))) {}
 
@@ -83,7 +96,8 @@ TestProfileIOS::TestingFactories& TestProfileIOS::TestingFactories::operator=(
 
 TestProfileIOS::TestingFactories::~TestingFactories() = default;
 
-TestProfileIOS::TestProfileIOS(const base::FilePath& state_path,
+TestProfileIOS::TestProfileIOS(base::PassKey<TestProfileIOS> pass_key,
+                               const base::FilePath& state_path,
                                TestProfileIOS* original_profile,
                                TestingFactories testing_factories)
     : ProfileIOS(state_path,
@@ -96,7 +110,7 @@ TestProfileIOS::TestProfileIOS(const base::FilePath& state_path,
 
   ProfileDependencyManagerIOS::GetInstance()->MarkProfileLive(this);
 
-  AssignTestingFactories(PassKey{}, this, std::move(testing_factories));
+  AssignTestingFactories(PassKey{}, *this, std::move(testing_factories));
   profile_metrics::SetBrowserProfileType(
       this, profile_metrics::BrowserProfileType::kIncognito);
 
@@ -106,13 +120,15 @@ TestProfileIOS::TestProfileIOS(const base::FilePath& state_path,
 }
 
 TestProfileIOS::TestProfileIOS(
+    base::PassKey<Builder> pass_key,
     const base::FilePath& state_path,
     std::string_view profile_name,
     base::Uuid webkit_storage_id,
     std::unique_ptr<sync_preferences::PrefServiceSyncable> prefs,
     TestingFactories testing_factories,
     std::unique_ptr<ProfilePolicyConnector> policy_connector,
-    std::unique_ptr<policy::UserCloudPolicyManager> user_cloud_policy_manager)
+    std::unique_ptr<policy::UserCloudPolicyManager> user_cloud_policy_manager,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory)
     : ProfileIOS(
           state_path,
           profile_name,
@@ -123,13 +139,14 @@ TestProfileIOS::TestProfileIOS(
       webkit_storage_id_(std::move(webkit_storage_id)),
       user_cloud_policy_manager_(std::move(user_cloud_policy_manager)),
       policy_connector_(std::move(policy_connector)),
+      test_shared_url_loader_factory_(shared_url_loader_factory),
       otr_profile_(nullptr),
       original_profile_(nullptr) {
   DCHECK(!profile_name.empty());
 
   ProfileDependencyManagerIOS::GetInstance()->MarkProfileLive(this);
 
-  AssignTestingFactories(PassKey{}, this, std::move(testing_factories));
+  AssignTestingFactories(PassKey{}, *this, std::move(testing_factories));
   profile_metrics::SetBrowserProfileType(
       this, profile_metrics::BrowserProfileType::kRegular);
 
@@ -197,12 +214,14 @@ void TestProfileIOS::Init() {
         pref_registry);
   }
 
-  ProfileDependencyManagerIOS::GetInstance()->CreateProfileServicesForTest(
-      this);
-  // `SupervisedUserSettingsService` needs to be initialized for SyncService.
+  // `FamilyLinkSettingsService` needs to be initialized for the SyncService and
+  // for the PrefService to be accessible by other KeyedService instances.
   supervised_user::FamilyLinkSettingsServiceFactory::GetForProfile(this)->Init(
       GetStatePath(), GetIOTaskRunner().get(),
       /*load_synchronously=*/true);
+
+  ProfileDependencyManagerIOS::GetInstance()->CreateProfileServicesForTest(
+      this);
 }
 
 bool TestProfileIOS::IsOffTheRecord() const {
@@ -249,8 +268,9 @@ TestProfileIOS* TestProfileIOS::CreateOffTheRecordProfileWithTestingFactories(
     TestingFactories testing_factories) {
   DCHECK(!IsOffTheRecord());
   DCHECK(!otr_profile_);
-  otr_profile_.reset(new TestProfileIOS(GetOffTheRecordStatePath(), this,
-                                        std::move(testing_factories)));
+  otr_profile_ = std::make_unique<TestProfileIOS>(
+      base::PassKey<TestProfileIOS>{}, GetOffTheRecordStatePath(),
+      /*original_profile=*/this, std::move(testing_factories));
   otr_profile_->Init();
   return otr_profile_.get();
 }
@@ -310,11 +330,6 @@ TestProfileIOS::GetSharedURLLoaderFactory() {
              : BrowserState::GetSharedURLLoaderFactory();
 }
 
-void TestProfileIOS::SetSharedURLLoaderFactory(
-    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory) {
-  test_shared_url_loader_factory_ = std::move(shared_url_loader_factory);
-}
-
 TestProfileIOS::Builder::Builder() = default;
 
 TestProfileIOS::Builder::Builder(Builder&&) = default;
@@ -326,14 +341,28 @@ TestProfileIOS::Builder::~Builder() = default;
 
 TestProfileIOS::Builder& TestProfileIOS::Builder::AddTestingFactory(
     ProfileKeyedServiceFactoryIOS* service_factory,
-    ProfileKeyedServiceFactoryIOS::TestingFactory testing_factory) {
+    KeyedServiceTestingFactoryIOSByPtr testing_factory) {
+  testing_factories_.emplace_back(service_factory, std::move(testing_factory));
+  return *this;
+}
+
+TestProfileIOS::Builder& TestProfileIOS::Builder::AddTestingFactory(
+    ProfileKeyedServiceFactoryIOS* service_factory,
+    KeyedServiceTestingFactoryIOSByRef testing_factory) {
   testing_factories_.emplace_back(service_factory, std::move(testing_factory));
   return *this;
 }
 
 TestProfileIOS::Builder& TestProfileIOS::Builder::AddTestingFactory(
     RefcountedProfileKeyedServiceFactoryIOS* service_factory,
-    RefcountedProfileKeyedServiceFactoryIOS::TestingFactory testing_factory) {
+    RefcountedKeyedServiceTestingFactoryIOSByPtr testing_factory) {
+  testing_factories_.emplace_back(service_factory, std::move(testing_factory));
+  return *this;
+}
+
+TestProfileIOS::Builder& TestProfileIOS::Builder::AddTestingFactory(
+    RefcountedProfileKeyedServiceFactoryIOS* service_factory,
+    RefcountedKeyedServiceTestingFactoryIOSByRef testing_factory) {
   testing_factories_.emplace_back(service_factory, std::move(testing_factory));
   return *this;
 }
@@ -343,12 +372,6 @@ TestProfileIOS::Builder& TestProfileIOS::Builder::AddTestingFactories(
   for (auto& item : testing_factories) {
     testing_factories_.emplace_back(std::move(item));
   }
-  return *this;
-}
-
-TestProfileIOS::Builder& TestProfileIOS::Builder::SetName(
-    const std::string& name) {
-  profile_name_ = name;
   return *this;
 }
 
@@ -376,8 +399,10 @@ TestProfileIOS::Builder& TestProfileIOS::Builder::SetWebkitStorageId(
   return *this;
 }
 
-std::string TestProfileIOS::Builder::GetEffectiveName() const {
-  return profile_name_.empty() ? "Test" : profile_name_;
+TestProfileIOS::Builder& TestProfileIOS::Builder::SetSharedURLLoaderFactory(
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory) {
+  shared_url_loader_factory_ = shared_url_loader_factory;
+  return *this;
 }
 
 std::unique_ptr<TestProfileIOS> TestProfileIOS::Builder::Build() && {
@@ -386,11 +411,19 @@ std::unique_ptr<TestProfileIOS> TestProfileIOS::Builder::Build() && {
 
 std::unique_ptr<TestProfileIOS> TestProfileIOS::Builder::Build(
     const base::FilePath& data_dir) && {
-  CHECK(!data_dir.empty());
+  return std::move(*this).Build(data_dir, "Test");
+}
 
-  return base::WrapUnique(new TestProfileIOS(
-      data_dir.Append(GetEffectiveName()), GetEffectiveName(),
+std::unique_ptr<TestProfileIOS> TestProfileIOS::Builder::Build(
+    const base::FilePath& data_dir,
+    std::string_view profile_name) && {
+  CHECK(!data_dir.empty());
+  CHECK(!profile_name.empty());
+
+  return std::make_unique<TestProfileIOS>(
+      base::PassKey<Builder>{}, data_dir.Append(profile_name), profile_name,
       std::move(webkit_storage_id_), std::move(pref_service_),
       std::move(testing_factories_), std::move(policy_connector_),
-      std::move(user_cloud_policy_manager_)));
+      std::move(user_cloud_policy_manager_),
+      std::move(shared_url_loader_factory_));
 }

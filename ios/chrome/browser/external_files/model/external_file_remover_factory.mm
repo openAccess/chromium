@@ -7,32 +7,24 @@
 #import <memory>
 #import <utility>
 
+#import "ios/chrome/browser/bookmarks/model/bookmark_model_factory.h"
 #import "ios/chrome/browser/external_files/model/external_file_remover_impl.h"
 #import "ios/chrome/browser/sessions/model/ios_chrome_tab_restore_service_factory.h"
+#import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 
-// static
-ExternalFileRemover* ExternalFileRemoverFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<ExternalFileRemover>(
-      profile, /*create=*/true);
-}
-
-// static
-ExternalFileRemoverFactory* ExternalFileRemoverFactory::GetInstance() {
-  static base::NoDestructor<ExternalFileRemoverFactory> instance;
-  return instance.get();
-}
-
-ExternalFileRemoverFactory::ExternalFileRemoverFactory()
-    : ProfileKeyedServiceFactoryIOS("ExternalFileRemoverService") {
+ExternalFileRemoverFactory::ExternalFileRemoverFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "ExternalFileRemoverService") {
+  DependsOn(BrowserListFactory::GetInstance());
+  DependsOn(ios::BookmarkModelFactory::GetInstance());
   DependsOn(IOSChromeTabRestoreServiceFactory::GetInstance());
 }
 
-ExternalFileRemoverFactory::~ExternalFileRemoverFactory() = default;
-
 std::unique_ptr<KeyedService>
-ExternalFileRemoverFactory::BuildServiceInstanceFor(ProfileIOS* profile) const {
+ExternalFileRemoverFactory::BuildServiceInstanceFor(ProfileIOS& profile) const {
   return std::make_unique<ExternalFileRemoverImpl>(
-      profile, IOSChromeTabRestoreServiceFactory::GetForProfile(profile));
+      BrowserListFactory::GetForProfile(profile),
+      ios::BookmarkModelFactory::GetForProfile(profile),
+      IOSChromeTabRestoreServiceFactory::GetForProfile(profile));
 }

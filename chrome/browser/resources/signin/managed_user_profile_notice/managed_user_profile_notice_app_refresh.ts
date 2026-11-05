@@ -8,14 +8,15 @@ import 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
 import './managed_user_profile_notice_disclosure_refresh.js';
 import './managed_user_profile_notice_value_prop.js';
-import './managed_user_profile_notice_state.js';
+import './managed_user_profile_notice_state_refresh.js';
 import './managed_user_profile_notice_data_handling.js';
+import './signals_disclaimer_refresh.js';
 
 import {ColorChangeUpdater} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
 import type {CrButtonElement} from 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
 import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
-import {assertNotReached, assertNotReachedCase} from 'chrome://resources/js/assert.js';
+import {assertNotReachedCase} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
@@ -65,13 +66,8 @@ export class ManagedUserProfileNoticeAppRefreshElement extends
       },
 
       proceedLabel_: {type: String},
-
-      errorTitle_: {type: String},
-      errorSubtitle_: {type: String},
-
       disableProceedButton_: {type: Boolean},
       currentState_: {type: Number},
-      processingSubtitle_: {type: String},
       selectedDataHandling_: {type: String},
       appMode_: {
         type: String,
@@ -94,23 +90,18 @@ export class ManagedUserProfileNoticeAppRefreshElement extends
     showEnterpriseBadge: false,
     title: '',
     subtitle: '',
-    proceedLabel: '',
     checkLinkDataCheckboxByDefault: false,
   };
 
   protected accessor isModalDialog_: boolean =
       loadTimeData.getBoolean('isModalDialog');
   protected accessor proceedLabel_: string = '';
-  protected accessor errorTitle_: string = '';
-  protected accessor errorSubtitle_: string = '';
   protected accessor disableProceedButton_: boolean = false;
   protected accessor currentState_: State = State.DISCLOSURE;
   protected accessor appMode_: AppMode = this.getAppModeFromScreenType(
       loadTimeData.getInteger('screenType') as ScreenType);
   protected accessor revampEnabled_: boolean =
       loadTimeData.getBoolean('isFirstRunDesktopRevampEnabled');
-  protected accessor processingSubtitle_: string =
-      loadTimeData.getString('processingSubtitle');
   protected accessor selectedDataHandling_: BrowsingDataHandling|undefined;
 
   private managedUserProfileNoticeBrowserProxy_:
@@ -130,17 +121,11 @@ export class ManagedUserProfileNoticeAppRefreshElement extends
 
     this.addWebUiListener(
         'on-state-changed-to-error',
-        (errorTitle: string, errorSubTitle: string) => {
-          this.updateErrorStrings_(errorTitle, errorSubTitle);
-          this.updateCurrentState_(State.ERROR);
-        });
+        () => this.updateCurrentState_(State.ERROR));
 
     this.addWebUiListener(
         'on-profile-info-changed',
         (info: ManagedUserProfileInfo) => this.updateProfileInfo_(info));
-
-    this.addWebUiListener(
-        'on-long-processing', () => this.updateProcessingText_());
 
     this.managedUserProfileNoticeBrowserProxy_.initialized().then(info => {
       this.updateProfileInfo_(info);
@@ -213,31 +198,29 @@ export class ManagedUserProfileNoticeAppRefreshElement extends
       case ScreenType.ENTERPRISE_ACCOUNT_SYNC_ENABLED:
       case ScreenType.ENTERPRISE_ACCOUNT_SYNC_DISABLED:
       case ScreenType.CONSUMER_ACCOUNT_SYNC_DISABLED:
+      case ScreenType.DEVICE_SIGNALS_DISCLAIMER:
+      case ScreenType.ENTERPRISE_ACCOUNT_CREATION:
+      case ScreenType.ENTERPRISE_OIDC:
         return AppMode.PROFILE_PICKER;
       case ScreenType.FIRST_RUN:
         return AppMode.FIRST_RUN;
-      case ScreenType.ENTERPRISE_ACCOUNT_CREATION:
-      case ScreenType.ENTERPRISE_OIDC:
-      case ScreenType.DEVICE_SIGNALS_DISCLAIMER:
-        assertNotReached();
       default:
         assertNotReachedCase(screenType);
     }
-  }
-
-  private updateErrorStrings_(errorTitle: string, errorSubTitle: string) {
-    this.errorTitle_ = errorTitle;
-    this.errorSubtitle_ = errorSubTitle;
   }
 
   protected allowCancel_(): boolean {
     return this.isState_(State.DISCLOSURE) ||
         this.isState_(State.VALUE_PROPOSITION) ||
         this.isState_(State.USER_DATA_HANDLING) ||
-        this.isState_(State.TIMEOUT) || this.isState_(State.PROCESSING);
+        this.isState_(State.TIMEOUT) || this.isState_(State.PROCESSING) ||
+        this.isState_(State.SIGNALS_DISCLAIMER);
   }
 
   protected getCancelLabel_(): string {
+    if (this.isState_(State.SIGNALS_DISCLAIMER)) {
+      return this.i18n('signalsDisclaimerCancelLabel');
+    }
     if (this.isState_(State.VALUE_PROPOSITION) &&
         !loadTimeData.getBoolean('enforcedByPolicy')) {
       return this.i18n('cancelValueProp');
@@ -260,7 +243,7 @@ export class ManagedUserProfileNoticeAppRefreshElement extends
       case State.DISCLOSURE:
       case State.PROCESSING:
       case State.SUCCESS:
-        return this.profileInfo_.proceedLabel || this.i18n('continueLabel');
+        return this.i18n('continueLabel');
       case State.USER_DATA_HANDLING:
         return this.i18n('confirmLabel');
       case State.ERROR:
@@ -268,14 +251,10 @@ export class ManagedUserProfileNoticeAppRefreshElement extends
       case State.TIMEOUT:
         return this.i18n('retryLabel');
       case State.SIGNALS_DISCLAIMER:
-        assertNotReached();
+        return this.i18n('signalsDisclaimerContinueLabel');
       default:
         assertNotReachedCase(this.currentState_);
     }
-  }
-
-  private updateProcessingText_() {
-    this.processingSubtitle_ = this.i18n('longProcessingSubtitle');
   }
 
   protected onSelectedDataHandlingChanged_(
@@ -283,7 +262,9 @@ export class ManagedUserProfileNoticeAppRefreshElement extends
     this.selectedDataHandling_ = e.detail.value;
   }
 
-
+  protected isAnyState_(states: State[]): boolean {
+    return states.includes(this.currentState_);
+  }
 
   protected isState_(state: State): boolean {
     return this.currentState_ === state;

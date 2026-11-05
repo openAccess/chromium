@@ -116,7 +116,8 @@ TEST_P(WelcomeTourChangedExperimentalArmMetricTest,
   // Add a primary user session for an existing user. This should *not* trigger
   // the Welcome Tour to start.
   const auto primary_account_id = SimulateUserLogin(
-      {.display_email = "primary@test", .activate_session = false});
+      {.account_id = AccountId::FromUserEmail("primary@test")},
+      /*activate_session=*/false);
 
   const std::optional<ExperimentalArm> pref_value = GetPrefValue();
   if (pref_value) {
@@ -448,9 +449,6 @@ class WelcomeTourMetricsTest : public UserEducationAshTestBase {
       histogram_tester.ExpectTotalCount(metric_name, 1);
     }
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{features::kWelcomeTour};
 };
 
 // Tests -----------------------------------------------------------------------

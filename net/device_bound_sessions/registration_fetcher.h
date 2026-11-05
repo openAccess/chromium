@@ -10,6 +10,7 @@
 
 #include "base/functional/callback_forward.h"
 #include "components/unexportable_keys/unexportable_key_service.h"
+#include "crypto/sign.h"
 #include "net/base/isolation_info.h"
 #include "net/base/net_errors.h"
 #include "net/base/net_export.h"
@@ -20,7 +21,8 @@
 #include "net/device_bound_sessions/session_error.h"
 #include "net/http/http_response_headers.h"
 #include "net/log/net_log_source.h"
-#include "url/gurl.h"
+
+class GURL;
 
 namespace net {
 class URLRequestContext;
@@ -71,8 +73,7 @@ class NET_EXPORT RegistrationFetcher {
   // and if so it the callback with be called with a std::nullopt.
   virtual void StartCreateTokenAndFetch(
       RegistrationRequestParam& registration_params,
-      base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-          supported_algos,
+      base::span<const crypto::sign::SignatureKind> supported_algos,
       RegistrationCompleteCallback callback) = 0;
 
   // Starts the network request to the DBSC refresh endpoint with existing key

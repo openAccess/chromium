@@ -9,9 +9,8 @@
 
 #include "base/memory/ref_counted.h"
 #include "media/gpu/media_gpu_export.h"
-#include "media/gpu/windows/d3d11_status.h"
 #include "media/gpu/windows/d3d_com_defs.h"
-#include "ui/gfx/color_space.h"
+#include "media/gpu/windows/d3d_status.h"
 
 namespace media {
 
@@ -25,7 +24,7 @@ class MEDIA_GPU_EXPORT VideoProcessorProxy
   VideoProcessorProxy(ComD3D11VideoDevice1 video_device,
                       ComD3D11DeviceContext d3d11_device_context);
 
-  virtual D3D11Status Init(uint32_t width, uint32_t height);
+  virtual D3DStatus Init(uint32_t width, uint32_t height);
 
   // TODO(tmathmeyer) implement color space modification.
 
@@ -40,10 +39,10 @@ class MEDIA_GPU_EXPORT VideoProcessorProxy
       ID3D11VideoProcessorInputView** input_view);
 
   // Configure the stream (input) color space on the video context.
-  virtual void SetStreamColorSpace(const gfx::ColorSpace& color_space);
+  virtual void SetStreamColorSpace(DXGI_COLOR_SPACE_TYPE color_space);
 
   // Configure the output color space on the video context.
-  virtual void SetOutputColorSpace(const gfx::ColorSpace& color_space);
+  virtual void SetOutputColorSpace(DXGI_COLOR_SPACE_TYPE color_space);
 
   virtual HRESULT VideoProcessorBlt(ID3D11VideoProcessorOutputView* output_view,
                                     UINT output_frameno,

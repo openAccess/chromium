@@ -9,16 +9,16 @@
 #include "ash/shell.h"
 #include "ash/webui/boca_ui/url_constants.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_session_window_tracker.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/login_detection/login_detection_util.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/boca/boca_role_util.h"
 #include "chromeos/ash/components/boca/on_task/on_task_blocklist.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "components/google/core/common/google_util.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/navigation_controller.h"
@@ -54,10 +54,16 @@ bool DoAllQueryParamsExist(const std::set<std::string>& request_params,
 }
 
 // Returns whether the url is the start of an Oauth login.
+// TODO(b/541544177): Harden `login_detection_util` to offer all indicators
+// needed to reliably detect an OAuth login start.
 bool IsOauthLoginStart(const GURL& url) {
-  return url.SchemeIsHTTPOrHTTPS() &&
-         DoAllQueryParamsExist(login_detection::GetOAuthLoginStartQueryParams(),
-                               url);
+  if (!url.SchemeIsHTTPOrHTTPS()) {
+    return false;
+  }
+  std::set<std::string> params =
+      login_detection::GetOAuthLoginStartQueryParams();
+  params.insert("response_type");
+  return DoAllQueryParamsExist(params, url);
 }
 
 // Returns whether the url is the completion of an Oauth login.
@@ -106,9 +112,7 @@ content::WebContents* GetParentTab(content::NavigationHandle* navigation_handle,
     const SessionID parent_tab_id =
         on_task_blocklist->GetParentTabId(navigating_tab);
     if (parent_tab_id.is_valid()) {
-      BrowserDelegate* const tracked_browser =
-          BrowserController::GetInstance()->GetDelegate(
-              window_tracker->browser());
+      BrowserDelegate* const tracked_browser = window_tracker->browser();
       parent_tab = GetWebContentsForTabId(tracked_browser, parent_tab_id);
     }
 
@@ -184,7 +188,7 @@ void OnTaskLockedSessionNavigationThrottle::MaybeCreateAndAdd(
 
   // Ensure we only apply the nav throttle on OnTask SWA navigations.
   if (content_browser &&
-      (&content_browser->GetBrowser() != window_tracker->browser() &&
+      (content_browser != window_tracker->browser() &&
        content_browser->GetType() != BrowserType::kAppPopup)) {
     return;
   }
@@ -269,7 +273,7 @@ bool OnTaskLockedSessionNavigationThrottle::IsOutsideOnTaskAppNavigation() {
   // context, but is moved to a different browser right after (such as open link
   // in chrome window context menu).
   if (!content_browser ||
-      (&content_browser->GetBrowser() != window_tracker->browser() &&
+      (content_browser != window_tracker->browser() &&
        content_browser->GetType() != BrowserType::kAppPopup)) {
     return true;
   }
@@ -336,9 +340,9 @@ OnTaskLockedSessionNavigationThrottle::CheckRestrictions() {
     return PROCEED;
   }
 
-  // Checks if the query is the end of an OAuth login. If so, then we want
-  // to let these pass.
-  if (IsOauthLoginComplete(url)) {
+  // Checks if the query is the end of an OAuth login. Only allow completion
+  // URLs to bypass restrictions when an OAuth login flow is actively tracked.
+  if (window_tracker->oauth_in_progress() && IsOauthLoginComplete(url)) {
     should_redirects_pass_ = true;
     return PROCEED;
   }

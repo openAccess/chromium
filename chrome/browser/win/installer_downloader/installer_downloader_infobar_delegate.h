@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_WIN_INSTALLER_DOWNLOADER_INSTALLER_DOWNLOADER_INFOBAR_DELEGATE_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/functional/callback_forward.h"
@@ -13,7 +14,6 @@
 #include "components/infobars/core/infobar_delegate.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/models/image_model.h"
-#include "ui/base/window_open_disposition.h"
 
 namespace infobars {
 class InfoBar;
@@ -46,6 +46,7 @@ class InstallerDownloaderInfoBarDelegate : public ConfirmInfoBarDelegate {
   void InfoBarDismissed() override;
   std::u16string GetMessageText() const override;
   std::u16string GetLinkText() const override;
+  std::optional<std::u16string> GetLinkAccessibleText() const override;
   int GetButtons() const override;
   std::u16string GetButtonLabel(InfoBarButton button) const override;
   GURL GetLinkURL() const override;

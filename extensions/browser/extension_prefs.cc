@@ -18,6 +18,7 @@
 #include "base/containers/flat_set.h"
 #include "base/json/values_util.h"
 #include "base/logging.h"
+#include "base/notreached.h"
 #include "base/observer_list.h"
 #include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
@@ -46,6 +47,7 @@
 #include "extensions/browser/extension_prefs_observer.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/install_flag.h"
 #include "extensions/browser/install_prefs_helper.h"
 #include "extensions/browser/manifest_v2_handler.h"
@@ -144,7 +146,15 @@ constexpr const char kPrefSuggestedPageOrdinal[] = "suggested_page_ordinal";
 // A preference that, if true, will allow this extension to run in incognito
 // mode.
 constexpr const char kPrefIncognitoEnabled[] = "incognito";
+
+// A preference that, if true, will allow this extension to run in Enterprise
+// Isolated Mode.
+constexpr const char kPrefIsolatedModeEnabled[] = "isolated_mode";
+
 #if BUILDFLAG(IS_CHROMEOS)
+// TODO(crbug.com/573504328): Add kPrefIsolatedModeEnabledPending and update
+// SetIsIncognitoEnabledDelayed / HasIncognitoEnabledPendingUpdate /
+// ApplyPendingUpdates to support Isolated Mode on ChromeOS.
 constexpr const char kPrefIncognitoEnabledPending[] = "incognito-pending";
 #endif
 
@@ -193,11 +203,6 @@ constexpr const char kPrefAPIs[] = "api";
 constexpr const char kPrefManifestPermissions[] = "manifest_permissions";
 constexpr const char kPrefExplicitHosts[] = "explicit_host";
 constexpr const char kPrefScriptableHosts[] = "scriptable_host";
-
-// A preference that indicates when an extension was installed/updated.
-// TODO(anunoy): DEPRECATED! Remove after M113.
-// Use kPrefLastUpdateTime instead.
-constexpr const char kPrefDeprecatedInstallTime[] = "install_time";
 
 // A preference which saves the creation flags for extensions.
 constexpr const char kPrefCreationFlags[] = "creation_flags";
@@ -878,27 +883,38 @@ std::unique_ptr<PermissionSet> ExtensionPrefs::ReadPrefAsPermissionSet(
 
 namespace {
 
-// Set the API or Manifest permissions.
-// The format of api_values is:
+// Creates the list of API permissions stored in prefs. The format is:
 // [ "permission_name1",   // permissions do not support detail.
 //   "permission_name2",
 //   {"permission_name3": value },
 //   // permission supports detail, permission detail will be stored in value.
 //   ...
 // ]
-template <typename T>
-base::Value CreatePermissionList(const T& permissions) {
+base::Value CreateAPIPermissionList(const APIPermissionSet& permissions) {
   base::ListValue values;
-  for (const auto* permission : permissions) {
-    std::unique_ptr<base::Value> detail(permission->ToValue());
+  for (const APIPermission* permission : permissions) {
+    std::optional<base::Value> detail = permission->ToValue();
     if (detail) {
       base::DictValue tmp;
-      tmp.Set(permission->name(),
-              base::Value::FromUniquePtrValue(std::move(detail)));
+      tmp.Set(permission->name(), *std::move(detail));
       values.Append(std::move(tmp));
     } else {
       values.Append(permission->name());
     }
+  }
+  return base::Value(std::move(values));
+}
+
+// Creates the list of manifest permissions stored in prefs. Manifest
+// permissions always have details, so every entry is a dictionary:
+// [ {"permission_name1": value1}, {"permission_name2": value2}, ... ]
+base::Value CreateManifestPermissionList(
+    const ManifestPermissionSet& permissions) {
+  base::ListValue values;
+  for (const ManifestPermission* permission : permissions) {
+    base::DictValue tmp;
+    tmp.Set(permission->name(), permission->ToValue());
+    values.Append(std::move(tmp));
   }
   return base::Value(std::move(values));
 }
@@ -911,12 +927,13 @@ void ExtensionPrefs::SetExtensionPrefPermissionSet(
     const PermissionSet& new_value) {
   std::string api_pref = JoinPrefs({pref_key, kPrefAPIs});
   UpdateExtensionPref(extension_id, api_pref,
-                      CreatePermissionList(new_value.apis()));
+                      CreateAPIPermissionList(new_value.apis()));
 
   std::string manifest_permissions_pref =
       JoinPrefs({pref_key, kPrefManifestPermissions});
-  UpdateExtensionPref(extension_id, manifest_permissions_pref,
-                      CreatePermissionList(new_value.manifest_permissions()));
+  UpdateExtensionPref(
+      extension_id, manifest_permissions_pref,
+      CreateManifestPermissionList(new_value.manifest_permissions()));
 
   // Set the explicit host permissions.
   SetExtensionPrefURLPatternSet(extension_id,
@@ -1108,12 +1125,8 @@ void ExtensionPrefs::AddRawDisableReasons(
   const base::flat_set<int> new_reasons =
       base::STLSetUnion<base::flat_set<int>>(current_reasons, incoming_reasons);
 
-  if (new_reasons == current_reasons) {
-    return;
-  }
-
-  WriteDisableReasonsToPrefs(extension_id, new_reasons);
-  OnDisableReasonsChanged(extension_id, current_reasons, new_reasons);
+  ReplaceRawDisableReasons(DisableReasonRawManipulationPasskey(), extension_id,
+                           new_reasons);
 }
 
 void ExtensionPrefs::RemoveDisableReason(
@@ -1130,12 +1143,9 @@ void ExtensionPrefs::RemoveDisableReasons(const ExtensionId& extension_id,
 
   base::flat_set<int> new_reasons =
       base::STLSetDifference<base::flat_set<int>>(current_reasons, to_remove);
-  if (new_reasons == current_reasons) {
-    return;
-  }
 
-  WriteDisableReasonsToPrefs(extension_id, new_reasons);
-  OnDisableReasonsChanged(extension_id, current_reasons, new_reasons);
+  ReplaceRawDisableReasons(disable_reason_raw_manipulation_passkey_,
+                           extension_id, new_reasons);
 }
 
 void ExtensionPrefs::ReplaceRawDisableReasons(
@@ -1151,18 +1161,16 @@ void ExtensionPrefs::ReplaceRawDisableReasons(
   WriteDisableReasonsToPrefs(extension_id, disable_reasons);
   OnDisableReasonsChanged(extension_id, current_disable_reasons,
                           disable_reasons);
+
+  if (!disable_reasons.contains(disable_reason::DISABLE_BY_ANOTHER_EXTENSION)) {
+    UpdateExtensionPref(extension_id, kDisableReasonByExtensionId.name,
+                        std::nullopt);
+  }
 }
 
 void ExtensionPrefs::ClearDisableReasons(const ExtensionId& extension_id) {
-  const base::flat_set<int> current_disable_reasons =
-      ReadDisableReasonsFromPrefs(extension_id);
-
-  if (current_disable_reasons.empty()) {
-    return;
-  }
-
-  WriteDisableReasonsToPrefs(extension_id, {});
-  OnDisableReasonsChanged(extension_id, current_disable_reasons, {});
+  ReplaceRawDisableReasons(disable_reason_raw_manipulation_passkey_,
+                           extension_id, {});
 }
 
 void ExtensionPrefs::ClearInapplicableDisableReasonsForComponentExtension(
@@ -1316,8 +1324,14 @@ void ExtensionPrefs::RemoveDesiredActivePermissions(
 
 void ExtensionPrefs::SetWithholdingPermissions(const ExtensionId& extension_id,
                                                bool should_withhold) {
+  if (GetWithholdingPermissions(extension_id) == should_withhold) {
+    return;
+  }
   UpdateExtensionPref(extension_id, kPrefWithholdingPermissions,
                       base::Value(should_withhold));
+  for (auto& observer : observer_list_) {
+    observer.OnExtensionWithholdingPermissionsChanged(extension_id);
+  }
 }
 
 bool ExtensionPrefs::GetWithholdingPermissions(
@@ -1418,7 +1432,38 @@ void ExtensionPrefs::SetIsIncognitoEnabled(const ExtensionId& extension_id,
                                            bool enabled) {
   UpdateExtensionPref(extension_id, kPrefIncognitoEnabled,
                       base::Value(enabled));
-  extension_pref_value_map_->SetExtensionIncognitoState(extension_id, enabled);
+  if (!IsolatedModeReplacesIncognito()) {
+    extension_pref_value_map_->SetExtensionIncognitoState(extension_id,
+                                                          enabled);
+  }
+}
+
+bool ExtensionPrefs::IsIsolatedModeEnabled(
+    const ExtensionId& extension_id) const {
+  return ReadPrefAsBooleanAndReturn(extension_id, kPrefIsolatedModeEnabled);
+}
+
+void ExtensionPrefs::SetIsIsolatedModeEnabled(const ExtensionId& extension_id,
+                                              bool enabled) {
+  UpdateExtensionPref(extension_id, kPrefIsolatedModeEnabled,
+                      base::Value(enabled));
+  if (IsolatedModeReplacesIncognito()) {
+    extension_pref_value_map_->SetExtensionIncognitoState(extension_id,
+                                                          enabled);
+  }
+}
+
+bool ExtensionPrefs::IsolatedModeReplacesIncognito() {
+  // TODO(crbug.com/576933996): Initialize `isolated_mode_` eagerly in the
+  // constructor and remove this helper once tests set up Isolated Mode before
+  // ExtensionPrefs creation.
+  if (!isolated_mode_.has_value()) {
+    isolated_mode_ =
+        ExtensionsBrowserClient::Get() &&
+        ExtensionsBrowserClient::Get()->IsolatedModeReplacesIncognito(
+            browser_context_);
+  }
+  return *isolated_mode_;
 }
 
 bool ExtensionPrefs::AllowFileAccess(const ExtensionId& extension_id) const {
@@ -2025,6 +2070,11 @@ void ExtensionPrefs::OnDisableReasonsChanged(
         extension_id, CollapseUnknownDisableReasons(new_reasons));
   }
 
+  if (blocklist_prefs::IsExtensionBlocklisted(extension_id, this)) {
+    // If the extension is blocklisted, return early since we should not change
+    // the enabled state based on the disable reasons.
+    return;
+  }
   const bool new_enabled = new_reasons.empty();
   const bool old_enabled = old_reasons.empty();
 
@@ -2157,7 +2207,7 @@ const base::DictValue& ExtensionPrefs::GetInstallSignature() const {
 
 void ExtensionPrefs::SetInstallSignature(base::DictValue* signature) {
   if (signature) {
-    prefs_->Set(kInstallSignature, base::Value(std::move(*signature)));
+    prefs_->SetDict(kInstallSignature, std::move(*signature));
     DVLOG(1) << "SetInstallSignature - saving";
   } else {
     DVLOG(1) << "SetInstallSignature - clearing";
@@ -2221,8 +2271,6 @@ ExtensionPrefs::ExtensionPrefs(
 
   InitPrefStore();
 
-  BackfillAndMigrateInstallTimePrefs();
-
   MigrateDeprecatedDisableReasons();
 
   CleanUpCdpInstalledExtensions();
@@ -2244,6 +2292,7 @@ void ExtensionPrefs::RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
   registry->RegisterBooleanPref(
       pref_names::kExtensionInstallCloudPolicyChecksEnabled,
       /*default_value=*/false);
+  registry->RegisterDictionaryPref(pref_names::kGlobalShortcutsPortalState);
 }
 
 // static
@@ -2310,6 +2359,10 @@ void ExtensionPrefs::RegisterProfilePrefs(
   registry->RegisterListPref(pref_names::kInitialInstallList);
   registry->RegisterStringPref(pref_names::kInitialInstallProviderName,
                                /*default_value=*/std::string());
+
+  registry->RegisterBooleanPref(
+      pref_names::kExtensionForceInstallWithSearchOrNewTabOverridesEnabled,
+      /*default_value=*/false);
 }
 
 template <class ExtensionIdContainer>
@@ -2439,8 +2492,12 @@ void ExtensionPrefs::InitExtensionControlledPrefs(
     const ExtensionId& extension_id = info.extension_id;
 
     base::Time install_time = GetLastUpdateTime(this, extension_id);
-    bool is_enabled = !IsExtensionDisabled(extension_id);
-    bool is_incognito_enabled = IsIncognitoEnabled(extension_id);
+    bool is_enabled =
+        !IsExtensionDisabled(extension_id) &&
+        !blocklist_prefs::IsExtensionBlocklisted(extension_id, this);
+    bool is_incognito_enabled = IsolatedModeReplacesIncognito()
+                                    ? IsIsolatedModeEnabled(extension_id)
+                                    : IsIncognitoEnabled(extension_id);
     extension_pref_value_map_->RegisterExtension(
         extension_id, install_time, is_enabled, is_incognito_enabled);
 
@@ -2537,43 +2594,24 @@ void ExtensionPrefs::FinishExtensionInfoPrefs(
     app_sorting()->EnsureValidOrdinals(extension_id, suggested_page_ordinal);
   }
 
-  bool is_enabled = true;
+  bool is_enabled =
+      !blocklist_prefs::IsExtensionBlocklisted(extension_id, this);
   base::ListValue* disable_reasons = nullptr;
   extension_dict->GetListWithoutPathExpansion(kPrefDisableReasons,
                                               &disable_reasons);
   if (disable_reasons) {
-    is_enabled = disable_reasons->empty();
+    is_enabled = is_enabled && disable_reasons->empty();
   }
 
-  bool is_incognito_enabled = IsIncognitoEnabled(extension_id);
+  bool is_incognito_enabled = IsolatedModeReplacesIncognito()
+                                  ? IsIsolatedModeEnabled(extension_id)
+                                  : IsIncognitoEnabled(extension_id);
 
   extension_pref_value_map_->RegisterExtension(
       extension_id, install_time, is_enabled, is_incognito_enabled);
 
   for (auto& observer : observer_list_) {
     observer.OnExtensionRegistered(extension_id, install_time, is_enabled);
-  }
-}
-
-void ExtensionPrefs::BackfillAndMigrateInstallTimePrefs() {
-  // Get information for for all extensions including component extensions
-  // since the install time pref is saved for them too.
-  const InstallRecords extensions_info =
-      GetInstalledExtensionsInfo(/*include_component_extensions=*/true);
-
-  for (const auto& info : extensions_info) {
-    ScopedExtensionPrefUpdate update(prefs_, info.extension_id);
-    auto ext_dict = update.Get();
-    if (ext_dict->HasKey(kPrefDeprecatedInstallTime)) {
-      std::string install_time_string;
-      ext_dict->GetString(kPrefDeprecatedInstallTime, &install_time_string);
-      // Populate the new 'last_update_time' pref.
-      ext_dict->SetString(kPrefLastUpdateTime, install_time_string);
-      // Backfill the 'first_install_time' pref with the existing install time.
-      ext_dict->SetString(kPrefFirstInstallTime, install_time_string);
-      // Remove the deprecated 'install_time' pref.
-      ext_dict->Remove(kPrefDeprecatedInstallTime);
-    }
   }
 }
 

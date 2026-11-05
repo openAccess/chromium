@@ -309,10 +309,22 @@ class _TransitiveValuesBuilder:
         params = self._params
         ret = self._ret
         resource_deps = params.resource_deps()
-        ret.dependency_zips.update(resource_deps.collect('resources_zip'))
-        ret.dependency_zip_overlays.update(
-            resource_deps.collect('resources_overlay_zip')
-        )
+        if params.type == 'dist_aar':
+            # dist_aar packages uncompiled resource files into res/, whereas
+            # resources_zip contains pre-compiled .flat files.
+            for c in resource_deps:
+                res_sources = c.get('res_sources_path') or c.get(
+                    'uncompiled_resources_zip'
+                )
+                if zip_path := c.get('resources_zip'):
+                    ret.dependency_zips.add(res_sources or zip_path)
+                elif zip_path := c.get('resources_overlay_zip'):
+                    ret.dependency_zip_overlays.add(res_sources or zip_path)
+        else:
+            ret.dependency_zips.update(resource_deps.collect('resources_zip'))
+            ret.dependency_zip_overlays.update(
+                resource_deps.collect('resources_overlay_zip')
+            )
 
         assets, uncompressed_assets, locale_paks = _MergeAssets(
             all_deps_without_under_test.of_type('android_assets')
@@ -469,7 +481,7 @@ def _CreateJavaLocaleListFromAssets(assets, locale_paks):
     locales = [
         os.path.basename(a)[:-4] for a in assets_paths if a in locale_paks
     ]
-    return '{%s}' % ','.join('"%s"' % l for l in sorted(locales))
+    return '{%s}' % ','.join('"%s"' % l for l in sorted(locales))  # noqa: E741
 
 
 def _AddJarMapping(jar_to_target, config):
@@ -636,7 +648,9 @@ def _CreateLintConfig(params, javac_config, manifest_config):
                 resource_sources.add(path)
             else:
                 resource_zips.add(
-                    c.get('resources_zip') or c.get('resources_overlay_zip')
+                    c.get('uncompiled_resources_zip')
+                    or c.get('resources_zip')
+                    or c.get('resources_overlay_zip')
                 )
 
     if params.is_bundle():
@@ -759,9 +773,6 @@ def main():
 
     if is_apk:
         main_config['apk_path'] = params['apk_path']
-        if path := params.get('incremental_install_json_path'):
-            main_config['incremental_install_json_path'] = path
-            main_config['incremental_apk_path'] = params['incremental_apk_path']
 
     if is_bundle_module:
         main_config['unprocessed_jar_path'] = params['unprocessed_jar_path']
@@ -778,6 +789,9 @@ def main():
         if params.needs_full_javac_classpath():
             main_config['javac_full_classpath'] = javac_full_classpath
             main_config['sdk_jars'] = sdk_deps.collect('unprocessed_jar_path')
+            sdk_api_databases = sdk_deps.collect('api_database_path')
+            assert len(sdk_api_databases) <= 1, sdk_api_databases
+            main_config['sdk_api_databases'] = sdk_api_databases
 
         if params.collects_processed_classpath():
             main_config['processed_classpath'] = list(tv.all_processed_jars)
@@ -904,6 +918,7 @@ def main():
             union_fields['proguard_classpath_jars'] = 'proguard_classpath_jars'
             union_fields['proguard_all_configs'] = 'proguard_all_configs'
             union_fields['sdk_jars'] = 'sdk_jars'
+            union_fields['sdk_api_databases'] = 'sdk_api_databases'
 
         unioned_values = {k: OrderedSet() for k in union_fields}
         for n, c in module_configs_by_name.items():
@@ -931,6 +946,9 @@ def main():
 
         for dst_key in union_fields:
             main_config[dst_key] = list(unioned_values[dst_key])
+        if proguard_enabled:
+            sdk_api_databases = main_config['sdk_api_databases']
+            assert len(sdk_api_databases) <= 1, sdk_api_databases
 
         # Promote duplicates from siblings/cousins.
         for f in per_module_fields:
@@ -948,9 +966,7 @@ def main():
             main_config['version_code'] = params['version_code']
             main_config['version_name'] = params['version_name']
 
-        # TrichromeLibrary has no dex.
-        if final_dex_path := params.get('final_dex_path'):
-            main_config['final_dex_path'] = final_dex_path
+        main_config['final_dex_path'] = params['final_dex_path']
 
         library_paths = params.native_libraries()
         secondary_abi_libraries = params.secondary_abi_native_libraries()

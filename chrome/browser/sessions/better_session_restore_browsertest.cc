@@ -38,6 +38,7 @@
 #include "chrome/browser/ui/startup/features.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_profile.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
@@ -50,6 +51,7 @@
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/url_constants.h"
@@ -66,6 +68,21 @@
 #endif
 
 namespace {
+
+constexpr char kClearDiskStateHistogram[] =
+    "Storage.SessionStorage.ClearDiskStateAtStoragePartitionInit";
+
+// Returns the number of samples of `kClearDiskStateHistogram` recorded for
+// TopChromeWebUIProfile. With kTopChromeWebUISharedRenderer, it hosts the WebUI
+// toolbar, and its in-memory storage partition records false.
+int GetTopChromeWebUIProfileSampleCount() {
+  Profile* profile = webui::GetTopChromeWebUIProfile();
+  return profile && profile->GetStoragePartition(
+                        content::StoragePartitionConfig::CreateDefault(profile),
+                        /*can_create=*/false)
+             ? 1
+             : 0;
+}
 
 const char kTestHeaders[] = "HTTP/1.1 200 OK\nContent-type: text/html\n\n";
 
@@ -430,24 +447,74 @@ IN_PROC_BROWSER_TEST_P(ContinueWhereILeftOffSessionStorageTest,
   // regardless of feature state.
   CheckReloadedPageRestored();
 
+  const int top_chrome_webui_samples = GetTopChromeWebUIProfileSampleCount();
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOS also loads a signin OTR Profile (always false) and its parent
   // non-OTR Profile (true when the feature is enabled. False otherwise).
   if (IsClearDiskStateEnabled()) {
-    histogram_tester_.ExpectBucketCount(
-        "Storage.SessionStorage.ClearDiskStateAtStoragePartitionInit", false,
-        2);
-    histogram_tester_.ExpectBucketCount(
-        "Storage.SessionStorage.ClearDiskStateAtStoragePartitionInit", true, 1);
+    histogram_tester_.ExpectBucketCount(kClearDiskStateHistogram, false,
+                                        2 + top_chrome_webui_samples);
+    histogram_tester_.ExpectBucketCount(kClearDiskStateHistogram, true, 1);
   } else {
-    histogram_tester_.ExpectUniqueSample(
-        "Storage.SessionStorage.ClearDiskStateAtStoragePartitionInit", false,
-        3);
+    histogram_tester_.ExpectUniqueSample(kClearDiskStateHistogram, false,
+                                         3 + top_chrome_webui_samples);
   }
 #else
-  histogram_tester_.ExpectUniqueSample(
-      "Storage.SessionStorage.ClearDiskStateAtStoragePartitionInit", false, 1);
+  histogram_tester_.ExpectUniqueSample(kClearDiskStateHistogram, false,
+                                       1 + top_chrome_webui_samples);
 #endif  // BUILDFLAG(IS_CHROMEOS)
+}
+
+IN_PROC_BROWSER_TEST_F(ContinueWhereILeftOffTest,
+                       PRE_SessionStorageSequentiallyCloseMultipleWindows) {
+  StoreDataWithPage("session_storage.html?value=first");
+
+  BrowserWindowInterface* second_browser =
+      CreateBrowser(browser()->GetProfile());
+  StoreDataWithPage(second_browser, "session_storage.html?value=second");
+
+  ASSERT_NE(browser()
+                ->GetTabStripModel()
+                ->GetActiveWebContents()
+                ->GetController()
+                .GetDefaultSessionStorageNamespace()
+                ->id(),
+            second_browser->GetTabStripModel()
+                ->GetActiveWebContents()
+                ->GetController()
+                .GetDefaultSessionStorageNamespace()
+                ->id());
+
+  // SessionService records the first window as closed because another window
+  // remains open. Closing the last window adds its ID to
+  // `pending_window_close_ids_` before its tabs close, so `TabClosing()` leaves
+  // their sessionStorage namespaces marked as persistent for session restore.
+  CloseBrowserSynchronously(browser());
+  CloseBrowserSynchronously(second_browser);
+}
+
+IN_PROC_BROWSER_TEST_F(ContinueWhereILeftOffTest,
+                       SessionStorageSequentiallyCloseMultipleWindows) {
+  Profile* profile = browser()->GetProfile();
+  int restored_window_count = 0;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [this, profile,
+       &restored_window_count](BrowserWindowInterface* restored_browser) {
+        if (restored_browser->GetProfile() == profile &&
+            restored_browser->GetType() ==
+                BrowserWindowInterface::TYPE_NORMAL) {
+          CheckReloadedPageRestored(restored_browser);
+          const GURL& restored_url = restored_browser->GetTabStripModel()
+                                         ->GetWebContentsAt(0)
+                                         ->GetLastCommittedURL();
+          EXPECT_EQ("/session_restore/session_storage.html",
+                    restored_url.path());
+          EXPECT_EQ("value=second", restored_url.query());
+          ++restored_window_count;
+        }
+        return true;
+      });
+  EXPECT_EQ(1, restored_window_count);
 }
 
 IN_PROC_BROWSER_TEST_F(ContinueWhereILeftOffTest,
@@ -589,6 +656,21 @@ IN_PROC_BROWSER_TEST_F(ContinueWhereILeftOffTest,
   CheckFormRestored(new_browser, false, false);
 }
 
+IN_PROC_BROWSER_TEST_F(ContinueWhereILeftOffTest,
+                       PRE_SessionStorageLastWindowClose) {
+  StoreDataWithPage("session_storage.html");
+
+  // Close the last window while SessionService is still alive so TabClosing()
+  // makes the persistence decision before shutdown destroys the final namespace
+  // handle.
+  CloseBrowserSynchronously(browser());
+}
+
+IN_PROC_BROWSER_TEST_F(ContinueWhereILeftOffTest,
+                       SessionStorageLastWindowClose) {
+  CheckReloadedPageRestored();
+}
+
 #if BUILDFLAG(ENABLE_BACKGROUND_MODE)
 
 IN_PROC_BROWSER_TEST_F(ContinueWhereILeftOffTest,
@@ -712,7 +794,8 @@ IN_PROC_BROWSER_TEST_P(RestartSessionStorageTest, SessionStorage) {
   CheckReloadedPageRestored();
 
   histogram_tester_.ExpectUniqueSample(
-      "Storage.SessionStorage.ClearDiskStateAtStoragePartitionInit", false, 1);
+      kClearDiskStateHistogram, false,
+      1 + GetTopChromeWebUIProfileSampleCount());
 }
 
 IN_PROC_BROWSER_TEST_F(RestartTest, PRE_LocalStorageClearedOnExit) {
@@ -838,24 +921,27 @@ IN_PROC_BROWSER_TEST_P(NoSessionRestoreSessionStorageTest, SessionStorage) {
   EXPECT_EQ(std::string(url::kAboutBlankURL), web_contents->GetURL().spec());
   StoreDataWithPage("session_storage.html");
 
+  const int top_chrome_webui_samples = GetTopChromeWebUIProfileSampleCount();
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOS also loads a signin OTR Profile (always false) and its parent
   // non-OTR Profile (true when the feature is enabled. False otherwise).
   if (IsClearDiskStateEnabled()) {
-    histogram_tester_.ExpectBucketCount(
-        "Storage.SessionStorage.ClearDiskStateAtStoragePartitionInit", true, 2);
-    histogram_tester_.ExpectBucketCount(
-        "Storage.SessionStorage.ClearDiskStateAtStoragePartitionInit", false,
-        1);
+    histogram_tester_.ExpectBucketCount(kClearDiskStateHistogram, true, 2);
+    histogram_tester_.ExpectBucketCount(kClearDiskStateHistogram, false,
+                                        1 + top_chrome_webui_samples);
   } else {
-    histogram_tester_.ExpectUniqueSample(
-        "Storage.SessionStorage.ClearDiskStateAtStoragePartitionInit", false,
-        3);
+    histogram_tester_.ExpectUniqueSample(kClearDiskStateHistogram, false,
+                                         3 + top_chrome_webui_samples);
   }
 #else
-  histogram_tester_.ExpectUniqueSample(
-      "Storage.SessionStorage.ClearDiskStateAtStoragePartitionInit",
-      IsClearDiskStateEnabled(), 1);
+  if (IsClearDiskStateEnabled()) {
+    histogram_tester_.ExpectBucketCount(kClearDiskStateHistogram, true, 1);
+    histogram_tester_.ExpectBucketCount(kClearDiskStateHistogram, false,
+                                        top_chrome_webui_samples);
+  } else {
+    histogram_tester_.ExpectUniqueSample(kClearDiskStateHistogram, false,
+                                         1 + top_chrome_webui_samples);
+  }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 }
 

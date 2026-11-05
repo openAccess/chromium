@@ -45,8 +45,8 @@ sk_sp<SkData> MakeData(const std::string& str) {
 constexpr base::MemoryConsumerTraits kGrShaderCacheTraits(
     // Default capacity is small; footprint under 10MB.
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    // Eviction requires map and LRU list updates.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    // Eviction reads the LRU list and the entries being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     // Shaders are recoverable from disk or source recompilation.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Asynchronous since AsyncMemoryConsumerRegistration is used.
@@ -215,7 +215,7 @@ bool GrShaderCache::OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
 void GrShaderCache::OnUpdateMemoryLimit() {
   base::AutoLock auto_lock(lock_);
   if (base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
-    int clamped_memory_limit =
+    base::MemoryLimit clamped_memory_limit =
         std::clamp(memory_limit(), base::kCriticalMemoryPressureThreshold,
                    base::kNoMemoryPressureThreshold);
     size_t target_limit = gpu::UpdateShaderCacheSizeOnMemoryLimit(
@@ -227,7 +227,7 @@ void GrShaderCache::OnUpdateMemoryLimit() {
 void GrShaderCache::OnReleaseMemory() {
   base::AutoLock auto_lock(lock_);
 
-  int clamped_memory_limit =
+  base::MemoryLimit clamped_memory_limit =
       std::clamp(memory_limit(), base::kCriticalMemoryPressureThreshold,
                  base::kNoMemoryPressureThreshold);
   size_t target_limit = gpu::UpdateShaderCacheSizeOnMemoryLimit(

@@ -36,6 +36,28 @@ enum class TipIdentifier;
 // Indicates that the user has tapped the Default Browser promo.
 - (void)didTapDefaultBrowserPromo;
 
+// Indicates that the user has tapped the AIM module.
+- (void)didTapAIMModule;
+
+// Notifies the audience that the content suggestions size has been updated.
+- (void)contentSuggestionsWasUpdated;
+
+// Indicates that the user has tapped the photo picker button in the actionable
+// NTP Theme tip.
+- (void)didSelectNTPThemePhotoPicker;
+
+// Indicates that the user has tapped a theme option in the actionable NTP Theme
+// tip.
+- (void)didSelectNTPThemeOption;
+
+// Notifies the audience that a user-uploaded background photo was saved from
+// the actionable NTP Theme tip.
+- (void)didSaveNTPThemeBackgroundPhoto;
+
+// Indicates that the user has toggled the switch in the actionable Tips
+// Notifications tip.
+- (void)didToggleTipsNotificationsSwitch:(BOOL)enabled;
+
 @end
 
 #endif  // IOS_CHROME_BROWSER_CONTENT_SUGGESTIONS_UI_CONTENT_SUGGESTIONS_VIEW_CONTROLLER_AUDIENCE_H_

@@ -41,7 +41,7 @@ enum class TrustedVaultUserActionTriggerForUMA {
   kPasswordManagerErrorMessage = 4,
   // Used on iOS only, from the account menu.
   kAccountMenu = 5,
-  // From the Password Manager Settings (currently used only on iOS).
+  // From the Password Manager Settings (used on iOS and Desktop).
   kPasswordManagerSettings = 6,
   // From the passwords keyboard accessory (only used on Android).
   kPasswordManagerKeyboardAccessory = 7,
@@ -135,11 +135,40 @@ class TrustedVaultClient {
   // usually for the purpose of resolving a recoverability-degraded case
   // surfaced by GetIsRecoverabilityDegraded(). |method_type_hint| is an opaque
   // value provided server-side that may be used for related future
-  // interactions with the server.
+  // interactions with the server. |cb| is called upon completion with true if
+  // the recovery method was successfully registered (or a registration attempt
+  // returned that it was already registered), or false otherwise.
+  // Note: If there are no keys available locally, no registration attempt is
+  // performed and |cb| is called with false. However, it is possible that the
+  // provided |public_key| is already registered server-side - so an already
+  // registered |public_key| does not guarantee that |cb| is called with true.
+  //
+  // TODO(crbug.com/568736322): The behaviour on Android differs from the
+  // described behaviour above in somewhat complex/hard-to-predict ways. In
+  // particular, this method can silently create new encryption keys in certain
+  // (probably unlikely) circumstances. This should be aligned across platforms.
   virtual void AddTrustedRecoveryMethod(const GaiaId& gaia_id,
                                         const std::vector<uint8_t>& public_key,
                                         int method_type_hint,
-                                        base::OnceClosure cb) = 0;
+                                        base::OnceCallback<void(bool)> cb) = 0;
+
+  // Asynchronously checks whether `account_info` can be enrolled in
+  // the security domain without user interaction (e.g., for kChromeSync,
+  // whether the security domain is in the pre-enrolled state and a
+  // pre-generated Gaia password public key is available on the server).
+  // Resolves with `false` if the user is already enrolled.
+  virtual void CanEnroll(const CoreAccountInfo& account_info,
+                         base::OnceCallback<void(bool)> cb) = 0;
+
+  // Asynchronously enrolls `account_info` into the security domain (e.g., for
+  // kChromeSync, registers the user's Gaia password public key as a recovery
+  // factor and rotates the shared key from the constant key to a newly
+  // generated key). On success, `cb` is invoked with the new shared key and
+  // new key version; on failure (or if the user was already enrolled), `cb` is
+  // invoked with an empty vector and -1.
+  virtual void Enroll(
+      const CoreAccountInfo& account_info,
+      base::OnceCallback<void(const std::vector<uint8_t>&, int)> cb) = 0;
 
   // Clears all data associated with |account_info|. Doesn't remove account from
   // storage.

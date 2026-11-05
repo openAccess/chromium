@@ -22,8 +22,7 @@ sys.path.append(
     os.path.dirname(__file__), os.pardir, os.pardir, 'build', 'android'
   )
 )
-# pylint: disable=wrong-import-position,import-error
-import devil_chromium  # pylint: disable=unused-import
+import devil_chromium  # noqa: F401
 from devil.android import apk_helper
 from devil.android.ndk import abis
 from devil.android.sdk import version_codes
@@ -40,8 +39,6 @@ from pylib.utils import test_filter
 # contents need to be updated if there is an important fix to any of
 # the tests
 
-_APP_MODE_FULL = 'full'
-_APP_MODE_INSTANT = 'instant'
 
 _TEST_RUNNER_PATH = os.path.join(
   os.path.dirname(__file__),
@@ -66,7 +63,6 @@ _DEFAULT_TRADEFED_ADB_PATH = os.path.join(ANDROID_SDK_ROOT, 'platform-tools')
 _CTS_WEBKIT_PACKAGES = ["com.android.cts.webkit", "android.webkit.cts"]
 
 # Value of these constants should match flags in //build/android/test_runner.py
-_TEST_APK_AS_INSTANT_ARG = '--test-apk-as-instant'
 _USE_WEBVIEW_PROVIDER_ARG = '--use-webview-provider'
 
 SDK_PLATFORM_DICT = {
@@ -112,7 +108,6 @@ def GetCtsInfo(cts_gcs_path, arch, cts_release, item):
       return cts_gcs_path_info[cts_release]['arch'][arch][item]
     return cts_gcs_path_info[cts_release][item]
   except KeyError:
-    # pylint: disable=raise-missing-from
     # This script is executed with python2, and cannot use 'from'.
     raise Exception(
       'No %s info available for arch:%s, android:%s' % (item, arch, cts_release)
@@ -127,12 +122,10 @@ def GetCTSModuleNames(cts_gcs_path, arch, cts_release):
   return [os.path.basename(r['apk']) for r in test_runs]
 
 
-def GetTestRunFilterArg(args, test_run, test_app_mode=None, arch=None):
+def GetTestRunFilterArg(args, test_run, arch=None):
   """Merges json file filters with cmdline filters using
   test_filter.InitializeFilterFromArgs
   """
-
-  test_app_mode = test_app_mode or _APP_MODE_FULL
 
   # Convert cmdline filters to test-filter style
   filter_strings = test_filter.InitializeFiltersFromArgs(args)
@@ -146,7 +139,6 @@ def GetTestRunFilterArg(args, test_run, test_app_mode=None, arch=None):
       filter_["match"]
       for filter_ in filters
       if 'arch' not in filter_ or filter_['arch'] == arch
-      if 'mode' not in filter_ or filter_['mode'] == test_app_mode
     ]
 
   if not filter_strings or not any(
@@ -183,7 +175,6 @@ def RunCTS(
   tradefed_adb_path=None,
   voice_service=None,
   additional_apks=None,
-  test_app_mode=None,
   setup_commands=None,
   teardown_commands=None,
   json_results_file=None,
@@ -193,8 +184,6 @@ def RunCTS(
   Returns the script result code, test results will be stored in
   the json_results_file file if specified.
   """
-
-  test_app_mode = test_app_mode or _APP_MODE_FULL
 
   if is_hostside:
     suite_name, _ = os.path.splitext(os.path.basename(apk))
@@ -210,6 +199,12 @@ def RunCTS(
     ]
     if json_results_file:
       local_test_runner_args += ['--json-results-file=%s' % json_results_file]
+    # Hardcode an android_webview/ file path here, so that bugs are routed to
+    # the WebView team component. Otherwise this defaults to the top-level
+    # chromium component.
+    local_test_runner_args += [
+      '--test-location-for-bug-routing=//android_webview/DIR_METADATA'
+    ]
     return cmd_helper.RunCmd(
       [_TEST_RUNNER_PATH, 'hostside'] + local_test_runner_args
     )
@@ -236,14 +231,6 @@ def RunCTS(
           additional_apk_tmp,
         ]
 
-      if test_app_mode == _APP_MODE_INSTANT and not additional_apk.get(
-        'force_full_mode', False
-      ):
-        local_test_runner_args += [
-          '--instant-additional-apk',
-          additional_apk_tmp,
-        ]
-
   if setup_commands:
     for cmd in setup_commands:
       local_test_runner_args += ['--run-setup-command', cmd]
@@ -254,6 +241,12 @@ def RunCTS(
 
   if json_results_file:
     local_test_runner_args += ['--json-results-file=%s' % json_results_file]
+  # Hardcode an android_webview/ file path here, so that bugs are routed to
+  # the WebView team component. Otherwise this defaults to the top-level
+  # chromium component.
+  local_test_runner_args += [
+    '--test-location-for-bug-routing=//android_webview/DIR_METADATA'
+  ]
 
   return cmd_helper.RunCmd(
     [_TEST_RUNNER_PATH, 'instrumentation'] + local_test_runner_args
@@ -356,16 +349,12 @@ def RunAllCTSTests(args, arch, cts_release, test_runner_args):
       setup_commands = cts_test_run.get('setup_commands')
       teardown_commands = cts_test_run.get('teardown_commands')
 
-      test_app_mode = (
-        _APP_MODE_INSTANT if args.test_apk_as_instant else _APP_MODE_FULL
-      )
-
       # If --module-apk is specified then skip tests in all other modules
       if args.module_apk and os.path.basename(test_apk) != args.module_apk:
         continue
 
       iter_test_runner_args = test_runner_args + GetTestRunFilterArg(
-        args, cts_test_run, test_app_mode, arch
+        args, cts_test_run, arch
       )
 
       if json_results_file:
@@ -379,7 +368,6 @@ def RunAllCTSTests(args, arch, cts_release, test_runner_args):
             tradefed_adb_path=tradefed_adb_path,
             voice_service=voice_service,
             additional_apks=additional_apks,
-            test_app_mode=test_app_mode,
             setup_commands=setup_commands,
             teardown_commands=teardown_commands,
             json_results_file=iteration_json_file.name,
@@ -397,7 +385,6 @@ def RunAllCTSTests(args, arch, cts_release, test_runner_args):
           tradefed_adb_path=tradefed_adb_path,
           voice_service=voice_service,
           additional_apks=additional_apks,
-          test_app_mode=test_app_mode,
           setup_commands=setup_commands,
           teardown_commands=teardown_commands,
         )
@@ -491,8 +478,6 @@ def ForwardArgsToTestRunner(known_args):
     forwarded_args.extend(['--device'] + known_args.devices)
   if known_args.denylist_file:
     forwarded_args.extend(['--denylist-file', known_args.denylist_file])
-  if known_args.test_apk_as_instant:
-    forwarded_args.extend([_TEST_APK_AS_INSTANT_ARG])
   if known_args.use_webview_provider:
     forwarded_args.extend(
       [_USE_WEBVIEW_PROVIDER_ARG, known_args.use_webview_provider]
@@ -684,22 +669,6 @@ def main():
       'Path to a JSON file that contains the '
       'variations test seed. Defaults to running CTS '
       'tests without a variations test seed.'
-    ),
-  )
-  # We are re-using this argument that is used by our test runner
-  # to detect if we are testing against an instant app
-  # This allows us to know if we should filter tests based off the app
-  # app mode or not
-  # We are adding this filter directly instead of calling a function like
-  # we do with test_filter.AddFilterOptions below because this would make
-  # test-apk a required argument which would make this script fail
-  # because we provide this later programmatically in this script
-  parser.add_argument(
-    _TEST_APK_AS_INSTANT_ARG,
-    action='store_true',
-    help=(
-      'Run CTS tests in instant app mode. '
-      'Instant apps run in a more restrictive execution environment.'
     ),
   )
 

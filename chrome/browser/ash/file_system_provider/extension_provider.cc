@@ -14,7 +14,6 @@
 #include "chrome/browser/apps/app_service/app_icon_source.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/ash/file_system_provider/cloud_file_system.h"
 #include "chrome/browser/ash/file_system_provider/mount_request_handler.h"
 #include "chrome/browser/ash/file_system_provider/odfs_metrics.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system.h"
@@ -22,8 +21,6 @@
 #include "chrome/browser/ash/file_system_provider/service_worker_lifetime_manager.h"
 #include "chrome/browser/ash/file_system_provider/throttled_file_system.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_features.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_registry.h"
@@ -38,9 +35,6 @@ constexpr base::TimeDelta kDefaultMountTimeout = base::Minutes(10);
 
 ServiceWorkerLifetimeManager* GetServiceWorkerLifetimeManager(
     Profile* profile) {
-  if (!chromeos::features::IsUploadOfficeToCloudEnabled()) {
-    return nullptr;
-  }
   return ServiceWorkerLifetimeManager::Get(profile);
 }
 
@@ -80,7 +74,7 @@ std::unique_ptr<ProviderInterface> ExtensionProvider::Create(
 
   const extensions::FileSystemProviderCapabilities* const capabilities =
       extensions::FileSystemProviderCapabilities::Get(extension);
-  DCHECK(capabilities);
+  CHECK(capabilities, base::NotFatalUntil::M160);
 
   return std::make_unique<ExtensionProvider>(
       Profile::FromBrowserContext(registry->browser_context()),
@@ -96,28 +90,10 @@ std::unique_ptr<ProviderInterface> ExtensionProvider::Create(
 std::unique_ptr<ProvidedFileSystemInterface>
 ExtensionProvider::CreateProvidedFileSystem(
     Profile* profile,
-    const ProvidedFileSystemInfo& file_system_info,
-    CacheManager* cache_manager) {
-  DCHECK(profile);
-  if (!chromeos::features::IsFileSystemProviderCloudFileSystemEnabled()) {
-    return std::make_unique<ThrottledFileSystem>(
-        std::make_unique<ProvidedFileSystem>(profile, file_system_info));
-  }
-  // Cache type is only set when the
-  // `FileSystemProviderCloudFileSystemEnabled` and
-  // `FileSystemProviderContentCache` feature flags are enabled and the
-  // provider is ODFS.
-  if (file_system_info.cache_type() != CacheType::NONE) {
-    // CloudFileSystem with cache.
-    return std::make_unique<ThrottledFileSystem>(
-        std::make_unique<CloudFileSystem>(
-            std::make_unique<ProvidedFileSystem>(profile, file_system_info),
-            cache_manager));
-  }
-  // CloudFileSystem without cache.
+    const ProvidedFileSystemInfo& file_system_info) {
+  CHECK(profile, base::NotFatalUntil::M160);
   return std::make_unique<ThrottledFileSystem>(
-      std::make_unique<CloudFileSystem>(
-          std::make_unique<ProvidedFileSystem>(profile, file_system_info)));
+      std::make_unique<ProvidedFileSystem>(profile, file_system_info));
 }
 
 const Capabilities& ExtensionProvider::GetCapabilities() const {
@@ -171,14 +147,12 @@ ExtensionProvider::ExtensionProvider(Profile* profile,
   request_dispatcher_ = std::make_unique<RequestDispatcherImpl>(
       provider_id_.GetExtensionId(), extensions::EventRouter::Get(profile),
       GetServiceWorkerLifetimeManager(profile));
-  if (chromeos::features::IsUploadOfficeToCloudEnabled() &&
-      provider_id_.GetExtensionId() == extension_misc::kODFSExtensionId) {
+  if (provider_id_.GetExtensionId() == extension_misc::kODFSExtensionId) {
     odfs_metrics_ = std::make_unique<ODFSMetrics>();
   }
   request_manager_ = std::make_unique<RequestManager>(
       profile, /*notification_manager=*/nullptr, kDefaultMountTimeout);
-  if (chromeos::features::IsUploadOfficeToCloudEnabled() &&
-      provider_id_.GetExtensionId() == extension_misc::kODFSExtensionId) {
+  if (provider_id_.GetExtensionId() == extension_misc::kODFSExtensionId) {
     request_manager_->AddObserver(odfs_metrics_.get());
   }
   ObserveAppServiceForIcons(profile);

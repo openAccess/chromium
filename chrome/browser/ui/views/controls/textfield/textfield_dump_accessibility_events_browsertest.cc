@@ -48,8 +48,6 @@ IN_PROC_BROWSER_TEST_P(TextfieldDumpAccessibilityEventsTest, ValueChanged) {
       GetApiType() == ui::AXApiType::kWinIA2) {
     GTEST_SKIP() << "Legacy path fires incorrect EVENT_OBJECT_NAMECHANGE";
   }
-  // The ViewsAX path fires AXValueChanged on the parent AXGroup in addition
-  // to the textfield itself. Filter it for consistent cross-variant output.
   SetFilters(R"(
 @WIN-ALLOW:EVENT_OBJECT_VALUECHANGE*
 @WIN-ALLOW:IA2_EVENT_TEXT_INSERTED*
@@ -58,6 +56,11 @@ IN_PROC_BROWSER_TEST_P(TextfieldDumpAccessibilityEventsTest, ValueChanged) {
 @MAC-ALLOW:AXValueChanged*
 @AURALINUX-ALLOW:TEXT-INSERT*
 )");
+  // With ViewsAX on Mac, BrowserAccessibilityManagerMac::FireGeneratedEvent
+  // posts AXValueChanged for a text edit on both the text field and the root
+  // of its tree. That root is this test widget's RootView (role kWindow,
+  // exposed as AXGroup), which is inside the recorder's window scope, so it
+  // must be filtered here for consistent cross-variant output.
   AddDenyFilter("AXValueChanged on AXGroup*");
   BEGIN_RECORDING_EVENTS_OR_SKIP("textfield-value-changed");
   textfield_->SetText(u"Hello World");

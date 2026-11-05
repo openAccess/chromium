@@ -12,6 +12,7 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "gpu/config/gpu_config_export.h"
 
@@ -57,11 +58,12 @@ GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kAdjustGpuProcessPriority);
 
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kClearGrShaderDiskCacheOnInvalidPrefix);
 
+GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kGpuInitOptimization);
+
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kGpuShaderDiskCache);
 GPU_CONFIG_EXPORT bool IsShaderDiskCacheEnabled(
     const base::CommandLine* command_line);
 
-GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kVulkan);
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kForceEnableWebGpuInterop);
 
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kSkiaGraphite);
@@ -91,6 +93,10 @@ struct GPU_CONFIG_EXPORT SkiaGraphiteFeatureParams {
 
   // Maximum number of pending recordings before submitting to the GPU.
   int max_pending_recordings = 100;
+
+  // Maximum time since the last submit before a newly inserted recording
+  // forces a submit to the GPU.
+  base::TimeDelta max_time_between_submits = base::Milliseconds(500);
 
   // Whether to enable deferred submissions optimization (if possible). If it's
   // false, every SI's access will require a Graphite's Context::submit() call
@@ -149,6 +155,9 @@ inline bool SkiaGraphiteDawnEnableAutoMap() {
 inline int SkiaGraphiteMaxPendingRecordings() {
   return GetSkiaGraphiteFeatureParams().max_pending_recordings;
 }
+inline base::TimeDelta SkiaGraphiteMaxTimeBetweenSubmits() {
+  return GetSkiaGraphiteFeatureParams().max_time_between_submits;
+}
 inline bool SkiaGraphiteEnableDeferredSubmit() {
   return GetSkiaGraphiteFeatureParams().enable_deferred_submit;
 }
@@ -187,6 +196,7 @@ GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kGpuPersistentCache);
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kGpuPersistentCacheMetadata);
 GPU_CONFIG_EXPORT extern const base::FeatureParam<int>
     kGpuPersistentCacheMetadataPreloadCount;
+GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kGpuPersistentCacheAsyncInitialize);
 
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kConditionallySkipGpuChannelFlush);
 
@@ -206,20 +216,17 @@ GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebGPUBlobCache);
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebGPUEnableRangeAnalysisForRobustness);
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebGPUAndroidOpenGLES);
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebGPUUseSpirv14);
-GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebGPUDecomposeUniformBuffers);
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebGPUUseHLSL2021);
-GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebGPUUseSpirvReconvergenceMode);
 #if BUILDFLAG(IS_WIN)
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebGPUQualcommWindows);
 #endif
+GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebGPUUseDedicatedTransferBuffer);
 GPU_CONFIG_EXPORT extern const base::FeatureParam<std::string>
     kWebGPUDisabledToggles;
 GPU_CONFIG_EXPORT extern const base::FeatureParam<std::string>
     kWebGPUEnabledToggles;
 GPU_CONFIG_EXPORT extern const base::FeatureParam<std::string>
     kWebGPUUnsafeFeatures;
-GPU_CONFIG_EXPORT extern const base::FeatureParam<bool>
-    kWebGPUSpontaneousWireServer;
 GPU_CONFIG_EXPORT extern const base::FeatureParam<std::string>
     kWGSLUnsafeFeatures;
 
@@ -233,7 +240,6 @@ GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kGPUDriverBugListTestGroup);
 GPU_CONFIG_EXPORT extern const base::FeatureParam<int>
     kGPUDriverBugListTestGroupId;
 
-GPU_CONFIG_EXPORT bool IsUsingVulkan();
 GPU_CONFIG_EXPORT bool IsForceEnableWebGpuInterop();
 GPU_CONFIG_EXPORT bool IsDrDcEnabled(
     const gpu::GpuFeatureInfo& gpu_feature_info);
@@ -260,17 +266,27 @@ GPU_CONFIG_EXPORT bool IsSyncPointGraphValidationEnabled();
 
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kANGLEPerContextBlobCache);
 
+GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kANGLETrimMemory);
+
+GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kANGLETrimMemoryOnIdle);
+
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kConfigurableGPUWatchdogTimeout);
 GPU_CONFIG_EXPORT extern const base::FeatureParam<int>
     kConfigurableGPUWatchdogTimeoutSeconds;
 
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebGPUCompatibilityMode);
 
+GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebGLDeleteBuffersInBackground);
+
 GPU_CONFIG_EXPORT bool IsGraphiteContextThreadSafe();
 
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kSendGPUChannelEarly);
 GPU_CONFIG_EXPORT extern const base::FeatureParam<bool>
     kSendGPUChannelEarlyTopChromeOnly;
+
+GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kVulkanImaginationMSAA);
+
+GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWrappedSkiaBackingExclusiveAccess);
 
 }  // namespace features
 

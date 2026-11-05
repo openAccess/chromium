@@ -12,7 +12,6 @@ if (!is_android) {
       "support_tool_ui.h",
       "support_tool_ui_utils.h",
     ]
-    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
     deps = [
       "//base",
       "//chrome/app:branded_strings",
@@ -71,6 +70,7 @@ if (!is_android) {
       "//chrome/browser/support_tool",
       "//chrome/browser/support_tool:support_tool_proto",
       "//chrome/test:test_support",
+      "//chrome/test/base:testing_browser_process",
       "//components/feedback/redaction_tool",
       "//content/test:test_support",
       "//net",

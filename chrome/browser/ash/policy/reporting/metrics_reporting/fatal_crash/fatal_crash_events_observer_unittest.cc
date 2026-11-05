@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/policy/reporting/metrics_reporting/fatal_crash/fatal_crash_events_observer.h"
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <sstream>
@@ -229,7 +230,7 @@ class FatalCrashEventsObserverTestBase : public ::ash::NoSessionAshTestBase {
                          user_manager::UserType user_type,
                          bool is_user_affiliated) {
     NoSessionAshTestBase::SimulateUserLogin(
-        {.display_email = user_email,
+        {.account_id = AccountId::FromUserEmail(user_email),
          .user_type = user_type,
          .is_account_managed = is_user_affiliated});
   }
@@ -628,14 +629,15 @@ TEST_P(FatalCrashEventsObserverWithUserAffiliationParamTest,
     user_manager::UserType user_type;
     FatalCrashTelemetry::SessionType session_type;
   };
-  static constexpr TypePairs kSessionTypes[] = {
+  constexpr auto kSessionTypes = std::to_array<TypePairs>({
       {.user_type = user_manager::UserType::kChild,
        .session_type = FatalCrashTelemetry::SESSION_TYPE_CHILD},
       {.user_type = user_manager::UserType::kGuest,
-       .session_type = FatalCrashTelemetry::SESSION_TYPE_GUEST}};
+       .session_type = FatalCrashTelemetry::SESSION_TYPE_GUEST},
+  });
 
-  for (size_t i = 0; i < std::size(kSessionTypes); ++i) {
-    SimulateUserLogin(kUserEmail, UNSAFE_TODO(kSessionTypes[i]).user_type,
+  for (size_t i = 0; i < kSessionTypes.size(); ++i) {
+    SimulateUserLogin(kUserEmail, kSessionTypes[i].user_type,
                       is_user_affiliated());
     auto crash_event_info = NewCrashEventInfo(is_uploaded());
     if (is_uploaded()) {
@@ -649,8 +651,8 @@ TEST_P(FatalCrashEventsObserverWithUserAffiliationParamTest,
     const auto fatal_crash_telemetry =
         WaitForFatalCrashTelemetry(std::move(crash_event_info));
     ASSERT_TRUE(fatal_crash_telemetry.has_session_type());
-    UNSAFE_TODO(EXPECT_EQ(fatal_crash_telemetry.session_type(),
-                          kSessionTypes[i].session_type));
+    EXPECT_EQ(fatal_crash_telemetry.session_type(),
+              kSessionTypes[i].session_type);
     ClearLogin();
   }
 }

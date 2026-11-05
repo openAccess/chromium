@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/time/time.h"
 #include "components/browser_actuator/internal/transport/stream_connection_delegate.h"
 #include "components/signin/public/base/oauth_consumer_id.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
@@ -19,7 +20,7 @@ class IdentityManager;
 class PrimaryAccountAccessTokenFetcher;
 }  // namespace signin
 
-namespace browser_actuator {
+namespace browser_actuator::transport {
 
 // StreamConnectionDelegate decorator that authenticates the stream
 // connection as the profile's primary GAIA account
@@ -66,7 +67,8 @@ class OAuthStreamConnectionDelegate : public StreamConnectionDelegate {
   std::optional<StreamUploadBody> GetConnectionRequestBody() override;
 
  private:
-  void OnTokenFetched(std::unique_ptr<network::ResourceRequest> request,
+  void OnTokenFetched(base::TimeTicks start_time,
+                      std::unique_ptr<network::ResourceRequest> request,
                       PrepareRequestCallback callback,
                       GoogleServiceAuthError error,
                       signin::AccessTokenInfo access_token_info);
@@ -87,6 +89,6 @@ class OAuthStreamConnectionDelegate : public StreamConnectionDelegate {
   int consecutive_auth_failures_ = 0;
 };
 
-}  // namespace browser_actuator
+}  // namespace browser_actuator::transport
 
 #endif  // COMPONENTS_BROWSER_ACTUATOR_INTERNAL_TRANSPORT_OAUTH_OAUTH_STREAM_CONNECTION_DELEGATE_H_

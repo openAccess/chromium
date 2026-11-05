@@ -160,6 +160,9 @@ class PrintRenderFrameHelper
   friend class PrintRenderFrameHelperTestBase;
   FRIEND_TEST_ALL_PREFIXES(PrintRenderFrameHelperPreviewTest,
                            BlockScriptInitiatedPrinting);
+  FRIEND_TEST_ALL_PREFIXES(
+      PrintRenderFrameHelperPreviewTest,
+      PrintWithParamsBlocksConcurrentPrintPreviewAndScriptedPrint);
   FRIEND_TEST_ALL_PREFIXES(MAYBE_PrintRenderFrameHelperTest,
                            PrintRequestedPages);
   FRIEND_TEST_ALL_PREFIXES(MAYBE_PrintRenderFrameHelperTest,
@@ -273,6 +276,10 @@ class PrintRenderFrameHelper
   void PrintPreview(base::DictValue settings) override;
   void OnPrintPreviewDialogClosed() override;
 #endif  // BUILDFLAG(ENABLE_PRINT_PREVIEW)
+#if BUILDFLAG(IS_ANDROID)
+  void InitiatePrintAndroid() override;
+  void FinishPrintAndroid() override;
+#endif  // BUILDFLAG(IS_ANDROID)
   void PrintFrameContent(mojom::PrintFrameContentParamsPtr params,
                          PrintFrameContentCallback callback) override;
   void PrintingDone(bool success) override;
@@ -417,7 +424,8 @@ class PrintRenderFrameHelper
   // `page_index` is 0-based.
   // `metafile` is the rendered page and should be valid.
   // Returns true if print preview should continue, false on failure.
-  bool PreviewPageRendered(uint32_t page_index,
+  bool PreviewPageRendered(const mojom::PrintParams& print_params,
+                           uint32_t page_index,
                            std::unique_ptr<MetafileSkia> metafile);
 
   // Called when the connection with the |preview_ui_| goes away.
@@ -567,7 +575,7 @@ class PrintRenderFrameHelper
     size_t pages_rendered_count() const;
     MetafileSkia* metafile();
     ContentProxySet* typeface_content_info();
-    ContentProxySet* image_content_info();
+    ImageSerializationContext* image_content_info();
 
    private:
     enum class State {
@@ -592,7 +600,7 @@ class PrintRenderFrameHelper
     ContentProxySet typeface_content_info_;
 
     // The images encountered in the content during document serialization.
-    ContentProxySet image_content_info_;
+    ImageSerializationContext image_content_info_;
 
     // A document metafile is needed when not using the print compositor.
     std::unique_ptr<MetafileSkia> metafile_;
@@ -651,6 +659,9 @@ class PrintRenderFrameHelper
 
   ScriptingThrottler scripting_throttler_;
 
+  // Indicates that printing has started. On Android in the 3-stage print
+  // lifecycle, this is set by InitiatePrintAndroid() and remains true until
+  // FinishPrintAndroid() is invoked.
   bool print_in_progress_ = false;
   PrintPreviewContext print_preview_context_;
   bool is_loading_ = false;
@@ -675,7 +686,9 @@ class PrintRenderFrameHelper
   //   parameters so that it can be invoked after DidStopLoading.
   base::OnceClosure on_stop_loading_closure_;
 
-  // This is used to report PrintWithParams() call result.
+  // This is used to report the `PrintWithParams()` call result, and also
+  // serves as a flag indicating that `PrintWithParams()` is in progress to
+  // prevent concurrent print operations.
   PrintWithParamsCallback print_with_params_callback_;
 
   // Stores the quit closures of Mojo responses.

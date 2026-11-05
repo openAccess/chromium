@@ -25,10 +25,10 @@ import androidx.recyclerview.widget.RecyclerView;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetRecyclerScrollListener;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
 /**
@@ -37,6 +37,9 @@ import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
  */
 @NullMarked
 public class TabGroupListBottomSheetView implements BottomSheetContent {
+    private static final BottomSheetType SHEET_TYPE =
+            new BottomSheetType.Builder().setUserInitiated(true).build();
+
     private final RecyclerView mRecyclerView;
     private final ViewGroup mContentView;
     private final BottomSheetController mBottomsheetController;
@@ -61,7 +64,7 @@ public class TabGroupListBottomSheetView implements BottomSheetContent {
         mRecyclerView = mContentView.findViewById(R.id.tab_group_parity_recycler_view);
         mRecyclerView.setLayoutManager(new LinearLayoutManager(context));
         mRecyclerView.addOnScrollListener(
-                new BottomSheetRecyclerScrollListener(bottomSheetController));
+                new BottomSheetRecyclerScrollListener(bottomSheetController, this));
         mBottomsheetController = bottomSheetController;
         mShowNewGroupRow = showNewGroupRow;
     }
@@ -94,6 +97,11 @@ public class TabGroupListBottomSheetView implements BottomSheetContent {
     @Override
     public boolean swipeToDismissEnabled() {
         return true;
+    }
+
+    @Override
+    public BottomSheetType getSheetType() {
+        return SHEET_TYPE;
     }
 
     @Override
@@ -202,10 +210,7 @@ public class TabGroupListBottomSheetView implements BottomSheetContent {
 
             Resources resources = mRecyclerView.getContext().getResources();
             int rowHeight =
-                    resources.getDimensionPixelSize(
-                            ChromeFeatureList.sTabGroupListContainment.getValue()
-                                    ? R.dimen.tab_group_row_height_containment
-                                    : R.dimen.tab_group_row_height);
+                    resources.getDimensionPixelSize(R.dimen.tab_group_row_height_containment);
             ViewGroup.MarginLayoutParams recyclerLp =
                     (ViewGroup.MarginLayoutParams) mRecyclerView.getLayoutParams();
             int recyclerMargins =

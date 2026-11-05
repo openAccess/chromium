@@ -35,12 +35,9 @@ class QuicSessionPool::EndpointConnector : public QuicSessionAttempt::Delegate {
  public:
   // `created_by_slow_timer` is true for the connector created when the slow
   // timer fires. This stays unchanged if the connector moves to another slot.
-  // `is_stale` is true if this connector is attempting a stale DNS endpoint
-  // candidate.
   EndpointConnector(AsyncDnsJob* job,
                     const char* name,
-                    bool created_by_slow_timer,
-                    bool is_stale);
+                    bool created_by_slow_timer);
 
   EndpointConnector(const EndpointConnector&) = delete;
   EndpointConnector& operator=(const EndpointConnector&) = delete;
@@ -56,6 +53,8 @@ class QuicSessionPool::EndpointConnector : public QuicSessionAttempt::Delegate {
   std::optional<int> TryAdvance();
 
   bool has_attempt() const { return attempt_ != nullptr; }
+
+  bool has_attempt_in_flight() const { return attempt_in_flight_; }
 
   // A stable name that does not change when this connector moves between
   // slots. For logging.
@@ -73,7 +72,7 @@ class QuicSessionPool::EndpointConnector : public QuicSessionAttempt::Delegate {
 
   bool created_by_slow_timer() const { return created_by_slow_timer_; }
 
-  bool is_stale() const { return is_stale_; }
+  bool is_stale() const;
 
   // True when this connector could start an attempt as soon as the job has a
   // candidate for it. The job advances such connectors when new resolver
@@ -96,6 +95,10 @@ class QuicSessionPool::EndpointConnector : public QuicSessionAttempt::Delegate {
   // while this connector has one.
   void PopulateNetErrorDetails(NetErrorDetails* details) const;
 
+  // Cancels the attempt in flight, if any, because another connector settled
+  // the job.
+  void OnSuperseded();
+
   // QuicSessionAttempt::Delegate implementation.
   QuicSessionPool* GetQuicSessionPool() override;
   const QuicSessionAliasKey& GetKey() override;
@@ -104,6 +107,8 @@ class QuicSessionPool::EndpointConnector : public QuicSessionAttempt::Delegate {
   void OnQuicSessionCreationComplete(int rv) override;
 
  private:
+  void RecordAttemptTime(std::string_view result) const;
+
   // Hands the failed attempt's result and error details to the job, then
   // destroys the attempt. The job keeps the error details because the attempt
   // does not survive its own failure.
@@ -114,7 +119,6 @@ class QuicSessionPool::EndpointConnector : public QuicSessionAttempt::Delegate {
   const raw_ptr<AsyncDnsJob> job_;
   const char* const name_;
   const bool created_by_slow_timer_;
-  const bool is_stale_;
   std::unique_ptr<QuicSessionAttempt> attempt_;
   // The job-wide identifier of `attempt_`.
   std::optional<int> attempt_id_;

@@ -154,6 +154,9 @@ class DocumentPipFrameView : public views::FrameView,
   }
   views::ImageButton* GetCloseButtonForTesting() { return close_image_button_; }
   views::Label* GetWindowTitleForTesting() { return window_title_; }
+  AutoPipSettingOverlayView* GetAutoPipSettingOverlayViewForTesting() {
+    return auto_pip_setting_overlay_;
+  }
 
   // Recomputes the outer window bounds now that the Widget (and thus the
   // platform border) exists, so a request that specifies an explicit inner
@@ -167,19 +170,26 @@ class DocumentPipFrameView : public views::FrameView,
 
   void set_close_reason(CloseReason reason) { close_reason_ = reason; }
 
- private:
-  friend class DocumentPipFrameViewTest;
-  class WindowEventObserver;
-  // Minimal LocationBarModelDelegate backed by the opener WebContents.
-  class LocationBarModelDelegateImpl;
+ protected:
   // Returns the height of the top bar area, including the window top border.
   int GetTopAreaHeight() const;
 
   // Returns the insets of the window frame borders.
-  gfx::Insets FrameBorderInsets() const;
+  virtual gfx::Insets FrameBorderInsets() const;
 
   // Returns the insets of the window frame borders for resizing.
-  gfx::Insets ResizeBorderInsets() const;
+  virtual gfx::Insets ResizeBorderInsets() const;
+
+  views::FlexLayoutView* top_bar_container_view() {
+    return top_bar_container_view_;
+  }
+
+ private:
+  friend class DocumentPipFrameViewTest;
+  friend class DocumentPipFrameViewTestApi;
+  class WindowEventObserver;
+  // Minimal LocationBarModelDelegate backed by the opener WebContents.
+  class LocationBarModelDelegateImpl;
 
   // Returns the non-client view area size (border + top bar).
   gfx::Size GetNonClientViewAreaSize() const;

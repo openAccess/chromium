@@ -22,10 +22,32 @@
 
 namespace extensions {
 
+namespace {
+
+// Returns true if `path` is "/" followed by exactly `test`.
+bool IsPathEqualTo(std::string_view path, std::string_view test) {
+  return path.starts_with('/') && path.substr(1) == test;
+}
+
+}  // namespace
+
 bool IsSourceFromAnExtension(const std::u16string& source) {
   return GURL(source).SchemeIs(kExtensionScheme) ||
          base::StartsWith(source, u"extensions::",
                           base::CompareCase::SENSITIVE);
+}
+
+bool IsGeneratedFaviconURL(const GURL& url) {
+  // Accept both "/_favicon" and "/_favicon/" without allocating.
+  std::string_view path = url.path();
+  if (path.ends_with('/')) {
+    path.remove_suffix(1);
+  }
+  return IsPathEqualTo(path, kFaviconSourcePath);
+}
+
+bool IsGeneratedBackgroundPageURL(const GURL& url) {
+  return IsPathEqualTo(url.path(), kGeneratedBackgroundPageFilename);
 }
 
 }  // namespace extensions
@@ -40,9 +62,6 @@ const GURL* g_item_snippet_url_for_test_ = nullptr;
 
 const char kChromeWebstoreBaseURL[] = "https://chrome.google.com/webstore";
 const char kNewChromeWebstoreBaseURL[] = "https://chromewebstore.google.com/";
-const char kModernWebGuidanceURL[] =
-    "https://developer.chrome.com/docs/extensions/ai/"
-    "build-with-ai#modern_web_guidance";
 const char kChromeWebstoreUpdateURL[] =
     "https://clients2.google.com/service/update2/crx";
 const char kChromeWebstoreApiURL[] = "https://chromewebstore.googleapis.com/";
@@ -58,16 +77,15 @@ const char kCustomUiPlainLinkIphUtmSource[] = "ext_zero_state_promo_links_iph";
 const char kNtpPromo1pUtmSource[] = "ext_ntp_promo_1p";
 const char kNtpPromo2pUtmSource[] = "ext_ntp_promo_2p";
 const char kNtpPromoSlUtmSource[] = "ext_ntp_promo_sl";
+const char kReviewExtensionsMenuUtmSource[] = "ext_review_extensions_menu";
+const char kReviewExtensionsPageUtmSource[] = "ext_review_extensions_page";
+const char kReviewContextMenuUtmSource[] = "ext_review_context_menu";
 
 GURL GetWebstoreLaunchURL() {
   extensions::ExtensionsClient* client = extensions::ExtensionsClient::Get();
   if (client)
     return client->GetWebstoreBaseURL();
   return GURL(kChromeWebstoreBaseURL);
-}
-
-GURL GetModernWebGuidanceURL() {
-  return GURL(kModernWebGuidanceURL);
 }
 
 GURL GetNewWebstoreLaunchURL() {

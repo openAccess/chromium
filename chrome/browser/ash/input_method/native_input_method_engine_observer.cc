@@ -35,7 +35,6 @@
 #include "chrome/browser/ash/input_method/suggestion_enums.h"
 #include "chrome/browser/ash/lobster/lobster_event_sink.h"
 #include "chrome/browser/ui/ash/input_method/input_method_menu_manager.h"
-#include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "chromeos/ash/services/ime/public/cpp/autocorrect.h"
 #include "chromeos/ash/services/ime/public/mojom/input_method.mojom.h"
@@ -45,6 +44,7 @@
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "ui/base/ime/ash/extension_ime_util.h"
 #include "ui/base/ime/ash/ime_bridge.h"
 #include "ui/base/ime/ash/ime_keyboard.h"
@@ -60,7 +60,6 @@ namespace {
 namespace mojom = ::ash::ime::mojom;
 
 struct InputFieldContext {
-  bool multiword_enabled = false;
   bool multiword_allowed = false;
 };
 
@@ -505,7 +504,7 @@ uint32_t Utf16ToCodepoint(std::u16string_view str) {
   base::ReadUnicodeCharacter(str, &index, &codepoint);
 
   // Should only contain a single codepoint.
-  DCHECK_EQ(index, str.length() - 1);
+  CHECK_EQ(index, str.length() - 1, base::NotFatalUntil::M160);
   return codepoint;
 }
 
@@ -550,8 +549,6 @@ void OnError() {
 InputFieldContext CreateInputFieldContext(
     const AssistiveSuggesterSwitch::EnabledSuggestions& enabled_suggestions) {
   return InputFieldContext{
-      .multiword_enabled =
-          base::FeatureList::IsEnabled(features::kAssistMultiWord),
       .multiword_allowed = enabled_suggestions.multi_word_suggestions};
 }
 
@@ -559,7 +556,7 @@ mojom::TextPredictionMode GetTextPredictionMode(
     std::string_view engine_id,
     const InputFieldContext& context,
     PrefService* prefs) {
-  return context.multiword_enabled && context.multiword_allowed &&
+  return context.multiword_allowed &&
                  IsPredictiveWritingEnabled(prefs, engine_id)
              ? mojom::TextPredictionMode::kEnabled
              : mojom::TextPredictionMode::kDisabled;
@@ -680,8 +677,7 @@ void UpdateCandidatesWindowSync(ime::mojom::CandidatesWindowPtr window) {
 ime::mojom::InputMethodSettingsPtr WithAutocorrectOverride(
     ime::mojom::InputMethodSettingsPtr base_settings,
     bool autocorrect_enabled) {
-  if (!base::FeatureList::IsEnabled(features::kAutocorrectByDefault) ||
-      !base_settings || !base_settings->is_latin_settings()) {
+  if (!base_settings || !base_settings->is_latin_settings()) {
     return base_settings;
   }
 
@@ -815,8 +811,7 @@ void NativeInputMethodEngineObserver::OnActivate(const std::string& engine_id) {
       // The FST Mojo engine is only needed if autocorrect is enabled ...
       !IsPhysicalKeyboardAutocorrectEnabled(prefs_, engine_id) &&
       // ... or if predictive writing is enabled.
-      !(base::FeatureList::IsEnabled(features::kAssistMultiWord) &&
-        IsPredictiveWritingEnabled(prefs_, engine_id))) {
+      !IsPredictiveWritingEnabled(prefs_, engine_id)) {
     connection_factory_.reset();
     remote_manager_.reset();
     input_method_.reset();
@@ -927,9 +922,7 @@ void NativeInputMethodEngineObserver::HandleOnFocusAsyncForNativeMojoEngine(
                             settings);
 
   InputFieldContext input_field_context =
-      base::FeatureList::IsEnabled(features::kAssistMultiWord)
-          ? CreateInputFieldContext(enabled_suggestions)
-          : InputFieldContext{};
+      CreateInputFieldContext(enabled_suggestions);
   const bool is_normal_screen =
       InputMethodManager::Get()->GetActiveIMEState()->GetUIStyle() ==
       InputMethodManager::UIStyle::kNormal;
@@ -1041,11 +1034,13 @@ void NativeInputMethodEngineObserver::OnKeyEvent(
             Utf16ToCodepoint(character_composer_.composed_character()));
       }
       auto process_key_event_callback =
-          base::BindOnce([](mojom::KeyEventResult result) {
-            return result == mojom::KeyEventResult::kConsumedByIme
-                       ? ui::ime::KeyEventHandledState::kHandledByIME
-                       : ui::ime::KeyEventHandledState::kNotHandled;
-          }).Then(std::move(callback));
+          mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+              base::BindOnce([](mojom::KeyEventResult result) {
+                return result == mojom::KeyEventResult::kConsumedByIme
+                           ? ui::ime::KeyEventHandledState::kHandledByIME
+                           : ui::ime::KeyEventHandledState::kNotHandled;
+              }).Then(std::move(callback)),
+              mojom::KeyEventResult::kNeedsHandlingBySystem);
       input_method_->ProcessKeyEvent(std::move(key_event),
                                      std::move(process_key_event_callback));
     } else {
@@ -1069,9 +1064,11 @@ void NativeInputMethodEngineObserver::OnReset(const std::string& engine_id) {
 
 void NativeInputMethodEngineObserver::OnDeactivated(
     const std::string& engine_id) {
-  if (ShouldRouteToRuleBasedEngine(engine_id)) {
-    input_method_.reset();
-  }
+  // Release all Mojo connections to the ImeService process when deactivated.
+  connection_factory_.reset();
+  remote_manager_.reset();
+  input_method_.reset();
+  host_receiver_.reset();
   ime_base_observer_->OnDeactivated(engine_id);
 }
 

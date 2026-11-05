@@ -11,6 +11,7 @@
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
+#include "base/scoped_observation.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -24,16 +25,16 @@
 #include "chrome/browser/ash/file_system_provider/fake_extension_provider.h"
 #include "chrome/browser/ash/file_system_provider/mount_path_util.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system_interface.h"
-#include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "content/public/test/browser_test.h"
 #include "storage/browser/file_system/external_mount_points.h"
 #include "storage/browser/file_system/file_system_operation.h"
 #include "storage/browser/file_system/file_system_url.h"
+#include "ui/message_center/message_center.h"
+#include "ui/message_center/message_center_observer.h"
 
 using storage::FileSystemURL;
 
@@ -59,11 +60,9 @@ base::FilePath GetTestFilePath(const std::string& file_name) {
 // `OneDriveUploadHandler::Upload` method. Ensures that the upload completes
 // with the expected results.
 class OneDriveUploadHandlerTest : public InProcessBrowserTest,
-                                  public NotificationDisplayService::Observer {
+                                  public message_center::MessageCenterObserver {
  public:
   OneDriveUploadHandlerTest() {
-    feature_list_.InitAndEnableFeature(
-        chromeos::features::kUploadOfficeToCloud);
     EXPECT_TRUE(temp_dir_.CreateUniqueTempDir());
     my_files_dir_ = temp_dir_.GetPath().Append("myfiles");
     read_only_dir_ = temp_dir_.GetPath().Append("readonly");
@@ -79,7 +78,7 @@ class OneDriveUploadHandlerTest : public InProcessBrowserTest,
   }
 
   void TearDownOnMainThread() override {
-    RemoveObservers();
+    notification_observer_.Reset();
     InProcessBrowserTest::TearDownOnMainThread();
   }
 
@@ -158,13 +157,7 @@ class OneDriveUploadHandlerTest : public InProcessBrowserTest,
 
   void SetUpObservers() {
     // Subscribe to Notification updates to track copy/move ODFS notifications.
-    NotificationDisplayServiceFactory::GetForProfile(profile())->AddObserver(
-        this);
-  }
-
-  void RemoveObservers() {
-    NotificationDisplayServiceFactory::GetForProfile(browser()->GetProfile())
-        ->RemoveObserver(this);
+    notification_observer_.Observe(message_center::MessageCenter::Get());
   }
 
   void SetUpRunLoop(int conditions_to_end_wait = 1) {
@@ -251,18 +244,28 @@ class OneDriveUploadHandlerTest : public InProcessBrowserTest,
     EndWait();
   }
 
-  // Run |on_notification_displayed_callback_| with observed |notification|.
-  void OnNotificationDisplayed(
-      const message_center::Notification& notification,
-      const NotificationCommon::Metadata* const metadata) override {
-    if (on_notification_displayed_callback_) {
-      std::move(on_notification_displayed_callback_).Run(notification);
-    }
+  void OnNotificationAdded(const std::string& notification_id) override {
+    RunNotificationDisplayedCallback(notification_id);
   }
 
-  void OnNotificationClosed(const std::string& notification_id) override {}
-  void OnNotificationDisplayServiceDestroyed(
-      NotificationDisplayService* service) override {}
+  void OnNotificationUpdated(const std::string& notification_id) override {
+    RunNotificationDisplayedCallback(notification_id);
+  }
+
+  // Runs |on_notification_displayed_callback_| with the first cloud upload
+  // notification added or updated after the callback is set, then clears the
+  // callback. Other notifications are ignored so they don't use it up.
+  void RunNotificationDisplayedCallback(const std::string& notification_id) {
+    if (!on_notification_displayed_callback_ ||
+        !notification_id.starts_with("cloud-upload-")) {
+      return;
+    }
+    message_center::Notification* notification =
+        message_center::MessageCenter::Get()->FindNotificationById(
+            notification_id);
+    ASSERT_TRUE(notification);
+    std::move(on_notification_displayed_callback_).Run(*notification);
+  }
 
   void SetOnNotificationDisplayedCallback(
       base::RepeatingCallback<void(const message_center::Notification&)>
@@ -293,6 +296,9 @@ class OneDriveUploadHandlerTest : public InProcessBrowserTest,
   // Used to observe upload notifications during the tests.
   base::RepeatingCallback<void(const message_center::Notification&)>
       on_notification_displayed_callback_;
+  base::ScopedObservation<message_center::MessageCenter,
+                          message_center::MessageCenterObserver>
+      notification_observer_{this};
 };
 
 IN_PROC_BROWSER_TEST_F(OneDriveUploadHandlerTest, UploadFromMyFiles) {
@@ -542,9 +548,8 @@ class OneDriveUploadHandlerTest_ReauthEnabled
  public:
   OneDriveUploadHandlerTest_ReauthEnabled() {
     feature_list_.Reset();
-    feature_list_.InitWithFeatures({chromeos::features::kUploadOfficeToCloud,
-                                    features::kOneDriveUploadImmediateReauth},
-                                   {});
+    feature_list_.InitAndEnableFeature(
+        features::kOneDriveUploadImmediateReauth);
   }
 };
 

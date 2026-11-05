@@ -8,13 +8,16 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/component_export.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/ref_counted_memory.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/numerics/checked_math.h"
 #include "components/file_access/scoped_file_access_delegate.h"
@@ -52,7 +55,7 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) BlobDataBuilder {
   const std::string& uuid() const { return uuid_; }
 
   // Copies the given data into the blob.
-  void AppendData(const std::string& data) {
+  void AppendData(std::string_view data) {
     AppendData(base::as_byte_span(data));
   }
 
@@ -176,8 +179,13 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) BlobDataBuilder {
     content_type_ = content_type;
   }
 
-  void set_content_disposition(const std::string& content_disposition) {
-    content_disposition_ = content_disposition;
+  void set_creator_identity(
+      scoped_refptr<base::RefCountedString> creator_identity) {
+    creator_identity_ = std::move(creator_identity);
+  }
+
+  const scoped_refptr<base::RefCountedString>& creator_identity() const {
+    return creator_identity_;
   }
 
   std::unique_ptr<BlobDataSnapshot> CreateSnapshot() const;
@@ -241,13 +249,13 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) BlobDataBuilder {
       ::std::ostream* os);
   friend class BlobSliceTest;
 
-  void SliceBlob(const BlobEntry* entry,
+  void SliceBlob(scoped_refptr<const BlobEntry> entry,
                  uint64_t slice_offset,
                  uint64_t slice_size);
 
   std::string uuid_;
   std::string content_type_;
-  std::string content_disposition_;
+  scoped_refptr<base::RefCountedString> creator_identity_;
 
   base::CheckedNumeric<uint64_t> total_size_;
   base::CheckedNumeric<uint64_t> total_memory_size_;

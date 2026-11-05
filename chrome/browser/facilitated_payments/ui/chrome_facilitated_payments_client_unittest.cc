@@ -7,20 +7,30 @@
 #include <memory>
 
 #include "base/functional/bind.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
+#include "base/functional/callback_helpers.h"
+#include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
-#include "components/facilitated_payments/core/browser/facilitated_payments_app_info_list.h"
-#include "components/facilitated_payments/core/browser/pix_account_linking_manager.h"
 #include "components/facilitated_payments/core/features/features.h"
 #include "components/optimization_guide/core/hints/mock_optimization_guide_decider.h"
-#include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/tabs/public/mock_tab_interface.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/origin.h"
 
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/signin/identity_manager_factory.h"
+#include "components/facilitated_payments/content/browser/content_facilitated_payments_driver.h"
+#include "components/facilitated_payments/core/browser/facilitated_payments_app_info_list.h"
+#include "components/facilitated_payments/core/browser/pix_account_linking_manager.h"
+#include "components/facilitated_payments/core/browser/pix_manager.h"
+#include "components/signin/public/identity_manager/identity_test_utils.h"
+#endif  // BUILDFLAG(IS_ANDROID)
+
 using ::testing::_;
 using ::testing::Return;
 
+#if BUILDFLAG(IS_ANDROID)
 class MockFacilitatedPaymentsController : public FacilitatedPaymentsController {
  public:
   explicit MockFacilitatedPaymentsController(content::WebContents* web_contents)
@@ -42,7 +52,10 @@ class MockFacilitatedPaymentsController : public FacilitatedPaymentsController {
        base::OnceCallback<void(payments::facilitated::SelectedFopData)>
            on_fop_selected),
       (override));
-  MOCK_METHOD(void, ShowProgressScreen, (), (override));
+  MOCK_METHOD(void,
+              ShowProgressScreen,
+              (payments::facilitated::ProgressScreenType),
+              (override));
   MOCK_METHOD(void, ShowErrorScreen, (), (override));
   MOCK_METHOD(void, Dismiss, (), (override));
   MOCK_METHOD(void,
@@ -72,6 +85,7 @@ class MockPixAccountLinkingManager
               (override));
   MOCK_METHOD(void, DismissPrompt, (), (override));
 };
+#endif  // BUILDFLAG(IS_ANDROID)
 
 class ChromeFacilitatedPaymentsClientTest
     : public ChromeRenderViewHostTestHarness {
@@ -79,7 +93,8 @@ class ChromeFacilitatedPaymentsClientTest
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
     client_ = std::make_unique<ChromeFacilitatedPaymentsClient>(
-        web_contents(), &optimization_guide_decider_);
+        mock_tab_, web_contents(), &optimization_guide_decider_);
+#if BUILDFLAG(IS_ANDROID)
     auto controller =
         std::make_unique<MockFacilitatedPaymentsController>(web_contents());
     controller_ = controller.get();
@@ -89,6 +104,18 @@ class ChromeFacilitatedPaymentsClientTest
     pix_account_linking_manager_ = pix_account_linking_manager.get();
     client_->SetPixAccountLinkingManagerForTesting(
         std::move(pix_account_linking_manager));
+#endif  // BUILDFLAG(IS_ANDROID)
+  }
+
+  // The client holds a `raw_ref` to `web_contents()` and observes it, so it
+  // must be destroyed before the harness destroys the `WebContents`.
+  void TearDown() override {
+#if BUILDFLAG(IS_ANDROID)
+    controller_ = nullptr;
+    pix_account_linking_manager_ = nullptr;
+#endif  // BUILDFLAG(IS_ANDROID)
+    client_.reset();
+    ChromeRenderViewHostTestHarness::TearDown();
   }
 
   auto& base_client() {
@@ -96,17 +123,22 @@ class ChromeFacilitatedPaymentsClientTest
         *client_);
   }
 
+#if BUILDFLAG(IS_ANDROID)
   MockFacilitatedPaymentsController& controller() { return *controller_; }
 
   MockPixAccountLinkingManager& pix_account_linking_manager() {
     return *pix_account_linking_manager_;
   }
+#endif  // BUILDFLAG(IS_ANDROID)
 
  protected:
+  tabs::MockTabInterface mock_tab_;
   optimization_guide::MockOptimizationGuideDecider optimization_guide_decider_;
   std::unique_ptr<ChromeFacilitatedPaymentsClient> client_;
+#if BUILDFLAG(IS_ANDROID)
   raw_ptr<MockFacilitatedPaymentsController> controller_;
   raw_ptr<MockPixAccountLinkingManager> pix_account_linking_manager_;
+#endif  // BUILDFLAG(IS_ANDROID)
 };
 
 TEST_F(ChromeFacilitatedPaymentsClientTest, GetPaymentsDataManager) {
@@ -118,6 +150,89 @@ TEST_F(ChromeFacilitatedPaymentsClientTest,
   EXPECT_NE(nullptr, base_client().GetFacilitatedPaymentsNetworkInterface());
 }
 
+// Test the client correctly returns whether or not the tab is active.
+TEST_F(ChromeFacilitatedPaymentsClientTest, IsWebContentsVisibleOrOccluded) {
+  web_contents()->UpdateWebContentsVisibility(content::Visibility::VISIBLE);
+  EXPECT_TRUE(base_client().IsWebContentsVisibleOrOccluded());
+
+  web_contents()->UpdateWebContentsVisibility(content::Visibility::OCCLUDED);
+  EXPECT_TRUE(base_client().IsWebContentsVisibleOrOccluded());
+
+  web_contents()->UpdateWebContentsVisibility(content::Visibility::HIDDEN);
+  EXPECT_FALSE(base_client().IsWebContentsVisibleOrOccluded());
+}
+
+TEST_F(ChromeFacilitatedPaymentsClientTest,
+       IsInChromeCustomTabMode_NullCallback) {
+  EXPECT_FALSE(base_client().IsInChromeCustomTabMode());
+}
+
+TEST_F(ChromeFacilitatedPaymentsClientTest,
+       IsInChromeCustomTabMode_CallbackReturnsTrue) {
+  client_.reset();
+  client_ = std::make_unique<ChromeFacilitatedPaymentsClient>(
+      mock_tab_, web_contents(), &optimization_guide_decider_,
+      base::BindRepeating([](content::WebContents*) { return true; }));
+
+  EXPECT_TRUE(base_client().IsInChromeCustomTabMode());
+}
+
+TEST_F(ChromeFacilitatedPaymentsClientTest,
+       IsInChromeCustomTabMode_CallbackReturnsFalse) {
+  client_.reset();
+  client_ = std::make_unique<ChromeFacilitatedPaymentsClient>(
+      mock_tab_, web_contents(), &optimization_guide_decider_,
+      base::BindRepeating([](content::WebContents*) { return false; }));
+
+  EXPECT_FALSE(base_client().IsInChromeCustomTabMode());
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+// Tests that only the payment QR code allowlist is registered on Desktop when
+// QR code detection is enabled, since the Pix and payment link flows that use
+// the other allowlists are Android-only.
+TEST_F(ChromeFacilitatedPaymentsClientTest,
+       RegisterAllowlists_Desktop_QrCodeDetectionEnabled) {
+  base::test::ScopedFeatureList feature_list(
+      payments::facilitated::kEnableDesktopQrCodeDetection);
+  EXPECT_CALL(optimization_guide_decider_, RegisterOptimizationTypes).Times(0);
+  EXPECT_CALL(optimization_guide_decider_,
+              RegisterOptimizationTypes(testing::ElementsAre(
+                  optimization_guide::proto::
+                      PAYMENT_QR_CODE_MERCHANT_URL_REGEX_ALLOWLIST)))
+      .Times(1);
+
+  // Re-create the client; it should register the allowlist.
+  client_.reset();
+  client_ = std::make_unique<ChromeFacilitatedPaymentsClient>(
+      mock_tab_, web_contents(), &optimization_guide_decider_);
+}
+
+// Tests that no allowlist is registered on Desktop when QR code detection is
+// disabled.
+TEST_F(ChromeFacilitatedPaymentsClientTest,
+       RegisterAllowlists_Desktop_QrCodeDetectionDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      payments::facilitated::kEnableDesktopQrCodeDetection);
+  EXPECT_CALL(optimization_guide_decider_, RegisterOptimizationTypes).Times(0);
+
+  // Re-create the client; it should not register any allowlist.
+  client_.reset();
+  client_ = std::make_unique<ChromeFacilitatedPaymentsClient>(
+      mock_tab_, web_contents(), &optimization_guide_decider_);
+}
+
+// Tests that the client reports Desktop defaults for the device queries that
+// are only meaningful for the Android payment UI.
+TEST_F(ChromeFacilitatedPaymentsClientTest, DeviceQueries_DesktopDefaults) {
+  EXPECT_FALSE(base_client().IsInLandscapeMode());
+  EXPECT_FALSE(base_client().IsFoldable());
+  EXPECT_EQ(nullptr, base_client().GetDeviceDelegate());
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_ANDROID)
 // Test the client forwards call to show Pix FOP selector to the controller.
 TEST_F(ChromeFacilitatedPaymentsClientTest,
        ShowPixPaymentPrompt_ControllerDefaultTrue) {
@@ -127,13 +242,16 @@ TEST_F(ChromeFacilitatedPaymentsClientTest,
 }
 
 // Test that the `A2A_MERCHANT_ALLOWLIST`, `EWALLET_MERCHANT_ALLOWLIST`,
-// `PIX_PAYMENT_MERCHANT_ALLOWLIST` and `PIX_PSP_ALLOWLIST` optimization types
-// are registered when the `ChromeFacilitatedPaymentClient` is created.
+// `PIX_PAYMENT_MERCHANT_ALLOWLIST`, `PIX_PSP_ALLOWLIST` and
+// `PAYMENT_QR_CODE_MERCHANT_URL_REGEX_ALLOWLIST` optimization types are
+// registered when the `ChromeFacilitatedPaymentClient` is created.
 TEST_F(ChromeFacilitatedPaymentsClientTest, RegisterAllowlists) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
       /*enabled_features=*/{payments::facilitated::kEwalletPayments,
-                            payments::facilitated::kEnableIframeForPix},
+                            payments::facilitated::kEnableIframeForPix,
+                            payments::facilitated::
+                                kEnableDesktopQrCodeDetection},
       /*disabled_features=*/{});
   EXPECT_CALL(optimization_guide_decider_,
               RegisterOptimizationTypes(testing::ElementsAre(
@@ -151,10 +269,55 @@ TEST_F(ChromeFacilitatedPaymentsClientTest, RegisterAllowlists) {
               RegisterOptimizationTypes(testing::ElementsAre(
                   optimization_guide::proto::PIX_PSP_ALLOWLIST)))
       .Times(1);
+  EXPECT_CALL(optimization_guide_decider_,
+              RegisterOptimizationTypes(testing::ElementsAre(
+                  optimization_guide::proto::
+                      PAYMENT_QR_CODE_MERCHANT_URL_REGEX_ALLOWLIST)))
+      .Times(1);
 
   // Re-create the client; it should register the allowlist.
+  client_.reset();
   client_ = std::make_unique<ChromeFacilitatedPaymentsClient>(
-      web_contents(), &optimization_guide_decider_);
+      mock_tab_, web_contents(), &optimization_guide_decider_);
+}
+
+// Test that the `PAYMENT_QR_CODE_MERCHANT_URL_REGEX_ALLOWLIST` optimization
+// type is not registered when the `ChromeFacilitatedPaymentClient` is created
+// and the QR code detection experiment is disabled. The other allowlists are
+// unaffected; `EWALLET_MERCHANT_ALLOWLIST` and `PIX_PSP_ALLOWLIST` are still
+// registered because their gating features are enabled by default.
+TEST_F(ChromeFacilitatedPaymentsClientTest,
+       RegisterAllowlists_QrCodeDetectionExpOff) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      payments::facilitated::kEnableDesktopQrCodeDetection);
+
+  EXPECT_CALL(optimization_guide_decider_,
+              RegisterOptimizationTypes(testing::ElementsAre(
+                  optimization_guide::proto::PIX_MERCHANT_ORIGINS_ALLOWLIST)))
+      .Times(1);
+  EXPECT_CALL(optimization_guide_decider_,
+              RegisterOptimizationTypes(testing::ElementsAre(
+                  optimization_guide::proto::A2A_MERCHANT_ALLOWLIST)))
+      .Times(1);
+  EXPECT_CALL(optimization_guide_decider_,
+              RegisterOptimizationTypes(testing::ElementsAre(
+                  optimization_guide::proto::EWALLET_MERCHANT_ALLOWLIST)))
+      .Times(1);
+  EXPECT_CALL(optimization_guide_decider_,
+              RegisterOptimizationTypes(testing::ElementsAre(
+                  optimization_guide::proto::PIX_PSP_ALLOWLIST)))
+      .Times(1);
+  EXPECT_CALL(optimization_guide_decider_,
+              RegisterOptimizationTypes(testing::ElementsAre(
+                  optimization_guide::proto::
+                      PAYMENT_QR_CODE_MERCHANT_URL_REGEX_ALLOWLIST)))
+      .Times(0);
+
+  // Re-create the client; it should not register the allowlist.
+  client_.reset();
+  client_ = std::make_unique<ChromeFacilitatedPaymentsClient>(
+      mock_tab_, web_contents(), &optimization_guide_decider_);
 }
 
 // Test that the `EWALLET_MERCHANT_ALLOWLIST` optimization type is not
@@ -174,12 +337,17 @@ TEST_F(ChromeFacilitatedPaymentsClientTest, RegisterAllowlists_EWalletExpOff) {
       .Times(1);
   EXPECT_CALL(optimization_guide_decider_,
               RegisterOptimizationTypes(testing::ElementsAre(
+                  optimization_guide::proto::PIX_PSP_ALLOWLIST)))
+      .Times(1);
+  EXPECT_CALL(optimization_guide_decider_,
+              RegisterOptimizationTypes(testing::ElementsAre(
                   optimization_guide::proto::EWALLET_MERCHANT_ALLOWLIST)))
       .Times(0);
 
   // Re-create the client; it should not register the allowlist.
+  client_.reset();
   client_ = std::make_unique<ChromeFacilitatedPaymentsClient>(
-      web_contents(), &optimization_guide_decider_);
+      mock_tab_, web_contents(), &optimization_guide_decider_);
 }
 
 // Test that the `PIX_PSP_ALLOWLIST` optimization type is not registered when
@@ -208,16 +376,20 @@ TEST_F(ChromeFacilitatedPaymentsClientTest, RegisterAllowlists_IframeExpOff) {
       .Times(0);
 
   // Re-create the client; it should not register the allowlist.
+  client_.reset();
   client_ = std::make_unique<ChromeFacilitatedPaymentsClient>(
-      web_contents(), &optimization_guide_decider_);
+      mock_tab_, web_contents(), &optimization_guide_decider_);
 }
 
 // Test the client forwards call for showing the progress screen to the
 // controller.
 TEST_F(ChromeFacilitatedPaymentsClientTest, ShowProgressScreen) {
-  EXPECT_CALL(controller(), ShowProgressScreen);
+  EXPECT_CALL(
+      controller(),
+      ShowProgressScreen(payments::facilitated::ProgressScreenType::kPayment));
 
-  base_client().ShowProgressScreen();
+  base_client().ShowProgressScreen(
+      payments::facilitated::ProgressScreenType::kPayment);
 }
 
 // Test the client forwards call for showing the error screen to the controller.
@@ -232,10 +404,13 @@ TEST_F(ChromeFacilitatedPaymentsClientTest, ShowErrorScreen) {
 TEST_F(ChromeFacilitatedPaymentsClientTest,
        ControllerIsAbleToProcessBackToBackShowRequests) {
   EXPECT_CALL(controller(), Show);
-  EXPECT_CALL(controller(), ShowProgressScreen);
+  EXPECT_CALL(
+      controller(),
+      ShowProgressScreen(payments::facilitated::ProgressScreenType::kPayment));
 
   base_client().ShowPixPaymentPrompt({}, base::DoNothing());
-  base_client().ShowProgressScreen();
+  base_client().ShowProgressScreen(
+      payments::facilitated::ProgressScreenType::kPayment);
 }
 
 // Test that DismissPrompt is called when the client is destroyed.
@@ -245,6 +420,25 @@ TEST_F(ChromeFacilitatedPaymentsClientTest,
       url::Origin::Create(GURL("https://example.com")));
 
   EXPECT_CALL(pix_account_linking_manager(), DismissPrompt());
+
+  client_.reset();
+}
+
+// Test that destroying the client while a driver with an active manager still
+// exists in `driver_factory_` (e.g. when `TabFeatures` is destroyed before
+// `WebContents`) safely dismisses the prompt before destroying the controller.
+TEST_F(ChromeFacilitatedPaymentsClientTest,
+       Destructor_DestroysDriversBeforeController) {
+  payments::facilitated::ContentFacilitatedPaymentsDriver* driver =
+      client_->GetFacilitatedPaymentsDriverForFrame(main_rfh());
+  ASSERT_NE(nullptr, driver);
+  driver->SetPixManagerForTesting(
+      std::make_unique<payments::facilitated::PixManager>(
+          client_.get(),
+          /*api_client_creator=*/base::NullCallback(),
+          &optimization_guide_decider_));
+
+  EXPECT_CALL(controller(), Dismiss());
 
   client_.reset();
 }
@@ -263,18 +457,6 @@ TEST_F(ChromeFacilitatedPaymentsClientTest, IsInLandscapeMode) {
   EXPECT_CALL(controller(), IsInLandscapeMode);
 
   base_client().IsInLandscapeMode();
-}
-
-// Test the client correctly returns whether or not the tab is active.
-TEST_F(ChromeFacilitatedPaymentsClientTest, IsWebContentsVisibleOrOccluded) {
-  web_contents()->UpdateWebContentsVisibility(content::Visibility::VISIBLE);
-  EXPECT_TRUE(base_client().IsWebContentsVisibleOrOccluded());
-
-  web_contents()->UpdateWebContentsVisibility(content::Visibility::OCCLUDED);
-  EXPECT_TRUE(base_client().IsWebContentsVisibleOrOccluded());
-
-  web_contents()->UpdateWebContentsVisibility(content::Visibility::HIDDEN);
-  EXPECT_FALSE(base_client().IsWebContentsVisibleOrOccluded());
 }
 
 // Test that the client forwards call to show payment link FOP selector to the
@@ -330,38 +512,18 @@ TEST_F(ChromeFacilitatedPaymentsClientTest,
       payments::facilitated::FacilitatedPaymentsType::kPix);
 }
 
-TEST_F(ChromeFacilitatedPaymentsClientTest,
-       IsInChromeCustomTabMode_NullCallback) {
-  EXPECT_FALSE(base_client().IsInChromeCustomTabMode());
-}
-
-TEST_F(ChromeFacilitatedPaymentsClientTest,
-       IsInChromeCustomTabMode_CallbackReturnsTrue) {
-  client_ = std::make_unique<ChromeFacilitatedPaymentsClient>(
-      web_contents(), &optimization_guide_decider_,
-      base::BindRepeating([](content::WebContents*) { return true; }));
-
-  EXPECT_TRUE(base_client().IsInChromeCustomTabMode());
-}
-
-TEST_F(ChromeFacilitatedPaymentsClientTest,
-       IsInChromeCustomTabMode_CallbackReturnsFalse) {
-  client_ = std::make_unique<ChromeFacilitatedPaymentsClient>(
-      web_contents(), &optimization_guide_decider_,
-      base::BindRepeating([](content::WebContents*) { return false; }));
-
-  EXPECT_FALSE(base_client().IsInChromeCustomTabMode());
-}
-
 // Test that initializing ChromeFacilitatedPaymentsClient creates a default
 // PixAccountLinkingManager that handles flow initialization without crashing.
 TEST_F(ChromeFacilitatedPaymentsClientTest,
        PixAccountLinkingManager_InitializedByDefault) {
   const url::Origin kPageOrigin =
       url::Origin::Create(GURL("https://example.com"));
+  tabs::MockTabInterface local_tab;
   auto client = std::make_unique<ChromeFacilitatedPaymentsClient>(
-      web_contents(), &optimization_guide_decider_);
+      local_tab, web_contents(), &optimization_guide_decider_);
 
-  EXPECT_NO_FATAL_FAILURE(static_cast<payments::facilitated::FacilitatedPaymentsClient&>(*client)
-      .InitPixAccountLinkingFlow(kPageOrigin));
+  EXPECT_NO_FATAL_FAILURE(
+      static_cast<payments::facilitated::FacilitatedPaymentsClient&>(*client)
+          .InitPixAccountLinkingFlow(kPageOrigin));
 }
+#endif  // BUILDFLAG(IS_ANDROID)

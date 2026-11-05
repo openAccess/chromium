@@ -39,7 +39,6 @@
 #include "chrome/browser/ai/ai_data_keyed_service_factory.h"  // nogncheck
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/buildflags.h"
-#include "chrome/browser/content_settings/sound_content_setting_observer.h"
 #include "chrome/browser/custom_handlers/protocol_handler_registry_factory.h"
 #include "chrome/browser/defaults.h"
 #include "chrome/browser/devtools/devtools_toggle_action.h"
@@ -93,26 +92,25 @@
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/sad_tab.h"
-#include "chrome/browser/ui/search/search_tab_helper.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/status_bubble.h"
 #include "chrome/browser/ui/tab_contents/core_tab_helper.h"
 #include "chrome/browser/ui/tab_dialogs.h"
-#include "chrome/browser/ui/tab_helpers.h"
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_menu_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_selection_state.h"
 #include "chrome/browser/ui/tabs/tab_utils.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/unload_controller.h"
+#include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_modal/browser_window_modal_dialog_delegate.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
 #include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
 #include "chrome/browser/ui/window_sizer/window_sizer.h"
 #include "chrome/common/chrome_constants.h"
@@ -140,14 +138,18 @@
 #include "components/prefs/pref_service.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/security_interstitials/content/security_interstitial_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sessions/core/session_types.h"
 #include "components/split_tabs/split_tab_visual_data.h"
 #include "components/startup_metric_utils/browser/startup_metric_utils.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_collection.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/color_chooser.h"
 #include "content/public/browser/invalidate_type.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/ssl_status.h"
@@ -163,8 +165,9 @@
 #include "third_party/blink/public/mojom/frame/blocked_navigation_types.mojom.h"
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/text_elider.h"
 #include "ui/gfx/text_utils.h"
@@ -336,6 +339,11 @@ Browser::Browser(BrowserWindowCreateParams params)
         "Browser.WindowCount.Incognito",
         ProfileBrowserCollection::GetForProfile(profile_)
             ->GetOffTheRecordBrowserCount());
+  } else if (profile_->IsEnterpriseIsolatedModeProfile()) {
+    base::UmaHistogramCounts100(
+        "Browser.WindowCount.EnterpriseIsolated",
+        ProfileBrowserCollection::GetForProfile(profile_)
+            ->GetOffTheRecordBrowserCount());
   }
 }
 
@@ -376,7 +384,7 @@ Browser::~Browser() {
   //
   // TODO(crbug.com/40887606): This DCHECK doesn't always pass.
   // TODO(crbug.com/40064092): convert this to CHECK.
-  DCHECK(tab_strip_model_->empty());
+  CHECK(tab_strip_model_->empty(), base::NotFatalUntil::M162);
 
   SessionServiceBase* service = GetAppropriateSessionServiceForProfile(this);
 
@@ -397,10 +405,10 @@ bool Browser::IsDeleteScheduled() const {
   return UnloadController::From(this)->is_delete_scheduled();
 }
 
-void Browser::OpenGURL(const GURL& gurl, WindowOpenDisposition disposition) {
-  OpenURL(content::OpenURLParams(gurl, content::Referrer(), disposition,
-                                 ui::PAGE_TRANSITION_LINK,
-                                 /*is_renderer_initiated=*/false),
+void Browser::OpenGURL(const GURL& gurl,
+                       ui::mojom::WindowOpenDisposition disposition) {
+  OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+              gurl, disposition, ui::PAGE_TRANSITION_LINK),
           /*navigation_handle_callback=*/{});
 }
 
@@ -539,7 +547,7 @@ WebContents* Browser::OpenURL(
     base::OnceCallback<void(content::NavigationHandle&)>
         navigation_handle_callback) {
 #if DCHECK_IS_ON()
-  DCHECK(params.Valid());
+  CHECK(params.Valid(), base::NotFatalUntil::M162);
 #endif
 
   return BrowserWebContentsDelegate::From(this)->OpenURLFromTab(
@@ -556,13 +564,13 @@ void Browser::OnTabStripModelChanged(TabStripModel* tab_strip_model,
                tab_strip_model, "change", change);
   switch (change.type()) {
     case TabStripModelChange::kInserted: {
-      // Initialize find bar controller when tab having active find session
+      // Initialize find bar when tab having active find session
       // is inserted in a new window.
       find_in_page::FindTabHelper* find_tab_helper =
           find_in_page::FindTabHelper::FromWebContents(selection.new_contents);
-      if (!HasFindBarController() && find_tab_helper &&
+      if (!FindBarController::From(this)->HasFindBar() && find_tab_helper &&
           find_tab_helper->is_find_session_active()) {
-        std::ignore = CreateOrGetFindBarController();
+        FindBarController::From(this)->find_bar();
       }
       for (const auto& contents : change.GetInsert()->contents) {
         OnTabInsertedAt(contents.contents, contents.index);
@@ -603,8 +611,15 @@ void Browser::OnTabStripModelChanged(TabStripModel* tab_strip_model,
   OnActiveTabChanged(change, selection);
 }
 
-
 void Browser::TabStripEmpty() {
+  // A touch tab drag session may still be delivering OS touch events to this
+  // window's native widget. Destroying it mid-gesture would strand the drag, so
+  // let TabDragController take ownership of closing this browser once the drag
+  // completes.
+  if (TabDragController::OnBrowserTabStripEmptyDuringDrag(this)) {
+    return;
+  }
+
   // Note: even though the tab strip is empty, the call to Close() may not
   // result in closing this Browser. This can happen in the case of closing
   // the last Browser with ongoing downloads.
@@ -651,8 +666,13 @@ void Browser::OnTabInsertedAt(WebContents* contents, int index) {
   // won't start if the page is loading. Note that we don't want to
   // ScheduleUIUpdate() because the tab may not have been inserted in the UI
   // yet if this function is called before TabStripModel::TabInsertedAt().
-  BrowserUiController::From(this)->UpdateWindowForLoadingStateChanged(contents,
-                                                                      true);
+  // A tab that is not loading cannot change whether the window needs loading
+  // UI, and the check scans every tab, so skip it for such tabs (e.g. the
+  // background tabs of a session restore, which are inserted unloaded).
+  if (contents->ShouldShowLoadingUI()) {
+    BrowserUiController::From(this)->UpdateWindowForLoadingStateChanged(
+        contents, true);
+  }
 }
 
 void Browser::OnTabClosing(tabs::TabInterface* tab,
@@ -680,7 +700,7 @@ void Browser::OnTabClosing(tabs::TabInterface* tab,
       page_load_metrics::MetricsWebContentsObserver::FromWebContents(contents);
   metrics_observer->WebContentsWillSoonBeDestroyed();
 
-  GetFeatures().exclusive_access_manager()->OnTabClosing(contents);
+  ExclusiveAccessManager::From(this)->OnTabClosing(contents);
 }
 
 void Browser::OnTabDetached(tabs::TabInterface* tab,
@@ -722,8 +742,7 @@ void Browser::RestoreFocusAfterTabModalPopupClose(
 }
 
 void Browser::OnTabDeactivated(WebContents* contents) {
-  GetFeatures().exclusive_access_manager()->OnTabDeactivated(contents);
-  SearchTabHelper::FromWebContents(contents)->OnTabDeactivated();
+  ExclusiveAccessManager::From(this)->OnTabDeactivated(contents);
 
   // Save what the user's currently typing, so it can be restored when we
   // switch back to this tab.
@@ -738,7 +757,7 @@ void Browser::OnActiveTabChanged(const TabStripModelChange& change,
   // even if the tab strip is empty.
   if (change.type() != TabStripModelChange::kReplaced &&
       !tab_strip_model_->closing_all()) {
-    SidePanelUI* side_panel_ui = GetFeatures().side_panel_ui();
+    SidePanelUI* side_panel_ui = SidePanelUI::From(this);
     if (side_panel_ui) {
       side_panel_ui->OnActiveTabChanged(
           selection.old_contents, selection.new_contents,
@@ -795,7 +814,7 @@ void Browser::OnActiveTabChanged(const TabStripModelChange& change,
   window_->OnActiveTabChanged(selection.old_contents, selection.new_contents,
                               index, selection.reason);
 
-  GetFeatures().exclusive_access_manager()->OnTabDetachedFromView(
+  ExclusiveAccessManager::From(this)->OnTabDetachedFromView(
       selection.old_contents);
 
   // If we have any update pending, do it now.
@@ -824,22 +843,20 @@ void Browser::OnActiveTabChanged(const TabStripModelChange& change,
 
     // Show the loading state (if any).
     if (status_bubble == status_bubbles.front()) {
-      status_bubble->SetStatus(CoreTabHelper::FromWebContents(
-                                   tab_strip_model_->GetActiveWebContents())
-                                   ->GetStatusText());
+      if (auto* core_tab_helper = CoreTabHelper::FromWebContents(
+              tab_strip_model_->GetActiveWebContents())) {
+        status_bubble->SetStatus(core_tab_helper->GetStatusText());
+      }
     }
   }
 
-  if (HasFindBarController()) {
-    CreateOrGetFindBarController()->HandleActiveTabChanged(
+  if (FindBarController::From(this)->HasFindBar()) {
+    FindBarController::From(this)->HandleActiveTabChanged(
         selection.new_contents);
   }
 
-
-  SearchTabHelper::FromWebContents(selection.new_contents)->OnTabActivated();
   did_active_tab_change_callback_list_.Notify(this);
 }
-
 
 void Browser::OnTabReplacedAt(WebContents* old_contents,
                               WebContents* new_contents,
@@ -848,9 +865,17 @@ void Browser::OnTabReplacedAt(WebContents* old_contents,
   if (was_active) {
     did_active_tab_change_callback_list_.Notify(this);
   }
+  // OnTabInsertedAt() refreshes the loading UI only for contents that are
+  // loading, so remember whether the old contents needed it.
+  const bool old_contents_needed_loading_ui =
+      old_contents->ShouldShowLoadingUI();
   TabDetachedAtImpl(old_contents, was_active, DetachType::kReplace);
-  GetFeatures().exclusive_access_manager()->OnTabClosing(old_contents);
+  ExclusiveAccessManager::From(this)->OnTabClosing(old_contents);
   OnTabInsertedAt(new_contents, index);
+  if (old_contents_needed_loading_ui && !new_contents->ShouldShowLoadingUI()) {
+    BrowserUiController::From(this)->UpdateWindowForLoadingStateChanged(
+        new_contents, true);
+  }
 
   if (!new_contents->GetController().IsInitialBlankNavigation()) {
     // Send out notification so that observers are updated appropriately.
@@ -898,21 +923,12 @@ void Browser::TabDetachedAtImpl(content::WebContents* contents,
         location_bar->SaveStateToContents(contents);
       }
     }
-
   }
 
   SetAsDelegate(contents, false);
   BrowserUiController::From(this)->RemoveScheduledUpdatesFor(contents);
 
-  if (HasFindBarController() && was_active) {
-    CreateOrGetFindBarController()->ChangeWebContents(nullptr);
+  if (FindBarController::From(this)->HasFindBar() && was_active) {
+    FindBarController::From(this)->ChangeWebContents(nullptr);
   }
-}
-
-FindBarController* Browser::CreateOrGetFindBarController() {
-  return GetFeatures().GetFindBarController();
-}
-
-bool Browser::HasFindBarController() {
-  return GetFeatures().HasFindBarController();
 }

@@ -7,7 +7,6 @@
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "build/build_config.h"
-#include "chrome/browser/extensions/api/permissions/permissions_api.h"
 #include "chrome/browser/extensions/chrome_extension_test_notification_observer.h"
 #include "chrome/browser/extensions/chrome_extensions_browser_client.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
@@ -26,6 +25,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/service_worker_test_helpers.h"
+#include "extensions/browser/api/permissions/permissions_api.h"
 #include "extensions/browser/background_script_executor.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_event_histogram_value.h"
@@ -41,6 +41,7 @@
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace extensions {
 
@@ -79,8 +80,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, EventsAreUnregistered) {
 
   // The page has closed, so no matter what all events are no longer listened
   // to. Assertions for normal events:
-  EXPECT_FALSE(
-      event_router->ExtensionHasEventListener(id, "browserAction.onClicked"));
+  EXPECT_FALSE(event_router->ExtensionHasEventListener(id, "action.onClicked"));
   EXPECT_FALSE(
       event_router->ExtensionHasEventListener(id, "runtime.onStartup"));
   EXPECT_FALSE(
@@ -222,9 +222,11 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, EventAfterPermissionRemoved) {
           api::extension_types::FrameType::kOutermostFrame;
       event_details.transition_type =
           api::web_navigation::TransitionType::kLink;
-      event_router->BroadcastEvent(std::make_unique<Event>(
-          events::FOR_TEST, "webNavigation.onCommitted",
-          api::web_navigation::OnCommitted::Create(event_details)));
+      auto event_args = base::MakeRefCounted<EventArgs>(
+          api::web_navigation::OnCommitted::Create(event_details));
+      auto event = std::make_unique<Event>(
+          events::FOR_TEST, "webNavigation.onCommitted", std::move(event_args));
+      event_router->BroadcastEvent(std::move(event));
     }
 
     // The tabs.onActivated event listener in the extension will send a message
@@ -232,9 +234,11 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, EventAfterPermissionRemoved) {
     {
       auto event_details = api::tabs::OnActivated::ActiveInfo();
       ExtensionTestMessageListener listener_listener("onActivated called");
-      event_router->BroadcastEvent(std::make_unique<Event>(
-          events::FOR_TEST, "tabs.onActivated",
-          api::tabs::OnActivated::Create(event_details)));
+      auto event_args = base::MakeRefCounted<EventArgs>(
+          api::tabs::OnActivated::Create(event_details));
+      auto event = std::make_unique<Event>(events::FOR_TEST, "tabs.onActivated",
+                                           std::move(event_args));
+      event_router->BroadcastEvent(std::move(event));
       ASSERT_TRUE(listener_listener.WaitUntilSatisfied());
     }
   };
@@ -331,8 +335,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionApiTest, MAYBE_DispatchEventDuringShutdown) {
 
   // Broadcast an event to the event router. Since a shutdown is occurring, it
   // should be ignored and cause no problems.
-  event_router->BroadcastEvent(std::make_unique<Event>(
-      events::FOR_TEST, "tabs.onActivated", base::ListValue()));
+  event_router->BroadcastEvent(
+      std::make_unique<Event>(events::FOR_TEST, "tabs.onActivated", nullptr));
 }
 
 class EventsApiTest : public ExtensionApiTest {
@@ -480,7 +484,7 @@ IN_PROC_BROWSER_TEST_F(EventsApiTest, MAYBE_NewlyIntroducedListener) {
     ASSERT_TRUE(extension_v2);
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), GURL(url::kAboutBlankURL),
-        WindowOpenDisposition::NEW_BACKGROUND_TAB,
+        ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     // Expect tabs.onCreated to fire.
     EXPECT_TRUE(catcher.GetNextResult());

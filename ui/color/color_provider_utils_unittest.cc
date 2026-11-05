@@ -21,10 +21,51 @@ TEST_F(ColorProviderUtilsTest, ConvertColorProviderColorIdToCSSColorId) {
                 ui::ColorIdName(ui::kColorPrimaryBackground)));
 }
 
+TEST_F(ColorProviderUtilsTest, ConvertCSSColorIdToColorIdName) {
+  EXPECT_EQ("kColorPrimaryBackground",
+            ui::ConvertCSSColorIdToColorIdName("--color-primary-background"));
+  EXPECT_EQ("kColorRefPrimary0",
+            ui::ConvertCSSColorIdToColorIdName("--color-ref-primary0"));
+  EXPECT_TRUE(ui::ConvertCSSColorIdToColorIdName("").empty());
+}
+
+TEST_F(ColorProviderUtilsTest, ColorIdName) {
+  EXPECT_EQ("kColorPrimaryBackground",
+            ui::ColorIdName(ui::kColorPrimaryBackground));
+  EXPECT_EQ("ColorId(-1)", ui::ColorIdName(ui::kUiColorsStart - 1));
+}
+
+TEST_F(ColorProviderUtilsTest, ColorIdToCSSColorId) {
+  EXPECT_EQ("--color-primary-background",
+            ui::ColorIdToCSSColorId(ui::kColorPrimaryBackground));
+  EXPECT_EQ("--color-badge-background",
+            ui::ColorIdToCSSColorId(ui::kColorBadgeBackground));
+  EXPECT_EQ(ui::ConvertColorProviderColorIdToCSSColorId(
+                ui::ColorIdName(ui::kUiColorsStart)),
+            ui::ColorIdToCSSColorId(ui::kUiColorsStart));
+  EXPECT_EQ(ui::ConvertColorProviderColorIdToCSSColorId(
+                ui::ColorIdName(ui::kUiColorsEnd - 1)),
+            ui::ColorIdToCSSColorId(ui::kUiColorsEnd - 1));
+  EXPECT_TRUE(ui::ColorIdToCSSColorId(ui::kUiColorsStart - 1).empty());
+  EXPECT_TRUE(ui::ColorIdToCSSColorId(ui::kUiColorsEnd).empty());
+}
+
 TEST_F(ColorProviderUtilsTest, NameToColorId) {
   EXPECT_EQ(ui::kColorPrimaryBackground,
             ui::NameToColorId("kColorPrimaryBackground"));
   EXPECT_EQ(std::nullopt, ui::NameToColorId("kInvalidColorName"));
+}
+
+TEST_F(ColorProviderUtilsTest, FastAppendCssHexColor) {
+  std::string out;
+  ui::FastAppendCssHexColor(SkColorSetARGB(0x25, 0xF2, 0x99, 0x00), out);
+  EXPECT_EQ("#f2990025", out);
+}
+
+TEST_F(ColorProviderUtilsTest, FastAppendRgbColor) {
+  std::string out;
+  ui::FastAppendRgbColor(SkColorSetRGB(255, 0, 128), out);
+  EXPECT_EQ("255,0,128", out);
 }
 
 TEST_F(ColorProviderUtilsTest, ConvertSkColorToCSSColor) {

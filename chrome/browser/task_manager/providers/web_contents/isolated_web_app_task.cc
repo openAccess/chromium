@@ -35,7 +35,7 @@ constexpr UrlIdentity::FormatOptions kUrlIdentityOptions = {};
 // when title is empty.
 std::u16string GetTitleOrAppNameFromWebContents(
     content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
   std::u16string title = web_contents->GetTitle();
   // Empty title falls back to navigation URL.
   if (base::StartsWith(title, webapps::kIsolatedAppSchemeUtf16,
@@ -60,8 +60,10 @@ namespace task_manager {
 IsolatedWebAppTask::IsolatedWebAppTask(content::WebContents* web_contents)
     : RendererTask(
           PrefixTaskTitle(RendererTask::GetTitleFromWebContents(web_contents)),
-          RendererTask::GetFaviconFromWebContents(web_contents).get(),
-          web_contents) {}
+          /*icon=*/nullptr,
+          web_contents) {
+  DefaultUpdateFaviconImpl();
+}
 
 IsolatedWebAppTask::~IsolatedWebAppTask() = default;
 

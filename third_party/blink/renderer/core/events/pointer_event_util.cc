@@ -5,7 +5,9 @@
 #include "third_party/blink/renderer/core/events/pointer_event_util.h"
 
 #include <cmath>
+#include <numbers>
 
+#include "base/numerics/angle_conversions.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 
 namespace blink {
@@ -27,7 +29,7 @@ double PointerEventUtil::AzimuthFromTilt(double tilt_x_degrees,
 
   if (tilt_y_degrees == 0) {
     if (tilt_x_degrees < 0) {
-      return kPiDouble;
+      return std::numbers::pi;
     }
     return 0.0;
   }
@@ -38,8 +40,8 @@ double PointerEventUtil::AzimuthFromTilt(double tilt_x_degrees,
 
   DCHECK(tilt_x_degrees != 0.0 && tilt_y_degrees != 0.0 &&
          abs(tilt_x_degrees) != 90 && abs(tilt_y_degrees) != 90);
-  const double tilt_x_radians = kPiDouble / 180.0 * tilt_x_degrees;
-  const double tilt_y_radians = kPiDouble / 180.0 * tilt_y_degrees;
+  const double tilt_x_radians = base::DegToRad(tilt_x_degrees);
+  const double tilt_y_radians = base::DegToRad(tilt_y_degrees);
   const double tan_x = tan(tilt_x_radians);
   const double tan_y = tan(tilt_y_radians);
   double azimuth_radians = atan2(tan_y, tan_x);
@@ -56,8 +58,8 @@ double PointerEventUtil::AltitudeFromTilt(double tilt_x_degrees,
   DCHECK(tilt_x_degrees >= -90 && tilt_x_degrees <= 90);
   DCHECK(tilt_y_degrees >= -90 && tilt_y_degrees <= 90);
 
-  const double tilt_x_radians = kPiDouble / 180.0 * tilt_x_degrees;
-  const double tilt_y_radians = kPiDouble / 180.0 * tilt_y_degrees;
+  const double tilt_x_radians = base::DegToRad(tilt_x_degrees);
+  const double tilt_y_radians = base::DegToRad(tilt_y_degrees);
 
   if (abs(tilt_x_degrees) == 90 || abs(tilt_y_degrees) == 90) {
     return 0;
@@ -82,7 +84,8 @@ int32_t PointerEventUtil::TiltXFromSpherical(double azimuth_radians,
     // Not using std::round because we need Javascript Math.round behaviour
     // here which is different
     return std::floor(
-        Rad2deg(atan(cos(azimuth_radians) / tan(altitude_radians))) + 0.5);
+        base::RadToDeg(atan(cos(azimuth_radians) / tan(altitude_radians))) +
+        0.5);
   }
 
   if (azimuth_radians == kPiOverTwoDouble ||
@@ -107,12 +110,13 @@ int32_t PointerEventUtil::TiltYFromSpherical(double azimuth_radians,
     // Not using std::round because we need Javascript Math.round behaviour
     // here which is different
     return std::floor(
-        Rad2deg(atan(sin(azimuth_radians) / tan(altitude_radians))) + 0.5);
+        base::RadToDeg(atan(sin(azimuth_radians) / tan(altitude_radians))) +
+        0.5);
   }
-  if (azimuth_radians == 0 || azimuth_radians == kPiDouble ||
+  if (azimuth_radians == 0 || azimuth_radians == std::numbers::pi ||
       azimuth_radians == kTwoPiDouble) {
     return 0;
-  } else if (azimuth_radians < kPiDouble) {
+  } else if (azimuth_radians < std::numbers::pi) {
     // 1st and 2nd quadrants
     return 90;
   } else {

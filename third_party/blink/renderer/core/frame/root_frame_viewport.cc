@@ -151,7 +151,8 @@ void RootFrameViewport::RestoreToAnchor(const ScrollOffset& target_offset) {
         delta.y() < 0 ? floor(delta.y()) : ceil(delta.y()));
 
     LayoutViewport().SetScrollOffset(
-        ScrollOffset(LayoutViewport().ScrollOffsetInt() + layout_delta),
+        ScrollOffset(LayoutViewport().PixelSnappedScrollOffset() +
+                     layout_delta),
         mojom::blink::ScrollType::kAnchoring,
         cc::ScrollSourceType::kStationaryScroll);
   }
@@ -213,7 +214,7 @@ ScrollOffset RootFrameViewport::ScrollOffsetFromScrollAnimators() const {
 gfx::Rect RootFrameViewport::VisibleContentRect(
     IncludeScrollbarsInRect scrollbar_inclusion) const {
   return gfx::Rect(
-      gfx::PointAtOffsetFromOrigin(ScrollOffsetInt()),
+      gfx::PointAtOffsetFromOrigin(PixelSnappedScrollOffset()),
       GetVisualViewport().VisibleContentRect(scrollbar_inclusion).size());
 }
 
@@ -237,7 +238,7 @@ PhysicalRect RootFrameViewport::VisibleScrollSnapportRect(
   if (!LayoutViewport().GetLayoutBox())
     return visible_scroll_snapport;
 
-  const ComputedStyle& style = LayoutViewport().GetLayoutBox()->StyleRef();
+  const ComputedStyle& style = LayoutViewport().GetLayoutBox()->Style();
   visible_scroll_snapport.ContractEdges(
       MinimumValueForLength(style.ScrollPaddingTop(),
                             visible_scroll_snapport.Height()),
@@ -400,7 +401,7 @@ PhysicalRect RootFrameViewport::ScrollIntoView(
         mojom::blink::ScrollBehavior::kInstant;
     if (params->is_for_scroll_sequence) {
       behavior = DetermineScrollBehavior(
-          params->behavior, GetLayoutBox()->StyleRef().GetScrollBehavior());
+          params->behavior, GetLayoutBox()->Style().GetScrollBehavior());
     }
     SetScrollOffsetInternal(
         new_scroll_offset, params->type, cc::ScrollSourceType::kAbsoluteScroll,
@@ -476,10 +477,6 @@ bool RootFrameViewport::DistributeScrollBetweenViewports(
       scroll_first == kVisualViewport ? primary_offset : secondary_offset,
       scroll_type, source_type, behavior);
   return did_scroll;
-}
-
-gfx::Vector2d RootFrameViewport::ScrollOffsetInt() const {
-  return SnapScrollOffsetToPhysicalPixels(GetScrollOffset());
 }
 
 ScrollOffset RootFrameViewport::GetScrollOffset() const {
@@ -705,7 +702,7 @@ const cc::SnapContainerData* RootFrameViewport::GetSnapContainerData() const {
 
 void RootFrameViewport::SetSnapContainerData(
     std::optional<cc::SnapContainerData> data) {
-  LayoutViewport().SetSnapContainerData(data);
+  LayoutViewport().SetSnapContainerData(std::move(data));
 }
 
 bool RootFrameViewport::SetTargetSnapAreaElementIds(

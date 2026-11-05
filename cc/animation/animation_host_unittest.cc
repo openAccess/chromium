@@ -5,6 +5,7 @@
 #include "cc/animation/animation_host.h"
 
 #include <limits>
+#include <utility>
 
 #include "base/memory/ptr_util.h"
 #include "base/test/scoped_feature_list.h"
@@ -21,9 +22,9 @@
 #include "cc/trees/transform_node.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/animation/keyframe/keyframed_animation_curve.h"
 
 using ::testing::_;
-using ::testing::InvokeWithoutArgs;
 using ::testing::Mock;
 using ::testing::NiceMock;
 using ::testing::Return;
@@ -171,9 +172,9 @@ TEST_F(AnimationHostTest, FastLayerTreeMutatorUpdateTakesEffectInSameFrame) {
   host_impl_->SetLayerTreeMutator(
       base::WrapUnique<LayerTreeMutator>(mock_mutator));
   ON_CALL(*mock_mutator, HasMutators()).WillByDefault(Return(true));
-  ON_CALL(*mock_mutator, MutateRef(_))
-      .WillByDefault(InvokeWithoutArgs(
-          [this, local_time]() { this->SetOutputState(local_time); }));
+  ON_CALL(*mock_mutator, MutateRef(_)).WillByDefault([this, local_time]() {
+    this->SetOutputState(local_time);
+  });
 
   // Push the opacity animation to the impl thread.
   host_->PushPropertiesTo(host_impl_, delegate_.GetPropertyTrees());
@@ -341,12 +342,11 @@ TEST_F(AnimationHostTest,
 
   scoped_refptr<MockAnimation> mock_scroll_animation(
       new MockAnimation(animation_id1));
-  EXPECT_CALL(*mock_scroll_animation, Tick(_))
-      .WillOnce(InvokeWithoutArgs([&]() -> bool {
-        // Scroll to 20% of the max value.
-        SetScrollOffset(&property_trees, element_id, gfx::PointF(20, 20));
-        return true;
-      }));
+  EXPECT_CALL(*mock_scroll_animation, Tick(_)).WillOnce([&]() -> bool {
+    // Scroll to 20% of the max value.
+    SetScrollOffset(&property_trees, element_id, gfx::PointF(20, 20));
+    return true;
+  });
 
   // Ensure scroll animation is ticking.
   timeline_->AttachAnimation(mock_scroll_animation);
@@ -537,11 +537,10 @@ TEST_F(AnimationHostTest, TickScrollLinkedAnimationSmooth) {
 
   scoped_refptr<MockAnimation> mock_scroll_animation(
       new MockAnimation(scroll_animation_id));
-  EXPECT_CALL(*mock_scroll_animation, Tick(_))
-      .WillOnce(InvokeWithoutArgs([&]() -> bool {
-        SetScrollOffset(&property_trees, element_id, gfx::PointF(0, 50));
-        return true;
-      }));
+  EXPECT_CALL(*mock_scroll_animation, Tick(_)).WillOnce([&]() -> bool {
+    SetScrollOffset(&property_trees, element_id, gfx::PointF(0, 50));
+    return true;
+  });
   timeline_->AttachAnimation(mock_scroll_animation);
   host_impl_->AddToTicking(mock_scroll_animation);
 
@@ -585,12 +584,11 @@ TEST_F(AnimationHostTest, ScrollTimelineOffsetUpdatedByScrollAnimation) {
   int animation_id = 11;
   scoped_refptr<MockAnimation> mock_scroll_animation(
       new MockAnimation(animation_id));
-  EXPECT_CALL(*mock_scroll_animation, Tick(_))
-      .WillOnce(InvokeWithoutArgs([&]() -> bool {
-        // Scroll to 20% of the max value.
-        SetScrollOffset(&property_trees, element_id_, gfx::PointF(0, 20));
-        return true;
-      }));
+  EXPECT_CALL(*mock_scroll_animation, Tick(_)).WillOnce([&]() -> bool {
+    // Scroll to 20% of the max value.
+    SetScrollOffset(&property_trees, element_id_, gfx::PointF(0, 20));
+    return true;
+  });
 
   // Ensure scroll animation is ticking.
   timeline_->AttachAnimation(mock_scroll_animation);
@@ -608,6 +606,256 @@ TEST_F(AnimationHostTest, ScrollTimelineOffsetUpdatedByScrollAnimation) {
   double duration = ToMilliseconds(
       scroll_timeline->Duration(property_trees.scroll_tree(), false));
   EXPECT_NEAR(tick_time, 0.2 * duration, 1e-6);
+}
+
+TEST_F(AnimationHostTest, MinimumTickInterval_NoAnimations) {
+  // Returns TimeDelta::Max() when no animations are ticking.
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::TimeDelta::Max());
+}
+
+TEST_F(AnimationHostTest, MinimumTickInterval_SingleStepped) {
+  CreateTestLayer(true, false);
+  AttachTimelineAnimationLayer();
+  CreateImplTimelineAndAnimation();
+
+  // 15 steps over 1.0s duration -> 66666us.
+  AddOpacityStepsToAnimation(animation_.get(), 1.0, 0.0f, 1.0f, 15);
+  PushProperties();
+  host_impl_->ActivateAnimations(nullptr);
+  TickAnimationsTransferEvents(base::TimeTicks(), 1u);
+
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::Microseconds(66666));
+}
+
+TEST_F(AnimationHostTest, MinimumTickInterval_MultipleCompatibleStepped) {
+  CreateTestLayer(true, false);
+  AttachTimelineAnimationLayer();
+
+  int animation_id2 = AnimationIdProvider::NextAnimationId();
+  scoped_refptr<Animation> animation2 = Animation::Create(animation_id2);
+  timeline_->AttachAnimation(animation2);
+  animation2->AttachElement(element_id_);
+
+  CreateImplTimelineAndAnimation();
+
+  // Animation 1: 5 steps over 1.0s -> 200ms (200000us).
+  AddOpacityStepsToAnimation(animation_.get(), 1.0, 0.0f, 1.0f, 5);
+  // Animation 2: 2 steps over 1.0s -> 500ms (500000us).
+  AddOpacityStepsToAnimation(animation2.get(), 1.0, 0.0f, 1.0f, 2);
+
+  PushProperties();
+  host_impl_->ActivateAnimations(nullptr);
+  TickAnimationsTransferEvents(base::TimeTicks(), 2u);
+
+  // Harmonizes 200ms and 500ms to their common harmonic divisor 100ms.
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::Milliseconds(100));
+}
+
+TEST_F(AnimationHostTest, MinimumTickInterval_MultipleIdenticalStepped) {
+  CreateTestLayer(true, false);
+  AttachTimelineAnimationLayer();
+
+  int animation_id2 = AnimationIdProvider::NextAnimationId();
+  scoped_refptr<Animation> animation2 = Animation::Create(animation_id2);
+  timeline_->AttachAnimation(animation2);
+  animation2->AttachElement(element_id_);
+
+  CreateImplTimelineAndAnimation();
+
+  // Both animations: 10 steps over 1.0s -> 100ms.
+  AddOpacityStepsToAnimation(animation_.get(), 1.0, 0.0f, 1.0f, 10);
+  AddOpacityStepsToAnimation(animation2.get(), 1.0, 0.0f, 1.0f, 10);
+
+  PushProperties();
+  host_impl_->ActivateAnimations(nullptr);
+  TickAnimationsTransferEvents(base::TimeTicks(), 2u);
+
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::Milliseconds(100));
+}
+
+TEST_F(AnimationHostTest, MinimumTickInterval_SteppedAndContinuousConflict) {
+  CreateTestLayer(true, false);
+  AttachTimelineAnimationLayer();
+
+  int animation_id2 = AnimationIdProvider::NextAnimationId();
+  scoped_refptr<Animation> animation2 = Animation::Create(animation_id2);
+  timeline_->AttachAnimation(animation2);
+  animation2->AttachElement(element_id_);
+
+  CreateImplTimelineAndAnimation();
+
+  // Animation 1: 15 steps over 1.0s (stepped).
+  AddOpacityStepsToAnimation(animation_.get(), 1.0, 0.0f, 1.0f, 15);
+  // Animation 2: continuous opacity transition.
+  AddOpacityTransitionToAnimation(animation2.get(), 1.0, 0.0f, 1.0f, false);
+
+  PushProperties();
+  host_impl_->ActivateAnimations(nullptr);
+  TickAnimationsTransferEvents(base::TimeTicks(), 2u);
+
+  // Continuous animation present: must return 0 to avoid throttling.
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::TimeDelta());
+}
+
+TEST_F(AnimationHostTest, MinimumTickInterval_IncompatibleStepped) {
+  CreateTestLayer(true, false);
+  AttachTimelineAnimationLayer();
+
+  int animation_id2 = AnimationIdProvider::NextAnimationId();
+  scoped_refptr<Animation> animation2 = Animation::Create(animation_id2);
+  timeline_->AttachAnimation(animation2);
+  animation2->AttachElement(element_id_);
+
+  CreateImplTimelineAndAnimation();
+
+  // Animation 1: 37 steps over 1.0s (~27027us).
+  AddOpacityStepsToAnimation(animation_.get(), 1.0, 0.0f, 1.0f, 37);
+  // Animation 2: 41 steps over 1.0s (~24390us).
+  AddOpacityStepsToAnimation(animation2.get(), 1.0, 0.0f, 1.0f, 41);
+
+  PushProperties();
+  host_impl_->ActivateAnimations(nullptr);
+  TickAnimationsTransferEvents(base::TimeTicks(), 2u);
+
+  // Coprime steps requiring >32 harmonics cannot be harmonized within
+  // kMaxHarmonics; returns 0 (continuous fallback).
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::TimeDelta());
+}
+
+TEST_F(AnimationHostTest, MinimumTickInterval_PausedOrFinishedIgnored) {
+  CreateTestLayer(true, false);
+  AttachTimelineAnimationLayer();
+  CreateImplTimelineAndAnimation();
+
+  // Add stepped opacity animation.
+  AddOpacityStepsToAnimation(animation_.get(), 1.0, 0.0f, 1.0f, 15);
+
+  PushProperties();
+  host_impl_->ActivateAnimations(nullptr);
+  TickAnimationsTransferEvents(base::TimeTicks(), 1u);
+
+  // Add a continuous model that is in FINISHED state.
+  auto curve = gfx::KeyframedFloatAnimationCurve::Create();
+  curve->AddKeyframe(
+      gfx::FloatKeyframe::Create(base::TimeDelta(), 0.0f, nullptr));
+  curve->AddKeyframe(
+      gfx::FloatKeyframe::Create(base::Seconds(1), 1.0f, nullptr));
+  std::unique_ptr<KeyframeModel> finished_model = KeyframeModel::Create(
+      std::move(curve), AnimationIdProvider::NextKeyframeModelId(),
+      AnimationIdProvider::NextGroupId(),
+      KeyframeModel::TargetPropertyId(TargetProperty::TRANSFORM));
+  finished_model->SetRunState(gfx::KeyframeModel::FINISHED);
+  animation_impl_->AddKeyframeModel(std::move(finished_model));
+
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::Microseconds(66666));
+
+  // Add a continuous model that is in PAUSED state.
+  auto paused_curve = gfx::KeyframedFloatAnimationCurve::Create();
+  paused_curve->AddKeyframe(
+      gfx::FloatKeyframe::Create(base::TimeDelta(), 0.0f, nullptr));
+  paused_curve->AddKeyframe(
+      gfx::FloatKeyframe::Create(base::Seconds(1), 1.0f, nullptr));
+  std::unique_ptr<KeyframeModel> paused_model = KeyframeModel::Create(
+      std::move(paused_curve), AnimationIdProvider::NextKeyframeModelId(),
+      AnimationIdProvider::NextGroupId(),
+      KeyframeModel::TargetPropertyId(TargetProperty::FILTER));
+  paused_model->SetRunState(gfx::KeyframeModel::PAUSED);
+  animation_impl_->AddKeyframeModel(std::move(paused_model));
+
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::Microseconds(66666));
+}
+
+TEST_F(AnimationHostTest, MinimumTickInterval_MultipleTimelines) {
+  CreateTestLayer(true, false);
+  AttachTimelineAnimationLayer();
+
+  const int timeline_id2 = AnimationIdProvider::NextTimelineId();
+  scoped_refptr<AnimationTimeline> timeline2 =
+      AnimationTimeline::Create(timeline_id2);
+  host_->AddAnimationTimeline(timeline2);
+
+  int animation_id2 = AnimationIdProvider::NextAnimationId();
+  scoped_refptr<Animation> animation2 = Animation::Create(animation_id2);
+  timeline2->AttachAnimation(animation2);
+  animation2->AttachElement(element_id_);
+
+  CreateImplTimelineAndAnimation();
+
+  // Animation 1 on timeline_: 5 steps over 1.0s -> 200ms.
+  AddOpacityStepsToAnimation(animation_.get(), 1.0, 0.0f, 1.0f, 5);
+  // Animation 2 on timeline2: 2 steps over 1.0s -> 500ms.
+  AddOpacityStepsToAnimation(animation2.get(), 1.0, 0.0f, 1.0f, 2);
+
+  PushProperties();
+  host_impl_->ActivateAnimations(nullptr);
+  TickAnimationsTransferEvents(base::TimeTicks(), 2u);
+
+  // Harmonizes 200ms and 500ms to their common harmonic divisor 100ms.
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::Milliseconds(100));
+}
+
+TEST_F(AnimationHostTest, MinimumTickInterval_PlaybackRateScaling) {
+  CreateTestLayer(true, false);
+  AttachTimelineAnimationLayer();
+  CreateImplTimelineAndAnimation();
+
+  // 15 steps over 1.0s duration -> 66666us base interval.
+  AddOpacityStepsToAnimation(animation_.get(), 1.0, 0.0f, 1.0f, 15);
+  PushProperties();
+  host_impl_->ActivateAnimations(nullptr);
+  TickAnimationsTransferEvents(base::TimeTicks(), 1u);
+
+  auto* model = animation_impl_->GetKeyframeModel(TargetProperty::OPACITY);
+  ASSERT_TRUE(model);
+
+  // Set playback rate to 2.0x -> effective interval 33333us.
+  model->set_playback_rate(2.0);
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::Microseconds(33333));
+
+  // Set negative playback rate -0.5x (reversing) -> effective interval
+  // 133332us.
+  model->set_playback_rate(-0.5);
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::Microseconds(133332));
+
+  // Set invalid zero or non-finite rate -> returns 0 (continuous).
+  model->set_playback_rate(0.0);
+  EXPECT_EQ(host_impl_->MinimumTickInterval(), base::TimeDelta());
+}
+
+TEST_F(AnimationHostTest, InitClientAnimationStateRemovesStaleTimelines) {
+  delegate_.RegisterElementId(element_id_, ElementListType::ACTIVE);
+  AttachTimelineAnimationLayer();
+
+  animation_->AddKeyframeModel(KeyframeModel::Create(
+      std::make_unique<FakeTransformTransition>(1.0), 1, 1,
+      KeyframeModel::TargetPropertyId(TargetProperty::TRANSFORM)));
+
+  TestLayer* layer =
+      delegate_.FindTestLayer(element_id_, ElementListType::ACTIVE);
+  ASSERT_TRUE(layer);
+  EXPECT_TRUE(layer->is_currently_animating(TargetProperty::TRANSFORM));
+
+  // Detach the timeline while in a protected sequence (e.g. Document::Shutdown
+  // during an in-flight compositor commit). Removal is deferred into
+  // detached_timeline_map_.
+  delegate_.set_in_protected_sequence(true);
+  host_->DetachAnimationTimeline(timeline_);
+  EXPECT_TRUE(host_->GetTimelineById(timeline_id_));
+
+  // Simulate property tree rebuild for a new document resetting client
+  // animation state before CommitComplete or WillCommit has run.
+  delegate_.set_in_protected_sequence(false);
+  layer->set_is_currently_animating(TargetProperty::TRANSFORM, false);
+  layer->set_maximum_animation_scale(kInvalidScale);
+
+  // InitClientAnimationState() must flush stale detached timelines before
+  // initializing client animation state so animations from a detached timeline
+  // do not attempt to animate non-existent property tree nodes.
+  host_->InitClientAnimationState();
+
+  EXPECT_FALSE(host_->GetTimelineById(timeline_id_));
+  EXPECT_FALSE(timeline_->animation_host());
+  EXPECT_FALSE(layer->is_currently_animating(TargetProperty::TRANSFORM));
 }
 
 }  // namespace

@@ -98,8 +98,8 @@
 #include "storage/browser/file_system/file_system_operation_runner.h"
 #include "storage/browser/file_system/file_system_url.h"
 #include "third_party/re2/src/re2/re2.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/origin.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -120,7 +120,7 @@
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
-#include "components/safe_browsing/content/common/file_type_policies_test_util.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies_test_util.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
@@ -306,8 +306,7 @@ class DownloadsEventsListener : public EventRouter::TestObserver {
 
     Event* new_event = new Event(
         Profile::FromBrowserContext(event.restrict_to_browser_context),
-        event.event_name, base::Value(event.event_args.Clone()),
-        base::Time::Now());
+        event.event_name, base::Value(event.args().Clone()), base::Time::Now());
     // Keep track of the last filename seen in the event stream. Don't overwrite
     // with empty strings because some (most) events don't have filenames.
     if (!new_event->filename().empty()) {
@@ -461,7 +460,7 @@ class DownloadExtensionTest : public ExtensionApiTest {
     GURL url(extension_->GetResourceURL("empty.html"));
     // NOTE: `current_browser()` could be incognito.
     NavigateParams params(current_browser(), url, ui::PAGE_TRANSITION_LINK);
-    params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
     CHECK(handle);
     content::WebContents* const tab = handle->GetWebContents();
@@ -661,7 +660,7 @@ class DownloadExtensionTest : public ExtensionApiTest {
               : download::DOWNLOAD_INTERRUPT_REASON_USER_CANCELED,
           false,    // opened
           current,  // last_access_time
-          false, std::vector<DownloadItem::ReceivedSlice>());
+          false, std::vector<DownloadItem::ReceivedSlice>(), base::FilePath());
       items->push_back(item);
     }
 
@@ -736,7 +735,7 @@ class DownloadExtensionTest : public ExtensionApiTest {
     DownloadManager* manager = GetCurrentManager();
 
     const GURL url = embedded_test_server()->GetURL(path);
-    LoadURLNoWait(url, WindowOpenDisposition::CURRENT_TAB);
+    LoadURLNoWait(url, ui::mojom::WindowOpenDisposition::kCurrentTab);
 
     response->WaitForRequest();
     response->Send(
@@ -847,17 +846,18 @@ class DownloadExtensionTest : public ExtensionApiTest {
   }
 
   // Loads a URL without waiting for the navigation to complete.
-  content::WebContents* LoadURLNoWait(const GURL& url,
-                                      WindowOpenDisposition disposition) {
+  content::WebContents* LoadURLNoWait(
+      const GURL& url,
+      ui::mojom::WindowOpenDisposition disposition) {
     content::WebContents* tab = GetActiveWebContents();
     if (current_profile()->IsOffTheRecord()) {
       // Ensure we have an OTR window and OTR web contents.
       tab = PlatformOpenURLOffTheRecord(current_profile(), GURL("about:blank"));
     }
     CHECK(tab);
-    content::OpenURLParams params(url, content::Referrer(), disposition,
-                                  ui::PAGE_TRANSITION_LINK,
-                                  /*is_renderer_initiated=*/false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            url, disposition, ui::PAGE_TRANSITION_LINK);
     tab->OpenURL(params,
                  /*navigation_handle_callback=*/{});
     return tab;
@@ -880,8 +880,8 @@ class DownloadExtensionTest : public ExtensionApiTest {
                            ? GURL(url::kAboutBlankURL)
                            : extension->GetResourceURL("empty.html");
       // Recreate the tab each time for insulation.
-      content::WebContents* tab =
-          LoadURLNoWait(url, WindowOpenDisposition::NEW_FOREGROUND_TAB);
+      content::WebContents* tab = LoadURLNoWait(
+          url, ui::mojom::WindowOpenDisposition::kNewForegroundTab);
       CHECK(tab);
       CHECK(content::WaitForLoadStop(tab));
       function->set_extension(extension);
@@ -917,7 +917,7 @@ class DownloadExtensionTest : public ExtensionApiTest {
     CHECK(extension);
     GURL url = extension->GetResourceURL("empty.html");
     content::WebContents* tab =
-        LoadURLNoWait(url, WindowOpenDisposition::NEW_FOREGROUND_TAB);
+        LoadURLNoWait(url, ui::mojom::WindowOpenDisposition::kNewForegroundTab);
     EXPECT_TRUE(content::WaitForLoadStop(tab));
     EventRouter::Get(current_profile())
         ->AddEventListener(downloads::OnCreated::kEventName,
@@ -1465,6 +1465,42 @@ IN_PROC_BROWSER_TEST_F(DownloadExtensionTest,
         &result_string));
     EXPECT_STREQ("hello", result_string.c_str());
   }
+}
+
+// Test downloads.getFileIcon() end to end with the real icon extractor, i.e.
+// through IconManager and IconLoader, which the other FileIcon tests bypass by
+// injecting MockIconExtractorImpl. Regression test for crbug.com/578074719,
+// where IconLoader crashed on Android.
+IN_PROC_BROWSER_TEST_F(DownloadExtensionTest,
+                       DownloadExtensionTest_FileIcon_RealExtractor) {
+  DownloadItem* download_item = CreateFirstSlowTestDownload();
+  ASSERT_TRUE(download_item);
+  ScopedCancellingItem item(download_item);
+  ASSERT_FALSE(download_item->GetTargetFilePath().empty());
+
+  const std::string args =
+      base::StringPrintf("[%d, {\"size\": 32}]", download_item->GetId());
+#if BUILDFLAG(IS_ANDROID)
+  // Android does not provide file type icons, so the call fails cleanly.
+  EXPECT_EQ(RunFunctionAndReturnError(
+                base::MakeRefCounted<DownloadsGetFileIconFunction>(), args),
+            errors::kIconNotFound);
+#else
+  // Whether the OS or toolkit provides an icon depends on the test
+  // environment (e.g. GTK under Xvfb does not), so accept either outcome as
+  // long as the call completes.
+  auto function = base::MakeRefCounted<DownloadsGetFileIconFunction>();
+  if (RunFunction(function, args)) {
+    const base::ListValue* results = function->GetResultListForTest();
+    ASSERT_TRUE(results);
+    ASSERT_EQ(1u, results->size());
+    ASSERT_TRUE((*results)[0].is_string());
+    EXPECT_TRUE(
+        base::StartsWith((*results)[0].GetString(), "data:image/png;base64,"));
+  } else {
+    EXPECT_EQ(function->GetError(), errors::kIconNotFound);
+  }
+#endif
 }
 
 // Test passing the empty query to search().
@@ -3207,6 +3243,13 @@ IN_PROC_BROWSER_TEST_F(DownloadExtensionTest,
                           result_id)));
   ASSERT_TRUE(item->GetTargetFilePath().empty());
   ASSERT_EQ(DownloadItem::IN_PROGRESS, item->GetState());
+
+  // Calling getFileIcon before the target filename has been determined
+  // (e.g. right after onCreated) yields kEmptyFile.
+  EXPECT_EQ(RunFunctionAndReturnError(
+                base::MakeRefCounted<DownloadsGetFileIconFunction>(),
+                base::StringPrintf("[%d, {}]", result_id)),
+            errors::kEmptyFile);
 
   // Respond to the onDeterminingFilename.
   std::string error;

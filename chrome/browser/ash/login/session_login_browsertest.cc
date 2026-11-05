@@ -30,10 +30,10 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/webui/ash/login/user_creation_screen_handler.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/user_manager.h"
@@ -162,37 +162,6 @@ class OnboardingTest : public LoginManagerTest {
                                      &policy_server_mixin_};
 };
 
-IN_PROC_BROWSER_TEST_F(OnboardingTest, PRE_OnboardingUserActivityRegularUser) {
-  OobeScreenWaiter(UserCreationView::kScreenId).Wait();
-  LoginManagerMixin::TestUserInfo test_user(regular_user_);
-  login_mixin_.LoginWithDefaultContext(test_user);
-  OobeScreenExitWaiter(UserCreationView::kScreenId).Wait();
-
-  test::UserSessionManagerTestApi test_api(UserSessionManager::GetInstance());
-  ASSERT_TRUE(test_api.get_onboarding_user_activity_counter());
-  login_mixin_.SkipPostLoginScreens();
-}
-
-// TODO(crbug.com/339860384): Enable the test.
-IN_PROC_BROWSER_TEST_F(OnboardingTest,
-                       DISABLED_OnboardingUserActivityRegularUser) {
-  login_mixin_.LoginAsNewRegularUser();
-  login_mixin_.WaitForActiveSession();
-
-  test::UserSessionManagerTestApi test_api(UserSessionManager::GetInstance());
-  ASSERT_TRUE(test_api.get_onboarding_user_activity_counter());
-}
-
-// Verifies that counter is not started for child user.
-IN_PROC_BROWSER_TEST_F(OnboardingTest, OnboardingUserActivityChildUser) {
-  OobeScreenWaiter(UserCreationView::kScreenId).Wait();
-  login_mixin_.LoginAsNewChildUser();
-  OobeScreenExitWaiter(UserCreationView::kScreenId).Wait();
-
-  test::UserSessionManagerTestApi test_api(UserSessionManager::GetInstance());
-  ASSERT_FALSE(test_api.get_onboarding_user_activity_counter());
-}
-
 // Verifies that OnboardingCompletedVersion is stored for new users.
 IN_PROC_BROWSER_TEST_F(OnboardingTest, OnboardingCompletedVersion) {
   OobeScreenWaiter(UserCreationView::kScreenId).Wait();
@@ -202,8 +171,10 @@ IN_PROC_BROWSER_TEST_F(OnboardingTest, OnboardingCompletedVersion) {
   login_mixin_.SkipPostLoginScreens();
   login_mixin_.WaitForActiveSession();
 
-  AccountId account_id =
-      user_manager::UserManager::Get()->GetActiveUser()->GetAccountId();
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  ASSERT_TRUE(active_session);
+  AccountId account_id = active_session->account_id();
   EXPECT_EQ(user_manager::KnownUser(g_browser_process->local_state())
                 .GetOnboardingCompletedVersion(account_id),
             version_info::GetVersion());
@@ -221,8 +192,10 @@ IN_PROC_BROWSER_TEST_F(OnboardingTest, PRE_OnboardingCompletedVersionBackfill) {
   login_mixin_.SkipPostLoginScreens();
   login_mixin_.WaitForActiveSession();
 
-  AccountId account_id =
-      user_manager::UserManager::Get()->GetActiveUser()->GetAccountId();
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  ASSERT_TRUE(active_session);
+  AccountId account_id = active_session->account_id();
   user_manager::KnownUser(g_browser_process->local_state())
       .RemoveOnboardingCompletedVersionForTests(account_id);
 }
@@ -232,8 +205,10 @@ IN_PROC_BROWSER_TEST_F(OnboardingTest, OnboardingCompletedVersionBackfill) {
                                      /*check_if_submittable=*/false);
   login_mixin_.WaitForActiveSession();
 
-  AccountId account_id =
-      user_manager::UserManager::Get()->GetActiveUser()->GetAccountId();
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  ASSERT_TRUE(active_session);
+  AccountId account_id = active_session->account_id();
   EXPECT_EQ(user_manager::KnownUser(g_browser_process->local_state())
                 .GetOnboardingCompletedVersion(account_id),
             base::Version(kOnboardingBackfillVersion));

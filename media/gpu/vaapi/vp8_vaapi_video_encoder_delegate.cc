@@ -14,6 +14,7 @@
 #include "base/bits.h"
 #include "base/compiler_specific.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "media/base/media_switches.h"
@@ -59,11 +60,11 @@ uint8_t QindexToQuantizer(uint8_t q_index) {
       82, 85, 88, 91, 94, 97, 100, 103, 106, 109, 112, 115, 118, 121, 124, 127,
   });
 
-  for (size_t q = 0; q < std::size(kQuantizerToQindex); ++q) {
+  for (size_t q = 0; q < kQuantizerToQindex.size(); ++q) {
     if (kQuantizerToQindex[q] >= q_index)
       return q;
   }
-  return std::size(kQuantizerToQindex) - 1;
+  return kQuantizerToQindex.size() - 1;
 }
 
 // The return value is expressed as a percentage of the average. For example,
@@ -180,10 +181,12 @@ bool UpdateFrameHeaderForTemporalLayerEncoding(
     metadata.layer_sync = false;
     buffer_flags.fill(kUpdate);
   } else {
-    constexpr std::pair<Vp8Metadata,
-                        std::array<BufferFlags, kNumVp8ReferenceBuffers>>
-        kFrameConfigs[][kTemporalLayerCycle] = {
-            {
+    using FrameConfig =
+        std::pair<Vp8Metadata,
+                  std::array<BufferFlags, kNumVp8ReferenceBuffers>>;
+    static constexpr std::array<std::array<FrameConfig, kTemporalLayerCycle>, 2>
+        kFrameConfigs = {{
+            {{
                 // For two temporal layers.
                 {{.non_reference = false,
                   .temporal_idx = 0,
@@ -197,8 +200,8 @@ bool UpdateFrameHeaderForTemporalLayerEncoding(
                  {kReferenceAndUpdate, kNone, kNone}},
                 {{.non_reference = true, .temporal_idx = 1, .layer_sync = true},
                  {kReference, kNone, kNone}},
-            },
-            {
+            }},
+            {{
                 // For three temporal layers.
                 {{.non_reference = false,
                   .temporal_idx = 0,
@@ -214,12 +217,12 @@ bool UpdateFrameHeaderForTemporalLayerEncoding(
                   .temporal_idx = 2,
                   .layer_sync = false},
                  {kNone, kReference, kNone}},
-            },
-        };
+            }},
+        }};
 
     std::tie(metadata, buffer_flags) =
-        UNSAFE_TODO(kFrameConfigs[num_layers - kMinSupportedVP8TemporalLayers]
-                                 [frame_num % kTemporalLayerCycle]);
+        kFrameConfigs[num_layers - kMinSupportedVP8TemporalLayers]
+                     [frame_num % kTemporalLayerCycle];
   }
 
   frame_hdr.frame_type =
@@ -312,9 +315,11 @@ bool VP8VaapiVideoEncoderDelegate::Initialize(
   }
 
   visible_size_ = config.input_visible_size;
-  coded_size_ = gfx::Size(
-      base::bits::AlignUpDeprecatedDoNotUse(visible_size_.width(), 16),
-      base::bits::AlignUpDeprecatedDoNotUse(visible_size_.height(), 16));
+  coded_size_ =
+      gfx::Size(base::bits::AlignUp(
+                    base::checked_cast<uint32_t>(visible_size_.width()), 16u),
+                base::bits::AlignUp(
+                    base::checked_cast<uint32_t>(visible_size_.height()), 16u));
 
   current_params_ = EncodeParams();
   reference_frames_.Clear();
@@ -671,9 +676,9 @@ bool VP8VaapiVideoEncoderDelegate::SubmitFrameParameters(
     UNSAFE_TODO(pic_param.loop_filter_level[i]) =
         frame_header->loopfilter_hdr.level;
     UNSAFE_TODO(pic_param.ref_lf_delta[i]) =
-        UNSAFE_TODO(frame_header->loopfilter_hdr.ref_frame_delta[i]);
+        frame_header->loopfilter_hdr.ref_frame_delta[i];
     UNSAFE_TODO(pic_param.mode_lf_delta[i]) =
-        UNSAFE_TODO(frame_header->loopfilter_hdr.mb_mode_delta[i]);
+        frame_header->loopfilter_hdr.mb_mode_delta[i];
   }
 
   pic_param.sharpness_level = frame_header->loopfilter_hdr.sharpness_level;
@@ -695,9 +700,28 @@ bool VP8VaapiVideoEncoderDelegate::SubmitFrameParameters(
   qmatrix_buf.quantization_index_delta[4] =
       frame_header->quantization_hdr.uv_ac_delta;
 
-  return vaapi_wrapper_->SubmitBuffers(
+  const bool submitted_buffers = vaapi_wrapper_->SubmitBuffers(
       {{VAEncSequenceParameterBufferType, sizeof(seq_param), &seq_param},
        {VAEncPictureParameterBufferType, sizeof(pic_param), &pic_param},
        {VAQMatrixBufferType, sizeof(qmatrix_buf), &qmatrix_buf}});
+
+  if (submitted_buffers) {
+    // TODO(b/577156796): This call was added to work around two issues:
+    //
+    // 1) The Intel iHD driver resetting the quality level after every
+    //    VAEncSequenceParameterBufferVP8 submission.
+    //
+    // 2) The "Repak" feature in the iHD driver getting enabled as a result of
+    //    (1) which seems to be faulty because it produces corrupted bitstreams
+    //    sometimes.
+    //
+    // The VaapiWrapper::MaybeSetLowQualityEncoding_Locked() at context creation
+    // time **should** be enough, so when b/577156796 is resolved, we should be
+    // able to remove this call.
+    vaapi_wrapper_->MaybeSetLowQualityEncoding(GetCodedSize());
+    return true;
+  }
+
+  return false;
 }
 }  // namespace media

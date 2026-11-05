@@ -228,7 +228,7 @@ class SlopBucket::Configuration {
 
 constexpr base::MemoryConsumerTraits kSlopBucketTraits(
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kMedium,
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // This class uses AsyncMemoryConsumerRegistration, and must thus be marked
     // as asynchronous, even though the actual code in OnReleaseMemory is
@@ -421,7 +421,7 @@ class SlopBucket::Manager : public base::MemoryConsumer {
 
     // Responds to a memory pressure notification by emptying the free pool and
     // possibly disabling SlopBucket.
-    const int disable_limit_threshold =
+    const base::MemoryLimit disable_limit_threshold =
         configuration_.memory_pressure_disable_level() ==
                 base::MEMORY_PRESSURE_LEVEL_CRITICAL
             ? base::kCriticalMemoryPressureThreshold
@@ -550,9 +550,8 @@ std::unique_ptr<SlopBucket> SlopBucket::RequestSlopBucket(
     return nullptr;
   }
   net::RequestPriority priority = for_request->priority();
-  base::UmaHistogramEnumeration(
-      "NetworkService.SlopBucket.RequestedPriority", priority,
-      static_cast<net::RequestPriority>(net::MAXIMUM_PRIORITY + 1));
+  base::UmaHistogramEnumeration("NetworkService.SlopBucket.RequestedPriority",
+                                priority);
   if (priority < manager.require_priority()) {
     DVLOG(1) << "Refused to create SlopBucket for request to '"
              << for_request->url() << "' with priority "

@@ -5,8 +5,9 @@
 #ifndef MEDIA_GPU_COMMAND_BUFFER_HELPER_H_
 #define MEDIA_GPU_COMMAND_BUFFER_HELPER_H_
 
+#include <vector>
+
 #include "base/functional/callback_forward.h"
-#include "base/memory/ref_counted.h"
 #include "base/memory/ref_counted_delete_on_sequence.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/task/sequenced_task_runner.h"
@@ -14,7 +15,6 @@
 #include "build/build_config.h"
 #include "gpu/command_buffer/common/sync_token.h"
 #include "media/gpu/media_gpu_export.h"
-#include "ui/gl/gl_bindings.h"
 
 namespace gpu {
 class CommandBufferStub;
@@ -32,8 +32,6 @@ namespace media {
 class MEDIA_GPU_EXPORT CommandBufferHelper
     : public base::RefCountedDeleteOnSequence<CommandBufferHelper> {
  public:
-  REQUIRE_ADOPTION_FOR_REFCOUNTED_TYPE();
-
   using WillDestroyStubCB = base::OnceCallback<void(bool have_context)>;
 
   // TODO(sandersd): Consider adding an Initialize(stub) method so that
@@ -54,6 +52,9 @@ class MEDIA_GPU_EXPORT CommandBufferHelper
   // is probably necessary.
   virtual void WaitForSyncToken(gpu::SyncToken sync_token,
                                 base::OnceClosure done_cb) = 0;
+
+  virtual void WaitForSyncTokens(std::vector<gpu::SyncToken> sync_tokens,
+                                 base::OnceClosure done_cb);
 
 #if !BUILDFLAG(IS_ANDROID)
   // Retrieve the interface through which to create shared images.

@@ -11,6 +11,7 @@
 
 #include "base/notreached.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/location_bar/location_bar_override_data.h"
 #include "chrome/browser/ui/views/chrome_widget_sublevel.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
@@ -21,12 +22,14 @@
 #include "components/permissions/permission_util.h"
 #include "components/permissions/request_type.h"
 #include "components/strings/grit/components_strings.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
@@ -34,6 +37,7 @@
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_client_view.h"
+#include "ui/views/window/dialog_delegate.h"
 
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PermissionPromptBubbleBaseView,
                                       kMainViewId);
@@ -255,7 +259,8 @@ bool PermissionPromptBubbleBaseView::ShouldShowCloseButton() const {
 }
 
 void PermissionPromptBubbleBaseView::ClosingPermission() {
-  DCHECK_EQ(prompt_style_, PermissionPromptStyle::kBubbleOnly);
+  CHECK_EQ(prompt_style_, PermissionPromptStyle::kBubbleOnly,
+           base::NotFatalUntil::M162);
 
   if (delegate_) {
     permissions::PermissionUmaUtil::RecordActionBrowserAlwaysActive(
@@ -269,27 +274,20 @@ void PermissionPromptBubbleBaseView::RunButtonCallback(int button_id) {
   permissions::PermissionUmaUtil::RecordActionBrowserAlwaysActive(
       request_type(), GetPermissionActionString(button),
       record_host_always_active_value());
-  // `GetBrowser()` can be null for hosts that are not backed by a Browser, such
-  // as a standalone Document Picture-in-Picture window. Guard against it since
-  // `GetBrowserViewForBrowser()` dereferences its argument.
-  auto* browser = GetBrowser();
-  BrowserView* browser_view =
-      browser ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
   // `PERMISSION_SMART_CARD` is essentially a chooser permission without an
   // actual chooser - thus, there is no blocklist of devices and no real
   // difference between deny and dismiss. Ergo, deny clicks should be handled as
   // dismiss, including imposing embargo and recording appropriate histograms.
   const bool is_deny_supported =
       request_type() != permissions::RequestTypeForUma::PERMISSION_SMART_CARD;
-#endif  // BUILDFLAG(IS_CHROMEOS)
-  if (browser_view && browser_view->GetLocationBar()->GetChipController() &&
-      browser_view->GetLocationBar()
-          ->GetChipController()
-          ->IsPermissionPromptChipVisible() &&
-      browser_view->GetLocationBar()->GetChipController()->IsBubbleShowing()) {
-    ChipController* chip_controller =
-        browser_view->GetLocationBar()->GetChipController();
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
+  LocationBar* location_bar =
+      location_bar::GetLocationBarForWebContents(web_contents());
+  ChipController* chip_controller =
+      location_bar ? location_bar->GetChipController() : nullptr;
+  if (chip_controller && chip_controller->IsPermissionPromptChipVisible() &&
+      chip_controller->IsBubbleShowing()) {
     switch (button) {
       case PermissionDialogButton::kAccept:
         chip_controller->PromptDecided(permissions::PermissionAction::GRANTED);
@@ -302,12 +300,12 @@ void PermissionPromptBubbleBaseView::RunButtonCallback(int button_id) {
 
       case PermissionDialogButton::kDeny:
         chip_controller->PromptDecided(
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
             is_deny_supported ? permissions::PermissionAction::DENIED
                               : permissions::PermissionAction::DISMISSED
 #else
             permissions::PermissionAction::DENIED
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
         );
         return;
     }
@@ -328,13 +326,13 @@ void PermissionPromptBubbleBaseView::RunButtonCallback(int button_id) {
       delegate_->AcceptThisTime(/*prompt_options=*/std::monostate());
       return;
     case PermissionDialogButton::kDeny:
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
       is_deny_supported
           ? delegate_->Deny(/*prompt_options=*/std::monostate())
           : delegate_->Dismiss(/*prompt_options=*/std::monostate());
 #else
       delegate_->Deny(/*prompt_options=*/std::monostate());
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
       return;
   }
   NOTREACHED();

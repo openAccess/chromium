@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_WEBAUTHN_CORE_BROWSER_PASSKEY_MODEL_H_
 #define COMPONENTS_WEBAUTHN_CORE_BROWSER_PASSKEY_MODEL_H_
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -102,7 +103,12 @@ class PasskeyModel : public KeyedService {
   // Returns true if there are no passkeys in the account.
   virtual bool IsEmpty() const = 0;
 
+  // Returns the sync IDs of all stored passkeys, including shadowed ones.
   virtual base::flat_set<std::string> GetAllSyncIds() const = 0;
+
+  // Returns the device authorization key versions that stored passkeys,
+  // including shadowed and hidden ones, are encrypted with.
+  virtual base::flat_set<int32_t> GetDeviceAuthorizationKeyVersions() const = 0;
 
   // Returns the list of all passkeys matching the provided criteria:
   // - `rp_id`: Either a specific Relying Party ID or any.
@@ -165,25 +171,6 @@ class PasskeyModel : public KeyedService {
   virtual bool UpdatePasskeyEncryptedBlob(
       const std::string& credential_id,
       const std::string& new_encrypted_blob) = 0;
-
-  // Creates a passkey for the given RP and user and returns the new entity
-  // specifics.
-  //
-  // The returned entity's `encrypted` field will contain an
-  // `WebauthnCredentialSpecifics_EncryptedData` message, encrypted to
-  // `trusted_vault_key`. `public_key_spki_der_out`, if non-null, will be set to
-  // a DER-serialized X.509 SubjectPublicKeyInfo of the corresponding public
-  // key.
-  //
-  // Any existing passkeys for the same RP and user ID are shadowed (i.e., added
-  // to the new passkey's `newly_shadowed_credential_ids`), causing them not to
-  // be enumerated by other methods in the model.
-  virtual sync_pb::WebauthnCredentialSpecifics CreatePasskey(
-      std::string_view rp_id,
-      const UserEntity& user_entity,
-      base::span<const uint8_t> trusted_vault_key,
-      int32_t trusted_vault_key_version,
-      std::vector<uint8_t>* public_key_spki_der_out) = 0;
 
   // Creates a passkey from a pre-constructed protobuf.
   // Existing passkeys for the same RP and user ID will be shadowed, but

@@ -18,6 +18,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "build/build_config.h"
 #include "mojo/core/embedder/scoped_ipc_support.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
@@ -48,6 +49,9 @@ struct ConnectionInfo;
 
 namespace remoting {
 
+#if BUILDFLAG(IS_WIN)
+class CertificateBrokerImpl;
+#endif
 class ChromotingHostServicesServer;
 class DesktopSession;
 class PeerConnectionProcessHandler;
@@ -156,7 +160,7 @@ class DaemonProcess : public ConfigWatcher::Delegate,
   void Initialize();
 
   // Invokes |stopped_callback_| to ask the owner to delete |this|.
-  void Stop(int exit_code);
+  virtual void Stop(int exit_code);
 
   // Returns true if |terminal_id| is in the range of allocated IDs. I.e. it is
   // less or equal to the highest ID we have seen so far.
@@ -214,6 +218,9 @@ class DaemonProcess : public ConfigWatcher::Delegate,
   // Requests the network process to crash. Virtual for testing.
   virtual void DoCrashNetworkProcess(const base::Location& location);
 
+  // Called when the count of active desktop sessions changes.
+  virtual void OnSessionCountChanged(size_t session_count);
+
   scoped_refptr<AutoThreadTaskRunner> caller_task_runner() {
     return caller_task_runner_;
   }
@@ -245,6 +252,9 @@ class DaemonProcess : public ConfigWatcher::Delegate,
     return remoting_host_control_.get();
   }
 
+  // Deletes all desktop sessions.
+  void DeleteAllDesktopSessions();
+
  private:
   // Launches a peer connection process and establishes an IPC channel with it.
   // Returns a pointer to the created handler, or nullptr if creation failed.
@@ -261,9 +271,6 @@ class DaemonProcess : public ConfigWatcher::Delegate,
 
   // Binds associated interfaces to the network process launcher.
   void BindAssociatedInterfaces();
-
-  // Deletes all desktop sessions.
-  void DeleteAllDesktopSessions();
 
   // Task runner on which public methods of this class must be called.
   scoped_refptr<AutoThreadTaskRunner> caller_task_runner_;
@@ -303,6 +310,12 @@ class DaemonProcess : public ConfigWatcher::Delegate,
       this};
   mojo::AssociatedReceiver<mojom::HostStatusObserver> host_status_observer_{
       this};
+
+#if BUILDFLAG(IS_WIN)
+  std::unique_ptr<CertificateBrokerImpl> certificate_broker_impl_;
+  std::unique_ptr<mojo::AssociatedReceiver<mojom::CertificateBroker>>
+      certificate_broker_;
+#endif
 
   scoped_refptr<HostStatusMonitor> status_monitor_;
 

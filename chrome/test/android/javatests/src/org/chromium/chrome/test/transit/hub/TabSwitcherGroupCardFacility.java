@@ -84,7 +84,13 @@ public class TabSwitcherGroupCardFacility extends TabSwitcherCardFacility {
         boolean isIncognito = mHostStation.isIncognito();
         return menuButtonElement
                 .clickTo()
-                .enterFacility(new TabSwitcherGroupCardAppMenuFacility<>(isIncognito, mTitle));
+                .enterFacility(
+                        new TabSwitcherGroupCardAppMenuFacility<>(this, isIncognito, mTitle));
+    }
+
+    /** Returns the title of the tab group card. */
+    public String getTitle() {
+        return mTitle;
     }
 
     /**

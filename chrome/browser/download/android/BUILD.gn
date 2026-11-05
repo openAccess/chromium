@@ -24,6 +24,30 @@ android_library("file_provider_java") {
   ]
 }
 
+# Minimal Java library for download feature checks. Kept separate from ":java"
+# so that lower layers (e.g. the toolbar) can consult download feature flags
+# without depending on the full download UI.
+android_library("features_java") {
+  sources =
+      [ "java/src/org/chromium/chrome/browser/download/DownloadFeatures.java" ]
+  deps = [
+    "//base:base_java",
+    "//chrome/browser/flags:java",
+  ]
+}
+
+# Minimal Java library holding the state published to the download toolbar
+# button. Kept separate from ":java" so that the toolbar can consume it without
+# depending on the full download UI, and ":java" can publish it without
+# depending on the toolbar.
+android_library("toolbar_button_state_java") {
+  sources = [ "java/src/org/chromium/chrome/browser/download/DownloadToolbarButtonState.java" ]
+  deps = [
+    "//build/android:build_java",
+    "//third_party/androidx:androidx_annotation_annotation_java",
+  ]
+}
+
 android_library("java") {
   sources = [
     "java/src/org/chromium/chrome/browser/download/DangerousDownloadDialogBridge.java",
@@ -36,7 +60,9 @@ android_library("java") {
     "java/src/org/chromium/chrome/browser/download/DownloadManagerBridge.java",
     "java/src/org/chromium/chrome/browser/download/DownloadMessageUiController.java",
     "java/src/org/chromium/chrome/browser/download/DownloadStartupUtils.java",
+    "java/src/org/chromium/chrome/browser/download/DownloadStateModel.java",
     "java/src/org/chromium/chrome/browser/download/DownloadStatus.java",
+    "java/src/org/chromium/chrome/browser/download/DownloadToolbarButtonController.java",
     "java/src/org/chromium/chrome/browser/download/InsecureDownloadDialogBridge.java",
     "java/src/org/chromium/chrome/browser/download/MediaStoreHelper.java",
     "java/src/org/chromium/chrome/browser/download/MimeUtils.java",
@@ -69,11 +95,16 @@ android_library("java") {
     "java/src/org/chromium/chrome/browser/download/settings/DownloadLocationPreferenceAdapter.java",
     "java/src/org/chromium/chrome/browser/download/settings/DownloadLocationPreferenceDialog.java",
     "java/src/org/chromium/chrome/browser/download/settings/DownloadSettings.java",
+    "java/src/org/chromium/chrome/browser/download/tray/DownloadTrayDelegate.java",
+    "java/src/org/chromium/chrome/browser/download/tray/DownloadTrayItemProperties.java",
+    "java/src/org/chromium/chrome/browser/download/tray/DownloadTrayItemViewBinder.java",
+    "java/src/org/chromium/chrome/browser/download/tray/DownloadTrayMediator.java",
   ]
 
   deps = [
     ":file_provider_java",
     ":java_resources",
+    ":toolbar_button_state_java",
     "//base:base_java",
     "//base:content_uri_utils_java",
     "//build/android:build_java",
@@ -102,6 +133,7 @@ android_library("java") {
     "//content/public/android:content_java",
     "//net/android:net_java",
     "//third_party/android_deps:material_design_java",
+    "//third_party/androidx:androidx_activity_activity_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/androidx:androidx_appcompat_appcompat_resources_java",
     "//third_party/androidx:androidx_core_core_java",
@@ -157,66 +189,49 @@ generate_jni("jni_headers") {
   ]
 }
 
-android_library("download_java_tests") {
-  testonly = true
-
-  sources = [
-    "java/src/org/chromium/chrome/browser/download/DownloadFileProviderTest.java",
-    "java/src/org/chromium/chrome/browser/download/MimeUtilsTest.java",
-    "java/src/org/chromium/chrome/browser/download/StringUtilsTest.java",
-  ]
-
-  deps = [
-    ":file_provider_java",
-    ":java",
-    "//base:base_java",
-    "//base:base_java_test_support",
-    "//chrome/browser/flags:java",
-    "//chrome/browser/preferences:java",
-    "//chrome/browser/profiles/android:java",
-    "//chrome/browser/settings:test_support_java",
-    "//chrome/test/android:chrome_java_unit_test_support",
-    "//components/browser_ui/settings/android:java",
-    "//components/browser_ui/util/android:java",
-    "//components/offline_items_collection/core:core_java",
-    "//components/policy/android:policy_java_test_support",
-    "//components/prefs/android:java",
-    "//components/user_prefs/android:java",
-    "//content/public/test/android:content_java_test_support",
-    "//third_party/android_deps:espresso_java",
-    "//third_party/androidx:androidx_preference_preference_java",
-    "//third_party/androidx:androidx_test_core_java",
-    "//third_party/androidx:androidx_test_monitor_java",
-    "//third_party/androidx:androidx_test_runner_java",
-    "//third_party/junit",
-    "//third_party/mockito:mockito_java",
-  ]
-}
-
 robolectric_library("junit_tests") {
   sources = [
     "java/src/org/chromium/chrome/browser/download/DownloadDialogBridgeUnitTest.java",
     "java/src/org/chromium/chrome/browser/download/DownloadDirectoryProviderUnitTest.java",
+    "java/src/org/chromium/chrome/browser/download/DownloadFeaturesUnitTest.java",
+    "java/src/org/chromium/chrome/browser/download/DownloadFileProviderUnitTest.java",
     "java/src/org/chromium/chrome/browser/download/DownloadLocationDialogMetricsUnitTest.java",
+    "java/src/org/chromium/chrome/browser/download/DownloadStateModelTest.java",
+    "java/src/org/chromium/chrome/browser/download/DownloadToolbarButtonControllerTest.java",
+    "java/src/org/chromium/chrome/browser/download/MimeUtilsUnitTest.java",
+    "java/src/org/chromium/chrome/browser/download/StringUtilsUnitTest.java",
+    "java/src/org/chromium/chrome/browser/download/dialogs/DangerousDownloadDialogTest.java",
     "java/src/org/chromium/chrome/browser/download/dialogs/DownloadDialogUtilsUnitTest.java",
     "java/src/org/chromium/chrome/browser/download/dialogs/OpenDownloadDialogTest.java",
+    "java/src/org/chromium/chrome/browser/download/settings/DownloadLocationPreferenceDialogUnitTest.java",
+    "java/src/org/chromium/chrome/browser/download/tray/DownloadTrayItemViewBinderTest.java",
+    "java/src/org/chromium/chrome/browser/download/tray/DownloadTrayMediatorTest.java",
   ]
 
   deps = [
+    ":features_java",
     ":file_provider_java",
     ":java",
     ":java_resources",
+    ":toolbar_button_state_java",
     "//base:base_java",
     "//base:base_java_test_support",
+    "//base:base_java_test_support_uncommon",
     "//base:base_junit_test_support",
     "//chrome/browser/flags:java",
     "//chrome/browser/preferences:java",
     "//chrome/browser/profiles/android:java",
     "//chrome/test/android:chrome_java_unit_test_support",
+    "//components/browser_ui/util/android:java",
+    "//components/download/public/common:public_java",
     "//components/offline_items_collection/core:core_java",
     "//components/prefs/android:java",
     "//net/android:net_java",
+    "//third_party/androidx:androidx_activity_activity_java",
+    "//third_party/androidx:androidx_core_core_java",
+    "//third_party/androidx:androidx_preference_preference_java",
     "//third_party/androidx:androidx_test_core_java",
+    "//third_party/androidx:androidx_test_runner_java",
     "//third_party/jni_zero:jni_zero_java",
     "//third_party/junit",
     "//third_party/mockito:mockito_java",
@@ -236,12 +251,14 @@ android_resources("java_resources") {
     "java/res/layout/download_location_preference_item.xml",
     "java/res/layout/download_location_spinner_dropdown_item.xml",
     "java/res/layout/download_location_spinner_item.xml",
+    "java/res/layout/download_tray_item_row.xml",
     "java/res/values/dimens.xml",
     "java/res/values/styles.xml",
     "java/res/xml/download_preferences.xml",
   ]
 
   deps = [
+    "//chrome/browser/settings:java_resources",
     "//chrome/browser/ui/android/strings:ui_strings_grd",
     "//components/browser_ui/modaldialog/android:java_resources",
     "//components/browser_ui/strings/android:browser_ui_strings_grd",

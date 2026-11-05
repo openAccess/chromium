@@ -17,7 +17,7 @@
 #include "chrome/browser/search_engines/ai_mode_button_service_factory.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/contextual_search/searchbox_context_data.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
@@ -27,11 +27,13 @@
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_pedal_implementations.h"
+#include "chrome/browser/ui/omnibox/omnibox_popup_state_manager.h"
 #include "chrome/browser/ui/omnibox/omnibox_tab_helper.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/search/omnibox_utils.h"
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/contextual_searchbox_handler.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_omnibox_client.h"
@@ -42,7 +44,9 @@
 #include "chrome/grit/new_tab_page_resources.h"
 #include "components/contextual_search/contextual_search_service.h"
 #include "components/contextual_search/pref_names.h"
+#include "components/feature_engagement/public/feature_constants.h"
 #include "components/lens/lens_features.h"
+#include "components/lens/lens_overlay_invocation_source.h"
 #include "components/navigation_metrics/navigation_metrics.h"
 #include "components/omnibox/browser/aim_eligibility_service.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
@@ -50,6 +54,7 @@
 #include "components/omnibox/browser/autocomplete_controller_emitter.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
+#include "components/omnibox/browser/autocomplete_result.h"
 #include "components/omnibox/browser/contextual_search_provider.h"
 #include "components/omnibox/browser/omnibox_client.h"
 #include "components/omnibox/browser/omnibox_event_global_tracker.h"
@@ -74,6 +79,7 @@
 #include "third_party/metrics_proto/omnibox_focus_type.pb.h"
 #include "third_party/omnibox_proto/types.pb.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/webui/resource_path.h"
 #include "ui/base/window_open_disposition_utils.h"
@@ -84,20 +90,20 @@ namespace {
 searchbox::mojom::SelectionLineState ConvertLineState(
     OmniboxPopupSelection::LineState state) {
   switch (state) {
-    case OmniboxPopupSelection::LineState::NORMAL:
+    case OmniboxPopupSelection::LineState::kNormal:
       return searchbox::mojom::SelectionLineState::kNormal;
-    case OmniboxPopupSelection::LineState::KEYWORD_MODE:
+    case OmniboxPopupSelection::LineState::kKeywordMode:
       return searchbox::mojom::SelectionLineState::kKeywordMode;
-    case OmniboxPopupSelection::LineState::FOCUSED_BUTTON_AIM:
+    case OmniboxPopupSelection::LineState::kFocusedButtonAim:
       return searchbox::mojom::SelectionLineState::kFocusedButtonAim;
-    case OmniboxPopupSelection::LineState::FOCUSED_BUTTON_ACTION:
+    case OmniboxPopupSelection::LineState::kFocusedButtonAction:
       return searchbox::mojom::SelectionLineState::kFocusedButtonAction;
-    case OmniboxPopupSelection::LineState::FOCUSED_BUTTON_REMOVE_SUGGESTION:
+    case OmniboxPopupSelection::LineState::kFocusedButtonRemoveSuggestion:
       return searchbox::mojom::SelectionLineState::
           kFocusedButtonRemoveSuggestion;
     default:
       // WebUI omnibox doesn't support the other UIs and their focus states.
-      NOTREACHED() << state;
+      NOTREACHED() << static_cast<int>(state);
   }
 }
 
@@ -131,25 +137,27 @@ WebuiOmniboxHandler::WebuiOmniboxHandler(
     mojo::PendingRemote<searchbox::mojom::Page> pending_page,
     MetricsReporter* metrics_reporter,
     OmniboxController* omnibox_controller,
-    content::WebUI* web_ui,
+    Profile* profile,
+    content::WebContents* web_contents,
     GetSessionHandleCallback get_session_callback)
     : ContextualSearchboxHandler(std::move(pending_page_handler),
                                  std::move(pending_page),
-                                 Profile::FromWebUI(web_ui),
-                                 web_ui->GetWebContents(),
+                                 profile,
+                                 web_contents,
                                  /*client=*/nullptr,
                                  std::move(get_session_callback)),
-      web_contents_observer_(/*handler=*/this, web_ui->GetWebContents()),
+      web_contents_observer_(/*handler=*/this, web_contents),
       metrics_reporter_(metrics_reporter) {
   // Keep a reference to the OmniboxController instance owned by the
   // `OmniboxView`.
   CHECK(omnibox_controller);
   controller_ = omnibox_controller;
+  SendAvailableKeywordModels();
   autocomplete_controller_observation_.Observe(autocomplete_controller());
   edit_model_observation_.Observe(omnibox_controller->edit_model());
 
   auto* aim_eligibility_service =
-      AimEligibilityServiceFactory::GetForProfile(Profile::FromWebUI(web_ui));
+      AimEligibilityServiceFactory::GetForProfile(profile);
   if (aim_eligibility_service) {
     // `base::Unretained(this)` is safe here (and below) because `this` owns
     // the subscriptions and will automatically unsubscribe them when the
@@ -179,7 +187,7 @@ WebuiOmniboxHandler::WebuiOmniboxHandler(
                           base::Unretained(this)));
 
   if (tabs::TabInterface* tab =
-          tabs::TabInterface::MaybeGetFromContents(web_ui->GetWebContents())) {
+          tabs::TabInterface::MaybeGetFromContents(web_contents)) {
     tab_will_detach_subscription_ = tab->RegisterWillDetach(base::BindRepeating(
         &WebuiOmniboxHandler::OnTabWillDetach, base::Unretained(this)));
     tab_did_insert_subscription_ = tab->RegisterDidInsert(base::BindRepeating(
@@ -205,7 +213,7 @@ void WebuiOmniboxHandler::ActivateKeyword(
     uint8_t line,
     const GURL& url,
     base::TimeTicks match_selection_timestamp,
-    bool is_mouse_event) {
+    searchbox::mojom::KeywordActivationMethod activation_method) {
   const AutocompleteMatch* match = GetMatchWithUrl(line, url);
   if (!match) {
     // This can happen due to asynchronous updates changing the result while
@@ -213,18 +221,30 @@ void WebuiOmniboxHandler::ActivateKeyword(
     return;
   }
   // The rest of this function mirrors
-  // `OmniboxSuggestionButtonRowView::ButtonPressed()`.
+  // `OmniboxSuggestionButtonRowView::ButtonPressed()` for clicks and taps, and
+  // `OmniboxEditModel::StepPopupSelection()` for keyboard entry.
   OmniboxPopupSelection selection(
-      line, OmniboxPopupSelection::LineState::KEYWORD_MODE);
+      line, OmniboxPopupSelection::LineState::kKeywordMode);
   // Note: Since keyword mode logic depends on state of the edit model, the
   // selection must first be set to prepare for keyword mode before accepting.
   edit_model()->SetPopupSelection(selection);
   // Don't re-enter keyword mode if already in it. This occurs when the user
   // was in keyword mode and re-clicked the same or a different keyword chip.
   if (edit_model()->is_keyword_hint()) {
-    const auto entry_method = is_mouse_event
-                                  ? metrics::OmniboxEventProto::CLICK_HINT_VIEW
-                                  : metrics::OmniboxEventProto::TAP_HINT_VIEW;
+    metrics::OmniboxEventProto::KeywordModeEntryMethod entry_method;
+    switch (activation_method) {
+      case searchbox::mojom::KeywordActivationMethod::kClick:
+        entry_method = metrics::OmniboxEventProto::CLICK_HINT_VIEW;
+        break;
+      case searchbox::mojom::KeywordActivationMethod::kTap:
+        entry_method = metrics::OmniboxEventProto::TAP_HINT_VIEW;
+        break;
+      case searchbox::mojom::KeywordActivationMethod::kKeyboard:
+        // Like the Views popup, all keyboard entries are logged as `TAB`, even
+        // though e.g. arrow keys can also select an instant keyword match.
+        entry_method = metrics::OmniboxEventProto::TAB;
+        break;
+    }
     edit_model()->AcceptKeyword(entry_method);
   }
 }
@@ -239,7 +259,7 @@ void WebuiOmniboxHandler::QueryAutocomplete(
     bool is_on_focus,
     const std::string& keyword,
     searchbox::mojom::InputMethod input_method) {
-  if (!omnibox::IsWebUIOmniboxFullPopupEnabled()) {
+  if (!omnibox::internal::IsWebUIOmniboxFullPopupEnabled()) {
     DCHECK(!tab_id.has_value())
         << "QueryAutocomplete with tab_id is only supported when WebUI Omnibox "
            "full popup is enabled.";
@@ -270,12 +290,26 @@ void WebuiOmniboxHandler::QueryAutocomplete(
     return;
   }
 
+  // Captured before starting the query, which may update the edit model.
+  const bool is_zero_prefix_query_of_permanent_text =
+      is_on_focus && !edit_model()->user_input_in_progress();
+
   SearchboxHandler::QueryAutocomplete(
       query_id, /*tab_id=*/std::nullopt, input, prevent_inline_autocomplete,
       cursor_position, suggest_inventory, is_on_focus, keyword, input_method);
 
   // Ensure the `OmniboxEditModel` reflects the current input state.
-  if (auto* view = edit_model()->view()) {
+  //
+  // The query above has been started either way. But don't write a zero-prefix
+  // query of the permanent text back into the native view: such a query
+  // doesn't change what the view should show, and because it arrives
+  // asynchronously, writing it back can clobber newer native state. E.g. the
+  // second press of a double-click on the elided URL unelides it and selects a
+  // word. If the WebUI receives the first click's state only after that press,
+  // the zero-prefix query that it then issues would re-elide the URL here and
+  // drop that selection.
+  if (auto* view = edit_model()->view();
+      view && !is_zero_prefix_query_of_permanent_text) {
     view->SetWindowTextAndCaretPos(input, cursor_position,
                                    /*update_popup=*/false,
                                    /*notify_text_changed=*/false);
@@ -283,6 +317,17 @@ void WebuiOmniboxHandler::QueryAutocomplete(
 }
 
 void WebuiOmniboxHandler::OpenLensSearch() {
+  // Every popup Lens entrypoint, including the Lens icon (click or keyboard),
+  // ends up here. Opening Lens counts as using the IPH's promoted feature.
+  if (omnibox::kAskGLensIconIph.Get()) {
+    if (auto* const user_education =
+            BrowserUserEducationInterface::MaybeGetForWebUiContents(
+                web_contents_.get())) {
+      user_education->NotifyFeaturePromoFeatureUsed(
+          feature_engagement::kIPHOmniboxAskGLensIconFeature,
+          FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
+    }
+  }
   edit_model()->OpenLensSearch();
 }
 
@@ -319,6 +364,11 @@ void WebuiOmniboxHandler::AddTabContext(
     context = std::make_unique<SearchboxContextData::Context>();
   }
 
+  if (source == searchbox::mojom::TabAttachmentSource::kCurrentTabChip) {
+    context->invocation_source =
+        lens::LensOverlayInvocationSource::kOmniboxPageAction;
+  }
+
   auto tab_attachment = searchbox::mojom::TabAttachment::New();
   tab_attachment->tab_id = tab_id;
   tab_attachment->title = base::UTF16ToUTF8(TabUIHelper::From(tab)->GetTitle());
@@ -342,13 +392,9 @@ void WebuiOmniboxHandler::AddTabContext(
     }
   }
 
-  // Adding tab context is arguably a hybrid of `kClickOrGesture` (clicking a
-  // chip) and `kContextMenu` (doing so adds context similar to the
-  // `kContextMenu` items). Adding context should always open the AI popup,
-  // which `kContextMenu` guarantees but `kClickOrGesture` does not. Since this
-  // feature is not likely to launch, it's probably not worth the effort to
-  // investigate if this should be changed to `kContextMenu`.
-  edit_model()->OpenAiMode(OmniboxEditModel::AimActivation::kClickOrGesture);
+  // Adding context should always open the AI popup, which `kContextMenu`
+  // guarantees.
+  edit_model()->OpenAiMode(OmniboxEditModel::AimActivation::kContextMenu);
   std::move(callback).Run(base::ok(context_token));
 }
 void WebuiOmniboxHandler::StepSelection(
@@ -372,14 +418,14 @@ void WebuiOmniboxHandler::StepSelection(
       NOTREACHED();
     }
   }
-  page_->StepSelection(direction == OmniboxPopupSelection::kForward
+  page_->StepSelection(direction == OmniboxPopupSelection::Direction::kForward
                            ? searchbox::mojom::SelectionDirection::kForward
                            : searchbox::mojom::SelectionDirection::kBackward,
                        mojom_step);
 }
 
 void WebuiOmniboxHandler::OpenCurrentSelection(
-    WindowOpenDisposition disposition) {
+    ui::mojom::WindowOpenDisposition disposition) {
   page_->OpenCurrentSelection(disposition);
 }
 
@@ -387,13 +433,56 @@ void WebuiOmniboxHandler::SetAimButtonVisible(bool visible) {
   page_->SetAimButtonVisible(visible);
 }
 
-WindowOpenDisposition WebuiOmniboxHandler::ComputeWindowOpenDisposition(
-    uint8_t mouse_button,
-    bool alt_key,
-    bool ctrl_key,
-    bool meta_key,
-    bool shift_key,
-    bool via_keyboard) {
+void WebuiOmniboxHandler::DetachFromOmniboxController() {
+  edit_model_observation_.Reset();
+  autocomplete_controller_observation_.Reset();
+  controller_ = nullptr;
+  web_contents_observer_.ScopedObserve(nullptr);
+  // The snapshots hold matches from the old window's results.
+  autocomplete_result_snapshots_.clear();
+  DetachFromBrowserWindow();
+}
+
+void WebuiOmniboxHandler::AttachToOmniboxController(
+    OmniboxController* omnibox_controller) {
+  CHECK(omnibox_controller);
+  controller_ = omnibox_controller;
+  autocomplete_controller_observation_.Observe(autocomplete_controller());
+  edit_model_observation_.Observe(omnibox_controller->edit_model());
+  AttachToBrowserWindow();
+
+  content::WebContents* active_contents = nullptr;
+  if (auto* browser_window_interface =
+          webui::GetBrowserWindowInterface(web_contents_)) {
+    if (auto* tab_list = TabListInterface::From(browser_window_interface)) {
+      if (auto* active_tab = tab_list->GetActiveTab()) {
+        active_contents = active_tab->GetContents();
+      }
+    }
+  }
+  web_contents_observer_.ScopedObserve(active_contents);
+
+  // Only hidden popups move, and hiding cleared the page's results. The new
+  // window has results only when the move happens while its popup opens, e.g.
+  // from `Show()` after synchronous matches arrived; send them then. The page
+  // keeps its selected line across result updates, so also send the new
+  // window's selection rather than let the page apply the old one to it.
+  if (autocomplete_controller()->result().empty()) {
+    return;
+  }
+  OnStart(autocomplete_controller(), autocomplete_controller()->input());
+  OnResultChanged(autocomplete_controller(), /*default_match_changed=*/false);
+  OnSelectionChanged(OmniboxPopupSelection(OmniboxPopupSelection::kNoMatch),
+                     edit_model()->GetPopupSelection());
+}
+
+ui::mojom::WindowOpenDisposition
+WebuiOmniboxHandler::ComputeWindowOpenDisposition(uint8_t mouse_button,
+                                                  bool alt_key,
+                                                  bool ctrl_key,
+                                                  bool meta_key,
+                                                  bool shift_key,
+                                                  bool via_keyboard) {
   return via_keyboard
              ? searchbox::ComputeOpenDispositionFromModifiersAndLogToUma(
                    shift_key, ctrl_key, alt_key, meta_key)
@@ -401,7 +490,6 @@ WindowOpenDisposition WebuiOmniboxHandler::ComputeWindowOpenDisposition(
                    /*middle_button=*/mouse_button == 1, alt_key, ctrl_key,
                    meta_key, shift_key);
 }
-
 
 bool WebuiOmniboxHandler::ShouldShowFirstContextualDescription() const {
   return omnibox::kAskGShowFirstDescription.Get() &&
@@ -427,17 +515,34 @@ void WebuiOmniboxHandler::OverrideIconPaths(
             ? searchbox_internal::kSearchSparkIconResourceName
             : searchbox_internal::kReplyRotated180IconResourceName;
   }
+
+  // Show a side panel icon in front of the "Opens in side panel" description.
+  // Description icons are new; consider moving this to its own hook (e.g.
+  // GetDescriptionIconPath()) depending on how this parameter evolves.
+  // For now we are keeping this icon override scoped to webui omnibox.
+  if (ContextualSearchProvider::HasSidePanelDescription(
+          match, autocomplete_controller()->autocomplete_provider_client())) {
+    mojom_match->description_icon_path =
+        searchbox_internal::kDockToRightIconResourceName;
+  }
   SearchboxHandler::OverrideIconPaths(match, mojom_match);
 }
 
 void WebuiOmniboxHandler::OnFocusChanged(bool focused) {
   if (focused) {
-    edit_model()->OnSetFocus(false);
+    if (omnibox::internal::IsWebUIOmniboxFullPopupEnabled()) {
+      if (omnibox_controller() &&
+          omnibox_controller()->popup_state_manager()->popup_state() ==
+              OmniboxPopupState::kNone) {
+        return;
+      }
+    }
+    edit_model()->OnSetFocus(/*control_down=*/false);
   } else {
     edit_model()->OnWillKillFocus();
     // Delay killing focus for full popup until state is properly synced in
     // omnibox_popup_view_full_webui's `OnTabChanged`
-    if (!base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxFullPopup)) {
+    if (!omnibox::internal::IsWebUIOmniboxFullPopupEnabled()) {
       // Kill focus on focus loss to properly terminate the edit session and
       // reset popup and keyword state.
       edit_model()->OnKillFocus();
@@ -454,11 +559,18 @@ void WebuiOmniboxHandler::OnStart(AutocompleteController* controller,
                                   const AutocompleteInput& input) {
   const AutocompleteProviderClient* client =
       autocomplete_controller()->autocomplete_provider_client();
+  bool cobrowse_blocked = (omnibox::kAskGCoBrowse.Get() ||
+                           omnibox::kAskGCoBrowseWithVisualSelection.Get()) &&
+                          client && !client->ShouldOpenCoBrowsePanel();
+  bool composebox_blocked = omnibox::kAskGComposeBox.Get() && client &&
+                            !client->ShouldOpenComposeboxForAskG();
+  bool ask_g_fallback_to_lens = cobrowse_blocked || composebox_blocked;
   // Check if there are zero suggest (either on NTP or on web) or the
   // input text is empty (necessary because `IsZeroSuggest()` is false on
   // clobber).
   page_->UpdateLensSearchEligibility(
       ContextualSearchProvider::LensEntrypointEligible(input, client) &&
+      !ask_g_fallback_to_lens &&
       (input.IsZeroSuggest() || input.text().empty()));
 }
 
@@ -481,6 +593,12 @@ void WebuiOmniboxHandler::OnResultChanged(AutocompleteController* controller,
   SearchboxHandler::OnResultChanged(controller, default_match_changed);
 }
 
+void WebuiOmniboxHandler::SetPopupSelection(
+    searchbox::mojom::OmniboxPopupSelectionPtr selection) {
+  SearchboxHandler::SetPopupSelection(std::move(selection));
+  UpdateAimButtonVisibility();
+}
+
 void WebuiOmniboxHandler::OnSelectionChanged(
     OmniboxPopupSelection old_selection,
     OmniboxPopupSelection selection) {
@@ -491,6 +609,7 @@ void WebuiOmniboxHandler::OnSelectionChanged(
       searchbox::mojom::OmniboxPopupSelection::New(
           selection.line, ConvertLineState(selection.state),
           selection.action_index));
+  UpdateAimButtonVisibility();
 }
 
 void WebuiOmniboxHandler::OnCharTyped(base::TimeTicks timestamp) {
@@ -503,6 +622,7 @@ void WebuiOmniboxHandler::OnActiveTabChanged(TabListInterface& tab_list,
                                              tabs::TabInterface* tab) {
   web_contents_observer_.ScopedObserve(tab->GetContents());
   ContextualSearchboxHandler::OnActiveTabChanged(tab_list, tab);
+  UpdateAimButtonVisibility();
 }
 
 void WebuiOmniboxHandler::OnTabWillDetach(
@@ -516,8 +636,11 @@ void WebuiOmniboxHandler::OnTabWillDetach(
 
 void WebuiOmniboxHandler::OnTabDidInsert(tabs::TabInterface* tab) {
   if (auto* browser_window_interface = tab->GetBrowserWindowInterface()) {
+    // The window can be absent in unit tests that stub out the browser.
+    BrowserWindow* const browser_window =
+        BrowserWindow::FromBrowser(browser_window_interface);
     if (auto* location_bar =
-            browser_window_interface->GetFeatures().location_bar()) {
+            browser_window ? browser_window->GetLocationBar() : nullptr) {
       if (auto* omnibox_controller = location_bar->GetOmniboxController()) {
         edit_model_observation_.Reset();
         autocomplete_controller_observation_.Reset();
@@ -541,6 +664,10 @@ void WebuiOmniboxHandler::UpdateAimButtonVisibility() {
     auto* client =
         static_cast<ChromeOmniboxClient*>(omnibox_controller()->client());
     if (LocationBar* location_bar = client->GetLocationBar()) {
+      if (auto* ai_mode_controller = omnibox::AiModePageActionController::From(
+              location_bar->GetBrowser())) {
+        ai_mode_controller->UpdatePageAction();
+      }
       SetAimButtonVisible(
           omnibox::AiModePageActionController::ShouldShowPageAction(
               profile_, *location_bar));
@@ -591,6 +718,7 @@ void WebuiOmniboxHandler::OnContentSharingPolicyChanged() {
 
 void WebuiOmniboxHandler::OnAimPopupEligibilityChanged() {
   InitializeInputStateModel();
+  UpdateAimButtonVisibility();
 
   page_->UpdateAimPopupEligibility(
       omnibox::IsAimPopupEnabled(profile_) &&

@@ -69,6 +69,7 @@ public class TabStripIphController {
     private final UserEducationHelper mUserEducationHelper;
     private final Tracker mTracker;
     private boolean mGlicIphShowing;
+    private boolean mVerticalTabsIphShowing;
 
     /**
      * Constructs the controller.
@@ -149,6 +150,10 @@ public class TabStripIphController {
             iphCommandBuilder
                     .setOnShowCallback(() -> mGlicIphShowing = true)
                     .setOnDismissCallback(() -> mGlicIphShowing = false);
+        } else if (iphType == IphType.VERTICAL_TABS_PROMO) {
+            iphCommandBuilder
+                    .setOnShowCallback(() -> mVerticalTabsIphShowing = true)
+                    .setOnDismissCallback(() -> mVerticalTabsIphShowing = false);
         }
 
         mUserEducationHelper.requestShowIph(iphCommandBuilder.build());
@@ -176,12 +181,18 @@ public class TabStripIphController {
         return mGlicIphShowing;
     }
 
+    /** Returns whether Vertical Tabs IPH is currently showing on the tab strip. */
+    public boolean isVerticalTabsIphShowing() {
+        return mVerticalTabsIphShowing;
+    }
+
     /**
      * @param toolbarContainerView The view where the IPH will be shown on.
      * @param groupTitle The group title or its related tab where the IPH should be shown on.
      * @param tab The tab to show the IPH on. Pass in {@code null} if the IPH is not tied to a
      *     particular tab.
      * @param iphType The type of the IPH to be shown.
+     * @param tabStripHeight The height of the tab strip in dp.
      * @return the anchor area where the IPH should be positioned underneath.
      */
     private Rect calculateAnchorRect(

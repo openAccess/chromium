@@ -24,12 +24,6 @@ enum ActuationEligibility {
   kPlatformUnsupported,
 };
 
-struct GeminiEnterpriseSettingsInfo {
-  string project_id;
-  string app_id;
-  string location;
-};
-
 // Struct containing data about eligibility for GLIC.
 struct ProfileEnablement {
   // Whether the GLIC feature is enabled.
@@ -37,6 +31,14 @@ struct ProfileEnablement {
 
   // Whether the profile is regular (e.g. not incognito)
   bool is_regular_profile;
+
+  // Whether the Gemini account eligibility checks apply to the profile's
+  // provider (`GlicProviderSpec::RequiresGeminiAccountEligibility()`). If not,
+  // `is_rolled_out`, `primary_account_is_capable`,
+  // `primary_account_is_fully_signed_in`, `allowed_by_chrome_policy`,
+  // `allowed_by_remote_admin` and `allowed_by_remote_other` aren't checked
+  // and are always true.
+  bool gemini_account_eligibility_checked;
 
   // Whether Glic is rolled out to the profile. Rollout can be enabled by the
   // `GlicRollout` flag, or by the `GlicTieredRollout` flag and synced pref.
@@ -77,9 +79,6 @@ struct ProfileEnablement {
   // account type.
   bool share_image_allowed;
 
-  // Settings for Gemini Enterprise.
-  GeminiEnterpriseSettingsInfo? gemini_enterprise_settings;
-
   // Summary of whether actuation is enabled, and if not, why not.
   ActuationEligibility actuation_eligibility;
 
@@ -112,13 +111,24 @@ struct TieredRolloutInfo {
   bool is_eligible_for_tiered_rollout_v1;
   // Eligible for V2 (feature flag + tier).
   bool is_eligible_for_tiered_rollout_v2;
-  // Combined eligibility (V1 or V2).
+  // Eligible for benefit-based rollout (feature flag + subscription benefits).
+  bool is_eligible_for_benefit_based_rollout;
+  // Combined eligibility (V1, V2, or benefit-based).
   bool is_eligible_overall;
   // Value of the kGlicRolloutEligibility pref.
   bool glic_rollout_eligibility_pref;
   // Comma separated integers set from experiment config, eligible tiers
   // configured for V2.
   string tiered_rollout_v2_eligible_tiers;
+  // The user's synced subscription benefits (the `sync.subscription_benefits`
+  // priority pref).
+  array<string> subscription_benefits;
+  // Comma separated benefit names set from experiment config, benefits which
+  // make the profile eligible for Glic.
+  string eligible_benefits;
+  // Comma separated benefit names set from experiment config, benefits which
+  // make the profile eligible for Autobrowse (web actuation).
+  string actor_eligible_benefits;
   // Text status of syncing the preference.
   string preference_sync_status;
 };
@@ -131,6 +141,15 @@ struct InternalsDataPayload {
   bool experimental_triggering_enabled;
   InternalsDebugInfo debug_info;
   TieredRolloutInfo tiered_rollout_info;
+  bool hotkey_global_scope_migrated_v2;
+  // The Glic provider that the profile is latched to.
+  GlicProviderType provider;
+};
+
+// The Glic provider that a profile is latched to (`GlicProvider`).
+enum GlicProviderType {
+  kGemini,
+  kGeminiEnterprise,
 };
 
 struct InternalsDebugInfo {
@@ -139,6 +158,7 @@ struct InternalsDebugInfo {
   bool glic_rollout_feature_enabled;
   bool glic_tiered_rollout_feature_enabled;
   bool glic_tiered_rollout_v2_feature_enabled;
+  bool glic_subscription_benefits_eligibility_feature_enabled;
 
   // Platform and form factor
   Platform platform;
@@ -166,6 +186,7 @@ struct InternalsDebugInfo {
 enum FreCompletionWaitMode {
   kDefault,
   kNever,
+  kAlways,
 };
 
 struct ScreenshotTestKeyConfiguration {
@@ -276,6 +297,9 @@ interface InternalsPageHandler {
 
   // Revokes Actuation consent.
   RevokeActuationConsent();
+
+  // Sets whether the hotkey global scope migration V2 preference is set.
+  SetHotkeyGlobalScopeMigratedV2(bool migrated);
 };
 
 // Factory for InternalsPageHandler used in chrome://glic/internals.

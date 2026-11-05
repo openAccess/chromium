@@ -7,6 +7,7 @@
 
 #include <array>
 #include <optional>
+#include <utility>
 
 #include "base/compiler_specific.h"
 #include "third_party/blink/renderer/core/core_export.h"
@@ -26,6 +27,7 @@
 #include "third_party/blink/renderer/core/style/grid_area.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -133,7 +135,7 @@ CSSPrimitiveValue* ConsumeInteger(
     CSSParserTokenStream&,
     const CSSParserContext&,
     CSSParserLocalContext&,
-    double minimum_value = -std::numeric_limits<double>::max(),
+    CSSPrimitiveValue::ValueRange = CSSPrimitiveValue::ValueRange::kInteger,
     const bool is_percentage_allowed = true);
 CSSPrimitiveValue* ConsumeIntegerOrNumberCalc(
     CSSParserTokenStream&,
@@ -235,7 +237,7 @@ CORE_EXPORT CSSURLPatternValue* ConsumeUrlPattern(CSSParserTokenStream&,
 
 // Parses a comma-separated list of param() functions for the
 // link-parameters property.
-// Grammar: param(<dashed-ident>, <declaration-value>?)#
+// Grammar: param(<dashed-ident>: <declaration-value>?)#
 // Returns a CSSValueList of CSSParamValuePair, or nullptr on failure.
 // Spec: https://drafts.csswg.org/css-link-params/
 CORE_EXPORT CSSValue* ConsumeLinkParameters(CSSParserTokenStream&,
@@ -266,6 +268,9 @@ CORE_EXPORT CSSValue* ConsumeColorWithoutElementAndPropertyContext(
 CORE_EXPORT CSSValue* ConsumeAbsoluteColor(CSSParserTokenStream&,
                                            const CSSParserContext&,
                                            CSSParserLocalContext&);
+
+CORE_EXPORT bool IsAllowedColorValue(const CSSValue*,
+                                     const ColorParserContext&);
 
 CSSValue* ConsumeLineWidth(CSSParserTokenStream&,
                            const CSSParserContext&,
@@ -493,7 +498,6 @@ bool ConsumeTimelineTriggerShorthand(
 
 CSSValue* GetImpliedRangeEnd(const CSSValue* start_range);
 
-void AddBackgroundValue(CSSValue*& list, const CSSValue*);
 CSSValue* ConsumeBackgroundAttachment(CSSParserTokenStream&);
 CSSValue* ConsumeBackgroundBlendMode(CSSParserTokenStream&);
 CSSValue* ConsumeBackgroundBox(CSSParserTokenStream&);
@@ -662,7 +666,6 @@ CSSValue* ConsumeFontFeatureSettings(CSSParserTokenStream&,
 CSSValue* ConsumeFontVariationSettings(CSSParserTokenStream&,
                                        const CSSParserContext&,
                                        CSSParserLocalContext&);
-CSSValue* ConsumeFontLanguageOverrideString(CSSParserTokenStream&);
 CSSValue* ConsumeFontLanguageOverride(CSSParserTokenStream&,
                                       const CSSParserContext&);
 CSSIdentifierValue* ConsumeFontVariantCSS21(CSSParserTokenStream&);
@@ -717,9 +720,9 @@ CSSValue* ParseGridLanesTemplateAreasValue(
     bool is_for_columns);
 CSSValue* ParseGridLanesDirection(CSSParserTokenStream&);
 
-CSSValue* ConsumeFlowTolerance(CSSParserTokenStream&,
-                               const CSSParserContext&,
-                               CSSParserLocalContext&);
+CSSValue* ConsumeFitTolerance(CSSParserTokenStream&,
+                              const CSSParserContext&,
+                              CSSParserLocalContext&);
 
 bool ConsumeGapDecorationsRuleInsetCapJunctionShorthand(
     bool important,
@@ -810,6 +813,11 @@ bool ConsumeRadii(std::array<CSSValue*, 4>& horizontal_radii,
                   CSSParserTokenStream& stream,
                   const CSSParserContext& context,
                   CSSParserLocalContext& local_context);
+// Returns the pair (first radius, second radius) on success.
+std::optional<std::pair<CSSValue*, CSSValue*>>
+ConsumeBorderRadiusCornerShorthand(CSSParserTokenStream& stream,
+                                   const CSSParserContext& context,
+                                   CSSParserLocalContext& local_context);
 
 CSSValue* ConsumeTextDecorationLine(CSSParserTokenStream&);
 CSSValue* ConsumeTextDecorationSkipSpaces(CSSParserTokenStream&);

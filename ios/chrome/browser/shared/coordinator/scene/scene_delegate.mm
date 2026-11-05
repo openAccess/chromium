@@ -7,6 +7,7 @@
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
 #import "base/files/file_path.h"
+#import "base/ios/ios_util.h"
 #import "base/path_service.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/breadcrumbs/core/breadcrumb_persistent_storage_util.h"
@@ -16,10 +17,13 @@
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/app/task_orchestrator.h"
 #import "ios/chrome/app/task_request.h"
+#import "ios/chrome/app/tests_hook.h"
 #import "ios/chrome/browser/appearance/ui_bundled/appearance_customization.h"
+#import "ios/chrome/browser/shared/coordinator/scene/chrome_connection_options.h"
 #import "ios/chrome/browser/shared/model/paths/paths.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/chrome_overlay_window/chrome_overlay_window.h"
+#import "ios/public/provider/chrome/browser/multiwindow/multiwindow_api.h"
 
 namespace {
 
@@ -78,11 +82,31 @@ void SyncBreadcrumbsLog() {
   return _window;
 }
 
+- (void)windowScene:(UIWindowScene*)windowScene
+    didUpdateEffectiveGeometry:
+        (UIWindowSceneGeometry*)previousEffectiveGeometry {
+  _sceneState.multipleScenesAvailable =
+      [self multipleScenesAvailableForScene:_sceneState.scene];
+}
+
 #pragma mark - UISceneDelegate
 
 - (void)scene:(UIScene*)scene
     willConnectToSession:(UISceneSession*)session
                  options:(UISceneConnectionOptions*)connectionOptions {
+  ChromeConnectionOptions* chromeOptions =
+      tests_hook::GetOverriddenConnectionOptions();
+  if (!chromeOptions) {
+    chromeOptions = [[ChromeConnectionOptions alloc]
+        initWithConnectionOptions:connectionOptions];
+  }
+
+  [self scene:scene willConnectToSession:session chromeOptions:chromeOptions];
+}
+
+- (void)scene:(UIScene*)scene
+    willConnectToSession:(UISceneSession*)session
+           chromeOptions:(ChromeConnectionOptions*)options {
   CHECK(_window);
   CHECK(!_sceneState);
   MainApplicationDelegate* appDelegate =
@@ -94,32 +118,32 @@ void SyncBreadcrumbsLog() {
 
   _sceneState.window = _window;
   _sceneState.scene = base::apple::ObjCCastStrict<UIWindowScene>(scene);
-  _sceneState.currentOrigin = [self originFromSession:session
-                                              options:connectionOptions];
+  _sceneState.currentOrigin = [self originFromSession:session options:options];
   _sceneState.activationLevel = SceneActivationLevelBackground;
+  _sceneState.multipleScenesAvailable =
+      [self multipleScenesAvailableForScene:_sceneState.scene];
   if (IsEnableNewStartupFlowEnabled()) {
-    if (connectionOptions.shortcutItem) {
-      [self addTaskRequestForShortcutItem:connectionOptions.shortcutItem
+    if (options.shortcutItem) {
+      [self addTaskRequestForShortcutItem:options.shortcutItem
                               isColdStart:YES
                                   handler:nil];
     }
-    if (connectionOptions.URLContexts.count != 0) {
-      for (UIOpenURLContext* URLContext in connectionOptions.URLContexts) {
+    if (options.URLContexts.count != 0) {
+      for (UIOpenURLContext* URLContext in options.URLContexts) {
         [self addTaskRequestForURLContext:URLContext isColdStart:YES];
       }
     }
-    if (connectionOptions.userActivities.count != 0) {
-      for (NSUserActivity* userActivity in connectionOptions.userActivities) {
+    if (options.userActivities.count != 0) {
+      for (NSUserActivity* userActivity in options.userActivities) {
         [self addTaskRequestForUserActivity:userActivity isColdStart:YES];
       }
     }
   } else {
-    _sceneState.connectionOptions = connectionOptions;
+    _sceneState.connectionOptions = options;
   }
 
-  if (connectionOptions.shortcutItem != nil ||
-      connectionOptions.URLContexts.count != 0 ||
-      connectionOptions.userActivities.count != 0) {
+  if (options.shortcutItem != nil || options.URLContexts.count != 0 ||
+      options.userActivities.count != 0) {
     _sceneState.startupHadExternalIntent = YES;
   }
 
@@ -133,8 +157,13 @@ void SyncBreadcrumbsLog() {
           UIApplication.sharedApplication.delegate);
   [appDelegate.appState sceneStateDisconnected:_sceneState];
 
-  _window.rootViewController = nil;
-  _sceneState.activationLevel = SceneActivationLevelDisconnected;
+  if (IsClearRootViewControllerAfterSceneDisconnectEnabled()) {
+    _sceneState.activationLevel = SceneActivationLevelDisconnected;
+    _window.rootViewController = nil;
+  } else {
+    _window.rootViewController = nil;
+    _sceneState.activationLevel = SceneActivationLevelDisconnected;
+  }
   _sceneState = nil;
   // Setting the level to Disconnected had the side effect of tearing down the
   // controller’s UI.
@@ -144,7 +173,7 @@ void SyncBreadcrumbsLog() {
 #pragma mark - private
 
 - (WindowActivityOrigin)originFromSession:(UISceneSession*)session
-                                  options:(UISceneConnectionOptions*)options {
+                                  options:(ChromeConnectionOptions*)options {
   WindowActivityOrigin origin = WindowActivityUnknownOrigin;
 
   // When restoring the session, the origin is set to restore to avoid
@@ -172,14 +201,25 @@ void SyncBreadcrumbsLog() {
   return origin;
 }
 
+- (BOOL)multipleScenesAvailableForScene:(UIWindowScene*)scene {
+  return base::ios::IsMultipleScenesSupported() &&
+         ios::provider::IsWindowSceneActivationAllowed(scene);
+}
+
 #pragma mark Transitioning to the Foreground
 
 - (void)sceneWillEnterForeground:(UIScene*)scene {
+  if (tests_hook::ShouldPauseStartupAtBackgroundStage()) {
+    return;
+  }
   _sceneState.currentOrigin = WindowActivityRestoredOrigin;
   _sceneState.activationLevel = SceneActivationLevelForegroundInactive;
 }
 
 - (void)sceneDidBecomeActive:(UIScene*)scene {
+  if (tests_hook::ShouldPauseStartupAtBackgroundStage()) {
+    return;
+  }
   _sceneState.currentOrigin = WindowActivityRestoredOrigin;
   _sceneState.activationLevel = SceneActivationLevelForegroundActive;
 }
@@ -240,11 +280,7 @@ void SyncBreadcrumbsLog() {
                                                sceneState:_sceneState
                                                   handler:completionHandler
                                               isColdStart:isColdStart];
-  MainApplicationDelegate* appDelegate =
-      base::apple::ObjCCastStrict<MainApplicationDelegate>(
-          UIApplication.sharedApplication.delegate);
-
-  [appDelegate.appState.taskOrchestrator addTaskRequest:request];
+  [self addTaskRequest:request];
 }
 
 - (void)addTaskRequestForURLContext:(UIOpenURLContext*)URLContext
@@ -252,11 +288,7 @@ void SyncBreadcrumbsLog() {
   TaskRequest* request = [TaskRequest taskForURLContext:URLContext
                                              sceneState:_sceneState
                                             isColdStart:isColdStart];
-  MainApplicationDelegate* appDelegate =
-      base::apple::ObjCCastStrict<MainApplicationDelegate>(
-          UIApplication.sharedApplication.delegate);
-
-  [appDelegate.appState.taskOrchestrator addTaskRequest:request];
+  [self addTaskRequest:request];
 }
 
 - (void)addTaskRequestForUserActivity:(NSUserActivity*)userActivity
@@ -264,6 +296,13 @@ void SyncBreadcrumbsLog() {
   TaskRequest* request = [TaskRequest taskForUserActivity:userActivity
                                                sceneState:_sceneState
                                               isColdStart:isColdStart];
+  [self addTaskRequest:request];
+}
+
+// Adds `request` to the task orchestrator.
+- (void)addTaskRequest:(TaskRequest*)request {
+  // Access `AppState` through the application delegate because during cold
+  // start the scene's `ProfileState` has not yet been connected.
   MainApplicationDelegate* appDelegate =
       base::apple::ObjCCastStrict<MainApplicationDelegate>(
           UIApplication.sharedApplication.delegate);

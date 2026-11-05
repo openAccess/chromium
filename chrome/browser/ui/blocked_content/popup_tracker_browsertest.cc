@@ -15,7 +15,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/test_safe_browsing_database_helper.h"
+#include "chrome/browser/safe_browsing/db/test_safe_browsing_database_helper.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -27,8 +27,8 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/blocked_content/popup_blocker_tab_helper.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
+#include "components/safe_browsing/core/browser/db/sb_test_util.h"
 #include "components/safe_browsing/core/browser/db/v4_embedded_test_server_util.h"
-#include "components/safe_browsing/core/browser/db/v4_test_util.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/web_contents.h"
@@ -41,7 +41,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/dom_key.h"
 #include "ui/events/keycodes/keyboard_codes.h"
@@ -297,7 +297,7 @@ IN_PROC_BROWSER_TEST_F(PopupTrackerBrowserTest, AllowlistedPopup_HasTracker) {
       blocked_content::PopupBlockerTabHelper::FromWebContents(web_contents);
   popup_blocker->ShowBlockedPopup(
       popup_blocker->GetBlockedPopupRequests().begin()->first,
-      WindowOpenDisposition::NEW_FOREGROUND_TAB);
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab);
   navigation_observer.Wait();
 
   // Close the popup and check metric.
@@ -319,7 +319,7 @@ IN_PROC_BROWSER_TEST_F(PopupTrackerBrowserTest, AllowlistedPopup_HasTracker) {
 IN_PROC_BROWSER_TEST_F(PopupTrackerBrowserTest, NoOpener_NoTracker) {
   const GURL url = embedded_test_server()->GetURL("/title1.html");
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   content::WebContents* new_contents =
@@ -561,7 +561,7 @@ IN_PROC_BROWSER_TEST_F(PopupTrackerBrowserTest, PopupInTab_IsWindowFalse) {
   auto* entry = ExpectAndGetEntry(first_url);
   test_ukm_recorder_->ExpectEntryMetric(
       entry, kUkmWindowOpenDisposition,
-      static_cast<int>(WindowOpenDisposition::NEW_FOREGROUND_TAB));
+      static_cast<int>(ui::mojom::WindowOpenDisposition::kNewForegroundTab));
 }
 
 // TODO(crbug.com/40749398): Test is flaky on Linux.
@@ -602,7 +602,7 @@ IN_PROC_BROWSER_TEST_F(PopupTrackerBrowserTest,
   auto* entry = ExpectAndGetEntry(first_url);
   test_ukm_recorder_->ExpectEntryMetric(
       entry, kUkmWindowOpenDisposition,
-      static_cast<int>(WindowOpenDisposition::NEW_POPUP));
+      static_cast<int>(ui::mojom::WindowOpenDisposition::kNewPopup));
 }
 
 // TODO(crbug.com/40730174): Test is flaky on Linux Ozone Wayland.

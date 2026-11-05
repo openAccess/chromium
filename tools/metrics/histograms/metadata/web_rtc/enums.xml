@@ -26,17 +26,6 @@ chromium-metrics-reviews@google.com.
 
 <enums>
 
-<enum name="AddIceCandidateResult">
-  <int value="0" label="Success"/>
-  <int value="1" label="Closed"/>
-  <int value="2" label="No remote description"/>
-  <int value="3" label="Null candidate"/>
-  <int value="4" label="Candidate not valid"/>
-  <int value="5" label="PeerConnection not ready"/>
-  <int value="6" label="Failed in addition"/>
-  <int value="7" label="Failed - not usable"/>
-</enum>
-
 <enum name="ClockdriftLevel">
   <int value="0" label="None"/>
   <int value="1" label="Probable"/>
@@ -288,9 +277,16 @@ chromium-metrics-reviews@google.com.
   <int value="32" label="IceCandidateCount"/>
   <int value="33" label="Bundle"/>
   <int value="34" label="Bandwidth"/>
+  <int value="35" label="Sframe"/>
+  <int value="36" label="MsidStream"/>
+  <int value="37" label="MsidTrack"/>
+  <int value="38" label="IceOptionsRemoved"/>
+  <int value="39" label="Rejected"/>
   <int value="40" label="RtpHeaderExtensionsRemoved"/>
   <int value="41" label="RtpHeaderExtensionsAdded"/>
   <int value="42" label="RtpHeaderExtensionsModified"/>
+  <int value="43" label="Cryptex"/>
+  <int value="44" label="RtcpXrRcvrRtt"/>
   <int value="60" label="AudioCodecsRemoved"/>
   <int value="61" label="AudioCodecsAdded"/>
   <int value="62" label="AudioCodecsReordered"/>
@@ -468,6 +464,17 @@ chromium-metrics-reviews@google.com.
   <int value="12" label="kExpiredLogFileDuringSession"/>
 </enum>
 
+<enum name="WebRtcFallbackSelectSourceResult">
+  <summary>
+    Combined SelectSource() results of the main and secondary capturers in
+    webrtc::FallbackDesktopCapturerWrapper::SelectSourceResult.
+  </summary>
+  <int value="0" label="MainSucceededSecondarySucceeded"/>
+  <int value="1" label="MainSucceededSecondaryFailed"/>
+  <int value="2" label="MainFailedSecondarySucceeded"/>
+  <int value="3" label="MainFailedSecondaryFailed"/>
+</enum>
+
 <enum name="WebRtcH264DecoderImplEvent">
   <int value="0" label="Init"/>
   <int value="1" label="Error"/>
@@ -537,6 +544,12 @@ chromium-metrics-reviews@google.com.
   <int value="2102772693" label="Duo"/>
 </enum>
 
+<enum name="WebRtcNeuralResidualEchoEstimatorInitResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="Model load failed"/>
+  <int value="2" label="Destroyed before resolved"/>
+</enum>
+
 <enum name="WebRtcPeerConnectionUsagePattern">
   <summary>
     These values are integers representing a set of flags indicating how the
@@ -560,6 +573,34 @@ chromium-metrics-reviews@google.com.
   <int value="157414" label="Data, Stun, SLD/SRD, local IPv6, remote MDNS"/>
   <int value="157670"
       label="Connected, Data, Stun, local IPv6, remote MDNS (triplicate)"/>
+</enum>
+
+<enum name="WebRtcPlayoutDelayModeBitmask">
+  <summary>
+    Bitmask of the playout delay modes that were used by a received video
+    stream, as signaled by the min/max delay in the playout-delay RTP header
+    extension. Bit 0 (1): Default, no playout delay signaled. Bit 1 (2): 0/0,
+    lowest possible delay. Bit 2 (4): 0/X, zero min delay and positive max
+    delay, low delay with some buffering in the rendering. Bit 3 (8): X/Y,
+    positive min and max delay. The value 0 is never recorded. Mirrors
+    PlayoutDelayModeBitmask in
+    third_party/webrtc/video/receive_statistics_proxy.cc.
+  </summary>
+  <int value="1" label="Default"/>
+  <int value="2" label="0/0"/>
+  <int value="3" label="Default | 0/0"/>
+  <int value="4" label="0/X"/>
+  <int value="5" label="Default | 0/X"/>
+  <int value="6" label="0/0 | 0/X"/>
+  <int value="7" label="Default | 0/0 | 0/X"/>
+  <int value="8" label="X/Y"/>
+  <int value="9" label="Default | X/Y"/>
+  <int value="10" label="0/0 | X/Y"/>
+  <int value="11" label="Default | 0/0 | X/Y"/>
+  <int value="12" label="0/X | X/Y"/>
+  <int value="13" label="Default | 0/X | X/Y"/>
+  <int value="14" label="0/0 | 0/X | X/Y"/>
+  <int value="15" label="Default | 0/0 | 0/X | X/Y"/>
 </enum>
 
 <enum name="WebRtcScalabilityMode">

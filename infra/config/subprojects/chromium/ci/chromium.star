@@ -61,6 +61,7 @@ consoles.console_view(
 
 ci.builder(
     name = "android-archive-rel",
+    description_html = "Archive builder for Android ARM.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -98,6 +99,7 @@ ci.builder(
         additional_compile_targets = "all",
     ),
     cores = 32,
+    ssd = None,
     gardener_rotations = args.ignore_default(gardener_rotations.ANDROID),
     console_view_entry = consoles.console_view_entry(
         category = "android",
@@ -120,6 +122,7 @@ ci.builder(
 
 ci.builder(
     name = "android-arm64-archive-rel",
+    description_html = "Archive builder for Android ARM64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -158,6 +161,7 @@ ci.builder(
         additional_compile_targets = "all",
     ),
     cores = 32,
+    ssd = None,
     gardener_rotations = args.ignore_default(gardener_rotations.ANDROID),
     console_view_entry = consoles.console_view_entry(
         category = "android|arm",
@@ -219,6 +223,7 @@ ci.builder(
         additional_compile_targets = "all",
     ),
     cores = 32,
+    ssd = None,
     gardener_rotations = args.ignore_default(gardener_rotations.ANDROID),
     console_view_entry = consoles.console_view_entry(
         category = "android|desktop",
@@ -281,6 +286,7 @@ ci.builder(
         additional_compile_targets = "all",
     ),
     cores = 32,
+    ssd = None,
     gardener_rotations = args.ignore_default(gardener_rotations.ANDROID),
     console_view_entry = consoles.console_view_entry(
         category = "android|desktop",
@@ -304,6 +310,7 @@ ci.builder(
 ci.builder(
     name = "android-official",
     branch_selector = branches.selector.ANDROID_BRANCHES,
+    description_html = "Official builder for Android ARM.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -458,6 +465,7 @@ ci.builder(
 
 ci.builder(
     name = "linux-chromeos-archive-rel",
+    description_html = "Archive builder for Ash Chrome (linux-chromeos) x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -517,6 +525,7 @@ ci.builder(
         ],
     ),
     cores = 8,
+    ssd = None,
     tree_closing = False,
     console_view_entry = consoles.console_view_entry(
         category = "cros",
@@ -545,6 +554,7 @@ ci.builder(
 
 ci.builder(
     name = "linux-archive-rel",
+    description_html = "Archive builder for Linux x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -575,6 +585,7 @@ ci.builder(
         additional_compile_targets = "all",
     ),
     cores = 32,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux",
         short_name = "rel",
@@ -597,6 +608,7 @@ ci.builder(
 ci.builder(
     name = "linux-official",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Official builder for Linux x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -695,6 +707,7 @@ ci.builder(
 
 ci.builder(
     name = "mac-archive-rel",
+    description_html = "Archive builder for Mac x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -745,6 +758,7 @@ ci.builder(
 
 ci.builder(
     name = "mac-arm64-archive-rel",
+    description_html = "Archive builder for Mac ARM64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -798,6 +812,7 @@ ci.builder(
 ci.builder(
     name = "mac-official",
     branch_selector = branches.selector.MAC_BRANCHES,
+    description_html = "Official builder for Mac ARM64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -841,6 +856,7 @@ ci.builder(
 
 ci.builder(
     name = "win-archive-rel",
+    description_html = "Archive builder for Windows x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -872,7 +888,7 @@ ci.builder(
     builderless = False,
     cores = 16,
     os = os.WINDOWS_DEFAULT,
-    ssd = True,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "win|rel",
         short_name = "64",
@@ -926,7 +942,7 @@ ci.builder(
     builderless = False,
     cores = 16,
     os = os.WINDOWS_DEFAULT,
-    ssd = True,
+    ssd = None,
     # TODO(crbug.com/335863313): Enable when verified.
     gardener_rotations = args.ignore_default(None),
     # TODO(crbug.com/335863313): Enable when verified.
@@ -952,6 +968,7 @@ ci.builder(
 ci.builder(
     name = "win-official",
     branch_selector = branches.selector.WINDOWS_BRANCHES,
+    description_html = "Official builder for Windows x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -999,6 +1016,7 @@ ci.builder(
 
 ci.builder(
     name = "win32-archive-rel",
+    description_html = "Archive builder for Windows x86.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -1051,6 +1069,7 @@ ci.builder(
 ci.builder(
     name = "win32-official",
     branch_selector = branches.selector.WINDOWS_BRANCHES,
+    description_html = "Official builder for Windows x86.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",

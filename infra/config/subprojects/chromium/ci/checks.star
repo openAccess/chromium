@@ -24,10 +24,12 @@ consoles.console_view(
 
 ci.builder(
     name = "linux-presubmit",
+    description_html = "Runs presubmit checks on Linux machines.",
     executable = "recipe:presubmit",
     builderless = True,
     cores = 32,
     os = os.LINUX_DEFAULT,
+    ssd = None,
     gardener_rotations = gardener_rotations.CHROMIUM,
     console_view_entry = consoles.console_view_entry(
         console_view = "checks",
@@ -50,6 +52,7 @@ ci.builder(
 
 ci.builder(
     name = "win-presubmit",
+    description_html = "Runs presubmit checks on Windows machines.",
     executable = "recipe:presubmit",
     builderless = True,
     cores = "16|32",

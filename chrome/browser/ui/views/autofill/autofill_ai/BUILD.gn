@@ -9,6 +9,7 @@ source_set("autofill_ai") {
     "autofill_ai_bubble_utils.h",
     "autofill_ai_import_data_bubble_view.h",
     "autofill_ai_local_save_notification_view.h",
+    "entity_suppression_dialog_view.h",
   ]
   public_deps = [
     "//base",
@@ -24,20 +25,60 @@ source_set("impl") {
     "autofill_ai_bubble_utils.cc",
     "autofill_ai_import_data_bubble_view.cc",
     "autofill_ai_local_save_notification_view.cc",
+    "entity_suppression_dialog_view.cc",
   ]
   public_deps = [ ":autofill_ai" ]
   deps = [
     "//build:branding_buildflags",
     "//chrome/app:generated_resources",
+    "//chrome/browser/ui/dialogs:browser_dialogs",
     "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/autofill:autofill_bubble_utils",
     "//chrome/browser/ui/views/autofill/payments:dialog_view_ids",
+    "//components/autofill/core/browser",
     "//components/autofill/core/common",
+    "//components/resources:components_scaled_resources",
     "//components/strings",
     "//components/vector_icons",
+    "//content/public/browser",
     "//ui/accessibility:ax_base",
     "//ui/base",
     "//ui/color",
     "//ui/gfx",
     "//ui/views",
+  ]
+}
+
+source_set("browser_tests") {
+  testonly = true
+
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  sources = [
+    "autofill_ai_import_data_bubble_view_browsertest.cc",
+    "autofill_ai_local_save_notification_view_browsertest.cc",
+    "entity_suppression_dialog_view_browsertest.cc",
+  ]
+
+  deps = [
+    ":autofill_ai",
+    "//chrome/browser/ui:browser_window_header",
+    "//chrome/browser/ui/autofill:test_support",
+    "//chrome/test:test_support_ui",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [
+    "autofill_ai_import_data_bubble_view_unittest.cc",
+    "autofill_ai_local_save_notification_view_unittest.cc",
+  ]
+
+  deps = [
+    ":autofill_ai",
+    "//chrome/browser/ui/views/autofill/payments:dialog_view_ids",
+    "//chrome/test:test_support",
   ]
 }

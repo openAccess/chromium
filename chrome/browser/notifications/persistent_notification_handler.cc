@@ -30,6 +30,7 @@
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_pattern.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/optimization_guide/core/model_quality/model_quality_logs_uploader_service.h"
 #include "components/permissions/features.h"
 #include "components/permissions/permission_uma_util.h"
 #include "components/permissions/permission_util.h"
@@ -77,7 +78,7 @@ void RecordCloseResult(content::PersistentNotificationStatus status) {
 }  // namespace
 
 PersistentNotificationHandler::PersistentNotificationHandler() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   on_app_terminating_subscription_ =
       browser_shutdown::AddAppTerminatingCallback(
           base::BindOnce(&PersistentNotificationHandler::OnAppTerminating,
@@ -85,7 +86,7 @@ PersistentNotificationHandler::PersistentNotificationHandler() {
 }
 
 PersistentNotificationHandler::~PersistentNotificationHandler() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 }
 
 void PersistentNotificationHandler::OnClose(
@@ -94,8 +95,12 @@ void PersistentNotificationHandler::OnClose(
     const std::string& notification_id,
     bool by_user,
     base::OnceClosure completed_closure) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(origin.is_valid());
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
+  if (notification_id.empty() || !origin.is_valid()) {
+    RecordCloseResult(content::PersistentNotificationStatus::kDatabaseError);
+    std::move(completed_closure).Run();
+    return;
+  }
 
   if (browser_shutdown::HasShutdownStarted() ||
       g_browser_process->IsShuttingDown()) {
@@ -129,10 +134,11 @@ void PersistentNotificationHandler::OnClose(
 
   NotificationMetricsLogger* metrics_logger =
       NotificationMetricsLoggerFactory::GetForBrowserContext(profile);
-  if (by_user)
+  if (by_user) {
     metrics_logger->LogPersistentNotificationClosedByUser();
-  else
+  } else {
     metrics_logger->LogPersistentNotificationClosedProgrammatically();
+  }
 
   int32_t callback_id = close_completed_callbacks_.Add(
       std::make_unique<base::OnceClosure>(std::move(completed_closure)));
@@ -148,7 +154,7 @@ void PersistentNotificationHandler::OnCloseCompleted(
     Profile* profile,
     uint64_t close_completed_callback_id,
     content::PersistentNotificationStatus status) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   base::OnceClosure* completed_closure_pointer =
       close_completed_callbacks_.Lookup(close_completed_callback_id);
@@ -176,7 +182,16 @@ void PersistentNotificationHandler::OnClick(
     const std::optional<int>& action_index,
     const std::optional<std::u16string>& reply,
     base::OnceClosure completed_closure) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
+  if (notification_id.empty() || !origin.is_valid()) {
+    // Record the failure directly rather than via OnClickCompleted(), which
+    // would try to close a notification with an invalid ID.
+    base::UmaHistogramEnumeration(
+        "Notifications.PersistentWebNotificationClickResult",
+        content::PersistentNotificationStatus::kDatabaseError);
+    std::move(completed_closure).Run();
+    return;
+  }
 
   NotificationMetricsLogger* metrics_logger =
       NotificationMetricsLoggerFactory::GetForBrowserContext(profile);
@@ -204,25 +219,23 @@ void PersistentNotificationHandler::OnClick(
     return;
   }
 
-  if (action_index.has_value())
+  if (action_index.has_value()) {
     metrics_logger->LogPersistentNotificationActionButtonClick();
-  else
+  } else {
     metrics_logger->LogPersistentNotificationClick();
-
-  // TODO(crbug.com/40280229)
-  if (!origin.is_empty()) {
-    auto* service =
-        NotificationsEngagementServiceFactory::GetForProfile(profile);
-    // This service might be missing for incognito profiles and in tests.
-    if (service) {
-      service->RecordNotificationInteraction(origin);
-    }
-
-    // Notification clicks are considered a form of engagement with the
-    // |origin|, thus we log the interaction with the Site Engagement service.
-    site_engagement::SiteEngagementService::Get(profile)
-        ->HandleNotificationInteraction(origin);
   }
+
+  // `origin` is guaranteed to be valid by the early return above.
+  auto* service = NotificationsEngagementServiceFactory::GetForProfile(profile);
+  // This service might be missing for incognito profiles and in tests.
+  if (service) {
+    service->RecordNotificationInteraction(origin);
+  }
+
+  // Notification clicks are considered a form of engagement with the
+  // |origin|, thus we log the interaction with the Site Engagement service.
+  site_engagement::SiteEngagementService::Get(profile)
+      ->HandleNotificationInteraction(origin);
 
   content::NotificationEventDispatcher::GetInstance()
       ->DispatchNotificationClickEvent(
@@ -248,7 +261,7 @@ void PersistentNotificationHandler::OnClickCompleted(
     const std::string& notification_id,
     base::OnceClosure completed_closure,
     content::PersistentNotificationStatus status) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   UMA_HISTOGRAM_ENUMERATION(
       "Notifications.PersistentWebNotificationClickResult", status);
@@ -282,7 +295,7 @@ void PersistentNotificationHandler::OnClickCompleted(
 }
 
 void PersistentNotificationHandler::OnAppTerminating() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Release all keep alives for currently running 'notificationclose' events.
   // This will allow browser shutdown to begin without waiting for the
@@ -307,7 +320,7 @@ void PersistentNotificationHandler::DisableNotifications(
     const GURL& origin,
     const std::optional<std::string>& notification_id,
     const std::optional<bool>& is_suspicious) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   permissions::PermissionUmaUtil::ScopedRevocationReporter
       scoped_revocation_reporter(
           profile, origin, origin, ContentSettingsType::NOTIFICATIONS,
@@ -355,7 +368,7 @@ void PersistentNotificationHandler::DisableNotifications(
 
 void PersistentNotificationHandler::OpenSettings(Profile* profile,
                                                  const GURL& origin) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   NotificationCommon::OpenNotificationSettings(profile, origin);
   UMA_HISTOGRAM_ENUMERATION(
       "Notifications.Actions",
@@ -422,6 +435,9 @@ void PersistentNotificationHandler::OnMaybeReport(
     bool did_show_warning,
     bool did_user_unsubscribe) {
   CHECK(profile);
+  if (notification_id.empty() || !url.is_valid()) {
+    return;
+  }
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   // In case the data volume becomes excessive, logging should happen at a
@@ -492,10 +508,11 @@ void PersistentNotificationHandler::NotificationKeepAliveState::AddKeepAlive(
 
 void PersistentNotificationHandler::NotificationKeepAliveState::RemoveKeepAlive(
     Profile* profile) {
-  DCHECK_GT(pending_dispatch_events_, 0);
+  CHECK_GT(pending_dispatch_events_, 0, base::NotFatalUntil::M161);
   // Reset the keep alive if all in-flight events have been processed.
-  if (--pending_dispatch_events_ == 0)
+  if (--pending_dispatch_events_ == 0) {
     event_dispatch_keep_alive_.reset();
+  }
 
   // TODO(crbug.com/40159237): Remove IsOffTheRecord() when Incognito profiles
   // support refcounting.

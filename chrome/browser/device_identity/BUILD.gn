@@ -6,8 +6,6 @@ assert(!is_android)
 
 source_set("device_identity") {
   sources = [
-    "device_identity_provider.cc",
-    "device_identity_provider.h",
     "device_oauth2_token_service.cc",
     "device_oauth2_token_service.h",
     "device_oauth2_token_service_factory.cc",
@@ -17,7 +15,6 @@ source_set("device_identity") {
 
   public_deps = [
     "//base",
-    "//components/invalidation:legacy_topics_cleanup",
     "//google_apis",
   ]
 
@@ -48,6 +45,7 @@ source_set("device_identity") {
     ]
     public_deps += [ "//chromeos/ash/components/settings" ]
     deps += [
+      "//ash/constants",
       "//chrome/common:constants",
       "//chromeos/ash/components/cryptohome",
     ]
@@ -61,6 +59,7 @@ source_set("unit_tests") {
     ":device_identity",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//components/prefs:test_support",
     "//content/public/browser",
     "//content/test:test_support",
@@ -74,7 +73,10 @@ source_set("unit_tests") {
       "chromeos/device_oauth2_token_store_chromeos_unittest.cc",
       "chromeos/token_encryptor_unittest.cc",
     ]
-    deps += [ "//chromeos/ash/components/policy/device_policy:test_support" ]
+    deps += [
+      "//ash/constants",
+      "//chromeos/ash/components/policy/device_policy:test_support",
+    ]
   } else {
     sources += [ "device_oauth2_token_store_desktop_unittest.cc" ]
     deps += [

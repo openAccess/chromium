@@ -38,7 +38,7 @@
 #include "components/safe_browsing/content/browser/safe_browsing_blocking_page.h"
 #include "components/safe_browsing/content/browser/ui_manager.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/security_interstitials/content/bad_clock_blocking_page.h"
 #include "components/security_interstitials/content/blocked_interception_blocking_page.h"
 #include "components/security_interstitials/content/https_only_mode_blocking_page.h"
@@ -55,6 +55,7 @@
 #include "components/supervised_user/core/browser/supervised_user_service.h"
 #include "components/supervised_user/core/browser/supervised_user_utils.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/url_data_source.h"
@@ -75,9 +76,13 @@
 #include "components/security_interstitials/content/captive_portal_blocking_page.h"
 #endif
 
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || \
+    BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/supervised_user/supervised_user_verification_controller_client.h"
 #include "chrome/browser/supervised_user/supervised_user_verification_page_blocked_sites.h"
+#endif
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
 #include "chrome/browser/supervised_user/supervised_user_verification_page_youtube.h"
 #endif
 
@@ -421,7 +426,10 @@ CreateSupervisedUserVerificationPageForYouTube(
           chrome::ChromeUINewTabURLAsGURL(), kRequestUrl),
       is_main_frame);
 }
+#endif
 
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || \
+    BUILDFLAG(IS_ANDROID)
 std::unique_ptr<SupervisedUserVerificationPageForBlockedSites>
 CreateSupervisedUserVerificationPageForBlockedSites(
     content::WebContents* web_contents,
@@ -600,7 +608,7 @@ void InterstitialHTMLSource::StartDataRequest(
   // query (everything after the ? character).
   GURL url =
       GURL(chrome::kChromeUIInterstitialURL).GetWithEmptyPath().Resolve(path);
-  std::string path_without_query = url.GetPath();
+  std::string_view path_without_query = url.path();
   if (path_without_query == "/ssl") {
     interstitial_delegate = CreateSslBlockingPage(web_contents);
   } else if (path_without_query == "/mitm-software-ssl") {
@@ -635,12 +643,15 @@ void InterstitialHTMLSource::StartDataRequest(
   } else if (path_without_query == "/supervised-user-verify") {
     interstitial_delegate = CreateSupervisedUserVerificationPageForYouTube(
         web_contents, /*is_main_frame=*/true);
-  } else if (path_without_query == "/supervised-user-verify-blocked-site") {
-    interstitial_delegate = CreateSupervisedUserVerificationPageForBlockedSites(
-        web_contents, /*is_main_frame=*/true);
   } else if (path_without_query == "/supervised-user-verify-subframe") {
     interstitial_delegate = CreateSupervisedUserVerificationPageForYouTube(
         web_contents, /*is_main_frame=*/false);
+#endif
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || \
+    BUILDFLAG(IS_ANDROID)
+  } else if (path_without_query == "/supervised-user-verify-blocked-site") {
+    interstitial_delegate = CreateSupervisedUserVerificationPageForBlockedSites(
+        web_contents, /*is_main_frame=*/true);
   } else if (path_without_query ==
              "/supervised-user-verify-blocked-site-subframe") {
     interstitial_delegate = CreateSupervisedUserVerificationPageForBlockedSites(

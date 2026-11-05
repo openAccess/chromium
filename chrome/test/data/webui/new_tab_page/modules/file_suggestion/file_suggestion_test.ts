@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {FileSuggestionElement} from 'chrome://new-tab-page/lazy_load.js';
+import type {FileSuggestionElement} from 'chrome://new-tab-page/lazy_load.js';
+import {FileAction} from 'chrome://new-tab-page/lazy_load.js';
 import type {File} from 'chrome://new-tab-page/new_tab_page.js';
 import {RecommendationType} from 'chrome://new-tab-page/new_tab_page.js';
 import type {CrAutoImgElement} from 'chrome://new-tab-page/new_tab_page.js';
@@ -15,7 +16,7 @@ suite('FileSuggestion', () => {
 
   setup(() => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    fileSuggestion = new FileSuggestionElement();
+    fileSuggestion = document.createElement('ntp-file-suggestion');
     document.body.appendChild(fileSuggestion);
   });
 
@@ -96,6 +97,11 @@ suite('FileSuggestion', () => {
         assertEquals(1, metrics.count(`NewTabPage.${moduleName}.FileClick`));
         assertEquals(
             1, metrics.count(`NewTabPage.${moduleName}.FileClick`, clickIndex));
+        assertEquals(
+            1,
+            metrics.count(
+                `NewTabPage.${moduleName}.UserAction`,
+                FileAction.FILE_SUGGESTION_CLICKED));
 
         // Test that files with non-null `recommendationType` get a histogram
         // emission for the type.
@@ -115,11 +121,17 @@ suite('FileSuggestion', () => {
             metrics.count(
                 `NewTabPage.${moduleName}.RecommendationTypeClick`,
                 RecommendationType.kTrending));
+        assertEquals(
+            2,
+            metrics.count(
+                `NewTabPage.${moduleName}.UserAction`,
+                FileAction.FILE_SUGGESTION_CLICKED));
       });
 
   test(
       'see more button renders and dispatches usage event when clicked',
       async () => {
+        const metrics = fakeMetricsPrivate();
         fileSuggestion.moduleName = 'Drive';
         fileSuggestion.files = createFiles(1, null);
         await microtasksFinished();
@@ -143,5 +155,9 @@ suite('FileSuggestion', () => {
         link.click();
         const usageEvent: Event = await usagePromise;
         assertTrue(!!usageEvent);
+        assertEquals(
+            1,
+            metrics.count(
+                'NewTabPage.Drive.UserAction', FileAction.SEE_MORE_CLICKED));
       });
 });

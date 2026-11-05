@@ -516,11 +516,18 @@ EncoderStatus D3D12VideoEncodeH264Delegate::EncodeImpl(
                     .long_term_pic_num = destroy_buffer.value()});
   }
   if (update_buffer.has_value()) {
-    if (update_buffer.value() >=
-        reference_frame_manager_.GetMaxLongTermFrameIndexPlus1()) {
-      mmco.push_back({.memory_management_control_operation = 4,
-                      .max_long_term_frame_idx_plus1 =
-                          static_cast<UINT>(update_buffer.value()) + 1});
+    if (!is_keyframe) {
+      // Always pair MMCO 4 with MMCO 6 so that every frame assigning a
+      // long-term frame index also (re)establishes MaxLongTermFrameIdx in the
+      // same slice header. Previously for typical L1T2 encoding, we will be
+      // signaling MMCO 4 right after the first T1 frame after IDR. If that T1
+      // frame get lost, subsequent MMCO 6 on decoding side will fail because
+      // the MaxLongTermFrameIdx would not have been updated correctly.
+      mmco.push_back(
+          {.memory_management_control_operation = 4,
+           .max_long_term_frame_idx_plus1 = static_cast<UINT>(std::max(
+               static_cast<uint32_t>(update_buffer.value()) + 1u,
+               reference_frame_manager_.GetMaxLongTermFrameIndexPlus1()))});
     }
     mmco.push_back({.memory_management_control_operation = 6,
                     .long_term_frame_idx = update_buffer.value()});
@@ -862,7 +869,8 @@ EncoderStatus D3D12VideoEncodeH264Delegate::InitializeVideoEncoder(
             "Failed to create D3D12VideoEncoderWrapper."};
   }
   // We use full frame mode so the number of subregions is always 1.
-  if (!video_encoder_wrapper_->Initialize(/*max_subregions_number=*/1)) {
+  if (!video_encoder_wrapper_->Initialize(/*max_subregions_number=*/1,
+                                          min_bitstream_buffer_size_)) {
     return EncoderStatus::Codes::kEncoderInitializationError;
   }
 
@@ -874,7 +882,8 @@ EncoderStatus D3D12VideoEncodeH264Delegate::InitializeVideoEncoder(
   return EncoderStatus::Codes::kOk;
 }
 
-EncoderStatus::Or<size_t> D3D12VideoEncodeH264Delegate::ReadbackBitstream(
+base::expected<size_t, EncoderStatus>
+D3D12VideoEncodeH264Delegate::ReadbackBitstream(
     base::span<uint8_t> bitstream_buffer) {
   size_t packed_header_size = packed_header_.BytesInBuffer();
   // The |bitstream_buffer| is from outer shared memory, and the
@@ -885,7 +894,7 @@ EncoderStatus::Or<size_t> D3D12VideoEncodeH264Delegate::ReadbackBitstream(
   auto size_or_error = D3D12VideoEncodeDelegate::ReadbackBitstream(
       bitstream_buffer.subspan(packed_header_size));
   if (!size_or_error.has_value()) {
-    return std::move(size_or_error).error();
+    return base::unexpected(std::move(size_or_error).error());
   }
   size_t payload_size = packed_header_size + std::move(size_or_error).value();
   if (software_rate_controller_) {

@@ -6,8 +6,8 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_LAYOUT_UNPOSITIONED_FLOAT_H_
 
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/layout/block_break_token.h"
 #include "third_party/blink/renderer/core/layout/block_node.h"
+#include "third_party/blink/renderer/core/layout/fragmentation_layout_input.h"
 #include "third_party/blink/renderer/core/layout/geometry/bfc_offset.h"
 #include "third_party/blink/renderer/core/layout/geometry/box_strut.h"
 #include "third_party/blink/renderer/core/layout/geometry/logical_size.h"
@@ -26,7 +26,7 @@ struct CORE_EXPORT UnpositionedFloat final {
 
  public:
   UnpositionedFloat(BlockNode node,
-                    const BlockBreakToken* token,
+                    const FragmentationLayoutInput& fragmentation,
                     const LogicalSize available_size,
                     const LogicalSize percentage_size,
                     const BfcOffset& origin_bfc_offset,
@@ -34,9 +34,9 @@ struct CORE_EXPORT UnpositionedFloat final {
                     const ComputedStyle& parent_style,
                     LayoutUnit fragmentainer_block_size,
                     LayoutUnit fragmentainer_block_offset,
-                    bool is_hidden_for_paint)
+                    LineClampFloatState line_clamp_state)
       : node(node),
-        token(token),
+        fragmentation(fragmentation),
         available_size(available_size),
         percentage_size(percentage_size),
         origin_bfc_offset(origin_bfc_offset),
@@ -44,10 +44,10 @@ struct CORE_EXPORT UnpositionedFloat final {
         parent_style(parent_style),
         fragmentainer_block_size(fragmentainer_block_size),
         fragmentainer_block_offset(fragmentainer_block_offset),
-        is_hidden_for_paint(is_hidden_for_paint) {}
+        line_clamp_state(line_clamp_state) {}
 
   BlockNode node;
-  const BlockBreakToken* token = nullptr;
+  FragmentationLayoutInput fragmentation;
 
   const LogicalSize available_size;
   const LogicalSize percentage_size;
@@ -56,7 +56,7 @@ struct CORE_EXPORT UnpositionedFloat final {
   const ComputedStyle& parent_style;
   LayoutUnit fragmentainer_block_size;
   LayoutUnit fragmentainer_block_offset;
-  bool is_hidden_for_paint;
+  LineClampFloatState line_clamp_state;
 
   // layout_result and margins are used as a cache when measuring the
   // inline_size of a float in an inline context.

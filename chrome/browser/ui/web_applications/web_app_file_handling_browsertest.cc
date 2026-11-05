@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
@@ -14,6 +15,7 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "chrome/browser/file_system_access/file_system_access_permission_request_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -37,6 +39,7 @@
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chrome/common/chrome_features.h"
 #include "components/embedder_support/switches.h"
+#include "components/permissions/permission_uma_constants.h"
 #include "components/permissions/test/permission_request_observer.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
@@ -45,6 +48,7 @@
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/webapps/browser/features.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_launcher.h"
@@ -53,6 +57,10 @@
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
+#include "third_party/blink/public/mojom/manifest/manifest_launch_handler.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "url/origin.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/file_manager/file_manager_test_util.h"
@@ -200,15 +208,10 @@ class WebAppFileHandlingBrowserTest : public WebAppFileHandlingTestBase {
     EXPECT_EQ(expected_file_path.BaseName().AsUTF8Unsafe(),
               content::EvalJs(web_contents_.get(),
                               "window.launchParams.files[0].name"));
-    std::string check_permissions_js(
-        // clang-format off
-        "(async () => {"
-        "  return await window.launchParams.files[0].queryPermission("
-        "             {mode: 'readwrite'}) === 'granted';"
-        "})()");
-    // clang-format on
-    EXPECT_TRUE(content::EvalJs(web_contents_.get(), check_permissions_js)
-                    .ExtractBool());
+    EXPECT_EQ("granted", EvalJs(web_contents_.get(), R"(
+        window.launchParams.files[0].queryPermission({mode: 'read'}))"));
+    EXPECT_EQ("prompt", EvalJs(web_contents_.get(), R"(
+        window.launchParams.files[0].queryPermission({mode: 'readwrite'}))"));
   }
 
   GURL GetLaunchParamsTargetUrl() {
@@ -249,7 +252,7 @@ class WebAppFileHandlingBrowserTest : public WebAppFileHandlingTestBase {
       const std::vector<base::FilePath>& files =
           std::vector<base::FilePath>()) {
     apps::AppLaunchParams params(app_id, launch_container,
-                                 WindowOpenDisposition::NEW_WINDOW,
+                                 ui::mojom::WindowOpenDisposition::kNewWindow,
                                  launch_source);
 
     if (files.size()) {
@@ -498,11 +501,87 @@ IN_PROC_BROWSER_TEST_F(WebAppFileHandlingBrowserTest, LaunchQueueSetOnReload) {
     content::TestNavigationObserver navigation_observer(web_contents_);
     chrome::Reload(GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
                        web_contents_),
-                   WindowOpenDisposition::CURRENT_TAB);
+                   ui::mojom::WindowOpenDisposition::kCurrentTab);
     navigation_observer.Wait();
     AttachTestConsumer(web_contents_);
   }
   EXPECT_FALSE(HasLaunchParams());
+}
+
+// Regression test for b/534356407: with `launch_handler.client_mode:
+// "focus-existing"`, a file launch must not reuse an in-scope document that
+// committed an opaque origin (here via `Content-Security-Policy: sandbox`).
+// That document is cross-origin to the app and must never receive file handles
+// minted for it. Instead the app window is navigated to the real file handler,
+// which receives the file.
+IN_PROC_BROWSER_TEST_F(WebAppFileHandlingBrowserTest,
+                       FocusExistingFileLaunchSkipsOpaqueOriginDocument) {
+  const GURL start_url = embedded_https_test_server().GetURL(
+      "app.com", "/web_app_file_handling/index.html");
+  const GURL handler_url = embedded_https_test_server().GetURL(
+      "app.com", "/web_app_file_handling/handle_files.html");
+  const GURL sandboxed_url = embedded_https_test_server().GetURL(
+      "app.com", "/web_app_file_handling/sandboxed.html");
+
+  auto web_app_info =
+      WebAppInstallInfo::CreateWithStartUrlForTesting(start_url);
+  web_app_info->scope = start_url.GetWithoutFilename();
+  web_app_info->title = u"A focus-existing file handling app";
+  web_app_info->launch_handler = blink::Manifest::LaunchHandler(
+      blink::mojom::ManifestLaunchHandler_ClientMode::kFocusExisting);
+  apps::FileHandler entry;
+  entry.action = handler_url;
+  entry.accept.emplace_back();
+  entry.accept[0].mime_type = "text/*";
+  entry.accept[0].file_extensions.insert(".txt");
+  web_app_info->file_handlers.push_back(std::move(entry));
+  const webapps::AppId app_id =
+      WebAppBrowserTestBase::InstallWebApp(std::move(web_app_info));
+
+  // Open the app and put its window on an in-scope page with an opaque origin.
+  content::WebContents* app_contents =
+      LaunchApplication(profile(), app_id, start_url);
+  ASSERT_TRUE(content::NavigateToURL(app_contents, sandboxed_url));
+  ASSERT_TRUE(
+      app_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin().opaque());
+
+  // Launch the app with a file.
+  const base::FilePath file = CreateTestFileWithExtension("txt");
+  auto launch_infos =
+      file_handler_manager().GetMatchingFileHandlerUrls(app_id, {file});
+  ASSERT_EQ(1u, launch_infos.size());
+  const auto& [url, launch_files] = launch_infos[0];
+  // Not NEW_WINDOW: that always opens a new window and would bypass
+  // focus-existing entirely.
+  apps::AppLaunchParams params(
+      app_id, apps::LaunchContainer::kLaunchContainerWindow,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      apps::LaunchSource::kFromFileManager);
+  params.launch_files = launch_files;
+  params.override_url = url;
+
+  content::TestNavigationObserver navigation_observer(handler_url);
+  navigation_observer.WatchExistingWebContents();
+  navigation_observer.StartWatchingNewWebContents();
+  base::test::TestFuture<base::WeakPtr<BrowserWindowInterface>,
+                         base::WeakPtr<content::WebContents>,
+                         apps::LaunchContainer>
+      future;
+  provider()->scheduler().LaunchAppWithCustomParams(std::move(params),
+                                                    future.GetCallback());
+  web_contents_ = future.Get<1>().get();
+  ASSERT_TRUE(web_contents_);
+  navigation_observer.Wait();
+  AttachTestConsumer(web_contents_);
+
+  // The existing app window was navigated to the real handler rather than
+  // reused in place, and the handler received the file.
+  EXPECT_EQ(web_contents_, app_contents);
+  EXPECT_EQ(handler_url, web_contents_->GetLastCommittedURL());
+  EXPECT_FALSE(
+      web_contents_->GetPrimaryMainFrame()->GetLastCommittedOrigin().opaque());
+  VerifyPwaDidReceiveFileLaunchParams(file);
+  EXPECT_EQ(GetLaunchParamsTargetUrl(), handler_url);
 }
 
 IN_PROC_BROWSER_TEST_F(WebAppFileHandlingBrowserTest,
@@ -531,11 +610,72 @@ IN_PROC_BROWSER_TEST_F(WebAppFileHandlingBrowserTest,
     content::TestNavigationObserver navigation_observer(web_contents_);
     chrome::Reload(GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
                        web_contents_),
-                   WindowOpenDisposition::CURRENT_TAB);
+                   ui::mojom::WindowOpenDisposition::kCurrentTab);
     navigation_observer.Wait();
     AttachTestConsumer(web_contents_);
   }
   EXPECT_FALSE(HasLaunchParams());
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFileHandlingBrowserTest,
+                       FileLaunchParamsPermissionsAndAccess) {
+  InstallFileHandlingPWA();
+  base::FilePath test_file_path = CreateTestFileWithExtension("txt");
+  {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    EXPECT_TRUE(base::WriteFile(test_file_path, "sample_data"));
+  }
+
+  LaunchWithFiles(app_id(), GetTextFileHandlerActionURL(), {test_file_path});
+  VerifyPwaDidReceiveFileLaunchParams(test_file_path);
+
+  // Reading the file contents succeeds with read permission.
+  EXPECT_EQ("sample_data",
+            content::EvalJs(
+                web_contents_.get(),
+                "(async () => {"
+                "  const file = await window.launchParams.files[0].getFile();"
+                "  return await file.text();"
+                "})()"));
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppFileHandlingBrowserTest,
+                       FileLaunchParamsWritePermissionDeniedFails) {
+  InstallFileHandlingPWA();
+  base::FilePath test_file_path = CreateTestFileWithExtension("txt");
+  {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    EXPECT_TRUE(base::WriteFile(test_file_path, "sample_data"));
+  }
+
+  LaunchWithFiles(app_id(), GetTextFileHandlerActionURL(), {test_file_path});
+  VerifyPwaDidReceiveFileLaunchParams(test_file_path);
+
+  // Auto-deny permission prompts for the web contents so that createWritable()
+  // immediately fails without waiting for user interaction.
+  FileSystemAccessPermissionRequestManager::FromWebContents(web_contents_.get())
+      ->set_auto_response_for_test(permissions::PermissionAction::DENIED);
+
+  // Verify that attempting to write without permission fails and does not
+  // modify the file on disk.
+  EXPECT_EQ("NotAllowedError", EvalJs(web_contents_.get(), R"(
+      (async () => {
+        try {
+          const writable = await window.launchParams.files[0].createWritable();
+          await writable.write('unauthorized_write');
+          await writable.close();
+          return 'success';
+        } catch (e) {
+          return e.name;
+        }
+      })())"));
+
+  {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    std::string content;
+    EXPECT_TRUE(base::ReadFileToString(test_file_path, &content));
+    EXPECT_EQ("sample_data", content);
+  }
 }
 
 }  // namespace web_app

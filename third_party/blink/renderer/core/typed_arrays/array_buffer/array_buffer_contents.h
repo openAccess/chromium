@@ -28,10 +28,9 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_TYPED_ARRAYS_ARRAY_BUFFER_ARRAY_BUFFER_CONTENTS_H_
 
 #include "base/containers/span.h"
-#include "partition_alloc/partition_alloc_constants.h"
+#include "partition_alloc/partition_alloc_public_constants.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
 #include "v8/include/v8.h"
@@ -70,6 +69,11 @@ class CORE_EXPORT ArrayBufferContents {
     kCrash,
   };
 
+  enum class MaxAllocationSizePolicy {
+    kNormal,
+    kAllowGigaAllocations,
+  };
+
   ArrayBufferContents() = default;
   ArrayBufferContents(size_t num_elements,
                       size_t element_byte_size,
@@ -94,10 +98,16 @@ class CORE_EXPORT ArrayBufferContents {
                       AllocationFailureBehavior allocation_failure_behavior =
                           AllocationFailureBehavior::kInvalid);
 
+  // The resulting contents is backed by `shared_memory_region`; `offset` is
+  // down to a multiple of the VM allocation granularity. If `sharing_type`
+  // is `kShared`, creates a backing store for a `SharedArrayBuffer` that
+  // uses a mapping from the passed in `shared_memory_region`; otherwise,
+  // creates a backing store for a regular `ArrayBuffer`.
   ArrayBufferContents(
       const base::subtle::PlatformSharedMemoryRegion& shared_memory_region,
       uint64_t offset,
-      size_t length);
+      size_t length,
+      SharingType is_shared);
 
   ArrayBufferContents(ArrayBufferContents&&) = default;
 
@@ -116,6 +126,7 @@ class CORE_EXPORT ArrayBufferContents {
   // Resets the internal memory so that the ArrayBufferContents is empty.
   void Reset();
 
+  // Prefer using the ByteSpan*() over Data*().
   void* Data() const {
     DCHECK(!IsShared());
     return DataMaybeShared();
@@ -139,33 +150,30 @@ class CORE_EXPORT ArrayBufferContents {
   }
   bool IsValid() const { return backing_store_ && backing_store_->Data(); }
   base::span<uint8_t> ByteSpan() const {
-    // SAFETY: `BackingStore` guarantees that `Data()` points to at least
-    // `DataLength()` many bytes.
-    return UNSAFE_BUFFERS(base::span(
-        base::unchecked, static_cast<uint8_t*>(Data()), DataLength()));
+    DCHECK(!IsShared());
+    return ByteSpanMaybeShared();
   }
   base::span<uint8_t> ByteSpanShared() const {
     DCHECK(IsShared());
     return ByteSpanMaybeShared();
   }
   base::span<uint8_t> ByteSpanMaybeShared() const {
-    // SAFETY: `BackingStore` guarantees that `Data()` points to at least
-    // `DataLength()` many bytes.
-    return UNSAFE_BUFFERS(base::span(base::unchecked,
-                                     static_cast<uint8_t*>(DataMaybeShared()),
-                                     DataLength()));
+    return backing_store_ ? base::span(backing_store_->ByteSpan())
+                          : base::span<uint8_t>();
   }
 
   std::shared_ptr<v8::BackingStore> BackingStore() const {
     return backing_store_;
   }
 
-  void Transfer(ArrayBufferContents& other);
+  void TransferOrCopy(ArrayBufferContents& other);
   void ShareWith(ArrayBufferContents& other);
   void ShareNonSharedForInternalUse(ArrayBufferContents& other);
   void CopyTo(ArrayBufferContents& other);
 
-  static void* AllocateMemoryOrNull(size_t, InitializationPolicy);
+  static void* AllocateMemoryOrNull(size_t,
+                                    InitializationPolicy,
+                                    MaxAllocationSizePolicy);
   static void FreeMemory(void*);
 
  private:

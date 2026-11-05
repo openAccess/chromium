@@ -36,6 +36,7 @@
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_tab_helper.h"
 #import "ios/chrome/browser/ntp/shared/metrics/feed_metrics_recorder.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_presenter.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_presenter_observer_bridge.h"
 #import "ios/chrome/browser/segmentation_platform/model/segmentation_platform_service_factory.h"
@@ -149,6 +150,7 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
   BubbleViewControllerPresenter* _geminiImageRemixBubblePresenter;
   BubbleViewControllerPresenter* _pinSiteToMostVisitedTilesBubblePresenter;
   BubbleViewControllerPresenter* _sendTabToSelfOmniboxBubblePresenter;
+  BubbleViewControllerPresenter* _bottomOmniboxBubblePresenter;
 
   // List of existing gestural IPH views.
   GestureInProductHelpView* _pullToRefreshGestureIPH;
@@ -234,6 +236,7 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
 - (void)hideBubblesPointingToOmnibox {
   [_lensOverlayEntrypointBubblePresenter dismissAnimated:NO];
   [_sendTabToSelfOmniboxBubblePresenter dismissAnimated:NO];
+  [_bottomOmniboxBubblePresenter dismissAnimated:NO];
 }
 
 - (void)handleTapOutsideOfVisibleGestureInProductHelp {
@@ -331,7 +334,8 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
   // Checks "canPresentBubble" after checking that the NTP with feed is visible.
   // This ensures that the feature tracker doesn't trigger the IPH event if the
   // bubble isn't shown, which would prevent it from ever being shown again.
-  if (!menuButton || ![self canPresentBubble]) {
+  if (!menuButton || ![self canPresentBubbleWithCheckTabScrolledToTop:
+                                !IsNTPEphemeralThemeEnabled()]) {
     return;
   }
   CGPoint customizationMenuAnchor =
@@ -721,9 +725,8 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
 }
 
 - (void)presentToolbarSwipeGestureInProductHelp {
-  // Inapplicable on iPad.
-  if (ui::GetDeviceFormFactor() !=
-          ui::DeviceFormFactor::DEVICE_FORM_FACTOR_PHONE ||
+  // Inapplicable when the tab strip is visible.
+  if (CanShowTabStrip(self.rootViewController) ||
       UIAccessibilityIsVoiceOverRunning() ||
       (![self canPresentBubbleWithCheckTabScrolledToTop:NO])) {
     return;
@@ -761,8 +764,7 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
   NSLayoutConstraint* topConstraintForTopEdgeSwipe =
       [guide.topAnchor constraintEqualToAnchor:contentAreaGuide.topAnchor];
   NSLayoutConstraint* initialTopConstraint =
-      self.rootViewController.traitCollection.verticalSizeClass ==
-              UIUserInterfaceSizeClassRegular
+      IsSplitToolbarMode(self.rootViewController)
           ? topConstraintForBottomEdgeSwipe
           : topConstraintForTopEdgeSwipe;
   initialTopConstraint.active = YES;
@@ -785,7 +787,7 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
   toolbarSwipeGestureIPH.delegate = self;
   [self.rootViewController.view addSubview:toolbarSwipeGestureIPH];
   AddSameConstraints(toolbarSwipeGestureIPH, guide);
-  if (IsPageActionMenuEnabled()) {
+  if (IsPageActionMenuEnabled() && !IsIOSGeminiBottomSheetMigrationEnabled()) {
     [self.geminiHandler
         hideFloatyIfInvokedAnimated:NO
                          fromSource:gemini::FloatyUpdateSource::GestureIph];
@@ -909,6 +911,12 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
 }
 
 - (void)presentReaderModeOptionsBubble {
+  UIView* referencedView = [_layoutGuideCenter
+      referencedViewUnderName:kReaderModeOptionsEntrypointGuide];
+  if (!referencedView) {
+    return;
+  }
+
   if (![self canPresentBubbleWithCheckTabScrolledToTop:NO]) {
     return;
   }
@@ -929,18 +937,14 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
       [self anchorPointToGuide:kReaderModeOptionsEntrypointGuide
                      direction:arrowDirection];
 
-  // An adjusted x offset to ensure that the bubble frame is on-screen.
-  CGFloat anchorXOffset = UseRTLLayout() ? -38 : 38;
-
-  BubbleViewControllerPresenter* presenter = [self
-      presentBubbleForFeature:feature_engagement::
-                                  kIPHiOSReaderModeOptionsFeature
-                    direction:arrowDirection
-                    alignment:BubbleAlignmentTopOrLeading
-                         text:text
-        voiceOverAnnouncement:text
-                  anchorPoint:CGPoint(readerModeOptionsAnchor.x + anchorXOffset,
-                                      readerModeOptionsAnchor.y)];
+  BubbleViewControllerPresenter* presenter =
+      [self presentBubbleForFeature:feature_engagement::
+                                        kIPHiOSReaderModeOptionsFeature
+                          direction:arrowDirection
+                          alignment:BubbleAlignmentTopOrLeading
+                               text:text
+              voiceOverAnnouncement:text
+                        anchorPoint:readerModeOptionsAnchor];
 
   if (presenter) {
     _readerModeOptionsBubblePresenter = presenter;
@@ -972,6 +976,36 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
                         anchorPoint:omniboxAnchor];
   if (presenter) {
     _sendTabToSelfOmniboxBubblePresenter = presenter;
+  }
+}
+
+- (void)presentBottomOmniboxBubble {
+  web::WebState* currentWebState = _webStateList->GetActiveWebState();
+  if (!IsBottomOmniboxAvailable() || [self isBottomOmnibox] ||
+      ![self canPresentBubbleWithCheckTabScrolledToTop:NO] ||
+      !currentWebState || IsUrlNtp(currentWebState->GetVisibleURL()) ||
+      !IsChromeNextIaEnabled()) {
+    return;
+  }
+
+  BubbleArrowDirection arrowDirection = BubbleArrowDirectionUp;
+  NSString* title =
+      l10n_util::GetNSString(IDS_IOS_NEW_IA_PROMO_IPH_BOTTOM_OMNIBOX_TITLE);
+  NSString* text =
+      l10n_util::GetNSString(IDS_IOS_NEW_IA_PROMO_IPH_BOTTOM_OMNIBOX_TEXT);
+  CGPoint omniboxAnchor = [self anchorPointToGuide:kTopOmniboxGuide
+                                         direction:arrowDirection];
+
+  BubbleViewControllerPresenter* presenter = [self
+      presentBubbleForFeature:feature_engagement::kIPHiOSBottomOmniboxFeature
+                    direction:arrowDirection
+                    alignment:BubbleAlignmentCenter
+                        title:title
+                         text:text
+        voiceOverAnnouncement:text
+                  anchorPoint:omniboxAnchor];
+  if (presenter) {
+    _bottomOmniboxBubblePresenter = presenter;
   }
 }
 
@@ -1084,7 +1118,7 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
       !dismissButtonTappedEvent.empty()) {
     _engagementTracker->NotifyEvent(dismissButtonTappedEvent);
   }
-  if (IsPageActionMenuEnabled()) {
+  if (IsPageActionMenuEnabled() && !IsIOSGeminiBottomSheetMigrationEnabled()) {
     [self.geminiHandler
         updateFloatyVisibilityIfEligibleAnimated:NO
                                       fromSource:gemini::FloatyUpdateSource::
@@ -1129,6 +1163,8 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
       _infobarModalPresenter = nullptr;
       break;
     case OverlayModality::kTesting:
+      NOTREACHED();
+    case OverlayModality::kWatermark:
       NOTREACHED();
   }
 }
@@ -1176,6 +1212,29 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
                          dismissAction:dismissAction];
 }
 
+// Convenience method that calls `-presentBubbleForFeature` with a `title` and
+// default param values for `anchorViewFrame`, `presentAction`, and
+// `dismissAction`.
+- (BubbleViewControllerPresenter*)
+    presentBubbleForFeature:(const base::Feature&)feature
+                  direction:(BubbleArrowDirection)direction
+                  alignment:(BubbleAlignment)alignment
+                      title:(NSString*)title
+                       text:(NSString*)text
+      voiceOverAnnouncement:(NSString*)voiceOverAnnouncement
+                anchorPoint:(CGPoint)anchorPoint {
+  return [self presentBubbleForFeature:feature
+                             direction:direction
+                             alignment:alignment
+                                 title:title
+                                  text:text
+                 voiceOverAnnouncement:voiceOverAnnouncement
+                           anchorPoint:anchorPoint
+                       anchorViewFrame:CGRectZero
+                         presentAction:nil
+                         dismissAction:nil];
+}
+
 // Presents and returns a bubble view controller for the `feature` with an arrow
 // `direction`, an arrow `alignment` and a `text` on an `anchorPoint`.
 - (BubbleViewControllerPresenter*)
@@ -1188,11 +1247,38 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
             anchorViewFrame:(CGRect)anchorViewFrame
               presentAction:(ProceduralBlock)presentAction
               dismissAction:(void (^)(IPHDismissalReasonType))dismissAction {
+  return [self presentBubbleForFeature:feature
+                             direction:direction
+                             alignment:alignment
+                                 title:nil
+                                  text:text
+                 voiceOverAnnouncement:voiceOverAnnouncement
+                           anchorPoint:anchorPoint
+                       anchorViewFrame:anchorViewFrame
+                         presentAction:presentAction
+                         dismissAction:dismissAction];
+}
+
+// Presents and returns a bubble view controller for the `feature` with an arrow
+// `direction`, an arrow `alignment`, an optional `title`, and a `text` on an
+// `anchorPoint`.
+- (BubbleViewControllerPresenter*)
+    presentBubbleForFeature:(const base::Feature&)feature
+                  direction:(BubbleArrowDirection)direction
+                  alignment:(BubbleAlignment)alignment
+                      title:(NSString*)title
+                       text:(NSString*)text
+      voiceOverAnnouncement:(NSString*)voiceOverAnnouncement
+                anchorPoint:(CGPoint)anchorPoint
+            anchorViewFrame:(CGRect)anchorViewFrame
+              presentAction:(ProceduralBlock)presentAction
+              dismissAction:(void (^)(IPHDismissalReasonType))dismissAction {
   DCHECK(_engagementTracker);
   BubbleViewControllerPresenter* presenter =
       [self bubblePresenterForFeature:feature
                             direction:direction
                             alignment:alignment
+                                title:title
                                  text:text
                         dismissAction:dismissAction];
   if (!presenter) {
@@ -1262,6 +1348,7 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
   UILayoutGuide* guide = [_layoutGuideCenter makeLayoutGuideNamed:guideName];
   DCHECK(guide);
   [self.rootViewController.view addLayoutGuide:guide];
+  [self.rootViewController.view layoutIfNeeded];
 
   CGPoint anchorPoint =
       bubble_util::AnchorPoint(guide.layoutFrame, arrowDirection);
@@ -1317,6 +1404,7 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
   UILayoutGuide* guide = [_layoutGuideCenter makeLayoutGuideNamed:guideName];
   CHECK(guide);
   [self.rootViewController.view addLayoutGuide:guide];
+  [self.rootViewController.view layoutIfNeeded];
   CGRect frame = guide.layoutFrame;
   CGRect frameInWindow = [guide.owningView convertRect:frame
                                                 toView:guide.owningView.window];
@@ -1385,11 +1473,13 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
 // it is valid to show the promotion and `nil` otherwise. `feature` is the
 // base::Feature object associated with the given promotion. `direction` is the
 // direction the bubble's arrow is pointing. `alignment` is the alignment of the
-// arrow on the button. `text` is the text displayed by the bubble.
+// arrow on the button. `title` is the optional title and `text` is the text
+// displayed by the bubble.
 - (BubbleViewControllerPresenter*)
     bubblePresenterForFeature:(const base::Feature&)feature
                     direction:(BubbleArrowDirection)direction
                     alignment:(BubbleAlignment)alignment
+                        title:(NSString*)title
                          text:(NSString*)text
                 dismissAction:(void (^)(IPHDismissalReasonType))dismissAction {
   DCHECK(_engagementTracker);
@@ -1407,12 +1497,23 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
         [weakSelf featureDismissed:feature];
       };
 
-  BubbleViewControllerPresenter* bubbleViewControllerPresenter =
-      [[BubbleViewControllerPresenter alloc]
-          initDefaultBubbleWithText:text
-                     arrowDirection:direction
-                          alignment:alignment
-                  dismissalCallback:dismissalCallback];
+  BubbleViewControllerPresenter* bubbleViewControllerPresenter;
+  if (title) {
+    bubbleViewControllerPresenter = [[BubbleViewControllerPresenter alloc]
+             initWithText:text
+                    title:title
+           arrowDirection:direction
+                alignment:alignment
+               bubbleType:BubbleViewTypeRich
+          pageControlPage:BubblePageControlPageNone
+        dismissalCallback:dismissalCallback];
+  } else {
+    bubbleViewControllerPresenter = [[BubbleViewControllerPresenter alloc]
+        initDefaultBubbleWithText:text
+                   arrowDirection:direction
+                        alignment:alignment
+                dismissalCallback:dismissalCallback];
+  }
 
   bubbleViewControllerPresenter.customBubbleVisibilityDuration =
       [self bubbleVisibilityDurationForFeature:feature];
@@ -1505,9 +1606,13 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
     gestureIPHView.delegate = self;
     AddSameConstraints(gestureIPHView, contentAreaGuide);
     if (IsPageActionMenuEnabled()) {
-      [self.geminiHandler
-          hideFloatyIfInvokedAnimated:NO
-                           fromSource:gemini::FloatyUpdateSource::GestureIph];
+      if (IsIOSGeminiBottomSheetMigrationEnabled()) {
+        [self.geminiHandler minimizeGeminiIfInvoked];
+      } else {
+        [self.geminiHandler
+            hideFloatyIfInvokedAnimated:NO
+                             fromSource:gemini::FloatyUpdateSource::GestureIph];
+      }
     }
     return gestureIPHView;
   }
@@ -1630,9 +1735,69 @@ constexpr CGFloat kAdditionalBorderMargin = 4;
 
 #pragma mark - Testing
 
-- (BubbleViewControllerPresenter*)
-    sendTabToSelfOmniboxBubblePresenterForTesting {
-  return _sendTabToSelfOmniboxBubblePresenter;
+- (BubbleViewControllerPresenter*)bubblePresenterForFeatureForTesting:
+    (const base::Feature&)feature {
+  if (feature.name == feature_engagement::kIPHiOSBottomOmniboxFeature.name) {
+    return _bottomOmniboxBubblePresenter;
+  }
+  if (feature.name == feature_engagement::kIPHSendTabToSelfOmnibox.name) {
+    return _sendTabToSelfOmniboxBubblePresenter;
+  }
+  if (feature.name ==
+      feature_engagement::kIPHiOSReaderModeOptionsFeature.name) {
+    return _readerModeOptionsBubblePresenter;
+  }
+  if (feature.name == feature_engagement::kIPHDiscoverFeedHeaderFeature.name) {
+    return _discoverFeedHeaderMenuTipBubblePresenter;
+  }
+  if (feature.name ==
+      feature_engagement::kIPHHomeCustomizationMenuFeature.name) {
+    return _homeCustomizationMenuTipBubblePresenter;
+  }
+  if (feature.name ==
+      feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature.name) {
+    return _homeBackgroundCustomizationMenuTipBubblePresenter;
+  }
+  if (feature.name == feature_engagement::kIPHDefaultSiteViewFeature.name) {
+    return _defaultPageModeTipBubblePresenter;
+  }
+  if (feature.name == feature_engagement::kIPHWhatsNewFeature.name) {
+    return _whatsNewBubblePresenter;
+  }
+  if (feature.name ==
+      feature_engagement::kIPHPriceNotificationsWhileBrowsingFeature.name) {
+    return _priceNotificationsWhileBrowsingBubbleTipPresenter;
+  }
+  if (feature.name == feature_engagement::kIPHiOSLensKeyboardFeature.name) {
+    return _lensKeyboardPresenter;
+  }
+  if (feature.name ==
+      feature_engagement::kIPHiOSLensOverlayEntrypointTipFeature.name) {
+    return _lensOverlayEntrypointBubblePresenter;
+  }
+  if (feature.name ==
+      feature_engagement::kIPHiOSSettingsInOverflowMenuBubbleFeature.name) {
+    return _settingsInOverflowMenuBubblePresenter;
+  }
+  if (feature.name ==
+      feature_engagement::kIPHiOSSwitchAccountsWithNTPAccountParticleDiscFeature
+          .name) {
+    return _switchAccountWithNTPIdentityDiscBubblePresenter;
+  }
+  if (feature.name == feature_engagement::kIPHiOSFeedSwipeStaticFeature.name) {
+    return _feedSwipeBubblePresenter;
+  }
+  if (feature.name == feature_engagement::kIPHIOSPageActionMenu.name) {
+    return _pageActionMenuBubblePresenter;
+  }
+  if (feature.name == feature_engagement::kIPHiOSGeminiImageRemixFeature.name) {
+    return _geminiImageRemixBubblePresenter;
+  }
+  if (feature.name ==
+      feature_engagement::kIPHiOSPinMostVisitedSiteFeature.name) {
+    return _pinSiteToMostVisitedTilesBubblePresenter;
+  }
+  return nil;
 }
 
 @end

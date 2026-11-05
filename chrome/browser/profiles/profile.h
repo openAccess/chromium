@@ -393,8 +393,7 @@ class Profile : public content::BrowserContext {
 
   // IsRegularProfile(), IsSystemProfile(), IsIncognitoProfile(),
   // IsGuestSession() and IsEnterpriseIsolatedModeProfile() are mutually
-  // exclusive. Note: IsGuestSession() is not mutually exclusive with the rest
-  // of the methods mentioned above on ChromeOS. TODO(crbug.com/40233408).
+  // exclusive.
   //
   // IsSystemProfile() returns true for both regular and off-the-record profile
   //   of the system profile.
@@ -428,6 +427,9 @@ class Profile : public content::BrowserContext {
   // Returns whether it is a system profile.
   bool IsSystemProfile() const;
 
+  // Returns whether it is a Top Chrome WebUI profile.
+  bool IsTopChromeWebUIProfile() const;
+
   // Returns true if this OffTheRecord profile was created via the
   // "createBrowsingContext" Chrome DevTools Protocol command.
   bool IsDevToolsOTRProfile() const;
@@ -455,7 +457,7 @@ class Profile : public content::BrowserContext {
   }
 
   void ResumeAccessibilityEvents() {
-    DCHECK_GT(accessibility_pause_level_, 0);
+    CHECK_GT(accessibility_pause_level_, 0, base::NotFatalUntil::M162);
     accessibility_pause_level_--;
   }
 
@@ -538,6 +540,10 @@ class Profile : public content::BrowserContext {
   void NotifyOffTheRecordProfileCreated(Profile* off_the_record);
   void NotifyProfileInitializationComplete();
 
+  // Posts a `BEST_EFFORT` task via `AfterStartupTaskUtils` to create the
+  // `KeyedService`s that opted into post-startup creation for this profile.
+  void ScheduleCreateServicesAfterStartup();
+
   // Returns whether the user has signed in this profile to an account.
   virtual bool IsSignedIn() = 0;
 
@@ -546,12 +552,6 @@ class Profile : public content::BrowserContext {
   }
 
   const std::optional<OTRProfileID> otr_profile_id_;
-
-#if BUILDFLAG(IS_CHROMEOS)
-  // TODO(40233408): Remove this when migration is completed.
-  // True if the guest profile uses BrowserProfileType::kGuest.
-  bool new_guest_profile_impl_;
-#endif
 
  private:
   LifecycleState lifecycle_state_ = LifecycleState::kNotRegistered;

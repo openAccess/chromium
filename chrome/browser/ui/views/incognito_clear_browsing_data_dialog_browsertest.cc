@@ -4,8 +4,12 @@
 
 #include "chrome/browser/ui/views/incognito_clear_browsing_data_dialog.h"
 
+#include "base/command_line.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "build/branding_buildflags.h"
+#include "build/build_config.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -14,18 +18,33 @@
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/incognito_clear_browsing_data_dialog_coordinator.h"
 #include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
+#include "components/enterprise/isolated_mode/prefs.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/widget/widget_observer.h"
 
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/test/base/scoped_channel_override.h"
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+
 namespace {
 
 class IncognitoClearBrowsingDataDialogTest : public InProcessBrowserTest {
  public:
-  void OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type type) {
+  BrowserWindowInterface* CreateIncognitoBrowser(Profile* profile = nullptr) {
+    BrowserWindowInterface* incognito_browser =
+        InProcessBrowserTest::CreateIncognitoBrowser(profile);
+    AvatarToolbarButtonTestAccessor(incognito_browser).WaitForAvatarButton();
+    return incognito_browser;
+  }
+
+  void OpenDialog(IncognitoClearBrowsingDataDialog::Type type) {
     if (!incognito_browser_) {
       incognito_browser_ = CreateIncognitoBrowser(GetProfile());
     }
@@ -86,7 +105,7 @@ class IncognitoClearBrowsingDataDialogBrowserTest
     : public SupportsTestDialog<IncognitoClearBrowsingDataDialogTest> {
  public:
   void ShowUi(const std::string& name) override {
-    OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type::kDefaultBubble);
+    OpenDialog(IncognitoClearBrowsingDataDialog::Type::kDefaultBubble);
   }
 };
 
@@ -97,7 +116,7 @@ IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
                        TestDialogIsShown_DefaultBubble) {
-  OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type::kDefaultBubble);
+  OpenDialog(IncognitoClearBrowsingDataDialog::Type::kDefaultBubble);
   auto* incognito_cbd_dialog_view = GetDialogView();
 
   ASSERT_TRUE(GetCoordinator()->IsShowing());
@@ -113,7 +132,7 @@ IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
 IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
                        TestCloseWindowsButton) {
   base::HistogramTester histogram_tester;
-  OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type::kDefaultBubble);
+  OpenDialog(IncognitoClearBrowsingDataDialog::Type::kDefaultBubble);
   auto destroyed_observer = BubbleWidgetDestroyedObserver(
       GetIncognitoBrowser(), GetDialogView()->GetWidget());
 
@@ -129,7 +148,7 @@ IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
 
 IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest, TestCancelButton) {
   base::HistogramTester histogram_tester;
-  OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type::kDefaultBubble);
+  OpenDialog(IncognitoClearBrowsingDataDialog::Type::kDefaultBubble);
 
   views::test::WidgetDestroyedWaiter destroyed_waiter(GetDialogWidget());
 
@@ -145,7 +164,7 @@ IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest, TestCancelButton) {
 
 IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
                        TestBrowserCloseEventClosesDialogFirst) {
-  OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type::kDefaultBubble);
+  OpenDialog(IncognitoClearBrowsingDataDialog::Type::kDefaultBubble);
   auto destroyed_observer =
       BubbleWidgetDestroyedObserver(GetIncognitoBrowser(), GetDialogWidget());
 
@@ -168,10 +187,61 @@ IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
   ASSERT_TRUE(coordinator->IsShowing());
 }
 
+class IsolatedClearBrowsingDataDialogTest
+    : public IncognitoClearBrowsingDataDialogTest {
+ public:
+  IsolatedClearBrowsingDataDialogTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        enterprise_isolated_mode::kEnableEnterpriseIsolatedMode);
+  }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    IncognitoClearBrowsingDataDialogTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(
+        enterprise_isolated_mode::switches::
+            kForceEnterpriseIsolatedModeReplacesIncognito);
+  }
+
+ private:
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+  chrome::ScopedChannelOverride channel_override_{
+      chrome::ScopedChannelOverride::Channel::kDev};
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(IsolatedClearBrowsingDataDialogTest,
+                       ClearBrowsingDataNavigationInIsolatedMode) {
+  BrowserWindowInterface* isolated_browser = CreateIncognitoBrowser();
+  Profile* isolated_profile = isolated_browser->GetProfile();
+  ASSERT_TRUE(isolated_profile->IsEnterpriseIsolatedModeProfile());
+  ui_test_utils::SendToOmniboxAndSubmit(isolated_browser,
+                                        "chrome://settings/clearBrowserData");
+  std::u16string current_tab_title;
+  ui_test_utils::GetCurrentTabTitle(isolated_browser, &current_tab_title);
+  EXPECT_EQ(u"about:blank", current_tab_title);
+  auto* coordinator =
+      IncognitoClearBrowsingDataDialogCoordinator::From(isolated_browser);
+  ASSERT_TRUE(coordinator->IsShowing());
+}
+
+IN_PROC_BROWSER_TEST_F(IsolatedClearBrowsingDataDialogTest,
+                       HistoryNavigationInIsolatedMode) {
+  BrowserWindowInterface* isolated_browser = CreateIncognitoBrowser();
+  Profile* isolated_profile = isolated_browser->GetProfile();
+  ASSERT_TRUE(isolated_profile->IsEnterpriseIsolatedModeProfile());
+  ui_test_utils::SendToOmniboxAndSubmit(isolated_browser, "chrome://history");
+  std::u16string current_tab_title;
+  ui_test_utils::GetCurrentTabTitle(isolated_browser, &current_tab_title);
+  EXPECT_EQ(u"about:blank", current_tab_title);
+  auto* coordinator =
+      IncognitoClearBrowsingDataDialogCoordinator::From(isolated_browser);
+  ASSERT_TRUE(coordinator->IsShowing());
+}
+
 IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
                        TestDialogIsShown_HistoryDisclaimerBubble) {
-  OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type::
-                 kHistoryDisclaimerBubble);
+  OpenDialog(IncognitoClearBrowsingDataDialog::Type::kHistoryDisclaimerBubble);
   auto* incognito_cbd_dialog_view = GetDialogView();
 
   ASSERT_TRUE(GetCoordinator()->IsShowing());
@@ -186,8 +256,7 @@ IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
 
 IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
                        TestCloseIncognitoButton) {
-  OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type::
-                 kHistoryDisclaimerBubble);
+  OpenDialog(IncognitoClearBrowsingDataDialog::Type::kHistoryDisclaimerBubble);
 
   ui_test_utils::BrowserDestroyedObserver observer(GetIncognitoBrowser());
   GetDialogView()->CancelDialog();
@@ -197,8 +266,7 @@ IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest,
 }
 
 IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest, TestGotItButton) {
-  OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type::
-                 kHistoryDisclaimerBubble);
+  OpenDialog(IncognitoClearBrowsingDataDialog::Type::kHistoryDisclaimerBubble);
 
   views::test::WidgetDestroyedWaiter destroyed_waiter(GetDialogWidget());
 
@@ -210,8 +278,7 @@ IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest, TestGotItButton) {
 }
 
 IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest, ShowTwice) {
-  OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type::
-                 kHistoryDisclaimerBubble);
+  OpenDialog(IncognitoClearBrowsingDataDialog::Type::kHistoryDisclaimerBubble);
   auto* const first_incognito_cbd_dialog_view = GetDialogView();
   EXPECT_TRUE(first_incognito_cbd_dialog_view);
 
@@ -221,8 +288,7 @@ IN_PROC_BROWSER_TEST_F(IncognitoClearBrowsingDataDialogTest, ShowTwice) {
       first_incognito_cbd_dialog_view);
 
   // Show again with the same type.
-  OpenDialog(IncognitoClearBrowsingDataDialogInterface::Type::
-                 kHistoryDisclaimerBubble);
+  OpenDialog(IncognitoClearBrowsingDataDialog::Type::kHistoryDisclaimerBubble);
   const auto* const second_incognito_cbd_dialog_view = GetDialogView();
   EXPECT_TRUE(second_incognito_cbd_dialog_view);
 

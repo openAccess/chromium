@@ -19,6 +19,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/native_library.h"
+#include "base/notimplemented.h"
 #include "gpu/config/skia_limits.h"
 #include "gpu/vulkan/init/vulkan_factory.h"
 #include "gpu/vulkan/skia_vk_memory_allocator_impl.h"
@@ -109,8 +110,10 @@ AwVulkanContextProvider::Globals::~Globals() {
   g_globals = nullptr;
 
   gr_context.reset();
-  device_queue->Destroy();
-  device_queue = nullptr;
+  if (device_queue) {
+    device_queue->Destroy();
+    device_queue = nullptr;
+  }
 }
 
 bool AwVulkanContextProvider::Globals::Initialize(
@@ -137,9 +140,12 @@ bool AwVulkanContextProvider::Globals::Initialize(
   }
 
   device_queue = std::make_unique<gpu::VulkanDeviceQueue>(params->instance);
-  device_queue->InitializeForWebView(
-      params->physical_device, params->device, params->queue,
-      params->graphics_queue_index, std::move(device_extensions));
+  if (!device_queue->InitializeForWebView(
+          params->physical_device, params->device, params->queue,
+          params->graphics_queue_index, std::move(device_extensions))) {
+    LOG(ERROR) << "Unable to initialize VulkanDeviceQueue.";
+    return false;
+  }
 
   // Create our Skia GrContext.
   skgpu::VulkanGetProc get_proc = [](const char* proc_name, VkInstance instance,
@@ -265,6 +271,10 @@ GrDirectContext* AwVulkanContextProvider::GetGrContext() {
   return globals_->gr_context.get();
 }
 
+gpu::GraphiteSharedContext* AwVulkanContextProvider::GetGraphiteContext() {
+  return nullptr;
+}
+
 GrVkSecondaryCBDrawContext*
 AwVulkanContextProvider::GetGrSecondaryCBDrawContext() {
   CHECK(active_draw_state_);
@@ -302,6 +312,12 @@ bool AwVulkanContextProvider::InitializeGrContext(
   // GrContext is created in Globals, so nothing to do here besides DCHECK.
   DCHECK(globals_);
   return globals_->gr_context.get() != nullptr;
+}
+
+bool AwVulkanContextProvider::InitializeGraphiteContext(
+    const skgpu::graphite::ContextOptions& options) {
+  NOTIMPLEMENTED();
+  return false;
 }
 
 void AwVulkanContextProvider::SecondaryCBDrawBegin(

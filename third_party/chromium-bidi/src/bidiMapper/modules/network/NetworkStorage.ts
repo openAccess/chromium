@@ -29,6 +29,7 @@ import type {LoggerFn} from '../../../utils/log.js';
 import {uuidv4} from '../../../utils/uuid.js';
 import type {CdpClient} from '../../BidiMapper.js';
 import type {CdpTarget} from '../cdp/CdpTarget.js';
+import type {BrowsingContextImpl} from '../context/BrowsingContextImpl.js';
 import type {BrowsingContextStorage} from '../context/BrowsingContextStorage.js';
 import type {EventManager} from '../session/EventManager.js';
 
@@ -64,8 +65,14 @@ export class NetworkStorage {
   /** A map from intercept ID to track active network intercepts. */
   readonly #intercepts = new Map<Network.Intercept, NetworkInterception>();
 
+  // TODO: Move to ContextConfigStorage after
+  // https://github.com/w3c/webdriver-bidi/issues/1170 is addressed.
   #defaultCacheBehavior: Network.SetCacheBehaviorParameters['cacheBehavior'] =
     'default';
+  readonly #contextCacheBehavior = new Map<
+    BrowsingContext.BrowsingContext,
+    Network.SetCacheBehaviorParameters['cacheBehavior']
+  >();
 
   constructor(
     eventManager: EventManager,
@@ -116,7 +123,7 @@ export class NetworkStorage {
     return request;
   }
 
-  onCdpTargetCreated(cdpTarget: CdpTarget) {
+  onCdpTargetCreated(cdpTarget: CdpTarget): void {
     const cdpClient = cdpTarget.cdpClient;
 
     // TODO: Wrap into object
@@ -249,6 +256,24 @@ export class NetworkStorage {
   async getCollectedData(
     params: Network.GetDataParameters,
   ): Promise<Network.GetDataResult> {
+    if (params.disown && params.collector === undefined) {
+      throw new InvalidArgumentException(
+        'Cannot disown collected data without collector ID',
+      );
+    }
+
+    if (
+      params.dataType === Network.DataType.Response &&
+      !this.#collectorsStorage.isCollected(
+        params.request,
+        params.dataType,
+        params.collector,
+      ) &&
+      this.#collectorsStorage.hasCollectors()
+    ) {
+      await this.#waitForRequestFinished(params.request);
+    }
+
     if (
       !this.#collectorsStorage.isCollected(
         params.request,
@@ -260,12 +285,6 @@ export class NetworkStorage {
         params.collector === undefined
           ? `No collected ${params.dataType} data`
           : `Collector ${params.collector} didn't collect ${params.dataType} data`,
-      );
-    }
-
-    if (params.disown && params.collector === undefined) {
-      throw new InvalidArgumentException(
-        'Cannot disown collected data without collector ID',
       );
     }
 
@@ -299,6 +318,25 @@ export class NetworkStorage {
     }
 
     return result;
+  }
+
+  /**
+   * For redirected requests, the same request ID spawns multiple internal
+   * requests. Waits for the final request in the chain to finish.
+   */
+  async #waitForRequestFinished(id: Network.Request): Promise<void> {
+    while (true) {
+      const request = this.getRequestById(id);
+      if (
+        !request ||
+        request.isFinished ||
+        request.interceptPhase ||
+        (!request.hasResponse && request.redirectCount === 0)
+      ) {
+        return;
+      }
+      await Promise.race([request.finishedPromise, request.waitNextPhase]);
+    }
   }
 
   async #getCollectedResponseData(
@@ -351,7 +389,7 @@ export class NetworkStorage {
     };
   }
 
-  collectIfNeeded(request: NetworkRequest, dataType: Network.DataType) {
+  collectIfNeeded(request: NetworkRequest, dataType: Network.DataType): void {
     this.#collectorsStorage.collectIfNeeded(
       request,
       dataType,
@@ -360,7 +398,11 @@ export class NetworkStorage {
     );
   }
 
-  getInterceptionStages(browsingContextId: BrowsingContext.BrowsingContext) {
+  getInterceptionStages(browsingContextId: BrowsingContext.BrowsingContext): {
+    request: boolean;
+    response: boolean;
+    auth: boolean;
+  } {
     const stages = {
       request: false,
       response: false,
@@ -422,7 +464,7 @@ export class NetworkStorage {
     return intercepts;
   }
 
-  disposeRequestMap(sessionId: string) {
+  disposeRequestMap(sessionId: string): void {
     for (const request of this.#requests.values()) {
       if (request.cdpClient.sessionId === sessionId) {
         this.#requests.delete(request.id);
@@ -448,7 +490,7 @@ export class NetworkStorage {
    * Removes the given intercept from the intercept map.
    * Throws NoSuchInterceptException if the intercept does not exist.
    */
-  removeIntercept(intercept: Network.Intercept) {
+  removeIntercept(intercept: Network.Intercept): void {
     if (!this.#intercepts.has(intercept)) {
       throw new NoSuchInterceptException(
         `Intercept '${intercept}' does not exist.`,
@@ -481,17 +523,26 @@ export class NetworkStorage {
     return;
   }
 
-  addRequest(request: NetworkRequest) {
+  addRequest(request: NetworkRequest): void {
     this.#requests.set(request.id, request);
   }
 
   /**
    * Disposes the given request, if no collectors targeting it are left.
    */
-  disposeRequest(id: Network.Request) {
+  disposeRequest(id: Network.Request): void {
+    const request = this.#requests.get(id);
+    if (!request) {
+      return;
+    }
+    if (!request.isFinished) {
+      // Keep request if it's still active (e.g. intercepted), to allow
+      // subsequent `provideResponse` or `continueRequest`.
+      return;
+    }
     if (this.#collectorsStorage.isCollected(id)) {
       // Keep request, as it's data can be accessed later.
-      this.#requests.get(id)?.disposeData();
+      request.disposeData();
       return;
     }
     // TODO: dispose Network data from Chromium once there is a CDP command for that.
@@ -510,28 +561,18 @@ export class NetworkStorage {
     );
   }
 
-  set defaultCacheBehavior(
-    behavior: Network.SetCacheBehaviorParameters['cacheBehavior'],
-  ) {
-    this.#defaultCacheBehavior = behavior;
-  }
-
-  get defaultCacheBehavior() {
-    return this.#defaultCacheBehavior;
-  }
-
   addDataCollector(params: Network.AddDataCollectorParameters): string {
     return this.#collectorsStorage.addDataCollector(params);
   }
 
-  removeDataCollector(params: Network.RemoveDataCollectorParameters) {
+  removeDataCollector(params: Network.RemoveDataCollectorParameters): void {
     const releasedRequests = this.#collectorsStorage.removeDataCollector(
       params.collector,
     );
     releasedRequests.map((request) => this.disposeRequest(request));
   }
 
-  disownData(params: Network.DisownDataParameters) {
+  disownData(params: Network.DisownDataParameters): void {
     if (
       !this.#collectorsStorage.isCollected(
         params.request,
@@ -551,5 +592,28 @@ export class NetworkStorage {
     );
     // `disposeRequest` disposes request only if no other collectors for it are left.
     this.disposeRequest(params.request);
+  }
+
+  setCacheBehavior(
+    behavior: Network.SetCacheBehaviorParameters['cacheBehavior'],
+    contexts: Set<BrowsingContextImpl>,
+  ): void {
+    if (contexts.size === 0) {
+      this.#defaultCacheBehavior = behavior;
+      this.#contextCacheBehavior.clear();
+      return;
+    }
+
+    for (const context of contexts.values()) {
+      this.#contextCacheBehavior.set(context.id, behavior);
+    }
+  }
+
+  getCacheBehavior(
+    topLevelId: BrowsingContext.BrowsingContext,
+  ): Network.SetCacheBehaviorParameters['cacheBehavior'] {
+    return (
+      this.#contextCacheBehavior.get(topLevelId) ?? this.#defaultCacheBehavior
+    );
   }
 }

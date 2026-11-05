@@ -42,9 +42,9 @@ namespace blink {
 
 FontPlatformDataCache::FontPlatformDataCache()
     : font_size_limit_(std::nextafter(
-          (static_cast<float>(std::numeric_limits<unsigned>::max()) - 2.f) /
-              static_cast<float>(blink::FontCacheKey::PrecisionMultiplier()),
-          0.f)) {}
+          (static_cast<float>(std::numeric_limits<wtf_size_t>::max()) - 2.0f) /
+              static_cast<float>(FontCacheKey::PrecisionMultiplier()),
+          0.0f)) {}
 
 const FontPlatformData* FontPlatformDataCache::GetOrCreateFontPlatformData(
     FontCache* font_cache,
@@ -77,7 +77,7 @@ const FontPlatformData* FontPlatformDataCache::GetOrCreateFontPlatformData(
        alternate_font_name == AlternateFontName::kLastResort);
 
   if (!match_alternate_font_name ||
-      creation_params.CreationType() != kCreateFontByFamily) {
+      creation_params.CreationType() != FontFaceCreationType::kFamily) {
     return nullptr;
   }
 

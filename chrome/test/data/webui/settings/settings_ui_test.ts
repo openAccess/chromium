@@ -4,12 +4,12 @@
 
 // clang-format off
 import {COLORS_CSS_SELECTOR} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
-import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import type {CrDrawerElement, CrToolbarElement, CrToolbarSearchFieldElement, SettingsUiElement} from 'chrome://settings/settings.js';
-import {CrSettingsPrefs, loadTimeData, MAX_QUERY_LENGTH, Router, routes} from 'chrome://settings/settings.js';
-import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
-import {eventToPromise} from 'chrome://webui-test/test_util.js';
+import {loadTimeData, MAX_QUERY_LENGTH, MAX_SEARCH_RESULTS, Router, routes, settingsSearchBrowserProxyFactory, SettingsSearchManagerImpl, setSettingsSearchManagerForTesting} from 'chrome://settings/settings.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
+
+import {TestSettingsSearchHandler} from './test_settings_search_handler.js';
 // clang-format on
 
 /** @fileoverview Suite of tests for the Settings layout. */
@@ -18,12 +18,10 @@ suite('SettingsUIToolbarAndDrawer', function() {
   let toolbar: CrToolbarElement;
   let drawer: CrDrawerElement;
 
-  setup(async function() {
+  setup(function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     ui = document.createElement('settings-ui');
     document.body.appendChild(ui);
-    await CrSettingsPrefs.initialized;
-    flush();
     toolbar = ui.$.toolbar;
     drawer = ui.$.drawer;
   });
@@ -31,16 +29,16 @@ suite('SettingsUIToolbarAndDrawer', function() {
   test('showing menu in toolbar is dependent on narrow mode', async function() {
     assertTrue(!!toolbar);
     toolbar.narrow = true;
-    await toolbar.updateComplete;
+    await microtasksFinished();
     assertTrue(toolbar.showMenu);
 
     toolbar.narrow = false;
-    await toolbar.updateComplete;
+    await microtasksFinished();
     assertFalse(toolbar.showMenu);
   });
 
   test('app drawer', async () => {
-    assertEquals(null, ui.shadowRoot!.querySelector('cr-drawer settings-menu'));
+    assertEquals(null, ui.shadowRoot.querySelector('cr-drawer settings-menu'));
     assertFalse(drawer.open);
 
     const drawerOpened = eventToPromise('cr-drawer-opened', drawer);
@@ -49,7 +47,7 @@ suite('SettingsUIToolbarAndDrawer', function() {
 
     // Validate that dialog is open and menu is shown so it will animate.
     assertTrue(drawer.open);
-    assertTrue(!!ui.shadowRoot!.querySelector('cr-drawer settings-menu'));
+    assertTrue(!!ui.shadowRoot.querySelector('cr-drawer settings-menu'));
 
     const drawerClosed = eventToPromise('close', drawer);
     drawer.cancel();
@@ -58,18 +56,18 @@ suite('SettingsUIToolbarAndDrawer', function() {
     // Drawer is closed, but menu is still stamped so
     // its contents remain visible as the drawer slides
     // out.
-    assertTrue(!!ui.shadowRoot!.querySelector('cr-drawer settings-menu'));
+    assertTrue(!!ui.shadowRoot.querySelector('cr-drawer settings-menu'));
   });
 
   test('app drawer closes when exiting narrow mode', async () => {
     // Mimic narrow mode and open the drawer
     toolbar.narrow = true;
     drawer.openDrawer();
-    flush();
+    await microtasksFinished();
     await eventToPromise('cr-drawer-opened', drawer);
 
     toolbar.narrow = false;
-    flush();
+    await microtasksFinished();
     await eventToPromise('close', drawer);
     assertFalse(drawer.open);
   });
@@ -80,12 +78,11 @@ suite('SettingsUISearch', function() {
   let toolbar: CrToolbarElement;
   let searchField: CrToolbarSearchFieldElement;
 
-  setup(async function() {
+  setup(function() {
+    loadTimeData.overrideValues({enableSettingsSearch2026: false});
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     ui = document.createElement('settings-ui');
     document.body.appendChild(ui);
-    await CrSettingsPrefs.initialized;
-    flush();
     toolbar = ui.$.toolbar;
     searchField = toolbar.getSearchField();
   });
@@ -146,9 +143,9 @@ suite('SettingsUISearch', function() {
   test('MaintainsFocusOnMenus', async () => {
     // Start in non-narrow mode with focus in the left menu.
     toolbar.narrow = false;
-    await toolbar.updateComplete;
+    await microtasksFinished();
     ui.$.leftMenu.focusFirstItem();
-    assertEquals(ui.$.leftMenu, ui.shadowRoot!.activeElement);
+    assertEquals(ui.$.leftMenu, ui.shadowRoot.activeElement);
 
     // Switch to narrow mode and test that focus moves to menu button.
     toolbar.narrow = true;
@@ -157,8 +154,8 @@ suite('SettingsUISearch', function() {
 
     // Switch back to non-narrow mode and test that focus moves to left menu.
     toolbar.narrow = false;
-    await toolbar.updateComplete;
-    assertEquals(ui.$.leftMenu, ui.shadowRoot!.activeElement);
+    await microtasksFinished();
+    assertEquals(ui.$.leftMenu, ui.shadowRoot.activeElement);
   });
 });
 
@@ -166,26 +163,120 @@ suite('WebuiRefresh2026', () => {
   const WEBUI_REFRESH_ATTR = 'webui-refresh-2026';
   let ui: SettingsUiElement;
 
-  function createSettingsUI() {
+  function createSettingsUi() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     ui = document.createElement('settings-ui');
     document.body.appendChild(ui);
-    flush();
   }
 
-  test('Enabled', async () => {
+  test('Enabled', () => {
     loadTimeData.overrideValues({webuiRefresh2026: WEBUI_REFRESH_ATTR});
-    createSettingsUI();
-    await flushTasks();
+    createSettingsUi();
 
     assertNotEquals(null, document.body.querySelector(COLORS_CSS_SELECTOR));
   });
 
-  test('Disabled', async () => {
+  test('Disabled', () => {
     loadTimeData.overrideValues({webuiRefresh2026: ''});
-    createSettingsUI();
-    await flushTasks();
+    createSettingsUi();
 
     assertEquals(null, document.body.querySelector(COLORS_CSS_SELECTOR));
+  });
+});
+
+suite('SettingsRefresh2026', () => {
+  let ui: SettingsUiElement;
+
+  function createSettingsUi() {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    ui = document.createElement('settings-ui');
+    document.body.appendChild(ui);
+  }
+
+  test('NavMenuCollapseEnabled', async () => {
+    loadTimeData.overrideValues({settingsRefresh2026: 'settings-refresh-2026'});
+    createSettingsUi();
+
+    ui.$.toolbar.narrow = false;
+    await microtasksFinished();
+
+    // In non-narrow mode, the left nav menu is neither hidden nor collapsed.
+    assertFalse(ui.$.left.hasAttribute('hidden'));
+    assertFalse(ui.$.left.hasAttribute('collapsed'));
+    assertTrue(isVisible(ui.$.left));
+    assertFalse(ui.$.leftMenu.collapsed);
+    assertFalse(ui.$.leftMenu.hasAttribute('collapsed'));
+    assertTrue(isVisible(ui.$.leftMenu));
+    assertFalse(ui.$.toolbar.showMenu);
+
+    ui.$.toolbar.narrow = true;
+    await microtasksFinished();
+
+    // The left nav menu should be collapsed but not hidden when
+    // settings refresh is enabled.
+    assertFalse(ui.$.left.hasAttribute('hidden'));
+    assertTrue(ui.$.left.hasAttribute('collapsed'));
+    assertTrue(isVisible(ui.$.left));
+    assertTrue(ui.$.leftMenu.collapsed);
+    assertTrue(ui.$.leftMenu.hasAttribute('collapsed'));
+    assertTrue(isVisible(ui.$.leftMenu));
+    assertFalse(ui.$.toolbar.showMenu);
+  });
+
+  test('NavMenuCollapseDisabled', async () => {
+    loadTimeData.overrideValues({settingsRefresh2026: ''});
+    createSettingsUi();
+
+    // When not in settings refresh and in narrow mode, the left nav
+    // menu should be hidden but not collapsed.
+    ui.$.toolbar.narrow = true;
+    await microtasksFinished();
+    assertTrue(ui.$.left.hasAttribute('hidden'));
+    assertFalse(ui.$.left.hasAttribute('collapsed'));
+    assertFalse(isVisible(ui.$.left));
+    assertFalse(ui.$.leftMenu.collapsed);
+    assertFalse(ui.$.leftMenu.hasAttribute('collapsed'));
+    assertFalse(isVisible(ui.$.leftMenu));
+    assertTrue(ui.$.toolbar.showMenu);
+  });
+});
+
+suite('SettingsSearch2026', () => {
+  let ui: SettingsUiElement;
+  let searchField: CrToolbarSearchFieldElement;
+  let handler: TestSettingsSearchHandler;
+
+  function createSettingsUi() {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    ui = document.createElement('settings-ui');
+    document.body.appendChild(ui);
+    searchField = ui.$.toolbar.getSearchField();
+  }
+
+  setup(() => {
+    window.history.replaceState(undefined, '', routes.BASIC.path);
+    loadTimeData.overrideValues({enableSettingsSearch2026: true});
+    handler = new TestSettingsSearchHandler();
+    settingsSearchBrowserProxyFactory.setInstance({handler});
+    setSettingsSearchManagerForTesting(new SettingsSearchManagerImpl());
+
+    createSettingsUi();
+  });
+
+  test('ForwardsToolbarSearchToSearchHandler', async () => {
+    searchField.setValue('theme');
+    assertDeepEquals(
+        ['theme', MAX_SEARCH_RESULTS], await handler.whenCalled('search'));
+    assertEquals('', Router.getInstance().getQueryParameters().toString());
+  });
+
+  test('DisabledFlagDoesNotUseSearchHandler', () => {
+    loadTimeData.overrideValues({enableSettingsSearch2026: false});
+    createSettingsUi();
+
+    searchField.setValue('theme');
+    assertEquals(0, handler.getCallCount('search'));
+    assertEquals(
+        'search=theme', Router.getInstance().getQueryParameters().toString());
   });
 });

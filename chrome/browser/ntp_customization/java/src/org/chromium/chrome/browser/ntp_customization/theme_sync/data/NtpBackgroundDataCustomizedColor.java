@@ -120,7 +120,7 @@ public class NtpBackgroundDataCustomizedColor extends NtpBackgroundDataBase {
     }
 
     @Override
-    public boolean equals(Object obj) {
+    public boolean equals(@Nullable Object obj) {
         if (obj instanceof NtpBackgroundDataCustomizedColor other) {
             return super.equals(obj)
                     && mNtpThemeColorFromHexInfo.equals(other.getNtpThemeColorFromHexInfo());
@@ -130,7 +130,7 @@ public class NtpBackgroundDataCustomizedColor extends NtpBackgroundDataBase {
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), mNtpThemeColorFromHexInfo.hashCode());
+        return Objects.hash(super.hashCode(), mNtpThemeColorFromHexInfo);
     }
 
     /** Returns the NtpBackgroundDataCustomizedColor object from the given JSON. */

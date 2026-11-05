@@ -12,17 +12,32 @@
 #include "base/metrics/field_trial_params.h"
 #include "build/build_config.h"
 
+// Macros to define the default state of features explicitly across platforms.
+#if BUILDFLAG(IS_ANDROID)
+#define FEATURE_ENABLED_BY_DEFAULT_NON_ANDROID base::FEATURE_DISABLED_BY_DEFAULT
+#define FEATURE_ENABLED_BY_DEFAULT_ANDROID_ONLY base::FEATURE_ENABLED_BY_DEFAULT
+#else
+#define FEATURE_ENABLED_BY_DEFAULT_NON_ANDROID base::FEATURE_ENABLED_BY_DEFAULT
+#define FEATURE_ENABLED_BY_DEFAULT_ANDROID_ONLY \
+  base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+
+#define FEATURE_ENABLED_BY_DEFAULT_ALL_PLATFORMS \
+  base::FEATURE_ENABLED_BY_DEFAULT
+
 namespace features {
 
 BASE_DECLARE_FEATURE(kGlicAndroidSidePanel);
 BASE_DECLARE_FEATURE(kGlicDragAndDropFileUploadAndroid);
 
+// Enables attaching the Glic WebUI WebContents to the offscreen rendering
+// manager on Android, so it keeps executing JavaScript, servicing Mojo IPC and
+// scheduling frames while Chrome is not in the foreground.
+BASE_DECLARE_FEATURE(kGlicAndroidOffscreenRendering);
+
 BASE_DECLARE_FEATURE(kGlicClearTurnIdOnPanelWillOpen);
-BASE_DECLARE_FEATURE(kGlicChromeStatusIcon);
-extern const base::FeatureParam<int> kGlicChromeStatusIconSizePx;
-extern const base::FeatureParam<bool> kGlicChromeStatusIconUseAltIcon;
-extern const base::FeatureParam<bool> kGlicChromeStatusIconLogOnly;
-extern const base::FeatureParam<std::string> kGlicChromeStatusIconOtherAppID;
+
+BASE_DECLARE_FEATURE(kGlicChromeStatusIconWin);
 
 BASE_DECLARE_FEATURE(kGlicOSIconVariant);
 extern const base::FeatureParam<int> kGlicOSIconVariantParam;
@@ -34,33 +49,38 @@ extern const base::FeatureParam<bool> kAutoOpenGlicForPdfWithOnboarding;
 extern const base::FeatureParam<base::TimeDelta> kAutoOpenGlicCooldown;
 
 BASE_DECLARE_FEATURE(kGlicInvoke);
-BASE_DECLARE_FEATURE(kGlicOnboardingMetricsMigration);
 
+// Controls inline cue for text selection.
 BASE_DECLARE_FEATURE(kGlicSelectionPrompt);
-extern const base::FeatureParam<bool> kGlicSelectionPromptUpdatesOnly;
 extern const base::FeatureParam<bool> kGlicSelectionShowCopyButtons;
 extern const base::FeatureParam<bool> kGlicSelectionAutoSendPrompt;
 extern const base::FeatureParam<std::string> kGlicSelectionPromptCta;
 inline constexpr char kGlicSelectionPromptCtaTellMe[] = "tell_me_about_this";
 inline constexpr char kGlicSelectionPromptCtaExplain[] = "explain";
-extern const base::FeatureParam<bool> kGlicSelectionPromptInlineFulfillment;
-extern const base::FeatureParam<std::string>
-    kGlicSelectionPromptInlinePromptTemplate;
-extern const base::FeatureParam<bool> kGlicSelectionPromptSkills;
 extern const base::FeatureParam<std::string> kGlicSelectionDefaultBlockedSites;
 base::flat_set<std::string> GetGlicSelectionDefaultBlockedSites();
 
+BASE_DECLARE_FEATURE(kGlicSelectionOverlayPrompt);
+BASE_DECLARE_FEATURE(kGlicSelectionOverlayPromptBox);
+BASE_DECLARE_FEATURE(kGlicSelectionOverlayDogfoodFeedback);
+BASE_DECLARE_FEATURE_PARAM(std::string,
+                           kGlicSelectionOverlayDogfoodFeedbackUrl);
+BASE_DECLARE_FEATURE(kGlicSelectionSuggestions);
+BASE_DECLARE_FEATURE_PARAM(std::string, kGlicSelectionSuggestionsCapabilities);
+BASE_DECLARE_FEATURE(kQuickAnswersSelectionSuggestions);
+
+BASE_DECLARE_FEATURE(kGlicSelectionSmallChip);
+extern const base::FeatureParam<bool> kGlicSelectionSmallChipOnTop;
+
+BASE_DECLARE_FEATURE(kGlicSuggestionContextMenu);
+
 BASE_DECLARE_FEATURE(kGlicCreateTabAdjacent);
+
+BASE_DECLARE_FEATURE(kGlicDynamicChromeTools);
 
 BASE_DECLARE_FEATURE(kGlicLiveMode);
 
-BASE_DECLARE_FEATURE(kGlicDefaultToLastActiveConversation);
-extern const base::FeatureParam<base::TimeDelta>
-    kGlicDefaultToLastActiveConversationMaxRecency;
-
 BASE_DECLARE_FEATURE(kGlicSummarizeVideoSuggestion);
-
-BASE_DECLARE_FEATURE(kGlicFixTimeToFirstQueryKillSwitch);
 
 BASE_DECLARE_FEATURE(kGlicContextMenu);
 extern const base::FeatureParam<std::string> kGlicContextMenuArm;
@@ -69,10 +89,40 @@ extern const base::FeatureParam<bool> kGlicContextMenuWithOnboarding;
 BASE_DECLARE_FEATURE(kGlicContextMenuBelowSearch);
 
 BASE_DECLARE_FEATURE(kGlicTextSelectionContextMenu);
+extern const base::FeatureParam<bool>
+    kGlicTextSelectionContextMenuMessageFirstFre;
+// Whether the selected text is auto-submitted with a default prompt instead of
+// only being attached to the input area for the user to submit manually.
+extern const base::FeatureParam<bool> kGlicTextSelectionContextMenuAutoSubmit;
 
 BASE_DECLARE_FEATURE(kGlicTieredRolloutV2);
 extern const base::FeatureParam<std::string> kGlicTieredRolloutV2EligibleTiers;
 const base::flat_set<int32_t>& GetGlicTieredRolloutV2EligibleTiers();
+
+// Exempts the user from ActorPolicyChecker.
+BASE_DECLARE_FEATURE(kGlicActorPolicyControlExemption);
+
+// When enabled, Glic and Autobrowse (web actuation) entitlement is determined
+// by the synced subscription benefits priority pref
+// (`subscription_eligibility::prefs::kSubscriptionBenefits`) instead of the AI
+// subscription tier (`kAiSubscriptionTier`).
+BASE_DECLARE_FEATURE(kGlicSubscriptionBenefitsEligibility);
+// Comma separated list of subscription benefit values which make a profile
+// eligible for Glic.
+extern const base::FeatureParam<std::string> kGlicEligibleBenefits;
+// Comma separated list of subscription benefit values which make a profile
+// eligible for Autobrowse (web actuation).
+extern const base::FeatureParam<std::string> kGlicActorEligibleBenefits;
+// These parse the params on each call, so that experiment configurations
+// applied after startup (e.g. in tests) are respected.
+base::flat_set<std::string> GetGlicEligibleBenefits();
+base::flat_set<std::string> GetGlicActorEligibleBenefits();
+
+// Returns true if `profile_benefits`, the benefits stored in the subscription
+// benefits priority pref, contains at least one of `eligible_benefits`.
+bool HasAnyEligibleGlicBenefit(
+    const base::flat_set<std::string>& profile_benefits,
+    const base::flat_set<std::string>& eligible_benefits);
 
 BASE_DECLARE_FEATURE(kGlicHorizontalTabToolbarButton);
 
@@ -106,14 +156,19 @@ BASE_DECLARE_FEATURE(kGlicCookieSyncOnError);
 extern const base::FeatureParam<base::TimeDelta>
     kGlicCookieSyncOnErrorMinInterval;
 BASE_DECLARE_FEATURE(kGlicCookieSyncOnOpenEvenIfNoSyncNeeded);
+BASE_DECLARE_FEATURE(kGlicCookieSyncEarlyNoStartup);
+BASE_DECLARE_FEATURE(kGlicReuseCookies);
 
 BASE_DECLARE_FEATURE(kGlicWebClientLoadTimes);
 extern const base::FeatureParam<int> kGlicPreLoadingTimeMs;
 extern const base::FeatureParam<int> kGlicMinLoadingTimeMs;
 extern const base::FeatureParam<int> kGlicMaxLoadingTimeMs;
-extern const base::FeatureParam<int> kGlicReloadMaxLoadingTimeMs;
 
 BASE_DECLARE_FEATURE(kGlicContextualCueingV2AutoSubmit);
+BASE_DECLARE_FEATURE(kGlicContextualCuesHandleEdu);
+BASE_DECLARE_FEATURE(kGlicContextualCuesHandleShopping);
+BASE_DECLARE_FEATURE(kGlicContextualCueV2ActiveUserBackoff);
+extern const base::FeatureParam<int> kMinDaysSinceLastInvocation;
 
 BASE_DECLARE_FEATURE(kGlicMessageFirstFreForContextualCue);
 
@@ -127,8 +182,41 @@ BASE_DECLARE_FEATURE(kGlicShowForSignedOut);
 BASE_DECLARE_FEATURE(kGlicAnchorEntryPointForOnboardedUsers);
 BASE_DECLARE_FEATURE(kGlicProcessCounterAbuseVerdict);
 BASE_DECLARE_FEATURE(kGlicNoWebUiLoader);
-BASE_DECLARE_FEATURE(kGlicGeminiEnterpriseSettingsEnabled);
-BASE_DECLARE_FEATURE(kGlicGeminiEnterpriseConsentEnabled);
+BASE_DECLARE_FEATURE(kGlicNativeLoadingPlaceholder);
+bool IsGlicNativeLoadingPlaceholderEnabled();
+
+// TODO(b/576288240): Move the GEiC features below into a GEiC-specific
+// header and namespace under chrome/browser/glic/gemini_enterprise/.
+
+// Enables Gemini Enterprise in Chrome (GEiC), the standalone enterprise
+// surface.
+BASE_DECLARE_FEATURE(kGeic);
+// Allows the GEiC surface to be turned off from within the kGeic study without
+// having to disable the study itself.
+extern const base::FeatureParam<bool> kGeicEnabledParam;
+// The Gemini Enterprise guest URL. Intentionally empty by default: running in
+// GEiC mode without an explicit GEiC URL is a misconfiguration, so callers
+// error rather than fall back to the consumer Gemini URL.
+extern const base::FeatureParam<std::string> kGeicGuestURL;
+// Enables the Gemini Enterprise in Chrome (GEiC) first-run experience (FRE).
+// When enabled for a GEiC profile, Chrome stores FRE completion per GE instance
+// in `geic.completed_fre`, exposes it to the GE web app, and gates GEiC
+// features on its completion. Without it, GEiC profiles are always consented.
+BASE_DECLARE_FEATURE(kGeicFre);
+
+// Allows the Gemini Enterprise (GEiC) guest to use the Glic actor (web
+// actuation).
+BASE_DECLARE_FEATURE(kGeicActuation);
+
+// Lets the Gemini Enterprise (GEiC) guest use server-side rendering. This is
+// independent of `kGlicSsr`, which only applies to consumer Gemini, so the two
+// can be rolled out separately.
+BASE_DECLARE_FEATURE(kGeicSsr);
+
+// Prompts the user to relaunch Chrome when the Glic provider configuration
+// (e.g. the `GeminiEnterpriseUrl` policy) changes mid-session. Requires
+// `kGeic`.
+BASE_DECLARE_FEATURE(kGeicProviderChangePrompt);
 
 BASE_DECLARE_FEATURE(kGlicMarketingAutoOpen);
 extern const base::FeatureParam<std::string> kGlicMarketingUrlAllowlist;
@@ -140,25 +228,60 @@ BASE_DECLARE_FEATURE(kGlicPasteEligibilityCheck);
 BASE_DECLARE_FEATURE(kGlicWebPasteEligibilityCheck);
 
 BASE_DECLARE_FEATURE(kGlicTabGroups);
-extern const base::FeatureParam<bool> kGlicTabGroupsUseFullTabEmbedder;
 BASE_DECLARE_FEATURE(kGlicSparkSettingsAccessibleLabels);
 
 BASE_DECLARE_FEATURE(kGlicOptInDialogA11yFix);
 BASE_DECLARE_FEATURE(kGlicStructuredYieldMetadata);
 
-
 BASE_DECLARE_FEATURE(kGlicNoWebview);
+// When enabled alongside GlicNoWebview, disables the High Frequency Cookie
+// Rotation (HFCR) frame in Glic. See b/565392099.
+BASE_DECLARE_FEATURE(kGlicDisableHfcr);
+// When enabled, appends the primary account email as the authuser query
+// parameter to the guest URL when NoWebview is enabled.
+BASE_DECLARE_FEATURE(kGlicSetAuthUser);
 BASE_DECLARE_FEATURE(kGlicDisconnectedWebview);
+BASE_DECLARE_FEATURE(kGlicGuestInitialSize);
 
 BASE_DECLARE_FEATURE(kGlicShakeTrigger);
+extern const base::FeatureParam<bool> kGlicShakeTriggerOnlyOnSidePanel;
 
 BASE_DECLARE_FEATURE(kGlicAndroidTablet);
+
+// Enables voice input for Gemini in Chrome, including the microphone permission
+// toggle in Glic settings.
+BASE_DECLARE_FEATURE(kGlicVoice);
+
+// When enabled, the Android experimental opt-in dialog uses a taller 380x710dp
+// max size, so its content fits without scrolling, instead of the default
+// 380x567dp.
+BASE_DECLARE_FEATURE(kGlicExperimentalOptInDialogNonScrollable);
 
 BASE_DECLARE_FEATURE(kGlicActionFirstFRE);
 
 BASE_DECLARE_FEATURE(kGlicWarmOnNudge);
 
 BASE_DECLARE_FEATURE(kGlicWarmOnIph);
+
+BASE_DECLARE_FEATURE(kGlicWarmOnGeminiWeb);
+
+BASE_DECLARE_FEATURE(kGlicBackfillWarmingUsePerformanceManager);
+
+BASE_DECLARE_FEATURE(kGlicColdWarmingUsePerformanceManager);
+
+BASE_DECLARE_FEATURE(kGlicSsr);
+extern const base::FeatureParam<bool> kGlicShowLoaderUntilMainPageOnload;
+
+BASE_DECLARE_FEATURE(kGlicClientDataStorage);
+
+BASE_DECLARE_FEATURE(kGlicShowNotTellTutorials);
+extern const base::FeatureParam<int> kGlicShowNotTellTutorialsArm;
+
+BASE_DECLARE_FEATURE(kGlicActivityHub);
+
+// Uses the updated copy and title layout for the Glic experimental triggering
+// OS notification. Kill switch: when disabled, the original strings are shown.
+BASE_DECLARE_FEATURE(kGlicExperimentalTriggeringOsNotificationUpdatedStrings);
 }  // namespace features
 
 #endif  // CHROME_BROWSER_GLIC_PUBLIC_FEATURES_H_

@@ -28,6 +28,35 @@ constexpr base::TimeDelta kKeyDownRateLimit = base::Milliseconds(25);
 constexpr base::TimeDelta kPasteRateLimit = base::Milliseconds(200);
 inline constexpr base::TimeDelta kPasteKeyTimerDuration =
     base::Milliseconds(100);
+
+// Process-wide aggregate budget, counted across all WebStates. Only one
+// WebState receives keyboard or paste input at a time, so normal input
+// does not exceed a single tab's budget (40 keydown/s, 5 paste/s); the caps
+// below provide additional headroom for focus transitions, iPad multi-window
+// environments, and burst typing while bounding aggregate event frequency.
+constexpr base::TimeDelta kAggregateRateLimitInterval = base::Seconds(1);
+constexpr int kMaxKeyDownEventsPerInterval = 80;
+constexpr int kMaxPasteEventsPerInterval = 10;
+
+// Returns true if an additional event should be dropped because the
+// process-wide budget (`max_events_per_interval` per aggregate interval) is
+// exhausted; otherwise consumes one slot and returns false.
+bool IsAggregateRateLimited(base::TimeTicks now,
+                            base::TimeTicks& interval_start,
+                            int& events_in_interval,
+                            int max_events_per_interval) {
+  if (interval_start.is_null() || now < interval_start ||
+      now - interval_start >= kAggregateRateLimitInterval) {
+    interval_start = now;
+    events_in_interval = 0;
+  }
+  if (events_in_interval >= max_events_per_interval) {
+    return true;
+  }
+  ++events_in_interval;
+  return false;
+}
+
 }  // namespace
 
 PasswordProtectionJavaScriptFeature::PasswordProtectionJavaScriptFeature()
@@ -59,12 +88,13 @@ void PasswordProtectionJavaScriptFeature::ScriptMessageReceived(
     web::WebState* web_state,
     const web::ScriptMessage& message) {
   // Verify that the message is well-formed before using it.
-  if (!message.legacy_body()->is_dict()) {
+  const web::ScriptMessageValue& body = message.body();
+  if (body.type() != base::Value::Type::DICT) {
     return;
   }
-  const base::DictValue& dict = message.legacy_body()->GetDict();
+  const web::ScriptMessageDictValue& dict = body.GetDict();
 
-  const std::string* event_type = dict.FindString("eventType");
+  std::optional<std::string> event_type = dict.FindString("eventType");
   if (!event_type || event_type->empty()) {
     return;
   }
@@ -86,14 +116,13 @@ void PasswordProtectionJavaScriptFeature::ScriptMessageReceived(
     return;
   }
 
-  const std::string* text = dict.FindString("text");
+  std::optional<std::string> text = dict.FindString("text");
   if (!text || text->empty()) {
     return;
   }
   if (*event_type == kKeyDownEventType) {
     // A key event should consist of a single character. A longer string
-    // means the message isn't well-formed, so might be coming from a
-    // compromised WebProcess.
+    // means the message is not well-formed.
     if (base::CountUnicodeCharacters(*text) != 1) {
       return;
     }
@@ -124,36 +153,44 @@ void PasswordProtectionJavaScriptFeature::ScriptMessageReceived(
 bool PasswordProtectionJavaScriptFeature::IsPasteRateLimited(
     web::WebState* web_state) {
   const base::TimeTicks now = base::TimeTicks::Now();
-  auto [it, inserted] = last_paste_timestamps_.insert({web_state, now});
-  if (inserted) {
-    // First paste for this tab - not rate limited.
-    return false;
+  auto it = last_paste_timestamps_.find(web_state);
+  if (it != last_paste_timestamps_.end()) {
+    const base::TimeDelta elapsed = now - it->second;
+    if (elapsed < kPasteRateLimit) {
+      return true;
+    }
   }
 
-  const base::TimeDelta elapsed = now - it->second;
-  if (elapsed < kPasteRateLimit) {
+  // Enforce the process-wide aggregate budget across all WebStates.
+  if (IsAggregateRateLimited(now, paste_interval_start_,
+                             paste_events_in_interval_,
+                             kMaxPasteEventsPerInterval)) {
     return true;
   }
 
-  it->second = now;
+  last_paste_timestamps_[web_state] = now;
   return false;
 }
 
 bool PasswordProtectionJavaScriptFeature::IsKeyDownRateLimited(
     web::WebState* web_state) {
   const base::TimeTicks now = base::TimeTicks::Now();
-  auto [it, inserted] = last_keydown_timestamps_.insert({web_state, now});
-  if (inserted) {
-    // First keydown for this tab - not rate limited.
-    return false;
+  auto it = last_keydown_timestamps_.find(web_state);
+  if (it != last_keydown_timestamps_.end()) {
+    const base::TimeDelta elapsed = now - it->second;
+    if (elapsed < kKeyDownRateLimit) {
+      return true;
+    }
   }
 
-  const base::TimeDelta elapsed = now - it->second;
-  if (elapsed < kKeyDownRateLimit) {
+  // Enforce the process-wide aggregate budget across all WebStates.
+  if (IsAggregateRateLimited(now, keydown_interval_start_,
+                             keydown_events_in_interval_,
+                             kMaxKeyDownEventsPerInterval)) {
     return true;
   }
 
-  it->second = now;
+  last_keydown_timestamps_[web_state] = now;
   return false;
 }
 
@@ -201,4 +238,10 @@ void PasswordProtectionJavaScriptFeature::RemoveObserver(
   last_paste_timestamps_.erase(web_state);
   paste_key_timers_.erase(web_state);
   last_keydown_timestamps_.erase(web_state);
+  if (lookup_by_web_state_.empty()) {
+    keydown_interval_start_ = base::TimeTicks();
+    keydown_events_in_interval_ = 0;
+    paste_interval_start_ = base::TimeTicks();
+    paste_events_in_interval_ = 0;
+  }
 }

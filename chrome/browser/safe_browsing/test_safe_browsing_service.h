@@ -15,13 +15,12 @@
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/content/browser/safe_browsing_blocking_page_factory.h"
 #include "components/safe_browsing/content/browser/ui_manager.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 
 namespace safe_browsing {
 class SafeBrowsingDatabaseManager;
-struct V4ProtocolConfig;
 class TestSafeBrowsingDatabaseManager;
 class TestSafeBrowsingUIManager;
 
@@ -52,23 +51,19 @@ class TestSafeBrowsingService : public SafeBrowsingService,
   TestSafeBrowsingService(const TestSafeBrowsingService&) = delete;
   TestSafeBrowsingService& operator=(const TestSafeBrowsingService&) = delete;
 
-  // SafeBrowsingService overrides
-  V4ProtocolConfig GetV4ProtocolConfig() const override;
-
   std::string serialized_download_report();
   void ClearDownloadReport();
 
   // In browser tests, the following setters must be called before
   // SafeBrowsingService::Initialize().
   // The preferable way to use these setters is by calling corresponding
-  // TestSafeBrowsingServiceFactory::SetTest[DatabaseManager/UIManager/
-  // ProtocolConfig]() before InProcessBrowserTest::SetUp() is called. Then
-  // inside TestSafeBrowsingServiceFactory::CreateSafeBrowsingService(),
+  // TestSafeBrowsingServiceFactory::SetTest[DatabaseManager/UIManager]() before
+  // InProcessBrowserTest::SetUp() is called. Then inside
+  // TestSafeBrowsingServiceFactory::CreateSafeBrowsingService(),
   // TestSafeBrowsingService instance is created, customised(by using the
   // following setters), and then initialized.
   void SetUIManager(TestSafeBrowsingUIManager* ui_manager);
   void SetDatabaseManager(TestSafeBrowsingDatabaseManager* database_manager);
-  void SetV4ProtocolConfig(V4ProtocolConfig* v4_protocol_config);
   const scoped_refptr<SafeBrowsingDatabaseManager>& database_manager()
       const override;
   void UseSBLocalDatabaseManager();
@@ -100,7 +95,7 @@ class TestSafeBrowsingService : public SafeBrowsingService,
   bool CanCreateDownloadProtectionService() override;
 #endif
   bool CanCreateIncidentReportingService() override;
-  SafeBrowsingDatabaseManager* CreateDatabaseManager() override;
+  scoped_refptr<SafeBrowsingDatabaseManager> CreateDatabaseManager() override;
 #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
   DownloadProtectionService* CreateDownloadProtectionService() override;
 #endif
@@ -110,7 +105,6 @@ class TestSafeBrowsingService : public SafeBrowsingService,
       content::BrowserContext* browser_context) override;
 
  private:
-  std::unique_ptr<V4ProtocolConfig> v4_protocol_config_;
   std::string serialized_download_report_;
   scoped_refptr<SafeBrowsingDatabaseManager> test_database_manager_;
   bool use_sb_local_db_manager_ = false;
@@ -136,11 +130,11 @@ class TestSafeBrowsingServiceFactory : public SafeBrowsingServiceFactory {
 
   TestSafeBrowsingService* test_safe_browsing_service();
 
-  // Test UI manager, database manager and protocol config need to be set before
+  // Test UI manager and database manager need to be set before
   // SafeBrowsingService::Initialize() is called.
   void SetTestUIManager(TestSafeBrowsingUIManager* ui_manager);
   void SetTestDatabaseManager(
-      TestSafeBrowsingDatabaseManager* database_manager);
+      scoped_refptr<TestSafeBrowsingDatabaseManager> database_manager);
 
   // Be default, the TestSafeBrowsingService creates an instance of the
   // TestSafeBrowsingDatabaseManager. This function can be used to override that

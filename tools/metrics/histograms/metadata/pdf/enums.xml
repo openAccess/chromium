@@ -42,8 +42,8 @@ chromium-metrics-reviews@google.com.
   <int value="12" label="PageSelectorNavigate"/>
   <int value="13" label="SaveFirst"/>
   <int value="14" label="Save"/>
-  <int value="15" label="SaveWithAnnotationFirst"/>
-  <int value="16" label="SaveWithAnnotation"/>
+  <int value="15" label="SaveWithAnnotationFirst (deprecated)"/>
+  <int value="16" label="SaveWithAnnotation (deprecated)"/>
   <int value="17" label="PrintFirst"/>
   <int value="18" label="Print"/>
   <int value="19" label="EnterAnnotationModeFirst"/>
@@ -142,6 +142,10 @@ chromium-metrics-reviews@google.com.
   <int value="112" label="EditInk2TextAnnotationAborted"/>
   <int value="113" label="DeleteInk2TextAnnotationFirst"/>
   <int value="114" label="DeleteInk2TextAnnotation"/>
+  <int value="115" label="EnterInk2SignatureModeFirst"/>
+  <int value="116" label="EnterInk2SignatureMode"/>
+  <int value="117" label="ExitInk2SignatureModeFirst"/>
+  <int value="118" label="ExitInk2SignatureMode"/>
 </enum>
 
 <enum name="ChromePDFViewerLoadStatus">

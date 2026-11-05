@@ -7,6 +7,7 @@
 
 #include "chrome/browser/ui/views/glic/glic_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_glic_button_interface.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_glic_constants.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/gfx/geometry/rect.h"
@@ -17,7 +18,8 @@ class BrowserFrameView;
 namespace glic {
 inline constexpr int kToolbarGlicIconSize = 16;
 
-class ToolbarGlicButton : public GlicButton<ToolbarButton> {
+class ToolbarGlicButton : public GlicButton<ToolbarButton>,
+                          public ToolbarGlicButtonInterface {
   METADATA_HEADER(ToolbarGlicButton, ToolbarButton)
  public:
   explicit ToolbarGlicButton(
@@ -41,7 +43,6 @@ class ToolbarGlicButton : public GlicButton<ToolbarButton> {
   bool IsWidgetAlive() const;
   void AddedToWidget() override;
   void UpdateColors() override;
-  void UpdateStyle(bool should_match_toolbar);
   void AddCloseButton(PressedCallback pressed_callback);
   BrowserFrameView* GetBrowserFrameView() const;
   void SetForegroundFrameActiveColorId(ui::ColorId new_color_id) override;
@@ -55,16 +56,29 @@ class ToolbarGlicButton : public GlicButton<ToolbarButton> {
   int GetSplitRoundedEdgeRadius() override;
   int GetIconSize() const override;
   ui::ColorId GetBackgroundColor();
+  SkColor GetForegroundColor(ButtonState state) const override;
 
   void Collapse() override;
   void Expand() override;
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
+  void OnThemeChanged() override;
+  bool GetIsShowingNudge()
+      const override;  // also overrides ToolbarGlicButtonInterface
 
-  bool GetIsShowingNudge() const override;
+  // ToolbarGlicButtonInterface:
+  void SetIsShowingNudge(bool is_showing) override;
+  /* bool GetIsShowingNudge() const override;  // also overrides GlicButton
+   */
+  void SetNudgeLabel(std::string label) override;
+  void SetVisible(bool visible) override;
+  bool IsVisible() const override;
+  void SetGlicPanelIsOpen(bool open) override;
+  void UpdateStyle(bool should_match_toolbar) override;
 
  private:
   void UpdateBackground();
   void UpdateInkDrop();
+  void UpdateCloseButton();
 
   float GetWidthFactor() const override;
   void SetWidthFactor(float factor) override;
@@ -72,7 +86,6 @@ class ToolbarGlicButton : public GlicButton<ToolbarButton> {
   // GlicButton:
   ui::ColorId GetCustomThemeForegroundId() const override;
   std::optional<SkColor> GetHighlightTextColor() const override;
-  void OnThemeChanged() override;
 
   std::optional<int> left_corner_radius_;
   std::optional<int> right_corner_radius_;

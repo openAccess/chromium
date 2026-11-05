@@ -204,8 +204,8 @@ TEST_F(SaveAndFillDialogControllerImplTest, FormatExpirationDateInput) {
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 TEST_F(SaveAndFillDialogControllerImplTest, IsValidCvc) {
-  // Empty CVC is valid since it's optional.
-  EXPECT_TRUE(controller()->IsValidCvc(u""));
+  // Empty CVC is invalid since it's required.
+  EXPECT_FALSE(controller()->IsValidCvc(u""));
 
   // Valid 3-digit CVC.
   EXPECT_TRUE(controller()->IsValidCvc(u"123"));
@@ -263,8 +263,6 @@ TEST_F(SaveAndFillDialogControllerImplTest, IsValidNameOnCard) {
   EXPECT_FALSE(controller()->IsValidNameOnCard(u""));
   EXPECT_FALSE(controller()->IsValidNameOnCard(u"John123"));
   EXPECT_FALSE(controller()->IsValidNameOnCard(u"Invalid@Name"));
-  EXPECT_FALSE(
-      controller()->IsValidNameOnCard(u"This name is way too long for a card"));
 }
 
 TEST_F(SaveAndFillDialogControllerImplTest,

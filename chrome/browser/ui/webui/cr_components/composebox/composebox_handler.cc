@@ -29,12 +29,14 @@
 #include "components/omnibox/common/composebox_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/page_navigator.h"
 #include "net/base/url_util.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "third_party/omnibox_proto/chrome_aim_entry_point.pb.h"
 #include "ui/base/models/menu_model.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
@@ -66,9 +68,9 @@ ComposeboxOmniboxClient::GetContextualInputData() const {
 void ComposeboxOmniboxClient::OnAutocompleteAccept(
     const GURL& destination_url,
     TemplateURLRef::PostContent* post_content,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
-    AutocompleteMatchType::Type match_type,
+    omnibox::AutocompleteMatchType match_type,
     base::TimeTicks match_selection_timestamp,
     bool destination_url_entered_without_scheme,
     bool destination_url_entered_with_http_scheme,
@@ -82,8 +84,8 @@ void ComposeboxOmniboxClient::OnAutocompleteAccept(
   net::GetValueForKeyInQuery(destination_url, "q", &query_text);
   composebox_handler_->SubmitQuery(
       query_text, disposition,
-      PageClassificationToAimEntryPoint(
-          GetPageClassification(/*is_prefetch=*/false)),
+      GetAimEntryPoint(GetPageClassification(/*is_prefetch=*/false),
+                       composebox_handler_->GetContextualSessionHandle()),
       additional_params, /*is_voice_search=*/false);
 }
 
@@ -105,7 +107,8 @@ ComposeboxHandler::ComposeboxHandler(
                                                                   web_contents,
                                                                   this),
                         std::move(get_session_callback),
-                        std::move(clear_session_callback)) {}
+                        std::move(clear_session_callback),
+                        /*screenshare_delegate=*/nullptr) {}
 
 ComposeboxHandler::ComposeboxHandler(
     mojo::PendingReceiver<composebox::mojom::PageHandler> pending_handler,
@@ -116,13 +119,15 @@ ComposeboxHandler::ComposeboxHandler(
     content::WebContents* web_contents,
     std::unique_ptr<OmniboxClient> omnibox_client,
     GetSessionHandleCallback get_session_callback,
-    ClearSessionHandleCallback clear_session_callback)
+    ClearSessionHandleCallback clear_session_callback,
+    ContextualSearchboxScreenshareController::Delegate* screenshare_delegate)
     : ContextualSearchboxHandler(std::move(pending_searchbox_handler),
                                  std::move(pending_searchbox_page),
                                  profile,
                                  web_contents,
                                  std::move(omnibox_client),
-                                 std::move(get_session_callback)),
+                                 std::move(get_session_callback),
+                                 screenshare_delegate),
       clear_session_callback_(std::move(clear_session_callback)),
       handler_(this, std::move(pending_handler)) {
   // Set the callback for getting suggest inputs from the session.
@@ -206,9 +211,10 @@ void ComposeboxHandler::NavigateUrl(const GURL& url) {
   if (!browser_window_interface) {
     return;
   }
-  content::OpenURLParams params(url, content::Referrer(),
-                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK);
   browser_window_interface->OpenURL(std::move(params),
                                     /*navigation_handle_callback=*/{});
 }
@@ -259,7 +265,7 @@ void ComposeboxHandler::ClearFiles(bool should_block_auto_suggested_tabs) {
   if (GetInputState().active_tool ==
       omnibox::ToolMode::TOOL_MODE_IMAGE_GEN_UPLOAD) {
     if (auto* model = input_state_model()) {
-      model->setActiveTool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
+      model->SetActiveTool(omnibox::ToolMode::TOOL_MODE_IMAGE_GEN);
     }
   }
 }
@@ -271,16 +277,16 @@ void ComposeboxHandler::SubmitQuery(const std::string& query_text,
                                     bool meta_key,
                                     bool shift_key,
                                     bool is_voice_search) {
-  const WindowOpenDisposition disposition = ui::DispositionFromClick(
+  const ui::mojom::WindowOpenDisposition disposition = ui::DispositionFromClick(
       /*middle_button=*/mouse_button == 1, alt_key, ctrl_key, meta_key,
       shift_key);
-  omnibox::ChromeAimEntryPoint aim_entry_point =
-      PageClassificationToAimEntryPoint(
-          client()->GetPageClassification(/*is_prefetch=*/false));
+  auto* session_handle = GetContextualSessionHandle();
+  omnibox::ChromeAimEntryPoint aim_entry_point = GetAimEntryPoint(
+      client()->GetPageClassification(/*is_prefetch=*/false), session_handle);
 
   if (auto* metrics_recorder = GetMetricsRecorder()) {
     int file_count = 0;
-    if (auto* session_handle = GetContextualSessionHandle()) {
+    if (session_handle) {
       file_count = session_handle->GetUploadedContextFileInfos().size();
     }
     metrics_recorder->RecordNoAcMatchSubmitQuery(query_text.size(), file_count,
@@ -293,7 +299,7 @@ void ComposeboxHandler::SubmitQuery(const std::string& query_text,
 
 void ComposeboxHandler::SubmitQuery(
     const std::string& query_text,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     omnibox::ChromeAimEntryPoint aim_entrypoint,
     std::map<std::string, std::string> additional_params,
     bool is_voice_search) {
@@ -318,7 +324,7 @@ void ComposeboxHandler::SubmitQuery(
 
 void ComposeboxHandler::ProcessContextAndOpenUrl(
     GURL url,
-    const WindowOpenDisposition disposition) {
+    const ui::mojom::WindowOpenDisposition disposition) {
   ContextualSearchboxHandler::ProcessContextAndOpenUrl(url, disposition);
   // To keep the current composebox in a valid state after passing along its
   // session handle and input state model, clear both of these values. This

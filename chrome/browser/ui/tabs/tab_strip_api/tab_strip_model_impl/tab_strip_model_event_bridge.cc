@@ -5,7 +5,9 @@
 #include "chrome/browser/ui/tabs/tab_strip_api/tab_strip_model_impl/tab_strip_model_event_bridge.h"
 
 #include "base/notimplemented.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/tab_strip_model_impl/converters/event_transformation.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 
 namespace tabs_api::tab_strip_model {
 
@@ -117,6 +119,11 @@ void TabStripModelEventBridge::OnTabStripModelChanged(
 void TabStripModelEventBridge::OnTabChangedAt(tabs::TabInterface* tab,
                                               TabChangeType change_type) {
   Notify(events::ToEvent(*tab_strip_model_adapter_, tab, change_type));
+}
+
+void TabStripModelEventBridge::OnTabBlockedStateChanged(
+    tabs::TabInterface* tab) {
+  Notify(events::ToBlockedStateChangedEvent(*tab_strip_model_adapter_, tab));
 }
 
 void TabStripModelEventBridge::OnTabGroupChanged(const TabGroupChange& change) {

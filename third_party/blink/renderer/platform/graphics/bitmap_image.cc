@@ -44,7 +44,9 @@
 #include "third_party/blink/renderer/platform/graphics/paint/paint_image.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
+#include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
 #include "third_party/blink/renderer/platform/timer.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
@@ -206,7 +208,7 @@ void BitmapImage::RecordDecodedImageType(UseCounter* use_counter) {
 }
 
 void BitmapImage::RecordDecodedImageC2PA(UseCounter* use_counter) {
-  if (decoder_->HasC2PAManifest()) {
+  if (GetC2PAManifestStatus() == C2PAManifestStatus::kDetected) {
     BitmapImageMetrics::CountDecodedImageC2PA(use_counter);
   }
 }
@@ -300,6 +302,11 @@ const AtomicString& BitmapImage::MimeType() const {
   return decoder_ ? decoder_->MimeType() : g_null_atom;
 }
 
+C2PAManifestStatus BitmapImage::GetC2PAManifestStatus() const {
+  return decoder_ ? decoder_->GetC2PAManifestStatus()
+                  : C2PAManifestStatus::kUnknown;
+}
+
 void BitmapImage::Draw(cc::PaintCanvas* canvas,
                        const cc::PaintFlags& flags,
                        const gfx::RectF& dst_rect,
@@ -321,11 +328,9 @@ void BitmapImage::Draw(cc::PaintCanvas* canvas,
 
   auto paint_image_decoding_mode =
       ToPaintImageDecodingMode(draw_options.decode_mode);
-  if (image.decoding_mode() != paint_image_decoding_mode ||
-      image.may_be_lcp_candidate() != draw_options.may_be_lcp_candidate) {
+  if (image.decoding_mode() != paint_image_decoding_mode) {
     image = PaintImageBuilder::WithCopy(std::move(image))
                 .set_decoding_mode(paint_image_decoding_mode)
-                .set_may_be_lcp_candidate(draw_options.may_be_lcp_candidate)
                 .TakePaintImage();
   }
 
@@ -365,7 +370,7 @@ void BitmapImage::Draw(cc::PaintCanvas* canvas,
     }
   }
 
-  uint32_t stable_id = image.stable_id();
+  PaintImage::Id stable_id = image.stable_id();
   bool is_lazy_generated = image.IsLazyGenerated();
 
   const cc::PaintFlags* image_flags = &flags;
@@ -609,7 +614,7 @@ scoped_refptr<Image> BitmapImage::ImageForDefaultFrame() {
                         .set_repetition_count(kAnimationNone)
                         .TakePaintImage();
     }
-    return StaticBitmapImage::Create(std::move(paint_image));
+    return StaticBitmapImage::Create(std::move(paint_image), Orientation());
   }
 
   return Image::ImageForDefaultFrame();

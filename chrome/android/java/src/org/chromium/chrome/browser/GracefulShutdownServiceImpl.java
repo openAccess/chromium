@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser;
 
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
@@ -17,6 +18,7 @@ import org.chromium.base.SplitCompatService;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.notifications.NotificationConstants;
 import org.chromium.chrome.browser.notifications.NotificationUmaTracker;
 import org.chromium.chrome.browser.notifications.NotificationWrapperBuilderFactory;
@@ -43,6 +45,25 @@ public class GracefulShutdownServiceImpl extends SplitCompatService.Impl {
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private @Nullable Runnable mStopRunnable;
+
+    /** Starts the GracefulShutdownService ONLY if the last open activity is dying. */
+    public static void maybeStartGracefulShutdown(Context context) {
+        if (!ChromeFeatureList.sTabAndroidGracefulShutdown.isEnabled()) {
+            return;
+        }
+        if (!GracefulShutdownService.isLastActivityDying()) {
+            return;
+        }
+        Log.i(TAG, "Starting GracefulShutdownService.");
+        try {
+            Intent intent = new Intent(context, GracefulShutdownService.class);
+            ForegroundServiceUtils.getInstance().startForegroundService(intent);
+            GracefulShutdownService.recordStatus(GracefulShutdownService.Status.LAUNCH_ATTEMPTED);
+        } catch (Throwable e) {
+            GracefulShutdownService.recordStatus(GracefulShutdownService.Status.LAUNCH_FAILED);
+            Log.e(TAG, "Failed to start GracefulShutdownService", e);
+        }
+    }
 
     @Override
     public void onCreate() {
@@ -97,11 +118,11 @@ public class GracefulShutdownServiceImpl extends SplitCompatService.Impl {
             GracefulShutdownService.recordStatus(
                     GracefulShutdownService.Status.START_FOREGROUND_FAILED);
             Log.e(TAG, "Failed to startForeground", e);
+            getService().stopSelf();
+            return Service.START_NOT_STICKY;
         }
 
-        if (mStopRunnable != null) {
-            mHandler.removeCallbacks(mStopRunnable);
-        }
+        removeStopRunnable();
 
         mStopRunnable =
                 () -> {
@@ -114,6 +135,7 @@ public class GracefulShutdownServiceImpl extends SplitCompatService.Impl {
                         Log.e(TAG, "Failed to stopForeground", e);
                     }
                     getService().stopSelf();
+                    mStopRunnable = null;
                 };
         mHandler.postDelayed(mStopRunnable, DEFAULT_SHUTDOWN_TIMEOUT_MS);
 
@@ -121,12 +143,35 @@ public class GracefulShutdownServiceImpl extends SplitCompatService.Impl {
     }
 
     @Override
+    public void onTimeout(int startId) {
+        Log.i(TAG, "GracefulShutdownServiceImpl onTimeout");
+        removeStopRunnable();
+        GracefulShutdownService.recordStatus(GracefulShutdownService.Status.OS_TIMED_OUT);
+        try {
+            ForegroundServiceUtils.getInstance()
+                    .stopForeground(getService(), Service.STOP_FOREGROUND_REMOVE);
+        } catch (Throwable e) {
+            Log.e(TAG, "Failed to stopForeground", e);
+        }
+        getService().stopSelf();
+    }
+
+    @Override
+    public void onTimeout(int startId, int fgsType) {
+        onTimeout(startId);
+    }
+
+    @Override
     public void onDestroy() {
+        removeStopRunnable();
+        Log.i(TAG, "GracefulShutdownServiceImpl onDestroy");
+    }
+
+    private void removeStopRunnable() {
         if (mStopRunnable != null) {
             mHandler.removeCallbacks(mStopRunnable);
             mStopRunnable = null;
         }
-        Log.i(TAG, "GracefulShutdownServiceImpl onDestroy");
     }
 
     void setServiceForTesting(SplitCompatService service) {

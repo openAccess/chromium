@@ -291,7 +291,7 @@ std::string AccessibilityTreeFormatterBlink::DumpInternalAccessibilityTree(
     ui::AXTreeID tree_id,
     const std::vector<AXPropertyFilter>& property_filters) {
   ui::AXTreeManager* ax_mgr = ui::AXTreeManager::FromID(tree_id);
-  DCHECK(ax_mgr);
+  CHECK(ax_mgr, base::NotFatalUntil::M159);
   SetPropertyFilters(property_filters, kFiltersDefaultSet);
   return FormatTree(BuildTreeForNode(ax_mgr->GetRoot()));
 }
@@ -585,7 +585,7 @@ void AccessibilityTreeFormatterBlink::AddProperties(
        ++attr_index) {
     auto attr = static_cast<ax::mojom::IntListAttribute>(attr_index);
     if (node.HasIntListAttribute(attr)) {
-      const std::vector<int32_t>& values = node.GetIntListAttribute(attr);
+      base::span<const int32_t> values = node.GetIntListAttribute(attr);
       base::ListValue value_list;
       for (auto value : values) {
         if (ui::IsNodeIdIntListAttribute(attr)) {

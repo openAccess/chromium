@@ -4,6 +4,9 @@
 
 #include <stddef.h>
 
+#include <memory>
+#include <string>
+
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -19,7 +22,6 @@
 #include "base/threading/platform_thread.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
-#include "chrome/browser/extensions/api/permissions/permissions_api.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_management_test_util.h"
 #include "chrome/browser/extensions/extension_service.h"
@@ -51,6 +53,7 @@
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/browser/api/permissions/permissions_api.h"
 #include "extensions/browser/browsertest_util.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/script_injection_tracker.h"
@@ -67,6 +70,8 @@
 #include "extensions/test/result_catcher.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/http/http_status_code.h"
+#include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
@@ -75,6 +80,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
@@ -939,6 +945,70 @@ IN_PROC_BROWSER_TEST_P(ContentScriptApiTestWithContextType,
   EXPECT_TRUE(catcher.GetNextResult()) << catcher.message();
 }
 
+// Tests that WebAssembly code generation in a content script is checked
+// against the isolated world's CSP (which, for MV3 extensions, includes
+// 'wasm-unsafe-eval') rather than the page's CSP. Regression test for a bug
+// where V8Initializer::WasmCodeGenerationCheckCallback consulted the main
+// world CSP regardless of the world the code was being generated in.
+IN_PROC_BROWSER_TEST_F(ContentScriptApiTest, BypassPageCSPForWasm) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  static constexpr char kWasmManifest[] = R"(
+      {
+        "name": "Wasm in content script on a page with a restrictive CSP",
+        "version": "0.1",
+        "manifest_version": 3,
+        "host_permissions": ["http://*/*"],
+        "content_scripts": [{
+          "matches": ["http://*/*/test_file_with_csp.html"],
+          "js": ["content_script.js"]
+        }]
+      })";
+  // Instantiate the smallest possible wasm module: the magic header
+  // (0, "A", "S", "M") followed by the version (0x1).
+  static constexpr char kContentScript[] = R"(
+      (async () => {
+        const bytes = new Uint8Array([0, 0x61, 0x73, 0x6d, 0x1, 0, 0, 0]);
+        try {
+          await WebAssembly.instantiate(bytes);
+          chrome.test.sendMessage('wasm allowed');
+        } catch (e) {
+          chrome.test.sendMessage('wasm blocked: ' + e.message);
+        }
+      })();)";
+
+  TestExtensionDir dir;
+  dir.WriteManifest(kWasmManifest);
+  dir.WriteFile(FILE_PATH_LITERAL("content_script.js"), kContentScript);
+  ASSERT_TRUE(LoadExtension(dir.UnpackedPath()));
+
+  // test_file_with_csp.html declares `default-src 'none'`, which disallows
+  // wasm code generation in the main world.
+  ExtensionTestMessageListener listener;
+  GURL url =
+      embedded_test_server()->GetURL("/extensions/test_file_with_csp.html");
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(NavigateToURL(web_contents, url));
+
+  ASSERT_TRUE(listener.WaitUntilSatisfied());
+  EXPECT_EQ("wasm allowed", listener.message());
+
+  // Sanity check: the page's CSP does block wasm in the main world, so the
+  // content script above only succeeded because the isolated world's CSP was
+  // applied.
+  static constexpr char kMainWorldScript[] = R"(
+      (async () => {
+        const bytes = new Uint8Array([0, 0x61, 0x73, 0x6d, 0x1, 0, 0, 0]);
+        try {
+          await WebAssembly.instantiate(bytes);
+          return 'wasm allowed';
+        } catch (e) {
+          return 'wasm blocked';
+        }
+      })();)";
+  EXPECT_EQ("wasm blocked", content::EvalJs(web_contents, kMainWorldScript));
+}
+
 // Test that when injecting a blocking content script, other scripts don't run
 // until the blocking script finishes.
 IN_PROC_BROWSER_TEST_F(ContentScriptApiTest, ContentScriptBlockingScript) {
@@ -970,10 +1040,11 @@ IN_PROC_BROWSER_TEST_F(ContentScriptApiTest, ContentScriptBlockingScript) {
 
   // Navigate! Both extensions will try to inject. Use WebContents::OpenURL() to
   // avoid waits on navigation/load, which cause the test to time out.
-  content::OpenURLParams params(
-      embedded_test_server()->GetURL("/empty.html"), content::Referrer(),
-      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          embedded_test_server()->GetURL("/empty.html"),
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_TYPED);
   web_contents->OpenURL(params,
                         /*navigation_handle_callback=*/{});
 
@@ -1024,10 +1095,11 @@ IN_PROC_BROWSER_TEST_F(ContentScriptApiTest,
 
   // Navigate! Use WebContents::OpenURL() to avoid waits that can cause the
   // test to time out.
-  content::OpenURLParams params(
-      embedded_test_server()->GetURL("/empty.html"), content::Referrer(),
-      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          embedded_test_server()->GetURL("/empty.html"),
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_TYPED);
   web_contents->OpenURL(params,
                         /*navigation_handle_callback=*/{});
 
@@ -1065,10 +1137,11 @@ IN_PROC_BROWSER_TEST_F(ContentScriptApiTest,
 
   // Navigate! Use WebContents::OpenURL() to avoid waits that can cause the
   // test to time out.
-  content::OpenURLParams params(
-      embedded_test_server()->GetURL("/empty.html"), content::Referrer(),
-      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          embedded_test_server()->GetURL("/empty.html"),
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_TYPED);
   web_contents->OpenURL(params,
                         /*navigation_handle_callback=*/{});
 
@@ -1965,7 +2038,8 @@ IN_PROC_BROWSER_TEST_F(ContentScriptRelatedFrameTest,
   NavigateParams navigate_params(browser_window_interface(),
                                  null_document_url(),
                                  ui::PAGE_TRANSITION_TYPED);
-  navigate_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  navigate_params.disposition =
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab;
 
   // Save the WebContents instance that will be created by this navigation, as
   // the dom message that we later wait for is sent in this instance.
@@ -2426,107 +2500,6 @@ IN_PROC_BROWSER_TEST_P(ContentScriptApiPrerenderingMV3Test, SpeculationRules) {
 }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
-class ContentScriptApiFencedFrameTest : public ContentScriptApiTest {
- protected:
-  ContentScriptApiFencedFrameTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        {{blink::features::kFencedFrames, {{"implementation_type", "mparch"}}},
-         {features::kPrivacySandboxAdsAPIsOverride, {}},
-         {blink::features::kFencedFramesAPIChanges, {}},
-         {blink::features::kFencedFramesDefaultMode, {}}},
-        {/* disabled_features */});
-    UseHttpsTestServer();
-  }
-  ~ContentScriptApiFencedFrameTest() override = default;
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-// Inject two extensions with matching rules. Only the extension
-// that matches the outermost extension's content_scripts should
-// get injected.
-// The documentIdle extension should execute (sending 'done').
-// The documentStart extension should not-execute (sending 'fail') since it
-// isn't the parent extension of the fenced frame.
-IN_PROC_BROWSER_TEST_F(ContentScriptApiFencedFrameTest,
-                       InjectionMatchesCorrectExtension) {
-  ASSERT_TRUE(StartEmbeddedTestServer());
-
-  const char kDocumentIdleExtensionManifest[] =
-      R"MANIFEST({
-        "name": "Document Idle Extesnsion",
-        "version": "0.1",
-        "manifest_version": 3,
-        "content_scripts": [{
-          "matches": ["https://*/fenced_frames/title1.html"],
-          "js": ["script.js"],
-          "run_at": "document_idle",
-          "all_frames": true
-        }]
-      })MANIFEST";
-
-  const char kDocumentStartExtensionManifest[] =
-      R"MANIFEST({
-        "name": "Document Start extension",
-        "version": "0.1",
-        "manifest_version": 3,
-        "content_scripts": [{
-          "matches": ["https://*/fenced_frames/title1.html"],
-          "js": ["script.js"],
-          "run_at": "document_start",
-          "all_frames": true
-        }]
-      })MANIFEST";
-
-  GURL fenced_frame_url =
-      embedded_test_server()->GetURL("a.test", "/fenced_frames/title1.html");
-
-  TestExtensionDir document_idle_extension_dir;
-  document_idle_extension_dir.WriteManifest(kDocumentIdleExtensionManifest);
-
-  document_idle_extension_dir.WriteFile(FILE_PATH_LITERAL("test.html"), R"HTML(
-    <html>
-      Fenced Frame Test!
-      <fencedframe></fencedframe>
-      <script src="navigation.js"></script>
-    </html>
-  )HTML");
-
-  document_idle_extension_dir.WriteFile(
-      FILE_PATH_LITERAL("navigation.js"),
-      content::JsReplace(
-          "const fencedframe = document.querySelector('fencedframe');"
-          "fencedframe.config = new FencedFrameConfig($1);",
-          fenced_frame_url));
-
-  document_idle_extension_dir.WriteFile(FILE_PATH_LITERAL("script.js"),
-                                        kNonBlockingScript);
-  const Extension* extension =
-      LoadExtension(document_idle_extension_dir.UnpackedPath());
-  ASSERT_TRUE(extension);
-
-  TestExtensionDir document_start_extension_dir;
-  const char kFailureScript[] = "chrome.test.sendMessage('fail');";
-
-  document_start_extension_dir.WriteManifest(kDocumentStartExtensionManifest);
-  document_start_extension_dir.WriteFile(FILE_PATH_LITERAL("script.js"),
-                                         kFailureScript);
-
-  ASSERT_TRUE(LoadExtension(document_start_extension_dir.UnpackedPath()));
-
-  ExtensionTestMessageListener listener;
-  content::WebContents* tab_contents = GetActiveWebContents();
-
-  GURL extension_test_url = extension->GetResourceURL("test.html");
-  ASSERT_TRUE(NavigateToURL(tab_contents, extension_test_url));
-
-  EXPECT_EQ(extension_test_url,
-            tab_contents->GetPrimaryMainFrame()->GetLastCommittedURL());
-  EXPECT_TRUE(listener.WaitUntilSatisfied());
-  EXPECT_EQ("done", listener.message());
-}
-
 class ContentScriptApiTestWithActivityLog : public ContentScriptApiTest {
   void SetUpCommandLine(base::CommandLine* command_line) override {
     command_line->AppendSwitch(::switches::kEnableExtensionActivityLogging);
@@ -2710,10 +2683,11 @@ IN_PROC_BROWSER_TEST_P(ContentScriptApiTestWithBackgroundCompilation,
 
   // Navigate, the script will be injected.
   content::WebContents* web_contents = GetActiveWebContents();
-  content::OpenURLParams params(
-      embedded_test_server()->GetURL("/empty.html"), content::Referrer(),
-      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          embedded_test_server()->GetURL("/empty.html"),
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_TYPED);
   web_contents->OpenURL(params,
                         /*navigation_handle_callback=*/{});
 
@@ -2812,4 +2786,562 @@ IN_PROC_BROWSER_TEST_F(ContentScriptApiTest,
   // reused.
   EXPECT_TRUE(listener.WaitUntilSatisfied());
 }
+
+class ContentScriptSkipServiceWorkerTest : public ContentScriptApiTest {
+ protected:
+  base::test::ScopedFeatureList feature_list_{
+      blink::features::kIsolatedWorldEventSourceAndBeaconsSkipServiceWorker};
+};
+
+// Tests that requests issued from a content script's isolated world bypass the
+// page's service worker. Regression test for https://crbug.com/501419037
+// (EventSource and sendBeacon) and https://crbug.com/371011220 (import()).
+IN_PROC_BROWSER_TEST_F(ContentScriptSkipServiceWorkerTest,
+                       IsolatedWorldRequestsSkipPageServiceWorker) {
+  // Answers every request under `/sw-probe/` itself, so a probe can only reach
+  // the embedded test server if the worker was skipped.
+  static constexpr char kServiceWorker[] = R"(
+    self.addEventListener('install', () => self.skipWaiting());
+    self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+    self.addEventListener('fetch', e => {
+      const probe = new URL(e.request.url).pathname.split('/sw-probe/')[1];
+      if (probe === undefined) {
+        return;
+      }
+      const responses = {
+        'module.js': ['text/javascript', "export default 'INTERCEPTED';"],
+        'events': ['text/event-stream', 'data: INTERCEPTED\n\n'],
+      };
+      const [type, body] = responses[probe] ?? ['text/plain', 'INTERCEPTED'];
+      e.respondWith(new Response(body, {headers: {'Content-Type': type}}));
+    });
+  )";
+
+  // Registers the worker and, once it controls the page, issues one request
+  // per API. `navigator.serviceWorker.ready` is unavailable in isolated
+  // worlds, hence the `controllerchange` listener.
+  static constexpr char kContentScript[] = R"(
+    const url = probe => location.origin + '/sw-probe/' + probe;
+    navigator.serviceWorker.register('/sw.js');
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      chrome.test.runTests([
+        async function fetchProbe() {
+          const response = await fetch(url('text'));
+          chrome.test.assertEq('REAL_SERVER', await response.text());
+          chrome.test.succeed();
+        },
+        async function xhrProbe() {
+          const text = await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', url('text'));
+            xhr.onload = () => resolve(xhr.responseText);
+            xhr.onerror = () => reject(new Error('XHR failed'));
+            xhr.send();
+          });
+          chrome.test.assertEq('REAL_SERVER', text);
+          chrome.test.succeed();
+        },
+        async function importProbe() {
+          const module = await import(url('module.js'));
+          chrome.test.assertEq('REAL_SERVER', module.default);
+          chrome.test.succeed();
+        },
+        async function eventSourceProbe() {
+          const data = await new Promise((resolve, reject) => {
+            const source = new EventSource(url('events'));
+            source.onmessage = e => { source.close(); resolve(e.data); };
+            source.onerror = () => reject(new Error('EventSource failed'));
+          });
+          chrome.test.assertEq('REAL_SERVER', data);
+          chrome.test.succeed();
+        },
+        function beaconProbe() {
+          // Only the server can tell what a beacon carried; see the test.
+          chrome.test.assertTrue(
+              navigator.sendBeacon(url('beacon'), 'BEACON_PAYLOAD'));
+          chrome.test.succeed();
+        },
+      ]);
+    });
+  )";
+
+  static constexpr char kProbeManifest[] = R"({
+    "name": "Isolated world service worker test",
+    "version": "1.0",
+    "manifest_version": 3,
+    "content_scripts": [{
+      "matches": ["*://*/*"],
+      "js": ["content_script.js"]
+    }]
+  })";
+
+  net::test_server::ControllableHttpResponse beacon(embedded_test_server(),
+                                                    "/sw-probe/beacon");
+  // Serves the worker, and the probes that make it to the network.
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+      [](const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+        if (request.relative_url == "/sw.js") {
+          response->set_content_type("text/javascript");
+          response->set_content(kServiceWorker);
+        } else if (request.relative_url == "/sw-probe/text") {
+          response->set_content("REAL_SERVER");
+        } else if (request.relative_url == "/sw-probe/module.js") {
+          response->set_content_type("text/javascript");
+          response->set_content("export default 'REAL_SERVER';");
+        } else if (request.relative_url == "/sw-probe/events") {
+          response->set_content_type("text/event-stream");
+          response->set_content("data: REAL_SERVER\n\n");
+        } else {
+          return nullptr;
+        }
+        return response;
+      }));
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(kProbeManifest);
+  test_dir.WriteFile(FILE_PATH_LITERAL("content_script.js"), kContentScript);
+  ASSERT_TRUE(LoadExtension(test_dir.UnpackedPath()));
+
+  ResultCatcher catcher;
+  ASSERT_TRUE(NavigateToURL(GetActiveWebContents(),
+                            embedded_test_server()->GetURL("/empty.html")));
+  ASSERT_TRUE(catcher.GetNextResult()) << catcher.message();
+
+  // A beacon's response is not observable by its sender, so check on the server
+  // side that the payload arrived unaltered.
+  {
+    SCOPED_TRACE("waiting for beacon request to reach the server");
+    beacon.WaitForRequest();
+  }
+  EXPECT_EQ("BEACON_PAYLOAD", beacon.http_request()->content);
+}
+
+// Test fixture for verifying service worker registration behaviors when
+// initiated from scripts injected by extensions into web pages.
+class InjectedScriptServiceWorkerBrowserTest : public ContentScriptApiTest {
+ public:
+  InjectedScriptServiceWorkerBrowserTest() = default;
+  ~InjectedScriptServiceWorkerBrowserTest() override = default;
+  InjectedScriptServiceWorkerBrowserTest(
+      const InjectedScriptServiceWorkerBrowserTest&) = delete;
+  InjectedScriptServiceWorkerBrowserTest& operator=(
+      const InjectedScriptServiceWorkerBrowserTest&) = delete;
+
+  void SetUpOnMainThread() override {
+    ContentScriptApiTest::SetUpOnMainThread();
+    UseHttpsTestServer();
+  }
+};
+
+// Tests that when an extension injects a script into `example.com` and attempts
+// to register a service worker from an external webpage (`evil.com/script.js`),
+// from an extension resource
+// (`chrome-extension://<id>/extension_war_sw_to_register.js`), or from a
+// same-origin `blob:` URL, registration is rejected in both the isolated
+// content script world and the main page world (`SecurityError` for
+// cross-origin and extension-resource scripts; `TypeError` for unsupported
+// `blob:` scheme).
+IN_PROC_BROWSER_TEST_F(InjectedScriptServiceWorkerBrowserTest,
+                       RegisterCrossOriginExtensionResourceOrBlobWorkerFails) {
+  // Start the embedded HTTPS test server to serve web origins.
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  const GURL evil_sw_url = embedded_test_server()->GetURL(
+      /*hostname=*/"evil.com", /*relative_url=*/"/script.js");
+
+  // Configure an extension that injects a content script into `example.com` and
+  // exposes an extension service worker file and a main-world helper script in
+  // `web_accessible_resources`.
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(R"({
+    "name": "Cross Origin SW Registration Tester",
+    "version": "1.0",
+    "manifest_version": 3,
+    "content_scripts": [{
+      "matches": ["*://example.com/*"],
+      "js": ["content_script.js"],
+      "run_at": "document_idle"
+    }],
+    "web_accessible_resources": [{
+      "resources": ["extension_war_sw_to_register.js", "main_world.js"],
+      "matches": ["*://example.com/*"]
+    }]
+  })");
+
+  // Write a valid extension resource to disk so the test exercises a real
+  // web-accessible file rather than encountering a 404 error. The service
+  // worker event listeners should not execute if the tests passes because
+  // registration is rejected synchronously. If run then they ensure the worker
+  // activates immediately and the test fails.
+  test_dir.WriteFile(FILE_PATH_LITERAL("extension_war_sw_to_register.js"), R"(
+    self.addEventListener('install', () => self.skipWaiting());
+    self.addEventListener('activate', event => {
+      event.waitUntil(self.clients.claim());
+    });
+  )");
+
+  // Script injected into the page's main world by `content_script.js`. It
+  // attempts service worker registrations using a same-origin `blob:` URL, a
+  // cross-origin web script URL, and an extension resource URL, and posts the
+  // results back to the content script via `window.postMessage()`.
+  std::string main_world_script = content::JsReplace(
+      R"(
+        // Injected into the page's main world to attempt service worker
+        // registrations from the web origin context and post the results back
+        // to the content script.
+        (async () => {
+          const evilWebSwUrl = $1;
+          const extSwUrl = document.currentScript.dataset.extSwUrl;
+
+          // Helper to register a service worker URL and return either
+          // 'REGISTERED' or the resulting error name and message string.
+          async function tryRegister(url) {
+            try {
+              await navigator.serviceWorker.register(url);
+              return 'REGISTERED';
+            } catch (err) {
+              return err.name + ': ' + err.message;
+            }
+          }
+
+          // Test registration with a same-origin `blob:` URL.
+          const blob = new Blob(
+              ["self.addEventListener('install', () => self.skipWaiting());"],
+              {type: 'text/javascript'});
+          const blobUrl = URL.createObjectURL(blob);
+          let mainBlob;
+          try {
+            mainBlob = await tryRegister(blobUrl);
+          } finally {
+            URL.revokeObjectURL(blobUrl);
+          }
+
+          // Test registration with a cross-origin web script URL.
+          const mainEvil = await tryRegister(evilWebSwUrl);
+
+          // Test registration with an extension resource URL.
+          const mainExt = await tryRegister(extSwUrl);
+
+          // Post all main-world registration results to the content script.
+          window.postMessage({
+            type: 'MAIN_WORLD_SW_RESULTS',
+            mainEvil,
+            mainExt,
+            mainBlob
+          }, window.location.origin);
+        })();
+      )",
+      evil_sw_url);
+  test_dir.WriteFile(FILE_PATH_LITERAL("main_world.js"), main_world_script);
+
+  // The injected content script attempts service worker registrations directly
+  // from its isolated world (using a same-origin `blob:` URL, a cross-origin
+  // web script URL, and an extension resource URL), injects `main_world.js`
+  // into the page's DOM to attempt the same registrations in the main world,
+  // and sends all combined results to the C++ test runner via
+  // `chrome.test.sendMessage()`.
+  std::string content_script = content::JsReplace(
+      R"(
+        // Injected content script that attempts service worker registrations
+        // from the isolated world, injects `main_world.js` to test the main
+        // world, and forwards all registration outcomes to the C++ test runner.
+        (async () => {
+          const evilWebSwUrl = $1;
+          const extSwUrl = chrome.runtime.getURL(
+            'extension_war_sw_to_register.js');
+
+          // Helper to register a service worker URL and return either
+          // 'REGISTERED' or the resulting error name and message string.
+          async function tryRegister(url) {
+            try {
+              await navigator.serviceWorker.register(url);
+              return 'REGISTERED';
+            } catch (err) {
+              return err.name + ': ' + err.message;
+            }
+          }
+
+          // Test registration from the isolated world with a same-origin
+          // `blob:` URL.
+          const blob = new Blob(
+              ["self.addEventListener('install', () => self.skipWaiting());"],
+              {type: 'text/javascript'});
+          const blobUrl = URL.createObjectURL(blob);
+          let isolatedBlob;
+          try {
+            isolatedBlob = await tryRegister(blobUrl);
+          } finally {
+            URL.revokeObjectURL(blobUrl);
+          }
+
+          // Test registration from the isolated world with a cross-origin
+          // web script URL.
+          const isolatedEvil = await tryRegister(evilWebSwUrl);
+
+          // Test registration from the isolated world with an extension
+          // resource URL.
+          const isolatedExt = await tryRegister(extSwUrl);
+
+          // Inject `main_world.js` into the DOM and await its registration
+          // results received via `window.postMessage()`.
+          const mainWorldResults = await new Promise(resolve => {
+            window.addEventListener('message', function onMsg(event) {
+              if (event.source === window &&
+                  event.origin === window.location.origin &&
+                  event.data &&
+                  event.data.type === 'MAIN_WORLD_SW_RESULTS') {
+                window.removeEventListener('message', onMsg);
+                resolve(event.data);
+              }
+            });
+            const script = document.createElement('script');
+            script.dataset.extSwUrl = extSwUrl;
+            script.src = chrome.runtime.getURL('main_world.js');
+            document.documentElement.appendChild(script);
+          });
+
+          // Forward both isolated-world and main-world registration results
+          // to the C++ test runner.
+          chrome.test.sendMessage(
+              'isolatedEvil=' + isolatedEvil + '|isolatedExt=' + isolatedExt +
+              '|isolatedBlob=' + isolatedBlob +
+              '|mainEvil=' + mainWorldResults.mainEvil +
+              '|mainExt=' + mainWorldResults.mainExt +
+              '|mainBlob=' + mainWorldResults.mainBlob);
+        })();
+      )",
+      evil_sw_url);
+  test_dir.WriteFile(FILE_PATH_LITERAL("content_script.js"), content_script);
+
+  // Load the extension and navigate to `example.com`.
+  const Extension* extension = LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  content::WebContents* web_contents = GetActiveWebContents();
+  const GURL page_url = embedded_test_server()->GetURL(
+      /*hostname=*/"example.com", /*relative_url=*/"/empty.html");
+  ExtensionTestMessageListener result_listener;
+  ASSERT_TRUE(NavigateToURL(web_contents, page_url));
+  {
+    SCOPED_TRACE("Waiting for injected script registration results");
+    ASSERT_TRUE(result_listener.WaitUntilSatisfied());
+  }
+
+  // Parse the results returned by the injected script and verify that all
+  // cross-origin and extension-resource registration attempts failed with
+  // `SecurityError`, and `blob:` registration attempts failed with `TypeError`.
+  const std::string& result_message = result_listener.message();
+  EXPECT_THAT(result_message,
+              ::testing::HasSubstr(
+                  "isolatedEvil=SecurityError: Failed to register a "
+                  "ServiceWorker: The origin of the provided scriptURL"));
+  EXPECT_THAT(result_message,
+              ::testing::HasSubstr(
+                  "isolatedExt=SecurityError: Failed to register a "
+                  "ServiceWorker: The origin of the provided scriptURL"));
+  EXPECT_THAT(result_message,
+              ::testing::HasSubstr(
+                  "mainEvil=SecurityError: Failed to register a "
+                  "ServiceWorker: The origin of the provided scriptURL"));
+  EXPECT_THAT(result_message,
+              ::testing::HasSubstr(
+                  "mainExt=SecurityError: Failed to register a "
+                  "ServiceWorker: The origin of the provided scriptURL"));
+  EXPECT_THAT(result_message,
+              ::testing::HasSubstr("does not match the current origin"));
+  EXPECT_THAT(result_message,
+              ::testing::HasSubstr(
+                  "isolatedBlob=TypeError: Failed to register a ServiceWorker: "
+                  "The URL protocol of the script"));
+  EXPECT_THAT(result_message,
+              ::testing::HasSubstr(
+                  "mainBlob=TypeError: Failed to register a ServiceWorker: The "
+                  "URL protocol of the script"));
+  EXPECT_THAT(result_message, ::testing::HasSubstr("is not supported"));
+
+  // Confirm that no service worker registration or
+  // `navigator.serviceWorker.controller` exists for `example.com`.
+  EXPECT_EQ(false, content::EvalJs(web_contents,
+                                   "navigator.serviceWorker.getRegistration()"
+                                   ".then(reg => Boolean(reg))"));
+  EXPECT_EQ(false, content::EvalJs(web_contents,
+                                   "!!navigator.serviceWorker.controller"));
+}
+
+// Tests that when an extension injects a script into `example.com` to register
+// a same-origin service worker (`example.com/script.js`) and attempts to
+// intercept `script.js` via `declarativeNetRequest` to replace it with its own
+// arbitrary script code (either via redirect to an extension resource or via
+// redirect to a `data:` URL), the registration is rejected with a
+// `SecurityError` (`net::ERR_UNSAFE_REDIRECT`) because service worker script
+// fetches disallow redirects. Also verifies that no service worker registration
+// is created.
+IN_PROC_BROWSER_TEST_F(InjectedScriptServiceWorkerBrowserTest,
+                       InterceptWorkerScriptViaDnrFailsWithRedirectError) {
+  // Register a default handler on `embedded_test_server()` so that `/script.js`
+  // and `/script_data.js` would serve valid JavaScript if not intercepted.
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+      [](const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        if (request.relative_url == "/script.js" ||
+            request.relative_url == "/script_data.js") {
+          auto response =
+              std::make_unique<net::test_server::BasicHttpResponse>();
+          response->set_code(net::HTTP_OK);
+          response->set_content_type("text/javascript");
+          response->set_content("// legitimate server service worker script");
+          return response;
+        }
+        return nullptr;
+      }));
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  // Set up an extension that injects a script into `example.com` to register
+  // `/script.js` and `/script_data.js`, while intercepting those requests with
+  // `declarativeNetRequest` redirect rules to substitute arbitrary script code.
+  TestExtensionDir test_dir;
+  test_dir.WriteManifest(R"({
+    "name": "DNR SW Script Replacement Tester",
+    "version": "1.0",
+    "manifest_version": 3,
+    "permissions": ["declarativeNetRequest"],
+    "host_permissions": ["*://example.com/*"],
+    "content_scripts": [{
+      "matches": ["*://example.com/*"],
+      "js": ["content_script.js"],
+      "run_at": "document_idle"
+    }],
+    "declarative_net_request": {
+      "rule_resources": [{
+        "id": "ruleset_1",
+        "enabled": true,
+        "path": "rules.json"
+      }]
+    },
+    "web_accessible_resources": [{
+      "resources": ["sw_replacement.js"],
+      "matches": ["*://example.com/*"]
+    }]
+  })");
+
+  test_dir.WriteFile(FILE_PATH_LITERAL("rules.json"), R"([
+    {
+      "id": 1,
+      "priority": 1,
+      "action": {
+        "type": "redirect",
+        "redirect": { "extensionPath": "/sw_replacement.js" }
+      },
+      "condition": {
+        "urlFilter": "script.js"
+      }
+    },
+    {
+      "id": 2,
+      "priority": 1,
+      "action": {
+        "type": "redirect",
+        "redirect": {
+          "url": "data:text/javascript,self.addEventListener('fetch',()=>{});"
+        }
+      },
+      "condition": {
+        "urlFilter": "script_data.js"
+      }
+    }
+  ])");
+
+  // Write a replacement extension script to disk so the declarativeNetRequest
+  // redirect target exists as a valid web-accessible file rather than
+  // encountering a 404 error. The service worker event listeners should not
+  // execute if the test passes because redirected service worker script loads
+  // are rejected immediately. If run then they ensure the replacement activates
+  // immediately and intercepts fetches, which would fail the test.
+  test_dir.WriteFile(FILE_PATH_LITERAL("sw_replacement.js"), R"(
+    // Activate immediately once installed.
+    self.addEventListener('install', () => self.skipWaiting());
+
+    // Claim existing clients upon activation.
+    self.addEventListener('activate', event => {
+      event.waitUntil(self.clients.claim());
+    });
+
+    // Intercept fetch requests to return replacement content.
+    self.addEventListener('fetch', event => {
+      event.respondWith(new Response('INTERCEPTED_BY_REPLACEMENT'));
+    });
+  )");
+
+  // The injected content script attempts service worker registrations whose
+  // network requests are intercepted and redirected by `declarativeNetRequest`
+  // rules (to an extension resource or `data:` URL), and forwards the
+  // registration outcomes to the C++ test runner via
+  // `chrome.test.sendMessage()`.
+  test_dir.WriteFile(FILE_PATH_LITERAL("content_script.js"), R"(
+    (async () => {
+      // Helper to register a service worker path and return either
+      // 'REGISTERED' or the resulting error name and message string.
+      async function tryRegister(path) {
+        try {
+          await navigator.serviceWorker.register(path);
+          return 'REGISTERED';
+        } catch (err) {
+          return err.name + ': ' + err.message;
+        }
+      }
+
+      // Attempt to register a service worker redirected to an extension
+      // resource via declarativeNetRequest.
+      const extRedirect = await tryRegister('/script.js');
+
+      // Attempt to register a service worker redirected to a data: URL via
+      // declarativeNetRequest.
+      const dataRedirect = await tryRegister('/script_data.js');
+
+      // Forward both registration outcomes back to the C++ test runner.
+      chrome.test.sendMessage(
+          'extRedirect=' + extRedirect + '|dataRedirect=' + dataRedirect);
+    })();
+  )");
+
+  // Load the extension and navigate to `example.com`.
+  const Extension* extension = LoadExtension(test_dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  content::WebContents* web_contents = GetActiveWebContents();
+  const GURL page_url = embedded_test_server()->GetURL(
+      /*hostname=*/"example.com", /*relative_url=*/"/empty.html");
+  ExtensionTestMessageListener result_listener;
+  ASSERT_TRUE(NavigateToURL(web_contents, page_url));
+  {
+    SCOPED_TRACE(
+        "Waiting for injected script declarative net request interception "
+        "results");
+    ASSERT_TRUE(result_listener.WaitUntilSatisfied());
+  }
+
+  // Verify that both replacement attempts were rejected because service worker
+  // script loads forbid redirects.
+  const std::string& result_message = result_listener.message();
+  EXPECT_THAT(result_message,
+              ::testing::HasSubstr("extRedirect=SecurityError:"));
+  EXPECT_THAT(result_message,
+              ::testing::HasSubstr("dataRedirect=SecurityError:"));
+  EXPECT_THAT(
+      result_message,
+      ::testing::HasSubstr(
+          "The script resource is behind a redirect, which is disallowed."));
+
+  // Confirm that no service worker registration or
+  // `navigator.serviceWorker.controller` was created.
+  EXPECT_EQ(false, content::EvalJs(web_contents,
+                                   "navigator.serviceWorker.getRegistration()"
+                                   ".then(reg => Boolean(reg))"));
+  EXPECT_EQ(false, content::EvalJs(web_contents,
+                                   "!!navigator.serviceWorker.controller"));
+}
+
 }  // namespace extensions

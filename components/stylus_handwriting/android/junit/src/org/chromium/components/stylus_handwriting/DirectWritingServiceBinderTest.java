@@ -24,14 +24,12 @@ import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
 
 /** Unit tests for {@link DirectWritingServiceBinder}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class DirectWritingServiceBinderTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -44,7 +42,7 @@ public class DirectWritingServiceBinderTest {
 
     @Before
     public void setUp() {
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
         doReturn(mDwCallback).when(mTriggerCallback).getServiceCallback();
     }
 

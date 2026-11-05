@@ -188,12 +188,12 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   HttpsState GetHttpsState() const final;
   ResourceFetcher* Fetcher() final;
   bool CanExecuteScripts(ReasonForCallingCanExecuteScripts) final;
-  void ExceptionThrown(ErrorEvent*) final;
+  void ExceptionThrown(ErrorEvent*, SanitizeScriptErrors) final;
   void AddInspectorIssue(AuditsIssue) final;
   EventTarget* ErrorEventTarget() final { return this; }
   KURL OutgoingReferrerUrl() const final;
   void SetInitiatorStateToken(
-      const base::UnguessableToken& initiator_state_token) final;
+      const InitiatorStateToken& initiator_state_token) final;
   CoreProbeSink* GetProbeSink() final;
   const BrowserInterfaceBrokerProxy& GetBrowserInterfaceBroker() const final;
   FrameOrWorkerScheduler* GetScheduler() final;
@@ -290,7 +290,7 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   Navigator* clientInformation() { return navigator(); }
 
   bool offscreenBuffering() const;
-  bool alwaysOnTop() const;
+  bool alwaysOnTopPopup() const;
 
   int outerHeight() const;
   int outerWidth() const;
@@ -414,6 +414,8 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
 
   DEFINE_ATTRIBUTE_EVENT_LISTENER(pagereveal, kPagereveal)
 
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(openerchange, kOpenerchange)
+
   void RegisterEventListenerObserver(EventListenerObserver*);
 
   void FrameDestroyed();
@@ -447,6 +449,11 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
       MessageEvent*,
       SourceLocation*,
       const base::UnguessableToken& source_agent_cluster_id);
+
+  // Activates the transient capability token on this window corresponding to
+  // `delegated_capability` when a delegated message is dispatched.
+  void ActivateDelegatedCapability(
+      mojom::blink::DelegatedCapability delegated_capability);
 
   // Events
   // EventTarget API
@@ -524,7 +531,7 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   //   - The frame exists and its policies have not changed.
   //   - Or there is an ongoing navigation started from the frame in the state
   //   associated with the token.
-  const base::UnguessableToken& GetInitiatorStateToken() const {
+  const InitiatorStateToken& GetInitiatorStateToken() const {
     return initiator_state_token_;
   }
 
@@ -606,6 +613,16 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   // the status.
   void SetStorageAccessApiStatus(net::StorageAccessApiStatus status);
 
+  // Whether this window's document may bind
+  // network.mojom.RestrictedDeviceBoundSessionManager. The browser decides at
+  // commit; a document that commits without commit params gets false.
+  bool CanUseDeviceBoundSessionJsApi() const {
+    return can_use_device_bound_session_js_api_;
+  }
+  void SetCanUseDeviceBoundSessionJsApi(bool value) {
+    can_use_device_bound_session_js_api_ = value;
+  }
+
   // https://html.spec.whatwg.org/multipage/browsing-the-web.html#has-been-revealed
   bool HasBeenRevealed() const { return has_been_revealed_; }
   void SetHasBeenRevealed(bool revealed);
@@ -684,6 +701,7 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   DelegatedCapabilityRequestToken display_capture_request_token_;
   DelegatedCapabilityRequestToken digital_credentials_create_token_;
   DelegatedCapabilityRequestToken digital_credentials_get_token_;
+  DelegatedCapabilityRequestToken popup_request_token_;
 
   // https://dom.spec.whatwg.org/#window-current-event
   // We represent the "undefined" value as nullptr.
@@ -726,7 +744,7 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   // InitiatorNavigationState in the browser process for navigations started
   // from this LocalFrame. This will be updated if the policies of the
   // LocalFrame change (e.g. Referrer policy, CSP).
-  base::UnguessableToken initiator_state_token_;
+  InitiatorStateToken initiator_state_token_;
 
   // Tracks which document policy violation reports have already been sent in
   // this document, to avoid reporting duplicates. The value stored comes
@@ -744,10 +762,6 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   // of the back-forward cache.
   size_t total_bytes_buffered_while_in_back_forward_cache_ = 0;
 
-  // Collection of fenced frame APIs.
-  // https://github.com/shivanigithub/fenced-frame/issues/14
-  Member<Fence> fence_;
-
   Member<CrashReportContext> crash_report_storage_;
 
   Member<CloseWatcher::WatcherStack> closewatcher_stack_;
@@ -761,6 +775,9 @@ class CORE_EXPORT LocalDOMWindow final : public DOMWindow,
   // Records this window's Storage Access API status. It cannot be downgraded.
   net::StorageAccessApiStatus storage_access_api_status_ =
       net::StorageAccessApiStatus::kNone;
+
+  // Set by DocumentLoader for each new document in this window.
+  bool can_use_device_bound_session_js_api_ = false;
 
   // Tracks whether this window has shown a payment request without a user
   // activation. It cannot be revoked once set to true.

@@ -28,6 +28,7 @@
 #include "third_party/blink/renderer/core/html/media/html_video_element.h"
 #include "third_party/blink/renderer/core/testing/wait_for_event.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/media/media_player_client.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_descriptor.h"
 #include "third_party/blink/renderer/platform/testing/empty_web_media_player.h"
@@ -167,8 +168,7 @@ class VideoWakeLockTestWebFrameClient
   }
 
  private:
-  raw_ptr<MediaPlayerClient, UnprotectedInRelease | DanglingUntriaged>
-      media_player_client_ = nullptr;
+  Persistent<MediaPlayerClient> media_player_client_ = nullptr;
   std::unique_ptr<WebMediaPlayer> web_media_player_;
 };
 
@@ -712,6 +712,20 @@ TEST_F(VideoWakeLockTest, VideoOnlyMediaStreamAlwaysTakesLock) {
   GetMediaPlayer()->SetSize(kSmallVideoSize);
   GetMediaPlayerClient()->SizeChanged();
   UpdateObservers();
+  EXPECT_TRUE(HasWakeLock());
+
+  // Move the video offscreen and ensure the wake lock is still held.
+  SetDivHeight(kWindowSize.height());
+  UpdateObservers();
+  EXPECT_TRUE(HasWakeLock());
+
+  // Hiding the page should release the lock, and showing it again should
+  // re-acquire the lock even while the MediaStream is small and offscreen.
+  GetPage().SetVisibilityState(mojom::blink::PageVisibilityState::kHidden,
+                               false);
+  EXPECT_FALSE(HasWakeLock());
+  GetPage().SetVisibilityState(mojom::blink::PageVisibilityState::kVisible,
+                               false);
   EXPECT_TRUE(HasWakeLock());
 
   // Ensure normal wake lock release.

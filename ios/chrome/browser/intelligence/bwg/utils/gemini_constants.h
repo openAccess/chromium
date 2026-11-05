@@ -14,8 +14,7 @@ namespace gemini {
 // Logged as IOSGeminiEntryPoint enum for the IOS.Gemini.EntryPoint histogram.
 // LINT.IfChange(EntryPoint)
 enum class EntryPoint {
-  // Gemini was opened directly from a Gemini promo.
-  Promo = 0,
+  // Promo = 0, // Deprecated, no longer used.
   // Gemini was opened directly from the overflow menu.
   OverflowMenu = 1,
   // Gemini was opened from the AI Hub.
@@ -43,6 +42,10 @@ enum class EntryPoint {
   AppSwitcherAISummarization = 13,
   // Gemini was opened from an unsupported query in AtMemory search.
   AtMemorySearch = 14,
+  // Gemini was opened from the contextual cue chip in the omnibox.
+  ContextualCueChip = 15,
+  // Gemini was opened from the contextual cue infobar banner.
+  ContextualCueInfobar = 16,
   // The entry point is unknown.
   Unknown = 100,
   kMaxValue = Unknown,
@@ -210,7 +213,9 @@ enum class InputType {
   kEditMenuPrompt = 26,
   // Summarization query originating from the App Switcher.
   kAppSwitcherSummarize = 27,
-  kMaxValue = kAppSwitcherSummarize,
+  // Live voice prompt input type.
+  kLivePrompt = 28,
+  kMaxValue = kLivePrompt,
 };
 // LINT.ThenChange(
 //   /ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h:IOSGeminiFirstPromptSubmissionMethod,
@@ -240,6 +245,10 @@ enum class GeminiFirstRunType {
 // An optional text prompt to prepopulate the input field.
 @property(nonatomic, copy) NSString* prepopulatedPrompt;
 
+// Whether to automatically submit `prepopulatedPrompt` upon presenting the
+// floaty.
+@property(nonatomic, assign) BOOL shouldAutoSubmit;
+
 // Whether the signed-in active account does not match the target account
 // specified by the triggering entry point (e.g. App Switcher AI
 // Summarization). Entry points targeting a specific user identity generally
@@ -261,9 +270,7 @@ extern NSString* const kLottieAnimationFirstRunBannerName;
 
 // Lottie animation names for Gemini Visual Rich First Run carousel slides.
 extern NSString* const kLottieAnimationFRESummarizeSlideName;
-extern NSString* const kLottieAnimationFRESummarizeSlideDarkName;
 extern NSString* const kLottieAnimationFRESummarizeSlideRTLName;
-extern NSString* const kLottieAnimationFRESummarizeSlideDarkRTLName;
 
 extern NSString* const kLottieAnimationFREShoppingSlideName;
 extern NSString* const kLottieAnimationFREShoppingSlideDarkName;
@@ -275,6 +282,12 @@ extern NSString* const kLottieAnimationFREPlanningSlideDarkName;
 extern NSString* const kLottieAnimationFREPlanningSlideRTLName;
 extern NSString* const kLottieAnimationFREPlanningSlideDarkRTLName;
 
+// Returns the color provider dictionary for the Summarize slide in light mode.
+NSDictionary<NSString*, UIColor*>* SummarizeSlideLightModeColorProvider();
+
+// Returns the color provider dictionary for the Summarize slide in dark mode.
+NSDictionary<NSString*, UIColor*>* SummarizeSlideDarkModeColorProvider();
+
 // Accessibility identifier for the Gemini Visual Rich FRE carousel scroll view.
 extern NSString* const kGeminiFRECarouselScrollViewAccessibilityIdentifier;
 
@@ -284,17 +297,17 @@ extern const char kLastInteractionTimestampDictKey[];
 // interaction.
 extern const char kURLOnLastInteractionDictKey[];
 
-// Consent row links for the new Gemini First Run.
+// Consent row links for the Gemini First Run.
 extern const char kDataGovernanceManagedLinkURL[];
 extern const char kActivityLinkURL[];
+extern const char kLocationInfoLinkURL[];
 extern const char kChoicesLinkURL[];
 extern const char kConnectedServicesLinkURL[];
-
-// Consent row links for the old First Run experience.
-// TODO(crbug.com/393204662): Remove these links once the old FRE is removed.
-extern const char kSecondBoxLinkURLManagedAccount[];
-extern const char kSecondBoxLink1URLNonManagedAccount[];
-extern const char kSecondBoxLink2URLNonManagedAccount[];
+extern const char kUploadsLinkURL[];
+extern const char kScreensLinkURL[];
+extern const char kPauseActivityLinkURL[];
+extern const char kImproveSettingLinkURL[];
+extern const char kTrainingSettingLinkURL[];
 
 // Consent row links for Gemini Live First Run.
 extern const char kLivePrivacyNoticeLinkURL[];
@@ -308,17 +321,17 @@ extern const char kSecondFootnoteLinkURL[];
 extern const char kKoreanTermsFootnoteLinkURL[];
 extern const char kWatchLinkURL[];
 
-// Action identifiers for links in the new Gemini First Run consent rows.
+// Action identifiers for links in the Gemini First Run consent rows.
 extern NSString* const kGeminiDataGovernanceManagedLinkAction;
 extern NSString* const kGeminiActivityLinkAction;
+extern NSString* const kGeminiLocationInfoLinkAction;
 extern NSString* const kGeminiChoicesLinkAction;
 extern NSString* const kGeminiConnectedServicesLinkAction;
-
-// TODO(crbug.com/393204662): Remove these links once the old FRE is removed.
-// Action identifiers for links in the old Gemini First Run consent rows.
-extern NSString* const kGeminiSecondBoxLinkActionManagedAccount;
-extern NSString* const kGeminiSecondBoxLink1ActionNonManagedAccount;
-extern NSString* const kGeminiSecondBoxLink2ActionNonManagedAccount;
+extern NSString* const kGeminiUploadsLinkAction;
+extern NSString* const kGeminiScreensLinkAction;
+extern NSString* const kGeminiPauseActivityLinkAction;
+extern NSString* const kGeminiImproveSettingLinkAction;
+extern NSString* const kGeminiTrainingSettingLinkAction;
 
 // Action identifiers for links in the Gemini Live First Run consent rows.
 extern NSString* const kGeminiLivePrivacyNoticeLinkAction;
@@ -343,5 +356,8 @@ extern const int kGeminiContextualCueChipSlidingWindow;
 
 // The accessibility ID of the Gemini wrapper stack in the first run flow.
 extern NSString* const kGeminiFirstRunWrapperStackAccessibilityIdentifier;
+
+// The accessibility ID of the close button in the Gemini modal.
+extern NSString* const kGeminiModalContentCloseButtonAccessibilityIdentifier;
 
 #endif  // IOS_CHROME_BROWSER_INTELLIGENCE_BWG_UTILS_GEMINI_CONSTANTS_H_

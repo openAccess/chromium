@@ -15,10 +15,7 @@ static_library("region_search") {
     "lens_region_search_helper.h",
   ]
 
-  public_deps = [
-    "//chrome/browser:browser_public_dependencies",
-    "//ui/base/unowned_user_data",
-  ]
+  public_deps = [ "//ui/base/unowned_user_data" ]
 
   deps = [
     "//base",
@@ -28,6 +25,7 @@ static_library("region_search") {
     "//chrome/browser/ui/tab_contents",
     "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/common:constants",
     "//components/lens",
     "//components/lens:buildflags",

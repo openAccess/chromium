@@ -33,11 +33,13 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
+#include "components/url_pattern/simple_url_pattern_matcher.h"
 #include "content/browser/background_sync/background_sync_manager.h"
 #include "content/browser/devtools/devtools_agent_host_impl.h"
 #include "content/browser/devtools/devtools_io_context.h"
 #include "content/browser/devtools/devtools_stream_file.h"
 #include "content/browser/devtools/devtools_stream_pipe.h"
+#include "content/browser/devtools/protocol/debugger.h"
 #include "content/browser/devtools/protocol/devtools_network_resource_loader.h"
 #include "content/browser/devtools/protocol/handler_helpers.h"
 #include "content/browser/devtools/protocol/network.h"
@@ -88,6 +90,7 @@
 #include "net/cookies/cookie_partition_key.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "net/cookies/cookie_util.h"
+#include "net/device_bound_sessions/session.h"
 #include "net/filter/source_stream_type.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
@@ -116,6 +119,7 @@
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom.h"
 #include "third_party/blink/public/platform/resource_request_blocked_reason.h"
 #include "third_party/boringssl/src/include/openssl/ssl.h"
+#include "third_party/re2/src/re2/re2.h"
 #include "url/third_party/mozilla/url_parse.h"
 
 namespace content {
@@ -133,6 +137,24 @@ using ClearBrowserCookiesCallback =
 
 static constexpr char kInvalidCookieFields[] = "Invalid cookie fields";
 
+void DispatchSearchResults(
+    std::unique_ptr<Network::Backend::SearchInResponseBodyCallback> callback,
+    std::optional<std::vector<network::mojom::MessageSearchMatchPtr>> matches) {
+  if (!matches.has_value()) {
+    callback->fallThrough();
+    return;
+  }
+
+  auto protocol_matches =
+      std::make_unique<protocol::Array<protocol::Debugger::SearchMatch>>();
+  for (const auto& match : *matches) {
+    protocol_matches->emplace_back(protocol::Debugger::SearchMatch::Create()
+                                       .SetLineNumber(match->line_number)
+                                       .SetLineContent(match->line_content)
+                                       .Build());
+  }
+  callback->sendSuccess(std::move(protocol_matches));
+}
 Network::CertificateTransparencyCompliance SerializeCTPolicyCompliance(
     net::ct::CTPolicyCompliance ct_compliance) {
   switch (ct_compliance) {
@@ -210,7 +232,7 @@ std::unique_ptr<Network::Cookie> BuildCookie(
           .SetExpires(cookie.ExpiryDate().is_null()
                           ? -1
                           : cookie.ExpiryDate().InSecondsFSinceUnixEpoch())
-          .SetSize(cookie.Name().length() + cookie.Value().length())
+          .SetSize(net::cookie_util::NameValueSizeBytes(cookie))
           .SetHttpOnly(cookie.IsHttpOnly())
           .SetSecure(cookie.SecureAttribute())
           .SetSession(!cookie.IsPersistent())
@@ -882,12 +904,6 @@ GetProtocolBlockedSetCookieReason(net::CookieInclusionStatus status) {
     blockedReasons->push_back(
         Network::SetCookieBlockedReasonEnum::UserPreferences);
   }
-  if (status.HasExclusionReason(
-          net::CookieInclusionStatus::ExclusionReason::
-              EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET)) {
-    blockedReasons->push_back(
-        Network::SetCookieBlockedReasonEnum::ThirdPartyBlockedInFirstPartySet);
-  }
   if (status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                     EXCLUDE_THIRD_PARTY_PHASEOUT)) {
     blockedReasons->push_back(
@@ -984,12 +1000,6 @@ GetProtocolBlockedCookieReason(net::CookieInclusionStatus status) {
     blockedReasons->push_back(
         Network::CookieBlockedReasonEnum::UserPreferences);
   }
-  if (status.HasExclusionReason(
-          net::CookieInclusionStatus::ExclusionReason::
-              EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET)) {
-    blockedReasons->push_back(
-        Network::CookieBlockedReasonEnum::ThirdPartyBlockedInFirstPartySet);
-  }
   if (status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                     EXCLUDE_THIRD_PARTY_PHASEOUT)) {
     blockedReasons->push_back(
@@ -1056,8 +1066,6 @@ Network::CookieExemptionReason GetProtocolCookieExemptionReason(
       return Network::CookieExemptionReasonEnum::EnterprisePolicy;
     case net::CookieInclusionStatus::ExemptionReason::kStorageAccess:
       return Network::CookieExemptionReasonEnum::StorageAccess;
-    case net::CookieInclusionStatus::ExemptionReason::kTopLevelStorageAccess:
-      return Network::CookieExemptionReasonEnum::TopLevelStorageAccess;
     case net::CookieInclusionStatus::ExemptionReason::kScheme:
       return Network::CookieExemptionReasonEnum::Scheme;
     case net::CookieInclusionStatus::ExemptionReason::
@@ -1338,7 +1346,6 @@ String NetworkHandler::NetErrorToString(int net_error) {
       return Network::ErrorReasonEnum::Failed;
   }
 }
-
 
 // static
 const char* NetworkHandler::ResourceTypeToString(
@@ -2009,6 +2016,10 @@ String BuildProtocolDeviceBoundSessionFetchResult(
         kAttestationSigningError:
       return protocol::Network::DeviceBoundSessionFetchResultEnum::
           AttestationSigningError;
+    case net::device_bound_sessions::SessionError::ErrorType::
+        kFederatedRegistrationRedirected:
+      return protocol::Network::DeviceBoundSessionFetchResultEnum::
+          FederatedRegistrationRedirected;
   }
 }
 // LINT.ThenChange(//third_party/blink/public/devtools_protocol/domains/Network.pdl:DeviceBoundSessionFetchResult)
@@ -2044,6 +2055,9 @@ String BuildProtocolDeviceBoundSessionRefreshResult(
     case net::device_bound_sessions::RefreshResult::kInScopeRefreshNotYetNeeded:
       return protocol::Network::RefreshEventDetails::RefreshResultEnum::
           InScopeRefreshNotYetNeeded;
+    case net::device_bound_sessions::RefreshResult::kCanceled:
+      return protocol::Network::RefreshEventDetails::RefreshResultEnum::
+          Canceled;
   }
 }
 // LINT.ThenChange(//third_party/blink/public/devtools_protocol/domains/Network.pdl:DeviceBoundSessionRefreshResult,//net/device_bound_sessions/refresh_result.h:DeviceBoundSessionRefreshResult)
@@ -2096,6 +2110,9 @@ String BuildProtocolDeviceBoundSessionDeletionReason(
     case net::device_bound_sessions::DeletionReason::kDevTools:
       return protocol::Network::TerminationEventDetails::DeletionReasonEnum::
           DevTools;
+    case net::device_bound_sessions::DeletionReason::kReplaced:
+      return protocol::Network::TerminationEventDetails::DeletionReasonEnum::
+          Replaced;
   }
 }
 
@@ -2662,12 +2679,20 @@ Response NetworkHandler::EmulateNetworkConditionsByRule(
         matched_network_conditions,
     std::unique_ptr<protocol::Array<String>>* rule_ids_result) {
   std::vector<network::mojom::MatchedNetworkConditionsPtr> matched_conditions;
-  *rule_ids_result = std::make_unique<protocol::Array<String>>();
+  auto rule_ids = std::make_unique<protocol::Array<String>>();
   for (auto& matched_condition : *matched_network_conditions) {
+    const std::string& pattern = matched_condition->GetUrlPattern();
+    if (!pattern.empty() &&
+        !url_pattern::SimpleUrlPatternMatcher::Create(pattern,
+                                                      /*base_url=*/nullptr)
+             .has_value()) {
+      return Response::InvalidParams(base::StrCat(
+          {"Pattern \"", pattern, "\" failed to parse as a URLPattern."}));
+    }
     auto rule_id = base::UnguessableToken::Create();
     network::mojom::MatchedNetworkConditionsPtr conditions =
         network::mojom::MatchedNetworkConditions::New();
-    conditions->pattern = matched_condition->GetUrlPattern();
+    conditions->pattern = pattern;
     conditions->conditions = network::mojom::NetworkConditions::New();
     conditions->conditions->offline =
         offline.has_value() ? offline.value()
@@ -2684,9 +2709,10 @@ Response NetworkHandler::EmulateNetworkConditionsByRule(
     conditions->conditions->packet_reordering =
         matched_condition->GetPacketReordering(false);
     conditions->conditions->rule_id = rule_id;
-    rule_ids_result->get()->push_back(rule_id.ToString());
+    rule_ids->push_back(rule_id.ToString());
     matched_conditions.emplace_back(std::move(conditions));
   }
+  *rule_ids_result = std::move(rule_ids);
   SetNetworkConditions(
       std::move(matched_conditions),
       emulate_offline_service_worker.value_or(offline.value_or(false)));
@@ -3489,7 +3515,8 @@ void NetworkHandler::LoadingComplete(
       request_id,
       status.completion_time.ToInternalValue() /
           static_cast<double>(base::Time::kMicrosecondsPerSecond),
-      status.encoded_data_length.InBytesF());
+      status.encoded_data_length.InBytesF(),
+      status.encoded_body_length.InBytesF());
 }
 
 void NetworkHandler::FetchKeepAliveRequestWillBeSent(
@@ -3664,7 +3691,6 @@ void NetworkHandler::OnSignedExchangeReceived(
       std::move(signed_exchange_info));
 }
 
-
 void NetworkHandler::BodyDataReceived(const String& request_id,
                                       const String& body,
                                       bool is_base64_encoded) {
@@ -3728,8 +3754,6 @@ void NetworkHandler::ProcessDurableMessageOrGetLocalData(
 void NetworkHandler::GetResponseBody(
     const String& request_id,
     std::unique_ptr<GetResponseBodyCallback> callback) {
-  CHECK(storage_partition_);
-  CHECK(devtools_token_);
   network::mojom::DurableMessageCollector* collector =
       root_session_->MaybeGetDurableMessageCollector();
   if (collector) {
@@ -3744,6 +3768,24 @@ void NetworkHandler::GetResponseBody(
                                       std::nullopt);
 }
 
+void NetworkHandler::SearchInResponseBody(
+    const std::string& request_id,
+    const std::string& query,
+    std::optional<bool> case_sensitive,
+    std::optional<bool> is_regex,
+    std::unique_ptr<SearchInResponseBodyCallback> callback) {
+  network::mojom::DurableMessageCollector* collector =
+      root_session_->MaybeGetDurableMessageCollector();
+  if (collector) {
+    std::string pattern =
+        is_regex.value_or(false) ? query : re2::RE2::QuoteMeta(query);
+    collector->Search(
+        request_id, pattern, case_sensitive.value_or(false),
+        base::BindOnce(&DispatchSearchResults, std::move(callback)));
+    return;
+  }
+  callback->fallThrough();
+}
 
 // static
 std::string NetworkHandler::ExtractFragment(const GURL& url,
@@ -3808,6 +3850,10 @@ NetworkHandler::CreateRequestFromResourceRequest(
     request_object->SetIsAdRelated(true);
   }
   return request_object;
+}
+
+bool NetworkHandler::MayApplyOverridesTo(const GURL& url) const {
+  return client_ && client_->MayAttachToURL(url, host_ && host_->web_ui());
 }
 
 void NetworkHandler::ApplyOverrides(net::HttpRequestHeaders* headers,
@@ -4197,6 +4243,11 @@ void NetworkHandler::LoadNetworkResource(
       return;
     }
 
+    if (!frame->policy_container_host()) {
+      callback->sendFailure(
+          Response::ServerError("Frame does not have a policy container"));
+      return;
+    }
     RenderFrameHostCSPContext csp_context(frame);
 
     network::CSPCheckResult result = csp_context.IsAllowedByCsp(
@@ -4220,6 +4271,7 @@ void NetworkHandler::LoadNetworkResource(
         network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
         frame->GetCookieSettingOverrides(),
         /*network_restrictions_id=*/frame->GetNetworkRestrictionsID(),
+        /*renderer_accessible_http_cache_write_enabled=*/false,
         "NetworkHandler::LoadNetworkResource");
 
     auto factory = CreateNetworkFactoryForDevTools(
@@ -4230,12 +4282,33 @@ void NetworkHandler::LoadNetworkResource(
       return;
     }
 
+    auto redirect_check = base::BindRepeating(
+        [](scoped_refptr<PolicyContainerHost> policy_container_host,
+           base::WeakPtr<RenderFrameHostImpl> frame, const GURL& initial_url,
+           const net::RedirectInfo& redirect_info) -> bool {
+          if (!frame || !policy_container_host ||
+              frame->policy_container_host() != policy_container_host.get()) {
+            return false;
+          }
+          RenderFrameHostCSPContext csp_context(frame.get());
+          network::CSPCheckResult result = csp_context.IsAllowedByCsp(
+              policy_container_host->policies().content_security_policies,
+              network::mojom::CSPDirectiveName::ConnectSrc,
+              redirect_info.new_url, initial_url,
+              /*has_followed_redirect=*/true,
+              /*source_location=*/nullptr,
+              network::CSPContext::CHECK_ENFORCED_CSP,
+              /*is_opaque_fenced_frame=*/false);
+          return result.IsAllowed();
+        },
+        base::WrapRefCounted(frame->policy_container_host()),
+        frame->GetWeakPtr(), gurl);
     url_loader_factory.Bind(std::move(factory));
     auto loader = DevToolsNetworkResourceLoader::Create(
         std::move(url_loader_factory), std::move(gurl),
         frame->GetLastCommittedOrigin(), frame->ComputeSiteForCookies(),
         caching, include_credentials, std::move(complete_callback),
-        frame->IsOutermostMainFrame());
+        frame->IsOutermostMainFrame(), std::move(redirect_check));
     loaders_.emplace(std::move(loader), std::move(callback));
     return;
   }

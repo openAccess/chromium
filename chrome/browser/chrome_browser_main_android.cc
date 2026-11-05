@@ -6,7 +6,11 @@
 
 #include <memory>
 
+#include "base/android/application_status_listener.h"
 #include "base/android/jni_android.h"
+#include "base/android/scudo_features.h"
+#include "base/android/scudo_purge_coordinator.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/path_service.h"
 #include "base/task/current_thread.h"
@@ -19,6 +23,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/data_saver/data_saver.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/webauthn/android/cable_module_android.h"
 #include "components/crash/content/browser/child_exit_observer_android.h"
 #include "components/crash/content/browser/child_process_crash_observer_android.h"
@@ -58,14 +63,22 @@ int ChromeBrowserMainPartsAndroid::PreCreateThreads() {
 
 void ChromeBrowserMainPartsAndroid::PostProfileInit(Profile* profile,
                                                     bool is_initial_profile) {
-  DCHECK(is_initial_profile);  // No multiprofile on Android, only the initial
-                               // call should happen.
+  // Only the initial profile is loaded unless profile startup supports
+  // multiple profiles.
+  CHECK(
+      is_initial_profile || profiles::IsAndroidMultiprofileStartupDataEnabled(),
+      base::NotFatalUntil::M162);
+  ChromeBrowserMainParts::PostProfileInit(profile, is_initial_profile);
+
+  // The Android-specific work below is process-wide, or only for the initial
+  // profile, so it must run once.
+  if (!is_initial_profile) {
+    return;
+  }
 
   // Get the OS Data Saver setting. This will be needed later on, so we want to
   // fetch this setting as soon as possible to avoid blocking on it.
   data_saver::FetchDataSaverOSSettingAsynchronously();
-
-  ChromeBrowserMainParts::PostProfileInit(profile, is_initial_profile);
 
   // Idempotent.  Needs to be called once on startup.  If
   // InitializeClipboardAndroidFromLocalState() is called multiple times (e.g.,
@@ -113,10 +126,46 @@ void ChromeBrowserMainPartsAndroid::PostBrowserStart() {
       base::BindOnce(&ReportSeccompSupport), base::Minutes(1));
 
   RegisterChromeJavaMojoInterfaces();
+
+  scudo_purge_coordinator_ =
+      base::android::ScudoPurgeCoordinator::CreateIfEnabled();
+
+  if (scudo_purge_coordinator_) {
+    scudo_purge_coordinator_->Start();
+
+    // `base::Unretained(this)` is safe because `app_status_listener_` is owned
+    // by `this` and unregisters the listener upon destruction, ensuring the
+    // callback cannot be invoked after `this` is destroyed.
+    app_status_listener_ = base::android::ApplicationStatusListener::New(
+        base::BindRepeating(
+            &ChromeBrowserMainPartsAndroid::OnApplicationStateChange,
+            base::Unretained(this)));
+
+    OnApplicationStateChange(
+        base::android::ApplicationStatusListener::GetState());
+  }
 }
 
 void ChromeBrowserMainPartsAndroid::ShowMissingLocaleMessageBox() {
   NOTREACHED();
+}
+
+void ChromeBrowserMainPartsAndroid::OnApplicationStateChange(
+    base::android::ApplicationState state) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(scudo_purge_coordinator_);
+  switch (state) {
+    case base::android::APPLICATION_STATE_HAS_RUNNING_ACTIVITIES:
+    case base::android::APPLICATION_STATE_HAS_PAUSED_ACTIVITIES:
+      scudo_purge_coordinator_->OnForegrounded();
+      break;
+    case base::android::APPLICATION_STATE_HAS_STOPPED_ACTIVITIES:
+    case base::android::APPLICATION_STATE_HAS_DESTROYED_ACTIVITIES:
+      scudo_purge_coordinator_->OnBackgrounded();
+      break;
+    case base::android::APPLICATION_STATE_UNKNOWN:
+      break;
+  }
 }
 
 DEFINE_JNI(ChromeBackupWatcher)

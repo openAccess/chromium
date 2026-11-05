@@ -5,7 +5,6 @@
 #import "ios/chrome/browser/intelligence/page_action_menu/coordinator/page_action_menu_coordinator.h"
 
 #import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
-#import "ios/chrome/browser/dom_distiller/model/distiller_service_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
@@ -20,7 +19,6 @@
 #import "ios/chrome/browser/intelligence/page_action_menu/utils/ai_hub_constants.h"
 #import "ios/chrome/browser/intelligence/page_action_menu/utils/ai_hub_metrics.h"
 #import "ios/chrome/browser/reader_mode/coordinator/reader_mode_options_mediator.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_browser_agent.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/reader_mode/ui/reader_mode_options_controls_view.h"
@@ -30,7 +28,6 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
-#import "ios/chrome/browser/shared/public/commands/contextual_sheet_commands.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_overlay_commands.h"
 #import "ios/chrome/browser/shared/public/commands/page_action_menu_commands.h"
@@ -41,6 +38,7 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/web_distiller/model/distiller_service_factory.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "url/gurl.h"
@@ -92,7 +90,7 @@ constexpr NSTimeInterval kEligibilityPollTimeout = 5.0;
       GeminiTabHelper::FromWebState(activeWebState);
 
   HostContentSettingsMap* hostContentSettingsMap =
-      ios::HostContentSettingsMapFactory::GetForProfile(self.profile);
+      ios::HostContentSettingsMapFactory::GetForProfile(self.profile).get();
   _mediator = [[PageActionMenuMediator alloc]
             initWithWebState:activeWebState
        authenticationService:AuthenticationServiceFactory::GetForProfile(
@@ -110,8 +108,6 @@ constexpr NSTimeInterval kEligibilityPollTimeout = 5.0;
       self.browser->GetCommandDispatcher(), PageActionMenuCommands);
   _mediator.pageActionMenuHandler = pageActionMenuHandler;
   _mediator.consumer = _viewController;
-  _mediator.contextualSheetHandler = HandlerForProtocol(
-      self.browser->GetCommandDispatcher(), ContextualSheetCommands);
   // Trigger the workspace policy check if it was skipped at init time.
   // This ensures eligibility data is available or loading by the time
   // the user interacts with Ask Gemini. The spinner handles the case
@@ -250,7 +246,8 @@ constexpr NSTimeInterval kEligibilityPollTimeout = 5.0;
       [self.pageActionMenuHandler dismissPageActionMenuWithCompletion:nil];
       break;
     case kGeminiEntryFlowResultCancelled:
-      // User cancelled sign-in — PAM stays open.
+    case kGeminiEntryFlowResultNoConsent:
+      // User cancelled sign-in/consent — PAM stays open.
       break;
     case kGeminiEntryFlowResultAccountIneligibleByGemini:
     case kGeminiEntryFlowResultAccountIneligibleByEnterprise:

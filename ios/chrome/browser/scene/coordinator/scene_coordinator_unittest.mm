@@ -31,7 +31,6 @@
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/identity_test_environment_browser_state_adaptor.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -71,8 +70,9 @@ class SceneCoordinatorTest : public PlatformTest {
                                 BuildIdentityManagerForTests));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
+    builder.SetSharedURLLoaderFactory(
+        test_loader_factory_.GetSafeWeakWrapper());
     profile_ = std::move(builder).Build();
 
     profile_state_ = [[ProfileState alloc] initWithAppState:nil];
@@ -82,10 +82,6 @@ class SceneCoordinatorTest : public PlatformTest {
     scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_.get()];
     scene_state_.profileState = profile_state_;
     scene_state_.sceneSessionID = "scene";
-
-    profile_->SetSharedURLLoaderFactory(
-        base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
-            &test_loader_factory_));
 
     coordinator_ = [[SceneCoordinator alloc]
         initWithTabOpener:OCMProtocolMock(@protocol(TabOpening))];
@@ -263,6 +259,7 @@ TEST_F(SceneCoordinatorTest, TestDismissModalDialogsWithCompletion) {
                            forProtocol:@protocol(BrowserCoordinatorCommands)];
 
   id mockGeminiHandler = OCMProtocolMock(@protocol(GeminiCommands));
+  OCMExpect([mockGeminiHandler dismissGeminiFlowWithCompletion:nil]);
   [dispatcher startDispatchingToTarget:mockGeminiHandler
                            forProtocol:@protocol(GeminiCommands)];
 
@@ -274,6 +271,55 @@ TEST_F(SceneCoordinatorTest, TestDismissModalDialogsWithCompletion) {
                          dismissOmnibox:YES
                        dismissSnackbars:YES];
   EXPECT_TRUE(completed);
+  EXPECT_OCMOCK_VERIFY(mockGeminiHandler);
+}
+
+// Tests that dismissModalDialogsWithCompletion does not dismiss Gemini when
+// dismissGemini is NO.
+TEST_F(SceneCoordinatorTest,
+       TestDismissModalDialogsWithCompletionDoesNotDismissGemini) {
+  CommandDispatcher* dispatcher =
+      coordinator_.currentBrowser->GetCommandDispatcher();
+
+  id mockSnackbarHandler = OCMProtocolMock(@protocol(SnackbarCommands));
+  [dispatcher startDispatchingToTarget:mockSnackbarHandler
+                           forProtocol:@protocol(SnackbarCommands)];
+
+  id mockBookmarksHandler = OCMProtocolMock(@protocol(BookmarksCommands));
+  [dispatcher startDispatchingToTarget:mockBookmarksHandler
+                           forProtocol:@protocol(BookmarksCommands)];
+
+  id mockBrowserCoordinatorHandler =
+      OCMProtocolMock(@protocol(BrowserCoordinatorCommands));
+  OCMStub([mockBrowserCoordinatorHandler
+              clearPresentedStateWithCompletion:[OCMArg any]
+                                 dismissOmnibox:YES])
+      .andDo(^(NSInvocation* invocation) {
+        void* ptr = nullptr;
+        [invocation getArgument:&ptr atIndex:2];
+        ProceduralBlock completionBlock = (__bridge ProceduralBlock)ptr;
+        if (completionBlock) {
+          completionBlock();
+        }
+      });
+  [dispatcher startDispatchingToTarget:mockBrowserCoordinatorHandler
+                           forProtocol:@protocol(BrowserCoordinatorCommands)];
+
+  id mockGeminiHandler = OCMProtocolMock(@protocol(GeminiCommands));
+  [[mockGeminiHandler reject] dismissGeminiFlowWithCompletion:[OCMArg any]];
+  [dispatcher startDispatchingToTarget:mockGeminiHandler
+                           forProtocol:@protocol(GeminiCommands)];
+
+  __block bool completed = false;
+  [coordinator_
+      dismissModalDialogsWithCompletion:^{
+        completed = true;
+      }
+                         dismissOmnibox:YES
+                       dismissSnackbars:YES
+                          dismissGemini:NO];
+  EXPECT_TRUE(completed);
+  EXPECT_OCMOCK_VERIFY(mockGeminiHandler);
 }
 
 }  // namespace

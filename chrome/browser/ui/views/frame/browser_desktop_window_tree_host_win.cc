@@ -12,6 +12,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted_delete_on_sequence.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/process/process_handle.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/task_traits.h"
@@ -39,6 +40,7 @@
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
+#include "ui/base/mojom/menu_source_type.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/theme_provider.h"
 #include "ui/base/win/hwnd_metrics.h"
@@ -119,7 +121,8 @@ VirtualDesktopHelper::VirtualDesktopHelper(const std::string& initial_workspace)
       initial_workspace_(initial_workspace) {}
 
 void VirtualDesktopHelper::Init(HWND hwnd) {
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M162);
   owning_task_runner()->PostTask(
       FROM_HERE, base::BindOnce(&VirtualDesktopHelper::InitImpl, this, hwnd,
                                 initial_workspace_));
@@ -128,7 +131,8 @@ void VirtualDesktopHelper::Init(HWND hwnd) {
 VirtualDesktopHelper::~VirtualDesktopHelper() = default;
 
 std::string VirtualDesktopHelper::GetWorkspace() {
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M162);
   if (!workspace_.has_value()) {
     workspace_ = initial_workspace_;
   }
@@ -139,7 +143,8 @@ std::string VirtualDesktopHelper::GetWorkspace() {
 void VirtualDesktopHelper::UpdateWindowDesktopId(
     HWND hwnd,
     WorkspaceChangedCallback callback) {
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M162);
   owning_task_runner()->PostTaskAndReplyWithResult(
       FROM_HERE,
       base::BindOnce(&VirtualDesktopHelper::GetWindowDesktopIdImpl, hwnd,
@@ -158,7 +163,8 @@ void VirtualDesktopHelper::SetInitialWorkspaceRemembered(bool remembered) {
 
 void VirtualDesktopHelper::SetWorkspace(WorkspaceChangedCallback callback,
                                         const std::string& workspace) {
-  DCHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M162);
   // If GetWindowDesktopId() fails, |workspace| will be empty, and it's most
   // likely that the current value of |workspace_| is still correct, so don't
   // overwrite it.
@@ -175,7 +181,8 @@ void VirtualDesktopHelper::SetWorkspace(WorkspaceChangedCallback callback,
 
 void VirtualDesktopHelper::InitImpl(HWND hwnd,
                                     const std::string& initial_workspace) {
-  DCHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M162);
   // Virtual Desktops on Windows are best-effort and may not always be
   // available.
   if (FAILED(::CoCreateInstance(__uuidof(::VirtualDesktopManager), nullptr,
@@ -199,7 +206,8 @@ void VirtualDesktopHelper::InitImpl(HWND hwnd,
 std::string VirtualDesktopHelper::GetWindowDesktopIdImpl(
     HWND hwnd,
     Microsoft::WRL::ComPtr<IVirtualDesktopManager> virtual_desktop_manager) {
-  DCHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
+  CHECK(!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI),
+        base::NotFatalUntil::M162);
   if (!virtual_desktop_manager) {
     return std::string();
   }
@@ -282,7 +290,8 @@ void BrowserDesktopWindowTreeHostWin::ShowCustomSystemMenu(
 void BrowserDesktopWindowTreeHostWin::Init(
     const views::Widget::InitParams& params) {
   DesktopWindowTreeHostWin::Init(params);
-  virtual_desktop_helper_ = new VirtualDesktopHelper(params.workspace);
+  virtual_desktop_helper_ =
+      base::MakeRefCounted<VirtualDesktopHelper>(params.workspace);
   virtual_desktop_helper_->Init(GetHWND());
 }
 
@@ -625,20 +634,22 @@ SkBitmap GetBadgedIconBitmapForProfile(Profile* profile) {
 }
 
 void BrowserDesktopWindowTreeHostWin::SetWindowIcon(bool badged) {
-  // Hold onto the previous icon so that the currently displayed
-  // icon is valid until replaced with the new icon.
-  base::win::ScopedGDIObject<HICON> previous_icon = std::move(icon_handle_);
+  // Keep the previous badged icon alive until the window has switched away
+  // from it.
+  base::win::ScopedGDIObject<HICON> previous_badged_icon =
+      std::move(badged_icon_);
+  HICON icon = nullptr;
   if (badged) {
     CHECK(browser_view_);
-    icon_handle_ = IconUtil::CreateHICONFromSkBitmap(
+    badged_icon_ = IconUtil::CreateHICONFromSkBitmap(
         GetBadgedIconBitmapForProfile(browser_view_->browser()->GetProfile()));
+    icon = badged_icon_.get();
   } else {
-    icon_handle_.reset(GetAppIcon());
+    icon = GetAppIcon();
   }
   SendMessage(GetHWND(), WM_SETICON, ICON_SMALL,
-              reinterpret_cast<LPARAM>(icon_handle_.get()));
-  SendMessage(GetHWND(), WM_SETICON, ICON_BIG,
-              reinterpret_cast<LPARAM>(icon_handle_.get()));
+              reinterpret_cast<LPARAM>(icon));
+  SendMessage(GetHWND(), WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
 }
 
 void BrowserDesktopWindowTreeHostWin::ShowViewsSystemMenuAtDefaultLocation() {

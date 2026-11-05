@@ -42,7 +42,6 @@ if (!is_android) {
       "//ui/strings:ui_strings",
       "//ui/strings:ui_strings_grit",
     ]
-    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
   }
 
   source_set("test_support") {
@@ -53,7 +52,6 @@ if (!is_android) {
     ]
     public_deps = [
       ":tab_sharing",
-      "//chrome/browser/ui",
       "//chrome/browser/ui/views",
       "//chrome/browser/ui/views:screen_sharing_util",
       "//testing/gmock",
@@ -69,6 +67,7 @@ if (!is_android) {
       "//chrome/browser/ui/tab_sharing:test_support",
       "//chrome/browser/ui/views:layout_provider",
       "//chrome/test:test_support",
+      "//chrome/test/base:chrome_render_view_host_test_harness",
       "//components/infobars/content",
       "//components/url_formatter",
       "//components/vector_icons",

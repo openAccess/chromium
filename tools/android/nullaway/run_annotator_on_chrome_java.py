@@ -18,6 +18,7 @@ sys.path.insert(1, str(_SRC_ROOT / 'build/android/gyp'))
 
 from util import build_utils
 import action_helpers
+import java_home  # build_utils adds //third_party/jdk to sys.path.
 
 _ANNOTATOR_JAR = (
     '../NullAwayAnnotator/annotator-core/build/libs/'
@@ -25,7 +26,7 @@ _ANNOTATOR_JAR = (
 )
 _CHROME_JAVA_TURBINE_JAR = 'obj/chrome/android/chrome_java.turbine.jar'
 _NULLAWAY_JAR = (
-    '../../third_party/android_build_tools/nullaway/cipd/nullaway.jar'
+    '../../third_party/android_build_tools/error_prone/cipd/nullaway.jar'
 )
 
 
@@ -123,11 +124,11 @@ def prep_errorprone_run(enable_annotator, parser):
         ]
 
     javac_cmd = [
-        '../../third_party/jdk/current/bin/javac',
+        os.path.join(java_home.JAVA_HOME, 'bin', 'javac'),
         '-g',
         '-parameters',
         '--release',
-        '17',
+        '25',
         '-encoding',
         'UTF-8',
         '-sourcepath',
@@ -188,8 +189,8 @@ def main():
     if os.path.exists(outdir):
         shutil.rmtree(outdir)
 
-    compile_script = f'nullaway-annotator-compile.sh'
-    compile_logs = f'nullaway-annotator-compile.log'
+    compile_script = 'nullaway-annotator-compile.sh'
+    compile_logs = 'nullaway-annotator-compile.log'
     if os.path.exists(compile_logs):
         os.unlink(compile_logs)
 

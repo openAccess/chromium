@@ -14,7 +14,6 @@
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/strings/grit/components_strings.h"
-#import "components/sync/base/features.h"
 #import "components/sync/service/sync_service.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
 #import "ios/chrome/browser/settings/model/sync/utils/account_error_ui_info.h"
@@ -106,12 +105,6 @@ std::u16string GetIdentityErrorInfoBarTitle(
           IDS_IOS_IDENTITY_ERROR_INFOBAR_ENTER_PASSPHRASE_TITLE);
     case syncer::SyncService::UserActionableError::
         kNeedsTrustedVaultKeyForPasswords:
-      return base::FeatureList::IsEnabled(
-                 syncer::kSyncTrustedVaultInfobarMessageImprovements)
-                 ? l10n_util::GetStringUTF16(
-                       IDS_IOS_IDENTITY_ERROR_INFOBAR_GET_ALL_YOUR_PASSWORDS_TITLE)
-                 : l10n_util::GetStringUTF16(
-                       IDS_IOS_IDENTITY_ERROR_INFOBAR_VERIFY_ITS_YOU_TITLE);
     case syncer::SyncService::UserActionableError::
         kNeedsTrustedVaultKeyForEverything:
     case syncer::SyncService::UserActionableError::
@@ -144,15 +137,10 @@ NSString* GetIdentityErrorInfoBarMessage(
       return l10n_util::GetNSString(
           IDS_IOS_IDENTITY_ERROR_INFOBAR_DEVICE_MANAGEMENT_SERVICES_UNAVAILABLE_MESSAGE);
     case syncer::SyncService::UserActionableError::
-        kNeedsTrustedVaultKeyForPasswords: {
-      return base::FeatureList::IsEnabled(
-                 syncer::kSyncTrustedVaultInfobarMessageImprovements)
-                 ? l10n_util::GetNSString(
-                       IDS_IOS_IDENTITY_ERROR_INFOBAR_GET_ALL_YOUR_PASSWORDS_ON_THIS_DEVICE)
-                 : l10n_util::GetNSStringF(
-                       IDS_IOS_IDENTITY_ERROR_INFOBAR_KEEP_USING_PASSWORDS_MESSAGE_WITH_EMAIL,
-                       email);
-    }
+        kNeedsTrustedVaultKeyForPasswords:
+      return l10n_util::GetNSStringF(
+          IDS_IOS_IDENTITY_ERROR_INFOBAR_KEEP_USING_PASSWORDS_MESSAGE_WITH_EMAIL,
+          email);
     case syncer::SyncService::UserActionableError::
         kTrustedVaultRecoverabilityDegradedForPasswords:
       return l10n_util::GetNSString(
@@ -187,12 +175,6 @@ NSString* GetIdentityErrorInfoBarButtonLabel(syncer::SyncService* syncService) {
           IDS_IOS_IDENTITY_ERROR_INFOBAR_ENTER_BUTTON_LABEL);
     case syncer::SyncService::UserActionableError::
         kNeedsTrustedVaultKeyForPasswords:
-      return base::FeatureList::IsEnabled(
-                 syncer::kSyncTrustedVaultInfobarMessageImprovements)
-                 ? l10n_util::GetNSString(
-                       IDS_IOS_IDENTITY_ERROR_INFOBAR_OKAY_BUTTON_LABEL)
-                 : l10n_util::GetNSString(
-                       IDS_IOS_IDENTITY_ERROR_INFOBAR_VERIFY_BUTTON_LABEL);
     case syncer::SyncService::UserActionableError::
         kNeedsTrustedVaultKeyForEverything:
     case syncer::SyncService::UserActionableError::
@@ -220,8 +202,6 @@ std::string GetSyncErrorInfobarHistogramSuffix(
   }
   NOTREACHED();
 }
-
-}  // namespace
 
 NSString* GetSyncErrorDescriptionForSyncService(
     syncer::SyncService* syncService) {
@@ -262,6 +242,8 @@ NSString* GetSyncErrorDescriptionForSyncService(
       return nil;
   }
 }
+
+}  // namespace
 
 std::u16string GetSyncErrorInfoBarTitleForProfile(ProfileIOS* profile) {
   DCHECK(profile);
@@ -383,10 +365,12 @@ bool ShouldShowSyncSettings(syncer::SyncService::UserActionableError error) {
   }
 }
 
-bool DisplaySyncErrors(ProfileIOS* profile,
-                       web::WebState* web_state,
-                       id<SyncPresenterCommands> sync_presenter_handler,
-                       SyncErrorInfoBarTrigger trigger) {
+bool DisplaySyncErrors(
+    ProfileIOS* profile,
+    web::WebState* web_state,
+    id<SyncPresenterCommands> sync_presenter_handler,
+    id<PrimaryAccountReauthCommands> primary_account_reauth_handler,
+    SyncErrorInfoBarTrigger trigger) {
   // Avoid displaying sync errors on incognito tabs.
   if (profile->IsOffTheRecord()) {
     return false;
@@ -428,7 +412,8 @@ bool DisplaySyncErrors(ProfileIOS* profile,
       InfoBarManagerImpl::FromWebState(web_state);
   DCHECK(infoBarManager);
   bool infobar_displayed = SyncErrorInfoBarDelegate::Create(
-      infoBarManager, profile, sync_presenter_handler, trigger);
+      infoBarManager, profile, sync_presenter_handler,
+      primary_account_reauth_handler, trigger);
   if (infobar_displayed) {
     // Logs when an infobar is shown to user. See crbug.com/265352.
     base::UmaHistogramEnumeration(kSyncErrorInfobarDisplayedHistogramName,

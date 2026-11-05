@@ -148,6 +148,11 @@ suite('ProfileInfoTests', function() {
     ProfileInfoBrowserProxyImpl.setInstance(profileInfoBrowserProxy);
 
     syncBrowserProxy = new TestSyncBrowserProxy();
+    syncBrowserProxy.testSyncStatus = {
+      syncSystemEnabled: false,
+      signedInState: SignedInState.SIGNED_OUT,
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(syncBrowserProxy);
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -196,6 +201,10 @@ suite('SigninDisallowedTests', function() {
     loadTimeData.overrideValues({signinAllowed: false});
 
     syncBrowserProxy = new TestSyncBrowserProxy();
+    syncBrowserProxy.testSyncStatus = {
+      signedInState: SignedInState.SIGNED_OUT,
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(syncBrowserProxy);
 
     profileInfoBrowserProxy = new TestProfileInfoBrowserProxy();
@@ -219,18 +228,23 @@ suite('SigninDisallowedTests', function() {
     assertTrue(!!peoplePage.shadowRoot.querySelector('#profile-row'));
 
     // Control element doesn't exist when policy forbids signin.
-    await simulateSyncStatus({
-      signedInState: SignedInState.SIGNED_OUT,
-      statusAction: StatusAction.NO_ACTION,
-    });
     assertFalse(
         !!peoplePage.shadowRoot.querySelector('settings-sync-account-control'));
   });
 });
 
-suite('SyncStatusTests', function() {
+// TODO(crbug.com/40066949): Remove once kSync becomes unreachable or is
+// deleted from the codebase. See ConsentLevel::kSync documentation for
+// details.
+suite('SignoutDialogTests', function() {
   setup(async function() {
     syncBrowserProxy = new TestSyncBrowserProxy();
+    // The WebUI signout dialog is only reachable for syncing users.
+    syncBrowserProxy.testSyncStatus = {
+      signedInState: SignedInState.SYNCING,
+      signedInUsername: 'fakeUsername',
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(syncBrowserProxy);
 
     profileInfoBrowserProxy = new TestProfileInfoBrowserProxy();
@@ -244,13 +258,6 @@ suite('SyncStatusTests', function() {
 
   teardown(function() {
     reset();
-  });
-
-  test('Toast', async function() {
-    assertFalse(peoplePage.$.toast.open);
-    webUIListenerCallback('sync-settings-saved');
-    await microtasksFinished();
-    assertTrue(peoplePage.$.toast.open);
   });
 
   test('SignOutNavigationNormalProfile', async function() {
@@ -270,7 +277,6 @@ suite('SyncStatusTests', function() {
     assertLT(0, deleteProfileCheckbox.clientHeight);
 
     const disconnectConfirm = signoutDialog.$.disconnectConfirm;
-    assertTrue(!!disconnectConfirm);
     assertFalse(disconnectConfirm.hidden);
 
     disconnectConfirm.click();
@@ -307,10 +313,13 @@ suite('SyncStatusTests', function() {
     assertTrue(signoutDialog.$.dialog.open);
     assertTrue(!!signoutDialog.shadowRoot.querySelector('#deleteProfile'));
 
-    const disconnectConfirm =
-        signoutDialog.shadowRoot.querySelector<HTMLElement>(
-            '#disconnectConfirm');
-    assertTrue(!!disconnectConfirm);
+    const dialogBody = signoutDialog.shadowRoot.querySelector('[slot=body]');
+    assertTrue(!!dialogBody);
+    assertEquals(
+        loadTimeData.getString('syncDisconnectExplanation'),
+        dialogBody.textContent);
+
+    const disconnectConfirm = signoutDialog.$.disconnectConfirm;
     assertFalse(disconnectConfirm.hidden);
 
     syncBrowserProxy.resetResolver('signOut');
@@ -322,35 +331,6 @@ suite('SyncStatusTests', function() {
     });
     const deleteProfile = await syncBrowserProxy.whenCalled('signOut');
     assertFalse(deleteProfile);
-  });
-
-  test('SignOutDialogManagedProfileHtmlEscaping', async function() {
-    loadTimeData.overrideValues({
-      syncDisconnectManagedProfileExplanation: 'Explanation $1',
-    });
-
-    await syncBrowserProxy.whenCalled('getSyncStatus');
-    await simulateSyncStatus({
-      signedInState: SignedInState.SYNCING,
-      domain: 'example.com<a href="http://example.com">link</a>',
-      syncSystemEnabled: true,
-      statusAction: StatusAction.NO_ACTION,
-    });
-
-    Router.getInstance().navigateTo(routes.SIGN_OUT);
-    await microtasksFinished();
-
-    const signoutDialog =
-        peoplePage.shadowRoot.querySelector('settings-signout-dialog');
-    assertTrue(!!signoutDialog);
-    assertTrue(signoutDialog.$.dialog.open);
-
-    const dialogBody = signoutDialog.shadowRoot.querySelector('[slot=body]');
-    assertTrue(!!dialogBody);
-    assertEquals(
-        'Explanation example.com<a href="http://example.com">link</a>',
-        dialogBody.textContent);
-    assertFalse(!!dialogBody.querySelector('a'));
   });
 
   test('getProfileStatsCount', async function() {
@@ -435,6 +415,11 @@ suite('SyncStatusTests', function() {
 suite('SyncSettings', function() {
   setup(async function() {
     syncBrowserProxy = new TestSyncBrowserProxy();
+    // The sync settings only exist for syncing users.
+    syncBrowserProxy.testSyncStatus = {
+      signedInState: SignedInState.SYNCING,
+      statusAction: StatusAction.NO_ACTION,
+    };
     SyncBrowserProxyImpl.setInstance(syncBrowserProxy);
 
     profileInfoBrowserProxy = new TestProfileInfoBrowserProxy();
@@ -454,6 +439,15 @@ suite('SyncSettings', function() {
   teardown(function() {
     reset();
   });
+
+  // <if expr="not is_chromeos">
+  test('Toast', async function() {
+    assertFalse(peoplePage.$.toast.open);
+    webUIListenerCallback('sync-settings-saved');
+    await microtasksFinished();
+    assertTrue(peoplePage.$.toast.open);
+  });
+  // </if>
 
   test('ShowCorrectSyncRow', async function() {
     assertTrue(isChildVisible(peoplePage, '#sync-setup'));

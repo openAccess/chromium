@@ -30,6 +30,7 @@
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/compose/compose.mojom.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
@@ -55,6 +56,7 @@
 #include "components/segmentation_platform/public/testing/mock_segmentation_platform_service.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "components/unified_consent/pref_names.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -248,11 +250,8 @@ class ChromeComposeClientBrowserTest : public InProcessBrowserTest {
   }
 
   void InsertText() {
-    std::string js =
-        "var el = document.getElementById('test_field');"
-        "el.focus();"
-        "document.execCommand('insertText', false, 'a');";
-    ASSERT_TRUE(content::ExecJs(web_contents(), js));
+    FocusField();
+    content::SimulateCharTyped(web_contents(), u'a');
   }
 
   // Focuses the textarea with id 'test_field' in the DOM.

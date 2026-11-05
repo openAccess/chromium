@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <array>
+
+#include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
@@ -39,7 +42,7 @@ std::string ParamToTestSuffix(
 }
 
 // Permutations of supported parameters.
-const ProfileTypeChoiceTestParam kTestParams[] = {
+const base::NoDestructor kTestParams(std::to_array<ProfileTypeChoiceTestParam>({
     {.pixel_test_param = {.test_suffix = "Regular"}},
     {.pixel_test_param = {.test_suffix = "RegularRefreshedUI"},
      .use_refreshed_ui = true},
@@ -53,7 +56,7 @@ const ProfileTypeChoiceTestParam kTestParams[] = {
     {.pixel_test_param = {.test_suffix = "DarkDeclineSigninCTAExperiment",
                           .use_dark_theme = true},
      .decline_signin_cta_experiment_enabled = true},
-};
+}));
 
 const char kRemoveAvatarIconJS[] =
     "(() => {"
@@ -118,8 +121,9 @@ class ProfileTypeChoiceUIPixelTest
     views::Widget* widget = GetWidgetForScreenshot();
 
     auto* test_info = testing::UnitTest::GetInstance()->current_test_info();
-    const std::string screenshot_name =
-        base::StrCat({test_info->test_suite_name(), "_", test_info->name()});
+    const std::string baseline = "8481376";
+    const std::string screenshot_name = base::StrCat(
+        {test_info->test_suite_name(), "_", test_info->name(), "_", baseline});
 
     return VerifyPixelUi(widget, "ProfileTypeChoiceUIPixelTest",
                          screenshot_name) != ui::test::ActionResult::kFailed;
@@ -146,5 +150,5 @@ IN_PROC_BROWSER_TEST_P(ProfileTypeChoiceUIPixelTest, InvokeUi_default) {
 
 INSTANTIATE_TEST_SUITE_P(,
                          ProfileTypeChoiceUIPixelTest,
-                         testing::ValuesIn(kTestParams),
+                         testing::ValuesIn(*kTestParams),
                          &ParamToTestSuffix);

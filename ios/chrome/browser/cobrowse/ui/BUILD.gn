@@ -18,12 +18,16 @@ source_set("ui") {
   deps = [
     ":constants",
     "//base",
+    "//components/strings",
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/assistant/ui",
+    "//ios/chrome/browser/cobrowse/shared/metrics",
+    "//ios/chrome/browser/cobrowse/shared/metrics:metrics_constants",
     "//ios/chrome/browser/composebox/ui",
     "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/browser/shared/public/features:system_flags",
     "//ios/chrome/browser/shared/ui/elements",
+    "//ios/chrome/browser/shared/ui/image",
     "//ios/chrome/browser/shared/ui/symbols",
     "//ios/chrome/browser/shared/ui/util",
     "//ios/chrome/common/ui/colors",
@@ -40,6 +44,34 @@ source_set("constants") {
   ]
 }
 
+source_set("unit_tests") {
+  testonly = true
+  sources = [
+    "assistant_aim_header_view_unittest.mm",
+    "assistant_aim_history_view_controller_unittest.mm",
+    "assistant_aim_view_controller_unittest.mm",
+    "assistant_aim_zero_state_view_controller_unittest.mm",
+  ]
+  deps = [
+    ":constants",
+    ":ui",
+    "//base",
+    "//base/test:test_support",
+    "//components/strings",
+    "//ios/chrome/app/strings",
+    "//ios/chrome/browser/cobrowse/shared/metrics",
+    "//ios/chrome/browser/cobrowse/shared/metrics:metrics_constants",
+    "//ios/chrome/browser/shared/public/features",
+    "//ios/chrome/browser/shared/ui/elements",
+    "//ios/chrome/test:test_support",
+    "//ios/chrome/test/app:test_support",
+    "//testing/gtest",
+    "//third_party/ocmock",
+    "//ui/base",
+  ]
+  frameworks = [ "UIKit.framework" ]
+}
+
 source_set("eg2_tests") {
   configs += [ "//build/config/ios:xctest_config" ]
   testonly = true
@@ -54,10 +86,14 @@ source_set("eg2_tests") {
     "//ios/chrome/browser/composebox/public:features",
     "//ios/chrome/browser/composebox/shared/ui:ui_constants",
     "//ios/chrome/browser/scene/ui:constants",
+    "//ios/chrome/browser/shared/model/prefs:pref_names",
     "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/browser/shared/public/snackbar:constants",
     "//ios/chrome/browser/start_surface/ui_bundled:test_utils",
+    "//ios/chrome/browser/tab_picker/ui:ui_constants",
     "//ios/chrome/browser/tab_switcher/ui_bundled/tab_grid:tab_grid_ui_constants",
+    "//ios/chrome/browser/tab_switcher/ui_bundled/test:utils",
+    "//ios/chrome/test:eg_test_support+eg2",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
     "//ios/testing/earl_grey:eg_test_support+eg2",
     "//net:test_support",

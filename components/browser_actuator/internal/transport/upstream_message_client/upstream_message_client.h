@@ -16,8 +16,8 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
-#include "components/browser_actuator/internal/metrics_utils.h"
-#include "components/browser_actuator/public/common.h"
+#include "components/browser_actuator/internal/transport/metrics_utils.h"
+#include "components/browser_actuator/public/transport/common.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "third_party/protobuf/src/google/protobuf/message_lite.h"
 #include "url/gurl.h"
@@ -36,6 +36,10 @@ struct EndpointResponse;
 }  // namespace endpoint_fetcher
 
 namespace browser_actuator {
+class ActuatorUpstreamMessage;
+}  // namespace browser_actuator
+
+namespace browser_actuator::transport {
 
 // Encapsulates the network logic to send upstream actuator messages to
 // OnePlatform via standard HTTPS POST requests (EndpointFetcher).
@@ -54,8 +58,9 @@ class UpstreamMessageClient {
   UpstreamMessageClient(const UpstreamMessageClient&) = delete;
   UpstreamMessageClient& operator=(const UpstreamMessageClient&) = delete;
 
-  // Sends an upstream message payload to the server.
-  virtual void SendUpstreamMessage(
+  // Assembles an `ActuatorUpstreamMessage` envelope for `message`, initiates
+  // the HTTPS POST to the server, and returns the assembled envelope.
+  virtual ActuatorUpstreamMessage SendUpstreamMessage(
       std::string_view session_id,
       int64_t client_sequence_number,
       std::optional<int64_t> responding_to_sequence_number,
@@ -84,6 +89,6 @@ class UpstreamMessageClient {
   base::WeakPtrFactory<UpstreamMessageClient> weak_ptr_factory_{this};
 };
 
-}  // namespace browser_actuator
+}  // namespace browser_actuator::transport
 
 #endif  // COMPONENTS_BROWSER_ACTUATOR_INTERNAL_TRANSPORT_UPSTREAM_MESSAGE_CLIENT_UPSTREAM_MESSAGE_CLIENT_H_

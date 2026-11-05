@@ -8,6 +8,7 @@
 #include "third_party/nearby/src/internal/platform/implementation/webrtc.h"
 
 #include <memory>
+#include <vector>
 
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/synchronization/lock.h"
@@ -57,6 +58,10 @@ class WebRtcMedium : public api::WebRtcMedium {
       std::string_view self_id,
       const location::nearby::connections::LocationHint& location_hint) override;
 
+  std::unique_ptr<webrtc::PeerConnectionObserver>
+  CreatePeerConnectionObserverWrapperForTesting(
+      webrtc::PeerConnectionObserver* observer);
+
  private:
   void FetchIceServers(webrtc::PeerConnectionObserver* observer,
                        PeerConnectionCallback callback);
@@ -71,14 +76,12 @@ class WebRtcMedium : public api::WebRtcMedium {
       EXCLUSIVE_LOCKS_REQUIRED(peer_connection_factory_lock_);
   void InitNetworkThread(base::OnceClosure complete_callback);
   void InitSignalingThread(base::OnceClosure complete_callback);
-  void InitWorkerThread(base::OnceClosure complete_callback);
   void ShutdownNetworkManager();
 
   // base::Thread is required here because we need to be able to Start/Stop the
   // threads explicitly with along with the peer connection factory instance.
   base::Thread chrome_network_thread_;
   base::Thread chrome_signaling_thread_;
-  base::Thread chrome_worker_thread_;
 
   // These webrtc::Thread* are jingle thread wrappers around the corresponding
   // base::Thread. They get cleaned up on thread shutdown so we don't need to
@@ -86,7 +89,6 @@ class WebRtcMedium : public api::WebRtcMedium {
   // RAW_PTR_EXCLUSION: Performance.
   RAW_PTR_EXCLUSION webrtc::Thread* rtc_network_thread_ = nullptr;
   RAW_PTR_EXCLUSION webrtc::Thread* rtc_signaling_thread_ = nullptr;
-  RAW_PTR_EXCLUSION webrtc::Thread* rtc_worker_thread_ = nullptr;
 
   // Used to guard access to peer_connection_factory_.
   base::Lock peer_connection_factory_lock_;
@@ -94,6 +96,11 @@ class WebRtcMedium : public api::WebRtcMedium {
   // the passed task runner the first time a Peer Connection is requested.
   webrtc::scoped_refptr<webrtc::PeerConnectionFactoryInterface>
       peer_connection_factory_ GUARDED_BY(peer_connection_factory_lock_);
+
+  // Owns `PeerConnectionObserverWrapper` instances passed to WebRTC
+  // `PeerConnection`s so they outlive `chrome_signaling_thread_`.
+  std::vector<std::unique_ptr<webrtc::PeerConnectionObserver>>
+      observer_wrappers_ GUARDED_BY(peer_connection_factory_lock_);
 
   mojo::SharedRemote<network::mojom::P2PSocketManager> p2p_socket_manager_;
   mojo::SharedRemote<::sharing::mojom::MdnsResponderFactory>

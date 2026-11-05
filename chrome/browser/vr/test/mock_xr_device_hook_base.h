@@ -24,7 +24,6 @@
 #include "device/vr/public/mojom/vr_service.mojom.h"
 #include "device/vr/public/mojom/xr_hand_tracking_data.mojom.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/gfx/geometry/quaternion.h"
 #include "ui/gfx/geometry/transform.h"
@@ -82,6 +81,11 @@ class MockXRDeviceHookBase : public device_test::mojom::XRTestHook {
 
   // Event simulation:
   void SimulateSessionLost();
+  // The runtime stops the session. After the browser ends it, it stays IDLE
+  // until SimulateSessionReady().
+  void SimulateSessionStopped();
+  // The runtime makes the stopped session READY to run again.
+  void SimulateSessionReady();
   void SimulateVisibilityBlurred();
   void SimulateInteractionProfileChanged(
       device::mojom::OpenXrInteractionProfileType profile);

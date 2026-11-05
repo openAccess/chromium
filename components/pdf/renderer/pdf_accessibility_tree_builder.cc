@@ -5,13 +5,18 @@
 #include "components/pdf/renderer/pdf_accessibility_tree_builder.h"
 
 #include <cmath>
+#include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
+#include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/i18n/break_iterator.h"
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversion_utils.h"
+#include "components/pdf/renderer/pdf_accessibility_table_detector.h"
 #include "components/pdf/renderer/pdf_accessibility_tree_builder_heuristic.h"
 #include "components/pdf/renderer/pdf_accessibility_tree_builder_structure.h"
 #include "components/strings/grit/components_strings.h"
@@ -31,20 +36,40 @@ namespace {
 // The upper (exclusive) bound for valid 7-bit ASCII code points [0, 127].
 constexpr uint32_t kMaxAsciiCodePoint = 128;
 
-ax::mojom::Role GetRoleForButtonType(chrome_pdf::ButtonType button_type) {
-  switch (button_type) {
-    case chrome_pdf::ButtonType::kRadioButton:
-      return ax::mojom::Role::kRadioButton;
-    case chrome_pdf::ButtonType::kCheckBox:
-      return ax::mojom::Role::kCheckBox;
-    case chrome_pdf::ButtonType::kPushButton:
-      return ax::mojom::Role::kButton;
-  }
-}
-
 bool IsAsciiWhitespace(uint32_t char_code) {
   return char_code < kMaxAsciiCodePoint &&
          base::IsAsciiWhitespace(static_cast<char>(char_code));
+}
+
+// Returns the starting character index for each of `text_runs`.
+std::vector<uint32_t> GetTextRunStartIndices(
+    const std::vector<chrome_pdf::AccessibilityTextRunInfo>& text_runs) {
+  std::vector<uint32_t> start_indices;
+  start_indices.reserve(text_runs.size());
+  uint32_t current_index = 0;
+  for (const auto& run : text_runs) {
+    start_indices.push_back(current_index);
+    current_index += run.len;
+  }
+  return start_indices;
+}
+
+// Returns copies of the annotations in `page_objects` with text run indices
+// remapped to `result.text_runs`, or `std::nullopt` if no run was split.
+std::optional<chrome_pdf::AccessibilityPageObjects> GetSplitPageObjects(
+    const pdf::SplitTextRunsResult& result,
+    const chrome_pdf::AccessibilityPageObjects& page_objects) {
+  if (!features::IsPdfAccessibilityHeuristicEnhancementsEnabled() ||
+      result.text_runs.empty()) {
+    return std::nullopt;
+  }
+  chrome_pdf::AccessibilityPageObjects split_page_objects;
+  split_page_objects.links = page_objects.links;
+  split_page_objects.images = page_objects.images;
+  split_page_objects.highlights = page_objects.highlights;
+  split_page_objects.graphics = page_objects.graphics;
+  pdf::RemapTextRunIndices(result.first_split_run_indices, split_page_objects);
+  return split_page_objects;
 }
 
 // Holds sanitized text and corresponding character offsets for a text run.
@@ -146,6 +171,45 @@ bool IsValidFontWeight(float font_weight) {
   return font_weight <= kMaxValidBoldValue && font_weight >= 0;
 }
 
+// Appends, in tree order, the names of the static text nodes under `node`.
+// Popup notes are skipped since their text is not part of the page content.
+void AppendStaticTextDescendants(
+    const ui::AXNodeData& node,
+    const base::flat_map<ui::AXNodeID, const ui::AXNodeData*>& nodes_by_id,
+    std::string& text) {
+  CHECK(features::IsPdfAccessibilityHeuristicEnhancementsEnabled());
+  for (ui::AXNodeID child_id : node.child_ids) {
+    auto it = nodes_by_id.find(child_id);
+    if (it == nodes_by_id.end()) {
+      continue;
+    }
+    const ui::AXNodeData& child = *it->second;
+    if (child.role == ax::mojom::Role::kStaticText &&
+        child.HasStringAttribute(ax::mojom::StringAttribute::kName)) {
+      text += child.GetStringAttribute(ax::mojom::StringAttribute::kName);
+    } else if (child.role != ax::mojom::Role::kNote) {
+      AppendStaticTextDescendants(child, nodes_by_id, text);
+    }
+  }
+}
+
+bool ShouldUseStructureMode(
+    const chrome_pdf::AccessibilityStructureElement* page_structure_tree) {
+  return page_structure_tree &&
+         pdf::PdfAccessibilityTreeBuilderStructure::StructureTreeHasContent(
+             page_structure_tree);
+}
+
+std::vector<pdf::RulingLine> GetRulingLines(
+    const chrome_pdf::AccessibilityPageObjects& page_objects,
+    bool use_structure_mode) {
+  return features::IsPdfAccessibilityHeuristicEnhancementsEnabled() &&
+                 !use_structure_mode
+             ? pdf::ExtractRulingLines(page_objects.line_segments,
+                                       page_objects.filled_rects)
+             : std::vector<pdf::RulingLine>();
+}
+
 }  // namespace
 
 namespace pdf {
@@ -166,19 +230,34 @@ PdfAccessibilityTreeBuilder::PdfAccessibilityTreeBuilder(
     std::map<int32_t, PdfAccessibilityTree::AnnotationInfo>*
         node_id_to_annotation_info)
     : mark_headings_using_heuristic_(mark_headings_using_heuristic),
+      // Use structure tree mode if a structure tree exists. Structure tree mode
+      // preserves semantic structure from the PDF's tags and inserts any
+      // unassociated text runs as additional content. Fall back to heuristic
+      // mode only when no structure tree is available.
+      use_structure_mode_(ShouldUseStructureMode(page_structure_tree)),
+      ruling_lines_(GetRulingLines(page_objects, use_structure_mode_)),
+      split_result_(
+          SplitTextRunsAtVerticalDividers(ruling_lines_, chars, text_runs)),
+      text_run_start_indices_(GetTextRunStartIndices(
+          split_result_.text_runs.empty() ? text_runs
+                                          : split_result_.text_runs)),
+      split_page_objects_(GetSplitPageObjects(split_result_, page_objects)),
       text_runs_(text_runs),
       chars_(chars),
-      links_(page_objects.links),
-      images_(page_objects.images),
-      highlights_(page_objects.highlights),
-      text_fields_(page_objects.form_fields.text_fields),
-      buttons_(page_objects.form_fields.buttons),
-      choice_fields_(page_objects.form_fields.choice_fields),
+      links_(split_page_objects_ ? split_page_objects_->links
+                                 : page_objects.links),
+      images_(split_page_objects_ ? split_page_objects_->images
+                                  : page_objects.images),
+      highlights_(split_page_objects_ ? split_page_objects_->highlights
+                                      : page_objects.highlights),
+      graphics_(split_page_objects_ ? split_page_objects_->graphics
+                                    : page_objects.graphics),
       page_structure_tree_(page_structure_tree),
       page_index_(page_index),
       root_node_(root_node),
       container_obj_(container_obj),
       nodes_(nodes),
+      first_node_index_(nodes->size()),
       node_id_to_page_char_index_(node_id_to_page_char_index),
       node_id_to_annotation_info_(node_id_to_annotation_info) {
   page_node_ = CreateAndAppendNode(ax::mojom::Role::kRegion,
@@ -191,37 +270,23 @@ PdfAccessibilityTreeBuilder::PdfAccessibilityTreeBuilder(
   page_node_->relative_bounds.bounds = gfx::RectF(page_info.bounds);
   root_node_->relative_bounds.bounds.Union(page_node_->relative_bounds.bounds);
   root_node_->child_ids.push_back(page_node_->id);
-
-  if (!text_runs.empty()) {
-    text_run_start_indices_.reserve(text_runs.size());
-    text_run_start_indices_.push_back(0);
-    for (size_t i = 0; i < text_runs.size() - 1; ++i) {
-      text_run_start_indices_.push_back(text_run_start_indices_[i] +
-                                        text_runs[i].len);
-    }
-  }
 }
 
 PdfAccessibilityTreeBuilder::~PdfAccessibilityTreeBuilder() = default;
 
 void PdfAccessibilityTreeBuilder::BuildPageTree() {
-  // Use structure tree mode if a structure tree exists. Structure tree mode
-  // preserves semantic structure from the PDF's tags and inserts any
-  // unassociated text runs as additional content. Fall back to heuristic mode
-  // only when no structure tree is available.
-  bool use_structure_mode =
-      page_structure_tree_ &&
-      PdfAccessibilityTreeBuilderStructure::StructureTreeHasContent(
-          page_structure_tree_);
-
   VLOG(1) << "PDF page " << page_index_ << ": "
-          << (use_structure_mode ? "structure tree" : "heuristic") << " mode";
+          << (use_structure_mode_ ? "structure tree" : "heuristic") << " mode";
 
-  if (use_structure_mode) {
+  if (use_structure_mode_) {
     PdfAccessibilityTreeBuilderStructure(*this, page_structure_tree_)
         .BuildPageTree();
   } else {
     PdfAccessibilityTreeBuilderHeuristic(*this).BuildPageTree();
+  }
+
+  if (features::IsPdfAccessibilityHeuristicEnhancementsEnabled()) {
+    NameHeadingsFromContents();
   }
 }
 
@@ -300,6 +365,38 @@ bool PdfAccessibilityTreeBuilder::IsBoldStyle(
 float PdfAccessibilityTreeBuilder::GetFontWeight(
     const chrome_pdf::AccessibilityTextStyleInfo& style) {
   return IsValidFontWeight(style.font_weight) ? style.font_weight : 0.0f;
+}
+
+void PdfAccessibilityTreeBuilder::NameHeadingsFromContents() {
+  CHECK(features::IsPdfAccessibilityHeuristicEnhancementsEnabled());
+  auto page_nodes = base::span(*nodes_).subspan(first_node_index_);
+
+  const auto nodes_by_id =
+      base::MakeFlatMap<ui::AXNodeID, const ui::AXNodeData*>(
+          page_nodes, /*comp=*/{},
+          [](const std::unique_ptr<ui::AXNodeData>& node) {
+            return std::make_pair(node->id, node.get());
+          });
+
+  for (const std::unique_ptr<ui::AXNodeData>& node : page_nodes) {
+    if (node->role != ax::mojom::Role::kHeading) {
+      continue;
+    }
+
+    std::string text;
+    AppendStaticTextDescendants(*node, nodes_by_id, text);
+
+    // Text runs routinely carry padding spaces used for glyph positioning. They
+    // belong in the text, but in a name they only add silence when a screen
+    // reader announces the heading.
+    base::TrimWhitespaceASCII(text, base::TRIM_ALL, &text);
+    if (text.empty()) {
+      continue;
+    }
+
+    node->SetNameFrom(ax::mojom::NameFrom::kContents);
+    node->SetNameChecked(text);
+  }
 }
 
 void PdfAccessibilityTreeBuilder::AddFontWeightAttributes(
@@ -438,178 +535,6 @@ ui::AXNodeData* PdfAccessibilityTreeBuilder::CreatePopupNoteNode(
   popup_note_node->child_ids.push_back(static_popup_note_text_node->id);
 
   return popup_note_node;
-}
-
-ui::AXNodeData* PdfAccessibilityTreeBuilder::CreateTextFieldNode(
-    const chrome_pdf::AccessibilityTextFieldInfo& text_field) {
-  ax::mojom::Restriction restriction = text_field.is_read_only
-                                           ? ax::mojom::Restriction::kReadOnly
-                                           : ax::mojom::Restriction::kNone;
-  ui::AXNodeData* text_field_node =
-      CreateAndAppendNode(ax::mojom::Role::kTextField, restriction);
-
-  text_field_node->AddStringAttribute(ax::mojom::StringAttribute::kName,
-                                      text_field.name);
-  text_field_node->AddStringAttribute(ax::mojom::StringAttribute::kValue,
-                                      text_field.value);
-  text_field_node->AddState(ax::mojom::State::kFocusable);
-  if (text_field.is_required) {
-    text_field_node->AddState(ax::mojom::State::kRequired);
-  }
-  if (text_field.is_password) {
-    text_field_node->AddState(ax::mojom::State::kProtected);
-  }
-  text_field_node->relative_bounds.bounds = text_field.bounds;
-  return text_field_node;
-}
-
-ui::AXNodeData* PdfAccessibilityTreeBuilder::CreateButtonNode(
-    const chrome_pdf::AccessibilityButtonInfo& button) {
-  ax::mojom::Restriction restriction = button.is_read_only
-                                           ? ax::mojom::Restriction::kReadOnly
-                                           : ax::mojom::Restriction::kNone;
-  ui::AXNodeData* button_node =
-      CreateAndAppendNode(GetRoleForButtonType(button.type), restriction);
-  button_node->AddStringAttribute(ax::mojom::StringAttribute::kName,
-                                  button.name);
-  button_node->AddState(ax::mojom::State::kFocusable);
-
-  if (button.type == chrome_pdf::ButtonType::kRadioButton ||
-      button.type == chrome_pdf::ButtonType::kCheckBox) {
-    ax::mojom::CheckedState checkedState = button.is_checked
-                                               ? ax::mojom::CheckedState::kTrue
-                                               : ax::mojom::CheckedState::kNone;
-    button_node->SetCheckedState(checkedState);
-    button_node->AddStringAttribute(ax::mojom::StringAttribute::kValue,
-                                    button.value);
-    button_node->AddIntAttribute(ax::mojom::IntAttribute::kSetSize,
-                                 button.control_count);
-    button_node->AddIntAttribute(ax::mojom::IntAttribute::kPosInSet,
-                                 button.control_index + 1);
-    button_node->SetDefaultActionVerb(ax::mojom::DefaultActionVerb::kCheck);
-  } else {
-    button_node->SetDefaultActionVerb(ax::mojom::DefaultActionVerb::kPress);
-  }
-
-  button_node->relative_bounds.bounds = button.bounds;
-  return button_node;
-}
-
-ui::AXNodeData* PdfAccessibilityTreeBuilder::CreateListboxOptionNode(
-    const chrome_pdf::AccessibilityChoiceFieldOptionInfo& choice_field_option,
-    ax::mojom::Restriction restriction) {
-  ui::AXNodeData* listbox_option_node =
-      CreateAndAppendNode(ax::mojom::Role::kListBoxOption, restriction);
-
-  listbox_option_node->AddStringAttribute(ax::mojom::StringAttribute::kName,
-                                          choice_field_option.name);
-  listbox_option_node->AddBoolAttribute(ax::mojom::BoolAttribute::kSelected,
-                                        choice_field_option.is_selected);
-  listbox_option_node->AddState(ax::mojom::State::kFocusable);
-  listbox_option_node->SetDefaultActionVerb(
-      ax::mojom::DefaultActionVerb::kSelect);
-
-  return listbox_option_node;
-}
-
-ui::AXNodeData* PdfAccessibilityTreeBuilder::CreateListboxNode(
-    const chrome_pdf::AccessibilityChoiceFieldInfo& choice_field,
-    ui::AXNodeData* control_node) {
-  ax::mojom::Restriction restriction = choice_field.is_read_only
-                                           ? ax::mojom::Restriction::kReadOnly
-                                           : ax::mojom::Restriction::kNone;
-  ui::AXNodeData* listbox_node =
-      CreateAndAppendNode(ax::mojom::Role::kListBox, restriction);
-
-  if (choice_field.type != chrome_pdf::ChoiceFieldType::kComboBox) {
-    listbox_node->AddStringAttribute(ax::mojom::StringAttribute::kName,
-                                     choice_field.name);
-  }
-
-  ui::AXNodeData* first_selected_option = nullptr;
-  for (const chrome_pdf::AccessibilityChoiceFieldOptionInfo& option :
-       choice_field.options) {
-    ui::AXNodeData* listbox_option_node =
-        CreateListboxOptionNode(option, restriction);
-    if (!first_selected_option && listbox_option_node->GetBoolAttribute(
-                                      ax::mojom::BoolAttribute::kSelected)) {
-      first_selected_option = listbox_option_node;
-    }
-    // TODO(crbug.com/40661774): Add `listbox_option_node` specific bounds
-    // here.
-    listbox_option_node->relative_bounds.bounds = choice_field.bounds;
-    listbox_node->child_ids.push_back(listbox_option_node->id);
-  }
-
-  if (control_node && first_selected_option) {
-    control_node->AddIntAttribute(ax::mojom::IntAttribute::kActivedescendantId,
-                                  first_selected_option->id);
-  }
-
-  if (choice_field.is_multi_select) {
-    listbox_node->AddState(ax::mojom::State::kMultiselectable);
-  }
-  listbox_node->AddState(ax::mojom::State::kFocusable);
-  listbox_node->relative_bounds.bounds = choice_field.bounds;
-  return listbox_node;
-}
-
-ui::AXNodeData* PdfAccessibilityTreeBuilder::CreateComboboxInputNode(
-    const chrome_pdf::AccessibilityChoiceFieldInfo& choice_field,
-    ax::mojom::Restriction restriction) {
-  ax::mojom::Role input_role = choice_field.has_editable_text_box
-                                   ? ax::mojom::Role::kTextFieldWithComboBox
-                                   : ax::mojom::Role::kComboBoxMenuButton;
-  ui::AXNodeData* combobox_input_node =
-      CreateAndAppendNode(input_role, restriction);
-  combobox_input_node->AddStringAttribute(ax::mojom::StringAttribute::kName,
-                                          choice_field.name);
-  for (const chrome_pdf::AccessibilityChoiceFieldOptionInfo& option :
-       choice_field.options) {
-    if (option.is_selected) {
-      combobox_input_node->AddStringAttribute(
-          ax::mojom::StringAttribute::kValue, option.name);
-      break;
-    }
-  }
-
-  combobox_input_node->AddState(ax::mojom::State::kFocusable);
-  combobox_input_node->relative_bounds.bounds = choice_field.bounds;
-  if (input_role == ax::mojom::Role::kComboBoxMenuButton) {
-    combobox_input_node->SetDefaultActionVerb(
-        ax::mojom::DefaultActionVerb::kOpen);
-  }
-
-  return combobox_input_node;
-}
-
-ui::AXNodeData* PdfAccessibilityTreeBuilder::CreateComboboxNode(
-    const chrome_pdf::AccessibilityChoiceFieldInfo& choice_field) {
-  ax::mojom::Restriction restriction = choice_field.is_read_only
-                                           ? ax::mojom::Restriction::kReadOnly
-                                           : ax::mojom::Restriction::kNone;
-  ui::AXNodeData* combobox_node =
-      CreateAndAppendNode(ax::mojom::Role::kComboBoxGrouping, restriction);
-  ui::AXNodeData* input_element =
-      CreateComboboxInputNode(choice_field, restriction);
-  ui::AXNodeData* list_element = CreateListboxNode(choice_field, input_element);
-  input_element->AddIntListAttribute(ax::mojom::IntListAttribute::kControlsIds,
-                                     std::vector<int32_t>{list_element->id});
-  combobox_node->child_ids.push_back(input_element->id);
-  combobox_node->child_ids.push_back(list_element->id);
-  combobox_node->AddState(ax::mojom::State::kFocusable);
-  combobox_node->relative_bounds.bounds = choice_field.bounds;
-  return combobox_node;
-}
-
-ui::AXNodeData* PdfAccessibilityTreeBuilder::CreateChoiceFieldNode(
-    const chrome_pdf::AccessibilityChoiceFieldInfo& choice_field) {
-  switch (choice_field.type) {
-    case chrome_pdf::ChoiceFieldType::kListBox:
-      return CreateListboxNode(choice_field, /*control_node=*/nullptr);
-    case chrome_pdf::ChoiceFieldType::kComboBox:
-      return CreateComboboxNode(choice_field);
-  }
 }
 
 #if BUILDFLAG(ENABLE_SCREEN_AI_SERVICE)

@@ -36,6 +36,7 @@
 #include "base/debug/dump_without_crashing.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 #include "third_party/blink/public/mojom/frame/user_activation_notification_type.mojom-blink.h"
@@ -235,7 +236,7 @@ const ComputedStyle* GetComputedStyleFromScrollbar(
 
     if (const LayoutCustomScrollbarPart* scroll_corner_layout_object =
             scrollable_area->ScrollCorner()) {
-      return &scroll_corner_layout_object->StyleRef();
+      return &scroll_corner_layout_object->Style();
     }
   }
 
@@ -256,11 +257,6 @@ const ComputedStyle* GetComputedStyleFromScrollbar(
 // The amount of time to wait for a cursor update on style and layout changes
 // Set to 50Hz, no need to be faster than common screen refresh rate
 static constexpr base::TimeDelta kCursorUpdateInterval = base::Milliseconds(20);
-
-// The maximum size a cursor can be without falling back to the default cursor
-// when intersecting browser native UI.
-// https://developer.mozilla.org/en-US/docs/Web/CSS/cursor#icon_size_limits.
-static const int kMaximumCursorSizeWithoutFallback = 32;
 
 // The minimum amount of time an element stays active after a ShowPress
 // This is roughly 9 frames, which should be long enough to be noticeable.
@@ -420,10 +416,15 @@ HitTestResult EventHandler::HitTestResultAtLocation(
           if (hit_type & HitTestRequest::kHitTestVisualOverflow) {
             // Apply ancestor transforms to location rect
             PhysicalRect local_rect = location.BoundingBox();
+            MapCoordinatesFlags map_flags = {
+                MapCoordinatesMode::kTraverseDocumentBoundaries};
+            if (RuntimeEnabledFeatures::
+                    UsePaintGeometryForIntersectionEnabled()) {
+              map_flags.Put(MapCoordinatesMode::kUseGeometryMapper);
+            }
             PhysicalRect main_frame_rect =
                 frame_view->GetLayoutView()->LocalToAncestorRect(
-                    local_rect, main_view->GetLayoutView(),
-                    {MapCoordinatesMode::kTraverseDocumentBoundaries});
+                    local_rect, main_view->GetLayoutView(), map_flags);
             adjusted_location = HitTestLocation(main_frame_rect);
           } else {
             // Don't apply ancestor transforms to bounding box
@@ -599,9 +600,8 @@ std::optional<ui::Cursor> EventHandler::SelectCursor(
   // style recalc, for the cursor.
   const ComputedStyle* area_style = nullptr;
   if (auto* area = DynamicTo<HTMLAreaElement>(node);
-      area && !hit_layout_object &&
-      RuntimeEnabledFeatures::HTMLAreaElementDisplayNoneEnabled()) {
-    area_style = area->GetComputedStyle();
+      area && !hit_layout_object) {
+    area_style = ComputedStyle::NullifyEnsured(area->GetComputedStyle());
     if (area_style) {
       HTMLImageElement* image = area->ImageElement();
       hit_layout_object = image ? image->GetLayoutObject() : nullptr;
@@ -615,7 +615,7 @@ std::optional<ui::Cursor> EventHandler::SelectCursor(
   const LayoutObject& layout_object = *hit_layout_object;
   if (!area_style && ShouldShowResizeForNode(layout_object, location)) {
     const LayoutBox* box = layout_object.EnclosingLayer()->GetLayoutBox();
-    EResize resize = box->StyleRef().UsedResize();
+    EResize resize = box->Style().UsedResize();
     switch (resize) {
       case EResize::kVertical:
         return NorthSouthResizeCursor();
@@ -649,7 +649,7 @@ std::optional<ui::Cursor> EventHandler::SelectCursor(
 
   const ComputedStyle& style = area_style        ? *area_style
                                : scrollbar_style ? *scrollbar_style
-                                                 : layout_object.StyleRef();
+                                                 : layout_object.Style();
 
   if (const CursorList* cursors = style.Cursors()) {
     for (const auto& cursor : *cursors) {
@@ -664,16 +664,15 @@ std::optional<ui::Cursor> EventHandler::SelectCursor(
       CHECK(style_image->CachedImage());
 
       float scale = style_image->ImageScaleFactor();
-      Image* image = style_image->CachedImage()->GetImage();
+      scoped_refptr<Image> image = style_image->CachedImage()->GetImage();
 
       const float device_scale_factor =
           page->GetChromeClient().GetScreenInfo(*frame_).device_scale_factor;
 
-      scoped_refptr<Image> svg_image_holder;
       // If the image is an SVG, then adjust the scale to reflect the device
       // scale factor so that the SVG can be rasterized in the native
       // resolution and scaled down to the correct size for the cursor.
-      if (auto* svg_image = DynamicTo<SVGImage>(image)) {
+      if (auto* svg_image = DynamicTo<SVGImage>(image.get())) {
         // Adjust the total scale factor. The image scale factor doesn't
         // really affect SVG images though (as is evident below), so this
         // should probably be dropped (scale should be set to the DPR).
@@ -689,12 +688,11 @@ std::optional<ui::Cursor> EventHandler::SelectCursor(
             kRespectImageOrientation);
 
         // TODO(fs): Should pass proper URL. Use StyleImage::GetImage.
-        svg_image_holder = SVGImageForContainer::Create(
+        image = SVGImageForContainer::Create(
             *svg_image, size_in_device_pixels, device_scale_factor, nullptr,
             frame_->GetDocument()
                 ->GetStyleEngine()
                 .ResolveColorSchemeForEmbedding(&style));
-        image = svg_image_holder.get();
       }
 
       // Reject empty and too large cursors.
@@ -713,51 +711,43 @@ std::optional<ui::Cursor> EventHandler::SelectCursor(
           image->AsSkBitmapForCurrentFrame(kRespectImageOrientation),
           DetermineHotSpot(*image, hot_spot_specified, hot_spot), scale);
 
-      // For large cursors below the max size, limit their ability to cover UI
-      // elements by removing them when they are not fully contained by the
-      // visual viewport. Careful, we need to make sure to translate coordinate
-      // spaces if we are in an OOPIF.
+      // Limit custom cursors from covering UI elements by removing them when
+      // they are not fully contained by the visual viewport. Careful, we need
+      // to make sure to translate coordinate spaces if we are in an OOPIF.
       //
       // TODO(csharrison): Consider sending a fallback cursor in the IPC to the
-      // browser process so we can do that calculation there instead, this would
-      // ensure even a compromised renderer could not obscure browser UI with a
-      // large cursor. Also, consider augmenting the intervention to drop the
-      // cursor for iframes if the cursor image obscures content in the parent
-      // frame.
+      // browser process so we can do that calculation there instead. Also,
+      // consider augmenting the intervention to drop the cursor for iframes if
+      // the cursor image obscures content in the parent frame.
       gfx::SizeF custom_bitmap_size(custom_cursor.custom_bitmap().width(),
                                     custom_cursor.custom_bitmap().height());
       custom_bitmap_size.Scale(1.f / custom_cursor.image_scale_factor());
-      if (custom_bitmap_size.width() > kMaximumCursorSizeWithoutFallback ||
-          custom_bitmap_size.height() > kMaximumCursorSizeWithoutFallback) {
-        PhysicalOffset ancestor_location =
-            frame_->ContentLayoutObject()->LocalToAncestorPoint(
-                location.Point(),
-                nullptr,  // no ancestor maps all the way up the hierarchy
-                {MapCoordinatesMode::kTraverseDocumentBoundaries,
-                 MapCoordinatesMode::kApplyRemoteMainFrameTransform});
+      PhysicalOffset ancestor_location =
+          frame_->ContentLayoutObject()->LocalToAncestorPoint(
+              location.Point(),
+              nullptr,  // no ancestor maps all the way up the hierarchy
+              {MapCoordinatesMode::kTraverseDocumentBoundaries,
+               MapCoordinatesMode::kApplyRemoteMainFrameTransform});
 
-        // Check the cursor rect with device and accessibility scaling applied.
-        const float scale_factor =
-            cursor_accessibility_scale_factor_ *
-            (image->IsSVGImage() ? 1.f : device_scale_factor);
-        gfx::SizeF scaled_size(custom_bitmap_size);
-        scaled_size.Scale(scale_factor);
-        gfx::PointF scaled_hot_spot(custom_cursor.custom_hotspot());
-        scaled_hot_spot.Scale(scale_factor /
-                              custom_cursor.image_scale_factor());
-        PhysicalRect cursor_rect(
-            ancestor_location -
-                PhysicalOffset::FromPointFFloor(scaled_hot_spot),
-            PhysicalSize::FromSizeFFloor(scaled_size));
+      // Check the cursor rect with device and accessibility scaling applied.
+      const float scale_factor =
+          cursor_accessibility_scale_factor_ *
+          (image->IsSVGImage() ? 1.f : device_scale_factor);
+      gfx::SizeF scaled_size(custom_bitmap_size);
+      scaled_size.Scale(scale_factor);
+      gfx::PointF scaled_hot_spot(custom_cursor.custom_hotspot());
+      scaled_hot_spot.Scale(scale_factor / custom_cursor.image_scale_factor());
+      PhysicalRect cursor_rect(
+          ancestor_location - PhysicalOffset::FromPointFFloor(scaled_hot_spot),
+          PhysicalSize::FromSizeFFloor(scaled_size));
 
-        PhysicalRect frame_rect(
-            page->GetVisualViewport().VisibleContentRect(kExcludeScrollbars));
-        frame_->ContentLayoutObject()->MapToVisualRectInAncestorSpace(
-            nullptr, frame_rect);
+      PhysicalRect frame_rect(
+          page->GetVisualViewport().VisibleContentRect(kExcludeScrollbars));
+      frame_->ContentLayoutObject()->MapToVisualRectInAncestorSpace(nullptr,
+                                                                    frame_rect);
 
-        if (!frame_rect.Contains(cursor_rect)) {
-          continue;
-        }
+      if (!frame_rect.Contains(cursor_rect)) {
+        continue;
       }
 
       return custom_cursor;
@@ -904,8 +894,14 @@ WebInputEventResult EventHandler::HandleMousePressEvent(
   if (subframe) {
     WebInputEventResult result = PassMousePressEventToSubframe(mev, subframe);
     if (mouse_event_manager_->MousePressed()) {
-      capturing_mouse_events_element_ = mev.InnerElement();
-      capturing_subframe_element_ = mev.InnerElement();
+      if (RuntimeEnabledFeatures::SubframeMouseCaptureOwnerEnabled()) {
+        Element* subframe_owner = subframe->DeprecatedLocalOwner();
+        capturing_mouse_events_element_ =
+            subframe_owner ? subframe_owner : mev.InnerElement();
+      } else {
+        capturing_mouse_events_element_ = mev.InnerElement();
+      }
+      capturing_subframe_element_ = capturing_mouse_events_element_;
     }
 
     mouse_event_manager_->InvalidateClick();
@@ -930,7 +926,8 @@ WebInputEventResult EventHandler::HandleMousePressEvent(
   }
 
   LocalFrame::NotifyUserActivation(
-      frame_, mojom::blink::UserActivationNotificationType::kInteraction);
+      frame_, mojom::blink::UserActivationNotificationType::kInteraction,
+      RuntimeEnabledFeatures::TrustedUserActivationTriggersEnabled());
 
   if (RuntimeEnabledFeatures::MiddleClickAutoscrollEnabled()) {
     // We store whether middle click autoscroll is in progress before calling
@@ -2197,7 +2194,14 @@ WebInputEventResult EventHandler::SendContextMenuEvent(
 
   PhysicalOffset position_in_contents(v->ConvertFromRootFrame(
       gfx::ToFlooredPoint(event.PositionInRootFrame())));
-  HitTestRequest request(HitTestRequest::kActive);
+  HitTestRequest::HitTestRequestType hit_type = HitTestRequest::kActive;
+  if (RuntimeEnabledFeatures::LongPressReleasesActiveStateEnabled()) {
+    // This hit test must not modify the hover/active state. The input event
+    // handler calling into this method should have done it by now
+    // (https://crbug.com/358393574).
+    hit_type |= HitTestRequest::kReadOnly;
+  }
+  HitTestRequest request(hit_type);
   Document& document = *frame_->GetDocument();
   MouseEventWithHitTestResults mev =
       document.PerformMouseEventHitTest(request, position_in_contents, event);
@@ -2222,6 +2226,25 @@ WebInputEventResult EventHandler::SendContextMenuEvent(
     UseCounter::Count(document, WebFeature::kContextMenuEventDefaultPrevented);
   }
   return result;
+}
+
+// The contextmenu event is dispatched from the browser process or from
+// in-renderer touch selection code paths, without a real input event to
+// inherit the pointer type from.
+static bool IsTouchMenuSourceType(
+    ui::mojom::blink::MenuSourceType source_type) {
+  switch (source_type) {
+    case ui::mojom::blink::MenuSourceType::kTouch:
+    case ui::mojom::blink::MenuSourceType::kLongPress:
+    case ui::mojom::blink::MenuSourceType::kLongTap:
+    case ui::mojom::blink::MenuSourceType::kTouchEditMenu:
+    case ui::mojom::blink::MenuSourceType::kTouchHandle:
+    case ui::mojom::blink::MenuSourceType::kAdjustSelection:
+    case ui::mojom::blink::MenuSourceType::kAdjustSelectionReset:
+      return true;
+    default:
+      return false;
+  }
 }
 
 static bool ShouldShowContextMenuAtSelection(const FrameSelection& selection) {
@@ -2347,6 +2370,10 @@ WebInputEventResult EventHandler::ShowNonLocatedContextMenu(
       WebPointerProperties::Button::kNoButton, /* clickCount */ 0,
       WebInputEvent::kNoModifiers, base::TimeTicks::Now(), source_type);
   mouse_event.id = PointerEventFactory::kMouseId;
+  if (base::FeatureList::IsEnabled(features::kContextMenuPointerTypeForTouch) &&
+      IsTouchMenuSourceType(source_type)) {
+    mouse_event.pointer_type = WebPointerProperties::PointerType::kTouch;
+  }
 
   // TODO(dtapuska): Transition the mouseEvent to be created really in viewport
   // coordinates instead of root frame coordinates.

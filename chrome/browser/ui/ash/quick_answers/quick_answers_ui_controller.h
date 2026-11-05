@@ -13,7 +13,6 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/magic_boost_user_consent_view.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/quick_answers_view.h"
-#include "chrome/browser/ui/ash/quick_answers/ui/rich_answers_view.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/user_consent_view.h"
 #include "chromeos/components/quick_answers/public/cpp/constants.h"
 #include "chromeos/components/quick_answers/public/cpp/quick_answers_state.h"
@@ -21,7 +20,6 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/view_tracker.h"
 #include "ui/views/view_utils.h"
-#include "ui/views/widget/unique_widget_ptr.h"
 #include "ui/views/widget/widget.h"
 
 class ApplicationLocaleStorage;
@@ -33,7 +31,6 @@ class ReadWriteCardsUiController;
 }  // namespace chromeos
 
 namespace quick_answers {
-class RichAnswersView;
 class UserConsentView;
 }  // namespace quick_answers
 
@@ -74,9 +71,6 @@ class QuickAnswersUiController {
   // Returns true if there was a QuickAnswersView to close.
   bool CloseQuickAnswersView();
 
-  // Returns true if there was a RichAnswersView to close.
-  bool CloseRichAnswersView();
-
   void OnQuickAnswersViewPressed();
 
   void OnGoogleSearchLabelPressed();
@@ -103,8 +97,7 @@ class QuickAnswersUiController {
                              const std::u16string& intent_text);
   void CreateUserConsentViewForPixelTest(const gfx::Rect& anchor_bounds,
                                          quick_answers::IntentType intent_type,
-                                         const std::u16string& intent_text,
-                                         bool use_refreshed_design);
+                                         const std::u16string& intent_text);
 
   // Closes the user consent view.
   void CloseUserConsentView();
@@ -132,10 +125,6 @@ class QuickAnswersUiController {
   // showing.
   bool IsShowingQuickAnswersView() const;
 
-  // Used by the controller to check if the RichAnswers view is currently
-  // showing.
-  bool IsShowingRichAnswersView() const;
-
   // Gets the controller that is used to show the widget containing quick
   // answers views.
   chromeos::ReadWriteCardsUiController& GetReadWriteCardsUiController() const;
@@ -152,10 +141,6 @@ class QuickAnswersUiController {
     return views::AsViewClass<quick_answers::MagicBoostUserConsentView>(
         user_consent_view_.view());
   }
-  quick_answers::RichAnswersView* rich_answers_view() {
-    return views::AsViewClass<quick_answers::RichAnswersView>(
-        rich_answers_widget_->GetContentsView());
-  }
 
  private:
   void OpenFeedbackPage(const std::string& feedback_template);
@@ -169,21 +154,10 @@ class QuickAnswersUiController {
       const std::string& query,
       std::optional<quick_answers::Intent> intent,
       quick_answers::QuickAnswersView::Params params);
-  void CreateUserConsentViewInternal(Profile* profile,
-                                     const gfx::Rect& anchor_bounds,
-                                     quick_answers::IntentType intent_type,
-                                     const std::u16string& intent_text,
-                                     bool use_refreshed_design);
-
-  // Constructs/resets the Quick Answers rich card view.
-  void CreateRichAnswersView();
 
   const raw_ref<ApplicationLocaleStorage> application_locale_storage_;
 
   raw_ptr<QuickAnswersControllerImpl> controller_ = nullptr;
-
-  // Widget pointers for quick answers related views.
-  views::UniqueWidgetPtr rich_answers_widget_;
 
   views::ViewTracker user_consent_view_;
   views::ViewTracker quick_answers_view_;

@@ -23,7 +23,7 @@ chromium-metrics-reviews@google.com.
 <histograms>
 
 <histogram name="DevTools.ActionTaken" enum="DevToolsAction"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>yangguo@google.com</owner>
   <owner>bmeurer@google.com</owner>
   <summary>Specified DevTools action has been taken.</summary>
@@ -39,8 +39,46 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="DevTools.BlockedByPolicy" enum="DeveloperToolsAvailability"
+    expires_after="2027-10-05">
+  <owner>mickaczmarczyk@google.com</owner>
+  <owner>cbe-cep-eng@google.com</owner>
+  <component>1937512</component>
+  <summary>
+    Recorded each time the &quot;Your organization has blocked the use of
+    DevTools on this page&quot; dialog is shown, i.e. each time a user actively
+    tried to open DevTools or view source and was blocked by the
+    DeveloperToolsAvailability, DeveloperToolsAvailabilityAllowlist or
+    DeveloperToolsAvailabilityBlocklist policies. Not recorded for repeated
+    attempts while the dialog is already open on the same tab. The bucket is the
+    effective value of the DeveloperToolsAvailability policy for the profile at
+    the time of the block. A rise in the DisallowedForForceInstalledExtensions
+    or Allowed buckets indicates DevTools being blocked in contexts that admins
+    did not explicitly disallow. Desktop only.
+  </summary>
+</histogram>
+
+<histogram name="DevTools.BlockedByPolicy.Reason" enum="DevToolsBlockReason"
+    expires_after="2027-10-05">
+  <owner>mickaczmarczyk@google.com</owner>
+  <owner>cbe-cep-eng@google.com</owner>
+  <component>1937512</component>
+  <summary>
+    Recorded together with DevTools.BlockedByPolicy, i.e. each time the
+    &quot;Your organization has blocked the use of DevTools on this page&quot;
+    dialog is shown. The bucket is the specific check that blocked DevTools for
+    the tab: the DeveloperToolsAvailability policy being set to Disallowed, the
+    URL-based DeveloperToolsAvailabilityAllowlist/Blocklist policies, the tab
+    belonging to a restricted extension or web app while the policy has its
+    default value, or the DevTools UI being unavailable for the profile. Blocks
+    reported for a component extension or for the URL lists while the policy has
+    its default value are the ones to investigate when the volume rises. Desktop
+    only.
+  </summary>
+</histogram>
+
 <histogram name="DevTools.BuiltInAiAvailability"
-    enum="DevToolsBuiltInAiAvailability" expires_after="2027-02-14">
+    enum="DevToolsBuiltInAiAvailability" expires_after="2027-04-18">
   <owner>wolfi@google.com</owner>
   <owner>alexrudenko@google.com</owner>
   <component>1559716</component>
@@ -48,7 +86,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.CDPCommandFrom{ClientType}" enum="CDPCommands"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>wolfi@google.com</owner>
   <owner>danilsomsikov@google.com</owner>
   <owner>yangguo@google.com</owner>
@@ -86,6 +124,16 @@ chromium-metrics-reviews@google.com.
   <summary>The number of comments created in one turn.</summary>
 </histogram>
 
+<histogram name="DevTools.Comments.CommentQueued" units="count"
+    expires_after="2027-08-12">
+  <owner>nroscino@google.com</owner>
+  <owner>nharshunova@google.com</owner>
+  <owner>yulunz@google.com</owner>
+  <summary>
+    The number of comments queued (saved without being sent to the AI agent).
+  </summary>
+</histogram>
+
 <histogram name="DevTools.Comments.CommentResolvedBy{Resolver}" units="count"
     expires_after="2027-08-12">
   <owner>nharshunova@google.com</owner>
@@ -114,7 +162,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.DeveloperResourceLoaded"
-    enum="DevToolsDeveloperResourceLoaded" expires_after="2026-12-27">
+    enum="DevToolsDeveloperResourceLoaded" expires_after="2027-05-02">
   <owner>bmeurer@google.com</owner>
   <owner>danilsomsikov@google.com</owner>
   <summary>
@@ -149,7 +197,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.DeveloperResourceScheme"
-    enum="DevToolsDeveloperResourceScheme" expires_after="2027-02-14">
+    enum="DevToolsDeveloperResourceScheme" expires_after="2027-04-18">
   <owner>bmeurer@google.com</owner>
   <owner>danilsomsikov@google.com</owner>
   <summary>
@@ -197,7 +245,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.ExperimentEnabled" enum="DevtoolsExperiments"
-    expires_after="2027-03-01">
+    expires_after="2027-05-02">
   <owner>yangguo@google.com</owner>
   <owner>changhaohan@google.com</owner>
   <summary>
@@ -206,7 +254,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.ExperimentEnabledAtLaunch" enum="DevtoolsExperiments"
-    expires_after="2027-03-01">
+    expires_after="2027-05-02">
   <owner>yangguo@google.com</owner>
   <owner>changhaohan@google.com</owner>
   <summary>
@@ -236,7 +284,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.Freestyler.QueryLength" units="count"
-    expires_after="2026-07-19">
+    expires_after="2027-10-01">
   <owner>ergunsh@google.com</owner>
   <owner>alexrudenko@google.com</owner>
   <component>1633102</component>
@@ -246,7 +294,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.FrontendLocation" enum="DevToolsFrontendLocation"
-    expires_after="2027-01-16">
+    expires_after="2027-03-21">
   <owner>dsv@chromium.org</owner>
   <owner>chrome-devtools@google.com</owner>
   <summary>
@@ -257,7 +305,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.Insights.LongTeaserGenerationTime" units="ms"
-    expires_after="2026-10-24">
+    expires_after="2027-06-30">
   <owner>wolfi@google.com</owner>
   <owner>alexrudenko@google.com</owner>
   <summary>
@@ -267,7 +315,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.Insights.ShortTeaserGenerationTime" units="ms"
-    expires_after="2026-10-24">
+    expires_after="2027-06-30">
   <owner>wolfi@google.com</owner>
   <owner>alexrudenko@google.com</owner>
   <summary>
@@ -277,7 +325,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.Insights.TeaserAfterFirstCharacterAbortionTime"
-    units="ms" expires_after="2026-10-24">
+    units="ms" expires_after="2027-06-30">
   <owner>wolfi@google.com</owner>
   <owner>alexrudenko@google.com</owner>
   <summary>
@@ -288,7 +336,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.Insights.TeaserBeforeFirstCharacterAbortionTime"
-    units="ms" expires_after="2026-10-24">
+    units="ms" expires_after="2027-06-30">
   <owner>wolfi@google.com</owner>
   <owner>alexrudenko@google.com</owner>
   <summary>
@@ -299,7 +347,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.Insights.TeaserChunkToEndMedium" units="ms"
-    expires_after="2027-01-26">
+    expires_after="2027-06-30">
   <owner>wolfi@google.com</owner>
   <owner>alexrudenko@google.com</owner>
   <summary>
@@ -309,7 +357,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.Insights.TeaserFirstChunkGenerationTime" units="ms"
-    expires_after="2026-11-10">
+    expires_after="2027-06-30">
   <owner>wolfi@google.com</owner>
   <owner>alexrudenko@google.com</owner>
   <summary>
@@ -319,7 +367,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.Insights.TeaserFirstChunkGenerationTimeMedium"
-    units="ms" expires_after="2027-01-26">
+    units="ms" expires_after="2027-06-30">
   <owner>wolfi@google.com</owner>
   <owner>alexrudenko@google.com</owner>
   <summary>
@@ -329,7 +377,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.Insights.TeaserGenerationTime" units="ms"
-    expires_after="2026-10-24">
+    expires_after="2027-06-30">
   <owner>wolfi@google.com</owner>
   <owner>alexrudenko@google.com</owner>
   <summary>
@@ -339,7 +387,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.Insights.TeaserGenerationTimeMedium" units="ms"
-    expires_after="2027-01-26">
+    expires_after="2027-06-30">
   <owner>wolfi@google.com</owner>
   <owner>alexrudenko@google.com</owner>
   <summary>
@@ -348,7 +396,7 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="DevTools.InspectElement" units="ms" expires_after="2026-10-25">
+<histogram name="DevTools.InspectElement" units="ms" expires_after="2027-10-25">
   <owner>yangguo@google.com</owner>
   <owner>bmeurer@google.com</owner>
   <summary>
@@ -477,6 +525,48 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="DevTools.OpenAttempt.AllowedByPolicy{PolicyState}"
+    enum="BooleanAllowed" expires_after="2027-10-27">
+  <owner>mickaczmarczyk@google.com</owner>
+  <owner>cbe-cep-eng@google.com</owner>
+  <component>1937512</component>
+  <summary>
+    Measures the policy-allowance rate of attempts to open a new DevTools window
+    for a tab, {PolicyState}, used to monitor for unexpected spikes or drops in
+    policy blocks. Emits Allowed when DevTools opens, and Not Allowed when an
+    enterprise policy check blocks DevTools for the tab and the DevTools policy
+    dialog is shown; see DevTools.BlockedByPolicy.Reason for which check caused
+    the block.
+
+    Counts both user-initiated opens (menu, shortcut, context menu) and
+    programmatic ones (e.g. --auto-open-devtools-for-tabs, automatic opening for
+    new targets). Not recorded for repeated attempts while the policy dialog is
+    already open on the same tab, for toggling an already-open DevTools window,
+    or when DevTools is unavailable for reasons unrelated to policy (such as
+    --kiosk mode, a ChromeOS captive portal sign-in window, or missing UI
+    bindings). Unlike DevTools.BlockedByPolicy, blocked view-source attempts and
+    non-policy UI blocks are not included, so the Not Allowed counts of the two
+    histograms are not expected to match. Desktop only.
+  </summary>
+  <token key="PolicyState">
+    <variant name=""
+        summary="across all profiles, including unmanaged users where no
+                 policy check affects DevTools"/>
+    <variant name=".OnProfileWithPolicyCheck"
+        summary="on profiles where at least one policy check can affect
+                 DevTools availability: an explicitly configured DevTools
+                 policy (DeveloperToolsAvailability, DeveloperToolsDisabled,
+                 DeveloperToolsAvailabilityAllowlist or
+                 DeveloperToolsAvailabilityBlocklist), devtools://devtools
+                 being on URLBlocklist, a managed profile, an installed
+                 policy-forced extension, a policy-installed Isolated Web
+                 App, or a kiosk web app. Recorded for every open attempt on
+                 such profiles (including on URLs that no rule matches) so
+                 the Allowed share measures the open success rate for that
+                 profile population"/>
+  </token>
+</histogram>
+
 <histogram name="DevTools.OpenedByAction" enum="DevToolsOpenedByAction"
     expires_after="2027-01-18">
   <owner>changhaohan@google.com</owner>
@@ -488,7 +578,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.PanelShown" enum="DevToolsPanel"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>yangguo@google.com</owner>
   <owner>bmeurer@google.com</owner>
   <summary>Specified DevTools panel was shown.</summary>
@@ -525,7 +615,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram name="DevTools.RemoteDebugging.ConnectionPermission"
     enum="DevToolsRemoteDebuggingConnectionPermission"
-    expires_after="2027-01-01">
+    expires_after="2027-03-07">
   <owner>alexrudenko@google.com</owner>
   <owner>hablich@google.com</owner>
   <summary>
@@ -534,7 +624,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.RemoteDebugging.ServerAction"
-    enum="DevToolsRemoteDebuggingServerAction" expires_after="2027-01-01">
+    enum="DevToolsRemoteDebuggingServerAction" expires_after="2027-03-07">
   <owner>alexrudenko@google.com</owner>
   <owner>hablich@google.com</owner>
   <summary>
@@ -605,7 +695,7 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="DevTools.TraceLoad2" units="ms" expires_after="2027-05-01">
+<histogram name="DevTools.TraceLoad2" units="ms" expires_after="2027-10-01">
   <owner>paulirish@google.com</owner>
   <owner>jacktfranklin@google.com</owner>
   <owner>victorporof@google.com</owner>
@@ -620,7 +710,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DevTools.VisualLogging.ProcessingTime" units="ms"
-    expires_after="2027-01-24">
+    expires_after="2027-03-28">
   <owner>danilsomsikov@google.com</owner>
   <owner>hablich@google.com</owner>
   <summary>

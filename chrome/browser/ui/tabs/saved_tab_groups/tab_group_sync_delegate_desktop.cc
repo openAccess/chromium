@@ -23,8 +23,10 @@
 #include "components/saved_tab_groups/internal/tab_group_sync_service_impl.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/saved_tab_groups/public/types.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/gfx/range/range.h"
 
 namespace tab_groups {
@@ -123,7 +125,7 @@ tabs::TabInterface* MaybeOpenTabFromSavedTab(const SavedTabGroupTab& saved_tab,
   content::NavigationHandle* navigation_handle =
       SavedTabGroupUtils::OpenTabInBrowser(
           saved_tab.url(), browser, browser->GetProfile(),
-          WindowOpenDisposition::NEW_BACKGROUND_TAB);
+          ui::mojom::WindowOpenDisposition::kNewBackgroundTab);
   if (!navigation_handle) {
     return nullptr;
   }
@@ -179,7 +181,8 @@ TabGroupSyncDelegateDesktop::HandleOpenTabGroupRequest(
   // tab group in the browser).
   if (base::FeatureList::IsEnabled(features::kTabGroupsFocusing) &&
       browser->GetTabStripModel()->GetFocusedGroup().has_value()) {
-    browser->GetTabStripModel()->SetFocusedGroup(std::nullopt);
+    browser->GetTabStripModel()->ExitFocusMode(
+        TabGroupFocusExitReason::kGroupCreated);
   }
 
   // Open the tabs in the saved group.
@@ -396,7 +399,7 @@ TabGroupId TabGroupSyncDelegateDesktop::AddOpenedTabsToGroup(
 
     // Activate the first tab in the group.
     tabs::TabInterface* first_tab = tab_group->GetFirstTab();
-    DCHECK(first_tab);
+    CHECK(first_tab, base::NotFatalUntil::M162);
     tab_strip_model->ActivateTabAt(tab_strip_model->GetIndexOfTab(first_tab));
   }
 

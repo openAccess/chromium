@@ -12,7 +12,6 @@ import android.content.Context;
 import android.os.PowerManager;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.MediumTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -20,10 +19,10 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 import org.robolectric.Shadows;
 import org.robolectric.shadows.ShadowPowerManager;
 
@@ -37,7 +36,7 @@ import org.chromium.base.test.util.Feature;
 @RunWith(BaseRobolectricTestRunner.class)
 public class OmahaServiceStartDelayerTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
-    @Mock private Activity mActivity;
+    private Activity mActivity;
 
     @Spy private Runnable mRunnable;
     private OmahaServiceStartDelayer mOmahaServiceStartDelayer;
@@ -45,6 +44,8 @@ public class OmahaServiceStartDelayerTest {
 
     @Before
     public void setUp() throws Exception {
+        // Lifecycle is not driven by Robolectric; states are set via ApplicationStatus below.
+        mActivity = Robolectric.buildActivity(Activity.class).get();
         Context appContext = ApplicationProvider.getApplicationContext();
         mShadowPowerManager =
                 Shadows.shadowOf((PowerManager) appContext.getSystemService(Context.POWER_SERVICE));
@@ -72,11 +73,11 @@ public class OmahaServiceStartDelayerTest {
     }
 
     private void setInteractive() {
-        mShadowPowerManager.setIsInteractive(true);
+        mShadowPowerManager.turnScreenOn(true);
     }
 
     private void setNonInteractive() {
-        mShadowPowerManager.setIsInteractive(false);
+        mShadowPowerManager.turnScreenOn(false);
     }
 
     private void verifyTaskScheduled() {
@@ -89,7 +90,6 @@ public class OmahaServiceStartDelayerTest {
 
     /** Check if the runnable is posted and run while the screen is on. */
     @Test
-    @MediumTest
     @Feature({"Omaha"})
     public void testRunnableRunsWithScreenOn() {
         startSession();
@@ -178,9 +178,10 @@ public class OmahaServiceStartDelayerTest {
         verify(mRunnable, times(0)).run();
     }
 
-    /** Verify that the runnable is only executed once even if the public API contract is not upheld. */
+    /**
+     * Verify that the runnable is only executed once even if the public API contract is not upheld.
+     */
     @Test
-    @MediumTest
     @Feature({"Omaha"})
     public void testRunnableIsOnlyExecutedOnce() {
         startSession();

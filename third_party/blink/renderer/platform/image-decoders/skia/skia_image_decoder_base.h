@@ -34,7 +34,7 @@ class PLATFORM_EXPORT SkiaImageDecoderBase : public ImageDecoder {
   ~SkiaImageDecoderBase() override;
 
   // ImageDecoder:
-  void OnSetData(scoped_refptr<SegmentReader> data) final;
+  void OnSetData(scoped_refptr<SegmentReader> data) override;
   int RepetitionCount() const final;
   bool FrameIsReceivedAtIndex(wtf_size_t) const final;
   base::TimeDelta FrameDurationAtIndex(wtf_size_t) const final;
@@ -48,6 +48,11 @@ class PLATFORM_EXPORT SkiaImageDecoderBase : public ImageDecoder {
   // OnCreateSkCodec needs to read enough of the image to get the image size.
   virtual std::unique_ptr<SkCodec> OnCreateSkCodec(std::unique_ptr<SkStream>,
                                                    SkCodec::Result* result) = 0;
+
+  // Called after the codec size and common metadata are available.
+  virtual void OnSkCodecCreated() {}
+
+  const SkCodec* codec() const { return codec_.get(); }
 
  private:
   // ImageDecoder:

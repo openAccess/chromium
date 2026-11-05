@@ -5,9 +5,9 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TOOLBAR_WEBUI_TOOLBAR_EXTENSIONS_CONTAINER_WRAPPER_H_
 #define CHROME_BROWSER_UI_VIEWS_TOOLBAR_WEBUI_TOOLBAR_EXTENSIONS_CONTAINER_WRAPPER_H_
 
-#include <list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,7 +16,6 @@
 #include "chrome/browser/ui/extensions/extensions_toolbar_view_model.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_extensions_container_observer.h"
 #include "components/browser_apis/ui_controllers/toolbar/icon_handle.h"
-#include "content/public/browser/web_contents_observer.h"
 #include "ui/base/interaction/element_tracker.h"
 
 class BrowserWindowInterface;
@@ -25,7 +24,6 @@ class WebUIToolbarControlDelegate;
 class WebUIToolbarExtensionsContainer;
 
 namespace content {
-class Page;
 class WebContents;
 }
 
@@ -39,8 +37,7 @@ class ScopedUnownedUserData;
 // and initialization. It implements WebUIToolbarExtensionsContainer::Observer
 // to cache extensions state and notify the delegate.
 class WebUIToolbarExtensionsContainerWrapper
-    : public WebUIToolbarExtensionsContainerObserver,
-      public content::WebContentsObserver {
+    : public WebUIToolbarExtensionsContainerObserver {
  public:
   explicit WebUIToolbarExtensionsContainerWrapper(
       WebUIToolbarControlDelegate* delegate);
@@ -70,14 +67,11 @@ class WebUIToolbarExtensionsContainerWrapper
       override;
   void OnActionRemoved(std::vector<toolbar_ui_api::mojom::IconUpdatePtr> icons,
                        const std::string& id) override;
-  void OnActionPoppedOut(base::OnceClosure callback) override;
-
-  // content::WebContentsObserver:
-  void PrimaryPageChanged(content::Page& page) override;
+  void OnActionPoppedOut(const std::string& action_id,
+                         base::OnceClosure callback) override;
+  void OnPopOutCancelled() override;
 
  private:
-  struct PendingAnchorRequest;
-
   // This string is used as the extensions_bar::mojom::ExtensionActionInfo::id
   // value to indicate the extensions button (not actually an extension).
   // Empty string should not overlap with actual extension IDs.
@@ -85,8 +79,6 @@ class WebUIToolbarExtensionsContainerWrapper
 
   void OnActiveTabChanged(BrowserWindowInterface* browser_interface);
   void SendExtensionsState();
-  // Returns whether any of `cached_actions_` have access to `web_contents`.
-  bool AnyActionHasCurrentSiteAccess(content::WebContents& web_contents);
   // Compute WebUI state for extensions button.
   extensions_bar::mojom::ExtensionActionInfoPtr GetExtensionsButton();
   // Update `extensions_button_state`.  Returns true if state changed.
@@ -108,7 +100,12 @@ class WebUIToolbarExtensionsContainerWrapper
 
   std::vector<std::string> last_sent_extension_ids_;
 
-  std::list<PendingAnchorRequest> pending_anchor_requests_;
+  // Action ID, callback, and subscription for the pending OnActionPoppedOut()
+  // request, if any. There's at most one at a time, since the container cancels
+  // any pending pop out before starting a new one.
+  std::optional<std::string> pending_pop_out_action_id_;
+  base::OnceClosure pending_pop_out_callback_;
+  ui::ElementTracker::Subscription pending_pop_out_subscription_;
 
   // Only for use by GetExtensionsButton(). Update by calling
   // UpdateExtensionsButtonState().

@@ -21,9 +21,9 @@
 #include "media/base/video_frame_converter.h"
 #include "media/base/video_frame_pool.h"
 #include "media/capture/video/video_capture_buffer_pool_util.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 #include "media/media_buildflags.h"
 #include "media/muxers/webm_muxer.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
 #include "media/video/video_encode_accelerator.h"
 #include "third_party/blink/public/platform/media/video_capture.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
@@ -37,7 +37,6 @@
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/heap/weak_cell.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/sequence_bound.h"
@@ -181,6 +180,7 @@ class VideoTrackRecorder : public TrackRecorder<MediaStreamVideoSink> {
     // on the codec-specific task runner.
     void InitializeEncoder(
         KeyFrameRequestProcessor::Configuration key_frame_config,
+        bool cross_origin_isolated_capability,
         std::unique_ptr<media::VideoEncoderMetricsProvider> metrics_provider,
         size_t frame_buffer_pool_limit);
 
@@ -334,6 +334,7 @@ class MODULES_EXPORT VideoTrackRecorderImpl : public VideoTrackRecorder {
       WeakCell<CallbackInterface>* callback_interface,
       uint32_t bits_per_second,
       KeyFrameRequestProcessor::Configuration key_frame_config,
+      bool cross_origin_isolated_capability,
       size_t frame_buffer_pool_limit =
           media::DeviceVideoCaptureMaxBufferPoolSize());
 
@@ -389,6 +390,7 @@ class MODULES_EXPORT VideoTrackRecorderImpl : public VideoTrackRecorder {
   SequenceBound<Encoder> encoder_;
 
   const KeyFrameRequestProcessor::Configuration key_frame_config_;
+  const bool cross_origin_isolated_capability_;
   const CodecProfile codec_profile_;
   const uint32_t bits_per_second_;
   const size_t frame_buffer_pool_limit_;
@@ -411,7 +413,8 @@ class MODULES_EXPORT VideoTrackRecorderPassthrough : public VideoTrackRecorder {
       scoped_refptr<base::SingleThreadTaskRunner> main_thread_task_runner,
       MediaStreamComponent* track,
       WeakCell<CallbackInterface>* callback_interface,
-      KeyFrameRequestProcessor::Configuration key_frame_config);
+      KeyFrameRequestProcessor::Configuration key_frame_config,
+      bool cross_origin_isolated_capability);
 
   VideoTrackRecorderPassthrough(const VideoTrackRecorderPassthrough&) = delete;
   VideoTrackRecorderPassthrough& operator=(

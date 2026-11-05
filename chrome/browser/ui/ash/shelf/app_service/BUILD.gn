@@ -28,14 +28,13 @@ static_library("app_service") {
     "shelf_app_service_promise_app_updater.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash",
     "//ash/constants",
     "//ash/public/cpp",
     "//ash/strings",
     "//base",
+    "//chrome/app:generated_resources",
     "//chrome/app/theme:chrome_unscaled_resources_grit",
     "//chrome/browser/apps/app_service/app_icon",
     "//chrome/browser/ash/app_list",
@@ -46,7 +45,6 @@ static_library("app_service") {
     "//chrome/browser/ash/arc/pip",
     "//chrome/browser/ash/arc/session",
     "//chrome/browser/ash/borealis",
-    "//chrome/browser/ash/browser_delegate",
     "//chrome/browser/ash/bruschetta",
     "//chrome/browser/ash/crostini",
     "//chrome/browser/ash/guest_os",
@@ -60,6 +58,7 @@ static_library("app_service") {
     "//chrome/browser/web_applications",
     "//chromeos/ash/components/borealis",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/browser_delegate",
     "//chromeos/ash/experiences/arc",
     "//chromeos/ash/experiences/arc:arc_app_constants",
     "//chromeos/ash/experiences/arc/video_accelerator:protected_native_pixmap_query_client",
@@ -96,7 +95,6 @@ source_set("browser_tests") {
     "//ash",
     "//ash/constants",
     "//base/test:test_support",
-    "//chrome/app/vector_icons",
     "//chrome/browser",
     "//chrome/browser/apps/app_service",
     "//chrome/browser/apps/app_service:app_registry_cache_waiter",
@@ -113,7 +111,7 @@ source_set("browser_tests") {
     "//chrome/browser/ash/guest_os",
     "//chrome/browser/ash/system_web_apps",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/ash/shelf",
     "//chrome/browser/ui/ash/shelf:test_support",
     "//chrome/browser/ui/browser_web_contents_delegate",

@@ -92,6 +92,7 @@ ci.builder(
             "chromium_linux_cast_receiver",
         ],
     ),
+    ssd = None,
     tree_closing = True,
     console_view_entry = consoles.console_view_entry(
         category = "cast",
@@ -136,6 +137,7 @@ ci.builder(
             "chromium_linux_cast_receiver",
         ],
     ),
+    ssd = None,
     tree_closing = True,
     console_view_entry = consoles.console_view_entry(
         category = "cast",
@@ -179,6 +181,7 @@ ci.builder(
             "chromium_linux_cast_receiver_gtests",
         ],
     ),
+    ssd = None,
     tree_closing = True,
     console_view_entry = consoles.console_view_entry(
         category = "cast",
@@ -222,6 +225,7 @@ ci.builder(
             "chromium_linux_cast_receiver_gtests",
         ],
     ),
+    ssd = None,
     tree_closing = True,
     console_view_entry = consoles.console_view_entry(
         category = "cast",
@@ -233,6 +237,7 @@ ci.builder(
 
 ci.builder(
     name = "Deterministic Linux",
+    description_html = "Verifies that Linux x64 release builds are deterministic.",
     executable = "recipe:swarming/deterministic_build",
     gn_args = gn_args.config(
         configs = [
@@ -243,8 +248,8 @@ ci.builder(
             "x64",
         ],
     ),
+    builderless = False,
     ssd = True,
-    free_space = builders.free_space.high,
     # Don't use the default tree closer, which filters by step name, and instead
     # enable tree closing for any step failure.
     tree_closing_notifiers = args.ignore_default(["close-on-any-step-failure"]),
@@ -263,6 +268,7 @@ ci.builder(
 
 ci.builder(
     name = "Deterministic Linux (dbg)",
+    description_html = "Verifies that Linux x64 debug builds are deterministic.",
     executable = "recipe:swarming/deterministic_build",
     gn_args = {
         "local": gn_args.config(
@@ -273,6 +279,11 @@ ci.builder(
         ),
     },
     cores = 32,
+    ssd = None,
+    # This builder uses almost as much disk space as is available on a standard
+    # VM, which causes issues if there are any caches from other builders. So,
+    # target higher disk space instances.
+    free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
         category = "debug|builder",
         short_name = "det",
@@ -287,6 +298,7 @@ ci.builder(
 
 ci.builder(
     name = "Leak Detection Linux",
+    description_html = "Builds and runs memory leak detection tests on Linux x64 release builds.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(config = "chromium"),
         chromium_config = builder_config.chromium_config(
@@ -313,6 +325,7 @@ ci.builder(
             "linux-jammy",
         ],
     ),
+    ssd = None,
     gardener_rotations = args.ignore_default(None),
     tree_closing = False,
     console_view_entry = consoles.console_view_entry(
@@ -328,6 +341,7 @@ ci.builder(
 ci.builder(
     name = "Linux Builder",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Compiles Linux x64 release builds for triggered testers.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -353,7 +367,6 @@ ci.builder(
             "gpu_tests",
             "release_builder",
             "remoteexec",
-            "devtools_do_typecheck",
             "linux",
             "x64",
         ],
@@ -369,6 +382,7 @@ ci.builder(
             "isolate_profile_data",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release",
         short_name = "bld",
@@ -380,6 +394,7 @@ ci.builder(
 ci.builder(
     name = "Linux Builder (dbg)",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Compiles Linux x64 debug builds for triggered testers.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -411,6 +426,7 @@ ci.builder(
             "all",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|builder",
         short_name = "64",
@@ -520,6 +536,7 @@ ci.thin_tester(
         browser_config = targets.browser_config.DEBUG,
         os_type = targets.os_type.LINUX,
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "arm64",
         short_name = "dbg",
@@ -531,6 +548,7 @@ ci.thin_tester(
 ci.builder(
     name = "Linux Builder (Wayland)",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Compiles Linux x64 Wayland release builds for triggered testers.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -562,6 +580,7 @@ ci.builder(
     targets = targets.bundle(
         additional_compile_targets = "chrome",
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release",
         short_name = "bld-wl",
@@ -624,6 +643,7 @@ ci.thin_tester(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "linux",
         short_name = "no-webui",
@@ -635,6 +655,7 @@ ci.thin_tester(
 ci.thin_tester(
     name = "Linux Tests",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Runs standard Chromium test suites against Linux x64 release builds.",
     parent = "ci/Linux Builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -670,6 +691,14 @@ ci.thin_tester(
                     "--additional-env-var=LLVM_PROFILE_FILE=${ISOLATED_OUTDIR}/profraw/default-%2m.profraw",
                 ],
                 swarming = targets.swarming(
+                    # Move to faster machine types to reduce capacity impact.
+                    # TODO(crbug.com/541675870): Can remove this if/when
+                    # everything's been migrated.
+                    optional_dimensions = {
+                        30: {
+                            "cpu": "x86-64-e4",
+                        },
+                    },
                     shards = 8,
                 ),
             ),
@@ -677,12 +706,10 @@ ci.thin_tester(
                 args = [
                     "--additional-env-var=LLVM_PROFILE_FILE=${ISOLATED_OUTDIR}/profraw/default-%2m.profraw",
                 ],
+                enable_rts_filtering = True,
             ),
             "browser_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
                     # Move to faster machine types to reduce capacity impact.
                     # TODO(crbug.com/541675870): Can remove this if/when
@@ -695,20 +722,38 @@ ci.thin_tester(
                     shards = 20,
                 ),
             ),
+            "components_unittests": targets.mixin(
+                enable_rts_filtering = True,
+            ),
             "content_browsertests": targets.mixin(
                 ci_only = True,
             ),
+            "headless_shell_wpt_tests": targets.mixin(
+                swarming = targets.swarming(
+                    # Move to faster machine types to reduce capacity impact.
+                    # TODO(crbug.com/541675870): Can remove this if/when
+                    # everything's been migrated.
+                    optional_dimensions = {
+                        30: {
+                            "cpu": "x86-64-e4",
+                        },
+                    },
+                ),
+            ),
             "interactive_ui_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
+                swarming = targets.swarming(
+                    # Move to faster machine types to reduce capacity impact.
+                    # TODO(crbug.com/541675870): Can remove this if/when
+                    # everything's been migrated.
+                    optional_dimensions = {
+                        30: {
+                            "cpu": "x86-64-e4",
+                        },
+                    },
+                ),
             ),
             "sync_integration_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
+                enable_rts_filtering = True,
             ),
             "not_site_per_process_blink_web_tests": targets.mixin(
                 args = [
@@ -717,6 +762,18 @@ ci.thin_tester(
             ),
             "not_site_per_process_blink_wpt_tests": targets.mixin(
                 ci_only = True,
+            ),
+            "not_site_per_process_headless_shell_wpt_tests": targets.mixin(
+                swarming = targets.swarming(
+                    # Move to faster machine types to reduce capacity impact.
+                    # TODO(crbug.com/541675870): Can remove this if/when
+                    # everything's been migrated.
+                    optional_dimensions = {
+                        30: {
+                            "cpu": "x86-64-e4",
+                        },
+                    },
+                ),
             ),
             "telemetry_perf_unittests": targets.mixin(
                 args = [
@@ -727,8 +784,22 @@ ci.thin_tester(
             "webdriver_wpt_tests": targets.mixin(
                 ci_only = True,
             ),
+            "webdriver_bidi_e2e_tests": [
+                targets.mixin(
+                    experiment_percentage = 10,
+                    swarming = targets.swarming(
+                        shards = 8,
+                    ),
+                ),
+                # TODO(crbug.com/579036421): Remove once e4 failures are fixed.
+                "e2-standard-8",
+            ],
+            "webdriver_bidi_unittests": targets.mixin(
+                experiment_percentage = 10,
+            ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release",
         short_name = "tst",
@@ -751,6 +822,7 @@ ci.thin_tester(
 ci.thin_tester(
     name = "Linux Tests (dbg)(1)",
     branch_selector = branches.selector.LINUX_BRANCHES,
+    description_html = "Runs standard Chromium test suites against Linux x64 debug builds.",
     parent = "ci/Linux Builder (dbg)",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -779,19 +851,18 @@ ci.thin_tester(
                     shards = 15,
                 ),
             ),
-            "browser_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
-                # crbug.com/1066161
-                # crbug.com/1459645
-                # crbug.com/1508286
-                # crbug.com/404871436
-                swarming = targets.swarming(
-                    shards = 90,
+            "browser_tests": [
+                targets.mixin(
+                    # crbug.com/1066161
+                    # crbug.com/1459645
+                    # crbug.com/1508286
+                    # crbug.com/404871436
+                    swarming = targets.swarming(
+                        shards = 152,
+                    ),
                 ),
-            ),
+                "no_ssd",
+            ],
             "content_browsertests": targets.mixin(
                 # crbug.com/1508286
                 # crbug.com/404871436
@@ -812,12 +883,10 @@ ci.thin_tester(
             "interactive_ui_tests": targets.mixin(
                 args = [
                     "--test-launcher-filter-file=../../testing/buildbot/filters/ozone-linux.interactive_ui_tests.filter",
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
                 ],
                 # Slow on certain debug builders, see crbug.com/1513713.
                 swarming = targets.swarming(
-                    shards = 25,
+                    shards = 41,
                 ),
             ),
             "leveldb_unittests": targets.mixin(
@@ -841,20 +910,19 @@ ci.thin_tester(
                 ),
             ),
             "sync_integration_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
                     shards = 16,
                 ),
             ),
-            "telemetry_perf_unittests": targets.mixin(
-                args = [
-                    "--xvfb",
-                    "--jobs=1",
-                ],
-            ),
+            "telemetry_perf_unittests": [
+                targets.mixin(
+                    args = [
+                        "--xvfb",
+                        "--jobs=1",
+                    ],
+                ),
+                "no_ssd",
+            ],
             "unit_tests": targets.mixin(
                 # The suite runs signficantly slower on linux dbg, so increase shards.
                 swarming = targets.swarming(
@@ -866,17 +934,22 @@ ci.thin_tester(
                     "--debug",
                 ],
                 swarming = targets.swarming(
-                    shards = 4,
+                    shards = 12,
                 ),
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|tester",
         short_name = "64",
     ),
     cq_mirrors_console_view = "mirrors",
     contact_team_email = "chrome-linux-engprod@google.com",
+    experiments = {
+        "luci.buildbucket.run_in_turboci": 100,
+        "luci.buildbucket.run_in_turboci.grpc_client": 100,
+    },
 )
 
 ci.thin_tester(
@@ -975,6 +1048,7 @@ ci.thin_tester(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release",
         short_name = "tst-wl",
@@ -1062,6 +1136,7 @@ ci.thin_tester(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release",
         short_name = "tst-mt",
@@ -1073,6 +1148,7 @@ ci.thin_tester(
 # For documentation, see //services/network/README.md.
 ci.builder(
     name = "Network Service Linux",
+    description_html = "Builds and runs extra Network Service test suites on Linux x64 release builds.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -1105,6 +1181,7 @@ ci.builder(
             "linux-jammy",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release",
         short_name = "nsl",
@@ -1202,6 +1279,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "OriginIsolation",
         short_name = "oi",
@@ -1212,6 +1290,7 @@ ci.builder(
 
 ci.builder(
     name = "linux-bfcache-rel",
+    description_html = "Builds and runs tests with Back-Forward Cache (bfcache) enabled on Linux x64 release builds.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -1253,6 +1332,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "bfcache",
         short_name = "bfc",
@@ -1263,6 +1343,7 @@ ci.builder(
 
 ci.builder(
     name = "linux-extended-tracing-rel",
+    description_html = "Builds Chromium with extended tracing enabled on Linux x64 release builds.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -1293,6 +1374,7 @@ ci.builder(
             "all",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release",
         short_name = "trc",
@@ -1334,6 +1416,7 @@ ci.builder(
             "empty_main",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release",
         short_name = "gcc",
@@ -1366,6 +1449,7 @@ ci.builder(
             "all",
         ],
     ),
+    ssd = None,
     gardener_rotations = args.ignore_default(None),
     tree_closing = False,
     console_view_entry = consoles.console_view_entry(
@@ -1383,6 +1467,7 @@ ci.builder(
 ci.builder(
     name = "linux-v4l2-codec-rel",
     branch_selector = branches.selector.MAIN,
+    description_html = "Compiles Chromium and V4L2 test targets with Video4Linux2 (V4L2) hardware video codec support enabled on Linux x64 release builds.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -1420,9 +1505,43 @@ ci.builder(
             "v4l2_unittest",
         ],
     ),
+    ssd = None,
     tree_closing = False,
     console_view_entry = consoles.console_view_entry(
         category = "linux",
     ),
     cq_mirrors_console_view = "mirrors",
+)
+
+ci.builder(
+    name = "linux-webdriver-bidi-rel",
+    description_html = "Builder for WebDriver BiDi implementation",
+    builder_spec = builder_config.copy_from("ci/Linux Builder"),
+    gn_args = "ci/Linux Builder",
+    targets = targets.bundle(
+        targets = [
+            "webdriver_bidi_e2e_tests",
+            "webdriver_bidi_unittests",
+        ],
+        mixins = [
+            "linux-jammy",
+        ],
+        per_test_modifications = {
+            "webdriver_bidi_e2e_tests": [
+                targets.mixin(
+                    swarming = targets.swarming(
+                        shards = 8,
+                    ),
+                ),
+                # TODO(crbug.com/579036421): Remove once e4 failures are fixed.
+                "e2-standard-8",
+            ],
+        },
+    ),
+    console_view_entry = consoles.console_view_entry(
+        category = "webdriver",
+        short_name = "bidi",
+    ),
+    cq_mirrors_console_view = "mirrors",
+    contact_team_email = "chrome-devtools@google.com",
 )

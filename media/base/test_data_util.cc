@@ -10,12 +10,13 @@
 #include <array>
 #include <optional>
 #include <ostream>
+#include <string>
+#include <string_view>
 
 #include "base/check_op.h"
-#include "base/containers/flat_map.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/files/file_util.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/path_service.h"
 #include "media/base/decoder_buffer.h"
@@ -26,153 +27,156 @@ namespace {
 
 // Mime types for test files. Sorted in the ASCII code order of the variable
 // names.
-const char kAacAdtsAudio[] = "audio/aac";
-const char kMp2AudioSBR[] = "video/mp2t; codecs=\"avc1.4D4041,mp4a.40.5\"";
-const char kMp2tAudioVideo[] = "video/mp2t; codecs=\"mp4a.40.2, avc1.42E01E\"";
-const char kMp3Audio[] = "audio/mpeg";
+constexpr std::string_view kAacAdtsAudio = "audio/aac";
+constexpr std::string_view kMp2AudioSBR =
+    "video/mp2t; codecs=\"avc1.4D4041,mp4a.40.5\"";
+constexpr std::string_view kMp2tAudioVideo =
+    "video/mp2t; codecs=\"mp4a.40.2, avc1.42E01E\"";
+constexpr std::string_view kMp3Audio = "audio/mpeg";
 // MP4
-const char kMp4AacAudio[] = "audio/mp4; codecs=\"mp4a.40.2\"";
-const char kMp4Av110bitVideo[] = "video/mp4; codecs=\"av01.0.04M.10\"";
-const char kMp4IamfAudioAvc1Video[] = "video/mp4; codecs=\"avc1.640028, iamf\"";
-const char kMp4Av1Video[] = "video/mp4; codecs=\"av01.0.04M.08\"";
-const char kMp4Av1VideoOpusAudio[] = "video/mp4; codecs=\"av01.0.04M.08,opus\"";
-const char kMp4Avc1Video[] = "video/mp4; codecs=\"avc1.64001E\"";
-const char kMp4AacAudioAvc1Video[] =
+constexpr std::string_view kMp4AacAudio = "audio/mp4; codecs=\"mp4a.40.2\"";
+constexpr std::string_view kMp4Av110bitVideo =
+    "video/mp4; codecs=\"av01.0.04M.10\"";
+constexpr std::string_view kMp4IamfAudioAvc1Video =
+    "video/mp4; codecs=\"avc1.640028, iamf\"";
+constexpr std::string_view kMp4Av1Video = "video/mp4; codecs=\"av01.0.04M.08\"";
+constexpr std::string_view kMp4Av1VideoOpusAudio =
+    "video/mp4; codecs=\"av01.0.04M.08,opus\"";
+constexpr std::string_view kMp4Avc1Video = "video/mp4; codecs=\"avc1.64001E\"";
+constexpr std::string_view kMp4AacAudioAvc1Video =
     "video/mp4; codecs=\"mp4a.40.2, avc1.64001E\"";
-const char kMp4Avc3Video[] = "video/mp4; codecs=\"avc3.64001f\"";
-const char kMp4FlacAudio[] = "audio/mp4; codecs=\"flac\"";
-const char kMp4OpusAudio[] = "audio/mp4; codecs=\"opus\"";
-const char kMp4Vp9Profile2Video[] =
+constexpr std::string_view kMp4Avc3Video = "video/mp4; codecs=\"avc3.64001f\"";
+constexpr std::string_view kMp4FlacAudio = "audio/mp4; codecs=\"flac\"";
+constexpr std::string_view kMp4OpusAudio = "audio/mp4; codecs=\"opus\"";
+constexpr std::string_view kMp4Vp9Profile2Video =
     "video/mp4; codecs=\"vp09.02.10.10.01.02.02.02.00\"";
-const char kMp4Vp9Video[] =
+constexpr std::string_view kMp4Vp9Video =
     "video/mp4; codecs=\"vp09.00.10.08.01.02.02.02.00\"";
-const char kMp4XheAacAudio[] = "audio/mp4; codecs=\"mp4a.40.42\"";
-const char kMp4DolbyVisionProfile5[] = "video/mp4; codecs=\"dvh1.05.06\"";
-const char kMp4DolbyVisionProfile8x[] = "video/mp4; codecs=\"dvhe.08.07\"";
+constexpr std::string_view kMp4XheAacAudio = "audio/mp4; codecs=\"mp4a.40.42\"";
+constexpr std::string_view kMp4DolbyVisionProfile5 =
+    "video/mp4; codecs=\"dvh1.05.06\"";
+constexpr std::string_view kMp4DolbyVisionProfile8x =
+    "video/mp4; codecs=\"dvhe.08.07\"";
 // WebM
-const char kWebMAv110bitVideo[] = "video/webm; codecs=\"av01.0.04M.10\"";
-const char kWebMAv1Video[] = "video/webm; codecs=\"av01.0.04M.08\"";
-const char kWebMOpusAudio[] = "audio/webm; codecs=\"opus\"";
-const char kWebMOpusAudioVp9Video[] = "video/webm; codecs=\"opus, vp9\"";
-const char kWebMVorbisAudio[] = "audio/webm; codecs=\"vorbis\"";
-const char kWebMVorbisAudioVp8Video[] = "video/webm; codecs=\"vorbis, vp8\"";
-const char kWebMVp8Video[] = "video/webm; codecs=\"vp8\"";
-const char kWebMVp9Profile2Video[] =
+constexpr std::string_view kWebMAv110bitVideo =
+    "video/webm; codecs=\"av01.0.04M.10\"";
+constexpr std::string_view kWebMAv1Video =
+    "video/webm; codecs=\"av01.0.04M.08\"";
+constexpr std::string_view kWebMOpusAudio = "audio/webm; codecs=\"opus\"";
+constexpr std::string_view kWebMOpusAudioVp9Video =
+    "video/webm; codecs=\"opus, vp9\"";
+constexpr std::string_view kWebMVorbisAudio = "audio/webm; codecs=\"vorbis\"";
+constexpr std::string_view kWebMVorbisAudioVp8Video =
+    "video/webm; codecs=\"vorbis, vp8\"";
+constexpr std::string_view kWebMVp8Video = "video/webm; codecs=\"vp8\"";
+constexpr std::string_view kWebMVp9Profile2Video =
     "video/webm; codecs=\"vp09.02.10.10.01.02.02.02.00\"";
-const char kWebMVp9Video[] = "video/webm; codecs=\"vp9\"";
+constexpr std::string_view kWebMVp9Video = "video/webm; codecs=\"vp9\"";
 
 // A map from a test file name to its mime type. The file is located at
-// media/test/data.
-using FileToMimeTypeMap = base::flat_map<std::string, std::string>;
-
-// Wrapped to avoid static initializer startup cost. The list is sorted in the
-// the ASCII code order of file names.
+// media/test/data. The list is sorted in the ASCII code order of file names.
 // Note: Some files are old and the codec string in the mime type may not be
 // accurate.
 // Warning: When adding new files, make sure the codec string is accurate. For
 // example kMp4Avc1Video is for H264 high profile. If you add a file that uses
 // main profile, a new mime type should be added.
-const FileToMimeTypeMap& GetFileToMimeTypeMap() {
-  static const base::NoDestructor<FileToMimeTypeMap> kFileToMimeTypeMap({
-      {"bear-1280x720-av_frag.mp4", kMp4AacAudioAvc1Video},
-      {"bear-1280x720-a_frag-cenc-key_rotation.mp4", kMp4AacAudio},
-      {"bear-1280x720-a_frag-cenc.mp4", kMp4AacAudio},
-      {"bear-1280x720-a_frag-cenc_clear-all.mp4", kMp4AacAudio},
-      {"bear-1280x720-aac_he.ts", kMp2AudioSBR},
-      {"bear-1280x720-v_frag-avc3.mp4", kMp4Avc3Video},
-      {"bear-1280x720-v_frag-cenc-key_rotation.mp4", kMp4Avc1Video},
-      {"bear-1280x720-v_frag-cenc.mp4", kMp4Avc1Video},
-      {"bear-1280x720-v_frag-cenc_clear-all.mp4", kMp4Avc1Video},
-      {"bear-1280x720.ts", kMp2tAudioVideo},
-      {"bear-320x240-16x9-aspect-av_enc-av.webm", kWebMVorbisAudioVp8Video},
-      {"bear-320x240-16x9-aspect.webm", kWebMVorbisAudioVp8Video},
-      {"bear-320x240-audio-only.webm", kWebMVorbisAudio},
-      {"bear-320x240-av_enc-a.webm", kWebMVorbisAudioVp8Video},
-      {"bear-320x240-av_enc-av.webm", kWebMVorbisAudioVp8Video},
-      {"bear-320x240-av_enc-av_clear-1s.webm", kWebMVorbisAudioVp8Video},
-      {"bear-320x240-av_enc-av_clear-all.webm", kWebMVorbisAudioVp8Video},
-      {"bear-320x240-av_enc-v.webm", kWebMVorbisAudioVp8Video},
-      {"bear-320x240-live.webm", kWebMVorbisAudioVp8Video},
-      {"bear-320x240-opus-a_enc-a.webm", kWebMOpusAudio},
-      {"bear-320x240-opus-av_enc-av.webm", kWebMOpusAudioVp9Video},
-      {"bear-320x240-opus-av_enc-v.webm", kWebMOpusAudioVp9Video},
-      {"bear-320x240-v-vp9_fullsample_enc-v.webm", kWebMVp9Video},
-      {"bear-320x240-v-vp9_profile2_subsample_cenc-v.mp4",
-       kMp4Vp9Profile2Video},
-      {"bear-320x240-v-vp9_profile2_subsample_cenc-v.webm",
-       kWebMVp9Profile2Video},
-      {"bear-320x240-v-vp9_subsample_enc-v.webm", kWebMVp9Video},
-      {"bear-320x240-v_enc-v.webm", kWebMVp8Video},
-      {"bear-320x240-v_frag-vp9-cenc.mp4", kMp4Vp9Video},
-      {"bear-320x240-v_frag-vp9.mp4", kMp4Vp9Video},
-      {"bear-320x240-video-only.webm", kWebMVp8Video},
-      {"bear-320x240.webm", kWebMVorbisAudioVp8Video},
-      {"bear-320x240_corrupted_after_init_segment.webm",
-       kWebMVorbisAudioVp8Video},
-      {"bear-640x360-a_frag-cbcs.mp4", kMp4AacAudio},
-      {"bear-640x360-a_frag-cenc.mp4", kMp4AacAudio},
-      {"bear-640x360-a_frag-cenc.mp4;bear-640x360-v_frag-cenc.mp4",
-       kMp4AacAudioAvc1Video},
-      {"bear-640x360-a_frag.mp4", kMp4AacAudio},
-      {"bear-640x360-av_frag.mp4", kMp4AacAudioAvc1Video},
-      {"bear-640x360-v_frag-cbc1.mp4", kMp4Avc1Video},
-      {"bear-640x360-v_frag-cbcs.mp4", kMp4Avc1Video},
-      {"bear-640x360-v_frag-cenc-key_rotation.mp4", kMp4Avc1Video},
-      {"bear-640x360-v_frag-cenc-mdat.mp4", kMp4Avc1Video},
-      {"bear-640x360-v_frag-cenc-senc-no-saiz-saio.mp4", kMp4Avc1Video},
-      {"bear-640x360-v_frag-cenc-senc.mp4", kMp4Avc1Video},
-      {"bear-640x360-v_frag-cenc.mp4", kMp4Avc1Video},
-      {"bear-640x360-v_frag-cens.mp4", kMp4Avc1Video},
-      {"bear-640x360-v_frag.mp4", kMp4Avc1Video},
-      {"bear-a_enc-a.webm", kWebMVorbisAudio},
-      {"bear-audio-implicit-he-aac-v1.aac", kAacAdtsAudio},
-      {"bear-audio-implicit-he-aac-v2.aac", kAacAdtsAudio},
-      {"bear-audio-lc-aac.aac", kAacAdtsAudio},
-      {"bear-audio-main-aac.aac", kAacAdtsAudio},
-      {"bear-audio-mp4a.69.ts", "video/mp2t; codecs=\"mp4a.69\""},
-      {"bear-audio-mp4a.6B.ts", "video/mp2t; codecs=\"mp4a.6B\""},
-      {"bear-av1-320x180-10bit-cenc.mp4", kMp4Av110bitVideo},
-      {"bear-av1-320x180-10bit-cenc.webm", kWebMAv110bitVideo},
-      {"bear-av1-320x180-10bit.mp4", kMp4Av110bitVideo},
-      {"bear-av1-320x180-10bit.webm", kWebMAv110bitVideo},
-      {"bear-av1-480x360.webm", kWebMAv1Video},
-      {"bear-av1-cenc.mp4", kMp4Av1Video},
-      {"bear-av1-cenc.webm", kWebMAv1Video},
-      {"bear-av1-opus.mp4", kMp4Av1VideoOpusAudio},
-      {"bear-av1.mp4", kMp4Av1Video},
-      {"bear-av1.webm", kWebMAv1Video},
-      {"bear-flac-cenc.mp4", kMp4FlacAudio},
-      {"bear-flac_frag.mp4", kMp4FlacAudio},
-      {"bear-opus.mp4", kMp4OpusAudio},
-      {"bear-opus.webm", kWebMOpusAudio},
-      {"bear-opus-cenc.mp4", kMp4OpusAudio},
-      {"bear-vp8a.webm", kWebMVp8Video},
-      {"bear-vp9-blockgroup.webm", kWebMVp9Video},
-      {"bear-vp9.webm", kWebMVp9Video},
-      {"color_pattern_24_dvhe_05_1920x1080-3sec-frag-cenc.mp4",
-       kMp4DolbyVisionProfile5},
-      {"color_pattern_24_dvhe_05_1920x1080-3sec-frag-cenc-clearlead-2sec.mp4",
-       kMp4DolbyVisionProfile5},
-      {"color_pattern_24_dvhe_081_1920x1080-3sec-frag-cenc.mp4",
-       kMp4DolbyVisionProfile8x},
-      {"color_pattern_24_dvhe_081_1920x1080-3sec-frag-cenc-clearlead-2sec.mp4",
-       kMp4DolbyVisionProfile8x},
-      {"frame_size_change-av_enc-v.webm", kWebMVorbisAudioVp8Video},
-      {"icy_sfx.mp3", kMp3Audio},
-      {"iamf_alternating_sine_waves_714.mp4", kMp4IamfAudioAvc1Video},
-      {"iamf_alternating_sine_waves_stereo.mp4", kMp4IamfAudioAvc1Video},
-      {"noise-xhe-aac.mp4", kMp4XheAacAudio},
-      {"opus-trimming-test.mp4", kMp4OpusAudio},
-      {"opus-trimming-test.webm", kWebMOpusAudio},
-      {"sfx-flac_frag.mp4", kMp4FlacAudio},
-      {"sfx-opus-441.webm", kWebMOpusAudio},
-      {"sfx-opus_frag.mp4", kMp4OpusAudio},
-      {"sfx.adts", kAacAdtsAudio},
-      {"sfx.mp3", kMp3Audio},
-  });
-
-  return *kFileToMimeTypeMap;
-}
+constexpr auto kFileToMimeTypeMap = base::MakeFixedFlatMap<std::string_view,
+                                                           std::string_view>({
+    {"bear-1280x720-a_frag-cenc-key_rotation.mp4", kMp4AacAudio},
+    {"bear-1280x720-a_frag-cenc.mp4", kMp4AacAudio},
+    {"bear-1280x720-a_frag-cenc_clear-all.mp4", kMp4AacAudio},
+    {"bear-1280x720-aac_he.ts", kMp2AudioSBR},
+    {"bear-1280x720-av_frag.mp4", kMp4AacAudioAvc1Video},
+    {"bear-1280x720-v_frag-avc3.mp4", kMp4Avc3Video},
+    {"bear-1280x720-v_frag-cenc-key_rotation.mp4", kMp4Avc1Video},
+    {"bear-1280x720-v_frag-cenc.mp4", kMp4Avc1Video},
+    {"bear-1280x720-v_frag-cenc_clear-all.mp4", kMp4Avc1Video},
+    {"bear-1280x720.ts", kMp2tAudioVideo},
+    {"bear-320x240-16x9-aspect-av_enc-av.webm", kWebMVorbisAudioVp8Video},
+    {"bear-320x240-16x9-aspect.webm", kWebMVorbisAudioVp8Video},
+    {"bear-320x240-audio-only.webm", kWebMVorbisAudio},
+    {"bear-320x240-av_enc-a.webm", kWebMVorbisAudioVp8Video},
+    {"bear-320x240-av_enc-av.webm", kWebMVorbisAudioVp8Video},
+    {"bear-320x240-av_enc-av_clear-1s.webm", kWebMVorbisAudioVp8Video},
+    {"bear-320x240-av_enc-av_clear-all.webm", kWebMVorbisAudioVp8Video},
+    {"bear-320x240-av_enc-v.webm", kWebMVorbisAudioVp8Video},
+    {"bear-320x240-live.webm", kWebMVorbisAudioVp8Video},
+    {"bear-320x240-opus-a_enc-a.webm", kWebMOpusAudio},
+    {"bear-320x240-opus-av_enc-av.webm", kWebMOpusAudioVp9Video},
+    {"bear-320x240-opus-av_enc-v.webm", kWebMOpusAudioVp9Video},
+    {"bear-320x240-v-vp9_fullsample_enc-v.webm", kWebMVp9Video},
+    {"bear-320x240-v-vp9_profile2_subsample_cenc-v.mp4", kMp4Vp9Profile2Video},
+    {"bear-320x240-v-vp9_profile2_subsample_cenc-v.webm",
+     kWebMVp9Profile2Video},
+    {"bear-320x240-v-vp9_subsample_enc-v.webm", kWebMVp9Video},
+    {"bear-320x240-v_enc-v.webm", kWebMVp8Video},
+    {"bear-320x240-v_frag-vp9-cenc.mp4", kMp4Vp9Video},
+    {"bear-320x240-v_frag-vp9.mp4", kMp4Vp9Video},
+    {"bear-320x240-video-only.webm", kWebMVp8Video},
+    {"bear-320x240.webm", kWebMVorbisAudioVp8Video},
+    {"bear-320x240_corrupted_after_init_segment.webm",
+     kWebMVorbisAudioVp8Video},
+    {"bear-640x360-a_frag-cbcs.mp4", kMp4AacAudio},
+    {"bear-640x360-a_frag-cenc.mp4", kMp4AacAudio},
+    {"bear-640x360-a_frag-cenc.mp4;bear-640x360-v_frag-cenc.mp4",
+     kMp4AacAudioAvc1Video},
+    {"bear-640x360-a_frag.mp4", kMp4AacAudio},
+    {"bear-640x360-av_frag.mp4", kMp4AacAudioAvc1Video},
+    {"bear-640x360-v_frag-cbc1.mp4", kMp4Avc1Video},
+    {"bear-640x360-v_frag-cbcs.mp4", kMp4Avc1Video},
+    {"bear-640x360-v_frag-cenc-key_rotation.mp4", kMp4Avc1Video},
+    {"bear-640x360-v_frag-cenc-mdat.mp4", kMp4Avc1Video},
+    {"bear-640x360-v_frag-cenc-senc-no-saiz-saio.mp4", kMp4Avc1Video},
+    {"bear-640x360-v_frag-cenc-senc.mp4", kMp4Avc1Video},
+    {"bear-640x360-v_frag-cenc.mp4", kMp4Avc1Video},
+    {"bear-640x360-v_frag-cens.mp4", kMp4Avc1Video},
+    {"bear-640x360-v_frag.mp4", kMp4Avc1Video},
+    {"bear-a_enc-a.webm", kWebMVorbisAudio},
+    {"bear-audio-implicit-he-aac-v1.aac", kAacAdtsAudio},
+    {"bear-audio-implicit-he-aac-v2.aac", kAacAdtsAudio},
+    {"bear-audio-lc-aac.aac", kAacAdtsAudio},
+    {"bear-audio-main-aac.aac", kAacAdtsAudio},
+    {"bear-audio-mp4a.69.ts", "video/mp2t; codecs=\"mp4a.69\""},
+    {"bear-audio-mp4a.6B.ts", "video/mp2t; codecs=\"mp4a.6B\""},
+    {"bear-av1-320x180-10bit-cenc.mp4", kMp4Av110bitVideo},
+    {"bear-av1-320x180-10bit-cenc.webm", kWebMAv110bitVideo},
+    {"bear-av1-320x180-10bit.mp4", kMp4Av110bitVideo},
+    {"bear-av1-320x180-10bit.webm", kWebMAv110bitVideo},
+    {"bear-av1-480x360.webm", kWebMAv1Video},
+    {"bear-av1-cenc.mp4", kMp4Av1Video},
+    {"bear-av1-cenc.webm", kWebMAv1Video},
+    {"bear-av1-opus.mp4", kMp4Av1VideoOpusAudio},
+    {"bear-av1.mp4", kMp4Av1Video},
+    {"bear-av1.webm", kWebMAv1Video},
+    {"bear-flac-cenc.mp4", kMp4FlacAudio},
+    {"bear-flac_frag.mp4", kMp4FlacAudio},
+    {"bear-opus-cenc.mp4", kMp4OpusAudio},
+    {"bear-opus.mp4", kMp4OpusAudio},
+    {"bear-opus.webm", kWebMOpusAudio},
+    {"bear-vp8a.webm", kWebMVp8Video},
+    {"bear-vp9-blockgroup.webm", kWebMVp9Video},
+    {"bear-vp9.webm", kWebMVp9Video},
+    {"color_pattern_24_dvhe_05_1920x1080-3sec-frag-cenc-clearlead-2sec.mp4",
+     kMp4DolbyVisionProfile5},
+    {"color_pattern_24_dvhe_05_1920x1080-3sec-frag-cenc.mp4",
+     kMp4DolbyVisionProfile5},
+    {"color_pattern_24_dvhe_081_1920x1080-3sec-frag-cenc-clearlead-2sec.mp4",
+     kMp4DolbyVisionProfile8x},
+    {"color_pattern_24_dvhe_081_1920x1080-3sec-frag-cenc.mp4",
+     kMp4DolbyVisionProfile8x},
+    {"frame_size_change-av_enc-v.webm", kWebMVorbisAudioVp8Video},
+    {"iamf_alternating_sine_waves_714.mp4", kMp4IamfAudioAvc1Video},
+    {"iamf_alternating_sine_waves_stereo.mp4", kMp4IamfAudioAvc1Video},
+    {"icy_sfx.mp3", kMp3Audio},
+    {"noise-xhe-aac.mp4", kMp4XheAacAudio},
+    {"opus-trimming-test.mp4", kMp4OpusAudio},
+    {"opus-trimming-test.webm", kWebMOpusAudio},
+    {"sfx-flac_frag.mp4", kMp4FlacAudio},
+    {"sfx-opus-441.webm", kWebMOpusAudio},
+    {"sfx-opus_frag.mp4", kMp4OpusAudio},
+    {"sfx.adts", kAacAdtsAudio},
+    {"sfx.mp3", kMp3Audio},
+});
 
 // Key used to encrypt test files.
 const auto kSecretKey = std::to_array<uint8_t>({
@@ -214,6 +218,14 @@ const auto kKeyId = std::to_array<uint8_t>({
     0x35,
 });
 
+constexpr uint8_t kAv1ObuSequenceHeaderType = 1;
+constexpr uint8_t kAv1ObuForbiddenBitMask = 0b1000'0000;
+constexpr uint8_t kAv1ObuTypeBitsMask = 0b0000'1111;
+constexpr uint8_t kAv1ObuExtensionFlagBitMask = 0b0000'0100;
+constexpr uint8_t kAv1ObuHasSizeFieldBitMask = 0b0000'0010;
+constexpr uint8_t kLeb128ValueBitsMask = 0b0111'1111;
+constexpr uint8_t kLeb128ContinuationBitMask = 0b1000'0000;
+
 }  // namespace
 
 // TODO(sandersd): Change the tests to use a more unique message.
@@ -242,10 +254,9 @@ base::FilePath GetTestDataPath() {
   return base::FilePath(kTestDataPath);
 }
 
-std::string GetMimeTypeForFile(std::string_view file_name) {
-  const auto& map = GetFileToMimeTypeMap();
-  auto itr = map.find(file_name);
-  CHECK(itr != map.end()) << ": file_name = " << file_name;
+std::string_view GetMimeTypeForFile(std::string_view file_name) {
+  auto itr = kFileToMimeTypeMap.find(file_name);
+  CHECK(itr != kFileToMimeTypeMap.end()) << ": file_name = " << file_name;
   return itr->second;
 }
 
@@ -281,6 +292,128 @@ scoped_refptr<DecoderBuffer> ReadTestDataFile(std::string_view name,
   auto buffer = ReadTestDataFile(name);
   buffer->set_timestamp(pts);
   return buffer;
+}
+
+scoped_refptr<DecoderBuffer> RewriteAv1SequenceHeaderOperatingPoint(
+    const DecoderBuffer& buffer,
+    uint16_t operating_point_idc,
+    uint8_t seq_level_idx) {
+  base::span<const uint8_t> stream(buffer);
+  std::vector<uint8_t> output;
+  size_t offset = 0;
+  bool rewrote_seq_header = false;
+  while (offset < stream.size()) {
+    const size_t obu_start = offset;
+    const uint8_t header_byte = stream[offset++];
+    CHECK_EQ(header_byte & kAv1ObuForbiddenBitMask, 0);
+    CHECK_NE(header_byte & kAv1ObuHasSizeFieldBitMask, 0);
+    const uint8_t obu_type = (header_byte >> 3) & kAv1ObuTypeBitsMask;
+    const bool has_extension = (header_byte & kAv1ObuExtensionFlagBitMask) != 0;
+    uint8_t extension_byte = 0;
+    if (has_extension) {
+      CHECK_LT(offset, stream.size());
+      extension_byte = stream[offset++];
+    }
+    uint64_t obu_size = 0;
+    for (int i = 0; i < 8; ++i) {
+      CHECK_LT(offset, stream.size());
+      const uint8_t byte = stream[offset++];
+      obu_size |= static_cast<uint64_t>(byte & kLeb128ValueBitsMask) << (i * 7);
+      if ((byte & kLeb128ContinuationBitMask) == 0) {
+        break;
+      }
+    }
+    CHECK_LE(obu_size, stream.size() - offset);
+    base::span<const uint8_t> payload =
+        stream.subspan(offset, static_cast<size_t>(obu_size));
+    offset += static_cast<size_t>(obu_size);
+
+    if (obu_type != kAv1ObuSequenceHeaderType) {
+      base::span<const uint8_t> raw_obu =
+          stream.subspan(obu_start, offset - obu_start);
+      output.insert(output.end(), raw_obu.begin(), raw_obu.end());
+      continue;
+    }
+
+    auto read_bit = [&](size_t bit_index) -> uint8_t {
+      return (payload[bit_index / 8] >> (7 - (bit_index % 8))) & 1;
+    };
+    auto read_bits = [&](size_t& bit_index, size_t count) -> uint32_t {
+      uint32_t value = 0;
+      for (size_t i = 0; i < count; ++i) {
+        value = (value << 1) | read_bit(bit_index++);
+      }
+      return value;
+    };
+
+    size_t bit_idx = 0;
+    read_bits(bit_idx, 3);                // seq_profile
+    read_bits(bit_idx, 1);                // still_picture
+    CHECK_EQ(read_bits(bit_idx, 1), 0u);  // reduced_still_picture_header
+    CHECK_EQ(read_bits(bit_idx, 1), 0u);  // timing_info_present_flag
+    CHECK_EQ(read_bits(bit_idx, 1), 0u);  // initial_display_delay_present_flag
+
+    const uint32_t operating_points_cnt_minus_1 = read_bits(bit_idx, 5);
+    for (uint32_t i = 0; i <= operating_points_cnt_minus_1; ++i) {
+      read_bits(bit_idx, 12);                          // operating_point_idc[i]
+      const uint32_t level_i = read_bits(bit_idx, 5);  // seq_level_idx[i]
+      if (level_i > 7) {
+        read_bits(bit_idx, 1);  // seq_tier[i]
+      }
+    }
+
+    size_t trailing_one_bit = payload.size() * 8;
+    while (trailing_one_bit > bit_idx) {
+      --trailing_one_bit;
+      if (read_bit(trailing_one_bit) == 1) {
+        break;
+      }
+    }
+    CHECK_EQ(read_bit(trailing_one_bit), 1u);
+
+    std::vector<uint8_t> new_payload;
+    size_t out_bit_idx = 0;
+    auto write_bit = [&](uint8_t bit) {
+      if (out_bit_idx % 8 == 0) {
+        new_payload.push_back(0);
+      }
+      new_payload.back() |= (bit & 1) << (7 - (out_bit_idx % 8));
+      ++out_bit_idx;
+    };
+    auto write_bits = [&](uint32_t value, size_t count) {
+      for (size_t i = 0; i < count; ++i) {
+        write_bit((value >> (count - 1 - i)) & 1);
+      }
+    };
+
+    for (size_t i = 0; i < 7; ++i) {
+      write_bit(read_bit(i));
+    }
+    write_bits(0, 5);  // operating_points_cnt_minus_1 = 0
+    write_bits(operating_point_idc, 12);
+    write_bits(seq_level_idx, 5);
+    if (seq_level_idx > 7) {
+      write_bits(0, 1);  // seq_tier[0] = 0
+    }
+    for (size_t i = bit_idx; i < trailing_one_bit; ++i) {
+      write_bit(read_bit(i));
+    }
+    write_bit(1);  // trailing 1 bit
+    while (out_bit_idx % 8 != 0) {
+      write_bit(0);
+    }
+
+    output.push_back(header_byte);
+    if (has_extension) {
+      output.push_back(extension_byte);
+    }
+    CHECK_LT(new_payload.size(), 128u);
+    output.push_back(static_cast<uint8_t>(new_payload.size()));
+    output.insert(output.end(), new_payload.begin(), new_payload.end());
+    rewrote_seq_header = true;
+  }
+  CHECK(rewrote_seq_header);
+  return DecoderBuffer::CopyFrom(output);
 }
 
 bool LookupTestKeyVector(const std::vector<uint8_t>& key_id,

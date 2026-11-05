@@ -6,16 +6,14 @@
     "isolated_scripts": [
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -23,7 +21,7 @@
         },
         "module_name": "//third_party/abseil-cpp:absl_hardening_tests",
         "module_scheme": "gtest",
-        "name": "absl_hardening_tests iPad (A16) 27.0",
+        "name": "absl_hardening_tests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -33,7 +31,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -43,11 +41,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -55,20 +53,18 @@
         },
         "test": "absl_hardening_tests",
         "test_id_prefix": "ninja://third_party/abseil-cpp:absl_hardening_tests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -76,7 +72,7 @@
         },
         "module_name": "//third_party/abseil-cpp:absl_hardening_tests",
         "module_scheme": "gtest",
-        "name": "absl_hardening_tests iPhone 16 27.0",
+        "name": "absl_hardening_tests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -86,7 +82,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -96,11 +92,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -108,20 +104,18 @@
         },
         "test": "absl_hardening_tests",
         "test_id_prefix": "ninja://third_party/abseil-cpp:absl_hardening_tests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -129,7 +123,7 @@
         },
         "module_name": "//base:base_unittests",
         "module_scheme": "gtest",
-        "name": "base_unittests iPad (A16) 27.0",
+        "name": "base_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -139,7 +133,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -149,11 +143,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -161,20 +155,18 @@
         },
         "test": "base_unittests",
         "test_id_prefix": "ninja://base:base_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -182,7 +174,7 @@
         },
         "module_name": "//base:base_unittests",
         "module_scheme": "gtest",
-        "name": "base_unittests iPhone 16 27.0",
+        "name": "base_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -192,7 +184,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -202,11 +194,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -214,20 +206,18 @@
         },
         "test": "base_unittests",
         "test_id_prefix": "ninja://base:base_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone SE (3rd generation)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -235,7 +225,7 @@
         },
         "module_name": "//base:base_unittests",
         "module_scheme": "gtest",
-        "name": "base_unittests iPhone SE (3rd generation) 27.0",
+        "name": "base_unittests iPhone SE (3rd generation) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -245,7 +235,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -255,11 +245,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -267,20 +257,18 @@
         },
         "test": "base_unittests",
         "test_id_prefix": "ninja://base:base_unittests/",
-        "variant_id": "iPhone SE (3rd generation) 27.0"
+        "variant_id": "iPhone SE (3rd generation) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -288,7 +276,7 @@
         },
         "module_name": "//third_party/boringssl:boringssl_crypto_tests",
         "module_scheme": "gtest",
-        "name": "boringssl_crypto_tests iPad (A16) 27.0",
+        "name": "boringssl_crypto_tests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -298,7 +286,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -308,11 +296,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -320,20 +308,18 @@
         },
         "test": "boringssl_crypto_tests",
         "test_id_prefix": "ninja://third_party/boringssl:boringssl_crypto_tests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -341,7 +327,7 @@
         },
         "module_name": "//third_party/boringssl:boringssl_crypto_tests",
         "module_scheme": "gtest",
-        "name": "boringssl_crypto_tests iPhone 16 27.0",
+        "name": "boringssl_crypto_tests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -351,7 +337,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -361,11 +347,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -373,20 +359,18 @@
         },
         "test": "boringssl_crypto_tests",
         "test_id_prefix": "ninja://third_party/boringssl:boringssl_crypto_tests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -394,7 +378,7 @@
         },
         "module_name": "//third_party/boringssl:boringssl_ssl_tests",
         "module_scheme": "gtest",
-        "name": "boringssl_ssl_tests iPad (A16) 27.0",
+        "name": "boringssl_ssl_tests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -404,7 +388,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -414,11 +398,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -426,20 +410,18 @@
         },
         "test": "boringssl_ssl_tests",
         "test_id_prefix": "ninja://third_party/boringssl:boringssl_ssl_tests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -447,7 +429,7 @@
         },
         "module_name": "//third_party/boringssl:boringssl_ssl_tests",
         "module_scheme": "gtest",
-        "name": "boringssl_ssl_tests iPhone 16 27.0",
+        "name": "boringssl_ssl_tests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -457,7 +439,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -467,11 +449,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -479,20 +461,18 @@
         },
         "test": "boringssl_ssl_tests",
         "test_id_prefix": "ninja://third_party/boringssl:boringssl_ssl_tests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -500,7 +480,7 @@
         },
         "module_name": "//components:components_unittests",
         "module_scheme": "gtest",
-        "name": "components_unittests iPad (A16) 27.0",
+        "name": "components_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -510,7 +490,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -520,11 +500,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -532,20 +512,18 @@
         },
         "test": "components_unittests",
         "test_id_prefix": "ninja://components:components_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -553,7 +531,7 @@
         },
         "module_name": "//components:components_unittests",
         "module_scheme": "gtest",
-        "name": "components_unittests iPhone 16 27.0",
+        "name": "components_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -563,7 +541,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -573,11 +551,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -585,20 +563,18 @@
         },
         "test": "components_unittests",
         "test_id_prefix": "ninja://components:components_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone SE (3rd generation)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -606,7 +582,7 @@
         },
         "module_name": "//components:components_unittests",
         "module_scheme": "gtest",
-        "name": "components_unittests iPhone SE (3rd generation) 27.0",
+        "name": "components_unittests iPhone SE (3rd generation) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -616,7 +592,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -626,11 +602,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -638,20 +614,18 @@
         },
         "test": "components_unittests",
         "test_id_prefix": "ninja://components:components_unittests/",
-        "variant_id": "iPhone SE (3rd generation) 27.0"
+        "variant_id": "iPhone SE (3rd generation) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -659,7 +633,7 @@
         },
         "module_name": "//third_party/crashpad/crashpad:crashpad_tests",
         "module_scheme": "gtest",
-        "name": "crashpad_tests iPad (A16) 27.0",
+        "name": "crashpad_tests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -669,7 +643,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -679,11 +653,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -691,20 +665,18 @@
         },
         "test": "crashpad_tests",
         "test_id_prefix": "ninja://third_party/crashpad/crashpad:crashpad_tests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -712,7 +684,7 @@
         },
         "module_name": "//third_party/crashpad/crashpad:crashpad_tests",
         "module_scheme": "gtest",
-        "name": "crashpad_tests iPhone 16 27.0",
+        "name": "crashpad_tests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -722,7 +694,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -732,11 +704,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -744,20 +716,18 @@
         },
         "test": "crashpad_tests",
         "test_id_prefix": "ninja://third_party/crashpad/crashpad:crashpad_tests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -765,7 +735,7 @@
         },
         "module_name": "//crypto:crypto_unittests",
         "module_scheme": "gtest",
-        "name": "crypto_unittests iPad (A16) 27.0",
+        "name": "crypto_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -775,7 +745,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -785,11 +755,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -797,20 +767,18 @@
         },
         "test": "crypto_unittests",
         "test_id_prefix": "ninja://crypto:crypto_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -818,7 +786,7 @@
         },
         "module_name": "//crypto:crypto_unittests",
         "module_scheme": "gtest",
-        "name": "crypto_unittests iPhone 16 27.0",
+        "name": "crypto_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -828,7 +796,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -838,11 +806,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -850,20 +818,18 @@
         },
         "test": "crypto_unittests",
         "test_id_prefix": "ninja://crypto:crypto_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -871,7 +837,7 @@
         },
         "module_name": "//ui/gfx:gfx_unittests",
         "module_scheme": "gtest",
-        "name": "gfx_unittests iPad (A16) 27.0",
+        "name": "gfx_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -881,7 +847,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -891,11 +857,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -903,20 +869,18 @@
         },
         "test": "gfx_unittests",
         "test_id_prefix": "ninja://ui/gfx:gfx_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -924,7 +888,7 @@
         },
         "module_name": "//ui/gfx:gfx_unittests",
         "module_scheme": "gtest",
-        "name": "gfx_unittests iPhone 16 27.0",
+        "name": "gfx_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -934,7 +898,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -944,11 +908,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -956,20 +920,18 @@
         },
         "test": "gfx_unittests",
         "test_id_prefix": "ninja://ui/gfx:gfx_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone SE (3rd generation)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -977,7 +939,7 @@
         },
         "module_name": "//ui/gfx:gfx_unittests",
         "module_scheme": "gtest",
-        "name": "gfx_unittests iPhone SE (3rd generation) 27.0",
+        "name": "gfx_unittests iPhone SE (3rd generation) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -987,7 +949,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -997,11 +959,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1009,20 +971,18 @@
         },
         "test": "gfx_unittests",
         "test_id_prefix": "ninja://ui/gfx:gfx_unittests/",
-        "variant_id": "iPhone SE (3rd generation) 27.0"
+        "variant_id": "iPhone SE (3rd generation) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1030,7 +990,7 @@
         },
         "module_name": "//google_apis:google_apis_unittests",
         "module_scheme": "gtest",
-        "name": "google_apis_unittests iPad (A16) 27.0",
+        "name": "google_apis_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1040,7 +1000,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1050,11 +1010,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1062,20 +1022,18 @@
         },
         "test": "google_apis_unittests",
         "test_id_prefix": "ninja://google_apis:google_apis_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1083,7 +1041,7 @@
         },
         "module_name": "//google_apis:google_apis_unittests",
         "module_scheme": "gtest",
-        "name": "google_apis_unittests iPhone 16 27.0",
+        "name": "google_apis_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1093,7 +1051,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1103,11 +1061,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1115,20 +1073,18 @@
         },
         "test": "google_apis_unittests",
         "test_id_prefix": "ninja://google_apis:google_apis_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1136,7 +1092,7 @@
         },
         "module_name": "//components/gwp_asan:gwp_asan_unittests",
         "module_scheme": "gtest",
-        "name": "gwp_asan_unittests iPad (A16) 27.0",
+        "name": "gwp_asan_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1146,7 +1102,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1156,11 +1112,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1168,20 +1124,18 @@
         },
         "test": "gwp_asan_unittests",
         "test_id_prefix": "ninja://components/gwp_asan:gwp_asan_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1189,7 +1143,7 @@
         },
         "module_name": "//components/gwp_asan:gwp_asan_unittests",
         "module_scheme": "gtest",
-        "name": "gwp_asan_unittests iPhone 16 27.0",
+        "name": "gwp_asan_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1199,7 +1153,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1209,11 +1163,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1221,21 +1175,19 @@
         },
         "test": "gwp_asan_unittests",
         "test_id_prefix": "ninja://components/gwp_asan:gwp_asan_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1243,7 +1195,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_bookmarks_eg2tests_module iPad (A16) 27.0",
+        "name": "ios_chrome_bookmarks_eg2tests_module iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1253,7 +1205,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1263,11 +1215,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1276,21 +1228,19 @@
         },
         "test": "ios_chrome_bookmarks_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1298,7 +1248,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_bookmarks_eg2tests_module iPhone 16 27.0",
+        "name": "ios_chrome_bookmarks_eg2tests_module iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1308,7 +1258,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1318,11 +1268,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1331,23 +1281,21 @@
         },
         "test": "ios_chrome_bookmarks_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
           "--clones",
           "2",
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1355,7 +1303,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_integration_eg2tests_module iPad (A16) 27.0",
+        "name": "ios_chrome_integration_eg2tests_module iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1365,7 +1313,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1375,11 +1323,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1388,23 +1336,21 @@
         },
         "test": "ios_chrome_integration_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
           "--clones",
           "2",
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1412,7 +1358,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_integration_eg2tests_module iPhone 16 27.0",
+        "name": "ios_chrome_integration_eg2tests_module iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1422,7 +1368,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1432,11 +1378,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1445,23 +1391,21 @@
         },
         "test": "ios_chrome_integration_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
           "--clones",
           "2",
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1469,7 +1413,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_settings_eg2tests_module iPad (A16) 27.0",
+        "name": "ios_chrome_settings_eg2tests_module iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1479,7 +1423,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1489,11 +1433,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1502,23 +1446,21 @@
         },
         "test": "ios_chrome_settings_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
           "--clones",
           "2",
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1526,7 +1468,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_settings_eg2tests_module iPhone 16 27.0",
+        "name": "ios_chrome_settings_eg2tests_module iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1536,7 +1478,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1546,11 +1488,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1559,21 +1501,19 @@
         },
         "test": "ios_chrome_settings_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1581,7 +1521,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_signin_eg2tests_module iPad (A16) 27.0",
+        "name": "ios_chrome_signin_eg2tests_module iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1591,7 +1531,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1601,11 +1541,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1614,21 +1554,19 @@
         },
         "test": "ios_chrome_signin_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1636,7 +1574,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_signin_eg2tests_module iPhone 16 27.0",
+        "name": "ios_chrome_signin_eg2tests_module iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1646,7 +1584,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1656,11 +1594,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1669,21 +1607,19 @@
         },
         "test": "ios_chrome_signin_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1691,7 +1627,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_smoke_eg2tests_module iPad (A16) 27.0",
+        "name": "ios_chrome_smoke_eg2tests_module iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1701,7 +1637,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1711,11 +1647,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1723,21 +1659,19 @@
         },
         "test": "ios_chrome_smoke_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1745,7 +1679,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_smoke_eg2tests_module iPhone 16 27.0",
+        "name": "ios_chrome_smoke_eg2tests_module iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1755,7 +1689,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1765,11 +1699,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1777,23 +1711,21 @@
         },
         "test": "ios_chrome_smoke_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
           "--clones",
           "2",
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1801,7 +1733,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_ui_eg2tests_module iPad (A16) 27.0",
+        "name": "ios_chrome_ui_eg2tests_module iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1811,7 +1743,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1821,11 +1753,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1834,23 +1766,21 @@
         },
         "test": "ios_chrome_ui_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
           "--clones",
           "2",
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1858,7 +1788,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_ui_eg2tests_module iPhone 16 27.0",
+        "name": "ios_chrome_ui_eg2tests_module iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1868,7 +1798,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1878,11 +1808,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1891,20 +1821,18 @@
         },
         "test": "ios_chrome_ui_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1912,7 +1840,7 @@
         },
         "module_name": "//ios/chrome/test:ios_chrome_unittests",
         "module_scheme": "gtest",
-        "name": "ios_chrome_unittests iPad (A16) 27.0",
+        "name": "ios_chrome_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1922,7 +1850,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1932,11 +1860,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1944,20 +1872,18 @@
         },
         "test": "ios_chrome_unittests",
         "test_id_prefix": "ninja://ios/chrome/test:ios_chrome_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -1965,7 +1891,7 @@
         },
         "module_name": "//ios/chrome/test:ios_chrome_unittests",
         "module_scheme": "gtest",
-        "name": "ios_chrome_unittests iPhone 16 27.0",
+        "name": "ios_chrome_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1975,7 +1901,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1985,11 +1911,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -1997,20 +1923,18 @@
         },
         "test": "ios_chrome_unittests",
         "test_id_prefix": "ninja://ios/chrome/test:ios_chrome_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone SE (3rd generation)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2018,7 +1942,7 @@
         },
         "module_name": "//ios/chrome/test:ios_chrome_unittests",
         "module_scheme": "gtest",
-        "name": "ios_chrome_unittests iPhone SE (3rd generation) 27.0",
+        "name": "ios_chrome_unittests iPhone SE (3rd generation) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2028,7 +1952,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2038,11 +1962,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2050,21 +1974,19 @@
         },
         "test": "ios_chrome_unittests",
         "test_id_prefix": "ninja://ios/chrome/test:ios_chrome_unittests/",
-        "variant_id": "iPhone SE (3rd generation) 27.0"
+        "variant_id": "iPhone SE (3rd generation) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2072,7 +1994,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_web_eg2tests_module iPad (A16) 27.0",
+        "name": "ios_chrome_web_eg2tests_module iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2082,7 +2004,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2092,11 +2014,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2105,21 +2027,19 @@
         },
         "test": "ios_chrome_web_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2127,7 +2047,7 @@
         },
         "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_web_eg2tests_module iPhone 16 27.0",
+        "name": "ios_chrome_web_eg2tests_module iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2137,7 +2057,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2147,11 +2067,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2160,20 +2080,18 @@
         },
         "test": "ios_chrome_web_eg2tests_module",
         "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2181,7 +2099,7 @@
         },
         "module_name": "//ios/components:ios_components_unittests",
         "module_scheme": "gtest",
-        "name": "ios_components_unittests iPad (A16) 27.0",
+        "name": "ios_components_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2191,7 +2109,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2201,11 +2119,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2213,20 +2131,18 @@
         },
         "test": "ios_components_unittests",
         "test_id_prefix": "ninja://ios/components:ios_components_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2234,7 +2150,7 @@
         },
         "module_name": "//ios/components:ios_components_unittests",
         "module_scheme": "gtest",
-        "name": "ios_components_unittests iPhone 16 27.0",
+        "name": "ios_components_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2244,7 +2160,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2254,11 +2170,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2266,20 +2182,18 @@
         },
         "test": "ios_components_unittests",
         "test_id_prefix": "ninja://ios/components:ios_components_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2287,7 +2201,7 @@
         },
         "module_name": "//ios/chrome/test/extensions:ios_credential_provider_extension_unittests",
         "module_scheme": "gtest",
-        "name": "ios_credential_provider_extension_unittests iPad (A16) 27.0",
+        "name": "ios_credential_provider_extension_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2297,7 +2211,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2307,11 +2221,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2319,20 +2233,18 @@
         },
         "test": "ios_credential_provider_extension_unittests",
         "test_id_prefix": "ninja://ios/chrome/test/extensions:ios_credential_provider_extension_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2340,7 +2252,7 @@
         },
         "module_name": "//ios/chrome/test/extensions:ios_credential_provider_extension_unittests",
         "module_scheme": "gtest",
-        "name": "ios_credential_provider_extension_unittests iPhone 16 27.0",
+        "name": "ios_credential_provider_extension_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2350,7 +2262,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2360,11 +2272,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2372,20 +2284,18 @@
         },
         "test": "ios_credential_provider_extension_unittests",
         "test_id_prefix": "ninja://ios/chrome/test/extensions:ios_credential_provider_extension_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone SE (3rd generation)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2393,7 +2303,7 @@
         },
         "module_name": "//ios/chrome/test/extensions:ios_credential_provider_extension_unittests",
         "module_scheme": "gtest",
-        "name": "ios_credential_provider_extension_unittests iPhone SE (3rd generation) 27.0",
+        "name": "ios_credential_provider_extension_unittests iPhone SE (3rd generation) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2403,7 +2313,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2413,11 +2323,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2425,20 +2335,18 @@
         },
         "test": "ios_credential_provider_extension_unittests",
         "test_id_prefix": "ninja://ios/chrome/test/extensions:ios_credential_provider_extension_unittests/",
-        "variant_id": "iPhone SE (3rd generation) 27.0"
+        "variant_id": "iPhone SE (3rd generation) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2446,7 +2354,7 @@
         },
         "module_name": "//ios/net:ios_net_unittests",
         "module_scheme": "gtest",
-        "name": "ios_net_unittests iPad (A16) 27.0",
+        "name": "ios_net_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2456,7 +2364,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2466,11 +2374,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2479,20 +2387,18 @@
         },
         "test": "ios_net_unittests",
         "test_id_prefix": "ninja://ios/net:ios_net_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2500,7 +2406,7 @@
         },
         "module_name": "//ios/net:ios_net_unittests",
         "module_scheme": "gtest",
-        "name": "ios_net_unittests iPhone 16 27.0",
+        "name": "ios_net_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2510,7 +2416,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2520,11 +2426,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2533,20 +2439,18 @@
         },
         "test": "ios_net_unittests",
         "test_id_prefix": "ninja://ios/net:ios_net_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2554,7 +2458,7 @@
         },
         "module_name": "//ios/testing:ios_testing_unittests",
         "module_scheme": "gtest",
-        "name": "ios_testing_unittests iPad (A16) 27.0",
+        "name": "ios_testing_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2564,7 +2468,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2574,11 +2478,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2586,20 +2490,18 @@
         },
         "test": "ios_testing_unittests",
         "test_id_prefix": "ninja://ios/testing:ios_testing_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2607,7 +2509,7 @@
         },
         "module_name": "//ios/testing:ios_testing_unittests",
         "module_scheme": "gtest",
-        "name": "ios_testing_unittests iPhone 16 27.0",
+        "name": "ios_testing_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2617,7 +2519,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2627,11 +2529,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2639,20 +2541,18 @@
         },
         "test": "ios_testing_unittests",
         "test_id_prefix": "ninja://ios/testing:ios_testing_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2660,7 +2560,7 @@
         },
         "module_name": "//ios/web:ios_web_inttests",
         "module_scheme": "gtest",
-        "name": "ios_web_inttests iPad (A16) 27.0",
+        "name": "ios_web_inttests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2670,7 +2570,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2680,11 +2580,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2692,20 +2592,18 @@
         },
         "test": "ios_web_inttests",
         "test_id_prefix": "ninja://ios/web:ios_web_inttests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2713,7 +2611,7 @@
         },
         "module_name": "//ios/web:ios_web_inttests",
         "module_scheme": "gtest",
-        "name": "ios_web_inttests iPhone 16 27.0",
+        "name": "ios_web_inttests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2723,7 +2621,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2733,11 +2631,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2745,20 +2643,18 @@
         },
         "test": "ios_web_inttests",
         "test_id_prefix": "ninja://ios/web:ios_web_inttests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone SE (3rd generation)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2766,7 +2662,7 @@
         },
         "module_name": "//ios/web:ios_web_inttests",
         "module_scheme": "gtest",
-        "name": "ios_web_inttests iPhone SE (3rd generation) 27.0",
+        "name": "ios_web_inttests iPhone SE (3rd generation) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2776,7 +2672,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2786,11 +2682,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2798,21 +2694,19 @@
         },
         "test": "ios_web_inttests",
         "test_id_prefix": "ninja://ios/web:ios_web_inttests/",
-        "variant_id": "iPhone SE (3rd generation) 27.0"
+        "variant_id": "iPhone SE (3rd generation) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2820,7 +2714,7 @@
         },
         "module_name": "//ios/web/shell/test:ios_web_shell_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_web_shell_eg2tests_module iPad (A16) 27.0",
+        "name": "ios_web_shell_eg2tests_module iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2830,7 +2724,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2840,11 +2734,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2852,21 +2746,19 @@
         },
         "test": "ios_web_shell_eg2tests_module",
         "test_id_prefix": "ninja://ios/web/shell/test:ios_web_shell_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
+          "27.2",
           "--xcodebuild-sim-runner",
-          "--use-simulator-cache",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2874,7 +2766,7 @@
         },
         "module_name": "//ios/web/shell/test:ios_web_shell_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_web_shell_eg2tests_module iPhone 16 27.0",
+        "name": "ios_web_shell_eg2tests_module iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2884,7 +2776,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2894,11 +2786,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2906,20 +2798,18 @@
         },
         "test": "ios_web_shell_eg2tests_module",
         "test_id_prefix": "ninja://ios/web/shell/test:ios_web_shell_eg2tests_module/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2927,7 +2817,7 @@
         },
         "module_name": "//ios/web:ios_web_unittests",
         "module_scheme": "gtest",
-        "name": "ios_web_unittests iPad (A16) 27.0",
+        "name": "ios_web_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2937,7 +2827,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2947,11 +2837,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -2959,20 +2849,18 @@
         },
         "test": "ios_web_unittests",
         "test_id_prefix": "ninja://ios/web:ios_web_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -2980,7 +2868,7 @@
         },
         "module_name": "//ios/web:ios_web_unittests",
         "module_scheme": "gtest",
-        "name": "ios_web_unittests iPhone 16 27.0",
+        "name": "ios_web_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2990,7 +2878,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3000,11 +2888,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3012,20 +2900,18 @@
         },
         "test": "ios_web_unittests",
         "test_id_prefix": "ninja://ios/web:ios_web_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone SE (3rd generation)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3033,7 +2919,7 @@
         },
         "module_name": "//ios/web:ios_web_unittests",
         "module_scheme": "gtest",
-        "name": "ios_web_unittests iPhone SE (3rd generation) 27.0",
+        "name": "ios_web_unittests iPhone SE (3rd generation) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3043,7 +2929,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3053,11 +2939,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3065,20 +2951,18 @@
         },
         "test": "ios_web_unittests",
         "test_id_prefix": "ninja://ios/web:ios_web_unittests/",
-        "variant_id": "iPhone SE (3rd generation) 27.0"
+        "variant_id": "iPhone SE (3rd generation) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3086,7 +2970,7 @@
         },
         "module_name": "//ios/web_view/test:ios_web_view_inttests",
         "module_scheme": "gtest",
-        "name": "ios_web_view_inttests iPad (A16) 27.0",
+        "name": "ios_web_view_inttests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3096,7 +2980,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3106,11 +2990,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3118,20 +3002,18 @@
         },
         "test": "ios_web_view_inttests",
         "test_id_prefix": "ninja://ios/web_view/test:ios_web_view_inttests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3139,7 +3021,7 @@
         },
         "module_name": "//ios/web_view/test:ios_web_view_inttests",
         "module_scheme": "gtest",
-        "name": "ios_web_view_inttests iPhone 16 27.0",
+        "name": "ios_web_view_inttests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3149,7 +3031,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3159,11 +3041,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3171,20 +3053,18 @@
         },
         "test": "ios_web_view_inttests",
         "test_id_prefix": "ninja://ios/web_view/test:ios_web_view_inttests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone SE (3rd generation)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3192,7 +3072,7 @@
         },
         "module_name": "//ios/web_view/test:ios_web_view_inttests",
         "module_scheme": "gtest",
-        "name": "ios_web_view_inttests iPhone SE (3rd generation) 27.0",
+        "name": "ios_web_view_inttests iPhone SE (3rd generation) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3202,7 +3082,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3212,11 +3092,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3224,20 +3104,18 @@
         },
         "test": "ios_web_view_inttests",
         "test_id_prefix": "ninja://ios/web_view/test:ios_web_view_inttests/",
-        "variant_id": "iPhone SE (3rd generation) 27.0"
+        "variant_id": "iPhone SE (3rd generation) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3245,7 +3123,7 @@
         },
         "module_name": "//ios/web_view/test:ios_web_view_unittests",
         "module_scheme": "gtest",
-        "name": "ios_web_view_unittests iPad (A16) 27.0",
+        "name": "ios_web_view_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3255,7 +3133,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3265,11 +3143,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3277,20 +3155,18 @@
         },
         "test": "ios_web_view_unittests",
         "test_id_prefix": "ninja://ios/web_view/test:ios_web_view_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3298,7 +3174,7 @@
         },
         "module_name": "//ios/web_view/test:ios_web_view_unittests",
         "module_scheme": "gtest",
-        "name": "ios_web_view_unittests iPhone 16 27.0",
+        "name": "ios_web_view_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3308,7 +3184,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3318,11 +3194,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3330,20 +3206,18 @@
         },
         "test": "ios_web_view_unittests",
         "test_id_prefix": "ninja://ios/web_view/test:ios_web_view_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone SE (3rd generation)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3351,7 +3225,7 @@
         },
         "module_name": "//ios/web_view/test:ios_web_view_unittests",
         "module_scheme": "gtest",
-        "name": "ios_web_view_unittests iPhone SE (3rd generation) 27.0",
+        "name": "ios_web_view_unittests iPhone SE (3rd generation) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3361,7 +3235,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3371,11 +3245,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3383,20 +3257,18 @@
         },
         "test": "ios_web_view_unittests",
         "test_id_prefix": "ninja://ios/web_view/test:ios_web_view_unittests/",
-        "variant_id": "iPhone SE (3rd generation) 27.0"
+        "variant_id": "iPhone SE (3rd generation) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3404,7 +3276,7 @@
         },
         "module_name": "//net:net_unittests",
         "module_scheme": "gtest",
-        "name": "net_unittests iPad (A16) 27.0",
+        "name": "net_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3414,7 +3286,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3424,11 +3296,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3436,20 +3308,18 @@
         },
         "test": "net_unittests",
         "test_id_prefix": "ninja://net:net_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3457,7 +3327,7 @@
         },
         "module_name": "//net:net_unittests",
         "module_scheme": "gtest",
-        "name": "net_unittests iPhone 16 27.0",
+        "name": "net_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3467,7 +3337,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3477,11 +3347,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3489,29 +3359,26 @@
         },
         "test": "net_unittests",
         "test_id_prefix": "ninja://net:net_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
-        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//rlz:rlz_unittests",
         "module_scheme": "gtest",
-        "name": "rlz_unittests iPad (A16) 27.0",
+        "name": "rlz_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3521,7 +3388,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3531,11 +3398,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3543,29 +3410,26 @@
         },
         "test": "rlz_unittests",
         "test_id_prefix": "ninja://rlz:rlz_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
-        "experiment_percentage": 100,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
         "module_name": "//rlz:rlz_unittests",
         "module_scheme": "gtest",
-        "name": "rlz_unittests iPhone 16 27.0",
+        "name": "rlz_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3575,7 +3439,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3585,11 +3449,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3597,20 +3461,18 @@
         },
         "test": "rlz_unittests",
         "test_id_prefix": "ninja://rlz:rlz_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3618,7 +3480,7 @@
         },
         "module_name": "//services:services_unittests",
         "module_scheme": "gtest",
-        "name": "services_unittests iPad (A16) 27.0",
+        "name": "services_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3628,7 +3490,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3638,11 +3500,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3650,20 +3512,18 @@
         },
         "test": "services_unittests",
         "test_id_prefix": "ninja://services:services_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3671,7 +3531,7 @@
         },
         "module_name": "//services:services_unittests",
         "module_scheme": "gtest",
-        "name": "services_unittests iPhone 16 27.0",
+        "name": "services_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3681,7 +3541,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3691,11 +3551,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3703,20 +3563,18 @@
         },
         "test": "services_unittests",
         "test_id_prefix": "ninja://services:services_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3724,7 +3582,7 @@
         },
         "module_name": "//skia:skia_unittests",
         "module_scheme": "gtest",
-        "name": "skia_unittests iPad (A16) 27.0",
+        "name": "skia_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3734,7 +3592,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3744,11 +3602,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3756,20 +3614,18 @@
         },
         "test": "skia_unittests",
         "test_id_prefix": "ninja://skia:skia_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3777,7 +3633,7 @@
         },
         "module_name": "//skia:skia_unittests",
         "module_scheme": "gtest",
-        "name": "skia_unittests iPhone 16 27.0",
+        "name": "skia_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3787,7 +3643,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3797,11 +3653,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3809,20 +3665,18 @@
         },
         "test": "skia_unittests",
         "test_id_prefix": "ninja://skia:skia_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone SE (3rd generation)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3830,7 +3684,7 @@
         },
         "module_name": "//skia:skia_unittests",
         "module_scheme": "gtest",
-        "name": "skia_unittests iPhone SE (3rd generation) 27.0",
+        "name": "skia_unittests iPhone SE (3rd generation) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3840,7 +3694,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3850,11 +3704,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3862,20 +3716,18 @@
         },
         "test": "skia_unittests",
         "test_id_prefix": "ninja://skia:skia_unittests/",
-        "variant_id": "iPhone SE (3rd generation) 27.0"
+        "variant_id": "iPhone SE (3rd generation) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3883,7 +3735,7 @@
         },
         "module_name": "//sql:sql_unittests",
         "module_scheme": "gtest",
-        "name": "sql_unittests iPad (A16) 27.0",
+        "name": "sql_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3893,7 +3745,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3903,11 +3755,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3915,20 +3767,18 @@
         },
         "test": "sql_unittests",
         "test_id_prefix": "ninja://sql:sql_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3936,7 +3786,7 @@
         },
         "module_name": "//sql:sql_unittests",
         "module_scheme": "gtest",
-        "name": "sql_unittests iPhone 16 27.0",
+        "name": "sql_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3946,7 +3796,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3956,11 +3806,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -3968,20 +3818,18 @@
         },
         "test": "sql_unittests",
         "test_id_prefix": "ninja://sql:sql_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -3989,7 +3837,7 @@
         },
         "module_name": "//ui/base:ui_base_unittests",
         "module_scheme": "gtest",
-        "name": "ui_base_unittests iPad (A16) 27.0",
+        "name": "ui_base_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -3999,7 +3847,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4009,11 +3857,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -4021,20 +3869,18 @@
         },
         "test": "ui_base_unittests",
         "test_id_prefix": "ninja://ui/base:ui_base_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -4042,7 +3888,7 @@
         },
         "module_name": "//ui/base:ui_base_unittests",
         "module_scheme": "gtest",
-        "name": "ui_base_unittests iPhone 16 27.0",
+        "name": "ui_base_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -4052,7 +3898,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4062,11 +3908,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -4074,20 +3920,18 @@
         },
         "test": "ui_base_unittests",
         "test_id_prefix": "ninja://ui/base:ui_base_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone SE (3rd generation)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -4095,7 +3939,7 @@
         },
         "module_name": "//ui/base:ui_base_unittests",
         "module_scheme": "gtest",
-        "name": "ui_base_unittests iPhone SE (3rd generation) 27.0",
+        "name": "ui_base_unittests iPhone SE (3rd generation) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -4105,7 +3949,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4115,11 +3959,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -4127,20 +3971,18 @@
         },
         "test": "ui_base_unittests",
         "test_id_prefix": "ninja://ui/base:ui_base_unittests/",
-        "variant_id": "iPhone SE (3rd generation) 27.0"
+        "variant_id": "iPhone SE (3rd generation) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPad (A16)",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -4148,7 +3990,7 @@
         },
         "module_name": "//url:url_unittests",
         "module_scheme": "gtest",
-        "name": "url_unittests iPad (A16) 27.0",
+        "name": "url_unittests iPad (A16) 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -4158,7 +4000,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4168,11 +4010,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -4180,20 +4022,18 @@
         },
         "test": "url_unittests",
         "test_id_prefix": "ninja://url:url_unittests/",
-        "variant_id": "iPad (A16) 27.0"
+        "variant_id": "iPad (A16) 27.2"
       },
       {
         "args": [
-          "--use-simulator-cache",
           "--platform",
           "iPhone 16",
           "--version",
-          "27.0",
-          "--use-simulator-cache",
+          "27.2",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
-          "27a5252f",
+          "27b52",
           "--xctest"
         ],
         "merge": {
@@ -4201,7 +4041,7 @@
         },
         "module_name": "//url:url_unittests",
         "module_scheme": "gtest",
-        "name": "url_unittests iPhone 16 27.0",
+        "name": "url_unittests iPhone 16 27.2",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -4211,7 +4051,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4221,11 +4061,11 @@
           },
           "named_caches": [
             {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
+              "name": "runtime_ios_27_2",
+              "path": "Runtime-ios-27.2"
             },
             {
-              "name": "xcode_ios_27a5252f",
+              "name": "xcode_ios_27b52",
               "path": "Xcode.app"
             }
           ],
@@ -4233,7 +4073,7 @@
         },
         "test": "url_unittests",
         "test_id_prefix": "ninja://url:url_unittests/",
-        "variant_id": "iPhone 16 27.0"
+        "variant_id": "iPhone 16 27.2"
       }
     ]
   }

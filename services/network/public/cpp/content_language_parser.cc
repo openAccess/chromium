@@ -22,9 +22,10 @@ std::optional<std::vector<std::string>> ParseContentLanguages(
     return std::nullopt;
 
   for (const auto& list_item : maybe_list.value()) {
+    const net::structured_headers::ParameterizedItem* item =
+        list_item.GetIfItem();
     // Make sure not a nested list.
-    if (list_item.member_is_inner_list || list_item.member.size() != 1u ||
-        !list_item.member.front().item.is_token()) {
+    if (!item || !item->item.is_token()) {
       return std::nullopt;
     }
   }
@@ -32,7 +33,7 @@ std::optional<std::vector<std::string>> ParseContentLanguages(
   std::vector<std::string> result;
   result.reserve(maybe_list->size());
   for (auto& list_item : maybe_list.value()) {
-    const std::string* token_value = list_item.member.front().item.GetIfToken();
+    std::string* token_value = list_item.GetIfItem()->item.GetIfToken();
     result.emplace_back(std::move(*token_value));
   }
   return result;

@@ -11,6 +11,7 @@
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/webui/file_manager/file_manager_ui.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ref_counted.h"
@@ -20,11 +21,9 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/drive/file_system_util.h"
 #include "chrome/browser/ash/extensions/file_manager/drivefs_event_router.h"
-#include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/ash/file_manager/io_task.h"
 #include "chrome/browser/ash/file_manager/io_task_controller.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
@@ -32,17 +31,17 @@
 #include "chrome/browser/ash/policy/dlp/files_policy_notification_manager.h"
 #include "chrome/browser/ash/policy/dlp/files_policy_notification_manager_factory.h"
 #include "chrome/browser/platform_util.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "components/prefs/pref_service.h"
-#include "content/public/browser/browser_task_traits.h"
-#include "content/public/browser/browser_thread.h"
+#include "components/user_manager/user.h"
 #include "extensions/browser/extension_event_histogram_value.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/strings/grit/ui_chromeos_strings.h"
+#include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
 
 namespace file_manager {
@@ -68,40 +67,15 @@ using message_center::ButtonInfo;
 using message_center::HandleNotificationClickDelegate;
 using message_center::Notification;
 using message_center::NotificationDelegate;
-using message_center::NotifierId;
 using message_center::RichNotificationData;
 using message_center::SystemNotificationWarningLevel;
 using NotificationPtr = std::unique_ptr<Notification>;
 using DelegatePtr = scoped_refptr<NotificationDelegate>;
-using OperationID = storage::FileSystemOperationRunner::OperationID;
-using FileSystemContextPtr = scoped_refptr<storage::FileSystemContext>;
 
 using enum extensions::events::HistogramValue;
 using enum message_center::NotificationType;
 
-void CancelCopyOnIOThread(FileSystemContextPtr file_system_context,
-                          OperationID operation_id) {
-  file_system_context->operation_runner()->Cancel(
-      operation_id, base::BindOnce([](base::File::Error error) {
-        DLOG_IF(WARNING, error != base::File::FILE_OK)
-            << "Failed to cancel copy: " << error;
-      }));
-}
-
 constexpr char kSwaFileOperationPrefix[] = "swa-file-operation-";
-
-bool NotificationIdToOperationId(const std::string& notification_id,
-                                 OperationID* operation_id) {
-  *operation_id = 0;
-  std::string id_string;
-  if (base::RemoveChars(notification_id, kSwaFileOperationPrefix, &id_string)) {
-    if (base::StringToUint64(id_string, operation_id)) {
-      return true;
-    }
-  }
-
-  return false;
-}
 
 void RecordDeviceNotificationMetric(DeviceNotificationUmaType type) {
   UMA_HISTOGRAM_ENUMERATION(kNotificationShowHistogramName, type);
@@ -190,6 +164,13 @@ std::u16string GetIOTaskMessage(Profile* profile,
                       .BaseName()
                       .value()));
 }
+
+message_center::NotifierId CreateNotifierId(const user_manager::User& user) {
+  message_center::NotifierId notifier_id;
+  notifier_id.profile_id = user.GetAccountId().GetUserEmail();
+  return notifier_id;
+}
+
 }  // namespace
 
 std::string GetNotificationId(io_task::IOTaskId task_id) {
@@ -197,39 +178,64 @@ std::string GetNotificationId(io_task::IOTaskId task_id) {
 }
 
 NotificationPtr CreateSystemNotification(
+    message_center::NotificationType type,
+    const user_manager::User& user,
     const std::string& notification_id,
     const std::u16string& title,
     const std::u16string& message,
     DelegatePtr delegate,
     message_center::RichNotificationData optional_fields) {
   return ash::CreateSystemNotificationPtr(
-      NOTIFICATION_TYPE_SIMPLE, notification_id, title, message,
-      GetStringUTF16(IDS_FILEMANAGER_APP_NAME), GURL(), NotifierId(),
-      optional_fields, std::move(delegate), ash::kFolderIcon,
-      SystemNotificationWarningLevel::NORMAL);
+      type,
+      ash::CreateUserScopedNotificationId(notification_id,
+                                          user.username_hash()),
+      title, message, GetStringUTF16(IDS_FILEMANAGER_APP_NAME),
+      CreateNotifierId(user), optional_fields, std::move(delegate),
+      ash::kFolderIcon, SystemNotificationWarningLevel::NORMAL);
 }
 
-NotificationPtr CreateSystemNotification(const std::string& notification_id,
-                                         int title_id,
-                                         int message_id,
-                                         DelegatePtr delegate) {
+std::string SystemNotificationManager::GetScopedNotificationId(
+    std::string_view notification_id) const {
+  return ash::CreateUserScopedNotificationId(notification_id,
+                                             user_->username_hash());
+}
+
+NotificationPtr SystemNotificationManager::CreateSystemNotification(
+    const std::string& notification_id,
+    const std::u16string& title,
+    const std::u16string& message,
+    DelegatePtr delegate,
+    message_center::RichNotificationData optional_fields) const {
+  return file_manager::CreateSystemNotification(
+      NOTIFICATION_TYPE_SIMPLE, *user_, notification_id, title, message,
+      std::move(delegate), std::move(optional_fields));
+}
+
+NotificationPtr SystemNotificationManager::CreateSystemNotification(
+    const std::string& notification_id,
+    int title_id,
+    int message_id,
+    DelegatePtr delegate) const {
   return CreateSystemNotification(notification_id, GetStringUTF16(title_id),
                                   GetStringUTF16(message_id),
                                   std::move(delegate));
 }
 
-NotificationPtr CreateSystemNotification(
+NotificationPtr SystemNotificationManager::CreateSystemNotification(
     const std::string& notification_id,
     const std::u16string& title,
     const std::u16string& message,
-    const RepeatingClosure& click_callback) {
+    const RepeatingClosure& click_callback) const {
   return CreateSystemNotification(
       notification_id, title, message,
       MakeRefCounted<HandleNotificationClickDelegate>(click_callback));
 }
 
 SystemNotificationManager::SystemNotificationManager(Profile* profile)
-    : profile_(profile), app_name_(GetStringUTF16(IDS_FILEMANAGER_APP_NAME)) {}
+    : profile_(profile),
+      user_(CHECK_DEREF(
+          ash::BrowserContextHelper::Get()->GetUserByBrowserContext(profile))),
+      app_name_(GetStringUTF16(IDS_FILEMANAGER_APP_NAME)) {}
 
 SystemNotificationManager::~SystemNotificationManager() = default;
 
@@ -253,40 +259,6 @@ NotificationPtr SystemNotificationManager::CreateNotification(
     int message_id) {
   return CreateNotification(notification_id, GetStringUTF16(title_id),
                             GetStringUTF16(message_id));
-}
-
-void SystemNotificationManager::HandleProgressClick(
-    const std::string& notification_id,
-    std::optional<int> button_index) {
-  if (button_index) {
-    // Cancel the copy operation.
-    FileSystemContextPtr file_system_context =
-        util::GetFileManagerFileSystemContext(profile_);
-    OperationID operation_id;
-    if (NotificationIdToOperationId(notification_id, &operation_id)) {
-      content::GetIOThreadTaskRunner({})->PostTask(
-          FROM_HERE, base::BindOnce(&CancelCopyOnIOThread, file_system_context,
-                                    operation_id));
-    }
-  }
-}
-
-NotificationPtr SystemNotificationManager::CreateProgressNotification(
-    const std::string& notification_id,
-    const std::u16string& title,
-    const std::u16string& message,
-    int progress) {
-  RichNotificationData rich_data;
-  rich_data.progress = progress;
-  rich_data.progress_status = message;
-
-  return ash::CreateSystemNotificationPtr(
-      NOTIFICATION_TYPE_PROGRESS, notification_id, title, message, app_name_,
-      GURL(), NotifierId(), rich_data,
-      MakeRefCounted<HandleNotificationClickDelegate>(
-          BindRepeating(&SystemNotificationManager::HandleProgressClick,
-                        weak_ptr_factory_.GetWeakPtr(), notification_id)),
-      ash::kFolderIcon, SystemNotificationWarningLevel::NORMAL);
 }
 
 NotificationPtr SystemNotificationManager::CreateIOTaskProgressNotification(
@@ -328,12 +300,11 @@ NotificationPtr SystemNotificationManager::CreateIOTaskProgressNotification(
       &SystemNotificationManager::HandleIOTaskProgressNotificationClick,
       weak_ptr_factory_.GetWeakPtr(), task_id, notification_id, paused);
 
-  auto notification = ash::CreateSystemNotificationPtr(
-      NOTIFICATION_TYPE_PROGRESS, notification_id, title, message, app_name_,
-      GURL(), NotifierId(), rich_data,
+  auto notification = file_manager::CreateSystemNotification(
+      NOTIFICATION_TYPE_PROGRESS, *user_, notification_id, title, message,
       MakeRefCounted<IOTaskProgressNotificationClickDelegate>(
           std::move(notification_click_handler), paused),
-      ash::kFolderIcon, SystemNotificationWarningLevel::NORMAL);
+      std::move(rich_data));
 
   std::vector<ButtonInfo> notification_buttons;
 
@@ -371,8 +342,8 @@ void SystemNotificationManager::HandleIOTaskProgressNotificationClick(
 }
 
 void SystemNotificationManager::Dismiss(const std::string& notification_id) {
-  GetNotificationDisplayService()->Close(NotificationHandler::Type::TRANSIENT,
-                                         notification_id);
+  message_center::MessageCenter::Get()->RemoveNotification(
+      GetScopedNotificationId(notification_id), /*by_user=*/false);
 }
 
 static const char kDeviceFailNotificationId[] = "swa-device-fail-id";
@@ -392,11 +363,8 @@ void SystemNotificationManager::HandleDeviceEvent(
 
     case fmp::DeviceEventType::kRemoved:
       // Hide device fail & storage disabled notifications.
-      GetNotificationDisplayService()->Close(
-          NotificationHandler::Type::TRANSIENT, kDeviceFailNotificationId);
-      GetNotificationDisplayService()->Close(
-          NotificationHandler::Type::TRANSIENT,
-          ToString(fmp::DeviceEventType::kDisabled));
+      Dismiss(kDeviceFailNotificationId);
+      Dismiss(ToString(fmp::DeviceEventType::kDisabled));
       // Remove the device from the mount status map.
       mount_status_.erase(event.device_path);
       break;
@@ -420,12 +388,9 @@ void SystemNotificationManager::HandleDeviceEvent(
       break;
 
     case fmp::DeviceEventType::kFormatSuccess:
-    case fmp::DeviceEventType::kFormatFail:
-    case fmp::DeviceEventType::kPartitionFail: {
+    case fmp::DeviceEventType::kFormatFail: {
       // Hide the formatting notification.
-      GetNotificationDisplayService()->Close(
-          NotificationHandler::Type::TRANSIENT,
-          ToString(fmp::DeviceEventType::kFormatStart));
+      Dismiss(ToString(fmp::DeviceEventType::kFormatStart));
       std::u16string message;
       if (event.type == fmp::DeviceEventType::kFormatSuccess) {
         message = GetStringFUTF16(IDS_FILE_BROWSER_FORMAT_SUCCESS_MESSAGE,
@@ -435,10 +400,7 @@ void SystemNotificationManager::HandleDeviceEvent(
       } else {
         message = GetStringFUTF16(IDS_FILE_BROWSER_FORMAT_FAILURE_MESSAGE,
                                   UTF8ToUTF16(event.device_label));
-        RecordDeviceNotificationMetric(
-            event.type == fmp::DeviceEventType::kFormatFail
-                ? DeviceNotificationUmaType::FORMAT_FAIL
-                : DeviceNotificationUmaType::PARTITION_FAIL);
+        RecordDeviceNotificationMetric(DeviceNotificationUmaType::FORMAT_FAIL);
       }
       notification = CreateNotification(
           id,
@@ -447,11 +409,6 @@ void SystemNotificationManager::HandleDeviceEvent(
           std::move(message));
       break;
     }
-
-    case fmp::DeviceEventType::kPartitionStart:
-    case fmp::DeviceEventType::kPartitionSuccess:
-      // No-op.
-      break;
 
     case fmp::DeviceEventType::kRenameFail:
       notification = CreateNotification(
@@ -469,34 +426,26 @@ void SystemNotificationManager::HandleDeviceEvent(
   }
 
   if (notification) {
-    GetNotificationDisplayService()->Display(
-        NotificationHandler::Type::TRANSIENT, *notification,
-        /*metadata=*/nullptr);
+    message_center::MessageCenter::Get()->AddNotification(
+        std::move(notification));
   }
 }
 
 static const char kBulkPinningNotificationId[] = "drive-bulk-pinning-error";
 
 void SystemNotificationManager::HandleBulkPinningNotificationClick() {
-  if (auto* user = ash::BrowserContextHelper::Get()->GetUserByBrowserContext(
-          profile_.get())) {
-    // TODO(crbug.com/447287122): Revisit here to check if there should be a
-    // case that profile is not user profile.
-    ash::SettingsAppManager::Get()->Open(
-        *user,
-        {.sub_page = chromeos::settings::mojom::kGoogleDriveSubpagePath});
-  }
-  GetNotificationDisplayService()->Close(NotificationHandler::Type::TRANSIENT,
-                                         kBulkPinningNotificationId);
+  ash::SettingsAppManager::Get()->Open(
+      *user_, {.sub_page = chromeos::settings::mojom::kGoogleDriveSubpagePath});
+  Dismiss(kBulkPinningNotificationId);
 }
 
 NotificationPtr SystemNotificationManager::MakeBulkPinningErrorNotification(
     const Event& event) {
   // Parse the event args as a bulk-pinning progress struct.
-  DCHECK(!event.event_args.empty());
-  auto progress = fmp::BulkPinProgress::FromValue(event.event_args[0]);
+  CHECK(!event.args().empty(), base::NotFatalUntil::M160);
+  auto progress = fmp::BulkPinProgress::FromValue(event.args()[0]);
   if (!progress) {
-    LOG(ERROR) << "Cannot parse BulkPinProgress from " << event.event_args[0];
+    LOG(ERROR) << "Cannot parse BulkPinProgress from " << event.args()[0];
     return nullptr;
   }
 
@@ -562,11 +511,10 @@ NotificationPtr SystemNotificationManager::MakeBulkPinningErrorNotification(
 
 NotificationPtr SystemNotificationManager::MakeDriveSyncErrorNotification(
     const Event& event) {
-  DCHECK(!event.event_args.empty());
-  auto sync_error = fmp::DriveSyncErrorEvent::FromValue(event.event_args[0]);
+  CHECK(!event.args().empty(), base::NotFatalUntil::M160);
+  auto sync_error = fmp::DriveSyncErrorEvent::FromValue(event.args()[0]);
   if (!sync_error) {
-    LOG(ERROR) << "Cannot parse DriveSyncErrorEvent from "
-               << event.event_args[0];
+    LOG(ERROR) << "Cannot parse DriveSyncErrorEvent from " << event.args()[0];
     return nullptr;
   }
 
@@ -643,18 +591,16 @@ void SystemNotificationManager::HandleDriveDialogClick(
   if (drivefs_event_router_) {
     drivefs_event_router_->OnDialogResult(result);
   }
-  GetNotificationDisplayService()->Close(NotificationHandler::Type::TRANSIENT,
-                                         kDriveDialogId);
+  Dismiss(kDriveDialogId);
 }
 
 NotificationPtr SystemNotificationManager::MakeDriveConfirmDialogNotification(
     const Event& event) {
-  DCHECK(!event.event_args.empty());
-  auto dialog_event =
-      fmp::DriveConfirmDialogEvent::FromValue(event.event_args[0]);
+  CHECK(!event.args().empty(), base::NotFatalUntil::M160);
+  auto dialog_event = fmp::DriveConfirmDialogEvent::FromValue(event.args()[0]);
   if (!dialog_event) {
     LOG(ERROR) << "Cannot parse DriveConfirmDialogEvent from "
-               << event.event_args[0];
+               << event.args()[0];
     return nullptr;
   }
 
@@ -674,7 +620,7 @@ NotificationPtr SystemNotificationManager::MakeDriveConfirmDialogNotification(
 }
 
 void SystemNotificationManager::HandleEvent(const Event& event) {
-  if (event.event_args.empty()) {
+  if (event.args().empty()) {
     DLOG(WARNING) << "Ignored empty Event {name: " << event.event_name
                   << ", histogram_value: " << event.histogram_value << "}";
     return;
@@ -702,7 +648,7 @@ void SystemNotificationManager::HandleEvent(const Event& event) {
     default:
       VLOG(1) << "Ignored Event {name: " << event.event_name
               << ", histogram_value: " << event.histogram_value
-              << ", args: " << event.event_args << "}";
+              << ", args: " << event.args() << "}";
       return;
   }
 
@@ -713,13 +659,13 @@ void SystemNotificationManager::HandleEvent(const Event& event) {
   // Check if we need to remove any progress notification when there
   // are active SWA windows.
   if (!force_as_system_notification && DoFilesSwaWindowsExist()) {
-    GetNotificationDisplayService()->Close(NotificationHandler::Type::TRANSIENT,
-                                           notification->id());
+    message_center::MessageCenter::Get()->RemoveNotification(notification->id(),
+                                                             /*by_user=*/false);
     return;
   }
 
-  GetNotificationDisplayService()->Display(NotificationHandler::Type::TRANSIENT,
-                                           *notification, nullptr);
+  message_center::MessageCenter::Get()->AddNotification(
+      std::move(notification));
 }
 
 void SystemNotificationManager::HandleIOTaskProgress(
@@ -754,11 +700,8 @@ void SystemNotificationManager::HandleIOTaskProgress(
   // progress notification.
   if (status.IsScanning()) {
     Dismiss(id);
-    NotificationPtr notification =
-        MakeDataProtectionPolicyProgressNotification(id, status);
-    GetNotificationDisplayService()->Display(
-        NotificationHandler::Type::TRANSIENT, *notification,
-        /*metadata=*/nullptr);
+    message_center::MessageCenter::Get()->AddNotification(
+        MakeDataProtectionPolicyProgressNotification(id, status));
     return;
   }
 
@@ -793,12 +736,9 @@ void SystemNotificationManager::HandleIOTaskProgress(
     progress = status.bytes_transferred * 100.0 / status.total_bytes;
   }
 
-  NotificationPtr notification = CreateIOTaskProgressNotification(
-      status.task_id, id, title, message, paused, progress);
-
-  GetNotificationDisplayService()->Display(NotificationHandler::Type::TRANSIENT,
-                                           *notification,
-                                           /*metadata=*/nullptr);
+  message_center::MessageCenter::Get()->AddNotification(
+      CreateIOTaskProgressNotification(status.task_id, id, title, message,
+                                       paused, progress));
 }
 
 constexpr char kRemovableNotificationId[] = "swa-removable-device-id";
@@ -813,16 +753,9 @@ void SystemNotificationManager::HandleRemovableNotificationClick(
       base::FilePath volume_root(path);
       platform_util::ShowItemInFolder(profile_, volume_root);
     } else {
-      if (auto* user =
-              ash::BrowserContextHelper::Get()->GetUserByBrowserContext(
-                  profile_.get())) {
-        // TODO(crbug.com/447287122): Revisit here to check if there should be a
-        // case that profile is not user profile.
-        ash::SettingsAppManager::Get()->Open(
-            *user,
-            {.sub_page =
-                 chromeos::settings::mojom::kExternalStorageSubpagePath});
-      }
+      ash::SettingsAppManager::Get()->Open(
+          *user_,
+          {.sub_page = chromeos::settings::mojom::kExternalStorageSubpagePath});
     }
     if (base::checked_cast<size_t>(button_index.value()) <
         uma_types_for_buttons.size()) {
@@ -831,8 +764,7 @@ void SystemNotificationManager::HandleRemovableNotificationClick(
     }
   }
 
-  GetNotificationDisplayService()->Close(NotificationHandler::Type::TRANSIENT,
-                                         kRemovableNotificationId);
+  Dismiss(kRemovableNotificationId);
 }
 
 void SystemNotificationManager::HandleDataProtectionPolicyNotificationClick(
@@ -930,7 +862,8 @@ NotificationPtr SystemNotificationManager::MakeMountErrorNotification(
           weak_ptr_factory_.GetWeakPtr(), volume.mount_path().value(),
           uma_types_for_buttons)));
 
-  DCHECK_EQ(buttons.size(), uma_types_for_buttons.size());
+  CHECK_EQ(buttons.size(), uma_types_for_buttons.size(),
+           base::NotFatalUntil::M160);
   notification->set_buttons(buttons);
 
   return notification;
@@ -954,8 +887,7 @@ SystemNotificationManager::UpdateDeviceMountStatus(MountCompletedEvent& event,
     case MOUNT_STATUS_ONLY_PARENT_ERROR:
       if (!volume.is_parent()) {
         // Hide Device Fail notification.
-        GetNotificationDisplayService()->Close(
-            NotificationHandler::Type::TRANSIENT, kDeviceFailNotificationId);
+        Dismiss(kDeviceFailNotificationId);
       }
       [[fallthrough]];
     case MOUNT_STATUS_NO_RESULT:
@@ -1001,7 +933,7 @@ NotificationPtr SystemNotificationManager::MakeRemovableNotification(
           DeviceNotificationUserActionUmaType::OPEN_MEDIA_DEVICE_NAVIGATION);
     } else {
       const PrefService* const service = profile_->GetPrefs();
-      DCHECK(service);
+      CHECK(service, base::NotFatalUntil::M160);
       bool arc_enabled = service->GetBoolean(arc::prefs::kArcEnabled);
       bool arc_removable_media_access_enabled =
           service->GetBoolean(arc::prefs::kArcHasAccessToRemovableMedia);
@@ -1053,7 +985,8 @@ NotificationPtr SystemNotificationManager::MakeRemovableNotification(
       notification_buttons.emplace_back(
           GetStringUTF16(IDS_REMOVABLE_DEVICE_OPEN_SETTTINGS_BUTTON_LABEL));
     }
-    DCHECK_EQ(notification_buttons.size(), uma_types_for_buttons.size());
+    CHECK_EQ(notification_buttons.size(), uma_types_for_buttons.size(),
+             base::NotFatalUntil::M160);
     notification->set_buttons(notification_buttons);
   }
   if (volume.device_type() != ash::DeviceType::kUnknown &&
@@ -1127,8 +1060,7 @@ void SystemNotificationManager::HandleMountCompletedEvent(
       break;
 
     case fmp::MountCompletedEventType::kUnmount:
-      GetNotificationDisplayService()->Close(
-          NotificationHandler::Type::TRANSIENT, kRemovableNotificationId);
+      Dismiss(kRemovableNotificationId);
 
       if (volume.device_type() != ash::DeviceType::kUnknown &&
           !volume.storage_device_path().empty()) {
@@ -1144,15 +1076,9 @@ void SystemNotificationManager::HandleMountCompletedEvent(
   }
 
   if (notification) {
-    GetNotificationDisplayService()->Display(
-        NotificationHandler::Type::TRANSIENT, *notification,
-        /*metadata=*/nullptr);
+    message_center::MessageCenter::Get()->AddNotification(
+        std::move(notification));
   }
-}
-
-NotificationDisplayService*
-SystemNotificationManager::GetNotificationDisplayService() {
-  return NotificationDisplayServiceFactory::GetForProfile(profile_);
 }
 
 void SystemNotificationManager::SetDriveFSEventRouter(

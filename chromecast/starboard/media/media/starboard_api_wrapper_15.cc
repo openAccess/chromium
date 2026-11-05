@@ -4,6 +4,10 @@
 
 // Defines APIs that are specific to Starboard 15. GetStarboardApiWrapper() is
 // the public API; everything else is an implementation detail.
+#if !defined(SB_API_VERSION) || SB_API_VERSION < 15
+#error "starboard_api_wrapper_15.cc must be compiled with SB_API_VERSION >= 15"
+#endif
+
 #include <starboard/drm.h>
 #include <starboard/media.h>
 #include <starboard/player.h>
@@ -88,15 +92,18 @@ SbMediaAudioStreamInfo ToSbMediaAudioStreamInfo(
   return out_audio_info;
 }
 
-// A concrete implementation of StarboardApiWrapper for Starboard version 15.
-class StarboardApiWrapper15 : public StarboardApiWrapperBase {
+// A concrete implementation of StarboardApiWrapper for Starboard version 15+.
+class StarboardApiWrapper15 : public sb15::StarboardApiWrapperBase {
  public:
   StarboardApiWrapper15() = default;
   ~StarboardApiWrapper15() override = default;
 
   // StarboardApiWrapper impl:
   void SeekTo(void* player, int64_t time, int seek_ticket) override {
-    SbPlayerSeek(static_cast<SbPlayer>(player), time, seek_ticket);
+    if (auto seek_fn = sb15::ResolveStarboardSymbol<decltype(&SbPlayerSeek)>(
+            "SbPlayerSeek")) {
+      seek_fn(static_cast<SbPlayer>(player), time, seek_ticket);
+    }
   }
 
   void GetPlayerInfo(void* player, StarboardPlayerInfo* player_info) override {
@@ -106,7 +113,10 @@ class StarboardApiWrapper15 : public StarboardApiWrapperBase {
       return;
     }
     CHECK(player_info);
-    SbPlayerGetInfo(static_cast<SbPlayer>(player), &sb_player_info);
+    if (auto info_fn = sb15::ResolveStarboardSymbol<decltype(&SbPlayerGetInfo)>(
+            "SbPlayerGetInfo")) {
+      info_fn(static_cast<SbPlayer>(player), &sb_player_info);
+    }
 
     player_info->current_media_timestamp_micros =
         sb_player_info.current_media_timestamp;
@@ -166,19 +176,22 @@ class StarboardApiWrapper15 : public StarboardApiWrapperBase {
     return out_audio_info;
   }
 
-  void CallWriteSamples(
-      SbPlayer player,
-      SbMediaType sample_type,
-      base::span<const SbPlayerSampleInfo> sample_infos) override {
-    SbPlayerWriteSamples(player, sample_type, sample_infos.data(),
-                         sample_infos.size());
+  void CallWriteSamples(SbPlayer player,
+                        SbMediaType sample_type,
+                        const SbPlayerSampleInfo* sample_infos,
+                        int sample_infos_count) override {
+    if (auto write_fn =
+            sb15::ResolveStarboardSymbol<decltype(&SbPlayerWriteSamples)>(
+                "SbPlayerWriteSamples")) {
+      write_fn(player, sample_type, sample_infos, sample_infos_count);
+    }
   }
 };
 
 }  // namespace
 
-// Note: declared in starboard_api_wrapper.h.
-std::unique_ptr<StarboardApiWrapper> GetStarboardApiWrapper() {
+std::unique_ptr<StarboardApiWrapper> CreateStarboardApiWrapper15() {
+  LOG(INFO) << "Created StarboardApiWrapper for SB_API_VERSION 15+";
   return std::make_unique<StarboardApiWrapper15>();
 }
 

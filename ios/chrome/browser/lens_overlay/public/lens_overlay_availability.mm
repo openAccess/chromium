@@ -25,13 +25,18 @@ bool IsLensOverlaySameTabNavigationEnabled(const PrefService* prefs) {
   return isIPhone;
 }
 
+bool IsLVFUnifiedExperienceEnabled(const PrefService* prefs) {
+  return IsLensOverlayAllowedByPolicy(prefs) &&
+         base::FeatureList::IsEnabled(kEnableLensViewFinderUnifiedExperience);
+}
+
 bool IsLensOverlayLandscapeOrientationEnabled(const PrefService* prefs) {
   return base::FeatureList::IsEnabled(kLensOverlayEnableLandscapeCompatibility);
 }
 
 bool IsLVFEscapeHatchEnabled(const PrefService* prefs) {
   BOOL isTablet = ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET;
-  return !isTablet;
+  return !isTablet || base::FeatureList::IsEnabled(kEnableLensOnIPad);
 }
 
 bool UseCustomLensOverlayBottomSheet() {

@@ -8,14 +8,16 @@
 #include "device/vr/openxr/openxr_graphics_binding.h"
 #include "device/vr/openxr/openxr_platform.h"
 #include "device/vr/openxr/openxr_util.h"
+#include "device/vr/openxr/openxr_view_configuration.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 
 namespace device {
 
-// Timeout for waiting for a swapchain image. 50ms is chosen to be long enough
-// to avoid false positives on slow frames, but short enough to avoid ANR.
+// Timeout for waiting for a swapchain image. 1000ms is chosen to be long enough
+// to avoid false positives on heavy GPU frames, but well below Android's 5s ANR
+// timeout.
 constexpr XrDuration kSwapchainWaitTimeout =
-    base::Milliseconds(50).InNanoseconds();
+    base::Milliseconds(1000).InNanoseconds();
 
 // static
 OpenXrCompositionLayer::Type OpenXrCompositionLayer::GetTypeFromMojomData(
@@ -43,9 +45,8 @@ OpenXrCompositionLayer::OpenXrCompositionLayer(
       creation_data_(std::move(layer_data)) {
   type_ = GetTypeFromMojomData(*creation_data_->mutable_data->layer_data);
 
-  // Projection layers will have same size as the base layer, and will
-  // be set later.
-  if (type_ != Type::kProjection) {
+  if (read_only_data().texture_width > 0 &&
+      read_only_data().texture_height > 0) {
     SetSwapchainImageSize(gfx::Size(read_only_data().texture_width,
                                     read_only_data().texture_height));
   }
@@ -95,11 +96,15 @@ OpenXrCompositionLayer::GetSwapchainImages() const {
 
 XrResult OpenXrCompositionLayer::CreateSwapchain(XrSession session,
                                                  uint32_t sample_count) {
+  // If kNumPrimaryViews is not 2, we need to be given the number of views here.
+  static_assert(kNumPrimaryViews == 2);
+
   DCHECK(!HasColorSwapchain());
   DCHECK(GetSwapchainImages().empty());
 
   XrSwapchainCreateInfo swapchain_create_info = {XR_TYPE_SWAPCHAIN_CREATE_INFO};
-  swapchain_create_info.arraySize = 1;
+  swapchain_create_info.arraySize =
+      SwapchainUsesTextureArray() ? kNumPrimaryViews : 1;
   swapchain_create_info.format = graphics_binding_->GetSwapchainFormat(session);
 
   swapchain_create_info.createFlags = creation_data_->read_only_data->is_static
@@ -224,6 +229,17 @@ bool OpenXrCompositionLayer::IsUsingSharedImages() const {
   return ((swapchain_info.size() > 1) && swapchain_info[0].shared_image);
 }
 
+bool OpenXrCompositionLayer::SharedImageUsesTextureArray() const {
+  return read_only_data().texture_type == mojom::XRTextureType::kTextureArray;
+}
+
+bool OpenXrCompositionLayer::SwapchainUsesTextureArray() const {
+  // We will let arraySize be kNumPrimaryViews. Open XR only uses
+  // GL_TEXTURE_2D_ARRAY when arraySize > 1.
+  return read_only_data().layout == mojom::XRLayerLayout::kStereo &&
+         kNumPrimaryViews > 1;
+}
+
 LayerId OpenXrCompositionLayer::GetLayerId() const {
   return creation_data_->read_only_data->layer_id;
 }
@@ -242,7 +258,7 @@ void OpenXrCompositionLayer::UpdateActiveSwapchainImageSize(
   }
 }
 
-const gfx::Rect OpenXrCompositionLayer::GetSubImageViewport(
+gfx::Rect OpenXrCompositionLayer::GetSubImageViewport(
     XrEyeVisibility eye) const {
   gfx::Rect info{0, 0, static_cast<int>(read_only_data().texture_width),
                  static_cast<int>(read_only_data().texture_height)};
@@ -264,6 +280,11 @@ const gfx::Rect OpenXrCompositionLayer::GetSubImageViewport(
     }
   }
   return info;
+}
+
+uint32_t OpenXrCompositionLayer::GetSubImageArrayIndex(
+    XrEyeVisibility eye) const {
+  return SwapchainUsesTextureArray() && eye == XR_EYE_VISIBILITY_RIGHT ? 1 : 0;
 }
 
 std::vector<XrEyeVisibility> OpenXrCompositionLayer::GetXrEyesForComposition()

@@ -168,7 +168,6 @@ WorkletGlobalScope::~WorkletGlobalScope() = default;
 const BrowserInterfaceBrokerProxy&
 WorkletGlobalScope::GetBrowserInterfaceBroker() const {
   if (browser_interface_broker_proxy_.is_bound()) {
-    CHECK(IsSharedStorageWorkletGlobalScope());
     return browser_interface_broker_proxy_;
   }
 
@@ -227,7 +226,9 @@ void WorkletGlobalScope::AddInspectorIssue(AuditsIssue issue) {
   }
 }
 
-void WorkletGlobalScope::ExceptionThrown(ErrorEvent* error_event) {
+void WorkletGlobalScope::ExceptionThrown(
+    ErrorEvent* error_event,
+    SanitizeScriptErrors sanitize_script_errors) {
   if (IsMainThreadWorkletGlobalScope()) {
     if (!frame_) {
       return;
@@ -368,7 +369,6 @@ ukm::SourceId WorkletGlobalScope::UkmSourceID() const {
 
 mojo::PendingRemote<mojom::blink::BlobURLStore>
 WorkletGlobalScope::TakeBlobUrlStorePendingRemote() {
-  DCHECK(blob_url_store_pending_remote_.is_valid());
   return std::move(blob_url_store_pending_remote_);
 }
 

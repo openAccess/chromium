@@ -8,7 +8,6 @@
 
 #include "base/check.h"
 #include "base/check_op.h"
-#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/trace_event/trace_event.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
@@ -18,7 +17,6 @@
 #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
 #include "gpu/command_buffer/service/skia_utils.h"
-#include "gpu/command_buffer/service/texture_manager.h"
 #include "skia/buildflags.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -33,10 +31,6 @@
 #include "third_party/skia/include/private/chromium/GrPromiseImageTexture.h"
 
 namespace {
-
-// TODO(crbug.com/524822746): Killswitch for extra validation, remove after M152
-// stable.
-BASE_FEATURE(kValidatePromiseImageFormat, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
@@ -129,11 +123,8 @@ namespace viz {
 
 ImageContextImpl::ImageContextImpl(const TransferableResource& resource,
                                    bool maybe_concurrent_reads,
-                                   bool raw_draw_if_possible,
                                    uint32_t client_id)
-    : ImageContext(resource),
-      maybe_concurrent_reads_(maybe_concurrent_reads),
-      raw_draw_if_possible_(raw_draw_if_possible) {}
+    : ImageContext(resource), maybe_concurrent_reads_(maybe_concurrent_reads) {}
 
 ImageContextImpl::ImageContextImpl(const gpu::Mailbox& mailbox,
                                    const gfx::Size& size,
@@ -143,15 +134,13 @@ ImageContextImpl::ImageContextImpl(const gpu::Mailbox& mailbox,
       is_for_render_pass_(true) {}
 
 ImageContextImpl::~ImageContextImpl() {
+  // Destroy the SkImage before `representation_` as it's a view of the
+  // representation.
+  clear_image();
   DeleteFallbackTextures();
 }
 
 void ImageContextImpl::OnContextLost() {
-  if (texture_passthrough_) {
-    texture_passthrough_->MarkContextLost();
-    texture_passthrough_.reset();
-  }
-
   if (representation_) {
     representation_->OnContextLost();
     representation_scoped_read_access_.reset();
@@ -336,40 +325,10 @@ void ImageContextImpl::BeginAccessIfNecessary(
     gpu::SharedImageRepresentationFactory* representation_factory,
     std::vector<GrBackendSemaphore>* begin_semaphores,
     std::vector<GrBackendSemaphore>* end_semaphores) {
-  if (representation_raster_scoped_access_)
-    return;
-
   if (!BeginAccessIfNecessaryInternal(context_state, representation_factory,
                                       begin_semaphores, end_semaphores)) {
     CreateFallbackImage(context_state);
   }
-}
-
-bool ImageContextImpl::BeginRasterAccess(
-    gpu::SharedImageRepresentationFactory* representation_factory) {
-  if (paint_op_buffer()) {
-    DCHECK(raster_representation_);
-    DCHECK(representation_raster_scoped_access_);
-    return true;
-  }
-
-  auto raster = raw_draw_if_possible_
-                    ? representation_factory->ProduceRaster(mailbox())
-                    : nullptr;
-  if (!raster)
-    return false;
-
-  auto scoped_access = raster->BeginScopedReadAccess();
-  if (!scoped_access)
-    return false;
-
-  set_paint_op_buffer(scoped_access->paint_op_buffer());
-  set_clear_color(scoped_access->clear_color());
-
-  raster_representation_ = std::move(raster);
-  representation_raster_scoped_access_ = std::move(scoped_access);
-
-  return true;
 }
 
 bool ImageContextImpl::BeginAccessIfNecessaryInternal(
@@ -417,10 +376,9 @@ bool ImageContextImpl::BeginAccessIfNecessaryInternal(
       return false;
     }
 
-    if ((representation->format() != format() ||
-         representation->format().PrefersExternalSampler() !=
-             format().PrefersExternalSampler()) &&
-        base::FeatureList::IsEnabled(kValidatePromiseImageFormat)) {
+    if (representation->format() != format() ||
+        representation->format().PrefersExternalSampler() !=
+            format().PrefersExternalSampler()) {
       DLOG(ERROR) << "Failed to fulfill the promise texture - SharedImage "
                      "format does not match TransferableResource format: "
                   << representation->format().ToString() << " vs "
@@ -434,45 +392,24 @@ bool ImageContextImpl::BeginAccessIfNecessaryInternal(
   representation_scoped_read_access_ =
       representation_->BeginScopedReadAccess(begin_semaphores, end_semaphores);
   if (!representation_scoped_read_access_) {
-    clear_image();
-    representation_ = nullptr;
     DLOG(ERROR) << "Failed to fulfill the promise texture - SharedImage "
                    "begin read access failed..";
+    return false;
+  }
+
+  graphite_ycbcr_info_mismatch_ = false;
+  if (!ValidateYCbCrInfo(context_state)) {
+    graphite_ycbcr_info_mismatch_ = true;
+    representation_scoped_read_access_->ApplyBackendSurfaceEndState();
+    representation_scoped_read_access_.reset();
     return false;
   }
 
   // Only one promise texture for external sampler case.
   int num_planes =
       format().PrefersExternalSampler() ? 1 : format().NumberOfPlanes();
+
   if (context_state->graphite_shared_context()) {
-#if BUILDFLAG(IS_ANDROID) && BUILDFLAG(SKIA_USE_DAWN)
-    // In the case of video decoding, it is possible for there to be a mismatch
-    // between the YCbCr info passed to Viz at the time of creating the promise
-    // texture and that computed at the time of fulfilling the promise texture.
-    // Detect such mismatches and error out, as Skia/Dawn will raise errors.
-    graphite_ycbcr_info_mismatch_ = false;
-
-    skgpu::graphite::DawnTextureInfo fulfillment_texture_info;
-    CHECK(skgpu::graphite::TextureInfos::GetDawnTextureInfo(
-        representation_scoped_read_access_->graphite_texture(0).info(),
-        &fulfillment_texture_info));
-
-    wgpu::YCbCrVkDescriptor promise_texture_ycbcr_desc = {};
-    if (ycbcr_info()) {
-      promise_texture_ycbcr_desc =
-          gpu::ToDawnYCbCrVkDescriptor(ycbcr_info().value());
-    }
-    wgpu::YCbCrVkDescriptor fulfillment_texture_ycbcr_desc =
-        fulfillment_texture_info.fYcbcrVkDescriptor;
-
-    if (!DawnYCbCrVkDescriptorsAreCompatible(promise_texture_ycbcr_desc,
-                                             fulfillment_texture_ycbcr_desc)) {
-      graphite_ycbcr_info_mismatch_ = true;
-      representation_scoped_read_access_.reset();
-      return false;
-    }
-#endif
-
     for (int plane_index = 0; plane_index < num_planes; plane_index++) {
       graphite_textures_.push_back(
           representation_scoped_read_access_->graphite_texture(plane_index));
@@ -489,12 +426,46 @@ bool ImageContextImpl::BeginAccessIfNecessaryInternal(
   return true;
 }
 
-void ImageContextImpl::EndAccessIfNecessary() {
-  if (paint_op_buffer()) {
-    DCHECK(!representation_scoped_read_access_);
-    return;
-  }
+bool ImageContextImpl::ValidateYCbCrInfo(
+    gpu::SharedContextState* context_state) {
+#if BUILDFLAG(IS_ANDROID)
+  if (context_state->IsGraphiteDawn()) {
+#if BUILDFLAG(SKIA_USE_DAWN)
+    // In the case of video decoding, it is possible for there to be a
+    // mismatch between the YCbCr info passed to Viz at the time of creating
+    // the promise texture and that computed at the time of fulfilling the
+    // promise texture. Detect such mismatches and error out, as Skia/Dawn
+    // will raise errors.
+    skgpu::graphite::DawnTextureInfo fulfillment_texture_info;
+    CHECK(skgpu::graphite::TextureInfos::GetDawnTextureInfo(
+        representation_scoped_read_access_->graphite_texture(0).info(),
+        &fulfillment_texture_info));
+    wgpu::YCbCrVkDescriptor fulfillment_texture_ycbcr_desc =
+        fulfillment_texture_info.fYcbcrVkDescriptor;
 
+    wgpu::YCbCrVkDescriptor promise_texture_ycbcr_desc = {};
+    if (ycbcr_info()) {
+      promise_texture_ycbcr_desc =
+          gpu::ToDawnYCbCrVkDescriptor(ycbcr_info().value());
+    }
+
+    if (!DawnYCbCrVkDescriptorsAreCompatible(promise_texture_ycbcr_desc,
+                                             fulfillment_texture_ycbcr_desc)) {
+      return false;
+    }
+#endif  // BUILDFLAG(SKIA_USE_DAWN)
+  } else if (context_state->IsGraphiteVulkan()) {
+#if BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
+    // TODO(crbug.com/55295190): Implement YCbCr compatibility check.
+    return true;
+#endif  // BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  return true;
+}
+
+void ImageContextImpl::EndAccessIfNecessary() {
   if (!representation_scoped_read_access_)
     return;
 

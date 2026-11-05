@@ -15,8 +15,8 @@
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "chrome/browser/predictors/loading_test_util.h"
 #include "chrome/browser/predictors/predictors_features.h"
 #include "chrome/browser/predictors/predictors_switches.h"
@@ -33,6 +33,7 @@
 #include "net/base/network_isolation_key.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/expectation_handler.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -65,12 +66,13 @@ class FakePrefetchManagerDelegate : public PrefetchManager::Delegate {
   }
 
   void WaitForPrefetchFinished(const GURL& url) {
-    if (finished_urls_.find(url) != finished_urls_.end())
-      return;
-    base::RunLoop loop;
-    DCHECK(done_callbacks_.find(url) == done_callbacks_.end());
-    done_callbacks_[url] = loop.QuitClosure();
-    loop.Run();
+    if (finished_urls_.find(url) == finished_urls_.end()) {
+      base::RunLoop loop;
+      DCHECK(done_callbacks_.find(url) == done_callbacks_.end());
+      done_callbacks_[url] = loop.QuitClosure();
+      loop.Run();
+    }
+    finished_urls_.erase(url);
   }
 
   base::flat_set<GURL> GetPrefetchedURLsForURL(const GURL& url) const {
@@ -269,39 +271,6 @@ TEST_P(PrefetchManagerTest, OneMainFrameUrlMultiplePrefetch) {
   fake_delegate_->WaitForPrefetchFinished(main_frame_url);
 }
 
-// Tests that metrics related to queueing of prefetch jobs are recorded.
-TEST_P(PrefetchManagerTest, QueueingMetricsRecorded) {
-  base::HistogramTester histogram_tester;
-  net::test_server::EmbeddedTestServer test_server;
-  std::vector<PrefetchRequest> requests;
-  size_t num_prefetches = kMaxInflightPrefetches;
-
-  GURL main_frame_url("https://abc.invalid");
-
-  // Start the server.
-  auto test_server_handle = test_server.StartAndReturnHandle();
-  ASSERT_TRUE(test_server_handle);
-
-  // Set up prefetches one more than the inflight limit.
-  // The request URLs can only be constructed after the server is started.
-  for (size_t i = 0; i < num_prefetches + 1; i++) {
-    std::string path = base::StringPrintf("/script%" PRIuS ".js", i);
-    GURL url = test_server.GetURL(path);
-    requests.push_back(CreateScriptRequest(url));
-  }
-
-  // Start the prefetching.
-  prefetch_manager_->Start(main_frame_url, std::move(requests));
-
-  // The number of queued jobs should have been recorded.
-  histogram_tester.ExpectUniqueSample(
-      "Navigation.Prefetch.PrefetchJobQueueLength", num_prefetches + 1, 1);
-  // Each job that was actually executed should have had its queueing time
-  // recorded.
-  histogram_tester.ExpectTotalCount(
-      "Navigation.Prefetch.PrefetchJobQueueingTime", num_prefetches);
-}
-
 // Tests prefetching multiple URLs for multiple main frames.
 TEST_P(PrefetchManagerTest, MultipleMainFrameUrlMultiplePrefetch) {
   net::test_server::EmbeddedTestServer test_server;
@@ -481,14 +450,7 @@ TEST_P(PrefetchManagerTest, Stop) {
               UnorderedElementsAreArray({test_server.GetURL(path2)}));
 }
 
-// Flaky on Mac/Linux/CrOS/Android/Windows. http://crbug.com/40784662
-#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
-    BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)
-#define MAYBE_StopAndStart DISABLED_StopAndStart
-#else
-#define MAYBE_StopAndStart StopAndStart
-#endif
-TEST_P(PrefetchManagerTest, MAYBE_StopAndStart) {
+TEST_P(PrefetchManagerTest, StopAndStart) {
   net::test_server::EmbeddedTestServer test_server;
 
   // Set up prefetches (limit + 1).
@@ -567,7 +529,9 @@ TEST_P(PrefetchManagerTest, MAYBE_StopAndStart) {
   // We don't expect any additional requests to be started.
   EXPECT_TRUE(fake_delegate_->GetPrefetchedURLsForURL(main_frame_url).empty());
 
-  // Restart requests. These requests will work as normal.
+  // Restart requests without the extra request that required Stop() to cancel.
+  // These requests will work as normal.
+  requests.pop_back();
   prefetch_manager_->Start(main_frame_url, requests);
   for (auto& response : responses2) {
     response->WaitForRequest();
@@ -578,7 +542,8 @@ TEST_P(PrefetchManagerTest, MAYBE_StopAndStart) {
   fake_delegate_->WaitForPrefetchFinished(main_frame_url);
 
   // Prefetches should have been initiated with the second start.
-  EXPECT_FALSE(fake_delegate_->GetPrefetchedURLsForURL(main_frame_url).empty());
+  EXPECT_THAT(fake_delegate_->GetPrefetchedURLsForURL(main_frame_url),
+              UnorderedElementsAreArray(expected_prefetch_requests));
 }
 
 class HeaderInjectingThrottle : public blink::URLLoaderThrottle {
@@ -628,8 +593,9 @@ TEST_P(PrefetchManagerTest, Throttles) {
       content::SetBrowserClientForTesting(&content_browser_client);
 
   net::test_server::EmbeddedTestServer test_server;
-  net::test_server::ControllableHttpResponse response(&test_server,
-                                                      "/prefetch");
+  net::test_server::ExpectationHandler handler(&test_server);
+  base::test::TestFuture<net::test_server::HttpRequest> request_future;
+  handler.OnRequest("/prefetch").RespondWith().SetValue(request_future);
 
   // Start the server.
   auto test_server_handle = test_server.StartAndReturnHandle();
@@ -641,10 +607,9 @@ TEST_P(PrefetchManagerTest, Throttles) {
 
   prefetch_manager_->Start(main_frame_url, {request});
 
-  response.WaitForRequest();
-  const net::test_server::HttpRequest* actual_request = response.http_request();
-  auto iter = actual_request->headers.find("x-injected");
-  ASSERT_TRUE(iter != actual_request->headers.end());
+  const net::test_server::HttpRequest& actual_request = request_future.Get();
+  auto iter = actual_request.headers.find("x-injected");
+  ASSERT_TRUE(iter != actual_request.headers.end());
   EXPECT_EQ(iter->second, "injected value");
 
   content::SetBrowserClientForTesting(old_content_browser_client);

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/offline_pages/background_loader_offliner.h"
 
+#include <array>
 #include <memory>
 #include <string>
 #include <utility>
@@ -34,6 +35,7 @@
 #include "components/security_state/core/security_state.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/mhtml_extra_parts.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
@@ -69,18 +71,13 @@ BackgroundLoaderOffliner::BackgroundLoaderOffliner(
       network_bytes_(0LL),
       is_low_bar_met_(false),
       did_snapshot_on_last_retry_(false) {
-  DCHECK(offline_page_model_);
-  DCHECK(browser_context_);
+  CHECK(offline_page_model_, base::NotFatalUntil::M161);
+  CHECK(browser_context_, base::NotFatalUntil::M161);
   // When the offliner is created for test harness runs, the
   // |load_termination_listener_| will be set to nullptr, in order to prevent
   // crashing, adding a check here.
   if (load_termination_listener_) {
     load_termination_listener_->set_offliner(this);
-  }
-
-  for (int i = 0; i < ResourceDataType::RESOURCE_DATA_TYPE_COUNT; ++i) {
-    UNSAFE_TODO(stats_[i]).requested = 0;
-    UNSAFE_TODO(stats_[i]).completed = 0;
   }
 }
 
@@ -102,9 +99,9 @@ bool BackgroundLoaderOffliner::LoadAndSave(
     const SavePageRequest& request,
     CompletionCallback completion_callback,
     const ProgressCallback& progress_callback) {
-  DCHECK(completion_callback);
-  DCHECK(progress_callback);
-  DCHECK(offline_page_model_);
+  CHECK(completion_callback, base::NotFatalUntil::M161);
+  CHECK(progress_callback, base::NotFatalUntil::M161);
+  CHECK(offline_page_model_, base::NotFatalUntil::M161);
 
   if (pending_request_) {
     DVLOG(1) << "Already have pending request";
@@ -145,6 +142,8 @@ bool BackgroundLoaderOffliner::LoadAndSave(
 }
 
 bool BackgroundLoaderOffliner::Cancel(CancelCallback callback) {
+  // TODO(crbug.com/575156065): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(pending_request_);
   // We ignore the case where pending_request_ is not set, but given the checks
   // in RequestCoordinator this should not happen.
@@ -180,7 +179,8 @@ void BackgroundLoaderOffliner::TerminateLoadIfInProgress() {
 
 bool BackgroundLoaderOffliner::HandleTimeout(int64_t request_id) {
   if (pending_request_) {
-    DCHECK(request_id == pending_request_->request_id());
+    CHECK(request_id == pending_request_->request_id(),
+          base::NotFatalUntil::M161);
     if (is_low_bar_met_ && (pending_request_->started_attempt_count() + 1 >=
                                 policy_->GetMaxStartedTries() ||
                             pending_request_->completed_attempt_count() + 1 >=
@@ -312,7 +312,7 @@ void BackgroundLoaderOffliner::ObserveResourceLoading(
     bool started) {
   // Add the signal to extra data, and use for tracking.
 
-  RequestStats& found_stats = UNSAFE_TODO(stats_[type]);
+  RequestStats& found_stats = stats_[type];
   if (started) {
     ++found_stats.requested;
   } else {
@@ -466,10 +466,7 @@ void BackgroundLoaderOffliner::ResetState() {
   base::SingleThreadTaskRunner::GetCurrentDefault()->DeleteSoon(
       FROM_HERE, std::move(loader_));
 
-  for (int i = 0; i < ResourceDataType::RESOURCE_DATA_TYPE_COUNT; ++i) {
-    UNSAFE_TODO(stats_[i]).requested = 0;
-    UNSAFE_TODO(stats_[i]).completed = 0;
-  }
+  stats_ = {};
 }
 
 void BackgroundLoaderOffliner::ResetLoader() {

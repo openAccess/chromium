@@ -10,11 +10,7 @@
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
-#include "chrome/browser/ui/views/profiles/feature_showcase/default_browser_step_eligibility_checker.h"
 #include "chrome/browser/ui/views/profiles/feature_showcase/feature_showcase_constants.h"
-#include "chrome/browser/ui/views/profiles/feature_showcase/google_lens_step_eligibility_checker.h"
-#include "chrome/browser/ui/views/profiles/feature_showcase/password_manager_feature_showcase_eligibility_checker.h"
-#include "chrome/browser/ui/views/profiles/feature_showcase/themes_and_customization_step_eligibility_checker.h"
 #include "chrome/browser/ui/views/profiles/first_run_flow_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_management_step_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_view_test_utils.h"
@@ -136,9 +132,10 @@ class FirstRunFeatureShowcasePixelTest
     const testing::TestInfo* test_info =
         testing::UnitTest::GetInstance()->current_test_info();
     CHECK(test_info);
+    const std::string baseline = "8481376";
     const std::string screenshot_name =
         base::StrCat({test_info->test_suite_name(), "_", test_info->name(), "_",
-                      GetParam().step});
+                      GetParam().step, "_", baseline});
 
     return VerifyPixelUi(widget, "FirstRunFeatureShowcasePixelTest",
                          screenshot_name) != ui::test::ActionResult::kFailed;

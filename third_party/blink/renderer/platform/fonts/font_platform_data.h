@@ -51,7 +51,7 @@
 #include "third_party/skia/include/core/SkTypeface.h"
 
 #if BUILDFLAG(IS_MAC)
-typedef const struct __CTFont* CTFontRef;
+using CTFontRef = const struct __CTFont*;
 #endif  // BUILDFLAG(IS_MAC)
 
 namespace blink {
@@ -100,7 +100,7 @@ class PLATFORM_EXPORT FontPlatformData
   HarfBuzzFace* GetHarfBuzzFace() const;
   bool HasSpaceInLigaturesOrKerning(TypesettingFeatures) const;
   SkTypefaceID UniqueID() const;
-  unsigned GetHash() const;
+  uint32_t GetHash() const;
 
   FontOrientation Orientation() const { return orientation_; }
   const ResolvedFontFeatures& ResolvedFeatures() const {
@@ -109,8 +109,8 @@ class PLATFORM_EXPORT FontPlatformData
   bool IsVerticalAnyUpright() const {
     return blink::IsVerticalAnyUpright(orientation_);
   }
-  bool IsVerticalNonCJKUpright() const {
-    return blink::IsVerticalNonCJKUpright(orientation_);
+  bool IsVerticalNonCjkUpright() const {
+    return blink::IsVerticalNonCjkUpright(orientation_);
   }
   void SetOrientation(FontOrientation orientation) {
     orientation_ = orientation;

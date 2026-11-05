@@ -46,6 +46,8 @@ source_set("impl") {
     ":sharing_hub",
     "//chrome/browser/image_editor",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui:browser_commands",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/browser/ui/views/frame:toolbar_button_provider",
@@ -65,7 +67,6 @@ source_set("impl") {
     sources += [ "sharing_hub_bubble_controller_desktop_impl.cc" ]
     deps += [
       "//chrome/app:command_ids",
-      "//chrome/app:generated_resources",
       "//chrome/browser/favicon",
       "//chrome/browser/ui/color:color_headers",
       "//chrome/browser/ui/qrcode_generator",
@@ -76,7 +77,6 @@ source_set("impl") {
       "//ui/native_theme",
     ]
   }
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 if (is_win || is_mac || is_linux) {

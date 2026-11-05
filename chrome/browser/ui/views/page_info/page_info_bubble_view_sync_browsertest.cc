@@ -3,11 +3,12 @@
 // found in the LICENSE file.
 
 #include "base/test/metrics/histogram_tester.h"
-#include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
+#include "chrome/browser/safe_browsing/password_protection/chrome_password_protection_service.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/location_icon_test_accessor.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view.h"
@@ -34,6 +35,7 @@
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/test/test_event.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/test/widget_test.h"
 
@@ -51,7 +53,8 @@ void PerformMouseClickOnView(views::View* view) {
 void OpenPageInfoBubble(BrowserWindowInterface* browser) {
   LocationIconTestAccessor(browser).ShowBubble();
   views::BubbleDialogDelegateView* page_info =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting();
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(
+          browser->GetTabStripModel()->GetActiveWebContents());
   EXPECT_NE(nullptr, page_info);
   page_info->set_close_on_deactivate(false);
 }
@@ -60,7 +63,9 @@ void OpenPageInfoBubble(BrowserWindowInterface* browser) {
 // |view_id|.
 views::View* GetView(BrowserWindowInterface* browser, int view_id) {
   views::Widget* page_info_bubble =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetWidget();
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(
+          browser->GetTabStripModel()->GetActiveWebContents())
+          ->GetWidget();
   EXPECT_TRUE(page_info_bubble);
 
   views::View* view = page_info_bubble->GetRootView()->GetViewByID(view_id);
@@ -102,8 +107,10 @@ class PageInfoBubbleViewSyncBrowserTest : public SyncTest {
 
   const std::u16string GetPageInfoBubbleViewDetailText() {
     auto* label =
-        PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetViewByID(
-            PageInfoViewFactory::VIEW_ID_PAGE_INFO_SECURITY_DETAILS_LABEL);
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(
+            GetBrowser(0)->GetTabStripModel()->GetActiveWebContents())
+            ->GetViewByID(
+                PageInfoViewFactory::VIEW_ID_PAGE_INFO_SECURITY_DETAILS_LABEL);
     return static_cast<views::StyledLabel*>(label)->GetText();
   }
 };

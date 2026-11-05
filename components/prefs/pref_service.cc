@@ -219,7 +219,7 @@ const PrefService::Preference* PrefService::FindPreference(
   if (it != prefs_map_.end())
     return it->second.get();
   const base::Value* default_value = nullptr;
-  if (!pref_registry_->defaults()->GetValue(path, &default_value)) {
+  if (!pref_registry_->default_store()->GetValue(path, &default_value)) {
     return nullptr;
   }
   it = prefs_map_
@@ -320,7 +320,7 @@ const base::Value* PrefService::GetDefaultPrefValue(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // Lookup the preference in the default store.
   const base::Value* value = nullptr;
-  bool has_value = pref_registry_->defaults()->GetValue(path, &value);
+  bool has_value = pref_registry_->default_store()->GetValue(path, &value);
   DCHECK(has_value) << "Default value missing for pref: " << path;
   return value;
 }
@@ -381,6 +381,10 @@ void PrefService::Set(std::string_view path, const base::Value& value) {
   SetUserPrefValue(path, value.Clone());
 }
 
+void PrefService::Set(std::string_view path, base::Value&& value) {
+  SetUserPrefValue(path, std::move(value));
+}
+
 void PrefService::SetBoolean(std::string_view path, bool value) {
   SetUserPrefValue(path, base::Value(value));
 }
@@ -395,6 +399,14 @@ void PrefService::SetDouble(std::string_view path, double value) {
 
 void PrefService::SetString(std::string_view path, std::string_view value) {
   SetUserPrefValue(path, base::Value(value));
+}
+
+void PrefService::SetString(std::string_view path, const char* value) {
+  SetUserPrefValue(path, base::Value(value));
+}
+
+void PrefService::SetString(std::string_view path, std::string&& value) {
+  SetUserPrefValue(path, base::Value(std::move(value)));
 }
 
 void PrefService::SetDict(std::string_view path, base::DictValue dict) {
@@ -418,7 +430,7 @@ void PrefService::SetLanguageTag(std::string_view path,
 void PrefService::SetInt64(std::string_view path, int64_t value) {
   CHECK_EQ(pref_registry_->GetRegisteredPrefType(path).value_or(
                PrefRegistry::RegisteredPrefType::kInt64),
-           PrefRegistry::RegisteredPrefType::kInt64, base::NotFatalUntil::M143)
+           PrefRegistry::RegisteredPrefType::kInt64)
       << path;
   SetUserPrefValue(path, base::Int64ToValue(value));
 }
@@ -426,7 +438,7 @@ void PrefService::SetInt64(std::string_view path, int64_t value) {
 int64_t PrefService::GetInt64(std::string_view path) const {
   CHECK_EQ(pref_registry_->GetRegisteredPrefType(path).value_or(
                PrefRegistry::RegisteredPrefType::kInt64),
-           PrefRegistry::RegisteredPrefType::kInt64, base::NotFatalUntil::M143)
+           PrefRegistry::RegisteredPrefType::kInt64)
       << path;
   const base::Value& value = GetValue(path);
   std::optional<int64_t> integer = base::ValueToInt64(value);
@@ -451,7 +463,7 @@ uint64_t PrefService::GetUint64(std::string_view path) const {
 void PrefService::SetTime(std::string_view path, base::Time value) {
   CHECK_EQ(pref_registry_->GetRegisteredPrefType(path).value_or(
                PrefRegistry::RegisteredPrefType::kTime),
-           PrefRegistry::RegisteredPrefType::kTime, base::NotFatalUntil::M143)
+           PrefRegistry::RegisteredPrefType::kTime)
       << path;
   SetUserPrefValue(path, base::TimeToValue(value));
 }
@@ -459,7 +471,7 @@ void PrefService::SetTime(std::string_view path, base::Time value) {
 base::Time PrefService::GetTime(std::string_view path) const {
   CHECK_EQ(pref_registry_->GetRegisteredPrefType(path).value_or(
                PrefRegistry::RegisteredPrefType::kTime),
-           PrefRegistry::RegisteredPrefType::kTime, base::NotFatalUntil::M143)
+           PrefRegistry::RegisteredPrefType::kTime)
       << path;
   const base::Value& value = GetValue(path);
   std::optional<base::Time> time = base::ValueToTime(value);
@@ -502,7 +514,7 @@ base::Value* PrefService::GetMutableUserPref(std::string_view path,
 
   // If no user preference of the correct type exists, clone default value.
   const base::Value* default_value = nullptr;
-  pref_registry_->defaults()->GetValue(path, &default_value);
+  pref_registry_->default_store()->GetValue(path, &default_value);
   DCHECK_EQ(default_value->type(), type);
   user_pref_store_->SetValueSilently(path, default_value->Clone(),
                                      GetWriteFlags(pref));
@@ -606,7 +618,14 @@ PrefService::Preference::Preference(const PrefService* service,
       pref_service_(CHECK_DEREF(service)) {}
 
 const base::Value* PrefService::Preference::GetValue() const {
-  return pref_service_->GetPreferenceValue(name_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(pref_service_->sequence_checker_);
+
+  const base::Value* found_value = nullptr;
+  CHECK(pref_value_store()->GetValue(name_, type_, &found_value))
+      << "Must register pref before getting its value: " << name_;
+  CHECK(found_value);
+  CHECK_EQ(found_value->type(), type_);
+  return found_value;
 }
 
 const base::Value* PrefService::Preference::GetRecommendedValue() const {
@@ -668,22 +687,26 @@ const base::Value* PrefService::GetPreferenceValue(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   const base::Value* default_value = nullptr;
-  CHECK(pref_registry_->defaults()->GetValue(path, &default_value))
+  CHECK(pref_registry_->default_store()->GetValue(path, &default_value))
       << "Trying to access an unregistered pref: " << path;
   CHECK(default_value);
   const base::Value::Type default_type = default_value->type();
 
   const base::Value* found_value = nullptr;
-  // GetValue shouldn't fail because every registered preference has at least a
-  // default value.
-  CHECK(pref_value_store_->GetValue(path, default_type, &found_value));
-  CHECK(found_value);
-  // The type is expected to match here thanks to a verification in
-  // PrefValueStore::GetValueFromStoreWithType which discards polluted values
-  // (and we should at least get a matching type from the default store if no
-  // other store has a valid value+type).
-  CHECK_EQ(found_value->type(), default_type);
-  return found_value;
+  if (pref_value_store_->GetValueFromNonDefaultStores(path, default_type,
+                                                      &found_value)) {
+    CHECK(found_value);
+    // The type is expected to match here thanks to a verification in
+    // PrefValueStore::GetValueFromStoreWithType which discards polluted values.
+    CHECK_EQ(found_value->type(), default_type);
+    return found_value;
+  }
+
+  // If no non-default store overrides `path`, return `default_value` directly
+  // (already retrieved above from `pref_registry_->defaults()`, which is
+  // `pref_value_store_`'s DEFAULT_STORE) instead of looking up `path` in
+  // DefaultPrefStore a second time.
+  return default_value;
 }
 
 // static

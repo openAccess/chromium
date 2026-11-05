@@ -74,7 +74,8 @@ class WTF_EXPORT AtomicString {
   // contains invalid UTF-8 sequences.
   static AtomicString FromUtf8(base::span<const uint8_t>);
   static AtomicString FromUtf8(std::string_view utf8_string) {
-    return FromUtf8(base::as_byte_span(utf8_string));
+    // Not `base::as_byte_span()`, see String::FromUtf8().
+    return FromUtf8(base::as_bytes(base::span<const char>(utf8_string)));
   }
 
   template <typename IntegerType>
@@ -83,23 +84,35 @@ class WTF_EXPORT AtomicString {
     return AtomicString(converter.Span());
   }
 
-  static AtomicString Number(double, unsigned precision = 6);
+  static AtomicString Number(double, wtf_size_t precision = 6);
 
   // [string.cons] --------------------------------------------------
 
   AtomicString() = default;
-  explicit AtomicString(const char* chars)
-      // SAFETY: The below span creation is safe if `chars` points to a
-      // NUL-terminated string.
-      : AtomicString(base::as_bytes(UNSAFE_BUFFERS(
-            base::span(base::unchecked, chars, chars ? strlen(chars) : 0u)))) {}
+  explicit AtomicString(const char* chars) {
+    if (!chars) {
+      return;
+    }
+    if (chars[0] == '\0') {
+      string_ = String(StringImpl::empty_);
+      return;
+    }
+    // SAFETY: The below span creation is safe if `chars` points to a
+    // NUL-terminated string.
+    *this = AtomicString(base::as_bytes(UNSAFE_BUFFERS(
+        base::span(base::unchecked, chars, strlen(chars)))));
+  }
   explicit AtomicString(base::span<const LChar> chars);
   explicit AtomicString(
       base::span<const UChar> chars,
       AtomicStringUCharEncoding encoding = AtomicStringUCharEncoding::kUnknown);
-  explicit AtomicString(const UChar* chars);
+  template <size_t kLength>
+  explicit AtomicString(const UChar (&chars)[kLength])
+      : AtomicString(base::span(chars).template first<kLength - 1>()) {
+    DCHECK_EQ(chars[kLength - 1], 0);
+  }
 
-  explicit AtomicString(const StringView& view);
+  explicit AtomicString(const StringView& view) : string_(Add(view)) {}
 
   // Constructing an AtomicString from a String / StringImpl can be expensive if
   // the StringImpl is not already atomic.
@@ -132,7 +145,7 @@ class WTF_EXPORT AtomicString {
   operator const String&() const { return string_; }
   const String& GetString() const { return string_; }
 
-  unsigned Hash() const { return string_.Impl()->ExistingHash(); }
+  uint32_t Hash() const { return string_.Impl()->ExistingHash(); }
 
   // Returns an LChar span of the underlying representation of the string.
   // This function must only be called on 8-bit strings.
@@ -292,8 +305,23 @@ class WTF_EXPORT AtomicString {
       return r;
     return AddSlowCase(r);
   }
+
+  ALWAYS_INLINE static String Add(const StringView& r) {
+    if (r.IsNull()) {
+      return String();
+    }
+    if (!r.length()) {
+      return String(StringImpl::empty_);
+    }
+    if (StringImpl* impl = r.SharedImpl(); impl && impl->IsAtomic()) {
+      return String(impl);
+    }
+    return AddSlowCase(r);
+  }
+
   static String AddSlowCase(String&&);
   static String AddSlowCase(StringImpl*);
+  static String AddSlowCase(const StringView&);
 };
 
 inline bool operator==(const AtomicString& a, const AtomicString& b) {

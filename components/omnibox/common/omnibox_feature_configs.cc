@@ -241,30 +241,6 @@ bool ContextualSearch::IsEnabledWithPrefetch() const {
   return IsContextualSearchEnabled() && zero_suggest_synchronous_matches_only;
 }
 
-BASE_FEATURE(MiaZPS::kOmniboxMiaZPS,
-             "OmniboxMiaZPS",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-MiaZPS::MiaZPS() {
-  enabled = base::FeatureList::IsEnabled(kOmniboxMiaZPS);
-  local_history_non_normalized_contents =
-      base::FeatureParam<bool>(&kOmniboxMiaZPS,
-                               "LocalHistoryNonNormalizedContents", true)
-          .Get();
-
-  suppress_psuggest_backfill_with_mia =
-      base::FeatureParam<bool>(&kOmniboxMiaZPS,
-                               "SuppressPsuggestBackfillWithMIA",
-                               enable_if(IS_ANDROID || IS_IOS))
-          .Get();
-}
-
-MiaZPS::MiaZPS(const MiaZPS&) = default;
-MiaZPS::MiaZPS(MiaZPS&&) = default;
-MiaZPS& MiaZPS::operator=(const MiaZPS&) = default;
-MiaZPS& MiaZPS::operator=(MiaZPS&&) = default;
-MiaZPS::~MiaZPS() = default;
-
 BASE_FEATURE(Toolbelt::kOmniboxToolbelt,
              "OmniboxToolbelt",
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -372,39 +348,6 @@ DocumentProvider& DocumentProvider::operator=(const DocumentProvider&) =
     default;
 DocumentProvider& DocumentProvider::operator=(DocumentProvider&&) = default;
 DocumentProvider::~DocumentProvider() = default;
-
-BASE_FEATURE(AdjustOmniboxIndent::kAdjustOmniboxIndent,
-             "AdjustOmniboxIndent",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-AdjustOmniboxIndent::AdjustOmniboxIndent() {
-  const bool enabled = base::FeatureList::IsEnabled(kAdjustOmniboxIndent);
-  indent_input_when_popup_closed =
-      enabled ? base::FeatureParam<bool>(&kAdjustOmniboxIndent,
-                                         "indent-input-when-popup-closed", true)
-                    .Get()
-              : false;
-  input_icon_indent_offset =
-      enabled ? base::FeatureParam<int>(&kAdjustOmniboxIndent,
-                                        "input-icon-indent-offset", -7)
-                    .Get()
-              : 0;
-  input_text_indent_offset =
-      enabled ? base::FeatureParam<int>(&kAdjustOmniboxIndent,
-                                        "input-text-indent-offset", -2)
-                    .Get()
-              : 0;
-  match_icon_indent_offset =
-      enabled ? base::FeatureParam<int>(&kAdjustOmniboxIndent,
-                                        "match-icon-indent-offset", -7)
-                    .Get()
-              : 0;
-  match_text_indent_offset =
-      enabled ? base::FeatureParam<int>(&kAdjustOmniboxIndent,
-                                        "match-text-indent-offset", -9)
-                    .Get()
-              : 0;
-}
 
 // static
 BASE_FEATURE(ForceAllowedToBeDefault::kForceAllowedToBeDefault,
@@ -590,24 +533,6 @@ base::DictValue SearchAggregatorProvider::CreateMockSearchAggregator(
   return result;
 }
 
-// static
-BASE_FEATURE(SuggestionAnswerMigration::kOmniboxSuggestionAnswerMigration,
-             "OmniboxSuggestionAnswerMigration",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-SuggestionAnswerMigration::SuggestionAnswerMigration() {
-  enabled = base::FeatureList::IsEnabled(kOmniboxSuggestionAnswerMigration);
-}
-
-SuggestionAnswerMigration::SuggestionAnswerMigration(
-    const SuggestionAnswerMigration&) = default;
-SuggestionAnswerMigration::SuggestionAnswerMigration(
-    SuggestionAnswerMigration&&) = default;
-SuggestionAnswerMigration& SuggestionAnswerMigration::operator=(
-    const SuggestionAnswerMigration&) = default;
-SuggestionAnswerMigration& SuggestionAnswerMigration::operator=(
-    SuggestionAnswerMigration&&) = default;
-SuggestionAnswerMigration::~SuggestionAnswerMigration() = default;
-
 BASE_FEATURE(OmniboxZpsSuggestionLimit::kOmniboxZpsSuggestionLimit,
              "OmniboxZpsSuggestionLimit",
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -748,7 +673,7 @@ ComposeboxSuggestionLimit::ComposeboxSuggestionLimit() {
 
 // Feature to enable embedded permission prompts (user-pull model) to be used in
 // cobrowsing (full window and side panel), new tab page, and omnibox.
-BASE_FEATURE(kEmbeddedPermissionEnabled, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kEmbeddedPermissionEnabled, base::FEATURE_ENABLED_BY_DEFAULT);
 
 ComposeboxSuggestionLimit::ComposeboxSuggestionLimit(
     const ComposeboxSuggestionLimit&) = default;
@@ -765,12 +690,15 @@ ComposeboxSuggestionLimit::~ComposeboxSuggestionLimit() = default;
 // Feature to enable the short suggest path.
 BASE_FEATURE(SuggestPathClientConfig::kUseShortSuggestPathV1,
              "OmniboxUseShortSuggestPathV1",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE_PARAM(std::string,
-                   kSuggestPathClient,
-                   &SuggestPathClientConfig::kUseShortSuggestPathV1,
-                   "OmniboxSuggestPathClient",
-                   "");
+             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(
+    std::string,
+    kSuggestPathClient,
+    &SuggestPathClientConfig::kUseShortSuggestPathV1,
+    "OmniboxSuggestPathClient",
+    "chrome-omni,chrome,chrome-ntp-action,chrome-cobrowse-compose,"
+    "chrome-multimodal,chrome-contextual,"
+    "chrome-android-search-resumption-module,chrome-compose,chrome-mobile-aim");
 
 SuggestPathClientConfig::SuggestPathClientConfig() {
   enabled = base::FeatureList::IsEnabled(kUseShortSuggestPathV1);

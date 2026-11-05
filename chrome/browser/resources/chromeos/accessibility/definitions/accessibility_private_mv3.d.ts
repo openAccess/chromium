@@ -4,10 +4,11 @@
 
 /**
  * @fileoverview Definitions for chrome.accessibilityPrivate API
- * Generated from: chrome/common/extensions/api/accessibility_private.json
+ * Generated from:
+ * chromeos/ash/experiences/extensions/common/api/accessibility_private.json
  * run `tools/json_schema_compiler/compiler.py
- * chrome/common/extensions/api/accessibility_private.json -g ts_definitions` to
- * regenerate.
+ * chromeos/ash/experiences/extensions/common/api/accessibility_private.json -g
+ * ts_definitions` to regenerate.
  */
 
 import type {ChromeEvent} from '../../../../../../tools/typescript/definitions/chrome_event.js';
@@ -223,7 +224,6 @@ declare global {
       export enum AccessibilityFeature {
         DICTATION_CONTEXT_CHECKING = 'dictationContextChecking',
         GOOGLE_TTS_HIGH_QUALITY_VOICES = 'googleTtsHighQualityVoices',
-        CAPTIONS_ON_BRAILLE_DISPLAY = 'captionsOnBrailleDisplay',
       }
 
       export enum SelectToSpeakPanelAction {
@@ -277,17 +277,20 @@ declare global {
 
       export enum DlcType {
         TTS_BN_BD = 'ttsBnBd',
+        TTS_BN_IN = 'ttsBnIn',
         TTS_CS_CZ = 'ttsCsCz',
         TTS_DA_DK = 'ttsDaDk',
         TTS_DE_DE = 'ttsDeDe',
         TTS_EL_GR = 'ttsElGr',
         TTS_EN_AU = 'ttsEnAu',
         TTS_EN_GB = 'ttsEnGb',
+        TTS_EN_IN = 'ttsEnIn',
         TTS_EN_US = 'ttsEnUs',
         TTS_ES_ES = 'ttsEsEs',
         TTS_ES_US = 'ttsEsUs',
         TTS_FI_FI = 'ttsFiFi',
         TTS_FIL_PH = 'ttsFilPh',
+        TTS_FR_CA = 'ttsFrCa',
         TTS_FR_FR = 'ttsFrFr',
         TTS_HI_IN = 'ttsHiIn',
         TTS_HU_HU = 'ttsHuHu',

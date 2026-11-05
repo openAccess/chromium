@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//components/proto_extras/proto_extras.gni")
 import("//third_party/protobuf/proto_library.gni")
 
 if (current_toolchain == host_toolchain) {
@@ -9,19 +10,27 @@ if (current_toolchain == host_toolchain) {
     sources = [ "proto_extras_plugin.cc" ]
     deps = [
       ":proto_extras_options_proto",
-      "//base",
+      "//third_party/abseil-cpp:absl",
       "//third_party/protobuf:protoc_cpp",
       "//third_party/protobuf:protoc_lib",
     ]
+
+    # Do not depend on //base so the plugin can link alongside protoc
+    # without waiting for libbase.so (and its Rust dependencies) in component
+    # builds. Use "//base" rather than "//base/*" because Windows component
+    # builds pull in //base/allocator/partition_allocator/* via
+    # //build/config:shared_library_deps.
+    assert_no_deps = [ "//base" ]
   }
 
   executable("proto_test_extras_plugin") {
     sources = [ "proto_test_extras_plugin.cc" ]
     deps = [
-      "//base",
+      "//third_party/abseil-cpp:absl",
       "//third_party/protobuf:protoc_cpp",
       "//third_party/protobuf:protoc_lib",
     ]
+    assert_no_deps = [ "//base" ]
   }
 }
 
@@ -96,4 +105,13 @@ source_set("unit_tests") {
     "//testing/gtest",
     "//third_party/protobuf:protobuf_lite",
   ]
+}
+
+# base::Value serialization for google::protobuf::Any. Lite protos embedding an
+# `Any` field need this to be able to generate their own serialization with
+# //components/proto_extras.
+proto_extras("any_proto_extras") {
+  sources = [ "//third_party/protobuf/src/google/protobuf/any.proto" ]
+  proto_in_dir = "//third_party/protobuf/src"
+  deps = [ "//third_party/protobuf:any_proto" ]
 }

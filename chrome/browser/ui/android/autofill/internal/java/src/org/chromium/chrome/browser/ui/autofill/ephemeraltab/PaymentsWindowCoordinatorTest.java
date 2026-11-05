@@ -22,6 +22,7 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.ephemeraltab.EphemeralTabCoordinator;
@@ -89,6 +90,7 @@ public class PaymentsWindowCoordinatorTest {
                         /* canPromoteToNewTab= */ eq(false),
                         /* shouldHaveContextMenu= */ eq(false),
                         /* initiatorOrigin= */ any(),
+                        /* additionalNavigationParams= */ any(),
                         any(Runnable.class));
         verify(mEphemeralTabCoordinator).addObserver(any(EphemeralTabObserver.class));
     }
@@ -112,6 +114,7 @@ public class PaymentsWindowCoordinatorTest {
                         /* canPromoteToNewTab= */ eq(false),
                         /* shouldHaveContextMenu= */ eq(false),
                         /* initiatorOrigin= */ any(),
+                        /* additionalNavigationParams= */ any(),
                         callbackCaptor.capture());
 
         callbackCaptor.getValue().run();
@@ -133,6 +136,7 @@ public class PaymentsWindowCoordinatorTest {
                         /* canPromoteToNewTab= */ eq(false),
                         /* shouldHaveContextMenu= */ eq(false),
                         /* initiatorOrigin= */ any(),
+                        /* additionalNavigationParams= */ any(),
                         any(Runnable.class));
         verify(mEphemeralTabCoordinator, never()).addObserver(any(EphemeralTabObserver.class));
     }
@@ -152,8 +156,26 @@ public class PaymentsWindowCoordinatorTest {
                         /* canPromoteToNewTab= */ eq(false),
                         /* shouldHaveContextMenu= */ eq(false),
                         /* initiatorOrigin= */ any(),
+                        /* additionalNavigationParams= */ any(),
                         any(Runnable.class));
         verify(mEphemeralTabCoordinator, never()).addObserver(any(EphemeralTabObserver.class));
+    }
+
+    @Test
+    public void testOpenEphemeralTab_whenCoordinatorUnavailable_thenNotifiesBridgeOfDenial() {
+        when(mMerchantWebContents.getTopLevelNativeWindow()).thenReturn(mWindowAndroid);
+        // A supplier without a value, i.e. an embedder that does not support ephemeral tabs.
+        EphemeralTabCoordinatorSupplier.setInstanceForTesting(null);
+
+        mCoordinator.openEphemeralTab(ISSUER_URL, TAB_TITLE, mMerchantWebContents);
+
+        // Must not be synchronous: the native caller keeps using its flow state after this call
+        // returns, while the notification tears that state down.
+        verify(mPaymentsWindowBridge, never()).onUserDeniedTabOpening();
+
+        ShadowLooper.idleMainLooper();
+
+        verify(mPaymentsWindowBridge).onUserDeniedTabOpening();
     }
 
     @Test

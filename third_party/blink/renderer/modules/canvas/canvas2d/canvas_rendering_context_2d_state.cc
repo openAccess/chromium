@@ -539,8 +539,9 @@ sk_sp<PaintFilter> CanvasRenderingContext2DState::GetFilterForOffscreenCanvas(
   FilterEffectBuilder filter_effect_builder(
       gfx::RectF(canvas_viewport), canvas_viewport,
       1.0f,  // Deliberately ignore zoom on the canvas element.
-      Color::kBlack, mojom::blink::ColorScheme::kLight, &fill_flags_for_filter,
-      &stroke_flags_for_filter);
+      Color::kBlack, mojom::blink::ColorScheme::kLight,
+      /*is_in_canvas_subtree=*/false,  // OffscreenCanvas has no DOM subtree.
+      &fill_flags_for_filter, &stroke_flags_for_filter);
 
   FilterEffect* last_effect = filter_effect_builder.BuildFilterEffect(
       operations, !context->OriginClean());
@@ -576,9 +577,10 @@ sk_sp<PaintFilter> CanvasRenderingContext2DState::GetFilter(
     // StyleResolver cannot be used in frame-less documents.
     if (!document.GetFrame())
       return nullptr;
-    // Update the filter value to the proper base URL if needed.
+    // Update the filter value to the proper base URL if needed. Style and
+    // layout have already been updated by
+    // `CanvasRenderingContext2D::StateGetFilter`.
     if (css_filter_value_->MayContainUrl()) {
-      document.UpdateStyleAndLayout(DocumentUpdateReason::kCanvas);
       css_filter_value_->ReResolveUrl(document);
     }
 
@@ -588,7 +590,7 @@ sk_sp<PaintFilter> CanvasRenderingContext2DState::GetFilter(
     // If font_for_filter_ was never set (ie frame-less documents) use base font
     if (!font_for_filter_->GetFontSelector()) [[unlikely]] {
       if (LayoutView* layout_view = document.GetLayoutView()) {
-        font = layout_view->StyleRef().GetFont();
+        font = layout_view->Style().GetFont();
       } else {
         return nullptr;
       }
@@ -611,7 +613,9 @@ sk_sp<PaintFilter> CanvasRenderingContext2DState::GetFilter(
   FilterEffectBuilder filter_effect_builder(
       gfx::RectF(canvas_viewport), canvas_viewport,
       1.0f,  // Deliberately ignore zoom on the canvas element.
-      Color::kBlack, mojom::blink::ColorScheme::kLight, &fill_flags_for_filter,
+      Color::kBlack, mojom::blink::ColorScheme::kLight,
+      // 2D context filters rely on origin tainting, not subtree scoping.
+      /*is_in_canvas_subtree=*/false, &fill_flags_for_filter,
       &stroke_flags_for_filter);
 
   FilterEffect* last_effect = filter_effect_builder.BuildFilterEffect(
@@ -619,12 +623,11 @@ sk_sp<PaintFilter> CanvasRenderingContext2DState::GetFilter(
   if (last_effect) {
     resolved_filter_ =
         paint_filter_builder::Build(last_effect, kInterpolationSpaceSRGB);
-    if (resolved_filter_) {
-      context->UpdateFilterReferences(operations);
-      if (last_effect->OriginTainted())
-        context->SetOriginTainted();
+    if (resolved_filter_ && last_effect->OriginTainted()) {
+      context->SetOriginTainted();
     }
   }
+  context->UpdateFilterReferences(operations);
 
   filter_state_ =
       resolved_filter_ ? FilterState::kResolved : FilterState::kInvalid;

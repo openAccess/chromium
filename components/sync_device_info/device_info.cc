@@ -75,7 +75,6 @@ DeviceInfo::DeviceInfo(
     const std::string& full_hardware_class,
     base::Time last_updated_timestamp,
     base::TimeDelta pulse_interval,
-    bool send_tab_to_self_receiving_enabled,
     SendTabReceivingType send_tab_to_self_receiving_type,
     const std::optional<SharingInfo>& sharing_info,
     const std::optional<PhoneAsASecurityKeyInfo>& paask_info,
@@ -87,6 +86,7 @@ DeviceInfo::DeviceInfo(
         desktop_to_ios_promo_receiving_types,
     GlicExperimentalTriggeringState glic_experimental_triggering_state,
     std::optional<int> glic_experimental_triggering_version,
+    base::flat_set<std::string> glic_experimental_triggering_capabilities,
     std::optional<std::string> android_os_build_fingerprint_prefix,
     std::optional<PersonalContextInfo> personal_context_info)
     : guid_(guid),
@@ -105,7 +105,6 @@ DeviceInfo::DeviceInfo(
           std::move(android_os_build_fingerprint_prefix)),
       last_updated_timestamp_(last_updated_timestamp),
       pulse_interval_(pulse_interval),
-      send_tab_to_self_receiving_enabled_(send_tab_to_self_receiving_enabled),
       send_tab_to_self_receiving_type_(send_tab_to_self_receiving_type),
       sharing_info_(sharing_info),
       paask_info_(paask_info),
@@ -119,6 +118,8 @@ DeviceInfo::DeviceInfo(
       glic_experimental_triggering_state_(glic_experimental_triggering_state),
       glic_experimental_triggering_version_(
           glic_experimental_triggering_version),
+      glic_experimental_triggering_capabilities_(
+          std::move(glic_experimental_triggering_capabilities)),
       personal_context_info_(std::move(personal_context_info)) {}
 
 DeviceInfo::DeviceInfo(const DeviceInfo& other) = default;
@@ -190,10 +191,6 @@ base::TimeDelta DeviceInfo::pulse_interval() const {
   return pulse_interval_;
 }
 
-bool DeviceInfo::send_tab_to_self_receiving_enabled() const {
-  return send_tab_to_self_receiving_enabled_;
-}
-
 DeviceInfo::SendTabReceivingType DeviceInfo::send_tab_to_self_receiving_type()
     const {
   return send_tab_to_self_receiving_type_;
@@ -215,6 +212,11 @@ DeviceInfo::glic_experimental_triggering_state() const {
 
 std::optional<int> DeviceInfo::glic_experimental_triggering_version() const {
   return glic_experimental_triggering_version_;
+}
+
+const base::flat_set<std::string>&
+DeviceInfo::glic_experimental_triggering_capabilities() const {
+  return glic_experimental_triggering_capabilities_;
 }
 
 const std::optional<std::string>& DeviceInfo::server_determined_model_name()
@@ -258,10 +260,6 @@ void DeviceInfo::set_full_hardware_class(
   full_hardware_class_ = full_hardware_class;
 }
 
-void DeviceInfo::set_send_tab_to_self_receiving_enabled(bool new_value) {
-  send_tab_to_self_receiving_enabled_ = new_value;
-}
-
 void DeviceInfo::set_send_tab_to_self_receiving_type(
     SendTabReceivingType new_value) {
   send_tab_to_self_receiving_type_ = new_value;
@@ -284,6 +282,11 @@ void DeviceInfo::set_glic_experimental_triggering_state(
 void DeviceInfo::set_glic_experimental_triggering_version(
     std::optional<int> version) {
   glic_experimental_triggering_version_ = version;
+}
+
+void DeviceInfo::set_glic_experimental_triggering_capabilities(
+    const base::flat_set<std::string>& capabilities) {
+  glic_experimental_triggering_capabilities_ = capabilities;
 }
 
 void DeviceInfo::set_sharing_info(

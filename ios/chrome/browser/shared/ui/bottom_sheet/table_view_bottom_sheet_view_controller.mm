@@ -12,9 +12,8 @@
 #import "base/check.h"
 #import "base/notreached.h"
 #import "ios/chrome/browser/shared/ui/bottom_sheet/table_view_bottom_sheet_view_controller+subclassing.h"
-#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
-#import "ui/base/device_form_factor.h"
+#import "ios/chrome/common/ui/util/ui_util.h"
 
 namespace {
 
@@ -54,6 +53,19 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
 
   // Keep track of the minimized state height.
   std::optional<CGFloat> _minimizedStateHeight;
+
+  // Horizontal leading and trailing constraints for transaction buttons.
+  NSArray<NSLayoutConstraint*>* _buttonLeadingConstraints;
+  NSArray<NSLayoutConstraint*>* _buttonTrailingConstraints;
+
+  // Registration for window trait changes.
+  id<UITraitChangeRegistration> _windowTraitChangeRegistration;
+
+  // The window on which `_windowTraitChangeRegistration` is registered.
+  __weak UIWindow* _observedWindow;
+
+  // The row that is selected in the table view.
+  NSInteger _selectedRow;
 }
 
 @end
@@ -65,12 +77,18 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
   [self updateHeight];
 }
 
-- (void)reconfigureCellAtIndexPath:(NSIndexPath*)indexPath {
-  [_tableView reconfigureRowsAtIndexPaths:@[ indexPath ]];
+- (void)setSelectedRow:(NSInteger)selectedRow {
+  if (_selectedRow == selectedRow) {
+    return;
+  }
+  _selectedRow = selectedRow;
+  if (_tableView) {
+    [self selectCurrentRow];
+  }
 }
 
-- (NSInteger)selectedRow {
-  return _tableView.indexPathForSelectedRow.row;
+- (void)reconfigureCellAtIndexPath:(NSIndexPath*)indexPath {
+  [_tableView reconfigureRowsAtIndexPaths:@[ indexPath ]];
 }
 
 - (CGFloat)tableViewWidth {
@@ -84,14 +102,26 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
 }
 
 - (void)adjustTransactionsButtonHorizontalConstraints {
-  CGFloat buttonHorizontalMargin =
-      (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET ? 64.0
-                                                                  : 24.0);
-
-  [self applyHorizontalConstraints:buttonHorizontalMargin
-                         forButton:self.primaryActionButton];
-  [self applyHorizontalConstraints:buttonHorizontalMargin
-                         forButton:self.secondaryActionButton];
+  CGFloat margin = [self buttonHorizontalMargin];
+  UILayoutGuide* safeArea = self.view.safeAreaLayoutGuide;
+  _buttonLeadingConstraints = @[
+    [self.primaryActionButton.leadingAnchor
+        constraintGreaterThanOrEqualToAnchor:safeArea.leadingAnchor
+                                    constant:margin],
+    [self.secondaryActionButton.leadingAnchor
+        constraintGreaterThanOrEqualToAnchor:safeArea.leadingAnchor
+                                    constant:margin],
+  ];
+  _buttonTrailingConstraints = @[
+    [self.primaryActionButton.trailingAnchor
+        constraintLessThanOrEqualToAnchor:safeArea.trailingAnchor
+                                 constant:-margin],
+    [self.secondaryActionButton.trailingAnchor
+        constraintLessThanOrEqualToAnchor:safeArea.trailingAnchor
+                                 constant:-margin],
+  ];
+  [NSLayoutConstraint activateConstraints:_buttonLeadingConstraints];
+  [NSLayoutConstraint activateConstraints:_buttonTrailingConstraints];
 }
 
 #pragma mark - Subclassing
@@ -128,7 +158,7 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
   _minimizedHeightConstraint.active = _tableViewIsMinimized;
   _heightConstraint.active = !_tableViewIsMinimized;
 
-  [self selectFirstRow];
+  [self selectCurrentRow];
 
   return _tableView;
 }
@@ -173,8 +203,8 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
 
   [self setUpBottomSheetDetents];
 
-  // Set selection to the first one.
-  [self selectFirstRow];
+  // Set selection to the selected row.
+  [self selectCurrentRow];
 
   [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
                      withAction:@selector(updateHeightOnTraitChange)];
@@ -183,13 +213,37 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
 - (void)viewIsAppearing:(BOOL)animated {
   [super viewIsAppearing:animated];
 
+  [self updateTransactionsButtonHorizontalConstraints];
+  if (self.view.window && self.view.window != _observedWindow) {
+    [_observedWindow unregisterForTraitChanges:_windowTraitChangeRegistration];
+    _observedWindow = self.view.window;
+    __weak __typeof(self) weakSelf = self;
+    _windowTraitChangeRegistration = [_observedWindow
+        registerForTraitChanges:@[
+          UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class
+        ]
+                    withHandler:^(id<UITraitEnvironment> traitEnvironment,
+                                  UITraitCollection* previousCollection) {
+                      [weakSelf updateTransactionsButtonHorizontalConstraints];
+                    }];
+  }
   [self updateHeight];
+}
+
+- (void)viewDidDisappear:(BOOL)animated {
+  [super viewDidDisappear:animated];
+  if (_windowTraitChangeRegistration) {
+    [_observedWindow unregisterForTraitChanges:_windowTraitChangeRegistration];
+    _windowTraitChangeRegistration = nil;
+    _observedWindow = nil;
+  }
 }
 
 #pragma mark - UITableViewDelegate
 
 - (void)tableView:(UITableView*)tableView
     didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
+  _selectedRow = indexPath.row;
   [tableView cellForRowAtIndexPath:indexPath].accessoryType =
       UITableViewCellAccessoryCheckmark;
 }
@@ -211,20 +265,24 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
 
 #pragma mark - Private
 
-// Applies horizontal constraints to a button.
-- (void)applyHorizontalConstraints:(CGFloat)buttonHorizontalMargin
-                         forButton:(UIView*)button {
-  [button.leadingAnchor
-      constraintGreaterThanOrEqualToAnchor:self.view.safeAreaLayoutGuide
-                                               .leadingAnchor
-                                  constant:buttonHorizontalMargin]
-      .active = YES;
+// Returns the horizontal margin for transaction buttons based on window
+// size-class traits.
+- (CGFloat)buttonHorizontalMargin {
+  return IsRegularXRegularSizeClass(self.view.window) ? 64.0 : 24.0;
+}
 
-  [button.trailingAnchor
-      constraintLessThanOrEqualToAnchor:self.view.safeAreaLayoutGuide
-                                            .trailingAnchor
-                               constant:-buttonHorizontalMargin]
-      .active = YES;
+// Updates stored button horizontal constraints when container traits change.
+- (void)updateTransactionsButtonHorizontalConstraints {
+  if (!_buttonLeadingConstraints.count && !_buttonTrailingConstraints.count) {
+    return;
+  }
+  CGFloat margin = [self buttonHorizontalMargin];
+  for (NSLayoutConstraint* constraint in _buttonLeadingConstraints) {
+    constraint.constant = margin;
+  }
+  for (NSLayoutConstraint* constraint in _buttonTrailingConstraints) {
+    constraint.constant = -margin;
+  }
 }
 
 // Maximum initial number of visible cells.
@@ -232,11 +290,21 @@ NSString* const kCustomDetentIdentifier = @"customDetent";
   return 2.5;
 }
 
-// Select the first row in the table view.
-- (void)selectFirstRow {
-  [_tableView selectRowAtIndexPath:[NSIndexPath indexPathForRow:0 inSection:0]
+// Selects the current row in the table view.
+- (void)selectCurrentRow {
+  NSIndexPath* oldIndexPath = _tableView.indexPathForSelectedRow;
+  if (oldIndexPath) {
+    [_tableView deselectRowAtIndexPath:oldIndexPath animated:NO];
+    [_tableView cellForRowAtIndexPath:oldIndexPath].accessoryType =
+        UITableViewCellAccessoryNone;
+  }
+  NSIndexPath* newIndexPath = [NSIndexPath indexPathForRow:_selectedRow
+                                                 inSection:0];
+  [_tableView selectRowAtIndexPath:newIndexPath
                           animated:NO
                     scrollPosition:UITableViewScrollPositionNone];
+  [_tableView cellForRowAtIndexPath:newIndexPath].accessoryType =
+      UITableViewCellAccessoryCheckmark;
 }
 
 // Mocks cells to compute the table view height for the given number of rows.

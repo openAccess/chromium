@@ -8,35 +8,33 @@ import sys
 
 
 def CheckChangeOnUpload(input_api, output_api):
-    results = []
-    results.extend(_CheckHistogramsAllowlist(input_api, output_api))
-    return results
+  results = []
+  results.extend(_CheckHistogramsAllowlist(input_api, output_api))
+  return results
 
 
 def _CheckHistogramsAllowlist(input_api, output_api):
-    """Checks that HistogramsAllowlist.java contains valid histograms."""
-    src_path = os.path.join(input_api.PresubmitLocalPath(), '..', '..', '..',
-                            '..')
-    histograms_path = os.path.join(src_path, 'tools', 'metrics', 'histograms')
-    sys.path.append(histograms_path)
+  """Checks that HistogramsAllowlist.java contains valid histograms."""
+  src_path = os.path.join(
+    input_api.PresubmitLocalPath(), '..', '..', '..', '..'
+  )
+  histograms_path = os.path.join(src_path, 'tools', 'metrics', 'histograms')
+  sys.path.append(histograms_path)
 
-    import print_histogram_names
-    from histograms_allowlist_check import WellKnownAllowlistPath
-    from histograms_allowlist_check import check_histograms_allowlist
-    allowlist_path = os.path.join(
-        src_path, WellKnownAllowlistPath.ANDROID_WEBVIEW.relative_path())
+  import histogram_paths
+  from histograms_allowlist_check import WellKnownAllowlistPath
+  from histograms_allowlist_check import check_histograms_allowlist
 
-    histograms_allowlist_filter = lambda f: f.LocalPath().endswith(
-        WellKnownAllowlistPath.ANDROID_WEBVIEW.filename())
-    if not input_api.AffectedFiles(file_filter=histograms_allowlist_filter):
-        return []
+  allowlist_path = os.path.join(
+    src_path, WellKnownAllowlistPath.ANDROID_WEBVIEW.relative_path()
+  )
 
-    xml_files = print_histogram_names.histogram_xml_files()
-    result = check_histograms_allowlist(output_api, allowlist_path, xml_files)
+  histograms_allowlist_filter = lambda f: f.LocalPath().endswith(  # noqa: E731
+    WellKnownAllowlistPath.ANDROID_WEBVIEW.filename()
+  )
+  if not input_api.AffectedFiles(file_filter=histograms_allowlist_filter):
+    return []
 
-    # TODO(crbug.com/391795980): Files should be scope managed, remove this
-    # quick fixed once the issue is done.
-    for f in xml_files:
-        f.close()
-
-    return result
+  return check_histograms_allowlist(
+    output_api, allowlist_path, histogram_paths.ALL_XMLS
+  )

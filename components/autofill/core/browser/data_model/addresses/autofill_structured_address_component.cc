@@ -19,6 +19,7 @@
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/containers/fixed_flat_set.h"
+#include "base/containers/span.h"
 #include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/notreached.h"
@@ -80,8 +81,7 @@ bool IsLessSignificantVerificationStatus(VerificationStatus left,
 
   // In all other cases, it is sufficient to compare the underlying integer
   // values.
-  return static_cast<std::underlying_type_t<VerificationStatus>>(left) <
-         static_cast<std::underlying_type_t<VerificationStatus>>(right);
+  return std::to_underlying(left) < std::to_underlying(right);
 }
 
 VerificationStatus GetMoreSignificantVerificationStatus(
@@ -586,7 +586,7 @@ bool AddressComponent::IsValueCompatibleWithDescendants(
   }
 
   return std::ranges::all_of(
-      Subcomponents(), [value](const AddressComponent* c) {
+      Subcomponents(), [&value](const AddressComponent* c) {
         return c->IsValueCompatibleWithDescendants(value);
       });
 }
@@ -618,25 +618,22 @@ void AddressComponent::ParseValueAndAssignSubcomponentsByFallbackMethod() {
   std::vector<std::u16string> space_separated_tokens = base::SplitString(
       GetValue(), u" ", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
 
-  auto token_iterator = space_separated_tokens.begin();
   auto subcomponent_types = GetSubcomponentTypes();
 
   // Assign one space-separated token each to all but the last subcomponent.
   for (size_t i = 0; (i + 1) < subcomponent_types.size(); ++i) {
     // If there are no tokens left, parsing is done.
-    if (token_iterator == space_separated_tokens.end()) {
+    if (i == space_separated_tokens.size()) {
       return;
     }
-    // Set the current token to the type and advance the token iterator. By
-    // design, this should never fail.
-    CHECK(SetValueForType(subcomponent_types[i], *token_iterator,
+    // Set the current token to the type. By design, this should never fail.
+    CHECK(SetValueForType(subcomponent_types[i], space_separated_tokens[i],
                           VerificationStatus::kParsed));
-    token_iterator++;
   }
 
   // Collect all remaining tokens in the last subcomponent.
   std::u16string remaining_tokens = base::JoinString(
-      std::vector<std::u16string>(token_iterator, space_separated_tokens.end()),
+      base::span(space_separated_tokens).subspan(subcomponent_types.size() - 1),
       u" ");
   // By design, it should be possible to assign the value unless the regular
   // expression is wrong.
@@ -979,10 +976,6 @@ void AddressComponent::RegisterSynthesizedSubcomponent(
     AddressComponent* synthesized_component) {
   synthesized_component->SetParent(this);
   synthesized_subcomponents_.push_back(synthesized_component);
-}
-
-const std::vector<AddressToken> AddressComponent::GetSortedTokens() const {
-  return TokenizeValue(GetValue());
 }
 
 bool AddressComponent::IsMergeableWithComponent(
@@ -1394,31 +1387,6 @@ bool AddressComponent::MergeTokenEquivalentComponent(
     }
   }
   return true;
-}
-
-void AddressComponent::ConsumeAdditionalToken(
-    const std::u16string& token_value) {
-  if (IsAtomic()) {
-    if (GetValue().empty()) {
-      SetValue(token_value, VerificationStatus::kParsed);
-    } else {
-      SetValue(base::StrCat({GetValue(), u" ", token_value}),
-               VerificationStatus::kParsed);
-    }
-    return;
-  }
-
-  // Try the first free subcomponent.
-  for (AddressComponent* subcomponent : subcomponents_) {
-    if (subcomponent->GetValue().empty()) {
-      subcomponent->SetValue(token_value, VerificationStatus::kParsed);
-      return;
-    }
-  }
-
-  // Otherwise append the value to the first component.
-  subcomponents_[0]->SetValue(base::StrCat({GetValue(), u" ", token_value}),
-                              VerificationStatus::kParsed);
 }
 
 int AddressComponent::GetStructureVerificationScore() const {

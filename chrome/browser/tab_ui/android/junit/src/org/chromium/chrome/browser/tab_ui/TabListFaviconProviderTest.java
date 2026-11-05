@@ -35,7 +35,6 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.ContextUtils;
@@ -60,7 +59,6 @@ import org.chromium.url.JUnitTestGURLs;
 
 /** Unit tests for {@link TabListFaviconProvider}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabListFaviconProviderTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -97,7 +95,7 @@ public class TabListFaviconProviderTest {
         when(mProfile.getPrimaryOtrProfile(anyBoolean())).thenReturn(mOtrProfile);
         when(mFaviconHelperJniMock.init()).thenReturn(1L);
         FaviconHelperJni.setInstanceForTesting(mFaviconHelperJniMock);
-        mActivity = Robolectric.setupActivity(Activity.class);
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
 
         mUrl1 = JUnitTestGURLs.URL_1;
@@ -211,7 +209,7 @@ public class TabListFaviconProviderTest {
                                                     eq(mProfile),
                                                     eq(mUrl1),
                                                     anyInt(),
-                                                    anyBoolean(),
+                                                    eq(false),
                                                     mFaviconImageCallbackCaptor.capture());
                                     verify(mMockFaviconHelper, never())
                                             .getLocalFaviconImageForURL(
@@ -245,7 +243,7 @@ public class TabListFaviconProviderTest {
                                                     eq(mOtrProfile),
                                                     eq(mUrl1),
                                                     anyInt(),
-                                                    anyBoolean(),
+                                                    eq(false),
                                                     mFaviconImageCallbackCaptor.capture());
                                     mFaviconImageCallbackCaptor
                                             .getValue()
@@ -274,7 +272,7 @@ public class TabListFaviconProviderTest {
                                                     eq(mProfile),
                                                     eq(mUrl1),
                                                     anyInt(),
-                                                    anyBoolean(),
+                                                    eq(false),
                                                     mFaviconImageCallbackCaptor.capture());
                                     mFaviconImageCallbackCaptor
                                             .getValue()

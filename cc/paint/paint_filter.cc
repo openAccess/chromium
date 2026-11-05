@@ -39,6 +39,7 @@
 namespace cc {
 namespace {
 const bool kHasNoDiscardableImages = false;
+const bool kHasNoReadBackDisallowedContent = false;
 
 template <typename T>
 bool AreValuesEqualForTesting(const sk_sp<T>& a, const sk_sp<T>& b) {
@@ -66,6 +67,20 @@ bool HasDiscardableImages(base::span<const sk_sp<PaintFilter>> filters) {
   return false;
 }
 
+bool HasReadBackDisallowedContent(const sk_sp<PaintFilter>& filter) {
+  return filter && filter->has_read_back_disallowed_content();
+}
+
+bool HasReadBackDisallowedContent(
+    base::span<const sk_sp<PaintFilter>> filters) {
+  for (auto& filter : filters) {
+    if (filter && filter->has_read_back_disallowed_content()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 sk_sp<PaintFilter> Snapshot(const sk_sp<PaintFilter>& filter,
                             ImageProvider* image_provider) {
   if (!filter)
@@ -77,8 +92,11 @@ sk_sp<PaintFilter> Snapshot(const sk_sp<PaintFilter>& filter,
 
 PaintFilter::PaintFilter(Type type,
                          const CropRect* crop_rect,
-                         bool has_discardable_images)
-    : type_(type), has_discardable_images_(has_discardable_images) {
+                         bool has_discardable_images,
+                         bool has_read_back_disallowed_content)
+    : type_(type),
+      has_discardable_images_(has_discardable_images),
+      has_read_back_disallowed_content_(has_read_back_disallowed_content) {
   if (crop_rect)
     crop_rect_.emplace(*crop_rect);
 }
@@ -250,14 +268,19 @@ std::vector<sk_sp<SkImageFilter>> PaintFilter::ToSkImageFilters(
 OneInputPaintFilter::OneInputPaintFilter(Type type,
                                          sk_sp<PaintFilter> input,
                                          const CropRect* crop_rect)
-    : PaintFilter(type, crop_rect, HasDiscardableImages(input)),
+    : PaintFilter(type,
+                  crop_rect,
+                  HasDiscardableImages(input),
+                  HasReadBackDisallowedContent(input)),
       input_(std::move(input)) {}
 
 OneInputPaintFilter::~OneInputPaintFilter() = default;
 
-gfx::ContentColorUsage OneInputPaintFilter::GetContentColorUsage() const {
-  return has_discardable_images() ? input_->GetContentColorUsage()
-                                  : gfx::ContentColorUsage::kSRGB;
+void OneInputPaintFilter::UnionColorVolumeInto(
+    gfx::ContentColorVolume& color_volume) const {
+  if (input_) {
+    input_->UnionColorVolumeInto(color_volume);
+  }
 }
 
 base::CheckedNumeric<size_t> OneInputPaintFilter::BaseSerializedSize() const {
@@ -276,22 +299,22 @@ TwoInputPaintFilter::TwoInputPaintFilter(Type type,
                                          const CropRect* crop_rect)
     : PaintFilter(type,
                   crop_rect,
-                  HasDiscardableImages(first) || HasDiscardableImages(second)),
+                  HasDiscardableImages(first) || HasDiscardableImages(second),
+                  HasReadBackDisallowedContent(first) ||
+                      HasReadBackDisallowedContent(second)),
       first_(std::move(first)),
       second_(std::move(second)) {}
 
 TwoInputPaintFilter::~TwoInputPaintFilter() = default;
 
-gfx::ContentColorUsage TwoInputPaintFilter::GetContentColorUsage() const {
-  if (!has_discardable_images()) {
-    return gfx::ContentColorUsage::kSRGB;
+void TwoInputPaintFilter::UnionColorVolumeInto(
+    gfx::ContentColorVolume& color_volume) const {
+  if (first_) {
+    first_->UnionColorVolumeInto(color_volume);
   }
-  gfx::ContentColorUsage result =
-      first_ ? first_->GetContentColorUsage() : gfx::ContentColorUsage::kSRGB;
-  if (second_ && result != gfx::ContentColorUsage::kMaxValue) {
-    result = std::max(result, second_->GetContentColorUsage());
+  if (second_) {
+    second_->UnionColorVolumeInto(color_volume);
   }
-  return result;
 }
 
 base::CheckedNumeric<size_t> TwoInputPaintFilter::BaseSerializedSize() const {
@@ -754,7 +777,10 @@ ImagePaintFilter::ImagePaintFilter(PaintImage image,
                                    const SkRect& src_rect,
                                    const SkRect& dst_rect,
                                    PaintFlags::FilterQuality filter_quality)
-    : PaintFilter(kType, nullptr, !image.IsTextureBacked()),
+    : PaintFilter(kType,
+                  nullptr,
+                  !image.IsTextureBacked(),
+                  image.is_read_back_disallowed()),
       image_(std::move(image)),
       src_rect_(src_rect),
       dst_rect_(dst_rect),
@@ -772,8 +798,9 @@ ImagePaintFilter::ImagePaintFilter(PaintImage image,
 
 ImagePaintFilter::~ImagePaintFilter() = default;
 
-gfx::ContentColorUsage ImagePaintFilter::GetContentColorUsage() const {
-  return image_.GetContentColorUsage();
+void ImagePaintFilter::UnionColorVolumeInto(
+    gfx::ContentColorVolume& color_volume) const {
+  image_.UnionColorVolumeInto(color_volume);
 }
 
 size_t ImagePaintFilter::SerializedSize() const {
@@ -800,6 +827,7 @@ sk_sp<PaintFilter> ImagePaintFilter::SnapshotWithImagesInternal(
       PaintImageBuilder::WithDefault()
           .set_id(image_.stable_id())
           .set_texture_image(decoded_sk_image, PaintImage::GetNextContentId())
+          .set_is_read_back_disallowed(image_.is_read_back_disallowed())
           .TakePaintImage();
 
   return sk_make_sp<ImagePaintFilter>(std::move(decoded_paint_image), src_rect_,
@@ -827,7 +855,10 @@ RecordPaintFilter::RecordPaintFilter(PaintRecord record,
                                      const gfx::SizeF& raster_scale,
                                      ScalingBehavior scaling_behavior,
                                      ImageProvider* image_provider)
-    : PaintFilter(kType, nullptr, record.has_discardable_images()),
+    : PaintFilter(kType,
+                  nullptr,
+                  record.has_discardable_images(),
+                  record.has_read_back_disallowed_content()),
       record_(std::move(record)),
       record_bounds_(record_bounds),
       raster_scale_(raster_scale),
@@ -872,8 +903,9 @@ RecordPaintFilter::RecordPaintFilter(PaintRecord record,
 
 RecordPaintFilter::~RecordPaintFilter() = default;
 
-gfx::ContentColorUsage RecordPaintFilter::GetContentColorUsage() const {
-  return record_.content_color_usage();
+void RecordPaintFilter::UnionColorVolumeInto(
+    gfx::ContentColorVolume& color_volume) const {
+  color_volume.UnionWith(record_.content_color_volume());
 }
 
 sk_sp<RecordPaintFilter> RecordPaintFilter::CreateScaledPaintRecord(
@@ -932,7 +964,10 @@ MergePaintFilter::MergePaintFilter(base::span<const sk_sp<PaintFilter>> filters,
 MergePaintFilter::MergePaintFilter(base::span<const sk_sp<PaintFilter>> filters,
                                    const CropRect* crop_rect,
                                    ImageProvider* image_provider)
-    : PaintFilter(kType, crop_rect, HasDiscardableImages(filters)) {
+    : PaintFilter(kType,
+                  crop_rect,
+                  HasDiscardableImages(filters),
+                  HasReadBackDisallowedContent(filters)) {
   std::vector<sk_sp<SkImageFilter>> sk_filters;
   sk_filters.reserve(filters.size());
 
@@ -950,20 +985,13 @@ MergePaintFilter::MergePaintFilter(base::span<const sk_sp<PaintFilter>> filters,
 
 MergePaintFilter::~MergePaintFilter() = default;
 
-gfx::ContentColorUsage MergePaintFilter::GetContentColorUsage() const {
-  gfx::ContentColorUsage result = gfx::ContentColorUsage::kSRGB;
-  if (!has_discardable_images()) {
-    return result;
-  }
+void MergePaintFilter::UnionColorVolumeInto(
+    gfx::ContentColorVolume& color_volume) const {
   for (const auto& input : inputs_) {
     if (input) {
-      result = std::max(result, input->GetContentColorUsage());
-      if (result == gfx::ContentColorUsage::kMaxValue) {
-        break;
-      }
+      input->UnionColorVolumeInto(color_volume);
     }
   }
-  return result;
 }
 
 size_t MergePaintFilter::SerializedSize() const {
@@ -1099,7 +1127,10 @@ TurbulencePaintFilter::TurbulencePaintFilter(TurbulenceType turbulence_type,
                                              SkScalar seed,
                                              const SkISize* tile_size,
                                              const CropRect* crop_rect)
-    : PaintFilter(kType, crop_rect, kHasNoDiscardableImages),
+    : PaintFilter(kType,
+                  crop_rect,
+                  kHasNoDiscardableImages,
+                  kHasNoReadBackDisallowedContent),
       turbulence_type_(turbulence_type),
       base_frequency_x_(base_frequency_x),
       base_frequency_y_(base_frequency_y),
@@ -1122,10 +1153,6 @@ TurbulencePaintFilter::TurbulencePaintFilter(TurbulenceType turbulence_type,
 }
 
 TurbulencePaintFilter::~TurbulencePaintFilter() = default;
-
-gfx::ContentColorUsage TurbulencePaintFilter::GetContentColorUsage() const {
-  return gfx::ContentColorUsage::kSRGB;
-}
 
 size_t TurbulencePaintFilter::SerializedSize() const {
   return (BaseSerializedSize() +
@@ -1159,10 +1186,10 @@ ShaderPaintFilter::ShaderPaintFilter(sk_sp<PaintShader> shader,
                                      PaintFlags::FilterQuality filter_quality,
                                      SkImageFilters::Dither dither,
                                      const CropRect* crop_rect)
-    : PaintFilter(
-          kType,
-          crop_rect,
-          shader->HasDiscardableImages(/*content_color_usage=*/nullptr)),
+    : PaintFilter(kType,
+                  crop_rect,
+                  shader->HasDiscardableImages(),
+                  shader->HasReadBackDisallowedContent()),
       shader_(std::move(shader)),
       alpha_(alpha),
       filter_quality_(filter_quality),
@@ -1184,12 +1211,11 @@ ShaderPaintFilter::ShaderPaintFilter(sk_sp<PaintShader> shader,
 
 ShaderPaintFilter::~ShaderPaintFilter() = default;
 
-gfx::ContentColorUsage ShaderPaintFilter::GetContentColorUsage() const {
-  gfx::ContentColorUsage result = gfx::ContentColorUsage::kSRGB;
-  if (has_discardable_images()) {
-    shader_->HasDiscardableImages(&result);
+void ShaderPaintFilter::UnionColorVolumeInto(
+    gfx::ContentColorVolume& color_volume) const {
+  if (shader_) {
+    shader_->UnionColorVolumeInto(color_volume);
   }
-  return result;
 }
 
 size_t ShaderPaintFilter::SerializedSize() const {

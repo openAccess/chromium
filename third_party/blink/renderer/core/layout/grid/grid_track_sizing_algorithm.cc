@@ -265,7 +265,21 @@ GridTrackSizingAlgorithm::ComputeFirstSetGeometry(
       break;
   }
 
-  switch (content_alignment.GetPosition()) {
+  // For grid-lanes containers with 'track-reverse', the grid axis fills from
+  // the last line, so 'flow-start'/'flow-end' swap with their usual 'start'/
+  // 'end' offsets.  We only check for `track-reverse` here because we only work
+  // with grid-axis content alignment here.
+  ContentPosition position = content_alignment.GetUsedPosition();
+  if (container_style.IsDisplayGridLanes() &&
+      container_style.IsReverseGridLanesTrackDirection()) {
+    if (position == ContentPosition::kFlowStart) {
+      position = ContentPosition::kEnd;
+    } else if (position == ContentPosition::kFlowEnd) {
+      position = ContentPosition::kStart;
+    }
+  }
+
+  switch (position) {
     case ContentPosition::kLeft: {
       DCHECK(is_for_columns);
       if (IsLtr(container_style.Direction())) {
@@ -289,16 +303,19 @@ GridTrackSizingAlgorithm::ComputeFirstSetGeometry(
       return geometry;
     }
     case ContentPosition::kEnd:
-    case ContentPosition::kFlexEnd: {
+    case ContentPosition::kFlowEnd: {
       geometry.start_offset += FreeSpace();
       return geometry;
     }
     case ContentPosition::kStart:
-    case ContentPosition::kFlexStart:
+    case ContentPosition::kFlowStart:
     case ContentPosition::kNormal:
     case ContentPosition::kBaseline:
     case ContentPosition::kLastBaseline:
       return geometry;
+    case ContentPosition::kFlexStart:
+    case ContentPosition::kFlexEnd:
+      NOTREACHED();
   }
 }
 
@@ -1063,7 +1080,7 @@ void GridTrackSizingAlgorithm::StretchAutoTracks(
   // (or default) content distribution in the respective axis.
   if (content_alignment.Distribution() != ContentDistributionType::kStretch &&
       (content_alignment.Distribution() != ContentDistributionType::kDefault ||
-       content_alignment.GetPosition() != ContentPosition::kNormal)) {
+       content_alignment.GetComputedPosition() != ContentPosition::kNormal)) {
     return;
   }
 

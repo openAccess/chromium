@@ -45,6 +45,7 @@
 #include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/common/extensions/extension_test_util.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
@@ -81,6 +82,7 @@
 #include "extensions/browser/unpacked_installer.h"
 #include "extensions/browser/updater/extension_cache_fake.h"
 #include "extensions/browser/updater/extension_downloader_test_helper.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/feature_switch.h"
 #include "extensions/common/features/feature_channel.h"
@@ -424,7 +426,6 @@ IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest,
   extensions::ComponentLoader::EnableBackgroundExtensionsForTesting();
   auto* loader = extensions::ComponentLoader::Get(browser()->GetProfile());
   loader->AddDefaultComponentExtensions(false);
-  base::RunLoop().RunUntilIdle();
 
   extensions::ExtensionRegistry* registry = extension_registry();
   ASSERT_TRUE(
@@ -555,6 +556,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest, ExtensionInstallBlocklistWildcard) {
 IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest,
                        ExtensionInstallBlocklistSharedModules) {
   // Verifies that shared_modules are not affected by the blocklist.
+  auto disable_publisher_key =
+      extensions::DisablePublisherKeyVerificationForTests();
 
   base::FilePath base_path;
   GetTestDataDirectory(&base_path);
@@ -1870,6 +1873,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest,
                        ExtensionInstallForcelist_DefaultedUpdateUrl) {
   // Verifies the ExtensionInstallForcelist policy with an empty (defaulted)
   // "update" URL.
+  auto disable_publisher_key =
+      extensions::DisablePublisherKeyVerificationForTests();
 
   ExtensionRequestInterceptor interceptor;
 

@@ -181,7 +181,7 @@ void ChromeJsErrorReportProcessor::OnConsentCheckCompleted(
     base::TimeDelta browser_process_uptime,
     base::Time report_time,
     std::optional<JavaScriptErrorReport> error_report) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!error_report) {
     // User didn't consent. This isn't an error so don't log an error.
     return;
@@ -189,11 +189,11 @@ void ChromeJsErrorReportProcessor::OnConsentCheckCompleted(
 
   const crash_reporter::ProductInfo product_info = GetProductInfo();
   const GURL source(error_report->url);
-  const std::string product_name = error_report->product.empty()
-                                       ? product_info.product_name
-                                       : error_report->product;
+  const std::string product_name =
+      error_report->product.empty() ? std::string(product_info.product_name())
+                                    : error_report->product;
   const std::string version = error_report->version.empty()
-                                  ? product_info.version
+                                  ? std::string(product_info.version())
                                   : error_report->version;
 
   ParameterMap params;
@@ -203,8 +203,8 @@ void ChromeJsErrorReportProcessor::OnConsentCheckCompleted(
   params["type"] = "JavascriptError";
   params["error_message"] = TruncateErrorMessage(error_report->message);
   params["browser"] = "Chrome";
-  params["browser_version"] = product_info.version;
-  params["channel"] = product_info.channel;
+  params["browser_version"] = std::string(product_info.version());
+  params["channel"] = std::string(product_info.channel());
 #if BUILDFLAG(IS_CHROMEOS)
   // base::SysInfo::OperatingSystemName() returns "Linux" on ChromeOS devices.
   params["os"] = "ChromeOS";
@@ -347,7 +347,7 @@ void ChromeJsErrorReportProcessor::SendErrorReport(
     JavaScriptErrorReport error_report,
     base::OnceClosure completion_callback,
     content::BrowserContext* browser_context) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // In theory, we should wait until the after the consent check to update the
   // sent map. However, that would mean we do a bunch of extra work on each

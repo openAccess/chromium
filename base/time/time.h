@@ -812,8 +812,23 @@ class BASE_EXPORT Time : public time_internal::TimeBase<Time> {
 
   // The following two functions round down the time to the nearest day in
   // either UTC or local time. It will represent midnight on that day.
+  //
+  // NOTE: Do not add `base::Days(N)` directly to `LocalMidnight()` to compute
+  // midnight on another local calendar day, as Daylight Saving Time transitions
+  // make some local days 23 or 25 hours long. Use `NextLocalMidnight()` or
+  // `LocalMidnightWithOffset()` instead.
   Time UTCMidnight() const { return Midnight(false); }
   Time LocalMidnight() const { return Midnight(true); }
+
+  // Returns local midnight on the calendar day `day_offset` days from the
+  // local calendar day of this Time (e.g., `day_offset = 1` returns midnight at
+  // the start of the next local day; `day_offset = -1` returns midnight at the
+  // start of the previous local day). Accounts for Daylight Saving Time
+  // transitions where a local calendar day may not be 24 hours long.
+  // Note: This is a precise "days" offset; e.g. "+365" does *not* guarantee
+  // "next year" (due to leap years), etc.
+  Time LocalMidnightWithOffset(int day_offset) const;
+  Time NextLocalMidnight() const { return LocalMidnightWithOffset(1); }
 
   // For legacy deserialization only. Converts an integer value representing
   // Time to a class. This may be used when deserializing a |Time| structure,
@@ -1326,6 +1341,10 @@ BASE_EXPORT std::ostream& operator<<(std::ostream& os, TimeTicks time_ticks);
 // Behaves similarly to `TimeTicks` (a monotonically non-decreasing clock time)
 // with the main difference being that `LiveTicks` is guaranteed not to advance
 // while the system is suspended.
+//
+// TODO(crbug.com/567134137): Fully define "while the system is suspended",
+// e.g. how LiveTicks behaves in intermediate low-power modes like Windows
+// "Modern Standby".
 class BASE_EXPORT LiveTicks : public time_internal::TimeBase<LiveTicks> {
  public:
   constexpr LiveTicks() : TimeBase(0) {}
@@ -1341,6 +1360,51 @@ class BASE_EXPORT LiveTicks : public time_internal::TimeBase<LiveTicks> {
 
 // For logging use only.
 BASE_EXPORT std::ostream& operator<<(std::ostream& os, LiveTicks live_ticks);
+
+namespace time_internal {
+
+// RealTicks ------------------------------------------------------------------
+
+// Behaves similarly to `TimeTicks` (a monotonically non-decreasing clock time)
+// with the main difference being that `RealTicks` always returns clock ticks
+// since the system booted, continuing to advance while the system is suspended.
+//
+// IMPORTANT: `RealTicks` is GUARANTEED to advance in lockstep with `LiveTicks`
+// as long as the system is awake (not suspended). On all platforms, both clocks
+// are derived from the exact same underlying time source with an identical
+// ticking rate; they never drift relative to each other while awake, differing
+// solely by an offset representing cumulative time spent in system suspension.
+//
+// This is internal to base (e.g. for `ElapsedNoSleepTimer`).
+class BASE_EXPORT RealTicks : public TimeBase<RealTicks> {
+ public:
+  constexpr RealTicks() : TimeBase(0) {}
+  static RealTicks Now();
+
+ private:
+  friend class TimeBase<RealTicks>;
+
+  // Please use Now() to create a new object. This is for internal use
+  // and testing.
+  constexpr explicit RealTicks(int64_t us) : TimeBase(us) {}
+};
+
+// For logging use only.
+BASE_EXPORT std::ostream& operator<<(std::ostream& os, RealTicks real_ticks);
+
+struct BASE_EXPORT LiveAndRealTicks {
+  LiveTicks live;
+  RealTicks real;
+  // Upper bound on sampling error resulting from non-atomic clock reads and
+  // independent microsecond truncation.
+  TimeDelta max_error;
+};
+
+// Reads LiveTicks and RealTicks, making a best effort to be atomic without
+// locking.
+BASE_EXPORT LiveAndRealTicks SampleLiveAndRealTicks();
+
+}  // namespace time_internal
 
 // ThreadTicks ----------------------------------------------------------------
 

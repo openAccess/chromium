@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_LENS_OVERLAY_BASE_CONTROLLER_H_
 
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/views/controls/webview/web_contents_delegate_views.h"
 #include "ui/views/view.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/widget/widget.h"
@@ -43,12 +45,13 @@ class PrefService;
 // Manages all state associated with the overlay.
 // This class is not thread safe. It should only be used from the browser
 // thread.
-class OverlayBaseController : public content::WebContentsDelegate,
-                              public views::ViewObserver,
-                              public views::WidgetObserver,
-                              public content::RenderProcessHostObserver,
-                              public ImmersiveModeController::Observer,
-                              public content::WebContentsObserver {
+class OverlayBaseController
+    : public views::WebContentsDelegateViews<OverlayBaseController>,
+      public views::ViewObserver,
+      public views::WidgetObserver,
+      public content::RenderProcessHostObserver,
+      public ImmersiveModeController::Observer,
+      public content::WebContentsObserver {
  public:
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kOverlayId);
 
@@ -179,7 +182,25 @@ class OverlayBaseController : public content::WebContentsDelegate,
   // exist.
   void SetOverlayWebViewOpacity(float opacity);
 
+  // Wraps `contents` in the overlay WebView.
+  std::unique_ptr<views::WebView> CreateOverlayWebView(
+      std::unique_ptr<content::WebContents> contents);
+
  protected:
+  // Creates the overlay WebContents and starts loading the WebUI.
+  std::unique_ptr<content::WebContents> CreateOverlayWebContents();
+
+  // Returns the subclass's prewarmed overlay WebContents, if it has one whose
+  // renderer has not crashed; otherwise nullptr. The overlay shows it in place
+  // of a newly created one.
+  virtual std::unique_ptr<content::WebContents>
+  TakePrewarmedOverlayWebContents();
+
+  // Shows the overlay and moves to `State::kStartingWebUI` if the screenshot is
+  // still being captured. Called once the screenshot is ready, or earlier by a
+  // subclass whose prewarmed WebUI can bind in parallel with the capture.
+  void MaybeStartOverlayWebUI();
+
   // Whether the side panel is showing.
   virtual bool IsResultsSidePanelShowing() = 0;
 
@@ -336,8 +357,10 @@ class OverlayBaseController : public content::WebContentsDelegate,
   void ShowOverlay();
 
   // Hides the overlay view and restores input to the tab contents web view.
-  // This does not change any overlay state.
-  void HideOverlay();
+  // This does not change any overlay state. `entering_background` is true when
+  // the overlay is only being hidden because its tab is entering the
+  // background, in which case it is re-shown when the tab is foregrounded.
+  virtual void HideOverlay(bool entering_background);
 
   // Hides the overlay, but also sets the state to kHidden.
   void HideOverlayAndSetHiddenState();
@@ -357,6 +380,9 @@ class OverlayBaseController : public content::WebContentsDelegate,
 
   // Close the preselection bubble.
   void ClosePreselectionBubbleImpl();
+
+  // Returns the web view hosting the overlay WebUI if it exists.
+  views::WebView* GetOverlayWebView() const;
 
   // Returns the host view that the overlay should be attached to. Can be null.
   views::View* GetHostView() const;

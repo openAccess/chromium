@@ -40,6 +40,7 @@ class DownloadStatusUpdater;
 class GlobalFeatures;
 class GpuModeManager;
 class IconManager;
+class IntranetRedirectDetector;
 class MediaFileSystemRegistry;
 class NotificationPlatformBridge;
 class NotificationUIManager;
@@ -54,7 +55,6 @@ class WebRtcLogUploader;
 #if !BUILDFLAG(IS_ANDROID)
 class HidSystemTrayIcon;
 class UsbSystemTrayIcon;
-class IntranetRedirectDetector;
 #endif
 
 namespace embedder_support {
@@ -88,9 +88,11 @@ namespace variations {
 class VariationsService;
 }
 
+#if !BUILDFLAG(IS_CHROMEOS)
 namespace activity_reporter {
 class ActivityReporter;
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 namespace component_updater {
 class ComponentUpdateService;
@@ -164,8 +166,8 @@ class BrowserProcess {
   // shutdown.
   virtual void EndSession() = 0;
 
-  // Gets the manager for the various metrics-related services, constructing it
-  // if necessary.
+  // Gets the manager for the various metrics-related services. May return null
+  // during shutdown.
   virtual metrics_services_manager::MetricsServicesManager*
   GetMetricsServicesManager() = 0;
 
@@ -232,9 +234,7 @@ class BrowserProcess {
   virtual supervised_user::DeviceParentalControls&
   device_parental_controls() = 0;
 
-#if !BUILDFLAG(IS_ANDROID)
   virtual IntranetRedirectDetector* intranet_redirect_detector() = 0;
-#endif
 
   // Sets or gets the locale used by the application. It is the IETF language
   // tag, defined in BCP 47. The region subtag is not included when it adds no
@@ -291,7 +291,10 @@ class BrowserProcess {
   virtual void StartAutoupdateTimer() = 0;
 #endif
 
+#if !BUILDFLAG(IS_CHROMEOS)
+  // Activity reporting is never built into ChromeOS.
   virtual activity_reporter::ActivityReporter* activity_reporter() = 0;
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
   virtual component_updater::ComponentUpdateService* component_updater() = 0;
 

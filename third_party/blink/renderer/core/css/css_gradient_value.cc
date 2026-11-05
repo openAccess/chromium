@@ -31,6 +31,7 @@
 
 #include "base/memory/values_equivalent.h"
 #include "base/notreached.h"
+#include "base/numerics/angle_conversions.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
 #include "third_party/blink/renderer/core/css/css_alpha_color_value.h"
 #include "third_party/blink/renderer/core/css/css_color.h"
@@ -399,10 +400,12 @@ static Color ResolveStopColor(const CSSToLengthConversionData& conversion_data,
   const ResolveColorValueContext context{
       .length_resolver = conversion_data,
       .text_link_colors = document.GetTextLinkColors(),
-      .used_color_scheme = color_scheme,
-      .color_provider = document.GetColorProviderForPainting(color_scheme),
-      .can_expose_accent_color =
-          document.IsInWebAppScope() && document.IsInitialProfile()};
+      .theme_info = {
+          .color_provider = document.GetColorProviderForPainting(color_scheme),
+          .color_scheme = color_scheme,
+          .accent_color = style.ResolveMirroredAccentColor(),
+          .can_expose_system_accent_color =
+              document.IsInWebAppScope() && document.IsInitialProfile()}};
   const StyleColor style_stop_color = ResolveColorValue(stop_color, context);
   return style_stop_color.Resolve(
       style.VisitedDependentColor(GetCSSPropertyColor()), color_scheme);
@@ -455,7 +458,7 @@ static const CSSValue* GetComputedStopColor(const CSSValue& color,
   const ResolveColorValueContext context{
       .length_resolver = CSSToLengthConversionData(/*element=*/nullptr),
       .text_link_colors = TextLinkColors(),
-      .used_color_scheme = color_scheme};
+      .theme_info = {.color_scheme = color_scheme}};
   const StyleColor style_stop_color = ResolveColorValue(color, context);
   const Color current_color =
       style.VisitedDependentColor(GetCSSPropertyColor());
@@ -1321,7 +1324,7 @@ static void EndPointsFromAngle(float angle_deg,
 
   // angleDeg is a "bearing angle" (0deg = N, 90deg = E),
   // but tan expects 0deg = E, 90deg = N.
-  float slope = tan(Deg2rad(90 - angle_deg));
+  float slope = tan(base::DegToRad(90 - angle_deg));
 
   // We find the endpoint by computing the intersection of the line formed by
   // the slope, and a line perpendicular to it that intersects the corner.
@@ -1425,7 +1428,7 @@ std::unique_ptr<Gradient> CSSLinearGradientValue::CreateGradient(
             rise *= -1;
           }
           // Compute angle, and flip it back to "bearing angle" degrees.
-          float angle = 90 - Rad2deg(atan2(rise, run));
+          float angle = 90 - base::RadToDeg(atan2(rise, run));
           EndPointsFromAngle(angle, size, first_point, second_point,
                              gradient_type_);
         } else if (first_x_ || first_y_) {
@@ -1614,27 +1617,29 @@ static bool IsUsingCurrentColor(
   return false;
 }
 
-static bool IsUsingContainerRelativeUnits(const CSSValue* value) {
-  const auto* primitive_value = DynamicTo<CSSPrimitiveValue>(value);
-  return primitive_value && primitive_value->HasContainerRelativeUnits();
+static void AccumulateLengthUnitTypes(
+    const CSSValue* value,
+    CSSPrimitiveValue::LengthTypeFlags& types) {
+  if (const auto* primitive_value = DynamicTo<CSSPrimitiveValue>(value)) {
+    primitive_value->AccumulateLengthUnitTypes(types);
+  }
 }
 
-static bool IsUsingContainerRelativeUnits(
-    const HeapVector<CSSGradientColorStop, 2>& stops) {
+static void AccumulateLengthUnitTypes(
+    const HeapVector<CSSGradientColorStop, 2>& stops,
+    CSSPrimitiveValue::LengthTypeFlags& types) {
   for (const CSSGradientColorStop& stop : stops) {
-    if (IsUsingContainerRelativeUnits(stop.offset_.Get())) {
-      return true;
-    }
+    AccumulateLengthUnitTypes(stop.offset_.Get(), types);
   }
-  return false;
 }
 
 bool CSSLinearGradientValue::IsUsingCurrentColor() const {
   return blink::cssvalue::IsUsingCurrentColor(stops_);
 }
 
-bool CSSLinearGradientValue::IsUsingContainerRelativeUnits() const {
-  return blink::cssvalue::IsUsingContainerRelativeUnits(stops_);
+void CSSLinearGradientValue::AccumulateLengthUnitTypes(
+    CSSPrimitiveValue::LengthTypeFlags& types) const {
+  blink::cssvalue::AccumulateLengthUnitTypes(stops_, types);
 }
 
 void CSSLinearGradientValue::TraceAfterDispatch(blink::Visitor* visitor) const {
@@ -2167,12 +2172,13 @@ bool CSSRadialGradientValue::IsUsingCurrentColor() const {
   return blink::cssvalue::IsUsingCurrentColor(stops_);
 }
 
-bool CSSRadialGradientValue::IsUsingContainerRelativeUnits() const {
-  return blink::cssvalue::IsUsingContainerRelativeUnits(stops_) ||
-         blink::cssvalue::IsUsingContainerRelativeUnits(first_x_) ||
-         blink::cssvalue::IsUsingContainerRelativeUnits(first_y_) ||
-         blink::cssvalue::IsUsingContainerRelativeUnits(end_horizontal_size_) ||
-         blink::cssvalue::IsUsingContainerRelativeUnits(end_vertical_size_);
+void CSSRadialGradientValue::AccumulateLengthUnitTypes(
+    CSSPrimitiveValue::LengthTypeFlags& types) const {
+  blink::cssvalue::AccumulateLengthUnitTypes(stops_, types);
+  blink::cssvalue::AccumulateLengthUnitTypes(first_x_, types);
+  blink::cssvalue::AccumulateLengthUnitTypes(first_y_, types);
+  blink::cssvalue::AccumulateLengthUnitTypes(end_horizontal_size_, types);
+  blink::cssvalue::AccumulateLengthUnitTypes(end_vertical_size_, types);
 }
 
 void CSSRadialGradientValue::TraceAfterDispatch(blink::Visitor* visitor) const {
@@ -2352,10 +2358,11 @@ bool CSSConicGradientValue::IsUsingCurrentColor() const {
   return blink::cssvalue::IsUsingCurrentColor(stops_);
 }
 
-bool CSSConicGradientValue::IsUsingContainerRelativeUnits() const {
-  return blink::cssvalue::IsUsingContainerRelativeUnits(stops_) ||
-         blink::cssvalue::IsUsingContainerRelativeUnits(x_.Get()) ||
-         blink::cssvalue::IsUsingContainerRelativeUnits(y_.Get());
+void CSSConicGradientValue::AccumulateLengthUnitTypes(
+    CSSPrimitiveValue::LengthTypeFlags& types) const {
+  blink::cssvalue::AccumulateLengthUnitTypes(stops_, types);
+  blink::cssvalue::AccumulateLengthUnitTypes(x_.Get(), types);
+  blink::cssvalue::AccumulateLengthUnitTypes(y_.Get(), types);
 }
 
 void CSSConicGradientValue::TraceAfterDispatch(blink::Visitor* visitor) const {

@@ -13,7 +13,9 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/android/gurl_android.h"
+#include "url/origin.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/ServiceTabLauncher_jni.h"
@@ -39,11 +41,11 @@ ServiceTabLauncher::~ServiceTabLauncher() = default;
 void ServiceTabLauncher::LaunchTab(content::BrowserContext* browser_context,
                                    const content::OpenURLParams& params,
                                    TabLaunchedCallback callback) {
-  WindowOpenDisposition disposition = params.disposition;
-  if (disposition != WindowOpenDisposition::NEW_WINDOW &&
-      disposition != WindowOpenDisposition::NEW_POPUP &&
-      disposition != WindowOpenDisposition::NEW_FOREGROUND_TAB &&
-      disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB) {
+  ui::mojom::WindowOpenDisposition disposition = params.disposition;
+  if (disposition != ui::mojom::WindowOpenDisposition::kNewWindow &&
+      disposition != ui::mojom::WindowOpenDisposition::kNewPopup &&
+      disposition != ui::mojom::WindowOpenDisposition::kNewForegroundTab &&
+      disposition != ui::mojom::WindowOpenDisposition::kNewBackgroundTab) {
     // ServiceTabLauncher can currently only launch new tabs.
     NOTIMPLEMENTED();
     return;
@@ -54,13 +56,13 @@ void ServiceTabLauncher::LaunchTab(content::BrowserContext* browser_context,
   // IDMap requires a pointer, so we move |callback| into a heap pointer.
   int request_id = tab_launched_callbacks_.Add(
       std::make_unique<TabLaunchedCallback>(std::move(callback)));
-  DCHECK_GE(request_id, 1);
+  CHECK_GE(request_id, 1, base::NotFatalUntil::M161);
 
   Java_ServiceTabLauncher_launchTab(
       env, request_id, browser_context->IsOffTheRecord(), params.url,
       static_cast<int32_t>(disposition), params.referrer.url.spec(),
       static_cast<int32_t>(params.referrer.policy), params.extra_headers,
-      nullptr);
+      nullptr, params.initiator_origin, params.is_renderer_initiated);
 }
 
 void ServiceTabLauncher::OnTabLaunched(int request_id,

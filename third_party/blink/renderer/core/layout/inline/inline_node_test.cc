@@ -118,7 +118,7 @@ class InlineNodeTest : public RenderingTest {
 
     return node
         .ComputeMinMaxSizes(node.Style().GetWritingMode(), space,
-                            MinMaxSizesFloatInput())
+                            MinMaxSizesInput::Unconstrained())
         .sizes;
   }
 
@@ -1322,14 +1322,14 @@ TEST_F(InlineNodeTest, ClearFirstInlineFragmentOnSplitFlow) {
   EXPECT_TRUE(after_layout);
 
   // Check it is the one owned by the new root inline formatting context.
-  LayoutBlock* inner_span_cb = inner_span->GetLayoutObject()->ContainingBlock();
+  LayoutBox* inner_span_box = inner_span->GetLayoutObject()->ContainingBox();
   LayoutObject* container = GetLayoutObjectByElementId("container");
-  EXPECT_EQ(inner_span_cb, container);
-  InlineCursor inner_span_cb_cursor(*To<LayoutBlockFlow>(inner_span_cb));
-  inner_span_cb_cursor.MoveToFirstLine();
-  inner_span_cb_cursor.MoveToFirstChild();
-  EXPECT_TRUE(inner_span_cb_cursor);
-  EXPECT_EQ(inner_span_cb_cursor.Current().GetLayoutObject(),
+  EXPECT_EQ(inner_span_box, container);
+  InlineCursor inner_span_box_cursor(*To<LayoutBlockFlow>(inner_span_box));
+  inner_span_box_cursor.MoveToFirstLine();
+  inner_span_box_cursor.MoveToFirstChild();
+  EXPECT_TRUE(inner_span_box_cursor);
+  EXPECT_EQ(inner_span_box_cursor.Current().GetLayoutObject(),
             outer_span->GetLayoutObject());
 }
 
@@ -1723,8 +1723,7 @@ TEST_F(InlineNodeTest, TextCombineWordSpacing) {
   SetBodyInnerHTML("<div id=t1>ab</div>");
   const auto& text =
       *To<Text>(GetElementById("t1")->firstChild())->GetLayoutObject();
-  const auto& font_description =
-      text.StyleRef().GetFont()->GetFontDescription();
+  const auto& font_description = text.Style().GetFont()->GetFontDescription();
 
   EXPECT_EQ(0, font_description.LetterSpacing());
   EXPECT_EQ(0, font_description.WordSpacing());

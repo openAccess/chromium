@@ -57,6 +57,7 @@
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/search/ntp_features.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
@@ -67,6 +68,8 @@
 #include "skia/ext/skia_utils_base.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image.h"
@@ -558,7 +561,8 @@ void WallpaperSearchHandler::OpenHelpArticle() {
                                  GURL(chrome::kWallpaperSearchLearnMorePageURL),
                                  ui::PAGE_TRANSITION_LINK);
   navigate_params.window_action = NavigateParams::WindowAction::kShowWindow;
-  navigate_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  navigate_params.disposition =
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   Navigate(&navigate_params);
 }
 

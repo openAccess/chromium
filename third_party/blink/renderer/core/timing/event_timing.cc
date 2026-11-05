@@ -22,6 +22,9 @@
 #include "third_party/blink/renderer/core/timing/soft_navigation_heuristics.h"
 
 namespace blink {
+
+BASE_FEATURE(kEventTimingUseTargetFrame, base::FEATURE_ENABLED_BY_DEFAULT);
+
 namespace {
 
 // Returns true when the type of the event is one of the standard input events
@@ -92,6 +95,19 @@ UIEventTiming::UIEventTiming(LocalFrame* frame, const Event& event) {
   }
 }
 
+UIEventTiming::UIEventTiming(LocalFrame* handling_frame,
+                             LocalFrame* target_frame,
+                             const Event& event)
+    : UIEventTiming(base::FeatureList::IsEnabled(kEventTimingUseTargetFrame)
+                        ? target_frame
+                        : handling_frame,
+                    event) {
+  if (PerformanceEventTiming* entry = GetEntry()) {
+    entry->GetEventTimingReportingInfo()->is_cross_frame_target =
+        handling_frame != target_frame;
+  }
+}
+
 NavigationEventTiming::NavigationEventTiming(LocalFrame* frame,
                                              const Event& event) {
   if (IsNavigationEventType(event)) {
@@ -155,5 +171,21 @@ EventTiming::~EventTiming() {
   }
 }
 
+base::TimeTicks EventQueuedTimestampScope::g_current_queued_time_;
+
+EventQueuedTimestampScope::EventQueuedTimestampScope(
+    base::TimeTicks queued_time)
+    : previous_queued_time_(g_current_queued_time_) {
+  g_current_queued_time_ = queued_time;
+}
+
+EventQueuedTimestampScope::~EventQueuedTimestampScope() {
+  g_current_queued_time_ = previous_queued_time_;
+}
+
+// static
+base::TimeTicks EventQueuedTimestampScope::CurrentQueuedTimestamp() {
+  return g_current_queued_time_;
+}
 
 }  // namespace blink

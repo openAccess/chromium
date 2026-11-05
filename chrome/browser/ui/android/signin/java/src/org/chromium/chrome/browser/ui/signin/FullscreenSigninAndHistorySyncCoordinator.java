@@ -22,6 +22,7 @@ import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.build.annotations.EnsuresNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManager;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
@@ -29,7 +30,7 @@ import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.signin.services.SigninMetricsUtils;
 import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninCoordinator;
-import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninMediator;
+import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninLoadPoint;
 import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninView;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncCoordinator;
@@ -38,10 +39,12 @@ import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncView;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler.BackPressResult;
+import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.metrics.AccountConsistencyPromoAction;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
+import org.chromium.components.signin.metrics.SigninFunnelEvent;
 import org.chromium.components.signin.metrics.SignoutReason;
 import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.base.WindowAndroid;
@@ -147,16 +150,7 @@ public final class FullscreenSigninAndHistorySyncCoordinator extends SigninAndHi
             advanceToNextPage();
             mDidShowSignin = false;
         } else {
-            mSigninCoordinator =
-                    new FullscreenSigninCoordinator(
-                            mActivity,
-                            mModalDialogManager,
-                            this,
-                            mPrivacyPreferencesManager,
-                            mConfig.signinConfig,
-                            mSigninAccessPoint);
-            mViewHolder.addView(getCurrentChildView());
-            mSigninCoordinator.setView((FullscreenSigninView) getCurrentChildView());
+            showChildView(ChildView.SIGNIN);
             // TODO(crbug.com/347657449): Record other AccountConsistencyPromoActions.
             SigninMetricsUtils.logAccountConsistencyPromoAction(
                     AccountConsistencyPromoAction.SHOWN, mSigninAccessPoint);
@@ -180,6 +174,12 @@ public final class FullscreenSigninAndHistorySyncCoordinator extends SigninAndHi
         if (mHistorySyncCoordinator != null) {
             mHistorySyncCoordinator.destroy();
             mHistorySyncCoordinator = null;
+        }
+
+        if (mConfig.shouldCallTrackerDismissed) {
+            Profile profile = assumeNonNull(mProfileSupplier.get()).getOriginalProfile();
+            TrackerFactory.getTrackerForProfile(profile)
+                    .dismissed(FeatureConstants.FULLSCREEN_SIGNIN_PROMO_FEATURE);
         }
     }
 
@@ -273,8 +273,11 @@ public final class FullscreenSigninAndHistorySyncCoordinator extends SigninAndHi
                 /* requireDeviceLockReauthentication= */ true,
                 mWindowAndroid,
                 (resultCode, data) -> {
-                    if (resultCode == Activity.RESULT_OK && mSigninCoordinator != null) {
+                    if (mSigninCoordinator == null) return;
+                    if (resultCode == Activity.RESULT_OK) {
                         mSigninCoordinator.continueSignIn();
+                    } else {
+                        mSigninCoordinator.onDeviceLockCanceled();
                     }
                 },
                 DeviceLockActivityLauncher.Source.FULLSCREEN_SIGNIN);
@@ -292,8 +295,7 @@ public final class FullscreenSigninAndHistorySyncCoordinator extends SigninAndHi
     }
 
     @Override
-    public void recordLoadCompletedHistograms(
-            @FullscreenSigninMediator.LoadPoint int slowestLoadPoint) {
+    public void recordLoadCompletedHistograms(@FullscreenSigninLoadPoint int slowestLoadPoint) {
         RecordHistogram.recordTimesHistogram(
                 "Signin.Timestamps.Android.Fullscreen.LoadCompleted",
                 SystemClock.elapsedRealtime() - mActivityStartTime);
@@ -304,6 +306,14 @@ public final class FullscreenSigninAndHistorySyncCoordinator extends SigninAndHi
         RecordHistogram.recordTimesHistogram(
                 "Signin.Timestamps.Android.Fullscreen.NativeInitialized",
                 SystemClock.elapsedRealtime() - mActivityStartTime);
+    }
+
+    /** Implements {@link FullscreenSigninCoordinator.Delegate} */
+    @Override
+    public void logPromoShownFunnelEventOnBackPress(
+            @SigninAccessPoint int accessPoint, @SigninFunnelEvent int event) {
+        // No-op: showChildView() recreates the sign-in coordinator on back press, and the new
+        // coordinator already logs the promo shown event once its initial load completes.
     }
 
     /** Implements {@link FullscreenSigninCoordinator.Delegate} */
@@ -331,6 +341,9 @@ public final class FullscreenSigninAndHistorySyncCoordinator extends SigninAndHi
     public boolean canUsePreferredAccount() {
         return true;
     }
+
+    // TODO(b/553341908): Implement FullscreenSigninCoordinator.Delegate#displayManagementNotice to
+    // show the enterprise signals disclaimer.
 
     @Override
     public OneshotSupplier<Boolean> getPolicyLoadListener() {
@@ -404,21 +417,8 @@ public final class FullscreenSigninAndHistorySyncCoordinator extends SigninAndHi
         mViewHolder.addView(getCurrentChildView());
         switch (child) {
             case ChildView.SIGNIN:
-                // Destroy any pre-existing sign-in coordinator (e.g. after a configuration
-                // change while already on the sign-in view) so its mediator can unregister its
-                // AccountManagerFacade observer and release the Activity context.
-                if (mSigninCoordinator != null) {
-                    mSigninCoordinator.destroy();
-                    mSigninCoordinator = null;
-                }
-                mSigninCoordinator =
-                        new FullscreenSigninCoordinator(
-                                mActivity,
-                                mModalDialogManager,
-                                this,
-                                mPrivacyPreferencesManager,
-                                mConfig.signinConfig,
-                                mSigninAccessPoint);
+                maybeCreateSigninCoordinator();
+                assumeNonNull(mSigninCoordinator);
                 mSigninCoordinator.setView((FullscreenSigninView) getCurrentChildView());
                 if (mHistorySyncCoordinator != null) {
                     mHistorySyncCoordinator.destroy();
@@ -446,6 +446,21 @@ public final class FullscreenSigninAndHistorySyncCoordinator extends SigninAndHi
             case ChildView.HISTORY_SYNC -> mHistorySyncView;
             default -> throw new IllegalStateException(mCurrentView + " view index doesn't exist");
         };
+    }
+
+    private void maybeCreateSigninCoordinator() {
+        if (mSigninCoordinator != null) {
+            return;
+        }
+
+        mSigninCoordinator =
+                new FullscreenSigninCoordinator(
+                        mActivity,
+                        mModalDialogManager,
+                        this,
+                        mPrivacyPreferencesManager,
+                        mConfig.signinConfig,
+                        mSigninAccessPoint);
     }
 
     private void maybeCreateHistorySyncCoordinator() {

@@ -8,16 +8,20 @@ import android.os.CancellationSignal;
 import android.webkit.CookieManager;
 import android.webkit.GeolocationPermissions;
 import android.webkit.ServiceWorkerController;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebStorage;
 
-import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 
 import java.lang.reflect.InvocationHandler;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executor;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 /** Boundary interface for Profile. */
 @NullMarked
@@ -45,6 +49,7 @@ public interface ProfileBoundaryInterface {
             /* SpeculativeLoadingParameters */ InvocationHandler speculativeLoadingParams,
             /* PrefetchOperationCallback */ InvocationHandler callback);
 
+    @Deprecated
     void clearPrefetch(
             String url,
             Executor callbackExecutor,
@@ -88,14 +93,13 @@ public interface ProfileBoundaryInterface {
     @Deprecated
     void setOriginMatchedHeader(String headerName, String headerValue, Set<String> originRules);
 
-    void addOriginMatchedHeader(
-            @NonNull String name, @NonNull String value, @NonNull Set<String> rules);
+    void addOriginMatchedHeader(String name, String value, Set<String> rules);
 
     boolean hasOriginMatchedHeader(String headerName);
 
-    @NonNull /* List<OriginMatchedBoundaryInterface> */
-            List<InvocationHandler> getOriginMatchedHeaders(
-                    @Nullable String headerName, @Nullable String headerValue);
+    /* List<OriginMatchedBoundaryInterface> */
+    List<InvocationHandler> getOriginMatchedHeaders(
+            @Nullable String headerName, @Nullable String headerValue);
 
     /**
      * @deprecated Can be removed along with {@link
@@ -104,9 +108,13 @@ public interface ProfileBoundaryInterface {
     @Deprecated
     void clearOriginMatchedHeader(String headerName);
 
-    void clearOriginMatchedHeader(@NonNull String headerName, @Nullable String headerValue);
+    void clearOriginMatchedHeader(String headerName, @Nullable String headerValue);
 
     void clearAllOriginMatchedHeaders();
+
+    Runnable addHeaderInterceptor(
+            Consumer<BiConsumer<@RequestMatcherConfig Integer, Object>> buildRequestMatcherConfig,
+            Function<WebResourceRequest, Map<String, @Nullable String>> headerInterceptor);
 
     void preconnect(String url);
 
@@ -116,13 +124,17 @@ public interface ProfileBoundaryInterface {
      * <p>This method is non-blocking and does not force native Chromium startup. The request is
      * queued and executed once native initialization completes.
      */
-    void enqueuePreconnect(@NonNull String url);
+    void enqueuePreconnect(String url);
 
     void addQuicHints(Set<String> origins);
 
     /* HttpCacheBoundaryInterface */ InvocationHandler getHttpCache();
 
-    void setCrossOriginIsolatedAllowList(@NonNull Set<String> originPatterns);
+    void setCrossOriginIsolatedAllowList(Set<String> originPatterns);
 
-    @NonNull Set<String> getCrossOriginIsolatedAllowList();
+    Set<String> getCrossOriginIsolatedAllowList();
+
+    void configureIsolatedSites(Set<String> sites);
+
+    boolean canConfigureIsolatedSites();
 }

@@ -4,9 +4,13 @@
 
 #include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"
 
+#include <memory>
+
 #include "base/barrier_closure.h"
 #include "base/containers/flat_map.h"
 #include "base/json/json_reader.h"
+#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -258,36 +262,51 @@ void EventReportValidator::ExpectSensitiveDataEventWarnThenBypass(
     chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_warn_event,
     chrome::cros::reporting::proto::DlpSensitiveDataEvent
         expected_bypass_event) {
-  EXPECT_CALL(*client_, UploadSecurityEvent)
-      .WillOnce(
-          [expected_warn_event](
-              bool include_device_info,
-              ::chrome::cros::reporting::proto::UploadEventsRequest request,
-              policy::CloudPolicyClient::ResultCallback callback) {
-            // There should only be 1 event per test.
-            ASSERT_EQ(1, request.events_size());
-            ASSERT_TRUE(request.events().Get(0).has_sensitive_data_event());
-            auto sensitive_data_event =
-                request.events().Get(0).sensitive_data_event();
-            EXPECT_THAT(sensitive_data_event, EqualsProto(expected_warn_event));
-          })
-      .WillOnce(
-          [this, expected_bypass_event](
-              bool include_device_info,
-              ::chrome::cros::reporting::proto::UploadEventsRequest request,
-              policy::CloudPolicyClient::ResultCallback callback) {
-            // There should only be 1 event per test.
-            ASSERT_EQ(1, request.events_size());
-            ASSERT_TRUE(request.events().Get(0).has_sensitive_data_event());
-            auto sensitive_data_event =
-                request.events().Get(0).sensitive_data_event();
-            EXPECT_THAT(sensitive_data_event,
-                        EqualsProto(expected_bypass_event));
+  struct State {
+    chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_warn;
+    chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_bypass;
+    bool saw_warn = false;
+    bool saw_bypass = false;
+  };
+  auto state = base::MakeRefCounted<base::RefCountedData<State>>();
+  state->data.expected_warn = std::move(expected_warn_event);
+  state->data.expected_bypass = std::move(expected_bypass_event);
 
-            if (!done_closure_.is_null()) {
-              done_closure_.Run();
-            }
-          });
+  EXPECT_CALL(*client_, UploadSecurityEvent)
+      .Times(2)
+      .WillRepeatedly([this, state](
+                          bool include_device_info,
+                          ::chrome::cros::reporting::proto::UploadEventsRequest
+                              request,
+                          policy::CloudPolicyClient::ResultCallback callback) {
+        // There should only be 1 event per test.
+        ASSERT_EQ(1, request.events_size());
+        ASSERT_TRUE(request.events().Get(0).has_sensitive_data_event());
+        auto sensitive_data_event =
+            request.events().Get(0).sensitive_data_event();
+        if (sensitive_data_event.event_result() ==
+            chrome::cros::reporting::proto::EventResult::EVENT_RESULT_WARNED) {
+          EXPECT_FALSE(state->data.saw_warn);
+          state->data.saw_warn = true;
+          EXPECT_THAT(sensitive_data_event,
+                      EqualsProto(state->data.expected_warn));
+        } else if (sensitive_data_event.event_result() ==
+                   chrome::cros::reporting::proto::EventResult::
+                       EVENT_RESULT_BYPASSED) {
+          EXPECT_FALSE(state->data.saw_bypass);
+          state->data.saw_bypass = true;
+          EXPECT_THAT(sensitive_data_event,
+                      EqualsProto(state->data.expected_bypass));
+        } else {
+          FAIL() << "Unexpected event result: "
+                 << sensitive_data_event.event_result();
+        }
+
+        if (state->data.saw_warn && state->data.saw_bypass &&
+            !done_closure_.is_null()) {
+          done_closure_.Run();
+        }
+      });
 }
 
 void EventReportValidator::
@@ -297,54 +316,66 @@ void EventReportValidator::
         chrome::cros::reporting::proto::DlpSensitiveDataEvent
             expected_sensitive_data_event,
         const std::set<std::string>* expected_mimetypes) {
+  struct State {
+    chrome::cros::reporting::proto::SafeBrowsingDangerousDownloadEvent
+        expected_dangerous;
+    chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_sensitive;
+    bool saw_dangerous = false;
+    bool saw_sensitive = false;
+  };
+  auto state = std::make_shared<State>();
+  state->expected_dangerous = std::move(expected_dangerous_download_event);
+  state->expected_sensitive = std::move(expected_sensitive_data_event);
+
   EXPECT_CALL(*client_, UploadSecurityEvent)
-      .WillOnce(
-          [expected_dangerous_download_event, expected_mimetypes](
+      .Times(2)
+      .WillRepeatedly(
+          [this, state, expected_mimetypes](
               bool include_device_info,
               ::chrome::cros::reporting::proto::UploadEventsRequest request,
-              policy::CloudPolicyClient::ResultCallback callback) mutable {
+              policy::CloudPolicyClient::ResultCallback callback) {
             // There should only be 1 event per test.
             ASSERT_EQ(1, request.events_size());
-            ASSERT_TRUE(request.events().Get(0).has_dangerous_download_event());
-            auto dangerous_download_event =
-                request.events().Get(0).dangerous_download_event();
+            if (request.events().Get(0).has_dangerous_download_event()) {
+              EXPECT_FALSE(state->saw_dangerous);
+              state->saw_dangerous = true;
+              auto dangerous_download_event =
+                  request.events().Get(0).dangerous_download_event();
 
-            if (expected_mimetypes) {
-              EXPECT_TRUE(expected_mimetypes->contains(
-                  dangerous_download_event.content_type()));
-              // Reset the `content_type` field, so that we can check if the
-              // rest of the fields match.
-              dangerous_download_event.clear_content_type();
-              expected_dangerous_download_event.clear_content_type();
+              if (expected_mimetypes) {
+                EXPECT_TRUE(expected_mimetypes->contains(
+                    dangerous_download_event.content_type()));
+                // Reset the `content_type` field, so that we can check if the
+                // rest of the fields match.
+                dangerous_download_event.clear_content_type();
+                state->expected_dangerous.clear_content_type();
+              }
+
+              EXPECT_THAT(dangerous_download_event,
+                          EqualsProto(state->expected_dangerous));
+            } else if (request.events().Get(0).has_sensitive_data_event()) {
+              EXPECT_FALSE(state->saw_sensitive);
+              state->saw_sensitive = true;
+              auto sensitive_data_event =
+                  request.events().Get(0).sensitive_data_event();
+
+              if (expected_mimetypes) {
+                EXPECT_TRUE(expected_mimetypes->contains(
+                    sensitive_data_event.content_type()));
+                // Reset the `content_type` field, so that we can check if the
+                // rest of the fields match.
+                sensitive_data_event.clear_content_type();
+                state->expected_sensitive.clear_content_type();
+              }
+
+              EXPECT_THAT(sensitive_data_event,
+                          EqualsProto(state->expected_sensitive));
+            } else {
+              FAIL() << "Unexpected event type in UploadSecurityEvent";
             }
 
-            EXPECT_THAT(dangerous_download_event,
-                        EqualsProto(expected_dangerous_download_event));
-          })
-      .WillOnce(
-          [this, expected_sensitive_data_event, expected_mimetypes](
-              bool include_device_info,
-              ::chrome::cros::reporting::proto::UploadEventsRequest request,
-              policy::CloudPolicyClient::ResultCallback callback) mutable {
-            // There should only be 1 event per test.
-            ASSERT_EQ(1, request.events_size());
-            ASSERT_TRUE(request.events().Get(0).has_sensitive_data_event());
-            auto sensitive_data_event =
-                request.events().Get(0).sensitive_data_event();
-
-            if (expected_mimetypes) {
-              EXPECT_TRUE(expected_mimetypes->contains(
-                  sensitive_data_event.content_type()));
-              // Reset the `content_type` field, so that we can check if the
-              // rest of the fields match.
-              sensitive_data_event.clear_content_type();
-              expected_sensitive_data_event.clear_content_type();
-            }
-
-            EXPECT_THAT(sensitive_data_event,
-                        EqualsProto(expected_sensitive_data_event));
-
-            if (!done_closure_.is_null()) {
+            if (state->saw_dangerous && state->saw_sensitive &&
+                !done_closure_.is_null()) {
               done_closure_.Run();
             }
           });

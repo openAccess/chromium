@@ -5,7 +5,10 @@
 #ifndef BASE_CONTAINERS_MAP_UTIL_H_
 #define BASE_CONTAINERS_MAP_UTIL_H_
 
+#include <concepts>
 #include <memory>
+#include <tuple>
+#include <utility>
 
 #include "base/types/to_address.h"
 
@@ -21,8 +24,9 @@ using MappedType = typename Map::mapped_type;
 // Returns a pointer to the const value associated with the given key if it
 // exists, or null otherwise.
 template <typename Map, typename Key = Map::key_type>
-constexpr const internal::MappedType<Map>* FindOrNull(const Map& map,
-                                                      const Key& key) {
+[[nodiscard]] constexpr const internal::MappedType<Map>* FindOrNull(
+    const Map& map,
+    const Key& key) {
   auto it = map.find(key);
   return it != map.end() ? &it->second : nullptr;
 }
@@ -30,7 +34,8 @@ constexpr const internal::MappedType<Map>* FindOrNull(const Map& map,
 // Returns a pointer to the value associated with the given key if it exists, or
 // null otherwise.
 template <typename Map, typename Key = Map::key_type>
-constexpr internal::MappedType<Map>* FindOrNull(Map& map, const Key& key) {
+[[nodiscard]] constexpr internal::MappedType<Map>* FindOrNull(Map& map,
+                                                              const Key& key) {
   auto it = map.find(key);
   return it != map.end() ? &it->second : nullptr;
 }
@@ -45,7 +50,8 @@ template <typename Map,
           typename Key = Map::key_type,
           typename MappedElementType =
               std::pointer_traits<internal::MappedType<Map>>::element_type>
-constexpr MappedElementType* FindPtrOrNull(const Map& map, const Key& key) {
+[[nodiscard]] constexpr MappedElementType* FindPtrOrNull(const Map& map,
+                                                         const Key& key) {
   auto it = map.find(key);
   return it != map.end() ? base::to_address(it->second) : nullptr;
 }
@@ -82,6 +88,41 @@ Map::iterator InsertOrAssign(Map& map,
     it->second = std::forward<MappedElementType>(element);
   }
   return it;
+}
+
+// Returns a reference to the value associated with the given key if it exists,
+// or inserts a new value created by invoking `factory` and returns a reference
+// to it otherwise. `factory` is only invoked when `key` is not found.
+//
+// `key` can be any heterogeneous comparable overload of the `key_type` for
+// `map`. In particular, there is no need to construct a temporary `key` of the
+// type stored in the map as long as `key` is comparable with the
+// `Map::key_type`.
+template <typename Map, typename Key = Map::key_type, typename Factory>
+  requires(std::invocable<Factory>)
+internal::MappedType<Map>& GetOrCreate(Map& map, Key&& key, Factory&& factory) {
+  auto it = map.lower_bound(key);
+  if (it == map.end() || map.key_comp()(key, it->first)) {
+    it = map.emplace_hint(it, std::forward<Key>(key),
+                          std::forward<Factory>(factory)());
+  }
+  return it->second;
+}
+
+// Same as above, except that a default-constructed value is inserted when
+// `key` is not found.
+//
+// TODO(crbug.com/376532871): Can be removed once map::operator[] and
+// map::try_emplace support heterogenous key overloads, in C++26.
+template <typename Map, typename Key = Map::key_type>
+internal::MappedType<Map>& GetOrCreate(Map& map, Key&& key) {
+  auto it = map.lower_bound(key);
+  if (it == map.end() || map.key_comp()(key, it->first)) {
+    it = map.emplace_hint(it, std::piecewise_construct,
+                          std::forward_as_tuple(std::forward<Key>(key)),
+                          std::forward_as_tuple());
+  }
+  return it->second;
 }
 
 }  // namespace base

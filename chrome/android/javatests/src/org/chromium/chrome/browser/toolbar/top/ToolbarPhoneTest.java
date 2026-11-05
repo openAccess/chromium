@@ -17,13 +17,16 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
 
+import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
@@ -46,12 +49,13 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.supplier.SupplierUtils;
@@ -75,6 +79,7 @@ import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.omnibox.LocationBarBackgroundDrawable;
 import org.chromium.chrome.browser.omnibox.LocationBarCoordinator;
 import org.chromium.chrome.browser.omnibox.SearchEngineService;
+import org.chromium.chrome.browser.omnibox.status.StatusProperties.StatusIconResource;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
@@ -90,16 +95,18 @@ import org.chromium.chrome.browser.toolbar.optional_button.ButtonDataImpl;
 import org.chromium.chrome.browser.toolbar.optional_button.OptionalButtonCoordinator;
 import org.chromium.chrome.browser.toolbar.signin_button.SigninButtonCoordinator;
 import org.chromium.chrome.browser.toolbar.top.ToolbarPhone.VisualState;
-import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.chrome.browser.ui.theme.ChromeSemanticColorUtils;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.BottomBarTestUtils;
+import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
+import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.omnibox.OmniboxFeatureList;
+import org.chromium.components.search_engines.AiModeButtonUiConfig;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -135,6 +142,8 @@ public class ToolbarPhoneTest {
     private MenuButton mMenuButton;
     private OmniboxTestUtils mOmnibox;
     private TemplateUrlService mTemplateUrlService;
+    private NullableObservableSupplier<AiModeButtonUiConfig> mAiModeButtonUiConfigSupplier;
+    private NonNullObservableSupplier<StatusIconResource> mAiModeButtonIconSupplier;
     private WebPageStation mPage;
 
     @ParameterAnnotations.UseMethodParameterBefore(NightModeTestUtils.NightModeParams.class)
@@ -155,10 +164,17 @@ public class ToolbarPhoneTest {
         mPage = mActivityTestRule.startOnBlankPage();
         TemplateUrlService originalService =
                 ThreadUtils.runOnUiThreadBlocking(
-                        () ->
-                                TemplateUrlServiceFactory.getForProfile(
-                                        ProfileManager.getLastUsedRegularProfile()));
-        mTemplateUrlService = Mockito.spy(originalService);
+                        () -> {
+                            mAiModeButtonUiConfigSupplier = ObservableSuppliers.createNullable();
+                            mAiModeButtonIconSupplier =
+                                    ObservableSuppliers.createNonNull(
+                                            new StatusIconResource(
+                                                    R.drawable.ic_search_spark_24dp,
+                                                    Resources.ID_NULL));
+                            return TemplateUrlServiceFactory.getForProfile(
+                                    ProfileManager.getLastUsedRegularProfile());
+                        });
+        mTemplateUrlService = spy(originalService);
         TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
         mToolbar = mActivityTestRule.getActivity().findViewById(R.id.toolbar);
         mToolbarButtonsContainer = mToolbar.findViewById(R.id.toolbar_buttons);
@@ -173,7 +189,7 @@ public class ToolbarPhoneTest {
     @Test
     @MediumTest
     public void testDrawTabSwitcherAnimation_menuButtonDrawn() {
-        mMenuButton = Mockito.spy(mToolbar.findViewById(R.id.menu_button_wrapper));
+        mMenuButton = mToolbar.findViewById(R.id.menu_button_wrapper);
         mToolbar.setMenuButtonCoordinatorForTesting(mMenuButtonCoordinator);
         doReturn(mMenuButton).when(mMenuButtonCoordinator).getMenuButton();
         doReturn(true).when(mMenuButtonCoordinator).isVisible();
@@ -217,69 +233,65 @@ public class ToolbarPhoneTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_app_menu_in_toolbar/true",
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_home_button_in_toolbar/false"
-    })
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_app_menu_in_toolbar/true")
     public void testBackButtonVisibility_ntp() {
-        ToolbarPhone toolbarSpy = Mockito.spy(mToolbar);
-        BackButtonCoordinator mockBackButtonCoordinator = Mockito.mock(BackButtonCoordinator.class);
-        toolbarSpy.setBackButtonCoordinatorForTesting(mockBackButtonCoordinator);
+        mPage.openNewTabFast();
+        BackButtonCoordinator mockBackButtonCoordinator = mock(BackButtonCoordinator.class);
 
-        doReturn(true).when(toolbarSpy).isLocationBarShownInNtp();
-        doReturn(false).when(toolbarSpy).urlHasFocus();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mToolbar.setBackButtonCoordinatorForTesting(mockBackButtonCoordinator);
+                    assertTrue(mToolbar.isLocationBarShownInNtp());
+                    assertFalse(mToolbar.urlHasFocus());
 
-        ThreadUtils.runOnUiThreadBlocking(() -> toolbarSpy.updateButtonVisibility());
+                    mToolbar.updateButtonVisibility();
 
-        verify(mockBackButtonCoordinator).setVisibility(false);
+                    verify(mockBackButtonCoordinator).setVisibility(false);
+                });
     }
 
     @Test
     @MediumTest
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_app_menu_in_toolbar/true",
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_home_button_in_toolbar/false"
-    })
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_app_menu_in_toolbar/true")
     public void testBackButtonVisibility_regularPage() {
-        ToolbarPhone toolbarSpy = Mockito.spy(mToolbar);
-        BackButtonCoordinator mockBackButtonCoordinator = Mockito.mock(BackButtonCoordinator.class);
-        toolbarSpy.setBackButtonCoordinatorForTesting(mockBackButtonCoordinator);
+        BackButtonCoordinator mockBackButtonCoordinator = mock(BackButtonCoordinator.class);
 
-        doReturn(false).when(toolbarSpy).isLocationBarShownInNtp();
-        doReturn(false).when(toolbarSpy).urlHasFocus();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mToolbar.setBackButtonCoordinatorForTesting(mockBackButtonCoordinator);
+                    assertFalse(mToolbar.isLocationBarShownInNtp());
+                    assertFalse(mToolbar.urlHasFocus());
 
-        ThreadUtils.runOnUiThreadBlocking(() -> toolbarSpy.updateButtonVisibility());
+                    mToolbar.updateButtonVisibility();
 
-        verify(mockBackButtonCoordinator).setVisibility(true);
+                    verify(mockBackButtonCoordinator).setVisibility(true);
+                });
     }
 
     @Test
     @MediumTest
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_app_menu_in_toolbar/true",
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_home_button_in_toolbar/false"
-    })
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_app_menu_in_toolbar/true")
     public void testBackButtonVisibility_focused() {
-        ToolbarPhone toolbarSpy = Mockito.spy(mToolbar);
-        BackButtonCoordinator mockBackButtonCoordinator = Mockito.mock(BackButtonCoordinator.class);
-        toolbarSpy.setBackButtonCoordinatorForTesting(mockBackButtonCoordinator);
+        BackButtonCoordinator mockBackButtonCoordinator = mock(BackButtonCoordinator.class);
 
-        doReturn(false).when(toolbarSpy).isLocationBarShownInNtp();
-        doReturn(true).when(toolbarSpy).urlHasFocus();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mToolbar.onUrlFocusChange(true);
+                    mToolbar.setBackButtonCoordinatorForTesting(mockBackButtonCoordinator);
+                    assertFalse(mToolbar.isLocationBarShownInNtp());
+                    assertTrue(mToolbar.urlHasFocus());
 
-        ThreadUtils.runOnUiThreadBlocking(() -> toolbarSpy.updateButtonVisibility());
+                    mToolbar.updateButtonVisibility();
 
-        verify(mockBackButtonCoordinator).setVisibility(false);
+                    verify(mockBackButtonCoordinator).setVisibility(false);
+                });
     }
 
     @Test
     @MediumTest
-    @EnableFeatures({
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_app_menu_in_toolbar/true",
-        ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_home_button_in_toolbar/false"
-    })
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR + ":keep_app_menu_in_toolbar/true")
     public void testBackButtonVisibility_urlExpansion() {
-        BackButtonCoordinator mockBackButtonCoordinator = Mockito.mock(BackButtonCoordinator.class);
+        BackButtonCoordinator mockBackButtonCoordinator = mock(BackButtonCoordinator.class);
         mToolbar.setBackButtonCoordinatorForTesting(mockBackButtonCoordinator);
         when(mockBackButtonCoordinator.isVisible()).thenReturn(true);
 
@@ -377,15 +389,13 @@ public class ToolbarPhoneTest {
 
     @Test
     @MediumTest
-    @DisableFeatures({
-        ChromeFeatureList.ANDROID_SURFACE_COLOR_UPDATE,
-    })
     @DisableIf.Build(
             sdk_equals = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
             message = "crbug.com/351025374")
     public void testToolbarColorSameAsSuggestionColorWhenFocus_activeColorOmnibox() {
         LocationBarCoordinator locationBarCoordinator =
                 (LocationBarCoordinator) mToolbar.getLocationBar();
+        OmniboxResourceProvider resourceProvider = mToolbar.getOmniboxResourceProviderForTesting();
         ColorDrawable toolbarBackgroundDrawable = mToolbar.getBackgroundDrawable();
         mToolbar.setLocationBarBackgroundDrawableForTesting(mLocationbarBackgroundDrawable);
         int nonFocusedRadius =
@@ -405,15 +415,12 @@ public class ToolbarPhoneTest {
                 () -> {
                     Criteria.checkThat(
                             toolbarBackgroundDrawable.getColor(),
-                            Matchers.is(
-                                    OmniboxResourceProvider.getSuggestionsDropdownBackgroundColor(
-                                            mToolbar.getContext(),
-                                            BrandedColorScheme.APP_DEFAULT)));
+                            Matchers.is(resourceProvider.getSuggestionsDropdownBackgroundColor()));
                 });
-        verify(mLocationbarBackgroundDrawable)
-                .setBackgroundColor(
-                        OmniboxResourceProvider.getStandardSuggestionBackgroundColor(
-                                mToolbar.getContext(), BrandedColorScheme.APP_DEFAULT));
+        int expectedLocationBarColor =
+                ThreadUtils.runOnUiThreadBlocking(
+                        resourceProvider::getStandardSuggestionBackgroundColor);
+        verify(mLocationbarBackgroundDrawable).setBackgroundColor(expectedLocationBarColor);
         verify(mLocationbarBackgroundDrawable, atLeastOnce()).setCornerRadius(focusedRadius);
 
         // Clear focus on the Omnibox
@@ -425,10 +432,7 @@ public class ToolbarPhoneTest {
                 () -> {
                     Criteria.checkThat(
                             toolbarBackgroundDrawable.getColor(),
-                            Matchers.not(
-                                    OmniboxResourceProvider.getSuggestionsDropdownBackgroundColor(
-                                            mToolbar.getContext(),
-                                            BrandedColorScheme.APP_DEFAULT)));
+                            Matchers.not(resourceProvider.getSuggestionsDropdownBackgroundColor()));
                 });
         verify(mLocationbarBackgroundDrawable, atLeastOnce()).setBackgroundColor(anyInt());
         verify(mLocationbarBackgroundDrawable, atLeastOnce()).setCornerRadius(nonFocusedRadius);
@@ -483,7 +487,6 @@ public class ToolbarPhoneTest {
     @MediumTest
     @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testOptionalButton_NotDrawnWhenNotVisible() {
-
         Drawable drawable =
                 AppCompatResources.getDrawable(
                         mActivityTestRule.getActivity(), R.drawable.ic_toolbar_share_offset_24dp);
@@ -529,7 +532,6 @@ public class ToolbarPhoneTest {
     @MediumTest
     @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testOptionalButton_DrawnWhenVisible() {
-
         Drawable drawable =
                 AppCompatResources.getDrawable(
                         mActivityTestRule.getActivity(), R.drawable.ic_toolbar_share_offset_24dp);
@@ -695,10 +697,7 @@ public class ToolbarPhoneTest {
     @Test
     @MediumTest
     @DisableIf.Build(sdk_equals = VERSION_CODES.TIRAMISU, message = "crbug.com/339034032")
-    @DisableFeatures({
-        ChromeFeatureList.ANDROID_SURFACE_COLOR_UPDATE,
-        ChromeFeatureList.ANDROID_BOTTOM_BAR
-    })
+    @DisableFeatures({ChromeFeatureList.ANDROID_BOTTOM_BAR})
     public void testToolbarBackgroundChangedWhenSearchEngineHasNoLogo() {
         when(mTemplateUrlService.doesDefaultSearchEngineHaveLogo()).thenReturn(false);
 
@@ -713,7 +712,9 @@ public class ToolbarPhoneTest {
         // Load the new tab page.
         mActivityTestRule.loadUrl(getOriginalNativeNtpUrl());
         Tab tab = mActivityTestRule.getActivityTab();
-        NewTabPageTestUtils.waitForNtpLoaded(tab);
+        // TODO(crbug.com/428022848): Hop on once RegularNewTabPageStation can model an NTP
+        // without a search provider logo.
+        ChromeTabUtils.waitForNtpLoaded(tab);
         ViewGroup fakeSearchBox = mActivityTestRule.getActivity().findViewById(R.id.search_box);
         assertEquals(true, mToolbar.isLocationBarShownInGeneralNtp());
         assertEquals(View.VISIBLE, fakeSearchBox.getVisibility());
@@ -760,6 +761,13 @@ public class ToolbarPhoneTest {
     @Test
     @MediumTest
     public void testGetLocationBarOffsetForFocusAnimation() {
+        // The NTP observes the AI Mode entry point config and icon, so the mock must supply them.
+        doReturn(mAiModeButtonUiConfigSupplier)
+                .when(mSearchEngineService)
+                .getAiModeButtonUiConfigSupplier();
+        doReturn(mAiModeButtonIconSupplier)
+                .when(mSearchEngineService)
+                .getAiModeButtonIconSupplier();
         SearchEngineService.setInstanceForTesting(mSearchEngineService);
 
         // Test focus on non-NTP pages.
@@ -841,6 +849,63 @@ public class ToolbarPhoneTest {
                             0);
                     mToolbar.onUrlFocusChange(true);
                     assertTrue(mToolbar.isAnimationRunningForTesting());
+                });
+    }
+
+    @Test
+    @MediumTest
+    public void testHairlineShownOnNativePageWithErrorPageUnderneath() {
+        // chrome://history is a native page on Android. The WebContents underneath it commits an
+        // error page (there is no history WebUI on Android), which must not hide the hairline.
+        mActivityTestRule.loadUrl(UrlConstants.HISTORY_URL);
+        CriteriaHelper.pollUiThread(
+                () -> mActivityTestRule.getActivity().getActivityTab().isNativePage());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mToolbar.updateHairlineVisibility();
+                    assertTrue(mToolbar.shouldDrawHairline());
+                    assertEquals(View.VISIBLE, mToolbar.getToolbarHairline().getVisibility());
+                });
+    }
+
+    @Test
+    @MediumTest
+    public void testHairlineOnIncognitoNtp_dependsOnToolbarPosition() {
+        mActivityTestRule.loadUrlInNewTab(UrlConstants.NTP_URL, /* incognito= */ true);
+        CriteriaHelper.pollUiThread(
+                () -> mActivityTestRule.getActivity().getActivityTab().isIncognitoBranded());
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    BrowserControlsManager browserControlsManager =
+                            mActivityTestRule.getActivity().getBrowserControlsManager();
+                    // Top-anchored: the incognito NTP intentionally blends into the toolbar.
+                    assertEquals(
+                            ControlsPosition.TOP, browserControlsManager.getControlsPosition());
+                    mToolbar.updateHairlineVisibility();
+                    assertFalse(mToolbar.shouldDrawHairline());
+
+                    // Bottom-anchored: the hairline separates page content from the omnibox.
+                    browserControlsManager.setControlsPosition(
+                            ControlsPosition.BOTTOM,
+                            0,
+                            0,
+                            0,
+                            browserControlsManager.getTopControlsHeight(),
+                            0,
+                            0);
+                    mToolbar.updateHairlineVisibility();
+                    assertTrue(mToolbar.shouldDrawHairline());
+                    assertEquals(View.VISIBLE, mToolbar.getToolbarHairline().getVisibility());
+
+                    browserControlsManager.setControlsPosition(
+                            ControlsPosition.TOP,
+                            browserControlsManager.getBottomControlsHeight(),
+                            0,
+                            0,
+                            0,
+                            0,
+                            0);
                 });
     }
 }

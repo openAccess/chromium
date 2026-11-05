@@ -4,11 +4,12 @@
 
 #include "content/browser/media/capture/frame_sink_video_capture_device.h"
 
+#include <algorithm>
 #include <array>
 #include <memory>
 
-#include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
@@ -107,6 +108,7 @@ class MockFrameSinkVideoCapturer : public viz::mojom::FrameSinkVideoCapturer {
                     const gfx::Size& max_size,
                     bool use_fixed_aspect_ratio));
   MOCK_METHOD1(SetAutoThrottlingEnabled, void(bool));
+  MOCK_METHOD1(SetIsSecure, void(bool));
   void ChangeTarget(const std::optional<viz::VideoCaptureTarget>& target,
                     uint32_t sub_capture_version) final {
     DCHECK_NOT_ON_DEVICE_THREAD();
@@ -350,6 +352,7 @@ class FrameSinkVideoCaptureDeviceTest : public testing::Test {
     EXPECT_CALL(capturer_, SetMinCapturePeriod(kMinCapturePeriod));
     EXPECT_CALL(capturer_,
                 SetResolutionConstraints(kResolution, kResolution, _));
+    EXPECT_CALL(capturer_, SetIsSecure(false));
     const viz::VideoCaptureTarget target(viz::FrameSinkId{1, 1});
     EXPECT_CALL(
         capturer_,
@@ -390,8 +393,8 @@ class FrameSinkVideoCaptureDeviceTest : public testing::Test {
         base::ReadOnlySharedMemoryRegion::Create(
             media::VideoFrame::AllocationSize(kFormat, kResolution));
     CHECK(region.IsValid());
-    UNSAFE_TODO(memset(region.mapping.memory(), GetFrameFillValue(frame_number),
-                       region.mapping.size()));
+    std::ranges::fill(base::span(region.mapping),
+                      GetFrameFillValue(frame_number));
 
     mojo::PendingRemote<viz::mojom::FrameSinkVideoConsumerFrameCallbacks>
         callbacks_remote;
@@ -632,18 +635,19 @@ TEST_F(FrameSinkVideoCaptureDeviceTest, ShutsDownOnFatalError) {
   }
 }
 
-// Tests that the video rotation is properly sent through metadata.
-TEST_F(FrameSinkVideoCaptureDeviceTest, SetsVideoRotation) {
+// Frames captured from a frame sink are always delivered in the compositor's
+// own, unrotated orientation: when the display is rotated, viz applies the
+// display transform in a separate render pass that copy requests do not
+// observe (see SurfaceAggregator::AddDisplayTransformPass()). Tagging frames
+// with a rotation here would make consumers such as WebRTC rotate an image
+// that is already upright, so no transformation must be set.
+TEST_F(FrameSinkVideoCaptureDeviceTest, DoesNotSetVideoRotation) {
   auto receiver_ptr = std::make_unique<MockVideoFrameReceiver>();
   auto* const receiver = receiver_ptr.get();
   EXPECT_CALL(*receiver, OnStarted());
   EXPECT_CALL(*receiver, OnError(_)).Times(0);
 
   AllocateAndStartSynchronouslyWithExpectations(std::move(receiver_ptr));
-
-  // Set the rotation to 180 degrees.
-  POST_DEVICE_METHOD_CALL(SetVideoRotation, media::VIDEO_ROTATION_180);
-  WAIT_FOR_DEVICE_TASKS();
 
   int buffer_id = -1;
   MockFrameSinkVideoConsumerFrameCallbacks callbacks;
@@ -658,11 +662,10 @@ TEST_F(FrameSinkVideoCaptureDeviceTest, SetsVideoRotation) {
   SimulateFrameCapture(0, &callbacks);
   WAIT_FOR_DEVICE_TASKS();
 
-  // Confirm the VideoFrameReceiver was provided the correct metadata.
+  // Confirm the VideoFrameReceiver was not handed a rotation.
   const auto info = receiver->TakeVideoFrameInfo(buffer_id);
   ASSERT_TRUE(info);
-  EXPECT_TRUE(info->metadata.transformation.has_value());
-  EXPECT_EQ(media::VIDEO_ROTATION_180, info->metadata.transformation->rotation);
+  EXPECT_FALSE(info->metadata.transformation.has_value());
 
   media::VideoCaptureFeedback fake_feedback = media::VideoCaptureFeedback(0.0);
   fake_feedback.frame_id = receiver->TakeFeedbackId(buffer_id);
@@ -672,6 +675,39 @@ TEST_F(FrameSinkVideoCaptureDeviceTest, SetsVideoRotation) {
   POST_DEVICE_METHOD_CALL(OnUtilizationReport, fake_feedback);
   receiver->ReleaseAccessPermission(buffer_id);
   auto buffer = receiver->TakeBufferHandle(buffer_id);
+  WAIT_FOR_DEVICE_TASKS();
+
+  StopAndDeAllocateSynchronouslyWithExpectations(true /* capturer will stop */);
+}
+
+TEST_F(FrameSinkVideoCaptureDeviceTest, SetsIsSecure) {
+  auto receiver = std::make_unique<MockVideoFrameReceiver>();
+  EXPECT_CALL(*receiver, OnError(_)).Times(0);
+
+  EXPECT_CALL(capturer_, SetFormat(kFormat));
+  EXPECT_CALL(capturer_, SetMinCapturePeriod(kMinCapturePeriod));
+  EXPECT_CALL(capturer_, SetResolutionConstraints(kResolution, kResolution, _));
+  EXPECT_CALL(capturer_, SetIsSecure(true));
+  const viz::VideoCaptureTarget target(viz::FrameSinkId{1, 1});
+  EXPECT_CALL(
+      capturer_,
+      MockChangeTarget(std::optional<viz::VideoCaptureTarget>(target), 0));
+  EXPECT_CALL(
+      capturer_,
+      MockStart(
+          NotNull(),
+          viz::mojom::BufferFormatPreference::kPreferMappableSharedImage));
+
+  EXPECT_FALSE(capturer_.is_bound());
+  POST_DEVICE_METHOD_CALL(OnTargetChanged, target,
+                          /*sub_capture_version=*/0);
+  media::VideoCaptureParams params = GetCaptureParams();
+  params.is_secure = true;
+  POST_DEVICE_METHOD_CALL(AllocateAndStartWithReceiver, params,
+                          std::move(receiver));
+  WAIT_FOR_DEVICE_TASKS();
+  RUN_UI_TASKS();
+  EXPECT_TRUE(capturer_.is_bound());
   WAIT_FOR_DEVICE_TASKS();
 
   StopAndDeAllocateSynchronouslyWithExpectations(true /* capturer will stop */);

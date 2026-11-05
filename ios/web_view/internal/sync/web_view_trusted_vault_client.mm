@@ -11,6 +11,7 @@
 #import "base/functional/callback.h"
 #import "base/functional/callback_helpers.h"
 #import "base/logging.h"
+#import "base/notimplemented.h"
 #import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/signin/public/identity_manager/account_info.h"
@@ -143,9 +144,25 @@ void WebViewTrustedVaultClient::AddTrustedRecoveryMethod(
     const GaiaId& gaia_id,
     const std::vector<uint8_t>& public_key,
     int method_type_hint,
-    base::OnceClosure callback) {
+    base::OnceCallback<void(bool)> callback) {
   // Not used on iOS.
   NOTREACHED();
+}
+
+void WebViewTrustedVaultClient::CanEnroll(
+    const CoreAccountInfo& account_info,
+    base::OnceCallback<void(bool)> callback) {
+  // TODO(crbug.com/579292060): Implement for iOS.
+  NOTIMPLEMENTED();
+  std::move(callback).Run(false);
+}
+
+void WebViewTrustedVaultClient::Enroll(
+    const CoreAccountInfo& account_info,
+    base::OnceCallback<void(const std::vector<uint8_t>&, int)> callback) {
+  // TODO(crbug.com/579292060): Implement for iOS.
+  NOTIMPLEMENTED();
+  std::move(callback).Run(std::vector<uint8_t>(), -1);
 }
 
 void WebViewTrustedVaultClient::ClearLocalDataForAccount(

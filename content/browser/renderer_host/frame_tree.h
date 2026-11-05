@@ -53,6 +53,7 @@ class RenderViewHostDelegate;
 class RenderViewHostImpl;
 class RenderFrameHostManager;
 class RenderWidgetHostDelegate;
+class RenderWidgetHostImpl;
 class SiteInstance;
 class SiteInstanceGroup;
 
@@ -230,6 +231,12 @@ class CONTENT_EXPORT FrameTree {
     // WebContents::PrivilegedParams). Used to skip the service worker for the
     // main resource of navigations in such a WebContents.
     virtual bool DoesWebContentsDisallowServiceWorkerControl();
+
+    // Returns true if this FrameTree is hosted by a WebContents that disallows
+    // shared workers for the pages it hosts (see
+    // WebContents::PrivilegedParams). Used to disable the SharedWorker
+    // interface in Blink for documents committed in such a WebContents.
+    virtual bool DoesWebContentsDisallowSharedWorkers();
   };
 
   // Type of FrameTree instance.
@@ -301,7 +308,7 @@ class CONTENT_EXPORT FrameTree {
 
   bool is_primary() const { return type_ == Type::kPrimary; }
   bool is_prerendering() const { return type_ == Type::kPrerender; }
-  bool is_fenced_frame() const { return type_ == Type::kFencedFrame; }
+  bool is_fenced_frame() const { return false; }
   bool is_guest() const { return type_ == Type::kGuest; }
 
   Delegate* delegate() { return delegate_; }
@@ -411,13 +418,38 @@ class CONTENT_EXPORT FrameTree {
       const blink::LocalFrameToken& frame_token,
       const base::UnguessableToken& devtools_frame_token,
       const blink::DocumentToken& document_token,
-      const base::UnguessableToken& initiator_state_token,
+      const blink::InitiatorStateToken& initiator_state_token,
       const blink::FramePolicy& frame_policy,
       const blink::mojom::FrameOwnerProperties& frame_owner_properties,
       bool was_discarded,
       blink::FrameOwnerElementType owner_type,
       bool is_dummy_frame_for_inner_tree,
       std::unique_ptr<base::UnguessableToken> sandbox_origin_token = nullptr);
+
+  // Creates a dummy outer delegate FrameTreeNode which serves as a placeholder
+  // for an inner FrameTree (e.g., Persistent Widgets). It will never have a
+  // corresponding RenderFrameImpl in a renderer process, so remotes, receivers,
+  // names, and policies are passed as null/default values.
+  FrameTreeNode* CreateDelegateFrameTreeNode(
+      RenderFrameHostImpl* parent,
+      blink::FrameOwnerElementType owner_type);
+
+  // Connects this inner FrameTree to an outer delegate FrameTreeNode, setting
+  // up the inner/outer FrameTree mapping and initializing the
+  // RenderFrameProxyHost in the embedder's SiteInstanceGroup with the renderer
+  // RemoteFrame interfaces.
+  RenderFrameProxyHost* ConnectOuterDelegateProxy(
+      FrameTreeNode* outer_delegate_node,
+      RenderFrameHostImpl* embedder_rfh,
+      const blink::RemoteFrameToken& frame_token,
+      blink::mojom::RemoteFrameInterfacesFromRendererPtr
+          remote_frame_interfaces);
+
+  // Initializes the RenderViewHost for this inner FrameTree root and assigns
+  // its RenderWidgetHostViewChildFrame to the RenderFrameHostManager so that
+  // input and compositing are routed through the embedder frame.
+  // Returns true on success, false if InitRenderView fails.
+  bool InitRenderViewForInnerFrameTree();
 
   // Removes a frame from the frame tree. |child|, its children, and objects
   // owned by their RenderFrameHostManagers are immediately deleted. The root
@@ -584,6 +616,14 @@ class CONTENT_EXPORT FrameTree {
   // Another page accessed the initial empty main document, which means it
   // is no longer safe to display a pending URL without risking a URL spoof.
   void DidAccessInitialMainDocument();
+
+  // Called when Viz reports that `widget` activated a CompositorFrame with
+  // visually non-empty content. If `widget` is still the main frame's widget
+  // and the tab is still an unmodified blank tab, this is treated as an access
+  // to the initial empty document, since a compromised renderer can draw
+  // without ever sending the DidAccessInitialMainDocument IPC.
+  // See https://crbug.com/40055319.
+  void OnFirstVisuallyNonEmptyCompositorFrame(RenderWidgetHostImpl* widget);
 
   bool has_accessed_initial_main_document() const {
     return has_accessed_initial_main_document_;

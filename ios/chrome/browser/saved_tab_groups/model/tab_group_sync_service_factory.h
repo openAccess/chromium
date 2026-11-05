@@ -5,32 +5,25 @@
 #ifndef IOS_CHROME_BROWSER_SAVED_TAB_GROUPS_MODEL_TAB_GROUP_SYNC_SERVICE_FACTORY_H_
 #define IOS_CHROME_BROWSER_SAVED_TAB_GROUPS_MODEL_TAB_GROUP_SYNC_SERVICE_FACTORY_H_
 
-#import "base/no_destructor.h"
-#import "ios/chrome/browser/shared/model/profile/profile_keyed_service_factory_ios.h"
-
-class ProfileIOS;
+#import "components/saved_tab_groups/public/tab_group_sync_service.h"
+#import "ios/chrome/browser/shared/model/profile/typed_profile_keyed_service_factory_ios.h"
 
 namespace tab_groups {
 class SyntheticFieldTrialHelper;
-class TabGroupSyncService;
 
 // Factory for the Tab Group Sync service.
-class TabGroupSyncServiceFactory : public ProfileKeyedServiceFactoryIOS {
+class TabGroupSyncServiceFactory final
+    : public TypedProfileKeyedServiceFactoryIOS<TabGroupSyncServiceFactory,
+                                                TabGroupSyncService> {
  public:
-  static TabGroupSyncService* GetForProfile(ProfileIOS* profile);
-  static TabGroupSyncServiceFactory* GetInstance();
+  explicit TabGroupSyncServiceFactory(PassKey key);
 
   // Return the default factory.
-  static TestingFactory GetDefaultFactory();
+  static TestingFactoryByRef GetDefaultFactory();
 
  private:
-  friend class base::NoDestructor<TabGroupSyncServiceFactory>;
-
-  TabGroupSyncServiceFactory();
-  ~TabGroupSyncServiceFactory() override;
-
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      ProfileIOS* profile) const override;
+      ProfileIOS& profile) const final;
 
   // Called to report synthetic field trial on whether the client had a sync
   // tabgroup.
@@ -44,7 +37,8 @@ class TabGroupSyncServiceFactory : public ProfileKeyedServiceFactoryIOS {
   static void RegisterFieldTrial(std::string_view trial_name,
                                  std::string_view group_name);
 
-  std::unique_ptr<SyntheticFieldTrialHelper> synthetic_field_trial_helper_;
+  // Returns the singleton SyntheticFieldTrialHelper used by this instance.
+  static SyntheticFieldTrialHelper* GetSyntheticFieldTrialHelper();
 };
 
 }  // namespace tab_groups

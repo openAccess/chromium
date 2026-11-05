@@ -13,6 +13,7 @@
 #include "base/files/file_path.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/version.h"
+#include "components/metrics/metrics_service.h"
 #include "components/variations/proto/study.pb.h"
 #include "components/variations/seed_response.h"
 #include "components/version_info/channel.h"
@@ -64,7 +65,8 @@ class VariationsServiceClient {
   // server is implemented, returns the SeedResponse from the native variations
   // seed store, and removes the seed from the native storage given that we can
   // assume that the returned seed would be stored into Chrome Prefs. Otherwise,
-  // returns nullptr.
+  // returns nullptr. On first run, Desktop Chrome returns the seed from the
+  // installer initial preferences.
   virtual std::unique_ptr<SeedResponse> TakeSeedFromNativeVariationsSeedStore();
 
   // If an invalid command-line was specified by the user, flag an error to the
@@ -97,6 +99,18 @@ class VariationsServiceClient {
   // Returns whether we verify the variations seed with its signature when we
   // load the variations seed from disk on startup.
   virtual bool EnableSignatureVerificationOnLoad();
+
+  // Rotates the current UMA log (closes current and opens a new one) right
+  // before runtime mutable variations changes are applied.
+  virtual metrics::MetricsService::RotateUmaLogResult
+      RotateUmaLogForRuntimeMutability(
+          metrics::MetricsService::RuntimeMutabilityPassKey);
+
+  // Returns whether applying runtime mutable variations changes should be
+  // delayed (e.g. because it is currently too early to close the current UMA
+  // log).
+  virtual bool ShouldDelayRuntimeMutability(
+      metrics::MetricsService::RuntimeMutabilityPassKey);
 
  private:
   // Gets the channel of the embedder. But all variations callers should use

@@ -11,6 +11,7 @@
 #include "base/containers/span.h"
 #include "net/device_bound_sessions/registration_fetcher_param.h"
 #include "net/device_bound_sessions/session_challenge_param.h"
+#include "net/device_bound_sessions/session_error.h"
 #include "net/device_bound_sessions/session_service.h"
 #include "net/ssl/ssl_cert_request_info.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -35,9 +36,7 @@ class SessionServiceMock : public SessionService {
               (override));
   MOCK_METHOD(std::optional<SessionService::DeferralParams>,
               ShouldDefer,
-              (DbscRequest & request,
-               HttpRequestHeaders* extra_headers,
-               const FirstPartySetMetadata& first_party_set_metadata),
+              (DbscRequest & request, HttpRequestHeaders* extra_headers),
               (override));
   MOCK_METHOD(void,
               DeferRequestForRefresh,
@@ -49,7 +48,6 @@ class SessionServiceMock : public SessionService {
               SetChallengeForBoundSession,
               (OnAccessCallback on_access_callback,
                DbscRequest& request,
-               const FirstPartySetMetadata& first_party_set_metadata,
                const SessionChallengeParam& challenge_param),
               (override));
   MOCK_METHOD(
@@ -68,27 +66,12 @@ class SessionServiceMock : public SessionService {
                const SessionKey& session_key,
                SessionService::OnAccessCallback per_request_callback),
               (override));
-  MOCK_METHOD(bool,
-              AddPreProvisionedKey,
-              (const url::Origin&,
-               std::string_view,
-               const GURL&,
-               unexportable_keys::UnexportableSigningKeyId),
-              (override));
-  MOCK_METHOD(
-      (SessionErrorOr<unexportable_keys::UnexportableSigningKeyId>),
-      FindPreProvisionedKey,
-      (const RegistrationFetcherParam& param,
-       base::optional_ref<const url::Origin> original_request_initiator),
-      (override));
   MOCK_METHOD(void,
               DeleteAllSessions,
               (DeletionReason reason,
                std::optional<base::Time> created_after_time,
                std::optional<base::Time> created_before_time,
-               base::RepeatingCallback<bool(const url::Origin&,
-                                            const net::SchemefulSite&)>
-                   origin_and_site_matcher,
+               OriginAndSiteMatcher origin_and_site_matcher,
                base::OnceClosure completion_callback),
               (override));
   MOCK_METHOD(base::ScopedClosureRunner,
@@ -130,9 +113,7 @@ class SessionServiceMock : public SessionService {
               (override));
   MOCK_METHOD(void,
               HandleResponseHeaders,
-              (DbscRequest & request,
-               HttpResponseHeaders* headers,
-               const FirstPartySetMetadata& first_party_set_metadata),
+              (DbscRequest & request, HttpResponseHeaders* headers),
               (override));
   MOCK_METHOD(void,
               SelectClientCertificate,

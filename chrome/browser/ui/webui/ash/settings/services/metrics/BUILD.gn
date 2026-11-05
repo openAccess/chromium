@@ -17,7 +17,6 @@ static_library("metrics") {
   public_deps = [
     "//ash/webui/settings/public/constants:mojom",
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ui/webui/ash/settings/search/mojom",
     "//components/metrics",
     "//components/prefs",
@@ -28,12 +27,11 @@ static_library("metrics") {
     "//chrome/browser:browser_process",
     "//chrome/browser/ash/login",
     "//chrome/browser/metrics",
-    "//chrome/browser/profiles:profile",
-    "//chrome/browser/profiles:profile_manager",
     "//chrome/browser/ui/webui/ash/settings/pages",
     "//chrome/browser/ui/webui/ash/settings/search",
     "//chrome/common:constants",
     "//chromeos/ash/components/settings",
+    "//components/user_manager",
   ]
 }
 
@@ -58,6 +56,7 @@ source_set("unit_tests") {
     "//chrome/browser/ui/webui/ash/settings/test_support",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/login/login_state",
     "//components/account_id",
     "//components/metrics",

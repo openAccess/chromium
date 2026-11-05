@@ -15,7 +15,7 @@
 #include "media/base/limits.h"
 #include "media/capture/mojom/video_capture_buffer.mojom.h"
 #include "media/capture/mojom/video_capture_types.mojom.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 
 namespace content {
 
@@ -95,6 +95,8 @@ void DevToolsVideoConsumer::SetMinCapturePeriod(
 
 void DevToolsVideoConsumer::SetMinAndMaxFrameSize(gfx::Size min_frame_size,
                                                   gfx::Size max_frame_size) {
+  // TODO(crbug.com/567037602): CHECK-exclusion: Convert to a CHECK once we
+  // are confident it won't be triggered.
   DCHECK(IsValidMinAndMaxFrameSize(min_frame_size, max_frame_size));
   min_frame_size_ = min_frame_size;
   max_frame_size_ = max_frame_size;
@@ -153,7 +155,7 @@ void DevToolsVideoConsumer::OnFrameCaptured(
   // the same type, with null check being equivalent to IsValid() check. Given
   // the above, we should never be able to receive a read only shmem region that
   // is not valid - mojo will enforce it for us.
-  DCHECK(shmem_region.IsValid());
+  CHECK(shmem_region.IsValid(), base::NotFatalUntil::M159);
 
   base::ReadOnlySharedMemoryMapping mapping = shmem_region.Map();
   if (!mapping.IsValid()) {

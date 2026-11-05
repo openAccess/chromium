@@ -52,6 +52,7 @@ source_set("chromeos") {
     "//remoting/host/base",
     "//ui/base/cursor/mojom:cursor_type",
     "//ui/display/manager",
+    "//ui/gfx:gfx_skia",
     "//ui/wm",
   ]
 }
@@ -70,7 +71,6 @@ source_set("browser_interop") {
   deps = [
     "//base",
     "//chrome/browser:browser_process",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/net",
     "//content/public/browser",
     "//net",

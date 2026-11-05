@@ -50,7 +50,6 @@ android_library("java") {
     "//base:base_java",
     "//chrome/browser/feature_engagement:java",
     "//chrome/browser/flags:java",
-    "//chrome/browser/hub:factory_java",
     "//chrome/browser/hub:java",
     "//chrome/browser/hub:pane_base_java",
     "//chrome/browser/profiles/android:java",
@@ -161,7 +160,6 @@ robolectric_library("junit") {
     "//third_party/androidx:androidx_recyclerview_recyclerview_java",
     "//third_party/androidx:androidx_test_core_java",
     "//third_party/androidx:androidx_test_ext_junit_java",
-    "//third_party/androidx:androidx_test_runner_java",
     "//third_party/hamcrest:hamcrest_java",
     "//third_party/hamcrest:hamcrest_library_java",
     "//third_party/jni_zero:jni_zero_java",
@@ -178,11 +176,15 @@ robolectric_library("junit") {
 android_library("recent_tabs_javatests") {
   testonly = true
   resources_package = "org.chromium.chrome.browser.recent_tabs"
-  sources = [ "android/java/src/org/chromium/chrome/browser/recent_tabs/RestoreTabsTest.java" ]
+  sources = [
+    "android/java/src/org/chromium/chrome/browser/recent_tabs/RecentlyClosedBridgeTest.java",
+    "android/java/src/org/chromium/chrome/browser/recent_tabs/RestoreTabsTest.java",
+  ]
 
   deps = [
     ":java",
     ":java_resources",
+    "//base:base_java",
     "//base:base_java_test_support",
     "//chrome/android:chrome_java",
     "//chrome/android/features/tab_ui:test_support_javalib",
@@ -192,16 +194,22 @@ android_library("recent_tabs_javatests") {
     "//chrome/browser/profiles/android:java",
     "//chrome/browser/recent_tabs:helper_java",
     "//chrome/browser/recent_tabs:java",
+    "//chrome/browser/sync/android:java",
+    "//chrome/browser/tab:java",
+    "//chrome/browser/tabmodel:java",
+    "//chrome/browser/tabpersistence:java",
     "//chrome/test/android:chrome_java_integration_test_support",
     "//chrome/test/android:chrome_java_transit",
     "//components/browser_ui/bottomsheet/android:java",
     "//components/browser_ui/bottomsheet/android:manager_java",
     "//components/feature_engagement/public:public_java",
     "//components/omnibox/common:features_java",
+    "//components/sync/android:sync_java",
     "//components/sync_device_info:sync_device_info_java",
     "//third_party/android_deps:espresso_java",
     "//third_party/androidx:androidx_recyclerview_recyclerview_java",
     "//third_party/androidx:androidx_test_runner_java",
+    "//third_party/google-truth:google_truth_java",
     "//third_party/hamcrest:hamcrest_java",
     "//third_party/hamcrest:hamcrest_library_java",
     "//third_party/jni_zero:jni_zero_java",
@@ -209,6 +217,7 @@ android_library("recent_tabs_javatests") {
     "//third_party/mockito:mockito_java",
     "//ui/android:ui_java",
     "//ui/android:ui_java_test_support",
+    "//ui/base/mojom:mojom_java",
     "//url:gurl_java",
     "//url:gurl_junit_test_support",
   ]
@@ -226,6 +235,7 @@ android_library("unit_device_javatests") {
     ":java",
     "//base:base_java_test_support",
     "//base:tasks_java",
+    "//base/test:public_transit_java",
     "//chrome/browser/profiles/android:java",
     "//chrome/browser/recent_tabs:java",
     "//chrome/browser/tabmodel:java",

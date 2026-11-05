@@ -64,7 +64,6 @@
 #include "third_party/blink/public/common/frame/frame_owner_element_type.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom.h"
 #include "third_party/blink/public/mojom/page/prerender_page_param.mojom.h"
 #include "third_party/blink/public/mojom/page/widget.mojom.h"
 #include "third_party/blink/public/mojom/widget/platform_widget.mojom.h"
@@ -548,8 +547,9 @@ bool CopyMetafileDataToReadOnlySharedMem(
   if (!region_mapping.IsValid())
     return false;
 
-  if (!metafile.GetData(region_mapping.mapping.memory(), buf_size))
+  if (!metafile.GetData(region_mapping.mapping.data(), buf_size)) {
     return false;
+  }
 
   *region = std::move(region_mapping.region);
   return true;
@@ -694,7 +694,7 @@ class HeaderAndFooterContext {
     return blink::WebLocalFrame::CreateMainFrame(
         web_view_, &frame_client_, nullptr, mojo::NullRemote(),
         blink::LocalFrameToken(), blink::DocumentToken(),
-        base::UnguessableToken::Create(), nullptr);
+        blink::InitiatorStateToken(), nullptr);
   }
 
   void InitWebView() {
@@ -983,7 +983,7 @@ void PrepareFrameAndViewForPrint::CopySelection(
   blink::WebView::ApplyWebPreferences(prefs, web_view);
   blink::WebLocalFrame* main_frame = blink::WebLocalFrame::CreateMainFrame(
       web_view, this, nullptr, mojo::NullRemote(), blink::LocalFrameToken(),
-      blink::DocumentToken(), base::UnguessableToken::Create(), nullptr);
+      blink::DocumentToken(), blink::InitiatorStateToken(), nullptr);
   frame_.Reset(main_frame);
   mojo::AssociatedRemote<blink::mojom::FrameWidget> frame_widget;
   mojo::PendingAssociatedReceiver<blink::mojom::FrameWidget>
@@ -1163,7 +1163,7 @@ PrintRenderFrameHelper::~PrintRenderFrameHelper() = default;
 const mojo::AssociatedRemote<mojom::PrintManagerHost>&
 PrintRenderFrameHelper::GetPrintManagerHost() {
   // We should not make calls back to the host while handling PrintWithParams().
-  DCHECK(!print_with_params_callback_);
+  CHECK(!print_with_params_callback_);
 
   if (!print_manager_host_) {
     render_frame()->GetRemoteAssociatedInterfaces()->GetInterface(
@@ -1228,6 +1228,10 @@ void PrintRenderFrameHelper::ScriptedPrint(bool user_initiated) {
   // diagnose latency.
   TRACE_EVENT("latency", "PrintRenderFrameHelper::ScriptedPrint");
 
+  if (print_in_progress_ || print_with_params_callback_) {
+    return;
+  }
+
   blink::WebLocalFrame* web_frame = render_frame()->GetWebFrame();
   if (!IsScriptInitiatedPrintAllowed(web_frame, user_initiated))
     return;
@@ -1239,7 +1243,10 @@ void PrintRenderFrameHelper::ScriptedPrint(bool user_initiated) {
   if (!web_frame->GetDocument().GetFrame())
     return;
 
-  if (print_in_progress_) {
+  // Re-check after `IsScriptInitiatedPrintAllowed()`, which sends a synchronous
+  // `IsPrintingEnabled()` IPC that can pump incoming print IPCs while waiting
+  // for a reply and mutate the state.
+  if (print_in_progress_ || print_with_params_callback_) {
     return;
   }
 
@@ -1282,17 +1289,64 @@ void PrintRenderFrameHelper::ScriptedPrint(bool user_initiated) {
   loop.Run();
 #else
   Print(web_frame, blink::WebNode(), PrintRequestType::kScripted);
-#endif
   if (!weak_this) {
     return;
   }
 
   web_frame->DispatchAfterPrintEvent();
-  if (!weak_this)
+  // DispatchAfterPrintEvent() runs script, which may delete `this`.
+  if (!weak_this) {
     return;
+  }
+  print_in_progress_ = false;
+#endif
+}
+
+#if BUILDFLAG(IS_ANDROID)
+void PrintRenderFrameHelper::InitiatePrintAndroid() {
+  ScopedIPC scoped_ipc(weak_ptr_factory_.GetWeakPtr());
+  if (ipc_nesting_level_ > kAllowedIpcDepthForPrint) {
+    return;
+  }
+
+  if (print_in_progress_ || print_with_params_callback_ || render_frame_gone_) {
+    return;
+  }
+
+  // On Android, `print_in_progress_` remains true throughout the entire system
+  // print session until `FinishPrintAndroid()` is invoked, preventing duplicate
+  // `beforeprint` dispatches while allowing asynchronous rendering.
+  print_in_progress_ = true;
+  render_frame()->GetWebFrame()->DispatchBeforePrintEvent(
+      /*print_client=*/nullptr);
+}
+
+void PrintRenderFrameHelper::FinishPrintAndroid() {
+  ScopedIPC scoped_ipc(weak_ptr_factory_.GetWeakPtr());
+  if (ipc_nesting_level_ > kAllowedIpcDepthForPrint) {
+    return;
+  }
+
+  if (!print_in_progress_ || print_with_params_callback_) {
+    return;
+  }
+
+  on_stop_loading_closure_.Reset();
+  is_loading_ = false;
+  Reset();
+
+  if (!render_frame_gone_) {
+    auto weak_this = weak_ptr_factory_.GetWeakPtr();
+    render_frame()->GetWebFrame()->DispatchAfterPrintEvent();
+    // DispatchAfterPrintEvent() runs script, which may delete `this`.
+    if (!weak_this) {
+      return;
+    }
+  }
 
   print_in_progress_ = false;
 }
+#endif  // BUILDFLAG(IS_ANDROID)
 
 void PrintRenderFrameHelper::WillBeDestroyed() {
   // TODO(crbug.com/40094746): Handle unpausing here when PrintRenderFrameHelper
@@ -1320,25 +1374,32 @@ void PrintRenderFrameHelper::PrintRequestedPages() {
 void PrintRenderFrameHelper::PrintRequestedPagesInternal(
     bool already_notified_frame) {
   ScopedIPC scoped_ipc(weak_ptr_factory_.GetWeakPtr());
-  if (ipc_nesting_level_ > kAllowedIpcDepthForPrint) {
+  if (ipc_nesting_level_ > kAllowedIpcDepthForPrint ||
+      print_with_params_callback_) {
     return;
   }
 
   blink::WebLocalFrame* frame = render_frame()->GetWebFrame();
 
 #if BUILDFLAG(IS_ANDROID)
-  bool is_scripted = print_in_progress_;
+  bool has_external_lifecycle = print_in_progress_;
 #else
-  constexpr bool is_scripted = false;
+  constexpr bool has_external_lifecycle = false;
 #endif
 
-  if (!already_notified_frame && !is_scripted) {
-    frame->DispatchBeforePrintEvent(/*print_client=*/nullptr);
-    // Don't print if the RenderFrame is gone.
-    if (render_frame_gone_) {
-      return;
+  if (!already_notified_frame) {
+    // `beforeprint` may already have been dispatched outside of this method:
+    // by `ScriptedPrint()` (nested run loop) or by `InitiatePrintAndroid()`.
+    if (!has_external_lifecycle) {
+      auto weak_this = weak_ptr_factory_.GetWeakPtr();
+      frame->DispatchBeforePrintEvent(/*print_client=*/nullptr);
+      // Don't print if the RenderFrame is gone.
+      if (!weak_this || render_frame_gone_) {
+        return;
+      }
     }
 
+    // Always give the document a chance to load print-only/lazy resources.
     is_loading_ = frame->WillPrintSoon();
     if (is_loading_) {
       on_stop_loading_closure_ = base::BindOnce(
@@ -1359,7 +1420,7 @@ void PrintRenderFrameHelper::PrintRequestedPagesInternal(
     return;
   }
 
-  if (!is_scripted) {
+  if (!has_external_lifecycle) {
     frame->DispatchAfterPrintEvent();
   }
   // WARNING: `this` may be gone at this point. Do not do any more work here and
@@ -1376,22 +1437,22 @@ void PrintRenderFrameHelper::PrintWithParams(
     return;
   }
 
-  if (print_with_params_callback_) {
+  if (print_in_progress_ || print_with_params_callback_) {
     std::move(callback).Run(
         base::unexpected(mojom::PrintFailureReason::kPrintingInProgress));
     return;
   }
 
+  print_with_params_callback_ = std::move(callback);
+
   blink::WebLocalFrame* frame = render_frame()->GetWebFrame();
   frame->DispatchBeforePrintEvent(/*print_client=*/nullptr);
   // Don't print if the RenderFrame is gone.
   if (render_frame_gone_) {
-    std::move(callback).Run(
-        base::unexpected(mojom::PrintFailureReason::kGeneralFailure));
+    std::move(print_with_params_callback_)
+        .Run(base::unexpected(mojom::PrintFailureReason::kGeneralFailure));
     return;
   }
-
-  print_with_params_callback_ = std::move(callback);
 
   // If we are printing a frame with an internal PDF plugin element, find the
   // plugin node and print that instead.
@@ -1422,9 +1483,17 @@ void PrintRenderFrameHelper::PrintWithParams(
 }
 
 void PrintRenderFrameHelper::OnPrintWithParamsFinished() {
+  ScopedIPC scoped_ipc(weak_ptr_factory_.GetWeakPtr());
   if (render_frame_gone_) {
+    if (print_with_params_callback_) {
+      std::move(print_with_params_callback_)
+          .Run(base::unexpected(mojom::PrintFailureReason::kGeneralFailure));
+    }
+    Reset();
     return;
   }
+
+  print_in_progress_ = true;
 
   blink::WebLocalFrame* frame = render_frame()->GetWebFrame();
   const blink::WebNode plugin_node = delegate_->GetPdfElement(frame);
@@ -1434,23 +1503,30 @@ void PrintRenderFrameHelper::OnPrintWithParamsFinished() {
   prep_frame_view_->EnterPrintMode(*print_pages_params_->params,
                                    /*ignore_css_margins=*/false);
 
+  auto weak_this = weak_ptr_factory_.GetWeakPtr();
   PrintPages();
   FinishFramePrinting();
-
-  if (render_frame_gone_) {
+  if (!weak_this) {
     return;
   }
 
-  frame->DispatchAfterPrintEvent();
-  // WARNING: `this` may be gone at this point. Do not do any more work here and
-  // just return.
+  if (!render_frame_gone_) {
+    frame->DispatchAfterPrintEvent();
+    if (!weak_this) {
+      return;
+    }
+  }
+
+  print_in_progress_ = false;
 }
 
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW)
 void PrintRenderFrameHelper::PrintForSystemDialog() {
   ScopedIPC scoped_ipc(weak_ptr_factory_.GetWeakPtr());
-  if (ipc_nesting_level_ > kAllowedIpcDepthForPrint)
+  if (ipc_nesting_level_ > kAllowedIpcDepthForPrint ||
+      print_with_params_callback_) {
     return;
+  }
 
   if (closures_for_mojo_responses_->HasScriptedPrintPreviewQuitClosure()) {
     // If an in-progress print preview already created a nested loop, avoid
@@ -1496,7 +1572,7 @@ void PrintRenderFrameHelper::InitiatePrintPreview(
   if (ipc_nesting_level_ > kAllowedIpcDepthForPrint)
     return;
 
-  if (print_in_progress_) {
+  if (print_in_progress_ || print_with_params_callback_) {
     return;
   }
 
@@ -1529,8 +1605,10 @@ void PrintRenderFrameHelper::InitiatePrintPreview(
 
 void PrintRenderFrameHelper::PrintPreview(base::DictValue settings) {
   ScopedIPC scoped_ipc(weak_ptr_factory_.GetWeakPtr());
-  if (ipc_nesting_level_ > kAllowedIpcDepthForPrint)
+  if (ipc_nesting_level_ > kAllowedIpcDepthForPrint ||
+      print_with_params_callback_) {
     return;
+  }
 
   print_preview_context_.OnPrintPreview();
 
@@ -1597,7 +1675,7 @@ void PrintRenderFrameHelper::PrintFrameContent(
     return;
 
   // If the last request is not finished yet, do not proceed.
-  if (prep_frame_view_) {
+  if (prep_frame_view_ || print_with_params_callback_) {
     DLOG(ERROR) << "Previous request is still ongoing";
     return;
   }
@@ -1609,7 +1687,7 @@ void PrintRenderFrameHelper::PrintFrameContent(
     return;
 
   ContentProxySet typeface_content_info;
-  ContentProxySet image_content_info;
+  ImageSerializationContext image_content_info;
   MetafileSkia metafile(mojom::SkiaDocumentType::kMSKP,
                         params->document_cookie);
 
@@ -1768,7 +1846,12 @@ PrintRenderFrameHelper::CreatePreviewDocument() {
   }
 #endif
 
-  const mojom::PrintParams& print_params = *print_pages_params_->params;
+  // Clone `print_pages_params_->params` instead of holding a raw reference into
+  // `print_pages_params_`, which may be overwritten or reset if nested message
+  // loops or script execution re-enter `PrintRenderFrameHelper`.
+  const mojom::PrintParamsPtr print_params_clone =
+      print_pages_params_->params.Clone();
+  const mojom::PrintParams& print_params = *print_params_clone;
 
   bool require_document_metafile =
       print_params.printed_doc_type != mojom::SkiaDocumentType::kMSKP;
@@ -1845,20 +1928,18 @@ PrintRenderFrameHelper::CreatePreviewDocument() {
   }
 #endif
 
-  if (print_pages_params_->params->printed_doc_type ==
-      mojom::SkiaDocumentType::kMSKP) {
+  if (print_params.printed_doc_type == mojom::SkiaDocumentType::kMSKP) {
     // Want modifiable content of MSKP type to be collected into a document
     // during individual page preview generation (to avoid separate document
     // version for composition), notify to prepare to do this collection.
-    preview_ui_->DidPrepareDocumentForPreview(
-        print_pages_params_->params->document_cookie,
-        print_params.preview_request_id);
+    preview_ui_->DidPrepareDocumentForPreview(print_params.document_cookie,
+                                              print_params.preview_request_id);
   }
 
   {
     std::unique_ptr<HeaderAndFooterContext> header_footer_context;
     blink::WebLocalFrame* header_footer_frame = nullptr;
-    if (print_pages_params_->params->display_header_footer) {
+    if (print_params.display_header_footer) {
       header_footer_context = std::make_unique<HeaderAndFooterContext>(
           *print_preview_context_.prepared_frame());
       header_footer_frame = header_footer_context->frame();
@@ -1905,7 +1986,11 @@ bool PrintRenderFrameHelper::RenderPreviewPage(
   TRACE_EVENT1("print", "PrintRenderFrameHelper::RenderPreviewPage",
                "page_index", page_index);
 
-  const mojom::PrintParams& print_params = *print_pages_params_->params;
+  // Clone `print_pages_params_->params` across `PrintPageInternal()`, which can
+  // spin a nested loop or run script that resets `print_pages_params_`.
+  const mojom::PrintParamsPtr print_params_clone =
+      print_pages_params_->params.Clone();
+  const mojom::PrintParams& print_params = *print_params_clone;
   MetafileSkia* render_metafile = print_preview_context_.metafile();
   std::unique_ptr<MetafileSkia> page_render_metafile;
   if (!render_metafile) {
@@ -1944,7 +2029,8 @@ bool PrintRenderFrameHelper::RenderPreviewPage(
       // rendered.
       page_render_metafile = render_metafile->GetMetafileForCurrentPage(
           print_params.printed_doc_type);
-      return PreviewPageRendered(page_index, std::move(page_render_metafile));
+      return PreviewPageRendered(print_params, page_index,
+                                 std::move(page_render_metafile));
 
     case PrintPageInternalResult::kNoCanvas:
       print_preview_context_.set_error(PrintPreviewErrorBuckets::kNoCanvas);
@@ -2089,10 +2175,10 @@ void PrintRenderFrameHelper::PrintNode(const blink::WebNode& node) {
     return;
   }
 
-  if (print_in_progress_) {
+  if (print_in_progress_ || print_with_params_callback_) {
     // This can happen as a result of processing sync messages when printing
-    // from ppapi plugins. It's a rare case, so its OK to just fail here.
-    // See http://crbug.com/159165.
+    // from PDF plugins, or when `PrintWithParams()` is already in progress.
+    // It's a rare case, so it's OK to just fail here. See crbug.com/40076541.
     return;
   }
 
@@ -2328,13 +2414,16 @@ bool PrintRenderFrameHelper::PrintPagesNative(
     const std::vector<uint32_t>& printed_pages) {
   DCHECK(!printed_pages.empty());
 
-  const mojom::PrintPagesParams& params = *print_pages_params_;
-  const mojom::PrintParams& print_params = *params.params;
+  // Clone `print_pages_params_->params` across `PrintPageInternal()`, which can
+  // spin a nested loop or run script that resets `print_pages_params_`.
+  const mojom::PrintParamsPtr print_params_clone =
+      print_pages_params_->params.Clone();
+  const mojom::PrintParams& print_params = *print_params_clone;
 
   // Provide typeface and image context to use with serializing to the print
   // compositor.
   ContentProxySet typeface_content_info;
-  ContentProxySet image_content_info;
+  ImageSerializationContext image_content_info;
   MetafileSkia metafile(print_params.printed_doc_type,
                         print_params.document_cookie);
   CHECK(metafile.Init());
@@ -2819,6 +2908,7 @@ bool PrintRenderFrameHelper::CheckForCancel() {
 }
 
 bool PrintRenderFrameHelper::PreviewPageRendered(
+    const mojom::PrintParams& print_params,
     uint32_t page_index,
     std::unique_ptr<MetafileSkia> metafile) {
   DCHECK_NE(page_index, kInvalidPageIndex);
@@ -2842,8 +2932,8 @@ bool PrintRenderFrameHelper::PreviewPageRendered(
     ui::AXTreeUpdate accessibility_tree;
     snapshotter_->Snapshot(/* max_node_count= */ 0,
                            /* timeout= */ {}, &accessibility_tree);
-    GetPrintManagerHost()->SetAccessibilityTree(
-        print_pages_params_->params->document_cookie, accessibility_tree);
+    GetPrintManagerHost()->SetAccessibilityTree(print_params.document_cookie,
+                                                accessibility_tree);
   }
 
   auto preview_page_params = mojom::DidPreviewPageParams::New();
@@ -2857,13 +2947,11 @@ bool PrintRenderFrameHelper::PreviewPageRendered(
   }
 
   preview_page_params->page_index = page_index;
-  preview_page_params->document_cookie =
-      print_pages_params_->params->document_cookie;
+  preview_page_params->document_cookie = print_params.document_cookie;
 
   if (preview_ui_) {
-    preview_ui_->DidPreviewPage(
-        std::move(preview_page_params),
-        print_pages_params_->params->preview_request_id);
+    preview_ui_->DidPreviewPage(std::move(preview_page_params),
+                                print_params.preview_request_id);
   }
   return true;
 }
@@ -3125,7 +3213,7 @@ PrintRenderFrameHelper::PrintPreviewContext::typeface_content_info() {
   return &typeface_content_info_;
 }
 
-ContentProxySet*
+ImageSerializationContext*
 PrintRenderFrameHelper::PrintPreviewContext::image_content_info() {
   DCHECK(IsRendering());
   return &image_content_info_;

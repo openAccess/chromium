@@ -23,7 +23,6 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "services/network/public/cpp/client_hints.h"
-#include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/is_potentially_trustworthy.h"
 #include "third_party/blink/public/common/client_hints/enabled_client_hints.h"
 #include "third_party/blink/public/common/features.h"
@@ -48,19 +47,20 @@ ParseInitializeClientHintsStorage() {
     LOG(WARNING)
         << "The 'initialize-client-hints-storage' switch value could not be "
         << "properly parsed.";
-    return {};
+    return results;
   }
 
-  for (auto entry : *maybe_value) {
-    url::Origin origin = url::Origin::Create(GURL(entry.first));
+  for (const auto [key, value] : *maybe_value) {
+    url::Origin origin = url::Origin::Create(GURL(key));
     if (origin.opaque() || origin.scheme() != url::kHttpsScheme) {
       LOG(WARNING)
-          << "The url '" << entry.first
+          << "The url '" << key
           << "' cannot be associated to client hints and will be ignored.";
       continue;
     }
 
-    if (!entry.second.is_string()) {
+    const std::string* str = value.GetIfString();
+    if (!str) {
       LOG(WARNING) << "The value associated with the origin \""
                    << origin.Serialize() << "\" could not be recognized as a "
                    << "valid string and will be ignored.";
@@ -68,16 +68,15 @@ ParseInitializeClientHintsStorage() {
     }
 
     std::optional<std::vector<network::mojom::WebClientHintsType>>
-        maybe_parsed_accept_ch =
-            network::ParseClientHintsHeader(entry.second.GetString());
+        maybe_parsed_accept_ch = network::ParseClientHintsHeader(*str);
 
     if (!maybe_parsed_accept_ch) {
       LOG(WARNING) << "Could not parse the following client hint token list: "
-                   << entry.second.GetString();
+                   << *str;
       continue;
     }
 
-    results[origin] = maybe_parsed_accept_ch.value();
+    results[std::move(origin)] = *std::move(maybe_parsed_accept_ch);
   }
 
   return results;
@@ -122,9 +121,6 @@ network::NetworkQualityTracker* ClientHints::GetNetworkQualityTracker() {
 void ClientHints::GetAllowedClientHintsFromSource(
     const url::Origin& origin,
     blink::EnabledClientHints* client_hints) {
-  if (network::features::ShouldBlockAcceptClientHintsFor(origin)) {
-    return;
-  }
   const GURL& url = origin.GetURL();
   if (!network::IsUrlPotentiallyTrustworthy(url)) {
     return;

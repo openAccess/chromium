@@ -18,6 +18,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/functional/function_ref.h"
+#include "base/i18n/language_tag.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/weak_ptr.h"
@@ -51,6 +52,7 @@
 #include "net/base/schemeful_site.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/manifest/manifest.h"
+#include "third_party/blink/public/common/manifest/manifest_icon_selector.h"
 #include "third_party/blink/public/common/safe_url_pattern.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
@@ -70,19 +72,15 @@ constexpr int kMaxIcons = 20;
 constexpr SquareSizePx kMaxIconSize =
     webapps::InstallableEvaluator::kMaximumIconSizeInPx;
 
-// Concept to ensure a map type has icu::Locale as its key type.
-template <typename MapType>
-concept IsMapKeyedLocale =
-    std::same_as<typename MapType::key_type, icu::Locale>;
-
 // Finds a value in a locale-keyed map, first trying exact match, then
 // language-only fallback.
 // The returned pointer is only valid as long as |localized_map| remains
 // unmodified. Callers must use the result immediately and not store it.
-template <IsMapKeyedLocale MapType>
+template <typename MapType>
+  requires std::same_as<typename MapType::key_type, base::i18n::LanguageTag>
 const typename MapType::mapped_type* FindLocalizedValue(
     const MapType& localized_map,
-    const icu::Locale& application_locale) {
+    const base::i18n::LanguageTag& application_locale) {
   if (localized_map.empty()) {
     return nullptr;
   }
@@ -91,8 +89,7 @@ const typename MapType::mapped_type* FindLocalizedValue(
     return &it->second;
   }
   // Fall back to language-only ("en") match if no exact match ("en-US") found.
-  icu::Locale language_only(application_locale.getLanguage());
-  it = localized_map.find(language_only);
+  it = localized_map.find(application_locale.WithLanguageSubtagOnly());
   if (it != localized_map.end()) {
     return &it->second;
   }
@@ -100,19 +97,17 @@ const typename MapType::mapped_type* FindLocalizedValue(
 }
 
 // Matches a localized text object from a map based on |application_locale|.
-blink::mojom::ManifestLocalizedTextObjectPtr MatchLocalizedText(
-    const base::flat_map<icu::Locale,
-                         blink::mojom::ManifestLocalizedTextObjectPtr>&
+const blink::Manifest::ManifestLocalizedTextObject* MatchLocalizedText(
+    const absl::flat_hash_map<base::i18n::LanguageTag,
+                              blink::Manifest::ManifestLocalizedTextObject>&
         localized_map,
-    const icu::Locale& application_locale) {
-  const blink::mojom::ManifestLocalizedTextObjectPtr* result =
-      FindLocalizedValue(localized_map, application_locale);
-  return result ? (*result).Clone() : nullptr;
+    const base::i18n::LanguageTag& application_locale) {
+  return FindLocalizedValue(localized_map, application_locale);
 }
 
 const std::vector<blink::Manifest::ImageResource>& GetLocalizedShortcutIcons(
     const blink::Manifest::ShortcutItem& shortcut,
-    const icu::Locale& application_locale) {
+    const base::i18n::LanguageTag& application_locale) {
   if (shortcut.icons_localized.has_value() &&
       !shortcut.icons_localized->empty()) {
     const std::vector<blink::Manifest::ImageResource>* localized_icons =
@@ -126,7 +121,7 @@ const std::vector<blink::Manifest::ImageResource>& GetLocalizedShortcutIcons(
 
 const std::u16string& GetLocalizedShortcutName(
     const blink::Manifest::ShortcutItem& shortcut,
-    const icu::Locale& application_locale) {
+    const base::i18n::LanguageTag& application_locale) {
   if (shortcut.name_localized.has_value() &&
       !shortcut.name_localized->empty()) {
     const blink::Manifest::ManifestLocalizedTextObject* localized =
@@ -139,16 +134,16 @@ const std::u16string& GetLocalizedShortcutName(
 }
 
 LocalizedText GetLocalizedTitleFromManifestFields(
-    const blink::mojom::Manifest& manifest,
-    const icu::Locale& application_locale) {
-  blink::mojom::ManifestLocalizedTextObjectPtr localized_name;
-  if (manifest.name_localized.has_value()) {
+    const blink::Manifest& manifest,
+    const base::i18n::LanguageTag& application_locale) {
+  const blink::Manifest::ManifestLocalizedTextObject* localized_name = nullptr;
+  if (manifest.name_localized().has_value()) {
     localized_name =
-        MatchLocalizedText(*manifest.name_localized, application_locale);
+        MatchLocalizedText(*manifest.name_localized(), application_locale);
   }
-  if (!localized_name && manifest.short_name_localized.has_value()) {
-    localized_name =
-        MatchLocalizedText(*manifest.short_name_localized, application_locale);
+  if (!localized_name && manifest.short_name_localized().has_value()) {
+    localized_name = MatchLocalizedText(*manifest.short_name_localized(),
+                                        application_locale);
   }
 
   if (localized_name && !localized_name->value.empty()) {
@@ -158,21 +153,22 @@ LocalizedText GetLocalizedTitleFromManifestFields(
   // Fall back to non-localized fields. Use assignment operator which handles
   // clearing lang/dir fields.
   LocalizedText result;
-  std::u16string name = manifest.name.value_or(std::u16string());
+  std::u16string name = manifest.name().value_or(std::u16string());
   if (!name.empty()) {
     result = name;
-  } else if (manifest.short_name) {
-    result = *manifest.short_name;
+  } else if (manifest.short_name()) {
+    result = *manifest.short_name();
   }
   return result;
 }
 
 LocalizedText GetLocalizedDescriptionFromManifestFields(
-    const blink::mojom::Manifest& manifest,
-    const icu::Locale& application_locale) {
-  if (manifest.description_localized.has_value()) {
-    blink::mojom::ManifestLocalizedTextObjectPtr localized_description =
-        MatchLocalizedText(*manifest.description_localized, application_locale);
+    const blink::Manifest& manifest,
+    const base::i18n::LanguageTag& application_locale) {
+  if (manifest.description_localized().has_value()) {
+    const blink::Manifest::ManifestLocalizedTextObject* localized_description =
+        MatchLocalizedText(*manifest.description_localized(),
+                           application_locale);
     if (localized_description && !localized_description->value.empty()) {
       return LocalizedText(localized_description->value,
                            localized_description->lang,
@@ -182,24 +178,63 @@ LocalizedText GetLocalizedDescriptionFromManifestFields(
   // Fall back to non-localized field. Use assignment operator which handles
   // clearing lang/dir fields.
   LocalizedText result;
-  if (manifest.description.has_value()) {
-    result = *manifest.description;
+  if (manifest.description().has_value()) {
+    result = *manifest.description();
   }
   return result;
 }
 
 const std::vector<blink::Manifest::ImageResource>&
-GetLocalizedIconsFromManifest(const blink::mojom::Manifest& manifest,
-                              const icu::Locale& application_locale) {
-  if (manifest.icons_localized.has_value() &&
-      !manifest.icons_localized->empty()) {
+GetLocalizedIconsFromManifest(
+    const blink::Manifest& manifest,
+    const base::i18n::LanguageTag& application_locale) {
+  if (manifest.icons_localized().has_value() &&
+      !manifest.icons_localized()->empty()) {
     const std::vector<blink::Manifest::ImageResource>* localized_icons =
-        FindLocalizedValue(*manifest.icons_localized, application_locale);
+        FindLocalizedValue(*manifest.icons_localized(), application_locale);
     if (localized_icons && !localized_icons->empty()) {
       return *localized_icons;
     }
   }
-  return manifest.icons;
+  return manifest.icons();
+}
+
+void RecordSvgIconUrl(const blink::Manifest::ImageResource& icon,
+                      WebAppInstallInfo* web_app_info) {
+  if (blink::ManifestIconSelector::IsIconSvg(icon)) {
+    web_app_info->svg_icon_urls.insert(icon.src);
+  }
+}
+
+// Declared sizes to request for `icon`, in declaration order, dropping
+// non-square and too large ones. A zero size ("any") requests no declared
+// size. SVGs rasterize at the requested size, so every declared square size is
+// requested; raster images ignore it, so only the first one is.
+std::vector<SquareSizePx> GetDeclaredSizesToRequest(
+    const blink::Manifest::ImageResource& icon) {
+  std::vector<SquareSizePx> sizes;
+  const bool is_svg = blink::ManifestIconSelector::IsIconSvg(icon);
+  for (const gfx::Size& size : icon.sizes) {
+    if (size.width() != size.height() || size.width() > kMaxIconSize) {
+      continue;
+    }
+    sizes.push_back(size.width());
+    if (!is_svg) {
+      break;
+    }
+  }
+  return sizes;
+}
+
+// Records the sizes that are downloaded for an icon, which determines how many
+// sizes still need to be generated from a "sizes": "any" SVG icon.
+void RecordProvidedSizes(const std::vector<SquareSizePx>& sizes_to_request,
+                         SizeSet& provided_sizes) {
+  for (SquareSizePx size_px : sizes_to_request) {
+    if (size_px > 0) {
+      provided_sizes.emplace(size_px, size_px);
+    }
+  }
 }
 
 // Construct a list of icons from the parsed icons field of the manifest
@@ -209,61 +244,57 @@ GetLocalizedIconsFromManifest(const blink::mojom::Manifest& manifest,
 void UpdateWebAppInstallInfoIconsFromManifestIfNeeded(
     const std::vector<blink::Manifest::ImageResource>& icons,
     WebAppInstallInfo* web_app_info) {
+  // Recorded for every entry: `GetTrustedIconsFromManifest()` scans all icons,
+  // so it can select one that the `kMaxIcons` cap below never reaches.
+  for (const blink::Manifest::ImageResource& icon : icons) {
+    RecordSvgIconUrl(icon, web_app_info);
+  }
+
   std::vector<apps::IconInfo> web_app_icons;
   for (const auto& icon : icons) {
     // An icon's purpose vector should never be empty (the manifest parser
     // should have added ANY if there was no purpose specified in the manifest).
     CHECK(!icon.purpose.empty());
 
+    // TODO(crbug.com/40126722): Take the declared icon density and sizes into
+    // account.
+    const std::vector<SquareSizePx> declared_sizes =
+        GetDeclaredSizesToRequest(icon);
+    if (!icon.sizes.empty() && declared_sizes.empty()) {
+      continue;
+    }
+    std::vector<std::optional<SquareSizePx>> sizes_to_request = {std::nullopt};
+    if (!declared_sizes.empty()) {
+      sizes_to_request.assign(declared_sizes.begin(), declared_sizes.end());
+    }
+
     for (IconPurpose purpose : icon.purpose) {
-      apps::IconInfo info;
-
-      if (!icon.sizes.empty()) {
-        if (std::ranges::contains(icon.sizes, gfx::Size()) &&
-            icon.src.spec().find(".svg") != std::string::npos) {
-          web_app_info->icons_with_size_any.manifest_icons[purpose] = icon.src;
-        }
-
-        // Filter out non-square or too large icons.
-        auto valid_size =
-            std::ranges::find_if(icon.sizes, [](const gfx::Size& size) {
-              return size.width() == size.height() &&
-                     size.width() <= kMaxIconSize;
-            });
-        if (valid_size == icon.sizes.end()) {
-          continue;
-        }
-
-        // TODO(crbug.com/40126722): Take the declared icon density and
-        // sizes into account.
-        info.square_size_px = valid_size->width();
+      if (std::ranges::contains(icon.sizes, gfx::Size()) &&
+          blink::ManifestIconSelector::IsIconSvg(icon)) {
+        web_app_info->icons_with_size_any.manifest_icons[purpose] = icon.src;
       }
 
-      info.url = icon.src;
-      info.purpose = ManifestPurposeToIconInfoPurpose(purpose);
-      web_app_icons.push_back(std::move(info));
+      for (std::optional<SquareSizePx> size_px : sizes_to_request) {
+        apps::IconInfo info;
+        info.square_size_px = size_px;
+        info.url = icon.src;
+        info.purpose = ManifestPurposeToIconInfoPurpose(purpose);
+        web_app_icons.push_back(std::move(info));
 
-      // Limit the number of icons we store on the user's machine.
+        // Limit the number of icons we store on the user's machine.
+        if (web_app_icons.size() == kMaxIcons) {
+          break;
+        }
+      }
+
       if (web_app_icons.size() == kMaxIcons) {
         break;
       }
     }
 
-    // Keep track of the sizes passed in via the manifest which will be
-    // later used to compute how many SVG icons of size:any we need to
-    // download.
-    // This is handled outside the loop above to reduce the number of iterations
-    // so that purpose and size metadata is parsed sequentially one after the
-    // other.
-    if (!web_app_info->icons_with_size_any.manifest_icons.empty()) {
-      for (const auto& icon_size : icon.sizes) {
-        if (icon_size == gfx::Size()) {
-          continue;
-        }
-        web_app_info->icons_with_size_any.manifest_icon_provided_sizes.emplace(
-            icon_size);
-      }
-    }
+    RecordProvidedSizes(
+        declared_sizes,
+        web_app_info->icons_with_size_any.manifest_icon_provided_sizes);
 
     if (web_app_icons.size() == kMaxIcons) {
       break;
@@ -282,7 +313,7 @@ void UpdateWebAppInstallInfoIconsFromManifestIfNeeded(
 void PopulateWebAppShortcutsMenuItemInfos(
     const std::vector<blink::Manifest::ShortcutItem>& shortcuts,
     WebAppInstallInfo* web_app_info,
-    const icu::Locale& application_locale) {
+    const base::i18n::LanguageTag& application_locale) {
   std::vector<WebAppShortcutsMenuItemInfo> web_app_shortcut_infos;
   web_app_shortcut_infos.reserve(shortcuts.size());
   int num_shortcut_icons = 0;
@@ -298,51 +329,41 @@ void PopulateWebAppShortcutsMenuItemInfos(
     const std::vector<blink::Manifest::ImageResource>& shortcut_icons_list =
         GetLocalizedShortcutIcons(shortcut, application_locale);
 
+    // TODO(crbug.com/40126722): Take the declared icon density and sizes into
+    // account.
+    std::vector<std::vector<SquareSizePx>> sizes_per_icon;
+    sizes_per_icon.reserve(shortcut_icons_list.size());
+    for (const blink::Manifest::ImageResource& icon : shortcut_icons_list) {
+      sizes_per_icon.push_back(GetDeclaredSizesToRequest(icon));
+      RecordProvidedSizes(
+          sizes_per_icon.back(),
+          web_app_info->icons_with_size_any.shortcut_menu_icons_provided_sizes);
+      RecordSvgIconUrl(icon, web_app_info);
+    }
+
     for (IconPurpose purpose : kIconPurposes) {
       std::vector<WebAppShortcutsMenuItemInfo::Icon> shortcut_icons;
-      for (const auto& icon : shortcut_icons_list) {
+      for (size_t i = 0; i < shortcut_icons_list.size(); ++i) {
+        const blink::Manifest::ImageResource& icon = shortcut_icons_list[i];
         CHECK(!icon.purpose.empty());
         if (!std::ranges::contains(icon.purpose, purpose)) {
           continue;
         }
 
-        WebAppShortcutsMenuItemInfo::Icon info;
-
         if (std::ranges::contains(icon.sizes, gfx::Size()) &&
-            icon.src.spec().find(".svg") != std::string::npos) {
+            blink::ManifestIconSelector::IsIconSvg(icon)) {
           web_app_info->icons_with_size_any.shortcut_menu_icons[purpose] =
               icon.src;
         }
 
-        // Filter out non-square or too large icons.
-        auto valid_size_it =
-            std::ranges::find_if(icon.sizes, [](const gfx::Size& size) {
-              return size.width() == size.height() &&
-                     size.width() <= kMaxIconSize;
-            });
-        if (valid_size_it == icon.sizes.end()) {
-          continue;
-        }
-        // TODO(crbug.com/40126722): Take the declared icon density and
-        // sizes into account.
-        info.square_size_px = valid_size_it->width();
-
-        // Keep track of the sizes passed in via the manifest which will be
-        // later used to compute how many SVG icons of size:any we need to
-        // download.
-        if (!web_app_info->icons_with_size_any.shortcut_menu_icons.empty()) {
-          for (const auto& icon_size : icon.sizes) {
-            if (icon_size == gfx::Size()) {
-              continue;
-            }
-            web_app_info->icons_with_size_any.shortcut_menu_icons_provided_sizes
-                .emplace(icon_size);
+        for (SquareSizePx size_px : sizes_per_icon[i]) {
+          CHECK_LE(num_shortcut_icons, kMaxIcons);
+          if (num_shortcut_icons == kMaxIcons) {
+            break;
           }
-        }
-
-        CHECK_LE(num_shortcut_icons, kMaxIcons);
-        if (num_shortcut_icons < kMaxIcons) {
+          WebAppShortcutsMenuItemInfo::Icon info;
           info.url = icon.src;
+          info.square_size_px = size_px;
           shortcut_icons.push_back(std::move(info));
           ++num_shortcut_icons;
         }
@@ -424,37 +445,44 @@ std::optional<apps::ShareTarget> ToWebAppShareTarget(
 }
 
 std::vector<apps::ProtocolHandlerInfo> ToWebAppProtocolHandlers(
-    const std::vector<blink::mojom::ManifestProtocolHandlerPtr>&
+    const std::vector<blink::Manifest::ProtocolHandler>&
         manifest_protocol_handlers) {
   std::vector<apps::ProtocolHandlerInfo> protocol_handlers;
   for (const auto& manifest_protocol_handler : manifest_protocol_handlers) {
     apps::ProtocolHandlerInfo protocol_handler;
     protocol_handler.protocol =
-        base::UTF16ToUTF8(manifest_protocol_handler->protocol);
-    protocol_handler.url = manifest_protocol_handler->url;
+        base::UTF16ToUTF8(manifest_protocol_handler.protocol);
+    protocol_handler.url = manifest_protocol_handler.url;
     protocol_handlers.push_back(std::move(protocol_handler));
   }
   return protocol_handlers;
 }
 
 ScopeExtensions ToWebAppScopeExtensions(
-    const std::vector<blink::mojom::ManifestScopeExtensionPtr>&
-        scope_extensions) {
+    const std::vector<blink::Manifest::ScopeExtension>& scope_extensions) {
   ScopeExtensions apps_scope_extensions;
   for (const auto& scope_extension : scope_extensions) {
-    CHECK(scope_extension);
+    // Disallow opaque origins and non-HTTPS origins as defense-in-depth against
+    // corrupted or invalid scope extension entries. IPC validation and bad
+    // message reporting are performed at the IPC boundary in
+    // ManifestManagerHost.
+    if (scope_extension.origin.opaque() ||
+        scope_extension.origin.scheme() != url::kHttpsScheme) {
+      continue;
+    }
     auto new_scope_extension = ScopeExtensionInfo::CreateForOrigin(
-        scope_extension->origin, scope_extension->has_origin_wildcard);
+        scope_extension.origin, scope_extension.has_origin_wildcard);
     apps_scope_extensions.insert(std::move(new_scope_extension));
   }
   return apps_scope_extensions;
 }
 
 std::optional<MigrationSource> ToMigrationSource(
-    const blink::mojom::ManifestMigrateFrom& migrate_from) {
+    const blink::Manifest::MigrateFrom& migrate_from) {
   std::optional<webapps::ManifestId> manifest_id =
       webapps::ManifestId::Create(migrate_from.id);
-  if (!manifest_id.has_value()) {
+  if (!manifest_id.has_value() ||
+      url::Origin::Create(manifest_id->value()).opaque()) {
     return std::nullopt;
   }
   return MigrationSource(*manifest_id, migrate_from.behavior,
@@ -492,35 +520,23 @@ void PopulateHomeTabIconsFromHomeTabManifestParams(
 
     if (!icon.sizes.empty()) {
       if (std::ranges::contains(icon.sizes, gfx::Size()) &&
-          icon.src.spec().find(".svg") != std::string::npos) {
+          blink::ManifestIconSelector::IsIconSvg(icon)) {
         for (const auto& purpose : icon.purpose) {
           web_app_info->icons_with_size_any.home_tab_icons[purpose] = icon.src;
         }
       }
-      // Filter out non-square or too large icons.
-      auto valid_size =
-          std::ranges::find_if(icon.sizes, [](const gfx::Size& size) {
-            return size.width() == size.height() &&
-                   size.width() <= kMaxIconSize;
-          });
-      if (valid_size == icon.sizes.end()) {
+      const std::vector<SquareSizePx> sizes_to_request =
+          GetDeclaredSizesToRequest(icon);
+      if (sizes_to_request.empty()) {
         continue;
       }
 
-      // Keep track of the sizes passed in via the manifest which will be
-      // later used to compute how many SVG icons of size:any we need to
-      // download.
-      if (!web_app_info->icons_with_size_any.home_tab_icons.empty()) {
-        for (const auto& icon_size : icon.sizes) {
-          if (icon_size == gfx::Size()) {
-            continue;
-          }
-          web_app_info->icons_with_size_any.home_tab_icon_provided_sizes
-              .emplace(icon_size);
-        }
-      }
+      RecordProvidedSizes(
+          sizes_to_request,
+          web_app_info->icons_with_size_any.home_tab_icon_provided_sizes);
     }
 
+    RecordSvgIconUrl(icon, web_app_info);
     home_tab_icons.push_back(std::move(icon));
 
     // Limit the number of icons we store on the user's machine.
@@ -596,7 +612,7 @@ ManifestToWebAppInstallInfoJob::~ManifestToWebAppInstallInfoJob() = default;
 // static
 std::unique_ptr<ManifestToWebAppInstallInfoJob>
 ManifestToWebAppInstallInfoJob::CreateAndStart(
-    const blink::mojom::Manifest& manifest,
+    const blink::Manifest& manifest,
     WebAppDataRetriever& data_retriever,
     bool background_installation,
     webapps::WebappInstallSource install_source,
@@ -637,7 +653,7 @@ IconsDownloadedResult ManifestToWebAppInstallInfoJob::icon_download_result()
 }
 
 ManifestToWebAppInstallInfoJob::ManifestToWebAppInstallInfoJob(
-    const blink::mojom::Manifest& manifest,
+    const blink::Manifest& manifest,
     WebAppDataRetriever& data_retriever,
     bool background_installation,
     webapps::WebappInstallSource install_source,
@@ -645,7 +661,7 @@ ManifestToWebAppInstallInfoJob::ManifestToWebAppInstallInfoJob(
     WebAppInstallInfoCreationCallback creation_callback,
     WebAppInstallInfoConstructOptions options,
     std::optional<WebAppInstallInfo> fallback_info)
-    : manifest_(manifest.Clone()),
+    : manifest_(manifest),
       data_retriever_(data_retriever),
       creation_callback_(std::move(creation_callback)),
       options_(options),
@@ -653,19 +669,21 @@ ManifestToWebAppInstallInfoJob::ManifestToWebAppInstallInfoJob(
       debug_data_(debug_data) {
   // These are the pre-requisites for constructing a WebAppInstallInfo from a
   // valid manifest id and start url.
-  CHECK(manifest_->id.is_valid());
-  CHECK(!manifest_->id.has_ref());
-  CHECK(manifest_->start_url.is_valid());
+  CHECK(manifest_.id().is_valid());
+  CHECK(!manifest_.id().has_ref());
+  CHECK(manifest_.start_url().is_valid());
 
-  debug_data_->Set("manifest_id", manifest_->id.spec());
-  debug_data_->Set("start_url", manifest_->start_url.spec());
+  // TODO(https://crbug.com/485890278): Consider adding
+  // blink::Manifest::ToDebugValue() for richer manifest debug_data logging.
+  debug_data_->Set("manifest_id", manifest_.id().spec());
+  debug_data_->Set("start_url", manifest_.start_url().spec());
   debug_data_->Set("background_installation", background_installation);
   debug_data_->Set("install_source", base::ToString(install_source));
-  if (manifest_->name && !manifest_->name->empty()) {
-    debug_data_->Set("manifest_name", *manifest_->name);
+  if (manifest_.name() && !manifest_.name()->empty()) {
+    debug_data_->Set("manifest_name", *manifest_.name());
   }
-  if (manifest_->short_name && !manifest_->short_name->empty()) {
-    debug_data_->Set("manifest_short_name", *manifest_->short_name);
+  if (manifest_.short_name() && !manifest_.short_name()->empty()) {
+    debug_data_->Set("manifest_short_name", *manifest_.short_name());
   }
 }
 
@@ -687,12 +705,12 @@ void ManifestToWebAppInstallInfoJob::Start(
   }
 
   std::optional<webapps::ManifestId> manifest_id =
-          webapps::ManifestId::Create(manifest_->id);
+      webapps::ManifestId::Create(manifest_.id());
 
   CHECK(manifest_id.has_value());
 
-  install_info_ = std::make_unique<WebAppInstallInfo>(
-      *manifest_id, manifest_->start_url);
+  install_info_ =
+      std::make_unique<WebAppInstallInfo>(*manifest_id, manifest_.start_url());
 
   // First, populate the `install_info()` by parsing the fields provided in the
   // manifest.
@@ -760,17 +778,15 @@ void ManifestToWebAppInstallInfoJob::FetchIconsInternal(
 
 void ManifestToWebAppInstallInfoJob::ParseManifestAndPopulateInfo() {
   // Create the application locale once for all localization lookups.
-  const icu::Locale application_locale(g_browser_process->GetFeatures()
-                                           ->application_locale_storage()
-                                           ->Get()
-                                           .c_str());
+  const base::i18n::LanguageTag application_locale =
+      g_browser_process->GetFeatures()->application_locale_storage()->GetTag();
 
   install_info().title =
-      GetLocalizedTitleFromManifestFields(*manifest_, application_locale);
+      GetLocalizedTitleFromManifestFields(manifest_, application_locale);
 
   // Clean up.
-  if (manifest_->scope.is_valid()) {
-    install_info().scope = manifest_->scope;
+  if (manifest_.scope().is_valid()) {
+    install_info().scope = manifest_.scope();
   }
   // Ensure scope is derived if empty after processing manifest.
   if (install_info().scope.is_empty()) {
@@ -778,21 +794,20 @@ void ManifestToWebAppInstallInfoJob::ParseManifestAndPopulateInfo() {
   }
   CHECK(!install_info().scope.is_empty());
 
-  if (manifest_->theme_color.has_value()) {
-    install_info().theme_color = SkColorSetA(
-        static_cast<SkColor>(manifest_->theme_color.value()), SK_AlphaOPAQUE);
+  if (manifest_.theme_color().has_value()) {
+    install_info().theme_color =
+        SkColorSetA(manifest_.theme_color().value(), SK_AlphaOPAQUE);
   }
 
-  if (manifest_->background_color.has_value()) {
+  if (manifest_.background_color().has_value()) {
     install_info().background_color =
-        SkColorSetA(static_cast<SkColor>(manifest_->background_color.value()),
-                    SK_AlphaOPAQUE);
+        SkColorSetA(manifest_.background_color().value(), SK_AlphaOPAQUE);
   }
 
-  if (manifest_->display != DisplayMode::kUndefined) {
-    install_info().display_mode = manifest_->display;
+  if (manifest_.display() != DisplayMode::kUndefined) {
+    install_info().display_mode = manifest_.display();
   }
-  for (const auto& override_item : manifest_->display_override) {
+  for (const auto& override_item : manifest_.display_override()) {
     if (override_item.display() == DisplayMode::kUnframed) {
       if (base::FeatureList::IsEnabled(blink::features::kUnframedIwa)) {
         install_info().display_override.push_back(
@@ -805,10 +820,14 @@ void ManifestToWebAppInstallInfoJob::ParseManifestAndPopulateInfo() {
   }
 
   const std::vector<blink::Manifest::ImageResource>& icons =
-      GetLocalizedIconsFromManifest(*manifest_, application_locale);
+      GetLocalizedIconsFromManifest(manifest_, application_locale);
   UpdateWebAppInstallInfoIconsFromManifestIfNeeded(icons, &install_info());
   if (options_.use_manifest_icons_as_trusted) {
-    install_info().trusted_icons = install_info().manifest_icons;
+    for (const apps::IconInfo& icon_info : install_info().manifest_icons) {
+      if (icon_info.purpose != apps::IconInfo::Purpose::kMonochrome) {
+        install_info().trusted_icons.push_back(icon_info);
+      }
+    }
   } else {
     std::optional<apps::IconInfo> primary_icon_metadata =
         GetTrustedIconsFromManifest(icons);
@@ -818,76 +837,77 @@ void ManifestToWebAppInstallInfoJob::ParseManifestAndPopulateInfo() {
   }
 
   // TODO(crbug.com/40185556): Confirm incoming icons to write to install_info_.
-  PopulateFileHandlerInfoFromManifest(manifest_->file_handlers,
+  PopulateFileHandlerInfoFromManifest(manifest_.file_handlers(),
                                       install_info().scope, &install_info());
 
-  install_info().share_target = ToWebAppShareTarget(manifest_->share_target);
+  install_info().share_target = ToWebAppShareTarget(manifest_.share_target());
 
   install_info().protocol_handlers =
-      ToWebAppProtocolHandlers(manifest_->protocol_handlers);
+      ToWebAppProtocolHandlers(manifest_.protocol_handlers());
 
   install_info().scope_extensions =
-      ToWebAppScopeExtensions(manifest_->scope_extensions);
+      ToWebAppScopeExtensions(manifest_.scope_extensions());
 
   GURL inferred_scope = install_info().scope.is_valid()
                             ? install_info().scope
                             : install_info().start_url().GetWithoutFilename();
   if (base::FeatureList::IsEnabled(
           blink::features::kWebAppManifestLockScreen) &&
-      manifest_->lock_screen && manifest_->lock_screen->start_url.is_valid() &&
-      IsInScope(manifest_->lock_screen->start_url, inferred_scope)) {
-    install_info().lock_screen_start_url = manifest_->lock_screen->start_url;
+      manifest_.lock_screen() &&
+      manifest_.lock_screen()->start_url.is_valid() &&
+      IsInScope(manifest_.lock_screen()->start_url, inferred_scope)) {
+    install_info().lock_screen_start_url = manifest_.lock_screen()->start_url;
   }
 
-  if (manifest_->note_taking &&
-      manifest_->note_taking->new_note_url.is_valid() &&
-      IsInScope(manifest_->note_taking->new_note_url, inferred_scope)) {
+  if (manifest_.note_taking() &&
+      manifest_.note_taking()->new_note_url.is_valid() &&
+      IsInScope(manifest_.note_taking()->new_note_url, inferred_scope)) {
     install_info().note_taking_new_note_url =
-        manifest_->note_taking->new_note_url;
+        manifest_.note_taking()->new_note_url;
   }
 
   CHECK(install_info().shortcuts_menu_item_infos.empty());
-  PopulateWebAppShortcutsMenuItemInfos(manifest_->shortcuts, &install_info(),
+  PopulateWebAppShortcutsMenuItemInfos(manifest_.shortcuts(), &install_info(),
                                        application_locale);
 
-  for (const auto& migrate_from : manifest_->migrate_from) {
-    if (!net::SchemefulSite::IsSameSite(manifest_->manifest_url,
-                                        migrate_from->id)) {
+  for (const auto& migrate_from : manifest_.migrate_from()) {
+    if (!net::SchemefulSite::IsSameSite(manifest_.manifest_url(),
+                                        migrate_from.id)) {
       continue;
     }
-    std::optional<MigrationSource> source = ToMigrationSource(*migrate_from);
+    std::optional<MigrationSource> source = ToMigrationSource(migrate_from);
     if (source.has_value()) {
       install_info().migration_sources.push_back(std::move(*source));
     }
   }
 
-  if (manifest_->manifest_url.is_valid()) {
-    install_info().manifest_url = manifest_->manifest_url;
+  if (manifest_.manifest_url().is_valid()) {
+    install_info().manifest_url = manifest_.manifest_url();
   }
 
-  if (manifest_->update_manifest_url &&
-      manifest_->update_manifest_url->is_valid()) {
+  if (manifest_.update_manifest_url() &&
+      manifest_.update_manifest_url()->is_valid()) {
     install_info().iwa_update_manifest_url =
-        manifest_->update_manifest_url.value();
+        manifest_.update_manifest_url().value();
   }
 
-  install_info().launch_handler = manifest_->launch_handler;
+  install_info().launch_handler = manifest_.launch_handler();
 
   LocalizedText description =
-      GetLocalizedDescriptionFromManifestFields(*manifest_, application_locale);
+      GetLocalizedDescriptionFromManifestFields(manifest_, application_locale);
   if (!description.empty()) {
     install_info().description = std::move(description);
   }
 
-  install_info().translations = ToWebAppTranslations(manifest_->translations);
+  install_info().translations = ToWebAppTranslations(manifest_.translations());
 
-  install_info().tab_strip = manifest_->tab_strip;
+  install_info().tab_strip = manifest_.tab_strip();
 
   if (HomeTabIconsExistInTabStrip(*install_info_)) {
     PopulateHomeTabIconsFromHomeTabManifestParams(&install_info());
   }
 
-  install_info().related_applications = manifest_->related_applications;
+  install_info().related_applications = manifest_.related_applications();
 }
 
 void ManifestToWebAppInstallInfoJob::OnIconsFetchedGetInstallInfo(
@@ -918,7 +938,9 @@ void ManifestToWebAppInstallInfoJob::OnIconsFetchedGetInstallInfo(
     debug_data_->Set("is_generated_icon", true);
   }
   if (options_.use_manifest_icons_as_trusted) {
-    install_info().trusted_icon_bitmaps = install_info().icon_bitmaps;
+    install_info().trusted_icon_bitmaps.any = install_info().icon_bitmaps.any;
+    install_info().trusted_icon_bitmaps.maskable =
+        install_info().icon_bitmaps.maskable;
   } else {
     PopulateTrustedIconBitmaps(install_info(), icons_map);
   }

@@ -12,14 +12,17 @@ import android.transition.Transition;
 import android.transition.TransitionSet;
 import android.view.View;
 import android.view.ViewStub;
+import android.widget.FrameLayout;
 
 import org.chromium.base.Callback;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.actor.ActorKeyedService;
 import org.chromium.chrome.browser.actor.ActorKeyedServiceFactory;
 import org.chromium.chrome.browser.actor.ActorTask;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
 import org.chromium.chrome.browser.layouts.LayoutManager;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -35,8 +38,10 @@ import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandlerRegistry;
 import org.chromium.ui.base.ViewUtils;
+import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
+import org.chromium.ui.modelutil.PropertyObservable;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -55,9 +60,14 @@ public class ActorOverlayCoordinator {
     private final Callback<Profile> mProfileObserver;
     private final TabModelSelector mTabModelSelector;
     private final @Nullable SideUiStateProvider mSideUiStateProvider;
+    private final PropertyObservable.PropertyObserver<PropertyKey> mModelObserver;
 
+    private @Nullable FrameLayout mContainer;
     private @Nullable ActorOverlayView mView;
     private @Nullable PropertyModelChangeProcessor mChangeProcessor;
+    private @Nullable ViewStub mHandoffButtonStub;
+    private @Nullable ActorHandoffButtonView mHandoffButtonView;
+    private @Nullable PropertyModelChangeProcessor mHandoffButtonChangeProcessor;
     private @Nullable SideUiObserver mSideUiObserver;
     private @Nullable ActorKeyedService mActorKeyedService;
     private ActorKeyedService.@Nullable Observer mActorObserver;
@@ -73,6 +83,7 @@ public class ActorOverlayCoordinator {
      * @param backPressHandlerRegistry The BackPressHandlerRegistry to handle back press.
      * @param layoutManagerSupplier The LayoutManager supplier to observe layout changes.
      * @param profileSupplier The Profile supplier to observe profile changes.
+     * @param omniboxFocusStateSupplier Supplier for whether the omnibox currently has focus.
      * @param sideUiStateProvider The {@link SideUiStateProvider} providing state on the side UI.
      */
     public ActorOverlayCoordinator(
@@ -84,6 +95,7 @@ public class ActorOverlayCoordinator {
             BackPressHandlerRegistry backPressHandlerRegistry,
             MonotonicObservableSupplier<LayoutManager> layoutManagerSupplier,
             MonotonicObservableSupplier<Profile> profileSupplier,
+            NonNullObservableSupplier<Boolean> omniboxFocusStateSupplier,
             @Nullable SideUiStateProvider sideUiStateProvider) {
         mViewStub = viewStub;
         mContext = viewStub.getContext();
@@ -99,12 +111,23 @@ public class ActorOverlayCoordinator {
                         .with(ActorOverlayProperties.TOP_MARGIN, 0)
                         .with(ActorOverlayProperties.RIGHT_MARGIN, 0)
                         .with(ActorOverlayProperties.BOTTOM_MARGIN, 0)
+                        .with(ActorOverlayProperties.CONTROLS_POSITION, ControlsPosition.TOP)
+                        .with(ActorOverlayProperties.HANDOFF_BUTTON_TOP_MARGIN, 0)
                         .with(ActorOverlayProperties.ON_CLICK_LISTENER, v -> handleOnClick())
                         .with(
                                 ActorOverlayProperties.ON_TAKE_OVER_CLICK_LISTENER,
                                 v -> handleTakeOverTask())
                         .with(ActorOverlayProperties.TAKE_OVER_TASK_BUTTON_VISIBLE, false)
                         .build();
+
+        mModelObserver =
+                (source, key) -> {
+                    if (key == ActorOverlayProperties.TAKE_OVER_TASK_BUTTON_VISIBLE
+                            && mModel.get(ActorOverlayProperties.TAKE_OVER_TASK_BUTTON_VISIBLE)) {
+                        inflateHandoffButtonView();
+                    }
+                };
+        mModel.addObserver(mModelObserver);
 
         mSideUiStateProvider = sideUiStateProvider;
         if (mSideUiStateProvider != null) {
@@ -117,11 +140,13 @@ public class ActorOverlayCoordinator {
 
         mMediator =
                 new ActorOverlayMediator(
+                        mContext,
                         mModel,
                         tabModelSelector,
                         browserControlsVisibilityManager,
                         tabObscuringHandler,
                         layoutManagerSupplier,
+                        omniboxFocusStateSupplier,
                         this::inflateView,
                         this::showInteractionLimitedSnackbar,
                         this::dismissInteractionLimitedSnackbar);
@@ -132,26 +157,44 @@ public class ActorOverlayCoordinator {
     }
 
     private void inflateView() {
-        if (mView != null) return;
-        mView = (ActorOverlayView) mViewStub.inflate();
+        if (mContainer != null) return;
+        mContainer = (FrameLayout) mViewStub.inflate();
+        mView = mContainer.findViewById(R.id.actor_overlay_scrim);
+        mHandoffButtonStub = mContainer.findViewById(R.id.actor_handoff_button_stub);
         mChangeProcessor =
-                PropertyModelChangeProcessor.create(mModel, mView, ActorOverlayViewBinder::bind);
+                PropertyModelChangeProcessor.create(
+                        mModel,
+                        new ActorOverlayViewBinder.ViewHolder(mContainer, mView),
+                        ActorOverlayViewBinder::bind);
+        if (mModel.get(ActorOverlayProperties.TAKE_OVER_TASK_BUTTON_VISIBLE)) {
+            inflateHandoffButtonView();
+        }
+    }
+
+    private void inflateHandoffButtonView() {
+        if (mHandoffButtonView != null || mContainer == null || mHandoffButtonStub == null) return;
+        mHandoffButtonView = (ActorHandoffButtonView) mHandoffButtonStub.inflate();
+        mHandoffButtonStub = null;
+        mHandoffButtonChangeProcessor =
+                PropertyModelChangeProcessor.create(
+                        mModel, mHandoffButtonView, ActorHandoffButtonViewBinder::bind);
     }
 
     private class MarginAdjusterForSideUi implements SideUiObserver {
 
         @Override
         public @Nullable Transition onPreSideUiSpecsChange(
-                SideUiCoordinator.SideUiSpecs sideUiSpecs) {
-            if (mView == null || !mModel.get(ActorOverlayProperties.VISIBLE)) {
+                SideUiCoordinator.SideUiSpecs sideUiSpecs,
+                SideUiCoordinator.UiUpdateRequest request) {
+            if (mContainer == null || !mModel.get(ActorOverlayProperties.VISIBLE)) {
                 return null;
             }
             TransitionSet transitionSet = new TransitionSet();
             Collection<View> descendants = new ArrayList<>();
-            ViewUtils.getAllDescendants(mView, descendants, emptySet());
+            ViewUtils.getAllDescendants(mContainer, descendants, emptySet());
 
             Transition transition = new ChangeBounds();
-            transition.addTarget(mView);
+            transition.addTarget(mContainer);
             for (View view : descendants) {
                 transition.addTarget(view);
             }
@@ -160,10 +203,21 @@ public class ActorOverlayCoordinator {
         }
 
         @Override
-        public void onSideUiSpecsChanged(SideUiCoordinator.SideUiSpecs sideUiSpecs) {
-            mModel.set(ActorOverlayProperties.LEFT_MARGIN, sideUiSpecs.getWidth(AnchorSide.LEFT));
-            mModel.set(ActorOverlayProperties.RIGHT_MARGIN, sideUiSpecs.getWidth(AnchorSide.RIGHT));
+        public void onSideUiSpecsChangeStarted(
+                SideUiCoordinator.SideUiSpecs sideUiSpecs,
+                SideUiCoordinator.UiUpdateRequest request) {
+            mModel.set(
+                    ActorOverlayProperties.LEFT_MARGIN,
+                    sideUiSpecs.getReservedWidth(AnchorSide.LEFT));
+            mModel.set(
+                    ActorOverlayProperties.RIGHT_MARGIN,
+                    sideUiSpecs.getReservedWidth(AnchorSide.RIGHT));
         }
+
+        @Override
+        public void onSideUiSpecsChangeCompleted(
+                SideUiCoordinator.SideUiSpecs sideUiSpecs,
+                SideUiCoordinator.UiUpdateRequest request) {}
     }
 
     private void onProfileAdded(Profile profile) {
@@ -222,7 +276,23 @@ public class ActorOverlayCoordinator {
     }
 
     boolean isViewInflatedForTesting() {
-        return mView != null;
+        return mContainer != null;
+    }
+
+    @Nullable FrameLayout getContainerForTesting() {
+        return mContainer;
+    }
+
+    @Nullable ActorOverlayView getOverlayViewForTesting() {
+        return mView;
+    }
+
+    @Nullable ActorHandoffButtonView getHandoffButtonViewForTesting() {
+        return mHandoffButtonView;
+    }
+
+    @Nullable ViewStub getHandoffButtonStubForTesting() {
+        return mHandoffButtonStub;
     }
 
     PropertyModel getModelForTesting() {
@@ -247,10 +317,19 @@ public class ActorOverlayCoordinator {
         }
         mBackPressHandlerRegistry.removeHandler(mMediator);
         mMediator.destroy();
+        mModel.removeObserver(mModelObserver);
         if (mChangeProcessor != null) {
             mChangeProcessor.destroy();
             mChangeProcessor = null;
         }
+        if (mHandoffButtonChangeProcessor != null) {
+            mHandoffButtonChangeProcessor.destroy();
+            mHandoffButtonChangeProcessor = null;
+        }
+        mContainer = null;
+        mView = null;
+        mHandoffButtonView = null;
+        mHandoffButtonStub = null;
         dismissInteractionLimitedSnackbar();
     }
 }

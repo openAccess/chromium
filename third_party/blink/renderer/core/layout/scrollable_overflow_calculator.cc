@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/core/layout/inline/inline_cursor.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/layout/layout_text_combine.h"
+#include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/layout/length_utils.h"
 #include "third_party/blink/renderer/core/layout/logical_fragment.h"
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
@@ -29,7 +30,7 @@ ScrollableOverflowCalculator::RecalculateScrollableOverflowForFragment(
     bool has_block_fragmentation) {
   const BlockNode node(const_cast<LayoutBox*>(
       To<LayoutBox>(fragment.GetSelfOrContainerLayoutObject())));
-  DCHECK(!node.IsReplaced() || node.IsMedia());
+  DCHECK(!node.IsReplaced());
 
   const WritingDirectionMode writing_direction =
       node.Style().GetWritingDirection();
@@ -88,6 +89,7 @@ ScrollableOverflowCalculator::ScrollableOverflowCalculator(
       has_block_fragmentation_(has_block_fragmentation),
       padding_(padding),
       size_(size) {
+  DCHECK(!node.IsReplaced());
   const auto border_scrollbar = borders + scrollbar;
 
   // TODO(layout-dev): This isn't correct for <fieldset> elements as we may
@@ -97,25 +99,44 @@ ScrollableOverflowCalculator::ScrollableOverflowCalculator(
                                     .ClampNegativeToZero(),
                                 (size_.height - border_scrollbar.VerticalSum())
                                     .ClampNegativeToZero())};
-  scrollable_overflow_ = padding_rect_;
+  if (is_view_ && !has_block_fragmentation_ &&
+      RuntimeEnabledFeatures::ResponsiveIframesShrinkEnabled()) {
+    // Start with an empty rect and unite `padding_rect_` later, to compute both
+    // with and without `padding_rect_`.
+    scrollable_overflow_ = {
+        PhysicalOffset(has_left_overflow_ ? padding_rect_.Right()
+                                          : padding_rect_.offset.left,
+                       has_top_overflow_ ? padding_rect_.Bottom()
+                                         : padding_rect_.offset.top),
+        PhysicalSize()};
+  } else {
+    scrollable_overflow_ = padding_rect_;
+  }
 }
 
 const PhysicalRect ScrollableOverflowCalculator::Result(
     const std::optional<PhysicalRect> inflow_bounds) {
-  if (!inflow_bounds || !is_scroll_container_)
-    return scrollable_overflow_;
+  if (inflow_bounds && is_scroll_container_) {
+    PhysicalOffset start_offset = inflow_bounds->MinXMinYCorner() -
+                                  PhysicalOffset(padding_.left, padding_.top);
+    PhysicalOffset end_offset = inflow_bounds->MaxXMaxYCorner() +
+                                PhysicalOffset(padding_.right, padding_.bottom);
 
-  PhysicalOffset start_offset = inflow_bounds->MinXMinYCorner() -
-                                PhysicalOffset(padding_.left, padding_.top);
-  PhysicalOffset end_offset = inflow_bounds->MaxXMaxYCorner() +
-                              PhysicalOffset(padding_.right, padding_.bottom);
+    PhysicalRect inflow_overflow = {
+        start_offset, PhysicalSize(end_offset.left - start_offset.left,
+                                   end_offset.top - start_offset.top)};
+    inflow_overflow = AdjustOverflowForScrollOrigin(inflow_overflow);
 
-  PhysicalRect inflow_overflow = {
-      start_offset, PhysicalSize(end_offset.left - start_offset.left,
-                                 end_offset.top - start_offset.top)};
-  inflow_overflow = AdjustOverflowForScrollOrigin(inflow_overflow);
+    scrollable_overflow_.UniteEvenIfEmpty(inflow_overflow);
+  }
 
-  scrollable_overflow_.UniteEvenIfEmpty(inflow_overflow);
+  if (is_view_ && !has_block_fragmentation_ &&
+      RuntimeEnabledFeatures::ResponsiveIframesShrinkEnabled()) {
+    To<LayoutView>(node_.GetLayoutBox())
+        ->SetScrollableOverflowWithoutPaddingBox(scrollable_overflow_);
+    scrollable_overflow_.UniteEvenIfEmpty(padding_rect_);
+  }
+
   return scrollable_overflow_;
 }
 
@@ -137,7 +158,7 @@ void ScrollableOverflowCalculator::AddItemsInternal(
   }
 
   for (const auto& item : items) {
-    if (item->IsHiddenForPaint()) {
+    if (item->IsHiddenDueToLayout()) {
       continue;
     }
 
@@ -240,7 +261,9 @@ PhysicalRect ScrollableOverflowCalculator::AdjustOverflowForScrollOrigin(
 PhysicalRect ScrollableOverflowCalculator::ScrollableOverflowForPropagation(
     const PhysicalBoxFragment& child_fragment) {
   // Don't propagate any overflow if:
-  //  - We are hidden for painting purposes (empty-cells within a table).
+  //  - We are hidden for painting purposes due to layout rather than CSS
+  //    (e.g. empty-cells within a table, or line-clamp hidden content).
+  //  - We are a float inside a line-clamp container (IsLineClampClippedFloat).
   //  - We are a ::view-transition pseudo. They are positioned as a child of
   //    its owning element, but not subject to that elements overflow clip or
   //    scroll translation. See:
@@ -248,7 +271,8 @@ PhysicalRect ScrollableOverflowCalculator::ScrollableOverflowForPropagation(
   //    Note that both the scope and its container will ignore overflow from
   //    this pseudo; this should be correct as a consequence of the fact that
   //    the scope is treated as having contain:layout.
-  if (child_fragment.IsHiddenForPaint() ||
+  if (child_fragment.IsHiddenDueToLayout() ||
+      child_fragment.IsLineClampClippedFloat() ||
       IsA<ViewTransitionTransitionElement>(child_fragment.GetNode())) {
     return {};
   }
@@ -309,9 +333,9 @@ PhysicalRect ScrollableOverflowCalculator::ScrollableOverflowForPropagation(
     LayoutObject::AncestorSkipInfo skip_info(node_.GetLayoutBox());
     OverflowClipAxes clipped_axes = kNoOverflowClip;
     for (const LayoutObject* walker =
-             child_fragment.GetLayoutObject()->ContainingBlock(&skip_info);
+             child_fragment.GetLayoutObject()->ContainingBox(&skip_info);
          walker != node_.GetLayoutBox() && !skip_info.AncestorSkipped();
-         walker = walker->ContainingBlock(&skip_info)) {
+         walker = walker->ContainingBox(&skip_info)) {
       if (OverflowClipAxes axes_to_clip = walker->GetOverflowClipAxes()) {
         // Shrink the overflow rectangle to be at most 1px large along the axes
         // to be clipped. Unconditionally setting it to 0 would prevent us from

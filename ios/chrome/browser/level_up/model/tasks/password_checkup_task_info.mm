@@ -3,8 +3,6 @@
 // found in the LICENSE file.
 
 #import "base/functional/bind.h"
-#import "base/functional/callback_helpers.h"
-#import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/level_up/model/task_info.h"
 #import "ios/chrome/browser/level_up/model/tasks/task_factories.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
@@ -24,15 +22,16 @@ class PasswordCheckupTaskInfo : public TaskInfo {
     return l10n_util::GetStringUTF8(IDS_IOS_LEVEL_UP_FEATURE_PASSWORD_CHECKUP);
   }
   std::string GetTaskDescription() const override {
-    return "Check your saved passwords for security issues";
+    return l10n_util::GetStringUTF8(
+        IDS_IOS_LEVEL_UP_FEATURE_PASSWORD_CHECKUP_DESCRIPTION);
   }
   Symbol GetIconSymbol() const override { return SymbolPasswordManager; }
   bool IsMulticolorIcon() const override { return true; }
   LevelUpTaskCategory GetCategory() const override {
     return LevelUpTaskCategory::kSafety;
   }
-  std::string GetTriggerUserAction() const override {
-    return "MobilePasswordCheckupSettingsClose";
+  std::vector<std::string> GetTriggerUserActions() const override {
+    return {"MobilePasswordCheckupSettingsClose"};
   }
   std::string GetCompletionSnackbarMessage() const override {
     return l10n_util::GetStringUTF8(

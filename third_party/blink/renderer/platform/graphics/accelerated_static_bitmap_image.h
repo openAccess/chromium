@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_ACCELERATED_STATIC_BITMAP_IMAGE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GRAPHICS_ACCELERATED_STATIC_BITMAP_IMAGE_H_
 
+#include "base/functional/function_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_checker.h"
@@ -69,6 +70,31 @@ class PLATFORM_EXPORT AcceleratedStaticBitmapImage final
       const gfx::HDRMetadata&,
       base::OnceCallback<void(gpu::SharedImageExportResult)> release_callback);
 
+  // The set of read/display SharedImage usages that callers may pass to
+  // CreateFromRaster().
+  static constexpr gpu::SharedImageUsageSet kAllowedReadUsages =
+      gpu::SHARED_IMAGE_USAGE_RASTER_READ | gpu::SHARED_IMAGE_USAGE_GLES2_READ |
+      gpu::SHARED_IMAGE_USAGE_WEBGPU_READ |
+      gpu::SHARED_IMAGE_USAGE_DISPLAY_READ | gpu::SHARED_IMAGE_USAGE_SCANOUT;
+
+  // Creates an image initialized by rasterizing the commands recorded by
+  // `draw_callback`. `shared_image_usage_flags` specifies the read/display
+  // usages required by the caller (which must be a subset of
+  // `kAllowedReadUsages`); `SHARED_IMAGE_USAGE_RASTER_WRITE` is added
+  // internally.
+  static scoped_refptr<StaticBitmapImage> CreateFromRaster(
+      const gfx::Size& size,
+      viz::SharedImageFormat format,
+      SkAlphaType alpha_type,
+      const gfx::ColorSpace& color_space,
+      const gfx::HDRMetadata& hdr_metadata,
+      base::WeakPtr<WebGraphicsContext3DProviderWrapper>
+          context_provider_wrapper,
+      gpu::SharedImageUsageSet shared_image_usage_flags,
+      base::FunctionRef<void(cc::PaintCanvas&)> draw_callback,
+      scoped_refptr<const cc::AnimatedImageFrameIndexMap>
+          animated_image_frame_index_map = nullptr);
+
   bool IsOpaque() override;
   bool IsTextureBacked() const override { return true; }
 
@@ -79,9 +105,10 @@ class PLATFORM_EXPORT AcceleratedStaticBitmapImage final
             const ImageDrawOptions&) override;
 
   bool IsValid() const final;
-  WebGraphicsContext3DProvider* ContextProvider() const final;
-  base::WeakPtr<WebGraphicsContext3DProviderWrapper> ContextProviderWrapper()
-      const final;
+
+  base::WeakPtr<WebGraphicsContext3DProviderWrapper>
+  SkiaContextProviderWrapper() const;
+
   scoped_refptr<StaticBitmapImage> MakeUnaccelerated() final;
 
   bool CopyToTexture(gpu::gles2::GLES2Interface* dest_gl,

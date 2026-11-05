@@ -48,6 +48,7 @@
 #include "third_party/blink/renderer/core/dom/document_fragment.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/execution_context/agent.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/html/html_document.h"
@@ -62,6 +63,7 @@
 #include "third_party/blink/renderer/core/html/parser/html_resource_preloader.h"
 #include "third_party/blink/renderer/core/html/parser/html_tree_builder.h"
 #include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/core/inspector/identifiers_factory.h"
 #include "third_party/blink/renderer/core/inspector/inspector_trace_events.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/core/loader/prefetched_signed_exchange_manager.h"
@@ -69,6 +71,8 @@
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/sanitizer/sanitizer.h"
 #include "third_party/blink/renderer/core/script/html_parser_script_runner.h"
+#include "third_party/blink/renderer/core/script/script_element_base.h"
+#include "third_party/blink/renderer/core/script/script_loader.h"
 #include "third_party/blink/renderer/platform/bindings/runtime_call_stats.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_handle.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -80,11 +84,11 @@
 #include "third_party/blink/renderer/platform/scheduler/public/non_main_thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
+#include "third_party/perfetto/include/perfetto/tracing/event_context.h"
 #include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 
 namespace blink {
@@ -378,10 +382,11 @@ HTMLDocumentParser::HTMLDocumentParser(
                          kForceSynchronousParsing,
                          parser_prefetch_policy) {
   // Allow declarative shadow DOM for the fragment parser only if explicitly
-  // enabled.
+  // enabled, or when streaming HTML directly into a root insertion point.
   bool include_shadow_roots =
+      root_insertion_point ||
       fragment_target->GetDocument().GetDeclarativeShadowRootAllowState() ==
-      Document::DeclarativeShadowRootAllowState::kAllow;
+          Document::DeclarativeShadowRootAllowState::kAllow;
 
   // For now document fragment parsing never reports errors.
   bool report_errors = false;
@@ -391,7 +396,8 @@ HTMLDocumentParser::HTMLDocumentParser(
   if (parser_content_policy == kAllowScriptingContentAndMarkAsParserInserted) {
     CHECK(RuntimeEnabledFeatures::NewHTMLSettingMethodsEnabled());
     script_runner_ = HTMLParserScriptRunner::Create(
-        ReentryPermit(), &fragment_target->GetDocument(), this);
+        ReentryPermit(), &fragment_target->GetDocument(), this,
+        /*is_parsing_fragment=*/true);
   }
 
   tree_builder_ = MakeGarbageCollected<HTMLTreeBuilder>(
@@ -485,6 +491,7 @@ unsigned HTMLDocumentParser::GetChunkCountForTesting() const {
 }
 
 void HTMLDocumentParser::Detach() {
+  CHECK(!fragment_parser_abort_requested_);
   // Deschedule any pending tokenizer pumps.
   task_runner_state_->SetState(
       HTMLDocumentParserState::DeferredParserState::kNotScheduled);
@@ -502,12 +509,66 @@ void HTMLDocumentParser::Detach() {
   background_script_scanner_.Reset();
   background_scanner_.reset();
   tokenizer_.Reset();
+  close_callback_.Reset();
+}
+
+void HTMLDocumentParser::SetCloseCallback(base::OnceClosure callback) {
+  CHECK(IsParsingFragment());
+  CHECK(!close_callback_);
+  close_callback_ = std::move(callback);
 }
 
 void HTMLDocumentParser::StopParsing() {
   DocumentParser::StopParsing();
+  // https://html.spec.whatwg.org/C/#abort-a-parser, fragment case: flush
+  // pending text, mark every open <script> as "already started" so a partially
+  // parsed script never runs later, pop all open elements, and drop the
+  // pending parser-blocking / deferred scripts (which also unblocks rendering
+  // on them).
+  if (tree_builder_ && IsParsingFragment()) {
+    // Only HTMLStream (streamHTML* etc.) stops a fragment parser mid-parse.
+    CHECK(RuntimeEnabledFeatures::NewHTMLSettingMethodsEnabled());
+    tree_builder_->Flush();
+    if (tree_builder_->OpenElements()->StackDepth() > 0) {
+      for (HTMLStackItem* item = tree_builder_->OpenElements()->TopStackItem();
+           item; item = item->NextItemInStack()) {
+        if (item->IsElementNode() && item->GetElement()->IsScriptElement()) {
+          if (ScriptLoader* loader =
+                  ScriptLoaderFromElement(item->GetElement())) {
+            loader->SetAlreadyStarted();
+          }
+        }
+      }
+      tree_builder_->OpenElements()->PopAll();
+    }
+    if (script_runner_) {
+      script_runner_->Detach();
+    }
+  }
   task_runner_state_->SetState(
       HTMLDocumentParserState::DeferredParserState::kNotScheduled);
+}
+
+void HTMLDocumentParser::AbortFragmentParser() {
+  if (IsDetached()) {
+    return;
+  }
+  CHECK(IsParsingFragment());
+  CHECK(task_runner_state_);
+  // <spec>If parser's fragment parser running is true, then set parser's
+  // fragment parser abort requested to true and return.</spec>
+  //
+  // The parser is running while a tokenizer pump is on the stack. This is the
+  // case when a streamed script or a custom element reaction aborts the stream
+  // while the parser resumes after a parser-blocking script, where there is no
+  // in-flight write() for the WritableStream to queue the abort behind.
+  if (task_runner_state_->InPumpSession()) {
+    fragment_parser_abort_requested_ = true;
+    return;
+  }
+  // <spec>Abort parser.</spec>
+  StopParsing();
+  Detach();
 }
 
 // This kicks off "Once the user agent stops parsing" as described by:
@@ -561,6 +622,10 @@ void HTMLDocumentParser::PrepareToStopParsing() {
     GetDocument()->OnPrepareToStopParsing();
   }
 
+  if (close_callback_) {
+    std::move(close_callback_).Run();
+  }
+
   AttemptToRunDeferredScriptsAndEnd();
 
   base::TimeDelta elapsed_time = timer.Elapsed();
@@ -593,18 +658,17 @@ void HTMLDocumentParser::DeferredPumpTokenizerIfPossible(
               perfetto::Flow::FromPointer(this), "parser", (void*)this, "state",
               task_runner_state_->GetStateAsString());
 
-  if (metrics_reporter_ && from_finish_append && !did_pump_tokenizer_) {
-    base::UmaHistogramCustomMicrosecondsTimes(
-        "Blink.HTMLParsing.TimeToDeferredPumpTokenizer4",
-        base::TimeTicks::Now() - schedule_time, base::Microseconds(1),
-        base::Seconds(1), 100);
-  }
-
   // This method is called when the post task is executed, marking the end of
   // a yield. Report the yielded time.
   DCHECK(yield_timer_);
   if (metrics_reporter_) {
-    metrics_reporter_->AddYieldInterval(yield_timer_->Elapsed());
+    base::TimeTicks now;
+    metrics_reporter_->AddYieldInterval(yield_timer_->Elapsed(&now));
+    if (from_finish_append && !did_pump_tokenizer_) {
+      base::UmaHistogramCustomMicrosecondsTimes(
+          "Blink.HTMLParsing.TimeToDeferredPumpTokenizer4", now - schedule_time,
+          base::Microseconds(1), base::Seconds(1), 100);
+    }
   }
   yield_timer_.reset();
 
@@ -635,6 +699,19 @@ void HTMLDocumentParser::PumpTokenizerIfPossible() {
   if (!IsStopped() &&
       (!IsPaused() || task_runner_state_->ShouldEndIfDelayed())) {
     yielded = PumpTokenizer();
+  }
+
+  // <spec href="https://html.spec.whatwg.org/C/#run-a-fragment-parser">If
+  // parser's fragment parser abort requested is true, then abort
+  // parser.</spec>
+  //
+  // Nested pumps leave this to the outermost one, so that the whole run of the
+  // parser has returned before the stack of open elements is popped.
+  if (fragment_parser_abort_requested_ &&
+      !task_runner_state_->InPumpSession()) {
+    fragment_parser_abort_requested_ = false;
+    AbortFragmentParser();
+    return;
   }
 
   if (yielded) {
@@ -813,10 +890,7 @@ bool HTMLDocumentParser::PumpTokenizer() {
                     starting_bytes - input_.length());
   }
 
-  const bool is_stopped_or_parsing_fragment =
-      IsStopped() || IsParsingFragment();
-
-  if (!is_stopped_or_parsing_fragment) {
+  if (!IsStopped()) {
     // There should only be PendingText left since the tree-builder always
     // flushes the task queue before returning. In case that ever changes,
     // crash.
@@ -829,7 +903,7 @@ bool HTMLDocumentParser::PumpTokenizer() {
         chunk_parsing_timer.Elapsed() - time_executing_script, tokens_parsed);
   }
 
-  if (is_stopped_or_parsing_fragment) {
+  if (IsStopped() || IsParsingFragment()) {
     return false;
   }
 
@@ -923,15 +997,86 @@ bool HTMLDocumentParser::HasInsertionPoint() {
          (WasCreatedByScript() && !input_.HaveSeenEndOfFile());
 }
 
+// static
+void HTMLDocumentParser::AddHtmlContentTraceAnnotations(
+    perfetto::EventContext& ctx,
+    Document* doc,
+    const String& html,
+    Element* context_element) {
+  // The enclosing parser slices (`HTMLDocumentParser::append`,
+  // `HTMLDocumentParser::insert`, `ParseHTMLFragment`) are emitted under the
+  // `"blink"` category so their timing and lightweight args (`size`,
+  // `is_fragment`, `parsed_fast_path`) are recorded in standard `"blink"`
+  // traces. Gate the full HTML payload and element/document attribution on
+  // `disabled-by-default-blink.debug.html_content` here so they attach directly
+  // to the parent duration slice without incurring overhead or emitting page
+  // content when only `"blink"` is enabled.
+  bool html_content_enabled = false;
+  TRACE_EVENT_CATEGORY_GROUP_ENABLED(
+      TRACE_DISABLED_BY_DEFAULT("blink.debug.html_content"),
+      &html_content_enabled);
+  if (!html_content_enabled) {
+    return;
+  }
+
+  constexpr wtf_size_t kMaxTracedHtmlContentLength = 1000000;
+  constexpr wtf_size_t kMaxTracedHtmlPreviewLength = 200;
+
+  if (doc) {
+    const KURL& url = (!doc->Url().IsEmpty() || !doc->GetExecutionContext())
+                          ? doc->Url()
+                          : doc->GetExecutionContext()->Url();
+    ctx.AddDebugAnnotation("document_url", url.GetString());
+
+    LocalFrame* frame = doc->GetFrame();
+    if (!frame && doc->GetExecutionContext()) {
+      if (auto* window =
+              DynamicTo<LocalDOMWindow>(doc->GetExecutionContext())) {
+        frame = window->GetFrame();
+      }
+    }
+    if (frame) {
+      ctx.AddDebugAnnotation("frame", IdentifiersFactory::FrameId(frame));
+    }
+  }
+
+  if (context_element) {
+    ctx.AddDebugAnnotation("context_element", context_element->DebugName());
+    if (context_element->HasID()) {
+      ctx.AddDebugAnnotation("context_element_id",
+                             context_element->GetIdAttribute());
+    }
+    ctx.AddDebugAnnotation("context_node_id",
+                           IdentifiersFactory::IntIdForNode(context_element));
+  }
+
+  ctx.AddDebugAnnotation("html_preview",
+                         html.length() <= kMaxTracedHtmlPreviewLength
+                             ? html
+                             : html.substr(0, kMaxTracedHtmlPreviewLength));
+  if (html.length() <= kMaxTracedHtmlContentLength) {
+    ctx.AddDebugAnnotation("html_content", html);
+  } else {
+    ctx.AddDebugAnnotation("html_content",
+                           html.substr(0, kMaxTracedHtmlContentLength));
+    ctx.AddDebugAnnotation("html_truncated", true);
+  }
+}
+
 void HTMLDocumentParser::insert(const String& source) {
   // No need to do any processing if the supplied text is empty.
   if (IsStopped() || source.empty()) {
     return;
   }
 
+  Document* doc = GetDocument();
+  const bool is_detached_doc = !doc || !doc->GetFrame();
   TRACE_EVENT("blink", "HTMLDocumentParser::insert",
-              perfetto::Flow::FromPointer(this), "source_length",
-              source.length(), "parser", (void*)this);
+              perfetto::Flow::FromPointer(this), "size", source.length(),
+              "parser", static_cast<void*>(this), "is_detached_doc",
+              is_detached_doc, [&](perfetto::EventContext ctx) {
+                AddHtmlContentTraceAnnotations(ctx, doc, source);
+              });
 
   SegmentedString excluded_line_number_source(source);
   excluded_line_number_source.SetExcludeLineNumbers();
@@ -960,9 +1105,20 @@ void HTMLDocumentParser::insert(const String& source) {
 }
 
 void HTMLDocumentParser::Append(const String& input_source) {
+  Document* doc = GetDocument();
+  const bool is_fragment = tree_builder_ && IsParsingFragment();
+  const bool is_detached_doc = !doc || !doc->GetFrame();
   TRACE_EVENT("blink", "HTMLDocumentParser::append",
               perfetto::Flow::FromPointer(this), "size", input_source.length(),
-              "parser", (void*)this);
+              "parser", static_cast<void*>(this), "is_fragment", is_fragment,
+              "is_detached_doc", is_detached_doc,
+              [&](perfetto::EventContext ctx) {
+                // Fragment parses are already traced by the enclosing
+                // ParseHTMLFragment slice with context_element metadata.
+                if (!is_fragment) {
+                  AddHtmlContentTraceAnnotations(ctx, doc, input_source);
+                }
+              });
 
   if (IsStopped()) {
     return;
@@ -1482,10 +1638,11 @@ void HTMLDocumentParser::ScanAndPreload(HTMLPreloadScanner* scanner) {
       base::StrCat(
           {kHistogramScanAndPreloadTime, ".Scan", GetPreloadHistogramSuffix()}),
       scan_time);
-  base::ElapsedTimer timer_after_scan;
+  base::TimeTicks after_scan_time = base::TimeTicks::Now();
   ProcessPreloadData(std::move(preload_data));
-  const base::TimeDelta scan_and_preload_time = timer_before_scan.Elapsed();
-  const base::TimeDelta preload_time = timer_after_scan.Elapsed();
+  base::TimeTicks now;
+  const base::TimeDelta scan_and_preload_time = timer_before_scan.Elapsed(&now);
+  const base::TimeDelta preload_time = now - after_scan_time;
   base::UmaHistogramMicrosecondsTimes(
       base::StrCat({kHistogramScanAndPreloadTime, GetPreloadHistogramSuffix()}),
       scan_and_preload_time);
@@ -1780,34 +1937,6 @@ bool HTMLDocumentParser::ShouldPumpTokenizerNowForFinishAppend() const {
              : features::kProcessHtmlDataImmediatelyFirstChunk.Get();
 }
 
-ALWAYS_INLINE bool HTMLDocumentParser::ShouldCheckTimeBudget(
-    NextTokenStatus next_token_status,
-    html_names::HTMLTag tag,
-    int newly_consumed_characters,
-    int tokens_parsed) const {
-  if (next_token_status == kHaveTokensAfterScript) {
-    // If we executed a script when parsing this token, then check the time
-    // budget again since script execution is slow.
-    return true;
-  }
-  if (newly_consumed_characters > 200) {
-    // Always update timer on tokens of more than 200 characters as they're
-    // often slow.
-    return true;
-  }
-
-  // <style>, <iframe> and <link> tags are slow to parse.
-  if (tag == html_names::HTMLTag::kStyle ||
-      tag == html_names::HTMLTag::kIFrame ||
-      tag == html_names::HTMLTag::kLink) {
-    return true;
-  }
-
-  // The token is probably fast to parse, only update the timer for 10% of
-  // those tokens.
-  return tokens_parsed % 10 == 0;
-}
-
 bool HTMLDocumentParser::ShouldSkipPreloadScan() {
   // Check if Document-Policy has Expect-No-Linked-Resources hint.
   auto* document = GetDocument();
@@ -1861,17 +1990,13 @@ bool HTMLDocumentParser::AllowPreloading() {
     }
 
     // Only allows preloads if all seen meta tags have been processed.
-    int processed_meta_policies = 0;
-    for (const auto& policy : csp->GetParsedPolicies()) {
-      if (policy->header->source ==
-          network::mojom::blink::ContentSecurityPolicySource::kMeta) {
-        ++processed_meta_policies;
-      }
-    }
-    return processed_meta_policies == seen_csp_meta_tags_;
-  } else {
-    return false;
+    return processed_csp_meta_tags_ == seen_csp_meta_tags_;
   }
+  return false;
+}
+
+void HTMLDocumentParser::DidProcessCSPMetaTagForPreload() {
+  ++processed_csp_meta_tags_;
 }
 
 }  // namespace blink

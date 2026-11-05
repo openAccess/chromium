@@ -109,7 +109,7 @@ async def assert_success_download_events(
     websocket, prepare_context, content, trigger_download, downloadable_url
 ):
 
-    async def assert_success_download_events(context_id):
+    async def assert_success_download_events(context_id, user_context_id=ANY_STR):
         await prepare_context(context_id)
         await trigger_download(context_id)
         event = await wait_for_event(websocket, "browsingContext.downloadWillBegin")
@@ -117,14 +117,16 @@ async def assert_success_download_events(
             "method": "browsingContext.downloadWillBegin",
             "params": {
                 "context": context_id,
-                "navigation": ANY_UUID,
+                "download": ANY_UUID,
+                "navigation": None,
                 "suggestedFilename": ANY_STR,
                 "timestamp": ANY_TIMESTAMP,
                 "url": downloadable_url,
+                "userContext": user_context_id,
             },
             "type": "event",
         }
-        navigation_id = event["params"]["navigation"]
+        download_id = event["params"]["download"]
 
         event = await wait_for_event(websocket, "browsingContext.downloadEnd")
 
@@ -132,11 +134,13 @@ async def assert_success_download_events(
             "method": "browsingContext.downloadEnd",
             "params": {
                 "context": context_id,
-                "navigation": navigation_id,
+                "download": download_id,
+                "navigation": None,
                 "filepath": ANY_STR,
                 "status": "complete",
                 "timestamp": ANY_TIMESTAMP,
                 "url": downloadable_url,
+                "userContext": user_context_id,
             },
             "type": "event",
         }
@@ -155,7 +159,7 @@ async def assert_denied_download_events(
     websocket, prepare_context, trigger_download, downloadable_url
 ):
 
-    async def assert_denied_download_events(context_id):
+    async def assert_denied_download_events(context_id, user_context_id=ANY_STR):
         await prepare_context(context_id)
         await trigger_download(context_id)
         event = await wait_for_event(websocket, "browsingContext.downloadWillBegin")
@@ -163,14 +167,16 @@ async def assert_denied_download_events(
             "method": "browsingContext.downloadWillBegin",
             "params": {
                 "context": context_id,
-                "navigation": ANY_UUID,
+                "download": ANY_UUID,
+                "navigation": None,
                 "suggestedFilename": ANY_STR,
                 "timestamp": ANY_TIMESTAMP,
                 "url": downloadable_url,
+                "userContext": user_context_id,
             },
             "type": "event",
         }
-        navigation_id = event["params"]["navigation"]
+        download_id = event["params"]["download"]
 
         event = await wait_for_event(websocket, "browsingContext.downloadEnd")
 
@@ -178,10 +184,12 @@ async def assert_denied_download_events(
             "method": "browsingContext.downloadEnd",
             "params": {
                 "context": context_id,
-                "navigation": navigation_id,
+                "download": download_id,
+                "navigation": None,
                 "status": "canceled",
                 "timestamp": ANY_TIMESTAMP,
                 "url": downloadable_url,
+                "userContext": user_context_id,
             },
             "type": "event",
         }
@@ -191,7 +199,12 @@ async def assert_denied_download_events(
 
 @pytest.mark.asyncio
 async def test_browsing_context_download_will_begin(
-    websocket, target_context_id, downloadable_url, prepare_context, trigger_download
+    websocket,
+    target_context_id,
+    downloadable_url,
+    prepare_context,
+    trigger_download,
+    target_user_context_id,
 ):
     await prepare_context(target_context_id)
     await trigger_download(target_context_id)
@@ -202,10 +215,88 @@ async def test_browsing_context_download_will_begin(
         "method": "browsingContext.downloadWillBegin",
         "params": {
             "context": target_context_id,
-            "navigation": ANY_UUID,
+            "download": ANY_UUID,
+            "navigation": None,
             "suggestedFilename": FILE_NAME,
             "timestamp": ANY_TIMESTAMP,
             "url": downloadable_url,
+            "userContext": target_user_context_id,
+        },
+        "type": "event",
+    }
+
+
+@pytest.mark.asyncio
+async def test_browsing_context_download_navigation(
+    websocket,
+    context_id,
+    html,
+    url_download,
+    content,
+    tmp_path,
+    trigger_download,
+):
+    await execute_command(
+        websocket,
+        {
+            "method": "browser.setDownloadBehavior",
+            "params": {
+                "downloadBehavior": {
+                    "type": "allowed",
+                    "destinationFolder": str(tmp_path),
+                },
+            },
+        },
+    )
+
+    download_url = url_download(FILE_NAME, content)
+    page_url = html(f"""<a id="download_link" href="{download_url}">Download</a>""")
+    await goto_url(websocket, context_id, page_url)
+
+    await subscribe(
+        websocket,
+        [
+            "browsingContext.navigationStarted",
+            "browsingContext.downloadWillBegin",
+            "browsingContext.downloadEnd",
+        ],
+    )
+
+    await trigger_download(context_id)
+
+    nav_event = await wait_for_event(websocket, "browsingContext.navigationStarted")
+    navigation_id = nav_event["params"]["navigation"]
+
+    will_begin_event = await wait_for_event(
+        websocket, "browsingContext.downloadWillBegin"
+    )
+    assert will_begin_event == {
+        "method": "browsingContext.downloadWillBegin",
+        "params": {
+            "context": context_id,
+            "download": ANY_UUID,
+            "navigation": navigation_id,
+            "suggestedFilename": FILE_NAME,
+            "timestamp": ANY_TIMESTAMP,
+            "url": download_url,
+            "userContext": "default",
+        },
+        "type": "event",
+    }
+    download_id = will_begin_event["params"]["download"]
+
+    end_event = await wait_for_event(websocket, "browsingContext.downloadEnd")
+    assert end_event == {
+        "method": "browsingContext.downloadEnd",
+        "params": {
+            "context": context_id,
+            "download": download_id,
+            "filepath": ANY_STR,
+            "navigation": navigation_id,
+            "status": "complete",
+            "timestamp": ANY_TIMESTAMP,
+            "url": download_url,
+            "userContext": "default",
         },
         "type": "event",
     }
@@ -232,15 +323,17 @@ async def test_browsing_context_download_default_behavior(
         "method": "browsingContext.downloadWillBegin",
         "params": {
             "context": target_context_id,
-            "navigation": ANY_UUID,
+            "download": ANY_UUID,
+            "navigation": None,
             "suggestedFilename": FILE_NAME,
             "timestamp": ANY_TIMESTAMP,
             "url": downloadable_url,
+            "userContext": target_user_context_id,
         },
         "type": "event",
     }
 
-    navigation_id = event["params"]["navigation"]
+    download_id = event["params"]["download"]
 
     if target_user_context_id != "default" and test_headless_mode == "false":
         pytest.xfail(
@@ -257,10 +350,12 @@ async def test_browsing_context_download_default_behavior(
             "method": "browsingContext.downloadEnd",
             "params": {
                 "context": target_context_id,
-                "navigation": navigation_id,
+                "download": download_id,
+                "navigation": None,
                 "status": "canceled",
                 "timestamp": ANY_TIMESTAMP,
                 "url": downloadable_url,
+                "userContext": target_user_context_id,
             },
             "type": "event",
         }
@@ -270,11 +365,13 @@ async def test_browsing_context_download_default_behavior(
         "method": "browsingContext.downloadEnd",
         "params": {
             "context": target_context_id,
-            "navigation": navigation_id,
+            "download": download_id,
+            "navigation": None,
             "status": "complete",
             "filepath": ANY_STR,
             "timestamp": ANY_TIMESTAMP,
             "url": downloadable_url,
+            "userContext": target_user_context_id,
         },
         "type": "event",
     }
@@ -324,15 +421,17 @@ async def test_browsing_context_download_end_canceled(
         "method": "browsingContext.downloadWillBegin",
         "params": {
             "context": target_context_id,
-            "navigation": ANY_UUID,
+            "download": ANY_UUID,
+            "navigation": None,
             "suggestedFilename": ANY_STR,
             "timestamp": ANY_TIMESTAMP,
             "url": ANY_STR,
+            "userContext": target_user_context_id,
         },
         "type": "event",
     }
 
-    navigation_id = event["params"]["navigation"]
+    download_id = event["params"]["download"]
 
     # Cancel download via CDP.
     await send_JSON_command(
@@ -342,7 +441,7 @@ async def test_browsing_context_download_end_canceled(
             "params": {
                 "method": "Browser.cancelDownload",
                 "params": {
-                    "guid": navigation_id,
+                    "guid": download_id,
                     **(
                         {"browserContextId": target_user_context_id}
                         if target_user_context_id != "default"
@@ -362,10 +461,12 @@ async def test_browsing_context_download_end_canceled(
         "method": "browsingContext.downloadEnd",
         "params": {
             "context": target_context_id,
-            "navigation": navigation_id,
+            "download": download_id,
+            "navigation": None,
             "status": "canceled",
             "timestamp": ANY_TIMESTAMP,
             "url": url_hang_forever_download(),
+            "userContext": target_user_context_id,
         },
         "type": "event",
     }
@@ -386,7 +487,7 @@ async def test_browsing_context_download_behavior_deny(
         },
     )
 
-    await assert_denied_download_events(target_context_id)
+    await assert_denied_download_events(target_context_id, target_user_context_id)
 
 
 @pytest.mark.asyncio
@@ -411,7 +512,9 @@ async def test_browsing_context_download_behavior_allowed_with_destination_folde
         },
     )
 
-    download_path = await assert_success_download_events(target_context_id)
+    download_path = await assert_success_download_events(
+        target_context_id, target_user_context_id
+    )
     assert download_path.startswith(str(tmp_path))
 
 

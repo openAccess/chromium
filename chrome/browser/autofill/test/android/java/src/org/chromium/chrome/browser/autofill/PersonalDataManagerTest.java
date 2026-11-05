@@ -35,7 +35,6 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.CreditCard;
-import org.chromium.chrome.browser.autofill.PersonalDataManager.Iban;
 import org.chromium.components.autofill.AutofillPolicyDataCategory;
 import org.chromium.components.autofill.AutofillProfile;
 import org.chromium.components.autofill.FieldType;
@@ -43,6 +42,7 @@ import org.chromium.components.autofill.IbanRecordType;
 import org.chromium.components.autofill.VerificationStatus;
 import org.chromium.components.autofill.payments.BankAccount;
 import org.chromium.components.autofill.payments.Ewallet;
+import org.chromium.components.autofill.payments.Iban;
 import org.chromium.components.autofill.payments.PaymentInstrument;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.url.GURL;
@@ -1133,6 +1133,7 @@ public class PersonalDataManagerTest {
                                         .setSupportedPaymentRails(new int[] {1})
                                         .build())
                         .setBankName("bank name")
+                        .setAccountNumberSuffix("account_number_suffix")
                         .build();
         BankAccount bankAccount2 =
                 new BankAccount.Builder()
@@ -1144,6 +1145,7 @@ public class PersonalDataManagerTest {
                                         .setDisplayIconUrl(new GURL("http://example.com"))
                                         .build())
                         .setBankName("bank name 2")
+                        .setAccountNumberSuffix("account_number_suffix")
                         .build();
         AutofillTestHelper.addMaskedBankAccount(bankAccount1);
         AutofillTestHelper.addMaskedBankAccount(bankAccount2);

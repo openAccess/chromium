@@ -27,6 +27,7 @@
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
+#include "components/autofill/core/browser/data_model/valuables/valuable_types.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/integrators/at_memory/memory_data_type.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
@@ -34,6 +35,7 @@
 #include "components/autofill/core/browser/webdata/autocomplete/autocomplete_table_label_sensitive.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "ui/gfx/image/image.h"
+#include "ui/gfx/range/range.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -95,10 +97,41 @@ struct Suggestion {
                            const PasswordSuggestionDetails&) = default;
   };
 
+  // Citation linking a substring range of a suggestion's main text to a source
+  // URL.
+  struct PersonalContextSourceCitation final {
+    PersonalContextSourceCitation();
+    PersonalContextSourceCitation(GURL url,
+                                  gfx::Range range,
+                                  std::u16string accessible_name);
+    PersonalContextSourceCitation(const PersonalContextSourceCitation&);
+    PersonalContextSourceCitation(PersonalContextSourceCitation&&);
+    PersonalContextSourceCitation& operator=(
+        const PersonalContextSourceCitation&);
+    PersonalContextSourceCitation& operator=(PersonalContextSourceCitation&&);
+    ~PersonalContextSourceCitation();
+
+    friend bool operator==(const PersonalContextSourceCitation&,
+                           const PersonalContextSourceCitation&) = default;
+
+    // Destination URL to navigate to when the citation link is clicked.
+    GURL url;
+    // Character range in `Suggestion::main_text.value` corresponding to the
+    // citation badge link.
+    gfx::Range range;
+    // Accessible label for screen readers when focusing the citation link,
+    // e.g. "Gmail source 1". Must not be empty: otherwise the link falls back
+    // to announcing its visible text ("[1]").
+    std::u16string accessible_name;
+  };
+
   struct AutofillAiPayload final {
     AutofillAiPayload();
     explicit AutofillAiPayload(EntityInstance::EntityId guid,
                                bool requires_server_fetch = false);
+    AutofillAiPayload(EntityInstance::EntityId guid,
+                      std::vector<PersonalContextSourceCitation> citations,
+                      bool requires_server_fetch = false);
     AutofillAiPayload(const AutofillAiPayload&);
     AutofillAiPayload(AutofillAiPayload&&);
     AutofillAiPayload& operator=(const AutofillAiPayload&);
@@ -113,6 +146,9 @@ struct Suggestion {
                            const AutofillAiPayload&) = default;
 
     EntityInstance::EntityId guid;
+
+    // Citations to sources from which the entity was extracted.
+    std::vector<PersonalContextSourceCitation> citations;
 
     // Whether selecting this suggestion requires fetching data from a server.
     // E.g. retrieving masked credentials.
@@ -208,7 +244,8 @@ struct Suggestion {
                                     Iban::Guid,
                                     Iban::InstrumentId,
                                     std::string,
-                                    EntityInstance::EntityId>;
+                                    EntityInstance::EntityId,
+                                    ValuableId>;
 
     AtMemoryPayload();
     // `value` is the value to be shown in the suggestion UI and the preview.
@@ -218,6 +255,10 @@ struct Suggestion {
     AtMemoryPayload& operator=(const AtMemoryPayload&);
     AtMemoryPayload& operator=(AtMemoryPayload&&);
     ~AtMemoryPayload();
+
+#if BUILDFLAG(IS_ANDROID)
+    base::android::ScopedJavaLocalRef<jobject> CreateJavaObject() const;
+#endif  // BUILDFLAG(IS_ANDROID)
 
     friend bool operator==(const AtMemoryPayload&,
                            const AtMemoryPayload&) = default;
@@ -261,10 +302,10 @@ struct Suggestion {
   using InstrumentId = base::StrongAlias<class InstrumentIdTag, uint64_t>;
   // TODO(crbug.com/477689220): Directly use BnplIssuer and remove the alias.
   using BnplIssuer = base::StrongAlias<class BnplIssuerTag, BnplIssuer>;
+  using PromoCode = base::StrongAlias<class PromoCodeTag, std::string>;
   using Payload = std::variant<Guid,
                                InstrumentId,
                                AutofillProfilePayload,
-                               GURL,
                                PasswordSuggestionDetails,
                                AutofillAiPayload,
                                PaymentsPayload,
@@ -273,7 +314,8 @@ struct Suggestion {
                                BnplIssuer,
                                AtMemoryPayload,
                                OpenGeminiPayload,
-                               AutocompleteSearchResultLabelSensitive>;
+                               AutocompleteSearchResultLabelSensitive,
+                               PromoCode>;
 
   // This struct is used to provide password suggestions with custom icons,
   // using the favicon of the website associated with the credentials. While
@@ -403,9 +445,12 @@ struct Suggestion {
     kKey,
     kLocation,
     kLocationSpark,
-    kLoyalty,
+    kLoyaltyPrograms,
+    kLoyaltyProgramsSpark,
     kMagic,
+    kMailAsterisk,
     kOfferTag,
+    kOpenInNew,
     kOrder,
     kOrderSpark,
     kPassport,
@@ -536,14 +581,14 @@ struct Suggestion {
       case SuggestionType::kBackupPasswordEntry:
       case SuggestionType::kTroubleSigningInEntry:
         return std::holds_alternative<PasswordSuggestionDetails>(payload);
-      case SuggestionType::kSeePromoCodeDetails:
-      case SuggestionType::kAutofillAiSourceAttribution:
-        return std::holds_alternative<GURL>(payload);
+      case SuggestionType::kMerchantPromoCodeEntry:
+        return std::holds_alternative<PromoCode>(payload);
       case SuggestionType::kIbanEntry:
         return std::holds_alternative<Guid>(payload) ||
                std::holds_alternative<InstrumentId>(payload);
       case SuggestionType::kFillAutofillAi:
       case SuggestionType::kRemoveAutofillAi:
+      case SuggestionType::kAutofillAiSourceAttribution:
         return std::holds_alternative<AutofillAiPayload>(payload);
       case SuggestionType::kCreditCardEntry:
       case SuggestionType::kVirtualCreditCardEntry:
@@ -576,7 +621,7 @@ struct Suggestion {
   // Payload generated by the backend layer. This payload contains the
   // information required for further actions after the suggestion is
   // selected/accepted. Depending on the suggestion type, this may contain a
-  // profile GUID, a destination URL, or some other specialized Payload variant.
+  // profile GUID, or some other specialized Payload variant.
   Payload payload;
 
   // Determines popup identifier for the suggestion.
@@ -664,6 +709,11 @@ struct Suggestion {
   // that they better reflect the information that's going to be filled in the
   // form.
   std::optional<std::u16string> acceptance_a11y_announcement;
+
+  // If specified, this text will be announced by screen readers when this
+  // suggestion is shown. If set on multiple suggestions in the popup, only the
+  // first one is read.
+  std::optional<std::u16string> a11y_announcement;
 
   // When `type` is
   // `SuggestionType::k(Address|CreditCard)FieldByFieldFilling` or

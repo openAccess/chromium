@@ -45,7 +45,7 @@ class CC_PAINT_EXPORT PaintShader : public SkRefCnt {
     kShaderCount
   };
 
-  using RecordShaderId = uint32_t;
+  using RecordShaderId = uint64_t;
   static const RecordShaderId kInvalidRecordShaderId;
 
   // Scaling behavior dictates how a PaintRecord shader will behave. Use
@@ -170,11 +170,9 @@ class CC_PAINT_EXPORT PaintShader : public SkRefCnt {
     return image_analysis_state_;
   }
 
-  // If `content_color_usage` is not null, the function should update
-  // `*content_color_usage` to be
-  // max(*content_color_usage, max_content_color_usage_of_the_flags).
-  bool HasDiscardableImages(
-      gfx::ContentColorUsage* content_color_usage = nullptr) const;
+  bool HasDiscardableImages() const;
+  bool HasReadBackDisallowedContent() const;
+  void UnionColorVolumeInto(gfx::ContentColorVolume& color_volume) const;
 
   SkMatrix GetLocalMatrix() const {
     return local_matrix_ ? *local_matrix_ : SkMatrix::I();

@@ -27,6 +27,7 @@
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
+#include "base/timer/timer.h"
 #include "base/types/expected.h"
 #include "components/optimization_guide/content/browser/autofill_annotations_provider.h"
 #include "components/optimization_guide/content/browser/media_transcript_provider.h"
@@ -46,7 +47,9 @@
 #include "services/metrics/public/cpp/metrics_utils.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
+#include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
 #include "ui/gfx/geometry/rect.h"
 
@@ -323,6 +326,10 @@ std::optional<optimization_guide::RenderFrameInfo> GetRenderFrameInfo(
   render_frame_info.source_origin = render_frame_host->GetLastCommittedOrigin();
   render_frame_info.url = render_frame_host->GetLastCommittedURL();
   render_frame_info.media_data = ComputeMediaData(render_frame_host);
+  render_frame_info.script_tools_are_allowed =
+      base::FeatureList::IsEnabled(blink::features::kWebMCP) &&
+      render_frame_host->IsFeatureEnabled(
+          network::mojom::PermissionsPolicyFeature::kTools);
 
   if (base::FeatureList::IsEnabled(
           features::kAnnotatedPageContentVerifyPopupProcess)) {
@@ -453,17 +460,26 @@ void OnGotAIPageContentOrTimedOutForAllFrames(
   bool on_critical_path = main_frame_options->on_critical_path;
 
   if (main_frame_did_timeout) {
-    std::move(done_callback).Run(base::unexpected("Timeout in Main Frame"));
+    base::UmaHistogramEnumeration(
+        kAIPageContentExtractionStatusHistogram,
+        AIPageContentExtractionStatus::kMainFrameTimeout);
+    std::move(done_callback)
+        .Run(base::unexpected(AIPageContentError{
+            AIPageContentExtractionStatus::kMainFrameTimeout,
+            "Timeout in Main Frame"}));
     return;
   }
 
-  if (auto result = optimization_guide::ConvertAIPageContentToProto(
-          std::move(main_frame_options), main_frame_token,
-          *timeout_helper->raw_page_content_map(),
-          base::BindRepeating(&GetRenderFrameInfo), frame_token_set,
-          page_content);
+  if (base::expected<void, AIPageContentError> result =
+          optimization_guide::ConvertAIPageContentToProto(
+              std::move(main_frame_options), main_frame_token,
+              *timeout_helper->raw_page_content_map(),
+              base::BindRepeating(&GetRenderFrameInfo), frame_token_set,
+              page_content);
       !result.has_value()) {
-    std::move(done_callback).Run(base::unexpected(result.error()));
+    base::UmaHistogramEnumeration(kAIPageContentExtractionStatusHistogram,
+                                  result.error().status);
+    std::move(done_callback).Run(base::unexpected(std::move(result.error())));
     return;
   }
 
@@ -528,6 +544,8 @@ void OnGotAIPageContentOrTimedOutForAllFrames(
       base::BindOnce(RecordPageContentExtractionMetrics,
                      elapsed_timer.Elapsed(), source_id, mode, on_critical_path,
                      page_content.proto));
+  base::UmaHistogramEnumeration(kAIPageContentExtractionStatusHistogram,
+                                AIPageContentExtractionStatus::kSuccess);
   std::move(done_callback).Run(std::move(page_content));
 }
 
@@ -573,7 +591,13 @@ void GetAIPageContent(content::WebContents* web_contents,
   DCHECK(web_contents->GetPrimaryMainFrame());
 
   if (!web_contents->GetPrimaryMainFrame()->IsRenderFrameLive()) {
-    std::move(done_callback).Run(base::unexpected("Main frame not live"));
+    base::UmaHistogramEnumeration(
+        kAIPageContentExtractionStatusHistogram,
+        AIPageContentExtractionStatus::kMainFrameNotLive);
+    std::move(done_callback)
+        .Run(base::unexpected(AIPageContentError{
+            AIPageContentExtractionStatus::kMainFrameNotLive,
+            "Main frame not live"}));
     return;
   }
 

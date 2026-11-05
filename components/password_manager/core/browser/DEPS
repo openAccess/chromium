@@ -21,6 +21,7 @@ include_rules = [
   "+components/sync/service",
   "+components/sync/test",
   "+components/sync_preferences",
+  "+components/trusted_vault",
   "+components/ukm",
   "+components/undo",
   "+components/url_formatter",
@@ -51,12 +52,12 @@ specific_include_rules = {
   "http_credentials_cleaner_unittest\\.cc": [
     "+services/network",
   ],
+  "password_csv_reader_fuzzer\\.cc": [
+    "+third_party/fuzztest",
+  ],
   "password_manager_blocklist_policy\\.(cc|h)": [
     "+components/keyed_service/content",
     "+components/policy/core/browser",
     "+components/user_prefs",
-  ],
-  ".*unit_test\\.cc": [
-    "+components/autofill/core/browser/test_utils",
   ],
 }

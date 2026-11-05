@@ -59,6 +59,29 @@ mojom::AdditionalContextPtr CreateAdditionalContext(
   return context;
 }
 
+std::optional<content::ClipboardEndpoint> CreateSourceClipboardEndpoint(
+    content::GlobalRenderFrameHostId render_frame_host_id) {
+  content::RenderFrameHost* rfh =
+      content::RenderFrameHost::FromID(render_frame_host_id);
+  if (!rfh || !rfh->IsActive()) {
+    return std::nullopt;
+  }
+
+  return content::ClipboardEndpoint::ForFrame(
+      ui::DataTransferEndpoint(
+          rfh->GetMainFrame()->GetLastCommittedURL(),
+          {.off_the_record = rfh->GetBrowserContext()->IsOffTheRecord()}),
+      base::BindRepeating(
+          [](content::GlobalRenderFrameHostId rfh_id)
+              -> content::BrowserContext* {
+            auto* rfh = content::RenderFrameHost::FromID(rfh_id);
+            return (rfh && rfh->IsActive()) ? rfh->GetBrowserContext()
+                                            : nullptr;
+          },
+          rfh->GetGlobalId()),
+      *rfh);
+}
+
 }  // namespace
 
 GlicShareImageHandler::GlicShareImageHandler(GlicKeyedService& service)
@@ -123,7 +146,17 @@ void GlicShareImageHandler::ShareContextImage(
 
 void GlicShareImageHandler::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
-  ShareComplete(ShareImageResult::kFailedSawNavigation);
+  auto source = CreateSourceClipboardEndpoint(render_frame_host_id_);
+  if (!source || !initial_cached_source_.has_value()) {
+    ShareComplete(ShareImageResult::kFailedSawNavigation);
+    return;
+  }
+
+  auto current_cached_source =
+      enterprise_data_protection::CacheFullCopySource(*source);
+  if (current_cached_source != *initial_cached_source_) {
+    ShareComplete(ShareImageResult::kFailedSawNavigation);
+  }
 }
 
 void GlicShareImageHandler::OnWillDiscardContents(
@@ -172,18 +205,11 @@ void GlicShareImageHandler::OnReceivedImage(
       CreateAdditionalContext(src_url_, frame_url_, frame_origin_,
                               thumbnail_data, tab_handle_, mime_type);
 
-  content::ClipboardEndpoint source(
-      ui::DataTransferEndpoint(
-          rfh->GetMainFrame()->GetLastCommittedURL(),
-          {.off_the_record = rfh->GetBrowserContext()->IsOffTheRecord()}),
-      base::BindRepeating(
-          [](content::GlobalRenderFrameHostId rfh_id)
-              -> content::BrowserContext* {
-            auto* rfh = content::RenderFrameHost::FromID(rfh_id);
-            return rfh ? rfh->GetBrowserContext() : nullptr;
-          },
-          rfh->GetGlobalId()),
-      *rfh);
+  auto source = CreateSourceClipboardEndpoint(render_frame_host_id_);
+  if (!source) {
+    ShareComplete(ShareImageResult::kFailedNoFrame);
+    return;
+  }
 
   ui::ClipboardMetadata metadata;
   metadata.format_type = ui::ClipboardFormatType::PngType();
@@ -194,10 +220,7 @@ void GlicShareImageHandler::OnReceivedImage(
   PolicyCheck policy_check =
       do_policy_checks ? PolicyCheck::kClipboard : PolicyCheck::kNone;
 
-  Target target =
-      base::FeatureList::IsEnabled(features::kGlicShareImageNoNewConversation)
-          ? Target(*tab, DefaultConversation())
-          : Target(*tab, NewConversation());
+  Target target = Target(*tab, DefaultConversation());
   GlicInvokeOptions invoke_options(std::move(target),
                                    mojom::InvocationSource::kSharedImage);
   invoke_options.additional_context = AdditionalTabContext(
@@ -228,9 +251,6 @@ void GlicShareImageHandler::OnInvokeError(GlicInvokeError error) {
       break;
     case GlicInvokeError::kTabClosed:
       ShareComplete(ShareImageResult::kFailedNoTab);
-      break;
-    case GlicInvokeError::kInstanceDestroyed:
-      ShareComplete(ShareImageResult::kFailedLostInstance);
       break;
     case GlicInvokeError::kInvokeInProgress:
       ShareComplete(ShareImageResult::kFailedInvokeInProgress);
@@ -268,6 +288,26 @@ void GlicShareImageHandler::OnInvokeError(GlicInvokeError error) {
     case GlicInvokeError::kSuperseded:
       ShareComplete(ShareImageResult::kFailedSuperseded);
       break;
+    case GlicInvokeError::kLiveModeActive:
+      ShareComplete(ShareImageResult::kFailedLiveModeActive);
+      break;
+    case GlicInvokeError::kClientLoadError:
+      ShareComplete(ShareImageResult::kFailedUnknown);
+      break;
+    case GlicInvokeError::kSignInRequired:
+      // The invocation timed out waiting for the user to sign in.
+      ShareComplete(ShareImageResult::kFailedTimedOut);
+      break;
+    case GlicInvokeError::kInstanceDestroyedBlankInstanceClosed:
+    case GlicInvokeError::kInstanceDestroyedUnbound:
+    case GlicInvokeError::kInstanceDestroyedArchived:
+    case GlicInvokeError::kInstanceDestroyedSignedOut:
+    case GlicInvokeError::kInstanceDestroyedShutdown:
+      ShareComplete(ShareImageResult::kFailedLostInstance);
+      break;
+    case GlicInvokeError::kPanelClosed:
+      ShareComplete(ShareImageResult::kFailedCancelled);
+      break;
   }
 }
 
@@ -292,7 +332,7 @@ void GlicShareImageHandler::MaybeShowErrorToast(tabs::TabInterface* tab) {
   }
 #if !BUILDFLAG(IS_ANDROID)  // TODO(b/478008740): Implement for android.
   if (BrowserWindowInterface* browser = tab->GetBrowserWindowInterface()) {
-    if (auto* controller = browser->GetFeatures().toast_controller()) {
+    if (auto* controller = ToastController::From(browser)) {
       controller->MaybeShowToast(ToastParams(ToastId::kGlicShareImageFailed));
     }
   }
@@ -312,43 +352,30 @@ void GlicShareImageHandler::StopObservingNavigation() {
 
 bool GlicShareImageHandler::AreClipboardPolicyChecksRequired(
     std::optional<size_t> size) {
-  content::RenderFrameHost* rfh =
-      content::RenderFrameHost::FromID(render_frame_host_id_);
-  if (!rfh) {
+  auto source = CreateSourceClipboardEndpoint(render_frame_host_id_);
+  if (!source) {
     return false;
   }
-
-  content::ClipboardEndpoint source(
-      ui::DataTransferEndpoint(
-          rfh->GetMainFrame()->GetLastCommittedURL(),
-          {.off_the_record = rfh->GetBrowserContext()->IsOffTheRecord()}),
-      base::BindRepeating(
-          [](content::GlobalRenderFrameHostId rfh_id)
-              -> content::BrowserContext* {
-            auto* rfh = content::RenderFrameHost::FromID(rfh_id);
-            return rfh ? rfh->GetBrowserContext() : nullptr;
-          },
-          rfh->GetGlobalId()),
-      *rfh);
 
   ui::ClipboardMetadata metadata;
   metadata.format_type = ui::ClipboardFormatType::PngType();
   metadata.size = size.value_or(kShareThumbnailMaxSize);
 
   bool copy_check_required =
-      enterprise_data_protection::IsCopyPolicyCheckRequired(source, metadata);
+      enterprise_data_protection::IsCopyPolicyCheckRequired(*source, metadata);
 
-  ui::DataTransferEndpoint dte(glic::GetGuestURL());
-  content::ClipboardEndpoint paste_destination(
-      dte, base::BindRepeating(
-               [](GlicKeyedService* service) -> content::BrowserContext* {
-                 return service->profile();
-               },
-               base::Unretained(&service_.get())));
+  ui::DataTransferEndpoint dte(glic::GetGuestURL(service_->profile()));
+  content::ClipboardEndpoint paste_destination =
+      content::ClipboardEndpoint::ForUnloadedTab(
+          dte, base::BindRepeating(
+                   [](GlicKeyedService* service) -> content::BrowserContext* {
+                     return service->profile();
+                   },
+                   base::Unretained(&service_.get())));
 
   bool paste_check_required =
       enterprise_data_protection::IsPastePolicyCheckRequired(
-          source, paste_destination, metadata);
+          *source, paste_destination, metadata);
 
   return copy_check_required || paste_check_required;
 }
@@ -357,6 +384,12 @@ void GlicShareImageHandler::MaybeStartObservingNavigation(
     tabs::TabInterface* tab) {
   if (!AreClipboardPolicyChecksRequired(std::nullopt)) {
     return;
+  }
+
+  auto source = CreateSourceClipboardEndpoint(render_frame_host_id_);
+  if (source) {
+    initial_cached_source_ =
+        enterprise_data_protection::CacheFullCopySource(*source);
   }
 
   // Listen for navigations and WebContents destruction.
@@ -408,6 +441,7 @@ void GlicShareImageHandler::Reset() {
   src_url_ = GURL();
   frame_url_ = GURL();
   frame_origin_ = url::Origin();
+  initial_cached_source_.reset();
   StopObservingNavigation();
 
   if (is_share_in_progress_ && current_invocation_instance_) {

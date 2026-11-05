@@ -8,33 +8,24 @@
 #import <UIKit/UIKit.h>
 
 #import "ios/chrome/browser/intelligence/bwg/ui/gemini_container_consumer.h"
+#import "ios/chrome/browser/intelligence/bwg/ui/gemini_container_mutator.h"
 
-@class GeminiContainerViewController;
-
-// Delegate for the GeminiContainerViewController.
-@protocol GeminiContainerViewControllerDelegate <NSObject>
-
-// Called when the keyboard is shown.
-- (void)geminiContainerViewController:
-            (GeminiContainerViewController*)viewController
-          didShowKeyboardWithDuration:(NSTimeInterval)duration
-                                curve:(UIViewAnimationCurve)curve;
-
-@end
+@class ActuationWorklogViewController;
 
 // A view controller that acts as a container for Gemini features.
 @interface GeminiContainerViewController
     : UIViewController <GeminiContainerConsumer>
 
-// The delegate for this view controller.
-@property(nonatomic, weak) id<GeminiContainerViewControllerDelegate> delegate;
+// The mutator for this view controller.
+@property(nonatomic, weak) id<GeminiContainerMutator> mutator;
 
 // The child zero-state view controller.
 @property(nonatomic, weak) UIViewController* zeroStateViewController;
 
-// Initializes the container with the Gemini backend view controller.
-- (instancetype)initWithGeminiViewController:
-    (UIViewController*)geminiViewController NS_DESIGNATED_INITIALIZER;
+// Initializes the container with an optional actuation worklog view controller.
+- (instancetype)initWithWorklogViewController:
+    (ActuationWorklogViewController*)worklogViewController
+    NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 - (instancetype)initWithNibName:(NSString*)nibNameOrNil

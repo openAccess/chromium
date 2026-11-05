@@ -284,13 +284,9 @@ TEST(AutofillValidation, IsValidNameOnCard) {
   }
 
   const char16_t* const kInvalidNamesOnCard[] = {
-      u"John D0E",   u"Jane@Doe",
-      u"John#Smith", u"Maria$V",
-      u"Test^Name",  u"Name*Here",
-      u"John(Doe)",  u"Jane[Doe]",
-      u"Maria{V}",   u"Test=Name",
-      u"Name?Here",  u"|Doe",
-      u"•Name",      u"This name is way too long for a card",
+      u"John D0E",  u"Jane@Doe",  u"John#Smith", u"Maria$V",  u"Test^Name",
+      u"Name*Here", u"John(Doe)", u"Jane[Doe]",  u"Maria{V}", u"Test=Name",
+      u"Name?Here", u"|Doe",      u"•Name",
   };
   for (const char16_t* name : kInvalidNamesOnCard) {
     SCOPED_TRACE(base::UTF16ToUTF8(name));
@@ -318,10 +314,16 @@ TEST_P(AutofillIsValidZipTest, IsValidZip) {
 
 TEST(AutofillValidation, IsSSN) {
   const char16_t* const kValidSSNs[] = {
-      u"078-05-1120",           u"078051120",
-      u"078 05 1120",           u"078.05.1120",
+      u"078-05-1120", u"078051120", u"078 05 1120", u"078.05.1120",
       u"078\u00A005\u202F1120", u"078\u300005\u20021120",
-  };
+      // En dash (U+2013) from b/556230099.
+      u"219\u201309\u20139999",
+      // Em dash (U+2014) and minus sign (U+2212).
+      u"219\u201409\u22129999",
+      // Fullwidth hyphen-minus (U+FF0D).
+      u"219\uFF0D09\uFF0D9999",
+      // Zero-width space (U+200B).
+      u"219\u200B09\u200B9999"};
   for (const char16_t* ssn : kValidSSNs) {
     SCOPED_TRACE(base::UTF16ToUTF8(ssn));
     EXPECT_TRUE(IsSSN(ssn));

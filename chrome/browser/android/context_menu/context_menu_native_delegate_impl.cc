@@ -22,6 +22,7 @@
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom.h"
 #include "third_party/blink/public/mojom/frame/media_player_action.mojom.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/gfx/android/java_bitmap.h"
 
 #if BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND)
@@ -135,6 +136,8 @@ ContextMenuNativeDelegateImpl::ContextMenuNativeDelegateImpl(
     content::ContextMenuParams* const context_menu_params)
     : web_contents_(web_contents), context_menu_params_(context_menu_params) {}
 
+ContextMenuNativeDelegateImpl::~ContextMenuNativeDelegateImpl() = default;
+
 void ContextMenuNativeDelegateImpl::StartDownload(JNIEnv* env,
                                                   const GURL& url,
                                                   bool jis_media) {
@@ -148,8 +151,10 @@ void ContextMenuNativeDelegateImpl::SearchForImage(
   if (!render_frame_host)
     return;
 
-  CoreTabHelper::FromWebContents(web_contents_)
-      ->SearchByImage(render_frame_host, context_menu_params_->src_url);
+  if (auto* core_tab_helper = CoreTabHelper::FromWebContents(web_contents_)) {
+    core_tab_helper->SearchByImage(render_frame_host,
+                                   context_menu_params_->src_url);
+  }
 }
 
 void ContextMenuNativeDelegateImpl::InspectElement(
@@ -254,15 +259,21 @@ void ContextMenuNativeDelegateImpl::DownloadVideoFrame(
           blink::mojom::MediaPlayerActionType::kSaveVideoFrameAs, true));
 }
 
-static int64_t JNI_ContextMenuNativeDelegateImpl_Init(
+void ContextMenuNativeDelegateImpl::ShowInterestInElement(JNIEnv* env) {
+  web_contents_->ShowInterestInElement(
+      context_menu_params_->interest_for_dom_node_id);
+}
+
+static jni_zero::JniUniquePtr<ContextMenuNativeDelegateImpl>
+JNI_ContextMenuNativeDelegateImpl_Init(
     JNIEnv* env,
     content::WebContents* web_contents,
     const JavaRef<jobject>& jcontext_menu_params) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
   auto* params =
       context_menu::ContextMenuParamsFromJavaObject(jcontext_menu_params);
-  return reinterpret_cast<intptr_t>(
-      new ContextMenuNativeDelegateImpl(web_contents, params));
+  return jni_zero::MakeUnique<ContextMenuNativeDelegateImpl>(web_contents,
+                                                             params);
 }
 
 DEFINE_JNI(ContextMenuNativeDelegateImpl)

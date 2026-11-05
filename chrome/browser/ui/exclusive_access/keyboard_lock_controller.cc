@@ -72,6 +72,27 @@ void KeyboardLockController::HandleUserHeldEscape() {
 
   base::RecordAction(base::UserMetricsAction("UnlockKeyboard_PressAndHoldEsc"));
   UnlockKeyboard();
+  // A held Esc key must exit tab fullscreen now. Otherwise it would only exit
+  // on the next Esc key event (an auto-repeat keydown or the keyup), which may
+  // not arrive before the OS acts on the held key, e.g. Android may terminate
+  // an app that captures the keyboard while Esc is held.
+  // Guarded by the kKeyboardLockHeldEscExitsTabFullscreen kill switch.
+  //
+  // Skip this when the browser window itself is fullscreen (e.g. F11), with or
+  // without tab fullscreen on top of it. In that case the same held Esc key is
+  // handled by FullscreenController::HandleUserHeldEscape(), which exits both
+  // browser and tab fullscreen (or deliberately stays fullscreen, e.g. locked
+  // fullscreen). Calling HandleUserPressedEscape() as well would start a
+  // second exit while the first may still be in progress.
+  // If the behavior in fullscreen_controller changes this will silently break.
+  if (base::FeatureList::IsEnabled(
+          features::kKeyboardLockHeldEscExitsTabFullscreen)) {
+    FullscreenController* const fullscreen_controller =
+        exclusive_access_manager()->fullscreen_controller();
+    if (!fullscreen_controller->IsFullscreenForBrowser()) {
+      fullscreen_controller->HandleUserPressedEscape();
+    }
+  }
 }
 
 void KeyboardLockController::HandleUserReleasedEscapeEarly() {
@@ -81,8 +102,8 @@ void KeyboardLockController::HandleUserReleasedEscapeEarly() {
 }
 
 bool KeyboardLockController::RequiresPressAndHoldEscToExit() const {
-  DCHECK_EQ(keyboard_lock_state_ == KeyboardLockState::kUnlocked,
-            exclusive_access_tab() == nullptr);
+  CHECK_EQ(keyboard_lock_state_ == KeyboardLockState::kUnlocked,
+           exclusive_access_tab() == nullptr, base::NotFatalUntil::M162);
   return keyboard_lock_state_ == KeyboardLockState::kLockedWithEsc;
 }
 
@@ -99,14 +120,15 @@ void KeyboardLockController::NotifyTabExclusiveAccessLost() {
 }
 
 bool KeyboardLockController::IsKeyboardLockActive() const {
-  DCHECK_EQ(keyboard_lock_state_ == KeyboardLockState::kUnlocked,
-            exclusive_access_tab() == nullptr);
+  CHECK_EQ(keyboard_lock_state_ == KeyboardLockState::kUnlocked,
+           exclusive_access_tab() == nullptr, base::NotFatalUntil::M162);
   return keyboard_lock_state_ != KeyboardLockState::kUnlocked;
 }
 
 void KeyboardLockController::RequestKeyboardLock(WebContents* web_contents,
                                                  bool esc_key_locked) {
-  DCHECK(!exclusive_access_tab() || exclusive_access_tab() == web_contents);
+  CHECK(!exclusive_access_tab() || exclusive_access_tab() == web_contents,
+        base::NotFatalUntil::M162);
   if (!base::FeatureList::IsEnabled(
           permissions::features::kKeyboardLockPrompt)) {
     LockKeyboard(web_contents->GetWeakPtr(), esc_key_locked);
@@ -117,7 +139,7 @@ void KeyboardLockController::RequestKeyboardLock(WebContents* web_contents,
       base::BindOnce(&KeyboardLockController::LockKeyboard,
                      weak_ptr_factory_.GetWeakPtr(), web_contents->GetWeakPtr(),
                      esc_key_locked),
-      base::BindOnce(&KeyboardLockController::UnlockKeyboardForWebContents,
+      base::BindOnce(&KeyboardLockController::OnKeyboardLockPermissionDenied,
                      weak_ptr_factory_.GetWeakPtr(),
                      web_contents->GetWeakPtr()),
       web_contents);
@@ -130,7 +152,7 @@ bool KeyboardLockController::HandleKeyEvent(
     return false;
   }
 
-  DCHECK_EQ(ui::VKEY_ESCAPE, event.windows_key_code);
+  CHECK_EQ(ui::VKEY_ESCAPE, event.windows_key_code, base::NotFatalUntil::M162);
   // This method handles the press and hold gesture used for exiting fullscreen.
   // If we don't have a feature which requires press and hold, or there isn't an
   // active keyboard lock request which requires press and hold, then we just
@@ -217,6 +239,18 @@ void KeyboardLockController::UnlockKeyboardForWebContents(
   SetTabWithExclusiveAccess(nullptr);
   exclusive_access_manager()->UpdateBubble(base::NullCallback());
   NotifyLockRequestResult();
+}
+
+void KeyboardLockController::OnKeyboardLockPermissionDenied(
+    base::WeakPtr<content::WebContents> web_contents) {
+  if (!web_contents) {
+    return;
+  }
+  UnlockKeyboardForWebContents(web_contents);
+  // Unlike an unlock from Esc or a fullscreen exit, a denied or dismissed
+  // prompt must not be shown again when the page re-enters fullscreen, so
+  // drop the request too. See crbug.com/379954091.
+  web_contents->DiscardKeyboardLockRequest();
 }
 
 void KeyboardLockController::HandleUserHeldEscapeDeprecated() {

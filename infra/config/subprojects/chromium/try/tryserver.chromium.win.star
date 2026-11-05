@@ -27,6 +27,8 @@ try_.defaults.set(
     execution_timeout = try_constants.DEFAULT_EXECUTION_TIMEOUT,
     experiments = {
         "chromium_tests.resultdb_module": 100,
+        "luci.buildbucket.run_in_turboci": 50,
+        "luci.buildbucket.run_in_turboci.grpc_client": 100,
     },
     orchestrator_cores = "2|4",
     orchestrator_siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
@@ -63,20 +65,20 @@ try_.builder(
         ],
     ),
     os = os.LINUX_DEFAULT,
+    ssd = True,
     contact_team_email = "chrome-build-team@google.com",
 )
 
 try_.builder(
     name = "win-annotator-rel",
-    description_html = "Runs tests for the Network Traffic Annotation Auditor on Windows, mirroring win-annotator-rel.",
     mirrors = ["ci/win-annotator-rel"],
     gn_args = gn_args.config(
         configs = [
             "ci/win-annotator-rel",
-            "try_builder",
-            "no_symbols",
+            "release_try_builder",
         ],
     ),
+    ssd = None,
     contact_team_email = "cbe-compliance@google.com",
 )
 
@@ -92,6 +94,7 @@ try_.builder(
             "dcheck_always_on",
         ],
     ),
+    ssd = None,
     contact_team_email = "chrome-desktop-engprod@google.com",
     properties = {
         # The format of these properties is defined at archive/properties.proto
@@ -115,6 +118,7 @@ try_.builder(
     gn_args = "ci/win-asan",
     cores = 16,
     ssd = True,
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     execution_timeout = 9 * time.hour,
     siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
 )
@@ -131,6 +135,7 @@ try_.builder(
             "dcheck_always_on",
         ],
     ),
+    ssd = None,
     contact_team_email = "chrome-desktop-engprod@google.com",
     properties = {
         # The format of these properties is defined at archive/properties.proto
@@ -161,8 +166,10 @@ try_.builder(
     ),
     builderless = False,
     os = os.WINDOWS_ANY,
+    contact_team_email = "chrome-fuzzing-core@google.com",
     cq_settings = try_.cq_settings(
         on_default_cq = True,
+        reuse_max_commit_distance = 800 if settings.is_main else None,
     ),
     experiments = {
         # crbug/940930
@@ -184,6 +191,7 @@ try_.builder(
             "no_symbols",
         ],
     ),
+    ssd = None,
     contact_team_email = "chrome-counter-abuse-core@google.com",
 )
 
@@ -208,12 +216,14 @@ try_.orchestrator_builder(
         ],
     ),
     compilator = "win-rel-compilator",
+    contact_team_email = "chrome-desktop-engprod@google.com",
     coverage_test_types = ["unit", "overall"],
     # TODO (crbug.com/1372179): Use orchestrator pool once overloaded test pools
     # are addressed
     #use_orchestrator_pool = True,
     cq_settings = try_.cq_settings(
         on_default_cq = True,
+        reuse_max_commit_distance = 800 if settings.is_main else None,
     ),
     experiments = {
         # go/nplus1shardsproposal
@@ -222,7 +232,10 @@ try_.orchestrator_builder(
         "chromium.enable_cleandead": 100,
         # go/rts-project-proposal
         "chromium_rts.filter_file_analysis": 100,
+        # crbug.com/40280175
+        "chromium_checkout.expand_submodules": 100,
         "luci.buildbucket.run_in_turboci": 100,
+        "luci.buildbucket.run_in_turboci.grpc_client": 100,
     },
     main_list_view = "try",
     use_clang_coverage = True,
@@ -232,8 +245,38 @@ try_.compilator_builder(
     name = "win-rel-compilator",
     branch_selector = branches.selector.WINDOWS_BRANCHES,
     cores = 32 if settings.is_main else 16,
+    contact_team_email = "chrome-desktop-engprod@google.com",
     # TODO (crbug.com/1245171): Revert when root issue is fixed
     grace_period = 4 * time.minute,
+    main_list_view = "try",
+)
+
+try_.builder(
+    name = "win-devtools-frontend-rel",
+    description_html = "Runs DevTools Frontend tests exactly like win-rel",
+    mirrors = [
+        "ci/win-devtools-frontend-rel",
+    ],
+    gn_args = "ci/win-devtools-frontend-rel",
+    contact_team_email = "chrome-devtools@google.com",
+    cq_settings = try_.cq_settings(
+        includable_only = True,
+    ),
+    main_list_view = "try",
+)
+
+try_.builder(
+    name = "win-webdriver-bidi-rel",
+    description_html = "Runs webdriver bidi tests exactly like win-rel",
+    mirrors = [
+        "ci/win-webdriver-bidi-rel",
+    ],
+    gn_args = "ci/win-webdriver-bidi-rel",
+    ssd = None,
+    contact_team_email = "chrome-devtools@google.com",
+    cq_settings = try_.cq_settings(
+        includable_only = True,
+    ),
     main_list_view = "try",
 )
 
@@ -248,6 +291,7 @@ try_.builder(
             "release_try_builder",
         ],
     ),
+    ssd = None,
     contact_team_email = "chrome-desktop-engprod@google.com",
     properties = {
         # The format of these properties is defined at archive/properties.proto
@@ -280,13 +324,15 @@ try_.builder(
     ),
     builderless = False,
     cores = 16,
-    os = os.WINDOWS_ANY,
+    os = os.WINDOWS_DEFAULT,
     ssd = True,
+    contact_team_email = "chrome-desktop-engprod@google.com",
     cq_settings = try_.cq_settings(
         # TODO(crbug.com/40847153) Remove once cancelling doesn't wipe
         # out builder cache
         cancel_stale = False,
         on_default_cq = True,
+        reuse_max_commit_distance = 800 if settings.is_main else None,
     ),
     experiments = {
         "luci.buildbucket.run_in_turboci": 100,
@@ -312,6 +358,7 @@ try_.builder(
             "resource_allowlisting",
         ],
     ),
+    contact_team_email = "chrome-desktop-engprod@google.com",
 )
 
 try_.builder(
@@ -325,24 +372,27 @@ try_.builder(
             "release_try_builder",
         ],
     ),
+    contact_team_email = "chrome-desktop-engprod@google.com",
 )
 
 try_.builder(
     name = "win_upload_clang",
+    description_html = "Builds and uploads Clang toolchain packages for Windows.",
     executable = "recipe:chromium_toolchain/package_clang",
     builderless = False,
     cores = 32,
-    os = os.WINDOWS_ANY,
+    os = os.WINDOWS_DEFAULT,
     execution_timeout = 6 * time.hour,
     siso_project = None,
 )
 
 try_.builder(
     name = "win_upload_rust",
+    description_html = "Builds and uploads Rust toolchain packages for Windows.",
     executable = "recipe:chromium_toolchain/package_rust",
     builderless = False,
     cores = 32,
-    os = os.WINDOWS_ANY,
+    os = os.WINDOWS_DEFAULT,
     execution_timeout = 6 * time.hour,
     siso_project = None,
 )
@@ -357,11 +407,11 @@ try_.builder(
     cores = 16,
     os = os.WINDOWS_10,
     ssd = True,
+    contact_team_email = "chrome-desktop-engprod@google.com",
 )
 
 try_.builder(
     name = "win11-rel",
-    description_html = "This builder run tests for Windows 11 release build.",
     mirrors = [
         "ci/Win x64 Builder",
         "ci/Win11 Tests x64",
@@ -394,9 +444,6 @@ try_.builder(
 try_.builder(
     name = "win-arm64-rel",
     branch_selector = branches.selector.WINDOWS_BRANCHES,
-    description_html = (
-        "This builder run tests for Windows ARM64 release build."
-    ),
     mirrors = [
         "ci/win-arm64-rel",
         "ci/win11-arm64-rel-tests",
@@ -411,6 +458,7 @@ try_.builder(
     ),
     builderless = True,
     os = os.WINDOWS_10,
+    ssd = None,
     contact_team_email = "chrome-desktop-engprod@google.com",
     # TODO (crbug.com/1372179): Use orchestrator pool once overloaded test pools
     # are addressed
@@ -446,7 +494,7 @@ try_.builder(
     ),
     builderless = False,
     cores = None,
-    os = os.WINDOWS_ANY,
+    os = os.WINDOWS_DEFAULT,
     contact_team_email = "chrome-desktop-engprod@google.com",
     cq_settings = try_.cq_settings(
         # TODO(crbug.com/40847153) Remove once cancelling doesn't wipe
@@ -463,7 +511,6 @@ try_.builder(
 
 try_.builder(
     name = "win-arm64-dbg",
-    description_html = "This builder run tests for Windows ARM64 debug build.",
     mirrors = [
         "ci/win-arm64-dbg",
         "ci/win11-arm64-dbg-tests",
@@ -475,7 +522,7 @@ try_.builder(
     ),
     builderless = True,
     cores = 16,
-    os = os.WINDOWS_10,
+    os = os.WINDOWS_DEFAULT,
     ssd = True,
     contact_team_email = "chrome-desktop-engprod@google.com",
     # The size of the testing pool is limited.
@@ -490,6 +537,7 @@ try_.builder(
     mirrors = ["ci/win-fieldtrial-rel"],
     gn_args = "ci/win-fieldtrial-rel",
     os = os.WINDOWS_DEFAULT,
+    ssd = None,
 )
 
 try_.builder(
@@ -500,10 +548,10 @@ try_.builder(
     gn_args = gn_args.config(
         configs = [
             "ci/win-perfetto-rel",
-            "try_builder",
-            "no_symbols",
+            "release_try_builder",
         ],
     ),
+    ssd = None,
 )
 
 try_.builder(
@@ -519,6 +567,7 @@ try_.builder(
         "ci/win-treesinviz-disabled-rel",
     ],
     gn_args = "ci/win-treesinviz-disabled-rel",
+    ssd = None,
     contact_team_email = "chrome-gpu-team@google.com",
 )
 
@@ -562,6 +611,10 @@ shared_gpu.try_.win_optional_builder(
     ),
     # default is 6 for GPU optional builders.
     execution_timeout = 5 * time.hour,
+    experiments = {
+        "luci.buildbucket.run_in_turboci": 100,
+        "luci.buildbucket.run_in_turboci.grpc_client": 100,
+    },
     main_list_view = "try",
     # This is higher than the default of 7 for optional GPU builders
     # because Windows builds take longer than other platforms even
@@ -592,6 +645,10 @@ shared_gpu.try_.win_optional_builder(
     ),
     # default is 6 for GPU optional builders.
     execution_timeout = 5 * time.hour,
+    experiments = {
+        "luci.buildbucket.run_in_turboci": 100,
+        "luci.buildbucket.run_in_turboci.grpc_client": 100,
+    },
     main_list_view = "try",
     # This is higher than the default of 7 for optional GPU builders
     # because Windows builds take longer than other platforms even
@@ -605,7 +662,6 @@ shared_gpu.try_.win_optional_builder(
 
 try_.builder(
     name = "win-separate-renderer-rel",
-    description_html = "Runs separate renderer tests on Windows, mirroring win-separate-renderer-fyi-rel.",
     mirrors = [
         "ci/win-separate-renderer-fyi-rel",
     ],
@@ -616,6 +672,7 @@ try_.builder(
             "dcheck_always_on",
         ],
     ),
+    ssd = None,
     contact_team_email = "toyoshim@chromium.org",
     cq_settings = try_.cq_settings(
         includable_only = True,

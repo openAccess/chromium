@@ -16,8 +16,8 @@ class FirstLetterPseudoElementTest : public PageTestBase {};
 TEST_F(FirstLetterPseudoElementTest, DoesNotBreakEmoji) {
   const UChar emoji[] = {0xD83D, 0xDE31, 0};
   const bool preserve_breaks = false;
-  FirstLetterPseudoElement::Punctuation punctuation =
-      FirstLetterPseudoElement::Punctuation::kNotSeen;
+  FirstLetterPseudoElement::LeadingPunctuationState punctuation =
+      FirstLetterPseudoElement::LeadingPunctuationState::kNotStarted;
   EXPECT_EQ(2u, FirstLetterPseudoElement::FirstLetterLength(
                     emoji, preserve_breaks, punctuation));
 }
@@ -81,14 +81,14 @@ TEST_F(FirstLetterPseudoElementTest, InitialLetter) {
       *To<LayoutTextFragment>(initial_letter_box.SlowFirstChild());
 
   EXPECT_TRUE(initial_letter_box.IsInitialLetterBox());
-  EXPECT_EQ(3.0f, initial_letter_box.StyleRef().InitialLetter().Size());
-  EXPECT_EQ(3, initial_letter_box.StyleRef().InitialLetter().Sink());
+  EXPECT_EQ(3.0f, initial_letter_box.Style().InitialLetter().Size());
+  EXPECT_EQ(3, initial_letter_box.Style().InitialLetter().Sink());
 
-  EXPECT_EQ(sample.GetLayoutObject()->StyleRef().GetFont(),
-            initial_letter_box.StyleRef().GetFont())
+  EXPECT_EQ(sample.GetLayoutObject()->Style().GetFont(),
+            initial_letter_box.Style().GetFont())
       << "initial letter box should have a specified font.";
 
-  const auto& initial_letter_text_style1 = initial_letter_text1.StyleRef();
+  const auto& initial_letter_text_style1 = initial_letter_text1.Style();
   EXPECT_EQ(EVerticalAlign::kBaseline,
             initial_letter_text_style1.VerticalAlign());
   EXPECT_EQ(LayoutUnit(80),
@@ -110,7 +110,7 @@ TEST_F(FirstLetterPseudoElementTest, InitialLetter) {
   EXPECT_EQ(&initial_letter_text2, &initial_letter_text1)
       << "font-size and line-height changes don't build new first-letter tree.";
 
-  const auto& initial_letter_text_style2 = initial_letter_text2.StyleRef();
+  const auto& initial_letter_text_style2 = initial_letter_text2.Style();
   EXPECT_EQ(EVerticalAlign::kBaseline,
             initial_letter_text_style2.VerticalAlign());
   EXPECT_EQ(LayoutUnit(115),
@@ -124,8 +124,8 @@ TEST_F(FirstLetterPseudoElementTest, UnicodePairBreaking) {
   const UChar test_string[] = {0xD800, 0xDD00, 'A', 0xD800, 0xDD00,
                                0xD800, 0xDD00, 'B', 0};
   const bool preserve_breaks = false;
-  FirstLetterPseudoElement::Punctuation punctuation =
-      FirstLetterPseudoElement::Punctuation::kNotSeen;
+  FirstLetterPseudoElement::LeadingPunctuationState punctuation =
+      FirstLetterPseudoElement::LeadingPunctuationState::kNotStarted;
   EXPECT_EQ(7u, FirstLetterPseudoElement::FirstLetterLength(
                     test_string, preserve_breaks, punctuation));
 }
@@ -140,23 +140,23 @@ FirstLetterLayoutTextTestCase first_letter_layout_text_cases[] = {
     {" F", " F"},
     {".", nullptr},
     {" ", nullptr},
-    {". F", nullptr},
+    {". F", ". F"},
     {"<span> </span>", nullptr},
     {"<span> F </span>", " F "},
     {" <span>.</span>.F", "."},
     {"..<span></span>F", ".."},
-    {"..<span> </span>F", nullptr},
+    {"..<span> </span>F", ".."},
     {".<span>.F</span>F", "."},
-    {". <span>F</span>", nullptr},
+    {". <span>F</span>", ". "},
     {".<span>..</span>F", "."},
-    {".<span>..</span> F", nullptr},
+    {".<span>..</span> F", "."},
     {".<span>..</span>", nullptr},
     {"<span>..</span>F", ".."},
     {"<span></span>F", "F"},
     {"<span>   </span>F", "F"},
     {"<span><span>.</span></span><span>F</span>", "."},
     {"<span> <span> </span></span> <span>F</span>", "F"},
-    {"<span><span>.</span><span> </span></span><span>F</span>", nullptr},
+    {"<span><span>.</span><span> </span></span><span>F</span>", "."},
 };
 
 class FirstLetterTextTest : public FirstLetterPseudoElementTest,
@@ -176,10 +176,10 @@ TEST_P(FirstLetterTextTest, All) {
   // Need to mark the body layout style as having ::first-letter styles.
   // Otherwise FirstLetterTextLayoutObject() will always return nullptr.
   LayoutObject* layout_body = GetDocument().body()->GetLayoutObject();
-  ComputedStyleBuilder builder(layout_body->StyleRef());
+  ComputedStyleBuilder builder(layout_body->Style());
   builder.SetPseudoElementStyles(
       1 << (kPseudoIdFirstLetter - kFirstPublicPseudoId));
-  layout_body->SetStyle(builder.TakeStyle(),
+  layout_body->SetStyle(*builder.TakeStyle(),
                         LayoutObject::ApplyStyleChanges::kNo);
 
   LayoutText* layout_text =

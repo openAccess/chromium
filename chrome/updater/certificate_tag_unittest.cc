@@ -4,22 +4,27 @@
 
 #include "chrome/updater/certificate_tag.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
-#include <cstdint>
-#include <cstring>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
-#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/memory_mapped_file.h"
+#include "base/files/scoped_temp_dir.h"
 #include "chrome/updater/certificate_tag_internal.h"
+#include "chrome/updater/tag.h"
 #include "chrome/updater/test/unit_test_util.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/zlib/google/compression_utils.h"
 
@@ -45,8 +50,7 @@ TEST(CertificateTag, RoundTrip) {
   ASSERT_TRUE(bin2);
   std::optional<std::vector<uint8_t>> parsed_tag(bin2->tag());
   ASSERT_TRUE(parsed_tag);
-  ASSERT_EQ(parsed_tag->size(), sizeof(kTag));
-  UNSAFE_TODO(EXPECT_TRUE(memcmp(kTag, parsed_tag->data(), sizeof(kTag)) == 0));
+  EXPECT_THAT(*parsed_tag, ::testing::ElementsAreArray(kTag));
 
   // Update an existing tag.
   static constexpr uint8_t kTag2[] = {1, 2, 3, 4, 6};
@@ -57,14 +61,87 @@ TEST(CertificateTag, RoundTrip) {
   ASSERT_TRUE(bin3);
   std::optional<std::vector<uint8_t>> parsed_tag2(bin3->tag());
   ASSERT_TRUE(parsed_tag2);
-  ASSERT_EQ(parsed_tag2->size(), sizeof(kTag2));
-  UNSAFE_TODO(
-      EXPECT_TRUE(memcmp(kTag2, parsed_tag2->data(), sizeof(kTag2)) == 0));
+  EXPECT_THAT(*parsed_tag2, ::testing::ElementsAreArray(kTag2));
 
   // Updating an existing tag with a tag of the same size should not have grown
   // the binary, i.e. the old tag should have been erased first.
   EXPECT_EQ(sizeof(kTag), sizeof(kTag2));
   EXPECT_EQ(updated_exe->size(), updated_again_exe->size());
+}
+
+// Tag string written by `CertificateTagAreaSizeTest`.
+constexpr char kAreaSizeTestTagString[] = "brand=QAQA";
+
+// Size of the tag data (`kTagHeaderBytes` + tag string) for
+// `kAreaSizeTestTagString`, i.e. the minimum size of the tag area.
+constexpr size_t kAreaSizeTestTagDataBytes =
+    kTagHeaderBytes + std::string_view(kAreaSizeTestTagString).size();
+static_assert(kAreaSizeTestTagDataBytes == 24);
+
+struct CertificateTagAreaSizeTestCase {
+  // Optional subdirectory of the test data directory containing `file_name`.
+  const std::string subdir;
+  const std::string file_name;
+  std::unique_ptr<BinaryInterface> (*create_binary)(
+      base::span<const uint8_t> contents);
+  const int padded_length;
+  const size_t expected_tag_area_bytes;
+};
+
+class CertificateTagAreaSizeTest
+    : public ::testing::TestWithParam<CertificateTagAreaSizeTestCase> {};
+
+INSTANTIATE_TEST_SUITE_P(
+    CertificateTagAreaSizeTestCases,
+    CertificateTagAreaSizeTest,
+    ::testing::ValuesIn(std::vector<CertificateTagAreaSizeTestCase>{
+        // Default padding: the total tag area is `kDefaultBinaryTagBytes`.
+        {"", "signed.exe", &CreatePEBinary, kDefaultBinaryTagBytes,
+         kDefaultBinaryTagBytes},
+        {"tagged_msi", "GUH-untagged.msi", &CreateMSIBinary,
+         kDefaultBinaryTagBytes, kDefaultBinaryTagBytes},
+
+        // A padded length of 0 shrinks the tag area to fit the tag data.
+        {"", "signed.exe", &CreatePEBinary, 0, kAreaSizeTestTagDataBytes},
+        {"tagged_msi", "GUH-untagged.msi", &CreateMSIBinary, 0,
+         kAreaSizeTestTagDataBytes},
+
+        // A padded length larger than the tag data but less than
+        // `kDefaultBinaryTagBytes` pads the tag area to exactly that length.
+        {"", "signed.exe", &CreatePEBinary, 100, 100},
+        {"tagged_msi", "GUH-untagged.msi", &CreateMSIBinary, 100, 100},
+
+        // A padded length smaller than the tag data does not truncate it.
+        {"", "signed.exe", &CreatePEBinary, 10, kAreaSizeTestTagDataBytes},
+        {"tagged_msi", "GUH-untagged.msi", &CreateMSIBinary, 10,
+         kAreaSizeTestTagDataBytes},
+    }));
+
+TEST_P(CertificateTagAreaSizeTest, TestCases) {
+  base::FilePath in_file =
+      GetParam().subdir.empty()
+          ? test::GetTestFilePath(GetParam().file_name.c_str())
+          : test::GetTestFilePath(GetParam().subdir.c_str())
+                .AppendASCII(GetParam().file_name);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath out_file =
+      temp_dir.GetPath().AppendASCII(GetParam().file_name);
+
+  ASSERT_TRUE(BinaryWriteTag(in_file, kAreaSizeTestTagString,
+                             GetParam().padded_length, out_file));
+
+  std::string contents;
+  ASSERT_TRUE(base::ReadFileToString(out_file, &contents));
+  std::unique_ptr<BinaryInterface> bin =
+      GetParam().create_binary(base::as_byte_span(contents));
+  ASSERT_TRUE(bin);
+
+  std::optional<std::vector<uint8_t>> tag = bin->tag();
+  ASSERT_TRUE(tag);
+  EXPECT_EQ(tag->size(), GetParam().expected_tag_area_bytes);
+  EXPECT_EQ(ReadTag(*tag), kAreaSizeTestTagString);
 }
 
 namespace internal {
@@ -166,15 +243,15 @@ std::vector<uint32_t> GetDifatEntries(int sectors, int free_entries) {
   entries.reserve(kNumDifatHeaderEntries + sectors * 1024);
 
   // Some sector number.
-  const uint32_t sentinel = 123;
+  constexpr uint32_t kSentinel = 123;
   for (; sectors > 0; --sectors) {
     std::vector<uint32_t> new_entries(1024);
-    new_entries[1023] = sectors == 1 ? kFatEndOfChain : sentinel;
+    new_entries[1023] = sectors == 1 ? kFatEndOfChain : kSentinel;
     entries.insert(entries.end(), new_entries.begin(), new_entries.end());
   }
   size_t i = entries.size() - 1;
   while (free_entries > 0) {
-    if (entries[i] != kFatEndOfChain && entries[i] != sentinel) {
+    if (entries[i] != kFatEndOfChain && entries[i] != kSentinel) {
       entries[i] = kFatFreeSector;
       --free_entries;
     }
@@ -480,18 +557,21 @@ void Validate(const MSIBinary& bin,
   MSIDirEntry entry;
   do {
     // Fixed `kNumDirEntryBytes` directory entry size.
-    for (i = 0; i < bin.sector_format_.size / kNumDirEntryBytes; ++i) {
-      uint64_t offset =
-          dir_sector * bin.sector_format_.size + i * kNumDirEntryBytes;
-      UNSAFE_TODO(
-          std::memcpy(&entry, &bin.contents_[offset], sizeof(MSIDirEntry)));
+    for (size_t entry_index = 0;
+         entry_index < bin.sector_format_.size / kNumDirEntryBytes;
+         ++entry_index) {
+      size_t offset = dir_sector * bin.sector_format_.size +
+                      entry_index * kNumDirEntryBytes;
+      base::byte_span_from_ref(entry).copy_from_nonoverlapping(
+          base::as_byte_span(bin.contents_)
+              .subspan(offset, sizeof(MSIDirEntry)));
 
-      // Skip the mini stream and signature entries.
-      // SAFETY: byte manipulation of a C data structure.
+      // Skip the mini stream and signature entries. As in
+      // `MSIBinary::SignedDataDirFromSector()`, the name must match
+      // `kSignatureName` exactly, including its length.
       if (entry.stream_size < kMiniStreamCutoffSize ||
-          std::equal(entry.name,
-                     UNSAFE_BUFFERS(entry.name + entry.num_name_bytes),
-                     std::begin(kSignatureName))) {
+          base::as_byte_span(entry.name).first(entry.num_name_bytes) ==
+              kSignatureName) {
         continue;
       }
       uint64_t allocated_size = 0;
@@ -531,7 +611,7 @@ struct CertificateTagMsiValidateTestCase {
 class CertificateTagMsiValidateTest
     : public ::testing::TestWithParam<CertificateTagMsiValidateTestCase> {};
 
-UNSAFE_TODO(INSTANTIATE_TEST_SUITE_P(
+INSTANTIATE_TEST_SUITE_P(
     CertificateTagMsiValidateTestCases,
     CertificateTagMsiValidateTest,
     ::testing::ValuesIn(std::vector<CertificateTagMsiValidateTestCase>{
@@ -550,14 +630,16 @@ UNSAFE_TODO(INSTANTIATE_TEST_SUITE_P(
          [] {
            std::vector<uint8_t> expected_tag(8632);
            static constexpr char magic[] = "Gact2.0Omaha";
-           std::memcpy(&expected_tag[0], magic, sizeof(magic));
+           base::span(expected_tag).copy_prefix_from(base::as_byte_span(magic));
            static constexpr char tag[] =
                "appguid={8A69D345-D564-463C-AFF1-A69D9E530F96}&iid={2D8C18E9-"
                "8D3A-4EFC-6D61-AE23E3530EA2}&lang=en&browser=4&usagestats=0&"
                "appname=Google%20Chrome&needsadmin=prefers&brand=CHMB&"
                "installdataindex=defaultbrowser";
            expected_tag[sizeof(magic)] = sizeof(tag) - 1;
-           std::memcpy(&expected_tag[sizeof(magic) + 1], tag, sizeof(tag));
+           base::span(expected_tag)
+               .subspan(sizeof(magic) + 1)
+               .copy_prefix_from(base::as_byte_span(tag));
            return expected_tag;
          }(),
          [] {
@@ -565,10 +647,10 @@ UNSAFE_TODO(INSTANTIATE_TEST_SUITE_P(
                                            'O', 'm', 'a', 'h', 'a', '\0', '\n',
                                            'b', 'r', 'a', 'n', 'd', '=',  'Q',
                                            'A', 'Q', 'A', '\0'};
-           new_tag.resize(8206);
+           new_tag.resize(kDefaultBinaryTagBytes);
            return new_tag;
          }()},
-    })));
+    }));
 
 TEST_P(CertificateTagMsiValidateTest, TestCases) {
   base::MemoryMappedFile mapped_file;

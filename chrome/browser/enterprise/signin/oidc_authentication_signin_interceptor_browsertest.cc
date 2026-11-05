@@ -6,8 +6,6 @@
 
 #include <variant>
 
-#include "base/base64.h"
-#include "base/cfi_buildflags.h"
 #include "base/files/file_util.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -21,7 +19,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_file_util.h"
 #include "base/uuid.h"
-#include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/identifiers/profile_id_service_factory.h"
 #include "chrome/browser/enterprise/profile_management/profile_management_features.h"
@@ -71,6 +68,7 @@
 #include "content/public/test/browser_test.h"
 #include "google_apis/gaia/core_account_id.h"
 #include "net/test/embedded_test_server/http_response.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/test/test_network_connection_tracker.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -392,7 +390,8 @@ class OidcAuthenticationSigninInterceptorTest
 
     auto delegate = std::make_unique<MockDelegate>();
     delegate_ = delegate.get();
-    interceptor_ = std::make_unique<OidcAuthenticationSigninInterceptor>(
+    interceptor_ = std::make_unique<
+        testing::NiceMock<MockOidcAuthenticationSigninInterceptor>>(
         browser()->GetProfile(), std::move(delegate));
 
     histogram_tester_ = std::make_unique<base::HistogramTester>();
@@ -715,7 +714,7 @@ class OidcAuthenticationSigninInterceptorTest
   }
 
  protected:
-  std::unique_ptr<OidcAuthenticationSigninInterceptor> interceptor_;
+  std::unique_ptr<MockOidcAuthenticationSigninInterceptor> interceptor_;
   std::unique_ptr<base::HistogramTester> histogram_tester_;
   raw_ptr<MockDelegate> delegate_ = nullptr;  // Owned by `interceptor_`
   base::WeakPtr<FakeBubbleHandle> fake_bubble_handle_;
@@ -945,38 +944,48 @@ INSTANTIATE_TEST_SUITE_P(All,
 
 IN_PROC_BROWSER_TEST_P(OidcAuthenticationSigninInterceptorTest,
                        InterceptionAlreadyInProgress) {
-  if (!base::FeatureList::IsEnabled(
-          profile_management::features::kOidcNavigationThrottleAsyncMode)) {
-    GTEST_SKIP() << "Test only relevant when async mode is enabled.";
-  }
-  base::HistogramTester histogram_tester;
   AddTabToCurrentBrowser(GURL("about:blank"));
 
   EXPECT_TRUE(interceptor_->MaybeInterceptOidcAuthentication(
       web_contents(), kExampleOidcTokens, kExampleIssuerIdentifier,
       kExampleSubjectIdentifier, std::string(), base::DoNothing()));
 
+  bool second_callback_called = false;
   EXPECT_FALSE(interceptor_->MaybeInterceptOidcAuthentication(
       web_contents(), kExampleOidcTokens, kExampleIssuerIdentifier,
-      kExampleSubjectIdentifier, std::string(), base::DoNothing()));
+      kExampleSubjectIdentifier, std::string(),
+      base::BindOnce([](bool* called) { *called = true; },
+                     &second_callback_called)));
+  EXPECT_FALSE(second_callback_called);
 
-  histogram_tester.ExpectUniqueSample(
+  histogram_tester_->ExpectUniqueSample(
       "Enterprise.OidcEnrollment.Interception.Result",
       OidcInterceptionResult::kInterceptionInProgress, 1);
 }
 
-#if (BUILDFLAG(IS_LINUX) && BUILDFLAG(CFI_ICALL_CHECK)) || \
-    defined(UNDEFINED_SANITIZER)
-#define MAYBE_OidcCallbackResetOnSuccess DISABLED_OidcCallbackResetOnSuccess
-#else
-#define MAYBE_OidcCallbackResetOnSuccess OidcCallbackResetOnSuccess
-#endif
 IN_PROC_BROWSER_TEST_P(OidcAuthenticationSigninInterceptorTest,
-                       MAYBE_OidcCallbackResetOnSuccess) {
-  if (!base::FeatureList::IsEnabled(
-          profile_management::features::kOidcNavigationThrottleAsyncMode)) {
-    GTEST_SKIP() << "Test only relevant when async mode is enabled.";
-  }
+                       InvalidOidcTokensSkipsInterception) {
+  AddTabToCurrentBrowser(GURL("about:blank"));
+  bool callback_called = false;
+  EXPECT_FALSE(interceptor_->MaybeInterceptOidcAuthentication(
+      web_contents(), ProfileManagementOidcTokens(), kExampleIssuerIdentifier,
+      kExampleSubjectIdentifier, std::string(),
+      base::BindOnce([](bool* called) { *called = true; }, &callback_called)));
+  EXPECT_FALSE(callback_called);
+}
+
+IN_PROC_BROWSER_TEST_P(OidcAuthenticationSigninInterceptorTest,
+                       NullWebContentsSkipsInterception) {
+  bool callback_called = false;
+  EXPECT_FALSE(interceptor_->MaybeInterceptOidcAuthentication(
+      nullptr, kExampleOidcTokens, kExampleIssuerIdentifier,
+      kExampleSubjectIdentifier, std::string(),
+      base::BindOnce([](bool* called) { *called = true; }, &callback_called)));
+  EXPECT_FALSE(callback_called);
+}
+
+IN_PROC_BROWSER_TEST_P(OidcAuthenticationSigninInterceptorTest,
+                       OidcCallbackResetOnSuccess) {
   number_of_windows_ = 1;
   AddTabToCurrentBrowser(GURL("about:blank"));
   AddTabToCurrentBrowser(GURL("about:blank"));
@@ -985,7 +994,7 @@ IN_PROC_BROWSER_TEST_P(OidcAuthenticationSigninInterceptorTest,
   EXPECT_CALL(*delegate_, ShowOidcInterceptionDialog(_, _, _, _, _))
       .WillOnce(testing::Return(nullptr));
 
-  EXPECT_TRUE(interceptor_->MaybeInterceptOidcAuthentication(
+  ASSERT_TRUE(interceptor_->MaybeInterceptOidcAuthentication(
       web_contents(), kExampleOidcTokens, kExampleIssuerIdentifier,
       kExampleSubjectIdentifier, std::string(),
       base::BindOnce([](bool* called) { *called = true; }, &callback_called)));
@@ -995,27 +1004,14 @@ IN_PROC_BROWSER_TEST_P(OidcAuthenticationSigninInterceptorTest,
   Profile& new_profile =
       profiles::testing::CreateProfileSync(profile_manager, new_path);
 
-  auto* mock_interceptor =
-      static_cast<MockOidcAuthenticationSigninInterceptor*>(interceptor_.get());
-
-  mock_interceptor->SetNewProfileForTesting(new_profile.GetWeakPtr());
-  mock_interceptor->FinalizeSigninInterceptionForTesting();
+  interceptor_->SetNewProfileForTesting(new_profile.GetWeakPtr());
+  interceptor_->FinalizeSigninInterceptionForTesting();
 
   EXPECT_FALSE(callback_called);
 }
 
-#if (BUILDFLAG(IS_LINUX) && BUILDFLAG(CFI_ICALL_CHECK)) || \
-    defined(UNDEFINED_SANITIZER)
-#define MAYBE_OidcCallbackRunOnFailure DISABLED_OidcCallbackRunOnFailure
-#else
-#define MAYBE_OidcCallbackRunOnFailure OidcCallbackRunOnFailure
-#endif
 IN_PROC_BROWSER_TEST_P(OidcAuthenticationSigninInterceptorTest,
-                       MAYBE_OidcCallbackRunOnFailure) {
-  if (!base::FeatureList::IsEnabled(
-          profile_management::features::kOidcNavigationThrottleAsyncMode)) {
-    GTEST_SKIP() << "Test only relevant when async mode is enabled.";
-  }
+                       OidcCallbackRunOnFailure) {
   AddTabToCurrentBrowser(GURL("about:blank"));
   bool callback_called = false;
 
@@ -1028,8 +1024,7 @@ IN_PROC_BROWSER_TEST_P(OidcAuthenticationSigninInterceptorTest,
       base::BindOnce([](bool* called) { *called = true; }, &callback_called)));
 
   // Finalize without creating new profile (cancellation or failure)
-  static_cast<MockOidcAuthenticationSigninInterceptor*>(interceptor_.get())
-      ->FinalizeSigninInterceptionForTesting();
+  interceptor_->FinalizeSigninInterceptionForTesting();
   EXPECT_TRUE(callback_called);
 }
 

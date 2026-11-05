@@ -62,14 +62,14 @@ source_set("formats") {
     "mp4/es_descriptor.h",
     "mp4/fourccs.cc",
     "mp4/fourccs.h",
-    "mp4/hdr_metadata_track.cc",
-    "mp4/hdr_metadata_track.h",
     "mp4/mp4_stream_parser.cc",
     "mp4/mp4_stream_parser.h",
     "mp4/parse_result.h",
     "mp4/rcheck.h",
     "mp4/sample_to_group_iterator.cc",
     "mp4/sample_to_group_iterator.h",
+    "mp4/stream_parser_metadata_track.cc",
+    "mp4/stream_parser_metadata_track.h",
     "mp4/track_run_iterator.cc",
     "mp4/track_run_iterator.h",
     "mp4/writable_box_definitions.cc",
@@ -106,8 +106,6 @@ source_set("formats") {
     "webm/webm_tracks_parser.h",
     "webm/webm_video_client.cc",
     "webm/webm_video_client.h",
-    "webm/webm_webvtt_parser.cc",
-    "webm/webm_webvtt_parser.h",
   ]
 
   deps = [
@@ -335,7 +333,6 @@ source_set("unit_tests") {
     "webm/webm_stream_parser_unittest.cc",
     "webm/webm_tracks_parser_unittest.cc",
     "webm/webm_video_client_unittest.cc",
-    "webm/webm_webvtt_parser_unittest.cc",
   ]
 
   deps = [
@@ -356,9 +353,9 @@ source_set("unit_tests") {
       "mp4/es_descriptor_unittest.cc",
       "mp4/h264_annex_b_to_avc_bitstream_converter_unittest.cc",
       "mp4/h26x_annex_b_to_bitstream_converter_unittest.cc",
-      "mp4/hdr_metadata_track_unittest.cc",
       "mp4/mp4_stream_parser_unittest.cc",
       "mp4/sample_to_group_iterator_unittest.cc",
+      "mp4/stream_parser_metadata_track_unittest.cc",
       "mp4/track_run_iterator_unittest.cc",
       "mpeg/adts_stream_parser_unittest.cc",
     ]
@@ -428,10 +425,6 @@ source_set("unit_tests") {
     "hls/types_unittest.cc",
     "hls/variable_dictionary_unittest.cc",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 # TODO(crbug.com/40057824): This should be gated behind `enable_hls_demuxer`,

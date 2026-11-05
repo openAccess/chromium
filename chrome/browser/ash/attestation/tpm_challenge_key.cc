@@ -8,6 +8,8 @@
 #include <string>
 #include <utility>
 
+#include "base/check.h"
+#include "base/check_is_test.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
@@ -24,25 +26,36 @@ namespace attestation {
 
 //========================= TpmChallengeKeyFactory =============================
 
-TpmChallengeKey* TpmChallengeKeyFactory::next_result_for_testing_ = nullptr;
+namespace {
 
-// static
-std::unique_ptr<TpmChallengeKey> TpmChallengeKeyFactory::Create() {
-  if (next_result_for_testing_) [[unlikely]] {
-    std::unique_ptr<TpmChallengeKey> result(next_result_for_testing_);
-    next_result_for_testing_ = nullptr;
-    return result;
-  }
+// The `ScopedOneshotOverrideForTesting` that is alive, if any.
+TpmChallengeKeyFactory::ScopedOneshotOverrideForTesting* g_oneshot_override =
+    nullptr;
 
-  return std::make_unique<TpmChallengeKeyImpl>();
+}  // namespace
+
+TpmChallengeKeyFactory::ScopedOneshotOverrideForTesting::
+    ScopedOneshotOverrideForTesting(std::unique_ptr<TpmChallengeKey> instance)
+    : instance_(std::move(instance)) {
+  CHECK_IS_TEST();
+  CHECK(instance_);
+  CHECK(!g_oneshot_override) << "Only one override allowed";
+  g_oneshot_override = this;
+}
+
+TpmChallengeKeyFactory::ScopedOneshotOverrideForTesting::
+    ~ScopedOneshotOverrideForTesting() {
+  g_oneshot_override = nullptr;
 }
 
 // static
-void TpmChallengeKeyFactory::SetForTesting(
-    std::unique_ptr<TpmChallengeKey> next_result) {
-  // unique_ptr itself cannot be stored in a static variable because of its
-  // complex destructor.
-  next_result_for_testing_ = next_result.release();
+std::unique_ptr<TpmChallengeKey> TpmChallengeKeyFactory::Create() {
+  if (g_oneshot_override) [[unlikely]] {
+    CHECK(g_oneshot_override->instance_) << "Create() can be called only once";
+    return std::move(g_oneshot_override->instance_);
+  }
+
+  return std::make_unique<TpmChallengeKeyImpl>();
 }
 
 //=========================== TpmChallengeKeyImpl ==============================
@@ -72,8 +85,8 @@ void TpmChallengeKeyImpl::BuildResponse(
     const std::string& key_name,
     const std::optional<std::string>& signals) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(callback_.is_null());
-  DCHECK(!callback.is_null());
+  CHECK(callback_.is_null(), base::NotFatalUntil::M161);
+  CHECK(!callback.is_null(), base::NotFatalUntil::M161);
 
   // For device key: if |register_key| is true, |key_name| should not be empty.
   DCHECK((flow_type != ::attestation::ENTERPRISE_MACHINE) ||

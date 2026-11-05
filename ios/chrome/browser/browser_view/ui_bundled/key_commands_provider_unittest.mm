@@ -16,15 +16,14 @@
 #import "components/sync/test/test_sync_service.h"
 #import "components/sync_preferences/testing_pref_service_syncable.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_model_factory.h"
-#import "ios/chrome/browser/dom_distiller/model/distiller_service_factory.h"
 #import "ios/chrome/browser/find_in_page/model/find_tab_helper.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
+#import "ios/chrome/browser/lens/model/lens_browser_agent.h"
 #import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_tab_helper.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_tab_helper_delegate.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/sessions/model/fake_tab_restore_service.h"
 #import "ios/chrome/browser/sessions/model/ios_chrome_tab_restore_browser_agent.h"
@@ -52,6 +51,7 @@
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/browser/web/model/web_navigation_browser_agent.h"
 #import "ios/chrome/browser/web/model/web_navigation_util.h"
+#import "ios/chrome/browser/web_distiller/model/distiller_service_factory.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/public/provider/chrome/browser/user_feedback/user_feedback_api.h"
@@ -85,7 +85,7 @@ class KeyCommandsProviderTest : public PlatformTest {
         [[LayoutGuideSceneAgent alloc] init];
     [scene_state_ addAgent:layout_guide_scene_agent];
     browser_ = std::make_unique<TestBrowser>(profile_.get(), scene_state_);
-    web_state_list_ = browser_->GetWebStateList();
+    LensBrowserAgent::CreateForBrowser(browser_.get());
     WebNavigationBrowserAgent::CreateForBrowser(browser_.get());
 
     bookmark_model_ = ios::BookmarkModelFactory::GetForProfile(profile_.get());
@@ -109,16 +109,16 @@ class KeyCommandsProviderTest : public PlatformTest {
   web::FakeWebState* InsertNewWebState(int index) {
     auto web_state = std::make_unique<web::FakeWebState>();
     web_state->SetBrowserState(profile_.get());
-    int insertedIndex = web_state_list_->InsertWebState(
+    int insertedIndex = web_state_list()->InsertWebState(
         std::move(web_state),
         WebStateList::InsertionParams::AtIndex(index).Activate());
     return static_cast<web::FakeWebState*>(
-        web_state_list_->GetWebStateAt(insertedIndex));
+        web_state_list()->GetWebStateAt(insertedIndex));
   }
 
   void CloseWebState(int index) {
-    web_state_list_->CloseWebStateAt(index,
-                                     WebStateList::ClosingReason::kDefault);
+    web_state_list()->CloseWebStateAt(index,
+                                      WebStateList::ClosingReason::kDefault);
   }
 
   // Checks that `view_controller_` can perform the `action` with the given
@@ -149,11 +149,11 @@ class KeyCommandsProviderTest : public PlatformTest {
     web_state->SetNavigationManager(std::move(navigation_manager));
     web_state->SetBrowserState(profile_.get());
 
-    int insertedIndex = web_state_list_->InsertWebState(
+    int insertedIndex = web_state_list()->InsertWebState(
         std::move(web_state),
         WebStateList::InsertionParams::AtIndex(index).Activate());
     return static_cast<web::FakeWebState*>(
-        web_state_list_->GetWebStateAt(insertedIndex));
+        web_state_list()->GetWebStateAt(insertedIndex));
   }
 
   // Creates a FakeWebState with a navigation history containing exactly only
@@ -181,11 +181,12 @@ class KeyCommandsProviderTest : public PlatformTest {
     EXPECT_EQ(user_action_tester_.GetActionCount(user_action), 1);
   }
 
+  WebStateList* web_state_list() { return browser_->GetWebStateList(); }
+
   web::WebTaskEnvironment task_environment_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<TestBrowser> browser_;
-  raw_ptr<WebStateList, DanglingUntriaged> web_state_list_;
   SceneState* scene_state_;
   base::UserActionTester user_action_tester_;
   raw_ptr<bookmarks::BookmarkModel> bookmark_model_;
@@ -198,6 +199,15 @@ class KeyCommandsProviderTest : public PlatformTest {
 // Checks that KeyCommandsProvider returns key commands.
 TEST_F(KeyCommandsProviderTest, ReturnsKeyCommands) {
   EXPECT_NE(0u, provider_.keyCommands.count);
+  bool has_close_tab = false;
+  for (UIKeyCommand* command in provider_.keyCommands) {
+    if (command.action == @selector(keyCommand_closeTab)) {
+      has_close_tab = true;
+      EXPECT_TRUE(command.wantsPriorityOverSystemBehavior);
+      break;
+    }
+  }
+  EXPECT_TRUE(has_close_tab);
 }
 
 #pragma mark - Responder Chain Tests
@@ -235,11 +245,21 @@ TEST_F(KeyCommandsProviderTest, CanPerform_AlwaysAvailableActions) {
   EXPECT_TRUE(CanPerform(@"keyCommand_openNewTab"));
   EXPECT_TRUE(CanPerform(@"keyCommand_openNewRegularTab"));
   EXPECT_TRUE(CanPerform(@"keyCommand_openNewIncognitoTab"));
-  EXPECT_TRUE(CanPerform(@"keyCommand_openNewWindow"));
-  EXPECT_TRUE(CanPerform(@"keyCommand_openNewIncognitoWindow"));
   EXPECT_TRUE(CanPerform(@"keyCommand_showSettings"));
   EXPECT_TRUE(CanPerform(@"keyCommand_showReadingList"));
   EXPECT_TRUE(CanPerform(@"keyCommand_goToTabGrid"));
+}
+
+// Test whether KeyCommandsProvider can perform the open new window actions
+// based on `scene_state_.multipleScenesAvailable`.
+TEST_F(KeyCommandsProviderTest, CanPerform_OpenNewWindowActions) {
+  scene_state_.multipleScenesAvailable = NO;
+  EXPECT_FALSE(CanPerform(@"keyCommand_openNewWindow"));
+  EXPECT_FALSE(CanPerform(@"keyCommand_openNewIncognitoWindow"));
+
+  scene_state_.multipleScenesAvailable = YES;
+  EXPECT_TRUE(CanPerform(@"keyCommand_openNewWindow"));
+  EXPECT_TRUE(CanPerform(@"keyCommand_openNewIncognitoWindow"));
 }
 
 // Checks whether KeyCommandsProvider can perform the actions that are always
@@ -268,7 +288,7 @@ TEST_F(KeyCommandsProviderTest,
 // available when there are tabs.
 TEST_F(KeyCommandsProviderTest, CanPerform_TabsActions) {
   // No tabs.
-  ASSERT_EQ(web_state_list_->count(), 0);
+  ASSERT_EQ(web_state_list()->count(), 0);
   NSArray<NSString*>* actions = @[
     @"keyCommand_openLocation",    @"keyCommand_closeTab",
     @"keyCommand_showBookmarks",   @"keyCommand_reload",
@@ -303,7 +323,7 @@ TEST_F(KeyCommandsProviderTest, CanPerform_TabsActions) {
 // Next and Find Previous are not shown.
 TEST_F(KeyCommandsProviderTest, CanPerform_FindInPageActions) {
   // No tabs.
-  ASSERT_EQ(web_state_list_->count(), 0);
+  ASSERT_EQ(web_state_list()->count(), 0);
   EXPECT_FALSE(CanPerform(@"keyCommand_find"));
   EXPECT_FALSE(CanPerform(@"keyCommand_findNext"));
   EXPECT_FALSE(CanPerform(@"keyCommand_findPrevious"));
@@ -338,7 +358,7 @@ TEST_F(KeyCommandsProviderTest, CanPerform_EditingTextActions) {
   UIKeyCommand* back_2 = UIKeyCommand.cr_back_2;
   UIKeyCommand* forward_2 = UIKeyCommand.cr_forward_2;
   // No tabs.
-  ASSERT_EQ(web_state_list_->count(), 0);
+  ASSERT_EQ(web_state_list()->count(), 0);
 
   EXPECT_FALSE(CanPerform(@"keyCommand_back"));
   EXPECT_FALSE(CanPerform(@"keyCommand_forward"));
@@ -382,11 +402,34 @@ TEST_F(KeyCommandsProviderTest, CanPerform_EditingTextActions) {
   EXPECT_FALSE(CanPerform(@"keyCommand_forward", forward_2));
 }
 
+// Tests that keyCommand_closeTab can be performed when text is being edited,
+// as long as tabs are present.
+TEST_F(KeyCommandsProviderTest, CanPerform_CloseTabWhileEditingText) {
+  // No tabs.
+  ASSERT_EQ(web_state_list()->count(), 0);
+  EXPECT_FALSE(CanPerform(@"keyCommand_closeTab"));
+
+  // Add a tab.
+  InsertNewWebState(0);
+  EXPECT_TRUE(CanPerform(@"keyCommand_closeTab"));
+
+  // Focus a text field to simulate editing text (such as in the omnibox).
+  UITextField* textField = [[UITextField alloc] init];
+  [GetAnyKeyWindow() addSubview:textField];
+  [textField becomeFirstResponder];
+
+  EXPECT_TRUE(CanPerform(@"keyCommand_closeTab"));
+
+  // Clean up.
+  [textField resignFirstResponder];
+  [textField removeFromSuperview];
+}
+
 // Checks whether KeyCommandsProvider can perform the actions that are only
 // available when there are tabs and it is a http or https page.
 TEST_F(KeyCommandsProviderTest, CanPerform_ActionsInHttpPage) {
   // No tabs.
-  ASSERT_EQ(web_state_list_->count(), 0);
+  ASSERT_EQ(web_state_list()->count(), 0);
   NSArray<NSString*>* actions =
       @[ @"keyCommand_addToBookmarks", @"keyCommand_addToReadingList" ];
   for (NSString* action in actions) {
@@ -469,7 +512,7 @@ TEST_F(KeyCommandsProviderTest, CanPerform_BackForwardWithMultipleEntries) {
 TEST_F(KeyCommandsProviderTest, CanPerform_ReopenLastClosedTab) {
   IOSChromeTabRestoreBrowserAgent::CreateForBrowser(browser_.get());
   // No tabs.
-  ASSERT_EQ(web_state_list_->count(), 0);
+  ASSERT_EQ(web_state_list()->count(), 0);
   EXPECT_FALSE(CanPerform(@"keyCommand_reopenLastClosedTab"));
 
   // Add three new tabs.
@@ -546,7 +589,6 @@ TEST_F(KeyCommandsProviderTest, ShowHistory_IncognitoBrowserState) {
   ProfileIOS* incognito_profile = profile_->GetOffTheRecordProfile();
   browser_ = std::make_unique<TestBrowser>(incognito_profile);
   provider_ = [[KeyCommandsProvider alloc] initWithBrowser:browser_.get()];
-  web_state_list_ = browser_->GetWebStateList();
 
   NSString* showHistoryCommand = @"keyCommand_showHistory";
   EXPECT_FALSE(CanPerform(showHistoryCommand));
@@ -566,7 +608,6 @@ TEST_F(KeyCommandsProviderTest, clearBrowsingData_IncognitoBrowserState) {
   ProfileIOS* incognito_profile = profile_->GetOffTheRecordProfile();
   browser_ = std::make_unique<TestBrowser>(incognito_profile);
   provider_ = [[KeyCommandsProvider alloc] initWithBrowser:browser_.get()];
-  web_state_list_ = browser_->GetWebStateList();
 
   // This condition should be TRUE in regular but FALSE in incognito.
   EXPECT_FALSE(CanPerform(@"keyCommand_clearBrowsingData"));
@@ -729,22 +770,22 @@ TEST_F(KeyCommandsProviderTest, NextPreviousTab) {
   InsertNewWebState(0);
   InsertNewWebState(1);
   InsertNewWebState(2);
-  ASSERT_EQ(web_state_list_->count(), 3);
+  ASSERT_EQ(web_state_list()->count(), 3);
 
   [provider_ keyCommand_showNextTab];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
   [provider_ keyCommand_showNextTab];
-  EXPECT_EQ(web_state_list_->active_index(), 1);
+  EXPECT_EQ(web_state_list()->active_index(), 1);
   [provider_ keyCommand_showNextTab];
-  EXPECT_EQ(web_state_list_->active_index(), 2);
+  EXPECT_EQ(web_state_list()->active_index(), 2);
   [provider_ keyCommand_showNextTab];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
   [provider_ keyCommand_showPreviousTab];
-  EXPECT_EQ(web_state_list_->active_index(), 2);
+  EXPECT_EQ(web_state_list()->active_index(), 2);
   [provider_ keyCommand_showPreviousTab];
-  EXPECT_EQ(web_state_list_->active_index(), 1);
+  EXPECT_EQ(web_state_list()->active_index(), 1);
   [provider_ keyCommand_showPreviousTab];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
 }
 
 // Verifies that the Bookmarks are asked to be shown.
@@ -821,52 +862,52 @@ TEST_F(KeyCommandsProviderTest, AddToReadingList_DoesntAddWhenNTP) {
 // Verifies that showing the tab at a given index is a no-op when there are no
 // tabs.
 TEST_F(KeyCommandsProviderTest, ShowTabAtIndex_NoTab) {
-  ASSERT_EQ(web_state_list_->count(), 0);
+  ASSERT_EQ(web_state_list()->count(), 0);
 
   [provider_ keyCommand_select1];
-  EXPECT_EQ(web_state_list_->active_index(), WebStateList::kInvalidIndex);
+  EXPECT_EQ(web_state_list()->active_index(), WebStateList::kInvalidIndex);
   [provider_ keyCommand_select2];
-  EXPECT_EQ(web_state_list_->active_index(), WebStateList::kInvalidIndex);
+  EXPECT_EQ(web_state_list()->active_index(), WebStateList::kInvalidIndex);
   [provider_ keyCommand_select3];
-  EXPECT_EQ(web_state_list_->active_index(), WebStateList::kInvalidIndex);
+  EXPECT_EQ(web_state_list()->active_index(), WebStateList::kInvalidIndex);
   [provider_ keyCommand_select4];
-  EXPECT_EQ(web_state_list_->active_index(), WebStateList::kInvalidIndex);
+  EXPECT_EQ(web_state_list()->active_index(), WebStateList::kInvalidIndex);
   [provider_ keyCommand_select5];
-  EXPECT_EQ(web_state_list_->active_index(), WebStateList::kInvalidIndex);
+  EXPECT_EQ(web_state_list()->active_index(), WebStateList::kInvalidIndex);
   [provider_ keyCommand_select6];
-  EXPECT_EQ(web_state_list_->active_index(), WebStateList::kInvalidIndex);
+  EXPECT_EQ(web_state_list()->active_index(), WebStateList::kInvalidIndex);
   [provider_ keyCommand_select7];
-  EXPECT_EQ(web_state_list_->active_index(), WebStateList::kInvalidIndex);
+  EXPECT_EQ(web_state_list()->active_index(), WebStateList::kInvalidIndex);
   [provider_ keyCommand_select8];
-  EXPECT_EQ(web_state_list_->active_index(), WebStateList::kInvalidIndex);
+  EXPECT_EQ(web_state_list()->active_index(), WebStateList::kInvalidIndex);
   [provider_ keyCommand_select9];
-  EXPECT_EQ(web_state_list_->active_index(), WebStateList::kInvalidIndex);
+  EXPECT_EQ(web_state_list()->active_index(), WebStateList::kInvalidIndex);
 }
 
 // Verifies that showing the tab at a given index is a no-op when there is one
 // tab.
 TEST_F(KeyCommandsProviderTest, ShowTabAtIndex_OneTab) {
   InsertNewWebState(0);
-  ASSERT_EQ(web_state_list_->count(), 1);
+  ASSERT_EQ(web_state_list()->count(), 1);
 
   [provider_ keyCommand_select1];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
   [provider_ keyCommand_select2];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
   [provider_ keyCommand_select3];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
   [provider_ keyCommand_select4];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
   [provider_ keyCommand_select5];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
   [provider_ keyCommand_select6];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
   [provider_ keyCommand_select7];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
   [provider_ keyCommand_select8];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
   [provider_ keyCommand_select9];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
 }
 
 // Verifies that showing the tab at a given index is showing the correct tab.
@@ -882,26 +923,26 @@ TEST_F(KeyCommandsProviderTest, ShowTabAtIndex_SomeTabs) {
   InsertNewWebState(8);
   InsertNewWebState(9);
   InsertNewWebState(10);
-  ASSERT_EQ(web_state_list_->count(), 11);
+  ASSERT_EQ(web_state_list()->count(), 11);
 
   [provider_ keyCommand_select1];
-  EXPECT_EQ(web_state_list_->active_index(), 0);
+  EXPECT_EQ(web_state_list()->active_index(), 0);
   [provider_ keyCommand_select2];
-  EXPECT_EQ(web_state_list_->active_index(), 1);
+  EXPECT_EQ(web_state_list()->active_index(), 1);
   [provider_ keyCommand_select3];
-  EXPECT_EQ(web_state_list_->active_index(), 2);
+  EXPECT_EQ(web_state_list()->active_index(), 2);
   [provider_ keyCommand_select4];
-  EXPECT_EQ(web_state_list_->active_index(), 3);
+  EXPECT_EQ(web_state_list()->active_index(), 3);
   [provider_ keyCommand_select5];
-  EXPECT_EQ(web_state_list_->active_index(), 4);
+  EXPECT_EQ(web_state_list()->active_index(), 4);
   [provider_ keyCommand_select6];
-  EXPECT_EQ(web_state_list_->active_index(), 5);
+  EXPECT_EQ(web_state_list()->active_index(), 5);
   [provider_ keyCommand_select7];
-  EXPECT_EQ(web_state_list_->active_index(), 6);
+  EXPECT_EQ(web_state_list()->active_index(), 6);
   [provider_ keyCommand_select8];
-  EXPECT_EQ(web_state_list_->active_index(), 7);
+  EXPECT_EQ(web_state_list()->active_index(), 7);
   [provider_ keyCommand_select9];
-  EXPECT_EQ(web_state_list_->active_index(), 10);
+  EXPECT_EQ(web_state_list()->active_index(), 10);
 }
 
 // Verifies that KeyCommandsProvider performs the correct back/forward

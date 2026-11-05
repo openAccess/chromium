@@ -12,12 +12,16 @@
 #import "components/send_tab_to_self/metrics_util.h"
 #import "ios/chrome/browser/authentication/signin/non_modal_promo/coordinator/non_modal_signin_promo_coordinator.h"
 #import "ios/chrome/browser/authentication/signin/non_modal_promo/coordinator/non_modal_signin_promo_types.h"
+#import "ios/chrome/browser/default_browser/promo/generic/coordinator/default_browser_generic_promo_coordinator.h"
+#import "ios/chrome/browser/default_browser/promo/generic/public/default_browser_generic_promo_commands.h"
 #import "ios/chrome/browser/download/coordinator/download_list_coordinator.h"
 #import "ios/chrome/browser/download/coordinator/pass_kit_coordinator.h"
 #import "ios/chrome/browser/download/model/external_app_util.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/test/test_fullscreen_controller.h"
+#import "ios/chrome/browser/promos_manager/coordinator/promos_manager_coordinator.h"
 #import "ios/chrome/browser/save_to_photos/ui_bundled/save_to_photos_coordinator.h"
 #import "ios/chrome/browser/send_tab_to_self/coordinator/send_tab_to_self_coordinator.h"
+#import "ios/chrome/browser/settings/clear_browsing_data/coordinator/quick_delete_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_scene_agent.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_ui_provider.h"
@@ -27,10 +31,15 @@
 #import "ios/chrome/browser/shared/public/commands/activity_service_commands.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/contextual_panel_entrypoint_iph_commands.h"
+#import "ios/chrome/browser/shared/public/commands/credential_provider_promo_commands.h"
 #import "ios/chrome/browser/shared/public/commands/download_list_commands.h"
 #import "ios/chrome/browser/shared/public/commands/non_modal_signin_promo_commands.h"
+#import "ios/chrome/browser/shared/public/commands/promos_manager_commands.h"
+#import "ios/chrome/browser/shared/public/commands/quick_delete_commands.h"
 #import "ios/chrome/browser/shared/public/commands/save_image_to_photos_command.h"
 #import "ios/chrome/browser/shared/public/commands/save_to_photos_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/send_tab_to_self_commands.h"
 #import "ios/chrome/browser/shared/public/commands/tab_picker_commands.h"
 #import "ios/chrome/browser/shared/public/commands/web_content_commands.h"
@@ -436,6 +445,59 @@ TEST_F(BrowserModalHostTest, StartsAndStopsStoreKitCoordinator) {
   EXPECT_OCMOCK_VERIFY(classMock);
 }
 
+// Tests that `-showAppStoreWithParameters:` does not clear presented state or
+// start a new `StoreKitCoordinator` if one is already started.
+TEST_F(BrowserModalHostTest, DoesNotStartStoreKitCoordinatorIfAlreadyStarted) {
+  id classMock = OCMClassMock([StoreKitCoordinator class]);
+  StoreKitCoordinator* mockCoordinator = classMock;
+  NSDictionary* parameters = @{@"id" : @"12345"};
+  OCMExpect([classMock alloc]).andReturn(classMock);
+  OCMExpect([[classMock ignoringNonObjectArgs]
+                initWithBaseViewController:base_view_controller_
+                                   browser:browser_.get()])
+      .andReturn(mockCoordinator);
+  OCMExpect([mockCoordinator setDelegate:[OCMArg any]]);
+  OCMExpect([mockCoordinator setITunesProductParameters:parameters]);
+  OCMExpect([mockCoordinator start]);
+
+  CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
+  id mockBrowserCoordinatorCommandsHandler =
+      OCMProtocolMock(@protocol(BrowserCoordinatorCommands));
+  [dispatcher startDispatchingToTarget:mockBrowserCoordinatorCommandsHandler
+                           forProtocol:@protocol(BrowserCoordinatorCommands)];
+  OCMExpect([mockBrowserCoordinatorCommandsHandler
+                clearPresentedStateWithCompletion:[OCMArg any]
+                                   dismissOmnibox:YES])
+      .andDo(^(NSInvocation* invocation) {
+        __unsafe_unretained ProceduralBlock completion;
+        [invocation getArgument:&completion atIndex:2];
+        if (completion) {
+          completion();
+        }
+      });
+
+  id<WebContentCommands> handler =
+      HandlerForProtocol(dispatcher, WebContentCommands);
+
+  [handler showAppStoreWithParameters:parameters];
+
+  EXPECT_OCMOCK_VERIFY(mockBrowserCoordinatorCommandsHandler);
+  EXPECT_OCMOCK_VERIFY(classMock);
+
+  // Calling `-showAppStoreWithParameters:` again while `StoreKitCoordinator` is
+  // already started should early return without clearing presented state or
+  // starting another coordinator.
+  OCMReject([mockBrowserCoordinatorCommandsHandler
+      clearPresentedStateWithCompletion:[OCMArg any]
+                         dismissOmnibox:YES]);
+  OCMReject([classMock alloc]);
+
+  [handler showAppStoreWithParameters:parameters];
+
+  EXPECT_OCMOCK_VERIFY(mockBrowserCoordinatorCommandsHandler);
+  EXPECT_OCMOCK_VERIFY(classMock);
+}
+
 // Tests that `-showDialogForPassKitPasses:` starts the PassKitCoordinator.
 TEST_F(BrowserModalHostTest, StartsPassKitCoordinator) {
   id classMock = OCMClassMock([PassKitCoordinator class]);
@@ -486,5 +548,149 @@ TEST_F(BrowserModalHostTest,
   OCMStub([mockCoordinator passes]).andReturn(passes);
   [handler showDialogForPassKitPasses:passes];
 
+  EXPECT_OCMOCK_VERIFY(classMock);
+}
+
+// Tests that `-dismissContextualPanelEntrypointIPH:` can be invoked without
+// crashing.
+TEST_F(BrowserModalHostTest, DismissesContextualPanelEntrypointIPH) {
+  CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
+  id<ContextualPanelEntrypointIPHCommands> handler =
+      HandlerForProtocol(dispatcher, ContextualPanelEntrypointIPHCommands);
+  [handler dismissContextualPanelEntrypointIPH:NO];
+}
+
+// Tests that `-showQuickDeleteAndCanPerformRadialWipeAnimation:` starts
+// QuickDeleteCoordinator and `-stopQuickDelete` stops it.
+TEST_F(BrowserModalHostTest, StartsAndStopsQuickDeleteCoordinator) {
+  id classMock = OCMClassMock([QuickDeleteCoordinator class]);
+  QuickDeleteCoordinator* mockCoordinator = classMock;
+  OCMExpect([classMock alloc]).andReturn(classMock);
+  OCMExpect([[classMock ignoringNonObjectArgs]
+                   initWithBaseViewController:[OCMArg any]
+                                      browser:browser_.get()
+                canPerformRadialWipeAnimation:YES])
+      .andReturn(mockCoordinator);
+  OCMExpect([mockCoordinator start]);
+
+  CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
+  id<QuickDeleteCommands> handler =
+      HandlerForProtocol(dispatcher, QuickDeleteCommands);
+  [handler showQuickDeleteAndCanPerformRadialWipeAnimation:YES];
+  EXPECT_OCMOCK_VERIFY(classMock);
+
+  OCMExpect([mockCoordinator stop]);
+  [handler stopQuickDelete];
+  EXPECT_OCMOCK_VERIFY(classMock);
+}
+
+// Test that `-stopQuickDeleteForAnimationWithCompletion:` does not crash when
+// `BrowserCoordinatorCommands` and `SceneCommands` are no longer dispatched
+// during UI shutdown, and invokes them when they are dispatched.
+TEST_F(BrowserModalHostTest, StopQuickDeleteForAnimationWithCompletion) {
+  id mockBaseViewController = OCMPartialMock(base_view_controller_);
+  UIViewController* presentedViewController = [[UIViewController alloc] init];
+  OCMStub([mockBaseViewController presentedViewController])
+      .andReturn(presentedViewController);
+  OCMStub([mockBaseViewController
+      dismissViewControllerAnimated:YES
+                         completion:[OCMArg invokeBlock]]);
+
+  CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
+  id<QuickDeleteCommands> handler =
+      HandlerForProtocol(dispatcher, QuickDeleteCommands);
+
+  // When `BrowserCoordinatorCommands` and `SceneCommands` are not dispatched
+  // (e.g. during shutdown), the completion block should still run without
+  // crashing.
+  __block base::test::TestFuture<void> first_completion;
+  [handler stopQuickDeleteForAnimationWithCompletion:^{
+    first_completion.SetValue();
+  }];
+  EXPECT_TRUE(first_completion.Wait());
+
+  // When `BrowserCoordinatorCommands` and `SceneCommands` are dispatched, both
+  // handlers should be invoked.
+  id mockBrowserCoordinatorCommands =
+      OCMProtocolMock(@protocol(BrowserCoordinatorCommands));
+  [dispatcher startDispatchingToTarget:mockBrowserCoordinatorCommands
+                           forProtocol:@protocol(BrowserCoordinatorCommands)];
+  OCMExpect([mockBrowserCoordinatorCommands
+      clearPresentedStateWithCompletion:nil
+                         dismissOmnibox:YES]);
+
+  id mockSceneCommands = OCMProtocolMock(@protocol(SceneCommands));
+  [dispatcher startDispatchingToTarget:mockSceneCommands
+                           forProtocol:@protocol(SceneCommands)];
+  OCMExpect([mockSceneCommands dismissModalDialogsWithCompletion:nil]);
+
+  __block base::test::TestFuture<void> second_completion;
+  [handler stopQuickDeleteForAnimationWithCompletion:^{
+    second_completion.SetValue();
+  }];
+  EXPECT_TRUE(second_completion.Wait());
+
+  EXPECT_OCMOCK_VERIFY(mockBrowserCoordinatorCommands);
+  EXPECT_OCMOCK_VERIFY(mockSceneCommands);
+}
+
+// Tests that `-dismissCurrentPromo` stops PromosManagerCoordinator.
+TEST_F(BrowserModalHostTest, DismissesCurrentPromo) {
+  CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
+  id mockSceneCommands = OCMProtocolMock(@protocol(SceneCommands));
+  [dispatcher startDispatchingToTarget:mockSceneCommands
+                           forProtocol:@protocol(SceneCommands)];
+  id mockCredentialProviderPromoCommands =
+      OCMProtocolMock(@protocol(CredentialProviderPromoCommands));
+  [dispatcher
+      startDispatchingToTarget:mockCredentialProviderPromoCommands
+                   forProtocol:@protocol(CredentialProviderPromoCommands)];
+
+  id classMock = OCMClassMock([PromosManagerCoordinator class]);
+  PromosManagerCoordinator* mockCoordinator = classMock;
+  OCMExpect([classMock alloc]).andReturn(classMock);
+  OCMExpect([[classMock ignoringNonObjectArgs]
+                initWithBaseViewController:base_view_controller_
+                                   browser:browser_.get()
+                              sceneHandler:[OCMArg any]])
+      .andReturn(mockCoordinator);
+  OCMExpect([mockCoordinator start]);
+
+  id<PromosManagerCommands> handler =
+      HandlerForProtocol(dispatcher, PromosManagerCommands);
+  [handler showPromo];
+  EXPECT_OCMOCK_VERIFY(classMock);
+
+  OCMExpect([mockCoordinator stop]);
+  [handler dismissCurrentPromo];
+  EXPECT_OCMOCK_VERIFY(classMock);
+}
+
+// Tests that `-hidePromo` stops DefaultBrowserGenericPromoCoordinator.
+TEST_F(BrowserModalHostTest, HidesDefaultBrowserPromo) {
+  CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
+  id<PromosManagerCommands> promosHandler =
+      HandlerForProtocol(dispatcher, PromosManagerCommands);
+  id<DefaultBrowserGenericPromoCommands> defaultBrowserHandler =
+      HandlerForProtocol(dispatcher, DefaultBrowserGenericPromoCommands);
+
+  id classMock = OCMClassMock([DefaultBrowserGenericPromoCoordinator class]);
+  DefaultBrowserGenericPromoCoordinator* mockCoordinator = classMock;
+  OCMExpect([classMock alloc]).andReturn(classMock);
+  OCMExpect([[classMock ignoringNonObjectArgs]
+                initWithBaseViewController:base_view_controller_
+                                   browser:browser_.get()])
+      .andReturn(mockCoordinator);
+  OCMExpect([mockCoordinator setPromosUIHandler:[OCMArg any]]);
+  OCMExpect([mockCoordinator
+      setHandler:static_cast<id<DefaultBrowserGenericPromoCommands>>(
+                     modal_host_)]);
+  OCMExpect([mockCoordinator start]);
+
+  [promosHandler showDefaultBrowserPromo];
+  EXPECT_OCMOCK_VERIFY(classMock);
+
+  OCMExpect([mockCoordinator stop]);
+  [defaultBrowserHandler hidePromo];
   EXPECT_OCMOCK_VERIFY(classMock);
 }

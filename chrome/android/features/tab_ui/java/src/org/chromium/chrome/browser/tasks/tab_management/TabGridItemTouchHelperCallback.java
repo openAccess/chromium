@@ -13,7 +13,6 @@ import static org.chromium.chrome.browser.tasks.tab_management.UiTypeHelper.isMe
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Canvas;
-import android.view.HapticFeedbackConstants;
 import android.view.View;
 
 import androidx.recyclerview.widget.ItemTouchHelper;
@@ -23,17 +22,15 @@ import org.chromium.base.ResettersForTesting;
 import org.chromium.base.Token;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.NonNullObservableSupplier;
-import org.chromium.base.supplier.ObservableSuppliers;
-import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabId;
+import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabGroupUtils;
 import org.chromium.chrome.browser.tabmodel.TabModel;
-import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabGridDialogHandler;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
@@ -44,7 +41,6 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 import org.chromium.ui.recyclerview.widget.ItemTouchHelper2;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -65,18 +61,26 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
         void onDropTab(@TabId int tabId);
     }
 
-    private final SettableNonNullObservableSupplier<Integer> mRecentlySwipedTabIdSupplier =
-            ObservableSuppliers.createNonNull(Tab.INVALID_TAB_ID);
-    private final TabActionListener mTabClosedListener;
+    /** An interface to handle ungroup bar status updates during drag-and-drop. */
+    @FunctionalInterface
+    public interface UngroupBarStatusHandler {
+        /**
+         * Updates the status of the ungroup bar in TabGridDialog.
+         *
+         * @param status The status in {@link TabGridDialogView.UngroupBarStatus} that the ungroup
+         *     bar should be updated to.
+         */
+        void updateUngroupBarStatus(@TabGridDialogView.UngroupBarStatus int status);
+    }
+
+    private final TabSwipeHandler mTabSwipeHandler;
     private final String mComponentName;
-    private final @Nullable TabGridDialogHandler mTabGridDialogHandler;
+    private final @Nullable UngroupBarStatusHandler mUngroupBarStatusHandler;
     private final int mLongPressDpThresholdSquared;
     private final TabGroupCreationDialogManager mTabGroupCreationDialogManager;
     private final @TabListLayoutType int mLayoutType;
-    private float mSwipeToDismissThreshold;
     private float mMergeThreshold;
     private float mUngroupThreshold;
-    private boolean mIsSwipingToDismiss;
     private int mDragFlags;
     private int mHoveredTabIndex = TabModel.INVALID_TAB_INDEX;
     private int mUnGroupTabIndex = TabModel.INVALID_TAB_INDEX;
@@ -91,8 +95,8 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
      * @param tabListModel The property model of tab data to act on.
      * @param currentTabModelSupplier The supplier of the current {@link TabModel}. It should never
      *     return null.
-     * @param tabClosedListener The listener to invoke when a tab is closed.
-     * @param tabGridDialogHandler The interface for sending updates when using a tab grid dialog.
+     * @param tabSwipeHandler The {@link TabSwipeHandler} to handle swipe gestures.
+     * @param ungroupBarStatusHandler The interface for sending ungroup bar status updates.
      * @param componentName The name of the component for metrics logging.
      * @param layoutType The layout type of the tab list.
      * @param onDragStateChangedListener The listener to notify when the active drag state changes.
@@ -102,16 +106,16 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
             TabGroupCreationDialogManager tabGroupCreationDialogManager,
             TabListModel tabListModel,
             Supplier<TabModel> currentTabModelSupplier,
-            TabActionListener tabClosedListener,
-            @Nullable TabGridDialogHandler tabGridDialogHandler,
+            TabSwipeHandler tabSwipeHandler,
+            @Nullable UngroupBarStatusHandler ungroupBarStatusHandler,
             String componentName,
             @TabListLayoutType int layoutType,
             Runnable onDragStateChangedListener) {
         super(context, tabListModel, currentTabModelSupplier);
-        mTabClosedListener = tabClosedListener;
+        mTabSwipeHandler = tabSwipeHandler;
         mComponentName = componentName;
         mLayoutType = layoutType;
-        mTabGridDialogHandler = tabGridDialogHandler;
+        mUngroupBarStatusHandler = ungroupBarStatusHandler;
         mTabGroupCreationDialogManager = tabGroupCreationDialogManager;
         mOnDragStateChangedListener = onDragStateChangedListener;
 
@@ -142,7 +146,7 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
      */
     void setupCallback(
             float swipeToDismissThreshold, float mergeThreshold, float ungroupThreshold) {
-        mSwipeToDismissThreshold = swipeToDismissThreshold;
+        mTabSwipeHandler.setSwipeToDismissThresholdPx(swipeToDismissThreshold);
         mMergeThreshold = mergeThreshold;
         mUngroupThreshold = ungroupThreshold;
         mDragFlags =
@@ -157,7 +161,7 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
         if (mSelectedTabIndex != TabModel.INVALID_TAB_INDEX) {
             deselectSelectedCard();
             mSelectedTabIndex = TabModel.INVALID_TAB_INDEX;
-            mSelectedTabId = Tab.INVALID_TAB_ID;
+            mSelectedModel = null;
         }
         if (mHoveredTabIndex != TabModel.INVALID_TAB_INDEX) {
             mModel.updateHoveredCardForHover(mHoveredTabIndex, false);
@@ -178,8 +182,7 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
     @Override
     public int getMovementFlags(RecyclerView recyclerView, RecyclerView.ViewHolder viewHolder) {
         final int dragFlags = isMessageType(viewHolder) ? 0 : mDragFlags;
-        final int swipeFlags =
-                isSwipeable(viewHolder) ? ItemTouchHelper.START | ItemTouchHelper.END : 0;
+        final int swipeFlags = mTabSwipeHandler.getSwipeFlags(viewHolder, mIsMouseInputSource);
 
         return makeMovementFlags(dragFlags, swipeFlags);
     }
@@ -206,6 +209,7 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
             RecyclerView recyclerView,
             RecyclerView.ViewHolder fromViewHolder,
             RecyclerView.ViewHolder toViewHolder) {
+        assert !isMessageType(fromViewHolder);
         assert !(fromViewHolder instanceof SimpleRecyclerViewAdapter.ViewHolder)
                 || hasTabPropertiesModel(fromViewHolder);
 
@@ -229,19 +233,33 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
         @TabId int destinationTabId = model.get(TabProperties.TAB_ID);
         int distance = toViewHolder.getAdapterPosition() - fromViewHolder.getAdapterPosition();
         TabModel tabModel = mCurrentTabModelSupplier.get();
+        Tab destinationTab = tabModel.getTabById(destinationTabId);
         if (mLayoutType == TabListLayoutType.FLAT) {
-            int destinationIndex = tabModel.indexOf(tabModel.getTabById(destinationTabId));
-            tabModel.moveTab(currentTabId, destinationIndex);
+            tabModel.moveTab(currentTabId, tabModel.indexOf(destinationTab));
         } else {
-            List<Tab> destinationTabGroup = getRelatedTabsForId(destinationTabId);
-            int newIndex =
-                    distance >= 0
-                            ? TabGroupUtils.getLastTabModelIndexForList(
-                                    tabModel, destinationTabGroup)
-                            : TabGroupUtils.getFirstTabModelIndexForList(
-                                    tabModel, destinationTabGroup);
+            // In the Tab Switcher (GROUPED), the destination card can be an entire tab
+            // group. Target the edge of that group based on drag direction.
+            Token destGroupId = destinationTab != null ? destinationTab.getTabGroupId() : null;
+            int newIndex;
+            if (destGroupId != null) {
+                List<Tab> destinationTabs = tabModel.getTabsInGroup(destGroupId);
+                newIndex =
+                        distance >= 0
+                                ? TabGroupUtils.getLastTabModelIndexForList(
+                                        tabModel, destinationTabs)
+                                : TabGroupUtils.getFirstTabModelIndexForList(
+                                        tabModel, destinationTabs);
+            } else {
+                newIndex = tabModel.indexOf(destinationTab);
+            }
             newIndex = adjustIndexBasedOnPinning(tabModel, currentTabId, newIndex);
-            tabModel.moveRelatedTabs(currentTabId, newIndex);
+            Tab currentTab = tabModel.getTabById(currentTabId);
+            Token tabGroupId = currentTab != null ? currentTab.getTabGroupId() : null;
+            if (tabGroupId != null) {
+                tabModel.moveGroupToIndex(tabGroupId, newIndex);
+            } else {
+                tabModel.moveTab(currentTabId, newIndex);
+            }
         }
         RecordUserAction.record("TabGrid.Drag.Reordered." + mComponentName);
         mActionAttempted = true;
@@ -266,14 +284,14 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
             mSelectedTabIndex = viewHolder.getBindingAdapterPosition();
             if (mSelectedTabIndex != TabModel.INVALID_TAB_INDEX
                     && mSelectedTabIndex < mModel.size()) {
-                mSelectedTabId = TabProperties.getTabId(mModel.get(mSelectedTabIndex).model);
+                mSelectedModel = mModel.get(mSelectedTabIndex).model;
             }
             mModel.updateSelectedCardForSelection(mSelectedTabIndex, true);
             onDragStateChanged();
             RecordUserAction.record("TabGrid.Drag.Start." + mComponentName);
         } else if (actionState == ItemTouchHelper.ACTION_STATE_IDLE) {
             onDragStateChanged();
-            mIsSwipingToDismiss = false;
+            mTabSwipeHandler.resetSwipeState();
 
             RecyclerView.ViewHolder hoveredViewHolder =
                     recyclerView.findViewHolderForAdapterPosition(mHoveredTabIndex);
@@ -284,6 +302,7 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
                     !(hoveredViewHolder instanceof SimpleRecyclerViewAdapter.ViewHolder)
                             || hasTabPropertiesModel(hoveredViewHolder);
 
+            boolean wasMergedToGroup = false;
             if (wasHoveredOnArchivedMessageCard()
                     && mSelectedTabIndex != TabModel.INVALID_TAB_INDEX) {
                 onDropOnArchivalMessageCard();
@@ -295,10 +314,10 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
                         && !recyclerView.isComputingLayout()
                         && shouldUpdate) {
                     View selectedItemView = selectedViewHolder.itemView;
-                    onTabMergeToGroup(
-                            mModel.getTabCardCountsBefore(mSelectedTabIndex),
-                            mModel.getTabCardCountsBefore(mHoveredTabIndex));
-                    maybeRemoveRecyclerViewChild(recyclerView, selectedItemView);
+                    wasMergedToGroup = onTabMergeToGroup(mSelectedTabIndex, mHoveredTabIndex);
+                    if (wasMergedToGroup) {
+                        maybeRemoveRecyclerViewChild(recyclerView, selectedItemView);
+                    }
                 }
                 mActionAttempted = true;
             } else {
@@ -306,7 +325,7 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
             }
             if (mHoveredTabIndex != TabModel.INVALID_TAB_INDEX && shouldUpdate) {
                 mModel.updateHoveredCardForHover(
-                        mSelectedTabIndex > mHoveredTabIndex
+                        mSelectedTabIndex > mHoveredTabIndex || !wasMergedToGroup
                                 ? mHoveredTabIndex
                                 : mModel.getTabIndexBefore(mHoveredTabIndex),
                         false);
@@ -373,10 +392,10 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
             }
             mHoveredTabIndex = TabModel.INVALID_TAB_INDEX;
             mSelectedTabIndex = TabModel.INVALID_TAB_INDEX;
-            mSelectedTabId = Tab.INVALID_TAB_ID;
+            mSelectedModel = null;
             mUnGroupTabIndex = TabModel.INVALID_TAB_INDEX;
-            if (mTabGridDialogHandler != null) {
-                mTabGridDialogHandler.updateUngroupBarStatus(
+            if (mUngroupBarStatusHandler != null) {
+                mUngroupBarStatusHandler.updateUngroupBarStatus(
                         TabGridDialogView.UngroupBarStatus.HIDE);
             }
         }
@@ -435,35 +454,7 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
             mActionStarted = true;
         }
         if (actionState == ItemTouchHelper.ACTION_STATE_SWIPE) {
-            float alpha = Math.max(0.2f, 1f - 0.8f * Math.abs(dX) / mSwipeToDismissThreshold);
-
-            assert viewHolder instanceof SimpleRecyclerViewAdapter.ViewHolder;
-
-            SimpleRecyclerViewAdapter.ViewHolder simpleViewHolder =
-                    (SimpleRecyclerViewAdapter.ViewHolder) viewHolder;
-
-            @Nullable PropertyModel viewHolderModel = simpleViewHolder.model;
-            if (viewHolderModel == null) return;
-
-            @Nullable PropertyModel cardModel = null;
-            if (TabProperties.isTabOrTabGroup(viewHolderModel)) {
-                cardModel = mModel.getModelFromTabId(viewHolderModel.get(TabProperties.TAB_ID));
-            } else if (viewHolderModel.get(CARD_TYPE) == MESSAGE) {
-                int index =
-                        mModel.lastIndexForMessageItemFromType(viewHolderModel.get(MESSAGE_TYPE));
-                if (index == TabModel.INVALID_TAB_INDEX) return;
-
-                cardModel = mModel.get(index).model;
-            }
-
-            if (cardModel == null) return;
-
-            cardModel.set(TabListModel.CardProperties.CARD_ALPHA, alpha);
-            boolean isOverSwipeThreshold = Math.abs(dX) >= mSwipeToDismissThreshold;
-            if (isOverSwipeThreshold && !mIsSwipingToDismiss) {
-                viewHolder.itemView.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
-            }
-            mIsSwipingToDismiss = isOverSwipeThreshold;
+            mTabSwipeHandler.onChildDrawSwipe(viewHolder, dX);
             return;
         }
 
@@ -500,7 +491,7 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
                 mModel.updateHoveredCardForHover(prevHovered, false);
             }
         } else if (actionState == ItemTouchHelper.ACTION_STATE_DRAG
-                && mTabGridDialogHandler != null) {
+                && mUngroupBarStatusHandler != null) {
             int itemMiddle =
                     Math.floorDiv(
                             viewHolder.itemView.getBottom() + viewHolder.itemView.getTop(), 2);
@@ -511,7 +502,7 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
                     isHoveredOnUngroupBar
                             ? viewHolder.getAdapterPosition()
                             : TabModel.INVALID_TAB_INDEX;
-            mTabGridDialogHandler.updateUngroupBarStatus(
+            mUngroupBarStatusHandler.updateUngroupBarStatus(
                     isHoveredOnUngroupBar
                             ? TabGridDialogView.UngroupBarStatus.HOVERED
                             : (mSelectedTabIndex == TabModel.INVALID_TAB_INDEX
@@ -522,46 +513,18 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
 
     @Override
     public void onSwiped(RecyclerView.ViewHolder viewHolder, int i) {
-        assert viewHolder instanceof SimpleRecyclerViewAdapter.ViewHolder;
-
-        SimpleRecyclerViewAdapter.ViewHolder simpleViewHolder =
-                (SimpleRecyclerViewAdapter.ViewHolder) viewHolder;
-
-        PropertyModel model = simpleViewHolder.model;
-        assumeNonNull(model);
-        if (model.containsKey(TabProperties.TAB_ID)) {
-            int tabId = model.get(TabProperties.TAB_ID);
-            mRecentlySwipedTabIdSupplier.set(tabId);
-        }
-
-        if (TabProperties.isTabOrTabGroup(model)) {
-            mTabClosedListener.run(
-                    viewHolder.itemView,
-                    model.get(TabProperties.TAB_ID),
-                    /* triggeringMotion= */ null);
-
-            RecordUserAction.record("MobileStackViewSwipeCloseTab." + mComponentName);
-        } else if (model.get(CARD_TYPE) == MESSAGE) {
-            // TODO(crbug.com/40099080): Have a caller instead of simulating the close click. And
-            // write unit test to verify the caller is called.
-            viewHolder.itemView.findViewById(R.id.close_button).performClick();
-            // TODO(crbug.com/40099080): UserAction swipe to dismiss.
-        }
+        mTabSwipeHandler.onSwiped(viewHolder);
         mActionAttempted = true;
     }
 
     @Override
     public float getSwipeThreshold(RecyclerView.ViewHolder viewHolder) {
-        @Nullable RecyclerView recyclerView = mRecyclerViewSupplier.get();
-        if (recyclerView != null) {
-            return mSwipeToDismissThreshold / recyclerView.getWidth();
-        }
-        return 0.f;
+        return mTabSwipeHandler.getSwipeThreshold(viewHolder);
     }
 
     /** Provides the tab ID for the most recently swiped tab. */
     NonNullObservableSupplier<Integer> getRecentlySwipedTabIdSupplier() {
-        return mRecentlySwipedTabIdSupplier;
+        return mTabSwipeHandler.getRecentlySwipedTabIdSupplier();
     }
 
     private void handleHoverForArchiveMessage(RecyclerView recyclerView) {
@@ -671,46 +634,58 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
         }
     }
 
-    private void onTabMergeToGroup(int selectedCardIndex, int hoveredCardIndex) {
+    private boolean onTabMergeToGroup(int selectedCardIndex, int hoveredCardIndex) {
         TabModel tabModel = mCurrentTabModelSupplier.get();
-        Tab selectedCard = tabModel.getRepresentativeTabAt(selectedCardIndex);
-        Tab hoveredCard = tabModel.getRepresentativeTabAt(hoveredCardIndex);
-        if (selectedCard == null) return;
-        if (hoveredCard == null) return;
-        List<Tab> tabsToMerge = new ArrayList<>();
-        tabsToMerge.addAll(tabModel.getRelatedTabList(selectedCard.getId()));
-        tabsToMerge.addAll(tabModel.getRelatedTabList(hoveredCard.getId()));
-        boolean willMergingCreateNewGroup = tabModel.willMergingCreateNewGroup(tabsToMerge);
-        tabModel.mergeTabsToGroup(selectedCard.getId(), hoveredCard.getId());
+        List<Tab> selectedTabs = getTabsForCardIndex(tabModel, selectedCardIndex);
+        List<Tab> hoveredTabs = getTabsForCardIndex(tabModel, hoveredCardIndex);
+        if (selectedTabs.isEmpty() || hoveredTabs.isEmpty()) return false;
+        Tab hoveredCard = hoveredTabs.get(0);
+        // In GROUPED layout, every card is either a standalone tab or a full tab group, so a merge
+        // creates a new group if both cards are standalone tabs.
+        boolean willMergingCreateNewGroup =
+                selectedTabs.get(0).getTabGroupId() == null && hoveredCard.getTabGroupId() == null;
+        tabModel.mergeListOfTabsToGroup(
+                selectedTabs, hoveredCard, TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
 
         if (willMergingCreateNewGroup) {
+            RecordUserAction.record("TabGroup.Created.DropToMergeV2");
             mTabGroupCreationDialogManager.showDialog(hoveredCard.getTabGroupId(), tabModel);
+        } else {
+            RecordUserAction.record("TabGrid.Drag.DropToMergeV2");
         }
 
         // If user has used drop-to-merge, send a signal to disable
         // FeatureConstants.TAB_GROUPS_DRAG_AND_DROP_FEATURE.
-        Profile profile = mCurrentTabModelSupplier.get().getProfile();
+        Profile profile = tabModel.getProfile();
         assert profile != null;
         Tracker tracker = TrackerFactory.getTrackerForProfile(profile);
         tracker.notifyEvent(EventConstants.TAB_DRAG_AND_DROP_TO_GROUP);
+        return true;
     }
 
-    private boolean isSwipeable(RecyclerView.ViewHolder viewHolder) {
-        if (mIsMouseInputSource) {
-            return false;
+    private List<Tab> getTabsForCardIndex(TabModel tabModel, int cardIndex) {
+        if (!mModel.isValidIndex(cardIndex)) return List.of();
+        Token tabGroupId = mModel.getTabGroupIdForIndex(cardIndex);
+        if (tabGroupId != null) {
+            return tabModel.getTabsInGroup(tabGroupId);
+        }
+        PropertyModel model = mModel.get(cardIndex).model;
+        @TabId int tabId = TabProperties.getTabId(model);
+        if (tabId == Tab.INVALID_TAB_ID) return List.of();
+        Tab tab = tabModel.getTabById(tabId);
+        if (tab == null) return List.of();
+
+        if (TabUiFeatureUtilities.isAndroidTabUiRefactorEnabled()) {
+            return List.of(tab);
         }
 
-        // The archived tabs message can't be dismissed.
-        if (viewHolder.getItemViewType() == UiType.ARCHIVED_TABS_MESSAGE) {
-            return false;
+        // With the refactor flag off, a group card is a TAB card for one tab in the group, so
+        // expand it to the whole group.
+        Token fallbackGroupId = tab.getTabGroupId();
+        if (fallbackGroupId != null) {
+            return tabModel.getTabsInGroup(fallbackGroupId);
         }
-
-        // Pinned tabs can't be dismissed.
-        if (isPinnedRegularTab(viewHolder)) {
-            return false;
-        }
-
-        return true;
+        return List.of(tab);
     }
 
     private void deselectSelectedCard() {

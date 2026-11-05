@@ -13,6 +13,7 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ref.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
@@ -29,19 +30,19 @@
 #include "chrome/browser/autocomplete/autocomplete_classifier_factory.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_provider_client.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
-#include "chrome/browser/autocomplete/shortcuts_backend_factory.h"
 #include "chrome/browser/bitmap_fetcher/bitmap_fetcher_service_factory.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/command_updater.h"
+#include "chrome/browser/contextual_tasks/search_journey_tracker.h"
+#include "chrome/browser/contextual_tasks/search_journey_tracker_factory.h"
 #include "chrome/browser/extensions/api/omnibox/omnibox_api.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/feedback/public/feedback_source.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/history_embeddings/history_embeddings_utils.h"
 #include "chrome/browser/omnibox/autocomplete_controller_emitter_factory.h"
-#include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
+#include "chrome/browser/page_load_metrics/chrome_navigation_initiator.h"
 #include "chrome/browser/predictors/autocomplete_action_predictor.h"
 #include "chrome/browser/predictors/autocomplete_action_predictor_factory.h"
 #include "chrome/browser/predictors/loading_predictor.h"
@@ -91,24 +92,27 @@
 #include "components/omnibox/browser/omnibox_prefs.h"
 #include "components/omnibox/browser/page_classification_functions.h"
 #include "components/omnibox/browser/search_provider.h"
-#include "components/omnibox/browser/shortcuts_backend.h"
 #include "components/omnibox/browser/zero_suggest_provider.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/omnibox/common/omnibox_features.h"
-#include "components/page_load_metrics/browser/navigation_handle_user_data.h"
+#include "components/page_load_metrics/browser/navigation_initiator.h"
 #include "components/profile_metrics/browser_profile_type.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/search_engines/template_url_starter_pack_data.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
@@ -118,8 +122,8 @@
 #include "services/network/public/cpp/constants.h"
 #include "skia/ext/image_operations.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/image/canvas_image_source.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia_operations.h"
@@ -165,34 +169,49 @@ LensSearchController* GetLensSearchController(
 //
 // Holding the continuation here makes the safe outcome the default: if this
 // object is destroyed without Run() having been called, the navigation is
-// resumed as if no dialog had been shown. Only an explicit user decision can
-// suppress it. See https://crbug.com/540532980.
-class PendingNavigationGuard {
+// resumed as if no dialog had been shown (unless the initiating tab was
+// closed or deactivated). Only an explicit user decision can suppress it. See
+// https://crbug.com/540532980.
+class PendingNavigationGuard : public content::WebContentsObserver {
  public:
   using Callback =
       base::OnceCallback<void(OmniboxClient::ExtensionControlledDialogResult)>;
 
-  explicit PendingNavigationGuard(Callback callback)
-      : callback_(std::move(callback)) {}
+  PendingNavigationGuard(Callback callback,
+                         LocationBar& location_bar,
+                         content::WebContents* initiating_web_contents)
+      : content::WebContentsObserver(initiating_web_contents),
+        callback_(std::move(callback)),
+        location_bar_(location_bar) {}
 
   PendingNavigationGuard(const PendingNavigationGuard&) = delete;
   PendingNavigationGuard& operator=(const PendingNavigationGuard&) = delete;
 
-  ~PendingNavigationGuard() {
+  ~PendingNavigationGuard() override {
     if (callback_) {
       std::move(callback_).Run(
-          OmniboxClient::ExtensionControlledDialogResult::kNoDialogShown);
+          OriginalTabStillActive()
+              ? OmniboxClient::ExtensionControlledDialogResult::kNoDialogShown
+              : OmniboxClient::ExtensionControlledDialogResult::kCancel);
     }
   }
 
   void Run(OmniboxClient::ExtensionControlledDialogResult result) {
     if (callback_) {
-      std::move(callback_).Run(result);
+      std::move(callback_).Run(
+          OriginalTabStillActive()
+              ? result
+              : OmniboxClient::ExtensionControlledDialogResult::kCancel);
     }
   }
 
  private:
+  bool OriginalTabStillActive() const {
+    return web_contents() && location_bar_->GetWebContents() == web_contents();
+  }
+
   Callback callback_;
+  const raw_ref<LocationBar> location_bar_;
 };
 
 ExtensionControlledDialogResult SettingDialogResultToExtensionDialogResult(
@@ -331,9 +350,10 @@ bool ChromeOmniboxClient::
     return false;
   }
 
-  auto guarded_callback = base::BindOnce(
-      &PendingNavigationGuard::Run,
-      std::make_unique<PendingNavigationGuard>(std::move(callback)));
+  auto guarded_callback =
+      base::BindOnce(&PendingNavigationGuard::Run,
+                     std::make_unique<PendingNavigationGuard>(
+                         std::move(callback), *location_bar_, web_contents));
 
   controller->ShowConfirmationDialog(
       *web_contents,
@@ -442,6 +462,8 @@ gfx::Image ChromeOmniboxClient::GetSizedIcon(const gfx::Image& icon) const {
   // In touch mode, icons are 20x20. FaviconCache and ExtensionIconManager both
   // guarantee favicons and extension icons will be 16x16, so add extra padding
   // around them to align them vertically with the other vector icons.
+  // TODO(crbug.com/576479304): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK_GE(icon_size, icon.Height());
   DCHECK_GE(icon_size, icon.Width());
   auto padding_border = gfx::Insets::VH((icon_size - icon.Height()) / 2,
@@ -502,7 +524,7 @@ void ChromeOmniboxClient::ProcessExtensionMatch(
     const std::u16string& text,
     const TemplateURL* template_url,
     const AutocompleteMatch& match,
-    WindowOpenDisposition disposition) {
+    ui::mojom::WindowOpenDisposition disposition) {
   // Strip the keyword + leading space (if present) off the input.
   std::u16string remaining_input;
   AutocompleteInput::SplitKeywordFromInput(match.fill_into_edit, true,
@@ -511,7 +533,7 @@ void ChromeOmniboxClient::ProcessExtensionMatch(
   // In unscoped mode, the input is sent verbatim. In scoped (keyword) mode, the
   // keyword and input are split, and only the input after the keyword is sent.
   std::string input =
-      match.provider->type() == AutocompleteProvider::TYPE_UNSCOPED_EXTENSION
+      match.provider->type() == AutocompleteProvider::Type::kUnscopedExtension
           ? base::UTF16ToUTF8(match.fill_into_edit)
           : base::UTF16ToUTF8(remaining_input);
   extensions::ExtensionOmniboxEventRouter::OnInputEntered(
@@ -926,9 +948,9 @@ void ChromeOmniboxClient::ShowFeedbackPage(const std::u16string& input_text,
 void ChromeOmniboxClient::OnAutocompleteAccept(
     const GURL& destination_url,
     TemplateURLRef::PostContent* post_content,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
-    AutocompleteMatchType::Type match_type,
+    omnibox::AutocompleteMatchType match_type,
     base::TimeTicks match_selection_timestamp,
     bool destination_url_entered_without_scheme,
     bool destination_url_entered_with_http_scheme,
@@ -945,9 +967,26 @@ void ChromeOmniboxClient::OnAutocompleteAccept(
                     {header.first, ": ", header.second, "\r\n"});
   }
 
+  // Tells Search when the query matches text the user recently copied, so it
+  // can slice metrics by it.
+  GURL url = destination_url;
+  // `match` with `url`, if that differs. Code that runs after the navigation
+  // finds this search by the match's URL, e.g. to remove it from history if the
+  // user picks the "Did you mean" infobar instead.
+  std::optional<AutocompleteMatch> match_with_url;
+  if (contextual_tasks::SearchJourneyTracker* tracker =
+          contextual_tasks::SearchJourneyTrackerFactory::GetForProfile(
+              profile_)) {
+    url = tracker->MaybeAppendCopyMatchParam(destination_url);
+    if (url != destination_url) {
+      match_with_url = match;
+      match_with_url->destination_url = url;
+    }
+  }
+
   // Store the details necessary to open the omnibox match via browser commands.
   location_bar_->set_navigation_params(LocationBar::NavigationParams(
-      destination_url, disposition, transition, match_selection_timestamp,
+      url, disposition, transition, match_selection_timestamp,
       destination_url_entered_without_scheme,
       destination_url_entered_with_http_scheme, extra_headers));
 
@@ -955,14 +994,18 @@ void ChromeOmniboxClient::OnAutocompleteAccept(
     auto navigation = chrome::OpenCurrentURL(browser_);
     if (navigation) {
       if (ui::PageTransitionCoreTypeIs(transition, ui::PAGE_TRANSITION_TYPED)) {
-        AttachOmniboxDirectUrlInputNavigationHandleUserData(*navigation);
+        page_load_metrics::NavigationInitiatorHolder::CreateForNavigationHandle(
+            *navigation, chrome_navigation_initiator::kOmniboxDirectUrlInput);
       } else if (ui::PageTransitionCoreTypeIs(transition,
                                               ui::PAGE_TRANSITION_GENERATED)) {
-        AttachOmniboxDefaultSearchEngineNavigationHandleUserData(*navigation);
+        page_load_metrics::NavigationInitiatorHolder::CreateForNavigationHandle(
+            *navigation,
+            chrome_navigation_initiator::kOmniboxDefaultSearchEngine);
       }
     }
-    ChromeOmniboxNavigationObserver::Create(navigation.get(), profile_, text,
-                                            match, alternative_nav_match);
+    ChromeOmniboxNavigationObserver::Create(
+        navigation.get(), profile_, text,
+        match_with_url ? *match_with_url : match, alternative_nav_match);
     search_engines::MaybeShowSearchEngineResetNotification(browser_,
                                                            match_type);
   }
@@ -1002,6 +1045,10 @@ void ChromeOmniboxClient::OnInputInProgress(bool in_progress) {
 }
 
 void ChromeOmniboxClient::OnPopupVisibilityChanged(bool popup_is_open) {
+  if (!location_bar_) {
+    // `location_bar_` can be null in tests.
+    return;
+  }
   content::WebContents* const web_contents = location_bar_->GetWebContents();
   if (web_contents) {
     auto* const helper =
@@ -1012,8 +1059,9 @@ void ChromeOmniboxClient::OnPopupVisibilityChanged(bool popup_is_open) {
   }
 }
 
-void ChromeOmniboxClient::OpenUrl(GURL gurl,
-                                  WindowOpenDisposition disposition) {
+void ChromeOmniboxClient::OpenUrl(
+    GURL gurl,
+    ui::mojom::WindowOpenDisposition disposition) {
   CHECK(browser_);
   NavigateParams params(browser_, gurl, ui::PAGE_TRANSITION_GENERATED);
   params.disposition = disposition;
@@ -1022,7 +1070,7 @@ void ChromeOmniboxClient::OpenUrl(GURL gurl,
 
 void ChromeOmniboxClient::OpenUrlWithCallback(
     GURL gurl,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     base::OnceCallback<void(base::WeakPtr<content::NavigationHandle>)>
         callback) {
   CHECK(browser_);
@@ -1036,12 +1084,8 @@ void ChromeOmniboxClient::OpenIphLink(GURL gurl) {
   ui::PageTransition transition = ui::PageTransitionFromInt(
       ui::PAGE_TRANSITION_LINK | ui::PAGE_TRANSITION_FROM_ADDRESS_BAR);
   NavigateParams params(profile_, gurl, transition);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   Navigate(&params);
-}
-
-bool ChromeOmniboxClient::IsHistoryEmbeddingsEnabled() const {
-  return history_embeddings::IsHistoryEmbeddingsEnabledForProfile(profile_);
 }
 
 bool ChromeOmniboxClient::IsAimPopupEnabled() const {
@@ -1068,6 +1112,8 @@ void ChromeOmniboxClient::MaybePrewarmForDefaultSearchEngine(
     case PrewarmTrigger::kUserInteraction:
       CHECK(
           !base::FeatureList::IsEnabled(features::kPrewarmZeroSuggestTrigger));
+      CHECK(!base::FeatureList::IsEnabled(
+          features::kPrewarmPageLoadAndTabSwitchAfterPaintTrigger));
       if (!location_bar_->GetWebContents()) {
         // There seems to be a subtle timing where the active tab does not have
         // a valid WebContents instance on an user interaction trigger.
@@ -1094,7 +1140,8 @@ void ChromeOmniboxClient::DoPrerender(const AutocompleteMatch& match) {
     return;
   }
 
-  DCHECK(!AutocompleteMatch::IsSearchType(match.type));
+  CHECK(!AutocompleteMatch::IsSearchType(match.type),
+        base::NotFatalUntil::M162);
 
   predictors::AutocompleteActionPredictorFactory::GetForProfile(profile_)
       ->StartPrerendering(match.destination_url, *web_contents);
@@ -1124,18 +1171,4 @@ void ChromeOmniboxClient::DoPreconnect(const AutocompleteMatch& match) {
   // We could prefetch the alternate nav URL, if any, but because there
   // can be many of these as a user types an initial series of characters,
   // the OS DNS cache could suffer eviction problems for minimal gain.
-}
-
-// static
-void ChromeOmniboxClient::OnSuccessfulNavigation(
-    Profile* profile,
-    const std::u16string& text,
-    const AutocompleteMatch& match) {
-  auto shortcuts_backend = ShortcutsBackendFactory::GetForProfile(profile);
-  // Can be null in incognito.
-  if (!shortcuts_backend) {
-    return;
-  }
-
-  shortcuts_backend->AddOrUpdateShortcut(text, match);
 }

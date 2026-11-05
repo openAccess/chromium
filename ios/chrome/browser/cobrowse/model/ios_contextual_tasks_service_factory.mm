@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/cobrowse/model/ios_contextual_tasks_service_factory.h"
 
+#import <utility>
+
 #import "base/functional/bind.h"
 #import "components/contextual_tasks/internal/composite_context_decorator.h"
 #import "components/contextual_tasks/internal/contextual_tasks_service_impl.h"
@@ -39,52 +41,36 @@ bool IsGeminiThreadsEnabled() {
 
 }  // namespace
 
-// static
-contextual_tasks::ContextualTasksService*
-IOSContextualTasksServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()
-      ->GetServiceForProfileAs<contextual_tasks::ContextualTasksService>(
-          profile, /*create=*/true);
-}
-
-// static
-IOSContextualTasksServiceFactory*
-IOSContextualTasksServiceFactory::GetInstance() {
-  static base::NoDestructor<IOSContextualTasksServiceFactory> instance;
-  return instance.get();
-}
-
-IOSContextualTasksServiceFactory::IOSContextualTasksServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("ContextualTasksService",
-                                    ProfileSelection::kOwnInstanceInIncognito) {
+IOSContextualTasksServiceFactory::IOSContextualTasksServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "ContextualTasksService",
+          ProfileSelection::kOwnInstanceInIncognito) {
   DependsOn(DataTypeStoreServiceFactory::GetInstance());
   DependsOn(ios::FaviconServiceFactory::GetInstance());
   DependsOn(ios::HistoryServiceFactory::GetInstance());
   DependsOn(IdentityManagerFactory::GetInstance());
 }
 
-IOSContextualTasksServiceFactory::~IOSContextualTasksServiceFactory() = default;
-
 std::unique_ptr<KeyedService>
 IOSContextualTasksServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   favicon::FaviconService* favicon_service =
       ios::FaviconServiceFactory::GetForProfile(
           profile, ServiceAccessType::EXPLICIT_ACCESS);
   history::HistoryService* history_service =
-      ios::HistoryServiceFactory::GetForProfile(
-          profile, ServiceAccessType::EXPLICIT_ACCESS);
+      ios::HistoryServiceFactory::GetForProfile(profile);
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
 
-  bool supports_ephemeral_only = profile->IsOffTheRecord();
+  bool supports_ephemeral_only = profile.IsOffTheRecord();
 
   return std::make_unique<contextual_tasks::ContextualTasksServiceImpl>(
       ::GetChannel(),
       DataTypeStoreServiceFactory::GetForProfile(profile)->GetStoreFactory(),
       contextual_tasks::CreateCompositeContextDecorator(favicon_service,
                                                         history_service, {}),
-      identity_manager, profile->GetPrefs(), supports_ephemeral_only,
+      identity_manager, profile.GetPrefs(), supports_ephemeral_only,
       base::BindRepeating(&GetNumberOfActiveTasks),
       base::BindRepeating(&IsGeminiThreadsEnabled));
 }

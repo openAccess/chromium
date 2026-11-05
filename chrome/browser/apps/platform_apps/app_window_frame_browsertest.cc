@@ -11,6 +11,8 @@
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/app_window/native_app_window.h"
 #include "third_party/skia/include/core/SkRegion.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace extensions {
 
@@ -79,9 +81,11 @@ IN_PROC_BROWSER_TEST_F(AppWindowFrameBrowserTest, IncognitoOpenUrl) {
   content::WebContents* app_contents =
       app_window->app_window_contents_for_test()->GetWebContents();
 
-  content::OpenURLParams params(GURL(url::kAboutBlankURL), {},
-                                WindowOpenDisposition::OFF_THE_RECORD,
-                                ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(url::kAboutBlankURL),
+          ui::mojom::WindowOpenDisposition::kOffTheRecord,
+          ui::PAGE_TRANSITION_LINK);
   content::WebContents* new_contents =
       app_contents->OpenURL(params, /*navigation_handle_callback=*/{});
 
@@ -116,9 +120,8 @@ IN_PROC_BROWSER_TEST_F(AppWindowFrameBrowserTest, DraggableFramelessWindow) {
 
 #if BUILDFLAG(IS_CHROMEOS)
 
-// Disabled due to flake. https://crbug.com/40256924
 IN_PROC_BROWSER_TEST_F(AppWindowFrameBrowserTest,
-                       DISABLED_ShouldShowStaleContentOnEviction) {
+                       ShouldShowStaleContentOnEviction) {
   AppWindow* app_window = CreateTestAppWindow("{}");
   // Make sure that a surface gets embedded in the frame evictor of the
   // DelegateFrameHost.

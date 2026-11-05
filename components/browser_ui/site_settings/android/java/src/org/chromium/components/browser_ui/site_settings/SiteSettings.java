@@ -9,6 +9,9 @@ import static org.chromium.components.content_settings.PrefNames.COOKIE_CONTROLS
 
 import android.content.Context;
 import android.os.Bundle;
+import android.view.Menu;
+import android.view.MenuInflater;
+import android.view.MenuItem;
 
 import androidx.annotation.VisibleForTesting;
 import androidx.preference.Preference;
@@ -27,6 +30,7 @@ import org.chromium.components.browser_ui.settings.search.BaseSearchIndexProvide
 import org.chromium.components.browser_ui.settings.search.PreferenceParser;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.browser_ui.site_settings.SiteSettingsCategory.Type;
+import org.chromium.components.browser_ui.util.TraceEventVectorDrawableCompat;
 import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.CookieControlsMode;
 import org.chromium.components.user_prefs.UserPrefs;
@@ -43,9 +47,11 @@ public class SiteSettings extends BaseSiteSettingsFragment
         implements EmbeddableSettingsPage,
                 Preference.OnPreferenceClickListener,
                 CustomDividerFragment {
+    public static final String MAIN_MENU_KEY = "content_settings";
+
     // The keys for each category shown on the Site Settings page
     // are defined in the SiteSettingsCategory. The only exception is the permission autorevocation
-    // switch at the bottom of the page and its top divider.
+    // switch at the bottom of the page.
     @VisibleForTesting
     public static final String PERMISSION_AUTOREVOCATION_PREF = "permission_autorevocation";
 
@@ -63,6 +69,32 @@ public class SiteSettings extends BaseSiteSettingsFragment
 
         configurePreferences();
         updatePreferenceStates();
+        setHasOptionsMenu(true);
+    }
+
+    @Override
+    public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
+        menu.clear();
+        if (getSiteSettingsDelegate().isHelpAndFeedbackEnabled()) {
+            MenuItem help =
+                    menu.add(
+                            Menu.NONE,
+                            R.id.menu_id_site_settings_help,
+                            Menu.NONE,
+                            getSiteSettingsDelegate().getHelpMenuStringRes());
+            help.setIcon(
+                    TraceEventVectorDrawableCompat.create(
+                            getResources(), R.drawable.ic_help_24dp, getContext().getTheme()));
+        }
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == R.id.menu_id_site_settings_help) {
+            getSiteSettingsDelegate().launchSettingsHelpAndFeedbackActivity(getActivity());
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
     }
 
     @Override
@@ -80,14 +112,6 @@ public class SiteSettings extends BaseSiteSettingsFragment
     }
 
     private void configurePreferences() {
-        // TODO(crbug.com/439911511): Remove the divider directly form the layout.
-        if (getSiteSettingsDelegate().isSettingsContainmentEnabled()) {
-            Preference divider = findPreference("divider");
-            if (divider != null) {
-                getPreferenceScreen().removePreference(divider);
-            }
-        }
-
         // Remove unsupported settings categories.
         for (@SiteSettingsCategory.Type int type = 0;
                 type < SiteSettingsCategory.Type.NUM_ENTRIES;
@@ -260,7 +284,7 @@ public class SiteSettings extends BaseSiteSettingsFragment
 
     @Override
     public @Nullable String getMainMenuKey() {
-        return "content_settings";
+        return MAIN_MENU_KEY;
     }
 
     public static final BaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
@@ -277,9 +301,6 @@ public class SiteSettings extends BaseSiteSettingsFragment
     public static void updateDynamicPreferences(
             Context context, SiteSettingsDelegate delegate, SettingsIndexData indexData) {
         String prefFragment = SiteSettings.class.getName();
-
-        // Always remove the divider as the search is based on containment style.
-        indexData.removeEntry(PreferenceParser.createUniqueId(prefFragment, "divider"));
 
         for (@Type int prefCategory = 0; prefCategory < Type.NUM_ENTRIES; prefCategory++) {
             if (SiteSettingsCategory.contentSettingsType(prefCategory) < 0) continue;

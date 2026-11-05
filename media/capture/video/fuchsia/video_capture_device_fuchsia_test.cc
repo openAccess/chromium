@@ -43,7 +43,7 @@ void ValidateReceivedFrame(const ReceivedFrame& frame,
 
   auto handle = frame.buffer.handle_provider->GetHandleForInProcessAccess();
 
-  FakeCameraStream::ValidateFrameData(handle->data().data(), coded_size, salt);
+  FakeCameraStream::ValidateFrameData(handle->const_data(), coded_size, salt);
 }
 
 // VideoCaptureBufferHandle implementation that references memory allocated on
@@ -114,12 +114,14 @@ class TestVideoCaptureClient final : public VideoCaptureDevice::Client {
     started_ = true;
   }
 
-  ReserveResult ReserveOutputBuffer(const gfx::Size& dimensions,
-                                    VideoPixelFormat format,
-                                    int frame_feedback_id,
-                                    Buffer* buffer,
-                                    int* require_new_buffer_id,
-                                    int* retire_old_buffer_id) override {
+  ReserveResult ReserveOutputBuffer(
+      const gfx::Size& dimensions,
+      VideoPixelFormat format,
+      int frame_feedback_id,
+      Buffer* buffer,
+      int* require_new_buffer_id,
+      int* retire_old_buffer_id,
+      const gfx::ColorSpace& color_space) override {
     EXPECT_TRUE(started_);
     EXPECT_EQ(format, PIXEL_FORMAT_I420);
     EXPECT_EQ(dimensions.width() % 2, 0);

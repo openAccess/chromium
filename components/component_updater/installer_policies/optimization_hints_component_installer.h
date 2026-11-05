@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_COMPONENT_UPDATER_INSTALLER_POLICIES_OPTIMIZATION_HINTS_COMPONENT_INSTALLER_H_
 #define COMPONENTS_COMPONENT_UPDATER_INSTALLER_POLICIES_OPTIMIZATION_HINTS_COMPONENT_INSTALLER_H_
 
+#include <stdint.h>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,7 +22,8 @@ class Version;
 namespace component_updater {
 
 // The name of the file that stores the unindexed hints.
-extern const base::FilePath::CharType kUnindexedHintsFileName[];
+inline constexpr base::FilePath::CharType kUnindexedHintsFileName[] =
+    FILE_PATH_LITERAL("optimization-hints.pb");
 
 class ComponentUpdateService;
 
@@ -28,7 +31,7 @@ class ComponentUpdateService;
 class OptimizationHintsComponentInstallerPolicy
     : public ComponentInstallerPolicy {
  public:
-  static const char kManifestRulesetFormatKey[];
+  static constexpr char kManifestRulesetFormatKey[] = "ruleset_format";
 
   OptimizationHintsComponentInstallerPolicy();
 

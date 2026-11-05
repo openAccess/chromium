@@ -78,8 +78,8 @@ class FetchDataLoaderTest : public testing::Test {
         scoped_refptr<base::SingleThreadTaskRunner> task_runner)
         : task_runner_(std::move(task_runner)) {}
 
-    void DidFetchDataStartedDataPipe(
-        mojo::ScopedDataPipeConsumerHandle handle) override {
+    void DidFetchDataStartedDataPipe(mojo::ScopedDataPipeConsumerHandle handle,
+                                     DrainedDataPipeClient*) override {
       DataPipeBytesConsumer::CompletionNotifier* notifier;
       destination_ = MakeGarbageCollected<DataPipeBytesConsumer>(
           task_runner_, std::move(handle), &notifier);
@@ -114,24 +114,13 @@ class FetchDataLoaderTest : public testing::Test {
 class FetchDataLoaderBlobTest : public FetchDataLoaderTest {
  public:
   FetchDataLoaderBlobTest()
-      : fake_task_runner_(base::MakeRefCounted<scheduler::FakeTaskRunner>()),
-        blob_registry_receiver_(
-            &fake_blob_registry_,
-            blob_registry_remote_.BindNewPipeAndPassReceiver()) {
-    BlobDataHandle::SetBlobRegistryForTesting(blob_registry_remote_.get());
-  }
-
-  ~FetchDataLoaderBlobTest() override {
-    BlobDataHandle::SetBlobRegistryForTesting(nullptr);
-  }
+      : fake_task_runner_(base::MakeRefCounted<scheduler::FakeTaskRunner>()) {}
 
  protected:
   scoped_refptr<scheduler::FakeTaskRunner> fake_task_runner_;
 
  private:
-  FakeBlobRegistry fake_blob_registry_;
-  mojo::Remote<mojom::blink::BlobRegistry> blob_registry_remote_;
-  mojo::Receiver<mojom::blink::BlobRegistry> blob_registry_receiver_;
+  ScopedFakeBlobRegistry blob_registry_;
 };
 
 ACTION_P(QUITLOOP, loop) {
@@ -158,7 +147,7 @@ TEST_F(FetchDataLoaderBlobTest, LoadAsBlob) {
                   BytesConsumer::BlobSizePolicy::kDisallowBlobWithInvalidSize))
       .WillOnce(Return(ByMove(nullptr)));
   EXPECT_CALL(*consumer, SetClient(_)).WillOnce(SaveArg<0>(&client));
-  EXPECT_CALL(*consumer, DrainAsDataPipe());
+  EXPECT_CALL(*consumer, DrainAsDataPipe(_));
   EXPECT_CALL(*consumer, GetPublicState())
       .WillOnce(Return(BytesConsumer::PublicState::kReadableOrWaiting));
   EXPECT_CALL(checkpoint, Call(2));
@@ -211,7 +200,7 @@ TEST_F(FetchDataLoaderBlobTest, LoadAsBlobFailed) {
                   BytesConsumer::BlobSizePolicy::kDisallowBlobWithInvalidSize))
       .WillOnce(Return(ByMove(nullptr)));
   EXPECT_CALL(*consumer, SetClient(_)).WillOnce(SaveArg<0>(&client));
-  EXPECT_CALL(*consumer, DrainAsDataPipe());
+  EXPECT_CALL(*consumer, DrainAsDataPipe(_));
   EXPECT_CALL(*consumer, GetPublicState())
       .WillOnce(Return(BytesConsumer::PublicState::kReadableOrWaiting));
   EXPECT_CALL(checkpoint, Call(2));
@@ -259,7 +248,7 @@ TEST_F(FetchDataLoaderBlobTest, LoadAsBlobCancel) {
                   BytesConsumer::BlobSizePolicy::kDisallowBlobWithInvalidSize))
       .WillOnce(Return(ByMove(nullptr)));
   EXPECT_CALL(*consumer, SetClient(_)).WillOnce(SaveArg<0>(&client));
-  EXPECT_CALL(*consumer, DrainAsDataPipe());
+  EXPECT_CALL(*consumer, DrainAsDataPipe(_));
   EXPECT_CALL(*consumer, GetPublicState())
       .WillOnce(Return(BytesConsumer::PublicState::kReadableOrWaiting));
   EXPECT_CALL(checkpoint, Call(2));
@@ -301,7 +290,7 @@ TEST_F(FetchDataLoaderBlobTest, LoadAsBlobNoClientCallbacksAfterCancel) {
                   BytesConsumer::BlobSizePolicy::kDisallowBlobWithInvalidSize))
       .WillOnce(Return(ByMove(nullptr)));
   EXPECT_CALL(*consumer, SetClient(_)).WillOnce(SaveArg<0>(&client));
-  EXPECT_CALL(*consumer, DrainAsDataPipe());
+  EXPECT_CALL(*consumer, DrainAsDataPipe(_));
   EXPECT_CALL(*consumer, GetPublicState())
       .WillOnce(Return(BytesConsumer::PublicState::kReadableOrWaiting));
   EXPECT_CALL(checkpoint, Call(2));

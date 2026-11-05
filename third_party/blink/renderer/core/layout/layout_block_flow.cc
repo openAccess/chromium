@@ -56,6 +56,7 @@
 #include "third_party/blink/renderer/core/layout/layout_result.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/layout/logical_box_fragment.h"
+#include "third_party/blink/renderer/core/layout/multicol_break_token_data.h"
 #include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
 #include "third_party/blink/renderer/core/layout/shapes/shape_outside_info.h"
 #include "third_party/blink/renderer/core/layout/table/layout_table.h"
@@ -143,14 +144,14 @@ LayoutBlockFlow* LayoutBlockFlow::CreateAnonymous(Document& document,
                                                   const ComputedStyle& style) {
   auto* layout_block_flow = MakeGarbageCollected<LayoutBlockFlow>(nullptr);
   layout_block_flow->SetDocumentForAnonymous(document);
-  layout_block_flow->SetStyle(&style);
+  layout_block_flow->SetStyle(style);
   return layout_block_flow;
 }
 
 bool LayoutBlockFlow::IsInitialLetterBox() const {
   NOT_DESTROYED();
   return IsA<FirstLetterPseudoElement>(GetNode()) &&
-         !StyleRef().InitialLetter().IsNormal();
+         !Style().InitialLetter().IsNormal();
 }
 
 bool LayoutBlockFlow::CanContainFirstFormattedLine() const {
@@ -263,7 +264,7 @@ void LayoutBlockFlow::AddChild(LayoutObject* new_child,
     // and that is not inline level, but IsInline().
     if (new_child->IsInline() && !new_child->IsLayoutOutsideListMarker()) {
       // No suitable existing anonymous block-flow - create a new one.
-      auto* new_block_flow = To<LayoutBlockFlow>(CreateAnonymousBlock());
+      auto* new_block_flow = To<LayoutBlockFlow>(CreateAnonymousChild());
       LayoutBox::AddChild(new_block_flow, before_child);
       // Reparent adjacent floating or out-of-flow siblings to the new block.
       ReparentPrecedingFloatingOrOutOfFlow(this, new_block_flow,
@@ -392,13 +393,11 @@ void LayoutBlockFlow::CollapseAnonymousBlockChild(LayoutBlockFlow* child) {
   NOT_DESTROYED();
   if (!AllowsCollapseAnonymousBlockChild(*this, *child))
     return;
-  SetNeedsLayoutAndIntrinsicWidthsRecalcAndFullPaintInvalidation(
-      layout_invalidation_reason::kChildAnonymousBlockChanged);
 
-  child->MoveAllChildrenTo(this, child->NextSibling(), child->HasLayer());
+  LayoutObject* next_sibling = child->NextSibling();
+  Children()->RemoveChildNode(this, child);
   SetChildrenInline(child->ChildrenInline());
-
-  Children()->RemoveChildNode(this, child, child->HasLayer());
+  child->MoveAllChildrenTo(this, next_sibling, true);
   child->Destroy();
 }
 
@@ -524,10 +523,10 @@ void LayoutBlockFlow::MakeChildrenNonInline(LayoutObject* insertion_point) {
 
     child = inline_run_end->NextSibling();
 
-    LayoutBlock* block = CreateAnonymousBlock();
+    LayoutBlock* block = CreateAnonymousChild();
     Children()->InsertChildNode(this, block, inline_run_start);
     MoveChildrenTo(block, inline_run_start, child,
-                   /*full_remove_insert=*/false);
+                   /*full_remove_insert=*/true);
   }
 
 #if DCHECK_IS_ON()
@@ -540,25 +539,28 @@ void LayoutBlockFlow::MakeChildrenNonInline(LayoutObject* insertion_point) {
 
 bool LayoutBlockFlow::ShouldTruncateOverflowingText() const {
   NOT_DESTROYED();
-  const LayoutObject* object_to_check = this;
+  // The object owning the text-overflow style and the object that actually
+  // scrolls the text are usually the same, but not for a <textarea>.
+  const LayoutObject* style_object = this;
   if (IsAnonymousBlockFlow()) {
     const LayoutObject* parent = Parent();
-    if (!parent || !parent->BehavesLikeBlockContainer()) {
+    if (!parent || !parent->CanApplyTextOverflow()) {
       return false;
     }
-    object_to_check = parent;
+    style_object = parent;
   }
-  if (!object_to_check->HasNonVisibleOverflow() ||
-      object_to_check->StyleRef().TextOverflow().IsClip()) {
+  const LayoutObject* scroll_object = style_object->ScrollerForTextOverflow();
+  if (!scroll_object->HasNonVisibleOverflow() ||
+      style_object->Style().TextOverflow().IsClip()) {
     return false;
   }
   // If selection focus is inside this element, don't truncate (show full text).
   if (RuntimeEnabledFeatures::TextOverflowClipWithSelectionEnabled() &&
-      object_to_check->ContainsSelectionFocus()) {
+      style_object->ContainsSelectionFocus()) {
     return false;
   }
   if (RuntimeEnabledFeatures::DisableEllipsisWhenScrolledEnabled()) {
-    if (const auto* box = DynamicTo<LayoutBox>(object_to_check)) {
+    if (const auto* box = DynamicTo<LayoutBox>(scroll_object)) {
       if (auto* scrollable_area = box->GetScrollableArea()) {
         auto* snapshot = scrollable_area->GetTextOverflowPostLayoutSnapshot();
         if (!snapshot) {
@@ -630,7 +632,7 @@ bool LayoutBlockFlow::AllowsColumns() const {
   // We don't allow custom layout and multicol on the same object. This is
   // similar to not allowing it for flexbox, grids and tables (although those
   // don't create LayoutBlockFlow, so we don't need to check for those here).
-  if (StyleRef().IsDisplayLayoutCustom()) {
+  if (Style().IsDisplayLayoutCustom()) {
     return false;
   }
 
@@ -650,7 +652,7 @@ bool LayoutBlockFlow::AllowsColumns() const {
 void LayoutBlockFlow::UpdateForMulticol() {
   NOT_DESTROYED();
   auto ShouldBeMulticol = [this]() -> bool {
-    if (!StyleRef().SpecifiesColumns() || !AllowsColumns()) {
+    if (!Style().SpecifiesColumns() || !AllowsColumns()) {
       return false;
     }
 
@@ -709,7 +711,7 @@ void LayoutBlockFlow::SetShouldDoFullPaintInvalidationForFirstLine() {
   DCHECK(ChildrenInline());
 
   const auto fragments = PhysicalFragments();
-  if (fragments.IsEmpty()) {
+  if (fragments.empty()) {
     return;
   }
   for (const PhysicalBoxFragment& fragment : fragments) {
@@ -732,11 +734,11 @@ void LayoutBlockFlow::SetShouldDoFullPaintInvalidationForFirstLine() {
         }
         LayoutObject* layout_object = item->GetMutableLayoutObject();
         DCHECK(layout_object);
-        layout_object->StyleRef().ClearCachedPseudoElementStyles();
+        layout_object->Style().ClearCachedPseudoElementStyles();
         item->GetMutableForPainting().InvalidateInkOverflow();
         layout_object->SetShouldDoFullPaintInvalidation();
       }
-      StyleRef().ClearCachedPseudoElementStyles();
+      Style().ClearCachedPseudoElementStyles();
       SetShouldDoFullPaintInvalidation();
       return;
     }
@@ -805,6 +807,25 @@ void LayoutBlockFlow::InvalidateDisplayItemClients(
       break;
     }
   }
+}
+
+wtf_size_t LayoutBlockFlow::StitchedRowGapIndex(
+    const PhysicalBoxFragment& fragment,
+    wtf_size_t gap_index,
+    std::optional<wtf_size_t>) const {
+  NOT_DESTROYED();
+  if (!IsMulticolContainer()) {
+    return gap_index;
+  }
+
+  if (const BlockBreakToken* previous_break_token =
+          FindPreviousBreakToken(fragment)) {
+    if (const auto* data = DynamicTo<MulticolBreakTokenData>(
+            previous_break_token->TokenData())) {
+      return data->GetFirstUnprocessedRowGapIndex() + gap_index;
+    }
+  }
+  return gap_index;
 }
 
 }  // namespace blink

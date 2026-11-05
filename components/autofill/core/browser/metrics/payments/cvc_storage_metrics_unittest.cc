@@ -46,8 +46,7 @@ class CvcStorageMetricsTest
     SetUpHelper();
     form_type_ = std::get<0>(GetParam());
 
-    // Set up the form data. Reset form action to skip the IsFormMixedContent
-    // check.
+    // Set up the form data.
     form_ = GetAndAddSeenForm({.description_for_logging = "CvcStorage",
                                .fields = GetTestFormDataFields(),
                                .action = ""});
@@ -174,6 +173,7 @@ TEST_P(CvcStorageMetricsTest, LogSelectedMetrics) {
       mojom::ActionPersistence::kFill, form().global_id(),
       form().fields().back().global_id(),
       paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   EXPECT_THAT(
@@ -192,6 +192,7 @@ TEST_P(CvcStorageMetricsTest, LogSelectedMetrics) {
       mojom::ActionPersistence::kFill, form().global_id(),
       form().fields().front().global_id(),
       paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   EXPECT_THAT(
@@ -216,12 +217,13 @@ TEST_P(CvcStorageMetricsTest, LogFilledMetrics) {
   // Simulate filling the suggestion with CVC.
   if (!using_local_card()) {
     EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-        .WillOnce(base::test::RunOnceCallback<1>(card()));
+        .WillOnce(base::test::RunOnceCallback<2>(card()));
   }
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form().global_id(),
       form().fields().front().global_id(),
       paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   EXPECT_THAT(
@@ -238,12 +240,13 @@ TEST_P(CvcStorageMetricsTest, LogFilledMetrics) {
   // Fill the suggestion again.
   if (!using_local_card()) {
     EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-        .WillOnce(base::test::RunOnceCallback<1>(card()));
+        .WillOnce(base::test::RunOnceCallback<2>(card()));
   }
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form().global_id(),
       form().fields().front().global_id(),
       paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   EXPECT_THAT(
@@ -270,12 +273,13 @@ TEST_P(CvcStorageMetricsTest, LogSubmitMetrics) {
       form(), form().fields().front().global_id());
   if (!using_local_card()) {
     EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-        .WillOnce(base::test::RunOnceCallback<1>(card()));
+        .WillOnce(base::test::RunOnceCallback<2>(card()));
   }
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form().global_id(),
       form().fields().front().global_id(),
       paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
   SubmitForm(form());
 

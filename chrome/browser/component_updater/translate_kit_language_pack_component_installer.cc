@@ -4,8 +4,9 @@
 
 #include "chrome/browser/component_updater/translate_kit_language_pack_component_installer.h"
 
+#include <stdint.h>
+
 #include <algorithm>
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -120,7 +121,12 @@ std::string TranslateKitLanguagePackComponentInstallerPolicy::GetName() const {
 update_client::InstallerAttributes
 TranslateKitLanguagePackComponentInstallerPolicy::GetInstallerAttributes()
     const {
-  return update_client::InstallerAttributes();
+  update_client::InstallerAttributes attributes;
+  if (base::FeatureList::IsEnabled(
+          on_device_translation::kTranslateKitV3Models)) {
+    attributes["model_version"] = "v3";
+  }
+  return attributes;
 }
 
 const on_device_translation::LanguagePackComponentConfig&

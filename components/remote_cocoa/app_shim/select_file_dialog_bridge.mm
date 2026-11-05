@@ -12,6 +12,7 @@
 #include "base/apple/bridging.h"
 #import "base/apple/foundation_util.h"
 #include "base/apple/scoped_cftyperef.h"
+#include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/i18n/case_conversion.h"
 #import "base/mac/mac_util.h"
@@ -19,6 +20,8 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/threading/hang_watcher.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/time/time.h"
+#include "components/remote_cocoa/app_shim/features.h"
 #import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
 #import "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
 #import "ui/base/l10n/l10n_util_mac.h"
@@ -173,7 +176,16 @@ NSSavePanel* __weak g_last_created_panel_for_testing = nil;
 @interface SelectFileDialogDelegate : NSObject <NSOpenSavePanelDelegate>
 @end
 
-@implementation SelectFileDialogDelegate
+@implementation SelectFileDialogDelegate {
+  base::TimeTicks _shownTime;
+}
+
+- (instancetype)init {
+  if (self = [super init]) {
+    _shownTime = base::TimeTicks::Now();
+  }
+  return self;
+}
 
 - (BOOL)panel:(id)sender validateURL:(NSURL*)url error:(NSError**)outError {
   // Refuse to accept users closing the dialog with a key repeat, since the key
@@ -181,6 +193,19 @@ NSSavePanel* __weak g_last_created_panel_for_testing = nil;
   // See https://crbug.com/40085079 and https://crbug.com/514070501.
   auto currentEvent = NSApp.currentEvent;
   if (currentEvent.type == NSEventTypeKeyDown && currentEvent.ARepeat) {
+    return NO;
+  }
+
+  // Enforce a minimum display duration to prevent accidental immediate
+  // acceptances. `AutofillSuggestionController` uses a 500ms delay to prevent
+  // accidental interactions. That value is being reused here.
+  // LINT.IfChange(MinDisplayDuration)
+  constexpr base::TimeDelta kMinDisplayDuration = base::Milliseconds(500);
+  // LINT.ThenChange(
+  //     //chrome/browser/ui/autofill/autofill_suggestion_controller.h:IgnoreEarlyClicksDuration,
+  //     //ui/shell_dialogs/safe_accept_file_dialog_event_handler_win.cc:MinDisplayDuration
+  // )
+  if (base::TimeTicks::Now() - _shownTime < kMinDisplayDuration) {
     return NO;
   }
 
@@ -436,8 +461,9 @@ void SelectFileDialogBridge::Show(
     panel_.nameFieldStringValue = default_filename;
   }
 
-  // Ensure that key-repeat events do not trigger the dialog. See the class
-  // comment on |SelectFileDialogDelegate|.
+  // Assign a delegate to the panel in order to enforce a few security
+  // requirements. See the implementation of `SelectFileDialogDelegate` for more
+  // details.
   delegate_ = [[SelectFileDialogDelegate alloc] init];
   panel_.delegate = delegate_;
 
@@ -454,7 +480,7 @@ void SelectFileDialogBridge::Show(
   // The sheet parent will be activated by AppKit on sheet close, which may
   // cause auto-dismissal of the owning window (e.g. extension popup).
   // Therefore, prevent the sheet parent from becoming key.
-  if (sheet_parent != owning_window_) {
+  if (sheet_parent && sheet_parent != owning_window_) {
     if (NativeWidgetMacNSWindow* sheet_parent_widget_window =
             base::apple::ObjCCast<NativeWidgetMacNSWindow>(sheet_parent)) {
       scoped_prevent_key_window_ =
@@ -462,10 +488,32 @@ void SelectFileDialogBridge::Show(
     }
   }
 
-  [panel_ beginSheetModalForWindow:sheet_parent
-                 completionHandler:^(NSInteger result) {
-                   ended_callback.Run(result != NSModalResponseOK);
-                 }];
+  const bool can_host_sheet =
+      sheet_parent && (sheet_parent.styleMask & NSWindowStyleMaskTitled) &&
+      sheet_parent.level == NSNormalWindowLevel;
+  const bool can_host_auxiliary_sheet =
+      base::FeatureList::IsEnabled(
+          remote_cocoa::features::kMacFullScreenAuxiliaryFileDialog) &&
+      sheet_parent &&
+      (sheet_parent.collectionBehavior &
+       NSWindowCollectionBehaviorFullScreenAuxiliary);
+
+  if (can_host_sheet || can_host_auxiliary_sheet) {
+    [panel_ beginSheetModalForWindow:sheet_parent
+                   completionHandler:^(NSInteger result) {
+                     ended_callback.Run(result != NSModalResponseOK);
+                   }];
+  } else {
+    if (owning_window_) {
+      panel_.level = std::max(owning_window_.level + 1,
+                              static_cast<NSInteger>(NSModalPanelWindowLevel));
+    } else {
+      panel_.level = NSModalPanelWindowLevel;
+    }
+    [panel_ beginWithCompletionHandler:^(NSInteger result) {
+      ended_callback.Run(result != NSModalResponseOK);
+    }];
+  }
 }
 
 void SelectFileDialogBridge::SetAccessoryView(

@@ -4,6 +4,7 @@
 
 #import <memory>
 #import <string>
+#import <string_view>
 #import <vector>
 
 #import "base/check.h"
@@ -39,8 +40,10 @@
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/app_launch_configuration.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/web/common/features.h"
 #import "ios/web/public/test/element_selector.h"
+#import "net/base/net_errors.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "net/test/embedded_test_server/http_request.h"
 #import "net/test/embedded_test_server/http_response.h"
@@ -95,18 +98,30 @@ NSString* const kPrimaryButtonID = @"primary-button";
 constexpr base::TimeDelta kReportUploadTimeout = base::Seconds(15);
 
 // Duration to wait for client-side detection classification to finish and cache
-// a verdict. On high-resolution devices (e.g. iPad Pro 13-inch) on loaded bots,
-// cold-start model loading, snapshot generation, and BEST_EFFORT background ML
-// visual feature extraction require additional time beyond default action
-// timeouts.
-constexpr base::TimeDelta kClassificationVerdictTimeout = base::Seconds(30);
+// a verdict. On loaded simulator bots and high-resolution devices (e.g. iPad
+// Pro 13-inch), cold-start model loading, snapshot generation, and BEST_EFFORT
+// background ML visual feature extraction require additional time beyond
+// default action timeouts.
+constexpr base::TimeDelta kClassificationVerdictTimeout = base::Seconds(60);
 
-// Request handler for net::EmbeddedTestServer that returns the request URL's
-// path as the body of the response if the request URL's path starts with
-// "/echo". Otherwise, returns nulltpr to allow other handlers to handle the
-// request.
+// Path for a page that closes the connection after sending partial content,
+// triggering a post-commit navigation failure.
+constexpr std::string_view kPostCommitFailurePath = "/post_commit_failure";
+
+// Request handler for net::EmbeddedTestServer that returns a truncated HTTP
+// response for `kPostCommitFailurePath`, or the request URL's path as the body
+// of the response if the request URL's path starts with "/echo". Otherwise,
+// returns nullptr to allow other handlers to handle the request.
 std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
     const net::test_server::HttpRequest& request) {
+  if (request.relative_url == kPostCommitFailurePath) {
+    // The declared `Content-Length` exceeds the body, so the connection closes
+    // after the headers commit, failing the navigation post-commit.
+    return std::make_unique<net::test_server::RawHttpResponse>(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; "
+        "charset=utf-8\r\nContent-Length: 1024\r\n\r\n",
+        "<html><body><h1>Partial</h1>");
+  }
   if (!base::StartsWith(request.relative_url, "/echo",
                         base::CompareCase::SENSITIVE)) {
     return nullptr;
@@ -151,6 +166,8 @@ void EnableEnterpriseUrlFilteringPrefs() {
   GURL _realTimePhishingURL;
   // Text that is found on the real-time phishing page.
   std::string _realTimePhishingContent;
+  // A URL that commits a partial response and then fails mid-body.
+  GURL _postCommitFailureURL;
   // A URL that is flagged by Enterprise real-time lookups.
   GURL _enterpriseWarnURL;
   // Text that is found in the page flagged by Enterprise lookups.
@@ -176,6 +193,11 @@ void EnableEnterpriseUrlFilteringPrefs() {
   GURL _safeURL2;
   // Text that is found on the safe page.
   std::string _safeContent2;
+  // A URL that passes navigation-time URL checks and is flagged post-navigation
+  // by Client-Side Detection.
+  GURL _scamURL;
+  // Text that is found on the scam page.
+  std::string _scamContent;
   // The default value for SafeBrowsingEnabled pref.
   BOOL _safeBrowsingEnabledPrefDefault;
   // The default value for SafeBrowsingEnhanced pref.
@@ -191,9 +213,6 @@ void EnableEnterpriseUrlFilteringPrefs() {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config;
-
-  config.additional_args.push_back(
-      "--host-resolver-rules=MAP test.localhost 127.0.0.1");
 
   // Use commandline args to insert fake unsafe URLs into the Safe Browsing
   // database.
@@ -253,6 +272,13 @@ void EnableEnterpriseUrlFilteringPrefs() {
         std::string("--mark_as_enterprise_warned=") +
         _enterpriseWarnURL.spec());
 
+  } else if (
+      [self isRunningTest:
+                @selector(
+                    testPostCommitFailureLateAsyncVerdictShowsInterstitial)]) {
+    config.additional_args.push_back(
+        std::string("--mark_as_real_time_phishing=") +
+        _postCommitFailureURL.spec());
   } else {
     config.additional_args.push_back(
         std::string("--mark_as_real_time_phishing=") +
@@ -264,6 +290,16 @@ void EnableEnterpriseUrlFilteringPrefs() {
     config.additional_args.push_back(
         std::string("--enable-features=") +
         safe_browsing::kClientSideDetectionEnabledIos.name);
+  } else if ([self
+                 isRunningTest:
+                     @selector(
+                         testClientSideDetectionIntelligentScanForceRequest)]) {
+    config.additional_args.push_back(base::StrCat(
+        {"--enable-features=",
+         safe_browsing::kClientSideDetectionEnabledIos.name, ":",
+         safe_browsing::kCsdEnforceIos.name, "/true,",
+         safe_browsing::kClientSideDetectionServerModelForScamDetectionIos
+             .name}));
   }
 
   config.additional_args.push_back(
@@ -302,14 +338,19 @@ void EnableEnterpriseUrlFilteringPrefs() {
   _safeURL2 = self.testServer->GetURL("/echo_also_safe");
   _safeContent2 = "also_safe";
 
+  _scamURL = self.testServer->GetURL("/echo_scam_page");
+  _scamContent = "scam_page";
+
+  _postCommitFailureURL = self.testServer->GetURL(kPostCommitFailurePath);
+
   // Artificial verdict caching for hash prefix real time causes URLs with the
-  // same host to be seen as unsafe. Replacing the host string with
-  // test.localhost allows for proper testing between safe browsing v5 and
-  // iframe queries.
+  // same host to be seen as unsafe. Replacing the host string with localhost
+  // allows for proper testing between safe browsing v5 and iframe queries.
   GURL::Replacements replacements;
-  replacements.SetHostStr("test.localhost");
+  replacements.SetHostStr("localhost");
   _safeURL1 = _safeURL1.ReplaceComponents(replacements);
   _safeURL2 = _safeURL2.ReplaceComponents(replacements);
+  _scamURL = _scamURL.ReplaceComponents(replacements);
   _iframeWithPhishingURL =
       _iframeWithPhishingURL.ReplaceComponents(replacements);
 
@@ -389,6 +430,8 @@ void EnableEnterpriseUrlFilteringPrefs() {
 
   // Clear mock scorer in ClientSideDetectionService for test isolation.
   [SafeBrowsingAppInterface clearScorer];
+  [SafeBrowsingAppInterface setBypassLocalResourceCheckForTesting:NO];
+  [SafeBrowsingAppInterface resumeAsyncQueriesForTesting];
 
   [super tearDownHelper];
 }
@@ -503,6 +546,7 @@ void EnableEnterpriseUrlFilteringPrefs() {
 
 // Tests that a phishing page is blocked, and the "Back to safety" button on
 // the warning page works as expected.
+TAG_SMOKE_TEST(SafeBrowsingTestCase, testPhishingPage);
 - (void)testPhishingPage {
   [ChromeEarlGrey loadURL:_safeURL1];
   [ChromeEarlGrey waitForWebStateContainingText:_safeContent1];
@@ -1253,6 +1297,9 @@ void EnableEnterpriseUrlFilteringPrefs() {
 // scorer is present.
 - (void)testClientSideDetectionRuns {
   [SafeBrowsingAppInterface setMockScorer];
+  // Embedded test server URLs resolve to localhost. Bypass localhost/local
+  // resource pre-classification checks for client-side detection testing.
+  [SafeBrowsingAppInterface setBypassLocalResourceCheckForTesting:YES];
 
   GREYAssertTrue([SafeBrowsingAppInterface isScorerSet],
                  @"Scorer was not set.");
@@ -1294,33 +1341,40 @@ void EnableEnterpriseUrlFilteringPrefs() {
 // Tests that a FORCE_REQUEST real-time verdict triggers client-side detection
 // reporting even if the local model does not detect phishing.
 - (void)testClientSideDetectionForceRequest {
+  // Embedded test server URLs resolve to localhost. Bypass localhost/local
+  // resource pre-classification checks for client-side detection testing.
+  [SafeBrowsingAppInterface setBypassLocalResourceCheckForTesting:YES];
+
   // Enable Enhanced Safe Browsing, which is required for force request caching.
   [ChromeEarlGrey setBoolValue:YES forUserPref:prefs::kSafeBrowsingEnhanced];
 
-  // Inject the FORCE_REQUEST verdict into the cache for `_safeURL1`.
-  [SafeBrowsingAppInterface
-      cacheRealTimeVerdictForURL:base::SysUTF8ToNSString(_safeURL1.spec())
-                    forceRequest:YES];
+  // Inject the `FORCE_REQUEST` verdict into the cache for `_safeURL2`. Unlike
+  // `_safeURL1`, `_safeURL2` is not marked as high-confidence allowlisted in
+  // `appConfigurationForTestCase`, so no sampled real-time lookup ping (which
+  // bypasses the verdict cache and overwrites it with the server's response) is
+  // sent when it is loaded.
+  NSString* url = base::SysUTF8ToNSString(_safeURL2.spec());
+  [SafeBrowsingAppInterface cacheRealTimeVerdictForURL:url
+                                          forceRequest:YES
+                                       intelligentScan:NO];
 
   // Verify that it was correctly cached.
   NSInteger type = [SafeBrowsingAppInterface
-      cachedRealTimeURLClientSideDetectionTypeForURL:base::SysUTF8ToNSString(
-                                                         _safeURL1.spec())];
+      cachedRealTimeURLClientSideDetectionTypeForURL:url];
   GREYAssertEqual(type,
                   static_cast<NSInteger>(
                       safe_browsing::ClientSideDetectionType::FORCE_REQUEST),
                   @"Type in cache was not FORCE_REQUEST. Actual: %ld", type);
 
   // Load the safe URL.
-  [ChromeEarlGrey loadURL:_safeURL1];
-  [ChromeEarlGrey waitForWebStateContainingText:_safeContent1];
+  [ChromeEarlGrey loadURL:_safeURL2];
+  [ChromeEarlGrey waitForWebStateContainingText:_safeContent2];
 
   // Trigger visual classification completion with non-phishing scores. This
   // simulates the classifier completing with a non-phishing result.
   NSArray<NSNumber*>* nonPhishingScores = @[ @0.1, @0.2 ];
-  [SafeBrowsingAppInterface
-      triggerClassificationDoneWithURL:base::SysUTF8ToNSString(_safeURL1.spec())
-                          visualScores:nonPhishingScores];
+  [SafeBrowsingAppInterface triggerClassificationDoneWithURL:url
+                                                visualScores:nonPhishingScores];
 
   // Verify image classification completed event is logged.
   GREYAssertTrue(
@@ -1367,6 +1421,107 @@ void EnableEnterpriseUrlFilteringPrefs() {
           }),
       @"Timed out waiting for ClientSideDetectionEvent histogram with "
       @"kNetworkRequestSent.");
+}
+
+// Test that an intelligent scan force request verdict triggers client-side
+// detection workflow, sends a report containing intelligent scan info, and
+// displays the user-visible Safe Browsing Scam Warning interstitial blocking
+// page.
+- (void)testClientSideDetectionIntelligentScanForceRequest {
+  // Allow localhost testing.
+  [SafeBrowsingAppInterface setBypassLocalResourceCheckForTesting:YES];
+  [SafeBrowsingAppInterface setUpMockScamVerdictPhishingReportServer];
+
+  // Enable Enhanced Safe Browsing, which is required for force request caching.
+  [ChromeEarlGrey setBoolValue:YES forUserPref:prefs::kSafeBrowsingEnhanced];
+
+  // Load a safe URL first so there is history to go back to when "Back to
+  // safety" is tapped on the interstitial.
+  [ChromeEarlGrey loadURL:_safeURL1];
+  [ChromeEarlGrey waitForWebStateContainingText:_safeContent1];
+
+  // Inject the intelligent scan FORCE_REQUEST verdict into the cache for
+  // `_scamURL`.
+  [SafeBrowsingAppInterface
+      cacheRealTimeVerdictForURL:base::SysUTF8ToNSString(_scamURL.spec())
+                    forceRequest:YES
+                 intelligentScan:YES];
+
+  // Verify that it was correctly cached.
+  NSInteger type = [SafeBrowsingAppInterface
+      cachedRealTimeURLClientSideDetectionTypeForURL:base::SysUTF8ToNSString(
+                                                         _scamURL.spec())];
+  GREYAssertEqual(type,
+                  static_cast<NSInteger>(
+                      safe_browsing::ClientSideDetectionType::FORCE_REQUEST),
+                  @"Type in cache was not FORCE_REQUEST. Actual: %ld", type);
+
+  // Load the scam URL which will trigger CSD force request.
+  [ChromeEarlGrey loadURL:_scamURL];
+  [ChromeEarlGrey waitForWebStateContainingText:_scamContent];
+
+  // Trigger visual classification completion with non-phishing scores. This
+  // simulates the classifier completing with a non-phishing result.
+  NSArray<NSNumber*>* nonPhishingScores = @[ @0.1, @0.2 ];
+  [SafeBrowsingAppInterface
+      triggerClassificationDoneWithURL:base::SysUTF8ToNSString(_scamURL.spec())
+                          visualScores:nonPhishingScores];
+
+  // Verify that a ClientPhishingRequest containing intelligent scan info was
+  // sent to the phishing report server.
+  ConditionBlock requestCondition = ^{
+    return [SafeBrowsingAppInterface
+        lastSentPhishingRequestHasIntelligentScanInfo];
+  };
+  GREYAssert(base::test::ios::WaitUntilConditionOrTimeout(
+                 base::test::ios::kWaitForPageLoadTimeout, requestCondition),
+             @"Intelligent scan phishing report was not sent.");
+
+  // Verify that the user-visible Safe Browsing Scam Warning interstitial
+  // blocking page is displayed in the WebState.
+  [ChromeEarlGrey waitForWebStateContainingText:l10n_util::GetStringUTF8(
+                                                    IDS_SAFEBROWSING_HEADING)];
+
+  // Tap on the "Back to safety" button and verify that the previous page's
+  // contents are loaded.
+  [ChromeEarlGrey tapWebStateElementWithID:kPrimaryButtonID];
+  [ChromeEarlGrey waitForWebStateContainingText:_safeContent1];
+}
+
+// Tests that when a navigation suffers a post-commit failure while an
+// asynchronous real-time Safe Browsing check is in flight, the late unsafe
+// verdict reloads the page and presents the Safe Browsing interstitial.
+// `SafeBrowsingQueryManager`'s async queries are paused during the navigation
+// so that the post-commit load error occurs deterministically before the unsafe
+// verdict is delivered.
+- (void)testPostCommitFailureLateAsyncVerdictShowsInterstitial {
+  [ChromeEarlGrey setBoolValue:YES forUserPref:prefs::kSafeBrowsingEnhanced];
+
+  [ChromeEarlGrey loadURL:_safeURL1];
+  [ChromeEarlGrey waitForWebStateContainingText:_safeContent1];
+
+  // Pause async queries so that the post-commit load error occurs before
+  // the late async verdict is delivered.
+  GREYAssertTrue([SafeBrowsingAppInterface pauseAsyncQueriesForTesting],
+                 @"Failed to pause async Safe Browsing queries.");
+
+  [ChromeEarlGrey loadURL:_postCommitFailureURL waitForCompletion:NO];
+
+  // Wait for the post-commit error page, and assert that the Safe Browsing
+  // interstitial is not showing yet.
+  [ChromeEarlGrey
+      waitForWebStateContainingText:net::ErrorToShortString(
+                                        net::ERR_CONNECTION_CLOSED)];
+  [ChromeEarlGrey
+      waitForWebStateNotContainingText:l10n_util::GetStringUTF8(
+                                           IDS_SAFEBROWSING_HEADING)];
+
+  // Resume the paused async query, delivering the unsafe verdict.
+  [SafeBrowsingAppInterface resumeAsyncQueriesForTesting];
+
+  // The late verdict should reload the page and display the interstitial.
+  [ChromeEarlGrey waitForWebStateContainingText:l10n_util::GetStringUTF8(
+                                                    IDS_SAFEBROWSING_HEADING)];
 }
 
 @end

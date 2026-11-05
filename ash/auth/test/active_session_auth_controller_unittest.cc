@@ -3,7 +3,12 @@
 // found in the LICENSE file.
 
 #include "ash/auth/active_session_auth_controller_impl.h"
+#include "ash/auth/views/active_session_auth_view.h"
+#include "ash/auth/views/auth_container_view.h"
+#include "ash/auth/views/fingerprint_view.h"
 #include "ash/constants/ash_pref_names.h"
+#include "ash/public/cpp/auth/active_session_fingerprint_client.h"
+#include "ash/public/cpp/shell_window_ids.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
@@ -20,14 +25,17 @@
 #include "chromeos/ash/components/osauth/impl/request/webauthn_auth_request.h"
 #include "chromeos/ash/components/osauth/public/auth_parts.h"
 #include "chromeos/ash/components/osauth/public/request/auth_request.h"
+#include "components/account_id/account_id_literal.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/user_manager/fake_user_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/user_manager.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/cros_system_api/dbus/cryptohome/dbus-constants.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/gfx/animation/animation.h"
+#include "ui/views/view_utils.h"
 
 namespace ash {
 
@@ -35,10 +43,61 @@ namespace {
 
 constexpr char kUserEmail[] = "expected_email@example.com";
 constexpr GaiaId::Literal kFakeGaia("fake_gaia");
+constexpr AccountId::Literal kTestAccountId =
+    AccountId::Literal::FromUserEmailGaiaId(kUserEmail, kFakeGaia);
 constexpr char kExpectedPassword[] = "expected_password";
 constexpr char kExpectedPin[] = "123456";
 constexpr char kExpectedSalt[] = "test salt";
 constexpr char kRpId[] = "example.com";
+
+class ScopedTestFingerprintClient : public ActiveSessionFingerprintClient {
+ public:
+  ScopedTestFingerprintClient() {
+    Shell::Get()->active_session_auth_controller()->SetFingerprintClient(this);
+  }
+
+  ~ScopedTestFingerprintClient() override {
+    Shell::Get()->active_session_auth_controller()->SetFingerprintClient(
+        nullptr);
+  }
+
+  bool IsFingerprintAvailable(AuthRequest::Reason reason,
+                              const AccountId& account_id) override {
+    return true;
+  }
+
+  void PrepareFingerprintAuth(
+      std::unique_ptr<UserContext> user_context,
+      AuthOperationCallback auth_ready_callback,
+      ActiveSessionFingerprintScanCallback on_scan_callback) override {
+    terminate_called_ = false;
+    on_scan_callback_ = std::move(on_scan_callback);
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(auth_ready_callback),
+                                  std::move(user_context), std::nullopt));
+  }
+
+  void TerminateFingerprintAuth(std::unique_ptr<UserContext> user_context,
+                                AuthOperationCallback callback) override {
+    terminate_called_ = true;
+    on_scan_callback_.Reset();
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), std::move(user_context),
+                                  std::nullopt));
+  }
+
+  void SimulateScan(FingerprintAuthScanResult result) {
+    if (on_scan_callback_) {
+      on_scan_callback_.Run(result);
+    }
+  }
+
+  bool terminate_called() const { return terminate_called_; }
+
+ private:
+  ActiveSessionFingerprintScanCallback on_scan_callback_;
+  bool terminate_called_ = false;
+};
 
 }  // namespace
 
@@ -62,46 +121,38 @@ class ActiveSessionAuthControllerTest
   using OnAuthComplete = std::variant<std::unique_ptr<TokenBasedCallback>,
                                       std::unique_ptr<WebAuthNCallback>>;
 
+  ActiveSessionAuthControllerTest() = default;
+
   void SetUp() override {
-    InitializeUserManager();
-    AddUserToUserManager();
     SystemSaltGetter::Initialize();
     CryptohomeMiscClient::InitializeFake();
     UserDataAuthClient::InitializeFake();
     auth_parts_ = AuthParts::Create(local_state());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(local_state());
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(kTestAccountId));
+    user_session_test_environment_->LogIn(kTestAccountId);
+    ASSERT_FALSE(
+        user_manager::UserManager::Get()->IsUserCryptohomeDataEphemeral(
+            kTestAccountId));
 
     NoSessionAshTestBase::SetUp();
 
     ClearLogin();
-    SimulateUserLogin({kUserEmail, user_manager::UserType::kRegular});
+    SimulateUserLogin({.account_id = AccountId::FromUserEmail(kUserEmail),
+                       .user_type = user_manager::UserType::kRegular});
   }
 
   void TearDown() override {
+    gfx::Animation::SetPrefersReducedMotionForTesting(false);
     Shell::Get()->session_controller()->ClearUserSessionsForTest();
-
-    auth_parts_.reset();
-    user_manager_->Destroy();
-    user_manager_.reset();
-    SystemSaltGetter::Shutdown();
-    CryptohomeMiscClient::Shutdown();
-    UserDataAuthClient::Shutdown();
-
     NoSessionAshTestBase::TearDown();
-  }
 
-  void InitializeUserManager() {
-    user_manager_ =
-        std::make_unique<user_manager::FakeUserManager>(local_state());
-    user_manager_->Initialize();
-  }
-
-  void AddUserToUserManager() {
-    account_id_ = AccountId::FromUserEmailGaiaId(kUserEmail, kFakeGaia);
-    user_manager_->AddGaiaUser(account_id_, user_manager::UserType::kRegular);
-    user_manager_->UserLoggedIn(
-        account_id_,
-        user_manager::FakeUserManager::GetFakeUsernameHash(account_id_));
-    ASSERT_FALSE(user_manager_->IsUserCryptohomeDataEphemeral(account_id_));
+    user_session_test_environment_.reset();
+    auth_parts_.reset();
+    UserDataAuthClient::Shutdown();
+    CryptohomeMiscClient::Shutdown();
+    SystemSaltGetter::Shutdown();
   }
 
   std::string HashPassword(const std::string& unhashed_password) {
@@ -214,16 +265,16 @@ class ActiveSessionAuthControllerTest
   }
 
  protected:
-  AccountId account_id_;
-  std::unique_ptr<user_manager::FakeUserManager> user_manager_;
   std::unique_ptr<AuthParts> auth_parts_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
 };
 
 // Tests that the StartAuthSession call to cryptohome includes the correct
 // account id.
 TEST_P(ActiveSessionAuthControllerTest,
        StartAuthSessionCalledWithCorrectAccountIdAndReturnsPasswordFactor) {
-  AddGaiaPassword(account_id_, kExpectedPassword);
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
 
   auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
       Shell::Get()->active_session_auth_controller());
@@ -250,8 +301,8 @@ TEST_P(ActiveSessionAuthControllerTest,
 // Tests that the ListAuthFactors call to cryptohome includes the correct
 // account id and returns the password and pin factors.
 TEST_P(ActiveSessionAuthControllerTest, StartAuthSessionReturnsPasswordAndPin) {
-  AddGaiaPassword(account_id_, kExpectedPassword);
-  AddCryptohomePin(account_id_, kExpectedPin);
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
+  AddCryptohomePin(kTestAccountId, kExpectedPin);
 
   auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
       Shell::Get()->active_session_auth_controller());
@@ -274,7 +325,7 @@ TEST_P(ActiveSessionAuthControllerTest, StartAuthSessionReturnsPasswordAndPin) {
 // correct account id and password, and that the `OnAuthComplete` callback
 // is called with correct parameters.
 TEST_P(ActiveSessionAuthControllerTest, SubmitPassword) {
-  AddGaiaPassword(account_id_, kExpectedPassword);
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
 
   auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
       Shell::Get()->active_session_auth_controller());
@@ -311,7 +362,7 @@ TEST_P(ActiveSessionAuthControllerTest, SubmitPassword) {
 // correct account id and password, and that the `OnAuthComplete` callback
 // is not called with wrong credentials.
 TEST_P(ActiveSessionAuthControllerTest, WrongPassword) {
-  AddGaiaPassword(account_id_, kExpectedPassword);
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
 
   auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
       Shell::Get()->active_session_auth_controller());
@@ -348,11 +399,11 @@ TEST_P(ActiveSessionAuthControllerTest, WrongPassword) {
 // correct account id and pin, and that the `OnAuthComplete` callback
 // is called with the correct credentials.
 TEST_P(ActiveSessionAuthControllerTest, SubmitPin) {
-  AddGaiaPassword(account_id_, kExpectedPassword);
-  AddCryptohomePin(account_id_, kExpectedPin);
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
+  AddCryptohomePin(kTestAccountId, kExpectedPin);
 
   user_manager::KnownUser known_user(Shell::Get()->local_state());
-  known_user.SetStringPref(account_id_, prefs::kQuickUnlockPinSalt,
+  known_user.SetStringPref(kTestAccountId, prefs::kQuickUnlockPinSalt,
                            kExpectedSalt);
 
   auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
@@ -388,11 +439,11 @@ TEST_P(ActiveSessionAuthControllerTest, SubmitPin) {
 // account id and pin, and that the `OnAuthComplete` callback
 // is not called with a wrong credentials error reply.
 TEST_P(ActiveSessionAuthControllerTest, WrongPin) {
-  AddGaiaPassword(account_id_, kExpectedPassword);
-  AddCryptohomePin(account_id_, kExpectedPin);
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
+  AddCryptohomePin(kTestAccountId, kExpectedPin);
 
   user_manager::KnownUser known_user(Shell::Get()->local_state());
-  known_user.SetStringPref(account_id_, prefs::kQuickUnlockPinSalt,
+  known_user.SetStringPref(kTestAccountId, prefs::kQuickUnlockPinSalt,
                            kExpectedSalt);
 
   auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
@@ -428,12 +479,12 @@ TEST_P(ActiveSessionAuthControllerTest, WrongPin) {
 // correctly formed when pin and password authentication are both
 // tried.
 TEST_P(ActiveSessionAuthControllerTest, BadPinThenGoodPassword) {
-  AddGaiaPassword(account_id_, kExpectedPassword);
-  AddCryptohomePin(account_id_, kExpectedPin);
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
+  AddCryptohomePin(kTestAccountId, kExpectedPin);
   const std::string bad_pin = "bad_pin";
 
   user_manager::KnownUser known_user(Shell::Get()->local_state());
-  known_user.SetStringPref(account_id_, prefs::kQuickUnlockPinSalt,
+  known_user.SetStringPref(kTestAccountId, prefs::kQuickUnlockPinSalt,
                            kExpectedSalt);
 
   auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
@@ -483,12 +534,12 @@ TEST_P(ActiveSessionAuthControllerTest, BadPinThenGoodPassword) {
 
 // Check the format and content of pin lockout status message.
 TEST_P(ActiveSessionAuthControllerTest, PinLockoutMessage) {
-  AddGaiaPassword(account_id_, kExpectedPassword);
-  AddCryptohomePin(account_id_, kExpectedPin);
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
+  AddCryptohomePin(kTestAccountId, kExpectedPin);
   const std::string bad_pin = "bad_pin";
 
   user_manager::KnownUser known_user(Shell::Get()->local_state());
-  known_user.SetStringPref(account_id_, prefs::kQuickUnlockPinSalt,
+  known_user.SetStringPref(kTestAccountId, prefs::kQuickUnlockPinSalt,
                            kExpectedSalt);
 
   auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
@@ -518,7 +569,7 @@ TEST_P(ActiveSessionAuthControllerTest, PinLockoutMessage) {
 // Tests that the OnAuthCancel callback is called with the correct
 // parameters.
 TEST_P(ActiveSessionAuthControllerTest, OnAuthCancel) {
-  AddGaiaPassword(account_id_, kExpectedPassword);
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
 
   auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
       Shell::Get()->active_session_auth_controller());
@@ -549,7 +600,7 @@ TEST_P(ActiveSessionAuthControllerTest, OnAuthCancel) {
 // Tests that the dialog is not shown if the user has no authentication factors.
 TEST_P(ActiveSessionAuthControllerTest, WithoutAnyFactor) {
   auto account_identifier =
-        cryptohome::CreateAccountIdentifierFromAccountId(account_id_);
+      cryptohome::CreateAccountIdentifierFromAccountId(kTestAccountId);
 
   FakeUserDataAuthClient::TestApi::Get()->AddExistingUser(account_identifier);
 
@@ -567,15 +618,15 @@ TEST_P(ActiveSessionAuthControllerTest, WithoutAnyFactor) {
 // Validate PIN status with PIN only.
 TEST_P(ActiveSessionAuthControllerTest, PinOnlyLockoutMessage) {
   auto account_identifier =
-      cryptohome::CreateAccountIdentifierFromAccountId(account_id_);
+      cryptohome::CreateAccountIdentifierFromAccountId(kTestAccountId);
 
   FakeUserDataAuthClient::TestApi::Get()->AddExistingUser(account_identifier);
 
-  AddCryptohomePin(account_id_, kExpectedPin);
+  AddCryptohomePin(kTestAccountId, kExpectedPin);
   const std::string bad_pin = "bad_pin";
 
   user_manager::KnownUser known_user(Shell::Get()->local_state());
-  known_user.SetStringPref(account_id_, prefs::kQuickUnlockPinSalt,
+  known_user.SetStringPref(kTestAccountId, prefs::kQuickUnlockPinSalt,
                            kExpectedSalt);
 
   auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
@@ -607,14 +658,14 @@ TEST_P(ActiveSessionAuthControllerTest, PinOnlyLockoutMessage) {
 // is called with the correct credentials.
 TEST_P(ActiveSessionAuthControllerTest, PinOnlySubmit) {
   auto account_identifier =
-      cryptohome::CreateAccountIdentifierFromAccountId(account_id_);
+      cryptohome::CreateAccountIdentifierFromAccountId(kTestAccountId);
 
   FakeUserDataAuthClient::TestApi::Get()->AddExistingUser(account_identifier);
 
-  AddCryptohomePin(account_id_, kExpectedPin);
+  AddCryptohomePin(kTestAccountId, kExpectedPin);
 
   user_manager::KnownUser known_user(Shell::Get()->local_state());
-  known_user.SetStringPref(account_id_, prefs::kQuickUnlockPinSalt,
+  known_user.SetStringPref(kTestAccountId, prefs::kQuickUnlockPinSalt,
                            kExpectedSalt);
 
   auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
@@ -642,6 +693,146 @@ TEST_P(ActiveSessionAuthControllerTest, PinOnlySubmit) {
       [](auto&& arg) {
         EXPECT_TRUE(arg->IsReady());
         EXPECT_EQ(arg->template Get<bool>(), true);
+      },
+      future);
+}
+
+// Tests that fingerprint authentication succeeds and closes the dialog when
+// reduced motion is enabled.
+TEST_P(ActiveSessionAuthControllerTest,
+       FingerprintAuthSuccessWithReducedMotion) {
+  gfx::Animation::SetPrefersReducedMotionForTesting(true);
+  ScopedTestFingerprintClient fp_client;
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
+
+  auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
+      Shell::Get()->active_session_auth_controller());
+
+  auto future = ShowAuthDialogForVariant(GetParam().first);
+  base::RunLoop().RunUntilIdle();
+  ASSERT_TRUE(controller->IsShown());
+
+  fp_client.SimulateScan(FingerprintAuthScanResult::kSuccess);
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_FALSE(controller->IsShown());
+  EXPECT_TRUE(fp_client.terminate_called());
+  std::visit(
+      [](auto&& arg) {
+        EXPECT_TRUE(arg->IsReady());
+        EXPECT_EQ(arg->template Get<bool>(), true);
+      },
+      future);
+}
+
+// Tests that the dialog stays open during the fingerprint success animation
+// and closes when the animation stops.
+TEST_P(ActiveSessionAuthControllerTest,
+       FingerprintAuthSuccessClosesWhenAnimationStops) {
+  ScopedTestFingerprintClient fp_client;
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
+
+  auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
+      Shell::Get()->active_session_auth_controller());
+
+  auto future = ShowAuthDialogForVariant(GetParam().first);
+  base::RunLoop().RunUntilIdle();
+  ASSERT_TRUE(controller->IsShown());
+
+  fp_client.SimulateScan(FingerprintAuthScanResult::kSuccess);
+  base::RunLoop().RunUntilIdle();
+
+  // The dialog stays open and ignores new scans while the animation plays.
+  EXPECT_TRUE(controller->IsShown());
+  EXPECT_FALSE(fp_client.terminate_called());
+  fp_client.SimulateScan(FingerprintAuthScanResult::kFailed);
+
+  // Stop the animation to finish the close flow.
+  views::Widget* widget = views::Widget::GetWidgetForNativeWindow(
+      Shell::GetPrimaryRootWindow()
+          ->GetChildById(kShellWindowId_SystemModalContainer)
+          ->children()
+          .back());
+  auto* fp_view =
+      AuthContainerView::TestApi(ActiveSessionAuthView::TestApi(
+                                     views::AsViewClass<ActiveSessionAuthView>(
+                                         widget->GetContentsView()))
+                                     .GetAuthContainerView())
+          .GetFingerprintView()
+          .get();
+  FingerprintView::TestApi(fp_view).GetLottieAnimationView()->Stop();
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_FALSE(controller->IsShown());
+  EXPECT_TRUE(fp_client.terminate_called());
+  std::visit(
+      [](auto&& arg) {
+        EXPECT_TRUE(arg->IsReady());
+        EXPECT_EQ(arg->template Get<bool>(), true);
+      },
+      future);
+}
+
+// Tests that locking the session during the fingerprint success animation
+// immediately closes the dialog and completes authentication.
+TEST_P(ActiveSessionAuthControllerTest, SessionLockDuringFingerprintAnimation) {
+  ScopedTestFingerprintClient fp_client;
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
+
+  auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
+      Shell::Get()->active_session_auth_controller());
+
+  auto future = ShowAuthDialogForVariant(GetParam().first);
+  base::RunLoop().RunUntilIdle();
+  ASSERT_TRUE(controller->IsShown());
+
+  fp_client.SimulateScan(FingerprintAuthScanResult::kSuccess);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(controller->IsShown());
+  EXPECT_FALSE(fp_client.terminate_called());
+
+  GetSessionControllerClient()->SetSessionState(
+      session_manager::SessionState::LOCKED);
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_FALSE(controller->IsShown());
+  EXPECT_TRUE(fp_client.terminate_called());
+  std::visit(
+      [](auto&& arg) {
+        EXPECT_TRUE(arg->IsReady());
+        EXPECT_EQ(arg->template Get<bool>(), true);
+      },
+      future);
+}
+
+// Tests that locking the session while fingerprint auth is waiting for an
+// in-progress password check closes the dialog and terminates fingerprint auth.
+TEST_P(ActiveSessionAuthControllerTest,
+       SessionLockDuringFingerprintAuthWaiting) {
+  ScopedTestFingerprintClient fp_client;
+  AddGaiaPassword(kTestAccountId, kExpectedPassword);
+
+  auto* controller = static_cast<ActiveSessionAuthControllerImpl*>(
+      Shell::Get()->active_session_auth_controller());
+
+  auto future = ShowAuthDialogForVariant(GetParam().first);
+  base::RunLoop().RunUntilIdle();
+  ASSERT_TRUE(controller->IsShown());
+
+  ActiveSessionAuthControllerImpl::TestApi(controller)
+      .SubmitPassword(kExpectedPassword);
+  fp_client.SimulateScan(FingerprintAuthScanResult::kSuccess);
+
+  GetSessionControllerClient()->SetSessionState(
+      session_manager::SessionState::LOCKED);
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_FALSE(controller->IsShown());
+  EXPECT_TRUE(fp_client.terminate_called());
+  std::visit(
+      [](auto&& arg) {
+        EXPECT_TRUE(arg->IsReady());
+        EXPECT_FALSE(arg->template Get<bool>());
       },
       future);
 }

@@ -35,7 +35,8 @@ void StoreU32Unaligned(uint32_t v, void* ptr) {
 
 }  // namespace
 
-const CommonDecoder::CommandInfo CommonDecoder::command_info[] = {
+const std::array<CommonDecoder::CommandInfo, cmd::kNumCommands>
+    CommonDecoder::command_info = {{
 #define COMMON_COMMAND_BUFFER_CMD_OP(name)                       \
   {                                                              \
     &CommonDecoder::Handle##name, cmd::name::kArgFlags,          \
@@ -43,10 +44,9 @@ const CommonDecoder::CommandInfo CommonDecoder::command_info[] = {
         sizeof(cmd::name) / sizeof(CommandBufferEntry) - 1,      \
   }                                                              \
   ,  /* NOLINT */
-  COMMON_COMMAND_BUFFER_CMDS(COMMON_COMMAND_BUFFER_CMD_OP)
-  #undef COMMON_COMMAND_BUFFER_CMD_OP
-};
-
+        COMMON_COMMAND_BUFFER_CMDS(COMMON_COMMAND_BUFFER_CMD_OP)
+#undef COMMON_COMMAND_BUFFER_CMD_OP
+    }};
 
 CommonDecoder::Bucket::Bucket() : size_(0) {}
 
@@ -69,12 +69,10 @@ void CommonDecoder::Bucket::SetSize(size_t size) {
   }
 }
 
-bool CommonDecoder::Bucket::SetData(
-    const volatile void* src, size_t offset, size_t size) {
-  if (OffsetSizeValid(offset, size)) {
-    auto src_span = UNSAFE_TODO(
-        base::span(static_cast<const volatile uint8_t*>(src), size));
-    data_.subspan(offset, size).copy_from(src_span);
+bool CommonDecoder::Bucket::SetData(base::span<const volatile uint8_t> src,
+                                    size_t offset) {
+  if (OffsetSizeValid(offset, src.size())) {
+    data_.subspan(offset, src.size()).copy_from(src);
     return true;
   }
   return false;
@@ -89,7 +87,8 @@ void CommonDecoder::Bucket::SetFromString(const char* str) {
     std::string_view str_view(str);
     size_t size = str_view.size() + 1;
     SetSize(size);
-    SetData(str_view.data(), 0, size);
+    SetData(base::as_byte_span(str_view), 0);
+    data_[str_view.size()] = 0;
   }
 }
 
@@ -103,58 +102,55 @@ bool CommonDecoder::Bucket::GetAsString(std::string* str) {
   return true;
 }
 
-bool CommonDecoder::Bucket::GetAsStrings(
-    GLsizei* _count, std::vector<char*>* _string, std::vector<GLint>* _length) {
+std::optional<std::vector<std::string_view>>
+CommonDecoder::Bucket::GetAsStrings() {
   const size_t bucket_size = this->size();
-  if (bucket_size < sizeof(GLint)) {
-    return false;
+  if (bucket_size < sizeof(int32_t)) {
+    return std::nullopt;
   }
   base::SpanReader reader{GetDataAsByteSpan(0, bucket_size)};
 
   std::optional<int32_t> count32 = reader.ReadI32NativeEndian();
   if (!count32.has_value() || *count32 < 0) {
-    return false;
+    return std::nullopt;
   }
-  const GLsizei count = static_cast<GLsizei>(*count32);
+  const int32_t count = *count32;
 
   // Don't pre-size the vectors from the untrusted `count`: a bogus value would
   // try to allocate a huge amount of memory. Reserve is bounded by the bucket
   // size instead, and SpanReader fails gracefully once the bucket runs out of
   // data.
-  const size_t reserve = bucket_size / (sizeof(GLint) + 1u);
-  std::vector<GLint> lengths;
+  const size_t reserve = bucket_size / (sizeof(int32_t) + 1u);
+  std::vector<int32_t> lengths;
   lengths.reserve(reserve);
-  for (GLsizei ii = 0; ii < count; ++ii) {
+  for (int32_t ii = 0; ii < count; ++ii) {
     std::optional<int32_t> length32 = reader.ReadI32NativeEndian();
     if (!length32.has_value() || *length32 < 0) {
-      return false;
+      return std::nullopt;
     }
-    lengths.push_back(static_cast<GLint>(*length32));
+    lengths.push_back(*length32);
   }
 
-  std::vector<char*> strs;
-  strs.reserve(reserve);
-  for (const GLint length : lengths) {
+  std::vector<std::string_view> strings;
+  strings.reserve(lengths.size());
+  for (const int32_t length : lengths) {
     std::optional<base::span<uint8_t>> str =
         reader.Read(static_cast<size_t>(length) + 1u);
     if (!str.has_value()) {
-      return false;
+      return std::nullopt;
     }
     if ((*str)[length] != 0) {
-      return false;
+      return std::nullopt;
     }
-    strs.push_back(base::as_writable_chars(*str).data());
+    strings.push_back(base::as_string_view(
+        base::span<const uint8_t>(*str).first(static_cast<size_t>(length))));
   }
 
   if (reader.remaining() != 0u) {
-    return false;
+    return std::nullopt;
   }
 
-  DCHECK(_count && _string && _length);
-  *_count = count;
-  *_string = strs;
-  *_length = lengths;
-  return true;
+  return strings;
 }
 
 bool CommonDecoder::Bucket::OffsetSizeValid(size_t offset, size_t size) const {
@@ -270,8 +266,8 @@ RETURN_TYPE GetImmediateDataAs(const volatile COMMAND_TYPE& pod) {
 error::Error CommonDecoder::DoCommonCommand(unsigned int command,
                                             unsigned int arg_count,
                                             const volatile void* cmd_data) {
-  if (command < std::size(command_info)) {
-    const CommandInfo& info = UNSAFE_TODO(command_info[command]);
+  if (command < command_info.size()) {
+    const CommandInfo& info = command_info[command];
     unsigned int info_arg_count = static_cast<unsigned int>(info.arg_count);
     if ((info.arg_flags == cmd::kFixed && arg_count == info_arg_count) ||
         (info.arg_flags == cmd::kAtLeastN && arg_count >= info_arg_count)) {
@@ -319,16 +315,16 @@ error::Error CommonDecoder::HandleSetBucketData(uint32_t immediate_data_size,
   uint32_t bucket_id = args.bucket_id;
   uint32_t offset = args.offset;
   uint32_t size = args.size;
-  const void* data = GetSharedMemoryAs<const void*>(
+  std::optional<base::span<uint8_t>> data = GetSharedMemoryAsByteSpan(
       args.shared_memory_id, args.shared_memory_offset, size);
-  if (!data) {
+  if (!data.has_value()) {
     return error::kInvalidArguments;
   }
   Bucket* bucket = GetBucket(bucket_id);
   if (!bucket) {
     return error::kInvalidArguments;
   }
-  if (!bucket->SetData(data, offset, size)) {
+  if (!bucket->SetData(*data, offset)) {
     return error::kInvalidArguments;
   }
 
@@ -340,18 +336,20 @@ error::Error CommonDecoder::HandleSetBucketDataImmediate(
     const volatile void* cmd_data) {
   const volatile cmd::SetBucketDataImmediate& args =
       *static_cast<const volatile cmd::SetBucketDataImmediate*>(cmd_data);
-  const volatile void* data = GetImmediateDataAs<const volatile void*>(args);
   uint32_t bucket_id = args.bucket_id;
   uint32_t offset = args.offset;
   uint32_t size = args.size;
   if (size > immediate_data_size) {
     return error::kInvalidArguments;
   }
+  const volatile uint8_t* data =
+      GetImmediateDataAs<const volatile uint8_t*>(args);
+  auto data_span = UNSAFE_TODO(base::span<const volatile uint8_t>(data, size));
   Bucket* bucket = GetBucket(bucket_id);
   if (!bucket) {
     return error::kInvalidArguments;
   }
-  if (!bucket->SetData(data, offset, size)) {
+  if (!bucket->SetData(data_span, offset)) {
     return error::kInvalidArguments;
   }
   return error::kNoError;

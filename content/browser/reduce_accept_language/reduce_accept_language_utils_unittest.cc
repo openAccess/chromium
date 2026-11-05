@@ -9,7 +9,6 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/test/scoped_feature_list.h"
-#include "content/browser/reduce_accept_language/reduce_accept_language_throttle.h"
 #include "content/public/browser/reduce_accept_language_controller_delegate.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_browser_context.h"
@@ -49,65 +48,7 @@ CreateStubAssociatedInterfaceProviderReceiver() {
   return TestRenderFrameHost::CreateStubAssociatedInterfaceProviderReceiver();
 }
 
-static constexpr const char kDeprecationTrialName[] =
-    "DisableReduceAcceptLanguage";
-
 }  // namespace
-
-class MockOriginTrialsDelegate
-    : public content::OriginTrialsControllerDelegate {
- public:
-  ~MockOriginTrialsDelegate() override = default;
-
-  base::flat_map<url::Origin, base::flat_set<std::string>> persisted_trials_;
-
-  base::flat_set<std::string> GetPersistedTrialsForOrigin(
-      const url::Origin& origin,
-      const url::Origin& top_level_origin,
-      base::Time current_time) override {
-    return {};
-  }
-
-  bool IsFeaturePersistedForOrigin(const url::Origin& origin,
-                                   const url::Origin& top_level_origin,
-                                   blink::mojom::OriginTrialFeature feature,
-                                   const base::Time current_time) override {
-    std::string trial_name = "";
-    switch (feature) {
-      case blink::mojom::OriginTrialFeature::kDisableReduceAcceptLanguage:
-        trial_name = kDeprecationTrialName;
-        break;
-      default:
-        break;
-    }
-    const auto& it = persisted_trials_.find(origin);
-    EXPECT_FALSE(trial_name.empty());
-    return it != persisted_trials_.end() && it->second.contains(trial_name);
-  }
-
-  void PersistTrialsFromTokens(
-      const url::Origin& origin,
-      const url::Origin& top_level_origin,
-      const base::span<const std::string> header_tokens,
-      const base::Time current_time,
-      std::optional<ukm::SourceId> source_id) override {}
-
-  void PersistAdditionalTrialsFromTokens(
-      const url::Origin& origin,
-      const url::Origin& top_level_origin,
-      const base::span<const url::Origin> script_origins,
-      const base::span<const std::string> header_tokens,
-      const base::Time current_time,
-      std::optional<ukm::SourceId> source_id) override {}
-
-  void ClearPersistedTokens() override { persisted_trials_.clear(); }
-
-  void AddPersistedTrialForTest(std::string_view url,
-                                std::string_view trial_name) {
-    url::Origin key = url::Origin::Create(GURL(url));
-    persisted_trials_[key].emplace(trial_name);
-  }
-};
 
 class AcceptLanguageUtilsTests : public RenderViewHostImplTestHarness {
  public:
@@ -130,7 +71,7 @@ class AcceptLanguageUtilsTests : public RenderViewHostImplTestHarness {
         CreateStubAssociatedInterfaceProviderReceiver(),
         blink::mojom::TreeScopeType::kDocument, std::string(), "uniqueName0",
         false, blink::LocalFrameToken(), base::UnguessableToken::Create(),
-        blink::DocumentToken(), base::UnguessableToken::Create(),
+        blink::DocumentToken(), blink::InitiatorStateToken(),
         blink::FramePolicy(), blink::mojom::FrameOwnerProperties(),
         blink::FrameOwnerElementType::kIframe, ukm::kInvalidSourceId);
   }
@@ -565,122 +506,6 @@ TEST_F(AcceptLanguageUtilsTests, VerifyClearAcceptLanguage) {
   std::optional<std::string> new_persisted_language =
       delegate.GetReducedLanguage(origin);
   EXPECT_FALSE(new_persisted_language.has_value());
-}
-
-TEST_F(AcceptLanguageUtilsTests, ValidateDeprecationOriginTrial) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {network::features::kReduceAcceptLanguage}, {});
-
-  GURL request_url = GURL(kFirstPartyUrl);
-  contents()->NavigateAndCommit(request_url);
-  FrameTree& frame_tree = contents()->GetPrimaryFrameTree();
-  FrameTreeNode* root = frame_tree.root();
-
-  MockOriginTrialsDelegate origin_trials_delegate;
-  origin_trials_delegate.AddPersistedTrialForTest(kFirstPartyUrl,
-                                                  kDeprecationTrialName);
-  EXPECT_TRUE(
-      ReduceAcceptLanguageUtils::CheckDisableReduceAcceptLanguageOriginTrial(
-          request_url, root, &origin_trials_delegate));
-  EXPECT_FALSE(
-      ReduceAcceptLanguageUtils::CheckDisableReduceAcceptLanguageOriginTrial(
-          request_url, nullptr, &origin_trials_delegate));
-  EXPECT_FALSE(
-      ReduceAcceptLanguageUtils::CheckDisableReduceAcceptLanguageOriginTrial(
-          request_url, root, nullptr));
-}
-
-TEST_F(AcceptLanguageUtilsTests, ThrottleProcessResponse) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {network::features::kReduceAcceptLanguage}, {});
-
-  MockReduceAcceptLanguageControllerDelegate delegate =
-      MockReduceAcceptLanguageControllerDelegate("en,zh");
-  ReduceAcceptLanguageUtils reduce_language_utils =
-      ReduceAcceptLanguageUtils::CreateForTesting(delegate);
-
-  GURL request_url = GURL(kFirstPartyUrl);
-  contents()->NavigateAndCommit(request_url);
-  FrameTree& frame_tree = contents()->GetPrimaryFrameTree();
-  FrameTreeNode* root = frame_tree.root();
-
-  MockOriginTrialsDelegate origin_trials_delegate;
-  ReduceAcceptLanguageThrottle throttle = ReduceAcceptLanguageThrottle(
-      std::move(reduce_language_utils), &origin_trials_delegate,
-      root->frame_tree_node_id());
-
-  // User's first prefer language.
-  std::string language = delegate.GetUserAcceptLanguages()[0];
-
-  network::ResourceRequest request;
-  request.url = request_url;
-  net::HttpRequestHeaders headers;
-  headers.SetHeader(net::HttpRequestHeaders::kAcceptLanguage, language);
-  request.headers = headers;
-  bool defer = false;
-  blink::URLLoaderThrottle::RestartWithURLReset restart_with_url_reset(false);
-  throttle.WillStartRequest(&request, &defer);
-
-  delegate.PersistReducedLanguage(url::Origin::Create(request_url), language);
-
-  network::mojom::URLResponseHead response_head;
-  response_head.headers =
-      base::MakeRefCounted<net::HttpResponseHeaders>("HTTP/1.1 200 OK");
-
-  // Early returns without the avail-language header.
-  {
-    throttle.BeforeWillProcessResponse(request_url, response_head,
-                                       &restart_with_url_reset);
-    std::optional<std::string> persist_language =
-        delegate.GetReducedLanguage(url::Origin::Create(request_url));
-    EXPECT_EQ(persist_language.value(), language);
-  }
-
-  // Early returns with service worker.
-  response_head.parsed_headers = network::mojom::ParsedHeaders::New();
-  response_head.parsed_headers->content_language =
-      network::ParseContentLanguages("ja");
-  response_head.parsed_headers->avail_language =
-      network::ParseAvailLanguage("ja, zh");
-  {
-    response_head.did_service_worker_navigation_preload = true;
-    throttle.BeforeWillProcessResponse(request_url, response_head,
-                                       &restart_with_url_reset);
-
-    std::optional<std::string> persist_language =
-        delegate.GetReducedLanguage(url::Origin::Create(request_url));
-    EXPECT_EQ(persist_language.value(), language);
-  }
-
-  // Early return when the deprecation trial feature turned on.
-  {
-    origin_trials_delegate.AddPersistedTrialForTest(kFirstPartyUrl,
-                                                    kDeprecationTrialName);
-    throttle.BeforeWillProcessResponse(request_url, response_head,
-                                       &restart_with_url_reset);
-
-    std::optional<std::string> persist_language =
-        delegate.GetReducedLanguage(url::Origin::Create(request_url));
-    EXPECT_EQ(persist_language.value(), language);
-    origin_trials_delegate.ClearPersistedTokens();
-  }
-
-  // ReduceAcceptLanguageThrottle reads and parses the language: the persisted
-  // language should be updated to new negotiated language `zh`.
-  // User's initial accept-language is `en`, user full accept-language is
-  // [`en`, `zh`], and site supports language list is [`ja`, `zh`]. After
-  // language negotiation, the user's preferred language is `zh`.
-  {
-    response_head.did_service_worker_navigation_preload = false;
-    throttle.BeforeWillProcessResponse(request_url, response_head,
-                                       &restart_with_url_reset);
-
-    std::optional<std::string> persist_language =
-        delegate.GetReducedLanguage(url::Origin::Create(request_url));
-    EXPECT_EQ(persist_language.value(), "zh");
-  }
 }
 
 TEST_F(AcceptLanguageUtilsTests, GetLanguageWithDefaultLimits) {

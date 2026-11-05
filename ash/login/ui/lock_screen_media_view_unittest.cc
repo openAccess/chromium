@@ -31,8 +31,13 @@ class LockScreenMediaViewTest : public LoginTestBase {
   LockScreenMediaViewTest& operator=(const LockScreenMediaViewTest&) = delete;
   ~LockScreenMediaViewTest() override = default;
 
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    LoginTestBase::SetUpInitParams(init_params);
+    ASSERT_TRUE(init_params.users.empty());
+    init_params.users.push_back(LoginInfo{});
+  }
+
   void SetUp() override {
-    set_start_session(true);
     LoginTestBase::SetUp();
 
     LockContentsView* lock_contents_view = new LockContentsView(

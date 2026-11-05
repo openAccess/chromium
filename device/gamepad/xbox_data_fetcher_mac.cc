@@ -11,6 +11,7 @@
 #include <IOKit/usb/USB.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -18,15 +19,26 @@
 #include "base/apple/foundation_util.h"
 #include "base/compiler_specific.h"
 #include "base/containers/fixed_flat_set.h"
+#include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "device/gamepad/gamepad_id_list.h"
 #include "device/gamepad/gamepad_uma.h"
 
 namespace device {
 
 namespace {
+
+// Delay before retrying to open a device that failed with
+// kIOReturnExclusiveAccess once it reports kIOMessageServiceWasClosed. A
+// failed open attempt can itself trigger kIOMessageServiceWasClosed, so
+// retrying synchronously would busy-loop while another client owns the device.
+// A device that stays owned by another client is re-polled at this interval
+// for as long as it remains connected.
+constexpr base::TimeDelta kExclusiveAccessRetryDelay = base::Seconds(1);
 
 // XboxDataFetcher recognizes the following devices connected over USB.
 constexpr auto kSupportedDeviceIds = base::MakeFixedFlatSet<GamepadId>({
@@ -47,16 +59,6 @@ constexpr auto kSupportedDeviceIds = base::MakeFixedFlatSet<GamepadId>({
 
 }  // namespace
 
-XboxDataFetcher::PendingController::PendingController(
-    XboxDataFetcher* fetcher,
-    std::unique_ptr<XboxControllerMac> controller)
-    : fetcher(fetcher), controller(std::move(controller)) {}
-
-XboxDataFetcher::PendingController::~PendingController() {
-  if (controller)
-    controller->Shutdown();
-}
-
 XboxDataFetcher::XboxDataFetcher() = default;
 
 XboxDataFetcher::~XboxDataFetcher() {
@@ -73,7 +75,7 @@ GamepadSource XboxDataFetcher::source() {
 void XboxDataFetcher::GetGamepadData(bool devices_changed_hint) {
   // This just loops through all the connected pads and "pings" them to indicate
   // that they're still active.
-  for (auto* controller : controllers_) {
+  for (XboxControllerMac* controller : controllers_) {
     GetPadState(controller->location_id());
   }
 }
@@ -133,6 +135,10 @@ void XboxDataFetcher::DeviceRemoved(void* context, io_iterator_t iterator) {
   io_service_t ref;
   while ((ref = IOIteratorNext(iterator))) {
     base::mac::ScopedIOObject<io_service_t> scoped_ref(ref);
+    uint64_t entry_id = 0;
+    if (IORegistryEntryGetRegistryEntryID(ref, &entry_id) == KERN_SUCCESS) {
+      fetcher->pending_services_.erase(entry_id);
+    }
     base::apple::ScopedCFTypeRef<CFNumberRef> number(
         base::apple::CFCastStrict<CFNumberRef>(IORegistryEntryCreateCFProperty(
             ref, CFSTR(kUSBDevicePropertyLocationID), kCFAllocatorDefault,
@@ -148,42 +154,67 @@ void XboxDataFetcher::InterestCallback(void* context,
                                        io_service_t service,
                                        IOMessage message_type,
                                        void* message_argument) {
+  // `context` is the XboxDataFetcher. Its lifetime matches the notification
+  // port: the port is destroyed before the fetcher is deleted, so `context`
+  // cannot dangle here.
+  XboxDataFetcher* fetcher = static_cast<XboxDataFetcher*>(context);
   if (message_type == kIOMessageServiceWasClosed) {
-    PendingController* pending = static_cast<PendingController*>(context);
-    pending->fetcher->PendingControllerBecameAvailable(service, pending);
+    fetcher->PendingServiceBecameAvailable(service);
+  } else if (message_type == kIOMessageServiceIsTerminated) {
+    uint64_t entry_id = 0;
+    if (IORegistryEntryGetRegistryEntryID(service, &entry_id) == KERN_SUCCESS) {
+      fetcher->pending_services_.erase(entry_id);
+    }
   }
 }
 
-void XboxDataFetcher::PendingControllerBecameAvailable(
-    io_service_t service,
-    PendingController* pending) {
-  // Destroying the PendingController object unregisters our interest
-  // notification.
-  auto it = pending_controllers_.find(pending);
-  if (it != pending_controllers_.end()) {
-    pending_controllers_.erase(it);
+void XboxDataFetcher::PendingServiceBecameAvailable(io_service_t service) {
+  // Look up the pending service registered for this device by registry entry
+  // ID. Stale or duplicate notifications find no entry and are safely ignored.
+  uint64_t entry_id = 0;
+  kern_return_t kr = IORegistryEntryGetRegistryEntryID(service, &entry_id);
+  if (kr != KERN_SUCCESS) {
+    return;
   }
-  TryOpenDevice(service);
+
+  if (pending_services_.erase(entry_id) == 0) {
+    return;
+  }
+
+  // Don't retry immediately. A failed open attempt can itself cause
+  // kIOMessageServiceWasClosed to be delivered, so retrying synchronously can
+  // turn into a busy loop while the device stays owned by another client.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&XboxDataFetcher::RetryOpenDevice,
+                     weak_factory_.GetWeakPtr(), entry_id),
+      kExclusiveAccessRetryDelay);
+}
+
+void XboxDataFetcher::RetryOpenDevice(uint64_t entry_id) {
+  // IOServiceGetMatchingService() consumes the matching dictionary.
+  base::mac::ScopedIOObject<io_service_t> service(IOServiceGetMatchingService(
+      kIOMainPortDefault, IORegistryEntryIDMatching(entry_id)));
+  if (!service) {
+    // The device was removed while waiting to retry.
+    return;
+  }
+
+  TryOpenDevice(service.get());
 }
 
 bool XboxDataFetcher::TryOpenDevice(io_service_t service) {
-  auto pending = std::make_unique<PendingController>(
-      this, std::make_unique<XboxControllerMac>(this));
-  bool did_register_interest =
-      RegisterForInterestNotifications(service, pending.get());
-
-  auto* controller = pending->controller.get();
+  auto controller = std::make_unique<XboxControllerMac>(this);
   XboxControllerMac::OpenDeviceResult result = controller->OpenDevice(service);
   if (result == XboxControllerMac::OpenDeviceResult::kOpenSucceeded) {
     RecordXboxMacOutcome(XboxMacOutcome::kSuccess);
-    AddController(pending->controller.release());
+    AddController(controller.release());
     return true;
   }
 
-  if (did_register_interest &&
-      result ==
-          XboxControllerMac::OpenDeviceResult::kOpenFailedExclusiveAccess) {
-    pending_controllers_.insert(std::move(pending));
+  if (result ==
+      XboxControllerMac::OpenDeviceResult::kOpenFailedExclusiveAccess) {
+    RegisterForInterestNotifications(service);
   }
   return false;
 }
@@ -256,35 +287,51 @@ bool XboxDataFetcher::RegisterForDeviceNotifications(int vendor_id,
   return true;
 }
 
-bool XboxDataFetcher::RegisterForInterestNotifications(
-    io_service_t service,
-    PendingController* pending) {
-  if (port_ == nullptr)
-    port_.reset(IONotificationPortCreate(kIOMainPortDefault));
+bool XboxDataFetcher::RegisterForInterestNotifications(io_service_t service) {
   if (!port_.is_valid())
     return false;
 
+  uint64_t entry_id = 0;
+  if (IORegistryEntryGetRegistryEntryID(service, &entry_id) != KERN_SUCCESS) {
+    return false;
+  }
+
+  if (pending_services_.contains(entry_id)) {
+    return true;
+  }
+
+  base::mac::ScopedIOObject<io_object_t> notify;
+  // Pass `this` (whose lifetime matches the notification port) as `refCon`:
+  // queued notification messages carry the `refCon` and outlive temporary
+  // device open attempt objects.
   kern_return_t kr = IOServiceAddInterestNotification(
-      port_.get(), service, kIOGeneralInterest, InterestCallback, pending,
-      pending->notify.InitializeInto());
-  return kr == KERN_SUCCESS;
+      port_.get(), service, kIOGeneralInterest, InterestCallback,
+      /*refCon=*/this, notify.InitializeInto());
+  if (kr != KERN_SUCCESS) {
+    return false;
+  }
+
+  pending_services_.emplace(entry_id, std::move(notify));
+  return true;
 }
 
 void XboxDataFetcher::UnregisterFromNotifications() {
   if (!listening_)
     return;
   listening_ = false;
-  if (source_)
+  if (source_) {
     CFRunLoopSourceInvalidate(source_);
+    source_ = nullptr;
+  }
   port_.reset();
-  pending_controllers_.clear();
+  pending_services_.clear();
 }
 
 XboxControllerMac* XboxDataFetcher::ControllerForLocation(UInt32 location_id) {
-  for (std::set<XboxControllerMac*>::iterator i = controllers_.begin();
-       i != controllers_.end(); ++i) {
-    if ((*i)->location_id() == location_id)
-      return *i;
+  for (XboxControllerMac* controller : controllers_) {
+    if (controller->location_id() == location_id) {
+      return controller;
+    }
   }
   return NULL;
 }
@@ -299,6 +346,7 @@ void XboxDataFetcher::AddController(XboxControllerMac* controller) {
   }
   PadState* state = GetPadState(controller->location_id());
   if (!state) {
+    controller->Shutdown();
     delete controller;
     RecordXboxMacOutcome(XboxMacOutcome::kNoSlotAvailable);
     return;  // No available slot for this device
@@ -343,14 +391,7 @@ void XboxDataFetcher::RemoveController(XboxControllerMac* controller) {
 }
 
 void XboxDataFetcher::RemoveControllerByLocationID(uint32_t location_id) {
-  XboxControllerMac* controller = NULL;
-  for (std::set<XboxControllerMac*>::iterator i = controllers_.begin();
-       i != controllers_.end(); ++i) {
-    if ((*i)->location_id() == location_id) {
-      controller = *i;
-      break;
-    }
-  }
+  XboxControllerMac* controller = ControllerForLocation(location_id);
   if (controller)
     RemoveController(controller);
 }
@@ -366,8 +407,8 @@ void XboxDataFetcher::XboxControllerGotData(
 
   for (size_t i = 0; i < 6; i++) {
     pad.buttons[i].used = true;
-    pad.buttons[i].pressed = UNSAFE_TODO(data.buttons[i]);
-    pad.buttons[i].value = UNSAFE_TODO(data.buttons[i]) ? 1.0f : 0.0f;
+    pad.buttons[i].pressed = data.buttons[i];
+    pad.buttons[i].value = data.buttons[i] ? 1.0f : 0.0f;
   }
   pad.buttons[6].used = true;
   pad.buttons[6].pressed =
@@ -379,24 +420,24 @@ void XboxDataFetcher::XboxControllerGotData(
   pad.buttons[7].value = data.triggers[1];
   for (size_t i = 8; i < 16; i++) {
     pad.buttons[i].used = true;
-    pad.buttons[i].pressed = UNSAFE_TODO(data.buttons[i - 2]);
-    pad.buttons[i].value = UNSAFE_TODO(data.buttons[i - 2]) ? 1.0f : 0.0f;
+    pad.buttons[i].pressed = data.buttons[i - 2];
+    pad.buttons[i].value = data.buttons[i - 2] ? 1.0f : 0.0f;
   }
   if (controller->xinput_type() == kXInputTypeXbox360) {
-    // Map the Xbox button on Xbox 360 to buttons[16].
+    // Map the Xbox button on Xbox 360 to pad.buttons[16].
     pad.buttons[16].used = true;
     pad.buttons[16].pressed = data.buttons[14];
     pad.buttons[16].value = data.buttons[14] ? 1.0f : 0.0f;
   }
   if (controller->gamepad_id() == GamepadId::kMicrosoftProduct0b12) {
-    // Map the Share button on Xbox Series X to buttons[17].
+    // Map the Share button on Xbox Series X to pad.buttons[17].
     pad.buttons[17].used = true;
     pad.buttons[17].pressed = data.buttons[14];
     pad.buttons[17].value = data.buttons[14] ? 1.0f : 0.0f;
     pad.buttons_length = 18;
   }
-  for (size_t i = 0; i < std::size(data.axes); i++) {
-    pad.axes[i] = UNSAFE_TODO(data.axes[i]);
+  for (size_t i = 0; i < data.axes.size(); i++) {
+    pad.axes[i] = data.axes[i];
   }
 
   pad.timestamp = CurrentTimeInMicroseconds();

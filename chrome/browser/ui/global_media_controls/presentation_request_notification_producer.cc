@@ -13,6 +13,7 @@
 #include "components/media_router/common/providers/cast/cast_media_source.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/media_session.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -53,7 +54,7 @@ class PresentationRequestNotificationProducer::
       PresentationRequestNotificationProducer* notification_producer)
       : content::WebContentsObserver(web_contents),
         notification_producer_(notification_producer) {
-    DCHECK(notification_producer_);
+    CHECK(notification_producer_, base::NotFatalUntil::M162);
   }
 
  private:
@@ -89,7 +90,7 @@ PresentationRequestNotificationProducer::
 
 void PresentationRequestNotificationProducer::OnStartPresentationContextCreated(
     std::unique_ptr<media_router::StartPresentationContext> context) {
-  DCHECK(context);
+  CHECK(context, base::NotFatalUntil::M162);
   const auto& request = context->presentation_request();
   CreateItemForPresentationRequest(request, std::move(context));
 }

@@ -16,6 +16,7 @@
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_tab_helper_factory.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_promo.h"
 #include "chrome/browser/ui/webui/metrics_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
@@ -44,6 +45,8 @@
 #include "ash/webui/settings/public/constants/routes_util.h"
 #include "chrome/browser/ash/account_manager/account_apps_availability.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/global_features.h"  // nogncheck crbug.com/40147906
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/ui/webui/ash/edu_coexistence/edu_coexistence_login_handler.h"
@@ -56,7 +59,6 @@
 #include "chrome/grit/gaia_action_buttons_resources_map.h"
 #include "chrome/grit/supervision_resources.h"
 #include "chrome/grit/supervision_resources_map.h"
-#include "components/account_manager_core/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
@@ -72,46 +74,38 @@ namespace {
 #if BUILDFLAG(IS_CHROMEOS)
 void AddEduStrings(content::WebUIDataSource* source,
                    const std::u16string& username) {
-  source->AddLocalizedString("okButton", IDS_APP_OK);
-  source->AddLocalizedString("backButton", IDS_EDU_LOGIN_BACK);
-  source->AddLocalizedString("nextButton", IDS_EDU_LOGIN_NEXT);
+  static constexpr webui::LocalizedString kLocalizedStrings[] = {
+      {"okButton", IDS_APP_OK},
+      {"backButton", IDS_EDU_LOGIN_BACK},
+      {"nextButton", IDS_EDU_LOGIN_NEXT},
+      {"parentsListTitle", IDS_EDU_LOGIN_WELCOME_TITLE_2},
+      {"parentsListBody", IDS_EDU_LOGIN_WELCOME_BODY_2},
+      {"reauthBody", IDS_EDU_LOGIN_WELCOME_REAUTH_BODY},
+      {"parentSigninTitle", IDS_EDU_LOGIN_PARENT_SIGNIN_TITLE},
+      {"parentSigninPasswordLabel", IDS_EDU_LOGIN_PARENT_SIGNIN_PASSWORD_LABEL},
+      {"parentSigninPasswordError",
+       IDS_EDU_LOGIN_PARENT_SIGNIN_PASSWORD_ERROR_MESSAGE},
+      {"parentSigninAccountRecoveryText",
+       IDS_EDU_LOGIN_PARENT_SIGNIN_ACCOUNT_RECOVERY_LINK_TEXT},
+      {"parentSigninPasswordShow", IDS_EDU_LOGIN_PARENT_SIGNIN_PASSWORD_SHOW},
+      {"parentSigninPasswordHide", IDS_EDU_LOGIN_PARENT_SIGNIN_PASSWORD_HIDE},
+      // Strings for server based EDU Coexistence flow.
+      {"supervisedUserOfflineTitle", IDS_SUPERVISED_USER_OFFLINE_TITLE},
+      {"supervisedUserOfflineDescription",
+       IDS_SUPERVISED_USER_OFFLINE_DESCRIPTION},
+      {"supervisedUserErrorTitle", IDS_SUPERVISED_USER_ERROR_TITLE},
+      {"supervisedUserErrorDescription", IDS_SUPERVISED_USER_ERROR_DESCRIPTION},
+      {"loadingMessage", IDS_LOGIN_GAIA_LOADING_MESSAGE},
+      {"addSchoolAccountLabel",
+       IDS_ACCOUNT_MANAGER_DIALOG_ADD_SCHOOL_ACCOUNT_LABEL},
+  };
+  source->AddLocalizedStrings(kLocalizedStrings);
 
-  source->AddLocalizedString("parentsListTitle", IDS_EDU_LOGIN_WELCOME_TITLE_2);
-  source->AddLocalizedString("parentsListBody", IDS_EDU_LOGIN_WELCOME_BODY_2);
-  source->AddLocalizedString("reauthBody", IDS_EDU_LOGIN_WELCOME_REAUTH_BODY);
-  source->AddLocalizedString("parentSigninTitle",
-                             IDS_EDU_LOGIN_PARENT_SIGNIN_TITLE);
   source->AddString(
       "parentSigninBody",
       l10n_util::GetStringFUTF16(IDS_EDU_LOGIN_PARENT_SIGNIN_BODY, username));
-  source->AddLocalizedString("parentSigninPasswordLabel",
-                             IDS_EDU_LOGIN_PARENT_SIGNIN_PASSWORD_LABEL);
-  source->AddLocalizedString(
-      "parentSigninPasswordError",
-      IDS_EDU_LOGIN_PARENT_SIGNIN_PASSWORD_ERROR_MESSAGE);
-  source->AddLocalizedString(
-      "parentSigninAccountRecoveryText",
-      IDS_EDU_LOGIN_PARENT_SIGNIN_ACCOUNT_RECOVERY_LINK_TEXT);
-  source->AddLocalizedString("parentSigninPasswordShow",
-                             IDS_EDU_LOGIN_PARENT_SIGNIN_PASSWORD_SHOW);
-  source->AddLocalizedString("parentSigninPasswordHide",
-                             IDS_EDU_LOGIN_PARENT_SIGNIN_PASSWORD_HIDE);
   source->AddString("parentSigninAccountRecoveryUrl",
                     chrome::kAccountRecoveryURL);
-
-  // Strings for server based EDU Coexistence flow.
-  source->AddLocalizedString("supervisedUserOfflineTitle",
-                             IDS_SUPERVISED_USER_OFFLINE_TITLE);
-  source->AddLocalizedString("supervisedUserOfflineDescription",
-                             IDS_SUPERVISED_USER_OFFLINE_DESCRIPTION);
-  source->AddLocalizedString("supervisedUserErrorTitle",
-                             IDS_SUPERVISED_USER_ERROR_TITLE);
-  source->AddLocalizedString("supervisedUserErrorDescription",
-                             IDS_SUPERVISED_USER_ERROR_DESCRIPTION);
-  source->AddLocalizedString("loadingMessage", IDS_LOGIN_GAIA_LOADING_MESSAGE);
-  source->AddLocalizedString(
-      "addSchoolAccountLabel",
-      IDS_ACCOUNT_MANAGER_DIALOG_ADD_SCHOOL_ACCOUNT_LABEL);
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -202,14 +196,13 @@ void CreateAndAddWebUIDataSource(Profile* profile) {
   source->AddBoolean(
       "secondaryGoogleAccountSigninAllowed",
       profile->GetPrefs()->GetBoolean(
-          ::account_manager::prefs::kSecondaryGoogleAccountSigninAllowed));
+          policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed));
   source->AddBoolean("shouldSkipWelcomePage",
                      profile->GetPrefs()->GetBoolean(
                          ash::prefs::kShouldSkipInlineLoginWelcomePage));
 
-  bool is_incognito_enabled =
-      (IncognitoModePrefs::GetAvailability(profile->GetPrefs()) !=
-       policy::IncognitoModeAvailability::kDisabled);
+  bool is_incognito_enabled = (IncognitoModePrefs::GetAvailability(profile) !=
+                               policy::IncognitoModeAvailability::kDisabled);
   int message_id =
       is_incognito_enabled
           ? IDS_ACCOUNT_MANAGER_DIALOG_WELCOME_BODY
@@ -228,7 +221,7 @@ void CreateAndAddWebUIDataSource(Profile* profile) {
 
   user_manager::User* user =
       ash::ProfileHelper::Get()->GetUserByProfile(profile);
-  DCHECK(user);
+  CHECK(user, base::NotFatalUntil::M162);
   source->AddString("userName", user->GetGivenName());
   source->AddString("accountManagerOsSettingsUrl",
                     chromeos::settings::GetOSSettingsUrl(
@@ -294,10 +287,12 @@ InlineLoginUI::InlineLoginUI(content::WebUI* web_ui) : WebDialogUI(web_ui) {
           &WebDialogUI::CloseDialog, weak_factory_.GetWeakPtr(),
           base::ListValue() /* args */)));
   if (profile->IsChild()) {
-    web_ui->AddMessageHandler(
-        std::make_unique<ash::EduCoexistenceLoginHandler>(base::BindRepeating(
-            &WebDialogUI::CloseDialog, weak_factory_.GetWeakPtr(),
-            base::ListValue() /* args */)));
+    web_ui->AddMessageHandler(std::make_unique<ash::EduCoexistenceLoginHandler>(
+        g_browser_process->GetFeatures()->application_locale_storage(),
+        IdentityManagerFactory::GetForProfile(profile),
+        base::BindRepeating(&WebDialogUI::CloseDialog,
+                            weak_factory_.GetWeakPtr(),
+                            base::ListValue() /* args */)));
   }
 
 #else

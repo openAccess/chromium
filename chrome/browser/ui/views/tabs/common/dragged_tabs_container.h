@@ -94,6 +94,13 @@ class DraggedTabsContainer : public TabDragTarget,
   // bounds.
   gfx::Rect GetDraggingViewsBounds() const;
 
+  // Returns the bounds of the first and last dragging views, adjusted to
+  // `point_in_container`. The returned bounds are not clamped to the container
+  // bounds. `IsHandlingDrag()` needs to be true in order to call this, or else
+  // it will crash.
+  std::pair<gfx::Rect, gfx::Rect> GetExtremalDraggingViewsBoundsAtPoint(
+      const gfx::Point& point_in_container) const;
+
  protected:
   struct DraggedViewVisualData {
     gfx::Vector2d offset;
@@ -116,8 +123,8 @@ class DraggedTabsContainer : public TabDragTarget,
   // respective axis.
   bool HasMinimumOverlap(const gfx::Rect& a,
                          const gfx::Rect& b,
-                         std::optional<int> min_x_overlap,
-                         std::optional<int> min_y_overlap) const;
+                         std::optional<float> min_x_overlap,
+                         std::optional<float> min_y_overlap) const;
 
   TabDragHandler& GetDragHandler();
   const TabDragHandler& GetDragHandler() const;
@@ -178,8 +185,18 @@ class DraggedTabsContainer : public TabDragTarget,
   // the last drag point.
   void UpdateDraggingViewTransforms(const gfx::Point& point_in_container);
 
+  // Updates the transformation applied to a single dragging view, according to
+  // the bounding box of all dragged views.
+  void UpdateDraggingViewTransform(views::View* dragged_view,
+                                   const DraggedViewVisualData& visual_data,
+                                   const gfx::Rect& bounding_box_for_point);
+
   bool IsHorizontalDragSupported() const;
   bool IsVerticalDragSupported() const;
+
+  // Returns the bounds in `host_view_` coordinates to which dragged views
+  // should be clamped.
+  gfx::Rect GetDraggingViewsClampingBounds() const;
 
   // Returns the bounds of the box containing all dragged views, adjusted to
   // the point `point_in_container` and clamped to the bounds of the
@@ -235,6 +252,10 @@ class DraggedTabsContainer : public TabDragTarget,
   // The bounding box of all the dragged views, relative to the drag point.
   gfx::Rect dragging_views_bounds_;
 
+  // The bounding box of the first and last views along the drag layout axis,
+  // relative to the drag point.
+  std::optional<std::pair<gfx::Rect, gfx::Rect>> extremal_view_bounds_;
+
   // Child views that are being dragged, mapped to their DraggedViewVisualData,
   // whose offset is relative within `dragging_views_bounds_`.
   base::flat_map<raw_ptr<views::View>, DraggedViewVisualData> dragging_views_;
@@ -264,6 +285,9 @@ class DraggedTabsContainer : public TabDragTarget,
       std::nullopt;
 
   base::OnceClosureList on_will_destroy_callback_list_;
+
+  // True while resetting drag state in ResetDragState().
+  bool is_resetting_drag_state_ = false;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_COMMON_DRAGGED_TABS_CONTAINER_H_

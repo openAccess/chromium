@@ -169,17 +169,16 @@ constexpr auto kDownloadAnnotationDevToolsProtocol =
     })");
 
 constexpr auto kDownloadAnnotationDevUi =
-    net::DefinePartialNetworkTrafficAnnotation(
-        "iwa_web_app_internals_web_bundle",
-        "iwa_bundle_downloader",
-        R"(
+    net::DefinePartialNetworkTrafficAnnotation("iwa_dev_ui_web_bundle",
+                                               "iwa_bundle_downloader",
+                                               R"(
     semantics {
-      sender: "Web App Internals page"
+      sender: "IWA Dev UI Page"
       description:
         "Downloads a Signed Web Bundle of an Isolated Web App which contains "
         "code and other resources of this app."
       trigger:
-        "User accepts the installation dialog in chrome://web-app-internals."
+        "User accepts the installation dialog in chrome://iwa-dev."
     }
     policy {
       setting: "This feature cannot be disabled in settings."
@@ -576,9 +575,8 @@ void IsolatedWebAppDevInstallManager::DownloadWebBundleToFile(
     std::optional<IwaUpdateInfo> optional_update_info,
     ScopedTempWebBundleFile bundle) {
   base::FilePath path = bundle.path();
-  auto downloader = IsolatedWebAppDownloader::Create(
-      profile()->GetURLLoaderFactory(),
-      profile()->GetDefaultStoragePartition()->GetNetworkContext());
+  auto downloader =
+      IsolatedWebAppDownloader::Create(profile()->GetURLLoaderFactory());
   auto* downloader_ptr = downloader.get();
   base::OnceClosure downloader_keep_alive =
       base::DoNothingWithBoundArgs(std::move(downloader));
@@ -586,6 +584,7 @@ void IsolatedWebAppDevInstallManager::DownloadWebBundleToFile(
   downloader_ptr->DownloadSignedWebBundle(
       web_bundle_url, std::move(path),
       GetDownloadAnnotationTag(install_surface),
+      /*client_security_state_address_space=*/std::nullopt,
       base::BindOnce(&IsolatedWebAppDevInstallManager::OnWebBundleDownloaded,
                      weak_ptr_factory_.GetWeakPtr(), std::move(install_surface),
                      std::move(callback), std::move(expected_bundle_id),

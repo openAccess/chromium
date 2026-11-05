@@ -71,7 +71,6 @@
 #include "ui/gfx/presentation_feedback.h"
 #include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/switches.h"
-#include "ui/gl/gl_switches.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "base/time/time.h"
@@ -93,18 +92,16 @@ Compositor::Compositor(const viz::FrameSinkId& frame_sink_id,
                        scoped_refptr<base::SingleThreadTaskRunner> task_runner,
                        bool enable_pixel_canvas,
                        bool use_external_begin_frame_control,
-                       bool force_software_compositor,
                        bool enable_compositing_based_throttling,
                        size_t memory_limit_when_visible_mb)
     : context_factory_(context_factory),
       frame_sink_id_(frame_sink_id),
       task_runner_(task_runner),
       use_external_begin_frame_control_(use_external_begin_frame_control),
-      force_software_compositor_(force_software_compositor),
       layer_animator_collection_(this),
       is_pixel_canvas_(enable_pixel_canvas),
       lock_manager_(task_runner) {
-  DCHECK(context_factory_);
+  CHECK(context_factory_, base::NotFatalUntil::M163);
   auto* host_frame_sink_manager = context_factory_->GetHostFrameSinkManager();
   host_frame_sink_manager->RegisterFrameSinkId(
       frame_sink_id_, this, viz::ReportFirstSurfaceActivation::kYes);
@@ -176,13 +173,11 @@ Compositor::Compositor(const viz::FrameSinkId& frame_sink_id,
   settings.initial_debug_state.SetRecordRenderingStats(
       command_line->HasSwitch(switches::kEnableGpuBenchmarking));
 
-  settings.use_zero_copy = IsUIZeroCopyEnabled() && !features::IsUsingRawDraw();
+  settings.use_zero_copy = IsUIZeroCopyEnabled();
 
   // UI compositor always uses partial raster if not using zero-copy. Zero copy
   // doesn't currently support partial raster.
-  // RawDraw doesn't support partial raster.
-  settings.use_partial_raster =
-      !(settings.use_zero_copy || features::IsUsingRawDraw());
+  settings.use_partial_raster = !settings.use_zero_copy;
 
   settings.prefer_rgba_4444 =
       command_line->HasSwitch(switches::kUIEnableRGBA4444Textures);
@@ -203,12 +198,6 @@ Compositor::Compositor(const viz::FrameSinkId& frame_sink_id,
   settings.use_gpu_memory_buffer_resources =
       features::IsDelegatedCompositingEnabled();
 #endif
-
-  // Set use_gpu_memory_buffer_resources to false to disable delegated
-  // compositing, if RawDraw is enabled.
-  if (settings.use_gpu_memory_buffer_resources && features::IsUsingRawDraw()) {
-    settings.use_gpu_memory_buffer_resources = false;
-  }
 
   settings.memory_policy.bytes_limit_when_visible =
       (memory_limit_when_visible_mb > 0 ? memory_limit_when_visible_mb : 512) *
@@ -334,7 +323,7 @@ Compositor::~Compositor() {
   context_factory_->RemoveCompositor(this);
   auto* host_frame_sink_manager = context_factory_->GetHostFrameSinkManager();
   for (auto& client : child_frame_sinks_) {
-    DCHECK(client.is_valid());
+    CHECK(client.is_valid(), base::NotFatalUntil::M163);
     host_frame_sink_manager->UnregisterFrameSinkHierarchy(frame_sink_id_,
                                                           client);
   }
@@ -346,13 +335,13 @@ void Compositor::AddChildFrameSink(const viz::FrameSinkId& frame_sink_id) {
       frame_sink_id_, frame_sink_id);
 
   auto result = child_frame_sinks_.insert(frame_sink_id);
-  DCHECK(result.second);
+  CHECK(result.second, base::NotFatalUntil::M163);
 }
 
 void Compositor::RemoveChildFrameSink(const viz::FrameSinkId& frame_sink_id) {
   auto it = child_frame_sinks_.find(frame_sink_id);
   CHECK(it != child_frame_sinks_.end());
-  DCHECK(it->is_valid());
+  CHECK(it->is_valid(), base::NotFatalUntil::M163);
   context_factory_->GetHostFrameSinkManager()->UnregisterFrameSinkHierarchy(
       frame_sink_id_, *it);
   child_frame_sinks_.erase(it);
@@ -368,7 +357,9 @@ void Compositor::SetLayerTreeFrameSink(
   // to match the Compositor's.
   if (display_private_) {
     display_private_->Resize(size());
-    display_private_->SetDisplayVisible(host_->IsVisible());
+    display_private_->SetDisplayVisible(
+        host_->IsVisible() ? viz::mojom::DisplayVisibility::kVisible
+                           : viz::mojom::DisplayVisibility::kInvisible);
     display_private_->SetDisplayColorSpaces(display_color_spaces_);
     display_private_->SetDisplayColorMatrix(
         gfx::SkM44ToTransform(display_color_matrix_));
@@ -392,7 +383,7 @@ void Compositor::SetLayerTreeFrameSink(
 void Compositor::SetExternalBeginFrameController(
     mojo::AssociatedRemote<viz::mojom::ExternalBeginFrameController>
         external_begin_frame_controller) {
-  DCHECK(use_external_begin_frame_control());
+  CHECK(use_external_begin_frame_control(), base::NotFatalUntil::M163);
   external_begin_frame_controller_ = std::move(external_begin_frame_controller);
   if (pending_begin_frame_args_) {
 #if BUILDFLAG(IS_IOS)
@@ -436,13 +427,13 @@ void Compositor::SetRootLayer(Layer* root_layer) {
 }
 
 void Compositor::DisableAnimations() {
-  DCHECK(animations_are_enabled_);
+  CHECK(animations_are_enabled_, base::NotFatalUntil::M163);
   animations_are_enabled_ = false;
   root_layer_->ResetCompositorForAnimatorsInTree(this);
 }
 
 void Compositor::EnableAnimations() {
-  DCHECK(!animations_are_enabled_);
+  CHECK(!animations_are_enabled_, base::NotFatalUntil::M163);
   animations_are_enabled_ = true;
   root_layer_->SetCompositorForAnimatorsInTree(this);
 }
@@ -475,7 +466,7 @@ void Compositor::ScheduleRedrawRect(const gfx::Rect& damage_rect) {
 void Compositor::SetScaleAndSize(float scale,
                                  const gfx::Size& size_in_pixel,
                                  const viz::LocalSurfaceId& local_surface_id) {
-  DCHECK_GT(scale, 0);
+  CHECK_GT(scale, 0, base::NotFatalUntil::M163);
   bool device_scale_factor_changed = device_scale_factor_ != scale;
   device_scale_factor_ = scale;
 
@@ -607,8 +598,11 @@ void Compositor::SetVisible(bool visible) {
   // Visibility is reset when the output surface is lost, so this must also be
   // updated then. We need to call this even if the visibility hasn't changed,
   // for the same reason.
-  if (display_private_)
-    display_private_->SetDisplayVisible(visible);
+  if (display_private_) {
+    display_private_->SetDisplayVisible(
+        visible ? viz::mojom::DisplayVisibility::kVisible
+                : viz::mojom::DisplayVisibility::kInvisible);
+  }
 
   if (changed) {
     observer_list_.Notify(&CompositorObserver::OnCompositorVisibilityChanged,
@@ -647,7 +641,7 @@ void Compositor::SetDisplayVSyncParameters(base::TimeTicks timebase,
     // TODO(brianderson): We should not be receiving 0 intervals.
     interval = viz::BeginFrameArgs::DefaultInterval();
   }
-  DCHECK_GT(interval.InMillisecondsF(), 0);
+  CHECK_GT(interval.InMillisecondsF(), 0, base::NotFatalUntil::M163);
 
   // This is called at high frequency on macOS, so early-out of redundant
   // updates here.
@@ -682,7 +676,7 @@ void Compositor::SetMaxVSyncAndVrr(
 
 void Compositor::SetAcceleratedWidget(gfx::AcceleratedWidget widget) {
   // This function should only get called once.
-  DCHECK(!widget_valid_);
+  CHECK(!widget_valid_, base::NotFatalUntil::M163);
   widget_ = widget;
   widget_valid_ = true;
   if (layer_tree_frame_sink_requested_) {
@@ -692,7 +686,7 @@ void Compositor::SetAcceleratedWidget(gfx::AcceleratedWidget widget) {
 }
 
 gfx::AcceleratedWidget Compositor::ReleaseAcceleratedWidget() {
-  DCHECK(!IsVisible());
+  CHECK(!IsVisible(), base::NotFatalUntil::M163);
   host_->ReleaseLayerTreeFrameSink();
   display_private_.reset();
   external_begin_frame_controller_.reset();
@@ -705,7 +699,7 @@ gfx::AcceleratedWidget Compositor::ReleaseAcceleratedWidget() {
 }
 
 gfx::AcceleratedWidget Compositor::widget() const {
-  DCHECK(widget_valid_);
+  CHECK(widget_valid_, base::NotFatalUntil::M163);
   return widget_;
 }
 
@@ -744,7 +738,7 @@ void Compositor::RemoveAnimationObserver(
   animation_observer_list_.RemoveObserver(observer);
   if (animation_observer_list_.empty()) {
     // The only way to get here should be through the AddAnimationObserver.
-    DCHECK(animation_started_);
+    CHECK(animation_started_, base::NotFatalUntil::M163);
 
     // Request one more frame so that BeginMainFrame could notify the observers.
     host_->SetNeedsAnimate();
@@ -774,7 +768,8 @@ void Compositor::IssueExternalBeginFrame(
     // When wait_for_all_frame_sinks() is false, IssueExternalBeginFrame()
     // shouldn't be called again before the previous begin frame is
     // acknowledged.
-    DCHECK(!pending_begin_frame_args_ || !wait_for_all_frame_sinks());
+    CHECK(!pending_begin_frame_args_ || !wait_for_all_frame_sinks(),
+          base::NotFatalUntil::M163);
     pending_begin_frame_args_.emplace(args, std::move(callback));
     return;
   }
@@ -813,7 +808,7 @@ void Compositor::DidUpdateLayers() {
 }
 
 void Compositor::BeginMainFrame(const viz::BeginFrameArgs& args) {
-  DCHECK(!IsLocked());
+  CHECK(!IsLocked(), base::NotFatalUntil::M163);
   animation_observer_list_.Notify(&CompositorAnimationObserver::OnAnimationStep,
                                   args.frame_time);
   if (!animation_observer_list_.empty()) {
@@ -847,7 +842,7 @@ void Compositor::UpdateLayerTreeHost() {
 }
 
 void Compositor::RequestNewLayerTreeFrameSink() {
-  DCHECK(!layer_tree_frame_sink_requested_);
+  CHECK(!layer_tree_frame_sink_requested_, base::NotFatalUntil::M163);
   layer_tree_frame_sink_requested_ = true;
   external_begin_frame_controller_.reset();
   if (widget_valid_) {
@@ -866,7 +861,7 @@ void Compositor::DidFailToInitializeLayerTreeFrameSink() {
 void Compositor::DidCommit(int source_frame_number,
                            base::TimeTicks,
                            base::TimeTicks) {
-  DCHECK(!IsLocked());
+  CHECK(!IsLocked(), base::NotFatalUntil::M163);
   observer_list_.Notify(&CompositorObserver::OnCompositingDidCommit, this);
 }
 
@@ -940,7 +935,8 @@ Compositor::TrackerState::~TrackerState() = default;
 void Compositor::StartMetricsTracker(
     TrackerId tracker_id,
     CompositorMetricsTrackerHost::ReportCallback callback) {
-  DCHECK(!compositor_metrics_tracker_map_.contains(tracker_id));
+  CHECK(!compositor_metrics_tracker_map_.contains(tracker_id),
+        base::NotFatalUntil::M163);
 
   auto& tracker_state = compositor_metrics_tracker_map_[tracker_id];
   tracker_state.report_callback = std::move(callback);
@@ -1048,14 +1044,14 @@ const cc::LayerTreeSettings& Compositor::GetLayerTreeSettings() const {
 
 void Compositor::AddSimpleBeginFrameObserver(
     ui::HostBeginFrameObserver::SimpleBeginFrameObserver* obs) {
-  DCHECK(obs);
+  CHECK(obs, base::NotFatalUntil::M163);
   simple_begin_frame_observers_.AddObserver(obs);
   MaybeUpdateObserveBeginFrame();
 }
 
 void Compositor::RemoveSimpleBeginFrameObserver(
     ui::HostBeginFrameObserver::SimpleBeginFrameObserver* obs) {
-  DCHECK(obs);
+  CHECK(obs, base::NotFatalUntil::M163);
   simple_begin_frame_observers_.RemoveObserver(obs);
   MaybeUpdateObserveBeginFrame();
 }
@@ -1120,7 +1116,7 @@ const cc::PropertyTrees* Compositor::property_trees() const {
 }
 
 void Compositor::CheckPropertyTrees() const {
-  DCHECK(uses_layer_lists_);
+  CHECK(uses_layer_lists_, base::NotFatalUntil::M163);
   // TODO(crbug.com/389771428): Make this work for all of the property trees.
 
 #if DCHECK_IS_ON()
@@ -1128,15 +1124,18 @@ void Compositor::CheckPropertyTrees() const {
   // TODO: Get the whole clip tree to pass, not just the first two nodes.
   const cc::ClipTree& ui_clip_tree = property_trees_->clip_tree();
   const cc::ClipTree& cc_clip_tree = host_->property_trees()->clip_tree();
-  DCHECK_EQ(ui_clip_tree.Node(cc::kRootPropertyNodeId),
-            cc_clip_tree.Node(cc::kRootPropertyNodeId));
-  DCHECK_EQ(ui_clip_tree.ViewportClip(), cc_clip_tree.ViewportClip());
-  DCHECK_NE(viewport_clip_id_, cc::kInvalidPropertyNodeId);
-  DCHECK_EQ(ui_clip_tree.Node(viewport_clip_id_),
-            cc_clip_tree.Node(viewport_clip_id_));
+  CHECK_EQ(ui_clip_tree.Node(cc::kRootPropertyNodeId),
+           cc_clip_tree.Node(cc::kRootPropertyNodeId),
+           base::NotFatalUntil::M163);
+  CHECK_EQ(ui_clip_tree.ViewportClip(), cc_clip_tree.ViewportClip(),
+           base::NotFatalUntil::M163);
+  CHECK_NE(viewport_clip_id_, cc::kInvalidPropertyNodeId,
+           base::NotFatalUntil::M163);
+  CHECK_EQ(ui_clip_tree.Node(viewport_clip_id_),
+           cc_clip_tree.Node(viewport_clip_id_), base::NotFatalUntil::M163);
 
   if (!root_layer()) {
-    DCHECK_EQ(ui_clip_tree.size(), (unsigned long)2);
+    CHECK_EQ(ui_clip_tree.size(), (unsigned long)2, base::NotFatalUntil::M163);
   }
 #endif
 }

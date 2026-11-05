@@ -107,12 +107,11 @@ void CreateSharedContext(const GpuDriverBugWorkarounds& workarounds,
   context_state->InitializeGL(GpuPreferences(), workarounds, GpuFeatureInfo());
 }
 
-class EGLImageBackingFactoryThreadSafeTest
-    : public testing::TestWithParam<viz::SharedImageFormat> {
+class EGLImageBackingFactoryTest : public testing::Test {
  public:
-  EGLImageBackingFactoryThreadSafeTest()
+  EGLImageBackingFactoryTest()
       : shared_image_manager_(std::make_unique<SharedImageManager>(true)) {}
-  ~EGLImageBackingFactoryThreadSafeTest() override {
+  ~EGLImageBackingFactoryTest() override {
     // |context_state_| must be destroyed on its own context.
     if (context_state_) {
       context_state_->MakeCurrent(surface_.get(), /*needs_gl=*/true);
@@ -124,14 +123,6 @@ class EGLImageBackingFactoryThreadSafeTest
     if (!IsEglImageSupported()) {
       GTEST_SKIP();
     }
-
-#if BUILDFLAG(IS_ANDROID)
-    auto* command_line = base::CommandLine::ForCurrentProcess();
-    if (gles2::UsePassthroughCommandDecoder(command_line)) {
-      // TODO(crbug.com/40278643): fix this tests to work with passthrough.
-      GTEST_SKIP();
-    }
-#endif
 
     GpuDriverBugWorkarounds workarounds;
 
@@ -147,6 +138,9 @@ class EGLImageBackingFactoryThreadSafeTest
         std::make_unique<SharedImageRepresentationFactory>(
             shared_image_manager_.get(), nullptr);
 
+    supports_etc1_ = context_state_->feature_info()
+                         ->validators()
+                         ->compressed_texture_format.IsValid(GL_ETC1_RGB8_OES);
   }
 
   bool use_passthrough() {
@@ -154,8 +148,6 @@ class EGLImageBackingFactoryThreadSafeTest
         base::CommandLine::ForCurrentProcess());
     return passthrough;
   }
-
-  viz::SharedImageFormat get_format() { return GetParam(); }
 
  protected:
 #if BUILDFLAG(USE_DAWN) && BUILDFLAG(DAWN_ENABLE_BACKEND_OPENGLES)
@@ -211,8 +203,8 @@ class EGLImageBackingFactoryThreadSafeTest
                        const wgpu::Device& device,
                        const gfx::Size& size,
                        const std::vector<uint8_t>& expected_color) const {
-    uint32_t buffer_stride = static_cast<uint32_t>(
-        base::bits::AlignUpDeprecatedDoNotUse(size.width() * 4, 256));
+    uint32_t buffer_stride = base::bits::AlignUp(
+        base::checked_cast<uint32_t>(size.width()) * 4, 256u);
     size_t buffer_size = static_cast<size_t>(size.height()) * buffer_stride;
     wgpu::BufferDescriptor buffer_desc{
         .usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead,
@@ -269,7 +261,53 @@ class EGLImageBackingFactoryThreadSafeTest
   std::unique_ptr<MemoryTypeTracker> memory_type_tracker_;
   std::unique_ptr<SharedImageRepresentationFactory>
       shared_image_representation_factory_;
+  bool supports_etc1_ = false;
+};
 
+TEST_F(EGLImageBackingFactoryTest, CompressedFormatRequiresInitialData) {
+  if (!supports_etc1_) {
+    GTEST_SKIP() << "ETC1 not supported";
+  }
+
+  auto format = viz::SinglePlaneFormat::kETC1;
+  gfx::Size size(64, 64);
+  // Note: The specific usage doesn't matter here as long as it's supported by
+  // GLTextureImageBacking.
+  gpu::SharedImageUsageSet usage = SHARED_IMAGE_USAGE_GLES2_READ;
+
+  // Compressed textures cannot be cleared so they must be created with initial
+  // pixel data.
+  bool supported = backing_factory_->CanCreateSharedImage(
+      usage, format, size, /*thread_safe=*/false, gfx::EMPTY_BUFFER,
+      GrContextType::kGL, {});
+  EXPECT_FALSE(supported);
+
+  // With correctly sized initial data the format is supported.
+  size_t required_size = format.MaybeEstimatedSizeInBytes(size).value();
+  std::vector<uint8_t> initial_data(required_size);
+  supported = backing_factory_->CanCreateSharedImage(
+      usage, format, size, /*thread_safe=*/false, gfx::EMPTY_BUFFER,
+      GrContextType::kGL, initial_data);
+  EXPECT_TRUE(supported);
+}
+
+class EGLImageBackingFactoryThreadSafeTest
+    : public EGLImageBackingFactoryTest,
+      public testing::WithParamInterface<viz::SharedImageFormat> {
+ public:
+  void SetUp() override {
+    EGLImageBackingFactoryTest::SetUp();
+
+#if BUILDFLAG(IS_ANDROID)
+    auto* command_line = base::CommandLine::ForCurrentProcess();
+    if (gles2::UsePassthroughCommandDecoder(command_line)) {
+      // TODO(crbug.com/40278643): fix this tests to work with passthrough.
+      GTEST_SKIP();
+    }
+#endif
+  }
+
+  viz::SharedImageFormat get_format() { return GetParam(); }
 };
 
 class CreateAndValidateSharedImageRepresentations {
@@ -437,6 +475,68 @@ TEST_P(EGLImageBackingFactoryThreadSafeTest, UploadReadback) {
   EXPECT_TRUE(backing->ReadbackToMemory({dst_pixmap}));
 
   // Compare
+  EXPECT_EQ(src_pixels, dst_pixels);
+}
+
+TEST_P(EGLImageBackingFactoryThreadSafeTest, UploadReadbackCrossThreadWithTLS) {
+  const auto mailbox = Mailbox::Generate();
+  const auto format = get_format();
+  const gfx::Size size(4, 4);
+  const auto color_space = gfx::ColorSpace::CreateSRGB();
+  const gpu::SurfaceHandle surface_handle = gpu::kNullSurfaceHandle;
+  const gpu::SharedImageUsageSet usage =
+      SHARED_IMAGE_USAGE_GLES2_READ | SHARED_IMAGE_USAGE_GLES2_WRITE;
+
+  auto backing = backing_factory_->CreateSharedImage(
+      mailbox,
+      {format, size, color_space, kTopLeft_GrSurfaceOrigin, kPremul_SkAlphaType,
+       usage, "TestLabel"},
+      surface_handle, /*is_thread_safe=*/true);
+  ASSERT_NE(backing, nullptr);
+
+  std::vector<uint8_t> src_pixels(size.width() * size.height() * 4, 0xFF);
+  for (size_t i = 0; i < src_pixels.size(); ++i) {
+    src_pixels[i] = static_cast<uint8_t>(i % 256);
+  }
+
+  SkImageInfo info = SkImageInfo::Make(
+      size.width(), size.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+  SkPixmap pixmap(info, src_pixels.data(), info.minRowBytes());
+
+  std::vector<uint8_t> dst_pixels(src_pixels.size(), 0);
+  SkPixmap dst_pixmap(info, dst_pixels.data(), info.minRowBytes());
+
+  // Perform UploadFromMemory and ReadbackToMemory on a second thread where no
+  // GL context is initially current, relying on the thread-local
+  // SharedContextState to make its GL context current.
+  std::thread second_thread([&]() {
+    scoped_refptr<gl::GLSurface> surface2;
+    scoped_refptr<gl::GLContext> context2;
+    scoped_refptr<SharedContextState> context_state2;
+    GpuDriverBugWorkarounds workarounds;
+    CreateSharedContext(workarounds, surface2, context2, context_state2);
+    SharedContextState::SetForCurrentThread(context_state2.get());
+
+    // Release the GL context so UploadFromMemory must make it current via TLS.
+    context2->ReleaseCurrent(surface2.get());
+    EXPECT_EQ(gl::GLContext::GetCurrent(), nullptr);
+    EXPECT_TRUE(backing->UploadFromMemory({pixmap}));
+
+    // Release the GL context again via context_state2 (whose
+    // last_current_surface_ was set by MakeCurrent() during UploadFromMemory)
+    // so ReadbackToMemory must also make it current via TLS.
+    context_state2->ReleaseCurrent(surface2.get());
+    EXPECT_EQ(gl::GLContext::GetCurrent(), nullptr);
+    EXPECT_TRUE(backing->ReadbackToMemory({dst_pixmap}));
+
+    SharedContextState::ClearForCurrentThread();
+    context_state2->MakeCurrent(surface2.get(), /*needs_gl=*/true);
+    context_state2.reset();
+    context2.reset();
+    surface2.reset();
+  });
+
+  second_thread.join();
   EXPECT_EQ(src_pixels, dst_pixels);
 }
 

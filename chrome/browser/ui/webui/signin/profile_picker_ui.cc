@@ -43,6 +43,7 @@
 #include "components/signin/public/base/signin_switches.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/base/features.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -63,7 +64,7 @@ bool IsBrowserSigninAllowed() {
   return true;
 #else
   policy::PolicyService* policy_service = g_browser_process->policy_service();
-  DCHECK(policy_service);
+  CHECK(policy_service, base::NotFatalUntil::M162);
   const policy::PolicyMap& policies = policy_service->GetPolicies(
       policy::PolicyNamespace(policy::POLICY_DOMAIN_CHROME, std::string()));
 
@@ -137,6 +138,10 @@ void AddStrings(content::WebUIDataSource* html_source,
       {"profileMenuRemoveText", IDS_PROFILE_PICKER_PROFILE_MENU_REMOVE_TEXT},
       {"profileMenuCustomizeText",
        IDS_PROFILE_PICKER_PROFILE_MENU_CUSTOMIZE_TEXT},
+      {"profileMenuMoveLeftText",
+       IDS_PROFILE_PICKER_PROFILE_MENU_MOVE_LEFT_TEXT},
+      {"profileMenuMoveRightText",
+       IDS_PROFILE_PICKER_PROFILE_MENU_MOVE_RIGHT_TEXT},
       {"removeWarningLocalProfileTitle",
        IDS_PROFILE_PICKER_REMOVE_WARNING_LOCAL_PROFILE_TITLE},
       {"removeWarningSignedInProfileTitle",
@@ -300,7 +305,7 @@ ProfilePickerUI::ProfilePickerUI(content::WebUI* web_ui)
 
   // `content::WebContents::GetVisibleURL()` is used here because a
   // WebUIController is created before the navigation commits.
-  bool is_glic_version = web_ui->GetWebContents()->GetVisibleURL().GetQuery() ==
+  bool is_glic_version = web_ui->GetWebContents()->GetVisibleURL().query() ==
                          chrome::kChromeUIProfilePickerGlicQuery;
 
   std::unique_ptr<ProfilePickerHandler> handler =
@@ -309,7 +314,7 @@ ProfilePickerUI::ProfilePickerUI(content::WebUI* web_ui)
   web_ui->AddMessageHandler(std::move(handler));
 
   // Same as above for usage of `content::WebContents::GetVisibleURL()`.
-  if (web_ui->GetWebContents()->GetVisibleURL().GetQuery() ==
+  if (web_ui->GetWebContents()->GetVisibleURL().query() ==
       chrome::kChromeUIProfilePickerStartupQuery) {
     profile_picker_handler_->EnableStartupMetrics();
   }

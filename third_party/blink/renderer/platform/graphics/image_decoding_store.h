@@ -169,12 +169,13 @@ class DecoderCacheEntry final : public CacheEntry {
 template <>
 struct HashTraits<DecoderCacheKey> : GenericHashTraits<DecoderCacheKey> {
   STATIC_ONLY(HashTraits);
-  static unsigned GetHash(const DecoderCacheKey& p) {
+  static uint32_t GetHash(const DecoderCacheKey& p) {
     auto first =
         HashInts(blink::GetHash(const_cast<ImageFrameGenerator*>(p.gen_.get())),
                  blink::GetHash(p.size_));
-    auto second = HashInts(
-        blink::GetHash(static_cast<uint8_t>(p.alpha_option_)), p.client_id_);
+    auto second =
+        HashInts(blink::GetHash(static_cast<uint8_t>(p.alpha_option_)),
+                 blink::GetHash(p.client_id_));
     return HashInts(first, second);
   }
 
@@ -247,7 +248,6 @@ class PLATFORM_EXPORT ImageDecodingStore final {
   void SetCacheLimitInBytes(size_t);
   size_t MemoryUsageInBytes();
   int CacheEntries();
-  int DecoderCacheEntries();
 
  private:
   void Prune();

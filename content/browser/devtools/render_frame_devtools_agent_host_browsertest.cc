@@ -6,15 +6,21 @@
 #include "content/browser/devtools/render_frame_devtools_agent_host.h"
 
 #include <string_view>
+#include <utility>
 
+#include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/common/content_navigation_policy.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_agent_host_client.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/browser/network_service_util.h"
 #include "content/public/browser/render_process_host.h"
@@ -26,12 +32,15 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
+#include "content/public/test/test_devtools_protocol_client.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/shell/browser/shell.h"
+#include "content/test/content_browser_test_utils_internal.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "services/network/public/mojom/network_service_test.mojom.h"
+#include "ui/base/page_transition_types.h"
+#include "url/url_constants.h"
 
 namespace content {
 
@@ -45,8 +54,6 @@ class RenderFrameDevToolsAgentHostBrowserTest : public ContentBrowserTest {
 
 namespace {
 
-const char kFencedFramePath[] = "/devtools/navigation.html";
-
 // A DevToolsAgentHostClient implementation doing nothing.
 class StubDevToolsAgentHostClient : public content::DevToolsAgentHostClient {
  public:
@@ -56,17 +63,84 @@ class StubDevToolsAgentHostClient : public content::DevToolsAgentHostClient {
   void DispatchProtocolMessage(content::DevToolsAgentHost* agent_host,
                                base::span<const uint8_t> message) override {}
   bool MayAttachToURL(const GURL& url, bool is_webui) override {
-    // Return a false in case that the url is a fenced frame test url to detach
-    // the attached client in order to test that a fenced frame calls
-    // OnNavigationRequestWillBeSent through the outer document.
-    if (url.path().find(kFencedFramePath) != std::string_view::npos) {
-      return false;
-    }
     return true;
   }
 };
 
 }  // namespace
+
+IN_PROC_BROWSER_TEST_F(RenderFrameDevToolsAgentHostBrowserTest,
+                       OlderCommitKeepsPendingNavigationTarget) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  Shell* new_shell =
+      Shell::CreateNewWindow(shell()->web_contents()->GetBrowserContext(),
+                             GURL(), nullptr, gfx::Size());
+  auto* web_contents = static_cast<WebContentsImpl*>(new_shell->web_contents());
+  FrameTreeNode* root = web_contents->GetPrimaryFrameTree().root();
+  RenderFrameHostImpl* frame_a = web_contents->GetPrimaryMainFrame();
+  scoped_refptr<DevToolsAgentHost> agent_host =
+      DevToolsAgentHost::GetOrCreateFor(web_contents);
+  auto* frame_agent =
+      static_cast<RenderFrameDevToolsAgentHost*>(agent_host.get());
+
+  // Hold the initial about:blank commit in the current frame while a newer
+  // navigation becomes ready to commit in a different frame.
+  CommitNavigationPauser initial_commit(frame_a);
+  NavigationController::LoadURLParams initial_params{GURL(url::kAboutBlankURL)};
+  initial_params.transition_type = ui::PAGE_TRANSITION_AUTO_TOPLEVEL;
+  auto initial_navigation =
+      web_contents->GetController().LoadURLWithParams(initial_params);
+  initial_commit.WaitForCommitAndPause();
+  ASSERT_TRUE(initial_navigation);
+  ASSERT_TRUE(initial_navigation->IsWaitingToCommit());
+  ASSERT_EQ(frame_a, initial_navigation->GetRenderFrameHost());
+
+  TestDevToolsProtocolClient client;
+  client.AttachToWebContents(web_contents);
+  base::ScopedClosureRunner detach_client(
+      base::BindLambdaForTesting([&] { client.DetachProtocolClient(); }));
+  ASSERT_TRUE(agent_host->IsAttached());
+
+  const GURL destination =
+      embedded_test_server()->GetURL("next.test", "/title1.html");
+  TestNavigationManager newer_navigation(web_contents, destination);
+  new_shell->LoadURL(destination);
+  ASSERT_TRUE(newer_navigation.WaitForResponse());
+  RenderFrameHostImpl* frame_b =
+      root->render_manager()->speculative_frame_host();
+  ASSERT_TRUE(frame_b);
+  ASSERT_NE(frame_a, frame_b);
+
+  CommitNavigationPauser newer_commit(frame_b);
+  newer_navigation.ResumeNavigation();
+  newer_commit.WaitForCommitAndPause();
+  ASSERT_TRUE(newer_navigation.GetNavigationHandle()->IsWaitingToCommit());
+  ASSERT_EQ(frame_b, frame_agent->GetFrameHostForTesting());
+
+  initial_commit.ResumePausedCommit();
+  EXPECT_FALSE(initial_navigation);
+  EXPECT_EQ(GURL(url::kAboutBlankURL), web_contents->GetLastCommittedURL());
+  EXPECT_EQ(frame_a, web_contents->GetPrimaryMainFrame());
+  EXPECT_TRUE(newer_navigation.GetNavigationHandle()->IsWaitingToCommit());
+  EXPECT_EQ(frame_b, frame_agent->GetFrameHostForTesting());
+
+  newer_commit.ResumePausedCommit();
+  ASSERT_TRUE(newer_navigation.WaitForNavigationFinished());
+  ASSERT_TRUE(WaitForLoadStop(web_contents));
+  EXPECT_EQ(frame_b, web_contents->GetPrimaryMainFrame());
+  EXPECT_EQ(frame_b, frame_agent->GetFrameHostForTesting());
+  EXPECT_FALSE(web_contents->IsCrashed());
+
+  base::DictValue params;
+  params.Set("expression", "location.href");
+  params.Set("returnByValue", true);
+  const base::DictValue* result =
+      client.SendCommandSync("Runtime.evaluate", std::move(params));
+  ASSERT_TRUE(result);
+  const std::string* value = result->FindStringByDottedPath("result.value");
+  ASSERT_TRUE(value);
+  EXPECT_EQ(destination.spec(), *value);
+}
 
 // This test checks which RenderFrameHostImpl the RenderFrameDevToolsAgentHost
 // is tracking while a cross-site navigation is canceled after having reached
@@ -207,108 +281,6 @@ IN_PROC_BROWSER_TEST_F(RenderFrameDevToolsAgentHostBrowserTest,
   devtools_agent_host->DetachClient(&devtools_agent_host_client);
 }
 
-class RenderFrameDevToolsAgentHostFencedFrameBrowserTest
-    : public RenderFrameDevToolsAgentHostBrowserTest {
- public:
-  RenderFrameDevToolsAgentHostFencedFrameBrowserTest() = default;
-  ~RenderFrameDevToolsAgentHostFencedFrameBrowserTest() override = default;
-  RenderFrameDevToolsAgentHostFencedFrameBrowserTest(
-      const RenderFrameDevToolsAgentHostFencedFrameBrowserTest&) = delete;
-
-  RenderFrameDevToolsAgentHostFencedFrameBrowserTest& operator=(
-      const RenderFrameDevToolsAgentHostFencedFrameBrowserTest&) = delete;
-
-  void SetUpOnMainThread() override {
-    RenderFrameDevToolsAgentHostBrowserTest::SetUpOnMainThread();
-    embedded_test_server()->ServeFilesFromSourceDirectory("content/test/data");
-    EXPECT_TRUE(embedded_test_server()->Start());
-  }
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
-  bool IsCrashed(RenderFrameDevToolsAgentHost* rfh_devtools_agent) {
-    return rfh_devtools_agent->render_frame_crashed_;
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(RenderFrameDevToolsAgentHostFencedFrameBrowserTest,
-                       CallNavigationRequestCallbackViaOuterDocument) {
-  GURL url = embedded_test_server()->GetURL("/title1.html");
-  EXPECT_TRUE(NavigateToURL(shell(), url));
-
-  scoped_refptr<DevToolsAgentHost> devtools_agent_host =
-      DevToolsAgentHost::GetOrCreateFor(shell()->web_contents());
-  StubDevToolsAgentHostClient devtools_agent_host_client;
-  devtools_agent_host->AttachClient(&devtools_agent_host_client);
-  EXPECT_TRUE(devtools_agent_host->IsAttached());
-
-  // Create a fenced frame.
-  GURL fenced_frame_url =
-      embedded_test_server()->GetURL("a.com", kFencedFramePath);
-  content::RenderFrameHostImpl* fenced_frame_host =
-      static_cast<content::RenderFrameHostImpl*>(
-          fenced_frame_test_helper().CreateFencedFrame(
-              shell()->web_contents()->GetPrimaryMainFrame(),
-              fenced_frame_url));
-  ASSERT_TRUE(fenced_frame_host);
-  // The client should be detached by the fenced frame calling
-  // OnNavigationRequestWillBeSent through the outer document.
-  EXPECT_FALSE(devtools_agent_host->IsAttached());
-}
-
-IN_PROC_BROWSER_TEST_F(RenderFrameDevToolsAgentHostFencedFrameBrowserTest,
-                       PageCrashInFencedFrame) {
-  // Ensure all sites get dedicated processes during the test.
-  IsolateAllSitesForTesting(base::CommandLine::ForCurrentProcess());
-
-  GURL url = embedded_test_server()->GetURL("a.com", "/title1.html");
-  EXPECT_TRUE(NavigateToURL(shell(), url));
-
-  // Create a fenced frame.
-  const GURL fenced_frame_url =
-      embedded_test_server()->GetURL("b.com", "/fenced_frames/title1.html");
-
-  RenderFrameHostImpl* fenced_frame_host =
-      static_cast<content::RenderFrameHostImpl*>(
-          fenced_frame_test_helper().CreateFencedFrame(
-              shell()->web_contents()->GetPrimaryMainFrame(),
-              fenced_frame_url));
-  ASSERT_TRUE(fenced_frame_host);
-
-  // Terminate the fenced frame process.
-  {
-    RenderProcessHostWatcher termination_observer(
-        fenced_frame_host->GetProcess(),
-        RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
-    EXPECT_TRUE(
-        fenced_frame_host->GetProcess()->Shutdown(content::RESULT_CODE_KILLED));
-    termination_observer.Wait();
-  }
-  EXPECT_FALSE(fenced_frame_host->IsRenderFrameLive());
-
-  // Open DevTools.
-  scoped_refptr<DevToolsAgentHost> devtools_agent =
-      RenderFrameDevToolsAgentHost::GetOrCreateFor(
-          static_cast<RenderFrameHostImpl*>(
-              shell()->web_contents()->GetPrimaryMainFrame())
-              ->frame_tree_node());
-  RenderFrameDevToolsAgentHost* main_rfh_devtools_agent =
-      static_cast<RenderFrameDevToolsAgentHost*>(devtools_agent.get());
-
-  scoped_refptr<DevToolsAgentHost> ff_devtools_agent =
-      RenderFrameDevToolsAgentHost::GetOrCreateFor(
-          fenced_frame_host->frame_tree_node());
-  RenderFrameDevToolsAgentHost* ff_rfh_devtools_agent =
-      static_cast<RenderFrameDevToolsAgentHost*>(ff_devtools_agent.get());
-
-  EXPECT_FALSE(IsCrashed(main_rfh_devtools_agent));
-  EXPECT_TRUE(IsCrashed(ff_rfh_devtools_agent));
-}
 
 class RenderFrameDevToolsAgentHostRawHeadersBrowserTest
     : public RenderFrameDevToolsAgentHostBrowserTest {

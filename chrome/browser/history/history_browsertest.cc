@@ -25,6 +25,7 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -41,6 +42,7 @@
 #include "components/history/core/test/history_service_test_util.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url_service.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
@@ -48,15 +50,20 @@
 #include "content/public/common/referrer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_frame_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/webui/untrusted_web_ui_browsertest_util.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/actor/ui/actor_task_unload_handler.h"
+#endif
 
 using content::BrowserThread;
 using ::testing::_;
@@ -587,10 +594,10 @@ IN_PROC_BROWSER_TEST_F(HistoryBrowserTest, MultiTabsWindowsHistory) {
   BrowserWindowInterface* browser2 = CreateBrowser(browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser2, url2));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser2, url3, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser2, url3, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ui_test_utils::NavigateToURLWithDisposition(
-      browser2, url4, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser2, url4, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   std::vector<GURL> urls(GetHistoryContents());
@@ -781,7 +788,7 @@ IN_PROC_BROWSER_TEST_F(HistoryBrowserTest, ReloadBringPageToTop) {
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url1));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url2, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), url2, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   std::vector<GURL> urls(GetHistoryContents());
@@ -811,7 +818,7 @@ IN_PROC_BROWSER_TEST_F(HistoryBrowserTest, BackForwardBringPageToTop) {
 
   content::WebContents* tab =
       browser()->tab_strip_model()->GetActiveWebContents();
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(content::WaitForLoadStop(tab));
 
   std::vector<GURL> urls(GetHistoryContents());
@@ -819,7 +826,7 @@ IN_PROC_BROWSER_TEST_F(HistoryBrowserTest, BackForwardBringPageToTop) {
   ASSERT_EQ(url1, urls[0]);
   ASSERT_EQ(url2, urls[1]);
 
-  chrome::GoForward(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoForward(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(content::WaitForLoadStop(tab));
   urls = GetHistoryContents();
   ASSERT_EQ(2u, urls.size());
@@ -955,7 +962,7 @@ IN_PROC_BROWSER_TEST_F(HistoryBrowserTest, OneHistoryTabPerWindow) {
 
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(url::kAboutBlankURL),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   chrome::ExecuteCommand(browser(), IDC_SHOW_HISTORY);
 
@@ -1178,6 +1185,31 @@ class HistoryTaskTagBrowserTest : public HistoryBrowserTest {
   actor::ActorKeyedService* actor_service() {
     return actor::ActorKeyedService::Get(profile());
   }
+
+  void SetUpOnMainThread() override {
+    HistoryBrowserTest::SetUpOnMainThread();
+#if !BUILDFLAG(IS_ANDROID)
+    // These tests navigate via browser initiated navigations while an Actor
+    // task is active to verify history tagging. Suppress the leave site dialog
+    // so the test scaffolding is not intercepted, and restore at teardown.
+    previous_suppress_confirm_dialog_ =
+        actor::ActorTaskTabCloseConfirmDialog::ShouldSuppressForTesting();
+    actor::ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(true);
+#endif
+  }
+
+  void TearDownOnMainThread() override {
+#if !BUILDFLAG(IS_ANDROID)
+    actor::ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(
+        previous_suppress_confirm_dialog_);
+#endif
+    HistoryBrowserTest::TearDownOnMainThread();
+  }
+
+ private:
+#if !BUILDFLAG(IS_ANDROID)
+  bool previous_suppress_confirm_dialog_ = false;
+#endif
 };
 
 // Test that history entry is correctly tagged when actor is active.
@@ -1270,7 +1302,7 @@ IN_PROC_BROWSER_TEST_F(HistoryTaskTagBrowserTest, TwoTabs) {
   // Open a new tab and navigate on it so it becomes active.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), GetActorInitialUrl(),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Set up the test observer for this new tab.
@@ -1542,61 +1574,6 @@ IN_PROC_BROWSER_TEST_F(HistoryPrerenderBrowserTest,
   // prerendering URL, should be recorded.
   EXPECT_THAT(GetHistoryContents(),
               testing::ElementsAre(kRedirectedUrl, kInitialUrl));
-}
-
-// For tests which use fenced frame.
-class HistoryFencedFrameBrowserTest : public HistoryMPArchBrowserTest {
- public:
-  HistoryFencedFrameBrowserTest() = default;
-  ~HistoryFencedFrameBrowserTest() override = default;
-  HistoryFencedFrameBrowserTest(const HistoryFencedFrameBrowserTest&) = delete;
-
-  HistoryFencedFrameBrowserTest& operator=(
-      const HistoryFencedFrameBrowserTest&) = delete;
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
-  content::WebContents* web_contents() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(HistoryFencedFrameBrowserTest,
-                       FencedFrameDoesNotAffectLoadingState) {
-  HistoryTabHelper* history_tab_helper =
-      HistoryTabHelper::FromWebContents(web_contents());
-  ASSERT_TRUE(history_tab_helper);
-  base::TimeTicks last_load_completion_before_navigation =
-      history_tab_helper->last_load_completion_;
-
-  auto initial_url = embedded_https_test_server().GetURL("/empty.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initial_url));
-  // |last_load_completion_| should be updated after finishing the normal
-  // navigation.
-  EXPECT_NE(last_load_completion_before_navigation,
-            history_tab_helper->last_load_completion_);
-
-  // Create a fenced frame.
-  GURL fenced_frame_url =
-      embedded_https_test_server().GetURL("/fenced_frames/title1.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          web_contents()->GetPrimaryMainFrame(), fenced_frame_url);
-
-  // Navigate the fenced frame.
-  last_load_completion_before_navigation =
-      history_tab_helper->last_load_completion_;
-  fenced_frame_test_helper().NavigateFrameInFencedFrameTree(fenced_frame_host,
-                                                            fenced_frame_url);
-  // |last_load_completion_| should not be updated after finishing the
-  // navigation of the fenced frame.
-  EXPECT_EQ(last_load_completion_before_navigation,
-            history_tab_helper->last_load_completion_);
 }
 
 // For tests which enable :visited links partitioning.

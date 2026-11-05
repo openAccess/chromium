@@ -5,8 +5,9 @@
 #ifndef COMPONENTS_UPDATE_CLIENT_TEST_CONFIGURATOR_H_
 #define COMPONENTS_UPDATE_CLIENT_TEST_CONFIGURATOR_H_
 
+#include <stdint.h>
+
 #include <array>
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -95,6 +96,7 @@ class TestConfigurator : public Configurator {
   std::string GetChannel() const override;
   std::string GetLang() const override;
   std::string GetOSLongName() const override;
+  std::string GetDeviceFormFactor() const override;
   base::flat_map<std::string, std::string> ExtraRequestParams() const override;
   std::string GetDownloadPreference() const override;
   scoped_refptr<NetworkFetcherFactory> GetNetworkFetcherFactory() override;

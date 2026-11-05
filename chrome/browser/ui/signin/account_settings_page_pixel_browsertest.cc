@@ -5,6 +5,7 @@
 #include <string>
 
 #include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "chrome/browser/profiles/batch_upload/batch_upload_service_test_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
@@ -36,8 +37,7 @@ class AccountSettingsPagePixelBrowserTest : public InteractiveBrowserTest {
  public:
   AccountSettingsPagePixelBrowserTest() {
     feature_list_.InitWithFeatures(
-        /*enabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos,
-                              syncer::kUnoPhase2FollowUp},
+        /*enabled_features=*/{syncer::kUnoPhase2FollowUp},
         /*disabled_features=*/{});
   }
 
@@ -175,8 +175,16 @@ IN_PROC_BROWSER_TEST_F(AccountSettingsPagePixelBrowserTest,
       "account_settings_page_sync_datatypes_off"));
 }
 
+// TODO(crbug.com/550857602): Flaky on Windows builders.
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_OpenAccountSettingsPageWithPassphraseRequired \
+  DISABLED_OpenAccountSettingsPageWithPassphraseRequired
+#else
+#define MAYBE_OpenAccountSettingsPageWithPassphraseRequired \
+  OpenAccountSettingsPageWithPassphraseRequired
+#endif
 IN_PROC_BROWSER_TEST_F(AccountSettingsPagePixelBrowserTest,
-                       OpenAccountSettingsPageWithPassphraseRequired) {
+                       MAYBE_OpenAccountSettingsPageWithPassphraseRequired) {
   SigninWithFullInfo();
   SimulatePassphraseError();
 

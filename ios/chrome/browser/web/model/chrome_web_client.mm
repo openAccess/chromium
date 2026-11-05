@@ -9,9 +9,9 @@
 #import <string_view>
 
 #import "base/apple/bundle_locations.h"
+#import "base/check.h"
 #import "base/command_line.h"
 #import "base/feature_list.h"
-#import "base/ios/ios_util.h"
 #import "base/ios/ns_error_util.h"
 #import "base/memory/ref_counted_memory.h"
 #import "base/metrics/histogram_functions.h"
@@ -35,6 +35,8 @@
 #import "components/safe_browsing/core/common/features.h"
 #import "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #import "components/safe_browsing/core/common/utils.h"
+#import "components/search_engines/template_url.h"
+#import "components/search_engines/template_url_service.h"
 #import "components/strings/grit/components_strings.h"
 #import "components/supervised_user/core/browser/supervised_user_interstitial.h"
 #import "components/translate/ios/browser/translate_java_script_feature.h"
@@ -44,20 +46,24 @@
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_java_script_feature.h"
 #import "ios/chrome/browser/browser_content/model/edit_menu_tab_helper.h"
 #import "ios/chrome/browser/cobrowse/model/aim_cobrowse_java_script_feature.h"
-#import "ios/chrome/browser/cobrowse/model/cobrowse_util.h"
 #import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
+#import "ios/chrome/browser/enterprise/connectors/device_trust/model/device_trust_java_script_feature.h"
+#import "ios/chrome/browser/enterprise/connectors/device_trust/model/device_trust_util.h"
 #import "ios/chrome/browser/enterprise/connectors/ios_enterprise_interstitial.h"
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_reporting_event_router_factory.h"
+#import "ios/chrome/browser/enterprise/proxy/model/enterprise_proxy_error.h"
 #import "ios/chrome/browser/flags/chrome_switches.h"
 #import "ios/chrome/browser/https_upgrades/model/https_upgrade_service_factory.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/action_target_java_script_feature.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/attempt_form_filling_tool_java_script_feature.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/click_tool_java_script_feature.h"
+#import "ios/chrome/browser/intelligence/actor/tools/model/drag_and_release_tool_java_script_feature.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/page_stability_java_script_feature.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/scroll_tool_java_script_feature.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/select_tool_java_script_feature.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/type_tool_java_script_feature.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/intelligence/page_classification/education_java_script_feature.h"
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_extractor_java_script_feature.h"
 #import "ios/chrome/browser/link_to_text/model/link_to_text_java_script_feature.h"
 #import "ios/chrome/browser/ntp/model/browser_policy_new_tab_page_rewriter.h"
@@ -66,7 +72,6 @@
 #import "ios/chrome/browser/permissions/model/geolocation_api_usage_java_script_feature.h"
 #import "ios/chrome/browser/permissions/model/media_api_usage_java_script_feature.h"
 #import "ios/chrome/browser/prerender/model/prerender_tab_helper.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_java_script_feature.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_scroll_anchor_java_script_feature.h"
 #import "ios/chrome/browser/safe_browsing/model/client_side_detection/client_side_detection_java_script_feature.h"
@@ -74,6 +79,7 @@
 #import "ios/chrome/browser/safe_browsing/model/safe_browsing_blocking_page.h"
 #import "ios/chrome/browser/search_engines/model/search_engine_java_script_feature.h"
 #import "ios/chrome/browser/search_engines/model/search_engine_tab_helper_factory.h"
+#import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_text_fragment_selector_generator.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
@@ -90,11 +96,14 @@
 #import "ios/chrome/browser/supervised_user/model/supervised_user_url_filter_tab_helper.h"
 #import "ios/chrome/browser/unified_consent/model/url_keyed_data_collection_consent_helper_factory_ios.h"
 #import "ios/chrome/browser/unified_consent/model/url_keyed_data_collection_consent_helper_ios.h"
+#import "ios/chrome/browser/universal_optout/model/eligibility_utils.h"
+#import "ios/chrome/browser/universal_optout/model/universal_optout_service_factory.h"
 #import "ios/chrome/browser/web/model/browser_about_rewriter.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_java_script_feature.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_tab_helper.h"
 #import "ios/chrome/browser/web/model/chrome_main_parts.h"
 #import "ios/chrome/browser/web/model/dark_mode_detection/dark_mode_detection_java_script_feature.h"
+#import "ios/chrome/browser/web/model/enterprise_proxy_error_page_util.h"
 #import "ios/chrome/browser/web/model/error_page_util.h"
 #import "ios/chrome/browser/web/model/font_size/font_size_java_script_feature.h"
 #import "ios/chrome/browser/web/model/image_fetch/image_fetch_java_script_feature.h"
@@ -102,6 +111,8 @@
 #import "ios/chrome/browser/web/model/java_script_console/java_script_console_feature_factory.h"
 #import "ios/chrome/browser/web/model/print/print_java_script_feature.h"
 #import "ios/chrome/browser/web/model/web_performance_metrics/web_performance_metrics_java_script_feature.h"
+#import "ios/chrome/browser/web_extension/model/extension_service.h"
+#import "ios/chrome/browser/web_extension/model/extension_service_factory.h"
 #import "ios/chrome/browser/web_selection/model/web_selection_java_script_feature.h"
 #import "ios/chrome/common/channel_info.h"
 #import "ios/chrome/common/crash_report/crash_helper.h"
@@ -138,6 +149,7 @@
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/resource/resource_bundle.h"
 #import "url/gurl.h"
+#import "url/origin.h"
 #import "url/url_constants.h"
 
 namespace {
@@ -203,7 +215,10 @@ NSString* GetLookalikeUrlErrorPageHtml(web::WebState* web_state,
           lookalike_info->match_type,
           std::make_unique<LookalikeUrlControllerClient>(
               web_state, lookalike_info->safe_url, lookalike_info->request_url,
-              GetApplicationContext()->GetApplicationLocaleStorage()->Get()));
+              std::string(GetApplicationContext()
+                              ->GetApplicationLocaleStorage()
+                              ->GetTag()
+                              .tag_string())));
   std::string error_page_content = page->GetHtmlContents();
   security_interstitials::IOSBlockingPageTabHelper::FromWebState(web_state)
       ->AssociateBlockingPage(navigation_id, std::move(page));
@@ -228,7 +243,10 @@ NSString* GetHttpsOnlyModeErrorPageHtml(web::WebState* web_state,
           web_state, container->http_url(), service,
           std::make_unique<HttpsOnlyModeControllerClient>(
               web_state, container->http_url(),
-              GetApplicationContext()->GetApplicationLocaleStorage()->Get()));
+              std::string(GetApplicationContext()
+                              ->GetApplicationLocaleStorage()
+                              ->GetTag()
+                              .tag_string())));
 
   std::string error_page_content = page->GetHtmlContents();
   security_interstitials::IOSBlockingPageTabHelper::FromWebState(web_state)
@@ -263,7 +281,10 @@ NSString* GetSupervisedUserErrorPageHTML(web::WebState* web_state,
           error_info->filtering_result().reason,
           container->IsRemoteApprovalPendingForUrl(url),
           error_info->is_main_frame(),
-          GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
+          std::string(GetApplicationContext()
+                          ->GetApplicationLocaleStorage()
+                          ->GetTag()
+                          .tag_string()),
           ui_util::SystemSuggestedFontSizeMultiplier());
 
   security_interstitials::IOSBlockingPageTabHelper::FromWebState(web_state)
@@ -331,7 +352,10 @@ void ChromeWebClient::AddAdditionalSchemes(Schemes* schemes) const {
 
 std::string ChromeWebClient::GetApplicationLocale() const {
   DCHECK(GetApplicationContext());
-  return GetApplicationContext()->GetApplicationLocaleStorage()->Get();
+  return std::string(GetApplicationContext()
+                         ->GetApplicationLocaleStorage()
+                         ->GetTag()
+                         .tag_string());
 }
 
 bool ChromeWebClient::IsAppSpecificURL(const GURL& url) const {
@@ -444,6 +468,7 @@ std::vector<web::JavaScriptFeature*> ChromeWebClient::GetJavaScriptFeatures(
   features.push_back(translate::TranslateJavaScriptFeature::GetInstance());
   features.push_back(WebPerformanceMetricsJavaScriptFeature::GetInstance());
   features.push_back(ChooseFileJavaScriptFeature::GetInstance());
+  features.push_back(EducationJavaScriptFeature::GetInstance());
   features.push_back(PageContextExtractorJavaScriptFeature::GetInstance());
   if (IsIOSDarkModeDetectionEnabled()) {
     features.push_back(DarkModeDetectionJavaScriptFeature::GetInstance());
@@ -454,6 +479,8 @@ std::vector<web::JavaScriptFeature*> ChromeWebClient::GetJavaScriptFeatures(
     features.push_back(
         actor::AttemptFormFillingToolJavaScriptFeature::GetInstance());
     features.push_back(actor::ClickToolJavaScriptFeature::GetInstance());
+    features.push_back(
+        actor::DragAndReleaseToolJavaScriptFeature::GetInstance());
     features.push_back(actor::ScrollToolJavaScriptFeature::GetInstance());
     features.push_back(actor::SelectToolJavaScriptFeature::GetInstance());
     features.push_back(actor::TypeToolJavaScriptFeature::GetInstance());
@@ -485,8 +512,16 @@ std::vector<web::JavaScriptFeature*> ChromeWebClient::GetJavaScriptFeatures(
     }
   }
 
-  if (IsAimCobrowseEligible(profile)) {
+  // Register the feature regardless of `IsAimCobrowseEligible()`: JavaScript
+  // features are configured only once per profile, but eligibility can change
+  // during the session (e.g. after sign-in or once the AIM eligibility
+  // response arrives). Cobrowse entry points check eligibility before use.
+  if (!profile->IsOffTheRecord() && IsAimCobrowseEnabled()) {
     features.push_back(AimCobrowseJavaScriptFeature::GetInstance());
+  }
+
+  if (ShouldRegisterDeviceTrust(profile)) {
+    features.push_back(DeviceTrustJavaScriptFeature::GetInstance());
   }
 
   return features;
@@ -525,6 +560,10 @@ void ChromeWebClient::PrepareErrorPage(
     DCHECK_EQ(kHttpsOnlyModeErrorCode, final_underlying_error.code);
     std::move(callback).Run(
         GetHttpsOnlyModeErrorPageHtml(web_state, navigation_id));
+  } else if ([final_underlying_error.domain
+                 isEqualToString:kEnterpriseProxyErrorDomain]) {
+    std::move(callback).Run(GetEnterpriseProxyErrorPageHtml(
+        web_state, url, error, is_post, is_off_the_record, navigation_id));
   } else if (ssl_info.has_value()) {
     IOSSSLErrorHandler::HandleSSLError(
         web_state, net::MapCertStatusToNetError(ssl_info.value().cert_status),
@@ -544,11 +583,8 @@ UIView* ChromeWebClient::GetWindowedContainer() {
 }
 
 bool ChromeWebClient::EnableFullscreenAPI() const {
-  // Only use the Fullscreen API on iOS 16.4+, which fixes serious crashes in
-  // earlier versions. Also, only enable on iPad to match expectations of the
-  // iOS web ecosystem.
-  return base::ios::IsRunningOnOrLater(16, 4, 0) &&
-         ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET;
+  // Only enable on iPad to match expectations of the iOS web ecosystem.
+  return ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET;
 }
 
 bool ChromeWebClient::EnableLongPressUIContextMenu() const {
@@ -571,7 +607,7 @@ web::UserAgentType ChromeWebClient::GetDefaultUserAgent(
   ProfileIOS* profile =
       ProfileIOS::FromBrowserState(web_state->GetBrowserState());
   HostContentSettingsMap* settings_map =
-      ios::HostContentSettingsMapFactory::GetForProfile(profile);
+      ios::HostContentSettingsMapFactory::GetForProfile(profile).get();
 
   bool use_desktop_agent = ShouldLoadUrlInDesktopMode(url, settings_map);
   return use_desktop_agent ? web::UserAgentType::DESKTOP
@@ -583,7 +619,7 @@ void ChromeWebClient::LogDefaultUserAgent(web::WebState* web_state,
   ProfileIOS* profile =
       ProfileIOS::FromBrowserState(web_state->GetBrowserState());
   HostContentSettingsMap* settings_map =
-      ios::HostContentSettingsMapFactory::GetForProfile(profile);
+      ios::HostContentSettingsMapFactory::GetForProfile(profile).get();
   bool use_desktop_agent = ShouldLoadUrlInDesktopMode(url, settings_map);
   base::UmaHistogramBoolean("IOS.PageLoad.DefaultModeMobile",
                             !use_desktop_agent);
@@ -596,7 +632,6 @@ void ChromeWebClient::CleanupNativeRestoreURLs(web::WebState* web_state) const {
     // title. When restoring the NTP, be sure to re-add the title below.
     web::NavigationItem* item = navigationManager->GetItemAtIndex(i);
     NewTabPageTabHelper::UpdateItem(item);
-
   }
 }
 
@@ -686,4 +721,56 @@ bool ChromeWebClient::IsSmoothScrollingSupported() const {
   // considered the same as FullscreenSmoothScrolling.
   return IsFullscreenRefactoringEnabled() ||
          ios::provider::IsFullscreenSmoothScrollingSupported();
+}
+
+web::UniversalOptOutState ChromeWebClient::GetUniversalOptOutState(
+    web::BrowserState* browser_state) const {
+  ProfileIOS* profile = ProfileIOS::FromBrowserState(browser_state);
+  CHECK(profile);
+  return universal_optout::GetUniversalOptOutState(
+      profile->GetPrefs(),
+      universal_optout::UniversalOptOutServiceFactory::GetForProfile(profile));
+}
+
+web::ExtensionController* ChromeWebClient::GetExtensionController(
+    web::BrowserState* browser_state) const {
+  ProfileIOS* profile = ProfileIOS::FromBrowserState(browser_state);
+  ExtensionService* service = ExtensionServiceFactory::GetForProfile(profile);
+  return service ? service->GetExtensionController() : nullptr;
+}
+
+bool ChromeWebClient::ShouldBlockUniversalLinksForURL(
+    web::BrowserState* browser_state,
+    const GURL& url) const {
+  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS() || !browser_state) {
+    return false;
+  }
+  ProfileIOS* profile = ProfileIOS::FromBrowserState(browser_state);
+  TemplateURLService* template_url_service =
+      ios::TemplateURLServiceFactory::GetForProfile(profile);
+  if (!template_url_service) {
+    return false;
+  }
+  const TemplateURL* default_provider =
+      template_url_service->GetDefaultSearchProvider();
+  if (!default_provider) {
+    return false;
+  }
+  const SearchTermsData& search_terms_data =
+      template_url_service->search_terms_data();
+  if (default_provider->IsSearchURL(url, search_terms_data)) {
+    return true;
+  }
+
+  // Match the DSE homepage/root URL while excluding non-search paths on the
+  // same origin (e.g., `https://www.google.com/maps/...`) and other
+  // subdomains (e.g., `maps.google.com`, `drive.google.com`) so native
+  // Universal Links are not blocked for non-search ecosystem apps.
+  GURL dse_url = default_provider->GenerateSearchURL(search_terms_data);
+  if (url::Origin::Create(url) == url::Origin::Create(dse_url) &&
+      (url.path().empty() || url.path() == "/")) {
+    return true;
+  }
+
+  return false;
 }

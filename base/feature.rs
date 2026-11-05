@@ -6,7 +6,7 @@
 //! (Detailed information on usage can be found on the comment for the
 //! macro itself, which is defined at the bottom of this file.)
 
-use std::ffi::c_char;
+use std::ffi::{c_char, c_void};
 use std::sync::atomic::AtomicU32;
 
 #[doc(hidden)]
@@ -16,6 +16,10 @@ pub mod internal {
     pub enum FeatureMacroHandshake {
         Secret,
     }
+
+    // LINT.IfChange(FeatureDefaultStateTag)
+    pub(super) const FEATURE_DEFAULT_STATE_TAG_MASK: usize = 0b11;
+    // LINT.ThenChange(feature_internal.h:FeatureDefaultStateTag)
 }
 
 /// Specifies whether a given feature is enabled or disabled by default.
@@ -24,7 +28,7 @@ pub mod internal {
 // `FEATURE_ENABLED_FOR_COUNTRIES`) defined in C++ are not supported for
 /// Rust-defined features and are omitted here.
 #[repr(i32)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeatureState {
     Disabled = 0,
     Enabled = 1,
@@ -40,24 +44,23 @@ pub struct Feature {
     /// The name of the feature. Private to enforce null-termination via the
     /// constructor.
     name: &'static c_char,
-    /// The default state of the feature.
-    pub default_state: FeatureState,
-    /// Cached override state, used by C++ FeatureList::IsEnabled.
-    /// Initialized to 0.
-    cached_value: AtomicU32,
+    /// Points into the writable state of the feature, used by C++
+    /// FeatureList::IsEnabled, at an offset equal to the default state. See
+    /// `Feature::tagged_state` in base/feature.h.
+    tagged_state: *const c_void,
 }
 
 // LINT.IfChange(FeatureStruct)
 const _: () = {
-    assert!(
-        std::mem::size_of::<Feature>()
-            == if std::mem::size_of::<*const ()>() == 8 { 16 } else { 12 }
-    );
+    assert!(std::mem::size_of::<Feature>() == 2 * std::mem::size_of::<*const ()>());
     assert!(std::mem::align_of::<Feature>() == std::mem::size_of::<*const ()>());
 
     assert!(std::mem::offset_of!(Feature, name) == 0);
-    assert!(std::mem::offset_of!(Feature, default_state) == std::mem::size_of::<*const ()>());
-    assert!(std::mem::offset_of!(Feature, cached_value) == std::mem::size_of::<*const ()>() + 4);
+    assert!(std::mem::offset_of!(Feature, tagged_state) == std::mem::size_of::<*const ()>());
+
+    // The default state is stored in the low bits of `tagged_state`.
+    assert!(std::mem::align_of::<AtomicU32>() > internal::FEATURE_DEFAULT_STATE_TAG_MASK);
+    assert!(FeatureState::Enabled as usize <= internal::FEATURE_DEFAULT_STATE_TAG_MASK);
 };
 // LINT.ThenChange(feature_list_unittest.cc:FeatureStruct)
 
@@ -70,6 +73,7 @@ impl Feature {
     #[doc(hidden)]
     pub const unsafe fn from_id(
         name: &'static str,
+        state: &'static AtomicU32,
         default_state: FeatureState,
         _handshake: internal::FeatureMacroHandshake,
     ) -> Self {
@@ -77,8 +81,13 @@ impl Feature {
             // Safety: name is guaranteed to be null-terminated.
             // We take a pointer here.
             name: unsafe { &*(name.as_ptr() as *const c_char) },
-            default_state,
-            cached_value: AtomicU32::new(0),
+            // Encode the default state in the low bits of the pointer, so that
+            // `state` can be zero-initialized. `AtomicU32` is 4-byte aligned,
+            // so this stays within `state`.
+            tagged_state: (state as *const AtomicU32)
+                .cast::<u8>()
+                .wrapping_add(default_state as usize)
+                .cast::<c_void>(),
         }
     }
 
@@ -86,19 +95,97 @@ impl Feature {
     pub fn is_enabled(&self) -> bool {
         ffi::FeatureList::IsEnabled(self.into())
     }
+
+    /// Return the feature's default state.
+    pub fn default_state(&self) -> FeatureState {
+        match self.tagged_state.addr() & internal::FEATURE_DEFAULT_STATE_TAG_MASK {
+            0 => FeatureState::Disabled,
+            1 => FeatureState::Enabled,
+            _ => unreachable!("Rust features do not support country-restricted defaults"),
+        }
+    }
 }
 
 impl<'a> From<&'a Feature> for &'a ffi::Feature {
     fn from(feature: &'a Feature) -> Self {
-        // Safety: Feature is ABI-compatible with ffi::Feature (checked by static
-        // asserts above).
+        // Safety: Feature is ABI-compatible with ffi::Feature (checked by
+        // static asserts above).
         unsafe { std::mem::transmute(feature) }
     }
 }
 
 // Safety: Feature is intended to be used as a global static and is thread-safe
-// thanks to the atomic cached_value.
+// thanks to the atomic state it points to.
 unsafe impl Sync for Feature {}
+
+/// A parameter for a `base::Feature`.
+///
+/// Feature parameters allow for tuning experiments from the server side via
+/// Finch.
+pub struct FeatureParam<T: 'static> {
+    pub feature: &'static Feature,
+    pub name: &'static str,
+    pub default_value: T,
+}
+
+impl<T: 'static> FeatureParam<T> {
+    /// Creates a new `FeatureParam<T>`.
+    pub const fn new(feature: &'static Feature, name: &'static str, default_value: T) -> Self {
+        Self { feature, name, default_value }
+    }
+}
+
+impl FeatureParam<bool> {
+    /// Returns the value of the parameter.
+    pub fn get(&self) -> bool {
+        ffi::get_bool_param(self.feature.into(), self.name, self.default_value)
+    }
+}
+
+impl FeatureParam<i32> {
+    /// Returns the value of the parameter.
+    pub fn get(&self) -> i32 {
+        ffi::get_int_param(self.feature.into(), self.name, self.default_value)
+    }
+}
+
+impl FeatureParam<f64> {
+    /// Returns the value of the parameter.
+    pub fn get(&self) -> f64 {
+        ffi::get_double_param(self.feature.into(), self.name, self.default_value)
+    }
+}
+
+impl FeatureParam<&'static str> {
+    /// Returns the value of the parameter.
+    pub fn get(&self) -> String {
+        ffi::get_string_param(self.feature.into(), self.name, self.default_value)
+    }
+}
+
+impl FeatureParam<String> {
+    /// Returns the value of the parameter.
+    pub fn get(&self) -> String {
+        ffi::get_string_param(self.feature.into(), self.name, &self.default_value)
+    }
+}
+
+/// TimeDelta in Rust is an alias to `std::time::Duration`.
+pub type TimeDelta = std::time::Duration;
+
+impl FeatureParam<std::time::Duration> {
+    /// Returns the value of the parameter.
+    pub fn get(&self) -> std::time::Duration {
+        let default_micros: i64 = self.default_value.as_micros().try_into().unwrap_or(i64::MAX);
+        let result_micros =
+            ffi::get_time_delta_param(self.feature.into(), self.name, default_micros);
+        if result_micros <= 0 {
+            std::time::Duration::ZERO
+        } else {
+            std::time::Duration::from_micros(result_micros as u64)
+        }
+    }
+}
 
 #[cxx::bridge(namespace = "base")]
 // Public so other crates can use the Feature type in their own cxx bridges
@@ -107,6 +194,7 @@ pub mod ffi {
     unsafe extern "C++" {
         include!("base/feature.h");
         include!("base/feature_list.h");
+        include!("base/feature_rust_shim.h");
         type Feature;
 
         #[namespace = "base"]
@@ -114,6 +202,41 @@ pub mod ffi {
 
         #[Self = "FeatureList"]
         fn IsEnabled(feature: &Feature) -> bool;
+
+        #[rust_name = "get_bool_param"]
+        fn GetFieldTrialParamByFeatureAsBoolShim(
+            feature: &Feature,
+            param_name: &str,
+            default_value: bool,
+        ) -> bool;
+
+        #[rust_name = "get_int_param"]
+        fn GetFieldTrialParamByFeatureAsIntShim(
+            feature: &Feature,
+            param_name: &str,
+            default_value: i32,
+        ) -> i32;
+
+        #[rust_name = "get_double_param"]
+        fn GetFieldTrialParamByFeatureAsDoubleShim(
+            feature: &Feature,
+            param_name: &str,
+            default_value: f64,
+        ) -> f64;
+
+        #[rust_name = "get_string_param"]
+        fn GetFieldTrialParamByFeatureAsStringShim(
+            feature: &Feature,
+            param_name: &str,
+            default_value: &str,
+        ) -> String;
+
+        #[rust_name = "get_time_delta_param"]
+        fn GetFieldTrialParamByFeatureAsTimeDeltaInMicrosecondsShim(
+            feature: &Feature,
+            param_name: &str,
+            default_value_micros: i64,
+        ) -> i64;
     }
 }
 
@@ -149,13 +272,64 @@ macro_rules! base_feature {
     ($id:ident, $default:expr) => {
         #[unsafe(no_mangle)]
         #[allow(non_upper_case_globals)]
-        pub static $id: $crate::Feature = unsafe {
-            // Safety: The string constructed here is explicitly null-terminated.
-            $crate::Feature::from_id(
-                concat!(stringify!($id), "\0"),
-                $default,
-                $crate::internal::FeatureMacroHandshake::Secret,
-            )
+        // LINT.IfChange(FeatureSection)
+        #[cfg_attr(
+            any(
+                target_os = "android",
+                target_os = "linux",
+                target_os = "chromeos",
+                target_os = "fuchsia"
+            ),
+            unsafe(link_section = ".data.rel.ro..cr_features")
+        )]
+        // LINT.ThenChange(feature_internal.h:FeatureSection)
+        pub static $id: $crate::Feature = {
+            use ::std::sync::atomic::AtomicU32;
+
+            // LINT.IfChange(FeatureStateSection)
+            #[cfg_attr(target_os = "windows", unsafe(link_section = ".data$cr_feature_states"))]
+            // LINT.ThenChange(feature_internal.h:FeatureStateSection)
+            static STATE: AtomicU32 = AtomicU32::new(0);
+            unsafe {
+                // Safety: The string constructed here is explicitly
+                // null-terminated.
+                $crate::Feature::from_id(
+                    concat!(stringify!($id), "\0"),
+                    &STATE,
+                    $default,
+                    $crate::internal::FeatureMacroHandshake::Secret,
+                )
+            }
         };
+    };
+}
+
+/// The macro for defining base::FeatureParams in Rust is `base_feature_param!`.
+///
+/// - `$id` is the parameter's identifier.
+/// - `$name` is the string name of the parameter in Finch configurations.
+/// - `$type` is the type of the parameter (`bool`, `i32`, `f64`, `&'static
+///   str`, `String`, or `TimeDelta` / `std::time::Duration`).
+/// - `$feature` is a reference to the associated `Feature` (e.g. `&MyFeature`).
+/// - `$default` is the default value to return when the parameter is not set.
+///
+/// # Usage:
+///
+/// ```rust
+/// use feature::{base_feature, base_feature_param, FeatureState};
+///
+/// base_feature!(MyFeature, FeatureState::Disabled);
+/// base_feature_param!(MyTimeoutParam, i32, &MyFeature, "timeout_ms", 100);
+///
+/// if MyFeature.is_enabled() {
+///     let timeout = MyTimeoutParam.get();
+/// }
+/// ```
+#[macro_export]
+macro_rules! base_feature_param {
+    ($id:ident, $type:ty, $feature:expr, $name:expr, $default:expr) => {
+        #[allow(non_upper_case_globals)]
+        pub static $id: $crate::FeatureParam<$type> =
+            $crate::FeatureParam::new($feature, $name, $default);
     };
 }

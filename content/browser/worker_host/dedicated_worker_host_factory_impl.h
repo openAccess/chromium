@@ -5,6 +5,7 @@
 #ifndef CONTENT_BROWSER_WORKER_HOST_DEDICATED_WORKER_HOST_FACTORY_IMPL_H_
 #define CONTENT_BROWSER_WORKER_HOST_DEDICATED_WORKER_HOST_FACTORY_IMPL_H_
 
+#include "base/memory/self_deleting.h"
 #include "content/browser/network/cross_origin_embedder_policy_reporter.h"
 #include "content/browser/renderer_host/policy_container_host.h"
 #include "content/common/content_export.h"
@@ -60,12 +61,6 @@ class CONTENT_EXPORT DedicatedWorkerHostFactoryImpl final
       base::WeakPtr<CrossOriginEmbedderPolicyReporter> creator_coep_reporter,
       const base::UnguessableToken& creator_network_restrictions_id);
 
-  DedicatedWorkerHostFactoryImpl(const DedicatedWorkerHostFactoryImpl&) =
-      delete;
-  DedicatedWorkerHostFactoryImpl& operator=(
-      const DedicatedWorkerHostFactoryImpl&) = delete;
-
- private:
   DedicatedWorkerHostFactoryImpl(
       RenderFrameHost& ancestor_render_frame_host,
       mojo::PendingReceiver<blink::mojom::DedicatedWorkerHostFactory> receiver,
@@ -77,8 +72,15 @@ class CONTENT_EXPORT DedicatedWorkerHostFactoryImpl final
       network::mojom::ClientSecurityStatePtr creator_client_security_state,
       const PolicyContainerPolicies& creator_policies,
       base::WeakPtr<CrossOriginEmbedderPolicyReporter> creator_coep_reporter,
-      const base::UnguessableToken& creator_network_restrictions_id);
+      const base::UnguessableToken& creator_network_restrictions_id,
+      base::SelfDeletingPassKey key);
 
+  DedicatedWorkerHostFactoryImpl(const DedicatedWorkerHostFactoryImpl&) =
+      delete;
+  DedicatedWorkerHostFactoryImpl& operator=(
+      const DedicatedWorkerHostFactoryImpl&) = delete;
+
+ private:
   // `this` can only be destroyed by DocumentService.
   ~DedicatedWorkerHostFactoryImpl() override;
 
@@ -91,8 +93,7 @@ class CONTENT_EXPORT DedicatedWorkerHostFactoryImpl final
           outside_fetch_client_settings_object,
       mojo::PendingRemote<blink::mojom::BlobURLToken> blob_url_token,
       mojo::PendingRemote<blink::mojom::DedicatedWorkerHostFactoryClient>
-          client,
-      net::StorageAccessApiStatus storage_access_api_status) override;
+          client) override;
 
   // The ID of the RenderProcessHost where the worker will live.
   const ChildProcessId worker_process_id_;

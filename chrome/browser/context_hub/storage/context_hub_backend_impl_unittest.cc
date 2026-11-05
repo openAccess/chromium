@@ -12,6 +12,7 @@
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "chrome/browser/context_hub/memory_bank/memory_bank_entry.h"
+#include "components/passage_embeddings/core/passage_embeddings_types.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -43,12 +44,13 @@ TEST_F(ContextHubBackendImplTest, SaveTabAndRetrieve) {
   entry.url = GURL("https://example.com");
   entry.tab_title = "Example";
   entry.selected_text = "Page content";
+  entry.image_url = GURL("https://example.com/image.png");
   entry.note = "Test Note";
   entry.collection = "Research";
 
-  base::test::TestFuture<bool> save_future;
+  base::test::TestFuture<std::optional<int64_t>> save_future;
   backend_->AddOrUpdateMemoryBankEntry(entry, save_future.GetCallback());
-  ASSERT_TRUE(save_future.Get());
+  ASSERT_THAT(save_future.Get(), testing::Optional(1));
 
   base::test::TestFuture<std::vector<MemoryBankEntry>> get_future;
   backend_->GetAllMemoryBankEntries(get_future.GetCallback());
@@ -59,6 +61,9 @@ TEST_F(ContextHubBackendImplTest, SaveTabAndRetrieve) {
   EXPECT_EQ("Example", entries[0].tab_title);
   ASSERT_TRUE(entries[0].selected_text.has_value());
   EXPECT_EQ("Page content", entries[0].selected_text.value());
+  ASSERT_TRUE(entries[0].image_url.has_value());
+  EXPECT_EQ(GURL("https://example.com/image.png"),
+            entries[0].image_url.value());
   ASSERT_TRUE(entries[0].note.has_value());
   EXPECT_EQ("Test Note", entries[0].note.value());
   ASSERT_TRUE(entries[0].collection.has_value());
@@ -73,9 +78,9 @@ TEST_F(ContextHubBackendImplTest, SaveTextSelectionAndDelete) {
   entry.tab_title = "Google";
   entry.selected_text = "Search text";
 
-  base::test::TestFuture<bool> save_future;
+  base::test::TestFuture<std::optional<int64_t>> save_future;
   backend_->AddOrUpdateMemoryBankEntry(entry, save_future.GetCallback());
-  ASSERT_TRUE(save_future.Get());
+  ASSERT_THAT(save_future.Get(), testing::Optional(1));
 
   base::test::TestFuture<std::vector<MemoryBankEntry>> get_future;
   backend_->GetAllMemoryBankEntries(get_future.GetCallback());
@@ -104,14 +109,14 @@ TEST_F(ContextHubBackendImplTest, OperationsQueuedBeforeInit) {
   entry.tab_title = "Queued Tab";
 
   // Queue add, delete, and get operations before running task environment.
-  base::test::TestFuture<bool> save_future;
+  base::test::TestFuture<std::optional<int64_t>> save_future;
   backend->AddOrUpdateMemoryBankEntry(entry, save_future.GetCallback());
 
   base::test::TestFuture<std::vector<MemoryBankEntry>> get_future;
   backend->GetAllMemoryBankEntries(get_future.GetCallback());
 
   // Wait for queued operations to process once initialization completes.
-  ASSERT_TRUE(save_future.Get());
+  ASSERT_THAT(save_future.Get(), testing::Optional(1));
 
   auto entries = get_future.Get();
   ASSERT_EQ(1u, entries.size());
@@ -140,13 +145,13 @@ TEST_F(ContextHubBackendImplTest, GetMemoryBankEntriesByIds) {
   entry2.url = GURL("https://example.com/2");
   entry2.tab_title = "Tab 2";
 
-  base::test::TestFuture<bool> save_future1;
+  base::test::TestFuture<std::optional<int64_t>> save_future1;
   backend_->AddOrUpdateMemoryBankEntry(entry1, save_future1.GetCallback());
-  ASSERT_TRUE(save_future1.Get());
+  ASSERT_THAT(save_future1.Get(), testing::Optional(1));
 
-  base::test::TestFuture<bool> save_future2;
+  base::test::TestFuture<std::optional<int64_t>> save_future2;
   backend_->AddOrUpdateMemoryBankEntry(entry2, save_future2.GetCallback());
-  ASSERT_TRUE(save_future2.Get());
+  ASSERT_THAT(save_future2.Get(), testing::Optional(2));
 
   base::test::TestFuture<std::vector<MemoryBankEntry>> all_future;
   backend_->GetAllMemoryBankEntries(all_future.GetCallback());
@@ -175,13 +180,13 @@ TEST_F(ContextHubBackendImplTest, GetAllMemoryBankTags) {
   entry2.url = GURL("https://example.com/2");
   entry2.tags = {"tag2", "tag3"};
 
-  base::test::TestFuture<bool> save_future1;
+  base::test::TestFuture<std::optional<int64_t>> save_future1;
   backend_->AddOrUpdateMemoryBankEntry(entry1, save_future1.GetCallback());
-  ASSERT_TRUE(save_future1.Get());
+  ASSERT_THAT(save_future1.Get(), testing::Optional(1));
 
-  base::test::TestFuture<bool> save_future2;
+  base::test::TestFuture<std::optional<int64_t>> save_future2;
   backend_->AddOrUpdateMemoryBankEntry(entry2, save_future2.GetCallback());
-  ASSERT_TRUE(save_future2.Get());
+  ASSERT_THAT(save_future2.Get(), testing::Optional(2));
 
   base::test::TestFuture<const std::vector<std::string>&> tags_future;
   backend_->GetAllMemoryBankTags(tags_future.GetCallback());
@@ -202,17 +207,68 @@ TEST_F(ContextHubBackendImplTest, GetAllMemoryBankCollections) {
   entry2.url = GURL("https://example.com/2");
   entry2.collection = "Recipes";
 
-  base::test::TestFuture<bool> save_future1;
+  base::test::TestFuture<std::optional<int64_t>> save_future1;
   backend_->AddOrUpdateMemoryBankEntry(entry1, save_future1.GetCallback());
-  ASSERT_TRUE(save_future1.Get());
+  ASSERT_THAT(save_future1.Get(), testing::Optional(1));
 
-  base::test::TestFuture<bool> save_future2;
+  base::test::TestFuture<std::optional<int64_t>> save_future2;
   backend_->AddOrUpdateMemoryBankEntry(entry2, save_future2.GetCallback());
-  ASSERT_TRUE(save_future2.Get());
+  ASSERT_THAT(save_future2.Get(), testing::Optional(2));
 
   base::test::TestFuture<const std::vector<std::string>&> coll_future;
   backend_->GetAllMemoryBankCollections(coll_future.GetCallback());
   EXPECT_THAT(coll_future.Get(), testing::ElementsAre("Recipes", "Research"));
+}
+
+TEST_F(ContextHubBackendImplTest, AddMemoryBankEmbeddings) {
+  MemoryBankEntry entry;
+  entry.type = MemoryBankType::kTab;
+  entry.timestamp = base::Time::FromSecondsSinceUnixEpoch(1000);
+  entry.url = GURL("https://example.com");
+  entry.tab_title = "Example";
+
+  base::test::TestFuture<std::optional<int64_t>> save_future;
+  backend_->AddOrUpdateMemoryBankEntry(entry, save_future.GetCallback());
+  ASSERT_THAT(save_future.Get(), testing::Optional(1));
+
+  base::test::TestFuture<std::vector<MemoryBankEntry>> get_entries_future;
+  backend_->GetAllMemoryBankEntries(get_entries_future.GetCallback());
+  std::vector<MemoryBankEntry> entries = get_entries_future.Get();
+  ASSERT_EQ(1u, entries.size());
+  int64_t entry_id = entries[0].id;
+
+  base::test::TestFuture<std::vector<int64_t>> missing_embeddings_future1;
+  backend_->GetMemoryBankEntryIdsWithoutEmbeddings(
+      missing_embeddings_future1.GetCallback());
+  EXPECT_THAT(missing_embeddings_future1.Get(), testing::ElementsAre(entry_id));
+
+  base::test::TestFuture<bool> version_future1;
+  backend_->SetMemoryBankEmbeddingsVersion(1, version_future1.GetCallback());
+  ASSERT_TRUE(version_future1.Get());
+
+  std::vector<passage_embeddings::Embedding> embeddings = {
+      passage_embeddings::Embedding(std::vector<float>{0.6f, 0.8f}),
+      passage_embeddings::Embedding(std::vector<float>{0.8f, 0.6f}),
+  };
+  base::test::TestFuture<bool> add_emb_future;
+  backend_->AddOrUpdateMemoryBankEmbeddings(entry_id, embeddings,
+                                            add_emb_future.GetCallback());
+  ASSERT_TRUE(add_emb_future.Get());
+
+  base::test::TestFuture<std::vector<int64_t>> missing_embeddings_future2;
+  backend_->GetMemoryBankEntryIdsWithoutEmbeddings(
+      missing_embeddings_future2.GetCallback());
+  EXPECT_TRUE(missing_embeddings_future2.Get().empty());
+
+  // Changing the embeddings version drops stored embeddings.
+  base::test::TestFuture<bool> version_future2;
+  backend_->SetMemoryBankEmbeddingsVersion(2, version_future2.GetCallback());
+  ASSERT_TRUE(version_future2.Get());
+
+  base::test::TestFuture<std::vector<int64_t>> missing_embeddings_future3;
+  backend_->GetMemoryBankEntryIdsWithoutEmbeddings(
+      missing_embeddings_future3.GetCallback());
+  EXPECT_THAT(missing_embeddings_future3.Get(), testing::ElementsAre(entry_id));
 }
 
 }  // namespace context_hub

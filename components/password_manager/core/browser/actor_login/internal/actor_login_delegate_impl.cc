@@ -81,7 +81,7 @@ void ActorLoginDelegateImpl::RemoveFromUserDataForTesting(
 
 void ActorLoginDelegateImpl::GetCredentials(
     bool has_sign_in_with_google_button,
-    base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger,
+    scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger,
     CredentialsOrErrorReply callback) {
   CHECK(callback);
 
@@ -154,20 +154,13 @@ void ActorLoginDelegateImpl::GetCredentials(
 void ActorLoginDelegateImpl::AttemptLogin(
     const Credential& credential,
     bool should_store_permission,
-    base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger,
+    scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger,
     base::TimeTicks attempt_login_tool_start_time,
     FrameFillingStartedCallback frame_filling_started_cb,
     LoginStatusResultOrErrorReply done_callback,
     base::WeakPtr<ActionSequenceDelegate> action_sequence_delegate) {
   CHECK(done_callback);
 
-#if BUILDFLAG(IS_ANDROID)
-  if (base::FeatureList::IsEnabled(
-          password_manager::features::
-              kActorLoginNoPermanentPermissionsAndroid)) {
-    should_store_permission = false;
-  }
-#endif
 
   // One request at a time mechanism using pending callbacks.
   // Check if either callback is currently active.

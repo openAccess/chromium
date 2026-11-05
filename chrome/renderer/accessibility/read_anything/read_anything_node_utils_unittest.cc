@@ -4,18 +4,16 @@
 
 #include "chrome/renderer/accessibility/read_anything/read_anything_node_utils.h"
 
-#include <cinttypes>
 #include <string>
 
 #include "base/test/scoped_feature_list.h"
-#include "read_anything_node_utils.h"
-#include "read_anything_test_utils.h"
+#include "chrome/renderer/accessibility/read_anything/read_anything_test_utils.h"
+#include "services/strings/grit/services_strings.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_node_data.h"
-#include "ui/accessibility/ax_node_position.h"
 #include "ui/accessibility/ax_tree.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -80,6 +78,19 @@ TEST_F(ReadAnythingNodeUtilsTest, GetTextContent_PDF_FiltersReturnCharacters) {
   EXPECT_EQ(text.length(), sentence.length());
   EXPECT_EQ(text.find('\n'), std::string::npos);
   EXPECT_EQ(text.find('\r'), std::string::npos);
+}
+
+TEST_F(ReadAnythingNodeUtilsTest, GetTextContent_ListMarkerReturnsName) {
+  static constexpr ui::AXNodeID kId = 2;
+  ui::AXNodeData data;
+  data.id = kId;
+  data.role = ax::mojom::Role::kListMarker;
+  data.AddStringAttribute(ax::mojom::StringAttribute::kName, "5. ");
+  ui::AXTree tree;
+  ui::AXNode node(&tree, nullptr, kId, 0);
+  node.SetData(std::move(data));
+  EXPECT_EQ(u"5. ",
+            a11y::GetTextContent(&node, /*is_pdf=*/true, /*is_docs=*/false));
 }
 
 TEST_F(ReadAnythingNodeUtilsTest,
@@ -311,6 +322,19 @@ TEST_F(ReadAnythingNodeUtilsTest,
   EXPECT_NE(text.find('\r'), std::string::npos);
 }
 
+TEST_F(ReadAnythingNodeUtilsTest,
+       GetTextContent_WhitespaceOnlyNode_NormalizesNonBreakingSpace) {
+  static constexpr ui::AXNodeID kId = 2;
+  ui::AXNodeData data = test::TextNode(kId, u"\u00A0");
+  ui::AXTree tree;
+  ui::AXNode node(&tree, nullptr, kId, 0);
+  node.SetData(std::move(data));
+
+  std::u16string text =
+      a11y::GetTextContent(&node, /*is_pdf=*/false, /*is_docs=*/false);
+  EXPECT_EQ(text, u" ");
+}
+
 TEST_F(ReadAnythingNodeUtilsTest, IsIgnored_ReturnsTrueWhenAXNodeIsIgnored) {
   static constexpr ui::AXNodeID kId = 2;
   ui::AXNodeData data = test::TextNode(kId);
@@ -352,6 +376,156 @@ TEST_F(ReadAnythingNodeUtilsTest, IsIgnored_ControlElementsIgnored) {
   // Select field nodes are ignored
   node.SetData(std::move(select_data));
   EXPECT_TRUE(a11y::IsIgnored(&node, false));
+}
+
+TEST_F(ReadAnythingNodeUtilsTest, IsIgnored_PdfOcrStartAndEndNodes) {
+  static constexpr ui::AXNodeID kRootId = 1;
+  static constexpr ui::AXNodeID kOcrBannerId = 2;
+  static constexpr ui::AXNodeID kOcrBannerTextId = 3;
+  static constexpr ui::AXNodeID kNonOcrBannerId = 4;
+  static constexpr ui::AXNodeID kNonOcrBannerTextId = 5;
+  static constexpr ui::AXNodeID kOcrContentInfoId = 6;
+  static constexpr ui::AXNodeID kOcrContentInfoTextId = 7;
+  static constexpr ui::AXNodeID kNonOcrContentInfoId = 8;
+  static constexpr ui::AXNodeID kNonOcrContentInfoTextId = 9;
+
+  ui::AXTree tree;
+  ui::AXTreeUpdate update;
+  update.root_id = kRootId;
+  update.nodes = {
+      test::GenericContainerNode(
+          kRootId, {kOcrBannerId, kNonOcrBannerId, kOcrContentInfoId,
+                    kNonOcrContentInfoId}),
+      test::ContainerNode(kOcrBannerId, ax::mojom::Role::kBanner,
+                          {kOcrBannerTextId}),
+      test::TextNode(kOcrBannerTextId,
+                     l10n_util::GetStringUTF16(IDS_PDF_OCR_RESULT_BEGIN)),
+      test::ContainerNode(kNonOcrBannerId, ax::mojom::Role::kBanner,
+                          {kNonOcrBannerTextId}),
+      test::TextNode(kNonOcrBannerTextId, u"Regular banner text"),
+      test::ContainerNode(kOcrContentInfoId, ax::mojom::Role::kContentInfo,
+                          {kOcrContentInfoTextId}),
+      test::TextNode(kOcrContentInfoTextId,
+                     l10n_util::GetStringUTF16(IDS_PDF_OCR_RESULT_END)),
+      test::ContainerNode(kNonOcrContentInfoId, ax::mojom::Role::kContentInfo,
+                          {kNonOcrContentInfoTextId}),
+      test::TextNode(kNonOcrContentInfoTextId, u"Regular content info text")};
+  ASSERT_TRUE(tree.Unserialize(update));
+
+  // Both the OCR start `kBanner` and its child text node are ignored in PDFs.
+  EXPECT_TRUE(a11y::IsIgnored(tree.GetFromId(kOcrBannerId), /*is_pdf=*/true));
+  EXPECT_TRUE(
+      a11y::IsIgnored(tree.GetFromId(kOcrBannerTextId), /*is_pdf=*/true));
+  EXPECT_FALSE(a11y::IsIgnored(tree.GetFromId(kOcrBannerId), /*is_pdf=*/false));
+  EXPECT_FALSE(
+      a11y::IsIgnored(tree.GetFromId(kOcrBannerTextId), /*is_pdf=*/false));
+
+  // The OCR end `kContentInfo` is kept (for `<br>` insertion), while its child
+  // text node is ignored in PDFs.
+  EXPECT_FALSE(
+      a11y::IsIgnored(tree.GetFromId(kOcrContentInfoId), /*is_pdf=*/true));
+  EXPECT_TRUE(
+      a11y::IsIgnored(tree.GetFromId(kOcrContentInfoTextId), /*is_pdf=*/true));
+  EXPECT_FALSE(
+      a11y::IsIgnored(tree.GetFromId(kOcrContentInfoTextId), /*is_pdf=*/false));
+
+  // Non-OCR banner, content info, and container nodes are not ignored.
+  EXPECT_FALSE(
+      a11y::IsIgnored(tree.GetFromId(kNonOcrBannerId), /*is_pdf=*/true));
+  EXPECT_FALSE(
+      a11y::IsIgnored(tree.GetFromId(kNonOcrBannerTextId), /*is_pdf=*/true));
+  EXPECT_FALSE(
+      a11y::IsIgnored(tree.GetFromId(kNonOcrContentInfoId), /*is_pdf=*/true));
+  EXPECT_FALSE(a11y::IsIgnored(tree.GetFromId(kNonOcrContentInfoTextId),
+                               /*is_pdf=*/true));
+  EXPECT_FALSE(a11y::IsIgnored(tree.GetFromId(kRootId), /*is_pdf=*/true));
+}
+
+TEST_F(ReadAnythingNodeUtilsTest, IsPdfArtifact_SectionHeaderAndFooter) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kPdfAccessibilityHeuristicEnhancements);
+
+  static constexpr ui::AXNodeID kRootId = 1;
+  static constexpr ui::AXNodeID kHeaderId = 2;
+  static constexpr ui::AXNodeID kHeaderTextId = 3;
+  static constexpr ui::AXNodeID kFooterId = 4;
+  static constexpr ui::AXNodeID kFooterWrapperId = 5;
+  static constexpr ui::AXNodeID kFooterTextId = 6;
+  static constexpr ui::AXNodeID kParagraphId = 7;
+  static constexpr ui::AXNodeID kParagraphTextId = 8;
+
+  ui::AXNodeData root_data;
+  root_data.id = kRootId;
+  root_data.role = ax::mojom::Role::kRootWebArea;
+  root_data.child_ids = {kHeaderId, kFooterId, kParagraphId};
+
+  ui::AXNodeData header_data;
+  header_data.id = kHeaderId;
+  header_data.role = ax::mojom::Role::kSectionHeader;
+  header_data.child_ids = {kHeaderTextId};
+
+  ui::AXNodeData header_text = test::TextNode(kHeaderTextId, u"Header text");
+
+  // The footer text is nested below a wrapper to cover text that is not a
+  // direct child of the footer.
+  ui::AXNodeData footer_data;
+  footer_data.id = kFooterId;
+  footer_data.role = ax::mojom::Role::kSectionFooter;
+  footer_data.child_ids = {kFooterWrapperId};
+
+  ui::AXNodeData footer_wrapper = test::GenericContainerNode(kFooterWrapperId);
+  footer_wrapper.child_ids = {kFooterTextId};
+
+  ui::AXNodeData footer_text = test::TextNode(kFooterTextId, u"Footer text");
+
+  ui::AXNodeData paragraph_data;
+  paragraph_data.id = kParagraphId;
+  paragraph_data.role = ax::mojom::Role::kParagraph;
+  paragraph_data.child_ids = {kParagraphTextId};
+
+  ui::AXNodeData paragraph_text =
+      test::TextNode(kParagraphTextId, u"Paragraph text");
+
+  ui::AXTree tree;
+  ui::AXTreeUpdate update;
+  update.root_id = kRootId;
+  update.nodes = {root_data,      header_data, header_text,    footer_data,
+                  footer_wrapper, footer_text, paragraph_data, paragraph_text};
+  tree.Unserialize(update);
+
+  // Section header, footer, and all of their descendants are artifacts when
+  // heuristic enhancements are enabled.
+  EXPECT_TRUE(a11y::IsPdfArtifact(tree.GetFromId(kHeaderId)));
+  EXPECT_TRUE(a11y::IsPdfArtifact(tree.GetFromId(kHeaderTextId)));
+  EXPECT_TRUE(a11y::IsPdfArtifact(tree.GetFromId(kFooterId)));
+  EXPECT_TRUE(a11y::IsPdfArtifact(tree.GetFromId(kFooterWrapperId)));
+  EXPECT_TRUE(a11y::IsPdfArtifact(tree.GetFromId(kFooterTextId)));
+
+  // Artifacts are not ignored so select-to-distill can still show them.
+  EXPECT_FALSE(a11y::IsIgnored(tree.GetFromId(kHeaderId), /*is_pdf=*/true));
+  EXPECT_FALSE(a11y::IsIgnored(tree.GetFromId(kHeaderTextId), /*is_pdf=*/true));
+  EXPECT_FALSE(a11y::IsIgnored(tree.GetFromId(kFooterId), /*is_pdf=*/true));
+  EXPECT_FALSE(a11y::IsIgnored(tree.GetFromId(kFooterTextId), /*is_pdf=*/true));
+
+  // Regular paragraph and its text are not artifacts.
+  EXPECT_FALSE(a11y::IsPdfArtifact(tree.GetFromId(kParagraphId)));
+  EXPECT_FALSE(a11y::IsPdfArtifact(tree.GetFromId(kParagraphTextId)));
+}
+
+TEST_F(ReadAnythingNodeUtilsTest,
+       IsPdfArtifact_HeuristicEnhancementsDisabled_ReturnsFalse) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kPdfAccessibilityHeuristicEnhancements);
+
+  ui::AXNodeData data;
+  data.id = 2;
+  data.role = ax::mojom::Role::kSectionHeader;
+  ui::AXTree tree;
+  ui::AXNode node(&tree, nullptr, 2, 0);
+  node.SetData(std::move(data));
+  EXPECT_FALSE(a11y::IsPdfArtifact(&node));
 }
 
 TEST_F(ReadAnythingNodeUtilsTest, IsSuperscript) {
@@ -541,6 +715,47 @@ TEST_F(ReadAnythingNodeUtilsTest, GetHtmlTagForPdf_StaticTextReturnsEmptyTag) {
   ui::AXNode node(&tree, nullptr, 2, 0);
   node.SetData(std::move(data));
   EXPECT_EQ(a11y::GetHtmlTagForPDF(&node, "span"), "");
+}
+
+TEST_F(ReadAnythingNodeUtilsTest, GetHtmlTagForPdf_StaticTextScriptHasNoTag) {
+  base::test::ScopedFeatureList feature_list(
+      features::kPdfAccessibilityHeuristicEnhancements);
+
+  // Superscripts and subscripts are wrapped by the WebUI around the text node
+  // itself, so the static text node must keep an empty tag. Otherwise reading
+  // mode builds an element and recurses into the node's inline text boxes,
+  // which it does not render, dropping the text.
+  ui::AXNodeData sup_data = test::TextNode(2);
+  sup_data.role = ax::mojom::Role::kStaticText;
+  sup_data.SetTextPosition(ax::mojom::TextPosition::kSuperscript);
+  ui::AXTree sup_tree;
+  ui::AXNode sup_node(&sup_tree, nullptr, 2, 0);
+  sup_node.SetData(std::move(sup_data));
+  EXPECT_EQ(a11y::GetHtmlTagForPDF(&sup_node, "span"), "");
+
+  ui::AXNodeData sub_data = test::TextNode(3);
+  sub_data.role = ax::mojom::Role::kStaticText;
+  sub_data.SetTextPosition(ax::mojom::TextPosition::kSubscript);
+  ui::AXTree sub_tree;
+  ui::AXNode sub_node(&sub_tree, nullptr, 3, 0);
+  sub_node.SetData(std::move(sub_data));
+  EXPECT_EQ(a11y::GetHtmlTagForPDF(&sub_node, "span"), "");
+}
+
+TEST_F(ReadAnythingNodeUtilsTest, IsSubscript) {
+  ui::AXNodeData data = test::TextNode(2);
+  ui::AXTree tree;
+  ui::AXNode node(&tree, nullptr, 2, 0);
+  node.SetData(data);
+  EXPECT_FALSE(a11y::IsSubscript(&node));
+
+  data.SetTextPosition(ax::mojom::TextPosition::kSuperscript);
+  node.SetData(data);
+  EXPECT_FALSE(a11y::IsSubscript(&node));
+
+  data.SetTextPosition(ax::mojom::TextPosition::kSubscript);
+  node.SetData(data);
+  EXPECT_TRUE(a11y::IsSubscript(&node));
 }
 
 TEST_F(ReadAnythingNodeUtilsTest, GetHtmlTagForPdf_ContentInfoReturnsBr) {

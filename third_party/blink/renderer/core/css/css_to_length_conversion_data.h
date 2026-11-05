@@ -339,6 +339,8 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
     kSiblingRelative = 1u << 19,
     // random() without element-shared
     kElementDependentRandom = 1u << 20,
+    // anchor(), anchor-size() referencing default anchor
+    kDefaultAnchorRelative = 1u << 21,
     // Adjust the Flags type above if adding more bits below.
   };
 
@@ -412,6 +414,7 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
   }
 
   void ReferenceAnchor() const override;
+  void ReferenceDefaultAnchor() const override;
   void ReferenceSibling() const override;
 
   void ReferenceElementDependentRandom() const override;
@@ -443,6 +446,17 @@ class CORE_EXPORT CSSToLengthConversionData : public CSSLengthResolver {
   CSSToLengthConversionData Unzoomed() const {
     return CopyWithAdjustedZoom(1.0f);
   }
+
+  // Returns the viewport sizes, recording the viewport-unit dependencies
+  // present in `types` so that the resulting style is invalidated when the
+  // viewport is resized.
+  //
+  // This is for values that are not resolved during style resolution (e.g.
+  // gradient color stops), and which therefore never reach the
+  // ViewportWidth()/ViewportHeight()/etc. accessors that record the
+  // dependency themselves.
+  const ViewportSize& ViewportSizes(
+      const CSSPrimitiveValue::LengthTypeFlags& types) const;
 
  private:
   void SetFlag(Flag flag) const {

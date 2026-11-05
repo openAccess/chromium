@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/enterprise/cloud_content_scanning/model/cloud_content_scanning_helper.h"
 
+#import <optional>
+
 #import "base/check.h"
 #import "base/files/file_path.h"
 #import "base/functional/bind.h"
@@ -38,6 +40,7 @@
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ios/web/public/navigation/navigation_context.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_observer.h"
 #import "ios/web/public/web_state_user_data.h"
@@ -187,6 +190,14 @@ class PendingScanDecision : public web::WebStateUserData<PendingScanDecision>,
     web_state_ = nullptr;
   }
 
+  void DidStartNavigation(web::WebState* web_state,
+                          web::NavigationContext* navigation_context) override {
+    CHECK_EQ(web_state_, web_state);
+    if (!navigation_context->IsSameDocument()) {
+      web_state_->RemoveUserData(UserDataKey());
+    }
+  }
+
  private:
   friend class web::WebStateUserData<PendingScanDecision>;
 
@@ -301,7 +312,7 @@ FileDownloadScanningResources::FileDownloadScanningResources(
 FileDownloadScanningResources& FileDownloadScanningResources::operator=(
     FileDownloadScanningResources&&) = default;
 
-FileDownloadScanningResources PrepareCloudContentScanning(
+std::unique_ptr<FileDownloadScanningResources> PrepareCloudContentScanning(
     web::WebState* web_state,
     const GURL& url,
     const base::FilePath& file_path,
@@ -323,7 +334,6 @@ FileDownloadScanningResources PrepareCloudContentScanning(
 
   bool is_analysis_enabled =
       settings.has_value() && IsDownloadConnectorEnabled(connectors_service);
-  FileDownloadScanningResources resources;
   auto content_analysis_info = std::make_unique<ContentAnalysisInfo>(
       url, std::move(settings).value_or(AnalysisSettings()),
       ContentAnalysisRequest::NORMAL_DOWNLOAD, *web_state);
@@ -347,40 +357,21 @@ FileDownloadScanningResources PrepareCloudContentScanning(
         DeepScanAccessPoint::DOWNLOAD,
         std::move(files_request_handler_delegate));
 
-    resources.content_analysis_info = std::move(content_analysis_info);
-    resources.files_request_handler = std::move(files_request_handler);
+    auto resources = std::make_unique<FileDownloadScanningResources>();
+    resources->content_analysis_info = std::move(content_analysis_info);
+    resources->files_request_handler = std::move(files_request_handler);
     return resources;
   }
 
-  // For non-blocking mode, the download and the content scanning should proceed
-  // asynchronously. Defer the `download_proceed` callback so it runs after the
-  // caller has assigned the returned dummy handler.
-  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(std::move(download_proceed), true));
-
-  // Start a non-block scan.
+  // For non-blocking mode, the `download_proceed` callback is deferred so it
+  // runs after the downloaded file has been cloned to ensure it can be uploaded
+  // succesfully. After the clone, the download and content scanning should
+  // proceed asynchronously.
   BackgroundCloudScannerManagerFactory::GetForProfile(profile)->StartScanner(
-      std::move(content_analysis_info), url, file_path);
+      std::move(content_analysis_info), url, file_path,
+      std::move(download_proceed));
 
-  // Return a dummy handler to the caller. An empty `file_path` makes it a no-op
-  // dummy. This is used to maintain the existing synchronous-like flow in the
-  // caller while allowing the actual scan to run asynchronously in the
-  // background.
-  auto dummy_info = std::make_unique<ContentAnalysisInfo>(
-      url, AnalysisSettings(), ContentAnalysisRequest::NORMAL_DOWNLOAD,
-      *web_state);
-  auto dummy_delegate = std::make_unique<FilesRequestHandlerIOS>(
-      ConnectorsServiceFactory::GetForProfile(profile),
-      IOSReportingEventRouterFactory::GetForProfile(profile), base::FilePath(),
-      base::BindOnce([](RequestHandlerResult result) {}));
-  auto dummy_handler = std::make_unique<FilesRequestHandlerBase>(
-      dummy_info.get(),
-      IOSCloudBinaryUploadServiceFactory::GetForProfile(profile), url, "",
-      DeepScanAccessPoint::DOWNLOAD, std::move(dummy_delegate));
-
-  resources.content_analysis_info = std::move(dummy_info);
-  resources.files_request_handler = std::move(dummy_handler);
-  return resources;
+  return nullptr;
 }
 
 }  // namespace enterprise_connectors

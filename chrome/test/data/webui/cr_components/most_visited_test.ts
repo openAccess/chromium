@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'chrome://resources/cr_components/most_visited/most_visited.js';
+
 import {TileSource} from '//resources/mojo/components/ntp_tiles/tile_source.mojom-webui.js';
-import {MostVisitedElement} from 'chrome://resources/cr_components/most_visited/most_visited.js';
-import type {AutoRemovedEventDetail} from 'chrome://resources/cr_components/most_visited/most_visited.js';
+import type {AutoRemovedEventDetail, MostVisitedElement} from 'chrome://resources/cr_components/most_visited/most_visited.js';
 import type {MostVisitedPageRemote, MostVisitedTile} from 'chrome://resources/cr_components/most_visited/most_visited.mojom-webui.js';
 import {browserProxyFactory, MostVisitedPageHandlerRemote} from 'chrome://resources/cr_components/most_visited/most_visited.mojom-webui.js';
 import {MostVisitedWindowProxy} from 'chrome://resources/cr_components/most_visited/window_proxy.js';
@@ -168,6 +169,7 @@ interface SetUpTestOptions {
   singleRow: boolean;
   reflowOnOverflow: boolean;
   expandableTilesEnabled: boolean;
+  shortcutsReorderEnabled: boolean;
   maxTilesInCollapsedState: number;
   maxShortcutsInExpandedState: number;
   maxMostVisitedTilesInExpandedState: number;
@@ -182,6 +184,7 @@ function setUpTest(providedOptions: Partial<SetUpTestOptions> = {}) {
     singleRow: false,
     reflowOnOverflow: false,
     expandableTilesEnabled: false,
+    shortcutsReorderEnabled: false,
     maxTilesInCollapsedState: 6,
     maxShortcutsInExpandedState: 10,
     maxMostVisitedTilesInExpandedState: 8,
@@ -194,13 +197,16 @@ function setUpTest(providedOptions: Partial<SetUpTestOptions> = {}) {
   createBrowserProxy();
   createWindowProxy();
 
-  mostVisited = new MostVisitedElement();
+  mostVisited = document.createElement('cr-most-visited');
   mostVisited.nonEditable = options.nonEditable;
   mostVisited.hideTitle = options.hideTitle;
   mostVisited.singleRow = options.singleRow;
   mostVisited.reflowOnOverflow = options.reflowOnOverflow;
   if (options.expandableTilesEnabled) {
     mostVisited.setAttribute('expandable-tiles-enabled', '');
+  }
+  if (options.shortcutsReorderEnabled) {
+    mostVisited.setAttribute('shortcuts-reorder-enabled', '');
   }
   mostVisited.setAttribute(
       'max-tiles-in-collapsed-state',
@@ -355,7 +361,7 @@ suite('ExpandableTiles', () => {
         'getMostVisitedExpandedState', Promise.resolve({isExpanded: true}));
     createWindowProxy();
 
-    mostVisited = new MostVisitedElement();
+    mostVisited = document.createElement('cr-most-visited');
     mostVisited.setAttribute('expandable-tiles-enabled', '');
     document.body.appendChild(mostVisited);
     await wide();
@@ -944,6 +950,59 @@ suite('Reflow Layouts', () => {
   });
 });
 
+suite('ContainerWidth', () => {
+  setup(async () => {
+    await setUpTest({singleRow: true});
+    await addTiles(8);
+  });
+
+  test('column count follows the container width', async () => {
+    // 700px fits 6 tiles of 112px, so 5 columns.
+    mostVisited.containerWidth = 700;
+    await microtasksFinished();
+    assertTileLength(8);
+    assertHiddenTileLength(3);
+
+    // 10 columns, the maximum for a single row.
+    mostVisited.containerWidth = 1300;
+    await microtasksFinished();
+    assertHiddenTileLength(0);
+
+    // 3 columns, the minimum.
+    mostVisited.containerWidth = 400;
+    await microtasksFinished();
+    assertHiddenTileLength(5);
+  });
+
+  test('switches between the container and window widths', async () => {
+    assertHiddenTileLength(0);
+
+    mostVisited.containerWidth = 400;
+    await microtasksFinished();
+    assertHiddenTileLength(5);
+
+    // The window's width is no longer listened to.
+    await wide();
+    assertHiddenTileLength(5);
+
+    mostVisited.containerWidth = null;
+    await microtasksFinished();
+    await wide();
+    assertHiddenTileLength(0);
+  });
+
+  test('keeps using the container width when singleRow changes', async () => {
+    mostVisited.containerWidth = 700;
+    await microtasksFinished();
+    assertHiddenTileLength(3);
+
+    // 5 columns in 2 rows.
+    mostVisited.singleRow = false;
+    await microtasksFinished();
+    assertHiddenTileLength(0);
+  });
+});
+
 suite('LoggingAndUpdates', () => {
   setup(async () => {
     await setUpTest();
@@ -1355,7 +1414,7 @@ suite('Modification', () => {
                 {
                   title: 'e1',
                   titleDirection: TextDirection.LEFT_TO_RIGHT,
-                  url: `https://e1/`,
+                  url: 'https://e1/',
                   source: TileSource.ENTERPRISE_SHORTCUTS,
                   titleSource: 0,
                   isQueryTile: false,
@@ -1365,7 +1424,7 @@ suite('Modification', () => {
                 {
                   title: 'c1',
                   titleDirection: TextDirection.LEFT_TO_RIGHT,
-                  url: `https://e1/`,
+                  url: 'https://e1/',
                   source: TileSource.CUSTOM_LINKS,
                   titleSource: 1,
                   isQueryTile: false,
@@ -1425,7 +1484,7 @@ suite('Modification', () => {
             {
               title: 'e1',
               titleDirection: TextDirection.LEFT_TO_RIGHT,
-              url: `https://e1/`,
+              url: 'https://e1/',
               source: TileSource.ENTERPRISE_SHORTCUTS,
               titleSource: 0,
               isQueryTile: false,
@@ -1435,7 +1494,7 @@ suite('Modification', () => {
             {
               title: 'c1',
               titleDirection: TextDirection.LEFT_TO_RIGHT,
-              url: `https://c1/`,
+              url: 'https://c1/',
               source: TileSource.CUSTOM_LINKS,
               titleSource: 1,
               isQueryTile: false,
@@ -1768,7 +1827,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const enterpriseShortcut = {
       title: 'e1',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://e1/`,
+      url: 'https://e1/',
       source: TileSource.ENTERPRISE_SHORTCUTS,
       titleSource: 0,
       isQueryTile: false,
@@ -1778,7 +1837,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const customLink1 = {
       title: 'c1',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://c1/`,
+      url: 'https://c1/',
       source: TileSource.CUSTOM_LINKS,
       titleSource: 1,
       isQueryTile: false,
@@ -1788,7 +1847,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const customLink2 = {
       title: 'c2',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://c2/`,
+      url: 'https://c2/',
       source: TileSource.CUSTOM_LINKS,
       titleSource: 2,
       isQueryTile: false,
@@ -1842,7 +1901,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const enterpriseShortcut = {
       title: 'a',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://a/`,
+      url: 'https://a/',
       source: TileSource.ENTERPRISE_SHORTCUTS,
       titleSource: 0,
       isQueryTile: false,
@@ -1852,7 +1911,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const customLink = {
       title: 'b',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://b/`,
+      url: 'https://b/',
       source: TileSource.CUSTOM_LINKS,
       titleSource: 1,
       isQueryTile: false,
@@ -1896,7 +1955,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const enterpriseShortcut = {
       title: 'a',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://a/`,
+      url: 'https://a/',
       source: TileSource.ENTERPRISE_SHORTCUTS,
       titleSource: 0,
       isQueryTile: false,
@@ -1906,7 +1965,7 @@ function createDragAndDropSuite(singleRow: boolean, reflowOnOverflow: boolean) {
     const customLink = {
       title: 'b',
       titleDirection: TextDirection.LEFT_TO_RIGHT,
-      url: `https://b/`,
+      url: 'https://b/',
       source: TileSource.CUSTOM_LINKS,
       titleSource: 1,
       isQueryTile: false,
@@ -2186,7 +2245,7 @@ suite('EnterpriseShortcuts', () => {
           {
             title: 'c',
             titleDirection: TextDirection.LEFT_TO_RIGHT,
-            url: `https://c/`,
+            url: 'https://c/',
             source: TileSource.CUSTOM_LINKS,
             titleSource: 1,
             isQueryTile: false,
@@ -2308,6 +2367,290 @@ suite('EnterpriseShortcuts', () => {
   });
 });
 
+suite('ShortcutsReorder', () => {
+  [false, true].forEach(shortcutsReorderEnabled => {
+    test(
+        `reorder menu option rendered when shortcutsReorderEnabled=${
+            shortcutsReorderEnabled}`,
+        async () => {
+          document.body.innerHTML = window.trustedTypes!.emptyHTML;
+          await setUpTest({shortcutsReorderEnabled});
+          await addTiles(1);
+          const tile = queryTiles()[0]!;
+          const actionMenuButton =
+              tile.querySelector<HTMLElement>('#actionMenuButton')!;
+          assertFalse(mostVisited.$.actionMenu.open);
+          actionMenuButton.click();
+          assertTrue(mostVisited.$.actionMenu.open);
+          const reorderButton =
+              $$<HTMLElement>(mostVisited, '#actionMenuReorder');
+          if (shortcutsReorderEnabled) {
+            assertTrue(!!reorderButton);
+          } else {
+            assertFalse(!!reorderButton);
+          }
+        });
+  });
+
+  test('tile properties change when reorder mode is enabled', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({shortcutsReorderEnabled: true});
+    await addTiles(1);
+    const tile = queryTiles()[0]!;
+    const tileLink = tile.querySelector<HTMLAnchorElement>('a')!;
+    // In default mode, the aria-label is just the title.
+    const title = tileLink.getAttribute('aria-label')!;
+
+    // Open the action menu and enter reorder mode.
+    tile.querySelector<HTMLElement>('#actionMenuButton')!.click();
+    await microtasksFinished();
+    $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+    await new Promise(requestAnimationFrame);
+    await microtasksFinished();
+
+    // The aria-label should change when in reorder mode.
+    const reorderA11yLabel = tileLink.getAttribute('aria-label')!;
+    assertNotEquals(title, reorderA11yLabel);
+    assertTrue(reorderA11yLabel.includes('arrow keys'));
+    assertEquals('', tileLink.getAttribute('href'));
+    assertEquals(tileLink, mostVisited.shadowRoot?.activeElement);
+  });
+
+  test('container role is application only in reorder mode', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({shortcutsReorderEnabled: true});
+    await addTiles(1);
+    const container = $$<HTMLElement>(mostVisited, '#container');
+    assertFalse(container.hasAttribute('role'));
+
+    // Enter reorder mode.
+    const tile = queryTiles()[0]!;
+    tile.querySelector<HTMLElement>('#actionMenuButton')!.click();
+    await microtasksFinished();
+    $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+    await microtasksFinished();
+
+    assertEquals('application', container.getAttribute('role'));
+  });
+
+  test('tiles reorder correctly with arrow keys', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({shortcutsReorderEnabled: true});
+    await addTiles(3);
+    const tilesBefore = queryTiles();
+    const firstTitleBefore = tilesBefore[0]!.title;
+    const secondTitleBefore = tilesBefore[1]!.title;
+
+    // Enter reorder mode on the first tile.
+    tilesBefore[0]!.querySelector<HTMLElement>('#actionMenuButton')!.click();
+    await microtasksFinished();
+    $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+    await microtasksFinished();
+
+    // Press Right arrow to swap the first and second tiles.
+    tilesBefore[0]!.dispatchEvent(
+        new KeyboardEvent('keydown', {key: 'ArrowRight', bubbles: true}));
+    await microtasksFinished();
+
+    const tilesAfter = queryTiles();
+    // The second tile should now be first, and the first tile should now be
+    // second
+    assertEquals(secondTitleBefore, tilesAfter[0]!.title);
+    assertEquals(firstTitleBefore, tilesAfter[1]!.title);
+  });
+
+  test('tiles reorder wraps only across visible tiles', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({
+      shortcutsReorderEnabled: true,
+      expandableTilesEnabled: true,
+      maxTilesInCollapsedState: 2,
+    });
+    await addTiles(3);
+    const tilesBefore = queryTiles();
+    const firstTitle = tilesBefore[0]!.title;
+    const secondTitle = tilesBefore[1]!.title;
+    const hiddenTitle = tilesBefore[2]!.title;
+    assertTrue(tilesBefore[2]!.hidden);
+
+    // Enter reorder mode on the first visible tile.
+    tilesBefore[0]!.querySelector<HTMLElement>('#actionMenuButton')!.click();
+    await microtasksFinished();
+    $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+    await microtasksFinished();
+
+    // Press Left arrow to wrap around to the last visible tile,
+    // skipping the hidden tile.
+    tilesBefore[0]!.dispatchEvent(
+        new KeyboardEvent('keydown', {key: 'ArrowLeft', bubbles: true}));
+    await microtasksFinished();
+
+    const tilesAfter = queryTiles();
+    assertEquals(secondTitle, tilesAfter[0]!.title);
+    assertEquals(firstTitle, tilesAfter[1]!.title);
+    assertEquals(hiddenTitle, tilesAfter[2]!.title);
+  });
+
+  ['Escape', 'Enter', 'Tab'].forEach(exitKey => {
+    test(`exits reorder mode when ${exitKey} is pressed`, async () => {
+      document.body.innerHTML = window.trustedTypes!.emptyHTML;
+      await setUpTest({shortcutsReorderEnabled: true});
+      await addTiles(1);
+      const container = $$<HTMLElement>(mostVisited, '#container');
+      const tile = queryTiles()[0]!;
+      const tileLink = tile.querySelector<HTMLAnchorElement>('a')!;
+      const originalTitle = tileLink.getAttribute('aria-label')!;
+      const originalHref = tileLink.getAttribute('href')!;
+
+      // Enter reorder mode.
+      tile.querySelector<HTMLElement>('#actionMenuButton')!.click();
+      await microtasksFinished();
+      $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+      await new Promise(requestAnimationFrame);
+      await microtasksFinished();
+
+      // Assert in reorder mode.
+      assertEquals('application', container.getAttribute('role'));
+      assertEquals('', tileLink.getAttribute('href'));
+
+      // Exit reorder mode.
+      const keydownEvent = new KeyboardEvent(
+          'keydown', {key: exitKey, bubbles: true, cancelable: true});
+      tile.dispatchEvent(keydownEvent);
+      await microtasksFinished();
+
+      // Assert that default mode tile properties are restored and focus is set
+      // to the action menu button.
+      assertTrue(keydownEvent.defaultPrevented);
+      assertFalse(container.hasAttribute('role'));
+      assertEquals(originalTitle, tileLink.getAttribute('aria-label'));
+      assertEquals(originalHref, tileLink.getAttribute('href'));
+      assertEquals(
+          tile.querySelector('#actionMenuButton'),
+          mostVisited.shadowRoot?.activeElement);
+    });
+  });
+
+  test('exits reorder mode when clicking outside container', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({shortcutsReorderEnabled: true});
+    await addTiles(1);
+    const container = $$<HTMLElement>(mostVisited, '#container');
+    const tile = queryTiles()[0]!;
+    const tileLink = tile.querySelector<HTMLAnchorElement>('a')!;
+    const originalTitle = tileLink.getAttribute('aria-label')!;
+    const originalHref = tileLink.getAttribute('href')!;
+
+    // Enter reorder mode.
+    tile.querySelector<HTMLElement>('#actionMenuButton')!.click();
+    await microtasksFinished();
+    $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+    await new Promise(requestAnimationFrame);
+    await microtasksFinished();
+
+    // Clicking outside the container should exit reorder mode.
+    document.body.click();
+    await microtasksFinished();
+    assertFalse(container.hasAttribute('role'));
+    assertEquals(originalTitle, tileLink.getAttribute('aria-label'));
+    assertEquals(originalHref, tileLink.getAttribute('href'));
+  });
+
+  test('disables buttons and ignores tile clicks in reorder mode', async () => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    await setUpTest({
+      shortcutsReorderEnabled: true,
+      expandableTilesEnabled: true,
+      maxTilesInCollapsedState: 2,
+    });
+    await addTiles(3);
+    const tile = queryTiles()[0]!;
+    const showMoreButton = getShowMoreButton()!;
+    const showLessButton = getShowLessButton()!;
+    const addShortcutButton = $$<CrButtonElement>(mostVisited, '#addShortcut');
+
+    // Enter reorder mode in collapsed state (show more button visible).
+    tile.querySelector<HTMLElement>('#actionMenuButton')!.click();
+    await microtasksFinished();
+    $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+    await new Promise(requestAnimationFrame);
+    await microtasksFinished();
+
+    assertTrue(showMoreButton.disabled);
+
+    // Clicking a tile should not trigger navigation.
+    const clickEvent =
+        new MouseEvent('click', {bubbles: true, cancelable: true});
+    tile.dispatchEvent(clickEvent);
+    assertTrue(clickEvent.defaultPrevented);
+    assertEquals(0, handler.getCallCount('onMostVisitedTileNavigation'));
+
+    // Exit reorder mode and verify buttons are re-enabled.
+    tile.dispatchEvent(
+        new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+    await microtasksFinished();
+    assertFalse(showMoreButton.disabled);
+
+    // Make show less and add shortcut buttons visible and re-enter reorder
+    // mode.
+    showMoreButton.click();
+    await microtasksFinished();
+    tile.querySelector<HTMLElement>('#actionMenuButton')!.click();
+    await microtasksFinished();
+    $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+    await new Promise(requestAnimationFrame);
+    await microtasksFinished();
+
+    assertTrue(showLessButton.disabled);
+    assertTrue(addShortcutButton.disabled);
+  });
+
+  test(
+      'shows drag icon and hides action menu button in reorder mode',
+      async () => {
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
+        await setUpTest({shortcutsReorderEnabled: true});
+        await addTiles(2);
+        const tile = queryTiles()[0]!;
+        const dragPanIcon = tile.querySelector<HTMLElement>('.drag-pan-icon')!;
+        const actionMenuButton =
+            tile.querySelector<HTMLElement>('#actionMenuButton')!;
+
+        // In default mode the drag icon is hidden.
+        assertFalse(isVisible(dragPanIcon));
+        assertEquals('0', getComputedStyle(dragPanIcon).opacity);
+
+        // Enter reorder mode.
+        actionMenuButton.click();
+        await microtasksFinished();
+        $$<HTMLElement>(mostVisited, '#actionMenuReorder').click();
+        await new Promise(requestAnimationFrame);
+        await microtasksFinished();
+
+        tile.dispatchEvent(new MouseEvent('mouseenter'));
+        await microtasksFinished();
+
+        // Verify the drag icon is visible and the action menu button is hidden.
+        assertTrue(isVisible(dragPanIcon));
+        assertEquals('1', getComputedStyle(dragPanIcon).opacity);
+        assertFalse(isVisible(actionMenuButton));
+      });
+
+  test(
+      'does not show drag icon for non-custom most visited tiles', async () => {
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
+        await setUpTest({shortcutsReorderEnabled: true});
+        await addTiles(2);
+        const tile = queryTiles()[0]!;
+        const dragPanIcon = tile.querySelector<HTMLElement>('.drag-pan-icon')!;
+
+        tile.dispatchEvent(new MouseEvent('mouseenter'));
+        await microtasksFinished();
+
+        assertFalse(isVisible(dragPanIcon));
+      });
+});
+
 suite('ShortcutsAutoRemovalToast', () => {
   setup(async () => {
     await setUpTest();
@@ -2411,17 +2754,53 @@ suite('NonEditable', () => {
     titleElements.forEach(el => assertTrue(el.hidden));
   });
 
-  test('maxTiles limits total tiles in single row', async () => {
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    await setUpTest({
-      nonEditable: true,
-      hideTitle: true,
-      singleRow: true,
-      maxTiles: 7,
-    });
-    await addTiles(10, /*customLinksEnabled=*/ false);
-    const tiles = queryTiles();
-    assertEquals(7, tiles.length);
-    tiles.forEach(el => assertFalse(el.hidden));
+  test(
+      'maxTiles limits total tiles in single row and updates dynamically',
+      async () => {
+        document.body.innerHTML = window.trustedTypes!.emptyHTML;
+        await setUpTest({
+          nonEditable: true,
+          hideTitle: true,
+          singleRow: true,
+          maxTiles: 7,
+        });
+        await addTiles(10, /*customLinksEnabled=*/ false);
+        let tiles = queryTiles();
+        assertEquals(7, tiles.length);
+        tiles.forEach(el => assertFalse(el.hidden));
+
+        // Verify dynamically changing maxTiles updates rendered tiles.
+        mostVisited.maxTiles = 5;
+        await microtasksFinished();
+        tiles = queryTiles();
+        assertEquals(5, tiles.length);
+        tiles.forEach(el => assertFalse(el.hidden));
+      });
+
+  [false, true].forEach(hideTitle => {
+    test(
+        `focused tile link highlights circular tile icon, hideTitle=${
+            hideTitle}`,
+        async () => {
+          document.body.innerHTML = window.trustedTypes!.emptyHTML;
+          await setUpTest({
+            nonEditable: true,
+            hideTitle,
+          });
+          mostVisited.style.setProperty(
+              '--most-visited-focus-shadow', 'rgb(26, 115, 232) 0px 0px 0px 2px');
+          document.documentElement.classList.add('focus-outline-visible');
+          await addTiles(1, /*customLinksEnabled=*/ false);
+          const tile = queryTiles()[0]!;
+          const tileLink = tile.querySelector<HTMLElement>('a')!;
+          const tileIcon = tile.querySelector<HTMLElement>('.tile-icon')!;
+
+          tileLink.focus();
+          assertEquals('none', getComputedStyle(tileLink).boxShadow);
+          assertEquals(
+              'rgb(26, 115, 232) 0px 0px 0px 2px',
+              getComputedStyle(tileIcon).boxShadow);
+        });
   });
+
 });

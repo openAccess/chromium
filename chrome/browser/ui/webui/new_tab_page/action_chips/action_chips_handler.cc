@@ -39,8 +39,8 @@
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "third_party/omnibox_proto/chrome_aim_entry_point.pb.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "url/gurl.h"
 #include "url/mojom/url.mojom.h"
@@ -48,6 +48,7 @@
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
+#include "chrome/browser/ui/webui/webui_embedding_context.h"
 #endif
 
 namespace {
@@ -75,9 +76,9 @@ bool IsInvalidMostRecentTab(content::WebContents& contents) {
          url.SchemeIs(content::kChromeUIUntrustedScheme);
 }
 
-TabInterface* FindMostRecentTab(content::WebUI& web_ui) {
+TabInterface* FindMostRecentTab(content::WebContents* web_contents) {
   auto* browser_window_interface =
-      webui::GetBrowserWindowInterface(web_ui.GetWebContents());
+      webui::GetBrowserWindowInterface(web_contents);
   if (!browser_window_interface) {
     return nullptr;
   }
@@ -126,24 +127,23 @@ ActionChipsHandler::ActionChipsHandler(
     mojo::PendingReceiver<action_chips::mojom::ActionChipsHandler> receiver,
     mojo::PendingRemote<action_chips::mojom::Page> page,
     Profile* profile,
-    content::WebUI* web_ui,
+    content::WebContents* web_contents,
     std::unique_ptr<ActionChipsGenerator> action_chips_generator,
     GetSessionHandleCallback get_session_handle_callback)
     : receiver_(this, std::move(receiver)),
       page_(std::move(page)),
       profile_(profile),
-      web_ui_(web_ui),
+      web_contents_(web_contents),
       action_chips_generator_(std::move(action_chips_generator)),
       get_session_handle_callback_(std::move(get_session_handle_callback)) {
 #if !BUILDFLAG(IS_ANDROID)
-  content::WebContents* web_contents = web_ui_->GetWebContents();
-  auto* browser_window_interface =
-      webui::GetBrowserWindowInterface(web_contents);
-  if (browser_window_interface) {
-    // No need to call RemoveObserver later since TabStripModelObserver takes
-    // care of it in its destructor.
-    browser_window_interface->GetTabStripModel()->AddObserver(this);
-  }
+  browser_window_interface_subscription_ =
+      webui::RegisterBrowserWindowInterfaceChanged(
+          web_contents_.get(),
+          base::BindRepeating(
+              &ActionChipsHandler::OnBrowserWindowInterfaceChanged,
+              weak_factory_.GetWeakPtr()));
+  UpdateTabStripModelObservation();
 #endif  // !BUILDFLAG(IS_ANDROID)
   pref_change_registrar_.Init(profile_->GetPrefs());
   pref_change_registrar_.Add(
@@ -164,7 +164,7 @@ void ActionChipsHandler::StartActionChipsRetrieval() {
 #if !BUILDFLAG(IS_ANDROID)
   if (contextual_search::ContextualSearchService::IsContextSharingEnabled(
           profile_->GetPrefs())) {
-    tab = FindMostRecentTab(*web_ui_);
+    tab = FindMostRecentTab(web_contents_);
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -226,9 +226,28 @@ void ActionChipsHandler::OnTabStripModelChanged(
     TabStripModel*,
     const TabStripModelChange& change,
     const TabStripSelectionChange&) {
-  if (!IsTabReadyForActionChipsRetrieval(web_ui_->GetWebContents(), change)) {
+  if (!IsTabReadyForActionChipsRetrieval(web_contents_.get(), change)) {
     return;
   }
+  StartActionChipsRetrieval();
+}
+
+bool ActionChipsHandler::UpdateTabStripModelObservation() {
+  TabStripModelObserver::StopObservingAll(this);
+  content::WebContents* web_contents = web_contents_.get();
+  auto* browser_window_interface =
+      webui::GetBrowserWindowInterface(web_contents);
+  if (browser_window_interface) {
+    browser_window_interface->GetTabStripModel()->AddObserver(this);
+  }
+  return browser_window_interface != nullptr;
+}
+
+void ActionChipsHandler::OnBrowserWindowInterfaceChanged() {
+  if (!UpdateTabStripModelObservation()) {
+    return;
+  }
+  last_processed_url_.reset();
   StartActionChipsRetrieval();
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -266,13 +285,13 @@ void ActionChipsHandler::NavigateToAim(
       lens::LensOverlayInvocationSource::kNtpActionChips,
       /*additional_params=*/{});
 
-  const WindowOpenDisposition disposition = ui::DispositionFromClick(
+  const ui::mojom::WindowOpenDisposition disposition = ui::DispositionFromClick(
       /*middle_button=*/mouse_button == 1, modifiers->alt_key,
       modifiers->ctrl_key, modifiers->meta_key, modifiers->shift_key);
 
-  content::OpenURLParams params(aim_url, content::Referrer(), disposition,
-                                ui::PAGE_TRANSITION_GENERATED,
-                                /*is_renderer_initiated=*/false);
-  web_ui_->GetWebContents()->OpenURL(params,
-                                     /*navigation_handle_callback=*/{});
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          aim_url, disposition, ui::PAGE_TRANSITION_GENERATED);
+  web_contents_.get()->OpenURL(params,
+                               /*navigation_handle_callback=*/{});
 }

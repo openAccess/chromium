@@ -10,7 +10,6 @@
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "components/tabs/public/tab_interface.h"
 #include "extensions/browser/extension_api_frame_id_map.h"
 #include "extensions/browser/view_type_utils.h"
@@ -26,6 +25,7 @@
 #else
 #include "chrome/browser/ui/browser_tab_strip_tracker.h"
 #include "chrome/browser/ui/browser_tab_strip_tracker_delegate.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #endif
 
@@ -186,7 +186,8 @@ void WebNavigationEventRouter::TabReplaced(content::WebContents* old_contents,
   if (!tab_observer) {
     // If you hit this DCHECK(), please add reproduction steps to
     // http://crbug.com/40135496.
-    DCHECK(GetViewType(old_contents) != mojom::ViewType::kTabContents);
+    CHECK(GetViewType(old_contents) != mojom::ViewType::kTabContents,
+          base::NotFatalUntil::M161);
     return;
   }
   if (!FrameNavigationState::IsValidUrl(old_contents->GetLastCommittedURL()) ||
@@ -213,7 +214,8 @@ void WebNavigationEventRouter::RecordNewWebContents(
   if (!tab_observer) {
     // If you hit this DCHECK(), please add reproduction steps to
     // http://crbug.com/40135496.
-    DCHECK(GetViewType(source_web_contents) != mojom::ViewType::kTabContents);
+    CHECK(GetViewType(source_web_contents) != mojom::ViewType::kTabContents,
+          base::NotFatalUntil::M161);
     return;
   }
 

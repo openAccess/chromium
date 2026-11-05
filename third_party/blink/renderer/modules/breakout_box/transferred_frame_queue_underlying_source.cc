@@ -16,26 +16,47 @@ template <typename NativeFrameType>
 TransferredFrameQueueUnderlyingSource<NativeFrameType>::
     TransferredFrameQueueUnderlyingSource(
         ScriptState* script_state,
-        CrossThreadPersistent<FrameQueueHost> host,
+        scoped_refptr<FrameQueue<NativeFrameType>> queue,
         scoped_refptr<base::SequencedTaskRunner> host_runner,
-        CrossThreadOnceClosure transferred_source_destroyed_callback)
-    : FrameQueueUnderlyingSource<NativeFrameType>(script_state, host),
-      host_runner_(host_runner),
-      host_(std::move(host)),
-      transferred_source_destroyed_callback_(
-          std::move(transferred_source_destroyed_callback)) {}
+        CrossThreadWeakHandle<FrameQueueHost> host_handle,
+        std::string device_id,
+        wtf_size_t frame_pool_size,
+        std::optional<base::ThreadType> thread_type)
+    : FrameQueueUnderlyingSource<NativeFrameType>(script_state,
+                                                  std::move(queue),
+                                                  std::move(device_id),
+                                                  frame_pool_size,
+                                                  thread_type),
+      host_runner_(std::move(host_runner)),
+      host_handle_(std::move(host_handle)) {}
 
 template <typename NativeFrameType>
 bool TransferredFrameQueueUnderlyingSource<
     NativeFrameType>::StartFrameDelivery() {
   // PostCrossThreadTask needs a closure, so we have to ignore
   // StartFrameDelivery()'s return type.
-  auto start_frame_delivery_cb = [](FrameQueueHost* host) {
-    host->StartFrameDelivery();
-  };
-
-  PostCrossThreadTask(*host_runner_.get(), FROM_HERE,
-                      CrossThreadBindOnce(start_frame_delivery_cb, host_));
+  auto start_frame_delivery_cb =
+      [](FrameQueueHost* host,
+         scoped_refptr<base::SequencedTaskRunner> transferred_runner,
+         CrossThreadWeakHandle<FrameQueueHost> transferred_source) {
+        if (host) {
+          host->StartFrameDelivery();
+          return;
+        }
+        // The host is gone, so it won't deliver frames, and it may never close
+        // this source. Close it so that the transferred stream doesn't hang.
+        PostCrossThreadTask(
+            *transferred_runner, FROM_HERE,
+            CrossThreadBindOnce(&FrameQueueHost::Close,
+                                MakeUnwrappingCrossThreadWeakHandle(
+                                    std::move(transferred_source))));
+      };
+  PostCrossThreadTask(
+      *host_runner_.get(), FROM_HERE,
+      CrossThreadBindOnce(start_frame_delivery_cb,
+                          MakeUnwrappingCrossThreadWeakHandle(host_handle_),
+                          this->GetRealmRunner(),
+                          MakeCrossThreadWeakHandle<FrameQueueHost>(this)));
 
   // This could fail on the host side, but for now we don't do an async check.
   return true;
@@ -44,14 +65,29 @@ bool TransferredFrameQueueUnderlyingSource<
 template <typename NativeFrameType>
 void TransferredFrameQueueUnderlyingSource<
     NativeFrameType>::StopFrameDelivery() {
-  PostCrossThreadTask(*host_runner_.get(), FROM_HERE,
-                      CrossThreadBindOnce(&FrameQueueHost::Close, host_));
+  PostCrossThreadTask(
+      *host_runner_.get(), FROM_HERE,
+      CrossThreadBindOnce(&FrameQueueHost::Close,
+                          MakeUnwrappingCrossThreadWeakHandle(host_handle_)));
+}
+
+template <typename NativeFrameType>
+void TransferredFrameQueueUnderlyingSource<NativeFrameType>::Close() {
+  if (this->IsClosed()) {
+    return;
+  }
+  FrameQueueUnderlyingSource<NativeFrameType>::Close();
+  if (host_runner_) {
+    PostCrossThreadTask(
+        *host_runner_.get(), FROM_HERE,
+        CrossThreadBindOnce(&FrameQueueHost::ClearTransferredSource,
+                            MakeUnwrappingCrossThreadWeakHandle(host_handle_)));
+  }
 }
 
 template <typename NativeFrameType>
 void TransferredFrameQueueUnderlyingSource<
     NativeFrameType>::ContextDestroyed() {
-  std::move(transferred_source_destroyed_callback_).Run();
   FrameQueueUnderlyingSource<NativeFrameType>::ContextDestroyed();
 }
 

@@ -18,6 +18,7 @@ buildflag_header("buildflags") {
 
 if (enable_vulkan) {
   use_vulkan_xcb = ozone_platform_x11
+
   config("vulkan_config") {
     defines = [ "VK_NO_PROTOTYPES" ]
     if (use_vulkan_xcb) {
@@ -43,8 +44,6 @@ if (enable_vulkan) {
 
     public_configs = [ ":vulkan_config" ]
 
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
     defines = [ "IS_VULKAN_IMPL" ]
 
     deps = [
@@ -69,8 +68,6 @@ if (enable_vulkan) {
     ]
 
     defines = [ "IS_VULKAN_IMPL" ]
-
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
     deps = [
       ":vulkan_function_pointers",
@@ -121,18 +118,11 @@ if (enable_vulkan) {
 
     defines = [ "IS_VULKAN_IMPL" ]
 
-    if (ozone_platform == "x11") {
-      defines += [ "OZONE_PLATFORM_IS_X11" ]
-    }
-
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
     deps = [
       ":buildflags",
       "//base",
       "//components/crash/core/common:crash_key",
       "//components/viz/common/resources:shared_image_format",
-      "//third_party/re2",
       "//third_party/vulkan_memory_allocator",
       "//ui/base:ozone_buildflags",
       "//ui/gfx",
@@ -220,10 +210,6 @@ if (enable_vulkan) {
       sources += [ "tests/native_window_android.cc" ]
       deps += [ "//ui/gl" ]
     }
-
-    # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-    # enable the diagnostic by removing this line.
-    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
 
   # TODO(penghuang): support more platforms
@@ -249,7 +235,7 @@ if (enable_vulkan) {
         ":test_support",
         "//base",
         "//base/test:test_support",
-        "//components/viz/common:vulkan_context_provider",
+        "//gpu/command_buffer/service:gles2",
         "//gpu/ipc/service",
         "//gpu/vulkan/init",
         "//testing/gmock",
@@ -268,10 +254,6 @@ if (enable_vulkan) {
       if (use_ozone) {
         deps += [ "//ui/ozone" ]
       }
-
-      # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-      # enable the diagnostic by removing this line.
-      configs += [ "//build/config/compiler:no_exit_time_destructors" ]
     }
   }
 }

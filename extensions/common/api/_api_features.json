@@ -30,9 +30,18 @@
     // "desktop_android" is not supported.
     "platforms": ["chromeos", "linux", "mac", "win"],
     "allowlist": [
-      "2FC374607C2DF285634B67C64A2E356C607091C3",  // Quickoffice
-      "3727DD3E564B6055387425027AD74C58784ACC15",  // Quickoffice internal
-      "12E618C3C6E97495AAECF2AC12DEB082353241C6"   // QO component extension
+      // Quickoffice
+      "2FC374607C2DF285634B67C64A2E356C607091C3",
+      // Quickoffice (SHA-256)
+      "5F81F9FE1F4F499490466BC3861653FE72DE22E2BA8E4E5769DED9FB2C7EE2D0",
+      // Quickoffice internal
+      "3727DD3E564B6055387425027AD74C58784ACC15",
+      // Quickoffice internal (SHA-256)
+      "04C5C683BDBBDA3120FDD1043E96E551185C57F38BE14EE17B5993F6AD4C592F",
+      // QO component extension
+      "12E618C3C6E97495AAECF2AC12DEB082353241C6",
+      // QO component extension (SHA-256)
+      "0EEEFAA87E292CD986DD0528E90F9128A936B1C4E1C53E7FAA0244594C69DF94"
     ]
   }],
   "app.window": [{
@@ -87,7 +96,8 @@
   },
   "audio": {
     "dependencies": ["permission:audio"],
-    "contexts": ["privileged_extension"]
+    "contexts": ["privileged_extension"],
+    "platforms": ["chromeos"]
   },
   "automationInternal": {
     "internal": true,
@@ -149,6 +159,10 @@
   },
   "clipboard.setImageData": {
     "dependencies": ["permission:clipboardWrite"]
+  },
+  "cookies": {
+    "dependencies": ["permission:cookies"],
+    "contexts": ["privileged_extension"]
   },
   "declarativeNetRequest": [{
     "dependencies": ["permission:declarativeNetRequest"],
@@ -228,9 +242,19 @@
     "contexts": ["privileged_extension"],
     "extension_types": ["extension"],
     "allowlist": [
-      "2FC374607C2DF285634B67C64A2E356C607091C3",  // http://crbug.com/1352358
-      "3727DD3E564B6055387425027AD74C58784ACC15",  // http://crbug.com/1352358
-      "12E618C3C6E97495AAECF2AC12DEB082353241C6"   // http://crbug.com/1352358
+      // https://crbug.com/1352358
+      // Quickoffice
+      "2FC374607C2DF285634B67C64A2E356C607091C3",
+      // Quickoffice (SHA-256)
+      "5F81F9FE1F4F499490466BC3861653FE72DE22E2BA8E4E5769DED9FB2C7EE2D0",
+      // Quickoffice internal
+      "3727DD3E564B6055387425027AD74C58784ACC15",
+      // Quickoffice internal (SHA-256)
+      "04C5C683BDBBDA3120FDD1043E96E551185C57F38BE14EE17B5993F6AD4C592F",
+      // QO component extension
+      "12E618C3C6E97495AAECF2AC12DEB082353241C6",
+      // QO component extension (SHA-256)
+      "0EEEFAA87E292CD986DD0528E90F9128A936B1C4E1C53E7FAA0244594C69DF94"
     ]
   },
   "feedbackPrivate.readLogSource": [
@@ -280,17 +304,6 @@
         "chrome://lock-reauth/*",
         "chrome://skills/*"
       ]
-    }, {
-      "internal": true,
-      "channel": "stable",
-      "contexts": [
-        "webui_untrusted"
-      ],
-      "matches": [
-        "chrome-untrusted://lens/*"
-      ],
-      // "desktop_android" is not supported.
-      "platforms": ["chromeos", "linux", "mac", "win"]
     }, {
       // This feature is used by the Controlled Frame API and is specifically
       // enabled by //chrome.
@@ -411,7 +424,6 @@
       "chrome://profile-picker/*",
       "chrome://read-later.top-chrome/*",
       "chrome://settings/*",
-      "chrome://sync-confirmation/*",
       "chrome://tab-search.top-chrome/*",
       "chrome://tab-strip.top-chrome/*",
       "chrome://vc-background/*",
@@ -525,7 +537,34 @@
     "dependencies": ["manifest:mime_types_handler"],
     "contexts": ["privileged_extension"],
     // "desktop_android" is not supported.
-    "platforms": ["chromeos", "linux", "mac", "win"]
+    "platforms": ["chromeos", "linux", "mac", "win"],
+    // The public `mimeHandler` API made `mime_types_handler` available to
+    // any extension, so this API needs its own allowlist. It holds the
+    // hashed IDs of the extensions in `kMIMETypeHandlersAllowlist`.
+    // LINT.IfChange(MimeHandlerPrivateAllowlist)
+    "allowlist": [
+      // browser_tests
+      "787000072C6FBB934AF5A42275CDE73FC977D995",
+      // browser_tests (SHA-256)
+      "E2ECC66FF61D50855BDCE96E37D84AF3727F9384AB4FD8A51354DFD51B05C8DF",
+      // QuickOffice
+      "2FC374607C2DF285634B67C64A2E356C607091C3",
+      // QuickOffice (SHA-256)
+      "5F81F9FE1F4F499490466BC3861653FE72DE22E2BA8E4E5769DED9FB2C7EE2D0",
+      // QuickOffice component extension
+      "12E618C3C6E97495AAECF2AC12DEB082353241C6",
+      // QuickOffice component extension (SHA-256)
+      "0EEEFAA87E292CD986DD0528E90F9128A936B1C4E1C53E7FAA0244594C69DF94",
+      // QuickOffice Editor
+      "3727DD3E564B6055387425027AD74C58784ACC15",
+      // QuickOffice Editor (SHA-256)
+      "04C5C683BDBBDA3120FDD1043E96E551185C57F38BE14EE17B5993F6AD4C592F",
+      // PDF
+      "CBCC42ABED43A4B58FE3810E62AFFA010EB0349F",
+      // PDF (SHA-256)
+      "CDF9DD8503F39D9609C6C191E04450FCCEB41BCF9712F361A9013DEF8B9C7552"
+    ]
+    // LINT.ThenChange(//extensions/common/manifest_handlers/mime_types_handler.cc:MimeTypeHandlersAllowlist)
   },
   "mojoPrivate": {
     "contexts": ["privileged_extension"],
@@ -559,14 +598,25 @@
       "chrome://os-settings/*"
     ]
   }],
-  "odfsConfigPrivate": {
-    "dependencies": ["permission:odfsConfigPrivate"],
-    "contexts": ["privileged_extension"],
-    "feature_flag": "ApiOdfsConfigPrivate"
-  },
   "offscreen": {
     "dependencies": ["permission:offscreen"],
     "contexts": ["privileged_extension"]
+  },
+  "permissions": {
+    "channel": "stable",
+    "extension_types": [
+      "extension",
+      "legacy_packaged_app",
+      "platform_app",
+      "chromeos_system_extension"
+    ],
+    "contexts": ["privileged_extension"]
+  },
+  "permissions.addHostAccessRequest": {
+    "min_manifest_version": 3
+  },
+  "permissions.removeHostAccessRequest": {
+    "min_manifest_version": 3
   },
   "power": {
     "dependencies": ["permission:power"],
@@ -653,6 +703,16 @@
     "min_manifest_version": 3,
     "contexts": ["privileged_extension"]
   },
+  "runtime.getDocumentId": {
+    "contexts": [
+      "privileged_extension",
+      "offscreen_extension",
+      "unprivileged_extension",
+      "content_script"
+    ],
+    "disallow_for_service_workers": true,
+    "feature_flag": "ApiRuntimeGetDocumentId"
+  },
   "runtime.getURL": {
     "contexts": [
       "privileged_extension",
@@ -673,6 +733,12 @@
     "contexts": "all",
     "extension_types": "all",
     "matches": ["<all_urls>"]
+  },
+  "runtime.markListenerRegistrationComplete": {
+    "contexts": ["privileged_extension"],
+    "extension_types": ["extension"],
+    "min_manifest_version": 3,
+    "feature_flag": "ExtensionAsyncListenerRegistration"
   },
   "runtime.onConnect": {
     "contexts": [
@@ -906,10 +972,6 @@
     "dependencies": ["permission:virtualKeyboard"],
     "contexts": ["privileged_extension"]
   },
-  "vpnProvider": {
-    "dependencies": ["permission:vpnProvider"],
-    "contexts": ["privileged_extension"]
-  },
   "webRequest": {
     "dependencies": ["permission:webRequest"],
     "contexts": ["privileged_extension"]
@@ -939,15 +1001,6 @@
       "chrome://password-change/*",
       "chrome://lock-reauth/*",
       "chrome://skills/*"
-    ]
-  }, {
-    "internal": true,
-    "channel": "stable",
-    "contexts": [
-      "webui_untrusted"
-    ],
-    "matches": [
-      "chrome-untrusted://lens/*"
     ]
   }, {
     // This feature is used by the Controlled Frame API and is specifically
@@ -1000,15 +1053,6 @@
       "chrome://skills/*"
     ]
   }, {
-    "internal": true,
-    "channel": "stable",
-    "contexts": [
-      "webui_untrusted"
-    ],
-    "matches": [
-      "chrome-untrusted://lens/*"
-    ]
-  }, {
     // This feature is used by the Controlled Frame API and is specifically
     // enabled by //chrome.
     "internal": true,
@@ -1039,14 +1083,6 @@
       "chrome://os-settings/*",
       "chrome://parent-access/*",
       "chrome://skills/*"
-    ]
-  }, {
-    "channel": "stable",
-    "contexts": [
-      "webui_untrusted"
-    ],
-    "matches": [
-      "chrome-untrusted://lens/*"
     ]
   }]
 }

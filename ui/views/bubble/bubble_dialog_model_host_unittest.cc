@@ -9,21 +9,34 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
+#include "base/test/bind.h"
 #include "base/test/gtest_util.h"
+#include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/models/dialog_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/events/base_event_utils.h"
+#include "ui/events/event.h"
+#include "ui/strings/grit/ui_strings.h"
+#include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/link.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/metadata/view_factory.h"
+#include "ui/views/metrics.h"
+#include "ui/views/test/button_test_api.h"
 #include "ui/views/test/views_test_base.h"
+#include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/window/dialog_client_view.h"
 
 class BubbleDialogModelHostTestPassKey {
  public:
@@ -683,6 +696,263 @@ TEST_F(BubbleDialogModelHostTest, ClientOwnedWithTextfieldConsensusGroups) {
   // children before member destruction.
   bubble_widget.reset();
   host.reset();
+}
+
+namespace {
+
+// Shows a bubble hosting `model` and returns the widget. The host can be
+// accessed through the widget's delegate.
+Widget* ShowBubbleWithModel(std::unique_ptr<ui::DialogModel> model,
+                            Widget* anchor_widget) {
+  auto host = std::make_unique<BubbleDialogModelHost>(
+      std::move(model), anchor_widget->GetContentsView(),
+      BubbleBorder::Arrow::TOP_RIGHT);
+  Widget* const bubble_widget = BubbleDialogDelegate::CreateBubbleDeprecated(
+      std::move(host), Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
+  test::WidgetVisibleWaiter waiter(bubble_widget);
+  bubble_widget->Show();
+  waiter.Wait();
+  return bubble_widget;
+}
+
+BubbleDialogModelHost* GetHost(Widget* bubble_widget) {
+  return static_cast<BubbleDialogModelHost*>(
+      bubble_widget->widget_delegate()->AsDialogDelegate());
+}
+
+ui::MouseEvent MouseClickAt(base::TimeTicks time_stamp) {
+  return ui::MouseEvent(ui::EventType::kMousePressed, gfx::PointF(),
+                        gfx::PointF(), time_stamp, ui::EF_LEFT_MOUSE_BUTTON,
+                        ui::EF_LEFT_MOUSE_BUTTON);
+}
+
+}  // namespace
+
+// The extra button is not routed through DialogClientView::ButtonPressed(),
+// so BubbleDialogModelHost applies the dialog's input protection to it
+// directly. Pointer events that arrive within the protection window of the
+// dialog becoming visible, or in rapid succession, must not run the button
+// callback.
+TEST_F(BubbleDialogModelHostTest,
+       ExtraButtonIgnoresEarlyAndRepeatedPointerEvents) {
+  std::unique_ptr<Widget> anchor_widget = CreateTestWidget(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  anchor_widget->Show();
+
+  int press_count = 0;
+  Widget* const bubble_widget = ShowBubbleWithModel(
+      ui::DialogModel::Builder()
+          .AddOkButton(base::DoNothing())
+          .AddExtraButton(base::BindLambdaForTesting(
+                              [&](const ui::Event&) { ++press_count; }),
+                          ui::DialogModel::Button::Params().SetLabel(u"Button"))
+          .Build(),
+      anchor_widget.get());
+  BubbleDialogModelHost* const host = GetHost(bubble_widget);
+
+  auto* const extra_button = AsViewClass<Button>(host->GetExtraView());
+  ASSERT_NE(extra_button, nullptr);
+
+  // Restart the protection window so that event timestamps can be reliably
+  // compared against it.
+  host->GetDialogClientView()->TriggerInputProtection(/*force_early=*/true);
+
+  // A pointer event within the protection window is ignored.
+  test::ButtonTestApi(extra_button)
+      .NotifyClick(MouseClickAt(ui::EventTimeForNow()));
+  EXPECT_EQ(0, press_count);
+
+  // A pointer event past the protection window is accepted.
+  const base::TimeTicks delayed_time =
+      ui::EventTimeForNow() + 2 * GetDoubleClickInterval();
+  test::ButtonTestApi(extra_button).NotifyClick(MouseClickAt(delayed_time));
+  EXPECT_EQ(1, press_count);
+
+  // A rapid repeat of the previous event is ignored.
+  test::ButtonTestApi(extra_button)
+      .NotifyClick(MouseClickAt(delayed_time + base::Milliseconds(1)));
+  EXPECT_EQ(1, press_count);
+
+  bubble_widget->CloseNow();
+}
+
+// Key events activate the extra button during the protection window unless
+// the model opts into input protection, matching the behavior of the ok and
+// cancel buttons.
+TEST_F(BubbleDialogModelHostTest, ExtraButtonAllowsKeyEventsByDefault) {
+  std::unique_ptr<Widget> anchor_widget = CreateTestWidget(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  anchor_widget->Show();
+
+  int press_count = 0;
+  Widget* const bubble_widget = ShowBubbleWithModel(
+      ui::DialogModel::Builder()
+          .AddOkButton(base::DoNothing())
+          .AddExtraButton(base::BindLambdaForTesting(
+                              [&](const ui::Event&) { ++press_count; }),
+                          ui::DialogModel::Button::Params().SetLabel(u"Button"))
+          .Build(),
+      anchor_widget.get());
+  BubbleDialogModelHost* const host = GetHost(bubble_widget);
+
+  auto* const extra_button = AsViewClass<Button>(host->GetExtraView());
+  ASSERT_NE(extra_button, nullptr);
+
+  host->GetDialogClientView()->TriggerInputProtection(/*force_early=*/true);
+
+  test::ButtonTestApi(extra_button)
+      .NotifyClick(ui::KeyEvent(ui::EventType::kKeyPressed, ui::VKEY_RETURN,
+                                ui::EF_NONE, ui::EventTimeForNow()));
+  EXPECT_EQ(1, press_count);
+
+  bubble_widget->CloseNow();
+}
+
+TEST_F(BubbleDialogModelHostTest,
+       ExtraButtonDisallowsEarlyKeyEventsWithInputProtection) {
+  std::unique_ptr<Widget> anchor_widget = CreateTestWidget(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  anchor_widget->Show();
+
+  int press_count = 0;
+  Widget* const bubble_widget = ShowBubbleWithModel(
+      ui::DialogModel::Builder()
+          .AddOkButton(base::DoNothing())
+          .AddExtraButton(base::BindLambdaForTesting(
+                              [&](const ui::Event&) { ++press_count; }),
+                          ui::DialogModel::Button::Params().SetLabel(u"Button"))
+          .SetEnableInputProtection(true)
+          .Build(),
+      anchor_widget.get());
+  BubbleDialogModelHost* const host = GetHost(bubble_widget);
+
+  auto* const extra_button = AsViewClass<Button>(host->GetExtraView());
+  ASSERT_NE(extra_button, nullptr);
+
+  host->GetDialogClientView()->TriggerInputProtection(/*force_early=*/true);
+
+  // A key event within the protection window is ignored.
+  test::ButtonTestApi(extra_button)
+      .NotifyClick(ui::KeyEvent(ui::EventType::kKeyPressed, ui::VKEY_RETURN,
+                                ui::EF_NONE, ui::EventTimeForNow()));
+  EXPECT_EQ(0, press_count);
+
+  // A key event past the protection window is accepted.
+  test::ButtonTestApi(extra_button)
+      .NotifyClick(
+          ui::KeyEvent(ui::EventType::kKeyPressed, ui::VKEY_RETURN, ui::EF_NONE,
+                       ui::EventTimeForNow() + 2 * GetDoubleClickInterval()));
+  EXPECT_EQ(1, press_count);
+
+  bubble_widget->CloseNow();
+}
+
+// The extra link gets the same input protection as the extra button.
+TEST_F(BubbleDialogModelHostTest, ExtraLinkIgnoresEarlyPointerEvents) {
+  std::unique_ptr<Widget> anchor_widget = CreateTestWidget(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  anchor_widget->Show();
+
+  int click_count = 0;
+  Widget* const bubble_widget = ShowBubbleWithModel(
+      ui::DialogModel::Builder()
+          .AddOkButton(base::DoNothing())
+          .AddExtraLink(ui::DialogModelLabel::CreateLink(
+              IDS_APP_OK, base::BindLambdaForTesting(
+                              [&](const ui::Event&) { ++click_count; })))
+          .Build(),
+      anchor_widget.get());
+  BubbleDialogModelHost* const host = GetHost(bubble_widget);
+
+  auto* const extra_link = AsViewClass<Link>(host->GetExtraView());
+  ASSERT_NE(extra_link, nullptr);
+  test::RunScheduledLayout(bubble_widget);
+  ASSERT_FALSE(extra_link->size().IsEmpty());
+
+  host->GetDialogClientView()->TriggerInputProtection(/*force_early=*/true);
+
+  // A pointer event within the protection window is ignored.
+  extra_link->OnMouseReleased(
+      ui::MouseEvent(ui::EventType::kMouseReleased, gfx::PointF(),
+                     gfx::PointF(), ui::EventTimeForNow(),
+                     ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(0, click_count);
+
+  // A pointer event past the protection window is accepted.
+  extra_link->OnMouseReleased(ui::MouseEvent(
+      ui::EventType::kMouseReleased, gfx::PointF(), gfx::PointF(),
+      ui::EventTimeForNow() + 2 * GetDoubleClickInterval(),
+      ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(1, click_count);
+
+  bubble_widget->CloseNow();
+}
+
+TEST_F(BubbleDialogModelHostTest, ParagraphWithHeaderHasAccessibleMetadata) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kParagraphId);
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kPlainParagraphId);
+
+  std::unique_ptr<Widget> anchor_widget = CreateTestWidget(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  anchor_widget->Show();
+  const auto context =
+      views::ElementTrackerViews::GetContextForWidget(anchor_widget.get());
+
+  Widget* const bubble_widget = ShowBubbleWithModel(
+      ui::DialogModel::Builder()
+          .SetTitle(u"Dialog Title")
+          .AddParagraph(ui::DialogModelLabel(u"Paragraph body text"),
+                        u"Section Header", kParagraphId)
+          .AddParagraph(ui::DialogModelLabel(u"Plain paragraph body text"),
+                        /*header=*/std::u16string(), kPlainParagraphId)
+          .Build(),
+      anchor_widget.get());
+  BubbleDialogModelHost* const host = GetHost(bubble_widget);
+
+  // Verify dialog title is heading level 1.
+  Label* title_label =
+      views::AsViewClass<Label>(host->GetBubbleFrameView()->title());
+  ASSERT_NE(title_label, nullptr);
+  ui::AXNodeData title_node_data;
+  title_label->GetViewAccessibility().GetAccessibleNodeData(&title_node_data);
+  EXPECT_EQ(title_node_data.role, ax::mojom::Role::kHeading);
+  EXPECT_TRUE(title_node_data.HasIntAttribute(
+      ax::mojom::IntAttribute::kHierarchicalLevel));
+  EXPECT_EQ(title_node_data.GetIntAttribute(
+                ax::mojom::IntAttribute::kHierarchicalLevel),
+            1);
+
+  // Verify paragraph with header has a header_label with heading level 2.
+  auto* paragraph_container =
+      views::ElementTrackerViews::GetInstance()->GetUniqueView(kParagraphId,
+                                                               context);
+  ASSERT_NE(paragraph_container, nullptr);
+  ASSERT_GE(paragraph_container->children().size(), 2u);
+  auto* header_label = AsViewClass<Label>(paragraph_container->children()[0]);
+  ASSERT_NE(header_label, nullptr);
+
+  ui::AXNodeData header_node_data;
+  header_label->GetViewAccessibility().GetAccessibleNodeData(&header_node_data);
+  EXPECT_EQ(header_node_data.role, ax::mojom::Role::kHeading);
+  EXPECT_TRUE(header_node_data.HasIntAttribute(
+      ax::mojom::IntAttribute::kHierarchicalLevel));
+  EXPECT_EQ(header_node_data.GetIntAttribute(
+                ax::mojom::IntAttribute::kHierarchicalLevel),
+            2);
+
+  // Verify plain paragraph without header has no heading role or level.
+  auto* plain_paragraph_view =
+      views::ElementTrackerViews::GetInstance()->GetUniqueView(
+          kPlainParagraphId, context);
+  ASSERT_NE(plain_paragraph_view, nullptr);
+  ui::AXNodeData plain_node_data;
+  plain_paragraph_view->GetViewAccessibility().GetAccessibleNodeData(
+      &plain_node_data);
+  EXPECT_NE(plain_node_data.role, ax::mojom::Role::kHeading);
+  EXPECT_FALSE(plain_node_data.HasIntAttribute(
+      ax::mojom::IntAttribute::kHierarchicalLevel));
+
+  bubble_widget->CloseNow();
 }
 
 }  // namespace views

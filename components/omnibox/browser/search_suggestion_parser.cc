@@ -45,7 +45,6 @@
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "third_party/omnibox_proto/entity_info.pb.h"
 #include "third_party/omnibox_proto/navigational_intent.pb.h"
-#include "third_party/omnibox_proto/rich_suggest_template.pb.h"
 #include "third_party/omnibox_proto/suggest_template_info.pb.h"
 #include "ui/base/device_form_factor.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -90,30 +89,31 @@ omnibox::SuggestType GetSuggestType(const std::string& type) {
 }
 
 // Converts an omnibox::SuggestType enum value to an equivalent
-// AutocompleteMatchType::Type enum values.
-AutocompleteMatchType::Type GetAutocompleteMatchType(
+// omnibox::AutocompleteMatchType enum values.
+omnibox::AutocompleteMatchType GetAutocompleteMatchType(
     omnibox::SuggestType suggest_type) {
   switch (suggest_type) {
     case omnibox::TYPE_CALCULATOR:
-      return AutocompleteMatchType::CALCULATOR;
+      return omnibox::AutocompleteMatchType::kCalculator;
     case omnibox::TYPE_ENTITY:
-      return AutocompleteMatchType::SEARCH_SUGGEST_ENTITY;
+      return omnibox::AutocompleteMatchType::kSearchSuggestEntity;
     case omnibox::TYPE_TAIL:
-      return AutocompleteMatchType::SEARCH_SUGGEST_TAIL;
+      return omnibox::AutocompleteMatchType::kSearchSuggestTail;
     case omnibox::TYPE_PERSONALIZED_QUERY:
-      return AutocompleteMatchType::SEARCH_SUGGEST_PERSONALIZED;
+      return omnibox::AutocompleteMatchType::kSearchSuggestPersonalized;
     case omnibox::TYPE_PROFILE:
-      return AutocompleteMatchType::SEARCH_SUGGEST_PROFILE;
+      return omnibox::AutocompleteMatchType::kSearchSuggestProfile;
     case omnibox::TYPE_NAVIGATION:
-      return AutocompleteMatchType::NAVSUGGEST;
+      return omnibox::AutocompleteMatchType::kNavsuggest;
     case omnibox::TYPE_PERSONALIZED_NAVIGATION:
-      return AutocompleteMatchType::NAVSUGGEST_PERSONALIZED;
+      return omnibox::AutocompleteMatchType::kNavsuggestPersonalized;
     default: {
-      // Use `ACMatchType::SEARCH_SUGGEST_ENTITY` for categorical suggestions.
+      // Use `AutocompleteMatchType::SEARCH_SUGGEST_ENTITY` for categorical
+      // suggestions.
       if (suggest_type == omnibox::TYPE_CATEGORICAL_QUERY) {
-        return AutocompleteMatchType::SEARCH_SUGGEST_ENTITY;
+        return omnibox::AutocompleteMatchType::kSearchSuggestEntity;
       }
-      return AutocompleteMatchType::SEARCH_SUGGEST;
+      return omnibox::AutocompleteMatchType::kSearchSuggest;
     }
   }
 }
@@ -194,12 +194,12 @@ constexpr auto kReservedReservedGroupSectionsMap =
 // section known to Chrome.
 omnibox::GroupSection ChromeGroupSectionForRemoteGroupIndex(
     const int group_index) {
-  if (kReservedReservedGroupSectionsMap.contains(group_index)) {
-    return kReservedReservedGroupSectionsMap.at(group_index);
-  } else {
-    // Return a default section if we don't have any reserved sections left.
-    return omnibox::SECTION_DEFAULT;
+  const auto it = kReservedReservedGroupSectionsMap.find(group_index);
+  if (it != kReservedReservedGroupSectionsMap.end()) {
+    return it->second;
   }
+  // Return a default section if we don't have any reserved sections left.
+  return omnibox::SECTION_DEFAULT;
 }
 
 // Decodes a proto object from its serialized Base64 string representation.
@@ -225,21 +225,12 @@ bool DecodeProtoFromBase64(const std::string* encoded_data, T& result_proto) {
   return true;
 }
 
-// Format template image URLs that do not contain a scheme.
-// The call to GetFormattedURL() will return the URL with a scheme added or
-// return the same URL if no formatting is necessary.
-
 std::u16string GetAnnotation(
-    const omnibox::EntityInfo& entity_info,
     base::optional_ref<const omnibox::SuggestTemplateInfo>
         suggest_template_info) {
   if (suggest_template_info.has_value() &&
       !suggest_template_info->secondary_text().text().empty()) {
     return base::UTF8ToUTF16(suggest_template_info->secondary_text().text());
-  }
-
-  if (!entity_info.annotation().empty()) {
-    return base::UTF8ToUTF16(entity_info.annotation());
   }
   return u"";
 }
@@ -252,20 +243,22 @@ bool SuggestTemplateInfoHasPrimaryText(
          !suggest_template_info->primary_text().text().empty();
 }
 
+bool SuggestTemplateInfoHasSecondaryText(
+    base::optional_ref<const omnibox::SuggestTemplateInfo>
+        suggest_template_info) {
+  return suggest_template_info.has_value() &&
+         suggest_template_info->has_secondary_text() &&
+         !suggest_template_info->secondary_text().text().empty();
+}
+
 // Update `match_contents` if there is any input that has a higher precedence.
 void MaybeUpdateMatchContents(
-    const omnibox::EntityInfo& entity_info,
     base::optional_ref<const omnibox::SuggestTemplateInfo>
         suggest_template_info,
     std::u16string& match_contents) {
   if (SuggestTemplateInfoHasPrimaryText(suggest_template_info)) {
     match_contents =
         base::UTF8ToUTF16(suggest_template_info->primary_text().text());
-    return;
-  }
-
-  if (!entity_info.name().empty()) {
-    match_contents = base::UTF8ToUTF16(entity_info.name());
     return;
   }
 }
@@ -442,6 +435,56 @@ SuggestResponseMetadata ParseSuggestResponseMetadata(
 
   return metadata;
 }
+
+void PopulateSuggestTemplateInfoFromEntityInfo(
+    const omnibox::EntityInfo& entity_info,
+    omnibox::SuggestTemplateInfo* suggest_template_info) {
+  suggest_template_info->set_style(omnibox::SuggestTemplateInfo::ENRICHED);
+  if (entity_info.has_name()) {
+    suggest_template_info->mutable_primary_text()->set_text(entity_info.name());
+  }
+
+  if (entity_info.has_annotation()) {
+    suggest_template_info->mutable_secondary_text()->set_text(
+        entity_info.annotation());
+  }
+
+  if (entity_info.has_image_url()) {
+    suggest_template_info->mutable_image()->set_url(entity_info.image_url());
+    if (entity_info.has_dominant_color()) {
+      suggest_template_info->mutable_image()->set_dominant_color(
+          entity_info.dominant_color());
+    }
+  }
+
+  if (entity_info.has_entity_id()) {
+    suggest_template_info->set_entity_id(entity_info.entity_id());
+  }
+
+  if (entity_info.has_website_uri()) {
+    suggest_template_info->set_website_uri(entity_info.website_uri());
+  }
+
+  if (entity_info.has_suggest_search_parameters()) {
+    base::StringPairs kv_pairs;
+    base::SplitStringIntoKeyValuePairs(entity_info.suggest_search_parameters(),
+                                       '=', '&', &kv_pairs);
+    for (const auto& pair : kv_pairs) {
+      (*suggest_template_info
+            ->mutable_default_search_parameters())[pair.first] = pair.second;
+    }
+  }
+
+  for (const auto& action : entity_info.action_suggestions()) {
+    auto* template_action = suggest_template_info->add_action_suggestions();
+    template_action->set_action_uri(action.action_uri());
+    template_action->set_logs_action_type(action.logs_action_type());
+    template_action->set_action_type(
+        static_cast<omnibox::SuggestTemplateInfo::TemplateAction::ActionType>(
+            action.action_type()));
+    *template_action->mutable_search_parameters() = action.search_parameters();
+  }
+}
 }  // namespace
 
 omnibox::SuggestSubtype SuggestSubtypeForNumber(int value) {
@@ -468,7 +511,7 @@ SearchSuggestionParser::Result::Result(
     bool from_keyword,
     int relevance,
     bool relevance_from_server,
-    AutocompleteMatchType::Type type,
+    omnibox::AutocompleteMatchType type,
     omnibox::SuggestType suggest_type,
     std::vector<int> subtypes,
     const std::string& deletion_url,
@@ -491,7 +534,7 @@ SearchSuggestionParser::Result::~Result() = default;
 
 SearchSuggestionParser::SuggestResult::SuggestResult(
     const std::u16string& suggestion,
-    AutocompleteMatchType::Type type,
+    omnibox::AutocompleteMatchType type,
     omnibox::SuggestType suggest_type,
     std::vector<int> subtypes,
     bool from_keyword,
@@ -506,7 +549,6 @@ SearchSuggestionParser::SuggestResult::SuggestResult(
                     suggestion,
                     /*match_contents_prefix=*/std::u16string(),
                     /*annotation=*/std::u16string(),
-                    /*entity_info=*/omnibox::EntityInfo(),
                     /*deletion_url=*/"",
                     from_keyword,
                     navigational_intent,
@@ -518,13 +560,12 @@ SearchSuggestionParser::SuggestResult::SuggestResult(
 
 SearchSuggestionParser::SuggestResult::SuggestResult(
     const std::u16string& suggestion,
-    AutocompleteMatchType::Type type,
+    omnibox::AutocompleteMatchType type,
     omnibox::SuggestType suggest_type,
     std::vector<int> subtypes,
     const std::u16string& match_contents,
     const std::u16string& match_contents_prefix,
     const std::u16string& annotation,
-    omnibox::EntityInfo entity_info,
     const std::string& deletion_url,
     bool from_keyword,
     omnibox::NavigationalIntent navigational_intent,
@@ -540,7 +581,6 @@ SearchSuggestionParser::SuggestResult::SuggestResult(
                     match_contents,
                     match_contents_prefix,
                     annotation,
-                    std::move(entity_info),
                     deletion_url,
                     from_keyword,
                     navigational_intent,
@@ -553,13 +593,12 @@ SearchSuggestionParser::SuggestResult::SuggestResult(
 
 SearchSuggestionParser::SuggestResult::SuggestResult(
     const std::u16string& suggestion,
-    AutocompleteMatchType::Type type,
+    omnibox::AutocompleteMatchType type,
     omnibox::SuggestType suggest_type,
     std::vector<int> subtypes,
     const std::u16string& match_contents,
     const std::u16string& match_contents_prefix,
     const std::u16string& annotation,
-    omnibox::EntityInfo entity_info,
     const std::string& deletion_url,
     bool from_keyword,
     omnibox::NavigationalIntent navigational_intent,
@@ -579,7 +618,6 @@ SearchSuggestionParser::SuggestResult::SuggestResult(
              navigational_intent),
       suggestion_(suggestion),
       match_contents_prefix_(match_contents_prefix),
-      entity_info_(std::move(entity_info)),
       suggest_template_info_(std::move(suggest_template_info)),
       should_prefetch_(should_prefetch),
       should_prerender_(should_prerender) {
@@ -632,7 +670,7 @@ void SearchSuggestionParser::SuggestResult::ClassifyMatchContents(
   }
 
   std::u16string lookup_text = input_text;
-  if (type_ == AutocompleteMatchType::SEARCH_SUGGEST_TAIL) {
+  if (type_ == omnibox::AutocompleteMatchType::kSearchSuggestTail) {
     const size_t contents_index =
         suggestion_.length() - match_contents_.length();
     // Ensure the query starts with the input text, and ends with the match
@@ -660,14 +698,29 @@ void SearchSuggestionParser::SuggestResult::ClassifyMatchContents(
       ClassifyAllMatchesInString(input_text, match_contents_, true);
 }
 
-void SearchSuggestionParser::SuggestResult::SetRichAnswerTemplate(
-    const omnibox::RichAnswerTemplate& answer_template) {
-  answer_template_ = answer_template;
-}
+ACMatchClassifications
+SearchSuggestionParser::SuggestResult::ClassifyAnnotation() const {
+  if (annotation_.empty()) {
+    return {};
+  }
 
-void SearchSuggestionParser::SuggestResult::SetEntityInfo(
-    const omnibox::EntityInfo& entity_info) {
-  entity_info_ = entity_info;
+  // Only use the server-provided `suggest_template_info` formatting if the
+  // template's secondary text is non-empty, has fragments, and matches
+  // `annotation_`. Otherwise the fragment indices would not apply to
+  // `annotation_`.
+  if (SuggestTemplateInfoHasSecondaryText(suggest_template_info_) &&
+      suggest_template_info_->secondary_text().fragments_size() > 0 &&
+      annotation_ ==
+          base::UTF8ToUTF16(suggest_template_info_->secondary_text().text())) {
+    auto classifications = ClassifyFormattedString(
+        suggest_template_info_->secondary_text(), ACMatchClassification::DIM);
+    if (!classifications.empty()) {
+      return classifications;
+    }
+  }
+
+  // The fallback for annotations is dimmed text.
+  return {ACMatchClassification(0, ACMatchClassification::DIM)};
 }
 
 void SearchSuggestionParser::SuggestResult::SetSuggestTemplateInfo(
@@ -699,7 +752,7 @@ int SearchSuggestionParser::SuggestResult::CalculateRelevance(
 SearchSuggestionParser::NavigationResult::NavigationResult(
     const AutocompleteSchemeClassifier& scheme_classifier,
     const GURL& url,
-    AutocompleteMatchType::Type match_type,
+    omnibox::AutocompleteMatchType match_type,
     omnibox::SuggestType suggest_type,
     std::vector<int> subtypes,
     const std::u16string& description,
@@ -1002,8 +1055,8 @@ bool SearchSuggestionParser::ParseSuggestResults(
       }
     }
 
-    AutocompleteMatchType::Type match_type =
-        AutocompleteMatchType::SEARCH_SUGGEST;
+    omnibox::AutocompleteMatchType match_type =
+        omnibox::AutocompleteMatchType::kSearchSuggest;
     omnibox::SuggestType suggest_type = omnibox::TYPE_QUERY;
 
     // Legacy code: if the server sends us a single subtype ID, place it beside
@@ -1032,8 +1085,9 @@ bool SearchSuggestionParser::ParseSuggestResults(
       deletion_url = FindStringOrEmpty(suggestion_detail, "du");
     }
 
-    if ((match_type == AutocompleteMatchType::NAVSUGGEST) ||
-        (match_type == AutocompleteMatchType::NAVSUGGEST_PERSONALIZED)) {
+    if ((match_type == omnibox::AutocompleteMatchType::kNavsuggest) ||
+        (match_type ==
+         omnibox::AutocompleteMatchType::kNavsuggestPersonalized)) {
       // Do not blindly trust the URL coming from the server to be valid.
       GURL url(url_formatter::FixupURL(base::UTF16ToUTF8(suggestion)));
       if (url.is_valid() && url.SchemeIsHTTPOrHTTPS()) {
@@ -1052,7 +1106,7 @@ bool SearchSuggestionParser::ParseSuggestResults(
       }
     } else {
       std::u16string match_contents = suggestion;
-      if (match_type == AutocompleteMatchType::CALCULATOR) {
+      if (match_type == omnibox::AutocompleteMatchType::kCalculator) {
         const bool has_equals_prefix = !suggestion.compare(0, 2, u"= ");
         if (has_equals_prefix) {
           // Calculator results include a "= " prefix but we don't want to
@@ -1070,13 +1124,10 @@ bool SearchSuggestionParser::ParseSuggestResults(
         }
       }
 
-      omnibox::RichSuggestTemplate suggest_template;
       omnibox::EntityInfo entity_info;
       omnibox::SuggestTemplateInfo suggest_template_info;
       std::u16string match_contents_prefix;
       std::optional<int> suggestion_group_id;
-      bool answer_parsed_successfully = false;
-      omnibox::RichAnswerTemplate answer_template;
       bool has_suggest_template = false;
 
       if (response_metadata.suggestion_details &&
@@ -1085,17 +1136,11 @@ bool SearchSuggestionParser::ParseSuggestResults(
         const base::DictValue& suggestion_detail =
             (*response_metadata.suggestion_details)[index].GetDict();
 
-        // Rich Suggest Template.
-        const auto* rich_template_str =
-            suggestion_detail.FindString("google:templateinfo");
-        DecodeProtoFromBase64<omnibox::RichSuggestTemplate>(rich_template_str,
-                                                            suggest_template);
-
         // Entity.
         const auto* entity_info_string =
             suggestion_detail.FindString("google:entityinfo");
-        DecodeProtoFromBase64<omnibox::EntityInfo>(entity_info_string,
-                                                   entity_info);
+        bool has_entity_info = DecodeProtoFromBase64<omnibox::EntityInfo>(
+            entity_info_string, entity_info);
 
         // Suggest Template Info.
         const auto* suggest_info_string =
@@ -1116,10 +1161,13 @@ bool SearchSuggestionParser::ParseSuggestResults(
         // Suggestion group Id.
         suggestion_group_id = suggestion_detail.FindInt("zl");
 
-        // Answer.
-        if (suggest_template.has_rich_answer_template()) {
-          answer_template = suggest_template.rich_answer_template();
-          answer_parsed_successfully = true;
+        // Entity to SUIT Fallback Translation Layer.
+        // If the server sends legacy EntityInfo without SuggestTemplateInfo,
+        // we synthesize a SuggestTemplateInfo on the client.
+        if (!has_suggest_template && has_entity_info) {
+          has_suggest_template = true;
+          PopulateSuggestTemplateInfoFromEntityInfo(entity_info,
+                                                    &suggest_template_info);
         }
       }
 
@@ -1129,23 +1177,17 @@ bool SearchSuggestionParser::ParseSuggestResults(
       const base::optional_ref<const omnibox::SuggestTemplateInfo>
           maybe_suggest_template_info =
               has_suggest_template ? &suggest_template_info : nullptr;
-      MaybeUpdateMatchContents(entity_info, maybe_suggest_template_info,
-                               match_contents);
+      MaybeUpdateMatchContents(maybe_suggest_template_info, match_contents);
       const std::u16string annotation =
-          GetAnnotation(entity_info, maybe_suggest_template_info);
-      results->suggest_results.push_back(SuggestResult(
+          GetAnnotation(maybe_suggest_template_info);
+      results->suggest_results.emplace_back(
           suggestion, match_type, suggest_type, subtypes[index], match_contents,
-          match_contents_prefix, annotation, std::move(entity_info),
-          deletion_url, is_keyword_result, nav_intent, relevance,
-          response_metadata.relevances != nullptr, should_prefetch,
-          should_prerender, trimmed_input,
+          match_contents_prefix, annotation, deletion_url, is_keyword_result,
+          nav_intent, relevance, response_metadata.relevances != nullptr,
+          should_prefetch, should_prerender, trimmed_input,
           has_suggest_template
               ? std::make_optional(std::move(suggest_template_info))
-              : std::nullopt));
-
-      if (answer_parsed_successfully) {
-        results->suggest_results.back().SetRichAnswerTemplate(answer_template);
-      }
+              : std::nullopt);
 
       if (suggestion_group_id) {
         results->suggest_results.back().set_suggestion_group_id(
@@ -1169,14 +1211,15 @@ bool SearchSuggestionParser::ParseSuggestResults(
       return false;
     }
 
-    // There is nothing to do if the group config has been added before.
-    if (results->suggestion_groups_map.contains(suggestion_group_id)) {
+    // Store the group config in the results, unless it has been added before.
+    auto [it, inserted] = results->suggestion_groups_map.try_emplace(
+        suggestion_group_id, group_config);
+    if (!inserted) {
       return true;
     }
 
-    // Store the group config with the appropriate section in the results.
-    results->suggestion_groups_map[suggestion_group_id].MergeFrom(group_config);
-    results->suggestion_groups_map[suggestion_group_id].set_section(
+    // Set the appropriate section for the newly added group config.
+    it->second.set_section(
         ChromeGroupSectionForRemoteGroupIndex(group_index++));
     return true;
   };
@@ -1193,12 +1236,10 @@ bool SearchSuggestionParser::ParseSuggestResults(
     // Add the group config associated with the suggestion, if the suggestion
     // has a valid group ID and a corresponding group config is found in the
     // response.
-    if (!response_metadata.groups_info.group_configs().contains(
-            suggestion_group_id) ||
-        !add_group_config(suggestion_group_id,
-                          response_metadata.groups_info.group_configs().at(
-                              suggestion_group_id))) {
-      continue;
+    const auto it =
+        response_metadata.groups_info.group_configs().find(suggestion_group_id);
+    if (it != response_metadata.groups_info.group_configs().end()) {
+      add_group_config(suggestion_group_id, it->second);
     }
   }
 

@@ -17,6 +17,9 @@ NSString* const kContentSuggestionsMostVisitedAccessibilityIdentifierPrefix =
 NSString* const kContentSuggestionsShortcutsAccessibilityIdentifierPrefix =
     @"contentSuggestionsShortcutsAccessibilityIdentifierPrefix";
 
+NSString* const kContentSuggestionsAIMModuleAccessibilityIdentifier =
+    @"ContentSuggestionsAIMModuleAccessibilityIdentifier";
+
 NSString* const kMagicStackScrollViewAccessibilityIdentifier =
     @"MagicStackScrollViewAccessibilityIdentifier";
 
@@ -65,6 +68,7 @@ bool IsTipsModuleType(ContentSuggestionsModuleType type) {
     case ContentSuggestionsModuleType::kTips:
     case ContentSuggestionsModuleType::kAppBundlePromo:
     case ContentSuggestionsModuleType::kDefaultBrowser:
+    case ContentSuggestionsModuleType::kTipsNTPThemeActionable:
       return true;
     case ContentSuggestionsModuleType::kInvalid:
     case ContentSuggestionsModuleType::kTabResumption:

@@ -21,6 +21,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/persistent_memory_allocator.h"
 #include "base/observer_list.h"
+#include "base/process/process.h"
 #include "build/build_config.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_process_host.h"
@@ -79,6 +80,7 @@ class MockRenderProcessHost : public RenderProcessHost {
   void SimulateReady();
 
   // RenderProcessHost implementation (public portion).
+  bool IsMock() const override;
   bool Init() override;
   void EnableSendQueue() override;
   int GetNextRoutingID() override;
@@ -187,6 +189,8 @@ class MockRenderProcessHost : public RenderProcessHost {
   int GetPendingReuseRefCountForTesting() const override;
   bool AreRefCountsDisabled() override;
   mojom::Renderer* GetRendererInterface() override;
+  mojom::RendererVariationsConfiguration* GetRendererVariationsConfiguration()
+      override;
 
   bool MayReuseHost() override;
   bool IsUnused() override;
@@ -251,11 +255,11 @@ class MockRenderProcessHost : public RenderProcessHost {
       const blink::StorageKey& storage_key,
       mojo::PendingReceiver<blink::mojom::LockManager> receiver) override {}
   void CreateOneShotSyncService(
-      const url::Origin& origin,
+      const blink::StorageKey& storage_key,
       mojo::PendingReceiver<blink::mojom::OneShotBackgroundSyncService>
           receiver) override {}
   void CreatePeriodicSyncService(
-      const url::Origin& origin,
+      const blink::StorageKey& storage_key,
       mojo::PendingReceiver<blink::mojom::PeriodicBackgroundSyncService>
           receiver) override {}
   void CreatePermissionService(
@@ -272,12 +276,20 @@ class MockRenderProcessHost : public RenderProcessHost {
       const blink::StorageKey& storage_key,
       mojo::PendingReceiver<blink::mojom::NotificationService> receiver)
       override {}
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   void CreateOOPVideoDecoder(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver) override {}
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
   std::string GetInfoForBrowserContextDestructionCrashReporting() override;
+  const std::string& GetUnresponsiveDocumentJavascriptCallStack()
+      const override;
+  const blink::LocalFrameToken& GetUnresponsiveDocumentToken() const override;
+  std::optional<blink::OomInterventionMetrics> GetCrashMemoryMetrics()
+      const override;
+  void SetUnresponsiveDocumentJSCallStackAndToken(
+      std::string javascript_call_stack,
+      blink::LocalFrameToken token);
   void WriteIntoTrace(perfetto::TracedProto<TraceProto> proto) const override;
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -351,7 +363,6 @@ class MockRenderProcessHost : public RenderProcessHost {
   bool is_for_guests_only_;
   bool is_pdf_ = false;
   base::Process::Priority priority_;
-  bool is_unused_;
   bool are_v8_optimizations_disabled_ = false;
   bool is_for_top_chrome_web_ui_ = false;
   bool has_immersive_xr_session_ = false;
@@ -363,11 +374,19 @@ class MockRenderProcessHost : public RenderProcessHost {
   int pending_reuse_ref_count_;
   int foreground_service_worker_count_;
   std::unique_ptr<mojo::AssociatedRemote<mojom::Renderer>> renderer_interface_;
+  std::unique_ptr<
+      mojo::AssociatedRemote<mojom::RendererVariationsConfiguration>>
+      renderer_variations_configuration_;
   std::map<std::string, InterfaceBinder> binder_overrides_;
   bool is_renderer_locked_to_site_ = false;
   std::set<GlobalRenderFrameHostId> render_frame_host_id_set_;
   mojo::PendingReceiver<blink::mojom::CacheStorage> cache_storage_receiver_;
   mojo::PendingReceiver<blink::mojom::IDBFactory> idb_factory_receiver_;
+  std::string unresponsive_document_javascript_call_stack_;
+  blink::LocalFrameToken unresponsive_document_token_;
+  // Returned by GetProcess(), which hands out references.
+  const base::Process null_process_;
+  const base::Process current_process_ = base::Process::Current();
   base::WeakPtrFactory<MockRenderProcessHost> weak_ptr_factory_{this};
 };
 

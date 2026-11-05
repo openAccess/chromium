@@ -198,6 +198,10 @@ WebrtcEventLogData* WebrtcConnectionToClient::rtc_event_log() {
   return transport_->rtc_event_log();
 }
 
+base::WeakPtr<ConnectionToClient> WebrtcConnectionToClient::GetWeakPtr() {
+  return weak_factory_.GetWeakPtr();
+}
+
 void WebrtcConnectionToClient::OnWebrtcTransportConnecting() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   // Create outgoing control channel. |event_dispatcher_| is initialized later
@@ -363,6 +367,13 @@ void WebrtcConnectionToClient::OnChannelClosed(
 bool WebrtcConnectionToClient::allChannelsConnected() {
   return control_dispatcher_ && control_dispatcher_->is_connected() &&
          event_dispatcher_ && event_dispatcher_->is_connected();
+}
+
+std::unique_ptr<MessagePipe>
+WebrtcConnectionToClient::CreateOutgoingDataChannel(
+    const std::string& channel_name) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  return transport_->CreateOutgoingChannel(channel_name);
 }
 
 }  // namespace remoting::protocol

@@ -16,6 +16,7 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/read_only_shared_memory_region.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
 #include "base/task/common/task_annotator.h"
@@ -27,7 +28,7 @@
 #include "cc/base/devtools_instrumentation.h"
 #include "cc/base/features.h"
 #include "cc/benchmarks/benchmark_instrumentation.h"
-#include "cc/input/browser_controls_offset_manager.h"
+#include "cc/input/browser_controls_offset_manager_interface.h"
 #include "cc/input/browser_controls_offset_tag_modifications.h"
 #include "cc/metrics/compositor_timing_history.h"
 #include "cc/paint/paint_image.h"
@@ -152,6 +153,11 @@ ProxyImpl::ProxyImpl(base::WeakPtr<ProxyMain> proxy_main_weak_ptr,
       host_impl_->compositor_frame_reporting_controller());
 
   DCHECK_EQ(scheduler_->visible(), host_impl_->visible());
+}
+
+base::ReadOnlySharedMemoryRegion ProxyImpl::TakeScrollTimingBufferRegion() {
+  DCHECK(IsImplThread());
+  return host_impl_->TakeScrollTimingBufferRegion();
 }
 
 ProxyImpl::~ProxyImpl() {
@@ -291,16 +297,24 @@ void ProxyImpl::SetNeedsRedrawOnImpl(const gfx::Rect& damage_rect) {
   SetNeedsRedrawOnImplThread();
 }
 
-void ProxyImpl::SetNeedsCommitOnImpl(BeginMainFrameReason reason,
+void ProxyImpl::SetNeedsCommitOnImpl(BeginMainFrameReasons reason,
                                      bool urgent,
                                      bool unthrottle) {
-  SetNeedsCommitOnImplThread(reason, urgent, unthrottle);
+  begin_main_frame_reason_ |= reason;
+  TRACE_EVENT0("cc", "ProxyImpl::SetNeedsCommitOnImplThread");
+  DCHECK(IsImplThread());
+  scheduler_->SetNeedsBeginMainFrame(urgent, unthrottle);
 }
 
 void ProxyImpl::SetTargetLocalSurfaceIdOnImpl(
     const viz::LocalSurfaceId& target_local_surface_id) {
   DCHECK(IsImplThread());
   host_impl_->SetTargetLocalSurfaceId(target_local_surface_id);
+}
+
+void ProxyImpl::SetMemoryPolicyOnImpl(const ManagedMemoryPolicy& policy) {
+  DCHECK(IsImplThread());
+  host_impl_->SetMemoryPolicy(policy);
 }
 
 void ProxyImpl::BeginMainFrameAbortedOnImpl(
@@ -559,6 +573,11 @@ void ProxyImpl::SetNeedsOneBeginImplFrameOnImplThread() {
   scheduler_->SetNeedsOneBeginImplFrame();
 }
 
+void ProxyImpl::NotifyInputEvent() {
+  DCHECK(IsImplThread());
+  scheduler_->NotifyInputEvent();
+}
+
 void ProxyImpl::SetNeedsPrepareTilesOnImplThread() {
   DCHECK(IsImplThread());
   scheduler_->SetNeedsPrepareTiles();
@@ -567,10 +586,7 @@ void ProxyImpl::SetNeedsPrepareTilesOnImplThread() {
 void ProxyImpl::SetNeedsCommitOnImplThread(BeginMainFrameReason reason,
                                            bool urgent,
                                            bool unthrottled) {
-  set_begin_main_frame_reason(reason);
-  TRACE_EVENT0("cc", "ProxyImpl::SetNeedsCommitOnImplThread");
-  DCHECK(IsImplThread());
-  scheduler_->SetNeedsBeginMainFrame(urgent, unthrottled);
+  SetNeedsCommitOnImpl(reason, urgent, unthrottled);
 }
 
 void ProxyImpl::SetVideoNeedsBeginFrames(bool needs_begin_frames) {

@@ -25,11 +25,10 @@
 #include "components/skills/public/skills_service.h"
 #include "components/sync/protocol/skill_specifics.pb.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/views/window/dialog_delegate.h"
 #include "url/gurl.h"
-
-DEFINE_USER_DATA(skills::SkillsUiTabController);
 
 namespace {
 
@@ -40,9 +39,7 @@ using glic::mojom::SkillSource;
 namespace skills {
 
 SkillsUiTabController::SkillsUiTabController(tabs::TabInterface& tab)
-    : SkillsUiTabControllerInterface(tab),
-      tab_(tab),
-      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
+    : SkillsUiTabControllerInterface(tab), tab_(tab) {
   will_detach_subscription_ = tab.RegisterWillDetach(base::BindRepeating(
       &SkillsUiTabController::OnTabWillDetach, base::Unretained(this)));
 }

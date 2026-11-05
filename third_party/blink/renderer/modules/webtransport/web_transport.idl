@@ -30,6 +30,8 @@
 
   void close(optional WebTransportCloseInfo closeInfo = {});
   [CallWith=ScriptState] readonly attribute Promise<undefined> ready;
+  [RuntimeEnabled=WebTransportReliability]
+  readonly attribute WebTransportReliabilityMode reliability;
   [CallWith=ScriptState] readonly attribute Promise<WebTransportCloseInfo> closed;
 
   // https://w3c.github.io/webtransport/#dom-webtransport-draining
@@ -38,6 +40,12 @@
 
   [CallWith=ScriptState, RuntimeEnabled=WebTransportStats]
   Promise<WebTransportConnectionStats> getStats();
+
+  [CallWith=ScriptState, NewObject, RuntimeEnabled=WebTransportExportKeyingMaterial]
+  Promise<Uint8Array> exportKeyingMaterial(
+      BufferSource label,
+      BufferSource context,
+      unsigned long outputLength);
 
   [RaisesException, RuntimeEnabled=WebTransportSendGroup]
   WebTransportSendGroup createSendGroup();
@@ -58,4 +66,7 @@
   // established, so it cannot return the same object across accesses.
   [RuntimeEnabled=WebTransportHeaders]
   readonly attribute Headers? responseHeaders;
+
+  [RuntimeEnabled=WebTransportReliability]
+  static readonly attribute boolean supportsReliableOnly;
 };

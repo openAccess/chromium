@@ -6,18 +6,16 @@
 
 #include <vector>
 
+#include "base/memory/scoped_refptr.h"
 #include "base/values.h"
 #include "chrome/browser/content_settings/generated_javascript_optimizer_pref.h"
 #include "chrome/browser/policy/policy_test_utils.h"
-#include "chrome/browser/safe_browsing/safe_browsing_service.h"
-#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
-#include "chrome/browser/site_protection/site_familiarity_utils.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/core/browser/db/fake_database_manager.h"
+#include "components/safe_browsing/buildflags.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/web_contents.h"
@@ -27,6 +25,13 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#include "chrome/browser/safe_browsing/safe_browsing_service.h"
+#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
+#include "chrome/browser/site_protection/site_familiarity_utils.h"
+#include "components/safe_browsing/core/browser/db/fake_database_manager.h"
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 namespace policy {
 
@@ -216,6 +221,7 @@ INSTANTIATE_TEST_SUITE_P(DefaultNotSet,
                          V8OptimizerPolicyTest,
                          testing::Values(NOT_SET));
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 class V8OptimizerPolicyTest_UseSiteFamiliarity : public V8OptimizerPolicyTest {
  public:
   V8OptimizerPolicyTest_UseSiteFamiliarity() {
@@ -231,7 +237,7 @@ class V8OptimizerPolicyTest_UseSiteFamiliarity : public V8OptimizerPolicyTest {
     // Test UI manager and test database manager should be set before
     // the browser is started but after threads are created.
     factory_.SetTestDatabaseManager(
-        new safe_browsing::FakeSafeBrowsingDatabaseManager(
+        base::MakeRefCounted<safe_browsing::FakeSafeBrowsingDatabaseManager>(
             content::GetUIThreadTaskRunner({})));
     safe_browsing::SafeBrowsingService::RegisterFactory(&factory_);
   }
@@ -271,5 +277,6 @@ INSTANTIATE_TEST_SUITE_P(DefaultEnabled,
 INSTANTIATE_TEST_SUITE_P(DefaultNotSet,
                          V8OptimizerPolicyTest_UseSiteFamiliarity,
                          testing::Values(NOT_SET));
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 }  // namespace policy

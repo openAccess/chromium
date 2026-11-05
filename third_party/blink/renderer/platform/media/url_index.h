@@ -10,7 +10,6 @@
 
 #include <optional>
 #include <string>
-#include <utility>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
@@ -23,6 +22,8 @@
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl_hash.h"
+#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
+#include "third_party/blink/renderer/platform/wtf/hash_functions.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
@@ -38,7 +39,6 @@ const int64_t kPositionNotSpecified = -1;
 
 class ResourceFetchContext;
 class UrlData;
-class UrlIndexTest;
 
 // A multibuffer for loading media resources which knows
 // how to create MultiBufferDataProviders to load data
@@ -73,8 +73,31 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
   // Keep in sync with WebMediaPlayer::CorsMode.
   enum CorsMode { CORS_UNSPECIFIED, CORS_ANONYMOUS, CORS_USE_CREDENTIALS };
   enum CacheMode { kNormal, kCacheDisabled };
-  using KeyType =
-      std::pair<KURL, std::pair<CorsMode, media::DataSource::EncodingMode>>;
+  enum class ServiceWorkerMode {
+    kAllow,
+    kSkip,
+  };
+
+  struct Key {
+    Key();
+    Key(const KURL& url,
+        scoped_refptr<const SecurityOrigin> security_origin,
+        CorsMode cors_mode,
+        media::DataSource::EncodingMode encoding_mode,
+        ServiceWorkerMode service_worker_mode = ServiceWorkerMode::kAllow);
+    Key(const Key&);
+    Key(Key&&);
+    Key& operator=(const Key&);
+    Key& operator=(Key&&);
+    ~Key();
+
+    KURL url;
+    scoped_refptr<const SecurityOrigin> security_origin;
+    CorsMode cors_mode = CORS_UNSPECIFIED;
+    media::DataSource::EncodingMode encoding_mode =
+        media::DataSource::EncodingMode::kIdentity;
+    ServiceWorkerMode service_worker_mode = ServiceWorkerMode::kAllow;
+  };
 
   // `url_index` is a WeakPtr since while UrlData objects are created by the
   // UrlIndex they are not owned by the UrlIndex until after the network load
@@ -83,9 +106,12 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
   UrlData(base::PassKey<UrlIndex>,
           const KURL& url,
           CorsMode cors_mode,
-          media::DataSource::EncodingMode encoding_mode,
-          base::WeakPtr<UrlIndex> url_index,
           CacheMode cache_lookup_mode,
+          scoped_refptr<const SecurityOrigin> security_origin,
+          media::DataSource::EncodingMode encoding_mode,
+          ServiceWorkerMode service_worker_mode,
+          const KURL& original_request_url,
+          base::WeakPtr<UrlIndex> url_index,
           scoped_refptr<base::SingleThreadTaskRunner> task_runner);
   UrlData(const UrlData&) = delete;
   UrlData& operator=(const UrlData&) = delete;
@@ -93,13 +119,31 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
   // Accessors
   const KURL& url() const { return url_; }
 
+  // The URL to issue network range requests against. Equal to `url()` except
+  // for unindexed bounce-back redirects, where follow-up range requests replay
+  // from `original_request_url_` to preserve `net::URLRequest::url_chain()`.
+  const KURL& request_url() const {
+    return original_request_url_.IsEmpty() ? url_ : original_request_url_;
+  }
+  bool has_original_request_url() const {
+    return !original_request_url_.IsEmpty();
+  }
+
+  ServiceWorkerMode service_worker_mode() const { return service_worker_mode_; }
+
+  const scoped_refptr<const SecurityOrigin>& security_origin() const {
+    return security_origin_;
+  }
+
+  const std::optional<KURL>& data_origin() const { return data_origin_; }
+
   // Cross-origin access mode
   CorsMode cors_mode() const { return cors_mode_; }
 
   bool has_access_control() const { return has_access_control_; }
 
   bool passed_timing_allow_origin_check() const {
-    return passed_timing_allow_origin_check_;
+    return passed_timing_allow_origin_check_.value_or(false);
   }
 
   const std::string& mime_type() const { return mime_type_; }
@@ -131,10 +175,14 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
   base::Time valid_until() const { return valid_until_; }
 
   // The key used by UrlIndex to find this UrlData.
-  KeyType key() const;
+  Key key() const;
 
   // Length of data associated with url or |kPositionNotSpecified|
   int64_t length() const { return length_; }
+
+  // Returns true if this UrlData has not yet had a length set, or if |length|
+  // matches the existing length.
+  bool HasCompatibleLength(int64_t length) const;
 
   // Returns the number of blocks cached for this resource.
   size_t CachedSize();
@@ -148,16 +196,29 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
   // This must be called after the response arrives.
   bool is_cors_cross_origin() const { return is_cors_cross_origin_; }
 
+  // True if loading this UrlData traversed a cross-origin redirect that must be
+  // replayed on follow-up range requests (e.g. a cross-origin bounce-back).
+  bool has_cross_origin_redirect() const { return has_cross_origin_redirect_; }
+
   // Notifies the url index that this is currently used.
   // The url <-> URLData mapping will be eventually be invalidated if
   // this is not called regularly.
   void Use();
 
-  // Call this before we add some data to the multibuffer().
-  // If the multibuffer is empty, the data origin is set from
-  // |origin| and returns true. If not, it compares |origin|
-  // to the previous origin and returns whether they match or not.
-  bool ValidateDataOrigin(const KURL& origin);
+  // Returns true if this UrlData has not yet had a data origin set, or if
+  // |origin|, |is_cors_cross_origin|, and |has_cross_origin_redirect| are
+  // compatible with the existing data origin, CORS cross-origin state, and
+  // redirect state.
+  bool CanAcceptDataFrom(const KURL& origin,
+                         bool is_cors_cross_origin,
+                         bool has_cross_origin_redirect = false) const;
+
+  // Sets the data origin, CORS cross-origin state, and cross-origin redirect
+  // state. Must only be called when CanAcceptDataFrom(origin,
+  // is_cors_cross_origin, has_cross_origin_redirect) is true.
+  void SetDataOrigin(const KURL& origin,
+                     bool is_cors_cross_origin,
+                     bool has_cross_origin_redirect = false);
 
   // Setters.
   void set_length(int64_t length);
@@ -166,7 +227,6 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
   void set_range_supported();
   void set_last_modified(base::Time last_modified);
   void set_etag(const std::string& etag);
-  void set_is_cors_cross_origin(bool is_cors_cross_origin);
   void set_has_access_control();
   void set_passed_timing_allow_origin_check(bool);
   void set_mime_type(std::string mime_type);
@@ -177,6 +237,11 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
 
   // Fail, tell all clients that a failure has occurred.
   void Fail();
+
+  // Marks this data as CORS cross-origin before calling Fail(). Used when a
+  // request fails due to cross-origin security restrictions (e.g., ORB, CORP,
+  // or CORS violations) before a response is received.
+  void CrossOriginFail();
 
   // Callback for receiving notifications when a redirect occurs.
   using RedirectCB = base::OnceCallback<void(const scoped_refptr<UrlData>&)>;
@@ -200,9 +265,12 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
  protected:
   UrlData(const KURL& url,
           CorsMode cors_mode,
-          media::DataSource::EncodingMode encoding_mode,
-          base::WeakPtr<UrlIndex> url_index,
           CacheMode cache_lookup_mode,
+          scoped_refptr<const SecurityOrigin> security_origin,
+          media::DataSource::EncodingMode encoding_mode,
+          ServiceWorkerMode service_worker_mode,
+          const KURL& original_request_url,
+          base::WeakPtr<UrlIndex> url_index,
           scoped_refptr<base::SingleThreadTaskRunner> task_runner);
   virtual ~UrlData();
 
@@ -212,11 +280,20 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
   friend class UrlIndex;
 
   void OnEmpty();
-  void MergeFrom(const scoped_refptr<UrlData>& other);
+  bool MergeFrom(const scoped_refptr<UrlData>& other);
+  void set_is_cors_cross_origin(bool is_cors_cross_origin);
 
   // Url we represent, note that there may be multiple UrlData for
   // the same url.
   const KURL url_;
+
+  // Non-empty only for unindexed bounce-back redirects, where `url_` holds the
+  // post-redirect URL while follow-up range requests replay from
+  // `original_request_url_`.
+  const KURL original_request_url_;
+
+  // Requesting document's security origin.
+  const scoped_refptr<const SecurityOrigin> security_origin_;
 
   // Origin of the data, should only be different from the
   // url_.DeprecatedGetOriginAsURL() when service workers are involved.
@@ -226,8 +303,9 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
   const CorsMode cors_mode_;
   bool has_access_control_;
 
-  // Timing-allow-origin
-  bool passed_timing_allow_origin_check_;
+  // Timing-allow-origin (unset until the first response is received; once any
+  // response fails TAO, latched to false).
+  std::optional<bool> passed_timing_allow_origin_check_;
 
   // Mime type category (stashed for UMA / metrics).
   std::string mime_type_;
@@ -254,8 +332,19 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
 
   media::DataSource::EncodingMode encoding_mode_;
 
+  // Controls whether range requests for this UrlData may be intercepted by a
+  // Service Worker (`kAllow`) or must bypass Service Workers (`kSkip`, latched
+  // once a redirect hop not synthesized by a Service Worker is followed).
+  // Included in `UrlData::Key` so post-redirect loads do not share `UrlIndex`
+  // entries with normal Service-Worker-eligible loads.
+  ServiceWorkerMode service_worker_mode_;
+
   // https://html.spec.whatwg.org/#cors-cross-origin
   bool is_cors_cross_origin_ = false;
+
+  // True if loading this UrlData traversed a cross-origin redirect that must be
+  // replayed on follow-up range requests.
+  bool has_cross_origin_redirect_ = false;
 
   // Last time some media time used this resource.
   // Note that we use base::Time rather than base::TimeTicks because
@@ -280,6 +369,29 @@ class PLATFORM_EXPORT UrlData : public RefCounted<UrlData> {
   THREAD_CHECKER(thread_checker_);
 };
 
+template <>
+struct HashTraits<UrlData::Key>
+    : OneFieldHashTraits<UrlData::Key, &UrlData::Key::security_origin> {
+  static constexpr bool kEmptyValueIsZero = false;
+  static UrlData::Key EmptyValue() { return UrlData::Key(); }
+
+  static uint32_t GetHash(const UrlData::Key& key) {
+    uint32_t hash = key.url.IsNull() ? 0 : blink::GetHash(key.url);
+    hash = HashInts(hash, blink::GetHash(key.security_origin));
+    hash = HashInts(hash, blink::GetHash(key.cors_mode));
+    hash = HashInts(hash, blink::GetHash(key.encoding_mode));
+    return HashInts(hash, blink::GetHash(key.service_worker_mode));
+  }
+
+  static bool Equal(const UrlData::Key& a, const UrlData::Key& b) {
+    return a.url == b.url &&
+           HashTraits<scoped_refptr<const SecurityOrigin>>::Equal(
+               a.security_origin, b.security_origin) &&
+           a.cors_mode == b.cors_mode && a.encoding_mode == b.encoding_mode &&
+           a.service_worker_mode == b.service_worker_mode;
+  }
+};
+
 // The UrlIndex lets you look up UrlData instances by url.
 class PLATFORM_EXPORT UrlIndex {
  public:
@@ -301,8 +413,29 @@ class PLATFORM_EXPORT UrlIndex {
       const KURL& url,
       UrlData::CorsMode cors_mode,
       UrlData::CacheMode cache_mode,
+      scoped_refptr<const SecurityOrigin> security_origin,
       media::DataSource::EncodingMode encoding_mode =
-          media::DataSource::EncodingMode::kIdentity);
+          media::DataSource::EncodingMode::kIdentity,
+      UrlData::ServiceWorkerMode service_worker_mode =
+          UrlData::ServiceWorkerMode::kAllow);
+
+  // Creates an unindexed `UrlData` -- one that is never stored in or returned
+  // by `UrlIndex` (`TryInsert()`, `MergeFrom()`, and `RemoveUrlData()` ignore
+  // it), keeping its cached blocks and tainting private to its caller. Its
+  // post-redirect URL is `url` (`url()`), while follow-up range requests replay
+  // from `original_request_url` (`request_url()`). Used when direct follow-up
+  // range requests to `url` would lose redirect-chain state (such as
+  // bounce-back redirects or cross-origin redirects under universal/extension
+  // access), preserving `net::URLRequest::url_chain()` without colliding with
+  // or tainting direct `UrlIndex` entries for `url`.
+  scoped_refptr<UrlData> NewUnindexedUrlData(
+      const KURL& url,
+      UrlData::CorsMode cors_mode,
+      UrlData::CacheMode cache_mode,
+      scoped_refptr<const SecurityOrigin> security_origin,
+      media::DataSource::EncodingMode encoding_mode,
+      UrlData::ServiceWorkerMode service_worker_mode,
+      const KURL& original_request_url);
 
   // Add the given UrlData to the index if possible. If a better UrlData
   // is already present in the index, return it instead. (If not, we just
@@ -324,14 +457,10 @@ class PLATFORM_EXPORT UrlIndex {
   ResourceFetchContext* fetch_context() const { return fetch_context_; }
   int block_shift() const { return block_shift_; }
 
-  // Returns true kMaxParallelPreload or more urls are loading at the same time.
-  bool HasReachedMaxParallelPreload() const;
-
   // Protected rather than private for testing.
  protected:
   friend class UrlData;
   friend class ResourceMultiBuffer;
-  friend class UrlIndexTest;
   void RemoveUrlData(const scoped_refptr<UrlData>& url_data);
 
   // Virtual so we can override it in tests.
@@ -339,10 +468,13 @@ class PLATFORM_EXPORT UrlIndex {
       const KURL& url,
       UrlData::CorsMode cors_mode,
       UrlData::CacheMode cache_lookup_mode,
-      media::DataSource::EncodingMode encoding_mode);
+      scoped_refptr<const SecurityOrigin> security_origin,
+      media::DataSource::EncodingMode encoding_mode,
+      UrlData::ServiceWorkerMode service_worker_mode,
+      const KURL& original_request_url);
 
   raw_ptr<ResourceFetchContext> fetch_context_;
-  using UrlDataMap = HashMap<UrlData::KeyType, scoped_refptr<UrlData>>;
+  using UrlDataMap = HashMap<UrlData::Key, scoped_refptr<UrlData>>;
   UrlDataMap indexed_data_;
   scoped_refptr<MultiBuffer::GlobalLRU> lru_;
 

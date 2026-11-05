@@ -36,6 +36,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.build.annotations.RequiresNonNull;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.ConfigurationChangedObserver;
 import org.chromium.chrome.browser.lifecycle.StartStopWithNativeObserver;
@@ -356,12 +357,7 @@ class AppMenuHandlerImpl
                 /* headerModelList= */ null, mModelList, CallbackUtils.emptyRunnable());
 
         if (mAppMenu == null) {
-            mAppMenu =
-                    new AppMenu(
-                            this,
-                            mContext.getResources(),
-                            mHierarchicalMenuController,
-                            mAppMenuDelegate.shouldDisableVerticalScrollbar());
+            mAppMenu = new AppMenu(this, mContext.getResources(), mHierarchicalMenuController);
             mAppMenuDragHelper = new AppMenuDragHelper(mContext, mAppMenu, itemRowHeight);
         }
 
@@ -410,6 +406,12 @@ class AppMenuHandlerImpl
 
         // If keyboard is showing, wait until keyboard disappears to set appRect
         if (keyboardVisibilityDelegate.isKeyboardShowing(anchorView)) {
+            // A show may already be waiting on the keyboard. Replace it, or the listener
+            // below would remove the new one instead of itself and never be removed.
+            if (mKeyboardVisibilityListener != null) {
+                keyboardVisibilityDelegate.removeKeyboardVisibilityListener(
+                        mKeyboardVisibilityListener);
+            }
             View finalAnchorView = anchorView;
             boolean finalIsByPermanentButton = isByPermanentButton;
             mKeyboardVisibilityListener =
@@ -665,6 +667,14 @@ class AppMenuHandlerImpl
                 AppMenuItemType.HEADER,
                 new LayoutViewBuilder<>(R.layout.menu_header),
                 AppMenuItemViewBinder::bindHeaderItem);
+        adapter.registerType(
+                AppMenuItemType.TAB_GROUP,
+                new LayoutViewBuilder<>(standardItemResId),
+                AppMenuItemViewBinder::bindStandardItem);
+        adapter.registerType(
+                AppMenuItemType.TAB_GROUP_NO_ICON,
+                new LayoutViewBuilder<>(R.layout.menu_item_no_icon),
+                AppMenuItemViewBinder::bindStandardItem);
     }
 
     private void registerViewBinders(
@@ -793,6 +803,16 @@ class AppMenuHandlerImpl
             appRect.bottom = mDecorView.getHeight();
         }
 
+        // When anchored to the bottom bar with top-anchored controls, keep the menu from growing
+        // over the top controls unless the delegate says there is nothing there to protect.
+        int reservedTopSpace =
+                isFromBottomBar
+                                && mBrowserControlsStateProvider.getControlsPosition()
+                                        == ControlsPosition.TOP
+                                && mDelegate.shouldKeepMenuBelowTopControls()
+                        ? mBrowserControlsStateProvider.getTopControlsHeight()
+                        : 0;
+
         mAppMenu.show(
                 wrapper,
                 anchorView,
@@ -806,6 +826,7 @@ class AppMenuHandlerImpl
                 mBrowserControlsStateProvider.getControlsPosition(),
                 addTopPaddingBeforeFirstRow(),
                 isFromBottomBar,
+                reservedTopSpace,
                 this);
         assumeNonNull(mAppMenuDragHelper);
         mAppMenuDragHelper.onShow(startDragging);

@@ -40,6 +40,7 @@
 #include "components/page_content_annotations/core/page_content_annotations_switches.h"
 #include "components/page_content_annotations/core/page_content_extraction_types.h"
 #include "components/pdf/common/constants.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page.h"
@@ -102,12 +103,8 @@ std::optional<PageContent> TakePageContent(FetchPageContextResult result) {
     // The `FetchPageContextResult` cannot contain both AnnotatedPageContent
     // and PDF text at the same time.
     CHECK(!ContainsPDFText(result));
-    base::expected<PageContentResultWithEndTime, std::string>
-        annotated_page_content_result =
-            std::move(result.annotated_page_content_result);
-
     return base::MakeRefCounted<RefCountedAnnotatedPageContent>(
-        std::move(annotated_page_content_result->proto));
+        std::move(result.annotated_page_content_result->proto));
   }
 
   // Neither APC nor PDF text is available.
@@ -187,13 +184,15 @@ bool ShouldExtractPageContent(content::NavigationHandle* navigation_handle) {
 
 }  // namespace
 
+DEFINE_USER_DATA(AnnotatedPageContentRequest);
+
 AnnotatedPageContentRequest::AnnotatedPageContentRequest(
+    tabs::TabInterface& tab,
     content::WebContents* web_contents,
     PageContentExtractionService& page_content_extraction_service,
     FetchPageContextCallback fetch_page_context_callback,
     GetTabIdCallback get_tab_id_callback)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<AnnotatedPageContentRequest>(*web_contents),
       page_content_extraction_service_(page_content_extraction_service),
       options_(CreateOptions()),
       include_inner_text_(
@@ -203,14 +202,11 @@ AnnotatedPageContentRequest::AnnotatedPageContentRequest(
       use_page_settled_monitor_(base::FeatureList::IsEnabled(
           features::kPageContentExtractionUsingPageSettledMonitor)),
       fetch_page_context_callback_(std::move(fetch_page_context_callback)),
-      get_tab_id_callback_(std::move(get_tab_id_callback)) {
-  // Post to a background thread to avoid blocking the set up of the overlay.
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
-      base::BindOnce(&optimization_guide::PageContextEligibility::Get),
-      base::BindOnce(
-          &AnnotatedPageContentRequest::OnPageContextEligibilityAPILoaded,
-          weak_factory_.GetWeakPtr()));
+      get_tab_id_callback_(std::move(get_tab_id_callback)),
+      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
+  optimization_guide::PageContextEligibility::GetAsync(base::BindOnce(
+      &AnnotatedPageContentRequest::OnPageContextEligibilityAPILoaded,
+      weak_factory_.GetWeakPtr()));
 }
 
 AnnotatedPageContentRequest::~AnnotatedPageContentRequest() {
@@ -218,15 +214,17 @@ AnnotatedPageContentRequest::~AnnotatedPageContentRequest() {
 }
 
 // static
-std::unique_ptr<AnnotatedPageContentRequest>
-AnnotatedPageContentRequest::CreateForTesting(  // IN-TEST
-    content::WebContents* web_contents,
-    PageContentExtractionService& page_content_extraction_service,
-    FetchPageContextCallback fetch_page_context_callback,
-    GetTabIdCallback get_tab_id_callback) {
-  return base::WrapUnique(new AnnotatedPageContentRequest(
-      web_contents, page_content_extraction_service,
-      std::move(fetch_page_context_callback), std::move(get_tab_id_callback)));
+AnnotatedPageContentRequest* AnnotatedPageContentRequest::From(
+    tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
+
+// static
+AnnotatedPageContentRequest* AnnotatedPageContentRequest::FromWebContents(
+    content::WebContents* web_contents) {
+  return web_contents
+             ? From(tabs::TabInterface::MaybeGetFromContents(web_contents))
+             : nullptr;
 }
 
 void AnnotatedPageContentRequest::PrimaryPageChanged(content::Page& page) {
@@ -674,23 +672,22 @@ void AnnotatedPageContentRequest::OnPageContextFetched(
     return;
   }
 
-  // Notify page content extraction service with `page_content`, which holds
-  // either the APC for a non-PDF page; or the PDF text for a PDF page.
-  page_content_extraction_service_->OnPageContentExtracted(
-      web_contents()->GetPrimaryPage(), page_content.value(), screenshot_data,
-      get_tab_id_callback_.Run(web_contents()));
-
   if (IsPDFTextPtr(page_content.value())) {
     // Note: Unlike APC result, PDF text result is not stored to the
     // `cached_content_` below, which is used for supporting on-demand APC
     // fetching.
     // TODO(b/487632737): Investigate the support for on-demand PDF text
     // extraction, which may require storing the result to `cached_content_`.
+    page_content_extraction_service_->OnPageContentExtracted(
+        web_contents()->GetPrimaryPage(), page_content.value(), screenshot_data,
+        get_tab_id_callback_.Run(web_contents()));
     ResolveAllCallbacksWith(/*result=*/std::nullopt);
     return;
   }
 
-  // Move APC into the cache.
+  // Move APC into the cache before notifying `page_content_extraction_service_`
+  // so that observers querying cached content or server upload eligibility
+  // during `OnPageContentExtracted()` see the newly extracted result.
   cached_content_ =
       ExtractedPageContentResult(GetAnnotatedPageContentPtrFromPageContent(
                                      std::move(page_content.value())),
@@ -699,6 +696,11 @@ void AnnotatedPageContentRequest::OnPageContextFetched(
 
   CHECK(cached_content_);
   CHECK(cached_content_->page_content);
+
+  page_content_extraction_service_->OnPageContentExtracted(
+      web_contents()->GetPrimaryPage(), cached_content_->page_content,
+      cached_content_->screenshot_data,
+      get_tab_id_callback_.Run(web_contents()));
 
   RecordAnnotatedPageContentMetrics(cached_content_->page_content->data);
 
@@ -1094,7 +1096,5 @@ void AnnotatedPageContentRequest::SetPageSettledCallbackForTesting(  // IN-TEST
     base::OnceClosure callback) {
   page_settled_callback_for_testing_ = std::move(callback);
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(AnnotatedPageContentRequest);
 
 }  // namespace page_content_annotations

@@ -12,6 +12,8 @@
   std::unique_ptr<web::WebState::OpenURLParams> _openURLParams;
   // Backs up the property with the same name.
   BOOL _javaScriptDialogPresenterRequested;
+  // Backs up the property with the same name.
+  GURL _lastRequestedGeolocationOrigin;
 }
 
 @synthesize webState = _webState;
@@ -23,9 +25,12 @@
 @synthesize cutAllowedRequested = _cutAllowedRequested;
 @synthesize didFinishClipboardReadRequested = _didFinishClipboardReadRequested;
 @synthesize permissionsRequestHandled = _permissionsRequestHandled;
+@synthesize geolocationRequestHandled = _geolocationRequestHandled;
+@synthesize lastRequestedGeolocationOrigin = _lastRequestedGeolocationOrigin;
 @synthesize httpAuthenticationRequested = _httpAuthenticationRequested;
 @synthesize clientCertAuthenticationRequested =
     _clientCertAuthenticationRequested;
+@synthesize proxyAuthenticationRequested = _proxyAuthenticationRequested;
 @synthesize isAppLaunchingAllowedForWebStateReturnValue =
     _isAppLaunchingAllowedForWebStateReturnValue;
 
@@ -98,6 +103,15 @@
 }
 
 - (void)webState:(web::WebState*)webState
+    requestGeolocation:(const GURL&)origin
+       decisionHandler:(web::WebStatePermissionDecisionHandler)decisionHandler {
+  _webState = webState;
+  _geolocationRequestHandled = YES;
+  _lastRequestedGeolocationOrigin = origin;
+  decisionHandler(web::PermissionDecisionGrant);
+}
+
+- (void)webState:(web::WebState*)webState
     didRequestHTTPAuthForProtectionSpace:(NSURLProtectionSpace*)protectionSpace
                       proposedCredential:(NSURLCredential*)proposedCredential
                        completionHandler:(void (^)(NSString* username,
@@ -113,6 +127,20 @@
                                  (void (^)(SecIdentityRef))handler {
   _webState = webState;
   _clientCertAuthenticationRequested = YES;
+}
+
+- (void)webState:(web::WebState*)webState
+    didRequestProxyAuthForProtectionSpace:(NSURLProtectionSpace*)protectionSpace
+                       proposedCredential:(NSURLCredential*)proposedCredential
+                          failureResponse:(NSURLResponse*)failureResponse
+                        completionHandler:(void (^)(NSString* username,
+                                                    NSString* password,
+                                                    NSError* error))handler {
+  _webState = webState;
+  _proxyAuthenticationRequested = YES;
+  if (handler) {
+    handler(@"user", @"password", nil);
+  }
 }
 
 - (const web::WebState::OpenURLParams*)openURLParams {

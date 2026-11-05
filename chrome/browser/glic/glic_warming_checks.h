@@ -93,7 +93,9 @@ enum class GlicWarmingTrigger {
   kStartup = 0,
   kNudge = 1,
   kIph = 2,
-  kMaxValue = kIph,
+  kSelectionOverlay = 3,
+  kGeminiWeb = 4,
+  kMaxValue = kGeminiWeb,
 };
 
 using ShouldPreloadCallback =

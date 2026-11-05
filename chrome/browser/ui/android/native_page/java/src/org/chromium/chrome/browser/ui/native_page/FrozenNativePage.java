@@ -10,13 +10,14 @@ import androidx.annotation.ColorInt;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.url.Origin;
 
 /**
  * A empty stand-in for a native page. An inactive NativePage may be replaced with a
  * FrozenNativePage to free up resources.
  *
- * Any method may be called on this object, except for getView(), which will trigger an assert and
- * return null.
+ * <p>Any method may be called on this object, except for getView(), which will trigger an assert
+ * and return null.
  */
 @NullMarked
 public class FrozenNativePage implements NativePage {
@@ -27,6 +28,12 @@ public class FrozenNativePage implements NativePage {
     private final boolean mIsPdf;
     private final @Nullable String mCanonicalFilepath;
     private final boolean mIsDownloadSafe;
+    private final @Nullable Origin mInitiatorOrigin;
+
+    // Snapshot of the replaced page's unsaved-changes state, taken at freeze time. The underlying
+    // page is destroyed immediately after this object is constructed, so this state cannot be
+    // re-queried later.
+    private final boolean mHasUnsavedChanges;
 
     /** Creates a FrozenNativePage to replace the given NativePage and destroys the NativePage. */
     public static FrozenNativePage freeze(NativePage nativePage) {
@@ -46,6 +53,8 @@ public class FrozenNativePage implements NativePage {
         mIsPdf = nativePage.isPdf();
         mCanonicalFilepath = nativePage.getCanonicalFilepath();
         mIsDownloadSafe = nativePage.isDownloadSafe();
+        mInitiatorOrigin = nativePage.getInitiatorOrigin();
+        mHasUnsavedChanges = nativePage.hasUnsavedChanges();
     }
 
     @Override
@@ -105,6 +114,16 @@ public class FrozenNativePage implements NativePage {
     @Override
     public boolean isDownloadSafe() {
         return mIsDownloadSafe;
+    }
+
+    @Override
+    public @Nullable Origin getInitiatorOrigin() {
+        return mInitiatorOrigin;
+    }
+
+    @Override
+    public boolean hasUnsavedChanges() {
+        return mHasUnsavedChanges;
     }
 
     @Override

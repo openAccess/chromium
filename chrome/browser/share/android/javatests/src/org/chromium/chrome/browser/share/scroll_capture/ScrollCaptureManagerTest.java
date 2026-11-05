@@ -10,8 +10,6 @@ import static org.mockito.Mockito.when;
 
 import android.view.View;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -23,6 +21,7 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
@@ -52,7 +51,6 @@ public class ScrollCaptureManagerTest {
     }
 
     @Test
-    @SmallTest
     public void testObserveTab() {
         Tab tab = mock(Tab.class);
         InOrder inOrder = Mockito.inOrder(mTab, tab, mScrollCaptureManagerDelegateMock);
@@ -71,10 +69,9 @@ public class ScrollCaptureManagerTest {
     }
 
     @Test
-    @SmallTest
     public void testContentChange() {
-        View view = mock(View.class);
-        View anotherView = mock(View.class);
+        View view = new View(ContextUtils.getApplicationContext());
+        View anotherView = new View(ContextUtils.getApplicationContext());
         InOrder inOrder = Mockito.inOrder(mScrollCaptureManagerDelegateMock);
 
         // No view available
@@ -100,9 +97,8 @@ public class ScrollCaptureManagerTest {
     }
 
     @Test
-    @SmallTest
     public void testDestroy() {
-        View view = mock(View.class);
+        View view = new View(ContextUtils.getApplicationContext());
         InOrder inOrder = Mockito.inOrder(mTab, mScrollCaptureManagerDelegateMock);
 
         when(mTab.getView()).thenReturn(view);

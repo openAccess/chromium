@@ -32,12 +32,12 @@ absl_cc_library(
     absl::endian
     absl::fixed_array
     absl::function_ref
-    absl::meta
     absl::int128
-    absl::strings
+    absl::meta
     absl::optional
-    absl::variant
+    absl::string_view
     absl::utility
+    absl::variant
     absl::weakly_mixed_integer
   PUBLIC
 )
@@ -50,8 +50,8 @@ absl_cc_library(
   COPTS
     ${ABSL_TEST_COPTS}
   DEPS
-    absl::spy_hash_state
     absl::meta
+    absl::spy_hash_state
     absl::strings
     absl::variant
     GTest::gmock
@@ -74,11 +74,12 @@ absl_cc_test(
     absl::flat_hash_set
     absl::hash
     absl::hash_testing
-    absl::memory
-    absl::meta
     absl::spy_hash_state
     absl::string_view
+    absl::strings
     GTest::gmock_main
+  SHARD_COUNT
+    4
 )
 
 absl_cc_test(
@@ -90,12 +91,12 @@ absl_cc_test(
   COPTS
     ${ABSL_TEST_COPTS}
   DEPS
-    absl::hash
-    absl::hash_testing
-    absl::config
     absl::btree
+    absl::config
     absl::flat_hash_map
     absl::flat_hash_set
+    absl::hash
+    absl::hash_testing
     absl::node_hash_map
     absl::node_hash_set
     GTest::gmock_main
@@ -115,8 +116,8 @@ absl_cc_library(
     ${ABSL_DEFAULT_COPTS}
   DEPS
     absl::hash
-    absl::strings
     absl::str_format
+    absl::strings
     absl::weakly_mixed_integer
   TESTONLY
   PUBLIC
@@ -133,9 +134,9 @@ absl_cc_library(
   COPTS
     ${ABSL_DEFAULT_COPTS}
   DEPS
+    absl::bits
     absl::config
     absl::core_headers
-    absl::bits
     absl::endian
 )
 
@@ -172,6 +173,7 @@ absl_cc_test(
     ${ABSL_TEST_COPTS}
   DEPS
     absl::hash
+    absl::string_view
     absl::strings
     GTest::gmock_main
 )

@@ -4,11 +4,7 @@
 
 source_set("choice_api") {
   sources = [ "choice_api.h" ]
-  deps = [
-    "//ios/chrome/browser/first_run/public:screen_delegate",
-    "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
-    "//ios/chrome/browser/shared/model/browser",
-  ]
+  deps = []
   frameworks = [ "UIKit.framework" ]
 }
 
@@ -40,6 +36,16 @@ source_set("signin_sso_api") {
 source_set("device_identifier_api") {
   sources = [ "device_identifier_api.h" ]
   deps = []
+}
+
+source_set("embedded_reauth_api") {
+  sources = [
+    "embedded_reauth_api.h",
+    "embedded_reauth_interaction_manager.h",
+    "embedded_reauth_interaction_manager.mm",
+  ]
+  public_deps = [ "//base" ]
+  frameworks = [ "UIKit.framework" ]
 }
 
 source_set("trusted_vault_api") {

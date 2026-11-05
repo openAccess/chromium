@@ -20,6 +20,8 @@
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_type.h"
@@ -41,7 +43,8 @@ SystemClock::~SystemClock() {
 }
 
 void SystemClock::OnProfileWillBeDestroyed(Profile* profile) {
-  DCHECK(profile_observation_.IsObservingSource(profile));
+  CHECK(profile_observation_.IsObservingSource(profile),
+        base::NotFatalUntil::M160);
   profile_observation_.Reset();
   user_pref_registrar_.reset();
 }
@@ -106,7 +109,7 @@ void SystemClock::ScopedHourClockType::UpdateClockType(
 
 SystemClock::ScopedHourClockType SystemClock::CreateScopedHourClockType(
     base::HourClockType hour_clock_type) {
-  DCHECK(!scoped_hour_clock_type_.has_value());
+  CHECK(!scoped_hour_clock_type_.has_value(), base::NotFatalUntil::M160);
   scoped_hour_clock_type_ = hour_clock_type;
   NotifySystemClockTypeChanged();
   return ScopedHourClockType(weak_ptr_factory_.GetWeakPtr());
@@ -142,7 +145,8 @@ bool SystemClock::ShouldUse24HourClockForUser(const AccountId& user_id) const {
 
     // Regular users use `system_value` on managed devices where `system_value`
     // is from device policy.
-    DCHECK_EQ(user->GetType(), user_manager::UserType::kRegular);
+    CHECK_EQ(user->GetType(), user_manager::UserType::kRegular,
+             base::NotFatalUntil::M160);
     if (ash::InstallAttributes::Get()->IsEnterpriseManaged()) {
       return system_value;
     }
@@ -156,11 +160,11 @@ bool SystemClock::ShouldUse24HourClock() const {
     return scoped_hour_clock_type_ == base::k24HourClock;
   }
 
-  user_manager::User* const active_user =
-      user_manager::UserManager::Get()->GetActiveUser();
+  const session_manager::Session* const active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
 
-  return ShouldUse24HourClockForUser(active_user ? active_user->GetAccountId()
-                                                 : EmptyAccountId());
+  return ShouldUse24HourClockForUser(
+      active_session ? active_session->account_id() : EmptyAccountId());
 }
 
 void SystemClock::OnSystemPrefChanged() {

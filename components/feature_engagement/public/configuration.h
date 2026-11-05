@@ -10,6 +10,7 @@
 #include <ostream>
 #include <set>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -25,6 +26,9 @@ class ConfigurationProvider;
 // Max number of days for storing client side event data, ~10 years.
 constexpr uint32_t kMaxStoragePeriod = 365 * 10;
 
+// Max number of days for the window of client side event data, ~10 years.
+inline constexpr uint32_t kMaxWindowPeriod = kMaxStoragePeriod;
+
 // A ComparatorType describes the relationship between two numbers.
 enum ComparatorType {
   ANY = 0,  // Will always yield true.
@@ -34,6 +38,10 @@ enum ComparatorType {
   GREATER_THAN_OR_EQUAL = 4,
   EQUAL = 5,
   NOT_EQUAL = 6,
+  // Will always yield true. Must be used if the comparator is the same as
+  // `ANY` and the window is not 0. This should be exceptional, if needed to
+  // know the number of events that occurred in the window.
+  ANY_RELAXED = 7,
 };
 
 // A StorageType describes which type of storage the feature engagement events
@@ -49,9 +57,10 @@ enum StorageType {
 // verifying their relationship.
 struct Comparator {
  public:
-  Comparator();
-  Comparator(ComparatorType type, uint32_t value);
-  ~Comparator();
+  constexpr Comparator() : type(ANY), value(0) {}
+  constexpr Comparator(ComparatorType type, uint32_t value)
+      : type(type), value(value) {}
+  constexpr ~Comparator() = default;
 
   friend bool operator==(const Comparator&, const Comparator&) = default;
   friend auto operator<=>(const Comparator&, const Comparator&) = default;
@@ -64,6 +73,11 @@ struct Comparator {
   uint32_t value;
 };
 
+inline constexpr Comparator kAlwaysTrue(ANY, 0);
+inline constexpr Comparator kAlwaysTrueRelaxed(ANY_RELAXED, 0);
+inline constexpr Comparator kAlwaysAvailable(ANY, 0);
+inline constexpr Comparator kNoRestrictions(ANY, 0);
+
 std::ostream& operator<<(std::ostream& os, const Comparator& comparator);
 
 // A EventConfig contains all the information about how many times
@@ -72,10 +86,17 @@ std::ostream& operator<<(std::ostream& os, const Comparator& comparator);
 struct EventConfig {
  public:
   EventConfig();
-  EventConfig(const std::string& name,
+  // Takes std::string_view rather than const std::string& so that the many
+  // static-configuration call sites do not each materialize a temporary
+  // std::string inline.
+  EventConfig(std::string_view name,
               Comparator comparator,
               uint32_t window,
               uint32_t storage);
+  EventConfig(const EventConfig&);
+  EventConfig& operator=(const EventConfig&);
+  EventConfig(EventConfig&&) noexcept;
+  EventConfig& operator=(EventConfig&&) noexcept;
   ~EventConfig();
 
   friend bool operator==(const EventConfig&, const EventConfig&) = default;

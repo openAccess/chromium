@@ -6,7 +6,7 @@
 
 #include "base/no_destructor.h"
 #include "chrome/browser/chromeos/extensions/login_screen/login_state/login_state_api.h"
-#include "chrome/common/extensions/api/login_state.h"
+#include "chromeos/ash/experiences/extensions/common/api/login_state.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
 #include "content/public/browser/browser_context.h"
@@ -40,10 +40,12 @@ void SessionStateChangedEventDispatcher::OnSessionStateChanged() {
   api::login_state::SessionState new_state =
       ToApiEnum(session_manager::SessionManager::Get()->session_state());
 
-  std::unique_ptr<Event> event = std::make_unique<Event>(
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::login_state::OnSessionStateChanged::Create(new_state));
+  auto event = std::make_unique<Event>(
       events::LOGIN_STATE_ON_SESSION_STATE_CHANGED,
       api::login_state::OnSessionStateChanged::kEventName,
-      api::login_state::OnSessionStateChanged::Create(new_state));
+      std::move(event_args));
 
   event_router_->BroadcastEvent(std::move(event));
 }

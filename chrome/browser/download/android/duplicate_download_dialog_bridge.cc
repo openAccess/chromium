@@ -19,6 +19,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/android/window_android.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -34,8 +35,8 @@ DuplicateDownloadDialogBridge* DuplicateDownloadDialogBridge::GetInstance() {
 
 DuplicateDownloadDialogBridge::DuplicateDownloadDialogBridge() {
   JNIEnv* env = base::android::AttachCurrentThread();
-  java_object_.Reset(Java_DuplicateDownloadDialogBridge_create(
-      env, reinterpret_cast<intptr_t>(this)));
+  java_object_.Reset(
+      Java_DuplicateDownloadDialogBridge_create(env, jni_zero::MakeRaw(this)));
 }
 
 DuplicateDownloadDialogBridge::~DuplicateDownloadDialogBridge() {
@@ -50,7 +51,7 @@ void DuplicateDownloadDialogBridge::Show(
     bool duplicate_request_exists,
     content::WebContents* web_contents,
     DuplicateDownloadDialogCallback callback) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
   JNIEnv* env = base::android::AttachCurrentThread();
   base::android::ScopedJavaLocalRef<jobject> j_otr_profile_id;
   ui::WindowAndroid* window_android = web_contents->GetTopLevelNativeWindow();

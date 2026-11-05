@@ -13,8 +13,8 @@
 #include <vector>
 
 #include "base/containers/flat_set.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
@@ -23,6 +23,7 @@
 #include "cc/paint/filter_operation.h"
 #include "components/viz/common/surfaces/subtree_capture_id.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/interaction/safe_castable.h"
 #include "ui/compositor/compositor_export.h"
 #include "ui/compositor/layer_animation_delegate.h"
 #include "ui/compositor/layer_type.h"
@@ -51,7 +52,6 @@ class LayerSurface;
 enum class LayerRequestType {
   kPaint,
   kCacheRenderSurface,
-  kTrilinearFiltering,
 };
 
 template <LayerRequestType>
@@ -74,9 +74,10 @@ class LayerThreadedAnimationDelegate;
 // NOTE: Unlike Views, each Layer does *not* own its child Layers. If you
 // delete a Layer and it has children, the parent of each child Layer is set to
 // NULL, but the children are not deleted.
-class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate {
+class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate,
+                                public SafeCastable {
   // TODO(crbug.com/453831486): Remove this macro once the bug gets fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   using ShapeRects = std::vector<gfx::Rect>;
@@ -84,19 +85,7 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate {
   // Creates a Layer of the given type.
   static std::unique_ptr<Layer> Create(LayerType type);
 
-  // Casts the layer to the specified layer type `T`. Returns a pointer to the
-  // typed layer if this layer is of the requested type, otherwise returns null.
-  template <typename T>
-  const T* As() const {
-    return this->type() == T::kType ? static_cast<const T*>(this) : nullptr;
-  }
-
-  template <typename T>
-  T* As() {
-    return this->type() == T::kType ? static_cast<T*>(this) : nullptr;
-  }
-
-  // Helper wrappers for As<T>().
+  // Helper wrappers for AsA<T>().
   LayerTextured* AsTextured();
   const LayerTextured* AsTextured() const;
   LayerSolidColor* AsSolidColor();
@@ -448,9 +437,9 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate {
   // Note: Setting a layer non-opaque has significant performance impact,
   // especially on low-end Chrome OS devices. Please ensure you are not
   // adding unnecessary overdraw. When in doubt, talk to the graphics team.
-  // NOTE: Opacity of SOLID_COLOR layer is determined by the color's alpha
-  // channel. Calling this on SOLID_COLOR results in check failure.
-  void SetFillsBoundsOpaquely(bool fills_bounds_opaquely);
+  // NOTE: Opacity of LayerSolidColor is determined by the color's alpha
+  // channel, and calling this on LayerSolidColor is a no-op.
+  virtual void SetFillsBoundsOpaquely(bool fills_bounds_opaquely);
   bool fills_bounds_opaquely() const { return fills_bounds_opaquely_; }
 
   const std::string& name() const { return name_; }
@@ -564,7 +553,6 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate {
   friend class LayerNinePatch;
   friend class LayerSurface;
   friend class ScopedLayerRequest<LayerRequestType::kPaint>;
-  friend class ScopedLayerRequest<LayerRequestType::kTrilinearFiltering>;
   friend class ScopedLayerRequest<LayerRequestType::kCacheRenderSurface>;
   friend class LayerTestApi;
   friend class internal::LayerMirror;
@@ -576,10 +564,6 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate {
   // surface even if layer is invisible is not a problem.
   void AddCacheRenderSurfaceRequest();
   void RemoveCacheRenderSurfaceRequest();
-
-  // Request trilinear filtering for layer.
-  void AddTrilinearFilteringRequest();
-  void RemoveTrilinearFilteringRequest();
 
   void CollectAnimators(std::vector<scoped_refptr<LayerAnimator>>* animators);
 
@@ -679,7 +663,7 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate {
   // rooted from |this|.
   void GetFlattenedWeakList(std::vector<base::WeakPtr<Layer>>* flattened_list);
 
-  // Same as SetFillsBoundsOpaque but with a reason how it's changed.
+  // Same as SetFillsBoundsOpaquely() but with a reason how it's changed.
   void SetFillsBoundsOpaquelyWithReason(bool fills_bounds_opaquely,
                                         PropertyChangeReason reason);
 
@@ -792,12 +776,6 @@ class COMPOSITOR_EXPORT Layer : public LayerAnimationDelegate {
   // True when SetBackdropFilterBounds() has been called explicitly, preventing
   // automatic bounds recomputation. Cleared by ClearBackdropFilterBounds().
   bool has_explicit_backdrop_filter_bounds_ = false;
-
-  // The counter to maintain how many trilinear filtering requests we have. If
-  // the value > 0, means we need to perform trilinear filtering on the layer.
-  // If the value == 0, means we should not perform trilinear filtering on the
-  // layer.
-  unsigned trilinear_filtering_request_ = 0;
 
   // If true, scroll updates will not use the impl-side fast-path, and will be
   // applied to the main layer tree.

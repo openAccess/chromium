@@ -15,6 +15,7 @@ import static androidx.test.espresso.intent.Intents.intending;
 import static androidx.test.espresso.intent.matcher.IntentMatchers.anyIntent;
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 import static androidx.test.espresso.matcher.ViewMatchers.hasSibling;
+import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.isEnabled;
 import static androidx.test.espresso.matcher.ViewMatchers.withChild;
@@ -32,7 +33,6 @@ import static org.junit.Assert.assertEquals;
 
 import static org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.ABUSIVE_NOTIFICATION_REVOCATION_INTERACTIONS_HISTOGRAM_NAME;
 import static org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.DASHBOARD_INTERACTIONS_HISTOGRAM_NAME;
-import static org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.NOTIFICATIONS_INTERACTIONS_HISTOGRAM_NAME;
 import static org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.PERMISSIONS_INTERACTIONS_HISTOGRAM_NAME;
 import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
@@ -44,17 +44,18 @@ import android.net.Uri;
 import android.os.Build;
 import android.view.View;
 
+import androidx.preference.Preference;
+import androidx.preference.PreferenceGroup;
 import androidx.test.espresso.contrib.RecyclerViewActions;
 import androidx.test.espresso.intent.Intents;
 import androidx.test.espresso.intent.matcher.IntentMatchers;
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
-import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.hamcrest.Matcher;
 import org.hamcrest.Matchers;
-import org.junit.Assert;
+import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -69,6 +70,7 @@ import org.chromium.base.TimeUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.CriteriaNotSatisfiedException;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
@@ -93,8 +95,8 @@ import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.safe_browsing.SafeBrowsingBridge;
 import org.chromium.chrome.browser.safe_browsing.SafeBrowsingState;
 import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.DashboardInteractions;
-import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.NotificationsModuleInteractions;
 import org.chromium.chrome.browser.safety_hub.SafetyHubMetricUtils.PermissionsModuleInteractions;
+import org.chromium.chrome.browser.settings.SettingsInTab;
 import org.chromium.chrome.browser.settings.SettingsTestRule;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -109,7 +111,6 @@ import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.common.ContentUrlConstants;
-import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.DeviceRestriction;
 import org.chromium.ui.test.util.GmsCoreVersionRestriction;
 import org.chromium.ui.test.util.RenderTestRule;
@@ -122,10 +123,7 @@ import java.util.List;
 /** Tests for various Safety Hub settings surfaces. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@Features.DisableFeatures({
-    ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE,
-    ChromeFeatureList.SETTINGS_MULTI_COLUMN
-})
+@Features.DisableFeatures(ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE)
 @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
 @DisableIf.Build(
         sdk_equals = Build.VERSION_CODES.Q,
@@ -226,23 +224,14 @@ public final class SafetyHubTest {
                     0,
                     0,
                     PermissionsRevocationType.SUSPICIOUS_NOTIFICATION_PERMISSIONS);
-    private static final NotificationPermissions NOTIFICATION_PERMISSIONS_1 =
-            NotificationPermissions.create("http://example1.com", "*", 3);
-    private static final NotificationPermissions NOTIFICATION_PERMISSIONS_2 =
-            NotificationPermissions.create("http://example2.com", "*", 8);
 
-    private static final String PREF_NOTIFICATIONS_REVIEW = "notifications_review";
-    private static final int RENDER_TEST_REVISION = 3;
+    private static final int RENDER_TEST_REVISION = 4;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
     public SettingsTestRule<SafetyHubPermissionsFragment> mPermissionsFragmentTestRule =
             new SettingsTestRule<>(SafetyHubPermissionsFragment.class);
-
-    @Rule
-    public SettingsTestRule<SafetyHubNotificationsFragment> mNotificationsFragmentTestRule =
-            new SettingsTestRule<>(SafetyHubNotificationsFragment.class);
 
     @Rule
     public SettingsTestRule<SafetyHubFragment> mSafetyHubFragmentTestRule =
@@ -253,6 +242,7 @@ public final class SafetyHubTest {
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(RenderTestRule.Component.UI_SETTINGS_PRIVACY)
                     .setRevision(RENDER_TEST_REVISION)
+                    .setDescription("Ligatures and contextual alternates disabled in UI text")
                     .build();
 
     @Rule
@@ -263,9 +253,6 @@ public final class SafetyHubTest {
 
     private final FakeUnusedSitePermissionsBridge mUnusedPermissionsBridge =
             new FakeUnusedSitePermissionsBridge();
-
-    private final FakeNotificationPermissionReviewBridge mNotificationPermissionReviewBridge =
-            new FakeNotificationPermissionReviewBridge();
 
     private WebPageStation mPage;
     private Profile mProfile;
@@ -293,8 +280,6 @@ public final class SafetyHubTest {
     @Before
     public void setUp() {
         UnusedSitePermissionsBridgeJni.setInstanceForTesting(mUnusedPermissionsBridge);
-        NotificationPermissionReviewBridgeJni.setInstanceForTesting(
-                mNotificationPermissionReviewBridge);
 
         mPage = mActivityTestRule.startOnBlankPage();
         mProfile = mActivityTestRule.getProfile(/* incognito= */ false);
@@ -318,31 +303,8 @@ public final class SafetyHubTest {
     }
 
     @Test
-    @SmallTest
-    @Features.EnableFeatures(
-            ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION + ":shadow_run/false")
-    public void testFragmentAppearanceDisruptiveRevocation() throws IOException {
-        mSafetyHubFragmentTestRule.startSettingsActivity();
-        SafetyHubExpandablePreference preference =
-                mSafetyHubFragmentTestRule.getFragment().findPreference(PREF_NOTIFICATIONS_REVIEW);
-        Assert.assertFalse(preference.isVisible());
-    }
-
-    @Test
-    @MediumTest
-    @Features.EnableFeatures(
-            ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION + ":shadow_run/true")
-    public void testFragmentAppearanceShadowRun() throws IOException {
-        mSafetyHubFragmentTestRule.startSettingsActivity();
-        SafetyHubExpandablePreference preference =
-                mSafetyHubFragmentTestRule.getFragment().findPreference(PREF_NOTIFICATIONS_REVIEW);
-        Assert.assertTrue(preference.isVisible());
-    }
-
-    @Test
     @LargeTest
     @Feature({"RenderTest", "SafetyHubPermissions"})
-    @Features.DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testPermissionsSubpageAppearance() throws IOException {
         mUnusedPermissionsBridge.setPermissionsDataForReview(
                 new PermissionsData[] {PERMISSIONS_DATA_1, PERMISSIONS_DATA_2});
@@ -355,7 +317,6 @@ public final class SafetyHubTest {
     @Test
     @LargeTest
     @Feature({"RenderTest", "SafetyHubPermissions"})
-    @Features.DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testNotificationPermissionsSubpageAppearance() throws IOException {
         mUnusedPermissionsBridge.setPermissionsDataForReview(
                 new PermissionsData[] {PERMISSIONS_DATA_3, PERMISSIONS_DATA_4, PERMISSIONS_DATA_5});
@@ -363,21 +324,6 @@ public final class SafetyHubTest {
         mRenderTestRule.render(
                 getRootViewSanitized(R.string.safety_hub_permissions_page_title),
                 "notification_permissions_subpage");
-    }
-
-    @Test
-    @LargeTest
-    @Feature({"RenderTest", "SafetyHubNotifications"})
-    @Features.DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
-    public void testNotificationsSubpageAppearance() throws IOException {
-        mNotificationPermissionReviewBridge.setNotificationPermissionsForReview(
-                new NotificationPermissions[] {
-                    NOTIFICATION_PERMISSIONS_1, NOTIFICATION_PERMISSIONS_2
-                });
-        mNotificationsFragmentTestRule.startSettingsActivity();
-        mRenderTestRule.render(
-                getRootViewSanitized(R.string.safety_hub_notifications_page_title),
-                "notifications_subpage");
     }
 
     @Test
@@ -411,6 +357,12 @@ public final class SafetyHubTest {
     @Test
     @LargeTest
     @Feature({"SafetyHubPermissions"})
+    // TODO(crbug.com/574950033): Remove once finishing a subpage returns to Safety Hub when
+    // settings is shown in a tab.
+    @Features.DisableFeatures({
+        ChromeFeatureList.SETTINGS_IN_TAB,
+        ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP
+    })
     public void testClearPermissionsReviewList() {
         mUnusedPermissionsBridge.setPermissionsDataForReview(
                 new PermissionsData[] {PERMISSIONS_DATA_1, PERMISSIONS_DATA_2});
@@ -514,196 +466,13 @@ public final class SafetyHubTest {
 
         openActionBarOverflowOrOptionsMenu(mPermissionsFragmentTestRule.getActivity());
         onViewWaiting(withText(R.string.safety_hub_go_to_site_settings_button)).perform(click());
-        onViewWaiting(withText(R.string.prefs_site_settings)).check(matches(isDisplayed()));
-
-        histogramWatcher.assertExpected();
-    }
-
-    @Test
-    @LargeTest
-    @Feature({"SafetyHubNotifications"})
-    public void testNotificationAllow() {
-        mNotificationPermissionReviewBridge.setNotificationPermissionsForReview(
-                new NotificationPermissions[] {NOTIFICATION_PERMISSIONS_1});
-        mNotificationsFragmentTestRule.startSettingsActivity();
-        var histogramWatcher =
-                HistogramWatcher.newBuilder()
-                        .expectIntRecords(
-                                NOTIFICATIONS_INTERACTIONS_HISTOGRAM_NAME,
-                                NotificationsModuleInteractions.IGNORE,
-                                NotificationsModuleInteractions.UNDO_IGNORE)
-                        .build();
-
-        // Always allow the notification by clicking the corresponding menu button.
-        clickOnButtonNextToText(NOTIFICATION_PERMISSIONS_1.getPrimaryPattern());
-        onViewWaiting(withText(R.string.safety_hub_allow_notifications_menu_item)).perform(click());
-        onView(withText(NOTIFICATION_PERMISSIONS_1.getPrimaryPattern())).check(doesNotExist());
-
-        // Click on the action button of the snackbar to undo the above action.
-        onViewWaiting(withText(R.string.undo)).perform(click());
-        onViewWaiting(withText(NOTIFICATION_PERMISSIONS_1.getPrimaryPattern()))
-                .check(matches(isDisplayed()));
-
-        histogramWatcher.assertExpected();
-    }
-
-    @Test
-    @LargeTest
-    @Feature({"SafetyHubNotifications"})
-    public void testNotificationReset() {
-        mNotificationPermissionReviewBridge.setNotificationPermissionsForReview(
-                new NotificationPermissions[] {NOTIFICATION_PERMISSIONS_1});
-        mNotificationsFragmentTestRule.startSettingsActivity();
-        var histogramWatcher =
-                HistogramWatcher.newBuilder()
-                        .expectIntRecords(
-                                NOTIFICATIONS_INTERACTIONS_HISTOGRAM_NAME,
-                                NotificationsModuleInteractions.RESET,
-                                NotificationsModuleInteractions.UNDO_RESET)
-                        .build();
-
-        // Reset the notification by clicking the corresponding menu button.
-        clickOnButtonNextToText(NOTIFICATION_PERMISSIONS_1.getPrimaryPattern());
-        onViewWaiting(withText(R.string.safety_hub_reset_notifications_menu_item)).perform(click());
-        onView(withText(NOTIFICATION_PERMISSIONS_1.getPrimaryPattern())).check(doesNotExist());
-
-        // Click on the action button of the snackbar to undo the above action.
-        onViewWaiting(withText(R.string.undo)).perform(click());
-        onViewWaiting(withText(NOTIFICATION_PERMISSIONS_1.getPrimaryPattern()))
-                .check(matches(isDisplayed()));
-
-        histogramWatcher.assertExpected();
-    }
-
-    @Test
-    @LargeTest
-    @Feature({"SafetyHubNotifications"})
-    // Disruptive notification revocation disables the notification review module.
-    @Features.DisableFeatures(ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION)
-    @DisableIf.Build(supported_abis_includes = "x86_64", message = "https://crbug.com/382238797")
-    public void testResetAllNotifications() {
-        mNotificationPermissionReviewBridge.setNotificationPermissionsForReview(
-                new NotificationPermissions[] {
-                    NOTIFICATION_PERMISSIONS_1, NOTIFICATION_PERMISSIONS_2
-                });
-        mSafetyHubFragmentTestRule.startSettingsActivity();
-        var histogramWatcher =
-                HistogramWatcher.newBuilder()
-                        .expectIntRecords(
-                                NOTIFICATIONS_INTERACTIONS_HISTOGRAM_NAME,
-                                NotificationsModuleInteractions.OPEN_UI_REVIEW,
-                                NotificationsModuleInteractions.BLOCK_ALL,
-                                NotificationsModuleInteractions.UNDO_BLOCK_ALL)
-                        .build();
-
-        // Verify the notifications module is displaying the info state.
-        String notificationsTitle =
-                mSafetyHubFragmentTestRule
-                        .getActivity()
-                        .getResources()
-                        .getQuantityString(
-                                R.plurals.safety_hub_notifications_review_warning_title, 2, 2);
-        scrollToExpandedPreference(notificationsTitle);
-        onView(withText(notificationsTitle)).check(matches(isDisplayed()));
-
-        // Module should be expanded initially since it's in an info state and there are no other
-        // warning states.
-        verifyButtonsNextToTextVisibility(notificationsTitle, true);
-
-        // Open the notifications subpage.
-        clickOnSecondaryButtonNextToText(notificationsTitle);
-
-        // Verify that 2 sites are displayed.
-        onView(withText(NOTIFICATION_PERMISSIONS_1.getPrimaryPattern()))
-                .check(matches(isDisplayed()));
-        onView(withText(NOTIFICATION_PERMISSIONS_2.getPrimaryPattern()))
-                .check(matches(isDisplayed()));
-
-        // Click the button at the bottom of the page.
-        onView(withText(R.string.safety_hub_notifications_reset_all_button)).perform(click());
-
-        // Verify that the notifications subpage has been dismissed and the state of the
-        // notification module has changed.
-        String okNotificationTitle =
-                mSafetyHubFragmentTestRule
-                        .getActivity()
-                        .getString(R.string.safety_hub_notifications_review_ok_title);
-        scrollToExpandedPreference(okNotificationTitle);
-        onViewWaiting(withText(okNotificationTitle)).check(matches(isDisplayed()));
-
-        // Click on the snackbar action button and verify that the info state is displayed
-        // again.
-        onViewWaiting(withText(R.string.undo)).perform(click());
-        onViewWaiting(withText(notificationsTitle)).check(matches(isDisplayed()));
-
-        histogramWatcher.assertExpected();
-    }
-
-    @Test
-    @LargeTest
-    @Feature({"SafetyHubNotifications"})
-    // Disruptive notification revocation disables the notification review module.
-    @Features.DisableFeatures(ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION)
-    public void testNotificationsBottomButtonState() {
-        mNotificationPermissionReviewBridge.setNotificationPermissionsForReview(
-                new NotificationPermissions[] {NOTIFICATION_PERMISSIONS_1});
-        mSafetyHubFragmentTestRule.startSettingsActivity();
-
-        // Verify the notifications module is displaying the info state.
-        String notificationsTitle =
-                mSafetyHubFragmentTestRule
-                        .getActivity()
-                        .getResources()
-                        .getQuantityString(
-                                R.plurals.safety_hub_notifications_review_warning_title, 1, 1);
-        scrollToPreference(withText(notificationsTitle));
-        scrollToExpandedPreference(notificationsTitle);
-        onView(withText(notificationsTitle)).check(matches(isDisplayed()));
-
-        // Module should be expanded initially since it's in an info state and there are no other
-        // warning states.
-        verifyButtonsNextToTextVisibility(notificationsTitle, true);
-
-        // Open the notifications subpage.
-        clickOnSecondaryButtonNextToText(notificationsTitle);
-
-        // Check that the button is enabled.
-        onView(withText(R.string.safety_hub_notifications_reset_all_button))
-                .check(matches(isEnabled()));
-
-        // Reset the notification by clicking the corresponding menu button.
-        clickOnButtonNextToText(NOTIFICATION_PERMISSIONS_1.getPrimaryPattern());
-        onViewWaiting(withText(R.string.safety_hub_reset_notifications_menu_item)).perform(click());
-
-        // Check that the button is disabled.
-        onView(withText(R.string.safety_hub_notifications_reset_all_button))
-                .check(matches(not(isEnabled())));
-
-        // Click on the action button of the snackbar to undo the above action.
-        onViewWaiting(withText(R.string.undo)).perform(click());
-
-        // Check that the button is enabled.
-        onView(withText(R.string.safety_hub_notifications_reset_all_button))
-                .check(matches(isEnabled()));
-    }
-
-    @Test
-    @LargeTest
-    @Feature({"SafetyHubNotifications"})
-    public void testNotificationsToNotificationSettings() {
-        mNotificationsFragmentTestRule.startSettingsActivity();
-        var histogramWatcher =
-                HistogramWatcher.newSingleRecordWatcher(
-                        NOTIFICATIONS_INTERACTIONS_HISTOGRAM_NAME,
-                        NotificationsModuleInteractions.GO_TO_SETTINGS);
-
-        openActionBarOverflowOrOptionsMenu(mNotificationsFragmentTestRule.getActivity());
-        onViewWaiting(withText(R.string.safety_hub_go_to_notification_settings_button))
-                .perform(click());
         onViewWaiting(
                         allOf(
-                                withText(R.string.push_notifications_permission_title),
-                                withParent(withId(R.id.action_bar))))
+                                withText(R.string.prefs_site_settings),
+                                anyOf(
+                                        withParent(withId(R.id.action_bar)),
+                                        withParent(withId(R.id.settings_title_in_detailed_pane))),
+                                isDisplayed()))
                 .check(matches(isDisplayed()));
 
         histogramWatcher.assertExpected();
@@ -737,7 +506,8 @@ public final class SafetyHubTest {
         // Click on the secondary button and verity that the Safe Browsing settings is opened.
         scrollToExpandedPreference(safeBrowsingTitle);
         clickOnSecondaryButtonNextToText(safeBrowsingTitle);
-        onViewWaiting(withText(R.string.prefs_safe_browsing_title)).check(matches(isDisplayed()));
+        onViewWaiting(allOf(withText(R.string.prefs_safe_browsing_title), isDisplayed()))
+                .check(matches(isDisplayed()));
 
         histogramWatcher.assertExpected();
     }
@@ -816,8 +586,6 @@ public final class SafetyHubTest {
     @Policies.Add({@Policies.Item(key = "SafeBrowsingEnabled", string = "false")})
     @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
     @RequiresRestart
-    // Disruptive notification revocation disables the notification review module.
-    @Features.DisableFeatures(ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION)
     public void testMultiplePreferenceExpand() {
         // Set a module with an unmanaged warning state.
         int compromisedPasswordsCount = 5;
@@ -825,10 +593,8 @@ public final class SafetyHubTest {
         setAccountCompromisedPasswordsCount(compromisedPasswordsCount);
 
         // Set a module with info state.
-        mNotificationPermissionReviewBridge.setNotificationPermissionsForReview(
-                new NotificationPermissions[] {
-                    NOTIFICATION_PERMISSIONS_1, NOTIFICATION_PERMISSIONS_2
-                });
+        mUnusedPermissionsBridge.setPermissionsDataForReview(
+                new PermissionsData[] {PERMISSIONS_DATA_1, PERMISSIONS_DATA_2});
 
         mSafetyHubFragmentTestRule.startSettingsActivity();
         SafetyHubFragment safetyHubFragment = mSafetyHubFragmentTestRule.getFragment();
@@ -850,13 +616,12 @@ public final class SafetyHubTest {
         scrollToPreference(withText(safeBrowsingTitle));
         verifySummaryNextToTextVisibility(safeBrowsingTitle, false);
 
-        String notificationsTitle =
+        String permissionsTitle =
                 safetyHubFragment
                         .getResources()
-                        .getQuantityString(
-                                R.plurals.safety_hub_notifications_review_warning_title, 2, 2);
-        scrollToPreference(withText(notificationsTitle));
-        verifyButtonsNextToTextVisibility(notificationsTitle, false);
+                        .getQuantityString(R.plurals.safety_hub_permissions_warning_title, 2, 2);
+        scrollToPreference(withText(permissionsTitle));
+        verifyButtonsNextToTextVisibility(permissionsTitle, false);
 
         // Fix the warning state
         setAccountCompromisedPasswordsCount(0);
@@ -873,8 +638,8 @@ public final class SafetyHubTest {
         scrollToExpandedPreference(safeBrowsingTitle);
         verifySummaryNextToTextVisibility(safeBrowsingTitle, true);
 
-        scrollToExpandedPreference(notificationsTitle);
-        verifyButtonsNextToTextVisibility(notificationsTitle, true);
+        scrollToExpandedPreference(permissionsTitle);
+        verifyButtonsNextToTextVisibility(permissionsTitle, true);
 
         // Make sure the compromised passwords count is reset at the end of the test.
         clearAccountCompromisedPasswordsCount();
@@ -2027,106 +1792,13 @@ public final class SafetyHubTest {
         // Click on the secondary button and verify that the site settings page is opened.
         scrollToExpandedPreference(permissionsTitle);
         clickOnSecondaryButtonNextToText(permissionsTitle);
-        onViewWaiting(withText(R.string.prefs_site_settings)).check(matches(isDisplayed()));
-
-        histogramWatcher.assertExpected();
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"SafetyHubNotifications"})
-    // Disruptive notification revocation disables the notification review module.
-    @Features.DisableFeatures(ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION)
-    public void testNotificationReviewModule_ResetAll() {
-        mNotificationPermissionReviewBridge.setNotificationPermissionsForReview(
-                new NotificationPermissions[] {
-                    NOTIFICATION_PERMISSIONS_1, NOTIFICATION_PERMISSIONS_2
-                });
-        mSafetyHubFragmentTestRule.startSettingsActivity();
-        SafetyHubFragment safetyHubFragment = mSafetyHubFragmentTestRule.getFragment();
-        var histogramWatcher =
-                HistogramWatcher.newBuilder()
-                        .expectIntRecords(
-                                NOTIFICATIONS_INTERACTIONS_HISTOGRAM_NAME,
-                                NotificationsModuleInteractions.BLOCK_ALL,
-                                NotificationsModuleInteractions.UNDO_BLOCK_ALL)
-                        .build();
-
-        // Verify the notifications module is displaying the info state.
-        String notificationsTitle =
-                safetyHubFragment
-                        .getResources()
-                        .getQuantityString(
-                                R.plurals.safety_hub_notifications_review_warning_title, 2, 2);
-
-        scrollToExpandedPreference(notificationsTitle);
-        onView(withText(notificationsTitle)).check(matches(isDisplayed()));
-
-        // Module should be expanded initially since it's in an info state and there are no other
-        // warning states.
-        verifyButtonsNextToTextVisibility(notificationsTitle, true);
-
-        // Click on the reset all button.
-        clickOnPrimaryButtonNextToText(notificationsTitle);
-
-        // Verify the notification module has changed to a safe state.
-        String okNotificationsTitle =
-                safetyHubFragment.getString(R.string.safety_hub_notifications_review_ok_title);
-        scrollToExpandedPreference(okNotificationsTitle);
-        onViewWaiting(withText(okNotificationsTitle)).check(matches(isDisplayed()));
-
-        // Click on the snackbar action button and verify that the notifications are allowed
-        // again and the info state is displayed.
-        onViewWaiting(withText(R.string.undo)).perform(click());
-        onViewWaiting(withText(notificationsTitle)).check(matches(isDisplayed()));
-
-        List<NotificationPermissions> notificationPermissions =
-                Arrays.asList(
-                        mNotificationPermissionReviewBridge.getNotificationPermissions(
-                                safetyHubFragment.getProfile()));
-        assertEquals(2, notificationPermissions.size());
-        assertThat(
-                notificationPermissions,
-                containsInAnyOrder(NOTIFICATION_PERMISSIONS_1, NOTIFICATION_PERMISSIONS_2));
-
-        histogramWatcher.assertExpected();
-    }
-
-    @Test
-    @MediumTest
-    @Feature({"SafetyHubNotifications"})
-    // Disruptive notification revocation disables the notification review module.
-    @Features.DisableFeatures(ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION)
-    public void testNotificationReviewModule_SafeState() {
-        mNotificationPermissionReviewBridge.setNotificationPermissionsForReview(
-                new NotificationPermissions[] {});
-        mSafetyHubFragmentTestRule.startSettingsActivity();
-        var histogramWatcher =
-                HistogramWatcher.newSingleRecordWatcher(
-                        NOTIFICATIONS_INTERACTIONS_HISTOGRAM_NAME,
-                        NotificationsModuleInteractions.GO_TO_SETTINGS);
-
-        // Verify the notifications module is displaying the safe state.
-        String notificationsTitle =
-                mSafetyHubFragmentTestRule
-                        .getActivity()
-                        .getString(R.string.safety_hub_notifications_review_ok_title);
-
-        scrollToPreference(withText(notificationsTitle));
-        onView(withText(notificationsTitle)).check(matches(isDisplayed()));
-
-        // Module should be collapsed initially since it's in a safe state.
-        verifyButtonsNextToTextVisibility(notificationsTitle, false);
-        expandPreferenceWithText(notificationsTitle);
-
-        // Click on the secondary button and verify that notifications site settings page is
-        // opened.
-        scrollToExpandedPreference(notificationsTitle);
-        clickOnSecondaryButtonNextToText(notificationsTitle);
         onViewWaiting(
                         allOf(
-                                withText(R.string.push_notifications_permission_title),
-                                withParent(withId(R.id.action_bar))))
+                                withText(R.string.prefs_site_settings),
+                                anyOf(
+                                        withParent(withId(R.id.action_bar)),
+                                        withParent(withId(R.id.settings_title_in_detailed_pane))),
+                                isDisplayed()))
                 .check(matches(isDisplayed()));
 
         histogramWatcher.assertExpected();
@@ -2273,8 +1945,10 @@ public final class SafetyHubTest {
 
     @Test
     @MediumTest
-    @Restriction(DeviceFormFactor.PHONE) // Tablets and desktops don't have a help button or menu.
     public void testHelpCenterArticle() {
+        // Settings in a tab doesn't have a help button or menu.
+        Assume.assumeTrue(!SettingsInTab.shouldOpenSettingsInTab());
+
         mSafetyHubFragmentTestRule.startSettingsActivity();
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -2324,6 +1998,12 @@ public final class SafetyHubTest {
     @Test
     @LargeTest
     @Feature({"SafetyHubPermissions"})
+    // TODO(crbug.com/574950033): Remove once finishing a subpage returns to Safety Hub when
+    // settings is shown in a tab.
+    @Features.DisableFeatures({
+        ChromeFeatureList.SETTINGS_IN_TAB,
+        ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP
+    })
     public void testClearAbusiveNotificationPermissionsReviewList() {
         mUnusedPermissionsBridge.setPermissionsDataForReview(
                 new PermissionsData[] {PERMISSIONS_DATA_3});
@@ -2496,18 +2176,36 @@ public final class SafetyHubTest {
 
     static View getRootViewSanitized(int text) {
         View[] view = {null};
-        onViewWaiting(withText(text)).check((v, e) -> view[0] = v.getRootView());
+        onViewWaiting(allOf(withText(text), isDisplayed()))
+                .check((v, e) -> view[0] = v.getRootView());
         ThreadUtils.runOnUiThreadBlocking(() -> RenderTestRule.sanitize(view[0]));
         return view[0];
     }
 
     private void scrollToPreference(Matcher<View> matcher) {
-        onView(withId(R.id.recycler_view))
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
                 .perform(RecyclerViewActions.scrollTo(hasDescendant(matcher)));
     }
 
     private void scrollToExpandedPreference(String text) {
-        onView(withId(R.id.recycler_view))
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    SafetyHubFragment fragment = mSafetyHubFragmentTestRule.getFragment();
+                    Criteria.checkThat(fragment, Matchers.notNullValue());
+                    PreferenceGroup safetyModules = fragment.findPreference("safety_modules");
+                    Criteria.checkThat(safetyModules, Matchers.notNullValue());
+                    for (int i = 0; i < safetyModules.getPreferenceCount(); i++) {
+                        Preference pref = safetyModules.getPreference(i);
+                        if (pref.isVisible()
+                                && (text.equals(String.valueOf(pref.getTitle()))
+                                        || text.equals(String.valueOf(pref.getSummary())))) {
+                            return;
+                        }
+                    }
+                    throw new CriteriaNotSatisfiedException(
+                            "Visible preference with title or summary '" + text + "' not found.");
+                });
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
                 .perform(
                         RecyclerViewActions.scrollTo(
                                 hasDescendant(
@@ -2524,7 +2222,8 @@ public final class SafetyHubTest {
     }
 
     private void scrollToLastPosition() {
-        onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
+                .perform(RecyclerViewActions.scrollToLastPosition());
     }
 
     private void setAccountCompromisedPasswordsCount(int count) {
@@ -2629,6 +2328,7 @@ public final class SafetyHubTest {
                             passwordStoreBridge.getPasswordStoreCredentialsCountForAccountStore(),
                             is(1));
                 });
+        ThreadUtils.runOnUiThreadBlocking(passwordStoreBridge::destroy);
     }
 
     private void addCredentialToProfileStore() {
@@ -2647,6 +2347,7 @@ public final class SafetyHubTest {
                             passwordStoreBridge.getPasswordStoreCredentialsCountForProfileStore(),
                             is(1));
                 });
+        ThreadUtils.runOnUiThreadBlocking(passwordStoreBridge::destroy);
     }
 
     private void clearAllPasswords() {
@@ -2663,6 +2364,7 @@ public final class SafetyHubTest {
                             passwordStoreBridge.getPasswordStoreCredentialsCountForAllStores(),
                             is(0));
                 });
+        ThreadUtils.runOnUiThreadBlocking(passwordStoreBridge::destroy);
     }
 
     private void setSafeBrowsingState(@SafeBrowsingState int state) {

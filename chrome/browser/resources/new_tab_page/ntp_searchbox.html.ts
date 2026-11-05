@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import '//resources/cr_components/searchbox/searchbox_input.js';
+import 'chrome://resources/cr_components/searchbox/searchbox_input.js';
 
-import {html, nothing} from '//resources/lit/v3_0/lit.rollup.js';
+import {html, nothing} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import type {NtpSearchboxElement} from './ntp_searchbox.js';
 import {getHtml as getContextualEntrypointHtml} from './ntp_searchbox_contextual_entrypoint.html.js';
@@ -25,14 +25,12 @@ export function getHtml(this: NtpSearchboxElement) {
         .isListening="${this.isListening}"
         .darkThemeColorsEnabled="${false}"
         .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
-        .entrypointName="${'Realbox'}"
         part="animated-glow">
       </search-animated-glow>
     ` : ''}
   <cr-searchbox-input id="input"
       exportparts="searchbox-input"
       ?dropdown-is-visible="${this.dropdownIsVisible}"
-      input-aria-live="${this.inputAriaLive}"
       ?multi-line-enabled="${this.multiLineEnabled}"
       placeholder-text="${this.computePlaceholderText_(this.placeholderText)}"
       searchbox-aria-description="${this.searchboxAriaDescription}"
@@ -91,9 +89,6 @@ export function getHtml(this: NtpSearchboxElement) {
         selected-match-index="${this.selectedMatchIndex}"
         @selected-match-index-changed="${this.onSelectedMatchIndexChanged}"
         ?can-show-secondary-side="${this.canShowSecondarySide}"
-        ?had-secondary-side="${this.hadSecondarySide}"
-        @had-secondary-side-changed="${this.onHadSecondarySideChanged_}"
-        ?has-secondary-side="${this.hasSecondarySide}"
         @has-secondary-side-changed="${this.onHasSecondarySideChanged_}"
         @match-focusin="${this.onMatchFocusin}"
         @match-click="${this.onMatchClick}"

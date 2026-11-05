@@ -17,7 +17,6 @@ import org.chromium.components.browser_ui.widget.textbubble.TextBubble;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
-import org.chromium.components.feature_engagement.TriggerState;
 import org.chromium.ui.widget.RectProvider;
 import org.chromium.ui.widget.ViewRectProvider;
 
@@ -27,18 +26,22 @@ import org.chromium.ui.widget.ViewRectProvider;
  * keep any state or perform any logic.
  */
 @NullMarked
-class KeyboardAccessoryIphUtils {
+public class KeyboardAccessoryIphUtils {
     /**
      * Emits a filling event that matches the given feature. Noop if no tracker is available yet.
      *
      * @param tracker The {@link Tracker} associated with the current session.
      * @param feature The feature to emit a filling event for. Fails if no event to emit.
      */
-    static void emitFillingEvent(Tracker tracker, String feature) {
+    public static void emitFillingEvent(Tracker tracker, String feature) {
         if (!tracker.isInitialized()) return;
         switch (feature) {
             case FeatureConstants.KEYBOARD_ACCESSORY_AT_MEMORY_FEATURE:
                 tracker.notifyEvent(EventConstants.KEYBOARD_ACCESSORY_AT_MEMORY_USED);
+                return;
+            case FeatureConstants.KEYBOARD_ACCESSORY_AUTOFILL_AI_SPII_DISCLAIMER_FEATURE:
+                tracker.notifyEvent(
+                        EventConstants.KEYBOARD_ACCESSORY_AUTOFILL_AI_SPII_DISCLAIMER_USED);
                 return;
             case FeatureConstants.KEYBOARD_ACCESSORY_AUTOFILL_AI_VALUABLES_FEATURE:
                 tracker.notifyEvent(
@@ -48,9 +51,6 @@ class KeyboardAccessoryIphUtils {
                 tracker.notifyEvent(
                         EventConstants.KEYBOARD_ACCESSORY_ACCOUNT_NAME_EMAIL_AUTOFILLED);
                 return;
-            case FeatureConstants.KEYBOARD_ACCESSORY_ADDRESS_FILL_FEATURE:
-                tracker.notifyEvent(EventConstants.KEYBOARD_ACCESSORY_ADDRESS_AUTOFILLED);
-                return;
             case FeatureConstants.KEYBOARD_ACCESSORY_ENABLE_LOYALTY_CARDS_FEATURE:
                 tracker.notifyEvent(EventConstants.KEYBOARD_ACCESSORY_LOYALTY_CARDS_AUTOFILLED);
                 return;
@@ -58,14 +58,10 @@ class KeyboardAccessoryIphUtils {
                 tracker.notifyEvent(
                         EventConstants.KEYBOARD_ACCESSORY_HOME_AND_WORK_ADDRESS_AUTOFILLED);
                 return;
-            case FeatureConstants.KEYBOARD_ACCESSORY_PASSWORD_FILLING_FEATURE:
-                tracker.notifyEvent(EventConstants.KEYBOARD_ACCESSORY_PASSWORD_AUTOFILLED);
-                return;
             case FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_CARD_INFO_RETRIEVAL_FEATURE:
                 tracker.notifyEvent(
                         EventConstants.KEYBOARD_ACCESSORY_PAYMENT_CARD_INFO_RETRIEVAL_AUTOFILLED);
                 return;
-            case FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_FILLING_FEATURE:
             case FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_OFFER_FEATURE:
             case FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_VIRTUAL_CARD_DISABLED_FEATURE:
             case FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_VIRTUAL_CARD_FEATURE:
@@ -77,35 +73,6 @@ class KeyboardAccessoryIphUtils {
                 return;
         }
         assert false : "No filling event emitted for feature: " + feature;
-    }
-
-    /**
-     * Emits a scrolling event recording user's familiarity. Noop if no tracker is available yet.
-     *
-     * @param tracker The {@link Tracker} associated with the current session.
-     */
-    static void emitScrollingEvent(Tracker tracker) {
-        if (!tracker.isInitialized()) return;
-        tracker.notifyEvent(EventConstants.KEYBOARD_ACCESSORY_BAR_SWIPED);
-    }
-
-    /**
-     * Used to check that filling IPH has priority over IPH that only supports filling, like the IPH
-     * promoting the swipeability of the suggestions.
-     *
-     * @param tracker The {@link Tracker} associated with the current session.
-     * @return True iff any IPH prompting to use a chip was shown before.
-     */
-    static boolean hasShownAnyAutofillIphBefore(@Nullable Tracker tracker) {
-        if (tracker == null || !tracker.isInitialized()) return false;
-        return tracker.getTriggerState(FeatureConstants.KEYBOARD_ACCESSORY_ADDRESS_FILL_FEATURE)
-                        == TriggerState.HAS_BEEN_DISPLAYED
-                || tracker.getTriggerState(
-                                FeatureConstants.KEYBOARD_ACCESSORY_PASSWORD_FILLING_FEATURE)
-                        == TriggerState.HAS_BEEN_DISPLAYED
-                || tracker.getTriggerState(
-                                FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_FILLING_FEATURE)
-                        == TriggerState.HAS_BEEN_DISPLAYED;
     }
 
     /**
@@ -129,7 +96,8 @@ class KeyboardAccessoryIphUtils {
             View rootView,
             Runnable dismissCallback) {
         TextBubble helpBubble =
-                createBubble(tracker, feature, rectProvider, context, rootView, null, dismissCallback);
+                createBubble(
+                        tracker, feature, rectProvider, context, rootView, null, dismissCallback);
         if (helpBubble != null) helpBubble.show();
         return helpBubble != null;
     }
@@ -186,12 +154,16 @@ class KeyboardAccessoryIphUtils {
         if (tracker == null) return null;
         if (!tracker.isInitialized()) return null;
         if (!tracker.shouldTriggerHelpUi(feature)) return null; // This call records the IPH intent.
+        int maxWidthPx =
+                context.getResources()
+                        .getDimensionPixelSize(R.dimen.keyboard_accessory_iph_bubble_max_width);
         TextBubble helpBubble;
         // If the help text is provided, then use it directly to generate the text bubble.
         if (helpText != null && !helpText.isEmpty()) {
             helpBubble =
                     new TextBubble.Builder(context, rootView, rectProvider, helpText, helpText)
                             .setShowArrow(true)
+                            .setMaxWidth(maxWidthPx)
                             .build();
         } else {
             @StringRes int helpTextResourceId = getHelpTextForFeature(feature);
@@ -202,6 +174,7 @@ class KeyboardAccessoryIphUtils {
                                     rectProvider,
                                     helpTextResourceId,
                                     helpTextResourceId)
+                            .setMaxWidth(maxWidthPx)
                             .build();
         }
         helpBubble.setDismissOnTouchInteraction(true);
@@ -221,12 +194,8 @@ class KeyboardAccessoryIphUtils {
      */
     private static @StringRes int getHelpTextForFeature(@FeatureConstants String feature) {
         switch (feature) {
-            case FeatureConstants.KEYBOARD_ACCESSORY_ADDRESS_FILL_FEATURE:
-            case FeatureConstants.KEYBOARD_ACCESSORY_PASSWORD_FILLING_FEATURE:
-            case FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_FILLING_FEATURE:
-                return R.string.iph_keyboard_accessory_fill_with_chrome;
-            case FeatureConstants.KEYBOARD_ACCESSORY_BAR_SWIPING_FEATURE:
-                return R.string.iph_keyboard_accessory_swipe_for_more;
+            case FeatureConstants.KEYBOARD_ACCESSORY_AUTOFILL_AI_SPII_DISCLAIMER_FEATURE:
+                return R.string.iph_keyboard_accessory_autofill_ai_spii_disclaimer;
             case FeatureConstants.KEYBOARD_ACCESSORY_HOME_WORK_PROFILE_SUGGESTION_FEATURE:
                 return R.string.iph_keyboard_accessory_home_work_profile_suggestion;
             case FeatureConstants.KEYBOARD_ACCESSORY_PAYMENT_VIRTUAL_CARD_FEATURE:

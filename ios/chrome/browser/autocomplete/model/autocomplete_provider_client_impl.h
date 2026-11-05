@@ -93,6 +93,7 @@ class AutocompleteProviderClientImpl : public AutocompleteProviderClient {
       override;
   signin::IdentityManager* GetIdentityManager() const override;
   bool IsOffTheRecord() const override;
+  bool IsPrimaryOTRProfileWithRegularParent() const override;
   bool IsIncognitoProfile() const override;
   bool IsGuestSession() const override;
   bool SearchSuggestEnabled() const override;
@@ -124,7 +125,7 @@ class AutocompleteProviderClientImpl : public AutocompleteProviderClient {
       bool show,
       lens::LensOverlayInvocationSource invocation_source) override {}
   void IssueContextualSearchRequest(const GURL& destination_url,
-                                    AutocompleteMatchType::Type match_type,
+                                    omnibox::AutocompleteMatchType match_type,
                                     bool is_zero_prefix_suggestion) override {}
   base::WeakPtr<AutocompleteProviderClient> GetWeakPtr() override;
 

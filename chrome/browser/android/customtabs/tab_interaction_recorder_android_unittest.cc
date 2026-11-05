@@ -10,7 +10,6 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/test/mock_callback.h"
-#include "chrome/browser/ui/tab_helpers.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
@@ -35,6 +34,8 @@ namespace {
 using ::testing::_;
 using ::testing::NiceMock;
 
+// Simulates a text field value change on `autofill_manager` using a test
+// address form.
 void OnTextFieldValueChangedForAutofillManager(
     autofill::AutofillManager& autofill_manager) {
   autofill::FormData form = autofill::test::CreateTestAddressFormData();
@@ -43,6 +44,7 @@ void OnTextFieldValueChangedForAutofillManager(
       autofill::AutofillManagerTestApi::pass_key());
 }
 
+// Simulates seeing a test address form on `autofill_manager` hosted in `rfh`.
 void OnFormsSeenForAutofillManager(autofill::AutofillManager& autofill_manager,
                                    content::RenderFrameHost* rfh) {
   autofill::FormData form = autofill::test::CreateTestAddressFormData();
@@ -74,6 +76,8 @@ class AutofillObserverImplTest
   autofill::test::AutofillUnitTestEnvironment autofill_test_environment_;
 };
 
+// Verifies that `AutofillObserverImpl` invokes the form interaction callback
+// only once upon the first text field value change.
 TEST_F(AutofillObserverImplTest, TestFormInteraction) {
   base::MockOnceCallback<void(content::GlobalRenderFrameHostId)> callback;
   content::GlobalRenderFrameHostId id = content::GlobalRenderFrameHostId();
@@ -87,6 +91,8 @@ TEST_F(AutofillObserverImplTest, TestFormInteraction) {
   OnTextFieldValueChangedForAutofillManager(autofill_manager());
 }
 
+// Verifies that `AutofillObserverImpl` does not invoke the form interaction
+// callback if destroyed without any form interaction.
 TEST_F(AutofillObserverImplTest, TestNoFormInteraction) {
   content::GlobalRenderFrameHostId id = content::GlobalRenderFrameHostId();
   base::MockOnceCallback<void(content::GlobalRenderFrameHostId)> callback;
@@ -97,6 +103,8 @@ TEST_F(AutofillObserverImplTest, TestNoFormInteraction) {
   observer.reset();
 }
 
+// Verifies that `AutofillObserverImpl` handles `AutofillDriver` destruction
+// without invoking the form interaction callback.
 TEST_F(AutofillObserverImplTest, TestAutofillManagerDestroy) {
   content::GlobalRenderFrameHostId id = content::GlobalRenderFrameHostId();
   base::MockOnceCallback<void(content::GlobalRenderFrameHostId)> callback;
@@ -146,6 +154,8 @@ class TabInteractionRecorderAndroidTest
   autofill::test::AutofillUnitTestEnvironment autofill_test_environment_;
 };
 
+// Verifies that a form interaction in the primary main frame marks both the
+// session and the active page as having form interactions.
 TEST_F(TabInteractionRecorderAndroidTest, HadFormInteraction) {
   std::unique_ptr<content::WebContents> contents = CreateTestWebContents();
   auto* helper = TabInteractionRecorderAndroid::FromWebContents(contents.get());
@@ -164,6 +174,9 @@ TEST_F(TabInteractionRecorderAndroidTest, HadFormInteraction) {
   EXPECT_TRUE(helper->HadFormInteractionInActivePage(env));
 }
 
+// Verifies that navigating to a new page after a form interaction preserves
+// `HadFormInteractionInSession` while clearing
+// `HadFormInteractionInActivePage`.
 TEST_F(TabInteractionRecorderAndroidTest, HadFormInteractionThenNavigation) {
   std::unique_ptr<content::WebContents> contents = CreateTestWebContents();
   auto* helper = TabInteractionRecorderAndroid::FromWebContents(contents.get());
@@ -186,6 +199,9 @@ TEST_F(TabInteractionRecorderAndroidTest, HadFormInteractionThenNavigation) {
   EXPECT_FALSE(helper->HadFormInteractionInActivePage(env));
 }
 
+// Verifies that navigating away from the initial page sets
+// `HasNavigatedFromFirstPage` without setting `HadNavigationInteraction` when
+// no user interaction occurred.
 TEST_F(TabInteractionRecorderAndroidTest, HasNavigatedFromFirstPage) {
   std::unique_ptr<content::WebContents> contents = CreateTestWebContents();
   auto* helper = TabInteractionRecorderAndroid::FromWebContents(contents.get());
@@ -202,6 +218,8 @@ TEST_F(TabInteractionRecorderAndroidTest, HasNavigatedFromFirstPage) {
   EXPECT_FALSE(helper->HadNavigationInteraction(env));
 }
 
+// Verifies that `DidGetUserInteraction` records a touch event without setting
+// `HadNavigationInteraction` when still on the first page.
 TEST_F(TabInteractionRecorderAndroidTest, DidGetUserInteraction) {
   std::unique_ptr<content::WebContents> contents = CreateTestWebContents();
   auto* helper = TabInteractionRecorderAndroid::FromWebContents(contents.get());
@@ -216,6 +234,8 @@ TEST_F(TabInteractionRecorderAndroidTest, DidGetUserInteraction) {
   EXPECT_FALSE(helper->HadNavigationInteraction(env));
 }
 
+// Verifies that user interaction followed by navigation away from the first
+// page sets both `DidGetUserInteraction` and `HadNavigationInteraction`.
 TEST_F(TabInteractionRecorderAndroidTest,
        GetUserInteractionAndNavigateFromFirstPage) {
   std::unique_ptr<content::WebContents> contents = CreateTestWebContents();
@@ -231,6 +251,8 @@ TEST_F(TabInteractionRecorderAndroidTest,
   EXPECT_TRUE(helper->HadNavigationInteraction(env));
 }
 
+// Verifies that `Reset` clears all recorded form, user, and navigation
+// interactions.
 TEST_F(TabInteractionRecorderAndroidTest, ResetInteractions) {
   std::unique_ptr<content::WebContents> contents = CreateTestWebContents();
   auto* helper = TabInteractionRecorderAndroid::FromWebContents(contents.get());
@@ -260,8 +282,10 @@ TEST_F(TabInteractionRecorderAndroidTest, ResetInteractions) {
   EXPECT_FALSE(helper->HadFormInteractionInActivePage(env));
 }
 
-// TODO(crbug.com/41496197): Re-enable this test.
-TEST_F(TabInteractionRecorderAndroidTest, DISABLED_TestFormSeen) {
+// Verifies that seeing a form in the primary main frame creates
+// `FormInteractionData` on the document without marking it as having form
+// interaction data.
+TEST_F(TabInteractionRecorderAndroidTest, TestFormSeen) {
   std::unique_ptr<content::WebContents> contents = CreateTestWebContents();
   OnFormsSeenForAutofillManager(autofill_manager(),
                                 contents->GetPrimaryMainFrame());
@@ -274,6 +298,8 @@ TEST_F(TabInteractionRecorderAndroidTest, DISABLED_TestFormSeen) {
                    ->GetHasFormInteractionData());
 }
 
+// Verifies that seeing a form in a frame other than the observed primary main
+// frame does not create `FormInteractionData` on the primary main frame.
 TEST_F(TabInteractionRecorderAndroidTest, TestFormSeenInDifferentFrame) {
   std::unique_ptr<content::WebContents> contents = CreateTestWebContents();
   OnFormsSeenForAutofillManager(autofill_manager(), nullptr);

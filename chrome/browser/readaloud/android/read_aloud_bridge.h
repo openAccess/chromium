@@ -5,14 +5,18 @@
 #ifndef CHROME_BROWSER_READALOUD_ANDROID_READ_ALOUD_BRIDGE_H_
 #define CHROME_BROWSER_READALOUD_ANDROID_READ_ALOUD_BRIDGE_H_
 
+#include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_weak_ref.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "chrome/browser/readaloud/read_aloud_service.h"
+#include "chrome/browser/readaloud/read_aloud_voice_catalog.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/jni_zero/jni_zero.h"
 #include "url/gurl.h"
@@ -54,17 +58,17 @@ class ReadAloudBridge : public ReadAloudService::Delegate {
   void OnPlaybackProgressUpdated(base::TimeDelta elapsed,
                                  base::TimeDelta duration) override;
   void OnPlaybackStateChanged(
-      ReadAloudService::PlaybackState playback_state) override;
-  void OnVoicesAvailable(const std::vector<ReadAloudService::Voice>& voices,
-                         std::string_view selected_voice_id) override;
+      read_aloud::mojom::PlaybackState playback_state) override;
+  void OnVoicesAvailable(base::span<const VoiceInfo> voices) override;
   void OnWordHighlightUpdated(int absolute_start_index,
                               int absolute_end_index) override;
+  void OnTextChunked(const std::vector<std::u16string>& chunks) override;
   void OnHighlightingSupported(bool supported) override;
   void OnFallbackEngaged() override;
   void OnPlaybackError(std::string_view error_message) override;
   void OnVoicePreviewPlaybackStateChanged(
       std::string_view voice_id,
-      ReadAloudService::PlaybackState playback_state) override;
+      read_aloud::mojom::PlaybackState playback_state) override;
   void OnReadabilityResult(const GURL& url, bool is_readable) override;
   void OnNativeDestroyed() override;
 
@@ -73,17 +77,22 @@ class ReadAloudBridge : public ReadAloudService::Delegate {
   void Play(JNIEnv* env, content::WebContents* web_contents);
   void Pause(JNIEnv* env);
   void Stop(JNIEnv* env);
-  void SeekToWordIndex(JNIEnv* env, jint word_index);
+  void SeekToWord(JNIEnv* env, int32_t segment_index, int32_t character_offset);
   void Seek(JNIEnv* env, jlong absolute_time_nanos);
   void SeekRelative(JNIEnv* env, jlong offset_nanos);
   void SetPlaybackRate(JNIEnv* env, jfloat rate);
   void SetVoice(JNIEnv* env, const std::string& voice_id);
-  void PreviewVoice(JNIEnv* env, const std::string& voice_id);
+  void SetLanguageCode(JNIEnv* env, const std::string& language_code);
+  void PreviewVoice(JNIEnv* env,
+                    const std::string& voice_id,
+                    const std::u16string& preview_text);
+  void PauseVoicePreview(JNIEnv* env);
   void StopVoicePreview(JNIEnv* env);
-  void SetPlaybackMode(JNIEnv* env, jint mode);
+  void SetPlaybackMode(JNIEnv* env, int32_t mode);
   void SetHighlightingEnabled(JNIEnv* env, jboolean enabled);
-  void SendFeedback(JNIEnv* env, jint feedback_type);
+  void SendFeedback(JNIEnv* env, int32_t feedback_type);
   void CheckReadability(JNIEnv* env, const GURL& url);
+  void InitVoices(JNIEnv* env);
   void Destroy(JNIEnv* env);
 
  private:

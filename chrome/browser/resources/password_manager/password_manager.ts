@@ -4,12 +4,15 @@
 
 import './password_manager_app.js';
 
-export {SettingsPrefsElement} from '/shared/settings/prefs/prefs.js';
-export {CrSettingsPrefs} from '/shared/settings/prefs/prefs_types.js';
+export {PrefService} from '/shared/settings/prefs2/pref_service.js';
+export {PrefServiceObserverMixin} from '/shared/settings/prefs2/pref_service_observer_mixin.js';
+export type {PrefServiceObserverMixinInterface} from '/shared/settings/prefs2/pref_service_observer_mixin.js';
+export {PrefsBrowserProxy} from '/shared/settings/prefs2/prefs_browser_proxy.js';
 export {CrButtonElement} from 'chrome://resources/cr_elements/cr_button/cr_button.js';
 export {CrDialogElement} from 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
 export {CrExpandButtonElement} from 'chrome://resources/cr_elements/cr_expand_button/cr_expand_button.js';
 export {CrInputElement} from 'chrome://resources/cr_elements/cr_input/cr_input.js';
+export {FindShortcutManager} from 'chrome://resources/cr_elements/find_shortcut_manager.js';
 export {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
 export type {PluralStringProxy} from 'chrome://resources/js/plural_string_proxy.js';
 export {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.js';
@@ -28,7 +31,9 @@ export {EditPasswordDialogElement} from './dialogs/edit_password_dialog.js';
 export {MovePasswordsDialogElement} from './dialogs/move_passwords_dialog.js';
 export {RemoveActorLoginPermissionDialogElement} from './dialogs/remove_actor_login_permission_dialog.js';
 export {TrustedVaultErrorDialogElement} from './dialogs/trusted_vault_error_dialog.js';
+export {FindShortcutMixin} from './find_shortcut_mixin.js';
 export {FullDataResetElement} from './full_data_reset.js';
+export {NotificationCardId} from './notification_cards/notification_card.js';
 export type {NotificationCard, NotificationCardsProxy} from './notification_cards/notification_cards_browser_proxy.js';
 export {NotificationCardsProxyImpl} from './notification_cards/notification_cards_browser_proxy.js';
 // <if expr="is_win or is_macosx">
@@ -38,12 +43,15 @@ export type {PasskeysBrowserProxy} from './passkeys_browser_proxy.js';
 export {PasswordChangeDetailsElement} from './password_change_details.js';
 export {PasswordDetailsSectionElement} from './password_details_section.js';
 export {PasswordListItemElement} from './password_list_item.js';
+export type {ImportEntry, ImportResults} from './password_manager.mojom-webui.js';
+export {ExportPasswordsResult, ExportProgressStatus, ImportEntryStatus, ImportResultsStatus, PageCallbackRouter, PasswordAutomaticChangeState, PasswordManagerActionableError} from './password_manager.mojom-webui.js';
 export {PasswordManagerAppElement} from './password_manager_app.js';
-export type {AccountStorageActiveStateChangedListener, BlockedSite, BlockedSitesListChangedListener, CredentialsChangedListener, ImportEntry, ImportResults, PasswordCheckStatusChangedListener, PasswordManagerActionableErrorChangedListener, PasswordManagerAuthTimeoutListener, PasswordManagerProxy, PasswordsFileExportProgressListener} from './password_manager_proxy.js';
-export {ExportPasswordsResult, ExportProgressStatus, ImportEntryStatus, ImportResultsStatus, PageCallbackRouter, PasswordAutomaticChangeState, PasswordCheckInteraction, PasswordManagerActionableError, PasswordManagerImpl, PasswordViewPageInteractions, toMojoActionableError} from './password_manager_proxy.js';
+export type {AccountStorageActiveStateChangedListener, BlockedSite, BlockedSitesListChangedListener, CredentialsChangedListener, PasswordCheckStatusChangedListener, PasswordManagerActionableErrorChangedListener, PasswordManagerAuthTimeoutListener, PasswordManagerProxy} from './password_manager_proxy.js';
+export {PasswordCheckInteraction, PasswordManagerImpl, PasswordViewPageInteractions, toMojoActionableError} from './password_manager_proxy.js';
 export {PasswordsExporterElement} from './passwords_exporter.js';
 export {PasswordsImporterElement} from './passwords_importer.js';
 export {PasswordsSectionElement} from './passwords_section.js';
+export {isSavingNewPasswordsBlockedByMandatoryPolicy} from './prefs/policy_utils.js';
 export {PrefToggleButtonElement} from './prefs/pref_toggle_button.js';
 export type {RouteObserverMixinInterface} from './router.js';
 export {CheckupSubpage, Page, Route, RouteObserverMixin, Router, UrlParam} from './router.js';

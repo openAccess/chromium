@@ -16,8 +16,15 @@
 
 namespace webnn::ort {
 
+class Environment;
+
 class TensorImplOrt final : public WebNNTensorImpl {
  public:
+  // `tensor` must already be zero-initialized. That is left to the caller
+  // because device-only memory has to be cleared through ORT's copy path,
+  // which `AsSpan()` cannot reach.
+  // CPU accessibility is taken from `device_allocator`, which is null when the
+  // tensor came from the default CPU allocator.
   TensorImplOrt(mojo::PendingAssociatedReceiver<mojom::WebNNTensor> receiver,
                 WebNNContextImpl& context,
                 mojom::TensorInfoPtr tensor_info,
@@ -30,7 +37,9 @@ class TensorImplOrt final : public WebNNTensorImpl {
                 mojom::TensorInfoPtr tensor_info,
                 RepresentationPtr representation,
                 size_t size,
+                scoped_refptr<Environment> env,
                 ScopedOrtExternalMemoryHandle d3d_heap_external_memory_handle,
+                Microsoft::WRL::ComPtr<ID3D12Resource> mapped_d3d12_buffer,
                 ScopedOrtValue tensor);
 
   TensorImplOrt(const TensorImplOrt&) = delete;
@@ -51,6 +60,10 @@ class TensorImplOrt final : public WebNNTensorImpl {
 
   base::span<uint8_t> AsSpan() const;
 
+  // Null unless this tensor holds an external memory handle. Declared first
+  // (destroyed last) so the EP plugin backing
+  // `d3d_heap_external_memory_handle_`'s release callback stays loaded.
+  scoped_refptr<Environment> env_;
   // The device allocator used for device tensor creation. May be nullptr if
   // device tensor is not supported.
   // If the device allocator is present, the tensor is allocated by the device
@@ -63,6 +76,11 @@ class TensorImplOrt final : public WebNNTensorImpl {
   // Valid if the tensor was created with the ORT interop API. Must be kept
   // alive for the lifetime of the OrtValue.
   const ScopedOrtExternalMemoryHandle d3d_heap_external_memory_handle_;
+  // Exists only on the mapped-fallback interop path; keeps the buffer backing
+  // `tensor_`'s raw pointer alive independent of `representation_`. Must be
+  // declared before `tensor_` so it is destroyed after, since `tensor_` holds
+  // a raw pointer into this buffer's mapping.
+  const Microsoft::WRL::ComPtr<ID3D12Resource> mapped_d3d12_buffer_;
   const ScopedOrtValue tensor_ GUARDED_BY_CONTEXT(sequence_checker_);
   const size_t size_;
 };

@@ -13,6 +13,8 @@ import android.content.pm.PackageInfo;
 import android.graphics.Bitmap;
 import android.text.format.DateUtils;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.PackageUtils;
@@ -70,6 +72,7 @@ public class WebappDataStorage {
     static final String KEY_WEBAPK_MANIFEST_ID = "webapk_manifest_id";
     static final String KEY_WEBAPK_VERSION_CODE = "webapk_version_code";
     static final String KEY_LOCAL_REGISTRATION_TIMESTAMP = "local_registration_timestamp";
+    static final String KEY_WEBAPK_NOTIFICATION_CHANNEL_ID = "webapk_notification_channel_id";
 
     // The completion time of the last check for whether the WebAPK's Web Manifest was updated.
     static final String KEY_LAST_CHECK_WEB_MANIFEST_UPDATE_TIME =
@@ -247,7 +250,8 @@ public class WebappDataStorage {
         boolean updated = false;
 
         // The URL and scope may have been deleted by the user clearing their history. Check whether
-        // they are present, and update if necessary.
+        // they are present, and update if necessary. Also update the scope if it has changed (e.g.
+        // when a WebAPK's manifest scope is updated and relaunched).
         String url = mPreferences.getString(KEY_URL, URL_INVALID);
         if (url.equals(URL_INVALID)) {
             url = info.url();
@@ -255,7 +259,7 @@ public class WebappDataStorage {
             updated = true;
         }
 
-        if (mPreferences.getString(KEY_SCOPE, URL_INVALID).equals(URL_INVALID)) {
+        if (!mPreferences.getString(KEY_SCOPE, URL_INVALID).equals(info.scopeUrl())) {
             editor.putString(KEY_SCOPE, info.scopeUrl());
             updated = true;
         }
@@ -393,9 +397,27 @@ public class WebappDataStorage {
         mPreferences.edit().putLong(KEY_LAST_USED, TimeUtils.currentTimeMillis()).apply();
     }
 
+    /** Updates the scope for testing. */
+    @VisibleForTesting
+    public void updateScopeForTests(String scope) {
+        mPreferences.edit().putString(KEY_SCOPE, scope).apply();
+    }
+
     /** Returns the package name if the data is for a WebAPK, null otherwise. */
     public @Nullable String getWebApkPackageName() {
         return mPreferences.getString(KEY_WEBAPK_PACKAGE_NAME, null);
+    }
+
+    /**
+     * Returns the last known notification channel ID used for this WebAPK, or null if never set.
+     */
+    public @Nullable String getNotificationChannelId() {
+        return mPreferences.getString(KEY_WEBAPK_NOTIFICATION_CHANNEL_ID, null);
+    }
+
+    /** Updates the stored notification channel ID for this WebAPK. */
+    public void updateNotificationChannelId(String channelId) {
+        mPreferences.edit().putString(KEY_WEBAPK_NOTIFICATION_CHANNEL_ID, channelId).apply();
     }
 
     /**

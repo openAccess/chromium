@@ -18,6 +18,7 @@
 #include "media/base/video_frame.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom-blink.h"
+#include "third_party/blink/public/platform/modules/mediastream/web_media_stream_sink.h"
 #include "third_party/blink/public/web/web_heap.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream_video_track.h"
 #include "third_party/blink/renderer/modules/mediastream/mock_constraint_factory.h"
@@ -983,9 +984,9 @@ TEST_F(MediaStreamVideoSourceTest, CanDiscardAlpha) {
   WebMediaStreamTrack track = CreateTrack();
 
   MockMediaStreamVideoSink sink_no_alpha;
-  sink_no_alpha.SetUsesAlpha(MediaStreamVideoSink::UsesAlpha::kNo);
+  sink_no_alpha.SetUsesAlpha(WebMediaStreamSink::UsesAlpha::kNo);
   MockMediaStreamVideoSink sink_alpha;
-  sink_alpha.SetUsesAlpha(MediaStreamVideoSink::UsesAlpha::kDefault);
+  sink_alpha.SetUsesAlpha(WebMediaStreamSink::UsesAlpha::kDefault);
 
   EXPECT_CALL(*mock_source(), OnSourceCanDiscardAlpha(true));
   sink_no_alpha.ConnectToTrack(track);
@@ -1010,12 +1011,12 @@ TEST_F(MediaStreamVideoSourceTest, CanDiscardAlphaIfOtherSinksDiscard) {
   WebMediaStreamTrack track = CreateTrack();
 
   MockMediaStreamVideoSink sink_no_alpha;
-  sink_no_alpha.SetUsesAlpha(MediaStreamVideoSink::UsesAlpha::kNo);
+  sink_no_alpha.SetUsesAlpha(WebMediaStreamSink::UsesAlpha::kNo);
   MockMediaStreamVideoSink sink_depends;
   sink_depends.SetUsesAlpha(
-      MediaStreamVideoSink::UsesAlpha::kDependsOnOtherSinks);
+      WebMediaStreamSink::UsesAlpha::kDependsOnOtherSinks);
   MockMediaStreamVideoSink sink_alpha;
-  sink_alpha.SetUsesAlpha(MediaStreamVideoSink::UsesAlpha::kDefault);
+  sink_alpha.SetUsesAlpha(WebMediaStreamSink::UsesAlpha::kDefault);
 
   // Keep alpha if the only sink is DependsOnOtherSinks.
   EXPECT_CALL(*mock_source(), OnSourceCanDiscardAlpha(false));
@@ -1052,9 +1053,9 @@ TEST_F(MediaStreamVideoSourceTest, CanDiscardAlphaMultipleTracks) {
   WebMediaStreamTrack track_with_alpha = CreateTrack();
 
   MockMediaStreamVideoSink sink_no_alpha;
-  sink_no_alpha.SetUsesAlpha(MediaStreamVideoSink::UsesAlpha::kNo);
+  sink_no_alpha.SetUsesAlpha(WebMediaStreamSink::UsesAlpha::kNo);
   MockMediaStreamVideoSink sink_alpha;
-  sink_alpha.SetUsesAlpha(MediaStreamVideoSink::UsesAlpha::kDefault);
+  sink_alpha.SetUsesAlpha(WebMediaStreamSink::UsesAlpha::kDefault);
 
   // Adding just the track with no alpha, the source can discard alpha.
   EXPECT_CALL(*mock_source(), OnSourceCanDiscardAlpha(true));
@@ -1111,7 +1112,59 @@ TEST_F(MediaStreamVideoSourceTest, GetCaptureVersionDefaultImplementation) {
 }
 
 TEST_F(MediaStreamVideoSourceTest, GetNextCaptureVersionDefaultImplementation) {
-  EXPECT_EQ(source()->GetNextCaptureVersion(), std::nullopt);
+  EXPECT_EQ(source()->GetNextCaptureVersion(
+                media::mojom::SubCaptureTargetType::kCropTarget),
+            std::nullopt);
+}
+
+// Pausing a source must push a black frame all the way through to the sink, so
+// that a consumer is not left displaying the last real frame of whatever the
+// source was showing. Regression test: the black frame used to be built with a
+// default-constructed capture version, which the track discarded as
+// kOldCaptureVersion once the source's version had moved on.
+TEST_F(MediaStreamVideoSourceTest, StopForRestartDeliversBlackFrameToSink) {
+  WebMediaStreamTrack track = CreateTrackAndStartSource(100, 100, 30.0);
+  MockMediaStreamVideoSink sink;
+  sink.ConnectToTrack(track);
+
+  // Move the capture version on, as a source change does in production. From
+  // here the track discards any frame stamped with an older version.
+  const media::CaptureVersion kCaptureVersion(1, 0);
+  EXPECT_CALL(*mock_source(), GetCaptureVersion())
+      .WillRepeatedly(Return(kCaptureVersion));
+  mock_source()->DeliverNewCaptureVersion(kCaptureVersion);
+
+  // A real frame at the current version: this is the frame the sink would be
+  // stuck on if the black frame never arrived.
+  {
+    base::RunLoop run_loop;
+    EXPECT_CALL(sink, OnVideoFrame).WillOnce([&](base::TimeTicks) {
+      run_loop.Quit();
+    });
+    scoped_refptr<media::VideoFrame> frame =
+        media::VideoFrame::CreateBlackFrame(gfx::Size(200, 200));
+    frame->set_timestamp(base::Seconds(1));
+    frame->metadata().capture.version = kCaptureVersion;
+    mock_source()->DeliverVideoFrame(std::move(frame));
+    run_loop.Run();
+  }
+  EXPECT_EQ(sink.number_of_frames(), 1);
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(sink, OnVideoFrame).WillOnce([&](base::TimeTicks) {
+    run_loop.Quit();
+  });
+  mock_source()->EnableStopForRestart();
+  source()->StopForRestart(
+      BindOnce([](MediaStreamVideoSource::RestartResult result) {}),
+      /*send_black_frame=*/true);
+
+  run_loop.Run();
+
+  EXPECT_EQ(sink.number_of_frames(), 2);
+  ASSERT_TRUE(sink.last_frame());
+  EXPECT_FALSE(sink.last_frame()->visible_rect().IsEmpty());
+  sink.DisconnectFromTrack();
 }
 
 }  // namespace blink

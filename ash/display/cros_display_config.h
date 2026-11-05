@@ -134,8 +134,8 @@ struct ASH_EXPORT DisplayConfigProperties {
   bool set_primary = false;
 
   // If provided, sets the display's overscan insets to the provided value.
-  // Note: overscan values may not be negative or larger than a half of the
-  // screen's size. Overscan cannot be changed on the internal monitor.
+  // Note: each overscan inset may not be negative or larger than a quarter of
+  // the screen's size. Overscan cannot be changed on the internal monitor.
   std::optional<gfx::Insets> overscan;
 
   // If provided, updates the display's rotation, or if the auto-rotation is
@@ -351,17 +351,6 @@ class CrosDisplayConfig {
   // Sets |id| of display to render identification highlight on. Invalid |id|
   // turns identification highlight off.
   virtual void HighlightDisplay(int64_t display_id) = 0;
-
-  // Updates preview indicators with change in position of display being dragged
-  // in display layouts section of the display settings page. |display_id| is
-  // the ID of the display being dragged. |delta_x| and |delta_y| are the change
-  // in position of the dragged display since DragDisplayDelta() was last
-  // called. |display_id| remains the same while the drag is in progress, once
-  // the display is dropped, the new layout is applied, updating the display
-  // configuration.
-  virtual void DragDisplayDelta(int64_t display_id,
-                                int32_t delta_x,
-                                int32_t delta_y) = 0;
 };
 
 class ASH_EXPORT CrosDisplayConfigImpl final : public CrosDisplayConfig {
@@ -396,9 +385,6 @@ class ASH_EXPORT CrosDisplayConfigImpl final : public CrosDisplayConfig {
       base::optional_ref<const display::TouchCalibrationData> calibration,
       TouchCalibrationCallback callback) override;
   void HighlightDisplay(int64_t display_id) override;
-  void DragDisplayDelta(int64_t display_id,
-                        int32_t delta_x,
-                        int32_t delta_y) override;
 
   bool IsCalibrating() const;
 

@@ -77,8 +77,7 @@ constexpr FieldTypeSet kCreditCardFieldTypes =
 // more acute if the set below grows further (e.g., to include USERNAME) and the
 // overlap with PWM types grows (the Autofill server may predict
 // EMAIL_ADDRESS and USERNAME for the same field).
-constexpr FieldTypeSet kIdentityCredentialFieldTypes = {
-    NAME_FIRST, NAME_FULL, EMAIL_ADDRESS, PHONE_HOME_WHOLE_NUMBER, PASSWORD};
+constexpr FieldTypeSet kIdentityCredentialFieldTypes = {PASSWORD};
 
 // TODO(crbug.com/432645177): Remove `EMAIL_OR_LOYALTY_MEMBERSHIP_ID` and
 // represent it as union of the other three types. That means the getter
@@ -121,22 +120,14 @@ bool AutofillType::TestConstraints(const FieldTypeSet& s) {
          Intersection(s, kPasswordManagerFieldTypes).size() <= 1;
 }
 
-AutofillType::AutofillType(FieldTypeSet field_types, bool is_country_code)
-    : types_(Normalize(field_types)),
-      is_country_code_(is_country_code &&
-                       types_.contains(ADDRESS_HOME_COUNTRY)) {
+AutofillType::AutofillType(FieldTypeSet field_types)
+    : types_(Normalize(field_types)) {
   DCHECK(TestConstraints(field_types)) << FieldTypeSetToString(field_types);
   DCHECK(TestConstraints(GetTypes())) << FieldTypeSetToString(GetTypes());
 }
 
-AutofillType::AutofillType(FieldTypeSet field_types)
-    : AutofillType(field_types, false) {}
-
-AutofillType::AutofillType(FieldType field_type, bool is_country_code)
-    : AutofillType(FieldTypeSet{field_type}, is_country_code) {}
-
 AutofillType::AutofillType(FieldType field_type)
-    : AutofillType(field_type, false) {}
+    : AutofillType(FieldTypeSet{field_type}) {}
 
 FieldTypeSet AutofillType::GetTypes() const {
   return types_;

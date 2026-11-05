@@ -47,14 +47,12 @@ class TabFavicon : public favicon::FaviconDriverObserver {
       base::OnceCallback<void(const SkBitmap&)> callback);
 
   // TabFavicon JNI
-  TabFavicon(JNIEnv* env,
-             TabAndroid* tab_android,
-             int navigation_transition_favicon_size);
+  TabFavicon(TabAndroid* tab_android, int navigation_transition_favicon_size);
   ~TabFavicon() override;
-  void SetWebContents(JNIEnv* env, content::WebContents* web_contents);
-  void ResetWebContents(JNIEnv* env);
-  void OnDestroyed(JNIEnv* env);
-  base::android::ScopedJavaLocalRef<jobject> GetFavicon(JNIEnv* env);
+  void SetWebContents(content::WebContents* web_contents);
+  void ResetWebContents();
+  void OnDestroyed();
+  base::android::ScopedJavaLocalRef<jobject> GetFavicon();
 
   // favicon::FaviconDriverObserver
   void OnFaviconUpdated(favicon::FaviconDriver* favicon_driver,
@@ -64,6 +62,8 @@ class TabFavicon : public favicon::FaviconDriverObserver {
                         const gfx::Image& image) override;
 
  private:
+  float GetDeviceScaleFactor() const;
+
   static void GetFaviconOrFallback(
       TabAndroid* tab_android,
       base::OnceCallback<void(const SkBitmap&)> callback);

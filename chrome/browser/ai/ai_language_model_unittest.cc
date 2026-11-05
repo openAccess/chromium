@@ -30,13 +30,12 @@
 #include "build/build_config.h"
 #include "chrome/browser/ai/ai_test_utils.h"
 #include "chrome/browser/ai/features.h"
-#include "chrome/browser/component_updater/optimization_guide_on_device_model_installer.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "components/on_device_ai/ai_utils.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/fake_manifest_broker.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/scenario_builder.h"
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
+#include "components/optimization_guide/core/model_execution/performance_class.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
 #include "components/optimization_guide/core/model_execution/test/mock_download_progress_observer.h"
 #include "components/optimization_guide/core/model_execution/test/mock_on_device_capability.h"
@@ -71,7 +70,6 @@ namespace proto = ::optimization_guide::proto;
 using ::base::test::TestFuture;
 using ::on_device_model::mojom::PerformanceClass;
 using ::optimization_guide::FieldSubstitution;
-using ::optimization_guide::ForbidUnsafe;
 using ::optimization_guide::StringValueField;
 using ::testing::_;
 using ::testing::ElementsAre;
@@ -172,19 +170,6 @@ std::vector<blink::mojom::AILanguageModelPromptContentPtr> ToContentVector(
   return vector;
 }
 
-optimization_guide::proto::FeatureTextSafetyConfiguration CreateSafetyConfig() {
-  optimization_guide::proto::FeatureTextSafetyConfiguration safety_config;
-  safety_config.set_feature(
-      optimization_guide::proto::MODEL_EXECUTION_FEATURE_PROMPT_API);
-  safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-
-  auto* check = safety_config.add_request_check();
-  check->mutable_input_template()->Add(
-      FieldSubstitution("%s", StringValueField()));
-
-  return safety_config;
-}
-
 // Build a mojo prompt struct with the specified `role` and `text`
 blink::mojom::AILanguageModelPromptPtr MakePrompt(Role role,
                                                   const std::string& text,
@@ -209,7 +194,7 @@ std::vector<blink::mojom::AILanguageModelPromptPtr> MakeToolCallInput(
     const std::string& name,
     base::DictValue arguments) {
   base::DictValue tool_call;
-  tool_call.Set("callID", call_id);
+  tool_call.Set("callId", call_id);
   tool_call.Set("name", name);
   tool_call.Set("arguments", std::move(arguments));
   return MakeToolCallInput(std::move(tool_call));
@@ -307,7 +292,6 @@ class AILanguageModelTest : public AITestUtils::AITestBase {
  protected:
   proto::SolutionConfig CreateSolution() override {
     proto::OnDeviceModelExecutionFeatureConfig config;
-    config.set_can_skip_text_safety(true);
     proto::SamplingParams default_sampling_params;
     default_sampling_params.set_top_k(kTestDefaultTopK);
     default_sampling_params.set_temperature(kTestDefaultTemperature);
@@ -328,7 +312,6 @@ class AILanguageModelTest : public AITestUtils::AITestBase {
 
     proto::SolutionConfig solution_config;
     *solution_config.mutable_feature() = config;
-    *solution_config.mutable_safety() = CreateSafetyConfig();
     return solution_config;
   }
 
@@ -691,14 +674,8 @@ TEST_F(AILanguageModelTest, SpeculativeDecodingSamplingDefault) {
   feature_list.InitAndEnableFeature(
       on_device_model::features::kOnDeviceModelSpeculativeDecoding);
 
-  TestCreateLanguageModelClient language_model_client;
-  mojo::test::BadMessageObserver observer;
-  GetAIManagerRemote()->CreateLanguageModel(
-      language_model_client.BindNewPipeAndPassRemote(),
-      blink::mojom::AILanguageModelCreateOptions::New(),
-      /*monitor=*/mojo::NullRemote());
-  EXPECT_EQ(observer.WaitForBadMessage(),
-            "Incompatible speculative decoding options");
+  auto session = CreateSession();
+  EXPECT_THAT(Prompt(*session, MakeInput("foo")), ElementsAre("UfooEM"));
 }
 
 TEST_F(AILanguageModelTest, SpeculativeDecodingSamplingParams) {
@@ -744,21 +721,18 @@ TEST_F(AILanguageModelTest, SpeculativeDecodingSamplingParams) {
                 ElementsAre("UfooEM", "TopK: 2, Temp: 0"));
   }
 
-  // Non-greedy sampling (top_k = 2, temperature = 0.5) should fail.
+  // Non-greedy sampling (top_k = 2, temperature = 0.5) should succeed with
+  // standard decode.
   {
-    TestCreateLanguageModelClient language_model_client;
     auto sampling_params = blink::mojom::AILanguageModelSamplingParams::New();
     sampling_params->top_k = 2;
     sampling_params->temperature = 0.5f;
 
     auto options = blink::mojom::AILanguageModelCreateOptions::New();
     options->sampling_params = std::move(sampling_params);
-    mojo::test::BadMessageObserver observer;
-    GetAIManagerRemote()->CreateLanguageModel(
-        language_model_client.BindNewPipeAndPassRemote(), std::move(options),
-        /*monitor=*/mojo::NullRemote());
-    EXPECT_EQ(observer.WaitForBadMessage(),
-              "Incompatible speculative decoding options");
+    auto session = CreateSession(std::move(options));
+    EXPECT_THAT(Prompt(*session, MakeInput("foo")),
+                ElementsAre("UfooEM", "TopK: 2, Temp: 0.5"));
   }
 }
 
@@ -776,18 +750,14 @@ TEST_F(AILanguageModelTest, SpeculativeDecodingSamplingMode) {
     EXPECT_THAT(Prompt(*session, MakeInput("foo")), ElementsAre("UfooEM"));
   }
 
-  // Other modes (e.g. kBalanced) should fail.
+  // Other modes (e.g. kBalanced) should succeed with standard decode.
   {
-    TestCreateLanguageModelClient language_model_client;
     auto options = blink::mojom::AILanguageModelCreateOptions::New();
     options->sampling_mode =
         blink::mojom::AILanguageModelSamplingMode::kBalanced;
-    mojo::test::BadMessageObserver observer;
-    GetAIManagerRemote()->CreateLanguageModel(
-        language_model_client.BindNewPipeAndPassRemote(), std::move(options),
-        /*monitor=*/mojo::NullRemote());
-    EXPECT_EQ(observer.WaitForBadMessage(),
-              "Incompatible speculative decoding options");
+    auto session = CreateSession(std::move(options));
+    EXPECT_THAT(Prompt(*session, MakeInput("foo")),
+                ElementsAre("UfooEM", IsPromptWithParams(64, 1.0)));
   }
 }
 
@@ -1359,93 +1329,6 @@ TEST_F(AILanguageModelTest, MeasureInputUsage) {
   EXPECT_EQ(measure_future.Get(), std::string("UfooE").size());
 }
 
-TEST_F(AILanguageModelTest, TextSafetyInitialPrompts) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    return solution_config;
-  }());
-
-  auto options = blink::mojom::AILanguageModelCreateOptions::New();
-  options->initial_prompts.push_back(MakePrompt(Role::kSystem, "unsafe"));
-
-  TestCreateLanguageModelClient language_model_client;
-  GetAIManagerRemote()->CreateLanguageModel(
-      language_model_client.BindNewPipeAndPassRemote(), std::move(options),
-      mojo::NullRemote());
-  auto result = language_model_client.result().Take();
-  EXPECT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().error,
-            blink::mojom::AIManagerCreateClientError::kUnableToCreateSession);
-}
-
-TEST_F(AILanguageModelTest, TextSafetyInput) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    return solution_config;
-  }());
-
-  fake_broker_->settings().set_execute_result({"hi"});
-  auto session = CreateSession();
-  EXPECT_THAT(Prompt(*session, MakeInput("safe")), ElementsAre("hi"));
-
-  // Fake text safety checker looks for the string "unsafe".
-  AITestUtils::TestStreamingResponder responder;
-  session->Prompt(MakeInput("unsafe"), nullptr, responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-}
-
-TEST_F(AILanguageModelTest, TextSafetyOutput) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_minimum_tokens(1000);
-    return solution_config;
-  }());
-
-  // Fake text safety checker looks for the string "unsafe".
-  fake_broker_->settings().set_execute_result(
-      {"a", "b", "c", "d", "e", "f", "g", "unsafe", "h"});
-  auto session = CreateSession();
-  AITestUtils::TestStreamingResponder responder;
-  session->Prompt(MakeInput("foo"), nullptr, responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-  EXPECT_TRUE(responder.responses().empty());
-}
-
-TEST_F(AILanguageModelTest, TextSafetyOutputPartial) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_minimum_tokens(3);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_token_interval(2);
-    return solution_config;
-  }());
-
-  // Fake text safety checker looks for the string "unsafe".
-  fake_broker_->settings().set_execute_result(
-      {"a", "b", "c", "d", "e", "f", "g", "unsafe", "h"});
-  auto session = CreateSession();
-  AITestUtils::TestStreamingResponder responder;
-  session->Prompt(MakeInput("foo"), nullptr, responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-  // Partial checks should still allow some output to stream.
-  EXPECT_THAT(responder.responses(), ElementsAre("abc", "de", "fg"));
-}
-
 TEST_F(AILanguageModelTest, QueuesOperations) {
   auto session = CreateSession();
   AITestUtils::TestStreamingResponder responder1;
@@ -1982,7 +1865,7 @@ class AILanguageModelOpenLoopToolTest : public AILanguageModelTest {
     options->initial_prompts.push_back(std::move(tool_call.front()));
 
     base::DictValue tool_response;
-    tool_response.Set("callID", call_id);
+    tool_response.Set("callId", call_id);
     tool_response.Set("name", "get_weather");
     tool_response.Set("result", std::move(result));
     options->initial_prompts.push_back(blink::mojom::AILanguageModelPrompt::New(
@@ -2124,6 +2007,11 @@ TEST_F(AILanguageModelOpenLoopToolTest, InstanceInfoAdvertisesToolInputTypes) {
                   blink::mojom::AILanguageModelPromptType::kText,
                   blink::mojom::AILanguageModelPromptType::kToolCall,
                   blink::mojom::AILanguageModelPromptType::kToolResponse));
+  ASSERT_TRUE(result.value().info->output_types);
+  EXPECT_THAT(*result.value().info->output_types,
+              testing::UnorderedElementsAre(
+                  blink::mojom::AILanguageModelPromptType::kText,
+                  blink::mojom::AILanguageModelPromptType::kToolCall));
 }
 
 TEST_F(AILanguageModelOpenLoopToolTest, RejectMalformedToolCallInput) {
@@ -2132,7 +2020,7 @@ TEST_F(AILanguageModelOpenLoopToolTest, RejectMalformedToolCallInput) {
   auto session = CreateSessionWithToolsAndSystemPrompt(std::move(tools));
 
   base::DictValue tool_call;
-  tool_call.Set("callID", "call_missing_arguments");
+  tool_call.Set("callId", "call_missing_arguments");
   tool_call.Set("name", "get_weather");
 
   AITestUtils::TestStreamingResponder responder;
@@ -2259,7 +2147,7 @@ TEST_F(AILanguageModelOpenLoopToolTest, ToolResponseHandled) {
 
   // Send structured tool response with nested objects/arrays.
   base::DictValue tool_response_dict;
-  tool_response_dict.Set("callID", "call_456");
+  tool_response_dict.Set("callId", "call_456");
   tool_response_dict.Set("name", "get_weather");
 
   base::DictValue result;
@@ -2339,7 +2227,7 @@ TEST_F(AILanguageModelOpenLoopToolTest, ToolResponseWithError) {
 
   // Send tool error response.
   base::DictValue error_response_dict;
-  error_response_dict.Set("callID", "call_789");
+  error_response_dict.Set("callId", "call_789");
   error_response_dict.Set("name", "get_weather");
   error_response_dict.Set("errorMessage",
                           "Unable to find weather data for InvalidCity");
@@ -2399,7 +2287,7 @@ TEST_F(AILanguageModelOpenLoopToolTest, CompleteOpenLoopToolCallFlow) {
   // ========== STEP 4: Create and send tool response as new prompt ==========
   // Compose the result for ToolResponse.
   base::DictValue tool_result_dict;
-  tool_result_dict.Set("callID", "call_123");
+  tool_result_dict.Set("callId", "call_123");
   tool_result_dict.Set("name", "get_weather");
 
   base::DictValue result;
@@ -2462,7 +2350,7 @@ TEST_F(AILanguageModelOpenLoopToolTest,
 
   DisableToolCallSimulation();
   base::DictValue tool_response;
-  tool_response.Set("callID", "call_overflow");
+  tool_response.Set("callId", "call_overflow");
   tool_response.Set("name", "get_weather");
   base::DictValue result;
   result.Set("temperature", 72);
@@ -2536,7 +2424,7 @@ TEST_F(AILanguageModelOpenLoopToolTest, ClonedSessionPreservesTools) {
 
   // Send tool response to cloned session.
   base::DictValue tool_response_dict;
-  tool_response_dict.Set("callID", "call_clone_002");
+  tool_response_dict.Set("callId", "call_clone_002");
   tool_response_dict.Set("name", "get_weather");
 
   base::DictValue result;
@@ -2597,7 +2485,7 @@ TEST_F(AILanguageModelOpenLoopToolTest, RejectCreateWithFlagDisabled) {
 TEST_F(AILanguageModelOpenLoopToolTest, RejectToolResponseWithoutCapability) {
   auto session = CreateSession();
   base::DictValue tool_response_dict;
-  tool_response_dict.Set("callID", "c0");
+  tool_response_dict.Set("callId", "c0");
   tool_response_dict.Set("name", "no_such_tool");
   base::DictValue result;
   result.Set("arbitrary_field", "arbitrary_value");
@@ -2751,10 +2639,9 @@ class AILanguageModelWithFeatureConfigTest : public AILanguageModelTest {
                 proto::BaseModelRecipe::PERFORMANCE_HINT_HIGHEST_QUALITY,
                 {}, kDefaultMaxTokens),
             optimization_guide::FakeBaseModelAsset::Content{}, "1.0.0.0")
-        .AddSafetyModel("safety")
-        .AddSafeSolution("prompt_api", "base", "safety", default_solution)
-        .AddSafeSolution("prompt_api_gemma4", "gemma4_base", "safety",
-                         default_solution)
+        .AddUnsafeSolution("prompt_api", "base", default_solution)
+        .AddUnsafeSolution("prompt_api_gemma4", "gemma4_base",
+                           default_solution)
         .SetFeatureConfig("prompt_api",
                           optimization_guide::AnyWrapProto(prompt_api_cfg))
         .Finish();

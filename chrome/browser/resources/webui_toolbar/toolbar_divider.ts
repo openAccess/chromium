@@ -4,10 +4,13 @@
 
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
+import {OverflowableToolbarActionMixin} from './overflowable_toolbar_action_mixin.js';
 import {getCss} from './toolbar_divider.css.js';
 import {getHtml} from './toolbar_divider.html.js';
 
-export class ToolbarDividerElement extends CrLitElement {
+const ToolbarDividerElementBase = OverflowableToolbarActionMixin(CrLitElement);
+
+export class ToolbarDividerElement extends ToolbarDividerElementBase {
   static get is() {
     return 'toolbar-divider';
   }
@@ -15,6 +18,8 @@ export class ToolbarDividerElement extends CrLitElement {
   static override get styles() {
     return getCss();
   }
+
+  override isDivider: boolean = true;
 
   override render() {
     return getHtml.bind(this)();

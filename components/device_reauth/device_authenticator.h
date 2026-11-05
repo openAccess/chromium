@@ -9,6 +9,7 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/time/time.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
 #include "components/device_reauth/device_reauth_metrics_util.h"
 
 namespace device_reauth {
@@ -43,15 +44,6 @@ class DeviceAuthParams {
   std::string auth_result_histogram_;
 };
 
-#if BUILDFLAG(IS_ANDROID)
-// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.device_reauth
-enum class BiometricStatus {
-  kBiometricsAvailable,
-  kOnlyLskfAvailable,
-  kUnavailable,
-};
-#endif  // BUILDFLAG(IS_ANDROID)
-
 // This interface encapsulates operations related to biometric authentication.
 // It's intended to be used prior to sharing the user's credentials with a
 // website, either via form filling or the Credential Management API.
@@ -65,9 +57,18 @@ class DeviceAuthenticator {
 
   DeviceAuthenticator& operator=(const DeviceAuthenticator&) = delete;
 
+  // Deprecated: Use `DeviceAuthAvailabilityChecker::CanAuthenticateWithBiometrics`
+  // instead. This refactor is currently guarded by the killswitch
+  // `password_manager::features::kDeviceReauthRefactor`.
+  //
   // Returns whether biometrics are available for a given device.
   virtual bool CanAuthenticateWithBiometrics() = 0;
 
+  // Deprecated: Use
+  // `DeviceAuthAvailabilityChecker::CanAuthenticateWithBiometricOrScreenLock`
+  // instead. This refactor is currently guarded by the killswitch
+  // `password_manager::features::kDeviceReauthRefactor`.
+  //
   // Returns whether biometrics or screenlock are available for a given device.
   virtual bool CanAuthenticateWithBiometricOrScreenLock() = 0;
 
@@ -80,6 +81,10 @@ class DeviceAuthenticator {
                                        AuthenticateCallback callback) = 0;
 
 #if BUILDFLAG(IS_ANDROID)
+  // Deprecated: Use
+  // `DeviceAuthAvailabilityChecker::GetBiometricAvailabilityStatus` instead.
+  // This refactor is currently guarded by the killswitch
+  // `password_manager::features::kDeviceReauthRefactor`.
   virtual BiometricStatus GetBiometricAvailabilityStatus() = 0;
 #endif  // BUILDFLAG(IS_ANDROID)
 

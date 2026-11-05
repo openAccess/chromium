@@ -41,6 +41,7 @@
 #include "components/omnibox/browser/suggestion_group_util.h"
 #include "components/omnibox/browser/zero_suggest_provider.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
+#include "components/omnibox/common/omnibox_features.h"
 #include "components/search_engines/search_engine_type.h"
 #include "components/search_engines/search_terms_data.h"
 #include "components/search_engines/template_url.h"
@@ -163,7 +164,6 @@ struct EligibleMatchesAndActions {
         contextual_search_config.show_open_lens_action && !toolbelt_lens &&
         input.IsZeroSuggest() &&
         ContextualSearchProvider::LensEntrypointEligible(input, client) &&
-        !client->IsOmniboxNextLensSearchChipEnabled() &&
         !client->IsAskGShowChipEnabled();
 
     // - Check feature/params.
@@ -234,7 +234,8 @@ struct EligibleMatchesAndActions {
             ComputeDestinationUrlForLensQueryText(input.text(), turl_service);
         actions.push_back(
             base::MakeRefCounted<ContextualSearchFulfillmentAction>(
-                url, AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED, false));
+                url, omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
+                false));
       }
     }
 
@@ -330,16 +331,22 @@ AutocompleteMatch ContextualSearchProvider::CreateLensEntrypointMatch(
       omnibox::IsSearchResultsPage(input.current_page_classification())
           ? omnibox::kContextualActionZeroSuggestRelevanceLow
           : omnibox::kContextualActionZeroSuggestRelevance,
-      false, AutocompleteMatchType::PEDAL);
+      false, omnibox::AutocompleteMatchType::kPedal);
   match.transition = ui::PAGE_TRANSITION_GENERATED;
   match.suggest_type = omnibox::SuggestType::TYPE_NATIVE_CHROME;
   match.suggestion_group_id = omnibox::GroupId::GROUP_CONTEXTUAL_SEARCH_ACTION;
 
-  // Lens invocation action with secondary text that shows URL host.
+  // Lens invocation action with secondary text that shows URL host, or, when
+  // the action opens the cobrowse side panel, an "Opens in side panel" hint.
   match.takeover_action =
       base::MakeRefCounted<ContextualSearchOpenLensAction>();
-  match.contents =
-      base::UTF8ToUTF16(url_formatter::StripWWW(input.current_url().GetHost()));
+  if (ShouldShowSidePanelDescription(client())) {
+    match.contents =
+        l10n_util::GetStringUTF16(IDS_CONTEXTUAL_SEARCH_OPENS_IN_SIDE_PANEL);
+  } else {
+    match.contents = base::UTF8ToUTF16(
+        url_formatter::StripWWW(input.current_url().GetHost()));
+  }
   if (!match.contents.empty()) {
     match.contents_class = {{0, ACMatchClassification::DIM}};
   }
@@ -349,6 +356,29 @@ AutocompleteMatch ContextualSearchProvider::CreateLensEntrypointMatch(
   }
   match.fill_into_edit = match.description;
   return match;
+}
+
+// static
+bool ContextualSearchProvider::ShouldShowSidePanelDescription(
+    const AutocompleteProviderClient* client) {
+  // Mirrors the routing in `ContextualSearchOpenLensAction::Execute()`:
+  // composebox takes precedence over cobrowse, and if neither applies the
+  // action falls back to the Lens overlay (which is not a side panel).
+  return omnibox::kAskGSuggestionSidePanelDescription.Get() &&
+         !client->ShouldOpenComposeboxForAskG() &&
+         client->ShouldOpenCoBrowsePanel();
+}
+
+// static
+bool ContextualSearchProvider::HasSidePanelDescription(
+    const AutocompleteMatch& match,
+    const AutocompleteProviderClient* client) {
+  // Static contextual suggestions may have no description; see
+  // `AutocompleteController::UpdateKeywordDescriptions()`.
+  return ShouldShowSidePanelDescription(client) &&
+         (match.HasTakeoverAction(
+              OmniboxActionId::CONTEXTUAL_SEARCH_OPEN_LENS) ||
+          (match.IsContextualSearchSuggestion() && !match.description.empty()));
 }
 
 // static
@@ -365,7 +395,8 @@ bool ContextualSearchProvider::LensEntrypointEligible(
 ContextualSearchProvider::ContextualSearchProvider(
     AutocompleteProviderClient* client,
     AutocompleteProviderListener* listener)
-    : BaseSearchProvider(AutocompleteProvider::TYPE_CONTEXTUAL_SEARCH, client) {
+    : BaseSearchProvider(AutocompleteProvider::Type::kContextualSearch,
+                         client) {
   AddListener(listener);
 }
 
@@ -524,7 +555,7 @@ void ContextualSearchProvider::AddDefaultVerbatimMatch(
   std::u16string text = base::CollapseWhitespace(input.text(), false);
 
   AutocompleteMatch match(this, kDefaultVerbatimMatchRelevance, false,
-                          AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+                          omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   if (text.empty()) {
     // Inert/static keyword mode helper text match for empty input. This match
     // doesn't commit the omnibox when selected, it just stands in to inform the
@@ -546,7 +577,7 @@ void ContextualSearchProvider::AddDefaultVerbatimMatch(
     // to be fulfilled via ContextualSearchFulfillmentAction `takeover_action`.
     SearchSuggestionParser::SuggestResult verbatim(
         /*suggestion=*/text,
-        /*type=*/AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED,
+        /*type=*/omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
         /*suggest_type=*/omnibox::TYPE_NATIVE_CHROME,
         /*subtypes=*/{omnibox::SUBTYPE_CONTEXTUAL_SEARCH},
         /*from_keyword=*/true,
@@ -566,7 +597,7 @@ void ContextualSearchProvider::AddToolbeltMatch(
     const AutocompleteInput& input,
     std::vector<scoped_refptr<OmniboxAction>> actions) {
   AutocompleteMatch match(this, omnibox::kToolbeltRelevance, false,
-                          AutocompleteMatchType::NULL_RESULT_MESSAGE);
+                          omnibox::AutocompleteMatchType::kNullResultMessage);
   match.transition = ui::PAGE_TRANSITION_GENERATED;
   match.suggest_type = omnibox::SuggestType::TYPE_NATIVE_CHROME;
   match.suggestion_group_id = omnibox::GroupId::GROUP_SEARCH_TOOLBELT;

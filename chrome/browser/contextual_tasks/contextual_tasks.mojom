@@ -4,11 +4,11 @@
 
 module contextual_tasks.mojom;
 
+import "components/omnibox/browser/searchbox.mojom";
 import "mojo/public/mojom/base/uuid.mojom";
 import "mojo/public/mojom/base/unguessable_token.mojom";
 import "mojo/public/mojom/base/proto_wrapper.mojom";
 import "url/mojom/url.mojom";
-import "ui/base/mojom/window_open_disposition.mojom";
 
 // Struct representing an injected input which can be text only,
 // contain a modality chip, or both, and allows immediate submission.
@@ -28,38 +28,6 @@ struct ContextualTaskId {
 
 struct ContextualWindowId {
   mojo_base.mojom.UnguessableToken value;
-};
-
-
-// Represents the the visual information needed to display a single context row
-// of a tab where title and url will be displayed in the sources menu.
-struct TabContext {
-  url.mojom.Url url;
-  string title;
-  int32 tab_id;
-  bool has_chrome_tab_data;
-};
-
-// Represents the the visual information needed to display a single context row
-// of an image in the sources menu.
-struct ImageContext {
-  url.mojom.Url url;
-  string title;
-};
-
-// Represents the the visual information needed to display a single context row
-// of a file in the sources menu.
-struct FileContext {
-  url.mojom.Url url;
-  string title;
-};
-
-// Union representing different types (tabs, files and images) of context
-// information.
-union ContextInfo {
-  TabContext tab;
-  ImageContext image;
-  FileContext file;
 };
 
 // Struct representing max width, margin bottom/left,
@@ -92,6 +60,13 @@ interface PageHandler {
   // the WebUI to load in the hosted webview element.
   GetThreadUrl() => (url.mojom.Url url);
 
+  // Called when the user starts a new thread from the side panel. If the side
+  // panel state is scoped to the tab and other tabs share the thread, moves the
+  // active tab to a new thread in a new side panel `WebContents`, so that the
+  // other tabs keep the thread. Returns false if the page should start the new
+  // thread in place.
+  MoveActiveTabToNewThreadIfShared() => (bool moved);
+
   // Gets a URL for the provided task ID. This method should primarily be used
   // in the init flow for the feature, after a query is intercepted from UI like
   // the omnibox and we don't yet have a thread ID.
@@ -118,51 +93,21 @@ interface PageHandler {
   // Set the title of the active thread.
   SetThreadTitle(string title);
 
-  // Closes the side panel if it's open.
-  CloseSidePanel();
-
-  // Invoked when the user clicks Thread History button to show the full list
-  // of threads from history. In response, the backend will send a
-  // OPEN_THREADS_VIEW message to search to open the thread history natively.
-  ShowThreadHistory();
 
   // Returns whether the WebUI is being shown in a tab. If false, the UI is
   // shown in the side panel.
   IsShownInTab() => (bool is_in_tab);
 
-  // Opens the My Activity page in a new tab.
-  OpenMyActivityUi();
-
-  // Opens the Feedback page in a new tab.
-  OpenFeedbackUi();
+  // Note: The following help UI methods are intentionally parameterless to
+  // prevent compromised renderers from injecting arbitrary URLs or dispositions
+  // (crbug.com/523750306). Target URLs and dispositions are resolved entirely
+  // within the browser process.
 
   // Opens the onboarding help page in a new tab.
   OpenOnboardingHelpUi();
 
-  // Opens the overflow menu help page in a new tab.
-  OpenOverflowMenuHelpUi();
-
-  // Open the URL with window open disposition.
-  // Used for handling newwindow event inside <webview>.
-  OpenUrl(url.mojom.Url url, ui.mojom.WindowOpenDisposition disposition);
-
-  // Moves the contents of the side panel to a new tab.
-  MoveTaskUiToNewTab();
-
-  // Called when a tab in the sources menu is clicked. This will first attempt
-  // to switch to a tab matching both the provided `tab_id` and `url`. If no
-  // such tab is found, it will then try to switch to a tab matching only the
-  // `url`. If still no matching tab is found, a new foreground tab will be
-  // opened with the provided `url`.
-  OnTabClickedFromSourcesMenu(int32 tab_id, url.mojom.Url url);
-
-  // Called when a file in the sources menu is clicked. The file associated with
-  // the `url` will be opened in a new tab in the current browser window.
-  OnFileClickedFromSourcesMenu(url.mojom.Url url);
-
-  // Called when an image in the sources menu is clicked. The image will be
-  // opened in a new tab in the current browser window.
-  OnImageClickedFromSourcesMenu(url.mojom.Url url);
+  // Opens the Ask G help page in a new tab.
+  OpenAskGHelpUi();
 
   // Called by the WebUI when a 'message' event is received from
   // the <webview> guest. The 'message' is expected to be a serialized
@@ -179,25 +124,9 @@ interface PageHandler {
   // dismissed.
   OnboardingTooltipDismissed();
 
-  // Increments the counter for how many times the lens search tooltip is
-  // dismissed.
-  LensSearchTooltipDismissed();
-
   // Increments the counter for how many times the AskG tooltip is
   // dismissed.
   AskGTooltipDismissed();
-
-  // Called when the user clicks the 'Reopen tabs' button which will be
-  // displayed when user revisits an expired thread. Tabs which were added
-  // to context may or may not be opened in new tabs depending upon what
-  // option user selects.
-  ReopenTabs();
-
-  // Pins the side panel to the toolbar.
-  PinSidePanel();
-
-  // Unpins the side panel from the toolbar.
-  UnpinSidePanel();
 
   // Called when the user opens the composebox contextual action menu dialog.
   OnContextMenuOpened();
@@ -217,23 +146,6 @@ interface PageHandler {
 
   // Requests the browser to close a tracked window.
   CloseWindow(ContextualWindowId window_id);
-
-  // Triggers the pinning promo IPH if eligible.
-  MaybeTriggerPinningPromo();
-
-  // Triggers the display of the native PageInfo bubble.
-  // `is_pointer_interaction` is true if the bubble was opened via a pointer
-  // interaction (mouse, touch, etc.) rather than a keyboard interaction. This
-  // is necessary because the backend uses this context to decide whether to run
-  // pointer-specific rapid-reopen suppression shielding.
-  ShowPageInfoBubble(bool is_pointer_interaction);
-
-  // Called when the user presses the pointer down on the PageInfo button.
-  // This is used for bubble reopening suppression.
-  OnLogoPointerDown();
-
-  // Requests the browser to load a new thread URL in the guest WebContents.
-  CreateNewThread();
 };
 
 // WebUI-side handler for requests from the browser.
@@ -251,6 +163,10 @@ interface Page {
   // A notification that WebUI has moved into or out of the side panel. The UI
   // code should query the `IsShownInTab` method to get the current state.
   OnSidePanelStateChanged();
+
+  // Called by the browser process (C++) when the side panel is opened to focus
+  // the composebox input in the WebUI page.
+  FocusComposebox();
 
   // Called by the browser process (C++) to send a message to the <webview>
   // guest. The WebUI is responsible for taking a serialized
@@ -273,11 +189,6 @@ interface Page {
   // sync completes to ensure the login state is correctly propagated for fresh
   // starts.
   OnCookieSyncCompleted();
-
-  // Called by the browser process (C++) when the context associated with the
-  // task is updated (e.g. tabs, files or images added/removed). This is used
-  // for updating the icon shown on the sources menu entry point.
-  OnContextUpdated(array<ContextInfo> context);
 
   // Called by the browser process (C++) when the AIM server sends a HideInput
   // command to hide the compose box.
@@ -316,9 +227,6 @@ interface Page {
   // is in NLM mode.
   SetInNlm(bool in_nlm);
 
-  // Called by the browser process (C++) to notify the UI if the current page
-  // is an AI page or not.
-  OnAiPageStatusChanged(bool is_ai_page);
 
   // Called by the browser process (C++) when the Lens overlay is shown/hidden.
   // This also passes whether the overlay hint text should be shown for the
@@ -348,18 +256,6 @@ interface Page {
   // WebUI.
   UnlockInput();
 
-  // Called by the browser process (C++) to show or hide the reopen tabs
-  // section.
-  SetShowReopenTabs(bool show);
-
-  // Called by the browser process (C++) to notify the UI when the pin state
-  // changes.
-  OnSidePanelPinStateChanged(bool is_pinned);
-
-  // Called by the browser process (C++) to notify the UI whether the expand
-  // button should be enabled.
-  SetExpandButtonEnabled(bool enabled);
-
   // Called by the browser process to turn on smart tab sharing in the WebUI.
   TurnOnSmartTabSharing();
 
@@ -372,6 +268,12 @@ interface Page {
   // Called by the browser process (C++) to notify the UI that a tracked window
   // was closed.
   OnWindowClosed(ContextualWindowId window_id);
+
+  // Requests the side panel UI to reset its state for an in-place fresh thread
+  // (e.g. triggered by an omnibox page action on an already-open side panel).
+  // Navigates the embedded webview in-place to `thread_url`, clears composebox
+  // inputs, and resets active tab context to get contextual suggestions.
+  ResetForNewThread(mojo_base.mojom.Uuid task_id, url.mojom.Url thread_url);
 };
 
 // Used to bootstrip bi-directional communication between the browser and webui.
@@ -389,30 +291,50 @@ interface ExtensionPageHandlerFactory {
       pending_receiver<ExtensionPageHandler> receiver);
 };
 
-// Browser-side handler for requests from the extension frame.
-// Implemented in C++ (ContextualTasksExtensionHandler) and called from
-// HTML/TS client (input_plate.ts) in the extension context.
-// Provides APIs to bootstrap communication and send messages from the webview
-// back to the browser.
+// Browser-side handler for requests from the built-in Contextual Tasks
+// component extension (`extension_misc::kContextualTasksExtensionId`).
+// Bound either per extension document frame (`ContextualTasksExtensionHandler`)
+// or for the extension's Service Worker
+// (`ContextualTasksExtensionServiceWorkerHandler`). Never exposed to WebUIs or
+// web pages.
 interface ExtensionPageHandler {
   // Fetches the initial handshake ping message.
   // Called by the extension JS during initialization to obtain the handshake
   // message that must be sent to the GWS guest page to establish the channel.
   //
+  // Inputs:
+  // - `document_id`: Optional serialized 32-character hex representation of
+  //   `extensions::ExtensionApiFrameIdMap::DocumentId` (a 128-bit
+  //   `base::UnguessableToken`) exposed to the extension Service Worker as
+  //   `chrome.runtime.MessageSender.documentId`. Ignored when called from a
+  //   document-bound extension frame (`ContextualTasksExtensionHandler`). When
+  //   called from the Service Worker, parsed via
+  //   `ExtensionApiFrameIdMap::DocumentIdFromString()` and validated to belong
+  //   to an active primary main frame in the same Profile; invalid or
+  //   unmatched IDs return an empty message.
+  //
   // Returns:
   // - `message`: A ProtoWrapper containing the serialized
-  //   `lens.ClientToAimMessage` which wraps the `HandshakePing`.
-  GetHandshakeMessage() => (mojo_base.mojom.ProtoWrapper message);
+  //   `lens.ClientToSearchMessage` which wraps the `HandshakePing`.
+  GetHandshakeMessage(string? document_id)
+      => (mojo_base.mojom.ProtoWrapper message);
 
   // Forwards a message received from the webview guest to the browser.
   // Called by the extension JS when it receives a `message` event from the
-  // embedded <webview> containing data destined for the AIM server.
+  // embedded <webview> containing data destined for the AIM server, or by the
+  // extension Service Worker with `document_id` set to the sender's document
+  // ID.
   //
   // Inputs:
   // - `message`: The raw bytes of the serialized protobuf message from the
   //   guest.
+  // - `document_id`: Optional serialized `ExtensionApiFrameIdMap::DocumentId`
+  //   (`chrome.runtime.MessageSender.documentId`) when called from the
+  //   extension Service Worker. Parsed via
+  //   `ExtensionApiFrameIdMap::DocumentIdFromString()` and dropped if invalid
+  //   or not an active primary main frame in the same Profile.
   // TODO(crbug.com/462788705): Use `ProtoWrapper` instead of `array<uint8>`
-  OnWebviewMessage(array<uint8> message);
+  OnWebviewMessage(array<uint8> message, string? document_id);
 
   // Updates the browser with the current active task ID.
   // Called by the extension JS when the task context changes in the UI.
@@ -420,45 +342,61 @@ interface ExtensionPageHandler {
   // Inputs:
   // - `uuid`: The Uuid of the new active task.
   SetTaskId(mojo_base.mojom.Uuid uuid);
+
+  // Returns the base64 PNG data-URI of the Lens crop preview for the current
+  // tab/session, or null if no crop is active.
+  //
+  // Previous designs used an explicit `data_id` parameter, but it was removed
+  // to prevent race conditions where the embedding page could request an image
+  // for a stale `data_id` that no longer exists in the browser.
+  GetLensCropPreview() => (string? data_uri);
+
+  // Removes the active Lens region crop, clearing region selection
+  // and closing the Lens overlay.
+  RemoveLensCrop();
 };
 
 // Extension-side handler for requests from the browser process.
-// Implemented in HTML/TS (input_plate.ts) and called from C++
-// (ContextualTasksExtensionHandler) to control the extension UI and forward
-// messages from the browser to the webview.
+// State of the Smart Tab Sharing ('Share open tabs') feature for the current
+// Contextual Tasks session.
+struct SmartTabSharingState {
+  // Whether Smart Tab Sharing is currently toggled on for the session.
+  bool active;
+  // Whether the Smart Tab Sharing menu option should be shown in the tab picker
+  // menu.
+  bool visible;
+};
+
+// Implemented in HTML/TS and called from C++
+// (ContextualTasksExtensionHandler or
+// ContextualTasksExtensionServiceWorkerHandler) to control the extension UI and
+// forward messages from the browser to the connected search page.
 interface ExtensionPage {
-  // Sends a message from the browser to the extension to be forwarded to GWS.
-  // Called by C++ to deliver data (e.g. from the AIM server) to the guest.
-  //
-  // Inputs:
-  // - `message`: The raw bytes of the serialized protobuf message.
-  // TODO(crbug.com/462788705): Use `ProtoWrapper` instead of `array<uint8>`
-  PostAimMessage(array<uint8> message);
+  // Sends a search communication message (e.g.
+  // lens.chrome.ClientToSearchMessage) from the browser to the extension to be
+  // forwarded to the search page. `document_id` is the target frame's
+  // serialized `ExtensionApiFrameIdMap::DocumentId` when routing through the
+  // extension Service Worker, or null in unit/browser tests that do not target
+  // a specific frame.
+  PostSearchMessage(
+      mojo_base.mojom.ProtoWrapper message, string? document_id);
 
-  // Signals to the extension that the handshake with GWS is complete.
-  // Called by C++ after the browser processes the handshake response.
-  OnHandshakeComplete();
+  // Called by the browser process (C++) when the Lens overlay is shown/hidden.
+  OnLensOverlayStateChanged(bool is_showing);
 
-  // Called by the browser process (C++) when the AIM server sends a HideInput
-  // command to hide the compose box.
-  HideInput();
+  // Called by the browser process (C++, ContextualTasksExtensionHandler)
+  // when an updated Lens region selection is captured while the chip
+  // iframe is already mounted, allowing the chip to update its preview
+  // thumbnail in-place without unmounting/remounting.
+  OnLensCropUpdated(url.mojom.Url data_uri);
 
-  // Called by the browser process (C++) when the AIM server sends a
-  // RestoreInput command to show the compose box.
-  RestoreInput();
-
-  // Called by the browser process (C++) when the AIM server sends an
-  // EnterBasicMode command to enter basic mode.
-  EnterBasicMode();
-
-  // Called by the browser process (C++) when the AIM server sends an
-  // ExitBasicMode command to exit basic mode.
-  ExitBasicMode();
-
-  // Called by the browser process (C++) to lock/disable the input in the WebUI.
-  LockInput();
-
-  // Called by the browser process (C++) to unlock/enable the input in the
-  // WebUI.
-  UnlockInput();
+  // Called by the browser process (C++, ContextualTasksExtensionHandler)
+  // when the session's tab context state updates, providing the combined
+  // list of attached and restored tabs along with the IDs of tabs that
+  // have already been submitted or restored, as well as the current Smart
+  // Tab Sharing state (consumed by `ContextLibraryElement` in
+  // `context_library.ts` and `TabPickerAppElement` in `tab_picker_app.ts`).
+  OnTabContextUpdated(array<searchbox.mojom.TabInfo> tabs,
+                      array<int32> submitted_tab_ids,
+                      SmartTabSharingState smart_tab_sharing_state);
 };

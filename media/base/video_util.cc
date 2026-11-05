@@ -758,9 +758,11 @@ bool ReadbackTexturePlaneToMemorySync(VideoFrame& src_frame,
   std::unique_ptr<gpu::RasterScopedAccess> ri_access =
       src_frame.shared_image()->BeginRasterAccess(ri, sync_token,
                                                   /*readonly=*/true);
-  bool readback_result =
-      ri->ReadbackImagePixels(mailbox, info, dest_stride, src_rect.x(),
-                              src_rect.y(), src_plane, dest_pixels);
+  gfx::Size plane_size = src_frame.shared_image()->format().GetPlaneSize(
+      src_plane, src_frame.shared_image()->size());
+  bool readback_result = ri->ReadbackImagePixels(
+      mailbox, plane_size, info, dest_stride, src_rect.x(), src_rect.y(),
+      src_plane, dest_pixels);
 
   bool result = readback_result &&
                 ri->GetGraphicsResetStatusKHR() == GL_NO_ERROR &&
@@ -808,6 +810,8 @@ SkColorType SkColorTypeForPlaneNoCheck(VideoPixelFormat format, size_t plane) {
       return kBGRA_8888_SkColorType;
     case PIXEL_FORMAT_RGBAF16:
       return kRGBA_F16_SkColorType;
+    case PIXEL_FORMAT_Y410:
+      return kRGBA_1010102_SkColorType;
     default:
       return kUnknown_SkColorType;
   }
@@ -879,6 +883,8 @@ SkYUVAInfo::PlaneConfig SkYUVAPlaneConfigForFormat(VideoPixelFormat format) {
       return SkYUVAInfo::PlaneConfig::kY_UV;
     case PIXEL_FORMAT_NV12A:
       return SkYUVAInfo::PlaneConfig::kY_UV_A;
+    case PIXEL_FORMAT_Y410:
+      return SkYUVAInfo::PlaneConfig::kUYVA;
   }
 }
 
@@ -936,7 +942,7 @@ scoped_refptr<VideoFrame> CreateFromSkImage(sk_sp<SkImage> sk_image,
     return nullptr;
 
   if (sk_image->colorSpace()) {
-    frame->set_color_space(gfx::ColorSpace(*sk_image->colorSpace()));
+    frame->set_color_space(gfx::ColorSpace(sk_image->colorSpace()));
   }
 
   frame->AddDestructionObserver(

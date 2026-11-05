@@ -58,7 +58,7 @@ class GL_EXPORT GLSurfaceEGLSurfaceControl : public Presenter {
 
   bool ScheduleOverlayPlane(
       OverlayImage image,
-      std::unique_ptr<gfx::GpuFence> gpu_fence,
+      gfx::GpuFenceHandle gpu_fence,
       const gfx::OverlayPlaneData& overlay_plane_data) override;
   void PreserveChildSurfaceControls() override;
 
@@ -100,6 +100,7 @@ class GL_EXPORT GLSurfaceEGLSurfaceControl : public Presenter {
     bool opaque = true;
     gfx::ColorSpace color_space;
     gfx::HDRMetadata hdr_metadata;
+    float desired_brightness_ratio = 1.f;
     gfx::Rect damage_rect;
     bool is_root_overlay = false;
 

@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -34,6 +35,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -44,7 +46,6 @@
 #include "components/network_session_configurator/common/network_switches.h"
 #include "components/optimization_guide/core/delivery/model_info.h"
 #include "components/optimization_guide/core/inference/execution_status.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/optimization_guide/proto/page_entities_metadata.pb.h"
@@ -61,11 +62,13 @@
 #include "components/page_content_annotations/core/test_page_content_annotator.h"
 #include "components/passage_embeddings/core/passage_embeddings_test_util.h"
 #include "components/ukm/test_ukm_recorder.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
 #include "pdf/buildflags.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_source.h"
@@ -77,7 +80,9 @@
 #include "third_party/blink/public/common/features.h"
 
 #if BUILDFLAG(ENABLE_PDF)
+#include "chrome/browser/pdf/pdf_extension_test_util.h"
 #include "components/pdf/browser/pdf_document_helper.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "pdf/mojom/pdf.mojom.h"
 #endif  // BUILDFLAG(ENABLE_PDF)
 
@@ -125,7 +130,48 @@ class TestPageContentAnnotationsObserver
 class HangingPdfListener : public pdf::mojom::PdfListener {
  public:
   HangingPdfListener() = default;
-  ~HangingPdfListener() override = default;
+  ~HangingPdfListener() override {
+    // Must close `receiver_` before dropping any unrun Mojo response callbacks,
+    // otherwise Mojo will DCHECK that callbacks were destroyed while the IPC
+    // pipe is still open.
+    Disconnect();
+  }
+
+  mojo::PendingRemote<pdf::mojom::PdfListener> BindNewPipeAndPassRemote() {
+    return receiver_.BindNewPipeAndPassRemote();
+  }
+
+  void Disconnect() {
+    receiver_.reset();
+    pending_get_page_text_callbacks_.clear();
+    pending_get_pdf_bytes_callbacks_.clear();
+  }
+
+  bool HasPendingRequest() const {
+    return !pending_get_page_text_callbacks_.empty() ||
+           !pending_get_pdf_bytes_callbacks_.empty();
+  }
+
+  void RespondToPendingRequests() {
+    for (auto& callback : pending_get_page_text_callbacks_) {
+      if (callback) {
+        std::move(callback).Run(u"late pdf text");
+      }
+    }
+    pending_get_page_text_callbacks_.clear();
+
+    for (auto& callback : pending_get_pdf_bytes_callbacks_) {
+      if (callback) {
+        std::move(callback).Run(
+            pdf::mojom::PdfListener::GetPdfBytesStatus::kSuccess, {1, 2, 3}, 1);
+      }
+    }
+    pending_get_pdf_bytes_callbacks_.clear();
+
+    // Flush the receiver so the late responses are delivered to
+    // `PageContextFetcher`.
+    receiver_.FlushForTesting();
+  }
 
   // pdf::mojom::PdfListener:
   void GetPageText(int32_t page_index, GetPageTextCallback callback) override {
@@ -163,6 +209,7 @@ class HangingPdfListener : public pdf::mojom::PdfListener {
  private:
   std::vector<GetPageTextCallback> pending_get_page_text_callbacks_;
   std::vector<GetPdfBytesCallback> pending_get_pdf_bytes_callbacks_;
+  mojo::Receiver<pdf::mojom::PdfListener> receiver_{this};
 };
 #endif  // BUILDFLAG(ENABLE_PDF)
 
@@ -646,13 +693,10 @@ IN_PROC_BROWSER_TEST_F(PageContentAnnotationsServiceBrowserTest,
             observer.last_page_content_annotations_result()->GetType());
   EXPECT_NE(-1.0, observer.last_page_content_annotations_result()
                       ->GetContentVisibilityScore());
-  EXPECT_TRUE(
-      PageContentAnnotationsWebContentsObserver::GetOrCreateForWebContents(
-          browser()->GetTabStripModel()->GetActiveWebContents(),
-          *PageContentAnnotationsServiceFactory::GetForProfile(
-              browser()->GetProfile()))
-          ->content_visibility_score()
-          .has_value());
+  EXPECT_TRUE(PageContentAnnotationsWebContentsObserver::FromWebContents(
+                  browser()->GetTabStripModel()->GetActiveWebContents())
+                  ->content_visibility_score()
+                  .has_value());
 }
 
 class PageContentAnnotationsServiceRemoteMetadataBrowserTest
@@ -1050,8 +1094,15 @@ IN_PROC_BROWSER_TEST_F(PageContentAnnotationsServiceBatchVisitNoAnnotateTest,
       0);
 }
 
+// TODO(crbug.com/512459314): Disabled on Windows due to flakiness.
+#if BUILDFLAG(IS_WIN)
+#define MAYBE_NoModelExecutionWithoutFullBatch \
+  DISABLED_NoModelExecutionWithoutFullBatch
+#else
+#define MAYBE_NoModelExecutionWithoutFullBatch NoModelExecutionWithoutFullBatch
+#endif
 IN_PROC_BROWSER_TEST_F(PageContentAnnotationsServiceBatchVisitTest,
-                       NoModelExecutionWithoutFullBatch) {
+                       MAYBE_NoModelExecutionWithoutFullBatch) {
   base::HistogramTester histogram_tester;
 
   GURL url(embedded_test_server()->GetURL("a.test", "/hello.html"));
@@ -1470,14 +1521,36 @@ IN_PROC_BROWSER_TEST_P(
 IN_PROC_BROWSER_TEST_P(
     PageContentAnnotationsServiceContentExtractionResponseCodeTest,
     SameDocument404Navigation) {
-  base::HistogramTester histogram_tester;
-  ukm::TestAutoSetUkmRecorder ukm_recorder;
-
   content::WebContents* web_contents =
       browser()->GetTabStripModel()->GetActiveWebContents();
   GURL initial_url(embedded_test_server()->GetURL("a.test", "/page404.html"));
-  content::NavigateToURLBlockUntilNavigationsComplete(web_contents, initial_url,
-                                                      1);
+  if (IsPageSettledMonitorEnabled()) {
+    // `/page404.html` has no body content, so the legacy FCP-based path never
+    // extracts the initial cross-document load, whereas `PageSettledMonitor`
+    // settles after its minimum wait and extracts it. Wait for the initial
+    // cross-document extraction to finish before recording metrics for the
+    // subsequent same-document navigation.
+    base::HistogramTester initial_histogram_tester;
+    ukm::TestAutoSetUkmRecorder initial_ukm_recorder;
+    base::test::TestFuture<void> initial_future;
+    initial_ukm_recorder.SetOnAddEntryCallback(
+        ukm::builders::OptimizationGuide_AnnotatedPageContent::kEntryName,
+        initial_future.GetRepeatingCallback());
+    content::NavigateToURLBlockUntilNavigationsComplete(web_contents,
+                                                        initial_url, 1);
+    ASSERT_TRUE(initial_future.Wait());
+    optimization_guide::RetryForHistogramUntilCountReached(
+        &initial_histogram_tester,
+        "OptimizationGuide.AnnotatedPageContent.ComputeMetricsLatency", 1);
+    optimization_guide::RetryForHistogramUntilCountReached(
+        &initial_histogram_tester, "OptimizationGuide.InnerText.TotalSize2", 1);
+  } else {
+    content::NavigateToURLBlockUntilNavigationsComplete(web_contents,
+                                                        initial_url, 1);
+  }
+
+  base::HistogramTester histogram_tester;
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
   GURL same_doc_url(
       embedded_test_server()->GetURL("a.test", "/page404.html#fragment"));
   content::NavigationHandleCommitObserver handle_observer(web_contents,
@@ -2166,8 +2239,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         ExtractionRequestType::kPDFText, 1);
     histogram_tester.ExpectUniqueSample(kPdfTextExtractionStatusHistogram,
                                         PdfTextExtractionStatus::kSuccess, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 1);
+    histogram_tester.ExpectUniqueSample(
+        kPdfTextTopLevelSizeLimitExceededHistogram, false, 1);
   } else {
     // Neither APC nor PDF text extraction is requested when feature is
     // disabled. Only the PDF page count is requested and recorded to UKM
@@ -2188,8 +2263,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         kPageContentExtractionRequestTypeHistogram,
         ExtractionRequestType::kPDFPageCount, 1);
     histogram_tester.ExpectTotalCount(kPdfTextExtractionStatusHistogram, 0);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 0);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 0);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 0);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 0);
+    histogram_tester.ExpectTotalCount(
+        kPdfTextTopLevelSizeLimitExceededHistogram, 0);
   }
 }
 
@@ -2241,8 +2318,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         ExtractionRequestType::kPDFText, 1);
     histogram_tester.ExpectUniqueSample(kPdfTextExtractionStatusHistogram,
                                         PdfTextExtractionStatus::kEmptyText, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 1);
+    histogram_tester.ExpectUniqueSample(
+        kPdfTextTopLevelSizeLimitExceededHistogram, false, 1);
   } else {
     // Neither APC nor PDF text extraction is requested when feature is
     // disabled. Only the PDF page count is requested and recorded to UKM
@@ -2263,8 +2342,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         kPageContentExtractionRequestTypeHistogram,
         ExtractionRequestType::kPDFPageCount, 1);
     histogram_tester.ExpectTotalCount(kPdfTextExtractionStatusHistogram, 0);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 0);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 0);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 0);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 0);
+    histogram_tester.ExpectTotalCount(
+        kPdfTextTopLevelSizeLimitExceededHistogram, 0);
   }
 }
 
@@ -2319,8 +2400,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         ExtractionRequestType::kPDFText, 1);
     histogram_tester.ExpectUniqueSample(kPdfTextExtractionStatusHistogram,
                                         PdfTextExtractionStatus::kSuccess, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 1);
+    histogram_tester.ExpectUniqueSample(
+        kPdfTextTopLevelSizeLimitExceededHistogram, false, 1);
   } else {
     // Neither APC nor PDF text extraction is requested when feature is
     // disabled. Only the PDF page count is requested and recorded to UKM
@@ -2341,8 +2424,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         kPageContentExtractionRequestTypeHistogram,
         ExtractionRequestType::kPDFPageCount, 1);
     histogram_tester.ExpectTotalCount(kPdfTextExtractionStatusHistogram, 0);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 0);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 0);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 0);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 0);
+    histogram_tester.ExpectTotalCount(
+        kPdfTextTopLevelSizeLimitExceededHistogram, 0);
   }
 }
 
@@ -2397,8 +2482,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         ExtractionRequestType::kPDFText, 1);
     histogram_tester.ExpectUniqueSample(kPdfTextExtractionStatusHistogram,
                                         PdfTextExtractionStatus::kSuccess, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 1);
+    histogram_tester.ExpectUniqueSample(
+        kPdfTextTopLevelSizeLimitExceededHistogram, true, 1);
   } else {
     // Neither APC nor PDF text extraction is requested when feature is
     // disabled. Only the PDF page count is requested and recorded to UKM
@@ -2419,8 +2506,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         kPageContentExtractionRequestTypeHistogram,
         ExtractionRequestType::kPDFPageCount, 1);
     histogram_tester.ExpectTotalCount(kPdfTextExtractionStatusHistogram, 0);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 0);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 0);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 0);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 0);
+    histogram_tester.ExpectTotalCount(
+        kPdfTextTopLevelSizeLimitExceededHistogram, 0);
   }
 }
 
@@ -2475,8 +2564,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         ExtractionRequestType::kPDFText, 1);
     histogram_tester.ExpectUniqueSample(kPdfTextExtractionStatusHistogram,
                                         PdfTextExtractionStatus::kSuccess, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 1);
+    histogram_tester.ExpectUniqueSample(
+        kPdfTextTopLevelSizeLimitExceededHistogram, true, 1);
   } else {
     // Neither APC nor PDF text extraction is requested when feature is
     // disabled. Only the PDF page count is requested and recorded to UKM
@@ -2497,8 +2588,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         kPageContentExtractionRequestTypeHistogram,
         ExtractionRequestType::kPDFPageCount, 1);
     histogram_tester.ExpectTotalCount(kPdfTextExtractionStatusHistogram, 0);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 0);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 0);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 0);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 0);
+    histogram_tester.ExpectTotalCount(
+        kPdfTextTopLevelSizeLimitExceededHistogram, 0);
   }
 }
 
@@ -2551,8 +2644,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
       EXPECT_TRUE(ukm_future.WaitAndClear());
 
       histogram_tester.ExpectTotalCount(kPdfTextExtractionStatusHistogram, 0);
-      histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 0);
-      histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 0);
+      histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 0);
+      histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 0);
+      histogram_tester.ExpectTotalCount(
+          kPdfTextTopLevelSizeLimitExceededHistogram, 0);
     }
   };
 
@@ -2567,8 +2662,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         ExtractionRequestType::kPDFText, 1);
     histogram_tester.ExpectUniqueSample(kPdfTextExtractionStatusHistogram,
                                         PdfTextExtractionStatus::kSuccess, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 1);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 1);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 1);
+    histogram_tester.ExpectUniqueSample(
+        kPdfTextTopLevelSizeLimitExceededHistogram, false, 1);
   } else {
     histogram_tester.ExpectUniqueSample(
         kPageContentExtractionRequestTypeHistogram,
@@ -2586,8 +2683,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
         ExtractionRequestType::kPDFText, 2);
     histogram_tester.ExpectUniqueSample(kPdfTextExtractionStatusHistogram,
                                         PdfTextExtractionStatus::kSuccess, 2);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 2);
-    histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 2);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 2);
+    histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 2);
+    histogram_tester.ExpectUniqueSample(
+        kPdfTextTopLevelSizeLimitExceededHistogram, false, 2);
   } else {
     histogram_tester.ExpectUniqueSample(
         kPageContentExtractionRequestTypeHistogram,
@@ -2654,8 +2753,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
   histogram_tester.ExpectTotalCount(kPageContentExtractionRequestTypeHistogram,
                                     0);
   histogram_tester.ExpectTotalCount(kPdfTextExtractionStatusHistogram, 0);
-  histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 0);
-  histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeLimitExceededHistogram,
+                                    0);
 }
 
 // Async getter does not support PDF documents, regardless of whether PDF text
@@ -2690,8 +2791,10 @@ IN_PROC_BROWSER_TEST_P(PageContentAnnotationsServiceContentExtractionPdfTest,
   histogram_tester.ExpectTotalCount(kPageContentExtractionRequestTypeHistogram,
                                     0);
   histogram_tester.ExpectTotalCount(kPdfTextExtractionStatusHistogram, 0);
-  histogram_tester.ExpectTotalCount(kPdfTextExtractionLatencyHistogram, 0);
-  histogram_tester.ExpectTotalCount(kPdfTextExtractionSizeHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeLimitExceededHistogram,
+                                    0);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -2707,13 +2810,20 @@ class PageContentAnnotationsServiceContentExtractionPdfHangingTest
   ~PageContentAnnotationsServiceContentExtractionPdfHangingTest() override =
       default;
 
+  // Use a very long timeout to prevent slow-running tests to trigger the time
+  // out callback.
+  virtual std::string GetPdfExtractionTimeout() const { return "100s"; }
+
   void InitializeFeatureList() override {
     // Setting a delay so that the extraction does not get triggered by
     // `AnnotatedPageContentRequest`. The extraction is triggered by directly
     // calling `FetchPageContext` after the required setup completes.
     std::vector<base::test::FeatureRefAndParams> enabled_features{
         {features::kAnnotatedPageContentExtraction,
-         {{"capture_delay", "10000s"}}}};
+         {{"capture_delay", "10000s"}}},
+        {kPageContextFetcherPdfExtraction,
+         {{"timeout", GetPdfExtractionTimeout()}}},
+        {kGlicEmbeddedPdfBytesExtraction, {}}};
     std::vector<base::test::FeatureRef> disabled_features;
 
     if (IsPDFTextExtractionEnabled()) {
@@ -2727,56 +2837,57 @@ class PageContentAnnotationsServiceContentExtractionPdfHangingTest
     }
 
     AddPageSettledMonitorFeatureState(IsPageSettledMonitorEnabled(),
-                                      enabled_features, disabled_features);
+                                      enabled_features, disabled_features,
+                                      /*capture_delay=*/"10000s");
 
     scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features,
                                                        disabled_features);
   }
+
+  void SetUpTopLevelPdfWithHangingListener(
+      content::WebContents* web_contents,
+      HangingPdfListener& hanging_listener) {
+    ui_test_utils::NavigateToURLBlockUntilNavigationsComplete(
+        browser(), embedded_test_server()->GetURL("/pdf/test.pdf"),
+        /*number_of_navigations=*/1);
+    ASSERT_TRUE(pdf_extension_test_util::EnsurePDFHasLoaded(web_contents));
+
+    pdf::PDFDocumentHelper* pdf_helper =
+        pdf::PDFDocumentHelper::MaybeGetForWebContents(*web_contents);
+    ASSERT_TRUE(pdf_helper);
+
+    pdf_helper->SetListener(hanging_listener.BindNewPipeAndPassRemote());
+    pdf_helper->OnDocumentLoadComplete();
+  }
 };
 
-// Simulate that a PDF extraction hangs and the WebContents goes away. The
-// `PageContextFetcher` should be destroyed without causing memory leak. This is
-// done by making sure the `FetchPageContextResultCallback` is run in this case.
-// This callback is stored as a member of `PageContextFetcher`. The callback
-// also holds a unique_ptr to `PageContextFetcher` itself, creating a circular
-// reference. There will be a memory leak if WebContents goes away but the
-// callback is never run, which makes `PageContextFetcher` unable to be
-// destroyed.
+// Simulate that a PDF extraction hangs and the WebContents goes away. When
+// the WebContents is destroyed during a hanging PDF extraction, frame tree
+// teardown disconnects the Mojo pipe to PDFium and `PageContextFetcher`
+// resolves `FetchPageContextResultCallback` with
+// `FetchPageContextError::kWebContentsWentAway`.
 IN_PROC_BROWSER_TEST_P(
     PageContentAnnotationsServiceContentExtractionPdfHangingTest,
     PDFExtractionNotCompleteWebContentsWentAway) {
   content::WebContents* web_contents =
       browser()->GetTabStripModel()->GetActiveWebContents();
 
-  // Navigate to a PDF document.
-  ui_test_utils::NavigateToURLBlockUntilNavigationsComplete(
-      browser(), embedded_test_server()->GetURL("/pdf/test.pdf"),
-      /*number_of_navigations=*/1);
-
-  // Wait for PDFDocumentHelper creation.
-  pdf::PDFDocumentHelper* pdf_helper;
-  ASSERT_TRUE(base::test::RunUntil([&pdf_helper, &web_contents]() {
-    pdf_helper = pdf::PDFDocumentHelper::MaybeGetForWebContents(*web_contents);
-    return pdf_helper != nullptr;
-  }));
-
-  // Bind the hanging PDF Listener to simulate PDF text and bytes extraction
-  // taking forever.
   HangingPdfListener hanging_listener;
-  mojo::Receiver<pdf::mojom::PdfListener> receiver(&hanging_listener);
-  pdf_helper->SetListener(receiver.BindNewPipeAndPassRemote());
-
-  // Notify the PDF document load complete.
-  pdf_helper->OnDocumentLoadComplete();
+  ASSERT_NO_FATAL_FAILURE(
+      SetUpTopLevelPdfWithHangingListener(web_contents, hanging_listener));
 
   // Manually trigger FetchPageContext.
   FetchPageContextOptions options;
   options.pdf_options.emplace(IsPDFTextExtractionEnabled()
                                   ? PdfOptions::Format::kText
                                   : PdfOptions::Format::kBytes,
-                              1024);
+                              /*size_limit=*/1024);
   base::test::TestFuture<FetchPageContextResultCallbackArg> future;
-  FetchPageContext(*web_contents, options, nullptr, future.GetCallback());
+  FetchPageContext(*web_contents, options, /*progress_listener=*/nullptr,
+                   future.GetCallback());
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return hanging_listener.HasPendingRequest(); }));
 
   // Close the tab to simulate the web content going away.
   browser()->GetTabStripModel()->CloseWebContentsAt(0,
@@ -2790,11 +2901,227 @@ IN_PROC_BROWSER_TEST_P(
             FetchPageContextError::kWebContentsWentAway);
 }
 
+// Simulate that the IPC pipe to PDFium disconnects should conclude the
+// extraction with a null PDF result.
+IN_PROC_BROWSER_TEST_P(
+    PageContentAnnotationsServiceContentExtractionPdfHangingTest,
+    PDFExtractionDisconnect) {
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+
+  HangingPdfListener hanging_listener;
+  ASSERT_NO_FATAL_FAILURE(
+      SetUpTopLevelPdfWithHangingListener(web_contents, hanging_listener));
+
+  FetchPageContextOptions options;
+  options.annotated_page_content_options =
+      blink::mojom::AIPageContentOptions::New();
+  options.pdf_options.emplace(IsPDFTextExtractionEnabled()
+                                  ? PdfOptions::Format::kText
+                                  : PdfOptions::Format::kBytes,
+                              /*size_limit=*/1024);
+  base::test::TestFuture<FetchPageContextResultCallbackArg> future;
+  FetchPageContext(*web_contents, options, /*progress_listener=*/nullptr,
+                   future.GetCallback());
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return hanging_listener.HasPendingRequest(); }));
+
+  // Disconnect the Mojo receiver to simulate PDFium IPC pipe disconnection.
+  hanging_listener.Disconnect();
+
+  FetchPageContextResultCallbackArg result = future.Take();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE((*result)->pdf_result.has_value());
+  EXPECT_TRUE((*result)->annotated_page_content_result.has_value());
+}
+
+// Simulate that an embedded PDF navigating away in the middle of the extraction
+// should conclude the extraction with a null PDF result.
+IN_PROC_BROWSER_TEST_P(
+    PageContentAnnotationsServiceContentExtractionPdfHangingTest,
+    EmbeddedPDFExtractionIframeNavigates) {
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+
+  ui_test_utils::NavigateToURLBlockUntilNavigationsComplete(
+      browser(), embedded_test_server()->GetURL("/iframe.html"),
+      /*number_of_navigations=*/1);
+  ASSERT_TRUE(content::NavigateIframeToURL(
+      web_contents, /*iframe_id=*/"test",
+      embedded_test_server()->GetURL("/pdf/test.pdf")));
+
+  content::RenderFrameHost* pdf_frame =
+      content::ChildFrameAt(web_contents->GetPrimaryMainFrame(), 0);
+  ASSERT_TRUE(pdf_frame);
+  ASSERT_TRUE(pdf_extension_test_util::EnsurePDFHasLoaded(pdf_frame));
+
+  pdf::PDFDocumentHelper* pdf_helper =
+      pdf::PDFDocumentHelper::MaybeGetForWebContents(*web_contents);
+  ASSERT_TRUE(pdf_helper);
+
+  HangingPdfListener hanging_listener;
+  pdf_helper->SetListener(hanging_listener.BindNewPipeAndPassRemote());
+  pdf_helper->OnDocumentLoadComplete();
+
+  FetchPageContextOptions options;
+  options.inner_text_bytes_limit = 1024;
+  options.pdf_options.emplace(PdfOptions::Format::kBytes, /*size_limit=*/1024);
+  base::test::TestFuture<FetchPageContextResultCallbackArg> future;
+  FetchPageContext(*web_contents, options, /*progress_listener=*/nullptr,
+                   future.GetCallback());
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return hanging_listener.HasPendingRequest(); }));
+
+  // Navigate the iframe hosting the embedded PDF away while extraction hangs.
+  ASSERT_TRUE(content::NavigateIframeToURL(
+      web_contents, /*iframe_id=*/"test",
+      embedded_test_server()->GetURL("/title1.html")));
+
+  // The extraction result is valid with a null PDF result.
+  FetchPageContextResultCallbackArg result = future.Take();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE((*result)->pdf_result.has_value());
+  EXPECT_TRUE((*result)->inner_text_result.has_value());
+}
+
 INSTANTIATE_TEST_SUITE_P(
     All,
     PageContentAnnotationsServiceContentExtractionPdfHangingTest,
     ::testing::Combine(::testing::Bool(), ::testing::Bool()),
     &PageContentAnnotationsServiceContentExtractionPdfHangingTest::
         DescribeParams);
+
+class PageContentAnnotationsServiceContentExtractionPdfTimeoutTest
+    : public PageContentAnnotationsServiceContentExtractionPdfHangingTest {
+ public:
+  PageContentAnnotationsServiceContentExtractionPdfTimeoutTest() = default;
+  ~PageContentAnnotationsServiceContentExtractionPdfTimeoutTest() override =
+      default;
+
+  // Use a small timeout to trigger the timeout behavior.
+  std::string GetPdfExtractionTimeout() const override { return "100ms"; }
+};
+
+// Simulate that a PDF extraction hits the timeout should conclude the
+// extraction with a null PDF result.
+IN_PROC_BROWSER_TEST_P(
+    PageContentAnnotationsServiceContentExtractionPdfTimeoutTest,
+    PDFExtractionTimeout) {
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+
+  HangingPdfListener hanging_listener;
+  ASSERT_NO_FATAL_FAILURE(
+      SetUpTopLevelPdfWithHangingListener(web_contents, hanging_listener));
+
+  base::HistogramTester histogram_tester;
+  FetchPageContextOptions options;
+  options.pdf_options.emplace(IsPDFTextExtractionEnabled()
+                                  ? PdfOptions::Format::kText
+                                  : PdfOptions::Format::kBytes,
+                              /*size_limit=*/1024);
+  base::test::TestFuture<FetchPageContextResultCallbackArg> future;
+  FetchPageContext(*web_contents, options, /*progress_listener=*/nullptr,
+                   future.GetCallback());
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return hanging_listener.HasPendingRequest(); }));
+
+  // Wait for the PDF extraction timeout to fire.
+  FetchPageContextResultCallbackArg result = future.Take();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_FALSE((*result)->pdf_result.has_value());
+
+  // Late responses arriving after timeout should be ignored.
+  // Note: The late responses are ignored because `PageContextFetcher` is
+  // destroyed by `PageContextFetcherManager` immediately after the fetch
+  // completes. In `page_context_fetcher_unittest.cc`, there are tests that
+  // exercise that the late responses actually arrive, and the `pdf_done_` check
+  // at the beginning of the response callback handles this correctly.
+  hanging_listener.RespondToPendingRequests();
+
+  histogram_tester.ExpectTotalCount(kPdfBytesTopLevelLatencyHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfBytesTopLevelSizeHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfBytesTopLevelSizeLimitExceededHistogram,
+                                    0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextExtractionStatusHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeLimitExceededHistogram,
+                                    0);
+  histogram_tester.ExpectTotalCount("Glic.PageContextFetcher.Total", 1);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    PageContentAnnotationsServiceContentExtractionPdfTimeoutTest,
+    ::testing::Combine(::testing::Bool(), ::testing::Bool()),
+    &PageContentAnnotationsServiceContentExtractionPdfTimeoutTest::
+        DescribeParams);
+
+class PageContentAnnotationsServiceContentExtractionEmbeddedPdfTest
+    : public PageContentAnnotationsServiceContentExtractionPdfTest {
+ public:
+  PageContentAnnotationsServiceContentExtractionEmbeddedPdfTest() = default;
+  ~PageContentAnnotationsServiceContentExtractionEmbeddedPdfTest() override =
+      default;
+
+  void InitializeFeatureList() override {
+    PageContentAnnotationsServiceContentExtractionPdfTest::
+        InitializeFeatureList();
+    embedded_pdf_bytes_extraction_.InitAndEnableFeature(
+        kGlicEmbeddedPdfBytesExtraction);
+  }
+
+ private:
+  base::test::ScopedFeatureList embedded_pdf_bytes_extraction_;
+};
+
+// Feature `kGlicEmbeddedPdfBytesExtraction` does not affect PDF text
+// extraction. PDF text extraction is still restricted to top-level PDF only,
+// even if the feature is enabled.
+IN_PROC_BROWSER_TEST_P(
+    PageContentAnnotationsServiceContentExtractionEmbeddedPdfTest,
+    PDFTextExtractionDoesNotSupportEmbeddedPDF) {
+  base::HistogramTester histogram_tester;
+
+  // Set up the observer for page content extraction.
+  FakeExtractionServiceObserver observer;
+  auto* service = PageContentExtractionServiceFactory::GetForProfile(
+      browser()->GetProfile());
+  observer.Observe(service);
+
+  // Navigate to a page that embeds a PDF.
+  ui_test_utils::NavigateToURLBlockUntilNavigationsComplete(
+      browser(), embedded_test_server()->GetURL("/pdf/two_embedded_pdfs.html"),
+      /*number_of_navigations=*/1);
+
+  // Text extraction does not support embedded PDF. The PDF text extraction is
+  // never attempted. The request for PDF text is not created because the page
+  // fails the MIME type being `application/pdf` check. Instead, a request for
+  // `AnnotatedPageContent` is made.
+  observer.Wait();
+  const PageContent& page_content = observer.page_content_future_.Get();
+  RefCountedAnnotatedPageContentPtr annotated_page_content_ptr =
+      GetAnnotatedPageContentPtrFromPageContent(page_content);
+  ASSERT_TRUE(annotated_page_content_ptr);
+
+  histogram_tester.ExpectUniqueSample(
+      kPageContentExtractionRequestTypeHistogram,
+      ExtractionRequestType::kAnnotatedPageContent, 1);
+  histogram_tester.ExpectTotalCount(kPdfTextExtractionStatusHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelLatencyHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeHistogram, 0);
+  histogram_tester.ExpectTotalCount(kPdfTextTopLevelSizeLimitExceededHistogram,
+                                    0);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    PageContentAnnotationsServiceContentExtractionEmbeddedPdfTest,
+    ::testing::Combine(::testing::Bool(), ::testing::Bool()),
+    &PageContentAnnotationsServiceContentExtractionPdfTest::DescribeParams);
 
 }  // namespace page_content_annotations

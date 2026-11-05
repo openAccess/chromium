@@ -4,8 +4,12 @@
 
 #include "third_party/blink/renderer/core/html/canvas/predefined_color_space.h"
 
+#include <cmath>
+
 #include "third_party/blink/renderer/bindings/core/v8/v8_canvas_high_dynamic_range_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_canvas_smpte_st_2086_metadata.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_canvas_tone_mapping.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_canvas_tone_mapping_mode.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_predefined_color_space.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
@@ -90,6 +94,9 @@ V8PredefinedColorSpace PredefinedColorSpaceToV8(
   }
 }
 
+// TODO(https://crbug.com/448552449): Remove ParseCanvasHighDynamicRangeOptions.
+// The experimental HTMLCanvasElement-level HDR API will be removed once its
+// replacements are added.
 void ParseCanvasHighDynamicRangeOptions(
     const CanvasHighDynamicRangeOptions* options,
     gfx::HDRMetadata& hdr_metadata) {
@@ -102,11 +109,8 @@ void ParseCanvasHighDynamicRangeOptions(
       case V8CanvasHighDynamicRangeMode::Enum::kDefault:
         break;
       case V8CanvasHighDynamicRangeMode::Enum::kExtended:
-        hdr_metadata.extended_range.emplace(
-            /*current_headroom=*/gfx::HdrMetadataExtendedRange::
-                kDefaultHdrHeadroom,
-            /*desired_headroom=*/gfx::HdrMetadataExtendedRange::
-                kDefaultHdrHeadroom);
+        hdr_metadata.SetExtendedRangeWithHeadroom(
+            std::log2(gfx::HDRMetadata::kDefaultHdrHeadroom));
         break;
     }
   }
@@ -128,12 +132,40 @@ void ParseCanvasHighDynamicRangeOptions(
         .fMinimumDisplayMasteringLuminance = v8_metadata->minimumLuminance(),
     });
   }
-  if (gfx::HdrMetadataAgtm::IsEnabled()) {
-    if (options->hasAgtm()) {
-      auto span = options->agtm().RawByteSpan();
-      hdr_metadata.SetSerializedAgtm(span);
+  if (options->hasAgtm()) {
+    auto span = options->agtm().RawByteSpan();
+    hdr_metadata.SetSerializedAgtm(span);
+  }
+}
+
+void ParseCanvasToneMapping(const CanvasToneMapping* tone_mapping,
+                            gfx::HDRMetadata& hdr_metadata) {
+  hdr_metadata = gfx::HDRMetadata();
+  if (!tone_mapping) {
+    return;
+  }
+  if (tone_mapping->hasMode()) {
+    switch (tone_mapping->mode().AsEnum()) {
+      case V8CanvasToneMappingMode::Enum::kStandard:
+        break;
+      case V8CanvasToneMappingMode::Enum::kExtended:
+        hdr_metadata.SetExtendedRangeWithHeadroom(
+            std::log2(gfx::HDRMetadata::kDefaultHdrHeadroom));
+        break;
     }
   }
+}
+
+CanvasToneMapping* CanvasToneMappingToV8(const gfx::HDRMetadata& hdr_metadata) {
+  CanvasToneMapping* tone_mapping = CanvasToneMapping::Create();
+  // `extended` is the only supported non-`standard` mode, so report it for any
+  // AGTM metadata. Update this when more modes are added.
+  if (hdr_metadata.HasAgtm()) {
+    tone_mapping->setMode(V8CanvasToneMappingMode::Enum::kExtended);
+  } else {
+    tone_mapping->setMode(V8CanvasToneMappingMode::Enum::kStandard);
+  }
+  return tone_mapping;
 }
 
 }  // namespace blink

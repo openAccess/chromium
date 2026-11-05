@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_UI_INSECURE_CREDENTIALS_MANAGER_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_UI_INSECURE_CREDENTIALS_MANAGER_H_
 
+#include <utility>
 #include <vector>
 
 #include "base/containers/flat_set.h"
@@ -16,11 +17,12 @@
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "base/scoped_observation.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
-#include "base/timer/elapsed_timer.h"
 #include "base/types/strong_alias.h"
 #include "components/password_manager/core/browser/ui/credential_utils.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace password_manager {
 
@@ -43,6 +45,11 @@ class InsecureCredentialsManager : public SavedPasswordsPresenter::Observer {
    public:
     virtual void OnInsecureCredentialsChanged() = 0;
   };
+
+  // The result of a weak or reuse check, together with how long the check
+  // itself took to run (excluding any time spent queued on the task runner).
+  using TimedCheckResult =
+      std::pair<base::TimeDelta, absl::flat_hash_set<PasswordString>>;
 
   explicit InsecureCredentialsManager(SavedPasswordsPresenter* presenter);
   ~InsecureCredentialsManager() override;
@@ -79,14 +86,13 @@ class InsecureCredentialsManager : public SavedPasswordsPresenter::Observer {
  private:
   // Updates |weak_passwords| set and notifies observers that weak credentials
   // were changed.
-  void OnWeakCheckDone(base::ElapsedTimer timer_since_weak_check_start,
-                       base::flat_set<std::u16string> weak_passwords);
-  void OnPartialWeakCheckDone(base::flat_set<std::u16string> weak_passwords);
+  void OnWeakCheckDone(TimedCheckResult result);
+  void OnPartialWeakCheckDone(
+      absl::flat_hash_set<PasswordString> weak_passwords);
 
   // Updates |reused_passwords| set and notifies observers that insecure
   // credentials were changed.
-  void OnReuseCheckDone(base::ElapsedTimer timer_since_reuse_check_start,
-                        base::flat_set<std::u16string> reused_passwords);
+  void OnReuseCheckDone(TimedCheckResult result);
 
   // SavedPasswordsPresenter::Observer:
   void OnSavedPasswordsChanged(const PasswordStoreChangeList& changes) override;
@@ -99,10 +105,19 @@ class InsecureCredentialsManager : public SavedPasswordsPresenter::Observer {
   raw_ptr<SavedPasswordsPresenter> presenter_ = nullptr;
 
   // Cache of the most recently obtained weak passwords.
-  base::flat_set<std::u16string> weak_passwords_;
+  absl::flat_hash_set<PasswordString> weak_passwords_;
 
   // Cache of the most recently obtained reused passwords.
-  base::flat_set<std::u16string> reused_passwords_;
+  absl::flat_hash_set<PasswordString> reused_passwords_;
+
+  // Task runner used for all weak and reuse checks. It is sequenced so that
+  // the replies that update `weak_passwords_` and `reused_passwords_` arrive
+  // in the order in which the checks were started. Otherwise a check started
+  // earlier (over an older snapshot of the saved passwords) could complete
+  // after a later one and overwrite the caches with stale data. Likewise, a
+  // full weak check and a partial weak check for changed passwords could
+  // otherwise race and clobber each other's results.
+  const scoped_refptr<base::SequencedTaskRunner> check_task_runner_;
 
   // A scoped observer for |presenter_|.
   base::ScopedObservation<SavedPasswordsPresenter,

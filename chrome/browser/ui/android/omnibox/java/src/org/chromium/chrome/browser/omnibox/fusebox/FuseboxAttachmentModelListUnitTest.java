@@ -12,15 +12,14 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
-import android.content.res.Resources;
 import android.os.SystemClock;
 
 import org.junit.Before;
@@ -30,25 +29,28 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 
-import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxAttachmentRecyclerViewAdapter.FuseboxAttachmentType;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.FuseboxAttachmentButtonType;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.FuseboxTabAttachStartFailureReason;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.utilities.TabLoadingService;
 import org.chromium.components.contextual_search.ContextUploadErrorType;
 import org.chromium.components.contextual_search.ContextUploadStatus;
-import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.content_public.browser.RenderWidgetHostView;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.modelutil.ListObservable.ListObserver;
 
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @RunWith(BaseRobolectricTestRunner.class)
 public class FuseboxAttachmentModelListUnitTest {
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private ComposeboxQueryControllerBridge mComposeboxQueryControllerBridge;
     @Mock private FuseboxAttachmentModelList.FuseboxAttachmentChangeListener mListener;
@@ -56,8 +58,9 @@ public class FuseboxAttachmentModelListUnitTest {
     @Mock private Runnable mAttachmentUploadFailedListener;
     @Mock private WebContents mWebContents;
     @Mock private RenderWidgetHostView mRenderWidgetHostView;
+    @Mock private TabLoadingService mTabLoadingService;
+    @Mock private ListObserver<Void> mListObserver;
 
-    private Resources mResources;
     private FuseboxAttachmentModelList mFuseboxAttachmentModelList;
 
     private FuseboxAttachment createTestAttachment(String title) {
@@ -72,13 +75,12 @@ public class FuseboxAttachmentModelListUnitTest {
 
     @Before
     public void setUp() {
-        OmniboxFeatures.sMultiattachmentFusebox.setForTesting(true);
+        TabLoadingService.setInstanceForTesting(mTabLoadingService);
         mFuseboxAttachmentModelList = new FuseboxAttachmentModelList();
         mFuseboxAttachmentModelList.setComposeboxQueryControllerBridge(
                 mComposeboxQueryControllerBridge);
         verify(mComposeboxQueryControllerBridge)
                 .setContextUploadObserver(mFuseboxAttachmentModelList);
-        mResources = ContextUtils.getApplicationContext().getResources();
         mFuseboxAttachmentModelList.addAttachmentChangeListener(mListener);
         mFuseboxAttachmentModelList.setAttachmentUploadFailedListener(
                 mAttachmentUploadFailedListener);
@@ -88,18 +90,38 @@ public class FuseboxAttachmentModelListUnitTest {
         return FuseboxAttachment.forTab(
                 tab,
                 /* bypassTabCache= */ false,
-                mResources,
                 FuseboxAttachmentButtonType.TAB_PICKER,
                 /* isSuggestedTab= */ false);
     }
 
     private FuseboxAttachment createTabAttachment(int tabId, String token) {
+        return createTabAttachment(
+                tabId, token, FuseboxAttachmentButtonType.TAB_PICKER, /* isSuggestedTab= */ false);
+    }
+
+    private FuseboxAttachment createSuggestedTabAttachment(int tabId, String token) {
+        return createTabAttachment(
+                tabId,
+                token,
+                FuseboxAttachmentButtonType.SUGGESTED_TAB,
+                /* isSuggestedTab= */ true);
+    }
+
+    /**
+     * Creates a tab attachment for a distinct inactive tab whose cached-context lookup yields
+     * token.
+     */
+    private FuseboxAttachment createTabAttachment(
+            int tabId,
+            String token,
+            @FuseboxAttachmentButtonType int buttonType,
+            boolean isSuggestedTab) {
         Tab tab = mock(Tab.class);
         when(tab.getId()).thenReturn(tabId);
-        var attachment = createTabAttachment(tab);
-        when(mComposeboxQueryControllerBridge.addTabContextFromCache(tabId, false))
+        when(mComposeboxQueryControllerBridge.addTabContextFromCache(tabId, isSuggestedTab))
                 .thenReturn(token);
-        return attachment;
+        return FuseboxAttachment.forTab(
+                tab, /* bypassTabCache= */ false, buttonType, isSuggestedTab);
     }
 
     @Test
@@ -143,11 +165,17 @@ public class FuseboxAttachmentModelListUnitTest {
     public void testAdd_withInvalidToken_notifiesUploadFailed() {
         when(mComposeboxQueryControllerBridge.addFile(anyString(), anyString(), any()))
                 .thenReturn(null);
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords(
+                                FuseboxMetrics.TAB_ATTACHMENT_START_FAILURE_REASON_HISTOGRAM)
+                        .build();
 
         FuseboxAttachment attachment = createTestAttachment("test");
         mFuseboxAttachmentModelList.add(attachment);
 
         verify(mAttachmentUploadFailedListener).run();
+        watcher.assertExpected();
     }
 
     @Test
@@ -455,7 +483,7 @@ public class FuseboxAttachmentModelListUnitTest {
     public void testMaxAttachments() {
         when(mComposeboxQueryControllerBridge.addFile(anyString(), anyString(), any()))
                 .thenReturn("pretokenized-token", "uploaded-token");
-        for (int i = 0; i < FuseboxAttachmentModelList.getMaxAttachments(); i++) {
+        for (int i = 0; i < FuseboxAttachmentModelList.MAX_ATTACHMENTS; i++) {
             FuseboxAttachment attachment = createTestAttachment("pretokenized");
             assertTrue(mFuseboxAttachmentModelList.add(attachment));
         }
@@ -502,7 +530,8 @@ public class FuseboxAttachmentModelListUnitTest {
         doReturn(false).when(mTab).isFrozen();
         doReturn(mWebContents).when(mTab).getWebContents();
         doReturn(mRenderWidgetHostView).when(mWebContents).getRenderWidgetHostView();
-        when(mComposeboxQueryControllerBridge.addTabContext(mTab, false)).thenReturn("token");
+        when(mComposeboxQueryControllerBridge.addTabContext(mTab, /* isSuggestedTab= */ false))
+                .thenReturn("token");
 
         FuseboxAttachment tabAttachment = createTabAttachment(mTab);
         mFuseboxAttachmentModelList.add(tabAttachment);
@@ -518,7 +547,8 @@ public class FuseboxAttachmentModelListUnitTest {
         doReturn(true).when(mTab).isIncognitoBranded();
         doReturn(mWebContents).when(mTab).getWebContents();
         doReturn(mRenderWidgetHostView).when(mWebContents).getRenderWidgetHostView();
-        when(mComposeboxQueryControllerBridge.addTabContext(mTab, false)).thenReturn("token");
+        when(mComposeboxQueryControllerBridge.addTabContext(mTab, /* isSuggestedTab= */ false))
+                .thenReturn("token");
 
         FuseboxAttachment tabAttachment = createTabAttachment(mTab);
         mFuseboxAttachmentModelList.add(tabAttachment);
@@ -533,8 +563,11 @@ public class FuseboxAttachmentModelListUnitTest {
         doReturn(false).when(mTab).isFrozen();
         doReturn(mWebContents).when(mTab).getWebContents();
         doReturn(mRenderWidgetHostView).when(mWebContents).getRenderWidgetHostView();
-        when(mComposeboxQueryControllerBridge.addTabContext(mTab, false)).thenReturn("token2");
-        when(mComposeboxQueryControllerBridge.addTabContextFromCache(1, false)).thenReturn("");
+        when(mComposeboxQueryControllerBridge.addTabContext(mTab, /* isSuggestedTab= */ false))
+                .thenReturn("token2");
+        when(mComposeboxQueryControllerBridge.addTabContextFromCache(
+                        1, /* isSuggestedTab= */ false))
+                .thenReturn("");
 
         FuseboxAttachment tabAttachment = createTabAttachment(mTab);
         mFuseboxAttachmentModelList.add(tabAttachment);
@@ -548,13 +581,16 @@ public class FuseboxAttachmentModelListUnitTest {
         doReturn(false).when(mTab).isFrozen();
         doReturn(mWebContents).when(mTab).getWebContents();
         doReturn(mRenderWidgetHostView).when(mWebContents).getRenderWidgetHostView();
-        when(mComposeboxQueryControllerBridge.addTabContextFromCache(1, false)).thenReturn("token");
+        when(mComposeboxQueryControllerBridge.addTabContextFromCache(
+                        1, /* isSuggestedTab= */ false))
+                .thenReturn("token");
 
         FuseboxAttachment tabAttachment = createTabAttachment(mTab);
         mFuseboxAttachmentModelList.add(tabAttachment);
         assertEquals("token", tabAttachment.getToken());
 
-        when(mComposeboxQueryControllerBridge.addTabContext(mTab, false)).thenReturn("token2");
+        when(mComposeboxQueryControllerBridge.addTabContext(mTab, /* isSuggestedTab= */ false))
+                .thenReturn("token2");
         mFuseboxAttachmentModelList.onContextUploadStatusChanged(
                 "token", ContextUploadStatus.VALIDATION_FAILED, ContextUploadErrorType.UNKNOWN);
         assertEquals("token2", tabAttachment.getToken());
@@ -629,8 +665,8 @@ public class FuseboxAttachmentModelListUnitTest {
 
         // Add an attachment before starting the batch edit.
         mFuseboxAttachmentModelList.add(attachment1);
-        // Reset the listener to ignore the notification from the previous add.
-        reset(mListener);
+        // Clear invocations on listener to ignore the notification from the previous add.
+        clearInvocations(mListener);
 
         try (var token = mFuseboxAttachmentModelList.beginBatchEdit()) {
             mFuseboxAttachmentModelList.add(attachment2);
@@ -711,7 +747,9 @@ public class FuseboxAttachmentModelListUnitTest {
         doReturn(true).when(mTab).isInitialized();
         doReturn(false).when(mTab).isFrozen();
         doReturn(null).when(mTab).getWebContents();
-        when(mComposeboxQueryControllerBridge.addTabContextFromCache(1, false)).thenReturn("token");
+        when(mComposeboxQueryControllerBridge.addTabContextFromCache(
+                        1, /* isSuggestedTab= */ false))
+                .thenReturn("token");
         FuseboxAttachment tabAttachment = createTabAttachment(mTab);
         mFuseboxAttachmentModelList.add(tabAttachment);
 
@@ -720,5 +758,297 @@ public class FuseboxAttachmentModelListUnitTest {
 
         assertTrue(mFuseboxAttachmentModelList.isEmpty());
         verify(mComposeboxQueryControllerBridge).removeAttachment("token");
+    }
+
+    private FuseboxAttachment addTabPickerAttachment(int tabId, String token, long loadDurationMs) {
+        FuseboxAttachment attachment = createTabAttachment(tabId, token);
+        mFuseboxAttachmentModelList.add(attachment);
+        when(mTabLoadingService.getAndClearLoadDuration(tabId)).thenReturn(loadDurationMs);
+        return attachment;
+    }
+
+    private void notifyUploadSuccessful(String token) {
+        mFuseboxAttachmentModelList.onContextUploadStatusChanged(
+                token, ContextUploadStatus.UPLOAD_SUCCESSFUL, ContextUploadErrorType.UNKNOWN);
+    }
+
+    private HistogramWatcher newEffectiveDurationWatcher(
+            String recordedSuffix, String skippedSuffix) {
+        return HistogramWatcher.newBuilder()
+                .expectAnyRecord(
+                        FuseboxMetrics.TAB_ATTACHMENT_EFFECTIVE_DURATION_HISTOGRAM + recordedSuffix)
+                .expectNoRecords(
+                        FuseboxMetrics.TAB_ATTACHMENT_EFFECTIVE_DURATION_HISTOGRAM + skippedSuffix)
+                .build();
+    }
+
+    @Test
+    public void testOnContextUploadStatusChanged_tabPickerAttachment_recordsEffectiveDuration() {
+        addTabPickerAttachment(/* tabId= */ 1, "tab-token-1", /* loadDurationMs= */ 500L);
+        var watcher = newEffectiveDurationWatcher(".SingleTab", ".MultipleTabs");
+
+        notifyUploadSuccessful("tab-token-1");
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testOnContextUploadStatusChanged_multiTabSelection_recordsMultipleTabsDuration() {
+        addTabPickerAttachment(/* tabId= */ 2, "tab-token-2", /* loadDurationMs= */ 1000L)
+                .setIsPartOfMultiTabSelection(true);
+        var watcher = newEffectiveDurationWatcher(".MultipleTabs", ".SingleTab");
+
+        notifyUploadSuccessful("tab-token-2");
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testOnContextUploadStatusChanged_warmTab_recordsEffectiveDuration() {
+        addTabPickerAttachment(/* tabId= */ 1, "tab-token-warm", /* loadDurationMs= */ 0L);
+        var watcher = newEffectiveDurationWatcher(".SingleTab", ".MultipleTabs");
+
+        notifyUploadSuccessful("tab-token-warm");
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testAdd_limitReached_recordsAttachmentLimitReached() {
+        when(mComposeboxQueryControllerBridge.addFile(anyString(), anyString(), any()))
+                .thenReturn("token-file");
+        for (int i = 0; i < FuseboxAttachmentModelList.MAX_ATTACHMENTS; i++) {
+            mFuseboxAttachmentModelList.add(createTestAttachment("file" + i));
+        }
+
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                FuseboxMetrics.TAB_ATTACHMENT_START_FAILURE_REASON_HISTOGRAM,
+                                FuseboxTabAttachStartFailureReason.ATTACHMENT_LIMIT_REACHED)
+                        .expectIntRecord(
+                                FuseboxMetrics.TAB_ATTACHMENT_START_FAILURE_REASON_HISTOGRAM
+                                        + ".TabPicker",
+                                FuseboxTabAttachStartFailureReason.ATTACHMENT_LIMIT_REACHED)
+                        .build();
+
+        assertFalse(mFuseboxAttachmentModelList.add(createTabAttachment(mTab)));
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testAdd_nullBridge_recordsSessionUnavailable() {
+        mFuseboxAttachmentModelList.setComposeboxQueryControllerBridge(null);
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                FuseboxMetrics.TAB_ATTACHMENT_START_FAILURE_REASON_HISTOGRAM,
+                                FuseboxTabAttachStartFailureReason.SESSION_UNAVAILABLE)
+                        .build();
+
+        assertFalse(mFuseboxAttachmentModelList.add(createTabAttachment(mTab)));
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testAdd_tabUploadRejected_recordsStartFailureReason() {
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                FuseboxMetrics.TAB_ATTACHMENT_START_FAILURE_REASON_HISTOGRAM,
+                                FuseboxTabAttachStartFailureReason.CACHE_UNAVAILABLE_TAB_NOT_LIVE)
+                        .build();
+
+        assertFalse(
+                mFuseboxAttachmentModelList.add(
+                        createTabAttachment(/* tabId= */ 1, /* token= */ null)));
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testOnContextUploadStatusChanged_uploadExpiredAfterSuccess_doesNotRecordFailed() {
+        addTabPickerAttachment(/* tabId= */ 1, "tab-token-1", /* loadDurationMs= */ 0L);
+        notifyUploadSuccessful("tab-token-1");
+
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Omnibox.MobileFusebox.AttachmentFailed")
+                        .expectNoRecords("Omnibox.MobileFusebox.AttachmentAbandoned")
+                        .build();
+
+        mFuseboxAttachmentModelList.onContextUploadStatusChanged(
+                "tab-token-1", ContextUploadStatus.UPLOAD_EXPIRED, ContextUploadErrorType.UNKNOWN);
+        watcher.assertExpected();
+        assertTrue(mFuseboxAttachmentModelList.isEmpty());
+    }
+
+    @Test
+    public void testOnContextUploadStatusChanged_retryAfterExpiry_doesNotRecordSucceededAgain() {
+        addActiveTabUploadedFromCache();
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Omnibox.MobileFusebox.AttachmentSucceeded")
+                        .expectNoRecords(
+                                FuseboxMetrics.TAB_ATTACHMENT_EFFECTIVE_DURATION_HISTOGRAM
+                                        + ".SingleTab")
+                        .build();
+
+        expireUpload("token-cache");
+        notifyUploadSuccessful("token-fresh");
+        watcher.assertExpected();
+    }
+
+    /**
+     * Adds an active tab whose upload started from the cache as "token-cache" and succeeded; a
+     * retry will capture it fresh as "token-fresh".
+     */
+    private FuseboxAttachment addActiveTabUploadedFromCache() {
+        setUpActiveTab(1);
+        when(mComposeboxQueryControllerBridge.addTabContextFromCache(
+                        /* tabId= */ 1, /* isSuggestedTab= */ false))
+                .thenReturn("token-cache");
+        when(mComposeboxQueryControllerBridge.addTabContext(mTab, /* isSuggestedTab= */ false))
+                .thenReturn("token-fresh");
+        var attachment = createTabAttachment(mTab);
+        mFuseboxAttachmentModelList.add(attachment);
+        notifyUploadSuccessful("token-cache");
+        return attachment;
+    }
+
+    private void expireUpload(String token) {
+        mFuseboxAttachmentModelList.onContextUploadStatusChanged(
+                token, ContextUploadStatus.UPLOAD_EXPIRED, ContextUploadErrorType.UNKNOWN);
+    }
+
+    private void setUpActiveTab(int tabId) {
+        doReturn(tabId).when(mTab).getId();
+        doReturn(true).when(mTab).isInitialized();
+        doReturn(mWebContents).when(mTab).getWebContents();
+        doReturn(mRenderWidgetHostView).when(mWebContents).getRenderWidgetHostView();
+    }
+
+    private HistogramWatcher newNoAbandonedOrFailedWatcher() {
+        return HistogramWatcher.newBuilder()
+                .expectNoRecords("Omnibox.MobileFusebox.AttachmentAbandoned")
+                .expectNoRecords("Omnibox.MobileFusebox.AttachmentFailed")
+                .build();
+    }
+
+    @Test
+    public void testRemove_retryAfterSuccessInFlight_doesNotRecordAbandoned() {
+        var attachment = addActiveTabUploadedFromCache();
+        expireUpload("token-cache");
+        var watcher = newNoAbandonedOrFailedWatcher();
+
+        mFuseboxAttachmentModelList.remove(attachment, /* isFailure= */ false);
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testClear_retryAfterSuccessInFlight_doesNotRecordAbandoned() {
+        addActiveTabUploadedFromCache();
+        expireUpload("token-cache");
+        var watcher = newNoAbandonedOrFailedWatcher();
+
+        mFuseboxAttachmentModelList.clear();
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testOnContextUploadStatusChanged_retryAfterSuccessFails_recordsNeitherOutcome() {
+        addActiveTabUploadedFromCache();
+        expireUpload("token-cache");
+        var watcher = newNoAbandonedOrFailedWatcher();
+
+        mFuseboxAttachmentModelList.onContextUploadStatusChanged(
+                "token-fresh", ContextUploadStatus.UPLOAD_FAILED, ContextUploadErrorType.UNKNOWN);
+
+        watcher.assertExpected();
+        assertTrue(mFuseboxAttachmentModelList.isEmpty());
+    }
+
+    @Test
+    public void testOnContextUploadStatusChanged_retryStarted_rebindsAttachment() {
+        var attachment = addActiveTabUploadedFromCache();
+        mFuseboxAttachmentModelList.addObserver(mListObserver);
+
+        expireUpload("token-cache");
+
+        assertFalse(attachment.isUploadComplete());
+        verify(mListObserver).onItemRangeChanged(any(), eq(0), eq(1), eq(null));
+    }
+
+    @Test
+    public void testClear_pendingSuggestedTab_doesNotRecordAbandoned() {
+        mFuseboxAttachmentModelList.add(createSuggestedTabAttachment(/* tabId= */ 1, "token-sugg"));
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Omnibox.MobileFusebox.AttachmentAbandoned")
+                        .build();
+
+        mFuseboxAttachmentModelList.clear();
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testUploadFailedTerminal_suggestedTab_doesNotRecordAttachmentFailed() {
+        mFuseboxAttachmentModelList.add(createSuggestedTabAttachment(/* tabId= */ 1, "token-sugg"));
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Omnibox.MobileFusebox.AttachmentFailed")
+                        .build();
+
+        mFuseboxAttachmentModelList.onContextUploadStatusChanged(
+                "token-sugg",
+                ContextUploadStatus.VALIDATION_FAILED,
+                ContextUploadErrorType.BROWSER_PROCESSING_ERROR);
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testUploadSuccessful_suggestedTab_doesNotRecordAttachmentSucceeded() {
+        mFuseboxAttachmentModelList.add(createSuggestedTabAttachment(/* tabId= */ 1, "token-sugg"));
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Omnibox.MobileFusebox.AttachmentSucceeded")
+                        .build();
+
+        notifyUploadSuccessful("token-sugg");
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testRemoveSuggestedTabs_uploadPending_doesNotRecordAbandoned() {
+        mFuseboxAttachmentModelList.add(createSuggestedTabAttachment(/* tabId= */ 1, "token-sugg"));
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Omnibox.MobileFusebox.AttachmentAbandoned")
+                        .build();
+
+        mFuseboxAttachmentModelList.removeSuggestedTabs();
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testUploadStatusChanged_pendingSuggestedTab_doesNotBlockNotification() {
+        addTabPickerAttachment(/* tabId= */ 1, "tab-token-1", /* loadDurationMs= */ 0L);
+        mFuseboxAttachmentModelList.add(createSuggestedTabAttachment(/* tabId= */ 2, "token-sugg"));
+
+        notifyUploadSuccessful("tab-token-1");
+
+        verify(mListener).onAttachmentUploadStatusChanged();
+    }
+
+    @Test
+    public void testUploadStatusChanged_retryInFlight_doesNotNotify() {
+        addActiveTabUploadedFromCache();
+        clearInvocations(mListener);
+
+        expireUpload("token-cache");
+
+        verify(mListener, never()).onAttachmentUploadStatusChanged();
     }
 }

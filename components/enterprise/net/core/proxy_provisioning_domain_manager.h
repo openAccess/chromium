@@ -38,6 +38,11 @@ class ProxyProvisioningDomainManager {
         ProxyProvisioningDomainManager* domain_manager) = 0;
   };
 
+  struct FailureDetails {
+    bool invalid_policy = false;
+    std::optional<ProvisioningDomainFetchError> fetch_error;
+  };
+
   using GetURLLoaderFactoryCallback =
       base::RepeatingCallback<scoped_refptr<network::SharedURLLoaderFactory>()>;
 
@@ -73,10 +78,15 @@ class ProxyProvisioningDomainManager {
   const ProvisioningDomainProxyConfig& fetched_config() const {
     return fetched_config_;
   }
+  const std::optional<FailureDetails>& last_failure() const {
+    return last_failure_;
+  }
   ProvisioningDomainProxyConfig::State state() const {
     return fetched_config_.state;
   }
-  bool is_refresh_in_progress() const { return fetcher_ != nullptr; }
+  bool is_refresh_in_progress() const {
+    return fetcher_ != nullptr || is_initial_refresh_pending_;
+  }
 
   bool IsExpirationTimerRunningForTesting() const {
     return expiration_timer_.IsRunning();
@@ -97,17 +107,20 @@ class ProxyProvisioningDomainManager {
   // expiration TTL.
   void ScheduleProactiveRefresh();
   void StartRefreshInternal(bool force);
+  void CancelRefreshInternal();
   void OnRefreshComplete(ProvisioningDomainFetchResult result);
   void TransitionToState(ProvisioningDomainProxyConfig::State new_state);
   void NotifyIfStateChanged();
 
   const ProvisioningDomainConfig policy_;
   ProvisioningDomainProxyConfig fetched_config_;
+  std::optional<FailureDetails> last_failure_;
 
   const raw_ptr<EnterpriseNetworkAuthService> auth_service_;
   GetURLLoaderFactoryCallback url_loader_factory_callback_;
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   std::unique_ptr<ProvisioningDomainFetcher> fetcher_;
+  bool is_initial_refresh_pending_ = false;
   base::OneShotTimer expiration_timer_;
   int consecutive_transient_failures_ = 0;
 

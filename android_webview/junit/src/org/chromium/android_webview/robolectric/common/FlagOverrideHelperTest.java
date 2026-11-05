@@ -4,13 +4,10 @@
 
 package org.chromium.android_webview.robolectric.common;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.android_webview.common.Flag;
 import org.chromium.android_webview.common.FlagOverrideHelper;
@@ -26,7 +23,6 @@ import java.util.Set;
 
 /** Unit tests for FlagOverrideHelper. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class FlagOverrideHelperTest {
     @Before
     public void setUp() {
@@ -67,7 +63,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testGetCommaDelimitedSwitchValue() {
         CommandLine.getInstance().appendSwitchWithValue("foo", "val1,val2");
         List<String> values = FlagOverrideHelper.getCommaDelimitedSwitchValue("foo");
@@ -75,14 +70,12 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testSetCommaDelimitedSwitchValue() {
         FlagOverrideHelper.setCommaDelimitedSwitchValue("foo", Arrays.asList("val1", "val2"));
         Assert.assertEquals("val1,val2", CommandLine.getInstance().getSwitchValue("foo"));
     }
 
     @Test
-    @SmallTest
     public void testUnknownFlag() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("unknown-flag", true);
@@ -97,7 +90,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testAddFlag() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("flag-1", true);
@@ -109,7 +101,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testAddFlag_noValue() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("flag-1", true);
@@ -124,7 +115,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testAddFlag_withValue() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("flag-3", true);
@@ -137,7 +127,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testRemoveFlag_notYetAdded() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("flag-2", false);
@@ -149,7 +138,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testRemoveFlag_alreadyAdded() {
         CommandLine.getInstance().appendSwitch("flag-2");
         Map<String, Boolean> map = new HashMap<>();
@@ -162,7 +150,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testEnableBaseFeature_notYetEnabled() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("feature-1", true);
@@ -174,7 +161,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testEnableBaseFeature_multiple() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("feature-1", true);
@@ -187,7 +173,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testEnableBaseFeature_alreadyEnabled() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("feature-1", true);
@@ -200,7 +185,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testEnableBaseFeature_alreadyDisabled() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("feature-1", true);
@@ -213,7 +197,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testDisableBaseFeature_notYetEnabled() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("feature-2", false);
@@ -225,7 +208,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testDisableBaseFeature_multiple() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("feature-1", false);
@@ -238,7 +220,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testDisableBaseFeature_alreadyEnabled() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("feature-2", false);
@@ -251,7 +232,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testDisableBaseFeature_alreadyDisabled() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("feature-2", false);
@@ -264,7 +244,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testLotsOfFlagsAndFeatures() {
         Map<String, Boolean> map = new HashMap<>();
         map.put("flag-1", true);
@@ -285,7 +264,6 @@ public class FlagOverrideHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testMultipleOverrides() {
         Map<String, Boolean> map1 = new HashMap<>();
         map1.put("flag-1", true);

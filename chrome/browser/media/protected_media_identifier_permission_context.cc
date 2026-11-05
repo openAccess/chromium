@@ -50,7 +50,7 @@ namespace {
 // enterprise policy.
 bool IsProtectedContentIdentifierAllowedByPolicy(Profile* profile) {
   PrefService* service = profile->GetPrefs();
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M161);
 
   return service->GetBoolean(
       policy::policy_prefs::kProtectedContentIdentifiersAllowed);
@@ -86,6 +86,8 @@ ProtectedMediaIdentifierPermissionContext::GetContentSettingStatusInternal(
   ContentSetting content_setting = permissions::
       ContentSettingPermissionContextBase::GetContentSettingStatusInternal(
           render_frame_host, requesting_origin, embedding_origin);
+  // TODO(crbug.com/576042411): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(content_setting == CONTENT_SETTING_ALLOW ||
 #if BUILDFLAG(IS_ANDROID)
          content_setting == CONTENT_SETTING_ASK ||
@@ -124,7 +126,7 @@ bool ProtectedMediaIdentifierPermissionContext::IsOriginAllowed(
 void ProtectedMediaIdentifierPermissionContext::UpdateTabContext(
     const permissions::PermissionRequestData& request_data,
     bool allowed) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // WebContents may have gone away.
   content_settings::PageSpecificContentSettings* content_settings =

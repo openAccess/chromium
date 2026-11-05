@@ -21,7 +21,6 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
@@ -54,7 +53,8 @@ base::DictValue GetForceInstalledExtensionsFromPrefs(const PrefService* prefs) {
   }
   const base::Value* login_screen_extensions_pref_value =
       login_screen_extensions_pref->GetValue();
-  DCHECK(login_screen_extensions_pref_value->is_dict());
+  CHECK(login_screen_extensions_pref_value->is_dict(),
+        base::NotFatalUntil::M160);
   return login_screen_extensions_pref_value->GetDict().Clone();
 }
 
@@ -78,8 +78,7 @@ bool IsBadgeBasedAuthenticationEnabled(
 bool IsLockScreenTakingOver(const base::DictValue& force_installed_extensions) {
   const session_manager::SessionState session_state =
       session_manager::SessionManager::Get()->session_state();
-  return chromeos::features::IsLockScreenBadgeAuthEnabled() &&
-         session_state == session_manager::SessionState::LOCKED &&
+  return session_state == session_manager::SessionState::LOCKED &&
          ash::BrowserContextHelper::Get()->GetLockScreenBrowserContext() &&
          IsBadgeBasedAuthenticationEnabled(force_installed_extensions);
 }
@@ -109,18 +108,14 @@ AuthenticationScreenExtensionsExternalLoader::
           /*always_check_updates=*/true,
           /*wait_for_cache_initialization=*/false,
           /*allow_scheduled_updates=*/false) {
-  DCHECK(ash::IsSigninBrowserContext(profile) ||
-         (chromeos::features::IsLockScreenBadgeAuthEnabled() &&
-          ash::IsLockScreenBrowserContext(profile)));
-  if (chromeos::features::IsLockScreenBadgeAuthEnabled()) {
-    session_manager_observation_.Observe(
-        session_manager::SessionManager::Get());
+  CHECK(ash::IsSigninBrowserContext(profile) ||
+            ash::IsLockScreenBrowserContext(profile),
+        base::NotFatalUntil::M160);
+  session_manager_observation_.Observe(session_manager::SessionManager::Get());
 
-    ProfileManager* const profile_manager =
-        g_browser_process->profile_manager();
-    DCHECK(profile_manager);
-    profile_manager_observation_.Observe(profile_manager);
-  }
+  ProfileManager* const profile_manager = g_browser_process->profile_manager();
+  CHECK(profile_manager, base::NotFatalUntil::M160);
+  profile_manager_observation_.Observe(profile_manager);
 }
 
 void AuthenticationScreenExtensionsExternalLoader::StartLoading() {
@@ -163,7 +158,7 @@ void AuthenticationScreenExtensionsExternalLoader::OnProfileAdded(
 
 void AuthenticationScreenExtensionsExternalLoader::
     OnProfileManagerDestroying() {
-  DCHECK(profile_manager_observation_.IsObserving());
+  CHECK(profile_manager_observation_.IsObserving(), base::NotFatalUntil::M160);
   // We need to do this here in addition to `Shutdown()`, because the profile
   // manager destruction can start before the profile's one.
   profile_manager_observation_.Reset();
@@ -199,7 +194,7 @@ void AuthenticationScreenExtensionsExternalLoader::UpdateStateFromPrefs() {
   if (ash::IsSigninBrowserContext(profile_)) {
     should_load_extensions = !is_lock_screen_taking_over;
   } else {
-    DCHECK(ash::IsLockScreenBrowserContext(profile_));
+    CHECK(ash::IsLockScreenBrowserContext(profile_), base::NotFatalUntil::M160);
     should_load_extensions = is_lock_screen_taking_over;
   }
 

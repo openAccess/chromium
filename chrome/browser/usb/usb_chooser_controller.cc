@@ -14,7 +14,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/chooser_controller/title_util.h"
-#include "chrome/browser/net/referrer.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/usb/usb_blocklist.h"
 #include "chrome/browser/usb/usb_chooser_context_factory.h"
@@ -31,6 +30,8 @@
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 using content::RenderFrameHost;
@@ -208,11 +209,10 @@ void UsbChooserController::OpenHelpCenterUrl() const {
   }
 
   WebContents::FromRenderFrameHost(render_frame_host)
-      ->OpenURL(content::OpenURLParams(
-                    GURL(chrome::kChooserUsbOverviewURL), content::Referrer(),
-                    WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                    ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                    false /* is_renderer_initialized */),
+      ->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                    GURL(chrome::kChooserUsbOverviewURL),
+                    ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                    ui::PAGE_TRANSITION_AUTO_TOPLEVEL),
                 /*navigation_handle_callback=*/{});
 }
 

@@ -33,7 +33,7 @@ class CustomPropertyTest : public PageTestBase {
   }
 
   const ComputedStyle& GetComputedStyle() {
-    Element* node = GetDocument().getElementById(AtomicString("target"));
+    Element* node = GetElementById("target");
     return node->ComputedStyleRef();
   }
 
@@ -295,7 +295,7 @@ TEST_F(CustomPropertyTest, ValueMode) {
     StyleResolverState state(GetDocument(), *GetDocument().documentElement(),
                              /* StyleRecalcContext */ nullptr, StyleRequest());
     state.CreateNewClonedStyle(
-        *GetDocument().GetStyleResolver().InitialStyleForElement());
+        GetDocument().GetStyleResolver().InitialStyleForElement());
     property.ApplyValue(state, *declaration,
                         static_cast<CSSProperty::ValueModeFlags>(
                             CSSProperty::ValueMode::kNormal));
@@ -309,7 +309,7 @@ TEST_F(CustomPropertyTest, ValueMode) {
     StyleResolverState state(GetDocument(), *GetDocument().documentElement(),
                              /* StyleRecalcContext */ nullptr, StyleRequest());
     state.CreateNewClonedStyle(
-        *GetDocument().GetStyleResolver().InitialStyleForElement());
+        GetDocument().GetStyleResolver().InitialStyleForElement());
     property.ApplyValue(state, *declaration,
                         static_cast<CSSProperty::ValueModeFlags>(
                             CSSProperty::ValueMode::kAnimated));

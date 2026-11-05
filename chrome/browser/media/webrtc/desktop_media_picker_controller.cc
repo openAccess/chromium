@@ -33,6 +33,10 @@
 
 using ::content::DesktopMediaID;
 
+namespace {
+std::optional<bool> g_is_system_audio_capture_supported_for_testing;
+}  // namespace
+
 DesktopMediaPickerController::DesktopMediaPickerController(
     DesktopMediaPickerFactory* picker_factory)
     : picker_factory_(picker_factory
@@ -46,7 +50,10 @@ void DesktopMediaPickerController::Show(
     const std::vector<DesktopMediaList::Type>& sources,
     DoneCallback done_callback,
     base::OnceClosure on_show_picker) {
-  DCHECK(!std::ranges::contains(sources, DesktopMediaList::Type::kNone));
+  CHECK(!std::ranges::contains(sources, DesktopMediaList::Type::kNone),
+        base::NotFatalUntil::M161);
+  // TODO(crbug.com/576416893): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!done_callback_);
 
   done_callback_ = std::move(done_callback);
@@ -71,7 +78,7 @@ void DesktopMediaPickerController::Show(
   if (params.select_only_screen && sources.size() == 1 &&
       sources[0] == DesktopMediaList::Type::kScreen) {
     // Try to bypass the picker dialog if possible.
-    DCHECK(source_lists_.size() == 1);
+    CHECK(source_lists_.size() == 1, base::NotFatalUntil::M161);
     auto* source_list = source_lists_[0].get();
     source_list->Update(
         base::BindOnce(&DesktopMediaPickerController::OnInitialMediaListFound,
@@ -87,8 +94,17 @@ void DesktopMediaPickerController::WebContentsDestroyed() {
 }
 
 // static
+void DesktopMediaPickerController::SetSystemAudioCaptureSupportedForTesting(
+    std::optional<bool> is_supported) {
+  g_is_system_audio_capture_supported_for_testing = is_supported;
+}
+
+// static
 bool DesktopMediaPickerController::IsSystemAudioCaptureSupported(
     Params::RequestSource request_source) {
+  if (g_is_system_audio_capture_supported_for_testing.has_value()) {
+    return *g_is_system_audio_capture_supported_for_testing;
+  }
   if (!media::IsSystemLoopbackCaptureSupported()) {
     return false;
   }
@@ -97,9 +113,7 @@ bool DesktopMediaPickerController::IsSystemAudioCaptureSupported(
     return (media::IsMacSckSystemLoopbackCaptureSupported() ||
             base::FeatureList::IsEnabled(media::kMacCatapLoopbackAudioForCast));
   } else {
-    return (media::IsMacCatapSystemLoopbackCaptureSupported() &&
-            base::FeatureList::IsEnabled(
-                media::kMacCatapLoopbackAudioForScreenShare));
+    return media::IsMacCatapSystemLoopbackCaptureSupported();
   }
 #elif BUILDFLAG(IS_LINUX)
   if (request_source == Params::RequestSource::kCast) {
@@ -114,14 +128,15 @@ bool DesktopMediaPickerController::IsSystemAudioCaptureSupported(
 }
 
 void DesktopMediaPickerController::OnInitialMediaListFound() {
-  DCHECK(params_.select_only_screen);
-  DCHECK(source_lists_.size() == 1);
+  CHECK(params_.select_only_screen, base::NotFatalUntil::M161);
+  CHECK(source_lists_.size() == 1, base::NotFatalUntil::M161);
   auto* source_list = source_lists_[0].get();
   if (source_list->GetSourceCount() == 1) {
     // With only one possible source, the picker dialog is being bypassed. Apply
     // the default value of the "audio checkbox" here for desktop screen share.
     DesktopMediaID media_id = source_list->GetSource(0).id;
-    DCHECK_EQ(media_id.type, DesktopMediaID::TYPE_SCREEN);
+    CHECK_EQ(media_id.type, DesktopMediaID::TYPE_SCREEN,
+             base::NotFatalUntil::M161);
     media_id.audio_share =
         params_.request_audio &&
         IsSystemAudioCaptureSupported(params_.request_source);

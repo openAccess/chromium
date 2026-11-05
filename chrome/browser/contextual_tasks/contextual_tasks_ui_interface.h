@@ -29,6 +29,10 @@ namespace lens {
 class ClientToAimMessage;
 }  // namespace lens
 
+namespace contextual_tasks_toolbar::mojom {
+class Page;
+}
+
 namespace contextual_tasks {
 class ContextualTasksComposeboxHandlerInterface;
 namespace mojom {
@@ -69,6 +73,9 @@ class ContextualTasksUIInterface : public TaskInfoDelegate,
   // a tab.
   virtual void OnSidePanelStateChanged() = 0;
 
+  // Called when the side panel is opened to focus the composebox input.
+  virtual void FocusComposebox() {}
+
   // Called when the active tab has been changed (e.g. new page loaded or title
   // change). This is used to update the UI for both tab/side panel modes.
   // Note that a title can be updated while the page is loading, so this can
@@ -77,6 +84,12 @@ class ContextualTasksUIInterface : public TaskInfoDelegate,
 
   // Re-syncs the current auto-suggested tab context to the WebUI composebox.
   virtual void SyncAutoSuggestedTabContext() = 0;
+
+  // Resets the contextual tasks side panel UI state for an in-place fresh
+  // thread (e.g. triggered by omnibox page action on an already-open side
+  // panel).
+  virtual void ResetForNewThread(const base::Uuid& task_id,
+                                 const GURL& url) = 0;
 
   // Notifies the UI that the Lens overlay state has changed.
   virtual void OnLensOverlayStateChanged(
@@ -125,6 +138,9 @@ class ContextualTasksUIInterface : public TaskInfoDelegate,
   // Returns the Mojo remote used to communicate with the WebUI page.
   virtual mojo::Remote<contextual_tasks::mojom::Page>& GetPageRemote() = 0;
 
+  // Returns the Mojo remote used to communicate with the Toolbar WebUI page.
+  virtual contextual_tasks_toolbar::mojom::Page* GetToolbarPageRemote() = 0;
+
   // Fetches and assumes unique ownership of the pre-configured input state
   // model attached to the WebContents for the current task. Subsequent calls
   // for the same task will return nullptr.
@@ -133,7 +149,7 @@ class ContextualTasksUIInterface : public TaskInfoDelegate,
 
   // Fetches the restored tab IDs attached to the WebContents for the
   // current task.
-  virtual std::vector<int32_t> GetRestoredTabIds() = 0;
+  virtual const std::vector<int32_t>& GetRestoredTabIds() = 0;
 
   // Notifies the UI that restored tabs have been successfully fetched from the
   // database.

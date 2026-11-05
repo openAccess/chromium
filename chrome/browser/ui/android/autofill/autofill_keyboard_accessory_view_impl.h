@@ -14,7 +14,8 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/ui/autofill/autofill_keyboard_accessory_view.h"
+#include "chrome/browser/ui/android/autofill/autofill_keyboard_accessory_view.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 
 namespace autofill {
 
@@ -45,30 +46,42 @@ class AutofillKeyboardAccessoryViewImpl : public AutofillKeyboardAccessoryView {
       const std::u16string& confirmation_body_link,
       const std::u16string& confirm_button_text,
       base::OnceCallback<void(bool)> deletion_callback) override;
+  void ShowAutofillAiSuggestionDetails(
+      const std::u16string& title,
+      const std::u16string& body,
+      const std::u16string& confirm_button_text,
+      const std::u16string& primary_button_text,
+      std::vector<EntityInstance::PersonalContextRecordTypePayload::Source>
+          sources,
+      base::OnceCallback<void(bool)> suppression_callback) override;
 
   // --------------------------------------------------------------------------
   // Methods called from Java via JNI
   // --------------------------------------------------------------------------
 
   // Called when an autofill item was accepted.
-  void SuggestionAccepted(JNIEnv* env, int32_t list_index);
+  void SuggestionAccepted(int32_t list_index, bool was_obscured);
 
   // Called when an autofill item's selection state changes.
-  void SuggestionSelectionStateChanged(JNIEnv* env,
-                                       int32_t list_index,
-                                       bool is_selected);
+  void SuggestionSelectionStateChanged(int32_t list_index, bool is_selected);
 
   // Called when the deletion of an autofill item was requested.
-  void DeletionRequested(JNIEnv* env, int32_t list_index);
+  void DeletionRequested(int32_t list_index);
 
   // Called when the user closes the deletion dialog.
-  void OnDeletionDialogClosed(JNIEnv* env, bool confirmed);
+  void OnDeletionDialogClosed(bool confirmed);
+
+  // Called when showing Autofill AI suggestion details was requested.
+  void AutofillAiSuggestionDetailsRequested(int32_t list_index);
+
+  // Called when the user closes the Autofill AI suppression dialog.
+  void OnAutofillAiSuppressionDialogClosed(bool confirmed);
 
   // Called when this view was dismissed.
-  void ViewDismissed(JNIEnv* env);
+  void ViewDismissed();
 
   // Called when opening settings for an entity type was requested.
-  void OpenSettingsForEntityType(JNIEnv* env, int32_t entity_type);
+  void OpenSettingsForEntityType(int32_t entity_type);
 
  private:
   // Weak reference to the controller of this view. It can be null if the
@@ -78,8 +91,11 @@ class AutofillKeyboardAccessoryViewImpl : public AutofillKeyboardAccessoryView {
   // Invoked when the user confirms or declines the deletion process.
   base::OnceCallback<void(bool)> deletion_callback_;
 
+  // Invoked when the user confirms or declines the Autofill AI suppression.
+  base::OnceCallback<void(bool)> autofill_ai_suppression_callback_;
+
   // The corresponding java object.
-  base::android::ScopedJavaGlobalRef<jobject> java_object_;
+  jni_zero::ScopedJavaGlobalRef<jobject> java_object_;
 };
 
 }  // namespace autofill

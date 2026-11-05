@@ -122,4 +122,14 @@ struct FindOptions {
   // Signifies whether we should force text scoping to happen immediately
   // or not. Only used for testing purposes.
   bool run_synchronously_for_testing = false;
+
+  // Controls whether the viewport should scroll to the active match.
+  bool scroll_to_match = true;
+
+  // Controls whether find-next/previous (`new_session` == false) should skip
+  // matches that are currently visible within the viewport and jump to the
+  // first match outside the viewport. If no match exists outside the viewport,
+  // falls back to the normal next/previous match. Ignored when `new_session`
+  // is true.
+  bool skip_viewport = false;
 };

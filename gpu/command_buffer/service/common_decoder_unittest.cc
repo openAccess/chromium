@@ -66,14 +66,15 @@ TEST(CommonDecoderBucket, SetData) {
   static const char data[] = "testing";
 
   bucket.SetSize(10);
-  EXPECT_TRUE(bucket.SetData(data, 0, sizeof(data)));
+  EXPECT_TRUE(bucket.SetData(base::as_byte_span(data), 0));
   EXPECT_EQ(bucket.GetDataAsByteSpan(0, sizeof(data)),
             base::as_byte_span(data));
-  EXPECT_TRUE(bucket.SetData(data, 2, sizeof(data)));
+  EXPECT_TRUE(bucket.SetData(base::as_byte_span(data), 2));
   EXPECT_EQ(bucket.GetDataAsByteSpan(2, sizeof(data)),
             base::as_byte_span(data));
-  EXPECT_FALSE(bucket.SetData(data, 0, sizeof(data) * 2));
-  EXPECT_FALSE(bucket.SetData(data, 5, sizeof(data)));
+  constexpr std::array<uint8_t, 11> too_large = {};
+  EXPECT_FALSE(bucket.SetData(too_large, 0));
+  EXPECT_FALSE(bucket.SetData(base::as_byte_span(data), 5));
 }
 
 class TestCommonDecoder : public CommonDecoder {
@@ -471,34 +472,28 @@ TEST_F(CommonDecoderTest, GetAsStrings_Success) {
   size_t write_offset = 0;
 
   const GLint count = 2;
-  bucket.SetData(&count, write_offset, sizeof(count));
+  bucket.SetData(base::byte_span_from_ref(count), write_offset);
   write_offset += sizeof(count);
 
   const std::array<GLint, 2> sizes = {2, 3};
-  bucket.SetData(&sizes, write_offset, sizeof(sizes));
+  bucket.SetData(base::as_byte_span(sizes), write_offset);
   write_offset += sizeof(sizes);
 
   const std::array<char, 3> str0 = {'a', 'b', 0};
-  bucket.SetData(&str0, write_offset, sizeof(str0));
+  bucket.SetData(base::as_byte_span(str0), write_offset);
   write_offset += sizeof(str0);
 
   const std::array<char, 4> str1 = {'x', 'y', 'z', 0};
-  bucket.SetData(&str1, write_offset, sizeof(str1));
+  bucket.SetData(base::as_byte_span(str1), write_offset);
   write_offset += sizeof(str1);
 
   EXPECT_EQ(write_offset, kBucketSize);
 
-  GLsizei count_out;
-  std::vector<char*> strings_out;
-  std::vector<GLint> lengths_out;
-  EXPECT_TRUE(bucket.GetAsStrings(&count_out, &strings_out, &lengths_out));
-
-  EXPECT_EQ(count_out, count);
-  EXPECT_EQ(lengths_out.size(), size_t(count_out));
-  EXPECT_EQ(lengths_out[0], sizes[0]);
-  EXPECT_EQ(lengths_out[1], sizes[1]);
-  EXPECT_EQ(std::string(str0.data()), std::string(strings_out[0]));
-  EXPECT_EQ(std::string(str1.data()), std::string(strings_out[1]));
+  std::optional<std::vector<std::string_view>> strings = bucket.GetAsStrings();
+  ASSERT_TRUE(strings.has_value());
+  ASSERT_EQ(strings->size(), static_cast<size_t>(count));
+  EXPECT_EQ((*strings)[0], "ab");
+  EXPECT_EQ((*strings)[1], "xyz");
 }
 
 // Regression test for https://issues.chromium.org/487755344 where negative
@@ -508,18 +503,15 @@ TEST_F(CommonDecoderTest, GetAsStrings_StringsSizeNegative) {
   bucket.SetSize(14);
 
   GLint count = 2;
-  bucket.SetData(&count, 0, sizeof(count));
+  bucket.SetData(base::byte_span_from_ref(count), 0);
   GLint length0 = 1;
-  bucket.SetData(&length0, 4, sizeof(length0));
+  bucket.SetData(base::byte_span_from_ref(length0), 4);
   GLint length1 = -1;
-  bucket.SetData(&length1, 8, sizeof(length1));
+  bucket.SetData(base::byte_span_from_ref(length1), 8);
   std::array<uint8_t, 2> str = {'A', 0};
-  bucket.SetData(&str, 12, sizeof(str));
+  bucket.SetData(base::as_byte_span(str), 12);
 
-  GLsizei count_out;
-  std::vector<char*> strings_out;
-  std::vector<GLint> lengths_out;
-  EXPECT_FALSE(bucket.GetAsStrings(&count_out, &strings_out, &lengths_out));
+  EXPECT_FALSE(bucket.GetAsStrings().has_value());
 }
 
 // Test that GetAsStrings rejects strings that are not NUL-terminated.
@@ -533,21 +525,18 @@ TEST_F(CommonDecoderTest, GetAsStrings_MissingNulTerminator) {
   size_t write_offset = 0;
 
   const GLint count = 1;
-  bucket.SetData(&count, write_offset, sizeof(count));
+  bucket.SetData(base::byte_span_from_ref(count), write_offset);
   write_offset += sizeof(count);
 
   const GLint length0 = 2;
-  bucket.SetData(&length0, write_offset, sizeof(length0));
+  bucket.SetData(base::byte_span_from_ref(length0), write_offset);
   write_offset += sizeof(length0);
 
   // "abc" instead of "ab\0", so the NUL terminator is missing.
   const std::array<char, 3> str0 = {'a', 'b', 'c'};
-  bucket.SetData(&str0, write_offset, sizeof(str0));
+  bucket.SetData(base::as_byte_span(str0), write_offset);
 
-  GLsizei count_out;
-  std::vector<char*> strings_out;
-  std::vector<GLint> lengths_out;
-  EXPECT_FALSE(bucket.GetAsStrings(&count_out, &strings_out, &lengths_out));
+  EXPECT_FALSE(bucket.GetAsStrings().has_value());
 }
 
 }  // namespace gpu

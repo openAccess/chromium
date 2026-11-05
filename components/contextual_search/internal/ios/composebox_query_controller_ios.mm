@@ -14,6 +14,7 @@
 #import "components/contextual_search/internal/ios/composebox_image_helper_ios.h"
 #import "components/lens/lens_bitmap_processing.h"
 #import "components/lens/ref_counted_lens_overlay_client_logs.h"
+#import "google_apis/google_api_keys.h"
 #import "third_party/lens_server_proto/lens_overlay_server.pb.h"
 
 void ComposeboxQueryControllerIOS::CreateImageUploadRequest(
@@ -24,6 +25,7 @@ void ComposeboxQueryControllerIOS::CreateImageUploadRequest(
     std::optional<std::string> page_title,
     std::optional<std::string> file_name,
     UploadImageType image_type,
+    std::optional<std::string> mime_type_string,
     RequestBodyProtoCreatedCallback callback) {
   CHECK(image_options.has_value());
   // On iOS, we use UIImage for decoding and resizing.
@@ -43,7 +45,7 @@ void ComposeboxQueryControllerIOS::CreateImageUploadRequest(
 
   if (std::optional<lens::ImageData> image_data_proto =
           MaybeCreateC2paBypassImageData(image_data, image.size.width,
-                                         image.size.height)) {
+                                         image.size.height, mime_type_string)) {
     CreateFileUploadRequestProtoWithImageDataAndContinue(
         request_id, CreateClientContext(), ref_counted_logs,
         std::move(callback), page_url, page_title, file_name, image_type,
@@ -61,4 +63,11 @@ void ComposeboxQueryControllerIOS::CreateImageUploadRequest(
                      request_id, CreateClientContext(), ref_counted_logs,
                      std::move(callback), page_url, page_title, file_name,
                      image_type));
+}
+
+bool ComposeboxQueryControllerIOS::IsGoogleChromeApiKeyUsed() const {
+  // On iOS, `use_official_google_api_keys` is false in developer builds, which
+  // instead provide the API key via `google_api_key` or `Info.plist`.
+  return google_apis::HasAPIKeyConfigured() ||
+         ComposeboxQueryController::IsGoogleChromeApiKeyUsed();
 }

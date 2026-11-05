@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 
+#include "base/feature_list.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -18,8 +19,10 @@
 #include "components/signin/core/browser/account_metrics_id_allocator.h"
 #include "components/signin/core/browser/account_preview_data.h"
 #include "components/signin/core/browser/account_preview_heuristic.h"
+#include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_prefs.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/base/data_type.h"
 
@@ -31,33 +34,50 @@ enum class CountScale { k100, k1000, k10000, k100000 };
 
 std::optional<CountScale> GetScaleForDataType(syncer::DataType type) {
   switch (type) {
-    case syncer::APPS:
-      return CountScale::k100;
     case syncer::AUTOFILL:
       return CountScale::k100000;
-    case syncer::AUTOFILL_WALLET_CREDENTIAL:
-      return CountScale::k100;
     case syncer::BOOKMARKS:
       return CountScale::k100000;
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
     case syncer::EXTENSIONS:
       return CountScale::k100;
+#endif
     case syncer::PASSWORDS:
       return CountScale::k10000;
-    case syncer::PREFERENCES:
-      return CountScale::k1000;
     case syncer::READING_LIST:
       return CountScale::k1000;
-    case syncer::SESSIONS:
-      return CountScale::k10000;
-    case syncer::THEMES:
-      return CountScale::k100;
     case syncer::AUTOFILL_WALLET_METADATA:
       return CountScale::k100;
-    case syncer::DEVICE_INFO:
-      return CountScale::k1000;
     default:
-      return std::nullopt;
+      break;
   }
+
+  if (!base::FeatureList::IsEnabled(
+          switches::kEnableAccountPreviewDataFetchOptimizations) ||
+      !switches::kAccountPreviewDataReducedTypes.Get()) {
+    switch (type) {
+      case syncer::APPS:
+        return CountScale::k100;
+      case syncer::AUTOFILL_WALLET_CREDENTIAL:
+        return CountScale::k100;
+#if !BUILDFLAG(ENABLE_DICE_SUPPORT)
+      case syncer::EXTENSIONS:
+        return CountScale::k100;
+#endif
+      case syncer::PREFERENCES:
+        return CountScale::k1000;
+      case syncer::SESSIONS:
+        return CountScale::k10000;
+      case syncer::THEMES:
+        return CountScale::k100;
+      case syncer::DEVICE_INFO:
+        return CountScale::k1000;
+      default:
+        break;
+    }
+  }
+
+  return std::nullopt;
 }
 
 }  // namespace
@@ -91,7 +111,7 @@ void AccountPreviewMetricsRecorder::RecordMetrics(
   std::string account_suffix = ".Account" + base::NumberToString(account_index);
 
   bool is_primary = identity_manager_->GetPrimaryAccountId(
-                        ConsentLevel::kSignin) == account_info.account_id;
+                        ConsentLevel::kSignin) == account_info.GetAccountId();
   // TODO(crbug.com/510760810): Add HasOtherDevices metric once the network
   // response parsing is implemented.
 
@@ -208,7 +228,7 @@ void AccountPreviewMetricsRecorder::RecordSelectionHeuristicResult(
     if (has_primary_account && account.gaia_id == primary_account.gaia) {
       continue;
     }
-    if (!account.is_regular_account()) {
+    if (!account.is_regular_account() || !account.preview_data) {
       continue;
     }
     auto score_it = selection_result.account_scores.find(account.gaia_id);
@@ -225,6 +245,23 @@ void AccountPreviewMetricsRecorder::RecordSelectionHeuristicResult(
 
   pref_service_->SetTime(
       prefs::kAccountPreviewSelectionHeuristicScoresLastRecordedPref, now);
+}
+
+void AccountPreviewMetricsRecorder::RecordSwitchingHeuristicResult(
+    const AccountSwitchingSelectionResult& switching_result) {
+  base::Time last_recorded = pref_service_->GetTime(
+      prefs::kAccountPreviewSwitchingHeuristicLastRecordedPref);
+  base::Time now = base::Time::Now();
+  if (!last_recorded.is_null() && now >= last_recorded &&
+      (now - last_recorded) < base::Days(1)) {
+    return;
+  }
+
+  profile_metrics_service_->UmaHistogramEnumeration(
+      "Signin.SwitchingHeuristic.WouldShowPromo2", switching_result.outcome);
+
+  pref_service_->SetTime(
+      prefs::kAccountPreviewSwitchingHeuristicLastRecordedPref, now);
 }
 
 }  // namespace signin

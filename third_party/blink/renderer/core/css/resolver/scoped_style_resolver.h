@@ -69,7 +69,6 @@ class CORE_EXPORT ScopedStyleResolver final
       const AtomicString& animation_name);
 
   CounterStyleMap* GetCounterStyleMap() { return counter_style_map_.Get(); }
-  static void CounterStyleRulesChanged(TreeScope& scope);
 
   StyleRulePositionTry* PositionTryForName(const AtomicString& try_name);
 
@@ -128,6 +127,9 @@ class CORE_EXPORT ScopedStyleResolver final
   static void KeyframesRulesAdded(const TreeScope&);
   static Element& InvalidationRootForTreeScope(const TreeScope&);
 
+  void AddImplicitScopeTriggers(unsigned start_index,
+                                const ActiveStyleSheetVector&);
+
   void Trace(Visitor*) const;
 
  private:
@@ -156,7 +158,6 @@ class CORE_EXPORT ScopedStyleResolver final
   Member<TreeScope> scope_;
 
   ActiveStyleSheetVector active_style_sheets_;
-  MediaQueryResultFlags media_query_result_flags_;
   HeapVector<RuleSetGroup> rule_set_groups_;
 
   using KeyframesRuleMap =

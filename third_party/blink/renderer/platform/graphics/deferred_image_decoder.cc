@@ -69,8 +69,14 @@ std::unique_ptr<DeferredImageDecoder> DeferredImageDecoder::Create(
     bool data_complete,
     ImageDecoder::AlphaOption alpha_option,
     ColorBehavior color_behavior) {
+  // High-bit-depth images are decoded to half float (CreateGenerator()
+  // promotes them to kRGBA_F16_SkColorType, which makes ImageDecoderWrapper
+  // decode with kHighBitDepthToHalfFloat). The metadata decoder must be
+  // configured the same way: for some formats the reported color space
+  // depends on the output bit depth, and it must match the color space of
+  // the actually decoded pixels.
   std::unique_ptr<ImageDecoder> metadata_decoder = ImageDecoder::Create(
-      data, data_complete, alpha_option, ImageDecoder::kDefaultBitDepth,
+      data, data_complete, alpha_option, ImageDecoder::kHighBitDepthToHalfFloat,
       color_behavior, cc::AuxImage::kDefault,
       Platform::GetMaxDecodedImageBytes());
   if (!metadata_decoder)
@@ -101,7 +107,6 @@ DeferredImageDecoder::DeferredImageDecoder(
       can_yuv_decode_(false),
       has_hot_spot_(false),
       image_is_high_bit_depth_(false),
-      has_c2pa_manifest_(false),
       complete_frame_content_id_(PaintImage::GetNextContentId()) {}
 
 DeferredImageDecoder::~DeferredImageDecoder() {
@@ -258,9 +263,9 @@ wtf_size_t DeferredImageDecoder::FrameCount() {
                            : frame_data_.size();
 }
 
-bool DeferredImageDecoder::HasC2PAManifest() const {
-  return metadata_decoder_ ? metadata_decoder_->HasC2PAManifest()
-                           : has_c2pa_manifest_;
+C2PAManifestStatus DeferredImageDecoder::GetC2PAManifestStatus() const {
+  return metadata_decoder_ ? metadata_decoder_->GetC2PAManifestStatus()
+                           : c2pa_manifest_status_;
 }
 
 int DeferredImageDecoder::RepetitionCount() const {
@@ -337,7 +342,7 @@ void DeferredImageDecoder::ActivateLazyDecoding() {
 
   size_ = metadata_decoder_->Size();
   image_is_high_bit_depth_ = metadata_decoder_->ImageIsHighBitDepth();
-  has_c2pa_manifest_ = metadata_decoder_->HasC2PAManifest();
+  c2pa_manifest_status_ = metadata_decoder_->GetC2PAManifestStatus();
   has_hot_spot_ = metadata_decoder_->HotSpot(hot_spot_);
   filename_extension_ = metadata_decoder_->FilenameExtension();
   mime_type_ = metadata_decoder_->MimeType();

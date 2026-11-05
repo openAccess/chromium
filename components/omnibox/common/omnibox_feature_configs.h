@@ -289,22 +289,6 @@ struct ContextualSearch : Config<ContextualSearch> {
   int loading_suggestions_opacity_animation_duration;
 };
 
-// If enabled, allows MIA zero-prefix suggestions in NTP omnibox and realbox.
-struct MiaZPS : Config<MiaZPS> {
-  DECLARE_FEATURE(kOmniboxMiaZPS);
-
-  MiaZPS();
-  MiaZPS(const MiaZPS&);
-  MiaZPS(MiaZPS&&);
-  MiaZPS& operator=(const MiaZPS&);
-  MiaZPS& operator=(MiaZPS&&);
-  ~MiaZPS();
-  bool enabled;
-  // Whether to use non-normalized text for local history zp suggestions.
-  bool local_history_non_normalized_contents;
-  bool suppress_psuggest_backfill_with_mia;
-};
-
 BASE_DECLARE_FEATURE(kEmbeddedPermissionEnabled);
 
 // A config struct for the omnibox toolbelt.
@@ -361,24 +345,6 @@ struct Toolbelt : Config<Toolbelt> {
   // verbatim user input text, instead of any text that might have been selected
   // or inline autocompleted previously.
   bool select_toolbelt_before_opening;
-};
-
-// If enabled, adjusts the indentation of the omnibox input and matches to fix
-// the visual shift in omnibox input text when the omnibox popup opens.
-struct AdjustOmniboxIndent : Config<AdjustOmniboxIndent> {
-  DECLARE_FEATURE(kAdjustOmniboxIndent);
-
-  AdjustOmniboxIndent();
-  // Whether to indent the omnibox input text and icon when the popup is closed.
-  bool indent_input_when_popup_closed;
-  // Amount by which the indentation of the omnibox input icon is offset.
-  int input_icon_indent_offset;
-  // Amount by which the indentation of the omnibox input text is offset.
-  int input_text_indent_offset;
-  // Amount by which the indentation of the omnibox match icon is offset.
-  int match_icon_indent_offset;
-  // Amount by which the indentation of the omnibox match text is offset.
-  int match_text_indent_offset;
 };
 
 // If enabled, allow document provider requests when all other conditions are
@@ -506,19 +472,6 @@ struct SearchAggregatorProvider : Config<SearchAggregatorProvider> {
   // If enabled, Chrome will blend search suggestions with other Omnibox
   // suggestions without requiring keyword mode.
   bool require_shortcut;
-};
-
-// If enabled, uses RichAnswerTemplate instead of SuggestionAnswer to display
-// answers.
-struct SuggestionAnswerMigration : Config<SuggestionAnswerMigration> {
-  DECLARE_FEATURE(kOmniboxSuggestionAnswerMigration);
-  SuggestionAnswerMigration();
-  SuggestionAnswerMigration(const SuggestionAnswerMigration&);
-  SuggestionAnswerMigration(SuggestionAnswerMigration&&);
-  SuggestionAnswerMigration& operator=(const SuggestionAnswerMigration&);
-  SuggestionAnswerMigration& operator=(SuggestionAnswerMigration&&);
-  ~SuggestionAnswerMigration();
-  bool enabled;
 };
 
 struct OmniboxZpsSuggestionLimit : Config<OmniboxZpsSuggestionLimit> {

@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/html/forms/html_option_element.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/dom_token_list.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/html/forms/html_button_element.h"
@@ -139,16 +140,13 @@ TEST_F(HTMLOptionElementTest, MutationObserver) {
       </option>
     </select>
   )HTML");
-  auto* select = To<HTMLSelectElement>(
-      GetDocument().getElementById(AtomicString("select")));
-  auto* option_one = To<HTMLOptionElement>(
-      GetDocument().getElementById(AtomicString("option_one")));
-  auto* option_two = To<HTMLOptionElement>(
-      GetDocument().getElementById(AtomicString("option_two")));
-  auto* option_one_span = To<HTMLSpanElement>(
-      GetDocument().getElementById(AtomicString("option_one_span")));
-  auto* option_two_span = To<HTMLSpanElement>(
-      GetDocument().getElementById(AtomicString("option_two_span")));
+  auto* select = To<HTMLSelectElement>(GetElementById("select"));
+  auto* option_one = To<HTMLOptionElement>(GetElementById("option_one"));
+  auto* option_two = To<HTMLOptionElement>(GetElementById("option_two"));
+  auto* option_one_span =
+      To<HTMLSpanElement>(GetElementById("option_one_span"));
+  auto* option_two_span =
+      To<HTMLSpanElement>(GetElementById("option_two_span"));
   auto* option_one_label_container =
       To<HTMLSpanElement>(option_one->GetShadowRoot()->firstChild());
   auto* option_two_label_container =

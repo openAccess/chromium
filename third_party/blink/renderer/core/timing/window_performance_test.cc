@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/timing/window_performance.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <type_traits>
@@ -45,6 +46,7 @@
 #include "third_party/blink/renderer/core/testing/mock_policy_container_host.h"
 #include "third_party/blink/renderer/core/timing/dom_window_performance.h"
 #include "third_party/blink/renderer/core/timing/event_timing.h"
+#include "third_party/blink/renderer/core/timing/performance_element_timing.h"
 #include "third_party/blink/renderer/core/timing/performance_event_timing.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
@@ -263,8 +265,7 @@ class WindowPerformanceTest : public testing::Test,
   PerformanceEventTiming* SimulateEventDispatch(
       const Event& event,
       base::TimeDelta processing_duration) {
-    performance_->GetResponsivenessMetrics()
-        .SetCurrentInteractionEventQueuedTimestamp(event.PlatformTimeStamp());
+    EventQueuedTimestampScope scoped_queued_time(event.PlatformTimeStamp());
 
     UIEventTiming ui_event_timing(GetFrame(), event);
     PerformanceEventTiming* entry = ui_event_timing.GetEntry();
@@ -556,6 +557,84 @@ TEST_P(WindowPerformanceTest, Expose100MsEvents) {
       performance_->getBufferedEntriesByType(performance_entry_names::kEvent);
   EXPECT_EQ(1u, entries.size());
   EXPECT_EQ(event_type_names::kMousedown, entries.at(0)->name());
+}
+
+TEST_P(WindowPerformanceTest, QueuedTimestampScopingAndFallback) {
+  base::TimeTicks creation_time = base::TimeTicks::Now();
+
+  // 1. When no queued timestamp is set, fallback to processing_start.
+  auto* event1 =
+      CreatePointerEvent(event_type_names::kPointerdown, creation_time, 1);
+  UIEventTiming timing1(GetFrame(), *event1);
+  PerformanceEventTiming* entry1 = timing1.GetEntry();
+  ASSERT_TRUE(entry1);
+  EXPECT_EQ(entry1->GetEventTimingReportingInfo()->enqueued_to_main_thread_time,
+            entry1->GetEventTimingReportingInfo()->processing_start_time);
+
+  // 2. When queued timestamp is before creation_time, fallback to
+  // processing_start.
+  base::TimeTicks stale_queued_time = creation_time - base::Milliseconds(10);
+  {
+    EventQueuedTimestampScope scoped_queued_time(stale_queued_time);
+    auto* event2 =
+        CreatePointerEvent(event_type_names::kPointerdown, creation_time, 2);
+    UIEventTiming timing2(GetFrame(), *event2);
+    PerformanceEventTiming* entry2 = timing2.GetEntry();
+    ASSERT_TRUE(entry2);
+    EXPECT_EQ(
+        entry2->GetEventTimingReportingInfo()->enqueued_to_main_thread_time,
+        entry2->GetEventTimingReportingInfo()->processing_start_time);
+  }
+
+  // 3. When queued timestamp is valid (>= creation_time), use queued timestamp.
+  base::TimeTicks valid_queued_time = creation_time + base::Milliseconds(5);
+  {
+    EventQueuedTimestampScope scoped_queued_time(valid_queued_time);
+    auto* event3 =
+        CreatePointerEvent(event_type_names::kPointerdown, creation_time, 3);
+    UIEventTiming timing3(GetFrame(), *event3);
+    PerformanceEventTiming* entry3 = timing3.GetEntry();
+    ASSERT_TRUE(entry3);
+    EXPECT_EQ(
+        entry3->GetEventTimingReportingInfo()->enqueued_to_main_thread_time,
+        valid_queued_time);
+  }
+
+  // 4. Once EventQueuedTimestampScope goes out of scope, queued timestamp is
+  // reset.
+  EXPECT_TRUE(EventQueuedTimestampScope::CurrentQueuedTimestamp().is_null());
+
+  // 5. Nested scopes restore previous queued timestamp.
+  {
+    EventQueuedTimestampScope outer_scope(valid_queued_time);
+    EXPECT_EQ(EventQueuedTimestampScope::CurrentQueuedTimestamp(),
+              valid_queued_time);
+    {
+      base::TimeTicks inner_queued_time =
+          creation_time + base::Milliseconds(10);
+      EventQueuedTimestampScope inner_scope(inner_queued_time);
+      EXPECT_EQ(EventQueuedTimestampScope::CurrentQueuedTimestamp(),
+                inner_queued_time);
+    }
+    EXPECT_EQ(EventQueuedTimestampScope::CurrentQueuedTimestamp(),
+              valid_queued_time);
+  }
+  EXPECT_TRUE(EventQueuedTimestampScope::CurrentQueuedTimestamp().is_null());
+
+  // 6. Subframe (separate LocalFrame/WindowPerformance) inherits the active
+  // EventQueuedTimestampScope timestamp on the main thread.
+  {
+    DummyPageHolder subframe_page(gfx::Size(400, 300));
+    EventQueuedTimestampScope scoped_queued_time(valid_queued_time);
+    auto* subframe_event =
+        CreatePointerEvent(event_type_names::kPointerdown, creation_time, 4);
+    UIEventTiming subframe_timing(&subframe_page.GetFrame(), *subframe_event);
+    PerformanceEventTiming* subframe_entry = subframe_timing.GetEntry();
+    ASSERT_TRUE(subframe_entry);
+    EXPECT_EQ(subframe_entry->GetEventTimingReportingInfo()
+                  ->enqueued_to_main_thread_time,
+              valid_queued_time);
+  }
 }
 
 TEST_P(WindowPerformanceTest, EventTimingDuration) {
@@ -1498,12 +1577,15 @@ TEST_P(WindowPerformanceTest, ElementTimingTraceEvent) {
   using trace_analyzer::Query;
   trace_analyzer::Start("*");
   // |element| needs to be non-null to prevent a crash.
-  performance_->AddElementTiming(
+  PerformanceElementTiming* entry = PerformanceElementTiming::Create(
       AtomicString("image-paint"), "url", gfx::RectF(10, 20, 30, 40),
-      DOMPaintTimingInfo{2000, 2000},
-      GetTimeOrigin() + base::Milliseconds(1000), AtomicString("identifier"),
-      gfx::Size(200, 300), AtomicString("id"),
-      /*element*/ page_holder_->GetDocument().documentElement());
+      /*load_time=*/1000, AtomicString("identifier"), 200, 300,
+      AtomicString("id"),
+      /*element=*/page_holder_->GetDocument().documentElement(),
+      performance_->DomWindow());
+  entry->FinalizeEntry(DOMPaintTimingInfo{2000, 2000},
+                       performance_->NavigationId().web_exposed_id);
+  performance_->AddElementTiming(entry);
   auto analyzer = trace_analyzer::Stop();
   trace_analyzer::TraceEventVector events;
   Query q = Query::EventNameIs("PerformanceElementTiming");
@@ -2399,16 +2481,18 @@ TEST_F(WindowPerformanceNavigationIdTest, NavigationIdHardNavigations) {
     EXPECT_EQ(performance->NavigationId().non_web_exposed_id, 1u);
     ids.push_back(performance->NavigationId().web_exposed_id);
   }
-  // We allow 10 collisions, since the IDs are randomly generated between 100
-  // and 10000.
-  auto last = std::unique(ids.begin(), ids.end());
-  auto num_collisions = std::distance(last, ids.end());
-  EXPECT_LT(num_collisions, 10u);
-  ids.erase(last, ids.end());
   // The IDs are not in sorted order.
   std::vector<uint64_t> sorted_ids(ids.begin(), ids.end());
   std::sort(sorted_ids.begin(), sorted_ids.end());
   EXPECT_NE(sorted_ids, ids);
+
+  // We allow 10 collisions, since the IDs are randomly generated between 100
+  // and 10000.
+  std::sort(ids.begin(), ids.end());
+  auto last = std::unique(ids.begin(), ids.end());
+  auto num_collisions = std::distance(last, ids.end());
+  EXPECT_LT(num_collisions, 10u);
+  ids.erase(last, ids.end());
 }
 
 TEST_F(WindowPerformanceNavigationIdTest, NavigationIdSoftNavigations) {

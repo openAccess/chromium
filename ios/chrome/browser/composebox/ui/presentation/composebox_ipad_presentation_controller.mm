@@ -7,6 +7,7 @@
 #import "base/check.h"
 #import "ios/chrome/browser/composebox/shared/ui/composebox_ui_constants.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_constants.h"
+#import "ios/chrome/browser/omnibox/ui/popup/omnibox_popup_util.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
@@ -98,9 +99,17 @@
   CGFloat top = CGRectGetMinY(omniboxFrame) - kInputPlateIpadMargin;
   CGFloat width = omniboxFrame.size.width;
   CGFloat x = omniboxFrame.origin.x;
-  if (IsRegularXRegularSizeClass(self.traitCollection)) {
+  if (ShouldApplyOmniboxPopoutLayout(self)) {
     x -= kComposeboxOmniboxLayoutGuideHorizontalMargin;
     width += kComposeboxOmniboxLayoutGuideHorizontalMargin * 2;
+
+    CGFloat minWidth =
+        kOmniboxIPadMinWidthPercentage * containerView.frame.size.width;
+    if (width < minWidth) {
+      CGFloat marginCompensation = (minWidth - width) / 2;
+      x -= marginCompensation;
+      width = minWidth;
+    }
   }
 
   CGFloat preferredHeight =

@@ -18,7 +18,7 @@ namespace policy {
 namespace {
 // Array of features exposed through the Java PolicyFeatures API.
 const base::Feature* const kFeaturesExposedToJava[] = {
-    &features::kAndroidUseAdminsForEnterpriseInfo,
+    &features::kUseRestrictionsManagerInAppRestrictionsProvider,
 };
 
 base::android::FeatureMap* GetFeatureMap() {

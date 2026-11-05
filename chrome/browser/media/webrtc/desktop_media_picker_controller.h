@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_MEDIA_WEBRTC_DESKTOP_MEDIA_PICKER_CONTROLLER_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -26,9 +27,6 @@ class DesktopMediaPickerFactory;
 // The main entry point for the desktop picker dialog box, which prompts the
 // user to select a desktop or an application window whose content will be made
 // available as a video stream.
-//
-// TODO(crbug.com/40637301): Rename this class.  Consider merging with
-// DesktopMediaPickerImpl and naming the merged class just DesktopMediaPicker.
 class DesktopMediaPickerController : private content::WebContentsObserver {
  public:
   using Params = DesktopMediaPicker::Params;
@@ -54,6 +52,9 @@ class DesktopMediaPickerController : private content::WebContentsObserver {
   // Checks if system audio capture is supported on the current platform.
   static bool IsSystemAudioCaptureSupported(
       Params::RequestSource request_source);
+
+  static void SetSystemAudioCaptureSupportedForTesting(
+      std::optional<bool> is_supported);
 
   // Show the desktop picker dialog using the parameters specified by |params|,
   // with the possible selections restricted to those included in |sources|.  If

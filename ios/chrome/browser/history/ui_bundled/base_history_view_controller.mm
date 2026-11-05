@@ -4,14 +4,19 @@
 
 #import "ios/chrome/browser/history/ui_bundled/base_history_view_controller.h"
 
+#import <optional>
+
 #import "base/apple/foundation_util.h"
 #import "base/cancelable_callback.h"
 #import "base/i18n/time_formatting.h"
 #import "base/ios/ios_util.h"
+#import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/timer/elapsed_timer.h"
 #import "components/browsing_data/core/browsing_data_utils.h"
+#import "components/history/core/browser/features.h"
 #import "components/strings/grit/components_strings.h"
 #import "components/sync/base/data_type.h"
 #import "components/sync/service/sync_service.h"
@@ -126,6 +131,11 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
   // canceled if results are displayed between callback runs.
   base::CancelableOnceCallback<void(void)> _maybeRemoveLoadingIndicatorTask;
   base::CancelableOnceCallback<void(void)> _displayLoadingIndicatorTask;
+
+  std::optional<base::ElapsedTimer> _initialLoadTimer;
+  // YES once `_initialLoadTimer` has been started, so that it is only ever
+  // started once per controller lifetime.
+  BOOL _initialLoadTimerStarted;
 }
 // YES if there are no results to show.
 @property(nonatomic, assign) BOOL empty;
@@ -157,6 +167,7 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
 }
 
 - (void)detachFromBrowser {
+  _initialLoadTimer.reset();
   // Clear C++ ivars.
   _browser = nullptr;
   _historyService = nullptr;
@@ -284,6 +295,14 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
   _query_history_continuation.Reset();
 
   BOOL fetchAllHistory = !query || [query isEqualToString:@""];
+  // Only the initial full-history load is measured. Starting a search before
+  // the initial results arrive abandons the sample.
+  if (fetchAllHistory && !_initialLoadTimerStarted) {
+    _initialLoadTimerStarted = YES;
+    _initialLoadTimer = base::ElapsedTimer();
+  } else if (!fetchAllHistory) {
+    _initialLoadTimer.reset();
+  }
   std::u16string queryString =
       fetchAllHistory ? std::u16string() : base::SysNSStringToUTF16(query);
   history::QueryOptions options;
@@ -340,7 +359,8 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
   // history, try fetching again.
   syncer::SyncService* syncService =
       SyncServiceFactory::GetForProfile(self.browser->GetProfile());
-  if (syncService->GetActiveDataTypes().Has(
+  if (syncService &&
+      syncService->GetActiveDataTypes().Has(
           syncer::HISTORY_DELETE_DIRECTIVES) &&
       queryResultsInfo.sync_timed_out) {
     [self showHistoryMatchingQuery:_currentQuery];
@@ -464,20 +484,8 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
   }
 
   // Delete items from Browser History.
-  std::vector<BrowsingHistoryService::HistoryEntry> entries;
-  for (NSIndexPath* indexPath in toDeleteIndexPaths) {
-    HistoryEntryItem* object = base::apple::ObjCCastStrict<HistoryEntryItem>(
-        [self.tableViewModel itemAtIndexPath:indexPath]);
-    BrowsingHistoryService::HistoryEntry entry;
-    entry.url = object.URL;
-    // Since the similar visits grouping logic does not exist on iOS, we only
-    // need to pass the timestamp for the current URL. See b/460405414 for more
-    // details.
-    // TODO(b/483287809): Enable similar visits grouping for iOS.
-    entry.all_timestamps[object.URL].insert(object.timestamp);
-    entries.push_back(entry);
-  }
-  self.historyService->RemoveVisits(entries);
+  self.historyService->RemoveVisits(
+      [self entriesForItemsAtIndexPaths:toDeleteIndexPaths]);
 
   // Delete items from `self.tableView` using performBatchUpdates.
   __weak __typeof(self) weakSelf = self;
@@ -490,6 +498,29 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
         [weakSelf updateTableViewAfterDeletingEntries];
       }];
   base::RecordAction(base::UserMetricsAction("HistoryPage_RemoveSelected"));
+}
+
+// Returns the history entries for the items at `indexPaths`. If similar visits
+// grouping is enabled, each entry contains all the timestamps of the similar
+// visits, otherwise each entry contains just one timestamp.
+- (std::vector<BrowsingHistoryService::HistoryEntry>)
+    entriesForItemsAtIndexPaths:(NSArray<NSIndexPath*>*)indexPaths {
+  std::vector<BrowsingHistoryService::HistoryEntry> entries;
+  entries.reserve(indexPaths.count);
+  for (NSIndexPath* indexPath in indexPaths) {
+    HistoryEntryItem* object = base::apple::ObjCCastStrict<HistoryEntryItem>(
+        [self.tableViewModel itemAtIndexPath:indexPath]);
+    BrowsingHistoryService::HistoryEntry entry;
+    entry.url = object.URL;
+    if (base::FeatureList::IsEnabled(
+            history::kBrowsingHistorySimilarVisitsGrouping)) {
+      entry.all_timestamps = object.allTimestamps;
+    } else {
+      entry.all_timestamps[object.URL].insert(object.timestamp);
+    }
+    entries.push_back(entry);
+  }
+  return entries;
 }
 
 #pragma mark - UITableViewDelegate
@@ -774,6 +805,7 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
   // If there are no results and no URLs have been loaded, report that no
   // history entries were found.
   if ([self checkEmptyHistory:_results]) {
+    _initialLoadTimer.reset();
     [self addEmptyTableViewBackground];
     [self resetResults];
     return;
@@ -806,6 +838,7 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
         [base::SysUTF16ToNSString(base::TimeFormatTimeOfDay(entry.time)) copy];
     item.URL = entry.url;
     item.timestamp = entry.time;
+    item.allTimestamps = entry.all_timestamps;
     [resultsItems addObject:item];
   }
 
@@ -829,6 +862,16 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
                               animated:NO
                         scrollPosition:UITableViewScrollPositionNone];
   [self updateTableViewAfterDeletingEntries];
+  if (_initialLoadTimer.has_value()) {
+    if (!self.empty) {
+      // `reloadData` only invalidates the table view. `layoutIfNeeded` forces
+      // cell creation so the sample reflects laid-out content.
+      [self.tableView layoutIfNeeded];
+      base::UmaHistogramTimes("IOS.HistoryPage.TimeToFirstVisibleContent",
+                              _initialLoadTimer->Elapsed());
+    }
+    _initialLoadTimer.reset();
+  }
   [self resetResults];
 }
 

@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Password non corretta</translation>
 <translation id="5059127710849015030">Traslitterazione nepalese</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> imposta regole di override del proxy</translation>
 <translation id="5081517858322016911">Verranno eliminati <ph name="TOTAL_FILE_SIZE" /> di file</translation>
 <translation id="508423945471810158">Spostamento di <ph name="NUMBER_OF_ITEMS" /> elementi in <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Si è verificato un errore.</translation>
-<translation id="5102922915594634436">Gestisci cartelle sincronizzate</translation>
 <translation id="5109254780565519649">Si è verificato un errore. Alcuni elementi potrebbero non essere stati ripristinati.</translation>
 <translation id="5110329002213341433">Inglese (Canada)</translation>
 <translation id="5119780910075847424">Sincronizzazione in pausa</translation>
@@ -634,7 +634,7 @@
 <translation id="5845721951356578987">Infermiera</translation>
 <translation id="5858478190805449225">Modalità di risparmio energetico attiva. Riprova quando questa modalità sarà disattivata.</translation>
 <translation id="5860491529813859533">Attiva</translation>
-<translation id="5861477046012235702">Giocatore</translation>
+<translation id="5861477046012235702">Gamer</translation>
 <translation id="5864471791310927901">Ricerca DHCP non riuscita</translation>
 <translation id="5896749729057314184">Rete <ph name="NETWORK_INDEX" /> di <ph name="NETWORK_COUNT" />, <ph name="NETWORK_NAME" />, Non attivato, Intensità del segnale <ph name="SIGNAL_STRENGTH" />%, Dettagli</translation>
 <translation id="5912396950572065471">Formato</translation>
@@ -868,7 +868,6 @@
 <translation id="7663224033570512922">Hindi</translation>
 <translation id="7665680517722058469">Prova a effettuare un'altra ricerca</translation>
 <translation id="7689532716264131859"><ph name="NUMBER_OF_ITEMS" /> elementi spostati nel cestino</translation>
-<translation id="7693909743393669729">La formattazione di un'unità causerà l'eliminazione di tutti i dati archiviati e la rimozione di tutte le partizioni esistenti, incluse quelle che potrebbero non essere visibili. L'operazione non potrà essere annullata.</translation>
 <translation id="7695430100978772476">Impossibile formattare <ph name="DRIVE_NAME" /></translation>
 <translation id="76959938259365003">Impossibile svuotare il cestino.</translation>
 <translation id="7705251383879779343">Elemento <ph name="FILE_NAME" /> copiato.</translation>
@@ -912,7 +911,6 @@
 <translation id="7901567919203965902">Inglese (Stati Uniti) - Internazionale Workman</translation>
 <translation id="7903984238293908205">Katakana</translation>
 <translation id="7908378463497120834">Spiacenti, impossibile montare almeno una partizione del dispositivo di archiviazione esterno.</translation>
-<translation id="7908793776359722643">La formattazione di una partizione eliminerà tutti i dati archiviati al suo interno. L'operazione non potrà essere annullata.</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">I tuoi file in Il mio Drive verranno sincronizzati automaticamente con Chromebook in modo da aprirli senza connessione a internet.</translation>
 <translation id="7925247922861151263">Controllo AAA non riuscito</translation>

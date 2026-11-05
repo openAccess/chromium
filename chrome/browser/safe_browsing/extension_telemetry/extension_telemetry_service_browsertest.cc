@@ -18,9 +18,11 @@
 #include "chrome/browser/safe_browsing/extension_telemetry/search_hijacking_detector.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/enterprise/connectors/core/reporting_constants.h"
 #include "components/omnibox/browser/autocomplete_match.h"
@@ -603,15 +605,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
   EXPECT_EQ(action_detail.redirect_url(), "http://google.com/pages/");
 }
 
-// TODO(crbug.com/444383306): Deflake this test on mac.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_DetectsAndReportsTabsApiSignal \
-  DISABLED_DetectsAndReportsTabsApiSignal
-#else
-#define MAYBE_DetectsAndReportsTabsApiSignal DetectsAndReportsTabsApiSignal
-#endif
 IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
-                       MAYBE_DetectsAndReportsTabsApiSignal) {
+                       DetectsAndReportsTabsApiSignal) {
   SetSafeBrowsingState(browser()->GetProfile()->GetPrefs(),
                        SafeBrowsingState::ENHANCED_PROTECTION);
   ASSERT_TRUE(StartEmbeddedTestServer());
@@ -986,16 +981,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
   }
 }
 
-// TODO(crbug.com/444572871) Fix test
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_DetectsAndReportsSearchHijackingSignal \
-  DISABLED_DetectsAndReportsSearchHijackingSignal
-#else
-#define MAYBE_DetectsAndReportsSearchHijackingSignal \
-  DetectsAndReportsSearchHijackingSignal
-#endif
 IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
-                       MAYBE_DetectsAndReportsSearchHijackingSignal) {
+                       DetectsAndReportsSearchHijackingSignal) {
   SetSafeBrowsingState(browser()->GetProfile()->GetPrefs(),
                        SafeBrowsingState::ENHANCED_PROTECTION);
   ASSERT_TRUE(StartEmbeddedTestServer());
@@ -1018,6 +1005,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
   // Set up DSE.
   TemplateURLService* template_url_service =
       TemplateURLServiceFactory::GetForProfile(browser()->GetProfile());
+  ASSERT_TRUE(template_url_service);
+  search_test_utils::WaitForTemplateURLServiceToLoad(template_url_service);
   TemplateURLData data;
   data.SetShortName(u"Test");
   data.SetKeyword(u"test");

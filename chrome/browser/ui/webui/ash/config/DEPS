@@ -7,12 +7,8 @@ include_rules = [
   # directory to #include its own files.
   "+chrome/browser/ui/webui/ash/config",
 
-  # Existing dependencies within //chrome. There is an active effort to
-  # refactor //chrome/browser/ui/ash to break these dependencies; see b/332804822.
-  # Whenever possible, avoid adding new //chrome dependencies to this list.
-  "+chrome/browser/app_mode/app_mode_utils.h",
+  # Other ash directories in //chrome.
   "+chrome/browser/ash/annotator",
-  "+chrome/browser/ash/borealis",
   "+chrome/browser/ash/boca/receiver",
   "+chrome/browser/ash/diagnostics",
   "+chrome/browser/ash/eche_app",
@@ -26,12 +22,7 @@ include_rules = [
   "+chrome/browser/ash/scanning",
   "+chrome/browser/ash/shimless_rma",
   "+chrome/browser/ash/system_web_apps/apps",
-  "+chrome/browser/browser_process.h",
-  "+chrome/browser/feedback",
-  "+chrome/browser/global_features.h",
   "+chrome/browser/ui/ash/holding_space",
-  "+chrome/browser/ui/select_file_policy/chrome_select_file_policy.h",
-  "+chrome/browser/ui/webui/about/about_ui.h",
   "+chrome/browser/ui/webui/ash/account_manager",
   "+chrome/browser/ui/webui/ash/add_supervision",
   "+chrome/browser/ui/webui/ash/app_install",
@@ -56,7 +47,6 @@ include_rules = [
   "+chrome/browser/ui/webui/ash/lock_screen_reauth",
   "+chrome/browser/ui/webui/ash/login",
   "+chrome/browser/ui/webui/ash/mako",
-  "+chrome/browser/ui/webui/ash/manage_mirrorsync",
   "+chrome/browser/ui/webui/ash/multidevice_internals",
   "+chrome/browser/ui/webui/ash/multidevice_setup",
   "+chrome/browser/ui/webui/ash/network_ui",
@@ -71,13 +61,23 @@ include_rules = [
   "+chrome/browser/ui/webui/ash/slow",
   "+chrome/browser/ui/webui/ash/smb_shares",
   "+chrome/browser/ui/webui/ash/sys_internals",
+
+  # Existing dependencies within //chrome. There is an active effort to
+  # refactor //chrome/browser/ui/ash to break these dependencies; see b/332804822.
+  # Whenever possible, avoid adding new //chrome dependencies to this list.
+  "+chrome/browser/app_mode/app_mode_utils.h",
+  "+chrome/browser/browser_process.h",
+  "+chrome/browser/feedback",
+  "+chrome/browser/ui/select_file_policy/chrome_select_file_policy.h",
+  "+chrome/browser/ui/webui/about/about_ui.h",
   "+chrome/browser/ui/webui/chromeos/chrome_url_disabled",
   "+chrome/browser/ui/webui/nearby_internals",
   "+chrome/browser/ui/webui/nearby_share",
 ]
 
 specific_include_rules = {
-  "chrome_web_ui_configs_chromeos\\.cc": [
-    "+chrome/browser/consent_auditor/consent_auditor_factory.h",
-  ]
+  "ash_web_ui_config_manager_unittest\\.cc": [
+    "+chrome/browser/global_features.h",
+    "+chrome/test/base/testing_browser_process.h",
+  ],
 }

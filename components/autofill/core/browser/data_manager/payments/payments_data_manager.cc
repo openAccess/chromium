@@ -52,6 +52,7 @@
 #include "components/autofill/core/browser/metrics/payments/cvc_storage_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/iban_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/mandatory_reauth_metrics.h"
+#include "components/autofill/core/browser/metrics/payments/promo_code_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/wallet_usage_data_metrics.h"
 #include "components/autofill/core/browser/payments/bnpl_manager.h"
 #include "components/autofill/core/browser/payments/constants.h"
@@ -192,8 +193,9 @@ class PaymentsDatabaseHelper {
     }
   }
 
-  // Returns the database that should be used for storing local data.
-  scoped_refptr<AutofillWebDataService> GetLocalDatabase() {
+  // Returns the profile database (stores local data and synced server data
+  // persisted across restarts).
+  scoped_refptr<AutofillWebDataService> GetProfileDatabase() {
     return profile_database_;
   }
 
@@ -304,6 +306,7 @@ PaymentsDataManager::PaymentsDataManager(
 PaymentsDataManager::~PaymentsDataManager() {
   CancelPendingLocalQuery(&pending_creditcards_query_);
   CancelPendingLocalQuery(&pending_local_ibans_query_);
+  CancelPendingLocalQuery(&pending_offer_data_query_);
   CancelPendingServerQueries();
 }
 
@@ -313,10 +316,10 @@ void PaymentsDataManager::Shutdown() {
 }
 
 void PaymentsDataManager::OnAutofillChangedBySync(syncer::DataType data_type) {
-  if (data_type == syncer::AUTOFILL_WALLET_CREDENTIAL ||
+  if (data_type == syncer::AUTOFILL_VALUABLE ||
+      data_type == syncer::AUTOFILL_WALLET_CREDENTIAL ||
       data_type == syncer::AUTOFILL_WALLET_DATA ||
       data_type == syncer::AUTOFILL_WALLET_METADATA ||
-      data_type == syncer::AUTOFILL_WALLET_OFFER ||
       data_type == syncer::AUTOFILL_WALLET_USAGE) {
     Refresh();
   }
@@ -592,7 +595,7 @@ const Iban* PaymentsDataManager::GetIbanByGUID(const std::string& guid) const {
 }
 
 const AutofillOfferData* PaymentsDataManager::GetMerchantPromoCodeByOfferId(
-    const int64_t offer_id) const {
+    std::string_view offer_id) const {
   auto iter = std::ranges::find_if(
       autofill_offer_data_,
       [&offer_id](const std::unique_ptr<AutofillOfferData>& offer_data) {
@@ -786,11 +789,8 @@ PaymentsDataManager::GetApplicableBenefitForCardAndOrigin(
 
 std::vector<const CreditCard*> PaymentsDataManager::GetLocalCreditCards()
     const {
-  return base::ToVector(
-      local_credit_cards_,
-      [](const std::unique_ptr<CreditCard>& card) -> const CreditCard* {
-        return card.get();
-      });
+  return base::ToVector<const CreditCard*>(local_credit_cards_,
+                                           &std::unique_ptr<CreditCard>::get);
 }
 
 std::vector<const CreditCard*> PaymentsDataManager::GetServerCreditCards()
@@ -798,11 +798,8 @@ std::vector<const CreditCard*> PaymentsDataManager::GetServerCreditCards()
   if (!IsAutofillWalletImportEnabled()) {
     return {};
   }
-  return base::ToVector(
-      server_credit_cards_,
-      [](const std::unique_ptr<CreditCard>& card) -> const CreditCard* {
-        return card.get();
-      });
+  return base::ToVector<const CreditCard*>(server_credit_cards_,
+                                           &std::unique_ptr<CreditCard>::get);
 }
 
 std::vector<const CreditCard*> PaymentsDataManager::GetCreditCards() const {
@@ -820,24 +817,15 @@ std::vector<const CreditCard*> PaymentsDataManager::GetCreditCards() const {
 }
 
 std::vector<const Iban*> PaymentsDataManager::GetLocalIbans() const {
-  std::vector<const Iban*> result;
-  result.reserve(local_ibans_.size());
-  for (const auto& iban : local_ibans_) {
-    result.push_back(iban.get());
-  }
-  return result;
+  return base::ToVector<const Iban*>(local_ibans_, &std::unique_ptr<Iban>::get);
 }
 
 std::vector<const Iban*> PaymentsDataManager::GetServerIbans() const {
   if (!IsAutofillWalletImportEnabled()) {
     return {};
   }
-  std::vector<const Iban*> result;
-  result.reserve(server_ibans_.size());
-  for (const std::unique_ptr<Iban>& iban : server_ibans_) {
-    result.push_back(iban.get());
-  }
-  return result;
+  return base::ToVector<const Iban*>(server_ibans_,
+                                     &std::unique_ptr<Iban>::get);
 }
 
 std::vector<const Iban*> PaymentsDataManager::GetIbans() const {
@@ -874,12 +862,8 @@ std::vector<Iban> PaymentsDataManager::GetOrderedIbansToSuggest() const {
                                                         comparison_time);
   });
 
-  std::vector<Iban> ibans_to_suggest;
-  ibans_to_suggest.reserve(available_ibans.size());
-  for (const Iban* iban : available_ibans) {
-    ibans_to_suggest.push_back(*iban);
-  }
-  return ibans_to_suggest;
+  return base::ToVector(available_ibans,
+                        [](const Iban* iban) { return *iban; });
 }
 
 bool PaymentsDataManager::HasMaskedBankAccounts() const {
@@ -937,12 +921,8 @@ PaymentsDataManager::GetCreditCardCloudTokenData() const {
   if (!IsAutofillWalletImportEnabled()) {
     return {};
   }
-  std::vector<CreditCardCloudTokenData*> result;
-  result.reserve(server_credit_card_cloud_token_data_.size());
-  for (const auto& data : server_credit_card_cloud_token_data_) {
-    result.push_back(data.get());
-  }
-  return result;
+  return base::ToVector(server_credit_card_cloud_token_data_,
+                        &std::unique_ptr<CreditCardCloudTokenData>::get);
 }
 
 std::vector<const AutofillOfferData*> PaymentsDataManager::GetAutofillOffers()
@@ -950,10 +930,8 @@ std::vector<const AutofillOfferData*> PaymentsDataManager::GetAutofillOffers()
   if (!IsAutofillWalletImportEnabled() || !IsAutofillPaymentMethodsEnabled()) {
     return {};
   }
-  return base::ToVector(
-      autofill_offer_data_,
-      [](const std::unique_ptr<AutofillOfferData>& offer)
-          -> const AutofillOfferData* { return offer.get(); });
+  return base::ToVector<const AutofillOfferData*>(
+      autofill_offer_data_, &std::unique_ptr<AutofillOfferData>::get);
 }
 
 std::vector<const AutofillOfferData*>
@@ -962,39 +940,31 @@ PaymentsDataManager::GetActiveAutofillPromoCodeOffersForOrigin(
   if (!IsAutofillWalletImportEnabled() || !IsAutofillPaymentMethodsEnabled()) {
     return {};
   }
-  std::vector<const AutofillOfferData*> promo_code_offers_for_origin;
-  std::ranges::for_each(
-      autofill_offer_data_,
-      [&](const std::unique_ptr<AutofillOfferData>& autofill_offer_data) {
-        if (autofill_offer_data.get()->IsGPayPromoCodeOffer() &&
-            autofill_offer_data.get()->IsActiveAndEligibleForOrigin(origin)) {
-          promo_code_offers_for_origin.push_back(autofill_offer_data.get());
-        }
-      });
-  return promo_code_offers_for_origin;
-}
-
-std::vector<const AutofillOfferData*>
-PaymentsDataManager::GetActiveAutofillWalletDirectOffersForOrigin(
-    GURL origin) const {
   if (!base::FeatureList::IsEnabled(
           features::kAutofillEnableWalletDirectOffers)) {
     return {};
   }
-  // TODO(crbug.com/546252995): Add filtering logic for direct offer data from
-  // `autofill_offer_data_` after Chrome Sync logic is added.
-  std::vector<const AutofillOfferData*> wallet_direct_offers_for_origin;
-  wallet_direct_offers_for_origin.reserve(autofill_offer_data_.size());
-  std::ranges::for_each(
-      autofill_offer_data_,
-      [&](const std::unique_ptr<AutofillOfferData>& autofill_offer_data) {
-        if (autofill_offer_data->IsActiveAndEligibleForOrigin(origin)) {
-          wallet_direct_offers_for_origin.push_back(autofill_offer_data.get());
-        }
-      });
-  return wallet_direct_offers_for_origin;
+  const bool skip_locale_and_country_check = base::FeatureList::IsEnabled(
+      features::kAutofillDisableWalletDirectOffersLocaleCountryCheckForTesting);
+  if (!skip_locale_and_country_check &&
+      ((app_locale_ != "en-US" && app_locale_ != "en-CA" &&
+        app_locale_ != "en-GB") ||
+       GetCountryCodeForExperimentGroup() != "US")) {
+    return {};
+  }
+  std::vector<const AutofillOfferData*> promo_code_offers_for_origin;
+  promo_code_offers_for_origin.reserve(autofill_offer_data_.size());
+  for (const std::unique_ptr<AutofillOfferData>& autofill_offer_data :
+       autofill_offer_data_) {
+    // TODO(crbug.com/546252995): Drop empty promo codes at the sync
+    // bridge / disk loading level instead of filtering them here.
+    if (autofill_offer_data->IsActiveAndEligibleForOrigin(origin) &&
+        !autofill_offer_data->GetPromoCode().empty()) {
+      promo_code_offers_for_origin.push_back(autofill_offer_data.get());
+    }
+  }
+  return promo_code_offers_for_origin;
 }
-
 GURL PaymentsDataManager::GetCardArtURL(const CreditCard& credit_card) const {
   if (credit_card.card_art_url().is_valid()) {
     return credit_card.card_art_url();
@@ -1330,9 +1300,10 @@ std::string PaymentsDataManager::OnAcceptedLocalIbanSave(Iban imported_iban) {
 }
 
 bool PaymentsDataManager::IsKnownCard(const CreditCard& credit_card) const {
-  const auto stripped_pan = StripCardNumberSeparators(credit_card.number());
+  const auto stripped_pan =
+      StripSeparatorsAndNormalizeDigits(credit_card.number());
   for (const auto& card : local_credit_cards_) {
-    if (stripped_pan == StripCardNumberSeparators(card->number())) {
+    if (stripped_pan == StripSeparatorsAndNormalizeDigits(card->number())) {
       return true;
     }
   }
@@ -1460,7 +1431,7 @@ std::string PaymentsDataManager::AddAsLocalIban(Iban iban) {
   // IBANs from the settings page using this pref.
   SetAutofillHasSeenIban();
 
-  if (!GetLocalDatabase()) {
+  if (!GetProfileDatabase()) {
     return std::string();
   }
 
@@ -1480,7 +1451,7 @@ std::string PaymentsDataManager::AddAsLocalIban(Iban iban) {
   }
 
   // Add the new IBAN to the web database.
-  GetLocalDatabase()->AddLocalIban(iban);
+  GetProfileDatabase()->AddLocalIban(iban);
 
   // Refresh our local cache and send notifications to observers.
   Refresh();
@@ -1488,12 +1459,12 @@ std::string PaymentsDataManager::AddAsLocalIban(Iban iban) {
 }
 
 std::string PaymentsDataManager::UpdateIban(const Iban& iban) {
-  if (!GetLocalDatabase()) {
+  if (!GetProfileDatabase()) {
     return std::string();
   }
 
   // Make the update.
-  GetLocalDatabase()->UpdateLocalIban(iban);
+  GetProfileDatabase()->UpdateLocalIban(iban);
 
   // Refresh our local cache and send notifications to observers.
   Refresh();
@@ -1513,7 +1484,7 @@ void PaymentsDataManager::AddCreditCard(const CreditCard& credit_card) {
     return;
   }
 
-  if (!GetLocalDatabase()) {
+  if (!GetProfileDatabase()) {
     return;
   }
 
@@ -1525,7 +1496,7 @@ void PaymentsDataManager::AddCreditCard(const CreditCard& credit_card) {
   UMA_HISTOGRAM_BOOLEAN("Autofill.PaymentsDataManager.LocalCardAdded", true);
 
   // Add the new credit card to the web database.
-  GetLocalDatabase()->AddCreditCard(credit_card);
+  GetProfileDatabase()->AddCreditCard(credit_card);
 
   // Refresh our local cache and send notifications to observers.
   Refresh();
@@ -1534,10 +1505,10 @@ void PaymentsDataManager::AddCreditCard(const CreditCard& credit_card) {
 void PaymentsDataManager::DeleteLocalCreditCards(
     const std::vector<CreditCard>& cards) {
   DCHECK(database_helper_);
-  DCHECK(GetLocalDatabase()) << "Use of local card without local storage.";
+  DCHECK(GetProfileDatabase()) << "Use of local card without local storage.";
 
   for (const auto& card : cards) {
-    GetLocalDatabase()->RemoveCreditCard(card.guid());
+    GetProfileDatabase()->RemoveCreditCard(card.guid());
   }
 
   // Refresh the database, so latest state is reflected in all consumers.
@@ -1547,12 +1518,9 @@ void PaymentsDataManager::DeleteLocalCreditCards(
 }
 
 void PaymentsDataManager::DeleteAllLocalCreditCards() {
-  std::vector<CreditCard> cards_to_delete;
-  cards_to_delete.reserve(local_credit_cards_.size());
-  for (const CreditCard* card : GetLocalCreditCards()) {
-    cards_to_delete.push_back(*card);
-  }
-  DeleteLocalCreditCards(cards_to_delete);
+  DeleteLocalCreditCards(base::ToVector(
+      local_credit_cards_,
+      [](const std::unique_ptr<CreditCard>& card) { return *card; }));
 }
 
 bool PaymentsDataManager::HasAllLocalCreditCards() const {
@@ -1581,12 +1549,12 @@ void PaymentsDataManager::UpdateCreditCard(const CreditCard& credit_card) {
   // Update the cached version.
   *existing_credit_card = credit_card;
 
-  if (!GetLocalDatabase()) {
+  if (!GetProfileDatabase()) {
     return;
   }
 
   // Make the update.
-  GetLocalDatabase()->UpdateCreditCard(credit_card);
+  GetProfileDatabase()->UpdateCreditCard(credit_card);
 
   // Refresh our local cache and send notifications to observers.
   Refresh();
@@ -1594,7 +1562,7 @@ void PaymentsDataManager::UpdateCreditCard(const CreditCard& credit_card) {
 
 void PaymentsDataManager::UpdateLocalCvc(const std::string& guid,
                                          const std::u16string& cvc) {
-  if (!GetLocalDatabase()) {
+  if (!GetProfileDatabase()) {
     return;
   }
 
@@ -1603,7 +1571,7 @@ void PaymentsDataManager::UpdateLocalCvc(const std::string& guid,
     return;
   }
 
-  GetLocalDatabase()->UpdateLocalCvc(guid, cvc);
+  GetProfileDatabase()->UpdateLocalCvc(guid, cvc);
   Refresh();
 }
 
@@ -1677,10 +1645,10 @@ void PaymentsDataManager::ClearServerCvcs() {
 }
 
 void PaymentsDataManager::ClearLocalCvcs() {
-  CHECK(GetLocalDatabase()) << "Removing Local cvcs without local storage.";
+  CHECK(GetProfileDatabase()) << "Removing Local cvcs without local storage.";
 
   // Clear the local CVCs in the web database.
-  GetLocalDatabase()->ClearLocalCvcs();
+  GetProfileDatabase()->ClearLocalCvcs();
 
   // Refresh our local cache and send notifications to observers.
   Refresh();
@@ -1688,11 +1656,11 @@ void PaymentsDataManager::ClearLocalCvcs() {
 
 #if BUILDFLAG(IS_IOS)
 void PaymentsDataManager::CleanupForCrbug445879524() {
-  if (!GetLocalDatabase()) {
+  if (!GetProfileDatabase()) {
     return;
   }
 
-  GetLocalDatabase()->CleanupForCrbug445879524();
+  GetProfileDatabase()->CleanupForCrbug445879524();
 
   // Refresh our local cache and send notifications to observers.
   Refresh();
@@ -1747,16 +1715,16 @@ bool PaymentsDataManager::SaveCardLocallyIfNew(
 }
 
 void PaymentsDataManager::RemoveByGUID(const std::string& guid) {
-  if (!GetLocalDatabase()) {
+  if (!GetProfileDatabase()) {
     return;
   }
 
   if (FindByGUID(local_credit_cards_, guid)) {
-    GetLocalDatabase()->RemoveCreditCard(guid);
+    GetProfileDatabase()->RemoveCreditCard(guid);
     // Refresh our local cache and send notifications to observers.
     Refresh();
   } else if (FindByGUID(local_ibans_, guid)) {
-    GetLocalDatabase()->RemoveLocalIban(guid);
+    GetProfileDatabase()->RemoveLocalIban(guid);
     // Refresh our local cache and send notifications to observers.
     Refresh();
   }
@@ -1793,8 +1761,8 @@ void PaymentsDataManager::RecordUseOfCard(const CreditCard& card) {
   if (credit_card->record_type() == CreditCard::RecordType::kLocalCard) {
     // Fail silently if there's no local database, because we need to
     // support this for tests.
-    if (GetLocalDatabase()) {
-      GetLocalDatabase()->UpdateCreditCard(*credit_card);
+    if (GetProfileDatabase()) {
+      GetProfileDatabase()->UpdateCreditCard(*credit_card);
     }
   } else {
     DCHECK(GetServerDatabase())
@@ -1813,16 +1781,17 @@ void PaymentsDataManager::RecordUseOfIban(Iban& iban) {
         << "Recording use of server IBAN metadata without server storage.";
     GetServerDatabase()->UpdateServerIbanMetadata(iban);
   } else {
-    if (GetLocalDatabase()) {
-      GetLocalDatabase()->UpdateLocalIban(iban);
+    if (GetProfileDatabase()) {
+      GetProfileDatabase()->UpdateLocalIban(iban);
     }
   }
 
   Refresh();
 }
 
-scoped_refptr<AutofillWebDataService> PaymentsDataManager::GetLocalDatabase() {
-  return database_helper_->GetLocalDatabase();
+scoped_refptr<AutofillWebDataService>
+PaymentsDataManager::GetProfileDatabase() {
+  return database_helper_->GetProfileDatabase();
 }
 scoped_refptr<AutofillWebDataService> PaymentsDataManager::GetServerDatabase() {
   return database_helper_->GetServerDatabase();
@@ -1836,7 +1805,6 @@ void PaymentsDataManager::CancelPendingServerQueries() {
   CancelPendingServerQuery(&pending_customer_data_query_);
   CancelPendingServerQuery(&pending_server_creditcard_cloud_token_data_query_);
   CancelPendingServerQuery(&pending_server_ibans_query_);
-  CancelPendingServerQuery(&pending_offer_data_query_);
   CancelPendingServerQuery(&pending_virtual_card_usage_data_query_);
   CancelPendingServerQuery(&pending_credit_card_benefit_query_);
   if (AreBankAccountsSupported()) {
@@ -1878,7 +1846,7 @@ base::WeakPtr<PaymentsDataManager> PaymentsDataManager::GetWeakPtr() {
 }
 
 void PaymentsDataManager::LoadCreditCards() {
-  if (!database_helper_->GetLocalDatabase()) {
+  if (!database_helper_->GetProfileDatabase()) {
     NOTREACHED();
   }
 
@@ -1886,7 +1854,7 @@ void PaymentsDataManager::LoadCreditCards() {
   CancelPendingServerQuery(&pending_server_creditcards_query_);
 
   pending_creditcards_query_ =
-      database_helper_->GetLocalDatabase()->GetCreditCards(
+      database_helper_->GetProfileDatabase()->GetCreditCards(
           base::BindOnce(&PaymentsDataManager::OnWebDataServiceRequestDone,
                          weak_ptr_factory_.GetWeakPtr()));
   if (database_helper_->GetServerDatabase()) {
@@ -1911,14 +1879,14 @@ void PaymentsDataManager::LoadCreditCardCloudTokenData() {
 }
 
 void PaymentsDataManager::LoadIbans() {
-  if (!database_helper_->GetLocalDatabase()) {
+  if (!database_helper_->GetProfileDatabase()) {
     NOTREACHED();
   }
   CancelPendingLocalQuery(&pending_local_ibans_query_);
   CancelPendingServerQuery(&pending_server_ibans_query_);
 
   pending_local_ibans_query_ =
-      database_helper_->GetLocalDatabase()->GetLocalIbans(
+      database_helper_->GetProfileDatabase()->GetLocalIbans(
           base::BindOnce(&PaymentsDataManager::OnWebDataServiceRequestDone,
                          weak_ptr_factory_.GetWeakPtr()));
   if (database_helper_->GetServerDatabase()) {
@@ -1956,14 +1924,20 @@ void PaymentsDataManager::LoadPaymentInstruments() {
 }
 
 void PaymentsDataManager::LoadAutofillOffers() {
-  if (!database_helper_->GetServerDatabase()) {
+  // Offers are Wallet direct offers, which are synced through the
+  // `AUTOFILL_VALUABLE` data type. Its `ValuableSyncBridge` is attached to the
+  // profile (local) database in both full sync and transport mode, so the
+  // offers are read from there. Reading them from the server database would
+  // miss them entirely for users who didn't enable the sync feature, since in
+  // that case the server database is the ephemeral account storage.
+  if (!database_helper_->GetProfileDatabase()) {
     return;
   }
 
-  CancelPendingServerQuery(&pending_offer_data_query_);
+  CancelPendingLocalQuery(&pending_offer_data_query_);
 
   pending_offer_data_query_ =
-      database_helper_->GetServerDatabase()->GetAutofillOffers(
+      database_helper_->GetProfileDatabase()->GetAutofillOffers(
           base::BindOnce(&PaymentsDataManager::OnWebDataServiceRequestDone,
                          weak_ptr_factory_.GetWeakPtr()));
 }
@@ -2011,10 +1985,10 @@ void PaymentsDataManager::LoadPaymentInstrumentCreationOptions() {
 void PaymentsDataManager::CancelPendingLocalQuery(
     WebDataServiceBase::Handle* handle) {
   if (*handle) {
-    if (!database_helper_->GetLocalDatabase()) {
+    if (!database_helper_->GetProfileDatabase()) {
       NOTREACHED();
     }
-    database_helper_->GetLocalDatabase()->CancelRequest(*handle);
+    database_helper_->GetProfileDatabase()->CancelRequest(*handle);
   }
   *handle = 0;
 }
@@ -2052,6 +2026,10 @@ void PaymentsDataManager::LogStoredPaymentsDataMetrics() const {
   autofill_metrics::LogStoredVirtualCardUsageCount(
       autofill_virtual_card_usage_data_.size());
   LogBnplIssuersSyncedCountAtStartup(GetBnplIssuers().size());
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillEnableWalletDirectOffers)) {
+    autofill_metrics::LogStoredPromoCodeMetrics(GetAutofillOffers());
+  }
 }
 
 void PaymentsDataManager::LogServerCardLinkClicked() const {
@@ -2284,7 +2262,7 @@ std::string PaymentsDataManager::SaveImportedCreditCard(
   // Potentially merge the card with an existing card.
   for (std::unique_ptr<CreditCard>& card : local_credit_cards_) {
     if (card->UpdateFromImportedCard(imported_card, app_locale_)) {
-      GetLocalDatabase()->UpdateCreditCard(*card);
+      GetProfileDatabase()->UpdateCreditCard(*card);
       Refresh();
       return card->guid();
     }
@@ -2524,25 +2502,28 @@ void PaymentsDataManager::CacheIfEwalletCreationOption(
   const sync_pb::EwalletCreationOption& ewallet_creation_option =
       payment_instrument_creation_option.ewallet_creation_option();
 
-  std::u16string ewallet_issuer_display_name =
-      base::UTF8ToUTF16(ewallet_creation_option.issuer_display_name());
-  if (std::ranges::contains(ewallet_creation_options_,
-                            ewallet_issuer_display_name,
+  std::u16string ewallet_issuer_id =
+      base::UTF8ToUTF16(ewallet_creation_option.issuer_id());
+  if (std::ranges::contains(ewallet_creation_options_, ewallet_issuer_id,
                             &Ewallet::ewallet_name)) {
     return;
   }
+
+  std::u16string ewallet_issuer_display_name =
+      base::UTF8ToUTF16(ewallet_creation_option.issuer_display_name());
 
   std::vector<std::u16string> supported_payment_link_uris = base::ToVector(
       ewallet_creation_option.supported_payment_link_uris(),
       [](const std::string& uri) { return base::UTF8ToUTF16(uri); });
 
-  ewallet_creation_options_.emplace_back(0,       // instrument_id = 0
-                                         u"",     // nickname
-                                         GURL(),  // display_icon_url
-                                         ewallet_issuer_display_name,
-                                         u"",  // account_display_name
-                                         supported_payment_link_uris,
-                                         false  // is_fido_enrolled
+  ewallet_creation_options_.emplace_back(
+      0,                            // instrument_id = 0
+      u"",                          // nickname
+      GURL(),                       // display_icon_url
+      ewallet_issuer_id,            // ewallet_name
+      ewallet_issuer_display_name,  // account_display_name
+      supported_payment_link_uris,
+      false  // is_fido_enrolled
   );
 }
 

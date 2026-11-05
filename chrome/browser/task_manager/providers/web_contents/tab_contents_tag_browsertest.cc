@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 #include <array>
+#include <ranges>
 
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
@@ -19,12 +20,14 @@
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/favicon/content/content_favicon_driver.h"
 #include "components/favicon/core/favicon_driver.h"
 #include "components/favicon/core/favicon_driver_observer.h"
+#include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/favicon_status.h"
 #include "content/public/browser/navigation_controller.h"
@@ -32,7 +35,6 @@
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/test/browser_test.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -94,6 +96,17 @@ class FaviconWaiter : public favicon::FaviconDriverObserver {
     run_loop.Run();
   }
 
+  void WaitForValidFavicon() {
+    if (driver_->FaviconIsValid()) {
+      driver_->RemoveObserver(this);
+      return;
+    }
+    wait_for_valid_favicon_ = true;
+    base::RunLoop run_loop;
+    quit_closure_ = run_loop.QuitClosure();
+    run_loop.Run();
+  }
+
  private:
   GURL GetCurrentFaviconURL() {
     content::NavigationController& controller =
@@ -108,7 +121,8 @@ class FaviconWaiter : public favicon::FaviconDriverObserver {
                         bool icon_url_changed,
                         const gfx::Image& image) override {
     if (notification_icon_type == NON_TOUCH_16_DIP &&
-        icon_url == target_favicon_url_) {
+        (wait_for_valid_favicon_ ? driver_->FaviconIsValid()
+                                 : icon_url == target_favicon_url_)) {
       driver_->RemoveObserver(this);
 
       if (!quit_closure_.is_null())
@@ -118,6 +132,7 @@ class FaviconWaiter : public favicon::FaviconDriverObserver {
 
   raw_ptr<favicon::ContentFaviconDriver> driver_;
   GURL target_favicon_url_;
+  bool wait_for_valid_favicon_ = false;
   base::RepeatingClosure quit_closure_;
 };
 
@@ -176,6 +191,29 @@ class TabContentsTagTest : public InProcessBrowserTest {
 
   GURL GetUrlOfFile(const char* test_page_file) const {
     return embedded_test_server()->GetURL(test_page_file);
+  }
+
+  content::WebContents* active_web_contents() const {
+    return browser()->GetTabStripModel()->GetActiveWebContents();
+  }
+
+  const Task* GetActiveTabTask(const MockWebContentsTaskManager& task_manager) {
+    const SessionID tab_id =
+        sessions::SessionTabHelper::IdForTab(active_web_contents());
+    const std::u16string tab_prefix =
+        l10n_util::GetStringFUTF16(IDS_TASK_MANAGER_TAB_PREFIX, u"");
+    for (const Task* task : std::views::reverse(task_manager.tasks())) {
+      if (task->GetTabId() == tab_id && task->title().starts_with(tab_prefix)) {
+        return task;
+      }
+    }
+    return nullptr;
+  }
+
+  void WaitForActiveTabFavicon() {
+    FaviconWaiter waiter(
+        favicon::ContentFaviconDriver::FromWebContents(active_web_contents()));
+    waiter.WaitForValidFavicon();
   }
 
  private:
@@ -370,49 +408,47 @@ IN_PROC_BROWSER_TEST_F(TabContentsTagTest, NavigateToPageNoFavicon) {
                                         gfx::Image(task->icon())));
 }
 
-class TabContentsTagFencedFrameTest : public TabContentsTagTest {
- public:
-  TabContentsTagFencedFrameTest() = default;
-  ~TabContentsTagFencedFrameTest() override = default;
-
-  content::WebContents* GetWebContents() {
-    return browser()->GetTabStripModel()->GetActiveWebContents();
-  }
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-// Tests that a fenced frame doesn't update the title of its web contents' task
-// via WebContentsTaskProvider::WebContentsEntry.
-IN_PROC_BROWSER_TEST_F(TabContentsTagFencedFrameTest,
-                       FencedFrameDoesNotUpdateTitle) {
+IN_PROC_BROWSER_TEST_F(TabContentsTagTest, ThemifiesDefaultAndChromeFavicons) {
   MockWebContentsTaskManager task_manager;
-  EXPECT_TRUE(task_manager.tasks().empty());
   task_manager.StartObserving();
-  ASSERT_EQ(task_manager.NonToolTasks().size(), 1u);
-
-  const GURL initial_url = embedded_test_server()->GetURL("/title3.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initial_url));
-  const Task* primary_mainframe_task = task_manager.NonToolTasks().front();
-  EXPECT_EQ(Task::RENDERER, primary_mainframe_task->GetType());
-  EXPECT_EQ(primary_mainframe_task->title(), u"Tab: Title Of More Awesomeness");
-
-  // Create a fenced frame and load a URL.
-  const GURL kFencedFrameUrl =
-      embedded_test_server()->GetURL("/fenced_frames/title2.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          GetWebContents()->GetPrimaryMainFrame(), kFencedFrameUrl);
-  EXPECT_NE(nullptr, fenced_frame_host);
-
-  // The navigation in the fenced frame should not change the title of the
-  // primary mainframe's task to "Title Of Awesomeness".
-  EXPECT_EQ(primary_mainframe_task->title(), u"Tab: Title Of More Awesomeness");
+  ASSERT_EQ(1, tabs_count());
+  // "about:blank" has no favicon of its own, so the task shows the default
+  // favicon, which needs theming.
+  const Task* task = GetActiveTabTask(task_manager);
+  ASSERT_TRUE(task);
+  EXPECT_EQ(GetAboutBlankExpectedTitle(), task->title());
+  EXPECT_TRUE(task->should_themify_icon());
+  // A page with a favicon of its own: no theming once it has loaded.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GetUrlOfFile("/favicon/page_with_favicon.html")));
+  {
+    FaviconWaiter waiter(
+        favicon::ContentFaviconDriver::FromWebContents(active_web_contents()));
+    waiter.WaitForFaviconWithURL(GetUrlOfFile("/favicon/icon.png"));
+  }
+  task = GetActiveTabTask(task_manager);
+  ASSERT_TRUE(task);
+  EXPECT_FALSE(task->should_themify_icon());
+  // chrome://version has a favicon of its own too, and is one of the chrome://
+  // pages excluded from theming.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
+                                           GURL(chrome::kChromeUIVersionURL)));
+  ASSERT_NO_FATAL_FAILURE(WaitForActiveTabFavicon());
+  task = GetActiveTabTask(task_manager);
+  ASSERT_TRUE(task);
+  EXPECT_FALSE(task->should_themify_icon());
+  // The NTP's own favicon is monochrome and needs theming, valid or not.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL(chrome::kChromeUINewTabPageURL)));
+  task = GetActiveTabTask(task_manager);
+  ASSERT_TRUE(task);
+  EXPECT_TRUE(task->should_themify_icon());
+  ASSERT_NO_FATAL_FAILURE(WaitForActiveTabFavicon());
+  task = GetActiveTabTask(task_manager);
+  ASSERT_TRUE(task);
+  EXPECT_TRUE(task->should_themify_icon());
+  EXPECT_FALSE(task->icon().isNull());
 }
+
 
 }  // namespace task_manager

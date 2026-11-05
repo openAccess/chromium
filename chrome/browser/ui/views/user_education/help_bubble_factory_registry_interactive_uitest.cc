@@ -2,11 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "components/user_education/common/help_bubble/help_bubble_factory_registry.h"
+
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/tabs/tab_menu_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/tabs/browser_tab_strip_controller.h"
@@ -20,7 +23,6 @@
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/interaction/interaction_test_util_browser.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
-#include "components/user_education/common/help_bubble/help_bubble_factory_registry.h"
 #include "components/user_education/views/help_bubble_view.h"
 #include "content/public/test/browser_test.h"
 #include "ui/base/interaction/element_tracker.h"
@@ -143,6 +145,10 @@ IN_PROC_BROWSER_TEST_F(HelpBubbleFactoryRegistryInteractiveUitest,
                         bubble = GetRegistry()->CreateHelpBubble(
                             el, GetBubbleParams());
                       }),
+          Check([&bubble]() { return bubble != nullptr; },
+                "Check bubble is not null."),
+          Check([&bubble]() { return bubble->is_open(); },
+                "Check bubble registers as open."),
           WaitForShow(
               user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
 
@@ -160,5 +166,9 @@ IN_PROC_BROWSER_TEST_F(HelpBubbleFactoryRegistryInteractiveUitest,
 #if BUILDFLAG(IS_MAC)
               )  // WithoutDelay(
 #endif
-  );
+      ,
+      WaitForHide(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      Check([&bubble]() { return !bubble->is_open(); },
+            "Check bubble closes when context menu closes."));
 }

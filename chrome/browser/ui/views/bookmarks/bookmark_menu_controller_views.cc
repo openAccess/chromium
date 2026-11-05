@@ -10,10 +10,9 @@
 #include "chrome/browser/bookmarks/bookmark_merged_surface_service.h"
 #include "chrome/browser/bookmarks/bookmark_merged_surface_service_observer.h"
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
+#include "chrome/browser/ui/views/bookmarks/bookmark_bar_menu_delegate.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_menu_controller_observer.h"
-#include "chrome/browser/ui/views/bookmarks/bookmark_menu_delegate.h"
-#include "content/public/browser/page_navigator.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
@@ -22,8 +21,6 @@
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/widget/widget.h"
 
-using bookmarks::BookmarkNode;
-using content::PageNavigator;
 using views::MenuItemView;
 
 BookmarkMenuController::BookmarkMenuController(
@@ -32,7 +29,7 @@ BookmarkMenuController::BookmarkMenuController(
     const BookmarkParentFolder& folder,
     size_t start_child_index,
     bool for_drop)
-    : menu_delegate_(std::make_unique<BookmarkMenuDelegate>(
+    : menu_delegate_(std::make_unique<BookmarkBarMenuDelegate>(
           browser,
           parent,
           this,
@@ -56,7 +53,7 @@ void BookmarkMenuController::RunMenuAt(BookmarkBarView* bookmark_bar) {
   bookmark_bar_ = bookmark_bar;
   views::MenuButton* menu_button =
       bookmark_bar_->GetMenuButtonForFolder(folder_);
-  DCHECK(menu_button);
+  CHECK(menu_button, base::NotFatalUntil::M162);
   views::MenuAnchorPosition anchor;
   bookmark_bar_->GetAnchorPositionForButton(menu_button, &anchor);
   gfx::Point screen_loc;

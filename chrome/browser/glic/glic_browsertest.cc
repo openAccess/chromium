@@ -42,7 +42,6 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_provider_manager.h"
 #include "ui/compositor/layer_solid_color.h"
 #include "ui/views/widget/widget.h"
@@ -70,8 +69,7 @@ class GlicBrowserTest : public InProcessBrowserTest {
   }
 
  protected:
-  virtual void InitializeFeatureList() {
-  }
+  virtual void InitializeFeatureList() {}
 
  private:
   GlicTestEnvironment glic_test_environment_{{.fre_status = std::nullopt}};
@@ -79,6 +77,13 @@ class GlicBrowserTest : public InProcessBrowserTest {
 
 class SharedGlicBrowserTest : public glic::GlicBrowserTest {
  public:
+  SharedGlicBrowserTest() {
+    // Focus trapping inside the WebUI host (#webviewContainer webview) is
+    // specific to the <webview> architecture and not applicable in NoWebview
+    // mode where Views manages focus directly.
+    scoped_feature_list_.InitAndDisableFeature(features::kGlicNoWebview);
+  }
+
   // Set up the Glic UI for testing. This runs after the browser is launched.
   void SetUpOnMainThread() override {
     glic::GlicBrowserTest::SetUpOnMainThread();
@@ -99,6 +104,9 @@ class SharedGlicBrowserTest : public glic::GlicBrowserTest {
 
  protected:
   raw_ptr<content::WebContents> web_contents_ = nullptr;
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Ensure basic incognito window doesn't cause a crash. Simply opens an
@@ -220,8 +228,12 @@ class GlicKeyedServiceSyncBrowserTest : public GlicBrowserTest {
   }
 
   void InitializeFeatureList() override {
-    scoped_feature_list_.InitAndEnableFeature(
-        features::kGlicExperimentalTriggering);
+    // The policy control exemption lets the test profile act on the web, which
+    // is required for experimental triggering to be available.
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kGlicExperimentalTriggering,
+                              features::kGlicActorPolicyControlExemption},
+        /*disabled_features=*/{});
   }
 
   void SetUpInProcessBrowserTestFixture() override {

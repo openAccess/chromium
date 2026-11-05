@@ -39,11 +39,10 @@ BrowsingInstance::BrowsingInstance(
           OriginAgentClusterIsolationState::CreateForDefaultIsolation(
               browser_context)),
       active_contents_count_(0u),
-      default_site_instance_(nullptr),
       default_site_instance_group_(nullptr),
       web_exposed_isolation_info_(web_exposed_isolation_info),
       is_fixed_storage_partition_(is_fixed_storage_partition) {
-  DCHECK(browser_context);
+  CHECK(browser_context, base::NotFatalUntil::M160);
   if (is_guest) {
     CHECK(is_fixed_storage_partition);
   }
@@ -146,16 +145,19 @@ scoped_refptr<SiteInstanceImpl> BrowsingInstance::GetSiteInstanceForURLHelper(
   if (!ShouldUseDefaultSiteInstanceGroup() && allow_default_instance &&
       SiteInstanceImpl::CanBePlacedInDefaultSiteInstanceOrGroup(
           isolation_context_, url_info.url, site_info)) {
+    // Each shard has its own default SiteInstance.
+    SiteShard shard = site_info.shard();
     scoped_refptr<SiteInstanceImpl> site_instance =
-        default_site_instance_.get();
+        GetDefaultSiteInstance(shard);
     if (!site_instance) {
       site_instance = new SiteInstanceImpl(this);
 
-      // Note: |default_site_instance_| will get set inside this call
+      // Note: |default_site_instances_| will get set inside this call
       // via RegisterSiteInstance().
-      site_instance->SetSiteInfoToDefault(
-          site_info.GetStoragePartitionConfig());
-      DCHECK_EQ(default_site_instance_, site_instance.get());
+      site_instance->SetSiteInfoToDefault(site_info.GetStoragePartitionConfig(),
+                                          shard);
+      CHECK_EQ(GetDefaultSiteInstance(shard), site_instance.get(),
+               base::NotFatalUntil::M160);
     }
 
     // Add |site_info| to the set so we can keep track of all the sites the
@@ -168,8 +170,9 @@ scoped_refptr<SiteInstanceImpl> BrowsingInstance::GetSiteInstanceForURLHelper(
 }
 
 void BrowsingInstance::RegisterSiteInstance(SiteInstanceImpl* site_instance) {
-  DCHECK(site_instance->browsing_instance_.get() == this);
-  DCHECK(site_instance->HasSite());
+  CHECK(site_instance->browsing_instance_.get() == this,
+        base::NotFatalUntil::M160);
+  CHECK(site_instance->HasSite(), base::NotFatalUntil::M160);
 
   // Verify that the SiteInstance's StoragePartitionConfig matches this
   // BrowsingInstance's StoragePartitionConfig if it already has one.
@@ -190,9 +193,12 @@ void BrowsingInstance::RegisterSiteInstance(SiteInstanceImpl* site_instance) {
   // Explicitly prevent the default SiteInstance from being added since
   // the map is only supposed to contain instances that map to a single site.
   if (site_instance->IsDefaultSiteInstance()) {
+    // TODO(crbug.com/578414909): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(!ShouldUseDefaultSiteInstanceGroup());
-    CHECK(!default_site_instance_);
-    default_site_instance_ = site_instance;
+    SiteShard shard = site_instance->GetSiteInfo().shard();
+    CHECK(!default_site_instances_.contains(shard));
+    default_site_instances_[shard] = site_instance;
     return;
   }
 
@@ -210,13 +216,21 @@ void BrowsingInstance::RegisterSiteInstance(SiteInstanceImpl* site_instance) {
   }
 }
 
-void BrowsingInstance::UnregisterSiteInstance(SiteInstanceImpl* site_instance) {
-  DCHECK(site_instance->browsing_instance_.get() == this);
-  DCHECK(site_instance->HasSite());
+SiteInstanceImpl* BrowsingInstance::GetDefaultSiteInstance(SiteShard shard) {
+  CHECK(!ShouldUseDefaultSiteInstanceGroup());
+  auto it = default_site_instances_.find(shard);
+  return it != default_site_instances_.end() ? it->second.get() : nullptr;
+}
 
-  if (site_instance == default_site_instance_) {
-    // The last reference to the default SiteInstance is being destroyed.
-    default_site_instance_ = nullptr;
+void BrowsingInstance::UnregisterSiteInstance(SiteInstanceImpl* site_instance) {
+  CHECK(site_instance->browsing_instance_.get() == this,
+        base::NotFatalUntil::M160);
+  CHECK(site_instance->HasSite(), base::NotFatalUntil::M160);
+
+  auto it = default_site_instances_.find(site_instance->GetSiteInfo().shard());
+  if (it != default_site_instances_.end() && it->second == site_instance) {
+    // The last reference to this default SiteInstance is being destroyed.
+    default_site_instances_.erase(it);
   }
 
   // Only unregister the SiteInstance if it is the same one that is registered
@@ -237,10 +251,12 @@ BrowsingInstanceId BrowsingInstance::NextBrowsingInstanceId() {
 BrowsingInstance::~BrowsingInstance() {
   // We should only be deleted when all of the SiteInstances that refer to
   // us are gone.
+  // TODO(crbug.com/569105157): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(site_instance_map_.empty());
-  DCHECK_EQ(0u, active_contents_count_);
-  DCHECK(!default_site_instance_);
-  DCHECK(!default_site_instance_group_);
+  CHECK_EQ(0u, active_contents_count_, base::NotFatalUntil::M160);
+  CHECK(default_site_instances_.empty(), base::NotFatalUntil::M160);
+  CHECK(!default_site_instance_group_, base::NotFatalUntil::M160);
 
   // Remove any origin isolation opt-ins related to this instance.
   ChildProcessSecurityPolicyImpl* policy =
@@ -268,8 +284,9 @@ SiteInfo BrowsingInstance::ComputeSiteInfoForURL(
 
   // The WebExposedIsolationInfos must be compatible for this function to make
   // sense.
-  DCHECK(WebExposedIsolationInfo::AreCompatible(
-      url_info.web_exposed_isolation_info, web_exposed_isolation_info_));
+  CHECK(WebExposedIsolationInfo::AreCompatible(
+            url_info.web_exposed_isolation_info, web_exposed_isolation_info_),
+        base::NotFatalUntil::M160);
 
   // If the passed in UrlInfo has a null WebExposedIsolationInfo, meaning that
   // it is compatible with any isolation state, we reuse the isolation state of
@@ -280,7 +297,8 @@ SiteInfo BrowsingInstance::ComputeSiteInfoForURL(
 }
 
 int BrowsingInstance::EstimateOriginAgentClusterOverhead() {
-  DCHECK(SiteIsolationPolicy::IsProcessIsolationForOriginAgentClusterEnabled());
+  CHECK(SiteIsolationPolicy::IsProcessIsolationForOriginAgentClusterEnabled(),
+        base::NotFatalUntil::M160);
 
   std::set<SiteInfo> site_info_set;
   std::set<SiteInfo> site_info_set_no_oac;
@@ -320,7 +338,8 @@ int BrowsingInstance::EstimateOriginAgentClusterOverhead() {
     site_info_set_no_oac.insert(
         site_info.GetNonOriginKeyedEquivalentForMetrics(isolation_context_));
   }
-  DCHECK_GE(site_info_set.size(), site_info_set_no_oac.size());
+  CHECK_GE(site_info_set.size(), site_info_set_no_oac.size(),
+           base::NotFatalUntil::M160);
   int result = site_info_set.size() - site_info_set_no_oac.size();
   return result;
 }
@@ -330,7 +349,7 @@ void BrowsingInstance::IncrementActiveContentsCount() {
 }
 
 void BrowsingInstance::DecrementActiveContentsCount() {
-  DCHECK_LT(0u, active_contents_count_);
+  CHECK_LT(0u, active_contents_count_, base::NotFatalUntil::M160);
   active_contents_count_--;
 }
 

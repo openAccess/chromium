@@ -13,7 +13,6 @@
 #import "components/signin/public/identity_manager/identity_test_environment.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
-#import "ios/chrome/browser/signin/model/capabilities_dict.h"
 #import "ios/chrome/browser/signin/model/capabilities_types.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
@@ -21,7 +20,6 @@
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest/include/gtest/gtest.h"
-#import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 
 namespace {
@@ -57,13 +55,13 @@ class AccountCapabilitiesFetcherIOSTest : public PlatformTest {
         FakeSystemIdentityManager::FromSystemIdentityManager(
             GetApplicationContext()->GetSystemIdentityManager());
 
-    CoreAccountInfo account_info =
+    AccountInfo account_info =
         identity_test_environment_.MakeAccountAvailable(kTestEmail);
 
     // Register a fake identity and set the expected capabilities.
     id<SystemIdentity> identity = [FakeSystemIdentity
-        identityWithEmail:base::SysUTF8ToNSString(account_info.email)
-                   gaiaID:account_info.gaia];
+        identityWithEmail:base::SysUTF8ToNSString(account_info.GetEmail())
+                   gaiaID:account_info.GetGaiaId()];
     system_identity_manager->AddIdentity(identity);
 
     if (capability_fetched.has_value() &&
@@ -79,7 +77,8 @@ class AccountCapabilitiesFetcherIOSTest : public PlatformTest {
     // Check that the capabilities are correctly converted.
     base::RunLoop run_loop;
     ios::AccountCapabilitiesFetcherIOS fetcher(
-        account_info, AccountCapabilitiesFetcher::FetchPriority::kForeground,
+        account_info.GetCoreAccountInfo(),
+        AccountCapabilitiesFetcher::FetchPriority::kForeground,
         account_manager_service_,
         base::BindRepeating(&CheckCapability, capability_expected),
         base::BindOnce([](base::RunLoop* run_loop,

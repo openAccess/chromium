@@ -6,7 +6,6 @@
 
 #include "base/check_op.h"
 #include "media/base/media_serializers.h"
-#include "ui/gfx/color_space_win.h"
 
 namespace media {
 namespace {
@@ -14,7 +13,7 @@ namespace {
 // Only define this method in debug mode.
 #if !defined(NDEBUG)
 
-void AddDebugMessages(D3D11Status* error, ComD3D11Device device) {
+void AddDebugMessages(D3DStatus* error, ComD3D11Device device) {
   // MSDN says that this needs to be casted twice, then GetMessage should
   // be called with a malloc.
   ComD3D11Debug debug_layer;
@@ -44,14 +43,14 @@ void AddDebugMessages(D3D11Status* error, ComD3D11Device device) {
   error->WithData("debug_info", messages);
 }
 
-D3D11Status DebugStatus(D3D11Status&& status, ComD3D11Device device) {
+D3DStatus DebugStatus(D3DStatus&& status, ComD3D11Device device) {
   AddDebugMessages(&status, device);
   return std::move(status);
 }
 
 #else
 
-D3D11Status DebugStatus(D3D11Status&& status, ComD3D11Device device) {
+D3DStatus DebugStatus(D3DStatus&& status, ComD3D11Device device) {
   return std::move(status);
 }
 
@@ -67,7 +66,7 @@ VideoProcessorProxy::VideoProcessorProxy(
     : video_device_(std::move(video_device)),
       device_context_(std::move(d3d11_device_context)) {}
 
-D3D11Status VideoProcessorProxy::Init(uint32_t width, uint32_t height) {
+D3DStatus VideoProcessorProxy::Init(uint32_t width, uint32_t height) {
   processor_enumerator_.Reset();
   video_processor_.Reset();
 
@@ -90,14 +89,14 @@ D3D11Status VideoProcessorProxy::Init(uint32_t width, uint32_t height) {
   HRESULT hr = video_device_->CreateVideoProcessorEnumerator(
       &desc, &processor_enumerator_);
   if (!SUCCEEDED(hr)) {
-    return DebugStatus({D3D11Status::Codes::kCreateDecoderOutputViewFailed, hr},
+    return DebugStatus({D3DStatus::Codes::kCreateDecoderOutputViewFailed, hr},
                        device);
   }
 
   hr = video_device_->CreateVideoProcessor(processor_enumerator_.Get(), 0,
                                            &video_processor_);
   if (!SUCCEEDED(hr)) {
-    return DebugStatus({D3D11Status::Codes::kCreateVideoProcessorFailed, hr},
+    return DebugStatus({D3DStatus::Codes::kCreateVideoProcessorFailed, hr},
                        device);
   }
 
@@ -108,7 +107,7 @@ D3D11Status VideoProcessorProxy::Init(uint32_t width, uint32_t height) {
   video_context_->VideoProcessorSetStreamAutoProcessingMode(
       video_processor_.Get(), 0, FALSE);
 
-  return D3D11Status::Codes::kOk;
+  return D3DStatus::Codes::kOk;
 }
 
 HRESULT VideoProcessorProxy::CreateVideoProcessorOutputView(
@@ -130,17 +129,15 @@ HRESULT VideoProcessorProxy::CreateVideoProcessorInputView(
 }
 
 void VideoProcessorProxy::SetStreamColorSpace(
-    const gfx::ColorSpace& color_space) {
-  video_context_->VideoProcessorSetStreamColorSpace1(
-      video_processor_.Get(), 0,
-      gfx::ColorSpaceWin::GetDXGIColorSpace(color_space));
+    DXGI_COLOR_SPACE_TYPE color_space) {
+  video_context_->VideoProcessorSetStreamColorSpace1(video_processor_.Get(), 0,
+                                                     color_space);
 }
 
 void VideoProcessorProxy::SetOutputColorSpace(
-    const gfx::ColorSpace& color_space) {
-  video_context_->VideoProcessorSetOutputColorSpace1(
-      video_processor_.Get(),
-      gfx::ColorSpaceWin::GetDXGIColorSpace(color_space));
+    DXGI_COLOR_SPACE_TYPE color_space) {
+  video_context_->VideoProcessorSetOutputColorSpace1(video_processor_.Get(),
+                                                     color_space);
 }
 
 HRESULT VideoProcessorProxy::VideoProcessorBlt(

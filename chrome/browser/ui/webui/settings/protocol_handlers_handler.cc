@@ -45,7 +45,7 @@ base::ListValue GetHandlersAsListValue(
                       handler.GetProtocolDisplayName());
     handler_value.Set("protocol", handler.protocol());
     handler_value.Set("spec", handler.url().spec());
-    handler_value.Set("host", handler.url().GetHost());
+    handler_value.Set("host", handler.url().host());
     if (registry) {
       handler_value.Set("is_default", registry->IsDefault(handler));
     }
@@ -328,7 +328,7 @@ void ProtocolHandlersHandler::ResetProtocolHandlerUserApproval(
     const base::ListValue& args) {
   custom_handlers::ProtocolHandler handler(ParseAppHandlerFromArgs(args));
   CHECK(!handler.IsEmpty());
-  DCHECK(web_app_provider_);
+  CHECK(web_app_provider_, base::NotFatalUntil::M162);
 
   const webapps::AppId& app_id = handler.web_app_id().value();
   web_app_provider_->scheduler().UpdateProtocolHandlerUserApproval(

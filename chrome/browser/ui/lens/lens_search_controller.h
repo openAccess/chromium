@@ -17,9 +17,15 @@
 #include "components/lens/lens_overlay_invocation_source.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/tabs/public/tab_interface.h"
+#include "third_party/omnibox_proto/chrome_aim_entry_point.pb.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/gfx/geometry/rect.h"
+#include "url/origin.h"
+
+namespace contextual_search {
+class ContextualSearchSessionHandle;
+}  // namespace contextual_search
 
 namespace lens {
 class LensOverlayQueryController;
@@ -129,12 +135,12 @@ class LensSearchController {
   // is fully opened.
   // TODO(crbug.com/403629222): Revisit if it makes sense to pass the
   // destination URL instead of the query text directly.
-  void IssueContextualSearchRequest(
+  virtual void IssueContextualSearchRequest(
       lens::LensOverlayInvocationSource invocation_source,
       const GURL& destination_url,
-      AutocompleteMatchType::Type match_type,
-      bool is_zero_prefix_suggestion);
-
+      omnibox::AutocompleteMatchType match_type,
+      bool is_zero_prefix_suggestion,
+      bool grant_session_permission);
 
   // If `suppress_contextualization` is true, queries will not be performed with
   // contextualization for the duration of the session. However,
@@ -145,9 +151,32 @@ class LensSearchController {
       lens::LensOverlayInvocationSource invocation_source,
       std::string query_text,
       std::map<std::string, std::string> additional_query_parameters,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       bool is_zero_prefix_suggestion,
-      bool suppress_contextualization);
+      bool suppress_contextualization,
+      bool grant_session_permission = false);
+
+  // Starts a zero-state session in the side panel for this tab, creating or
+  // taking the contextual search session handle and updating invocation source.
+  // If `open_lens_overlay` is true, concurrently opens the Lens Overlay.
+  void StartZeroStateSessionInSidePanel(
+      omnibox::ChromeAimEntryPoint entry_point,
+      lens::LensOverlayInvocationSource invocation_source,
+      bool open_lens_overlay = false);
+
+  // Attempts to open a pre-constructed AIM query `url` with `session_handle`
+  // in the side panel for this tab. The active tab context must have already
+  // been uploaded to `session_handle`; to start a query that uploads the active
+  // tab for the caller, use `IssueContextualSearchRequest` or
+  // `IssueTextSearchRequest` instead. Returns true and takes ownership of
+  // `session_handle` if opened in the side panel; returns false and leaves
+  // `session_handle` untouched if the query should not or cannot be opened in
+  // the side panel.
+  [[nodiscard]] virtual bool StartContextualAimQueryInSidePanel(
+      const GURL& url,
+      std::unique_ptr<contextual_search::ContextualSearchSessionHandle>&
+          session_handle,
+      omnibox::ChromeAimEntryPoint aim_entry_point);
 
   // Starts the closing process of the overlay. This is an asynchronous process
   // with the following sequence:
@@ -177,8 +206,9 @@ class LensSearchController {
   // Returns true if Lens is currently active on this tab.
   virtual bool IsActive();
 
-  // Returns true if either the overlay or the side panel is showing.
-  bool IsShowingUI();
+  // Returns true if either the overlay or the side panel is showing. Virtual
+  // for testing.
+  virtual bool IsShowingUI();
 
   // Returns true if Lens is currently off on this tab.
   bool IsOff();
@@ -280,6 +310,13 @@ class LensSearchController {
   get_lens_permission_bubble_controller_for_testing() {
     return lens_permission_bubble_controller_.get();
   }
+
+  // Returns whether the current tab's committed origin matches the origin
+  // of the page when this Lens session was initiated.
+  virtual bool IsCurrentTabSameOrigin() const;
+
+  // Returns the origin of the page when this Lens session was initiated.
+  const url::Origin& session_origin() const { return session_origin_; }
 
  protected:
   friend class LensOverlayController;
@@ -396,7 +433,8 @@ class LensSearchController {
   // Creates all state necessary to start a Lens session. This method contains
   // shared state that is used no matter the entrypoint.
   void StartLensSession(lens::LensOverlayInvocationSource invocation_source,
-                        bool suppress_contextualization = false);
+                        bool suppress_contextualization = false,
+                        bool grant_session_permission = false);
 
   // Runs the eligibility checks necessary for Lens to open on this tab. If the
   // user has not granted permission to use Lens on this tab, the permission
@@ -558,6 +596,9 @@ class LensSearchController {
   raw_ptr<tabs::TabInterface> tab_;
 
   ui::ScopedUnownedUserData<LensSearchController> scoped_unowned_user_data_;
+
+  // The origin of the page when the Lens session was initialized.
+  url::Origin session_origin_;
 
   // Must be the last member.
   base::WeakPtrFactory<LensSearchController> weak_ptr_factory_{this};

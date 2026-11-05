@@ -18,7 +18,9 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "components/remote_cocoa/app_shim/features.h"
 #include "components/remote_cocoa/app_shim/select_file_dialog_bridge.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/gtest_mac.h"
@@ -74,13 +76,20 @@ class SelectFileDialogMacTest : public PlatformTest,
 
   // Helper method to create a dialog with the given `args`. Returns the created
   // NSSavePanel.
-  NSSavePanel* SelectFileWithParams(FileDialogArguments args) {
+  NSSavePanel* SelectFileWithParams(
+      FileDialogArguments args,
+      NSWindowStyleMask style_mask = NSWindowStyleMaskTitled,
+      NSInteger level = NSNormalWindowLevel,
+      NSWindowCollectionBehavior collection_behavior =
+          NSWindowCollectionBehaviorDefault) {
     NSWindow* parent_window =
         [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 100, 100)
-                                    styleMask:NSWindowStyleMaskTitled
+                                    styleMask:style_mask
                                       backing:NSBackingStoreBuffered
                                         defer:NO];
     parent_window.releasedWhenClosed = NO;
+    parent_window.level = level;
+    parent_window.collectionBehavior = collection_behavior;
     parent_windows_.push_back(parent_window);
 
     dialog_->SelectFile(args.type, args.title, args.default_path,
@@ -131,6 +140,8 @@ class SelectFileDialogMacTest : public PlatformTest,
     // Spin the run loop to get any pending Mojo IPC sent.
     base::RunLoop().RunUntilIdle();
   }
+
+  NSWindow* last_parent_window() const { return parent_windows_.back(); }
 
  private:
   scoped_refptr<SelectFileDialogImpl> dialog_;
@@ -527,6 +538,53 @@ TEST_F(SelectFileDialogMacTest, DontCrashWithBogusExtension) {
   NSSavePanel* panel = SelectFileWithParams(args);
   // If execution gets this far, there was no crash.
   EXPECT_TRUE(panel);
+}
+
+TEST_F(SelectFileDialogMacTest, NonTitledParentWindow) {
+  FileDialogArguments args;
+  NSSavePanel* panel =
+      SelectFileWithParams(args, NSWindowStyleMaskBorderless);
+  EXPECT_TRUE(panel);
+  EXPECT_TRUE(panel.visible);
+  EXPECT_EQ(panel.level, NSModalPanelWindowLevel);
+}
+
+TEST_F(SelectFileDialogMacTest, FloatingParentWindow) {
+  FileDialogArguments args;
+  NSSavePanel* panel =
+      SelectFileWithParams(args, NSWindowStyleMaskBorderless,
+                           NSFloatingWindowLevel);
+  EXPECT_TRUE(panel);
+  EXPECT_TRUE(panel.visible);
+  EXPECT_GE(panel.level, NSModalPanelWindowLevel);
+  EXPECT_GT(panel.level, NSFloatingWindowLevel);
+}
+
+TEST_F(SelectFileDialogMacTest, FullScreenAuxiliaryParentWindow) {
+  FileDialogArguments args;
+  NSSavePanel* panel = SelectFileWithParams(
+      args, NSWindowStyleMaskBorderless, NSFloatingWindowLevel,
+      NSWindowCollectionBehaviorFullScreenAuxiliary);
+  EXPECT_TRUE(panel);
+  EXPECT_TRUE(panel.visible);
+  EXPECT_TRUE(panel.isSheet);
+  EXPECT_EQ(panel.sheetParent, last_parent_window());
+}
+
+TEST_F(SelectFileDialogMacTest,
+       FullScreenAuxiliaryParentWindow_FeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      remote_cocoa::features::kMacFullScreenAuxiliaryFileDialog);
+
+  FileDialogArguments args;
+  NSSavePanel* panel = SelectFileWithParams(
+      args, NSWindowStyleMaskBorderless, NSFloatingWindowLevel,
+      NSWindowCollectionBehaviorFullScreenAuxiliary);
+  EXPECT_TRUE(panel);
+  EXPECT_TRUE(panel.visible);
+  EXPECT_FALSE(panel.isSheet);
+  EXPECT_GE(panel.level, NSModalPanelWindowLevel);
 }
 
 }  // namespace ui::test

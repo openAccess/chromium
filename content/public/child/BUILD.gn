@@ -31,20 +31,10 @@ source_set("child_sources") {
     sources += [ "font_integration_init.h" ]
   }
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//content:content_implementation",
-  ]
+  configs += [ "//content:content_implementation" ]
 
   deps = [
-    "//content/child",  # Must not be public_deps!
     "//content/public/common:common_sources",
     "//gin",
-  ]
-
-  allow_circular_includes_from = [
-    # This target is a pair with content/child. They always go together and
-    # include headers from each other.
-    "//content/child",
   ]
 }

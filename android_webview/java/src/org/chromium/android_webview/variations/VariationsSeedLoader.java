@@ -14,7 +14,7 @@ import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.SystemClock;
 
-import androidx.annotation.NonNull;
+import androidx.annotation.GuardedBy;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
@@ -23,6 +23,7 @@ import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.android_webview.AwBrowserProcess;
+import org.chromium.android_webview.DualTraceEvent;
 import org.chromium.android_webview.common.AwFeatures;
 import org.chromium.android_webview.common.AwSwitches;
 import org.chromium.android_webview.common.WebViewCachedFlags;
@@ -32,6 +33,7 @@ import org.chromium.android_webview.common.services.ServiceConnectionDelayRecord
 import org.chromium.android_webview.common.services.ServiceNames;
 import org.chromium.android_webview.common.variations.VariationsServiceMetricsHelper;
 import org.chromium.android_webview.common.variations.VariationsUtils;
+import org.chromium.android_webview.metrics.NonembeddedMetricsCollector;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
@@ -57,31 +59,73 @@ import java.util.concurrent.TimeoutException;
  * block on loading the seed (by using FutureTask.get()) but should not block on the other work done
  * by the Runnable.
  *
- * The Runnable and FutureTask together perform these steps:
- * 1. Pre-load the metrics client ID. This is needed to seed the EntropyProvider. If there is no
- *    client ID, variations can't be used on this run.
- * 2. Load the new seed file, if any.
- * 3. If no new seed file, load the old seed file, if any.
- * 4. Make the loaded seed available via get() (or null if there was no seed).
- * 5. If there was a new seed file, replace the old with the new (but only after making the loaded
- *    seed available, as the replace need not block startup).
- * 6. If there was no seed, or the loaded seed was expired, request a new seed (but don't request
- *    more often than MAX_REQUEST_PERIOD_MILLIS).
+ * <p>The Runnable and FutureTask together perform these steps:
  *
- * VariationsSeedLoader should be used during WebView startup like so:
- * 1. Ensure ContextUtils.getApplicationContext(), AwBrowserProcess.getWebViewPackageName(), and
- *    PathUtils are ready to use.
- * 2. As early as possible, call startVariationsInit() to begin the task.
- * 3. Perform any WebView startup tasks which don't require variations to be initialized.
- * 4. Call finishVariationsInit() with the value returned from startVariationsInit(). This will
- *    block for up to SEED_LOAD_TIMEOUT_MILLIS if the task hasn't fininshed loading the seed. If the
- *    seed is loaded on time, variations will be initialized. finishVariationsInit() must be called
- *    before AwFeatureListCreator::SetUpFieldTrials() runs.
+ * <ol>
+ *   <li>Pre-load the metrics client ID. This is needed to seed the EntropyProvider. If there is no
+ *       client ID, variations can't be used on this run.
+ *   <li>Load the new seed file, if any.
+ *   <li>If no new seed file, load the old seed file, if any.
+ *   <li>Make the loaded seed available via get() (or null if there was no seed).
+ *   <li>If there was a new seed file, replace the old with the new (but only after making the
+ *       loaded seed available, as the replace need not block startup).
+ *   <li>If there was no seed, or the loaded seed was expired, request a new seed (but don't request
+ *       more often than MAX_REQUEST_PERIOD_MILLIS).
+ * </ol>
+ *
+ * <p>VariationsSeedLoader should be used during WebView startup like so:
+ *
+ * <ol>
+ *   <li>Ensure ContextUtils.getApplicationContext(), AwBrowserProcess.getWebViewPackageName(), and
+ *       PathUtils are ready to use.
+ *   <li>As early as possible, call startVariationsInit() to begin the task.
+ *   <li>Perform any WebView startup tasks which don't require variations to be initialized.
+ *   <li>Call finishVariationsInit() with the value returned from startVariationsInit(). This will
+ *       block for up to SEED_LOAD_TIMEOUT_MILLIS if the task hasn't fininshed loading the seed. If
+ *       the seed is loaded on time, variations will be initialized. finishVariationsInit() must be
+ *       called before AwFeatureListCreator::SetUpFieldTrials() runs.
+ * </ol>
  */
 @JNINamespace("android_webview")
 @NullMarked
 public class VariationsSeedLoader {
     private static final String TAG = "VariationsSeedLoader";
+
+    private static final Object sSeedLoaderLock = new Object();
+
+    @GuardedBy("sSeedLoaderLock")
+    private static @Nullable VariationsSeedLoader sSeedLoader;
+
+    /** Starts the asynchronous background task to load the variations seed. */
+    public static void startInit() {
+        if (FastVariationsSeedSafeModeAction.hasRun()) {
+            return;
+        }
+        synchronized (sSeedLoaderLock) {
+            if (sSeedLoader == null) {
+                sSeedLoader = new VariationsSeedLoader();
+                sSeedLoader.startVariationsInit();
+            }
+        }
+    }
+
+    /** Finishes variations seed loading and applies variations before native startup. */
+    public static void finishInit() {
+        if (FastVariationsSeedSafeModeAction.hasRun()) {
+            return;
+        }
+        try (DualTraceEvent e = DualTraceEvent.scoped("VariationsSeedLoader.finishInit")) {
+            synchronized (sSeedLoaderLock) {
+                if (sSeedLoader == null) {
+                    Log.e(TAG, "finishInit() called before startInit()");
+                    startInit();
+                }
+                assert sSeedLoader != null;
+                sSeedLoader.finishVariationsInit();
+                sSeedLoader = null; // Allow this to be GC'd after its background thread finishes.
+            }
+        }
+    }
 
     // The expiration time for an app's copy of the Finch seed, after which we'll still use it,
     // but we'll request a new one from VariationsSeedService.
@@ -265,7 +309,6 @@ public class VariationsSeedLoader {
      * <p>This method should be posted to a background thread to ensure that other initialization
      * work can happen concurrently.
      */
-    @NonNull
     private SeedLoadResult loadSeedFile() {
         File newSeedFile = VariationsUtils.getNewSeedFile();
         File oldSeedFile = VariationsUtils.getSeedFile();
@@ -367,7 +410,7 @@ public class VariationsSeedLoader {
                 }
                 // Connect to nonembedded metrics Service at the same time we connect to variation
                 // service.
-                AwBrowserProcess.collectNonembeddedMetrics();
+                NonembeddedMetricsCollector.collectNonembeddedMetrics();
             } catch (NameNotFoundException e) {
                 Log.e(
                         TAG,

@@ -153,19 +153,23 @@ void DlpContentManagerAsh::CheckScreenShareRestriction(
 }
 
 void DlpContentManagerAsh::OnVideoCaptureStarted(const ScreenshotArea& area) {
-  DCHECK(!running_video_capture_info_.has_value());
-  running_video_capture_info_.emplace(area);
+  CHECK(!running_video_capture_info_.has_value(), base::NotFatalUntil::M160);
   const ConfidentialContentsInfo info =
       GetAreaConfidentialContentsInfo(area, DlpContentRestriction::kScreenshot);
-  // Taking video capture of confidential content with block level restriction
-  // should not proceed to this function. Taking video capture should be blocked
-  // earlier.
-  DCHECK(!IsBlocked(info.restriction_info));
+  if (IsBlocked(info.restriction_info)) {
+    MaybeReportEvent(info.restriction_info,
+                     DlpRulesManager::Restriction::kScreenshot);
+    data_controls::DlpBooleanHistogram(
+        data_controls::dlp::kVideoCaptureInterruptedUMA, true);
+    InterruptVideoRecording();
+    return;
+  }
+  running_video_capture_info_.emplace(area);
   if (IsReported(info.restriction_info)) {
     // Don't report for the report mode before starting a video capture to avoid
     // reporting multiple times.
-    DCHECK(
-        running_video_capture_info_->reported_confidential_contents.IsEmpty());
+    CHECK(running_video_capture_info_->reported_confidential_contents.IsEmpty(),
+          base::NotFatalUntil::M160);
     // TODO(1306306): Consider reporting all visible confidential urls for
     //  onscreen restrictions.
     MaybeReportEvent(info.restriction_info,
@@ -226,7 +230,7 @@ void DlpContentManagerAsh::OnImageCapture(const ScreenshotArea& area) {
   // Taking screenshots of confidential content with block level restriction
   // should not proceed to this function. Taking screenshot should be blocked
   // earlier.
-  DCHECK(!IsBlocked(info.restriction_info));
+  CHECK(!IsBlocked(info.restriction_info), base::NotFatalUntil::M160);
   if (IsReported(info.restriction_info)) {
     MaybeReportEvent(info.restriction_info,
                      DlpRulesManager::Restriction::kScreenshot);
@@ -265,7 +269,7 @@ void DlpContentManagerAsh::OnScreenShareStarted(
     base::RepeatingClosure stop_callback,
     content::MediaStreamUI::StateChangeCallback state_change_callback,
     content::MediaStreamUI::SourceCallback source_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   for (const content::DesktopMediaID& id : screen_share_ids) {
     AddOrUpdateScreenShare(label, id, application_title, stop_callback,
@@ -367,12 +371,16 @@ void DlpContentManagerAsh::OnConfidentialityChanged(
     const DlpContentRestrictionSet& restriction_set) {
   DlpContentManager::OnConfidentialityChanged(web_contents, restriction_set);
   if (!restriction_set.IsEmpty()) {
-    web_contents_window_observers_[web_contents] =
-        std::make_unique<DlpWindowObserver>(web_contents->GetNativeView(),
-                                            this);
-    if (web_contents->GetVisibility() == content::Visibility::VISIBLE) {
-      MaybeChangeOnScreenRestrictions();
+    if (aura::Window* window = web_contents->GetNativeView()) {
+      web_contents_window_observers_[web_contents] =
+          std::make_unique<DlpWindowObserver>(window, this);
+      if (web_contents->GetVisibility() == content::Visibility::VISIBLE) {
+        MaybeChangeOnScreenRestrictions();
+      } else {
+        CheckRunningScreenShares();
+      }
     } else {
+      web_contents_window_observers_.erase(web_contents);
       CheckRunningScreenShares();
     }
   } else {
@@ -394,9 +402,12 @@ void DlpContentManagerAsh::RemoveFromConfidential(
 
 void DlpContentManagerAsh::MaybeChangeOnScreenRestrictions() {
   DlpContentRestrictionSet new_restriction_set;
-  // Check each visible WebContents.
+  // Check each visible WebContents that has a native window. Unattached guest
+  // WebContents have Visibility::VISIBLE by default, but no native view until
+  // attached to their embedder.
   for (const auto& entry : confidential_web_contents_) {
-    if (entry.first->GetVisibility() == content::Visibility::VISIBLE) {
+    if (entry.first->GetVisibility() == content::Visibility::VISIBLE &&
+        entry.first->GetNativeView()) {
       new_restriction_set.UnionWith(entry.second);
     }
   }
@@ -421,12 +432,13 @@ void DlpContentManagerAsh::MaybeChangeOnScreenRestrictions() {
 void DlpContentManagerAsh::OnScreenRestrictionsChanged(
     const DlpContentRestrictionSet& added_restrictions,
     const DlpContentRestrictionSet& removed_restrictions) {
-  DCHECK(!(added_restrictions.GetRestrictionLevel(
-               DlpContentRestriction::kPrivacyScreen) ==
-               DlpRulesManager::Level::kBlock &&
-           removed_restrictions.GetRestrictionLevel(
-               DlpContentRestriction::kPrivacyScreen) ==
-               DlpRulesManager::Level::kBlock));
+  CHECK(!(added_restrictions.GetRestrictionLevel(
+              DlpContentRestriction::kPrivacyScreen) ==
+              DlpRulesManager::Level::kBlock &&
+          removed_restrictions.GetRestrictionLevel(
+              DlpContentRestriction::kPrivacyScreen) ==
+              DlpRulesManager::Level::kBlock),
+        base::NotFatalUntil::M160);
   ash::PrivacyScreenDlpHelper* privacy_screen_helper =
       ash::PrivacyScreenDlpHelper::Get();
 
@@ -475,8 +487,10 @@ DlpContentManagerAsh::GetConfidentialContentsOnScreen(
   info.restriction_info =
       GetOnScreenPresentRestrictions().GetRestrictionLevelAndUrl(restriction);
   for (auto& entry : confidential_web_contents_) {
-    if (entry.first->GetVisibility() != content::Visibility::VISIBLE)
+    if (entry.first->GetVisibility() != content::Visibility::VISIBLE ||
+        !entry.first->GetNativeView()) {
       continue;
+    }
     if (entry.first->IsBeingDestroyed()) {
       // The contents can be in the process of being destroyed during this
       // check, although they have not yet been removed from
@@ -520,11 +534,11 @@ DlpContentManagerAsh::GetAreaConfidentialContentsInfo(
 
   // Window - restricted if the window contains confidential data.
   if (area.type == ScreenshotType::kWindow) {
-    DCHECK(area.window);
+    CHECK(area.window, base::NotFatalUntil::M160);
     // Check whether the captured window contains any confidential WebContents.
     for (auto& entry : confidential_web_contents_) {
       aura::Window* web_contents_window = entry.first->GetNativeView();
-      if (area.window->Contains(web_contents_window)) {
+      if (web_contents_window && area.window->Contains(web_contents_window)) {
         if (entry.second.GetRestrictionLevel(restriction) ==
             info.restriction_info.level) {
           info.confidential_contents.Add(entry.first);
@@ -556,9 +570,10 @@ DlpContentManagerAsh::GetAreaConfidentialContentsInfo(
     return info;
   }
 
-  DCHECK_EQ(area.type, ScreenshotType::kPartialWindow);
-  DCHECK(area.rect);
-  DCHECK(area.window);
+  CHECK_EQ(area.type, ScreenshotType::kPartialWindow,
+           base::NotFatalUntil::M160);
+  CHECK(area.rect, base::NotFatalUntil::M160);
+  CHECK(area.window, base::NotFatalUntil::M160);
   // Partial - restricted if any visible confidential content intersects
   // with the area.
 
@@ -570,8 +585,8 @@ DlpContentManagerAsh::GetAreaConfidentialContentsInfo(
       continue;
     }
     aura::Window* web_contents_window = entry.first->GetNativeView();
-    if (web_contents_window->GetOcclusionState() ==
-        aura::Window::OcclusionState::OCCLUDED) {
+    if (!web_contents_window || web_contents_window->GetOcclusionState() ==
+                                    aura::Window::OcclusionState::OCCLUDED) {
       continue;
     }
     aura::Window* root_window = web_contents_window->GetRootWindow();
@@ -650,15 +665,17 @@ DlpContentManagerAsh::GetScreenShareConfidentialContentsInfo(
   if (media_id.type == content::DesktopMediaID::Type::TYPE_WEB_CONTENTS) {
     return GetScreenShareConfidentialContentsInfoForWebContents(web_contents);
   }
-  DCHECK_EQ(media_id.type, content::DesktopMediaID::Type::TYPE_WINDOW);
+  CHECK_EQ(media_id.type, content::DesktopMediaID::Type::TYPE_WINDOW,
+           base::NotFatalUntil::M160);
   ConfidentialContentsInfo info;
   aura::Window* window = content::DesktopMediaID::GetNativeWindowById(media_id);
   if (window) {
     // Check whether the captured window contains any confidential WebContents.
     for (auto& entry : confidential_web_contents_) {
       aura::Window* web_contents_window = entry.first->GetNativeView();
-      if (!window->Contains(web_contents_window))
+      if (!web_contents_window || !window->Contains(web_contents_window)) {
         continue;
+      }
       if (entry.second.GetRestrictionLevel(
               DlpContentRestriction::kScreenShare) ==
           info.restriction_info.level) {

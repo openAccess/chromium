@@ -27,8 +27,9 @@
 
 #include <algorithm>
 #include <memory>
+#include <ranges>
 
-#include "base/containers/adapters.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/renderer/core/css/css_container_rule.h"
 #include "third_party/blink/renderer/core/css/css_counter_style_rule.h"
 #include "third_party/blink/renderer/core/css/css_font_palette_values_rule.h"
@@ -205,7 +206,8 @@ BuildSpecificityComponents(const CSSSelector* selector) {
   }
   auto components =
       std::make_unique<protocol::Array<protocol::CSS::SpecificityComponent>>();
-  for (const Vector<const CSSSelector*>& compound : base::Reversed(compounds)) {
+  for (const Vector<const CSSSelector*>& compound :
+       std::views::reverse(compounds)) {
     for (const CSSSelector* simple_selector : compound) {
       std::array<uint8_t, 3> tuple =
           simple_selector->SimpleSelectorSpecificityTuple();
@@ -2171,11 +2173,12 @@ void InspectorStyleSheet::InnerSetText(const String& text,
   if (mark_as_locally_modified) {
     Element* element = OwnerStyleElement();
     if (element) {
-      resource_container_->StoreStyleElementContent(element->GetDomNodeId(),
-                                                    text);
+      resource_container_->StoreStyleElementContent(
+          DOMNodeIdType(element->GetDomNodeId()), text);
     } else if (origin_ == protocol::CSS::StyleSheetOriginEnum::Inspector) {
       resource_container_->StoreStyleElementContent(
-          page_style_sheet_->OwnerDocument()->GetDomNodeId(), text);
+          DOMNodeIdType(page_style_sheet_->OwnerDocument()->GetDomNodeId()),
+          text);
     } else {
       resource_container_->StoreStyleSheetContent(FinalURL(), text);
     }
@@ -2392,6 +2395,16 @@ InspectorStyleSheet::BuildObjectForRuleUsage(CSSRule* rule, bool was_used) {
       type == CSSRule::kScopeRule || type == CSSRule::kContainerRule ||
       type == CSSRule::kStartingStyleRule || type == CSSRule::kNavigationRule) {
     whole_rule_range.end = source_data->rule_header_range.end + 1;
+  } else if (type == CSSRule::kStyleRule) {
+    if (!source_data->child_rules.empty()) {
+      whole_rule_range.end = source_data->property_data.empty()
+                                 ? source_data->rule_header_range.end + 1
+                                 : source_data->rule_declarations_range.end;
+    } else if (source_data->rule_header_range.length() == 0) {
+      // CSSNestedDeclarations rules have no prelude or `{}` braces, so
+      // `rule_declarations_range.end` is already the exclusive end offset.
+      whole_rule_range.end = source_data->rule_declarations_range.end;
+    }
   }
 
   std::unique_ptr<protocol::CSS::RuleUsage> result =
@@ -2728,14 +2741,15 @@ String InspectorStyleSheet::SourceMapURL() {
     return String();
   }
 
-  if (String style_sheet_text; GetText(&style_sheet_text)) {
-    String comment_value =
-        FindMagicComment(style_sheet_text, "sourceMappingURL");
-    if (!comment_value.empty()) {
-      return comment_value;
-    }
+  String header_source_map_url = page_style_sheet_->Contents()->SourceMapURL();
+  if (!header_source_map_url.empty()) {
+    return header_source_map_url;
   }
-  return page_style_sheet_->Contents()->SourceMapURL();
+
+  if (String style_sheet_text; GetText(&style_sheet_text)) {
+    return FindMagicComment(style_sheet_text, "sourceMappingURL");
+  }
+  return String();
 }
 
 const Document* InspectorStyleSheet::GetDocument() {
@@ -3016,7 +3030,7 @@ bool InspectorStyleSheet::InlineStyleSheetText(String* out) {
   }
 
   result = resource_container_->LoadStyleElementContent(
-      owner_element->GetDomNodeId(), out);
+      DOMNodeIdType(owner_element->GetDomNodeId()), out);
 
   if (!result) {
     *out = owner_element->textContent();
@@ -3039,7 +3053,8 @@ bool InspectorStyleSheet::InspectorStyleSheetText(String* result) {
     return false;
   }
   if (resource_container_->LoadStyleElementContent(
-          page_style_sheet_->OwnerDocument()->GetDomNodeId(), result)) {
+          DOMNodeIdType(page_style_sheet_->OwnerDocument()->GetDomNodeId()),
+          result)) {
     return true;
   }
   *result = "";

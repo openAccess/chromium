@@ -6,11 +6,9 @@ import 'chrome://customize-chrome-side-panel.top-chrome/app.js';
 
 import type {AppElement} from 'chrome://customize-chrome-side-panel.top-chrome/app.js';
 import type {BackgroundCollection, CustomizeChromePageRemote, ManagementNoticeState} from 'chrome://customize-chrome-side-panel.top-chrome/customize_chrome.mojom-webui.js';
-import {CustomizeChromePageCallbackRouter, CustomizeChromePageHandlerRemote, CustomizeChromeSection, NewTabPageType} from 'chrome://customize-chrome-side-panel.top-chrome/customize_chrome.mojom-webui.js';
-import {CustomizeChromeApiProxy} from 'chrome://customize-chrome-side-panel.top-chrome/customize_chrome_api_proxy.js';
-import {CustomizeToolbarClientCallbackRouter, CustomizeToolbarHandlerRemote} from 'chrome://customize-chrome-side-panel.top-chrome/customize_toolbar.mojom-webui.js';
+import {browserProxyFactory as customizeChromeBrowserProxyFactory, CustomizeChromePageHandlerRemote, CustomizeChromeSection, NewTabPageType} from 'chrome://customize-chrome-side-panel.top-chrome/customize_chrome.mojom-webui.js';
+import {browserProxyFactory as customizeToolbarBrowserProxyFactory, CustomizeToolbarHandlerRemote} from 'chrome://customize-chrome-side-panel.top-chrome/customize_toolbar.mojom-webui.js';
 import type {CustomizeToolbarHandlerInterface} from 'chrome://customize-chrome-side-panel.top-chrome/customize_toolbar.mojom-webui.js';
-import {CustomizeToolbarApiProxy} from 'chrome://customize-chrome-side-panel.top-chrome/customize_toolbar/customize_toolbar_api_proxy.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertFalse, assertGE, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import type {TestMock} from 'chrome://webui-test/test_mock.js';
@@ -27,13 +25,14 @@ suite('AppTest', () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     handler = installMock(
         CustomizeChromePageHandlerRemote,
-        (mock: CustomizeChromePageHandlerRemote) =>
-            CustomizeChromeApiProxy.setInstance(
-                mock, new CustomizeChromePageCallbackRouter()));
+        (mock: CustomizeChromePageHandlerRemote) => {
+          const {instance, remote} =
+              customizeChromeBrowserProxyFactory.createForTest(mock);
+          customizeChromeBrowserProxyFactory.setInstance(instance);
+          callbackRouter = remote;
+        });
     handler.setResultFor('getBackgroundImages', new Promise(() => {}));
     handler.setResultFor('getBackgroundCollections', new Promise(() => {}));
-    callbackRouter = CustomizeChromeApiProxy.getInstance()
-                         .callbackRouter.$.bindNewPipeAndPassRemote();
     customizeChromeApp = document.createElement('customize-chrome-app');
     document.body.appendChild(customizeChromeApp);
     return microtasksFinished();
@@ -57,30 +56,32 @@ suite('AppTest', () => {
         new Event('edit-theme-click'));
     await microtasksFinished();
     // Current page should now be categories.
-    assertTrue(
-        customizeChromeApp.$.categoriesPage.classList.contains('selected'));
+    const categoriesPage =
+        customizeChromeApp.shadowRoot.querySelector('#categoriesPage');
+    assertTrue(!!categoriesPage);
+    assertTrue(categoriesPage.classList.contains('selected'));
     assertEquals(customizeChromeApp, document.activeElement);
 
     // Send event for category selected.
-    customizeChromeApp.$.categoriesPage.dispatchEvent(
-        new CustomEvent<BackgroundCollection>(
-            'collection-select', {detail: testCollection}));
+    categoriesPage.dispatchEvent(new CustomEvent<BackgroundCollection>(
+        'collection-select', {detail: testCollection}));
     await microtasksFinished();
     // Current page should now be themes.
-    assertTrue(customizeChromeApp.$.themesPage.classList.contains('selected'));
+    const themesPage =
+        customizeChromeApp.shadowRoot.querySelector('#themesPage');
+    assertTrue(!!themesPage);
+    assertTrue(themesPage.classList.contains('selected'));
     assertEquals(customizeChromeApp, document.activeElement);
 
     // Send event for back click.
-    customizeChromeApp.$.themesPage.dispatchEvent(new Event('back-click'));
+    themesPage.dispatchEvent(new Event('back-click'));
     await microtasksFinished();
     // Current page should now be categories.
-    assertTrue(
-        customizeChromeApp.$.categoriesPage.classList.contains('selected'));
+    assertTrue(categoriesPage.classList.contains('selected'));
     assertEquals(customizeChromeApp, document.activeElement);
 
     // Send event for upload image.
-    customizeChromeApp.$.categoriesPage.dispatchEvent(
-        new Event('local-image-upload'));
+    categoriesPage.dispatchEvent(new Event('local-image-upload'));
     await microtasksFinished();
     // Current page should now be overview.
     assertTrue(
@@ -94,7 +95,7 @@ suite('AppTest', () => {
     assertEquals(customizeChromeApp, document.activeElement);
 
     // Send event for back click.
-    customizeChromeApp.$.categoriesPage.dispatchEvent(new Event('back-click'));
+    categoriesPage.dispatchEvent(new Event('back-click'));
     await microtasksFinished();
     // Current page should now be overview.
     assertTrue(
@@ -332,9 +333,11 @@ suite('AppTest', () => {
       document.body.innerHTML = window.trustedTypes!.emptyHTML;
       toolbarCustomizationHandler = installMock(
           CustomizeToolbarHandlerRemote,
-          (mock: CustomizeToolbarHandlerRemote) =>
-              CustomizeToolbarApiProxy.setInstance(
-                  mock, new CustomizeToolbarClientCallbackRouter()));
+          (mock: CustomizeToolbarHandlerRemote) => {
+            const {instance} =
+                customizeToolbarBrowserProxyFactory.createForTest(mock);
+            customizeToolbarBrowserProxyFactory.setInstance(instance);
+          });
       toolbarCustomizationHandler.setResultFor(
           'listActions', Promise.resolve([]));
       toolbarCustomizationHandler.setResultFor(
@@ -357,8 +360,10 @@ suite('AppTest', () => {
           await microtasksFinished();
 
           // Current page should now be categories.
-          assertTrue(customizeChromeApp.$.categoriesPage.classList.contains(
-              'selected'));
+          const categoriesPage =
+              customizeChromeApp.shadowRoot.querySelector('#categoriesPage');
+          assertTrue(!!categoriesPage);
+          assertTrue(categoriesPage.classList.contains('selected'));
           assertEquals(customizeChromeApp, document.activeElement);
 
           callbackRouter.attachedTabStateUpdated(NewTabPageType.kExtension);

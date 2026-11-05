@@ -9,15 +9,31 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/glic/glic_pref_names.h"
-#include "chrome/browser/glic/glic_pref_names_internal.h"
 #include "chrome/browser/glic/public/features.h"
-#include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
+#include "chrome/browser/glic/test_support/scoped_glic_provider_override.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
+#include "chrome/browser/glic/glic_selection_observer.h"
+#include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
+#include "chrome/browser/glic/selection/selection_overlay_controller.h"
+#include "chrome/common/chrome_features.h"
+#include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/web_contents.h"
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/wm/window_pin_util.h"
+#include "ui/aura/window.h"
+#endif
 
 namespace glic {
 
@@ -49,64 +65,63 @@ class InstanceIndependentHotkeyManagerBrowserTest : public GlicBrowserTest {
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
+#if BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_F(InstanceIndependentHotkeyManagerBrowserTest,
-                       AcceleratorPressedInvokesGlic) {
-  // Simulate the accelerator being pressed.
-  TriggerHotkey(LocalHotkeyManager::Command::kPanelToggle);
+                       CanHandleAcceleratorsReturnsFalseWhenLockedFullscreen) {
+  auto* hotkey_manager = coordinator().GetHotkeyManagerForTesting();
+  EXPECT_TRUE(hotkey_manager->CanHandleAccelerators());
 
-  // Verify that the panel actually opens.
-  ASSERT_OK(WaitForGlicOpen());
-}
+  // Pin the browser window in trusted (locked) fullscreen mode.
+  ash::PinWindow(GetBrowser()->GetWindow()->GetNativeWindow(),
+                 /*trusted=*/true);
+  EXPECT_FALSE(hotkey_manager->CanHandleAccelerators());
 
-IN_PROC_BROWSER_TEST_F(InstanceIndependentHotkeyManagerBrowserTest,
-                       CanHandleAcceleratorsReturnsTrueWhenEnabled) {
-  auto* profile = GetBrowser()->GetProfile();
-  InstanceIndependentHotkeyManager manager(
-      &coordinator(), profile,
-      &GlicKeyedServiceFactory::GetGlicKeyedService(profile)->enabling());
-  EXPECT_TRUE(manager.CanHandleAccelerators());
+  // Unpin the window and verify accelerators can be handled again.
+  ash::UnpinWindow(GetBrowser()->GetWindow()->GetNativeWindow());
+  EXPECT_TRUE(hotkey_manager->CanHandleAccelerators());
 }
+#endif
 
 IN_PROC_BROWSER_TEST_F(InstanceIndependentHotkeyManagerBrowserTest,
                        CanHandleAcceleratorsReturnsFalseWhenFreNotCompleted) {
   // Override the FRE status to not completed.
-  auto* profile = GetBrowser()->GetProfile();
-  profile->GetPrefs()->SetInteger(
+  GetProfile()->GetPrefs()->SetInteger(
       prefs::kGlicCompletedFre,
       std::to_underlying(prefs::FreStatus::kNotStarted));
 
-  InstanceIndependentHotkeyManager manager(
-      &coordinator(), profile,
-      &GlicKeyedServiceFactory::GetGlicKeyedService(profile)->enabling());
   // Should return false because FRE is not completed.
-  EXPECT_FALSE(manager.CanHandleAccelerators());
+  EXPECT_FALSE(
+      coordinator().GetHotkeyManagerForTesting()->CanHandleAccelerators());
 }
 
 IN_PROC_BROWSER_TEST_F(InstanceIndependentHotkeyManagerBrowserTest,
                        AcceleratorPressedLaunchesGlicInLocalScope) {
-  g_browser_process->local_state()->SetBoolean(
-      prefs::kGlicHotkeyGlobalScopeEnabled, false);
+  EXPECT_TRUE(
+      coordinator().GetHotkeyManagerForTesting()->CanHandleAccelerators());
 
-  // Simulate the accelerator being pressed.
+  // Simulate the accelerator being pressed in default local scope
+  // (launcher=true, global=false).
   TriggerHotkey(LocalHotkeyManager::Command::kPanelToggle);
 
   // Verify that the panel actually opens.
   ASSERT_OK(WaitForGlicOpen());
 }
 
-IN_PROC_BROWSER_TEST_F(InstanceIndependentHotkeyManagerBrowserTest,
-                       AcceleratorPressedDoesNotLaunchGlicIfLauncherDisabled) {
+IN_PROC_BROWSER_TEST_F(
+    InstanceIndependentHotkeyManagerBrowserTest,
+    AcceleratorPressedLaunchesGlicWhenLauncherDisabledAndLocalScopeEnabled) {
   g_browser_process->local_state()->SetBoolean(prefs::kGlicLauncherEnabled,
                                                false);
-  g_browser_process->local_state()->SetBoolean(
-      prefs::kGlicHotkeyGlobalScopeEnabled, false);
 
-  // Simulate the accelerator being pressed.
+  EXPECT_TRUE(
+      coordinator().GetHotkeyManagerForTesting()->CanHandleAccelerators());
+
+  // Even if the launcher is disabled, local scoped hotkeys should still launch
+  // Glic.
   TriggerHotkey(LocalHotkeyManager::Command::kPanelToggle);
 
-  // Verify that the panel is not showing.
-  WaitForDuration(base::Milliseconds(300));
-  EXPECT_FALSE(coordinator().IsAnyPanelShowing());
+  // Verify that the panel actually opens.
+  ASSERT_OK(WaitForGlicOpen());
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -115,17 +130,120 @@ IN_PROC_BROWSER_TEST_F(InstanceIndependentHotkeyManagerBrowserTest,
   g_browser_process->local_state()->SetBoolean(
       prefs::kGlicHotkeyGlobalScopeEnabled, true);
 
-  auto* profile = GetBrowser()->GetProfile();
-  InstanceIndependentHotkeyManager manager(
-      &coordinator(), profile,
-      &GlicKeyedServiceFactory::GetGlicKeyedService(profile)->enabling());
-
-  // Since global scope is enabled, the local manager should return false.
-  EXPECT_FALSE(
-      manager.AcceleratorPressed(LocalHotkeyManager::Command::kPanelToggle));
+  // Since global scope is enabled, the local manager should return false
+  // (pass-through).
+  EXPECT_FALSE(coordinator().GetHotkeyManagerForTesting()->AcceleratorPressed(
+      LocalHotkeyManager::Command::kPanelToggle));
 
   // Verify that the panel is not showing.
   EXPECT_FALSE(coordinator().IsAnyPanelShowing());
+}
+
+IN_PROC_BROWSER_TEST_F(InstanceIndependentHotkeyManagerBrowserTest,
+                       CaptureRegionHotkeyOpensGlicWhenPromptBoxDisabled) {
+  CreateAndActivateTab(GetSimpleTestUrl());
+  EXPECT_FALSE(coordinator().IsAnyPanelShowing());
+
+  TriggerHotkey(LocalHotkeyManager::Command::kCaptureRegion);
+
+  ASSERT_OK(WaitForGlicOpen());
+}
+
+class InstanceIndependentHotkeyManagerPromptBoxBrowserTest
+    : public InstanceIndependentHotkeyManagerBrowserTest {
+ public:
+  InstanceIndependentHotkeyManagerPromptBoxBrowserTest() {
+    prompt_box_feature_list_.InitWithFeatures(
+        {::features::kGlicCaptureRegion,
+         features::kGlicSelectionOverlayPromptBox},
+        {});
+  }
+
+  void SetUpOnMainThread() override {
+    GlicBrowserTest::SetUpOnMainThread();
+    g_browser_process->local_state()->SetBoolean(prefs::kGlicLauncherEnabled,
+                                                 false);
+    g_browser_process->local_state()->SetBoolean(
+        prefs::kGlicHotkeyGlobalScopeEnabled, false);
+  }
+
+ private:
+  base::test::ScopedFeatureList prompt_box_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(InstanceIndependentHotkeyManagerPromptBoxBrowserTest,
+                       CaptureRegionHotkeyOpensOverlayWithoutPanelWhenClosed) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  EXPECT_FALSE(GlicSidePanelCoordinator::IsShowing(tab));
+  EXPECT_FALSE(coordinator().IsAnyPanelShowing());
+
+  base::HistogramTester histogram_tester;
+  TriggerHotkey(LocalHotkeyManager::Command::kCaptureRegion);
+
+  ASSERT_OK(RunUntilEqual(
+      [&]() { return controller->state(); },
+      SelectionOverlayController::State::kOverlay,
+      "Timeout waiting for SelectionOverlayController state to be kOverlay"));
+  EXPECT_EQ(controller->GetSelectedRegionCount(), 0u);
+  EXPECT_FALSE(GlicSidePanelCoordinator::IsShowing(tab));
+  EXPECT_FALSE(coordinator().IsAnyPanelShowing());
+  histogram_tester.ExpectBucketCount(
+      "Glic.Invoke.InvocationSource",
+      mojom::InvocationSource::kCaptureRegionHotkey, 0);
+
+  controller->Close();
+}
+
+IN_PROC_BROWSER_TEST_F(
+    InstanceIndependentHotkeyManagerPromptBoxBrowserTest,
+    CaptureRegionHotkeyPreselectsTextSelectionWhenPanelClosed) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  content::WebContents* web_contents = tab->GetContents();
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(web_contents);
+  ASSERT_TRUE(controller);
+  auto* selection_observer = GlicSelectionObserver::From(tab);
+  ASSERT_TRUE(selection_observer);
+
+  web_contents->SelectAll();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return selection_observer->GetCurrentSelectionBounds().has_value();
+  }));
+  EXPECT_FALSE(GlicSidePanelCoordinator::IsShowing(tab));
+
+  base::HistogramTester histogram_tester;
+  TriggerHotkey(LocalHotkeyManager::Command::kCaptureRegion);
+
+  ASSERT_OK(RunUntilEqual(
+      [&]() { return controller->state(); },
+      SelectionOverlayController::State::kOverlay,
+      "Timeout waiting for SelectionOverlayController state to be kOverlay"));
+  EXPECT_EQ(controller->GetSelectedRegionCount(), 1u);
+  EXPECT_FALSE(GlicSidePanelCoordinator::IsShowing(tab));
+  EXPECT_FALSE(coordinator().IsAnyPanelShowing());
+  histogram_tester.ExpectBucketCount(
+      "Glic.Invoke.InvocationSource",
+      mojom::InvocationSource::kCaptureRegionHotkey, 0);
+
+  controller->Close();
+}
+
+IN_PROC_BROWSER_TEST_F(InstanceIndependentHotkeyManagerPromptBoxBrowserTest,
+                       CaptureRegionHotkeyInvokesGlicWhenPanelOpen) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  ASSERT_TRUE(OpenGlicForActiveTab().has_value());
+  ASSERT_TRUE(GlicSidePanelCoordinator::IsShowing(tab));
+
+  base::HistogramTester histogram_tester;
+  TriggerHotkey(LocalHotkeyManager::Command::kCaptureRegion);
+
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Invoke.InvocationSource",
+      mojom::InvocationSource::kCaptureRegionHotkey, 1);
+  EXPECT_TRUE(GlicSidePanelCoordinator::IsShowing(tab));
 }
 #endif
 
@@ -145,11 +263,40 @@ class InstanceIndependentHotkeyManagerFeatureDisabledBrowserTest
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
+// On ChromeOS, the global hotkey is registered with ash's accelerator
+// controller, which FocusManager::ProcessAccelerator() falls through to, so
+// triggering the hotkey from the browser opens the panel via the global path.
+#if !BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_F(
     InstanceIndependentHotkeyManagerFeatureDisabledBrowserTest,
-    AcceleratorPressedDoesNotLaunchGlicWhenFeatureDisabled) {
-  // Even though hotkey is pressed, it should behave as global (return false)
-  // because the feature is disabled (default behavior).
+    AcceleratorPressedDoesNotLaunchGlicWhenLauncherEnabled) {
+  g_browser_process->local_state()->SetBoolean(prefs::kGlicLauncherEnabled,
+                                               true);
+
+  // If the feature is disabled, the local manager should return false (pass
+  // through to the global manager) even if the launcher is enabled.
+  EXPECT_FALSE(coordinator().GetHotkeyManagerForTesting()->AcceleratorPressed(
+      LocalHotkeyManager::Command::kPanelToggle));
+
+  // Hotkey is global and should not be handled locally.
+  TriggerHotkey(LocalHotkeyManager::Command::kPanelToggle);
+
+  // Verify that the panel is not showing.
+  WaitForDuration(base::Milliseconds(300));
+  EXPECT_FALSE(coordinator().IsAnyPanelShowing());
+}
+#endif
+
+IN_PROC_BROWSER_TEST_F(
+    InstanceIndependentHotkeyManagerFeatureDisabledBrowserTest,
+    AcceleratorPressedDoesNotLaunchGlicWhenLauncherDisabled) {
+  g_browser_process->local_state()->SetBoolean(prefs::kGlicLauncherEnabled,
+                                               false);
+
+  // When launcher is disabled and feature is disabled, hotkeys are disabled.
+  EXPECT_FALSE(
+      coordinator().GetHotkeyManagerForTesting()->CanHandleAccelerators());
+
   TriggerHotkey(LocalHotkeyManager::Command::kPanelToggle);
 
   // Verify that the panel is not showing.
@@ -157,22 +304,45 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_FALSE(coordinator().IsAnyPanelShowing());
 }
 
+// Gemini Enterprise doesn't support the OS-global hotkey, so the hotkey is
+// always handled locally, even when the local scope feature is disabled.
+class InstanceIndependentHotkeyManagerGeminiEnterpriseBrowserTest
+    : public InstanceIndependentHotkeyManagerFeatureDisabledBrowserTest {
+ private:
+  ScopedGlicProviderOverride provider_override_{
+      GlicProvider::kGeminiEnterprise};
+};
+
 IN_PROC_BROWSER_TEST_F(
-    InstanceIndependentHotkeyManagerFeatureDisabledBrowserTest,
-    AcceleratorPressedReturnsFalseWhenLauncherEnabled) {
+    InstanceIndependentHotkeyManagerGeminiEnterpriseBrowserTest,
+    AcceleratorPressedLaunchesGlicWhenLauncherDisabled) {
+  g_browser_process->local_state()->SetBoolean(prefs::kGlicLauncherEnabled,
+                                               false);
+
+  EXPECT_TRUE(
+      coordinator().GetHotkeyManagerForTesting()->CanHandleAccelerators());
+
+  TriggerHotkey(LocalHotkeyManager::Command::kPanelToggle);
+
+  ASSERT_OK(WaitForGlicOpen());
+}
+
+IN_PROC_BROWSER_TEST_F(
+    InstanceIndependentHotkeyManagerGeminiEnterpriseBrowserTest,
+    AcceleratorPressedLaunchesGlicWhenGlobalScopeEnabled) {
   g_browser_process->local_state()->SetBoolean(prefs::kGlicLauncherEnabled,
                                                true);
+#if !BUILDFLAG(IS_ANDROID)
+  g_browser_process->local_state()->SetBoolean(
+      prefs::kGlicHotkeyGlobalScopeEnabled, true);
+#endif
 
-  auto* profile = GetBrowser()->GetProfile();
-  InstanceIndependentHotkeyManager manager(
-      &coordinator(), profile,
-      &GlicKeyedServiceFactory::GetGlicKeyedService(profile)->enabling());
+  EXPECT_TRUE(
+      coordinator().GetHotkeyManagerForTesting()->CanHandleAccelerators());
 
-  // If the feature is disabled, the local manager should return false (pass
-  // through to the global manager) even if the launcher is enabled.
-  EXPECT_FALSE(
-      manager.AcceleratorPressed(LocalHotkeyManager::Command::kPanelToggle));
-  EXPECT_FALSE(coordinator().IsAnyPanelShowing());
+  TriggerHotkey(LocalHotkeyManager::Command::kPanelToggle);
+
+  ASSERT_OK(WaitForGlicOpen());
 }
 
 }  // namespace

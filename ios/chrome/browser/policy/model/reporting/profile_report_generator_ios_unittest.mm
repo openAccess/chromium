@@ -9,7 +9,7 @@
 #import "base/files/file_path.h"
 #import "base/memory/raw_ptr.h"
 #import "base/run_loop.h"
-#import "base/strings/stringprintf.h"
+#import "base/strings/strcat.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/bind.h"
 #import "base/test/scoped_command_line.h"
@@ -40,6 +40,7 @@
 #import "ios/chrome/browser/policy/model/profile_policy_connector_mock.h"
 #import "ios/chrome/browser/policy/model/reporting/features.h"
 #import "ios/chrome/browser/policy/model/reporting/reporting_delegate_factory_ios.h"
+#import "ios/chrome/browser/policy/model/reporting/reporting_util.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
@@ -47,7 +48,6 @@
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -99,6 +99,15 @@ struct TestParams {
   ProfileName profile_name;
 };
 
+constexpr std::string_view ToString(ProfileReporting profile_reporting) {
+  return profile_reporting == ProfileReporting::kEnabled ? "ProfileReporting"
+                                                         : "NoProfileReporting";
+}
+
+constexpr std::string_view ToString(ProfileName profile_name) {
+  return profile_name == ProfileName::kEmail ? "UseEmail" : "NoUseEmail";
+}
+
 }  // namespace
 
 enum class Affiliation {
@@ -138,8 +147,7 @@ class ProfileReportGeneratorIOSTest
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         enterprise::ProfileIdServiceFactoryIOS::GetInstance(),
         base::BindRepeating(&CreateProfileIdService));
@@ -266,7 +274,7 @@ class ProfileReportGeneratorIOSTest
   }
 
   std::unique_ptr<em::ChromeUserProfileInfo> GenerateReport() {
-    const base::FilePath path = profile_->GetStatePath();
+    const base::FilePath path = GetProfilePath();
     base::test::TestFuture<std::unique_ptr<em::ChromeUserProfileInfo>>
         test_future;
     generator_.MaybeGenerate(path, ReportType::kBrowser,
@@ -295,6 +303,10 @@ class ProfileReportGeneratorIOSTest
       return kFakeFullName;
     }
     return profile_->GetProfileName();
+  }
+
+  base::FilePath GetProfilePath() const {
+    return base::FilePath(SanitizeProfilePath(profile_->GetProfileName()));
   }
 
   ProfileReportGenerator* generator() { return &generator_; }
@@ -413,13 +425,8 @@ INSTANTIATE_TEST_SUITE_P(
         TestParams{ProfileReporting::kEnabled, ProfileName::kProfileName},
         TestParams{ProfileReporting::kDisabled, ProfileName::kEmail}),
     [](const testing::TestParamInfo<TestParams>& info) {
-      return base::StringPrintf(
-          "%s_%s",
-          info.param.profile_reporting == ProfileReporting::kEnabled
-              ? "ProfileReporting"
-              : "NoProfileReporting",
-          info.param.profile_name == ProfileName::kEmail ? "UseEmail"
-                                                         : "NoUseEmail");
+      return base::StrCat({ToString(info.param.profile_reporting), "_",
+                           ToString(info.param.profile_name)});
     });
 
 }  // namespace enterprise_reporting

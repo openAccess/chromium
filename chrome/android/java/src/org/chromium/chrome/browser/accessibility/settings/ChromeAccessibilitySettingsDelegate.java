@@ -4,11 +4,14 @@
 
 package org.chromium.chrome.browser.accessibility.settings;
 
+import android.content.Context;
+
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.chrome.browser.dom_distiller.DomDistillerServiceFactory;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.image_descriptions.ImageDescriptionsController;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.reader_mode.ReaderModeServiceFactory;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.components.browser_ui.accessibility.AccessibilitySettingsDelegate;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
@@ -61,6 +64,7 @@ public class ChromeAccessibilitySettingsDelegate implements AccessibilitySetting
         }
     }
 
+    private final @Nullable Context mContext;
     private final Profile mProfile;
 
     /**
@@ -69,6 +73,17 @@ public class ChromeAccessibilitySettingsDelegate implements AccessibilitySetting
      * @param profile The profile associated with the delegate.
      */
     public ChromeAccessibilitySettingsDelegate(Profile profile) {
+        this(null, profile);
+    }
+
+    /**
+     * Constructs a delegate for the given context and profile.
+     *
+     * @param context Context associated with the delegate.
+     * @param profile The profile associated with the delegate.
+     */
+    public ChromeAccessibilitySettingsDelegate(@Nullable Context context, Profile profile) {
+        mContext = context;
         mProfile = profile;
     }
 
@@ -84,7 +99,14 @@ public class ChromeAccessibilitySettingsDelegate implements AccessibilitySetting
 
     @Override
     public SettingsNavigation getSiteSettingsNavigation() {
-        return SettingsNavigationFactory.createSettingsNavigation();
+        return mContext != null
+                ? SettingsNavigationFactory.createSettingsNavigation(mContext)
+                : SettingsNavigationFactory.createSettingsNavigation();
+    }
+
+    @Override
+    public SettingsNavigation getSiteSettingsNavigation(Context context) {
+        return SettingsNavigationFactory.createSettingsNavigation(context);
     }
 
     @Override
@@ -113,17 +135,7 @@ public class ChromeAccessibilitySettingsDelegate implements AccessibilitySetting
 
     @Override
     public DistilledPagePrefs getDistilledPagePrefs() {
-        return DomDistillerServiceFactory.getForProfile(mProfile).getDistilledPagePrefs();
-    }
-
-    /**
-     * Returns whether the material slider should be used for the page zoom preference.
-     *
-     * @return True if the slider should be used, false otherwise.
-     */
-    @Override
-    public boolean shouldUseSlider() {
-        return true;
+        return ReaderModeServiceFactory.getForProfile(mProfile).getDistilledPagePrefs();
     }
 
     /**

@@ -282,7 +282,6 @@ using ::testing::_;
 using ::testing::DoAll;
 using ::testing::InSequence;
 using ::testing::Invoke;
-using ::testing::InvokeWithoutArgs;
 
 }  // namespace
 
@@ -298,11 +297,10 @@ TEST_F(PageNodeImplTest, ObserverWorks) {
 
   // Remove observers at the head and tail of the list inside a callback, and
   // expect that `obs` is still notified correctly.
-  EXPECT_CALL(head_obs, OnBeforePageNodeAdded(_))
-      .WillOnce(InvokeWithoutArgs([&] {
-        graph()->RemovePageNodeObserver(&head_obs);
-        graph()->RemovePageNodeObserver(&tail_obs);
-      }));
+  EXPECT_CALL(head_obs, OnBeforePageNodeAdded(_)).WillOnce([&] {
+    graph()->RemovePageNodeObserver(&head_obs);
+    graph()->RemovePageNodeObserver(&tail_obs);
+  });
   // `tail_obs` should not be notified as it was removed.
   EXPECT_CALL(tail_obs, OnBeforePageNodeAdded(_)).Times(0);
 
@@ -405,8 +403,9 @@ TEST_F(PageNodeImplTest, ObserverWorks) {
   EXPECT_EQ(raw_page_node, obs.TakeNotifiedPageNode());
 
   // Re-entrant iteration should work.
-  EXPECT_CALL(obs, OnIsFocusedChanged(raw_page_node))
-      .WillOnce(InvokeWithoutArgs([&] { page_node->SetIsVisible(false); }));
+  EXPECT_CALL(obs, OnIsFocusedChanged(raw_page_node)).WillOnce([&] {
+    page_node->SetIsVisible(false);
+  });
   EXPECT_CALL(obs, OnIsVisibleChanged(raw_page_node));
   page_node->SetIsFocused(false);
 
@@ -517,6 +516,30 @@ TEST_F(PageNodeImplTest, IsHoldingBlockingIndexedDBLock) {
   EXPECT_CALL(obs, OnPageIsHoldingBlockingIndexedDBLockChanged(raw_page_node));
   page_node->SetIsHoldingBlockingIndexedDBLockForTesting(false);
   EXPECT_FALSE(page_node->IsHoldingBlockingIndexedDBLock());
+}
+
+TEST_F(PageNodeImplTest, IsUserOrBrowserInitiatedLoad) {
+  auto page_node = CreateNode<PageNodeImpl>();
+  const PageNode* raw_page_node = page_node.get();
+
+  // Defaults to true.
+  EXPECT_TRUE(raw_page_node->IsUserOrBrowserInitiatedLoad());
+
+  MockObserver obs(graph());
+
+  // Setting the same value doesn't notify.
+  EXPECT_CALL(obs, OnIsUserOrBrowserInitiatedLoadChanged(_)).Times(0);
+  page_node->SetIsUserOrBrowserInitiatedLoad(true);
+  testing::Mock::VerifyAndClearExpectations(&obs);
+
+  EXPECT_CALL(obs, OnIsUserOrBrowserInitiatedLoadChanged(raw_page_node));
+  page_node->SetIsUserOrBrowserInitiatedLoad(false);
+  EXPECT_FALSE(raw_page_node->IsUserOrBrowserInitiatedLoad());
+  testing::Mock::VerifyAndClearExpectations(&obs);
+
+  EXPECT_CALL(obs, OnIsUserOrBrowserInitiatedLoadChanged(raw_page_node));
+  page_node->SetIsUserOrBrowserInitiatedLoad(true);
+  EXPECT_TRUE(raw_page_node->IsUserOrBrowserInitiatedLoad());
 }
 
 }  // namespace performance_manager

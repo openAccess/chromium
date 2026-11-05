@@ -55,6 +55,8 @@ class MessageWrapper {
   void SetPrimaryButtonText(const std::u16string& primary_button_text);
   int GetPrimaryButtonTextMaxLines();
   void SetPrimaryButtonTextMaxLines(int max_lines);
+  PrimaryWidgetAppearance GetPrimaryWidgetAppearance();
+  void SetPrimaryWidgetAppearance(PrimaryWidgetAppearance appearance);
   std::u16string GetSecondaryButtonMenuText();
   void SetSecondaryButtonMenuText(
       const std::u16string& secondary_button_menu_text);

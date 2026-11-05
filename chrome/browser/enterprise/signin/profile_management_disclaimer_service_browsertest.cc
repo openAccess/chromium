@@ -6,6 +6,7 @@
 
 #include "base/json/values_util.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_mock_time_message_loop_task_runner.h"
 #include "base/test/test_future.h"
@@ -36,6 +37,7 @@
 #include "components/signin/public/identity_manager/accounts_mutator.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -65,6 +67,9 @@ struct ManagementDisclaimerTestParam {
   bool expected_management_accepted;
   bool expected_primary_account;
   bool expected_refresh_token;
+  // Whether the disclaimer flow reports that profile separation is enforced by
+  // policy (second argument of the completion callback).
+  bool expected_profile_creation_required_by_policy;
 };
 
 const ManagementDisclaimerTestParam kManagementDisclaimerTestParams[] = {
@@ -80,6 +85,7 @@ const ManagementDisclaimerTestParam kManagementDisclaimerTestParams[] = {
         .expected_management_accepted = false,
         .expected_primary_account = true,
         .expected_refresh_token = true,
+        .expected_profile_creation_required_by_policy = false,
     },
     // - Managed
     // - No policies
@@ -94,6 +100,7 @@ const ManagementDisclaimerTestParam kManagementDisclaimerTestParams[] = {
         .expected_management_accepted = true,
         .expected_primary_account = true,
         .expected_refresh_token = true,
+        .expected_profile_creation_required_by_policy = false,
     },
     // - Managed
     // - Profile creation is enforced by policy
@@ -111,6 +118,7 @@ const ManagementDisclaimerTestParam kManagementDisclaimerTestParams[] = {
         .expected_management_accepted = true,
         .expected_primary_account = true,
         .expected_refresh_token = true,
+        .expected_profile_creation_required_by_policy = true,
     },
     // - Managed
     // - No policies
@@ -126,6 +134,7 @@ const ManagementDisclaimerTestParam kManagementDisclaimerTestParams[] = {
         .expected_management_accepted = true,
         .expected_primary_account = true,
         .expected_refresh_token = true,
+        .expected_profile_creation_required_by_policy = false,
     },
     // - Managed
     // - Profile creation is enforced by policy
@@ -144,6 +153,7 @@ const ManagementDisclaimerTestParam kManagementDisclaimerTestParams[] = {
         .expected_management_accepted = true,
         .expected_primary_account = true,
         .expected_refresh_token = true,
+        .expected_profile_creation_required_by_policy = true,
     },
     // - Managed
     // - No policies
@@ -158,6 +168,7 @@ const ManagementDisclaimerTestParam kManagementDisclaimerTestParams[] = {
         .expected_management_accepted = false,
         .expected_primary_account = false,
         .expected_refresh_token = true,
+        .expected_profile_creation_required_by_policy = false,
     },
     // - Managed
     // - Profile creation is enforced by policy
@@ -175,6 +186,7 @@ const ManagementDisclaimerTestParam kManagementDisclaimerTestParams[] = {
         .expected_management_accepted = false,
         .expected_primary_account = false,
         .expected_refresh_token = false,
+        .expected_profile_creation_required_by_policy = true,
     },
     // - Managed
     // - No policies
@@ -189,18 +201,13 @@ const ManagementDisclaimerTestParam kManagementDisclaimerTestParams[] = {
         .expected_management_accepted = false,
         .expected_primary_account = false,
         .expected_refresh_token = true,
+        .expected_profile_creation_required_by_policy = false,
     },
     // - Managed
     // - Profile creation is enforced by policy
     // - No User choice
     {
-#if BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_WIN) && defined(ADDRESS_SANITIZER))
-        // TODO(crbug.com/505194363): Re-enable on Mac once deflaked.
-        // TODO(crbug.com/549938845): Flaky on Win ASan.
-        .test_name = "DISABLED_Managed_EnforcedByPolicy_Dismiss",
-#else
         .test_name = "Managed_EnforcedByPolicy_Dismiss",
-#endif
         .user_choice = std::nullopt,
         .policies = policy::ProfileSeparationPolicies(
             /*profile_separation_settings=*/policy::ProfileSeparationSettings::
@@ -212,6 +219,7 @@ const ManagementDisclaimerTestParam kManagementDisclaimerTestParams[] = {
         .expected_management_accepted = false,
         .expected_primary_account = false,
         .expected_refresh_token = false,
+        .expected_profile_creation_required_by_policy = true,
     },
 };
 
@@ -279,10 +287,12 @@ class ProfileManagementDisclaimerServiceBrowserFocusBrowserTest
   }
 
   void ReplaceCurrentBrowserWithNewOne() {
+    BrowserWindowInterface* const old_browser = browser();
     BrowserWindowInterface* const new_browser =
-        CreateBrowser(browser()->GetProfile());
-    CloseBrowserSynchronously(browser());
+        CreateBrowser(old_browser->GetProfile());
     SetBrowser(new_browser);
+    CloseBrowserSynchronously(old_browser);
+    ui_test_utils::WaitForBrowserSetLastActive(new_browser);
     ASSERT_EQ(browser(), new_browser);
   }
 
@@ -314,31 +324,25 @@ IN_PROC_BROWSER_TEST_P(
 
   ASSERT_TRUE(
       identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
-  ASSERT_EQ(identity_manager()
-                ->FindExtendedAccountInfo(primary_account_info)
-                .IsManaged(),
-            signin::TriboolFromBool(GetParam().is_managed));
+  ASSERT_EQ(
+      identity_manager()
+          ->FindExtendedAccountInfo(primary_account_info.GetCoreAccountInfo())
+          .IsManaged(),
+      signin::TriboolFromBool(GetParam().is_managed));
   ASSERT_FALSE(enterprise_util::UserAcceptedAccountManagement(GetProfile()));
+
+  base::test::TestFuture<Profile*, bool> future;
+  disclaimer_service->AddCallbackForTesting(future.GetCallback());
 
   // Create a new browser to trigger the profile management disclaimer.
   ReplaceCurrentBrowserWithNewOne();
 
-  Profile* new_profile = nullptr;
-
-  if (GetParam().user_choice.has_value()) {
-    base::test::TestFuture<Profile*, bool> future;
-    disclaimer_service->EnsureManagedProfileForAccount(
-        primary_account_info.account_id,
-        signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup,
-        future.GetCallback());
-    ASSERT_TRUE(future.Wait());
-    new_profile = future.Get<Profile*>();
-  }
-
-  auto* signin_view_controller =
-      browser()->GetFeatures().signin_view_controller();
+  auto* signin_view_controller = SigninViewController::From(browser());
   if (!GetParam().is_managed) {
-    base::RunLoop().RunUntilIdle();
+    ASSERT_TRUE(future.Wait());
+    EXPECT_EQ(future.Get<Profile*>(), nullptr);
+    EXPECT_EQ(future.Get<bool>(),
+              GetParam().expected_profile_creation_required_by_policy);
     ASSERT_FALSE(signin_view_controller->ShowsModalDialog());
     ASSERT_TRUE(
         identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
@@ -347,12 +351,21 @@ IN_PROC_BROWSER_TEST_P(
   }
 
   if (!GetParam().user_choice.has_value()) {
-    base::RunLoop().RunUntilIdle();
-    ASSERT_TRUE(signin_view_controller->ShowsModalDialog());
+    ASSERT_TRUE(base::test::RunUntil(
+        [&]() { return signin_view_controller->ShowsModalDialog(); }));
 
     // Dismiss the dialog without any user choice.
     signin_view_controller->CloseModalSignin();
   }
+
+  ASSERT_TRUE(future.Wait());
+  // The result must come from the disclaimer flow that the browser focus
+  // started, which evaluated the profile separation policies. A flow that
+  // times out waiting for account info resets before evaluating them and
+  // reports `false`.
+  EXPECT_EQ(future.Get<bool>(),
+            GetParam().expected_profile_creation_required_by_policy);
+  Profile* new_profile = future.Get<Profile*>();
 
   Profile* verify_profile = nullptr;
   switch (GetParam().expected_profile_result) {
@@ -372,9 +385,12 @@ IN_PROC_BROWSER_TEST_P(
 
   EXPECT_EQ(enterprise_util::UserAcceptedAccountManagement(verify_profile),
             GetParam().expected_management_accepted);
-  EXPECT_EQ(GetIdentityManager(verify_profile)
-                ->HasAccountWithRefreshToken(primary_account_info.account_id),
-            GetParam().expected_refresh_token);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return GetIdentityManager(verify_profile)
+               ->HasAccountWithRefreshToken(
+                   primary_account_info.GetAccountId()) ==
+           GetParam().expected_refresh_token;
+  }));
 
   if (verify_profile != GetProfile()) {
     EXPECT_EQ(GetIdentityManager(verify_profile)
@@ -389,7 +405,7 @@ IN_PROC_BROWSER_TEST_P(
         identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
     EXPECT_FALSE(enterprise_util::UserAcceptedAccountManagement(GetProfile()));
     EXPECT_FALSE(identity_manager()->HasAccountWithRefreshToken(
-        primary_account_info.account_id));
+        primary_account_info.GetAccountId()));
   }
 }
 
@@ -497,28 +513,28 @@ IN_PROC_BROWSER_TEST_P(ProfileManagementDisclaimerServiceSigninBrowserTest,
 
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(disclaimer_service->GetAccountBeingConsideredForManagementIfAny(),
-            primary_account_info.account_id);
+            primary_account_info.GetAccountId());
 
   primary_account_info = MakeValidAccountInfoForAccount(
       std::move(primary_account_info),
       GetParam().is_managed ? "example.com" : std::string());
   ASSERT_TRUE(
       identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
-  ASSERT_EQ(identity_manager()
-                ->FindExtendedAccountInfo(primary_account_info)
-                .IsManaged(),
-            signin::TriboolFromBool(GetParam().is_managed));
+  ASSERT_EQ(
+      identity_manager()
+          ->FindExtendedAccountInfo(primary_account_info.GetCoreAccountInfo())
+          .IsManaged(),
+      signin::TriboolFromBool(GetParam().is_managed));
   ASSERT_FALSE(enterprise_util::UserAcceptedAccountManagement(GetProfile()));
 
   Profile* new_profile = nullptr;
 
-  auto* signin_view_controller =
-      browser()->GetFeatures().signin_view_controller();
+  auto* signin_view_controller = SigninViewController::From(browser());
 
   if (GetParam().user_choice.has_value()) {
     base::test::TestFuture<Profile*, bool> future;
     disclaimer_service->EnsureManagedProfileForAccount(
-        primary_account_info.account_id,
+        primary_account_info.GetAccountId(),
         signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup,
         future.GetCallback());
     ASSERT_TRUE(future.Wait());
@@ -535,8 +551,8 @@ IN_PROC_BROWSER_TEST_P(ProfileManagementDisclaimerServiceSigninBrowserTest,
   }
 
   if (!GetParam().user_choice.has_value()) {
-    base::RunLoop().RunUntilIdle();
-    ASSERT_TRUE(signin_view_controller->ShowsModalDialog());
+    ASSERT_TRUE(base::test::RunUntil(
+        [&]() { return signin_view_controller->ShowsModalDialog(); }));
 
     // Dismiss the dialog without any user choice.
     signin_view_controller->CloseModalSignin();
@@ -560,9 +576,12 @@ IN_PROC_BROWSER_TEST_P(ProfileManagementDisclaimerServiceSigninBrowserTest,
 
   EXPECT_EQ(enterprise_util::UserAcceptedAccountManagement(verify_profile),
             GetParam().expected_management_accepted);
-  EXPECT_EQ(GetIdentityManager(verify_profile)
-                ->HasAccountWithRefreshToken(primary_account_info.account_id),
-            GetParam().expected_refresh_token);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return GetIdentityManager(verify_profile)
+               ->HasAccountWithRefreshToken(
+                   primary_account_info.GetAccountId()) ==
+           GetParam().expected_refresh_token;
+  }));
 
   if (verify_profile != GetProfile()) {
     EXPECT_EQ(GetIdentityManager(verify_profile)
@@ -577,7 +596,7 @@ IN_PROC_BROWSER_TEST_P(ProfileManagementDisclaimerServiceSigninBrowserTest,
         identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
     EXPECT_FALSE(enterprise_util::UserAcceptedAccountManagement(GetProfile()));
     EXPECT_FALSE(identity_manager()->HasAccountWithRefreshToken(
-        primary_account_info.account_id));
+        primary_account_info.GetAccountId()));
   }
 }
 
@@ -702,7 +721,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
   // succeeded.
   ASSERT_FALSE(signin_prefs
                    .GetPolicyDisclaimerLastRegistrationFailureTime(
-                       primary_account_info.gaia)
+                       primary_account_info.GetGaiaId())
                    .has_value());
 
   // Update the dm token and the client id to empty, this should be ignored
@@ -721,7 +740,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
   // PolicyFetchTracker::RegisterForPolicy() would be called again and a crash
   // would happen.
   disclaimer_service->EnsureManagedProfileForAccount(
-      primary_account_info.account_id,
+      primary_account_info.GetAccountId(),
       signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup,
       base::DoNothing());
 
@@ -729,12 +748,12 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
   // succeeded because the result was cached.
   ASSERT_FALSE(signin_prefs
                    .GetPolicyDisclaimerLastRegistrationFailureTime(
-                       primary_account_info.gaia)
+                       primary_account_info.GetGaiaId())
                    .has_value());
 
   base::test::TestFuture<Profile*, bool> future;
   disclaimer_service->EnsureManagedProfileForAccount(
-      primary_account_info.account_id,
+      primary_account_info.GetAccountId(),
       signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup,
       future.GetCallback());
   ASSERT_TRUE(future.Wait());
@@ -743,16 +762,17 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
 
   ASSERT_TRUE(
       identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
-  ASSERT_EQ(identity_manager()
-                ->FindExtendedAccountInfo(primary_account_info)
-                .IsManaged(),
-            signin::TriboolFromBool(true));
+  ASSERT_EQ(
+      identity_manager()
+          ->FindExtendedAccountInfo(primary_account_info.GetCoreAccountInfo())
+          .IsManaged(),
+      signin::TriboolFromBool(true));
   ASSERT_TRUE(enterprise_util::UserAcceptedAccountManagement(GetProfile()));
   // There should be no failure info in the pref since the registration
   // succeeded because the result was cached.
   ASSERT_FALSE(signin_prefs
                    .GetPolicyDisclaimerLastRegistrationFailureTime(
-                       primary_account_info.gaia)
+                       primary_account_info.GetGaiaId())
                    .has_value());
 }
 
@@ -790,11 +810,11 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
   // The failure info should be in the pref since the registration failed.
   ASSERT_TRUE(signin_prefs
                   .GetPolicyDisclaimerLastRegistrationFailureTime(
-                      primary_account_info.gaia)
+                      primary_account_info.GetGaiaId())
                   .has_value());
   ASSERT_EQ(signin_prefs
                 .GetPolicyDisclaimerLastRegistrationFailureTime(
-                    primary_account_info.gaia)
+                    primary_account_info.GetGaiaId())
                 .value(),
             base::Time::Now());
 
@@ -808,7 +828,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
   {
     base::test::TestFuture<Profile*, bool> future;
     disclaimer_service->EnsureManagedProfileForAccount(
-        primary_account_info.account_id,
+        primary_account_info.GetAccountId(),
         signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup,
         future.GetCallback());
     ASSERT_TRUE(future.Wait());
@@ -821,11 +841,11 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
     // the delay has not passed yet.
     ASSERT_TRUE(signin_prefs
                     .GetPolicyDisclaimerLastRegistrationFailureTime(
-                        primary_account_info.gaia)
+                        primary_account_info.GetGaiaId())
                     .has_value());
     ASSERT_EQ(signin_prefs
                   .GetPolicyDisclaimerLastRegistrationFailureTime(
-                      primary_account_info.gaia)
+                      primary_account_info.GetGaiaId())
                   .value(),
               base::Time::Now());
   }
@@ -839,7 +859,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
   // good dm token and client id. The disclaimer should be shown.
   base::test::TestFuture<Profile*, bool> future;
   disclaimer_service->EnsureManagedProfileForAccount(
-      primary_account_info.account_id,
+      primary_account_info.GetAccountId(),
       signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup,
       future.GetCallback());
   ASSERT_TRUE(future.Wait());
@@ -848,16 +868,17 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
 
   ASSERT_TRUE(
       identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
-  ASSERT_EQ(identity_manager()
-                ->FindExtendedAccountInfo(primary_account_info)
-                .IsManaged(),
-            signin::TriboolFromBool(true));
+  ASSERT_EQ(
+      identity_manager()
+          ->FindExtendedAccountInfo(primary_account_info.GetCoreAccountInfo())
+          .IsManaged(),
+      signin::TriboolFromBool(true));
   ASSERT_TRUE(enterprise_util::UserAcceptedAccountManagement(GetProfile()));
   // There should be no failure info in the pref since the registration
   // succeeded because the result was cached.
   ASSERT_FALSE(signin_prefs
                    .GetPolicyDisclaimerLastRegistrationFailureTime(
-                       primary_account_info.gaia)
+                       primary_account_info.GetGaiaId())
                    .has_value());
 }
 
@@ -899,11 +920,11 @@ IN_PROC_BROWSER_TEST_F(
   // The failure info should be in the pref since the registration failed.
   ASSERT_TRUE(signin_prefs
                   .GetPolicyDisclaimerLastRegistrationFailureTime(
-                      primary_account_info.gaia)
+                      primary_account_info.GetGaiaId())
                   .has_value());
   ASSERT_EQ(signin_prefs
                 .GetPolicyDisclaimerLastRegistrationFailureTime(
-                    primary_account_info.gaia)
+                    primary_account_info.GetGaiaId())
                 .value(),
             base::Time::Now());
 
@@ -915,7 +936,7 @@ IN_PROC_BROWSER_TEST_F(
   {
     base::test::TestFuture<Profile*, bool> future;
     disclaimer_service->EnsureManagedProfileForAccount(
-        primary_account_info.account_id,
+        primary_account_info.GetAccountId(),
         signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup,
         future.GetCallback());
 
@@ -930,7 +951,7 @@ IN_PROC_BROWSER_TEST_F(
     // Here there should be no crash
     base::test::TestFuture<Profile*, bool> future;
     disclaimer_service->EnsureManagedProfileForAccount(
-        primary_account_info.account_id,
+        primary_account_info.GetAccountId(),
         signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup,
         future.GetCallback());
     ASSERT_TRUE(future.Wait());
@@ -957,16 +978,15 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
       policy::UserPolicySigninServiceFactory::GetForProfile(GetProfile()))
       ->UpdateDMTokenAndClientId("dm_token", "client_id");
 
-  // This should trigger the failure to register.
+  GetProfile()->GetPrefs()->SetBoolean(prefs::kSigninAllowed, false);
   AccountInfo account_info =
       MakeValidAccountInfoForAccount("bob@example.com", "example.com");
   base::RunLoop().RunUntilIdle();
-  GetProfile()->GetPrefs()->SetBoolean(prefs::kSigninAllowed, false);
 
   {
     base::test::TestFuture<Profile*, bool> future;
     disclaimer_service->EnsureManagedProfileForAccount(
-        account_info.account_id,
+        account_info.GetAccountId(),
         signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup,
         future.GetCallback());
 
@@ -974,7 +994,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
     Profile* new_profile = future.Get<Profile*>();
     ASSERT_FALSE(new_profile);
     EXPECT_TRUE(GetIdentityManager(GetProfile())
-                    ->HasAccountWithRefreshToken(account_info.account_id));
+                    ->HasAccountWithRefreshToken(account_info.GetAccountId()));
   }
 }
 
@@ -1005,7 +1025,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
   {
     base::test::TestFuture<Profile*, bool> future;
     disclaimer_service->EnsureManagedProfileForAccount(
-        account_info.account_id,
+        account_info.GetAccountId(),
         signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup,
         future.GetCallback());
 
@@ -1013,7 +1033,7 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
     Profile* new_profile = future.Get<Profile*>();
     ASSERT_FALSE(new_profile);
     EXPECT_FALSE(GetIdentityManager(GetProfile())
-                     ->HasAccountWithRefreshToken(account_info.account_id));
+                     ->HasAccountWithRefreshToken(account_info.GetAccountId()));
   }
 }
 
@@ -1032,14 +1052,14 @@ IN_PROC_BROWSER_TEST_F(ProfileManagementDisclaimerServiceBrowserTest,
 
   base::test::TestFuture<Profile*, bool> future;
   disclaimer_service->EnsureManagedProfileForAccount(
-      primary_account_info.account_id,
+      primary_account_info.GetAccountId(),
       signin_metrics::AccessPoint::kEnterpriseManagementDisclaimerAtStartup,
       future.GetCallback());
 
   base::RunLoop().RunUntilIdle();
 
   SigninViewController* signin_view_controller =
-      browser()->GetFeatures().signin_view_controller();
+      SigninViewController::From(browser());
   ASSERT_TRUE(signin_view_controller->ShowsModalDialog());
   content::WebContents* dialog_web_contents =
       signin_view_controller->GetModalDialogWebContentsForTesting();

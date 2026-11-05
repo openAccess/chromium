@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "base/files/file_util.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/simple_test_clock.h"
 #include "base/threading/thread_restrictions.h"
@@ -20,7 +22,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/test_data_directory.h"
 #include "services/cert_verifier/public/mojom/cert_verifier_service_factory.mojom.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/jni_android.h"
@@ -132,6 +134,7 @@ class KnownInterceptionDisclosurePlatformBrowserTest
     messages::MessageDispatcherBridge::SetInstanceForTesting(nullptr);
     g_last_message_wrapper = nullptr;
 #endif
+    KnownInterceptionDisclosureCooldown::GetInstance()->ResetForTesting();
     PlatformBrowserTest::TearDown();
   }
 
@@ -184,6 +187,11 @@ IN_PROC_BROWSER_TEST_P(KnownInterceptionDisclosurePlatformBrowserTest,
 
   content::WebContents* tab1 = chrome_test_utils::GetActiveWebContents(this);
 
+  base::ScopedClosureRunner reset_cooldown(base::BindOnce(
+      &KnownInterceptionDisclosureCooldown::ResetForTesting,
+      base::Unretained(KnownInterceptionDisclosureCooldown::GetInstance()),
+      chrome_test_utils::GetProfile(this)));
+
   auto clock = std::make_unique<base::SimpleTestClock>();
   auto* clock_ptr = clock.get();
   clock_ptr->SetNow(base::Time::Now());
@@ -200,7 +208,8 @@ IN_PROC_BROWSER_TEST_P(KnownInterceptionDisclosurePlatformBrowserTest,
   // Test that the infobar is shown on new tabs after it has been triggered
   // once.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL("about:blank"), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL("about:blank"),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   content::WebContents* tab2 = tab_strip_model->GetActiveWebContents();
   EXPECT_EQ(1u, GetDisclosureCount(tab2));
@@ -274,9 +283,20 @@ IN_PROC_BROWSER_TEST_P(KnownInterceptionDisclosurePlatformBrowserTest,
 #endif
 }
 
+#if BUILDFLAG(IS_ANDROID)
+// Centralized infobars are not supported on Android, which instead uses
+// Messages. Only instantiate once for the default path.
+INSTANTIATE_TEST_SUITE_P(All,
+                         KnownInterceptionDisclosurePlatformBrowserTest,
+                         testing::Values(false),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return "Default";
+                         });
+#else
 INSTANTIATE_TEST_SUITE_P(All,
                          KnownInterceptionDisclosurePlatformBrowserTest,
                          testing::Bool(),
                          [](const testing::TestParamInfo<bool>& info) {
                            return info.param ? "Migrated" : "Legacy";
                          });
+#endif

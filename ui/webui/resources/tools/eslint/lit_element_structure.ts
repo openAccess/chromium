@@ -7,7 +7,7 @@ import type {TSESLint, TSESTree} from '/third_party/node/node_modules/@typescrip
 import assert from 'node:assert';
 import path from 'node:path';
 
-import {dashCaseToCamelCase, isCrLitElementSubclass, isIdentifier, isLiteral, isType, LIT_IMPORT_REGEX} from './query_utils.js';
+import {dashCaseToCamelCase, isCrLitElementSubclass, isCrLitElementType, isIdentifier, isLiteral, isMixinClass, isType, LIT_IMPORT_REGEX} from './query_utils.js';
 
 // The order in which boilerplate and lifecycle CrLitElement methods should
 // be defined.
@@ -30,19 +30,21 @@ interface OrderEntry {
 }
 
 type Options = [];
-type MessageIds = 'htmlImportInTsFile'|'inconsistentClassName'|
-    'inconsistentFilename'|'incorrectClassNameSuffix'|
-    'incorrectDollarSignNotation'|'incorrectDomNameSuffix'|
-    'incorrectFilenameSuffix'|'incorrectMethodDefinitionOrder'|
+type MessageIds =
+    'emptyLifecycleMethod'|'emptyPropertiesGetter'|'htmlImportInTsFile'|
+    'inconsistentClassName'|'inconsistentFilename'|'incorrectClassNameSuffix'|
+    'incorrectDomNameSuffix'|'incorrectFilenameSuffix'|
+    'incorrectMethodDefinitionOrder'|'invalidDollarSignProperty'|
     'missingCustomElementRegistration'|'missingCustomEventTypeParameter'|
     'missingStaticIsGetter'|'missingSuperCalls'|'missingTagNameRegistration'|
-    'useFireHelper'|'useFireHelperWithEventName';
+    'noConstructorParams'|'noNewCrLitElement';
 
 // Necessary info to track about each CrLitElement subclass definition
 // encountered in the current file.
 class ClassInfo {
   private readonly context: TSESLint.RuleContext<MessageIds, Options>;
   private readonly isTest: boolean;
+  private readonly isMixin: boolean;
 
   // Whether 'interface HTMLElementTagNameMap {...}' is specified. Only
   // applies when isTest=false.
@@ -72,11 +74,13 @@ class ClassInfo {
 
   constructor(
       context: TSESLint.RuleContext<MessageIds, Options>,
-      node: TSESTree.ClassDeclarationWithName, isTest: boolean) {
+      node: TSESTree.ClassDeclarationWithName, isTest: boolean,
+      isMixin: boolean) {
     this.context = context;
     this.node = node;
     this.name = this.node.id.name;
     this.isTest = isTest;
+    this.isMixin = isMixin;
   }
 
   visitStaticGetIs(node: TSESTree.ReturnStatement) {
@@ -93,6 +97,43 @@ class ClassInfo {
         return;
       default:
         assert.fail(`Unexpected type ${node.argument.type} encountered.`);
+    }
+  }
+
+  runEmptyPropertiesGetterCheck(node: TSESTree.ReturnStatement) {
+    if (!node.argument || !isType(node.argument, Node.ObjectExpression) ||
+        node.argument.properties.length > 0) {
+      return;
+    }
+
+    this.context.report({
+      node,
+      messageId: 'emptyPropertiesGetter',
+      data: {
+        className: this.name,
+      },
+    });
+  }
+
+  runEmptyLifecycleMethodCheck(node: TSESTree.MethodDefinition) {
+    if (!node.value.body) {
+      return;
+    }
+
+    assert.ok(isIdentifier(node.key));
+    const methodName = node.key.name;
+    const statements = node.value.body.body;
+    const isOnlySuperCall = statements.length === 1 &&
+        isSuperLifecycleCall(statements[0]!, methodName);
+    if (statements.length === 0 || isOnlySuperCall) {
+      this.context.report({
+        node,
+        messageId: 'emptyLifecycleMethod',
+        data: {
+          className: this.name,
+          methodName,
+        },
+      });
     }
   }
 
@@ -117,15 +158,18 @@ class ClassInfo {
     this.hasCustomElementRegistration = arg0Correct && arg1Correct;
   }
 
-  runDollarSignNotationCheck(node: TSESTree.MemberExpression) {
-    assert.ok(isLiteral(node.property));
-    const dashCaseName = node.property.value as string;
+  runConstructorParamsCheck(node: TSESTree.MethodDefinition) {
+    // Mixins are excluded because TypeScript requires any mixin class
+    // constructor to declare a single '...args: any[]' rest parameter (TS2545).
+    if (this.isMixin || node.value.params.length === 0) {
+      return;
+    }
+
     this.context.report({
       node,
-      messageId: 'incorrectDollarSignNotation',
+      messageId: 'noConstructorParams',
       data: {
-        dashCaseName,
-        camelCaseName: dashCaseToCamelCase(dashCaseName),
+        className: this.name,
       },
     });
   }
@@ -159,56 +203,9 @@ class ClassInfo {
     });
   }
 
-  runUseFireHelperCheck(node: TSESTree.ObjectExpression) {
-    assert.ok(isType(node, Node.ObjectExpression));
-
-    const callExpressionNode = node.parent!.parent! as TSESTree.CallExpression;
-    assert.ok(isType(callExpressionNode, Node.CallExpression));
-
-    function hasProp(
-        node: TSESTree.ObjectExpression, name: string,
-        value: unknown): boolean {
-      return node.properties.some(prop => {
-        return isType(prop, Node.Property) && isIdentifier(prop.key) &&
-            prop.key.name === name && isLiteral(prop.value) &&
-            prop.value.value === value;
-      });
-    }
-
-    if (!hasProp(node, 'bubbles', true) || !hasProp(node, 'composed', true)) {
-      return;
-    }
-
-    let propertiesLength = 2;
-    if (node.properties.find(
-            prop => isType(prop, Node.Property) && isIdentifier(prop.key) &&
-                prop.key.name === 'detail')) {
-      propertiesLength++;
-    }
-
-    if (node.properties.length > propertiesLength) {
-      // Handle case where properties other than 'bubbles', 'composed',
-      // 'detail' are passed.
-      return;
-    }
-
-    const callExpression = node.parent as TSESTree.NewExpression;
-    let eventName: string = '';
-    if (isLiteral(callExpression.arguments[0]!)) {
-      eventName = callExpression.arguments[0]!.value as string;
-    }
-
-    this.context.report({
-      node: callExpressionNode,
-      messageId: eventName ? 'useFireHelperWithEventName' : 'useFireHelper',
-      data: {
-        eventName,
-      },
-    });
-  }
-
   runMissingTagNameRegistrationCheck() {
-    if (this.isTest || !this.domName || this.hasTagNameRegistration) {
+    if (this.isTest || this.isMixin || !this.domName ||
+        this.hasTagNameRegistration) {
       return;
     }
 
@@ -229,7 +226,8 @@ class ClassInfo {
   }
 
   runMissingCustomElementRegistrationCheck() {
-    if (this.node.abstract || this.hasCustomElementRegistration) {
+    if (this.node.abstract || this.isMixin ||
+        this.hasCustomElementRegistration) {
       return;
     }
 
@@ -243,7 +241,7 @@ class ClassInfo {
   }
 
   runMissingStaticIsGetterCheck() {
-    if (this.node.abstract || this.domName) {
+    if (this.node.abstract || this.isMixin || this.domName) {
       return;
     }
 
@@ -273,6 +271,12 @@ class ClassInfo {
   }
 
   runConsistentFilenameDomNameCheck() {
+    if (this.isTest || this.isMixin) {
+      // Don't proceed with filename consistency checks if running in a test
+      // context or on a mixin class.
+      return;
+    }
+
     const basename = path.basename(this.context.filename, '.ts');
 
     if (basename.endsWith('_element')) {
@@ -283,13 +287,6 @@ class ClassInfo {
           filename: basename + '.ts',
         },
       });
-      return;
-    }
-
-    if (this.isTest) {
-      // Don't proceed with filename consistency checks if running in a test
-      // context, since it is common for custom elements to be defined in the
-      // file holding the tests and not a dedicated file.
       return;
     }
 
@@ -325,6 +322,10 @@ class ClassInfo {
   }
 
   runConsistentClassDomNameCheck() {
+    if (this.isMixin) {
+      return;
+    }
+
     if (!this.name.endsWith('Element')) {
       this.context.report({
         node: this.node,
@@ -402,6 +403,65 @@ class ClassInfo {
       },
     });
   }
+
+  runInvalidDollarSignPropertyCheck(node: TSESTree.TSPropertySignature) {
+    assert.ok(node.typeAnnotation);
+    assert.ok(isType(node.typeAnnotation.typeAnnotation, Node.TSTypeLiteral));
+
+    const typeLiteral = node.typeAnnotation.typeAnnotation;
+    for (const member of typeLiteral.members) {
+      if (!isType(member, Node.TSPropertySignature)) {
+        continue;
+      }
+
+      assert.ok(member.typeAnnotation);
+      const isInvalid = member.optional ||
+          isNullableOrUndefinable(member.typeAnnotation.typeAnnotation);
+      if (isInvalid) {
+        assert.ok(isIdentifier(member.key));
+        this.context.report({
+          node: member,
+          messageId: 'invalidDollarSignProperty',
+          data: {
+            className: this.name,
+            propertyName: member.key.name,
+          },
+        });
+      }
+    }
+  }
+}
+
+function isSuperLifecycleCall(
+    statement: TSESTree.Statement, methodName: string): boolean {
+  if (!isType(statement, Node.ExpressionStatement) ||
+      !isType(statement.expression, Node.CallExpression)) {
+    return false;
+  }
+  const callee = statement.expression.callee;
+  return isType(callee, Node.MemberExpression) &&
+      isType(callee.object, Node.Super) && isIdentifier(callee.property) &&
+      callee.property.name === methodName;
+}
+
+function isNullableOrUndefinable(typeNode: TSESTree.TypeNode): boolean {
+  if (isType(typeNode, Node.TSNullKeyword) ||
+      isType(typeNode, Node.TSUndefinedKeyword)) {
+    return true;
+  }
+
+  if (isType(typeNode, Node.TSUnionType)) {
+    return typeNode.types.some(isNullableOrUndefinable);
+  }
+
+  return false;
+}
+
+function isTestFile(filename: string): boolean {
+  const normalizedFilename = filename.replaceAll('\\', '/');
+  return normalizedFilename.includes('chrome/test/data/webui') ||
+      normalizedFilename.includes('chrome/test/data/pdf') ||
+      normalizedFilename.endsWith('_test.ts');
 }
 
 function canImportHtml(filename: string, importsRender: boolean): boolean {
@@ -426,9 +486,7 @@ function canImportHtml(filename: string, importsRender: boolean): boolean {
 
   // Tests may use html to define dummy elements, e.g. for testing
   // mixins
-  const isTestFile = normalizedFilename.includes('chrome/test/data/webui') ||
-      normalizedFilename.includes('chrome/test/data/pdf');
-  return isTestFile;
+  return isTestFile(filename);
 }
 
 export const litElementStructureRule = ESLintUtils.RuleCreator.withoutDocs<
@@ -440,12 +498,12 @@ export const litElementStructureRule = ESLintUtils.RuleCreator.withoutDocs<
       description: 'Checks that the structure of a LitElement is correct',
     },
     messages: {
+      emptyLifecycleMethod:
+          'Unnecessary empty lifecycle method \'{{methodName}}\' in class {{className}}.',
+      emptyPropertiesGetter:
+          'Unnecessary empty \'properties()\' getter in class {{className}}. Remove it if the element has no reactive properties.',
       htmlImportInTsFile:
           'Found import of html in file containing a CrLitElement subclass definition. Templates for CrLitElement subclasses belong in the .html.ts template file, not the class definition file.',
-      useFireHelper:
-          'Use this.fire(...) instead of this.dispatchEvent(new CustomEvent(...))..',
-      useFireHelperWithEventName:
-          'Use this.fire(...) instead of this.dispatchEvent(new CustomEvent(...)), for event \'{{eventName}}\'.',
       incorrectClassNameSuffix:
           'Class name \'{{className}}\' should end with the \'Element\' suffix.',
       incorrectDomNameSuffix:
@@ -456,8 +514,6 @@ export const litElementStructureRule = ESLintUtils.RuleCreator.withoutDocs<
           'Naming of class/dom pair {{className}} ↔ {{domName}} is inconsistent.',
       inconsistentFilename:
           'Naming of file/{{referenceType}} pair {{filename}} ↔ {{referenceName}} is inconsistent.',
-      incorrectDollarSignNotation:
-          'Use camelCase instead of dash-case for DOM ids, change this.$[\'{{dashCaseName}}\'] to this.$.{{camelCaseName}}.',
       incorrectMethodDefinitionOrder:
           'Inconsistent method definition order in class {{className}}. Expected [{{expectedOrder}}], found [{{actualOrder}}].',
       missingSuperCalls:
@@ -470,19 +526,24 @@ export const litElementStructureRule = ESLintUtils.RuleCreator.withoutDocs<
           'Missing customElements.define({{className}}.is, {{className}}) call.',
       missingCustomEventTypeParameter:
           'Missing CustomEvent type parameter for {{type}} \'{{name}}\' (use CustomEvent<void> or CustomEvent<SomeType>).',
+      invalidDollarSignProperty:
+          'Optional or nullable property \'{{propertyName}}\' is not allowed on the \'$\' interface of \'{{className}}\'. Elements accessed via \'$\' are expected to always exist in the DOM.',
+      noConstructorParams:
+          'Constructor in CrLitElement subclass {{className}} must not accept parameters.',
+      noNewCrLitElement:
+          'Do not instantiate CrLitElement subclass \'{{className}}\' using \'new\'. Use document.createElement() or an HTML template instead.',
     },
     schema: [],
   },
   defaultOptions: [],
   create(context) {
-    // Whether lit.rollup.js is imported.
-    let hasLitImport = false;
     let importsRender = false;
     let htmlImportNode: TSESTree.Node|null = null;
 
-    // Whether operating on a test file, assuming all files end with the
-    // '_test.ts' suffix.
-    const isTest = context.filename.endsWith('_test.ts');
+    // Dollar sign property signatures in this file, keyed by interface name.
+    const dollarProperties = new Map<string, TSESTree.TSPropertySignature>();
+
+    const isTest = isTestFile(context.filename);
 
     const METHOD_DEFINITION_SELECTOR_TEMPLATE =
         'ClassDeclaration > ClassBody > MethodDefinition[key.name=/{{methodDefinition}}/]';
@@ -493,13 +554,19 @@ export const litElementStructureRule = ESLintUtils.RuleCreator.withoutDocs<
         METHOD_DEFINITION_SELECTOR_TEMPLATE.replace(
             '{{methodDefinition}}', METHOD_DEFINITION_ORDER_REGEX);
 
+    const ALL_LIFECYCLE_METHODS_REGEX =
+        '^(connectedCallback|disconnectedCallback|willUpdate|firstUpdated|updated)$';
+    const ALL_LIFECYCLE_METHOD_DEFINITION_SELECTOR =
+        METHOD_DEFINITION_SELECTOR_TEMPLATE.replace(
+            '{{methodDefinition}}', ALL_LIFECYCLE_METHODS_REGEX);
+
     const SUPER_CALL_REQUIRED_REGEX =
         '^(connectedCallback|disconnectedCallback|willUpdate|updated)$';
     const LIFECYCLE_METHOD_DEFINITION_SELECTOR =
         METHOD_DEFINITION_SELECTOR_TEMPLATE.replace(
             '{{methodDefinition}}', SUPER_CALL_REQUIRED_REGEX);
     const LIFECYCLE_METHOD_SUPER_CALL_SELECTOR = `${
-        LIFECYCLE_METHOD_DEFINITION_SELECTOR} > FunctionExpression > BlockStatement > ExpressionStatement > CallExpression > MemberExpression[object.type="Super"][property.name=/${
+        LIFECYCLE_METHOD_DEFINITION_SELECTOR} > FunctionExpression > BlockStatement CallExpression > MemberExpression[object.type="Super"][property.name=/${
         SUPER_CALL_REQUIRED_REGEX}/]`;
 
     // Info about all the CrLitElement subclass definitions encountered in this
@@ -519,32 +586,37 @@ export const litElementStructureRule = ESLintUtils.RuleCreator.withoutDocs<
         if (importedName === 'render') {
           importsRender = true;
         }
-        if (importedName === 'CrLitElement') {
-          hasLitImport = true;
-        }
       },
       'ClassDeclaration'(node: TSESTree.ClassDeclaration) {
-        if (!hasLitImport ||
-            !isCrLitElementSubclass(node, context.sourceCode.ast)) {
+        if (!isCrLitElementSubclass(node, context)) {
           currentClassInfo = null;
           return;
         }
 
         assert.ok(node.id);
         currentClassInfo = new ClassInfo(
-            context, node as TSESTree.ClassDeclarationWithName, isTest);
+            context, node as TSESTree.ClassDeclarationWithName, isTest,
+            isMixinClass(node, context));
         classInfos.set(node.id.name, currentClassInfo);
       },
       'ClassDeclaration > ClassBody > MethodDefinition[key.name="is"] > FunctionExpression > BlockStatement > ReturnStatement'(
           node: TSESTree.ReturnStatement) {
-        if (!hasLitImport || !currentClassInfo) {
+        if (!currentClassInfo) {
           return;
         }
 
         currentClassInfo.visitStaticGetIs(node);
       },
+      'ClassDeclaration > ClassBody > MethodDefinition[key.name="properties"] > FunctionExpression > BlockStatement > ReturnStatement'(
+          node: TSESTree.ReturnStatement) {
+        if (!currentClassInfo) {
+          return;
+        }
+
+        currentClassInfo.runEmptyPropertiesGetterCheck(node);
+      },
       [METHOD_DEFINITION_SELECTOR](node: TSESTree.MethodDefinition) {
-        if (!hasLitImport || !currentClassInfo) {
+        if (!currentClassInfo) {
           return;
         }
 
@@ -552,8 +624,24 @@ export const litElementStructureRule = ESLintUtils.RuleCreator.withoutDocs<
         currentClassInfo.methodDefinitionOrder.push(
             {name: node.key.name, node});
       },
+      'ClassDeclaration > ClassBody > MethodDefinition[kind="constructor"]'(
+          node: TSESTree.MethodDefinition) {
+        if (!currentClassInfo) {
+          return;
+        }
+
+        currentClassInfo.runConstructorParamsCheck(node);
+      },
+      [ALL_LIFECYCLE_METHOD_DEFINITION_SELECTOR](
+          node: TSESTree.MethodDefinition) {
+        if (!currentClassInfo) {
+          return;
+        }
+
+        currentClassInfo.runEmptyLifecycleMethodCheck(node);
+      },
       [LIFECYCLE_METHOD_DEFINITION_SELECTOR](node: TSESTree.MethodDefinition) {
-        if (!hasLitImport || !currentClassInfo) {
+        if (!currentClassInfo) {
           return;
         }
 
@@ -561,39 +649,23 @@ export const litElementStructureRule = ESLintUtils.RuleCreator.withoutDocs<
         currentClassInfo.superCallRequired.add(node.key.name);
       },
       [LIFECYCLE_METHOD_SUPER_CALL_SELECTOR](node: TSESTree.MemberExpression) {
-        if (!hasLitImport || !currentClassInfo) {
+        if (!currentClassInfo) {
           return;
         }
 
         assert.ok(isIdentifier(node.property));
         currentClassInfo.superCallCalled.add(node.property.name);
       },
-      ['MemberExpression[object.object.type="ThisExpression"][object.property.name="$"][property.type="Literal"]'](
-          node: TSESTree.MemberExpression) {
-        if (!hasLitImport || !currentClassInfo) {
-          return;
-        }
-
-        currentClassInfo.runDollarSignNotationCheck(node);
-      },
-      ['CallExpression[callee.object.type="ThisExpression"][callee.property.name="dispatchEvent"] > NewExpression[callee.name="CustomEvent"] > ObjectExpression'](
-          node: TSESTree.ObjectExpression) {
-        if (!hasLitImport || !currentClassInfo) {
-          return;
-        }
-
-        currentClassInfo.runUseFireHelperCheck(node);
-      },
       ['MethodDefinition > FunctionExpression TSTypeReference[typeName.name="CustomEvent"]:not([typeArguments])'](
           node: TSESTree.TSTypeReference) {
-        if (!hasLitImport || !currentClassInfo) {
+        if (!currentClassInfo) {
           return;
         }
 
         currentClassInfo.runCustomEventTypeParameterCheck(node);
       },
       'ClassDeclaration:exit'(_node: TSESTree.ClassDeclaration) {
-        if (!hasLitImport || !currentClassInfo) {
+        if (!currentClassInfo) {
           return;
         }
 
@@ -605,14 +677,15 @@ export const litElementStructureRule = ESLintUtils.RuleCreator.withoutDocs<
       },
       ['Program > TSModuleDeclaration[kind=global] > TSModuleBlock > TSInterfaceDeclaration[id.name="HTMLElementTagNameMap"] > TSInterfaceBody > TSPropertySignature'](
           node: TSESTree.TSPropertySignature) {
-        if (!hasLitImport) {
+        if (classInfos.size === 0) {
           return;
         }
-
         assert.ok(node.typeAnnotation);
         const typeAnnotation = node.typeAnnotation.typeAnnotation;
         assert.ok(isType(typeAnnotation, Node.TSTypeReference));
-        assert.ok(isIdentifier(typeAnnotation.typeName));
+        if (!isIdentifier(typeAnnotation.typeName)) {
+          return;
+        }
         const className = typeAnnotation.typeName.name;
 
         const classInfo = classInfos.get(className) || null;
@@ -622,10 +695,9 @@ export const litElementStructureRule = ESLintUtils.RuleCreator.withoutDocs<
       },
       'ExpressionStatement > CallExpression[callee.object.name="customElements"][callee.property.name="define"]'(
           node: TSESTree.CallExpression) {
-        if (!hasLitImport) {
+        if (classInfos.size === 0) {
           return;
         }
-
         assert.ok(isIdentifier(node.arguments[1]!));
         const className = node.arguments[1].name;
         const classInfo = classInfos.get(className) || null;
@@ -633,14 +705,46 @@ export const litElementStructureRule = ESLintUtils.RuleCreator.withoutDocs<
           classInfo.visitCustomElementsDefineCall(node);
         }
       },
+      ['TSInterfaceDeclaration > TSInterfaceBody > TSPropertySignature[key.name="$"]'](
+          node: TSESTree.TSPropertySignature) {
+        assert.ok(isType(node.parent.parent, Node.TSInterfaceDeclaration));
+        dollarProperties.set(node.parent.parent.id.name, node);
+      },
+      'NewExpression'(node: TSESTree.NewExpression) {
+        const services = ESLintUtils.getParserServices(context);
+        const checker = services.program.getTypeChecker();
+        const tsNode = services.esTreeNodeToTSNodeMap.get(node);
+        assert.ok(tsNode);
+        const type = checker.getTypeAtLocation(tsNode);
+        if (isCrLitElementType(type, checker)) {
+          assert.ok(isIdentifier(node.callee));
+          context.report({
+            node,
+            messageId: 'noNewCrLitElement',
+            data: {
+              className: node.callee.name,
+            },
+          });
+        }
+      },
       'Program:exit'(_node: TSESTree.Program) {
+        if (classInfos.size === 0) {
+          return;
+        }
+
         for (const classInfo of classInfos.values()) {
           classInfo.runMissingTagNameRegistrationCheck();
           classInfo.runMissingCustomElementRegistrationCheck();
         }
 
-        if (htmlImportNode && classInfos.size > 0 &&
-            !canImportHtml(context.filename, importsRender)) {
+        for (const [interfaceName, dollarProp] of dollarProperties) {
+          const classInfo = classInfos.get(interfaceName);
+          if (classInfo) {
+            classInfo.runInvalidDollarSignPropertyCheck(dollarProp);
+          }
+        }
+
+        if (htmlImportNode && !canImportHtml(context.filename, importsRender)) {
           context.report({
             node: htmlImportNode,
             messageId: 'htmlImportInTsFile',

@@ -21,7 +21,8 @@
 #include "components/sessions/core/session_id.h"
 #include "components/sessions/core/tab_restore_service.h"
 #import "ui/base/cocoa/cocoa_base_utils.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 
 using content::OpenURLParams;
 using content::Referrer;
@@ -34,7 +35,7 @@ namespace {
 // NB: Takes |node| by value, because the HistoryMenuBridge could be destroyed
 // before RunInSafeProfileHelper finishes.
 void OpenURLForItem(HistoryMenuBridge::HistoryItem node,
-                    WindowOpenDisposition disposition,
+                    ui::mojom::WindowOpenDisposition disposition,
                     Profile* profile) {
   if (!profile) {
     return;  // Failed to load profile, ignore.
@@ -44,7 +45,7 @@ void OpenURLForItem(HistoryMenuBridge::HistoryItem node,
   if (node.session_id.is_valid()) {
     app_controller_mac::TabRestorer::RestoreByID(profile, node.session_id);
   } else {
-    DCHECK(node.url.is_valid());
+    CHECK(node.url.is_valid(), base::NotFatalUntil::M162);
     Profile* target_profile = profile;
 
     // Allow a history menu item to open in an active incognito window.
@@ -76,9 +77,13 @@ void OpenURLForItem(HistoryMenuBridge::HistoryItem node,
 - (instancetype)initWithBridge:(HistoryMenuBridge*)bridge {
   if ((self = [super init])) {
     _bridge = bridge;
-    DCHECK(_bridge);
+    CHECK(_bridge, base::NotFatalUntil::M162);
   }
   return self;
+}
+
+- (void)clearBridge {
+  _bridge = nullptr;
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)menuItem {
@@ -87,7 +92,7 @@ void OpenURLForItem(HistoryMenuBridge::HistoryItem node,
 
 // Open the URL of the given history item in the current tab.
 - (void)openURLForItem:(const HistoryMenuBridge::HistoryItem*)node {
-  WindowOpenDisposition disposition =
+  ui::mojom::WindowOpenDisposition disposition =
       ui::WindowOpenDispositionFromNSEvent([NSApp currentEvent]);
   if (Profile* profile = _bridge->profile()) {
     OpenURLForItem(*node, disposition, profile);
@@ -103,6 +108,10 @@ void OpenURLForItem(HistoryMenuBridge::HistoryItem node,
 }
 
 - (IBAction)openHistoryMenuItem:(id)sender {
+  if (!_bridge) {
+    return;
+  }
+
   const HistoryMenuBridge::HistoryItem* item =
       _bridge->HistoryItemForMenuItem(sender);
 
@@ -120,11 +129,15 @@ void OpenURLForItem(HistoryMenuBridge::HistoryItem node,
 // NSMenuDelegate:
 
 - (void)menuWillOpen:(NSMenu*)menu {
-  _bridge->SetIsMenuOpen(true);
+  if (_bridge) {
+    _bridge->SetIsMenuOpen(true);
+  }
 }
 
 - (void)menuDidClose:(NSMenu*)menu {
-  _bridge->SetIsMenuOpen(false);
+  if (_bridge) {
+    _bridge->SetIsMenuOpen(false);
+  }
 }
 
 @end  // HistoryMenuCocoaController

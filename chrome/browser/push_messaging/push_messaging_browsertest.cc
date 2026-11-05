@@ -29,14 +29,11 @@
 #include "chrome/browser/gcm/instance_id/instance_id_profile_service_factory.h"
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/notifications/notification_handler.h"
-#include "chrome/browser/permissions/crowd_deny_fake_safe_browsing_database_manager.h"
-#include "chrome/browser/permissions/crowd_deny_preload_data.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/push_messaging/push_messaging_app_identifier.h"
 #include "chrome/browser/push_messaging/push_messaging_service_factory.h"
 #include "chrome/browser/push_messaging/push_messaging_service_impl.h"
 #include "chrome/browser/push_messaging/push_messaging_unsubscribed_entry.h"
-#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/buildflags.h"
@@ -64,6 +61,7 @@
 #include "components/push_messaging/push_messaging_constants.h"
 #include "components/push_messaging/push_messaging_features.h"
 #include "components/push_messaging/push_messaging_utils.h"
+#include "components/safe_browsing/buildflags.h"
 #include "components/site_engagement/content/site_engagement_score.h"
 #include "components/site_engagement/content/site_engagement_service.h"
 #include "content/public/browser/browsing_data_remover.h"
@@ -80,8 +78,14 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/mojom/push_messaging/push_messaging.mojom.h"
 #include "third_party/blink/public/mojom/push_messaging/push_messaging_status.mojom.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/message_center/public/cpp/notification.h"
+
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#include "chrome/browser/permissions/crowd_deny_fake_safe_browsing_database_manager.h"
+#include "chrome/browser/permissions/crowd_deny_preload_data.h"
+#include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
+#endif
 
 namespace {
 
@@ -1436,7 +1440,7 @@ IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTest,
   // Open a blank foreground tab so site is no longer visible.
   ui_test_utils::NavigateToURLWithDisposition(
       GetBrowser(), GURL("about:blank"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
   // If the Service Worker push event handler shows a notification, we
@@ -1524,7 +1528,7 @@ IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTest,
 
   ui_test_utils::NavigateToURLWithDisposition(
       GetBrowser(), GURL("about:blank"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
   // Send a missed notification to use up the budget.
@@ -1568,6 +1572,7 @@ IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTest,
   ASSERT_EQ(0u, GetNotificationCount());
 }
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 class PushMessagingBrowserTestWithAbusiveOriginPermissionRevocation
     : public PushMessagingBrowserTestBase {
  public:
@@ -1702,6 +1707,7 @@ IN_PROC_BROWSER_TEST_F(
       "PushMessaging.DeliveryStatus",
       static_cast<int>(blink::mojom::PushEventStatus::SUCCESS), 1);
 }
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTestBase,
                        PushEventIgnoresScheduledNotificationsForEnforcement) {
@@ -1723,7 +1729,7 @@ IN_PROC_BROWSER_TEST_F(PushMessagingBrowserTestBase,
 
   ui_test_utils::NavigateToURLWithDisposition(
       GetBrowser(), GURL("about:blank"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
   gcm::IncomingMessage message;

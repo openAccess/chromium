@@ -37,27 +37,12 @@ CommandEvent::CommandEvent(const AtomicString& type,
 }
 
 Element* CommandEvent::source() const {
-  if (!source_) {
-    CHECK(!related_target_);
-    return nullptr;
-  }
-
-  if (RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
-          source_->GetExecutionContext())) {
-    EventTarget* related_target = related_target_.Get();
-    return related_target ? DynamicTo<Element>(related_target->ToNode())
-                          : nullptr;
-  }
-
   return DynamicTo<Element>(Retarget(source_));
 }
 
 DispatchEventResult CommandEvent::DispatchEvent(EventDispatcher& dispatcher) {
-  if (RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
-          dispatcher.GetNode().GetExecutionContext())) {
-    GetEventPath().AdjustForRelatedTarget(dispatcher.GetNode(),
+  GetEventPath().AdjustForReferenceTarget(dispatcher.GetNode(),
                                           relatedTarget());
-  }
   return dispatcher.Dispatch();
 }
 

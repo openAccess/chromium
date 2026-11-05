@@ -10,6 +10,7 @@
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
+#include "base/i18n/language_tag.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/raw_ref.h"
@@ -20,15 +21,14 @@
 #include "base/time/tick_clock.h"
 #include "base/time/time.h"
 #include "base/timer/wall_clock_timer.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller_util.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/web_applications/policy/web_app_policy_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/google/core/common/google_util.h"
@@ -38,12 +38,6 @@
 #include "content/public/browser/storage_partition_config.h"
 
 namespace ash::graduation {
-
-namespace {
-base::Time GetNextDayLocalMidnight(base::Time date) {
-  return (date.LocalMidnight() + base::Days(1)).LocalMidnight();
-}
-}  // namespace
 
 GraduationManagerImpl::GraduationManagerImpl(
     ApplicationLocaleStorage* application_locale_storage)
@@ -62,8 +56,8 @@ GraduationManagerImpl::~GraduationManagerImpl() {
   midnight_timer_.reset();
 }
 
-std::string GraduationManagerImpl::GetLanguageCode() const {
-  return google_util::GetGoogleLocale(application_locale_storage_->Get());
+base::i18n::LanguageTag GraduationManagerImpl::GetLanguageCode() const {
+  return google_util::GetGoogleLocale(application_locale_storage_->GetTag());
 }
 
 content::StoragePartition* GraduationManagerImpl::GetStoragePartition(
@@ -197,7 +191,7 @@ void GraduationManagerImpl::MaybeScheduleAppStatusUpdate() {
     return;
   }
 
-  const base::Time midnight = GetNextDayLocalMidnight(/*date=*/clock_->Now());
+  const base::Time midnight = clock_->Now().NextLocalMidnight();
   CHECK(midnight_timer_);
   midnight_timer_->Start(FROM_HERE, midnight,
                          base::BindOnce(&GraduationManagerImpl::OnMidnightTimer,

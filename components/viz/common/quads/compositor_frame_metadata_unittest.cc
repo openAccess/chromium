@@ -57,8 +57,8 @@ TEST(CompositorFrameMetadata, Clone) {
   metadata.device_scale_factor = 12.3f;
   metadata.root_scroll_offset = gfx::PointF(4.f, 5.f);
   metadata.page_scale_factor = 6.7f;
+  metadata.surface_backing_size_scale_factor = 8.9f;
   metadata.scrollable_viewport_size = gfx::SizeF(89.0f, 12.3f);
-  metadata.content_color_usage = gfx::ContentColorUsage::kHDR;
   metadata.may_contain_video = true;
   metadata.is_handling_interaction = true;
   metadata.is_handling_animation = true;
@@ -75,6 +75,7 @@ TEST(CompositorFrameMetadata, Clone) {
   metadata.send_frame_token_to_embedder = true;
   metadata.min_page_scale_factor = 123.3f;
   metadata.top_controls_visible_height.emplace(0.5);
+  metadata.view_transition_deadline_in_frames.emplace(240u);
   metadata.display_transform_hint = gfx::OVERLAY_TRANSFORM_FLIP_VERTICAL;
   metadata.delegated_ink_metadata = std::make_unique<gfx::DelegatedInkMetadata>(
       gfx::PointF(88.8, 44.4), 1.f, SK_ColorRED,
@@ -88,8 +89,9 @@ TEST(CompositorFrameMetadata, Clone) {
   EXPECT_FLOAT_EQ(clone.device_scale_factor, metadata.device_scale_factor);
   EXPECT_EQ(clone.root_scroll_offset, metadata.root_scroll_offset);
   EXPECT_FLOAT_EQ(clone.page_scale_factor, metadata.page_scale_factor);
+  EXPECT_FLOAT_EQ(clone.surface_backing_size_scale_factor,
+                  metadata.surface_backing_size_scale_factor);
   EXPECT_EQ(clone.scrollable_viewport_size, metadata.scrollable_viewport_size);
-  EXPECT_EQ(clone.content_color_usage, metadata.content_color_usage);
   EXPECT_EQ(clone.may_contain_video, metadata.may_contain_video);
   EXPECT_EQ(clone.is_handling_interaction, metadata.is_handling_interaction);
   EXPECT_EQ(clone.is_handling_animation, metadata.is_handling_animation);
@@ -114,6 +116,10 @@ TEST(CompositorFrameMetadata, Clone) {
             metadata.top_controls_visible_height);
   EXPECT_FLOAT_EQ(*clone.top_controls_visible_height,
                   *metadata.top_controls_visible_height);
+  EXPECT_EQ(clone.view_transition_deadline_in_frames,
+            metadata.view_transition_deadline_in_frames);
+  EXPECT_EQ(*clone.view_transition_deadline_in_frames,
+            *metadata.view_transition_deadline_in_frames);
   EXPECT_EQ(clone.display_transform_hint, metadata.display_transform_hint);
 
   EXPECT_EQ(!!clone.delegated_ink_metadata, !!metadata.delegated_ink_metadata);

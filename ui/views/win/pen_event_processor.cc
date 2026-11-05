@@ -8,6 +8,7 @@
 #include "base/notreached.h"
 #include "base/time/time.h"
 #include "components/stylus_handwriting/win/features.h"
+#include "ui/display/win/screen_win.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/event_utils.h"
 
@@ -52,7 +53,8 @@ std::unique_ptr<ui::Event> PenEventProcessor::GenerateEvent(
   // have to check if previously the pointer type is an eraser.
   if (pointer_pen_info.penFlags & PEN_FLAG_ERASER) {
     input_type = ui::EventPointerType::kEraser;
-    DCHECK(!eraser_pointer_id_ || *eraser_pointer_id_ == mapped_pointer_id);
+    CHECK(!eraser_pointer_id_ || *eraser_pointer_id_ == mapped_pointer_id,
+          base::NotFatalUntil::M163);
     eraser_pointer_id_ = mapped_pointer_id;
   } else if (eraser_pointer_id_ && *eraser_pointer_id_ == mapped_pointer_id &&
              (message == WM_POINTERUP || message == WM_NCPOINTERUP)) {
@@ -63,10 +65,9 @@ std::unique_ptr<ui::Event> PenEventProcessor::GenerateEvent(
   // convert pressure into a float [0, 1]. The range of the pressure is
   // [0, 1024] as specified on MSDN.
   float pressure = static_cast<float>(pointer_pen_info.pressure) / 1024;
-  int rotation_angle = static_cast<int>(pointer_pen_info.rotation) % 180;
-  if (rotation_angle < 0) {
-    rotation_angle += 180;
-  }
+  // The rotation is already normalized to [0, 359] as specified on MSDN. See
+  // https://learn.microsoft.com/windows/win32/api/winuser/ns-winuser-pointer_pen_info#members
+  int rotation_angle = static_cast<int>(pointer_pen_info.rotation);
   int tilt_x = pointer_pen_info.tiltX;
   int tilt_y = pointer_pen_info.tiltY;
 
@@ -114,11 +115,10 @@ std::unique_ptr<ui::Event> PenEventProcessor::GenerateEvent(
   std::optional<ui::StylusHandwritingPropertiesWin> handwriting_properties;
   if (stylus_handwriting::win::IsStylusHandwritingWinEnabled() &&
       message == WM_POINTERDOWN) {
-    handwriting_properties =
-        std::make_optional<ui::StylusHandwritingPropertiesWin>();
-    handwriting_properties->handwriting_pointer_id = pointer_id;
-    handwriting_properties->handwriting_stroke_id =
-        ui::GetHandwritingStrokeId(pointer_id);
+    handwriting_properties.emplace(
+        pointer_id, ui::GetHandwritingStrokeId(pointer_id),
+        display::win::GetScreenWin()->GetPixelsPerInchForPointerDevice(
+            pointer_pen_info.pointerInfo.sourceDevice));
   }
 
   return GenerateTouchEvent(message, pointer_id, pointer_pen_info.pointerInfo,

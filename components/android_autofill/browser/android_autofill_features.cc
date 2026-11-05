@@ -6,6 +6,8 @@
 
 #include <jni.h>
 
+#include <array>
+
 #include "base/compiler_specific.h"
 #include "base/feature_list.h"
 
@@ -16,11 +18,13 @@ namespace autofill::features {
 
 namespace {
 
-const base::Feature* const kFeaturesExposedToJava[] = {
+constexpr std::array kFeaturesExposedToJava = {
     &kAndroidAutofillLazyFrameworkWrapper,
     &kAndroidAutofillImprovedVisibilityDetection,
     &kAndroidAutofillFieldsUpdatedOnSelect,
-    &kAndroidAutofillSupportForHttpAuthOrigin};
+    &kAndroidAutofillSuppressOffscreenDatalist,
+    &kAndroidAutofillIncludeSelectOptionValues,
+};
 
 }  // namespace
 
@@ -37,27 +41,37 @@ BASE_FEATURE(kAndroidAutofillLazyFrameworkWrapper,
 BASE_FEATURE(kAndroidAutofillImprovedVisibilityDetection,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// If enabled, the iframe security policy gets Chrome's predicted type, rather
+// than UNKNOWN_TYPE, for filled cardholder name and expiration date fields in
+// the main frame whose values look like such values. Like in Chrome, this lets
+// them be filled when the user fills from a cross-origin payment iframe.
+BASE_FEATURE(kAndroidAutofillFillNonSensitiveCardFieldsInMainFrame,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // If enabled, the native autofill provider is updated when the web contents
 // change.
 BASE_FEATURE(kAndroidAutofillUpdateContextForWebContents,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, fields are updated whenever a user interacts with a <select>.
-// TODO(crbug.com/502346855): Remove in M152 or later.
+// TODO(crbug.com/502346855): Remove in M157 or later.
 BASE_FEATURE(kAndroidAutofillFieldsUpdatedOnSelect,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// LINT.IfChange
-// If enabled, the origin of the challenger is passed to the HttpAuth dialog for
-// autofill purposes. Remove in or after M153.
-BASE_FEATURE(kAndroidAutofillSupportForHttpAuthOrigin,
+// If enabled, datalist popups are suppressed when the field is outside the
+// container view's visible bounds.
+BASE_FEATURE(kAndroidAutofillSuppressOffscreenDatalist,
              base::FEATURE_ENABLED_BY_DEFAULT);
-// LINT.ThenChange(//chrome/android/DEPS)
+
+// If enabled, <select> elements include both option display texts and option
+// values in ViewStructure.setAutofillOptions(), and AutofillRequest maps
+// indices from either range back to the corresponding option value.
+BASE_FEATURE(kAndroidAutofillIncludeSelectOptionValues,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 static int64_t JNI_AndroidAutofillFeatures_GetFeature(JNIEnv* env,
                                                       int32_t ordinal) {
-  return reinterpret_cast<int64_t>(
-      UNSAFE_TODO(kFeaturesExposedToJava[ordinal]));
+  return reinterpret_cast<int64_t>(kFeaturesExposedToJava[ordinal]);
 }
 
 }  // namespace autofill::features

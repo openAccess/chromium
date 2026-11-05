@@ -25,7 +25,6 @@
 #include "chrome/browser/ash/login/oobe_screen.h"
 #include "chrome/browser/ash/login/quickstart_controller.h"
 #include "chrome/browser/ash/login/screen_manager.h"
-#include "chrome/browser/ash/login/screens/account_selection_screen.h"
 #include "chrome/browser/ash/login/screens/add_child_screen.h"
 #include "chrome/browser/ash/login/screens/ai_intro_screen.h"
 #include "chrome/browser/ash/login/screens/categories_selection_screen.h"
@@ -105,9 +104,18 @@ class MetricsService;
 namespace policy {
 class AutoEnrollmentController;
 class BrowserPolicyConnectorAsh;
+class DeviceRestrictionScheduleController;
 }  // namespace policy
 
+namespace user_manager {
+class MultiUserSignInPolicyController;
+}  // namespace user_manager
+
 namespace ash {
+
+namespace system {
+class SystemClock;
+}  // namespace system
 
 class BaseScreen;
 class DemoSetupController;
@@ -137,6 +145,10 @@ class WizardController : public OobeUI::Observer {
   // `application_locale_storage` and `browser_policy_connector_ash` must be
   // non-null and must outlive `this`.
   // `shared_url_loader_factory` and `component_manager_ash` must be non-null.
+  // `device_restriction_schedule_controller` may be null in unit tests, but
+  // must outlive `this` if it's non-null.
+  // `multi_user_sign_in_policy_controller` and `system_clock` must be non-null
+  // and must outlive `this`.
   WizardController(
       PrefService* local_state,
       ::metrics::MetricsService* metrics_service,
@@ -145,6 +157,11 @@ class WizardController : public OobeUI::Observer {
       policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
       scoped_refptr<component_updater::ComponentManagerAsh>
           component_manager_ash,
+      policy::DeviceRestrictionScheduleController*
+          device_restriction_schedule_controller,
+      const user_manager::MultiUserSignInPolicyController*
+          multi_user_sign_in_policy_controller,
+      system::SystemClock* system_clock,
       WizardContext* wizard_context);
 
   WizardController(const WizardController&) = delete;
@@ -285,8 +302,9 @@ class WizardController : public OobeUI::Observer {
   // Show Cryptohome recovery screen.
   void ShowCryptohomeRecoveryScreen(std::unique_ptr<UserContext> user_context);
 
-  // Exits Fjord touch controller screen if it's showing.
-  bool ExitFjordTouchControllerScreen();
+  // Notifies the Fjord touch controller screen that the touch controller setup
+  // is finished, which enables its next button.
+  bool OnFjordTouchControllerSetupFinished();
 
   // Shows the Fjord OOBE state if the next state is valid.
   bool ShowNextFjordOobeScreen(
@@ -404,7 +422,6 @@ class WizardController : public OobeUI::Observer {
   void ShowPersonalizedRecomendAppsScreen();
   void ShowPerksDiscoveryScreen();
   void ShowSplitModifierKeyboardInfoScreen();
-  void ShowAccountSelectionScreen();
   void ShowAppLaunchSplashScreen();
   void ShowFjordImageSelectionScreen();
   void ShowFjordImageDownloadScreen();
@@ -548,7 +565,6 @@ class WizardController : public OobeUI::Observer {
   void OnDeviceDisabledChecked(bool device_disabled);
   void OnSplitModifierKeyboardInfoScreenExit(
       SplitModifierKeyboardInfoScreen::Result result);
-  void OnAccountSelectionScreenExit(AccountSelectionScreen::Result result);
 
   // Shows update screen and starts update process.
   void InitiateOOBEUpdate();
@@ -660,6 +676,11 @@ class WizardController : public OobeUI::Observer {
       browser_policy_connector_ash_;
   const scoped_refptr<component_updater::ComponentManagerAsh>
       component_manager_ash_;
+  const raw_ptr<policy::DeviceRestrictionScheduleController>
+      device_restriction_schedule_controller_;
+  const raw_ref<const user_manager::MultiUserSignInPolicyController>
+      multi_user_sign_in_policy_controller_;
+  const raw_ref<system::SystemClock> system_clock_;
 
   std::unique_ptr<policy::AutoEnrollmentController> auto_enrollment_controller_;
   std::unique_ptr<ChoobeFlowController> choobe_flow_controller_;

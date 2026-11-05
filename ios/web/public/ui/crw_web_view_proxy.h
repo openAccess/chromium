@@ -23,15 +23,28 @@
 // setting the `obscuredInsets` property will not have any effect.
 @property(nonatomic, assign) BOOL ignoreObscuredInsets;
 
-// Web view's obscured insets. If `ignoreObscuredInsets` is set to `YES` then
-// setting this property will not have any effect.
+// Web view's obscured insets. Setting this property also updates
+// `UIScrollView.contentInset` and `contentOffset` (on iOS 26+) or resizes the
+// web view's frame (on earlier iOS versions) in addition to updating the
+// underlying web view's `obscuredContentInsets`. The value persists across
+// content view changes: it is also applied to content views set later, e.g.
+// when the web view is created after this is set. If `ignoreObscuredInsets` is
+// set to `YES` then setting this property will not have any effect.
 @property(nonatomic, assign) UIEdgeInsets obscuredInsets;
 
 // Sets the obscured insets with an initial velocity for spring animations.
 - (void)setObscuredInsets:(UIEdgeInsets)obscuredInsets
           initialVelocity:(CGFloat)initialVelocity;
 
-// Sets the web view's min and max viewport insets.
+// The insets that specify the portion of the web view that is obscured by UI
+// elements. Unlike `obscuredInsets`, this property is forwarded directly to the
+// underlying web view's `obscuredContentInsets` without modifying
+// `UIScrollView.contentInset`, `contentOffset`, or the web view's frame.
+@property(nonatomic) UIEdgeInsets obscuredContentInsets API_AVAILABLE(ios(26));
+
+// Sets the web view's min and max viewport insets. The values persist across
+// content view changes: they are also applied to content views set later,
+// e.g. when the web view is created after this is called.
 - (void)setMinimumViewportInset:(UIEdgeInsets)minInset
            maximumViewportInset:(UIEdgeInsets)maxInset;
 
@@ -66,11 +79,18 @@
 
 // Whether or not the content view should use the content inset when setting
 // `contentInset`. Implementations may or may not respect the setting of this
-// property.
+// property. The value set persists across content view changes: it is also
+// applied to content views set later, e.g. when the web view is created after
+// this is set. Reading it returns the current content view's value (`NO` if
+// there is no web view).
 @property(nonatomic, assign) BOOL shouldUseViewContentInset;
 
 // YES if the keyboard is currently visible for use in the web view.
 @property(nonatomic, readonly, getter=isKeyboardVisible) BOOL keyboardVisible;
+
+// Whether input views (the software keyboard, input accessory views, and
+// tablet shortcut bar) should be suppressed. Defaults to `NO`.
+@property(nonatomic, assign) BOOL shouldSuppressInputViews;
 
 // Register the given insets for the given caller.
 - (void)registerInsets:(UIEdgeInsets)insets forCaller:(id)caller;

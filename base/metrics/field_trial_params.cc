@@ -19,6 +19,7 @@
 #include "base/metrics/field_trial_param_associator.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/metrics_hashes.h"
+#include "base/metrics/runtime_field_trial_overrides.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
@@ -72,9 +73,18 @@ void LogInvalidValue(const Feature& feature,
                      const std::string& param_name,
                      const std::string& value_as_string,
                      const std::string& default_value_as_string) {
+  std::string trial_name;
+  if (feature.IsRuntimeMutable()) {
+    if (auto* feature_list = FeatureList::GetInstance()) {
+      trial_name =
+          feature_list->GetControllingTrialInfoByFeatureName(feature.name)
+              .trial_name;
+    }
+  } else if (FieldTrial* trial = FeatureList::GetFieldTrial(feature)) {
+    trial_name = trial->trial_name();
+  }
   UmaHistogramSparse("Variations.FieldTriamParamsLogInvalidValue",
-                     static_cast<int>(base::HashFieldTrialName(
-                         FeatureList::GetFieldTrial(feature)->trial_name())));
+                     static_cast<int>(base::HashFieldTrialName(trial_name)));
   // To anyone noticing these crash dumps in the wild, these parameters come
   // from server-side experiment configuration. If you're seeing an increase it
   // is likely due to a bad experiment rollout rather than changes in the client
@@ -175,6 +185,22 @@ bool GetFieldTrialParamsByFeature(const Feature& feature,
                                   FieldTrialParams* params) {
   if (!FeatureList::IsEnabled(feature)) {
     return false;
+  }
+
+  if (feature.IsRuntimeMutable()) {
+    auto* feature_list = FeatureList::GetInstance();
+    if (feature_list) {
+      auto override_info =
+          feature_list->GetAssociatedRuntimeFieldTrialOverrideInfoByFeatureName(
+              feature.name);
+      if (override_info.has_value() && override_info.value()) {
+        if (override_info.value()->params().empty()) {
+          return false;
+        }
+        *params = override_info.value()->params();
+        return true;
+      }
+    }
   }
 
   FieldTrial* trial = FeatureList::GetFieldTrial(feature);

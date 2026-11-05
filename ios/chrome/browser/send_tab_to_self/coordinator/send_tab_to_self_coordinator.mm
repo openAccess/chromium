@@ -6,79 +6,40 @@
 
 #import <memory>
 #import <optional>
-#import <string_view>
-#import <utility>
 
-#import "base/apple/foundation_util.h"
 #import "base/check.h"
-#import "base/feature_list.h"
 #import "base/functional/bind.h"
-#import "base/functional/callback_helpers.h"
 #import "base/ios/block_types.h"
-#import "base/memory/raw_ptr.h"
-#import "base/scoped_observation.h"
-#import "base/strings/string_util.h"
+#import "base/not_fatal_until.h"
 #import "base/strings/sys_string_conversions.h"
-#import "base/strings/utf_string_conversions.h"
-#import "base/task/sequenced_task_runner.h"
-#import "base/time/time.h"
-#import "base/values.h"
 #import "components/send_tab_to_self/entry_point_display_reason.h"
-#import "components/send_tab_to_self/features.h"
 #import "components/send_tab_to_self/metrics_util.h"
-#import "components/send_tab_to_self/page_context.h"
 #import "components/send_tab_to_self/send_tab_to_self_model.h"
 #import "components/send_tab_to_self/send_tab_to_self_sync_service.h"
-#import "components/send_tab_to_self/target_device_info.h"
 #import "components/send_tab_to_self/target_device_list_waiter.h"
 #import "components/signin/public/base/signin_metrics.h"
-#import "components/strings/grit/components_strings.h"
-#import "components/sync/service/sync_service.h"
-#import "components/sync/service/sync_service_observer.h"
 #import "ios/chrome/browser/authentication/ui_bundled/change_profile/change_profile_send_tab.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator.h"
-#import "ios/chrome/browser/infobars/ui_bundled/presentation/infobar_modal_positioner.h"
-#import "ios/chrome/browser/send_tab_to_self/coordinator/send_tab_to_self_coordinator.h"
 #import "ios/chrome/browser/send_tab_to_self/coordinator/send_tab_to_self_coordinator_delegate.h"
 #import "ios/chrome/browser/send_tab_to_self/coordinator/send_tab_to_self_mediator.h"
 #import "ios/chrome/browser/send_tab_to_self/coordinator/send_tab_to_self_mediator_delegate.h"
 #import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_browser_agent.h"
-#import "ios/chrome/browser/sync/model/send_tab_to_self_sync_service_factory.h"
-#import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_text_fragment_selector_generator.h"
-#import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_util.h"
 #import "ios/chrome/browser/send_tab_to_self/ui/send_tab_to_self_bottom_sheet_view_controller.h"
 #import "ios/chrome/browser/send_tab_to_self/ui/send_tab_to_self_modal_delegate.h"
-#import "ios/chrome/browser/send_tab_to_self/ui/send_tab_to_self_modal_presentation_controller.h"
-#import "ios/chrome/browser/send_tab_to_self/ui/send_tab_to_self_table_view_controller.h"
-#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
-#import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
-#import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
-#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
-#import "ios/chrome/browser/shared/public/commands/toolbar_commands.h"
-#import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
-#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 #import "ios/chrome/browser/sync/model/send_tab_to_self_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
-#import "ios/chrome/grit/ios_strings.h"
-#import "ios/web/public/thread/web_task_traits.h"
-#import "ios/web/public/thread/web_thread.h"
-#import "ios/web/public/web_state.h"
-#import "ui/base/l10n/l10n_util.h"
 
 namespace {
 
@@ -95,18 +56,8 @@ void OpenManageDevicesTab(CommandDispatcher* dispatcher) {
 
 }  // namespace
 
-@interface SendTabToSelfCoordinator () <InfobarModalPositioner,
-                                        SendTabToSelfMediatorDelegate,
-                                        SendTabToSelfModalDelegate,
-                                        UIViewControllerTransitioningDelegate> {
-  std::unique_ptr<send_tab_to_self::TargetDeviceListWaiter>
-      _targetDeviceListWaiter;
-  send_tab_to_self::ShareEntryPoint _entryPoint;
-  // Non-nil only when the coordinator is initialized in direct-send mode,
-  // representing the target device's cache GUID where the tab should be sent.
-  NSString* _targetDeviceCacheGUID;
-  NSString* _targetDeviceName;
-}
+@interface SendTabToSelfCoordinator () <SendTabToSelfMediatorDelegate,
+                                        SendTabToSelfModalDelegate>
 
 @property(nonatomic, assign, readonly) GURL url;
 @property(nonatomic, copy, readonly) NSString* title;
@@ -115,7 +66,7 @@ void OpenManageDevicesTab(CommandDispatcher* dispatcher) {
 // tab directly to a specific target device without presenting any picker UI.
 @property(nonatomic, assign, readonly) BOOL isDirectSend;
 
-// The TableViewController that shows the Send Tab To Self UI. This is NOT the
+// The view controller that shows the Send Tab To Self UI. This is NOT the
 // presented controller, it is wrapped in a UINavigationController.
 @property(nonatomic, strong) UIViewController* sendTabToSelfViewController;
 // If non-null, this is called when iOS finishes the animated dismissal of the
@@ -133,6 +84,13 @@ void OpenManageDevicesTab(CommandDispatcher* dispatcher) {
   UINavigationController* _navigationController;
   // The mediator of this coordinator.
   SendTabToSelfMediator* _mediator;
+  std::unique_ptr<send_tab_to_self::TargetDeviceListWaiter>
+      _targetDeviceListWaiter;
+  send_tab_to_self::ShareEntryPoint _entryPoint;
+  // Non-nil only when the coordinator is initialized in direct-send mode,
+  // representing the target device's cache GUID where the tab should be sent.
+  NSString* _targetDeviceCacheGUID;
+  NSString* _targetDeviceName;
 }
 
 #pragma mark - Public
@@ -209,7 +167,7 @@ void OpenManageDevicesTab(CommandDispatcher* dispatcher) {
 // Do not call directly, use `[self.delegate
 // sendTabToSelfCoordinatorWantsToBeStopped:self]` instead!
 - (void)stop {
-  DCHECK(!self.stopped) << "Already stopped";
+  CHECK(!self.stopped, base::NotFatalUntil::M158);
   self.stopped = YES;
   // Abort the waiting if it's still ongoing.
   _targetDeviceListWaiter.reset();
@@ -229,62 +187,21 @@ void OpenManageDevicesTab(CommandDispatcher* dispatcher) {
   self.dismissedCompletion = nil;
 }
 
-#pragma mark - UIViewControllerTransitioningDelegate
-
-- (UIPresentationController*)
-    presentationControllerForPresentedViewController:
-        (UIViewController*)presented
-                            presentingViewController:
-                                (UIViewController*)presenting
-                                sourceViewController:(UIViewController*)source {
-  SendTabToSelfModalPresentationController* presentationController =
-      [[SendTabToSelfModalPresentationController alloc]
-          initWithPresentedViewController:presented
-                 presentingViewController:presenting];
-  presentationController.modalPositioner = self;
-  return presentationController;
-}
-
 #pragma mark - SendTabToSelfMediatorDelegate
 
 - (void)mediatorWantsToBeStopped:(SendTabToSelfMediator*)mediator {
-  CHECK_EQ(mediator, _mediator, base::NotFatalUntil::M150);
+  CHECK_EQ(mediator, _mediator);
   [self.delegate sendTabToSelfCoordinatorWantsToBeStopped:self];
 }
 
 - (void)mediatorWantsToRefreshView:(SendTabToSelfMediator*)mediator {
-  CHECK_EQ(mediator, _mediator, base::NotFatalUntil::M150);
+  CHECK_EQ(mediator, _mediator);
   if (_signinCoordinator) {
     // Nothing to refresh in case of sign-in. The signin coordinator will deal
     // with the update itself.
     return;
   }
   [self show];
-}
-
-#pragma mark - InfobarModalPositioner
-
-- (CGFloat)modalHeightForWidth:(CGFloat)width {
-  UIView* view = self.sendTabToSelfViewController.view;
-  CGSize contentSize = CGSizeZero;
-  if (UIScrollView* scrollView = base::apple::ObjCCast<UIScrollView>(view)) {
-    CGRect layoutFrame = self.baseViewController.view.bounds;
-    layoutFrame.size.width = width;
-    scrollView.frame = layoutFrame;
-    [scrollView setNeedsLayout];
-    [scrollView layoutIfNeeded];
-    contentSize = scrollView.contentSize;
-  } else {
-    contentSize = [view sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
-  }
-
-  // Since the TableView is contained in a NavigationController get the
-  // navigation bar height.
-  CGFloat navigationBarHeight =
-      self.sendTabToSelfViewController.navigationController.navigationBar.frame
-          .size.height;
-
-  return contentSize.height + navigationBarHeight;
 }
 
 #pragma mark - SendTabToSelfModalDelegate
@@ -401,57 +318,34 @@ void OpenManageDevicesTab(CommandDispatcher* dispatcher) {
   ProfileIOS* profile = self.profile;
   send_tab_to_self::SendTabToSelfSyncService* syncService =
       SendTabToSelfSyncServiceFactory::GetForProfile(profile);
-  // This modal should not be launched in incognito mode where syncService
+  // This modal should not be launched in incognito mode where `syncService`
   // is undefined.
-  DCHECK(syncService);
-  ChromeAccountManagerService* accountManagerService =
-      ChromeAccountManagerServiceFactory::GetForProfile(profile);
-  DCHECK(accountManagerService);
+  CHECK(syncService);
   id<SystemIdentity> account =
       AuthenticationServiceFactory::GetForProfile(profile)
           ->GetPrimaryIdentity();
-  DCHECK(account) << "The user must be signed in to share a tab";
+  CHECK(account);
 
-  if (base::FeatureList::IsEnabled(
-          send_tab_to_self::kSendTabToSelfEnhancedBottomsheet)) {
-    SendTabToSelfBottomSheetViewController* bottomSheet =
-        [[SendTabToSelfBottomSheetViewController alloc]
-            initWithDeviceList:syncService->GetSendTabToSelfModel()
-                                   ->GetTargetDeviceInfoSortedList()
-                  accountEmail:account.userEmail
-                      delegate:self];
-    bottomSheet.parentViewControllerHeight =
-        self.baseViewController.view.frame.size.height;
-    self.sendTabToSelfViewController = bottomSheet;
-    _navigationController = [[UINavigationController alloc]
-        initWithRootViewController:self.sendTabToSelfViewController];
-    _navigationController.modalPresentationStyle = UIModalPresentationPageSheet;
-    UISheetPresentationController* sheet =
-        _navigationController.sheetPresentationController;
-    if (sheet) {
-      sheet.prefersGrabberVisible = YES;
-    }
-    [self.baseViewController presentViewController:_navigationController
-                                          animated:YES
-                                        completion:nil];
-  } else {
-    self.sendTabToSelfViewController = [[SendTabToSelfTableViewController alloc]
-        initWithDeviceList:syncService->GetSendTabToSelfModel()
-                               ->GetTargetDeviceInfoSortedList()
-                  delegate:self
-             accountAvatar:GetApplicationContext()
-                               ->GetIdentityAvatarProvider()
-                               ->GetIdentityAvatar(
-                                   account, IdentityAvatarSize::TableViewIcon)
-              accountEmail:account.userEmail];
-    _navigationController = [[UINavigationController alloc]
-        initWithRootViewController:self.sendTabToSelfViewController];
-    _navigationController.transitioningDelegate = self;
-    _navigationController.modalPresentationStyle = UIModalPresentationCustom;
-    [self.baseViewController presentViewController:_navigationController
-                                          animated:YES
-                                        completion:nil];
+  SendTabToSelfBottomSheetViewController* bottomSheet =
+      [[SendTabToSelfBottomSheetViewController alloc]
+          initWithDeviceList:syncService->GetSendTabToSelfModel()
+                                 ->GetTargetDeviceInfoSortedList()
+                accountEmail:account.userEmail
+                    delegate:self];
+  bottomSheet.parentViewControllerHeight =
+      self.baseViewController.view.frame.size.height;
+  self.sendTabToSelfViewController = bottomSheet;
+  _navigationController = [[UINavigationController alloc]
+      initWithRootViewController:self.sendTabToSelfViewController];
+  _navigationController.modalPresentationStyle = UIModalPresentationPageSheet;
+  UISheetPresentationController* sheet =
+      _navigationController.sheetPresentationController;
+  if (sheet) {
+    sheet.prefersGrabberVisible = YES;
   }
+  [self.baseViewController presentViewController:_navigationController
+                                        animated:YES
+                                      completion:nil];
 }
 
 // Shows a signin promo, for the case where the user is not signed in yet and
@@ -459,9 +353,9 @@ void OpenManageDevicesTab(CommandDispatcher* dispatcher) {
 - (void)showSigninPromo {
   __weak __typeof(self) weakSelf = self;
   SigninCoordinatorCompletionCallback completion = ^(
-      SigninCoordinator* coordinator, SigninCoordinatorResult result,
-      id<SystemIdentity> completionIdentity) {
-    BOOL succeeded = result == SigninCoordinatorResultSuccess;
+      SigninCoordinator* coordinator,
+      SigninCoordinatorResultOrIdentity result) {
+    BOOL succeeded = result.has_value();
     [weakSelf onSigninCompleteWithCoordinator:coordinator succeeded:succeeded];
   };
   ChangeProfileContinuationProvider provider = base::BindRepeating(
@@ -490,7 +384,7 @@ void OpenManageDevicesTab(CommandDispatcher* dispatcher) {
 // Called when the sign-in flow is complete.
 - (void)onSigninCompleteWithCoordinator:(SigninCoordinator*)coordinator
                               succeeded:(BOOL)succeeded {
-  CHECK_EQ(_signinCoordinator, coordinator, base::NotFatalUntil::M151);
+  CHECK_EQ(_signinCoordinator, coordinator);
   [self stopSigninCoordinator];
   if (!succeeded) {
     [self.delegate sendTabToSelfCoordinatorWantsToBeStopped:self];

@@ -70,8 +70,16 @@ class SearchboxInteractiveTestMixin : public T {
             T::PollElement(
                 kGoogleSearchNavigated, tab_id,
                 [expected_params](const ui::TrackedElement* el) {
-                  const GURL url = el->AsA<TrackedElementWebContents>()
-                                       ->owner()
+                  if (!el) {
+                    return false;
+                  }
+                  const auto* const tracked_wc =
+                      el->AsA<TrackedElementWebContents>();
+                  if (!tracked_wc || !tracked_wc->owner() ||
+                      !tracked_wc->owner()->web_contents()) {
+                    return false;
+                  }
+                  const GURL url = tracked_wc->owner()
                                        ->web_contents()
                                        ->GetLastCommittedURL();
                   if (!google_util::IsGoogleSearchUrl(url)) {
@@ -182,6 +190,74 @@ class SearchboxInteractiveTestMixin : public T {
         omnibox_context_entrypoint_contents_id, state_ready)));
   }
 
+  // Freezes CSS animations, transitions, caret blink, and Web Animations API
+  // effects across all open Shadow DOM roots, awaits Lit `updateComplete` and
+  // font loading, and waits for two animation frames before pixel capture.
+  // TODO(crbug.com/490226386): Added to deflake WebUI pixel tests. Remove if
+  // pixel tests remain flaky.
+  auto PrepareWebUiForPixelTest(const ui::ElementIdentifier& contents_id) {
+    return T::Steps(T::InAnyContext(T::WaitForWebContentsPainted(contents_id)),
+                    T::InSameContext(T::CheckJsResult(contents_id,
+                                                      R"(async () => {
+              if (document.fonts && document.fonts.ready) {
+                await document.fonts.ready;
+              }
+              const css = `
+                *, *::before, *::after {
+                  animation: none !important;
+                  animation-delay: 0s !important;
+                  animation-duration: 0s !important;
+                  transition: none !important;
+                  transition-delay: 0s !important;
+                  transition-duration: 0s !important;
+                  caret-color: transparent !important;
+                }
+                #caret, #caret.animating {
+                  animation: none !important;
+                  transition: none !important;
+                  opacity: 1 !important;
+                }
+              `;
+              const freezeTree = async (root) => {
+                const target = root.head || root;
+                if (!target.querySelector('style[data-pixel-test-freeze]')) {
+                  const style = document.createElement('style');
+                  style.setAttribute('data-pixel-test-freeze', 'true');
+                  style.textContent = css;
+                  target.appendChild(style);
+                }
+                const elements = Array.from(root.querySelectorAll('*'));
+                for (const el of elements) {
+                  if ('disableCaretColorAnimation' in el) {
+                    el.disableCaretColorAnimation = true;
+                  }
+                  if ('animationState' in el) {
+                    el.animationState = 'none';
+                  }
+                  if (el.updateComplete) {
+                    await el.updateComplete;
+                  }
+                  if (typeof el.getAnimations === 'function') {
+                    for (const anim of el.getAnimations()) {
+                      anim.finish();
+                    }
+                  }
+                  if (el.shadowRoot) {
+                    await freezeTree(el.shadowRoot);
+                  }
+                }
+              };
+              await freezeTree(document);
+              // Run a second pass for elements that re-rendered in response
+              // to the first pass's property changes.
+              await freezeTree(document);
+              await new Promise(r => requestAnimationFrame(
+                  () => requestAnimationFrame(r)));
+              return true;
+            })",
+                                                      true)));
+  }
+
   void SetUpOnMainThread() override {
     T::SetUpOnMainThread();
     SetUpUrlLoaderInterceptor();
@@ -197,7 +273,8 @@ class SearchboxInteractiveTestMixin : public T {
     url_loader_interceptor_ =
         std::make_unique<content::URLLoaderInterceptor>(base::BindRepeating(
             [](content::URLLoaderInterceptor::RequestParams* params) {
-              if (params->url_request.url.path() != "/complete/search") {
+              if (params->url_request.url.path() != "/complete/s" &&
+                  params->url_request.url.path() != "/complete/search") {
                 return false;
               }
 

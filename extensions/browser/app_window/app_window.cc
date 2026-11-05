@@ -52,10 +52,12 @@
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkRegion.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/gfx/draggable_region.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/size.h"
 
@@ -336,6 +338,7 @@ void AppWindow::Init(const GURL& url,
 
   AppWindowRegistry::Get(browser_context_)->AddAppWindow(this);
 
+  base::WeakPtr<AppWindow> weak_this = weak_ptr_factory_.GetWeakPtr();
   if (new_params.hidden) {
     // Although the window starts hidden by default, calling Hide() here
     // notifies observers of the window being hidden.
@@ -351,12 +354,23 @@ void AppWindow::Init(const GURL& url,
       Minimize();
     }
 
+    // `Fullscreen()` (or another state transition) can synchronously close the
+    // window and destroy `this`.
+    if (!weak_this) {
+      return;
+    }
+
     Show(new_params.focused ? SHOW_ACTIVE : SHOW_INACTIVE);
+  }
+
+  if (!weak_this) {
+    return;
   }
 
   OnNativeWindowChanged();
 
-  ExtensionRegistry::Get(browser_context_)->AddObserver(this);
+  extension_registry_observation_.Observe(
+      ExtensionRegistry::Get(browser_context_));
 
   // Close when the browser process is exiting.
   app_delegate_->SetTerminatingCallback(base::BindOnce(
@@ -365,9 +379,7 @@ void AppWindow::Init(const GURL& url,
   app_window_contents_->LoadContents(new_params.creator_process_id);
 }
 
-AppWindow::~AppWindow() {
-  ExtensionRegistry::Get(browser_context_)->RemoveObserver(this);
-}
+AppWindow::~AppWindow() = default;
 
 void AppWindow::RequestMediaAccessPermission(
     content::WebContents* web_contents,
@@ -406,7 +418,7 @@ content::WebContents* AppWindow::AddNewContents(
     WebContents* source,
     std::unique_ptr<WebContents> new_contents,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture,
     bool* was_blocked) {
@@ -728,6 +740,7 @@ void AppWindow::Show(ShowType show_type) {
   bool was_hidden = is_hidden_ || !has_been_shown_;
   is_hidden_ = false;
 
+  base::WeakPtr<AppWindow> weak_this = weak_ptr_factory_.GetWeakPtr();
   switch (show_type) {
     case SHOW_ACTIVE:
       GetBaseWindow()->Show();
@@ -736,13 +749,20 @@ void AppWindow::Show(ShowType show_type) {
       GetBaseWindow()->ShowInactive();
       break;
   }
+  if (!weak_this) {
+    return;
+  }
   AppWindowRegistry::Get(browser_context_)->AppWindowShown(this, was_hidden);
   has_been_shown_ = true;
 }
 
 void AppWindow::Hide() {
   is_hidden_ = true;
+  base::WeakPtr<AppWindow> weak_this = weak_ptr_factory_.GetWeakPtr();
   GetBaseWindow()->Hide();
+  if (!weak_this) {
+    return;
+  }
   AppWindowRegistry::Get(browser_context_)->AppWindowHidden(this);
   app_delegate_->OnHide();
 }
@@ -1106,14 +1126,7 @@ AppWindow::CreateParams AppWindow::LoadDefaults(CreateParams params) const {
 // static
 SkRegion* AppWindow::RawDraggableRegionsToSkRegion(
     const std::vector<blink::mojom::DraggableRegionPtr>& regions) {
-  SkRegion* sk_region = new SkRegion;
-  for (const auto& region : regions) {
-    sk_region->op(
-        SkIRect::MakeLTRB(region->bounds.x(), region->bounds.y(),
-                          region->bounds.right(), region->bounds.bottom()),
-        region->draggable ? SkRegion::kUnion_Op : SkRegion::kDifference_Op);
-  }
-  return sk_region;
+  return new SkRegion(gfx::DraggableRegionsToSkRegion(regions));
 }
 
 }  // namespace extensions

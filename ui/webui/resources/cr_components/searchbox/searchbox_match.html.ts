@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {resolveSchemeRelativeUrl} from '//resources/js/icon.js';
 import {html} from '//resources/lit/v3_0/lit.rollup.js';
 import {KeywordType} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 
@@ -25,9 +26,14 @@ export function getHtml(this: SearchboxMatchElement) {
           ellipsis prepended to the suggestion. -->
       <span id="ellipsis" ?hidden="${!this.showEllipsis}">...&nbsp;</span>
       <span id="suggestion">
-        <span id="contents" .innerHTML="${this.contentsHtml_}"></span>
-        <span id="separator" class="dim">${this.separatorText_}</span>
-        <span id="description" .innerHTML="${this.descriptionHtml_}"></span>
+        <span id="primaryText" .innerHTML="${this.primaryTextHtml_}"></span>
+        <span id="separator"
+            class="suggest-hint-text">${this.separatorText_}</span>
+        <span id="secondaryText" .innerHTML="${this.secondaryTextHtml_}"
+            ?has-icon="${!!this.match.descriptionIconPath}"
+            style="--description-icon: url(${
+                resolveSchemeRelativeUrl(this.match.descriptionIconPath)})">
+        </span>
       </span>
     </div>
   </div>

@@ -22,14 +22,6 @@
 
 namespace ash {
 
-namespace {
-class FakeScopedIphSession : public ScopedIphSession {
- public:
-  ~FakeScopedIphSession() override = default;
-  void NotifyEvent(const std::string& event) override {}
-};
-}  // namespace
-
 TestAppListClient::TestAppListClient() = default;
 
 TestAppListClient::~TestAppListClient() = default;
@@ -108,13 +100,6 @@ AppListNotifier* TestAppListClient::GetNotifier() {
   return nullptr;
 }
 
-void TestAppListClient::RecalculateWouldTriggerLauncherSearchIph() {}
-
-std::unique_ptr<ScopedIphSession>
-TestAppListClient::CreateLauncherSearchIphSession() {
-  return std::make_unique<FakeScopedIphSession>();
-}
-
 void TestAppListClient::LoadIcon(int profile_id, const std::string& app_id) {
   loaded_icon_app_ids_.push_back(app_id);
 }
@@ -142,15 +127,9 @@ void TestAppListClient::OnZeroStateSearchDone(base::OnceClosure on_done) {
   std::move(on_done).Run();
 }
 
-std::optional<bool> TestAppListClient::IsNewUser(
-    const AccountId& account_id) const {
-  return is_new_user_;
-}
-
 void TestAppListClient::RecordAppsDefaultVisibility(
     const std::vector<std::string>& apps_above_the_fold,
-    const std::vector<std::string>& apps_below_the_fold,
-    bool is_apps_collections_page) {
+    const std::vector<std::string>& apps_below_the_fold) {
   items_above_the_fold_count_ = apps_above_the_fold.size();
   items_below_the_fold_count_ = apps_below_the_fold.size();
 }

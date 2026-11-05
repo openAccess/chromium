@@ -50,6 +50,16 @@ class KEYED_SERVICE_EXPORT BrowserContextDependencyManager
   // ServiceIsNULLWhileTesting().
   void CreateBrowserContextServicesForTest(content::BrowserContext* context);
 
+  // Called by the embedder once browser startup is complete (and, for
+  // contexts created later, shortly after their creation) to create the
+  // services whose factory overrides
+  // BrowserContextKeyedServiceFactory::ServiceIsCreatedAfterStartup() (or the
+  // refcounted equivalent) to return true. Services already created on demand
+  // are left untouched. Not called for test BrowserContexts; tests that need
+  // such a service should request it explicitly.
+  void CreateBrowserContextServicesAfterStartup(
+      content::BrowserContext* context);
+
   // Called by each BrowserContext to alert us that we should destroy services
   // associated with it.
   void DestroyBrowserContextServices(content::BrowserContext* context);
@@ -74,6 +84,17 @@ class KEYED_SERVICE_EXPORT BrowserContextDependencyManager
   // construction (i.e., 0xWhatever might be created, be destroyed, and then a
   // new BrowserContext object might be created at 0xWhatever).
   void MarkBrowserContextLive(content::BrowserContext* context);
+
+  // Disables services for |context| by default: services are only created for
+  // it by factories that explicitly allow it, see
+  // KeyedServiceBaseFactory::ServiceIsAllowedWhenServicesDisabledByDefault().
+  // Must be called before any service is created for |context|.
+  void DisableBrowserContextServicesByDefault(content::BrowserContext* context);
+
+  // Returns whether DisableBrowserContextServicesByDefault() has been called
+  // for |context|.
+  bool AreBrowserContextServicesDisabledByDefault(
+      content::BrowserContext* context) const;
 
   static BrowserContextDependencyManager* GetInstance();
 

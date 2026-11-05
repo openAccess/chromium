@@ -21,6 +21,7 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/headless/test/pdf_utils.h"
 #include "components/printing/browser/print_manager_utils.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -229,6 +230,26 @@ IN_PROC_BROWSER_TEST_P(PrintToPdfProtocolTest, PrintToPdfPrintMediaSlowImage) {
 
   // Expect top left pixel of the printed image, should not be white.
   // We check that the slow image actually loaded and rendered.
+  EXPECT_NE(GetPixelRGB(0, 0), 0xffffffu);
+  EXPECT_NE(GetPixelRGB(50, 50), 0xffffffu);
+}
+
+IN_PROC_BROWSER_TEST_P(PrintToPdfProtocolTest,
+                       PrintToPdfPrintMediaSlowImageWithWindowPrint) {
+  NavigateToURLBlockUntilNavigationsComplete(
+      "/print_to_pdf/media_print_slow_image.html");
+
+  ASSERT_TRUE(content::ExecJs(
+      web_contents(),
+      "window.addEventListener('beforeprint', () => window.print());"
+      "window.matchMedia('print').addEventListener('change', () => "
+      "window.print());"
+      "window.addEventListener('afterprint', () => window.print());"));
+
+  Attach();
+
+  PrintOnePageWithDefaultSettings();
+
   EXPECT_NE(GetPixelRGB(0, 0), 0xffffffu);
   EXPECT_NE(GetPixelRGB(50, 50), 0xffffffu);
 }

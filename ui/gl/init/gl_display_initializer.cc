@@ -42,8 +42,6 @@ void GetEGLInitDisplays(bool supports_angle,
   // made. If we check too late, it will appear that some users are missing from
   // the group if they are falling back to another path due to crashes or
   // missing support.
-  bool default_angle_metal =
-      base::FeatureList::IsEnabled(features::kDefaultANGLEMetal);
   bool default_angle_vulkan = features::IsDefaultANGLEVulkan();
 
   // If we're already requesting software GL, make sure we don't fallback to the
@@ -75,9 +73,14 @@ void GetEGLInitDisplays(bool supports_angle,
     return;
   }
 
-  if (supports_angle_metal && use_angle_default && default_angle_metal &&
-      !GetGlWorkarounds().disable_metal) {
-    AddInitDisplay(init_displays, ANGLE_METAL);
+  if (supports_angle_metal) {
+    if (use_angle_default) {
+      AddInitDisplay(init_displays, ANGLE_METAL);
+    } else if (requested_renderer == kANGLEImplementationMetalName) {
+      AddInitDisplay(init_displays, ANGLE_METAL);
+    } else if (requested_renderer == kANGLEImplementationMetalNULLName) {
+      AddInitDisplay(init_displays, ANGLE_METAL_NULL);
+    }
   }
 
   if (supports_angle_vulkan && use_angle_default && default_angle_vulkan) {
@@ -147,18 +150,6 @@ void GetEGLInitDisplays(bool supports_angle,
     if (requested_renderer == kANGLEImplementationSwiftShaderName ||
         requested_renderer == kANGLEImplementationSwiftShaderForWebGLName) {
       AddInitDisplay(init_displays, ANGLE_SWIFTSHADER);
-    }
-  }
-
-  if (supports_angle_metal) {
-    if (use_angle_default) {
-      if (!supports_angle_opengl) {
-        AddInitDisplay(init_displays, ANGLE_METAL);
-      }
-    } else if (requested_renderer == kANGLEImplementationMetalName) {
-      AddInitDisplay(init_displays, ANGLE_METAL);
-    } else if (requested_renderer == kANGLEImplementationMetalNULLName) {
-      AddInitDisplay(init_displays, ANGLE_METAL_NULL);
     }
   }
 

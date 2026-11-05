@@ -53,6 +53,9 @@ class SystemIdentityManagerObserver;
 // whether the accounts were added through Chrome or through some other Google
 // app. It also allows adding accounts to the device via
 // `SystemIdentityInteractionManager`, and displaying some account-related UIs.
+// This class ignores the `kRestrictAccountsToPatterns` policy and deals with
+// accounts on the device even if they are filtered by
+// `kRestrictAccountsToPatterns`.
 class SystemIdentityManager {
  public:
   using CapabilityResult = SystemIdentityCapabilityResult;
@@ -120,10 +123,9 @@ class SystemIdentityManager {
   // Callback invoked when the `GetHostedDomain()` operation completes.
   using HostedDomainCallback = base::OnceCallback<void(NSString*, NSError*)>;
 
-  // Callback invoked when the `FetchTokenAuthURL()` operation completes.
-  using AuthenticatedURLCallback = base::OnceCallback<void(NSURL*, NSError*)>;
-
-  // Callback invoked when the `FetchCapabilities()` operation completes.
+  // Callback invoked once all the requested capabilities have been fetched.
+  // Not used by this interface itself; implementations that fetch capabilities
+  // in a single batch can use it internally.
   using FetchCapabilitiesCallback =
       base::OnceCallback<void(std::map<std::string, CapabilityResult>)>;
 
@@ -133,8 +135,7 @@ class SystemIdentityManager {
   using FetchPartialCapabilitiesCallback =
       base::RepeatingCallback<void(std::map<std::string, CapabilityResult>)>;
 
-  // Callback invoked when the `FetchCapabilitiesWithPartial()` operation
-  // completes.
+  // Callback invoked when the `FetchCapabilities()` operation completes.
   using FetchCapabilitiesCompletion = base::OnceClosure;
 
   // Callback invoked when `HandleMDMNotification` completes. It is invoked
@@ -281,24 +282,16 @@ class SystemIdentityManager {
       id<SystemIdentity> identity) = 0;
 
   // Asynchronously returns the capabilities for `identity`.
-  // TODO(crbug.com/517899430): remove this method once it's replaced by
-  // FetchCapabilitiesWithPartial.
-  virtual void FetchCapabilities(id<SystemIdentity> identity,
-                                 const std::vector<std::string>& names,
-                                 FetchCapabilitiesCallback callback) = 0;
-
-  // Asynchronously returns the capabilities for `identity`.
   // * `partial_callback` is called multiple times as a subset of capabilities
   // in `names` are fetched.
   // * `completion` is called once after all capabilities in `names` are fetched
   // or the fetch has failed. No more calls to `partial_callback` are expected
   // after `completion` is called.
-  // TODO(crbug.com/517899430): Have `completion` as the last parameter.
-  virtual void FetchCapabilitiesWithPartial(
+  virtual void FetchCapabilities(
       id<SystemIdentity> identity,
       const std::vector<std::string>& names,
-      FetchCapabilitiesCompletion completion,
-      FetchPartialCapabilitiesCallback partial_callback) = 0;
+      FetchPartialCapabilitiesCallback partial_callback,
+      FetchCapabilitiesCompletion completion) = 0;
 
   // Registers the provider for building external privacy context.
   virtual void RegisterExternalPrivacyContextProvider(
@@ -337,20 +330,11 @@ class SystemIdentityManager {
 
   // Returns whether the `error` is due to restricted access to the scopes in
   // the access token request.
-  // TODO(crbug.com/425592221): Convert to pure virtual method.
-  virtual bool IsScopeLimitedError(id<RefreshAccessTokenError> error);
+  virtual bool IsScopeLimitedError(id<RefreshAccessTokenError> error) = 0;
 
   // Returns whether the `error` associated with `identity` is due to MDM
   // (Mobile Device Management) or not.
   virtual bool IsMDMError(id<SystemIdentity> identity, NSError* error) = 0;
-
-  // Asynchronously fetches the token auth URL that can be used to
-  // authorize a webview for the given identity.
-  // The callback is invoked on the calling sequence when the operation
-  // completes.
-  virtual void FetchTokenAuthURL(id<SystemIdentity> identity,
-                                 NSURL* target_url,
-                                 AuthenticatedURLCallback callback) = 0;
 
  protected:
   // Invokes `OnIdentityListChanged(...)` for all observers.

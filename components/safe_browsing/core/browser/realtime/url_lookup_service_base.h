@@ -20,7 +20,7 @@
 #include "base/timer/timer.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/browser/referring_app_info.h"
 #include "components/safe_browsing/core/browser/safe_browsing_token_fetcher.h"
@@ -201,8 +201,7 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
   // active Gaia filtering.
   virtual std::string GetContentAreaAccountEmail(const GURL& tab_url) const = 0;
 
-  // Returns true if `url`'s scheme can be checked, or if it should be checked
-  // anyway because of "EnterpriseRealTimeUrlCheckMode".
+  // Returns true if `url` is eligible for a real-time URL lookup.
   virtual bool CanCheckUrl(const GURL& url) = 0;
 
   // KeyedService:
@@ -212,9 +211,9 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
   // Suffix for logging metrics.
   virtual std::string GetMetricSuffix() const = 0;
 
-  // Overrides safe url check from browser throttle. This is used
-  // to send requests for sites that would usually be safe in case
-  // they are blocked by an enterprise data protection rule.
+  // Returns true if `url` should override the `KnownSafeUrl()` check in
+  // `BrowserURLLoaderThrottle`. Used by enterprise to allow checking
+  // `chrome://` URLs that may be blocked by an enterprise data protection rule.
   virtual bool ShouldOverrideKnownSafeUrlDecision(const GURL& url) const = 0;
 
   // Fragments, usernames and passwords are removed, because fragments are only
@@ -379,6 +378,14 @@ class RealTimeUrlLookupServiceBase : public KeyedService {
   virtual void MaybeFillReferringWebApk(
       const internal::ReferringAppInfo& referring_app_info,
       RTLookupRequest& request) {}
+
+  // Returns the Chrome extension that initiated the navigation in the tab
+  // identified by `tab_id`, if Chrome can determine one. The base
+  // implementation returns `std::nullopt`; the enterprise service overrides it
+  // so the server can attribute the reporting events it generates for the
+  // request. Called on the UI thread.
+  virtual std::optional<ExtensionTelemetryReportRequest::ExtensionInfo>
+  GetExtensionInitiator(SessionID tab_id) const;
 
   // Get a resource request with URL, load_flags and method set.
   std::unique_ptr<network::ResourceRequest> GetResourceRequest();

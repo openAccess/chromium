@@ -17,18 +17,17 @@ namespace blink {
 
 ScriptState::ScriptState(v8::Local<v8::Context> context,
                          DOMWrapperWorld* world,
-                         scoped_refptr<scheduler::EventLoop> event_loop)
+                         scheduler::EventLoop* event_loop)
     : isolate_(world->GetIsolate()),
       context_(isolate_, context),
       world_(world),
       per_context_data_(
-          MakeGarbageCollected<V8PerContextData>(context,
-                                                 std::move(event_loop))) {
+          MakeGarbageCollected<V8PerContextData>(context, event_loop)) {
   CHECK(isolate_);
   DCHECK(world_);
-  context_.SetWeak(this, &OnV8ContextCollectedCallback);
-  context->SetAlignedPointerInEmbedderData(kV8ContextPerContextDataIndex, this,
-                                           kTypeTag);
+  context_.SetPhantom();
+  context->SetAlignedPointerInEmbedderDataV2(kV8ContextPerContextDataIndex,
+                                             this, kTypeTag);
 }
 
 void ScriptState::EnqueueMicrotask(
@@ -55,7 +54,6 @@ void ScriptState::EnqueueMicrotask(
 
 ScriptState::~ScriptState() {
   DCHECK(!per_context_data_);
-  DCHECK(context_.IsEmpty());
   InstanceCounters::DecrementCounter(
       InstanceCounters::kDetachedScriptStateCounter);
   RendererResourceCoordinator::Get()->OnScriptStateDestroyed(this);
@@ -90,19 +88,12 @@ void ScriptState::DissociateContext() {
 
   v8::HandleScope scope(GetIsolate());
   // Cut the reference from V8 context to ScriptState.
-  GetContext()->SetAlignedPointerInEmbedderData(
+  GetContext()->SetAlignedPointerInEmbedderDataV2(
       kV8ContextPerContextDataIndex, static_cast<ScriptState*>(nullptr),
       kTypeTag);
-  reference_from_v8_context_.Clear();
 
   // Cut the reference from ScriptState to V8 context.
   context_.Clear();
-}
-
-void ScriptState::OnV8ContextCollectedCallback(
-    const v8::WeakCallbackInfo<ScriptState>& data) {
-  data.GetParameter()->reference_from_v8_context_.Clear();
-  data.GetParameter()->context_.Clear();
 }
 
 }  // namespace blink

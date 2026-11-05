@@ -7,12 +7,16 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
+#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
+#include "base/timer/wall_clock_timer.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/site_token_provider/site_token_provider.h"
@@ -33,11 +37,15 @@ class SiteTokenProviderService : public KeyedService,
   // KeyedService:
   void Shutdown() override;
 
-  // Triggers local state synchronization updates.
+  // Fetches fresh tokens and arms the next background refresh if signed in;
+  // otherwise clears the cache and cancels any pending refresh.
   void UpdateState();
 
   // Returns the site token for `domain` if one exists.
   virtual std::string GetTokenForDomain(std::string_view domain) const;
+
+  // Returns true if `domain` is in the allowlist for header injection.
+  bool IsDomainAllowlisted(std::string_view domain) const;
 
   // Populates the internal token cache directly for testing purposes.
   void SetTokenForTesting(std::string_view domain, std::string token);
@@ -49,11 +57,18 @@ class SiteTokenProviderService : public KeyedService,
       const signin::PrimaryAccountChangeEvent& event_details) override;
 
  private:
-  void OnTokensUpdated(std::map<std::string, std::string> tokens);
+  void OnTokensUpdated(
+      std::optional<std::map<std::string, std::string>> tokens);
+  void ScheduleNextRefresh();
 
   std::unique_ptr<SiteTokenProvider> provider_;
   raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;
+  base::flat_set<std::string> allowed_domains_;
+  base::ScopedObservation<signin::IdentityManager,
+                          signin::IdentityManager::Observer>
+      identity_manager_observation_{this};
   std::map<std::string, std::string> token_cache_;
+  base::WallClockTimer refresh_timer_;
 
   base::WeakPtrFactory<SiteTokenProviderService> weak_ptr_factory_{this};
 };

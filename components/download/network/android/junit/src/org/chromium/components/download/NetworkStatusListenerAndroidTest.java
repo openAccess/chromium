@@ -6,8 +6,6 @@ package org.chromium.components.download;
 
 import static org.mockito.Mockito.when;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -17,7 +15,6 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Shadows;
-import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.ThreadUtils;
@@ -31,7 +28,6 @@ import org.chromium.net.NetworkChangeNotifierAutoDetect;
  * Unit test for {@link NetworkStatusListenerAndroid} and {@link BackgroundNetworkStatusListener}.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class NetworkStatusListenerAndroidTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     private static final int NATIVE_PTR = 1;
@@ -91,7 +87,6 @@ public class NetworkStatusListenerAndroidTest {
     }
 
     @Test
-    @SmallTest
     public void testGetCurrentConnectionType() {
         initWithConnectionType(ConnectionType.CONNECTION_3G);
 
@@ -103,7 +98,6 @@ public class NetworkStatusListenerAndroidTest {
     }
 
     @Test
-    @SmallTest
     public void testOnConnectionTypeChanged() {
         initWithConnectionType(ConnectionType.CONNECTION_3G);
 

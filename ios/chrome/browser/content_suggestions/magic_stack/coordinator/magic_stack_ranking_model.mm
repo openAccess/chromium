@@ -22,6 +22,8 @@
 #import "components/power_bookmarks/core/power_bookmark_utils.h"
 #import "components/power_bookmarks/core/proto/power_bookmark_meta.pb.h"
 #import "components/power_bookmarks/core/proto/shopping_specifics.pb.h"
+#import "components/prefs/ios/pref_observer_bridge.h"
+#import "components/prefs/pref_change_registrar.h"
 #import "components/prefs/pref_service.h"
 #import "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #import "components/search/search.h"
@@ -41,6 +43,7 @@
 #import "components/segmentation_platform/public/segmentation_platform_service.h"
 #import "components/send_tab_to_self/features.h"
 #import "components/send_tab_to_self/pref_names.h"
+#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/app_store_bundle/model/app_store_bundle_service.h"
 #import "ios/chrome/browser/content_suggestions/app_bundle_promo/coordinator/app_bundle_promo_mediator.h"
 #import "ios/chrome/browser/content_suggestions/app_bundle_promo/coordinator/app_bundle_promo_mediator_delegate.h"
@@ -83,11 +86,14 @@
 #import "ios/chrome/browser/content_suggestions/tips/coordinator/tips_magic_stack_mediator_delegate.h"
 #import "ios/chrome/browser/content_suggestions/tips/ui/tips_module_config.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
+#import "ios/chrome/browser/home_customization/model/home_background_customization_service.h"
 #import "ios/chrome/browser/lens/ui_bundled/lens_availability.h"
 #import "ios/chrome/browser/lens/ui_bundled/lens_entrypoint.h"
 #import "ios/chrome/browser/level_up/model/level_up_service.h"
 #import "ios/chrome/browser/ntp/ui_bundled/home_start_data_source.h"
 #import "ios/chrome/browser/ntp_tiles/model/tab_resumption/tab_resumption_prefs.h"
+#import "ios/chrome/browser/push_notification/model/push_notification_client_id.h"
+#import "ios/chrome/browser/push_notification/model/push_notification_settings_util.h"
 #import "ios/chrome/browser/safety_check/model/ios_chrome_safety_check_manager_constants.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
@@ -116,7 +122,8 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
                                       ShopCardMediatorDelegate,
                                       ShortcutsMediatorDelegate,
                                       TabResumptionMediatorDelegate,
-                                      TipsMagicStackMediatorDelegate>
+                                      TipsMagicStackMediatorDelegate,
+                                      PrefObserverDelegate>
 // For testing-only
 @property(nonatomic, assign) BOOL hasReceivedMagicStackResponse;
 @property(nonatomic, assign) BOOL hasReceivedEphemericalCardResponse;
@@ -155,21 +162,29 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
   raw_ptr<TemplateURLService, DanglingUntriaged> _templateURLService;
   raw_ptr<bookmarks::BookmarkModel, DanglingUntriaged> _bookmarkModel;
   raw_ptr<LevelUpService, DanglingUntriaged> _levelUpService;
+  // Registrar for user Pref changes notifications.
+  PrefChangeRegistrar _prefChangeRegistrar;
+  // Bridge to listen to Pref changes.
+  std::unique_ptr<PrefObserverBridge> _prefObserverBridge;
+  raw_ptr<HomeBackgroundCustomizationService> _backgroundCustomizationService;
 }
 
 - (instancetype)
-    initWithSegmentationService:
-        (segmentation_platform::SegmentationPlatformService*)segmentationService
-                shoppingService:(commerce::ShoppingService*)shoppingService
-                    authService:(AuthenticationService*)authenticationService
-                    prefService:(PrefService*)prefService
-                     localState:(PrefService*)localState
-                moduleMediators:(NSArray*)moduleMediators
-                    tipsManager:(TipsManagerIOS*)tipsManager
-             templateURLService:(TemplateURLService*)templateURLService
-          appStoreBundleService:(AppStoreBundleService*)appStoreBundleService
-                  bookmarkModel:(bookmarks::BookmarkModel*)bookmarkModel
-                 levelUpService:(LevelUpService*)levelUpService {
+       initWithSegmentationService:
+           (segmentation_platform::SegmentationPlatformService*)
+               segmentationService
+                   shoppingService:(commerce::ShoppingService*)shoppingService
+                       authService:(AuthenticationService*)authenticationService
+                       prefService:(PrefService*)prefService
+                        localState:(PrefService*)localState
+                   moduleMediators:(NSArray*)moduleMediators
+                       tipsManager:(TipsManagerIOS*)tipsManager
+                templateURLService:(TemplateURLService*)templateURLService
+             appStoreBundleService:(AppStoreBundleService*)appStoreBundleService
+                     bookmarkModel:(bookmarks::BookmarkModel*)bookmarkModel
+                    levelUpService:(LevelUpService*)levelUpService
+    backgroundCustomizationService:
+        (HomeBackgroundCustomizationService*)backgroundCustomizationService {
   self = [super init];
   if (self) {
     _segmentationService = segmentationService;
@@ -183,6 +198,7 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
     _bookmarkModel = bookmarkModel;
     _tipsManager = tipsManager;
     _levelUpService = levelUpService;
+    _backgroundCustomizationService = backgroundCustomizationService;
 
     for (id mediator in moduleMediators) {
       if ([mediator isKindOfClass:[MostVisitedTilesMediator class]]) {
@@ -228,6 +244,14 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
         NOTREACHED();
       }
     }
+    if (_prefService && IsLevelUpEnabled()) {
+      _prefChangeRegistrar.Init(_prefService);
+      _prefObserverBridge = std::make_unique<PrefObserverBridge>(self);
+      _prefObserverBridge->ObserveChangesForPreference(prefs::kLevelUpOptIn,
+                                                       &_prefChangeRegistrar);
+      _prefObserverBridge->ObserveChangesForPreference(
+          prefs::kLevelUpCompletedTasks, &_prefChangeRegistrar);
+    }
   }
   return self;
 }
@@ -244,6 +268,10 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
   _tipsMediator = nil;
   _tipsManager = nil;
   _appBundlePromoMediator = nil;
+  _prefChangeRegistrar.Reset();
+  _prefObserverBridge.reset();
+  _backgroundCustomizationService = nullptr;
+  _levelUpHandler = nil;
 }
 
 #pragma mark - Public
@@ -252,12 +280,8 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
   _magicStackOrderFromSegmentationReceived = NO;
   _magicStackOrderFromSegmentation = nil;
   _latestMagicStackConfigOrder = nil;
-  if (base::FeatureList::IsEnabled(
-          segmentation_platform::features::
-              kSegmentationPlatformEphemeralCardRanker)) {
-    _ephemeralCardToShow = ContentSuggestionsModuleType::kInvalid;
-    [self fetchEphemeralCardFromSegmentationPlatform];
-  }
+  _ephemeralCardToShow = ContentSuggestionsModuleType::kInvalid;
+  [self fetchEphemeralCardFromSegmentationPlatform];
   [self fetchMagicStackModuleRankingFromSegmentationPlatform];
 }
 
@@ -372,7 +396,7 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
     return;
   }
 
-  TipsModuleConfig* config = _tipsMediator.config;
+  MagicStackModule* config = _tipsMediator.activeConfig;
   [self.delegate magicStackRankingModel:self didReconfigureItem:config];
 }
 
@@ -385,7 +409,7 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
                                 ContentSuggestionsModuleType::kTips);
 
   [self.delegate magicStackRankingModel:self
-                          didRemoveItem:_tipsMediator.config
+                          didRemoveItem:_tipsMediator.activeConfig
                                 animate:YES
                          withCompletion:completion];
 }
@@ -447,6 +471,20 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
                           didRemoveItem:_tabResumptionMediator.itemConfig
                                 animate:NO
                          withCompletion:nil];
+}
+
+#pragma mark - PrefObserverDelegate
+
+- (void)onPreferenceChanged:(const std::string&)preferenceName {
+  if (preferenceName == prefs::kLevelUpOptIn ||
+      preferenceName == prefs::kLevelUpCompletedTasks) {
+    if (![self isMagicStackOrderReady]) {
+      return;
+    }
+    _latestMagicStackConfigOrder = [self latestMagicStackConfigRank];
+    [self.delegate magicStackRankingModel:self
+                 didGetLatestRankingOrder:_latestMagicStackConfigOrder];
+  }
 }
 
 - (NSUInteger)indexForMagicStackModule:
@@ -516,11 +554,6 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
   [order addObject:@(int(ContentSuggestionsModuleType::kSafetyCheck))];
 }
 
-// Adds the Level Up module to `order` based on the current Level Up state.
-- (void)addLevelUpToMagicStackOrder:(NSMutableArray*)order {
-  [order addObject:@(int(ContentSuggestionsModuleType::kLevelUp))];
-}
-
 // Starts a fetch of the ephemeral card to show from Segmentation.
 - (void)fetchEphemeralCardFromSegmentationPlatform {
   segmentation_platform::PredictionOptions options;
@@ -545,6 +578,13 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
                ->GetString(send_tab_to_self::prefs::
                                kIOSSendTabToSelfLastReceivedTabURLPref)
                .empty()));
+
+  bool ntpThemeTipEnabled = base::FeatureList::IsEnabled(
+      segmentation_platform::features::kMagicStackNTPThemeTipIos);
+  bool ntpCustomizationTipEnabled = base::FeatureList::IsEnabled(
+      segmentation_platform::features::kMagicStackNTPCustomizationTipIos);
+  bool tipsNotificationTipEnabled = base::FeatureList::IsEnabled(
+      segmentation_platform::features::kMagicStackTipsNotificationTipIos);
 
   if (_tipsManager) {
     // Profile signals
@@ -610,6 +650,15 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
             !_tipsManager->WasSignalFired(
                 segmentation_platform::tips_manager::signals::
                     kAddressBarPositionChoiceScreenDisplayed)));
+    if (tipsNotificationTipEnabled) {
+      inputContext->metadata_args.emplace(
+          segmentation_platform::kTipsOptInPromptNotReceivedRecently,
+          segmentation_platform::processing::ProcessedValue::FromFloat(
+              !_tipsManager->WasSignalFiredWithin(
+                  segmentation_platform::tips_manager::signals::
+                      kTipsNotificationOptInPromptReceived,
+                  base::Days(60))));
+    }
 
     // Miscellaneous signals
     BOOL isPhone = ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_PHONE;
@@ -634,6 +683,49 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
         segmentation_platform::kIsDefaultBrowserChromeIos,
         segmentation_platform::processing::ProcessedValue::FromFloat(
             IsChromeLikelyDefaultBrowser()));
+
+    if (ntpThemeTipEnabled) {
+      inputContext->metadata_args.emplace(
+          segmentation_platform::kNTPBackgroundNotSelectedRecently,
+          segmentation_platform::processing::ProcessedValue::FromFloat(
+              !_tipsManager->WasSignalFiredWithin(
+                  segmentation_platform::tips_manager::signals::
+                      kNTPBackgroundSelected,
+                  base::Days(90))));
+    }
+    if (ntpCustomizationTipEnabled) {
+      inputContext->metadata_args.emplace(
+          segmentation_platform::kNeverCustomizeNTP,
+          segmentation_platform::processing::ProcessedValue::FromFloat(
+              !_tipsManager->WasSignalFired(
+                  segmentation_platform::tips_manager::signals::
+                      kNTPCustomized)));
+    }
+  }
+
+  if (tipsNotificationTipEnabled) {
+    // TipsNotification is an app-wide client, not tied to any account. An empty
+    // `GaiaId` is passed.
+    bool notOptedIntoTipsNotifications =
+        !push_notification_settings::
+            GetMobileNotificationPermissionStatusForClient(
+                PushNotificationClientId::kTips, GaiaId());
+    inputContext->metadata_args.emplace(
+        segmentation_platform::kNotOptInTipsNotifications,
+        segmentation_platform::processing::ProcessedValue::FromFloat(
+            notOptedIntoTipsNotifications));
+  }
+
+  if (ntpThemeTipEnabled && _backgroundCustomizationService) {
+    const bool hasNoNTPBackground =
+        !_backgroundCustomizationService->GetCurrentCustomBackground()
+             .has_value() &&
+        !_backgroundCustomizationService->GetCurrentColorTheme().has_value();
+
+    inputContext->metadata_args.emplace(
+        segmentation_platform::kLacksNTPBackground,
+        segmentation_platform::processing::ProcessedValue::FromFloat(
+            hasNoNTPBackground));
   }
 
   __weak MagicStackRankingModel* weakSelf = self;
@@ -682,20 +774,10 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
       TipIdentifier tipIdentifier = TipIdentifierForOutputLabel(label);
 
       if (tipIdentifier != TipIdentifier::kUnknown) {
-        BOOL shouldShowTipsWithProductImage =
-            tipIdentifier == TipIdentifier::kLensShop &&
-            _tipsMediator.config.productImageData.length > 0;
-
-        _ephemeralCardToShow =
-            shouldShowTipsWithProductImage
-                ? ContentSuggestionsModuleType::kTipsWithProductImage
-                : ContentSuggestionsModuleType::kTips;
-
-        [_tipsMediator reconfigureWithTipIdentifier:tipIdentifier];
-
-        card = _tipsMediator.config;
-
-        break;
+          [_tipsMediator reconfigureWithTipIdentifier:tipIdentifier];
+          card = _tipsMediator.activeConfig;
+          _ephemeralCardToShow = card.type;
+          break;
       }
     } else if (label == segmentation_platform::kSendTabNotificationPromo) {
       _ephemeralCardToShow = ContentSuggestionsModuleType::kSendTabPromo;
@@ -885,6 +967,12 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
     }
   }
 
+  if (IsLevelUpEnabled() &&
+      ![magicStackOrder
+          containsObject:@(int(ContentSuggestionsModuleType::kLevelUp))]) {
+    [magicStackOrder addObject:@(int(ContentSuggestionsModuleType::kLevelUp))];
+  }
+
   _magicStackOrderFromSegmentationReceived = YES;
   _magicStackOrderFromSegmentation = magicStackOrder;
   _latestMagicStackConfigOrder = [self latestMagicStackConfigRank];
@@ -901,53 +989,50 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
   }
   // Currently assume ephemeral cards are always added to the front of the Magic
   // Stack when it can show.
-  if (base::FeatureList::IsEnabled(
-          segmentation_platform::features::
-              kSegmentationPlatformEphemeralCardRanker)) {
-    switch (_ephemeralCardToShow) {
-      case ContentSuggestionsModuleType::kPriceTrackingPromo:
-        if (_priceTrackingPromoMediator &&
-            _priceTrackingPromoMediator.priceTrackingPromoConfigToShow) {
-          [magicStackOrder addObject:_priceTrackingPromoMediator
-                                         .priceTrackingPromoConfigToShow];
-        }
-        break;
-      case ContentSuggestionsModuleType::kSendTabPromo:
-        if (_sendTabPromoMediator &&
-            _sendTabPromoMediator.sendTabPromoConfigToShow) {
-          [magicStackOrder
-              addObject:_sendTabPromoMediator.sendTabPromoConfigToShow];
-        }
-        break;
-      case ContentSuggestionsModuleType::kTips:
-      case ContentSuggestionsModuleType::kTipsWithProductImage: {
-        if (_tipsMediator && _tipsMediator.config) {
-          [magicStackOrder addObject:_tipsMediator.config];
-        }
-        break;
+  switch (_ephemeralCardToShow) {
+    case ContentSuggestionsModuleType::kPriceTrackingPromo:
+      if (_priceTrackingPromoMediator &&
+          _priceTrackingPromoMediator.priceTrackingPromoConfigToShow) {
+        [magicStackOrder addObject:_priceTrackingPromoMediator
+                                       .priceTrackingPromoConfigToShow];
       }
-      case ContentSuggestionsModuleType::kAppBundlePromo:
-        if (_appBundlePromoMediator && _appBundlePromoMediator.config) {
-          [magicStackOrder addObject:_appBundlePromoMediator.config];
-        }
-        break;
-      case ContentSuggestionsModuleType::kDefaultBrowser:
-        if (_defaultBrowserMediator) {
-          [magicStackOrder addObject:_defaultBrowserMediator.config];
-        }
-        break;
-      case ContentSuggestionsModuleType::kLevelUp: {
-        if (IsLevelUpEnabled()) {
-          LevelUpConfig* config = [self createLevelUpConfig];
-          if (config) {
-            [magicStackOrder addObject:config];
-          }
-        }
-        break;
+      break;
+    case ContentSuggestionsModuleType::kSendTabPromo:
+      if (_sendTabPromoMediator &&
+          _sendTabPromoMediator.sendTabPromoConfigToShow) {
+        [magicStackOrder
+            addObject:_sendTabPromoMediator.sendTabPromoConfigToShow];
       }
-      default:
-        break;
+      break;
+    case ContentSuggestionsModuleType::kTips:
+    case ContentSuggestionsModuleType::kTipsWithProductImage:
+    case ContentSuggestionsModuleType::kTipsNTPThemeActionable: {
+      if (_tipsMediator && _tipsMediator.activeConfig) {
+        [magicStackOrder addObject:_tipsMediator.activeConfig];
+      }
+      break;
     }
+    case ContentSuggestionsModuleType::kAppBundlePromo:
+      if (_appBundlePromoMediator && _appBundlePromoMediator.config) {
+        [magicStackOrder addObject:_appBundlePromoMediator.config];
+      }
+      break;
+    case ContentSuggestionsModuleType::kDefaultBrowser:
+      if (_defaultBrowserMediator) {
+        [magicStackOrder addObject:_defaultBrowserMediator.config];
+      }
+      break;
+    case ContentSuggestionsModuleType::kLevelUp: {
+      if (IsLevelUpEnabled()) {
+        LevelUpConfig* config = [self createLevelUpConfig];
+        if (config) {
+          [magicStackOrder addObject:config];
+        }
+      }
+      break;
+    }
+    default:
+      break;
   }
   for (NSNumber* moduleNumber in _magicStackOrderFromSegmentation) {
     ContentSuggestionsModuleType moduleType =
@@ -1005,7 +1090,7 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
         }
         break;
       case ContentSuggestionsModuleType::kLevelUp: {
-        if (IsLevelUpEnabled()) {
+        if ([self shouldShowLevelUp]) {
           LevelUpConfig* config = [self createLevelUpConfig];
           if (config) {
             [magicStackOrder addObject:config];
@@ -1111,14 +1196,11 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
 - (NSString*)titleForCategory:(LevelUpTaskCategory)category {
   switch (category) {
     case LevelUpTaskCategory::kProductivity:
-      // TODO(crbug.com/513244362): Add localization strings.
-      return @"";
+      return l10n_util::GetNSString(IDS_IOS_LEVEL_UP_PRODUCTIVITY_TITLE);
     case LevelUpTaskCategory::kSearch:
-      // TODO(crbug.com/513244362): Add localization strings.
-      return @"";
+      return l10n_util::GetNSString(IDS_IOS_LEVEL_UP_SEARCH_TITLE);
     case LevelUpTaskCategory::kSafety:
-      // TODO(crbug.com/513244362): Add localization strings.
-      return @"";
+      return l10n_util::GetNSString(IDS_IOS_LEVEL_UP_SAFETY_TITLE);
   }
 }
 
@@ -1151,9 +1233,18 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
   return total;
 }
 
+// Returns YES if the Level Up module should be added into the Magic Stack.
+- (BOOL)shouldShowLevelUp {
+  return IsLevelUpEnabled() && _prefService &&
+         _prefService->GetBoolean(prefs::kLevelUpOptIn);
+}
+
 // Returns the configured LevelUpConfig if incomplete tasks exist, or nil
 // otherwise.
 - (LevelUpConfig*)createLevelUpConfig {
+  if (![self shouldShowLevelUp]) {
+    return nil;
+  }
   std::optional<LevelUpTaskCategory> category = [self levelUpCategory];
   if (!category) {
     return nil;
@@ -1166,6 +1257,7 @@ using segmentation_platform::home_modules::SavePasswordsEphemeralModule;
   int total = [self totalTasksForCategory:*category];
   config.progressTotal = total;
   config.progressCompleted = total - remaining;
+  config.commandHandler = self.levelUpHandler;
   return config;
 }
 

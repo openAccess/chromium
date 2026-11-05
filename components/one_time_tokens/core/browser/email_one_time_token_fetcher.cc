@@ -82,14 +82,15 @@ EmailOneTimeTokenFetcher::EmailOneTimeTokenFetcher(
     signin::IdentityManager& identity_manager,
     std::string encrypted_message_reference,
     base::TimeTicks notification_received_timeticks,
+    base::Time email_received_timestamp,
     OneTimeTokenLogSink* log_sink)
     : url_loader_factory_(std::move(url_loader_factory)),
       identity_manager_(identity_manager),
       encrypted_message_reference_(std::move(encrypted_message_reference)),
-      notification_received_timeticks_(
-          notification_received_timeticks.is_null()
-              ? base::TimeTicks::Now()
-              : notification_received_timeticks),
+      notification_received_timeticks_(notification_received_timeticks.is_null()
+                                           ? base::TimeTicks::Now()
+                                           : notification_received_timeticks),
+      email_received_timestamp_(email_received_timestamp),
       log_sink_(log_sink) {}
 
 EmailOneTimeTokenFetcher::~EmailOneTimeTokenFetcher() = default;
@@ -174,6 +175,7 @@ void EmailOneTimeTokenFetcher::StartOneTimeTokenServiceCall(
             "An opaque (encrypted) reference to the message which contains the "
             "OTP. No user data is sent."
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "onetimetoken.pa.googleapis.com"
           last_reviewed: "2026-03-20"
           internal {
             contacts {
@@ -295,7 +297,8 @@ EmailOneTimeTokenFetcher::ExtractOneTimeTokenValueFromResponse(
   return base::ok(OneTimeToken(OneTimeTokenType::kGmail,
                                response.one_time_password().one_time_password(),
                                notification_received_timeticks_,
-                               response.sender_address()));
+                               response.sender_address(),
+                               email_received_timestamp_));
 }
 
 }  // namespace one_time_tokens

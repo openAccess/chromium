@@ -72,8 +72,6 @@ class CoordinatorImplTest : public testing::Test {
 
   void SetUp() override {
     coordinator_ = std::make_unique<NiceMock<FakeCoordinatorImpl>>();
-    tracing::PerfettoTracedProcess::DataSourceBase::ResetTaskRunner(
-        base::SingleThreadTaskRunner::GetCurrentDefault());
   }
 
   void TearDown() override {
@@ -748,8 +746,10 @@ TEST_F(CoordinatorImplTest, DumpsArentAddedToTraceUnlessRequested) {
   }
 }
 
-// TODO(crbug.com/40281135): Test is flaky across platforms.
-TEST_F(CoordinatorImplTest, DISABLED_DumpsAreAddedToTraceWhenRequested) {
+// Verifies that `RequestGlobalMemoryDumpAndAppendToTrace()` appends a memory
+// tracker snapshot packet to the active trace when memory dump tracing is
+// enabled.
+TEST_F(CoordinatorImplTest, DumpsAreAddedToTraceWhenRequested) {
   tracing::DataSourceTester data_source_tester(
       TracingObserverProto::GetInstance());
 

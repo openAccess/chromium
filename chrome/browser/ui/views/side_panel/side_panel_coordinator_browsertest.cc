@@ -36,6 +36,7 @@
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/extensions/extension_action_test_helper.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/side_panel/side_panel_content_proxy.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
@@ -44,16 +45,16 @@
 #include "chrome/browser/ui/side_panel/side_panel_entry_observer.h"
 #include "chrome/browser/ui/side_panel/side_panel_native_view.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
-#include "chrome/browser/ui/side_panel/side_panel_ui_provider.h"
+#include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/side_panel/side_panel_util.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model_factory.h"
 #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/animations/side_panel_animations.h"
-#include "chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/layout/browser_view_layout.h"
 #include "chrome/browser/ui/views/frame/multi_contents_view.h"
@@ -62,10 +63,12 @@
 #include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_header.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/contextual_tasks/public/features.h"
 #include "components/crx_file/id_util.h"
 #include "components/lens/lens_features.h"
 #include "components/sessions/content/session_tab_helper.h"
@@ -81,9 +84,10 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/compositor/layer.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/controls/separator.h"
-#include "ui/views/layout/animating_layout_manager_test_util.h"
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/test/views_test_utils.h"
 
@@ -205,13 +209,15 @@ class SidePanelCoordinatorTest : public InProcessBrowserTest {
 
   void AddTabToBrowser(const GURL& tab_url) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), tab_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        browser(), tab_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   }
 
  protected:
   void WaitForExtensionsContainerAnimation() {
-    views::test::WaitForAnimatingLayoutManager(GetExtensionsToolbarDesktop());
+    WaitForInitialWebUIToolbar(browser());
+    ExtensionActionTestHelper::Create(browser())
+        ->WaitForExtensionsContainerLayout();
   }
 
   void ClickButton(views::Button* button) {
@@ -222,12 +228,6 @@ class SidePanelCoordinatorTest : public InProcessBrowserTest {
 
   SidePanelEntry::Key GetKeyForExtension(const extensions::ExtensionId& id) {
     return SidePanelEntry::Key(SidePanelEntry::Id::kExtension, id);
-  }
-
-  ExtensionsToolbarDesktop* GetExtensionsToolbarDesktop() const {
-    return BrowserView::GetBrowserViewForBrowser(browser())
-        ->toolbar()
-        ->extensions_container();
   }
 
   SidePanelRegistry* GetActiveTabRegistry() {
@@ -292,9 +292,7 @@ class SidePanelCoordinatorTest : public InProcessBrowserTest {
     return extension;
   }
 
-  SidePanelCoordinator* coordinator() {
-    return SidePanelCoordinator::From(browser());
-  }
+  SidePanelUI* coordinator() { return SidePanelUI::From(browser()); }
 
   SidePanelRegistry* global_registry() {
     return SidePanelRegistry::From(browser());
@@ -304,9 +302,9 @@ class SidePanelCoordinatorTest : public InProcessBrowserTest {
       contextual_registries_;
 };
 
-IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest, TestSidePanelUIProvider) {
+IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest, TestSidePanelUI) {
   Init();
-  EXPECT_EQ(SidePanelUIProvider::From(browser()), coordinator());
+  EXPECT_EQ(SidePanelUI::From(browser()), coordinator());
 }
 
 IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest, ToggleSidePanel) {
@@ -469,47 +467,6 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest, ChangeSidePanelWidth) {
   // Verify the side panel width is capped at two thirds of the browser width.
   EXPECT_EQ(GetSidePanel()->width(), two_thirds_browser_width);
 }
-
-IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,
-                       ReadAnythingSidePanelWidthNotCappedAtTwoThirds) {
-  Init();
-  // Set side panel to left-aligned so positive resize increments mean an
-  // increase in side panel width.
-  BrowserView::GetBrowserViewForBrowser(browser())
-      ->GetProfile()
-      ->GetPrefs()
-      ->SetBoolean(prefs::kSidePanelHorizontalAlignment, false);
-  coordinator()->DisableAnimationsForTesting();
-
-  const int min_side_panel_width = GetSidePanel()->GetMinimumSize().width();
-
-  // Set the browser width so that two thirds of the browser would be larger
-  // than the minimum side panel width.
-  gfx::Rect original_browser_bounds(
-      BrowserView::GetBrowserViewForBrowser(browser())->GetBounds());
-  gfx::Rect new_bounds(original_browser_bounds);
-  new_bounds.set_width(min_side_panel_width * 3);
-  // Explicitly restore the browser window on ChromeOS, as it would otherwise
-  // be maximized and the SetBounds call would be a no-op.
-#if BUILDFLAG(IS_CHROMEOS)
-  BrowserView::GetBrowserViewForBrowser(browser())->Restore();
-#endif
-  BrowserView::GetBrowserViewForBrowser(browser())->SetBounds(new_bounds);
-
-  // Switch to the read anything side panel and verify the width is greater than
-  // two thirds of the browser width.
-  coordinator()->Toggle(SidePanelEntry::Key(SidePanelEntry::Id::kReadAnything),
-                        SidePanelOpenTrigger::kPinnedEntryToolbarButton);
-  int browser_width = BrowserView::GetBrowserViewForBrowser(browser())
-                          ->GetLocalBounds()
-                          .width();
-  int two_thirds_browser_width = browser_width * 2 / 3;
-  GetSidePanel()->SetPanelWidth(two_thirds_browser_width + 10);
-  views::test::RunScheduledLayout(
-      BrowserView::GetBrowserViewForBrowser(browser()));
-  EXPECT_GT(GetSidePanel()->width(), two_thirds_browser_width);
-}
-
 // TODO(crbug.com/384507412): Flaky on Linux and ChromeOS.
 // Disabled due to new, better layout logic. New tests need to be written.
 // These have a tendency to fail on CI because they are highly dependent on e.g.
@@ -632,7 +589,7 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest, ChangeSidePanelWidthMaxMin) {
                (browser_width - two_thirds_browser_width -
                 GetLayoutConstant(LayoutConstant::kSidePanelInset)));
   EXPECT_EQ(BrowserView::GetBrowserViewForBrowser(browser())
-                ->contents_web_view()
+                ->GetContentsView()
                 ->width(),
             web_contents_width);
 }
@@ -669,13 +626,20 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,
   GetSidePanel()->OnResize(large_increment, true);
   views::test::RunScheduledLayout(
       BrowserView::GetBrowserViewForBrowser(browser()));
-
+  const int browser_width = BrowserView::GetBrowserViewForBrowser(browser())
+                                ->GetLocalBounds()
+                                .width();
+  const int two_thirds_browser_width = browser_width * 2 / 3;
+  const int expected_side_panel_width = std::max(
+      two_thirds_browser_width, GetSidePanel()->GetMinimumSize().width());
+  EXPECT_EQ(expected_side_panel_width, GetSidePanel()->width());
   MultiContentsView* multi_contents_view =
       BrowserView::GetBrowserViewForBrowser(browser())->multi_contents_view();
-  EXPECT_EQ(multi_contents_view->width() -
-                multi_contents_view->split_view_insets_for_testing().width(),
-            BrowserViewLayout::kContentsContainerMinimumWidth +
-                views::Separator::kThickness - 1);
+  const int expected_multi_contents_width =
+      std::max(BrowserViewLayout::kContentsContainerMinimumWidth +
+                   views::Separator::kThickness - 1,
+               browser_width - two_thirds_browser_width);
+  EXPECT_EQ(multi_contents_view->width(), expected_multi_contents_width);
 }
 
 IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest, ChangeSidePanelWidthRTL) {
@@ -751,17 +715,12 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest, SidePanelAlignmentOverrides) {
             SidePanel::HorizontalAlignment::kRight);
 
   // Verify overridden panels use their overrides despite the default pref.
-  // Glic is kRight and ContextualTasks is kLeft.
+  // Glic is kRight.
   GetSidePanel()->UpdateHorizontalAlignment(SidePanelEntryId::kGlic);
   EXPECT_EQ(GetSidePanel()->horizontal_alignment(),
             SidePanel::HorizontalAlignment::kRight);
 
-  GetSidePanel()->UpdateHorizontalAlignment(SidePanelEntryId::kContextualTasks);
-  EXPECT_EQ(GetSidePanel()->horizontal_alignment(),
-            SidePanel::HorizontalAlignment::kLeft);
-
-  // Toggle the default pref and verify glic and contextual tasks alignment is
-  // unchanged.
+  // Toggle the default pref and verify glic alignment is unchanged.
   prefs->SetBoolean(prefs::kSidePanelHorizontalAlignment, false);
 
   GetSidePanel()->UpdateHorizontalAlignment(SidePanelEntryId::kReadingList);
@@ -772,15 +731,9 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest, SidePanelAlignmentOverrides) {
   EXPECT_EQ(GetSidePanel()->horizontal_alignment(),
             SidePanel::HorizontalAlignment::kRight);
 
-  GetSidePanel()->UpdateHorizontalAlignment(SidePanelEntryId::kContextualTasks);
-  EXPECT_EQ(GetSidePanel()->horizontal_alignment(),
-            SidePanel::HorizontalAlignment::kLeft);
-
-  // Verify changes to glic/contextual tasks only apply to that feature.
+  // Verify changes to glic only apply to that feature.
   base::DictValue new_overrides;
   new_overrides.Set(SidePanelEntryIdToString(SidePanelEntryId::kGlic), false);
-  new_overrides.Set(
-      SidePanelEntryIdToString(SidePanelEntryId::kContextualTasks), true);
   prefs->Set(prefs::kSidePanelAlignmentOverrides,
              base::Value(std::move(new_overrides)));
 
@@ -791,11 +744,55 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest, SidePanelAlignmentOverrides) {
   GetSidePanel()->UpdateHorizontalAlignment(SidePanelEntryId::kGlic);
   EXPECT_EQ(GetSidePanel()->horizontal_alignment(),
             SidePanel::HorizontalAlignment::kLeft);
+}
+
+class SidePanelCoordinatorContextualTasksDefaultRightTest
+    : public SidePanelCoordinatorTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  SidePanelCoordinatorContextualTasksDefaultRightTest() {
+    scoped_feature_list_.InitWithFeatureState(
+        contextual_tasks::kContextualTasksSidePanelDefaultRight, GetParam());
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(SidePanelCoordinatorContextualTasksDefaultRightTest,
+                       ContextualTasksDefaultAlignment) {
+  Init();
+  PrefService* prefs = BrowserView::GetBrowserViewForBrowser(browser())
+                           ->GetProfile()
+                           ->GetPrefs();
+  const SidePanel::HorizontalAlignment expected_default_alignment =
+      GetParam() ? SidePanel::HorizontalAlignment::kRight
+                 : SidePanel::HorizontalAlignment::kLeft;
+
+  prefs->SetBoolean(prefs::kSidePanelHorizontalAlignment, true);
+  GetSidePanel()->UpdateHorizontalAlignment(SidePanelEntryId::kContextualTasks);
+  EXPECT_EQ(GetSidePanel()->horizontal_alignment(), expected_default_alignment);
+
+  prefs->SetBoolean(prefs::kSidePanelHorizontalAlignment, false);
+  GetSidePanel()->UpdateHorizontalAlignment(SidePanelEntryId::kContextualTasks);
+  EXPECT_EQ(GetSidePanel()->horizontal_alignment(), expected_default_alignment);
+
+  base::DictValue new_overrides;
+  new_overrides.Set(
+      SidePanelEntryIdToString(SidePanelEntryId::kContextualTasks),
+      !GetParam());
+  prefs->Set(prefs::kSidePanelAlignmentOverrides,
+             base::Value(std::move(new_overrides)));
 
   GetSidePanel()->UpdateHorizontalAlignment(SidePanelEntryId::kContextualTasks);
   EXPECT_EQ(GetSidePanel()->horizontal_alignment(),
-            SidePanel::HorizontalAlignment::kRight);
+            GetParam() ? SidePanel::HorizontalAlignment::kLeft
+                       : SidePanel::HorizontalAlignment::kRight);
 }
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         SidePanelCoordinatorContextualTasksDefaultRightTest,
+                         testing::Bool());
 
 // Verify that right and left alignment works the same as when in LTR mode.
 IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest, ChangeSidePanelAlignmentRTL) {
@@ -1717,6 +1714,222 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,
   EXPECT_EQ(side_panel->width(), side_panel->GetMinimumSize().width());
 }
 
+IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,
+                       OverrideAndResetContentsWidth) {
+  Init();
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  SidePanel* side_panel = GetSidePanel();
+  ASSERT_TRUE(side_panel);
+  coordinator()->DisableAnimationsForTesting();
+
+  const std::string bookmarks_side_panel_id =
+      SidePanelEntryIdToString(SidePanelEntryId::kBookmarks);
+  PrefService* prefs = browser()->GetProfile()->GetPrefs();
+  {
+    ScopedDictPrefUpdate update(prefs, prefs::kSidePanelIdToWidth);
+    update->Remove(bookmarks_side_panel_id);
+  }
+
+  coordinator()->Show(SidePanelEntryId::kBookmarks);
+  views::test::RunScheduledLayout(browser_view);
+  const int default_width = side_panel->width();
+  const int default_content_width =
+      coordinator()->GetCurrentEntryDefaultContentWidth();
+
+  // OverrideContentsWidth changes the width temporarily without updating the
+  // pref.
+  const int kExpandedContentWidth = default_content_width + 120;
+  const int kExpectedExpandedWidth = default_width + 120;
+  coordinator()->OverrideContentsWidth(kExpandedContentWidth);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), kExpectedExpandedWidth);
+  EXPECT_FALSE(prefs->GetDict(prefs::kSidePanelIdToWidth)
+                   .FindInt(bookmarks_side_panel_id)
+                   .has_value());
+
+  // ResetContentsWidthOverride restores the default width when no manual width
+  // pref is set.
+  coordinator()->ResetContentsWidthOverride();
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), default_width);
+
+  // OverrideContentsWidth clamps widths smaller than the minimum width.
+  coordinator()->OverrideContentsWidth(kExpandedContentWidth);
+  views::test::RunScheduledLayout(browser_view);
+  ASSERT_EQ(side_panel->width(), kExpectedExpandedWidth);
+  coordinator()->OverrideContentsWidth(10);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), side_panel->GetMinimumSize().width());
+
+  // If a manual width pref is set, ResetContentsWidthOverride restores the
+  // manual width pref.
+  const int kManualPrefWidth = default_width + 60;
+  {
+    ScopedDictPrefUpdate update(prefs, prefs::kSidePanelIdToWidth);
+    update->Set(bookmarks_side_panel_id, base::Value(kManualPrefWidth));
+  }
+  coordinator()->OverrideContentsWidth(kExpandedContentWidth);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), kExpectedExpandedWidth);
+  EXPECT_EQ(prefs->GetDict(prefs::kSidePanelIdToWidth)
+                .FindInt(bookmarks_side_panel_id),
+            kManualPrefWidth);
+
+  coordinator()->ResetContentsWidthOverride();
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), kManualPrefWidth);
+}
+
+IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,
+                       OverrideContentsWidthResetsOnEntrySwitchAndReopen) {
+  Init();
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  SidePanel* side_panel = GetSidePanel();
+  ASSERT_TRUE(side_panel);
+  coordinator()->DisableAnimationsForTesting();
+
+  PrefService* prefs = browser()->GetProfile()->GetPrefs();
+  {
+    ScopedDictPrefUpdate update(prefs, prefs::kSidePanelIdToWidth);
+    update->Remove(SidePanelEntryIdToString(SidePanelEntryId::kBookmarks));
+  }
+
+  coordinator()->Show(SidePanelEntryId::kBookmarks);
+  views::test::RunScheduledLayout(browser_view);
+  const int default_width = side_panel->width();
+  const int default_content_width =
+      coordinator()->GetCurrentEntryDefaultContentWidth();
+  const int kExpandedContentWidth = default_content_width + 120;
+  const int kExpectedExpandedWidth = default_width + 120;
+
+  // Switching to another entry and back resets the temporary width.
+  coordinator()->OverrideContentsWidth(kExpandedContentWidth);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), kExpectedExpandedWidth);
+  coordinator()->Show(SidePanelEntryId::kReadingList);
+  views::test::RunScheduledLayout(browser_view);
+  coordinator()->Show(SidePanelEntryId::kBookmarks);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), default_width);
+
+  // Closing and reopening the panel resets the temporary width.
+  coordinator()->OverrideContentsWidth(kExpandedContentWidth);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), kExpectedExpandedWidth);
+  coordinator()->Close();
+  views::test::RunScheduledLayout(browser_view);
+  coordinator()->Show(SidePanelEntryId::kBookmarks);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), default_width);
+}
+
+IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,
+                       OverrideAndResetContentsWidthIgnoredDuringManualResize) {
+  Init();
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  SidePanel* side_panel = GetSidePanel();
+  ASSERT_TRUE(side_panel);
+  coordinator()->DisableAnimationsForTesting();
+
+  const std::string bookmarks_side_panel_id =
+      SidePanelEntryIdToString(SidePanelEntryId::kBookmarks);
+  PrefService* prefs = browser()->GetProfile()->GetPrefs();
+  const int default_width = side_panel->GetMinimumSize().width();
+  const int kManualPrefWidth = default_width + 60;
+  {
+    ScopedDictPrefUpdate update(prefs, prefs::kSidePanelIdToWidth);
+    update->Set(bookmarks_side_panel_id, base::Value(kManualPrefWidth));
+  }
+
+  coordinator()->Show(SidePanelEntryId::kBookmarks);
+  views::test::RunScheduledLayout(browser_view);
+  const int default_content_width =
+      coordinator()->GetCurrentEntryDefaultContentWidth();
+  const int kExpandedContentWidth = default_content_width + 120;
+  const int kExpectedExpandedWidth = default_width + 120;
+
+  coordinator()->OverrideContentsWidth(kExpandedContentWidth);
+  views::test::RunScheduledLayout(browser_view);
+  ASSERT_EQ(side_panel->width(), kExpectedExpandedWidth);
+
+  const int kResizeAmount = -20;
+  const int kManualResizedWidth = kExpectedExpandedWidth - kResizeAmount;
+  side_panel->OnResize(kResizeAmount, /*done_resizing=*/false);
+  views::test::RunScheduledLayout(browser_view);
+  ASSERT_EQ(side_panel->width(), kManualResizedWidth);
+
+  coordinator()->OverrideContentsWidth(default_content_width);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), kManualResizedWidth);
+  coordinator()->ResetContentsWidthOverride();
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), kManualResizedWidth);
+
+  side_panel->OnResize(kResizeAmount, /*done_resizing=*/true);
+  coordinator()->OverrideContentsWidth(default_content_width);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), default_width);
+  coordinator()->ResetContentsWidthOverride();
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), kManualResizedWidth);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    SidePanelCoordinatorTest,
+    OverrideAndResetContentsWidthIgnoredWhenClosedOrClosing) {
+  Init();
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  SidePanel* side_panel = GetSidePanel();
+  ASSERT_TRUE(side_panel);
+
+  const std::string bookmarks_side_panel_id =
+      SidePanelEntryIdToString(SidePanelEntryId::kBookmarks);
+  PrefService* prefs = browser()->GetProfile()->GetPrefs();
+  const int kManualPrefWidth = side_panel->GetMinimumSize().width() + 60;
+  {
+    ScopedDictPrefUpdate update(prefs, prefs::kSidePanelIdToWidth);
+    update->Set(bookmarks_side_panel_id, base::Value(kManualPrefWidth));
+  }
+
+  auto* animation_coordinator = BrowserAnimationController::From(browser());
+  auto container = base::MakeRefCounted<gfx::AnimationContainer>();
+  animation_coordinator->SetAnimationContainerForTesting(
+      SidePanelAnimations::kSidePanel, container.get());
+  gfx::AnimationContainerTestApi test_api(container.get());
+
+  coordinator()->Show(SidePanelEntryId::kBookmarks);
+  test_api.IncrementTime(base::Seconds(1));
+  views::test::RunScheduledLayout(browser_view);
+  ASSERT_EQ(side_panel->state(), SidePanel::State::kOpen);
+
+  const int default_content_width =
+      coordinator()->GetCurrentEntryDefaultContentWidth();
+  const int kExpandedContentWidth = default_content_width + 120;
+  coordinator()->OverrideContentsWidth(kExpandedContentWidth);
+  views::test::RunScheduledLayout(browser_view);
+  const int expanded_width = side_panel->GetPreferredSize().width();
+  ASSERT_GT(expanded_width, kManualPrefWidth);
+
+  // Start closing the side panel; OverrideContentsWidth and
+  // ResetContentsWidthOverride should be ignored while in State::kClosing.
+  coordinator()->Close();
+  ASSERT_EQ(side_panel->state(), SidePanel::State::kClosing);
+  coordinator()->OverrideContentsWidth(default_content_width);
+  EXPECT_EQ(side_panel->GetPreferredSize().width(), expanded_width);
+  coordinator()->ResetContentsWidthOverride();
+  EXPECT_EQ(side_panel->GetPreferredSize().width(), expanded_width);
+
+  // Finish closing; OverrideContentsWidth and ResetContentsWidthOverride should
+  // also be ignored while in State::kClosed.
+  test_api.IncrementTime(base::Seconds(1));
+  views::test::RunScheduledLayout(browser_view);
+  ASSERT_EQ(side_panel->state(), SidePanel::State::kClosed);
+  coordinator()->OverrideContentsWidth(default_content_width);
+  EXPECT_EQ(side_panel->GetPreferredSize().width(), expanded_width);
+  coordinator()->ResetContentsWidthOverride();
+  EXPECT_EQ(side_panel->GetPreferredSize().width(), expanded_width);
+}
+
 class TestSidePanelObserver : public SidePanelEntryObserver {
  public:
   explicit TestSidePanelObserver(SidePanelRegistry* registry)
@@ -2219,7 +2432,7 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,
   ASSERT_TRUE(guest_browser->GetProfile()->IsGuestSession());
 
   // Check that pin button does not show in guest window.
-  auto* const coordinator = SidePanelCoordinator::From(guest_browser);
+  auto* const coordinator = SidePanelUI::From(guest_browser);
   coordinator->SetNoDelaysForTesting(true);
   coordinator->DisableAnimationsForTesting();
   coordinator->Show(SidePanelEntry::Id::kBookmarks);
@@ -2493,6 +2706,78 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorLoadingContentTest,
       coordinator()->IsSidePanelEntryShowing(loading_content_entry2_->key()));
 }
 
+IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorLoadingContentTest,
+                       OverrideAndResetContentsWidthDuringContentLoad) {
+  Init();
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  SidePanel* side_panel = GetSidePanel();
+  ASSERT_TRUE(side_panel);
+  coordinator()->DisableAnimationsForTesting();
+
+  const int default_width = side_panel->GetMinimumSize().width();
+  const int default_content_width =
+      SidePanelEntry::kSidePanelDefaultContentWidth;
+  const int kExpandedContentWidth = default_content_width + 120;
+  const int kExpectedExpandedWidth = default_width + 120;
+
+  // Start loading `loading_content_entry1_` while the side panel is closed.
+  coordinator()->Show(loading_content_entry1_->key().id());
+  ASSERT_FALSE(side_panel->GetVisible());
+  ASSERT_EQ(side_panel->state(), SidePanel::State::kClosed);
+  views::View* loading_content1 = loading_content_entry1_->CachedView().get();
+  ASSERT_NE(loading_content1, nullptr);
+  SidePanelContentProxy* loading_content_proxy1 =
+      SidePanelUtil::GetSidePanelContentProxy(loading_content1);
+  ASSERT_FALSE(loading_content_proxy1->IsAvailable());
+
+  // OverrideContentsWidth and ResetContentsWidthOverride are ignored while the
+  // side panel is still closed waiting for the first entry to load.
+  coordinator()->OverrideContentsWidth(kExpandedContentWidth);
+  EXPECT_EQ(side_panel->GetPreferredSize().width(), default_width);
+  coordinator()->ResetContentsWidthOverride();
+  EXPECT_EQ(side_panel->GetPreferredSize().width(), default_width);
+
+  // Finish loading `loading_content_entry1_`; the side panel opens at default
+  // width.
+  loading_content_proxy1->SetAvailable(true);
+  views::test::RunScheduledLayout(browser_view);
+  ASSERT_TRUE(side_panel->GetVisible());
+  EXPECT_EQ(side_panel->width(), default_width);
+
+  // Switch to `loading_content_entry2_`, which loads asynchronously while
+  // `loading_content_entry1_` remains open.
+  coordinator()->Show(loading_content_entry2_->key().id());
+  views::View* loading_content2 = loading_content_entry2_->CachedView().get();
+  ASSERT_NE(loading_content2, nullptr);
+  SidePanelContentProxy* loading_content_proxy2 =
+      SidePanelUtil::GetSidePanelContentProxy(loading_content2);
+  ASSERT_FALSE(loading_content_proxy2->IsAvailable());
+  ASSERT_TRUE(
+      coordinator()->IsSidePanelEntryShowing(loading_content_entry1_->key()));
+
+  // OverrideContentsWidth and ResetContentsWidthOverride resize the currently
+  // open entry while the new entry is loading.
+  coordinator()->OverrideContentsWidth(kExpandedContentWidth);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), kExpectedExpandedWidth);
+
+  coordinator()->ResetContentsWidthOverride();
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), default_width);
+
+  // If expanded while the new entry is loading, finishing the load resets the
+  // width to the new entry's width.
+  coordinator()->OverrideContentsWidth(kExpandedContentWidth);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_EQ(side_panel->width(), kExpectedExpandedWidth);
+
+  loading_content_proxy2->SetAvailable(true);
+  views::test::RunScheduledLayout(browser_view);
+  EXPECT_TRUE(
+      coordinator()->IsSidePanelEntryShowing(loading_content_entry2_->key()));
+  EXPECT_EQ(side_panel->width(), default_width);
+}
+
 namespace {
 class HidingReasonObserver : public SidePanelEntryObserver {
  public:
@@ -2614,7 +2899,7 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,
                 ->GetBrowserViewLayoutForTesting()
                 ->side_panel_animation_content(),
             nullptr);
-  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 0);
+  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 0u);
 
   // Advance the animation to its end, at this point the contents view should be
   // reparented to the side panel's ContentParentView.
@@ -2623,7 +2908,7 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,
                 ->GetBrowserViewLayoutForTesting()
                 ->side_panel_animation_content(),
             nullptr);
-  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 1);
+  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 1u);
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -2817,7 +3102,7 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,
                 ->GetBrowserViewLayoutForTesting()
                 ->side_panel_animation_content(),
             nullptr);
-  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 0);
+  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 0u);
 
   // Trigger the side panel to close, at this point the contents view should be
   // reparented to the side panel's ContentParentView.
@@ -2827,7 +3112,7 @@ IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,
                 ->GetBrowserViewLayoutForTesting()
                 ->side_panel_animation_content(),
             nullptr);
-  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 1);
+  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 1u);
 }
 #endif
 
@@ -2888,7 +3173,7 @@ IN_PROC_BROWSER_TEST_F(
                 ->GetBrowserViewLayoutForTesting()
                 ->side_panel_animation_content(),
             nullptr);
-  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 0);
+  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 0u);
 
   // Show the kShoppingInsights side panel mid content transition animation and
   // verify the content is correctly reparented.
@@ -2897,7 +3182,7 @@ IN_PROC_BROWSER_TEST_F(
                 ->GetBrowserViewLayoutForTesting()
                 ->side_panel_animation_content(),
             nullptr);
-  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 1);
+  ASSERT_EQ(side_panel->GetContentParentView()->children().size(), 1u);
 }
 
 IN_PROC_BROWSER_TEST_F(SidePanelCoordinatorTest,

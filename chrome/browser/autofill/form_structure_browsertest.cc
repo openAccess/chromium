@@ -20,10 +20,10 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/time/time_override.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -67,11 +67,9 @@ const base::FilePath::CharType kTestName[] = FILE_PATH_LITERAL("heuristics");
 
 #if !BUILDFLAG(USE_INTERNAL_AUTOFILL_PATTERNS)
 // To disable a data driven test, please add the name of the test file
-// (i.e., FILE_PATH_LITERAL("NNN_some_site.html")) to the initializer_list given
-// to the failing_test_names constructor.
-const auto& GetFailingTestNames() {
-  static std::set<base::FilePath::StringType> failing_test_names{};
-  return failing_test_names;
+// (i.e., FILE_PATH_LITERAL("NNN_some_site.html")) to the returned set.
+std::set<base::FilePath::StringType> GetFailingTestNames() {
+  return {};
 }
 #endif
 
@@ -86,12 +84,11 @@ const base::FilePath& GetTestDataDir() {
 }
 
 #if !BUILDFLAG(USE_INTERNAL_AUTOFILL_PATTERNS)
-const base::FilePath GetInputDir() {
-  static base::FilePath input_dir = GetTestDataDir()
-                                        .Append(kFeatureName)
-                                        .Append(kTestName)
-                                        .AppendASCII("input");
-  return input_dir;
+base::FilePath GetInputDir() {
+  return GetTestDataDir()
+      .Append(kFeatureName)
+      .Append(kTestName)
+      .AppendASCII("input");
 }
 
 const std::vector<base::FilePath>& GetTestFiles() {
@@ -244,6 +241,8 @@ FormStructureBrowserTest::FormStructureBrowserTest()
           features::kAutofillSupportSplitZipCode,
           features::kAutofillSupportStandaloneZipCodeGlobally,
           features::kAutofillEnableOneTimeCodeHeuristics,
+          // TODO(crbug.com/566051797): Remove once launched.
+          features::kAutofillOnlyConsiderSingleFieldFormsAsSearchForms,
       },
       // Disabled
       {

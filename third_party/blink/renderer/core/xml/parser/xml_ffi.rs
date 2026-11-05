@@ -8,9 +8,8 @@ use std::io::Cursor;
 use xml::{
     attribute::OwnedAttribute,
     common::{Position, TextPosition},
-    namespace::{Namespace, NS_XMLNS_URI, NS_XML_URI},
     reader::{
-        ErrorKind, EventReader as XmlEventReader,
+        ErrorKind, EventReader as XmlEventReader, ImmutableEntitiesError,
         XmlEvent::{
             CData, Characters, Comment, Doctype, EndDocument, EndElement, ProcessingInstruction,
             StartDocument, StartElement, Whitespace,
@@ -21,15 +20,23 @@ use xml::{
 
 use crate::ffi::{AttributeNameValue, AttributeView, StandaloneInfo, XmlCallbacks};
 use entities::{HTML5_MAP, LAT1_MAP, SPECIAL_MAP, SYMBOL_MAP};
+use std::cell::{Cell, RefCell};
 use std::pin::Pin;
 
+// `XmlReadState` is held by `XMLDocumentParserRs` and passed across FFI as a
+// shared `&XmlReadState` reference. While `process_next_event()` is on the
+// stack, synchronous C++ parser callbacks can re-enter `xml_ffi` with the same
+// `read_state_` (for example, `DocType()` calls `add_xhtml_entities()`, and
+// `StartElementNs()` calls `try_get_last_event_position()`). Using interior
+// mutability (`RefCell` / `Cell`) and dropping the `event_reader` borrow before
+// invoking `parser_callbacks` avoids creating aliasing `&mut` references across
+// FFI while allowing callbacks to safely access `event_reader` or
+// `last_event_position`.
 struct XmlReadState<'a> {
-    event_reader: XmlEventReader<Cursor<Vec<u8>>>,
-    error_details: Option<xml::reader::Error>,
-    last_event_position: Option<TextPosition>,
-    parser_callbacks: Pin<&'a mut XmlCallbacks>,
-    namespace_stack: Vec<Namespace>,
-    seen_first_event: bool,
+    event_reader: RefCell<XmlEventReader<Cursor<Vec<u8>>>>,
+    error_details: RefCell<Option<xml::reader::Error>>,
+    last_event_position: Cell<Option<TextPosition>>,
+    parser_callbacks: RefCell<Pin<&'a mut XmlCallbacks>>,
 }
 
 fn create_reader() -> XmlEventReader<Cursor<Vec<u8>>> {
@@ -50,17 +57,28 @@ fn create_reader() -> XmlEventReader<Cursor<Vec<u8>>> {
 fn create_read_state(callbacks: Pin<&mut XmlCallbacks>) -> Box<XmlReadState<'_>> {
     let event_reader = create_reader();
     Box::new(XmlReadState {
-        event_reader,
-        error_details: None,
-        last_event_position: None,
-        parser_callbacks: callbacks,
-        namespace_stack: Vec::new(),
-        seen_first_event: false,
+        event_reader: RefCell::new(event_reader),
+        error_details: RefCell::new(None),
+        last_event_position: Cell::new(None),
+        parser_callbacks: RefCell::new(callbacks),
     })
 }
 
-fn append_to_source(read_state: &mut XmlReadState, content: &[u8]) {
-    let buffer = read_state.event_reader.source_mut().get_mut();
+fn append_to_source(read_state: &XmlReadState, content: &[u8]) {
+    let mut reader = read_state.event_reader.borrow_mut();
+    let buffer = reader.source_mut().get_mut();
+    // When the encoding is set fixed on the xml Rust crate, it does not do its
+    // own BOM sniffing, hence removing a possible BOM here.
+    // The byte sequence [0xEF, 0xBB, 0xBF] is the UTF-8 representation of the
+    // Unicode Byte Order Mark (U+FEFF). Because Blink converts input strings
+    // (WTF::String) to UTF-8 before passing them to this FFI layer, any leading
+    // BOM is always encoded as UTF-8, and other BOM shapes (such as UTF-16
+    // or UTF-32) do not need to be handled here.
+    let content = if buffer.is_empty() {
+        content.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(content)
+    } else {
+        content
+    };
     buffer.extend_from_slice(content);
 }
 
@@ -72,41 +90,34 @@ struct NamespacesIterator<'a> {
     namespaces: Box<dyn Iterator<Item = (&'a str, &'a str)> + 'a>,
 }
 
-fn new_namespaces(existing: &Namespace, new: &Namespace, seen_first_event: bool) -> Namespace {
-    let mut result = Namespace::empty();
-    for (new_prefix, new_uri) in new.iter() {
-        // Don't add the first empty default namespace, as the parser synthesizes it and
-        // it likely did not come from the input document.
-        // See: https://github.com/kornelski/xml-rs/issues/48
-        if existing.get(new_prefix).is_none_or(|uri| uri != new_uri)
-            && (seen_first_event || !new_prefix.is_empty() || !new_uri.is_empty())
-        {
-            result.put(new_prefix, new_uri);
+fn process_next_event(read_state: &XmlReadState) {
+    let event_result = {
+        let mut reader = read_state.event_reader.borrow_mut();
+        let result = reader.next();
+        if result.is_ok() {
+            read_state.last_event_position.set(Some(reader.position()));
         }
-    }
-    result
-}
-
-fn process_next_event(read_state: &mut XmlReadState) {
-    let event_result = read_state.event_reader.next();
+        result
+    };
     match event_result {
-        Ok(event) => {
-            read_state.last_event_position = Some(read_state.event_reader.position());
-            match event {
-                StartDocument { version, encoding, standalone } => {
-                    let version: &str = version.as_str();
+        Ok(event) => match event {
+            StartDocument { version, encoding, standalone } => {
+                let version: &str = version.as_str();
 
-                    let buffer = read_state.event_reader.source().get_ref();
-                    let xml_declaration_view = read_state.last_event_position.and_then(|pos| {
-                        let start_index = pos.column as usize;
-                        if buffer[start_index..].starts_with(b"<?xml ") {
-                            buffer[start_index..].iter().position(|&c| c == b'>').map(
-                                |end_offset| &buffer[start_index..start_index + end_offset + 1],
-                            )
-                        } else {
-                            None
-                        }
-                    });
+                let (standalone, encoding) = {
+                    let reader = read_state.event_reader.borrow();
+                    let buffer = reader.source().get_ref();
+                    let xml_declaration_view =
+                        read_state.last_event_position.get().and_then(|pos| {
+                            let start_index = pos.column as usize;
+                            if buffer[start_index..].starts_with(b"<?xml ") {
+                                buffer[start_index..].iter().position(|&c| c == b'>').map(
+                                    |end_offset| &buffer[start_index..start_index + end_offset + 1],
+                                )
+                            } else {
+                                None
+                            }
+                        });
 
                     let standalone = standalone
                         .map(|is_standalone| {
@@ -118,7 +129,8 @@ fn process_next_event(read_state: &mut XmlReadState) {
                         })
                         .unwrap_or_else(|| {
                             if xml_declaration_view.is_some() {
-                                // <?xml instruction present, but standalone not specified
+                                // <?xml instruction present, but standalone not
+                                // specified
                                 return StandaloneInfo::kStandaloneUnspecified;
                             }
                             StandaloneInfo::kNoXmlDeclaration
@@ -132,90 +144,109 @@ fn process_next_event(read_state: &mut XmlReadState) {
                             }
                         })
                         .unwrap_or_default();
-                    read_state
-                        .parser_callbacks
-                        .as_mut()
-                        .StartDocument(version, &encoding, standalone);
-                }
-                ProcessingInstruction { name, data } => {
-                    let data = data.unwrap_or_default();
-                    let data = data.trim_start();
-                    read_state.parser_callbacks.as_mut().ProcessingInstruction(&name, data);
-                }
-                StartElement { name, attributes, namespace } => {
-                    let local_name: &str = &name.local_name;
-                    let has_prefix = name.prefix.is_some();
-                    let prefix: &str = &name.prefix.unwrap_or_default();
-                    let has_ns = name.namespace.is_some();
-                    let ns: &str = &name.namespace.unwrap_or_default();
+                    (standalone, encoding)
+                };
+                read_state
+                    .parser_callbacks
+                    .borrow_mut()
+                    .as_mut()
+                    .StartDocument(version, &encoding, standalone);
+            }
+            ProcessingInstruction { name, data } => {
+                let data = data.unwrap_or_default();
+                let data = data.trim_start();
+                read_state
+                    .parser_callbacks
+                    .borrow_mut()
+                    .as_mut()
+                    .ProcessingInstruction(&name, data);
+            }
+            StartElement { name, attributes, .. } => {
+                let local_name: &str = &name.local_name;
+                let has_prefix = name.prefix.is_some();
+                let prefix: &str = &name.prefix.unwrap_or_default();
+                let has_ns = name.namespace.is_some();
+                let ns: &str = &name.namespace.unwrap_or_default();
 
-                    let new_namespaces = new_namespaces(
-                        read_state.namespace_stack.last().unwrap_or(&Namespace::empty()),
-                        &namespace,
-                        read_state.seen_first_event,
-                    );
-
-                    read_state.seen_first_event = true;
-
-                    read_state.namespace_stack.push(namespace);
-                    let mut attributes = AttributesIterator { attributes: attributes.iter() };
-                    let mut new_namespaces =
-                        NamespacesIterator { namespaces: Box::new(new_namespaces.iter()) };
-                    read_state.parser_callbacks.as_mut().StartElementNs(
-                        local_name,
-                        has_prefix,
-                        prefix,
-                        has_ns,
-                        ns,
-                        &mut attributes,
-                        &mut new_namespaces,
-                    );
-                }
-                EndElement { name } => {
-                    read_state.namespace_stack.pop();
-
-                    let local_name: &str = &name.local_name;
-                    let prefix: &str = &name.prefix.unwrap_or_default();
-                    let ns: &str = &name.namespace.unwrap_or_default();
-                    read_state.parser_callbacks.as_mut().EndElementNs(local_name, prefix, ns);
-                }
-                Characters(characters) => {
-                    read_state.parser_callbacks.as_mut().Characters(&characters);
-                }
-                Whitespace(whitespace_characters) => {
-                    read_state.parser_callbacks.as_mut().Characters(&whitespace_characters);
-                }
-                Comment(comment) => {
-                    read_state.parser_callbacks.as_mut().Comment(&comment);
-                }
-                CData(data) => {
-                    read_state.parser_callbacks.as_mut().CData(&data);
-                }
-                EndDocument => {
-                    read_state.parser_callbacks.as_mut().EndDocument();
-                }
-                Doctype { .. } => {
-                    // It's safe to unwrap here. `doctype_ids()` after a `Doctype`
-                    // event only fails if there's no doctype name, which would have
+                // Clone `declared_namespaces()` so the `event_reader` borrow is
+                // released before invoking the C++ `StartElementNs` callback.
+                let declared = read_state.event_reader.borrow().declared_namespaces().cloned();
+                let mut attributes = AttributesIterator { attributes: attributes.iter() };
+                let mut new_namespaces =
+                    NamespacesIterator { namespaces: Box::new(declared.iter().flatten()) };
+                read_state.parser_callbacks.borrow_mut().as_mut().StartElementNs(
+                    local_name,
+                    has_prefix,
+                    prefix,
+                    has_ns,
+                    ns,
+                    &mut attributes,
+                    &mut new_namespaces,
+                );
+            }
+            EndElement { name } => {
+                let local_name: &str = &name.local_name;
+                let prefix: &str = &name.prefix.unwrap_or_default();
+                let ns: &str = &name.namespace.unwrap_or_default();
+                read_state
+                    .parser_callbacks
+                    .borrow_mut()
+                    .as_mut()
+                    .EndElementNs(local_name, prefix, ns);
+            }
+            Characters(characters) => {
+                read_state.parser_callbacks.borrow_mut().as_mut().Characters(&characters);
+            }
+            Whitespace(whitespace_characters) => {
+                read_state
+                    .parser_callbacks
+                    .borrow_mut()
+                    .as_mut()
+                    .Characters(&whitespace_characters);
+            }
+            Comment(comment) => {
+                read_state.parser_callbacks.borrow_mut().as_mut().Comment(&comment);
+            }
+            CData(data) => {
+                read_state.parser_callbacks.borrow_mut().as_mut().CData(&data);
+            }
+            EndDocument => {
+                read_state.parser_callbacks.borrow_mut().as_mut().EndDocument();
+            }
+            Doctype { .. } => {
+                // Clone the doctype IDs so the `event_reader` borrow is
+                // released before invoking the C++ `DocType` callback, which
+                // may call `add_xhtml_entities()` and mutably borrow
+                // `event_reader`.
+                let (name, public_id, system_id) = {
+                    let reader = read_state.event_reader.borrow();
+                    // It's safe to unwrap here. `doctype_ids()` after a
+                    // `Doctype` event only fails if there's
+                    // no doctype name, which would have
                     // resulted in a parser error earlier.
                     // See: https://github.com/kornelski/xml-rs/blob/main/src/reader/parser.rs#L162
-                    let ids = read_state.event_reader.doctype_ids().unwrap();
-                    read_state.parser_callbacks.as_mut().DocType(
-                        ids.name(),
-                        ids.public_id().unwrap_or(""),
-                        ids.system_id().unwrap_or(""),
-                    );
-                }
+                    let ids = reader.doctype_ids().unwrap();
+                    (
+                        ids.name().to_owned(),
+                        ids.public_id().unwrap_or("").to_owned(),
+                        ids.system_id().unwrap_or("").to_owned(),
+                    )
+                };
+                read_state
+                    .parser_callbacks
+                    .borrow_mut()
+                    .as_mut()
+                    .DocType(&name, &public_id, &system_id);
             }
-        }
+        },
         Err(failure) => {
-            read_state.error_details = Some(failure.clone());
+            *read_state.error_details.borrow_mut() = Some(failure.clone());
         }
     }
 }
 
 fn try_get_last_event_position(read_state: &XmlReadState, row: &mut u64, col: &mut u64) -> bool {
-    if let Some(position) = read_state.last_event_position {
+    if let Some(position) = read_state.last_event_position.get() {
         *row = position.row;
         *col = position.column;
         return true;
@@ -223,12 +254,13 @@ fn try_get_last_event_position(read_state: &XmlReadState, row: &mut u64, col: &m
     false
 }
 
-fn add_xhtml_entities(read_state: &mut XmlReadState) {
+fn add_xhtml_entities(read_state: &XmlReadState) {
+    let mut reader = read_state.event_reader.borrow_mut();
     for map in [LAT1_MAP, SYMBOL_MAP, SPECIAL_MAP, HTML5_MAP].iter() {
-        read_state
-            .event_reader
-            .add_entities(map.iter().copied())
-            .expect("Adding built-in entities should not cause an error.");
+        match reader.add_entities(map.iter().copied()) {
+            Ok(()) | Err(ImmutableEntitiesError::StandaloneDocument) => {}
+            Err(e) => panic!("Adding built-in entities should not cause an error: {e}"),
+        }
     }
 }
 
@@ -238,7 +270,7 @@ fn try_get_error_details(
     row: &mut u64,
     col: &mut u64,
 ) -> bool {
-    if let Some(error_details) = &read_state.error_details {
+    if let Some(error_details) = read_state.error_details.borrow().as_ref() {
         let error_string = error_details.to_string();
         // Remove the "row:col " prefix from the error message.
         // The row and col are passed separately.
@@ -254,20 +286,20 @@ fn try_get_error_details(
 }
 
 fn saw_error(read_state: &XmlReadState) -> bool {
-    read_state.error_details.is_some()
+    read_state.error_details.borrow().is_some()
 }
 
 fn is_error_resumable(read_state: &XmlReadState) -> bool {
     // See XML crate's parser.rs handle_eof() handling.
     // which returns SyntaxError::UnbalancedRootElement on
     // temporary end of read stream situations.
-    matches!(read_state.error_details.as_ref().map(|error| error.kind()),
+    matches!(read_state.error_details.borrow().as_ref().map(|error| error.kind()),
              Some(ErrorKind::Syntax(msg)) if
              msg.starts_with("Unexpected end of stream"))
 }
 
-fn reset_error(read_state: &mut XmlReadState) {
-    read_state.error_details = None;
+fn reset_error(read_state: &XmlReadState) {
+    *read_state.error_details.borrow_mut() = None;
 }
 
 fn attributes_next<'a>(
@@ -309,24 +341,9 @@ fn namespaces_next(
     prefix: &mut String,
     uri: &mut String,
 ) -> bool {
-    for namespace in namespaces_iterator.namespaces.by_ref() {
-        // TODO(drott): Why does the library generate these default ones?
-        // TODO(drott): Why do we see an empty namespace here for
-        // fast/dom/attribute-namespaces-get-set.html and XML like:
-        // <root xmlns:foo=\"http://www.example.com\" attr=\"test2\" foo:attr=\"test\" />
-        // and virtual/rust-xml/fast/xmlhttprequest/xmlhttprequest-get.xhtml
-        // Filed as: https://github.com/kornelski/xml-rs/issues/50
-
-        // Letting the empty namespace and empty URL pass through here
-        // is important to reset the default namespace to none.
-        if (namespace.0 == "xml" && namespace.1 == NS_XML_URI)
-            || (namespace.0 == "xmlns" && namespace.1 == NS_XMLNS_URI)
-        {
-            continue;
-        }
-
-        *prefix = namespace.0.to_string();
-        *uri = namespace.1.to_string();
+    if let Some((pfx, u)) = namespaces_iterator.namespaces.next() {
+        *prefix = pfx.to_string();
+        *uri = u.to_string();
         return true;
     }
     false
@@ -393,10 +410,10 @@ mod ffi {
             standalone: StandaloneInfo,
         );
         fn ProcessingInstruction(self: Pin<&mut XmlCallbacks>, name: &str, data: &str);
-        // CXX Rust::Str and &str do not allow a distinction between null and empty
-        // strings, so one way to convey that to the C++ side is to carry an
-        // extra boolean - which we require to be able to distinguish between a
-        // null and an empty namespace URI.
+        // CXX Rust::Str and &str do not allow a distinction between null and
+        // empty strings, so one way to convey that to the C++ side is
+        // to carry an extra boolean - which we require to be able to
+        // distinguish between a null and an empty namespace URI.
         #[allow(clippy::too_many_arguments)]
         fn StartElementNs(
             self: Pin<&mut XmlCallbacks>,
@@ -431,14 +448,14 @@ mod ffi {
         unsafe fn create_read_state<'a>(
             callbacks: Pin<&'a mut XmlCallbacks>,
         ) -> Box<XmlReadState<'a>>;
-        fn append_to_source(read_state: &mut XmlReadState, content: &[u8]);
-        fn process_next_event(read_state: &mut XmlReadState);
+        fn append_to_source(read_state: &XmlReadState, content: &[u8]);
+        fn process_next_event(read_state: &XmlReadState);
         fn try_get_last_event_position(
             read_state: &XmlReadState,
             row: &mut u64,
             col: &mut u64,
         ) -> bool;
-        fn add_xhtml_entities(read_state: &mut XmlReadState);
+        fn add_xhtml_entities(read_state: &XmlReadState);
         fn try_get_error_details(
             read_state: &XmlReadState,
             msg: &mut String,
@@ -447,7 +464,7 @@ mod ffi {
         ) -> bool;
         fn saw_error(read_state: &XmlReadState) -> bool;
         fn is_error_resumable(read_state: &XmlReadState) -> bool;
-        fn reset_error(read_state: &mut XmlReadState);
+        fn reset_error(read_state: &XmlReadState);
 
         fn parse_attributes(
             attributes_string: &[u8],

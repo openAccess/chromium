@@ -10,7 +10,9 @@
 #include "base/check.h"
 #include "base/notreached.h"
 #include "components/pdf/browser/pdf_document_helper_client.h"
+#include "components/pdf/browser/pdf_first_content_paint_registry.h"
 #include "components/pdf/browser/pdf_frame_util.h"
+#include "components/pdf/common/constants.h"
 #include "content/public/browser/document_user_data.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
@@ -111,6 +113,15 @@ PDFDocumentHelper* PDFDocumentHelper::MaybeGetForWebContents(
       });
 
   return pdf_helper;
+}
+
+// static
+PDFDocumentHelper* PDFDocumentHelper::MaybeGetForFullPagePdf(
+    content::WebContents& contents) {
+  if (contents.GetContentsMimeType() != pdf::kPDFMimeType) {
+    return nullptr;
+  }
+  return MaybeGetForWebContents(contents);
 }
 
 PDFDocumentHelper::PDFDocumentHelper(
@@ -501,6 +512,25 @@ void PDFDocumentHelper::OnDocumentLoadComplete() {
   document_load_complete_callbacks_.clear();
 
   client_->OnDocumentLoadComplete(render_frame_host());
+}
+
+void PDFDocumentHelper::OnPdfFirstContentPainted(base::TimeTicks paint_time) {
+  // A well-behaved renderer sends this exactly once per document. A repeat
+  // means the renderer is not honoring the interface contract, so treat it as
+  // compromised instead of silently dropping the message.
+  if (did_report_first_content_paint_) {
+    pdf_host_receivers_.ReportBadMessage(
+        "OnPdfFirstContentPainted called more than once for a document.");
+    return;
+  }
+  did_report_first_content_paint_ = true;
+
+  // `GetWebContents()` is the contents the PDF frame lives in, which under the
+  // MimeHandlerView guest architecture is the guest rather than the tab. The
+  // responsible contents is the tab in both architectures, and is what a
+  // subscriber can recognize.
+  NotifyPdfFirstContentPainted(GetWebContents().GetResponsibleWebContents(),
+                               paint_time);
 }
 
 void PDFDocumentHelper::SavePdf() {

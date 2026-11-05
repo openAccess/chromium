@@ -25,7 +25,6 @@
 #include "base/threading/scoped_thread_priority.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
-#include "components/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations_histograms.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
@@ -319,14 +318,13 @@ void BrowserStartupMetricRecorder::ResetSessionForTesting() {
   // tests run in the same process.
   main_window_startup_interrupted_ = false;
   message_loop_start_ticks_ = base::TimeTicks();
+  message_loop_start_no_sleep_timer_.reset();
   browser_window_display_ticks_ = base::TimeTicks();
-  browser_window_first_paint_ticks_ = base::TimeTicks();
-  is_privacy_sandbox_attestations_component_ready_recorded_ = false;
-  is_privacy_sandbox_attestations_first_check_recorded_ = false;
   is_first_run_ = false;
   is_browser_window_display_metric_emitted_ = false;
   did_record_startup_fcp_ = false;
   did_record_startup_lcp_ = false;
+  did_record_startup_pdf_first_content_paint_ = false;
 }
 
 bool BrowserStartupMetricRecorder::WasMainWindowStartupInterrupted() const {
@@ -346,6 +344,7 @@ void BrowserStartupMetricRecorder::RecordMessageLoopStartTicks(
   DCHECK(message_loop_start_ticks_.is_null());
   message_loop_start_ticks_ = ticks;
   DCHECK(!message_loop_start_ticks_.is_null());
+  message_loop_start_no_sleep_timer_.emplace();
 }
 
 base::TimeTicks BrowserStartupMetricRecorder::GetWebContentsStartTicks() const {
@@ -445,17 +444,6 @@ void BrowserStartupMetricRecorder::RecordBrowserWindowDisplay(
   EmitBrowserWindowDisplayHistogram();
 }
 
-void BrowserStartupMetricRecorder::RecordBrowserWindowFirstPaintTicks(
-    base::TimeTicks ticks) {
-  DCHECK(!ticks.is_null());
-
-  if (!browser_window_first_paint_ticks_.is_null()) {
-    return;
-  }
-
-  browser_window_first_paint_ticks_ = ticks;
-}
-
 void BrowserStartupMetricRecorder::RecordFirstWebContentsNonEmptyPaint(
     base::TimeTicks now,
     base::TimeTicks render_process_host_init_time) {
@@ -475,6 +463,17 @@ void BrowserStartupMetricRecorder::RecordFirstWebContentsNonEmptyPaint(
       &base::UmaHistogramLongTimes100,
       "Startup.BrowserMessageLoopStart.To.NonEmptyPaint2",
       now - message_loop_start_ticks_);
+
+  DCHECK(message_loop_start_no_sleep_timer_.has_value());
+  // Only recorded when no system sleep was detected, so that the distribution
+  // can be compared to Startup.BrowserMessageLoopStart.To.NonEmptyPaint2.
+  if (std::optional<base::TimeDelta> elapsed_no_sleep =
+          message_loop_start_no_sleep_timer_->Elapsed()) {
+    EmitHistogramWithTemperature(
+        &base::UmaHistogramLongTimes100,
+        "Startup.BrowserMessageLoopStart.To.NonEmptyPaint2.NoSleep",
+        *elapsed_no_sleep);
+  }
 }
 
 void BrowserStartupMetricRecorder::
@@ -539,6 +538,29 @@ void BrowserStartupMetricRecorder::RecordFirstWebContentsLargestContentfulPaint(
       web_contents_start_ticks, lcp_ticks);
 }
 
+void BrowserStartupMetricRecorder::RecordFirstWebContentsPdfFirstContentPaint(
+    base::TimeTicks pdf_paint_ticks) {
+  if (did_record_startup_pdf_first_content_paint_) {
+    return;
+  }
+
+  const base::TimeTicks web_contents_start_ticks = GetWebContentsStartTicks();
+  if (web_contents_start_ticks.is_null()) {
+    return;
+  }
+
+  if (!ShouldLogStartupHistogram()) {
+    return;
+  }
+
+  did_record_startup_pdf_first_content_paint_ = true;
+
+  EmitHistogramWithTemperatureAndTraceEvent(
+      &base::UmaHistogramLongTimes100,
+      "Startup.FirstWebContents.PdfFirstContentPaint", web_contents_start_ticks,
+      pdf_paint_ticks);
+}
+
 void BrowserStartupMetricRecorder::RecordFirstWebContentsMainNavigationStart(
     base::TimeTicks ticks) {
   const base::TimeTicks web_contents_start_ticks = GetWebContentsStartTicks();
@@ -578,7 +600,6 @@ void BrowserStartupMetricRecorder::RecordBrowserWindowFirstPaint(
     return;
   }
   is_first_call = false;
-  RecordBrowserWindowFirstPaintTicks(ticks);
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   // Mirror Startup.BrowserMessageLoopStartHardFault{Count,Bytes} at the first
   // paint checkpoint (using a higher 1M cap for Count to avoid saturation).
@@ -722,78 +743,6 @@ void BrowserStartupMetricRecorder::RecordExternalStartupMetric(
   if (set_non_browser_ui_displayed) {
     SetNonBrowserUIDisplayed();
   }
-}
-
-// There are two possible callers of `ComponentReady()`:
-// a) Component registration, when there is existing component file on disk.
-// b) Component installation, when the component is downloaded.
-//
-// The following factors affect the timing of `ComponentReady()`:
-// Non-browser UI during startup, for example, profile picker.
-// - When the user stays at the profile picker indefinitely. The registration
-// takes place in around 4 minutes after opening the browser.
-//
-// The purpose of this metric is to understand the time gap between the time
-// users are able to navigate and the time the Privacy Sandbox attestations map
-// is ready. If navigation to sites that use Privacy Sandbox APIs takes place
-// during this gap, the API calls may be rejected because the attestations map
-// has not been ready yet.
-//
-// To reduce the noise introduced by non-browser UI, we measure from the first
-// browser window paint if it has been recorded. If it is not recorded, the
-// measurement is taken from application start.
-// TODO(crbug.com/329235182): The Privacy Sandbox Attestation start up related
-// histograms are not using the temperature breakouts. The logic for all these
-// histograms could just live in the privacy sandbox component itself, which
-// pulls from startup code just to get the application start timeticks.
-void BrowserStartupMetricRecorder::RecordPrivacySandboxAttestationsFirstReady(
-    base::TimeTicks ticks) {
-  DCHECK(!ticks.is_null());
-
-  // This metric should be recorded at most once for each Chrome session.
-  if (is_privacy_sandbox_attestations_component_ready_recorded_) {
-    return;
-  }
-
-  // The first browser window paint has been recorded.
-  if (!browser_window_first_paint_ticks_.is_null()) {
-    is_privacy_sandbox_attestations_component_ready_recorded_ = true;
-    base::UmaHistogramLongTimes100(
-        privacy_sandbox::kComponentReadyFromBrowserWindowFirstPaintUMA,
-        ticks - browser_window_first_paint_ticks_);
-    return;
-  }
-
-  // Otherwise, this implies the component is installed before first browser
-  // window paint.
-  is_privacy_sandbox_attestations_component_ready_recorded_ = true;
-  if (WasMainWindowStartupInterrupted()) {
-    // The durations should be a few minutes.
-    base::UmaHistogramLongTimes100(
-        privacy_sandbox::kComponentReadyFromApplicationStartWithInterruptionUMA,
-        ticks - GetCommon().application_start_ticks_);
-  } else {
-    // The durations should be a few milliseconds.
-    base::UmaHistogramLongTimes100(
-        privacy_sandbox::kComponentReadyFromApplicationStartUMA,
-        ticks - GetCommon().application_start_ticks_);
-  }
-}
-
-void BrowserStartupMetricRecorder::RecordPrivacySandboxAttestationFirstCheck(
-    base::TimeTicks ticks) {
-  DCHECK(!ticks.is_null());
-
-  // This metric should be recorded at most once for each Chrome session.
-  if (is_privacy_sandbox_attestations_first_check_recorded_) {
-    return;
-  }
-
-  is_privacy_sandbox_attestations_first_check_recorded_ = true;
-
-  // Record the first time a Privacy Sandbox API is checked for attestation.
-  base::UmaHistogramLongTimes100(privacy_sandbox::kAttestationFirstCheckTimeUMA,
-                                 ticks - GetCommon().application_start_ticks_);
 }
 
 }  // namespace startup_metric_utils

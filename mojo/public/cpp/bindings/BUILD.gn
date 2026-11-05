@@ -80,6 +80,7 @@ component("bindings_base") {
     "lib/map_serialization_send_validation.h",
     "lib/may_auto_lock.h",
     "lib/message.cc",
+    "lib/message_fragment.cc",
     "lib/message_fragment.h",
     "lib/message_header_validator.cc",
     "lib/message_internal.cc",
@@ -90,11 +91,7 @@ component("bindings_base") {
     "lib/pending_receiver_state.h",
     "lib/pending_remote_state.cc",
     "lib/pending_remote_state.h",
-    "lib/proxy_to_responder.cc",
-    "lib/proxy_to_responder.h",
     "lib/scoped_interface_endpoint_handle.cc",
-    "lib/send_message_helper.cc",
-    "lib/send_message_helper.h",
     "lib/send_validation.h",
     "lib/send_validation_serialization.h",
     "lib/send_validation_type.h",
@@ -145,9 +142,8 @@ component("bindings_base") {
     ":mojo_buildflags",
     "//base",
     "//mojo/public/cpp/system",
+    "//third_party/abseil-cpp:absl",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   if (enable_ipc_fuzzer) {
     all_dependent_configs = [ "//tools/ipc_fuzzer:ipc_fuzzer_config" ]
@@ -208,6 +204,12 @@ component("bindings") {
     "lib/native_struct_serialization.h",
     "lib/pipe_control_message_handler.cc",
     "lib/pipe_control_message_proxy.cc",
+    "lib/proxy_to_responder.cc",
+    "lib/proxy_to_responder.h",
+    "lib/responder_thunk.cc",
+    "lib/responder_thunk.h",
+    "lib/send_message_helper.cc",
+    "lib/send_message_helper.h",
     "lib/sequence_local_sync_event_watcher.cc",
     "lib/sync_call_restrictions.cc",
     "lib/sync_event_watcher.cc",
@@ -277,9 +279,10 @@ component("bindings") {
     "//mojo/public/interfaces/bindings",
   ]
 
-  deps = [ "//mojo/core/embedder" ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
+  deps = [
+    "//mojo:buildflags",
+    "//mojo/core/embedder",
+  ]
 
   defines = [ "IS_MOJO_CPP_BINDINGS_IMPL" ]
 }
@@ -314,6 +317,22 @@ source_set("protobuf_support") {
   ]
 }
 
+if (is_android) {
+  # Native half of the JNI transport used by mojom(generate_jni = true)
+  # bindings. See //mojo/public/java:jni_transport_java.
+  source_set("jni_bridge") {
+    sources = [
+      "mojo_jni_bridge.cc",
+      "mojo_jni_bridge.h",
+    ]
+    public_deps = [
+      ":bindings",
+      "//base",
+    ]
+    deps = [ "//mojo/public/java:jni_transport_jni" ]
+  }
+}
+
 if (use_blink) {
   component("wtf_support") {
     sources = [
@@ -324,8 +343,6 @@ if (use_blink) {
       "map_traits_wtf_hash_map.h",
       "string_traits_wtf.h",
     ]
-
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
     defines = [ "IS_MOJO_CPP_BINDINGS_BASE_IMPL" ]
 

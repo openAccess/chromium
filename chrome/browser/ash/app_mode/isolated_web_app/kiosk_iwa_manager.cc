@@ -22,16 +22,15 @@
 #include "chrome/browser/ash/app_mode/kiosk_app_manager_base.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_cryptohome_remover.h"
+#include "chrome/browser/ash/app_mode/kiosk_web_app_update_observer.h"
 #include "chrome/browser/ash/policy/core/device_local_account.h"
-#include "chrome/browser/chromeos/app_mode/kiosk_web_app_update_observer.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/model/web_app_icon_types.h"
 #include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
-#include "components/webapps/isolated_web_apps/public/iwa_runtime_data_provider.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_runtime_data_provider.h"
 #include "url/origin.h"
 
 namespace ash {

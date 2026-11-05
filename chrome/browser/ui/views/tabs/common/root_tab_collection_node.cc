@@ -11,11 +11,13 @@
 #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_collection.h"
 #include "components/tabs/public/tab_collection_types.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 
 namespace {
 
@@ -95,6 +97,7 @@ void RootTabCollectionNode::OnChildrenAdded(
     const tabs::TabCollection::Position& position,
     const tabs::TabCollectionNodes& handles,
     bool insert_from_detached) {
+  auto animate_layout = GetController()->ScopedAnimateLayout();
   for (auto handle : handles) {
     tabs::ConstChildPtr child = GetNodeFromHandle(handle);
     GetNodeForHandle(position.parent_handle)
@@ -112,6 +115,7 @@ void RootTabCollectionNode::OnChildrenRemoved(
     return;
   }
 
+  auto animate_layout = GetController()->ScopedAnimateLayout();
   for (auto& handle : handles) {
     TabCollectionNode* child_node = parent_node->GetNodeForHandle(handle);
     if (child_node) {
@@ -143,6 +147,8 @@ void RootTabCollectionNode::OnChildMoved(
       pinned_node->GetNodeForHandle(dst_parent_node->GetHandle()) != nullptr;
 
   bool pin_state_changed = src_pinned != dst_pinned;
+
+  auto animate_layout = GetController()->ScopedAnimateLayout();
 
   if (pin_state_changed) {
     // Pin state change is treated as a remove and add instead of an attach and
@@ -256,6 +262,7 @@ void RootTabCollectionNode::OnTabGroupFocusChanged(
     return;
   }
 
+  auto animate_layout = GetController()->ScopedAnimateLayout();
   tab_strip_controller_->TabGroupFocusChanged(new_focused_group_id,
                                               old_focused_group_id);
 

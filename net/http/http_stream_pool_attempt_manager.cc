@@ -10,6 +10,7 @@
 #include <string_view>
 #include <utility>
 
+#include "base/containers/flat_set.h"
 #include "base/debug/alias.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
@@ -767,10 +768,18 @@ void HttpStreamPool::AttemptManager::OnTcpBasedAttemptComplete(
         raw_attempt->ip_endpoint());
   }
 
+  TcpBasedAttemptSlot* slot = raw_attempt->slot();
+  const bool has_other_attempt =
+      (raw_attempt == slot->ipv4_attempt() ? slot->ipv6_attempt() != nullptr
+                                           : slot->ipv4_attempt() != nullptr);
+  const bool slot_extracted = (rv != OK && !has_other_attempt);
   std::unique_ptr<TcpBasedAttempt> tcp_based_attempt =
       ExtractTcpBasedAttempt(raw_attempt, rv);
 
   if (rv != OK) {
+    if (slot_extracted) {
+      pool()->UpdateExpandabilityAfterRelease();
+    }
     HandleTcpBasedAttemptFailure(std::move(tcp_based_attempt), rv);
     return;
   }
@@ -1443,10 +1452,17 @@ void HttpStreamPool::AttemptManager::CancelTcpBasedAttemptSlot(
   if (reason.has_value()) {
     slot->SetCancelReason(*reason);
   }
+  pool()->UpdateExpandabilityAfterRelease();
 }
 
 bool HttpStreamPool::AttemptManager::IsTcpBasedAttemptReady() {
   CanAttemptResult can_attempt = CanAttemptConnection();
+  if (can_attempt == CanAttemptResult::kAttempt && ShouldRespectLimits()) {
+    pool()->UpdateExpandabilityBeforeAllocation();
+    if (pool()->ReachedMaxStreamLimit()) {
+      can_attempt = CanAttemptResult::kReachedPoolLimit;
+    }
+  }
   // TODO(crbug.com/383606724): Consider removing these trace and net log event
   // once we figure out better endpoint selection algorithm.
   TRACE_EVENT_INSTANT("net.stream", "AttemptManager::IsTcpBasedAttemptReady",
@@ -1491,9 +1507,18 @@ bool HttpStreamPool::AttemptManager::IsTcpBasedAttemptReady() {
       NotifyPreconnectsComplete(ERR_PRECONNECT_MAX_SOCKET_LIMIT);
       return false;
     case CanAttemptResult::kReachedPoolLimit:
-      // If we can't attempt connection due to the pool's limit, try to close an
-      // idle stream in the pool.
-      if (!pool()->CloseOneIdleStreamSocket()) {
+      while (pool()->TotalIdleStreamCount() > 0) {
+        if (!pool()->CloseOneIdleStreamSocket()) {
+          break;
+        }
+        // Check if a new allocation could succeed after releasing an idle
+        // socket. If not, release more idle sockets and try again.
+        pool()->UpdateExpandabilityBeforeAllocation();
+        if (!pool()->ReachedMaxStreamLimit()) {
+          break;
+        }
+      }
+      if (pool()->ReachedMaxStreamLimit()) {
         // Try to close idle SPDY sessions. SPDY sessions never release the
         // underlying sockets immediately on close, so return false anyway.
         spdy_session_pool()->CloseCurrentIdleSessions("Closing idle sessions");
@@ -1807,7 +1832,7 @@ void HttpStreamPool::AttemptManager::OnJobDone(Job* job) {
               [](Job* job, raw_ptr<Job> other_job) { return other_job == job; },
               job))
           .is_null());
-  DCHECK_EQ(preconnect_jobs_.count(job), 0u);
+  DCHECK(!preconnect_jobs_.contains(job));
 
   limit_ignoring_jobs_.erase(job);
   ip_based_pooling_disabling_jobs_.erase(job);
@@ -1877,7 +1902,7 @@ void HttpStreamPool::AttemptManager::MaybeCreateSpdyStreamAndNotify(
   CHECK(spdy_session);
   CHECK(spdy_session->IsAvailable());
 
-  std::set<std::string> dns_aliases =
+  base::flat_set<std::string> dns_aliases =
       http_network_session()->spdy_session_pool()->GetDnsAliasesForSessionKey(
           spdy_session_key());
 
@@ -1906,8 +1931,9 @@ void HttpStreamPool::AttemptManager::MaybeCreateQuicStreamAndNotify(
   CHECK(availability_state_ == AvailabilityState::kAvailable);
   CHECK(quic_session);
 
-  std::set<std::string> dns_aliases = quic_session->GetDnsAliasesForSessionKey(
-      quic_session_alias_key().session_key());
+  base::flat_set<std::string> dns_aliases =
+      quic_session->GetDnsAliasesForSessionKey(
+          quic_session_alias_key().session_key());
 
   std::vector<std::unique_ptr<QuicHttpStream>> streams(request_jobs_.size());
   std::ranges::generate(streams, [&] {
@@ -2045,8 +2071,7 @@ HttpStreamPool::AttemptManager::ExtractTcpBasedAttempt(
     TcpBasedAttempt* raw_attempt,
     int rv) {
   TcpBasedAttemptSlot* slot = raw_attempt->slot();
-  auto it = tcp_based_attempt_slots_.find(slot);
-  CHECK(it != tcp_based_attempt_slots_.end());
+  CHECK(tcp_based_attempt_slots_.contains(slot));
 
   std::unique_ptr<TcpBasedAttempt> attempt = slot->TakeAttempt(raw_attempt);
 

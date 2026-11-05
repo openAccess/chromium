@@ -27,8 +27,10 @@ public interface AutofillDelegate {
      *
      * @param listIndex The index of the accepted Autofill suggestion.
      * @param showLoadingOnAcceptance True if the suggestion shows a loading UI on acceptance.
+     * @param wasObscured True if the view was obscured when clicked.
      */
-    default void suggestionAccepted(int listIndex, boolean showLoadingOnAcceptance) {
+    default void suggestionAccepted(
+            int listIndex, boolean showLoadingOnAcceptance, boolean wasObscured) {
         suggestionAccepted(listIndex);
     }
 
@@ -38,6 +40,14 @@ public interface AutofillDelegate {
      * @param listIndex The index of the suggestion to delete.
      */
     void deleteSuggestion(int listIndex);
+
+    /**
+     * Initiates the flow to show Autofill AI suggestion details (such as attribution and
+     * suppression dialog).
+     *
+     * @param listIndex The index of the suggestion.
+     */
+    default void showAutofillAiSuggestionDetails(int listIndex) {}
 
     /**
      * Informs the controller the AutofillPopup received a {@code

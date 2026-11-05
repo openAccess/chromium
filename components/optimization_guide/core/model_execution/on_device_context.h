@@ -10,7 +10,7 @@
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_feature_adapter.h"
-#include "components/optimization_guide/core/model_execution/safety_checker.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_names.h"
 #include "components/optimization_guide/core/optimization_guide_logger.h"
 #include "components/optimization_guide/proto/model_quality_metadata.pb.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -43,8 +43,8 @@ struct OnDeviceOptions final {
 
   std::unique_ptr<Client> model_client;
   proto::OnDeviceModelVersions model_versions;
+  OnDeviceBaseModel base_model = OnDeviceBaseModel::kUnknown;
   scoped_refptr<const OnDeviceModelFeatureAdapter> adapter;
-  std::unique_ptr<SafetyChecker> safety_checker;
   TokenLimits token_limits;
   SessionConfigParams session_params;
 

@@ -21,12 +21,13 @@
 #include "chrome/browser/extensions/scoped_test_mv2_enabler.h"
 #include "chrome/browser/login_detection/login_detection_util.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_browsertest_util.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 #include "chrome/browser/tab_contents/navigation_metrics_recorder.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/sad_tab_helper.h"
@@ -52,6 +53,7 @@
 #include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/download_manager_delegate.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/reload_type.h"
@@ -62,6 +64,7 @@
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
@@ -69,7 +72,6 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/url_loader_interceptor.h"
@@ -88,6 +90,8 @@
 #include "third_party/blink/public/common/page_state/page_state.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 using ::testing::IsEmpty;
 using ::testing::UnorderedElementsAre;
@@ -2421,7 +2425,8 @@ IN_PROC_BROWSER_TEST_F(HistoryManipulationInterventionBrowserTest,
   // Create a new tab to avoid confusion from having a NTP navigation entry.
   GURL skippable_url(embedded_test_server()->GetURL("/title1.html"));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), skippable_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), skippable_url,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   content::WebContents* main_contents =
@@ -2441,7 +2446,7 @@ IN_PROC_BROWSER_TEST_F(HistoryManipulationInterventionBrowserTest,
 
   // Attempting to go back should do nothing.
   ASSERT_FALSE(chrome::CanGoBack(browser()));
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   ASSERT_EQ(redirected_url, main_contents->GetLastCommittedURL());
   EXPECT_EQ(main_contents->GetController().GetLastCommittedEntryIndex(), 1);
 
@@ -2478,7 +2483,7 @@ IN_PROC_BROWSER_TEST_F(HistoryManipulationInterventionBrowserTest,
   // Attempting to go back should skip |skippable_url| and go to about:blank.
   ASSERT_TRUE(chrome::CanGoBack(browser()));
   content::TestNavigationObserver observer(main_contents);
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   observer.Wait();
   ASSERT_EQ(GURL("about:blank"), main_contents->GetLastCommittedURL());
 }
@@ -2510,7 +2515,7 @@ IN_PROC_BROWSER_TEST_F(HistoryManipulationInterventionBrowserTest,
   ASSERT_TRUE(chrome::CanGoBack(browser()));
 
   content::TestNavigationObserver go_back_observer(main_contents);
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   go_back_observer.WaitForNavigationFinished();
   ASSERT_EQ(pdf_url, main_contents->GetLastCommittedURL());
 }
@@ -2541,7 +2546,7 @@ IN_PROC_BROWSER_TEST_F(HistoryManipulationInterventionBrowserTest,
 
   ASSERT_TRUE(chrome::CanGoBack(browser()));
   content::TestNavigationObserver go_back_observer(main_contents);
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   go_back_observer.WaitForNavigationFinished();
   ASSERT_EQ(GURL("about:blank"), main_contents->GetLastCommittedURL());
 }
@@ -3212,33 +3217,6 @@ IN_PROC_BROWSER_TEST_F(SiteIsolationForCOOPBrowserTest,
               UnorderedElementsAre("https://coop1.com", "https://coop3.com",
                                    "https://coop4.com"));
 }
-
-class FencedFrameNavigationBrowserTest : public ChromeNavigationBrowserTest {
- public:
-  void SetUpOnMainThread() override {
-    ChromeNavigationBrowserTest::SetUpOnMainThread();
-
-    // Add content/test/data for cross_site_iframe_factory.html.
-    embedded_https_test_server().ServeFilesFromSourceDirectory(
-        "content/test/data");
-    embedded_https_test_server().SetSSLConfig(
-        net::EmbeddedTestServer::CERT_TEST_NAMES);
-  }
-
-  content::RenderFrameHost* primary_main_frame_host() {
-    return browser()
-        ->tab_strip_model()
-        ->GetActiveWebContents()
-        ->GetPrimaryMainFrame();
-  }
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_test_helper_;
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_test_helper_;
-};
 
 // This is a regression test for crbug.com/456473704. It tests that navigating
 // to a top-level data URL that inherits DocumentIsolationPolicy from the

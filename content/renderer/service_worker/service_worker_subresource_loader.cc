@@ -9,6 +9,7 @@
 #include "base/debug/crash_logging.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
@@ -32,6 +33,7 @@
 #include "services/network/public/cpp/record_ontransfersizeupdate_utils.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/sri_message_signatures.h"
 #include "services/network/public/cpp/timing_allow_origin_parser.h"
 #include "services/network/public/mojom/early_hints.mojom.h"
 #include "services/network/public/mojom/service_worker_router_info.mojom.h"
@@ -402,9 +404,10 @@ void ServiceWorkerSubresourceLoader::DispatchFetchEvent() {
 
     base::ElapsedTimer router_evaluation_timer;
     response_head_->load_timing.service_worker_router_evaluation_start =
-        base::TimeTicks::Now();
+        router_evaluation_timer.start_time();
     const auto eval_result = EvaluateRouterConditions();
-    router_info->router_evaluation_time = router_evaluation_timer.Elapsed();
+    base::TimeTicks now;
+    router_info->router_evaluation_time = router_evaluation_timer.Elapsed(&now);
     if (eval_result) {  // matched the rule.
       const auto& sources = eval_result->sources;
       auto source_type = sources[0].type;
@@ -418,8 +421,8 @@ void ServiceWorkerSubresourceLoader::DispatchFetchEvent() {
           // Network fallback is requested.
           {
             auto timing = blink::mojom::ServiceWorkerFetchEventTiming::New();
-            timing->dispatch_event_time = base::TimeTicks::Now();
-            timing->respond_with_settled_time = base::TimeTicks::Now();
+            timing->dispatch_event_time = now;
+            timing->respond_with_settled_time = now;
             OnFallback(std::nullopt, std::move(timing), /*errors=*/nullptr);
           }
           return;
@@ -865,6 +868,8 @@ void ServiceWorkerSubresourceLoader::StartResponse(
 
   blink::ServiceWorkerLoaderHelpers::SaveResponseInfo(*response,
                                                       response_head_.get());
+  cache_storage_side_data_writer_ =
+      std::move(response->cache_storage_side_data_writer);
   response_head_->response_start = base::TimeTicks::Now();
   response_head_->load_timing.receive_headers_start = base::TimeTicks::Now();
   response_head_->load_timing.receive_headers_end =
@@ -872,15 +877,18 @@ void ServiceWorkerSubresourceLoader::StartResponse(
   response_source_ = response->response_source;
 
   // Synthetic and same-origin responses are same-origin to the requesting
-  // client, so the timing allow check trivially passes. Filtered responses
-  // wrap a cross-origin response for which the timing allow check must not
-  // be assumed to have passed unless the Timing-Allow-Origin check passes.
+  // client, so the timing allow check passes unless the response was fetched
+  // via a redirect chain that failed the TAO check. Filtered responses wrap
+  // a cross-origin response for which the timing allow check must not be
+  // assumed to have passed unless the response passed the TAO check and the
+  // Timing-Allow-Origin check passes for the request initiator.
   if (response_head_->response_type ==
           network::mojom::FetchResponseType::kBasic ||
       response_head_->response_type ==
           network::mojom::FetchResponseType::kDefault) {
-    response_head_->timing_allow_passed = true;
-  } else if (resource_request_.request_initiator &&
+    response_head_->timing_allow_passed = response->timing_allow_passed;
+  } else if (response->timing_allow_passed &&
+             resource_request_.request_initiator &&
              response_head_->parsed_headers &&
              network::TimingAllowOriginCheck(
                  response_head_->parsed_headers->timing_allow_origin,
@@ -903,6 +911,16 @@ void ServiceWorkerSubresourceLoader::StartResponse(
                                                              *response_head_);
   if (redirect_info) {
     HandleRedirect(*redirect_info, response_head_);
+    return;
+  }
+
+  // SRI verification applies to the final response, not redirect hops.
+  if (std::optional<network::mojom::BlockedByResponseReason> blocked_reason =
+          network::MaybeBlockResponseForSRIMessageSignature(
+              resource_request_, *response_head_,
+              resource_request_.expected_public_keys)) {
+    CommitCompleted(net::ERR_BLOCKED_BY_RESPONSE,
+                    "SRI message signature mismatch", blocked_reason);
     return;
   }
 
@@ -988,10 +1006,14 @@ void ServiceWorkerSubresourceLoader::CommitResponseBody(
     }
   }
   ValidateResponseSentToClient();
+  auto head = response_head.Clone();
+  if (response_head_.get() == response_head.get()) {
+    head->cache_storage_side_data_writer =
+        std::move(cache_storage_side_data_writer_);
+  }
   // TODO(kinuko): Fill the ssl_info.
-  url_loader_client_->OnReceiveResponse(response_head.Clone(),
-                                        std::move(response_body),
-                                        std::move(cached_metadata));
+  url_loader_client_->OnReceiveResponse(
+      std::move(head), std::move(response_body), std::move(cached_metadata));
 }
 
 void ServiceWorkerSubresourceLoader::CommitEmptyResponseAndComplete() {
@@ -1009,8 +1031,11 @@ void ServiceWorkerSubresourceLoader::CommitEmptyResponseAndComplete() {
   CommitCompleted(net::OK, "No body exists");
 }
 
-void ServiceWorkerSubresourceLoader::CommitCompleted(int error_code,
-                                                     const char* reason) {
+void ServiceWorkerSubresourceLoader::CommitCompleted(
+    int error_code,
+    const char* reason,
+    std::optional<network::mojom::BlockedByResponseReason>
+        blocked_by_response_reason) {
   TRACE_EVENT("ServiceWorker",
               "ServiceWorkerSubresourceLoader::CommitCompleted",
               perfetto::TerminatingFlow::Global(
@@ -1040,6 +1065,7 @@ void ServiceWorkerSubresourceLoader::CommitCompleted(int error_code,
   network::URLLoaderCompletionStatus status;
   status.error_code = error_code;
   status.completion_time = base::TimeTicks::Now();
+  status.blocked_by_response_reason = blocked_by_response_reason;
   url_loader_client_->OnComplete(status);
 
   // Invalidate weak pointers to prevent callbacks after commit.  This can

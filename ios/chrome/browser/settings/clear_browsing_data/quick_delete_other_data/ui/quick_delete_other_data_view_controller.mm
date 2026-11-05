@@ -21,6 +21,7 @@
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ui/base/l10n/l10n_util_mac.h"
+#import "url/gurl.h"
 
 using quick_delete_util::DefaultSearchEngineState;
 
@@ -49,8 +50,7 @@ enum ItemIdentifier {
 // Returns the branded version of the Google Services symbol.
 UIImage* GetBrandedGoogleServicesSymbol() {
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
-  return MakeSymbolMonochrome(
-      SymbolWithPointSize(SymbolGoogleIcon, kDefaultSymbolSize));
+  return SymbolWithPointSize(SymbolGoogleIconMonochrome, kDefaultSymbolSize);
 #else
   return SymbolWithPointSize(SymbolGearshape2, kDefaultSymbolSize);
 #endif

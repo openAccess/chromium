@@ -5,8 +5,10 @@
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/network/key_upload_request.h"
 
 #include "base/check.h"
+#include "base/notreached.h"
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/signing_key_pair.h"
 #include "components/policy/proto/device_management_backend.pb.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 
 using BPKUR = enterprise_management::BrowserPublicKeyUploadRequest;
@@ -17,15 +19,26 @@ namespace {
 
 constexpr int kMaxDMTokenLength = 4096;
 
-BPKUR::KeyType AlgorithmToType(
-    crypto::SignatureVerifier::SignatureAlgorithm algorithm) {
+BPKUR::KeyType AlgorithmToType(crypto::sign::SignatureKind algorithm) {
   switch (algorithm) {
-    case crypto::SignatureVerifier::RSA_PKCS1_SHA1:
-    case crypto::SignatureVerifier::RSA_PKCS1_SHA256:
-    case crypto::SignatureVerifier::RSA_PSS_SHA256:
+    case crypto::sign::RSA_PKCS1_SHA1:
+    case crypto::sign::RSA_PKCS1_SHA256:
+    case crypto::sign::RSA_PKCS1_SHA384:
+    case crypto::sign::RSA_PKCS1_SHA512:
+    case crypto::sign::RSA_PSS_SHA256:
+    case crypto::sign::RSA_PSS_SHA384:
+    case crypto::sign::RSA_PSS_SHA512:
       return BPKUR::RSA_KEY;
-    case crypto::SignatureVerifier::ECDSA_SHA256:
+    case crypto::sign::ECDSA_SHA1:
+    case crypto::sign::ECDSA_SHA256:
+    case crypto::sign::ECDSA_SHA384:
+    case crypto::sign::ECDSA_SHA512:
       return BPKUR::EC_KEY;
+    case crypto::sign::ED25519:
+    case crypto::sign::MLDSA_44:
+    case crypto::sign::MLDSA_65:
+    case crypto::sign::MLDSA_87:
+      NOTREACHED();
   }
 }
 
@@ -44,9 +57,9 @@ KeyUploadRequest::KeyUploadRequest(const GURL& dm_server_url,
     : dm_server_url_(dm_server_url),
       dm_token_(dm_token),
       request_body_(request_body) {
-  DCHECK(dm_server_url_.is_valid());
-  DCHECK(!dm_token_.empty());
-  DCHECK(!request_body_.empty());
+  CHECK(dm_server_url_.is_valid(), base::NotFatalUntil::M161);
+  CHECK(!dm_token_.empty(), base::NotFatalUntil::M161);
+  CHECK(!request_body_.empty(), base::NotFatalUntil::M161);
 }
 
 // static
@@ -56,7 +69,7 @@ KeyUploadRequest::BuildUploadPublicKeyRequest(
     const SigningKeyPair* old_key_pair,
     std::optional<std::string> nonce) {
   // A nonce is only needed in key rotation scenarios.
-  DCHECK_EQ(!!old_key_pair, nonce.has_value());
+  CHECK_EQ(!!old_key_pair, nonce.has_value(), base::NotFatalUntil::M161);
 
   std::vector<uint8_t> pubkey = new_key_pair.key()->GetSubjectPublicKeyInfo();
 

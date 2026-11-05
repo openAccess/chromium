@@ -11,7 +11,8 @@ import org.chromium.chrome.browser.compositor.overlays.strip.TabUnderlineManager
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
-import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabHoverCardController.TabHoverCardListener;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabListDataProvider;
+import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabItemHoverController.TabHoverListener;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabListProperties.RailCollapseState;
 
 /**
@@ -27,6 +28,12 @@ public class TabListConfig {
      * The base card UI type for tabs in the list (e.g. {@link UiType#TAB} or {@link UiType#STRIP}).
      */
     public final @UiType int tabUiType;
+
+    /**
+     * Whether the layout supports displaying tab groups (e.g. as group cards in GTS or group
+     * headers in Vertical Tabs). False for layouts that ignore tab groups (like Flat layout).
+     */
+    public final boolean supportsTabGroups;
 
     /**
      * Whether the layout supports message card items (e.g. IPH, promo cards, price welcome cards).
@@ -46,17 +53,17 @@ public class TabListConfig {
     public final boolean supportsShrinkCloseAnimation;
 
     /**
-     * Whether the component delays adding tabs to the model when created from switcher/group UI
-     * until after the switcher or dialog finishes hiding.
-     */
-    public final boolean supportsDelayedTabAddition;
-
-    /**
      * Whether the tab list items support a context click listener (e.g. mouse right click).
      * Defaults to false; enabled for Tab Switcher Grid and Dialogs where context clicks trigger tab
      * item context actions.
      */
     public final boolean supportsTabContextClick;
+
+    /**
+     * Whether this layout requires a thumbnail cache invalidation fetch when a tab is deselected.
+     * Often required for multi-thumbnail cluster views (like Grouped layouts).
+     */
+    public final boolean requiresThumbnailUpdateOnDeselect;
 
     /** The {@link TabClosingSource} to attribute when tabs or tab groups are closed. */
     public final @TabClosingSource int tabClosingSource;
@@ -67,42 +74,52 @@ public class TabListConfig {
     public final @Nullable NonNullObservableSupplier<@RailCollapseState Integer>
             railCollapseStateSupplier;
 
-    /** Listener for tab and tab group hover card events, or null if not supported. */
-    public final @Nullable TabHoverCardListener tabHoverCardListener;
+    /** Listener for tab and tab group hover events, or null if not supported. */
+    public final @Nullable TabHoverListener tabHoverListener;
 
     /** Manager for active tab underline indicators (e.g. for Glic), or null if not supported. */
     public final @Nullable TabUnderlineManager tabUnderlineManager;
 
+    /**
+     * Provider of tab list data. When non-null, the mediator is driven by the provider's snapshots
+     * instead of observing the tab model directly.
+     */
+    public final @Nullable TabListDataProvider dataProvider;
+
     private TabListConfig(Builder builder) {
         layoutType = builder.mLayoutType;
         tabUiType = builder.mTabUiType;
+        supportsTabGroups = builder.mSupportsTabGroups;
         supportsMessageCards = builder.mSupportsMessageCards;
         supportsModifierMultiSelect = builder.mSupportsModifierMultiSelect;
         supportsTabLoadingState = builder.mSupportsTabLoadingState;
         supportsShrinkCloseAnimation = builder.mSupportsShrinkCloseAnimation;
-        supportsDelayedTabAddition = builder.mSupportsDelayedTabAddition;
         supportsTabContextClick = builder.mSupportsTabContextClick;
+        requiresThumbnailUpdateOnDeselect = builder.mRequiresThumbnailUpdateOnDeselect;
         tabClosingSource = builder.mTabClosingSource;
         railCollapseStateSupplier = builder.mRailCollapseStateSupplier;
-        tabHoverCardListener = builder.mTabHoverCardListener;
+        tabHoverListener = builder.mTabHoverListener;
         tabUnderlineManager = builder.mTabUnderlineManager;
+        dataProvider = builder.mDataProvider;
     }
 
     /** Builder to construct {@link TabListConfig}. */
     public static class Builder {
         private final @TabListLayoutType int mLayoutType;
         private @UiType int mTabUiType;
+        private boolean mSupportsTabGroups;
         private boolean mSupportsMessageCards;
         private boolean mSupportsModifierMultiSelect;
         private boolean mSupportsTabLoadingState;
         private boolean mSupportsShrinkCloseAnimation;
-        private boolean mSupportsDelayedTabAddition;
         private boolean mSupportsTabContextClick;
+        private boolean mRequiresThumbnailUpdateOnDeselect;
         private @TabClosingSource int mTabClosingSource;
         private @Nullable NonNullObservableSupplier<@RailCollapseState Integer>
                 mRailCollapseStateSupplier;
-        private @Nullable TabHoverCardListener mTabHoverCardListener;
+        private @Nullable TabHoverListener mTabHoverListener;
         private @Nullable TabUnderlineManager mTabUnderlineManager;
+        private @Nullable TabListDataProvider mDataProvider;
 
         /**
          * @param layoutType The {@link TabListLayoutType} for the tab list.
@@ -119,6 +136,15 @@ public class TabListConfig {
          */
         public Builder setTabUiType(@UiType int tabUiType) {
             mTabUiType = tabUiType;
+            return this;
+        }
+
+        /**
+         * @param supportsTabGroups Whether the tab list supports displaying tab groups.
+         * @return The {@link Builder} instance.
+         */
+        public Builder setSupportsTabGroups(boolean supportsTabGroups) {
+            mSupportsTabGroups = supportsTabGroups;
             return this;
         }
 
@@ -162,23 +188,22 @@ public class TabListConfig {
         }
 
         /**
-         * Sets whether the component delays adding tabs to the model when created from
-         * switcher/group UI.
-         *
-         * @param supportsDelayedTabAddition Whether to delay tab addition until post-hiding.
-         * @return The {@link Builder} instance.
-         */
-        public Builder setSupportsDelayedTabAddition(boolean supportsDelayedTabAddition) {
-            mSupportsDelayedTabAddition = supportsDelayedTabAddition;
-            return this;
-        }
-
-        /**
          * @param supportsTabContextClick Whether tab list items support context click listeners.
          * @return The {@link Builder} instance.
          */
         public Builder setSupportsTabContextClick(boolean supportsTabContextClick) {
             mSupportsTabContextClick = supportsTabContextClick;
+            return this;
+        }
+
+        /**
+         * @param requiresThumbnailUpdateOnDeselect Whether the tab list requires a thumbnail cache
+         *     invalidation fetch when a tab is deselected.
+         * @return The {@link Builder} instance.
+         */
+        public Builder setRequiresThumbnailUpdateOnDeselect(
+                boolean requiresThumbnailUpdateOnDeselect) {
+            mRequiresThumbnailUpdateOnDeselect = requiresThumbnailUpdateOnDeselect;
             return this;
         }
 
@@ -205,12 +230,11 @@ public class TabListConfig {
         }
 
         /**
-         * @param tabHoverCardListener Listener for tab and tab group hover card events, or null.
+         * @param tabHoverListener Listener for tab and tab group hover events, or null.
          * @return The {@link Builder} instance.
          */
-        public Builder setTabHoverCardListener(
-                @Nullable TabHoverCardListener tabHoverCardListener) {
-            mTabHoverCardListener = tabHoverCardListener;
+        public Builder setTabHoverListener(@Nullable TabHoverListener tabHoverListener) {
+            mTabHoverListener = tabHoverListener;
             return this;
         }
 
@@ -220,6 +244,15 @@ public class TabListConfig {
          */
         public Builder setTabUnderlineManager(@Nullable TabUnderlineManager tabUnderlineManager) {
             mTabUnderlineManager = tabUnderlineManager;
+            return this;
+        }
+
+        /**
+         * @param dataProvider The {@link TabListDataProvider} backing the tab list, or null.
+         * @return The {@link Builder} instance.
+         */
+        public Builder setDataProvider(@Nullable TabListDataProvider dataProvider) {
+            mDataProvider = dataProvider;
             return this;
         }
 

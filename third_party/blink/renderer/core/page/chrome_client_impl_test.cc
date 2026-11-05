@@ -30,6 +30,7 @@
 
 #include "third_party/blink/renderer/core/page/chrome_client_impl.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -44,11 +45,13 @@
 #include "third_party/blink/public/mojom/choosers/color_chooser.mojom-blink.h"
 #include "third_party/blink/public/web/web_autofill_client.h"
 #include "third_party/blink/public/web/web_autofill_state.h"
+#include "third_party/blink/public/web/web_form_related_change_type.h"
 #include "third_party/blink/public/web/web_local_frame.h"
 #include "third_party/blink/public/web/web_local_frame_client.h"
 #include "third_party/blink/public/web/web_testing_support.h"
 #include "third_party/blink/public/web/web_view.h"
 #include "third_party/blink/public/web/web_view_client.h"
+#include "third_party/blink/renderer/core/editing/commands/typing_command.h"
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"
 #include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
@@ -71,6 +74,7 @@
 #include "third_party/blink/renderer/core/page/scoped_page_pauser.h"
 #include "third_party/blink/renderer/core/script/classic_script.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
+#include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/language.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 
@@ -535,8 +539,31 @@ class MockWebAutofillClient : public WebAutofillClient {
     is_autofillable_ = is_autofillable;
   }
 
+  void TextFieldValueChanged(const WebFormControlElement& element) override {
+    ++text_field_value_changed_count_;
+    last_element_ = element;
+  }
+  int text_field_value_changed_count() const {
+    return text_field_value_changed_count_;
+  }
+
+  void DidChangeFormRelatedElementDynamically(
+      WebFormRelatedChangeType,
+      std::optional<mojom::FormControlType> form_control_type,
+      base::FunctionRef<WebElement()> element) override {
+    last_form_control_type_ = form_control_type;
+    last_element_ = element();
+  }
+  const std::optional<mojom::FormControlType>& last_form_control_type() const {
+    return last_form_control_type_;
+  }
+  const WebElement& last_element() const { return last_element_; }
+
  private:
   bool is_autofillable_ = false;
+  int text_field_value_changed_count_ = 0;
+  std::optional<mojom::FormControlType> last_form_control_type_;
+  WebElement last_element_;
 };
 
 class ChromeClientImplAutofillTest : public testing::Test {
@@ -572,6 +599,98 @@ TEST_F(ChromeClientImplAutofillTest, IsAutofillableElement) {
 
   mock_autofill_client.SetIsAutofillable(true);
   EXPECT_TRUE(chrome_client_impl_->IsAutofillableElement(*input));
+
+  web_frame->SetAutofillClient(nullptr);
+}
+
+TEST_F(ChromeClientImplAutofillTest, DidChangeFormRelatedElementDynamically) {
+  frame_test_helpers::LoadHTMLString(
+      main_frame_,
+      "<body><input id=input type=checkbox><form id=form></form>"
+      "<input id=password type=password>",
+      blink::WebURL());
+  auto* web_frame = To<WebLocalFrameImpl>(main_frame_.get());
+  MockWebAutofillClient mock_autofill_client;
+  web_frame->SetAutofillClient(&mock_autofill_client);
+
+  LocalFrame* frame = web_frame->GetFrame();
+  Document* document = frame->GetDocument();
+  auto* input =
+      To<HTMLElement>(document->getElementById(AtomicString("input")));
+  auto* form = To<HTMLElement>(document->getElementById(AtomicString("form")));
+  auto* password =
+      To<HTMLInputElement>(document->getElementById(AtomicString("password")));
+
+  chrome_client_impl_->DidChangeFormRelatedElementDynamically(
+      frame, input, WebFormRelatedChangeType::kAdd);
+  EXPECT_EQ(mock_autofill_client.last_form_control_type(),
+            mojom::FormControlType::kInputCheckbox);
+  EXPECT_EQ(mock_autofill_client.last_element(), WebElement(input));
+
+  chrome_client_impl_->DidChangeFormRelatedElementDynamically(
+      frame, form, WebFormRelatedChangeType::kAdd);
+  EXPECT_EQ(mock_autofill_client.last_form_control_type(), std::nullopt);
+  EXPECT_EQ(mock_autofill_client.last_element(), WebElement(form));
+
+  // The client is told FormControlTypeForAutofill(): a text field that was a
+  // password field still counts as one.
+  password->setType(input_type_names::kText);
+  ASSERT_EQ(password->FormControlType(), mojom::FormControlType::kInputText);
+  chrome_client_impl_->DidChangeFormRelatedElementDynamically(
+      frame, password, WebFormRelatedChangeType::kAdd);
+  EXPECT_EQ(mock_autofill_client.last_form_control_type(),
+            mojom::FormControlType::kInputPassword);
+  EXPECT_EQ(mock_autofill_client.last_element(), WebElement(password));
+
+  web_frame->SetAutofillClient(nullptr);
+}
+
+TEST_F(ChromeClientImplAutofillTest, DidChangeValueInTextField) {
+  frame_test_helpers::LoadHTMLString(
+      main_frame_,
+      "<body><input id=input type=email><textarea id=textarea></textarea>"
+      "</body>",
+      blink::WebURL());
+  auto* web_frame = To<WebLocalFrameImpl>(main_frame_.get());
+  MockWebAutofillClient mock_autofill_client;
+  web_frame->SetAutofillClient(&mock_autofill_client);
+
+  Document* document = web_frame->GetFrame()->GetDocument();
+  auto* input =
+      To<HTMLInputElement>(document->getElementById(AtomicString("input")));
+  auto* textarea = To<HTMLTextAreaElement>(
+      document->getElementById(AtomicString("textarea")));
+  ASSERT_NE(input, nullptr);
+  ASSERT_NE(textarea, nullptr);
+
+  // Value changes caused by document.execCommand should not notify the
+  // autofill client as user text field edits.
+  input->Focus();
+  ASSERT_TRUE(document->execCommand("insertText", false, "sample@example.com",
+                                    ASSERT_NO_EXCEPTION));
+  EXPECT_EQ(input->Value(), "sample@example.com");
+  EXPECT_EQ(mock_autofill_client.text_field_value_changed_count(), 0);
+  EXPECT_TRUE(mock_autofill_client.last_element().IsNull());
+
+  textarea->Focus();
+  ASSERT_TRUE(document->execCommand("insertText", false, "sample text",
+                                    ASSERT_NO_EXCEPTION));
+  EXPECT_EQ(textarea->Value(), "sample text");
+  EXPECT_EQ(mock_autofill_client.text_field_value_changed_count(), 0);
+  EXPECT_TRUE(mock_autofill_client.last_element().IsNull());
+
+  // User typing outside of document.execCommand notifies the autofill client.
+  input->Focus();
+  TypingCommand::InsertText(*document, "x", 0,
+                            TypingCommand::PasswordEchoBehavior::kDoNotEcho);
+  EXPECT_EQ(mock_autofill_client.text_field_value_changed_count(), 1);
+  EXPECT_EQ(mock_autofill_client.last_element(), WebElement(input));
+
+  textarea->Focus();
+  TypingCommand::InsertText(*document, "y", 0,
+                            TypingCommand::PasswordEchoBehavior::kDoNotEcho);
+  EXPECT_EQ(mock_autofill_client.text_field_value_changed_count(), 2);
+  EXPECT_EQ(mock_autofill_client.last_element(), WebElement(textarea));
 
   web_frame->SetAutofillClient(nullptr);
 }

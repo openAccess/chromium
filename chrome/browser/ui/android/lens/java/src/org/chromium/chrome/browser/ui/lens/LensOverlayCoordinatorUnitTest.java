@@ -20,6 +20,7 @@ import android.app.Activity;
 import android.graphics.Bitmap;
 import android.net.Uri;
 
+import org.jni_zero.JniUniquePtr;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -69,6 +70,10 @@ public class LensOverlayCoordinatorUnitTest {
     @Mock private IdentityServicesProvider mIdentityServicesProviderMock;
     @Mock private IdentityManager mIdentityManagerMock;
 
+    @Mock
+    private JniUniquePtr<LensOverlayCoordinator.NativeLensOverlayControllerAndroid>
+            mNativeLensOverlayControllerAndroid;
+
     @Captor private ArgumentCaptor<LensIntentParams> mLensIntentParamsCaptor;
 
     private Activity mActivity;
@@ -77,6 +82,8 @@ public class LensOverlayCoordinatorUnitTest {
     @Before
     public void setUp() {
         LensOverlayCoordinatorJni.setInstanceForTesting(mLensOverlayCoordinatorJniMock);
+        when(mLensOverlayCoordinatorJniMock.init(any(), any()))
+                .thenReturn(mNativeLensOverlayControllerAndroid);
 
         mActivity = Robolectric.buildActivity(Activity.class).setup().get();
 
@@ -115,7 +122,19 @@ public class LensOverlayCoordinatorUnitTest {
 
         // Verify that it returns false and does not call into C++.
         assertFalse(started);
-        verify(mLensOverlayCoordinatorJniMock, never()).showUI(any(Long.class), any(Integer.class));
+        verify(mLensOverlayCoordinatorJniMock, never())
+                .showUI(any(), any(Integer.class), any(Boolean.class));
+    }
+
+    @Test
+    public void start_AfterDestroy() {
+        LensOverlayCoordinator coordinator = LensOverlayCoordinator.getOrCreateForTab(mTab);
+        coordinator.destroy();
+
+        assertFalse(coordinator.start(LensOverlayInvocationSource.APP_MENU));
+        assertFalse(LensOverlayTabHelper.isOverlayShowing(mTab));
+        verify(mLensOverlayCoordinatorJniMock, never())
+                .showUI(any(), any(Integer.class), any(Boolean.class));
     }
 
     @Test
@@ -123,7 +142,10 @@ public class LensOverlayCoordinatorUnitTest {
         LensOverlayCoordinator coordinator = LensOverlayCoordinator.getOrCreateForTab(mTab);
 
         // Mock JNI to return true.
-        when(mLensOverlayCoordinatorJniMock.showUI(any(Long.class), any(Integer.class)))
+        when(mLensOverlayCoordinatorJniMock.showUI(
+                        eq(mNativeLensOverlayControllerAndroid),
+                        any(Integer.class),
+                        any(Boolean.class)))
                 .thenReturn(true);
 
         // Attempt to start the overlay.
@@ -135,7 +157,10 @@ public class LensOverlayCoordinatorUnitTest {
         assertTrue(LensOverlayTabHelper.isOverlayShowing(mTab));
         // Verify JNI call.
         verify(mLensOverlayCoordinatorJniMock, times(1))
-                .showUI(any(Long.class), eq(LensOverlayInvocationSource.APP_MENU));
+                .showUI(
+                        eq(mNativeLensOverlayControllerAndroid),
+                        eq(LensOverlayInvocationSource.APP_MENU),
+                        eq(false));
     }
 
     @Test
@@ -143,7 +168,10 @@ public class LensOverlayCoordinatorUnitTest {
         LensOverlayCoordinator coordinator = LensOverlayCoordinator.getOrCreateForTab(mTab);
 
         // Mock JNI to return false (e.g., RenderWidgetHostView was null).
-        when(mLensOverlayCoordinatorJniMock.showUI(any(Long.class), any(Integer.class)))
+        when(mLensOverlayCoordinatorJniMock.showUI(
+                        eq(mNativeLensOverlayControllerAndroid),
+                        any(Integer.class),
+                        any(Boolean.class)))
                 .thenReturn(false);
 
         // Attempt to start the overlay.

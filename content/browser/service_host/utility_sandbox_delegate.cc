@@ -53,10 +53,12 @@ UtilitySandboxedProcessLauncherDelegate::
 #if DCHECK_IS_ON()
   bool supported_sandbox_type =
       sandbox_type_ == sandbox::mojom::Sandbox::kNoSandbox ||
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+      sandbox_type_ == sandbox::mojom::Sandbox::kXrCompositing ||
+#endif
 #if BUILDFLAG(IS_WIN)
       sandbox_type_ ==
           sandbox::mojom::Sandbox::kNoSandboxAndElevatedPrivileges ||
-      sandbox_type_ == sandbox::mojom::Sandbox::kXrCompositing ||
       sandbox_type_ == sandbox::mojom::Sandbox::kPdfConversion ||
       sandbox_type_ == sandbox::mojom::Sandbox::kIconReader ||
       sandbox_type_ == sandbox::mojom::Sandbox::kMediaFoundationCdm ||
@@ -66,6 +68,8 @@ UtilitySandboxedProcessLauncherDelegate::
 #endif
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
       sandbox_type_ == sandbox::mojom::Sandbox::kProxyResolver ||
+#endif
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE)
       sandbox_type_ == sandbox::mojom::Sandbox::kWebNNModelCompilation ||
 #endif
       sandbox_type_ == sandbox::mojom::Sandbox::kUtility ||
@@ -80,9 +84,9 @@ UtilitySandboxedProcessLauncherDelegate::
 #endif
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
       sandbox_type_ == sandbox::mojom::Sandbox::kShapeDetection ||
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
       sandbox_type_ == sandbox::mojom::Sandbox::kHardwareVideoDecoding ||
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
       sandbox_type_ == sandbox::mojom::Sandbox::kHardwareVideoEncoding ||
 #endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
@@ -96,13 +100,14 @@ UtilitySandboxedProcessLauncherDelegate::
     BUILDFLAG(IS_WIN)
       sandbox_type_ == sandbox::mojom::Sandbox::kScreenAI ||
       sandbox_type_ == sandbox::mojom::Sandbox::kPrintBackend ||
+      sandbox_type_ == sandbox::mojom::Sandbox::kPlatformRuntime ||
 #endif
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)
       sandbox_type_ == sandbox::mojom::Sandbox::kOnDeviceTranslation ||
 #endif
       sandbox_type_ == sandbox::mojom::Sandbox::kAudio ||
       sandbox_type_ == sandbox::mojom::Sandbox::kSpeechRecognition;
-  DCHECK(supported_sandbox_type);
+  CHECK(supported_sandbox_type, base::NotFatalUntil::M159);
 #endif  // DCHECK_IS_ON()
 }
 
@@ -144,16 +149,24 @@ ZygoteCommunication* UtilitySandboxedProcessLauncherDelegate::GetZygote() {
   // process upon startup.
   if (sandbox_type_ == sandbox::mojom::Sandbox::kNetwork ||
       sandbox_type_ == sandbox::mojom::Sandbox::kOnDeviceModelExecution ||
-#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
       sandbox_type_ == sandbox::mojom::Sandbox::kHardwareVideoDecoding ||
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
+#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
       sandbox_type_ == sandbox::mojom::Sandbox::kHardwareVideoEncoding ||
-#endif
+#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 #if BUILDFLAG(IS_CHROMEOS)
       sandbox_type_ == sandbox::mojom::Sandbox::kIme ||
       sandbox_type_ == sandbox::mojom::Sandbox::kTts ||
       sandbox_type_ == sandbox::mojom::Sandbox::kNearby ||
 #endif  // BUILDFLAG(IS_CHROMEOS)
       sandbox_type_ == sandbox::mojom::Sandbox::kAudio ||
+#if BUILDFLAG(IS_LINUX)
+      // The XR Device Service installs its broker and seccomp policy from a
+      // pre-sandbox hook, so it must fork from the unsandboxed zygote (like the
+      // other hook-based types) rather than the pre-sandboxed generic zygote.
+      sandbox_type_ == sandbox::mojom::Sandbox::kXrCompositing ||
+#endif
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
       sandbox_type_ == sandbox::mojom::Sandbox::kShapeDetection ||
 #endif
@@ -161,6 +174,7 @@ ZygoteCommunication* UtilitySandboxedProcessLauncherDelegate::GetZygote() {
     BUILDFLAG(IS_WIN)
       sandbox_type_ == sandbox::mojom::Sandbox::kPrintBackend ||
       sandbox_type_ == sandbox::mojom::Sandbox::kScreenAI ||
+      sandbox_type_ == sandbox::mojom::Sandbox::kPlatformRuntime ||
 #endif
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
       sandbox_type_ == sandbox::mojom::Sandbox::kOnDeviceTranslation ||

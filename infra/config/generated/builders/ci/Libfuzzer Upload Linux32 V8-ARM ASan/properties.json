@@ -26,9 +26,6 @@
                 "target_platform": "linux"
               },
               "legacy_gclient_config": {
-                "apply_configs": [
-                  "checkout_mesa"
-                ],
                 "config": "chromium"
               }
             }
@@ -64,7 +61,6 @@
     ]
   },
   "archive_path": "linux32-release-asan-arm-sim/libfuzzer-v8-arm-linux32-release",
-  "archive_prefix": "libfuzzer-v8-arm",
   "builder_group": "chromium.fuzz",
   "gardener_rotations": [
     "chromium"
@@ -74,6 +70,5 @@
     "chromium"
   ],
   "upload_bucket": "chromium-browser-libfuzzer",
-  "upload_directory": "asan-arm-sim",
   "v8_targets_only": true
 }

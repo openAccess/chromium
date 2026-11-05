@@ -19,6 +19,8 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "chrome/browser/contextual_tasks/search_journey_tracker.h"
+#include "chrome/browser/contextual_tasks/search_journey_tracker_factory.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
 #include "chrome/browser/preloading/prefetch/search_prefetch/field_trial_settings.h"
 #include "chrome/browser/preloading/prefetch/search_prefetch/search_prefetch_browser_test_base.h"
@@ -30,11 +32,14 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_pedal_implementations.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.h"
 #include "chrome/browser/ui/webui/searchbox/searchbox_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/contextual_search/contextual_search_types.h"
+#include "components/contextual_tasks/public/features.h"
 #include "components/omnibox/browser/actions/history_clusters_action.h"
 #include "components/omnibox/browser/actions/omnibox_action.h"
 #include "components/omnibox/browser/actions/omnibox_pedal.h"
@@ -53,12 +58,17 @@
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/search_engines/template_url_starter_pack_data.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/prerender_test_util.h"
+#include "content/public/test/test_navigation_observer.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "net/base/url_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/metrics_proto/omnibox_focus_type.pb.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "url/gurl.h"
@@ -73,6 +83,10 @@ class RealboxSearchBrowserTestPage : public searchbox::mojom::Page {
       searchbox::mojom::OmniboxPopupSelectionPtr old_selection,
       searchbox::mojom::OmniboxPopupSelectionPtr selection) override {}
   void SetInputText(const std::string& input_text) override {}
+  void SetKeywordSpaceTriggeringEnabled(bool enabled) override {}
+  void SetAvailableKeywordModels(
+      std::vector<searchbox::mojom::InputKeywordModelPtr> models,
+      const std::string& default_search_provider_keyword) override {}
   void SetThumbnail(const std::string& thumbnail_url,
                     bool is_deletable) override {}
   void OnContextualInputStatusChanged(
@@ -90,7 +104,7 @@ class RealboxSearchBrowserTestPage : public searchbox::mojom::Page {
       const std::optional<std::string>& invocation_source) override {}
   void OnPermissionPromptChanged(bool is_showing,
                                  const gfx::Size& prompt_size) override {}
-  void SetShowFre(bool show) override {}
+  void SetFreState(searchbox::mojom::FreStatePtr state) override {}
   MOCK_METHOD(void, UpdateContentSharingPolicy, (bool enabled), (override));
   MOCK_METHOD(void, UpdateLensSearchEligibility, (bool eligible), (override));
   MOCK_METHOD(void, UpdateAimPopupEligibility, (bool eligible), (override));
@@ -110,7 +124,10 @@ class RealboxSearchBrowserTestPage : public searchbox::mojom::Page {
               (searchbox::mojom::SelectionDirection,
                searchbox::mojom::SelectionStep),
               (override));
-  MOCK_METHOD(void, OpenCurrentSelection, (WindowOpenDisposition), (override));
+  MOCK_METHOD(void,
+              OpenCurrentSelection,
+              (ui::mojom::WindowOpenDisposition),
+              (override));
   MOCK_METHOD(void, SetAimButtonVisible, (bool visible), (override));
   MOCK_METHOD(
       void,
@@ -341,7 +358,7 @@ IN_PROC_BROWSER_TEST_F(RealboxHandlerTest, RealboxUpdatesEditModelInput) {
   ACMatches matches;
   for (size_t i = 0; i < 4; ++i) {
     AutocompleteMatch match(nullptr, 1000, false,
-                            AutocompleteMatchType::URL_WHAT_YOU_TYPED);
+                            omnibox::AutocompleteMatchType::kUrlWhatYouTyped);
     match.keyword = u"match";
     match.allowed_to_be_default_match = true;
     matches.push_back(match);
@@ -370,9 +387,10 @@ IN_PROC_BROWSER_TEST_F(RealboxHandlerTest, RealboxUpdatesEditModelInput) {
   EXPECT_EQ(input.focus_type(), metrics::OmniboxFocusType::INTERACTION_FOCUS);
 
   auto modifiers = searchbox::mojom::ActionModifiers::New();
-  handler_->OpenAutocompleteMatch(2, url, /*are_matches_showing=*/true,
-                                  /*mouse_button=*/1, std::move(modifiers),
-                                  /*via_keyboard=*/false);
+  handler_->OpenAutocompleteMatch(
+      autocomplete_controller_->result().sequence_id(), 2, url,
+      /*are_matches_showing=*/true, /*mouse_button=*/1, std::move(modifiers),
+      /*via_keyboard=*/false);
 
   // Assert that the input gets correctly updated for the realbox.
   EXPECT_TRUE(omnibox_edit_model_->GetInputForTesting().IsZeroSuggest());
@@ -398,7 +416,8 @@ INSTANTIATE_TEST_SUITE_P(All, RealboxHandlerTest, testing::Bool());
 // the NTP Realbox.
 IN_PROC_BROWSER_TEST_P(RealboxHandlerTest, PedalVectorIcons) {
   std::unordered_map<OmniboxPedalId, scoped_refptr<OmniboxPedal>> pedals =
-      GetPedalImplementations(/*incognito=*/true, /*guest=*/false,
+      GetPedalImplementations(OmniboxPedalProfileType::kOtrWithRegularParent,
+                              OmniboxPedalOtrType::kIncognito,
                               /*testing=*/true);
   for (auto const& it : pedals) {
     const scoped_refptr<OmniboxPedal> pedal = it.second;
@@ -428,11 +447,13 @@ IN_PROC_BROWSER_TEST_P(RealboxHandlerTest, ActionVectorIcons) {
 // Tests that all Omnibox match vector icons map to an equivalent SVG for use in
 // the NTP Realbox.
 IN_PROC_BROWSER_TEST_P(RealboxHandlerTest, MatchVectorIcons) {
-  for (int type = AutocompleteMatchType::URL_WHAT_YOU_TYPED;
-       type != AutocompleteMatchType::NUM_TYPES; type++) {
+  for (int type =
+           static_cast<int>(omnibox::AutocompleteMatchType::kUrlWhatYouTyped);
+       type <= static_cast<int>(omnibox::AutocompleteMatchType::kMaxValue);
+       type++) {
     AutocompleteMatch match;
-    match.type = static_cast<AutocompleteMatchType::Type>(type);
-    if (match.type == AutocompleteMatchType::STARTER_PACK) {
+    match.type = static_cast<omnibox::AutocompleteMatchType>(type);
+    if (match.type == omnibox::AutocompleteMatchType::kStarterPack) {
       // All STARTER_PACK suggestions should have non-empty vector icons.
       for (int starter_pack_id = static_cast<int>(
                template_url_starter_pack_data::StarterPackId::kBookmarks);
@@ -471,3 +492,41 @@ IN_PROC_BROWSER_TEST_P(RealboxHandlerTest, MatchVectorIcons) {
   }
 }
 
+class RealboxHandlerAbaSearchJourneysTest : public RealboxHandlerTest {
+ private:
+  base::test::ScopedFeatureList aba_feature_list_{
+      contextual_tasks::kABASearchJourneys};
+};
+
+// Tests that a realbox search for text the user copied tells Search that the
+// query matches a copy.
+IN_PROC_BROWSER_TEST_F(RealboxHandlerAbaSearchJourneysTest,
+                       SearchForCopiedTextAddsCopyMatchParam) {
+  Profile* profile = browser()->GetProfile();
+  TemplateURLService* template_url_service =
+      TemplateURLServiceFactory::GetForProfile(profile);
+  search_test_utils::WaitForTemplateURLServiceToLoad(template_url_service);
+  contextual_tasks::SearchJourneyTrackerFactory::GetForProfile(profile)
+      ->OnCopyRecorded(SessionID::NewUnique(), /*source_nav_entry_id=*/1,
+                       u"how do tides work");
+
+  content::WebContents* contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  content::TestNavigationObserver observer(contents);
+  handler_->client()->OnAutocompleteAccept(
+      template_url_service->GenerateSearchURLForDefaultSearchProvider(
+          u"how do tides work"),
+      /*post_content=*/nullptr, ui::mojom::WindowOpenDisposition::kCurrentTab,
+      ui::PAGE_TRANSITION_GENERATED,
+      omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
+      base::TimeTicks::Now(),
+      /*destination_url_entered_without_scheme=*/false,
+      /*destination_url_entered_with_http_scheme=*/false, u"how do tides work",
+      AutocompleteMatch(), AutocompleteMatch());
+  observer.Wait();
+
+  std::string copy_match;
+  EXPECT_TRUE(net::GetValueForKeyInQuery(observer.last_navigation_url(),
+                                         "ictfc", &copy_match));
+  EXPECT_EQ(copy_match, "1");
+}

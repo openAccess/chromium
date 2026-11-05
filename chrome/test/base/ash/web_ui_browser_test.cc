@@ -50,6 +50,8 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "net/base/filename_util.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/resource/resource_handle.h"
 
@@ -275,7 +277,7 @@ void BaseWebUIBrowserTest::BrowsePreload(const GURL& browse_to) {
   content::TestNavigationObserver navigation_observer(web_contents);
 
   NavigateParams params(browser(), browse_to, ui::PAGE_TRANSITION_TYPED);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
 
   Navigate(&params);
   navigation_observer.Wait();
@@ -299,9 +301,8 @@ void BaseWebUIBrowserTest::set_webui_host(const std::string& webui_host) {
 
 namespace {
 
-const GURL& DummyUrl() {
-  static GURL url(content::GetWebUIURLString("DummyURL"));
-  return url;
+GURL DummyUrl() {
+  return GURL(content::GetWebUIURLString("DummyURL"));
 }
 
 // DataSource for the dummy URL.  If no data source is provided then an error

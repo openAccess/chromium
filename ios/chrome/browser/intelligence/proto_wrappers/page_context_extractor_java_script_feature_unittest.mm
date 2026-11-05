@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_extractor_java_script_feature.h"
 
+#import <algorithm>
+
 #import "base/functional/bind.h"
 #import "base/run_loop.h"
 #import "base/strings/strcat.h"
@@ -16,7 +18,6 @@
 #import "base/time/time.h"
 #import "base/values.h"
 #import "components/optimization_guide/proto/features/common_quality_data.pb.h"
-#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/testing/embedded_test_server_handlers.h"
 #import "ios/web/public/js_messaging/java_script_feature_util.h"
@@ -47,24 +48,14 @@ const char kIframe2Html[] =
     "<html><head><title>Child 2</title></head><body><p>Child frame 2 "
     "text</p></body></html>";
 
-// The IPC extraction method used to fetch the page context data.
-enum class IPCExtractionMethod { kNative, kJSON };
-
 }  // namespace
 
-class PageContextExtractorJavaScriptFeatureTest
-    : public PlatformTest,
-      public ::testing::WithParamInterface<IPCExtractionMethod> {
+class PageContextExtractorJavaScriptFeatureTest : public PlatformTest {
  protected:
   PageContextExtractorJavaScriptFeatureTest()
       : web_client_(std::make_unique<web::FakeWebClient>()) {}
 
   void SetUp() override {
-    if (GetParam() == IPCExtractionMethod::kJSON) {
-      scoped_feature_list_.InitAndEnableFeature(kPageContextIPCOptimization);
-    } else {
-      scoped_feature_list_.InitAndDisableFeature(kPageContextIPCOptimization);
-    }
     PlatformTest::SetUp();
 
     browser_state_ = TestProfileIOS::Builder().Build();
@@ -98,8 +89,7 @@ class PageContextExtractorJavaScriptFeatureTest
     return PageContextExtractorJavaScriptFeature::GetInstance();
   }
 
-  // Run the extraction according to the test parameter.
-  // TODO(crbug.com/495446456): Clean up once the JSON experiment is done.
+  // Run the extraction.
   std::optional<base::Value> RunExtraction(
       web::WebFrame* frame,
       bool include_cross_origin_frame_content,
@@ -109,32 +99,32 @@ class PageContextExtractorJavaScriptFeatureTest
       bool attempt_paid_content_json_fixing,
       const std::string& nonce,
       base::TimeDelta timeout) {
-    base::test::TestFuture<std::optional<base::Value>> future;
-    if (GetParam() == IPCExtractionMethod::kNative) {
-      feature()->ExtractPageContext(
-          frame, include_cross_origin_frame_content, use_rich_extraction,
-          use_rich_extraction_with_actionable, extract_paid_content,
-          attempt_paid_content_json_fixing,
-          /*include_sensitive_payments_for_redaction=*/false,
-          /*extract_autofill_otp_redactions=*/false,
-          /*extract_password_screenshot_redactions=*/false, nonce, timeout,
-          base::BindOnce(
-              [](base::OnceCallback<void(std::optional<base::Value>)> callback,
-                 const base::Value* value) {
-                std::move(callback).Run(
-                    value ? std::make_optional(value->Clone()) : std::nullopt);
-              },
-              future.GetCallback()));
-    } else {
-      feature()->ExtractPageContextJSON(
-          frame, include_cross_origin_frame_content, use_rich_extraction,
-          use_rich_extraction_with_actionable, extract_paid_content,
-          attempt_paid_content_json_fixing,
-          /*include_sensitive_payments_for_redaction=*/false,
-          /*extract_autofill_otp_redactions=*/false,
-          /*extract_password_screenshot_redactions=*/false, nonce, timeout,
-          future.GetCallback());
+    if (!frame) {
+      EXPECT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+          base::test::ios::kWaitForJSCompletionTimeout, ^bool {
+            return web_state()
+                       ->GetPageWorldWebFramesManager()
+                       ->GetMainWebFrame() != nullptr;
+          }));
+      frame = web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame();
     }
+    EXPECT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+        base::test::ios::kWaitForJSCompletionTimeout, ^bool {
+          return feature()
+                     ->GetWebFramesManager(web_state())
+                     ->GetMainWebFrame() != nullptr;
+        }));
+    base::TimeDelta effective_timeout =
+        std::max(timeout, base::test::ios::kWaitForJSCompletionTimeout);
+    base::test::TestFuture<std::optional<base::Value>> future;
+    feature()->ExtractPageContext(
+        frame, include_cross_origin_frame_content, use_rich_extraction,
+        use_rich_extraction_with_actionable, extract_paid_content,
+        attempt_paid_content_json_fixing,
+        /*include_sensitive_payments_for_redaction=*/false,
+        /*extract_autofill_otp_redactions=*/false,
+        /*extract_password_screenshot_redactions=*/false, nonce,
+        effective_timeout, future.GetCallback());
     return future.Take();
   }
 
@@ -166,13 +156,12 @@ class PageContextExtractorJavaScriptFeatureTest
   std::unique_ptr<web::WebState> web_state_;
   net::EmbeddedTestServer test_server_;
   net::EmbeddedTestServer xorigin_test_server_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // TODO(crbug.com/504266564): Make sure all the test pages are formatted nicely
 // for human readers.
 
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContextWithCrossOriginFrames) {
   const std::string main_html =
       base::StrCat({"<html><head><title>Main</title></head><body><p>Main frame "
@@ -204,7 +193,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   EXPECT_TRUE(child.GetDict().FindString("remoteToken"));
 }
 
-TEST_P(PageContextExtractorJavaScriptFeatureTest, ExtractPageContext) {
+TEST_F(PageContextExtractorJavaScriptFeatureTest, ExtractPageContext) {
   const std::string main_html =
       base::StrCat({"<html><head><title>Main</title></head><body><p>Main frame "
                     "text</p><iframe "
@@ -228,7 +217,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest, ExtractPageContext) {
 
   base::Value expected_value(
       base::DictValue()
-          .Set("currentNodeInnerText", "Main frame text\n\n")
+          .Set("currentNodeInnerText", "Main frame text")
           .Set("title", "Main")
           .Set("sourceUrl", test_server_.GetURL(kMainPagePath).spec())
           .Set(
@@ -248,7 +237,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest, ExtractPageContext) {
   EXPECT_THAT(*result_value, base::test::IsSupersetOfValue(expected_value));
 }
 
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContextWithAnchors) {
   const std::string main_html =
       "<html><head><title>Main</title></head><body><a "
@@ -281,7 +270,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   EXPECT_THAT(*result_value, base::test::IsSupersetOfValue(expected_value));
 }
 
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContextWithForceDetach) {
   const std::string main_html = "<html><body><p>Hello</p></body></html>";
   web::test::LoadHtml(base::SysUTF8ToNSString(main_html),
@@ -316,7 +305,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Validate that <form> elements with nested <input name="name"> or <input
 // name="action"> don't clobber the values in the APC.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContextHandlesFormNamedElementPollution) {
   // Create HTML containing a form with children named "name" and "action".
   // Direct properties form.name and form.action will be overridden by DOM
@@ -365,7 +354,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Validate that <form> elements with nested <input name="contains"> don't crash
 // the script or prevent extraction.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContextHandlesFormNamedContainsPollution) {
   // Create HTML containing a form with a child input named "contains".
   // Direct property form.contains will be overridden by DOM Element.
@@ -405,7 +394,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 // Validate that <form> elements with nested standard prototype properties like
 // tagName, nodeType, ownerDocument don't crash the script or prevent
 // extraction.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContextHandlesFormNamedPrototypePropertiesPollution) {
   // Create HTML containing a form with children named after prototype getters.
   // Direct properties form.tagName, form.nodeType, etc. will be overridden by
@@ -469,7 +458,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 }
 
 // Test the extraction of the page context with RichExtraction.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction) {
   const std::string html =
       "<html><head><title>TreeWalker "
@@ -526,7 +515,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   EXPECT_EQ(*title, "TreeWalker Test");
 }
 
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtractionWithActionable) {
   const std::string html =
       "<html><body><button>Click me</button></body></html>";
@@ -560,7 +549,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 // Tests that anchor links with an href attribute receive clickability reasons
 // (CURSOR_POINTER), while anchors without href or with explicit non-pointer
 // cursors do not.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_AnchorClickabilityReasons) {
   web::test::LoadHtml(@"<html><body>"
                        "<a href=\"https://example.com\">Clickable Link</a>"
@@ -599,7 +588,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Tests that an element inheriting cursor: pointer from an ancestor does NOT
 // receive CURSOR_POINTER clickability, unless explicitly set on itself.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_CursorPointerInheritance) {
   web::test::LoadHtml(
       @"<html><body>"
@@ -642,7 +631,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Tests that a <summary> with cursor: pointer receives CURSOR_POINTER, but its
 // nested <span>, <svg>, and <path> children do NOT receive CURSOR_POINTER.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_CursorPointerInheritance_DetailsSummarySvg) {
   web::test::LoadHtml(@"<html><head><style>"
                        "  summary { cursor: pointer; }"
@@ -693,7 +682,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 }
 
 // Test the extraction of the text size.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_Text_Size) {
   const std::string html =
       "<html><body style=\"font-size: 16px\">"
@@ -748,7 +737,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 }
 
 // Test the extraction of the text color.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_Text_Color) {
   const std::string html = "<html><body><p style=\"color: rgb(0, 255, "
                            "0)\">Green Text</p></body></html>";
@@ -796,7 +785,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 }
 
 // Test the extraction of the table caption.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_Table_Caption) {
   const std::string html =
       "<html><body>"
@@ -841,7 +830,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Test the extraction of the table caption when the text is nested inside
 // other tags.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_Table_Caption_Nested) {
   const std::string html =
       "<html><body>"
@@ -892,7 +881,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 // Tests that elements styled with CSS table display types (display: table,
 // display: table-row, display: table-cell, display: table-header-group,
 // display: table-caption) are extracted as table structures at the JS layer.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_CssTable) {
   const std::string html =
       "<html><body>"
@@ -976,7 +965,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 // Verifies that internal SVG structural and metadata elements (like <title>,
 // <defs>, and <script>) are strictly excluded from extraction to prevent
 // non-visible technical strings from polluting the output.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_Svg) {
   const std::string html = "<html><body><svg width=\"100\" height=\"100\">"
                            "<title>SVG Title</title>"
@@ -1036,7 +1025,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
             "Nested Text");
 }
 
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_ShadowDom) {
   for (bool actionable_mode : {false, true}) {
     const std::string html =
@@ -1096,7 +1085,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 }
 
 // Verifies that SVG anchors are correctly extracted.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_Svg_Anchor) {
   const std::string html =
       "<html><body>"
@@ -1152,7 +1141,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Verifies that SVG elements rendered invisible via CSS (display/visibility)
 // are excluded.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_Svg_Visibility) {
   const std::string html =
       "<html><body><svg width=\"200\" height=\"200\">"
@@ -1196,7 +1185,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 }
 
 // Test the extraction of the ARIA label and aria-labelledby.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_BothSourcesOfAriaLabels) {
   const std::string html =
       "<html><body>"
@@ -1234,7 +1223,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 }
 
 // Test the extraction of the ARIA label when only aria-label is present.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_AriaLabelOnly) {
   const std::string html =
       "<html><body>"
@@ -1269,7 +1258,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Test that -webkit-text-security is respected for ARIA label and table name
 // extraction.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_TextSecurityBypass) {
   const std::string html =
       "<html><body>"
@@ -1338,7 +1327,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   EXPECT_EQ(*table_name, expected_mask);
 }
 
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_AriaRoles) {
   const std::string html =
       "<html><body>"
@@ -1407,13 +1396,17 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   }
 }
 
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_AXRole_WithActionable) {
   const std::string html =
       "<html><body>"
       "  <div role=\"button\">Button</div>"
       "  <div role=\"random_unknown_role\" tabindex=\"0\">Unknown</div>"
       "  <div tabindex=\"0\">No Role</div>"
+      "  <div role=\"\" tabindex=\"0\">Empty Role</div>"
+      "  <div role=\"none\" tabindex=\"0\">None</div>"
+      "  <div role=\"presentation\" tabindex=\"0\">Presentation</div>"
+      "  <div role=\"invalid BUTTON link\">Fallback Button</div>"
       "</body></html>";
   web::test::LoadHtml(base::SysUTF8ToNSString(html),
                       test_server_.GetURL(kMainPagePath), web_state());
@@ -1433,7 +1426,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   const base::ListValue* children = root_node->FindList("childrenNodes");
   ASSERT_TRUE(children);
 
-  ASSERT_EQ(children->size(), 3u);
+  ASSERT_EQ(children->size(), 7u);
 
   // Check the button node structure.
   const base::DictValue& button_node = (*children)[0].GetDict();
@@ -1453,12 +1446,11 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   ASSERT_TRUE(button_text);
   EXPECT_EQ(*button_text, "Button");
 
-  // Check the unknown role node structure.
+  // Keep the focusable node, but omit unrecognized explicit role metadata.
   const base::DictValue& unknown_node = (*children)[1].GetDict();
   std::optional<double> unknown_role =
       unknown_node.FindDoubleByDottedPath("contentAttributes.ariaRole");
-  ASSERT_TRUE(unknown_role.has_value());
-  EXPECT_EQ(static_cast<int>(unknown_role.value()), 181);  // AX_ROLE_UNKNOWN
+  EXPECT_FALSE(unknown_role.has_value());
 
   const base::ListValue* unknown_content_children =
       unknown_node.FindList("childrenNodes");
@@ -1471,16 +1463,33 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   ASSERT_TRUE(unknown_text);
   EXPECT_EQ(*unknown_text, "Unknown");
 
-  // Check the node with NO role (Preserved due to tabindex)
+  // Missing and empty roles also leave the field unset.
   const base::DictValue& no_role_node = (*children)[2].GetDict();
   std::optional<double> missing_role =
       no_role_node.FindDoubleByDottedPath("contentAttributes.ariaRole");
-  ASSERT_TRUE(missing_role.has_value());
-  EXPECT_EQ(static_cast<int>(missing_role.value()), 181);  // AX_ROLE_UNKNOWN
+  EXPECT_FALSE(missing_role.has_value());
+  EXPECT_FALSE(
+      (*children)[3].GetDict().FindByDottedPath("contentAttributes.ariaRole"));
+
+  // Presentational roles are recognized and both serialize as AX_ROLE_NONE.
+  for (size_t i : {4u, 5u}) {
+    SCOPED_TRACE(i);
+    const auto role = (*children)[i].GetDict().FindDoubleByDottedPath(
+        "contentAttributes.ariaRole");
+    ASSERT_TRUE(role.has_value());
+    EXPECT_EQ(static_cast<int>(*role), optimization_guide::proto::AX_ROLE_NONE);
+  }
+
+  // Skip invalid tokens and use the first recognized role, ignoring case.
+  const auto fallback_role = (*children)[6].GetDict().FindDoubleByDottedPath(
+      "contentAttributes.ariaRole");
+  ASSERT_TRUE(fallback_role.has_value());
+  EXPECT_EQ(static_cast<int>(*fallback_role),
+            optimization_guide::proto::AX_ROLE_BUTTON);
 }
 
 // Test the extraction of label elements and their associated control IDs.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_LabelForDomNodeId) {
   const std::string html = "<html><body><label for=\"myInput\"><span>My "
                            "<strong>Label</strong></span></label><input "
@@ -1533,8 +1542,8 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   EXPECT_EQ(*label_for_dom_node_id, *input_dom_node_id);
 }
 
-// Test the Scroller Info extraction.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+// Test the Scroller Info extraction when a canvas is present on the page.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_ScrollerInfo) {
   const std::string html =
       "<html><body>"
@@ -1542,6 +1551,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
       "auto;\">"
       "    <div style=\"width: 200px; height: 300px;\"></div>"
       "  </div>"
+      "  <canvas></canvas>"
       "  <script>"
       "    let el = document.getElementById('scroller');"
       "    el.scrollLeft = 50;"
@@ -1568,17 +1578,6 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
   const base::ListValue* children = root_node->FindList("childrenNodes");
   ASSERT_TRUE(children);
-
-  if (GetParam() == IPCExtractionMethod::kJSON) {
-    // In optimized mode, generic scrollable divs does not extract scroller
-    // info.
-    const base::DictValue& div_node = (*children)[0].GetDict();
-    const base::DictValue* interaction_info =
-        div_node.FindDictByDottedPath("contentAttributes.nodeInteractionInfo");
-    EXPECT_FALSE(interaction_info);
-    return;
-  }
-
   ASSERT_GE(children->size(), 1u);
 
   const base::DictValue& div_node = (*children)[0].GetDict();
@@ -1621,21 +1620,10 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   ASSERT_TRUE(visible_h.has_value());
   EXPECT_EQ(static_cast<int>(visible_h.value()), 100);
 
-  std::optional<double> visible_t = visible_area->FindDouble("top");
-  ASSERT_TRUE(visible_t.has_value());
-  EXPECT_EQ(static_cast<int>(visible_t.value()), 70);
-
-  std::optional<double> visible_l = visible_area->FindDouble("left");
-  ASSERT_TRUE(visible_l.has_value());
-  EXPECT_EQ(static_cast<int>(visible_l.value()), 50);
-
-  std::optional<double> visible_b = visible_area->FindDouble("bottom");
-  ASSERT_TRUE(visible_b.has_value());
-  EXPECT_EQ(static_cast<int>(visible_b.value()), 170);
-
-  std::optional<double> visible_r = visible_area->FindDouble("right");
-  ASSERT_TRUE(visible_r.has_value());
-  EXPECT_EQ(static_cast<int>(visible_r.value()), 150);
+  EXPECT_FALSE(visible_area->FindDouble("top").has_value());
+  EXPECT_FALSE(visible_area->FindDouble("left").has_value());
+  EXPECT_FALSE(visible_area->FindDouble("bottom").has_value());
+  EXPECT_FALSE(visible_area->FindDouble("right").has_value());
 
   std::optional<bool> user_scrollable_horizontal =
       scroller_info->FindBool("userScrollableHorizontal");
@@ -1648,8 +1636,47 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   EXPECT_TRUE(user_scrollable_vertical.value());
 }
 
+// Tests that generic scrollable divs do not extract scroller info in
+// non-actionable mode when no canvas is present on the page.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_RichExtraction_ScrollerInfo_SkippedWithoutCanvas) {
+  const std::string html =
+      "<html><body>"
+      "  <div id=\"scroller\" style=\"width: 100px; height: 100px; overflow: "
+      "auto;\">"
+      "    <div style=\"width: 200px; height: 300px;\"></div>"
+      "  </div>"
+      "</body></html>";
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/false,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value);
+  ASSERT_TRUE(result_value->is_dict());
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+
+  const base::ListValue* children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(children);
+  ASSERT_GE(children->size(), 1u);
+
+  const base::DictValue& div_node = (*children)[0].GetDict();
+  const base::DictValue* interaction_info =
+      div_node.FindDictByDottedPath("contentAttributes.nodeInteractionInfo");
+  EXPECT_FALSE(interaction_info);
+}
+
 // Tests that scroller info is extracted for all nodes when a canvas is present.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_ScrollerInfo_Canvas) {
   const std::string html =
       "<html><body>"
@@ -1710,7 +1737,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Test that absolute positioned elements are not clipped by static ancestors
 // with overflow: hidden.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_Geometry_AbsoluteClipping) {
   const std::string html =
       "<html><body>"
@@ -1783,7 +1810,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Test that absolute positioned elements are clipped by positioned ancestors
 // with overflow: hidden.
-TEST_P(
+TEST_F(
     PageContextExtractorJavaScriptFeatureTest,
     ExtractPageContext_RichExtraction_Geometry_AbsoluteClipping_PositionedAncestor) {
   const std::string html =
@@ -1857,7 +1884,7 @@ TEST_P(
 // correctly inherited by its absolute positioned child. If the parent instead
 // had absolute positioning, it would skip the static grandparent entirely,
 // meaning the absolute child would not be clipped.
-TEST_P(
+TEST_F(
     PageContextExtractorJavaScriptFeatureTest,
     ExtractPageContext_RichExtraction_Geometry_AbsoluteClipping_ChainedContainingBlock) {
   const std::string html =
@@ -1922,9 +1949,8 @@ TEST_P(
                                "chained fully clipped element";
 }
 
-// Verifies that ExtractPageContext payload is a string when IPC optimization
-// is enabled and a dictionary otherwise.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+// Verifies that ExtractPageContext payload is a string.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        VerifiesRawJavascriptExtractionResultType) {
   const std::string html = "<html><body><p>Test</p></body></html>";
   web::test::LoadHtml(base::SysUTF8ToNSString(html),
@@ -1955,13 +1981,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
   base::Value raw_result = future.Take();
 
-  if (GetParam() == IPCExtractionMethod::kJSON) {
-    EXPECT_TRUE(raw_result.is_string())
-        << "Expected a string payload when IPC optimization is enabled.";
-  } else {
-    EXPECT_TRUE(raw_result.is_dict())
-        << "Expected a dictionary payload when native extraction is used.";
-  }
+  EXPECT_TRUE(raw_result.is_string()) << "Expected a string payload.";
 }
 
 // Test the extraction of Z-order in a standard scenario where the actionable
@@ -1978,7 +1998,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 // Expectations:
 // - A single actionable button is on the screen.
 // - It should receive a documentScopedZOrder of 1.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_ZOrder_Generic) {
   const std::string html = R"(
     <html>
@@ -2044,7 +2064,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 // - The overlay is a generic container and not actionable.
 // - The button should successfully receive a
 // documentScopedZOrder of 1.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_ZOrder_PointerEventsNone) {
   const std::string html = R"(
     <html>
@@ -2108,7 +2128,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 // - Hit tests on the button will hit the span, which is a descendant, meaning
 // the button is still considered reachable.
 // - The button should receive a documentScopedZOrder of 1.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_ZOrder_ChildElementTopMost) {
   const std::string html = R"(
     <html>
@@ -2167,7 +2187,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 // - The button is rendered completely outside the visible viewport.
 // - elementsFromPoint at an offscreen coordinate returns null/empty.
 // - It should not receive a Z-order.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_ZOrder_OffScreen) {
   const std::string html = R"(
     <html>
@@ -2238,7 +2258,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 // - Because both buttons possess valid geometry and interaction info, they will
 //   both be processed and sorted relative to each other based on their visual
 //   stacking. Button 1 receives Z-order 1, and Button 2 receives Z-order 2.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtraction_ZOrder_Overlap) {
   const std::string html = R"(
     <html>
@@ -2293,7 +2313,130 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
                interaction_info3->FindDouble("documentScopedZOrder"));
 }
 
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+// Tests that `documentScopedZOrder` inside a same-origin iframe is computed
+// within the iframe's own document and is not overwritten by the parent
+// frame's z-order pass.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_RichExtraction_ZOrder_SameOriginIframe) {
+  const std::string html = R"(
+    <html>
+      <body style="margin: 0; padding: 0;">
+        <button id="main_btn" style="width: 80px; height: 40px;">Main</button>
+        <iframe style="width: 200px; height: 200px; border: none;" srcdoc="
+          <html>
+            <body style='margin: 0; padding: 0;'>
+              <button id='iframe_top' style='position: absolute; top: 10px; left: 10px; width: 80px; height: 40px; z-index: 2;'>Top</button>
+              <button id='iframe_bottom' style='position: absolute; top: 10px; left: 10px; width: 80px; height: 40px; z-index: 1;'>Bottom</button>
+            </body>
+          </html>
+        "></iframe>
+      </body>
+    </html>
+  )";
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/true,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value);
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  const base::ListValue* children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(children);
+  ASSERT_EQ(children->size(), 2u);
+
+  const base::DictValue& main_btn = (*children)[0].GetDict();
+  EXPECT_EQ(main_btn.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            1.0);
+
+  const base::DictValue& iframe_node = (*children)[1].GetDict();
+  const base::ListValue* iframe_children =
+      iframe_node.FindList("childrenNodes");
+  ASSERT_TRUE(iframe_children);
+  ASSERT_EQ(iframe_children->size(), 1u);
+
+  const base::DictValue& iframe_root = (*iframe_children)[0].GetDict();
+  const base::ListValue* iframe_body_children =
+      iframe_root.FindList("childrenNodes");
+  ASSERT_TRUE(iframe_body_children);
+  ASSERT_EQ(iframe_body_children->size(), 2u);
+
+  // `iframe_top` appears first in DOM order with `z-index: 2` over
+  // `iframe_bottom` (`z-index: 1`), so within the iframe document
+  // `iframe_bottom` gets Z-order 1 and `iframe_top` gets Z-order 2.
+  const base::DictValue& iframe_top = (*iframe_body_children)[0].GetDict();
+  const base::DictValue& iframe_bottom = (*iframe_body_children)[1].GetDict();
+  EXPECT_EQ(iframe_bottom.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            1.0);
+  EXPECT_EQ(iframe_top.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            2.0);
+}
+
+// Tests that an actionable `rootNode` (`ROOT`) stays at `documentScopedZOrder`
+// 1 even when a negative `z-index` descendant paints behind `<body>` and is
+// hit-tested against an overlapping element.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_RichExtraction_ZOrder_ActionableRootNode) {
+  const std::string html = R"(
+    <html>
+      <body onclick="void(0);" style="margin: 0; padding: 0;">
+        <button id="standalone_btn" style="position: absolute; top: 10px; left: 10px; width: 80px; height: 40px;">Standalone</button>
+        <button id="overlay_btn" style="position: absolute; top: 100px; left: 10px; width: 80px; height: 40px; z-index: 2;">Overlay</button>
+        <button id="neg_btn" style="position: absolute; top: 100px; left: 10px; width: 80px; height: 40px; z-index: -1;">Negative</button>
+      </body>
+    </html>
+  )";
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/true,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value);
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  EXPECT_EQ(root_node->FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            1.0);
+
+  const base::ListValue* children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(children);
+  ASSERT_EQ(children->size(), 3u);
+
+  const base::DictValue& standalone_btn = (*children)[0].GetDict();
+  const base::DictValue& overlay_btn = (*children)[1].GetDict();
+  const base::DictValue& neg_btn = (*children)[2].GetDict();
+
+  EXPECT_EQ(standalone_btn.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            2.0);
+  EXPECT_EQ(neg_btn.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            3.0);
+  EXPECT_EQ(overlay_btn.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            4.0);
+}
+
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_FormDisabledWithPollution) {
   // A form element containing an input with name="disabled".
   // Since HTMLFormElement has [LegacyOverrideBuiltIns], accessing form.disabled
@@ -2353,7 +2496,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Tests that page context extraction does not throw an error when the document
 // has no documentElement.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_NoDocumentElement) {
   const std::string html = "<html><body></body></html>";
   web::test::LoadHtml(base::SysUTF8ToNSString(html),
@@ -2379,7 +2522,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Tests that page context extraction does not throw a TypeError when traversing
 // non-HTMLElement nodes like SVG or MathML elements in actionable mode.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_RichExtractionWithActionable_SvgAndNonHtmlElements) {
   const std::string html =
       "<html><body>"
@@ -2404,7 +2547,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 
 // Test that custom ARIA form controls capture standard placeholder attributes
 // in addition to aria-placeholder.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_AriaControlPlaceholder) {
   const std::string html = R"(
     <html>
@@ -2499,7 +2642,7 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
 // Test that interactive elements clipped completely offscreen inside an
 // overflow container (such as offscreen carousel slides) do not retain
 // nodeInteractionInfo.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_CarouselOffscreenPruning) {
   const std::string html = R"(
     <html>
@@ -2555,11 +2698,33 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   const base::DictValue* offscreen_interaction_info =
       offscreen_button.FindDictByDottedPath(
           "contentAttributes.nodeInteractionInfo");
-  EXPECT_FALSE(offscreen_interaction_info);
+  ASSERT_TRUE(offscreen_interaction_info);
+  const base::ListValue* disabled_reasons =
+      offscreen_interaction_info->FindList("interactionDisabledReasons");
+  ASSERT_TRUE(disabled_reasons);
+  bool has_visually_unreachable = false;
+  for (const base::Value& reason : *disabled_reasons) {
+    if (reason.is_int() &&
+        reason.GetInt() ==
+            static_cast<int>(
+                optimization_guide::proto::
+                    INTERACTION_DISABLED_REASON_VISUALLY_UNREACHABLE)) {
+      has_visually_unreachable = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(has_visually_unreachable);
+  const base::ListValue* clickability_reasons =
+      offscreen_interaction_info->FindList("clickabilityReasons");
+  if (clickability_reasons) {
+    EXPECT_TRUE(clickability_reasons->empty());
+  }
+  EXPECT_FALSE(
+      offscreen_interaction_info->FindBool("isFocusable").value_or(false));
 }
 
 // Test fieldset extraction logic.
-TEST_P(PageContextExtractorJavaScriptFeatureTest,
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_FieldsetControl) {
   const std::string html = "<html><body>"
                            "  <fieldset name=\"test_fieldset\">"
@@ -2608,7 +2773,477 @@ TEST_P(PageContextExtractorJavaScriptFeatureTest,
   EXPECT_EQ(*field_name, "test_fieldset");
 }
 
-INSTANTIATE_TEST_SUITE_P(All,
-                         PageContextExtractorJavaScriptFeatureTest,
-                         ::testing::Values(IPCExtractionMethod::kNative,
-                                           IPCExtractionMethod::kJSON));
+// Test that <select> subtree pruning ensures <option> tags
+// are not extracted as child DOM nodes.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_SelectOneControlSubtreePruning) {
+  const std::string html =
+      "<html><body>"
+      "    <select name=\"country\" required>"
+      "        <option value=\"us\">United States</option>"
+      "        <option value=\"ca\" selected>Canada</option>"
+      "        <option value=\"fr\" disabled>France</option>"
+      "    </select>"
+      "</body></html>";
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/false,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value.has_value());
+  EXPECT_FALSE(result_value->is_none());
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  const base::ListValue* root_children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(root_children);
+  ASSERT_GE(root_children->size(), 1u);
+
+  const base::DictValue& select_node = (*root_children)[0].GetDict();
+
+  // Verify subtree pruning: <option> tags must NOT be child DOM nodes.
+  const base::ListValue* children = select_node.FindList("childrenNodes");
+  ASSERT_TRUE(children);
+  EXPECT_TRUE(children->empty());
+}
+
+// Test attribute type and form control type extraction for a single select
+// element
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_SelectOneControlType) {
+  const std::string html =
+      "<html><body>"
+      "    <select name=\"country\" required>"
+      "        <option value=\"us\">United States</option>"
+      "        <option value=\"ca\" selected>Canada</option>"
+      "        <option value=\"fr\" disabled>France</option>"
+      "    </select>"
+      "</body></html>";
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/false,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value.has_value());
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  const base::ListValue* root_children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(root_children);
+  ASSERT_GE(root_children->size(), 1u);
+
+  const base::DictValue& select_node = (*root_children)[0].GetDict();
+
+  // Verify attribute and form control types.
+  std::optional<double> attribute_type =
+      select_node.FindDoubleByDottedPath("contentAttributes.attributeType");
+  ASSERT_TRUE(attribute_type.has_value());
+  EXPECT_EQ(*attribute_type,
+            static_cast<double>(
+                optimization_guide::proto::CONTENT_ATTRIBUTE_FORM_CONTROL));
+
+  std::optional<double> form_control_type = select_node.FindDoubleByDottedPath(
+      "contentAttributes.formControlData.formControlType");
+  ASSERT_TRUE(form_control_type.has_value());
+  EXPECT_EQ(*form_control_type,
+            static_cast<double>(
+                optimization_guide::proto::FORM_CONTROL_TYPE_SELECT_ONE));
+}
+
+// Test field name, active value, and required constraint extraction for a
+// single select element.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_SelectOneControlAttributes) {
+  const std::string html =
+      "<html><body>"
+      "    <select name=\"country\" required>"
+      "        <option value=\"us\">United States</option>"
+      "        <option value=\"ca\" selected>Canada</option>"
+      "        <option value=\"fr\" disabled>France</option>"
+      "    </select>"
+      "</body></html>";
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/false,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value.has_value());
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  const base::ListValue* root_children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(root_children);
+  ASSERT_GE(root_children->size(), 1u);
+
+  const base::DictValue& select_node = (*root_children)[0].GetDict();
+
+  // Verify field name, active value, and required constraint.
+  const std::string* field_name = select_node.FindStringByDottedPath(
+      "contentAttributes.formControlData.fieldName");
+  ASSERT_TRUE(field_name);
+  EXPECT_EQ(*field_name, "country");
+
+  const std::string* field_value = select_node.FindStringByDottedPath(
+      "contentAttributes.formControlData.fieldValue");
+  ASSERT_TRUE(field_value);
+  EXPECT_EQ(*field_value, "ca");
+
+  std::optional<bool> is_required = select_node.FindBoolByDottedPath(
+      "contentAttributes.formControlData.isRequired");
+  ASSERT_TRUE(is_required.has_value());
+  EXPECT_TRUE(*is_required);
+}
+
+// Test extraction of selectOptions array including selected and disabled
+// states.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_SelectOneControlOptions) {
+  const std::string html =
+      "<html><body>"
+      "    <select name=\"country\" required>"
+      "        <option value=\"us\">United States</option>"
+      "        <option value=\"ca\" selected>Canada</option>"
+      "        <option value=\"fr\" disabled>France</option>"
+      "    </select>"
+      "</body></html>";
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/false,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value.has_value());
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  const base::ListValue* root_children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(root_children);
+  ASSERT_GE(root_children->size(), 1u);
+
+  const base::DictValue& select_node = (*root_children)[0].GetDict();
+
+  // Verify selectOptions array extraction.
+  const base::ListValue* select_options = select_node.FindListByDottedPath(
+      "contentAttributes.formControlData.selectOptions");
+  ASSERT_TRUE(select_options);
+  ASSERT_EQ(select_options->size(), 3u);
+
+  // Option 0: unselected
+  const base::DictValue& option0 = (*select_options)[0].GetDict();
+  const std::string* option0_value = option0.FindString("value");
+  ASSERT_TRUE(option0_value);
+  EXPECT_EQ(*option0_value, "us");
+  const std::string* option0_text = option0.FindString("text");
+  ASSERT_TRUE(option0_text);
+  EXPECT_EQ(*option0_text, "United States");
+  EXPECT_FALSE(option0.FindBool("isSelected").value_or(true));
+  EXPECT_FALSE(option0.FindBool("disabled").value_or(true));
+
+  // Option 1: selected
+  const base::DictValue& option1 = (*select_options)[1].GetDict();
+  const std::string* option1_value = option1.FindString("value");
+  ASSERT_TRUE(option1_value);
+  EXPECT_EQ(*option1_value, "ca");
+  const std::string* option1_text = option1.FindString("text");
+  ASSERT_TRUE(option1_text);
+  EXPECT_EQ(*option1_text, "Canada");
+  EXPECT_TRUE(option1.FindBool("isSelected").value_or(false));
+  EXPECT_FALSE(option1.FindBool("disabled").value_or(true));
+
+  // Option 2: disabled
+  const base::DictValue& option2 = (*select_options)[2].GetDict();
+  const std::string* option2_value = option2.FindString("value");
+  ASSERT_TRUE(option2_value);
+  EXPECT_EQ(*option2_value, "fr");
+  const std::string* option2_text = option2.FindString("text");
+  ASSERT_TRUE(option2_text);
+  EXPECT_EQ(*option2_text, "France");
+  EXPECT_FALSE(option2.FindBool("isSelected").value_or(true));
+  EXPECT_TRUE(option2.FindBool("disabled").value_or(false));
+}
+
+// Test multiple select extraction verifying FORM_CONTROL_TYPE_SELECT_MULTIPLE
+// and multi-selection preservation.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_SelectMultipleControl) {
+  const std::string html =
+      "<html><body>"
+      "    <select name=\"filters\" multiple>"
+      "        <option value=\"books\" selected>Books</option>"
+      "        <option value=\"movies\">Movies</option>"
+      "        <option value=\"music\" selected>Music</option>"
+      "    </select>"
+      "</body></html>";
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/false,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value.has_value());
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  const base::ListValue* root_children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(root_children);
+  ASSERT_GE(root_children->size(), 1u);
+
+  const base::DictValue& select_node = (*root_children)[0].GetDict();
+
+  // 1. Verify type mapping for `multiple` attribute.
+  std::optional<double> form_control_type = select_node.FindDoubleByDottedPath(
+      "contentAttributes.formControlData.formControlType");
+  ASSERT_TRUE(form_control_type.has_value());
+  EXPECT_EQ(*form_control_type,
+            static_cast<double>(
+                optimization_guide::proto::FORM_CONTROL_TYPE_SELECT_MULTIPLE));
+
+  // 2. Verify all selected options are preserved in selectOptions.
+  const base::ListValue* select_options = select_node.FindListByDottedPath(
+      "contentAttributes.formControlData.selectOptions");
+  ASSERT_TRUE(select_options);
+  ASSERT_EQ(select_options->size(), 3u);
+
+  EXPECT_TRUE(
+      (*select_options)[0].GetDict().FindBool("isSelected").value_or(false));
+  EXPECT_FALSE(
+      (*select_options)[1].GetDict().FindBool("isSelected").value_or(true));
+  EXPECT_TRUE(
+      (*select_options)[2].GetDict().FindBool("isSelected").value_or(false));
+}
+
+// Test <select> containing <optgroup> elements and verifying label fallback
+// when option inner text is empty.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_SelectWithOptgroupAndLabelFallback) {
+  const std::string html = R"(
+    <html>
+        <body>
+            <select name="beverage">
+                <optgroup label="Hot Drinks">
+                    <option value="coffee">Coffee</option>
+                    <option value="tea"></option>
+                </optgroup>
+                <optgroup label="Cold Drinks">
+                    <option value="soda" label="Fizzy Soda"></option>
+                </optgroup>
+            </select>
+        </body>
+    </html>
+  )";
+
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/false,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value.has_value());
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  const base::ListValue* root_children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(root_children);
+  ASSERT_GE(root_children->size(), 1u);
+
+  const base::DictValue& select_node = (*root_children)[0].GetDict();
+
+  // 1. Ensure <optgroup> does not appear in the childrenNodes
+  const base::ListValue* children = select_node.FindList("childrenNodes");
+  ASSERT_TRUE(children);
+  EXPECT_TRUE(children->empty());
+
+  // 2. All 3 options should be flattened and collected in selectOptions.
+  const base::ListValue* select_options = select_node.FindListByDottedPath(
+      "contentAttributes.formControlData.selectOptions");
+  ASSERT_TRUE(select_options);
+  ASSERT_EQ(select_options->size(), 3u);
+
+  // Option with inner text
+  const base::DictValue& option0 = (*select_options)[0].GetDict();
+  const std::string* option0_text = option0.FindString("text");
+  ASSERT_TRUE(option0_text);
+  EXPECT_EQ(*option0_text, "Coffee");
+  const std::string* option0_value = option0.FindString("value");
+  ASSERT_TRUE(option0_value);
+  EXPECT_EQ(*option0_value, "coffee");
+
+  // Option with no inner text or `label` attribute extracts an empty string for
+  // `text`.
+  const base::DictValue& option1 = (*select_options)[1].GetDict();
+  const std::string* option1_text = option1.FindString("text");
+  ASSERT_TRUE(option1_text);
+  EXPECT_EQ(*option1_text, "");
+  const std::string* option1_value = option1.FindString("value");
+  ASSERT_TRUE(option1_value);
+  EXPECT_EQ(*option1_value, "tea");
+
+  // Option with empty inner text falls back to the <option>'s label attribute
+  // ("Fizzy Soda")
+  const base::DictValue& option2 = (*select_options)[2].GetDict();
+  const std::string* option2_text = option2.FindString("text");
+  ASSERT_TRUE(option2_text);
+  EXPECT_EQ(*option2_text, "Fizzy Soda");
+  const std::string* option2_value = option2.FindString("value");
+  ASSERT_TRUE(option2_value);
+  EXPECT_EQ(*option2_value, "soda");
+}
+
+// Test <select> where <option> tags omit the value attribute, verifying that
+// value defaults to the option inner text per the HTML specification.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_SelectOptionValueFallbackToText) {
+  const std::string html = R"(
+    <html>
+      <body>
+        <select name="shipping">
+          <option>Standard Shipping</option>
+          <option selected>Express Delivery</option>
+        </select>
+      </body>
+    </html>
+  )";
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/false,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value.has_value());
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  const base::ListValue* root_children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(root_children);
+  ASSERT_GE(root_children->size(), 1u);
+
+  const base::DictValue& select_node = (*root_children)[0].GetDict();
+
+  // Selected value should match the second option's text
+  const std::string* field_value = select_node.FindStringByDottedPath(
+      "contentAttributes.formControlData.fieldValue");
+  ASSERT_TRUE(field_value);
+  EXPECT_EQ(*field_value, "Express Delivery");
+
+  const base::ListValue* select_options = select_node.FindListByDottedPath(
+      "contentAttributes.formControlData.selectOptions");
+  ASSERT_TRUE(select_options);
+  ASSERT_EQ(select_options->size(), 2u);
+
+  const base::DictValue& option0 = (*select_options)[0].GetDict();
+  const std::string* option0_text = option0.FindString("text");
+  ASSERT_TRUE(option0_text);
+  EXPECT_EQ(*option0_text, "Standard Shipping");
+  const std::string* option0_value = option0.FindString("value");
+  ASSERT_TRUE(option0_value);
+  EXPECT_EQ(*option0_value, "Standard Shipping");
+  EXPECT_FALSE(option0.FindBool("isSelected").value_or(true));
+
+  const base::DictValue& option1 = (*select_options)[1].GetDict();
+  const std::string* option1_text = option1.FindString("text");
+  ASSERT_TRUE(option1_text);
+  EXPECT_EQ(*option1_text, "Express Delivery");
+  const std::string* option1_value = option1.FindString("value");
+  ASSERT_TRUE(option1_value);
+  EXPECT_EQ(*option1_value, "Express Delivery");
+  EXPECT_TRUE(option1.FindBool("isSelected").value_or(false));
+}
+
+// Test single <select> without any explicit selected attribute, verifying that
+// the first option is selected by default.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_SelectDefaultSelection) {
+  const std::string html = R"(
+    <html>
+      <body>
+        <select name="fruits">
+            <option value="apple">Apple</option>
+            <option value="banana">Banana</option>
+            <option value="orange">Orange</option>
+        </select>
+      </body>
+    </html>
+  )";
+
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/false,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value.has_value());
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  const base::ListValue* root_children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(root_children);
+  ASSERT_GE(root_children->size(), 1u);
+
+  const base::DictValue& select_node = (*root_children)[0].GetDict();
+  const std::string* field_value = select_node.FindStringByDottedPath(
+      "contentAttributes.formControlData.fieldValue");
+  ASSERT_TRUE(field_value);
+  EXPECT_EQ(*field_value, "apple");
+
+  const base::ListValue* select_options = select_node.FindListByDottedPath(
+      "contentAttributes.formControlData.selectOptions");
+  ASSERT_TRUE(select_options);
+  ASSERT_EQ(select_options->size(), 3u);
+  EXPECT_TRUE(
+      (*select_options)[0].GetDict().FindBool("isSelected").value_or(false));
+  EXPECT_FALSE(
+      (*select_options)[1].GetDict().FindBool("isSelected").value_or(true));
+  EXPECT_FALSE(
+      (*select_options)[2].GetDict().FindBool("isSelected").value_or(true));
+}

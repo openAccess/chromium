@@ -5,7 +5,9 @@
 #ifndef COMPONENTS_TRUSTED_VAULT_TEST_MOCK_TRUSTED_VAULT_THROTTLING_CONNECTION_H_
 #define COMPONENTS_TRUSTED_VAULT_TEST_MOCK_TRUSTED_VAULT_THROTTLING_CONNECTION_H_
 
+#include <cstdint>
 #include <memory>
+#include <vector>
 
 #include "base/functional/callback.h"
 #include "components/signin/public/identity_manager/account_info.h"
@@ -23,6 +25,7 @@ class MockTrustedVaultThrottlingConnection
   MOCK_METHOD(std::unique_ptr<Request>,
               RegisterAuthenticationFactor,
               (const CoreAccountInfo& account_info,
+               SecurityDomainId security_domain,
                const MemberKeysSource& member_keys_source,
                const SecureBoxPublicKey& authentication_factor_public_key,
                AuthenticationFactorTypeAndRegistrationParams
@@ -32,6 +35,7 @@ class MockTrustedVaultThrottlingConnection
   MOCK_METHOD(std::unique_ptr<Request>,
               RegisterLocalDeviceWithoutKeys,
               (const CoreAccountInfo& account_info,
+               SecurityDomainId security_domain,
                const SecureBoxPublicKey& device_public_key,
                RegisterAuthenticationFactorCallback callback),
               (override));
@@ -39,6 +43,7 @@ class MockTrustedVaultThrottlingConnection
       std::unique_ptr<Request>,
       DownloadNewKeys,
       (const CoreAccountInfo& account_info,
+       SecurityDomainId security_domain,
        const TrustedVaultKeyAndVersion& last_trusted_vault_key_and_version,
        std::unique_ptr<SecureBoxKeyPair> device_key_pair,
        DownloadNewKeysCallback callback),
@@ -46,6 +51,7 @@ class MockTrustedVaultThrottlingConnection
   MOCK_METHOD(std::unique_ptr<Request>,
               DownloadIsRecoverabilityDegraded,
               (const CoreAccountInfo& account_info,
+               SecurityDomainId security_domain,
                IsRecoverabilityDegradedCallback callback),
               (override));
   MOCK_METHOD(std::unique_ptr<Request>,
@@ -53,21 +59,26 @@ class MockTrustedVaultThrottlingConnection
               (const CoreAccountInfo& account_info,
                DownloadGaiaPasswordPublicKeyCallback callback),
               (override));
-  MOCK_METHOD(std::unique_ptr<Request>,
-              RotateSharedKey,
-              (const CoreAccountInfo& account_info,
-               const trusted_vault_pb::RotateSharedKeyRequest& request,
-               RotateSharedKeyCallback callback),
-              (override));
+  MOCK_METHOD(
+      std::unique_ptr<Request>,
+      RotateSharedKey,
+      (const CoreAccountInfo& account_info,
+       SecurityDomainId security_domain,
+       const TrustedVaultKeyAndVersion& last_trusted_vault_key_and_version,
+       const std::vector<uint8_t>& new_trusted_vault_key,
+       RotateSharedKeyCallback callback),
+      (override));
   MOCK_METHOD(std::unique_ptr<Request>,
               DownloadAuthenticationFactorsRegistrationState,
               (const CoreAccountInfo& account_info,
+               SecurityDomainId security_domain,
                DownloadAuthenticationFactorsRegistrationStateCallback callback,
                base::RepeatingClosure keep_alive_callback),
               (override));
   MOCK_METHOD(std::unique_ptr<Request>,
               DownloadAuthenticationFactorsRegistrationState,
               (const CoreAccountInfo& account_info,
+               SecurityDomainId security_domain,
                std::set<trusted_vault_pb::SecurityDomainMember_MemberType>
                    recovery_factor_filter,
                DownloadAuthenticationFactorsRegistrationStateCallback callback,
@@ -75,11 +86,11 @@ class MockTrustedVaultThrottlingConnection
               (override));
   MOCK_METHOD(bool,
               AreRequestsThrottled,
-              (const CoreAccountInfo& account_info),
+              (const CoreAccountInfo& account_info, SecurityDomainId domain),
               (override));
   MOCK_METHOD(void,
               RecordFailedRequestForThrottling,
-              (const CoreAccountInfo& account_info),
+              (const CoreAccountInfo& account_info, SecurityDomainId domain),
               (override));
 };
 

@@ -16,6 +16,7 @@
 #import "base/metrics/user_metrics_action.h"
 #import "base/notimplemented.h"
 #import "base/strings/sys_string_conversions.h"
+#import "ios/chrome/browser/app_bar/ui/app_bar_constants.h"
 #import "ios/chrome/browser/bubble/ui_bundled/gesture_iph/gesture_in_product_help_view.h"
 #import "ios/chrome/browser/bubble/ui_bundled/gesture_iph/gesture_in_product_help_view_delegate.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
@@ -295,7 +296,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
         constraintEqualToAnchor:self.topToolbar.bottomAnchor],
     self.swipeToIncognitoIPHBottomConstraint
   ]];
-  if (IsPageActionMenuEnabled()) {
+  if (IsPageActionMenuEnabled() && !IsIOSGeminiBottomSheetMigrationEnabled()) {
     [self.geminiHandler
         hideFloatyIfInvokedAnimated:NO
                          fromSource:gemini::FloatyUpdateSource::GestureIph];
@@ -524,7 +525,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 
 - (void)contentWillDisappearAnimated:(BOOL)animated {
   [self recordIdlePageStatus];
-  [self.topToolbar unfocusSearchBar];
+  [self exitSearchModeAndUnfocusSearchBar];
 
   [self.swipeToIncognitoIPH
       dismissWithReason:IPHDismissalReasonType::kTappedOutsideIPHAndAnchorView];
@@ -767,7 +768,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 - (void)setCurrentPage:(TabGridPage)currentPage {
   // Record the idle metric if the previous page was the tab groups page.
   if (_currentPage != currentPage) {
-    [self.topToolbar unfocusSearchBar];
+    [self exitSearchModeAndUnfocusSearchBar];
     [self tabGridDidPerformAction:TabGridActionType::kChangePage];
     if (_currentPage == TabGridPageTabGroups) {
       _idleTabGroupsPage = YES;
@@ -1305,6 +1306,14 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   [self.mutator quitSearchMode];
 }
 
+// Exits search mode if active and unfocuses the search bar.
+- (void)exitSearchModeAndUnfocusSearchBar {
+  if (_mode == TabGridMode::kSearch) {
+    [self quitSearchMode];
+  }
+  [self.topToolbar unfocusSearchBar];
+}
+
 // Called when a drag will begin.
 - (void)dragSessionWillBegin {
   self.dragSessionInProgress = YES;
@@ -1342,7 +1351,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
           UISceneActivationStateForegroundActive) {
     return;
   }
-  if (IsPageActionMenuEnabled()) {
+  if (IsPageActionMenuEnabled() && !IsIOSGeminiBottomSheetMigrationEnabled()) {
     [self.geminiHandler
         updateFloatyVisibilityIfEligibleAnimated:NO
                                       fromSource:gemini::FloatyUpdateSource::
@@ -1386,6 +1395,12 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
     // crbug.com/336515391.
     return;
   }
+
+  // Exit early if the Tab Grid Mode is incompatible with the search bar.
+  if (_mode != TabGridMode::kSearch) {
+    return;
+  }
+
   _searchText = searchText;
   searchBar.searchTextField.accessibilityIdentifier =
       [kTabGridSearchTextFieldIdentifierPrefix
@@ -1458,6 +1473,14 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   inset.left = self.scrollView.safeAreaInsets.left;
   inset.right = self.scrollView.safeAreaInsets.right;
   inset.top += self.scrollView.safeAreaInsets.top;
+
+  if (IsChromeNextIaEnabled()) {
+    if (self.layoutState.appBarPosition == AppBarPosition::kRight) {
+      inset.right += AppBarHeightLandscape();
+    } else if (self.layoutState.appBarPosition == AppBarPosition::kLeft) {
+      inset.left += AppBarHeightLandscape();
+    }
+  }
 
   return inset;
 }
@@ -2099,7 +2122,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
 - (void)gestureInProductHelpView:(GestureInProductHelpView*)view
             didDismissWithReason:(IPHDismissalReasonType)reason {
   [self.delegate tabGridDidDismissSwipeToIncognitoIPHWithReason:reason];
-  if (IsPageActionMenuEnabled()) {
+  if (IsPageActionMenuEnabled() && !IsIOSGeminiBottomSheetMigrationEnabled()) {
     [self.geminiHandler
         updateFloatyVisibilityIfEligibleAnimated:NO
                                       fromSource:gemini::FloatyUpdateSource::
@@ -2146,6 +2169,7 @@ NSUInteger GetPageIndexFromPage(TabGridPage page) {
   if (IsPinnedTabsEnabled()) {
     [self updatePinnedTabsViewControllerConstraints];
   }
+  [self setInsetForGridViews];
 }
 
 - (id<UIContextMenuInteractionAnimating>)activeContextMenuAnimator {

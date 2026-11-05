@@ -5,10 +5,10 @@
 /**
  * @fileoverview A component for displaying a single NTP Promo.
  */
-import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
-import '//resources/cr_elements/cr_action_menu/cr_action_menu.js';
-import '//resources/cr_elements/cr_icon/cr_icon.js';
-import '//resources/cr_elements/icons.html.js';
+import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
+import 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
+import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
+import 'chrome://resources/cr_elements/icons.html.js';
 import './ntp_promo_icons.html.js';
 
 import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
@@ -16,14 +16,13 @@ import {assert} from 'chrome://resources/js/assert.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import type {NtpPromoClientCallbackRouter, NtpPromoHandlerInterface, Promo} from '../ntp_promo.mojom-webui.js';
+import {browserProxyFactory} from '../ntp_promo.mojom-webui.js';
 
 import {getCss} from './individual_promos.css.js';
 import {getHtml} from './individual_promos.html.js';
-import {NtpPromoProxyImpl} from './ntp_promo_proxy.js';
 
 export interface IndividualPromosElement {
   $: {
-    actionMenu: CrActionMenuElement,
     promos: HTMLElement,
   };
 }
@@ -57,8 +56,8 @@ export class IndividualPromosElement extends CrLitElement {
 
   constructor() {
     super();
-    this.handler_ = NtpPromoProxyImpl.getInstance().getHandler();
-    this.callbackRouter_ = NtpPromoProxyImpl.getInstance().getCallbackRouter();
+    this.handler_ = browserProxyFactory.getInstance().handler;
+    this.callbackRouter_ = browserProxyFactory.getInstance().callbackRouter;
   }
 
   override connectedCallback() {
@@ -99,12 +98,13 @@ export class IndividualPromosElement extends CrLitElement {
 
   protected onMenuButtonClick_(e: Event) {
     e.stopPropagation();
-    this.$.actionMenu.showAt(e.target as HTMLElement);
+    this.shadowRoot.querySelector<CrActionMenuElement>('#actionMenu')!.showAt(
+        e.target as HTMLElement);
   }
 
   protected onPromoDismissed_(e: Event) {
     e.stopPropagation();
-    this.$.actionMenu.close();
+    this.shadowRoot.querySelector<CrActionMenuElement>('#actionMenu')!.close();
     if (this.promo_) {
       this.handler_.onPromoDismissed(this.promo_.id);
       this.promo_ = null;

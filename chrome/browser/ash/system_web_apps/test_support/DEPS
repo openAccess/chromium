@@ -3,10 +3,6 @@ include_rules = [
   # details.
   "-chrome",
 
-  # This directory is in //chrome, which violates the rule above. Allow this
-  # directory to #include its own files.
-  "+chrome/browser/ash/system_web_apps/test_support",
-
   # Existing dependencies within //chrome. There is an active effort to
   # refactor //chrome/browser/ash to break these dependencies; see b/332804822.
   # Whenever possible, avoid adding new //chrome dependencies to this list.
@@ -15,18 +11,15 @@ include_rules = [
   # individually. Other dependencies within //chrome are listed on a per-
   # directory basis. See //tools/chromeos/gen_deps.sh for details.
   "+chrome/browser/apps/app_service",
-  "+chrome/browser/ash/browser_delegate",
   "+chrome/browser/ash/system_web_apps",
   "+chrome/browser/global_features.h",
   "+chrome/browser/profiles",
   "+chrome/browser/ui/ash/system_web_apps",
   "+chrome/browser/ui/browser_window/public",
-  "+chrome/browser/ui/tabs",
   "+chrome/browser/ui/web_applications",
   "+chrome/browser/web_applications/mojom",
   "+chrome/browser/web_applications/os_integration",
   "+chrome/browser/web_applications/test",
-  "+chrome/browser/web_applications/web_app_helpers.h",
   "+chrome/browser/web_applications/web_app_icon_generator.h",
   "+chrome/browser/web_applications/web_app_install_info.h",
   "+chrome/browser/web_applications/web_app_provider.h",
@@ -36,3 +29,10 @@ include_rules = [
   "+chrome/test/base",
   "+chrome/test/interaction",
 ]
+
+specific_include_rules = {
+  # Only tests need these //chrome dependencies.
+  "system_web_app_integration_test\\.cc": [
+    "+chrome/browser/web_applications/web_app_helpers.h",
+  ],
+}

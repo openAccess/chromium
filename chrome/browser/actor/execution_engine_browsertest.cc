@@ -19,37 +19,38 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_file_util.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/site_policy.h"
-#include "chrome/browser/actor/tools/click_tool_request.h"
 #include "chrome/browser/actor/tools/fake_tool_request.h"
-#include "chrome/browser/actor/tools/tab_management_tool_request.h"
 #include "chrome/browser/actor/tools/tool_callbacks.h"
 #include "chrome/browser/actor/tools/wait_tool.h"
+#include "chrome/browser/actor/ui/actor_task_unload_handler.h"
 #include "chrome/browser/actor/ui/event_dispatcher.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/download/download_test_file_activity_observer.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
-#include "chrome/browser/glic/test_support/non_interactive_glic_test.h"
 #include "chrome/browser/lookalikes/lookalike_test_helper.h"
 #include "chrome/browser/optimization_guide/browser_test_util.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/file_system_access/file_system_access_test_utils.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
-#include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
 #include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/actor/action_result.h"
@@ -63,7 +64,6 @@
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/javascript_dialogs/app_modal_dialog_controller.h"
 #include "components/javascript_dialogs/app_modal_dialog_queue.h"
-#include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/core/filters/optimization_hints_component_update_listener.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
@@ -71,6 +71,7 @@
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
@@ -81,15 +82,17 @@
 #include "content/public/test/download_test_observer.h"
 #include "content/public/test/hit_test_region_observer.h"
 #include "content/public/test/navigation_handle_observer.h"
+#include "content/public/test/popup_test_utils.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_frame_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
@@ -99,6 +102,10 @@
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
 #include "components/safe_browsing/core/browser/db/fake_database_manager.h"
 #include "components/safe_browsing/core/common/features.h"
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_switches.h"
 #endif
 
 using ::base::test::TestFuture;
@@ -258,6 +265,40 @@ class ExecutionEngineBrowserTest : public InProcessBrowserTest {
   base::ScopedTempDir temp_dir_;
 };
 
+class ExecutionEngineCrossProfileBrowserTest
+    : public ExecutionEngineBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    ExecutionEngineBrowserTest::SetUpCommandLine(command_line);
+#if BUILDFLAG(IS_CHROMEOS)
+    command_line->AppendSwitch(
+        ash::switches::kIgnoreUserProfileMappingForTests);
+#endif
+  }
+};
+
+// A Wait action can't observe a tab in another profile: the engine resolves
+// surfaces within the task's profile, so the other profile's tab is treated as
+// absent.
+IN_PROC_BROWSER_TEST_F(ExecutionEngineCrossProfileBrowserTest,
+                       WaitCannotObserveCrossProfileTab) {
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+  Profile& profile2 = profiles::testing::CreateProfileSync(
+      profile_manager, profile_manager->GenerateNextProfileDirectoryPath());
+
+  BrowserWindowInterface* browser2 = CreateBrowserWindow(
+      BrowserWindowCreateParams(&profile2, /*from_user_gesture=*/true));
+  chrome::NewTab(browser2, NewTabTypes::kNoUserAction);
+  tabs::TabInterface* tab2 = browser2->GetActiveTabInterface();
+
+  std::unique_ptr<ToolRequest> action_request = MakeWaitRequest(tab2);
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(action_request), result.GetCallback());
+  ExpectErrorResult(result, mojom::ActionResultCode::kTabWentAway);
+
+  browser2->GetWindow()->Close();
+}
+
 // The coordinator does not yet handle multi-tab cases. For now,
 // while acting on a tab, we override attempts by the page to create new
 // tabs, and instead navigate the existing tab.
@@ -328,7 +369,8 @@ IN_PROC_BROWSER_TEST_F(ExecutionEngineBrowserTest, TwoClicksInBackgroundTab) {
 
   // Create a second tab, which will be in the foreground.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL("about:blank"), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL("about:blank"),
+      ::ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // The first tab should now be in the background.
@@ -427,8 +469,8 @@ IN_PROC_BROWSER_TEST_F(ExecutionEngineBrowserTest, FirstActionOnBlockedSite) {
 
   // Even though the first action failed, the tab should still be associated
   // with the task.
-  EXPECT_TRUE(
-      actor_task().GetLastActedTabs().contains(active_tab()->GetHandle()));
+  EXPECT_TRUE(actor_task().GetLastActedActorSurfaces().contains(
+      ActorSurfaceHandle::From(active_tab()->GetHandle())));
 }
 
 IN_PROC_BROWSER_TEST_F(ExecutionEngineBrowserTest, PrerenderBlockedSite) {
@@ -955,6 +997,23 @@ class ExecutionEngineSkipBeforeUnloadBrowserTest
     }
   }
 
+  void SetUpOnMainThread() override {
+    ExecutionEngineBrowserTest::SetUpOnMainThread();
+    // This test navigates via the Omnibox transition to exercise beforeunload
+    // handling. The leave site confirmation would intercept that navigation
+    // first, so it is suppressed here. This is process global state, so the
+    // previous value is restored at teardown.
+    previous_suppress_confirm_dialog_ =
+        ActorTaskTabCloseConfirmDialog::ShouldSuppressForTesting();
+    ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(true);
+  }
+
+  void TearDownOnMainThread() override {
+    ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(
+        previous_suppress_confirm_dialog_);
+    ExecutionEngineBrowserTest::TearDownOnMainThread();
+  }
+
   bool IsActorActive() const { return std::get<0>(GetParam()); }
   bool IsSkipFeatureEnabled() const { return std::get<1>(GetParam()); }
 
@@ -977,6 +1036,7 @@ class ExecutionEngineSkipBeforeUnloadBrowserTest
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
+  bool previous_suppress_confirm_dialog_ = false;
 };
 
 // This test is to ensure that the beforeunload dialog is skipped when the
@@ -1119,9 +1179,11 @@ IN_PROC_BROWSER_TEST_F(ExecutionEngineBrowserTest, CollectsToolVotes) {
   ExpectOkResult(result);
 
   const TabObservationStrategy& strategy = result.GetStrategy();
-  EXPECT_EQ(strategy.GetScreenshotPolicy(active_tab()->GetHandle()),
+  EXPECT_EQ(strategy.GetScreenshotPolicy(
+                ActorSurfaceHandle::From(active_tab()->GetHandle())),
             ScreenshotPolicy::kRequested);
-  EXPECT_EQ(strategy.GetPageContentExtractionPolicy(active_tab()->GetHandle()),
+  EXPECT_EQ(strategy.GetPageContentExtractionPolicy(
+                ActorSurfaceHandle::From(active_tab()->GetHandle())),
             PageContentExtractionPolicy::kRequested);
 }
 
@@ -1135,10 +1197,10 @@ IN_PROC_BROWSER_TEST_F(ExecutionEngineBrowserTest, CollectsMultipleToolVotes) {
 
   std::unique_ptr<ToolRequest> tool1 = std::make_unique<FakeToolRequest>(
       on_invoke_future1.GetCallback(), base::OnceClosure(),
-      active_tab()->GetHandle());
+      ActorSurfaceHandle::From(active_tab()->GetHandle()));
   std::unique_ptr<ToolRequest> tool2 = std::make_unique<FakeToolRequest>(
       on_invoke_future2.GetCallback(), base::OnceClosure(),
-      active_tab()->GetHandle());
+      ActorSurfaceHandle::From(active_tab()->GetHandle()));
 
   ActResultFuture result;
   actor_task().Act(ToRequestList(tool1, tool2), result.GetCallback());
@@ -1165,9 +1227,11 @@ IN_PROC_BROWSER_TEST_F(ExecutionEngineBrowserTest, CollectsMultipleToolVotes) {
   // Screenshot: max(Skipped, Required) = Required.
   // Dom Extraction: max(Required, Skipped) = Required.
   const TabObservationStrategy& strategy = result.GetStrategy();
-  EXPECT_EQ(strategy.GetScreenshotPolicy(active_tab()->GetHandle()),
+  EXPECT_EQ(strategy.GetScreenshotPolicy(
+                ActorSurfaceHandle::From(active_tab()->GetHandle())),
             ScreenshotPolicy::kRequired);
-  EXPECT_EQ(strategy.GetPageContentExtractionPolicy(active_tab()->GetHandle()),
+  EXPECT_EQ(strategy.GetPageContentExtractionPolicy(
+                ActorSurfaceHandle::From(active_tab()->GetHandle())),
             PageContentExtractionPolicy::kRequired);
 }
 

@@ -104,6 +104,7 @@ class ContactInfoActiveChecker : public SingleClientStatusChangeChecker {
 
   // StatusChangeChecker implementation.
   bool IsExitConditionSatisfied(std::ostream* os) override {
+    *os << "Waiting for CONTACT_INFO active state to become " << expect_active_;
     return service()->GetActiveDataTypes().Has(syncer::CONTACT_INFO) ==
            expect_active_;
   }
@@ -126,6 +127,7 @@ class FakeServerSpecificsChecker
 
   // StatusChangeChecker implementation.
   bool IsExitConditionSatisfied(std::ostream* os) override {
+    *os << "Waiting for server CONTACT_INFO specifics to match: ";
     std::vector<std::string> specifics;
     for (const sync_pb::SyncEntity& entity :
          fake_server()->GetSyncEntitiesByDataType(syncer::CONTACT_INFO)) {
@@ -165,14 +167,7 @@ void AddSpecificsToServer(const sync_pb::ContactInfoSpecifics& specifics,
 
 class SingleClientContactInfoSyncTestBase : public SyncTest {
  public:
-  explicit SingleClientContactInfoSyncTestBase(
-      SyncTest::SetupSyncMode setup_sync_mode)
-      : SyncTest(SINGLE_CLIENT) {
-    if (setup_sync_mode == SetupSyncMode::kSyncTransportOnly) {
-      feature_list_.InitAndEnableFeature(
-          syncer::kReplaceSyncPromosWithSignInPromos);
-    }
-  }
+  SingleClientContactInfoSyncTestBase() : SyncTest(SINGLE_CLIENT) {}
 
   // In SINGLE_CLIENT tests, there's only a single PersonalDataManager.
   autofill::PersonalDataManager* GetPersonalDataManager() const {
@@ -195,18 +190,12 @@ class SingleClientContactInfoSyncTestBase : public SyncTest {
                                        identity_manager->GetPrimaryAccountInfo(
                                            signin::ConsentLevel::kSignin)));
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 class SingleClientContactInfoSyncTest
     : public SingleClientContactInfoSyncTestBase,
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  SingleClientContactInfoSyncTest()
-      : SingleClientContactInfoSyncTestBase(GetSetupSyncMode()) {}
-
   SyncTest::SetupSyncMode GetSetupSyncMode() const override {
     return GetParam();
   }
@@ -300,11 +289,12 @@ class SingleClientContactInfoPassphraseSyncTest
       public testing::WithParamInterface<
           std::tuple<SyncTest::SetupSyncMode, bool>> {
  public:
-  SingleClientContactInfoPassphraseSyncTest()
-      : SingleClientContactInfoSyncTestBase(GetSetupSyncMode()) {
+  SingleClientContactInfoPassphraseSyncTest() {
+#if BUILDFLAG(IS_CHROMEOS)
     passphrase_feature_.InitWithFeatureState(
         syncer::kSyncEnableContactInfoDataTypeForCustomPassphraseUsers,
         EnabledForPassphraseUsersTestParam());
+#endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
   SyncTest::SetupSyncMode GetSetupSyncMode() const override {
@@ -316,13 +306,21 @@ class SingleClientContactInfoPassphraseSyncTest
   }
 
  private:
+#if BUILDFLAG(IS_CHROMEOS)
   base::test::ScopedFeatureList passphrase_feature_;
+#endif  // BUILDFLAG(IS_CHROMEOS)
 };
 
 INSTANTIATE_TEST_SUITE_P(
     ,
     SingleClientContactInfoPassphraseSyncTest,
-    testing::Combine(GetSyncTestModes(), testing::Bool()),
+    testing::Combine(GetSyncTestModes(),
+#if BUILDFLAG(IS_CHROMEOS)
+                     testing::Bool()
+#else
+                     testing::Values(true)
+#endif
+                         ),
     [](const testing::TestParamInfo<std::tuple<SyncTest::SetupSyncMode, bool>>&
            info) {
       return testing::PrintToString(std::get<0>(info.param)) +

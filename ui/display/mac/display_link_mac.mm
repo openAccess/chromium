@@ -5,6 +5,7 @@
 #include "ui/display/mac/display_link_mac.h"
 
 #include "base/feature_list.h"
+#include "base/mac/mac_util.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/bind_post_task.h"
@@ -16,9 +17,6 @@
 #include "ui/display/types/display_constants.h"
 
 namespace ui {
-
-// For testing only. Create CADisplayLink in the GPU process.
-BASE_FEATURE(kCADisplayLinkInGpu, base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool SkipPostTaskForCallbacks() {
   return base::FeatureList::IsEnabled(
@@ -38,6 +36,24 @@ bool DisplayLinkMac::SupportsDisplayLinkMacInBrowser() {
       display::features::kCADisplayLinkInBrowser);
 }
 
+// Static
+bool DisplayLinkMac::SupportsCADisplayLinkInGPU() {
+  if (!@available(macos 14.0, *)) {
+    return false;
+  }
+
+  if (!base::FeatureList::IsEnabled(display::features::kCADisplayLinkInGpu)) {
+    return false;
+  }
+
+  // The minimum version required for the Finch experiment default is set to
+  // macOS 15.0.
+  const int min_version =
+      display::features::kCADisplayLinkInGpuMinMacOSMajorVersion.Get();
+
+  return base::mac::MacOSMajorVersion() >= min_version;
+}
+
 // static
 scoped_refptr<DisplayLinkMac> DisplayLinkMac::GetForDisplay(
     int64_t vsync_display_id) {
@@ -52,16 +68,17 @@ scoped_refptr<DisplayLinkMac> DisplayLinkMac::GetForDisplay(
   CGDirectDisplayID display_id =
       static_cast<CGDirectDisplayID>(vsync_display_id);
 
+  scoped_refptr<DisplayLinkMac> display_link;
   // CADisplayLink is available only for MacOS 14.0+.
-  if (@available(macos 14.0, *)) {
-    // Testing only.
-    if (base::FeatureList::IsEnabled(kCADisplayLinkInGpu)) {
-      return CADisplayLinkMac::GetForDisplay(display_id,
-                                             /*in_gpu_process=*/true);
+  if (SupportsCADisplayLinkInGPU()) {
+    display_link = CADisplayLinkMac::GetForDisplay(display_id,
+                                                   /*in_gpu_process=*/true);
+    if (!display_link) {
+      return CVDisplayLinkMac::GetForDisplay(display_id);
     }
+    return display_link;
   }
 
-  scoped_refptr<DisplayLinkMac> display_link;
   if (SupportsDisplayLinkMacInBrowser()) {
     display_link = ExternalDisplayLinkMac::GetForDisplay(display_id);
     if (display_link) {
@@ -70,6 +87,8 @@ scoped_refptr<DisplayLinkMac> DisplayLinkMac::GetForDisplay(
     // Fallback to CVDisplayLinkMac if failed.
   }
 
+  // macOS (10.4, 15.0): CVDisplayLink is introduced in 10.4 and deprecated
+  // in 15.0.
   return CVDisplayLinkMac::GetForDisplay(display_id);
 }
 

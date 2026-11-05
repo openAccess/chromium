@@ -950,8 +950,8 @@ void DownloadManagerImpl::CreateNewDownloadItemToStart(
 
   download::DownloadItemImpl* download = CreateActiveItem(id, *info);
   if (delegate_ && info->save_info) {
-    info->save_info->needs_obfuscation =
-        delegate_->ShouldObfuscateDownload(download);
+    info->needs_obfuscation = delegate_->ShouldObfuscateDownload(download);
+    info->save_info->needs_obfuscation = info->needs_obfuscation;
     info->save_info->total_bytes = info->total_bytes;
   }
   content::devtools_instrumentation::WillBeginDownload(info.get(), download);
@@ -1211,6 +1211,19 @@ void DownloadManagerImpl::InterceptNavigation(
   ui::PageTransition transition_type =
       static_cast<ui::PageTransition>(resource_request->transition_type);
 
+  // Capture the initiator's StoragePartitionConfig now so that the download is
+  // associated with the correct partition even if the initiating frame is
+  // detached before CheckDownloadAllowed() completes.
+  auto storage_partition_config =
+      StoragePartitionConfig::CreateDefault(browser_context_);
+  auto* ftn = FrameTreeNode::GloballyFindByID(frame_tree_node_id);
+  if (ftn && ftn->current_frame_host()) {
+    storage_partition_config = ftn->current_frame_host()
+                                   ->GetSiteInstance()
+                                   ->GetSecurityPrincipal()
+                                   .GetStoragePartitionConfig();
+  }
+
   WebContents::Getter web_contents_getter =
       base::BindRepeating(WebContents::FromFrameTreeNodeId, frame_tree_node_id);
 
@@ -1220,7 +1233,7 @@ void DownloadManagerImpl::InterceptNavigation(
           weak_factory_.GetWeakPtr(), frame_tree_node_id,
           std::move(resource_request), std::move(url_chain), cert_status,
           std::move(response_head), std::move(response_body),
-          std::move(url_loader_client_endpoints));
+          std::move(url_loader_client_endpoints), storage_partition_config);
 
   delegate_->CheckDownloadAllowed(
       std::move(web_contents_getter), url, method, std::move(request_initiator),
@@ -1327,7 +1340,8 @@ download::DownloadItem* DownloadManagerImpl::CreateDownloadItem(
     bool opened,
     base::Time last_access_time,
     bool transient,
-    const std::vector<download::DownloadItem::ReceivedSlice>& received_slices) {
+    const std::vector<download::DownloadItem::ReceivedSlice>& received_slices,
+    const base::FilePath& display_name) {
   // Retrieve the in-progress download if it exists. Notice that this also
   // removes it from |in_progress_downloads_|.
   auto in_progress_download = RetrieveInProgressDownload(id);
@@ -1376,7 +1390,10 @@ download::DownloadItem* DownloadManagerImpl::CreateDownloadItem(
 #if BUILDFLAG(IS_ANDROID)
   if (target_path.IsContentUri()) {
     base::FilePath android_display_name =
-        in_progress_manager_->GetDownloadDisplayName(target_path);
+        base::FeatureList::IsEnabled(
+            download::features::kRetrieveDisplayNamesForHistoryDownloads)
+            ? display_name
+            : in_progress_manager_->GetDownloadDisplayName(target_path);
     if (!android_display_name.empty())
       item->SetDisplayName(android_display_name);
     else
@@ -1589,6 +1606,7 @@ void DownloadManagerImpl::InterceptNavigationOnChecksComplete(
     network::mojom::URLResponseHeadPtr response_head,
     mojo::ScopedDataPipeConsumerHandle response_body,
     network::mojom::URLLoaderClientEndpointsPtr url_loader_client_endpoints,
+    const StoragePartitionConfig& storage_partition_config,
     bool is_download_allowed) {
   if (!is_download_allowed) {
     DropDownload();
@@ -1599,17 +1617,12 @@ void DownloadManagerImpl::InterceptNavigationOnChecksComplete(
   int render_frame_id = -1;
   GURL site_url, tab_url, tab_referrer_url;
   RenderFrameHost* render_frame_host = nullptr;
-  auto storage_partition_config =
-      StoragePartitionConfig::CreateDefault(browser_context_);
   auto* ftn = FrameTreeNode::GloballyFindByID(frame_tree_node_id);
   if (ftn) {
     render_frame_host = ftn->current_frame_host();
     if (render_frame_host) {
       render_process_id = render_frame_host->GetProcess()->GetDeprecatedID();
       render_frame_id = render_frame_host->GetRoutingID();
-      storage_partition_config = render_frame_host->GetSiteInstance()
-                                     ->GetSecurityPrincipal()
-                                     .GetStoragePartitionConfig();
     }
     auto* web_contents = WebContentsImpl::FromFrameTreeNode(ftn);
     DCHECK(web_contents);
@@ -1689,8 +1702,9 @@ void DownloadManagerImpl::BeginResourceDownloadOnChecksComplete(
   } else if (rfh && params->url().SchemeIs(content::kChromeUIScheme)) {
     pending_url_loader_factory =
         std::make_unique<network::WrapperPendingSharedURLLoaderFactory>(
-            CreateWebUIURLLoaderFactory(rfh, params->url().GetScheme(),
-                                        base::flat_set<std::string>()));
+            CreateWebUIURLLoaderFactoryWithoutOriginLock(
+                WebUIURLLoaderFactoryPasskey::GetPassKey(), rfh,
+                params->url().GetScheme(), base::flat_set<std::string>()));
   } else if (rfh && params->url().SchemeIsFileSystem()) {
     StoragePartitionImpl* storage_partition = GetStoragePartitionForConfig(
         browser_context_, storage_partition_config);

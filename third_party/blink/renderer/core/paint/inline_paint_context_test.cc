@@ -118,7 +118,7 @@ TEST_F(InlinePaintContextTest,
   const LayoutObject* target_layout_object =
       GetLayoutObjectByElementId("target");
   ASSERT_TRUE(target_layout_object);
-  const ComputedStyle& style = target_layout_object->StyleRef();
+  const ComputedStyle& style = target_layout_object->Style();
 
   constexpr LayoutUnit kDecorationWidth(40);
   // First and last fragment of the run, but without a line cursor.
@@ -179,7 +179,7 @@ TEST_F(InlinePaintContextTest, DecorationInsetAccumulatesAcrossRun) {
   const LayoutObject* target_layout_object =
       GetLayoutObjectByElementId("target");
   ASSERT_TRUE(target_layout_object);
-  const ComputedStyle& style = target_layout_object->StyleRef();
+  const ComputedStyle& style = target_layout_object->Style();
 
   // The decorated run consists of three 20px fragments. A 40% inset resolves
   // to 24px against the 60px run, consuming each edge fragment and carrying
@@ -228,6 +228,102 @@ TEST_F(InlinePaintContextTest, DecorationInsetAccumulatesAcrossRun) {
   const DecorationGeometry ef_geometry = compute_underline(*ef_text);
   EXPECT_FLOAT_EQ(0.0f, ef_geometry.line.x());
   EXPECT_FLOAT_EQ(0.0f, ef_geometry.line.width());
+}
+
+// Shared setup for the wavy phase tests: a decorated `#target` split into
+// three 20px fragments ("AB", nested "CD", "EF"), and a helper that computes
+// each fragment's wavy underline geometry the same way `TextFragmentPainter`
+// does when painting it.
+class WavyDecorationPhaseTest : public InlinePaintContextTest {
+ public:
+  void SetupDecoratedFragments() {
+    LoadAhem();
+    SetBodyInnerHTML(R"HTML(
+      <style>
+      #ifc {
+        font: 10px/1 Ahem;
+        margin: 0;
+      }
+      #target {
+        text-decoration: underline wavy;
+      }
+      </style>
+      <div id="ifc">
+        <span id="target">AB<span style="background: yellow">CD</span>EF</span>
+      </div>
+    )HTML");
+  }
+
+  DecorationGeometry WavyGeometryFor(const LayoutObject& text) {
+    const auto* ifc = To<LayoutBlockFlow>(GetLayoutObjectByElementId("ifc"));
+    InlineCursor line_cursor(*ifc);
+    line_cursor.MoveToFirstLine();
+    InlinePaintContext inline_context;
+    inline_context.SetLineBox(line_cursor);
+
+    InlineCursor cursor;
+    cursor.MoveTo(text);
+    EXPECT_TRUE(cursor.Current());
+    const FragmentItem& item = *cursor.CurrentItem();
+    InlinePaintContext::ScopedInlineItem scoped_item(item, &inline_context);
+    const PhysicalOffset offset = item.OffsetInContainerFragment();
+    TextDecorationInfo info(LineRelativeOffset::CreateFromBoxOrigin(offset),
+                            item.Size().width, item.Style(), item.GetUsedFont(),
+                            &inline_context, TextDecorationLine::kNone,
+                            Color());
+    EXPECT_EQ(info.AppliedDecorationCount(), 1u);
+    const ResolvedDecoration decoration = info.ResolveDecorationAt(0);
+    EXPECT_TRUE(decoration.HasUnderline());
+    TextDecorationOffset decoration_offset(item.Style());
+    return info.ComputeUnderlineLineData(decoration, decoration_offset);
+  }
+
+  const LayoutObject& TextChild(int index) {
+    const LayoutObject* target = GetLayoutObjectByElementId("target");
+    const LayoutObject* ab_text = target->SlowFirstChild();
+    CHECK(ab_text && ab_text->IsText());
+    if (index == 0) {
+      return *ab_text;
+    }
+    const LayoutObject* nested_span = ab_text->NextSibling();
+    CHECK(nested_span);
+    if (index == 1) {
+      const LayoutObject* cd_text = nested_span->SlowFirstChild();
+      CHECK(cd_text && cd_text->IsText());
+      return *cd_text;
+    }
+    const LayoutObject* ef_text = nested_span->NextSibling();
+    CHECK(ef_text && ef_text->IsText());
+    return *ef_text;
+  }
+};
+
+TEST_F(WavyDecorationPhaseTest, PhaseContinuesAcrossFragments) {
+  SetupDecoratedFragments();
+
+  // The wavy pattern is anchored at the decorating box (`#target`), so each
+  // fragment's pattern shift is its inline distance from the box start. This
+  // keeps the wave phase continuous across the fragment boundaries.
+  const DecorationGeometry ab_geometry = WavyGeometryFor(TextChild(0));
+  EXPECT_EQ(ab_geometry.style, kWavyStroke);
+  EXPECT_FLOAT_EQ(0.f, ab_geometry.wavy_pattern_shift);
+
+  const DecorationGeometry cd_geometry = WavyGeometryFor(TextChild(1));
+  EXPECT_EQ(cd_geometry.style, kWavyStroke);
+  EXPECT_FLOAT_EQ(20.f, cd_geometry.wavy_pattern_shift);
+
+  const DecorationGeometry ef_geometry = WavyGeometryFor(TextChild(2));
+  EXPECT_EQ(ef_geometry.style, kWavyStroke);
+  EXPECT_FLOAT_EQ(40.f, ef_geometry.wavy_pattern_shift);
+}
+
+TEST_F(WavyDecorationPhaseTest, KillSwitchRestoresPerFragmentPhase) {
+  ScopedWavyDecorationContinuousPhaseForTest continuous_phase(false);
+  SetupDecoratedFragments();
+
+  const DecorationGeometry ef_geometry = WavyGeometryFor(TextChild(2));
+  EXPECT_EQ(ef_geometry.style, kWavyStroke);
+  EXPECT_FLOAT_EQ(0.f, ef_geometry.wavy_pattern_shift);
 }
 
 TEST_F(InlinePaintContextTest, VerticalAlign) {
@@ -350,6 +446,55 @@ TEST_F(InlinePaintContextTest, StopPropagateTextDecorations) {
     </div>
   )HTML");
   // Test pass if no DCHECK failures.
+}
+
+TEST_F(InlinePaintContextTest, TextBoxTrimInlineBox) {
+  ScopedTextBoxTrimOnInlineBoxForTest text_box_trim_on_inline_box(true);
+  LoadAhem();
+  SetBodyInnerHTML(R"HTML(
+    <style>
+    #container {
+      font-family: Ahem;
+      font-size: 100px;
+      line-height: 1.5;
+    }
+    .decorated {
+      text-decoration-line: underline;
+      text-underline-offset: 20px;
+    }
+    .trim {
+      text-box-trim: trim-both;
+      text-box-edge: ex alphabetic;
+    }
+    </style>
+    <div id="container">
+      <div><span id="untrimmed" class="decorated" style="background: yellow">x</span></div>
+      <div><span id="trimmed" class="decorated trim">x</span></div>
+      <div><span id="parent_decorated" class="decorated"><span id="child_trimmed" class="trim">x</span></span></div>
+    </div>
+  )HTML");
+
+  // `#parent_decorated` should not be culled because its child has
+  // `text-box-trim`.
+  InlineCursor parent_cursor;
+  parent_cursor.MoveTo(*GetLayoutObjectByElementId("parent_decorated"));
+  EXPECT_TRUE(parent_cursor.Current().IsInlineBox());
+
+  auto get_text_bottom_in_line = [&](const char* id) {
+    const LayoutObject* box = GetLayoutObjectByElementId(id);
+    InlineCursor cursor;
+    cursor.MoveTo(*box);
+    EXPECT_TRUE(cursor.Current().IsInlineBox());
+    cursor.MoveToNext();
+    EXPECT_TRUE(cursor.Current().IsText());
+    const FragmentItem& text_item = *cursor.Current();
+    return text_item.InkOverflowRect().Bottom() +
+           text_item.OffsetInContainerFragment().top;
+  };
+
+  const LayoutUnit untrimmed_bottom = get_text_bottom_in_line("untrimmed");
+  EXPECT_EQ(untrimmed_bottom, get_text_bottom_in_line("trimmed"));
+  EXPECT_EQ(untrimmed_bottom, get_text_bottom_in_line("child_trimmed"));
 }
 
 }  // namespace blink

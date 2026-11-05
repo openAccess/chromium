@@ -17,11 +17,11 @@
 #include "chrome/browser/ash/arc/accessibility/geometry_util.h"
 #include "chrome/browser/ash/arc/input_method_manager/arc_input_method_manager_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/extensions/api/accessibility_private.h"
 #include "chromeos/ash/experiences/arc/arc_browser_context_keyed_service_factory_base.h"
 #include "chromeos/ash/experiences/arc/message_center/arc_notification_surface.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
+#include "chromeos/ash/experiences/extensions/common/api/accessibility_private.h"
 #include "components/exo/shell_surface_util.h"
 #include "components/exo/surface.h"
 #include "components/exo/wm_helper.h"
@@ -87,7 +87,7 @@ void DispatchFocusChange(
       accessibility_manager->profile() != profile)
     return;
 
-  DCHECK(exo::WMHelper::HasInstance());
+  CHECK(exo::WMHelper::HasInstance(), base::NotFatalUntil::M160);
   aura::Window* active_window = exo::WMHelper::GetInstance()->GetActiveWindow();
   if (!active_window)
     return;
@@ -242,7 +242,7 @@ void ArcAccessibilityHelperBridge::OnToggleNativeChromeVoxArcSupport(
 
 void ArcAccessibilityHelperBridge::OnAction(
     const ui::AXActionData& data) const {
-  DCHECK(data.target_node_id);
+  CHECK(data.target_node_id, base::NotFatalUntil::M160);
 
   ax::android::AXTreeSourceAndroid* tree_source =
       tree_tracker_.GetFromTreeId(data.target_tree_id);
@@ -546,14 +546,14 @@ void ArcAccessibilityHelperBridge::DispatchEventTextAnnouncement(
   if (!event_data->event_text.has_value())
     return;
 
-  auto event_args(
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
       extensions::api::accessibility_private::OnAnnounceForAccessibility::
           Create(*(event_data->event_text)));
-  std::unique_ptr<extensions::Event> event(new extensions::Event(
+  auto event = std::make_unique<extensions::Event>(
       extensions::events::ACCESSIBILITY_PRIVATE_ON_ANNOUNCE_FOR_ACCESSIBILITY,
       extensions::api::accessibility_private::OnAnnounceForAccessibility::
           kEventName,
-      std::move(event_args)));
+      std::move(event_args));
   GetEventRouter()->BroadcastEvent(std::move(event));
 }
 

@@ -26,8 +26,6 @@ const char* SinglePlaneFormatToString(SharedImageFormat format) {
     return "RGBA_4444";
   } else if (format == SinglePlaneFormat::kBGRA_8888) {
     return "BGRA_8888";
-  } else if (format == SinglePlaneFormat::kALPHA_8) {
-    return "ALPHA_8";
   } else if (format == SinglePlaneFormat::kBGR_565) {
     return "BGR_565";
   } else if (format == SinglePlaneFormat::kETC1) {
@@ -36,8 +34,6 @@ const char* SinglePlaneFormatToString(SharedImageFormat format) {
     return "R_8";
   } else if (format == SinglePlaneFormat::kRG_88) {
     return "RG_88";
-  } else if (format == SinglePlaneFormat::kLUMINANCE_F16) {
-    return "LUMINANCE_F16";
   } else if (format == SinglePlaneFormat::kRGBA_F16) {
     return "RGBA_F16";
   } else if (format == SinglePlaneFormat::kR_16) {
@@ -54,6 +50,8 @@ const char* SinglePlaneFormatToString(SharedImageFormat format) {
     return "BGRA_1010102";
   } else if (format == SinglePlaneFormat::kR_F16) {
     return "R_F16";
+  } else if (format == SinglePlaneFormat::kY410) {
+    return "Y410";
   }
   NOTREACHED();
 }
@@ -349,7 +347,6 @@ bool SharedImageFormat::HasAlpha() const {
       case mojom::SingleplanarFormat::RGBA_1010102:
       case mojom::SingleplanarFormat::BGRA_8888:
       case mojom::SingleplanarFormat::BGRA_1010102:
-      case mojom::SingleplanarFormat::ALPHA_8:
       case mojom::SingleplanarFormat::RGBA_F16:
         return true;
       default:
@@ -384,15 +381,14 @@ int SharedImageFormat::BytesPerPixel() const {
     case mojom::SingleplanarFormat::RGBA_1010102:
     case mojom::SingleplanarFormat::BGRA_1010102:
     case mojom::SingleplanarFormat::RG_1616:
+    case mojom::SingleplanarFormat::Y410:
       return 4;
     case mojom::SingleplanarFormat::RGBA_4444:
-    case mojom::SingleplanarFormat::LUMINANCE_F16:
     case mojom::SingleplanarFormat::R_F16:
     case mojom::SingleplanarFormat::R_16:
     case mojom::SingleplanarFormat::BGR_565:
     case mojom::SingleplanarFormat::RG_88:
       return 2;
-    case mojom::SingleplanarFormat::ALPHA_8:
     case mojom::SingleplanarFormat::R_8:
       return 1;
     case mojom::SingleplanarFormat::ETC1:

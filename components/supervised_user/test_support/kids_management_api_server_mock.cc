@@ -9,7 +9,6 @@
 
 #include "base/functional/bind.h"
 #include "base/strings/strcat.h"
-#include "base/test/scoped_feature_list.h"
 #include "components/supervised_user/core/browser/fetcher_config.h"
 #include "components/supervised_user/core/browser/proto/kidsmanagement_messages.pb.h"
 #include "components/supervised_user/test_support/kids_chrome_management_test_utils.h"
@@ -20,14 +19,6 @@
 #include "url/gurl.h"
 
 namespace supervised_user {
-
-const std::multimap<kidsmanagement::FamilyRole, std::string> kSimpsonFamily = {
-    {kidsmanagement::HEAD_OF_HOUSEHOLD, "marge@gmail.com"},
-    {kidsmanagement::PARENT, "homer@gmail.com"},
-    {kidsmanagement::MEMBER, "abraham@gmail.com"},
-    {kidsmanagement::CHILD, "lisa@gmail.com"},
-    {kidsmanagement::CHILD, "bart@gmail.com"},
-};
 
 namespace {
 
@@ -48,14 +39,6 @@ kidsmanagement::ClassifyUrlResponse ClassifyUrlResponse(
   return response;
 }
 }  // namespace
-
-void SetHttpEndpointsForKidsManagementApis(
-    base::test::ScopedFeatureList& feature_list,
-    std::string_view hostname) {
-  feature_list.InitAndEnableFeatureWithParameters(
-      kSupervisedUserProtoFetcherConfig,
-      {{"service_endpoint", base::StrCat({"http://", hostname})}});
-}
 
 KidsManagementClassifyUrlMock::KidsManagementClassifyUrlMock() {
   ON_CALL(*this, ClassifyUrl)

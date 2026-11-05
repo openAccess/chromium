@@ -126,7 +126,7 @@ BtmDatabase::BtmDatabase(const std::optional<base::FilePath>& db_path)
   }
 
   if (Init() != sql::INIT_OK) {
-    LOG(WARNING) << "Failed to initialize the DIPS SQLite database.";
+    LOG(WARNING) << "Failed to initialize the BTM SQLite database.";
   }
 }
 
@@ -194,19 +194,6 @@ bool BtmDatabase::InitTables() {
   // clang-format on
   CHECK(db_->IsSQLValid(kBouncesSql), base::NotFatalUntil::M158);
 
-  static constexpr char kPopupsSql[] =  // clang-format off
-    "CREATE TABLE popups("
-      "opener_site TEXT NOT NULL,"
-      "popup_site TEXT NOT NULL,"
-      "access_id INT64,"
-      "last_popup_time INTEGER,"
-      "is_current_interaction BOOLEAN,"
-      "is_authentication_interaction BOOLEAN,"
-      "PRIMARY KEY (`opener_site`,`popup_site`)"
-    ")";
-  // clang-format on
-  CHECK(db_->IsSQLValid(kPopupsSql), base::NotFatalUntil::M158);
-
   static constexpr char kConfigSql[] =  // clang-format off
     "CREATE TABLE config("
       "key TEXT NOT NULL,"
@@ -220,7 +207,7 @@ bool BtmDatabase::InitTables() {
     return false;
   }
 
-  return db_->Execute(kBouncesSql) && db_->Execute(kPopupsSql);
+  return db_->Execute(kBouncesSql);
 }
 
 sql::InitStatus BtmDatabase::InitImpl() {
@@ -299,7 +286,6 @@ sql::InitStatus BtmDatabase::Init() {
 
 void BtmDatabase::LogDatabaseMetrics() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  base::TimeTicks start_time = base::TimeTicks::Now();
 
   std::optional<int64_t> db_size = base::GetFileSize(db_path_);
   if (db_size.has_value()) {
@@ -308,10 +294,7 @@ void BtmDatabase::LogDatabaseMetrics() {
   }
 
   base::UmaHistogramCounts10000("Privacy.DIPS.DatabaseEntryCount",
-                                GetEntryCount(BtmDatabaseTable::kBounces));
-
-  base::UmaHistogramTimes("Privacy.DIPS.DatabaseHealthMetricsTime",
-                          base::TimeTicks::Now() - start_time);
+                                GetEntryCount());
 }
 
 bool BtmDatabase::CheckDBInit() {
@@ -365,7 +348,9 @@ bool BtmDatabase::Write(const std::string& site,
       "last_web_authn_assertion_time"
     ") VALUES(?,?,?,?,?,?,?)";
   // clang-format on
-  CHECK(db_->IsSQLValid(kWriteSql), base::NotFatalUntil::M158);
+  // TODO(crbug.com/570577047): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(db_->IsSQLValid(kWriteSql));
 
   SCOPED_UMA_HISTOGRAM_TIMER("Privacy.DIPS.Database.Operation.WriteTime");
 
@@ -382,42 +367,6 @@ bool BtmDatabase::Write(const std::string& site,
   base::UmaHistogramEnumeration("Privacy.DIPS.DIPSErrorCodes",
                                 BtmErrorCode::kWrite_None);
   return true;
-}
-
-bool BtmDatabase::WritePopup(const std::string& opener_site,
-                             const std::string& popup_site,
-                             const uint64_t access_id,
-                             const base::Time& popup_time,
-                             bool is_current_interaction,
-                             bool is_authentication_interaction) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (!CheckDBInit()) {
-    return false;
-  }
-
-  static constexpr char kWriteSql[] =  // clang-format off
-    "INSERT OR REPLACE INTO popups("
-      "opener_site,"
-      "popup_site,"
-      "access_id,"
-      "last_popup_time,"
-      "is_current_interaction,"
-      "is_authentication_interaction"
-    ") VALUES(?,?,?,?,?,?)";
-  // clang-format on
-  CHECK(db_->IsSQLValid(kWriteSql), base::NotFatalUntil::M158);
-
-  SCOPED_UMA_HISTOGRAM_TIMER("Privacy.DIPS.Database.Operation.WritePopupTime");
-
-  sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kWriteSql));
-  statement.BindString(0, opener_site);
-  statement.BindString(1, popup_site);
-  statement.BindInt64(2, access_id);
-  statement.BindTime(3, popup_time);
-  statement.BindBool(4, is_current_interaction);
-  statement.BindBool(5, is_authentication_interaction);
-
-  return statement.Run();
 }
 
 std::optional<StateValue> BtmDatabase::Read(const std::string& site) {
@@ -438,7 +387,9 @@ std::optional<StateValue> BtmDatabase::Read(const std::string& site) {
     FROM bounces
     WHERE site=?
   )SQL";
-  CHECK(db_->IsSQLValid(kReadSql), base::NotFatalUntil::M158);
+  // TODO(570577090): CHECK-exclusion: Convert to a CHECK once we are confident
+  // it won't be triggered.
+  DCHECK(db_->IsSQLValid(kReadSql));
 
   SCOPED_UMA_HISTOGRAM_TIMER("Privacy.DIPS.Database.Operation.ReadTime");
 
@@ -488,7 +439,7 @@ std::optional<StateValue> BtmDatabase::Read(const std::string& site) {
   // If `site` is an empty string, treat the entry as not in the database and
   // remove it. See crbug.com/1447035 for context.
   if (site.empty()) {
-    RemoveRow(BtmDatabaseTable::kBounces, site);
+    RemoveRow(site);
     return std::nullopt;
   }
 
@@ -496,51 +447,7 @@ std::optional<StateValue> BtmDatabase::Read(const std::string& site) {
                     web_authn_assertion_times};
 }
 
-std::optional<PopupsStateValue> BtmDatabase::ReadPopup(
-    const std::string& opener_site,
-    const std::string& popup_site) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (!CheckDBInit()) {
-    return std::nullopt;
-  }
-
-  static constexpr char kReadSql[] =  // clang-format off
-      "SELECT opener_site,"
-        "popup_site,"
-        "access_id,"
-        "last_popup_time, "
-        "is_current_interaction, "
-        "is_authentication_interaction "
-        "FROM popups "
-        "WHERE opener_site=? AND popup_site=?";
-  // clang-format on
-  CHECK(db_->IsSQLValid(kReadSql), base::NotFatalUntil::M158);
-
-  SCOPED_UMA_HISTOGRAM_TIMER("Privacy.DIPS.Database.Operation.ReadPopupTime");
-
-  sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kReadSql));
-  statement.BindString(0, opener_site);
-  statement.BindString(1, popup_site);
-
-  if (!statement.Step()) {
-    return std::nullopt;
-  }
-
-  uint64_t access_id = statement.ColumnInt64(2);
-  std::optional<base::Time> popup_time = ColumnOptionalTime(statement, 3);
-  if (!popup_time.has_value()) {
-    return std::nullopt;
-  }
-  bool is_current_interaction = statement.ColumnBool(4);
-
-  bool is_authentication_interaction = statement.ColumnBool(5);
-
-  return PopupsStateValue{access_id, popup_time.value(), is_current_interaction,
-                          is_authentication_interaction};
-}
-
-std::vector<std::string> BtmDatabase::GetAllSitesForTesting(
-    BtmDatabaseTable table) {
+std::vector<std::string> BtmDatabase::GetAllSitesForTesting() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!CheckDBInit()) {
     return {};
@@ -548,24 +455,12 @@ std::vector<std::string> BtmDatabase::GetAllSitesForTesting(
 
   std::vector<std::string> sites;
 
-  if (table == BtmDatabaseTable::kBounces) {
-    static constexpr char kReadBounceTableSqlStr[] = "SELECT site FROM bounces";
-    CHECK(db_->IsSQLValid(kReadBounceTableSqlStr), base::NotFatalUntil::M158);
-    sql::Statement s_bounces(
-        db_->GetCachedStatement(SQL_FROM_HERE, kReadBounceTableSqlStr));
-    while (s_bounces.Step()) {
-      sites.push_back(s_bounces.ColumnString(0));
-    }
-  } else if (table == BtmDatabaseTable::kPopups) {
-    static constexpr char kReadPopupTableSqlStr[] =
-        "SELECT opener_site,popup_site FROM popups";
-    CHECK(db_->IsSQLValid(kReadPopupTableSqlStr), base::NotFatalUntil::M158);
-    sql::Statement s_popups(
-        db_->GetCachedStatement(SQL_FROM_HERE, kReadPopupTableSqlStr));
-    while (s_popups.Step()) {
-      sites.push_back(s_popups.ColumnString(0));
-      sites.push_back(s_popups.ColumnString(1));
-    }
+  static constexpr char kReadBounceTableSqlStr[] = "SELECT site FROM bounces";
+  CHECK(db_->IsSQLValid(kReadBounceTableSqlStr), base::NotFatalUntil::M158);
+  sql::Statement s_bounces(
+      db_->GetCachedStatement(SQL_FROM_HERE, kReadBounceTableSqlStr));
+  while (s_bounces.Step()) {
+    sites.push_back(s_bounces.ColumnString(0));
   }
 
   return sites;
@@ -591,7 +486,9 @@ std::vector<std::string> BtmDatabase::GetSitesThatBounced(
       "AND last_web_authn_assertion_time IS NULL "
     "ORDER BY site";
   // clang-format on
-  CHECK(db_->IsSQLValid(kBounceSql), base::NotFatalUntil::M158);
+  // TODO(crbug.com/559371151): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(db_->IsSQLValid(kBounceSql));
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kBounceSql));
   statement.BindTime(0, clock_->Now() - grace_period);
 
@@ -624,7 +521,9 @@ std::set<std::string> BtmDatabase::FilterSites(
   const std::string kReadSql = absl::StrFormat(
       kReadSqlFmt,
       base::JoinString(std::vector<std::string_view>(sites.size(), "?"), ","));
-  CHECK(db_->IsSQLValid(kReadSql), base::NotFatalUntil::M158);
+  // TODO(crbug.com/570257021): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(db_->IsSQLValid(kReadSql));
 
   std::string histogram_name;
   switch (filter) {
@@ -699,8 +598,9 @@ size_t BtmDatabase::ClearExpiredRows() {
     ")<?";
   // clang-format on
 
-  CHECK(db_->IsSQLValid(kClearAllExpiredBouncesTableSql),
-        base::NotFatalUntil::M158);
+  // TODO(crbug.com/564966486): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(db_->IsSQLValid(kClearAllExpiredBouncesTableSql));
   sql::Statement bounces_statement(
       db_->GetCachedStatement(SQL_FROM_HERE, kClearAllExpiredBouncesTableSql));
   bounces_statement.BindTime(
@@ -710,25 +610,10 @@ size_t BtmDatabase::ClearExpiredRows() {
   }
   change_count += db_->GetLastChangeCount();
 
-  static constexpr char kClearAllExpiredPopupsTableSql[] =
-      "DELETE FROM popups "
-      "WHERE last_popup_time<?";
-
-  CHECK(db_->IsSQLValid(kClearAllExpiredPopupsTableSql),
-        base::NotFatalUntil::M158);
-  sql::Statement popups_statement(
-      db_->GetCachedStatement(SQL_FROM_HERE, kClearAllExpiredPopupsTableSql));
-  popups_statement.BindTime(0, clock_->Now() - kPopupTtl);
-  if (!popups_statement.Run()) {
-    return 0;
-  }
-  change_count += db_->GetLastChangeCount();
-
   return change_count;
 }
 
-bool BtmDatabase::RemoveRow(const BtmDatabaseTable table,
-                            std::string_view site) {
+bool BtmDatabase::RemoveRow(std::string_view site) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!CheckDBInit()) {
     return false;
@@ -736,31 +621,14 @@ bool BtmDatabase::RemoveRow(const BtmDatabaseTable table,
 
   ClearExpiredRows();
 
-  if (table == BtmDatabaseTable::kBounces) {
-    static constexpr char kRemoveSql[] = "DELETE FROM bounces WHERE site=?";
-    CHECK(db_->IsSQLValid(kRemoveSql), base::NotFatalUntil::M158);
-    sql::Statement statement(
-        db_->GetCachedStatement(SQL_FROM_HERE, kRemoveSql));
-    statement.BindString(0, site);
-    return statement.Run();
-  } else if (table == BtmDatabaseTable::kPopups) {
-    static constexpr char kRemoveSql[] =
-        "DELETE FROM popups WHERE opener_site=? OR popup_site=?";
-    CHECK(db_->IsSQLValid(kRemoveSql), base::NotFatalUntil::M158);
-    sql::Statement statement(
-        db_->GetCachedStatement(SQL_FROM_HERE, kRemoveSql));
-    statement.BindString(0, site);
-    statement.BindString(1, site);
-    return statement.Run();
-  }
-
-  // This should never be called - both BtmDatabaseTable types are handled and
-  // return above.
-  return false;
+  static constexpr char kRemoveSql[] = "DELETE FROM bounces WHERE site=?";
+  CHECK(db_->IsSQLValid(kRemoveSql), base::NotFatalUntil::M158);
+  sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kRemoveSql));
+  statement.BindString(0, site);
+  return statement.Run();
 }
 
-bool BtmDatabase::RemoveRows(const BtmDatabaseTable table,
-                             const std::vector<std::string>& sites) {
+bool BtmDatabase::RemoveRows(const std::vector<std::string>& sites) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!CheckDBInit()) {
     return false;
@@ -775,29 +643,12 @@ bool BtmDatabase::RemoveRows(const BtmDatabaseTable table,
   const std::string site_list =
       base::JoinString(std::vector<std::string_view>(sites.size(), "?"), ",");
 
-  if (table == BtmDatabaseTable::kBounces) {
-    sql::Statement statement(db_->GetUniqueStatement(base::StrCat(
-        {"DELETE FROM bounces ", "WHERE site IN(", site_list, ")"})));
-    for (size_t i = 0; i < sites.size(); i++) {
-      statement.BindString(i, sites[i]);
-    }
-    return statement.Run();
-  } else if (table == BtmDatabaseTable::kPopups) {
-    sql::Statement statement(db_->GetUniqueStatement(
-        base::StrCat({"DELETE FROM popups ", "WHERE opener_site IN(", site_list,
-                      ") OR popup_site IN(", site_list, ")"})));
-    for (size_t i = 0; i < sites.size(); i++) {
-      // There are 2 * sites.size() total bind locations, in the first and
-      // second site_list. Each site should be bound in both lists.
-      statement.BindString(i, sites[i]);
-      statement.BindString(i + sites.size(), sites[i]);
-    }
-    return statement.Run();
+  sql::Statement statement(db_->GetUniqueStatement(base::StrCat(
+      {"DELETE FROM bounces ", "WHERE site IN(", site_list, ")"})));
+  for (size_t i = 0; i < sites.size(); i++) {
+    statement.BindString(i, sites[i]);
   }
-
-  // This should never be called - both BtmDatabaseTable types are handled and
-  // return above.
-  return false;
+  return statement.Run();
 }
 
 bool BtmDatabase::RemoveEventsByTime(const base::Time& delete_begin,
@@ -882,7 +733,9 @@ bool BtmDatabase::ClearTimestamps(const base::Time& delete_begin,
             "WHERE first_web_authn_assertion_time>=? AND "
                   "last_web_authn_assertion_time<=?";
     // clang-format on
-    CHECK(db_->IsSQLValid(kClearWaaSql), base::NotFatalUntil::M158);
+    // TODO(crbug.com/568606044): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(db_->IsSQLValid(kClearWaaSql));
 
     sql::Statement s_clear_waa(
         db_->GetCachedStatement(SQL_FROM_HERE, kClearWaaSql));
@@ -890,21 +743,6 @@ bool BtmDatabase::ClearTimestamps(const base::Time& delete_begin,
     s_clear_waa.BindTime(1, delete_end);
 
     if (!s_clear_waa.Run()) {
-      return false;
-    }
-
-    static constexpr char kClearPopupsSql[] =  // clang-format off
-        "DELETE FROM popups "
-        "WHERE last_popup_time>=? AND last_popup_time<=?";
-    // clang-format on
-    CHECK(db_->IsSQLValid(kClearPopupsSql), base::NotFatalUntil::M158);
-
-    sql::Statement s_clear_popups(
-        db_->GetCachedStatement(SQL_FROM_HERE, kClearPopupsSql));
-    s_clear_popups.BindTime(0, delete_begin);
-    s_clear_popups.BindTime(1, delete_end);
-
-    if (!s_clear_popups.Run()) {
       return false;
     }
   }
@@ -1128,13 +966,10 @@ bool BtmDatabase::RemoveEmptyRows() {
   CHECK(db_->IsSQLValid(kCleanUpSql), base::NotFatalUntil::M158);
   sql::Statement s_clean(db_->GetCachedStatement(SQL_FROM_HERE, kCleanUpSql));
 
-  // Clearing the `popups` table is unnecessary because there are no operations
-  // to nullify individual rows.
-
   return s_clean.Run();
 }
 
-size_t BtmDatabase::GetEntryCount(const BtmDatabaseTable table) {
+size_t BtmDatabase::GetEntryCount() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!CheckDBInit()) {
     return 0;
@@ -1142,23 +977,11 @@ size_t BtmDatabase::GetEntryCount(const BtmDatabaseTable table) {
 
   ClearExpiredRows();
 
-  if (table == BtmDatabaseTable::kBounces) {
-    static constexpr char kBounceTableEntryCountSqlStr[] =
-        "SELECT COUNT(*) FROM bounces";
-    sql::Statement statement(
-        db_->GetCachedStatement(SQL_FROM_HERE, kBounceTableEntryCountSqlStr));
-    return (statement.Step() ? statement.ColumnInt(0) : 0);
-  } else if (table == BtmDatabaseTable::kPopups) {
-    static constexpr char kPopupTableEntryCountSqlStr[] =
-        "SELECT COUNT(*) FROM popups";
-    sql::Statement statement(
-        db_->GetCachedStatement(SQL_FROM_HERE, kPopupTableEntryCountSqlStr));
-    return (statement.Step() ? statement.ColumnInt(0) : 0);
-  }
-
-  // This should never be called - both BtmDatabaseTable types are handled and
-  // return above.
-  return false;
+  static constexpr char kBounceTableEntryCountSqlStr[] =
+      "SELECT COUNT(*) FROM bounces";
+  sql::Statement statement(
+      db_->GetCachedStatement(SQL_FROM_HERE, kBounceTableEntryCountSqlStr));
+  return (statement.Step() ? statement.ColumnInt(0) : 0);
 }
 
 size_t BtmDatabase::GarbageCollect() {
@@ -1169,33 +992,28 @@ size_t BtmDatabase::GarbageCollect() {
 
   size_t num_deleted = ClearExpiredRows();
 
-  for (const BtmDatabaseTable table :
-       {BtmDatabaseTable::kBounces, BtmDatabaseTable::kPopups}) {
-    // NOTE: `GetEntryCount()` might perform other row deletions whilst
-    // re-calling `ClearExpiredRows()`, but possible precision lost in the final
-    // num_delete isn't deemed crucial.
-    const size_t num_entries = GetEntryCount(table);
-    if (num_entries <= max_entries_) {
-      continue;
-    }
-
-    const int purge_goal = num_entries - (max_entries_ - purge_entries_);
-    CHECK_GT(purge_goal, 0, base::NotFatalUntil::M158);
-    num_deleted += GarbageCollectOldest(table, purge_goal);
+  // NOTE: `GetEntryCount()` might perform other row deletions whilst
+  // re-calling `ClearExpiredRows()`, but possible precision lost in the final
+  // num_delete isn't deemed crucial.
+  const size_t num_entries = GetEntryCount();
+  if (num_entries <= max_entries_) {
+    return num_deleted;
   }
+
+  const int purge_goal = num_entries - (max_entries_ - purge_entries_);
+  CHECK_GT(purge_goal, 0, base::NotFatalUntil::M158);
+  num_deleted += GarbageCollectOldest(purge_goal);
 
   return num_deleted;
 }
 
-size_t BtmDatabase::GarbageCollectOldest(const BtmDatabaseTable table,
-                                         int purge_goal) {
+size_t BtmDatabase::GarbageCollectOldest(int purge_goal) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!CheckDBInit()) {
     return 0;
   }
 
-  if (table == BtmDatabaseTable::kBounces) {
-    static constexpr char kGarbageCollectOldestSql[] =  // clang-format off
+  static constexpr char kGarbageCollectOldestSql[] =  // clang-format off
     "DELETE FROM bounces "
     "WHERE site IN("
       "SELECT site FROM bounces "
@@ -1214,46 +1032,22 @@ size_t BtmDatabase::GarbageCollectOldest(const BtmDatabaseTable table,
         "last_web_authn_assertion_time ASC "
       "LIMIT ?"
     ")";
-    // clang-format on
-    CHECK(db_->IsSQLValid(kGarbageCollectOldestSql), base::NotFatalUntil::M158);
+  // clang-format on
+  CHECK(db_->IsSQLValid(kGarbageCollectOldestSql), base::NotFatalUntil::M158);
 
-    sql::Statement statement(
-        db_->GetCachedStatement(SQL_FROM_HERE, kGarbageCollectOldestSql));
-    statement.BindInt(0, purge_goal);
-    return statement.Run() ? db_->GetLastChangeCount() : 0;
-  } else if (table == BtmDatabaseTable::kPopups) {
-    static constexpr char kGarbageCollectOldestSql[] =  // clang-format off
-    "DELETE FROM popups "
-    "WHERE (opener_site,popup_site) IN("
-      "SELECT opener_site,popup_site "
-      "FROM popups "
-      "ORDER BY last_popup_time ASC "
-      "LIMIT ?"
-    ")";
-    // clang-format on
-    CHECK(db_->IsSQLValid(kGarbageCollectOldestSql), base::NotFatalUntil::M158);
-
-    sql::Statement statement(
-        db_->GetCachedStatement(SQL_FROM_HERE, kGarbageCollectOldestSql));
-    statement.BindInt(0, purge_goal);
-    return statement.Run() ? db_->GetLastChangeCount() : 0;
-  }
-
-  // This should never be called - both BtmDatabaseTable types are handled and
-  // return above.
-  return false;
+  sql::Statement statement(
+      db_->GetCachedStatement(SQL_FROM_HERE, kGarbageCollectOldestSql));
+  statement.BindInt(0, purge_goal);
+  return statement.Run() ? db_->GetLastChangeCount() : 0;
 }
 
-std::vector<std::string> BtmDatabase::GetGarbageCollectOldestSitesForTesting(
-    BtmDatabaseTable table) {
+std::vector<std::string> BtmDatabase::GetGarbageCollectOldestSitesForTesting() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!CheckDBInit()) {
     return {};
   }
 
-  std::vector<std::string> sites;
-  if (table == BtmDatabaseTable::kBounces) {
-    static constexpr char kReadSql[] =  // clang-format off
+  static constexpr char kReadSql[] =  // clang-format off
     "SELECT site FROM bounces "
     "ORDER BY "
       "MAX("
@@ -1268,26 +1062,14 @@ std::vector<std::string> BtmDatabase::GetGarbageCollectOldestSitesForTesting(
       ") ASC,"
       "last_user_activation_time ASC,"
       "last_web_authn_assertion_time ASC";
-    // clang-format on
-    CHECK(db_->IsSQLValid(kReadSql), base::NotFatalUntil::M158);
+  // clang-format on
+  CHECK(db_->IsSQLValid(kReadSql), base::NotFatalUntil::M158);
 
-    sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kReadSql));
-    while (statement.Step()) {
-      sites.push_back(statement.ColumnString(0));
-    }
-  } else if (table == BtmDatabaseTable::kPopups) {
-    static constexpr char kReadSql[] =
-        "SELECT opener_site,popup_site "
-        "FROM popups "
-        "ORDER BY last_popup_time ASC";
-    CHECK(db_->IsSQLValid(kReadSql), base::NotFatalUntil::M158);
-
-    sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kReadSql));
-    while (statement.Step()) {
-      sites.push_back(statement.ColumnString(0));
-    }
+  std::vector<std::string> sites;
+  sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kReadSql));
+  while (statement.Step()) {
+    sites.push_back(statement.ColumnString(0));
   }
-
   return sites;
 }
 
@@ -1299,7 +1081,9 @@ bool BtmDatabase::SetConfigValue(std::string_view key, int64_t value) {
 
   static constexpr char kInsertValueSql[] =
       "INSERT OR REPLACE INTO config(key,int_value) VALUES(?,?)";
-  CHECK(db_->IsSQLValid(kInsertValueSql), base::NotFatalUntil::M158);
+  // TODO(566054600): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(db_->IsSQLValid(kInsertValueSql));
   sql::Statement statement(
       db_->GetCachedStatement(SQL_FROM_HERE, kInsertValueSql));
   statement.BindString(0, key);

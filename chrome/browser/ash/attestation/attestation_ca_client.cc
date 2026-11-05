@@ -152,7 +152,7 @@ void AttestationCAClient::OnURLLoadComplete(
   std::unique_ptr<network::SimpleURLLoader> url_loader = std::move(*it);
   url_loaders_.erase(it);
 
-  DCHECK(url_loader);
+  CHECK(url_loader, base::NotFatalUntil::M161);
 
   if (url_loader->ResponseInfo() && url_loader->ResponseInfo()->headers) {
     int response_code = url_loader->ResponseInfo()->headers->response_code();
@@ -234,22 +234,15 @@ void AttestationCAClient::CheckIfAnyProxyPresent(
     ProxyPresenceCallback callback) {
   GURL url(GetType() == TEST_PCA ? kTestEnrollRequestURL
                                  : kDefaultEnrollRequestURL);
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M161);
 
   network::mojom::NetworkContext* network_context = nullptr;
   // Uses the injected network context if present.
   if (network_context_for_testing_ != nullptr) {
     network_context = network_context_for_testing_;
-  } else if (!g_browser_process ||
-             !g_browser_process->system_network_context_manager() ||
-             !g_browser_process->system_network_context_manager()
-                  ->GetContext()) {
-    LOG(DFATAL) << "No valid system network context.";
-    std::move(callback).Run(/*is_any_proxy_present=*/true);
-    return;
   } else {
-    network_context =
-        g_browser_process->system_network_context_manager()->GetContext();
+    CHECK(SystemNetworkContextManager::HasInstance());
+    network_context = SystemNetworkContextManager::GetInstance()->GetContext();
   }
 
   CAProxyLookupClient::LookUpProxyForURL(

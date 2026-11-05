@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.metrics;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
+import android.app.Activity;
 import android.content.ComponentCallbacks;
 import android.content.Context;
 import android.content.res.Configuration;
@@ -16,6 +17,8 @@ import androidx.annotation.VisibleForTesting;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.Log;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
@@ -34,6 +37,7 @@ import org.chromium.content_public.browser.BrowserStartupController;
 import org.chromium.content_public.browser.DeviceUtils;
 import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.permissions.AndroidPermissionDelegate;
 import org.chromium.url.GURL;
 
@@ -45,8 +49,6 @@ import org.chromium.url.GURL;
 @NullMarked
 public class UmaSessionStats {
     private static final String TAG = "UmaSessionStats";
-
-    private static long sNativeUmaSessionStats;
 
     // TabModelSelector is needed to get the count of open tabs. We want to log the number of open
     // tabs on every page load.
@@ -68,7 +70,8 @@ public class UmaSessionStats {
         mContext = context;
     }
 
-    private void recordPageLoadStats(Tab tab) {
+    @VisibleForTesting
+    void recordPageLoadStats(Tab tab) {
         WebContents webContents = tab.getWebContents();
         boolean isDesktopUserAgent =
                 webContents != null
@@ -84,8 +87,21 @@ public class UmaSessionStats {
         if (connectedDevices.contains(InputDevice.SOURCE_MOUSE)) {
             UmaSessionStatsJni.get().recordPageLoadedWithMouse();
         }
-        if (EdgeToEdgeUtils.isPageOptedIntoEdgeToEdge(tab)) {
+        if (EdgeToEdgeUtils.isPageOptedIntoBottomEdgeToEdge(tab)) {
             UmaSessionStatsJni.get().recordPageLoadedWithToEdge();
+        }
+        if (DeviceInfo.isFoldable()) {
+            Activity activity = ContextUtils.activityFromContext(tab.getContext());
+            // Not all tabs are associated with an Activity. If there is no
+            // activity, skip it, since then it's not clear what is the display.
+            if (activity != null) {
+                // Approximates inner screen (tablet mode) vs outer screen (phone mode) usage.
+                // Note: Does not handle corner cases like multi-window/split-screen where an
+                // inner screen window has phone-like dimensions.
+                boolean isTabletMode = DeviceFormFactor.isNonMultiDisplayContextOnTablet(activity);
+                RecordHistogram.recordBooleanHistogram(
+                        "Android.Foldable.PageLoadedInTabletMode", isTabletMode);
+            }
         }
 
         // If the session has ended (i.e. chrome is in the background), escape early. Ideally we
@@ -114,7 +130,6 @@ public class UmaSessionStats {
             @ActivityType int activityType,
             @Nullable TabModelSelector tabModelSelector,
             @Nullable AndroidPermissionDelegate permissionDelegate) {
-        ensureNativeInitialized();
         mTabbedSessionContainedGoogleSearch = false;
         mCurrentActivityType = activityType;
 
@@ -155,18 +170,10 @@ public class UmaSessionStats {
                     };
         }
 
-        UmaSessionStatsJni.get().umaResumeSession(sNativeUmaSessionStats);
+        UmaSessionStatsJni.get().umaResumeSession();
         updatePreferences();
         updateMetricsServiceState();
         DefaultBrowserInfoUmaRecorder.logDefaultBrowserStats();
-    }
-
-    private static void ensureNativeInitialized() {
-        // Lazily create the native object and the notification handler. These objects are never
-        // destroyed.
-        if (sNativeUmaSessionStats == 0) {
-            sNativeUmaSessionStats = UmaSessionStatsJni.get().init();
-        }
     }
 
     /** Unregisters observers, and if this is the last active session, logs the current session. */
@@ -183,7 +190,7 @@ public class UmaSessionStats {
                     mTabbedSessionContainedGoogleSearch);
         }
 
-        UmaSessionStatsJni.get().umaEndSession(sNativeUmaSessionStats);
+        UmaSessionStatsJni.get().umaEndSession();
     }
 
     /**
@@ -291,8 +298,6 @@ public class UmaSessionStats {
     @VisibleForTesting
     @NativeMethods
     public interface Natives {
-        long init();
-
         void changeMetricsReportingState(boolean enabled, int calledFrom);
 
         void initMetricsAndCrashReportingForTesting();
@@ -303,9 +308,9 @@ public class UmaSessionStats {
 
         void updateMetricsServiceState(boolean mayUpload);
 
-        void umaResumeSession(long nativeUmaSessionStats);
+        void umaResumeSession();
 
-        void umaEndSession(long nativeUmaSessionStats);
+        void umaEndSession();
 
         void registerExternalExperiment(
                 @JniType("std::vector<int32_t>") int[] experimentIds, boolean overrideExistingIds);

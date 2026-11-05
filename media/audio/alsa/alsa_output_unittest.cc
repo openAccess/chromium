@@ -187,9 +187,9 @@ TEST_F(AlsaPcmOutputStreamTest, ConstructedState) {
 }
 
 TEST_F(AlsaPcmOutputStreamTest, LatencyFloor) {
-  constexpr const double kMicrosPerFrame =
+  constexpr double kMicrosPerFrame =
       static_cast<double>(1000000) / kTestSampleRate;
-  const double kPacketFramesInMinLatency =
+  constexpr double kPacketFramesInMinLatency =
       AlsaPcmOutputStream::kMinLatencyMicros / kMicrosPerFrame / 2.0;
 
   // Test that packets which would cause a latency under less than
@@ -220,7 +220,7 @@ TEST_F(AlsaPcmOutputStreamTest, LatencyFloor) {
   Mock::VerifyAndClear(mock_manager_.get());
 
   // Test that having more packets ends up with a latency based on packet size.
-  const int kOverMinLatencyPacketSize = kPacketFramesInMinLatency + 1;
+  constexpr int kOverMinLatencyPacketSize = kPacketFramesInMinLatency + 1;
   int64_t expected_micros = AudioTimestampHelper::FramesToTime(
                                 kOverMinLatencyPacketSize * 2, kTestSampleRate)
                                 .InMicroseconds();
@@ -278,7 +278,7 @@ TEST_F(AlsaPcmOutputStreamTest, OpenClose) {
   EXPECT_EQ(AlsaPcmOutputStream::kIsOpened, test_stream->state());
   EXPECT_EQ(GetFakeHandle(), test_stream->playback_handle_);
   EXPECT_EQ(kTestFramesPerPacket, test_stream->frames_per_packet_);
-  EXPECT_TRUE(test_stream->buffer_.get());
+  EXPECT_TRUE(test_stream->buffer_);
   EXPECT_FALSE(test_stream->stop_stream_);
 
   // Now close it and test that everything was released.
@@ -302,7 +302,7 @@ TEST_F(AlsaPcmOutputStreamTest, PcmOpenFailed) {
   // Ensure internal state is set for a no-op stream if PcmOpen() fails.
   EXPECT_TRUE(test_stream->stop_stream_);
   EXPECT_FALSE(test_stream->playback_handle_);
-  EXPECT_FALSE(test_stream->buffer_.get());
+  EXPECT_FALSE(test_stream->buffer_);
 
   // Close the stream since we opened it to make destruction happy.
   test_stream->Close();
@@ -329,7 +329,7 @@ TEST_F(AlsaPcmOutputStreamTest, PcmSetParamsFailed) {
   // Ensure internal state is set for a no-op stream if PcmSetParams() fails.
   EXPECT_TRUE(test_stream->stop_stream_);
   EXPECT_FALSE(test_stream->playback_handle_);
-  EXPECT_FALSE(test_stream->buffer_.get());
+  EXPECT_FALSE(test_stream->buffer_);
 
   // Close the stream since we opened it to make destruction happy.
   test_stream->Close();

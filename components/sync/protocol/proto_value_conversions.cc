@@ -21,7 +21,6 @@
 #include "components/sync/protocol/app_setting_specifics.pb.h"
 #include "components/sync/protocol/app_specifics.pb.h"
 #include "components/sync/protocol/arc_package_specifics.pb.h"
-#include "components/sync/protocol/autofill_offer_specifics.pb.h"
 #include "components/sync/protocol/autofill_specifics.pb.h"
 #include "components/sync/protocol/bookmark_specifics.pb.h"
 #include "components/sync/protocol/collaboration_group_specifics.pb.h"
@@ -61,7 +60,6 @@
 #include "components/sync/protocol/typed_url_specifics.pb.h"
 #include "components/sync/protocol/user_consent_specifics.pb.h"
 #include "components/sync/protocol/user_event_specifics.pb.h"
-#include "components/sync/protocol/web_apk_specifics.pb.h"
 #include "components/sync/protocol/web_app_specifics.pb.h"
 #include "components/sync/protocol/webauthn_credential_specifics.pb.h"
 #include "components/sync/protocol/workspace_desk_specifics.pb.h"
@@ -347,7 +345,6 @@ IMPLEMENT_PROTO_TO_VALUE(AppListSpecifics)
 IMPLEMENT_PROTO_TO_VALUE(AppSettingSpecifics)
 IMPLEMENT_PROTO_TO_VALUE(AppSpecifics)
 IMPLEMENT_PROTO_TO_VALUE(ArcPackageSpecifics)
-IMPLEMENT_PROTO_TO_VALUE(AutofillOfferSpecifics)
 IMPLEMENT_PROTO_TO_VALUE(AutofillProfileSpecifics)
 IMPLEMENT_PROTO_TO_VALUE(AutofillSpecifics)
 IMPLEMENT_PROTO_TO_VALUE(AutofillValuableMetadataSpecifics)
@@ -426,7 +423,6 @@ IMPLEMENT_PROTO_TO_VALUE(WalletCreditCardCloudTokenData)
 IMPLEMENT_PROTO_TO_VALUE(WalletMaskedCreditCard)
 IMPLEMENT_PROTO_TO_VALUE(WalletMetadataSpecifics)
 IMPLEMENT_PROTO_TO_VALUE(WalletPostalAddress)
-IMPLEMENT_PROTO_TO_VALUE(WebApkSpecifics)
 IMPLEMENT_PROTO_TO_VALUE(WebAppSpecifics)
 IMPLEMENT_PROTO_TO_VALUE(WebauthnCredentialSpecifics)
 IMPLEMENT_PROTO_TO_VALUE(WifiConfigurationSpecifics)

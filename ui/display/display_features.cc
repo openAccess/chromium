@@ -45,7 +45,19 @@ BASE_FEATURE(kDrmColorSpaceDefaultIsRec709, base::FEATURE_DISABLED_BY_DEFAULT);
 #if BUILDFLAG(IS_MAC)
 BASE_FEATURE(kCADisplayLinkInBrowser, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kSkipPostTaskForCallbacks, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kCADisplayLinkInGpu, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Minimum macOS major version (e.g. "14", "15", "26", or "27") required
+// to use CADisplayLink in the GPU process when `kCADisplayLinkInGpu` is
+// enabled.
+// The minimum required version has been raised to macOS 15.0, as CVDisplayLink
+// is fully deprecated at this version and replaced by CADisplayLink.
+BASE_FEATURE_PARAM(int,
+                   kCADisplayLinkInGpuMinMacOSMajorVersion,
+                   &kCADisplayLinkInGpu,
+                   15);
+
+BASE_FEATURE(kSkipPostTaskForCallbacks, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
 // TODO(gildekel): A temporary flag to control whether EDID-based (vs.

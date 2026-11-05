@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/client/client_shared_image.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
@@ -94,18 +95,12 @@ class TestSharedImageInterface : public SharedImageInterface {
   scoped_refptr<ClientSharedImage> ImportSharedImage(
       ExportedSharedImage exported_shared_image) override;
 
-  void DestroySharedImage(const SyncToken& sync_token,
+  void DestroySharedImage(std::vector<SyncToken> sync_tokens,
                           const Mailbox& mailbox) override;
-  void DestroySharedImage(
-      const SyncToken& sync_token,
-      scoped_refptr<ClientSharedImage> client_shared_image) override;
 
-  bool IsLost() const override { return false; }
-  bool AddGpuChannelLostObserver(GpuChannelLostObserver* observer) override {
-    return true;
-  }
-  void RemoveGpuChannelLostObserver(GpuChannelLostObserver* observer) override {
-  }
+  bool IsLost() const override;
+  bool AddGpuChannelLostObserver(GpuChannelLostObserver* observer) override;
+  void RemoveGpuChannelLostObserver(GpuChannelLostObserver* observer) override;
 
 #if BUILDFLAG(IS_FUCHSIA)
   void RegisterSysmemBufferCollection(zx::eventpair service_handle,
@@ -179,8 +174,8 @@ class TestSharedImageInterface : public SharedImageInterface {
   const SyncToken& MostRecentGeneratedToken() const {
     return most_recent_generated_token_;
   }
-  const SyncToken& MostRecentDestroyToken() const {
-    return most_recent_destroy_token_;
+  const std::vector<SyncToken>& MostRecentDestroyTokens() const {
+    return most_recent_destroy_tokens_;
   }
   ClientSharedImage* MostRecentMappableSharedImage() const {
     return most_recent_mappable_shared_image_;
@@ -199,18 +194,12 @@ class TestSharedImageInterface : public SharedImageInterface {
     emulate_client_provided_native_buffer_ = true;
   }
 
-#if BUILDFLAG(IS_MAC)
-  void set_texture_target_for_io_surfaces(uint32_t target) {
-    shared_image_capabilities_.texture_target_for_io_surfaces = target;
-  }
-#endif
+  void MarkAsLost();
 
  protected:
   ~TestSharedImageInterface() override;
 
  private:
-  void InitializeSharedImageCapabilities();
-
   mutable base::Lock lock_;
 
   raw_ptr<TestSharedImageInterfaceClient> test_client_ = nullptr;
@@ -219,7 +208,7 @@ class TestSharedImageInterface : public SharedImageInterface {
   size_t num_update_shared_image_no_fence_calls_ = 0;
   gfx::Size most_recent_size_;
   SyncToken most_recent_generated_token_;
-  SyncToken most_recent_destroy_token_;
+  std::vector<SyncToken> most_recent_destroy_tokens_;
   raw_ptr<ClientSharedImage> most_recent_mappable_shared_image_;
   absl::flat_hash_set<Mailbox> shared_images_;
   bool emulate_client_provided_native_buffer_ = false;
@@ -237,6 +226,9 @@ class TestSharedImageInterface : public SharedImageInterface {
   absl::flat_hash_map<SharedImagePoolId,
                       mojo::Remote<mojom::SharedImagePoolClientInterface>>
       remote_map_;
+
+  bool is_lost_ GUARDED_BY(lock_) = false;
+  std::vector<raw_ptr<GpuChannelLostObserver>> observer_list_ GUARDED_BY(lock_);
 };
 
 }  // namespace gpu

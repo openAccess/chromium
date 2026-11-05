@@ -14,6 +14,7 @@
 #include "ui/compositor/paint_recorder.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/skia_util.h"
 
@@ -23,6 +24,7 @@ LensOverlayBlurLayerDelegate::LensOverlayBlurLayerDelegate(
     content::RenderWidgetHost* background_view_host)
     : background_view_host_(background_view_host) {
   SetLayer(std::make_unique<ui::LayerTextured>());
+  layer()->SetName("LensOverlayBlurLayer");
   layer()->SetFillsBoundsOpaquely(true);
   layer()->set_delegate(this);
 
@@ -132,7 +134,9 @@ void LensOverlayBlurLayerDelegate::FetchBackgroundImage() {
   auto* view = background_view_host_->GetView();
   auto size = view->GetViewBounds().size();
   auto quality = lens::features::GetLensOverlayCustomBlurQuality();
-  view->CopyFromSurface(
+  // Use CopyFromSurfaceSecure() because the Lens Overlay background blur layer
+  // is a trusted internal browser UI feature.
+  view->CopyFromSurfaceSecure(
       /*src_rect=*/gfx::Rect(),
       /*output_size=*/
       gfx::Size(size.width() * quality, size.height() * quality),

@@ -7,6 +7,9 @@ package org.chromium.chrome.browser.omnibox.voice;
 import static androidx.test.espresso.intent.Intents.intending;
 import static androidx.test.espresso.intent.matcher.IntentMatchers.hasAction;
 
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.lenient;
+
 import static org.chromium.base.test.transit.TransitAsserts.assertFinalDestination;
 
 import android.app.Activity;
@@ -25,21 +28,31 @@ import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarStatePredictor;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
+import org.chromium.chrome.test.transit.omnibox.OmniboxEnteredTextFacility;
 import org.chromium.chrome.test.transit.omnibox.OmniboxFacility;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.transit.testhtmls.NavigatePageStations;
+import org.chromium.components.omnibox.OmniboxFeatureList;
+import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.url.GURL;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -48,12 +61,21 @@ import java.util.List;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
+// These tests exercise the system speech recognizer flow, including low-confidence results. Keep
+// the Google app Voice Plate disabled so devices with the Google app installed don't delegate to
+// it, which always treats results as high confidence.
+@DisableFeatures(OmniboxFeatureList.OMNIBOX_VOICE_PLATE_INTENT)
 public final class VoiceSearchPTTest {
     private static final String VOICE_QUERY = "query";
 
     @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
+
+    @Rule
     public final AutoResetCtaTransitTestRule mCtaTestRule =
             ChromeTransitTestRules.fastAutoResetCtaActivityRule();
+
+    @Mock private TemplateUrlService mTemplateUrlService;
 
     @BeforeClass
     public static void setUpBeforeActivityLaunched() {
@@ -70,6 +92,18 @@ public final class VoiceSearchPTTest {
     @Before
     public void setUp() {
         Intents.init();
+        String testPageUrl = mCtaTestRule.getTestServer().getURL(NavigatePageStations.PATH_SIMPLE);
+        lenient().doReturn(true).when(mTemplateUrlService).doesDefaultSearchEngineHaveLogo();
+        lenient().doReturn(true).when(mTemplateUrlService).isDefaultSearchEngineGoogle();
+        lenient()
+                .doAnswer(
+                        invocation -> {
+                            String query = invocation.getArgument(0);
+                            return new GURL(testPageUrl + "?/search?q=" + query);
+                        })
+                .when(mTemplateUrlService)
+                .getUrlForVoiceSearchQuery(anyString());
+        TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
     }
 
     @After
@@ -110,9 +144,38 @@ public final class VoiceSearchPTTest {
         OmniboxFacility omnibox = ntp.openOmnibox();
 
         stubSpeechRecognitionResult(VOICE_QUERY, /* isHighConfidence= */ true);
-        WebPageStation searchResultsPage = omnibox.clickOmniboxMicToSearchPage(VOICE_QUERY);
+        WebPageStation searchResultsPage = clickOmniboxMicToSearchPage(omnibox, ntp, VOICE_QUERY);
 
         assertFinalDestination(searchResultsPage);
+    }
+
+    @LargeTest
+    @Test
+    @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
+    public void testOmniboxVoiceSearch_lowConfidence_entersText() {
+        RegularNewTabPageStation ntp = mCtaTestRule.startOnNtp();
+        OmniboxFacility omnibox = ntp.openOmnibox();
+        stubSpeechRecognitionResult(VOICE_QUERY, /* isHighConfidence= */ false);
+
+        OmniboxEnteredTextFacility enteredText = clickOmniboxMicToEnteredText(omnibox, VOICE_QUERY);
+
+        // Exiting the facility is necessary for batching tests together, as leaving the omnibox
+        // focused causes subsequent tests in the batch to fail.
+        enteredText.pressBackToExit();
+
+        assertFinalDestination(ntp);
+    }
+
+    private static WebPageStation clickOmniboxMicToSearchPage(
+            OmniboxFacility omnibox, RegularNewTabPageStation ntp, String query) {
+        return omnibox.micButtonElement.clickTo().arriveAt(ntp.createSearchPageStation(query));
+    }
+
+    private static OmniboxEnteredTextFacility clickOmniboxMicToEnteredText(
+            OmniboxFacility omnibox, String text) {
+        return omnibox.micButtonElement
+                .clickTo()
+                .enterFacility(new OmniboxEnteredTextFacility(omnibox, text));
     }
 
     private static void stubSpeechRecognitionResult(String query, boolean isHighConfidence) {

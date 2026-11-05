@@ -238,13 +238,13 @@ class CORE_EXPORT ConstraintSpaceBuilder final {
     EnsureRareData()->is_monolithic_overflow_propagation_disabled = true;
   }
 
-  void SetIsHiddenForPaint(bool is_hidden_for_paint) {
+  void SetIsHiddenDueToLayout(bool is_hidden_due_to_layout) {
 #if DCHECK_IS_ON()
-    DCHECK(!is_hidden_for_paint_set_);
-    is_hidden_for_paint_set_ = true;
+    DCHECK(!is_hidden_due_to_layout_set_);
+    is_hidden_due_to_layout_set_ = true;
 #endif
-    if (is_hidden_for_paint) {
-      space_.bitfields_.is_hidden_for_paint = true;
+    if (is_hidden_due_to_layout) {
+      space_.bitfields_.is_hidden_due_to_layout = true;
     }
   }
 
@@ -404,17 +404,11 @@ class CORE_EXPORT ConstraintSpaceBuilder final {
     space_.bitfields_.contains_annotations = b;
   }
   void SetBlockStartAnnotationSpace(LayoutUnit space) {
-    if (space)
-      EnsureRareData()->SetBlockStartAnnotationSpace(space);
-  }
-
-  void SetPreviousSiblingBlockEndAnnotationSpace(LayoutUnit space) {
     if (space) {
-      EnsureRareData()->SetPreviousSiblingBlockEndAnnotationSpace(space);
+      EnsureRareData()->SetBlockStartAnnotationSpace(space);
     } else {
-      // We assume SetPreviousSiblingBlockEndAnnotationSpace() is called only
-      // once.
-      DCHECK_EQ(space, space_.PreviousSiblingBlockEndAnnotationSpace());
+      // We assume SetBlockStartAnnotationSpace() is called only once.
+      DCHECK_EQ(space, space_.BlockStartAnnotationSpace());
     }
   }
 
@@ -652,6 +646,14 @@ class CORE_EXPORT ConstraintSpaceBuilder final {
     EnsureRareData()->SetGridLayoutSubtree(grid_layout_subtree);
   }
 
+  void SetIsLineClampClippedFloat() {
+#if DCHECK_IS_ON()
+    DCHECK(!is_line_clamp_clipped_float_set_);
+    is_line_clamp_clipped_float_set_ = true;
+#endif
+    space_.bitfields_.is_line_clamp_clipped_float = true;
+  }
+
   // Creates a new constraint space.
   const ConstraintSpace ToConstraintSpace() {
 #if DCHECK_IS_ON()
@@ -710,7 +712,7 @@ class CORE_EXPORT ConstraintSpaceBuilder final {
   bool force_orthogonal_writing_mode_root_;
 
 #if DCHECK_IS_ON()
-  bool is_hidden_for_paint_set_ = false;
+  bool is_hidden_due_to_layout_set_ = false;
   bool is_available_size_set_ = false;
   bool is_percentage_resolution_size_set_ = false;
   bool is_fragmentainer_block_size_set_ = false;
@@ -729,6 +731,7 @@ class CORE_EXPORT ConstraintSpaceBuilder final {
   bool is_table_row_data_set_ = false;
   bool is_table_section_data_set_ = false;
   bool is_grid_layout_subtree_set_ = false;
+  bool is_line_clamp_clipped_float_set_ = false;
 
   bool to_constraint_space_called_ = false;
 #endif
@@ -760,6 +763,10 @@ class CORE_EXPORT MinMaxConstraintSpaceBuilder final {
 
   void SetPercentageResolutionBlockSize(LayoutUnit block_size) {
     delegate_.SetPercentageResolutionSize({kIndefiniteSize, block_size});
+  }
+
+  void SetPercentageResolutionSize(LogicalSize size) {
+    delegate_.SetPercentageResolutionSize(size);
   }
 
   void SetReplacedChildPercentageResolutionBlockSize(LayoutUnit block_size) {

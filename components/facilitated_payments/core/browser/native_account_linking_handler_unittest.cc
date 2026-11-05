@@ -102,19 +102,30 @@ class TestNativeAccountLinkingHandler : public NativeAccountLinkingHandler {
   std::string_view GetHistogramSuffix() const override { return "TestFop"; }
 
   base::DictValue GetPayloadForGetDetailsForCreatePaymentInstrument() override {
-    return base::DictValue();
+    return payload_.Clone();
   }
+
+  void set_payload(base::DictValue payload) { payload_ = std::move(payload); }
 
   base::WeakPtr<NativeAccountLinkingHandler> GetWeakPtr() override {
     return weak_ptr_factory_.GetWeakPtr();
   }
 
-  bool is_prompt_showing() const { return is_prompt_showing_; }
+  bool is_prompt_showing() const {
+    return ui_state_ == NativeAccountLinkingHandler::UiState::kPrompt;
+  }
+  bool is_hidden() const {
+    return ui_state_ == NativeAccountLinkingHandler::UiState::kHidden;
+  }
+  bool is_progress_screen_showing() const {
+    return ui_state_ == NativeAccountLinkingHandler::UiState::kProgressScreen;
+  }
 
  private:
   raw_ptr<strike_database::StrikeDatabaseIntegratorBase> strike_database_ =
       nullptr;
   bool is_user_pref_enabled_ = true;
+  base::DictValue payload_;
   base::WeakPtrFactory<TestNativeAccountLinkingHandler> weak_ptr_factory_{this};
 };
 
@@ -133,8 +144,10 @@ class NativeAccountLinkingHandlerTest : public testing::Test {
     payments_data_manager_.SetPaymentsCustomerData(
         std::make_unique<autofill::PaymentsCustomerData>("123456"));
     payments_data_manager_.SetAccountInfoForPayments(
-        identity_test_env_.MakePrimaryAccountAvailable(
-            "test@example.com", signin::ConsentLevel::kSignin));
+        identity_test_env_
+            .MakePrimaryAccountAvailable("test@example.com",
+                                         signin::ConsentLevel::kSignin)
+            .GetCoreAccountInfo());
     ON_CALL(client_, GetCoreAccountInfo)
         .WillByDefault(
             Return(payments_data_manager_.GetAccountInfoForPaymentsServer()));
@@ -185,14 +198,17 @@ class NativeAccountLinkingHandlerTest : public testing::Test {
 TEST_F(NativeAccountLinkingHandlerTest,
        OnAccountLinkingResult_SuccessWithInvalidInstrumentId_MutatesToError) {
   // We expect the mocked abstract method DoOnAccountLinkingResult to receive
-  // the mutated failure payload instead of the success payload.
+  // the mutated failure payload instead of the success payload. The billing
+  // customer number is passed through untouched by the sanitisation.
   EXPECT_CALL(*handler_, DoOnAccountLinkingResult(AccountLinkingResult{
-                             false, 0, AccountLinkingResultCode::kResultError}))
+                             false, 0, AccountLinkingResultCode::kResultError,
+                             /*billing_customer_number=*/987}))
       .Times(1);
 
   // Directly pipe in a success with an invalid instrument ID
   handler_->OnAccountLinkingResult(
-      AccountLinkingResult{true, 0, AccountLinkingResultCode::kResultOk});
+      AccountLinkingResult{true, 0, AccountLinkingResultCode::kResultOk,
+                           /*billing_customer_number=*/987});
 
   // Verify the base class gracefully traps this edge-case and translates
   // it to a generic flow failure metric.
@@ -249,9 +265,10 @@ TEST_F(NativeAccountLinkingHandlerTest,
        InitiateAccountLinkingNetworkCall_Success) {
   std::vector<uint8_t> client_token = {1, 2, 3};
   EXPECT_CALL(payments_network_interface_,
-              GetDetailsForCreatePaymentInstrument(_, client_token, _, _))
+              GetDetailsForCreatePaymentInstrument(_, client_token, _, _, _))
       .WillOnce([](long billing_customer_id, const std::vector<uint8_t>& token,
-                   auto callback, const std::string& app_locale) {
+                   base::DictValue payload, auto callback,
+                   const std::string& app_locale) {
         std::move(callback).Run(
             autofill::payments::PaymentsAutofillClient::PaymentsRpcResult::
                 kSuccess,
@@ -277,12 +294,33 @@ TEST_F(NativeAccountLinkingHandlerTest,
 }
 
 TEST_F(NativeAccountLinkingHandlerTest,
+       InitiateAccountLinkingNetworkCall_PipesCustomPayload) {
+  std::vector<uint8_t> client_token = {1, 2, 3};
+  base::DictValue test_payload =
+      base::DictValue().Set("custom_key", "custom_value");
+  handler_->set_payload(test_payload.Clone());
+
+  EXPECT_CALL(payments_network_interface_,
+              GetDetailsForCreatePaymentInstrument(_, client_token, _, _, _))
+      .WillOnce([&test_payload](long, const std::vector<uint8_t>&,
+                                base::DictValue payload, auto,
+                                const std::string&) {
+        EXPECT_EQ(payload, test_payload);
+        return base::StrongAlias<autofill::payments::RequestIdTag,
+                                 std::string>();
+      });
+
+  handler_->InitiateAccountLinkingNetworkCall(client_token);
+}
+
+TEST_F(NativeAccountLinkingHandlerTest,
        InitiateAccountLinkingNetworkCall_Failure) {
   std::vector<uint8_t> client_token = {1, 2, 3};
   EXPECT_CALL(payments_network_interface_,
-              GetDetailsForCreatePaymentInstrument(_, client_token, _, _))
+              GetDetailsForCreatePaymentInstrument(_, client_token, _, _, _))
       .WillOnce([](long billing_customer_id, const std::vector<uint8_t>& token,
-                   auto callback, const std::string& app_locale) {
+                   base::DictValue account_linking_payload, auto callback,
+                   const std::string& app_locale) {
         std::move(callback).Run(autofill::payments::PaymentsAutofillClient::
                                     PaymentsRpcResult::kPermanentFailure,
                                 /*is_eligible=*/false,
@@ -315,9 +353,10 @@ TEST_F(NativeAccountLinkingHandlerTest,
        InitiateAccountLinkingNetworkCall_Success_NotEligible) {
   std::vector<uint8_t> client_token = {1, 2, 3};
   EXPECT_CALL(payments_network_interface_,
-              GetDetailsForCreatePaymentInstrument(_, client_token, _, _))
+              GetDetailsForCreatePaymentInstrument(_, client_token, _, _, _))
       .WillOnce([](long billing_customer_id, const std::vector<uint8_t>& token,
-                   auto callback, const std::string& app_locale) {
+                   base::DictValue account_linking_payload, auto callback,
+                   const std::string& app_locale) {
         std::move(callback).Run(autofill::payments::PaymentsAutofillClient::
                                     PaymentsRpcResult::kSuccess,
                                 /*is_eligible=*/false,
@@ -350,9 +389,10 @@ TEST_F(NativeAccountLinkingHandlerTest, OnAccepted_Success) {
   std::vector<uint8_t> client_token = {1, 2, 3};
   std::vector<uint8_t> expected_action_token = {'t', 'o', 'k', 'e', 'n'};
   EXPECT_CALL(payments_network_interface_,
-              GetDetailsForCreatePaymentInstrument(_, client_token, _, _))
+              GetDetailsForCreatePaymentInstrument(_, client_token, _, _, _))
       .WillOnce([&](long billing_customer_id, const std::vector<uint8_t>& token,
-                    auto callback, const std::string& app_locale) {
+                    base::DictValue account_linking_payload, auto callback,
+                    const std::string& app_locale) {
         std::move(callback).Run(autofill::payments::PaymentsAutofillClient::
                                     PaymentsRpcResult::kSuccess,
                                 /*is_eligible=*/true, expected_action_token);
@@ -382,9 +422,10 @@ TEST_F(NativeAccountLinkingHandlerTest, OnAccepted_InstrumentManagerFails) {
   std::vector<uint8_t> client_token = {1, 2, 3};
   std::vector<uint8_t> expected_action_token = {'t', 'o', 'k', 'e', 'n'};
   EXPECT_CALL(payments_network_interface_,
-              GetDetailsForCreatePaymentInstrument(_, client_token, _, _))
+              GetDetailsForCreatePaymentInstrument(_, client_token, _, _, _))
       .WillOnce([&](long billing_customer_id, const std::vector<uint8_t>& token,
-                    auto callback, const std::string& app_locale) {
+                    base::DictValue account_linking_payload, auto callback,
+                    const std::string& app_locale) {
         std::move(callback).Run(autofill::payments::PaymentsAutofillClient::
                                     PaymentsRpcResult::kSuccess,
                                 /*is_eligible=*/true, expected_action_token);
@@ -419,9 +460,10 @@ TEST_F(NativeAccountLinkingHandlerTest, OnAccepted_InstrumentManagerCanceled) {
   std::vector<uint8_t> client_token = {1, 2, 3};
   std::vector<uint8_t> expected_action_token = {'t', 'o', 'k', 'e', 'n'};
   EXPECT_CALL(payments_network_interface_,
-              GetDetailsForCreatePaymentInstrument(_, client_token, _, _))
+              GetDetailsForCreatePaymentInstrument(_, client_token, _, _, _))
       .WillOnce([&](long billing_customer_id, const std::vector<uint8_t>& token,
-                    auto callback, const std::string& app_locale) {
+                    base::DictValue account_linking_payload, auto callback,
+                    const std::string& app_locale) {
         std::move(callback).Run(autofill::payments::PaymentsAutofillClient::
                                     PaymentsRpcResult::kSuccess,
                                 /*is_eligible=*/true, expected_action_token);
@@ -453,13 +495,15 @@ TEST_F(NativeAccountLinkingHandlerTest, OnAccepted_InstrumentManagerCanceled) {
       /*expected_bucket_count=*/1);
 }
 
-TEST_F(NativeAccountLinkingHandlerTest, OnAccepted_UserLoggedOut) {
+TEST_F(NativeAccountLinkingHandlerTest,
+       OnAccepted_UserLoggedOut_DoesNotShowProgressScreen) {
   std::vector<uint8_t> client_token = {1, 2, 3};
   std::vector<uint8_t> expected_action_token = {'t', 'o', 'k', 'e', 'n'};
   EXPECT_CALL(payments_network_interface_,
-              GetDetailsForCreatePaymentInstrument(_, client_token, _, _))
+              GetDetailsForCreatePaymentInstrument(_, client_token, _, _, _))
       .WillOnce([&](long billing_customer_id, const std::vector<uint8_t>& token,
-                    auto callback, const std::string& app_locale) {
+                    base::DictValue account_linking_payload, auto callback,
+                    const std::string& app_locale) {
         std::move(callback).Run(autofill::payments::PaymentsAutofillClient::
                                     PaymentsRpcResult::kSuccess,
                                 /*is_eligible=*/true, expected_action_token);
@@ -487,9 +531,10 @@ TEST_F(NativeAccountLinkingHandlerTest, OnAccepted_ApiClientNull) {
   std::vector<uint8_t> client_token = {1, 2, 3};
   std::vector<uint8_t> expected_action_token = {'t', 'o', 'k', 'e', 'n'};
   EXPECT_CALL(payments_network_interface_,
-              GetDetailsForCreatePaymentInstrument(_, client_token, _, _))
+              GetDetailsForCreatePaymentInstrument(_, client_token, _, _, _))
       .WillOnce([&](long billing_customer_id, const std::vector<uint8_t>& token,
-                    auto callback, const std::string& app_locale) {
+                    base::DictValue account_linking_payload, auto callback,
+                    const std::string& app_locale) {
         std::move(callback).Run(autofill::payments::PaymentsAutofillClient::
                                     PaymentsRpcResult::kSuccess,
                                 /*is_eligible=*/true, expected_action_token);
@@ -533,9 +578,10 @@ TEST_F(NativeAccountLinkingHandlerTest, OnAccepted_NoToken) {
 TEST_F(NativeAccountLinkingHandlerTest, OnDeclined) {
   std::vector<uint8_t> client_token = {1, 2, 3};
   EXPECT_CALL(payments_network_interface_,
-              GetDetailsForCreatePaymentInstrument(_, client_token, _, _))
+              GetDetailsForCreatePaymentInstrument(_, client_token, _, _, _))
       .WillOnce([](long billing_customer_id, const std::vector<uint8_t>& token,
-                   auto callback, const std::string& app_locale) {
+                   base::DictValue account_linking_payload, auto callback,
+                   const std::string& app_locale) {
         std::move(callback).Run(
             autofill::payments::PaymentsAutofillClient::PaymentsRpcResult::
                 kSuccess,
@@ -577,8 +623,8 @@ TEST_F(NativeAccountLinkingHandlerTest, ShowAccountLinkingPrompt_Success) {
         on_dismissed = std::move(dismissed);
       });
 
-  // Base class OnAccepted/OnDeclined/Dismiss all trigger client_.DismissPrompt.
-  EXPECT_CALL(client_, DismissPrompt()).Times(3);
+  // Base class OnDeclined/Dismiss all trigger client_.DismissPrompt.
+  EXPECT_CALL(client_, DismissPrompt()).Times(2);
 
   EXPECT_CALL(*handler_, DoOnAccountLinkingResult(AccountLinkingResult{}))
       .Times(3);
@@ -586,7 +632,6 @@ TEST_F(NativeAccountLinkingHandlerTest, ShowAccountLinkingPrompt_Success) {
   handler_->ShowAccountLinkingPrompt();
   EXPECT_TRUE(handler_->is_prompt_showing());
   std::move(on_accepted).Run();
-  EXPECT_FALSE(handler_->is_prompt_showing());
 
   handler_->ShowAccountLinkingPrompt();
   EXPECT_TRUE(handler_->is_prompt_showing());
@@ -597,6 +642,43 @@ TEST_F(NativeAccountLinkingHandlerTest, ShowAccountLinkingPrompt_Success) {
   EXPECT_TRUE(handler_->is_prompt_showing());
   std::move(on_dismissed).Run();
   EXPECT_FALSE(handler_->is_prompt_showing());
+}
+
+TEST_F(NativeAccountLinkingHandlerTest,
+       UiStateTransitions_RedundantDismissIgnored) {
+  AccountLinkingParams params(FacilitatedPaymentsType::kEwallet);
+  EXPECT_CALL(*handler_, CreateAccountLinkingParams())
+      .WillRepeatedly(testing::Return(params));
+
+  handler_->ShowAccountLinkingPrompt();
+  EXPECT_EQ(handler_->is_prompt_showing(), true);
+
+  EXPECT_CALL(client_, DismissPrompt()).Times(1);
+
+  handler_->DismissPrompt();
+  EXPECT_EQ(handler_->is_prompt_showing(), false);
+
+  // Redundant call should be ignored and not forwarded to the client.
+  handler_->DismissPrompt();
+  EXPECT_EQ(handler_->is_prompt_showing(), false);
+}
+
+TEST_F(NativeAccountLinkingHandlerTest,
+       OnAccepted_MissingActionToken_TearsDownPrompt) {
+  AccountLinkingParams params(FacilitatedPaymentsType::kEwallet);
+  EXPECT_CALL(*handler_, CreateAccountLinkingParams())
+      .WillRepeatedly(testing::Return(params));
+
+  handler_->ShowAccountLinkingPrompt();
+  EXPECT_EQ(handler_->is_prompt_showing(), true);
+
+  // Since action_token_ is empty, OnAccepted will immediately bail and call
+  // OnAccountLinkingResult
+  EXPECT_CALL(client_, DismissPrompt()).Times(0);
+
+  EXPECT_CALL(*handler_, DoOnAccountLinkingResult(testing::_));
+
+  handler_->OnAccepted();
 }
 
 TEST_F(NativeAccountLinkingHandlerTest, ShowAccountLinkingPrompt_FopNullopt) {
@@ -731,11 +813,43 @@ TEST_F(NativeAccountLinkingHandlerTest, OnDeclined_RecordsStrikeInDatabase) {
 TEST_F(NativeAccountLinkingHandlerTest, OnDismissed_DoesNotRecordStrike) {
   ASSERT_EQ(test_strike_database_->GetStrikes(), 0);
 
+  AccountLinkingParams params(FacilitatedPaymentsType::kEwallet);
+  EXPECT_CALL(*handler_, CreateAccountLinkingParams())
+      .WillRepeatedly(Return(params));
+  handler_->ShowAccountLinkingPrompt();
+
   handler_->OnDismissed();
   EXPECT_EQ(test_strike_database_->GetStrikes(), 0);
   histogram_tester_.ExpectUniqueSample(
       "FacilitatedPayments.TestFop.AccountLinking.FlowExitedReason",
       AccountLinkingFlowExitedReason::kScreenClosedByUser, 1);
+}
+
+TEST_F(NativeAccountLinkingHandlerTest,
+       ShowAccountLinkingLoadingScreen_TransitionsStateAndCallsClient) {
+  AccountLinkingParams params(FacilitatedPaymentsType::kEwallet);
+  EXPECT_CALL(*handler_, CreateAccountLinkingParams())
+      .WillRepeatedly(Return(params));
+
+  handler_->ShowAccountLinkingPrompt();  // Moves state to kPrompt
+
+  EXPECT_CALL(client_, ShowProgressScreen(ProgressScreenType::kAccountLinking))
+      .Times(1);
+  handler_->ShowAccountLinkingLoadingScreen();  // Should move state to
+                                                // kProgressScreen
+
+  EXPECT_TRUE(handler_->is_progress_screen_showing());
+}
+
+TEST_F(NativeAccountLinkingHandlerTest,
+       ShowAccountLinkingLoadingScreen_IgnoresIfNotInPromptState) {
+  // Currently in kHidden state
+  EXPECT_CALL(client_, ShowProgressScreen).Times(0);
+
+  handler_->ShowAccountLinkingLoadingScreen();
+
+  // Should ignore and remain hidden
+  EXPECT_TRUE(handler_->is_hidden());
 }
 
 }  // namespace

@@ -33,6 +33,7 @@ const base::Feature* const kFeaturesExposedToJava[] = {
     &content_settings::features::kApproximateGeolocationPermission,
     &media::kAutoPictureInPictureAndroid,
     &blink::features::kBypassPepcSecurityForTesting,
+    &blink::features::kCameraAndMicrophoneElements,
     &blink::features::kUserMediaElement,
     &blink::features::kGeolocationElement,
 };
@@ -52,7 +53,7 @@ BASE_FEATURE(kAndroidCancelPermissionPromptOnTouchOutside,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables the loud version of the Clapper permission prompt.
-BASE_FEATURE(kPermissionsAndroidClapperLoud, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kPermissionsAndroidClapperLoud, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Timeout for the Clapper Loud permission prompt.
 const base::FeatureParam<base::TimeDelta> kClapperLoudTimeout{

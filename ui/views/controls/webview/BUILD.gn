@@ -3,6 +3,9 @@
 # found in the LICENSE file.
 
 import("//build/config/ozone.gni")
+import("//build/config/ui.gni")
+
+assert(toolkit_views)
 
 component("webview") {
   sources = [
@@ -10,6 +13,8 @@ component("webview") {
     "simple_web_view_dialog_delegate.h",
     "unhandled_keyboard_event_handler.cc",
     "unhandled_keyboard_event_handler.h",
+    "web_contents_delegate_views.cc",
+    "web_contents_delegate_views.h",
     "web_contents_set_background_color.cc",
     "web_contents_set_background_color.h",
     "web_dialog_view.cc",
@@ -51,12 +56,13 @@ component("webview") {
   public_deps = [
     "//base",
     "//content/public/browser",
+    "//ui/base/mojom",
     "//ui/gfx",
     "//ui/gfx/geometry",
     "//ui/views",
   ]
 
-  if (is_linux || is_chromeos || is_android || is_fuchsia) {
+  if (is_linux || is_chromeos || is_fuchsia) {
     if (use_ozone) {
       sources += [ "unhandled_keyboard_event_handler_ozone.cc" ]
       deps += [ "//ui/ozone" ]
@@ -64,4 +70,24 @@ component("webview") {
       sources += [ "unhandled_keyboard_event_handler_default.cc" ]
     }
   }
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [
+    "unhandled_keyboard_event_handler_unittest.cc",
+    "web_dialog_view_unittest.cc",
+    "webview_unittest.cc",
+  ]
+  deps = [
+    ":webview",
+    "//base",
+    "//base/test:test_support",
+    "//components/input",
+    "//content/test:test_support",
+    "//testing/gtest",
+    "//ui/base:test_support",
+    "//ui/views:test_support",
+    "//ui/web_dialogs:test_support",
+  ]
 }

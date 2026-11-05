@@ -121,16 +121,6 @@ class ASH_PUBLIC_EXPORT AppListClient {
   // implementation, this can return nullptr.
   virtual AppListNotifier* GetNotifier() = 0;
 
-  // Recalculate whether launcher search IPH should be shown and update
-  // SearchBoxModel.
-  virtual void RecalculateWouldTriggerLauncherSearchIph() = 0;
-
-  // `feature_engagement::Tracker` needs to be initialized before this method
-  // gets called. Call `WouldTriggerLauncherSearchIph` to initialize it. This
-  // returns false if the tracker is not initialized yet.
-  virtual std::unique_ptr<ScopedIphSession>
-  CreateLauncherSearchIphSession() = 0;
-
   // Invoked to load an icon of the app identified by `app_id`.
   virtual void LoadIcon(int profile_id, const std::string& app_id) = 0;
 
@@ -138,20 +128,10 @@ class ASH_PUBLIC_EXPORT AppListClient {
   // among synced devices.
   virtual ash::AppListSortOrder GetPermanentSortingOrder() const = 0;
 
-  // If present, indicates whether the user associated with the given
-  // `account_id` is considered new across all ChromeOS devices (i,e, it is the
-  // first device the user has ever logged into). A user is considered new if
-  // the first app list sync in the session was the first sync ever across all
-  // ChromeOS devices and sessions for the given user. As such, this value is
-  // absent until the first app list sync of the session is completed. NOTE:
-  // Currently only the primary user profile is supported.
-  virtual std::optional<bool> IsNewUser(const AccountId& account_id) const = 0;
-
   // Record metrics regarding the current visibility of apps in the launcher.
   virtual void RecordAppsDefaultVisibility(
       const std::vector<std::string>& apps_above_the_fold,
-      const std::vector<std::string>& apps_below_the_fold,
-      bool is_apps_collections_page) = 0;
+      const std::vector<std::string>& apps_below_the_fold) = 0;
 
   // Whether the app list was reordered locally.
   virtual bool HasReordered() = 0;

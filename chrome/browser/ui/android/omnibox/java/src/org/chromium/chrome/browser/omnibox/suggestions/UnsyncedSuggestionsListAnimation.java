@@ -59,7 +59,6 @@ public class UnsyncedSuggestionsListAnimation
             Supplier<Float> omniboxVerticalTranslationSupplier,
             BooleanSupplier usePopoverAnimationSupplier,
             Context context) {
-
         mListPropertyModel = listPropertyModel;
         mShowSuggestionsListCallback = showSuggestionsListCallback;
         mIsToolbarBottomAnchoredSupplier = isToolbarBottomAnchoredSupplier;
@@ -101,10 +100,6 @@ public class UnsyncedSuggestionsListAnimation
             mAnimator.addListener(this);
         }
         return mAnimator;
-    }
-
-    static void setAnimationsDisabledForTesting(boolean disabledForTesting) {
-        sAnimationsDisabledForTesting = disabledForTesting;
     }
 
     @Override
@@ -165,5 +160,9 @@ public class UnsyncedSuggestionsListAnimation
                     .getDimensionPixelOffset(
                             R.dimen.omnibox_suggestion_list_animation_added_vertical_offset);
         }
+    }
+
+    static void setAnimationsDisabledForTesting(boolean disabledForTesting) {
+        sAnimationsDisabledForTesting = disabledForTesting;
     }
 }

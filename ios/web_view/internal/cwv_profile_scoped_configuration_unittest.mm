@@ -13,6 +13,7 @@
 #import "ios/web/public/test/web_task_environment.h"
 #import "ios/web/public/web_client.h"
 #import "ios/web_view/internal/cwv_web_view_configuration_internal.h"
+#import "ios/web_view/internal/cwv_web_view_internal.h"
 #import "ios/web_view/internal/web_view_browser_state.h"
 #import "ios/web_view/public/cwv_web_view.h"
 #import "ios/web_view/public/cwv_web_view_configuration.h"
@@ -61,8 +62,11 @@ TEST_F(CWVProfileScopedConfigurationTest, MultitonCaching) {
     EXPECT_NSNE(config1, config2);
     EXPECT_NSEQ(config1.storageIdentifier, uuid1);
     EXPECT_NSEQ(config2.storageIdentifier, uuid2);
-    EXPECT_EQ([CWVWebViewConfiguration defaultConfiguration].storageIdentifier,
-              nil);
+    CWVWebViewConfiguration* unscoped_config = [[CWVWebViewConfiguration alloc]
+        initWithBrowserState:std::make_unique<WebViewBrowserState>(
+                                 /*off_the_record=*/false)];
+    EXPECT_EQ(unscoped_config.storageIdentifier, nil);
+    [unscoped_config shutDown];
   }
 }
 
@@ -111,6 +115,26 @@ TEST_F(CWVProfileScopedConfigurationTest, Cleanup) {
 
     EXPECT_TRUE(base::test::RunUntil(
         [&] { return !base::DirectoryExists(state_path); }));
+  }
+}
+
+// Tests that hasActiveWebViews correctly tracks CWVWebView instances.
+TEST_F(CWVProfileScopedConfigurationTest, HasActiveWebViews) {
+  if (@available(iOS 17.0, *)) {
+    NSUUID* uuid = [NSUUID UUID];
+    CWVWebViewConfiguration* config =
+        [CWVWebViewConfiguration configurationWithIdentifier:uuid];
+
+    EXPECT_FALSE(config.hasActiveWebViews);
+
+    @autoreleasepool {
+      CWVWebView* webView = [[CWVWebView alloc] initWithFrame:CGRectZero
+                                                configuration:config];
+      EXPECT_TRUE(config.hasActiveWebViews);
+      [webView shutDown];
+    }
+
+    EXPECT_FALSE(config.hasActiveWebViews);
   }
 }
 

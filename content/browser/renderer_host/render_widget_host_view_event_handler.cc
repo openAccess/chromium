@@ -4,7 +4,10 @@
 
 #include "content/browser/renderer_host/render_widget_host_view_event_handler.h"
 
+#include <utility>
+
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/numerics/safe_conversions.h"
@@ -25,6 +28,7 @@
 #include "content/public/browser/render_widget_host.h"
 #include "ui/aura/client/cursor_client.h"
 #include "ui/aura/client/focus_client.h"
+#include "ui/aura/client/screen_position_client.h"
 #include "ui/aura/scoped_keyboard_hook.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_delegate.h"
@@ -32,14 +36,19 @@
 #include "ui/base/ime/text_input_client.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer.h"
+#include "ui/display/display.h"
+#include "ui/display/screen.h"
 #include "ui/events/blink/blink_event_util.h"
 #include "ui/events/blink/web_input_event.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/gfx/delegated_ink_point.h"
+#include "ui/gfx/geometry/point_conversions.h"
 #include "ui/touch_selection/touch_selection_controller.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
+
+#include "ui/display/win/screen_win.h"
 #endif
 
 namespace {
@@ -131,6 +140,10 @@ void RenderWidgetHostViewEventHandler::SetPopupChild(
   popup_child_event_handler_ = popup_child_event_handler;
 }
 
+void RenderWidgetHostViewEventHandler::ResetHost() {
+  host_ = nullptr;
+}
+
 blink::mojom::PointerLockResult RenderWidgetHostViewEventHandler::LockPointer(
     bool request_unadjusted_movement) {
   aura::Window* root_window = window_->GetRootWindow();
@@ -146,13 +159,29 @@ blink::mojom::PointerLockResult RenderWidgetHostViewEventHandler::LockPointer(
     if (!mouse_locked_unadjusted_movement_)
       return blink::mojom::PointerLockResult::kUnsupportedOptions;
   }
+
+  // Retain legacy window-relative restoration for headless screens and
+  // embedders without screen mapping.
+  if (base::FeatureList::IsEnabled(
+          features::kPointerLockRestoreScreenPosition) &&
+      !window_->GetHost()->SupportsMouseLock() &&
+      !display::Screen::Get()->IsHeadless() &&
+      aura::client::GetScreenPositionClient(root_window)) {
+    // The last mouse event may be stale when lock is requested with the cursor
+    // outside the view. Sample before LockMouse() can clip it.
+    pointer_lock_restore_position_ =
+        display::Screen::Get()->GetCursorScreenPoint();
+  }
   mouse_locked_ = true;
 
   aura::Window::ScopedDeleteBlocker delete_blocker(window_);
   window_->GetHost()->LockMouse(window_);
 
-  if (ShouldMoveToCenter(unlocked_global_mouse_position_))
+  if (ShouldMoveToCenter(pointer_lock_restore_position_
+                             ? gfx::PointF(*pointer_lock_restore_position_)
+                             : unlocked_global_mouse_position_)) {
     MoveCursorToCenter(nullptr);
+  }
 
   delegate_->SetTooltipsEnabled(false);
   return blink::mojom::PointerLockResult::kSuccess;
@@ -197,6 +226,10 @@ void RenderWidgetHostViewEventHandler::UnlockPointer() {
     return;
   }
 
+  // Reset `pointer_lock_restore_position_` here so that `UnlockMouse` doesn't
+  // use a stale value.
+  const std::optional<gfx::Point> restore_position =
+      std::exchange(pointer_lock_restore_position_, std::nullopt);
   mouse_locked_ = false;
   mouse_locked_unadjusted_movement_.reset();
 
@@ -207,16 +240,40 @@ void RenderWidgetHostViewEventHandler::UnlockPointer() {
 
   window_->GetHost()->UnlockMouse(window_);
 
-  // Ensure that the global mouse position is updated here to its original
-  // value. If we don't do this then the synthesized mouse move which is posted
-  // after the cursor is moved ends up getting a large movement delta which is
-  // not what sites expect. The delta is computed in the
-  // ModifyEventMovementAndCoords function.
+  // Restore the cursor after emulated pointer lock. Blink resets its cached
+  // mouse position on unlock to avoid computing a movement delta from the last
+  // locked position.
   if (window_) {
-    window_->MoveCursorTo(gfx::ToFlooredPoint(unlocked_mouse_position_));
+    if (restore_position) {
+#if BUILDFLAG(IS_WIN)
+      // Windows does not populate Display::native_origin(). Use ScreenWin's
+      // native display origins and per-display scales to convert to pixels.
+      gfx::Point position_in_host =
+          display::win::GetScreenWin()->DIPToScreenPoint(*restore_position);
+#else
+      auto* screen = display::Screen::Get();
+      const display::Display cursor_display =
+          screen->GetDisplayNearestPoint(*restore_position);
+      gfx::Point position_in_host =
+          *restore_position - cursor_display.bounds().OffsetFromOrigin();
+      // Scale only the offset within the cursor's display, not its origin or
+      // the offset from the browser window.
+      position_in_host = gfx::ScaleToFlooredPoint(
+          position_in_host, cursor_display.device_scale_factor());
+      position_in_host += cursor_display.native_origin().OffsetFromOrigin();
+#endif
+      auto* window_host = window_->GetHost();
+      position_in_host -= window_host->GetBoundsInPixels().OffsetFromOrigin();
+      // The saved position is in integer screen DIPs. Converting to pixels may
+      // introduce a rounding error and land a few pixels off from the original
+      // location.
+      window_host->MoveCursorToLocationInPixels(position_in_host);
+    } else {
+      window_->MoveCursorTo(gfx::ToFlooredPoint(unlocked_mouse_position_));
+    }
   }
-  synthetic_move_position_ =
-      gfx::ToFlooredPoint(unlocked_global_mouse_position_);
+  synthetic_move_position_ = restore_position.value_or(
+      gfx::ToFlooredPoint(unlocked_global_mouse_position_));
 
   host_->LostPointerLock();
 }
@@ -315,7 +372,7 @@ void RenderWidgetHostViewEventHandler::HandleMouseWheelEvent(
     mouse_wheel_phase_handler_.AddPhaseIfNeededAndScheduleEndEvent(
         mouse_wheel_event, should_route_event, /*is_fling_capable=*/false);
     if (should_route_event) {
-      host_->delegate()->GetInputEventRouter()->RouteMouseWheelEvent(
+      host_->GetInputEventRouter()->RouteMouseWheelEvent(
           host_view_, &mouse_wheel_event, *event->latency());
     } else {
       ProcessMouseWheelEvent(mouse_wheel_event, *event->latency());
@@ -337,6 +394,11 @@ void RenderWidgetHostViewEventHandler::OnMouseEvent(ui::MouseEvent* event) {
     return;
 
   ForwardMouseEventToParent(event);
+  // Forwarding the event may have resulted in the view or window being
+  // destroyed.
+  if (!window_ || !host_ || host_view_->destroy_pending()) {
+    return;
+  }
   // TODO(mgiuca): Return if event->handled() returns true. This currently
   // breaks drop-down lists which means something is incorrectly setting
   // event->handled to true (http://crbug.com/577983).
@@ -375,14 +437,18 @@ void RenderWidgetHostViewEventHandler::OnMouseEvent(ui::MouseEvent* event) {
       // Confirm existing composition text on mouse press, to make sure
       // the input caret won't be moved with an ongoing composition text.
       if (event->type() == ui::EventType::kMousePressed) {
+        auto weak_this = weak_ptr_factory_.GetWeakPtr();
         FinishImeCompositionSession();
+        if (!weak_this || !window_ || !host_ || host_view_->destroy_pending()) {
+          return;
+        }
       }
 
       blink::WebMouseEvent mouse_event = ui::MakeWebMouseEvent(*event);
       ModifyEventMovementAndCoords(*event, &mouse_event);
       if (ShouldRouteEvents()) {
-        host_->delegate()->GetInputEventRouter()->RouteMouseEvent(
-            host_view_, &mouse_event, *event->latency());
+        host_->GetInputEventRouter()->RouteMouseEvent(host_view_, &mouse_event,
+                                                      *event->latency());
       } else {
         ProcessMouseEvent(mouse_event, *event->latency());
       }
@@ -449,10 +515,10 @@ void RenderWidgetHostViewEventHandler::OnScrollEvent(ui::ScrollEvent* event) {
 
     if (should_route_event) {
       if (maybe_synthetic_fling_cancel) {
-        host_->delegate()->GetInputEventRouter()->RouteGestureEvent(
+        host_->GetInputEventRouter()->RouteGestureEvent(
             host_view_, &*maybe_synthetic_fling_cancel, ui::LatencyInfo());
       }
-      host_->delegate()->GetInputEventRouter()->RouteMouseWheelEvent(
+      host_->GetInputEventRouter()->RouteMouseWheelEvent(
           host_view_, &mouse_wheel_event, *event->latency());
     } else {
       if (maybe_synthetic_fling_cancel) {
@@ -465,7 +531,7 @@ void RenderWidgetHostViewEventHandler::OnScrollEvent(ui::ScrollEvent* event) {
              event->type() == ui::EventType::kScrollFlingCancel) {
     blink::WebGestureEvent gesture_event = ui::MakeWebGestureEvent(*event);
     if (should_route_event) {
-      host_->delegate()->GetInputEventRouter()->RouteGestureEvent(
+      host_->GetInputEventRouter()->RouteGestureEvent(
           host_view_, &gesture_event, ui::LatencyInfo());
     } else {
       host_->ForwardGestureEvent(gesture_event);
@@ -526,8 +592,8 @@ void RenderWidgetHostViewEventHandler::OnTouchEvent(ui::TouchEvent* event) {
   MarkUnchangedTouchPointsAsStationary(&touch_event,
                                        event->pointer_details().id);
   if (ShouldRouteEvents()) {
-    host_->delegate()->GetInputEventRouter()->RouteTouchEvent(
-        host_view_, &touch_event, *event->latency());
+    host_->GetInputEventRouter()->RouteTouchEvent(host_view_, &touch_event,
+                                                  *event->latency());
   } else {
     ProcessTouchEvent(touch_event, *event->latency());
   }
@@ -557,7 +623,11 @@ void RenderWidgetHostViewEventHandler::OnGestureEvent(ui::GestureEvent* event) {
   // Confirm existing composition text on TAP gesture, to make sure the input
   // caret won't be moved with an ongoing composition text.
   if (event->type() == ui::EventType::kGestureTap) {
+    auto weak_this = weak_ptr_factory_.GetWeakPtr();
     FinishImeCompositionSession();
+    if (!weak_this || !window_ || !host_ || host_view_->destroy_pending()) {
+      return;
+    }
   }
 
   blink::WebGestureEvent gesture = ui::MakeWebGestureEvent(*event);
@@ -570,11 +640,14 @@ void RenderWidgetHostViewEventHandler::OnGestureEvent(ui::GestureEvent* event) {
     fling_cancel.data.fling_cancel.prevent_boosting = false;
     fling_cancel.data.fling_cancel.target_viewport = false;
     if (ShouldRouteEvents()) {
-      host_->delegate()->GetInputEventRouter()->RouteGestureEvent(
-          host_view_, &fling_cancel, ui::LatencyInfo());
+      host_->GetInputEventRouter()->RouteGestureEvent(host_view_, &fling_cancel,
+                                                      ui::LatencyInfo());
     } else {
       host_->ForwardGestureEvent(fling_cancel);
     }
+  }
+  if (!host_) {
+    return;
   }
 
   if (gesture.GetType() != blink::WebInputEvent::Type::kUndefined) {
@@ -600,8 +673,8 @@ void RenderWidgetHostViewEventHandler::OnGestureEvent(ui::GestureEvent* event) {
     }
 
     if (ShouldRouteEvents()) {
-      host_->delegate()->GetInputEventRouter()->RouteGestureEvent(
-          host_view_, &gesture, *event->latency());
+      host_->GetInputEventRouter()->RouteGestureEvent(host_view_, &gesture,
+                                                      *event->latency());
     } else {
       host_->GetRenderInputRouter()->ForwardGestureEventWithLatencyInfo(
           gesture, *event->latency());
@@ -675,8 +748,15 @@ void RenderWidgetHostViewEventHandler::FinishImeCompositionSession() {
   // call to finish composition text should be made through the RWHVA itself
   // otherwise the following call to cancel composition will lead to an extra
   // IPC for finishing the ongoing composition (see https://crbug.com/723024).
+  if (!host_view_ || !host_view_->GetTextInputClient()) {
+    return;
+  }
+  auto weak_this = weak_ptr_factory_.GetWeakPtr();
   host_view_->GetTextInputClient()->ConfirmCompositionText(
       /* keep_selection */ true);
+  if (!weak_this || !window_ || !host_ || host_view_->destroy_pending()) {
+    return;
+  }
   host_view_->ImeCancelComposition();
 }
 
@@ -788,8 +868,8 @@ void RenderWidgetHostViewEventHandler::HandleMouseEventWhileLocked(
     if (CanRendererHandleEvent(event, mouse_locked_, is_selection_popup) &&
         !(event->flags() & ui::EF_FROM_TOUCH)) {
       if (ShouldRouteEvents()) {
-        host_->delegate()->GetInputEventRouter()->RouteMouseEvent(
-            host_view_, &mouse_event, *event->latency());
+        host_->GetInputEventRouter()->RouteMouseEvent(host_view_, &mouse_event,
+                                                      *event->latency());
       } else {
         ProcessMouseEvent(mouse_event, *event->latency());
       }
@@ -851,8 +931,8 @@ void RenderWidgetHostViewEventHandler::MoveCursorToCenter(
         blink::WebInputEvent::Modifiers::kRelativeMotionEvent);
     mouse_event.SetPositionInScreen(gfx::PointF(center_in_screen));
     if (ShouldRouteEvents()) {
-      host_->delegate()->GetInputEventRouter()->RouteMouseEvent(
-          host_view_, &mouse_event, ui::LatencyInfo());
+      host_->GetInputEventRouter()->RouteMouseEvent(host_view_, &mouse_event,
+                                                    ui::LatencyInfo());
     } else {
       ProcessMouseEvent(mouse_event, ui::LatencyInfo());
     }
@@ -919,8 +999,9 @@ bool RenderWidgetHostViewEventHandler::ShouldMoveToCenter(
 }
 
 bool RenderWidgetHostViewEventHandler::ShouldRouteEvents() const {
-  if (!host_->delegate())
+  if (!host_ || !host_->delegate()) {
     return false;
+  }
 
   // Do not route events that are currently targeted to page popups such as
   // <select> element drop-downs, since these cannot contain cross-process
@@ -928,7 +1009,7 @@ bool RenderWidgetHostViewEventHandler::ShouldRouteEvents() const {
   if (!host_->delegate()->IsWidgetForPrimaryMainFrame(host_))
     return false;
 
-  return !!host_->delegate()->GetInputEventRouter();
+  return !!host_->GetInputEventRouter();
 }
 
 void RenderWidgetHostViewEventHandler::ProcessMouseEvent(

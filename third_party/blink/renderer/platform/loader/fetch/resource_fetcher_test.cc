@@ -33,6 +33,7 @@
 #include <memory>
 #include <optional>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
@@ -161,7 +162,7 @@ class ResourceFetcherTestBase : public testing::Test {
                          RenderBlockingBehavior,
                          const Resource*) override {
       request_ = PartialResourceRequest(request);
-      world_for_csp_ = options.world_for_csp;
+      world_for_csp_ = options.WorldForCsp();
     }
     void DidChangePriority(uint64_t identifier,
                            ResourceLoadPriority,
@@ -179,6 +180,7 @@ class ResourceFetcherTestBase : public testing::Test {
     void DidFinishLoading(uint64_t identifier,
                           base::TimeTicks finish_time,
                           int64_t encoded_data_length,
+                          uint64_t encoded_body_length,
                           int64_t decoded_body_length) override {}
     void DidFailLoading(const KURL&,
                         uint64_t identifier,
@@ -1075,6 +1077,176 @@ TEST_P(ResourceFetcherTest, Revalidate304) {
   EXPECT_NE(resource, new_resource);
 }
 
+TEST_P(ResourceFetcherTest, LinkPreload304MatchClearsUnusedPreload) {
+  ScopedSpeculationMeasurementForTest enable_speculation_measurement(true);
+  base::HistogramTester histogram_tester;
+  auto* fetcher = CreateFetcher();
+
+  KURL url("http://127.0.0.1:8000/foo.png");
+  RegisterMockedURLLoad(url);
+
+  // Link preload request
+  FetchParameters fetch_params_preload =
+      FetchParameters::CreateForTest(ResourceRequest(url));
+  fetch_params_preload.SetLinkPreload(true);
+  Resource* preload_resource =
+      MockResource::Fetch(fetch_params_preload, fetcher, nullptr);
+  ASSERT_TRUE(preload_resource);
+  EXPECT_TRUE(preload_resource->IsLinkPreload());
+  EXPECT_TRUE(preload_resource->IsUnusedPreload());
+  EXPECT_TRUE(fetcher->ContainsAsPreload(preload_resource));
+
+  // Response returns 304 without body
+  ResourceResponse response(url);
+  response.SetHttpStatusCode(304);
+  preload_resource->ResponseReceived(response);
+  preload_resource->FinishForTest();
+
+  // Subsequent actual request matches the preload URL
+  FetchParameters fetch_params =
+      FetchParameters::CreateForTest(ResourceRequest(url));
+  Resource* new_resource = MockResource::Fetch(fetch_params, fetcher, nullptr);
+
+  // The 304 preload resource cannot be reused, so a new Resource is fetched.
+  EXPECT_NE(preload_resource, new_resource);
+  // But preload_resource should be removed from preloads_ and not considered
+  // unused.
+  EXPECT_FALSE(fetcher->ContainsAsPreload(preload_resource));
+  EXPECT_FALSE(preload_resource->IsUnusedPreload());
+
+  const auto& preload_records = fetcher->GetPreloadRecords();
+  auto it = preload_records.find(url);
+  ASSERT_TRUE(it != preload_records.end());
+  EXPECT_TRUE(it->value.used_time.has_value());
+
+  fetcher->ScheduleWarnUnusedPreloads(base::DoNothing());
+  static_cast<scheduler::FakeTaskRunner*>(fetcher->GetTaskRunner().get())
+      ->RunUntilIdle();
+  histogram_tester.ExpectTotalCount("Renderer.Preload.UnusedResource", 0);
+  histogram_tester.ExpectTotalCount("Renderer.Preload.UnusedResource2", 0);
+  histogram_tester.ExpectTotalCount(
+      "Renderer.Preload.UnusedResource2.LinkPreload", 0);
+  histogram_tester.ExpectTotalCount("Renderer.Preload.UnusedResourceCount", 0);
+}
+
+TEST_P(ResourceFetcherTest, LinkPreload304NeverReferencedWarnsUnused) {
+  ScopedSpeculationMeasurementForTest enable_speculation_measurement(true);
+  base::HistogramTester histogram_tester;
+  auto* fetcher = CreateFetcher();
+
+  KURL url("http://127.0.0.1:8000/foo.png");
+  RegisterMockedURLLoad(url);
+
+  // Link preload request receives 304 response
+  FetchParameters fetch_params_preload =
+      FetchParameters::CreateForTest(ResourceRequest(url));
+  fetch_params_preload.SetLinkPreload(true);
+  Resource* preload_resource =
+      MockResource::Fetch(fetch_params_preload, fetcher, nullptr);
+  ASSERT_TRUE(preload_resource);
+  EXPECT_TRUE(preload_resource->IsLinkPreload());
+  EXPECT_TRUE(preload_resource->IsUnusedPreload());
+  EXPECT_TRUE(fetcher->ContainsAsPreload(preload_resource));
+
+  ResourceResponse response(url);
+  response.SetHttpStatusCode(304);
+  preload_resource->ResponseReceived(response);
+  preload_resource->FinishForTest();
+
+  // The preload is never referenced by any subsequent request.
+  EXPECT_TRUE(fetcher->ContainsAsPreload(preload_resource));
+  EXPECT_TRUE(preload_resource->IsUnusedPreload());
+
+  const auto& preload_records = fetcher->GetPreloadRecords();
+  auto it = preload_records.find(url);
+  ASSERT_TRUE(it != preload_records.end());
+  EXPECT_FALSE(it->value.used_time.has_value());
+
+  fetcher->ScheduleWarnUnusedPreloads(base::DoNothing());
+  static_cast<scheduler::FakeTaskRunner*>(fetcher->GetTaskRunner().get())
+      ->RunUntilIdle();
+  histogram_tester.ExpectBucketCount(
+      "Renderer.Preload.UnusedResource",
+      static_cast<int>(preload_resource->GetType()), 1);
+  histogram_tester.ExpectBucketCount("Renderer.Preload.UnusedResource2",
+                                     preload_resource->GetType(), 1);
+  histogram_tester.ExpectBucketCount(
+      "Renderer.Preload.UnusedResource2.LinkPreload",
+      preload_resource->GetType(), 1);
+  histogram_tester.ExpectBucketCount("Renderer.Preload.UnusedResourceCount", 1,
+                                     1);
+  histogram_tester.ExpectTotalCount("Renderer.Preload.UnusedResource", 1);
+  histogram_tester.ExpectTotalCount("Renderer.Preload.UnusedResource2", 1);
+  histogram_tester.ExpectTotalCount(
+      "Renderer.Preload.UnusedResource2.LinkPreload", 1);
+  histogram_tester.ExpectTotalCount("Renderer.Preload.UnusedResourceCount", 1);
+}
+
+TEST_P(ResourceFetcherTest,
+       LinkPreload304WithParameterMismatchDoesNotClearPreload) {
+  ScopedSpeculationMeasurementForTest enable_speculation_measurement(true);
+  base::HistogramTester histogram_tester;
+  auto* fetcher = CreateFetcher();
+
+  KURL url("http://127.0.0.1:8000/foo.png");
+  RegisterMockedURLLoad(url);
+
+  // Link preload request with credentials mode omit
+  FetchParameters fetch_params_preload =
+      FetchParameters::CreateForTest(ResourceRequest(url));
+  fetch_params_preload.SetLinkPreload(true);
+  fetch_params_preload.MutableResourceRequest().SetCredentialsMode(
+      network::mojom::CredentialsMode::kOmit);
+  Resource* preload_resource =
+      MockResource::Fetch(fetch_params_preload, fetcher, nullptr);
+  ASSERT_TRUE(preload_resource);
+  EXPECT_TRUE(preload_resource->IsLinkPreload());
+  EXPECT_TRUE(preload_resource->IsUnusedPreload());
+  EXPECT_TRUE(fetcher->ContainsAsPreload(preload_resource));
+
+  ResourceResponse response(url);
+  response.SetHttpStatusCode(304);
+  preload_resource->ResponseReceived(response);
+  preload_resource->FinishForTest();
+
+  // Subsequent actual request with credentials mode include (mismatched)
+  FetchParameters fetch_params =
+      FetchParameters::CreateForTest(ResourceRequest(url));
+  fetch_params.MutableResourceRequest().SetCredentialsMode(
+      network::mojom::CredentialsMode::kInclude);
+  Resource* new_resource = MockResource::Fetch(fetch_params, fetcher, nullptr);
+
+  EXPECT_NE(preload_resource, new_resource);
+  // Because parameters mismatched, preload_resource should NOT be cleared from
+  // preloads_ and should remain unused.
+  EXPECT_TRUE(fetcher->ContainsAsPreload(preload_resource));
+  EXPECT_TRUE(preload_resource->IsUnusedPreload());
+
+  const auto& preload_records = fetcher->GetPreloadRecords();
+  auto it = preload_records.find(url);
+  ASSERT_TRUE(it != preload_records.end());
+  EXPECT_FALSE(it->value.used_time.has_value());
+
+  fetcher->ScheduleWarnUnusedPreloads(base::DoNothing());
+  static_cast<scheduler::FakeTaskRunner*>(fetcher->GetTaskRunner().get())
+      ->RunUntilIdle();
+  histogram_tester.ExpectBucketCount(
+      "Renderer.Preload.UnusedResource",
+      static_cast<int>(preload_resource->GetType()), 1);
+  histogram_tester.ExpectBucketCount("Renderer.Preload.UnusedResource2",
+                                     preload_resource->GetType(), 1);
+  histogram_tester.ExpectBucketCount(
+      "Renderer.Preload.UnusedResource2.LinkPreload",
+      preload_resource->GetType(), 1);
+  histogram_tester.ExpectBucketCount("Renderer.Preload.UnusedResourceCount", 1,
+                                     1);
+  histogram_tester.ExpectTotalCount("Renderer.Preload.UnusedResource", 1);
+  histogram_tester.ExpectTotalCount("Renderer.Preload.UnusedResource2", 1);
+  histogram_tester.ExpectTotalCount(
+      "Renderer.Preload.UnusedResource2.LinkPreload", 1);
+  histogram_tester.ExpectTotalCount("Renderer.Preload.UnusedResourceCount", 1);
+}
+
 TEST_P(ResourceFetcherTest, LinkPreloadResourceMultipleFetchersAndMove) {
   auto* fetcher = CreateFetcher();
   auto* fetcher2 = CreateFetcher();
@@ -1221,11 +1393,10 @@ TEST_P(ResourceFetcherTest, StaleWhileRevalidatePropagatesIsolatedWorld) {
   fetcher->SetResourceLoadObserver(observer);
 
   KURL url("http://127.0.0.1:8000/foo.html");
-  FetchParameters fetch_params =
-      FetchParameters::CreateForTest(ResourceRequest(url));
   DOMWrapperWorld* isolated_world = DOMWrapperWorld::EnsureIsolatedWorld(
       /*v8::Isolate=*/nullptr, blink::kIsolatedWorldIdLimit - 1);
-  fetch_params.MutableOptions().world_for_csp = isolated_world;
+  FetchParameters fetch_params{ResourceRequest(url),
+                               ResourceLoaderOptions(isolated_world)};
 
   ResourceResponse response(url);
   response.SetHttpStatusCode(200);
@@ -1247,9 +1418,8 @@ TEST_P(ResourceFetcherTest, StaleWhileRevalidatePropagatesIsolatedWorld) {
   ResourceRequest resource_request(url);
   resource_request.SetRequestContext(
       mojom::blink::RequestContextType::INTERNAL);
-  FetchParameters fetch_params2 =
-      FetchParameters::CreateForTest(std::move(resource_request));
-  fetch_params2.MutableOptions().world_for_csp = isolated_world;
+  FetchParameters fetch_params2(std::move(resource_request),
+                                ResourceLoaderOptions(isolated_world));
   Resource* new_resource = MockResource::Fetch(fetch_params2, fetcher, nullptr);
   EXPECT_EQ(resource, new_resource);
   platform_->GetURLLoaderMockFactory()->ServeAsynchronousRequests();
@@ -1698,13 +1868,7 @@ TEST_F(ResourceFetcherTestBase, PopulateResourceRequestPermissionsPolicy) {
           /*parent_policy=*/nullptr,
           /*header_policy=*/
           {{{network::mojom::PermissionsPolicyFeature::
-                 kBrowsingTopics, /*allowed_origins=*/
-             {*network::OriginWithPossibleWildcards::FromOrigin(origin)},
-             /*self_if_matches=*/std::nullopt,
-             /*matches_all_origins=*/false,
-             /*matches_opaque_src=*/false},
-            {network::mojom::PermissionsPolicyFeature::
-                 kDeprecated_SharedStorage,
+                 kPrivateStateTokenIssuance,
              /*allowed_origins=*/{},
              /*self_if_matches=*/std::nullopt,
              /*matches_all_origins=*/false,
@@ -1736,13 +1900,7 @@ TEST_F(ResourceFetcherTestBase,
           /*parent_policy=*/nullptr,
           /*header_policy=*/
           {{{network::mojom::PermissionsPolicyFeature::
-                 kBrowsingTopics, /*allowed_origins=*/
-             {*network::OriginWithPossibleWildcards::FromOrigin(origin)},
-             /*self_if_matches=*/std::nullopt,
-             /*matches_all_origins=*/false,
-             /*matches_opaque_src=*/false},
-            {network::mojom::PermissionsPolicyFeature::
-                 kDeprecated_SharedStorage,
+                 kPrivateStateTokenIssuance,
              /*allowed_origins=*/{},
              /*self_if_matches=*/std::nullopt,
              /*matches_all_origins=*/false,
@@ -1806,17 +1964,18 @@ TEST_P(ResourceFetcherInspectorTest,
   ASSERT_FALSE(fetcher->ResourceHasBeenEmulatedLoadStartedForInspector(url));
 
   // Set up the second fetcher.
-  auto* otherContextFetcher = CreateFetcher();
-  otherContextFetcher->SetResourceLoadObserver(observer);
+  auto* other_context_fetcher = CreateFetcher();
+  other_context_fetcher->SetResourceLoadObserver(observer);
 
   // Ensure that the url is initially not marked as cached or
   // emulated and the observer's last request is empty.
-  ASSERT_EQ(otherContextFetcher->CachedResource(url), nullptr);
+  ASSERT_EQ(other_context_fetcher->CachedResource(url), nullptr);
   ASSERT_FALSE(
-      otherContextFetcher->ResourceHasBeenEmulatedLoadStartedForInspector(url));
+      other_context_fetcher->ResourceHasBeenEmulatedLoadStartedForInspector(
+          url));
   ASSERT_EQ(observer->GetLastRequest(), std::nullopt);
 
-  otherContextFetcher->EmulateLoadStartedForInspector(
+  other_context_fetcher->EmulateLoadStartedForInspector(
       resource, mojom::blink::RequestContextType::FONT,
       network::mojom::RequestDestination::kFont,
       fetch_initiator_type_names::kCSS);
@@ -1824,9 +1983,10 @@ TEST_P(ResourceFetcherInspectorTest,
   // After the first emulation, ensure that the url is not cached,
   // is not marked as emulated and the observer's last
   // request is not empty with the feature disabled.
-  ASSERT_EQ(otherContextFetcher->CachedResource(url), nullptr);
+  ASSERT_EQ(other_context_fetcher->CachedResource(url), nullptr);
   ASSERT_FALSE(
-      otherContextFetcher->ResourceHasBeenEmulatedLoadStartedForInspector(url));
+      other_context_fetcher->ResourceHasBeenEmulatedLoadStartedForInspector(
+          url));
   if (IsSkipCallbacksWhenDevToolsNotOpenEnabled() &&
       !IsInterestedInAllRequests()) {
     ASSERT_EQ(observer->GetLastRequest(), std::nullopt);
@@ -1837,7 +1997,7 @@ TEST_P(ResourceFetcherInspectorTest,
   // Clear out the last request to start fresh
   observer->ClearLastRequest();
 
-  otherContextFetcher->EmulateLoadStartedForInspector(
+  other_context_fetcher->EmulateLoadStartedForInspector(
       resource, mojom::blink::RequestContextType::FONT,
       network::mojom::RequestDestination::kFont,
       fetch_initiator_type_names::kCSS);
@@ -1846,9 +2006,10 @@ TEST_P(ResourceFetcherInspectorTest,
   // the resource is not marked as emulated, and the observer's last
   // request is not empty with the feature disabled. This means that
   // the observer was notified with this emulation.
-  ASSERT_EQ(otherContextFetcher->CachedResource(url), nullptr);
+  ASSERT_EQ(other_context_fetcher->CachedResource(url), nullptr);
   ASSERT_FALSE(
-      otherContextFetcher->ResourceHasBeenEmulatedLoadStartedForInspector(url));
+      other_context_fetcher->ResourceHasBeenEmulatedLoadStartedForInspector(
+          url));
   if (IsSkipCallbacksWhenDevToolsNotOpenEnabled() &&
       !IsInterestedInAllRequests()) {
     ASSERT_EQ(observer->GetLastRequest(), std::nullopt);
@@ -1875,17 +2036,18 @@ TEST_P(ResourceFetcherInspectorTest,
   ASSERT_FALSE(fetcher->ResourceHasBeenEmulatedLoadStartedForInspector(url));
 
   // Set up the second fetcher.
-  auto* otherContextFetcher = CreateFetcher();
-  otherContextFetcher->SetResourceLoadObserver(observer);
+  auto* other_context_fetcher = CreateFetcher();
+  other_context_fetcher->SetResourceLoadObserver(observer);
 
   // Ensure that the url is initially not cached, not marked as emulated,
   // and the observer's last request is empty.
-  ASSERT_EQ(otherContextFetcher->CachedResource(url), nullptr);
+  ASSERT_EQ(other_context_fetcher->CachedResource(url), nullptr);
   ASSERT_FALSE(
-      otherContextFetcher->ResourceHasBeenEmulatedLoadStartedForInspector(url));
+      other_context_fetcher->ResourceHasBeenEmulatedLoadStartedForInspector(
+          url));
   ASSERT_EQ(observer->GetLastRequest(), std::nullopt);
 
-  otherContextFetcher->EmulateLoadStartedForInspector(
+  other_context_fetcher->EmulateLoadStartedForInspector(
       resource, mojom::blink::RequestContextType::FONT,
       network::mojom::RequestDestination::kFont,
       fetch_initiator_type_names::kCSS);
@@ -1893,9 +2055,10 @@ TEST_P(ResourceFetcherInspectorTest,
   // After the first emulation, ensure that the url is not cached,
   // marked as emulated, and the observer's last request is not empty with
   // the feature enabled.
-  ASSERT_EQ(otherContextFetcher->CachedResource(url), nullptr);
+  ASSERT_EQ(other_context_fetcher->CachedResource(url), nullptr);
   ASSERT_TRUE(
-      otherContextFetcher->ResourceHasBeenEmulatedLoadStartedForInspector(url));
+      other_context_fetcher->ResourceHasBeenEmulatedLoadStartedForInspector(
+          url));
   if (IsSkipCallbacksWhenDevToolsNotOpenEnabled() &&
       !IsInterestedInAllRequests()) {
     ASSERT_EQ(observer->GetLastRequest(), std::nullopt);
@@ -1906,7 +2069,7 @@ TEST_P(ResourceFetcherInspectorTest,
   // Clear out the last request to start fresh
   observer->ClearLastRequest();
 
-  otherContextFetcher->EmulateLoadStartedForInspector(
+  other_context_fetcher->EmulateLoadStartedForInspector(
       resource, mojom::blink::RequestContextType::FONT,
       network::mojom::RequestDestination::kFont,
       fetch_initiator_type_names::kCSS);
@@ -1915,9 +2078,10 @@ TEST_P(ResourceFetcherInspectorTest,
   // marked as emulated, and the observer's last request is empty with
   // the feature enabled. This means that the observer was not
   // notified with this emulation.
-  ASSERT_EQ(otherContextFetcher->CachedResource(url), nullptr);
+  ASSERT_EQ(other_context_fetcher->CachedResource(url), nullptr);
   ASSERT_TRUE(
-      otherContextFetcher->ResourceHasBeenEmulatedLoadStartedForInspector(url));
+      other_context_fetcher->ResourceHasBeenEmulatedLoadStartedForInspector(
+          url));
   ASSERT_EQ(observer->GetLastRequest(), std::nullopt);
 }
 
@@ -2512,11 +2676,10 @@ TEST_P(ResourceFetcherTest, CrossWorldExtensionResourceMismatch) {
   ResourceRequest isolated_world_request(url);
   isolated_world_request.SetRequestContext(
       mojom::blink::RequestContextType::INTERNAL);
-  FetchParameters isolated_world_fetch_params =
-      FetchParameters::CreateForTest(std::move(isolated_world_request));
   DOMWrapperWorld* isolated_world = DOMWrapperWorld::EnsureIsolatedWorld(
       /*v8::Isolate=*/nullptr, blink::kIsolatedWorldIdLimit - 1);
-  isolated_world_fetch_params.MutableOptions().world_for_csp = isolated_world;
+  FetchParameters isolated_world_fetch_params(
+      std::move(isolated_world_request), ResourceLoaderOptions(isolated_world));
 
   // Verify that the cached resource is not reused in the extension isolated
   // world. Because the initiating worlds differ, this should force a mismatch
@@ -2564,11 +2727,10 @@ TEST_P(ResourceFetcherTest, PreloadMatchServiceWorkerWorldMismatch) {
   EXPECT_TRUE(preload_resource->IsLoaded());
 
   // 2. Fetch in isolated world (different world_for_csp)
-  FetchParameters fetch_params_load =
-      FetchParameters::CreateForTest(ResourceRequest(url));
   DOMWrapperWorld* isolated_world = DOMWrapperWorld::EnsureIsolatedWorld(
       /*v8::Isolate=*/nullptr, blink::kIsolatedWorldIdLimit - 1);
-  fetch_params_load.MutableOptions().world_for_csp = isolated_world;
+  FetchParameters fetch_params_load{ResourceRequest(url),
+                                    ResourceLoaderOptions(isolated_world)};
 
   // Verify that the loader detects the script world mismatch for the
   // Service Worker-fetched resource (returning
@@ -2579,6 +2741,85 @@ TEST_P(ResourceFetcherTest, PreloadMatchServiceWorkerWorldMismatch) {
       MockResource::Fetch(fetch_params_load, fetcher, nullptr);
 
   EXPECT_NE(preload_resource, load_resource);
+}
+
+// Main World Resources (Main World CSP).
+TEST_P(ResourceFetcherTest, MainWorldResourceWithMainWorldCsp) {
+  KURL url("http://127.0.0.1:8000/foo.js");
+  platform_->GetURLLoaderMockFactory()->RegisterURL(url, WebURLResponse(), "");
+  FetchParameters params{ResourceRequest(url),
+                         ResourceLoaderOptions(/*world_for_csp=*/nullptr)};
+  EXPECT_FALSE(params.Options().TargetWorld());
+  EXPECT_FALSE(params.Options().WorldForCsp());
+
+  auto* fetcher = CreateFetcher();
+  Resource* resource = MockResource::Fetch(params, fetcher, nullptr);
+  ASSERT_TRUE(resource);
+  EXPECT_FALSE(resource->GetResourceRequest().GetSkipServiceWorker());
+  EXPECT_FALSE(resource->Options().TargetWorld());
+  EXPECT_FALSE(resource->Options().WorldForCsp());
+}
+
+// Main World Resources (Main World CSP), via `CreateForTargetWorld(nullptr)`.
+TEST_P(ResourceFetcherTest, MainWorldResourceWithNullCreateForTargetWorld) {
+  KURL url("http://127.0.0.1:8000/foo.js");
+  platform_->GetURLLoaderMockFactory()->RegisterURL(url, WebURLResponse(), "");
+  FetchParameters params{ResourceRequest(url),
+                         ResourceLoaderOptions::CreateForTargetWorld(nullptr)};
+  EXPECT_FALSE(params.Options().TargetWorld());
+  EXPECT_FALSE(params.Options().WorldForCsp());
+
+  auto* fetcher = CreateFetcher();
+  Resource* resource = MockResource::Fetch(params, fetcher, nullptr);
+  ASSERT_TRUE(resource);
+  EXPECT_FALSE(resource->GetResourceRequest().GetSkipServiceWorker());
+  EXPECT_FALSE(resource->Options().TargetWorld());
+  EXPECT_FALSE(resource->Options().WorldForCsp());
+}
+
+// Main World Resources (Isolated World CSP) should obey isolated world CSP
+// while still intercepted by ServiceWorker.
+TEST_P(ResourceFetcherTest, MainWorldResourceWithIsolatedWorldCsp) {
+  KURL url("http://127.0.0.1:8000/foo.js");
+  platform_->GetURLLoaderMockFactory()->RegisterURL(url, WebURLResponse(), "");
+  DOMWrapperWorld* isolated_world = DOMWrapperWorld::EnsureIsolatedWorld(
+      /*v8::Isolate=*/nullptr, blink::kIsolatedWorldIdLimit - 1);
+  FetchParameters params{
+      ResourceRequest(url),
+      ResourceLoaderOptions(/*world_for_csp=*/isolated_world)};
+  EXPECT_FALSE(params.Options().TargetWorld());
+  EXPECT_EQ(params.Options().WorldForCsp(), isolated_world);
+
+  auto* fetcher = CreateFetcher();
+  Resource* resource = MockResource::Fetch(params, fetcher, nullptr);
+  ASSERT_TRUE(resource);
+  EXPECT_FALSE(resource->GetResourceRequest().GetSkipServiceWorker());
+  EXPECT_FALSE(resource->Options().TargetWorld());
+  EXPECT_EQ(resource->Options().WorldForCsp(), isolated_world);
+}
+
+// Isolated World Resources (Isolated World CSP) should obey isolated world CSP
+// and should skip ServiceWorker.
+TEST_P(ResourceFetcherTest, IsolatedWorldResourceWithIsolatedWorldCsp) {
+  KURL url("http://127.0.0.1:8000/foo.js");
+  platform_->GetURLLoaderMockFactory()->RegisterURL(url, WebURLResponse(), "");
+  DOMWrapperWorld* isolated_world = DOMWrapperWorld::EnsureIsolatedWorld(
+      /*v8::Isolate=*/nullptr, blink::kIsolatedWorldIdLimit - 1);
+  FetchParameters params{
+      ResourceRequest(url),
+      ResourceLoaderOptions::CreateForTargetWorld(isolated_world)};
+  EXPECT_EQ(params.Options().TargetWorld(), isolated_world);
+  EXPECT_EQ(params.Options().WorldForCsp(), isolated_world);
+
+  auto* fetcher = CreateFetcher();
+  Resource* resource = MockResource::Fetch(params, fetcher, nullptr);
+  ASSERT_TRUE(resource);
+  // TODO(crbug.com/563000235): the `SkipServiceWorker` flag should be set in
+  // `ResourceFetcher` in a centralized way after https://crrev.com/c/8391786
+  // and thus `GetSkipServiceWorker()` should be true.
+  EXPECT_FALSE(resource->GetResourceRequest().GetSkipServiceWorker());
+  EXPECT_EQ(resource->Options().TargetWorld(), isolated_world);
+  EXPECT_EQ(resource->Options().WorldForCsp(), isolated_world);
 }
 
 }  // namespace blink

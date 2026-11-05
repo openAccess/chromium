@@ -265,14 +265,16 @@ class ScreenCaptureKitDeviceMac
       SCContentFilter* filter,
       StreamCallback stream_created_callback,
       std::unique_ptr<content::PipScreenCaptureCoordinatorProxy>
-          pip_screen_capture_coordinator_proxy)
+          pip_screen_capture_coordinator_proxy,
+      base::OnceClosure stop_callback)
       : source_(source),
         is_native_picker_session_(is_native_picker),
         filter_(filter),
         stream_created_callback_(std::move(stream_created_callback)),
         device_task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()),
         pip_screen_capture_coordinator_proxy_(
-            std::move(pip_screen_capture_coordinator_proxy)) {
+            std::move(pip_screen_capture_coordinator_proxy)),
+        stop_callback_(std::move(stop_callback)) {
     SampleCallback sample_callback = base::BindPostTask(
         device_task_runner_,
         base::BindRepeating(&ScreenCaptureKitDeviceMac::OnStreamSample,
@@ -292,14 +294,16 @@ class ScreenCaptureKitDeviceMac
   ScreenCaptureKitDeviceMac& operator=(const ScreenCaptureKitDeviceMac&) =
       delete;
   ~ScreenCaptureKitDeviceMac() override {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
     if (pip_screen_capture_coordinator_proxy_) {
       pip_screen_capture_coordinator_proxy_->RemoveObserver(this);
     }
   }
 
   void OnShareableContentCreated(SCShareableContent* content) {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
 
     if (!content) {
       client()->OnError(
@@ -349,7 +353,8 @@ class ScreenCaptureKitDeviceMac
   }
 
   void CreateStream(SCContentFilter* filter) {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
     if (!filter) {
       client()->OnError(
           media::VideoCaptureError::kScreenCaptureKitFailedToFindSCDisplay,
@@ -403,17 +408,24 @@ class ScreenCaptureKitDeviceMac
         base::BindRepeating(&ScreenCaptureKitDeviceMac::OnStreamStarted,
                             weak_factory_.GetWeakPtr()));
     auto handler = ^(NSError* error) {
-      stream_started_callback.Run(!!error);
+      stream_started_callback.Run(error);
     };
     [stream_ startCaptureWithCompletionHandler:handler];
   }
-  void OnStreamStarted(bool error) {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  void OnStreamStarted(NSError* _Nullable error) {
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
 
     if (error) {
+      std::string error_string = base::StrCat(
+          {"Failed startCaptureWithCompletionHandler: ",
+           base::SysNSStringToUTF8([error domain]), ": ",
+           base::NumberToString([error code]), " (",
+           base::SysNSStringToUTF8([error localizedDescription]), ")"});
+      LOG(ERROR) << error_string;
       client()->OnError(
           media::VideoCaptureError::kScreenCaptureKitFailedStartCapture,
-          FROM_HERE, "Failed startCaptureWithCompletionHandler");
+          FROM_HERE, error_string);
       return;
     }
     client()->OnStarted();
@@ -423,13 +435,16 @@ class ScreenCaptureKitDeviceMac
     }
   }
   void OnStreamStopped(bool error) {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
+    if (stop_callback_) {
+      std::move(stop_callback_).Run();
+    }
 
     if (error) {
       client()->OnError(
           media::VideoCaptureError::kScreenCaptureKitFailedStopCapture,
           FROM_HERE, "Failed stopCaptureWithCompletionHandler");
-      return;
     }
   }
   void OnStreamSample(gfx::ScopedInUseIOSurface io_surface,
@@ -437,7 +452,8 @@ class ScreenCaptureKitDeviceMac
                       std::optional<gfx::Rect> visible_rect,
                       std::optional<float> scale_factor,
                       bool is_presenter_overlay_large_active) {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
 
     if (requested_capture_format_) {
       // Does the size of io_surface match the requested format?
@@ -526,7 +542,8 @@ class ScreenCaptureKitDeviceMac
         content_size, scale_factor);
   }
   void OnStreamError(NSError* _Nullable error) {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
 
     if (is_resetting_ || (fullscreen_module_ &&
                           fullscreen_module_->is_fullscreen_window_active())) {
@@ -540,18 +557,20 @@ class ScreenCaptureKitDeviceMac
       }
       OnStart();
     } else {
-      std::string error_string =
-          base::StrCat({"Stream delegate called didStopWithError: ",
-                        base::SysNSStringToUTF8([error domain]), ": ",
-                        base::NumberToString([error code])});
+      std::string error_string = base::StrCat(
+          {"Stream delegate called didStopWithError: ",
+           base::SysNSStringToUTF8([error domain]), ": ",
+           base::NumberToString([error code]), " (",
+           base::SysNSStringToUTF8([error localizedDescription]), ")"});
+      LOG(ERROR) << error_string;
       client()->OnError(media::VideoCaptureError::kScreenCaptureKitStreamError,
                         FROM_HERE, error_string);
     }
   }
   void OnUpdateContentFilterCompleted(NSError* _Nullable error) {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
     is_resetting_ = false;
-
     if (error) {
       client()->OnError(media::VideoCaptureError::kScreenCaptureKitStreamError,
                         FROM_HERE,
@@ -559,13 +578,15 @@ class ScreenCaptureKitDeviceMac
     }
   }
   void OnUpdateConfigurationError() {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
     client()->OnError(media::VideoCaptureError::kScreenCaptureKitStreamError,
                       FROM_HERE, "Error on updateConfiguration");
   }
 
   void OnShareableContentForFilterUpdate(SCShareableContent* content) {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
 
     if (!content || !stream_) {
       return;
@@ -606,7 +627,8 @@ class ScreenCaptureKitDeviceMac
       const GlobalRenderFrameHostId& new_pip_owner_render_frame_host_id,
       const std::vector<PipScreenCaptureCoordinatorProxy::CaptureInfo>&
           captures) override {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
 
     if (!stream_) {
       return;
@@ -629,7 +651,8 @@ class ScreenCaptureKitDeviceMac
 
   // IOSurfaceCaptureDeviceBase:
   void OnStart() override {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
     if (filter_) {
       // SCContentSharingPicker is used where filter_ is set on creation.
       CreateStream(filter_);
@@ -656,8 +679,13 @@ class ScreenCaptureKitDeviceMac
     }
   }
   void OnStop() override {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
 
+    // Invalidate existing weak pointers to cancel any in-flight callbacks
+    // (e.g., OnStreamSample) before binding a new weak pointer for
+    // OnStreamStopped below.
+    weak_factory_.InvalidateWeakPtrs();
     if (stream_) {
       auto stream_stopped_callback = base::BindPostTask(
           device_task_runner_,
@@ -676,15 +704,16 @@ class ScreenCaptureKitDeviceMac
       if (!remove_stream_output_result) {
         DLOG(ERROR) << "Failed removeStreamOutput";
       }
+      stream_ = nil;
+    } else if (stop_callback_) {
+      std::move(stop_callback_).Run();
     }
-
-    weak_factory_.InvalidateWeakPtrs();
-    stream_ = nil;
   }
 
   // ScreenCaptureKitResetStreamInterface.
   void ResetStreamTo(SCWindow* window) override {
-    DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+    CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M160);
 
     if (!window || is_resetting_) {
       client()->OnError(
@@ -741,6 +770,7 @@ class ScreenCaptureKitDeviceMac
   // The stream that does the capturing.
   SCStream* __strong stream_;
 
+  base::OnceClosure stop_callback_;
   base::WeakPtrFactory<ScreenCaptureKitDeviceMac> weak_factory_{this};
 };
 
@@ -755,7 +785,8 @@ std::unique_ptr<media::VideoCaptureDevice> CreateScreenCaptureKitDeviceMac(
     SCContentFilter* filter,
     ScreenCaptureKitDeviceMac::StreamCallback callback,
     std::unique_ptr<content::PipScreenCaptureCoordinatorProxy>
-        pip_screen_capture_coordinator_proxy) {
+        pip_screen_capture_coordinator_proxy,
+    base::OnceClosure stop_callback) {
   switch (source.type) {
     case DesktopMediaID::TYPE_SCREEN:
       // ScreenCaptureKitDeviceMac only supports a single display at a time.
@@ -786,7 +817,8 @@ std::unique_ptr<media::VideoCaptureDevice> CreateScreenCaptureKitDeviceMac(
 
   return std::make_unique<ScreenCaptureKitDeviceMac>(
       source, is_native_picker, filter, std::move(callback),
-      std::move(pip_screen_capture_coordinator_proxy));
+      std::move(pip_screen_capture_coordinator_proxy),
+      std::move(stop_callback));
 }
 
 }  // namespace content

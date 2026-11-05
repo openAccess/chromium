@@ -4,6 +4,8 @@
 
 #include "chrome/browser/extensions/api/identity/web_auth_flow.h"
 
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -12,8 +14,10 @@
 #include "base/test/test_future.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "chrome/browser/extensions/api/identity/web_auth_flow_info_bar_delegate.h"
 #include "chrome/browser/extensions/browser_window_util.h"
+#include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
@@ -24,16 +28,23 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/test/browser_event_waiter.h"
 #include "chrome/test/base/platform_browser_test.h"
+#include "components/infobars/content/content_infobar_manager.h"
+#include "components/infobars/core/confirm_infobar_delegate.h"
+#include "components/infobars/core/infobar.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "content/public/test/test_utils.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/base_window.h"
+#include "ui/base/ui_base_types.h"
+#include "url/origin.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/sessions/session_restore.h"
@@ -41,7 +52,34 @@
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #endif
 
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/jni_android.h"
+#include "chrome/test/test_support_jni_headers/PopupCreatorImpl_jni.h"
+#endif
+
 namespace extensions {
+
+namespace {
+
+// The acceptable margin of error (in dips) when comparing requested and actual
+// window bounds. On Android, this counters the rounding error during dip->px
+// conversion.
+constexpr int kBoundsToleranceDip = BUILDFLAG(IS_ANDROID) ? 2 : 0;
+
+// Returns whether `window` can be placed at requested bounds. On Android,
+// requested bounds are only applied when the window can be resized (e.g. the
+// SDK supports the window bounds API and the window is in desktop windowing
+// mode).
+bool CanApplyRequestedBounds(BrowserWindowInterface* window) {
+#if BUILDFLAG(IS_ANDROID)
+  ui::WindowResizePrecheckResult result;
+  return window->GetWindow()->CanResize(result);
+#else
+  return true;
+#endif
+}
+
+}  // namespace
 
 class MockWebAuthFlowDelegate : public WebAuthFlow::Delegate {
  public:
@@ -119,15 +157,17 @@ class WebAuthFlowBrowserTest : public PlatformBrowserTest {
       WebAuthFlow::AbortOnLoad abort_on_load_for_non_interactive =
           WebAuthFlow::AbortOnLoad::kYes,
       std::optional<base::TimeDelta> timeout_for_non_interactive = std::nullopt,
-      std::optional<gfx::Rect> popup_bounds = std::nullopt) {
+      std::optional<gfx::Rect> popup_bounds = std::nullopt,
+      std::optional<url::Origin> initiator_origin = std::nullopt) {
     if (!profile) {
       profile = GetProfile();
     }
 
     web_auth_flow_ = std::make_unique<WebAuthFlow>(
         &mock_web_auth_flow_delegate_, profile, url, mode,
-        /*user_gesture=*/true, abort_on_load_for_non_interactive,
-        timeout_for_non_interactive, popup_bounds);
+        /*user_gesture=*/true, std::move(initiator_origin),
+        abort_on_load_for_non_interactive, timeout_for_non_interactive,
+        popup_bounds);
 
     timeout_task_runner_ = base::MakeRefCounted<base::TestMockTimeTaskRunner>();
     web_auth_flow_->SetClockForTesting(timeout_task_runner_->GetMockTickClock(),
@@ -142,6 +182,25 @@ class WebAuthFlowBrowserTest : public PlatformBrowserTest {
       return nullptr;
     }
     return web_auth_flow_->web_contents();
+  }
+
+  ConfirmInfoBarDelegate* GetInfoBarDelegate() {
+    if (!web_contents()) {
+      return nullptr;
+    }
+    auto* manager =
+        infobars::ContentInfoBarManager::FromWebContents(web_contents());
+    if (!manager) {
+      return nullptr;
+    }
+    for (infobars::InfoBar* infobar : manager->infobars()) {
+      if (infobar->delegate()->GetIdentifier() ==
+          infobars::InfoBarDelegate::
+              EXTENSIONS_WEB_AUTH_FLOW_INFOBAR_DELEGATE) {
+        return infobar->delegate()->AsConfirmInfoBarDelegate();
+      }
+    }
+    return nullptr;
   }
 
   BrowserWindowInterface* GetFirstActivatedBrowser() {
@@ -427,65 +486,23 @@ IN_PROC_BROWSER_TEST_F(WebAuthFlowInBrowserTabParamBrowserTest,
   timeout_task_runner()->FastForwardBy(base::Milliseconds(30));
 }
 
-class WebAuthFlowFencedFrameTest
-    : public WebAuthFlowInBrowserTabParamBrowserTest {
- public:
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
+class WebAuthFlowInfoBarBrowserTest : public WebAuthFlowBrowserTest,
+                                      public testing::WithParamInterface<bool> {
+ protected:
+  WebAuthFlowInfoBarBrowserTest() {
+    if (GetParam()) {
+      feature_list_.InitAndEnableFeatureWithParameters(
+          infobars::kCentralizedInfoBarFramework,
+          {{infobars::kMigratedWebAuthFlow.name, "true"}});
+    } else {
+      feature_list_.InitAndDisableFeature(
+          infobars::kCentralizedInfoBarFramework);
+    }
   }
 
  private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
+  base::test::ScopedFeatureList feature_list_;
 };
-
-IN_PROC_BROWSER_TEST_F(WebAuthFlowFencedFrameTest,
-                       FencedFrameNavigationSuccess) {
-  const GURL auth_url = embedded_test_server()->GetURL("/title1.html");
-
-  // Observer for waiting until loading stops. A fenced frame will be created
-  // after load has finished.
-  WebAuthFlowTestNavigationObserver navigation_observer(auth_url);
-
-  EXPECT_CALL(mock(), OnAuthFlowURLChange(auth_url));
-  StartWebAuthFlow(auth_url);
-
-  navigation_observer.WaitForWindow(web_auth_flow());
-  testing::Mock::VerifyAndClearExpectations(&mock());
-
-  // Navigation for fenced frames should not affect to call the delegate methods
-  // in the WebAuthFlow.
-  EXPECT_CALL(mock(), OnAuthFlowURLChange(auth_url)).Times(0);
-
-  // Create a fenced frame into the inner WebContents of the WebAuthFlow.
-  ASSERT_TRUE(fenced_frame_test_helper().CreateFencedFrame(
-      web_contents()->GetPrimaryMainFrame(),
-      embedded_test_server()->GetURL("/fenced_frames/title1.html")));
-}
-
-IN_PROC_BROWSER_TEST_F(WebAuthFlowFencedFrameTest,
-                       FencedFrameNavigationFailure) {
-  const GURL auth_url = embedded_test_server()->GetURL("/title1.html");
-
-  // Observer for waiting until loading stops. A fenced frame will be created
-  // after load has finished.
-  WebAuthFlowTestNavigationObserver navigation_observer(auth_url);
-
-  EXPECT_CALL(mock(), OnAuthFlowURLChange(auth_url));
-  StartWebAuthFlow(auth_url);
-
-  navigation_observer.WaitForWindow(web_auth_flow());
-  testing::Mock::VerifyAndClearExpectations(&mock());
-
-  // Navigation for fenced frames should not affect to call the delegate methods
-  // in the WebAuthFlow.
-  EXPECT_CALL(mock(), OnAuthFlowURLChange(auth_url)).Times(0);
-  EXPECT_CALL(mock(), OnAuthFlowFailure).Times(0);
-
-  // Create a fenced frame into the inner WebContents of the WebAuthFlow.
-  ASSERT_TRUE(fenced_frame_test_helper().CreateFencedFrame(
-      web_contents()->GetPrimaryMainFrame(),
-      embedded_test_server()->GetURL("/error"), net::Error::ERR_FAILED));
-}
 
 // This test is in two parts:
 // - First create a WebAuthFlow in interactive mode that will create a popup
@@ -494,7 +511,7 @@ IN_PROC_BROWSER_TEST_F(WebAuthFlowFencedFrameTest,
 //
 // These two tests are combined into one in order not to re-test the window
 // creation twice.
-IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
+IN_PROC_BROWSER_TEST_P(WebAuthFlowInfoBarBrowserTest,
                        InteractivePopupWindowCreatedWithAuthURL_ThenCloseTab) {
   const GURL auth_url = embedded_test_server()->GetURL("/title1.html");
   WebAuthFlowTestNavigationObserver navigation_observer(auth_url);
@@ -502,7 +519,7 @@ IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
   EXPECT_CALL(mock(), OnAuthFlowURLChange(auth_url));
   StartWebAuthFlow(auth_url, WebAuthFlow::Mode::INTERACTIVE);
 
-  const char extension_name[] = "extension_name";
+  const std::string extension_name = "extension_name";
   web_auth_flow()->SetShouldShowInfoBar(extension_name);
 
   navigation_observer.WaitForWindow(web_auth_flow());
@@ -516,14 +533,14 @@ IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
             auth_url);
 
   // Check info bar exists and displays proper message with extension name.
-  base::WeakPtr<WebAuthFlowInfoBarDelegate> infobar_delegate =
-      web_auth_flow()->GetInfoBarDelegateForTesting();
-  EXPECT_TRUE(infobar_delegate);
+  ConfirmInfoBarDelegate* infobar_delegate = GetInfoBarDelegate();
+  ASSERT_TRUE(infobar_delegate);
   EXPECT_EQ(
       infobar_delegate->GetIdentifier(),
       infobars::InfoBarDelegate::EXTENSIONS_WEB_AUTH_FLOW_INFOBAR_DELEGATE);
-  EXPECT_TRUE(infobar_delegate->GetMessageText().find(
-      base::UTF8ToUTF16(std::string(extension_name))));
+  EXPECT_NE(infobar_delegate->GetMessageText().find(
+                base::UTF8ToUTF16(extension_name)),
+            std::u16string::npos);
 
   //---------------------------------------------------------------------
   // Part of the test that closes the tab, simulating declining the consent.
@@ -531,6 +548,13 @@ IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
   EXPECT_CALL(mock(), OnAuthFlowFailure(WebAuthFlow::Failure::WINDOW_CLOSED));
   tabs->GetActiveTab()->Close();
 }
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         WebAuthFlowInfoBarBrowserTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Migrated" : "Legacy";
+                         });
 
 IN_PROC_BROWSER_TEST_F(
     WebAuthFlowBrowserTest,
@@ -552,10 +576,7 @@ IN_PROC_BROWSER_TEST_F(
   //---------------------------------------------------------------------
   testing::Mock::VerifyAndClearExpectations(&mock());
 
-  // Keeping a reference to the info bar delegate to check later.
-  base::WeakPtr<WebAuthFlowInfoBarDelegate> auth_info_bar =
-      web_auth_flow()->GetInfoBarDelegateForTesting();
-  ASSERT_TRUE(auth_info_bar);
+  ASSERT_TRUE(GetInfoBarDelegate());
 
   BrowserWindowInterface* popup_browser =
       browser_window_util::GetBrowserForTabContents(*web_contents());
@@ -587,7 +608,7 @@ IN_PROC_BROWSER_TEST_F(
             popup_browser);
 
   // Infobar should not be closed on navigation.
-  EXPECT_TRUE(auth_info_bar);
+  EXPECT_TRUE(GetInfoBarDelegate());
 }
 
 // These tests run into Android's background activity launch restrictions.
@@ -715,9 +736,7 @@ IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
 
   // Check info bar is not created if not set via
   // `SetShouldShowInfoBar())`.
-  base::WeakPtr<WebAuthFlowInfoBarDelegate> infobar_delegate =
-      web_auth_flow()->GetInfoBarDelegateForTesting();
-  EXPECT_FALSE(infobar_delegate);
+  EXPECT_FALSE(GetInfoBarDelegate());
 }
 
 IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
@@ -739,8 +758,11 @@ IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
   BrowserWindowInterface* popup_window_browser =
       browser_window_util::GetBrowserForTabContents(*web_contents());
   EXPECT_NE(popup_window_browser, GetFirstActivatedBrowser());
+  EXPECT_EQ(popup_window_browser->GetType(),
+            BrowserWindowInterface::TYPE_POPUP);
 
   TabListInterface* popup_tabs = TabListInterface::From(popup_window_browser);
+  EXPECT_EQ(popup_tabs->GetTabCount(), 1);
   EXPECT_EQ(popup_tabs->GetActiveTab()->GetContents()->GetLastCommittedURL(),
             auth_url);
 
@@ -801,13 +823,15 @@ IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest, PopupWindowOpened_WithBounds) {
   ASSERT_TRUE(popup_window_browser);
   EXPECT_NE(popup_window_browser, GetFirstActivatedBrowser());
 
-  gfx::Rect bounds = popup_window_browser->GetWindow()->GetBounds();
-  EXPECT_EQ(bounds.x(), test_bounds.x());
-  EXPECT_EQ(bounds.y(), test_bounds.y());
-  // The final width and height can contain platform-specific offsets for the
-  // window title bar, which we don't want to assert exactly here.
-  EXPECT_GE(bounds.width(), test_bounds.width());
-  EXPECT_GE(bounds.height(), test_bounds.height());
+  if (CanApplyRequestedBounds(popup_window_browser)) {
+    gfx::Rect bounds = popup_window_browser->GetWindow()->GetBounds();
+    EXPECT_NEAR(bounds.x(), test_bounds.x(), kBoundsToleranceDip);
+    EXPECT_NEAR(bounds.y(), test_bounds.y(), kBoundsToleranceDip);
+    // The final width and height can contain platform-specific offsets for the
+    // window title bar, which we don't want to assert exactly here.
+    EXPECT_GE(bounds.width(), test_bounds.width() - kBoundsToleranceDip);
+    EXPECT_GE(bounds.height(), test_bounds.height() - kBoundsToleranceDip);
+  }
 }
 
 IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
@@ -847,12 +871,46 @@ IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest, StartAfterShutdownStarted) {
-  GetProfile()->NotifyWillBeDestroyed();
-  ASSERT_TRUE(GetProfile()->ShutdownStarted());
-
   const GURL auth_url = embedded_test_server()->GetURL("/title1.html");
-  EXPECT_DCHECK_DEATH(
-      StartWebAuthFlow(auth_url, WebAuthFlow::Mode::INTERACTIVE));
+  EXPECT_DEATH(
+      {
+        GetProfile()->NotifyWillBeDestroyed();
+        ASSERT_TRUE(GetProfile()->ShutdownStarted());
+        StartWebAuthFlow(auth_url, WebAuthFlow::Mode::INTERACTIVE);
+      },
+      "");
+}
+
+// The navigation must be attributed to the origin that supplied the URL, so
+// that it is not treated as a trusted browser-initiated navigation. See
+// https://crbug.com/523264945.
+IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest, InitiatorOriginPropagated) {
+  const GURL auth_url = embedded_test_server()->GetURL("/title1.html");
+  const url::Origin initiator_origin = url::Origin::Create(
+      GURL("chrome-extension://abcdefghijklmnopabcdefghijklmnop/"));
+
+  WebAuthFlowTestNavigationObserver navigation_observer(auth_url);
+  StartWebAuthFlow(auth_url, WebAuthFlow::Mode::INTERACTIVE,
+                   /*profile=*/nullptr, WebAuthFlow::AbortOnLoad::kYes,
+                   /*timeout_for_non_interactive=*/std::nullopt,
+                   /*popup_bounds=*/std::nullopt, initiator_origin);
+  navigation_observer.WaitForWindow(web_auth_flow());
+
+  EXPECT_TRUE(navigation_observer.last_navigation_succeeded());
+  EXPECT_EQ(initiator_origin, navigation_observer.last_initiator_origin());
+}
+
+// Flows that don't pass an initiator origin (i.e. the Gaia remote consent
+// flow) keep navigating as browser-initiated.
+IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest, NoInitiatorOriginByDefault) {
+  const GURL auth_url = embedded_test_server()->GetURL("/title1.html");
+
+  WebAuthFlowTestNavigationObserver navigation_observer(auth_url);
+  StartWebAuthFlow(auth_url, WebAuthFlow::Mode::INTERACTIVE);
+  navigation_observer.WaitForWindow(web_auth_flow());
+
+  EXPECT_TRUE(navigation_observer.last_navigation_succeeded());
+  EXPECT_EQ(std::nullopt, navigation_observer.last_initiator_origin());
 }
 
 #if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
@@ -870,6 +928,70 @@ IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
 
   web_auth_flow()->OnBrowserWindowInterfaceInitialized(nullptr);
   EXPECT_EQ(future.Get(), WebAuthFlow::Failure::CANNOT_CREATE_WINDOW);
+}
+
+IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
+                       JavaStartActivityFails_ReportsCannotCreateWindow) {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_PopupCreatorImpl_setTryStartActivityResultForTesting(env, false);
+
+  const GURL auth_url = embedded_test_server()->GetURL("/title1.html");
+
+  base::test::TestFuture<WebAuthFlow::Failure> future;
+  EXPECT_CALL(mock(),
+              OnAuthFlowFailure(WebAuthFlow::Failure::CANNOT_CREATE_WINDOW))
+      .WillOnce([this, &future](WebAuthFlow::Failure failure) {
+        // Delete the flow synchronously, as real delegates do.
+        DeleteWebAuthFlow();
+        future.SetValue(failure);
+      });
+
+  StartWebAuthFlow(auth_url, WebAuthFlow::Mode::INTERACTIVE);
+  EXPECT_EQ(future.Get(), WebAuthFlow::Failure::CANNOT_CREATE_WINDOW);
+}
+
+namespace {
+// Runs `callback` on the first DidStopLoading. Registered after WebAuthFlow,
+// so it runs after WebAuthFlow::AfterUrlLoaded() has posted the deferred
+// popup launch.
+class StopLoadingObserver : public content::WebContentsObserver {
+ public:
+  StopLoadingObserver(content::WebContents* web_contents,
+                      base::OnceClosure callback)
+      : content::WebContentsObserver(web_contents),
+        callback_(std::move(callback)) {}
+
+  void DidStopLoading() override {
+    if (callback_) {
+      std::move(callback_).Run();
+    }
+  }
+
+ private:
+  base::OnceClosure callback_;
+};
+}  // namespace
+
+// The delegate detaches (e.g. the redirect URL was reached) after the popup
+// launch was posted but before it ran. The launch must be abandoned and the
+// WebContents destroyed, not handed to an ownerless popup.
+IN_PROC_BROWSER_TEST_F(WebAuthFlowBrowserTest,
+                       Interactive_DelegateDetachedBeforeLaunch_NoPopup) {
+  size_t initial_browser_count = GetAllBrowserWindowInterfaces().size();
+  const GURL auth_url = embedded_test_server()->GetURL("/title1.html");
+  EXPECT_CALL(mock(), OnAuthFlowFailure(testing::_)).Times(0);
+
+  StartWebAuthFlow(auth_url, WebAuthFlow::Mode::INTERACTIVE);
+  content::WebContents* contents = web_contents();
+  ASSERT_TRUE(contents);
+  content::WebContentsDestroyedWatcher destroyed_watcher(contents);
+  StopLoadingObserver detach_on_stop(
+      contents, base::BindOnce(&WebAuthFlowBrowserTest::DeleteWebAuthFlow,
+                               base::Unretained(this)));
+
+  destroyed_watcher.Wait();
+  EXPECT_TRUE(destroyed_watcher.IsDestroyed());
+  EXPECT_EQ(GetAllBrowserWindowInterfaces().size(), initial_browser_count);
 }
 #endif
 

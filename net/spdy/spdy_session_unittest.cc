@@ -45,7 +45,6 @@
 #include "net/dns/public/host_resolver_results.h"
 #include "net/dns/public/secure_dns_policy.h"
 #include "net/http/http_request_info.h"
-#include "net/http/transport_security_state_test_util.h"
 #include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
 #include "net/log/net_log_source.h"
@@ -76,6 +75,10 @@
 #include "url/gurl.h"
 #include "url/scheme_host_port.h"
 #include "url/url_constants.h"
+
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+#include "net/cert/key_pinning_state_chrome_test_util.h"
+#endif
 
 using net::test::IsError;
 using net::test::IsOk;
@@ -3967,6 +3970,154 @@ TEST_F(SpdySessionTest, CloseSessionOnIdleWhenPoolStalled) {
   EXPECT_THAT(callback2.WaitForResult(), IsOk());
 }
 
+// Regression test for crbug.com/580617849: When the last active stream on a
+// SpdySession is canceled while the underlying socket pool is stalled and there
+// are pending SpdyStreamRequests, `CloseActiveStreamIterator()` must drain the
+// session asynchronously rather than synchronously failing the pending
+// `SpdyStreamRequest`s during `Cancel()`, and both already-posted
+// `CompleteStreamRequest()` tasks and remaining queued requests must fail with
+// `ERR_CONNECTION_CLOSED`.
+TEST_F(SpdySessionTest, CloseSessionOnIdleWhenPoolStalledDrainsAsynchronously) {
+  ClientSocketPoolManager::set_max_sockets_per_group_for_test(
+      HttpNetworkSession::SocketPoolType::kNormal, 1);
+  ClientSocketPoolManager::set_socket_soft_cap_per_pool_for_test(
+      HttpNetworkSession::SocketPoolType::kNormal, 1);
+
+  MockRead reads[] = {
+      MockRead(SYNCHRONOUS, ERR_IO_PENDING)  // Stall forever.
+  };
+  spdy::SpdySerializedFrame req1(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
+  spdy::SpdySerializedFrame req2(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 3, LOWEST));
+  spdy::SpdySerializedFrame cancel1(
+      spdy_util_.ConstructSpdyRstStream(1, spdy::ERROR_CODE_CANCEL));
+  spdy::SpdySerializedFrame cancel2(
+      spdy_util_.ConstructSpdyRstStream(3, spdy::ERROR_CODE_CANCEL));
+  MockWrite writes[] = {
+      CreateMockWrite(req1, 1),
+      CreateMockWrite(req2, 1),
+      CreateMockWrite(cancel1, 1),
+      CreateMockWrite(cancel2, 1),
+  };
+  StaticSocketDataProvider data(reads, writes);
+  session_deps_.socket_factory->AddSocketDataProvider(&data);
+
+  MockRead http_reads[] = {
+      MockRead(SYNCHRONOUS, ERR_IO_PENDING)  // Stall forever.
+  };
+  StaticSocketDataProvider http_data(http_reads, base::span<MockWrite>());
+  session_deps_.socket_factory->AddSocketDataProvider(&http_data);
+
+  AddSSLSocketData();
+
+  CreateNetworkSession();
+
+  ClientSocketPool* pool = http_session_->GetSocketPool(
+      HttpNetworkSession::SocketPoolType::kNormal, ProxyChain::Direct());
+
+  CreateSpdySession();
+  EXPECT_FALSE(pool->IsStalled());
+
+  base::WeakPtr<SpdyStream> spdy_stream1 = CreateStreamSynchronously(
+      SPDY_REQUEST_RESPONSE_STREAM, session_, test_url_, DEFAULT_PRIORITY,
+      NetLogWithSource());
+  ASSERT_TRUE(spdy_stream1);
+  test::StreamDelegateDoNothing delegate1(spdy_stream1);
+  spdy_stream1->SetDelegate(&delegate1);
+
+  base::WeakPtr<SpdyStream> spdy_stream2 = CreateStreamSynchronously(
+      SPDY_REQUEST_RESPONSE_STREAM, session_, test_url_, DEFAULT_PRIORITY,
+      NetLogWithSource());
+  ASSERT_TRUE(spdy_stream2);
+  test::StreamDelegateDoNothing delegate2(spdy_stream2);
+  spdy_stream2->SetDelegate(&delegate2);
+
+  quiche::HttpHeaderBlock headers1(
+      spdy_util_.ConstructGetHeaderBlock(kDefaultUrl));
+  quiche::HttpHeaderBlock headers2(headers1.Clone());
+  EXPECT_EQ(ERR_IO_PENDING, spdy_stream1->SendRequestHeaders(
+                                std::move(headers1), NO_MORE_DATA_TO_SEND));
+  EXPECT_EQ(ERR_IO_PENDING, spdy_stream2->SendRequestHeaders(
+                                std::move(headers2), NO_MORE_DATA_TO_SEND));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return delegate1.send_headers_completed() &&
+           delegate2.send_headers_completed();
+  }));
+
+  // Limit `max_concurrent_streams_` to 2 (occupied by `spdy_stream1` and
+  // `spdy_stream2`) and queue two pending stream requests on `session_`.
+  set_max_concurrent_streams(2);
+  SpdyStreamRequest stream_request3;
+  TestCompletionCallback stream_callback3;
+  EXPECT_EQ(ERR_IO_PENDING,
+            stream_request3.StartRequest(
+                SPDY_REQUEST_RESPONSE_STREAM, session_, test_url_,
+                /*can_send_early=*/false, DEFAULT_PRIORITY, SocketTag(),
+                NetLogWithSource(), stream_callback3.callback(),
+                TRAFFIC_ANNOTATION_FOR_TESTS));
+  SpdyStreamRequest stream_request4;
+  TestCompletionCallback stream_callback4;
+  EXPECT_EQ(ERR_IO_PENDING,
+            stream_request4.StartRequest(
+                SPDY_REQUEST_RESPONSE_STREAM, session_, test_url_,
+                /*can_send_early=*/false, DEFAULT_PRIORITY, SocketTag(),
+                NetLogWithSource(), stream_callback4.callback(),
+                TRAFFIC_ANNOTATION_FOR_TESTS));
+
+  // Stall the underlying socket pool.
+  TestCompletionCallback callback2;
+  auto connection2 = std::make_unique<ClientSocketHandle>();
+  EXPECT_EQ(
+      ERR_IO_PENDING,
+      connection2->Init(
+          ClientSocketPool::GroupId(
+              url::SchemeHostPort(url::kHttpScheme, "2.com", 80),
+              PrivacyMode::PRIVACY_MODE_DISABLED, NetworkAnonymizationKey(),
+              SecureDnsPolicy::kAllow, /*disable_cert_network_fetches=*/false,
+              handles::kInvalidNetworkHandle),
+          ClientSocketPool::SocketParams::CreateForHttpForTesting(),
+          std::nullopt /* proxy_annotation_tag */, DEFAULT_PRIORITY,
+          SocketTag(), ClientSocketPool::RespectLimits::ENABLED,
+          callback2.callback(), ClientSocketPool::ProxyAuthCallback(), pool,
+          NetLogWithSource()));
+  EXPECT_TRUE(pool->IsStalled());
+  EXPECT_FALSE(callback2.have_result());
+  EXPECT_FALSE(stream_callback3.have_result());
+  EXPECT_FALSE(stream_callback4.have_result());
+
+  // Canceling `spdy_stream1` frees one concurrency slot and posts
+  // `CompleteStreamRequest` for `stream_request3`. Immediately canceling
+  // `spdy_stream2` (the last active stream) while the pool is stalled must
+  // schedule `DoDrainSessionAsync` without popping `stream_request4` or
+  // synchronously failing either request.
+  ASSERT_TRUE(spdy_stream1);
+  spdy_stream1->Cancel(ERR_ABORTED);
+  EXPECT_FALSE(spdy_stream1);
+  ASSERT_TRUE(spdy_stream2);
+  spdy_stream2->Cancel(ERR_ABORTED);
+  EXPECT_FALSE(spdy_stream2);
+  EXPECT_FALSE(stream_callback3.have_result());
+  EXPECT_FALSE(stream_callback4.have_result());
+
+  // Starting a new request while `drain_session_pending_` is true must also
+  // return `ERR_CONNECTION_CLOSED` from `ConfirmHandshake()`.
+  SpdyStreamRequest stream_request5;
+  EXPECT_THAT(stream_request5.StartRequest(
+                  SPDY_REQUEST_RESPONSE_STREAM, session_, test_url_,
+                  /*can_send_early=*/false, DEFAULT_PRIORITY, SocketTag(),
+                  NetLogWithSource(), CompletionOnceCallback(),
+                  TRAFFIC_ANNOTATION_FOR_TESTS),
+              IsError(ERR_CONNECTION_CLOSED));
+
+  EXPECT_THAT(stream_callback3.WaitForResult(), IsError(ERR_CONNECTION_CLOSED));
+  EXPECT_THAT(stream_callback4.WaitForResult(), IsError(ERR_CONNECTION_CLOSED));
+  EXPECT_THAT(callback2.WaitForResult(), IsOk());
+  EXPECT_FALSE(pool->IsStalled());
+  EXPECT_TRUE(data.AllReadDataConsumed());
+  EXPECT_TRUE(data.AllWriteDataConsumed());
+}
+
 // Verify that SpdySessionKey and therefore SpdySession is different when
 // privacy mode is enabled or disabled.
 TEST_F(SpdySessionTest, SpdySessionKeyPrivacyMode) {
@@ -4760,6 +4911,203 @@ TEST_F(SpdySessionTest, SessionFlowControlNoSendLeaks) {
 
   EXPECT_TRUE(data.AllWriteDataConsumed());
   EXPECT_TRUE(data.AllReadDataConsumed());
+}
+
+// Regression test for crbug.com/565797214: when a stream with unwritten DATA in
+// the write queue is canceled after a session WINDOW_UPDATE has inflated the
+// session send window so that refunding the discarded DATA overflows, the
+// session must drain asynchronously rather than synchronously failing other
+// streams or pending SpdyStreamRequests during Cancel().
+TEST_F(SpdySessionTest,
+       SessionFlowControlCancelStreamSendWindowOverflowDrainsAsynchronously) {
+  const int32_t kMsgDataSize = 100;
+  const std::string msg_data(kMsgDataSize, 'a');
+  const int32_t initial_window_size = kDefaultInitialWindowSize;
+
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kMsgDataSize, MEDIUM,
+                                   base::span<const std::string_view>()));
+  spdy::SpdySerializedFrame rst(
+      spdy_util_.ConstructSpdyRstStream(1, spdy::ERROR_CODE_CANCEL));
+  spdy::SpdySerializedFrame goaway(spdy_util_.ConstructSpdyGoAway(
+      0, spdy::ERROR_CODE_PROTOCOL_ERROR,
+      "Received WINDOW_UPDATE [delta: 100] for session overflows "
+      "session_send_window_size_ [current: 2147483647]"));
+  MockWrite writes[] = {
+      CreateMockWrite(req, 0),
+      CreateMockWrite(rst, 5),
+      CreateMockWrite(goaway, 6),
+  };
+
+  spdy::SpdySerializedFrame resp(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
+  const uint32_t delta_window_size = std::numeric_limits<int32_t>::max() -
+                                     (initial_window_size - kMsgDataSize);
+  spdy::SpdySerializedFrame window_update(spdy_util_.ConstructSpdyWindowUpdate(
+      spdy::kSessionFlowControlStreamId, delta_window_size));
+  MockRead reads[] = {
+      MockRead(ASYNC, ERR_IO_PENDING, 1),
+      CreateMockRead(resp, 2),
+      CreateMockRead(window_update, 3, SYNCHRONOUS),
+      MockRead(SYNCHRONOUS, ERR_IO_PENDING, 4),
+  };
+
+  SequencedSocketData data(reads, writes);
+  session_deps_.socket_factory->AddSocketDataProvider(&data);
+
+  AddSSLSocketData();
+
+  CreateNetworkSession();
+  CreateSpdySession();
+  set_max_concurrent_streams(1);
+
+  base::WeakPtr<SpdyStream> stream1 =
+      CreateStreamSynchronously(SPDY_BIDIRECTIONAL_STREAM, session_, test_url_,
+                                MEDIUM, NetLogWithSource());
+  ASSERT_TRUE(stream1);
+
+  test::StreamDelegateSendImmediate delegate(stream1, msg_data);
+  stream1->SetDelegate(&delegate);
+
+  quiche::HttpHeaderBlock headers(
+      spdy_util_.ConstructPostHeaderBlock(kDefaultUrl, kMsgDataSize));
+  EXPECT_EQ(ERR_IO_PENDING,
+            stream1->SendRequestHeaders(std::move(headers), MORE_DATA_TO_SEND));
+
+  // Start a second stream request that stalls waiting for a stream slot.
+  SpdyStreamRequest request2;
+  TestCompletionCallback callback2;
+  EXPECT_EQ(ERR_IO_PENDING, request2.StartRequest(
+                                SPDY_BIDIRECTIONAL_STREAM, session_, test_url_,
+                                /*can_send_early=*/false, MEDIUM, SocketTag(),
+                                NetLogWithSource(), callback2.callback(),
+                                TRAFFIC_ANNOTATION_FOR_TESTS));
+
+  // Write the request headers for stream1.
+  data.RunUntilPaused();
+  EXPECT_EQ(1u, stream1->stream_id());
+  EXPECT_EQ(initial_window_size, session_send_window_size());
+
+  // Read the response headers (which queues the DATA frame and decrements the
+  // session send window) and the synchronous session WINDOW_UPDATE (which
+  // inflates the session send window to INT32_MAX), without running the
+  // message loop so the DATA frame remains queued.
+  data.Resume();
+  EXPECT_EQ(std::numeric_limits<int32_t>::max(), session_send_window_size());
+
+  // Canceling stream1 discards the queued DATA frame and refunds kMsgDataSize
+  // to the session send window, overflowing INT32_MAX. This must schedule an
+  // asynchronous session drain rather than synchronously invoking callback2.
+  stream1->Cancel(ERR_ABORTED);
+  EXPECT_FALSE(stream1);
+  EXPECT_FALSE(callback2.have_result());
+
+  // Running the message loop drains the session and fails request2.
+  EXPECT_THAT(callback2.WaitForResult(), IsError(ERR_HTTP2_PROTOCOL_ERROR));
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !session_; }));
+  EXPECT_TRUE(data.AllReadDataConsumed());
+  EXPECT_TRUE(data.AllWriteDataConsumed());
+}
+
+// Verify that when a session drain is pending (`drain_session_pending_`),
+// canceling a stream with queued DATA does not unstall other send-stalled
+// streams in `ResumeSendStalledStreams()` when its discarded DATA buffer
+// refunds bytes to `session_send_window_size_`.
+TEST_F(SpdySessionTest,
+       SessionFlowControlDoNotResumeSendStalledStreamsWhenDrainPending) {
+  const int32_t kMsgDataSize = 100;
+  const std::string msg_data(kMsgDataSize, 'a');
+
+  spdy::SpdySerializedFrame req1(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kMsgDataSize, MEDIUM,
+                                   base::span<const std::string_view>()));
+  spdy::SpdySerializedFrame req2(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 3, kMsgDataSize, MEDIUM,
+                                   base::span<const std::string_view>()));
+  spdy::SpdySerializedFrame ping_ack(spdy_util_.ConstructSpdyPing(1, true));
+  MockWrite writes[] = {
+      CreateMockWrite(req1, 0),
+      CreateMockWrite(req2, 1),
+      CreateMockWrite(ping_ack, 7),
+  };
+
+  spdy::SpdySerializedFrame resp1(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
+  spdy::SpdySerializedFrame resp2(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 3));
+  spdy::SpdySerializedFrame ping(spdy_util_.ConstructSpdyPing(1, false));
+  MockRead reads[] = {
+      MockRead(ASYNC, ERR_IO_PENDING, 2),
+      CreateMockRead(resp1, 3),
+      CreateMockRead(resp2, 4, SYNCHRONOUS),
+      CreateMockRead(ping, 5, SYNCHRONOUS),
+      MockRead(SYNCHRONOUS, ERR_IO_PENDING, 6),
+  };
+
+  SequencedSocketData data(reads, writes);
+  session_deps_.socket_factory->AddSocketDataProvider(&data);
+
+  AddSSLSocketData();
+
+  session_deps_.session_max_queued_capped_frames = 0;
+  CreateNetworkSession();
+  CreateSpdySession();
+
+  base::WeakPtr<SpdyStream> stream1 =
+      CreateStreamSynchronously(SPDY_BIDIRECTIONAL_STREAM, session_, test_url_,
+                                MEDIUM, NetLogWithSource());
+  ASSERT_TRUE(stream1);
+  test::StreamDelegateSendImmediate delegate1(stream1, msg_data);
+  stream1->SetDelegate(&delegate1);
+
+  base::WeakPtr<SpdyStream> stream2 =
+      CreateStreamSynchronously(SPDY_BIDIRECTIONAL_STREAM, session_, test_url_,
+                                MEDIUM, NetLogWithSource());
+  ASSERT_TRUE(stream2);
+  test::StreamDelegateSendImmediate delegate2(stream2, msg_data);
+  stream2->SetDelegate(&delegate2);
+
+  quiche::HttpHeaderBlock headers1(
+      spdy_util_.ConstructPostHeaderBlock(kDefaultUrl, kMsgDataSize));
+  EXPECT_EQ(ERR_IO_PENDING, stream1->SendRequestHeaders(std::move(headers1),
+                                                        MORE_DATA_TO_SEND));
+
+  quiche::HttpHeaderBlock headers2(
+      spdy_util_.ConstructPostHeaderBlock(kDefaultUrl, kMsgDataSize));
+  EXPECT_EQ(ERR_IO_PENDING, stream2->SendRequestHeaders(std::move(headers2),
+                                                        MORE_DATA_TO_SEND));
+
+  // Write request headers for both streams.
+  data.RunUntilPaused();
+  EXPECT_EQ(1u, stream1->stream_id());
+  EXPECT_EQ(3u, stream2->stream_id());
+
+  // Reduce the session send window to `kMsgDataSize` so `stream1`'s `DATA`
+  // frame consumes the entire window, then synchronously read `resp1` (queuing
+  // `stream1`'s `DATA` frame and reducing the session send window to 0),
+  // `resp2` (stalling `stream2` in `stream_send_unstall_queue_`), and `ping`
+  // (queuing 1 capped PING ACK frame in `write_queue_`).
+  StallSessionSend();
+  IncreaseSendWindowSize(kMsgDataSize);
+  EXPECT_EQ(kMsgDataSize, session_send_window_size());
+  data.Resume();
+  EXPECT_EQ(0, session_send_window_size());
+  EXPECT_TRUE(stream2->send_stalled_by_flow_control());
+
+  // Canceling `stream1` attempts to enqueue a `RST_STREAM` frame, which exceeds
+  // `session_max_queued_capped_frames` (0) and initiates `DoDrainSessionAsync`
+  // (`drain_session_pending_ = true`), then discards `stream1`'s queued `DATA`
+  // buffer and refunds `kMsgDataSize` to `session_send_window_size_`.
+  // `ResumeSendStalledStreams()` must return early and not unstall `stream2`.
+  stream1->Cancel(ERR_ABORTED);
+  EXPECT_FALSE(stream1);
+  ASSERT_TRUE(stream2);
+  EXPECT_TRUE(stream2->send_stalled_by_flow_control());
+
+  EXPECT_THAT(delegate2.WaitForClose(), IsError(ERR_CONNECTION_CLOSED));
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !session_; }));
+  EXPECT_TRUE(data.AllReadDataConsumed());
+  EXPECT_TRUE(data.AllWriteDataConsumed());
 }
 
 // Send data back and forth; the send and receive windows should
@@ -6490,6 +6838,81 @@ TEST_F(AltSvcFrameTest, DoNotProcessAltSvcFrameOnStreamWithInsecureOrigin) {
                   .empty());
 }
 
+// Check that an ALTSVC frame on stream 0 is ignored if the connection has a
+// certificate error, even if the error was bypassed.
+TEST_F(AltSvcFrameTest, DoNotProcessAltSvcFrameWithCertError) {
+  const char origin[] = "https://mail.example.org";
+  spdy::SpdyAltSvcIR altsvc_ir(/* stream_id = */ 0);
+  altsvc_ir.add_altsvc(alternative_service_);
+  altsvc_ir.set_origin(origin);
+  AddSocketData(altsvc_ir);
+  ssl_.ssl_info.cert_status = CERT_STATUS_AUTHORITY_INVALID;
+  AddSSLSocketData();
+
+  CreateNetworkSession();
+  CreateSpdySession();
+
+  WaitForSessionClose(session_);
+  EXPECT_TRUE(AllSocketDataConsumed());
+
+  EXPECT_TRUE(
+      spdy_session_pool_->http_server_properties()
+          ->GetAlternativeServiceInfos(url::SchemeHostPort(GURL(origin)),
+                                       NetworkAnonymizationKey())
+          .empty());
+}
+
+// Check that an ALTSVC frame on an active stream is ignored if the connection
+// has a certificate error, even if the error was bypassed.
+TEST_F(AltSvcFrameTest, DoNotProcessAltSvcFrameOnActiveStreamWithCertError) {
+  spdy::SpdyAltSvcIR altsvc_ir(/* stream_id = */ 1);
+  altsvc_ir.add_altsvc(alternative_service_);
+
+  spdy::SpdySerializedFrame altsvc_frame(spdy_util_.SerializeFrame(altsvc_ir));
+  spdy::SpdySerializedFrame rst(
+      spdy_util_.ConstructSpdyRstStream(1, spdy::ERROR_CODE_REFUSED_STREAM));
+  MockRead reads[] = {
+      CreateMockRead(altsvc_frame, 1), CreateMockRead(rst, 2),
+      MockRead(SYNCHRONOUS, OK, 3)  // EOF
+  };
+
+  const char request_origin[] = "https://mail.example.org";
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyGet(request_origin, 1, MEDIUM));
+  MockWrite writes[] = {
+      CreateMockWrite(req, 0),
+  };
+  SequencedSocketData data(reads, writes);
+  session_deps_.socket_factory->AddSocketDataProvider(&data);
+
+  ssl_.ssl_info.cert_status = CERT_STATUS_AUTHORITY_INVALID;
+  AddSSLSocketData();
+
+  CreateNetworkSession();
+  CreateSpdySession();
+
+  base::WeakPtr<SpdyStream> spdy_stream1 = CreateStreamSynchronously(
+      SPDY_REQUEST_RESPONSE_STREAM, session_, GURL(request_origin), MEDIUM,
+      NetLogWithSource());
+  test::StreamDelegateDoNothing delegate1(spdy_stream1);
+  spdy_stream1->SetDelegate(&delegate1);
+
+  quiche::HttpHeaderBlock headers(
+      spdy_util_.ConstructGetHeaderBlock(request_origin));
+
+  spdy_stream1->SendRequestHeaders(std::move(headers), NO_MORE_DATA_TO_SEND);
+
+  WaitForSessionClose(session_);
+  EXPECT_TRUE(data.AllWriteDataConsumed());
+  EXPECT_TRUE(data.AllReadDataConsumed());
+
+  EXPECT_TRUE(spdy_session_pool_->http_server_properties()
+                  ->GetAlternativeServiceInfos(
+                      url::SchemeHostPort(GURL(request_origin)),
+                      NetworkAnonymizationKey())
+                  .empty());
+}
+
 // An ALTSVC frame received on a session used to carry tunnels to other
 // destinations must be ignored: the session host is not authoritative for the
 // origin associated with the tunnel stream.
@@ -6786,14 +7209,20 @@ TEST(CanPoolTest, CanNotPoolWithClientCerts) {
                                     "www.example.org", "mail.example.org"));
 }
 
+// The PKP tests depend on ScopedKeyPinningStateChromeDefaults and
+// KeyPinningStateChrome which are only available when the builtin pin list is
+// compiled in. We could also make a separate version of these tests that use
+// the dynamic PKP path for testing on cronet, but it's not really worth the
+// effort, especially since this is only a temporary state. Once PKP refactor
+// is complete and pinning is only done in cert verification, then these tests
+// can just configure the mock cert verifier to test the desired pkp results.
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 TEST(CanPoolTest, CanNotPoolWithBadPins) {
   base::test::ScopedFeatureList scoped_feature_list_;
   scoped_feature_list_.InitAndEnableFeature(
       net::features::kStaticKeyPinningEnforcement);
+  ScopedKeyPinningStateChromeDefaults scoped_key_pinning_enable;
   TransportSecurityState tss;
-  tss.EnableStaticPinsForTesting();
-  tss.SetPinningListAlwaysTimelyForTesting(true);
-  ScopedTransportSecurityStateSource scoped_security_state_source;
 
   TestSSLConfigService ssl_config_service;
   SSLInfo ssl_info;
@@ -6806,6 +7235,7 @@ TEST(CanPoolTest, CanNotPoolWithBadPins) {
   EXPECT_FALSE(SpdySession::CanPool(&tss, ssl_info, ssl_config_service,
                                     "www.example.org", "example.test"));
 }
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 TEST(CanPoolTest, CanNotPoolWithBadCTWhenCTRequired) {
   using testing::Return;
@@ -6894,11 +7324,10 @@ TEST(CanPoolTest, CanPoolWithGoodCTWhenCTRequired) {
                                    "www.example.org", "mail.example.org"));
 }
 
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 TEST(CanPoolTest, CanPoolWithAcceptablePins) {
+  ScopedKeyPinningStateChromeDefaults scoped_key_pinning_enable;
   TransportSecurityState tss;
-  tss.EnableStaticPinsForTesting();
-  tss.SetPinningListAlwaysTimelyForTesting(true);
-  ScopedTransportSecurityStateSource scoped_security_state_source;
 
   TestSSLConfigService ssl_config_service;
   SSLInfo ssl_info;
@@ -6914,6 +7343,7 @@ TEST(CanPoolTest, CanPoolWithAcceptablePins) {
   EXPECT_TRUE(SpdySession::CanPool(&tss, ssl_info, ssl_config_service,
                                    "www.example.org", "mail.example.org"));
 }
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 TEST(CanPoolTest, CanPoolWithClientCertsAndPolicy) {
   TransportSecurityState tss;

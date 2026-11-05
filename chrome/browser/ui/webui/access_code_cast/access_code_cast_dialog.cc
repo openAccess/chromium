@@ -10,12 +10,14 @@
 #include "chrome/browser/media/router/discovery/access_code/access_code_cast_feature.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/chrome_constrained_window_views_client.h"
 #include "chrome/browser/ui/views/chrome_web_dialog_view.h"
 #include "chrome/browser/ui/webui/access_code_cast/access_code_cast_ui.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/web_modal/web_contents_modal_dialog_host.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
@@ -110,7 +112,9 @@ AccessCodeCastDialog::AccessCodeCastDialog(
     std::unique_ptr<MediaRouteStarter> media_route_starter)
     : cast_mode_set_(cast_mode_set),
       media_route_starter_(std::move(media_route_starter)),
-      web_contents_(media_route_starter_->GetWebContents()),
+      web_contents_(media_route_starter_->GetWebContents()
+                        ? media_route_starter_->GetWebContents()->GetWeakPtr()
+                        : nullptr),
       context_(media_route_starter_->GetProfile()) {
   DCHECK(media_route_starter_) << "Must have a media route starter!";
   DCHECK(!cast_mode_set_.empty())
@@ -155,7 +159,7 @@ void AccessCodeCastDialog::ShowWebDialog(AccessCodeCastDialogMode dialog_mode) {
 
   if (dialog_mode == AccessCodeCastDialogMode::kBrowserStandard &&
       web_contents_) {
-    UpdateDialogPosition(dialog_widget_, web_contents_);
+    UpdateDialogPosition(dialog_widget_, web_contents_.get());
   }
 }
 
@@ -208,7 +212,9 @@ views::Widget::InitParams AccessCodeCastDialog::CreateParams(
 }
 
 void AccessCodeCastDialog::CloseDialogWidget() {
-  dialog_widget_->Close();
+  if (dialog_widget_ && !closing_dialog_) {
+    dialog_widget_->Close();
+  }
 }
 
 base::WeakPtr<AccessCodeCastDialog> AccessCodeCastDialog::GetWeakPtr() {

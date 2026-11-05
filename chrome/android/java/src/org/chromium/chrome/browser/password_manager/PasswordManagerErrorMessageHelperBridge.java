@@ -24,13 +24,13 @@ import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
-import org.chromium.chrome.browser.sync.ui.SyncTrustedVaultProxyActivity;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.sync.SyncService;
+import org.chromium.components.trusted_vault.SecurityDomainId;
 import org.chromium.components.trusted_vault.TrustedVaultClient;
 import org.chromium.components.trusted_vault.TrustedVaultUserActionTriggerForUMA;
 import org.chromium.components.user_prefs.UserPrefs;
@@ -146,13 +146,19 @@ public class PasswordManagerErrorMessageHelperBridge {
         assert activity instanceof ChromeBaseAppCompatActivity;
         final ChromeBaseAppCompatActivity chromeActivity = (ChromeBaseAppCompatActivity) activity;
 
-        TrustedVaultClient.get()
+        TrustedVaultClient trustedVaultClient =
+                TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC);
+        trustedVaultClient
                 .createKeyRetrievalIntent(primaryAccountInfo)
                 .then(
                         (intent) -> {
                             var proxyIntent =
-                                    SyncTrustedVaultProxyActivity.createKeyRetrievalProxyIntent(
-                                            intent, trustedVaultUserActionTriggerForUMA);
+                                    trustedVaultClient
+                                            .getProxyIntentFactory()
+                                            .createKeyRetrievalProxyIntent(
+                                                    intent,
+                                                    trustedVaultUserActionTriggerForUMA,
+                                                    SecurityDomainId.CHROME_SYNC);
                             ActivityResultTracker tracker =
                                     chromeActivity.getActivityResultTracker();
                             ActivityResultTracker.ResultListener listener =

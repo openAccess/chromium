@@ -15,7 +15,6 @@
 #include "base/memory/ref_counted.h"
 #include "base/task/task_traits.h"
 #include "content/common/content_export.h"
-#include "content/public/browser/tracing_delegate.h"
 
 namespace base {
 namespace trace_event {
@@ -123,8 +122,11 @@ class TracingController {
   // the traced data.
   //
   // If |trace_data_endpoint| is not null, it will receive chunks of trace data
-  // as JSON-stringified events, followed by a notification that the trace
-  // collection is finished.
+  // in the format selected when tracing was started, followed by a
+  // notification that the trace collection is finished.
+  //
+  // |agent_label| filters the converted JSON, so passing a non-empty label
+  // for a protobuf trace fails.
   //
   virtual bool StopTracing(
       const scoped_refptr<TraceDataEndpoint>& trace_data_endpoint) = 0;

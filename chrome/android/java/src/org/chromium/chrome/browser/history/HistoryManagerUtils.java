@@ -10,14 +10,15 @@ import android.content.Intent;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileIntentUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.document.ChromeAsyncTabLauncher;
-import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
+import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.base.DeviceFormFactor;
 
@@ -34,14 +35,17 @@ public class HistoryManagerUtils {
      *     HistoryManager}.
      * @param profile The currently visible {@link Profile}.
      */
-    public static void showHistoryManager(Activity activity, Tab tab, Profile profile) {
+    public static void showHistoryManager(Activity activity, @Nullable Tab tab, Profile profile) {
         Context appContext = ContextUtils.getApplicationContext();
-        if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(activity)) {
-            UrlConstantResolver urlConstantResolver =
-                    UrlConstantResolverFactory.getForProfile(profile);
+        boolean isDesktopWebUiHistory = HistoryFeatures.isAndroidDesktopWebUiHistoryEnabled();
+        if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(activity) || isDesktopWebUiHistory) {
+            String historyUrl =
+                    isDesktopWebUiHistory
+                            ? UrlConstants.HISTORY_URL
+                            : UrlConstantResolverFactory.getForProfile(profile).getHistoryPageUrl();
 
-            // History shows up as a tab on tablets.
-            LoadUrlParams params = new LoadUrlParams(urlConstantResolver.getHistoryPageUrl());
+            // History shows up as a tab on tablets and desktop Android.
+            LoadUrlParams params = new LoadUrlParams(historyUrl);
             ChromeAsyncTabLauncher delegate =
                     new ChromeAsyncTabLauncher(/* incognito= */ profile.isOffTheRecord());
             delegate.launchNewTab(params, TabLaunchType.FROM_CHROME_UI, /* parent= */ tab);

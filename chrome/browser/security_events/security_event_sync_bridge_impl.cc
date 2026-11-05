@@ -60,13 +60,7 @@ SecurityEventSyncBridgeImpl::SecurityEventSyncBridgeImpl(
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
-SecurityEventSyncBridgeImpl::~SecurityEventSyncBridgeImpl() {
-  // TODO(crbug.com/362428820): Remove logging once investigation is complete.
-  if (store_) {
-    VLOG(1) << "SecurityEvents during destruction: "
-            << store_->in_memory_data().size();
-  }
-}
+SecurityEventSyncBridgeImpl::~SecurityEventSyncBridgeImpl() = default;
 
 void SecurityEventSyncBridgeImpl::RecordSecurityEvent(
     sync_pb::SecurityEventSpecifics specifics) {
@@ -101,9 +95,10 @@ std::optional<syncer::ModelError>
 SecurityEventSyncBridgeImpl::MergeFullSyncData(
     std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
     syncer::EntityChangeList entity_data) {
-  DCHECK(entity_data.empty());
-  DCHECK(change_processor()->IsTrackingMetadata());
-  DCHECK(!change_processor()->TrackedGaiaId().empty());
+  CHECK(entity_data.empty(), base::NotFatalUntil::M163);
+  CHECK(change_processor()->IsTrackingMetadata(), base::NotFatalUntil::M163);
+  CHECK(!change_processor()->TrackedGaiaId().empty(),
+        base::NotFatalUntil::M163);
   return ApplyIncrementalSyncChanges(std::move(metadata_change_list),
                                      std::move(entity_data));
 }
@@ -115,7 +110,8 @@ SecurityEventSyncBridgeImpl::ApplyIncrementalSyncChanges(
   std::unique_ptr<StoreWithCache::WriteBatch> write_batch =
       store_->CreateWriteBatch();
   for (const std::unique_ptr<syncer::EntityChange>& change : entity_changes) {
-    DCHECK_EQ(syncer::EntityChange::ACTION_DELETE, change->type());
+    CHECK_EQ(syncer::EntityChange::ACTION_DELETE, change->type(),
+             base::NotFatalUntil::M163);
     write_batch->DeleteData(change->storage_key());
   }
 

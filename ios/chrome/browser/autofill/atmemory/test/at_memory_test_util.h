@@ -15,8 +15,19 @@
 // Returns a matcher for the AtMemory keyboard accessory button.
 + (id<GREYMatcher>)atMemoryButton;
 
+// Returns a matcher for the title of the AtMemory bottom sheet ("Find and
+// fill").
++ (id<GREYMatcher>)bottomSheetTitle;
+
 // Returns a matcher for the search bar inside the AtMemory bottom sheet.
 + (id<GREYMatcher>)searchBar;
+
+// Returns a matcher for the collapsed search button (on iPhone Duo) or the
+// search bar inside the AtMemory bottom sheet.
++ (id<GREYMatcher>)searchButton;
+
+// Returns a matcher for the AtMemory chip in the suggestion strip.
++ (id<GREYMatcher>)suggestionStripAtMemoryButton;
 
 // Returns a matcher for the close button inside the AtMemory bottom sheet.
 + (id<GREYMatcher>)closeButton;
@@ -25,15 +36,56 @@
 // Gemini").
 + (id<GREYMatcher>)searchPromptCell;
 
-// Returns a matcher for a search result cell matching the given subtitle text.
-+ (id<GREYMatcher>)searchResultCellWithSubtitle:(NSString*)subtitle;
+// Returns a matcher for the search prompt cell displaying `query`.
++ (id<GREYMatcher>)searchPromptCellWithQuery:(NSString*)query;
+
+// Returns a matcher for the "No Data" error cell.
++ (id<GREYMatcher>)noDataCell;
+
+// Returns a matcher for the "No Connection" error cell.
++ (id<GREYMatcher>)noConnectionCell;
+
+// Returns a matcher for the image displayed in the zero-state empty view.
++ (id<GREYMatcher>)emptyStateImage;
+
+// Returns a matcher for a search result cell with the given `title`.
++ (id<GREYMatcher>)searchResultCellWithTitle:(NSString*)title;
 
 // Returns a matcher for the info button on a search result cell with the given
-// subtitle text.
-+ (id<GREYMatcher>)infoButtonForSearchResultWithSubtitle:(NSString*)subtitle;
+// `title`.
++ (id<GREYMatcher>)infoButtonForSearchResultWithTitle:(NSString*)title;
 
-// Returns a matcher for a granular fill chip button with the given label.
+// Returns a matcher for a granular fill chip button with the given `label`.
 + (id<GREYMatcher>)chipButtonWithLabel:(NSString*)label;
+
+// Returns a matcher for the "Manage your saved info" cell in granular fill.
++ (id<GREYMatcher>)manageSavedInfoCell;
+
+// Returns a matcher for the AtMemory zero-state empty view.
++ (id<GREYMatcher>)emptyView;
+
+// Returns a matcher for the inline privacy notice title label.
++ (id<GREYMatcher>)inlineNoticeTitle;
+
+// Returns a matcher for the inline privacy notice "OK" button.
++ (id<GREYMatcher>)inlineNoticeOKButton;
+
+// Returns a matcher for the AI disclosure footer view.
++ (id<GREYMatcher>)aiDisclosureFooter;
+
+// Returns a matcher for the link inside the AI disclosure footer.
++ (id<GREYMatcher>)aiDisclosureFooterLink;
+
+// Returns a matcher for a link element that spans across multiple lines.
++ (id<GREYMatcher>)isMultilineLink;
+
+// Returns a matcher for the "Manage settings" link inside the inline privacy
+// notice.
++ (id<GREYMatcher>)inlineNoticeSettingsLink;
+
+// Returns a matcher for the "Help improve enhanced autofill" settings page
+// title.
++ (id<GREYMatcher>)helpImproveSettingsPage;
 
 @end
 

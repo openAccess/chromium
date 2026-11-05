@@ -72,6 +72,7 @@ if (use_angle_stubs) {
     output_name = "libEGL"
     sources = [ "dummy_stub.cc" ]
   }
+
   shared_library("dummy_libGLESv2") {
     output_name = "libGLESv2"
     sources = [ "dummy_stub.cc" ]
@@ -159,8 +160,6 @@ component("gl") {
     "gl_utils.h",
     "gl_version_info.cc",
     "gl_version_info.h",
-    "gpu_switching_manager.cc",
-    "gpu_switching_manager.h",
     "gpu_timing.cc",
     "gpu_timing.h",
     "presenter.cc",
@@ -191,7 +190,6 @@ component("gl") {
   ]
 
   configs += [
-    "//build/config/compiler:wexit_time_destructors",
     "//build/config/compiler:wglobal_constructors",
     "//build/config:precompiled_headers",
   ]
@@ -200,11 +198,15 @@ component("gl") {
   if (enable_gpu_service_logging) {
     defines += [ "GPU_ENABLE_SERVICE_LOGGING" ]
   }
+  if (ozone_platform == "x11") {
+    defines += [ "OZONE_PLATFORM_IS_X11" ]
+  }
 
   deps = [
     ":buildflags",
     "//build:chromeos_buildflags",
     "//mojo/public/cpp/bindings",
+    "//third_party/re2",
     "//ui/base:ozone_buildflags",
     "//ui/gfx/mojom",
   ]
@@ -427,6 +429,7 @@ component("gl") {
     deps += [
       ":gl_jni_headers",
       "//third_party/angle:angle_gpu_info_util",
+      "//third_party/re2",
     ]
   }
 
@@ -595,6 +598,7 @@ test("gl_unittests") {
     "egl_api_unittest.cc",
     "gl_api_unittest.cc",
     "gl_display_manager_unittest.cc",
+    "gl_surface_presentation_helper_unittest.cc",
     "gl_version_info_unittest.cc",
     "gpu_timing_unittest.cc",
     "scoped_gl_framebuffer_unittest.cc",
@@ -628,6 +632,7 @@ test("gl_unittests") {
     ":run_all_unittests",
     ":test_support",
     "//base",
+    "//base/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
     "//third_party/angle:includes",
@@ -653,10 +658,6 @@ test("gl_unittests") {
   if (use_ozone) {
     deps += [ "//ui/ozone" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 # We can't run this test on real Chrome OS hardware for Ozone, so new target.

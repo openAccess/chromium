@@ -24,6 +24,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/network_delegate.h"
+#include "net/base/network_handle.h"
 #include "net/log/net_log.h"
 #include "net/storage_access_api/status.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
@@ -44,6 +45,7 @@ class Location;
 }  // namespace base
 
 namespace net {
+class HttpTransactionFactoryHandle;
 class IOBuffer;
 class IsolationInfo;
 class SSLInfo;
@@ -81,8 +83,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebSocket : public mojom::WebSocket {
           pending_connection_tracker,
       base::TimeDelta delay,
       const std::optional<base::UnguessableToken>& throttling_profile_id,
-      mojom::IPAddressSpace required_ip_address_space =
-          mojom::IPAddressSpace::kUnknown);
+      mojom::IPAddressSpace required_ip_address_space,
+      net::handles::NetworkHandle target_network);
 
   WebSocket(const WebSocket&) = delete;
   WebSocket& operator=(const WebSocket&) = delete;
@@ -230,6 +232,20 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebSocket : public mojom::WebSocket {
   std::optional<WebSocketThrottler::PendingConnection>
       pending_connection_tracker_;
 
+  // Keeps the isolated throttling session alive for the whole connection:
+  // the handshake URLRequest (the only other holder) is destroyed on
+  // upgrade, while the connection keeps using a socket handed out by the
+  // session's pool - which CHECKs that all sockets are returned before the
+  // session is destroyed. Declared before `channel_` so that destruction
+  // (reverse declaration order) tears down the channel - returning its
+  // socket to the pool - before this handle releases the session.
+  //
+  // Resolved in the constructor, not when the handshake URLRequest is
+  // created, so that a profile update during the per-renderer throttling
+  // delay (`delay_`) cannot retarget or unthrottle this connection.
+  scoped_refptr<net::HttpTransactionFactoryHandle>
+      isolated_transaction_factory_handle_;
+
   // The channel we use to send events to the network.
   std::unique_ptr<net::WebSocketChannel> channel_;
 
@@ -255,6 +271,9 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebSocket : public mojom::WebSocket {
   // For 3rd-party cookie permission checking. Also used by
   // RevokeIfNonceMatches() for handling network revocation.
   const net::IsolationInfo isolation_info_;
+
+  const net::handles::NetworkHandle target_network_ =
+      net::handles::kInvalidNetworkHandle;
 
   bool handshake_succeeded_ = false;
   const HasRawHeadersAccess has_raw_headers_access_;

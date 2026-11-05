@@ -20,13 +20,14 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #if BUILDFLAG(IS_ANDROID)
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_observer.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_test_helper.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
-
+#include "content/public/common/content_features.h"
 #endif
 
 namespace performance_manager {
@@ -283,8 +284,7 @@ TEST_F(PageLiveStateDecoratorHelperTabsTest, IsActiveTab) {
   std::unique_ptr<TabAndroid> tab2 =
       TabAndroid::CreateForTesting(profile(), 2, std::move(web_contents2));
 
-  tab_model.GetObserver()->DidSelectTab(tab1.get(),
-                                        TabModel::TabSelectionType::FROM_USER);
+  tab_model.GetObserver()->DidSelectTab(tab1.get());
 
   testing::TestPageNodeProperty(
       contents1, &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
@@ -293,8 +293,7 @@ TEST_F(PageLiveStateDecoratorHelperTabsTest, IsActiveTab) {
       contents2, &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
       &PageLiveStateDecorator::Data::IsActiveTab, false);
 
-  tab_model.GetObserver()->DidSelectTab(tab2.get(),
-                                        TabModel::TabSelectionType::FROM_USER);
+  tab_model.GetObserver()->DidSelectTab(tab2.get());
 
   testing::TestPageNodeProperty(
       contents1, &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
@@ -305,8 +304,7 @@ TEST_F(PageLiveStateDecoratorHelperTabsTest, IsActiveTab) {
 
   tab_model.GetObserver()->OnFinishingTabClosure(
       tab2.get(), TabModel::TabClosingSource::UNKNOWN);
-  tab_model.GetObserver()->DidSelectTab(tab1.get(),
-                                        TabModel::TabSelectionType::FROM_USER);
+  tab_model.GetObserver()->DidSelectTab(tab1.get());
 
   testing::TestPageNodeProperty(
       contents1, &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
@@ -332,8 +330,7 @@ TEST_F(PageLiveStateDecoratorHelperTabsTest, IsActiveTabAfterRemoved) {
   std::unique_ptr<TabAndroid> tab2 =
       TabAndroid::CreateForTesting(profile(), 2, std::move(web_contents2));
 
-  tab_model.GetObserver()->DidSelectTab(tab1.get(),
-                                        TabModel::TabSelectionType::FROM_USER);
+  tab_model.GetObserver()->DidSelectTab(tab1.get());
 
   testing::TestPageNodeProperty(
       contents1, &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
@@ -342,8 +339,7 @@ TEST_F(PageLiveStateDecoratorHelperTabsTest, IsActiveTabAfterRemoved) {
       contents2, &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
       &PageLiveStateDecorator::Data::IsActiveTab, false);
 
-  tab_model.GetObserver()->DidSelectTab(tab2.get(),
-                                        TabModel::TabSelectionType::FROM_USER);
+  tab_model.GetObserver()->DidSelectTab(tab2.get());
 
   testing::TestPageNodeProperty(
       contents1, &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
@@ -363,8 +359,7 @@ TEST_F(PageLiveStateDecoratorHelperTabsTest, IsActiveTabAfterRemoved) {
   tab2.reset();
 
   // Moving to the tab1 from tab2 does not cause invalid pointer access.
-  tab_model.GetObserver()->DidSelectTab(tab1.get(),
-                                        TabModel::TabSelectionType::FROM_USER);
+  tab_model.GetObserver()->DidSelectTab(tab1.get());
 
   testing::TestPageNodeProperty(
       contents1, &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
@@ -396,10 +391,8 @@ TEST_F(PageLiveStateDecoratorHelperTabsTest, IsActiveTabWithMultipleTabModels) {
   std::unique_ptr<TabAndroid> tab4 =
       TabAndroid::CreateForTesting(profile(), 4, std::move(web_contents4));
 
-  tab_model1.GetObserver()->DidSelectTab(tab1.get(),
-                                         TabModel::TabSelectionType::FROM_USER);
-  tab_model2.GetObserver()->DidSelectTab(tab4.get(),
-                                         TabModel::TabSelectionType::FROM_USER);
+  tab_model1.GetObserver()->DidSelectTab(tab1.get());
+  tab_model2.GetObserver()->DidSelectTab(tab4.get());
   testing::TestPageNodeProperty(
       contents1, &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
       &PageLiveStateDecorator::Data::IsActiveTab, true);
@@ -413,10 +406,8 @@ TEST_F(PageLiveStateDecoratorHelperTabsTest, IsActiveTabWithMultipleTabModels) {
       contents4, &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
       &PageLiveStateDecorator::Data::IsActiveTab, true);
 
-  tab_model1.GetObserver()->DidSelectTab(tab2.get(),
-                                         TabModel::TabSelectionType::FROM_USER);
-  tab_model2.GetObserver()->DidSelectTab(tab3.get(),
-                                         TabModel::TabSelectionType::FROM_USER);
+  tab_model1.GetObserver()->DidSelectTab(tab2.get());
+  tab_model2.GetObserver()->DidSelectTab(tab3.get());
   testing::TestPageNodeProperty(
       contents1, &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
       &PageLiveStateDecorator::Data::IsActiveTab, false);
@@ -445,6 +436,26 @@ TEST_F(PageLiveStateDecoratorHelperTabsTest,
   TabModelList::RemoveTabModel(&tab_model);
 
   EXPECT_FALSE(tab_model.GetObserver());
+}
+
+TEST_F(PageLiveStateDecoratorHelperTest, IsDiscardedUpdatedOnAndroid) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ::features::kWebContentsDiscard);
+
+  NavigateAndCommit(GURL("https://www.example.com/"));
+  testing::TestPageNodeProperty(
+      web_contents(), &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
+      &PageLiveStateDecorator::Data::IsDiscarded, false);
+
+  web_contents()->Discard(base::NullCallback());
+  testing::TestPageNodeProperty(
+      web_contents(), &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
+      &PageLiveStateDecorator::Data::IsDiscarded, true);
+
+  NavigateAndCommit(GURL("https://www.example.com/reloaded"));
+  testing::TestPageNodeProperty(
+      web_contents(), &PageLiveStateDecorator::Data::GetOrCreateForPageNode,
+      &PageLiveStateDecorator::Data::IsDiscarded, false);
 }
 
 #endif  // BUILDFLAG(IS_ANDROID)

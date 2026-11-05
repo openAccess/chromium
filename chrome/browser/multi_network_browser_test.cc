@@ -62,6 +62,8 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/service_worker/service_worker_status_code.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration_options.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
@@ -528,7 +530,7 @@ class PopupTestWebContentsDelegate : public content::WebContentsDelegate {
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override {
@@ -566,9 +568,10 @@ IN_PROC_BROWSER_TEST_F(MultiNetworkBrowserTest,
   observer.Wait();
   EXPECT_TRUE(observer.last_navigation_succeeded());
 
-  content::OpenURLParams open_params(
-      url, content::Referrer(), WindowOpenDisposition::NEW_POPUP,
-      ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false);
+  content::OpenURLParams open_params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, ui::mojom::WindowOpenDisposition::kNewPopup,
+          ui::PAGE_TRANSITION_LINK);
   content::WebContents* popup_contents =
       web_contents->OpenURL(open_params, /*navigation_handle_callback=*/{});
   ASSERT_TRUE(popup_contents);
@@ -612,9 +615,10 @@ IN_PROC_BROWSER_TEST_F(MultiNetworkBrowserTest,
   observer.Wait();
   EXPECT_TRUE(observer.last_navigation_succeeded());
 
-  content::OpenURLParams open_params(
-      url, content::Referrer(), WindowOpenDisposition::NEW_POPUP,
-      ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false);
+  content::OpenURLParams open_params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, ui::mojom::WindowOpenDisposition::kNewPopup,
+          ui::PAGE_TRANSITION_LINK);
   open_params.has_rel_opener = false;
   content::WebContents* popup_contents =
       web_contents->OpenURL(open_params, /*navigation_handle_callback=*/{});
@@ -812,7 +816,7 @@ IN_PROC_BROWSER_TEST_F(MultiNetworkBrowserTest,
        .invalid_network_handle = kExpectedNonNetworkFactories + 2u});
 }
 
-IN_PROC_BROWSER_TEST_F(MultiNetworkBrowserTest, WebSocketIgnoresTargetNetwork) {
+IN_PROC_BROWSER_TEST_F(MultiNetworkBrowserTest, WebSocketSetsTargetNetwork) {
   TestChromeContentBrowserClient test_client;
 
   constexpr net::handles::NetworkHandle network = 9;
@@ -824,6 +828,7 @@ IN_PROC_BROWSER_TEST_F(MultiNetworkBrowserTest, WebSocketIgnoresTargetNetwork) {
 
   net::EmbeddedTestServer ws_server(net::EmbeddedTestServer::TYPE_HTTP);
   ws_server.ServeFilesFromSourceDirectory("chrome/test/data");
+  net::test_server::InstallDefaultWebSocketHandlers(&ws_server);
   ASSERT_TRUE(
       ws_server.Start(/*port=*/0, GetLoopbackAddressForNetwork(network)));
 
@@ -835,15 +840,20 @@ IN_PROC_BROWSER_TEST_F(MultiNetworkBrowserTest, WebSocketIgnoresTargetNetwork) {
   observer.Wait();
   EXPECT_TRUE(observer.last_navigation_succeeded());
 
-  GURL ws_url =
-      net::test_server::GetWebSocketURL(ws_server, "127.0.0.1", "/echo");
+  GURL ws_url = net::test_server::GetWebSocketURL(ws_server, "127.0.0.1",
+                                                  "/echo-with-no-extension");
   std::string script = content::JsReplace(
-      "new Promise(resolve => {"
+      "new Promise((resolve, reject) => {"
       "  const ws = new WebSocket($1);"
-      "  ws.onclose = () => resolve();"
+      "  ws.onopen = () => ws.send('echo-test');"
+      "  ws.onmessage = (e) => resolve(e.data);"
+      "  ws.onerror = () => reject('WebSocket error');"
+      "  ws.onclose = (e) => {"
+      "    if (!e.wasClean) reject('WebSocket closed unexpectedly');"
+      "  };"
       "});",
       ws_url.spec().c_str());
-  EXPECT_TRUE(content::EvalJs(web_contents.get(), script).is_ok());
+  EXPECT_EQ("echo-test", content::EvalJs(web_contents.get(), script));
 
   VerifyFactoryCounts(test_client, network,
                       {.navigation = 1, .document_subresource = 2});
@@ -1176,19 +1186,16 @@ IN_PROC_BROWSER_TEST_F(MultiNetworkBrowserTest,
       pay_method_url.spec());
 
   // PaymentRequest.canMakePayment() triggers manifest downloads using
-  // CreateNetworkServiceDefaultFactory on RenderFrameHost.
+  // StoragePartition::GetURLLoaderFactoryForBrowserProcess().
   EXPECT_TRUE(content::EvalJs(web_contents.get(), script).is_ok());
 
   VerifyFactoryCounts(
       test_client, network,
-      // 1 navigation factory for /title1.html, and 2 document subresource
-      // factories (1 for the initial empty document created during WebContents
-      // initialization, and 1 for /title1.html). Chrome's
-      // PaymentManifestDownloader does not reuse the existing URLLoaderFactory
-      // for subresources created during navigation commit. Instead, it uses a
-      // dedicated URLLoaderFactory for each payment manifest download (created
-      // via RenderFrameHost::CreateNetworkServiceDefaultFactory, which
-      // correctly propagates the target_network because it calls
-      // WillCreateURLLoaderFactory and passes that RenderFrameHost).
-      {.navigation = 1, .document_subresource = 3});
+      // 1 navigation factory for /title1.html, and 2 document
+      // subresource factories (1 for the initial empty document
+      // created during WebContents initialization, and 1 for
+      // /title1.html). Chrome's PaymentManifestDownloader uses
+      // StoragePartition::GetURLLoaderFactoryForBrowserProcess(),
+      // which does not call WillCreateURLLoaderFactory.
+      {.navigation = 1, .document_subresource = 2});
 }

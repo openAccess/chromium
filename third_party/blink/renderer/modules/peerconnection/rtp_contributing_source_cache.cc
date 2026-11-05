@@ -5,16 +5,30 @@
 #include "third_party/blink/renderer/modules/peerconnection/rtp_contributing_source_cache.h"
 
 #include "base/check.h"
+#include "base/location.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_rtp_contributing_source.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_rtp_synchronization_source.h"
 #include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/loader/document_load_timing.h"
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.h"
+#include "third_party/blink/renderer/platform/bindings/exception_code.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/peerconnection/rtc_rtp_receiver_platform.h"
+#include "third_party/blink/renderer/platform/peerconnection/rtc_rtp_source.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/hash_map.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
@@ -98,10 +112,10 @@ RTCRtpContributingSourcesFromRTCRtpSources(
 
 RtpContributingSourceCache::RtpContributingSourceCache(
     RTCPeerConnection* pc,
-    scoped_refptr<base::SingleThreadTaskRunner> worker_thread_runner)
-    : pc_(pc), worker_thread_runner_(worker_thread_runner) {
+    scoped_refptr<base::SingleThreadTaskRunner> signaling_thread_runner)
+    : pc_(pc), signaling_thread_runner_(signaling_thread_runner) {
   DCHECK(pc_);
-  DCHECK(worker_thread_runner_);
+  DCHECK(signaling_thread_runner_);
 }
 
 void RtpContributingSourceCache::Shutdown() {
@@ -183,9 +197,9 @@ void RtpContributingSourceCache::MaybeUpdateRtpSources(
   base::WaitableEvent event;
   // Unretained is safe because we're waiting for the operation to complete.
   PostCrossThreadTask(
-      *worker_thread_runner_, FROM_HERE,
+      *signaling_thread_runner_, FROM_HERE,
       CrossThreadBindOnce(
-          &RtpContributingSourceCache::UpdateRtpSourcesOnWorkerThread,
+          &RtpContributingSourceCache::UpdateRtpSourcesOnSignalingThread,
           CrossThreadUnretained(this), CrossThreadUnretained(&receivers),
           CrossThreadUnretained(cached_sources_by_receiver),
           CrossThreadUnretained(&event)));
@@ -198,7 +212,7 @@ void RtpContributingSourceCache::MaybeUpdateRtpSources(
           &RtpContributingSourceCache::ClearCache, weak_factory_.GetWeakPtr()));
 }
 
-void RtpContributingSourceCache::UpdateRtpSourcesOnWorkerThread(
+void RtpContributingSourceCache::UpdateRtpSourcesOnSignalingThread(
     Vector<RTCRtpReceiverPlatform*>* receivers,
     HashMap<RTCRtpReceiverPlatform*, RTCRtpSources>* cached_sources_by_receiver,
     base::WaitableEvent* event) {

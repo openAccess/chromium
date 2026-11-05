@@ -4,12 +4,18 @@
 
 package org.chromium.components.browser_ui.bottomsheet;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
+import android.graphics.Color;
 import android.util.AttributeSet;
+import android.view.MotionEvent;
+import android.view.PointerIcon;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
@@ -22,6 +28,7 @@ import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent.GlowSpec;
+import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.base.ViewUtils;
 
@@ -31,8 +38,7 @@ import java.lang.annotation.RetentionPolicy;
 /** Presentation view layer for the BottomSheet component. */
 @NullMarked
 public class BottomSheetView extends FrameLayout {
-    protected static final GlowSpec DEFAULT_GLOW_SPEC =
-            new GlowSpec(0, GlowSpec.ShadowSize.DEFAULT);
+    private static final GlowSpec DEFAULT_GLOW_SPEC = new GlowSpec(0, GlowSpec.ShadowSize.DEFAULT);
 
     /** The visual presentation layout modes supported by the bottom sheet. */
     @IntDef({
@@ -99,52 +105,85 @@ public class BottomSheetView extends FrameLayout {
         }
     }
 
+    /** Interface for intercepting and handling touch events on the bottom sheet view. */
+    public interface TouchHandler {
+        /**
+         * Intercepts touch events directed at the bottom sheet view or its children.
+         *
+         * @param e The motion event.
+         * @return True if the event was intercepted, false otherwise.
+         */
+        boolean onInterceptTouchEvent(MotionEvent e);
+
+        /**
+         * Handles touch events directed at the bottom sheet view.
+         *
+         * @param e The motion event.
+         * @return True if the event was handled, false otherwise.
+         */
+        boolean onTouchEvent(MotionEvent e);
+    }
+
+    /** An out-array for use with getLocationOnScreen to prevent constant allocations. */
+    private final int[] mCachedLocation = new int[2];
+
+    /** The shadow length in pixels for standard sheets. */
+    private final @Px int mShadowLength;
+
+    /** The shadow length in pixels for large sheets. */
+    private final @Px int mShadowLengthLarge;
+
+    private final OnLayoutChangeListener mToolbarLayoutChangeListener;
+
     /** A handle to the FrameLayout that holds the content of the bottom sheet. */
-    protected TouchRestrictingFrameLayout mBottomSheetContentContainer;
+    private TouchRestrictingFrameLayout mBottomSheetContentContainer;
 
     /** The FrameLayout used to hold the bottom sheet toolbar. */
-    protected TouchRestrictingFrameLayout mToolbarHolder;
+    private TouchRestrictingFrameLayout mToolbarHolder;
 
     /** The view that contains the sheet background color. */
-    protected View mSheetBackground;
+    private View mSheetBackground;
 
     /** The view that contains the sheet background glow color. */
-    protected View mShadowLayer;
+    private View mShadowLayer;
 
     /**
-     * The view that is used to the area below the bottom sheet contents that is normally obscured
-     * by the keyboard.
+     * The view that is used to cover the area below the bottom sheet contents that is normally
+     * obscured by the keyboard.
      */
-    protected View mKeyboardCurtain;
+    private View mKeyboardCurtain;
 
     /**
      * The optional 'X' close button. This is injected into large form factor layouts when the sheet
      * is non-modal (meaning it lacks a background scrim that would otherwise allow the user to
      * easily tap-to-dismiss).
      */
-    protected @Nullable View mCloseButton;
+    private @Nullable View mCloseButton;
 
     /**
      * An alternative shadow layer used exclusively on large form factor devices when the current
      * sheet content opts out of the new bottom sheet UI. This provides the standard mobile
      * bottom-edge bleeder shadow instead of the full perimeter rectangle shadow.
      */
-    protected @Nullable View mFallbackShadowLayer;
+    private @Nullable View mFallbackShadowLayer;
 
     /** The drag handlebar view shown at the top of the sheet when requested by content. */
-    protected ImageView mHandlebar;
+    private ImageView mHandlebar;
 
-    /** The shadow length in pixels for standard sheets. */
-    protected final @Px int mShadowLength;
-
-    /** The shadow length in pixels for large sheets. */
-    protected final @Px int mShadowLengthLarge;
+    /** A handle to the FrameLayout that holds the snackbar of the bottom sheet. */
+    private @Nullable FrameLayout mSnackbarContainer;
 
     /** The active visual layout mode of the sheet. */
     private @SheetLayoutMode int mLayoutMode = SheetLayoutMode.STANDARD;
 
+    /** The visible cosmetic height of the sheet background and shadow layer. */
+    private @Px int mVisibleBackgroundHeight;
+
     /** The active glow specification for the sheet. */
     private @Nullable GlowSpec mGlowSpec;
+
+    private @Nullable TouchHandler mTouchHandler;
+    private @Nullable Runnable mToolbarSizeChangedCallback;
 
     /**
      * Constructor for inflating from XML.
@@ -158,12 +197,22 @@ public class BottomSheetView extends FrameLayout {
         mShadowLength = resources.getDimensionPixelSize(R.dimen.bottom_sheet_shadow_length);
         mShadowLengthLarge =
                 resources.getDimensionPixelSize(R.dimen.bottom_sheet_shadow_length_large);
+        mToolbarLayoutChangeListener =
+                (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+                    if (bottom - top == oldBottom - oldTop && right - left == oldRight - oldLeft) {
+                        return;
+                    }
+                    if (mToolbarSizeChangedCallback != null) {
+                        mToolbarSizeChangedCallback.run();
+                    }
+                };
     }
 
     @Initializer
     @Override
     protected void onFinishInflate() {
         super.onFinishInflate();
+        setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
         mBottomSheetContentContainer = findViewById(R.id.bottom_sheet_content);
         mToolbarHolder = findViewById(R.id.bottom_sheet_toolbar_container);
         mSheetBackground = findViewById(R.id.background);
@@ -172,6 +221,9 @@ public class BottomSheetView extends FrameLayout {
         mCloseButton = findViewById(R.id.bottom_sheet_close_button);
         mFallbackShadowLayer = findViewById(R.id.desktop_fallback_shadow);
         mHandlebar = findViewById(R.id.handlebar);
+        mSnackbarContainer = findViewById(R.id.bottom_sheet_snackbar_container);
+        mToolbarHolder.setBackgroundColor(Color.TRANSPARENT);
+        mToolbarHolder.addOnLayoutChangeListener(mToolbarLayoutChangeListener);
     }
 
     /** Returns the current visual presentation layout mode. */
@@ -222,22 +274,15 @@ public class BottomSheetView extends FrameLayout {
     }
 
     /**
-     * Sets the elevation (Z-index) of the content container.
+     * Sets the accessibility pane title for the sheet view.
      *
-     * @param z The elevation value in pixels.
+     * @param title The pane title.
      */
-    public void setContainerZ(float z) {
-        if (mBottomSheetContentContainer != null) {
-            ViewCompat.setElevation(mBottomSheetContentContainer, z);
-        }
+    public void setSheetAccessibilityPaneTitle(@Nullable CharSequence title) {
+        ViewCompat.setAccessibilityPaneTitle(this, title);
     }
 
-    /**
-     * Sets whether the fallback shadow is visible.
-     *
-     * @param visible Whether the fallback shadow should be visible.
-     */
-    public void setFallbackShadowVisible(boolean visible) {
+    private void setFallbackShadowVisible(boolean visible) {
         if (mFallbackShadowLayer != null) {
             mFallbackShadowLayer.setVisibility(visible ? View.VISIBLE : View.GONE);
         }
@@ -292,6 +337,7 @@ public class BottomSheetView extends FrameLayout {
      * @param mode The layout mode to apply.
      */
     public void setSheetLayoutMode(@SheetLayoutMode int mode) {
+        if (mLayoutMode == mode) return;
         mLayoutMode = mode;
         switch (mode) {
             case SheetLayoutMode.DESKTOP_POPUP -> {
@@ -305,6 +351,8 @@ public class BottomSheetView extends FrameLayout {
                     mShadowLayer.setBackgroundResource(R.drawable.popup_bg_shadow_16dp);
                     updateShadowLayerMargins(true);
                 }
+                mHandlebar.setPointerIcon(
+                        PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_HAND));
             }
             case SheetLayoutMode.DESKTOP_FALLBACK -> {
                 setCloseButtonVisible(false);
@@ -317,6 +365,10 @@ public class BottomSheetView extends FrameLayout {
                     mShadowLayer.setBackgroundResource(0);
                     mShadowLayer.setPadding(0, 0, 0, 0);
                     updateShadowLayerMargins(false);
+                }
+                mHandlebar.setPointerIcon(null);
+                if (mGlowSpec != null) {
+                    setGlowSpec(mGlowSpec);
                 }
             }
             default -> {
@@ -332,6 +384,7 @@ public class BottomSheetView extends FrameLayout {
                         mShadowLayer.setBackgroundResource(0);
                     }
                 }
+                mHandlebar.setPointerIcon(null);
             }
         }
     }
@@ -343,6 +396,7 @@ public class BottomSheetView extends FrameLayout {
      */
     public void setKeyboardCurtainHeight(@Px int height) {
         if (mKeyboardCurtain == null) return;
+        mKeyboardCurtain.setTranslationY(height);
         MarginLayoutParams params = (MarginLayoutParams) mKeyboardCurtain.getLayoutParams();
         if (params != null && params.height != height) {
             params.height = height;
@@ -391,7 +445,9 @@ public class BottomSheetView extends FrameLayout {
     }
 
     void setToolbarHolderForTesting(TouchRestrictingFrameLayout toolbarHolder) {
+        mToolbarHolder.removeOnLayoutChangeListener(mToolbarLayoutChangeListener);
         mToolbarHolder = toolbarHolder;
+        mToolbarHolder.addOnLayoutChangeListener(mToolbarLayoutChangeListener);
     }
 
     void setBottomSheetContentContainerForTesting(
@@ -465,6 +521,321 @@ public class BottomSheetView extends FrameLayout {
         if (params != null && params.height != height) {
             params.height = height;
             mBottomSheetContentContainer.setLayoutParams(params);
+        }
+    }
+
+    /**
+     * Sets the touch handler for this view.
+     *
+     * @param handler The touch handler to intercept and process touch events.
+     */
+    public void setTouchHandler(TouchHandler handler) {
+        mTouchHandler = handler;
+    }
+
+    @Override
+    public boolean onInterceptTouchEvent(MotionEvent e) {
+        if (mTouchHandler != null) {
+            return mTouchHandler.onInterceptTouchEvent(e);
+        }
+        return super.onInterceptTouchEvent(e);
+    }
+
+    // TODO(crbug.com/567600538): Evaluate ClickableViewAccessibility and consider
+    // implementing performClick() for BottomSheetView.
+    @SuppressLint("ClickableViewAccessibility")
+    @Override
+    public boolean onTouchEvent(MotionEvent e) {
+        if (mTouchHandler != null) {
+            return mTouchHandler.onTouchEvent(e);
+        }
+        return super.onTouchEvent(e);
+    }
+
+    @Override
+    public boolean onHoverEvent(MotionEvent event) {
+        // https://crbug.com/1297267 Consume hover events to prevent talkback from reading items
+        // behind the bottom sheet, in particular when the client has its own scrim lifecycle.
+        super.onHoverEvent(event);
+        return true;
+    }
+
+    @Override
+    public boolean onGenericMotionEvent(MotionEvent event) {
+        // If the mouse event is in the transparent shadow area above the sheet, let it fall
+        // through.
+        if (!isTouchEventInUsableArea(event)) {
+            return super.onGenericMotionEvent(event);
+        }
+
+        // Like onTouchEvent, act as a black hole for unhandled generic motion events
+        // (e.g., hardware mouse clicks or scrolls) that land within the physical sheet.
+        // This prevents them from falling through to the background WebContents.
+        return true;
+    }
+
+    @Override
+    public @Nullable PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
+        // First, check if a child view inside the sheet (like a specific button or the
+        // drag handlebar) has explicitly requested a custom pointer icon (like a hand).
+        PointerIcon icon = super.onResolvePointerIcon(event, pointerIndex);
+        if (icon != null) {
+            return icon;
+        }
+
+        // If no child cares, and the pointer is sitting in the empty usable area of the
+        // bottom sheet, forcefully return the default arrow icon. This overwrites
+        // the "stuck" hand cursor state bleeding up from the WebContents behind it.
+        if (isTouchEventInUsableArea(event)) {
+            return PointerIcon.getSystemIcon(getContext(), PointerIcon.TYPE_DEFAULT);
+        }
+
+        return super.onResolvePointerIcon(event, pointerIndex);
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasWindowFocus) {
+        super.onWindowFocusChanged(hasWindowFocus);
+
+        // Trigger a relayout on window focus to correct any positioning issues when leaving
+        // Chrome previously. This is required as a layout is not triggered when coming back to
+        // Chrome with the keyboard previously shown.
+        if (hasWindowFocus) {
+            ViewUtils.requestLayout(this, "BottomSheetView.onWindowFocusChanged");
+        }
+    }
+
+    /**
+     * Test whether a motion event is in the area of the sheet considered to be usable (i.e. not on
+     * the shadow shown above the sheet or some other decorative part of the view).
+     *
+     * @param event The motion event relative to the bottom sheet view.
+     * @return Whether the event is considered to be in the usable area of the sheet.
+     */
+    public boolean isTouchEventInUsableArea(MotionEvent event) {
+        return event.getY() > 0;
+    }
+
+    @Override
+    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+        super.onLayout(changed, left, top, right, bottom);
+        if (mLayoutMode == SheetLayoutMode.DESKTOP_POPUP && mVisibleBackgroundHeight > 0) {
+            setVisibleBackgroundHeight(mVisibleBackgroundHeight);
+        }
+    }
+
+    /**
+     * Sets the translation Y of the sheet view.
+     *
+     * @param translationY The translation Y coordinate.
+     */
+    public void setSheetTranslationY(float translationY) {
+        setTranslationY(translationY);
+        // The snackbar is anchored to the bottom of the BottomSheet, so it needs to be translated
+        // to the inverse of the BottomSheet's translation so it remains visible onscreen.
+        if (mSnackbarContainer != null) {
+            mSnackbarContainer.setTranslationY(-translationY);
+        }
+    }
+
+    /**
+     * Sets the translation X of the sheet view.
+     *
+     * @param translationX The translation X coordinate.
+     */
+    public void setSheetTranslationX(float translationX) {
+        setTranslationX(translationX);
+    }
+
+    /**
+     * Sets whether the drag handlebar is visible.
+     *
+     * @param visible True if the handlebar should be visible, false otherwise.
+     */
+    public void setHandlebarVisible(boolean visible) {
+        if (mHandlebar != null) {
+            mHandlebar.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    /**
+     * Sets the top margin of the content container and toolbar holder.
+     *
+     * @param topMargin The top margin in pixels.
+     */
+    public void setContentTopMargin(@Px int topMargin) {
+        if (mBottomSheetContentContainer != null) {
+            MarginLayoutParams params =
+                    (MarginLayoutParams) mBottomSheetContentContainer.getLayoutParams();
+            if (params != null && params.topMargin != topMargin) {
+                params.topMargin = topMargin;
+                mBottomSheetContentContainer.setLayoutParams(params);
+            }
+        }
+        if (mToolbarHolder != null) {
+            MarginLayoutParams params = (MarginLayoutParams) mToolbarHolder.getLayoutParams();
+            if (params != null && params.topMargin != topMargin) {
+                params.topMargin = topMargin;
+                mToolbarHolder.setLayoutParams(params);
+            }
+        }
+    }
+
+    /**
+     * Sets the visible cosmetic height of the sheet background and shadow layer.
+     *
+     * @param visibleHeight The visible background height in pixels.
+     */
+    public void setVisibleBackgroundHeight(@Px int visibleHeight) {
+        mVisibleBackgroundHeight = visibleHeight;
+        if (visibleHeight <= 0) return;
+        if (mSheetBackground == null || mShadowLayer == null) {
+            return;
+        }
+
+        // Clip the solid background strictly to the visual height.
+        mSheetBackground.setBottom(mSheetBackground.getTop() + visibleHeight);
+
+        // Wrap the shadow layer around the new background height, explicitly appending
+        // the shadow's native padding to allow the 9-patch border to paint correctly.
+        int shadowTopPadding = mShadowLayer.getPaddingTop();
+        int shadowBottomPadding = mShadowLayer.getPaddingBottom();
+        mShadowLayer.setBottom(
+                mShadowLayer.getTop() + visibleHeight + shadowTopPadding + shadowBottomPadding);
+        mShadowLayer.invalidate();
+    }
+
+    /**
+     * Sets whether the sheet view is focusable and manages its focus.
+     *
+     * @param focusable True if the sheet should be focusable, false otherwise.
+     */
+    public void setSheetFocusable(boolean focusable) {
+        setFocusable(focusable);
+        setFocusableInTouchMode(focusable);
+        if (focusable) {
+            if (getFocusedChild() == null) {
+                requestFocus();
+            }
+        } else {
+            clearFocus();
+            setContentDescription(null);
+        }
+    }
+
+    /**
+     * Sets the click listener for the drag handlebar.
+     *
+     * @param listener The click listener.
+     */
+    public void setHandlebarClickListener(@Nullable OnClickListener listener) {
+        mHandlebar.setOnClickListener(listener);
+    }
+
+    /**
+     * Sets the callback invoked when the toolbar holder's size changes.
+     *
+     * @param callback The callback to invoke on toolbar size change, or null.
+     */
+    void setToolbarSizeChangedCallback(@Nullable Runnable callback) {
+        mToolbarSizeChangedCallback = callback;
+    }
+
+    /**
+     * Dispatches a window state change accessibility event when the sheet pane appears or
+     * disappears, and shifts accessibility focus to the sheet when it opens.
+     *
+     * @param isShowing True if the sheet pane is appearing, false if it is disappearing.
+     */
+    // Suppressing AccessibilityFocus: The bottom sheet uses translationY for animations rather than
+    // standard visibility changes, which causes the Android accessibility framework to fail at
+    // automatically shifting focus to the newly opened pane. We must force focus here to ensure
+    // screen readers don't get stuck on background elements (e.g. the toolbar) when the sheet
+    // opens.
+    @SuppressWarnings("AccessibilityFocus")
+    void sendPaneChangeAccessibilityEvent(boolean isShowing) {
+        AccessibilityEvent event =
+                AccessibilityEvent.obtain(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED);
+        if (isShowing) {
+            event.setContentChangeTypes(AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_APPEARED);
+        } else {
+            event.setContentChangeTypes(AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_DISAPPEARED);
+        }
+        CharSequence paneTitle = ViewCompat.getAccessibilityPaneTitle(this);
+        if (paneTitle != null) {
+            event.getText().add(paneTitle);
+        }
+        event.setSource(this);
+        AccessibilityState.sendAccessibilityEvent(event);
+        if (isShowing) {
+            this.post(
+                    () -> {
+                        this.performAccessibilityAction(
+                                AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null);
+                    });
+        }
+    }
+
+    /**
+     * Measures and returns the measured height of the drag handlebar.
+     *
+     * @param maxSheetWidth The maximum sheet width for measurement.
+     * @param maxSheetHeight The maximum sheet height for measurement.
+     * @return The measured height of the handlebar in pixels.
+     */
+    public @Px int getHandlebarMeasuredHeight(int maxSheetWidth, int maxSheetHeight) {
+        if (mHandlebar == null) return 0;
+        if (mHandlebar.getMeasuredHeight() == 0) {
+            mHandlebar.measure(
+                    MeasureSpec.makeMeasureSpec(maxSheetWidth, MeasureSpec.AT_MOST),
+                    MeasureSpec.makeMeasureSpec(maxSheetHeight, MeasureSpec.AT_MOST));
+        }
+        return mHandlebar.getMeasuredHeight();
+    }
+
+    /**
+     * Returns whether the given touch event falls within the toolbar.
+     *
+     * @param event The motion event.
+     * @return True if the touch event is within the toolbar, false otherwise.
+     */
+    public boolean isEventInToolbar(MotionEvent event) {
+        if (mToolbarHolder == null) return false;
+        mToolbarHolder.getLocationOnScreen(mCachedLocation);
+
+        // This check only tests for collision for the Y component since the sheet is the full width
+        // of the screen. We only care if the touch event is above the bottom of the toolbar since
+        // we won't receive an event if the touch is outside the sheet.
+        return mCachedLocation[1] + mToolbarHolder.getHeight() > event.getRawY();
+    }
+
+    /**
+     * Sets bottom padding on the content container.
+     *
+     * @param paddingBottom The bottom padding in pixels.
+     */
+    public void setContentContainerPaddingBottom(@Px int paddingBottom) {
+        if (mBottomSheetContentContainer == null) return;
+        if (mBottomSheetContentContainer.getPaddingBottom() != paddingBottom) {
+            mBottomSheetContentContainer.setPadding(
+                    mBottomSheetContentContainer.getPaddingLeft(),
+                    mBottomSheetContentContainer.getPaddingTop(),
+                    mBottomSheetContentContainer.getPaddingRight(),
+                    paddingBottom);
+        }
+    }
+
+    /**
+     * Updates background layout params height.
+     *
+     * @param height The target background height in pixels.
+     */
+    public void updateBackgroundHeight(int height) {
+        if (mSheetBackground == null) return;
+        ViewGroup.LayoutParams bgParams = mSheetBackground.getLayoutParams();
+        if (bgParams != null && bgParams.height != height) {
+            bgParams.height = height;
+            mSheetBackground.setLayoutParams(bgParams);
         }
     }
 }

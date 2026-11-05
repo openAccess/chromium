@@ -5,12 +5,24 @@
 import './composebox_match.js';
 
 import {assert} from '//resources/js/assert.js';
+import {resolveSchemeRelativeUrl} from '//resources/js/icon.js';
+import {loadTimeData} from '//resources/js/load_time_data.js';
+import {hasKeyModifiers} from '//resources/js/util.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import type {AutocompleteMatch, AutocompleteResult} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {RenderType} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {SuggestStyle} from '//resources/mojo/components/omnibox/browser/suggest_template_info.mojom-webui.js';
 import {ToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 
+import {computeImageUrl, recordRichImageSuggestBatchLoadLatency, recordRichImageSuggestBatchLoadStatus, recordRichImageSuggestShown, RichImageSuggestBatchLoadStatus} from './common.js';
 import {getCss} from './composebox_dropdown.css.js';
 import {getHtml} from './composebox_dropdown.html.js';
+import type {ComposeboxMatchElement} from './composebox_match.js';
+
+// Maximum time to wait for a batch of rich suggestion images to preload before
+// revealing the cards.
+const IMAGE_PRELOAD_TIMEOUT_MS = 2000;
 
 // The '%' operator in JS returns negative numbers. This workaround avoids that.
 function remainder(lhs: number, rhs: number) {
@@ -57,7 +69,37 @@ export class ComposeboxDropdownElement extends CrLitElement {
         type: Number,
       },
       overrideClampLineNum: {type: Number},
+      richImageSuggestionsEnabled: {type: Boolean},
+      isImageBatchLoading_: {type: Boolean},
     };
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    this.cancelImagePreload_();
+  }
+
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
+    if (!this.richImageSuggestionsEnabled) {
+      return;
+    }
+
+    if (changedProperties.has('result') ||
+        changedProperties.has('maxSuggestions')) {
+      this.updateImagePreload_();
+    }
+  }
+
+  override updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
+
+    if (changedProperties.has('selectedMatchIndex') &&
+        this.selectedMatchIndex >= 0) {
+      const selectedMatch = this.shadowRoot.querySelector<HTMLElement>(
+          `#match${this.selectedMatchIndex}`);
+      selectedMatch?.scrollIntoView({block: 'nearest', inline: 'nearest'});
+    }
   }
 
   accessor result: AutocompleteResult|null = null;
@@ -70,6 +112,16 @@ export class ComposeboxDropdownElement extends CrLitElement {
   accessor maxSuggestions: number|null = null;
   accessor toolMode: ToolMode = ToolMode.kUnspecified;
   accessor overrideClampLineNum: number = -1;
+  accessor richImageSuggestionsEnabled: boolean = false;
+  accessor isImageBatchLoading_: boolean = false;
+  private composeboxSource_: string =
+      loadTimeData.getString('composeboxSource');
+  private imagePreloadGeneration_: number = 0;
+  private imagePreloadTimeoutId_: number|undefined;
+  // Retains HTMLImageElement instances so Blink's MemoryCache holds a strong
+  // reference to the decoded ImageResource across tool-mode toggles.
+  private loadedImages_: Map<string, HTMLImageElement> = new Map();
+  private preloadingImages_: Set<HTMLImageElement> = new Set();
 
   //============================================================================
   // Public methods
@@ -154,6 +206,43 @@ export class ComposeboxDropdownElement extends CrLitElement {
     this.selectedMatchIndex = remainder(next, maxVisibleIndex + 1);
   }
 
+  /** Returns the minimum index of the visible matches. */
+  getFirstVisibleIndex(): number {
+    if (!this.result || this.result.matches.length === 0) {
+      return -1;
+    }
+    const firstIndex = this.hideVerbatimMatch_(0) ? 1 : 0;
+    return firstIndex <= this.getMaxVisibleIndex_() ? firstIndex : -1;
+  }
+
+  /** Returns the maximum index of the visible matches. */
+  getLastVisibleIndex(): number {
+    return this.getMaxVisibleIndex_();
+  }
+
+  /**
+   * Unselects the active match if a Tab or Shift-Tab event is about to move
+   * focus outside the visible dropdown matches.
+   */
+  unselectOnTabExit(e: KeyboardEvent) {
+    if (this.selectedMatchIndex < 0) {
+      return;
+    }
+    const isForwardExit = !hasKeyModifiers(e) &&
+        this.selectedMatchIndex === this.getLastVisibleIndex();
+    const isBackwardExit = e.shiftKey && !e.altKey && !e.ctrlKey &&
+        !e.metaKey && this.selectedMatchIndex === this.getFirstVisibleIndex();
+    if (!isForwardExit && !isBackwardExit) {
+      return;
+    }
+
+    const matchEl = this.shadowRoot.querySelector<ComposeboxMatchElement>(
+        `#match${this.selectedMatchIndex}`);
+    if (matchEl?.willTabExitMatch(e.shiftKey)) {
+      this.unselect();
+    }
+  }
+
   /**
    * @returns Index of the match in the autocomplete result. Passed to the match
    *     so it knows its position in the list of matches.
@@ -162,8 +251,8 @@ export class ComposeboxDropdownElement extends CrLitElement {
     return this.result?.matches.indexOf(match) ?? -1;
   }
 
-  protected isSelected_(match: AutocompleteMatch): boolean {
-    return this.matchIndex_(match) === this.selectedMatchIndex;
+  protected isSelected_(index: number): boolean {
+    return index === this.selectedMatchIndex;
   }
 
   /** Returns the maximum index of the visible matches. */
@@ -225,6 +314,161 @@ export class ComposeboxDropdownElement extends CrLitElement {
 
   protected computeAriaLabel_(match: AutocompleteMatch): string {
     return match.a11yLabel;
+  }
+
+  /**
+   * @returns Unique suggestion group IDs in natural order of appearance in
+   *     matches.
+   */
+  protected groupIds_(): number[] {
+    return [...new Set<number>(
+        this.result?.matches.map(match => match.suggestionGroupId) ?? [])];
+  }
+
+  protected matchesForGroup_(groupId: number):
+      Array<{match: AutocompleteMatch, index: number}> {
+    if (!this.result) {
+      return [];
+    }
+    const result: Array<{match: AutocompleteMatch, index: number}> = [];
+    this.result.matches.forEach((match, index) => {
+      if (match.suggestionGroupId === groupId) {
+        result.push({match, index});
+      }
+    });
+    return result;
+  }
+
+  protected hasHeaderForGroup_(groupId: number): boolean {
+    return !!this.headerForGroup_(groupId);
+  }
+
+  protected headerForGroup_(groupId: number): string {
+    return this.result?.suggestionGroupsMap[groupId]?.header ?? '';
+  }
+
+  protected renderTypeClassForGroup_(groupId: number): string {
+    return this.result?.suggestionGroupsMap[groupId]?.renderType ===
+            RenderType.kGrid ?
+        'grid' :
+        'vertical';
+  }
+
+  protected onHeaderMousedown_(e: MouseEvent) {
+    // Prevent default mousedown behavior to keep focus in the composebox input.
+    e.preventDefault();
+  }
+
+  protected isMatchHidden_(index: number): boolean {
+    return this.hideVerbatimMatch_(index) || index > this.getMaxVisibleIndex_();
+  }
+
+  protected isMatchLoading_(match: AutocompleteMatch): boolean {
+    return this.richImageSuggestionsEnabled &&
+        match.suggestTemplate.style === SuggestStyle.kRichImage &&
+        Boolean(match.suggestTemplate.image?.url) && this.isImageBatchLoading_;
+  }
+
+  private clearImagePreloadTimeout_() {
+    if (this.imagePreloadTimeoutId_ !== undefined) {
+      clearTimeout(this.imagePreloadTimeoutId_);
+      this.imagePreloadTimeoutId_ = undefined;
+    }
+  }
+
+  private cancelImagePreload_() {
+    if (this.isImageBatchLoading_) {
+      recordRichImageSuggestBatchLoadStatus(
+          RichImageSuggestBatchLoadStatus.SUPERSEDED, this.composeboxSource_);
+      this.isImageBatchLoading_ = false;
+    }
+    this.imagePreloadGeneration_++;
+    this.clearImagePreloadTimeout_();
+    for (const img of this.preloadingImages_) {
+      img.onload = null;
+      img.onerror = null;
+    }
+    this.preloadingImages_.clear();
+  }
+
+  private updateImagePreload_() {
+    this.cancelImagePreload_();
+    const generation = this.imagePreloadGeneration_;
+    if (!this.result) {
+      this.isImageBatchLoading_ = false;
+      return;
+    }
+
+    const imageMatches = this.result.matches.filter(
+        (m, index) => !this.isMatchHidden_(index) &&
+            m.suggestTemplate.style === SuggestStyle.kRichImage &&
+            Boolean(m.suggestTemplate.image?.url));
+    if (imageMatches.length === 0) {
+      this.isImageBatchLoading_ = false;
+      return;
+    }
+    if (imageMatches.every(
+            m => this.loadedImages_.has(m.suggestTemplate.image!.url))) {
+      this.isImageBatchLoading_ = false;
+      recordRichImageSuggestBatchLoadStatus(
+          RichImageSuggestBatchLoadStatus.CACHED, this.composeboxSource_);
+      recordRichImageSuggestShown(this.composeboxSource_);
+      return;
+    }
+
+    this.isImageBatchLoading_ = true;
+    const startTime = window.performance.now();
+    const preloadPromises = imageMatches.map(m => {
+      const imageUrl = m.suggestTemplate.image!.url;
+      return new Promise<void>(resolve => {
+        if (this.loadedImages_.has(imageUrl)) {
+          resolve();
+          return;
+        }
+        const img = new Image();
+        this.preloadingImages_.add(img);
+        img.onload = () => {
+          this.preloadingImages_.delete(img);
+          this.loadedImages_.set(imageUrl, img);
+          resolve();
+        };
+        img.onerror = () => {
+          this.preloadingImages_.delete(img);
+          resolve();
+        };
+        img.src = resolveSchemeRelativeUrl(computeImageUrl(imageUrl));
+      });
+    });
+
+    const allPreloadedPromise = Promise.all(preloadPromises).then(() => {
+      recordRichImageSuggestBatchLoadLatency(
+          window.performance.now() - startTime, this.composeboxSource_);
+      return false;
+    });
+
+    const timeoutPromise = new Promise<boolean>(resolve => {
+      this.imagePreloadTimeoutId_ =
+          window.setTimeout(() => resolve(true), IMAGE_PRELOAD_TIMEOUT_MS);
+    });
+
+    void Promise
+        .race([
+          allPreloadedPromise,
+          timeoutPromise,
+        ])
+        .then(timedOut => {
+          if (this.imagePreloadGeneration_ === generation) {
+            // Only clear the timeout; let any still-in-flight images in
+            // `preloadingImages_` finish and populate `loadedImages_`.
+            this.clearImagePreloadTimeout_();
+            this.isImageBatchLoading_ = false;
+            recordRichImageSuggestShown(this.composeboxSource_);
+            recordRichImageSuggestBatchLoadStatus(
+                timedOut ? RichImageSuggestBatchLoadStatus.TIMED_OUT :
+                           RichImageSuggestBatchLoadStatus.LOADED,
+                this.composeboxSource_);
+          }
+        });
   }
 }
 

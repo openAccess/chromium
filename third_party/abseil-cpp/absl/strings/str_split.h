@@ -44,6 +44,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/base/config.h"
 #include "absl/base/internal/raw_logging.h"
 #include "absl/base/macros.h"
 #include "absl/strings/ascii.h"
@@ -95,7 +96,7 @@ ABSL_NAMESPACE_BEGIN
 // function:
 //
 //   struct SimpleDelimiter {
-//     const char c_;
+//     char c_;
 //     explicit SimpleDelimiter(char c) : c_(c) {}
 //     absl::string_view Find(absl::string_view text, size_t pos) {
 //       auto found = text.find(c_, pos);
@@ -205,7 +206,7 @@ class ByAnyChar {
   absl::string_view Find(absl::string_view text, size_t pos) const;
 
  private:
-  const std::string delimiters_;
+  std::string delimiters_;
 };
 
 // ByLength
@@ -236,7 +237,7 @@ class ByLength {
   absl::string_view Find(absl::string_view text, size_t pos) const;
 
  private:
-  const ptrdiff_t length_;
+  ptrdiff_t length_;
 };
 
 namespace strings_internal {
@@ -290,7 +291,7 @@ class MaxSplitsImpl {
 
  private:
   Delimiter delimiter_;
-  const int limit_;
+  int limit_;
   int count_;
 };
 
@@ -451,7 +452,8 @@ using EnableSplitIfString =
 // behavior works for:
 //
 // 1) All standard STL containers including `std::vector`, `std::list`,
-//    `std::deque`, `std::set`,`std::multiset`, 'std::map`, and `std::multimap`.
+//    `std::deque`, `std::set`, `std::multiset`, `std::map`, and
+//    `std::multimap`.
 // 2) `std::pair` (which is not actually a container). See below.
 // 3) `std::array`, which is a container but has different behavior due to its
 //    fixed size. See below.
@@ -467,8 +469,10 @@ using EnableSplitIfString =
 //   std::set<std::string> a = absl::StrSplit("b,a,c,a,b", ',');
 //   // a[0] == "a", a[1] == "b", a[2] == "c"
 //
-//   // `StrSplit()` can be used within a range-based for loop, in which case
-//   // each element will be of type `absl::string_view`.
+//   // `StrSplit()` can be used within a range-based for-loop, in which case
+//   // each element will be of type `absl::string_view`. The elements will
+//   // returned in the order in which they appear in the original string
+//   // without any other transformation, e.g. no de-duplication is performed.
 //   std::vector<std::string> v;
 //   for (const auto sv : absl::StrSplit("a,b,c", ',')) {
 //     if (sv != "b") v.emplace_back(sv);

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -21,6 +22,8 @@
 #include "third_party/skia/include/core/SkRRect.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/color/color_id.h"
+#include "ui/color/color_variant.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
@@ -63,7 +66,7 @@ SkColor IconLabelBubbleView::Delegate::GetIconLabelBubbleInkDropColor() const {
 }
 
 IconLabelBubbleView::SeparatorView::SeparatorView(IconLabelBubbleView* owner) {
-  DCHECK(owner);
+  CHECK(owner, base::NotFatalUntil::M162);
   owner_ = owner;
 
   SetPaintToLayer();
@@ -104,7 +107,7 @@ void IconLabelBubbleView::SeparatorView::UpdateOpacity() {
   }
 
   views::InkDrop* const ink_drop = views::InkDrop::Get(owner_)->GetInkDrop();
-  DCHECK(ink_drop);
+  CHECK(ink_drop, base::NotFatalUntil::M162);
 
   // If an inkdrop highlight or ripple is animating in or visible, the
   // separator should fade out.
@@ -162,7 +165,7 @@ IconLabelBubbleView::IconLabelBubbleView(const gfx::FontList& font_list,
       separator_view_(AddChildView(std::make_unique<SeparatorView>(this))),
       animation_layout_strategy_(
           std::make_unique<StandardIconLabelBubbleAnimationLayoutStrategy>(*this)) {
-  DCHECK(delegate_);
+  CHECK(delegate_, base::NotFatalUntil::M162);
 
   SetFontList(font_list);
   SetHorizontalAlignment(gfx::ALIGN_LEFT);
@@ -376,8 +379,15 @@ void IconLabelBubbleView::SetCustomBackgroundColorId(
   background_color_id_ = color_id;
 }
 
+std::optional<ui::ColorVariant>
+IconLabelBubbleView::GetDisabledForegroundColor() const {
+  return std::nullopt;
+}
+
 void IconLabelBubbleView::UpdateLabelColors() {
   SetEnabledTextColors(GetForegroundColor());
+  SetTextColor(STATE_DISABLED, GetDisabledForegroundColor().value_or(
+                                   ui::kColorLabelForegroundDisabled));
   label()->SetBackgroundColor(GetBackgroundColor());
 }
 
@@ -584,7 +594,7 @@ void IconLabelBubbleView::AnimationCanceled(const gfx::Animation* animation) {
 }
 
 void IconLabelBubbleView::SetImageModel(const ui::ImageModel& image_model) {
-  DCHECK(!image_model.IsEmpty());
+  CHECK(!image_model.IsEmpty(), base::NotFatalUntil::M162);
   LabelButton::SetImageModel(STATE_NORMAL, image_model);
 }
 
@@ -683,12 +693,14 @@ void IconLabelBubbleView::SetUpForInOutAnimation(base::TimeDelta duration) {
   // statically showing the label (1800ms), and hiding the label (600ms). The
   // proportion of time spent in each portion of the animation is controlled by
   // open_state_fraction_.
-  slide_animation_.SetSlideDuration(
-      duration + 2 * base::Milliseconds(kIconLabelFadeAnimationDurationMs));
+  const base::TimeDelta fade_duration =
+      base::Milliseconds(kIconLabelFadeAnimationDurationMs);
+  const base::TimeDelta total_duration = duration + 2 * fade_duration;
+  slide_animation_.SetSlideDuration(total_duration);
   // The tween is calculated in GetWidthBetween().
   slide_animation_.SetTweenType(gfx::Tween::LINEAR);
-  open_state_fraction_ = static_cast<float>(kIconLabelFadeAnimationDurationMs) /
-                         duration.InMilliseconds();
+  open_state_fraction_ =
+      total_duration.is_positive() ? (fade_duration / total_duration) : 0.0;
 }
 
 void IconLabelBubbleView::AnimateIn(std::optional<int> string_id) {
@@ -801,14 +813,8 @@ SkPath IconLabelBubbleView::GetHighlightPath() const {
   }
   highlight_bounds = GetMirroredRect(highlight_bounds);
 
-  const SkRect rect = RectToSkRect(highlight_bounds);
-  gfx::RoundedCornersF radii = GetCornerRadii();
-  const SkVector sk_radii[4] = {{radii.upper_left(), radii.upper_left()},
-                                {radii.upper_right(), radii.upper_right()},
-                                {radii.lower_right(), radii.lower_right()},
-                                {radii.lower_left(), radii.lower_left()}};
-
-  return SkPath::RRect(SkRRect::MakeRectRadii(rect, sk_radii));
+  return SkPath::RRect(
+      RoundedRectToSkRRect(highlight_bounds, GetCornerRadii()));
 }
 
 bool IconLabelBubbleView::PaintedOnSolidBackground() const {

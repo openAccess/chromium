@@ -117,7 +117,6 @@ suite('ContextualTasksComposeboxMiscInputsTest', () => {
     mockTimer = new MockTimer();
 
     loadTimeData.overrideValues({
-      useContextualTasksComposeboxFork: false,
       contextualMenuUsePecApi: false,
       composeboxSmartTabSharingVisible: false,
       contextManagementInComposeboxEnabled: false,
@@ -452,12 +451,12 @@ suite('ContextualTasksComposeboxMiscInputsTest', () => {
     await composebox.$.carousel.updateComplete;
 
     assertEquals(
-        0, composebox.pendingUploads.size,
-        '0 tab should be uploading after upload started since processing startts it');
+        1, composebox.pendingUploads.size,
+        '1 tab should be uploading after upload started');
 
-    assertTrue(
+    assertFalse(
         composebox.fileUploadsComplete,
-        'Tabs should be finished uploading since all uploads are started but not processing');
+        'Tabs should not be finished uploading while an upload is started');
 
     tabThumbnail = getThumbnailForTab(FAKE_TOKEN_STRING);
 
@@ -625,7 +624,7 @@ suite('ContextualTasksComposeboxMiscInputsTest', () => {
         0, composebox.pendingUploads.size,
         '0 tabs should be uploading due to expired status');
     assertEquals(
-        0, composebox.files.size,
+        0, composebox.attachedContext.size,
         '0 files should be in the composebox after upload expired');
   });
 
@@ -709,7 +708,7 @@ suite('ContextualTasksComposeboxMiscInputsTest', () => {
         0, composebox.pendingUploads.size,
         '0 tabs should be uploading due to expired status');
     assertEquals(
-        0, composebox.files.size,
+        0, composebox.attachedContext.size,
         '0 files should be in the composebox after upload failed');
   });
 });

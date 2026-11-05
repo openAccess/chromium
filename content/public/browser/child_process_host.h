@@ -79,6 +79,9 @@ class CONTENT_EXPORT ChildProcessHost {
     // gdb). In this case, you'd use GetChildPath to get the real executable
     // file name, and then prepend the GDB command to the command line.
     CHILD_ALLOW_SELF = 1 << 0,
+
+    // Indicates that the child process to be launched is a separate renderer.
+    CHILD_RENDERER = 1 << 1,
 #elif BUILDFLAG(IS_MAC)
     // Note, on macOS these are not bitwise flags and each value is mutually
     // exclusive with the others. Each one of these options must correspond to a
@@ -98,9 +101,10 @@ class CONTENT_EXPORT ChildProcessHost {
     CHILD_GPU,
 
     // Marker for the start of embedder-specific helper child process types.
-    // Values greater than CHILD_EMBEDDER_FIRST are reserved to be used by the
-    // embedder to add custom process types and will be resolved via
-    // ContentClient::GetChildPath().
+    // Values greater than CHILD_EMBEDDER_FIRST are reserved for embedder
+    // process types. Content provides no fallback resolution for these types;
+    // embedders must handle them in
+    // ContentBrowserClient::GetChildProcessPath().
     CHILD_EMBEDDER_FIRST,
 #endif
   };
@@ -110,11 +114,14 @@ class CONTENT_EXPORT ChildProcessHost {
   // the default child process pathname will be returned.  On most platforms,
   // this will be the same as the currently-executing process.
   //
-  // The |flags| argument accepts one or more flags such as CHILD_ALLOW_SELF.
+  // The `flags` argument accepts one or more flags such as CHILD_ALLOW_SELF.
   // Pass only CHILD_NORMAL if none of these special behaviors are required.
+  // `child_process_id` is the ID of the child process being launched, if known.
   //
   // On failure, returns an empty FilePath.
-  static base::FilePath GetChildPath(int flags);
+  static base::FilePath GetChildPath(
+      int flags,
+      ChildProcessId child_process_id = ChildProcessId());
 
   // Send the shutdown message to the child process.
   virtual void ForceShutdown() = 0;

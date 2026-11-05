@@ -23,7 +23,7 @@ void WidgetFadeAnimator::FadeIn(int slide_distance,
     return;
   }
 
-  DCHECK(widget_);
+  CHECK(widget_, base::NotFatalUntil::M163);
 
   animation_type_ = FadeType::kFadeIn;
   fade_animation_.SetDuration(fade_in_duration_);
@@ -31,6 +31,7 @@ void WidgetFadeAnimator::FadeIn(int slide_distance,
   // Widgets cannot be shown when visible and fully transparent.
   widget_->SetOpacity(0.01f);
 
+  base::WeakPtr<WidgetFadeAnimator> weak_this = weak_factory_.GetWeakPtr();
   switch (show_type_) {
     case WidgetShowType::kNone:
       break;
@@ -40,6 +41,12 @@ void WidgetFadeAnimator::FadeIn(int slide_distance,
     case WidgetShowType::kShowInactive:
       widget_->ShowInactive();
       break;
+  }
+
+  // Showing the widget can synchronously invoke native or observer callbacks
+  // that might destroy this animator or cancel the animation.
+  if (!weak_this || !IsFadingIn()) {
+    return;
   }
 
   SetBoundsForSliding(slide_distance, slide_direction);
@@ -67,7 +74,7 @@ void WidgetFadeAnimator::FadeOut(int slide_distance,
   // nothing to do. If the animation is close-on-hide, however, we should still
   // close the widget.
   if (!widget_->IsVisible()) {
-    DCHECK(!IsFadingIn());
+    CHECK(!IsFadingIn(), base::NotFatalUntil::M163);
     if (close_on_hide_) {
       widget_->Close();
     }

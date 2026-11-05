@@ -14,7 +14,6 @@
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ash/printing/enterprise/bulk_printers_calculator.h"
 #include "chrome/browser/ash/printing/enterprise/bulk_printers_calculator_factory.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -156,10 +155,10 @@ CalculatorsPoliciesBinder::CalculatorsPoliciesBinder(
       blocklist_name_(blocklist_name),
       allowlist_name_(allowlist_name),
       calculator_(calculator) {
-  DCHECK(access_mode_name);
-  DCHECK(blocklist_name);
-  DCHECK(allowlist_name);
-  DCHECK(calculator);
+  CHECK(access_mode_name, base::NotFatalUntil::M160);
+  CHECK(blocklist_name, base::NotFatalUntil::M160);
+  CHECK(allowlist_name, base::NotFatalUntil::M160);
+  CHECK(calculator, base::NotFatalUntil::M160);
 }
 
 CalculatorsPoliciesBinder::~CalculatorsPoliciesBinder() = default;

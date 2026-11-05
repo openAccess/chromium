@@ -49,7 +49,6 @@
 #include "third_party/blink/renderer/core/loader/modulescript/module_script_creation_params.h"
 #include "third_party/blink/renderer/core/loader/modulescript/module_script_fetch_request.h"
 #include "third_party/blink/renderer/core/loader/render_blocking_resource_manager.h"
-#include "third_party/blink/renderer/core/loader/url_matcher.h"
 #include "third_party/blink/renderer/core/loader/web_bundle/script_web_bundle.h"
 #include "third_party/blink/renderer/core/scheduler/task_attribution_util.h"
 #include "third_party/blink/renderer/core/script/cache_hint_attribute_value.h"
@@ -232,6 +231,17 @@ void ScriptLoader::Removed() {
 
 void ScriptLoader::DocumentBaseURLChanged() {
   if (GetScriptType() != ScriptTypeAtPrepare::kSpeculationRules) {
+    return;
+  }
+  // If the entire rule set failed to parse (which ShouldReportUMAForError()
+  // checks: kSourceIsNotJsonObject or kInvalidRulesetLevelTag), do not reparse
+  // it. Top-level parse errors only depend on the original source text and not
+  // the base URL, so reparsing would always fail with the same error and
+  // synchronously re-dispatch error events in AddSpeculationRuleSet() while
+  // EventDispatchForbiddenScope may be active (e.g. during <base> insertion or
+  // removal).
+  if (!speculation_rule_set_ ||
+      speculation_rule_set_->ShouldReportUMAForError()) {
     return;
   }
   // We reparse the original source text and generate a new SpeculationRuleSet
@@ -630,7 +640,7 @@ PendingScript* ScriptLoader::PrepareScript(
       !element_->IntegrityAttributeValue().empty()) {
     IntegrityMetadataSet metadata;
     SubresourceIntegrity::ParseIntegrityAttribute(
-        element_->IntegrityAttributeValue(), metadata, context_window);
+        element_->IntegrityAttributeValue(), metadata);
     if (!metadata.empty()) {
       UseCounter::Count(*context_window,
                         WebFeature::kSRIIntegrityAttributeOnInlineScript);
@@ -643,11 +653,10 @@ PendingScript* ScriptLoader::PrepareScript(
   // [CSP]</spec>
   if (!element_->HasSourceAttribute() &&
       (!element_->AllowInlineScriptForCSP(element_->GetNonceForElement(),
-                                          position.line_, source_text) ||
+                                          position, source_text) ||
        !SubresourceIntegrity::VerifyInlineIntegrity(
            element_->IntegrityAttributeValue(),
-           element_->SignatureAttributeValue(), source_text,
-           element_->GetExecutionContext()))) {
+           element_->SignatureAttributeValue(), source_text))) {
     return nullptr;
   }
 
@@ -680,8 +689,7 @@ PendingScript* ScriptLoader::PrepareScript(
   if (!integrity_attr.empty()) {
     IntegrityReport integrity_report;
     SubresourceIntegrity::ParseIntegrityAttribute(
-        integrity_attr, integrity_metadata, element_->GetExecutionContext(),
-        &integrity_report);
+        integrity_attr, integrity_metadata, &integrity_report);
     integrity_report.SendReports(element_->GetExecutionContext());
   }
 

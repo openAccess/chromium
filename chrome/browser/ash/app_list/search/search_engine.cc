@@ -31,6 +31,14 @@ void SearchEngine::AddProvider(std::unique_ptr<SearchProvider> provider) {
   providers_[provider->search_category()].push_back(std::move(provider));
 }
 
+void SearchEngine::InitializeProviders() {
+  for (const auto& [category, providers] : providers_) {
+    for (const auto& provider : providers) {
+      provider->Initialize();
+    }
+  }
+}
+
 void SearchEngine::StartSearch(const std::u16string& query,
                                SearchOptions search_options,
                                SearchResultsCallback callback) {
@@ -96,7 +104,7 @@ std::vector<SearchCategory> SearchEngine::GetAllSearchCategories() const {
 size_t SearchEngine::ReplaceProvidersForResultTypeForTest(
     ash::AppListSearchResultType result_type,
     std::unique_ptr<SearchProvider> new_provider) {
-  DCHECK_EQ(result_type, new_provider->ResultType());
+  CHECK_EQ(result_type, new_provider->ResultType(), base::NotFatalUntil::M160);
 
   size_t removed_providers = 0;
   for (auto& [category, providers] : providers_) {
@@ -108,7 +116,7 @@ size_t SearchEngine::ReplaceProvidersForResultTypeForTest(
   if (!removed_providers) {
     return 0u;
   }
-  DCHECK_EQ(1u, removed_providers);
+  CHECK_EQ(1u, removed_providers, base::NotFatalUntil::M160);
 
   AddProvider(std::move(new_provider));
   return removed_providers;

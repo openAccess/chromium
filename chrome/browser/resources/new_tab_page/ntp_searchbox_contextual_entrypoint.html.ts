@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {html} from '//resources/lit/v3_0/lit.rollup.js';
+import {html} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import type {NtpSearchboxElement} from './ntp_searchbox.js';
 
@@ -33,6 +33,8 @@ export function getHtml(this: NtpSearchboxElement) {
         .tabSuggestionsState="${this.tabSuggestionsState_}"
         .recentTabId="${this.recentTabId_}"
         .contextManagementInComposeboxEnabled="${this.contextManagementInComposeboxEnabled}"
+        .composeboxContextMenuTooltipsEnabled="${
+            this.composeboxContextMenuTooltipsEnabled}"
         ?show-context-menu-description="${!this.useCompactLayout_()}"
         .glifAnimationState="${this.contextMenuGlifAnimationState}"
         .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"

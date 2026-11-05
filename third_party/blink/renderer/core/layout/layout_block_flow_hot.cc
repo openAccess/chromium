@@ -20,12 +20,12 @@ bool LayoutBlockFlow::CreatesNewFormattingContext() const {
   if (IsInline() || IsFloatingOrOutOfFlowPositioned() || IsScrollContainer() ||
       IsFlexItem() || IsCustomItem() || IsDocumentElement() || IsGridItem() ||
       IsGridLanesItem() || IsWritingModeRoot() || IsMathItem() ||
-      StyleRef().Display() == EDisplay::kFlowRoot ||
-      StyleRef().Display() == EDisplay::kFlowRootListItem ||
+      Style().Display() == EDisplay::kFlowRoot ||
+      Style().Display() == EDisplay::kFlowRootListItem ||
       ShouldApplyPaintContainment() || ShouldApplyLayoutContainment() ||
-      StyleRef().IsContainerForSizeContainerQueries() ||
-      StyleRef().HasLineClamp() || StyleRef().SpecifiesColumns() ||
-      StyleRef().GetColumnSpan() == EColumnSpan::kAll) {
+      Style().IsContainerForSizeContainerQueries() || Style().HasLineClamp() ||
+      Style().SpecifiesColumns() ||
+      Style().GetColumnSpan() == EColumnSpan::kAll) {
     // The specs require this object to establish a new formatting context.
     return true;
   }
@@ -39,8 +39,9 @@ bool LayoutBlockFlow::CreatesNewFormattingContext() const {
   // https://drafts.csswg.org/css-align/#distribution-block
   // All values other than normal force the block container to establish an
   // independent formatting context.
-  if (StyleRef().AlignContent().GetPosition() != ContentPosition::kNormal ||
-      StyleRef().AlignContent().Distribution() !=
+  if (Style().AlignContent().GetComputedPosition() !=
+          ContentPosition::kNormal ||
+      Style().AlignContent().Distribution() !=
           ContentDistributionType::kDefault) {
     return true;
   }

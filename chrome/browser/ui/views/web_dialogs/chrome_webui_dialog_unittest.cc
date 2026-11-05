@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/views/web_dialogs/chrome_webui_dialog.h"
 
 #include <memory>
+#include <optional>
 
 #include "base/test/bind.h"
 #include "chrome/browser/ui/views/chrome_constrained_window_views_client.h"
@@ -17,7 +18,11 @@
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/display/display.h"
+#include "ui/display/screen.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/size.h"
 #include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/view.h"
@@ -222,6 +227,50 @@ TEST_F(ChromeWebUIDialogTest, AutoResizeClampsToMaxSize) {
   EXPECT_EQ(delegate->web_view()->GetPreferredSize(), gfx::Size(300, 300));
 }
 
+TEST_F(ChromeWebUIDialogTest, AutoResizeCapsRendererMaxToWorkArea) {
+  const gfx::Rect primary_work_area =
+      display::Screen::Get()->GetPrimaryDisplay().work_area();
+  ASSERT_FALSE(primary_work_area.IsEmpty());
+
+  WebDialogSpec spec;
+  spec.min_size = gfx::Size(kMinSize, kMinSize);
+  // Taller than the display.
+  spec.max_size = gfx::Size(615, primary_work_area.height() + 400);
+
+  std::unique_ptr<views::Widget> widget = CreateDialogWidget(spec);
+  auto* delegate = static_cast<ChromeWebUIDialog*>(widget->widget_delegate());
+
+  // The cap follows the work area of the display the widget is on.
+  const gfx::Rect work_area = widget->GetWorkAreaBoundsInScreen();
+  ASSERT_FALSE(work_area.IsEmpty());
+  ASSERT_LT(work_area.height(), spec.max_size.height());
+
+  // Content that overflows the display as well, so only the capped bounds can
+  // satisfy the reported size.
+  delegate->ResizeDueToAutoResize(nullptr,
+                                  gfx::Size(615, work_area.height() + 200));
+
+  const gfx::Size renderer_max = delegate->web_view()->AutoResizeMaxSize();
+  EXPECT_LT(renderer_max.height(), spec.max_size.height());
+  EXPECT_LE(renderer_max.height(), work_area.height());
+  // The renderer is never allowed to lay out taller than what the widget can
+  // show, so nothing is clipped without a scrollbar.
+  EXPECT_EQ(delegate->web_view()->GetPreferredSize(), renderer_max);
+}
+
+TEST_F(ChromeWebUIDialogTest, AutoResizeKeepsSpecMaxWhenItFitsTheDisplay) {
+  WebDialogSpec spec;
+  spec.min_size = gfx::Size(kMinSize, kMinSize);
+  spec.max_size = gfx::Size(300, 300);
+
+  std::unique_ptr<views::Widget> widget = CreateDialogWidget(spec);
+  auto* delegate = static_cast<ChromeWebUIDialog*>(widget->widget_delegate());
+
+  delegate->ResizeDueToAutoResize(nullptr, gfx::Size(200, 200));
+
+  EXPECT_EQ(gfx::Size(300, 300), delegate->web_view()->AutoResizeMaxSize());
+}
+
 TEST_F(ChromeWebUIDialogTest, AutoResizeWithUnboundedMaxSizeIsContentDriven) {
   // Sizes stay well inside the 800x600 test display so the work-area clamp is
   // not what this measures.
@@ -353,11 +402,12 @@ TEST_F(ChromeWebUIDialogTest, AddNewContentsInvokesCallback) {
   spec.max_size = gfx::Size(kMaxSize, kMaxSize);
 
   GURL observed_url;
-  WindowOpenDisposition observed_disposition = WindowOpenDisposition::UNKNOWN;
+  ui::mojom::WindowOpenDisposition observed_disposition =
+      ui::mojom::WindowOpenDisposition::kUnknown;
   spec.add_new_contents_callback = base::BindLambdaForTesting(
       [&](content::WebContents* source,
           std::unique_ptr<content::WebContents> new_contents,
-          const GURL& target_url, WindowOpenDisposition disposition,
+          const GURL& target_url, ui::mojom::WindowOpenDisposition disposition,
           const blink::mojom::WindowFeatures& window_features,
           bool user_gesture) -> content::WebContents* {
         observed_url = target_url;
@@ -371,12 +421,13 @@ TEST_F(ChromeWebUIDialogTest, AddNewContentsInvokesCallback) {
   blink::mojom::WindowFeatures window_features;
   delegate->AddNewContents(/*source=*/nullptr, /*new_contents=*/nullptr,
                            kTargetUrl,
-                           WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                           ui::mojom::WindowOpenDisposition::kNewForegroundTab,
                            window_features, /*user_gesture=*/true,
                            /*was_blocked=*/nullptr);
 
   EXPECT_EQ(observed_url, kTargetUrl);
-  EXPECT_EQ(observed_disposition, WindowOpenDisposition::NEW_FOREGROUND_TAB);
+  EXPECT_EQ(observed_disposition,
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab);
 }
 
 TEST_F(ChromeWebUIDialogTest, AddNewContentsWithoutCallbackDropsRequest) {
@@ -388,12 +439,13 @@ TEST_F(ChromeWebUIDialogTest, AddNewContentsWithoutCallbackDropsRequest) {
   auto* delegate = static_cast<ChromeWebUIDialog*>(widget->widget_delegate());
 
   blink::mojom::WindowFeatures window_features;
-  EXPECT_EQ(delegate->AddNewContents(
-                /*source=*/nullptr, /*new_contents=*/nullptr,
-                GURL("https://example.test/"),
-                WindowOpenDisposition::NEW_FOREGROUND_TAB, window_features,
-                /*user_gesture=*/true, /*was_blocked=*/nullptr),
-            nullptr);
+  EXPECT_EQ(
+      delegate->AddNewContents(
+          /*source=*/nullptr, /*new_contents=*/nullptr,
+          GURL("https://example.test/"),
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab, window_features,
+          /*user_gesture=*/true, /*was_blocked=*/nullptr),
+      nullptr);
 }
 
 TEST_F(ChromeWebUIDialogTest, EscShouldCancelDialogOverride) {

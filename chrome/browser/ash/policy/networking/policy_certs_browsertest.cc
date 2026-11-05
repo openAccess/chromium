@@ -32,7 +32,6 @@
 #include "chrome/browser/ash/policy/login/login_policy_test_base.h"
 #include "chrome/browser/ash/policy/login/signin_profile_extensions_policy_test_base.h"
 #include "chrome/browser/ash/policy/test_support/embedded_policy_test_server_mixin.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/net/nss_service.h"
 #include "chrome/browser/net/nss_service_factory.h"
@@ -41,12 +40,11 @@
 #include "chrome/browser/policy/profile_policy_connector_builder.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/webui/ash/login/gaia_screen_handler.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/ash/components/network/network_cert_loader.h"
 #include "chromeos/ash/components/network/onc/onc_certificate_importer.h"
 #include "chromeos/ash/components/network/onc/onc_certificate_importer_impl.h"
@@ -61,9 +59,6 @@
 #include "components/policy/core/common/policy_switches.h"
 #include "components/policy/policy_constants.h"
 #include "components/policy/proto/cloud_policy.pb.h"
-#include "components/session_manager/core/session_manager.h"
-#include "components/user_manager/user.h"
-#include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_type.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -500,13 +495,6 @@ class PolicyProvidedCertsOnUserSessionInitTest : public LoginPolicyTestBase {
     std::string user_policy_blob = GetTestCertsFileContents(kRootCaCertOnc);
     policy->mutable_opennetworkconfiguration()->set_value(user_policy_blob);
   }
-
-  Profile* active_user_profile() {
-    const user_manager::User* const user =
-        user_manager::UserManager::Get()->GetActiveUser();
-    Profile* const profile = ash::ProfileHelper::Get()->GetProfileByUser(user);
-    return profile;
-  }
 };
 
 // Verifies that the policy-provided trust root is active as soon as the user
@@ -525,7 +513,8 @@ IN_PROC_BROWSER_TEST_F(PolicyProvidedCertsOnUserSessionInitTest,
   TriggerLogIn();
 
   ash::test::WaitForPrimaryUserSessionStart();
-  EXPECT_EQ(net::OK, VerifyTestServerCert(active_user_profile(), server_cert));
+  EXPECT_EQ(net::OK,
+            VerifyTestServerCert(GetProfileForActiveUser(), server_cert));
 }
 
 // Testing policy-provided client cert import.
@@ -634,7 +623,7 @@ class PolicyProvidedCertsForSigninExtensionTest
     SigninProfileExtensionsPolicyTestBase::SetUpOnMainThread();
 
     signin_profile_ = GetInitialProfile();
-    ASSERT_TRUE(ash::ProfileHelper::IsSigninProfile(signin_profile_));
+    ASSERT_TRUE(ash::IsSigninBrowserContext(signin_profile_));
 
     extensions::ExtensionRegistry* extension_registry =
         extensions::ExtensionRegistry::Get(signin_profile_);
@@ -652,13 +641,18 @@ class PolicyProvidedCertsForSigninExtensionTest
     extension_2_observer.WaitForExtensionLoaded();
   }
 
+  void TearDownOnMainThread() override {
+    signin_profile_ = nullptr;
+    SigninProfileExtensionsPolicyTestBase::TearDownOnMainThread();
+  }
+
   content::StoragePartition* GetStoragePartitionForSigninExtension(
       const std::string& extension_id) {
     return extensions::util::GetStoragePartitionForExtensionId(
         extension_id, signin_profile_, /*can_create=*/false);
   }
 
-  raw_ptr<Profile, DanglingUntriaged> signin_profile_ = nullptr;
+  raw_ptr<Profile> signin_profile_ = nullptr;
   scoped_refptr<net::X509Certificate> server_cert_;
 
  private:

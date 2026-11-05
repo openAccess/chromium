@@ -6,8 +6,8 @@
 
 #include <memory>
 
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/segmentation_platform/embedder/input_delegate/tab_session_source.h"
@@ -15,12 +15,13 @@
 #include "components/segmentation_platform/internal/execution/processing/feature_processor_state.h"
 #include "components/sync_sessions/mock_session_sync_service.h"
 #include "components/sync_sessions/session_sync_service.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace segmentation_platform::processing {
 
@@ -54,7 +55,7 @@ class LocalTabHandlerTest : public InProcessBrowserTest {
   content::WebContents* AddTab() {
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), GURL("about:blank"),
-        WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
     return browser()->tab_strip_model()->GetWebContentsAt(

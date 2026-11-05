@@ -115,8 +115,9 @@ bool CheckContentSecurityPolicyForPreload(
     const network::mojom::LinkHeaderPtr& link,
     const std::vector<network::mojom::ContentSecurityPolicyPtr>&
         content_security_policies) {
-  DCHECK(link->rel == network::mojom::LinkRelAttribute::kPreload ||
-         link->rel == network::mojom::LinkRelAttribute::kModulePreload);
+  CHECK(link->rel == network::mojom::LinkRelAttribute::kPreload ||
+            link->rel == network::mojom::LinkRelAttribute::kModulePreload,
+        base::NotFatalUntil::M160);
 
   network::mojom::CSPDirectiveName directive =
       LinkAsAttributeToCSPDirective(link->as, link->rel);
@@ -277,7 +278,7 @@ class NavigationEarlyHintsManager::PreloadURLLoaderClient
   // mojo::DataPipeDrainer::Client overrides:
   void OnDataAvailable(base::span<const uint8_t> data) override {}
   void OnDataComplete() override {
-    DCHECK(response_body_drainer_);
+    CHECK(response_body_drainer_, base::NotFatalUntil::M160);
     response_body_drainer_.reset();
     MaybeCompletePreload();
   }
@@ -404,6 +405,11 @@ NavigationEarlyHintsManager::~NavigationEarlyHintsManager() = default;
 void NavigationEarlyHintsManager::HandleEarlyHints(
     network::mojom::EarlyHintsPtr early_hints,
     const network::ResourceRequest& request_for_navigation) {
+  // Only handle Early Hints for HTTP/HTTPS navigations.
+  if (!request_for_navigation.url.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
+
   // Ignore the second and subsequent responses to avoid situations where
   // policies such as CSP and connection allowlist are inconsistent among the
   // first and following responses. This behavior is specified by the step 19.5
@@ -480,7 +486,7 @@ bool NavigationEarlyHintsManager::HasInflightPreloads() const {
 
 void NavigationEarlyHintsManager::WaitForPreloadsFinishedForTesting(
     base::OnceCallback<void(PreloadedResources)> callback) {
-  DCHECK(!preloads_completion_callback_for_testing_);
+  CHECK(!preloads_completion_callback_for_testing_, base::NotFatalUntil::M160);
   if (inflight_preloads_.empty()) {
     std::move(callback).Run(preloaded_resources_);
   } else {
@@ -490,8 +496,8 @@ void NavigationEarlyHintsManager::WaitForPreloadsFinishedForTesting(
 
 void NavigationEarlyHintsManager::SetNetworkContextForTesting(
     network::mojom::NetworkContext* network_context) {
-  DCHECK(!network_context_for_testing_);
-  DCHECK(network_context);
+  CHECK(!network_context_for_testing_, base::NotFatalUntil::M160);
+  CHECK(network_context, base::NotFatalUntil::M160);
   network_context_for_testing_ = network_context;
 }
 
@@ -542,8 +548,10 @@ void NavigationEarlyHintsManager::MaybePreloadHintedResource(
     const std::vector<network::mojom::ContentSecurityPolicyPtr>&
         content_security_policies,
     net::ReferrerPolicy referrer_policy) {
-  DCHECK(request_for_navigation.is_outermost_main_frame);
-  DCHECK(request_for_navigation.url.SchemeIsHTTPOrHTTPS());
+  CHECK(request_for_navigation.is_outermost_main_frame,
+        base::NotFatalUntil::M160);
+  CHECK(request_for_navigation.url.SchemeIsHTTPOrHTTPS(),
+        base::NotFatalUntil::M160);
 
   // Step 2. If options's destination is not a destination, then return null.
   // https://html.spec.whatwg.org/multipage/semantics.html#create-a-link-request
@@ -583,6 +591,10 @@ void NavigationEarlyHintsManager::MaybePreloadHintedResource(
   request.credentials_mode = CalculateCredentialsMode(link);
   request.is_outermost_main_frame =
       request_for_navigation.is_outermost_main_frame;
+  // Preloads are part of the navigation's page load, so they share its DevTools
+  // throttling profile. DevTools network emulation then applies to them as it
+  // does to the navigation and the document's own requests.
+  request.throttling_profile_id = request_for_navigation.throttling_profile_id;
 
   blink::network_utils::SetAcceptHeader(request.headers, request.destination);
 
@@ -619,8 +631,8 @@ bool NavigationEarlyHintsManager::ShouldHandleResourceHints(
 void NavigationEarlyHintsManager::OnPreloadComplete(
     const GURL& url,
     const PreloadedResource& result) {
-  DCHECK(inflight_preloads_.contains(url));
-  DCHECK(!preloaded_resources_.contains(url));
+  CHECK(inflight_preloads_.contains(url), base::NotFatalUntil::M160);
+  CHECK(!preloaded_resources_.contains(url), base::NotFatalUntil::M160);
   preloaded_resources_[url] = result;
   inflight_preloads_.erase(url);
 

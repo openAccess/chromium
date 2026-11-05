@@ -4,8 +4,9 @@
 
 #import "ios/chrome/browser/policy/model/cloud/user_policy_signin_service_factory.h"
 
+#import <utility>
+
 #import "base/memory/ref_counted.h"
-#import "base/no_destructor.h"
 #import "components/policy/core/browser/browser_policy_connector.h"
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/pref_registry/pref_registry_syncable.h"
@@ -22,34 +23,20 @@
 
 namespace policy {
 
-UserPolicySigninServiceFactory::UserPolicySigninServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("UserPolicySigninService",
-                                    ServiceCreation::kCreateWithProfile,
-                                    TestingCreation::kNoServiceForTests) {
+UserPolicySigninServiceFactory::UserPolicySigninServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "UserPolicySigninService",
+                                         ServiceCreation::kCreateWithProfile,
+                                         TestingCreation::kNoServiceForTests) {
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(enterprise::ProfileIdServiceFactoryIOS::GetInstance());
   DependsOn(
       enterprise_groups::EnterpriseGroupsProfileHandlerFactory::GetInstance());
 }
 
-UserPolicySigninServiceFactory::~UserPolicySigninServiceFactory() = default;
-
-// static
-UserPolicySigninService* UserPolicySigninServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<UserPolicySigninService>(
-      profile, /*create=*/true);
-}
-
-// static
-UserPolicySigninServiceFactory* UserPolicySigninServiceFactory::GetInstance() {
-  static base::NoDestructor<UserPolicySigninServiceFactory> instance;
-  return instance.get();
-}
-
 std::unique_ptr<KeyedService>
 UserPolicySigninServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   BrowserPolicyConnector* connector =
       GetApplicationContext()->GetBrowserPolicyConnector();
   // Consistency check to make sure that the BrowserPolicyConnector is available
@@ -63,13 +50,13 @@ UserPolicySigninServiceFactory::BuildServiceInstanceFor(
   DCHECK(device_management_service);
 
   return std::make_unique<UserPolicySigninService>(
-      profile->GetPrefs(), GetApplicationContext()->GetLocalState(),
+      profile.GetPrefs(), GetApplicationContext()->GetLocalState(),
       enterprise::ProfileIdServiceFactoryIOS::GetForProfile(profile),
-      device_management_service, profile->GetUserCloudPolicyManager(),
+      device_management_service, profile.GetUserCloudPolicyManager(),
       IdentityManagerFactory::GetForProfile(profile),
       enterprise_groups::EnterpriseGroupsProfileHandlerFactory::GetForProfile(
           profile),
-      profile->GetSharedURLLoaderFactory());
+      profile.GetSharedURLLoaderFactory());
 }
 
 void UserPolicySigninServiceFactory::RegisterProfilePrefs(

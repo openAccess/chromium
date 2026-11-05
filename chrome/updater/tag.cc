@@ -4,10 +4,11 @@
 
 #include "chrome/updater/tag.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <array>
-#include <cstdint>
-#include <map>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -17,6 +18,7 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/containers/span.h"
 #include "base/containers/span_reader.h"
 #include "base/files/file.h"
@@ -25,7 +27,7 @@
 #include "base/files/memory_mapped_file.h"
 #include "base/logging.h"
 #include "base/memory/raw_span.h"
-#include "base/no_destructor.h"
+#include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_number_conversions.h"
@@ -47,23 +49,6 @@
 
 namespace updater::tagging {
 namespace {
-
-// These constants are conceptually cross-platform, but only currently used
-// on Mac.
-#if BUILDFLAG(IS_MAC)
-// Maximum length for the string representation of a tag that can be written
-// into a binary. This is the amount of space that must be reserved in a binary
-// for dynamic tagging, in a file format where tags can only be patched in place
-// rather than inserted, immediately after the magic signature and size bytes.
-// Because binary tag format includes an explicit tag size, no null terminator
-// is included in this count.
-constexpr size_t kMaxTagStringBytes = 8192;
-
-// Maximum length for the binary representation of a tag, including its magic
-// signature and length bytes.
-constexpr size_t kMaxBinaryTagBytes =
-    kMaxTagStringBytes + 2 + kTagMagicUtf8.size();
-#endif  // BUILDFLAG(IS_MAC)
 
 // Character that is disallowed from appearing in the tag.
 constexpr char kDisallowedCharInTag = '/';
@@ -102,7 +87,7 @@ std::optional<bool> ParseBool(std::string_view str) {
 struct CaseInsensitiveASCIICompare {
  public:
   template <typename StringT>
-  bool operator()(const StringT& x, const StringT& y) const {
+  constexpr bool operator()(const StringT& x, const StringT& y) const {
     return base::CompareCaseInsensitiveASCII(x, y) > 0;
   }
 };
@@ -235,27 +220,24 @@ ErrorCode ParseEnrollmentToken(std::string_view value, TagArgs& args) {
 using ParseGlobalAttributeFunPtr = ErrorCode (*)(std::string_view value,
                                                  TagArgs& args);
 
-using GlobalParseTable = std::map<std::string_view,
-                                  ParseGlobalAttributeFunPtr,
-                                  CaseInsensitiveASCIICompare>;
-
-const GlobalParseTable& GetTable() {
-  static const base::NoDestructor<GlobalParseTable> instance{
-      {{kTagArgBundleName, &ParseBundleName},
-       {kTagArgInstallationId, &ParseInstallationId},
-       {kTagArgBrandCode, &ParseBrandCode},
-       {kTagArgClientId, &ParseClientId},
-       {kTagArgOmahaExperimentLabels, &ParseOmahaExperimentLabels},
-       {kTagArgReferralId, &ParseReferralId},
-       {kTagArgBrowserType, &ParseBrowserType},
-       {kTagArgLanguage, &ParseLanguage},
-       {kTagArgFlighting, &ParseFlighting},
-       {kTagArgUsageStats, &ParseUsageStats},
-       {kTagArgAppId, &ParseAppId},
-       {kTagArgRuntimeMode, &ParseRuntimeMode},
-       {kTagArgEnrollmentToken, &ParseEnrollmentToken}}};
-  return *instance;
-}
+constexpr auto kGlobalParseTable =
+    base::MakeFixedFlatMap<std::string_view,
+                           ParseGlobalAttributeFunPtr,
+                           CaseInsensitiveASCIICompare>({
+        {kTagArgBundleName, &ParseBundleName},
+        {kTagArgInstallationId, &ParseInstallationId},
+        {kTagArgBrandCode, &ParseBrandCode},
+        {kTagArgClientId, &ParseClientId},
+        {kTagArgOmahaExperimentLabels, &ParseOmahaExperimentLabels},
+        {kTagArgReferralId, &ParseReferralId},
+        {kTagArgBrowserType, &ParseBrowserType},
+        {kTagArgLanguage, &ParseLanguage},
+        {kTagArgFlighting, &ParseFlighting},
+        {kTagArgUsageStats, &ParseUsageStats},
+        {kTagArgAppId, &ParseAppId},
+        {kTagArgRuntimeMode, &ParseRuntimeMode},
+        {kTagArgEnrollmentToken, &ParseEnrollmentToken},
+    });
 
 }  // namespace global_attributes
 
@@ -310,20 +292,17 @@ ErrorCode ParseUntrustedData(std::string_view value, AppArgs& args) {
 using ParseAppAttributeFunPtr = ErrorCode (*)(std::string_view value,
                                               AppArgs& args);
 
-using AppParseTable = std::
-    map<std::string_view, ParseAppAttributeFunPtr, CaseInsensitiveASCIICompare>;
-
-const AppParseTable& GetTable() {
-  static const base::NoDestructor<AppParseTable> instance{{
-      {kAppArgAdditionalParameters, &ParseAdditionalParameters},
-      {kAppArgExperimentLabels, &ParseExperimentLabels},
-      {kAppArgAppName, &ParseAppName},
-      {kTagArgNeedsAdmin, &ParseNeedsAdmin},
-      {kAppArgInstallDataIndex, &ParseInstallDataIndex},
-      {kAppArgUntrustedData, &ParseUntrustedData},
-  }};
-  return *instance;
-}
+constexpr auto kAppParseTable =
+    base::MakeFixedFlatMap<std::string_view,
+                           ParseAppAttributeFunPtr,
+                           CaseInsensitiveASCIICompare>({
+        {kAppArgAdditionalParameters, &ParseAdditionalParameters},
+        {kAppArgExperimentLabels, &ParseExperimentLabels},
+        {kAppArgAppName, &ParseAppName},
+        {kTagArgNeedsAdmin, &ParseNeedsAdmin},
+        {kAppArgInstallDataIndex, &ParseInstallDataIndex},
+        {kAppArgUntrustedData, &ParseUntrustedData},
+    });
 
 }  // namespace app_attributes
 
@@ -343,16 +322,12 @@ ErrorCode ParseNeedsAdmin(std::string_view value, RuntimeModeArgs& args) {
 using ParseRuntimeModeAttributeFunPtr = ErrorCode (*)(std::string_view value,
                                                       RuntimeModeArgs& args);
 
-using RuntimeModeParseTable = std::map<std::string_view,
-                                       ParseRuntimeModeAttributeFunPtr,
-                                       CaseInsensitiveASCIICompare>;
-
-const RuntimeModeParseTable& GetTable() {
-  static const base::NoDestructor<RuntimeModeParseTable> instance{{
-      {kTagArgNeedsAdmin, &ParseNeedsAdmin},
-  }};
-  return *instance;
-}
+constexpr auto kRuntimeModeParseTable =
+    base::MakeFixedFlatMap<std::string_view,
+                           ParseRuntimeModeAttributeFunPtr,
+                           CaseInsensitiveASCIICompare>({
+        {kTagArgNeedsAdmin, &ParseNeedsAdmin},
+    });
 
 }  // namespace runtime_mode_attributes
 
@@ -403,17 +378,13 @@ using ParseInstallerDataAttributeFunPtr =
                   TagArgs& args,
                   std::optional<size_t>& current_app_index);
 
-using InstallerDataParseTable = std::map<std::string_view,
-                                         ParseInstallerDataAttributeFunPtr,
-                                         CaseInsensitiveASCIICompare>;
-
-const InstallerDataParseTable& GetTable() {
-  static const base::NoDestructor<InstallerDataParseTable> instance{{
-      {kTagArgAppId, &FindAppIdInTagArgs},
-      {kAppArgInstallerData, &ParseInstallerData},
-  }};
-  return *instance;
-}
+constexpr auto kInstallerDataParseTable =
+    base::MakeFixedFlatMap<std::string_view,
+                           ParseInstallerDataAttributeFunPtr,
+                           CaseInsensitiveASCIICompare>({
+        {kTagArgAppId, &FindAppIdInTagArgs},
+        {kAppArgInstallerData, &ParseInstallerData},
+    });
 
 }  // namespace installer_data_attributes
 
@@ -465,36 +436,35 @@ std::vector<Attribute> Split(std::string_view query_string,
 
 // Parses global and app-specific attributes from |tag|.
 ErrorCode ParseTag(std::string_view tag, TagArgs& args) {
-  const auto& global_func_lookup_table = global_attributes::GetTable();
-  const auto& app_func_lookup_table = app_attributes::GetTable();
-  const auto& runtime_mode_func_lookup_table =
-      runtime_mode_attributes::GetTable();
-
   const std::vector<std::pair<std::string, std::string>> attributes =
       query_string::Split(tag);
   for (const auto& [name, value] : attributes) {
     // Attribute names are only ASCII, so no i18n case folding needed.
-    if (global_func_lookup_table.contains(name)) {
+    if (const auto global_it = global_attributes::kGlobalParseTable.find(name);
+        global_it != global_attributes::kGlobalParseTable.end()) {
       if (value.empty()) {
         return ErrorCode::kAttributeMustHaveValue;
       }
 
-      const ErrorCode result = global_func_lookup_table.at(name)(value, args);
+      const ErrorCode result = global_it->second(value, args);
       if (result != ErrorCode::kSuccess) {
         return result;
       }
-    } else if ((runtime_mode_func_lookup_table.contains(name)) &&
-               args.runtime_mode) {
+    } else if (const auto runtime_it =
+                   runtime_mode_attributes::kRuntimeModeParseTable.find(name);
+               args.runtime_mode &&
+               runtime_it !=
+                   runtime_mode_attributes::kRuntimeModeParseTable.end()) {
       if (value.empty()) {
         return ErrorCode::kAttributeMustHaveValue;
       }
 
-      const ErrorCode result =
-          runtime_mode_func_lookup_table.at(name)(value, *args.runtime_mode);
+      const ErrorCode result = runtime_it->second(value, *args.runtime_mode);
       if (result != ErrorCode::kSuccess) {
         return result;
       }
-    } else if (app_func_lookup_table.contains(name)) {
+    } else if (const auto app_it = app_attributes::kAppParseTable.find(name);
+               app_it != app_attributes::kAppParseTable.end()) {
       if (args.apps.empty()) {
         return ErrorCode::kApp_AppIdNotSpecified;
       }
@@ -504,8 +474,7 @@ ErrorCode ParseTag(std::string_view tag, TagArgs& args) {
       }
 
       AppArgs& current_app = args.apps.back();
-      const ErrorCode result =
-          app_func_lookup_table.at(name)(value, current_app);
+      const ErrorCode result = app_it->second(value, current_app);
       if (result != ErrorCode::kSuccess) {
         return result;
       }
@@ -539,13 +508,13 @@ ErrorCode ParseAppInstallerDataArgs(std::string_view app_installer_data_args,
       return ErrorCode::kAttributeMustHaveValue;
     }
 
-    const auto& func_lookup_table = installer_data_attributes::GetTable();
-    if (!func_lookup_table.contains(name)) {
+    const auto it =
+        installer_data_attributes::kInstallerDataParseTable.find(name);
+    if (it == installer_data_attributes::kInstallerDataParseTable.end()) {
       return ErrorCode::kUnrecognizedName;
     }
 
-    const ErrorCode result =
-        func_lookup_table.at(name)(value, args, current_app_index);
+    const ErrorCode result = it->second(value, args, current_app_index);
     if (result != ErrorCode::kSuccess) {
       return result;
     }
@@ -820,12 +789,8 @@ std::unique_ptr<tagging::BinaryInterface> CreateBinary(
 }
 
 std::string BinaryReadTagString(const base::FilePath& file) {
-  if (file.MatchesExtension(FILE_PATH_LITERAL(".pkg"))) {
-    return ReadTagFromPkg(ReadFileTail(file));
-  }
-
   // For MSI files, simply search the tail of the file for the tag.
-  if (!file.MatchesExtension(FILE_PATH_LITERAL(".exe"))) {
+  if (file.MatchesExtension(FILE_PATH_LITERAL(".msi"))) {
     return ParseTagBuffer(ReadFileTail(file));
   }
 
@@ -843,7 +808,7 @@ std::string BinaryReadTagString(const base::FilePath& file) {
 
   std::optional<std::vector<uint8_t>> tag = bin->tag();
   if (!tag) {
-    LOG(ERROR) << __func__ << ": No superfluous certificate in file: " << file;
+    LOG(ERROR) << __func__ << ": No tag in file: " << file;
     return {};
   }
 
@@ -883,6 +848,12 @@ bool BinaryWriteTag(const base::FilePath& in_file,
 
   // Validate the tag string, if any.
   if (!tag_string.empty()) {
+    if (tag_string.size() > kMaxTagStringBytes) {
+      LOG(ERROR) << __func__
+                 << ": Tag string is too long: " << tag_string.size() << " > "
+                 << kMaxTagStringBytes;
+      return false;
+    }
     tagging::TagArgs tag_args;
     const tagging::ErrorCode error = tagging::Parse(tag_string, {}, tag_args);
     if (error != tagging::ErrorCode::kSuccess) {
@@ -895,13 +866,9 @@ bool BinaryWriteTag(const base::FilePath& in_file,
   std::vector<uint8_t> tag_contents = tagging::GetTagFromTagString(tag_string);
 
   if (padded_length > 0) {
-    size_t new_size = 0;
-    if (base::CheckAdd(tag_contents.size(), padded_length)
-            .AssignIfValid(&new_size)) {
-      tag_contents.resize(new_size);
-    } else {
-      LOG(ERROR) << __func__ << "Failed to pad the tag contents.";
-      return false;
+    size_t padded_size = static_cast<size_t>(padded_length);
+    if (tag_contents.size() < padded_size) {
+      tag_contents.resize(padded_size);
     }
   }
 

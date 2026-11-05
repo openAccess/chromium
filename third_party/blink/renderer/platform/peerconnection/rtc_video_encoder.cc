@@ -6,24 +6,41 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <numeric>
+#include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/read_only_shared_memory_region.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/memory/shared_memory_mapping.h"
 #include "base/memory/unsafe_shared_memory_region.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/sequence_checker.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
@@ -35,8 +52,10 @@
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "gpu/command_buffer/client/client_shared_image.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
+#include "gpu/command_buffer/common/shared_image_usage.h"
 #include "media/base/bitrate.h"
 #include "media/base/bitstream_buffer.h"
+#include "media/base/encoder_status.h"
 #include "media/base/media_switches.h"
 #include "media/base/media_util.h"
 #include "media/base/platform_features.h"
@@ -44,7 +63,9 @@
 #include "media/base/svc_scalability_mode.h"
 #include "media/base/video_bitrate_allocation.h"
 #include "media/base/video_codecs.h"
+#include "media/base/video_encoder_metrics_provider.h"
 #include "media/base/video_frame.h"
+#include "media/base/video_types.h"
 #include "media/base/video_util.h"
 #include "media/capture/capture_switches.h"
 #include "media/media_buildflags.h"
@@ -53,31 +74,54 @@
 #include "media/video/gpu_video_accelerator_factories.h"
 #include "media/video/video_encode_accelerator.h"
 #include "media/webrtc/webrtc_features.h"
+#include "third_party/abseil-cpp/absl/container/inlined_vector.h"
 #include "third_party/blink/public/common/buildflags.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/allow_discouraged_type.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/web_graphics_context_3d_video_frame_pool.h"
+#include "third_party/blink/renderer/platform/peerconnection/h265_parameter_sets_tracker.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_video_encoder_media_log.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/webrtc/convert_to_webrtc_video_frame_buffer.h"
 #include "third_party/blink/renderer/platform/webrtc/webrtc_video_frame_adapter.h"
 #include "third_party/blink/renderer/platform/webrtc/webrtc_video_utils.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_gfx.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 #include "third_party/libyuv/include/libyuv.h"
+#include "third_party/libyuv/include/libyuv/convert_from.h"
+#include "third_party/libyuv/include/libyuv/scale.h"
+#include "third_party/webrtc/api/make_ref_counted.h"
+#include "third_party/webrtc/api/scoped_refptr.h"
+#include "third_party/webrtc/api/video/encoded_image.h"
+#include "third_party/webrtc/api/video/video_bitrate_allocation.h"
+#include "third_party/webrtc/api/video/video_codec_constants.h"
+#include "third_party/webrtc/api/video/video_codec_type.h"
+#include "third_party/webrtc/api/video/video_content_type.h"
+#include "third_party/webrtc/api/video/video_frame.h"
 #include "third_party/webrtc/api/video/video_frame_buffer.h"
+#include "third_party/webrtc/api/video/video_frame_type.h"
+#include "third_party/webrtc/api/video_codecs/scalability_mode.h"
+#include "third_party/webrtc/api/video_codecs/spatial_layer.h"
+#include "third_party/webrtc/api/video_codecs/video_codec.h"
+#include "third_party/webrtc/api/video_codecs/video_encoder.h"
+#include "third_party/webrtc/common_video/generic_frame_descriptor/generic_frame_info.h"
 #include "third_party/webrtc/modules/video_coding/codecs/h264/include/h264.h"
+#include "third_party/webrtc/modules/video_coding/codecs/h264/include/h264_globals.h"
+#include "third_party/webrtc/modules/video_coding/codecs/interface/common_constants.h"
+#include "third_party/webrtc/modules/video_coding/codecs/vp9/include/vp9_globals.h"
+#include "third_party/webrtc/modules/video_coding/include/video_codec_interface.h"
 #include "third_party/webrtc/modules/video_coding/include/video_error_codes.h"
 #include "third_party/webrtc/modules/video_coding/svc/create_scalability_structure.h"
+#include "third_party/webrtc/modules/video_coding/svc/scalable_video_controller.h"
+#include "third_party/webrtc/modules/video_coding/svc/simulcast_to_svc_converter.h"
 #include "third_party/webrtc/rtc_base/time_utils.h"
+#include "ui/gfx/buffer_types.h"
 
 namespace {
 
@@ -192,15 +236,7 @@ class RefCountedWritableSharedMemoryMapping
   RefCountedWritableSharedMemoryMapping& operator=(
       const RefCountedWritableSharedMemoryMapping&) = delete;
 
-  const base::span<const uint8_t> AsSpan() const { return mapping_; }
-  const base::span<uint8_t> AsSpan() { return mapping_; }
-
-  const unsigned char* front() const {
-    return static_cast<const unsigned char*>(mapping_.memory());
-  }
-  unsigned char* front() {
-    return static_cast<unsigned char*>(mapping_.memory());
-  }
+  base::span<const uint8_t> AsSpan() const { return mapping_; }
   size_t size() const { return mapping_.size(); }
 
  private:
@@ -224,7 +260,7 @@ class EncodedDataWrapper : public webrtc::EncodedImageBufferInterface {
     DCHECK(reuse_buffer_callback_);
     std::move(reuse_buffer_callback_).Run();
   }
-  const uint8_t* data() const override { return mapping_->front(); }
+  const uint8_t* data() const override { return mapping_->AsSpan().data(); }
   size_t size() const override { return size_; }
 
  private:
@@ -345,6 +381,17 @@ bool IsValidTemporalSVC(
       return false;
   }
   return (num_temporal_layers <= 3);
+}
+
+void CopyColorSpaceFromNativeFrame(const webrtc::VideoFrameBuffer& from_buffer,
+                                   scoped_refptr<media::VideoFrame> to_frame) {
+  if (from_buffer.type() != webrtc::VideoFrameBuffer::Type::kNative) {
+    LOG(ERROR) << "Color space information lost because frame is not kNative";
+    return;
+  }
+  const blink::WebRtcVideoFrameAdapterInterface* frame_adapter =
+      static_cast<const blink::WebRtcVideoFrameAdapterInterface*>(&from_buffer);
+  to_frame->set_color_space(frame_adapter->getMediaVideoFrame()->ColorSpace());
 }
 
 }  // namespace
@@ -608,11 +655,28 @@ bool IsZeroCopyEnabled(webrtc::VideoContentType content_type) {
   if (content_type == webrtc::VideoContentType::SCREENSHARE) {
     return false;
   }
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kDisableVideoCaptureUseGpuMemoryBuffer)) {
+    return false;
+  }
+#if BUILDFLAG(IS_MAC)
+  if (base::FeatureList::IsEnabled(features::kWebRtcMacSharedImageEncode)) {
+    return true;
+  }
+#endif
   // Zero copy video capture from other sources (e.g. camera).
-  return !base::CommandLine::ForCurrentProcess()->HasSwitch(
-             switches::kDisableVideoCaptureUseGpuMemoryBuffer) &&
-         base::CommandLine::ForCurrentProcess()->HasSwitch(
-             switches::kVideoCaptureUseGpuMemoryBuffer);
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kVideoCaptureUseGpuMemoryBuffer);
+}
+
+bool ShouldCheckIncomingFrameStorage() {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
+  return true;
+#elif BUILDFLAG(IS_MAC)
+  return base::FeatureList::IsEnabled(features::kWebRtcMacSharedImageEncode);
+#else
+  return false;
+#endif
 }
 
 bool UseSoftwareForLowResolution(const webrtc::VideoCodecType codec,
@@ -1174,11 +1238,11 @@ void RTCVideoEncoder::Impl::Enqueue(FrameChunk frame_chunk) {
     return;
   }
 
-// On Windows and Android it is possible that RtcVideoEncoder is configured to
-// only accept native inputs, but the incoming frame is not backed by
-// GpuMemoryBuffer and is not a black frame.
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
-  {
+  // On Windows, Android, and macOS (when kWebRtcMacSharedImageEncode is
+  // enabled), it is possible that RTCVideoEncoder is configured to accept
+  // native inputs, but the incoming frame is not backed by GpuMemoryBuffer /
+  // SharedImage and is not a black frame.
+  if (ShouldCheckIncomingFrameStorage()) {
     // Check if the incoming frame is backed by owned or unowned memory type.
     // This could happen when: 1. Zero-copy capture feature is turned on but
     // device does not support MediaFoundation; 2. Zero-copy is enabled and
@@ -1200,15 +1264,23 @@ void RTCVideoEncoder::Impl::Enqueue(FrameChunk frame_chunk) {
           use_native_input_ = false;
         }
       } else if (frame->HasSharedImage()) {
-        if (!use_native_input_) {
-          use_native_input_ = true;
-          // TODO(https://issuetracker.google.com/issues/337130619): Ideally
-          // |input_buffers_| should be cleaned up here.
-        }
+        // Native input is supported if:
+        // 1. The frame is backed by a *mappable* SharedImage, or
+        // 2. The VEA supports direct encoding for this SharedImage
+        // usage/format,
+        //    or
+        // 3. The renderer can convert textures to NV12 via GPU shaders.
+        bool can_encode_natively =
+            frame->HasMappableSharedImage() ||
+            encoder_info_.DoesSupportGpuSharedImages(
+                frame->shared_image()->usage(), frame->format()) ||
+            (use_accelerated_pool_ &&
+             WebGraphicsContext3DVideoFramePool::
+                 IsGpuMemoryBufferReadbackFromTextureEnabled());
+        use_native_input_ = can_encode_natively;
       }
     }
   }
-#endif
 
   pending_frames_.push_back(std::move(frame_chunk));
   // When |input_buffers_free_| is empty, EncodeOneFrame() or
@@ -1907,6 +1979,8 @@ void RTCVideoEncoder::Impl::BitstreamBufferReady(
         media::EncoderStatus status = FillGenericFrameInfo(info, metadata);
         if (!status.is_ok()) {
           NotifyErrorStatus(status);
+        } else {
+          image.SetTemporalIndex(info.generic_frame_info->temporal_id);
         }
       }
       break;
@@ -2054,6 +2128,7 @@ RTCVideoEncoder::Impl::CreateUnownedMemoryFrameByWebRTCVideoFrameBuffer(
          "Failed to convert WebRTC mapped buffer to media::VideoFrame"});
     return nullptr;
   }
+  CopyColorSpaceFromNativeFrame(frame_buffer, frame);
   return frame;
 }
 
@@ -2089,6 +2164,7 @@ RTCVideoEncoder::Impl::CreateI420SharedMemoryFrameByLibyuv(
                        "Failed to create input buffer"});
     return nullptr;
   }
+  CopyColorSpaceFromNativeFrame(frame_buffer, frame);
 
   // |frame| is STORAGE_UNOWNED_MEMORY at this point. Writing the data is
   // allowed.
@@ -2228,8 +2304,6 @@ RTCVideoEncoder::Impl::CreateNV12SharedImageFrame(
     return nullptr;
   }
 
-  frame->set_color_space(nv12_shared_image->color_space());
-
   input_buffers_free_.pop_back();
   frame->AddDestructionObserver(
       base::BindPostTaskToCurrentDefault(blink::BindOnce(
@@ -2308,7 +2382,8 @@ bool RTCVideoEncoder::Impl::MaybeConvertRGBAToNV12AndEncode(
           IsGpuMemoryBufferReadbackFromTextureEnabled()) {
     if (auto wrapper = SharedGpuContext::ContextProviderWrapper()) {
       accelerated_frame_pool_ =
-          std::make_unique<WebGraphicsContext3DVideoFramePool>(wrapper);
+          std::make_unique<WebGraphicsContext3DVideoFramePool>(
+              wrapper, media::PIXEL_FORMAT_NV12);
       if (!accelerated_frame_pool_) {
         use_accelerated_pool_ = false;
       }
@@ -2449,10 +2524,6 @@ bool RTCVideoEncoder::Impl::CreateBlackMappableSIFrame(
   black_frame_ = media::VideoFrame::WrapMappableSharedImage(
       std::move(shared_image), sync_token, base::NullCallback(),
       gfx::Rect(mapping->Size()), natural_size, base::TimeDelta());
-
-  if (black_frame_) {
-    black_frame_->set_color_space(black_frame_->shared_image()->color_space());
-  }
 
   return true;
 }

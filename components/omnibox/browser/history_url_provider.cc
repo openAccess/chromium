@@ -6,11 +6,11 @@
 
 #include <algorithm>
 #include <memory>
+#include <ranges>
 #include <string>
 #include <utility>
 
 #include "base/command_line.h"
-#include "base/containers/adapters.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -192,7 +192,7 @@ int CalculateRelevanceScoreUsingScoringParams(
 
 // Extracts typed_count, visit_count, and last_visited time from the URLRow and
 // puts them in the additional info field of the `match` for display in
-// about:omnibox.
+// chrome://omnibox-internals.
 void RecordAdditionalInfoFromUrlRow(const history::URLRow& info,
                                     AutocompleteMatch* match) {
   match->RecordAdditionalInfo("typed count", info.typed_count());
@@ -336,7 +336,7 @@ HistoryURLProvider::VisitClassifier::VisitClassifier(
   // empty prefix to those that have most components).
   const std::string& desired_tld = input.desired_tld();
   const URLPrefixes& url_prefixes = URLPrefix::GetURLPrefixes();
-  for (const URLPrefix& url_prefix : base::Reversed(url_prefixes)) {
+  for (const URLPrefix& url_prefix : std::views::reverse(url_prefixes)) {
     const GURL url_with_prefix = url_formatter::FixupURL(
         base::UTF16ToUTF8(url_prefix.prefix + input.text()), desired_tld);
     if (url_with_prefix.is_valid() &&
@@ -399,7 +399,7 @@ size_t HistoryURLProviderParams::EstimateMemoryUsage() const {
 
 HistoryURLProvider::HistoryURLProvider(AutocompleteProviderClient* client,
                                        AutocompleteProviderListener* listener)
-    : HistoryProvider(AutocompleteProvider::TYPE_HISTORY_URL, client),
+    : HistoryProvider(AutocompleteProvider::Type::kHistoryUrl, client),
       params_(nullptr),
       search_url_database_(OmniboxFieldTrial::HUPSearchDatabase()) {
   AddListener(listener);
@@ -1120,7 +1120,7 @@ AutocompleteMatch HistoryURLProvider::HistoryMatchToACMatch(
   bool deletable =
       !!info.visit_count() && client()->AllowDeletingBrowserHistory();
   AutocompleteMatch match(this, relevance, deletable,
-                          AutocompleteMatchType::HISTORY_URL);
+                          omnibox::AutocompleteMatchType::kHistoryUrl);
   match.typed_count = info.typed_count();
   match.destination_url = info.url();
   DCHECK(match.destination_url.is_valid());

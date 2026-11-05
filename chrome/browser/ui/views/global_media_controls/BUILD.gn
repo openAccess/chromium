@@ -2,10 +2,21 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/ozone.gni")
 import("//build/config/ui.gni")
 import("//crypto/features.gni")
 
 assert(toolkit_views)
+
+source_set("media_toolbar_button") {
+  public = [ "media_toolbar_button.h" ]
+  sources = [ "media_toolbar_button.cc" ]
+  public_deps = [
+    "//base",
+    "//ui/views",
+  ]
+  deps = [ "//chrome/browser/ui/global_media_controls" ]
+}
 
 source_set("global_media_controls") {
   public = [
@@ -16,19 +27,17 @@ source_set("global_media_controls") {
     "media_item_ui_cast_footer_view.h",
     "media_item_ui_device_selector_view.h",
     "media_item_ui_helper.h",
-    "media_item_ui_legacy_cast_footer_view.h",
     "media_notification_device_entry_ui.h",
-    "media_toolbar_button.h",
     "media_toolbar_button_contextual_menu.h",
     "media_toolbar_button_view.h",
   ]
   public_deps = [
+    ":media_toolbar_button",
     "//base",
     "//chrome/browser/ui/global_media_controls",
     "//chrome/browser/ui/media_router",
     "//chrome/browser/ui/views/controls",
     "//chrome/browser/ui/views/location_bar:icon_label_bubble",
-    "//chrome/browser/ui/views/media_router",
     "//chrome/browser/ui/views/toolbar",
     "//components/global_media_controls",
     "//components/media_message_center",
@@ -51,7 +60,6 @@ source_set("impl") {
     "media_item_ui_cast_footer_view.cc",
     "media_item_ui_device_selector_view.cc",
     "media_item_ui_helper.cc",
-    "media_item_ui_legacy_cast_footer_view.cc",
     "media_notification_device_entry_ui.cc",
     "media_toolbar_button_contextual_menu.cc",
     "media_toolbar_button_view.cc",
@@ -62,9 +70,13 @@ source_set("impl") {
     "//chrome/browser/feedback",
     "//chrome/browser/language",
     "//chrome/browser/media/router:media_router_feature",
+    "//chrome/browser/picture_in_picture",
     "//chrome/browser/ui:browser_element_identifiers",
+    "//chrome/browser/ui:singleton_tabs",
     "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/frame:browser_view_header",
+    "//chrome/browser/ui/views/media_router",
     "//components/language/core/browser",
     "//components/live_caption:constants",
     "//components/live_caption:utils",
@@ -76,7 +88,9 @@ source_set("impl") {
     "//components/vector_icons",
     "//ui/strings:ui_strings",
   ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
+  if (use_ozone) {
+    deps += [ "//ui/ozone" ]
+  }
 }
 
 source_set("test_support") {
@@ -86,10 +100,11 @@ source_set("test_support") {
   deps = [
     ":global_media_controls",
     "//chrome/browser/media/router:test_support",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/global_media_controls",
     "//chrome/browser/ui/views",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/browser/ui/views/toolbar",
+    "//chrome/browser/ui/views/toolbar:test_support",
     "//chrome/test:test_support_ui",
     "//components/global_media_controls",
     "//components/media_message_center",
@@ -107,7 +122,6 @@ source_set("unit_tests") {
     "cast_device_footer_view_unittest.cc",
     "cast_device_selector_view_unittest.cc",
     "media_item_ui_device_selector_view_unittest.cc",
-    "media_item_ui_legacy_cast_footer_view_unittest.cc",
     "media_toolbar_button_contextual_menu_unittest.cc",
   ]
   deps = [
@@ -116,9 +130,11 @@ source_set("unit_tests") {
     "//base",
     "//chrome/browser/ui/global_media_controls",
     "//chrome/test:test_support",
+    "//chrome/test/base:menu_model_test",
     "//components/global_media_controls",
     "//components/global_media_controls:test_support",
     "//components/media_message_center",
+    "//components/media_message_center:test_support",
     "//components/media_router/browser:test_support",
     "//testing/gmock",
     "//testing/gtest",
@@ -130,7 +146,13 @@ source_set("unit_tests") {
 
   if (is_linux || is_win || is_mac) {
     sources += [ "media_dialog_view_unittest.cc" ]
-    deps += [ "//chrome/browser/accessibility" ]
+    deps += [
+      "//chrome/browser/accessibility",
+      "//chrome/browser/accessibility/live_caption",
+      "//components/live_caption:constants",
+      "//components/live_caption:utils",
+      "//components/prefs",
+    ]
   }
 
   if (use_nss_certs && is_chromeos) {
@@ -153,7 +175,7 @@ source_set("browser_tests") {
     "//base",
     "//build:branding_buildflags",
     "//chrome/app:command_ids",
-    "//chrome/browser/ui",
+    "//chrome/browser/feedback",
     "//chrome/test:test_support",
     "//content/test:test_support",
   ]
@@ -186,8 +208,8 @@ source_set("interactive_ui_tests") {
     ":test_support",
     "//base",
     "//base/i18n:test_support",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/global_media_controls",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/test:test_support",
     "//chrome/test:test_support_ui",
     "//components/global_media_controls",

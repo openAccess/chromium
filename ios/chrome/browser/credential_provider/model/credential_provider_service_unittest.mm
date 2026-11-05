@@ -113,9 +113,6 @@ class CredentialProviderServiceTest : public PlatformTest {
 
   void SetUp() override {
     PlatformTest::SetUp();
-    // Make sure there are no favicons left from some other tests.
-    ASSERT_TRUE(DeleteFaviconsFolder());
-
     ASSERT_TRUE(scoped_temp_dir_.CreateUniqueTempDir());
     NSURL* folder_url =
         base::apple::FilePathToNSURL(scoped_temp_dir_.GetPath());
@@ -132,8 +129,6 @@ class CredentialProviderServiceTest : public PlatformTest {
   }
 
   void TearDown() override {
-    // Delete all favicon files that were created during the test.
-    EXPECT_TRUE(DeleteFaviconsFolder());
     SetFaviconsFolderURLForTesting(nil);
     ResetMaxNumberOfFaviconsForTesting();
 
@@ -275,6 +270,9 @@ TEST_F(CredentialProviderServiceTest, FirstSync) {
               base::SysUTF16ToNSString(kTestPassword1));
 }
 
+// Verifies that credentials added to both personal and account password
+// stores are properly synced into `credential_store_`, and that removing
+// logins cleans them up without race conditions between stores.
 TEST_F(CredentialProviderServiceTest, TwoStores) {
   password_manager::PasswordForm local_form;
   local_form.url = GURL(kTestUrl1);
@@ -374,7 +372,8 @@ TEST_F(CredentialProviderServiceTest, AccountChange) {
 
   // Set managed account as the primary one.
   CoreAccountInfo core_account =
-      identity_test_environment_.MakeAccountAvailable(kEmailFoo);
+      identity_test_environment_.MakeAccountAvailable(kEmailFoo)
+          .GetCoreAccountInfo();
   AccountInfo account = AccountInfo::Builder(core_account)
                             .SetHostedDomain(kManagedDomain)
                             .Build();
@@ -604,6 +603,8 @@ TEST_F(CredentialProviderServiceTest, AddCredentialsRefactored) {
   ASSERT_TRUE(WaitForCredentialCount(2u));
 }
 
+// Tests that adding a credential with a fresh cached favicon does not trigger
+// a new favicon fetch in `AddCredentialsRefactored`.
 TEST_F(CredentialProviderServiceTest, AddCredentialsRefactored_CachedFavicon) {
   base::test::ScopedFeatureList local_feature_list;
   local_feature_list.InitAndEnableFeature(
@@ -614,7 +615,7 @@ TEST_F(CredentialProviderServiceTest, AddCredentialsRefactored_CachedFavicon) {
 
   // Create a dummy favicon file to simulate a fresh cached favicon.
   GURL url(kTestUrl1);
-  NSString* favicon_key = GetFaviconFileKey(url);
+  NSString* favicon_key = base::SysUTF8ToNSString(GetFaviconFileKey(url));
 
   NSURL* folder_url = base::apple::FilePathToNSURL(scoped_temp_dir_.GetPath());
   ASSERT_NE(nil, folder_url);
@@ -636,10 +637,13 @@ TEST_F(CredentialProviderServiceTest, AddCredentialsRefactored_CachedFavicon) {
       password_manager::PasswordString(u"pwd1");
   password_store_->AddLogin(
       password_manager::FromPasswordForm(valid_password_form));
+  task_environment_.RunUntilIdle();
 
   ASSERT_TRUE(WaitForCredentialCount(1u));
 }
 
+// Tests that adding a single credential skips max favicon verification in
+// `AddCredentialsRefactored`.
 TEST_F(CredentialProviderServiceTest, AddCredentialsRefactored_SingleFormSkip) {
   base::test::ScopedFeatureList local_feature_list;
   local_feature_list.InitAndEnableFeature(
@@ -669,10 +673,13 @@ TEST_F(CredentialProviderServiceTest, AddCredentialsRefactored_SingleFormSkip) {
 
   credential_provider_service_->OnLoginsChanged(password_store_.get(),
                                                 change_list);
+  task_environment_.RunUntilIdle();
 
   ASSERT_TRUE(WaitForCredentialCount(1u));
 }
 
+// Tests that duplicate URLs in the same batch only trigger a single favicon
+// fetch in `AddCredentialsRefactored`.
 TEST_F(CredentialProviderServiceTest,
        AddCredentialsRefactored_DuplicateUrlsInBatch) {
   base::test::ScopedFeatureList local_feature_list;
@@ -684,8 +691,9 @@ TEST_F(CredentialProviderServiceTest,
 
   // We expect exactly 1 call to FaviconForPageUrl even though we add two
   // forms with the same URL in the same batch.
-  EXPECT_CALL(favicon_loader_, FaviconForPageUrl)
-      .WillOnce(testing::InvokeWithoutArgs([&]() { favicon_called_ = true; }));
+  EXPECT_CALL(favicon_loader_, FaviconForPageUrl).WillOnce([&]() {
+    favicon_called_ = true;
+  });
 
   password_manager::PasswordForm form1;
   form1.url = GURL("http://g.com");
@@ -715,6 +723,8 @@ TEST_F(CredentialProviderServiceTest,
       }));
 }
 
+// Tests that favicon fetching respects the maximum allowed favicons limit in
+// `AddCredentialsRefactored`.
 TEST_F(CredentialProviderServiceTest,
        AddCredentialsRefactored_MaxFaviconsBound) {
   base::test::ScopedFeatureList local_feature_list;
@@ -753,10 +763,13 @@ TEST_F(CredentialProviderServiceTest,
 
   credential_provider_service_->OnLoginsChanged(password_store_.get(),
                                                 change_list);
+  task_environment_.RunUntilIdle();
 
   ASSERT_TRUE(WaitForCredentialCount(2u));
 }
 
+// Tests that fallback favicon fetching respects the history sync state in
+// `AddCredentialsRefactored`.
 TEST_F(CredentialProviderServiceTest,
        AddCredentialsRefactored_HistorySyncState) {
   base::test::ScopedFeatureList local_feature_list;
@@ -784,6 +797,7 @@ TEST_F(CredentialProviderServiceTest,
 
   credential_provider_service_->OnLoginsChanged(password_store_.get(),
                                                 change_list);
+  task_environment_.RunUntilIdle();
 
   ASSERT_TRUE(WaitForCredentialCount(1u));
 
@@ -805,6 +819,7 @@ TEST_F(CredentialProviderServiceTest,
 
   credential_provider_service_->OnLoginsChanged(password_store_.get(),
                                                 change_list);
+  task_environment_.RunUntilIdle();
 
   ASSERT_TRUE(WaitForCredentialCount(2u));
 }

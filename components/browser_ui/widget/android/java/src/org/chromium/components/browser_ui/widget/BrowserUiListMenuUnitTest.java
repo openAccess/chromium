@@ -9,7 +9,6 @@ import static android.view.KeyEvent.KEYCODE_TAB;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.when;
 
 import static org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils.getBasicListMenu;
 import static org.chromium.ui.listmenu.ListItemType.MENU_ITEM_WITH_SUBMENU;
@@ -29,11 +28,6 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.Mockito;
-import org.mockito.Spy;
-import org.mockito.junit.MockitoJUnit;
-import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
@@ -55,16 +49,12 @@ import java.util.List;
 
 /** Unit test for {@link BrowserUiListMenuUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowAppCompatResources.class})
+@Config(shadows = {ShadowAppCompatResources.class})
 public class BrowserUiListMenuUnitTest {
 
     @Rule
     public final BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
-
-    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     private static final String TEST_LABEL = "test";
     private static final int NUM_SUBMENU_ITEMS = 5;
@@ -74,8 +64,6 @@ public class BrowserUiListMenuUnitTest {
     private ModelList mData;
     private BasicListMenu mBasicListMenu;
     private View mView;
-    @Mock private View mMockView;
-    @Spy private ListView mContentView;
 
     @Before
     public void setup() {
@@ -102,32 +90,33 @@ public class BrowserUiListMenuUnitTest {
     @Test
     public void testScrollHairline() {
         mBasicListMenu = getBasicListMenu(mActivity, mData, (item, view) -> {});
-        mContentView = Mockito.spy(setupListViewForSubmenuTesting());
+        ListView contentView = setupListViewForSubmenuTesting();
         // Assert not showing before navigation
         View hairline = mView.findViewById(R.id.menu_header_bottom_hairline);
         assertEquals(View.GONE, hairline.getVisibility());
         // Navigate to submenu
-        ListItem submenuParent = (ListItem) mContentView.getItemAtPosition(0);
+        ListItem submenuParent = (ListItem) contentView.getItemAtPosition(0);
         submenuParent.model.get(CLICK_LISTENER).onClick(mView);
+        populateListView(contentView);
 
         // Test listener directly since view scroll coordinate doesn't seem to work.
-        when(mContentView.getChildAt(0)).thenReturn(mMockView);
-        when(mMockView.getTop()).thenReturn(-1);
+        View firstChild = contentView.getChildAt(0);
+        firstChild.setTop(-1);
         mBasicListMenu
                 .getScrollChangeListenerForTesting()
                 .onScrollChange(
-                        mContentView,
+                        contentView,
                         /* scrollX= */ 0,
                         /* scrollY= */ 1,
                         /* oldScrollX= */ 0,
                         /* oldScrollY= */ 0);
         assertEquals(View.VISIBLE, hairline.getVisibility());
         // Scroll and assert it's no longer visible
-        when(mMockView.getTop()).thenReturn(0);
+        firstChild.setTop(0);
         mBasicListMenu
                 .getScrollChangeListenerForTesting()
                 .onScrollChange(
-                        mContentView,
+                        contentView,
                         /* scrollX= */ 0,
                         /* scrollY= */ 0,
                         /* oldScrollX= */ 0,
@@ -206,6 +195,11 @@ public class BrowserUiListMenuUnitTest {
         // Need to shadow the list views and populate them manually
         populateListView(headerView);
         populateListView(contentView);
+        int width = mActivity.getResources().getDimensionPixelSize(R.dimen.list_menu_width);
+        mView.measure(
+                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.EXACTLY));
+        mView.layout(0, 0, width, 300);
         headerView.getChildAt(0).requestFocus();
         // Hit tab and now the content view should have focus.
         headerView.onKeyDown(KEYCODE_TAB, new KeyEvent(ACTION_DOWN, KEYCODE_TAB));

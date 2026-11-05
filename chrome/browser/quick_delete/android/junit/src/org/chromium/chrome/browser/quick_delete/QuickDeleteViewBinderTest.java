@@ -12,14 +12,11 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
@@ -31,7 +28,6 @@ import org.chromium.ui.widget.TextViewWithClickableSpans;
 
 /** Robolectric tests for {@link QuickDeleteViewBinder}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class QuickDeleteViewBinderTest {
     private Activity mActivity;
     private View mQuickDeleteView;
@@ -67,7 +63,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_ZeroDomains() {
         var data = new QuickDeleteDelegate.DomainVisitsData("", 0);
         mPropertyModel.set(QuickDeleteProperties.TIME_PERIOD, TimePeriod.LAST_15_MINUTES);
@@ -84,7 +79,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_ZeroDomains_AllTime() {
         var data = new QuickDeleteDelegate.DomainVisitsData("", 0);
         mPropertyModel.set(QuickDeleteProperties.TIME_PERIOD, TimePeriod.ALL_TIME);
@@ -100,7 +94,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_OneDomain_OnlyDisplaysLastVisitedDomain() {
         var data = new QuickDeleteDelegate.DomainVisitsData("example.com", 1);
         mPropertyModel.set(QuickDeleteProperties.DOMAIN_VISITED_DATA, data);
@@ -113,7 +106,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_TwoDomains_UpdatesHistoryText_Singular() {
         var data = new QuickDeleteDelegate.DomainVisitsData("example.com", 2);
         mPropertyModel.set(QuickDeleteProperties.DOMAIN_VISITED_DATA, data);
@@ -126,7 +118,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_MultipleDomains_UpdatesHistoryText_Plural() {
         var data = new QuickDeleteDelegate.DomainVisitsData("example.com", 5);
         mPropertyModel.set(QuickDeleteProperties.DOMAIN_VISITED_DATA, data);
@@ -139,7 +130,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_HistorySyncDisabled_HidesMoreOnSyncedDevicesText() {
         setHistorySyncStatus(false);
         var data = new QuickDeleteDelegate.DomainVisitsData("example.com", 1);
@@ -152,7 +142,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_HistorySyncEnabled_DisplaysMoreOnSyncedDevicesText() {
         setHistorySyncStatus(true);
         var data = new QuickDeleteDelegate.DomainVisitsData("example.com", 1);
@@ -165,7 +154,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_Pending() {
         mPropertyModel.set(QuickDeleteProperties.IS_DOMAIN_VISITED_DATA_PENDING, true);
 
@@ -181,7 +169,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_DeletionDisabled() {
         mPropertyModel.set(QuickDeleteProperties.IS_HISTORY_DELETION_ALLOWED, false);
 
@@ -201,7 +188,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_Pending_WhenDisabled() {
         mPropertyModel.set(QuickDeleteProperties.IS_HISTORY_DELETION_ALLOWED, false);
         mPropertyModel.set(QuickDeleteProperties.IS_DOMAIN_VISITED_DATA_PENDING, true);
@@ -219,7 +205,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_ToggleAllowed() {
         // Start disabled
         mPropertyModel.set(QuickDeleteProperties.IS_HISTORY_DELETION_ALLOWED, false);
@@ -243,7 +228,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testBrowsingHistory_ToggleAllowed_WhilePending() {
         // Start disabled
         mPropertyModel.set(QuickDeleteProperties.IS_HISTORY_DELETION_ALLOWED, false);
@@ -265,7 +249,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testTabsToBeClosed_ZeroTabs() {
         final int tabsToBeClosed = 0;
         mPropertyModel.set(QuickDeleteProperties.CLOSED_TABS_COUNT, tabsToBeClosed);
@@ -284,7 +267,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testTabsToBeClosed_ZeroTabs_AllTime() {
         final int tabsToBeClosed = 0;
         mPropertyModel.set(QuickDeleteProperties.CLOSED_TABS_COUNT, tabsToBeClosed);
@@ -301,7 +283,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testTabsToBeClosed_OneTab_UpdatesTabsClosedText_Singular() {
         final int tabsToBeClosed = 1;
         mPropertyModel.set(QuickDeleteProperties.CLOSED_TABS_COUNT, tabsToBeClosed);
@@ -322,7 +303,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testTabsToBeClosed_MultipleTab_UpdatesTabsClosedText_Plural() {
         final int tabsToBeClosed = 2;
         mPropertyModel.set(QuickDeleteProperties.CLOSED_TABS_COUNT, tabsToBeClosed);
@@ -343,7 +323,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testSearchHistoryDisambiguationShown_WhenUserIsSignedOut() {
         setSignedInStatus(true);
         TextViewWithClickableSpans searchHistoryDisambiguation =
@@ -352,7 +331,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testSearchHistoryDisambiguationNotShown_WhenUserIsSignedOut() {
         setSignedInStatus(false);
         TextViewWithClickableSpans searchHistoryDisambiguation =
@@ -361,7 +339,6 @@ public class QuickDeleteViewBinderTest {
     }
 
     @Test
-    @SmallTest
     public void testQuickDeleteTimePeriodStringBindings() {
         assertEquals(
                 mActivity.getString(R.string.quick_delete_time_period_15_minutes),

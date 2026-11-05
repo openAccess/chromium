@@ -17,14 +17,13 @@
 #include "chrome/browser/ash/app_mode/kiosk_app_launcher.h"
 #include "chrome/browser/ash/app_mode/kiosk_web_app_launcher_base.h"
 #include "chrome/browser/extensions/extension_special_storage_policy.h"  // nogncheck crbug.com/386960384
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_cache_client.h"
 #include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_installer.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "components/account_id/account_id.h"
 #include "components/webapps/common/web_app_id.h"
-#include "components/webapps/isolated_web_apps/public/iwa_runtime_data_provider.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/types/isolated_web_app_external_install_options.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 

@@ -79,7 +79,7 @@ SaveToDriveFlow::SaveToDriveFlow(
       content_reader_(std::move(content_reader)),
       account_chooser_(std::move(account_chooser)),
       hats_service_(hats_service) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 }
 
 SaveToDriveFlow::~SaveToDriveFlow() {
@@ -118,7 +118,7 @@ void SaveToDriveFlow::SetSkipValidateTabForTesting(bool skip_validate_tab) {
 }
 
 void SaveToDriveFlow::Run() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   SaveToDriveProgress progress;
   progress.status = SaveToDriveStatus::kInitiated;
   progress.error_type = SaveToDriveErrorType::kNoError;
@@ -142,7 +142,7 @@ void SaveToDriveFlow::OnAccountChosen(std::optional<AccountInfo> account_info) {
     return;
   }
   if (!signin::IsUsernameAllowedByPattern(
-          account_info->email,
+          account_info->GetEmail(),
           g_browser_process->local_state()->GetString(
               prefs::kRestrictPdfSaveToGoogleDriveAccountsToPattern))) {
     progress.status = SaveToDriveStatus::kUploadFailed;
@@ -153,7 +153,7 @@ void SaveToDriveFlow::OnAccountChosen(std::optional<AccountInfo> account_info) {
     return;
   }
   save_to_drive_account_info_ = {
-      .email = account_info->email,
+      .email = std::string(account_info->GetEmail()),
       .is_managed = account_info->IsManaged() == signin::Tribool::kTrue,
   };
   progress.status = SaveToDriveStatus::kAccountSelected;
@@ -230,7 +230,7 @@ std::string SaveToDriveFlow::GetHatsSurveyTriggerId() {
 }
 
 void SaveToDriveFlow::Stop() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (base::FeatureList::IsEnabled(
           chrome_pdf::features::kPdfSaveToDriveSurvey)) {
     ShowHatsSurveyWithDelay();

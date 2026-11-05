@@ -6,9 +6,12 @@
 
 #include <windows.h>
 
+#include <shlobj.h>
+
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -18,20 +21,31 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/strcat.h"
-#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "base/types/expected.h"
 #include "base/values.h"
 #include "base/version.h"
-#include "chrome/updater/get_updater_scope.h"
+#include "base/win/current_module.h"
+#include "base/win/resource_util.h"
+#include "base/win/scoped_co_mem.h"
+#include "chrome/updater/app/app_install_progress.h"
+#include "chrome/updater/updater_scope.h"
 #include "chrome/updater/util/path_util.h"
+#include "chrome/updater/util/util.h"
+#include "chrome/updater/win/ui/l10n_util.h"
 #include "chrome/updater/win/ui/progress_wnd.h"
+#include "chrome/updater/win/ui/resources/resources.grh"
+#include "chrome/updater/win/ui/ui_util.h"
 #include "chrome/updater/win/ui/webview2ui.h"
+#include "third_party/webview2/include/WebView2.h"
 #include "ui/gfx/geometry/rect.h"
 
 namespace updater::ui {
 
-WebView2ProgressWnd::WebView2ProgressWnd() {
+WebView2ProgressWnd::WebView2ProgressWnd()
+    : language_info_(GetLanguageInfo(base::UTF8ToWide(GetTagLanguage()))) {
   set_window_style(WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
                    WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
   set_initial_class_style(CS_HREDRAW | CS_VREDRAW);
@@ -44,9 +58,89 @@ void WebView2ProgressWnd::SetEventSink(ProgressWndEvents* events) {
   events_ = events;
 }
 
-void WebView2ProgressWnd::Initialize() {}
+// static
+base::expected<std::wstring, HRESULT> WebView2ProgressWnd::LoadProgressPage() {
+  void* data = nullptr;
+  size_t size = 0;
+  if (!base::win::GetResourceFromModule(CURRENT_MODULE(),
+                                        IDR_WEBVIEW2_PROGRESS_HTML, RT_HTML,
+                                        &data, &size) ||
+      !size) {
+    LOG(ERROR) << "WebView2 embedded progress page is missing or empty";
+    return base::unexpected(HRESULT_FROM_WIN32(ERROR_RESOURCE_DATA_NOT_FOUND));
+  }
+  std::wstring page;
+  if (!base::UTF8ToWide(static_cast<const char*>(data), size, &page)) {
+    LOG(ERROR) << "Invalid UTF-8 in WebView2 progress page";
+    return base::unexpected(HRESULT_FROM_WIN32(ERROR_NO_UNICODE_TRANSLATION));
+  }
+  return page;
+}
+
+HRESULT WebView2ProgressWnd::Initialize() {
+  // WebView2 requires the calling thread to be a single-threaded apartment
+  // (STA), so a thread already initialized as MTA can't host it.
+  if (!com_initializer_.Succeeded()) {
+    LOG(ERROR) << "Thread apartment failed to initialize as STA.";
+    return CO_E_NOTINITIALIZED;
+  }
+
+  // WebView2 can't be hosted in an elevated process: the runtime always runs
+  // `msedgewebview2.exe` at medium integrity, so it can't use a profile in a
+  // location that is safe for an elevated process to access, and a
+  // user-writable profile would expose the elevated process to tampering.
+  // This check must come before any WebView2 API call, since the loader
+  // honors user-controlled overrides such as WEBVIEW2_BROWSER_EXECUTABLE_FOLDER
+  // when locating the runtime. The caller falls back to the native UI.
+  if (::IsUserAnAdmin()) {
+    LOG(WARNING) << "WebView2 UI is not supported in an elevated process.";
+    return E_ACCESSDENIED;
+  }
+
+  base::expected<std::wstring, HRESULT> page = LoadProgressPage();
+  if (!page.has_value()) {
+    return page.error();
+  }
+  html_content_ = std::move(page.value());
+
+  // WebView2 requires a writable profile. This process is not elevated, so
+  // the per-user install directory is both writable by `msedgewebview2.exe`
+  // and at the same privilege level as this process, regardless of the
+  // updater scope on the command line.
+  const std::optional<base::FilePath> profile_root =
+      GetInstallDirectory(UpdaterScope::kUser);
+  if (!profile_root) {
+    LOG(ERROR) << "Failed to resolve the WebView2 profile directory.";
+    return E_FAIL;
+  }
+  user_data_dir_ = profile_root->Append(FILE_PATH_LITERAL("UserData"));
+
+  // Fail early if the WebView2 runtime is not installed, instead of finding
+  // out asynchronously after the window has been shown.
+  base::win::ScopedCoMem<wchar_t> version;
+  if (const HRESULT hr =
+          ::GetAvailableCoreWebView2BrowserVersionString(nullptr, &version);
+      FAILED(hr)) {
+    LOG(ERROR) << "WebView2 runtime is not available: " << std::hex << hr;
+    return hr;
+  }
+  if (!version.get() || !*version.get()) {
+    LOG(ERROR) << "WebView2 runtime reported an empty version.";
+    return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+  }
+  VLOG(1) << "WebView2 runtime version: " << base::WideToUTF8(version.get());
+  return S_OK;
+}
+
+const base::FilePath& WebView2ProgressWnd::user_data_dir_for_testing() const {
+  return user_data_dir_;
+}
 
 void WebView2ProgressWnd::Show() {
+  CHECK(!user_data_dir_.empty()) << "Initialize() must succeed before Show()";
+  CHECK(creation_failed_callback_)
+      << "The creation failed callback must be set before Show()";
+
   RECT rc = {0, 0, 500, 400};
   ::AdjustWindowRect(&rc, window_style(), FALSE);
 
@@ -59,40 +153,71 @@ void WebView2ProgressWnd::Show() {
   const gfx::Rect bounds((screen_w - width) / 2, (screen_h - height) / 2, width,
                          height);
 
+  // `Init` is fatal if the window can't be created, so `hwnd()` is valid.
   Init(nullptr, bounds);
 
-  if (!hwnd()) {
-    // TODO(crbug.com/409590312): Handle UI creation error.
-    return;
-  }
-
-  ::SetWindowTextW(hwnd(), L"Google Installer");
+  ::SetWindowTextW(
+      hwnd(), GetInstallerDisplayName(bundle_name_, language_info_.translation)
+                  .c_str());
 
   // Show and paint the window.
   ::ShowWindow(hwnd(), SW_SHOW);
   ::UpdateWindow(hwnd());
 }
 
-void WebView2ProgressWnd::UpdateUI(const std::string& status_text,
-                                   int progress_pos,
-                                   bool is_marquee) {
-  if (!is_webview_ready_ || !browser_) {
+base::DictValue WebView2ProgressWnd::GetUIUpdateForTesting() const {
+  return GetUIUpdate();
+}
+
+base::DictValue WebView2ProgressWnd::GetUIUpdate() const {
+  std::string status_text =
+      state_.complete && !state_.completion_text.empty()
+          ? state_.completion_text
+          : base::WideToUTF8(GetLocalizedString(state_.message_id,
+                                                language_info_.translation));
+  // Normalize every displayed status, including success and error summaries,
+  // without changing the text received by the native progress window.
+  base::ReplaceSubstringsAfterOffset(&status_text, 0, "\r\n", "\n");
+  base::DictValue update;
+  update.Set("statusText", std::move(status_text));
+  update.Set("title", base::WideToUTF8(GetInstallerDisplayName(
+                          bundle_name_, language_info_.translation)));
+  update.Set("language", language_info_.language);
+  update.Set("textDirection", language_info_.is_rtl ? "rtl" : "ltr");
+  update.Set("cancelText",
+             base::WideToUTF8(GetLocalizedString(IDS_CANCEL_INSTALLATION_BASE,
+                                                 language_info_.translation)));
+  update.Set("cancelingText",
+             base::WideToUTF8(GetLocalizedString(IDS_CANCELING_BASE,
+                                                 language_info_.translation)));
+  update.Set("progress", state_.progress_pos);
+  update.Set("isMarquee", state_.is_marquee);
+  update.Set("complete", state_.complete);
+  update.Set("appName", base::UTF16ToUTF8(state_.app_name));
+  return update;
+}
+
+void WebView2ProgressWnd::SetState(ProgressState state) {
+  state_ = std::move(state);
+  PushStateToPage();
+}
+
+void WebView2ProgressWnd::PushStateToPage() {
+  if (!is_webview_ready_ || !browser_ || superseded_) {
     return;
   }
 
-  std::optional<std::string> json_status = base::WriteJson(status_text);
-  if (!json_status) {
-    LOG(ERROR) << "Failed to encode status text to JSON.";
+  const std::optional<std::string> json = base::WriteJson(GetUIUpdate());
+  if (!json) {
+    LOG(ERROR) << "Could not serialize a WebView2 progress update";
     return;
   }
-
-  browser_->ExecuteScript(base::UTF8ToWide(base::StrCat(
-      {"updateUI(", *json_status, ", ", base::NumberToString(progress_pos),
-       ", ", (is_marquee ? "true" : "false"), ")"})));
+  browser_->ExecuteScript(
+      base::UTF8ToWide(base::StrCat({"updateUI(", *json, ")"})));
 }
 
 void WebView2ProgressWnd::OnCheckingForUpdate() {
-  UpdateUI("Checking for updates...", 0, true);
+  SetState({.message_id = IDS_WAITING_TO_CONNECT_BASE});
 }
 
 void WebView2ProgressWnd::OnDownloading(
@@ -100,8 +225,12 @@ void WebView2ProgressWnd::OnDownloading(
     const std::u16string& app_name,
     const std::optional<base::TimeDelta> time_remaining,
     int pos) {
-  UpdateUI(base::StrCat({"Downloading ", base::UTF16ToUTF8(app_name), "..."}),
-           pos, pos <= 0);
+  SetState({.message_id = time_remaining && time_remaining->InSeconds() == 0
+                              ? IDS_DOWNLOADING_COMPLETED_BASE
+                              : IDS_DOWNLOADING_BASE,
+            .progress_pos = pos,
+            .is_marquee = pos <= 0,
+            .app_name = app_name});
 }
 
 void WebView2ProgressWnd::OnInstalling(
@@ -109,187 +238,118 @@ void WebView2ProgressWnd::OnInstalling(
     const std::u16string& app_name,
     const std::optional<base::TimeDelta> time_remaining,
     int pos) {
-  UpdateUI(base::StrCat({"Installing ", base::UTF16ToUTF8(app_name), "..."}),
-           pos, pos <= 0);
+  SetState({.message_id = IDS_INSTALLING_BASE,
+            .progress_pos = pos,
+            .is_marquee = pos <= 0,
+            .app_name = app_name});
 }
 
 void WebView2ProgressWnd::OnComplete(
     const ObserverCompletionInfo& observer_info) {
-  std::string message = base::UTF16ToUTF8(observer_info.completion_text);
-  UpdateUI(message, 100, false);
+  const bool success =
+      IsCompletionCodeSuccess(GetBundleCompletionCode(observer_info));
+  // Reuse the native UI's selection of detailed, already localized errors.
+  const std::string message =
+      success
+          ? base::UTF16ToUTF8(observer_info.completion_text)
+          : base::WideToUTF8(GetBundleCompletionErrorMessages(observer_info));
+  SetState({.message_id = success ? IDS_BUNDLE_INSTALLED_SUCCESSFULLY_BASE
+                                  : IDS_INSTALL_UPDATER_FAILED_BASE,
+            .progress_pos = 100,
+            .is_marquee = false,
+            .complete = true,
+            .completion_text = message});
 }
 
 void WebView2ProgressWnd::OnUpdateAvailable(const std::string&,
                                             const std::u16string&,
                                             const base::Version&) {}
 void WebView2ProgressWnd::OnWaitingToDownload(const std::string&,
-                                              const std::u16string&) {}
+                                              const std::u16string& app_name) {
+  // Unlike the native window's blank waiting label, keep a localized
+  // connection status visible alongside indeterminate progress.
+  SetState({.message_id = IDS_WAITING_TO_CONNECT_BASE, .app_name = app_name});
+}
 void WebView2ProgressWnd::OnWaitingRetryDownload(const std::string&,
                                                  const std::u16string&,
                                                  base::Time) {}
 void WebView2ProgressWnd::OnWaitingToInstall(const std::string&,
-                                             const std::u16string&) {}
+                                             const std::u16string& app_name) {
+  SetState({.message_id = IDS_WAITING_TO_INSTALL_BASE, .app_name = app_name});
+}
 void WebView2ProgressWnd::OnPause() {}
 
 LRESULT WebView2ProgressWnd::OnCreate(UINT, WPARAM, LPARAM) {
-  // WebView2 requires COM to be initialized on the calling thread.
-  // Initialize COM as single-threaded apartment (STA).
-  if (!com_initializer_.Succeeded()) {
-    LOG(ERROR) << "Thread apartment failed to initialize as STA. "
-               << "WebView2 may fail to display.";
-    return -1;
-  }
-
   RECT client_rect = {0};
   ::GetClientRect(hwnd(), &client_rect);
 
   browser_ = std::make_unique<WebView2UI>();
-
-  std::optional<base::FilePath> install_dir =
-      GetInstallDirectory(GetUpdaterScope());
-  if (!install_dir) {
-    LOG(ERROR) << "Failed to resolve installation directory.";
-    return -1;
+  const HRESULT hr =
+      browser_->Create(hwnd(), client_rect, user_data_dir_,
+                       base::BindOnce(&WebView2ProgressWnd::OnWebViewCreated,
+                                      msg_handler_weak_factory_.GetWeakPtr()));
+  if (FAILED(hr)) {
+    // The window is still being created, so the failure can't be handled
+    // here. Returning -1 is not an option either: `gfx::WindowImpl::Init`
+    // treats a failed window creation as fatal. Instead, handle the failure
+    // once the UI message loop runs, through the same path as an asynchronous
+    // WebView2 creation failure.
+    ::PostMessage(hwnd(), WM_WEBVIEW2_CREATE_FAILED, static_cast<WPARAM>(hr),
+                  0);
   }
-  base::FilePath user_data_dir =
-      install_dir->Append(FILE_PATH_LITERAL("UserData"));
-
-  browser_->Create(hwnd(), client_rect, user_data_dir,
-                   base::BindOnce(&WebView2ProgressWnd::OnWebViewCreated,
-                                  msg_handler_weak_factory_.GetWeakPtr()));
-
   return 0;
 }
 
+LRESULT WebView2ProgressWnd::OnWebViewCreateFailed(UINT,
+                                                   WPARAM wparam,
+                                                   LPARAM) {
+  OnWebViewCreationFailed(static_cast<HRESULT>(wparam));
+  return 0;
+}
+
+void WebView2ProgressWnd::OnWebViewCreationFailed(HRESULT result) {
+  LOG(ERROR) << "Failed to create WebView2: " << std::hex << result;
+  CHECK(creation_failed_callback_);
+
+  // Hand the UI over to the fallback. Once superseded, destroying this window
+  // must not quit the UI message loop, which the fallback UI keeps using.
+  superseded_ = true;
+
+  // Run the callback while this window is still visible: the fallback window
+  // can only take the foreground while this process owns the foreground
+  // window.
+  std::move(creation_failed_callback_).Run();
+
+  // This may be running from within a WebView2 callback, so the window is
+  // hidden now and closed asynchronously.
+  ::ShowWindow(hwnd(), SW_HIDE);
+  ::PostMessage(hwnd(), WM_CLOSE, 0, 0);
+}
+
 void WebView2ProgressWnd::OnWebViewCreated(HRESULT result) {
-  if (FAILED(result)) {
-    LOG(ERROR) << "Failed to create WebView2: " << std::hex << result;
-    // TODO(crbug.com/409590312): Handle UI creation error.
-    ::PostMessage(hwnd(), WM_CLOSE, 0, 0);
+  if (superseded_) {
     return;
   }
-  is_webview_ready_ = true;
-
+  if (FAILED(result)) {
+    OnWebViewCreationFailed(result);
+    return;
+  }
   browser_->SetWebMessageHandler(
       base::BindRepeating(&WebView2ProgressWnd::OnWebMessageReceived,
                           msg_handler_weak_factory_.GetWeakPtr()));
 
-  browser_->NavigateToString(
-      std::wstring(LR"DDDD(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chromium Updater</title>
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #ffffff;
-            color: #333333;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-            overflow: hidden; /* Prevent scrollbars during resize. */
-            user-select: none;
-            -webkit-user-select: none;
-        }
-        .container {
-            width: 80%;
-            max-width: 400px;
-            text-align: center;
-        }
-        #status-text {
-            margin-bottom: 20px;
-            font-size: 16px;
-            font-weight: 500;
-        }
-        .progress-bar-container {
-            width: 100%;
-            height: 8px;
-            background-color: #e0e0e0;
-            border-radius: 4px;
-            overflow: hidden;
-            margin-bottom: 20px;
-        }
-        .progress-bar-fill {
-            height: 100%;
-            width: 0%;
-            background-color: #1a73e8; /* Blue. */
-            transition: width 0.3s ease;
-        }
-        button {
-            padding: 8px 16px;
-            background-color: #ffffff;
-            border: 1px solid #dadce0;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            color: #1a73e8;
-            font-weight: 500;
-        }
-        button:hover {
-            background-color: #f8f9fa;
-        }
-        .marquee { animation: marquee 2s infinite linear;
-          width: 30% !important; }
-        @keyframes marquee { from { margin-left: -30%; } to
-          { margin-left: 100%; } }
-    </style>
-</head>
-<body>
-
-    <div class="container">
-        <div id="status-text">Initializing...</div>
-
-        <div class="progress-bar-container">
-            <div id="progress-bar" class="progress-bar-fill"></div>
-        </div>
-
-        <button id="cancel-btn">Cancel</button>
-    </div>
-
-    <script>
-        // Let the C++ backend know the DOM is ready and functions are exposed.
-        window.addEventListener('DOMContentLoaded', () => {
-            if (window.chrome && window.chrome.webview) {
-                window.chrome.webview.postMessage("ui_ready");
-            } else {
-                console.warn("WebView2 API not found!");
-            }
-        });
-
-        // Handle the cancel button click.
-        document.getElementById('cancel-btn').addEventListener('click', () => {
-            if (window.chrome && window.chrome.webview) {
-                window.chrome.webview.postMessage("cancel_installation");
-
-                document.getElementById('status-text').innerText =
-                    "Cancelling...";
-                document.getElementById('cancel-btn').disabled = true;
-            }
-        });
-
-        // C++ `ExecuteScript` can call the below functions.
-        window.updateUI = (status, pos, isMarquee) => {
-            document.getElementById('status-text').innerText = status;
-            const bar = document.getElementById('progress-bar');
-            bar.style.width = pos + '%';
-            if (isMarquee) bar.classList.add('marquee');
-            else bar.classList.remove('marquee');
-            if (pos >= 100)
-                document.getElementById('cancel-btn').style.display = 'none';
-        };
-    </script>
-</body>
-</html>
-)DDDD"));
+  if (const HRESULT hr = browser_->NavigateToString(html_content_);
+      FAILED(hr)) {
+    LOG(ERROR) << "Failed to navigate to the progress page: " << std::hex << hr;
+    OnWebViewCreationFailed(hr);
+    return;
+  }
 }
 
 void WebView2ProgressWnd::OnWebMessageReceived(const std::wstring& message) {
+  if (superseded_) {
+    return;
+  }
   // Handle messages from javascript.
   if (message == L"cancel_installation") {
     VLOG(2) << "User clicked cancel in the HTML UI.";
@@ -299,7 +359,8 @@ void WebView2ProgressWnd::OnWebMessageReceived(const std::wstring& message) {
     ::PostMessage(hwnd(), WM_CLOSE, 0, 0);
   } else if (message == L"ui_ready") {
     VLOG(2) << "HTML UI DOM is loaded and ready.";
-    UpdateUI("Initializing...", 0, true);
+    is_webview_ready_ = true;
+    PushStateToPage();
   } else {
     LOG(FATAL) << "Unrecognized web message: " << message;
   }
@@ -317,15 +378,7 @@ LRESULT WebView2ProgressWnd::OnSize(UINT, WPARAM, LPARAM) {
 }
 
 LRESULT WebView2ProgressWnd::OnDpiChanged(UINT, WPARAM, LPARAM lparam) {
-  // `lparam` is a pointer to a RECT containing the suggested new window bounds.
-  RECT* const suggested_rect = reinterpret_cast<RECT*>(lparam);
-
-  // Apply the suggested bounds.
-  ::SetWindowPos(hwnd(), nullptr, suggested_rect->left, suggested_rect->top,
-                 suggested_rect->right - suggested_rect->left,
-                 suggested_rect->bottom - suggested_rect->top,
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-
+  ApplySuggestedWindowRect(hwnd(), lparam);
   return 0;
 }
 
@@ -334,7 +387,10 @@ LRESULT WebView2ProgressWnd::OnDestroy(UINT, WPARAM, LPARAM) {
   // underlying WebView2 processes.
   browser_.reset();
 
-  ::PostQuitMessage(0);
+  // Closing the window ends the UI, unless another window has taken over.
+  if (!superseded_) {
+    ::PostQuitMessage(0);
+  }
 
   SetMsgHandled(FALSE);
   return 0;

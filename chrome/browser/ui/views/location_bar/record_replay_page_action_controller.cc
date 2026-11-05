@@ -40,8 +40,17 @@ views::BubbleAnchor GetAnchorForBubble(tabs::TabInterface& tab) {
   if (!browser_view) {
     return views::BubbleAnchor();
   }
-  return browser_view->toolbar_button_provider()->GetPageActionBubbleAnchor(
-      kActionRecordReplay);
+  auto* provider = browser_view->toolbar_button_provider();
+  views::BubbleAnchor anchor =
+      provider->GetPageActionBubbleAnchor(kActionRecordReplay);
+  // `GetPageActionBubbleAnchor` can return a null anchor if the action is not
+  // hosted directly inside the page action container (e.g., when displayed on
+  // the toolbar). Fall back to `GetBubbleAnchor` so the bubble anchors
+  // properly.
+  if (anchor.IsNull()) {
+    anchor = provider->GetBubbleAnchor(kActionRecordReplay);
+  }
+  return anchor;
 }
 
 }  // namespace
@@ -49,7 +58,9 @@ views::BubbleAnchor GetAnchorForBubble(tabs::TabInterface& tab) {
 RecordReplayPageActionController::RecordReplayPageActionController(
     tabs::TabInterface& tab,
     page_actions::PageActionController& page_action_controller)
-    : tab_(tab), page_action_controller_(page_action_controller) {
+    : tab_(tab),
+      page_action_controller_(page_action_controller),
+      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
   timer_.Start(
       FROM_HERE, base::Seconds(1),
       base::BindRepeating(&RecordReplayPageActionController::UpdateState,
@@ -58,6 +69,12 @@ RecordReplayPageActionController::RecordReplayPageActionController(
 }
 
 RecordReplayPageActionController::~RecordReplayPageActionController() = default;
+
+// static
+RecordReplayPageActionController* RecordReplayPageActionController::From(
+    tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
 
 void RecordReplayPageActionController::ExecuteAction(
     actions::ActionItem* item) {

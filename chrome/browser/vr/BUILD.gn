@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import("//build/buildflag_header.gni")
+import("//build/config/ozone.gni")
 import("//chrome/common/features.gni")
 import("//device/vr/buildflags/buildflags.gni")
 import("//testing/libfuzzer/fuzzer_test.gni")
@@ -15,11 +16,15 @@ if (is_android) {
 
 source_set("vr") {
   public = [ "vr_tab_helper.h" ]
-  public_deps = [ "//content/public/browser" ]
+  public_deps = [
+    "//base",
+    "//components/tabs:public",
+    "//content/public/browser",
+    "//ui/base/unowned_user_data",
+  ]
 
   if (enable_vr) {
     public += [ "chrome_xr_integration_client.h" ]
-    public_deps += [ "//base" ]
   }
 }
 
@@ -38,7 +43,6 @@ source_set("impl") {
   sources = [ "vr_tab_helper.cc" ]
   deps = [
     ":vr",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ui/browser_window",
     "//device/vr/buildflags",
     "//third_party/blink/public/common:headers",
@@ -63,6 +67,79 @@ source_set("unit_tests") {
     ":vr",
     "//testing/gtest",
   ]
+}
+
+# This should only contain files that are useful if enable_vr = false. For
+# tests/infrastructure that require enable_vr = true, see
+# :xr_browser_tests_vr_required.
+source_set("xr_browser_tests_common") {
+  testonly = true
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+  # Infrastructure
+  sources = [
+    "test/conditional_skipping.cc",
+    "test/conditional_skipping.h",
+    "test/multi_class_browser_test.h",
+    "test/webxr_browser_test.cc",
+    "test/webxr_browser_test.h",
+    "test/webxr_vr_browser_test.cc",
+    "test/webxr_vr_browser_test.h",
+    "test/xr_browser_test.cc",
+    "test/xr_browser_test.h",
+  ]
+
+  # Tests
+  sources += [
+    "webxr_vr_runtimeless_browser_test.cc",
+    "webxr_vr_spatial_tracking_test.cc",
+  ]
+
+  deps = [
+    "//base",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/test/base:browser_tests_runner",
+    "//chrome/test/base:chrome_test_utils",
+    "//sandbox/policy",
+  ]
+
+  public_deps = [ "//chrome/test:test_support" ]
+
+  if (is_android) {
+    public_deps += [
+      "//chrome/browser/android:tabs_public",
+      "//chrome/test:test_support_ui_android",
+    ]
+  } else {
+    deps += [ "//chrome/browser/ui:browser_tabstrip" ]
+    public_deps += [ "//chrome/test:test_support_ui" ]
+  }
+
+  data = [
+    "//chrome/test/data/xr/e2e_test_files/",
+    "//third_party/blink/web_tests/resources/testharness.js",
+  ]
+
+  if (enable_vr) {
+    deps += [ "//device/vr" ]
+  }
+
+  if (enable_cardboard) {
+    deps += [ "//device/vr/android/cardboard:vr_cardboard" ]
+  }
+
+  deps += [ "//ui/base:ozone_buildflags" ]
+  if (ozone_platform_x11) {
+    deps += [ "//ui/gfx/x" ]
+  }
+
+  if (enable_vr && is_win) {
+    deps += [ "//device/vr:directx_helpers" ]
+  }
+
+  if (!is_mac && !is_android) {
+    data_deps = [ "//chrome:packed_resources" ]
+  }
 }
 
 if (enable_vr) {
@@ -157,8 +234,6 @@ if (enable_vr) {
       "//ui/gfx/animation/keyframe",
     ]
 
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
     defines = [ "VR_UI_IMPLEMENTATION" ]
 
     if (is_android) {
@@ -205,8 +280,6 @@ if (enable_vr) {
       "//ui/base",
       "//ui/display",
     ]
-
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
     defines = [ "VR_IMPLEMENTATION" ]
 
@@ -278,8 +351,6 @@ if (enable_vr) {
       "//services/metrics/public/cpp:ukm_builders",
       "//skia",
     ]
-
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
   }
 
   test("vr_common_unittests") {
@@ -441,7 +512,7 @@ if (enable_vr) {
   if (!is_android) {
     # This should only contain that files that are useful if enable_vr = true.
     # For tests/infrastructure that can be used with enable_vr = false, see
-    # //chrome/test:xr_browser_tests_common.
+    # :xr_browser_tests_common.
     source_set("xr_browser_tests_vr_required") {
       testonly = true
       defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
@@ -456,8 +527,8 @@ if (enable_vr) {
 
       deps = [
         ":vr_common",
+        ":xr_browser_tests_common",
         "//chrome/common:constants",
-        "//chrome/test:xr_browser_tests_common",
         "//device/vr",
         "//device/vr:vr_test_utils",
         "//device/vr/buildflags",
@@ -468,8 +539,8 @@ if (enable_vr) {
 
       data_deps = []
 
-      # Windows-only tests and dependencies.
-      if (is_win) {
+      # Windows and Linux tests and dependencies.
+      if (is_win || is_linux) {
         # Infrastructure.
         sources += [
           "test/ui_utils.cc",
@@ -480,25 +551,33 @@ if (enable_vr) {
         sources += [
           "webxr_vr_frame_loop_browser_test.cc",
           "webxr_vr_frame_pose_browser_test.cc",
-          "webxr_vr_indicators_browser_test.cc",
           "webxr_vr_input_browser_test.cc",
           "webxr_vr_isolated_device_service_test.cc",
           "webxr_vr_lifecycle_browser_test.cc",
           "webxr_vr_permission_browser_test.cc",
-          "webxr_vr_permission_request_browser_test.cc",
           "webxr_vr_pixel_browser_test.cc",
           "webxr_vr_secondary_views_browser_test.cc",
           "webxr_vr_tab_browser_test.cc",
           "webxr_vr_transition_browser_test.cc",
         ]
 
+        # These need the in-headset UI, which Linux doesn't have yet.
+        if (is_win) {
+          sources += [
+            "webxr_vr_indicators_browser_test.cc",
+            "webxr_vr_permission_request_browser_test.cc",
+          ]
+        }
+
         deps += [
           ":vr_common",
           "//chrome/browser/content_settings:content_settings_factory",
           "//components/content_settings/core/browser",
-          "//device/vr:directx_helpers",
           "//device/vr:openxr_data",
         ]
+        if (is_win) {
+          deps += [ "//device/vr:directx_helpers" ]
+        }
       }
 
       if (enable_openxr) {
@@ -508,6 +587,60 @@ if (enable_vr) {
         ]
         data_deps += [ "//device/vr:openxr_mock" ]
       }
+    }
+  } else if (enable_openxr) {
+    source_set("android_browsertests") {
+      testonly = true
+      defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+
+      # Infrastructure.
+      sources = [
+        "test/mock_xr_device_hook_base.cc",
+        "test/mock_xr_device_hook_base.h",
+        "test/mock_xr_input_source.cc",
+        "test/mock_xr_input_source.h",
+        "test/ui_utils.cc",
+        "test/ui_utils.h",
+      ]
+
+      # Tests.
+      sources += [
+        "webxr_vr_frame_loop_browser_test.cc",
+        "webxr_vr_frame_pose_browser_test.cc",
+        "webxr_vr_indicators_browser_test.cc",
+        "webxr_vr_input_browser_test.cc",
+        "webxr_vr_layers_browser_test.cc",
+        "webxr_vr_lifecycle_browser_test.cc",
+        "webxr_vr_permission_browser_test.cc",
+        "webxr_vr_permission_request_browser_test.cc",
+        "webxr_vr_pixel_browser_test.cc",
+        "webxr_vr_secondary_views_browser_test.cc",
+        "webxr_vr_tab_browser_test.cc",
+        "webxr_vr_transition_browser_test.cc",
+      ]
+
+      deps = [
+        ":vr_common",
+        ":xr_browser_tests_common",
+        "//chrome/browser/content_settings:content_settings_factory",
+        "//chrome/common:constants",
+        "//chrome/test:xr_android_emulator_tests_runner",
+        "//components/content_settings/browser",
+        "//components/content_settings/core/browser",
+        "//components/webxr",
+        "//components/webxr/android",
+        "//components/webxr/android:features_java",
+        "//components/webxr/android:xr_java",
+        "//device/vr",
+        "//device/vr:openxr_data",
+        "//device/vr:openxr_test_helper",
+        "//device/vr:vr_test_utils",
+        "//device/vr/buildflags",
+        "//device/vr/orientation",
+        "//device/vr/public/mojom:isolated_xr_service",
+        "//device/vr/public/mojom/test:test_mojom",
+        "//third_party/openxr",
+      ]
     }
   }
 }

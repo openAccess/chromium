@@ -124,6 +124,10 @@ class PaymentLinkManagerTest : public testing::Test {
   }
 
  protected:
+  static constexpr char kShopeePayPaymentLink[] =
+      "shopeepay://shopeepay.com.my?code=https://shopeepay.com.my/"
+      "281011051692389958586862838?merchant=Walmart&amount=101&currency=usd";
+
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   signin::IdentityTestEnvironment identity_test_env_;
@@ -516,7 +520,7 @@ TEST_F(PaymentLinkManagerTest,
       supported_payment_link, GURL("https://www.example.com"),
       ukm::UkmRecorder::GetNewSourceID());
   EXPECT_CALL(client_, LoadRiskData(testing::_));
-  EXPECT_CALL(client_, ShowProgressScreen());
+  EXPECT_CALL(client_, ShowProgressScreen(ProgressScreenType::kPayment));
 
   test_api(*payment_link_manager_)
       .OnEwalletAccountSelected(/*selected_instrument_id=*/100L);
@@ -671,6 +675,9 @@ TEST_F(PaymentLinkManagerTest, OnAccountLinkingResult_LandscapeModeExitsFlow) {
       .Times(1)
       .WillOnce(testing::Return(true));
   EXPECT_CALL(client_, ShowPaymentLinkPrompt).Times(0);
+  // `DismissPrompt` is called once when exiting in landscape mode, and again
+  // when the test fixture destroys `payment_link_manager_`.
+  EXPECT_CALL(client_, DismissPrompt).Times(2);
 
   test_api(*payment_link_manager_)
       .OnAccountLinkingResult(
@@ -709,6 +716,124 @@ TEST_F(PaymentLinkManagerTest, OnAccountLinkingResult_SuccessLoadsRiskData) {
           payment_link_url,
           AccountLinkingResult{true, 12345,
                                AccountLinkingResultCode::kResultOk});
+
+  EXPECT_EQ(test_api(*payment_link_manager_).ui_state(),
+            UiState::kProgressScreen);
+}
+
+// Test that the progress screen left open by account linking is dismissed
+// after InvokePurchaseAction is triggered.
+TEST_F(
+    PaymentLinkManagerTest,
+    OnAccountLinkingResult_Success_DismissesProgressScreenAfterPurchaseAction) {
+  EXPECT_CALL(client_, LoadRiskData);
+  test_api(*payment_link_manager_)
+      .OnAccountLinkingResult(
+          GURL(kShopeePayPaymentLink),
+          AccountLinkingResult{true, 12345,
+                               AccountLinkingResultCode::kResultOk});
+  EXPECT_EQ(test_api(*payment_link_manager_).ui_state(),
+            UiState::kProgressScreen);
+
+  auto response_details =
+      std::make_unique<FacilitatedPaymentsInitiatePaymentResponseDetails>();
+  response_details->secure_payload_ = CreateSecurePayload();
+  EXPECT_CALL(GetApiClient(), InvokePurchaseAction);
+  // `DismissPrompt` is called once when the progress screen timer fires, and
+  // again when the test fixture destroys `payment_link_manager_`.
+  EXPECT_CALL(client_, DismissPrompt).Times(2);
+
+  test_api(*payment_link_manager_)
+      .OnInitiatePaymentResponseReceived(
+          base::TimeTicks::Now() - base::Seconds(2),
+          autofill::payments::PaymentsAutofillClient::PaymentsRpcResult::
+              kSuccess,
+          std::move(response_details));
+  FastForwardBy(base::Seconds(1));
+
+  EXPECT_EQ(test_api(*payment_link_manager_).ui_state(), UiState::kHidden);
+}
+
+// Verify that the billing customer number carried in the instrument manager
+// result is used when nothing has been synced yet.
+TEST_F(PaymentLinkManagerTest,
+       OnAccountLinkingResult_CarriedBillingCustomerNumber_UsedWhenSyncEmpty) {
+  EXPECT_CALL(client_, LoadRiskData);
+
+  test_api(*payment_link_manager_)
+      .OnAccountLinkingResult(
+          GURL(kShopeePayPaymentLink),
+          AccountLinkingResult{true, 12345, AccountLinkingResultCode::kResultOk,
+                               987});
+
+  EXPECT_EQ(test_api(*payment_link_manager_)
+                .initiate_payment_request_details()
+                ->billing_customer_number_,
+            987);
+}
+
+// Verify that the carried billing customer number overrides a different
+// positive synced value.
+TEST_F(PaymentLinkManagerTest,
+       OnAccountLinkingResult_CarriedBillingCustomerNumber_OverridesSync) {
+  payments_data_manager_.SetPaymentsCustomerData(
+      std::make_unique<autofill::PaymentsCustomerData>("555"));
+
+  EXPECT_CALL(client_, LoadRiskData);
+
+  test_api(*payment_link_manager_)
+      .OnAccountLinkingResult(
+          GURL(kShopeePayPaymentLink),
+          AccountLinkingResult{true, 12345, AccountLinkingResultCode::kResultOk,
+                               987});
+
+  EXPECT_EQ(test_api(*payment_link_manager_)
+                .initiate_payment_request_details()
+                ->billing_customer_number_,
+            987);
+}
+
+// Verify that the synced billing customer number is used when the instrument
+// manager result does not carry one.
+TEST_F(PaymentLinkManagerTest,
+       OnAccountLinkingResult_NoCarriedBillingCustomerNumber_FallsBackToSync) {
+  payments_data_manager_.SetPaymentsCustomerData(
+      std::make_unique<autofill::PaymentsCustomerData>("555"));
+
+  EXPECT_CALL(client_, LoadRiskData);
+
+  test_api(*payment_link_manager_)
+      .OnAccountLinkingResult(
+          GURL(kShopeePayPaymentLink),
+          AccountLinkingResult{true, 12345,
+                               AccountLinkingResultCode::kResultOk});
+
+  EXPECT_EQ(test_api(*payment_link_manager_)
+                .initiate_payment_request_details()
+                ->billing_customer_number_,
+            555);
+}
+
+// Verify that 0 is still sent when neither the instrument manager result nor
+// Sync provides a billing customer number.
+TEST_F(
+    PaymentLinkManagerTest,
+    OnAccountLinkingResult_NoBillingCustomerNumberFromEitherSource_SendsZero) {
+  EXPECT_CALL(client_, LoadRiskData);
+
+  test_api(*payment_link_manager_)
+      .OnAccountLinkingResult(
+          GURL(kShopeePayPaymentLink),
+          AccountLinkingResult{true, 12345,
+                               AccountLinkingResultCode::kResultOk});
+
+  ASSERT_TRUE(test_api(*payment_link_manager_)
+                  .initiate_payment_request_details()
+                  ->billing_customer_number_.has_value());
+  EXPECT_EQ(test_api(*payment_link_manager_)
+                .initiate_payment_request_details()
+                ->billing_customer_number_,
+            0);
 }
 
 // Test that OnAccountLinkingResult aborts quietly on cancellation.
@@ -1506,7 +1631,7 @@ TEST_F(PaymentLinkManagerTest, OnPaymentPromptResult_FopSelectorAccepted) {
       ukm::UkmRecorder::GetNewSourceID());
 
   EXPECT_CALL(client_, LoadRiskData(testing::_));
-  EXPECT_CALL(client_, ShowProgressScreen());
+  EXPECT_CALL(client_, ShowProgressScreen(ProgressScreenType::kPayment));
 
   test_api(*payment_link_manager_)
       .OnEwalletAccountSelected(/*selected_instrument_id=*/100L);
@@ -2646,6 +2771,61 @@ TEST_F(PaymentLinkManagerTest,
   payment_link_manager_->TriggerPaymentLinkPushPayment(
       supported_payment_link, GURL("https://www.example.com"),
       ukm::UkmRecorder::GetNewSourceID());
+}
+
+TEST_F(PaymentLinkManagerTest,
+       OnAccountLinkingResult_ResultError_RestoresListenerAndShowsErrorScreen) {
+  base::HistogramTester histogram_tester;
+  GURL payment_link_url("shopeepay://shopeepay.com.my?code=123");
+  base::RepeatingCallback<void(UiEvent)> restored_listener;
+  EXPECT_CALL(client_, SetUiEventListener(testing::_))
+      .WillOnce(testing::SaveArg<0>(&restored_listener));
+  EXPECT_CALL(client_, ShowErrorScreen).Times(1);
+
+  test_api(*payment_link_manager_)
+      .OnAccountLinkingResult(
+          payment_link_url,
+          AccountLinkingResult{/*is_successful=*/false, /*instrument_id=*/0,
+                               AccountLinkingResultCode::kResultError});
+
+  EXPECT_EQ(test_api(*payment_link_manager_).ui_state(), UiState::kErrorScreen);
+  EXPECT_EQ(test_api(*payment_link_manager_).ewallet_account_linking_manager(),
+            nullptr);
+
+  // Verify the restored listener is bound to
+  // PaymentLinkManager::OnUiScreenEvent and handles kNewScreenShown for the
+  // Error Screen without crashing.
+  ASSERT_TRUE(restored_listener);
+  restored_listener.Run(UiEvent::kNewScreenShown);
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.Ewallet.UiScreenShown", UiState::kErrorScreen, 1);
+}
+
+TEST_F(PaymentLinkManagerTest,
+       OnAccountLinkingResult_CouldNotInvoke_ResetsStateWithoutErrorScreen) {
+  GURL payment_link_url("shopeepay://shopeepay.com.my?code=123");
+  base::RepeatingCallback<void(UiEvent)> restored_listener;
+  EXPECT_CALL(client_, SetUiEventListener(testing::_))
+      .WillOnce(testing::SaveArg<0>(&restored_listener));
+  EXPECT_CALL(client_, ShowErrorScreen).Times(0);
+
+  test_api(*payment_link_manager_)
+      .OnAccountLinkingResult(
+          payment_link_url,
+          AccountLinkingResult{/*is_successful=*/false, /*instrument_id=*/0,
+                               AccountLinkingResultCode::kCouldNotInvoke});
+
+  EXPECT_EQ(test_api(*payment_link_manager_).ui_state(), UiState::kHidden);
+  EXPECT_EQ(test_api(*payment_link_manager_).ewallet_account_linking_manager(),
+            nullptr);
+
+  // Verify that Reset() invalidated the WeakPtr bound to the listener so that
+  // any subsequent UI events (including kNewScreenShown) while ui_state_ ==
+  // UiState::kHidden are safely ignored and do not trigger CHECK_NE(ui_state_,
+  // UiState::kHidden).
+  EXPECT_TRUE(restored_listener.IsCancelled());
+  restored_listener.Run(UiEvent::kNewScreenShown);
+  restored_listener.Run(UiEvent::kScreenClosedNotByUser);
 }
 
 }  // namespace payments::facilitated

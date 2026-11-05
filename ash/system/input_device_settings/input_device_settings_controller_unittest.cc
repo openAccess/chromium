@@ -75,179 +75,9 @@ namespace {
 constexpr char kInternalChromeOSKeyboardName[] =
     "kSampleKeyboardInternalChromeOS";
 
-const ui::KeyboardDevice kSampleKeyboardInternal(5,
-                                                 ui::INPUT_DEVICE_INTERNAL,
-                                                 "kSampleKeyboardInternal",
-                                                 "",
-                                                 base::FilePath("path5"),
-                                                 0x1111,
-                                                 0x1111,
-                                                 0);
-
-const ui::KeyboardDevice kSampleKeyboardInternal2(4,
-                                                  ui::INPUT_DEVICE_INTERNAL,
-                                                  "kSampleKeyboardInternal2",
-                                                  "",
-                                                  base::FilePath("path4"),
-                                                  0x1111,
-                                                  0x1111,
-                                                  0);
-
-const ui::KeyboardDevice kSampleKeyboardInternalChromeOS(
-    5,
-    ui::INPUT_DEVICE_INTERNAL,
-    kInternalChromeOSKeyboardName,
-    "",
-    base::FilePath("path5"),
-    0x1,
-    0x1,
-    0);
-
-const ui::KeyboardDevice kSampleKeyboardBluetooth(10,
-                                                  ui::INPUT_DEVICE_BLUETOOTH,
-                                                  "kSampleKeyboardBluetooth");
-const ui::KeyboardDevice kSampleKeyboardUsb(15,
-                                            ui::INPUT_DEVICE_USB,
-                                            "kSampleKeyboardUsb",
-                                            "",
-                                            base::FilePath("path15"),
-                                            0x1111,
-                                            0x2222,
-                                            0);
-const ui::KeyboardDevice kSampleKeyboardUsb2(20,
-                                             ui::INPUT_DEVICE_USB,
-                                             "kSampleKeyboardUsb2",
-                                             "",
-                                             base::FilePath("path20"),
-                                             0x1111,
-                                             0x3333,
-                                             0);
-const ui::TouchpadDevice kSampleTouchpadInternal(1,
-                                                 ui::INPUT_DEVICE_INTERNAL,
-                                                 "kSampleTouchpadInternal",
-                                                 "",
-                                                 base::FilePath(),
-                                                 0x1111,
-                                                 0x4444,
-                                                 0);
-const ui::TouchpadDevice kSampleHapticTouchpadInternal(
-    25,
-    ui::INPUT_DEVICE_INTERNAL,
-    "kSampleHapticTouchpadInternal",
-    "",
-    base::FilePath(),
-    0x1111,
-    0x4444,
-    0,
-    true);
-const ui::TouchpadDevice kSampleTouchpadExternal(26,
-                                                 ui::INPUT_DEVICE_USB,
-                                                 "kSampleTouchpadExternal",
-                                                 "",
-                                                 base::FilePath(),
-                                                 0x1111,
-                                                 0x5555,
-                                                 0);
-const ui::InputDevice kSamplePointingStickInternal(
-    2,
-    ui::INPUT_DEVICE_INTERNAL,
-    "kSamplePointingStickInternal");
-const ui::InputDevice kSamplePointingStickExternal(
-    3,
-    ui::INPUT_DEVICE_USB,
-    "kSamplePointingStickExternal");
-const ui::InputDevice kSampleMouseUsb(3,
-                                      ui::INPUT_DEVICE_USB,
-                                      "kSampleMouseUsb",
-                                      /*phys=*/"",
-                                      /*sys_path=*/base::FilePath(),
-                                      /*vendor=*/0x0001,
-                                      /*product=*/0x0002,
-                                      /*version=*/0x0003);
-const ui::InputDevice kSampleGraphicsTablet(4,
-                                            ui::INPUT_DEVICE_USB,
-                                            "kSampleGraphicsTablet",
-                                            /*phys=*/"",
-                                            /*sys_path=*/base::FilePath(),
-                                            /*vendor=*/0x0004,
-                                            /*product=*/0x0005,
-                                            /*version=*/0x0006);
-const ui::InputDevice kSampleUncustomizableMouse(5,
-                                                 ui::INPUT_DEVICE_USB,
-                                                 "kSampleUncustomizableMouse",
-                                                 /*phys=*/"",
-                                                 /*sys_path=*/base::FilePath(),
-                                                 /*vendor=*/0xffff,
-                                                 /*product=*/0xffff,
-                                                 /*version=*/0x0009);
-const ui::InputDevice kSampleCustomizableMouse(6,
-                                               ui::INPUT_DEVICE_USB,
-                                               "kSampleCustomizableMouse",
-                                               /*phys=*/"",
-                                               /*sys_path=*/base::FilePath(),
-                                               /*vendor=*/0xffff,
-                                               /*product=*/0xfffe,
-                                               /*version=*/0x0009);
-const ui::InputDevice kSampleKeyboardMouseCombo(7,
-                                                ui::INPUT_DEVICE_USB,
-                                                "kSampleKeyboardMouseCombo",
-                                                /*phys=*/"",
-                                                /*sys_path=*/base::FilePath(),
-                                                /*vendor=*/0x046d,
-                                                /*product=*/0xc548,
-                                                /*version=*/0x0009);
-const ui::InputDevice kSampleUnCustomizableGraphicsTablet(
-    27,
-    ui::INPUT_DEVICE_USB,
-    "kSampleGraphicsTablet",
-    /*phys=*/"",
-    /*sys_path=*/base::FilePath(),
-    /*vendor=*/0xeeee,
-    /*product=*/0xeeee,
-    /*version=*/0x0006);
-const ui::InputDevice kSamplekWacomOnePenTabletS(28,
-                                                 ui::INPUT_DEVICE_USB,
-                                                 "kSamplekWacomOnePenTabletS",
-                                                 /*phys=*/"",
-                                                 /*sys_path=*/base::FilePath(),
-                                                 /*vendor=*/0x0531,
-                                                 /*product=*/0x0100,
-                                                 /*version=*/0x0006);
-const ui::KeyboardDevice kSampleKeychronKeyboard(29,
-                                                 ui::INPUT_DEVICE_USB,
-                                                 "kSampleKeychronKeyboard",
-                                                 /*phys=*/"",
-                                                 /*sys_path=*/base::FilePath(),
-                                                 /*vendor=*/0x3434,
-                                                 /*product=*/0x0311,
-                                                 /*version=*/0);
-
-const ui::KeyboardDevice kSampleSplitModifierKeyboard(
-    21,
-    ui::INPUT_DEVICE_INTERNAL,
-    "kSampleSplitModifierKeyboard",
-    /*has_assistant_key=*/true,
-    /*has_function_key=*/true);
-
-const ui::InputDevice kSampleMouseWithCompanionApp(
-    29,
-    ui::INPUT_DEVICE_USB,
-    "kSampleMouseUsb",
-    /*phys=*/"",
-    /*sys_path=*/base::FilePath(),
-    /*vendor=*/0x1038,
-    /*product=*/0x1836,
-    /*version=*/0x0003);
-
 constexpr char kUserEmail1[] = "example1@abc.com";
 constexpr char kUserEmail2[] = "joy@abc.com";
 constexpr char kUserEmail3[] = "joy1@abc.com";
-const AccountId kAccountId1 =
-    AccountId::FromUserEmailGaiaId(kUserEmail1, GaiaId("1111"));
-const AccountId kAccountId2 =
-    AccountId::FromUserEmailGaiaId(kUserEmail2, GaiaId("2222"));
-const AccountId kAccountId3 =
-    AccountId::FromUserEmailGaiaId(kUserEmail3, GaiaId("3333"));
 
 constexpr char kKbdTopRowPropertyName[] = "CROS_KEYBOARD_TOP_ROW_LAYOUT";
 constexpr char kKbdTopRowLayoutUnspecified[] = "";
@@ -331,6 +161,7 @@ class TestPeripheralsAppDelegate : public PeripheralsAppDelegate {
   void set_should_fail(bool should_fail) { should_fail_ = should_fail; }
 
   void GetCompanionAppInfo(
+      const AccountId& account_id,
       const std::string& device_key,
       base::OnceCallback<void(const std::optional<mojom::CompanionAppInfo>&)>
           callback) override {
@@ -660,10 +491,6 @@ class InputDeviceSettingsControllerTest : public NoSessionAshTestBase {
     ON_CALL(*mock_adapter_, IsPresent).WillByDefault(testing::Return(true));
     task_runner_ = base::MakeRefCounted<base::TestSimpleTaskRunner>();
     image_downloader_ = std::make_unique<TestImageDownloader>();
-    scoped_feature_list_.InitWithFeatures(
-        {features::kAltClickAndSixPackCustomization,
-         features::kPeripheralNotification},
-        {});
     NoSessionAshTestBase::SetUp();
     Shell::Get()->event_rewriter_controller()->Initialize(nullptr, nullptr);
     fake_device_manager_ = std::make_unique<FakeDeviceManager>();
@@ -689,8 +516,8 @@ class InputDeviceSettingsControllerTest : public NoSessionAshTestBase {
 
     ClearLogin();
     if (should_sign_in_) {
-      SimulateUserLogin({kUserEmail1});
-      SimulateUserLogin({kUserEmail2});
+      SimulateUserLogin(AccountId::FromUserEmail(kUserEmail1));
+      SimulateUserLogin(AccountId::FromUserEmail(kUserEmail2));
       SwitchActiveUser(kAccountId1);
     }
 
@@ -753,6 +580,185 @@ class InputDeviceSettingsControllerTest : public NoSessionAshTestBase {
   }
 
  protected:
+  const ui::KeyboardDevice kSampleKeyboardInternal{
+      5,
+      ui::INPUT_DEVICE_INTERNAL,
+      "kSampleKeyboardInternal",
+      "",
+      base::FilePath("path5"),
+      0x1111,
+      0x1111,
+      0};
+
+  const ui::KeyboardDevice kSampleKeyboardInternal2{
+      4,
+      ui::INPUT_DEVICE_INTERNAL,
+      "kSampleKeyboardInternal2",
+      "",
+      base::FilePath("path4"),
+      0x1111,
+      0x1111,
+      0};
+
+  const ui::KeyboardDevice kSampleKeyboardInternalChromeOS{
+      5,
+      ui::INPUT_DEVICE_INTERNAL,
+      kInternalChromeOSKeyboardName,
+      "",
+      base::FilePath("path5"),
+      0x1,
+      0x1,
+      0};
+
+  const ui::KeyboardDevice kSampleKeyboardBluetooth{
+      10, ui::INPUT_DEVICE_BLUETOOTH, "kSampleKeyboardBluetooth"};
+  const ui::KeyboardDevice kSampleKeyboardUsb{
+      15,
+      ui::INPUT_DEVICE_USB,
+      "kSampleKeyboardUsb",
+      "",
+      base::FilePath("path15"),
+      0x1111,
+      0x2222,
+      0};
+  const ui::KeyboardDevice kSampleKeyboardUsb2{
+      20,
+      ui::INPUT_DEVICE_USB,
+      "kSampleKeyboardUsb2",
+      "",
+      base::FilePath("path20"),
+      0x1111,
+      0x3333,
+      0};
+  const ui::TouchpadDevice kSampleTouchpadInternal{
+      1,
+      ui::INPUT_DEVICE_INTERNAL,
+      "kSampleTouchpadInternal",
+      "",
+      base::FilePath(),
+      0x1111,
+      0x4444,
+      0};
+  const ui::TouchpadDevice kSampleHapticTouchpadInternal{
+      25,
+      ui::INPUT_DEVICE_INTERNAL,
+      "kSampleHapticTouchpadInternal",
+      "",
+      base::FilePath(),
+      0x1111,
+      0x4444,
+      0,
+      true};
+  const ui::TouchpadDevice kSampleTouchpadExternal{
+      26,
+      ui::INPUT_DEVICE_USB,
+      "kSampleTouchpadExternal",
+      "",
+      base::FilePath(),
+      0x1111,
+      0x5555,
+      0};
+  const ui::InputDevice kSamplePointingStickInternal{
+      2, ui::INPUT_DEVICE_INTERNAL, "kSamplePointingStickInternal"};
+  const ui::InputDevice kSamplePointingStickExternal{
+      3, ui::INPUT_DEVICE_USB, "kSamplePointingStickExternal"};
+  const ui::InputDevice kSampleMouseUsb{
+      3,
+      ui::INPUT_DEVICE_USB,
+      "kSampleMouseUsb",
+      /*phys=*/"",
+      /*sys_path=*/base::FilePath(),
+      /*vendor=*/0x0001,
+      /*product=*/0x0002,
+      /*version=*/0x0003};
+  const ui::InputDevice kSampleGraphicsTablet{
+      4,
+      ui::INPUT_DEVICE_USB,
+      "kSampleGraphicsTablet",
+      /*phys=*/"",
+      /*sys_path=*/base::FilePath(),
+      /*vendor=*/0x0004,
+      /*product=*/0x0005,
+      /*version=*/0x0006};
+  const ui::InputDevice kSampleUncustomizableMouse{
+      5,
+      ui::INPUT_DEVICE_USB,
+      "kSampleUncustomizableMouse",
+      /*phys=*/"",
+      /*sys_path=*/base::FilePath(),
+      /*vendor=*/0xffff,
+      /*product=*/0xffff,
+      /*version=*/0x0009};
+  const ui::InputDevice kSampleCustomizableMouse{
+      6,
+      ui::INPUT_DEVICE_USB,
+      "kSampleCustomizableMouse",
+      /*phys=*/"",
+      /*sys_path=*/base::FilePath(),
+      /*vendor=*/0xffff,
+      /*product=*/0xfffe,
+      /*version=*/0x0009};
+  const ui::InputDevice kSampleKeyboardMouseCombo{
+      7,
+      ui::INPUT_DEVICE_USB,
+      "kSampleKeyboardMouseCombo",
+      /*phys=*/"",
+      /*sys_path=*/base::FilePath(),
+      /*vendor=*/0x046d,
+      /*product=*/0xc548,
+      /*version=*/0x0009};
+  const ui::InputDevice kSampleUnCustomizableGraphicsTablet{
+      27,
+      ui::INPUT_DEVICE_USB,
+      "kSampleGraphicsTablet",
+      /*phys=*/"",
+      /*sys_path=*/base::FilePath(),
+      /*vendor=*/0xeeee,
+      /*product=*/0xeeee,
+      /*version=*/0x0006};
+  const ui::InputDevice kSamplekWacomOnePenTabletS{
+      28,
+      ui::INPUT_DEVICE_USB,
+      "kSamplekWacomOnePenTabletS",
+      /*phys=*/"",
+      /*sys_path=*/base::FilePath(),
+      /*vendor=*/0x0531,
+      /*product=*/0x0100,
+      /*version=*/0x0006};
+  const ui::KeyboardDevice kSampleKeychronKeyboard{
+      29,
+      ui::INPUT_DEVICE_USB,
+      "kSampleKeychronKeyboard",
+      /*phys=*/"",
+      /*sys_path=*/base::FilePath(),
+      /*vendor=*/0x3434,
+      /*product=*/0x0311,
+      /*version=*/0};
+
+  const ui::KeyboardDevice kSampleSplitModifierKeyboard{
+      21,
+      ui::INPUT_DEVICE_INTERNAL,
+      "kSampleSplitModifierKeyboard",
+      /*has_assistant_key=*/true,
+      /*has_function_key=*/true};
+
+  const ui::InputDevice kSampleMouseWithCompanionApp{
+      29,
+      ui::INPUT_DEVICE_USB,
+      "kSampleMouseUsb",
+      /*phys=*/"",
+      /*sys_path=*/base::FilePath(),
+      /*vendor=*/0x1038,
+      /*product=*/0x1836,
+      /*version=*/0x0003};
+
+  const AccountId kAccountId1 =
+      AccountId::FromUserEmailGaiaId(kUserEmail1, GaiaId("1111"));
+  const AccountId kAccountId2 =
+      AccountId::FromUserEmailGaiaId(kUserEmail2, GaiaId("2222"));
+  const AccountId kAccountId3 =
+      AccountId::FromUserEmailGaiaId(kUserEmail3, GaiaId("3333"));
+
   std::unique_ptr<InputDeviceSettingsControllerImpl> controller_;
   std::unique_ptr<TestPeripheralsAppDelegate> delegate_;
   std::unique_ptr<FakeDeviceManager> fake_device_manager_;
@@ -814,66 +820,6 @@ TEST_F(InputDeviceSettingsControllerTest, KeyboardAddingAndRemoving) {
   ui::DeviceDataManagerTestApi().SetKeyboardDevices({kSampleKeyboardInternal});
   EXPECT_EQ(observer_->num_keyboards_connected(), 1u);
   EXPECT_EQ(keyboard_pref_handler_->num_keyboard_settings_initialized(), 2u);
-}
-
-
-TEST_F(InputDeviceSettingsControllerTest,
-       DeletesSimulateRightClickPrefsWhenAltFlagDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      features::kAltClickAndSixPackCustomization);
-  auto user_prefs = TestPrefServiceProvider::CreateUserPrefServiceSimple();
-
-  base::DictValue test_pref_value;
-  base::DictValue six_pack_remappings_dict;
-  six_pack_remappings_dict.Set(
-      prefs::kTouchpadSettingSimulateRightClick,
-      static_cast<int>(ui::mojom::SimulateRightClickModifier::kAlt));
-  test_pref_value.Set("key", std::move(six_pack_remappings_dict));
-  user_prefs->SetDict(prefs::kTouchpadDeviceSettingsDictPref,
-                      test_pref_value.Clone());
-
-  SimulateUserLogin({}, kAccountId3, std::move(user_prefs));
-  PrefService* active_pref_service =
-      Shell::Get()->session_controller()->GetActivePrefService();
-  base::DictValue devices_dict =
-      active_pref_service->GetDict(prefs::kTouchpadDeviceSettingsDictPref)
-          .Clone();
-  base::DictValue* existing_settings_dict = devices_dict.FindDict("key");
-  EXPECT_EQ(base::DictValue(), *existing_settings_dict);
-}
-
-TEST_F(InputDeviceSettingsControllerTest,
-       DeletesSixPackKeyPrefsWhenAltFlagDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      features::kAltClickAndSixPackCustomization);
-
-  base::DictValue test_pref_value;
-  base::DictValue six_pack_remappings_dict;
-  base::DictValue settings_dict;
-
-  six_pack_remappings_dict.Set(
-      prefs::kSixPackKeyPageUp,
-      static_cast<int>(ui::mojom::SimulateRightClickModifier::kAlt));
-
-  settings_dict.Set(prefs::kKeyboardSettingSixPackKeyRemappings,
-                    std::move(six_pack_remappings_dict));
-
-  test_pref_value.Set("key", std::move(settings_dict));
-
-  auto user_prefs = TestPrefServiceProvider::CreateUserPrefServiceSimple();
-  user_prefs->SetDict(prefs::kKeyboardDeviceSettingsDictPref,
-                      test_pref_value.Clone());
-
-  SimulateUserLogin({}, kAccountId3, std::move(user_prefs));
-  PrefService* active_pref_service =
-      Shell::Get()->session_controller()->GetActivePrefService();
-  base::DictValue devices_dict =
-      active_pref_service->GetDict(prefs::kKeyboardDeviceSettingsDictPref)
-          .Clone();
-  base::DictValue* existing_settings_dict = devices_dict.FindDict("key");
-  EXPECT_EQ(base::DictValue(), *existing_settings_dict);
 }
 
 TEST_F(InputDeviceSettingsControllerTest,

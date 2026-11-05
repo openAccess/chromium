@@ -141,9 +141,6 @@ class CC_EXPORT ResourcePool : public base::trace_event::MemoryDumpProvider {
     // resource handed out by the ResourcePool.
     gpu::SyncToken returned_sync_token;
 
-    // True if the backing is using raw draw.
-    bool is_using_raw_draw = false;
-
    private:
     friend class OneCopyRasterBufferProvider;
     const gfx::Size& size() const { return size_; }
@@ -281,8 +278,9 @@ class CC_EXPORT ResourcePool : public base::trace_event::MemoryDumpProvider {
   // be allocated in a different way.
   void InvalidateResources();
 
-  // Called when a resource's content has been fully replaced (and is completely
-  // valid). Updates the resource's content ID to its new value.
+  // Called when a resource's content has been replaced. Updates the resource's
+  // content ID to its new value; 0 means the content is incomplete (e.g. it
+  // has checker-image placeholders) and must not be reused for partial raster.
   void OnContentReplaced(const InUsePoolResource& in_use_resource,
                          uint64_t content_id);
   void ReleaseResource(InUsePoolResource resource);
@@ -397,17 +395,7 @@ class CC_EXPORT ResourcePool : public base::trace_event::MemoryDumpProvider {
         return 0;
       }
 
-      size_t memory_usage = format().EstimatedSizeInBytes(size());
-
-      // Early research found with raw draw, GPU memory usage is reduced to
-      // 50%, so we consider a raw draw backing uses 50% of a normal backing
-      // in average.
-      // TODO(crbug.com/40214331): use accurate size for raw draw backings.
-      if (backing_->is_using_raw_draw) {
-        memory_usage = memory_usage / 2;
-      }
-
-      return memory_usage;
+      return format().EstimatedSizeInBytes(size());
     }
 
    private:

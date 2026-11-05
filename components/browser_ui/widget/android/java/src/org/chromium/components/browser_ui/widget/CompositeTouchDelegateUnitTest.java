@@ -19,13 +19,11 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 
 /** Tests for CompositeTouchDelegate. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public final class CompositeTouchDelegateUnitTest {
     CompositeTouchDelegate mCompositeTouchDelegate;
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -38,7 +36,7 @@ public final class CompositeTouchDelegateUnitTest {
 
     @Before
     public void setUp() {
-        View view = new View(Robolectric.setupActivity(Activity.class));
+        View view = new View(Robolectric.buildActivity(Activity.class).setup().get());
         mCompositeTouchDelegate = new CompositeTouchDelegate(view);
         mCompositeTouchDelegate.addDelegateForDescendantView(mMockTouchDelegate);
         mCompositeTouchDelegate.addDelegateForDescendantView(mMockOtherTouchDelegate);

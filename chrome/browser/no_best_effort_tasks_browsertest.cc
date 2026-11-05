@@ -9,11 +9,13 @@
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
 #include "base/test/test_timeouts.h"
 #include "base/test/values_test_util.h"
 #include "build/build_config.h"
@@ -27,7 +29,6 @@
 #include "chrome/test/base/platform_browser_test.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -47,45 +48,10 @@
 
 namespace {
 
-class RunLoopUntilLoadedAndPainted : public content::WebContentsObserver {
- public:
-  explicit RunLoopUntilLoadedAndPainted(content::WebContents* web_contents)
-      : content::WebContentsObserver(web_contents) {}
-
-  RunLoopUntilLoadedAndPainted(const RunLoopUntilLoadedAndPainted&) = delete;
-  RunLoopUntilLoadedAndPainted& operator=(const RunLoopUntilLoadedAndPainted&) =
-      delete;
-
-  ~RunLoopUntilLoadedAndPainted() override = default;
-
-  // Runs a RunLoop on the main thread until the first non-empty frame is
-  // painted and the load is complete for the WebContents provided to the
-  // constructor.
-  void Run() {
-    if (LoadedAndPainted())
-      return;
-
-    run_loop_.Run();
-  }
-
- private:
-  bool LoadedAndPainted() {
-    return web_contents()->CompletedFirstVisuallyNonEmptyPaint() &&
-           !web_contents()->IsLoading();
-  }
-
-  // content::WebContentsObserver:
-  void DidFirstVisuallyNonEmptyPaint() override {
-    if (LoadedAndPainted())
-      run_loop_.Quit();
-  }
-  void DidStopLoading() override {
-    if (LoadedAndPainted())
-      run_loop_.Quit();
-  }
-
-  base::RunLoop run_loop_;
-};
+void WaitUntilLoadedAndPainted(content::WebContents* web_contents) {
+  ASSERT_TRUE(content::WaitForLoadStop(web_contents));
+  content::WaitForCopyableViewInWebContents(web_contents);
+}
 
 class NoBestEffortTasksTest : public PlatformBrowserTest {
  public:
@@ -114,7 +80,40 @@ class NoBestEffortTasksTest : public PlatformBrowserTest {
     // server).
     host_resolver()->AddRule("*", "127.0.0.1");
     PlatformBrowserTest::SetUpOnMainThread();
+
+    // Post a BEST_EFFORT task that fails if it ever runs, so that every test
+    // using this fixture verifies that BEST_EFFORT tasks stay fenced for the
+    // whole test (the other tests would trivially pass if they were running).
+    // `best_effort_tasks_allowed` is heap-allocated and owned by the task
+    // because, on Android, the task could in theory run after the fixture is
+    // destroyed.
+    auto best_effort_tasks_allowed = std::make_unique<bool>(false);
+    best_effort_tasks_allowed_ptr_ = best_effort_tasks_allowed.get();
+    base::ThreadPool::PostTask(
+        FROM_HERE, {base::TaskPriority::BEST_EFFORT},
+        base::BindOnce(
+            [](std::unique_ptr<bool> best_effort_tasks_allowed) {
+              EXPECT_TRUE(*best_effort_tasks_allowed)
+                  << "A BEST_EFFORT task ran during a NoBestEffortTasksTest";
+            },
+            std::move(best_effort_tasks_allowed)));
   }
+
+  void TearDownOnMainThread() override {
+#if BUILDFLAG(IS_ANDROID)
+    // Android doesn't shut down the ThreadPool between tests so the validation
+    // task could run during teardown. On other platforms it shouldn't run at
+    // all.
+    *best_effort_tasks_allowed_ptr_ = true;
+#endif
+    // The task (and the flag it owns) is destroyed when the ThreadPool shuts
+    // down, so don't keep pointing at it.
+    best_effort_tasks_allowed_ptr_ = nullptr;
+    PlatformBrowserTest::TearDownOnMainThread();
+  }
+
+  // Owned by the BEST_EFFORT validation task posted in SetUpOnMainThread().
+  raw_ptr<bool> best_effort_tasks_allowed_ptr_ = nullptr;
 };
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -122,37 +121,6 @@ constexpr std::string_view kExtensionId = "ddchlicdkolnonkihahngkmmmjnjlkkf";
 #endif
 
 }  // namespace
-
-// Verify that BEST_EFFORT tasks don't run during these tests.
-IN_PROC_BROWSER_TEST_F(NoBestEffortTasksTest, ValidatePreconditions) {
-  // `best_effort_tasks_allowed` must be heap-allocated because the validation
-  // task could in theory run after returning from this scope.
-  auto best_effort_tasks_allowed = std::make_unique<bool>(false);
-#if BUILDFLAG(IS_ANDROID)
-  bool* best_effort_tasks_allowed_ptr = best_effort_tasks_allowed.get();
-#endif
-
-  base::ThreadPool::PostTask(
-      FROM_HERE, {base::TaskPriority::BEST_EFFORT},
-      base::BindOnce(
-          [](std::unique_ptr<bool> best_effort_tasks_allowed) {
-            EXPECT_TRUE(*best_effort_tasks_allowed);
-          },
-          std::move(best_effort_tasks_allowed)));
-
-  // Give the validation task a chance to run before continuing, to avoid
-  // false positives.
-  base::RunLoop run_loop;
-  base::ThreadPool::PostDelayedTask(FROM_HERE, run_loop.QuitClosure(),
-                                    TestTimeouts::action_timeout());
-  run_loop.Run();
-
-#if BUILDFLAG(IS_ANDROID)
-  // Android doesn't shut down the ThreadPool between tests so the validation
-  // task could run during teardown. On other platforms it shouldn't run at all.
-  *best_effort_tasks_allowed_ptr = true;
-#endif
-}
 
 // Verify that it is possible to load and paint the initial about:blank page
 // without running BEST_EFFORT tasks.
@@ -166,8 +134,7 @@ IN_PROC_BROWSER_TEST_F(NoBestEffortTasksTest, LoadAndPaintAboutBlank) {
 #endif
   ASSERT_TRUE(web_contents->GetLastCommittedURL().IsAboutBlank());
 
-  RunLoopUntilLoadedAndPainted run_until_loaded_and_painted(web_contents);
-  run_until_loaded_and_painted.Run();
+  WaitUntilLoadedAndPainted(web_contents);
 }
 
 // Verify that it is possible to load and paint a page from the network without
@@ -183,8 +150,7 @@ IN_PROC_BROWSER_TEST_F(NoBestEffortTasksTest, LoadAndPaintFromNetwork) {
   ASSERT_TRUE(web_contents);
   ASSERT_TRUE(web_contents->IsLoading());
 
-  RunLoopUntilLoadedAndPainted run_until_loaded_and_painted(web_contents);
-  run_until_loaded_and_painted.Run();
+  WaitUntilLoadedAndPainted(web_contents);
 }
 
 // Verify that it is possible to load and paint a file:// URL without running
@@ -200,8 +166,7 @@ IN_PROC_BROWSER_TEST_F(NoBestEffortTasksTest, LoadAndPaintFileScheme) {
   ASSERT_TRUE(web_contents);
   ASSERT_TRUE(web_contents->IsLoading());
 
-  RunLoopUntilLoadedAndPainted run_until_loaded_and_painted(web_contents);
-  run_until_loaded_and_painted.Run();
+  WaitUntilLoadedAndPainted(web_contents);
 }
 
 // Verify that an extension can be loaded and perform basic messaging without

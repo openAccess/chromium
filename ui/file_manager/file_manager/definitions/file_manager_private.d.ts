@@ -1,13 +1,14 @@
-// Copyright 2024 The Chromium Authors
+// Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 /**
  * @fileoverview Definitions for chrome.fileManagerPrivate API
- * Generated from: chrome/common/extensions/api/file_manager_private.idl
- * run `tools/json_schema_compiler/compiler.py
- * chrome/common/extensions/api/file_manager_private.idl -g ts_definitions` to
- * regenerate.
+ * Generated from:
+ * chromeos/ash/experiences/extensions/common/api/file_manager_private.idl run
+ * `tools/json_schema_compiler/compiler.py
+ * chromeos/ash/experiences/extensions/common/api/file_manager_private.idl -g
+ * ts_definitions` to regenerate.
  */
 
 import type {ChromeEvent} from './chrome_event.js';
@@ -145,9 +146,6 @@ declare global {
         RENAME_START = 'rename_start',
         RENAME_SUCCESS = 'rename_success',
         RENAME_FAIL = 'rename_fail',
-        PARTITION_START = 'partition_start',
-        PARTITION_SUCCESS = 'partition_success',
-        PARTITION_FAIL = 'partition_fail',
       }
 
       export enum DriveSyncErrorType {
@@ -791,6 +789,10 @@ declare global {
         filesystem: FileSystemData;
       }
 
+      export interface GrantAccessOptions {
+        forThumbnailing?: boolean;
+      }
+
       export function cancelDialog(): void;
 
       export function executeTask(
@@ -826,8 +828,9 @@ declare global {
 
       export function enableExternalFileScheme(): void;
 
-      export function grantAccess(entryUrls: string[], callback: () => void):
-          void;
+      export function grantAccess(
+          entryUrls: string[], options?: GrantAccessOptions,
+          callback: () => void): void;
 
       export function selectFiles(
           selectedPaths: string[], shouldReturnLocalPath: boolean,
@@ -889,10 +892,6 @@ declare global {
 
       export function formatVolume(
           volumeId: string, filesystem: FormatFileSystemType,
-          volumeLabel: string): void;
-
-      export function singlePartitionFormat(
-          deviceStoragePath: string, filesystem: FormatFileSystemType,
           volumeLabel: string): void;
 
       export function renameVolume(volumeId: string, newName: string): void;

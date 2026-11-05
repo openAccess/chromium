@@ -268,17 +268,17 @@ class TestCascade {
                                        const ComputedStyle* parent_style) {
     state.GetDocument().GetStyleEngine().UpdateViewportSize();
     if (parent_style) {
-      state.CreateNewStyle(*InitialStyle(state.GetDocument()), *parent_style);
-      state.SetParentStyle(parent_style);
+      state.CreateNewStyle(InitialStyle(state.GetDocument()), *parent_style);
+      state.SetParentStyle(*parent_style);
     } else {
-      state.CreateNewClonedStyle(*InitialStyle(state.GetDocument()));
+      state.CreateNewClonedStyle(InitialStyle(state.GetDocument()));
       state.SetParentStyle(InitialStyle(state.GetDocument()));
     }
     state.SetOldStyle(state.GetElement().GetComputedStyle());
     return state;
   }
 
-  static const ComputedStyle* InitialStyle(Document& document) {
+  static const ComputedStyle& InitialStyle(Document& document) {
     return document.GetStyleResolver().InitialStyleForElement();
   }
 
@@ -318,7 +318,7 @@ class TestCascade {
         true /* can_trigger_animations */);
     CSSAnimations::CalculateAnimationUpdate(
         state_.AnimationUpdate(), state_.GetElement(), state_.GetElement(),
-        state_.StyleBuilder(), state_.ParentStyle(),
+        state_.StyleBuilder(), state_.OldStyle(), state_.ParentStyle(),
         &GetDocument().GetStyleResolver(), true /* can_trigger_animations */);
   }
 
@@ -2821,6 +2821,7 @@ TEST_F(StyleCascadeTest, AnimatedVisitedHighPrio) {
     )HTML");
 
   TestCascade cascade(GetDocument());
+  cascade.State().StyleBuilder().SetInsideLink(EInsideLink::kInsideVisitedLink);
   cascade.Add("color:red");
   cascade.Add("animation:test 10s -5s linear");
   cascade.Apply();
@@ -3486,6 +3487,83 @@ TEST_F(StyleCascadeTest, VarInInternalVisitedColorShorthand) {
   const css_longhand::OutlineColor& outline_color =
       GetCSSPropertyOutlineColor();
   EXPECT_EQ(red, cascade.TakeStyle()->VisitedDependentColor(outline_color));
+}
+
+TEST_F(StyleCascadeTest, SubstituteAnimationTaintedInInternalVisitedProperty) {
+  TestCascade parent(GetDocument());
+  parent.Add("color:blue");
+  parent.Apply();
+
+  TestCascade cascade(GetDocument(), parent.TakeStyle());
+  cascade.Add(AnimationTaintedSet("--x", "green"));
+  cascade.Add("color:var(--x)");
+  cascade.Add("background-color:red",
+              {.link_match_type = CSSSelector::kMatchLink});
+  cascade.Add("background-color:var(--x)",
+              {.link_match_type = CSSSelector::kMatchVisited});
+
+  cascade.State().StyleBuilder().SetInsideLink(EInsideLink::kInsideVisitedLink);
+  cascade.Apply();
+
+  EXPECT_EQ("rgb(0, 128, 0)", cascade.ComputedValue("color"));
+  EXPECT_EQ("rgb(255, 0, 0)", cascade.ComputedValue("background-color"));
+
+  Color green(0, 128, 0);
+  const auto* style = cascade.TakeStyle();
+  EXPECT_EQ(green, style->VisitedDependentColor(GetCSSPropertyColor()));
+  EXPECT_EQ(green,
+            style->VisitedDependentColor(GetCSSPropertyBackgroundColor()));
+}
+
+TEST_F(StyleCascadeTest,
+       SubstituteAnimationTaintedInInternalVisitedPropertyDisabled) {
+  ScopedVisitedAnimationTaintedSubstitutionForTest scoped_feature(false);
+
+  TestCascade parent(GetDocument());
+  parent.Add("color:blue");
+  parent.Apply();
+
+  TestCascade cascade(GetDocument(), parent.TakeStyle());
+  cascade.Add(AnimationTaintedSet("--x", "green"));
+  cascade.Add("color:var(--x)");
+
+  cascade.State().StyleBuilder().SetInsideLink(EInsideLink::kInsideVisitedLink);
+  cascade.Apply();
+
+  // The visited color is invalid at computed-value time, and therefore
+  // inherits from the parent.
+  EXPECT_EQ("rgb(0, 128, 0)", cascade.ComputedValue("color"));
+  EXPECT_EQ(Color(0, 0, 255),
+            cascade.TakeStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+}
+
+TEST_F(StyleCascadeTest, AnimatedCustomPropertyInInternalVisitedColor) {
+  RegisterProperty(GetDocument(), "--x", "<color>", "black", true);
+
+  AppendSheet(R"HTML(
+     @keyframes test {
+        from { --x: rgb(100, 100, 100); }
+        to { --x: rgb(200, 200, 200); }
+     }
+    )HTML");
+
+  TestCascade parent(GetDocument());
+  parent.Add("color:blue");
+  parent.Apply();
+
+  TestCascade cascade(GetDocument(), parent.TakeStyle());
+  cascade.State().StyleBuilder().SetInsideLink(EInsideLink::kInsideVisitedLink);
+  cascade.Add("--x:red");
+  cascade.Add("color:var(--x)");
+  cascade.Add("animation:test 10s -5s linear");
+  cascade.Apply();
+
+  cascade.AddInterpolations();
+  cascade.Apply();
+
+  EXPECT_EQ("rgb(150, 150, 150)", cascade.ComputedValue("color"));
+  EXPECT_EQ(Color(150, 150, 150),
+            cascade.TakeStyle()->VisitedDependentColor(GetCSSPropertyColor()));
 }
 
 TEST_F(StyleCascadeTest, ApplyWithFilter) {
@@ -4464,7 +4542,7 @@ TEST_F(StyleCascadeTest, FlipToAnchorInvalid) {
 
 TEST_F(StyleCascadeTest, AutoBaseValueShorthand) {
   SetBodyInnerHTML("<select id=select></select>");
-  Element* select = GetDocument().getElementById(AtomicString("select"));
+  Element* select = GetElementById("select");
   ASSERT_TRUE(select);
 
   const CSSPropertyValueSet* set = css_test_helpers::ParseDeclarationBlock(
@@ -4483,7 +4561,7 @@ TEST_F(StyleCascadeTest, AutoBaseValueShorthand) {
 
 TEST_F(StyleCascadeTest, RevertInAutoBaseValue) {
   SetBodyInnerHTML("<select id=select></select>");
-  Element* select = GetDocument().getElementById(AtomicString("select"));
+  Element* select = GetElementById("select");
   ASSERT_TRUE(select);
 
   const CSSPropertyValueSet* set = css_test_helpers::ParseDeclarationBlock(
@@ -4501,7 +4579,7 @@ TEST_F(StyleCascadeTest, RevertInAutoBaseValue) {
 
 TEST_F(StyleCascadeTest, EnvInAutoBaseValue) {
   SetBodyInnerHTML("<select id=select></select>");
-  Element* select = GetDocument().getElementById(AtomicString("select"));
+  Element* select = GetElementById("select");
   ASSERT_TRUE(select);
 
   // UA styles don't use var(), but they could conceivably use env().
@@ -4520,7 +4598,7 @@ TEST_F(StyleCascadeTest, EnvInAutoBaseValue) {
 
 TEST_F(StyleCascadeTest, AutoBaseCycle) {
   SetBodyInnerHTML("<select id=select></select>");
-  Element* select = GetDocument().getElementById(AtomicString("select"));
+  Element* select = GetElementById("select");
   ASSERT_TRUE(select);
 
   const CSSPropertyValueSet* set = css_test_helpers::ParseDeclarationBlock(
@@ -4543,7 +4621,7 @@ TEST_F(StyleCascadeTest, RevertRuleInInternalAutoBase_NoBase) {
   ScopedCSSRevertRuleForTest revert_rule_feature(false);
 
   SetBodyInnerHTML("<select id=select></select>");
-  Element* select = GetDocument().getElementById(AtomicString("select"));
+  Element* select = GetElementById("select");
   ASSERT_TRUE(select);
 
   const CSSPropertyValueSet* ua_set = css_test_helpers::ParseDeclarationBlock(
@@ -4569,7 +4647,7 @@ TEST_F(StyleCascadeTest, RevertRuleInInternalAutoBase_Base) {
   ScopedCSSRevertRuleForTest revert_rule_feature(false);
 
   SetBodyInnerHTML("<select id=select></select>");
-  Element* select = GetDocument().getElementById(AtomicString("select"));
+  Element* select = GetElementById("select");
   ASSERT_TRUE(select);
 
   const CSSPropertyValueSet* ua_set = css_test_helpers::ParseDeclarationBlock(

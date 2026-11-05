@@ -52,6 +52,7 @@ import org.chromium.ui.widget.RectProvider;
 
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 @NullMarked
@@ -136,6 +137,7 @@ class ExtensionActionListMediator implements Destroyable {
     private final ExtensionActionListCoordinator.RecyclerViewDelegate mRecyclerViewDelegate;
     private final TabModelSelector mTabModelSelector;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mClearOmniboxFocus;
 
     private @Nullable AnchoredPopupWindow mHoverCard;
     private @Nullable String mHoverCardActionId;
@@ -183,7 +185,8 @@ class ExtensionActionListMediator implements Destroyable {
             @Nullable ContextMenuPopulatorFactory contextMenuPopulatorFactory,
             @Nullable SelectionDropdownMenuDelegate selectionDropdownMenuDelegate,
             TabModelSelector tabModelSelector,
-            ModalDialogManager modalDialogManager) {
+            ModalDialogManager modalDialogManager,
+            Runnable clearOmniboxFocus) {
         mContext = context;
         mWindowAndroid = windowAndroid;
         mModels = models;
@@ -196,6 +199,7 @@ class ExtensionActionListMediator implements Destroyable {
         mSelectionDropdownMenuDelegate = selectionDropdownMenuDelegate;
         mTabModelSelector = tabModelSelector;
         mModalDialogManager = modalDialogManager;
+        mClearOmniboxFocus = clearOmniboxFocus;
         mModalDialogManager.addObserver(mModalDialogManagerObserver);
 
         mExtensionsToolbarBridge.setActionListDelegate(mToolbarDelegate);
@@ -275,7 +279,7 @@ class ExtensionActionListMediator implements Destroyable {
 
         // Optimization: Remove items that are no longer present in the new list.
         // This prevents unnecessary moves if the first item is removed.
-        Set<String> pinnedActionIdsSet = new HashSet<>(Arrays.asList(pinnedActionIds));
+        Set<String> pinnedActionIdsSet = new LinkedHashSet<>(Arrays.asList(pinnedActionIds));
         for (int i = mModels.size() - 1; i >= 0; i--) {
             String id = getActionIdForIndex(i);
 
@@ -303,7 +307,7 @@ class ExtensionActionListMediator implements Destroyable {
         int currentModelIndex = 0;
 
         // Go through non-popped-out actions.
-        for (String actionId : pinnedActionIds) {
+        for (String actionId : pinnedActionIdsSet) {
             if (mPoppedOutActionId != null && mPoppedOutActionId.equals(actionId)) {
                 continue;
             }
@@ -468,7 +472,7 @@ class ExtensionActionListMediator implements Destroyable {
         model.set(ExtensionActionButtonProperties.ACCESSIBLE_NAME, action.getAccessibleName());
     }
 
-    void updateActionPropertiesForAll(WebContents webContents) {
+    void updateActionPropertiesForAll(@Nullable WebContents webContents) {
         for (int i = 0; i < mModels.size(); i++) {
             updateActionPropertiesForIndex(i, getActionIdForIndex(i), webContents);
         }
@@ -619,6 +623,7 @@ class ExtensionActionListMediator implements Destroyable {
     }
 
     private void onPrimaryClick(String actionId) {
+        mClearOmniboxFocus.run();
         if (mActionState instanceof ActionState.PopupActive activeState) {
             boolean closeOnly = activeState.getActionId().equals(actionId);
             closePopup();
@@ -683,16 +688,14 @@ class ExtensionActionListMediator implements Destroyable {
     }
 
     private void requestShowPopup(
-            String actionId, long nativeHostPtr, boolean inspectWithDevTools) {
+            String actionId,
+            ExtensionActionPopupContents popupContents,
+            boolean inspectWithDevTools) {
         closeHoverCard();
         closePopup();
         closeContextMenu();
 
-        mActionState =
-                new ActionState.PopupPending(
-                        actionId,
-                        ExtensionActionPopupContents.create(nativeHostPtr, inspectWithDevTools),
-                        inspectWithDevTools);
+        mActionState = new ActionState.PopupPending(actionId, popupContents, inspectWithDevTools);
 
         requestActionVisibility(actionId, () -> showPopupOnAnchor());
     }
@@ -779,6 +782,7 @@ class ExtensionActionListMediator implements Destroyable {
 
     @VisibleForTesting
     void requestShowContextMenu(String actionId) {
+        mClearOmniboxFocus.run();
         closeHoverCard();
         closePopup();
         closeContextMenu();
@@ -896,15 +900,18 @@ class ExtensionActionListMediator implements Destroyable {
         }
 
         @Override
-        public void onActiveWebContentsChanged(WebContents webContents) {
+        public void onActiveWebContentsChanged(@Nullable WebContents webContents) {
             updateActionPropertiesForAll(webContents);
         }
     }
 
     private class ToolbarDelegate implements ExtensionsToolbarBridge.ActionListDelegate {
         @Override
-        public void triggerPopup(String actionId, long nativeHostPtr, boolean inspectWithDevTools) {
-            requestShowPopup(actionId, nativeHostPtr, inspectWithDevTools);
+        public void triggerPopup(
+                String actionId,
+                ExtensionActionPopupContents popupContents,
+                boolean inspectWithDevTools) {
+            requestShowPopup(actionId, popupContents, inspectWithDevTools);
         }
 
         @Override

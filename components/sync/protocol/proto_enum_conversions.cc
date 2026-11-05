@@ -119,7 +119,6 @@ const char* ProtoEnumToString(
   switch (response_type) {
     ENUM_CASE(sync_pb::CommitResponse, SUCCESS);
     ENUM_CASE(sync_pb::CommitResponse, CONFLICT);
-    ENUM_CASE(sync_pb::CommitResponse, RETRY);
     ENUM_CASE(sync_pb::CommitResponse, INVALID_MESSAGE);
     ENUM_CASE(sync_pb::CommitResponse, OVER_QUOTA);
     ENUM_CASE(sync_pb::CommitResponse, TRANSIENT_ERROR);
@@ -774,17 +773,6 @@ const char* ProtoEnumToString(
     ENUM_CASE(sync_pb::WalletMetadataSpecifics, CARD);
     ENUM_CASE(sync_pb::WalletMetadataSpecifics, ADDRESS);
     ENUM_CASE(sync_pb::WalletMetadataSpecifics, IBAN);
-  }
-  NOTREACHED();
-}
-
-const char* ProtoEnumToString(sync_pb::WebApkIconInfo::Purpose purpose) {
-  ASSERT_ENUM_BOUNDS(sync_pb::WebApkIconInfo, Purpose, UNSPECIFIED, MONOCHROME);
-  switch (purpose) {
-    ENUM_CASE(sync_pb::WebApkIconInfo, UNSPECIFIED);
-    ENUM_CASE(sync_pb::WebApkIconInfo, ANY);
-    ENUM_CASE(sync_pb::WebApkIconInfo, MASKABLE);
-    ENUM_CASE(sync_pb::WebApkIconInfo, MONOCHROME);
   }
   NOTREACHED();
 }

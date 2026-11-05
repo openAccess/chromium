@@ -28,29 +28,25 @@
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "sandbox/mac/sandbox_serializer.h"
+#include "sandbox/policy/features.h"
 #include "sandbox/policy/mac/params.h"
 #include "sandbox/policy/mac/sandbox_mac.h"
 #include "sandbox/policy/mojom/sandbox.mojom.h"
 #include "sandbox/policy/switches.h"
+#include "services/webnn/public/mojom/features.mojom-features.h"
 
 namespace content {
 
-namespace {
-
-// If enabled, the macOS sandbox for the Network process will allow read and
-// write file access to the user's cache and temp directory
-// (https://crbug.com/527885521).
-// TODO(bryanoltman): remove this feature once we have determined the scope of
-// access needed by the Network process, if any.
-BASE_FEATURE(kMacSandboxNetworkUserDirAccess,
+// If enabled, allows the network process to create symlinks.
+BASE_FEATURE(kMacSandboxAllowNetworkSymlinkCreation,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// If enabled, the macOS sandbox for the On-Device Model Execution (ODME)
-// process will allow read and write file access to the user directory, as well
-// as the user's cache and temp directories (https://crbug.com/527915149).
-// TODO(bryanoltman): remove this feature once we have determined the scope of
-// access needed by the ODME process, if any.
-BASE_FEATURE(kMacSandboxOdmeUserDirAccess, base::FEATURE_DISABLED_BY_DEFAULT);
+// If enabled, allows the renderer process to query `process-info-pidinfo` for
+// any process rather than only itself.
+BASE_FEATURE(kMacSandboxAllowRendererPidinfo,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+namespace {
 
 std::optional<base::FilePath>& GetNetworkTestCertsDirectory() {
   // Set by SetNetworkTestCertsDirectoryForTesting().
@@ -76,25 +72,21 @@ std::string GetOSVersion() {
 
 // Retrieves the users shared darwin dirs and adds it to the profile.
 void AddDarwinDirs(sandbox::SandboxSerializer* serializer) {
-  char dir_path[PATH_MAX + 1];
-
-  size_t rv = confstr(_CS_DARWIN_USER_CACHE_DIR, dir_path, sizeof(dir_path));
-  PCHECK(rv != 0);
-  CHECK(serializer->SetParameter(
-      sandbox::policy::kParamDarwinUserCacheDir,
-      sandbox::policy::GetCanonicalPath(base::FilePath(dir_path)).value()));
-
-  rv = confstr(_CS_DARWIN_USER_DIR, dir_path, sizeof(dir_path));
-  PCHECK(rv != 0);
-  CHECK(serializer->SetParameter(
-      sandbox::policy::kParamDarwinUserDir,
-      sandbox::policy::GetCanonicalPath(base::FilePath(dir_path)).value()));
-
-  rv = confstr(_CS_DARWIN_USER_TEMP_DIR, dir_path, sizeof(dir_path));
-  PCHECK(rv != 0);
-  CHECK(serializer->SetParameter(
-      sandbox::policy::kParamDarwinUserTempDir,
-      sandbox::policy::GetCanonicalPath(base::FilePath(dir_path)).value()));
+  base::FilePath user_dir =
+      base::GetDarwinUserDirectory(base::DarwinUserDirectory::kUser);
+  CHECK(!user_dir.empty());
+  CHECK(serializer->SetParameter(sandbox::policy::kParamDarwinUserDir,
+                                 user_dir.value()));
+  base::FilePath user_cache_dir =
+      base::GetDarwinUserDirectory(base::DarwinUserDirectory::kUserCache);
+  CHECK(!user_cache_dir.empty());
+  CHECK(serializer->SetParameter(sandbox::policy::kParamDarwinUserCacheDir,
+                                 user_cache_dir.value()));
+  base::FilePath user_temp_dir =
+      base::GetDarwinUserDirectory(base::DarwinUserDirectory::kUserTemp);
+  CHECK(!user_temp_dir.empty());
+  CHECK(serializer->SetParameter(sandbox::policy::kParamDarwinUserTempDir,
+                                 user_temp_dir.value()));
 }
 
 // All of the below functions populate the `serializer` with the parameters that
@@ -106,7 +98,9 @@ void SetupCommonSandboxParameters(
   const base::CommandLine* browser_command_line =
       base::CommandLine::ForCurrentProcess();
   bool enable_logging = browser_command_line->HasSwitch(
-      sandbox::policy::switches::kEnableSandboxLogging);
+                            sandbox::policy::switches::kEnableSandboxLogging) ||
+                        base::FeatureList::IsEnabled(
+                            sandbox::policy::features::kEnableSandboxLogging);
 
   CHECK(serializer->SetParameter(
       sandbox::policy::kParamExecutablePath,
@@ -158,19 +152,37 @@ void SetupCommonSandboxParameters(
 
 void SetupNetworkSandboxParameters(sandbox::SandboxSerializer* serializer,
                                    const base::CommandLine& command_line) {
-  std::vector<base::FilePath> storage_paths =
-      GetContentClient()->browser()->GetNetworkContextsParentDirectory();
-
   AddDarwinDirs(serializer);
 
-  CHECK(serializer->SetParameter(
-      sandbox::policy::kParamNetworkServiceStoragePathsCount,
-      base::NumberToString(storage_paths.size())));
-  for (size_t i = 0; i < storage_paths.size(); ++i) {
-    base::FilePath path = sandbox::policy::GetCanonicalPath(storage_paths[i]);
-    std::string param_name = base::StringPrintf(
-        "%s%zu", sandbox::policy::kParamNetworkServiceStoragePathN, i);
-    CHECK(serializer->SetParameter(param_name, path.value())) << param_name;
+  std::optional<base::FilePath> data_dir =
+      GetContentClient()->browser()->GetNetworkContextsDataDirectory();
+  std::optional<base::FilePath> cache_dir =
+      GetContentClient()->browser()->GetNetworkContextsCacheDirectory();
+
+  if (base::FeatureList::IsEnabled(features::kTriggerNetworkDataMigration) &&
+      data_dir.has_value()) {
+    CHECK(serializer->SetParameter(
+        sandbox::policy::kParamUserDataDir,
+        sandbox::policy::GetCanonicalPath(*data_dir).value()));
+
+    if (cache_dir.has_value()) {
+      CHECK(serializer->SetParameter(
+          sandbox::policy::kParamUserCacheDir,
+          sandbox::policy::GetCanonicalPath(*cache_dir).value()));
+    }
+  } else {
+    std::vector<base::FilePath> storage_paths =
+        GetContentClient()->browser()->GetNetworkContextsParentDirectory();
+
+    CHECK(serializer->SetParameter(
+        sandbox::policy::kParamNetworkServiceStoragePathsCount,
+        base::NumberToString(storage_paths.size())));
+    for (size_t i = 0; i < storage_paths.size(); ++i) {
+      base::FilePath path = sandbox::policy::GetCanonicalPath(storage_paths[i]);
+      std::string param_name = base::StringPrintf(
+          "%s%zu", sandbox::policy::kParamNetworkServiceStoragePathN, i);
+      CHECK(serializer->SetParameter(param_name, path.value())) << param_name;
+    }
   }
 
   if (GetNetworkTestCertsDirectory().has_value()) {
@@ -181,8 +193,8 @@ void SetupNetworkSandboxParameters(sandbox::SandboxSerializer* serializer,
   }
 
   CHECK(serializer->SetBooleanParameter(
-      sandbox::policy::kParamNetworkUserDirAccess,
-      base::FeatureList::IsEnabled(kMacSandboxNetworkUserDirAccess)));
+      sandbox::policy::kParamAllowNetworkSymlinkCreation,
+      base::FeatureList::IsEnabled(kMacSandboxAllowNetworkSymlinkCreation)));
 }
 
 bool SetupGpuSandboxParameters(sandbox::SandboxSerializer* serializer,
@@ -193,12 +205,13 @@ bool SetupGpuSandboxParameters(sandbox::SandboxSerializer* serializer,
       command_line.HasSwitch(
           sandbox::policy::switches::kDisableMetalShaderCache)));
 
-  CHECK(serializer->SetBooleanParameter(
-      sandbox::policy::kParamOdmeUserDirAccess,
-      base::FeatureList::IsEnabled(kMacSandboxOdmeUserDirAccess)));
-
   base::FilePath helper_bundle_path =
       base::apple::GetInnermostAppBundlePath(command_line.GetProgram());
+
+  CHECK(serializer->SetBooleanParameter(
+      sandbox::policy::kParamWebnnCompilerProcess,
+      base::FeatureList::IsEnabled(
+          webnn::mojom::features::kWebNNCompilerProcess)));
 
   // The helper may not be contained in an app bundle for unit tests.
   // In that case `kParamHelperBundleId` will remain unset.
@@ -229,6 +242,12 @@ void SetupProxyResolverSandboxParameters(
       sandbox::policy::kParamSystemProxyNetworkAccess, /*value=*/false));
 }
 
+void SetupRendererSandboxParameters(sandbox::SandboxSerializer* serializer) {
+  CHECK(serializer->SetBooleanParameter(
+      sandbox::policy::kParamAllowRendererPidinfo,
+      base::FeatureList::IsEnabled(kMacSandboxAllowRendererPidinfo)));
+}
+
 void SetupWebNNModelCompilationSandboxParameters(
     sandbox::SandboxSerializer* serializer) {
   // CoreML requires access to user temporary directories to write intermediate
@@ -248,11 +267,14 @@ bool SetupSandboxParameters(sandbox::mojom::Sandbox sandbox_type,
     case sandbox::mojom::Sandbox::kMirroring:
     case sandbox::mojom::Sandbox::kPrintBackend:
     case sandbox::mojom::Sandbox::kPrintCompositor:
-    case sandbox::mojom::Sandbox::kRenderer:
     case sandbox::mojom::Sandbox::kService:
     case sandbox::mojom::Sandbox::kServiceWithJit:
+    case sandbox::mojom::Sandbox::kPlatformRuntime:
     case sandbox::mojom::Sandbox::kUtility:
       // No specialized setup required.
+      break;
+    case sandbox::mojom::Sandbox::kRenderer:
+      SetupRendererSandboxParameters(serializer);
       break;
     case sandbox::mojom::Sandbox::kProxyResolver:
       SetupProxyResolverSandboxParameters(serializer, command_line);

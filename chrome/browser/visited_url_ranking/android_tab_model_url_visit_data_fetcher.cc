@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/sync_device_info/device_info.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/url_deduplication/url_deduplication_helper.h"
 #include "components/visited_url_ranking/public/fetch_options.h"
 #include "components/visited_url_ranking/public/fetch_result.h"
@@ -53,6 +54,7 @@ TabMetadata::TabOrigin GetTabOriginFromLaunchType(int type) {
     case TabModel::TabLaunchType::FROM_READING_LIST:
     case TabModel::TabLaunchType::FROM_TAB_SWITCHER_UI:
     case TabModel::TabLaunchType::FROM_OMNIBOX:
+    case TabModel::TabLaunchType::FROM_OMNIBOX_BACKGROUND:
     case TabModel::TabLaunchType::FROM_BOOKMARK_BAR_BACKGROUND:
     case TabModel::TabLaunchType::FROM_RECENT_TABS_FOREGROUND:
     case TabModel::TabLaunchType::FROM_HISTORY_NAVIGATION_BACKGROUND:
@@ -60,6 +62,7 @@ TabMetadata::TabOrigin GetTabOriginFromLaunchType(int type) {
     case TabModel::TabLaunchType::FROM_LONGPRESS_FOREGROUND_IN_GROUP:
     case TabModel::TabLaunchType::FROM_LINK_CREATING_NEW_WINDOW:
     case TabModel::TabLaunchType::FROM_TIPS_NOTIFICATIONS:
+    case TabModel::TabLaunchType::FROM_UNDO_CLOSURE:
       return TabMetadata::TabOrigin::kOpenedByUserAction;
 
     case TabModel::TabLaunchType::FROM_RESTORE:

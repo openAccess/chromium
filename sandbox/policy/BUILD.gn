@@ -32,6 +32,8 @@ component("policy") {
     sources += [
       "linux/bpf_base_policy_linux.cc",
       "linux/bpf_base_policy_linux.h",
+      "linux/bpf_gpu_policy_android.cc",
+      "linux/bpf_gpu_policy_android.h",
       "linux/bpf_renderer_policy_linux.cc",
       "linux/bpf_renderer_policy_linux.h",
       "linux/landlock_gpu_policy_android.cc",
@@ -39,10 +41,12 @@ component("policy") {
       "linux/landlock_util.cc",
       "linux/landlock_util.h",
     ]
-    deps += [
+    public_deps += [
       "//sandbox:sandbox_buildflags",
-      "//sandbox/linux:sandbox_services",
       "//sandbox/linux:seccomp_bpf",
+    ]
+    deps += [
+      "//sandbox/linux:sandbox_services",
       "//third_party/jni_zero",
     ]
   }
@@ -95,11 +99,23 @@ component("policy") {
       "linux/sandbox_seccomp_bpf_linux.cc",
       "linux/sandbox_seccomp_bpf_linux.h",
     ]
-    if (allow_oop_video_decoder) {
+    if (is_chromeos) {
+      # Only wired up to a sandbox type when enable_oop_video_decoder is set
+      # (see sandbox_seccomp_bpf_linux.cc), but compiled on every ChromeOS
+      # build so that its unit tests run on the linux-chromeos CQ bots, which
+      # build without VA-API/V4L2.
       sources += [
         "linux/bpf_hardware_video_decoding_policy_linux.cc",
         "linux/bpf_hardware_video_decoding_policy_linux.h",
       ]
+    }
+    if (is_linux) {
+      # The XR Device Service (kXrCompositing) sandbox only exists on Linux.
+      sources += [
+        "linux/bpf_xr_policy_linux.cc",
+        "linux/bpf_xr_policy_linux.h",
+      ]
+      deps += [ "//net" ]  # TODO(crbug.com/40220507): remove this.
     }
 
     configs += [
@@ -234,6 +250,10 @@ source_set("tests") {
       "//sandbox/linux:sandbox_services_headers",
       "//sandbox/linux:seccomp_bpf",
     ]
+  }
+
+  if (is_chromeos) {
+    sources += [ "linux/bpf_hardware_video_decoding_policy_linux_unittest.cc" ]
   }
 
   if (is_win) {

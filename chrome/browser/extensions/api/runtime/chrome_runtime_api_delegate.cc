@@ -25,9 +25,11 @@
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/extensions/updater/extension_updater.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "components/update_client/update_query_params.h"
-#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/delayed_install_manager.h"
 #include "extensions/browser/extension_registrar.h"
@@ -35,6 +37,7 @@
 #include "extensions/browser/view_type_utils.h"
 #include "extensions/browser/warning_service.h"
 #include "extensions/browser/warning_set.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/runtime.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_features.h"
@@ -44,6 +47,8 @@
 #include "extensions/common/manifest_handlers/options_page_info.h"
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "net/base/backoff_entry.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/components/kiosk/kiosk_utils.h"
@@ -57,13 +62,11 @@
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/devtools/devtools_window.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
-#include "chrome/browser/ui/navigator/browser_navigator_params.h"
-#else
-#include "chrome/browser/ui/android/tab_model/tab_model.h"
-#include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+#endif
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
+#include "chrome/browser/ui/waap/waap_utils.h"
 #endif
 
 namespace {
@@ -284,54 +287,22 @@ bool ChromeRuntimeAPIDelegate::CheckForUpdates(
 
 void ChromeRuntimeAPIDelegate::OpenURL(const GURL& uninstall_url) {
   Profile* profile = Profile::FromBrowserContext(browser_context_);
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-  BrowserWindowInterface* current_browser =
-      ProfileBrowserCollection::GetForProfile(profile)->GetLastActiveBrowser();
-  if (!current_browser) {
-    current_browser =
-        CreateBrowserWindow(BrowserWindowCreateParams(profile, false));
-  }
-  if (!current_browser) {
-    return;
-  }
 
-  NavigateParams params(current_browser, uninstall_url,
+  NavigateParams params(profile, uninstall_url,
                         ui::PAGE_TRANSITION_CLIENT_REDIRECT);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.user_gesture = false;
   Navigate(&params);
-#else
-  TabModel* tab_model = nullptr;
-  for (TabModel* model : TabModelList::models()) {
-    if (model->GetProfile() == profile) {
-      tab_model = model;
-      break;
-    }
-  }
 
-  if (!tab_model) {
-    return;
+  // TODO(crbug.com/552223108): Remove this when the below bug is fixed on
+  // Android.
+#if BUILDFLAG(IS_ANDROID)
+  // This is necessary for Android since the new tab does not automatically
+  // gain focus with Navigate().
+  if (params.navigated_or_inserted_contents) {
+    params.navigated_or_inserted_contents->SetInitialFocus();
   }
-
-  std::unique_ptr<content::WebContents> contents = content::WebContents::Create(
-      content::WebContents::CreateParams(browser_context_));
-  content::WebContents* raw_web_contents = contents.get();
-  tab_model->CreateTab(nullptr, std::move(contents), TabModel::kInvalidIndex,
-                       TabModel::TabLaunchType::FROM_RECENT_TABS_FOREGROUND,
-                       /*should_pin=*/false);
-
-  content::NavigationController::LoadURLParams load_params(uninstall_url);
-  load_params.transition_type = ui::PAGE_TRANSITION_FROM_API;
-  base::WeakPtr<content::NavigationHandle> navigation_handle =
-      raw_web_contents->GetController().LoadURLWithParams(load_params);
-  // Navigation can fail for any number of reasons at the content layer.
-  // Unfortunately, we can't provide a detailed error message here, because
-  // there are too many possible triggers. At least add a log for diagnostics.
-  if (!navigation_handle) {
-    LOG(ERROR) << "navigation rejected for uninstall_url"
-               << uninstall_url.spec();
-  }
-#endif
+#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 // Helper function for GetPlatformInfo(). nacl_arch is deprecated, so
@@ -484,8 +455,13 @@ void ChromeRuntimeAPIDelegate::OpenOptionsPage(
 #else
     // Other platforms create windows synchronously. Fallthrough and open
     // the options page afterwards.
+    const base::TimeTicks now = base::TimeTicks::Now();
     browser = CreateBrowserWindow(std::move(params));
     CHECK(browser);
+    if (auto* manager = InitialWebUIWindowMetricsManager::From(browser)) {
+      manager->SetWindowCreationInfo(waap::NewWindowCreationSource::kExtension,
+                                     now);
+    }
 #endif
   }
   std::move(callback).Run(

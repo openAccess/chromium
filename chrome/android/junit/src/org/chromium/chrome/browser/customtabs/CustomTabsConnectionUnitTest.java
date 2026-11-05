@@ -64,18 +64,18 @@ import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowProcess;
 
+import org.chromium.base.ActivityState;
+import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.browserservices.PostMessageHandler;
 import org.chromium.chrome.browser.browserservices.SessionDataHolder;
 import org.chromium.chrome.browser.browserservices.SessionHandler;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.SessionHolder;
 import org.chromium.chrome.browser.browserservices.ui.splashscreen.trustedwebactivity.SplashImageHolder;
 import org.chromium.chrome.browser.customtabs.content.EngagementSignalsHandler;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManagerImpl;
 import org.chromium.chrome.browser.tab.Tab;
 
@@ -87,6 +87,22 @@ import java.io.IOException;
 /** Tests for some parts of {@link CustomTabsConnection}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class CustomTabsConnectionUnitTest {
+    // getIntentDataProvider() is otherwise only populated during native initialization.
+    private static class TestCustomTabActivity extends CustomTabActivity {
+        private BrowserServicesIntentDataProvider mIntentDataProvider;
+        private int mFinishAndRemoveTaskCount;
+
+        @Override
+        public BrowserServicesIntentDataProvider getIntentDataProvider() {
+            return mIntentDataProvider;
+        }
+
+        @Override
+        public void finishAndRemoveTask() {
+            mFinishAndRemoveTaskCount++;
+            super.finishAndRemoveTask();
+        }
+    }
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Rule public final TemporaryFolder mTemporaryFolder = new TemporaryFolder();
@@ -98,7 +114,7 @@ public class CustomTabsConnectionUnitTest {
     @Mock private Tab mTab;
 
     private CustomTabsConnection mConnection;
-    private SessionHolder<?> mSessionHolder;
+    private SessionHolder mSessionHolder;
     private CustomTabsSessionToken mSession;
     private PostMessageServiceConnection mPostMessageServiceConnection;
     private PostMessageHandler mPostMessageHandler;
@@ -108,7 +124,7 @@ public class CustomTabsConnectionUnitTest {
         CustomTabsConnection.setInstanceForTesting(null);
         mConnection = CustomTabsConnection.getInstance();
         mSession = spy(CustomTabsSessionToken.createMockSessionTokenForTesting());
-        mSessionHolder = new SessionHolder<>(mSession);
+        mSessionHolder = SessionHolder.of(mSession);
         when(mSession.getCallback()).thenReturn(mCallback);
         doReturn(mSessionHolder).when(mSessionHandler).getSession();
         SessionDataHolder.getInstance().setActiveHandler(mSessionHandler);
@@ -224,21 +240,6 @@ public class CustomTabsConnectionUnitTest {
                 mPostMessageHandler,
                 mPostMessageServiceConnection,
                 handler);
-    }
-
-    @Test
-    @DisableFeatures(ChromeFeatureList.SEARCH_IN_CCT)
-    public void shouldEnableOmniboxForIntent_featureDisabled() {
-        // The logic is currently expected to not even peek in the intent.
-        assertFalse(mConnection.shouldEnableOmniboxForIntent(null));
-    }
-
-    @Test
-    @EnableFeatures(ChromeFeatureList.SEARCH_IN_CCT)
-    public void shouldEnableOmniboxForIntent_featureEnabled() {
-        // The logic is currently expected to not even peek in the intent.
-        // Omnibox must remain disabled even if the feature flag is on.
-        assertFalse(mConnection.shouldEnableOmniboxForIntent(null));
     }
 
     @Test
@@ -401,5 +402,81 @@ public class CustomTabsConnectionUnitTest {
         assertFalse(TestSplashImageContentProvider.sOpened);
         assertNull(SplashImageHolder.getInstance().takeImage(mSessionHolder));
     }
+
     // TODO(https://crrev.com/c/4118209) Add more tests for Feature enabling/disabling.
+
+    private TestCustomTabActivity createCustomTabActivity(
+            boolean hasTargetNetwork, SessionHolder session, boolean finishing) {
+        TestCustomTabActivity activity =
+                Robolectric.buildActivity(TestCustomTabActivity.class).get();
+        BrowserServicesIntentDataProvider provider = mock(BrowserServicesIntentDataProvider.class);
+        activity.mIntentDataProvider = provider;
+        when(provider.hasTargetNetwork()).thenReturn(hasTargetNetwork);
+        doReturn(session).when(provider).getSession();
+        if (finishing) {
+            activity.finish();
+        }
+        return activity;
+    }
+
+    @Test
+    public void testCleanUpSession_matchingSessionWithTargetNetwork_finishesAndRemovesTask() {
+        TestCustomTabActivity activity =
+                createCustomTabActivity(
+                        /* hasTargetNetwork= */ true, mSessionHolder, /* finishing= */ false);
+        ApplicationStatus.onStateChangeForTesting(activity, ActivityState.CREATED);
+        try {
+            mConnection.cleanUpSession(mSession);
+            assertEquals(1, activity.mFinishAndRemoveTaskCount);
+            assertTrue(activity.isFinishing());
+        } finally {
+            ApplicationStatus.onStateChangeForTesting(activity, ActivityState.DESTROYED);
+        }
+    }
+
+    @Test
+    public void testCleanUpSession_withoutTargetNetwork_doesNotFinish() {
+        TestCustomTabActivity activity =
+                createCustomTabActivity(
+                        /* hasTargetNetwork= */ false, mSessionHolder, /* finishing= */ false);
+        ApplicationStatus.onStateChangeForTesting(activity, ActivityState.CREATED);
+        try {
+            mConnection.cleanUpSession(mSession);
+            assertEquals(0, activity.mFinishAndRemoveTaskCount);
+            assertFalse(activity.isFinishing());
+        } finally {
+            ApplicationStatus.onStateChangeForTesting(activity, ActivityState.DESTROYED);
+        }
+    }
+
+    @Test
+    public void testCleanUpSession_differentSession_doesNotFinish() {
+        SessionHolder otherSession =
+                SessionHolder.of(CustomTabsSessionToken.createMockSessionTokenForTesting());
+        TestCustomTabActivity activity =
+                createCustomTabActivity(
+                        /* hasTargetNetwork= */ true, otherSession, /* finishing= */ false);
+        ApplicationStatus.onStateChangeForTesting(activity, ActivityState.CREATED);
+        try {
+            mConnection.cleanUpSession(mSession);
+            assertEquals(0, activity.mFinishAndRemoveTaskCount);
+            assertFalse(activity.isFinishing());
+        } finally {
+            ApplicationStatus.onStateChangeForTesting(activity, ActivityState.DESTROYED);
+        }
+    }
+
+    @Test
+    public void testCleanUpSession_alreadyFinishing_doesNotFinishAgain() {
+        TestCustomTabActivity activity =
+                createCustomTabActivity(
+                        /* hasTargetNetwork= */ true, mSessionHolder, /* finishing= */ true);
+        ApplicationStatus.onStateChangeForTesting(activity, ActivityState.CREATED);
+        try {
+            mConnection.cleanUpSession(mSession);
+            assertEquals(0, activity.mFinishAndRemoveTaskCount);
+        } finally {
+            ApplicationStatus.onStateChangeForTesting(activity, ActivityState.DESTROYED);
+        }
+    }
 }

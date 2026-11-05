@@ -17,15 +17,19 @@
 #import "ios/chrome/browser/composebox/public/features.h"
 #import "ios/chrome/browser/composebox/shared/ui/composebox_ui_constants.h"
 #import "ios/chrome/browser/scene/ui/scene_ui_constants.h"
+#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_constants.h"
 #import "ios/chrome/browser/start_surface/ui_bundled/home_surface_egtest_utils.h"
+#import "ios/chrome/browser/tab_picker/ui/tab_picker_ui_constants.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_constants.h"
+#import "ios/chrome/browser/tab_switcher/ui_bundled/test/tabs_egtest_util.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
+#import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
@@ -37,6 +41,11 @@
 using chrome_test_util::OmniboxText;
 
 namespace {
+
+constexpr char kPonyPagePath[] = "/pony.html";
+constexpr char kChromiumLogoPagePath[] = "/chromium_logo_page.html";
+NSString* const kPonyPageTitle = @"ponies";
+NSString* const kChromiumLogoPageTitle = @"chromium logo";
 
 // Handles simulated search requests to provide an AIM-eligible page with a
 // link.
@@ -81,11 +90,25 @@ void WaitForDetent(AssistantContainerDetent detent) {
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:matcher];
 }
 
+// Taps the grabber, which moves the assistant to the next taller detent, or
+// from the tallest detent back to the smallest one, then waits for the
+// assistant to reach `detent`.
+void TapGrabberAndWaitForDetent(AssistantContainerDetent detent) {
+  [[EarlGrey selectElementWithMatcher:
+                 grey_accessibilityID(
+                     kAssistantContainerGrabberAccessibilityIdentifier)]
+      performAction:grey_tap()];
+  WaitForDetent(detent);
+}
+
 // Opens the composebox, attaches the current tab, and waits for the send button
 // to be enabled.
 void OpenCoBrowse(const GURL& url) {
+  [ComposeboxAppInterface enableAllTools];
   [ComposeboxAppInterface setFuseboxEligible:YES];
   [ComposeboxAppInterface setTabUploadAutoSucceed:YES];
+  [ChromeEarlGrey setBoolValue:YES
+                   forUserPref:prefs::kCobrowseTabSharingConsentAccepted];
 
   [ChromeEarlGrey loadURL:url];
   [ChromeEarlGrey waitForPageToFinishLoading];
@@ -136,6 +159,151 @@ id<GREYMatcher> CloseButton() {
   return grey_accessibilityID(kAssistantAIMCloseButtonAccessibilityIdentifier);
 }
 
+// Verifies that the Shared Tabs sheet displays the expected tabs (by title)
+// and does not contain the absent tabs. Note that this helper requires
+// `kComposeboxPlusButtonBottomSheet` to be enabled to display the Shared Tabs
+// menu item under the plus button. If `dismissAfterVerification` is YES,
+// dismisses the Shared Tabs sheet and the plus menu.
+void VerifySharedTabs(NSArray<NSString*>* expectedTitles,
+                      NSArray<NSString*>* absentTitles,
+                      BOOL dismissAfterVerification) {
+  id<GREYMatcher> plusButton = grey_allOf(
+      grey_accessibilityID(kComposeboxPlusButtonAccessibilityIdentifier),
+      grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:plusButton];
+  [[EarlGrey selectElementWithMatcher:plusButton] performAction:grey_tap()];
+
+  id<GREYMatcher> sharedTabsMenuItem = grey_allOf(
+      grey_text(l10n_util::GetNSString(IDS_IOS_COMPOSEBOX_MENU_SHARED_TABS)),
+      grey_sufficientlyVisible(), nil);
+
+  if (expectedTitles.count == 0) {
+    id<GREYMatcher> selectTabsMenuItem =
+        grey_allOf(grey_accessibilityID(
+                       kComposeboxSelectTabsActionAccessibilityIdentifier),
+                   grey_sufficientlyVisible(), nil);
+    [ChromeEarlGrey waitForUIElementToAppearWithMatcher:selectTabsMenuItem];
+    [[EarlGrey selectElementWithMatcher:sharedTabsMenuItem]
+        assertWithMatcher:grey_nil()];
+    if (dismissAfterVerification) {
+      [[EarlGrey selectElementWithMatcher:selectTabsMenuItem]
+          performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
+      [ChromeEarlGrey
+          waitForUIElementToDisappearWithMatcher:selectTabsMenuItem];
+    }
+    return;
+  }
+
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:sharedTabsMenuItem];
+  [[EarlGrey selectElementWithMatcher:sharedTabsMenuItem]
+      performAction:grey_tap()];
+
+  auto cellMatcher = [](NSString* title) {
+    return grey_allOf(
+        grey_text(title),
+        grey_ancestor(grey_kindOfClassName(@"UICollectionViewListCell")),
+        grey_sufficientlyVisible(), nil);
+  };
+
+  {
+    ScopedSynchronizationDisabler disabler;
+    for (NSString* title in expectedTitles) {
+      [ChromeEarlGrey waitForUIElementToAppearWithMatcher:cellMatcher(title)];
+    }
+    for (NSString* title in absentTitles) {
+      [[EarlGrey selectElementWithMatcher:cellMatcher(title)]
+          assertWithMatcher:grey_nil()];
+    }
+
+    if (dismissAfterVerification) {
+      id<GREYMatcher> sharedTabsCloseButton = grey_allOf(
+          grey_accessibilityID(
+              kComposeboxSharedTabsCloseButtonAccessibilityIdentifier),
+          grey_sufficientlyVisible(), nil);
+      [ChromeEarlGrey
+          waitForUIElementToAppearWithMatcher:sharedTabsCloseButton];
+      [[EarlGrey selectElementWithMatcher:sharedTabsCloseButton]
+          performAction:grey_tap()];
+      [ChromeEarlGrey
+          waitForUIElementToDisappearWithMatcher:sharedTabsCloseButton];
+    }
+  }
+
+  if (dismissAfterVerification) {
+    id<GREYMatcher> selectTabsMenuItem =
+        grey_allOf(grey_accessibilityID(
+                       kComposeboxSelectTabsActionAccessibilityIdentifier),
+                   grey_sufficientlyVisible(), nil);
+    [ChromeEarlGrey waitForUIElementToAppearWithMatcher:selectTabsMenuItem];
+    [[EarlGrey selectElementWithMatcher:selectTabsMenuItem]
+        performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
+    [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:selectTabsMenuItem];
+  }
+}
+
+// Removes a shared tab with `title` from the Shared Tabs sheet and dismisses
+// the sheet.
+void RemoveSharedTab(NSString* title) {
+  id<GREYMatcher> plusButton = grey_allOf(
+      grey_accessibilityID(kComposeboxPlusButtonAccessibilityIdentifier),
+      grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:plusButton];
+  [[EarlGrey selectElementWithMatcher:plusButton] performAction:grey_tap()];
+
+  id<GREYMatcher> sharedTabsMenuItem = grey_allOf(
+      grey_text(l10n_util::GetNSString(IDS_IOS_COMPOSEBOX_MENU_SHARED_TABS)),
+      grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:sharedTabsMenuItem];
+  [[EarlGrey selectElementWithMatcher:sharedTabsMenuItem]
+      performAction:grey_tap()];
+
+  id<GREYMatcher> cellMatcher = grey_allOf(
+      grey_text(title),
+      grey_ancestor(grey_kindOfClassName(@"UICollectionViewListCell")),
+      grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:cellMatcher];
+  [[EarlGrey selectElementWithMatcher:cellMatcher]
+      performAction:grey_longPress()];
+
+  id<GREYMatcher> removeActionMatcher = grey_allOf(
+      grey_text(l10n_util::GetNSString(IDS_IOS_COMPOSEBOX_MENU_REMOVE_TAB)),
+      grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:removeActionMatcher];
+  [[EarlGrey selectElementWithMatcher:removeActionMatcher]
+      performAction:grey_tap()];
+
+  {
+    ScopedSynchronizationDisabler disabler;
+    [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:removeActionMatcher];
+    [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:cellMatcher];
+    id<GREYMatcher> sharedTabsCloseButton =
+        grey_allOf(grey_accessibilityID(
+                       kComposeboxSharedTabsCloseButtonAccessibilityIdentifier),
+                   grey_sufficientlyVisible(), nil);
+    [ChromeEarlGrey waitForUIElementToAppearWithMatcher:sharedTabsCloseButton];
+    [[EarlGrey selectElementWithMatcher:sharedTabsCloseButton]
+        performAction:grey_tap()];
+    [ChromeEarlGrey
+        waitForUIElementToDisappearWithMatcher:sharedTabsCloseButton];
+  }
+
+  // Dismiss the "Tab removed" snackbar first so it doesn't obscure the
+  // Composebox menu on iPhone or elements on the input plate.
+  id<GREYMatcher> snackbarMatcher = chrome_test_util::SnackbarViewMatcher();
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:snackbarMatcher];
+  [[EarlGrey selectElementWithMatcher:snackbarMatcher]
+      performAction:grey_tap()];
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:snackbarMatcher];
+
+  id<GREYMatcher> selectTabsMenuItem = grey_allOf(
+      grey_accessibilityID(kComposeboxSelectTabsActionAccessibilityIdentifier),
+      grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:selectTabsMenuItem];
+  [[EarlGrey selectElementWithMatcher:selectTabsMenuItem]
+      performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:selectTabsMenuItem];
+}
+
 }  // namespace
 
 @interface AssistantAIMTestCase : ChromeTestCase
@@ -146,25 +314,49 @@ id<GREYMatcher> CloseButton() {
 }
 
 - (GURL)simulatedAimURLForQuery:(const std::string&)query {
-  std::string relativeURL = "/search?udm=50&mtid=dummy_server_id&q=" + query;
+  std::string relativeURL =
+      "/search?udm=50&mtid=dummy_server_id&mstk=dummy_turn_id&q=" + query;
   return self.testServer->GetURL("localhost", relativeURL);
 }
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
-  // Enable features needed for composebox.
-  config.features_enabled.push_back(kComposeboxIpad);
   config.features_enabled.push_back(kAimCobrowse);
   config.features_enabled.push_back(kAssistantContainer);
   config.features_enabled.push_back(kComposeboxPhysicalKeyboardReturnKeys);
-  config.features_disabled.push_back(kComposeboxAIMDisabled);
   config.features_disabled.push_back(omnibox::kAimServerEligibilityEnabled);
-  config.features_disabled.push_back(kAssistantAimMinimizedState);
   config.features_disabled.push_back(kComposeboxServerSideState);
-  config.features_disabled.push_back(kPreventCobrowseOnAimSrpTap);
-  // TODO(crbug.com/536079613): Re-enable kAppBarHideInFullscreen once these
-  // tests are updated to support it.
-  config.features_disabled.push_back(kAppBarHideInFullscreen);
+
+  if ([self isRunningTest:@selector(testMinimizedStateWhenFlagEnabled)]) {
+    config.features_enabled.push_back(kAssistantAimMinimizedState);
+  } else {
+    config.features_disabled.push_back(kAssistantAimMinimizedState);
+  }
+
+  if ([self isRunningTest:
+                @selector(testCobrowseAutoAttachesCurrentTabAfterNavigation)] ||
+      [self
+          isRunningTest:
+              @selector(
+                  testCobrowsePreservesAutoAttachedTabAfterSendingQueryAndNavigation)] ||
+      [self isRunningTest:@selector(
+                              testCobrowseFollowUpAfterSameTabNavigation)] ||
+      [self
+          isRunningTest:
+              @selector(
+                  testCobrowseRemovedTabStaysRemovedAfterRefocusingOrQuery)] ||
+      [self
+          isRunningTest:
+              @selector(testCobrowseNavigatingToChromeURLDoesNotAutoAttach)]) {
+    config.features_enabled.push_back(kComposeboxPlusButtonBottomSheet);
+  }
+
+  if ([self
+          isRunningTest:@selector(
+                            testNavigateInMainBrowserUpdatesCobrowseContext)] ||
+      [self isRunningTest:@selector(testAssistantPersistsOnColdStart)]) {
+    config.features_enabled.push_back(kEnableCobrowseOnAimSrpTap);
+  }
 
   // Enable omnibox debugging flags.
   config.additional_args.push_back("-EnableOmniboxDebugging");
@@ -201,7 +393,9 @@ id<GREYMatcher> CloseButton() {
     }
     // Also explicitly clear the session active map preference in case the
     // UI tap failed or the async preference write didn't complete.
-    [ChromeEarlGrey clearUserPrefWithName:"ios.cobrowse.session_active_map"];
+    [ChromeEarlGrey clearUserPrefWithName:prefs::kCobrowseSessionActiveMap];
+    [ChromeEarlGrey
+        clearUserPrefWithName:prefs::kCobrowseTabSharingConsentAccepted];
     [ChromeEarlGrey commitPendingUserPrefsWrite];
     [ComposeboxAppInterface setAllToolsEnabled:NO];
     [ComposeboxAppInterface setFuseboxEligible:NO];
@@ -210,7 +404,9 @@ id<GREYMatcher> CloseButton() {
   [super setUp];
   // Clear the pref at the beginning of the test as well to ensure a clean
   // slate, especially for tests that immediately relaunch the app.
-  [ChromeEarlGrey clearUserPrefWithName:"ios.cobrowse.session_active_map"];
+  [ChromeEarlGrey clearUserPrefWithName:prefs::kCobrowseSessionActiveMap];
+  [ChromeEarlGrey setBoolValue:YES
+                   forUserPref:prefs::kCobrowseTabSharingConsentAccepted];
   [ChromeEarlGrey commitPendingUserPrefsWrite];
 
   ResetMakeHomeSurfaceOpenImmediately();
@@ -224,10 +420,6 @@ id<GREYMatcher> CloseButton() {
 }
 
 - (void)testCloseButtonDismissesAssistant {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
   OpenCoBrowse(_defaultURL);
 
   // Wait for the assistant to appear.
@@ -242,10 +434,6 @@ id<GREYMatcher> CloseButton() {
 }
 
 - (void)testShowsUndoSnackbarAfterClosing {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
   OpenCoBrowse(_defaultURL);
 
   // Wait for the assistant to appear.
@@ -285,10 +473,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that allowing the undo snackbar to dismiss naturally does not crash the
 // app. This is a regression test for crbug.com/539891492.
 - (void)testCloseAssistantAndLetUndoSnackbarDismissDoesNotCrash {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
   OpenCoBrowse(_defaultURL);
 
   // Wait for the assistant to appear.
@@ -328,10 +512,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that opening an external URL from the launcher while the app is in the
 // background dismisses an active Co-browse session that is in minimized state.
 - (void)testOpenExternalURLWithActiveCoBrowse {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   // Open Co-browse session on an eligible search page.
   OpenCoBrowse(_defaultURL);
@@ -362,10 +542,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that opening a WidgetKit URL scheme while the app is in the background
 // dismisses an active Co-browse session that is in minimized state.
 - (void)testWidgetKitInvocationWithActiveCoBrowse {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   // Open Co-browse session on an eligible search page.
   OpenCoBrowse(_defaultURL);
@@ -397,10 +573,6 @@ id<GREYMatcher> CloseButton() {
 
 // Tests that the assistant can be dismissed and reopened multiple times.
 - (void)testOpenCloseAndReopenAssistant {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   // First presentation & dismissal.
   OpenCoBrowse(_defaultURL);
@@ -418,10 +590,6 @@ id<GREYMatcher> CloseButton() {
 }
 
 - (void)testAssistantPersistsThroughTabGrid {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
   OpenCoBrowse(_defaultURL);
 
   // Wait for the assistant to appear.
@@ -449,10 +617,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that tapping the new tab button in the toolbar opens a new tab, hides
 // the assistant, and navigating on the new tab shows the assistant again.
 - (void)testNewTabButtonHidesAssistant {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(@"Secondary toolbar is not present on iPad.");
   }
@@ -484,10 +648,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that when a new tab is opened from an eligible AIM page while a session
 // is already active, the assistant updates to the new tab's context.
 - (void)testNewTabTriggersCobrowseUpdatesContext {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   // 1. Start Co-browse on a normal URL.
   OpenCoBrowse(_defaultURL);
@@ -521,10 +681,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that the assistant can transition between medium, large, and minimized
 // detents.
 - (void)testDetentTransitions {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
   OpenCoBrowse(_defaultURL);
 
   // Wait for the assistant to appear.
@@ -550,15 +706,26 @@ id<GREYMatcher> CloseButton() {
   WaitForDetent(AssistantContainerDetent::kMinimized);
 }
 
+// Tests that tapping the grabber cycles the assistant through all its detents,
+// including from Minimized to Medium. EarlGrey swipes always run to the window
+// edge, so they can't reliably stop at the Medium detent.
+- (void)testGrabberCyclesDetents {
+  OpenCoBrowse(_defaultURL);
+
+  // Wait for the assistant to appear in the Medium detent.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:CloseButton()];
+  WaitForDetent(AssistantContainerDetent::kMedium);
+
+  TapGrabberAndWaitForDetent(AssistantContainerDetent::kLarge);
+  TapGrabberAndWaitForDetent(AssistantContainerDetent::kMinimized);
+  TapGrabberAndWaitForDetent(AssistantContainerDetent::kMedium);
+}
+
 // Tests that the Loaded AIM URL debugger view controller is presented
 // correctly when tapping the "AIM Loaded URL" action in the context menu
 // under omnibox debugging, and that it can be closed by tapping the Close
 // button.
 - (void)testLoadedURLDebuggerView {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
   OpenCoBrowse(_defaultURL);
 
   // Wait for the assistant to appear.
@@ -605,10 +772,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that the loaded AIM URL can be edited in the debugger, and that saving
 // the changes updates the URL and triggers a navigation.
 - (void)testLoadedURLDebuggerEditing {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
   OpenCoBrowse(_defaultURL);
 
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:CloseButton()];
@@ -693,10 +856,6 @@ id<GREYMatcher> CloseButton() {
 // is active, the context is updated, so that when returning to a non-AIM tab,
 // the updated context is displayed.
 - (void)testNavigateInMainBrowserUpdatesCobrowseContext {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   // 1. Navigate to fake aim page A.
   [ChromeEarlGrey loadURL:[self simulatedAimURLForQuery:"pageA"]];
@@ -740,18 +899,6 @@ id<GREYMatcher> CloseButton() {
 // All 3 detents are available in this mode. This test verifies that we start
 // in minimized and are not stuck in it.
 - (void)testMinimizedStateWhenFlagEnabled {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
-  AppLaunchConfiguration config = [self appConfigurationForTestCase];
-  // Remove from disabled list to allow enabling it.
-  std::erase(config.features_disabled, kAssistantAimMinimizedState);
-
-  config.features_enabled.push_back(kAssistantAimMinimizedState);
-  config.relaunch_policy = ForceRelaunchByKilling;
-  [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
-
   OpenCoBrowse(_defaultURL);
 
   // Wait for the assistant to appear and be visible.
@@ -818,10 +965,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that the Co-browse session (including its specific context and thread
 // ID) is persisted across cold starts.
 - (void)testAssistantPersistsOnColdStart {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   // 1. Setup a specific context by navigating to a simulated AIM URL.
   [ChromeEarlGrey loadURL:[self simulatedAimURLForQuery:"persisted_query"]];
@@ -867,38 +1010,30 @@ id<GREYMatcher> CloseButton() {
                                                           @"persisted_query")];
 }
 
-// Tests that the Co-browse assistant is hidden on the New Tab Page (NTP)
-// when an NTP is opened after the app restarts with an active session.
+// Tests that the Co-browse assistant is closed when the Start Surface (NTP)
+// is opened after the app restarts with an active session.
 - (void)testAssistantHiddenOnNTPAfterColdStart {
   if ([ChromeEarlGrey isIPadIdiom]) {
     EARL_GREY_TEST_SKIPPED(
         @"Start surface NTP on cold start is not supported on iPad.");
   }
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
-  // 1. Setup a specific context by navigating to a simulated AIM URL.
-  [ChromeEarlGrey loadURL:[self simulatedAimURLForQuery:"persisted_query"]];
-  [ChromeEarlGrey waitForPageToFinishLoading];
+  // 1. Open Co-browse on a normal URL.
+  OpenCoBrowse(_defaultURL);
 
-  // 2. Open cobrowse by tapping on a link in the fake aim page.
-  // This opens a new non-AIM tab (pony.html), which will display the sheet.
-  [ChromeEarlGrey tapWebStateElementWithID:@"my_link"];
-  [ChromeEarlGrey waitForMainTabCount:2];
-
+  // Wait for the assistant to appear.
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:CloseButton()];
 
   MakeHomeSurfaceOpenImmediately();
 
-  // 3. Cold start the app. This simulates returning to the app after it was
+  // 2. Cold start the app. This simulates returning to the app after it was
   // force-closed, which natively triggers the Start Surface NTP to open,
-  // preserving the cobrowse session on the background tab.
-  [ChromeEarlGrey saveSessionImmediately];
+  // terminating the cobrowse session.
   AppLaunchConfiguration config = [self appConfigurationForTestCase];
   config.relaunch_policy = ForceRelaunchByCleanShutdown;
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
+
+  [ChromeTestCase removeAnyOpenMenusAndInfoBars];
 
   // The app will automatically open a Start Surface NTP upon cold start.
   // Wait for the fake omnibox to appear, indicating the NTP has loaded.
@@ -909,10 +1044,50 @@ id<GREYMatcher> CloseButton() {
   [[EarlGrey selectElementWithMatcher:CloseButton()]
       assertWithMatcher:grey_nil()];
 
-  // Navigate to a normal URL to ensure the assistant reappears.
+  // Switch back to the previous tab to ensure the assistant does NOT reappear
+  // because the cobrowse session was terminated.
+  [ChromeEarlGrey selectTabAtIndex:0];
+  [ChromeEarlGrey waitForPageToFinishLoading];
+  [[EarlGrey selectElementWithMatcher:CloseButton()]
+      assertWithMatcher:grey_nil()];
+
+  ResetMakeHomeSurfaceOpenImmediately();
+}
+
+// Tests that the Co-browse assistant is closed when the Start Surface (NTP)
+// is opened after the app is backgrounded and foregrounded after the inactivity
+// threshold.
+- (void)testAssistantClosedOnStartSurfaceAfterWarmStart {
+  if ([ChromeEarlGrey isIPadIdiom]) {
+    EARL_GREY_TEST_SKIPPED(
+        @"Start surface NTP on warm start is not supported on iPad.");
+  }
+
+  OpenCoBrowse(_defaultURL);
+
+  // Wait for the assistant to appear.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:CloseButton()];
+
+  MakeHomeSurfaceOpenImmediately();
+
+  // Background and foreground the app. With MakeHomeSurfaceOpenImmediately(),
+  // the Start Surface NTP is opened and the cobrowse session is terminated.
+  [[AppLaunchManager sharedManager] backgroundAndForegroundApp];
+
+  // Wait for the fake omnibox to appear, indicating the NTP has loaded.
+  [ChromeEarlGrey
+      waitForUIElementToAppearWithMatcher:chrome_test_util::FakeOmnibox()];
+
+  // Verify the assistant is NOT visible on the Start Surface NTP.
+  [[EarlGrey selectElementWithMatcher:CloseButton()]
+      assertWithMatcher:grey_nil()];
+
+  // Navigate to a normal URL to ensure the assistant does NOT reappear because
+  // the cobrowse session was terminated.
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/pony.html")];
   [ChromeEarlGrey waitForPageToFinishLoading];
-  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:CloseButton()];
+  [[EarlGrey selectElementWithMatcher:CloseButton()]
+      assertWithMatcher:grey_nil()];
 
   ResetMakeHomeSurfaceOpenImmediately();
 }
@@ -921,7 +1096,7 @@ id<GREYMatcher> CloseButton() {
 // triggered and not in other windows on iPad.
 - (void)testAssistantOnlyInTriggeringWindowOniPad {
   if (![ChromeEarlGrey areMultipleWindowsSupported]) {
-    EARL_GREY_TEST_DISABLED(@"Multiple windows can't be opened.");
+    EARL_GREY_TEST_SKIPPED(@"Multiple windows can't be opened.");
   }
 
   OpenCoBrowse(_defaultURL);
@@ -973,10 +1148,6 @@ id<GREYMatcher> CloseButton() {
 // this detent persists when switching to the tab grid and selecting another
 // tab.
 - (void)testAssistantDetentPersistsAcrossTabs {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
   // 1. Load a page in the first tab.
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/pony.html")];
   [ChromeEarlGrey waitForPageToFinishLoading];
@@ -1018,10 +1189,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that when the assistant is closed (killed) and reopened,
 // it starts in the default detent rather than the last used detent.
 - (void)testReopenAssistantStartsInDefaultDetent {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   // 1. Open Co-browse.
   OpenCoBrowse(_defaultURL);
@@ -1059,14 +1226,6 @@ id<GREYMatcher> CloseButton() {
 
 // Tests that Co-browse Assistant is hidden when toolbars are hidden.
 - (void)testCobrowseHidesWhenToolbarsHide {
-  // TODO(crbug.com/526935460): Fix this test for ChromeNext.
-  if ([ChromeEarlGrey isChromeNextEnabled]) {
-    EARL_GREY_TEST_SKIPPED(@"Skipped when chromeNext is enabled.");
-  }
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
   OpenCoBrowse(self.testServer->GetURL("/tall_page.html"));
 
   // Wait for the assistant to appear.
@@ -1111,10 +1270,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that pressing Return in the composebox text view does not send the
 // query and Shift+Return adds a newline.
 - (void)testComposeboxReturnKeys {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   OpenCoBrowse(_defaultURL);
 
@@ -1167,14 +1322,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that the cobrowse input plate is hidden when the plus menu bottom sheet
 // is opened, and reshown after it is dismissed.
 - (void)testInputPlateHiddenOnPlusMenu {
-  if (!IsComposeboxPlusButtonBottomSheet()) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxPlusButtonBottomSheet is disabled.");
-  }
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   OpenCoBrowse(_defaultURL);
 
@@ -1222,10 +1369,6 @@ id<GREYMatcher> CloseButton() {
 // Tests that focusing the Cobrowse input plate automatically attaches the
 // active tab.
 - (void)testCobrowseAutoAttachesActiveTabWhenTyping {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   // 1. Open Co-browse. This loads /echo and opens the Assistant.
   OpenCoBrowse(_defaultURL);
@@ -1258,10 +1401,6 @@ id<GREYMatcher> CloseButton() {
 }
 
 - (void)testAssistantVisibleAfterOpeningLinkInNewTab {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   OpenCoBrowse(_defaultURL);
   [ChromeEarlGrey waitForUIElementToAppearWithMatcher:CloseButton()];
@@ -1289,21 +1428,9 @@ id<GREYMatcher> CloseButton() {
 }
 
 // Tests that when a new tab is opened from an eligible AIM page while no
-// session is active, and the prevent flag is enabled, the assistant is NOT
-// shown.
-- (void)testNewTabFromAimSRPDoesNotTriggerCobrowseWhenFlagEnabled {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
-  AppLaunchConfiguration config = [self appConfigurationForTestCase];
-  // Remove from disabled list to allow enabling it.
-  std::erase(config.features_disabled, kPreventCobrowseOnAimSrpTap);
-  config.features_enabled.push_back(kPreventCobrowseOnAimSrpTap);
-  // Use CleanShutdown so that the preference cleared in setUp is
-  // synchronously flushed to disk before the app relaunches.
-  config.relaunch_policy = ForceRelaunchByCleanShutdown;
-  [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
+// session is active, and the enable flag is disabled (default), the assistant
+// is NOT shown.
+- (void)testNewTabFromAimSRPDoesNotTriggerCobrowseWhenFlagDisabled {
 
   // Navigate the main browser to a simulated AIM URL.
   [ChromeEarlGrey loadURL:self.testServer->GetURL(
@@ -1324,10 +1451,6 @@ id<GREYMatcher> CloseButton() {
 
 // Tests that Co-browse cannot be opened in incognito tabs.
 - (void)testIncognitoDoesNotOpenCobrowse {
-  if ([ComposeboxAppInterface isServerSideStateEnabled]) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Skipped when kComposeboxServerSideState is enabled.");
-  }
 
   [ChromeEarlGrey openNewIncognitoTab];
 
@@ -1342,6 +1465,377 @@ id<GREYMatcher> CloseButton() {
   GREYAssertNotEqual(
       [ChromeEarlGrey webStateVisibleURL], _defaultURL,
       @"Tab should have navigated away instead of staying on the current page");
+}
+
+// Tests that focusing the Co-browse input plate auto-attaches the current tab,
+// and when navigating to a new URL while minimized, re-expanding and focusing
+// the input plate updates the auto-attached tab to the new page.
+- (void)testCobrowseAutoAttachesCurrentTabAfterNavigation {
+  // 1. Open Co-browse on Tab A (/pony.html).
+  OpenCoBrowse(self.testServer->GetURL(kPonyPagePath));
+
+  // Wait for the assistant to appear in medium detent.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:CloseButton()];
+  WaitForDetent(AssistantContainerDetent::kMedium);
+
+  // 2. Focus the input plate inside the Cobrowse assistant to expand to Large
+  // and trigger auto-attachment of the active tab.
+  id<GREYMatcher> cobrowseOmniboxMedium = grey_allOf(
+      chrome_test_util::Omnibox(),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentMediumIdentifier)),
+      nil);
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxMedium]
+      performAction:grey_tap()];
+  WaitForDetent(AssistantContainerDetent::kLarge);
+
+  // Verify that pony.html is auto-attached.
+  VerifySharedTabs(@[ kPonyPageTitle ], @[],
+                   /*dismissAfterVerification=*/YES);
+
+  // 3. Minimize the assistant container.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kAssistantContainerDetentLargeIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
+  WaitForDetent(AssistantContainerDetent::kMinimized);
+
+  // 4. Navigate the main browser to Tab B (/chromium_logo_page.html).
+  [ChromeEarlGrey loadURL:self.testServer->GetURL(kChromiumLogoPagePath)];
+  [ChromeEarlGrey waitForPageToFinishLoading];
+
+  // 5. Re-expand the assistant container to Large.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kAssistantContainerDetentMinimizedIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionUp)];
+  WaitForDetent(AssistantContainerDetent::kLarge);
+
+  // Focus the input plate in Large to ensure it's active and unhides the plus
+  // button.
+  id<GREYMatcher> cobrowseOmniboxLarge = grey_allOf(
+      chrome_test_util::Omnibox(),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentLargeIdentifier)),
+      nil);
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxLarge]
+      performAction:grey_tap()];
+
+  // 6. Verify that only chromium_logo_page.html is shared and pony.html was
+  // replaced.
+  VerifySharedTabs(@[ kChromiumLogoPageTitle ], @[ kPonyPageTitle ],
+                   /*dismissAfterVerification=*/YES);
+}
+
+// Tests that focusing the Co-browse input plate auto-attaches the current tab,
+// and after sending a query (interacting with the page), navigating to a new
+// URL preserves the previously shared tab while auto-attaching the new page.
+- (void)testCobrowsePreservesAutoAttachedTabAfterSendingQueryAndNavigation {
+  // 1. Open Co-browse on Tab A (/pony.html).
+  OpenCoBrowse(self.testServer->GetURL(kPonyPagePath));
+
+  // Wait for the assistant to appear in medium detent.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:CloseButton()];
+  WaitForDetent(AssistantContainerDetent::kMedium);
+
+  // 2. Focus the input plate inside the Cobrowse assistant to expand to Large
+  // and trigger auto-attachment of the active tab.
+  id<GREYMatcher> cobrowseOmniboxMedium = grey_allOf(
+      chrome_test_util::Omnibox(),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentMediumIdentifier)),
+      nil);
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxMedium]
+      performAction:grey_tap()];
+  WaitForDetent(AssistantContainerDetent::kLarge);
+
+  // Verify that pony.html is auto-attached.
+  VerifySharedTabs(@[ kPonyPageTitle ], @[],
+                   /*dismissAfterVerification=*/YES);
+
+  // 3. Send a followup query in Large detent to interact with Tab A.
+  id<GREYMatcher> cobrowseOmniboxLarge = grey_allOf(
+      chrome_test_util::Omnibox(),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentLargeIdentifier)),
+      nil);
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxLarge]
+      performAction:grey_tap()];
+  [ChromeEarlGreyUI replaceTextInOmnibox:@"Explain this page"];
+
+  id<GREYMatcher> sendButton = grey_allOf(
+      grey_accessibilityID(kComposeboxSendButtonAccessibilityIdentifier),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentLargeIdentifier)),
+      grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:sendButton];
+  [[EarlGrey selectElementWithMatcher:sendButton] performAction:grey_tap()];
+
+  // 4. Minimize the assistant container.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kAssistantContainerDetentLargeIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
+  WaitForDetent(AssistantContainerDetent::kMinimized);
+
+  // 5. Open a new tab (Tab B) and navigate to /chromium_logo_page.html.
+  [ChromeEarlGrey openNewTab];
+  [ChromeEarlGrey loadURL:self.testServer->GetURL(kChromiumLogoPagePath)];
+  [ChromeEarlGrey waitForPageToFinishLoading];
+
+  // 6. Re-expand the assistant container to Large.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kAssistantContainerDetentMinimizedIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionUp)];
+  WaitForDetent(AssistantContainerDetent::kLarge);
+
+  // Focus the input plate in Large to ensure it's active and unhides the plus
+  // button.
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxLarge]
+      performAction:grey_tap()];
+
+  // 7. Verify that BOTH pony.html (preserved from previous turn) and
+  // chromium_logo_page.html (newly auto-attached) are shared.
+  VerifySharedTabs(@[ kPonyPageTitle, kChromiumLogoPageTitle ], @[],
+                   /*dismissAfterVerification=*/YES);
+}
+
+// Tests that after sending a follow-up query in Co-browse, navigating to a new
+// URL in the SAME tab and re-focusing the Co-browse omnibox auto-attaches the
+// new page while preserving the previously shared page from the same tab.
+- (void)testCobrowseFollowUpAfterSameTabNavigation {
+  // 1. Open Co-browse on Tab A (/pony.html).
+  OpenCoBrowse(self.testServer->GetURL(kPonyPagePath));
+
+  // Wait for the assistant to appear in medium detent.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:CloseButton()];
+  WaitForDetent(AssistantContainerDetent::kMedium);
+
+  // 2. Focus the input plate inside the Cobrowse assistant to expand to Large
+  // and trigger auto-attachment of the active tab.
+  id<GREYMatcher> cobrowseOmniboxMedium = grey_allOf(
+      chrome_test_util::Omnibox(),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentMediumIdentifier)),
+      nil);
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxMedium]
+      performAction:grey_tap()];
+  WaitForDetent(AssistantContainerDetent::kLarge);
+
+  // Verify that pony.html is auto-attached.
+  VerifySharedTabs(@[ kPonyPageTitle ], @[],
+                   /*dismissAfterVerification=*/YES);
+
+  // 3. Send a followup query in Large detent to interact with Tab A.
+  id<GREYMatcher> cobrowseOmniboxLarge = grey_allOf(
+      chrome_test_util::Omnibox(),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentLargeIdentifier)),
+      nil);
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxLarge]
+      performAction:grey_tap()];
+  [ChromeEarlGreyUI replaceTextInOmnibox:@"Explain this page"];
+
+  id<GREYMatcher> sendButton = grey_allOf(
+      grey_accessibilityID(kComposeboxSendButtonAccessibilityIdentifier),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentLargeIdentifier)),
+      grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:sendButton];
+  [[EarlGrey selectElementWithMatcher:sendButton] performAction:grey_tap()];
+
+  // 4. Minimize the assistant container.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kAssistantContainerDetentLargeIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
+  WaitForDetent(AssistantContainerDetent::kMinimized);
+
+  // 5. Navigate to a new URL (/chromium_logo_page.html) in the SAME tab.
+  [ChromeEarlGrey loadURL:self.testServer->GetURL(kChromiumLogoPagePath)];
+  [ChromeEarlGrey waitForPageToFinishLoading];
+
+  // 6. Re-expand the assistant container to Large and focus the input plate.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kAssistantContainerDetentMinimizedIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionUp)];
+  WaitForDetent(AssistantContainerDetent::kLarge);
+
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxLarge]
+      performAction:grey_tap()];
+
+  // 7. Verify that BOTH pony.html (preserved from previous turn) and
+  // chromium_logo_page.html (newly auto-attached from the same tab) are shared.
+  VerifySharedTabs(@[ kPonyPageTitle, kChromiumLogoPageTitle ], @[],
+                   /*dismissAfterVerification=*/YES);
+
+  // 8. Remove pony.html (Page A) from Shared Tabs, refocus the omnibox, and
+  // verify that chromium_logo_page.html (Page B) remains in Shared Tabs.
+  RemoveSharedTab(kPonyPageTitle);
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxLarge]
+      performAction:grey_tap()];
+  VerifySharedTabs(@[ kChromiumLogoPageTitle ], @[ kPonyPageTitle ],
+                   /*dismissAfterVerification=*/YES);
+}
+
+// Tests that removing an auto-attached tab prevents it from being automatically
+// re-added when refocusing the Co-browse omnibox, and that navigating to a new
+// URL allows the new page to be auto-attached.
+- (void)testCobrowseRemovedTabStaysRemovedAfterRefocusingOrQuery {
+  // 1. Open Co-browse on Tab A (/pony.html).
+  OpenCoBrowse(self.testServer->GetURL(kPonyPagePath));
+
+  // Wait for the assistant to appear in medium detent.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:CloseButton()];
+  WaitForDetent(AssistantContainerDetent::kMedium);
+
+  // 2. Focus the input plate inside the Cobrowse assistant to expand to Large
+  // and trigger auto-attachment of the active tab.
+  id<GREYMatcher> cobrowseOmniboxMedium = grey_allOf(
+      chrome_test_util::Omnibox(),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentMediumIdentifier)),
+      nil);
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxMedium]
+      performAction:grey_tap()];
+  WaitForDetent(AssistantContainerDetent::kLarge);
+
+  // 3. Verify that pony.html was auto-attached by removing it from the Shared
+  // Tabs sheet (which asserts its presence before removal).
+  RemoveSharedTab(kPonyPageTitle);
+
+  // 4. Focus the input plate again in Large detent.
+  id<GREYMatcher> cobrowseOmniboxLarge = grey_allOf(
+      chrome_test_util::Omnibox(),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentLargeIdentifier)),
+      nil);
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxLarge]
+      performAction:grey_tap()];
+
+  // 5. Verify that pony.html was NOT automatically re-added.
+  VerifySharedTabs(@[], @[ kPonyPageTitle ],
+                   /*dismissAfterVerification=*/YES);
+
+  // 6. Explicitly re-add pony.html manually via the Tab Picker.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kComposeboxPlusButtonAccessibilityIdentifier)]
+      performAction:grey_tap()];
+  id<GREYMatcher> selectTabsMatcher = grey_allOf(
+      grey_accessibilityID(kComposeboxSelectTabsActionAccessibilityIdentifier),
+      grey_sufficientlyVisible(), nil);
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:selectTabsMatcher];
+  [[EarlGrey selectElementWithMatcher:selectTabsMatcher]
+      performAction:grey_tap()];
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                      grey_accessibilityID(
+                          kTabPickerCollectionViewAccessibilityIdentifier)];
+  [[EarlGrey selectElementWithMatcher:TabWithTitle(kPonyPageTitle)]
+      performAction:grey_tap()];
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::NavigationBarDoneButton()]
+      performAction:grey_tap()];
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
+                      grey_accessibilityID(
+                          kTabPickerCollectionViewAccessibilityIdentifier)];
+
+  // 7. Verify that pony.html IS attached now that it was manually selected.
+  VerifySharedTabs(@[ kPonyPageTitle ], @[],
+                   /*dismissAfterVerification=*/YES);
+
+  // 8. Remove pony.html again to verify navigation behavior.
+  RemoveSharedTab(kPonyPageTitle);
+
+  // 9. Minimize the assistant container.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kAssistantContainerDetentLargeIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
+  WaitForDetent(AssistantContainerDetent::kMinimized);
+
+  // 10. Navigate the main browser to Tab B (/chromium_logo_page.html).
+  [ChromeEarlGrey loadURL:self.testServer->GetURL(kChromiumLogoPagePath)];
+  [ChromeEarlGrey waitForPageToFinishLoading];
+
+  // 11. Re-expand the assistant container to Large and focus the input plate.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kAssistantContainerDetentMinimizedIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionUp)];
+  WaitForDetent(AssistantContainerDetent::kLarge);
+
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxLarge]
+      performAction:grey_tap()];
+
+  // 12. Verify that chromium_logo_page.html IS auto-attached and pony.html is
+  // still absent.
+  VerifySharedTabs(@[ kChromiumLogoPageTitle ], @[ kPonyPageTitle ],
+                   /*dismissAfterVerification=*/YES);
+}
+
+// Tests that navigating to an ineligible chrome:// URL in the main browser
+// does not auto-attach the tab and removes any previously auto-attached item
+// without showing an error snackbar.
+- (void)testCobrowseNavigatingToChromeURLDoesNotAutoAttach {
+  // 1. Open Co-browse on Tab A (/pony.html).
+  OpenCoBrowse(self.testServer->GetURL(kPonyPagePath));
+
+  // Wait for the assistant to appear in medium detent.
+  [ChromeEarlGrey waitForUIElementToAppearWithMatcher:CloseButton()];
+  WaitForDetent(AssistantContainerDetent::kMedium);
+
+  // 2. Focus the input plate inside the Cobrowse assistant to expand to Large
+  // and trigger auto-attachment of the active tab.
+  id<GREYMatcher> cobrowseOmniboxMedium = grey_allOf(
+      chrome_test_util::Omnibox(),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentMediumIdentifier)),
+      nil);
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxMedium]
+      performAction:grey_tap()];
+  WaitForDetent(AssistantContainerDetent::kLarge);
+
+  // 3. Verify that pony.html was auto-attached.
+  VerifySharedTabs(@[ kPonyPageTitle ], @[],
+                   /*dismissAfterVerification=*/YES);
+
+  // 4. Minimize the assistant container.
+  [[EarlGrey
+      selectElementWithMatcher:grey_accessibilityID(
+                                   kAssistantContainerDetentLargeIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionDown)];
+  WaitForDetent(AssistantContainerDetent::kMinimized);
+
+  // 5. Navigate the main browser to chrome://version (an ineligible URL).
+  [ChromeEarlGrey loadURL:GURL("chrome://version")];
+  [ChromeEarlGrey waitForPageToFinishLoading];
+
+  // 6. Re-expand the assistant container to Large and focus the input plate.
+  [[EarlGrey
+      selectElementWithMatcher:
+          grey_accessibilityID(kAssistantContainerDetentMinimizedIdentifier)]
+      performAction:grey_swipeFastInDirection(kGREYDirectionUp)];
+  WaitForDetent(AssistantContainerDetent::kLarge);
+
+  id<GREYMatcher> cobrowseOmniboxLarge = grey_allOf(
+      chrome_test_util::Omnibox(),
+      grey_ancestor(
+          grey_accessibilityID(kAssistantContainerDetentLargeIdentifier)),
+      nil);
+  [[EarlGrey selectElementWithMatcher:cobrowseOmniboxLarge]
+      performAction:grey_tap()];
+
+  // 7. Assert that no error snackbar is visible upon focusing the input plate.
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::SnackbarViewMatcher()]
+      assertWithMatcher:grey_nil()];
+
+  // 8. Verify that no tabs are auto-attached (pony.html was removed and
+  // chrome://version was not attached).
+  VerifySharedTabs(@[], @[ kPonyPageTitle ],
+                   /*dismissAfterVerification=*/YES);
 }
 
 @end

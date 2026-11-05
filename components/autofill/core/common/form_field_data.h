@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "base/i18n/rtl.h"
+#include "base/time/time.h"
 #include "base/types/optional_ref.h"
 #include "build/build_config.h"
 #include "components/autofill/core/common/autocomplete_parsing_util.h"
@@ -37,6 +38,7 @@ namespace autofill {
 struct JavaScriptFieldModification {
   FieldGlobalId field_id;
   mojom::JavaScriptModificationType modification_type;
+  base::TimeTicks timestamp;
 
   friend bool operator==(const JavaScriptFieldModification&,
                          const JavaScriptFieldModification&) = default;
@@ -375,6 +377,17 @@ class FormFieldData {
     host_form_signature_ = host_form_signature;
   }
 
+  // The structural signature of the field's renderer form, that is, the
+  // structural signature of the FormData that contained this field when it was
+  // received by the AutofillDriver.
+  FormSignature host_form_structural_signature() const {
+    return host_form_structural_signature_;
+  }
+  void set_host_form_structural_signature(
+      FormSignature host_form_structural_signature) {
+    host_form_structural_signature_ = host_form_structural_signature;
+  }
+
   // The origin of the frame that hosts the field.
   const url::Origin& origin() const { return origin_; }
   void set_origin(url::Origin origin) { origin_ = std::move(origin); }
@@ -523,6 +536,7 @@ class FormFieldData {
   FieldRendererId renderer_id_;
   FormRendererId host_form_id_;
   FormSignature host_form_signature_;
+  FormSignature host_form_structural_signature_;
   url::Origin origin_;
   int32_t form_control_ax_id_ = 0;
   uint64_t max_length_ = kDefaultMaxLength;

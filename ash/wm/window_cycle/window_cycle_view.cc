@@ -10,11 +10,11 @@
 
 #include "ash/accessibility/accessibility_controller.h"
 #include "ash/public/cpp/metrics_util.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/style_util.h"
+#include "ash/style/system_decoration.h"
 #include "ash/style/tab_slider.h"
 #include "ash/style/tab_slider_button.h"
 #include "ash/utility/occlusion_tracker_pauser.h"
@@ -52,7 +52,6 @@
 #include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
@@ -107,36 +106,24 @@ constexpr base::TimeDelta kOcclusionTrackerPauseTimeout =
 // Builds the item view for window cycling for the given `window` with the
 // correct parent. If the given `window` is a free-form window, the direct
 // parent will be `mirror_container`. For `window` that belongs to a snap group,
-// however, a `GroupContainerCycleView` will be added. If `same_app_only` is
-// true, `GroupContainerCycleView` will only be created if both the windows in
-// snap group belongs to the same app.
-WindowMiniViewBase* BuildAndConfigureCycleView(
-    aura::Window* window,
-    views::View* mirror_container,
-    std::vector<raw_ptr<WindowMiniViewBase, VectorExperimental>>& cycle_views,
-    const std::vector<raw_ptr<aura::Window, VectorExperimental>>& windows,
-    const bool same_app_only) {
+// however, a `GroupContainerCycleView` will be added.
+WindowMiniViewBase* BuildAndConfigureCycleView(aura::Window* window,
+                                               views::View* mirror_container) {
   if (auto* snap_group_controller = SnapGroupController::Get()) {
     if (auto* snap_group =
             snap_group_controller->GetSnapGroupForGivenWindow(window)) {
-      if (!same_app_only ||
-          (same_app_only &&
-           std::ranges::contains(windows, snap_group->window1()) &&
-           std::ranges::contains(windows, snap_group->window2()))) {
-        // Create `GroupContainerCycleView` if `window` is physically left / top
-        // snapped, which adds two child views subsequently. Skip adding
-        // `GroupContainerCycleView` if `window` is secondary snapped since the
-        // corresponding container view has been built.
-        return window == snap_group->GetPhysicallyLeftOrTopWindow()
-                   ? mirror_container->AddChildView(
-                         std::make_unique<GroupContainerCycleView>(snap_group))
-                   : nullptr;
-      }
+      // Create `GroupContainerCycleView` if `window` is physically left / top
+      // snapped, which adds two child views subsequently. Skip adding
+      // `GroupContainerCycleView` if `window` is secondary snapped since the
+      // corresponding container view has been built.
+      return window == snap_group->GetPhysicallyLeftOrTopWindow()
+                 ? mirror_container->AddChildView(
+                       std::make_unique<GroupContainerCycleView>(snap_group))
+                 : nullptr;
     }
   }
 
-  // `mirror_container_` owns `view`. The `preview_view_` in `view` will use
-  // trilinear filtering in InitLayerOwner().
+  // `mirror_container_` owns `view`.
   return mirror_container->AddChildView(
       std::make_unique<WindowCycleItemView>(window));
 }
@@ -144,9 +131,8 @@ WindowMiniViewBase* BuildAndConfigureCycleView(
 }  // namespace
 
 WindowCycleView::WindowCycleView(aura::Window* root_window,
-                                 const WindowList& windows,
-                                 const bool same_app_only)
-    : root_window_(root_window), same_app_only_(same_app_only) {
+                                 const WindowList& windows)
+    : root_window_(root_window) {
   const bool is_interactive_alt_tab_mode_allowed =
       Shell::Get()->window_cycle_controller()->IsInteractiveAltTabModeAllowed();
 
@@ -159,22 +145,19 @@ WindowCycleView::WindowCycleView(aura::Window* root_window,
 
   // The layer for `this` is responsible for showing background blur and fade
   // and clip animations.
-  SetPaintToLayer();
+  SetPaintToLayer(ui::LAYER_SOLID_COLOR);
   layer()->SetName("WindowCycleView");
   layer()->SetMasksToBounds(true);
   if (chromeos::features::IsSystemBlurEnabled()) {
-    layer()->SetFillsBoundsOpaquely(false);
-    layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
-    layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+    layer()->SetBackgroundBlur(StyleUtil::kBackgroundBlurSigma);
+    layer()->SetBackdropFilterQuality(StyleUtil::kBackgroundBlurQuality);
   }
 
-  SetBackground(views::CreateSolidBackground(
+  SetBackground(views::CreateLayerBasedRoundedBackground(
       chromeos::features::IsSystemBlurEnabled()
           ? cros_tokens::kCrosSysScrim2
-          : cros_tokens::kCrosSysSystemBaseElevatedOpaque));
-  SetBorder(std::make_unique<views::HighlightBorder>(
-      kBackgroundCornerRadius,
-      views::HighlightBorder::Type::kHighlightBorderOnShadow));
+          : cros_tokens::kCrosSysSystemBaseElevatedOpaque,
+      gfx::RoundedCornersF(kBackgroundCornerRadius)));
 
   // `mirror_container_` may be larger than `this`. In this case, it will be
   // shifted along the x-axis when the user tabs through. It is a container
@@ -194,7 +177,7 @@ WindowCycleView::WindowCycleView(aura::Window* root_window,
           .SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kStart)
           .Build());
   mirror_container_->AddObserver(this);
-  mirror_container_->layer()->SetName("WindowCycleView/MirrorContainer");
+  mirror_container_->layer()->SetName("WindowCycleView:MirrorContainer");
 
   if (is_interactive_alt_tab_mode_allowed) {
     tab_slider_ = AddChildView(std::make_unique<TabSlider>(/*max_tab_num=*/2));
@@ -239,6 +222,9 @@ WindowCycleView::WindowCycleView(aura::Window* root_window,
 
     no_recent_items_label_ = AddChildView(std::make_unique<views::Label>(
         l10n_util::GetStringUTF16(IDS_ASH_OVERVIEW_NO_RECENT_ITEMS)));
+    no_recent_items_label_->SetPaintToLayer();
+    no_recent_items_label_->layer()->SetFillsBoundsOpaquely(false);
+    no_recent_items_label_->SetSubpixelRenderingEnabled(false);
     no_recent_items_label_->SetHorizontalAlignment(gfx::ALIGN_CENTER);
     no_recent_items_label_->SetVerticalAlignment(gfx::ALIGN_MIDDLE);
 
@@ -259,8 +245,7 @@ WindowCycleView::WindowCycleView(aura::Window* root_window,
   }
 
   for (aura::Window* window : windows) {
-    if (auto* view = BuildAndConfigureCycleView(
-            window, mirror_container_, cycle_views_, windows, same_app_only)) {
+    if (auto* view = BuildAndConfigureCycleView(window, mirror_container_)) {
       cycle_views_.push_back(view);
       no_previews_list_.push_back(view);
     }
@@ -275,9 +260,10 @@ WindowCycleView::WindowCycleView(aura::Window* root_window,
   mirror_container_->SetBetweenChildSpacing(kBetweenChildPaddingDp -
                                             cycle_item_insets.width());
 
-  shadow_ = SystemShadow::CreateShadowOnNinePatchLayerForView(
-      this, SystemShadow::Type::kElevation4);
-  shadow_->SetRoundedCorners(gfx::RoundedCornersF(kBackgroundCornerRadius));
+  decoration_ = SystemDecoration::CreateForView(
+      this, SystemDecoration::ShadowType::kElevation4,
+      SystemDecoration::HighlightBorderMode::kHighlightBorder);
+  decoration_->SetRoundedCorners(gfx::RoundedCornersF(kBackgroundCornerRadius));
 }
 
 WindowCycleView::~WindowCycleView() = default;
@@ -319,9 +305,10 @@ void WindowCycleView::ScaleCycleView(const gfx::Rect& screen_bounds) {
     defer_widget_bounds_update_ = true;
   }
 
-  // Hide the shadow while animating because the clip rect animation clips away
-  // visible portions of `this` while the shadow remains the size of `this`.
-  shadow_->GetLayer()->SetVisible(false);
+  // Hide the decoration while animating because the clip rect animation clips
+  // away visible portions of `this` while the decoration remains the size of
+  // `this`.
+  decoration_->GetLayer()->SetVisible(false);
 
   layer()->SetClipRect(old_bounds);
   ui::ScopedLayerAnimationSettings settings(layer_animator);
@@ -358,8 +345,7 @@ void WindowCycleView::UpdateWindows(const WindowList& windows) {
     return;
 
   for (aura::Window* window : windows) {
-    if (auto* view = BuildAndConfigureCycleView(
-            window, mirror_container_, cycle_views_, windows, same_app_only_)) {
+    if (auto* view = BuildAndConfigureCycleView(window, mirror_container_)) {
       cycle_views_.push_back(view);
       no_previews_list_.push_back(view);
     }
@@ -381,6 +367,14 @@ void WindowCycleView::UpdateWindows(const WindowList& windows) {
 
 void WindowCycleView::FadeInLayer() {
   DCHECK(GetWidget());
+
+  decoration_->GetLayer()->SetOpacity(0.f);
+  {
+    ui::ScopedLayerAnimationSettings decoration_settings(
+        decoration_->GetLayer()->GetAnimator());
+    decoration_settings.SetTransitionDuration(kFadeInDuration);
+    decoration_->GetLayer()->SetOpacity(1.f);
+  }
 
   layer()->SetOpacity(0.f);
   ui::ScopedLayerAnimationSettings settings(layer()->GetAnimator());
@@ -602,8 +596,6 @@ void WindowCycleView::Layout(PassKey) {
   // work properly.
   if (first_layout) {
     mirror_container_->SizeToPreferredSize();
-    layer()->SetRoundedCornerRadius(
-        gfx::RoundedCornersF{kBackgroundCornerRadius});
   }
 
   gfx::RectF target_bounds;
@@ -707,7 +699,7 @@ void WindowCycleView::OnImplicitAnimationsCompleted() {
     defer_widget_bounds_update_ = false;
   }
 
-  shadow_->GetLayer()->SetVisible(true);
+  decoration_->GetLayer()->SetVisible(true);
 }
 
 gfx::Rect WindowCycleView::GetContentContainerBounds() const {

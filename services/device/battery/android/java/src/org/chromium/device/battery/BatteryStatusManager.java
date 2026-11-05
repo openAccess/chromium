@@ -16,6 +16,7 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.AsyncTask;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskRunner;
@@ -74,12 +75,15 @@ class BatteryStatusManager {
     }
 
     BatteryStatusManager(BatteryStatusCallback callback) {
-        this(
-                callback,
-                new AndroidBatteryManagerWrapper(
-                        (BatteryManager)
-                                ContextUtils.getApplicationContext()
-                                        .getSystemService(Context.BATTERY_SERVICE)));
+        this(callback, createAndroidBatteryManagerWrapper());
+    }
+
+    private static @Nullable AndroidBatteryManagerWrapper createAndroidBatteryManagerWrapper() {
+        // getSystemService() may return null, e.g. if the app's SELinux domain is not allowed to
+        // look up the battery services.
+        BatteryManager batteryManager =
+                ContextUtils.getApplicationContext().getSystemService(BatteryManager.class);
+        return batteryManager == null ? null : new AndroidBatteryManagerWrapper(batteryManager);
     }
 
     /**
@@ -91,6 +95,10 @@ class BatteryStatusManager {
         return new BatteryStatusManager(callback, batteryManager);
     }
 
+    boolean isEnabledForTesting() {
+        return mEnabled;
+    }
+
     /** Starts listening for intents. */
     void start() {
         if (DeviceFeatureMap.isEnabled(
@@ -100,11 +108,14 @@ class BatteryStatusManager {
         }
 
         if (mEnabled) return;
-        if (ContextUtils.registerProtectedBroadcastReceiver(
-                        ContextUtils.getApplicationContext(), mReceiver, mFilter)
-                != null) {
-            mEnabled = true;
-        }
+        // Deliver broadcasts on the Chromium UI thread (which may differ from the Android main
+        // thread in WebView) where BatteryMonitor Mojo endpoints are bound.
+        ContextUtils.registerProtectedBroadcastReceiver(
+                ContextUtils.getApplicationContext(),
+                mReceiver,
+                mFilter,
+                ThreadUtils.getUiThreadHandler());
+        mEnabled = true;
     }
 
     void startAsync() {
@@ -112,8 +123,14 @@ class BatteryStatusManager {
 
         sSequencedTaskRunner.execute(
                 () -> {
+                    // Deliver broadcasts on the Chromium UI thread (which may differ from the
+                    // Android main thread in WebView) where BatteryMonitor Mojo endpoints are
+                    // bound.
                     ContextUtils.registerProtectedBroadcastReceiver(
-                            ContextUtils.getApplicationContext(), mReceiver, mFilter);
+                            ContextUtils.getApplicationContext(),
+                            mReceiver,
+                            mFilter,
+                            ThreadUtils.getUiThreadHandler());
                 });
         mEnabled = true;
     }

@@ -2,14 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {AudioBrowserProxyImpl} from './audio_browser_proxy.js';
 import type {ReadAloudNode, Segment} from './read_aloud_types.js';
 import {TsReadModelImpl} from './ts_model_impl.js';
-import {V8ModelImpl} from './v8_model_impl.js';
 
-// Proxy class used to wrap text segmentation calls. This can be used to use
-// different text segmentation approaches via feature flag, such as an
-// implementation in C++ and an implementation in TypeScript.
+// Proxy class used to wrap text segmentation calls, so that tests can replace
+// the text segmentation implementation.
 export interface ReadAloudModelBrowserProxy {
   // TODO: crbug.com/440400392- Ensure all methods have documentation once
   // the structure is finalized.
@@ -34,20 +31,19 @@ export interface ReadAloudModelBrowserProxy {
   isInitialized(): boolean;
   init(context: ReadAloudNode): void;
 
-  // Resets the model. Method is optional because the V8 model handles this
-  // in C++.
-  resetModel?(): void;
+  // Resets the model.
+  resetModel(): void;
 
-  // Deletes a node from the model. Optional because the V8 model handles this
-  // in C++.
-  onNodeWillBeDeleted?(node: Node): void;
+  // Deletes a node from the model.
+  onNodeWillBeDeleted(node: Node): void;
+
+  // Requests phrase boundaries for the current sentence and the next few
+  // sentences, so they're ready by the time they're highlighted.
+  prefetchPhraseBoundaries(): void;
 }
 
 export function getReadAloudModel(): ReadAloudModelBrowserProxy {
-  return instance ||
-      (!AudioBrowserProxyImpl.getInstance().isPhraseHighlightingEnabled() ?
-           instance = new TsReadModelImpl() :
-           instance = new V8ModelImpl());
+  return instance || (instance = new TsReadModelImpl());
 }
 
 export function setInstance(obj: ReadAloudModelBrowserProxy|null) {

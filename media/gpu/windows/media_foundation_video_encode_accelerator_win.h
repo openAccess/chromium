@@ -117,6 +117,10 @@ class MEDIA_GPU_EXPORT MediaFoundationVideoEncodeAccelerator
       const gfx::Size& input_visible_size,
       scoped_refptr<DXGIDeviceManager> dxgi_device_manager);
 
+  void SetDxgiResourceMappingRequiredForTesting(bool required) {
+    dxgi_resource_mapping_required_ = required;
+  }
+
  private:
   // Holds output buffers coming from the client ready to be filled.
   struct BitstreamBufferRef;
@@ -228,7 +232,7 @@ class MEDIA_GPU_EXPORT MediaFoundationVideoEncodeAccelerator
   // Check if |size| is supported.
   bool IsFrameSizeAllowed(gfx::Size size);
   // Update frame size without re-initializing the encoder.
-  void UpdateFrameSize(const gfx::Size& size);
+  bool UpdateFrameSize(const gfx::Size& size);
 
   // Initialize video processing (for scaling).
   HRESULT InitializeD3DVideoProcessing(ID3D11Texture2D* input_texture);

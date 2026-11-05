@@ -21,7 +21,6 @@
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/apps/icon_standardizer.h"
 #include "chrome/browser/ash/note_taking/note_taking_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_context_menu.h"
@@ -52,6 +51,7 @@
 #include "ui/events/event_constants.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/skia_conversions.h"
+#include "ui/gfx/image/icon_standardizer.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/controls/menu/menu_runner.h"
@@ -88,7 +88,7 @@ class NativeAppWindowFrameView : public apps::AppWindowFrameView,
 
   // views::FrameView
   void UpdateWindowRoundedCorners() override {
-    DCHECK(GetWidget());
+    CHECK(GetWidget(), base::NotFatalUntil::M162);
 
     aura::Window* window = GetWidget()->GetNativeWindow();
     auto* window_state = ash::WindowState::Get(window);
@@ -149,7 +149,7 @@ class ChromeNativeAppClientView : public views::ClientView {
   // views::ClientView:
   void UpdateWindowRoundedCorners(
       const gfx::RoundedCornersF& window_radii) override {
-    DCHECK(GetWidget());
+    CHECK(GetWidget(), base::NotFatalUntil::M162);
 
     gfx::RoundedCornersF radii(0, 0, window_radii.lower_right(),
                                window_radii.lower_left());
@@ -284,10 +284,10 @@ ui::ImageModel ChromeNativeAppWindowViewsAuraAsh::GetWindowIcon() {
     return ui::ImageModel();
   }
 
-  DCHECK(image.IsImage());
+  CHECK(image.IsImage(), base::NotFatalUntil::M162);
   const gfx::ImageSkia image_skia = image.Rasterize(nullptr);
   return ui::ImageModel::FromImageSkia(
-      apps::CreateStandardIconImage(image_skia));
+      gfx::CreateStandardAppIconImage(image_skia));
 }
 
 bool ChromeNativeAppWindowViewsAuraAsh::ShouldRemoveStandardFrame() {
@@ -587,8 +587,9 @@ void ChromeNativeAppWindowViewsAuraAsh::OnWidgetActivationChanged(
 void ChromeNativeAppWindowViewsAuraAsh::OnPostWindowStateTypeChange(
     ash::WindowState* window_state,
     chromeos::WindowStateType old_type) {
-  DCHECK(!IsFrameless());
-  DCHECK_EQ(GetNativeWindow(), window_state->window());
+  CHECK(!IsFrameless(), base::NotFatalUntil::M162);
+  CHECK_EQ(GetNativeWindow(), window_state->window(),
+           base::NotFatalUntil::M162);
   if (window_state->IsFullscreen() != app_window()->IsFullscreen()) {
     // Report OS-initiated state changes to |app_window()|. This is done in
     // OnPostWindowStateTypeChange rather than OnWindowPropertyChanged because
@@ -616,7 +617,12 @@ void ChromeNativeAppWindowViewsAuraAsh::OnWindowPropertyChanged(
   if (new_state != ui::mojom::WindowShowState::kFullscreen &&
       new_state != ui::mojom::WindowShowState::kMinimized &&
       app_window()->IsFullscreen()) {
+    base::WeakPtr<extensions::AppWindow> weak_app_window =
+        app_window()->GetWeakPtr();
     app_window()->Restore();
+    if (!weak_app_window) {
+      return;
+    }
   }
 
   // Usually OnNativeWindowChanged() is called when the window bounds are
@@ -630,7 +636,8 @@ void ChromeNativeAppWindowViewsAuraAsh::OnWindowPropertyChanged(
 void ChromeNativeAppWindowViewsAuraAsh::OnWindowDestroying(
     aura::Window* window) {
   window_state_observation_.Reset();
-  DCHECK(window_observation_.IsObservingSource(window));
+  CHECK(window_observation_.IsObservingSource(window),
+        base::NotFatalUntil::M162);
   window_observation_.Reset();
 }
 
@@ -678,7 +685,7 @@ gfx::Image ChromeNativeAppWindowViewsAuraAsh::GetCustomImage() {
   TRACE_EVENT0("ui", "ChromeNativeAppWindowViewsAuraAsh::GetCustomImage");
   gfx::Image image = ChromeNativeAppWindowViews::GetCustomImage();
   return !image.IsEmpty()
-             ? gfx::Image(apps::CreateStandardIconImage(image.AsImageSkia()))
+             ? gfx::Image(gfx::CreateStandardAppIconImage(image.AsImageSkia()))
              : gfx::Image();
 }
 

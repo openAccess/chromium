@@ -16,7 +16,6 @@ source_set("pin_infobar") {
     "//ui/base/unowned_user_data",
   ]
   deps = [
-    "//chrome/browser:browser_public_dependencies",
     "//components/infobars/core",
     "//components/vector_icons",
     "//ui/gfx:native_ui_types",
@@ -82,6 +81,7 @@ source_set("unit_tests") {
     "//chrome/browser/ui/views:layout_provider",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//components/infobars/content",
     "//components/sync_preferences:test_support",
     "//content/test:test_support",

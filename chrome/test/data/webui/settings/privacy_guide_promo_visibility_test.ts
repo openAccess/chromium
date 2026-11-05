@@ -7,29 +7,27 @@ import 'chrome://settings/settings.js';
 import 'chrome://settings/lazy_load.js';
 
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
-import type {SettingsPrivacyPageIndexElement, SettingsPrefsElement, SyncStatus} from 'chrome://settings/settings.js';
-import {CrSettingsPrefs, loadTimeData, MetricsBrowserProxyImpl, PrivacyGuideBrowserProxyImpl, PrivacyGuideInteractions, resetRouterForTesting, routes, Router, StatusAction} from 'chrome://settings/settings.js';
+import type {SettingsPrivacyPageIndexElement, SyncStatus} from 'chrome://settings/settings.js';
+import {loadTimeData, MetricsBrowserProxyImpl, PrefService, PrefsBrowserProxy, PrivacyGuideBrowserProxyImpl, PrivacyGuideInteractions, resetRouterForTesting, routes, Router, StatusAction} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {isChildVisible} from 'chrome://webui-test/test_util.js';
 
 import {TestPrivacyGuideBrowserProxy} from './test_privacy_guide_browser_proxy.js';
 import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 
 // TODO(crbug.com/40184479): Remove once the privacy guide promo has been
 // removed.
 suite('PrivacyGuidePromoVisibility', () => {
   let page: SettingsPrivacyPageIndexElement;
-  let settingsPrefs: SettingsPrefsElement;
   let testMetricsBrowserProxy: TestMetricsBrowserProxy;
   let privacyGuideBrowserProxy: TestPrivacyGuideBrowserProxy;
+  let prefService: PrefService;
 
   suiteSetup(function() {
     loadTimeData.overrideValues({showPrivacyGuide: true});
     resetRouterForTesting();
-
-    settingsPrefs = document.createElement('settings-prefs');
-    return CrSettingsPrefs.initialized;
   });
 
   setup(async function() {
@@ -42,12 +40,22 @@ suite('PrivacyGuidePromoVisibility', () => {
     testMetricsBrowserProxy = new TestMetricsBrowserProxy();
     MetricsBrowserProxyImpl.setInstance(testMetricsBrowserProxy);
 
+    const initialPrefs = [
+      {
+        key: 'privacy_guide.viewed',
+        type: chrome.settingsPrivate.PrefType.BOOLEAN,
+        value: false,
+      },
+    ];
+    const prefsBrowserProxy = new TestPrefsBrowserProxy(initialPrefs);
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+    PrefService.resetInstanceForTesting();
+    prefService = PrefService.getInstance();
+    await prefService.whenInitialized();
+
     Router.getInstance().navigateTo(routes.PRIVACY);
 
     page = document.createElement('settings-privacy-page-index');
-    page.prefs = settingsPrefs.prefs!;
-    // The promo is only shown when privacy guide hasn't been visited yet.
-    page.setPrefValue('privacy_guide.viewed', false);
     document.body.appendChild(page);
     await flushTasks();
 
@@ -97,7 +105,7 @@ suite('PrivacyGuidePromoVisibility', () => {
 
   test('NoThanksButton', async function() {
     assertTrue(isChildVisible(page, '#privacyGuidePromo'));
-    assertFalse(page.getPref<boolean>('privacy_guide.viewed').value);
+    assertFalse(prefService.getPref<boolean>('privacy_guide.viewed').value);
 
     // Click the no thanks button.
     const privacyGuidePromo = page.shadowRoot!.querySelector<HTMLElement>(
@@ -112,6 +120,7 @@ suite('PrivacyGuidePromoVisibility', () => {
 
     // The privacy guide should be marked as seen and the promo no longer
     // visible.
+    assertTrue(prefService.getPref<boolean>('privacy_guide.viewed').value);
     assertFalse(isChildVisible(page, '#privacyGuidePromo'));
   });
 

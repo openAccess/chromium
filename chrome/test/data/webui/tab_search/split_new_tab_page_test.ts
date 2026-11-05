@@ -3,8 +3,9 @@
 // found in the LICENSE file.
 
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import type {SplitNewTabPageAppElement, Tab} from 'chrome://tab-search.top-chrome/tab_search.js';
-import {TabAlertState, TabSearchApiProxyImpl} from 'chrome://tab-search.top-chrome/tab_search.js';
+import {getDeepActiveElement} from 'chrome://resources/js/util.js';
+import type {PageRemote, SplitNewTabPageAppElement, Tab} from 'chrome://tab-search.top-chrome/tab_search.js';
+import {browserProxyFactory, TabAlertState, TabSearchApiProxyImpl} from 'chrome://tab-search.top-chrome/tab_search.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise} from 'chrome://webui-test/test_util.js';
 
@@ -73,12 +74,14 @@ function createWindowData() {
 suite('SplitNewTabPageTest', () => {
   let splitNewTabPage: SplitNewTabPageAppElement;
   let testApiProxy: TestTabSearchApiProxy;
+  let callbackRouterRemote: PageRemote;
 
   async function splitNewTabPageSetup() {
     splitNewTabPage = document.createElement('split-new-tab-page-app');
     document.body.appendChild(splitNewTabPage);
 
     await eventToPromise('viewport-filled', splitNewTabPage.$.splitTabsList);
+    await splitNewTabPage.initialFocusPromiseForTesting;
   }
 
   setup(() => {
@@ -92,6 +95,9 @@ suite('SplitNewTabPageTest', () => {
     testApiProxy.setProfileData(
         createProfileData({windows: createWindowData()}));
     testApiProxy.setIsSplit(true);
+    const {instance, remote} = browserProxyFactory.createForTest(testApiProxy);
+    browserProxyFactory.setInstance(instance);
+    callbackRouterRemote = remote;
     TabSearchApiProxyImpl.setInstance(testApiProxy);
   });
 
@@ -134,7 +140,7 @@ suite('SplitNewTabPageTest', () => {
           url: 'blob://data',
         }),
     );
-    testApiProxy.getCallbackRouterRemote().tabsChanged(createProfileData({
+    callbackRouterRemote.tabsChanged(createProfileData({
       windows: windowData,
     }));
     await eventToPromise('viewport-filled', splitNewTabPage.$.splitTabsList);
@@ -176,7 +182,7 @@ suite('SplitNewTabPageTest', () => {
       inHostWindow: true,
       tab: tab,
     };
-    testApiProxy.getCallbackRouterRemote().tabUpdated(tabUpdateInfo);
+    callbackRouterRemote.tabUpdated(tabUpdateInfo);
     await eventToPromise('viewport-filled', splitNewTabPage.$.splitTabsList);
 
     const updatedTabSearchItems =
@@ -201,7 +207,7 @@ suite('SplitNewTabPageTest', () => {
       inHostWindow: true,
       tab: tab,
     };
-    testApiProxy.getCallbackRouterRemote().tabUpdated(tabUpdateInfo);
+    callbackRouterRemote.tabUpdated(tabUpdateInfo);
     await eventToPromise('viewport-filled', splitNewTabPage.$.splitTabsList);
 
     const updatedTabSearchItems =
@@ -232,7 +238,7 @@ suite('SplitNewTabPageTest', () => {
       title: 'YouTube',
       url: 'https://www.youtube.com',
     }));
-    testApiProxy.getCallbackRouterRemote().tabsChanged(createProfileData({
+    callbackRouterRemote.tabsChanged(createProfileData({
       windows: windowData,
     }));
     await eventToPromise('viewport-filled', splitNewTabPage.$.splitTabsList);
@@ -248,7 +254,7 @@ suite('SplitNewTabPageTest', () => {
         3,
         splitNewTabPage.shadowRoot.querySelectorAll('tab-search-item').length);
 
-    testApiProxy.getCallbackRouterRemote().tabsRemoved({
+    callbackRouterRemote.tabsRemoved({
       tabIds: [6],
       recentlyClosedTabs: [],
     });
@@ -301,5 +307,28 @@ suite('SplitNewTabPageTest', () => {
     const initialTabSearchItems =
         splitNewTabPage.shadowRoot.querySelectorAll('tab-search-item');
     assertEquals(0, initialTabSearchItems.length);
+    assertEquals(1, testApiProxy.getCallCount('redirectToNtp'));
+  });
+
+  test('Redirects to NTP when not split', async () => {
+    testApiProxy.setIsSplit(false);
+    await splitNewTabPageSetup();
+    assertEquals(1, testApiProxy.getCallCount('redirectToNtp'));
+  });
+
+  test('Redirects to NTP on unsplit', async () => {
+    await splitNewTabPageSetup();
+    assertEquals(0, testApiProxy.getCallCount('redirectToNtp'));
+    callbackRouterRemote.tabUnsplit();
+    await testApiProxy.whenCalled('redirectToNtp');
+    assertEquals(1, testApiProxy.getCallCount('redirectToNtp'));
+  });
+
+  test('Initially focuses the first tab in the list', async () => {
+    await splitNewTabPageSetup();
+    const tabSearchItems =
+        splitNewTabPage.shadowRoot.querySelectorAll('tab-search-item');
+    assertEquals(3, tabSearchItems.length);
+    assertEquals(tabSearchItems[0], getDeepActiveElement());
   });
 });

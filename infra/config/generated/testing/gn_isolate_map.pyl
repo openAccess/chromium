@@ -481,6 +481,7 @@
   "chrome/installer/mac": {
     "label": "//chrome/installer/mac:mac",
     "type": "additional_compile_target",
+    "skip_usage_check": True,
   },
   "chrome/updater:all": {
     "label": "//chrome/updater:all",
@@ -1017,6 +1018,30 @@
     "type": "console_test_launcher",
     "module_scheme": "gtest",
   },
+  "devtools_api_tests": {
+    "label": "//third_party/devtools-frontend/src/test/api:devtools_api_tests",
+    "type": "generated_script",
+    "module_scheme": "mocha",
+    "skip_usage_check": True,
+  },
+  "devtools_e2e_tests": {
+    "label": "//third_party/devtools-frontend/src/test/e2e:devtools_e2e_tests",
+    "type": "generated_script",
+    "module_scheme": "mocha",
+    "skip_usage_check": True,
+  },
+  "devtools_node_unit_tests": {
+    "label": "//third_party/devtools-frontend/src/test/unit:devtools_node_unit_tests",
+    "type": "generated_script",
+    "module_scheme": "mocha",
+    "skip_usage_check": True,
+  },
+  "devtools_unit_tests": {
+    "label": "//third_party/devtools-frontend/src/test/unit:devtools_unit_tests",
+    "type": "generated_script",
+    "module_scheme": "mocha",
+    "skip_usage_check": True,
+  },
   "disk_usage_tast_test": {
     "label": "//chromeos:disk_usage_tast_test",
     "type": "generated_script",
@@ -1286,6 +1311,12 @@
     "type": "additional_compile_target",
     "skip_usage_check": True,
   },
+  "ios_chrome_all_eg2tests_module": {
+    "label": "//ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module",
+    "type": "generated_script",
+    "module_scheme": "xctest",
+    "skip_usage_check": True,
+  },
   "ios_chrome_bookmarks_eg2tests_module": {
     "label": "//ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module",
     "type": "generated_script",
@@ -1302,6 +1333,11 @@
     "type": "generated_script",
     "module_scheme": "xctest",
     "skip_usage_check": True,
+  },
+  "ios_chrome_perf_benchmarks_eg2tests_module": {
+    "label": "//ios/chrome/test/earl_grey2:ios_chrome_perf_benchmarks_eg2tests_module",
+    "type": "generated_script",
+    "module_scheme": "xctest",
   },
   "ios_chrome_settings_eg2tests_module": {
     "label": "//ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module",
@@ -1640,7 +1676,6 @@
     "label": "//components/optimization_guide/internal/testing:ondevice_api_scrape_tests",
     "type": "generated_script",
     "module_scheme": "flat",
-    "skip_usage_check": True,
   },
   "ondevice_model_benchmark": {
     "label": "//components/optimization_guide/internal:ondevice_model_benchmark",
@@ -1666,7 +1701,6 @@
     "label": "//chrome/browser/media/router:openscreen_unittests",
     "type": "console_test_launcher",
     "module_scheme": "gtest",
-    "skip_usage_check": True,
   },
   "optimization_guide_gpu_unittests": {
     "label": "//components/optimization_guide/internal:optimization_guide_gpu_unittests",
@@ -1698,6 +1732,19 @@
     "type": "generated_script",
     "module_scheme": "junit",
     "skip_usage_check": True,
+  },
+  "partition_alloc_perftests": {
+    "label": "//base:partition_alloc_perftests",
+    "type": "script",
+    "script": "//testing/scripts/run_performance_tests.py",
+    "skip_usage_check": True,
+    "args": [
+      "partition_alloc_perftests",
+      "--non-telemetry=true",
+      "--test-launcher-print-test-stdio=always",
+      "--test-launcher-jobs=1",
+      "--test-launcher-retry-limit=0",
+    ],
   },
   "password_manager_junit_tests": {
     "label": "//chrome/browser/password_manager/android:password_manager_junit_tests",
@@ -1753,13 +1800,8 @@
     "type": "generated_script",
     "module_scheme": "flat",
   },
-  "performance_test_suite_android_trichrome_chrome_google_64_32_bundle": {
-    "label": "//chrome/test:performance_test_suite_android_trichrome_chrome_google_64_32_bundle",
-    "type": "generated_script",
-    "module_scheme": "flat",
-  },
-  "performance_test_suite_android_trichrome_chrome_google_bundle": {
-    "label": "//chrome/test:performance_test_suite_android_trichrome_chrome_google_bundle",
+  "performance_test_suite_android_chrome_google_bundle": {
+    "label": "//chrome/test:performance_test_suite_android_chrome_google_bundle",
     "type": "generated_script",
     "module_scheme": "flat",
   },
@@ -2244,6 +2286,12 @@
     "label": "//media/gpu/test:video_encode_accelerator_tests",
     "type": "console_test_launcher",
     "module_scheme": "gtest",
+    "skip_usage_check": True,
+  },
+  "views_examples_mac_signing_tests": {
+    "label": "//chrome/views_examples/mac/signing:views_examples_mac_signing_tests",
+    "type": "generated_script",
+    "module_scheme": "pyunit",
     "skip_usage_check": True,
   },
   "views_examples_unittests": {

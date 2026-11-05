@@ -35,9 +35,8 @@
 #include "ui/accessibility/platform/browser_accessibility_manager.h"
 #include "ui/accessibility/platform/inspect/ax_api_type.h"
 #include "ui/accessibility/platform/inspect/ax_tree_formatter.h"
+
 #if BUILDFLAG(IS_WIN)
-#include "base/test/run_until.h"
-#include "ui/accessibility/platform/ax_platform_node_win.h"
 #include "ui/accessibility/platform/browser_accessibility_manager_win.h"
 #endif
 
@@ -45,29 +44,6 @@ namespace content {
 
 using ui::AXPropertyFilter;
 using ui::AXTreeFormatter;
-
-namespace {
-
-void WaitForWindowsAccessibilityEventTestTeardown() {
-#if BUILDFLAG(IS_WIN)
-  // Dump event tests inspect Windows accessibility objects while the page is
-  // live. Shell teardown can briefly leave destroyed nodes waiting on those
-  // COM references to release.
-  const auto get_ghost_count = [] {
-    return ui::AXPlatformNodeWin::GetCounts().ghost_nodes;
-  };
-  if (get_ghost_count() == 0) {
-    return;
-  }
-
-  EXPECT_TRUE(base::test::RunUntil([&] { return get_ghost_count() == 0; }))
-      << "Timed out waiting for Windows accessibility event test teardown; "
-      << get_ghost_count()
-      << " AXPlatformNodeWin COM references are still alive.";
-#endif
-}
-
-}  // namespace
 
 // See content/test/data/accessibility/readme.md for an overview.
 //
@@ -110,11 +86,6 @@ class DumpAccessibilityEventsTest : public DumpAccessibilityTestBase {
     command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures,
                                     "AOMAriaRelationshipProperties");
     DumpAccessibilityTestBase::SetUpCommandLine(command_line);
-  }
-
-  void PostRunTestOnMainThread() override {
-    ContentBrowserTest::PostRunTestOnMainThread();
-    WaitForWindowsAccessibilityEventTestTeardown();
   }
 
   std::vector<std::string> Dump() override;
@@ -593,16 +564,8 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
   RunEventTest(FILE_PATH_LITERAL("aria-combo-box-focus.html"));
 }
 
-// TODO(crbug.com/509331079): Re-enable this test.
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_AccessibilityEventsAriaComboBoxDelayAddList \
-  DISABLED_AccessibilityEventsAriaComboBoxDelayAddList
-#else
-#define MAYBE_AccessibilityEventsAriaComboBoxDelayAddList \
-  AccessibilityEventsAriaComboBoxDelayAddList
-#endif
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
-                       MAYBE_AccessibilityEventsAriaComboBoxDelayAddList) {
+                       AccessibilityEventsAriaComboBoxDelayAddList) {
   RunEventTest(FILE_PATH_LITERAL("aria-combo-box-delay-add-list.html"));
 }
 
@@ -1011,6 +974,22 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
                        AccessibilityEventsLiveRegionRemove) {
   RunEventTest(FILE_PATH_LITERAL("live-region-remove.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsLiveRegionReparent) {
+  RunEventTest(FILE_PATH_LITERAL("live-region-reparent.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsLiveRegionReparentFromLiveRegion) {
+  RunEventTest(FILE_PATH_LITERAL("live-region-reparent-from-live-region.html"));
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityEventsTest,
+                       AccessibilityEventsLiveRegionReparentWithinLiveRegion) {
+  RunEventTest(
+      FILE_PATH_LITERAL("live-region-reparent-within-live-region.html"));
 }
 
 IN_PROC_BROWSER_TEST_P(

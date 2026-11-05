@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 import '//resources/cr_elements/cr_button/cr_button.js';
-import '//resources/cr_elements/cr_lottie/cr_lottie.js';
+import '//resources/cr_components/cr_lottie/cr_lottie.js';
 import '//resources/cr_elements/cr_view_manager/cr_view_manager.js';
 import '/strings.m.js';
 import './feature_showcase_step.js';
@@ -15,7 +15,7 @@ import './themes_and_customization/themes_and_customization_step.js';
 import './password_manager/password_manager_step.js';
 
 import {ColorChangeUpdater} from '//resources/cr_components/color_change_listener/colors_css_updater.js';
-import type {CrLottieElement} from '//resources/cr_elements/cr_lottie/cr_lottie.js';
+import type {CrLottieElement} from '//resources/cr_components/cr_lottie/cr_lottie.js';
 import type {CrViewManagerElement} from '//resources/cr_elements/cr_view_manager/cr_view_manager.js';
 import {assert} from '//resources/js/assert.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
@@ -121,13 +121,13 @@ export class FeatureShowcaseAppElement extends CrLitElement {
     return this.steps.includes(stepId);
   }
 
-  protected onStepCompleted_() {
+  protected onStepCompleted_(e: Event) {
     assert(!this.areButtonsDisabled_, 'Buttons should not be disabled.');
     this.areButtonsDisabled_ = true;
     this.activeStepIndex++;
 
     if (this.activeStepIndex < this.steps.length) {
-      this.tryPlayingTransitionAnimations();
+      this.tryPlayingTransitionAnimations_();
       const step = this.steps[this.activeStepIndex]!;
       this.$.viewManager.switchView(step).then(() => {
         this.areButtonsDisabled_ = false;
@@ -136,14 +136,20 @@ export class FeatureShowcaseAppElement extends CrLitElement {
       return;
     }
 
-    browserProxyFactory.getInstance().handler.finishFeatureShowcase();
+    const stepper = (e.currentTarget as HTMLElement)
+                        .querySelector('feature-showcase-stepper');
+    assert(stepper);
+    this.updateComplete.then(() => stepper.waitForAnimationComplete())
+        .then(() => {
+          browserProxyFactory.getInstance().handler.finishFeatureShowcase();
+        });
   }
 
   private notifyStepShown_() {
     browserProxyFactory.getInstance().handler.nextStepShown();
   }
 
-  private tryPlayingTransitionAnimations() {
+  private tryPlayingTransitionAnimations_() {
     assert(this.activeStepIndex > 0, 'Step index should be greater than 0.');
     const startFrame = (this.activeStepIndex - 1) * 120;
     const endFrame = startFrame + 120;

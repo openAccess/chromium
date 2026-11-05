@@ -30,7 +30,6 @@
 #include "components/omnibox/browser/autocomplete_result.h"
 #include "components/omnibox/browser/fake_autocomplete_provider_client.h"
 #include "components/omnibox/browser/suggestion_group_util.h"
-#include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/search_engines/search_engines_test_util.h"
 #include "components/search_engines/template_url.h"
@@ -43,6 +42,8 @@ using base::Time;
 using metrics::OmniboxEventProto;
 
 namespace {
+
+constexpr bool kIsIOS = !!BUILDFLAG(IS_IOS);
 
 // Used to populate the URLDatabase.
 struct TestURLData {
@@ -318,7 +319,8 @@ TEST_F(LocalHistoryZeroSuggestProviderTest, EntryPoint) {
     // Enable local history zero-prefix suggestions beyond NTP.
     base::test::ScopedFeatureList features;
     features.InitWithFeatures(
-        /*enabled_features=*/{omnibox::kLocalHistoryZeroSuggestBeyondNTP},
+        /*enabled_features=*/{omnibox::kLocalHistoryZeroSuggestBeyondNTP,
+                              omnibox::kZeroSuggestPrefetchingOnSRP},
         /*disabled_features=*/{});
 #if BUILDFLAG(IS_IOS)
     StartProviderAndWaitUntilDone(
@@ -336,6 +338,69 @@ TEST_F(LocalHistoryZeroSuggestProviderTest, EntryPoint) {
     ExpectMatches(
         {{"hello world", omnibox::kLocalHistoryZeroSuggestRelevance}});
   }
+}
+
+TEST_P(LocalHistoryZeroSuggestProviderTest, SearchResultsRequirePrefetching) {
+  base::test::ScopedFeatureList features;
+  features.InitWithFeatureStates(
+      {{omnibox::kLocalHistoryZeroSuggestBeyondNTP, true},
+       {omnibox::kZeroSuggestPrefetchingOnSRP, GetParam()},
+       {omnibox::kZeroSuggestPrefetchingOnWeb, !GetParam()}});
+  LoadURLs({{default_search_provider(), "hello world", "", 1}});
+
+  const std::string url = "https://www.google.com/search?q=foo";
+  StartProviderAndWaitUntilDone(
+      kIsIOS ? url : "", metrics::OmniboxFocusType::INTERACTION_FOCUS,
+      OmniboxEventProto::SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT, url);
+
+  if (GetParam()) {
+    ExpectMatches(
+        {{"hello world", omnibox::kLocalHistoryZeroSuggestRelevance}});
+  } else {
+    ExpectMatches({});
+  }
+}
+
+TEST_P(LocalHistoryZeroSuggestProviderTest, WebPagesRequirePrefetching) {
+  base::test::ScopedFeatureList features;
+  features.InitWithFeatureStates(
+      {{omnibox::kLocalHistoryZeroSuggestBeyondNTP, true},
+       {omnibox::kZeroSuggestPrefetchingOnSRP, !GetParam()},
+       {omnibox::kZeroSuggestPrefetchingOnWeb, GetParam()}});
+  LoadURLs({{default_search_provider(), "hello world", "", 1}});
+
+  const std::string url = "https://example.com/";
+  StartProviderAndWaitUntilDone(kIsIOS ? url : "",
+                                metrics::OmniboxFocusType::INTERACTION_FOCUS,
+                                OmniboxEventProto::OTHER, url);
+
+  if (GetParam()) {
+    ExpectMatches(
+        {{"hello world", omnibox::kLocalHistoryZeroSuggestRelevance}});
+  } else {
+    ExpectMatches({});
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Prefetching,
+                         LocalHistoryZeroSuggestProviderTest,
+                         testing::Bool());
+
+TEST_F(LocalHistoryZeroSuggestProviderTest,
+       NtpAndOmniboxEverywhereDoNotRequirePrefetching) {
+  base::test::ScopedFeatureList features;
+  features.InitWithFeatures({omnibox::kLocalHistoryZeroSuggestBeyondNTP},
+                            {omnibox::kZeroSuggestPrefetchingOnSRP,
+                             omnibox::kZeroSuggestPrefetchingOnWeb});
+  LoadURLs({{default_search_provider(), "hello world", "", 1}});
+
+  StartProviderAndWaitUntilDone();
+  ExpectMatches({{"hello world", omnibox::kLocalHistoryZeroSuggestRelevance}});
+
+  StartProviderAndWaitUntilDone("",
+                                metrics::OmniboxFocusType::INTERACTION_FOCUS,
+                                OmniboxEventProto::OMNIBOX_EVERYWHERE);
+  ExpectMatches({{"hello world", omnibox::kLocalHistoryZeroSuggestRelevance}});
 }
 
 // Tests that search terms are extracted from the default search provider's
@@ -515,11 +580,6 @@ TEST_F(LocalHistoryZeroSuggestProviderTest, Deletion) {
 // Tests that local history uses the suggestion's term instead of the
 // normalized term.
 TEST_F(LocalHistoryZeroSuggestProviderTest, SuggestionTermUsed) {
-  omnibox_feature_configs::ScopedConfigForTesting<
-      omnibox_feature_configs::MiaZPS>
-      scoped_config;
-  scoped_config.Get().enabled = true;
-  scoped_config.Get().local_history_non_normalized_contents = true;
   LoadURLs({
       {default_search_provider(), "hELLo wORlD", "foo=bar4", 4},
       {default_search_provider(), "awesome", "foo=bar5", 5},
@@ -536,12 +596,6 @@ TEST_F(LocalHistoryZeroSuggestProviderTest, SuggestionTermUsed) {
 // the non-normalized suggestion term.
 TEST_F(LocalHistoryZeroSuggestProviderTest, DeletionWithNonNormalizedTerms) {
   base::HistogramTester histogram_tester;
-
-  omnibox_feature_configs::ScopedConfigForTesting<
-      omnibox_feature_configs::MiaZPS>
-      scoped_config;
-  scoped_config.Get().enabled = true;
-  scoped_config.Get().local_history_non_normalized_contents = true;
 
   auto* template_url_service = client_->GetTemplateURLService();
   auto* other_search_provider = template_url_service->Add(

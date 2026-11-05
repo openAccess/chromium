@@ -5,11 +5,16 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_INFOBAR_INTERNALS_INFOBAR_INTERNALS_HANDLER_H_
 #define CHROME_BROWSER_UI_WEBUI_INFOBAR_INTERNALS_INFOBAR_INTERNALS_HANDLER_H_
 
+#include <memory>
 #include <vector>
 
 #include "base/callback_list.h"
+#include "build/branding_buildflags.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/webui/infobar_internals/infobar_internals.mojom.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+
+class TabSharingUI;
 
 // The handler for Javascript messages related to the "infobar-internals" page.
 class InfoBarInternalsHandler final
@@ -25,19 +30,35 @@ class InfoBarInternalsHandler final
 
   // infobar_internals::mojom::PageHandler:
   void GetInfoBars(GetInfoBarsCallback callback) override;
-  void TriggerInfoBar(infobar_internals::mojom::InfoBarType type,
-                      TriggerInfoBarCallback callback) override;
+  void PerformInfoBarAction(infobar_internals::mojom::InfoBarType type,
+                            infobar_internals::mojom::InfoBarAction action,
+                            PerformInfoBarActionCallback callback) override;
 
  private:
+#if BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  class ScopedInstallerDownloaderBypassEligibilityCheck;
+#endif
+
   // Returns true on success, false if the requested type is unsupported or the
-  // triggering fail.
-  bool TriggerInfoBarInternal(infobar_internals::mojom::InfoBarType type);
+  // action fails.
+  bool PerformInfoBarActionInternal(
+      infobar_internals::mojom::InfoBarType type,
+      infobar_internals::mojom::InfoBarAction action);
 
   mojo::Receiver<infobar_internals::mojom::PageHandler> receiver_;
 
   // Stores the subscriptions to the ExtensionDevToolsInfoBarDelegate to keep
   // them alive.
   std::vector<base::CallbackListSubscription> subscriptions_;
+
+  // Keeps the TabSharingUI instance alive while the tab sharing infobar is
+  // shown.
+  std::unique_ptr<TabSharingUI> tab_sharing_ui_;
+
+#if BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
+  std::unique_ptr<ScopedInstallerDownloaderBypassEligibilityCheck>
+      scoped_initializer_;
+#endif
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_INFOBAR_INTERNALS_INFOBAR_INTERNALS_HANDLER_H_

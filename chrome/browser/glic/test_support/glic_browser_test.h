@@ -14,11 +14,13 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/functional/function_ref.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/run_until.h"
@@ -29,7 +31,11 @@
 #include "build/android_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/browser/glic/common/local_hotkey_manager.h"
+#include "chrome/browser/glic/glic_enums.h"
 #include "chrome/browser/glic/host/glic.mojom-shared.h"
+#include "chrome/browser/glic/host/glic_no_webview_contents_manager.h"
+#include "chrome/browser/glic/host/glic_overlay.mojom.h"
+#include "chrome/browser/glic/host/glic_overlay_ui.h"
 #include "chrome/browser/glic/host/glic_web_contents_warming_pool.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
@@ -49,21 +55,24 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/side_panel/side_panel_ui_provider.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/platform_browser_test.h"
 #include "components/feature_engagement/test/scoped_iph_feature_list.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/render_widget_host.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
+#include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/base_window.h"
 #include "ui/base/test/ui_controls.h"
+#include "ui/events/event.h"
 #include "ui/gfx/geometry/point_conversions.h"
 #include "url/gurl.h"
 
@@ -81,10 +90,6 @@
 #if defined(TOOLKIT_VIEWS)
 #include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
 #include "ui/views/test/mock_activation_controller.h"
-#endif
-
-#if BUILDFLAG(IS_CHROMEOS)
-#include "components/sync/base/features.h"
 #endif
 
 namespace glic {
@@ -168,6 +173,20 @@ template <typename T>
                                      std::not_equal_to<T>(), "!=", message);
 }
 
+template <typename T>
+[[nodiscard]] TestResult<> RunUntilNear(
+    base::FunctionRef<std::type_identity_t<T>()> get_value,
+    const T& expected_value,
+    double tolerance = 0.001,
+    std::string_view message = std::string_view()) {
+  return RunUntilComparisonPasses<T>(
+      get_value, expected_value,
+      [tolerance](const T& a, const T& b) {
+        return std::abs(a - b) <= tolerance;
+      },
+      "~=", message);
+}
+
 template <typename Callable>
 [[nodiscard]] TestResult<> RunUntilNull(
     Callable&& get_value,
@@ -235,6 +254,12 @@ template <typename Trigger>
       browser, "Window did not become active");
 }
 
+[[nodiscard]] inline TestResult<> ActivateWindow(
+    BrowserWindowInterface* browser) {
+  browser->GetWindow()->Activate();
+  return WaitForWindowActive(browser);
+}
+
 [[nodiscard]] inline TestResult<> WaitForSidePanelState(
     tabs::TabInterface* tab,
     GlicSidePanelCoordinator::State expected_state) {
@@ -257,9 +282,6 @@ class GlicBrowserTestMixin : public T {
       : T(std::forward<Args>(args)...) {
     std::vector<base::test::FeatureRefAndParams> enabled_features = {
         {features::kGlicMultiInstance, {}},
-#if BUILDFLAG(IS_CHROMEOS)
-        {syncer::kReplaceSyncPromosWithSignInPromos, {}},
-#endif
 #if BUILDFLAG(IS_ANDROID)
         {chrome::android::kTabBottomSheet, {}},
 #endif
@@ -283,9 +305,28 @@ class GlicBrowserTestMixin : public T {
   }
   ~GlicBrowserTestMixin() override = default;
 
+  // Overrides the HTTPS server that hosts the Glic guest page (default:
+  // `T::embedded_https_test_server()`). Call from the fixture constructor,
+  // before `SetUpCommandLine()`. The server must outlive the fixture's
+  // `GlicTestEnvironment` (e.g. own it in a base class declared before this
+  // mixin).
+  void set_glic_https_test_server(
+      net::test_server::EmbeddedTestServer* server) {
+    glic_https_test_server_ = server;
+  }
+  net::test_server::EmbeddedTestServer* GetGlicHttpsTestServer() {
+    return glic_https_test_server_ ? glic_https_test_server_.get()
+                                   : &T::embedded_https_test_server();
+  }
+
   // PlatformBrowserTest:
   void SetUpCommandLine(base::CommandLine* command_line) override {
     T::SetUpCommandLine(command_line);
+    // Binds the Glic HTTPS server so the guest URL is known here. Fixtures
+    // that configure its certificate (e.g. `SetCertHostnames()`) must do so
+    // before this, e.g. in their constructor or `SetUp()`.
+    CHECK(glic_test_environment_.InitializeEmbeddedTestServers(
+        GetGlicHttpsTestServer()));
     // TODO(crbug.com/516793173): Remove this switch once C++ browser tests
     // automatically inherit --force-desktop-android just like Java.
 #if BUILDFLAG(IS_DESKTOP_ANDROID)
@@ -336,14 +377,14 @@ class GlicBrowserTestMixin : public T {
 
     // Disable side panel animations on supported platforms.
     if (IsSidePanelEnabled()) {
-      SidePanelUI* side_panel_ui = SidePanelUIProvider::From(GetBrowser());
+      SidePanelUI* side_panel_ui = SidePanelUI::From(GetBrowser());
       CHECK(side_panel_ui);
       side_panel_ui->SetNoDelaysForTesting(true);
       side_panel_ui->DisableAnimationsForTesting();
     }
 
     CHECK(glic_test_environment_.SetupEmbeddedTestServers(
-        T::embedded_test_server(), &T::embedded_https_test_server()));
+        T::embedded_test_server(), GetGlicHttpsTestServer()));
     T::GetTabListInterface()
         ->GetActiveTab()
         ->GetBrowserWindowInterface()
@@ -366,6 +407,19 @@ class GlicBrowserTestMixin : public T {
     // JNI cleanup tasks) have finished running before the test fixture is
     // destroyed (which destroys ScopedFeatureList).
     base::RunLoop().RunUntilIdle();
+  }
+
+  void TearDown() override {
+    T::TearDown();
+#if BUILDFLAG(IS_ANDROID)
+    // On Android, BrowserTestBase::SetUp() releases the BEST_EFFORT execution
+    // fence and tears down the browser at the end of SetUp() without shutting
+    // down ThreadPoolInstance. Flush any queued background tasks before ~Test()
+    // destroys the fixture's ScopedFeatureList instances.
+    if (auto* thread_pool = base::ThreadPoolInstance::Get()) {
+      thread_pool->FlushForTesting();
+    }
+#endif
   }
 
   // Toggles the Glic UI.
@@ -939,7 +993,19 @@ class GlicBrowserTestMixin : public T {
     }
   }
 
+  bool IsNoWebviewEnabled() {
+    return GlicKeyedService::IsNoWebviewEnabled(T::GetProfile());
+  }
+
   [[nodiscard]] TestResult<> WaitForWebUiState(mojom::WebUiState state) {
+    if (IsNoWebviewEnabled()) {
+      if (state == mojom::WebUiState::kReady) {
+        return WaitForGlicClient();
+      } else {
+        return base::unexpected(
+            "WaitForWebUiState does not work with GlicNoWebview");
+      }
+    }
     auto state_to_string = [](mojom::WebUiState state) -> std::string {
       std::stringstream ss;
       ss << state;
@@ -956,6 +1022,133 @@ class GlicBrowserTestMixin : public T {
         state_to_string(state));
   }
 
+  [[nodiscard]] TestResult<> WaitForErrorPanelType(
+      std::optional<mojom::ErrorPanelType> expected_type,
+      GlicInstance* instance = nullptr) {
+    CHECK(IsNoWebviewEnabled())
+        << "WaitForErrorPanelType only works with GlicNoWebview";
+    auto type_to_string =
+        [](std::optional<mojom::ErrorPanelType> type) -> std::string {
+      if (!type) {
+        return "none";
+      }
+      std::stringstream ss;
+      ss << *type;
+      return ss.str();
+    };
+    return RunUntilEqual(
+        [&, instance, type_to_string]() -> std::string {
+          GlicInstanceImpl* target = GetInstanceImpl(instance);
+          if (!target) {
+            return "no instance";
+          }
+          auto* manager = static_cast<GlicNoWebviewContentsManager*>(
+              target->host().contents_manager());
+          if (!manager) {
+            return "no contents manager";
+          }
+          return type_to_string(manager->error_type());
+        },
+        type_to_string(expected_type), "Timeout waiting for error panel type");
+  }
+
+  [[nodiscard]] TestResult<> WaitForOverlayErrorPanel(
+      mojom::ErrorPanelType error_panel_type,
+      GlicInstance* instance = nullptr) {
+    if (!IsNoWebviewEnabled()) {
+      return base::unexpected(
+          "kGlicNoWebview must be enabled to use WaitForOverlayErrorPanel()");
+    }
+    RETURN_IF_ERROR(WaitForErrorPanelType(error_panel_type, instance));
+    GlicInstanceImpl* target = GetInstanceImpl(instance);
+    if (target) {
+      auto* manager = static_cast<GlicNoWebviewContentsManager*>(
+          target->host().contents_manager());
+      if (manager && manager->overlay_contents()) {
+        if (!content::WaitForLoadStop(manager->overlay_contents())) {
+          return base::unexpected("WaitForLoadStop failed on overlay_contents");
+        }
+      }
+    }
+    return base::ok();
+  }
+
+  [[nodiscard]] TestResult<> WaitForDisplayState(
+      GlicNoWebviewContentsManager::DisplayState display_state,
+      GlicInstance* instance = nullptr) {
+    if (!IsNoWebviewEnabled()) {
+      return WaitForWebUiState(mojom::WebUiState::kReady);
+    }
+    auto to_string =
+        [](GlicNoWebviewContentsManager::DisplayState state) -> std::string {
+      std::stringstream ss;
+      ss << state;
+      return ss.str();
+    };
+    return RunUntilEqual(
+        [&, instance, to_string]() -> std::string {
+          GlicInstanceImpl* target = GetInstanceImpl(instance);
+          if (!target) {
+            return "no instance";
+          }
+          auto* manager = static_cast<GlicNoWebviewContentsManager*>(
+              target->host().contents_manager());
+          if (!manager) {
+            return "no contents manager";
+          }
+          return to_string(manager->state());
+        },
+        to_string(display_state));
+  }
+
+  // Waits until the glic guest is visible in the glic view. This does not
+  // guarantee the glic view is itself visible.
+  [[nodiscard]] TestResult<> WaitUntilGuestIsShowing(
+      GlicInstance* instance = nullptr) {
+    if (!IsNoWebviewEnabled()) {
+      return WaitForWebUiState(mojom::WebUiState::kReady);
+    }
+    return WaitForDisplayState(
+        GlicNoWebviewContentsManager::DisplayState::kShowingGuest, instance);
+  }
+
+  [[nodiscard]] TestResult<> WaitForGuestState(
+      GlicNoWebviewContentsManager::GuestState guest_state,
+      GlicInstance* instance = nullptr) {
+    if (!IsNoWebviewEnabled()) {
+      return base::unexpected(
+          "WaitForGuestState only works with GlicNoWebview");
+    }
+    auto to_string =
+        [](GlicNoWebviewContentsManager::GuestState state) -> std::string {
+      switch (state) {
+        case GlicNoWebviewContentsManager::GuestState::kLoading:
+          return "kLoading";
+        case GlicNoWebviewContentsManager::GuestState::kReady:
+          return "kReady";
+        case GlicNoWebviewContentsManager::GuestState::kLogin:
+          return "kLogin";
+        case GlicNoWebviewContentsManager::GuestState::kGuestError:
+          return "kGuestError";
+        case GlicNoWebviewContentsManager::GuestState::kSecurityInterstitial:
+          return "kSecurityInterstitial";
+      }
+    };
+    return RunUntilEqual(
+        [&, instance, to_string]() -> std::string {
+          GlicInstanceImpl* target = GetInstanceImpl(instance);
+          if (!target) {
+            return "no instance";
+          }
+          auto* manager = static_cast<GlicNoWebviewContentsManager*>(
+              target->host().contents_manager());
+          if (!manager) {
+            return "no contents manager";
+          }
+          return to_string(manager->guest_state().get());
+        },
+        to_string(guest_state), "Timeout waiting for guest state");
+  }
   GlicKeyedService* service() {
     GlicKeyedService* service = GlicKeyedService::Get(weak_profile_.get());
     CHECK(service);
@@ -980,7 +1173,7 @@ class GlicBrowserTestMixin : public T {
   }
 
   // Adds a query param to the URL that will be used to load the mock glic.
-  // Must be called before `SetUpOnMainThread()`. Both `key` and `value` (if
+  // Must be called before `SetUpCommandLine()`. Both `key` and `value` (if
   // specified) will be URL-encoded for safety.
   void AddMockGlicQueryParam(const std::string_view& key,
                              const std::string_view& value = "") {
@@ -989,12 +1182,19 @@ class GlicBrowserTestMixin : public T {
 
   GURL GetGuestURL() { return glic_test_environment_.GetGuestURL(); }
 
+  // Waits for the glic client to become usable.
+  //
+  // This waits on `ClientLoadState`, not on the raw connection: a client that
+  // connected and then failed is not something a test can drive, so waiting
+  // for `kReady` is what callers actually want. It also makes the failure
+  // message say which states were seen instead of just "not connected".
   [[nodiscard]] TestResult<void> WaitForGlicClient(
       GlicInstance* instance = nullptr) {
     auto* instance_impl = GetInstanceImpl(instance);
     return RunUntilEqual(
-        [&]() { return instance_impl->host().IsWebClientConnected(); }, true,
-        "WaitForGlicClient: client client did not connect");
+        [&]() { return instance_impl->host().client_load_state(); },
+        ClientLoadState::kReady,
+        "WaitForGlicClient: client did not become ready");
   }
 
   // Create an actor task for the instance.
@@ -1059,8 +1259,9 @@ class GlicBrowserTestMixin : public T {
     if (accelerator.IsCmdDown()) {
       accelerator_state |= ui_controls::kCommand;
     }
-    ui_controls::SendKeyEvents(window, accelerator.key_code(),
-                               ui_controls::kKeyPress, accelerator_state);
+    ui_controls::SendKeyEvents(
+        window, accelerator.key_code(),
+        ui_controls::kKeyPress | ui_controls::kKeyRelease, accelerator_state);
 #else
     views::Widget* widget = views::Widget::GetWidgetForNativeWindow(
         GetBrowser()->GetWindow()->GetNativeWindow());
@@ -1073,6 +1274,42 @@ class GlicBrowserTestMixin : public T {
 
   void TriggerHotkey(LocalHotkeyManager::Command command) {
     TriggerHotkey(GetAccelerator(command));
+  }
+
+  void TriggerCtrlWheel(content::WebContents* web_contents, bool zoom_in) {
+    CHECK(web_contents);
+    content::RenderWidgetHost* rwh =
+        web_contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+    CHECK(rwh);
+
+    blink::WebMouseWheelEvent wheel_event(
+        blink::WebInputEvent::Type::kMouseWheel,
+        blink::WebInputEvent::kControlKey, base::TimeTicks::Now());
+
+    if (rwh->GetView()) {
+      const gfx::Rect view_bounds = rwh->GetView()->GetViewBounds();
+      const gfx::Point center_in_widget(view_bounds.width() / 2,
+                                        view_bounds.height() / 2);
+      wheel_event.SetPositionInWidget(center_in_widget.x(),
+                                      center_in_widget.y());
+      wheel_event.SetPositionInScreen(view_bounds.CenterPoint().x(),
+                                      view_bounds.CenterPoint().y());
+    }
+
+    wheel_event.delta_units = ui::ScrollGranularity::kScrollByLine;
+    wheel_event.delta_y =
+        (zoom_in ? 1.0 : -1.0) * ui::MouseWheelEvent::kWheelDelta;
+    wheel_event.wheel_ticks_y = (zoom_in ? 1.0 : -1.0);
+    wheel_event.event_action =
+        blink::WebMouseWheelEvent::EventAction::kPageZoom;
+    wheel_event.phase = blink::WebMouseWheelEvent::kPhaseBegan;
+    rwh->ForwardWheelEvent(wheel_event);
+  }
+
+  void TriggerCtrlWheel(GlicInstanceImpl* instance, bool zoom_in) {
+    CHECK(instance);
+    content::WebContents* web_contents = instance->host().webui_contents();
+    TriggerCtrlWheel(web_contents, zoom_in);
   }
 
  private:
@@ -1093,6 +1330,10 @@ class GlicBrowserTestMixin : public T {
   using T::OpenURLOffTheRecord;
 #endif
   GlicTestEnvironment glic_test_environment_;
+  // Optional override for the HTTPS server hosting the guest; see
+  // set_glic_https_test_server(). Not owned.
+  raw_ptr<net::test_server::EmbeddedTestServer> glic_https_test_server_ =
+      nullptr;
   base::test::ScopedFeatureList scoped_feature_list_;
   feature_engagement::test::ScopedIphFeatureList scoped_iph_feature_list_;
 #if defined(USE_MOCK_ACTIVATION_CONTROLLER)

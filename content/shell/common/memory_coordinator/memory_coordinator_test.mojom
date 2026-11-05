@@ -5,9 +5,14 @@
 module content.mojom;
 
 import "content/common/memory_coordinator/mojom/memory_coordinator.mojom";
+import "mojo/public/mojom/base/memory_limit.mojom";
 
 // An interface for driving memory coordinator tests in the renderer process.
 interface MemoryCoordinatorTest {
+  // Forwards `receiver` from the renderer to the browser's process binder.
+  // Used to test duplicate registry binding. Sends no reply.
+  BindRegistryHost(pending_receiver<ChildMemoryConsumerRegistryHost> receiver);
+
   // Registers a memory consumer in the renderer process with the given name
   // and traits. Signals received by the consumer will be echoed to |client|.
   RegisterConsumer(string name,
@@ -18,7 +23,7 @@ interface MemoryCoordinatorTest {
 // Receives echoes of memory coordinator signals from the renderer process.
 interface MemoryCoordinatorTestClient {
   // Called when the renderer's MemoryConsumer receives OnUpdateMemoryLimit.
-  OnUpdateMemoryLimit(int32 percentage);
+  OnUpdateMemoryLimit(mojo_base.mojom.MemoryLimit memory_limit);
 
   // Called when the renderer's MemoryConsumer receives OnReleaseMemory.
   OnReleaseMemory();

@@ -20,7 +20,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.Shadows;
-import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowApplication;
 
 import org.chromium.base.task.TaskTraits;
@@ -32,7 +31,6 @@ import java.util.HashSet;
 
 /** Unit tests for {@link org.chromium.webapk.lib.client.WebApkServiceConnectionManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class WebApkServiceConnectionManagerTest {
     private static final String WEBAPK_PACKAGE = "com.webapk.package";
 
@@ -54,7 +52,7 @@ public class WebApkServiceConnectionManagerTest {
 
     @Before
     public void setUp() {
-        mShadowApplication = Shadows.shadowOf(RuntimeEnvironment.application);
+        mShadowApplication = Shadows.shadowOf(RuntimeEnvironment.getApplication());
         mShadowApplication.setComponentNameAndServiceForBindService(
                 new ComponentName(WEBAPK_PACKAGE, ""), Mockito.mock(IBinder.class));
         mConnectionManager =
@@ -66,7 +64,7 @@ public class WebApkServiceConnectionManagerTest {
 
     @After
     public void tearDown() {
-        mConnectionManager.disconnectAll(RuntimeEnvironment.application);
+        mConnectionManager.disconnectAll(RuntimeEnvironment.getApplication());
         RobolectricUtil.runAllBackgroundAndUi();
     }
 
@@ -79,9 +77,9 @@ public class WebApkServiceConnectionManagerTest {
         TestCallback callback1 = new TestCallback();
         TestCallback callback2 = new TestCallback();
 
-        mConnectionManager.connect(RuntimeEnvironment.application, WEBAPK_PACKAGE, callback1);
+        mConnectionManager.connect(RuntimeEnvironment.getApplication(), WEBAPK_PACKAGE, callback1);
         RobolectricUtil.runAllBackgroundAndUi();
-        mConnectionManager.connect(RuntimeEnvironment.application, WEBAPK_PACKAGE, callback2);
+        mConnectionManager.connect(RuntimeEnvironment.getApplication(), WEBAPK_PACKAGE, callback2);
         RobolectricUtil.runAllBackgroundAndUi();
 
         // Only one connection should have been created.
@@ -120,7 +118,7 @@ public class WebApkServiceConnectionManagerTest {
             public Context getApplicationContext() {
                 // Need to return real context so that ContextUtils#fetchAppSharedPreferences() does
                 // not crash.
-                return RuntimeEnvironment.application;
+                return RuntimeEnvironment.getApplication();
             }
 
             // Create pending connection.
@@ -179,7 +177,7 @@ public class WebApkServiceConnectionManagerTest {
         public Context getApplicationContext() {
             // Need to return real context so that ContextUtils#fetchAppSharedPreferences() does
             // not crash.
-            return RuntimeEnvironment.application;
+            return RuntimeEnvironment.getApplication();
         }
 
         // Create pending connection.

@@ -14,9 +14,6 @@ import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoor
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator.BottomSheetType.THEME;
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator.BottomSheetType.THEME_COLLECTIONS;
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationCoordinator.BottomSheetType.THEME_TIP;
-import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType.CHROME_COLOR;
-import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType.IMAGE_FROM_DISK;
-import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType.THEME_COLLECTION;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.APP_LAUNCH_SEARCH_ENGINE_HAD_LOGO;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.NTP_BACKGROUND_IMAGE_LANDSCAPE_INFO;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.NTP_BACKGROUND_IMAGE_LANDSCAPE_INFO_FOR_DAILY_REFRESH;
@@ -32,7 +29,6 @@ import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.NTP_C
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.NTP_CUSTOMIZATION_PRIMARY_COLOR;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.NTP_CUSTOMIZATION_PRIMARY_COLOR_DARK;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.NTP_CUSTOMIZATION_PRIMARY_COLOR_FOR_DAILY_REFRESH;
-import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.NTP_CUSTOMIZATION_THEME_COLOR_ID;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.NTP_CUSTOMIZATION_THEME_IS_SNACKBAR_SHOWN;
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.NTP_CUSTOMIZATION_THEME_TIP_BOTTOM_SHEET_SHOWN_TIMESTAMP_MS;
 import static org.chromium.chrome.browser.url_constants.UrlOverrideUtils.isWebUiNtpOverrideEnabled;
@@ -57,6 +53,7 @@ import android.provider.Browser;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 
@@ -85,18 +82,25 @@ import org.chromium.base.task.AsyncTask;
 import org.chromium.base.task.BackgroundOnlyAsyncTask;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.composeplate.ComposeplateUtils;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.ChromeFeatures;
+import org.chromium.chrome.browser.ntp.NewTabPageUtils;
 import org.chromium.chrome.browser.ntp_customization.policy.NtpCustomizationPolicyManager;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorFromHexInfo;
-import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo.NtpThemeColorId;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorUtils;
 import org.chromium.chrome.browser.ntp_customization.theme.daily_refresh.NtpThemeDailyRefreshManager;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.CustomBackgroundInfo;
 import org.chromium.chrome.browser.ntp_customization.theme.upload_image.BackgroundImageInfo;
 import org.chromium.chrome.browser.ntp_customization.theme.upload_image.CropImageUtils;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataBase;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataColor;
 import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataImageBase;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataManager;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataThemeCollection;
 import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgroundDataUtils;
+import org.chromium.chrome.browser.ntp_customization.theme_sync.data.PlatformType;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -121,6 +125,7 @@ import java.io.IOException;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.nio.file.Paths;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 
 /** Utility class of the NTP customization. */
@@ -368,7 +373,9 @@ public class NtpCustomizationUtils {
 
         NtpThemeDailyRefreshManager ntpThemeDailyRefreshManager =
                 NtpThemeDailyRefreshManager.getInstance();
-        @ColorInt int color;
+        @Nullable
+        @ColorInt
+        Integer color;
         if (imageType == NtpBackgroundType.CHROME_COLOR) {
             @NtpThemeColorId
             int colorId = ntpThemeDailyRefreshManager.getNtpThemeColorIdForChromeColorTheme();
@@ -394,7 +401,7 @@ public class NtpCustomizationUtils {
             color = getCustomizedPrimaryColorFromSharedPreference();
         }
 
-        return (color != NtpThemeColorInfo.COLOR_NOT_SET) ? color : null;
+        return color;
     }
 
     /**
@@ -408,36 +415,6 @@ public class NtpCustomizationUtils {
         builder.setContentBasedSource(primaryColor);
         DynamicColorsOptions dynamicColorsOptions = builder.build();
         DynamicColors.applyToActivityIfAvailable(activity, dynamicColorsOptions);
-    }
-
-    /** Loads the NtpThemeColorInfo from the SharedPreference, null otherwise. */
-    public @Nullable static NtpThemeColorInfo loadColorInfoFromSharedPreference(Context context) {
-        if (!NtpCustomizationUtils.isNtpThemeCustomizationEnabled()) return null;
-
-        @NtpBackgroundType int imageType = getNtpBackgroundTypeFromSharedPreference();
-        if (imageType != NtpBackgroundType.CHROME_COLOR
-                && imageType != NtpBackgroundType.COLOR_FROM_HEX) {
-            return null;
-        }
-
-        if (imageType == NtpBackgroundType.CHROME_COLOR) {
-            // For CHROME_COLOR, a color resource id is saved in the SharedPreference.
-            @NtpThemeColorId int colorId = getNtpThemeColorIdFromSharedPreference();
-            if (colorId == NtpThemeColorId.DEFAULT) return null;
-
-            return NtpThemeColorUtils.createNtpThemeColorInfo(context, colorId);
-        }
-
-        // For other types, a color value is saved in the SharedPreference.
-        @ColorInt int primaryColor = getCustomizedPrimaryColorFromSharedPreference();
-        if (primaryColor == NtpThemeColorInfo.COLOR_NOT_SET) return null;
-
-        @ColorInt int backgroundColor = NtpThemeColorInfo.COLOR_NOT_SET;
-        if (imageType == NtpBackgroundType.COLOR_FROM_HEX) {
-            backgroundColor =
-                    getBackgroundColorFromSharedPreference(NtpThemeColorInfo.COLOR_NOT_SET);
-        }
-        return new NtpThemeColorFromHexInfo(context, backgroundColor, primaryColor);
     }
 
     // Gets the content based primary color for a bitmap.
@@ -495,12 +472,6 @@ public class NtpCustomizationUtils {
                 ChromePreferenceKeys.NTP_CUSTOMIZATION_BACKGROUND_TYPE, NtpBackgroundType.DEFAULT);
     }
 
-    /** Removes the NTP's background image type from the SharedPreference. */
-    public static void removeNtpBackgroundTypeFromSharedPreference() {
-        SharedPreferencesManager prefsManager = ChromeSharedPreferences.getInstance();
-        prefsManager.removeKey(ChromePreferenceKeys.NTP_CUSTOMIZATION_BACKGROUND_TYPE);
-    }
-
     /**
      * Gets the current NTP's background type from the SharedPreference. Returns
      * NtpBackgroundType.DEFAULT if the feature flag is disabled.
@@ -525,17 +496,6 @@ public class NtpCustomizationUtils {
         File file = getBackgroundImageFileFromPath(filePath);
         saveBitmapImageToFile(backgroundImageBitmap, file);
         imageData.setIsBitmapSaved(backgroundImageBitmap != null);
-    }
-
-    /**
-     * Saves the daily refresh background image.
-     *
-     * @param backgroundImageBitmap The bitmap of the daily refresh background image.
-     */
-    @VisibleForTesting
-    static void saveDailyRefreshBackgroundImageFile(@Nullable Bitmap backgroundImageBitmap) {
-        File file = createDailyRefreshBackgroundImageFile();
-        saveBitmapImageToFile(backgroundImageBitmap, file);
     }
 
     /**
@@ -634,12 +594,14 @@ public class NtpCustomizationUtils {
      *
      * @param backgroundImageBitmap The bitmap to save.
      * @param file The file to save the image to.
+     * @return Whether the image is saved.
      */
-    private static void saveBitmapImageToFileImpl(Bitmap backgroundImageBitmap, File file) {
+    private static boolean saveBitmapImageToFileImpl(Bitmap backgroundImageBitmap, File file) {
         try (FileOutputStream fileOutputStream = new FileOutputStream(file)) {
-            backgroundImageBitmap.compress(Bitmap.CompressFormat.PNG, 100, fileOutputStream);
+            return backgroundImageBitmap.compress(Bitmap.CompressFormat.PNG, 100, fileOutputStream);
         } catch (IOException e) {
             Log.i(TAG, "Failed to save background image to: " + file.getAbsolutePath());
+            return false;
         }
     }
 
@@ -942,27 +904,6 @@ public class NtpCustomizationUtils {
     }
 
     /**
-     * Picks the primary color for the daily refresh bitmap and saves it to SharedPreferences.
-     *
-     * @param bitmap The bitmap from which to extract and save the primary color.
-     */
-    static void pickAndSaveDailyRefreshPrimaryColor(Bitmap bitmap) {
-        new BackgroundOnlyAsyncTask<Void>() {
-            @Override
-            protected Void doInBackground() {
-                @ColorInt Integer primaryColor = getContentBasedSeedColor(bitmap);
-                if (primaryColor != null) {
-                    setDailyRefreshCustomizedPrimaryColorToSharedPreference(
-                            primaryColor.intValue());
-                } else {
-                    removeDailyRefreshCustomizedPrimaryColorFromSharedPreference();
-                }
-                return null;
-            }
-        }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
-    }
-
-    /**
      * Sets the customized primary color to the SharedPreference.
      *
      * @param color The new primary theme color.
@@ -972,18 +913,21 @@ public class NtpCustomizationUtils {
         prefsManager.writeInt(NTP_CUSTOMIZATION_PRIMARY_COLOR, color);
     }
 
-    /** Gets the customized primary color from the SharedPreference. */
-    public static @ColorInt int getCustomizedPrimaryColorFromSharedPreference() {
+    private static @Nullable @ColorInt Integer readNullableColorInt(String key) {
         SharedPreferencesManager prefsManager = ChromeSharedPreferences.getInstance();
-        return prefsManager.readInt(
-                NTP_CUSTOMIZATION_PRIMARY_COLOR, NtpThemeColorInfo.COLOR_NOT_SET);
+        return prefsManager.contains(key) ? prefsManager.readInt(key) : null;
     }
 
-    /** Gets the customized primary color in dark mode from the SharedPreference. */
-    public static @ColorInt int getCustomizedPrimaryColorDarkFromSharedPreference() {
-        SharedPreferencesManager prefsManager = ChromeSharedPreferences.getInstance();
-        return prefsManager.readInt(
-                NTP_CUSTOMIZATION_PRIMARY_COLOR_DARK, NtpThemeColorInfo.COLOR_NOT_SET);
+    /** Gets the customized primary color from the SharedPreference, or null if not set. */
+    public static @Nullable @ColorInt Integer getCustomizedPrimaryColorFromSharedPreference() {
+        return readNullableColorInt(NTP_CUSTOMIZATION_PRIMARY_COLOR);
+    }
+
+    /**
+     * Gets the customized primary color in dark mode from the SharedPreference, or null if not set.
+     */
+    public static @Nullable @ColorInt Integer getCustomizedPrimaryColorDarkFromSharedPreference() {
+        return readNullableColorInt(NTP_CUSTOMIZATION_PRIMARY_COLOR_DARK);
     }
 
     /**
@@ -997,11 +941,13 @@ public class NtpCustomizationUtils {
         prefsManager.writeInt(NTP_CUSTOMIZATION_PRIMARY_COLOR_FOR_DAILY_REFRESH, color);
     }
 
-    /** Gets the customized primary color for daily refresh from SharedPreferences. */
-    public static @ColorInt int getDailyRefreshCustomizedPrimaryColorFromSharedPreference() {
-        SharedPreferencesManager prefsManager = ChromeSharedPreferences.getInstance();
-        return prefsManager.readInt(
-                NTP_CUSTOMIZATION_PRIMARY_COLOR_FOR_DAILY_REFRESH, NtpThemeColorInfo.COLOR_NOT_SET);
+    /**
+     * Gets the customized primary color for daily refresh from SharedPreferences, or null if not
+     * set.
+     */
+    public static @Nullable @ColorInt Integer
+            getDailyRefreshCustomizedPrimaryColorFromSharedPreference() {
+        return readNullableColorInt(NTP_CUSTOMIZATION_PRIMARY_COLOR_FOR_DAILY_REFRESH);
     }
 
     /** Removes the customized primary color from the SharedPreference. */
@@ -1140,19 +1086,32 @@ public class NtpCustomizationUtils {
         return prefsManager.readLong(NTP_CUSTOMIZATION_LAST_DAILY_REFRESH_TIMESTAMP, 0);
     }
 
-    /** Removes the NTP's background color key and primary color key from the SharedPreference. */
-    static void resetCustomizedColors() {
+    /**
+     * Deletes all the NTP background image files, including the legacy background image file, the
+     * daily refresh background image file and all the files in the upload image and theme
+     * collection image directories.
+     */
+    static void deleteAllNtpBackgroundImageFiles() {
+        deleteBackgroundImageFile(createBackgroundImageFile());
+        deleteBackgroundImageFile(createDailyRefreshBackgroundImageFile());
+        deleteThemeImageFileDir(NTP_UPLOAD_IMAGES_DIR);
+        deleteThemeImageFileDir(NTP_THEME_COLLECTION_IMAGES_DIR);
+    }
+
+    /**
+     * Removes all the NTP background related keys from the SharedPreference regardless of the
+     * background type, including the background type, colors, image file path, image info and daily
+     * refresh data. This doesn't delete any image file.
+     */
+    static void removeAllNtpBackgroundDataFromSharedPreference() {
         SharedPreferencesManager prefsManager = ChromeSharedPreferences.getInstance();
+        prefsManager.removeKey(NTP_CUSTOMIZATION_BACKGROUND_TYPE);
         prefsManager.removeKey(ChromePreferenceKeys.NTP_CUSTOMIZATION_BACKGROUND_COLOR);
         prefsManager.removeKey(ChromePreferenceKeys.NTP_CUSTOMIZATION_BACKGROUND_COLOR_DARK);
         prefsManager.removeKey(ChromePreferenceKeys.NTP_CUSTOMIZATION_THEME_COLOR_ID);
         prefsManager.removeKey(
                 ChromePreferenceKeys.NTP_CUSTOMIZATION_CHROME_COLOR_DAILY_REFRESH_ENABLED);
-    }
-
-    /** Removes the NTP's background image related keys from the SharedPreference */
-    static void resetCustomizedImage(boolean deleteImageFile) {
-        SharedPreferencesManager prefsManager = ChromeSharedPreferences.getInstance();
+        prefsManager.removeKey(NTP_CUSTOMIZATION_BACKGROUND_IMAGE_FILE_PATH);
         prefsManager.removeKey(NTP_CUSTOMIZATION_PRIMARY_COLOR);
         prefsManager.removeKey(NTP_CUSTOMIZATION_PRIMARY_COLOR_DARK);
         prefsManager.removeKey(NTP_CUSTOMIZATION_PRIMARY_COLOR_FOR_DAILY_REFRESH);
@@ -1163,29 +1122,27 @@ public class NtpCustomizationUtils {
         prefsManager.removeKey(NTP_BACKGROUND_IMAGE_PORTRAIT_INFO_FOR_DAILY_REFRESH);
         prefsManager.removeKey(NTP_BACKGROUND_IMAGE_LANDSCAPE_INFO);
         prefsManager.removeKey(NTP_BACKGROUND_IMAGE_LANDSCAPE_INFO_FOR_DAILY_REFRESH);
-        if (deleteImageFile) {
-            deleteBackgroundImageFile(createBackgroundImageFile());
-            deleteBackgroundImageFile(createDailyRefreshBackgroundImageFile());
-            deleteThemeImageFileDir(NTP_UPLOAD_IMAGES_DIR);
-            deleteThemeImageFileDir(NTP_THEME_COLLECTION_IMAGES_DIR);
-        }
     }
 
-    /** Removes all NTP custom background related data. */
-    public static void resetNtpCustomBackgroundData() {
+    /**
+     * Removes all NTP custom background related data when the NTP background customization is
+     * disabled by policy.
+     */
+    public static void resetNtpCustomBackgroundDataForPolicy() {
         SharedPreferencesManager prefsManager = ChromeSharedPreferences.getInstance();
-        if (!prefsManager.contains(NTP_CUSTOMIZATION_BACKGROUND_TYPE)) {
-            // If the no data has been cached or has been cleaned up before, exits here.
+        if (!prefsManager.contains(NTP_CUSTOMIZATION_BACKGROUND_TYPE)
+                && prefsManager
+                        .readStringsWithPrefix(
+                                ChromePreferenceKeys.NTP_CUSTOMIZATION_SYNC_HISTORY_DATA)
+                        .isEmpty()) {
+            // If no data has been cached or it has been cleaned up before, exits here to avoid
+            // repeated disk and SharedPreferences operations on every startup.
             return;
         }
 
-        @NtpBackgroundType int type = prefsManager.readInt(NTP_CUSTOMIZATION_BACKGROUND_TYPE);
-        removeNtpBackgroundTypeFromSharedPreference();
-        switch (type) {
-            case CHROME_COLOR -> resetCustomizedColors();
-            case IMAGE_FROM_DISK, THEME_COLLECTION ->
-                    resetCustomizedImage(/* deleteImageFile= */ true);
-        }
+        removeAllNtpBackgroundDataFromSharedPreference();
+        NtpBackgroundDataManager.resetSharedPreference();
+        deleteAllNtpBackgroundImageFiles();
     }
 
     /**
@@ -1529,14 +1486,11 @@ public class NtpCustomizationUtils {
      * @param bitmap The bitmap of the theme collection or uploaded image.
      * @param backgroundImageInfo The {@link BackgroundImageInfo} containing the portrait and
      *     landscape transformation matrices of the image.
-     * @param skipSavingPrimaryColor True if color selection and saving are deferred until the
-     *     bottom sheet is dismissed.
      */
-    public static @Nullable @ColorInt Integer saveBackgroundInfo(
+    public static void saveBackgroundInfo(
             NtpBackgroundDataImageBase imageData,
             @Nullable Bitmap bitmap,
-            BackgroundImageInfo backgroundImageInfo,
-            boolean skipSavingPrimaryColor) {
+            BackgroundImageInfo backgroundImageInfo) {
         if (bitmap != null) {
             saveBackgroundImageFile(imageData, bitmap);
         }
@@ -1549,43 +1503,141 @@ public class NtpCustomizationUtils {
         }
 
         @ColorInt Integer primaryColor = imageData.getPrimaryColor();
-        @ColorInt Integer primaryColorPicked = null;
-        if (primaryColor == null) {
-            if (!skipSavingPrimaryColor && bitmap != null) {
-                primaryColorPicked = pickAndSavePrimaryColor(bitmap);
-            }
-        } else {
+        if (primaryColor != null) {
             setCustomizedPrimaryColorToSharedPreference(primaryColor);
+        } else if (bitmap != null) {
+            // Keeps the extracted color on the data object: the outbound sync payload is built
+            // from it, so discarding it here would re-sync this background without a color.
+            imageData.setPrimaryColor(pickAndSavePrimaryColor(bitmap));
+        } else {
+            // There is no color and no bitmap to extract one from, so the preference must stop
+            // describing the previous background.
+            removeCustomizedPrimaryColorFromSharedPreference();
         }
 
         updateBackgroundImageInfo(backgroundImageInfo);
-        return primaryColorPicked;
     }
 
     /**
-     * Updates the necessary preferences and files for daily refresh of theme collection image.
+     * Updates the necessary preferences and files for daily refresh of theme collection image. The
+     * daily refresh info is saved only after the image file has been written, so that the daily
+     * refresh is only applied with a complete image.
      *
      * @param customBackgroundInfo The {@link CustomBackgroundInfo} containing the theme collection
-     *     info if passed in a theme collection image.
+     *     info.
      * @param bitmap The bitmap of the theme collection or uploaded image.
      * @param backgroundImageInfo The {@link BackgroundImageInfo} containing the portrait and
      *     landscape transformation matrices of the image.
      */
     public static void saveDailyRefreshBackgroundInfo(
-            @Nullable CustomBackgroundInfo customBackgroundInfo,
+            CustomBackgroundInfo customBackgroundInfo,
             Bitmap bitmap,
             BackgroundImageInfo backgroundImageInfo) {
-        saveDailyRefreshBackgroundImageFile(bitmap);
+        new AsyncTask<@Nullable Integer>() {
+            private boolean mIsImageSaved;
 
-        if (customBackgroundInfo != null) {
-            setDailyRefreshCustomBackgroundInfoToSharedPreference(customBackgroundInfo);
-        } else {
-            removeDailyRefreshCustomBackgroundInfoFromSharedPreference();
+            @Override
+            protected @Nullable Integer doInBackground() {
+                mIsImageSaved =
+                        saveBitmapImageToFileImpl(bitmap, createDailyRefreshBackgroundImageFile());
+                return mIsImageSaved ? getContentBasedSeedColor(bitmap) : null;
+            }
+
+            @Override
+            protected void onPostExecute(@Nullable Integer primaryColor) {
+                // Drops the image if it wasn't saved, or if the background has been changed while
+                // it was being saved. The image file isn't deleted, since it's only used after the
+                // daily refresh info below is saved, and the next prefetch overwrites the same
+                // file. Deleting it here might also delete the image of a newer prefetch.
+                if (!mIsImageSaved
+                        || !isActiveDailyRefreshThemeCollection(
+                                customBackgroundInfo.collectionId)) {
+                    return;
+                }
+
+                updateDailyRefreshBackgroundImageInfo(backgroundImageInfo);
+                if (primaryColor != null) {
+                    setDailyRefreshCustomizedPrimaryColorToSharedPreference(primaryColor);
+                } else {
+                    removeDailyRefreshCustomizedPrimaryColorFromSharedPreference();
+                }
+                // Saved last, since the daily refresh is only applied if the info exists.
+                setDailyRefreshCustomBackgroundInfoToSharedPreference(customBackgroundInfo);
+            }
+        }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    }
+
+    /**
+     * Returns whether the synced background is the one persisted on this device.
+     *
+     * <p>Used to ignore synced themes that don't change anything, e.g. the synced state replayed
+     * when the native bridge attaches on startup, or a duplicate delivery of the current theme.
+     * Skipping these keeps the local state (e.g. a local chrome color daily refresh with the same
+     * color id) intact instead of clearing SharedPreferences and re-staging the same theme.
+     *
+     * <p>The comparison is with SharedPreferences rather than with the in-memory state, which may
+     * not be initialized yet or may be stale between a synced update and the NTP applying it. A
+     * pending daily refresh isn't considered either: a synced copy of the persisted theme keeps it.
+     *
+     * <p>Colors are compared with {@link NtpBackgroundDataBase#hasSameThemeAndCompatibleColor}, so
+     * a theme collection image synced without a primary color (e.g. from iOS) still matches the
+     * locally applied copy whose color was extracted from the bitmap.
+     *
+     * @param syncedBackgroundData The background data received from Chrome Sync, or null for the
+     *     default background.
+     */
+    public static boolean isSyncedBackgroundPersisted(
+            @Nullable NtpBackgroundDataBase syncedBackgroundData) {
+        @NtpBackgroundType int persistedType = getNtpBackgroundTypeFromSharedPreference();
+        if (syncedBackgroundData == null) {
+            return persistedType == NtpBackgroundType.DEFAULT;
         }
 
-        pickAndSaveDailyRefreshPrimaryColor(bitmap);
+        // TODO(crbug.com/488439751): Check NtpBackgroundDataCustomizedColor once custom hex color
+        // sync is supported.
+        if (syncedBackgroundData instanceof NtpBackgroundDataColor colorData) {
+            return persistedType == NtpBackgroundType.CHROME_COLOR
+                    && colorData.getThemeColorId() == getNtpThemeColorIdFromSharedPreference();
+        }
 
-        updateDailyRefreshBackgroundImageInfo(backgroundImageInfo);
+        return syncedBackgroundData.hasSameThemeAndCompatibleColor(
+                readPersistedThemeCollection(persistedType));
+    }
+
+    /**
+     * Returns the theme collection persisted on this device, or null if the persisted background
+     * isn't a theme collection. Only the data compared by {@link
+     * NtpBackgroundDataBase#hasSameThemeAndCompatibleColor} is read.
+     *
+     * @param persistedType The persisted background type.
+     */
+    private static @Nullable NtpBackgroundDataThemeCollection readPersistedThemeCollection(
+            @NtpBackgroundType int persistedType) {
+        if (persistedType != NtpBackgroundType.THEME_COLLECTION) return null;
+
+        CustomBackgroundInfo info = getCustomBackgroundInfoFromSharedPreference();
+        if (info == null) return null;
+
+        return new NtpBackgroundDataThemeCollection(
+                PlatformType.ANDROID,
+                info,
+                /* backgroundImageInfo= */ null,
+                /* bitmap= */ null,
+                getCustomizedPrimaryColorFromSharedPreference(),
+                /* fileIdHash= */ null);
+    }
+
+    /**
+     * Returns whether the background is the theme collection with the given ID with daily refresh
+     * enabled.
+     *
+     * @param collectionId The ID of the theme collection.
+     */
+    public static boolean isActiveDailyRefreshThemeCollection(@Nullable String collectionId) {
+        CustomBackgroundInfo current = getCustomBackgroundInfoFromSharedPreference();
+        return current != null
+                && current.isDailyRefreshEnabled
+                && Objects.equals(current.collectionId, collectionId);
     }
 
     /**
@@ -1601,8 +1653,15 @@ public class NtpCustomizationUtils {
         if (dailyRefreshNtpBackgroundImageInfo != null) {
             updateBackgroundImageInfo(dailyRefreshNtpBackgroundImageInfo);
         }
-        setCustomizedPrimaryColorToSharedPreference(
-                getDailyRefreshCustomizedPrimaryColorFromSharedPreference());
+        @Nullable
+        @ColorInt
+        Integer dailyRefreshPrimaryColor =
+                getDailyRefreshCustomizedPrimaryColorFromSharedPreference();
+        if (dailyRefreshPrimaryColor != null) {
+            setCustomizedPrimaryColorToSharedPreference(dailyRefreshPrimaryColor);
+        } else {
+            removeCustomizedPrimaryColorFromSharedPreference();
+        }
         CustomBackgroundInfo dailyRefreshCustomBackgroundInfo =
                 getDailyRefreshCustomBackgroundInfoFromSharedPreference();
         if (dailyRefreshCustomBackgroundInfo != null) {
@@ -1679,7 +1738,10 @@ public class NtpCustomizationUtils {
      *
      * <ul>
      *   <li>LFF devices in narrow/split-screen: Uses narrow-window specific margins.
-     *   <li>LFF devices in full/wide view: Uses wide-window specific margins.
+     *   <li>LFF devices in medium-width windows: No extra margin. The NTP is already inset by the
+     *       Feed's lateral paddings on wide windows, so the search box matches the width of the
+     *       Most Visited Tiles (MVT) container and the Feed below it, capped by its max width.
+     *   <li>LFF devices in expanded windows: Uses wide-window specific margins.
      *   <li>Phones: Uses the standard Most Visited Tiles (MVT) container margin.
      * </ul>
      *
@@ -1695,10 +1757,30 @@ public class NtpCustomizationUtils {
                             R.dimen.ntp_search_box_lateral_margin_narrow_window_tablet)
                     * 2;
         } else if (isLff) {
-            return resource.getDimensionPixelSize(R.dimen.ntp_search_box_lateral_margin_tablet) * 2;
+            return isInExpandedWindow(resource, uiConfig)
+                    ? resource.getDimensionPixelSize(R.dimen.ntp_search_box_lateral_margin_tablet)
+                            * 2
+                    : 0;
         } else {
             return resource.getDimensionPixelSize(R.dimen.mvt_container_lateral_margin) * 2;
         }
+    }
+
+    /**
+     * Returns whether the window is at least {@code
+     * R.dimen.ntp_search_box_expanded_window_min_width} wide. The window width excludes the
+     * horizontal inset, the same as the width that {@link UiConfig} uses to compute the display
+     * style.
+     */
+    private static boolean isInExpandedWindow(Resources resource, UiConfig uiConfig) {
+        int windowWidthDp =
+                resource.getConfiguration().screenWidthDp - uiConfig.getHorizontalInset();
+        // Round to avoid float precision issues when comparing with the integer window width.
+        int minWidthDp =
+                Math.round(
+                        resource.getDimension(R.dimen.ntp_search_box_expanded_window_min_width)
+                                / resource.getDisplayMetrics().density);
+        return windowWidthDp >= minWidthDp;
     }
 
     /**
@@ -1708,8 +1790,10 @@ public class NtpCustomizationUtils {
      * @param showSearchBoxTall Whether to show a tall search box.
      */
     public static int getSearchBoxHeight(Resources resources, boolean showSearchBoxTall) {
+        // TODO(https://crbug.com/534357676): sets the height in the layout file after the feature
+        // flag is fully launched.
         int searchBoxHeight =
-                showSearchBoxTall
+                showSearchBoxTall || ChromeFeatures.NtpAurora.isEnabled()
                         ? resources.getDimensionPixelSize(R.dimen.ntp_search_box_height_tall)
                         : resources.getDimensionPixelSize(R.dimen.ntp_search_box_height);
         return searchBoxHeight;
@@ -1773,23 +1857,12 @@ public class NtpCustomizationUtils {
     }
 
     public static void resetSharedPreferenceForTesting() {
+        removeAllNtpBackgroundDataFromSharedPreference();
         SharedPreferencesManager prefsManager = ChromeSharedPreferences.getInstance();
-        prefsManager.removeKey(ChromePreferenceKeys.NTP_CUSTOMIZATION_BACKGROUND_TYPE);
-        prefsManager.removeKey(ChromePreferenceKeys.NTP_CUSTOMIZATION_BACKGROUND_COLOR);
-        prefsManager.removeKey(ChromePreferenceKeys.NTP_CUSTOMIZATION_PRIMARY_COLOR);
-        prefsManager.removeKey(NTP_BACKGROUND_IMAGE_PORTRAIT_INFO);
-        prefsManager.removeKey(NTP_BACKGROUND_IMAGE_LANDSCAPE_INFO);
-        prefsManager.removeKey(NTP_CUSTOMIZATION_LAST_DAILY_REFRESH_TIMESTAMP);
-        prefsManager.removeKey(NTP_CUSTOMIZATION_CHROME_COLOR_DAILY_REFRESH_ENABLED);
         prefsManager.removeKey(NTP_CUSTOMIZATION_THEME_TIP_BOTTOM_SHEET_SHOWN_TIMESTAMP_MS);
-        prefsManager.removeKey(NTP_CUSTOMIZATION_BACKGROUND_IMAGE_FILE_PATH);
         prefsManager.removeKey(NTP_CUSTOMIZATION_THEME_IS_SNACKBAR_SHOWN);
         prefsManager.removeKey(NTP_CUSTOMIZATION_LAST_APPLY_THEME_TIMESTAMP_MS);
-        prefsManager.removeKey(NTP_CUSTOMIZATION_THEME_COLOR_ID);
-        prefsManager.removeKey(NTP_CUSTOMIZATION_PRIMARY_COLOR_FOR_DAILY_REFRESH);
-        prefsManager.removeKey(NTP_BACKGROUND_IMAGE_PORTRAIT_INFO_FOR_DAILY_REFRESH);
-        prefsManager.removeKey(NTP_BACKGROUND_IMAGE_LANDSCAPE_INFO_FOR_DAILY_REFRESH);
-        prefsManager.removeKey(NTP_CUSTOMIZATION_BACKGROUND_INFO_FOR_DAILY_REFRESH);
+        NtpBackgroundDataManager.resetSharedPreference();
     }
 
     public static void setImageFetcherForTesting(ImageFetcher imageFetcher) {
@@ -1904,23 +1977,86 @@ public class NtpCustomizationUtils {
     }
 
     /**
-     * Applies or removes a drop shadow on the given view. When enabled, sets elevation and tints
-     * the shadow with the primary theme color at 30% opacity.
+     * Applies the drop shadow to the search box view if Aurora is enabled, and configures container
+     * clipping.
      *
      * @param context Context used to retrieve color and dimension resources.
-     * @param view The target view to apply or remove the shadow from.
-     * @param enableShadow Whether the drop shadow should be applied.
+     * @param container The outer search box container view group.
+     * @param searchBox The inner search box view.
+     * @param isNtpAuroraEnabled Whether the drop shadow should be applied.
      */
-    public static void applyShadow(Context context, View view, boolean enableShadow) {
-        if (enableShadow) {
-            float elevation =
-                    context.getResources().getDimensionPixelSize(R.dimen.fake_search_box_elevation);
-            view.setElevation(elevation);
-            int shadowColor = context.getColor(R.color.search_box_shadow_color);
-            view.setOutlineAmbientShadowColor(shadowColor);
-            view.setOutlineSpotShadowColor(shadowColor);
-        } else {
-            view.setElevation(0f);
+    @VisibleForTesting
+    static void applyShadow(
+            Context context, ViewGroup container, View searchBox, boolean isNtpAuroraEnabled) {
+        if (isNtpAuroraEnabled) {
+            applyShadowImpl(context, searchBox);
         }
+
+        container.setClipToPadding(!isNtpAuroraEnabled);
+        container.setClipChildren(!isNtpAuroraEnabled);
+    }
+
+    /**
+     * Applies a drop shadow on the given view by setting elevation and tinting the shadow with the
+     * primary theme color at 30% opacity.
+     *
+     * @param context Context used to retrieve color and dimension resources.
+     * @param view The target view to apply the shadow to.
+     */
+    @VisibleForTesting
+    static void applyShadowImpl(Context context, View view) {
+        float elevation =
+                context.getResources().getDimensionPixelSize(R.dimen.fake_search_box_elevation);
+        view.setElevation(elevation);
+        int shadowColor = context.getColor(R.color.search_box_shadow_color);
+        view.setOutlineAmbientShadowColor(shadowColor);
+        view.setOutlineSpotShadowColor(shadowColor);
+    }
+
+    /**
+     * Updates the lateral padding on the search box container view to accommodate the drop shadow.
+     *
+     * @param context Context used to retrieve dimension resources.
+     * @param container The search box container view group to update.
+     * @param applyShadow Whether the drop shadow is applied.
+     */
+    @VisibleForTesting
+    static void updateSearchBoxPaddingAndMarginForShadow(
+            Context context, ViewGroup container, boolean applyShadow) {
+        ViewGroup.MarginLayoutParams layoutParams =
+                (ViewGroup.MarginLayoutParams) container.getLayoutParams();
+        if (layoutParams == null) return;
+
+        if (applyShadow) {
+            int lateralPadding =
+                    context.getResources()
+                            .getDimensionPixelSize(R.dimen.search_box_padding_for_shadow_lateral);
+            container.setPadding(
+                    lateralPadding,
+                    container.getPaddingTop(),
+                    lateralPadding,
+                    container.getPaddingBottom());
+        } else {
+            container.setPadding(0, container.getPaddingTop(), 0, container.getPaddingBottom());
+        }
+
+        container.setLayoutParams(layoutParams);
+    }
+
+    /**
+     * Applies or cleans up the white background, elevation shadow, and lateral buffer padding for
+     * the fake search box.
+     *
+     * @param context Context used to retrieve color and dimension resources.
+     * @param container The outer search box container view group.
+     * @param searchBox The inner search box view.
+     * @param applyWhiteBackground Whether to apply the white background.
+     */
+    public static void applyWhiteBackgroundAndShadow(
+            Context context, ViewGroup container, View searchBox, boolean applyWhiteBackground) {
+        boolean isNtpAuroraEnabled = NewTabPageUtils.isNtpAuroraEnabled();
+        ComposeplateUtils.applySearchBoxBackground(context, searchBox, applyWhiteBackground);
+        applyShadow(context, container, searchBox, isNtpAuroraEnabled);
+        updateSearchBoxPaddingAndMarginForShadow(context, container, isNtpAuroraEnabled);
     }
 }

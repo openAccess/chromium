@@ -6,6 +6,7 @@
 
 #import "base/notreached.h"
 #import "base/strings/utf_string_conversions.h"
+#import "ios/chrome/browser/omnibox/public/omnibox_icon_type.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_ui_features.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
@@ -15,124 +16,6 @@ namespace {
 
 // The size of symbol images.
 const CGFloat kSymbolLocationBarPointSize = 10;
-
-}  // namespace
-
-#pragma mark - Suggestion icons.
-
-OmniboxSuggestionIconType GetOmniboxSuggestionIconTypeForAutocompleteMatchType(
-    AutocompleteMatchType::Type type) {
-  switch (type) {
-    case AutocompleteMatchType::BOOKMARK_TITLE:
-    case AutocompleteMatchType::CLIPBOARD_URL:
-    case AutocompleteMatchType::DOCUMENT_SUGGESTION:
-    case AutocompleteMatchType::HISTORY_BODY:
-    case AutocompleteMatchType::HISTORY_CLUSTER:
-    case AutocompleteMatchType::HISTORY_KEYWORD:
-    case AutocompleteMatchType::HISTORY_TITLE:
-    case AutocompleteMatchType::HISTORY_URL:
-    case AutocompleteMatchType::NAVSUGGEST:
-    case AutocompleteMatchType::NAVSUGGEST_PERSONALIZED:
-    case AutocompleteMatchType::OPEN_TAB:
-    case AutocompleteMatchType::PEDAL:
-    case AutocompleteMatchType::PHYSICAL_WEB_DEPRECATED:
-    case AutocompleteMatchType::PHYSICAL_WEB_OVERFLOW_DEPRECATED:
-    case AutocompleteMatchType::STARTER_PACK:
-    case AutocompleteMatchType::TAB_SEARCH_DEPRECATED:
-    case AutocompleteMatchType::TILE_NAVSUGGEST:
-    case AutocompleteMatchType::TILE_MOST_VISITED_SITE:
-    case AutocompleteMatchType::URL_WHAT_YOU_TYPED:
-      return OmniboxSuggestionIconType::kDefaultFavicon;
-    case AutocompleteMatchType::CLIPBOARD_IMAGE:
-    case AutocompleteMatchType::CLIPBOARD_TEXT:
-    case AutocompleteMatchType::CONTACT_DEPRECATED:
-    case AutocompleteMatchType::SEARCH_OTHER_ENGINE:
-    case AutocompleteMatchType::SEARCH_SUGGEST:
-    case AutocompleteMatchType::SEARCH_SUGGEST_ENTITY:
-    case AutocompleteMatchType::SEARCH_SUGGEST_PROFILE:
-    case AutocompleteMatchType::SEARCH_SUGGEST_TAIL:
-    case AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED:
-    case AutocompleteMatchType::VOICE_SUGGEST:
-      return OmniboxSuggestionIconType::kSearch;
-    case AutocompleteMatchType::SEARCH_HISTORY:
-    case AutocompleteMatchType::SEARCH_SUGGEST_PERSONALIZED:
-      return OmniboxSuggestionIconType::kSearchHistory;
-    case AutocompleteMatchType::CALCULATOR:
-      return OmniboxSuggestionIconType::kCalculator;
-    case AutocompleteMatchType::EXTENSION_APP_DEPRECATED:
-    case AutocompleteMatchType::NULL_RESULT_MESSAGE:
-    case AutocompleteMatchType::NUM_TYPES:
-    case AutocompleteMatchType::TILE_SUGGESTION:
-    case AutocompleteMatchType::TILE_REPEATABLE_QUERY:
-    case AutocompleteMatchType::HISTORY_EMBEDDINGS:
-    case AutocompleteMatchType::FEATURED_ENTERPRISE_SEARCH:
-    case AutocompleteMatchType::HISTORY_EMBEDDINGS_ANSWER:
-    default:
-      DUMP_WILL_BE_NOTREACHED()
-          << "Unsupported AutocompleteMatchType: " << type;
-      return OmniboxSuggestionIconType::kDefaultFavicon;
-  }
-}
-
-UIImage* GetOmniboxSuggestionIconForAutocompleteMatchType(
-    AutocompleteMatchType::Type type) {
-  OmniboxSuggestionIconType iconType =
-      GetOmniboxSuggestionIconTypeForAutocompleteMatchType(type);
-  return GetOmniboxSuggestionIcon(iconType);
-}
-
-OmniboxSuggestionIconType
-GetOmniboxSuggestionIconTypeForSuggestTemplateInfoIconType(
-    omnibox::SuggestTemplateInfo::IconType type) {
-  // Update this assertion and the switch below whenever values are added.
-  static_assert(omnibox::SuggestTemplateInfo::IconType_MAX ==
-                omnibox::SuggestTemplateInfo::BOLT);
-  switch (type) {
-    case omnibox::SuggestTemplateInfo_IconType_HISTORY:
-      return OmniboxSuggestionIconType::kSearchHistory;
-    case omnibox::SuggestTemplateInfo_IconType_SEARCH_LOOP:
-      return OmniboxSuggestionIconType::kSearch;
-    case omnibox::SuggestTemplateInfo_IconType_SEARCH_LOOP_WITH_SPARKLE:
-      return OmniboxSuggestionIconType::kSearchWithSparkle;
-    case omnibox::SuggestTemplateInfo_IconType_TRENDING:
-      return OmniboxSuggestionIconType::kSearchTrend;
-    case omnibox::SuggestTemplateInfo_IconType_SUB_ARROW_RIGHT:
-      // TODO(crbug.com/437177158): Replace with the correct symbol when it's
-      // available.
-      return OmniboxSuggestionIconType::kSearch;
-    case omnibox::SuggestTemplateInfo_IconType_GLOBE_WITH_SEARCH_LOOP:
-    case omnibox::SuggestTemplateInfo_IconType_BANANA:
-      return OmniboxSuggestionIconType::kSearch;
-    case omnibox::SuggestTemplateInfo_IconType_NOTES_SPARK:
-      return OmniboxSuggestionIconType::kNotesSpark;
-    case omnibox::SuggestTemplateInfo_IconType_DRAFT_SPARK:
-    case omnibox::SuggestTemplateInfo_IconType_LIGHTBULB:
-    case omnibox::SuggestTemplateInfo_IconType_ATTACH_FILE:
-    case omnibox::SuggestTemplateInfo_IconType_SCHOOL:
-    case omnibox::SuggestTemplateInfo_IconType_INK_PEN:
-    case omnibox::SuggestTemplateInfo_IconType_TAB:
-    case omnibox::SuggestTemplateInfo_IconType_PHOTO_SPARK:
-    case omnibox::SuggestTemplateInfo_IconType_BOLT:
-      // TODO(crbug.com/486698515): Replace with the correct symbol when it's
-      // available.
-      return OmniboxSuggestionIconType::kSearch;
-    case omnibox::SuggestTemplateInfo_IconType_FAVICON:
-      return OmniboxSuggestionIconType::kDefaultFavicon;
-    case omnibox::SuggestTemplateInfo_IconType_ICON_TYPE_UNSPECIFIED:
-      return OmniboxSuggestionIconType::kSearch;
-    default:
-      return OmniboxSuggestionIconType::kSearch;
-  }
-}
-
-UIImage* GetOmniboxSuggestionIconForSuggestTemplateInfoIconType(
-    omnibox::SuggestTemplateInfo::IconType type) {
-  OmniboxSuggestionIconType iconType =
-      GetOmniboxSuggestionIconTypeForSuggestTemplateInfoIconType(type);
-  return GetOmniboxSuggestionIcon(iconType);
-}
-
-#pragma mark - Security icons.
 
 // Returns the asset with "always template" rendering mode.
 UIImage* GetLocationBarSecurityIcon(LocationBarSecurityIconType iconType) {
@@ -159,6 +42,125 @@ LocationBarSecurityIconType GetLocationBarSecurityIconTypeForSecurityState(
       NOTREACHED();
   }
 }
+
+}  // namespace
+
+#pragma mark - Suggestion icons.
+
+OmniboxSuggestionIconType GetOmniboxSuggestionIconTypeForAutocompleteMatchType(
+    omnibox::AutocompleteMatchType type) {
+  switch (type) {
+    case omnibox::AutocompleteMatchType::kBookmarkTitle:
+    case omnibox::AutocompleteMatchType::kClipboardUrl:
+    case omnibox::AutocompleteMatchType::kCrossDeviceTab:
+    case omnibox::AutocompleteMatchType::kDocumentSuggestion:
+    case omnibox::AutocompleteMatchType::kHistoryBody:
+    case omnibox::AutocompleteMatchType::kHistoryCluster:
+    case omnibox::AutocompleteMatchType::kHistoryKeyword:
+    case omnibox::AutocompleteMatchType::kHistoryTitle:
+    case omnibox::AutocompleteMatchType::kHistoryUrl:
+    case omnibox::AutocompleteMatchType::kNavsuggest:
+    case omnibox::AutocompleteMatchType::kNavsuggestPersonalized:
+    case omnibox::AutocompleteMatchType::kOpenTab:
+    case omnibox::AutocompleteMatchType::kPedal:
+    case omnibox::AutocompleteMatchType::kPhysicalWebDeprecated:
+    case omnibox::AutocompleteMatchType::kPhysicalWebOverflowDeprecated:
+    case omnibox::AutocompleteMatchType::kStarterPack:
+    case omnibox::AutocompleteMatchType::kTabSearchDeprecated:
+    case omnibox::AutocompleteMatchType::kTileNavsuggest:
+    case omnibox::AutocompleteMatchType::kTileMostVisitedSite:
+    case omnibox::AutocompleteMatchType::kUrlWhatYouTyped:
+      return OmniboxSuggestionIconType::kDefaultFavicon;
+    case omnibox::AutocompleteMatchType::kClipboardImage:
+    case omnibox::AutocompleteMatchType::kClipboardText:
+    case omnibox::AutocompleteMatchType::kContactDeprecated:
+    case omnibox::AutocompleteMatchType::kSearchOtherEngine:
+    case omnibox::AutocompleteMatchType::kSearchSuggest:
+    case omnibox::AutocompleteMatchType::kSearchSuggestEntity:
+    case omnibox::AutocompleteMatchType::kSearchSuggestProfile:
+    case omnibox::AutocompleteMatchType::kSearchSuggestTail:
+    case omnibox::AutocompleteMatchType::kSearchWhatYouTyped:
+    case omnibox::AutocompleteMatchType::kVoiceSuggest:
+      return OmniboxSuggestionIconType::kSearch;
+    case omnibox::AutocompleteMatchType::kSearchHistory:
+    case omnibox::AutocompleteMatchType::kSearchSuggestPersonalized:
+      return OmniboxSuggestionIconType::kSearchHistory;
+    case omnibox::AutocompleteMatchType::kCalculator:
+      return OmniboxSuggestionIconType::kCalculator;
+    case omnibox::AutocompleteMatchType::kExtensionAppDeprecated:
+    case omnibox::AutocompleteMatchType::kNullResultMessage:
+    case omnibox::AutocompleteMatchType::kTileSuggestion:
+    case omnibox::AutocompleteMatchType::kTileRepeatableQuery:
+    case omnibox::AutocompleteMatchType::kHistoryEmbeddings:
+    case omnibox::AutocompleteMatchType::kFeaturedEnterpriseSearch:
+    case omnibox::AutocompleteMatchType::kHistoryEmbeddingsAnswer:
+    default:
+      DUMP_WILL_BE_NOTREACHED()
+          << "Unsupported AutocompleteMatchType: " << static_cast<int>(type);
+      return OmniboxSuggestionIconType::kDefaultFavicon;
+  }
+}
+
+UIImage* GetOmniboxSuggestionIconForAutocompleteMatchType(
+    omnibox::AutocompleteMatchType type) {
+  OmniboxSuggestionIconType iconType =
+      GetOmniboxSuggestionIconTypeForAutocompleteMatchType(type);
+  return GetOmniboxSuggestionIcon(iconType);
+}
+
+OmniboxSuggestionIconType
+GetOmniboxSuggestionIconTypeForSuggestTemplateInfoIconType(
+    omnibox::SuggestTemplateInfo::IconType type) {
+  // Update this assertion and the switch below whenever values are added.
+  static_assert(omnibox::SuggestTemplateInfo::IconType_MAX ==
+                omnibox::SuggestTemplateInfo::IMAGE_CREATE);
+  switch (type) {
+    case omnibox::SuggestTemplateInfo_IconType_HISTORY:
+      return OmniboxSuggestionIconType::kSearchHistory;
+    case omnibox::SuggestTemplateInfo_IconType_SEARCH_LOOP:
+      return OmniboxSuggestionIconType::kSearch;
+    case omnibox::SuggestTemplateInfo_IconType_SEARCH_LOOP_WITH_SPARKLE:
+      return OmniboxSuggestionIconType::kSearchWithSparkle;
+    case omnibox::SuggestTemplateInfo_IconType_TRENDING:
+      return OmniboxSuggestionIconType::kSearchTrend;
+    case omnibox::SuggestTemplateInfo_IconType_SUB_ARROW_RIGHT:
+      // TODO(crbug.com/437177158): Replace with the correct symbol when it's
+      // available.
+      return OmniboxSuggestionIconType::kSearch;
+    case omnibox::SuggestTemplateInfo_IconType_GLOBE_WITH_SEARCH_LOOP:
+    case omnibox::SuggestTemplateInfo_IconType_BANANA:
+      return OmniboxSuggestionIconType::kSearch;
+    case omnibox::SuggestTemplateInfo_IconType_NOTES_SPARK:
+      return OmniboxSuggestionIconType::kNotesSpark;
+    case omnibox::SuggestTemplateInfo_IconType_DRAFT_SPARK:
+    case omnibox::SuggestTemplateInfo_IconType_LIGHTBULB:
+    case omnibox::SuggestTemplateInfo_IconType_ATTACH_FILE:
+    case omnibox::SuggestTemplateInfo_IconType_SCHOOL:
+    case omnibox::SuggestTemplateInfo_IconType_INK_PEN:
+    case omnibox::SuggestTemplateInfo_IconType_TAB:
+    case omnibox::SuggestTemplateInfo_IconType_PHOTO_SPARK:
+    case omnibox::SuggestTemplateInfo_IconType_BOLT:
+    case omnibox::SuggestTemplateInfo_IconType_IMAGE_CREATE:
+      // TODO(crbug.com/486698515): Replace with the correct symbol when it's
+      // available.
+      return OmniboxSuggestionIconType::kSearch;
+    case omnibox::SuggestTemplateInfo_IconType_FAVICON:
+      return OmniboxSuggestionIconType::kDefaultFavicon;
+    case omnibox::SuggestTemplateInfo_IconType_ICON_TYPE_UNSPECIFIED:
+      return OmniboxSuggestionIconType::kSearch;
+    default:
+      return OmniboxSuggestionIconType::kSearch;
+  }
+}
+
+UIImage* GetOmniboxSuggestionIconForSuggestTemplateInfoIconType(
+    omnibox::SuggestTemplateInfo::IconType type) {
+  OmniboxSuggestionIconType iconType =
+      GetOmniboxSuggestionIconTypeForSuggestTemplateInfoIconType(type);
+  return GetOmniboxSuggestionIcon(iconType);
+}
+
+#pragma mark - Security icons.
 
 // Converts the `security_level` to an appropriate icon in "always template"
 // rendering mode.

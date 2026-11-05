@@ -4,6 +4,7 @@
 
 #include "chrome/browser/extensions/api/search/search_api.h"
 
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
@@ -17,7 +18,10 @@
 #include "components/search_engines/util.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/buildflags/buildflags.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
@@ -96,11 +100,11 @@ ExtensionFunction::ResponseAction SearchQueryFunction::Run() {
   if (tab_id) {
     if (!ExtensionTabUtil::GetTabById(
             *tab_id, profile, include_incognito_information(), &web_contents)) {
-      return RespondNow(
-          Error(base::StringPrintf("No tab with id: %d.", *tab_id)));
+      return RespondNow(Error(ErrorUtils::FormatErrorMessage(
+          kTabNotFoundError, base::NumberToString(*tab_id))));
     }
     // If tab_id was specified, disposition couldn't have been (checked above).
-    DCHECK_EQ(Disposition::kNone, disposition);
+    CHECK_EQ(Disposition::kNone, disposition, base::NotFatalUntil::M161);
   }
 
   // If the extension didn't specify a tab, we need to find a browser to use.
@@ -151,7 +155,7 @@ ExtensionFunction::ResponseAction SearchQueryFunction::Run() {
   // GURL for default search provider.
   TemplateURLService* url_service =
       TemplateURLServiceFactory::GetForProfile(profile);
-  DCHECK(url_service);
+  CHECK(url_service, base::NotFatalUntil::M161);
   GURL url =
       GetDefaultSearchURLForSearchTerms(url_service, base::UTF8ToUTF16(text));
   if (!url.is_valid()) {
@@ -161,7 +165,7 @@ ExtensionFunction::ResponseAction SearchQueryFunction::Run() {
   switch (disposition) {
     case Disposition::kCurrentTab:
     case Disposition::kNone:
-      DCHECK(url.is_valid());
+      CHECK(url.is_valid(), base::NotFatalUntil::M161);
       web_contents->GetController().LoadURL(
           url, content::Referrer(),
           ui::PageTransition::PAGE_TRANSITION_FROM_API,
@@ -170,7 +174,7 @@ ExtensionFunction::ResponseAction SearchQueryFunction::Run() {
 
     case Disposition::kNewTab:
       ExtensionTabUtil::NavigateToURL(
-          WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           /*source_contents=*/web_contents, url,
           // Binding `this` is safe because it is ref-counted.
           base::BindOnce(&SearchQueryFunction::OnNavigate, this));
@@ -178,7 +182,7 @@ ExtensionFunction::ResponseAction SearchQueryFunction::Run() {
 
     case Disposition::kNewWindow:
       ExtensionTabUtil::NavigateToURL(
-          WindowOpenDisposition::NEW_WINDOW,
+          ui::mojom::WindowOpenDisposition::kNewWindow,
           /*source_contents=*/web_contents, url,
           // Binding `this` is safe because it is ref-counted.
           base::BindOnce(&SearchQueryFunction::OnNavigate, this));

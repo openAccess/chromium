@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/lens_overlay/coordinator/lens_view_finder_coordinator.h"
 
+#import <memory>
+
 #import "base/ios/block_types.h"
 #import "base/not_fatal_until.h"
 #import "base/strings/sys_string_conversions.h"
@@ -15,9 +17,9 @@
 #import "components/segmentation_platform/embedder/home_modules/tips_manager/signal_constants.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/profile/profile_state.h"
+#import "ios/chrome/app/tests_hook.h"
 #import "ios/chrome/browser/device_orientation/ui_bundled/scoped_force_portrait_orientation.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
-#import "ios/chrome/browser/first_run/public/best_features_item.h"
 #import "ios/chrome/browser/intents/model/intents_constants.h"
 #import "ios/chrome/browser/intents/model/intents_donation_helper.h"
 #import "ios/chrome/browser/lens/ui_bundled/lens_availability.h"
@@ -46,7 +48,6 @@
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/tips_manager/model/tips_manager_ios.h"
 #import "ios/chrome/browser/tips_manager/model/tips_manager_ios_factory.h"
-#import "ios/chrome/browser/welcome_back/model/features.h"
 #import "ios/chrome/common/app_group/app_group_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/public/provider/chrome/browser/lens/lens_api.h"
@@ -184,12 +185,20 @@ LensViewFinderTransition TransitionFromPresentationStyle(
   auto startPostCapture = ^{
     [weakSelf startPostCaptureWithMetadata:imageMetadata];
   };
-  if (_lensViewController.presentedViewController) {
-    [_lensViewController.presentedViewController
-        dismissViewControllerAnimated:YES
-                           completion:startPostCapture];
+
+  if ([self supportsRestoringLVF]) {
+    if (_lensViewController.presentedViewController) {
+      [_lensViewController.presentedViewController
+          dismissViewControllerAnimated:YES
+                             completion:startPostCapture];
+    } else {
+      startPostCapture();
+    }
   } else {
+    // When LVF restoration is not supported, start post capture at the same
+    // time, behind the capturing screen.
     startPostCapture();
+    [self exitLensViewFinderAnimated:YES completion:nil];
   }
 }
 
@@ -269,8 +278,11 @@ LensViewFinderTransition TransitionFromPresentationStyle(
       initWithLVFTransitionType:TransitionFromPresentationStyle(
                                     command.presentationStyle)];
 
-  _lensViewController =
-      ios::provider::NewChromeLensViewFinderController(configuration);
+  _lensViewController = tests_hook::GetOverriddenLensViewFinderController();
+  if (!_lensViewController) {
+    _lensViewController =
+        ios::provider::NewChromeLensViewFinderController(configuration);
+  }
 
   _lensViewController.transitioningDelegate = _transitionManager;
   _lensViewController.modalPresentationStyle =
@@ -313,7 +325,8 @@ LensViewFinderTransition TransitionFromPresentationStyle(
     return;
   }
   if (AppState* appState = sceneState.profileState.appState) {
-    _scopedForceOrientation = ForcePortraitOrientationOnIphone(appState);
+    _scopedForceOrientation =
+        std::make_unique<ScopedForcePortraitOrientation>(appState);
   }
 }
 
@@ -334,9 +347,12 @@ LensViewFinderTransition TransitionFromPresentationStyle(
   __weak __typeof(self) weakSelf = self;
   id<LensOverlayCommands> lensOverlayCommands = HandlerForProtocol(
       self.browser->GetCommandDispatcher(), LensOverlayCommands);
+  UIViewController* baseVC = [self supportsRestoringLVF]
+                                 ? _lensViewController
+                                 : self.baseViewController;
   [lensOverlayCommands searchWithLensImageMetadata:imageMetadata
                                         entrypoint:entrypoint
-                           initialPresentationBase:_lensViewController
+                           initialPresentationBase:baseVC
                                         completion:^(BOOL) {
                                           weakSelf.postCaptureShown = YES;
                                         }];
@@ -367,7 +383,8 @@ LensViewFinderTransition TransitionFromPresentationStyle(
       GetApplicationContext()->GetLocalState()->GetBoolean(
           prefs::kLensCameraAssistedSearchPolicyAllowed) &&
       !base::FeatureList::IsEnabled(kDisableLensCamera) &&
-      ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET;
+      (ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET ||
+       base::FeatureList::IsEnabled(kEnableLensOnIPad));
   [sharedDefaults setBool:enableLensInWidget forKey:enableLensInWidgetKey];
 }
 
@@ -398,13 +415,13 @@ LensViewFinderTransition TransitionFromPresentationStyle(
     shortcutTitle = l10n_util::GetNSStringWithFixup(
         IDS_IOS_APPLICATION_SHORTCUT_LENS_TITLE);
     shortcutIcon =
-        [UIApplicationShortcutIcon iconWithTemplateImageName:kCameraLensSymbol];
+        [UIApplicationShortcutIcon iconWithTemplateImageName:@"camera_lens"];
   } else {
     shortcutType = kShortcutQRScanner;
     shortcutTitle = l10n_util::GetNSStringWithFixup(
         IDS_IOS_APPLICATION_SHORTCUT_QR_SCANNER_TITLE);
     shortcutIcon =
-        [UIApplicationShortcutIcon iconWithSystemImageName:kQRCodeSymbol];
+        [UIApplicationShortcutIcon iconWithSystemImageName:@"qrcode"];
   }
   UIApplicationShortcutItem* item =
       [[UIApplicationShortcutItem alloc] initWithType:shortcutType
@@ -447,14 +464,16 @@ LensViewFinderTransition TransitionFromPresentationStyle(
     tipsManager->NotifySignal(
         segmentation_platform::tips_manager::signals::kLensUsed);
   }
-
-  // Notify Welcome Back to remove Lens from the eligible features.
-  if (IsWelcomeBackEnabled()) {
-    MarkWelcomeBackFeatureUsed(BestFeaturesItemType::kLensSearch);
-  }
-
   GetApplicationContext()->GetLocalState()->SetTime(prefs::kLensLastOpened,
                                                     base::Time::Now());
+}
+
+// Whether restoring the LVF session after post capture was shown is supported.
+// Restoration is not supported for devices that can show the side panel, as
+// they present post capture embedded in the viewport.
+- (BOOL)supportsRestoringLVF {
+  return ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET &&
+         !IsDuoDevice();
 }
 
 @end

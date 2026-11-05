@@ -102,7 +102,7 @@ async def test_continue_response_invalid_status_code(
             str(
                 {
                     "error": "invalid argument",
-                    "message": 'Number must be greater than or equal to 0 in "statusCode".*',
+                    "message": 'Too small: expected number to be >=0 in "statusCode".*',
                 }
             )
         ),
@@ -132,7 +132,7 @@ async def test_continue_response_invalid_reason_phrase(
         match=str(
             {
                 "error": "invalid argument",
-                "message": 'Expected string, received array in "reasonPhrase".',
+                "message": 'Invalid input: expected string, received array in "reasonPhrase".',
             }
         ),
     ):
@@ -159,7 +159,7 @@ async def test_continue_response_invalid_headers(websocket, context_id, url_exam
         match=str(
             {
                 "error": "invalid argument",
-                "message": 'Expected array, received string in "headers".',
+                "message": 'Invalid input: expected array, received string in "headers".',
             }
         ),
     ):
@@ -295,6 +295,7 @@ async def test_continue_response_completes(websocket, context_id, url_example):
             },
             "response": ANY_DICT,
             "timestamp": ANY_TIMESTAMP,
+            "userContext": "default",
         },
         "type": "event",
     }
@@ -347,6 +348,7 @@ async def test_continue_response_completes(websocket, context_id, url_example):
                 }
             ),
             "timestamp": ANY_TIMESTAMP,
+            "userContext": "default",
         },
         "type": "event",
     }
@@ -507,6 +509,7 @@ async def test_continue_response_remove_intercept_inflight_request(
                 "timings": ANY_DICT,
             },
             "timestamp": ANY_TIMESTAMP,
+            "userContext": "default",
         },
         "type": "event",
     }
@@ -542,6 +545,7 @@ async def test_continue_response_remove_intercept_inflight_request(
             "request": ANY_DICT,
             "response": ANY_DICT,
             "timestamp": ANY_TIMESTAMP,
+            "userContext": "default",
         },
         "type": "event",
     }

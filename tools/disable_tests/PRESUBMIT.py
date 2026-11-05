@@ -9,23 +9,12 @@ for more details on the presubmit API built into depot_tools.
 
 
 def _CommonChecks(input_api, output_api):
+  if not (
+    input_api.HasAffectedFiles(extensions='.py')
+    or input_api.HasAffectedFiles(path='tests')
+  ):
+    return []
   results = []
-  disabled_warnings = [
-    'anomalous-backslash-in-string',
-    'bad-indentation',
-    'consider-using-with',
-    'missing-module-docstring',
-    'possibly-used-before-assignment',
-    'superfluous-parens',
-    'unspecified-encoding',
-    'unused-import',
-    'use-dict-literal',
-  ]
-  results.extend(
-    input_api.canned_checks.RunPylint(
-      input_api, output_api, disabled_warnings=disabled_warnings, version='3.2'
-    )
-  )
 
   commands = []
   commands.extend(

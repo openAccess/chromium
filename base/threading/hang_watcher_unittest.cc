@@ -236,9 +236,7 @@ TEST_F(HangWatcherTest, MultipleInvalidateExpectationsDoNotCancelOut) {
   EXPECT_EQ(hang_watcher.GetHangCount(), 0);
 }
 
-// TODO(crbug.com/385732561): Test is flaky.
-TEST_F(HangWatcherTest,
-       DISABLED_NewInnerWatchHangsInScopeAfterInvalidationDetectsHang) {
+TEST_F(HangWatcherTest, NewInnerWatchHangsInScopeAfterInvalidationDetectsHang) {
   ScopedFeatureList enable_hang_watcher(kEnableHangWatcher);
   ManualHangWatcher hang_watcher(HangWatcher::ProcessType::kBrowserProcess);
 
@@ -504,13 +502,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 // Checks that Any and AnyCritical are correctly recorded for different process
 // and thread types.
-// TODO(crbug.com/446160865): Re-enable this test.
-#if BUILDFLAG(IS_IOS)
-#define MAYBE_AnyCriticalThreadHung DISABLED_AnyCriticalThreadHung
-#else
-#define MAYBE_AnyCriticalThreadHung AnyCriticalThreadHung
-#endif
-TEST_P(HangWatcherAnyCriticalThreadTests, MAYBE_AnyCriticalThreadHung) {
+TEST_P(HangWatcherAnyCriticalThreadTests, AnyCriticalThreadHung) {
   ScopedFeatureList enable_hang_watcher(kEnableHangWatcher);
   ScopedFeatureList enable_gpu_hang_watcher(kEnableHangWatcherOnGpuProcess);
   SingleThreadTaskEnvironment task_env(TaskEnvironment::TimeSource::MOCK_TIME);
@@ -627,18 +619,25 @@ TEST_F(HangWatcherTest, BestEffortHistograms) {
 
   std::atomic<base::TimeTicks> shared_last_foreground_time = TimeTicks::Now();
   internal::SetSharedLastForegroundTimeForMetrics(&shared_last_foreground_time);
+  // Reset the global state at the end of the test. Otherwise, it keeps pointing
+  // to `shared_last_foreground_time` after it goes out of scope, which makes
+  // later tests in the same process (e.g. AnyCriticalThreadHung) read a
+  // dangling pointer.
+  base::ScopedClosureRunner reset_last_foreground_time(base::BindOnce(
+      &internal::SetSharedLastForegroundTimeForMetrics, nullptr));
 
   // First monitoring catches the hang and emits the histogram.
   hang_watcher.TriggerSynchronousMonitoring();
   EXPECT_THAT(
       histogram_tester.GetAllSamplesForPrefix("HangWatcher.IsThreadHung"),
-      UnorderedElementsAre(
-          Pair("HangWatcher.IsThreadHung.RendererProcess.MainThread.BestEffort",
-               BucketsAre(Bucket(true, /*count=*/1))),
-          Pair("HangWatcher.IsThreadHung.Any",
-               BucketsAre(Bucket(true, /*count=*/1))),
-          Pair("HangWatcher.IsThreadHung.AnyCritical",
-               BucketsAre(Bucket(false, /*count=*/1)))));
+      UnorderedElementsAre(Pair("HangWatcher.IsThreadHung.RendererProcess."
+                                "MainThread.BestEffort",
+                                BucketsAre(Bucket(true, /*count=*/1))),
+                           Pair("HangWatcher.IsThreadHung.Any",
+                                BucketsAre(Bucket(true, /*count=*/1))),
+                           Pair("HangWatcher.IsThreadHung.AnyCritical",
+                                BucketsAre(Bucket(false, /*count=*/1)))));
+  internal::SetSharedLastForegroundTimeForMetrics(nullptr);
 }
 
 // Checks that the browser process emits Shutdown histograms on shutdown.

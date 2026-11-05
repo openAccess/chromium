@@ -59,10 +59,10 @@ if (is_android) {
       "//chrome/browser/flags:java",
       "//chrome/browser/profiles/android:java",
       "//components/segmentation_platform/public:public_java",
-      "//third_party/androidx:androidx_annotation_annotation_java",
       "//third_party/jni_zero:jni_zero_java",
     ]
   }
+
   generate_jni("client_util_jni_headers") {
     sources = [ "android/java/src/org/chromium/chrome/browser/segmentation_platform/client_util/HomeModulesRankingHelper.java" ]
   }
@@ -113,6 +113,7 @@ source_set("impl") {
     "//chrome/browser/sync",
     "//chrome/browser/ui/browser_window",
     "//components/commerce/core:feature_list",
+    "//components/commerce/core:shopping_service",
     "//components/compose:buildflags",
     "//components/metrics_services_manager",
     "//components/search",
@@ -131,16 +132,14 @@ source_set("impl") {
       "//chrome/android:jni_headers",
       "//chrome/browser/android:tabs_public",
       "//chrome/browser/flags:flags_android",
-      "//chrome/browser/ui",
       "//chrome/browser/ui/android/tab_model",
       "//chrome/browser/ui/android/toolbar",
-      "//components/commerce/core:shopping_service",
       "//components/segmentation_platform/embedder/home_modules:constants",
     ]
   } else {
     deps += [
-      "//chrome/browser/ui",
       "//chrome/browser/ui/sync",
+      "//chrome/browser/ui/tabs:tab_strip",
       "//components/tabs:public",
     ]
   }
@@ -162,6 +161,7 @@ source_set("unit_tests") {
     "//chrome/browser/commerce",
     "//chrome/browser/optimization_guide",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//components/commerce/core:shopping_service_test_support",
     "//components/optimization_guide/core",
     "//components/segmentation_platform/embedder",
@@ -196,6 +196,7 @@ source_set("browser_tests") {
     "//chrome/browser/history",
     "//chrome/browser/optimization_guide",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_utils",
     "//components/optimization_guide/core:test_support",
     "//components/segmentation_platform/embedder",
     "//components/segmentation_platform/embedder/default_model",
@@ -216,7 +217,6 @@ static_library("test_utils") {
     ":impl",
     ":segmentation_platform",
     "//base/test:test_support",
-    "//chrome/browser",
     "//chrome/browser/history",
     "//components/segmentation_platform/embedder",
     "//components/segmentation_platform/embedder/default_model:default_model_test_base",

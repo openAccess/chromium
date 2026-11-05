@@ -173,7 +173,6 @@ function populateLocalTargets(data) {
   removeChildren('apps-list');
   removeChildren('workers-list');
   removeChildren('service-workers-list');
-  removeChildren('shared-storage-worklets-list');
   removeChildren('others-list');
 
   data.sort((a, b) => a.name.localeCompare(b.name));
@@ -189,8 +188,6 @@ function populateLocalTargets(data) {
       addToWorkersList(data[i]);
     } else if (data[i].type === 'service_worker') {
       addToServiceWorkersList(data[i]);
-    } else if (data[i].type === 'shared_storage_worklet') {
-      addToSharedStorageWorkletsList(data[i]);
     } else {
       addToOthersList(data[i]);
     }
@@ -565,12 +562,6 @@ function addToServiceWorkersList(data) {
       row, 'terminate', sendTargetCommand.bind(null, 'close', data), false);
 }
 
-function addToSharedStorageWorkletsList(data) {
-  const row = addTargetToList(
-      data, $('shared-storage-worklets-list'), ['name', 'description', 'url']);
-  // TODO(yaoxia): add the "terminate" link when the backend supports it
-}
-
 function addToOthersList(data) {
   addTargetToList(data, $('others-list'), ['url']);
 }
@@ -600,7 +591,9 @@ function formatValue(data, property) {
 function addFavicon(row, data) {
   const favicon = document.createElement('img');
   if (data['faviconUrl']) {
-    favicon.src = data['faviconUrl'];
+    const internalURL = new URL('chrome://favicon2/');
+    internalURL.searchParams.set('iconUrl', data['faviconUrl']);
+    favicon.src = internalURL;
   }
   const propertiesBox = row.querySelector('.properties-box');
   propertiesBox.insertBefore(favicon, propertiesBox.firstChild);

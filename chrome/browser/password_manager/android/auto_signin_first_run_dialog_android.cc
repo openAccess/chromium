@@ -17,15 +17,15 @@
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_manager_settings_service.h"
 #include "components/strings/grit/components_strings.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/android/window_android.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/native_ui_types.h"
 
-// Must come after all headers that specialize FromJniType() / ToJniType().
+// Must come after headers that provide symbols used by @JniType.
 #include "chrome/android/chrome_jni_headers/AutoSigninFirstRunDialog_jni.h"
 
 using base::android::AttachCurrentThread;
-using base::android::ConvertUTF16ToJavaString;
 
 namespace {
 
@@ -68,8 +68,8 @@ void AutoSigninFirstRunDialogAndroid::ShowDialog() {
       native_window->GetJavaObject();
   if (java_dialog) {
     dialog_jobject_.Reset(Java_AutoSigninFirstRunDialog_createAndShowDialog(
-        env, java_dialog, reinterpret_cast<intptr_t>(this), message,
-        explanation, ok_button_text, turn_off_button_text));
+        env, java_dialog, jni_zero::MakeRaw(this), message, explanation,
+        ok_button_text, turn_off_button_text));
   }
 }
 
@@ -90,7 +90,7 @@ void AutoSigninFirstRunDialogAndroid::OnTurnOffClicked(JNIEnv* env) {
       Profile::FromBrowserContext(web_contents_->GetBrowserContext());
   // This dialog is not and should never be shown in incognito as it offers the
   // possibility to change user settings.
-  DCHECK(!profile->IsOffTheRecord());
+  CHECK(!profile->IsOffTheRecord(), base::NotFatalUntil::M161);
   password_manager::PasswordManagerSettingsService* service =
       PasswordManagerSettingsServiceFactory::GetForProfile(profile);
   // The service can be null if the password manager is not available, but there

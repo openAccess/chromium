@@ -32,6 +32,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 
 import androidx.annotation.DrawableRes;
+import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
 import androidx.core.util.Function;
 import androidx.core.util.Pair;
@@ -67,13 +68,16 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabFavicon;
 import org.chromium.chrome.browser.tab.TabId;
+import org.chromium.chrome.browser.tab_ui.MultiThumbnailCardProvider;
 import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tab_ui.TabSwitcherCustomViewManager;
 import org.chromium.chrome.browser.tab_ui.TabSwitcherGroupSuggestionService;
 import org.chromium.chrome.browser.tab_ui.TabSwitcherGroupSuggestionService.SuggestionUiEvent;
+import org.chromium.chrome.browser.tabmodel.TabGroupUtils;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
@@ -84,9 +88,13 @@ import org.chromium.chrome.browser.tasks.tab_management.TabGridItemLongPressOrch
 import org.chromium.chrome.browser.tasks.tab_management.TabListCoordinator.DragObserver;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator.TabListEditorController;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListItemOnClickListenerProvider;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageUpdateObserver;
-import org.chromium.chrome.browser.tasks.tab_management.pinned_tabs_strip.PinnedTabStripCoordinator;
+import org.chromium.chrome.browser.tasks.tab_management.labels.SendTabToSelfTabLabeller;
+import org.chromium.chrome.browser.tasks.tab_management.labels.TabGroupLabeller;
+import org.chromium.chrome.browser.tasks.tab_management.pinned_tabs.PinnedTabStripCoordinator;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
+import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
@@ -169,9 +177,6 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
             new TabModelObserver() {
                 @Override
                 public void didChangePinState(Tab tab) {
-                    if (mPinnedTabsCoordinator == null) {
-                        return;
-                    }
                     if (isAnyTabPinned()) {
                         if (mHubSearchBoxVisibilitySupplier.get()) {
                             // If search box is visible either we are at the start of the recycler
@@ -193,12 +198,9 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                         View view, int i, int i1, int i2, int i3, int i4, int i5, int i6, int i7) {
                     mTabListCoordinator.getContainerView().removeOnLayoutChangeListener(this);
                     view.post(
-                            () -> {
-                                if (mPinnedTabsCoordinator != null) {
+                            () ->
                                     updatePinnedTabsStripOnScroll(
-                                            /* shouldShowSearchBox= */ true, /* forced= */ true);
-                                }
-                            });
+                                            /* shouldShowSearchBox= */ true, /* forced= */ true));
                 }
             };
 
@@ -227,7 +229,7 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
     private final Callback<EdgeToEdgeController> mOnEdgeToEdgeControllerChangedCallback =
             new ValueChangedCallback<>(this::onEdgeToEdgeControllerChanged);
     private final @Nullable TabGroupLabeller mTabGroupLabeller;
-    private final @Nullable SendTabToSelfTabLabeller mSendTabToSelfTabLabeller;
+    private final SendTabToSelfTabLabeller mSendTabToSelfTabLabeller;
     private final MonotonicObservableSupplier<TabModel> mTabModelSupplier;
     private final MonotonicObservableSupplier<ShareDelegate> mShareDelegateSupplier;
     private final MonotonicObservableSupplier<TabBookmarker> mTabBookmarkerSupplier;
@@ -243,7 +245,8 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
     private final SettableNonNullObservableSupplier<Float> mSearchBoxVisibilityFractionSupplier =
             ObservableSuppliers.createNonNull(0.0f);
     private final @Nullable ImageView mPaneHairline;
-    private final @Nullable PinnedTabStripCoordinator mPinnedTabsCoordinator;
+    private final @Nullable DataSharingTabManager mDataSharingTabManager;
+    private final PinnedTabStripCoordinator mPinnedTabsCoordinator;
     private @Nullable TabGridContextMenuCoordinator mContextMenuCoordinator;
     private @Nullable TabGroupListBottomSheetCoordinator mTabGroupListBottomSheetCoordinator;
 
@@ -264,9 +267,10 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
      * @param tabContentManager For management of thumbnails.
      * @param browserControlsStateProvider For determining thumbnail size.
      * @param scrimManager The scrim component to use for the tab grid dialog.
+     * @param snackbarManager The activity-level {@link SnackbarManager}.
      * @param modalDialogManager The modal dialog manager for the activity.
      * @param bottomSheetController The {@link BottomSheetController} for the current activity.
-     * @param dataSharingTabManager The {@link} DataSharingTabManager managing communication between
+     * @param dataSharingTabManager The {@link DataSharingTabManager} managing communication between
      *     UI and DataSharing services.
      * @param messageManager The {@link TabSwitcherMessageManager} for the message service.
      * @param parentView The view to use as a parent.
@@ -295,6 +299,7 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
             TabContentManager tabContentManager,
             BrowserControlsStateProvider browserControlsStateProvider,
             ScrimManager scrimManager,
+            SnackbarManager snackbarManager,
             ModalDialogManager modalDialogManager,
             BottomSheetController bottomSheetController,
             DataSharingTabManager dataSharingTabManager,
@@ -323,6 +328,7 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
             mActivity = activity;
             mModalDialogManager = modalDialogManager;
             mBottomSheetController = bottomSheetController;
+            mDataSharingTabManager = dataSharingTabManager;
             mParentView = parentView;
             mOnDestroyed = onDestroyed;
             mEdgeToEdgeSupplier = edgeToEdgeSupplier;
@@ -375,7 +381,6 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                                                 dataSharingTabManager,
                                                 tabModelSupplier,
                                                 tabContentManager,
-                                                resetHandler,
                                                 getTabListItemOnClickListenerProvider(),
                                                 TabSwitcherPaneCoordinator.this
                                                         ::getTabGridDialogAnimationSourceView,
@@ -407,7 +412,7 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                             isVisibleSupplier,
                             isAnimatingSupplier,
                             onTabClickCallback,
-                            this::getNthTabIndexInModel,
+                            this::getIndexFromTabId,
                             bottomSheetController,
                             this::addOnLayoutChangedAfterInitialScrollListener,
                             hubSearchBoxVisibilitySupplier);
@@ -417,7 +422,8 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                             activity,
                             browserControlsStateProvider,
                             tabContentManager,
-                            tabModelSupplier);
+                            tabModelSupplier,
+                            TabFavicon::getBitmap);
 
             var recyclerViewTimer = new UptimeMillisTimer();
 
@@ -434,10 +440,10 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                             mModalDialogManager,
                             tabModelSupplier,
                             mMultiThumbnailCardProvider,
-                            /* actionOnRelatedTabs= */ true,
+                            TabListLayoutType.GROUPED,
                             dataSharingTabManager,
                             getTabListItemOnClickListenerProvider(),
-                            /* dialogHandler= */ null,
+                            /* ungroupBarStatusHandler= */ null,
                             TabProperties.TabActionState.CLOSABLE,
                             /* selectionDelegateProvider= */ null,
                             this::getPriceWelcomeMessageController,
@@ -458,8 +464,7 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                             tabSwitcherDragHandler,
                             /* undoBarExplicitTrigger= */ null,
                             /* snackbarManager= */ null,
-                            TabListEditorCoordinator.UNLIMITED_SELECTION,
-                            false);
+                            TabListEditorCoordinator.UNLIMITED_SELECTION);
             mTabListCoordinator = tabListCoordinator;
             TabGridItemLongPressOrchestrator.OnLongPressTabItemEventListener
                     longPressItemEventListener = this::onLongPressOnTabCard;
@@ -480,9 +485,6 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
             FrameLayout tabListContainer = layout.findViewById(R.id.tab_list_container);
             tabListContainer.addView(recyclerView);
             mPaneHairline = layout.findViewById(R.id.pane_hairline);
-
-            maybeMakeSpaceForSearchBar();
-            mActivity.registerComponentCallbacks(mComponentsCallbacks);
 
             // TODO(crbug.com/436614730): Inline the view construction once feature is launched.
             // Create and set up the pinned tab strip, and add it as a sibling of the regular tab
@@ -507,6 +509,9 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
 
             FrameLayout pinnedTabsContainer = layout.findViewById(R.id.pinned_tabs_container);
             pinnedTabsContainer.addView(pinnedTabStripRecyclerView);
+
+            maybeMakeSpaceForSearchBar();
+            mActivity.registerComponentCallbacks(mComponentsCallbacks);
 
             if (DeviceInfo.isXr()) {
                 recyclerView.setVerticalFadingEdgeEnabled(true);
@@ -543,7 +548,6 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                             super.onScrollStateChanged(recyclerView, newState);
 
                             if (newState == RecyclerView.SCROLL_STATE_IDLE) {
-                                assert mPinnedTabsCoordinator != null;
                                 if (isAnyTabPinned()) {
                                     mPinnedTabsCoordinator.onScrolled();
                                 }
@@ -574,6 +578,9 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                         }
 
                         @Override
+                        public void overrideTopInset(@Px int inset) {}
+
+                        @Override
                         public void destroy() {}
                     };
             mEdgeToEdgeSupplier.addSyncObserverAndPostIfNonNull(
@@ -583,22 +590,24 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                     "Android.TabSwitcher.SetupRecyclerView.Time",
                     recyclerViewTimer.getElapsedMillis());
 
-            TabListEditorManager tabListEditorManager =
+            mTabListEditorManager =
                     new TabListEditorManager(
                             activity,
                             mModalDialogManager,
                             coordinatorView,
-                            /* rootView= */ parentView,
+                            snackbarManager,
                             browserControlsStateProvider,
                             tabModelSupplier,
                             tabContentManager,
                             tabListCoordinator,
                             bottomSheetController,
-                            mode,
                             onTabGroupCreation,
                             desktopWindowStateManager,
-                            mEdgeToEdgeSupplier);
-            mTabListEditorManager = tabListEditorManager;
+                            mEdgeToEdgeSupplier,
+                            () ->
+                                    mDataSharingTabManager != null
+                                            ? mDataSharingTabManager.getTabGroupUiActionHandler()
+                                            : null);
             mMediator.setTabListEditorControllerSupplier(
                     mTabListEditorManager.getControllerSupplier());
 
@@ -618,14 +627,9 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
             } else {
                 mTabGroupLabeller = null;
             }
-            if (ChromeFeatureList.isEnabled(ChromeFeatureList.SEND_TAB_TO_SELF_AUTO_OPEN)) {
-                mSendTabToSelfTabLabeller =
-                        new SendTabToSelfTabLabeller(
-                                mTabListCoordinator.getTabListNotificationHandler(),
-                                tabModelSupplier);
-            } else {
-                mSendTabToSelfTabLabeller = null;
-            }
+            mSendTabToSelfTabLabeller =
+                    new SendTabToSelfTabLabeller(
+                            mTabListCoordinator.getTabListNotificationHandler(), tabModelSupplier);
 
             mOnVisibilityChanged.onResult(
                     isVisibleSupplier.addSyncObserverAndPostIfNonNull(mOnVisibilityChanged));
@@ -696,9 +700,7 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
         if (mTabGroupLabeller != null) {
             mTabGroupLabeller.destroy();
         }
-        if (mSendTabToSelfTabLabeller != null) {
-            mSendTabToSelfTabLabeller.destroy();
-        }
+        mSendTabToSelfTabLabeller.destroy();
         mTabModelSupplier.removeObserver(mOnTabModelChange);
         if (mTabGroupListBottomSheetCoordinator != null) {
             mTabGroupListBottomSheetCoordinator.destroy();
@@ -711,9 +713,7 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
             mTabModelSupplier.get().removeObserver(mTabModelObserver);
         }
 
-        if (mPinnedTabsCoordinator != null) {
-            mPinnedTabsCoordinator.destroy();
-        }
+        mPinnedTabsCoordinator.destroy();
         mActivity.unregisterComponentCallbacks(mComponentsCallbacks);
     }
 
@@ -731,13 +731,8 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
             return true;
         }
 
-        if (mPinnedTabsCoordinator != null) {
-            TabListRecyclerView pinnedRecyclerView =
-                    mPinnedTabsCoordinator.getPinnedTabsRecyclerView();
-            return isTouchOnRecyclerViewItem(pinnedRecyclerView, x, y);
-        }
-
-        return false;
+        TabListRecyclerView pinnedRecyclerView = mPinnedTabsCoordinator.getPinnedTabsRecyclerView();
+        return isTouchOnRecyclerViewItem(pinnedRecyclerView, x, y);
     }
 
     private boolean isTouchOnRecyclerViewItem(TabListRecyclerView recyclerView, float x, float y) {
@@ -801,9 +796,7 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
         if (mTabGroupLabeller != null) {
             mTabGroupLabeller.showAll();
         }
-        if (mSendTabToSelfTabLabeller != null) {
-            mSendTabToSelfTabLabeller.showAll(tabs);
-        }
+        mSendTabToSelfTabLabeller.showAll(tabs);
     }
 
     /** Performs soft cleanup which removes thumbnails to relieve memory usage. */
@@ -920,11 +913,10 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
      * Scrolls to the specified group and animates open a dialog. It is the caller's responsibility
      * to ensure that this pane is showing before calling this.
      *
-     * @param tabId The id of any tab in the group.
+     * @param tabGroupId The tab group ID of the group.
      */
-    public void requestOpenTabGroupDialog(int tabId) {
-        mMediator.scrollToTabById(tabId);
-        mMediator.openTabGroupDialog(tabId);
+    public void requestOpenTabGroupDialog(Token tabGroupId) {
+        mMediator.openTabGroupDialog(tabGroupId, /* shouldScroll= */ true);
     }
 
     /** Returns the range (inclusive) of visible view indexes. */
@@ -1050,11 +1042,11 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
 
         TabModel tabModel = mTabModelSupplier.get();
         assumeNonNull(tabModel);
-        int tabId = tabModel.getGroupLastShownTabId(tabGroupId);
+        int tabId = TabGroupUtils.getFirstTabIdInGroup(tabModel, tabGroupId);
         if (tabId == Tab.INVALID_TAB_ID) return null;
 
         TabListCoordinator coordinator = mTabListCoordinator;
-        int index = coordinator.getIndexForTabIdWithRelatedTabs(tabId);
+        int index = coordinator.getIndexFromTabId(tabId);
         ViewHolder sourceViewHolder =
                 coordinator.getContainerView().findViewHolderForAdapterPosition(index);
         // TODO(crbug.com/41479135): This is band-aid fix that will show basic fade-in/fade-out
@@ -1078,7 +1070,7 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                 priceWelcomeMessageController.addObserver(mPriceMessageUpdateObserver);
             }
             updateBottomPadding();
-            mTabListCoordinator.prepareTabSwitcherPaneView();
+            mTabListCoordinator.prepareTabListView();
         } else {
             mMessageManager.removeObserver(mMessageUpdateObserver);
             if (priceWelcomeMessageController != null) {
@@ -1123,31 +1115,9 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
         }
     }
 
-    /** Returns the container view property model for testing. */
-    PropertyModel getContainerViewModelForTesting() {
-        return mContainerViewModel;
-    }
-
-    /** Returns the dialog controller for testing. */
-    @Nullable DialogController getTabGridDialogControllerForTesting() {
-        return mDialogControllerSupplier.get();
-    }
-
-    /** Return the Edge to edge pad adjuster. */
-    EdgeToEdgePadAdjuster getEdgeToEdgePadAdjusterForTesting() {
-        return mEdgeToEdgePadAdjuster;
-    }
-
-    @Nullable PinnedTabStripCoordinator getPinnedTabsCoordinatorForTesting() {
-        return mPinnedTabsCoordinator;
-    }
-
-    /* package */ @Nullable TabGridDialogCoordinator getTabGridDialogCoordinatorForTesting() {
-        return mTabGridDialogCoordinator;
-    }
-
-    public ComponentCallbacks getComponentsCallbacksForTesting() {
-        return mComponentsCallbacks;
+    /** Prepares the tab switcher for hiding by detaching observers before exit animation. */
+    void prepareHiding() {
+        mTabListCoordinator.prepareHiding();
     }
 
     void showQuickDeleteAnimation(Runnable onAnimationEnd, List<Tab> tabs) {
@@ -1156,29 +1126,27 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                     onAnimationEnd.run();
                     // Update the pinned tabs bar, as there might be movement of items in the
                     // recycler view.
-                    if (mPinnedTabsCoordinator != null) mPinnedTabsCoordinator.onScrolled();
+                    mPinnedTabsCoordinator.onScrolled();
                 };
         mTabListCoordinator.showQuickDeleteAnimation(onAnimEnd, tabs);
 
         // Reveal the search bar if needed.
-        if (mPinnedTabsCoordinator != null) {
-            updatePinnedTabsStripOnScroll(/* shouldShowSearchBox= */ true, /* forced= */ false);
-        }
+        updatePinnedTabsStripOnScroll(/* shouldShowSearchBox= */ true, /* forced= */ false);
     }
 
-    /** Returns the filter index of a tab from its view index. */
-    public int countOfTabCardsOrInvalid(int viewIndex) {
-        return mTabListCoordinator.indexOfTabCardsOrInvalid(viewIndex);
+    /**
+     * Returns the tab group ID of the tab group card at the given view index, or null if the card
+     * at that index is not a tab group.
+     *
+     * @param viewIndex The view index in the recycler view.
+     * @return The {@link Token} tab group ID or null.
+     */
+    @Nullable Token getTabGroupIdForIndex(int viewIndex) {
+        return mTabListCoordinator.getTabGroupIdForIndex(viewIndex);
     }
 
-    private int getNthTabIndexInModel(int filterIndex) {
-        assert mTabListCoordinator != null;
-        int indexInModel = mTabListCoordinator.getIndexOfNthTabCard(filterIndex);
-        // If the tab list coordinator doesn't contain tab data yet assume filterIndex is a
-        // sufficient approximation as the offset would be caused by message cards.
-        if (indexInModel == TabList.INVALID_TAB_INDEX) return filterIndex;
-
-        return indexInModel;
+    private int getIndexFromTabId(@TabId int tabId) {
+        return mTabListCoordinator.getIndexFromTabId(tabId);
     }
 
     private void updateBottomPadding() {
@@ -1210,7 +1178,10 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
                         mBottomSheetController,
                         /* supportsShowNewGroup= */ true,
                         /* destroyOnHide= */ false,
-                        /* windowAndroid= */ null);
+                        /* windowAndroid= */ null,
+                        mDataSharingTabManager != null
+                                ? mDataSharingTabManager.getTabGroupUiActionHandler()
+                                : null);
 
         ShowTabListEditor showTabListEditor =
                 tabId -> {
@@ -1243,16 +1214,12 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
         TabListRecyclerView containerView = mTabListCoordinator.getContainerView();
         containerView.addOnLayoutChangeListener(mOnLayoutChangedAfterInitialScrollListener);
         containerView.post(
-                () -> {
-                    if (mPinnedTabsCoordinator != null) {
+                () ->
                         updatePinnedTabsStripOnScroll(
-                                /* shouldShowSearchBox= */ true, /* forced= */ true);
-                    }
-                });
+                                /* shouldShowSearchBox= */ true, /* forced= */ true));
     }
 
     private void updatePinnedTabsStripOnScroll(boolean shouldShowSearchBox, boolean forced) {
-        assert mPinnedTabsCoordinator != null;
         mPinnedTabsCoordinator.onScrolled();
         if (shouldShowSearchBox || mPinnedTabsCoordinator.isPinnedTabsBarVisible()) {
             mMediator.maybeTranslatePinnedStrip(shouldShowSearchBox, forced);
@@ -1264,15 +1231,11 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
         boolean isTabletOrLandscape = HubUtils.isScreenWidthTablet(config.screenWidthDp);
         mMediator.setIsTabletOrLandscape(isTabletOrLandscape);
         if (isTabletOrLandscape) {
-            if (mPinnedTabsCoordinator != null) {
-                mMediator.maybeTranslatePinnedStrip(
-                        /* shouldShowSearchBox= */ false, /* forced= */ true);
-            }
+            mMediator.maybeTranslatePinnedStrip(
+                    /* shouldShowSearchBox= */ false, /* forced= */ true);
         } else {
-            if (mPinnedTabsCoordinator != null) {
-                mMediator.maybeTranslatePinnedStrip(
-                        /* shouldShowSearchBox= */ true, /* forced= */ true);
-            }
+            mMediator.maybeTranslatePinnedStrip(
+                    /* shouldShowSearchBox= */ true, /* forced= */ true);
         }
     }
 
@@ -1285,5 +1248,32 @@ public class TabSwitcherPaneCoordinator implements BackPressHandler {
             mContainerViewModel.set(
                     TabListContainerProperties.IS_NON_ZERO_Y_OFFSET, isYOffsetNonZero);
         }
+    }
+
+    /** Returns the container view property model for testing. */
+    PropertyModel getContainerViewModelForTesting() {
+        return mContainerViewModel;
+    }
+
+    /** Returns the dialog controller for testing. */
+    @Nullable DialogController getTabGridDialogControllerForTesting() {
+        return mDialogControllerSupplier.get();
+    }
+
+    /** Return the Edge to edge pad adjuster. */
+    EdgeToEdgePadAdjuster getEdgeToEdgePadAdjusterForTesting() {
+        return mEdgeToEdgePadAdjuster;
+    }
+
+    PinnedTabStripCoordinator getPinnedTabsCoordinatorForTesting() {
+        return mPinnedTabsCoordinator;
+    }
+
+    /* package */ @Nullable TabGridDialogCoordinator getTabGridDialogCoordinatorForTesting() {
+        return mTabGridDialogCoordinator;
+    }
+
+    public ComponentCallbacks getComponentsCallbacksForTesting() {
+        return mComponentsCallbacks;
     }
 }

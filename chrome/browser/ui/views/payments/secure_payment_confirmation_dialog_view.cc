@@ -174,7 +174,7 @@ void SecurePaymentConfirmationDialogView::ShowDialog(
     AnotherWayCallback another_way_callback,
     CancelCallback cancel_callback,
     OptOutCallback opt_out_callback) {
-  DCHECK(model);
+  CHECK(model, base::NotFatalUntil::M162);
   model_ = model;
 
   set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
@@ -352,6 +352,11 @@ views::View* SecurePaymentConfirmationDialogView::GetFooterViewForTesting() {
 }
 
 bool SecurePaymentConfirmationDialogView::ShouldShowCloseButton() const {
+  return false;
+}
+
+bool SecurePaymentConfirmationDialogView::
+    ShouldAllowKeyEventsDuringInputProtection() const {
   return false;
 }
 

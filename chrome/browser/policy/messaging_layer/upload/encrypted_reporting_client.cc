@@ -133,13 +133,12 @@ std::unique_ptr<::net::BackoffEntry> GetBackoffEntry(Priority priority) {
 
       /*always_use_initial_delay=*/true,
   };
-  // Maximum backoff is set per priority. Current proposal is to set SECURITY
-  // and IMMEDIATE events to be backed off only slightly: max delay is set
+  // Maximum backoff is set per priority. Current proposal is to set IMMEDIATE
+  // events to be backed off only slightly: max delay is set
   // to 1 minute. For all other priorities max delay is set to 24 hours.
   auto backoff_entry = std::make_unique<::net::BackoffEntry>(
-      (priority == Priority::SECURITY || priority == Priority::IMMEDIATE)
-          ? &kImmediateUploadBackoffPolicy
-          : &kDefaultUploadBackoffPolicy);
+      priority == Priority::IMMEDIATE ? &kImmediateUploadBackoffPolicy
+                                      : &kDefaultUploadBackoffPolicy);
   return backoff_entry;
 }
 
@@ -269,7 +268,7 @@ void RemoveConfirmedEventsFromCache(UploadState* state) {
 // Posts upload records count UMA.
 void LogNumRecordsInUpload(uint64_t num_records) {
 #if BUILDFLAG(IS_CHROMEOS)
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (policy::ManagementServiceFactory::GetForPlatform()
           ->HasManagementAuthority(
               policy::EnterpriseManagementAuthority::CLOUD_DOMAIN)) {
@@ -371,13 +370,13 @@ class PayloadSizeUmaReporter {
 
   // Whether payload size should be reported now.
   static bool ShouldReport() {
-    DCHECK_CURRENTLY_ON(::content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(::content::BrowserThread::UI, base::NotFatalUntil::M162);
     return base::Time::Now() >= last_reported_time_ + kMinReportTimeDelta;
   }
 
   // Reports to UMA.
   void Report() {
-    DCHECK_CURRENTLY_ON(::content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(::content::BrowserThread::UI, base::NotFatalUntil::M162);
     CHECK_GE(response_payload_size_, 0);
 
     last_reported_time_ = base::Time::Now();
@@ -387,7 +386,7 @@ class PayloadSizeUmaReporter {
 
   // Updates response payload size.
   void UpdateResponsePayloadSize(int response_payload_size) {
-    DCHECK_CURRENTLY_ON(::content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(::content::BrowserThread::UI, base::NotFatalUntil::M162);
     response_payload_size_ = response_payload_size;
   }
 
@@ -432,14 +431,14 @@ class PayloadSizeComputationRateLimiterForUma {
 
   // Should payload size be computed and recorded?
   [[nodiscard]] bool ShouldDo() const {
-    DCHECK_CURRENTLY_ON(::content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(::content::BrowserThread::UI, base::NotFatalUntil::M162);
     return successful_upload_counter_ % kScaleFactor == 0u;
   }
 
   // Bumps the upload counter. Must call this once after having called
   // |ShouldDo| every time an upload succeeds.
   void Next() {
-    DCHECK_CURRENTLY_ON(::content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(::content::BrowserThread::UI, base::NotFatalUntil::M162);
     ++successful_upload_counter_;
   }
 
@@ -474,7 +473,7 @@ bool EncryptedReportingClient::GenerationGuidIsRequired() {
   // Generation guid is only required for unmanaged ChromeOS devices. Enterprise
   // managed ChromeOS devices or device with managed browser are not required to
   // use the version of `Storage` that produces generation guids.
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   return !policy::ManagementServiceFactory::GetForPlatform()
               ->HasManagementAuthority(
                   policy::EnterpriseManagementAuthority::CLOUD_DOMAIN);
@@ -859,10 +858,6 @@ base::TimeDelta EncryptedReportingClient::WhenIsAllowedToProceed(
   if (state->last_sequence_id > state->cached_records.rbegin()->first) {
     // Sequence id decreased, the upload is outdated, reject it forever.
     return base::TimeDelta::Max();
-  }
-  if (priority == Priority::SECURITY) {
-    // For SECURITY events the request is allowed.
-    return base::TimeDelta();  // 0 - allowed right away.
   }
 
   // Allow upload only if earliest retry time has passed.

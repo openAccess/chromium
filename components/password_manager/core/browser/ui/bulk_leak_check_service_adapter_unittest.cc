@@ -54,11 +54,11 @@ using ::testing::NiceMock;
 using ::testing::Return;
 
 MATCHER_P(CredentialsAre, credentials, "") {
-  return std::ranges::equal(arg, credentials.get(),
-                            [](const auto& lhs, const auto& rhs) {
-                              return lhs.username() == rhs.username() &&
-                                     lhs.password() == rhs.password();
-                            });
+  return std::ranges::is_permutation(
+      arg, credentials.get(), [](const auto& lhs, const auto& rhs) {
+        return lhs.username() == rhs.username() &&
+               lhs.password() == rhs.password();
+      });
 }
 
 StoredCredential MakeSavedPassword(std::string_view signon_realm,
@@ -75,7 +75,7 @@ StoredCredential MakeSavedPassword(std::string_view signon_realm,
 LeakCheckCredential MakeLeakCheckCredential(std::u16string_view username,
                                             std::u16string_view password) {
   return LeakCheckCredential(std::u16string(username),
-                             std::u16string(password));
+                             PasswordString(std::u16string(password)));
 }
 
 struct MockBulkLeakCheck : BulkLeakCheck {
@@ -83,7 +83,7 @@ struct MockBulkLeakCheck : BulkLeakCheck {
               CheckCredentials,
               (LeakDetectionInitiator, std::vector<LeakCheckCredential>),
               (override));
-  MOCK_METHOD(size_t, GetPendingChecksCount, (), (const override));
+  MOCK_METHOD(size_t, GetPendingChecksCount, (), (const, override));
 };
 
 using NiceMockBulkLeakCheck = ::testing::NiceMock<MockBulkLeakCheck>;
@@ -282,7 +282,7 @@ TEST_F(BulkLeakCheckServiceAdapterTest, OnEditedNoPrefs) {
   EXPECT_CALL(factory(), TryCreateBulkLeakCheck).Times(0);
   CredentialUIEntry original_credential(ToPasswordForm(password)),
       updated_credential = original_credential;
-  updated_credential.password = kPassword2;
+  updated_credential.password = PasswordString(kPassword2);
   presenter().EditSavedCredentials(original_credential, updated_credential);
   RunUntilIdle();
 }
@@ -308,7 +308,7 @@ TEST_F(BulkLeakCheckServiceAdapterTest, OnEditedWithPrefs) {
       .WillOnce(Return(ByMove(std::move(leak_check))));
   CredentialUIEntry original_credential(ToPasswordForm(password)),
       updated_credential = original_credential;
-  updated_credential.password = kPassword2;
+  updated_credential.password = PasswordString(kPassword2);
   presenter().EditSavedCredentials(original_credential, updated_credential);
   RunUntilIdle();
 }

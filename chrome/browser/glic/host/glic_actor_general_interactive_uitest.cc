@@ -18,17 +18,21 @@
 #include "chrome/browser/actor/ui/actor_ui_state_manager_prefs.h"
 #include "chrome/browser/devtools/devtools_window_testing.h"
 #include "chrome/browser/glic/host/glic_actor_interactive_uitest_common.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
 #include "chrome/browser/search/search.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/actor/core/actor_features.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/optimization_guide/content/browser/page_content_proto_util.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/views/test/widget_test.h"
 #include "url/origin.h"
@@ -199,8 +203,11 @@ GlicActorGeneralUiTest::CheckActorTabDataHasAnnotatedPageContentCache() {
   return Steps(Do([&]() {
     // TODO(crbug.com/420669167): Needs to be reconsidered for multi-tab.
     const AnnotatedPageContent* cached_apc =
-        actor::ActorTabData::From(
-            GetActorTask()->GetLastActedTabs().begin()->Get())
+        actor::ActorTabData::From(GetActorTask()
+                                      ->GetLastActedActorSurfaces()
+                                      .begin()
+                                      ->GetTabHandle()
+                                      .Get())
             ->GetLastObservedPageContent();
     EXPECT_TRUE(cached_apc);
     EXPECT_THAT(*annotated_page_content_, EqualsProto(*cached_apc));
@@ -209,9 +216,14 @@ GlicActorGeneralUiTest::CheckActorTabDataHasAnnotatedPageContentCache() {
 
 MultiStep GlicActorGeneralUiTest::OpenDevToolsWindow() {
   return Steps(Do([this]() {
-    content::WebContents* contents = GetGlicContents();
-    DevToolsWindowTesting::OpenDevToolsWindowSync(contents,
-                                                  /*is_docked=*/false);
+    content::WebContents* contents =
+        browser()->tab_strip_model()->GetActiveWebContents();
+    DevToolsWindow* devtools = DevToolsWindowTesting::OpenDevToolsWindowSync(
+        contents, /*is_docked=*/false);
+    BrowserWindowInterface* devtools_browser =
+        DevToolsWindowTesting::Get(devtools)->browser();
+    ASSERT_TRUE(devtools_browser);
+    ui_test_utils::WaitUntilBrowserBecomeActive(devtools_browser);
   }));
 }
 
@@ -258,8 +270,11 @@ MultiStep GlicActorGeneralUiTest::ReadTinyTargetBoundsAndAssertApcHitTest(
         EXPECT_EQ(button_bounds.size(), gfx::Size(20, 20));
 
         const apc::AnnotatedPageContent* cached_apc =
-            actor::ActorTabData::From(
-                GetActorTask()->GetLastActedTabs().begin()->Get())
+            actor::ActorTabData::From(GetActorTask()
+                                          ->GetLastActedActorSurfaces()
+                                          .begin()
+                                          ->GetTabHandle()
+                                          .Get())
                 ->GetLastObservedPageContent();
         ASSERT_TRUE(cached_apc);
 
@@ -652,12 +667,9 @@ class GlicActorGeneralUiTestWithoutPolicyExemption
     : public GlicActorGeneralUiTest {
  public:
   GlicActorGeneralUiTestWithoutPolicyExemption() {
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        /*enabled_features=*/{{features::kGlicActor,
-                               {{features::kGlicActorPolicyControlExemption
-                                     .name,
-                                 "false"}}}},
-        /*disabled_features=*/{});
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kGlicActor},
+        /*disabled_features=*/{features::kGlicActorPolicyControlExemption});
   }
   ~GlicActorGeneralUiTestWithoutPolicyExemption() override = default;
 
@@ -773,7 +785,7 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest, CreateActorTabOnNewTabPage) {
         // Create another tab to ensure we're using the initiator tab.
         ui_test_utils::NavigateToURLWithDisposition(
             browser(), GURL(url::kAboutBlankURL),
-            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
             ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
         // Sanity check - we'll ensure these won't change after binding to the
@@ -831,7 +843,7 @@ IN_PROC_BROWSER_TEST_F(GlicActorGeneralUiTest,
         // Create another tab to ensure we're using the initiator tab.
         ui_test_utils::NavigateToURLWithDisposition(
             browser(), GURL(url::kAboutBlankURL),
-            WindowOpenDisposition::NEW_FOREGROUND_TAB,
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
             ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
 
         // Sanity check - we'll ensure these won't change after binding to the
@@ -870,9 +882,10 @@ class GlicActorCallbackOrderGeneralUiTest : public GlicActorGeneralUiTest {
   GlicActorCallbackOrderGeneralUiTest() {
     feature_list_.InitWithFeaturesAndParameters(
         {
-            {features::kGlicActor,
-             {{features::kGlicActorClickDelay.name, "60000ms"},
-              {features::kGlicActorPolicyControlExemption.name, "true"}}},
+            {features::kGlicActor, {}},
+            {features::kGlicActorPolicyControlExemption, {}},
+            {actor::kActorClickDelay,
+             {{actor::kActorClickDelayParam.name, "60000ms"}}},
             {actor::kGlicPerformActionsReturnsBeforeStateChange, {}},
         },
         /*disabled_features=*/{});

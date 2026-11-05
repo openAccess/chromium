@@ -13,6 +13,9 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 import android.content.Context;
 import android.content.res.Resources;
@@ -29,12 +32,14 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.ObserverList;
 import org.chromium.base.Promise;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
@@ -42,7 +47,6 @@ import org.chromium.url.JUnitTestGURLs;
 
 /** Unit tests for {@link TabFavicon}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabFaviconTest {
     private static final int IDEAL_SIZE = 4;
 
@@ -52,6 +56,7 @@ public class TabFaviconTest {
     @Mock private Context mContext;
     @Mock private Resources mResources;
     @Mock private WebContents mWebContents;
+    private @Mock WebContents mNewWebContents;
     @Mock private FaviconHelper mFaviconHelper;
 
     private UserDataHost mUserDataHost;
@@ -322,5 +327,76 @@ public class TabFaviconTest {
 
         // 5. Verify cache is not polluted (getFavicon for URL_1 should be null)
         assertNull(mTabFavicon.getFavicon());
+    }
+
+    @Test
+    public void testGetNativePtrForTab_CreatesInstanceIfNeeded() {
+        TabImpl newTab = mock(TabImpl.class);
+        UserDataHost newUserDataHost = new UserDataHost();
+        doReturn(newUserDataHost).when(newTab).getUserDataHost();
+        doReturn(mContext).when(newTab).getContext();
+        doReturn(mResources).when(mContext).getResources();
+        doReturn(IDEAL_SIZE).when(mResources).getDimensionPixelSize(anyInt());
+        doReturn(true).when(newTab).isInitialized();
+
+        long nativePtr = TabFavicon.getNativePtrForTab(newTab);
+        assertEquals(12345L, nativePtr);
+    }
+
+    @Test
+    public void testGetBitmapWithFallback_NoInstanceReturnsNull() {
+        TabImpl newTab = mock(TabImpl.class);
+        UserDataHost newUserDataHost = new UserDataHost();
+        doReturn(newUserDataHost).when(newTab).getUserDataHost();
+        doReturn(true).when(newTab).isInitialized();
+
+        assertNull(TabFavicon.getBitmapWithFallback(newTab, false));
+    }
+
+    @Test
+    public void testConstructor_InitsWebContentsIfPresent() {
+        verify(mTabFaviconJni).setWebContents(12345L, mWebContents);
+    }
+
+    @Test
+    public void testGetBitmapWithFallback_NativePageReturnsNull() {
+        doReturn(true).when(mTab).isNativePage();
+
+        Bitmap bitmap = TabFavicon.getBitmapWithFallback(mTab, /* allowFallback= */ false);
+        assertNull(bitmap);
+    }
+
+    @Test
+    public void testGetFaviconOrFallback_NativePageRejected() {
+        doReturn(true).when(mTab).isNativePage();
+
+        Promise<Bitmap> promise = mTabFavicon.getFaviconOrFallback();
+        assertNotNull(promise);
+        assertTrue(promise.isRejected());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.CLANK_STARTUP_TAB_OPTIMIZATIONS)
+    public void testOnContentChanged_deduplicatesCallsWhenOptimizationsEnabled() {
+        // setUp() already called setWebContents once during construction via
+        // onContentChanged(mTab).
+        verify(mTabFaviconJni, times(1)).setWebContents(12345L, mWebContents);
+
+        mTabFavicon.onContentChanged(mTab);
+        verify(mTabFaviconJni, times(1)).setWebContents(12345L, mWebContents);
+
+        doReturn(mNewWebContents).when(mTab).getWebContents();
+        mTabFavicon.onContentChanged(mTab);
+        verify(mTabFaviconJni, times(1)).setWebContents(12345L, mNewWebContents);
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.CLANK_STARTUP_TAB_OPTIMIZATIONS)
+    public void testOnContentChanged_callsEveryTimeWhenOptimizationsDisabled() {
+        // setUp() called initWebContents directly without updating TabWebContentsUserData.
+        verify(mTabFaviconJni, times(1)).setWebContents(12345L, mWebContents);
+
+        mTabFavicon.onContentChanged(mTab);
+        verify(mTabFaviconJni, times(2)).setWebContents(12345L, mWebContents);
     }
 }

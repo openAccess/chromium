@@ -38,7 +38,7 @@ source_set("profile_controller") {
     "profile_controller.mm",
   ]
   deps = [
-    ":app_icon_launched_profile_agent",
+    ":actor_profile_agent",
     ":application_storage_metrics",
     ":certificate_policy_profile_agent",
     ":features",
@@ -51,12 +51,12 @@ source_set("profile_controller") {
     ":search_engine_choice_profile_agent",
     ":session_metrics_profile_agent",
     ":synced_set_up_profile_agent",
-    ":welcome_back_profile_agent",
     "//base",
     "//components/content_settings/core/browser",
     "//components/desktop_to_mobile_promos",
     "//components/feature_engagement/public",
     "//components/language/core/browser",
+    "//components/webauthn/core/browser/device_authorization:features",
     "//ios/chrome/app",
     "//ios/chrome/app:app_lifetime_observer",
     "//ios/chrome/app:task_names",
@@ -73,6 +73,8 @@ source_set("profile_controller") {
     "//ios/chrome/browser/external_files/model",
     "//ios/chrome/browser/feature_engagement/model",
     "//ios/chrome/browser/first_run/public:features",
+    "//ios/chrome/browser/intelligence/features",
+    "//ios/chrome/browser/level_up/model:promo",
     "//ios/chrome/browser/mailto_handler/model:mailto_handler_factory",
     "//ios/chrome/browser/ntp/model:home_background_customization_promo",
     "//ios/chrome/browser/profile_metrics/model:profile_agent",
@@ -95,8 +97,9 @@ source_set("profile_controller") {
     "//ios/chrome/browser/signin/model:authentication_service_factory",
     "//ios/chrome/browser/snapshots/model:constants",
     "//ios/chrome/browser/translate/model",
+    "//ios/chrome/browser/web_extension/model",
     "//ios/chrome/browser/web_state_list/model/web_usage_enabler",
-    "//ios/chrome/browser/welcome_back/model:features",
+    "//ios/chrome/browser/webauthn/model:device_authorization_profile_agent",
     "//ios/components/cookie_util",
     "//ios/public/provider/chrome/browser/raccoon:raccoon_api",
     "//ios/web/public/thread",
@@ -120,6 +123,25 @@ source_set("features") {
     "features.mm",
   ]
   deps = [ "//base" ]
+}
+
+source_set("actor_profile_agent") {
+  sources = [
+    "actor_profile_agent.h",
+    "actor_profile_agent.mm",
+  ]
+  public_deps = [
+    ":profile",
+    "//ios/chrome/app/background_task",
+  ]
+  deps = [
+    "//base",
+    "//ios/chrome/browser/intelligence/actor/model",
+    "//ios/chrome/browser/intelligence/actor/public:actor_types",
+    "//ios/chrome/browser/intelligence/features",
+    "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
+    "//ios/chrome/browser/shared/model/profile",
+  ]
 }
 
 source_set("application_storage_metrics") {
@@ -186,31 +208,27 @@ source_set("first_run_profile_agent") {
   deps = [
     "//base",
     "//components/feature_engagement/public",
-    "//components/metrics",
     "//ios/chrome/app/application_delegate:app_state",
     "//ios/chrome/app/application_delegate:startup_information",
     "//ios/chrome/app/profile",
     "//ios/chrome/browser/authentication/ui_bundled/signin:signin_headers",
     "//ios/chrome/browser/device_orientation/ui_bundled",
     "//ios/chrome/browser/feature_engagement/model",
-    "//ios/chrome/browser/first_run/coordinator",
     "//ios/chrome/browser/first_run/coordinator:first_run_provider",
-    "//ios/chrome/browser/first_run/guided_tour/coordinator",
     "//ios/chrome/browser/first_run/public:features",
-    "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/safari_data_import/public",
     "//ios/chrome/browser/scoped_ui_blocker/ui_bundled",
     "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
     "//ios/chrome/browser/shared/coordinator/scene:scene_state_observer",
-    "//ios/chrome/browser/shared/model/application_context",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/prefs:pref_names",
     "//ios/chrome/browser/shared/model/profile",
+    "//ios/chrome/browser/shared/public/commands",
     "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/browser/signin/model",
     "//ios/chrome/browser/signin/model:signin_util",
-    "//ios/chrome/browser/synced_set_up/public",
-    "//ios/chrome/browser/synced_set_up/utils",
+    "//ios/chrome/browser/synced_set_up/public:metrics",
+    "//ios/chrome/browser/synced_set_up/public:utils",
   ]
 }
 
@@ -256,7 +274,6 @@ source_set("session_metrics_profile_agent") {
     "//base",
     "//components/activity_reporter",
     "//components/feature_engagement/public",
-    "//components/metrics/private_metrics",
     "//components/prefs",
     "//ios/chrome/browser/feature_engagement/model",
     "//ios/chrome/browser/metrics/model",
@@ -328,56 +345,6 @@ source_set("multi_profile_forced_migration_profile_agent") {
   ]
 }
 
-source_set("app_icon_launched_profile_agent") {
-  sources = [
-    "app_icon_launched_profile_agent.h",
-    "app_icon_launched_profile_agent.mm",
-  ]
-  deps = [
-    ":profile",
-    "//components/feature_engagement/public",
-    "//ios/chrome/app/application_delegate:app_state",
-    "//ios/chrome/app/application_delegate:observing_app_state_agent",
-    "//ios/chrome/browser/feature_engagement/model",
-    "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
-    "//ios/chrome/browser/shared/model/profile",
-  ]
-}
-
-source_set("welcome_back_profile_agent") {
-  sources = [
-    "welcome_back_screen_profile_agent.h",
-    "welcome_back_screen_profile_agent.mm",
-  ]
-  public_deps = [ ":profile" ]
-  deps = [
-    "//base",
-    "//components/feature_engagement/public",
-    "//components/password_manager/core/browser",
-    "//components/previous_session_info",
-    "//components/signin/public/base",
-    "//components/signin/public/identity_manager",
-    "//ios/chrome/app/profile",
-    "//ios/chrome/browser/feature_engagement/model",
-    "//ios/chrome/browser/first_run/public:best_features_item",
-    "//ios/chrome/browser/first_run/public:features",
-    "//ios/chrome/browser/metrics/model",
-    "//ios/chrome/browser/promos_manager/model",
-    "//ios/chrome/browser/promos_manager/model:constants",
-    "//ios/chrome/browser/promos_manager/model:factory",
-    "//ios/chrome/browser/shared/model/application_context",
-    "//ios/chrome/browser/shared/model/prefs:pref_names",
-    "//ios/chrome/browser/shared/model/profile",
-    "//ios/chrome/browser/shared/model/utils",
-    "//ios/chrome/browser/shared/public/features:system_flags",
-    "//ios/chrome/browser/signin/model",
-    "//ios/chrome/browser/welcome_back/metrics",
-    "//ios/chrome/browser/welcome_back/model",
-    "//ios/chrome/browser/welcome_back/model:features",
-  ]
-  frameworks = [ "UIKit.framework" ]
-}
-
 source_set("synced_set_up_profile_agent") {
   sources = [
     "synced_set_up_profile_agent.h",
@@ -399,8 +366,8 @@ source_set("synced_set_up_profile_agent") {
     "//ios/chrome/browser/sync/model:device_info_sync_service_factory",
     "//ios/chrome/browser/sync/model/prefs/cross_device_pref_tracker:cross_device_pref_tracker_factory",
     "//ios/chrome/browser/sync/model/prefs/cross_device_pref_tracker:observer_bridge",
-    "//ios/chrome/browser/synced_set_up/public",
-    "//ios/chrome/browser/synced_set_up/utils",
+    "//ios/chrome/browser/synced_set_up/public:metrics",
+    "//ios/chrome/browser/synced_set_up/public:utils",
   ]
 }
 
@@ -440,6 +407,7 @@ source_set("test_utils") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "actor_profile_agent_unittest.mm",
     "certificate_policy_profile_agent_unittest.mm",
     "first_run_profile_agent_unittest.mm",
     "observing_profile_agent_unittest.mm",
@@ -448,9 +416,9 @@ source_set("unit_tests") {
     "profile_state_unittest.mm",
     "scene_observing_profile_agent_unittest.mm",
     "session_metrics_profile_agent_unittest.mm",
-    "welcome_back_screen_profile_agent_unittest.mm",
   ]
   deps = [
+    ":actor_profile_agent",
     ":certificate_policy_profile_agent",
     ":first_run_profile_agent",
     ":post_restore_profile_agent",
@@ -458,8 +426,8 @@ source_set("unit_tests") {
     ":profile_controller",
     ":session_metrics_profile_agent",
     ":test_utils",
-    ":welcome_back_profile_agent",
     "//base/test:test_support",
+    "//components/actor/core",
     "//components/feature_engagement/public",
     "//components/feature_engagement/test:test_support",
     "//components/prefs",
@@ -470,10 +438,17 @@ source_set("unit_tests") {
     "//ios/chrome/app/application_delegate:app_state",
     "//ios/chrome/app/application_delegate:startup_information",
     "//ios/chrome/app/application_delegate:test_support",
+    "//ios/chrome/app/background_task",
+    "//ios/chrome/app/background_task:features",
     "//ios/chrome/app/profile/test:test_support",
     "//ios/chrome/browser/feature_engagement/model",
     "//ios/chrome/browser/first_run/public:best_features_item",
     "//ios/chrome/browser/first_run/public:features",
+    "//ios/chrome/browser/intelligence/actor/metrics",
+    "//ios/chrome/browser/intelligence/actor/model",
+    "//ios/chrome/browser/intelligence/actor/public:actor_types",
+    "//ios/chrome/browser/intelligence/actor/test:test_support",
+    "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/metrics/model",
     "//ios/chrome/browser/promos_manager/model",
     "//ios/chrome/browser/promos_manager/model:constants",
@@ -499,15 +474,13 @@ source_set("unit_tests") {
     "//ios/chrome/browser/signin/model:test_support",
     "//ios/chrome/browser/sync/model",
     "//ios/chrome/browser/sync/model:test_support",
-    "//ios/chrome/browser/synced_set_up/public",
-    "//ios/chrome/browser/synced_set_up/utils",
-    "//ios/chrome/browser/welcome_back/metrics",
-    "//ios/chrome/browser/welcome_back/model",
-    "//ios/chrome/browser/welcome_back/model:features",
+    "//ios/chrome/browser/synced_set_up/public:metrics",
+    "//ios/chrome/browser/synced_set_up/public:utils",
     "//ios/chrome/test:test_support",
     "//ios/web/public/security",
     "//ios/web/public/session",
     "//ios/web/public/test",
+    "//ios/web/public/test/fakes",
     "//net:test_support",
     "//testing/gtest",
     "//third_party/ocmock",

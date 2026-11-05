@@ -40,6 +40,7 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/properties/css_bitset.h"
 #include "third_party/blink/renderer/core/dom/node_rare_data_field.h"
+#include "third_party/blink/renderer/core/style/animated_source_properties_bitset.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_counted_set.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/wtf/hash_counted_set.h"
@@ -81,6 +82,19 @@ class CORE_EXPORT ElementAnimations final
   bool IsEmpty() const {
     return effect_stack_.IsEmpty() && css_animations_.IsEmpty() &&
            animations_.empty() && worklet_animations_.empty();
+  }
+
+  // True while some animation or transition has an effect on this element's
+  // style, or while a CSS animation update is pending for it. A pending update
+  // is not necessarily a new effect (it can cancel one, or start one with a
+  // delay), so this can be true for an element with no active effect; it is
+  // never false for one that has an active effect. Unlike !IsEmpty(), this
+  // becomes false once every animation has finished without filling forwards,
+  // even though the ElementAnimations and the finished Animation objects stay
+  // around.
+  bool MayHaveActiveEffects() const {
+    return !effect_stack_.IsEmpty() ||
+           !css_animations_.PendingUpdate().IsEmpty();
   }
 
   CSSImageAnimations& CssImageAnimations() { return css_image_animations_; }
@@ -136,6 +150,16 @@ class CORE_EXPORT ElementAnimations final
   bool SetCompositedClipPathStatus(CompositedPaintStatus status);
 
   NativePaintWorkletData* EnsureClipPathNpwData(Element* element);
+  NativePaintWorkletData* GetClipPathNpwData() { return clip_path_npw_data_; }
+
+  // Properties whose animated value a descendant inherits, which the
+  // compositor cannot keep in sync.
+  const AnimatedSourceBitset& UnsupportedInheritedProperties() const {
+    return unsupported_inherited_properties_;
+  }
+  AnimatedSourceBitset& UnsupportedInheritedProperties() {
+    return unsupported_inherited_properties_;
+  }
 
   // Animations affecting properties marked as important cannot be composited.
   // An animation running on the compositor must be cancelled once the affected
@@ -144,6 +168,11 @@ class CORE_EXPORT ElementAnimations final
   // property value will not applied by the style cascade.
   void CancelCompositedAnimationsAffectingProperties(
       const CSSBitset& property_bitset);
+
+  // Downgrades composited animations affecting any of `properties` to run on
+  // the main thread, at the next PreCommit.
+  void DowngradeCompositedAnimationsAffectingProperties(
+      const AnimatedSourceBitset& properties);
 
   void Trace(Visitor*) const override;
 
@@ -159,6 +188,7 @@ class CORE_EXPORT ElementAnimations final
   WorkletAnimationSet worklet_animations_;
   Member<NativePaintWorkletData> background_color_npw_data_;
   Member<NativePaintWorkletData> clip_path_npw_data_;
+  AnimatedSourceBitset unsupported_inherited_properties_;
 
   // When an Element is being animated, its entire style will be dirtied every
   // frame by the running animation - even if the animation is only changing a

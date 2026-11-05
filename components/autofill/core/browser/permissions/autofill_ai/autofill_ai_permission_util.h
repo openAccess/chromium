@@ -11,6 +11,7 @@
 #include "build/buildflag.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
+#include "components/autofill/core/common/dense_set.h"
 
 class GURL;
 class PrefService;
@@ -21,10 +22,6 @@ class IdentityManager;
 
 namespace personal_context {
 enum class PersonalContextEligibilityState;
-}
-
-namespace subscription_eligibility {
-class SubscriptionEligibilityService;
 }
 
 namespace syncer {
@@ -41,7 +38,7 @@ class AutofillClient;
 class EntityDataManager;
 
 // An AutofillAI-related action that a user may take directly or indirectly
-// (e.g., IPH).
+// (e.g., Import entities to Google wallet).
 enum class AutofillAiAction {
   // Add new locally stored AutofillAI data in settings.
   kAddLocalEntityInstanceInSettings,
@@ -53,10 +50,6 @@ enum class AutofillAiAction {
   kFilling,
   // Import (i.e. saving or updating) AutofillAI data on form submission.
   kImport,
-  // Show the IPH for opting into AutofillAI.
-  // TODO(crbug.com/440488776): Remove. Default availability is enabled by
-  // default and thus no IPH for opt-in is shown anymore.
-  kIphForOptIn,
   // List existing AutofillAI data in settings.
   kListEntityInstancesInSettings,
   // Log quality metrics to the `ModelQualityLogsService`. Doesn't control
@@ -119,7 +112,7 @@ enum class AutofillAiOptInStatus {
 //   prefs.)
 // - Account state (sign-in status).
 // - Whether the `action` can be performed for the `entity_type`.
-//   `entity_type` is only considered to kFilling, kIphForOptIn, kImport,
+//   `entity_type` is only considered to kFilling, kImport,
 //   kImportToWallet, kTypeSupportsAmbientAutofillData and must be non-empty in
 //   these cases.
 // - Miscellaneous state (OTR, locale, GeoIP).
@@ -142,8 +135,6 @@ bool MayPerformAutofillAiAction(
     bool is_wallet_public_pass_storage_enabled,
     bool is_off_the_record,
     const GeoIpCountryCode& country_code,
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_service,
     personal_context::PersonalContextEligibilityState
         personal_context_eligibility_state,
     AutofillAiAction action,
@@ -193,8 +184,6 @@ bool SetAutofillAiOptInStatus(
     bool is_wallet_public_pass_storage_enabled,
     bool is_off_the_record,
     const GeoIpCountryCode& country_code,
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_service,
     personal_context::PersonalContextEligibilityState
         personal_context_eligibility_state,
     AutofillAiOptInStatus opt_in_status);
@@ -218,12 +207,9 @@ bool IsAutofillAiEntityTypeBlockedByPolicy(const AutofillClient& client,
 // `kAutofillAiAvailableByDefault` is enabled.
 [[nodiscard]] bool IsAutofillAiDefaultAvailabilityEnabled();
 
-// Returns whether the user's subscription tier or current device is eligible
-// for Ambient Autofill. Note that this does not check other requirements (e.g.
-// user sign-in state or enterprise policy).
-[[nodiscard]] bool IsDeviceOrSubscriptionTierEligibleForAmbientAutofill(
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_eligibility_service);
+// Returns the set of supported entity types configured by feature flags and
+// parameters for Ambient Autofill.
+DenseSet<EntityType> GetAutofillAmbientAutofillSupportedEntityTypes();
 
 }  // namespace autofill
 

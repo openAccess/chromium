@@ -720,6 +720,8 @@
     // end
     "flex-start",
     "flex-end",
+    "flow-start",
+    "flow-end",
     // center
     "space-between",
     "space-around",
@@ -1674,6 +1676,7 @@
     // scroll-snap-stop
     // normal
     // always
+    // before
 
     // containment
     // paint
@@ -2011,8 +2014,8 @@
 
     // position-visibility
     // always
-    // TODO(crbug.com/332933527): Support anchors-valid.
-    // "anchors-valid",
+    "anchor-valid",
+    "anchor-visible",
     "anchors-visible",
     "no-overflow",
 
@@ -2023,6 +2026,9 @@
     "grid-rows",
     "grid-columns",
     "grid-order",
+    "grid-lanes-flow",
+    "grid-lanes-track",
+    "grid-lanes-order",
     "source-order",
 
     // fill / stroke
@@ -2035,6 +2041,9 @@
     "per-line",
     "per-line-all",
     "consistent",
+
+    // progress()
+    "no-clamp",
 
     // media-progress()
     "media-progress",

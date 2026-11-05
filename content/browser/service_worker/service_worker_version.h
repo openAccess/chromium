@@ -21,9 +21,9 @@
 #include "base/containers/id_map.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/sanitized_object.h"
 #include "base/observer_list.h"
 #include "base/time/clock.h"
 #include "base/time/tick_clock.h"
@@ -139,7 +139,7 @@ class CONTENT_EXPORT ServiceWorkerVersion
       public EmbeddedWorkerInstance::Listener {
   // TODO(crbug.com/40864997): Remove this macro once we identified the cause of
   // the bug.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   using StatusCallback =
@@ -449,9 +449,11 @@ class CONTENT_EXPORT ServiceWorkerVersion
   // This must be called when is_endpoint_ready() returns true, which is after
   // InitializeGlobalScope() is called.
   blink::mojom::ServiceWorker* endpoint() {
+    // TODO(crbug.com/557920479): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(running_status() == blink::EmbeddedWorkerStatus::kStarting ||
            running_status() == blink::EmbeddedWorkerStatus::kRunning);
-    DCHECK(service_worker_remote_.is_bound());
+    CHECK(service_worker_remote_.is_bound(), base::NotFatalUntil::M159);
     return service_worker_remote_.get();
   }
 
@@ -464,7 +466,7 @@ class CONTENT_EXPORT ServiceWorkerVersion
   // if the pending request is pending too long? https://crbug.com/797222
   blink::mojom::ControllerServiceWorker* controller() {
     if (!remote_controller_.is_bound()) {
-      DCHECK(!controller_receiver_.is_valid());
+      CHECK(!controller_receiver_.is_valid(), base::NotFatalUntil::M159);
       controller_receiver_ = remote_controller_.BindNewPipeAndPassReceiver();
     }
     return remote_controller_.get();
@@ -568,7 +570,7 @@ class CONTENT_EXPORT ServiceWorkerVersion
   void set_outside_fetch_client_settings_object(
       blink::mojom::FetchClientSettingsObjectPtr
           outside_fetch_client_settings_object) {
-    DCHECK(!outside_fetch_client_settings_object_);
+    CHECK(!outside_fetch_client_settings_object_, base::NotFatalUntil::M159);
     outside_fetch_client_settings_object_ =
         std::move(outside_fetch_client_settings_object);
   }
@@ -817,6 +819,10 @@ class CONTENT_EXPORT ServiceWorkerVersion
   // Timeout for a request to be handled.
   static constexpr base::TimeDelta kRequestTimeout = base::Minutes(5);
 
+  // Checks if there is an active and pending event that allows the worker to
+  // open a new window or focus an existing one.
+  bool HasPendingWindowInteractionEvent();
+
   base::WeakPtr<ServiceWorkerVersion> GetWeakPtr();
 
  private:
@@ -943,7 +949,7 @@ class CONTENT_EXPORT ServiceWorkerVersion
   struct InflightRequest {
     // TODO(crbug.com/40864997): Remove this macro once we identified the cause
     // of the bug.
-    ADVANCED_MEMORY_SAFETY_CHECKS();
+    SANITIZED_OBJECT();
 
    public:
     InflightRequest(StatusCallback error_callback,
@@ -1030,6 +1036,7 @@ class CONTENT_EXPORT ServiceWorkerVersion
   void OpenNewTab(const GURL& url, OpenNewTabCallback callback) override;
   void OpenPaymentHandlerWindow(
       const GURL& url,
+      blink::mojom::PaymentHandlerOpenWindowOptionsPtr options,
       OpenPaymentHandlerWindowCallback callback) override;
   void PostMessageToClient(const std::string& client_uuid,
                            blink::TransferableMessage message) override;
@@ -1155,10 +1162,6 @@ class CONTENT_EXPORT ServiceWorkerVersion
   // Checks if there is an active and pending PAYMENT_REQUEST event
   // for the current service worker version.
   bool HasPendingPaymentRequestEvent();
-
-  // Checks if there is an active and pending event that allows the worker to
-  // open a new window or focus an existing one.
-  bool HasPendingWindowInteractionEvent();
 
   void DidShowPaymentHandlerWindow(
       const GURL& url,

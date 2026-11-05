@@ -38,6 +38,7 @@
 #include "ui/base/ime/ash/input_method_ash.h"
 #include "ui/base/ime/ash/mock_ime_input_context_handler.h"
 #include "ui/base/ime/ash/mock_input_method_manager.h"
+#include "ui/base/ime/ash/scoped_input_method_manager_for_testing.h"
 #include "ui/base/ime/fake_text_input_client.h"
 #include "ui/base/ime/text_input_flags.h"
 #include "ui/events/keycodes/dom/dom_code.h"
@@ -285,26 +286,6 @@ class NativeInputMethodEngineTest : public ::testing::Test {
         /*disabled_features=*/DisabledFeatures());
   }
 
-  void EnableDefaultFeatureListWithMultiWord() {
-    feature_list_.Reset();
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {
-            features::kAssistMultiWord,
-        },
-        /*disabled_features=*/DisabledFeatures());
-  }
-
-  void EnableDefaultFeatureListWithMultiwordDisabled() {
-    feature_list_.Reset();
-
-    std::vector<base::test::FeatureRef> disabled_features = DisabledFeatures();
-    disabled_features.push_back(features::kAssistMultiWord);
-
-    feature_list_.InitWithFeatures(/*enabled_features=*/{},
-                                   /*disabled_features=*/disabled_features);
-  }
-
   base::test::ScopedFeatureList feature_list_;
 
  private:
@@ -323,8 +304,8 @@ TEST_F(NativeInputMethodEngineTest,
                         /*predictive_writing_enabled=*/false);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine;
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
                     /*extension_id=*/"", &testing_profile);
@@ -332,8 +313,6 @@ TEST_F(NativeInputMethodEngineTest,
   engine.Enable(kEngineIdUs);
   engine.FlushForTesting();  // ensure input_method is connected.
   EXPECT_FALSE(engine.IsConnectedForTesting());
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest, LaunchesImeServiceIfAutocorrectIsOn) {
@@ -343,8 +322,8 @@ TEST_F(NativeInputMethodEngineTest, LaunchesImeServiceIfAutocorrectIsOn) {
                         /*predictive_writing_enabled=*/false);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine;
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
                     /*extension_id=*/"", &testing_profile);
@@ -352,43 +331,19 @@ TEST_F(NativeInputMethodEngineTest, LaunchesImeServiceIfAutocorrectIsOn) {
   engine.Enable(kEngineIdUs);
   engine.FlushForTesting();  // ensure input_method is connected.
   EXPECT_TRUE(engine.IsConnectedForTesting());
-
-  InputMethodManager::Shutdown();
-}
-
-TEST_F(NativeInputMethodEngineTest,
-       PredictiveWritingDoesNotLaunchImeServiceWithMultiWordFlagDisabled) {
-  TestingProfile testing_profile;
-  SetEmptyPrefs(testing_profile);
-  EnableDefaultFeatureListWithMultiwordDisabled();
-  SetInputMethodOptions(testing_profile, /*autocorrect_enabled=*/false,
-                        /*predictive_writing_enabled=*/true);
-
-  testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
-  NativeInputMethodEngine engine;
-  engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
-                    /*extension_id=*/"", &testing_profile);
-
-  engine.Enable(kEngineIdUs);
-  engine.FlushForTesting();  // ensure input_method is connected.
-  EXPECT_FALSE(engine.IsConnectedForTesting());
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest,
        PredictiveWritingDoesNotLaunchImeServiceWithNonEnUsEngineId) {
   TestingProfile testing_profile;
   SetEmptyPrefs(testing_profile);
-  EnableDefaultFeatureListWithMultiWord();
+  EnableDefaultFeatureList();
   SetInputMethodOptions(testing_profile, /*autocorrect_enabled=*/false,
                         /*predictive_writing_enabled=*/true);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine;
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
                     /*extension_id=*/"", &testing_profile);
@@ -396,21 +351,19 @@ TEST_F(NativeInputMethodEngineTest,
   engine.Enable(kEngineIdEs);
   engine.FlushForTesting();  // ensure input_method is connected.
   EXPECT_FALSE(engine.IsConnectedForTesting());
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest,
        PredictiveWritingLaunchesImeServiceWithEnglishEngineId) {
   TestingProfile testing_profile;
   SetEmptyPrefs(testing_profile);
-  EnableDefaultFeatureListWithMultiWord();
+  EnableDefaultFeatureList();
   SetInputMethodOptions(testing_profile, /*autocorrect_enabled=*/false,
                         /*predictive_writing_enabled=*/true);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine;
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
                     /*extension_id=*/"", &testing_profile);
@@ -418,23 +371,16 @@ TEST_F(NativeInputMethodEngineTest,
   engine.Enable(kEngineIdUs);
   engine.FlushForTesting();  // ensure input_method connected.
   EXPECT_TRUE(engine.IsConnectedForTesting());
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest, TogglesImeServiceWhenAutocorrectChanges) {
   TestingProfile testing_profile;
-  SetEmptyPrefs(testing_profile);
-
-  feature_list_.Reset();
-  feature_list_.InitWithFeatures(
-      /*enabled_features=*/{},
-      /*disabled_features=*/{features::kAutocorrectByDefault,
-                             features::kAssistMultiWord});
+  SetInputMethodOptions(testing_profile, /*autocorrect_enabled=*/false,
+                        /*predictive_writing_enabled=*/false);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine;
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
                     /*extension_id=*/"", &testing_profile);
@@ -450,8 +396,6 @@ TEST_F(NativeInputMethodEngineTest, TogglesImeServiceWhenAutocorrectChanges) {
                         /*predictive_writing_enabled=*/false);
   engine.FlushForTesting();
   EXPECT_FALSE(engine.IsConnectedForTesting());
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest, EnableInitializesConnection) {
@@ -461,8 +405,8 @@ TEST_F(NativeInputMethodEngineTest, EnableInitializesConnection) {
                         /*predictive_writing_enabled=*/false);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine;
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
                     /*extension_id=*/"", &testing_profile);
@@ -472,8 +416,6 @@ TEST_F(NativeInputMethodEngineTest, EnableInitializesConnection) {
 
   EXPECT_TRUE(engine.IsConnectedForTesting());
   EXPECT_TRUE(mock_input_method.host.is_bound());
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest, FocusCallsRightMojoFunctions) {
@@ -482,8 +424,8 @@ TEST_F(NativeInputMethodEngineTest, FocusCallsRightMojoFunctions) {
                         /*predictive_writing_enabled=*/false);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine;
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
                     /*extension_id=*/"", &testing_profile);
@@ -515,8 +457,6 @@ TEST_F(NativeInputMethodEngineTest, FocusCallsRightMojoFunctions) {
   engine.FlushForTesting();  // ensure input_method connected.
   engine.Focus(TextInputMethod::InputContext(ui::TEXT_INPUT_TYPE_TEXT));
   engine.FlushForTesting();
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest,
@@ -527,8 +467,8 @@ TEST_F(NativeInputMethodEngineTest,
                         /*predictive_writing_enabled=*/false);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   InputMethodManager::Get()->GetActiveIMEState()->SetUIStyle(
       InputMethodManager::UIStyle::kLock);
   NativeInputMethodEngine engine;
@@ -564,7 +504,6 @@ TEST_F(NativeInputMethodEngineTest,
 
   InputMethodManager::Get()->GetActiveIMEState()->SetUIStyle(
       InputMethodManager::UIStyle::kNormal);
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest, FocusUpdatesXkbLayout) {
@@ -572,8 +511,8 @@ TEST_F(NativeInputMethodEngineTest, FocusUpdatesXkbLayout) {
   SetPinyinLayoutPrefs(testing_profile, "Colemak");
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine;
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
                     /*extension_id=*/"", &testing_profile);
@@ -586,8 +525,6 @@ TEST_F(NativeInputMethodEngineTest, FocusUpdatesXkbLayout) {
                 ->GetImeKeyboard()
                 ->GetCurrentKeyboardLayoutName(),
             "us(colemak)");
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest,
@@ -596,11 +533,11 @@ TEST_F(NativeInputMethodEngineTest,
   SetEmptyPrefs(testing_profile);
   SetInputMethodOptions(testing_profile, /*autocorrect_enabled=*/true,
                         /*predictive_writing_enabled=*/true);
-  EnableDefaultFeatureListWithMultiWord();
+  EnableDefaultFeatureList();
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine(std::make_unique<FakeSuggesterSwitch>(
       FakeSuggesterSwitch::EnabledSuggestions{.multi_word_suggestions = true}));
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
@@ -633,8 +570,6 @@ TEST_F(NativeInputMethodEngineTest,
   engine.FlushForTesting();  // ensure input_method is connected.
   engine.Focus(TextInputMethod::InputContext(ui::TEXT_INPUT_TYPE_TEXT));
   engine.FlushForTesting();
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(
@@ -644,10 +579,10 @@ TEST_F(
   SetEmptyPrefs(testing_profile);
   SetInputMethodOptions(testing_profile, /*autocorrect_enabled=*/true,
                         /*predictive_writing_enabled=*/true);
-  EnableDefaultFeatureListWithMultiWord();
+  EnableDefaultFeatureList();
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine(std::make_unique<FakeSuggesterSwitch>(
       FakeSuggesterSwitch::EnabledSuggestions{.multi_word_suggestions =
                                                   false}));
@@ -681,8 +616,6 @@ TEST_F(
   engine.FlushForTesting();  // ensure input_method is connected.
   engine.Focus(TextInputMethod::InputContext(ui::TEXT_INPUT_TYPE_TEXT));
   engine.FlushForTesting();
-
-  InputMethodManager::Shutdown();
 }
 
 struct InputMethodMetadataCase {
@@ -728,17 +661,15 @@ TEST_P(AutocorrectByDefaultDisabledByInputMethodMetadata,
        DisablesAutocorrectInInputFieldSettingsWhenInvalidModelActivated) {
   const InputMethodMetadataCase& test_case = GetParam();
   feature_list_.Reset();
-  feature_list_.InitWithFeatures(
-      {features::kAutocorrectByDefault},
-      {features::kImeRuleConfig, features::kAssistMultiWord});
+  feature_list_.InitWithFeatures({}, {features::kImeRuleConfig});
   TestingProfile testing_profile;
   SetPhysicalKeyboardAutocorrectAsEnabledByDefault(testing_profile.GetPrefs(),
                                                    kEngineIdUs);
   MockIMEInputContextHandler mock_handler;
   IMEBridge::Get()->SetInputContextHandler(&mock_handler);
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine;
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
                     /*extension_id=*/"", &testing_profile);
@@ -764,7 +695,7 @@ TEST_P(AutocorrectByDefaultDisabledByInputMethodMetadata,
                         *ime::mojom::InputMethodSettings::NewLatinSettings(
                             ime::mojom::LatinSettings::New(
                                 /*autocorrect=*/false,
-                                /*predictive_writing=*/false)));
+                                /*predictive_writing=*/true)));
               std::move(callback).Run(
                   true,
                   ime::mojom::InputMethodMetadata::New(
@@ -791,7 +722,7 @@ TEST_P(AutocorrectByDefaultDisabledByInputMethodMetadata,
                         *ime::mojom::InputMethodSettings::NewLatinSettings(
                             ime::mojom::LatinSettings::New(
                                 /*autocorrect=*/test_case.autocorrect_enabled,
-                                /*predictive_writing=*/false)));
+                                /*predictive_writing=*/true)));
               std::move(callback).Run(
                   true,
                   ime::mojom::InputMethodMetadata::New(
@@ -811,8 +742,6 @@ TEST_P(AutocorrectByDefaultDisabledByInputMethodMetadata,
   engine.FlushForTesting();
   engine.Blur();
   engine.FlushForTesting();
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest, HandleAutocorrectChangesAutocorrectRange) {
@@ -829,8 +758,8 @@ TEST_F(NativeInputMethodEngineTest, HandleAutocorrectChangesAutocorrectRange) {
         std::move(callback).Run(true, EmptyInputMethodMetadata());
       });
 
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine;
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
                     /*extension_id=*/"", &testing_profile);
@@ -846,8 +775,6 @@ TEST_F(NativeInputMethodEngineTest, HandleAutocorrectChangesAutocorrectRange) {
   mock_input_method.host.FlushForTesting();
 
   EXPECT_EQ(mock_handler.GetAutocorrectRange(), gfx::Range(0, 3));
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest,
@@ -858,8 +785,8 @@ TEST_F(NativeInputMethodEngineTest,
                         /*predictive_writing_enabled=*/false);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   MockIMEInputContextHandler mock_handler;
   IMEBridge::Get()->SetInputContextHandler(&mock_handler);
   NativeInputMethodEngine engine;
@@ -891,8 +818,6 @@ TEST_F(NativeInputMethodEngineTest,
   engine.SetSurroundingText(u"你好", gfx::Range(2),
                             /*offset=*/0);
   engine.FlushForTesting();
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest, ProcessesDeadKeysCorrectly) {
@@ -902,8 +827,8 @@ TEST_F(NativeInputMethodEngineTest, ProcessesDeadKeysCorrectly) {
                         /*predictive_writing_enabled=*/false);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   MockIMEInputContextHandler mock_handler;
   IMEBridge::Get()->SetInputContextHandler(&mock_handler);
   NativeInputMethodEngine engine;
@@ -954,8 +879,6 @@ TEST_F(NativeInputMethodEngineTest, ProcessesDeadKeysCorrectly) {
   engine.ProcessKeyEvent({ui::EventType::kKeyReleased, ui::VKEY_A, ui::EF_NONE},
                          base::DoNothing());
   engine.FlushForTesting();
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest, ProcessesNamedKeysCorrectly) {
@@ -965,8 +888,8 @@ TEST_F(NativeInputMethodEngineTest, ProcessesNamedKeysCorrectly) {
                         /*predictive_writing_enabled=*/false);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   MockIMEInputContextHandler mock_handler;
   IMEBridge::Get()->SetInputContextHandler(&mock_handler);
   NativeInputMethodEngine engine;
@@ -1018,8 +941,6 @@ TEST_F(NativeInputMethodEngineTest, ProcessesNamedKeysCorrectly) {
       {ui::EventType::kKeyReleased, ui::VKEY_BACK, ui::EF_NONE},
       base::DoNothing());
   engine.FlushForTesting();
-
-  InputMethodManager::Shutdown();
 }
 
 TEST_F(NativeInputMethodEngineTest, DoesNotSendUnhandledNamedKeys) {
@@ -1029,8 +950,8 @@ TEST_F(NativeInputMethodEngineTest, DoesNotSendUnhandledNamedKeys) {
                         /*predictive_writing_enabled=*/false);
 
   testing::StrictMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   MockIMEInputContextHandler mock_handler;
   IMEBridge::Get()->SetInputContextHandler(&mock_handler);
   NativeInputMethodEngine engine;
@@ -1061,8 +982,6 @@ TEST_F(NativeInputMethodEngineTest, DoesNotSendUnhandledNamedKeys) {
       {ui::EventType::kKeyReleased, ui::VKEY_HELP, ui::EF_NONE},
       base::DoNothing());
   engine.FlushForTesting();
-
-  InputMethodManager::Shutdown();
 }
 
 class NativeInputMethodEngineWithRenderViewHostTest
@@ -1106,8 +1025,8 @@ TEST_F(NativeInputMethodEngineWithRenderViewHostTest,
                         /*predictive_writing_enabled=*/false);
 
   testing::NiceMock<MockInputMethod> mock_input_method;
-  InputMethodManager::Initialize(
-      new TestInputMethodManager(&mock_input_method));
+  ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager(&mock_input_method);
   NativeInputMethodEngine engine;
   engine.Initialize(std::make_unique<StubInputMethodEngineObserver>(),
                     /*extension_id=*/"", testing_profile);
@@ -1139,8 +1058,6 @@ TEST_F(NativeInputMethodEngineWithRenderViewHostTest,
       test_recorder.GetEntriesByName("InputMethod.NonCompliantApi");
   ukm::TestAutoSetUkmRecorder::ExpectEntryMetric(
       entries[0], "NonCompliantOperation", 1);  // kSetCompositionText
-
-  InputMethodManager::Shutdown();
 }
 
 }  // namespace

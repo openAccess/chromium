@@ -7,6 +7,7 @@
 
 #include <optional>
 
+#include "base/feature_list.h"
 #include "base/time/time.h"
 #include "base/types/pass_key.h"
 #include "third_party/blink/renderer/core/core_export.h"
@@ -15,6 +16,8 @@
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 
 namespace blink {
+
+CORE_EXPORT BASE_DECLARE_FEATURE(kEventTimingUseTargetFrame);
 
 class Event;
 class LocalFrame;
@@ -62,6 +65,9 @@ class CORE_EXPORT UIEventTiming final {
 
  public:
   UIEventTiming(LocalFrame* frame, const Event& event);
+  UIEventTiming(LocalFrame* handling_frame,
+                LocalFrame* target_frame,
+                const Event& event);
 
   std::optional<PerformanceTimelineEntryIdInfo> GetInteractionIdInfo() const {
     return timing_ ? timing_->GetInteractionIdInfo() : std::nullopt;
@@ -91,6 +97,27 @@ class CORE_EXPORT NavigationEventTiming final {
 
  private:
   std::optional<EventTiming> timing_;
+};
+
+// Scoper to track the queued-to-main-thread timestamp of the WebInputEvent
+// currently being dispatched by WidgetEventHandler. This is used by
+// EventTiming to record accurate input delays even for events targeted at
+// child frames.
+class CORE_EXPORT EventQueuedTimestampScope {
+  STACK_ALLOCATED();
+
+ public:
+  explicit EventQueuedTimestampScope(base::TimeTicks queued_time);
+  ~EventQueuedTimestampScope();
+  EventQueuedTimestampScope(const EventQueuedTimestampScope&) = delete;
+  EventQueuedTimestampScope& operator=(const EventQueuedTimestampScope&) =
+      delete;
+
+  static base::TimeTicks CurrentQueuedTimestamp();
+
+ private:
+  base::TimeTicks previous_queued_time_;
+  static base::TimeTicks g_current_queued_time_;
 };
 
 }  // namespace blink

@@ -36,7 +36,7 @@ constexpr base::TimeDelta kAuthorizationTimeout = base::Seconds(100);
 content::RenderFrame* GetRenderFrameForToken(
     const blink::LocalFrameToken& frame_token) {
   auto* web_frame = blink::WebLocalFrame::FromFrameToken(frame_token);
-  DCHECK(web_frame);
+  CHECK(web_frame, base::NotFatalUntil::M163);
 
   return content::RenderFrame::FromWebFrame(web_frame);
 }
@@ -69,7 +69,7 @@ class NonSwitchableAudioRendererSink
         supported_bitstream_audio_codecs_info_(
             std::move(supported_bitstream_audio_codecs_info)) {
     auto* render_frame = GetRenderFrameForToken(frame_token);
-    DCHECK(render_frame);
+    CHECK(render_frame, base::NotFatalUntil::M163);
     render_frame->GetBrowserInterfaceBroker().GetInterface(
         pending_audio_socket_broker_.InitWithNewPipeAndPassReceiver());
     render_frame->GetBrowserInterfaceBroker().GetInterface(
@@ -115,16 +115,16 @@ class NonSwitchableAudioRendererSink
     }
   }
 
-  void Pause() override {
+  void Pause(PauseReason reason) override {
     if (output_device_) {
-      output_device_->Pause();
+      output_device_->Pause(reason);
     } else {
-      pending_pause_ = true;
+      pending_pause_ = reason;
     }
   }
 
   void Play() override {
-    pending_pause_ = false;
+    pending_pause_ = std::nullopt;
     if (output_device_) {
       output_device_->Play();
     }
@@ -245,8 +245,8 @@ class NonSwitchableAudioRendererSink
     }
 
     if (pending_pause_) {
-      output_device_->Pause();
-      pending_pause_ = false;
+      output_device_->Pause(*pending_pause_);
+      pending_pause_ = std::nullopt;
     }
 
     if (pending_volume_) {
@@ -268,7 +268,7 @@ class NonSwitchableAudioRendererSink
   scoped_refptr<::media::AudioRendererSink> output_device_;
   bool is_initialized_ = false;
   bool pending_start_ = false;
-  bool pending_pause_ = false;
+  std::optional<PauseReason> pending_pause_;
   std::optional<double> pending_volume_;
 };
 

@@ -215,7 +215,7 @@ public class AutofillKeyboardAccessoryIntegrationTest {
         MultiWindowUtils.getInstance().setIsInMultiWindowModeForTesting(true);
         startAtTestPage(MultiWindowKeyboard::new);
         // The metric logs potentially filtered events as well, so it doesn't depend on the feature
-        // flag being turned on of off.
+        // flag being turned on or off.
         HistogramWatcher histogramExpectation =
                 HistogramWatcher.newSingleRecordWatcher(
                         "KeyboardAccessory.TouchEventFiltered", true);
@@ -241,6 +241,7 @@ public class AutofillKeyboardAccessoryIntegrationTest {
 
     @Test
     @MediumTest
+    @DisableFeatures({ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_SUPPRESS_ACCESSORY_ON_EMPTY})
     public void testMouseClicksConsumedByAccessoryBar() throws TimeoutException {
         mHelper.startAtTestPage(/* isRtl= */ false);
         mHelper.registerSheetDataProvider(AccessoryTabType.CREDIT_CARDS);

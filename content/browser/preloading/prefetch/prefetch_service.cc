@@ -390,7 +390,7 @@ PrefetchService::~PrefetchService() {  // NOLINT(modernize-use-equals-default)
 
 void PrefetchService::SetPrefetchServiceDelegateForTesting(
     std::unique_ptr<PrefetchServiceDelegate> delegate) {
-  DCHECK(!delegate_);
+  CHECK(!delegate_, base::NotFatalUntil::M159);
   delegate_ = std::move(delegate);
 }
 
@@ -503,7 +503,7 @@ base::WeakPtr<PrefetchContainer> PrefetchService::AddPrefetchRequestInternal(
 base::WeakPtr<PrefetchContainer>
 PrefetchService::CreatePrefetchContainerFromPrePrefetchForTesting(  // IN-TEST
     std::unique_ptr<const PrefetchRequest> prefetch_request) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   CHECK(base::FeatureList::IsEnabled(
       features::kPrefetchOffTheMainThreadForceForTesting));
   CHECK(GetBrowserContext());
@@ -1379,8 +1379,12 @@ void PrefetchService::OnGotEligibilityForRedirect(
     return;
   }
 
+  bool should_remove_embedder_additional_headers =
+      prefetch_container->ShouldRemoveEmbedderAdditionalHeaders(
+          redirect_info.new_url);
   auto headers_update_params = PrepareRedirectHeadersForPrefetch(
-      redirect_info.new_url, prefetch_container->request());
+      redirect_info.new_url, prefetch_container->request(),
+      should_remove_embedder_additional_headers);
 
   prefetch_container->UpdateResourceRequest(redirect_info,
                                             headers_update_params);
@@ -1624,7 +1628,8 @@ void PrefetchService::SendPrefetchRequest(
   auto streaming_loader = PrefetchStreamingURLLoader::CreateAndStart(
       GetURLLoaderFactoryForCurrentPrefetch(prefetch_container),
       *prefetch_container.GetResourceRequest(),
-      kNavigationalPrefetchTrafficAnnotation, PrefetchTimeoutDuration(),
+      kNavigationalPrefetchTrafficAnnotation,
+      PrefetchTimeoutDuration(prefetch_container.request()),
       base::BindOnce(&PrefetchContainer::OnPrefetchResponseStarted,
                      weak_prefetch_container),
       base::BindRepeating(&PrefetchService::OnPrefetchRedirect,
@@ -1950,6 +1955,9 @@ void PrefetchService::OnPrefetchCompletedOrFailed(
 
   RemoveFromSchedulerAndProgressAsync(prefetch_container);
 }
+
+void PrefetchService::OnPrefetchStale(
+    const PrefetchContainer& prefetch_container) {}
 
 void PrefetchService::DumpPrefetchesForDebug() const {
 #if DCHECK_IS_ON()

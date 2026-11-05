@@ -18,8 +18,10 @@
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
 #include "components/device_reauth/device_authenticator.h"
 #include "components/password_manager/core/browser/credential_manager_utils.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/form_fetcher_impl.h"
 #include "components/password_manager/core/browser/password_bubble_experiment.h"
 #include "components/password_manager/core/browser/password_feature_manager.h"
@@ -197,10 +199,20 @@ void CredentialManagerPendingRequestTask::ProcessForms(
   //
   // Moreover, we only return such a credential if the user has opted-in via the
   // first-run experience.
-  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
-      delegate_->client()->GetDeviceAuthenticator();
-  const bool is_reauth_before_filling_required =
-      delegate_->client()->IsReauthBeforeFillingRequired(authenticator.get());
+  bool is_reauth_before_filling_required = false;
+  if (!base::FeatureList::IsEnabled(
+          password_manager::features::kDeviceReauthRefactor)) {
+    std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
+        delegate_->client()->GetDeviceAuthenticator();
+    is_reauth_before_filling_required =
+        delegate_->client()->IsReauthBeforeFillingRequiredLegacy(
+            authenticator.get());
+  } else {
+    std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker> checker =
+        delegate_->client()->GetDeviceAuthAvailabilityChecker();
+    is_reauth_before_filling_required =
+        delegate_->client()->IsReauthBeforeFillingRequired(checker.get());
+  }
 
   if (is_reauth_before_filling_required &&
       mediation_ == CredentialMediationRequirement::kSilent) {
@@ -273,21 +285,24 @@ void CredentialManagerPendingRequestTask::ProcessForms(
     return;
   }
 
-  auto split_send_callback = base::SplitOnceCallback(std::move(send_callback_));
   if (!delegate_->client()->PromptUserToChooseCredentials(
           std::move(results), origin_,
-          base::BindOnce(
-              &CredentialManagerPendingRequestTaskDelegate::SendPasswordForm,
-              base::Unretained(delegate_), std::move(split_send_callback.first),
-              mediation_))) {
+          base::BindOnce(&CredentialManagerPendingRequestTask::SendPasswordForm,
+                         weak_ptr_factory_.GetWeakPtr()))) {
     // Since PromptUserToChooseCredentials() does not invoke the callback when
-    // returning false, `repeating_send_callback` has not been run in this
-    // branch yet.
+    // returning false, `send_callback_` has not been run in this branch yet.
     LogCredentialManagerGetResult(
         metrics_util::CredentialManagerGetResult::kNone, mediation_);
-    delegate_->SendCredential(std::move(split_send_callback.second),
-                              CredentialInfo());
+    delegate_->SendCredential(std::move(send_callback_), CredentialInfo());
   }
+}
+
+void CredentialManagerPendingRequestTask::SendPasswordForm(
+    const PasswordForm* form) {
+  // `delegate_->SendPasswordForm()` invokes CredentialManagerImpl::SendCredential(),
+  // which resets `pending_request_` and deletes `this`. Do not access any member
+  // after this call.
+  delegate_->SendPasswordForm(std::move(send_callback_), mediation_, form);
 }
 
 }  // namespace password_manager

@@ -4,10 +4,14 @@
 
 #include "media/base/mac/channel_layout_util_mac.h"
 
+#include <cstddef>
 #include <iterator>
+#include <memory>
 #include <utility>
+#include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/numerics/safe_conversions.h"
 #include "media/base/channel_layout.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -176,6 +180,7 @@ TEST(ChannelLayoutUtilMac, AudioChannelLayoutWithBitmapToChannelLayout) {
 }
 
 namespace {
+
 ChannelLayout GetChannelLayoutFromTag(AudioChannelLayoutTag tag) {
   int layout_size = offsetof(AudioChannelLayout, mChannelDescriptions[0]);
   ScopedAudioChannelLayout input_layout(layout_size);
@@ -187,6 +192,29 @@ ChannelLayout GetChannelLayoutFromTag(AudioChannelLayoutTag tag) {
                                                 &output_layout));
   return output_layout;
 }
+
+// Builds a layout which describes one channel per entry in `labels`.
+std::unique_ptr<ScopedAudioChannelLayout> MakeChannelLayout(
+    const std::vector<AudioChannelLabel>& labels) {
+  const size_t layout_size =
+      offsetof(AudioChannelLayout, mChannelDescriptions[0]) +
+      labels.size() * sizeof(AudioChannelDescription);
+  auto scoped_layout = std::make_unique<ScopedAudioChannelLayout>(layout_size);
+
+  AudioChannelLayout* layout = scoped_layout->layout();
+  layout->mChannelLayoutTag = kAudioChannelLayoutTag_UseChannelDescriptions;
+  layout->mChannelBitmap = 0;
+  layout->mNumberChannelDescriptions =
+      base::checked_cast<UInt32>(labels.size());
+
+  auto descriptions = GetDescriptions(*layout);
+  for (size_t i = 0; i < labels.size(); ++i) {
+    descriptions[i] = AudioChannelDescription{
+        .mChannelLabel = labels[i], .mChannelFlags = kAudioChannelFlags_AllOff};
+  }
+  return scoped_layout;
+}
+
 }  // namespace
 
 TEST(ChannelLayoutUtilMac, AudioChannelLayoutTagsToChannelLayout) {
@@ -224,14 +252,6 @@ TEST(ChannelLayoutUtilMac,
 TEST(ChannelLayoutUtilMac, ChannelLayoutConvertBackToChannelLayout) {
   for (int i = 0; i <= CHANNEL_LAYOUT_MAX; i++) {
     ChannelLayout input_layout = static_cast<ChannelLayout>(i);
-    // TODO(crbug.com/474106765): 5.1.4 and 7.1.4 are not supported yet. Once
-    // `kMaxConcurrentChannels` is upgraded to 12, then we can include these
-    // test cases.
-    if (input_layout == CHANNEL_LAYOUT_5_1_4 ||
-        input_layout == CHANNEL_LAYOUT_7_1_4) {
-      continue;
-    }
-
     // Skip invalid channel layout.
     int input_channels = ChannelLayoutToChannelCount(input_layout);
     if (input_channels == 0) {
@@ -255,6 +275,289 @@ TEST(ChannelLayoutUtilMac, ChannelLayoutConvertBackToChannelLayout) {
         *intermediate_layout->layout(), &output_layout));
     EXPECT_EQ(input_layout, output_layout);
   }
+}
+
+TEST(ChannelLayoutUtilMac, ParseCoreAudioChannelLayoutMono) {
+  auto input_layout = MakeChannelLayout({kAudioChannelLabel_Mono});
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 1u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_MONO);
+}
+
+TEST(ChannelLayoutUtilMac, ParseCoreAudioChannelLayoutStereo) {
+  auto input_layout =
+      MakeChannelLayout({kAudioChannelLabel_Left, kAudioChannelLabel_Right});
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 2u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_STEREO);
+}
+
+TEST(ChannelLayoutUtilMac, ParseCoreAudioChannelLayoutTwoUnknownLabels) {
+  auto input_layout = MakeChannelLayout({
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+  });
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 2u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_STEREO);
+}
+
+TEST(ChannelLayoutUtilMac, ParseCoreAudioChannelLayoutNamedLayout) {
+  auto input_layout = MakeChannelLayout({
+      kAudioChannelLabel_Left,
+      kAudioChannelLabel_Right,
+      kAudioChannelLabel_Center,
+      kAudioChannelLabel_LFEScreen,
+      kAudioChannelLabel_LeftSurround,
+      kAudioChannelLabel_RightSurround,
+  });
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 6u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_5_1);
+}
+
+TEST(ChannelLayoutUtilMac, ParseCoreAudioChannelLayoutDuplicateLabels) {
+  auto input_layout = MakeChannelLayout({
+      kAudioChannelLabel_Left,
+      kAudioChannelLabel_Left,
+      kAudioChannelLabel_Right,
+      kAudioChannelLabel_Right,
+      kAudioChannelLabel_Center,
+      kAudioChannelLabel_LFEScreen,
+  });
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 6u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_DISCRETE);
+}
+
+// Regression test for https://crbug.com/561637136.
+TEST(ChannelLayoutUtilMac, ParseCoreAudioChannelLayoutAllUnknownLabels) {
+  auto input_layout = MakeChannelLayout({
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+  });
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 6u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_DISCRETE);
+}
+
+TEST(ChannelLayoutUtilMac, ParseCoreAudioChannelLayoutSomeUnknownLabels) {
+  auto input_layout = MakeChannelLayout({
+      kAudioChannelLabel_Left,
+      kAudioChannelLabel_Right,
+      kAudioChannelLabel_Center,
+      kAudioChannelLabel_LFEScreen,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+  });
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 4u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_3_1);
+}
+
+TEST(ChannelLayoutUtilMac,
+     ParseCoreAudioChannelLayoutStereoWithTrailingUnknownLabels) {
+  auto input_layout = MakeChannelLayout({
+      kAudioChannelLabel_Left,
+      kAudioChannelLabel_Right,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+  });
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 2u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_STEREO);
+}
+
+TEST(ChannelLayoutUtilMac,
+     ParseCoreAudioChannelLayout7Point1Point4On16ChannelInterface) {
+  auto input_layout = MakeChannelLayout({
+      kAudioChannelLabel_Left,
+      kAudioChannelLabel_Right,
+      kAudioChannelLabel_Center,
+      kAudioChannelLabel_LFEScreen,
+      kAudioChannelLabel_RearSurroundLeft,
+      kAudioChannelLabel_RearSurroundRight,
+      kAudioChannelLabel_LeftSurround,
+      kAudioChannelLabel_RightSurround,
+      kAudioChannelLabel_LeftTopFront,
+      kAudioChannelLabel_RightTopFront,
+      kAudioChannelLabel_LeftTopRear,
+      kAudioChannelLabel_RightTopRear,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+  });
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 12u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_7_1_4);
+}
+
+TEST(ChannelLayoutUtilMac,
+     ParseCoreAudioChannelLayout7Point1Point4On32ChannelInterface) {
+  std::vector<AudioChannelLabel> labels = {
+      kAudioChannelLabel_Left,
+      kAudioChannelLabel_Right,
+      kAudioChannelLabel_Center,
+      kAudioChannelLabel_LFEScreen,
+      kAudioChannelLabel_RearSurroundLeft,
+      kAudioChannelLabel_RearSurroundRight,
+      kAudioChannelLabel_LeftSurround,
+      kAudioChannelLabel_RightSurround,
+      kAudioChannelLabel_LeftTopFront,
+      kAudioChannelLabel_RightTopFront,
+      kAudioChannelLabel_LeftTopRear,
+      kAudioChannelLabel_RightTopRear,
+  };
+  labels.resize(32, kAudioChannelLabel_Unknown);
+  auto input_layout = MakeChannelLayout(labels);
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 12u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_7_1_4);
+}
+
+TEST(ChannelLayoutUtilMac,
+     ParseCoreAudioChannelLayout5Point1Point4On16ChannelInterface) {
+  std::vector<AudioChannelLabel> labels = {
+      kAudioChannelLabel_Left,         kAudioChannelLabel_Right,
+      kAudioChannelLabel_Center,       kAudioChannelLabel_LFEScreen,
+      kAudioChannelLabel_LeftSurround, kAudioChannelLabel_RightSurround,
+      kAudioChannelLabel_LeftTopFront, kAudioChannelLabel_RightTopFront,
+      kAudioChannelLabel_LeftTopRear,  kAudioChannelLabel_RightTopRear,
+  };
+  labels.resize(16, kAudioChannelLabel_Unknown);
+  auto input_layout = MakeChannelLayout(labels);
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 10u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_5_1_4);
+}
+
+TEST(ChannelLayoutUtilMac,
+     ParseCoreAudioChannelLayoutUnmatchedSpeakerRolesWithUnknownLabels) {
+  auto input_layout = MakeChannelLayout({
+      kAudioChannelLabel_Left,
+      kAudioChannelLabel_Right,
+      kAudioChannelLabel_TopCenterSurround,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+      kAudioChannelLabel_Unknown,
+  });
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 6u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_DISCRETE);
+}
+
+TEST(ChannelLayoutUtilMac, ParseCoreAudioChannelLayoutWithoutDescriptions) {
+  auto input_layout = MakeChannelLayout({});
+
+  uint32_t channels = 1;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_DISCRETE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 0u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_NONE);
+}
+
+TEST(ChannelLayoutUtilMac, ParseCoreAudioChannelLayoutUnmappableLabel) {
+  auto input_layout = MakeChannelLayout({
+      kAudioChannelLabel_Left,
+      kAudioChannelLabel_Right,
+      kAudioChannelLabel_Center,
+      kAudioChannelLabel_LFEScreen,
+      kAudioChannelLabel_LeftSurround,
+      kAudioChannelLabel_Unused,
+  });
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 6u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_DISCRETE);
+}
+
+TEST(ChannelLayoutUtilMac, ParseCoreAudioChannelLayoutUnmatchedSpeakerRoles) {
+  auto input_layout = MakeChannelLayout({
+      kAudioChannelLabel_Left,
+      kAudioChannelLabel_Right,
+      kAudioChannelLabel_TopCenterSurround,
+  });
+
+  uint32_t channels = 0;
+  ChannelLayout output_layout = CHANNEL_LAYOUT_NONE;
+  ParseCoreAudioChannelLayout(*input_layout->layout(), &channels,
+                              &output_layout);
+
+  EXPECT_EQ(channels, 3u);
+  EXPECT_EQ(output_layout, CHANNEL_LAYOUT_DISCRETE);
 }
 
 }  // namespace media

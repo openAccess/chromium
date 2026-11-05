@@ -82,13 +82,14 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/origin.h"
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 #include "chrome/browser/smart_card/smart_card_permission_context.h"
 #include "chrome/browser/smart_card/smart_card_permission_context_factory.h"
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 
 #if BUILDFLAG(ENABLE_VR)
 #include "device/vr/public/cpp/features.h"
@@ -169,7 +170,6 @@ constexpr auto kContentSettingsTypeGroupNames = std::to_array<
     {ContentSettingsType::SPEAKER_SELECTION, "speaker-selection"},
     {ContentSettingsType::AUTOMATIC_FULLSCREEN, "automatic-fullscreen"},
     {ContentSettingsType::KEYBOARD_LOCK, "keyboard-lock"},
-    {ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS, "top-level-storage-access"},
     {ContentSettingsType::WEB_APP_INSTALLATION, "web-app-installation"},
     {ContentSettingsType::SMART_CARD_GUARD, "smart-card-readers"},
     {ContentSettingsType::SMART_CARD_DATA, kSmartCardChooserDataGroupType},
@@ -194,7 +194,6 @@ constexpr auto kContentSettingsTypeGroupNames = std::to_array<
     {ContentSettingsType::PASSWORD_PROTECTION, nullptr},
     {ContentSettingsType::MEDIA_ENGAGEMENT, nullptr},
     {ContentSettingsType::CLIENT_HINTS, nullptr},
-    {ContentSettingsType::DEPRECATED_ACCESSIBILITY_EVENTS, nullptr},
     {ContentSettingsType::CLIPBOARD_SANITIZED_WRITE, nullptr},
     {ContentSettingsType::BACKGROUND_FETCH, nullptr},
     {ContentSettingsType::INTENT_PICKER_DISPLAY, nullptr},
@@ -213,8 +212,6 @@ constexpr auto kContentSettingsTypeGroupNames = std::to_array<
     {ContentSettingsType::HTTP_ALLOWED, nullptr},
     {ContentSettingsType::HTTPS_ENFORCED, nullptr},
     {ContentSettingsType::FORMFILL_METADATA, nullptr},
-    {ContentSettingsType::DEPRECATED_FEDERATED_IDENTITY_ACTIVE_SESSION,
-     nullptr},
     {ContentSettingsType::AUTO_DARK_WEB_CONTENT, nullptr},
     {ContentSettingsType::REQUEST_DESKTOP_SITE, nullptr},
     {ContentSettingsType::NOTIFICATION_INTERACTIONS, nullptr},
@@ -222,9 +219,6 @@ constexpr auto kContentSettingsTypeGroupNames = std::to_array<
     {ContentSettingsType::NOTIFICATION_PERMISSION_REVIEW, nullptr},
     {ContentSettingsType::FEDERATED_IDENTITY_IDENTITY_PROVIDER_SIGNIN_STATUS,
      nullptr},
-    // PPAPI_BROKER has been deprecated. The content setting is not used or
-    // called from UI, so we don't need a representation JS string.
-    {ContentSettingsType::DEPRECATED_PPAPI_BROKER, nullptr},
     {ContentSettingsType::REVOKED_UNUSED_SITE_PERMISSIONS, nullptr},
     // TODO(crbug.com/40253587): Update JavaScript string representation when
     // desktop UI is implemented.
@@ -241,9 +235,6 @@ constexpr auto kContentSettingsTypeGroupNames = std::to_array<
     {ContentSettingsType::DIRECT_SOCKETS, nullptr},
     {ContentSettingsType::REVOKED_ABUSIVE_NOTIFICATION_PERMISSIONS, nullptr},
     {ContentSettingsType::DISPLAY_MEDIA_SYSTEM_AUDIO, nullptr},
-    {ContentSettingsType::STORAGE_ACCESS_HEADER_ORIGIN_TRIAL, nullptr},
-    // TODO(crbug.com/368266658): Implement the UI for Direct Sockets PNA.
-    {ContentSettingsType::DIRECT_SOCKETS_PRIVATE_NETWORK_ACCESS, nullptr},
     {ContentSettingsType::LEGACY_COOKIE_SCOPE, nullptr},
     {ContentSettingsType::ARE_SUSPICIOUS_NOTIFICATIONS_ALLOWLISTED_BY_USER,
      nullptr},
@@ -350,7 +341,7 @@ SiteSettingSource CalculateSiteSettingSource(
     }
   }
 
-  DCHECK_NE(SettingSource::kNone, info.source);
+  CHECK_NE(SettingSource::kNone, info.source, base::NotFatalUntil::M162);
   if (info.source == SettingSource::kUser) {
     if (result.source == content::PermissionStatusSource::MULTIPLE_DISMISSALS ||
         result.source == content::PermissionStatusSource::MULTIPLE_IGNORES) {
@@ -395,8 +386,9 @@ void GetPolicyAllowedUrls(ContentSettingsType type,
                           std::vector<base::DictValue>* exceptions,
                           content::WebUI* web_ui,
                           bool incognito) {
-  DCHECK(type == ContentSettingsType::MEDIASTREAM_MIC ||
-         type == ContentSettingsType::MEDIASTREAM_CAMERA);
+  CHECK(type == ContentSettingsType::MEDIASTREAM_MIC ||
+            type == ContentSettingsType::MEDIASTREAM_CAMERA,
+        base::NotFatalUntil::M162);
 
   Profile* profile = Profile::FromWebUI(web_ui);
   PrefService* prefs = profile->GetPrefs();
@@ -456,8 +448,9 @@ SiteSettingSource GetSourceForChooserException(Profile* profile,
   // is used.
   SiteSettingSource calculated_source = CalculateSiteSettingSource(
       profile, content_type, /*origin=*/GURL(), info, permission_result);
-  DCHECK(calculated_source == SiteSettingSource::kPolicy ||
-         calculated_source == SiteSettingSource::kPreference);
+  CHECK(calculated_source == SiteSettingSource::kPolicy ||
+            calculated_source == SiteSettingSource::kPreference,
+        base::NotFatalUntil::M162);
   return calculated_source;
 }
 
@@ -489,7 +482,7 @@ permissions::ObjectPermissionContextBase* GetBluetoothChooserContext(
   return nullptr;
 }
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 permissions::ObjectPermissionContextBase* GetSmartCardChooserContext(
     Profile* profile) {
   if (base::FeatureList::IsEnabled(blink::features::kSmartCard)) {
@@ -497,16 +490,16 @@ permissions::ObjectPermissionContextBase* GetSmartCardChooserContext(
   }
   return nullptr;
 }
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 
 const ChooserTypeNameEntry kChooserTypeGroupNames[] = {
     {&GetUsbChooserContext, kUsbChooserDataGroupType},
     {&GetSerialChooserContext, kSerialChooserDataGroupType},
     {&GetHidChooserContext, kHidChooserDataGroupType},
     {&GetBluetoothChooserContext, kBluetoothChooserDataGroupType},
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     {&GetSmartCardChooserContext, kSmartCardChooserDataGroupType}
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 };
 
 // These variables represent different formatting options for default (i.e. not
@@ -602,12 +595,11 @@ std::vector<ContentSettingsType> GetVisiblePermissionCategories(
 #endif
       ContentSettingsType::SENSORS,
       ContentSettingsType::SERIAL_GUARD,
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
       ContentSettingsType::SMART_CARD_GUARD,
 #endif
       ContentSettingsType::SOUND,
       ContentSettingsType::STORAGE_ACCESS,
-      ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS,
       ContentSettingsType::USB_GUARD,
       ContentSettingsType::VR,
       ContentSettingsType::WINDOW_MANAGEMENT,
@@ -782,7 +774,7 @@ void AddExceptionForHostedApp(const std::string& url_pattern,
 
   std::string setting_string =
       content_settings::ContentSettingToString(CONTENT_SETTING_ALLOW);
-  DCHECK(!setting_string.empty());
+  CHECK(!setting_string.empty(), base::NotFatalUntil::M162);
 
   exception.Set(kSetting, setting_string);
   exception.Set(kOrigin, url_pattern);
@@ -813,7 +805,7 @@ base::DictValue GetFileSystemExceptionForPage(ContentSettingsType content_type,
   exception.Set(kDisplayName, file_path.LossyDisplayName());
   std::string setting_string =
       content_settings::ContentSettingToString(setting);
-  DCHECK(!setting_string.empty());
+  CHECK(!setting_string.empty(), base::NotFatalUntil::M162);
   exception.Set(kSetting, setting_string);
 
   exception.Set(kSource, SiteSettingSourceToString(source));
@@ -862,7 +854,7 @@ base::DictValue GetExceptionForPage(
 
   std::string setting_string =
       content_settings::ContentSettingToString(setting);
-  DCHECK(!setting_string.empty());
+  CHECK(!setting_string.empty(), base::NotFatalUntil::M162);
   exception.Set(kSetting, setting_string);
 
   // Cookie exception types may have an expiration that should be shown.
@@ -925,7 +917,7 @@ base::DictValue GetStorageAccessExceptionForPage(
   exception.Set(kDisplayName, display_name);
   std::string setting_string =
       content_settings::ContentSettingToString(setting);
-  DCHECK(!setting_string.empty());
+  CHECK(!setting_string.empty(), base::NotFatalUntil::M162);
   exception.Set(kSetting, setting_string);
 
   // If there is only one exception and that exception applies everywhere,
@@ -1048,9 +1040,7 @@ void GetRawExceptionsForContentSettingsType(
     }
 
     // Don't add auto-granted permissions for storage access exceptions.
-    if (setting.metadata.decided_by_related_website_sets() &&
-        !base::FeatureList::IsEnabled(
-            permissions::features::kShowRelatedWebsiteSetsPermissionGrants)) {
+    if (setting.metadata.decided_by_related_website_sets()) {
       continue;
     }
 
@@ -1140,7 +1130,7 @@ void GetExceptionsForContentType(ContentSettingsType type,
       type == ContentSettingsType::MEDIASTREAM_CAMERA) {
     auto& policy_exceptions =
         all_provider_exceptions[ProviderType::kPolicyProvider];
-    DCHECK(policy_exceptions.empty());
+    CHECK(policy_exceptions.empty(), base::NotFatalUntil::M162);
     GetPolicyAllowedUrls(type, &policy_exceptions, web_ui, incognito);
   }
 
@@ -1235,7 +1225,7 @@ void GetContentCategorySetting(const HostContentSettingsMap* map,
   auto provider = ProviderType::kDefaultProvider;
   std::string setting = content_settings::ContentSettingToString(
       map->GetDefaultContentSetting(content_type, &provider));
-  DCHECK(!setting.empty());
+  CHECK(!setting.empty(), base::NotFatalUntil::M162);
 
   object->Set(kSetting, setting);
   if (provider != ProviderType::kDefaultProvider) {
@@ -1288,9 +1278,10 @@ ContentSetting GetContentSettingForOrigin(Profile* profile,
 
   if (info.metadata.session_model() ==
       content_settings::mojom::SessionModel::ONE_TIME) {
-    DCHECK(
-        permissions::PermissionUtil::DoesSupportTemporaryGrants(content_type));
-    DCHECK_EQ(result.status, PermissionStatus::GRANTED);
+    CHECK(permissions::PermissionUtil::DoesSupportTemporaryGrants(content_type),
+          base::NotFatalUntil::M162);
+    CHECK_EQ(result.status, PermissionStatus::GRANTED,
+             base::NotFatalUntil::M162);
     return CONTENT_SETTING_DEFAULT;
   }
   return permissions::PermissionUtil::PermissionStatusToContentSetting(
@@ -1362,7 +1353,7 @@ base::DictValue CreateChooserExceptionObject(
 
   std::string setting_string =
       content_settings::ContentSettingToString(CONTENT_SETTING_DEFAULT);
-  DCHECK(!setting_string.empty());
+  CHECK(!setting_string.empty(), base::NotFatalUntil::M162);
 
   exception.Set(kDisplayName, display_name);
   exception.Set(kObject, object.Clone());
@@ -1407,7 +1398,8 @@ base::ListValue GetChooserExceptionListFromProfile(
   base::ListValue exceptions;
   ContentSettingsType content_type =
       ContentSettingsTypeFromGroupName(chooser_type.name);
-  DCHECK(content_type != ContentSettingsType::DEFAULT);
+  CHECK(content_type != ContentSettingsType::DEFAULT,
+        base::NotFatalUntil::M162);
 
   // The BluetoothChooserContext is only available when the
   // WebBluetoothNewPermissionsBackend flag is enabled.
@@ -1446,7 +1438,8 @@ base::ListValue GetChooserExceptionListFromProfile(
       continue;
     }
 
-    std::u16string name = chooser_context->GetObjectDisplayName(object->value);
+    std::u16string name =
+        chooser_context->GetObjectDisplayNameForUI(object->value);
     auto& chooser_exception_details = all_chooser_objects[std::make_pair(
         name, base::Value(object->value.Clone()))];
 

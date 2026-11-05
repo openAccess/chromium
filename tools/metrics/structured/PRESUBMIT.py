@@ -14,6 +14,8 @@ STRUCTURED_OLD_XML = 'sync/structured.old.xml'
 
 def CheckChange(input_api, output_api):
   """Checks that structured.xml is pretty-printed and well-formatted."""
+  if not input_api.HasAffectedFiles(extensions=('.xml', '.py')):
+    return []
   errors = []
 
   for file in input_api.AffectedFiles():
@@ -41,23 +43,6 @@ def CheckChange(input_api, output_api):
           + ' exists after formatting; please remove before upload.'
         )
       )
-
-  disabled_warnings = [
-    'bad-indentation',
-    'consider-using-from-import',
-    'consider-using-with',
-    'duplicate-code',
-    'line-too-long',
-    'missing-module-docstring',
-    'superfluous-parens',
-    'unspecified-encoding',
-    'unused-import',
-  ]
-  errors.extend(
-    input_api.canned_checks.RunPylint(
-      input_api, output_api, disabled_warnings=disabled_warnings, version='3.2'
-    )
-  )
 
   return errors
 

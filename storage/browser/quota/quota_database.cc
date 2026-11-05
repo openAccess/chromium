@@ -18,7 +18,6 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/sequence_checker.h"
-#include "base/time/clock.h"
 #include "components/services/storage/public/cpp/buckets/constants.h"
 #include "components/services/storage/public/cpp/quota_error_or.h"
 #include "sql/database.h"
@@ -42,9 +41,9 @@ static const int kStaleBucketCutoffInDays = 400;
 
 // Version number of the database schema.
 //
-// We support migrating the database schema from versions that are at most 2
-// years old. Older versions are unsupported, and will cause the database to get
-// razed.
+// There should be at minimum two supported versions to ensure we retain
+// functional migration code, but additional versions more than two years old
+// should be removed and marked as unsupported.
 //
 // Version 1 - 2011-03-17 - http://crrev.com/78521 (unsupported)
 // Version 2 - 2011-04-25 - http://crrev.com/82847 (unsupported)
@@ -73,12 +72,6 @@ const char kBucketsTableBootstrapped[] = "IsBucketsBootstrapped";
 const char kMediaLicenseDatabaseRemoved[] = "IsMediaLicenseDatabaseRemoved";
 
 const int kCommitIntervalMs = 30000;
-
-const base::Clock* g_clock_for_testing = nullptr;
-
-void RecordDatabaseResetHistogram(const DatabaseResetReason reason) {
-  base::UmaHistogramEnumeration("Quota.QuotaDatabaseReset", reason);
-}
 
 // SQL statement fragment for inserting fields into the buckets table.
 #define BUCKETS_FIELDS_INSERTER                                         \
@@ -198,10 +191,7 @@ QuotaDatabase::QuotaDatabase(const base::FilePath& profile_path)
       db_file_path_(
           profile_path.empty()
               ? base::FilePath()
-              : storage_directory_->path().AppendASCII(kDatabaseName)),
-      legacy_db_file_path_(profile_path.empty()
-                               ? base::FilePath()
-                               : profile_path.AppendASCII(kDatabaseName)) {
+              : storage_directory_->path().AppendASCII(kDatabaseName)) {
   DETACH_FROM_SEQUENCE(sequence_checker_);
 }
 
@@ -209,7 +199,9 @@ QuotaDatabase::~QuotaDatabase() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (db_) {
     db_->reset_error_callback();
-    db_->CommitTransactionDeprecated();
+    if (transaction_) {
+      transaction_->Commit();
+    }
   }
 }
 
@@ -236,24 +228,24 @@ QuotaErrorOr<BucketInfo> QuotaDatabase::UpdateOrCreateBucket(
 
   // Don't bother updating anything if the bucket is expired.
   if (!bucket_result->expiration.is_null() &&
-      (bucket_result->expiration <= GetNow())) {
+      (bucket_result->expiration <= base::Time::Now())) {
     return bucket_result;
   }
 
   // Update the parameters that can be changed.
   if (!params.expiration.is_null() &&
       (params.expiration != bucket_result->expiration)) {
-    CHECK(!bucket_result->is_default(), base::NotFatalUntil::M148);
+    CHECK(!bucket_result->is_default());
     bucket_result =
         UpdateBucketExpiration(bucket_result->id, params.expiration);
-    CHECK(bucket_result.has_value(), base::NotFatalUntil::M148);
+    CHECK(bucket_result.has_value());
   }
 
   if (params.persistent && (*params.persistent != bucket_result->persistent)) {
-    CHECK(!bucket_result->is_default(), base::NotFatalUntil::M148);
+    CHECK(!bucket_result->is_default());
     bucket_result =
         UpdateBucketPersistence(bucket_result->id, *params.persistent);
-    CHECK(bucket_result.has_value(), base::NotFatalUntil::M148);
+    CHECK(bucket_result.has_value());
   }
 
   return bucket_result;
@@ -471,7 +463,7 @@ QuotaError QuotaDatabase::SetStorageKeyLastAccessTime(
 QuotaError QuotaDatabase::SetBucketLastAccessTime(BucketId bucket_id,
                                                   base::Time last_accessed) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(!bucket_id.is_null(), base::NotFatalUntil::M148);
+  CHECK(!bucket_id.is_null());
   QuotaError open_error = EnsureOpened();
   if (open_error != QuotaError::kNone) {
     return open_error;
@@ -498,7 +490,7 @@ QuotaError QuotaDatabase::SetBucketLastAccessTime(BucketId bucket_id,
 QuotaError QuotaDatabase::SetBucketLastModifiedTime(BucketId bucket_id,
                                                     base::Time last_modified) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(!bucket_id.is_null(), base::NotFatalUntil::M148);
+  CHECK(!bucket_id.is_null());
   QuotaError open_error = EnsureOpened();
   if (open_error != QuotaError::kNone) {
     return open_error;
@@ -548,7 +540,7 @@ QuotaError QuotaDatabase::RegisterInitialStorageKeyInfo(
 QuotaErrorOr<mojom::BucketTableEntryPtr> QuotaDatabase::GetBucketInfoForTest(
     BucketId bucket_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(!bucket_id.is_null(), base::NotFatalUntil::M148);
+  CHECK(!bucket_id.is_null());
   QuotaError open_error = EnsureOpened();
   if (open_error != QuotaError::kNone) {
     return base::unexpected(open_error);
@@ -591,6 +583,7 @@ QuotaErrorOr<mojom::BucketTableEntryPtr> QuotaDatabase::DeleteBucketData(
   // directory deletion fails. `storage_directory_` may be nullptr for
   // in-memory only.
   if (storage_directory_ && !storage_directory_->DoomBucket(bucket)) {
+    storage_directory_->ClearDoomedBuckets();
     return base::unexpected(QuotaError::kFileOperationError);
   }
 
@@ -601,6 +594,9 @@ QuotaErrorOr<mojom::BucketTableEntryPtr> QuotaDatabase::DeleteBucketData(
   statement.BindInt64(0, bucket.id.value());
 
   if (!statement.Step()) {
+    if (storage_directory_) {
+      storage_directory_->ClearDoomedBuckets();
+    }
     return base::unexpected(QuotaError::kDatabaseError);
   }
 
@@ -716,8 +712,8 @@ QuotaErrorOr<std::set<BucketLocator>> QuotaDatabase::GetBucketsModifiedBetween(
     return base::unexpected(open_error);
   }
 
-  CHECK(!begin.is_max(), base::NotFatalUntil::M148);
-  CHECK(end != base::Time(), base::NotFatalUntil::M148);
+  CHECK(!begin.is_max());
+  CHECK(end != base::Time());
   // clang-format off
   static constexpr char kSql[] =
       "SELECT id, storage_key, name FROM buckets "
@@ -753,7 +749,7 @@ QuotaErrorOr<std::set<BucketInfo>> QuotaDatabase::GetExpiredBuckets(
   // have already done so, or should not do so yet, then we just want to clear
   // expired buckets here and not do the full query.
   if (already_evicted_stale_storage_ ||
-      GetNow() < evict_stale_buckets_after_) {
+      base::Time::Now() < evict_stale_buckets_after_) {
     // clang-format off
     static constexpr char kSqlExpired[] =
         "SELECT " BUCKET_INFO_FIELDS_SELECTOR
@@ -762,7 +758,7 @@ QuotaErrorOr<std::set<BucketInfo>> QuotaDatabase::GetExpiredBuckets(
     // clang-format on
     sql::Statement statement(
         db_->GetCachedStatement(SQL_FROM_HERE, kSqlExpired));
-    statement.BindTime(0, GetNow());
+    statement.BindTime(0, base::Time::Now());
     return BucketInfosFromSqlStatement(statement);
   }
 
@@ -779,12 +775,13 @@ QuotaErrorOr<std::set<BucketInfo>> QuotaDatabase::GetExpiredBuckets(
   // clang-format on
   sql::Statement statement(
       db_->GetCachedStatement(SQL_FROM_HERE, kSqlExpiredAndStaleAndOrphan));
-  base::Time expiration_cutoff = GetNow();
+  base::Time expiration_cutoff = base::Time::Now();
   statement.BindTime(0, expiration_cutoff);
-  base::Time stale_cutoff = GetNow() - base::Days(kStaleBucketCutoffInDays);
+  base::Time stale_cutoff =
+      base::Time::Now() - base::Days(kStaleBucketCutoffInDays);
   statement.BindTime(1, stale_cutoff);
   statement.BindTime(2, stale_cutoff);
-  base::Time orphan_cutoff = GetNow() - base::Days(1);
+  base::Time orphan_cutoff = base::Time::Now() - base::Days(1);
   statement.BindTime(3, orphan_cutoff);
   statement.BindTime(4, orphan_cutoff);
 
@@ -863,6 +860,8 @@ QuotaError QuotaDatabase::SetIsMediaLicenseDatabaseRemoved(bool removed_flag) {
 bool QuotaDatabase::RecoverOrRaze(int error_code) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  transaction_.reset();
+
   std::ignore = sql::Recovery::RecoverIfPossible(
       db_.get(), error_code,
       sql::Recovery::Strategy::kRecoverWithMetaVersionOrRaze);
@@ -878,7 +877,10 @@ QuotaError QuotaDatabase::CorruptForTesting(
 
   if (db_) {
     // Commit the long-running transaction.
-    db_->CommitTransactionDeprecated();
+    if (transaction_) {
+      transaction_->Commit();
+      transaction_.reset();
+    }
     db_->Close();
   }
 
@@ -892,7 +894,9 @@ QuotaError QuotaDatabase::CorruptForTesting(
   }
 
   // Begin a long-running transaction. This matches EnsureOpen().
-  if (!db_->BeginTransactionDeprecated()) {
+  transaction_.emplace(db_.get());
+  if (!transaction_->Begin()) {
+    transaction_.reset();
     return QuotaError::kDatabaseError;
   }
   return QuotaError::kNone;
@@ -901,16 +905,6 @@ QuotaError QuotaDatabase::CorruptForTesting(
 void QuotaDatabase::SetDisabledForTesting(bool disable) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   is_disabled_ = disable;
-}
-
-// static
-base::Time QuotaDatabase::GetNow() {
-  return g_clock_for_testing ? g_clock_for_testing->Now() : base::Time::Now();
-}
-
-// static
-void QuotaDatabase::SetClockForTesting(const base::Clock* clock) {
-  g_clock_for_testing = clock;
 }
 
 void QuotaDatabase::SetAlreadyEvictedStaleStorageForTesting(
@@ -932,9 +926,16 @@ void QuotaDatabase::Commit() {
     timer_.Stop();
   }
 
-  db_->CommitTransactionDeprecated();
-  CHECK(!db_->HasActiveTransactions(), base::NotFatalUntil::M148);
-  CHECK(db_->BeginTransactionDeprecated(), base::NotFatalUntil::M148);
+  if (transaction_) {
+    transaction_->Commit();
+  }
+  CHECK(!db_->HasActiveTransactions());
+  transaction_.emplace(db_.get());
+  if (!transaction_->Begin()) {
+    // TODO(crbug.com/40831207): Handle failing to begin the transaction
+    // instead of running the following statements outside of one.
+    transaction_.reset();
+  }
 }
 
 void QuotaDatabase::ScheduleCommit() {
@@ -970,18 +971,6 @@ QuotaError QuotaDatabase::EnsureOpened() {
   db_->set_error_callback(base::BindRepeating(&QuotaDatabase::OnSqliteError,
                                               base::Unretained(this)));
 
-  // Migrate an existing database from the old path.
-  if (!db_file_path_.empty() && !MoveLegacyDatabase()) {
-    if (ResetStorage()) {
-      // ResetStorage() has succeeded and database is already open.
-      return QuotaError::kNone;
-    }
-    is_disabled_ = true;
-    db_.reset();
-    meta_table_.reset();
-    return QuotaError::kDatabaseError;
-  }
-
   if (!OpenDatabase() || !EnsureDatabaseVersion()) {
     LOG(ERROR) << "Could not open the quota database, resetting.";
     if (!db_file_path_.empty() && ResetStorage()) {
@@ -996,8 +985,15 @@ QuotaError QuotaDatabase::EnsureOpened() {
   }
 
   // Start a long-running transaction.
-  CHECK(!db_->HasActiveTransactions(), base::NotFatalUntil::M148);
-  db_->BeginTransactionDeprecated();
+  CHECK(!db_->HasActiveTransactions());
+  transaction_.emplace(db_.get());
+  if (!transaction_->Begin()) {
+    transaction_.reset();
+    is_disabled_ = true;
+    db_.reset();
+    meta_table_.reset();
+    return QuotaError::kDatabaseError;
+  }
 
   return QuotaError::kNone;
 }
@@ -1014,84 +1010,40 @@ void QuotaDatabase::OnSqliteError(int sqlite_error_code,
   }
 }
 
-bool QuotaDatabase::MoveLegacyDatabase() {
-  // Migration was added on 04/2022 (https://crrev.com/c/3513545).
-  // Cleanup after enough time has passed.
-  if (base::PathExists(db_file_path_) ||
-      !base::PathExists(legacy_db_file_path_)) {
-    return true;
-  }
-
-  if (!base::CreateDirectory(db_file_path_.DirName()) ||
-      !base::CopyFile(legacy_db_file_path_, db_file_path_)) {
-    sql::Database::Delete(db_file_path_);
-    return false;
-  }
-
-  base::FilePath legacy_journal_path =
-      sql::Database::JournalPath(legacy_db_file_path_);
-  if (base::PathExists(legacy_journal_path) &&
-      !base::CopyFile(legacy_journal_path,
-                      sql::Database::JournalPath(db_file_path_))) {
-    sql::Database::Delete(db_file_path_);
-    return false;
-  }
-
-  sql::Database::Delete(legacy_db_file_path_);
-  return true;
-}
-
 bool QuotaDatabase::OpenDatabase() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Open in memory database.
   if (db_file_path_.empty()) {
-    if (db_->OpenInMemory()) {
-      return true;
-    }
-    RecordDatabaseResetHistogram(DatabaseResetReason::kOpenInMemoryDatabase);
-    return false;
+    return db_->OpenInMemory();
   }
 
   if (!base::CreateDirectory(db_file_path_.DirName())) {
-    RecordDatabaseResetHistogram(DatabaseResetReason::kCreateDirectory);
     return false;
   }
 
-  if (!db_->Open(db_file_path_)) {
-    RecordDatabaseResetHistogram(DatabaseResetReason::kOpenDatabase);
-    return false;
-  }
-
-  return true;
+  return db_->Open(db_file_path_);
 }
 
 bool QuotaDatabase::EnsureDatabaseVersion() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!sql::MetaTable::DoesTableExist(db_.get())) {
-    if (CreateSchema()) {
-      return true;
-    }
-    RecordDatabaseResetHistogram(DatabaseResetReason::kCreateSchema);
-    return false;
+    return CreateSchema();
   }
 
   if (!meta_table_->Init(db_.get(), kQuotaDatabaseCurrentSchemaVersion,
                          kQuotaDatabaseCompatibleVersion)) {
-    RecordDatabaseResetHistogram(DatabaseResetReason::kInitMetaTable);
     return false;
   }
 
   if (meta_table_->GetCompatibleVersionNumber() >
       kQuotaDatabaseCurrentSchemaVersion) {
-    RecordDatabaseResetHistogram(DatabaseResetReason::kDatabaseVersionTooNew);
     LOG(WARNING) << "Quota database is too new.";
     return false;
   }
 
   if (meta_table_->GetVersionNumber() < kQuotaDatabaseCurrentSchemaVersion) {
     if (!QuotaDatabaseMigrations::UpgradeSchema(*this)) {
-      RecordDatabaseResetHistogram(DatabaseResetReason::kDatabaseMigration);
       return false;
     }
   }
@@ -1170,21 +1122,18 @@ bool QuotaDatabase::CreateIndex(const IndexSchema& index) {
 
 bool QuotaDatabase::ResetStorage() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(!db_file_path_.empty(), base::NotFatalUntil::M148);
-  CHECK(storage_directory_, base::NotFatalUntil::M148);
-  CHECK(!db_ || !db_->HasActiveTransactions(), base::NotFatalUntil::M148);
+  CHECK(!db_file_path_.empty());
+  CHECK(storage_directory_);
+  CHECK(!db_ || !db_->HasActiveTransactions());
   VLOG(1) << "Deleting existing quota data and starting over.";
 
   meta_table_.reset();
   db_.reset();
 
-  sql::Database::Delete(legacy_db_file_path_);
   sql::Database::Delete(db_file_path_);
 
   // Explicit file deletion to try and get consistent deletion across platforms.
-  base::DeleteFile(legacy_db_file_path_);
   base::DeleteFile(db_file_path_);
-  base::DeleteFile(sql::Database::JournalPath(legacy_db_file_path_));
   base::DeleteFile(sql::Database::JournalPath(db_file_path_));
 
   storage_directory_->Doom();
@@ -1241,7 +1190,7 @@ QuotaErrorOr<BucketInfo> QuotaDatabase::CreateBucketInternal(
 
   // First verify this won't exceed the max bucket count if one is given.
   if (max_bucket_count > 0) {
-    CHECK_NE(params.name, kDefaultBucketName, base::NotFatalUntil::M148);
+    CHECK_NE(params.name, kDefaultBucketName);
     // Note that technically we should be filtering out default buckets when
     // counting existing buckets so that the max count only applies to
     // non-default buckets. However the precise bucket count is not that
@@ -1274,7 +1223,7 @@ QuotaErrorOr<BucketInfo> QuotaDatabase::CreateBucketInternal(
         " RETURNING " BUCKET_INFO_FIELDS_SELECTOR;
   // clang-format on
   sql::Statement statement(db_->GetCachedStatement(SQL_FROM_HERE, kSql));
-  const base::Time now = GetNow();
+  const base::Time now = base::Time::Now();
   BindBucketInitParamsToInsertStatement(params,
                                         /*use_count=*/0,
                                         /*last_accessed=*/now,

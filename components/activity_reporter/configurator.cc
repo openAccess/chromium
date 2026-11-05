@@ -5,15 +5,20 @@
 #include "components/activity_reporter/configurator.h"
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "base/enterprise_util.h"
+#include "base/containers/flat_map.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/location.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "base/sequence_checker.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/version.h"
 #include "base/version_info/channel.h"
@@ -25,6 +30,7 @@
 #include "components/update_client/network.h"
 #include "components/update_client/persisted_data.h"
 #include "components/update_client/protocol_handler.h"
+#include "ui/base/device_form_factor.h"
 #include "url/gurl.h"
 
 namespace activity_reporter {
@@ -82,10 +88,10 @@ ActivityReporterConfigurator::ActivityReporterConfigurator(
     bool per_user_install)
     : pref_service_provider_(pref_service_provider),
       persisted_data_(update_client::CreatePersistedData(
-          pref_service_provider,
+          std::move(pref_service_provider),
           std::make_unique<ActivityService>())),
       network_fetcher_factory_(network_fetcher_factory),
-      channel_provider_(channel_provider),
+      channel_provider_(std::move(channel_provider)),
       per_user_install_(per_user_install) {}
 
 ActivityReporterConfigurator::~ActivityReporterConfigurator() = default;
@@ -143,6 +149,11 @@ std::string ActivityReporterConfigurator::GetLang() const {
 std::string ActivityReporterConfigurator::GetOSLongName() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return std::string{version_info::GetOSType()};
+}
+
+std::string ActivityReporterConfigurator::GetDeviceFormFactor() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return std::string(ui::DeviceFormFactorToString(ui::GetDeviceFormFactor()));
 }
 
 base::flat_map<std::string, std::string>
@@ -223,7 +234,9 @@ std::optional<bool> ActivityReporterConfigurator::IsMachineExternallyManaged()
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   policy::PlatformManagementService* service =
       policy::PlatformManagementService::GetInstance();
-  return service && service->IsManaged();
+  return service &&
+        service->GetManagementAuthorityTrustworthiness() >=
+             policy::ManagementAuthorityTrustworthiness::TRUSTED;
 }
 
 update_client::UpdaterStateProvider

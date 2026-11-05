@@ -21,7 +21,6 @@
 #include "base/containers/to_value_list.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -517,7 +516,7 @@ void WebApp::SetDarkModeBackgroundColor(
 }
 
 void WebApp::SetDisplayMode(DisplayMode display_mode) {
-  DCHECK_NE(DisplayMode::kUndefined, display_mode);
+  CHECK_NE(DisplayMode::kUndefined, display_mode, base::NotFatalUntil::M162);
   display_mode_ = display_mode;
 }
 
@@ -632,13 +631,15 @@ void WebApp::SetOriginAssociationLastValidationCheckTime(
 }
 
 void WebApp::SetLockScreenStartUrl(const GURL& lock_screen_start_url) {
-  DCHECK(lock_screen_start_url.is_empty() || lock_screen_start_url.is_valid());
+  CHECK(lock_screen_start_url.is_empty() || lock_screen_start_url.is_valid(),
+        base::NotFatalUntil::M162);
   lock_screen_start_url_ = lock_screen_start_url;
 }
 
 void WebApp::SetNoteTakingNewNoteUrl(const GURL& note_taking_new_note_url) {
-  DCHECK(note_taking_new_note_url.is_empty() ||
-         note_taking_new_note_url.is_valid());
+  CHECK(note_taking_new_note_url.is_empty() ||
+            note_taking_new_note_url.is_valid(),
+        base::NotFatalUntil::M162);
   note_taking_new_note_url_ = note_taking_new_note_url;
 }
 
@@ -678,8 +679,7 @@ void WebApp::SetLaunchQueryParams(
 }
 
 void WebApp::SetManifestUrl(const GURL& manifest_url) {
-  CHECK(manifest_url.is_valid() || manifest_url.is_empty(),
-        base::NotFatalUntil::M138);
+  CHECK(manifest_url.is_valid() || manifest_url.is_empty());
   manifest_url_ = manifest_url;
 }
 
@@ -775,8 +775,9 @@ void WebApp::SetRelatedApplications(
 void WebApp::AddPlaceholderInfoToManagementExternalConfigMap(
     WebAppManagement::Type type,
     bool is_placeholder) {
-  DCHECK_NE(type, WebAppManagement::Type::kSync);
-  DCHECK_NE(type, WebAppManagement::Type::kUserInstalled);
+  CHECK_NE(type, WebAppManagement::Type::kSync, base::NotFatalUntil::M162);
+  CHECK_NE(type, WebAppManagement::Type::kUserInstalled,
+           base::NotFatalUntil::M162);
   CHECK(!WebAppManagement::IsIwaType(type)) << type;
   management_to_external_config_map_[type].is_placeholder = is_placeholder;
 }
@@ -784,10 +785,11 @@ void WebApp::AddPlaceholderInfoToManagementExternalConfigMap(
 void WebApp::AddInstallURLToManagementExternalConfigMap(
     WebAppManagement::Type type,
     GURL install_url) {
-  DCHECK_NE(type, WebAppManagement::Type::kSync);
-  DCHECK_NE(type, WebAppManagement::Type::kUserInstalled);
+  CHECK_NE(type, WebAppManagement::Type::kSync, base::NotFatalUntil::M162);
+  CHECK_NE(type, WebAppManagement::Type::kUserInstalled,
+           base::NotFatalUntil::M162);
   CHECK(!WebAppManagement::IsIwaType(type)) << type;
-  DCHECK(install_url.is_valid());
+  CHECK(install_url.is_valid(), base::NotFatalUntil::M162);
   management_to_external_config_map_[type].install_urls.emplace(
       std::move(install_url));
 }
@@ -795,10 +797,11 @@ void WebApp::AddInstallURLToManagementExternalConfigMap(
 void WebApp::AddPolicyIdToManagementExternalConfigMap(
     WebAppManagement::Type type,
     std::string policy_id) {
-  DCHECK_NE(type, WebAppManagement::Type::kSync);
-  DCHECK_NE(type, WebAppManagement::Type::kUserInstalled);
+  CHECK_NE(type, WebAppManagement::Type::kSync, base::NotFatalUntil::M162);
+  CHECK_NE(type, WebAppManagement::Type::kUserInstalled,
+           base::NotFatalUntil::M162);
   CHECK(!WebAppManagement::IsIwaType(type)) << type;
-  DCHECK(!policy_id.empty());
+  CHECK(!policy_id.empty(), base::NotFatalUntil::M162);
   management_to_external_config_map_[type].additional_policy_ids.emplace(
       std::move(policy_id));
 }

@@ -81,15 +81,13 @@ public class TabSwitcherPane extends TabSwitcherPaneBase implements TabSwitcherD
             new TabGroupObserver() {
                 @Override
                 public void didRemoveTabGroup(
-                        int oldRootId,
-                        @Nullable Token oldTabGroupId,
-                        @DidRemoveTabGroupReason int removalReason) {
+                        Token oldTabGroupId, @DidRemoveTabGroupReason int removalReason) {
                     onDidRemoveTabGroup(oldTabGroupId, removalReason);
                 }
 
                 @Override
-                public void didCreateNewGroup(Tab destinationTab, TabModel tabModel) {
-                    // Unfortunately it's difficult to wait for a recycler view to finish  binding
+                public void onTabGroupCreated(Token tabGroupId) {
+                    // Unfortunately it's difficult to wait for a recycler view to finish binding
                     // and fully showing views. So just wait with a short delay.
                     PostTask.postDelayedTask(
                             TaskTraits.UI_DEFAULT,
@@ -171,7 +169,7 @@ public class TabSwitcherPane extends TabSwitcherPaneBase implements TabSwitcherD
                                         R.string.button_new_tab,
                                         R.string.button_new_tab,
                                         R.drawable.new_tab_icon))
-                        .setOnPress(newTabButtonClickListener::onClick)
+                        .setOnPress(this::onNewTabButtonClicked)
                         .build());
 
         profileProviderSupplier.onAvailable(this::onProfileProviderAvailable);
@@ -218,12 +216,12 @@ public class TabSwitcherPane extends TabSwitcherPaneBase implements TabSwitcherD
         }
 
         @Nullable TabModel tabModel = mTabModelSupplier.get();
-        if (tabModel == null || !tabModel.isTabModelRestored()) {
+        if (tabModel == null || !tabModel.isTabStateInitialized()) {
             // The tab list is trying to show without the filter being ready. This happens when
             // first trying to show a the pane. If this happens an attempt to show will be made
             // when the filter's restoreCompleted() method is invoked in TabSwitcherPaneMediator.
             // Start a timer to measure how long it takes for tab state to be initialized and for
-            // this UI to show i.e. isTabModelRestored becomes true. This timer will emit a
+            // this UI to show i.e. isTabStateInitialized becomes true. This timer will emit a
             // histogram when we successfully show. This timer is cancelled if: 1) the pane becomes
             // invisible in TabSwitcherPaneBase#notifyLoadHint, or 2) the filter becomes ready and
             // nothing gets shown.
@@ -309,7 +307,7 @@ public class TabSwitcherPane extends TabSwitcherPaneBase implements TabSwitcherD
                     TabModel tabModel = mTabModelSupplier.get();
                     TabSwitcherPaneCoordinator coordinator = getTabSwitcherPaneCoordinator();
                     if (tabModel.isActiveModel()
-                            && tabModel.isTabModelRestored()
+                            && tabModel.isTabStateInitialized()
                             && coordinator != null) {
                         coordinator.resetWithListOfTabs(tabModel.getRepresentativeTabList());
                     }
@@ -385,17 +383,12 @@ public class TabSwitcherPane extends TabSwitcherPaneBase implements TabSwitcherD
             return;
         }
 
-        TabModel tabModel = mTabModelSupplier.get();
         @Nullable Pair<Integer, Integer> range = coordinator.getVisibleRange();
         if (range == null) return;
         // Iterate in reverse because when multiple viable groups are on screen, we want to trigger
         // on the most recently added, which should be ordered later.
         for (int viewIndex = range.second; viewIndex >= range.first; --viewIndex) {
-            int filterIndex = coordinator.countOfTabCardsOrInvalid(viewIndex);
-            @Nullable Tab tab = tabModel.getRepresentativeTabAt(filterIndex);
-            if (tab == null || !tabModel.isTabInTabGroup(tab)) continue;
-
-            @Nullable Token tabGroupId = tab.getTabGroupId();
+            Token tabGroupId = coordinator.getTabGroupIdForIndex(viewIndex);
             if (!TabUiUtils.shouldShowIphForSync(mTabGroupSyncService, tabGroupId)) continue;
 
             @Nullable View anchorView = coordinator.getViewByIndex(viewIndex);
@@ -438,7 +431,7 @@ public class TabSwitcherPane extends TabSwitcherPaneBase implements TabSwitcherD
     }
 
     private void onDidRemoveTabGroup(
-            @Nullable Token oldTabGroupId, @DidRemoveTabGroupReason int removalReason) {
+            Token oldTabGroupId, @DidRemoveTabGroupReason int removalReason) {
         if (removalReason != DidRemoveTabGroupReason.CLOSE) return;
 
         TabModel tabModel = mTabModelSupplier.get();

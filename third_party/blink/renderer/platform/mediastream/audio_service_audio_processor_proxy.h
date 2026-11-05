@@ -5,10 +5,15 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_MEDIASTREAM_AUDIO_SERVICE_AUDIO_PROCESSOR_PROXY_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_MEDIASTREAM_AUDIO_SERVICE_AUDIO_PROCESSOR_PROXY_H_
 
+#include <cstdint>
+#include <optional>
+
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/synchronization/lock.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/thread_annotations.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -54,8 +59,15 @@ class PLATFORM_EXPORT AudioServiceAudioProcessorProxy
   // threads.
   void MaybeUpdateNumPreferredCaptureChannels(int32_t num_channels);
 
+  // Sets the dynamic voice isolation state on the audio processor.
   // Called on the main thread.
   void SetVoiceIsolation(bool enabled);
+
+  // Returns the dynamic voice isolation state if it has been explicitly set via
+  // SetVoiceIsolation(). Returns std::nullopt if voice isolation has not been
+  // dynamically modified via this proxy.
+  // Called on the main thread.
+  std::optional<bool> VoiceIsolation() const;
 
  protected:
   ~AudioServiceAudioProcessorProxy() override;
@@ -79,6 +91,8 @@ class PLATFORM_EXPORT AudioServiceAudioProcessorProxy
   // Accessed only in MaybeUpdateNumPreferredCaptureChannels().
   int32_t num_preferred_capture_channels_ = 1;
 
+  // Stores the dynamic voice isolation override. Set to std::nullopt initially
+  // until SetVoiceIsolation() is called.
   std::optional<bool> voice_isolation_enabled_
       GUARDED_BY_CONTEXT(main_thread_checker_);
 

@@ -27,36 +27,32 @@ class MockAutofillOptimizationGuideDecider
   MOCK_METHOD(CreditCardCategoryBenefit::BenefitCategory,
               AttemptToGetEligibleCreditCardBenefitCategory,
               (std::string_view issuer_id, const GURL& url),
-              (const override));
+              (const, override));
   MOCK_METHOD(bool,
               ShouldBlockSingleFieldSuggestions,
               (const GURL&, const AutofillField*),
-              (const override));
+              (const, override));
   MOCK_METHOD(bool,
               ShouldBlockFormFieldSuggestion,
               (const GURL&, const CreditCard&),
-              (const override));
+              (const, override));
   MOCK_METHOD(bool,
               ShouldBlockFlatRateBenefitSuggestionLabelsForUrl,
               (const GURL& url),
-              (const override));
+              (const, override));
   MOCK_METHOD(bool,
               IsUrlEligibleForBnplIssuer,
               (BnplIssuer::IssuerId issuer_id, const GURL& url),
-              (const override));
+              (const, override));
   MOCK_METHOD(void,
               OnPaymentsDataLoaded,
               (const PaymentsDataManager& payments_data_manager),
               (override));
   MOCK_METHOD(bool,
-              IsIframeUrlAllowlistedForActor,
-              (const GURL&),
-              (const override));
-  MOCK_METHOD(bool,
               IsUrlEligibleForOmniboxAutofill,
               (const GURL&),
-              (const override));
-  MOCK_METHOD(bool, ShouldBlockAtMemory, (const GURL&), (const override));
+              (const, override));
+  MOCK_METHOD(bool, ShouldBlockAtMemory, (const GURL&), (const, override));
 };
 
 }  // namespace autofill

@@ -33,7 +33,6 @@
 #include "base/time/time.h"
 #include "base/types/optional_ref.h"
 #include "build/build_config.h"
-#include "components/autofill/core/browser/autofill_browser_util.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/autofill_wallet_usage_data.h"
@@ -1098,6 +1097,7 @@ bool IsCreditCardFooterSuggestion(
     case SuggestionType::kAtMemoryOpenGemini:
     case SuggestionType::kAtMemorySearchAffordance:
     case SuggestionType::kAtMemorySearchResult:
+    case SuggestionType::kAtMemoryShortcutSettingsPromo:
     case SuggestionType::kAtMemorySourceAttribution:
     case SuggestionType::kAutocompleteAtMemoryButton:
     case SuggestionType::kAutocompleteEntry:
@@ -1123,6 +1123,7 @@ bool IsCreditCardFooterSuggestion(
     case SuggestionType::kFillPassword:
     case SuggestionType::kFreeformFooter:
     case SuggestionType::kGeneratePasswordEntry:
+    case SuggestionType::kGmailOneTimePasswordEntry:
     case SuggestionType::kIbanEntry:
     case SuggestionType::kIdentityCredential:
     case SuggestionType::kInsecureContextPaymentDisabledMessage:
@@ -1135,16 +1136,18 @@ bool IsCreditCardFooterSuggestion(
     case SuggestionType::kManageAutofillAiTravel:
     case SuggestionType::kManageIban:
     case SuggestionType::kManageLoyaltyCard:
+    case SuggestionType::kManageOffers:
     case SuggestionType::kManageEnhancedAutofill:
     case SuggestionType::kMerchantPromoCodeEntry:
     case SuggestionType::kOneTimePasswordEntry:
+    case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
+    case SuggestionType::kPendingStateTrustedVaultError:
     case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kRemoveAutofillAi:
     case SuggestionType::kSaveAndFillCreditCardEntry:
-    case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kTitle:
     case SuggestionType::kTroubleSigningInEntry:
     case SuggestionType::kViewPasswordDetails:
@@ -1347,15 +1350,16 @@ Suggestion CreateCreditCardSuggestion(
         l10n_util::GetStringUTF16(IDS_AUTOFILL_A11Y_ANNOUNCE_FILLED_FORM);
   }
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_CHROMEOS)
   // Newly-synced cards start with a `use_count()` of 1.
   if (credit_card.card_creation_source() ==
           CreditCard::CardCreationSource::kCreationSourceNonChromePayments &&
-      credit_card.usage_history().use_count() == 1 &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillEnableDownstreamCardAwarenessIph)) {
+      credit_card.usage_history().use_count() == 1) {
     suggestion.iph_metadata = Suggestion::IPHMetadata(
         &feature_engagement::kIPHAutofillDownstreamCardAwarenessFeature);
   }
+#endif
 
   return suggestion;
 }
@@ -1490,8 +1494,9 @@ bool ShouldShowScanCreditCard(const FormStructure& form,
 
   bool is_card_number_field =
       trigger_field.Type().GetCreditCardType() == CREDIT_CARD_NUMBER &&
-      base::ContainsOnlyChars(StripCardNumberSeparators(trigger_field.value()),
-                              u"0123456789");
+      base::ContainsOnlyChars(
+          StripSeparatorsAndNormalizeDigits(trigger_field.value()),
+          u"0123456789");
 
   if (!is_card_number_field) {
     return false;

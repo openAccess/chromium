@@ -8,15 +8,11 @@ import static org.junit.Assert.assertArrayEquals;
 
 import android.os.ParcelFileDescriptor;
 
-import androidx.test.filters.MediumTest;
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
@@ -31,7 +27,6 @@ import java.util.regex.Pattern;
 
 /** Unittests for {@link CrashFileManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class CrashFileManagerTest {
     @Rule public CrashTestRule mTestRule = new CrashTestRule();
 
@@ -170,7 +165,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testReadyForUploadForFirstTime() {
         Assert.assertTrue(
@@ -185,7 +179,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testCrashFileManagerWithNull() {
         try {
@@ -197,7 +190,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetMatchingFiles() {
         CrashFileManager crashFileManager = new CrashFileManager(mTestRule.getCacheDir());
@@ -210,7 +202,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @MediumTest
     @Feature({"Android-AppBase"})
     public void testFileComparator() {
         File[] expectedFiles = new File[] {mTmpFile3, mTmpFile2, mTmpFile1};
@@ -224,7 +215,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetAllFilesSorted() {
         CrashFileManager crashFileManager = new CrashFileManager(mTestRule.getCacheDir());
@@ -253,7 +243,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetCrashDirectory() {
         CrashFileManager crashFileManager = new CrashFileManager(mTestRule.getCacheDir());
@@ -263,7 +252,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testDeleteFile() {
         Assert.assertTrue(mTmpFile1.exists());
@@ -272,7 +260,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testIsMinidumpSansLogcat() {
         Assert.assertTrue(CrashFileManager.isMinidumpSansLogcat("foo.dmp"));
@@ -291,7 +278,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testSetReadyForUpload_MinidumpWithoutPid() throws IOException {
         File minidumpWithoutLogcat = new File(mTestRule.getCrashDir(), "foo.dmp");
@@ -303,7 +289,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testSetReadyForUpload_MinidumpWithPid() throws IOException {
         File minidumpWithoutLogcat = new File(mTestRule.getCrashDir(), "foo.dmp" + TEST_PID);
@@ -315,7 +300,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetMinidumpSansLogcatForPid() {
         CrashFileManager crashFileManager = new CrashFileManager(mTestRule.getCacheDir());
@@ -326,7 +310,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetMinidumpsSansLogcat() {
         CrashFileManager crashFileManager = new CrashFileManager(mTestRule.getCacheDir());
@@ -341,7 +324,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetMinidumpsReadyForUpload() throws IOException {
         File forcedFile = new File(mTestRule.getCrashDir(), "456_def.forced" + TEST_PID + ".try2");
@@ -360,7 +342,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetMinidumpsReadyForUpload_MultiDigitMaxTries() {
         CrashFileManager crashFileManager = new CrashFileManager(mTestRule.getCacheDir());
@@ -382,7 +363,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetMinidumpsNotForcedReadyForUpload() throws IOException {
         File forcedFile = new File(mTestRule.getCrashDir(), "456_def.forced" + TEST_PID + ".try2");
@@ -409,7 +389,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetMinidumpsSkippedUpload() throws IOException {
         File skippedFile =
@@ -429,7 +408,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetMinidumpsForcedUpload() throws IOException {
         File forcedFile = new File(mTestRule.getCrashDir(), "456_def.forced" + TEST_PID + ".try2");
@@ -448,7 +426,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetFilesBelowMaxTries() {
         // No files in input -> return empty
@@ -469,7 +446,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetAllUploadedFiles() {
         CrashFileManager crashFileManager = new CrashFileManager(mTestRule.getCacheDir());
@@ -483,7 +459,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testReadAttemptNumber() {
         Assert.assertEquals(0, CrashFileManager.readAttemptNumber("file.dmp"));
@@ -548,7 +523,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testAttemptNumberRename() {
         Assert.assertEquals(
@@ -578,7 +552,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testFilenameWithForcedUploadState() {
         // The ".try0" suffix is sometimes implicit -- in particular, when logcat extraction fails.
@@ -611,7 +584,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testMarkUploadSuccess() {
         CrashFileManager.markUploadSuccess(mDmpFile1);
@@ -626,7 +598,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testMarkUploadSuccess_ForcedUpload() throws IOException {
         File forced = new File(mTestRule.getCrashDir(), "123_abc.forced" + TEST_PID + ".try0");
@@ -638,7 +609,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testMarkUploadSkipped() {
         CrashFileManager.markUploadSkipped(mDmpFile1);
@@ -655,7 +625,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testFilterMinidumpFilesOnUid() {
         assertArrayEquals(
@@ -722,7 +691,6 @@ public class CrashFileManagerTest {
      * stored minidumps for a certain uid.
      */
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testMinidumpStorageRestrictionsPerUid() throws IOException {
         testMinidumpStorageRestrictions(/* perUid= */ true);
@@ -733,7 +701,6 @@ public class CrashFileManagerTest {
      * stored minidumps.
      */
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testMinidumpStorageRestrictionsGlobal() throws IOException {
         testMinidumpStorageRestrictions(/* perUid= */ false);
@@ -851,7 +818,6 @@ public class CrashFileManagerTest {
 
     /** Ensure that we won't copy minidumps that are too large. */
     @Test
-    @MediumTest
     @Feature({"Android-AppBase"})
     public void testCantCopyLargeFile() throws IOException {
         CrashFileManager fileManager = new CrashFileManager(mTestRule.getCacheDir());
@@ -886,7 +852,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testCleanOutAllNonFreshMinidumpFiles() throws IOException {
         // Create some simulated old files.
@@ -973,7 +938,6 @@ public class CrashFileManagerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Android-AppBase"})
     public void testGetCrashLocalIdFromFileName() {
         Assert.assertEquals(

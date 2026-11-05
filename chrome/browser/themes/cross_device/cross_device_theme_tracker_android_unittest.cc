@@ -30,11 +30,11 @@ class CrossDeviceThemeTrackerAndroidTest
   CrossDeviceThemeTrackerAndroidTest() {
     desktop_bridge_ = RegisterBridgeHelper<sync_pb::ThemeSpecifics>(
         syncer::THEMES, base::BindRepeating(&themes::TranslateDesktop),
-        tracker_.get(), &test_store_service_);
+        tracker_.get());
 
     ios_bridge_ = RegisterBridgeHelper<sync_pb::ThemeIosSpecifics>(
         syncer::THEMES_IOS, base::BindRepeating(&themes::TranslateIos),
-        tracker_.get(), &test_store_service_);
+        tracker_.get());
 
     // Wait for bridges to be ready.
     EXPECT_TRUE(base::test::RunUntil([&]() {
@@ -65,11 +65,9 @@ TEST_F(CrossDeviceThemeTrackerAndroidTest, SyncStarted) {
   MockObserver observer;
   tracker_->AddObserver(&observer);
 
-  // We expect status change notifications.
-  // Initially, both are kInitializing.
-  // When first bridge starts, aggregate is still kInitializing (no
-  // notification). When second bridge starts, aggregate becomes kActive
-  // (notifies).
+  // Before initial sync, metadata is not yet tracked, so OnSyncStarting alone
+  // should keep the service status in kInitializing until MergeFullSyncData
+  // completes on both bridges.
   EXPECT_CALL(observer, OnServiceStatusChanged(ServiceStatus::kActive))
       .Times(1);
 
@@ -78,19 +76,87 @@ TEST_F(CrossDeviceThemeTrackerAndroidTest, SyncStarted) {
   EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kInitializing);
 
   ios_bridge_->OnSyncStarting(request);
+  EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kInitializing);
+
+  desktop_bridge_->MergeFullSyncData(CreateSyncedMetadata(desktop_bridge_),
+                                     syncer::EntityChangeList());
+  EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kInitializing);
+
+  ios_bridge_->MergeFullSyncData(CreateSyncedMetadata(ios_bridge_),
+                                 syncer::EntityChangeList());
   EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kActive);
 
   tracker_->RemoveObserver(&observer);
+
+  // Disabling sync and re-starting before initial sync metadata is tracked
+  // should transition the tracker back to kInitializing until MergeFullSyncData
+  // completes on both bridges.
+  desktop_bridge_->ApplyDisableSyncChanges(
+      desktop_bridge_->CreateMetadataChangeList());
+  ios_bridge_->ApplyDisableSyncChanges(ios_bridge_->CreateMetadataChangeList());
+  EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kSyncDisabled);
+
+  desktop_bridge_->OnSyncStarting(request);
+  EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kInitializing);
+  ios_bridge_->OnSyncStarting(request);
+  EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kInitializing);
+
+  // Pausing sync while metadata is not yet tracked should transition the
+  // tracker to kSyncDisabled, and re-starting should return to kInitializing.
+  desktop_bridge_->OnSyncPaused();
+  ios_bridge_->OnSyncPaused();
+  EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kSyncDisabled);
+
+  desktop_bridge_->OnSyncStarting(request);
+  EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kInitializing);
+  ios_bridge_->OnSyncStarting(request);
+  EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kInitializing);
+
+  desktop_bridge_->MergeFullSyncData(CreateSyncedMetadata(desktop_bridge_),
+                                     syncer::EntityChangeList());
+  EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kInitializing);
+  ios_bridge_->MergeFullSyncData(CreateSyncedMetadata(ios_bridge_),
+                                 syncer::EntityChangeList());
+  EXPECT_EQ(tracker_->GetServiceStatus(), ServiceStatus::kActive);
+
+  // Simulate a restart where initial sync metadata was already persisted.
+  auto restarted_tracker =
+      std::make_unique<CrossDeviceThemeTracker<LocalSpecifics>>();
+  auto* restarted_desktop_bridge =
+      RegisterBridgeHelper<sync_pb::ThemeSpecifics>(
+          syncer::THEMES, base::BindRepeating(&themes::TranslateDesktop),
+          restarted_tracker.get());
+  auto* restarted_ios_bridge = RegisterBridgeHelper<sync_pb::ThemeIosSpecifics>(
+      syncer::THEMES_IOS, base::BindRepeating(&themes::TranslateIos),
+      restarted_tracker.get());
+
+  // Calling OnSyncStarting before the store finishes loading metadata should
+  // mark the bridge active once OnReadAllDataAndMetadata completes.
+  restarted_desktop_bridge->OnSyncStarting(request);
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return restarted_desktop_bridge->IsStoreInitializedForTesting() &&
+           restarted_ios_bridge->IsStoreInitializedForTesting();
+  }));
+  EXPECT_EQ(restarted_tracker->GetServiceStatus(),
+            ServiceStatus::kInitializing);
+
+  // Calling OnSyncStarting after metadata is already loaded and tracked should
+  // immediately mark the bridge active without MergeFullSyncData.
+  restarted_ios_bridge->OnSyncStarting(request);
+  EXPECT_EQ(restarted_tracker->GetServiceStatus(), ServiceStatus::kActive);
+
+  // Pausing sync when metadata is already tracked should keep the tracker
+  // active.
+  restarted_desktop_bridge->OnSyncPaused();
+  restarted_ios_bridge->OnSyncPaused();
+  EXPECT_EQ(restarted_tracker->GetServiceStatus(), ServiceStatus::kActive);
 }
 
 TEST_F(CrossDeviceThemeTrackerAndroidTest, DesktopUserThemeUpdate) {
   MockObserver observer;
   tracker_->AddObserver(&observer);
 
-  std::string cache_guid = "desktop_device_1";
-  std::string storage_key = AddDevice(cache_guid, "Windows Desktop",
-                                      syncer::DeviceInfo::OsType::kWindows,
-                                      syncer::DeviceInfo::FormFactor::kDesktop);
+  std::string storage_key = "current_theme";
 
   // Prepare Desktop theme specifics with UserColorTheme
   sync_pb::EntitySpecifics specifics;
@@ -112,10 +178,7 @@ TEST_F(CrossDeviceThemeTrackerAndroidTest, DesktopUserThemeUpdate) {
   // Verify tracker state
   auto themes = tracker_->GetOtherDevicesThemes();
   ASSERT_EQ(themes.size(), 1u);
-  EXPECT_EQ(themes[0].device_name, "Windows Desktop");
-  // The translated info will have the actual OS type resolved from DeviceInfo.
-  EXPECT_EQ(themes[0].os_type, syncer::DeviceInfo::OsType::kWindows);
-  EXPECT_EQ(themes[0].form_factor, syncer::DeviceInfo::FormFactor::kDesktop);
+  EXPECT_EQ(themes[0].data_type, syncer::THEMES);
 
   // Verify translated theme (ThemeAndroidSpecifics)
   const sync_pb::ThemeAndroidSpecifics& translated = themes[0].theme;
@@ -132,10 +195,7 @@ TEST_F(CrossDeviceThemeTrackerAndroidTest, DesktopAutogeneratedThemeUpdate) {
   MockObserver observer;
   tracker_->AddObserver(&observer);
 
-  std::string cache_guid = "desktop_device_2";
-  std::string storage_key =
-      AddDevice(cache_guid, "Macbook", syncer::DeviceInfo::OsType::kMac,
-                syncer::DeviceInfo::FormFactor::kDesktop);
+  std::string storage_key = "current_theme";
 
   // Prepare Desktop theme specifics with AutogeneratedColorTheme
   sync_pb::EntitySpecifics specifics;
@@ -155,11 +215,7 @@ TEST_F(CrossDeviceThemeTrackerAndroidTest, DesktopAutogeneratedThemeUpdate) {
   // Verify tracker state
   auto themes = tracker_->GetOtherDevicesThemes();
   ASSERT_EQ(themes.size(), 1u);
-  EXPECT_EQ(themes[0].device_name, "Macbook");
-  // The translated info will have the actual OS type resolved from DeviceInfo
-  // (kMac), overwriting the kWindows placeholder.
-  EXPECT_EQ(themes[0].os_type, syncer::DeviceInfo::OsType::kMac);
-  EXPECT_EQ(themes[0].form_factor, syncer::DeviceInfo::FormFactor::kDesktop);
+  EXPECT_EQ(themes[0].data_type, syncer::THEMES);
 
   // Verify translated theme (ThemeAndroidSpecifics)
   const sync_pb::ThemeAndroidSpecifics& translated = themes[0].theme;
@@ -177,10 +233,7 @@ TEST_F(CrossDeviceThemeTrackerAndroidTest, IosThemeUpdate) {
   MockObserver observer;
   tracker_->AddObserver(&observer);
 
-  std::string cache_guid = "ios_device_1";
-  std::string storage_key =
-      AddDevice(cache_guid, "iPad", syncer::DeviceInfo::OsType::kIOS,
-                syncer::DeviceInfo::FormFactor::kTablet);
+  std::string storage_key = "current_theme_ios";
 
   // Prepare iOS theme specifics
   sync_pb::EntitySpecifics specifics;
@@ -201,9 +254,7 @@ TEST_F(CrossDeviceThemeTrackerAndroidTest, IosThemeUpdate) {
   // Verify tracker state
   auto themes = tracker_->GetOtherDevicesThemes();
   ASSERT_EQ(themes.size(), 1u);
-  EXPECT_EQ(themes[0].device_name, "iPad");
-  EXPECT_EQ(themes[0].os_type, syncer::DeviceInfo::OsType::kIOS);
-  EXPECT_EQ(themes[0].form_factor, syncer::DeviceInfo::FormFactor::kTablet);
+  EXPECT_EQ(themes[0].data_type, syncer::THEMES_IOS);
 
   // Verify translated theme
   const sync_pb::ThemeAndroidSpecifics& translated = themes[0].theme;

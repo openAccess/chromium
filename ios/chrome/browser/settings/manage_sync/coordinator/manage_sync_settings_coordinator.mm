@@ -5,7 +5,6 @@
 #import "ios/chrome/browser/settings/manage_sync/coordinator/manage_sync_settings_coordinator.h"
 
 #import "base/check_op.h"
-#import "base/feature_list.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback.h"
 #import "base/functional/callback_helpers.h"
@@ -20,7 +19,6 @@
 #import "components/signin/public/base/signin_metrics.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/strings/grit/components_strings.h"
-#import "components/sync/base/features.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync/service/sync_service_utils.h"
 #import "components/sync/service/sync_user_settings.h"
@@ -74,6 +72,7 @@
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/system_identity_manager.h"
+#import "ios/chrome/browser/subscription_eligibility/model/subscription_eligibility_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_browser_agent.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_params.h"
@@ -174,12 +173,15 @@ enum class ActionAfterReauth {
   ProfileIOS* profile = self.profile;
 
   self.mediator = [[ManageSyncSettingsMediator alloc]
-        initWithSyncService:self.syncService
-            identityManager:IdentityManagerFactory::GetForProfile(profile)
-      authenticationService:self.authService
-      accountManagerService:ChromeAccountManagerServiceFactory::GetForProfile(
-                                profile)
-                prefService:profile->GetPrefs()];
+                 initWithSyncService:self.syncService
+                     identityManager:IdentityManagerFactory::GetForProfile(
+                                         profile)
+               authenticationService:self.authService
+               accountManagerService:ChromeAccountManagerServiceFactory::
+                                         GetForProfile(profile)
+                         prefService:profile->GetPrefs()
+      subscriptionEligibilityService:SubscriptionEligibilityServiceFactory::
+                                         GetForProfile(profile)];
   self.mediator.commandHandler = self;
   self.mediator.syncErrorHandler = self;
   self.mediator.forcedSigninEnabled =
@@ -187,7 +189,7 @@ enum class ActionAfterReauth {
       AuthenticationService::ServiceStatus::SigninForcedByPolicy;
   self.mediator.isEEAAccount =
       ios::RegionalCapabilitiesServiceFactory::GetForProfile(self.profile)
-          ->IsInEeaCountry();
+          ->MayShowLinkedGoogleServicesSetting();
 
   ManageSyncSettingsTableViewController* viewController =
       [[ManageSyncSettingsTableViewController alloc]
@@ -440,10 +442,11 @@ enum class ActionAfterReauth {
         manageSyncSettingsCoordinatorNeedToOpenChromeSyncWebPage:self];
   }
   GURL url = google_util::AppendGoogleLocaleParam(
-      GURL(base::FeatureList::IsEnabled(syncer::kSyncEnableNewSyncDashboardUrl)
-               ? kNewSyncGoogleDashboardURL
-               : kLegacySyncGoogleDashboardURL),
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get());
+      GURL(kSyncGoogleDashboardURL),
+      std::string(GetApplicationContext()
+                      ->GetApplicationLocaleStorage()
+                      ->GetTag()
+                      .tag_string()));
   OpenNewTabCommand* command = [OpenNewTabCommand commandWithURLFromChrome:url];
   id<SceneCommands> handler =
       HandlerForProtocol(self.browser->GetCommandDispatcher(), SceneCommands);
@@ -555,7 +558,7 @@ enum class ActionAfterReauth {
 
 - (void)openAccountMenu {
   if (_accountMenuCoordinator) {
-    // This can occurs in cause of double tap.
+    // This can occur in case of double tap.
     return;
   }
   _accountMenuCoordinator = [[AccountMenuCoordinator alloc]
@@ -692,15 +695,11 @@ enum class ActionAfterReauth {
   [_trustedVaultReauthenticationCoordinator start];
 }
 
-- (void)openMDMErrorDialogWithSystemIdentity:(id<SystemIdentity>)identity
-                                  completion:(ProceduralBlock)completion {
+- (void)openMDMErrorDialogWithSystemIdentity:(id<SystemIdentity>)identity {
   [self.viewController preventUserInteraction];
   __weak __typeof(self) weakSelf = self;
   base::OnceCallback<void(bool)> callback = base::BindOnce(^void(bool) {
     [weakSelf.viewController allowUserInteraction];
-    if (completion) {
-      completion();
-    }
   });
   self.authService->ShowMDMErrorDialogForIdentity(identity,
                                                   std::move(callback));
@@ -805,8 +804,7 @@ enum class ActionAfterReauth {
 
 - (void)syncEncryptionTableViewControllerDidDismiss:
     (SyncEncryptionTableViewController*)viewController {
-  CHECK_EQ(_syncEncryptionTableViewController, viewController,
-           base::NotFatalUntil::M150);
+  CHECK_EQ(_syncEncryptionTableViewController, viewController);
   _syncEncryptionTableViewController.presentationDelegate = nil;
   [_syncEncryptionTableViewController settingsWillBeDismissed];
   _syncEncryptionTableViewController = nil;

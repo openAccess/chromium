@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/fetch/form_data_bytes_consumer.h"
 
+#include "base/byte_size.h"
 #include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -83,9 +84,9 @@ class DataPipeGetterImpl : public network::mojom::blink::DataPipeGetter {
     ASSERT_TRUE(result);
   }
 
-  void Done(int status, uint64_t size) {
+  void Done(network::mojom::blink::DataPipeGetter::ReadResult size) {
     handle_.reset();
-    std::move(callback_).Run(status, size);
+    std::move(callback_).Run(std::move(size));
   }
 
   void Clone(mojo::PendingReceiver<network::mojom::blink::DataPipeGetter>
@@ -121,7 +122,7 @@ class SimpleDataPipeGetter : public DataPipeGetterImpl {
             ReadCallback callback) override {
     bool result = mojo::BlockingCopyFromString(str_.Utf8(), handle);
     ASSERT_TRUE(result);
-    std::move(callback).Run(0 /* OK */, str_.length());
+    std::move(callback).Run(base::ByteSize(str_.length()));
   }
 
  private:
@@ -216,19 +217,12 @@ class FormDataBytesConsumerTest : public PageTestBase {
         .SetBinderForTesting(mojom::FileUtilitiesHost::Name_,
                              base::BindRepeating(&FileUtilitiesHostImpl::Bind));
 
-    auto fake_blob_registry = std::make_unique<FakeBlobRegistry>(
+    blob_registry_ = std::make_unique<ScopedFakeBlobRegistry>(
         /*support_binary_blob_bodies=*/true);
-    mojo::MakeSelfOwnedReceiver(
-        std::move(fake_blob_registry),
-        blob_registry_remote_.BindNewPipeAndPassReceiver(),
-        Platform::Current()->GetIOTaskRunner());
-    BlobDataHandle::SetBlobRegistryForTesting(blob_registry_remote_.get());
 
     CHECK(scoped_temp_dir_.CreateUniqueTempDir());
   }
-  void TearDown() override {
-    BlobDataHandle::SetBlobRegistryForTesting(nullptr);
-  }
+  void TearDown() override { blob_registry_.reset(); }
 
   void AppendFile(scoped_refptr<EncodedFormData> data, String content) {
     base::FilePath file_path;
@@ -267,7 +261,7 @@ class FormDataBytesConsumerTest : public PageTestBase {
 
  private:
   std::unique_ptr<FileBackedBlobFactoryTestHelper> file_factory_helper_;
-  mojo::Remote<mojom::blink::BlobRegistry> blob_registry_remote_;
+  std::unique_ptr<ScopedFakeBlobRegistry> blob_registry_;
   base::ScopedTempDir scoped_temp_dir_;
 };
 
@@ -713,7 +707,7 @@ TEST_F(FormDataBytesConsumerTest, DataAndDataPipeAsync) {
         FROM_HERE, base::BindLambdaForTesting([&]() {
           data_pipe->Write(" hello");
           data_pipe->Write(" world");
-          data_pipe->Done(0 /* OK */, 12u);
+          data_pipe->Done(base::ByteSize(12u));
         }));
   }));
 

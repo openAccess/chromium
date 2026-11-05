@@ -80,9 +80,11 @@ android_resources("java_resources") {
     "java/res/drawable/facilitated_payments_error_icon.xml",
     "java/res/drawable/facilitated_payments_fop_icon_background.xml",
     "java/res/drawable/facilitated_payments_globe_icon.xml",
+    "java/res/drawable/facilitated_payments_google_wallet_icon.xml",
     "java/res/drawable/gpay_pix_logo.xml",
     "java/res/drawable/lock_icon.xml",
     "java/res/drawable/security_check_illustration.xml",
+    "java/res/drawable/security_check_illustration_with_clip_path.xml",
     "java/res/layout/bank_account_item.xml",
     "java/res/layout/ewallet_account_linking_prompt.xml",
     "java/res/layout/ewallet_item.xml",
@@ -115,6 +117,7 @@ robolectric_library("junit") {
 
   deps = [
     ":java",
+    ":java_resources",
     "//base:base_java_test_support",
     "//base:base_junit_test_support",
     "//base:callback_java",
@@ -140,7 +143,6 @@ robolectric_library("junit") {
     "//content/public/android:content_java",
     "//third_party/androidx:androidx_test_core_java",
     "//third_party/androidx:androidx_test_espresso_espresso_core_java",
-    "//third_party/androidx:androidx_test_runner_java",
     "//third_party/hamcrest:hamcrest_core_java",
     "//third_party/hamcrest:hamcrest_library_java",
     "//third_party/junit",

@@ -104,6 +104,7 @@
 #include "chromeos/ui/frame/frame_utils.h"
 #include "chromeos/ui/wm/desks/chromeos_desks_histogram_enums.h"
 #include "chromeos/ui/wm/window_util.h"
+#include "components/account_id/account_id.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/session_manager_types.h"
 #include "ui/accessibility/accessibility_features.h"
@@ -588,10 +589,6 @@ bool CanCycleMru() {
   return !keyboard::KeyboardUIController::Get()->IsKeyboardVisible();
 }
 
-bool CanCycleSameAppWindows() {
-  return features::IsSameAppWindowCycleEnabled() && CanCycleMru();
-}
-
 bool CanCycleUser() {
   return Shell::Get()->session_controller()->NumberOfLoggedInUsers() > 1;
 }
@@ -824,14 +821,14 @@ void BrightnessUp() {
     delegate->HandleBrightnessUp();
 }
 
-void CycleBackwardMru(bool same_app_only) {
+void CycleBackwardMru() {
   Shell::Get()->window_cycle_controller()->HandleCycleWindow(
-      WindowCycleController::WindowCyclingDirection::kBackward, same_app_only);
+      WindowCycleController::WindowCyclingDirection::kBackward);
 }
 
-void CycleForwardMru(bool same_app_only) {
+void CycleForwardMru() {
   Shell::Get()->window_cycle_controller()->HandleCycleWindow(
-      WindowCycleController::WindowCyclingDirection::kForward, same_app_only);
+      WindowCycleController::WindowCyclingDirection::kForward);
 }
 
 void CycleUser(CycleUserDirection direction) {
@@ -1148,7 +1145,17 @@ void ResizePipWindow() {
 }
 
 void RestoreTab() {
-  NewWindowDelegate::GetInstance()->RestoreTab();
+  // The accelerator is the entry point of the action, so it supplies the active
+  // user's account. The //chrome-side delegate forwards this to
+  // BrowserController, which owns browser-state mutations; //ash can't call
+  // BrowserController directly (it must not depend on //content).
+  //
+  // TODO(crbug.com/332804822): Call BrowserController::RestoreTab() directly
+  // and drop this NewWindowDelegate hop once //ash can depend on
+  // //chromeos/ash/components/browser_delegate (today it transitively pulls in
+  // //content via //components/tabs:public).
+  NewWindowDelegate::GetInstance()->RestoreTab(
+      Shell::Get()->session_controller()->GetActiveAccountId());
 }
 
 void RotateActiveWindow() {

@@ -10,6 +10,7 @@ build_webui("build") {
   grd_prefix = "feature_showcase"
 
   static_files = [
+    "animations/showcase_stepper.json",
     "animations/showcase_transition_bottom.json",
     "animations/showcase_transition_bottom_dark.json",
     "animations/showcase_transition_right.json",
@@ -17,8 +18,8 @@ build_webui("build") {
     "feature_showcase.html",
     "images/gemini_illustration_light.png",
     "images/gemini_illustration_dark.png",
-    "images/lens_overlay_illustration_light.png",
-    "images/lens_overlay_illustration_dark.png",
+    "images/lens_illustration_light.png",
+    "images/lens_illustration_dark.png",
     "images/password_manager_illustration_light.png",
     "images/password_manager_illustration_dark.png",
   ]
@@ -56,6 +57,7 @@ build_webui("build") {
   ts_deps = [
     "//third_party/lit/v3_0:build_ts",
     "//ui/webui/resources/cr_components/color_change_listener:build_ts",
+    "//ui/webui/resources/cr_components/cr_lottie:build_ts",
     "//ui/webui/resources/cr_components/customize_color_scheme_mode:build_ts",
     "//ui/webui/resources/cr_components/theme_color_picker:build_ts",
     "//ui/webui/resources/cr_elements:build_ts",

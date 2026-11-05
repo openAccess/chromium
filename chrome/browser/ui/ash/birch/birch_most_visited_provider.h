@@ -6,12 +6,10 @@
 #define CHROME_BROWSER_UI_ASH_BIRCH_BIRCH_MOST_VISITED_PROVIDER_H_
 
 #include "ash/birch/birch_data_provider.h"
-#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "components/history/core/browser/history_types.h"
-
-class Profile;
 
 namespace history {
 class HistoryService;
@@ -23,7 +21,8 @@ namespace ash {
 // to 'BirchModel' to be stored.
 class BirchMostVisitedProvider : public BirchDataProvider {
  public:
-  explicit BirchMostVisitedProvider(Profile* profile);
+  // `history_service` must not be null and must outlive `this`.
+  explicit BirchMostVisitedProvider(history::HistoryService* history_service);
   BirchMostVisitedProvider(const BirchMostVisitedProvider&) = delete;
   BirchMostVisitedProvider& operator=(const BirchMostVisitedProvider&) = delete;
   ~BirchMostVisitedProvider() override;
@@ -34,13 +33,8 @@ class BirchMostVisitedProvider : public BirchDataProvider {
   // Callback from history service with the list of most visited URLs.
   void OnGotMostVisitedURLs(history::MostVisitedURLList urls);
 
-  void set_history_service_for_test(history::HistoryService* service) {
-    history_service_ = service;
-  }
-
  private:
-  const raw_ptr<Profile> profile_;
-  raw_ptr<history::HistoryService> history_service_;
+  const raw_ref<history::HistoryService> history_service_;
 
   // Task tracker for history requests.
   base::CancelableTaskTracker cancelable_task_tracker_;

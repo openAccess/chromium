@@ -57,7 +57,7 @@ void WaylandCursorFactory::ThemeData::AddThemeLoadedCallback(
 }
 
 void WaylandCursorFactory::ThemeData::SetLoadedTheme(wl_cursor_theme* theme) {
-  DCHECK(!loaded_);
+  CHECK(!loaded_, base::NotFatalUntil::M163);
   theme_.reset(theme);
   loaded_ = true;
   for (auto& callback : callbacks_) {
@@ -78,7 +78,7 @@ WaylandCursorFactory::~WaylandCursorFactory() {
 
 void WaylandCursorFactory::ObserveThemeChanges() {
   auto* linux_ui = LinuxUi::instance();
-  DCHECK(linux_ui);
+  CHECK(linux_ui, base::NotFatalUntil::M163);
   cursor_theme_observer_.Observe(linux_ui);
 }
 
@@ -166,7 +166,7 @@ scoped_refptr<PlatformCursor> WaylandCursorFactory::GetDefaultCursor(
     mojom::CursorType type,
     float scale) {
   auto* const current_theme = GetThemeForScale(scale);
-  DCHECK(current_theme);
+  CHECK(current_theme, base::NotFatalUntil::M163);
   if (current_theme->cache().count(type) == 0) {
     auto async_cursor = base::MakeRefCounted<WaylandAsyncCursor>();
     current_theme->cache()[type] = async_cursor;
@@ -190,9 +190,6 @@ wl_cursor* WaylandCursorFactory::GetCursorFromTheme(wl_cursor_theme* theme,
 void WaylandCursorFactory::OnCursorThemeNameChanged(
     const std::string& cursor_theme_name) {
   CHECK(!cursor_theme_name.empty());
-  if (!IsValidCursorThemeName(cursor_theme_name)) {
-    return;
-  }
 
   if (name_ == cursor_theme_name)
     return;
@@ -202,9 +199,6 @@ void WaylandCursorFactory::OnCursorThemeNameChanged(
 }
 
 void WaylandCursorFactory::OnCursorThemeSizeChanged(int cursor_theme_size) {
-  if (!IsValidCursorThemeSize(cursor_theme_size) || cursor_theme_size == 0) {
-    return;
-  }
   size_ = cursor_theme_size;
 }
 
@@ -250,9 +244,7 @@ WaylandCursorFactory::ThemeData* WaylandCursorFactory::GetThemeForScale(
       FROM_HERE,
       {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
       base::BindOnce(
-          wl_cursor_theme_load,
-          (!name_.empty() && IsValidCursorThemeName(name_)) ? name_.c_str()
-                                                            : nullptr,
+          wl_cursor_theme_load, name_.empty() ? nullptr : name_.c_str(),
           GetScaledSize(scale), connection_->buffer_factory()->shm()),
       base::BindOnce(&WaylandCursorFactory::FinishThemeLoad,
                      weak_factory_.GetWeakPtr(), cache_entry->GetWeakPtr()));

@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <optional>
+#include <string_view>
 
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
@@ -35,11 +36,11 @@
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/policy/core/common/cloud/mock_cloud_policy_store.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
 #include "content/public/test/browser_task_environment.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -188,7 +189,6 @@ class DemoSetupControllerTest : public testing::Test {
   DemoSetupControllerTestHelper helper_;
 
   std::optional<DemoSetupController> tested_controller_;
-  base::test::ScopedFeatureList feature_list_;
   base::HistogramTester histogram_tester_;
 
  private:
@@ -526,47 +526,7 @@ TEST_F(DemoSetupControllerTest, GetSubOrganizationEmailWithLowercase) {
   EXPECT_EQ(email, "");
 }
 
-TEST_F(DemoSetupControllerTest, GetSubOrganizationEmailForBlazeyDevice) {
-  feature_list_.InitAndEnableFeature(chromeos::features::kCloudGamingDevice);
 
-  std::string email;
-
-  // Test other supported countries.
-  const std::string testing_supported_countries[] = {
-      "US", "AT", "AU", "BE", "BR", "CA", "DE", "DK", "ES",
-      "FI", "FR", "GB", "IE", "IN", "IT", "JP", "LU", "MX",
-      "NL", "NO", "NZ", "PL", "PT", "SE", "ZA"};
-
-  for (auto country : testing_supported_countries) {
-    g_browser_process->local_state()->SetString(prefs::kDemoModeCountry,
-                                                country);
-    email = DemoSetupController::GetSubOrganizationEmail(
-        CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()));
-
-    std::string country_lowercase = base::ToLowerASCII(country);
-    EXPECT_EQ(email, "admin-" + country_lowercase + "-blazey@" +
-                         policy::kDemoModeDomain);
-  }
-
-  // Test unsupported country string.
-  g_browser_process->local_state()->SetString(prefs::kDemoModeCountry, "KR");
-  email = DemoSetupController::GetSubOrganizationEmail(
-      CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()));
-  EXPECT_EQ(email, "");
-
-  // Test unsupported region string.
-  g_browser_process->local_state()->SetString(prefs::kDemoModeCountry,
-                                              "NORDIC");
-  email = DemoSetupController::GetSubOrganizationEmail(
-      CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()));
-  EXPECT_EQ(email, "");
-
-  // Test random string.
-  g_browser_process->local_state()->SetString(prefs::kDemoModeCountry, "foo");
-  email = DemoSetupController::GetSubOrganizationEmail(
-      CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()));
-  EXPECT_EQ(email, "");
-}
 
 TEST_F(DemoSetupControllerTest, GetSubOrganizationEmailForCustomOU) {
   base::test::ScopedCommandLine command_line;
@@ -607,8 +567,8 @@ TEST_F(DemoSetupControllerTest, OnlineSuccessWithValidRetailerAndStore) {
 }
 
 struct RetailerNameCanonicalizationTestCase {
-  std::string retailer_name;
-  std::string canonicalized_retailer_name;
+  std::string_view retailer_name;
+  std::string_view canonicalized_retailer_name;
 };
 
 class RetailerNameCanonicalizationTest
@@ -621,12 +581,13 @@ class RetailerNameCanonicalizationTest
 };
 
 TEST_P(RetailerNameCanonicalizationTest, SetAndCanonicalizeRetailerName) {
-  tested_controller_->SetAndCanonicalizeRetailerName(GetParam().retailer_name);
+  tested_controller_->SetAndCanonicalizeRetailerName(
+      std::string(GetParam().retailer_name));
   ASSERT_EQ(tested_controller_->get_retailer_name_for_testing(),
             GetParam().canonicalized_retailer_name);
 }
 
-const RetailerNameCanonicalizationTestCase kRetailerNameTestCases[] = {
+constexpr RetailerNameCanonicalizationTestCase kRetailerNameTestCases[] = {
     {"retailer", "retailer"},
     {"RETAILER", "retailer"},
     {"ReTaiLeR", "retailer"},

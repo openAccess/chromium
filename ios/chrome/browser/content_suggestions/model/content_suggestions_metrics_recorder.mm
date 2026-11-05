@@ -16,6 +16,7 @@
 #import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/content_suggestions/model/content_suggestions_metrics_constants.h"
 #import "ios/chrome/browser/content_suggestions/model/content_suggestions_metrics_recorder.h"
+#import "ios/chrome/browser/content_suggestions/most_visited_tiles/public/metrics.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_item.h"
 #import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
 #import "ios/chrome/browser/content_suggestions/set_up_list/public/set_up_list_utils.h"
@@ -24,6 +25,7 @@
 #import "ios/chrome/browser/favicon/ui_bundled/favicon_attributes_with_payload.h"
 #import "ios/chrome/browser/ntp/model/set_up_list_item_type.h"
 #import "ios/chrome/browser/ntp/model/set_up_list_metrics.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 
@@ -108,6 +110,7 @@ favicon_base::IconType GetIconTypeFromAttributes(
       break;
     case ContentSuggestionsModuleType::kTipsWithProductImage:
     case ContentSuggestionsModuleType::kTips:
+    case ContentSuggestionsModuleType::kTipsNTPThemeActionable:
       UMA_HISTOGRAM_EXACT_LINEAR(kMagicStackModuleEngagementTipsIndexHistogram,
                                  index, kMaxModuleEngagementIndex);
       break;
@@ -193,6 +196,11 @@ favicon_base::IconType GetIconTypeFromAttributes(
       index, item.source, item.titleSource,
       GetVisualTypeFromAttributes(item.attributes),
       GetIconTypeFromAttributes(item.attributes), item.URL));
+  if (GetAimButtonRefactorArm() == AimButtonRefactorArm::kAimAsMvt) {
+    if (item.source == ntp_tiles::TileSource::AI_MODE) {
+      RecordAimTileImpressionAtIndex(static_cast<int>(index));
+    }
+  }
 }
 
 + (void)recordMostVisitedTileOpened:(MostVisitedItem*)item

@@ -151,18 +151,26 @@ void SelectPopup::HideMenu() {
 void SelectPopup::SelectMenuItems(JNIEnv* env,
                                   int64_t selectPopupDelegate,
                                   const JavaRef<jintArray>& indices) {
-  blink::mojom::PopupMenuClient* popup_client_raw_ptr =
-      reinterpret_cast<blink::mojom::PopupMenuClient*>(selectPopupDelegate);
-  DCHECK(popup_client_raw_ptr && popup_client_.get() == popup_client_raw_ptr);
-
-  if (indices.is_null()) {
-    popup_client_->DidCancel();
+  // Nothing to do if the popup has already been dismissed, e.g. if this is
+  // called more than once.
+  if (!popup_client_) {
     return;
   }
 
-  std::vector<int> selected_indices;
-  base::android::JavaIntArrayToIntVector(env, indices, &selected_indices);
-  popup_client_->DidAcceptIndices(selected_indices);
+  blink::mojom::PopupMenuClient* popup_client_raw_ptr =
+      reinterpret_cast<blink::mojom::PopupMenuClient*>(selectPopupDelegate);
+  CHECK(popup_client_raw_ptr && popup_client_.get() == popup_client_raw_ptr,
+        base::NotFatalUntil::M159);
+
+  if (indices.is_null()) {
+    popup_client_->DidCancel();
+  } else {
+    std::vector<int> selected_indices;
+    base::android::JavaIntArrayToIntVector(env, indices, &selected_indices);
+    popup_client_->DidAcceptIndices(selected_indices);
+  }
+  popup_view_.Reset();
+  popup_client_.reset();
 }
 
 }  // namespace content

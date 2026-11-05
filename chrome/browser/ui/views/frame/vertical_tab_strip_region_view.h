@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_VERTICAL_TAB_STRIP_REGION_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_VERTICAL_TAB_STRIP_REGION_VIEW_H_
 
+#include <memory>
 #include <optional>
 
 #include "base/callback_list.h"
@@ -20,6 +21,7 @@
 #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
+#include "chrome/browser/ui/views/tabs/organizer/organizer_panel_host.h"
 #include "chrome/browser/ui/views/tabs/shared/drop_arrow.h"
 #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_expand_on_hover_lock.h"
 #include "components/tabs/public/tab_interface.h"
@@ -30,6 +32,7 @@
 #include "ui/views/accessible_pane_view.h"
 #include "ui/views/controls/resize_area_delegate.h"
 #include "ui/views/focus/focus_manager.h"
+#include "ui/views/layout/delegating_layout_manager.h"
 
 class BrowserView;
 class VerticalTabStripTopContainer;
@@ -45,7 +48,6 @@ namespace views {
 class ResizeArea;
 class Separator;
 class View;
-class FlexLayout;
 }  // namespace views
 
 // Container for the vertical tabstrip and the other views sharing space with
@@ -54,22 +56,13 @@ class VerticalTabStripRegionView final
     : public BaseTabStripRegionView,
       public views::ResizeAreaDelegate,
       public OmniboxTabHelper::Observer,
-      public tabs::VerticalTabStripStateController::Delegate {
+      public tabs::VerticalTabStripStateController::Delegate,
+      public OrganizerPanelHost,
+      public views::LayoutDelegate {
   METADATA_HEADER(VerticalTabStripRegionView, BaseTabStripRegionView)
 
  public:
   DECLARE_CLASS_CUSTOM_ELEMENT_EVENT_TYPE(kAnimationCompletedEvent);
-
-  // TODO(crbug.com/465833741): Replace constant with derived value based on
-  // caption buttons.
-  static constexpr int kUncollapsedMinWidth = 126;
-  // TODO(crbug.com/465832180): Replace constant based width final max width for
-  // view.
-  static constexpr int kUncollapsedMaxWidth = 400;
-  static constexpr int kCollapsedWidth = 56;
-  // TODO(crbug.com/465833741): Determine snapping behavior.
-  static constexpr int kCollapseSnapWidth =
-      (kUncollapsedMinWidth + kCollapsedWidth) / 2;
 
   explicit VerticalTabStripRegionView(
       tabs::VerticalTabStripStateController* state_controller,
@@ -100,6 +93,10 @@ class VerticalTabStripRegionView final
   void SetIsExitingExpandOnHoverForLayout(bool is_exiting_expand_on_hover);
   void SetTransitionButtonOpacity(float opacity);
   bool WillWrapDueToOverflow(int available_width) const;
+
+  // views::LayoutDelegate:
+  views::ProposedLayout CalculateProposedLayout(
+      const views::SizeBounds& size_bounds) const override;
 
   // views::View:
   void AddedToWidget() override;
@@ -133,6 +130,9 @@ class VerticalTabStripRegionView final
       base::RepeatingCallback<void(bool)> callback) override;
   bool IsCollapsing() override;
   void RequestCollapse(bool collapse) override;
+
+  void SetOrganizerPanelShowPercent(double percent);
+  void UpdatePanelClipAndOpacity();
 
   views::Separator* tabs_separator_for_testing() {
     return tab_strip_view() ? tab_strip_view()->GetTabsSeparator() : nullptr;
@@ -173,37 +173,21 @@ class VerticalTabStripRegionView final
     raw_ptr<VerticalTabStripRegionView> region_view_;
   };
 
-  // To avoid extra motion during expand on hover when the user doesn't need the
-  // expanded state, we reset the expand on hover timer when the user clicks on
-  // a tab to give them time to exit the tab strip before triggering the expand
-  // on hover state. This class listens for those click events to restart the
-  // timer.
-  class ClickEventHandler : public ui::EventHandler {
-   public:
-    explicit ClickEventHandler(VerticalTabStripRegionView* region_view);
-    ClickEventHandler(const ClickEventHandler&) = delete;
-    ClickEventHandler& operator=(const ClickEventHandler&) = delete;
-    ~ClickEventHandler() override = default;
-
-    // ui::EventHandler:
-    void OnMouseEvent(ui::MouseEvent* event) override;
-
-   private:
-    raw_ptr<VerticalTabStripRegionView> region_view_;
-  };
-
   // Used to create and destroy locks for the expand on hover state.
   friend class VerticalTabStripExpandOnHoverLock;
 
+  // OrganizerPanelHost:
+  void SetOrganizerPanelView(std::unique_ptr<views::View> panel_view) override;
+  std::unique_ptr<views::View> TakeOrganizerPanelView() override;
+  bool HasOrganizerPanelView() const override;
+
   void HandleMouseExited();
 
-  void OnTabStripViewSet() override;
-  void OnTabStripViewWillClear() override;
+  void AddTabStripView(std::unique_ptr<views::View> view) override;
+  std::unique_ptr<views::View> RemoveTabStripView(views::View* view) override;
 
   void OnCollapseStateChanged(
       tabs::VerticalTabStripCollapseState collapse_state);
-
-  void UpdateColors();
 
   void OnAnimationProgressed(const BrowserAnimationController* controller,
                              BrowserAnimationUpdate status);
@@ -211,16 +195,18 @@ class VerticalTabStripRegionView final
   // Get whether the collapse/expand animation is running.
   bool IsAnimatingSize() const;
 
-  bool IsFrameActive() const;
   bool IsCollapseButtonHovered() const;
 
   // Returns the bounds within which tabs can be dragged in the vertical tab
   // strip.
   gfx::Rect GetTabStripDraggableBounds() const override;
 
+  // Returns whether the resize area should be visible.
+  bool ShouldShowResizeArea() const;
+
   void OnExpandOnHoverEnabledChanged(bool enabled);
+  void HandlePaintAsActiveChanged();
   void UpdateExpandOnHoverState(std::optional<bool> hovered = std::nullopt);
-  void RestartExpandOnHoverTimer(const base::TimeDelta& delay);
   void OnMouseVelocityHeuristicInterval();
   void CalculateMouseVelocityForExpandOnHover();
   void ResetExpandOnHoverTimers();
@@ -238,6 +224,11 @@ class VerticalTabStripRegionView final
 
   void OnActiveTabChanged(const tabs::TabInterface* active_tab) override;
 
+  // Organizer panel:
+  raw_ptr<views::View> organizer_panel_view_ = nullptr;
+  double organizer_panel_show_percent_ = 0.0;
+
+  raw_ptr<views::View> content_area_view_ = nullptr;
   raw_ptr<VerticalTabStripTopContainer> top_button_container_ = nullptr;
   raw_ptr<views::Separator> top_button_separator_ = nullptr;
   raw_ptr<VerticalTabStripBottomContainer> bottom_button_container_ = nullptr;
@@ -245,7 +236,6 @@ class VerticalTabStripRegionView final
   raw_ptr<views::ResizeArea> resize_area_ = nullptr;
   raw_ptr<ShadowFrameView> shadow_frame_ = nullptr;
   int resize_area_width_;
-  raw_ptr<views::FlexLayout> flex_layout_ = nullptr;
 
   const raw_ptr<tabs::VerticalTabStripStateController> state_controller_;
   std::optional<base::CallbackListSubscription>
@@ -294,7 +284,6 @@ class VerticalTabStripRegionView final
       hover_card_animation_lock_;
 
   RegionViewFocusListener focus_listener_{this};
-  ClickEventHandler click_handler_{this};
   std::unique_ptr<VerticalTabStripFocusSwipeController> focus_swipe_controller_;
 
   // Allows the swipe controller to inspect tab dragging state and rotate
@@ -304,6 +293,9 @@ class VerticalTabStripRegionView final
   // The mouse exit event debounce timer.
   base::OneShotTimer mouse_exit_timer_;
 
+  // Debounces transient active -> inactive -> active blips (e.g. during child
+  // popup/bubble focus handoffs) before collapsing expand-on-hover.
+  base::OneShotTimer paint_as_active_timer_;
   base::CallbackListSubscription paint_as_active_subscription_;
 };
 

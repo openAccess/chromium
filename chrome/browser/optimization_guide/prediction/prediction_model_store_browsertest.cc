@@ -8,6 +8,7 @@
 #include "base/files/file_util.h"
 #include "base/task/thread_pool.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_run_loop_timeout.h"
 #include "base/test/task_environment.h"
 #include "base/threading/thread_restrictions.h"
@@ -22,10 +23,12 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/optimization_guide/core/delivery/model_store_metadata_entry.h"
 #include "components/optimization_guide/core/delivery/model_util.h"
 #include "components/optimization_guide/core/delivery/prediction_manager.h"
+#include "components/optimization_guide/core/delivery/prediction_model_download_manager.h"
 #include "components/optimization_guide/core/delivery/prediction_model_fetch_timer.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_permissions_util.h"
@@ -250,7 +253,11 @@ class PredictionModelStoreBrowserTestBase : public InProcessBrowserTest {
 class PredictionModelStoreBrowserTest
     : public PredictionModelStoreBrowserTestBase {
  public:
-  PredictionModelStoreBrowserTest() = default;
+  PredictionModelStoreBrowserTest() {
+    // TODO(crbug.com/579030694): Investigate lazy loading OrganizerPanel.
+    scoped_feature_list_.InitAndDisableFeature(
+        organizer_panel::kOrganizerPanel);
+  }
   ~PredictionModelStoreBrowserTest() override = default;
 
   PredictionModelStoreBrowserTest(const PredictionModelStoreBrowserTest&) =
@@ -520,8 +527,19 @@ IN_PROC_BROWSER_TEST_F(PredictionModelStoreBrowserTest,
   }
 }
 
+// TODO(crbug.com/580528440): Failing on MSan.
+#if defined(MEMORY_SANITIZER)
+#define MAYBE_PRE_TestOldModelRemovedOnModelUpdate \
+  DISABLED_PRE_TestOldModelRemovedOnModelUpdate
+#define MAYBE_TestOldModelRemovedOnModelUpdate \
+  DISABLED_TestOldModelRemovedOnModelUpdate
+#else
+#define MAYBE_PRE_TestOldModelRemovedOnModelUpdate \
+  PRE_TestOldModelRemovedOnModelUpdate
+#define MAYBE_TestOldModelRemovedOnModelUpdate TestOldModelRemovedOnModelUpdate
+#endif
 IN_PROC_BROWSER_TEST_F(PredictionModelStoreBrowserTest,
-                       PRE_TestOldModelRemovedOnModelUpdate) {
+                       MAYBE_PRE_TestOldModelRemovedOnModelUpdate) {
   auto model_cache_key =
       ClientCacheKey::FromLocale(g_browser_process->GetApplicationLocale());
   base::FilePath old_model_dir, new_model_dir;
@@ -592,7 +610,7 @@ IN_PROC_BROWSER_TEST_F(PredictionModelStoreBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(PredictionModelStoreBrowserTest,
-                       TestOldModelRemovedOnModelUpdate) {
+                       MAYBE_TestOldModelRemovedOnModelUpdate) {
   ModelFileObserver model_file_observer;
   RegisterAndWaitForModelUpdate(&model_file_observer);
   EXPECT_EQ(model_file_observer.optimization_target(),

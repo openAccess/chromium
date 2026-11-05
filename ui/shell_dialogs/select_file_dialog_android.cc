@@ -9,10 +9,14 @@
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/check.h"
+#include "base/functional/bind.h"
+#include "base/location.h"
 #include "base/notimplemented.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/sequenced_task_runner.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/android/window_android.h"
 #include "ui/shell_dialogs/select_file_policy.h"
 #include "ui/shell_dialogs/selected_file_info.h"
@@ -86,7 +90,8 @@ void SelectFileDialogImpl::OnMultipleFilesSelected(
   std::vector<ui::SelectedFileInfo> selected_files;
 
   jsize length = env->GetArrayLength(filepaths.obj());
-  DCHECK(length == env->GetArrayLength(display_names.obj()));
+  CHECK(length == env->GetArrayLength(display_names.obj()),
+        base::NotFatalUntil::M163);
   for (int i = 0; i < length; ++i) {
     auto path_ref = jni_zero::AdoptRef(
         env,
@@ -142,13 +147,53 @@ void SelectFileDialogImpl::SelectFileImpl(Type type,
                                           const std::string& default_extension,
                                           gfx::NativeWindow owning_window,
                                           const GURL* caller) {
+  if (select_file_policy() &&
+      !select_file_policy()->CanOpenSelectFileDialog()) {
+    select_file_policy()->SelectFileDenied();
+    if (listener_) {
+      listener_->FileSelectionCanceled();
+    }
+    return;
+  }
+
+  if (!owning_window) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&SelectFileDialogImpl::OnFileNotSelected,
+                                  this, nullptr));
+    return;
+  }
+
   JNIEnv* env = base::android::AttachCurrentThread();
 
   ScopedJavaLocalRef<jstring> intent_action =
       base::android::ConvertUTF8ToJavaString(
           env, IntentActionFromType(type, open_writable_));
+
+  std::vector<std::u16string> accept_types = accept_types_;
+  if (type == SelectFileDialog::SELECT_SAVEAS_FILE && accept_types.empty()) {
+    auto add_extension = [&accept_types](std::string_view extension) {
+      if (extension.empty() || extension == ".") {
+        return;
+      }
+      std::string formatted = extension.starts_with('.')
+                                  ? std::string(extension)
+                                  : "." + std::string(extension);
+      accept_types.push_back(base::UTF8ToUTF16(formatted));
+    };
+
+    if (file_types) {
+      for (const auto& extension_group : file_types->extensions) {
+        for (const auto& extension : extension_group) {
+          add_extension(extension);
+        }
+      }
+    }
+    if (accept_types.empty() && !default_extension.empty()) {
+      add_extension(default_extension);
+    }
+  }
   ScopedJavaLocalRef<jobjectArray> accept_types_java =
-      base::android::ToJavaArrayOfStrings(env, accept_types_);
+      base::android::ToJavaArrayOfStrings(env, accept_types);
 
   bool accept_multiple_files = SelectFileDialog::SELECT_OPEN_MULTI_FILE == type;
 
@@ -181,9 +226,8 @@ SelectFileDialogImpl::SelectFileDialogImpl(
     std::unique_ptr<SelectFilePolicy> policy)
     : SelectFileDialog(listener, std::move(policy)) {
   JNIEnv* env = base::android::AttachCurrentThread();
-  // TODO(crbug.com/1365766): The `intptr_t` to `this` might get stale.
   java_object_.Reset(
-      Java_SelectFileDialog_create(env, reinterpret_cast<intptr_t>(this)));
+      Java_SelectFileDialog_create(env, jni_zero::MakeRaw(this)));
 }
 
 bool SelectFileDialogImpl::HasMultipleFileTypeChoicesImpl() {

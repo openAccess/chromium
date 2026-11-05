@@ -61,6 +61,7 @@
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom-shared.h"
 #include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "url/gurl.h"
 
@@ -204,24 +205,24 @@ void AppHomePageHandler::LaunchAppInternal(
         extensions::ExtensionPrefs::Get(profile_), extension);
   }
 
-  WindowOpenDisposition disposition =
+  ui::mojom::WindowOpenDisposition disposition =
       click_event ? ui::DispositionFromClick(
                         click_event->button == 1.0, click_event->alt_key,
                         click_event->ctrl_key, click_event->meta_key,
                         click_event->shift_key)
-                  : WindowOpenDisposition::CURRENT_TAB;
+                  : ui::mojom::WindowOpenDisposition::kCurrentTab;
   GURL override_url;
 
   CHECK_NE(launch_bucket, extension_misc::APP_LAUNCH_BUCKET_INVALID);
   extensions::RecordAppLaunchType(launch_bucket, type);
 
-  if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
-      disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB ||
-      disposition == WindowOpenDisposition::NEW_WINDOW) {
+  if (disposition == ui::mojom::WindowOpenDisposition::kNewForegroundTab ||
+      disposition == ui::mojom::WindowOpenDisposition::kNewBackgroundTab ||
+      disposition == ui::mojom::WindowOpenDisposition::kNewWindow) {
     // TODO(jamescook): Proper support for background tabs.
     apps::AppLaunchParams params(
         app_id,
-        disposition == WindowOpenDisposition::NEW_WINDOW
+        disposition == ui::mojom::WindowOpenDisposition::kNewWindow
             ? apps::LaunchContainer::kLaunchContainerWindow
             : apps::LaunchContainer::kLaunchContainerTab,
         disposition, apps::LaunchSource::kFromAppHomePage);
@@ -244,8 +245,8 @@ void AppHomePageHandler::LaunchAppInternal(
 
     apps::AppLaunchParams params(
         app_id, launch_container,
-        old_contents ? WindowOpenDisposition::CURRENT_TAB
-                     : WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        old_contents ? ui::mojom::WindowOpenDisposition::kCurrentTab
+                     : ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         apps::LaunchSource::kFromAppHomePage);
     params.override_url = override_url;
     web_app::LaunchExtensionOrWebApp(
@@ -437,7 +438,7 @@ app_home::mojom::AppInfoPtr AppHomePageHandler::CreateAppInfoPtrFromExtension(
   if (extension->from_webstore()) {
     GURL store_url = GURL(base::StrCat(
         {"https://chrome.google.com/webstore/detail/", extension->id()}));
-    DCHECK(store_url.is_valid());
+    CHECK(store_url.is_valid(), base::NotFatalUntil::M162);
     app_info->store_page_url = store_url;
   }
   app_info->may_uninstall =

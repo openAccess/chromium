@@ -8,6 +8,7 @@ use std::iter::FusedIterator;
 use std::result;
 
 use crate::common::{Position, TextPosition};
+use crate::namespace::Namespace;
 
 pub use config::ParserConfig;
 pub use error::{Error, ErrorKind, ImmutableEntitiesError};
@@ -32,6 +33,9 @@ pub type Result<T, E = Error> = result::Result<T, E>;
 /// A wrapper around an `std::io::Read` instance which provides pull-based XML parsing.
 ///
 /// The reader should be wrapped in a `BufReader`, otherwise parsing may be very slow.
+///
+/// The parser reads ahead from the underlying reader, so the position of the
+/// underlying reader can be ahead of the last returned event.
 pub struct EventReader<R: Read> {
     source: R,
     parser: PullParser,
@@ -122,6 +126,28 @@ impl<R: Read> EventReader<R> {
     #[inline]
     pub fn doctype_ids(&self) -> Option<DoctypeRef<'_>> {
         self.parser.doctype_ids()
+    }
+
+    /// Returns the namespace declarations written directly on the element of the last event
+    ///
+    /// Unlike [`XmlEvent::StartElement`]'s `namespace`, which is the cumulative flattened
+    /// mapping of all namespaces in scope, this contains only the `xmlns` and `xmlns:*`
+    /// declarations of the element itself (including namespace declarations supplied by
+    /// DTD `ATTLIST` defaults).
+    ///
+    /// A default namespace undeclaration (`xmlns=""`) is reported as the mapping `"" -> ""`,
+    /// which is not otherwise distinguishable in the flattened mapping.
+    ///
+    /// The declarations always belong to the element of the `StartElement` or `EndElement`
+    /// event that has just been returned, and only to that element — declarations inherited
+    /// from ancestors are never included, and those of an enclosing element are not
+    /// available while its children are being reported. Because the value changes with every
+    /// element event, it has to be read (or cloned) before pulling the next event.
+    ///
+    /// Returns `None` after any other event, such as `Characters` or `EndDocument`.
+    #[inline]
+    pub fn declared_namespaces(&self) -> Option<&Namespace> {
+        self.parser.declared_namespaces()
     }
 
     /// Add new entity definitions **before any XML elements have been parsed**.

@@ -43,16 +43,13 @@
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
-#include "chrome/browser/ui/views/page_action/page_action_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
 #include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
-#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
 #include "chrome/browser/ui/web_applications/web_app_dialog_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_dialogs.h"
 #include "chrome/browser/web_applications/install_bounce_metric.h"
@@ -95,8 +92,8 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -264,11 +261,10 @@ class PwaInstallViewBrowserTest : public base::test::WithFeatureOverride,
 
   // Starts a navigation to |url| but does not wait for it to finish.
   void StartNavigateToUrl(const GURL& url) {
-    browser()->OpenURL(
-        content::OpenURLParams(
-            url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-            ui::PAGE_TRANSITION_TYPED, false /* is_renderer_initiated */),
-        /*navigation_handle_callback=*/{});
+    browser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                           url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+                           ui::PAGE_TRANSITION_TYPED),
+                       /*navigation_handle_callback=*/{});
     app_banner_manager_->WaitForInstallableCheckTearDown();
   }
 
@@ -349,18 +345,9 @@ class PwaInstallViewBrowserTest : public base::test::WithFeatureOverride,
   page_actions::PageActionTestAccessor GetPageActionAccessor() {
     return page_actions::PageActionTestAccessor(browser(), kActionInstallPwa);
   }
-  page_actions::PageActionViewInterface* GetPageActionView() {
-    return BrowserView::GetBrowserViewForBrowser(browser())
-        ->toolbar_button_provider()
-        ->GetPageActionViewInterface(kActionInstallPwa);
-  }
   void ExecuteForTesting() { web_app::ShowPwaInstallDialog(browser()); }
-  void FastForwardAnimation(IconLabelBubbleView* view) {
-    auto animation = std::make_unique<gfx::AnimationTestApi>(
-        &view->slide_animation_for_testing());
-    auto now = base::TimeTicks::Now();
-    animation->SetStartTime(now);
-    animation->Step(now + base::Minutes(1));
+  void FinishAnimation(page_actions::PageActionTestAccessor icon_accessor) {
+    icon_accessor.FinishAnimation();
     EnsureLayout();
   }
   void EnsureLayout() {
@@ -368,13 +355,8 @@ class PwaInstallViewBrowserTest : public base::test::WithFeatureOverride,
         BrowserView::GetBrowserViewForBrowser(browser()));
   }
   void VerifyLabelVisibility(bool isVisible) {
-    auto* page_action_view = GetPageActionView();
-    if (!features::IsWebUILocationBarEnabled()) {
-      auto* view = page_actions::GetIconLabelBubbleViewForTesting(
-          page_action_view, kActionInstallPwa);
-      FastForwardAnimation(view);
-    }
-    EXPECT_EQ(GetPageActionAccessor().IsChipVisible(), isVisible);
+    FinishAnimation(GetPageActionAccessor());
+    EXPECT_EQ(GetPageActionAccessor().ShouldShowSuggestionChip(), isVisible);
   }
 
   net::EmbeddedTestServer https_server_;
@@ -529,25 +511,21 @@ IN_PROC_BROWSER_TEST_P(PwaInstallViewBrowserTest,
     ASSERT_TRUE(result.installable);
   }
 
-  auto* page_action_view = page_actions::GetIconLabelBubbleViewForTesting(
-      GetPageActionView(), kActionInstallPwa);
-  views::InkDropHost* const ink_drop =
-      views::InkDrop::Get(page_action_view->ink_drop_view());
 
   ASSERT_EQ(installable_web_contents, GetCurrentTab());
   EXPECT_TRUE(GetPageActionAccessor().GetVisible());
-  EXPECT_FALSE(ink_drop->GetHighlighted());
+  EXPECT_FALSE(GetPageActionAccessor().HasIconHighlight());
 
   views::Widget* pwa_install_widget =
       ClickPWAInstallIconAndWaitForBubbleShown();
   EXPECT_NE(pwa_install_widget, nullptr);
-  EXPECT_TRUE(ink_drop->GetHighlighted());
+  EXPECT_TRUE(GetPageActionAccessor().HasIconHighlight());
 
   views::test::WidgetDestroyedWaiter destroy_waiter(pwa_install_widget);
   pwa_install_widget->CloseWithReason(
       views::Widget::ClosedReason::kEscKeyPressed);
   destroy_waiter.Wait();
-  EXPECT_FALSE(ink_drop->GetHighlighted());
+  EXPECT_FALSE(GetPageActionAccessor().HasIconHighlight());
 }
 
 // Tests that the install icon updates its visibility when tab crashes.
@@ -610,19 +588,15 @@ IN_PROC_BROWSER_TEST_P(PwaInstallViewBrowserTest, LabelAnimation) {
   EXPECT_FALSE(GetPageActionAccessor().GetVisible());
   ASSERT_TRUE(app_banner_manager_->WaitForInstallableCheck());
   EXPECT_TRUE(GetPageActionAccessor().GetVisible());
-  if (!features::IsWebUILocationBarEnabled()) {
-    auto* view = page_actions::GetIconLabelBubbleViewForTesting(
-        GetPageActionView(), kActionInstallPwa);
-    FastForwardAnimation(view);
-  }
-  EXPECT_TRUE(GetPageActionAccessor().IsChipVisible());
+  FinishAnimation(GetPageActionAccessor());
+  EXPECT_TRUE(GetPageActionAccessor().ShouldShowSuggestionChip());
 
   chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
   EXPECT_FALSE(GetPageActionAccessor().GetVisible());
 
   chrome::SelectPreviousTab(browser());
   EXPECT_TRUE(GetPageActionAccessor().GetVisible());
-  EXPECT_FALSE(GetPageActionAccessor().IsChipVisible());
+  EXPECT_FALSE(GetPageActionAccessor().ShouldShowSuggestionChip());
 }
 
 // Tests that the plus icon becomes invisible when the user is typing in the
@@ -871,10 +845,7 @@ IN_PROC_BROWSER_TEST_P(PwaInstallViewBrowserTest, PwaIntallIphIgnored) {
 IN_PROC_BROWSER_TEST_P(PwaInstallViewBrowserTest,
                        OnCloseDoesntRecordIgnoreIfExecuting) {
   PwaInstallPageActionController* pwa_install_controller =
-      browser()
-          ->GetActiveTabInterface()
-          ->GetTabFeatures()
-          ->pwa_install_page_action_controller();
+      PwaInstallPageActionController::From(browser()->GetActiveTabInterface());
   pwa_install_controller->SetIsExecuting(true);
 
   MockRecordIgnoreDelegate record_ignore;
@@ -886,10 +857,7 @@ IN_PROC_BROWSER_TEST_P(PwaInstallViewBrowserTest,
 IN_PROC_BROWSER_TEST_P(PwaInstallViewBrowserTest,
                        OnCloseRecordsIgnoreIfNotExecuting) {
   PwaInstallPageActionController* pwa_install_controller =
-      browser()
-          ->GetActiveTabInterface()
-          ->GetTabFeatures()
-          ->pwa_install_page_action_controller();
+      PwaInstallPageActionController::From(browser()->GetActiveTabInterface());
   ASSERT_FALSE(pwa_install_controller->GetIsExecuting());
 
   MockRecordIgnoreDelegate record_ignore;
@@ -905,7 +873,7 @@ IN_PROC_BROWSER_TEST_P(PwaInstallViewBrowserTest, IconViewAccessibleName) {
 
   const std::u16string& web_app_name =
       webapps::AppBannerManager::GetInstallableWebAppName(web_contents_);
-  EXPECT_EQ(GetPageActionView()->GetAccessibleName(),
+  EXPECT_EQ(GetPageActionAccessor().GetAccessibleName(),
             l10n_util::GetStringFUTF16(IDS_OMNIBOX_PWA_INSTALL_ICON_TOOLTIP,
                                        web_app_name));
 }

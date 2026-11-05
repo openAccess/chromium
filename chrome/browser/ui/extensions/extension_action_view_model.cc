@@ -17,6 +17,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/extensions/api/side_panel/side_panel_service.h"
 #include "chrome/browser/extensions/commands/command_service.h"
 #include "chrome/browser/extensions/extension_action_runner.h"
 #include "chrome/browser/extensions/extension_context_menu_model.h"
@@ -29,6 +30,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/extension_action_delegate.h"
 #include "chrome/browser/ui/extensions/extension_popup_types.h"
+#include "chrome/browser/ui/extensions/extension_side_panel_utils.h"
 #include "chrome/browser/ui/extensions/icon_with_badge_image_source.h"
 #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -52,11 +54,6 @@
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/native_theme/native_theme.h"
-
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "chrome/browser/extensions/api/side_panel/side_panel_service.h"
-#include "chrome/browser/ui/extensions/extension_side_panel_utils.h"
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -220,17 +217,17 @@ std::unique_ptr<ExtensionActionViewModel> ExtensionActionViewModel::Create(
     const extensions::ExtensionId& extension_id,
     BrowserWindowInterface* browser,
     std::unique_ptr<ExtensionActionDelegate> delegate) {
-  DCHECK(browser);
+  CHECK(browser, base::NotFatalUntil::M162);
 
   Profile* profile = browser->GetProfile();
   auto* registry = extensions::ExtensionRegistry::Get(profile);
   scoped_refptr<const extensions::Extension> extension =
       registry->enabled_extensions().GetByID(extension_id);
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M162);
   extensions::ExtensionAction* extension_action =
       extensions::ExtensionActionManager::Get(profile)->GetExtensionAction(
           *extension);
-  DCHECK(extension_action);
+  CHECK(extension_action, base::NotFatalUntil::M162);
 
   // WrapUnique() because the constructor is private.
   return base::WrapUnique(new ExtensionActionViewModel(
@@ -261,6 +258,8 @@ ExtensionActionViewModel::~ExtensionActionViewModel() {
 #if !BUILDFLAG(IS_ANDROID)
   // On Android, the UI is destroyed by the Java coordinator before the native
   // model is destroyed.
+  // TODO(crbug.com/574714884): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!IsShowingPopup());
 #endif
   delegate_->DetachFromModel();
@@ -533,10 +532,8 @@ void ExtensionActionViewModel::ExecuteUserAction(InvocationSource source) {
     TriggerPopup(PopupShowAction::kShow, kByUser, ShowPopupCallback());
   } else if (action ==
              extensions::ExtensionAction::ShowAction::kToggleSidePanel) {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
     extensions::side_panel_util::ToggleExtensionSidePanel(browser_,
                                                           extension_->id());
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
   }
 }
 
@@ -561,7 +558,7 @@ void ExtensionActionViewModel::UnregisterCommand() {
 }
 
 bool ExtensionActionViewModel::TryHandleAcceleratorPress() {
-  DCHECK(CanHandleAccelerators());
+  CHECK(CanHandleAccelerators(), base::NotFatalUntil::M162);
 
   if (IsShowingPopup()) {
     // TODO(crbug.com/498029086): This code is not reached on Android, because
@@ -609,7 +606,7 @@ void ExtensionActionViewModel::OnExtensionCommandRemoved(
 }
 
 void ExtensionActionViewModel::OnCommandServiceDestroying() {
-  DCHECK(command_service_observation_.IsObserving());
+  CHECK(command_service_observation_.IsObserving(), base::NotFatalUntil::M162);
   command_service_observation_.Reset();
 }
 
@@ -621,6 +618,11 @@ void ExtensionActionViewModel::InspectPopup() {
 }
 
 content::WebContents* ExtensionActionViewModel::GetCurrentWebContents() const {
+  if (delegate_) {
+    if (auto* web_contents = delegate_->GetActiveWebContents()) {
+      return web_contents;
+    }
+  }
   tabs::TabInterface* tab = TabListInterface::From(browser_)->GetActiveTab();
   if (!tab) {
     return nullptr;
@@ -629,7 +631,7 @@ content::WebContents* ExtensionActionViewModel::GetCurrentWebContents() const {
 }
 
 void ExtensionActionViewModel::NotifyIconObservers() {
-  if (!TabListInterface::From(browser_)->GetActiveTab()) {
+  if (!GetCurrentWebContents()) {
     return;
   }
   icon_observers_.Notify();
@@ -659,7 +661,7 @@ const extensions::Extension* ExtensionActionViewModel::GetExtension() const {
 
 bool ExtensionActionViewModel::GetExtensionCommand(
     extensions::Command* command) const {
-  DCHECK(command);
+  CHECK(command, base::NotFatalUntil::M162);
   if (!ExtensionIsValid()) {
     return false;
   }
@@ -724,7 +726,7 @@ bool ExtensionActionViewModel::CanHandleAccelerators() const {
 #if DCHECK_IS_ON()
   {
     extensions::Command command;
-    DCHECK(GetExtensionCommand(&command));
+    CHECK(GetExtensionCommand(&command), base::NotFatalUntil::M162);
   }
 #endif
 
@@ -757,8 +759,8 @@ void ExtensionActionViewModel::TriggerPopup(PopupShowAction show_action,
 
   content::WebContents* const web_contents = GetCurrentWebContents();
   const int tab_id = sessions::SessionTabHelper::IdForTab(web_contents).id();
-  DCHECK(extension_action_->GetIsVisible(tab_id));
-  DCHECK(extension_action_->HasPopup(tab_id));
+  CHECK(extension_action_->GetIsVisible(tab_id), base::NotFatalUntil::M162);
+  CHECK(extension_action_->HasPopup(tab_id), base::NotFatalUntil::M162);
 
   const GURL popup_url = extension_action_->GetPopupUrl(tab_id);
 

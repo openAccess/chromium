@@ -4,12 +4,14 @@
 
 module blink.mojom;
 
+import "mojo/public/mojom/base/language_tag.mojom";
 import "mojo/public/mojom/base/string16.mojom";
 import "services/device/public/mojom/screen_orientation_lock_types.mojom";
+import "services/network/public/mojom/permissions_policy/permissions_policy.mojom";
+import "skia/public/mojom/skcolor.mojom";
 import "third_party/blink/public/mojom/manifest/display_mode.mojom";
 import "third_party/blink/public/mojom/manifest/manifest_launch_handler.mojom";
 import "third_party/blink/public/mojom/manifest/manifest_migration_behavior.mojom";
-import "services/network/public/mojom/permissions_policy/permissions_policy.mojom";
 import "third_party/blink/public/mojom/safe_url_pattern.mojom";
 import "ui/gfx/geometry/mojom/geometry.mojom";
 import "url/mojom/origin.mojom";
@@ -32,6 +34,7 @@ struct Manifest {
     kRTL,
   };
 
+  // LINT.IfChange(ManifestFields)
   // The URL this manifest was loaded from. This can be an empty URL if this is
   // an automatically generated "default" manifest.
   url.mojom.Url manifest_url;
@@ -110,9 +113,10 @@ struct Manifest {
   // The app that this PWA intends to migrate to.
   ManifestMigrateTo? migrate_to;
 
-  // TODO(https://crbug.com/479448266): Use skia.mojom.SkColor.
-  uint32? theme_color;
-  uint32? background_color;
+  // Null if the member is absent from the manifest, is not a string, or is not
+  // a valid CSS color.
+  skia.mojom.SkColor? theme_color;
+  skia.mojom.SkColor? background_color;
 
   mojo_base.mojom.String16? gcm_sender_id;
 
@@ -139,10 +143,8 @@ struct Manifest {
   // TODO(b:340126786): Remove these obsolete fields.
   // TODO(crbug.com/40222835): This field is non-standard and part of a Chrome
   // experiment. See: https://github.com/w3c/manifest/issues/1045
-  // TODO(https://crbug.com/479448266): Use skia.mojom.SkColor possibly if these
-  // aren't yet removed.
-  uint32? dark_theme_color;
-  uint32? dark_background_color;
+  skia.mojom.SkColor? dark_theme_color;
+  skia.mojom.SkColor? dark_background_color;
 
   // TODO(crbug.com/897314): This field is non-standard and part of a Chrome
   // experiment. See:
@@ -155,10 +157,20 @@ struct Manifest {
 
   // Localized fields map locales with localized value.
   // See: https://www.w3.org/TR/appmanifest/#x_localized-members
-  map<Locale, ManifestLocalizedTextObject>? name_localized;
-  map<Locale, ManifestLocalizedTextObject>? short_name_localized;
-  map<Locale, ManifestLocalizedTextObject>? description_localized;
-  map<Locale, array<ManifestImageResource>>? icons_localized;
+  map<mojo_base.mojom.LanguageTag, ManifestLocalizedTextObject>? name_localized;
+  map<mojo_base.mojom.LanguageTag, ManifestLocalizedTextObject>?
+      short_name_localized;
+  map<mojo_base.mojom.LanguageTag, ManifestLocalizedTextObject>?
+      description_localized;
+  map<mojo_base.mojom.LanguageTag, array<ManifestImageResource>>?
+      icons_localized;
+  // LINT.ThenChange(
+  //   //third_party/blink/public/common/manifest/manifest.h:ManifestFields,
+  //   //third_party/blink/public/common/manifest/manifest.h:ManifestBuilderFields,
+  //   //third_party/blink/common/manifest/manifest.cc:ManifestEquality,
+  //   //third_party/blink/common/manifest/manifest.cc:ManifestToBuilder,
+  //   //third_party/blink/common/manifest/manifest.cc:ManifestBuilderBuild
+  // )
 };
 
 struct ManifestLocalizedTextObject {
@@ -168,13 +180,6 @@ struct ManifestLocalizedTextObject {
   Manifest.TextDirection? dir;
 
   mojo_base.mojom.String16? lang;
-};
-
-// Wrapper struct for BCP 47 locale tags. This is used as a map key for
-// localized manifest fields and will be converted to icu::Locale on the C++
-// side via StructTraits.
-struct Locale {
-  string tag;
 };
 
 // Structure representing a Shortcut Item per the Manifest specification, see:
@@ -194,10 +199,13 @@ struct ManifestShortcutItem {
 
   array<ManifestImageResource> icons;
 
-  map<Locale, ManifestLocalizedTextObject>? name_localized;
-  map<Locale, ManifestLocalizedTextObject>? short_name_localized;
-  map<Locale, ManifestLocalizedTextObject>? description_localized;
-  map<Locale, array<ManifestImageResource>>? icons_localized;
+  map<mojo_base.mojom.LanguageTag, ManifestLocalizedTextObject>? name_localized;
+  map<mojo_base.mojom.LanguageTag, ManifestLocalizedTextObject>?
+      short_name_localized;
+  map<mojo_base.mojom.LanguageTag, ManifestLocalizedTextObject>?
+      description_localized;
+  map<mojo_base.mojom.LanguageTag, array<ManifestImageResource>>?
+      icons_localized;
 };
 
 // Structure representing an icon as per the Manifest specification, see:
@@ -347,7 +355,10 @@ struct ManifestFileHandler {
   url.mojom.Url action;
   // Human-readable name for the file handler. May be displayed in file manager.
   mojo_base.mojom.String16 name;
-  // A mapping of a MIME types to a corresponding list of file extensions.
+  // A mapping of valid MIME types to a corresponding list of file extensions.
+  // Each MIME type must be syntactically valid and must NOT contain protocol
+  // scheme handlers or FreeDesktop pseudo-MIME types (e.g. "x-scheme-handler/*").
+  // Each file extension must start with '.' and be longer than 1 character.
   map<mojo_base.mojom.String16, array<mojo_base.mojom.String16>> accept;
 
   // How the app should be launched when there are multiple files being opened.

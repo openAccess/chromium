@@ -36,13 +36,14 @@ std::optional<std::vector<std::string>> ParseCookieIndices(
 
   std::vector<std::string> cookie_names;
   cookie_names.reserve(list->size());
-  for (const structured_headers::ParameterizedMember& member : *list) {
-    if (member.member_is_inner_list) {
+  for (structured_headers::ParameterizedMember& member : *list) {
+    structured_headers::ParameterizedItem* item = member.GetIfItem();
+    if (!item) {
       // Inner list not permitted here.
       return std::nullopt;
     }
 
-    const std::string* name = member.member[0].item.GetIfString();
+    std::string* name = item->item.GetIfString();
     if (!name) {
       // Non-string items are not permitted here.
       return std::nullopt;
@@ -87,7 +88,7 @@ std::optional<std::vector<std::string>> ParseCookieIndices(
     }
     CHECK(ParsedCookie::IsValidCookieName(*name))
         << "invalid cookie name \"" << *name << "\"";
-    cookie_names.push_back(*name);
+    cookie_names.push_back(std::move(*name));
   }
   return cookie_names;
 }

@@ -6,7 +6,6 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
-#include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/strings/strcat.h"
 #include "base/time/time.h"
@@ -43,9 +42,8 @@ const char kMessageIdRegexPattern[] = "(0:[0-9]+%)([0-9]+#)?([a-f0-9]+)";
 // confined to the format.
 std::string GetStrippedMessageId(const std::string& message_id) {
   std::string stripped_message_id, type_timestamp, hashcode;
-  static const base::NoDestructor<re2::RE2> kMessageIdRegex(
-      kMessageIdRegexPattern);
-  if (!re2::RE2::FullMatch(message_id, *kMessageIdRegex, &type_timestamp,
+  static constexpr re2::LazyRE2 message_id_regex = {kMessageIdRegexPattern};
+  if (!re2::RE2::FullMatch(message_id, *message_id_regex, &type_timestamp,
                            nullptr, &hashcode)) {
     return message_id;
   }
@@ -136,11 +134,6 @@ void SharingFCMHandler::OnMessage(const std::string& app_id,
                   SharingMessageTypeToString(message_type));
 }
 
-void SharingFCMHandler::OnSendAcknowledged(const std::string& app_id,
-                                           const std::string& message_id) {
-  NOTIMPLEMENTED();
-}
-
 void SharingFCMHandler::OnSendError(
     const std::string& app_id,
     const gcm::GCMClient::SendErrorDetails& details) {
@@ -174,7 +167,7 @@ SharingFCMHandler::GetServerChannel(
 SharingDevicePlatform SharingFCMHandler::GetSenderPlatform(
     const components_sharing_message::SharingMessage& original_message) {
   const syncer::DeviceInfo* device_info =
-      device_info_tracker_->GetDeviceInfo(original_message.sender_guid());
+      device_info_tracker_->GetChromeDeviceInfo(original_message.sender_guid());
   if (!device_info) {
     return SharingDevicePlatform::kUnknown;
   }

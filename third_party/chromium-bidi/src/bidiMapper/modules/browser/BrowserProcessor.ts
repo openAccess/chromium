@@ -119,10 +119,14 @@ export class BrowserProcessor {
       context.browserContextId,
     );
 
-    this.#configStorage.updateUserContextConfig(context.browserContextId, {
-      acceptInsecureCerts: params['acceptInsecureCerts'],
-      userPromptHandler: params['unhandledPromptBehavior'],
-    });
+    await this.#configStorage.updateConfig(
+      {
+        acceptInsecureCerts: params['acceptInsecureCerts'],
+        userPromptHandler: params['unhandledPromptBehavior'],
+      },
+      undefined,
+      [context.browserContextId],
+    );
 
     return {
       userContext: context.browserContextId,
@@ -175,6 +179,21 @@ export class BrowserProcessor {
     };
   }
 
+  async #getWindowBounds(windowId: number): Promise<Protocol.Browser.Bounds> {
+    try {
+      const {bounds} = await this.#browserCdpClient.sendCommand(
+        'Browser.getWindowBounds',
+        {windowId},
+      );
+      return bounds;
+    } catch (err) {
+      if ((err as Error).message.includes('Browser window not found')) {
+        throw new UnknownErrorException('no such client window');
+      }
+      throw err;
+    }
+  }
+
   async setClientWindowState(
     params: Browser.SetClientWindowStateParameters,
   ): Promise<Browser.SetClientWindowStateResult> {
@@ -201,29 +220,58 @@ export class BrowserProcessor {
 
     const windowId = Number.parseInt(clientWindow);
     if (isNaN(windowId)) {
-      throw new InvalidArgumentException('no such client window');
+      throw new UnknownErrorException('no such client window');
     }
 
-    await this.#browserCdpClient.sendCommand('Browser.setWindowBounds', {
-      windowId,
-      bounds,
-    });
+    // Verify the window exists and fetch its current state.
+    const currentBounds = await this.#getWindowBounds(windowId);
+    const currentWindowState = currentBounds.windowState ?? 'normal';
+    const hasDimensions =
+      params.state === 'normal' &&
+      (params.width !== undefined ||
+        params.height !== undefined ||
+        params.x !== undefined ||
+        params.y !== undefined);
 
-    const result = await this.#browserCdpClient.sendCommand(
-      'Browser.getWindowBounds',
-      {
+    // CDP rejects or ignores direct transitions and bounds updates from
+    // non-normal states (`minimized`, `maximized`, `fullscreen`), so restore
+    // the window to `normal` first before applying the target state/bounds.
+    if (
+      currentWindowState !== 'normal' &&
+      (params.state !== currentWindowState || hasDimensions)
+    ) {
+      await this.#browserCdpClient.sendCommand('Browser.setWindowBounds', {
         windowId,
-      },
-    );
+        bounds: {windowState: 'normal'},
+      });
+    }
+
+    // Apply the target state or dimensions if not already satisfied by the
+    // restore to `normal` above.
+    if (
+      params.state !== 'normal' ||
+      currentWindowState === 'normal' ||
+      hasDimensions
+    ) {
+      await this.#browserCdpClient.sendCommand('Browser.setWindowBounds', {
+        windowId,
+        bounds,
+      });
+    }
+
+    // `Browser.setWindowBounds` returns an empty result, and the window manager
+    // may clamp or ignore the requested state/dimensions, so fetch the actual
+    // resulting bounds.
+    const resultBounds = await this.#getWindowBounds(windowId);
 
     return {
       active: false,
       clientWindow: `${windowId}`,
-      state: result.bounds.windowState ?? 'normal',
-      height: result.bounds.height ?? 0,
-      width: result.bounds.width ?? 0,
-      x: result.bounds.left ?? 0,
-      y: result.bounds.top ?? 0,
+      state: resultBounds.windowState ?? 'normal',
+      height: resultBounds.height ?? 0,
+      width: resultBounds.width ?? 0,
+      x: resultBounds.left ?? 0,
+      y: resultBounds.top ?? 0,
     };
   }
 
@@ -293,33 +341,20 @@ export class BrowserProcessor {
   async setDownloadBehavior(
     params: Browser.SetDownloadBehaviorParameters,
   ): Promise<EmptyResult> {
-    let userContexts: string[];
-    if (params.userContexts === undefined) {
-      // Global download behavior.
-      userContexts = (await this.#userContextStorage.getUserContexts()).map(
-        (c) => c.userContext,
-      );
-    } else {
-      // Download behavior for the specific user contexts.
-      userContexts = Array.from(
-        await this.#userContextStorage.verifyUserContextIdList(
-          params.userContexts,
-        ),
-      );
-    }
-
-    if (params.userContexts === undefined) {
-      // Store the global setting to be applied for the future user contexts.
-      this.#configStorage.updateGlobalConfig({
+    await this.#configStorage.updateConfig(
+      {
         downloadBehavior: params.downloadBehavior,
-      });
-    } else {
-      params.userContexts.map((userContext) =>
-        this.#configStorage.updateUserContextConfig(userContext, {
-          downloadBehavior: params.downloadBehavior,
-        }),
-      );
-    }
+      },
+      undefined,
+      params.userContexts,
+    );
+
+    const userContexts =
+      params.userContexts === undefined
+        ? (await this.#userContextStorage.getUserContexts()).map(
+            (c) => c.userContext,
+          )
+        : Array.from(new Set(params.userContexts));
 
     await Promise.all(
       userContexts.map(async (userContext) => {

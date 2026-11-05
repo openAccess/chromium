@@ -148,6 +148,7 @@ class OmniboxAutofillDelegateTest
         mojom::ActionPersistence::kFill, form.global_id(),
         form.fields()[1].global_id(), &credit_card,
         AutofillTriggerSource::kOmniboxAutofill,
+        /*require_user_confirmation=*/false,
         /*blocked_fields=*/{});
   }
 
@@ -985,7 +986,7 @@ TEST_F(OmniboxAutofillDelegateTest, OnSuggestionsShown_ForwardToObserver) {
 
   EXPECT_CALL(observer, OnSuggestionsShown(::testing::Ref(autofill_manager()),
                                            testing::_));
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   autofill_manager().RemoveObserver(&observer);
 }
@@ -1003,7 +1004,7 @@ TEST_F(OmniboxAutofillDelegateTest, OnSuggestionsShown_LogFormEvents) {
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
 
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   // Verify interaction and shown form events.
   histogram_tester.ExpectBucketCount(
@@ -1042,7 +1043,7 @@ TEST_F(OmniboxAutofillDelegateTest, OnSuggestionsShown_LogTimingMetrics) {
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
 
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   // Verify timing metrics logging.
   histogram_tester.ExpectTotalCount(
@@ -1062,7 +1063,7 @@ TEST_F(OmniboxAutofillDelegateTest, OnSuggestionsShown_LogFunnelMetrics) {
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
 
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   // Reset the manager to trigger logger destruction and metrics logging.
   test_api(autofill_manager()).Reset();
@@ -1092,7 +1093,7 @@ TEST_F(OmniboxAutofillDelegateTest, OnSuggestionsShown_DoesNotLogKeyMetrics) {
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
 
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   // Reset the manager to trigger logger destruction and metrics logging.
   test_api(autofill_manager()).Reset();
@@ -1123,7 +1124,7 @@ TEST_F(OmniboxAutofillDelegateTest,
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
 
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   histogram_tester.ExpectBucketCount("Autofill.OmniboxAutofill.Events",
                                      OmniboxAutofillEvents::kChipClicked, 1);
@@ -1176,7 +1177,8 @@ TEST_F(OmniboxAutofillDelegateTest,
 
   Suggestion suggestion(SuggestionType::kCreditCardEntry);
 
-  delegate->DidAcceptSuggestion(suggestion, /*metadata=*/{});
+  delegate->DidAcceptSuggestion(suggestion, /*metadata=*/{}, form.global_id(),
+                                form.fields().front().global_id());
 
   histogram_tester.ExpectBucketCount("Autofill.OmniboxAutofill.Events",
                                      OmniboxAutofillEvents::kSuggestionAccepted,
@@ -1230,7 +1232,7 @@ TEST_F(OmniboxAutofillDelegateTest,
   // prerequisite for logging submission metrics.
   std::vector<Suggestion> suggestions = {
       Suggestion(SuggestionType::kCreditCardEntry)};
-  delegate->OnSuggestionsShown(suggestions, std::nullopt);
+  delegate->OnSuggestionsShown(suggestions, /*metadata=*/{});
 
   // Fill the form synchronously using the local card.
   AutofillForm(form, local_card);
@@ -1455,7 +1457,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_SubframeForm) {
   std::string guid = cards[0]->guid();
   suggestion.payload = Suggestion::Guid(guid);
 
-  delegate->DidSelectSuggestion(suggestion);
+  delegate->DidSelectSuggestion(suggestion, child_form.global_id(),
+                                child_form.fields().front().global_id());
 
   // Trigger fill (DidAcceptSuggestion).
   EXPECT_CALL(autofill_driver(1),
@@ -1464,7 +1467,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_SubframeForm) {
       .Times(1);
   EXPECT_CALL(autofill_driver(0), ExecuteApplyFormAction).Times(0);
 
-  delegate->DidAcceptSuggestion(suggestion, {});
+  delegate->DidAcceptSuggestion(suggestion, {}, child_form.global_id(),
+                                child_form.fields().front().global_id());
 }
 
 // Tests that selecting and accepting a credit card suggestion for a main frame
@@ -1514,7 +1518,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_MainFrameForm) {
   std::string guid = cards[0]->guid();
   suggestion.payload = Suggestion::Guid(guid);
 
-  delegate->DidSelectSuggestion(suggestion);
+  delegate->DidSelectSuggestion(suggestion, form.global_id(),
+                                form.fields().front().global_id());
 
   // Trigger fill (DidAcceptSuggestion).
   EXPECT_CALL(autofill_driver(0),
@@ -1522,7 +1527,8 @@ TEST_F(OmniboxAutofillDelegateFillingTest, FillOrPreviewCard_MainFrameForm) {
                                      mojom::ActionPersistence::kFill))
       .Times(1);
 
-  delegate->DidAcceptSuggestion(suggestion, {});
+  delegate->DidAcceptSuggestion(suggestion, {}, form.global_id(),
+                                form.fields().front().global_id());
 }
 
 }  // namespace

@@ -11,6 +11,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "content/public/browser/content_browser_client.h"
+#include "content/public/common/child_process_id.h"
 #include "fuchsia_web/webengine/browser/content_directory_loader_factory.h"
 #include "fuchsia_web/webengine/web_engine_export.h"
 
@@ -53,14 +54,14 @@ class WEB_ENGINE_EXPORT WebEngineContentBrowserClient final
   bool ShouldEnableStrictSiteIsolation() override;
   void AppendExtraCommandLineSwitches(base::CommandLine* command_line,
                                       int child_process_id) override;
-  std::string GetApplicationLocale() override;
+  base::i18n::LanguageTag GetApplicationLocale() override;
   std::string GetAcceptLangs(content::BrowserContext* context) override;
   bool MayDeleteServiceWorkerRegistration(
       const GURL& scope,
       content::BrowserContext* browser_context) override;
   base::OnceClosure SelectClientCertificate(
       content::BrowserContext* browser_context,
-      int process_id,
+      content::ChildProcessId process_id,
       content::WebContents* web_contents,
       net::SSLCertRequestInfo* cert_request_info,
       net::ClientCertIdentityList client_certs,

@@ -4,7 +4,9 @@
 
 #include <string>
 
+#include "base/command_line.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/buildflag.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
@@ -12,6 +14,8 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/toolbar/bookmark_sub_menu_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/app_menu/app_menu_search_bar_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/browser_app_menu_button.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -26,22 +30,29 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/base/test/ui_controls.h"
+#include "ui/base/ui_base_switches.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/controls/menu/menu_item_view.h"
 #include "ui/views/controls/menu/submenu_view.h"
+#include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view_utils.h"
 
 // TODO(crbug.com/498258602): Drag and drop tests are flaky on MacOS and
 // ChromeOS.
-// TODO(crbug.com/388531778): DND tests fail on Windows.
-#if BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 
 namespace {
 
-class AppMenuDragAndDropInteractiveTest : public InteractiveBrowserTest {
+class AppMenuDragAndDropInteractiveTest
+    : public InteractiveBrowserTest,
+      public testing::WithParamInterface<bool> {
  public:
-  AppMenuDragAndDropInteractiveTest() = default;
+  AppMenuDragAndDropInteractiveTest() {
+    scoped_feature_list_.InitWithFeatureState(features::kAppMenuGlowUp,
+                                              GetParam());
+  }
   ~AppMenuDragAndDropInteractiveTest() override = default;
 
   void SetUpOnMainThread() override {
@@ -51,11 +62,22 @@ class AppMenuDragAndDropInteractiveTest : public InteractiveBrowserTest {
   }
 
   auto TopCenter() {
-    return base::BindOnce([](ui::TrackedElement* el) {
+    return base::BindLambdaForTesting([this](ui::TrackedElement* el) {
       auto* const view =
           views::test::InteractiveViewsTestApi::AsView<views::View>(el);
       return view->GetBoundsInScreen().top_center() + gfx::Vector2d(0, 5);
     });
+  }
+
+  // On Linux, dropping a bookmark closes the app menu, so re-open the
+  // bookmarks submenu. On other platforms the menu stays open.
+  auto EnsureBookmarksMenuOpenAfterDrop() {
+#if BUILDFLAG(IS_LINUX)
+    return Steps(PressButton(kToolbarAppMenuButtonElementId),
+                 SelectMenuItem(AppMenuModel::kBookmarksMenuItem));
+#else
+    return Steps();
+#endif
   }
 
   static views::MenuItemView* FindMenuItemWithTitle(views::View* root,
@@ -104,9 +126,12 @@ class AppMenuDragAndDropInteractiveTest : public InteractiveBrowserTest {
       return false;
     });
   }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(AppMenuDragAndDropInteractiveTest,
+IN_PROC_BROWSER_TEST_P(AppMenuDragAndDropInteractiveTest,
                        BookmarksDragAndDrop) {
   if (views::test::InteractionTestUtilSimulatorViews::IsWayland()) {
     GTEST_SKIP() << "System DnD simulation is not supported on Wayland.";
@@ -132,14 +157,13 @@ IN_PROC_BROWSER_TEST_F(AppMenuDragAndDropInteractiveTest,
       DragMouseTo(kANodeMenuId, CenterPoint(), /*release=*/false)
           .SetMustRemainVisible(false),
       MoveMouseTo(kANodeMenuId, TopCenter()), ReleaseMouse(),
-      PressButton(kToolbarAppMenuButtonElementId),
-      SelectMenuItem(AppMenuModel::kBookmarksMenuItem),
+      EnsureBookmarksMenuOpenAfterDrop(),
       NameMenuItemWithTitle(kBNodeMenuId, u"b"),
       NameMenuItemWithTitle(kANodeMenuId, u"a"),
       CheckMenuItemBefore(kANodeMenuId, u"b"));
 }
 
-IN_PROC_BROWSER_TEST_F(AppMenuDragAndDropInteractiveTest,
+IN_PROC_BROWSER_TEST_P(AppMenuDragAndDropInteractiveTest,
                        BookmarksDragAndDropToNestedFolder) {
   if (views::test::InteractionTestUtilSimulatorViews::IsWayland()) {
     GTEST_SKIP() << "System DnD simulation is not supported on Wayland.";
@@ -163,15 +187,14 @@ IN_PROC_BROWSER_TEST_F(AppMenuDragAndDropInteractiveTest,
       CheckViewProperty(kBNodeMenuId, &views::MenuItemView::title, u"b"),
       MoveMouseTo(kANodeMenuId),
       DragMouseTo(kBNodeMenuId, CenterPoint()).SetMustRemainVisible(false),
-      PressButton(kToolbarAppMenuButtonElementId),
-      SelectMenuItem(AppMenuModel::kBookmarksMenuItem),
+      EnsureBookmarksMenuOpenAfterDrop(),
       NameMenuItemWithTitle(kBNodeMenuId, u"b"),
       CheckViewProperty(kBNodeMenuId, &views::MenuItemView::title, u"b"),
       SelectMenuItem(kBNodeMenuId), NameMenuItemWithTitle("a_in_b", u"a"),
       CheckViewProperty("a_in_b", &views::MenuItemView::title, u"a"));
 }
 
-IN_PROC_BROWSER_TEST_F(AppMenuDragAndDropInteractiveTest,
+IN_PROC_BROWSER_TEST_P(AppMenuDragAndDropInteractiveTest,
                        BookmarksDragAndDropFromNestedFolder) {
   if (views::test::InteractionTestUtilSimulatorViews::IsWayland()) {
     GTEST_SKIP() << "System DnD simulation is not supported on Wayland.";
@@ -197,8 +220,7 @@ IN_PROC_BROWSER_TEST_F(AppMenuDragAndDropInteractiveTest,
       DragMouseTo(kANodeMenuId, CenterPoint(), /*release=*/false)
           .SetMustRemainVisible(false),
       MoveMouseTo(kANodeMenuId, TopCenter()), ReleaseMouse(),
-      PressButton(kToolbarAppMenuButtonElementId),
-      SelectMenuItem(AppMenuModel::kBookmarksMenuItem),
+      EnsureBookmarksMenuOpenAfterDrop(),
       NameMenuItemWithTitle(kBNodeMenuId, u"b"),
       CheckViewProperty(kBNodeMenuId, &views::MenuItemView::title, u"b"),
       NameMenuItemWithTitle(kANodeMenuId, u"a"),
@@ -206,9 +228,13 @@ IN_PROC_BROWSER_TEST_F(AppMenuDragAndDropInteractiveTest,
       CheckMenuItemBefore(kANodeMenuId, u"b"));
 }
 
+INSTANTIATE_TEST_SUITE_P(All,
+                         AppMenuDragAndDropInteractiveTest,
+                         testing::Bool());
+
 }  // namespace
 
-#endif  // BUILDFLAG(IS_LINUX)
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 
 using AppMenuInteractiveTest = InteractiveBrowserTest;
 
@@ -217,4 +243,66 @@ IN_PROC_BROWSER_TEST_F(AppMenuInteractiveTest, DoNotCrashOnBrowserClose) {
       PressButton(kToolbarAppMenuButtonElementId),
       Do([this]() { browser()->GetWindow()->Close(); }),
       WaitForHide(kBrowserViewElementId));
+}
+
+class AppMenuSearchInteractiveTest : public InteractiveBrowserTest {
+ public:
+  AppMenuSearchInteractiveTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {features::kAppMenuGlowUp, features::kChroMenuSearch}, {});
+  }
+  ~AppMenuSearchInteractiveTest() override = default;
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    InteractiveBrowserTest::SetUpCommandLine(command_line);
+#if BUILDFLAG(IS_LINUX)
+    // On Linux with GTK4, GtkIMMulticontext re-injects unhandled non-printable
+    // keys onto an offscreen dummy GtkWindow when a TextInputClient is focused.
+    // Disable the GTK IME module so synthetic X11 key events route through
+    // InputMethodAuraLinux synchronously.
+    command_line->AppendSwitch(switches::kDisableGtkIme);
+#endif
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(AppMenuSearchInteractiveTest, SearchBarKeyEventRouting) {
+  RunTestSequence(
+      MoveMouseTo(kToolbarBackButtonElementId),
+      PressButton(kToolbarAppMenuButtonElementId),
+      WaitForShow(AppMenuSearchBarView::kSearchFieldElementId),
+      WaitForShow(AppMenuModel::kMoreToolsMenuItem),
+      CheckViewProperty(AppMenuSearchBarView::kSearchFieldElementId,
+                        &views::View::HasFocus, false),
+      // Pressing Down arrow on the active browser window routes through
+      // MenuController to focus the search field inside the non-activating
+      // MenuHost popup.
+      SendKeyPress(kBrowserViewElementId, ui::VKEY_DOWN, ui::EF_NONE),
+      CheckViewProperty(AppMenuSearchBarView::kSearchFieldElementId,
+                        &views::View::HasFocus, true),
+      // Typing characters on the active browser window routes through the
+      // shared ui::InputMethod into the focused menu-hosted search field and
+      // filters the menu.
+      SendKeyPress(kBrowserViewElementId, ui::VKEY_D, ui::EF_NONE),
+      SendKeyPress(kBrowserViewElementId, ui::VKEY_O, ui::EF_NONE),
+      CheckViewProperty(AppMenuSearchBarView::kSearchFieldElementId,
+                        &views::Textfield::GetText, u"do"),
+      CheckViewProperty(AppMenuSearchBarView::kSearchFieldElementId,
+                        &views::View::HasFocus, true),
+      WaitForShow(AppMenuSearchBarView::kBackButtonElementId),
+      WaitForHide(AppMenuModel::kMoreToolsMenuItem),
+      // Pressing Escape clears the search query while keeping search results
+      // and the back button visible without closing the menu.
+      SendKeyPress(kBrowserViewElementId, ui::VKEY_ESCAPE, ui::EF_NONE),
+      CheckViewProperty(AppMenuSearchBarView::kSearchFieldElementId,
+                        &views::Textfield::GetText, u""),
+      CheckViewProperty(AppMenuSearchBarView::kSearchFieldElementId,
+                        &views::View::HasFocus, true),
+      WaitForShow(AppMenuSearchBarView::kBackButtonElementId),
+      // Pressing the back button restores the normal menu and search icon.
+      PressButton(AppMenuSearchBarView::kBackButtonElementId),
+      WaitForShow(AppMenuSearchBarView::kSearchIconElementId),
+      WaitForShow(AppMenuModel::kMoreToolsMenuItem));
 }

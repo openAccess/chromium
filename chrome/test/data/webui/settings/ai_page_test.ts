@@ -4,57 +4,79 @@
 
 import 'chrome://settings/settings.js';
 
-import {EntityDataManagerProxyImpl, FeatureOptInState, SettingsAiPageFeaturePrefName as PrefName} from 'chrome://settings/lazy_load.js';
-import type {CrLinkRowElement, SettingsAiPageElement, SettingsPrefsElement} from 'chrome://settings/settings.js';
-import {AiPageInteractions, CrSettingsPrefs, loadTimeData, MetricsBrowserProxyImpl, OpenWindowProxyImpl, resetRouterForTesting, Router, routes} from 'chrome://settings/settings.js';
+// <if expr="_google_chrome">
+import {OnDeviceAiBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
+// </if>
+import type {SettingsAiPageElement} from 'chrome://settings/settings.js';
+import {AiPageInteractions, loadTimeData, MetricsBrowserProxyImpl, OpenWindowProxyImpl, PrefsBrowserProxy, PrefService, resetRouterForTesting, Router, routes} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
 import {isChildVisible, isVisible} from 'chrome://webui-test/test_util.js';
 
-import {TestEntityDataManagerProxy} from './test_entity_data_manager_proxy.js';
 import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+// <if expr="_google_chrome">
+import {TestOnDeviceAiBrowserProxy} from './test_on_device_ai_browser_proxy.js';
+// </if>
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
+
+function getInitialPrefs(): chrome.settingsPrivate.PrefObject[] {
+  return [
+    {
+      key: 'contextual_search.drive_consent_state',
+      type: chrome.settingsPrivate.PrefType.NUMBER,
+      value: 0,
+    },
+  ];
+}
 
 suite('AiPage', function() {
   let metricsBrowserProxy: TestMetricsBrowserProxy;
   let openWindowProxy: TestOpenWindowProxy;
+  // <if expr="_google_chrome">
+  let onDeviceAiBrowserProxy: TestOnDeviceAiBrowserProxy;
+  // </if>
   let page: SettingsAiPageElement;
-  let settingsPrefs: SettingsPrefsElement;
-  let entityDataManager: TestEntityDataManagerProxy;
+  let prefService: PrefService;
 
   suiteSetup(function() {
     metricsBrowserProxy = new TestMetricsBrowserProxy();
     MetricsBrowserProxyImpl.setInstance(metricsBrowserProxy);
     openWindowProxy = new TestOpenWindowProxy();
     OpenWindowProxyImpl.setInstance(openWindowProxy);
+    // <if expr="_google_chrome">
+    onDeviceAiBrowserProxy = new TestOnDeviceAiBrowserProxy();
+    OnDeviceAiBrowserProxyImpl.setInstance(onDeviceAiBrowserProxy);
+    // </if>
 
     loadTimeData.overrideValues({
       showAiPage: true,
       showAiPageAiFeatureSection: true,
       showGoogleSearchAiModeWorkspaceControl: true,
     });
-    settingsPrefs = document.createElement('settings-prefs');
-    return CrSettingsPrefs.initialized;
   });
 
-  setup(function() {
-    entityDataManager = new TestEntityDataManagerProxy();
-    EntityDataManagerProxyImpl.setInstance(entityDataManager);
+  setup(async function() {
+    const prefsBrowserProxy = new TestPrefsBrowserProxy(getInitialPrefs());
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+    PrefService.resetInstanceForTesting();
+    prefService = PrefService.getInstance();
+    await prefService.whenInitialized();
   });
 
   teardown(function() {
     Router.getInstance().resetRouteForTesting();
     metricsBrowserProxy.reset();
     openWindowProxy.reset();
+    // <if expr="_google_chrome">
+    onDeviceAiBrowserProxy.reset();
+    // </if>
   });
 
-  async function createPage() {
+  function createPage() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     page = document.createElement('settings-ai-page');
-    page.prefs = settingsPrefs.prefs!;
     Router.getInstance().navigateTo(routes.AI);
     document.body.appendChild(page);
-    return flushTasks();
   }
 
   async function verifyFeatureVisibilityMetrics(
@@ -78,7 +100,6 @@ suite('AiPage', function() {
   test('FeatureRowsVisibility', async () => {
     // Case 1, a subset of the controls should be visible.
     loadTimeData.overrideValues({
-      showHistorySearchControl: false,
       showComposeControl: true,
       showPasswordChangeControl: false,
       showAiSuggestionsControl: false,
@@ -87,13 +108,9 @@ suite('AiPage', function() {
       showGoogleSearchAiModeWorkspaceControl: true,
     });
     resetRouterForTesting();
-    await createPage();
+    createPage();
 
-    assertEquals(6, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
-
-    assertFalse(isChildVisible(page, '#historySearchRowV2'));
-    await verifyFeatureVisibilityMetrics(
-        'Settings.AiPage.ElementVisibility.HistorySearch', false);
+    assertEquals(5, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
 
     assertTrue(isChildVisible(page, '#composeRowV2'));
     await verifyFeatureVisibilityMetrics(
@@ -124,7 +141,6 @@ suite('AiPage', function() {
 
     // Case 2, a different subset of the controls should be visible.
     loadTimeData.overrideValues({
-      showHistorySearchControl: true,
       showComposeControl: false,
       showPasswordChangeControl: true,
       showAiSuggestionsControl: true,
@@ -133,12 +149,8 @@ suite('AiPage', function() {
       showGoogleSearchAiModeWorkspaceControl: false,
     });
     resetRouterForTesting();
-    await createPage();
-    assertEquals(6, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
-
-    assertTrue(isChildVisible(page, '#historySearchRowV2'));
-    await verifyFeatureVisibilityMetrics(
-        'Settings.AiPage.ElementVisibility.HistorySearch', true);
+    createPage();
+    assertEquals(5, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
 
     assertFalse(isChildVisible(page, '#composeRowV2'));
     await verifyFeatureVisibilityMetrics(
@@ -168,56 +180,16 @@ suite('AiPage', function() {
     assertEquals(0, metricsBrowserProxy.getCallCount('recordBooleanHistogram'));
   });
 
-  test('historySearchRow', async () => {
-    loadTimeData.overrideValues({
-      showAiPage: true,
-      showHistorySearchControl: true,
-    });
-    resetRouterForTesting();
-    await createPage();
-
-    const historySearchRow =
-        page.shadowRoot!.querySelector<CrLinkRowElement>('#historySearchRowV2');
-
-    assertTrue(!!historySearchRow);
-    assertTrue(isVisible(historySearchRow));
-
-    page.setPrefValue(
-        PrefName.HISTORY_SEARCH, FeatureOptInState.NOT_INITIALIZED);
-    assertEquals(
-        loadTimeData.getString('historySearchSublabelOff'),
-        historySearchRow.subLabel);
-
-    page.setPrefValue(PrefName.HISTORY_SEARCH, FeatureOptInState.DISABLED);
-    assertEquals(
-        loadTimeData.getString('historySearchSublabelOff'),
-        historySearchRow.subLabel);
-
-    page.setPrefValue(PrefName.HISTORY_SEARCH, FeatureOptInState.ENABLED);
-    assertEquals(
-        loadTimeData.getString('historySearchSublabelOn'),
-        historySearchRow.subLabel);
-
-    historySearchRow.click();
-    await verifyFeatureInteractionMetrics(
-        AiPageInteractions.HISTORY_SEARCH_CLICK,
-        'Settings.AiPage.HistorySearchEntryPointClick');
-
-    const currentRoute = Router.getInstance().getCurrentRoute();
-    assertEquals(routes.HISTORY_SEARCH, currentRoute);
-    assertEquals(routes.AI, currentRoute.parent);
-  });
-
   test('composeRow', async () => {
     loadTimeData.overrideValues({
       showAiPage: true,
       showComposeControl: true,
     });
     resetRouterForTesting();
-    await createPage();
+    createPage();
 
     const composeRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#composeRowV2');
+        page.shadowRoot.querySelector<HTMLElement>('#composeRowV2');
 
     assertTrue(!!composeRow);
     assertTrue(isVisible(composeRow));
@@ -235,10 +207,10 @@ suite('AiPage', function() {
     loadTimeData.overrideValues({
       showPasswordChangeControl: true,
     });
-    await createPage();
+    createPage();
 
     const passwordChangeRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#passwordChangeRowV2');
+        page.shadowRoot.querySelector<HTMLElement>('#passwordChangeRowV2');
     assertTrue(!!passwordChangeRow);
     assertTrue(isVisible(passwordChangeRow));
 
@@ -251,14 +223,14 @@ suite('AiPage', function() {
     assertEquals(url, loadTimeData.getString('passwordChangeSettingsUrl'));
   });
 
-  test('NoPasswordChangeRowWhenFeatureDisabled', async () => {
+  test('NoPasswordChangeRowWhenFeatureDisabled', () => {
     loadTimeData.overrideValues({
       showPasswordChangeControl: false,
     });
-    await createPage();
+    createPage();
 
     const passwordChangeRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#passwordChangeRowV2');
+        page.shadowRoot.querySelector<HTMLElement>('#passwordChangeRowV2');
     assertTrue(!!passwordChangeRow);
     assertFalse(isVisible(passwordChangeRow));
   });
@@ -268,9 +240,9 @@ suite('AiPage', function() {
       showIndigoControl: true,
       indigoSavedUrl: 'https://example.com/custom_saved',
     });
-    await createPage();
+    createPage();
 
-    const indigoRow = page.shadowRoot!.querySelector<HTMLElement>('#indigoRow');
+    const indigoRow = page.shadowRoot.querySelector<HTMLElement>('#indigoRow');
     assertTrue(!!indigoRow);
     assertTrue(isVisible(indigoRow));
 
@@ -283,13 +255,13 @@ suite('AiPage', function() {
     assertEquals(url, 'https://example.com/custom_saved');
   });
 
-  test('NoIndigoRowWhenFeatureDisabled', async () => {
+  test('NoIndigoRowWhenFeatureDisabled', () => {
     loadTimeData.overrideValues({
       showIndigoControl: false,
     });
-    await createPage();
+    createPage();
 
-    const indigoRow = page.shadowRoot!.querySelector<HTMLElement>('#indigoRow');
+    const indigoRow = page.shadowRoot.querySelector<HTMLElement>('#indigoRow');
     assertTrue(!!indigoRow);
     assertFalse(isVisible(indigoRow));
   });
@@ -300,10 +272,10 @@ suite('AiPage', function() {
       showAiSuggestionsControl: true,
     });
     resetRouterForTesting();
-    await createPage();
+    createPage();
 
     const aiSuggestionsRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#aiSuggestionsRow');
+        page.shadowRoot.querySelector<HTMLElement>('#aiSuggestionsRow');
 
     assertTrue(!!aiSuggestionsRow);
     assertTrue(isVisible(aiSuggestionsRow));
@@ -323,10 +295,10 @@ suite('AiPage', function() {
       showInlineCueMenuControl: true,
     });
     resetRouterForTesting();
-    await createPage();
+    createPage();
 
     const inlineCueMenuRow =
-        page.shadowRoot!.querySelector<HTMLElement>('#inlineCueMenuRow');
+        page.shadowRoot.querySelector<HTMLElement>('#inlineCueMenuRow');
 
     assertTrue(!!inlineCueMenuRow);
     assertTrue(isVisible(inlineCueMenuRow));
@@ -340,15 +312,15 @@ suite('AiPage', function() {
     assertEquals(routes.AI, currentRoute.parent);
   });
 
-  test('skillsRow', async () => {
+  test('skillsRow', () => {
     loadTimeData.overrideValues({
       showAiPage: true,
       showSkillsSettingPage: true,
     });
     resetRouterForTesting();
-    await createPage();
+    createPage();
 
-    const skillsRow = page.shadowRoot!.querySelector<HTMLElement>('#skillsRow');
+    const skillsRow = page.shadowRoot.querySelector<HTMLElement>('#skillsRow');
 
     assertTrue(!!skillsRow);
     assertTrue(isVisible(skillsRow));
@@ -359,18 +331,40 @@ suite('AiPage', function() {
     assertEquals(routes.AI, currentRoute.parent);
   });
 
+  // <if expr="_google_chrome">
+  test('onDeviceAiRow', () => {
+    loadTimeData.overrideValues({
+      showAiPage: true,
+      showOnDeviceAiAdvancedSettings: true,
+    });
+    resetRouterForTesting();
+    createPage();
+
+    const onDeviceAiRow =
+        page.shadowRoot.querySelector<HTMLElement>('#onDeviceAiRow');
+
+    assertTrue(!!onDeviceAiRow);
+    assertTrue(isVisible(onDeviceAiRow));
+    onDeviceAiRow.click();
+
+    const currentRoute = Router.getInstance().getCurrentRoute();
+    assertEquals(routes.ON_DEVICE_AI, currentRoute);
+    assertEquals(routes.AI, currentRoute.parent);
+  });
+  // </if>
+
   test('GoogleSearchAiModeRow', async () => {
     loadTimeData.overrideValues({
       showGoogleSearchAiModeWorkspaceControl: true,
     });
-    await createPage();
+    createPage();
 
-    const row = page.shadowRoot!.querySelector<HTMLElement>(
+    const row = page.shadowRoot.querySelector<HTMLElement>(
         '#googleSearchAiModeWorkspaceRow');
     assertTrue(!!row);
     assertTrue(isVisible(row));
 
-    page.setPrefValue('contextual_search.drive_consent_state', 0);
+    await prefService.setPrefValue('contextual_search.drive_consent_state', 0);
     row.click();
     await verifyFeatureInteractionMetrics(
         AiPageInteractions.GOOGLE_SEARCH_AI_MODE_WORKSPACE_CLICK,
@@ -384,14 +378,14 @@ suite('AiPage', function() {
     loadTimeData.overrideValues({
       showGoogleSearchAiModeWorkspaceControl: true,
     });
-    await createPage();
+    createPage();
 
-    const row = page.shadowRoot!.querySelector<HTMLElement>(
+    const row = page.shadowRoot.querySelector<HTMLElement>(
         '#googleSearchAiModeWorkspaceRow');
     assertTrue(!!row);
     assertTrue(isVisible(row));
 
-    page.setPrefValue('contextual_search.drive_consent_state', 1);
+    await prefService.setPrefValue('contextual_search.drive_consent_state', 1);
     row.click();
     await verifyFeatureInteractionMetrics(
         AiPageInteractions.GOOGLE_SEARCH_AI_MODE_WORKSPACE_CLICK,
@@ -402,13 +396,13 @@ suite('AiPage', function() {
         loadTimeData.getString('googleSearchAiModeRestrictedUrl'), url);
   });
 
-  test('NoGoogleSearchAiModeRowWhenFeatureDisabled', async () => {
+  test('NoGoogleSearchAiModeRowWhenFeatureDisabled', () => {
     loadTimeData.overrideValues({
       showGoogleSearchAiModeWorkspaceControl: false,
     });
-    await createPage();
+    createPage();
 
-    const row = page.shadowRoot!.querySelector<HTMLElement>(
+    const row = page.shadowRoot.querySelector<HTMLElement>(
         '#googleSearchAiModeWorkspaceRow');
     assertTrue(!!row);
     assertFalse(isVisible(row));

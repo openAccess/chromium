@@ -17,8 +17,8 @@
 #include "chrome/browser/permissions/one_time_permissions_tracker.h"
 #include "chrome/browser/permissions/one_time_permissions_tracker_factory.h"
 #include "chrome/browser/permissions/one_time_permissions_tracker_observer.h"
-#include "components/content_settings/core/browser/content_settings_registry.h"
 #include "components/content_settings/core/browser/content_settings_rule.h"
+#include "components/content_settings/core/browser/content_settings_utils.h"
 #include "components/content_settings/core/browser/permission_settings_registry.h"
 #include "components/content_settings/core/browser/user_modifiable_provider.h"
 #include "components/content_settings/core/common/content_settings.h"
@@ -282,23 +282,19 @@ void OneTimePermissionProvider::ExpireWebsiteSetting(
 
 void OneTimePermissionProvider::OnSuspend() {
   std::vector<ContentSettingEntry> patterns_to_delete;
-  auto* registry = content_settings::ContentSettingsRegistry::GetInstance();
 
-  for (const auto* info : *registry) {
-    auto setting_type = info->website_settings_info()->type();
-    if (permissions::PermissionUtil::DoesStoreTemporaryGrantsInHcsm(
-            setting_type)) {
-      std::unique_ptr<content_settings::RuleIterator> rule_iterator(
-          value_map_.GetRuleIterator(setting_type));
+  for (auto setting_type :
+       content_settings::GetTypesWithTemporaryGrantsInHcsm()) {
+    std::unique_ptr<content_settings::RuleIterator> rule_iterator(
+        value_map_.GetRuleIterator(setting_type));
 
-      while (rule_iterator && rule_iterator->HasNext()) {
-        auto rule = rule_iterator->Next();
-        patterns_to_delete.emplace_back(setting_type, rule->primary_pattern,
-                                        rule->secondary_pattern);
-        permissions::PermissionUmaUtil::RecordOneTimePermissionEvent(
-            setting_type,
-            permissions::OneTimePermissionEvent::EXPIRED_ON_SUSPEND);
-      }
+    while (rule_iterator && rule_iterator->HasNext()) {
+      auto rule = rule_iterator->Next();
+      patterns_to_delete.emplace_back(setting_type, rule->primary_pattern,
+                                      rule->secondary_pattern);
+      permissions::PermissionUmaUtil::RecordOneTimePermissionEvent(
+          setting_type,
+          permissions::OneTimePermissionEvent::EXPIRED_ON_SUSPEND);
     }
   }
 
@@ -360,18 +356,6 @@ void OneTimePermissionProvider::DeleteEntriesAndNotify(
     for (const auto& pattern : entries_to_delete) {
       value_map_.DeleteValue(pattern.primary_pattern, pattern.secondary_pattern,
                              pattern.type);
-
-      // In all the observable `OneTimePermissionsTrackerObserver` events
-      // which are emitted from the tracker, the tracker knows for which
-      // origins and content settings it can halt bookkeeping. However, the
-      // tracker isn't aware of externally deleted content settings. To
-      // prevent it from triggering observers for an already deleted content
-      // setting, we need to inform it about the deletion here (and only
-      // here).
-      if (one_time_permissions_tracker_) {
-        one_time_permissions_tracker_->CleanupStateForExpiredContentSetting(
-            pattern.type, pattern.primary_pattern, pattern.secondary_pattern);
-      }
     }
   }
 

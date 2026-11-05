@@ -29,6 +29,7 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/attestation/mock_attestation_flow.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/attestation/fake_attestation_client.h"
 #include "chromeos/ash/components/dbus/attestation/interface.pb.h"
@@ -338,6 +339,7 @@ TestingProfile* TpmChallengeKeySubtleTestBase::CreateUserProfile(
   auto test_account =
       AccountId::FromUserEmailGaiaId(kTestUserEmail, kTestUserGaiaId);
   fake_user_manager_->AddUserWithAffiliation(test_account, is_affiliated);
+  AnnotatedAccountId::Set(testing_profile, test_account);
 
   return testing_profile;
 }
@@ -492,6 +494,7 @@ class KioskTpmChallengeKeySubtleTest : public TpmChallengeKeySubtleTestBase {
         true);
     fake_user_manager_->AddUserWithAffiliation(user->GetAccountId(),
                                                /* is_affiliated= */ true);
+    AnnotatedAccountId::Set(testing_profile, user->GetAccountId());
     return testing_profile;
   }
 
@@ -823,7 +826,7 @@ TEST_F(AffiliatedUserTpmChallengeKeySubtleTest, RestorePreparedKeyState) {
   const char* const key_name = kNonDefaultKeyName;
 
   // Inject mocks into the next result of CreateForPreparedKey.
-  TpmChallengeKeySubtleFactory::SetForTesting(
+  TpmChallengeKeySubtleFactory::ScopedOneshotOverrideForTesting scoped_override(
       std::make_unique<TpmChallengeKeySubtleImpl>(&mock_attestation_flow_,
                                                   &mock_cert_uploader_));
 
@@ -880,7 +883,7 @@ TEST_F(AffiliatedUserTpmChallengeKeySubtleTest, KeyRegistrationFailed) {
   const char* const key_name = kNonDefaultKeyName;
 
   // Inject mocks into the next result of CreateForPreparedKey.
-  TpmChallengeKeySubtleFactory::SetForTesting(
+  TpmChallengeKeySubtleFactory::ScopedOneshotOverrideForTesting scoped_override(
       std::make_unique<TpmChallengeKeySubtleImpl>(&mock_attestation_flow_,
                                                   &mock_cert_uploader_));
 

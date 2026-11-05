@@ -7,12 +7,25 @@
 
 #include <stddef.h>
 
+#include <algorithm>
+#include <atomic>
 #include <concepts>
 #include <list>
+#include <memory>
 #include <optional>
 #include <utility>
 
+#include "base/base_export.h"
 #include "base/check.h"
+#include "base/debug/leak_annotations.h"
+#include "base/feature_list.h"
+#include "base/location.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/memory_coordinator/async_memory_consumer_registration.h"
+#include "base/memory_coordinator/memory_consumer.h"
+#include "base/memory_coordinator/memory_coordinator_features.h"
+#include "base/memory_coordinator/memory_limit.h"
+#include "base/task/sequenced_task_runner.h"
 
 namespace base {
 namespace trace_event::internal {
@@ -29,6 +42,32 @@ struct GetKeyFromKVPair {
   constexpr const T1& operator()(const std::pair<T1, T2>& pair) {
     return pair.first;
   }
+};
+
+inline bool IsLRUCacheMemoryConsumerEnabled() {
+  return base::FeatureList::GetInstance() &&
+         base::FeatureList::IsEnabled(kLRUCacheMemoryConsumer);
+}
+
+// Encapsulates the PassiveMemoryConsumer and its registration on the heap so
+// that it remains bound to the sequence where it was created even if the
+// owning LRUCacheBase is moved, accessed, or destroyed on another sequence.
+class BASE_EXPORT MemoryConsumerImpl : public PassiveMemoryConsumer {
+ public:
+  MemoryConsumerImpl();
+  ~MemoryConsumerImpl() override;
+
+  MemoryLimit current_memory_limit() const {
+    return current_memory_limit_.load(std::memory_order_relaxed);
+  }
+
+ protected:
+  // PassiveMemoryConsumer:
+  void OnUpdateMemoryLimit() override;
+
+ private:
+  std::atomic<MemoryLimit> current_memory_limit_{MemoryLimit::Default()};
+  AsyncMemoryConsumerRegistration registration_;
 };
 
 // Base class for the LRU cache specializations defined below.
@@ -61,24 +100,59 @@ class LRUCacheBase {
   // example, maybe it has special work to do when something is evicted), it
   // can pass NO_AUTO_EVICT to not restrict the cache size.
   explicit LRUCacheBase(std::optional<size_type> max_size)
-      : max_size_(max_size) {}
+      : baseline_max_size_(max_size) {
+    MaybeCreateOrRemoveRegistration();
+  }
 
   // In theory, LRUCacheBase could be copyable, but since copying `ValueList`
   // might be costly, it's currently move-only to ensure users don't
   // accidentally incur performance penalties. If you need this to become
   // copyable, talk to base/ OWNERS.
-  LRUCacheBase(LRUCacheBase&&) noexcept = default;
-  LRUCacheBase& operator=(LRUCacheBase&&) noexcept = default;
+  LRUCacheBase(LRUCacheBase&& other) noexcept
+      : ordering_(std::move(other.ordering_)),
+        index_(std::move(other.index_)),
+        baseline_max_size_(
+            std::exchange(other.baseline_max_size_, std::nullopt)),
+        consumer_(std::move(other.consumer_)),
+        consumer_task_runner_(std::move(other.consumer_task_runner_)) {}
 
-  ~LRUCacheBase() = default;
+  LRUCacheBase& operator=(LRUCacheBase&& other) noexcept {
+    if (this != &other) {
+      ResetRegistration();
+      ordering_ = std::move(other.ordering_);
+      index_ = std::move(other.index_);
+      baseline_max_size_ =
+          std::exchange(other.baseline_max_size_, std::nullopt);
+      consumer_ = std::move(other.consumer_);
+      consumer_task_runner_ = std::move(other.consumer_task_runner_);
+    }
+    return *this;
+  }
+
+  ~LRUCacheBase() { ResetRegistration(); }
 
   // Returns the maximum size of the cache. Valid to call only if there is a max
   // size (NO_AUTO_EVICT was *not* used).
-  size_type max_size() const { return max_size_.value(); }
+  size_type max_size() const {
+    CHECK(baseline_max_size_.has_value());
+
+    if (!consumer_ || baseline_max_size_.value() == 0) {
+      return baseline_max_size_.value();
+    }
+
+    // Some callers (mostly tests) set a max size of 0. We can't support 0
+    // out-of-the box for all callers, because some of them depend on insertions
+    // being guaranteed to work. Because of this, the max size imposed by
+    // MemoryCoordinator is >= 1, but we still need to honor a caller-passed max
+    // size of 0.
+    return std::max<size_type>(
+        1, consumer_->current_memory_limit().Scale(baseline_max_size_.value()));
+  }
 
   void UpdateMaxSize(size_type new_max_size) {
-    max_size_ = new_max_size;
-    ShrinkToSize(new_max_size);
+    baseline_max_size_ = new_max_size;
+    MaybeCreateOrRemoveRegistration();
+    ShrinkToSize(max_size());
   }
 
   // Inserts an item into the list. If an existing item has the same key, it is
@@ -94,16 +168,18 @@ class LRUCacheBase {
       // Erase the reference to it. The index reference will be replaced in the
       // code below.
       Erase(index_iter->second);
-    } else if (max_size_.has_value()) {
+    }
+
+    if (baseline_max_size_.has_value()) {
       // The only way an insertion can fail is if max size is zero. In other
       // cases, another item will be evicted to make room for the new item.
-      if (max_size_.value() == 0u) {
+      if (max_size() == 0u) {
         return end();
       }
 
       // New item is being inserted which might make it larger than the maximum
       // size: kick the oldest thing out if necessary.
-      ShrinkToSize(max_size_.value() - 1);
+      ShrinkToSize(max_size() - 1);
     }
 
     ordering_.push_front(std::move(value));
@@ -163,7 +239,9 @@ class LRUCacheBase {
   void Swap(LRUCacheBase& other) {
     ordering_.swap(other.ordering_);
     index_.swap(other.index_);
-    std::swap(max_size_, other.max_size_);
+    std::swap(baseline_max_size_, other.baseline_max_size_);
+    std::swap(consumer_, other.consumer_);
+    std::swap(consumer_task_runner_, other.consumer_task_runner_);
   }
 
   // Erases the item referenced by the given iterator. An iterator to the item
@@ -250,12 +328,44 @@ class LRUCacheBase {
   friend size_t trace_event::internal::DoEstimateMemoryUsageForLruCache(
       const LruCacheType&);
 
+  void MaybeCreateOrRemoveRegistration() {
+    if (!IsLRUCacheMemoryConsumerEnabled()) {
+      return;
+    }
+    if (baseline_max_size_.has_value() && !consumer_ &&
+        SequencedTaskRunner::HasCurrentDefault()) {
+      consumer_ = std::make_unique<MemoryConsumerImpl>();
+      consumer_task_runner_ = SequencedTaskRunner::GetCurrentDefault();
+    } else if (!baseline_max_size_.has_value() && consumer_) {
+      ResetRegistration();
+    }
+  }
+
+  void ResetRegistration() {
+    if (!consumer_) {
+      return;
+    }
+    // Destroy synchronously if we are already on the creation sequence;
+    // otherwise, post deletion back to the creation sequence where
+    // AsyncMemoryConsumerRegistration is sequence-bound.
+    if (consumer_task_runner_->RunsTasksInCurrentSequence()) {
+      consumer_.reset();
+    } else {
+      ANNOTATE_LEAKING_OBJECT_PTR(consumer_.get());
+      consumer_task_runner_->DeleteSoon(FROM_HERE, consumer_.release());
+    }
+    consumer_task_runner_.reset();
+  }
+
   ValueList ordering_;
   KeyIndex index_;
 
-  // Indicates the maximum size of the cache. If nullopt, there is no maximum
-  // size and eviction is not done automatically.
-  std::optional<size_type> max_size_;
+  // Indicates the requested maximum size of the cache. If nullopt, there is no
+  // maximum size and eviction is not done automatically.
+  std::optional<size_type> baseline_max_size_;
+
+  std::unique_ptr<MemoryConsumerImpl> consumer_;
+  scoped_refptr<SequencedTaskRunner> consumer_task_runner_;
 };
 
 }  // namespace internal

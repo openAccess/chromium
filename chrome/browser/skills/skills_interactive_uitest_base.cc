@@ -24,6 +24,7 @@
 #include "chrome/browser/sync/data_type_store_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/webui/skills/skills_dialog_view.h"
 #include "chrome/common/channel_info.h"
@@ -36,6 +37,7 @@
 #include "components/skills/proto/skill.pb.h"
 #include "components/sync/model/data_type_store_service.h"
 #include "content/public/test/browser_test.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 
 namespace skills {
@@ -110,7 +112,7 @@ ui::test::InteractiveTestApi::MultiStep
 SkillsInteractiveUiTestBase::CheckToastIsShowing(ToastId toast_id) {
   return PollUntil(
       [this, toast_id]() {
-        auto* controller = browser()->GetFeatures().toast_controller();
+        auto* controller = ToastController::From(browser());
         return controller && controller->IsShowingToast() &&
                controller->GetCurrentToastId() == toast_id;
       },
@@ -417,6 +419,10 @@ SkillsInteractiveUiTestBase::Seed1PSkills(
     GURL api_url(features::kSkillsServiceApiUrl.Get());
     test_url_loader_factory_.AddResponse(api_url.spec(), response_data,
                                          net::HTTP_OK);
+    // Trigger a fetch immediately so `Seed1PSkills` also works when called
+    // after the Glic panel has already been opened (which otherwise only
+    // triggers `RefreshDiscoverySkills()` on panel open).
+    GetSkillsService()->FetchDiscoverySkills();
   });
 }
 

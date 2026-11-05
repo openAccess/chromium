@@ -11,11 +11,9 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isA;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -38,14 +36,14 @@ import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.os.Build;
+import android.os.LocaleList;
 import android.provider.Settings;
 import android.view.ActionMode;
 import android.view.Menu;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.textclassifier.TextClassification;
-
-import androidx.test.filters.SmallTest;
+import android.view.textclassifier.TextClassifier;
+import android.widget.FrameLayout;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -53,7 +51,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.InOrder;
+import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnit;
@@ -62,6 +62,7 @@ import org.robolectric.RuntimeEnvironment;
 import org.robolectric.fakes.RoboMenu;
 import org.robolectric.util.ReflectionHelpers;
 
+import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.SelectionActionMenuClientWrapper.MenuType;
@@ -69,6 +70,7 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.blink_public.common.BlinkFeatures;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.content.browser.GestureListenerManagerImpl;
 import org.chromium.content.browser.PopupController;
@@ -86,6 +88,7 @@ import org.chromium.content_public.browser.SelectionMenuItem.ItemGroupOffset;
 import org.chromium.content_public.browser.SelectionPopupController;
 import org.chromium.content_public.browser.selection.SelectionActionMenuDelegate;
 import org.chromium.content_public.browser.selection.SelectionDropdownMenuDelegate;
+import org.chromium.content_public.browser.selection.SelectionDropdownMenuDelegate.ItemClickListener;
 import org.chromium.content_public.browser.test.util.TestSelectionDropdownMenuDelegate;
 import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.ui.base.ViewAndroidDelegate;
@@ -113,26 +116,61 @@ import java.util.List;
 @Features.DisableFeatures({ContentFeatures.NO_SELECTION_MENU_CACHING})
 public class SelectionPopupControllerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
-    private MenuModelBridge mMenuModelBridge;
+
+    // Overrides isAttachedToWindow() to avoid needing a real window, and startActionMode() since
+    // the real one requires a non-null callback and a window to host the action mode.
+    private static class TestView extends FrameLayout {
+        @Nullable ActionMode mActionModeForStart;
+        int mStartActionModeCount;
+        ActionMode.@Nullable Callback mLastActionModeCallback;
+        int mLastActionModeType;
+
+        TestView() {
+            super(ContextUtils.getApplicationContext());
+        }
+
+        @Override
+        public boolean isAttachedToWindow() {
+            return true;
+        }
+
+        @Override
+        public ActionMode startActionMode(ActionMode.Callback callback, int type) {
+            mStartActionModeCount++;
+            mLastActionModeCallback = callback;
+            mLastActionModeType = type;
+            return mActionModeForStart;
+        }
+    }
+
+    @Mock private Context mContext;
+    @Mock private TypedArray mTypedArray;
+    @Mock private WindowAndroid mWindowAndroid;
+    @Mock private WebContentsImpl mWebContents;
+    @Mock private ActionMode mActionMode;
+    @Mock private PackageManager mPackageManager;
+    @Mock private RenderWidgetHostViewImpl mRenderWidgetHostViewImpl;
+    @Mock private RenderFrameHost mRenderFrameHost;
+    @Mock private RenderCoordinatesImpl mRenderCoordinates;
+    @Mock private PopupController mPopupController;
+    @Mock private GestureListenerManagerImpl mGestureStateListenerManager;
+    @Mock private MenuModelBridge mMenuModelBridge;
+    @Mock private ActionModeCallback mActionModeCallback;
+    @Mock private MagnifierAnimator mMagnifierAnimator;
+    @Mock private SelectionActionMenuDelegate mSelectionActionMenuDelegate;
+    @Mock private WindowAndroid mNewWindowAndroid;
+    @Mock private SmartSelectionEventProcessor mLogger;
+    @Captor private ArgumentCaptor<ItemClickListener> mClickListenerCaptor;
+    private final TestView mView = new TestView();
+    private final View mWindowReadbackView = new View(ContextUtils.getApplicationContext());
     private SelectionPopupControllerImpl mController;
-    private Context mContext;
     private WeakReference<Context> mWeakContext;
-    private TypedArray mTypedArray;
-    private WindowAndroid mWindowAndroid;
-    private WebContentsImpl mWebContents;
-    private ViewGroup mView;
     private ViewAndroidDelegate mViewAndroidDelegate;
-    private ActionMode mActionMode;
-    private PackageManager mPackageManager;
-    private SmartSelectionEventProcessor mLogger;
-    private RenderWidgetHostViewImpl mRenderWidgetHostViewImpl;
-    private RenderCoordinatesImpl mRenderCoordinates;
     private ContentResolver mContentResolver;
-    private PopupController mPopupController;
-    private GestureListenerManagerImpl mGestureStateListenerManager;
-    private RenderFrameHost mRenderFrameHost;
-    private ActionModeCallback mActionModeCallback;
     private @Spy TestSelectionClient mTestSelectionClient = new TestSelectionClient();
+
+    // Set on mView before each test so that tests can detect whether exclusion rects were set.
+    private static final List<Rect> SENTINEL_EXCLUSION_RECTS = List.of(new Rect(1, 2, 3, 4));
 
     private static final String MOUNTAIN_FULL = "585 Franklin Street, Mountain View, CA 94041";
     private static final String MOUNTAIN = "Mountain";
@@ -190,30 +228,15 @@ public class SelectionPopupControllerTest {
 
     @Before
     public void setUp() {
-
-        mContext = Mockito.mock(Context.class);
         mWeakContext = new WeakReference<Context>(mContext);
-        mTypedArray = Mockito.mock(TypedArray.class);
-        mWindowAndroid = Mockito.mock(WindowAndroid.class);
-        mWebContents = Mockito.mock(WebContentsImpl.class);
-        mView = Mockito.mock(ViewGroup.class);
         mViewAndroidDelegate = ViewAndroidDelegate.createBasicDelegate(mView);
-        mActionMode = Mockito.mock(ActionMode.class);
-        mPackageManager = Mockito.mock(PackageManager.class);
-        mRenderWidgetHostViewImpl = Mockito.mock(RenderWidgetHostViewImpl.class);
-        mRenderFrameHost = Mockito.mock(RenderFrameHost.class);
-        mRenderCoordinates = Mockito.mock(RenderCoordinatesImpl.class);
-        mLogger = Mockito.mock(SmartSelectionEventProcessor.class);
-        mPopupController = Mockito.mock(PopupController.class);
-        mGestureStateListenerManager = Mockito.mock(GestureListenerManagerImpl.class);
-        mMenuModelBridge = Mockito.mock(MenuModelBridge.class);
-        mActionModeCallback = Mockito.mock(ActionModeCallback.class);
+        mView.setSystemGestureExclusionRects(SENTINEL_EXCLUSION_RECTS);
 
         setDropdownMenuFeatureEnabled(false);
 
         SelectionPopupControllerImpl.setDisableMagnifierForTesting(true);
 
-        mContentResolver = RuntimeEnvironment.application.getContentResolver();
+        mContentResolver = RuntimeEnvironment.getApplication().getContentResolver();
         // To let isDeviceProvisioned() call in showSelectionMenu() return true.
         Settings.Global.putInt(mContentResolver, Settings.Global.DEVICE_PROVISIONED, 1);
 
@@ -222,7 +245,6 @@ public class SelectionPopupControllerTest {
         when(mContext.obtainStyledAttributes(Mockito.any(int[].class))).thenReturn(mTypedArray);
         when(mWebContents.getRenderWidgetHostView()).thenReturn(mRenderWidgetHostViewImpl);
         when(mWebContents.getRenderCoordinates()).thenReturn(mRenderCoordinates);
-        when(mView.isAttachedToWindow()).thenReturn(true);
         when(mRenderCoordinates.getDeviceScaleFactor()).thenReturn(1.f);
         when(mWebContents.getViewAndroidDelegate()).thenReturn(mViewAndroidDelegate);
         when(mWebContents.getContext()).thenReturn(mContext);
@@ -239,7 +261,7 @@ public class SelectionPopupControllerTest {
     @Test
     @Feature({"TextInput", "SmartSelection"})
     public void testSmartSelectionAdjustSelectionRange() {
-        InOrder order = inOrder(mWebContents, mView);
+        InOrder order = inOrder(mWebContents);
         SelectionClient.Result result = resultForAmphitheatre();
 
         // Setup SelectionClient for SelectionPopupController.
@@ -259,8 +281,9 @@ public class SelectionPopupControllerTest {
         order.verify(mWebContents)
                 .adjustSelectionByCharacterOffset(result.startAdjust, result.endAdjust, true);
         assertFalse(mController.isActionModeValid());
+        assertEquals(0, mView.mStartActionModeCount);
 
-        when(mView.startActionMode(any(), anyInt())).thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
 
         // Call showSelectionMenu again, which is adjustSelectionByCharacterOffset triggered.
         showSelectionMenu(
@@ -269,7 +292,9 @@ public class SelectionPopupControllerTest {
                 /* selectionStartOffset= */ 0,
                 MenuSourceType.ADJUST_SELECTION);
 
-        order.verify(mView).startActionMode(isNull(), eq(ActionMode.TYPE_FLOATING));
+        assertEquals(1, mView.mStartActionModeCount);
+        assertNull(mView.mLastActionModeCallback);
+        assertEquals(ActionMode.TYPE_FLOATING, mView.mLastActionModeType);
 
         SelectionClient.Result returnResult = mController.getClassificationResult();
         assertEquals(-5, returnResult.startAdjust);
@@ -282,7 +307,7 @@ public class SelectionPopupControllerTest {
     @Test
     @Feature({"TextInput", "SmartSelection"})
     public void testSmartSelectionAnotherLongPressAfterAdjustment() {
-        InOrder order = inOrder(mWebContents, mView);
+        InOrder order = inOrder(mWebContents);
         SelectionClient.Result result = resultForAmphitheatre();
         SelectionClient.Result newResult = resultForMountain();
 
@@ -311,8 +336,9 @@ public class SelectionPopupControllerTest {
         order.verify(mWebContents)
                 .adjustSelectionByCharacterOffset(newResult.startAdjust, newResult.endAdjust, true);
         assertFalse(mController.isActionModeValid());
+        assertEquals(0, mView.mStartActionModeCount);
 
-        when(mView.startActionMode(any(), anyInt())).thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
 
         // First adjustSelectionByCharacterOffset() triggered.
         showSelectionMenu(
@@ -333,14 +359,16 @@ public class SelectionPopupControllerTest {
                 /* selectionStartOffset= */ 0,
                 MenuSourceType.ADJUST_SELECTION);
 
-        order.verify(mView).startActionMode(isNull(), eq(ActionMode.TYPE_FLOATING));
+        assertEquals(1, mView.mStartActionModeCount);
+        assertNull(mView.mLastActionModeCallback);
+        assertEquals(ActionMode.TYPE_FLOATING, mView.mLastActionModeType);
         assertTrue(mController.isActionModeValid());
     }
 
     @Test
     @Feature({"TextInput", "SmartSelection"})
     public void testSmartSelectionAnotherLongPressBeforeAdjustment() {
-        InOrder order = inOrder(mWebContents, mView);
+        InOrder order = inOrder(mWebContents);
         SelectionClient.Result result = resultForAmphitheatre();
         SelectionClient.Result newResult = resultForMountain();
 
@@ -371,8 +399,9 @@ public class SelectionPopupControllerTest {
         order.verify(mWebContents)
                 .adjustSelectionByCharacterOffset(newResult.startAdjust, newResult.endAdjust, true);
         assertFalse(mController.isActionModeValid());
+        assertEquals(0, mView.mStartActionModeCount);
 
-        when(mView.startActionMode(any(), anyInt())).thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
 
         // First adjustSelectionByCharacterOffset() triggered.
         showSelectionMenu(
@@ -393,7 +422,9 @@ public class SelectionPopupControllerTest {
                 /* selectionStartOffset= */ 0,
                 MenuSourceType.ADJUST_SELECTION);
 
-        order.verify(mView).startActionMode(isNull(), eq(ActionMode.TYPE_FLOATING));
+        assertEquals(1, mView.mStartActionModeCount);
+        assertNull(mView.mLastActionModeCallback);
+        assertEquals(ActionMode.TYPE_FLOATING, mView.mLastActionModeType);
         assertTrue(mController.isActionModeValid());
     }
 
@@ -417,7 +448,7 @@ public class SelectionPopupControllerTest {
                 /* selectionStartOffset= */ 5,
                 MenuSourceType.LONG_PRESS);
 
-        when(mView.startActionMode(any(), anyInt())).thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
 
         order.verify(mLogger).onSelectionStarted(AMPHITHEATRE, 5, true);
 
@@ -471,8 +502,7 @@ public class SelectionPopupControllerTest {
                 /* selectionStartOffset= */ 5,
                 MenuSourceType.LONG_PRESS);
 
-        when(mView.startActionMode(any(ActionMode.Callback2.class), anyInt()))
-                .thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
         order.verify(mLogger).onSelectionStarted(AMPHITHEATRE, 5, true);
 
         // No expansion.
@@ -520,58 +550,55 @@ public class SelectionPopupControllerTest {
     @Test
     @Feature({"TextInput", "Magnifier"})
     public void testHandleObserverSelectionHandle() {
-        MagnifierAnimator magnifierAnimator = Mockito.mock(MagnifierAnimator.class);
-        InOrder order = inOrder(magnifierAnimator);
-        mController.setMagnifierAnimator(magnifierAnimator);
+        InOrder order = inOrder(mMagnifierAnimator);
+        mController.setMagnifierAnimator(mMagnifierAnimator);
 
         // Selection handles shown.
         mController.onSelectionEvent(SelectionEventType.SELECTION_HANDLES_SHOWN, 0, 0, 1, 1);
 
         // Selection handles drag started.
         mController.onDragUpdate(TouchSelectionDraggableType.TOUCH_HANDLE, 0.f, 0.f);
-        order.verify(magnifierAnimator).handleDragStartedOrMoved(0.f, 0.f);
+        order.verify(mMagnifierAnimator).handleDragStartedOrMoved(0.f, 0.f);
 
         // Moving.
         mController.onDragUpdate(TouchSelectionDraggableType.TOUCH_HANDLE, 5.f, 5.f);
-        order.verify(magnifierAnimator).handleDragStartedOrMoved(5.f, 5.f);
+        order.verify(mMagnifierAnimator).handleDragStartedOrMoved(5.f, 5.f);
 
         // Selection handle drag stopped.
         mController.onSelectionEvent(SelectionEventType.SELECTION_HANDLE_DRAG_STOPPED, 0, 0, 1, 1);
-        order.verify(magnifierAnimator).handleDragStopped();
+        order.verify(mMagnifierAnimator).handleDragStopped();
     }
 
     @Test
     @Feature({"TextInput", "Magnifier"})
     public void testHandleObserverInsertionHandle() {
-        MagnifierAnimator magnifierAnimator = Mockito.mock(MagnifierAnimator.class);
-        InOrder order = inOrder(magnifierAnimator);
-        mController.setMagnifierAnimator(magnifierAnimator);
+        InOrder order = inOrder(mMagnifierAnimator);
+        mController.setMagnifierAnimator(mMagnifierAnimator);
 
         // Insertion handle shown.
         mController.onSelectionEvent(SelectionEventType.INSERTION_HANDLE_SHOWN, 0, 0, 1, 1);
 
         // Insertion handle drag started.
         mController.onDragUpdate(TouchSelectionDraggableType.TOUCH_HANDLE, 0.f, 0.f);
-        order.verify(magnifierAnimator).handleDragStartedOrMoved(0.f, 0.f);
+        order.verify(mMagnifierAnimator).handleDragStartedOrMoved(0.f, 0.f);
 
         // Moving.
         mController.onDragUpdate(TouchSelectionDraggableType.TOUCH_HANDLE, 5.f, 5.f);
-        order.verify(magnifierAnimator).handleDragStartedOrMoved(5.f, 5.f);
+        order.verify(mMagnifierAnimator).handleDragStartedOrMoved(5.f, 5.f);
 
         // Insertion handle drag stopped.
         mController.onSelectionEvent(SelectionEventType.INSERTION_HANDLE_DRAG_STOPPED, 0, 0, 1, 1);
-        order.verify(magnifierAnimator).handleDragStopped();
+        order.verify(mMagnifierAnimator).handleDragStopped();
     }
 
     @Test
     @Feature({"TextInput", "Magnifier"})
     public void testSetUseWindowReadbackView() {
-        View windowReadbackView = Mockito.mock(View.class);
-        when(mWindowAndroid.getReadbackView()).thenReturn(windowReadbackView);
+        when(mWindowAndroid.getReadbackView()).thenReturn(mWindowReadbackView);
         SelectionPopupControllerImpl.setShouldGetReadbackViewFromWindowAndroid();
 
         // Default: sShouldGetReadbackViewFromWindowAndroid is true, so returns windowReadbackView.
-        assertEquals(windowReadbackView, mController.getReadbackViewCallback().getReadbackView());
+        assertEquals(mWindowReadbackView, mController.getReadbackViewCallback().getReadbackView());
 
         // When useWindowReadbackView is explicitly set to false, it overrides to mView.
         mController.setUseWindowReadbackView(false);
@@ -579,7 +606,7 @@ public class SelectionPopupControllerTest {
 
         // When useWindowReadbackView is explicitly set to true, it returns windowReadbackView.
         mController.setUseWindowReadbackView(true);
-        assertEquals(windowReadbackView, mController.getReadbackViewCallback().getReadbackView());
+        assertEquals(mWindowReadbackView, mController.getReadbackViewCallback().getReadbackView());
     }
 
     @Test
@@ -637,7 +664,7 @@ public class SelectionPopupControllerTest {
     public void testSelectionWhenUnselectAndFocusedNodeChanged() {
         SelectionPopupControllerImpl spyController = Mockito.spy(mController);
 
-        when(mView.startActionMode(any(), anyInt())).thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
 
         // Long press triggered showSelectionMenu() call.
         showSelectionMenu(
@@ -646,7 +673,9 @@ public class SelectionPopupControllerTest {
                 /* selectionStartOffset= */ 0,
                 MenuSourceType.LONG_PRESS);
 
-        Mockito.verify(mView).startActionMode(isNull(), eq(ActionMode.TYPE_FLOATING));
+        assertEquals(1, mView.mStartActionModeCount);
+        assertNull(mView.mLastActionModeCallback);
+        assertEquals(ActionMode.TYPE_FLOATING, mView.mLastActionModeType);
         // showSelectionMenu() will invoke the first call to finishActionMode() in the
         // showActionModeOrClearOnFailure().
         Mockito.verify(spyController, times(1)).finishActionMode();
@@ -674,7 +703,7 @@ public class SelectionPopupControllerTest {
     public void testSelectionWhenWindowIsNull() {
         SelectionPopupControllerImpl spyController = Mockito.spy(mController);
 
-        when(mView.startActionMode(any(), anyInt())).thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
 
         // Long press triggered showSelectionMenu() call.
         showSelectionMenu(
@@ -683,7 +712,9 @@ public class SelectionPopupControllerTest {
                 /* selectionStartOffset= */ 0,
                 MenuSourceType.LONG_PRESS);
 
-        Mockito.verify(mView).startActionMode(isNull(), eq(ActionMode.TYPE_FLOATING));
+        assertEquals(1, mView.mStartActionModeCount);
+        assertNull(mView.mLastActionModeCallback);
+        assertEquals(ActionMode.TYPE_FLOATING, mView.mLastActionModeType);
         // showSelectionMenu() will invoke the first call to finishActionMode() in the
         // showActionModeOrClearOnFailure().
         Mockito.verify(spyController, times(1)).finishActionMode();
@@ -767,6 +798,47 @@ public class SelectionPopupControllerTest {
         Mockito.verify(dropdownMenuDelegate, times(1))
                 .show(any(), any(), any(), any(), any(), anyInt(), anyInt());
         Mockito.verify(spyController, never()).showActionModeOrClearOnFailure();
+    }
+
+    @Test
+    @Feature({"TextInput"})
+    @Features.EnableFeatures(BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU)
+    public void testShowDropdownMenuWhenMenuSourceIsKeyboard() {
+        setDropdownMenuFeatureEnabled(true);
+        SelectionPopupControllerImpl spyController = Mockito.spy(mController);
+        SelectionDropdownMenuDelegate dropdownMenuDelegate =
+                Mockito.spy(new TestSelectionDropdownMenuDelegate());
+        spyController.setDropdownMenuDelegate(dropdownMenuDelegate);
+        showSelectionMenu(
+                spyController,
+                AMPHITHEATRE_FULL,
+                /* selectionStartOffset= */ 0,
+                MenuSourceType.KEYBOARD);
+        Mockito.verify(spyController, times(1)).createAndShowDropdownMenu();
+        Mockito.verify(spyController, times(1)).destroyActionModeAndKeepSelection();
+        Mockito.verify(dropdownMenuDelegate, times(1)).dismiss();
+        Mockito.verify(dropdownMenuDelegate, times(1))
+                .show(any(), any(), any(), any(), any(), anyInt(), anyInt());
+        Mockito.verify(spyController, never()).showActionModeOrClearOnFailure();
+    }
+
+    @Test
+    @Feature({"TextInput"})
+    @Features.DisableFeatures(BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU)
+    public void testShowActionModeWhenMenuSourceIsKeyboardAndFeatureDisabled() {
+        setDropdownMenuFeatureEnabled(true);
+        SelectionPopupControllerImpl spyController = Mockito.spy(mController);
+        SelectionDropdownMenuDelegate dropdownMenuDelegate =
+                Mockito.spy(new TestSelectionDropdownMenuDelegate());
+        spyController.setDropdownMenuDelegate(dropdownMenuDelegate);
+        showSelectionMenu(
+                spyController,
+                AMPHITHEATRE_FULL,
+                /* selectionStartOffset= */ 0,
+                MenuSourceType.KEYBOARD);
+        Mockito.verify(spyController, times(1)).showActionModeOrClearOnFailure();
+        Mockito.verify(dropdownMenuDelegate, times(1)).dismiss();
+        Mockito.verify(spyController, never()).createAndShowDropdownMenu();
     }
 
     @Test
@@ -887,7 +959,7 @@ public class SelectionPopupControllerTest {
     public void testCacheHitBypassesClassificationRequest() {
         Assert.assertNull(mController.getSelectionMenuCachedResultForTesting());
 
-        when(mView.startActionMode(any(), anyInt())).thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
 
         SelectionClient.Result result = resultForNoChange();
         mTestSelectionClient.setResult(result);
@@ -925,14 +997,14 @@ public class SelectionPopupControllerTest {
         mController.getPendingSelectionMenu(MenuType.FLOATING);
         Assert.assertNotNull(mController.getSelectionMenuCachedResultForTesting());
 
-        mController.onWindowAndroidChanged(Mockito.mock(WindowAndroid.class));
+        mController.onWindowAndroidChanged(mNewWindowAndroid);
 
         Assert.assertNull(mController.getSelectionMenuCachedResultForTesting());
     }
 
     @Test
     public void testSelectionHandlesCleared_clearsClassificationResult() {
-        when(mView.startActionMode(any(), anyInt())).thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
         mTestSelectionClient.setResult(resultForNoChange());
         mController.setSelectionClient(mTestSelectionClient);
 
@@ -955,7 +1027,7 @@ public class SelectionPopupControllerTest {
 
     @Test
     public void testSelectionChangedToEmpty_clearsClassificationResult() {
-        when(mView.startActionMode(any(), anyInt())).thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
         mTestSelectionClient.setResult(resultForNoChange());
         mController.setSelectionClient(mTestSelectionClient);
 
@@ -978,7 +1050,7 @@ public class SelectionPopupControllerTest {
 
     @Test
     public void testSelectionHandlesMovedDuringDrag_clearsClassificationResult() {
-        when(mView.startActionMode(any(), anyInt())).thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
         mTestSelectionClient.setResult(resultForNoChange());
         mController.setSelectionClient(mTestSelectionClient);
 
@@ -1009,7 +1081,7 @@ public class SelectionPopupControllerTest {
 
     @Test
     public void testSelectionHandlesMovedNotDuringDrag_doesNotClearClassificationResult() {
-        when(mView.startActionMode(any(), anyInt())).thenReturn(mActionMode);
+        mView.mActionModeForStart = mActionMode;
         mTestSelectionClient.setResult(resultForNoChange());
         mController.setSelectionClient(mTestSelectionClient);
 
@@ -1032,10 +1104,9 @@ public class SelectionPopupControllerTest {
     @Test
     public void testMenuIsProcessedForSameSelectionStateIfCachingNotEnabledByDelegate() {
         Assert.assertNull(mController.getSelectionMenuCachedResultForTesting());
-        SelectionActionMenuDelegate delegate = Mockito.mock(SelectionActionMenuDelegate.class);
-        mController.setSelectionActionMenuDelegate(delegate);
-        when(delegate.canReuseCachedSelectionMenu(anyInt())).thenReturn(false);
-        when(delegate.getDefaultMenuItemOrder(anyInt()))
+        mController.setSelectionActionMenuDelegate(mSelectionActionMenuDelegate);
+        when(mSelectionActionMenuDelegate.canReuseCachedSelectionMenu(anyInt())).thenReturn(false);
+        when(mSelectionActionMenuDelegate.getDefaultMenuItemOrder(anyInt()))
                 .thenReturn(SelectionActionMenuDelegate.getDefaultMenuItemOrder());
 
         // Called twice to check the selection menu has been cached properly.
@@ -1059,10 +1130,9 @@ public class SelectionPopupControllerTest {
     @Test
     public void testMenuIsCachedForSameSelectionStateIfCachingEnabledByDelegate() {
         Assert.assertNull(mController.getSelectionMenuCachedResultForTesting());
-        SelectionActionMenuDelegate delegate = Mockito.mock(SelectionActionMenuDelegate.class);
-        mController.setSelectionActionMenuDelegate(delegate);
-        when(delegate.canReuseCachedSelectionMenu(anyInt())).thenReturn(true);
-        when(delegate.getDefaultMenuItemOrder(anyInt()))
+        mController.setSelectionActionMenuDelegate(mSelectionActionMenuDelegate);
+        when(mSelectionActionMenuDelegate.canReuseCachedSelectionMenu(anyInt())).thenReturn(true);
+        when(mSelectionActionMenuDelegate.getDefaultMenuItemOrder(anyInt()))
                 .thenReturn(SelectionActionMenuDelegate.getDefaultMenuItemOrder());
 
         // Called twice to check the selection menu has been cached properly.
@@ -1110,14 +1180,14 @@ public class SelectionPopupControllerTest {
     @Feature({"TextInput"})
     public void testNotSetExclusionRectsOnSelectionHandlesShownEvent() {
         mController.onSelectionEvent(SelectionEventType.SELECTION_HANDLES_SHOWN, 0, 0, 0, 0);
-        Mockito.verify(mView, never()).setSystemGestureExclusionRects(anyList());
+        assertEquals(SENTINEL_EXCLUSION_RECTS, mView.getSystemGestureExclusionRects());
     }
 
     @Test
     @Feature({"TextInput"})
     public void testNotSetExclusionRectsOnSelectionHandlesMovedEvent() {
         mController.onSelectionEvent(SelectionEventType.SELECTION_HANDLES_MOVED, 0, 0, 0, 0);
-        Mockito.verify(mView, never()).setSystemGestureExclusionRects(anyList());
+        assertEquals(SENTINEL_EXCLUSION_RECTS, mView.getSystemGestureExclusionRects());
     }
 
     @Test
@@ -1125,57 +1195,56 @@ public class SelectionPopupControllerTest {
     public void testSetExclusionRectsOnSelectionHandlesClearedEvent() {
         ReflectionHelpers.setStaticField(Build.VERSION.class, "SDK_INT", 29);
         mController.onSelectionEvent(SelectionEventType.SELECTION_HANDLES_CLEARED, 0, 0, 0, 0);
-        Mockito.verify(mView, times(1))
-                .setSystemGestureExclusionRects(List.of(new Rect(0, 0, 0, 0)));
+        assertEquals(List.of(new Rect(0, 0, 0, 0)), mView.getSystemGestureExclusionRects());
     }
 
     @Test
     @Feature({"TextInput"})
     public void testNotSetExclusionRectsOnSelectionHandlesDragStartedEvent() {
         mController.onSelectionEvent(SelectionEventType.SELECTION_HANDLE_DRAG_STARTED, 0, 0, 0, 0);
-        Mockito.verify(mView, never()).setSystemGestureExclusionRects(anyList());
+        assertEquals(SENTINEL_EXCLUSION_RECTS, mView.getSystemGestureExclusionRects());
     }
 
     @Test
     @Feature({"TextInput"})
     public void testNotSetExclusionRectsOnInsertionHandlesShownEvent() {
         mController.onSelectionEvent(SelectionEventType.INSERTION_HANDLE_SHOWN, 0, 0, 0, 0);
-        Mockito.verify(mView, never()).setSystemGestureExclusionRects(anyList());
+        assertEquals(SENTINEL_EXCLUSION_RECTS, mView.getSystemGestureExclusionRects());
     }
 
     @Test
     @Feature({"TextInput"})
     public void testNotSetExclusionRectsOnInsertionHandlesMovedEvent() {
         mController.onSelectionEvent(SelectionEventType.INSERTION_HANDLE_MOVED, 0, 0, 0, 0);
-        Mockito.verify(mView, never()).setSystemGestureExclusionRects(anyList());
+        assertEquals(SENTINEL_EXCLUSION_RECTS, mView.getSystemGestureExclusionRects());
     }
 
     @Test
     @Feature({"TextInput"})
     public void testNotSetExclusionRectsOnInsertionHandleTappedEvent() {
         mController.onSelectionEvent(SelectionEventType.INSERTION_HANDLE_TAPPED, 0, 0, 0, 0);
-        Mockito.verify(mView, never()).setSystemGestureExclusionRects(anyList());
+        assertEquals(SENTINEL_EXCLUSION_RECTS, mView.getSystemGestureExclusionRects());
     }
 
     @Test
     @Feature({"TextInput"})
     public void testNotSetExclusionRectsOnInsertionHandleClearedEvent() {
         mController.onSelectionEvent(SelectionEventType.INSERTION_HANDLE_CLEARED, 0, 0, 0, 0);
-        Mockito.verify(mView, never()).setSystemGestureExclusionRects(anyList());
+        assertEquals(SENTINEL_EXCLUSION_RECTS, mView.getSystemGestureExclusionRects());
     }
 
     @Test
     @Feature({"TextInput"})
     public void testNotSetExclusionRectsOnInsertionHandleDragStartedEvent() {
         mController.onSelectionEvent(SelectionEventType.INSERTION_HANDLE_DRAG_STARTED, 0, 0, 0, 0);
-        Mockito.verify(mView, never()).setSystemGestureExclusionRects(anyList());
+        assertEquals(SENTINEL_EXCLUSION_RECTS, mView.getSystemGestureExclusionRects());
     }
 
     @Test
     @Feature({"TextInput"})
     public void testNotSetExclusionRectsOnInsertionHandleDragStoppedEvent() {
         mController.onSelectionEvent(SelectionEventType.INSERTION_HANDLE_DRAG_STOPPED, 0, 0, 0, 0);
-        Mockito.verify(mView, never()).setSystemGestureExclusionRects(anyList());
+        assertEquals(SENTINEL_EXCLUSION_RECTS, mView.getSystemGestureExclusionRects());
     }
 
     @Test
@@ -1198,7 +1267,7 @@ public class SelectionPopupControllerTest {
         when(mockController.getTouchHandleRects()).thenReturn(handleRects);
         mockController.onSelectionEvent(
                 SelectionEventType.SELECTION_HANDLE_DRAG_STOPPED, 0, 0, 0, 0);
-        Mockito.verify(mView, times(1)).setSystemGestureExclusionRects(rects);
+        assertEquals(rects, mView.getSystemGestureExclusionRects());
     }
 
     @Test
@@ -1207,7 +1276,7 @@ public class SelectionPopupControllerTest {
         ReflectionHelpers.setStaticField(Build.VERSION.class, "SDK_INT", 29);
         when(mWebContents.getViewAndroidDelegate()).thenReturn(null);
         mController.onSelectionEvent(SelectionEventType.SELECTION_HANDLE_DRAG_STOPPED, 0, 0, 0, 0);
-        Mockito.verify(mView, never()).setSystemGestureExclusionRects(anyList());
+        assertEquals(SENTINEL_EXCLUSION_RECTS, mView.getSystemGestureExclusionRects());
     }
 
     @Test
@@ -1277,18 +1346,16 @@ public class SelectionPopupControllerTest {
                 AMPHITHEATRE_FULL,
                 /* selectionStartOffset= */ 0,
                 MenuSourceType.MOUSE);
-        ArgumentCaptor<SelectionDropdownMenuDelegate.ItemClickListener> clickListenerCaptor =
-                ArgumentCaptor.forClass(SelectionDropdownMenuDelegate.ItemClickListener.class);
         Mockito.verify(dropdownMenuDelegate, times(1))
                 .show(
                         any(),
                         any(),
                         any(),
-                        clickListenerCaptor.capture(),
+                        mClickListenerCaptor.capture(),
                         any(),
                         anyInt(),
                         anyInt());
-        SelectionDropdownMenuDelegate.ItemClickListener listener = clickListenerCaptor.getValue();
+        SelectionDropdownMenuDelegate.ItemClickListener listener = mClickListenerCaptor.getValue();
 
         // Click on the main menu item with submenu, menu should not be dismissed.
         listener.onItemClick(mainListItem.model);
@@ -1419,7 +1486,6 @@ public class SelectionPopupControllerTest {
     }
 
     @Test
-    @SmallTest
     @Feature("ExtensionContextMenuItems")
     public void testIntersperseMenuItems() {
         ModelList items = new ModelList();
@@ -1459,7 +1525,6 @@ public class SelectionPopupControllerTest {
     }
 
     @Test
-    @SmallTest
     @Feature("ExtensionContextMenuItems")
     public void testIntersperseMenuItems_insertsBeforeDividerOfNextGroup() {
         ModelList items = new ModelList();
@@ -1494,7 +1559,6 @@ public class SelectionPopupControllerTest {
     }
 
     @Test
-    @SmallTest
     @Feature("ExtensionContextMenuItems")
     public void testIntersperseMenuItems_orderZeroAndNegative() {
         ModelList items = new ModelList();
@@ -1529,7 +1593,6 @@ public class SelectionPopupControllerTest {
     }
 
     @Test
-    @SmallTest
     @Feature("ExtensionContextMenuItems")
     public void testIntersperseMenuItems_extensionAndInspectOrder() {
         ModelList items = new ModelList();
@@ -1563,7 +1626,6 @@ public class SelectionPopupControllerTest {
     }
 
     @Test
-    @SmallTest
     @Feature("ExtensionContextMenuItems")
     public void testIntersperseMenuItems_sanitizesConsecutiveAndEdgeDividers() {
         ModelList items = new ModelList();
@@ -1604,5 +1666,198 @@ public class SelectionPopupControllerTest {
         assertEquals("Item 1", items.get(0).model.get(TITLE));
         assertEquals(ListItemType.DIVIDER, items.get(1).type);
         assertEquals("Item 2", items.get(2).model.get(TITLE));
+    }
+
+    @Test
+    @Feature({"TextInput", "SmartSelection"})
+    public void testOnClassifiedAndOnClassifiedLateIgnoreDestroyedWebContents() {
+        TestSelectionClient client = new SelectionClientOnlyReturnTrue();
+        mController.setSelectionClient(client);
+
+        showSelectionMenu(
+                mController,
+                AMPHITHEATRE,
+                /* selectionStartOffset= */ 5,
+                MenuSourceType.LONG_PRESS);
+        assertTrue(mController.hasSelection());
+
+        when(mWebContents.isDestroyed()).thenReturn(true);
+
+        SelectionClient.Result result = resultForAmphitheatre();
+        result.text = AMPHITHEATRE_FULL;
+        result.start = 0;
+        result.end = AMPHITHEATRE_FULL.length();
+
+        mController.getResultCallback().onClassified(result);
+        assertNull(mController.getClassificationResult());
+
+        mController.getResultCallback().onClassifiedLate(result);
+        assertNull(mController.getClassificationResult());
+        assertNull(mController.getSelectionMenuCachedResultForTesting());
+    }
+
+    @Test
+    @Feature({"TextInput", "SmartSelection"})
+    public void testForwardTextSelectionToSystemUi_withSurroundingTextAndDestroy() {
+        AconfigFlaggedApiDelegate delegate = Mockito.mock(AconfigFlaggedApiDelegate.class);
+        when(delegate.isForwardTextSelectionToSystemUiEnabled()).thenReturn(true);
+        AconfigFlaggedApiDelegate.setInstanceForTesting(delegate);
+
+        SelectionClient.Result result = new SelectionClient.Result();
+        result.text = AMPHITHEATRE_FULL;
+        result.start = 5;
+        result.end = 17;
+
+        TestSelectionClient client = new TestSelectionClient();
+        client.setResult(result);
+        client.setResultCallback(mController.getResultCallback());
+        mController.setSelectionClient(client);
+
+        mView.mActionModeForStart = mActionMode;
+        showSelectionMenu(
+                mController,
+                AMPHITHEATRE,
+                /* selectionStartOffset= */ 5,
+                MenuSourceType.LONG_PRESS);
+
+        mController.onPrepareActionMode(mActionMode, new RoboMenu());
+        Mockito.verify(delegate, times(1))
+                .setTextSelection(
+                        eq(mActionMode),
+                        eq(AMPHITHEATRE_FULL),
+                        eq(5),
+                        eq(17),
+                        any(LocaleList.class));
+
+        mController.onDestroyActionMode();
+        Mockito.verify(delegate, times(1)).clearTextSelection(eq(mActionMode));
+    }
+
+    @Test
+    @Feature({"TextInput", "SmartSelection"})
+    public void testForwardTextSelectionToSystemUi_fallbackToSelectedText() {
+        AconfigFlaggedApiDelegate delegate = Mockito.mock(AconfigFlaggedApiDelegate.class);
+        when(delegate.isForwardTextSelectionToSystemUiEnabled()).thenReturn(true);
+        AconfigFlaggedApiDelegate.setInstanceForTesting(delegate);
+
+        mView.mActionModeForStart = mActionMode;
+        showSelectionMenu(
+                mController,
+                AMPHITHEATRE,
+                /* selectionStartOffset= */ 5,
+                MenuSourceType.LONG_PRESS);
+
+        mController.onPrepareActionMode(mActionMode, new RoboMenu());
+        Mockito.verify(delegate, times(1))
+                .setTextSelection(
+                        eq(mActionMode),
+                        eq(AMPHITHEATRE),
+                        eq(0),
+                        eq(AMPHITHEATRE.length()),
+                        any(LocaleList.class));
+    }
+
+    @Test
+    @Feature({"TextInput", "SmartSelection"})
+    public void
+            testForwardTextSelectionToSystemUi_skippedForPasswordIncognitoAndCustomClassifier() {
+        AconfigFlaggedApiDelegate delegate = Mockito.mock(AconfigFlaggedApiDelegate.class);
+        when(delegate.isForwardTextSelectionToSystemUiEnabled()).thenReturn(true);
+        AconfigFlaggedApiDelegate.setInstanceForTesting(delegate);
+
+        mView.mActionModeForStart = mActionMode;
+
+        // 1. Password selection should not forward text selection.
+        mController.showSelectionMenu(
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                /* isEditable= */ true,
+                /* isPasswordType= */ true,
+                AMPHITHEATRE,
+                /* selectionStartOffset= */ 0,
+                /* canSelectAll= */ true,
+                /* canRichlyEdit= */ true,
+                /* shouldSuggest= */ true,
+                MenuSourceType.LONG_PRESS,
+                mRenderFrameHost,
+                mMenuModelBridge);
+        mController.onPrepareActionMode(mActionMode, new RoboMenu());
+        Mockito.verify(delegate, never()).setTextSelection(any(), any(), anyInt(), anyInt(), any());
+
+        // 2. Incognito should not forward text selection.
+        when(mWebContents.isIncognito()).thenReturn(true);
+        showSelectionMenu(
+                mController,
+                AMPHITHEATRE,
+                /* selectionStartOffset= */ 5,
+                MenuSourceType.LONG_PRESS);
+        mController.onPrepareActionMode(mActionMode, new RoboMenu());
+        Mockito.verify(delegate, never()).setTextSelection(any(), any(), anyInt(), anyInt(), any());
+        when(mWebContents.isIncognito()).thenReturn(false);
+
+        // 3. Custom TextClassifier should not forward text selection.
+        TestSelectionClient customClient =
+                new TestSelectionClient() {
+                    @Override
+                    public TextClassifier getCustomTextClassifier() {
+                        return Mockito.mock(TextClassifier.class);
+                    }
+                };
+        customClient.setResult(new SelectionClient.Result());
+        customClient.setResultCallback(mController.getResultCallback());
+        mController.setSelectionClient(customClient);
+        showSelectionMenu(
+                mController,
+                AMPHITHEATRE,
+                /* selectionStartOffset= */ 5,
+                MenuSourceType.LONG_PRESS);
+        mController.onPrepareActionMode(mActionMode, new RoboMenu());
+        Mockito.verify(delegate, never()).setTextSelection(any(), any(), anyInt(), anyInt(), any());
+        mController.onDestroyActionMode();
+        Mockito.verify(delegate, never()).clearTextSelection(any());
+    }
+
+    @Test
+    @Feature({"TextInput", "SmartSelection"})
+    public void testForwardTextSelectionToSystemUi_clearsOnDestroyAfterMenuStateChanges() {
+        AconfigFlaggedApiDelegate delegate = Mockito.mock(AconfigFlaggedApiDelegate.class);
+        when(delegate.isForwardTextSelectionToSystemUiEnabled()).thenReturn(true);
+        AconfigFlaggedApiDelegate.setInstanceForTesting(delegate);
+
+        mView.mActionModeForStart = mActionMode;
+        showSelectionMenu(
+                mController,
+                AMPHITHEATRE,
+                /* selectionStartOffset= */ 5,
+                MenuSourceType.LONG_PRESS);
+        mController.onPrepareActionMode(mActionMode, new RoboMenu());
+        Mockito.verify(delegate, times(1))
+                .setTextSelection(
+                        eq(mActionMode),
+                        eq(AMPHITHEATRE),
+                        eq(0),
+                        eq(AMPHITHEATRE.length()),
+                        any(LocaleList.class));
+
+        // Even if a custom TextClassifier is installed afterward (so
+        // shouldForwardTextSelectionToSystemUi() now returns false), destroying the ActionMode
+        // must still clear the previously forwarded text selection exactly once.
+        TestSelectionClient customClient =
+                new TestSelectionClient() {
+                    @Override
+                    public TextClassifier getCustomTextClassifier() {
+                        return Mockito.mock(TextClassifier.class);
+                    }
+                };
+        mController.setSelectionClient(customClient);
+
+        mController.onDestroyActionMode();
+        mController.onDestroyActionMode();
+        Mockito.verify(delegate, times(1)).clearTextSelection(eq(mActionMode));
     }
 }

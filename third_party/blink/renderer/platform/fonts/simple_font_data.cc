@@ -79,6 +79,8 @@ SimpleFontData::SimpleFontData(const FontPlatformData* platform_data,
       shape_cache_(MakeGarbageCollected<NGShapeCache>(this)),
       font_(platform_data->size() ? platform_data->CreateSkFont()
                                   : skia::DefaultFont()),
+      is_fixed_pitch_(platform_data->Typeface() &&
+                      platform_data->Typeface()->isFixedPitch()),
       custom_font_data_(custom_data) {
   // Every time new SimpleFontData instance is created, Skia will ask
   // FreeType to get the metrics for glyphs by invoking
@@ -338,7 +340,7 @@ SimpleFontData* SimpleFontData::MetricsOverriddenFontData(
 // -------------------------------------------
 FontHeight SimpleFontData::NormalizedTypoAscentAndDescent(
     FontBaseline baseline_type) const {
-  if (baseline_type == kAlphabeticBaseline) {
+  if (baseline_type == FontBaseline::kAlphabetic) {
     if (!normalized_typo_ascent_descent_.ascent)
       ComputeNormalizedTypoAscentAndDescent();
     return normalized_typo_ascent_descent_;
@@ -580,7 +582,7 @@ inline float SimpleFontData::ZeroInlineSize() const {
   // 1em when it would be typeset upright (i.e. writing-mode is vertical-rl or
   // vertical-lr and text-orientation is upright).
   SkScalar size = font_.getSize();
-  if (!platform_data_->IsVerticalNonCJKUpright()) {
+  if (!platform_data_->IsVerticalNonCjkUpright()) {
     if (RuntimeEnabledFeatures::CSSChUnitSpecCompliantFallbackEnabled()) {
       return size * 0.5f;
     }

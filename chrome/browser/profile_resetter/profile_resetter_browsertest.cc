@@ -15,7 +15,7 @@
 #include "chrome/browser/file_system_access/file_system_access_permission_context_factory.h"
 #include "chrome/browser/profile_resetter/profile_resetter_test_base.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/browser_context.h"
@@ -30,6 +30,7 @@
 #include "net/cookies/cookie_util.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "url/origin.h"
 
@@ -236,7 +237,7 @@ class PinnedTabsResetTest : public InProcessBrowserTest,
 
   content::WebContents* AddTab(const GURL& url) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     return browser()->tab_strip_model()->GetActiveWebContents();
   }

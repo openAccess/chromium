@@ -31,6 +31,12 @@ SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictCloneToThreadsAndEPERMFork();
 // Crash if anything else is attempted.
 SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictPrctl();
 
+#if defined(__x86_64__)
+// Allow ARCH_GET_UNTAG_MASK.
+// Crash if anything else is attempted.
+SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictArchPrctl();
+#endif
+
 // Allow TCGETS and FIONREAD.
 // Crash if anything else is attempted.
 SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictIoctl();
@@ -40,6 +46,7 @@ SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictIoctl();
 // MAP_STACK | MAP_NORESERVE | MAP_FIXED | MAP_DENYWRITE.
 // Crash if any other flag is used.
 SANDBOX_EXPORT bpf_dsl::ResultExpr RestrictMmapFlags(
+    int sysno,
     uint64_t extra_allowed_mask = 0);
 
 // Restrict the flags argument in mremap(2).

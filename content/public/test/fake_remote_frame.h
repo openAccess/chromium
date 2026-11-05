@@ -5,6 +5,7 @@
 #ifndef CONTENT_PUBLIC_TEST_FAKE_REMOTE_FRAME_H_
 #define CONTENT_PUBLIC_TEST_FAKE_REMOTE_FRAME_H_
 
+#include "components/viz/common/surfaces/local_surface_id.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
@@ -48,7 +49,8 @@ class FakeRemoteFrame : public blink::mojom::RemoteFrame {
   void SetReplicatedOrigin(
       const url::Origin& origin,
       bool is_potentially_trustworthy_unique_origin) override;
-  void SetReplicatedIsAdFrame(bool is_ad_frame) override;
+  void SetReplicatedAdFrameStatus(
+      blink::mojom::FrameAdStatus ad_frame_status) override;
   void SetReplicatedIsSecureContextRoot(bool) override {}
   void SetReplicatedName(const std::string& name,
                          const std::string& unique_name) override;
@@ -87,8 +89,8 @@ class FakeRemoteFrame : public blink::mojom::RemoteFrame {
   void EnableAutoResize(const gfx::Size& min_size,
                         const gfx::Size& max_size) override;
   void DisableAutoResize() override;
-  void DidUpdateVisualProperties(
-      const cc::RenderFrameMetadata& metadata) override;
+  void DidUpdateChildLocalSurfaceId(
+      const viz::LocalSurfaceId& local_surface_id) override;
   void SetFrameSinkId(const viz::FrameSinkId& frame_sink_id,
                       bool allow_paint_holding) override;
   void ChildProcessGone() override;

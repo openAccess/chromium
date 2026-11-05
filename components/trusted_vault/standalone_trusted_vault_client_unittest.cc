@@ -20,16 +20,21 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
+#include "components/os_crypt/async/browser/test_utils.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/trusted_vault/command_line_switches.h"
+#include "components/trusted_vault/features.h"
 #include "components/trusted_vault/securebox.h"
+#include "components/trusted_vault/standalone_trusted_vault_frontend.h"
 #include "components/trusted_vault/standalone_trusted_vault_server_constants.h"
 #include "components/trusted_vault/test/fake_security_domains_server.h"
 #include "components/trusted_vault/test/fake_security_domains_url_loader_factory.h"
@@ -133,19 +138,30 @@ class StandaloneTrustedVaultClientTest : public testing::Test {
     task_environment_.RunUntilIdle();
   }
 
-  std::unique_ptr<StandaloneTrustedVaultClient> CreateClient() {
-    return std::make_unique<StandaloneTrustedVaultClient>(
+  scoped_refptr<StandaloneTrustedVaultFrontend> CreateFrontend() {
+    return base::MakeRefCounted<StandaloneTrustedVaultFrontend>(
+        os_crypt_async_.get(),
 #if BUILDFLAG(IS_MAC)
         kKeychainAccessGroupPrefix,
 #endif
-        SecurityDomainId::kChromeSync,
         /*base_dir=*/temp_dir_.GetPath(), identity_test_env_.identity_manager(),
         url_loader_factory_);
   }
 
+  std::unique_ptr<StandaloneTrustedVaultClient> CreateClient(
+      SecurityDomainId security_domain = SecurityDomainId::kChromeSync,
+      scoped_refptr<StandaloneTrustedVaultFrontend> frontend = nullptr) {
+    if (!frontend) {
+      frontend = CreateFrontend();
+    }
+    return std::make_unique<StandaloneTrustedVaultClient>(security_domain,
+                                                          std::move(frontend));
+  }
+
   CoreAccountInfo MakeAccountAvailable(const std::string& email) {
-    return identity_test_env_.MakePrimaryAccountAvailable(
-        email, signin::ConsentLevel::kSignin);
+    return identity_test_env_
+        .MakePrimaryAccountAvailable(email, signin::ConsentLevel::kSignin)
+        .GetCoreAccountInfo();
   }
 
   void WaitForIdle(StandaloneTrustedVaultClient* client) {
@@ -181,7 +197,7 @@ class StandaloneTrustedVaultClientTest : public testing::Test {
                                 const GaiaId& gaia_id,
                                 const std::vector<uint8_t>& public_key,
                                 int method_type_hint) {
-    base::test::TestFuture<void> future;
+    base::test::TestFuture<bool> future;
     client->AddTrustedRecoveryMethod(gaia_id, public_key, method_type_hint,
                                      future.GetCallback());
     ASSERT_TRUE(future.Wait());
@@ -198,9 +214,13 @@ class StandaloneTrustedVaultClientTest : public testing::Test {
 #if BUILDFLAG(IS_MAC)
   crypto::apple::ScopedFakeKeychainV2 fake_keychain_{kKeychainAccessGroup};
 #endif
+  base::test::ScopedFeatureList scoped_feature_list_{
+      kTrustedVaultSharedRecoveryFactorsAndEncryption};
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   base::ScopedTempDir temp_dir_;
+  std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt_async_ =
+      os_crypt_async::GetTestOSCryptAsyncForTesting();
   std::unique_ptr<FakeSecurityDomainsServer> fake_security_domains_server_;
   scoped_refptr<FakeSecurityDomainsURLLoaderFactory> url_loader_factory_;
   signin::IdentityTestEnvironment identity_test_env_;
@@ -266,7 +286,13 @@ TEST_F(StandaloneTrustedVaultClientTest,
   // failed request and throttles subsequent requests for kThrottlingDuration.
   // We advance time past the throttling interval so post-rotation requests
   // are not blocked.
+  MockTrustedVaultClientObserver observer;
+  base::ScopedObservation<TrustedVaultClient, TrustedVaultClient::Observer>
+      observation(&observer);
+  observation.Observe(client.get());
+  EXPECT_CALL(observer, OnTrustedVaultKeysChanged).Times(0);
   ASSERT_THAT(FetchKeys(client.get(), account_info), IsEmpty());
+  testing::Mock::VerifyAndClearExpectations(&observer);
   task_environment_.FastForwardBy(
       TrustedVaultThrottlingConnectionImpl::kThrottlingDuration +
       base::Seconds(1));
@@ -278,11 +304,9 @@ TEST_F(StandaloneTrustedVaultClientTest,
           GetConstantTrustedVaultKey());
   EXPECT_TRUE(MarkLocalKeysAsStale(client.get(), account_info));
 
-  // TODO(crbug.com/541108964): consider notifying observers when FetchKeys()
-  // downloads new keys from the server so that observer expectations can be
-  // tested here.
-  // FetchKeys() should follow the server side key rotation and register local
-  // factors if applicable.
+  // `FetchKeys()` should follow the server side key rotation, notify observers,
+  // and register local factors if applicable.
+  EXPECT_CALL(observer, OnTrustedVaultKeysChanged(testing::Eq(std::nullopt)));
   EXPECT_THAT(FetchKeys(client.get(), account_info),
               ElementsAre(new_epoch_key));
   WaitForIdle(client.get());
@@ -354,6 +378,171 @@ TEST_F(StandaloneTrustedVaultClientTest,
     EXPECT_EQ(GetLastKeyVersion(client_b.get(), account_info.gaia),
               kServerEpoch);
   }
+}
+
+TEST_F(StandaloneTrustedVaultClientTest,
+       ShouldShareFrontendAndRouteDomainNotifications) {
+  const std::vector<uint8_t> kSyncKey = {1, 2, 3, 4};
+  constexpr int kServerEpoch = 10;
+  fake_security_domains_server_->ResetDataToState({kSyncKey}, kServerEpoch);
+  CoreAccountInfo account_info = MakeAccountAvailable(kTestEmail);
+
+  scoped_refptr<StandaloneTrustedVaultFrontend> frontend = CreateFrontend();
+  std::unique_ptr<StandaloneTrustedVaultClient> sync_client =
+      CreateClient(SecurityDomainId::kChromeSync, frontend);
+  std::unique_ptr<StandaloneTrustedVaultClient> passkeys_client =
+      CreateClient(SecurityDomainId::kPasskeys, frontend);
+  WaitForIdle(sync_client.get());
+
+  MockTrustedVaultClientObserver sync_observer;
+  MockTrustedVaultClientObserver passkeys_observer;
+  sync_client->AddObserver(&sync_observer);
+  passkeys_client->AddObserver(&passkeys_observer);
+
+  // Storing keys in `kChromeSync` should notify only `sync_observer` and
+  // propagate the user action trigger.
+  EXPECT_CALL(sync_observer,
+              OnTrustedVaultKeysChanged(
+                  Eq(TrustedVaultUserActionTriggerForUMA::kSettings)));
+  EXPECT_CALL(passkeys_observer, OnTrustedVaultKeysChanged).Times(0);
+  sync_client->StoreKeys(account_info.gaia, {kSyncKey}, kServerEpoch,
+                         TrustedVaultUserActionTriggerForUMA::kSettings);
+  WaitForIdle(sync_client.get());
+  testing::Mock::VerifyAndClearExpectations(&sync_observer);
+  testing::Mock::VerifyAndClearExpectations(&passkeys_observer);
+
+  EXPECT_THAT(FetchKeys(sync_client.get(), account_info),
+              ElementsAre(kSyncKey));
+
+  // Downloading rotated keys via `FetchKeys()` in `kChromeSync` should notify
+  // only `sync_observer`.
+  const std::vector<uint8_t> rotated_sync_key =
+      fake_security_domains_server_->RotateTrustedVaultKey(kSyncKey);
+  EXPECT_TRUE(MarkLocalKeysAsStale(sync_client.get(), account_info));
+  EXPECT_CALL(sync_observer,
+              OnTrustedVaultKeysChanged(testing::Eq(std::nullopt)));
+  EXPECT_CALL(passkeys_observer, OnTrustedVaultKeysChanged).Times(0);
+  EXPECT_THAT(FetchKeys(sync_client.get(), account_info),
+              ElementsAre(kSyncKey, rotated_sync_key));
+  testing::Mock::VerifyAndClearExpectations(&sync_observer);
+  testing::Mock::VerifyAndClearExpectations(&passkeys_observer);
+
+  // Recoverability degraded notifications from the backend should be routed to
+  // the respective domain client only.
+  fake_security_domains_server_->RequirePublicKeyToAvoidRecoverabilityDegraded(
+      /*public_key=*/{9, 9, 9, 9});
+  base::RunLoop recoverability_run_loop;
+  EXPECT_CALL(sync_observer, OnTrustedVaultRecoverabilityChanged)
+      .WillOnce(
+          [&recoverability_run_loop]() { recoverability_run_loop.Quit(); });
+  EXPECT_CALL(passkeys_observer, OnTrustedVaultRecoverabilityChanged).Times(0);
+  sync_client->GetIsRecoverabilityDegraded(account_info, base::DoNothing());
+  recoverability_run_loop.Run();
+  testing::Mock::VerifyAndClearExpectations(&sync_observer);
+  testing::Mock::VerifyAndClearExpectations(&passkeys_observer);
+
+  // Cookie jar changes in IdentityManager should notify all registered clients.
+  EXPECT_CALL(sync_observer, OnTrustedVaultKeysChanged);
+  EXPECT_CALL(passkeys_observer, OnTrustedVaultKeysChanged);
+  identity_test_env_.SetCookieAccounts({});
+  testing::Mock::VerifyAndClearExpectations(&sync_observer);
+  testing::Mock::VerifyAndClearExpectations(&passkeys_observer);
+
+  sync_client->RemoveObserver(&sync_observer);
+  passkeys_client->RemoveObserver(&passkeys_observer);
+}
+
+TEST_F(StandaloneTrustedVaultClientTest, ShouldStoreAndFetchKeysAcrossDomains) {
+  const std::vector<uint8_t> kSyncKey = {1, 2, 3, 4};
+  const std::vector<uint8_t> kPasskeysKey = {5, 6, 7, 8};
+  CoreAccountInfo account_info = MakeAccountAvailable(kTestEmail);
+
+  {
+    scoped_refptr<StandaloneTrustedVaultFrontend> frontend = CreateFrontend();
+    std::unique_ptr<StandaloneTrustedVaultClient> sync_client =
+        CreateClient(SecurityDomainId::kChromeSync, frontend);
+    std::unique_ptr<StandaloneTrustedVaultClient> passkeys_client =
+        CreateClient(SecurityDomainId::kPasskeys, frontend);
+    WaitForIdle(sync_client.get());
+
+    StoreKeys(sync_client.get(), account_info.gaia, {kSyncKey},
+              /*last_key_version=*/1);
+    StoreKeys(passkeys_client.get(), account_info.gaia, {kPasskeysKey},
+              /*last_key_version=*/2);
+    WaitForIdle(sync_client.get());
+
+    EXPECT_THAT(FetchKeys(sync_client.get(), account_info),
+                ElementsAre(kSyncKey));
+    EXPECT_THAT(FetchKeys(passkeys_client.get(), account_info),
+                ElementsAre(kPasskeysKey));
+  }
+
+  // Verify persistence across frontend/client restart with LocalDomainsStorage.
+  {
+    scoped_refptr<StandaloneTrustedVaultFrontend> frontend = CreateFrontend();
+    std::unique_ptr<StandaloneTrustedVaultClient> sync_client =
+        CreateClient(SecurityDomainId::kChromeSync, frontend);
+    std::unique_ptr<StandaloneTrustedVaultClient> passkeys_client =
+        CreateClient(SecurityDomainId::kPasskeys, frontend);
+
+    EXPECT_THAT(FetchKeys(sync_client.get(), account_info),
+                ElementsAre(kSyncKey));
+    EXPECT_THAT(FetchKeys(passkeys_client.get(), account_info),
+                ElementsAre(kPasskeysKey));
+  }
+}
+
+TEST_F(StandaloneTrustedVaultClientTest,
+       ShouldMigrateFromLegacyStorageOnRestart) {
+  const std::vector<uint8_t> kKey1 = {1, 2, 3, 4};
+  const int kServerEpoch = 10;
+  fake_security_domains_server_->ResetDataToState({kKey1}, kServerEpoch);
+
+  const base::FilePath legacy_file_path =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("trusted_vault.pb"));
+  const base::FilePath new_file_path =
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("local_domains_data.pb"));
+
+  CoreAccountInfo account_info = MakeAccountAvailable(kTestEmail);
+
+  // First run with legacy storage enabled
+  // (`kTrustedVaultSharedRecoveryFactorsAndEncryption` disabled).
+  {
+    base::test::ScopedFeatureList disable_new_storage;
+    disable_new_storage.InitAndDisableFeature(
+        kTrustedVaultSharedRecoveryFactorsAndEncryption);
+
+    std::unique_ptr<StandaloneTrustedVaultClient> client = CreateClient();
+    StoreKeys(client.get(), account_info.gaia, {kKey1}, kServerEpoch);
+    WaitForIdle(client.get());
+
+    EXPECT_TRUE(base::PathExists(legacy_file_path));
+    EXPECT_FALSE(base::PathExists(new_file_path));
+    EXPECT_EQ(fake_security_domains_server_->GetMemberCount(),
+              kDefaultExpectedMemberCount);
+  }
+  task_environment_.RunUntilIdle();
+
+  // Simulate restart with the new encrypted storage format enabled.
+  std::unique_ptr<StandaloneTrustedVaultClient> migrated_client =
+      CreateClient();
+  WaitForIdle(migrated_client.get());
+
+  EXPECT_TRUE(base::PathExists(new_file_path));
+  // Cached keys should be immediately returned from migrated storage without
+  // re-registering recovery factors.
+  EXPECT_THAT(FetchKeys(migrated_client.get(), account_info),
+              ElementsAre(kKey1));
+  EXPECT_EQ(fake_security_domains_server_->GetMemberCount(),
+            kDefaultExpectedMemberCount);
+
+  // Verify that the migrated physical device private key can decrypt newly
+  // rotated server keys.
+  const std::vector<uint8_t> new_epoch_key =
+      fake_security_domains_server_->RotateTrustedVaultKey(kKey1);
+  EXPECT_TRUE(MarkLocalKeysAsStale(migrated_client.get(), account_info));
+  EXPECT_THAT(FetchKeys(migrated_client.get(), account_info),
+              ElementsAre(kKey1, new_epoch_key));
 }
 
 }  // namespace

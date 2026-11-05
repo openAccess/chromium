@@ -6,10 +6,14 @@
 
 #include <numeric>
 
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/dbus/cryptohome/UserDataAuth.pb.h"
 #include "chromeos/ash/components/dbus/cryptohome/rpc.pb.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/userdataauth/cryptohome_pkcs11_client.h"
@@ -17,7 +21,6 @@
 #include "chromeos/ash/components/login/auth/auth_factor_editor.h"
 #include "chromeos/ash/components/login/auth/public/cryptohome_key_constants.h"
 #include "chromeos/dbus/tpm_manager/tpm_manager_client.h"
-#include "components/user_manager/user_manager.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_ui.h"
@@ -34,25 +37,20 @@ constexpr int kRecoveryIdHistoryDepth = 5;
 
 void ForwardToUIThread(base::OnceCallback<void(bool)> ui_callback,
                        bool result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M162);
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce(std::move(ui_callback), result));
 }
 
 user_data_auth::GetAuthFactorExtendedInfoRequest
-GenerateAuthFactorExtendedInfoRequest(int depth) {
+GenerateAuthFactorExtendedInfoRequest(const AccountId& account_id, int depth) {
   user_data_auth::GetAuthFactorExtendedInfoRequest req;
   user_data_auth::RecoveryExtendedInfoRequest req_extended_info;
-  const user_manager::User* primary_user =
-      user_manager::UserManager::Get()->GetPrimaryUser();
-  if (primary_user) {
-    *req.mutable_account_id() =
-        cryptohome::CreateAccountIdentifierFromAccountId(
-            primary_user->GetAccountId());
-    *req.mutable_auth_factor_label() = kCryptohomeRecoveryKeyLabel;
-    req_extended_info.set_max_depth(depth);
-    *req.mutable_recovery_info_request() = std::move(req_extended_info);
-  }
+  *req.mutable_account_id() =
+      cryptohome::CreateAccountIdentifierFromAccountId(account_id);
+  *req.mutable_auth_factor_label() = kCryptohomeRecoveryKeyLabel;
+  req_extended_info.set_max_depth(depth);
+  *req.mutable_recovery_info_request() = std::move(req_extended_info);
   return req;
 }
 
@@ -92,7 +90,10 @@ void CryptohomeWebUIHandler::OnJavascriptAllowed() {
 
   // Add 1 to compensate for the first recovery ID, which is not displayed.
   user_data_auth::GetAuthFactorExtendedInfoRequest req =
-      GenerateAuthFactorExtendedInfoRequest(kRecoveryIdHistoryDepth + 1);
+      GenerateAuthFactorExtendedInfoRequest(
+          CHECK_DEREF(AnnotatedAccountId::Get(
+              Profile::FromWebUI(web_ui())->GetOriginalProfile())),
+          kRecoveryIdHistoryDepth + 1);
   userdataauth_client->GetAuthFactorExtendedInfo(
       req, base::BindOnce(&CryptohomeWebUIHandler::OnGetAuthFactorExtendedInfo,
                           weak_ptr_factory_.GetWeakPtr()));
@@ -113,7 +114,7 @@ void CryptohomeWebUIHandler::OnJavascriptDisallowed() {
 
 void CryptohomeWebUIHandler::GotIsTPMTokenEnabledOnUIThread(
     bool is_tpm_token_enabled) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 
   base::Value is_tpm_token_enabled_value(is_tpm_token_enabled);
   SetCryptohomeProperty("is-tpm-token-ready",

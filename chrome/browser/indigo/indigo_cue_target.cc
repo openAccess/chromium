@@ -19,7 +19,6 @@
 #include "chrome/browser/indigo/indigo_service.h"
 #include "chrome/browser/indigo/indigo_service_factory.h"
 #include "chrome/browser/indigo/resources/grit/indigo_strings.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/common/chrome_features.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
@@ -40,7 +39,7 @@ void IndigoCueTarget::Register(tabs::TabInterface& tab) {
   }
 
   auto* contextual_cueing_controller =
-      tab.GetTabFeatures()->contextual_cueing_controller();
+      contextual_cueing::ContextualCueingController::From(&tab);
   CHECK(contextual_cueing_controller);
   contextual_cueing_controller->RegisterCueTarget(
       contextual_cueing::CueTargetType::kIndigo,
@@ -59,6 +58,10 @@ contextual_cueing::CueTargetType IndigoCueTarget::GetType() const {
 
 bool IndigoCueTarget::RequiresModelExecution() const {
   return false;
+}
+
+bool IndigoCueTarget::IsPersistent() const {
+  return true;
 }
 
 bool IndigoCueTarget::IsEligible() const {
@@ -174,6 +177,14 @@ contextual_cueing::CueActionData IndigoCueTarget::CueActionDataFromResponse(
     const optimization_guide::proto::ContextualCue& cue,
     std::vector<tabs::TabHandle> tabs_to_show) const {
   return std::monostate{};
+}
+
+bool IndigoCueTarget::OverridesUcbScoring() const {
+  return features::kIndigoContextualCueingV2OverrideUcbScoring.Get();
+}
+
+bool IndigoCueTarget::DowngradesToQuietOnDismiss() const {
+  return true;
 }
 
 optimization_guide::proto::ContextualCueingSurface IndigoCueTarget::GetSurface()

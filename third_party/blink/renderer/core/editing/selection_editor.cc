@@ -153,13 +153,13 @@ void SelectionEditor::SetSelectionAndEndTyping(
     Node* new_focus = new_selection.Focus().AnchorNode();
     LayoutObject* old_style_owner =
         old_focus && old_focus->GetLayoutObject()
-            ? old_focus->GetLayoutObject()->ContainingBlockForTextOverflow()
+            ? old_focus->GetLayoutObject()->ContainerForTextOverflow()
             : nullptr;
     // Editable-only: non-editable content keeps its ellipsis
     // (crbug.com/526471153).
     LayoutObject* new_style_owner =
         new_focus && new_focus->GetLayoutObject() && IsEditable(*new_focus)
-            ? new_focus->GetLayoutObject()->ContainingBlockForTextOverflow()
+            ? new_focus->GetLayoutObject()->ContainerForTextOverflow()
             : nullptr;
 
     if (old_style_owner != new_style_owner) {
@@ -171,7 +171,7 @@ void SelectionEditor::SetSelectionAndEndTyping(
 
 void SelectionEditor::SetContainsSelectionFocusFlag(LayoutObject* style_owner,
                                                     bool value) {
-  if (!style_owner || style_owner->StyleRef().TextOverflow().IsClip() ||
+  if (!style_owner || style_owner->Style().TextOverflow().IsClip() ||
       style_owner->ContainsSelectionFocus() == value) {
     return;
   }

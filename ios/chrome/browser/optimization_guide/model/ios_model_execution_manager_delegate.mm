@@ -5,7 +5,6 @@
 #import "ios/chrome/browser/optimization_guide/model/ios_model_execution_manager_delegate.h"
 
 #import "components/optimization_guide/optimization_guide_buildflags.h"
-
 #if BUILDFLAG(BUILD_WITH_MODEL_EXECUTION)
 #import "components/optimization_guide/core/model_execution/private_ai_model_execution_fetcher.h"
 #import "components/private_ai/client.h"

@@ -12,9 +12,8 @@
 #include "third_party/blink/public/mojom/blob/data_element.mojom-blink.h"
 #include "third_party/blink/renderer/platform/blob/testing/fake_blob.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_mojo.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/uuid.h"
 
 namespace blink {
 
@@ -23,23 +22,17 @@ FakeFileBackedBlobFactory::~FakeFileBackedBlobFactory() = default;
 
 void FakeFileBackedBlobFactory::RegisterBlob(
     mojo::PendingReceiver<mojom::blink::Blob> blob,
-    const String& uuid,
-    const String& content_type,
-    mojom::blink::DataElementFilePtr file) {
-  RegisterBlobSync(std::move(blob), uuid, content_type, std::move(file),
-                   base::NullCallback());
-}
-
-void FakeFileBackedBlobFactory::RegisterBlobSync(
-    mojo::PendingReceiver<mojom::blink::Blob> blob,
-    const String& uuid,
     const String& content_type,
     mojom::blink::DataElementFilePtr file,
-    RegisterBlobSyncCallback callback) {
+    mojo::PendingRemote<mojom::blink::SnapshotPermissionToken>
+        snapshot_permission_token,
+    RegisterBlobCallback callback) {
+  const String uuid = CreateCanonicalUuidString();
   std::optional<std::vector<uint8_t>> content =
       base::ReadFileToBytes(file->path);
   Vector<uint8_t> body_bytes(content ? *content : std::vector<uint8_t>());
-  registrations.push_back(Registration{uuid, content_type, std::move(file)});
+  registrations.push_back(Registration{uuid, content_type, std::move(file),
+                                       snapshot_permission_token.is_valid()});
 
   PostCrossThreadTask(*base::ThreadPool::CreateSingleThreadTaskRunner({}),
                       FROM_HERE,
@@ -52,9 +45,7 @@ void FakeFileBackedBlobFactory::RegisterBlobSync(
                                 std::move(receiver));
                           },
                           uuid, std::move(blob), std::move(body_bytes)));
-  if (callback) {
-    std::move(callback).Run();
-  }
+  std::move(callback).Run(uuid);
 }
 
 }  // namespace blink

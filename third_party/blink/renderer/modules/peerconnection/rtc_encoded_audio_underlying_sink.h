@@ -5,17 +5,27 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_ENCODED_AUDIO_UNDERLYING_SINK_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_ENCODED_AUDIO_UNDERLYING_SINK_H_
 
+#include <cstdint>
+#include <limits>
+
+#include "base/memory/scoped_refptr.h"
 #include "base/threading/thread_checker.h"
 #include "base/unguessable_token.h"
+#include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/core/streams/underlying_sink_base.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_encoded_audio_stream_transformer.h"
-#include "third_party/webrtc/api/frame_transformer_interface.h"
+#include "third_party/webrtc/api/encoded_audio_frame_injector_interface.h"
 
 namespace blink {
 
 class ExceptionState;
 class RTCEncodedAudioStreamTransformer;
+class RTCRtpSenderEncodedSource;
 
 class MODULES_EXPORT RTCEncodedAudioUnderlyingSink final
     : public UnderlyingSinkBase {
@@ -23,6 +33,11 @@ class MODULES_EXPORT RTCEncodedAudioUnderlyingSink final
   RTCEncodedAudioUnderlyingSink(
       ScriptState*,
       scoped_refptr<blink::RTCEncodedAudioStreamTransformer::Broker>,
+      bool detach_frame_data_on_write);
+  RTCEncodedAudioUnderlyingSink(
+      ScriptState* script_state,
+      scoped_refptr<webrtc::EncodedAudioFrameInjectorInterface> frame_injector,
+      RTCRtpSenderEncodedSource* encoded_source,
       bool detach_frame_data_on_write);
   RTCEncodedAudioUnderlyingSink(
       ScriptState*,
@@ -50,6 +65,8 @@ class MODULES_EXPORT RTCEncodedAudioUnderlyingSink final
  private:
   scoped_refptr<blink::RTCEncodedAudioStreamTransformer::Broker>
       transformer_broker_;
+  scoped_refptr<webrtc::EncodedAudioFrameInjectorInterface> frame_injector_;
+  Member<RTCRtpSenderEncodedSource> encoded_source_;
   const bool detach_frame_data_on_write_;
   const bool enable_frame_restrictions_;
   base::UnguessableToken owner_id_;

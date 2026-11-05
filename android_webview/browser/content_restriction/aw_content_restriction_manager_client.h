@@ -11,11 +11,46 @@
 
 #include "base/android/scoped_java_ref.h"
 #include "base/functional/callback_forward.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "services/network/public/cpp/resource_request.h"
 
+class PrefRegistrySimple;
+class PrefService;
+
 namespace android_webview {
+namespace prefs {
+inline constexpr char kContentRestrictionEnabled[] =
+    "android_webview.content_restriction_enabled";
+}  // namespace prefs
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.android_webview
+// LINT.IfChange(ContentRestrictionFailureFallbackReason)
+enum class ContentRestrictionFailureFallbackReason {
+  kTimeout = 0,
+  kInvalidUrl = 1,
+  kAconfigFlaggedApiDelegateMissing = 2,
+  kClassificationError = 3,
+  kMaxValue = kClassificationError,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:ContentRestrictionFailureFallbackReason)
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.android_webview
+// LINT.IfChange(ContentRestrictionRequestBypassedThrottleReason)
+enum class ContentRestrictionRequestBypassedThrottleReason {
+  kSamePageNavigation = 0,
+  kUrlOverride = 1,
+  kRequestIntercept = 2,
+  kMaxValue = kRequestIntercept,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:ContentRestrictionRequestBypassedThrottleReason)
 
 // Client implementation for managing interactions with the
 // `ContentRestrictionManager` system service via the
@@ -46,9 +81,13 @@ class AwContentRestrictionManagerClient {
     base::android::ScopedJavaGlobalRef<jobject> java_bridge_;
   };
 
+  // Static factory helpers.
   static std::unique_ptr<AwContentRestrictionManagerClient> Create();
   static std::unique_ptr<AwContentRestrictionManagerClient> CreateForTesting(
-      std::unique_ptr<Delegate> delegate);
+      std::unique_ptr<Delegate> delegate,
+      PrefService* pref_service = nullptr);
+
+  static void RegisterPrefs(PrefRegistrySimple* registry);
 
   AwContentRestrictionManagerClient(const AwContentRestrictionManagerClient&) =
       delete;
@@ -100,6 +139,7 @@ class AwContentRestrictionManagerClient {
     struct PendingRequest {
       ContentClassificationCallback callback;
       std::unique_ptr<base::OneShotTimer> timer;
+      base::TimeTicks start_time;
     };
 
     // Internal timer callback invoked when the content classification request
@@ -111,12 +151,20 @@ class AwContentRestrictionManagerClient {
     base::WeakPtrFactory<ClassificationRequestTracker> weak_ptr_factory_{this};
   };
 
-  explicit AwContentRestrictionManagerClient(
-      std::unique_ptr<Delegate> delegate);
+  AwContentRestrictionManagerClient(std::unique_ptr<Delegate> delegate,
+                                    PrefService* pref_service);
+
+  // Synchronizes and updates the cached content restriction enabled state to
+  // minimize subsequent IPC hops. Triggered asynchronously on session startup.
+  void SyncContentRestrictionEnabledState();
 
   base::android::ScopedJavaGlobalRef<jobject> java_bridge_;
   const std::unique_ptr<Delegate> delegate_;
+  raw_ptr<PrefService> pref_service_ = nullptr;
   ClassificationRequestTracker request_tracker_;
+
+  base::WeakPtrFactory<AwContentRestrictionManagerClient> weak_ptr_factory_{
+      this};
 };
 
 }  // namespace android_webview

@@ -28,6 +28,7 @@
 
 #include "base/check_op.h"
 #include "base/notreached.h"
+#include "third_party/blink/public/platform/web_theme_engine.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/scroll/scroll_types.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar.h"
@@ -97,10 +98,9 @@ class CORE_EXPORT ScrollbarTheme {
 
   // Returns parts of the scrollbar which must be repainted following a change
   // in the thumb position, given scroll positions before and after.
-  virtual ScrollbarPart PartsToInvalidateOnThumbPositionChange(
-      const Scrollbar&,
-      float old_position,
-      float new_position) const {
+  virtual int PartsToInvalidateOnThumbPositionChange(const Scrollbar&,
+                                                     float old_position,
+                                                     float new_position) const {
     return kAllParts;
   }
 
@@ -111,7 +111,7 @@ class CORE_EXPORT ScrollbarTheme {
   virtual void PaintTickmarks(const PaintInfo&,
                               const Scrollbar&,
                               const gfx::Rect&);
-  virtual SkColor4f ThumbColor(const Scrollbar&) const { NOTREACHED(); }
+  virtual SkColor4f ThumbColor(const Scrollbar&) const;
 
   virtual bool ShouldCenterOnThumb(const Scrollbar&,
                                    const WebMouseEvent&) const {
@@ -263,6 +263,8 @@ class CORE_EXPORT ScrollbarTheme {
   virtual void PaintTrackBackgroundAndButtons(const PaintInfo&,
                                               const Scrollbar&,
                                               const gfx::Rect&);
+  WebThemeEngine::ScrollbarThumbExtraParams BuildScrollbarThumbExtraParams(
+      const Scrollbar&) const;
 
  protected:
   // For GetTheme().

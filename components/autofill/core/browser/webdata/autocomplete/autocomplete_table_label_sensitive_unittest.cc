@@ -17,6 +17,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/webdata/autocomplete/autocomplete_entry.h"
 #include "components/autofill/core/browser/webdata/autocomplete/autocomplete_entry_label_sensitive.h"
@@ -38,6 +39,7 @@ using AutocompleteEntryLabelSensitiveSet =
              bool (*)(const AutocompleteEntryLabelSensitive&,
                       const AutocompleteEntryLabelSensitive&)>;
 using ::base::Time;
+using ::testing::AllOf;
 using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::Optional;
@@ -61,18 +63,22 @@ bool CompareAutocompleteEntries(const AutocompleteEntryLabelSensitive& a,
                                      b.key().value(), b_created, b_used);
 }
 
+// Drops sub-second precision, as the database stores time with only
+// second-level precision.
+Time DropSubSecondPrecision(Time time) {
+  return Time::FromTimeT(time.ToTimeT());
+}
+
 AutocompleteEntryLabelSensitive MakeAutocompleteEntryLabelSensitiveForTest(
     const std::u16string& name,
     const std::u16string& label,
     const std::u16string& value,
     Time date_created,
     Time date_last_used) {
-  // Drop sub-second precision, as the database stores time with only
-  // second-level precision.
   return AutocompleteEntryLabelSensitive(
       AutocompleteKeyLabelSensitive(name, label, value),
-      Time::FromTimeT(date_created.ToTimeT()),
-      Time::FromTimeT(date_last_used.ToTimeT()));
+      DropSubSecondPrecision(date_created),
+      DropSubSecondPrecision(date_last_used));
 }
 
 // Checks that `actual` and `expected` contain the same elements.
@@ -107,6 +113,25 @@ auto EqualsSearchResult(std::u16string value,
                &AutocompleteSearchResultLabelSensitive::query_name, name),
       Property("AutocompleteSearchResultLabelSensitive::query_label",
                &AutocompleteSearchResultLabelSensitive::query_label, label));
+}
+
+auto EqualsSearchResult(std::u16string value,
+                        std::u16string name,
+                        std::u16string label,
+                        int count,
+                        base::Time date_last_used) {
+  return AllOf(
+      Property("AutocompleteSearchResultLabelSensitive::value",
+               &AutocompleteSearchResultLabelSensitive::value, value),
+      Property("AutocompleteSearchResultLabelSensitive::count",
+               &AutocompleteSearchResultLabelSensitive::count, count),
+      Property("AutocompleteSearchResultLabelSensitive::query_name",
+               &AutocompleteSearchResultLabelSensitive::query_name, name),
+      Property("AutocompleteSearchResultLabelSensitive::query_label",
+               &AutocompleteSearchResultLabelSensitive::query_label, label),
+      Property("AutocompleteSearchResultLabelSensitive::date_last_used",
+               &AutocompleteSearchResultLabelSensitive::date_last_used,
+               date_last_used));
 }
 
 class AutocompleteTableLabelSensitiveTest : public testing::Test {
@@ -448,7 +473,7 @@ TEST_F(AddFormFieldValuesTest, InsertsWithCorrectNormalizedLabel) {
 using GetFormValuesForElementNameAndLabelTest =
     AutocompleteTableLabelSensitiveTest;
 
-// GetFormValuesForElementNameAndLabel returns the correct set of suggestions
+// `GetFormValuesForElementNameAndLabel` returns the correct set of suggestions
 // for a given name/label and empty value prefix.
 TEST_F(GetFormValuesForElementNameAndLabelTest, ReturnsSuggestion) {
   ASSERT_TRUE(CreateAndSubmitDefaultField().has_value());
@@ -574,6 +599,118 @@ TEST_F(GetFormValuesForElementNameAndLabelTest, NormalizesLabelBeforeQuerying) {
 
   EXPECT_THAT(entries, ElementsAre(EqualsSearchResult(
                            kDefaultValue, kDefaultName, field.label(), 1)));
+}
+
+// GetFormValuesForElementNameAndLabel returns the most recent date_last_used
+// (minimum age) among matching entries for the suggestion.
+TEST_F(GetFormValuesForElementNameAndLabelTest, ReturnsMostRecentDateLastUsed) {
+  FormFieldData field = CreateDefaultField();
+  ASSERT_TRUE(SubmitFormField(field));
+
+  // Advance time and reinforce the field.
+  AdvanceClock(base::Seconds(1000));
+  ASSERT_TRUE(SubmitFormField(field));
+
+  const base::Time expected_date_last_used =
+      DropSubSecondPrecision(base::Time::Now());
+
+  std::vector<AutocompleteSearchResultLabelSensitive> entries;
+  ASSERT_TRUE(table().GetFormValuesForElementNameAndLabel(
+      kDefaultName, kDefaultLabel, /*prefix=*/std::u16string(),
+      /*limit=*/10, entries));
+
+  EXPECT_THAT(entries, ElementsAre(EqualsSearchResult(
+                           kDefaultValue, kDefaultName, kDefaultLabel, 2,
+                           expected_date_last_used)));
+}
+
+// Prefix matching properly escapes SQL LIKE wildcards like '%', '_', and '\'.
+TEST_F(GetFormValuesForElementNameAndLabelTest, LikePatternEscaping) {
+  FormFieldData field_percent =
+      test::CreateTestFormField(kDefaultLabel, kDefaultName, u"100% discount",
+                                FormControlType::kInputText);
+  FormFieldData field_thousand = test::CreateTestFormField(
+      kDefaultLabel, kDefaultName, u"1000 items", FormControlType::kInputText);
+  FormFieldData field_underscore = test::CreateTestFormField(
+      kDefaultLabel, kDefaultName, u"_special", FormControlType::kInputText);
+  FormFieldData field_letter = test::CreateTestFormField(
+      kDefaultLabel, kDefaultName, u"aspecial", FormControlType::kInputText);
+  FormFieldData field_backslash = test::CreateTestFormField(
+      kDefaultLabel, kDefaultName, u"\\special", FormControlType::kInputText);
+
+  ASSERT_TRUE(SubmitFormField(field_percent));
+  ASSERT_TRUE(SubmitFormField(field_thousand));
+  ASSERT_TRUE(SubmitFormField(field_underscore));
+  ASSERT_TRUE(SubmitFormField(field_letter));
+  ASSERT_TRUE(SubmitFormField(field_backslash));
+
+  std::vector<AutocompleteSearchResultLabelSensitive> entries;
+
+  // Searching for "100%" should only match "100% discount", not "1000 items".
+  ASSERT_TRUE(table().GetFormValuesForElementNameAndLabel(
+      kDefaultName, kDefaultLabel, u"100%", /*limit=*/10, entries));
+  EXPECT_THAT(entries, ElementsAre(EqualsSearchResult(
+                           u"100% discount", kDefaultName, kDefaultLabel, 1)));
+
+  // Searching for "_" should only match "_special", not "aspecial".
+  ASSERT_TRUE(table().GetFormValuesForElementNameAndLabel(
+      kDefaultName, kDefaultLabel, u"_", /*limit=*/10, entries));
+  EXPECT_THAT(entries, ElementsAre(EqualsSearchResult(u"_special", kDefaultName,
+                                                      kDefaultLabel, 1)));
+
+  // Searching for "\" should only match "\special", not other entries.
+  ASSERT_TRUE(table().GetFormValuesForElementNameAndLabel(
+      kDefaultName, kDefaultLabel, u"\\", /*limit=*/10, entries));
+  EXPECT_THAT(entries, ElementsAre(EqualsSearchResult(
+                           u"\\special", kDefaultName, kDefaultLabel, 1)));
+}
+
+// When multiple entries exist with the same value, query results are
+// deduplicated and prefer the highest priority MatchingType (kNameAndLabel >
+// kName / kLabel).
+TEST_F(GetFormValuesForElementNameAndLabelTest,
+       QueryDeduplication_PrefersNameAndLabel) {
+  FormFieldData field_both = test::CreateTestFormField(
+      u"Email Address", u"email_field", u"user@example.com",
+      FormControlType::kInputText);
+  FormFieldData field_name_only = test::CreateTestFormField(
+      u"Different Label", u"email_field", u"user@example.com",
+      FormControlType::kInputText);
+
+  ASSERT_TRUE(SubmitFormField(field_both));
+  ASSERT_TRUE(SubmitFormField(field_name_only));
+
+  std::vector<AutocompleteSearchResultLabelSensitive> entries;
+  ASSERT_TRUE(table().GetFormValuesForElementNameAndLabel(
+      u"email_field", u"Email Address", /*prefix=*/u"user", /*limit=*/10,
+      entries));
+
+  EXPECT_THAT(
+      entries,
+      ElementsAre(
+          AllOf(Property(&AutocompleteSearchResultLabelSensitive::value,
+                         u"user@example.com"),
+                Property(&AutocompleteSearchResultLabelSensitive::matching_type,
+                         MatchingType::kNameAndLabel))));
+}
+
+// When queried with an empty label, suggestions are matched by name only
+// and assign MatchingType::kName.
+TEST_F(GetFormValuesForElementNameAndLabelTest, QueryWithEmptyLabel) {
+  FormFieldData field = test::CreateTestFormField(
+      u"Some Label", u"user_name", u"Alice", FormControlType::kInputText);
+  ASSERT_TRUE(SubmitFormField(field));
+
+  std::vector<AutocompleteSearchResultLabelSensitive> entries;
+  ASSERT_TRUE(table().GetFormValuesForElementNameAndLabel(
+      u"user_name", /*label=*/u"", /*prefix=*/u"Al", /*limit=*/10, entries));
+
+  EXPECT_THAT(
+      entries,
+      ElementsAre(AllOf(
+          Property(&AutocompleteSearchResultLabelSensitive::value, u"Alice"),
+          Property(&AutocompleteSearchResultLabelSensitive::matching_type,
+                   MatchingType::kName))));
 }
 
 using GetCountOfValuesContainedBetweenTest =
@@ -1060,8 +1197,7 @@ TEST_F(RemoveFormElementTest, RemovesEntry) {
 TEST_F(RemoveFormElementTest, DoesNothingIfEntryDoesNotExist) {
   // The database stores timestamps with second precision. The test needs to
   // do the same to be able to compare entries.
-  base::Time seconds_precision_now = base::Time::FromSecondsSinceUnixEpoch(
-      base::Time::Now().InMillisecondsSinceUnixEpoch() / 1000);
+  base::Time seconds_precision_now = DropSubSecondPrecision(base::Time::Now());
 
   ASSERT_TRUE(CreateAndSubmitDefaultField().has_value());
 
@@ -1228,8 +1364,7 @@ using GetAutocompleteEntryLabelSensitiveTest =
 TEST_F(GetAutocompleteEntryLabelSensitiveTest, ReturnsEntry) {
   // The database stores timestamps with second precision. The test needs to
   // do the same to be able to compare entries.
-  base::Time seconds_precision_now = base::Time::FromSecondsSinceUnixEpoch(
-      base::Time::Now().InMillisecondsSinceUnixEpoch() / 1000);
+  base::Time seconds_precision_now = DropSubSecondPrecision(base::Time::Now());
 
   ASSERT_TRUE(CreateAndSubmitDefaultField().has_value());
 
@@ -1347,6 +1482,87 @@ TEST_F(MigrateDataFromLegacyTableTest, WipesExistingEntriesBeforeMigration) {
 
   // The migrated legacy entry should exist with empty label.
   EXPECT_TRUE(DoesAutocompleteEntryExist(legacy_name, u"", legacy_value));
+}
+
+// Tests ToSafeMatchingType correctly converts valid matching types and returns
+// kUnknown for out-of-bounds integer values.
+TEST_F(AutocompleteTableLabelSensitiveTest, ToSafeMatchingType_Bounds) {
+  EXPECT_EQ(ToSafeMatchingType(-1), MatchingType::kUnknown);
+  EXPECT_EQ(ToSafeMatchingType(static_cast<int>(MatchingType::kUnknown)),
+            MatchingType::kUnknown);
+  EXPECT_EQ(ToSafeMatchingType(static_cast<int>(MatchingType::kLabel)),
+            MatchingType::kLabel);
+  EXPECT_EQ(ToSafeMatchingType(static_cast<int>(MatchingType::kName)),
+            MatchingType::kName);
+  EXPECT_EQ(ToSafeMatchingType(static_cast<int>(MatchingType::kNameAndLabel)),
+            MatchingType::kNameAndLabel);
+  EXPECT_EQ(ToSafeMatchingType(static_cast<int>(MatchingType::kMaxValue) + 1),
+            MatchingType::kUnknown);
+  EXPECT_EQ(ToSafeMatchingType(100), MatchingType::kUnknown);
+}
+
+// Tests that GetTableStats computes the correct count of total entries, entries
+// with labels, and reused entries.
+TEST_F(AutocompleteTableLabelSensitiveTest, GetTableStats) {
+  // 1. Empty database.
+  EXPECT_EQ(table().GetTableStats(), (AutocompleteTableStats{
+                                         .total_entries = 0,
+                                         .entries_with_label = 0,
+                                         .entries_reused = 0,
+                                     }));
+
+  // 2. Add a name-only row (empty label).
+  FormFieldData field_name_only = test::CreateTestFormField(
+      /*label=*/u"", u"name1", u"value1", FormControlType::kInputText);
+  ASSERT_TRUE(SubmitFormField(field_name_only));
+
+  EXPECT_EQ(table().GetTableStats(), (AutocompleteTableStats{
+                                         .total_entries = 1,
+                                         .entries_with_label = 0,
+                                         .entries_reused = 0,
+                                     }));
+
+  // 3. Add a labeled row (non-empty label).
+  FormFieldData field_with_label = test::CreateTestFormField(
+      /*label=*/u"Label", u"name2", u"value2", FormControlType::kInputText);
+  ASSERT_TRUE(SubmitFormField(field_with_label));
+
+  EXPECT_EQ(table().GetTableStats(), (AutocompleteTableStats{
+                                         .total_entries = 2,
+                                         .entries_with_label = 1,
+                                         .entries_reused = 0,
+                                     }));
+
+  // 4. Submit the labeled field again to increment its count to 2 (reused).
+  ASSERT_TRUE(SubmitFormField(field_with_label));
+
+  EXPECT_EQ(table().GetTableStats(), (AutocompleteTableStats{
+                                         .total_entries = 2,
+                                         .entries_with_label = 1,
+                                         .entries_reused = 1,
+                                     }));
+
+  // 5. Submit the labeled field a third time (count = 3); entries_reused should
+  // remain 1 (distinct reused entries).
+  ASSERT_TRUE(SubmitFormField(field_with_label));
+
+  EXPECT_EQ(table().GetTableStats(), (AutocompleteTableStats{
+                                         .total_entries = 2,
+                                         .entries_with_label = 1,
+                                         .entries_reused = 1,
+                                     }));
+
+  // 6. Add a row whose label normalizes to empty (whitespace/punctuation only);
+  // it should be counted as name-only (entries_with_label unchanged).
+  FormFieldData field_punctuation_label = test::CreateTestFormField(
+      /*label=*/u" : ", u"name3", u"value3", FormControlType::kInputText);
+  ASSERT_TRUE(SubmitFormField(field_punctuation_label));
+
+  EXPECT_EQ(table().GetTableStats(), (AutocompleteTableStats{
+                                         .total_entries = 3,
+                                         .entries_with_label = 1,
+                                         .entries_reused = 1,
+                                     }));
 }
 
 }  // namespace

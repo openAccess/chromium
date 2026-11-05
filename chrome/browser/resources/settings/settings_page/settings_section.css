@@ -13,6 +13,34 @@
   position: relative;
 }
 
+:host-context([settings-refresh-2026]) {
+  &:host {
+    margin-bottom: 24px;
+  }
+
+  #header {
+    padding: 0;
+  }
+
+  #header[hidden] {
+    display: none;
+  }
+
+  #title {
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 24px;
+    margin: 0;
+    padding: 16px 20px;
+  }
+
+  #card {
+    display: flex;
+    flex-direction: column;
+    row-gap: 2px;
+  }
+}
+
 #header {
   display: flex;
   justify-content: space-between;

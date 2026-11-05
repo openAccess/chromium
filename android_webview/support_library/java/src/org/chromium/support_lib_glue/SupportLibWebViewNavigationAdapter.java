@@ -130,6 +130,20 @@ class SupportLibWebViewNavigationAdapter implements WebViewNavigationBoundaryInt
         }
     }
 
+    // TODO(crbug.com/385170155): This timestamp should stay aligned with the JS performance API.
+    // If that API changes to use actual_navigation_timestamp (or another metric), this should be
+    // updated to match.
+    @Override
+    public long getNavigationStartUptimeMillis() {
+        try (TraceEvent event =
+                TraceEvent.scoped(
+                        "WebView.APICall.AndroidX.NAVIGATION_GET_NAVIGATION_"
+                                + "START_UPTIME_MILLIS")) {
+            recordApiCall(ApiCall.NAVIGATION_GET_NAVIGATION_START_UPTIME_MILLIS);
+            return mNavigation.getNavigationStartUptimeMillis();
+        }
+    }
+
     @Override
     public /* WebViewPage */ @Nullable InvocationHandler getPage() {
         try (TraceEvent event = TraceEvent.scoped("WebView.APICall.AndroidX.NAVIGATION_GET_PAGE")) {
@@ -161,6 +175,16 @@ class SupportLibWebViewNavigationAdapter implements WebViewNavigationBoundaryInt
                 TraceEvent.scoped("WebView.APICall.AndroidX.NAVIGATION_GET_RESPONSE_HEADERS")) {
             recordApiCall(ApiCall.NAVIGATION_GET_RESPONSE_HEADERS);
             return mNavigation.getResponseHeaders();
+        }
+    }
+
+    @Override
+    public /* NavigationState */ InvocationHandler snapshotState() {
+        try (TraceEvent event =
+                TraceEvent.scoped("WebView.APICall.AndroidX.NAVIGATION_SNAPSHOT_STATE")) {
+            recordApiCall(ApiCall.NAVIGATION_SNAPSHOT_STATE);
+            return BoundaryInterfaceReflectionUtil.createInvocationHandlerFor(
+                    new SupportLibWebViewNavigationStateAdapter(mNavigation.snapshotState()));
         }
     }
 

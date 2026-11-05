@@ -17,6 +17,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.embedder_support.simple_factory_key.SimpleFactoryKeyHandle;
+import org.chromium.net.NetError;
 
 /** Provides access to native implementations of ImageFetcher for the given browser context. */
 @JNINamespace("image_fetcher")
@@ -78,6 +79,7 @@ public class ImageFetcherBridge {
                         params.url,
                         params.clientName,
                         params.expirationIntervalMinutes,
+                        params.isTrustedSource,
                         (ImageDataFetchResult dataFetchResult) -> {
                             callback.onResult(dataFetchResult);
                         });
@@ -186,9 +188,13 @@ public class ImageFetcherBridge {
     }
 
     @CalledByNative
-    private static RequestMetadata createRequestMetadata(
-            String mimeType, int httpResponseCode, String contentLocationHeader) {
-        return new RequestMetadata(mimeType, httpResponseCode, contentLocationHeader);
+    @VisibleForTesting
+    static RequestMetadata createRequestMetadata(
+            String mimeType,
+            int httpResponseCode,
+            @NetError int netError,
+            String contentLocationHeader) {
+        return new RequestMetadata(mimeType, httpResponseCode, netError, contentLocationHeader);
     }
 
     @CalledByNative
@@ -214,6 +220,7 @@ public class ImageFetcherBridge {
                 String url,
                 String clientName,
                 int expirationIntervalMinutes,
+                boolean isTrustedSource,
                 Callback<ImageDataFetchResult> callback);
 
         void fetchImage(

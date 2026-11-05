@@ -8,8 +8,6 @@ assert(enable_extensions)
 assert(is_chromeos)
 
 static_library("info_private") {
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   sources = [
     "info_private_api.cc",
     "info_private_api.h",
@@ -25,17 +23,15 @@ static_library("info_private") {
     "//build/config/cuttlefish:buildflags",
     "//build/config/squid:buildflags",
     "//chrome/browser:browser_process",
-    "//chrome/browser:browser_process_platform_part",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/app_mode",
     "//chrome/browser/ash/arc:arc_util",
     "//chrome/browser/ash/login",
-    "//chrome/browser/ash/policy/core",
-    "//chrome/browser/ash/profiles",
+    "//chrome/browser/ash/policy/enrollment",
     "//chrome/browser/ash/system",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/profiles:profile_manager",
     "//chrome/common:constants",
+    "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/install_attributes",
     "//chromeos/ash/components/network",
     "//chromeos/ash/components/settings",
     "//chromeos/ash/components/system",
@@ -45,6 +41,8 @@ static_library("info_private") {
     "//components/metrics",
     "//components/prefs",
     "//components/user_manager",
+    "//components/user_prefs",
+    "//content/public/browser",
     "//extensions/common",
     "//ui/display",
   ]

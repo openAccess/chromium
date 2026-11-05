@@ -5,24 +5,29 @@
 import 'chrome://settings/settings.js';
 import 'chrome://settings/lazy_load.js';
 
+// <if expr="_google_chrome">
+import {OnDeviceAiBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
+// </if>
 import type {SettingsAiPageIndexElement} from 'chrome://settings/settings.js';
-import {CrSettingsPrefs, loadTimeData, resetRouterForTesting, Router, routes} from 'chrome://settings/settings.js';
+import {AiSettingsSection, loadTimeData, PrefService, resetRouterForTesting, Router, routes} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertGT, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
+
+// <if expr="_google_chrome">
+import {TestOnDeviceAiBrowserProxy} from './test_on_device_ai_browser_proxy.js';
+// </if>
 
 suite('AiPageIndex', function() {
   let index: SettingsAiPageIndexElement;
 
   async function createAiPageIndex(): Promise<void> {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    const settingsPrefs = document.createElement('settings-prefs');
-    document.body.appendChild(settingsPrefs);
-    await CrSettingsPrefs.initialized;
+    await PrefService.getInstance().whenInitialized();
     index = document.createElement('settings-ai-page-index');
-    index.prefs = settingsPrefs.prefs!;
     document.body.appendChild(index);
-    return flushTasks();
+    // Wait for deferred route switching in currentRouteChanged(), which is
+    // scheduled in a microtask.
+    return microtasksFinished();
   }
 
   function assertActiveViews(ids: string[]) {
@@ -33,17 +38,22 @@ suite('AiPageIndex', function() {
   }
 
   setup(function() {
+    // <if expr="_google_chrome">
+    OnDeviceAiBrowserProxyImpl.setInstance(new TestOnDeviceAiBrowserProxy());
+    // </if>
     loadTimeData.overrideValues({
       showAiPage: true,
       showAiPageAiFeatureSection: true,
       showComposeControl: true,
-      showHistorySearchControl: true,
-      showGlicSettings: true,
+      aiSettingsSection: AiSettingsSection.GEMINI,
       enableAiModeSearchSetting: true,
       actorLoginFederatedLoginSupportEnabled: true,
       showAiSuggestionsControl: true,
       showInlineCueMenuControl: true,
       showDictationControl: true,
+      // <if expr="_google_chrome">
+      showOnDeviceAiAdvancedSettings: true,
+      // </if>
     });
     resetRouterForTesting();
     return createAiPageIndex();
@@ -63,10 +73,6 @@ suite('AiPageIndex', function() {
     Router.getInstance().navigateTo(routes.AI);
     await microtasksFinished();
     assertActiveViews(defaultViews);
-
-    Router.getInstance().navigateTo(routes.HISTORY_SEARCH);
-    await microtasksFinished();
-    assertActiveViews(['historySearch']);
 
     Router.getInstance().navigateTo(routes.OFFER_WRITING_HELP);
     await microtasksFinished();
@@ -91,6 +97,12 @@ suite('AiPageIndex', function() {
     Router.getInstance().navigateTo(routes.DICTATION);
     await microtasksFinished();
     assertActiveViews(['dictation']);
+
+    // <if expr="_google_chrome">
+    Router.getInstance().navigateTo(routes.ON_DEVICE_AI);
+    await microtasksFinished();
+    assertActiveViews(['onDeviceAi']);
+    // </if>
   });
 
   test('aiFeaturesSectionVisibility', async function() {
@@ -118,16 +130,53 @@ suite('AiPageIndex', function() {
         !!index.$.viewManager.querySelector('#aiModeSearch[slot=view]'));
   });
 
-  test('glicSectionVisibility', async function() {
-    assertTrue(!!index.$.viewManager.querySelector('#glic[slot=view]'));
-
+  test('aiSettingsSectionVisibilityNone', async function() {
     loadTimeData.overrideValues({
       showAiPage: true,
-      showGlicSettings: false,
+      aiSettingsSection: AiSettingsSection.NONE,
     });
     resetRouterForTesting();
     await createAiPageIndex();
     assertFalse(!!index.$.viewManager.querySelector('#glic[slot=view]'));
+    assertFalse(!!index.$.viewManager.querySelector('#geic[slot=view]'));
+  });
+
+  test('aiSettingsSectionVisibilityGemini', async function() {
+    loadTimeData.overrideValues({
+      showAiPage: true,
+      aiSettingsSection: AiSettingsSection.GEMINI,
+    });
+    resetRouterForTesting();
+    await createAiPageIndex();
+    assertTrue(!!index.$.viewManager.querySelector('#glic[slot=view]'));
+    assertFalse(!!index.$.viewManager.querySelector('#geic[slot=view]'));
+  });
+
+  test('aiSettingsSectionVisibilityGeminiEnterprise', async function() {
+    loadTimeData.overrideValues({
+      showAiPage: true,
+      aiSettingsSection: AiSettingsSection.GEMINI_ENTERPRISE,
+    });
+    resetRouterForTesting();
+    await createAiPageIndex();
+    assertFalse(!!index.$.viewManager.querySelector('#glic[slot=view]'));
+    assertTrue(!!index.$.viewManager.querySelector('#geic[slot=view]'));
+  });
+
+  test('GeminiEnterpriseRoutingAndDataParentViewId', async function() {
+    loadTimeData.overrideValues({
+      showAiPage: true,
+      aiSettingsSection: AiSettingsSection.GEMINI_ENTERPRISE,
+    });
+    resetRouterForTesting();
+    await createAiPageIndex();
+
+    Router.getInstance().navigateTo(routes.GEMINI_ENTERPRISE);
+    await microtasksFinished();
+    assertActiveViews(['geminiEnterprise']);
+
+    assertTrue(!!index.$.viewManager.querySelector(
+        '#geminiEnterprise[slot=view][data-parent-view-id=geic]'));
   });
 
   test('dictationSectionVisibility', async function() {
@@ -142,14 +191,30 @@ suite('AiPageIndex', function() {
     assertFalse(!!index.$.viewManager.querySelector('#dictation[slot=view]'));
   });
 
+  // <if expr="_google_chrome">
+  test('onDeviceAiSectionVisibility', async function() {
+    assertTrue(!!index.$.viewManager.querySelector('#onDeviceAi[slot=view]'));
+
+    loadTimeData.overrideValues({
+      showAiPage: true,
+      showOnDeviceAiAdvancedSettings: false,
+    });
+    resetRouterForTesting();
+    await createAiPageIndex();
+    assertFalse(!!index.$.viewManager.querySelector('#onDeviceAi[slot=view]'));
+  });
+  // </if>
+
   // Test that the child views are properly annotated.
   test('DataParentViewId', function() {
     const childViewsId = [
-      'historySearch',
       'compose',
       'aiSuggestions',
       'inlineCueMenu',
       'dictation',
+      // <if expr="_google_chrome">
+      'onDeviceAi',
+      // </if>
     ];
     for (const id of childViewsId) {
       assertTrue(!!index.$.viewManager.querySelector(
@@ -162,7 +227,7 @@ suite('AiPageIndex', function() {
         '#geminiLoginPermissions[slot=view][data-parent-view-id=gemini]'));
   });
 
-  // Minimal (non-exhaustive) tests to ensure SearchableViewContainerMixin is
+  // Minimal (non-exhaustive) tests to ensure SearchableViewContainerMixinLit is
   // inherited correctly.
   test('Search', async function() {
     function assertVisibleViews(visible: string[], hidden: string[]) {
@@ -176,7 +241,7 @@ suite('AiPageIndex', function() {
     }
 
     // Case1: Results only in the "AI Innovations" card.
-    let result = await index.searchContents('history search');
+    let result = await index.searchContents('help me write');
     assertFalse(result.canceled);
     assertGT(result.matchCount, 0);
     assertFalse(result.wasClearSearch);

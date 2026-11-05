@@ -10,6 +10,7 @@
 
 #include "base/functional/bind.h"
 #include "base/time/time.h"
+#include "components/viz/common/features.h"
 #include "components/viz/common/frame_sinks/copy_output_request.h"
 #include "components/viz/common/quads/compositor_render_pass.h"
 #include "components/viz/common/quads/compositor_render_pass_draw_quad.h"
@@ -126,11 +127,12 @@ Self& AddQuads<Self>::AddRenderPassQuad(const gfx::Rect& rect,
                                         const RenderPassQuadParams& params) {
   auto* sqs = AppendDefaultSharedQuadState(rect, visible_rect);
   auto* quad = pass_->CreateAndAppendDrawQuad<CompositorRenderPassDrawQuad>();
-  quad->SetAll(
-      sqs, rect, visible_rect, params.needs_blending, id, kInvalidResourceId,
-      gfx::RectF(), gfx::Size(), gfx::Vector2dF(1.0f, 1.0f), gfx::PointF(),
-      params.force_anti_aliasing_off,
-      /*backdrop_filter_quality=*/1.0f, params.intersects_damage_under);
+  quad->SetAll(sqs, rect, visible_rect, params.needs_blending, id,
+               kInvalidResourceId, gfx::RectF(), gfx::Size(),
+               gfx::Vector2dF(1.0f, 1.0f), gfx::PointF(),
+               params.force_anti_aliasing_off,
+               /*backdrop_filter_quality=*/1.0f, params.intersects_damage_under,
+               params.filters, params.backdrop_filters, std::nullopt);
 
   return ThisRef();
 }
@@ -239,18 +241,6 @@ RenderPassBuilder& RenderPassBuilder::SetCacheRenderPass(bool val) {
 RenderPassBuilder& RenderPassBuilder::SetHasDamageFromContributingContent(
     bool val) {
   pass_->has_damage_from_contributing_content = val;
-  return *this;
-}
-
-RenderPassBuilder& RenderPassBuilder::AddFilter(
-    const cc::FilterOperation& filter) {
-  pass_->filters.Append(filter);
-  return *this;
-}
-
-RenderPassBuilder& RenderPassBuilder::AddBackdropFilter(
-    const cc::FilterOperation& filter) {
-  pass_->backdrop_filters.Append(filter);
   return *this;
 }
 
@@ -495,6 +485,15 @@ CompositorFrameBuilder& CompositorFrameBuilder::AddLatencyInfos(
 
 CompositorFrameBuilder& CompositorFrameBuilder::SetActivationDependencies(
     std::vector<SurfaceId> activation_dependencies) {
+  frame_->metadata.activation_dependencies.clear();
+  for (auto& dep : activation_dependencies) {
+    frame_->metadata.activation_dependencies.emplace_back(std::move(dep));
+  }
+  return *this;
+}
+
+CompositorFrameBuilder& CompositorFrameBuilder::SetActivationDependencies(
+    std::vector<SurfaceIdAndDeadline> activation_dependencies) {
   frame_->metadata.activation_dependencies = std::move(activation_dependencies);
   return *this;
 }
@@ -502,6 +501,13 @@ CompositorFrameBuilder& CompositorFrameBuilder::SetActivationDependencies(
 CompositorFrameBuilder& CompositorFrameBuilder::SetDeadline(
     const FrameDeadline& deadline) {
   frame_->metadata.deadline = deadline;
+  if (features::UsePerDependencyDeadlines()) {
+    for (auto& dep : frame_->metadata.activation_dependencies) {
+      if (!dep.deadline_in_frames.has_value()) {
+        dep.deadline_in_frames = deadline.deadline_in_frames();
+      }
+    }
+  }
   return *this;
 }
 
@@ -534,6 +540,12 @@ CompositorFrameBuilder& CompositorFrameBuilder::AddDelegatedInkMetadata(
 CompositorFrameBuilder& CompositorFrameBuilder::AddOffsetTagDefinition(
     const OffsetTagDefinition& definition) {
   frame_->metadata.offset_tag_definitions.push_back(definition);
+  return *this;
+}
+
+CompositorFrameBuilder& CompositorFrameBuilder::AddOffsetTagValue(
+    const OffsetTagValue& value) {
+  frame_->metadata.offset_tag_values.push_back(value);
   return *this;
 }
 

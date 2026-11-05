@@ -10,7 +10,7 @@
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
@@ -100,7 +100,7 @@ void CastToolbarButtonController::OnDialogShown() {
 }
 
 void CastToolbarButtonController::OnDialogHidden() {
-  DCHECK_GT(dialog_count_, 0u);
+  CHECK_GT(dialog_count_, 0u, base::NotFatalUntil::M162);
   if (dialog_count_) {
     dialog_count_--;
   }
@@ -128,7 +128,7 @@ void CastToolbarButtonController::UpdateIcon() {
 }
 
 void CastToolbarButtonController::KeepIconShownOnPressed() {
-  DCHECK(!keep_visible_for_right_click_or_hold_);
+  CHECK(!keep_visible_for_right_click_or_hold_, base::NotFatalUntil::M162);
   keep_visible_for_right_click_or_hold_ = true;
   MaybeToggleIconVisibility();
 }
@@ -202,8 +202,11 @@ void CastToolbarButtonController::MaybeToggleIconVisibility() {
         // WebUIBrowser does not have a BrowserView.
         // TODO(webium): make an pinned toolbar actions container for
         // WebUIBrowser.
-        if (auto* controller =
-                browser->GetFeatures().pinned_toolbar_actions()) {
+        BrowserWindow* const browser_window =
+            BrowserWindow::FromBrowser(browser);
+        if (auto* controller = browser_window
+                                   ? browser_window->GetPinnedToolbarActions()
+                                   : nullptr) {
           controller->ShowActionEphemerallyInToolbar(kActionRouteMedia,
                                                      ShouldEnableAction());
         }

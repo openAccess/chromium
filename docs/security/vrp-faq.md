@@ -10,6 +10,7 @@ Please report all Chromium security bugs in the tracker using
 
 Please check here for any news and updates about the Chrome VRP.
 
+* October 2026: Updates for external fuzzer contribution.
 * April 2026 : Updates for new reward structure.
 * March 2026 : Updated formatting criteria & added self-service hotlists.
 
@@ -66,8 +67,11 @@ reports:
   * Your PoC should be constructed to reproduce locally when at all possible.
 * Do *not* provide links to websites (public or unlisted) as PoCs.
   * The PoC should ALWAYS be a file directly attached to the report.
-* Example servers should be written only in Python, other languages may lead
-  to your report being rejected.
+* Example servers should be written only in Python (other languages will lead to
+  your report being rejected). Please name your server `server.py` so that it
+  can be run without arguments (`python3 server.py`) and serves `poc.html` at
+  `http://localhost:8000/poc.html` (with `/gen/` resolving to the build's
+  `gen` directory if MojoJS bindings are used).
 
 ### Patches to simulate a compromised renderer
 
@@ -202,6 +206,32 @@ enabled):
 
 Non-standard, debugging or unsafe command line flags and features are not
 accepted.
+
+### Reporting full-chains
+
+Please report each individual bug in the chain as distinct bugs including the
+information we need to reproduce each bug in isolation. Once you have done so,
+create an additional vulnerability report that describes how the components
+chain together and refers to each bug for its details. Attach a video or logs
+showing the chain, and the command line, Chrome version, Operating System and
+hardware that you've used to demonstrate the full-chain exploit. Finally, add
+the
+[Security-Request-Exploit-Assessment](https://issues.chromium.org/hotlists/8186895)
+hotlist to the issue (you can do this after it has been filed).
+
+### Contributing Fuzzers
+
+We welcome contributions of blackbox fuzzers with a proven track record, and
+will run them on our clusterfuzz infrastructure so that reports are created
+automatically. To submit a fuzzer please first submit three valid security
+vulnerabilities using our normal processes. Once three vulnerabilities have
+been confirmed, and did not dupe against our internal fuzzers or AI tools,
+you are welcome to submit your fuzzer. Reach out to fuzzing@chromium.org
+with details of your fuzzer and links to the previously submitted
+vulnerabilities.
+
+All issues reported by hosted fuzzers are eligible for baseline rewards
+and a fuzzer bonus, as outlined in our [VRP Rules page](https://bughunters.google.com/about/rules/chrome-friends/chrome-vulnerability-reward-program-rules#fuzzer-bonus).
 
 ## Frequently Asked Questions (FAQ)
 
@@ -341,8 +371,7 @@ security problem, and adding necessary pocs and traces as attachments.
 * The exploit must work against a released Chrome build on the latest operating
   system versions and architectures, and prove code execution by executing a
   command shell with the credentials of the user running Chrome.
-* r/w and arbitrary read must work using Chrome in a special mode - details will
-  be released here soon.
+* r/w and arbitrary read must work using Chrome using `--vrp-flags` (see above).
 * If you have a proof to add to a bug after it has been rewarded, add the hotlist
   [Security-Request-Exploit-Assessment](https://issues.chromium.org/hotlists/8186895)
   (hotlist id:8186895) along with a poc and comment that demonstrates the proof.
@@ -400,6 +429,13 @@ security problem, and adding necessary pocs and traces as attachments.
 * The CVE number will be updated directly on the report itself and listed in
   the Chrome Browser release notes for that Stable channel update.
 
+#### My bug got a CVE but I didn't get a reward?
+
+* Chrome sometimes issues a CVE then later reexamines a report and determines
+  that it does not have security impact. Chrome does not routinely revoke
+  CVEs when this happens, but does update the bug status to reflect our new
+  assessment.
+
 ### Disclosure / Report Visibility
 
 #### What if I disclose the bug publicly before you have fixed or disclosed it?
@@ -414,7 +450,7 @@ security problem, and adding necessary pocs and traces as attachments.
 
 #### When will the bug I reported be publicly disclosed?
 
-* Most security bugs are automatically opened for public access 14 weeks after
+* Most security bugs are automatically opened for public access 30 days after
   the bug is closed as Fixed, meaning the fix commit is landed on Chromium main.
 * Our automation removes the view restrictions, opening the report for public
   visibility at that time.

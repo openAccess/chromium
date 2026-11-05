@@ -204,6 +204,33 @@
         "timeout_sec": 7200,
         "use_lkgm": true,
         "variant_id": "LKGM"
+      },
+      {
+        "ci_only": true,
+        "cros_board": "betty",
+        "cros_test_names": [
+          "tast.platform.ReportDiskUsage"
+        ],
+        "dut_pool": "vmlab",
+        "experiment_percentage": 100,
+        "merge": {
+          "args": [
+            "--upload-skia-json"
+          ],
+          "script": "//tools/perf/process_perf_results.py"
+        },
+        "module_name": "//chromeos:disk_usage_tast_test",
+        "module_scheme": "tast",
+        "name": "disk_usage_tast_test LKGM",
+        "resultdb": {
+          "result_format": "tast"
+        },
+        "strip_chrome": true,
+        "test": "disk_usage_tast_test",
+        "test_id_prefix": "ninja://chromeos:disk_usage_tast_test/",
+        "timeout_sec": 3600,
+        "use_lkgm": true,
+        "variant_id": "LKGM"
       }
     ]
   },
@@ -694,13 +721,13 @@
         "autotest_name": "chromium",
         "cros_board": "betty",
         "dut_pool": "vmlab",
-        "experiment_percentage": 100,
         "module_name": "//rlz:rlz_unittests",
         "module_scheme": "gtest",
         "name": "rlz_unittests LKGM",
         "resultdb": {
           "result_format": "gtest"
         },
+        "shard_level_retries_on_ctp": 1,
         "test": "rlz_unittests",
         "test_id_prefix": "ninja://rlz:rlz_unittests/",
         "timeout_sec": 5400,
@@ -1224,13 +1251,13 @@
         "autotest_name": "chromium",
         "cros_board": "betty",
         "dut_pool": "vmlab",
-        "experiment_percentage": 100,
         "module_name": "//rlz:rlz_unittests",
         "module_scheme": "gtest",
         "name": "rlz_unittests LKGM",
         "resultdb": {
           "result_format": "gtest"
         },
+        "shard_level_retries_on_ctp": 1,
         "test": "rlz_unittests",
         "test_id_prefix": "ninja://rlz:rlz_unittests/",
         "timeout_sec": 5400,
@@ -5374,69 +5401,6 @@
         },
         "test": "blink_web_tests",
         "test_id_prefix": "ninja://:blink_web_tests/"
-      }
-    ]
-  },
-  "mac-chrome": {
-    "additional_compile_targets": [
-      "chrome",
-      "chrome/installer/mac"
-    ],
-    "isolated_scripts": [
-      {
-        "merge": {
-          "args": [
-            "--upload-skia-json"
-          ],
-          "script": "//tools/perf/process_perf_results.py"
-        },
-        "module_name": "//chrome/test:chrome_sizes",
-        "module_scheme": "single",
-        "name": "chrome_sizes",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "dimensions": {
-            "cpu": "x86-64",
-            "os": "Mac-14",
-            "pool": "chrome.tests"
-          },
-          "service_account": "chrome-tester@chops-service-accounts.iam.gserviceaccount.com"
-        },
-        "test": "chrome_sizes",
-        "test_id_prefix": "ninja://chrome/test:chrome_sizes/"
-      },
-      {
-        "args": [
-          "--git-revision=${got_revision}"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//chrome/test:variations_smoke_tests",
-        "module_scheme": "single",
-        "name": "variations_smoke_tests",
-        "precommit_args": [
-          "--gerrit-issue=${patch_issue}",
-          "--gerrit-patchset=${patch_set}",
-          "--buildbucket-id=${buildbucket_build_id}"
-        ],
-        "resultdb": {
-          "enable": true,
-          "result_format": "single"
-        },
-        "swarming": {
-          "dimensions": {
-            "cpu": "x86-64",
-            "os": "Mac-14",
-            "pool": "chrome.tests"
-          },
-          "service_account": "chrome-tester@chops-service-accounts.iam.gserviceaccount.com"
-        },
-        "test": "variations_smoke_tests",
-        "test_id_prefix": "ninja://chrome/test:variations_smoke_tests/"
       }
     ]
   },

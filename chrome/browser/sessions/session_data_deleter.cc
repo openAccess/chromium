@@ -75,6 +75,7 @@ class SessionDataDeleterInternal
   void OnTrustTokenDeletionDone(bool any_data_deleted) {}
   void OnStorageDeletionDone() {}
   void OnMediaDeviceSaltDeletionDone() {}
+  void OnSharedDictionaryDeletionDone() {}
 
   std::unique_ptr<ScopedKeepAlive> keep_alive_;
   std::unique_ptr<ScopedProfileKeepAlive> profile_keep_alive_;
@@ -152,6 +153,10 @@ void SessionDataDeleterInternal::Run(
       base::BindOnce(&SessionDataDeleterInternal::OnTrustTokenDeletionDone,
                      this));
 
+  storage_partition->GetNetworkContext()->ClearSharedDictionarySessionOnlyData(
+      base::BindOnce(
+          &SessionDataDeleterInternal::OnSharedDictionaryDeletionDone, this));
+
   // Note that from this point on |*this| is kept alive by scoped_refptr<>
   // references automatically taken by |Bind()|, so when the last callback
   // created by Bind() is released (after execution of that function), the
@@ -171,10 +176,10 @@ SessionDataDeleter::~SessionDataDeleter() = default;
 
 void SessionDataDeleter::DeleteSessionOnlyData(bool skip_session_cookies,
                                                base::OnceClosure callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
   // As this function is creating KeepAlives, it should not be
   // called during shutdown.
-  DCHECK(!browser_shutdown::IsTryingToQuit());
+  CHECK(!browser_shutdown::IsTryingToQuit(), base::NotFatalUntil::M163);
 
   SessionStartupPref startup_pref =
       StartupBrowserCreator::GetSessionStartupPref(

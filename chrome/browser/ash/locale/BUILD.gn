@@ -12,16 +12,14 @@ static_library("locale") {
     "startup_settings_cache.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
+    "//ash/constants",
     "//ash/public/cpp",
     "//base",
     "//chrome/app:command_ids",
     "//chrome/browser/ash/base",
     "//chrome/browser/ash/settings",
     "//chrome/browser/profiles:profile",
-    "//chrome/common",
     "//components/application_locale_storage",
     "//components/language/core/browser",
     "//components/language/core/common",
@@ -41,9 +39,9 @@ source_set("unit_tests") {
 
   deps = [
     ":locale",
+    "//ash/constants",
     "//base",
     "//base/test:test_support",
-    "//chrome/common",
     "//testing/gtest",
     "//ui/base",
   ]
@@ -59,7 +57,6 @@ source_set("browser_tests") {
   deps = [
     ":locale",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
     "//chrome/test:test_support",
     "//components/language/core/browser",
     "//components/prefs",

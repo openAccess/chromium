@@ -53,15 +53,13 @@ class CardMetadataFormEventMetricsTest
 
   void SetUp() override {
     SetUpHelper();
-    // Set up the form data. Reset form action to skip the IsFormMixedContent
-    // check.
+    // Set up the form data.
     form_ =
         GetAndAddSeenForm({.description_for_logging = "CardMetadata",
                            .fields = {{.role = CREDIT_CARD_NAME_FULL},
                                       {.role = CREDIT_CARD_NUMBER},
                                       {.role = CREDIT_CARD_EXP_MONTH},
-                                      {.role = CREDIT_CARD_EXP_2_DIGIT_YEAR}},
-                           .action = ""});
+                                      {.role = CREDIT_CARD_EXP_2_DIGIT_YEAR}}});
 
     // Add a Mastercard masked server card.
     card_ = test::WithCvc(test::GetMaskedServerCard());
@@ -227,6 +225,7 @@ TEST_P(CardMetadataFormEventMetricsTest, LogSelectedMetrics) {
       mojom::ActionPersistence::kFill, form().global_id(),
       form().fields().back().global_id(),
       paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   // Verify that:
@@ -277,6 +276,7 @@ TEST_P(CardMetadataFormEventMetricsTest, LogSelectedMetrics) {
       mojom::ActionPersistence::kFill, form().global_id(),
       form().fields().back().global_id(),
       paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   EXPECT_THAT(
@@ -331,11 +331,12 @@ TEST_P(CardMetadataFormEventMetricsTest, LogFilledMetrics) {
   DidShowAutofillSuggestions(form(), /*field_index=*/form().fields().size() - 1,
                              SuggestionType::kCreditCardEntry);
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(base::test::RunOnceCallback<1>(card()));
+      .WillOnce(base::test::RunOnceCallback<2>(card()));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form().global_id(),
       form().fields().back().global_id(),
       paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   // Verify that:
@@ -382,11 +383,12 @@ TEST_P(CardMetadataFormEventMetricsTest, LogFilledMetrics) {
 
   // Fill the suggestion again.
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(base::test::RunOnceCallback<1>(card()));
+      .WillOnce(base::test::RunOnceCallback<2>(card()));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form().global_id(),
       form().fields().back().global_id(),
       paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   EXPECT_THAT(
@@ -423,11 +425,12 @@ TEST_P(CardMetadataFormEventMetricsTest, LogSubmitMetrics) {
   autofill_manager().OnAskForValuesToFillTest(
       form(), form().fields().back().global_id());
   EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-      .WillOnce(base::test::RunOnceCallback<1>(card()));
+      .WillOnce(base::test::RunOnceCallback<2>(card()));
   autofill_manager().FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form().global_id(),
       form().fields().back().global_id(),
       paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
   SubmitForm(form());
 
@@ -488,15 +491,13 @@ class CardMetadataLatencyMetricsTest
 
   void SetUp() override {
     SetUpHelper();
-    // Set up the form data. Reset form action to skip the IsFormMixedContent
-    // check.
+    // Set up the form data.
     form_ =
         GetAndAddSeenForm({.description_for_logging = "CardMetadata",
                            .fields = {{.role = CREDIT_CARD_NAME_FULL},
                                       {.role = CREDIT_CARD_NUMBER},
                                       {.role = CREDIT_CARD_EXP_MONTH},
-                                      {.role = CREDIT_CARD_EXP_2_DIGIT_YEAR}},
-                           .action = ""});
+                                      {.role = CREDIT_CARD_EXP_2_DIGIT_YEAR}}});
 
     CreditCard masked_server_card = test::GetMaskedServerCard();
     masked_server_card.SetNetworkForMaskedCard(kMasterCard);
@@ -544,7 +545,8 @@ TEST_P(CardMetadataLatencyMetricsTest, LogMetrics) {
       mojom::ActionPersistence::kFill, form().global_id(),
       form().fields().front().global_id(),
       paydm().GetCreditCardByGUID(kTestMaskedCardId),
-      AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+      /*blocked_fields=*/{});
 
   std::string latency_histogram_prefix =
       "Autofill.CreditCard.SelectionLatencySinceShown.";
@@ -650,19 +652,21 @@ class CardBenefitFormEventMetricsTest
     autofill_manager().FillOrPreviewForm(
         mojom::ActionPersistence::kFill, form().global_id(),
         form().fields()[credit_card_number_field_index()].global_id(), card,
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
   }
 
   // Simulating selecting and filling the given `card` from a list of
   // suggestions.
   void ShowSuggestionsThenSelectAndFillCard(const CreditCard* card) {
     EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-        .WillOnce(base::test::RunOnceCallback<1>(*card));
+        .WillOnce(base::test::RunOnceCallback<2>(*card));
     ShowCardSuggestions();
     autofill_manager().FillOrPreviewForm(
         mojom::ActionPersistence::kFill, form().global_id(),
         form().fields()[credit_card_number_field_index()].global_id(), card,
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
   }
 
   // Simulates clicking the CVC field. This will trigger a new fetch of
@@ -680,16 +684,14 @@ class CardBenefitFormEventMetricsTest
 
   void SetUp() override {
     SetUpHelper();
-    // Set up the form data. Reset form action to skip the IsFormMixedContent
-    // check.
-    form_ =
-        GetAndAddSeenForm({.description_for_logging = "CardBenefit",
-                           .fields = {{.role = CREDIT_CARD_NAME_FULL},
-                                      {.role = CREDIT_CARD_NUMBER},
-                                      {.role = CREDIT_CARD_EXP_MONTH},
-                                      {.role = CREDIT_CARD_EXP_2_DIGIT_YEAR},
-                                      {.role = CREDIT_CARD_VERIFICATION_CODE}},
-                           .action = ""});
+    // Set up the form data.
+    form_ = GetAndAddSeenForm(
+        {.description_for_logging = "CardBenefit",
+         .fields = {{.role = CREDIT_CARD_NAME_FULL},
+                    {.role = CREDIT_CARD_NUMBER},
+                    {.role = CREDIT_CARD_EXP_MONTH},
+                    {.role = CREDIT_CARD_EXP_2_DIGIT_YEAR},
+                    {.role = CREDIT_CARD_VERIFICATION_CODE}}});
     credit_card_number_field_index_ = 1;
     cvc_field_index_ = 4;
 
@@ -1725,32 +1727,32 @@ class CardBenefitFormEventMetricsInvalidBenefitSourceTest
     autofill_manager().FillOrPreviewForm(
         mojom::ActionPersistence::kFill, form().global_id(),
         form().fields()[credit_card_number_field_index()].global_id(), card,
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
   }
 
   // Simulating selecting and filling the given `card` from a list of
   // suggestions.
   void ShowSuggestionsThenSelectAndFillCard(const CreditCard* card) {
     EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
-        .WillOnce(base::test::RunOnceCallback<1>(*card));
+        .WillOnce(base::test::RunOnceCallback<2>(*card));
     ShowCardSuggestions();
     autofill_manager().FillOrPreviewForm(
         mojom::ActionPersistence::kFill, form().global_id(),
         form().fields()[credit_card_number_field_index()].global_id(), card,
-        AutofillTriggerSource::kPopup, /*blocked_fields=*/{});
+        AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
+        /*blocked_fields=*/{});
   }
 
   void SetUp() override {
     SetUpHelper();
-    // Set up the form data. Reset form action to skip the IsFormMixedContent
-    // check.
+    // Set up the form data.
     form_ =
         GetAndAddSeenForm({.description_for_logging = "CardBenefit",
                            .fields = {{.role = CREDIT_CARD_NAME_FULL},
                                       {.role = CREDIT_CARD_NUMBER},
                                       {.role = CREDIT_CARD_EXP_MONTH},
-                                      {.role = CREDIT_CARD_EXP_2_DIGIT_YEAR}},
-                           .action = ""});
+                                      {.role = CREDIT_CARD_EXP_2_DIGIT_YEAR}}});
     credit_card_number_field_index_ = 1;
 
     scoped_feature_list_.InitAndEnableFeature(

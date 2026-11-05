@@ -33,6 +33,7 @@
 #include "build/build_config.h"
 #include "chrome/browser/autocomplete/zero_suggest_cache_service_factory.h"
 #include "chrome/browser/autofill/autofill_entity_data_manager_factory.h"
+#include "chrome/browser/autofill/personal_context_entity_metadata_manager_factory.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/browser_process.h"
@@ -48,6 +49,7 @@
 #include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
+#include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/file_system_access/chrome_file_system_access_permission_context.h"
 #include "chrome/browser/file_system_access/file_system_access_permission_context_factory.h"
 #include "chrome/browser/heavy_ad_intervention/heavy_ad_service_factory.h"
@@ -79,6 +81,7 @@
 #include "chrome/browser/search_engine_choice/search_engine_choice_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/spellchecker/spellcheck_factory.h"
 #include "chrome/browser/spellchecker/spellcheck_service.h"
 #include "chrome/browser/strike_database/strike_database_factory.h"
@@ -91,6 +94,7 @@
 #include "chrome/common/url_constants.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/personal_context_entity_metadata_manager.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
@@ -108,6 +112,7 @@
 #include "components/crash/core/app/crashpad.h"
 #include "components/custom_handlers/protocol_handler_registry.h"
 #include "components/device_event_log/device_event_log.h"
+#include "components/favicon/core/favicon_service.h"
 #include "components/heavy_ad_intervention/heavy_ad_blocklist.h"
 #include "components/heavy_ad_intervention/heavy_ad_service.h"
 #include "components/history/core/browser/history_service.h"
@@ -124,7 +129,7 @@
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/smart_bubble_stats_store.h"
-#include "components/payments/content/web_payments_web_data_service.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "components/performance_manager/public/user_tuning/prefs.h"
 #include "components/permissions/features.h"
 #include "components/permissions/permission_actions_history.h"
@@ -141,6 +146,7 @@
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_utils.h"
+#include "components/skills/public/skills_service.h"
 #include "components/strike_database/strike_database.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
@@ -156,6 +162,7 @@
 #include "content/public/browser/ssl_host_state_delegate.h"
 #include "content/public/browser/storage_partition.h"
 #include "device/fido/platform_credential_store.h"
+#include "extensions/buildflags/buildflags.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "media/base/media_switches.h"
 #include "media/mojo/services/video_decode_perf_history.h"
@@ -607,7 +614,9 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
     DownloadCoreService* service =
         DownloadCoreServiceFactory::GetForBrowserContext(profile_);
     if (service) {
-      service->InitializeHistory();
+      service->InitializeHistory(
+          DownloadCoreService::DownloadHistoryLoadTrigger::
+              kBrowsingDataRemover);
     }
     DownloadPrefs* download_prefs =
         DownloadPrefs::FromDownloadManager(profile_->GetDownloadManager());
@@ -670,16 +679,19 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
         delegate->ClearPersistedTokens();
     }
 
-    if (auto* media_device_salt_service =
-            MediaDeviceSaltServiceFactory::GetInstance()->GetForBrowserContext(
-                profile_)) {
-      content::StoragePartition::StorageKeyMatcherFunction storage_key_matcher;
-      if (!filter_builder->MatchesAllOriginsAndDomains()) {
-        storage_key_matcher = filter_builder->BuildStorageKeyFilter();
+    if (!filter_builder->PartitionedCookiesOnly()) {
+      if (auto* media_device_salt_service =
+              MediaDeviceSaltServiceFactory::GetInstance()
+                  ->GetForBrowserContext(profile_)) {
+        content::StoragePartition::StorageKeyMatcherFunction
+            storage_key_matcher;
+        if (!filter_builder->MatchesAllOriginsAndDomains()) {
+          storage_key_matcher = filter_builder->BuildStorageKeyFilter();
+        }
+        media_device_salt_service->DeleteSalts(
+            delete_begin_, delete_end_, std::move(storage_key_matcher),
+            CreateTaskCompletionClosure(TracingDataType::kMediaDeviceSalts));
       }
-      media_device_salt_service->DeleteSalts(
-          delete_begin_, delete_end_, std::move(storage_key_matcher),
-          CreateTaskCompletionClosure(TracingDataType::kMediaDeviceSalts));
     }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -845,6 +857,16 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
       } else {
         NOTIMPLEMENTED();
       }
+    }
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // DATA_TYPE_SKILLS
+  if (remove_mask & constants::DATA_TYPE_SKILLS) {
+    skills::SkillsService* skills_service =
+        skills::SkillsServiceFactory::GetForProfile(profile_);
+    if (skills_service) {
+      skills_service->DeleteSkillsModifiedBetween(delete_begin_, delete_end_);
     }
   }
 
@@ -1065,6 +1087,16 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
         entity_data_manager->RemoveEntityInstancesModifiedBetween(delete_begin_,
                                                                   delete_end_);
       }
+      if (base::FeatureList::IsEnabled(
+              autofill::features::kAutofillAmbientAutofillSuppression)) {
+        if (autofill::
+                PersonalContextEntityMetadataManager* entity_metadata_manager =
+                    autofill::PersonalContextEntityMetadataManagerFactory::
+                        GetForProfile(profile_)) {
+          entity_metadata_manager->ClearSuppressions(delete_begin_,
+                                                     delete_end_);
+        }
+      }
       // Clear out the Autofill StrikeDatabase in its entirety.
       // TODO(crbug.com/40594007): Respect |delete_begin_| and |delete_end_| and
       // only clear out entries whose last strikes were created in that
@@ -1203,6 +1235,22 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
       chromeos::MahiManager::Get()->ClearCache();
     }
 #endif
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  // Clear URLs that failed to download from the favicon service.
+  // This in-memory negative cache reveals some history and would otherwise
+  // survive a cache deletion and could be used to re-identify the user, so
+  // clear it for both DATA_TYPE_HISTORY and DATA_TYPE_CACHE. It only stores URL
+  // hashes, so it cannot be filtered by origin or time; clear it entirely.
+  if (remove_mask & (constants::DATA_TYPE_HISTORY |
+                     content::BrowsingDataRemover::DATA_TYPE_CACHE)) {
+    favicon::FaviconService* favicon_service =
+        FaviconServiceFactory::GetForProfile(
+            profile_, ServiceAccessType::EXPLICIT_ACCESS);
+    if (favicon_service) {
+      favicon_service->ClearUnableToDownloadFavicons();
+    }
   }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -1486,7 +1534,7 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
       tab_model->CloseTabsNavigatedInTimeWindow(delete_begin, delete_end);
     }
 
-    TabModel* archived_tab_model = TabModelList::GetArchivedTabModel();
+    TabModel* archived_tab_model = TabModelList::GetArchivedTabModel(profile_);
     if (archived_tab_model) {
       archived_tab_model->CloseTabsNavigatedInTimeWindow(delete_begin,
                                                          delete_end);
@@ -1500,28 +1548,20 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
   // DATA_TYPE_RELATED_WEBSITE_SETS_PERMISSIONS
   if (remove_mask & content::BrowsingDataRemover::
                         DATA_TYPE_RELATED_WEBSITE_SETS_PERMISSIONS) {
-    for (ContentSettingsType type_to_clear :
-         {ContentSettingsType::STORAGE_ACCESS,
-          ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS}) {
-      host_content_settings_map_->ClearSettingsForOneTypeWithPredicate(
-          type_to_clear, [&](const ContentSettingPatternSource& setting) {
-            return setting.metadata.decided_by_related_website_sets() &&
-                   std::ranges::any_of(
-                       filter_builder->GetOrigins(),
-                       [&](const url::Origin& origin) -> bool {
-                         // TopLevelStorageAccessPermissionContext creates
-                         // grants using (origin, site) patterns. We explicitly
-                         // use the primary pattern's site here to ensure any
-                         // permission granted to subdomains of an RWS site are
-                         // properly cleared.
-                         return net::SchemefulSite(setting.primary_pattern
-                                                       .ToRepresentativeUrl())
-                                    .IsSameSiteWith(origin) ||
-                                setting.secondary_pattern.Matches(
-                                    origin.GetURL());
-                       });
-          });
-    }
+    host_content_settings_map_->ClearSettingsForOneTypeWithPredicate(
+        ContentSettingsType::STORAGE_ACCESS,
+        [&](const ContentSettingPatternSource& setting) {
+          return setting.metadata.decided_by_related_website_sets() &&
+                 std::ranges::any_of(
+                     filter_builder->GetOrigins(),
+                     [&](const url::Origin& origin) -> bool {
+                       return net::SchemefulSite(
+                                  setting.primary_pattern.ToRepresentativeUrl())
+                                  .IsSameSiteWith(origin) ||
+                              setting.secondary_pattern.Matches(
+                                  origin.GetURL());
+                     });
+        });
   }
 
   if (remove_mask & constants::DATA_TYPE_SEARCH_ENGINE_CHOICE) {

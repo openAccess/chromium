@@ -17,8 +17,8 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
-#include "base/threading/thread.h"
-#include "components/gcm_driver/crypto/gcm_decryption_result.h"
+#include "components/fcm/crypto/fcm_decryption_result.h"
+#include "components/fcm/engine/chrome_build_info.h"
 #include "components/gcm_driver/crypto/gcm_encryption_provider.h"
 #include "components/gcm_driver/crypto/gcm_encryption_result.h"
 #include "components/gcm_driver/fake_gcm_app_handler.h"
@@ -28,8 +28,6 @@
 #include "components/gcm_driver/gcm_client_factory.h"
 #include "components/gcm_driver/gcm_driver_desktop.h"
 #include "components/os_crypt/async/browser/test_utils.h"
-#include "components/prefs/pref_registry_simple.h"
-#include "components/prefs/testing_pref_service.h"
 #include "crypto/keypair.h"
 #include "net/url_request/url_request_test_util.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -89,7 +87,7 @@ class GCMDriverBaseTest : public testing::Test {
   network::TestURLLoaderFactory& loader() { return test_url_loader_factory_; }
   GCMEncryptionResult encryption_result() { return encryption_result_; }
   const std::string& encrypted_message() { return encrypted_message_; }
-  GCMDecryptionResult decryption_result() { return decryption_result_; }
+  fcm::FcmDecryptionResult decryption_result() { return decryption_result_; }
   const std::string& decrypted_message() { return decrypted_message_; }
 
   void PumpIOLoop();
@@ -112,7 +110,8 @@ class GCMDriverBaseTest : public testing::Test {
 
   void GetEncryptionInfoCompleted(std::string p256dh, std::string auth_secret);
   void EncryptMessageCompleted(GCMEncryptionResult result, std::string message);
-  void DecryptMessageCompleted(GCMDecryptionResult result, std::string message);
+  void DecryptMessageCompleted(fcm::FcmDecryptionResult result,
+                               std::string message);
   void UnregisterCompleted(GCMClient::Result result);
 
  protected:
@@ -121,7 +120,6 @@ class GCMDriverBaseTest : public testing::Test {
  private:
   std::unique_ptr<os_crypt_async::OSCryptAsync> os_crypt_;
   base::ScopedTempDir temp_dir_;
-  TestingPrefServiceSimple prefs_;
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::MainThreadType::UI,
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
@@ -137,7 +135,8 @@ class GCMDriverBaseTest : public testing::Test {
   GCMEncryptionResult encryption_result_ =
       GCMEncryptionResult::ENCRYPTION_FAILED;
   std::string encrypted_message_;
-  GCMDecryptionResult decryption_result_ = GCMDecryptionResult::UNENCRYPTED;
+  fcm::FcmDecryptionResult decryption_result_ =
+      fcm::FcmDecryptionResult::UNENCRYPTED;
   std::string decrypted_message_;
 };
 
@@ -158,8 +157,9 @@ void GCMDriverBaseTest::SetUp() {
 }
 
 void GCMDriverBaseTest::TearDown() {
-  if (!driver_)
+  if (!driver_) {
     return;
+  }
 
   ShutdownDriver();
   driver_.reset();
@@ -178,13 +178,13 @@ void GCMDriverBaseTest::PumpIOLoop() {
 }
 
 void GCMDriverBaseTest::CreateDriver() {
-  GCMClient::ChromeBuildInfo chrome_build_info;
+  fcm::ChromeBuildInfo chrome_build_info;
   chrome_build_info.product_category_for_subtypes = "com.chrome.macosx";
   driver_ = std::make_unique<GCMDriverDesktop>(
       std::make_unique<FakeGCMClientFactory>(
           base::SingleThreadTaskRunner::GetCurrentDefault(),
           io_thread_.task_runner()),
-      chrome_build_info, &prefs_, temp_dir_.GetPath(), base::DoNothing(),
+      chrome_build_info, temp_dir_.GetPath(), base::DoNothing(),
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
           &test_url_loader_factory_),
       network::TestNetworkConnectionTracker::GetInstance(),
@@ -204,8 +204,9 @@ void GCMDriverBaseTest::GetEncryptionInfo(const std::string& app_id,
   driver_->GetEncryptionInfo(
       app_id, base::BindOnce(&GCMDriverBaseTest::GetEncryptionInfoCompleted,
                              base::Unretained(this)));
-  if (wait_to_finish == WAIT)
+  if (wait_to_finish == WAIT) {
     run_loop.Run();
+  }
 }
 
 void GCMDriverBaseTest::EncryptMessage(const std::string& app_id,
@@ -222,8 +223,9 @@ void GCMDriverBaseTest::EncryptMessage(const std::string& app_id,
       base::BindOnce(&GCMDriverBaseTest::EncryptMessageCompleted,
                      base::Unretained(this)));
 
-  if (wait_to_finish == WAIT)
+  if (wait_to_finish == WAIT) {
     run_loop.Run();
+  }
 }
 
 void GCMDriverBaseTest::DecryptMessage(const std::string& app_id,
@@ -238,32 +240,36 @@ void GCMDriverBaseTest::DecryptMessage(const std::string& app_id,
       base::BindOnce(&GCMDriverBaseTest::DecryptMessageCompleted,
                      base::Unretained(this)));
 
-  if (wait_to_finish == WAIT)
+  if (wait_to_finish == WAIT) {
     run_loop.Run();
+  }
 }
 
 void GCMDriverBaseTest::GetEncryptionInfoCompleted(std::string p256dh,
                                                    std::string auth_secret) {
   p256dh_ = std::move(p256dh);
   auth_secret_ = std::move(auth_secret);
-  if (!async_operation_completed_callback_.is_null())
+  if (!async_operation_completed_callback_.is_null()) {
     std::move(async_operation_completed_callback_).Run();
+  }
 }
 
 void GCMDriverBaseTest::EncryptMessageCompleted(GCMEncryptionResult result,
                                                 std::string message) {
   encryption_result_ = result;
   encrypted_message_ = std::move(message);
-  if (!async_operation_completed_callback_.is_null())
+  if (!async_operation_completed_callback_.is_null()) {
     std::move(async_operation_completed_callback_).Run();
+  }
 }
 
-void GCMDriverBaseTest::DecryptMessageCompleted(GCMDecryptionResult result,
+void GCMDriverBaseTest::DecryptMessageCompleted(fcm::FcmDecryptionResult result,
                                                 std::string message) {
   decryption_result_ = result;
   decrypted_message_ = std::move(message);
-  if (!async_operation_completed_callback_.is_null())
+  if (!async_operation_completed_callback_.is_null()) {
     std::move(async_operation_completed_callback_).Run();
+  }
 }
 
 TEST_F(GCMDriverBaseTest, EncryptionDecryptionRoundTrip) {
@@ -280,7 +286,7 @@ TEST_F(GCMDriverBaseTest, EncryptionDecryptionRoundTrip) {
       DecryptMessage(kTestAppID1, /* authorized_entity= */ "",
                      encrypted_message(), GCMDriverBaseTest::WAIT));
 
-  EXPECT_EQ(GCMDecryptionResult::DECRYPTED_DRAFT_08, decryption_result());
+  EXPECT_EQ(fcm::FcmDecryptionResult::DECRYPTED_DRAFT_08, decryption_result());
   EXPECT_EQ(message, decrypted_message());
 }
 

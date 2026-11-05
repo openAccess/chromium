@@ -4,13 +4,14 @@
 
 #import "ios/web/public/test/fakes/fake_web_state_delegate.h"
 
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace web {
 
 FakeOpenURLRequest::FakeOpenURLRequest()
     : params(GURL(),
              Referrer(),
-             WindowOpenDisposition::UNKNOWN,
+             ui::mojom::WindowOpenDisposition::kUnknown,
              ui::PAGE_TRANSITION_LINK,
              false) {}
 
@@ -28,6 +29,13 @@ FakeAuthenticationRequest::~FakeAuthenticationRequest() = default;
 
 FakeAuthenticationRequest::FakeAuthenticationRequest(
     FakeAuthenticationRequest&&) = default;
+
+FakeProxyAuthenticationRequest::FakeProxyAuthenticationRequest() = default;
+
+FakeProxyAuthenticationRequest::~FakeProxyAuthenticationRequest() = default;
+
+FakeProxyAuthenticationRequest::FakeProxyAuthenticationRequest(
+    FakeProxyAuthenticationRequest&&) = default;
 
 FakeWebStateDelegate::FakeWebStateDelegate() {}
 
@@ -123,11 +131,36 @@ void FakeWebStateDelegate::OnAuthRequired(
   last_authentication_request_->client_cert_auth_callback = std::move(callback);
 }
 
+void FakeWebStateDelegate::OnProxyAuthChallenge(
+    WebState* source,
+    NSURLProtectionSpace* protection_space,
+    NSURLCredential* proposed_credential,
+    NSURLResponse* failure_response,
+    ProxyAuthCallback callback) {
+  last_proxy_authentication_request_ =
+      std::make_unique<FakeProxyAuthenticationRequest>();
+  last_proxy_authentication_request_->web_state = source;
+  last_proxy_authentication_request_->protection_space = protection_space;
+  last_proxy_authentication_request_->proposed_credential = proposed_credential;
+  last_proxy_authentication_request_->failure_response = failure_response;
+  last_proxy_authentication_request_->proxy_auth_callback = std::move(callback);
+}
+
 void FakeWebStateDelegate::HandlePermissionsDecisionRequest(
     WebState* source,
     NSArray<NSNumber*>* permissions,
     WebStatePermissionDecisionHandler handler) {
   last_requested_permissions_ = permissions;
+  if (should_handle_permission_decision_) {
+    handler(permission_decision_);
+  }
+}
+
+void FakeWebStateDelegate::RequestGeolocationPermission(
+    WebState* source,
+    const GURL& origin,
+    WebStatePermissionDecisionHandler handler) {
+  last_requested_geolocation_origin_ = origin;
   if (should_handle_permission_decision_) {
     handler(permission_decision_);
   }

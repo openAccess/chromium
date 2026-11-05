@@ -30,18 +30,13 @@
 #include <initializer_list>
 
 #include "third_party/blink/renderer/core/html/parser/html_stack_item.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 
 namespace blink {
 
 class ContainerNode;
 class Element;
-
-enum class DOMPartsAllowed {
-  kNever,
-  kInsideParseParts,
-  kAlways,
-};
 
 // NOTE: The HTML5 spec uses a backwards (grows downward) stack.  We're using
 // more standard (grows upwards) stack terminology here.
@@ -73,7 +68,6 @@ class HTMLElementStack {
     return top_.Get();
   }
 
-  HTMLStackItem* OneBelowTop() const;
   HTMLStackItem* Find(Element*) const;
   HTMLStackItem* FurthestBlockForFormattingElement(Element*) const;
   HTMLStackItem* Topmost(html_names::HTMLTag tag) const;
@@ -129,9 +123,7 @@ class HTMLElementStack {
   bool HasOnlyOneElement() const;
   bool SecondElementIsHTMLBodyElement() const;
   bool HasTemplateInHTMLScope() const;
-  bool HasOutgoingPatchInHTMLScope() const;
   Element* HtmlElement() const;
-  Element* HeadElement() const;
   Element* BodyElement() const;
 
   ContainerNode* RootNode() const;
@@ -147,9 +139,8 @@ class HTMLElementStack {
   void PushRootNodeCommon(HTMLStackItem*);
   void PopCommon();
   void RemoveNonTopCommon(Element*);
-
-  unsigned parse_parts_count_{0};
-  DOMPartsAllowed dom_parts_allowed_state_{DOMPartsAllowed::kInsideParseParts};
+  void UpdatePElementInButtonScope(
+      const HeapVector<Member<HTMLStackItem>>& items_above);
 
   Member<HTMLStackItem> top_;
 

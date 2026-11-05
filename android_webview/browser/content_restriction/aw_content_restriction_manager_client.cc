@@ -4,11 +4,16 @@
 
 #include "android_webview/browser/content_restriction/aw_content_restriction_manager_client.h"
 
+#include "android_webview/browser/aw_browser_process.h"
 #include "android_webview/common/aw_features.h"
 #include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/memory/ptr_util.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/task/sequenced_task_runner.h"
+#include "components/prefs/pref_registry_simple.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/http/http_request_headers.h"
 #include "url/gurl.h"
@@ -76,7 +81,8 @@ void AwContentRestrictionManagerClient::ClassificationRequestTracker::
   base::OneShotTimer* const timer_ptr = timer.get();
   pending_requests_.insert_or_assign(
       navigation_id, PendingRequest{.callback = std::move(callback),
-                                    .timer = std::move(timer)});
+                                    .timer = std::move(timer),
+                                    .start_time = base::TimeTicks::Now()});
 
   timer_ptr->Start(
       FROM_HERE, timeout,
@@ -92,6 +98,13 @@ void AwContentRestrictionManagerClient::ClassificationRequestTracker::
     return;
   }
 
+  base::TimeDelta latency = base::TimeTicks::Now() - it->second.start_time;
+  base::UmaHistogramTimes(
+      "Android.WebView.ContentRestriction.ClassificationRequestLatencyMs",
+      latency);
+  base::UmaHistogramBoolean("Android.WebView.ContentRestriction.Timeout",
+                            false);
+
   ContentClassificationCallback callback = std::move(it->second.callback);
   pending_requests_.erase(it);
   std::move(callback).Run(is_allowed);
@@ -104,6 +117,11 @@ void AwContentRestrictionManagerClient::ClassificationRequestTracker::OnTimeout(
     // Should be rare, but we return regardless.
     return;
   }
+
+  base::UmaHistogramBoolean("Android.WebView.ContentRestriction.Timeout", true);
+  base::UmaHistogramEnumeration(
+      "Android.WebView.ContentRestriction.FailureFallbackReason",
+      ContentRestrictionFailureFallbackReason::kTimeout);
 
   // The platform enforces its own timeouts so we should rarely get here. This
   // is only triggered when the platform is non-responsive, so we conservatively
@@ -119,6 +137,12 @@ AwContentRestrictionManagerClient::ClassificationRequestTracker::GetWeakPtr() {
 }
 
 // static
+void AwContentRestrictionManagerClient::RegisterPrefs(
+    PrefRegistrySimple* registry) {
+  registry->RegisterBooleanPref(prefs::kContentRestrictionEnabled, false);
+}
+
+// static
 std::unique_ptr<AwContentRestrictionManagerClient>
 AwContentRestrictionManagerClient::Create() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
@@ -126,8 +150,13 @@ AwContentRestrictionManagerClient::Create() {
   base::android::ScopedJavaGlobalRef<jobject> java_bridge(
       Java_AwContentRestrictionManagerBridge_Constructor(env));
   auto delegate = std::make_unique<Delegate>(java_bridge);
+  PrefService* pref_service = nullptr;
+  auto* const browser_process = AwBrowserProcess::GetInstance();
+  if (browser_process) {
+    pref_service = browser_process->local_state();
+  }
   std::unique_ptr<AwContentRestrictionManagerClient> client = base::WrapUnique(
-      new AwContentRestrictionManagerClient(std::move(delegate)));
+      new AwContentRestrictionManagerClient(std::move(delegate), pref_service));
   client->java_bridge_ = std::move(java_bridge);
 
   return client;
@@ -136,15 +165,36 @@ AwContentRestrictionManagerClient::Create() {
 // static
 std::unique_ptr<AwContentRestrictionManagerClient>
 AwContentRestrictionManagerClient::CreateForTesting(
-    std::unique_ptr<Delegate> delegate) {
+    std::unique_ptr<Delegate> delegate,
+    PrefService* pref_service) {
   return base::WrapUnique(
-      new AwContentRestrictionManagerClient(std::move(delegate)));
+      new AwContentRestrictionManagerClient(std::move(delegate), pref_service));
 }
 
 AwContentRestrictionManagerClient::AwContentRestrictionManagerClient(
-    std::unique_ptr<Delegate> delegate)
-    : delegate_(std::move(delegate)) {
+    std::unique_ptr<Delegate> delegate,
+    PrefService* pref_service)
+    : delegate_(std::move(delegate)), pref_service_(pref_service) {
   DCHECK(delegate_);
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&AwContentRestrictionManagerClient::
+                                    SyncContentRestrictionEnabledState,
+                                weak_ptr_factory_.GetWeakPtr()));
+}
+
+void AwContentRestrictionManagerClient::SyncContentRestrictionEnabledState() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!pref_service_) {
+    return;
+  }
+  bool content_restriction_enabled = delegate_->IsContentRestrictionEnabled();
+  bool old_content_restriction_enabled_value =
+      pref_service_->GetBoolean(prefs::kContentRestrictionEnabled);
+  pref_service_->SetBoolean(prefs::kContentRestrictionEnabled,
+                            content_restriction_enabled);
+  base::UmaHistogramBoolean(
+      "Android.WebView.ContentRestriction.ApiCallMatchesDiskCache",
+      old_content_restriction_enabled_value == content_restriction_enabled);
 }
 
 AwContentRestrictionManagerClient::~AwContentRestrictionManagerClient() {
@@ -156,7 +206,10 @@ AwContentRestrictionManagerClient::~AwContentRestrictionManagerClient() {
 }
 
 bool AwContentRestrictionManagerClient::IsContentRestrictionEnabled() {
-  return delegate_->IsContentRestrictionEnabled();
+  if (!pref_service_) {
+    return false;
+  }
+  return pref_service_->GetBoolean(prefs::kContentRestrictionEnabled);
 }
 
 void AwContentRestrictionManagerClient::RequestContentClassification(
@@ -190,3 +243,5 @@ int AwContentRestrictionManagerClient::CreateRequestBodyPipeAndGetWriteFd(
 }
 
 }  // namespace android_webview
+
+DEFINE_JNI(AwContentRestrictionManagerBridge)

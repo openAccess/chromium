@@ -31,17 +31,17 @@ TPIncident_ValueState MapValueState(
     ValueState value_state,
     ValueState external_validation_value_state) {
   switch (value_state) {
-    case ValueState::CLEARED:
+    case ValueState::CLEARED_HMAC:
       return TPIncident::CLEARED;
-    case ValueState::CHANGED:
+    case ValueState::CHANGED_HMAC:
       return TPIncident::CHANGED;
     case ValueState::UNTRUSTED_UNKNOWN_VALUE:
       return TPIncident::UNTRUSTED_UNKNOWN_VALUE;
     default:
       switch (external_validation_value_state) {
-        case ValueState::CLEARED:
+        case ValueState::CLEARED_HMAC:
           return TPIncident::BYPASS_CLEARED;
-        case ValueState::CHANGED:
+        case ValueState::CHANGED_HMAC:
           return TPIncident::BYPASS_CHANGED;
         default:
           return TPIncident::UNKNOWN;
@@ -98,6 +98,9 @@ void PreferenceValidationDelegate::OnSplitPreferenceValidation(
     ValueState value_state,
     ValueState external_validation_value_state,
     bool is_personal) {
+  if (!profile_) {
+    return;  // Profile already destroyed.
+  }
   TPIncident_ValueState proto_value_state =
       MapValueState(value_state, external_validation_value_state);
   if (proto_value_state != TPIncident::UNKNOWN) {

@@ -28,12 +28,19 @@ import org.chromium.chrome.browser.customtabs.content.WebAppLaunchHandler;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.webapps.WebApkPostShareTargetNavigator;
 import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.url.GURL;
+import org.chromium.url.Origin;
 
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.function.Function;
 
-/** Handles sharing intents coming to Trusted Web Activities. */
+/**
+ * Delivers incoming share data to the Web Share Target of the web app hosted in a {@code
+ * BaseCustomTabActivity}. This class serves both Trusted Web Activities and WebAPKs, which launch
+ * differently: TWAs arrive via {@code LaunchIntentDispatcher} with a Custom Tabs session, while
+ * WebAPKs arrive via {@code WebappLauncherActivity} with no session.
+ */
 @NullMarked
 public class TwaSharingController {
     private final CustomTabActivityTabProvider mTabProvider;
@@ -75,9 +82,12 @@ public class TwaSharingController {
                     (tab != null && tab.getWindowAndroid() != null)
                             ? tab.getWindowAndroid().getActivity().get()
                             : null;
-            // Pass null for caller because activity.getInitialCaller() in CustomTabActivity
-            // would return Chrome's own UID (due to trampoline dispatch). Passing null
-            // forces fallback to session UID/PID verification.
+            // Pass null for caller: activity.getInitialCaller() would return Chrome's own UID
+            // because of trampoline dispatch. filterShareData() instead uses the share data
+            // verified at launch (by LaunchIntentDispatcher for TWAs, or WebappLauncherActivity
+            // for WebAPKs). Otherwise, it falls back to checking URI permissions against the
+            // Custom Tabs session UID (TWAs) or the WebAPK package UID (WebAPKs). If activity is
+            // null, shared file URIs are dropped.
             shareData =
                     WebAppLaunchHandler.filterShareData(
                             intentDataProvider, activity, /* caller= */ null);
@@ -87,6 +97,15 @@ public class TwaSharingController {
         }
 
         final ShareData finalShareData = shareData;
+        // The app's start URL, used to bootstrap the app's service worker if it has never been
+        // installed, e.g. for a preinstalled TWA that has never been launched; see
+        // WebApkPostShareTargetNavigator. For a WebAPK, getUrlToLoad() is already the share target
+        // URL for a share intent (see HostBrowserLauncherParams), so use the manifest start URL.
+        // For a TWA, use the launch URL (the app's start URL by default).
+        final @Nullable String bootstrapUrl =
+                (webApkExtras != null)
+                        ? webApkExtras.manifestStartUrl
+                        : intentDataProvider.getUrlToLoad();
         return mVerifierDelegate
                 .verify(shareTarget.getAction())
                 .then(
@@ -96,22 +115,29 @@ public class TwaSharingController {
                                         return false;
                                     }
                                     if (shareTarget.isShareMethodPost()) {
-                                        return sendPost(finalShareData, shareTarget);
+                                        return sendPost(finalShareData, shareTarget, bootstrapUrl);
                                     }
 
-                                    mNavigationController.navigate(
+                                    LoadUrlParams params =
                                             new LoadUrlParams(
                                                     computeStartUrlForGETShareTarget(
-                                                            finalShareData, shareTarget)),
-                                            intent);
+                                                            finalShareData, shareTarget));
+                                    // The action has been verified to be within the app's scope,
+                                    // so the app is the initiator of this navigation. Attributing
+                                    // it ensures SameSite cookies are evaluated as they would be
+                                    // for a navigation started by the app itself, rather than
+                                    // treating the request as a user-typed navigation.
+                                    params.setInitiatorOrigin(
+                                            Origin.create(new GURL(shareTarget.getAction())));
+                                    mNavigationController.navigate(params, intent);
                                     return true;
                                 });
     }
 
     /**
-     * Converts to internal format.
-     * TODO(pshmakov): pull WebApkShareTarget out of WebApkInfo and rename to
-     * ShareTargetInternal. Also, replace WebApkInfo.ShareData with ShareData from TWA API.
+     * Converts to internal format. TODO(pshmakov): pull WebApkShareTarget out of WebApkInfo and
+     * rename to ShareTargetInternal. Also, replace WebApkInfo.ShareData with ShareData from TWA
+     * API.
      */
     private @Nullable WebApkShareTarget toShareTargetInternal(@Nullable ShareTarget shareTarget) {
         if (shareTarget == null) return null;
@@ -139,14 +165,19 @@ public class TwaSharingController {
                 action, paramTitle, paramText, isPost, isMultipart, filesArray, acceptsArray);
     }
 
-    private boolean sendPost(ShareData shareData, WebApkShareTarget target) {
+    private boolean sendPost(
+            ShareData shareData, WebApkShareTarget target, @Nullable String bootstrapUrl) {
         Tab tab = mTabProvider.getTab();
         if (tab == null) {
             assert false : "Null tab when sharing";
             return false;
         }
         return WebApkPostShareTargetNavigator.navigateIfPostShareTarget(
-                target.getAction(), target, shareData, assertNonNull(tab.getWebContents()));
+                target.getAction(),
+                new GURL(bootstrapUrl),
+                target,
+                shareData,
+                assertNonNull(tab.getWebContents()));
     }
 
     // Copy of HostBrowserLauncherParams#computeStartUrlForGETShareTarget().

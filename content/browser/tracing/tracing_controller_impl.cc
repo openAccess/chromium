@@ -45,6 +45,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/tracing_controller.h"
+#include "content/public/browser/tracing_delegate.h"
 #include "content/public/browser/tracing_service.h"
 #include "content/public/common/content_client.h"
 #include "gpu/config/gpu_info.h"
@@ -55,11 +56,11 @@
 #include "services/tracing/public/cpp/perfetto/perfetto_config.h"
 #include "services/tracing/public/cpp/perfetto/perfetto_session.h"
 #include "services/tracing/public/cpp/perfetto/perfetto_traced_process.h"
-#include "services/tracing/public/cpp/traced_process_impl.h"
 #include "services/tracing/public/cpp/tracing_features.h"
 #include "services/tracing/public/mojom/constants.mojom.h"
 #include "third_party/icu/source/i18n/unicode/timezone.h"
 #include "third_party/perfetto/include/perfetto/protozero/message.h"
+#include "third_party/perfetto/include/perfetto/tracing/core/trace_config.h"
 #include "third_party/perfetto/protos/perfetto/common/tracing_service_state.gen.h"
 #include "third_party/perfetto/protos/perfetto/common/track_event_descriptor.gen.h"
 #include "third_party/perfetto/protos/perfetto/trace/chrome/chrome_trace_event.pbzero.h"
@@ -100,18 +101,31 @@ inline constexpr char kRevisionMetadataKey[] = "revision";
 
 TracingControllerImpl* g_tracing_controller = nullptr;
 
+// Returns whether |config| asks for the legacy JSON conversion, or nullopt if
+// its data sources disagree. The setting applies to the whole session.
+std::optional<bool> ConvertsToLegacyJson(const perfetto::TraceConfig& config) {
+  std::optional<bool> converts;
+  for (const auto& data_source : config.data_sources()) {
+    const bool source_converts =
+        data_source.config().chrome_config().convert_to_legacy_json();
+    if (converts.value_or(source_converts) != source_converts) {
+      return std::nullopt;
+    }
+    converts = source_converts;
+  }
+  return converts.value_or(false);
+}
+
 }  // namespace
 
 TracingController* TracingController::GetInstance() {
   return TracingControllerImpl::GetInstance();
 }
 
-TracingControllerImpl::TracingControllerImpl()
-    : delegate_(GetContentClient()->browser()->CreateTracingDelegate()) {
-  DCHECK(!g_tracing_controller);
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  CHECK(delegate_);
-  InitializeDataSources();
+TracingControllerImpl::TracingControllerImpl(const TracingDelegate& delegate) {
+  CHECK(!g_tracing_controller, base::NotFatalUntil::M159);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  InitializeDataSources(delegate);
   g_tracing_controller = this;
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -128,17 +142,15 @@ TracingControllerImpl::TracingControllerImpl()
 
 TracingControllerImpl::~TracingControllerImpl() = default;
 
-void TracingControllerImpl::InitializeDataSources() {
-  tracing::TracedProcessImpl::GetInstance()->SetTaskRunner(
-      base::SequencedTaskRunner::GetCurrentDefault());
-
+void TracingControllerImpl::InitializeDataSources(
+    const TracingDelegate& delegate) {
   // Metadata only needs to be installed in the browser process.
   tracing::MetadataDataSource::Register(
       base::SequencedTaskRunner::GetCurrentDefault(),
-      {tracing_delegate()->CreateSystemProfileMetadataRecorder(),
+      {delegate.CreateSystemProfileMetadataRecorder(),
        base::BindRepeating(&TracingControllerImpl::RecorderMetadataToBundle)},
       {base::BindRepeating(&TracingControllerImpl::GenerateMetadataPacket)},
-      tracing_delegate()->CreateChromeMetadataPacketRecorder());
+      delegate.CreateChromeMetadataPacketRecorder());
 
 #if BUILDFLAG(IS_CHROMEOS)
   RegisterCrOSTracingDataSource();
@@ -188,12 +200,12 @@ void TracingControllerImpl::GenerateMetadataPacket(
 }
 
 TracingControllerImpl* TracingControllerImpl::GetInstance() {
-  DCHECK(g_tracing_controller);
+  CHECK(g_tracing_controller, base::NotFatalUntil::M159);
   return g_tracing_controller;
 }
 
 bool TracingControllerImpl::GetCategories(GetCategoriesDoneCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   ConnectToServiceIfNeeded();
   tracing::QueryTrackEventCategories(
       perfetto::Tracing::NewTrace(perfetto::BackendType::kCustomBackend),
@@ -213,7 +225,7 @@ bool TracingControllerImpl::GetCategories(GetCategoriesDoneCallback callback) {
 
 bool TracingControllerImpl::GetTrackEventDescriptor(
     GetTrackEventDescriptorDoneCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   ConnectToServiceIfNeeded();
   tracing::QueryTrackEventCategories(
       perfetto::Tracing::NewTrace(perfetto::BackendType::kCustomBackend),
@@ -235,12 +247,12 @@ bool TracingControllerImpl::StartTracingImpl(
     const base::trace_event::TraceConfig& trace_config,
     StartTracingDoneCallback callback,
     bool privacy_filtering_enabled) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   // TODO(chiniforooshan): The actual value should be received by callback and
   // this function should return void.
   if (IsTracing()) {
     // Do not allow updating trace config when process filter is not used.
-    if (trace_config.process_filter_config().empty() ||
+    if (!trace_config_ || trace_config.process_filter_config().empty() ||
         trace_config_->process_filter_config().empty()) {
       return false;
     }
@@ -258,13 +270,43 @@ bool TracingControllerImpl::StartTracingImpl(
   trace_config_ =
       std::make_unique<base::trace_event::TraceConfig>(trace_config);
 
-  DCHECK(!tracing_session_host_);
+  return StartTracingSession(
+      tracing::GetDefaultPerfettoConfig(trace_config, privacy_filtering_enabled,
+                                        /*convert_to_legacy_json=*/true),
+      std::move(callback), /*converts_to_legacy_json=*/true);
+}
+
+bool TracingControllerImpl::StartTracingWithPerfettoConfig(
+    const perfetto::TraceConfig& perfetto_config,
+    StartTracingDoneCallback callback) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (IsTracing()) {
+    return false;
+  }
+
+  std::optional<bool> converts_to_legacy_json =
+      ConvertsToLegacyJson(perfetto_config);
+  if (!converts_to_legacy_json.has_value()) {
+    DLOG(ERROR) << "Data sources disagree on convert_to_legacy_json";
+    return false;
+  }
+
+  return StartTracingSession(perfetto_config, std::move(callback),
+                             *converts_to_legacy_json);
+}
+
+bool TracingControllerImpl::StartTracingSession(
+    perfetto::TraceConfig perfetto_config,
+    StartTracingDoneCallback callback,
+    bool converts_to_legacy_json) {
+  CHECK(!tracing_session_host_, base::NotFatalUntil::M159);
   ConnectToServiceIfNeeded();
 
-  perfetto::TraceConfig perfetto_config =
-      tracing::GetDefaultPerfettoConfig(trace_config, privacy_filtering_enabled,
-                                        /*convert_to_legacy_json=*/true);
-
+  output_format_ = converts_to_legacy_json ? TraceDataFormat::kLegacyJson
+                                           : TraceDataFormat::kProtobuf;
+  is_tracing_ = true;
+  stop_requested_ = false;
+  tracing_disabled_ = false;
   consumer_host_->EnableTracing(
       tracing_session_host_.BindNewPipeAndPassReceiver(),
       receiver_.BindNewPipeAndPassRemote(), std::move(perfetto_config),
@@ -289,30 +331,45 @@ bool TracingControllerImpl::StopTracing(
 bool TracingControllerImpl::StopTracing(
     const scoped_refptr<TraceDataEndpoint>& trace_data_endpoint,
     const std::string& agent_label) {
-  if (!IsTracing() || drainer_ || !tracing_session_host_)
+  // |agent_label| filters the converted JSON, so it is meaningless for a
+  // protobuf trace.
+  if (!IsTracing() || stop_requested_ || drainer_ || !tracing_session_host_ ||
+      (output_format_ == TraceDataFormat::kProtobuf && !agent_label.empty())) {
     return false;
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  }
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
+  stop_requested_ = true;
   trace_data_endpoint_ = std::move(trace_data_endpoint);
   is_data_complete_ = false;
   read_buffers_complete_ = false;
 
-  mojo::ScopedDataPipeProducerHandle producer_handle;
-  mojo::ScopedDataPipeConsumerHandle consumer_handle;
-  MojoResult result =
-      mojo::CreateDataPipe(nullptr, producer_handle, consumer_handle);
-  if (result != MOJO_RESULT_OK) {
-    CompleteFlush();
-    return true;
+  if (output_format_ == TraceDataFormat::kProtobuf) {
+    // Data sources may still be emitting samples while they are disabled, so
+    // the buffers must not be read until OnTracingDisabled().
+    if (tracing_disabled_) {
+      StartProtobufRead();
+    } else {
+      tracing_session_host_->DisableTracing();
+    }
+  } else {
+    mojo::ScopedDataPipeProducerHandle producer_handle;
+    mojo::ScopedDataPipeConsumerHandle consumer_handle;
+    MojoResult result =
+        mojo::CreateDataPipe(nullptr, producer_handle, consumer_handle);
+    if (result != MOJO_RESULT_OK) {
+      CompleteFlush();
+      return true;
+    }
+
+    drainer_ = std::make_unique<mojo::DataPipeDrainer>(
+        this, std::move(consumer_handle));
+
+    tracing_session_host_->DisableTracingAndEmitJson(
+        agent_label, std::move(producer_handle),
+        base::BindOnce(&TracingControllerImpl::OnReadBuffersComplete,
+                       base::Unretained(this)));
   }
-
-  drainer_ =
-      std::make_unique<mojo::DataPipeDrainer>(this, std::move(consumer_handle));
-
-  tracing_session_host_->DisableTracingAndEmitJson(
-      agent_label, std::move(producer_handle),
-      base::BindOnce(&TracingControllerImpl::OnReadBuffersComplete,
-                     base::Unretained(this)));
 
   // TODO(chiniforooshan): Is the return value used anywhere?
   return true;
@@ -320,7 +377,7 @@ bool TracingControllerImpl::StopTracing(
 
 bool TracingControllerImpl::GetTraceBufferUsage(
     GetTraceBufferUsageCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   if (!tracing_session_host_) {
     std::move(callback).Run(0.0, 0);
@@ -337,7 +394,7 @@ bool TracingControllerImpl::GetTraceBufferUsage(
 }
 
 bool TracingControllerImpl::IsTracing() {
-  return trace_config_ != nullptr;
+  return is_tracing_;
 }
 
 void TracingControllerImpl::OnTracingEnabled() {
@@ -345,7 +402,20 @@ void TracingControllerImpl::OnTracingEnabled() {
     std::move(start_tracing_callback_).Run();
 }
 
-void TracingControllerImpl::OnTracingDisabled(bool) {}
+void TracingControllerImpl::OnTracingDisabled(bool tracing_succeeded) {
+  // DisableTracingAndEmitJson() already reads the buffers for the JSON path.
+  if (output_format_ != TraceDataFormat::kProtobuf) {
+    return;
+  }
+
+  if (!tracing_succeeded) {
+    VLOG(1) << "Tracing stopped with an error; draining available trace data";
+  }
+  tracing_disabled_ = true;
+  if (stop_requested_ && !drainer_) {
+    StartProtobufRead();
+  }
+}
 
 void TracingControllerImpl::OnTracingFailed() {
   CompleteFlush();
@@ -353,13 +423,16 @@ void TracingControllerImpl::OnTracingFailed() {
 
 void TracingControllerImpl::OnDataAvailable(base::span<const uint8_t> data) {
   if (trace_data_endpoint_) {
-    const std::string chunk(base::as_string_view(data));
     trace_data_endpoint_->ReceiveTraceChunk(
-        std::make_unique<std::string>(chunk));
+        std::make_unique<std::string>(base::as_string_view(data)));
   }
 }
 
 void TracingControllerImpl::CompleteFlush() {
+  output_format_ = TraceDataFormat::kLegacyJson;
+  is_tracing_ = false;
+  stop_requested_ = false;
+  tracing_disabled_ = false;
   if (trace_data_endpoint_)
     trace_data_endpoint_->ReceivedTraceFinalContents();
 
@@ -368,6 +441,33 @@ void TracingControllerImpl::CompleteFlush() {
   drainer_ = nullptr;
   tracing_session_host_.reset();
   receiver_.reset();
+  is_data_complete_ = false;
+  read_buffers_complete_ = false;
+}
+
+void TracingControllerImpl::StartProtobufRead() {
+  CHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK(stop_requested_);
+  CHECK(tracing_disabled_);
+  CHECK(tracing_session_host_);
+  // A second read would replace the in-flight drainer.
+  CHECK(!drainer_);
+
+  mojo::ScopedDataPipeProducerHandle producer_handle;
+  mojo::ScopedDataPipeConsumerHandle consumer_handle;
+  MojoResult result =
+      mojo::CreateDataPipe(nullptr, producer_handle, consumer_handle);
+  if (result != MOJO_RESULT_OK) {
+    CompleteFlush();
+    return;
+  }
+
+  drainer_ =
+      std::make_unique<mojo::DataPipeDrainer>(this, std::move(consumer_handle));
+  tracing_session_host_->ReadBuffers(
+      std::move(producer_handle),
+      base::BindOnce(&TracingControllerImpl::OnReadBuffersComplete,
+                     base::Unretained(this)));
 }
 
 void TracingControllerImpl::OnDataComplete() {

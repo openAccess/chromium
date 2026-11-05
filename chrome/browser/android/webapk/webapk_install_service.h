@@ -102,8 +102,10 @@ class WebApkInstallService : public KeyedService {
   // Removes current notifications about an ongoing install and adds a
   // installed-notification if the installation was successful.
   void HandleFinishInstallNotificationsAndMaybeLaunch(
+      content::WebContents* web_contents,
       const GURL& manifest_url,
       const GURL& url,
+      const GURL& scope,
       const std::u16string& short_name,
       const SkBitmap& primary_icon,
       bool is_primary_icon_maskable,
@@ -121,9 +123,11 @@ class WebApkInstallService : public KeyedService {
 
   // Shows a notification that an install is completed.
   static void ShowInstalledNotificationAndMaybeLaunch(
+      content::WebContents* web_contents,
       const GURL& manifest_url,
       const std::u16string& short_name,
       const GURL& url,
+      const GURL& scope,
       const SkBitmap& primary_icon,
       bool is_primary_icon_maskable,
       const std::string& package_name);
@@ -136,6 +140,8 @@ class WebApkInstallService : public KeyedService {
       const SkBitmap& primary_icon,
       bool is_primary_icon_maskable,
       webapps::WebApkInstallResult result);
+
+  friend class WebApkInstallerBrowserTest;
 
   raw_ptr<content::BrowserContext> browser_context_;
 

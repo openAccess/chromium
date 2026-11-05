@@ -9,38 +9,17 @@
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_view_util.h"
-#include "build/build_config.h"
 #include "third_party/boringssl/src/pki/input.h"
+
 #if defined(PLATFORM_USES_CHROMIUM_EV_METADATA)
+#include "base/containers/span.h"
+#include "base/memory/ptr_util.h"
 #include "crypto/openssl_util.h"
+#include "net/cert/internal/chrome_root_store_data.h"
 #include "third_party/boringssl/src/include/openssl/bytestring.h"
-#include "third_party/boringssl/src/include/openssl/mem.h"
 #endif
 
 namespace net {
-
-namespace {
-#if defined(PLATFORM_USES_CHROMIUM_EV_METADATA)
-// Raw metadata.
-struct EVMetadata {
-  // kMaxOIDsPerCA is the number of OIDs that we can support per root CA. At
-  // least one CA has different EV policies for business vs government
-  // entities and, in the case of cross-signing, we might need to list another
-  // CA's policy OID under the cross-signing root.
-  static const size_t kMaxOIDsPerCA = 2;
-
-  // The SHA-256 fingerprint of the root CA certificate, used as a unique
-  // identifier for a root CA certificate.
-  SHA256HashValue fingerprint;
-
-  // The EV policy OIDs of the root CA.
-  const std::string_view policy_oids[kMaxOIDsPerCA];
-};
-
-#include "net/data/ssl/chrome_root_store/chrome-ev-roots-inc.cc"
-
-#endif  // defined(PLATFORM_USES_CHROMIUM_EV_METADATA)
-}  // namespace
 
 // static
 EVRootCAMetadata* EVRootCAMetadata::GetInstance() {
@@ -49,6 +28,11 @@ EVRootCAMetadata* EVRootCAMetadata::GetInstance() {
 }
 
 #if defined(PLATFORM_USES_CHROMIUM_EV_METADATA)
+// static
+std::unique_ptr<EVRootCAMetadata> EVRootCAMetadata::CreateForTesting(
+    base::span<const EVMetadata> ev_root_ca_metadata_list) {
+  return base::WrapUnique(new EVRootCAMetadata(ev_root_ca_metadata_list));
+}
 
 namespace {
 
@@ -135,10 +119,14 @@ bool EVRootCAMetadata::RemoveEVCA(const SHA256HashValue& fingerprint) {
 
 #endif
 
-EVRootCAMetadata::EVRootCAMetadata() {
-// Constructs the object from the raw metadata in kEvRootCaMetadata.
 #if defined(PLATFORM_USES_CHROMIUM_EV_METADATA)
-  for (const auto& ev_root : kEvRootCaMetadata) {
+// Constructs the object from the raw metadata in GetEvRootCaMetadata().
+EVRootCAMetadata::EVRootCAMetadata()
+    : EVRootCAMetadata(GetEvRootCaMetadata()) {}
+
+EVRootCAMetadata::EVRootCAMetadata(
+    base::span<const EVMetadata> ev_root_ca_metadata_list) {
+  for (const auto& ev_root : ev_root_ca_metadata_list) {
     for (const auto& policy : ev_root.policy_oids) {
       if (policy.empty())
         break;
@@ -153,8 +141,10 @@ EVRootCAMetadata::EVRootCAMetadata() {
       policy_oids_.insert(policy_der);
     }
   }
-#endif
 }
+#else
+EVRootCAMetadata::EVRootCAMetadata() = default;
+#endif
 
 EVRootCAMetadata::~EVRootCAMetadata() = default;
 

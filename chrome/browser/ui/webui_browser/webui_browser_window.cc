@@ -8,6 +8,9 @@
 #include "base/feature_list.h"
 #include "base/notimplemented.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "content/public/browser/navigation_controller.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/global_keyboard_shortcuts_mac.h"
 #endif
@@ -16,7 +19,6 @@
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/accelerator_table.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_active_state_manager/browser_active_state_manager.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
@@ -24,13 +26,12 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window_state.h"
-#include "chrome/browser/ui/browser_window_theme_observer.h"
+#include "chrome/browser/ui/browser_window_theme_observer/browser_window_theme_observer.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui_base.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/find_bar_host.h"
 #include "chrome/browser/ui/views/find_bar_owner.h"
@@ -480,8 +481,9 @@ float WebUIBrowserWindow::GetScaleFactor() const {
 
 ui::ColorProviderKey::ThemeInitializerSupplier*
 WebUIBrowserWindow::GetThemeInitializerSupplier() const {
-  // Do not return any custom theme if this is an incognito browser.
-  if (browser_->GetProfile()->IsIncognitoProfile()) {
+  // Do not return any custom theme if this is an incognito browser or an
+  // enterprise isolated mode browser.
+  if (browser_->GetProfile()->IsPrimaryOTRProfileWithRegularParent()) {
     return nullptr;
   }
 
@@ -525,6 +527,11 @@ ui::ColorProviderKey WebUIBrowserWindow::GetColorProviderKey() const {
       return;
     }
 
+    if (browser_->GetProfile()->IsEnterpriseIsolatedModeProfile()) {
+      key.color_mode = ui::ColorProviderKey::ColorMode::kLight;
+      return;
+    }
+
     const auto browser_color_scheme = theme_service->GetBrowserColorScheme();
     if (browser_color_scheme != ThemeService::BrowserColorScheme::kSystem) {
       key.color_mode =
@@ -547,6 +554,8 @@ ui::ColorProviderKey WebUIBrowserWindow::GetColorProviderKey() const {
   // Determine appropriate key.user_color_source.
   if (browser_->GetProfile()->IsIncognitoProfile()) {
     key.user_color_source = ui::ColorProviderKey::UserColorSource::kGrayscale;
+  } else if (browser_->GetProfile()->IsEnterpriseIsolatedModeProfile()) {
+    key.user_color_source = ui::ColorProviderKey::UserColorSource::kBaseline;
   } else if (theme_service->UsingDeviceTheme()) {
     key.user_color_source = ui::ColorProviderKey::UserColorSource::kAccent;
   } else if (theme_service->GetIsGrayscale()) {
@@ -611,7 +620,7 @@ bool WebUIBrowserWindow::GetAcceleratorForCommandId(
 
 void WebUIBrowserWindow::OnWidgetBoundsChanged(views::Widget* widget,
                                                const gfx::Rect& new_bounds) {
-  DCHECK_EQ(widget, widget_.get());
+  CHECK_EQ(widget, widget_.get(), base::NotFatalUntil::M162);
   if (modal_dialog_host_) {
     modal_dialog_host_->NotifyPositionRequiresUpdate();
   }
@@ -628,7 +637,7 @@ gfx::Rect WebUIBrowserWindow::GetContentsBoundsInScreen() const {
 void WebUIBrowserWindow::ProcessFullscreen(bool fullscreen) {
   widget_->SetFullscreen(fullscreen);
 
-  auto* manager = browser_->GetFeatures().exclusive_access_manager();
+  auto* manager = ExclusiveAccessManager::From(browser_);
   if (!manager) {
     return;
   }
@@ -649,8 +658,7 @@ void WebUIBrowserWindow::ProcessFullscreen(bool fullscreen) {
     page->OnFullscreenModeChanged(fullscreen, context);
   }
 
-  browser_->GetFeatures()
-      .exclusive_access_manager()
+  ExclusiveAccessManager::From(browser_)
       ->fullscreen_controller()
       ->WindowFullscreenStateChanged();
 }
@@ -763,11 +771,22 @@ void WebUIBrowserWindow::UpdateLoadingAnimations(bool is_visible) {
   NOTIMPLEMENTED_LOG_ONCE();
 }
 
-
 void WebUIBrowserWindow::OnActiveTabChanged(content::WebContents* old_contents,
                                             content::WebContents* new_contents,
                                             int index,
                                             int reason) {
+  // A new tab's WebContents is created and starts loading before the WebUI
+  // creates its embedding element and attaches it as an embedded WebContents.
+  // The WebUI layout therefore cannot size the tab until after loading has
+  // started. Seed an unsized foreground tab from the outgoing tab so its
+  // initial layout does not use a zero-sized viewport.
+  if (old_contents && new_contents->GetSize().IsZero()) {
+    const gfx::Size old_size = old_contents->GetContainerBounds().size();
+    if (!old_size.IsEmpty()) {
+      new_contents->Resize(gfx::Rect(old_size));
+    }
+  }
+
   // New tabs have their ColorProviderSource set to the Widget initially.
   // Set the ColorProviderSource back to |this| when they're first activated.
   // This is a no-op if it's already set to |this|.
@@ -790,6 +809,8 @@ void WebUIBrowserWindow::OnActiveTabChanged(content::WebContents* old_contents,
   // State of extensions depends on what's active --- e.g. some may be disabled
   // on some URLs.
   extensions_container_->NotifyOfAllActions();
+
+  UpdateTitleBar();
 }
 
 void WebUIBrowserWindow::OnTabDetached(content::WebContents* contents,
@@ -839,6 +860,14 @@ LocationBar* WebUIBrowserWindow::GetLocationBar() const {
   return location_bar_.get();
 }
 
+ui::AcceleratorProvider* WebUIBrowserWindow::GetAcceleratorProvider() {
+  return this;
+}
+
+PinnedToolbarActions* WebUIBrowserWindow::GetPinnedToolbarActions() {
+  return nullptr;
+}
+
 void WebUIBrowserWindow::SetFocusToLocationBar(bool is_user_initiated) {
   if (webui_browser::mojom::Page* page = GetWebUIBrowserUI()->page()) {
     page->SetFocusToLocationBar(is_user_initiated);
@@ -882,7 +911,7 @@ void WebUIBrowserWindow::TabDraggingStatusChanged(bool is_dragging) {
 }
 
 void WebUIBrowserWindow::LinkOpeningFromGesture(
-    WindowOpenDisposition disposition) {
+    ui::mojom::WindowOpenDisposition disposition) {
   NOTIMPLEMENTED_LOG_ONCE();
 }
 
@@ -977,7 +1006,7 @@ void WebUIBrowserWindow::ZoomChangedForActiveTab(bool can_show_bubble) {
     return;
   }
 
-  auto* zoom_view_controller = tab->GetTabFeatures()->zoom_view_controller();
+  auto* zoom_view_controller = zoom::ZoomViewController::From(tab);
   if (!zoom_view_controller) {
     return;
   }
@@ -1051,7 +1080,8 @@ WebUIBrowserWindow::PreHandleKeyboardEvent(
   // command id from |accelerator_table_|, it must be a keydown event. This
   // DCHECK ensures we won't accidentally return NOT_HANDLED for a later added
   // RELEASED accelerator in BrowserView.
-  DCHECK_EQ(event.GetType(), blink::WebInputEvent::Type::kRawKeyDown);
+  CHECK_EQ(event.GetType(), blink::WebInputEvent::Type::kRawKeyDown,
+           base::NotFatalUntil::M162);
   // |accelerator| is a non-reserved browser shortcut (e.g. Ctrl+f).
   return content::KeyboardEventProcessingResult::NOT_HANDLED_IS_SHORTCUT;
 }
@@ -1085,14 +1115,6 @@ WebUIBrowserWindow::GetWebContentsModalDialogHostFor(
 
 void WebUIBrowserWindow::ShowAvatarBubbleFromAvatarButton(
     bool is_source_accelerator) {
-  NOTIMPLEMENTED_LOG_ONCE();
-}
-
-void WebUIBrowserWindow::MaybeShowProfileSwitchIPH() {
-  NOTIMPLEMENTED_LOG_ONCE();
-}
-
-void WebUIBrowserWindow::MaybeShowSupervisedUserProfileSignInIPH() {
   NOTIMPLEMENTED_LOG_ONCE();
 }
 
@@ -1334,6 +1356,5 @@ void WebUIBrowserWindow::CloseSidePanel() {
 }
 
 WebUIBrowserSidePanelUI* WebUIBrowserWindow::GetWebUIBrowserSidePanelUI() {
-  return static_cast<WebUIBrowserSidePanelUI*>(
-      browser_->GetFeatures().side_panel_ui());
+  return static_cast<WebUIBrowserSidePanelUI*>(SidePanelUI::From(browser_));
 }

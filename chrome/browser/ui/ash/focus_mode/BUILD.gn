@@ -15,8 +15,8 @@ static_library("focus_mode") {
   ]
 
   public_deps = [
-    "//chrome/browser:browser_public_dependencies",
     "//chromeos/ash/components/dbus/constants",
+    "//dbus",
   ]
 
   deps = [
@@ -24,8 +24,6 @@ static_library("focus_mode") {
     "//base",
     "//chrome/browser:browser_process",
     "//chrome/browser/ash/attestation",
-    "//chrome/browser/ash/profiles",
-    "//chrome/browser/profiles",
     "//chromeos/ash/components/attestation",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/cryptohome:public",
@@ -34,6 +32,8 @@ static_library("focus_mode") {
     "//chromeos/ash/components/dbus/cryptohome:attestation_proto",
     "//chromeos/ash/components/settings",
     "//chromeos/ash/components/signin:identity_manager_provider",
+    "//components/signin/public/identity_manager",
+    "//content/public/browser",
     "//google_apis/common",
     "//net/traffic_annotation",
   ]
@@ -54,11 +54,9 @@ source_set("unit_tests") {
     "//chromeos/ash/components/attestation:test_support",
     "//chromeos/ash/components/dbus/attestation",
     "//chromeos/ash/components/settings",
+    "//components/account_id",
+    "//components/account_id:test_support",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("browser_tests") {

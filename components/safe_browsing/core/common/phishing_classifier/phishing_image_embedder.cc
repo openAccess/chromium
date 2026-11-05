@@ -22,11 +22,12 @@ PhishingImageEmbedder::PhishingImageEmbedder() = default;
 
 Scorer* PhishingImageEmbedder::GetScorer() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-#if BUILDFLAG(IS_IOS)
-  return scorer_;
-#else
-  return ScorerStorage::GetInstance()->GetScorer();
+#if !BUILDFLAG(IS_IOS)
+  if (!has_explicit_scorer_) {
+    return ScorerStorage::GetInstance()->GetScorer();
+  }
 #endif
+  return scorer_;
 }
 
 bool PhishingImageEmbedder::is_ready() const {
@@ -34,12 +35,11 @@ bool PhishingImageEmbedder::is_ready() const {
   return !!GetScorer();
 }
 
-#if BUILDFLAG(IS_IOS)
 void PhishingImageEmbedder::set_scorer(Scorer* scorer) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   scorer_ = scorer;
+  has_explicit_scorer_ = true;
 }
-#endif
 
 PhishingImageEmbedder::~PhishingImageEmbedder() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -108,10 +108,8 @@ void PhishingImageEmbedder::OnImageEmbeddingDone(
         FROM_HERE,
         {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
          base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
-        base::BindOnce(
-            static_cast<std::unique_ptr<VisualFeatures> (*)(const SkBitmap&)>(
-                &visual_utils::ExtractVisualFeatures),
-            image_.AsBitmap()),
+        base::BindOnce(&visual_utils::ExtractVisualFeatures,
+                       visual_utils::GetBitmapForVisualFeatures(image_)),
         base::BindOnce(&PhishingImageEmbedder::OnVisualFeaturesExtracted,
                        weak_factory_.GetWeakPtr(),
                        std::move(image_feature_embedding)));

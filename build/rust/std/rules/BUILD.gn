@@ -15,129 +15,6 @@ config("max_codegen_units") {
   rustflags = [ "-Ccodegen-units=10000" ]
 }
 
-cargo_crate("addr2line") {
-  crate_type = "rlib"
-  crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/addr2line-0.27.1/src/lib.rs"
-  enabled = !is_win
-  sources = [
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/addr2line-0.27.1/src/bin/addr2line.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/addr2line-0.27.1/src/frame.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/addr2line-0.27.1/src/function.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/addr2line-0.27.1/src/lib.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/addr2line-0.27.1/src/line.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/addr2line-0.27.1/src/loader.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/addr2line-0.27.1/src/lookup.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/addr2line-0.27.1/src/unit.rs",
-  ]
-  inputs = []
-  no_std = true
-
-  # Unit tests skipped. Generate with --with-tests to include them.
-  build_native_rust_unit_tests = false
-  edition = "2018"
-  cargo_pkg_version = "0.27.1"
-  cargo_pkg_name = "addr2line"
-  cargo_pkg_description =
-      "A cross-platform symbolication library written in Rust, using `gimli`"
-  cargo_pkg_repository = "https://github.com/gimli-rs/addr2line"
-  library_configs -= [
-    "//build/config/compiler:chromium_code",
-    "//build/config/compiler:disallow_unstable_features",
-  ]
-  library_configs += [ "//build/config/compiler:no_chromium_code" ]
-  executable_configs -= [
-    "//build/config/compiler:chromium_code",
-    "//build/config/compiler:disallow_unstable_features",
-  ]
-  executable_configs += [ "//build/config/compiler:no_chromium_code" ]
-  deps = [
-    "//build/rust/std:profiler_builtins_group",
-    "//build/rust/std:std_build_deps",
-  ]
-  if (!is_win) {
-    deps += [
-      ":gimli",
-      ":rustc_std_workspace_alloc",
-      ":rustc_std_workspace_core",
-    ]
-  }
-  aliased_deps = {
-    alloc = ":rustc_std_workspace_alloc"
-    core = ":rustc_std_workspace_core"
-  }
-  features = [
-    "alloc",
-    "core",
-    "rustc-dep-of-std",
-  ]
-  rustenv = [
-    "CFG_DISABLE_UNSTABLE_FEATURES=0",
-    "STD_ENV_ARCH=$rust_target_arch",
-  ]
-  rustflags = [
-    "--cfg=backtrace_in_libstd",
-    "-Zforce-unstable-if-unmarked",
-    "--cap-lints=allow",  # Suppress all warnings in stdlib crates
-  ]
-  output_dir =
-      "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
-}
-cargo_crate("adler2") {
-  crate_type = "rlib"
-  crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/adler2-2.0.1/src/lib.rs"
-  enabled = !is_win
-  sources = [
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/adler2-2.0.1/src/algo.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/adler2-2.0.1/src/lib.rs",
-  ]
-  inputs = []
-  no_std = true
-
-  # Unit tests skipped. Generate with --with-tests to include them.
-  build_native_rust_unit_tests = false
-  edition = "2021"
-  cargo_pkg_version = "2.0.1"
-  cargo_pkg_authors = "Jonas Schievink <jonasschievink@gmail.com>, oyvindln <oyvindln@users.noreply.github.com>"
-  cargo_pkg_name = "adler2"
-  cargo_pkg_description =
-      "A simple clean-room implementation of the Adler-32 checksum"
-  cargo_pkg_repository = "https://github.com/oyvindln/adler2"
-  library_configs -= [
-    "//build/config/compiler:chromium_code",
-    "//build/config/compiler:disallow_unstable_features",
-  ]
-  library_configs += [ "//build/config/compiler:no_chromium_code" ]
-  executable_configs -= [
-    "//build/config/compiler:chromium_code",
-    "//build/config/compiler:disallow_unstable_features",
-  ]
-  executable_configs += [ "//build/config/compiler:no_chromium_code" ]
-  deps = [
-    "//build/rust/std:profiler_builtins_group",
-    "//build/rust/std:std_build_deps",
-  ]
-  if (!is_win) {
-    deps += [ ":rustc_std_workspace_core" ]
-  }
-  aliased_deps = {
-    core = ":rustc_std_workspace_core"
-  }
-  features = [
-    "core",
-    "rustc-dep-of-std",
-  ]
-  rustenv = [
-    "CFG_DISABLE_UNSTABLE_FEATURES=0",
-    "STD_ENV_ARCH=$rust_target_arch",
-  ]
-  rustflags = [
-    "--cfg=backtrace_in_libstd",
-    "-Zforce-unstable-if-unmarked",
-    "--cap-lints=allow",  # Suppress all warnings in stdlib crates
-  ]
-  output_dir =
-      "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
-}
 cargo_crate("alloc") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/lib.rs"
@@ -148,7 +25,7 @@ cargo_crate("alloc") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/boxed/convert.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/boxed/iter.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/boxed/thin.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/bstr.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/byte_str.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/collections/binary_heap/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/collections/btree/append.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/collections/btree/borrow.rs",
@@ -209,9 +86,11 @@ cargo_crate("alloc") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/lib.miri.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/lib.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/macros.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/panicking.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/raw_vec/tests.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/rc.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/rcs/arc.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/rcs/rc.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/slice.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/str.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/string.rs",
@@ -233,6 +112,7 @@ cargo_crate("alloc") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/vec/spec_from_iter.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/vec/spec_from_iter_nested.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/vec/splice.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/vec/sve_retain.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/wtf8/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/alloc/src/wtf8/tests.rs",
   ]
@@ -243,7 +123,7 @@ cargo_crate("alloc") {
     target_name = "alloc_bindings"
     cpp_namespace = "rs::alloc"
     h_out = "$root_gen_dir/third_party/crubit/support/rs_std/rs_alloc.h"
-    deps = [ ":core_bindings" ]
+    bindings_deps = [ ":core_bindings" ]
   }
 
   # Unit tests skipped. Generate with --with-tests to include them.
@@ -281,6 +161,7 @@ cargo_crate("alloc") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("cfg_if") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/cfg-if-1.0.4/src/lib.rs"
@@ -330,6 +211,7 @@ cargo_crate("cfg_if") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("compiler_builtins") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/lib.rs"
@@ -340,6 +222,9 @@ cargo_crate("compiler_builtins") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/avr.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/float/add.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/float/cmp.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/float/complex/div.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/float/complex/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/float/complex/mul.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/float/conv.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/float/div.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/float/extend.rs",
@@ -386,16 +271,19 @@ cargo_crate("compiler_builtins") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/acosf.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/acosh.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/acoshf.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/approx/cbrtf64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/approx/hypot.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/approx/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/aarch64/fma.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/aarch64/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/aarch64/rounding.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/aarch64/sqrt.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/arm/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/arm/sqrt.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/i586/exp_all.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/i586/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/i586/rounding.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/loongarch/fma.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/loongarch/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/loongarch/rounding.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/loongarch/sqrt.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/wasm32/fabs.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/arch/wasm32/mod.rs",
@@ -430,6 +318,9 @@ cargo_crate("compiler_builtins") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/exp10f.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/exp2.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/exp2f.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/exp2m1.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/exp2m1f.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/exp2m1f16.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/expf.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/expm1.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/expm1f.rs",
@@ -503,6 +394,9 @@ cargo_crate("compiler_builtins") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/nextafterf.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/pow.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/powf.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/relaxed/cbrtf64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/relaxed/hypotf64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/relaxed/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/rem_pio2.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/rem_pio2_large.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins/src/../../libm/src/math/rem_pio2f.rs",
@@ -589,6 +483,7 @@ cargo_crate("compiler_builtins") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("core") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/lib.rs"
@@ -613,8 +508,8 @@ cargo_crate("core") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/attribute_docs.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/bool.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/borrow.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/bstr/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/bstr/traits.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/byte_str/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/byte_str/traits.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/cell.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/cell/covariant_unsafe_cell.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/cell/lazy.rs",
@@ -627,6 +522,7 @@ cargo_crate("core") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/clone/uninit.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/cmp.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/cmp/bytewise.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/cmp/clamp.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/contracts.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/convert/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/convert/num.rs",
@@ -661,8 +557,10 @@ cargo_crate("core") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/intrinsics/bounds.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/intrinsics/fallback.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/intrinsics/gpu.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/intrinsics/macros.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/intrinsics/mir.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/intrinsics/reflection.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/intrinsics/simd/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/intrinsics/simd/scalable.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/io/borrowed_buf.rs",
@@ -749,6 +647,8 @@ cargo_crate("core") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/net/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/net/parser.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/net/socket_addr.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/bfloat.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/complex.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/error.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/f128.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/f16.rs",
@@ -778,6 +678,7 @@ cargo_crate("core") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/imp/libm.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/imp/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/imp/overflow_panic.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/imp/ppcf128.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/imp/traits.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/int_macros.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/num/mod.rs",
@@ -807,6 +708,7 @@ cargo_crate("core") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/os/darwin/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/os/darwin/objc.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/os/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/os/windows.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/panic.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/panic/location.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/panic/panic_info.rs",
@@ -826,7 +728,6 @@ cargo_crate("core") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/ptr/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/ptr/mut_ptr.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/ptr/unique.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/random.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/range.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/range/iter.rs",
@@ -1103,6 +1004,8 @@ cargo_crate("core") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/ptr/docs/is_null.md",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/ptr/docs/offset.md",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/ptr/docs/sub.md",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/sync/atomic_load_volatile.md",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/core/src/sync/atomic_store_volatile.md",
   ]
   no_std = true
 
@@ -1110,7 +1013,7 @@ cargo_crate("core") {
     target_name = "core_bindings"
     cpp_namespace = "rs::core"
     h_out = "$root_gen_dir/third_party/crubit/support/rs_std/rs_core.h"
-    deps = []
+    bindings_deps = []
   }
 
   # Unit tests skipped. Generate with --with-tests to include them.
@@ -1147,6 +1050,7 @@ cargo_crate("core") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("getopts") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/getopts-0.2.24/src/lib.rs"
@@ -1202,112 +1106,7 @@ cargo_crate("getopts") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
-cargo_crate("gimli") {
-  crate_type = "rlib"
-  crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/lib.rs"
-  enabled = !is_win
-  sources = [
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/arch.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/case_fold.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/case_fold_data.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/common.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/constants.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/endianity.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/leb128.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/lib.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/abbrev.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/addr.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/aranges.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/cfi.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/dwarf.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/endian_reader.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/endian_slice.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/index.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/line.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/lists.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/loclists.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/lookup.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/macros.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/names.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/op.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/pubnames.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/pubtypes.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/reader.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/relocate.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/rnglists.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/str.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/unit.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/util.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/read/value.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/test_util.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/abbrev.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/cfi.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/dwarf.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/endian_vec.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/line.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/loc.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/op.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/range.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/relocate.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/section.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/str.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/unit.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/gimli-0.34.0/src/write/writer.rs",
-  ]
-  inputs = []
-  no_std = true
 
-  # Unit tests skipped. Generate with --with-tests to include them.
-  build_native_rust_unit_tests = false
-  edition = "2024"
-  cargo_pkg_version = "0.34.0"
-  cargo_pkg_name = "gimli"
-  cargo_pkg_description =
-      "A library for reading and writing the DWARF debugging format."
-  cargo_pkg_repository = "https://github.com/gimli-rs/gimli"
-  library_configs -= [
-    "//build/config/compiler:chromium_code",
-    "//build/config/compiler:disallow_unstable_features",
-  ]
-  library_configs += [ "//build/config/compiler:no_chromium_code" ]
-  executable_configs -= [
-    "//build/config/compiler:chromium_code",
-    "//build/config/compiler:disallow_unstable_features",
-  ]
-  executable_configs += [ "//build/config/compiler:no_chromium_code" ]
-  deps = [
-    "//build/rust/std:profiler_builtins_group",
-    "//build/rust/std:std_build_deps",
-  ]
-  if (!is_win) {
-    deps += [
-      ":rustc_std_workspace_alloc",
-      ":rustc_std_workspace_core",
-    ]
-  }
-  aliased_deps = {
-    alloc = ":rustc_std_workspace_alloc"
-    core = ":rustc_std_workspace_core"
-  }
-  features = [
-    "read",
-    "read-core",
-    "rustc-dep-of-std",
-  ]
-  rustenv = [
-    "CFG_DISABLE_UNSTABLE_FEATURES=0",
-    "STD_ENV_ARCH=$rust_target_arch",
-  ]
-  rustflags = [
-    "--cfg=backtrace_in_libstd",
-    "-Zforce-unstable-if-unmarked",
-    "--cap-lints=allow",  # Suppress all warnings in stdlib crates
-  ]
-  output_dir =
-      "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
-}
 cargo_crate("hashbrown") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/hashbrown-0.17.1/src/lib.rs"
@@ -1390,398 +1189,454 @@ cargo_crate("hashbrown") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("libc") {
   crate_type = "rlib"
-  crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/lib.rs"
+  crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/lib.rs"
   enabled = !is_win
   sources = [
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/fuchsia/aarch64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/fuchsia/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/fuchsia/riscv64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/fuchsia/x86_64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/hermit.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/lib.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/macros.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/aix/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/aix/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libc/signal.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libc/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/pthread_/introspection.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/pthread_/pthread.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/pthread_/pthread_impl.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/pthread_/pthread_spis.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/pthread_/qos.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/pthread_/sched.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/pthread_/spawn.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/pthread_/stack_np.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/sys/_pthread/_pthread_types.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/sys/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/libpthread/sys/qos.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/arm/_mcontext.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/i386/_mcontext.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/mach/arm/_structs.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/mach/i386/_structs.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/mach/machine/_structs.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/mach/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/machine/_mcontext.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/net/bpf.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/net/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/netinet6/in6_var.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/netinet6/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/sys/_types/_ucontext.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/sys/ioccom.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/sys/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/sys/signal.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/sys/sockio.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/apple/xnu/sys/ttycom.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/bionic_libc/kernel_uapi/linux/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/bionic_libc/kernel_uapi/linux/types.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/bionic_libc/kernel_uapi/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/bionic_libc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/bionic_libc/pthread.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/bionic_libc/sys/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/bionic_libc/sys/socket.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/bionic_libc/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/common/bsd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/common/freebsd_like.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/common/linux_like/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/common/linux_like/pthread.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/common/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/common/netbsd_like.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/common/posix/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/common/posix/pthread.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/common/posix/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/common/solarish.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/cygwin/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/cygwin/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/dragonfly/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/dragonfly/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/emscripten/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/emscripten/pthread.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/emscripten/sched.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/emscripten/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/espidf/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/freebsd/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/freebsd/net/dlt.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/freebsd/net/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/freebsd/netinet6/in6_var.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/freebsd/netinet6/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/freebsd/sys/file.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/freebsd/sys/ioccom.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/freebsd/sys/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/freebsd/sys/socket.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/freebsd/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/fuchsia/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/fuchsia/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/posix/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/mips/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/mips/nptl/bits/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/mips/nptl/bits/struct_mutex.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/nptl/bits/struct_mutex.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/nptl/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/nptl/pthread.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/powerpc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/powerpc/nptl/bits/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/powerpc/nptl/bits/struct_mutex.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/s390/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/s390/nptl/bits/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/s390/nptl/bits/struct_mutex.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/unix/linux/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/unix/linux/net/route.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/unix/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/x86/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/x86/nptl/bits/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/glibc/sysdeps/x86/nptl/bits/struct_mutex.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/haiku/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/haiku/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/hermit_abi/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/horizon/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/hurd/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/illumos/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/illumos/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/l4re/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/l4re/packet.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/can.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/can/bcm.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/can/error.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/can/j1939.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/can/netlink.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/can/raw.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/futex.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/if_addr.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/if_link.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/if_packet.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/keyctl.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/membarrier.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/mount.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/netlink.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/pidfd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/sctp.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/tls.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/linux/types.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/linux_uapi/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/musl/arch/generic/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/musl/arch/mips/bits/socket.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/musl/arch/mips/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/musl/arch/mips64/bits/socket.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/musl/arch/mips64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/musl/arch/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/musl/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/musl/pthread.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/musl/sched.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/musl/sys/socket.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/musl/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/net/if_.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/sys/file.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/sys/ipc.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/sys/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/sys/socket.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/sys/statvfs.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/sys/time.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/sys/timex.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/sys/types.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/utmp_.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/netbsd/utmpx_.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/newlib/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/newlib/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/nto/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/nto/net/bpf.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/nto/net/if_.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/nto/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/nuttx/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/nuttx/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/openbsd/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/openbsd/sys/ipc.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/openbsd/sys/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/openbsd/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/dlfcn.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/errno.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/fcntl.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/limits.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/mqueue.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/pthread.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/semaphore.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/signal.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/stdio.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/stdlib.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/sys/mman.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/sys/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/sys/sched.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/sys/stat.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/sys/types.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/time.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/qurt/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/redox/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/relibc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/relibc/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/rtems/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/sgx/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/sgx/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/solaris/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/solaris/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/solid/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/teeos/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/trusty/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/uclibc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/uclibc/pthread.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/uclibc/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/ucrt/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/vita/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/vxworks/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/vxworks/unistd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/wasi/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/new/xous/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/primitives.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/psp.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/qurt/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/sgx.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/solid/aarch64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/solid/arm.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/solid/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/switch.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/teeos/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/trusty.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/types.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/aix/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/aix/powerpc64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/apple/b32/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/apple/b64/aarch64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/apple/b64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/apple/b64/x86_64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/apple/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/dragonfly/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/aarch64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/arm.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/freebsd11/b32.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/freebsd11/b64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/freebsd11/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/freebsd12/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/freebsd12/x86_64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/freebsd13/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/freebsd13/x86_64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/freebsd14/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/freebsd14/x86_64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/freebsd15/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/freebsd15/x86_64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/powerpc.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/powerpc64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/riscv64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/x86.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/freebsd/x86_64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/freebsdlike/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/netbsd/aarch64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/netbsd/arm.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/netbsd/mips.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/netbsd/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/netbsd/powerpc.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/netbsd/riscv64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/netbsd/sparc64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/netbsd/x86.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/netbsd/x86_64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/openbsd/aarch64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/openbsd/arm.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/openbsd/mips64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/openbsd/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/openbsd/powerpc.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/openbsd/powerpc64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/openbsd/riscv64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/openbsd/sparc64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/openbsd/x86.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/bsd/netbsdlike/openbsd/x86_64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/cygwin/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/haiku/b32.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/haiku/b64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/haiku/bsd.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/haiku/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/haiku/native.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/haiku/x86_64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/hurd/b32.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/hurd/b64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/hurd/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/android/b32/arm.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/android/b32/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/android/b32/x86/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/android/b64/aarch64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/android/b64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/android/b64/riscv64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/android/b64/x86_64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/android/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/emscripten/lfs64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/emscripten/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/l4re/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/l4re/uclibc/aarch64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/l4re/uclibc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/l4re/uclibc/x86_64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/arch/generic/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/arch/mips/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/arch/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/arch/powerpc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/arch/sparc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b32/arm/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b32/csky/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b32/m68k/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b32/mips/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b32/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b32/powerpc.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b32/riscv32/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b32/sparc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b32/x86/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/aarch64/ilp32.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/aarch64/lp64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/aarch64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/loongarch64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/mips64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/powerpc64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/riscv64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/s390x.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/sparc64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/x86_64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/x86_64/not_x32.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/b64/x86_64/x32.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/gnu/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b32/arm/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b32/hexagon.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b32/mips/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b32/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b32/powerpc.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b32/riscv32/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b32/x86/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b64/aarch64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b64/loongarch64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b64/mips64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b64/powerpc64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b64/riscv64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b64/s390x.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b64/wasm32/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b64/wasm32/wali.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/b64/x86_64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/lfs64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/musl/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/uclibc/arm/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/uclibc/mips/mips32/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/uclibc/mips/mips64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/uclibc/mips/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/uclibc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux/uclibc/x86_64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/linux_l4re_shared.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/linux_like/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/newlib/aarch64/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/newlib/arm/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/newlib/espidf/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/newlib/generic.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/newlib/horizon/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/newlib/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/newlib/powerpc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/newlib/rtems/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/newlib/vita/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/nto/arch/aarch64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/nto/arch/i686.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/nto/arch/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/nto/arch/x86_64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/nto/io_pkt/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/nto/io_sock/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/nto/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/nto/neutrino.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/nuttx/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/redox/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/solarish/compat.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/solarish/illumos.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/solarish/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/solarish/solaris.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/solarish/x86.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/solarish/x86_64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/unix/solarish/x86_common.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/vxworks/aarch64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/vxworks/arm.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/vxworks/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/vxworks/powerpc.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/vxworks/powerpc64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/vxworks/riscv32.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/vxworks/riscv64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/vxworks/x86.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/vxworks/x86_64.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/wasi/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/wasi/p2.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/windows/gnu/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/windows/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/windows/msvc/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/src/xous.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/fuchsia/aarch64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/fuchsia/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/fuchsia/riscv64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/fuchsia/x86_64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/helenos.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/hermit.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/lib.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/macros.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/aix/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/aix/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libc/signal.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libc/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/pthread_/introspection.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/pthread_/pthread.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/pthread_/pthread_impl.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/pthread_/pthread_spis.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/pthread_/qos.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/pthread_/sched.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/pthread_/spawn.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/pthread_/stack_np.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/sys/_pthread/_pthread_types.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/sys/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/libpthread/sys/qos.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/arm/_mcontext.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/i386/_mcontext.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/mach/arm/_structs.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/mach/i386/_structs.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/mach/machine/_structs.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/mach/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/machine/_mcontext.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/net/bpf.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/net/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/netinet/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/netinet/tcp.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/netinet6/in6_var.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/netinet6/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/sys/_types/_ucontext.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/sys/ioccom.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/sys/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/sys/signal.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/sys/sockio.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/apple/xnu/sys/ttycom.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/bionic_libc/kernel_uapi/linux/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/bionic_libc/kernel_uapi/linux/types.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/bionic_libc/kernel_uapi/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/bionic_libc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/bionic_libc/pthread.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/bionic_libc/sys/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/bionic_libc/sys/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/bionic_libc/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/common/bsd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/common/freebsd_like.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/common/linux_like/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/common/linux_like/pthread.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/common/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/common/netbsd_like.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/common/posix/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/common/posix/pthread.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/common/posix/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/common/solarish.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/cygwin/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/cygwin/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/dragonfly/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/dragonfly/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/emscripten/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/emscripten/pthread.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/emscripten/sched.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/emscripten/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/espidf/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/net/dlt.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/net/if_mib.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/net/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/net/route.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/netinet6/in6_var.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/netinet6/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/sys/elf_common.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/sys/file.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/sys/ioccom.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/sys/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/sys/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/freebsd/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/fuchsia/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/fuchsia/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/bits/signum_generic.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/io.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/io/sys/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/io/sys/statvfs.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/posix/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/signal.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/socket/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/socket/sys/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sys.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/mips/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/mips/nptl/bits/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/mips/nptl/bits/struct_mutex.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/nptl/bits/struct_mutex.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/nptl/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/nptl/pthread.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/powerpc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/powerpc/nptl/bits/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/powerpc/nptl/bits/struct_mutex.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/s390/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/s390/nptl/bits/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/s390/nptl/bits/struct_mutex.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/bits/sigaction.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/bits/signum_arch.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/bits/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/bits/socket_type.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/bits/statvfs.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/bits/types/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/bits/types/siginfo_t.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/mips/bits/sigaction.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/mips/bits/signum_arch.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/mips/bits/socket_type.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/net/route.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/s390/bits/sigaction.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/sparc/bits/sigaction.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/sparc/bits/signum_arch.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/linux/sparc/bits/socket_type.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/unix/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/x86/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/x86/nptl/bits/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/glibc/sysdeps/x86/nptl/bits/struct_mutex.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/haiku/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/haiku/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/abi/errno.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/bits.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/dirent_mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/errno.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/fibril.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/fibril_synch.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/inet/addr.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/inet/dnsr.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/inet/endpoint.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/inet/tcp.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/ipc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/loc.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/offset.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/stdio.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/stdlib.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/time.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/helenos/vfs/vfs.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/hermit_abi/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/horizon/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/hurd/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/illumos/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/illumos/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/l4re/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/l4re/packet.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/arch/mips/asm/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/arch/powerpc/asm/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/arch/sparc/asm/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/asm/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/asm/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/can.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/can/bcm.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/can/error.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/can/j1939.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/can/netlink.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/can/raw.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/futex.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/if_addr.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/if_link.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/if_packet.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/keyctl.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/membarrier.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/mount.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/netlink.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/pidfd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/sctp.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/tls.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/linux/types.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/linux_uapi/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/arch/generic/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/arch/mips/bits/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/arch/mips/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/arch/mips64/bits/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/arch/mips64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/arch/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/pthread.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/sched.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/signal.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/sys/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/musl/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/net/if_.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/sys/file.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/sys/ipc.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/sys/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/sys/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/sys/statvfs.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/sys/time.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/sys/timex.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/sys/types.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/utmp_.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/netbsd/utmpx_.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/newlib/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/newlib/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/nto/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/nto/net/bpf.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/nto/net/if_.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/nto/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/nuttx/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/nuttx/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/openbsd/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/openbsd/sys/ipc.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/openbsd/sys/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/openbsd/sys/sensors.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/openbsd/sys/sysctl.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/openbsd/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/dlfcn.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/errno.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/fcntl.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/limits.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/mqueue.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/pthread.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/semaphore.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/signal.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/stdio.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/stdlib.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/sys/mman.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/sys/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/sys/sched.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/sys/stat.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/sys/types.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/time.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/qurt/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/redox/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/relibc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/relibc/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/rtems/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/sgx/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/sgx/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/solaris/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/solaris/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/solid/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/teeos/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/trusty/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/uclibc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/uclibc/pthread.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/uclibc/socket.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/uclibc/sysdeps/linux/common/bits/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/uclibc/sysdeps/linux/common/bits/siginfo.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/uclibc/sysdeps/linux/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/uclibc/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/ucrt/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/vita/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/vxworks/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/vxworks/unistd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/wasi/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/new/xous/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/primitives.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/psp.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/qurt/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/sgx.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/solid/aarch64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/solid/arm.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/solid/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/switch.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/teeos/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/trusty.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/types.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/aix/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/aix/powerpc64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/apple/b32/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/apple/b64/aarch64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/apple/b64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/apple/b64/x86_64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/apple/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/dragonfly/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/aarch64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/arm.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/freebsd11/b32.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/freebsd11/b64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/freebsd11/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/freebsd12/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/freebsd12/x86_64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/freebsd13/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/freebsd13/x86_64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/freebsd14/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/freebsd14/x86_64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/freebsd15/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/freebsd15/x86_64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/powerpc.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/powerpc64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/riscv64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/x86.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/freebsd/x86_64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/freebsdlike/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/netbsd/aarch64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/netbsd/arm.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/netbsd/mips.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/netbsd/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/netbsd/powerpc.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/netbsd/riscv64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/netbsd/sparc64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/netbsd/x86.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/netbsd/x86_64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/openbsd/aarch64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/openbsd/arm.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/openbsd/mips64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/openbsd/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/openbsd/powerpc.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/openbsd/powerpc64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/openbsd/riscv64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/openbsd/sparc64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/openbsd/x86.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/bsd/netbsdlike/openbsd/x86_64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/cygwin/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/haiku/b32.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/haiku/b64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/haiku/bsd.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/haiku/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/haiku/native.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/haiku/x86_64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/hurd/b32.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/hurd/b64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/hurd/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/android/b32/arm.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/android/b32/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/android/b32/x86/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/android/b64/aarch64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/android/b64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/android/b64/riscv64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/android/b64/x86_64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/android/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/emscripten/lfs64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/emscripten/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/l4re/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/l4re/uclibc/aarch64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/l4re/uclibc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/l4re/uclibc/x86_64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/arch/generic/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/arch/mips/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/arch/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/arch/powerpc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/arch/sparc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b32/arm/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b32/csky/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b32/m68k/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b32/mips/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b32/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b32/powerpc.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b32/riscv32/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b32/sparc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b32/x86/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/aarch64/ilp32.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/aarch64/lp64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/aarch64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/loongarch64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/mips64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/powerpc64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/riscv64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/s390x.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/sparc64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/x86_64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/x86_64/not_x32.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/b64/x86_64/x32.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/gnu/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b32/arm/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b32/hexagon.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b32/mips/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b32/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b32/powerpc.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b32/riscv32/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b32/x86/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b64/aarch64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b64/loongarch64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b64/mips64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b64/powerpc64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b64/riscv64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b64/s390x.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b64/wasm32/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b64/wasm32/wali.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/b64/x86_64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/lfs64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/musl/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/uclibc/arm/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/uclibc/mips/mips32/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/uclibc/mips/mips64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/uclibc/mips/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/uclibc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux/uclibc/x86_64/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/linux_l4re_shared.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/linux_like/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/newlib/espidf/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/newlib/generic.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/newlib/horizon/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/newlib/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/newlib/rtems/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/newlib/vita/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/nto/arch/aarch64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/nto/arch/i686.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/nto/arch/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/nto/arch/x86_64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/nto/io_pkt/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/nto/io_sock/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/nto/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/nto/neutrino.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/nuttx/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/redox/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/solarish/compat.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/solarish/illumos.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/solarish/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/solarish/solaris.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/solarish/x86.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/solarish/x86_64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/unix/solarish/x86_common.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/vxworks/aarch64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/vxworks/arm.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/vxworks/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/vxworks/powerpc.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/vxworks/powerpc64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/vxworks/riscv32.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/vxworks/riscv64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/vxworks/x86.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/vxworks/x86_64.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/wasi/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/wasi/p2.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/windows/gnu/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/windows/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/windows/msvc/mod.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/src/xous.rs",
   ]
   inputs = []
   no_std = true
@@ -1789,7 +1644,7 @@ cargo_crate("libc") {
   # Unit tests skipped. Generate with --with-tests to include them.
   build_native_rust_unit_tests = false
   edition = "2021"
-  cargo_pkg_version = "0.2.189"
+  cargo_pkg_version = "0.2.191"
   cargo_pkg_name = "libc"
   cargo_pkg_description = "Raw FFI bindings to platform libraries like libc."
   cargo_pkg_repository = "https://github.com/rust-lang/libc"
@@ -1813,8 +1668,8 @@ cargo_crate("libc") {
     "rustc-dep-of-std",
     "rustc-std-workspace-core",
   ]
-  build_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/build.rs"
-  build_sources = [ "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.189/build.rs" ]
+  build_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/build.rs"
+  build_sources = [ "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/libc-0.2.191/build.rs" ]
   rustenv = [
     "CFG_DISABLE_UNSTABLE_FEATURES=0",
     "STD_ENV_ARCH=$rust_target_arch",
@@ -1827,6 +1682,7 @@ cargo_crate("libc") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("memchr") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/memchr-2.8.3/src/lib.rs"
@@ -1925,80 +1781,7 @@ cargo_crate("memchr") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
-cargo_crate("miniz_oxide") {
-  crate_type = "rlib"
-  crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/lib.rs"
-  enabled = !is_win
-  sources = [
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/deflate/buffer.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/deflate/core.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/deflate/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/deflate/stored.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/deflate/stream.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/deflate/zlib.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/inflate/core.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/inflate/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/inflate/output_buffer.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/inflate/stream.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/lib.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/serde/big_array.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/serde/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/miniz_oxide-0.9.1/src/shared.rs",
-  ]
-  inputs = []
-  no_std = true
 
-  # Unit tests skipped. Generate with --with-tests to include them.
-  build_native_rust_unit_tests = false
-  edition = "2021"
-  cargo_pkg_version = "0.9.1"
-  cargo_pkg_authors = "Frommi <daniil.liferenko@gmail.com>, oyvindln <oyvindln@users.noreply.github.com>, Rich Geldreich richgel99@gmail.com"
-  cargo_pkg_name = "miniz_oxide"
-  cargo_pkg_description = "DEFLATE compression and decompression library rewritten in Rust based on miniz"
-  cargo_pkg_repository =
-      "https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide"
-  library_configs -= [
-    "//build/config/compiler:chromium_code",
-    "//build/config/compiler:disallow_unstable_features",
-  ]
-  library_configs += [ "//build/config/compiler:no_chromium_code" ]
-  executable_configs -= [
-    "//build/config/compiler:chromium_code",
-    "//build/config/compiler:disallow_unstable_features",
-  ]
-  executable_configs += [ "//build/config/compiler:no_chromium_code" ]
-  deps = [
-    "//build/rust/std:profiler_builtins_group",
-    "//build/rust/std:std_build_deps",
-  ]
-  if (!is_win) {
-    deps += [
-      ":adler2",
-      ":rustc_std_workspace_alloc",
-      ":rustc_std_workspace_core",
-    ]
-  }
-  aliased_deps = {
-    alloc = ":rustc_std_workspace_alloc"
-    core = ":rustc_std_workspace_core"
-  }
-  features = [
-    "alloc",
-    "core",
-    "rustc-dep-of-std",
-  ]
-  rustenv = [
-    "CFG_DISABLE_UNSTABLE_FEATURES=0",
-    "STD_ENV_ARCH=$rust_target_arch",
-  ]
-  rustflags = [
-    "--cfg=backtrace_in_libstd",
-    "-Zforce-unstable-if-unmarked",
-    "--cap-lints=allow",  # Suppress all warnings in stdlib crates
-  ]
-  output_dir =
-      "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
-}
 cargo_crate("object") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/object-0.39.1/src/lib.rs"
@@ -2151,6 +1934,7 @@ cargo_crate("object") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("panic_abort") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/panic_abort/src/lib.rs"
@@ -2180,15 +1964,13 @@ cargo_crate("panic_abort") {
   ]
   executable_configs += [ "//build/config/compiler:no_chromium_code" ]
   deps = [
+    ":alloc",
     ":rustc_std_workspace_core",
     "//build/rust/std:profiler_builtins_group",
     "//build/rust/std:std_build_deps",
   ]
   if (is_android) {
-    deps += [
-      ":alloc",
-      ":libc",
-    ]
+    deps += [ ":libc" ]
   }
   aliased_deps = {
     core = ":rustc_std_workspace_core"
@@ -2205,6 +1987,7 @@ cargo_crate("panic_abort") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("proc_macro") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/proc_macro/src/lib.rs"
@@ -2268,6 +2051,7 @@ cargo_crate("proc_macro") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("profiler_builtins") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/profiler_builtins/src/lib.rs"
@@ -2304,6 +2088,7 @@ cargo_crate("profiler_builtins") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("rustc_demangle") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/rustc-demangle-0.1.28/src/lib.rs"
@@ -2357,6 +2142,7 @@ cargo_crate("rustc_demangle") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("rustc_literal_escaper") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/vendor/rustc-literal-escaper-0.0.8/src/lib.rs"
@@ -2402,6 +2188,7 @@ cargo_crate("rustc_literal_escaper") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("rustc_std_workspace_alloc") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/rustc-std-workspace-alloc/lib.rs"
@@ -2442,6 +2229,7 @@ cargo_crate("rustc_std_workspace_alloc") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("rustc_std_workspace_core") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/rustc-std-workspace-core/lib.rs"
@@ -2483,6 +2271,7 @@ cargo_crate("rustc_std_workspace_core") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("rustc_std_workspace_std") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/rustc-std-workspace-std/lib.rs"
@@ -2523,6 +2312,7 @@ cargo_crate("rustc_std_workspace_std") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("std") {
   crate_type = "rlib"
   crate_root =
@@ -2532,7 +2322,7 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/ascii.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/backtrace.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/backtrace/tests.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/bstr.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/byte_str.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/collections/hash/map.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/collections/hash/map/tests.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/collections/hash/mod.rs",
@@ -2546,6 +2336,7 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/ffi/os_str.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/ffi/os_str/tests.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/fs.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/fs/dirs.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/fs/tests.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/hash/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/hash/random.rs",
@@ -2589,6 +2380,7 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/cygwin/net.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/cygwin/raw.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/darwin/fs.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/darwin/fs/dirs.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/darwin/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/darwin/objc.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/darwin/raw.rs",
@@ -2690,6 +2482,7 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/unix/ffi/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/unix/ffi/os_str.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/unix/fs.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/unix/fs/dirs.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/unix/fs/tests.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/unix/io/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/unix/io/tests.rs",
@@ -2706,7 +2499,6 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/unix/process.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/unix/raw.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/unix/thread.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/unix/xdg.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/vita/fs.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/vita/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/vita/raw.rs",
@@ -2722,6 +2514,7 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/wasip2/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/windows/ffi.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/windows/fs.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/windows/fs/dirs.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/windows/io/handle.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/windows/io/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/os/windows/io/raw.rs",
@@ -2847,6 +2640,8 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/fs/windows.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/fs/windows/dir.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/fs/windows/remove_dir_all.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/fs/windows/tests.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/helpers/c_opaque.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/helpers/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/helpers/small_c_string.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/helpers/tests.rs",
@@ -2930,8 +2725,6 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/sgx/waitqueue/spin_mutex.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/sgx/waitqueue/spin_mutex/tests.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/sgx/waitqueue/tests.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/sgx/waitqueue/unsafe_list.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/sgx/waitqueue/unsafe_list/tests.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/solid/abi/fs.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/solid/abi/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/solid/abi/sockets.rs",
@@ -2948,7 +2741,10 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/unix/conf/tests.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/unix/fuchsia.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/unix/mod.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/unix/stack_overflow.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/unix/stack_overflow/handler_cygwin.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/unix/stack_overflow/handler_none.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/unix/stack_overflow/handler_signal.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/unix/stack_overflow/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/unix/stack_overflow/thread_info.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/unix/sync/condvar.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/pal/unix/sync/mod.rs",
@@ -3117,6 +2913,8 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/sync/thread_parking/unsupported.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/sync/thread_parking/windows7.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/sync/thread_parking/xous.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/sync/unsafe_list.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/sync/unsafe_list/tests.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread/hermit.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread/motor.rs",
@@ -3134,6 +2932,7 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread_local/destructors/list.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread_local/guard/apple.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread_local/guard/key.rs",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread_local/guard/retained.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread_local/guard/solid.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread_local/guard/windows.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread_local/key/racy.rs",
@@ -3148,7 +2947,6 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread_local/native/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread_local/no_threads.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/thread_local/os.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/time/hermit.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/time/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/time/sgx.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/sys/time/solid.rs",
@@ -3243,6 +3041,8 @@ cargo_crate("std") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/../../core/src/ptr/docs/is_null.md",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/../../core/src/ptr/docs/offset.md",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/../../core/src/ptr/docs/sub.md",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/../../core/src/sync/atomic_load_volatile.md",
+    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/../../core/src/sync/atomic_store_volatile.md",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/../../portable-simd/crates/core_simd/src/core_simd_docs.md",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/../../portable-simd/crates/std_float/src/lib.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/src/../../stdarch/crates/core_arch/src/core_arch_docs.md",
@@ -3253,7 +3053,7 @@ cargo_crate("std") {
     target_name = "std_bindings"
     cpp_namespace = "rs::std"
     h_out = "$root_gen_dir/third_party/crubit/support/rs_std/rs_std.h"
-    deps = [
+    bindings_deps = [
       ":alloc_bindings",
       ":core_bindings",
     ]
@@ -3293,21 +3093,14 @@ cargo_crate("std") {
   ]
   if (!is_win) {
     deps += [
-      ":addr2line",
       ":libc",
-      ":miniz_oxide",
       ":object",
     ]
   }
   if (is_win) {
     deps += [ ":windows_link" ]
   }
-  features = [
-    "addr2line",
-    "backtrace",
-    "miniz_oxide",
-    "object",
-  ]
+  features = [ "object" ]
   build_root =
       "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std/build.rs"
   build_sources = [
@@ -3325,6 +3118,7 @@ cargo_crate("std") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("std_detect") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std_detect/src/lib.rs"
@@ -3336,7 +3130,6 @@ cargo_crate("std_detect") {
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std_detect/src/detect/arch/mips64.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std_detect/src/detect/arch/mod.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std_detect/src/detect/arch/powerpc.rs",
-    "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std_detect/src/detect/arch/powerpc64.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std_detect/src/detect/arch/riscv.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std_detect/src/detect/arch/s390x.rs",
     "//third_party/rust-toolchain/lib/rustlib/src/rust/library/std_detect/src/detect/arch/x86.rs",
@@ -3419,6 +3212,7 @@ cargo_crate("std_detect") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("sysroot") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/sysroot/src/lib.rs"
@@ -3449,10 +3243,7 @@ cargo_crate("sysroot") {
     "//build/rust/std:profiler_builtins_group",
     "//build/rust/std:std_build_deps",
   ]
-  features = [
-    "backtrace",
-    "profiler",
-  ]
+  features = [ "profiler" ]
   rustenv = [
     "CFG_DISABLE_UNSTABLE_FEATURES=0",
     "STD_ENV_ARCH=$rust_target_arch",
@@ -3465,6 +3256,7 @@ cargo_crate("sysroot") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("test") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/test/src/lib.rs"
@@ -3545,6 +3337,7 @@ cargo_crate("test") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("unwind") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/unwind/src/lib.rs"
@@ -3597,6 +3390,7 @@ cargo_crate("unwind") {
   output_dir =
       "$root_out_dir/local_rustc_sysroot/lib/rustlib/$rust_abi_target/lib/"
 }
+
 cargo_crate("windows_link") {
   crate_type = "rlib"
   crate_root = "//third_party/rust-toolchain/lib/rustlib/src/rust/library/windows_link/src/lib.rs"

@@ -18,9 +18,9 @@ chromium::import! {
   "//mojo/public/rust/mojom_value_parser";
 }
 
-use mojom_value_parser::MojomParse;
+use mojom_value_parser::{MojomParse, SerializedData};
 
-use crate::message::MojomMessage;
+use crate::message::{MojomMessage, ReadableBytesOnlyMessage};
 use crate::message_header::{MessageHeader, MessageHeaderFlags};
 
 use super::endpoint_registry::{InterfaceId, CONTROL_INTERFACE_ID};
@@ -33,7 +33,8 @@ pub const RUN_OR_CLOSE_PIPE_MESSAGE_ID: u32 = 0xFFFFFFFE;
  * *********************************************************** */
 
 #[derive(Debug, PartialEq, Clone, MojomParse)]
-#[mojom(in_bindings_crate)] // Lets us derive `MojomParse` from the bindings crate
+#[mojom(in_bindings_crate)] // Lets us derive `MojomParse` from the bindings
+                            // crate
 pub struct DisconnectReason {
     pub custom_reason: u32,
     pub description: String,
@@ -83,7 +84,8 @@ pub fn construct_peer_endpoint_closed_message(id: InterfaceId) -> system::messag
     let input = RunOrClosePipeInput::PeerAssociatedEndpointClosedEvent(event);
     let params = RunOrClosePipeMessageParams { input };
 
-    let (payload, handles, interface_ids_offset) = mojom_value_parser::serialize(params, &());
+    let SerializedData { bytes: payload, handles, interface_ids_offset, .. } =
+        mojom_value_parser::serialize(params, &());
 
     let header = MessageHeader::new(
         CONTROL_INTERFACE_ID,
@@ -93,21 +95,33 @@ pub fn construct_peer_endpoint_closed_message(id: InterfaceId) -> system::messag
         interface_ids_offset,
     );
 
-    MojomMessage { header, payload, handles, raw_message_handle: None }.into()
+    MojomMessage {
+        header,
+        payload,
+        handles,
+        associated_ids: Default::default(),
+        raw_message_handle: None,
+    }
+    .into()
 }
 
 /// Parse a control message from its wire representation.
 ///
 /// If this function returns `None`, it means the message was invalid. In that
 /// case, this function reports the bad message before returning.
-pub fn parse_incoming_control_message(mut message: MojomMessage) -> Option<RunOrClosePipeInput> {
+///
+/// Otherwise, it also returns the underlying message, so that the caller
+/// can report it if the contents turn out to be invalid.
+pub fn parse_incoming_control_message(
+    mut message: MojomMessage,
+) -> Option<(RunOrClosePipeInput, ReadableBytesOnlyMessage)> {
     if message.header.name != RUN_OR_CLOSE_PIPE_MESSAGE_ID {
         let _ = message.report_bad_message("Control message has incorrect message ID");
         return None;
     }
 
     let mut opt_handles: Vec<Option<system::mojo_types::UntypedHandle>> =
-        message.handles.into_iter().map(Some).collect();
+        std::mem::take(&mut message.handles).into_iter().map(Some).collect();
 
     let params: RunOrClosePipeMessageParams = match mojom_value_parser::deserialize_exact(
         &message.payload,
@@ -117,13 +131,12 @@ pub fn parse_incoming_control_message(mut message: MojomMessage) -> Option<RunOr
     ) {
         Ok(p) => p,
         Err(_) => {
-            let _ = message
-                .raw_message_handle
-                .unwrap()
-                .report_bad_message("Control message failed deserialization");
+            let _ = message.report_bad_message("Control message failed deserialization");
             return None;
         }
     };
 
-    Some(params.input)
+    let raw_message =
+        message.raw_message_handle.take().expect("Incoming messages always have a raw handle");
+    Some((params.input, raw_message))
 }

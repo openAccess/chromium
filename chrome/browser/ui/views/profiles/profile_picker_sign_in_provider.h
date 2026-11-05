@@ -5,11 +5,12 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_PROFILES_PROFILE_PICKER_SIGN_IN_PROVIDER_H_
 #define CHROME_BROWSER_UI_VIEWS_PROFILES_PROFILE_PICKER_SIGN_IN_PROVIDER_H_
 
-#include <optional>
+#include <memory>
+#include <string>
 
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
-#include "base/functional/callback_forward.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
@@ -18,6 +19,7 @@
 #include "chrome/browser/ui/views/profiles/profile_picker_web_contents_host.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "content/public/browser/web_contents_delegate.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 struct CoreAccountInfo;
 class DiceTabHelper;
@@ -80,9 +82,6 @@ class ProfilePickerSignInProvider : public content::WebContentsDelegate,
   // Reloads the sign-in page if applicable.
   void ReloadSignInPage();
 
-  // Navigates back in the sign-in flow if applicable.
-  void NavigateBack();
-
   // Returns whether the flow is initialized (i.e. whether `profile_` has been
   // loaded).
   bool IsInitialized() const;
@@ -97,7 +96,7 @@ class ProfilePickerSignInProvider : public content::WebContentsDelegate,
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
@@ -119,12 +118,6 @@ class ProfilePickerSignInProvider : public content::WebContentsDelegate,
   void FinishFlow(const CoreAccountInfo& account_info);
 
   // Callbacks for the `DiceTabHelper`. Calls `FinishFlow()`.
-  void FinishFlowInPickerWithSyncConfirmation(
-      Profile* profile,
-      signin_metrics::AccessPoint access_point,
-      signin_metrics::PromoAction promo_action,
-      content::WebContents* contents,
-      const CoreAccountInfo& account_info);
   void FinishFlowInPickerWithHistorySyncOptin(
       Profile* profile,
       content::WebContents* contents,
@@ -134,18 +127,16 @@ class ProfilePickerSignInProvider : public content::WebContentsDelegate,
                        content::WebContents* contents,
                        const SigninUIError& error);
 
-  void OnSignInContentsFreedUp();
-
   void ResetWebContentsDelegates();
 
   GURL BuildSigninURL() const;
 
-  // The sync confirmation screen is triggered by the `DiceTabHelper`. This can
-  // happen in two cases: in the picker for normal accounts, and  in the
-  // browser for SAML account.
+  // The post-sign-in history sync opt-in step is triggered by the
+  // `DiceTabHelper`. This can happen in two cases: in the picker for normal
+  // accounts, and in the browser for SAML accounts.
   enum class DiceTabHelperMode {
-    kInPicker,   // The sync confirmation screen opens in the picker.
-    kInBrowser,  // The sync confirmation screen opens in the browser.
+    kInPicker,   // The history sync opt-in screen opens in the picker.
+    kInBrowser,  // The history sync opt-in screen opens in the browser.
   };
 
   // Initializes or updates the `DiceTabHelper`.
@@ -181,11 +172,6 @@ class ProfilePickerSignInProvider : public content::WebContentsDelegate,
   // The web contents backed by `profile_`. This is used for displaying the
   // sign-in flow.
   std::unique_ptr<content::WebContents> contents_;
-
-  // Because of ProfileOAuth2TokenService intricacies, the sign in should not
-  // finish before both the notification gets called.
-  // TODO(crbug.com/40791271): Remove this if the bug gets resolved.
-  bool refresh_token_updated_ = false;
 
   bool tab_helper_is_initialized_ = false;
 

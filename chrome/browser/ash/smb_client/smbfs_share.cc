@@ -11,10 +11,8 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/unguessable_token.h"
-#include "chrome/browser/ash/file_manager/volume_manager.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/smb_client/smb_service_helper.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/smb_shares/smb_credentials_dialog.h"
 #include "crypto/hash.h"
 #include "storage/browser/file_system/external_mount_points.h"
@@ -60,16 +58,24 @@ SmbFsShare::SmbFsShare(Profile* profile,
       display_name_(display_name),
       options_(options),
       mount_id_(GenerateStableMountId()) {
-  DCHECK(share_url_.IsValid());
+  CHECK(share_url_.IsValid(), base::NotFatalUntil::M160);
 }
 
 SmbFsShare::~SmbFsShare() {
   Unmount(base::DoNothing());
 }
 
+void SmbFsShare::AddMountObserver(MountObserver* observer) {
+  mount_observers_.AddObserver(observer);
+}
+
+void SmbFsShare::RemoveMountObserver(MountObserver* observer) {
+  mount_observers_.RemoveObserver(observer);
+}
+
 void SmbFsShare::Mount(SmbFsShare::MountCallback callback) {
-  DCHECK(!mounter_);
-  DCHECK(!host_);
+  CHECK(!mounter_, base::NotFatalUntil::M160);
+  CHECK(!host_, base::NotFatalUntil::M160);
 
   if (unmount_pending_) {
     LOG(WARNING) << "Cannot mount a shared that is being unmounted";
@@ -139,7 +145,7 @@ void SmbFsShare::DeleteRecursively(
 }
 
 void SmbFsShare::OnDeleteRecursivelyDone(base::File::Error error) {
-  DCHECK(delete_recursively_callback_);
+  CHECK(delete_recursively_callback_, base::NotFatalUntil::M160);
   std::move(delete_recursively_callback_).Run(error);
 }
 
@@ -161,17 +167,17 @@ void SmbFsShare::Unmount(SmbFsShare::UnmountCallback callback) {
     return;
   }
 
-  // Remove volume from VolumeManager. It's critical this is done before
-  // revoking the filesystem from ExternalMountPoints as some observers
-  // (ie. Crostini) need to create a cracked FileSystemURL (which
-  // requires the mount to still be registered with ExternalMountPoints)
-  // during the unmount process.
-  file_manager::VolumeManager::Get(profile_)->RemoveSmbFsVolume(
-      host_->mount_path());
+  // Notify observers (e.g. VolumeManager via SmbService) before revoking
+  // the filesystem from ExternalMountPoints as some observers (ie. Crostini)
+  // need to create a cracked FileSystemURL (which requires the mount to still
+  // be registered with ExternalMountPoints) during the unmount process.
+  for (auto& observer : mount_observers_) {
+    observer.OnSmbFsUnmounted(host_->mount_path());
+  }
 
   storage::ExternalMountPoints* const mount_points =
       storage::ExternalMountPoints::GetSystemInstance();
-  DCHECK(mount_points);
+  CHECK(mount_points, base::NotFatalUntil::M160);
   bool success = mount_points->RevokeFileSystem(mount_id_);
   CHECK(success);
 
@@ -206,19 +212,20 @@ void SmbFsShare::OnMountDone(MountCallback callback,
     return;
   }
 
-  DCHECK(smbfs_host);
+  CHECK(smbfs_host, base::NotFatalUntil::M160);
   host_ = std::move(smbfs_host);
 
   storage::ExternalMountPoints* const mount_points =
       storage::ExternalMountPoints::GetSystemInstance();
-  DCHECK(mount_points);
+  CHECK(mount_points, base::NotFatalUntil::M160);
   bool success = mount_points->RegisterFileSystem(
       mount_id_, storage::kFileSystemTypeSmbFs,
       storage::FileSystemMountOption(), host_->mount_path());
   CHECK(success);
 
-  file_manager::VolumeManager::Get(profile_)->AddSmbFsVolume(
-      host_->mount_path(), display_name_);
+  for (auto& observer : mount_observers_) {
+    observer.OnSmbFsMounted(host_->mount_path(), display_name_);
+  }
   std::move(callback).Run(SmbMountResult::kSuccess);
 }
 
@@ -295,7 +302,7 @@ void SmbFsShare::OnSmbCredentialsDialogShowDone(
 }
 
 void SmbFsShare::RemoveSavedCredentials(RemoveCredentialsCallback callback) {
-  DCHECK(!remove_credentials_callback_);
+  CHECK(!remove_credentials_callback_, base::NotFatalUntil::M160);
 
   if (!host_) {
     std::move(callback).Run(false /* success */);
@@ -308,7 +315,7 @@ void SmbFsShare::RemoveSavedCredentials(RemoveCredentialsCallback callback) {
 }
 
 void SmbFsShare::OnRemoveSavedCredentialsDone(bool success) {
-  DCHECK(remove_credentials_callback_);
+  CHECK(remove_credentials_callback_, base::NotFatalUntil::M160);
   std::move(remove_credentials_callback_).Run(success);
 }
 

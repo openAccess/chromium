@@ -6,9 +6,6 @@ package org.chromium.chrome.browser.language.settings;
 
 import android.text.TextUtils;
 
-import androidx.test.filters.SmallTest;
-
-import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -65,14 +62,8 @@ public class LanguagesManagerTest {
         TranslateBridgeJni.setInstanceForTesting(mFakeTranslateBridge);
     }
 
-    @After
-    public void tearDown() {
-        LanguageTestUtils.clearResourceBundleForTesting();
-    }
-
     /** Tests for getting the potential accept languages. */
     @Test
-    @SmallTest
     public void testGetPotentialAcceptLanguages() {
         List<LanguageItem> items =
                 LanguagesManager.getForProfile(mProfile)
@@ -107,7 +98,6 @@ public class LanguagesManagerTest {
 
     /** Tests for getting the potential UI languages. */
     @Test
-    @SmallTest
     public void testGetPotentialUiLanguages() {
         // Set UI Language to Swahili.
         AppLocaleUtils.setAppLanguagePref("sw");
@@ -147,7 +137,6 @@ public class LanguagesManagerTest {
 
     /** Tests for getting the all UI languages. */
     @Test
-    @SmallTest
     public void testGetAllPossibleUiLanguages() {
         List<LanguageItem> items =
                 LanguagesManager.getForProfile(mProfile).getAllPossibleUiLanguages();
@@ -157,7 +146,6 @@ public class LanguagesManagerTest {
 
     /** Tests for getting the potential target languages. */
     @Test
-    @SmallTest
     public void testGetPotentialTargetLanguages() {
         List<LanguageItem> items =
                 LanguagesManager.getForProfile(mProfile)
@@ -191,7 +179,6 @@ public class LanguagesManagerTest {
 
     /** Tests for getting the potential always translate languages. */
     @Test
-    @SmallTest
     public void testGetPotentialAlwaysLanguages() {
         List<LanguageItem> items =
                 LanguagesManager.getForProfile(mProfile)
@@ -220,7 +207,6 @@ public class LanguagesManagerTest {
 
     /** Test for getting the potential never translate languages. */
     @Test
-    @SmallTest
     public void testGetPotentialNeverLanguages() {
         List<LanguageItem> items =
                 LanguagesManager.getForProfile(mProfile)

@@ -5,7 +5,10 @@
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_ui_catalog_view_controller.h"
 
 #import "ios/chrome/browser/ai_prototyping/ui/actuation_worklog_debug_view_controller.h"
+#import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_actor_input_plate_view_controller.h"
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_actor_tool_chip_view_controller.h"
+#import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_actuation_header_view_controller.h"
+#import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_actuation_intervention_view_controller.h"
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_actuation_task_button_view_controller.h"
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_actuation_task_card_view_controller.h"
 #import "ios/chrome/browser/ai_prototyping/ui/ai_prototyping_mutator.h"
@@ -81,9 +84,27 @@ NSString* const kUICatalogCellIdentifier = @"UICatalogCell";
   taskCardItem.viewControllerClass =
       [AIPrototypingActuationTaskCardViewController class];
 
+  AIPrototypingUICatalogItem* headerItem =
+      [[AIPrototypingUICatalogItem alloc] init];
+  headerItem.title = @"Actuation Header";
+  headerItem.viewControllerClass =
+      [AIPrototypingActuationHeaderViewController class];
+
+  AIPrototypingUICatalogItem* interventionItem =
+      [[AIPrototypingUICatalogItem alloc] init];
+  interventionItem.title = @"Actuation Intervention";
+  interventionItem.viewControllerClass =
+      [AIPrototypingActuationInterventionViewController class];
+
+  AIPrototypingUICatalogItem* inputPlateItem =
+      [[AIPrototypingUICatalogItem alloc] init];
+  inputPlateItem.title = @"Actor Input Plate";
+  inputPlateItem.viewControllerClass =
+      [AIPrototypingActorInputPlateViewController class];
+
   _items = @[
     chipsItem, worklogItem, compactWorklogItem, actuationSandboxItem,
-    taskButtonItem, taskCardItem
+    taskButtonItem, taskCardItem, headerItem, interventionItem, inputPlateItem
   ];
 }
 

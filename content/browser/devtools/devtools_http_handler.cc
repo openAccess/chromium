@@ -25,6 +25,7 @@
 #include "base/memory/ref_counted_memory.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/strings/escape.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
@@ -57,6 +58,7 @@
 #include "net/server/http_server_response_info.h"
 #include "net/socket/server_socket.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "url/origin.h"
 #include "v8/include/v8-version-string.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -86,6 +88,14 @@ const char kTargetFaviconUrlField[] = "faviconUrl";
 const char kTargetWebSocketDebuggerUrlField[] = "webSocketDebuggerUrl";
 const char kTargetDevtoolsFrontendUrlField[] = "devtoolsFrontendUrl";
 const char kMissingGitRevision[] = "@0000000000000000000000000000000000000000";
+
+#if BUILDFLAG(IS_WIN)
+const char kNativeFilePathStyle[] = "windows";
+#elif BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
+const char kNativeFilePathStyle[] = "posix";
+#else
+#error Unsupported native file path style
+#endif
 
 const int32_t kSendBufferSizeForDevTools = 256 * 1024 * 1024;  // 256Mb
 const int32_t kReceiveBufferSizeForDevTools = 100 * 1024 * 1024;  // 100Mb
@@ -233,7 +243,7 @@ void ServerWrapper::Close(int connection_id) {
 void TerminateOnUI(std::unique_ptr<base::Thread> thread,
                    std::unique_ptr<ServerWrapper> server_wrapper,
                    std::unique_ptr<DevToolsSocketFactory> socket_factory) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   if (server_wrapper)
     thread->task_runner()->DeleteSoon(FROM_HERE, std::move(server_wrapper));
   if (socket_factory)
@@ -251,7 +261,7 @@ void ServerStartedOnUI(base::WeakPtr<DevToolsHttpHandler> handler,
                        ServerWrapper* server_wrapper,
                        DevToolsSocketFactory* socket_factory,
                        std::unique_ptr<net::IPEndPoint> ip_address) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   if (handler && thread && server_wrapper) {
     handler->ServerStarted(
         std::move(thread), std::unique_ptr<ServerWrapper>(server_wrapper),
@@ -272,7 +282,8 @@ void StartServerOnHandlerThread(
     const base::FilePath& debug_frontend_dir,
     const std::string& browser_guid,
     bool bundles_resources) {
-  DCHECK(thread->task_runner()->BelongsToCurrentThread());
+  CHECK(thread->task_runner()->BelongsToCurrentThread(),
+        base::NotFatalUntil::M159);
   std::unique_ptr<ServerWrapper> server_wrapper;
   std::unique_ptr<net::ServerSocket> server_socket =
       socket_factory->CreateForHttpServer();
@@ -328,27 +339,34 @@ class DevToolsAgentHostClientImpl : public DevToolsAgentHostClient {
       scoped_refptr<base::SingleThreadTaskRunner> task_runner,
       ServerWrapper* server_wrapper,
       int connection_id,
-      scoped_refptr<DevToolsAgentHost> agent_host)
+      scoped_refptr<DevToolsAgentHost> agent_host,
+      const net::IPEndPoint& peer_address)
       : task_runner_(std::move(task_runner)),
         server_wrapper_(server_wrapper),
         connection_id_(connection_id),
-        agent_host_(agent_host) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+        agent_host_(agent_host),
+        peer_address_(peer_address) {
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
     // TODO(dgozman): handle return value of AttachClient.
     agent_host_->AttachClient(this);
   }
 
   ~DevToolsAgentHostClientImpl() override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
     if (agent_host_)
       agent_host_->DetachClient(this);
   }
 
   std::string GetTypeForMetrics() override { return "RemoteDebugger"; }
 
+  PeerMetadata GetPeerMetadata() override {
+    return {.transport_type = PeerMetadata::TransportType::kWebSocket,
+            .peer_address = peer_address_};
+  }
+
   void AgentHostClosed(DevToolsAgentHost* agent_host) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    DCHECK(agent_host == agent_host_.get());
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+    CHECK(agent_host == agent_host_.get(), base::NotFatalUntil::M159);
 
     constexpr char kMsg[] =
         "{\"method\":\"Inspector.detached\","
@@ -364,8 +382,8 @@ class DevToolsAgentHostClientImpl : public DevToolsAgentHostClient {
 
   void DispatchProtocolMessage(DevToolsAgentHost* agent_host,
                                base::span<const uint8_t> message) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    DCHECK(agent_host == agent_host_.get());
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+    CHECK(agent_host == agent_host_.get(), base::NotFatalUntil::M159);
     task_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(&ServerWrapper::SendOverWebSocket,
@@ -374,7 +392,7 @@ class DevToolsAgentHostClientImpl : public DevToolsAgentHostClient {
   }
 
   void OnMessage(base::span<const uint8_t> message) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
     if (agent_host_)
       agent_host_->DispatchProtocolMessage(this, message);
   }
@@ -384,6 +402,7 @@ class DevToolsAgentHostClientImpl : public DevToolsAgentHostClient {
   const raw_ptr<ServerWrapper> server_wrapper_;
   const int connection_id_;
   scoped_refptr<DevToolsAgentHost> agent_host_;
+  const net::IPEndPoint peer_address_;
 };
 
 static bool TimeComparator(scoped_refptr<DevToolsAgentHost> host1,
@@ -617,6 +636,7 @@ void DevToolsHttpHandler::OnJsonRequest(
     version.Set("Protocol-Version", DevToolsAgentHost::GetProtocolVersion());
     version.Set("WebKit-Version", GetWebKitVersion());
     version.Set("Browser", GetContentClient()->browser()->GetProduct());
+    version.Set("File-Path-Style", kNativeFilePathStyle);
     version.Set("User-Agent", GetContentClient()->browser()->GetUserAgent());
     version.Set("V8-Version", V8_VERSION_STRING);
     std::string host = info.GetHeaderValue("host");
@@ -693,6 +713,14 @@ void DevToolsHttpHandler::OnJsonRequest(
     if (!agent_host) {
       SendJson(connection_id, net::HTTP_NOT_FOUND, std::nullopt,
                "No such target id: " + target_id);
+      return;
+    }
+
+    DevToolsManager* manager = DevToolsManager::GetInstance();
+    if (manager->delegate() &&
+        !manager->delegate()->AllowInspectingTarget(agent_host.get())) {
+      SendJson(connection_id, net::HTTP_FORBIDDEN, std::nullopt,
+               "Target is not inspectable");
       return;
     }
 
@@ -801,7 +829,7 @@ void DevToolsHttpHandler::HandleDebuggingApproval(
     connection_to_client_[connection_id] =
         std::make_unique<DevToolsAgentHostClientImpl>(
             thread_->task_runner(), server_wrapper_.get(), connection_id,
-            browser_agent);
+            browser_agent, request.peer);
     AcceptWebSocket(connection_id, request);
   } else {
     Send403(connection_id, "Connection rejected");
@@ -814,8 +842,14 @@ void DevToolsHttpHandler::OnWebSocketRequest(
   if (!thread_)
     return;
 
-  if (request.headers.count("origin") &&
-      !remote_allow_origins_.count(request.headers.at("origin")) &&
+  bool is_same_origin =
+      server_ip_address_ &&
+      url::Origin::Create(
+          GURL(base::StrCat({"http://", server_ip_address_->ToString()})))
+          .IsSameOriginWith(GURL(request.GetHeaderValue("origin")));
+  if (request.headers.count("origin") && !is_same_origin &&
+      !remote_allow_origins_.count(
+          base::ToLowerASCII(request.headers.at("origin"))) &&
       !remote_allow_origins_.count("*")) {
     const std::string& origin = request.headers.at("origin");
     const std::string message = base::StringPrintf(
@@ -854,7 +888,7 @@ void DevToolsHttpHandler::OnWebSocketRequest(
     connection_to_client_[connection_id] =
         std::make_unique<DevToolsAgentHostClientImpl>(
             thread_->task_runner(), server_wrapper_.get(), connection_id,
-            browser_agent);
+            browser_agent, request.peer);
     AcceptWebSocket(connection_id, request);
     return;
   }
@@ -873,9 +907,17 @@ void DevToolsHttpHandler::OnWebSocketRequest(
     return;
   }
 
+  DevToolsManager* manager = DevToolsManager::GetInstance();
+  if (manager->delegate() &&
+      !manager->delegate()->AllowInspectingTarget(agent.get())) {
+    Send403(connection_id, "Target is not inspectable");
+    return;
+  }
+
   connection_to_client_[connection_id] =
       std::make_unique<DevToolsAgentHostClientImpl>(
-          thread_->task_runner(), server_wrapper_.get(), connection_id, agent);
+          thread_->task_runner(), server_wrapper_.get(), connection_id, agent,
+          request.peer);
 
   AcceptWebSocket(connection_id, request);
 }

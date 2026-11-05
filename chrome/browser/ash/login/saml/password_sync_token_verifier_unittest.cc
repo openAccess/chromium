@@ -17,7 +17,7 @@
 #include "chrome/browser/ash/login/saml/password_sync_token_fetcher.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -123,7 +123,8 @@ void PasswordSyncTokenVerifierTest::SetUp() {
 void PasswordSyncTokenVerifierTest::CreatePasswordSyncTokenVerifier() {
   DestroyPasswordSyncTokenVerifier();
   verifier_ = std::make_unique<PasswordSyncTokenVerifier>(
-      TestingBrowserProcess::GetGlobal()->local_state(), primary_profile_);
+      TestingBrowserProcess::GetGlobal()->local_state(), primary_profile_,
+      IdentityManagerFactory::GetForProfile(primary_profile_));
 }
 
 void PasswordSyncTokenVerifierTest::DestroyPasswordSyncTokenVerifier() {

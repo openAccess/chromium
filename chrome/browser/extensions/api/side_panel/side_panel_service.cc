@@ -17,16 +17,28 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/extension_side_panel_utils.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/extensions/api/side_panel.h"
 #include "chrome/common/extensions/api/side_panel/side_panel_info.h"
 #include "chrome/common/pref_names.h"
 #include "components/sessions/core/session_id.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/pref_types.h"
 #include "extensions/common/error_utils.h"
 
 namespace extensions {
+
+template <>
+bool BrowserContextKeyedAPIFactory<
+    SidePanelService>::ServiceIsCreatedWithBrowserContext() const {
+  if (base::FeatureList::IsEnabled(features::kLazyKeyedServiceInstantiation) &&
+      features::kLazyKeyedServiceInstantiationExtensionsApi.Get()) {
+    return false;
+  }
+  return true;
+}
 
 namespace {
 
@@ -284,7 +296,7 @@ base::expected<bool, std::string> SidePanelService::OpenSidePanelForTab(
                                     &web_contents, nullptr) ||
       !window) {
     return base::unexpected(ErrorUtils::FormatErrorMessage(
-        ExtensionTabUtil::kTabNotFoundError, base::ToString(tab_id)));
+        kTabNotFoundError, base::ToString(tab_id)));
   }
 
   BrowserWindowInterface* browser_window = window->GetBrowserWindowInterface();
@@ -331,12 +343,12 @@ void SidePanelService::DispatchOnClosedEvent(const ExtensionId& extension_id,
     return;
   }
 
-  base::ListValue args;
+  auto args = base::MakeRefCounted<EventArgs>();
   api::side_panel::PanelClosedInfo info;
   info.window_id = window_id;
   info.tab_id = std::move(tab_id);
   info.path = path;
-  args.Append(info.ToValue());
+  args->data.Append(info.ToValue());
 
   auto event = std::make_unique<Event>(events::SIDE_PANEL_ON_CLOSED,
                                        api::side_panel::OnClosed::kEventName,
@@ -372,7 +384,7 @@ base::expected<bool, std::string> SidePanelService::CloseSidePanelForTab(
                                     &web_contents, /*tab_index=*/nullptr) ||
       !web_contents) {
     return base::unexpected(ErrorUtils::FormatErrorMessage(
-        ExtensionTabUtil::kTabNotFoundError, base::ToString(tab_id)));
+        kTabNotFoundError, base::ToString(tab_id)));
   }
 
   // Retrieve the corresponding browser window, since the active side panel for
@@ -449,8 +461,8 @@ void SidePanelService::DispatchOnOpenedEvent(const ExtensionId& extension_id,
   info.tab_id = std::move(tab_id);
   info.path = path;
 
-  base::ListValue args;
-  args.Append(info.ToValue());
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(info.ToValue());
   auto event = std::make_unique<Event>(events::SIDE_PANEL_ON_OPENED,
                                        api::side_panel::OnOpened::kEventName,
                                        std::move(args));

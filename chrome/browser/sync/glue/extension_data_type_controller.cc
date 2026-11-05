@@ -9,8 +9,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "extensions/browser/extension_system.h"
 
-namespace browser_sync {
-
 ExtensionDataTypeController::ExtensionDataTypeController(
     syncer::DataType type,
     syncer::OnceDataTypeStoreFactory store_factory,
@@ -26,8 +24,9 @@ ExtensionDataTypeController::ExtensionDataTypeController(
                                              delegate_mode,
                                              std::move(batch_uploader)),
       profile_(profile) {
-  DCHECK(type == syncer::EXTENSIONS || type == syncer::APPS ||
-         type == syncer::THEMES);
+  CHECK(type == syncer::EXTENSIONS || type == syncer::APPS ||
+            type == syncer::THEMES,
+        base::NotFatalUntil::M163);
 }
 
 ExtensionDataTypeController::~ExtensionDataTypeController() = default;
@@ -35,10 +34,8 @@ ExtensionDataTypeController::~ExtensionDataTypeController() = default;
 void ExtensionDataTypeController::LoadModels(
     const syncer::ConfigureContext& configure_context,
     const ModelLoadCallback& model_load_callback) {
-  DCHECK(CalledOnValidThread());
+  CHECK(CalledOnValidSequence(), base::NotFatalUntil::M163);
   extensions::ExtensionSystem::Get(profile_)->InitForRegularProfile(
       /*extensions_enabled=*/true);
   DataTypeController::LoadModels(configure_context, model_load_callback);
 }
-
-}  // namespace browser_sync

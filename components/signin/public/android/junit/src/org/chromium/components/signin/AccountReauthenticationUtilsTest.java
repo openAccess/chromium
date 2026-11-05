@@ -20,14 +20,12 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.FakeTimeTestRule;
 import org.chromium.base.Promise;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.google_apis.gaia.CoreAccountId;
 
@@ -37,7 +35,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Unit tests for the {@link AccountReauthenticationUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AccountReauthenticationUtilsTest {
     private static final long MOCK_RECENT_TIME_WINDOW_MILLIS = 10 * 60 * 1000; // 10 minutes
 
@@ -192,13 +189,6 @@ public class AccountReauthenticationUtilsTest {
                 .doAnswer(mConfirmationSuccessAnswer)
                 .when(mAccountManagerFacade)
                 .confirmCredentials(any(CoreAccountId.class), any(), any());
-        HistogramWatcher accountReauthenticationHistogram =
-                HistogramWatcher.newBuilder()
-                        .expectIntRecords(
-                                AccountReauthenticationUtils.ACCOUNT_REAUTHENTICATION_HISTOGRAM,
-                                AccountReauthenticationUtils.AccountReauthenticationEvent.STARTED,
-                                AccountReauthenticationUtils.AccountReauthenticationEvent.SUCCESS)
-                        .build();
 
         new AccountReauthenticationUtils()
                 .confirmCredentialsOrRecentAuthentication(
@@ -210,7 +200,6 @@ public class AccountReauthenticationUtilsTest {
         assertEquals(
                 (Integer) AccountReauthenticationUtils.ConfirmationResult.SUCCESS,
                 mRecentConfirmationResult.get());
-        accountReauthenticationHistogram.assertExpected();
     }
 
     @Test
@@ -219,14 +208,6 @@ public class AccountReauthenticationUtilsTest {
         doAnswer(mRecentAuthenticationAnswer)
                 .when(mAccountManagerFacade)
                 .confirmCredentials(any(CoreAccountId.class), any(), any());
-        HistogramWatcher accountReauthenticationHistogram =
-                HistogramWatcher.newBuilder()
-                        .expectIntRecords(
-                                AccountReauthenticationUtils.ACCOUNT_REAUTHENTICATION_HISTOGRAM,
-                                AccountReauthenticationUtils.AccountReauthenticationEvent.STARTED,
-                                AccountReauthenticationUtils.AccountReauthenticationEvent
-                                        .SUCCESS_RECENT_AUTHENTICATION)
-                        .build();
 
         new AccountReauthenticationUtils()
                 .confirmCredentialsOrRecentAuthentication(
@@ -238,7 +219,6 @@ public class AccountReauthenticationUtilsTest {
         assertEquals(
                 (Integer) AccountReauthenticationUtils.ConfirmationResult.SUCCESS,
                 mRecentConfirmationResult.get());
-        accountReauthenticationHistogram.assertExpected();
     }
 
     @Test
@@ -248,13 +228,6 @@ public class AccountReauthenticationUtilsTest {
                 .doAnswer(mConfirmationRejectedAnswer)
                 .when(mAccountManagerFacade)
                 .confirmCredentials(any(CoreAccountId.class), any(), any());
-        HistogramWatcher accountReauthenticationHistogram =
-                HistogramWatcher.newBuilder()
-                        .expectIntRecords(
-                                AccountReauthenticationUtils.ACCOUNT_REAUTHENTICATION_HISTOGRAM,
-                                AccountReauthenticationUtils.AccountReauthenticationEvent.STARTED,
-                                AccountReauthenticationUtils.AccountReauthenticationEvent.REJECTED)
-                        .build();
 
         new AccountReauthenticationUtils()
                 .confirmCredentialsOrRecentAuthentication(
@@ -266,7 +239,6 @@ public class AccountReauthenticationUtilsTest {
         assertEquals(
                 (Integer) AccountReauthenticationUtils.ConfirmationResult.REJECTED,
                 mRecentConfirmationResult.get());
-        accountReauthenticationHistogram.assertExpected();
     }
 
     @Test
@@ -275,13 +247,6 @@ public class AccountReauthenticationUtilsTest {
                 .doAnswer(mErrorAnswer)
                 .when(mAccountManagerFacade)
                 .confirmCredentials(any(CoreAccountId.class), any(), any());
-        HistogramWatcher accountReauthenticationHistogram =
-                HistogramWatcher.newBuilder()
-                        .expectIntRecords(
-                                AccountReauthenticationUtils.ACCOUNT_REAUTHENTICATION_HISTOGRAM,
-                                AccountReauthenticationUtils.AccountReauthenticationEvent.STARTED,
-                                AccountReauthenticationUtils.AccountReauthenticationEvent.ERROR)
-                        .build();
 
         new AccountReauthenticationUtils()
                 .confirmCredentialsOrRecentAuthentication(
@@ -293,7 +258,6 @@ public class AccountReauthenticationUtilsTest {
         assertEquals(
                 (Integer) AccountReauthenticationUtils.ConfirmationResult.ERROR,
                 mRecentConfirmationResult.get());
-        accountReauthenticationHistogram.assertExpected();
     }
 
     /**

@@ -26,6 +26,7 @@
 #include "third_party/blink/renderer/core/html/track/vtt/vtt_cue.h"
 #include "third_party/blink/renderer/core/loader/empty_clients.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
 #include "third_party/blink/renderer/platform/media/media_player_client.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
@@ -71,6 +72,13 @@ class FakeWebMediaPlayer final : public EmptyWebMediaPlayer {
     ScheduleTimeIncrement();
   }
   void Pause(PauseReason pause_reason) override { playing_ = false; }
+  void Shutdown() override {
+    if (client_) {
+      client_->MediaRemotingStopped(
+          MediaPlayerClient::kMediaRemotingStopNoText);
+    }
+    EmptyWebMediaPlayer::Shutdown();
+  }
   bool Paused() const override { return !playing_; }
   bool IsEnded() const override { return current_time_ == duration_; }
 
@@ -79,6 +87,7 @@ class FakeWebMediaPlayer final : public EmptyWebMediaPlayer {
     current_time_ = last_seek_time_;
     last_seek_time_ = -1;
 
+    CHECK(client_);
     client_->TimeChanged();
     if (playing_)
       ScheduleTimeIncrement();
@@ -120,6 +129,7 @@ class FakeWebMediaPlayer final : public EmptyWebMediaPlayer {
     // Notify the client if we've reached the end of the set duration
     if (current_time_ >= duration_) {
       current_time_ = duration_;
+      CHECK(client_);
       client_->TimeChanged();
     } else {
       ScheduleTimeIncrement();
@@ -129,7 +139,7 @@ class FakeWebMediaPlayer final : public EmptyWebMediaPlayer {
     context_->GetAgent()->event_loop()->PerformMicrotaskCheckpoint();
   }
 
-  raw_ptr<MediaPlayerClient, UnprotectedInRelease | DanglingUntriaged> client_;
+  WeakPersistent<MediaPlayerClient> client_;
   WeakPersistent<ExecutionContext> context_;
   mutable double current_time_ = 0;
   bool playing_ = false;
@@ -242,6 +252,58 @@ TEST_F(HTMLMediaElementEventListenersTest, RemovingFromDocumentCollectsAll) {
 }
 
 TEST_F(HTMLMediaElementEventListenersTest,
+       RemovingFromDocumentWhileRemotingCollectsAll) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<video></video>");
+  Video()->SetSrc(AtomicString("http://example.com"));
+  test::RunPendingTasks();
+  EXPECT_NE(WebMediaPlayer(), nullptr);
+  SimulateNetworkState(HTMLMediaElement::kNetworkIdle);
+  SimulateReadyState(HTMLMediaElement::kHaveCurrentData);
+
+  Video()->MediaRemotingStarted(WebString());
+  EXPECT_TRUE(Video()->IsRemotingInterstitialVisible());
+
+  WeakPersistent<HTMLVideoElement> weak_persistent_video = Video();
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("");
+  UpdateAllLifecyclePhasesForTest();
+  test::RunPendingTasks();
+
+  // The element is paused, idle, and detached, so it should be collectable.
+  // The player's Shutdown() runs MediaRemotingStopped() on the client which
+  // hides the interstitial; that must not schedule new work on the dying
+  // shadow tree.
+  ThreadState::Current()->CollectAllGarbageForTesting();
+  EXPECT_EQ(weak_persistent_video, nullptr);
+}
+
+TEST_F(HTMLMediaElementEventListenersTest,
+       MediaRemotingStoppedWhileDisconnectedImmediatelyHides) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("<video></video>");
+  Video()->SetSrc(AtomicString("http://example.com"));
+  test::RunPendingTasks();
+  EXPECT_NE(WebMediaPlayer(), nullptr);
+  SimulateNetworkState(HTMLMediaElement::kNetworkIdle);
+  SimulateReadyState(HTMLMediaElement::kHaveCurrentData);
+
+  Video()->MediaRemotingStarted(WebString());
+  EXPECT_TRUE(Video()->IsRemotingInterstitialVisible());
+
+  Persistent<HTMLVideoElement> video_holder = Video();
+  GetDocument().body()->RemoveChild(Video());
+  EXPECT_FALSE(video_holder->isConnected());
+
+  // Stopping remoting while disconnected should immediately hide the
+  // interstitial and reset state without scheduling fade animation timers.
+  video_holder->MediaRemotingStopped(
+      MediaPlayerClient::kMediaRemotingStopNoText);
+  EXPECT_FALSE(video_holder->IsRemotingInterstitialVisible());
+
+  // Run any delayed tasks; the interstitial should remain hidden.
+  test::RunDelayedTasks(base::Seconds(1));
+  EXPECT_FALSE(video_holder->IsRemotingInterstitialVisible());
+}
+
+TEST_F(HTMLMediaElementEventListenersTest,
        ReInsertingInDocumentCollectsControls) {
   EXPECT_EQ(Video(), nullptr);
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
@@ -322,8 +384,6 @@ class MockEventListener final : public NativeEventListener {
   MOCK_METHOD2(Invoke, void(ExecutionContext* executionContext, Event*));
 };
 
-static const base::TickClock* s_platform_clock_;
-
 class HTMLMediaElementWithMockSchedulerTest
     : public HTMLMediaElementEventListenersTest {
  protected:
@@ -337,8 +397,6 @@ class HTMLMediaElementWithMockSchedulerTest
   void SetUp() override {
     EnablePlatform();
 
-    s_platform_clock_ = GetTickClock();
-
     // DocumentParserTiming has DCHECKS to make sure time > 0.0.
     AdvanceClock(base::Seconds(1));
     // Tests rely on start time being a multiple of 250ms.
@@ -348,8 +406,6 @@ class HTMLMediaElementWithMockSchedulerTest
 
     HTMLMediaElementEventListenersTest::SetUp();
   }
-
-  static base::TimeTicks Now() { return s_platform_clock_->NowTicks(); }
 
  private:
   std::unique_ptr<base::subtle::ScopedTimeClockOverrides> time_overrides_;

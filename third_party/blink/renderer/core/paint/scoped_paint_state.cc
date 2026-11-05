@@ -102,6 +102,7 @@ void ScopedPaintState::AdjustForPaintProperties(const LayoutObject& object) {
     needs_new_chunk_properties = true;
   }
   DCHECK(!properties->ElementCanvasTransform());
+  DCHECK(!properties->ElementCanvasClip());
   DCHECK(!properties->Translate());
   DCHECK(!properties->Rotate());
   DCHECK(!properties->Scale());
@@ -110,6 +111,11 @@ void ScopedPaintState::AdjustForPaintProperties(const LayoutObject& object) {
     // Similar to the above.
     DCHECK(!effect->HasRealEffects());
     new_chunk_properties.SetEffect(*effect);
+    needs_new_chunk_properties = true;
+  }
+
+  if (const auto* line_clamp_float_clip = properties->LineClampFloatClip()) {
+    new_chunk_properties.SetClip(*line_clamp_float_clip);
     needs_new_chunk_properties = true;
   }
 
@@ -136,8 +142,14 @@ void ScopedBoxContentsPaintState::AdjustForBoxContents(const LayoutBox& box) {
 
   DCHECK_EQ(paint_offset_, fragment_to_paint_->PaintOffset());
 
+  PropertyTreeStateOrAlias contents_properties =
+      fragment_to_paint_->ContentsProperties();
+  if (input_paint_info_.IsReadBackAllowedRendering()) {
+    contents_properties.StripTaintedFilters();
+  }
+
   chunk_properties_.emplace(input_paint_info_.context.GetPaintController(),
-                            fragment_to_paint_->ContentsProperties(), box,
+                            contents_properties, box,
                             input_paint_info_.DisplayItemTypeForClipping());
 
   if (const auto* properties = fragment_to_paint_->PaintProperties()) {

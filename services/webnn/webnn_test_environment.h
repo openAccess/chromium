@@ -8,11 +8,17 @@
 #include "base/functional/callback_helpers.h"
 #include "base/test/task_environment.h"
 #include "gpu/command_buffer/service/scheduler.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "mojo/public/cpp/bindings/unique_receiver_set.h"
 #include "services/webnn/webnn_context_provider_impl.h"
+
+#if BUILDFLAG(IS_APPLE)
+#include "mojo/public/cpp/bindings/receiver_set.h"
+#include "services/webnn/webnn_compiler_service_impl.h"
+#endif
 
 #if BUILDFLAG(IS_WIN)
 #include "services/webnn/host/execution_provider_initializer.h"
-#include "ui/gfx/mojom/dxgi_info.mojom.h"
 #endif
 
 namespace webnn {
@@ -23,60 +29,53 @@ struct EpDeviceInfo;
 
 namespace test {
 
-// A minimal fake GpuHost implementation for testing.
-class FakeGpuHostForTesting : public viz::mojom::GpuHost {
+// A minimal fake WebNNBrowserHost implementation for testing.
+class FakeWebNNBrowserHostForTesting : public mojom::WebNNBrowserHost
+#if BUILDFLAG(IS_APPLE)
+    ,
+                                       public mojom::WebNNCompilerHost
+#endif
+{
  public:
-  FakeGpuHostForTesting();
-  ~FakeGpuHostForTesting() override;
+  FakeWebNNBrowserHostForTesting();
+  ~FakeWebNNBrowserHostForTesting() override;
 
-  void Bind(mojo::PendingReceiver<viz::mojom::GpuHost> receiver);
+  void Bind(mojo::PendingReceiver<mojom::WebNNBrowserHost> receiver);
 
-  void DidInitialize(
-      const gpu::GPUInfo& gpu_info,
-      const gpu::GpuFeatureInfo& gpu_feature_info,
-      const std::optional<gpu::GPUInfo>& gpu_info_for_hardware_gpu,
-      const std::optional<gpu::GpuFeatureInfo>&
-          gpu_feature_info_for_hardware_gpu,
-      const gfx::GpuExtraInfo& gpu_extra_info) override;
-  void DidFailInitialize() override;
-  void DidCreateContextSuccessfully() override;
-  void DidCreateOffscreenContext(const GURL& url) override;
-  void DidDestroyOffscreenContext(const GURL& url) override;
-  void DidDestroyChannel(int32_t client_id) override;
-  void DidDestroyAllChannels() override;
-  void DidLoseContext(gpu::error::ContextLostReason reason,
-                      const GURL& active_url) override;
-  void DisableGpuCompositing() override;
-  void DidUpdateGPUInfo(const gpu::GPUInfo& gpu_info) override;
-  void GetIsolationKey(int32_t client_id,
-                       const blink::WebGPUExecutionContextToken& token,
-                       GetIsolationKeyCallback cb) override;
-  void StoreBlobToDisk(const gpu::GpuDiskCacheHandle& handle,
-                       const std::string& key,
-                       const std::string& shader) override;
-  void ClearGrShaderDiskCache() override;
 #if BUILDFLAG(IS_WIN)
-  void DidUpdateOverlayInfo(const gpu::OverlayInfo& overlay_info) override;
-  void DidUpdateDXGIInfo(gfx::mojom::DXGIInfoPtr dxgi_info) override;
-  void EnsureWebNNExecutionProvidersReady(
-      EnsureWebNNExecutionProvidersReadyCallback callback) override;
-  void RequestWebNNCompilerContext(
+  void EnsureExecutionProvidersReady(
+      EnsureExecutionProvidersReadyCallback callback) override;
+#endif
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE)
+  void RequestCompilerContext(
       webnn::mojom::CreateContextOptionsPtr context_options,
       const webnn::ContextProperties& context_properties,
+#if BUILDFLAG(IS_WIN)
       const webnn::EpDeviceInfo& target_device,
+#endif
       mojo::PendingReceiver<webnn::mojom::WebNNCompilerContext>
           compiler_context_receiver,
       mojo::PendingRemote<webnn::mojom::WebNNModelLoader> model_loader_remote,
-      RequestWebNNCompilerContextCallback callback) override;
+      mojo::PendingReceiver<webnn::mojom::WebNNCompilerHost>
+          compiler_host_receiver,
+      RequestCompilerContextCallback callback) override;
 #endif
+  void CreateWeightsFile(CreateWeightsFileCallback callback) override;
 #if BUILDFLAG(IS_APPLE)
-  void CopyWebNNCompiledModel(const base::FilePath& compiler_model_path,
-                              CopyWebNNCompiledModelCallback callback) override;
-#endif
-  void CreateWebNNWeightsFile(CreateWebNNWeightsFileCallback callback) override;
+  void CopyCompiledModel(const base::FilePath& compiler_model_path,
+                         CopyCompiledModelCallback callback) override;
+
+  // mojom::WebNNCompilerHost:
+  void Terminate() override;
+#endif  // BUILDFLAG(IS_APPLE)
 
  private:
-  mojo::Receiver<viz::mojom::GpuHost> receiver_;
+  mojo::Receiver<mojom::WebNNBrowserHost> receiver_;
+#if BUILDFLAG(IS_APPLE)
+  mojo::Remote<mojom::WebNNCompilerService> compiler_service_remote_;
+  std::unique_ptr<WebNNCompilerServiceImpl> compiler_service_;
+  mojo::ReceiverSet<mojom::WebNNCompilerHost> compiler_host_receivers_;
+#endif
 };
 
 class WebNNTestEnvironment {
@@ -116,7 +115,7 @@ class WebNNTestEnvironment {
   void OnReceiverDisconnected();
   void OnContextDestroyed();
 
-  FakeGpuHostForTesting fake_gpu_host_;
+  FakeWebNNBrowserHostForTesting fake_webnn_browser_host_;
   std::unique_ptr<base::test::TaskEnvironment> task_environment_;
   std::unique_ptr<WebNNContextProviderImpl> context_provider_;
   size_t pending_receiver_count_ = 0;

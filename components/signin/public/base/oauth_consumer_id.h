@@ -85,7 +85,7 @@ enum class OAuthConsumerId {
   kPolicyTokenForwarder = 57,
   // kPluginVmLicenseChecker = 58,  // Removed due to deprecation.
   kDrivefsAuth = 59,
-  kNearbyPresenceServerClient = 60,
+  // kNearbyPresenceServerClient = 60,  // Removed due to deprecation.
   kCryptAuthClient = 61,
   kAmbientMode = 62,
   kProfileDownloader = 63,
@@ -135,7 +135,8 @@ enum class OAuthConsumerId {
   kTabContextContainersService = 107,
   kSiteTokenProvider = 108,
   kDeviceAuthorizationRequest = 109,
-  kMaxValue = kDeviceAuthorizationRequest,
+  kCmtgDeviceKeyProvider = 110,
+  kMaxValue = kCmtgDeviceKeyProvider,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:OAuthConsumerId)
 

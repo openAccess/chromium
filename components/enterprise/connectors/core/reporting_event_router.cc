@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <optional>
 
+#include "base/feature_list.h"
 #include "base/json/values_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -111,6 +112,20 @@ enterprise_connectors::EventResult GetEventResult(
 
 #endif  // BUILDFLAG(ENTERPRISE_DATA_CONTROLS)
 
+// Copies `extension_initiator` onto `event` when present and the feature is
+// enabled. Leaves `event.initiator` unset otherwise so consumers can tell
+// "unknown" from "empty".
+void MaybeSetExtensionInitiator(
+    chrome::cros::reporting::proto::Event& event,
+    const std::optional<ReportingEventRouter::ExtensionInitiatorInfo>&
+        extension_initiator) {
+  if (!extension_initiator ||
+      !base::FeatureList::IsEnabled(kEnterpriseExtensionActorAttribution)) {
+    return;
+  }
+  *event.mutable_initiator()->mutable_chrome_extension() = *extension_initiator;
+}
+
 }  // namespace
 
 ReportingEventRouter::SensitiveDataEvent::SensitiveDataEvent() = default;
@@ -212,7 +227,7 @@ void ReportingEventRouter::OnPasswordReuse(
     reporting_client_->ReportEvent(std::move(event), settings.value());
 }
 
-void ReportingEventRouter::OnPasswordChanged(const std::string& user_name) {
+void ReportingEventRouter::OnPasswordChanged(std::string_view user_name) {
   if (!IsEventEnabled(kKeyPasswordChangedEvent)) {
     return;
   }
@@ -232,7 +247,9 @@ void ReportingEventRouter::OnUrlFilteringInterstitial(
     const GURL& url,
     const std::string& threat_type,
     const safe_browsing::RTLookupResponse& response,
-    const ReferrerChain& referrer_chain) {
+    const ReferrerChain& referrer_chain,
+    const std::string& tab_title,
+    const std::optional<ExtensionInitiatorInfo>& extension_initiator) {
   if (!IsEventEnabled(kKeyUrlFilteringInterstitialEvent)) {
     return;
   }
@@ -241,41 +258,42 @@ void ReportingEventRouter::OnUrlFilteringInterstitial(
       reporting_client_->GetReportingSettings();
   std::string active_user = reporting_client_->GetContentAreaAccountEmail(url);
 
-    chrome::cros::reporting::proto::Event event;
-    *event.mutable_url_filtering_interstitial_event() =
-        GetUrlFilteringInterstitialEvent(
-            url, threat_type, response,
-            reporting_client_->GetProfileIdentifier(),
-            reporting_client_->GetProfileUserName(), active_user,
-            referrer_chain,
-            /*tab_title=*/"");  // TODO(b/552985411): Plumb the actual title
-                                // down from the observer in a follow-up CL.
+  chrome::cros::reporting::proto::Event event;
+  *event.mutable_url_filtering_interstitial_event() =
+      GetUrlFilteringInterstitialEvent(
+          url, threat_type, response, reporting_client_->GetProfileIdentifier(),
+          reporting_client_->GetProfileUserName(), active_user, referrer_chain,
+          tab_title);
+  MaybeSetExtensionInitiator(event, extension_initiator);
 
-    *event.mutable_time() = ToProtoTimestamp(base::Time::Now());
+  *event.mutable_time() = ToProtoTimestamp(base::Time::Now());
 
-    reporting_client_->ReportEvent(std::move(event), settings.value());
+  reporting_client_->ReportEvent(std::move(event), settings.value());
 }
 
 void ReportingEventRouter::OnSecurityInterstitialProceeded(
     const GURL& url,
     const std::string& reason,
     int net_error_code,
-    const ReferrerChain& referrer_chain) {
+    const ReferrerChain& referrer_chain,
+    const std::string& tab_title,
+    const std::optional<ExtensionInitiatorInfo>& extension_initiator) {
   if (!IsEventEnabled(kKeyInterstitialEvent)) {
     return;
   }
 
   std::optional<ReportingSettings> settings =
       reporting_client_->GetReportingSettings();
-    chrome::cros::reporting::proto::Event event;
-    *event.mutable_interstitial_event() = GetInterstitialEvent(
-        url, reason, net_error_code,
-        /*clicked_through=*/true, EventResult::BYPASSED,
-        reporting_client_->GetProfileIdentifier(),
-        reporting_client_->GetProfileUserName(), referrer_chain);
-    *event.mutable_time() = ToProtoTimestamp(base::Time::Now());
+  chrome::cros::reporting::proto::Event event;
+  *event.mutable_interstitial_event() = GetInterstitialEvent(
+      url, reason, net_error_code,
+      /*clicked_through=*/true, EventResult::BYPASSED,
+      reporting_client_->GetProfileIdentifier(),
+      reporting_client_->GetProfileUserName(), referrer_chain, tab_title);
+  MaybeSetExtensionInitiator(event, extension_initiator);
+  *event.mutable_time() = ToProtoTimestamp(base::Time::Now());
 
-    reporting_client_->ReportEvent(std::move(event), settings.value());
+  reporting_client_->ReportEvent(std::move(event), settings.value());
 }
 
 void ReportingEventRouter::OnSecurityInterstitialShown(
@@ -283,7 +301,9 @@ void ReportingEventRouter::OnSecurityInterstitialShown(
     const std::string& reason,
     int net_error_code,
     bool proceed_anyway_disabled,
-    const ReferrerChain& referrer_chain) {
+    const ReferrerChain& referrer_chain,
+    const std::string& tab_title,
+    const std::optional<ExtensionInitiatorInfo>& extension_initiator) {
   if (!IsEventEnabled(kKeyInterstitialEvent)) {
     return;
   }
@@ -293,15 +313,16 @@ void ReportingEventRouter::OnSecurityInterstitialShown(
   EventResult event_result =
       proceed_anyway_disabled ? EventResult::BLOCKED : EventResult::WARNED;
 
-    chrome::cros::reporting::proto::Event event;
-    *event.mutable_interstitial_event() = GetInterstitialEvent(
-        url, reason, net_error_code,
-        /*clicked_through=*/false, event_result,
-        reporting_client_->GetProfileIdentifier(),
-        reporting_client_->GetProfileUserName(), referrer_chain);
-    *event.mutable_time() = ToProtoTimestamp(base::Time::Now());
+  chrome::cros::reporting::proto::Event event;
+  *event.mutable_interstitial_event() = GetInterstitialEvent(
+      url, reason, net_error_code,
+      /*clicked_through=*/false, event_result,
+      reporting_client_->GetProfileIdentifier(),
+      reporting_client_->GetProfileUserName(), referrer_chain, tab_title);
+  MaybeSetExtensionInitiator(event, extension_initiator);
+  *event.mutable_time() = ToProtoTimestamp(base::Time::Now());
 
-    reporting_client_->ReportEvent(std::move(event), settings.value());
+  reporting_client_->ReportEvent(std::move(event), settings.value());
 }
 
 void ReportingEventRouter::SendEventOnGotHash(
@@ -325,7 +346,6 @@ void ReportingEventRouter::SendEventOnGotHash(
                                  std::move(reporting_settings));
 }
 
-
 void ReportingEventRouter::OnUnscannedFileEvent(
     const GURL& url,
     const GURL& tab_url,
@@ -334,13 +354,14 @@ void ReportingEventRouter::OnUnscannedFileEvent(
     const std::string& file_name,
     const HashCallbackVariant& sha256_or_cb,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& scan_id,
     const std::string& reason,
     const std::string& content_transfer_method,
     const int64_t content_size,
     const ReferrerChain& referrer_chain,
-    EventResult event_result) {
+    EventResult event_result,
+    const std::optional<ExtensionInitiatorInfo>& extension_initiator) {
   if (!IsEventEnabled(kKeyUnscannedFileEvent)) {
     return;
   }
@@ -363,6 +384,7 @@ void ReportingEventRouter::OnUnscannedFileEvent(
         content_transfer_method, reporting_client_->GetProfileIdentifier(),
         reporting_client_->GetProfileUserName(), content_size, referrer_chain,
         event_result);
+    MaybeSetExtensionInitiator(event, extension_initiator);
 
     auto send_event_cb =
         base::BindOnce(&ReportingEventRouter::SendEventOnGotHash,
@@ -384,7 +406,7 @@ void ReportingEventRouter::OnSensitiveDataEvent(
     const std::string& file_name,
     const HashCallbackVariant& sha256_or_cb,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& scan_id,
     const std::string& content_transfer_method,
     const std::string& source_email,
@@ -394,7 +416,8 @@ void ReportingEventRouter::OnSensitiveDataEvent(
     const int64_t content_size,
     const ReferrerChain& referrer_chain,
     const FrameUrlChain& frame_url_chain,
-    EventResult event_result) {
+    EventResult event_result,
+    const std::optional<ExtensionInitiatorInfo>& extension_initiator) {
   SensitiveDataEvent event;
   event.url = url;
   event.tab_url = tab_url;
@@ -414,6 +437,7 @@ void ReportingEventRouter::OnSensitiveDataEvent(
   event.referrer_chain = referrer_chain;
   event.frame_url_chain = frame_url_chain;
   event.event_result = event_result;
+  event.extension_initiator = extension_initiator;
   OnSensitiveDataEvent(event);
 }
 
@@ -445,6 +469,7 @@ void ReportingEventRouter::OnSensitiveDataEvent(
         reporting_client_->GetProfileUserName(), event.user_justification,
         event.content_size, event.result, event.referrer_chain,
         event.frame_url_chain, event.event_result);
+    MaybeSetExtensionInitiator(proto_event, event.extension_initiator);
 
     auto send_event_cb =
         base::BindOnce(&ReportingEventRouter::SendEventOnGotHash,
@@ -465,17 +490,18 @@ void ReportingEventRouter::OnDangerousDownloadEvent(
     const HashCallbackVariant& sha256_or_cb,
     const download::DownloadDangerType danger_type,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& scan_id,
     const int64_t content_size,
     const ReferrerChain& referrer_chain,
     const FrameUrlChain& frame_url_chain,
-    EventResult event_result) {
+    EventResult event_result,
+    const std::optional<ExtensionInitiatorInfo>& extension_initiator) {
   OnDangerousDownloadEvent(
       url, tab_url, /*source=*/"", /*destination=*/"", file_name, sha256_or_cb,
       DangerTypeToThreatType(danger_type), mime_type, trigger, scan_id,
       /*content_transfer_method*/ "", content_size, referrer_chain,
-      frame_url_chain, event_result);
+      frame_url_chain, event_result, extension_initiator);
 }
 
 void ReportingEventRouter::OnDangerousDownloadEvent(
@@ -487,13 +513,14 @@ void ReportingEventRouter::OnDangerousDownloadEvent(
     const HashCallbackVariant& sha256_or_cb,
     const std::string& threat_type,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& scan_id,
     const std::string& content_transfer_method,
     const int64_t content_size,
     const ReferrerChain& referrer_chain,
     const FrameUrlChain& frame_url_chain,
-    EventResult event_result) {
+    EventResult event_result,
+    const std::optional<ExtensionInitiatorInfo>& extension_initiator) {
   if (!IsEventEnabled(kKeyDangerousDownloadEvent)) {
     return;
   }
@@ -516,6 +543,7 @@ void ReportingEventRouter::OnDangerousDownloadEvent(
         content_transfer_method, reporting_client_->GetProfileIdentifier(),
         reporting_client_->GetProfileUserName(), content_size, referrer_chain,
         frame_url_chain, event_result);
+    MaybeSetExtensionInitiator(event, extension_initiator);
 
     auto send_event_cb = base::BindOnce(
         &ReportingEventRouter::SendEventOnGotHash,
@@ -537,7 +565,7 @@ void ReportingEventRouter::OnAnalysisConnectorResult(
     const std::string& file_name,
     const HashCallbackVariant& sha256_or_cb,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& scan_id,
     const std::string& content_transfer_method,
     const std::string& source_email,
@@ -546,14 +574,15 @@ void ReportingEventRouter::OnAnalysisConnectorResult(
     const int64_t content_size,
     const ReferrerChain& referrer_chain,
     const FrameUrlChain& frame_url_chain,
-    EventResult event_result) {
+    EventResult event_result,
+    const std::optional<ExtensionInitiatorInfo>& extension_initiator) {
   if (result.tag() == kMalwareTag) {
     DCHECK_EQ(1, result.triggered_rules().size());
     OnDangerousDownloadEvent(
         url, tab_url, source, destination, file_name, sha256_or_cb,
         MalwareRuleToThreatType(result.triggered_rules(0).rule_name()),
         mime_type, trigger, scan_id, content_transfer_method, content_size,
-        referrer_chain, frame_url_chain, event_result);
+        referrer_chain, frame_url_chain, event_result, extension_initiator);
   } else if (result.tag() == kDlpTag) {
     SensitiveDataEvent event;
     event.url = url;
@@ -573,6 +602,7 @@ void ReportingEventRouter::OnAnalysisConnectorResult(
     event.referrer_chain = referrer_chain;
     event.frame_url_chain = frame_url_chain;
     event.event_result = event_result;
+    event.extension_initiator = extension_initiator;
     OnSensitiveDataEvent(event);
   }
 }
@@ -606,37 +636,31 @@ std::string ReportingEventRouter::GetClipboardSourceString(
 void ReportingEventRouter::ReportCopy(
     const data_controls::ClipboardContext& context,
     const data_controls::Verdict& verdict) {
-  ReportCopyOrPaste(
-      context, verdict,
-      enterprise_connectors::kClipboardCopyDataTransferEventTrigger,
-      GetEventResult(verdict.level()));
+  ReportCopyOrPaste(context, verdict, DataTransferEventTrigger::CLIPBOARD_COPY,
+                    GetEventResult(verdict.level()));
 }
 
 void ReportingEventRouter::ReportCopyWarningBypassed(
     const data_controls::ClipboardContext& context,
     const data_controls::Verdict& verdict) {
-  ReportCopyOrPaste(
-      context, verdict,
-      enterprise_connectors::kClipboardCopyDataTransferEventTrigger,
-      enterprise_connectors::EventResult::BYPASSED);
+  ReportCopyOrPaste(context, verdict, DataTransferEventTrigger::CLIPBOARD_COPY,
+                    enterprise_connectors::EventResult::BYPASSED);
 }
 
 void ReportingEventRouter::ReportPaste(
     const data_controls::ClipboardContext& context,
     const data_controls::Verdict& verdict) {
-  ReportCopyOrPaste(
-      context, verdict,
-      enterprise_connectors::kWebContentUploadDataTransferEventTrigger,
-      GetEventResult(verdict.level()));
+  ReportCopyOrPaste(context, verdict,
+                    DataTransferEventTrigger::WEB_CONTENT_UPLOAD,
+                    GetEventResult(verdict.level()));
 }
 
 void ReportingEventRouter::ReportPasteWarningBypassed(
     const data_controls::ClipboardContext& context,
     const data_controls::Verdict& verdict) {
-  ReportCopyOrPaste(
-      context, verdict,
-      enterprise_connectors::kWebContentUploadDataTransferEventTrigger,
-      enterprise_connectors::EventResult::BYPASSED);
+  ReportCopyOrPaste(context, verdict,
+                    DataTransferEventTrigger::WEB_CONTENT_UPLOAD,
+                    enterprise_connectors::EventResult::BYPASSED);
 }
 
 void ReportingEventRouter::ReportPasteFromGemini(
@@ -656,7 +680,7 @@ void ReportingEventRouter::ReportPasteFromGemini(
       /*destination=*/destination_url.spec(),
       /*mime_type=*/"text/plain",
       /*trigger=*/
-      enterprise_connectors::kWebContentUploadDataTransferEventTrigger,
+      DataTransferEventTrigger::WEB_CONTENT_UPLOAD,
       // TODO(crbug.com/520496047): Use Gemini user email, should be the same as
       // the profile managed user.
       /*source_active_user_email=*/"",
@@ -671,7 +695,7 @@ void ReportingEventRouter::ReportPasteFromGemini(
 void ReportingEventRouter::ReportCopyOrPaste(
     const data_controls::ClipboardContext& context,
     const data_controls::Verdict& verdict,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     enterprise_connectors::EventResult result) {
   if (verdict.triggered_rules().empty()) {
     return;
@@ -681,16 +705,14 @@ void ReportingEventRouter::ReportCopyOrPaste(
   std::string destination_string;
   std::string source_string;
   std::string content_area_account_email;
-  if (trigger ==
-      enterprise_connectors::kWebContentUploadDataTransferEventTrigger) {
+  if (trigger == DataTransferEventTrigger::WEB_CONTENT_UPLOAD) {
     url = context.destination_url();
     destination_string = url.spec();
     source_string =
         GetClipboardSourceString(context.data_controls_copied_text_source());
     content_area_account_email = context.destination_active_user();
   } else {
-    DCHECK_EQ(trigger,
-              enterprise_connectors::kClipboardCopyDataTransferEventTrigger);
+    DCHECK_EQ(trigger, DataTransferEventTrigger::CLIPBOARD_COPY);
     url = context.source_url();
     source_string = context.source_url().spec();
     content_area_account_email = context.source_active_user();
@@ -716,7 +738,7 @@ void ReportingEventRouter::OnDataControlsSensitiveDataEvent(
     const std::string& source,
     const std::string& destination,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& source_active_user_email,
     const std::string& content_area_account_email,
     const data_controls::Verdict::TriggeredRules& triggered_rules,

@@ -174,9 +174,10 @@ AXNode* AutomationTreeManagerOwner::GetHostInParentTree(
   for (int32_t host_node_id : host_node_ids) {
     AXNode* host_node = parent_tree_wrapper->GetNode(host_node_id);
     if (host_node) {
-      DCHECK_EQ((*in_out_tree_wrapper)->GetTreeID(),
-                AXTreeID::FromString(host_node->GetStringAttribute(
-                    ax::mojom::StringAttribute::kChildTreeId)));
+      CHECK_EQ((*in_out_tree_wrapper)->GetTreeID(),
+               AXTreeID::FromString(host_node->GetStringAttribute(
+                   ax::mojom::StringAttribute::kChildTreeId)),
+               base::NotFatalUntil::M163);
       *in_out_tree_wrapper = parent_tree_wrapper;
       return host_node;
     }
@@ -725,7 +726,7 @@ bool AutomationTreeManagerOwner::GetBoundsForRange(
                           node->data().relative_bounds.bounds.height());
   const std::string& name =
       node->GetStringAttribute(ax::mojom::StringAttribute::kName);
-  std::vector<int> character_offsets =
+  base::span<const int32_t> character_offsets =
       node->GetIntListAttribute(ax::mojom::IntListAttribute::kCharacterOffsets);
   int len = static_cast<int>(std::min(name.size(), character_offsets.size()));
   if (start >= 0 && start <= end && end <= len) {
@@ -838,7 +839,7 @@ bool AutomationTreeManagerOwner::GetChildIDAtIndex(const AXTreeID& tree_id,
     child_node = node->GetUnignoredChildAtIndex(static_cast<size_t>(index));
   }
 
-  DCHECK(child_node);
+  CHECK(child_node, base::NotFatalUntil::M163);
   *child_tree_id = child_node->tree()->GetAXTreeID();
   *child_node_id = child_node->id();
   return true;

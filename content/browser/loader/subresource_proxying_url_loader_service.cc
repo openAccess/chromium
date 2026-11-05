@@ -6,6 +6,8 @@
 
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
 #include "content/browser/loader/prefetch_url_loader_service_context.h"
 #include "content/browser/loader/subresource_proxying_url_loader.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
@@ -30,7 +32,7 @@ SubresourceProxyingURLLoaderService::BindContext::BindContext(
     scoped_refptr<PrefetchedSignedExchangeCache>
         prefetched_signed_exchange_cache)
     : frame_tree_node_id(frame_tree_node_id),
-      factory(factory),
+      factory(std::move(factory)),
       render_frame_host(std::move(render_frame_host)),
       cross_origin_factory(nullptr),
       prefetched_signed_exchange_cache(
@@ -38,10 +40,18 @@ SubresourceProxyingURLLoaderService::BindContext::BindContext(
 
 void SubresourceProxyingURLLoaderService::BindContext::OnDidCommitNavigation(
     WeakDocumentPtr committed_document) {
+  did_commit_navigation = true;
   document = committed_document;
 }
 
-SubresourceProxyingURLLoaderService::BindContext::~BindContext() = default;
+SubresourceProxyingURLLoaderService::BindContext::~BindContext() {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  if (total_tokens_generated > 0) {
+    base::UmaHistogramCounts100(
+        "Prefetch.RecursivePrefetch.TokensPerDocument",
+        base::saturated_cast<int>(total_tokens_generated));
+  }
+}
 
 SubresourceProxyingURLLoaderService::SubresourceProxyingURLLoaderService(
     BrowserContext* browser_context)
@@ -49,7 +59,7 @@ SubresourceProxyingURLLoaderService::SubresourceProxyingURLLoaderService(
           std::make_unique<PrefetchURLLoaderServiceContext>(
               browser_context,
               loader_factory_receivers_)) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 }
 
 base::WeakPtr<SubresourceProxyingURLLoaderService::BindContext>
@@ -61,7 +71,7 @@ SubresourceProxyingURLLoaderService::GetFactory(
     base::WeakPtr<RenderFrameHostImpl> render_frame_host,
     scoped_refptr<PrefetchedSignedExchangeCache>
         prefetched_signed_exchange_cache) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   auto bind_context = base::MakeRefCounted<BindContext>(
       frame_tree_node_id, subresource_proxying_factory_bundle,
@@ -84,7 +94,7 @@ void SubresourceProxyingURLLoaderService::CreateLoaderAndStart(
     const network::ResourceRequest& resource_request_in,
     mojo::PendingRemote<network::mojom::URLLoaderClient> client,
     const net::MutableNetworkTrafficAnnotationTag& traffic_annotation) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (!PrefetchURLLoaderServiceContext::IsPrefetchRequest(
           resource_request_in)) {
@@ -126,7 +136,7 @@ SubresourceProxyingURLLoaderService::~SubresourceProxyingURLLoaderService() =
 
 void SubresourceProxyingURLLoaderService::Clone(
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   loader_factory_receivers_.Add(this, std::move(receiver),
                                 loader_factory_receivers_.current_context());
 }

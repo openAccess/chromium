@@ -19,6 +19,7 @@
 #include "components/segmentation_platform/public/result.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/page_user_data.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/webid/identity_request_dialog_controller.h"
 #include "third_party/blink/public/mojom/webid/federated_request.mojom-shared.h"
 #include "ui/gfx/native_ui_types.h"
@@ -54,7 +55,8 @@ class IdentityDialogControllerBrowserTest;
 // browser-mediated federated sign-in flows.
 class IdentityDialogController
     : public content::IdentityRequestDialogController,
-      public AccountSelectionView::Delegate {
+      public AccountSelectionView::Delegate,
+      public content::WebContentsObserver {
  public:
   explicit IdentityDialogController(
       content::WebContents* rp_web_contents,
@@ -127,6 +129,9 @@ class IdentityDialogController
       Account::SignInMode sign_in_mode,
       blink::mojom::RpMode rp_mode,
       AccountsDisplayedCallback accounts_displayed_callback) override;
+  bool ShowNativeAppUi(const content::NativeAppRequestOptions& request_options,
+                       DismissCallback dismiss_callback,
+                       NativeAppResultCallback native_result_callback) override;
 
   std::string GetTitle() const override;
   std::optional<std::string> GetSubtitle() const override;
@@ -157,11 +162,16 @@ class IdentityDialogController
   void OnMoreDetails() override;
   void OnAccountsDisplayed() override;
   void OnNativeAppResult(const std::string& token) override;
+  void OnNativeAppError(
+      const content::IdentityCredentialTokenError& error) override;
   void OnNativeAppLoginFinished() override;
   gfx::NativeView GetNativeView() override;
   content::WebContents* GetWebContents() override;
   content::IdentityRequestDialogController::PassiveDialogVolume
   GetPassiveDialogVolume() const override;
+
+  // content::WebContentsObserver:
+  void OnFedCmFederatedLogin(bool success) override;
 
   // Allows setting a mock AccountSelectionView for testing purposes.
   void SetAccountSelectionViewForTesting(
@@ -219,6 +229,9 @@ class IdentityDialogController
   // Whether we show any FedCM UI or not. Excludes the loading dialog since that
   // one is not something that modifies user state or is actionable by the user.
   bool did_show_ui_ = false;
+  // Whether an account has been selected by the user. This is used to avoid
+  // showing a HaT survey for auto reauthn.
+  bool was_account_explicitly_selected_ = false;
   std::optional<content::IdentityRequestDialogController::PassiveDialogVolume>
       passive_dialog_volume_;
   GetPassiveDialogVolumeCallback passive_dialog_volume_callback_;

@@ -11,7 +11,6 @@ component("device_features") {
     "device_features.cc",
     "device_features_export.h",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
   deps = [
     "//build:blink_buildflags",
     "//services/device/public/cpp/geolocation:buildflags",
@@ -25,6 +24,7 @@ component("device_features") {
     deps += [
       "//device/base",
       "//device/fido",
+      "//device/gamepad/public/cpp:switches",
       "//services/device/public/java:device_feature_list_jni",
     ]
   }

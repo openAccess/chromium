@@ -391,7 +391,7 @@ URLPatternSet PermissionsData::GetEffectiveHostPermissions() const {
 bool PermissionsData::HasHostPermission(const GURL& url) const {
   base::AutoLock auto_lock(runtime_lock_);
   return active_permissions_unsafe_->HasExplicitAccessToOrigin(url) &&
-         !IsPolicyBlockedHostUnsafe(url);
+         !IsPolicyBlockedHostUnsafe(url) && !IsUrlBlockedByUser(url);
 }
 
 PermissionMessages PermissionsData::GetPermissionMessages() const {
@@ -434,7 +434,8 @@ PermissionsData::PageAccess PermissionsData::GetPageAccess(
   return CanRunOnPage(
       document_url, active_permissions_unsafe_->explicit_hosts(),
       withheld_permissions_unsafe_->explicit_hosts(),
-      tab_permissions ? &tab_permissions->explicit_hosts() : nullptr, error);
+      tab_permissions ? &tab_permissions->explicit_hosts() : nullptr,
+      PatternMatchMode::kMatchUrl, error);
 }
 
 bool PermissionsData::CanRunContentScriptOnPage(const GURL& document_url,
@@ -457,7 +458,35 @@ PermissionsData::PageAccess PermissionsData::GetContentScriptAccess(
   return CanRunOnPage(
       document_url, active_permissions_unsafe_->scriptable_hosts(),
       withheld_permissions_unsafe_->scriptable_hosts(),
-      tab_permissions ? &tab_permissions->scriptable_hosts() : nullptr, error);
+      tab_permissions ? &tab_permissions->scriptable_hosts() : nullptr,
+      PatternMatchMode::kMatchUrl, error);
+}
+
+PermissionsData::PageAccess PermissionsData::GetPageAccessForSecurityOrigin(
+    const GURL& document_url,
+    int tab_id) const {
+  base::AutoLock auto_lock(runtime_lock_);
+
+  const PermissionSet* tab_permissions = GetTabSpecificPermissions(tab_id);
+  return CanRunOnPage(
+      document_url, active_permissions_unsafe_->explicit_hosts(),
+      withheld_permissions_unsafe_->explicit_hosts(),
+      tab_permissions ? &tab_permissions->explicit_hosts() : nullptr,
+      PatternMatchMode::kMatchSecurityOrigin, /*error=*/nullptr);
+}
+
+PermissionsData::PageAccess
+PermissionsData::GetContentScriptAccessForSecurityOrigin(
+    const GURL& document_url,
+    int tab_id) const {
+  base::AutoLock auto_lock(runtime_lock_);
+
+  const PermissionSet* tab_permissions = GetTabSpecificPermissions(tab_id);
+  return CanRunOnPage(
+      document_url, active_permissions_unsafe_->scriptable_hosts(),
+      withheld_permissions_unsafe_->scriptable_hosts(),
+      tab_permissions ? &tab_permissions->scriptable_hosts() : nullptr,
+      PatternMatchMode::kMatchSecurityOrigin, /*error=*/nullptr);
 }
 
 bool PermissionsData::CanCaptureVisiblePage(
@@ -473,6 +502,11 @@ bool PermissionsData::CanCaptureVisiblePage(
   // does not.)
   url::Origin origin = url::Origin::Create(document_url);
   const GURL origin_url = origin.GetURL();
+
+  if (!ExtensionsClient::Get()->IsCapturableURL(origin_url, error)) {
+    return false;
+  }
+
   {
     base::AutoLock auto_lock(runtime_lock_);
     // Disallow capturing policy-blocked hosts. No exceptions.
@@ -652,6 +686,7 @@ PermissionsData::PageAccess PermissionsData::CanRunOnPage(
     const URLPatternSet& permitted_url_patterns,
     const URLPatternSet& withheld_url_patterns,
     const URLPatternSet* tab_url_patterns,
+    PatternMatchMode match_mode,
     std::string* error) const {
   runtime_lock_.AssertAcquired();
   if (location_ != mojom::ManifestLocation::kComponent &&
@@ -674,14 +709,23 @@ PermissionsData::PageAccess PermissionsData::CanRunOnPage(
     return PageAccess::kDenied;
   }
 
-  if (tab_url_patterns && tab_url_patterns->MatchesURL(document_url))
-    return PageAccess::kAllowed;
+  auto matches_patterns = [&](const URLPatternSet& patterns) {
+    return match_mode == PatternMatchMode::kMatchSecurityOrigin
+               ? patterns.MatchesSecurityOrigin(document_url)
+               : patterns.MatchesURL(document_url);
+  };
 
-  if (permitted_url_patterns.MatchesURL(document_url))
+  if (tab_url_patterns && matches_patterns(*tab_url_patterns)) {
     return PageAccess::kAllowed;
+  }
 
-  if (withheld_url_patterns.MatchesURL(document_url))
+  if (matches_patterns(permitted_url_patterns)) {
+    return PageAccess::kAllowed;
+  }
+
+  if (matches_patterns(withheld_url_patterns)) {
     return PageAccess::kWithheld;
+  }
 
   if (error) {
     if (active_permissions_unsafe_->HasAPIPermission(APIPermissionID::kTab)) {

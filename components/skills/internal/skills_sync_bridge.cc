@@ -20,6 +20,7 @@
 #include "components/sync/model/model_error.h"
 #include "components/sync/model/mutable_data_batch.h"
 #include "components/sync/protocol/entity_data.h"
+#include "components/sync/protocol/entity_metadata.pb.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
 #include "components/sync/protocol/skill_specifics.pb.h"
 
@@ -55,6 +56,7 @@ sync_pb::SkillSpecifics SkillToSpecifics(
   specifics.set_last_update_time_windows_epoch_micros(
       ToWindowsEpochMicros(skill.last_update_time));
   specifics.set_schema_version(kSchemaVersion);
+  specifics.set_enabled(skill.enabled);
 
   // Do not override the skill source if it is unknown. This skill may be
   // created by a newer version of the client, so it's better to preserve the
@@ -63,6 +65,12 @@ sync_pb::SkillSpecifics SkillToSpecifics(
     specifics.set_skill_source(skill.source);
   }
   return specifics;
+}
+
+bool IsSkillEnabled(const sync_pb::SkillSpecifics& specifics) {
+  // Skills created by older clients that do not have the `enabled` field are
+  // enabled by default.
+  return specifics.has_enabled() ? specifics.enabled() : true;
 }
 
 std::unique_ptr<Skill> SpecificsToSkill(
@@ -78,6 +86,7 @@ std::unique_ptr<Skill> SpecificsToSkill(
   if (!specifics.source_skill_id().empty()) {
     skill->source_skill_id = specifics.source_skill_id();
   }
+  skill->enabled = IsSkillEnabled(specifics);
 
   skill->creation_time =
       FromWindowsEpochMicros(specifics.creation_time_windows_epoch_micros());
@@ -164,6 +173,12 @@ std::optional<syncer::ModelError> SkillsSyncBridge::ApplyIncrementalSyncChanges(
           continue;
         }
 
+        // First-party skills are never synced.
+        if (skill_specifics.skill_source() ==
+            sync_pb::SKILL_SOURCE_FIRST_PARTY) {
+          continue;
+        }
+
         const Skill* skill = skills_service_->AddOrUpdateSkillFromSync(
             skill_specifics.guid(), skill_specifics.source_skill_id(),
             skill_specifics.name(), skill_specifics.icon(),
@@ -173,7 +188,7 @@ std::optional<syncer::ModelError> SkillsSyncBridge::ApplyIncrementalSyncChanges(
                 skill_specifics.creation_time_windows_epoch_micros()),
             FromWindowsEpochMicros(
                 skill_specifics.last_update_time_windows_epoch_micros()),
-            skill_specifics.skill_source());
+            skill_specifics.skill_source(), IsSkillEnabled(skill_specifics));
         CHECK(skill);
 
         StoreSkill(*skill, *write_batch);
@@ -285,6 +300,7 @@ SkillsSyncBridge::TrimAllSupportedFieldsFromRemoteSpecifics(
   trimmed_specifics.clear_last_update_time_windows_epoch_micros();
   trimmed_specifics.clear_schema_version();
   trimmed_specifics.clear_source_skill_id();
+  trimmed_specifics.clear_enabled();
 
   // Note that in case of an unknown skill source, it's not stored in the
   // `skill_source` field but rather in unknown fields, and hence it's still
@@ -313,6 +329,12 @@ bool SkillsSyncBridge::IsEntityDataValid(
     const syncer::EntityData& entity_data) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (GetClientTag(entity_data).empty()) {
+    return false;
+  }
+
+  // First-party skills are never synced.
+  if (entity_data.specifics.skill().skill_source() ==
+      sync_pb::SKILL_SOURCE_FIRST_PARTY) {
     return false;
   }
 
@@ -395,24 +417,40 @@ void SkillsSyncBridge::OnReadAllDataAndMetadata(
     return;
   }
 
+  const syncer::EntityMetadataMap& sync_metadata =
+      metadata_batch->GetAllMetadata();
   std::vector<std::unique_ptr<Skill>> loaded_skills;
   for (const syncer::DataTypeStore::Record& record : *entries) {
     proto::SkillLocalData local_data;
     if (!local_data.ParseFromString(record.value)) {
       continue;
     }
-    if (!IsEntityDataValid(SpecificsToEntityData(local_data.specifics()))) {
+
+    // Merge stored specifics with `possibly_trimmed_base_specifics` from sync
+    // metadata so that any fields that were unknown when the entity was stored
+    // (and have since become supported after a browser upgrade) are recovered.
+    // Note: In production, the two protos have disjoint sets of fields, so the
+    // merge order does not matter; merging `possibly_trimmed_base_specifics` on
+    // top of `local_data` allows tests to simulate browser upgrades by setting
+    // already-known fields in `possibly_trimmed_base_specifics`.
+    sync_pb::SkillSpecifics specifics = local_data.specifics();
+    if (auto it = sync_metadata.find(record.id); it != sync_metadata.end()) {
+      specifics.MergeFrom(
+          it->second->possibly_trimmed_base_specifics().skill());
+    }
+
+    if (!IsEntityDataValid(SpecificsToEntityData(specifics))) {
       continue;
     }
-    if (!local_data.specifics().has_simple_skill()) {
+    if (!specifics.has_simple_skill()) {
       // Verify this explicitly as `IsEntityDataValid()` does not check for it.
       continue;
     }
-    if (record.id != local_data.specifics().guid()) {
+    if (record.id != specifics.guid()) {
       continue;
     }
 
-    loaded_skills.push_back(SpecificsToSkill(local_data.specifics()));
+    loaded_skills.push_back(SpecificsToSkill(specifics));
   }
 
   skills_service_->LoadInitialSkills(std::move(loaded_skills));

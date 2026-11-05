@@ -4,16 +4,15 @@
 
 #include "chrome/browser/task_manager/providers/spare_render_process_host_task_provider.h"
 
-#include "base/functional/bind.h"
-#include "base/process/process.h"
+#include <utility>
+
+#include "base/check.h"
 #include "chrome/browser/task_manager/providers/child_process_task.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/child_process_data.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/spare_render_process_host_manager.h"
-#include "content/public/common/process_type.h"
 
 using content::BrowserThread;
-using content::ChildProcessData;
 using content::RenderProcessHost;
 
 namespace task_manager {
@@ -31,8 +30,8 @@ Task* SpareRenderProcessHostTaskProvider::GetTaskOfUrlRequest(int child_id,
 }
 
 void SpareRenderProcessHostTaskProvider::StartUpdating() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(tasks_by_rph_id_.empty());
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(tasks_by_rph_id_.empty(), base::NotFatalUntil::M162);
 
   auto& spare_manager = content::SpareRenderProcessHostManager::Get();
   for (RenderProcessHost* spare_rph : spare_manager.GetSpares()) {
@@ -45,7 +44,7 @@ void SpareRenderProcessHostTaskProvider::StartUpdating() {
 }
 
 void SpareRenderProcessHostTaskProvider::StopUpdating() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 
   scoped_observation_.Reset();
 
@@ -55,14 +54,11 @@ void SpareRenderProcessHostTaskProvider::StopUpdating() {
 
 void SpareRenderProcessHostTaskProvider::OnSpareRenderProcessHostReady(
     RenderProcessHost* host) {
-  ChildProcessData data(content::PROCESS_TYPE_RENDERER, host->GetID());
-  data.SetProcess(host->GetProcess().Duplicate());
-
   auto task = std::make_unique<ChildProcessTask>(
-      data, ChildProcessTask::ProcessSubtype::kSpareRenderProcess);
+      *host, ChildProcessTask::ProcessSubtype::kSpareRenderProcess);
 
   auto [it, inserted] =
-      tasks_by_rph_id_.emplace(host->GetDeprecatedID(), std::move(task));
+      tasks_by_rph_id_.emplace(host->GetID(), std::move(task));
   CHECK(inserted);
 
   NotifyObserverTaskAdded(it->second.get());
@@ -70,7 +66,7 @@ void SpareRenderProcessHostTaskProvider::OnSpareRenderProcessHostReady(
 
 void SpareRenderProcessHostTaskProvider::OnSpareRenderProcessHostRemoved(
     RenderProcessHost* host) {
-  auto it = tasks_by_rph_id_.find(host->GetDeprecatedID());
+  auto it = tasks_by_rph_id_.find(host->GetID());
   if (it == tasks_by_rph_id_.end()) {
     // This can happen when a spare RenderProcessHost was created but never
     // reached the "ready" state.

@@ -75,6 +75,10 @@ class MockPageActionModel : public PageActionModelInterface {
               GetOverrideBackgroundColorId,
               (),
               (const, override));
+  MOCK_METHOD(std::optional<ui::ColorId>,
+              GetOverrideForegroundColorId,
+              (),
+              (const, override));
   MOCK_METHOD(void,
               AddObserver,
               (PageActionModelObserver * observer),
@@ -166,6 +170,11 @@ class MockPageActionModel : public PageActionModelInterface {
                std::optional<ui::ColorId> override_background_color_id),
               (override));
   MOCK_METHOD(void,
+              SetOverrideForegroundColorId,
+              (PageActionPassKey,
+               std::optional<ui::ColorId> override_foreground_color_id),
+              (override));
+  MOCK_METHOD(void,
               SetActionActive,
               (PageActionPassKey, bool is_active),
               (override));
@@ -177,6 +186,7 @@ class MockPageActionModel : public PageActionModelInterface {
               SetExemptFromOmniboxSuppression,
               (PageActionPassKey, bool is_exempt),
               (override));
+  MOCK_METHOD(bool, IsAffectedByOmniboxSuppression, (), (const, override));
   MOCK_METHOD(void,
               SetAnimationStyle,
               (PageActionPassKey, PageActionAnimationStyle style),

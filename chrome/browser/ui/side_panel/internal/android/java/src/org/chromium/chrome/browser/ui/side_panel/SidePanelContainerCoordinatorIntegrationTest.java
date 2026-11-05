@@ -4,12 +4,18 @@
 
 package org.chromium.chrome.browser.ui.side_panel;
 
+import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
+import static androidx.test.espresso.matcher.ViewMatchers.withId;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.app.Activity;
+import android.graphics.drawable.ColorDrawable;
+import android.os.SystemClock;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
@@ -26,7 +32,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.transit.ViewFinder;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
@@ -41,18 +49,25 @@ import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabbed_mode.TabbedRootUiCoordinator;
 import org.chromium.chrome.browser.ui.side_panel.test.SidePanelContainerCoordinatorIntegrationTestSupport;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ChromeTriggers;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.hub.UndoSnackbarFacility;
 import org.chromium.chrome.test.transit.ntp.IncognitoNewTabPageStation;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.components.browser_ui.styles.ChromeColors;
+import org.chromium.components.browser_ui.widget.RecyclerViewTestUtils;
+import org.chromium.content_public.browser.test.util.TouchCommon;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.test.util.RenderTestRule;
 import org.chromium.ui.util.ColorUtils;
 
@@ -73,6 +88,9 @@ public class SidePanelContainerCoordinatorIntegrationTest {
     private static final String RESPONSIVE_WEB_PAGE_URL =
             "/chrome/browser/ui/side_panel/test/data/responsive_page.html";
 
+    /** Tolerance for rounding errors when converting widths between dp and px. */
+    private static final int WIDTH_TOLERANCE_DP = 2;
+
     private WebPageStation mResponsivePageStation;
 
     @Rule
@@ -82,6 +100,8 @@ public class SidePanelContainerCoordinatorIntegrationTest {
     @Rule
     public RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
+                    .setRevision(4)
+                    .setDescription("Side panel header aligned with UX spec")
                     .setBugComponent(RenderTestRule.Component.UI_BROWSER_TOP_CHROME_SIDE_PANEL)
                     .build();
 
@@ -91,6 +111,12 @@ public class SidePanelContainerCoordinatorIntegrationTest {
                 mFreshCtaTransitTestRule.getTestServer().getURL(RESPONSIVE_WEB_PAGE_URL);
         mResponsivePageStation = mFreshCtaTransitTestRule.startOnUrl(responsivePageUrl);
         ChromeTabUtils.waitForTabPageLoaded(mResponsivePageStation.getTab(), responsivePageUrl);
+
+        Profile profile = mResponsivePageStation.getTab().getProfile();
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        SidePanelContainerCoordinatorIntegrationTestSupport
+                                .clearPersistedPanelWidths(profile));
     }
 
     @AfterClass
@@ -106,7 +132,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         var coordinator = getSidePanelContainerCoordinator();
 
         // Act.
-        showPanel(mResponsivePageStation.getTab());
+        showDevPanel(mResponsivePageStation.getTab());
         ViewGroup containerView = waitForContainerViewOpen(coordinator);
 
         // Assert.
@@ -118,6 +144,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         TextView titleView = containerView.findViewById(R.id.side_panel_title);
         assertNotNull(titleView);
         assertEquals("Developer Panel", titleView.getText().toString());
+        assertEquals(View.GONE, containerView.findViewById(R.id.side_panel_icon).getVisibility());
     }
 
     @Test
@@ -126,7 +153,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         // Arrange: Show the side panel for the current active tab.
         var coordinator = getSidePanelContainerCoordinator();
         var tab1 = mResponsivePageStation.getTab();
-        showPanel(tab1);
+        showDevPanel(tab1);
         ViewGroup containerView = waitForContainerViewOpen(coordinator);
         ViewGroup contentContainer = containerView.findViewById(R.id.side_panel_content_container);
         assertNotNull(contentContainer);
@@ -136,7 +163,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         // Arrange: Show the side panel for a new tab.
         var newTabPageStation = mResponsivePageStation.openNewTabFast();
         var tab2 = newTabPageStation.getTab();
-        showPanel(tab2);
+        showDevPanel(tab2);
         waitForContainerViewOpen(coordinator);
         assertEquals(1, contentContainer.getChildCount());
         View contentView2 = contentContainer.getChildAt(0);
@@ -159,7 +186,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         var tab1 = mResponsivePageStation.getTab();
 
         // Act.
-        showPanel(tab1);
+        showDevPanel(tab1);
         ViewGroup containerView = waitForContainerViewOpen(coordinator);
 
         // Assert.
@@ -175,13 +202,13 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         // Arrange: Show the side panel for the current active tab.
         var coordinator = getSidePanelContainerCoordinator();
         var tab1 = mResponsivePageStation.getTab();
-        showPanel(tab1);
+        showDevPanel(tab1);
         ViewGroup containerView = waitForContainerViewOpen(coordinator);
 
         // Arrange: Show the side panel for a new tab.
         var newTabPageStation = mResponsivePageStation.openNewTabFast();
         var tab2 = newTabPageStation.getTab();
-        showPanel(tab2);
+        showDevPanel(tab2);
         waitForContainerViewOpen(coordinator);
 
         // Force set a title on the view so we can test that replacing the panel natively updates it
@@ -204,7 +231,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         // Arrange: Open the panel
         var coordinator = getSidePanelContainerCoordinator();
         var tab1 = mResponsivePageStation.getTab();
-        showPanel(tab1);
+        showDevPanel(tab1);
         ViewGroup containerView = waitForContainerViewOpen(coordinator);
 
         // Force set a title on the view so we can test that close clears it
@@ -229,7 +256,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         var coordinator = getSidePanelContainerCoordinator();
 
         // Act.
-        showPanel(mResponsivePageStation.getTab());
+        showDevPanel(mResponsivePageStation.getTab());
         ViewGroup containerView = waitForContainerViewOpen(coordinator);
 
         // Assert.
@@ -238,11 +265,35 @@ public class SidePanelContainerCoordinatorIntegrationTest {
 
     @Test
     @MediumTest
+    public void clickCloseButtonOutsideIcon_closesPanel() {
+        // Arrange.
+        var coordinator = getSidePanelContainerCoordinator();
+        showDevPanel(mResponsivePageStation.getTab());
+        ViewGroup containerView = waitForContainerViewOpen(coordinator);
+        View headerView = containerView.findViewById(R.id.side_panel_header);
+        View closeButton = containerView.findViewById(R.id.side_panel_close_button);
+
+        // The button fills the header's height and is wider than its 24dp icon, for a larger
+        // touch target.
+        Activity activity = mFreshCtaTransitTestRule.getActivity();
+        assertEquals(ViewUtils.dpToPx(activity, 48), closeButton.getWidth(), /* delta= */ 1);
+        assertEquals(headerView.getHeight(), closeButton.getHeight());
+
+        // Act: Click near the button's top-start corner, outside its icon.
+        int offsetPx = ViewUtils.dpToPx(activity, 2);
+        TouchCommon.singleClickView(closeButton, offsetPx, offsetPx);
+
+        // Assert.
+        waitForContainerViewClose(coordinator);
+    }
+
+    @Test
+    @MediumTest
     public void closePanel_removesContentView() {
         // Arrange.
         var coordinator = getSidePanelContainerCoordinator();
         var tab = mResponsivePageStation.getTab();
-        showPanel(tab);
+        showDevPanel(tab);
         ViewGroup containerView = waitForContainerViewOpen(coordinator);
 
         // Act.
@@ -266,7 +317,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
 
         // Act: Open the side panel.
         var coordinator = getSidePanelContainerCoordinator();
-        showPanel(tab);
+        showDevPanel(tab);
         waitForContainerViewOpen(coordinator);
 
         // Assert: The WebContents width should become smaller.
@@ -296,16 +347,19 @@ public class SidePanelContainerCoordinatorIntegrationTest {
     @Test
     @MediumTest
     @Feature({"RenderTest"})
+    @DisableFeatures(ChromeFeatureList.DISABLE_GRID_TAB_SWITCHER)
     public void openAndClosePanel_tabThumbnailHasCorrectWidth() throws Exception {
         // Arrange: Get the tab showing the responsive page.
         var tab = mResponsivePageStation.getTab();
 
         // Arrange: Open the side panel.
         var coordinator = getSidePanelContainerCoordinator();
-        showPanel(tab);
+        showDevPanel(tab);
         waitForContainerViewOpen(coordinator);
 
         // Act: Open the grid tab switcher.
+        // Wait for the toolbar to settle before clicking the GTS button (crbug.com/562893806).
+        waitForBrowserControlContainerWidth(coordinator);
         var regularTabSwitcherStation = mResponsivePageStation.openRegularTabSwitcher();
         var tabCardFacility = regularTabSwitcherStation.expectTabCard(tab.getId(), tab.getTitle());
         View tabCardView = tabCardFacility.cardViewElement.value();
@@ -336,7 +390,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
     public void changeTheme_retainsOpenPanel() {
         // Arrange:
         var coordinator = getSidePanelContainerCoordinator();
-        showPanel(mResponsivePageStation.getTab());
+        showDevPanel(mResponsivePageStation.getTab());
         waitForContainerViewOpen(coordinator);
 
         // Act: Change the theme.
@@ -355,17 +409,10 @@ public class SidePanelContainerCoordinatorIntegrationTest {
     public void changeTheme_retainsBrowserControlContainerWidth() {
         // Arrange:
         ChromeTabbedActivity activity = mResponsivePageStation.getActivity();
-        var tab = mResponsivePageStation.getTab();
         var coordinator = getSidePanelContainerCoordinator();
-        showPanel(tab);
-        int sidePanelWidth = waitForContainerViewOpen(coordinator).getWidth();
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    int controlContainerWidth = getBrowserControlContainer(activity).getWidth();
-                    return controlContainerWidth > 0
-                            && controlContainerWidth + sidePanelWidth <= getWindowWidth(activity);
-                },
-                "Browser control container isn't resized to accommodate side panel.");
+        showDevPanel(mResponsivePageStation.getTab());
+        waitForContainerViewOpen(coordinator);
+        waitForBrowserControlContainerWidth(coordinator);
 
         // Act: Change the theme.
         ChromeTabbedActivity activityInNewTheme = changeTheme(activity);
@@ -373,19 +420,11 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         // Assert:
         // (1) Wait for the SidePanelContainerCoordinator in the new Activity to be initialized,
         // then
-        // (2) Verify the browser control container's width in the new Activity matches the width
-        // before theme change.
+        // (2) Verify the browser control container in the new Activity is resized to accommodate
+        // the side panel.
         var newCoordinator = waitForSidePanelContainerCoordinator(activityInNewTheme);
-        int newSidePanelWidth = waitForContainerViewOpen(newCoordinator).getWidth();
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    int newControlContainerWidth =
-                            getBrowserControlContainer(activityInNewTheme).getWidth();
-                    return newControlContainerWidth > 0
-                            && newControlContainerWidth + newSidePanelWidth
-                                    <= getWindowWidth(activityInNewTheme);
-                },
-                "Browser control container isn't resized to accommodate side panel.");
+        waitForContainerViewOpen(newCoordinator);
+        waitForBrowserControlContainerWidth(newCoordinator);
     }
 
     @Test
@@ -396,13 +435,16 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         var tab = mResponsivePageStation.getTab();
         var webContents = tab.getWebContents();
         assertNotNull(webContents);
+        int originalWebContentsWidth = ThreadUtils.runOnUiThreadBlocking(webContents::getWidth);
 
         var coordinator = getSidePanelContainerCoordinator();
-        showPanel(tab);
-        int sidePanelWidth = waitForContainerViewOpen(coordinator).getWidth();
+        showDevPanel(tab);
+        waitForContainerViewOpen(coordinator);
 
+        // WebContents#getWidth() returns a value in dp, whereas View#getWidth() and
+        // getWindowWidth() return px; compare against originalWebContentsWidth in dp.
         CriteriaHelper.pollUiThread(
-                () -> webContents.getWidth() + sidePanelWidth <= getWindowWidth(activity),
+                () -> webContents.getWidth() < originalWebContentsWidth,
                 "WebContents isn't resized to accommodate side panel.");
 
         // Act: Change the theme.
@@ -411,10 +453,10 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         // Assert:
         // (1) Wait for the SidePanelContainerCoordinator in the new Activity to be initialized,
         // then
-        // (2) Verify the WebContents's width in the new Activity matches the width before theme
-        // change.
+        // (2) Verify the WebContents's width in the new Activity remains narrowed for the side
+        // panel.
         var newCoordinator = waitForSidePanelContainerCoordinator(activityInNewTheme);
-        int newSidePanelWidth = waitForContainerViewOpen(newCoordinator).getWidth();
+        waitForContainerViewOpen(newCoordinator);
         CriteriaHelper.pollUiThread(
                 () -> {
                     var newTab = activityInNewTheme.getActivityTabProvider().get();
@@ -427,8 +469,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
                         return false;
                     }
 
-                    return newWebContents.getWidth() + newSidePanelWidth
-                            <= getWindowWidth(activityInNewTheme);
+                    return newWebContents.getWidth() < originalWebContentsWidth;
                 },
                 "WebContents isn't resized to accommodate side panel.");
     }
@@ -447,7 +488,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         assertNotNull(nativePageView);
 
         var coordinator = getSidePanelContainerCoordinator();
-        showPanel(tab);
+        showDevPanel(tab);
         int sidePanelWidth = waitForContainerViewOpen(coordinator).getWidth();
         CriteriaHelper.pollUiThread(
                 () -> nativePageView.getWidth() + sidePanelWidth <= getWindowWidth(activity),
@@ -483,7 +524,9 @@ public class SidePanelContainerCoordinatorIntegrationTest {
 
     @Test
     @MediumTest
-    public void closeAllTabsInGridTabSwitcher_closesSidePanel() {
+    @DisableFeatures(ChromeFeatureList.DISABLE_GRID_TAB_SWITCHER)
+    @EnableFeatures(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_DEV_FEATURE + ":scope/tab")
+    public void closeAllTabsInGridTabSwitcher_closesTabScopedSidePanel() {
         // Arrange: Open 2 tabs.
         var tab1 = mResponsivePageStation.getTab();
         var newTabPageStation = mResponsivePageStation.openNewTabFast();
@@ -491,13 +534,15 @@ public class SidePanelContainerCoordinatorIntegrationTest {
 
         // Arrange: Open the side panel for each tab.
         var coordinator = getSidePanelContainerCoordinator();
-        showPanel(tab2);
+        showDevPanel(tab2);
         waitForContainerViewOpen(coordinator);
         mResponsivePageStation = newTabPageStation.selectTabFast(tab1, WebPageStation::newBuilder);
-        showPanel(tab1);
+        showDevPanel(tab1);
         waitForContainerViewOpen(coordinator);
 
         // Act: Go to the grid tab switcher (GTS), and use the three-dot menu to close all tabs.
+        // Wait for the toolbar to settle before clicking the GTS button (crbug.com/562893806).
+        waitForBrowserControlContainerWidth(coordinator);
         var tabSwitcherStation = mResponsivePageStation.openRegularTabSwitcher();
         var dialogFacility = tabSwitcherStation.openAppMenu().clickCloseAllTabs();
         dialogFacility.positiveButtonElement.clickTo().exitFacility();
@@ -511,6 +556,167 @@ public class SidePanelContainerCoordinatorIntegrationTest {
 
     @Test
     @MediumTest
+    @DisableFeatures(ChromeFeatureList.DISABLE_GRID_TAB_SWITCHER)
+    @EnableFeatures(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_DEV_FEATURE + ":scope/window")
+    public void closeAllTabsInGridTabSwitcher_closesWindowScopedSidePanel() {
+        // Arrange: Open a second tab.
+        var newTabPageStation = mResponsivePageStation.openNewTabFast();
+        var newTab = newTabPageStation.getTab();
+
+        // Arrange: Open the window-scoped side panel.
+        var coordinator = getSidePanelContainerCoordinator();
+        showDevPanel(newTab);
+        waitForContainerViewOpen(coordinator);
+
+        // Act: Go to the grid tab switcher (GTS), and use the three-dot menu to close all tabs.
+        // Wait for the toolbar to settle before clicking the GTS button (crbug.com/562893806).
+        waitForBrowserControlContainerWidth(coordinator);
+        var tabSwitcherStation = newTabPageStation.openRegularTabSwitcher();
+        var dialogFacility = tabSwitcherStation.openAppMenu().clickCloseAllTabs();
+        dialogFacility.positiveButtonElement.clickTo().exitFacility();
+
+        // Act: Stay in GTS, use the "+" button to create a new tab.
+        tabSwitcherStation.openNewTab();
+
+        // Assert: The side panel is not shown.
+        waitForContainerViewClose(coordinator);
+    }
+
+    @Test
+    @MediumTest
+    @DisableFeatures(ChromeFeatureList.DISABLE_GRID_TAB_SWITCHER)
+    @EnableFeatures(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_DEV_FEATURE + ":scope/tab")
+    public void closeAllTabsInGridTabSwitcher_undo_restoresTabScopedSidePanel() {
+        // Arrange: Open 2 tabs.
+        var tab1 = mResponsivePageStation.getTab();
+        var newTabPageStation = mResponsivePageStation.openNewTabFast();
+        var tab2 = newTabPageStation.getTab();
+
+        // Arrange: Open the side panel for each tab.
+        var coordinator = getSidePanelContainerCoordinator();
+        showDevPanel(tab2);
+        waitForContainerViewOpen(coordinator);
+        mResponsivePageStation = newTabPageStation.selectTabFast(tab1, WebPageStation::newBuilder);
+        showDevPanel(tab1);
+        waitForContainerViewOpen(coordinator);
+
+        // Act: Go to the grid tab switcher (GTS), and use the three-dot menu to close all tabs.
+        // Wait for the toolbar to settle before clicking the GTS button (crbug.com/562893806).
+        waitForBrowserControlContainerWidth(coordinator);
+        var tabSwitcherStation = mResponsivePageStation.openRegularTabSwitcher();
+        var dialogFacility = tabSwitcherStation.openAppMenu().clickCloseAllTabs();
+        var undoSnackbar =
+                dialogFacility
+                        .positiveButtonElement
+                        .clickTo()
+                        .exitFacilityAnd()
+                        .enterFacility(new UndoSnackbarFacility<>("tabs closed"));
+
+        // Assert: The side panel is closed in the 0-tab GTS state.
+        waitForContainerViewClose(coordinator);
+
+        // Act: Undo the tab closure using the undo snackbar.
+        undoSnackbar.pressUndo();
+        RecyclerViewTestUtils.waitForView(tabSwitcherStation.recyclerViewElement.value(), 0);
+        RecyclerViewTestUtils.waitForView(tabSwitcherStation.recyclerViewElement.value(), 1);
+
+        // Act: Select the restored tab 1.
+        mResponsivePageStation =
+                tabSwitcherStation.selectTabAtIndex(0, WebPageStation.newBuilder());
+
+        // Assert: The side panel for tab 1 is automatically restored and reopened.
+        waitForContainerViewOpen(coordinator);
+
+        // Act: Select the restored tab 2.
+        mResponsivePageStation.selectTabFast(tab2, RegularNewTabPageStation::newBuilder);
+
+        // Assert: The side panel for tab 2 is automatically restored and reopened.
+        waitForContainerViewOpen(coordinator);
+    }
+
+    @Test
+    @MediumTest
+    @DisableFeatures(ChromeFeatureList.DISABLE_GRID_TAB_SWITCHER)
+    // BypassOutdatedSurfaceActivation avoids a Viz race that stalls the compositor for ~5s when
+    // switching to an evicted tab with the side panel open. See crbug.com/562893806.
+    @EnableFeatures({
+        ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_DEV_FEATURE + ":scope/window",
+        "BypassOutdatedSurfaceActivation"
+    })
+    public void closeAllTabsInGridTabSwitcher_undo_restoresWindowScopedSidePanel() {
+        // Arrange: Open a second tab.
+        var newTabPageStation = mResponsivePageStation.openNewTabFast();
+        var newTab = newTabPageStation.getTab();
+
+        // Arrange: Open the window-scoped side panel.
+        var coordinator = getSidePanelContainerCoordinator();
+        showDevPanel(newTab);
+        waitForContainerViewOpen(coordinator);
+
+        // Act: Go to the grid tab switcher (GTS), and use the three-dot menu to close all tabs.
+        // Wait for the toolbar to settle before clicking the GTS button (crbug.com/562893806).
+        waitForBrowserControlContainerWidth(coordinator);
+        var tabSwitcherStation = newTabPageStation.openRegularTabSwitcher();
+        var dialogFacility = tabSwitcherStation.openAppMenu().clickCloseAllTabs();
+        var undoSnackbar =
+                dialogFacility
+                        .positiveButtonElement
+                        .clickTo()
+                        .exitFacilityAnd()
+                        .enterFacility(new UndoSnackbarFacility<>("tabs closed"));
+
+        // Assert: The side panel is closed in the 0-tab GTS state.
+        waitForContainerViewClose(coordinator);
+
+        // Act: Undo the tab closure using the undo snackbar.
+        undoSnackbar.pressUndo();
+        RecyclerViewTestUtils.waitForView(tabSwitcherStation.recyclerViewElement.value(), 0);
+        RecyclerViewTestUtils.waitForView(tabSwitcherStation.recyclerViewElement.value(), 1);
+
+        // Act: Select the restored tab 1.
+        mResponsivePageStation =
+                tabSwitcherStation.selectTabAtIndex(0, WebPageStation.newBuilder());
+
+        // Assert: The side panel is automatically restored and reopened.
+        waitForContainerViewOpen(coordinator);
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_DEV_FEATURE + ":scope/tab")
+    public void closeTab_undo_restoresTabScopedSidePanel() {
+        // Arrange: Open a second tab and show the side panel on it.
+        var newTabPageStation = mResponsivePageStation.openNewTabFast();
+        var newTab = newTabPageStation.getTab();
+        var coordinator = getSidePanelContainerCoordinator();
+        showDevPanel(newTab);
+        waitForContainerViewOpen(coordinator);
+
+        // Act: Close the new (active) tab.
+        var undoSnackbar =
+                ChromeTriggers.invokeCustomMenuActionTo(
+                                org.chromium.chrome.R.id.close_tab, newTabPageStation)
+                        .arriveAtAnd(
+                                WebPageStation.newBuilder()
+                                        .initFrom(newTabPageStation)
+                                        .withIsSelectingTabs(1)
+                                        .build())
+                        .enterFacility(new UndoSnackbarFacility<>("Closed"));
+
+        // Assert: The side panel is closed because the first tab doesn't have an open side panel.
+        waitForContainerViewClose(coordinator);
+
+        // Act: Undo the tab closure.
+        undoSnackbar
+                .pressUndoTo()
+                .arriveAt(RegularNewTabPageStation.newBuilder().initSelectingExistingTab().build());
+
+        // Assert: The side panel for the second tab is automatically restored and reopened.
+        waitForContainerViewOpen(coordinator);
+    }
+
+    @Test
+    @MediumTest
     public void closePanel_switchTabMidAnimation_staysClosedWhenReturningToTab() {
         // Arrange: Open 2 tabs and show the side panel on tab1.
         Tab tab1 = mResponsivePageStation.getTab();
@@ -519,7 +725,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
 
         SidePanelContainerCoordinatorImpl coordinator = getSidePanelContainerCoordinator();
         mResponsivePageStation = newTabPageStation.selectTabFast(tab1, WebPageStation::newBuilder);
-        showPanel(tab1);
+        showDevPanel(tab1);
         waitForContainerViewOpen(coordinator);
 
         // Start animated close on tab1.
@@ -550,8 +756,12 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         var incognitoTab = incognitoTabStation.getTab();
 
         // Act & Assert.
-        showPanel(incognitoTab);
-        waitForContainerViewOpen(coordinator);
+        showDevPanel(incognitoTab);
+        ViewGroup containerView = waitForContainerViewOpen(coordinator);
+        assertEquals(
+                ChromeColors.getDefaultBgColor(
+                        mFreshCtaTransitTestRule.getActivity(), /* isIncognito= */ true),
+                ((ColorDrawable) containerView.getBackground()).getColor());
         closePanel(incognitoTab);
         waitForContainerViewClose(coordinator);
     }
@@ -569,8 +779,12 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         var coordinator = getSidePanelContainerCoordinator();
 
         // Act & Assert.
-        showPanel(regularTab);
-        waitForContainerViewOpen(coordinator);
+        showDevPanel(regularTab);
+        ViewGroup containerView = waitForContainerViewOpen(coordinator);
+        assertEquals(
+                ChromeColors.getDefaultBgColor(
+                        mFreshCtaTransitTestRule.getActivity(), /* isIncognito= */ false),
+                ((ColorDrawable) containerView.getBackground()).getColor());
         closePanel(regularTab);
         waitForContainerViewClose(coordinator);
     }
@@ -582,7 +796,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         // Arrange: Open the side panel in the regular pane.
         var coordinator = getSidePanelContainerCoordinator();
         var regularTab = mResponsivePageStation.getTab();
-        showPanel(regularTab);
+        showDevPanel(regularTab);
         waitForContainerViewOpen(coordinator);
 
         // Act: Switch to the incognito pane.
@@ -601,7 +815,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         var regularTab = mResponsivePageStation.getTab();
         var incognitoTabPageStation = mResponsivePageStation.openNewIncognitoTabFast();
         var incognitoTab = incognitoTabPageStation.getTab();
-        showPanel(incognitoTab);
+        showDevPanel(incognitoTab);
         waitForContainerViewOpen(coordinator);
 
         // Act: Switch back to the regular pane.
@@ -619,7 +833,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         // Arrange: Open the side panel in the regular pane.
         var coordinator = getSidePanelContainerCoordinator();
         var regularTab = mResponsivePageStation.getTab();
-        showPanel(regularTab);
+        showDevPanel(regularTab);
         waitForContainerViewOpen(coordinator);
 
         // Act: Switch to the incognito pane.
@@ -644,7 +858,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         var incognitoPageStation = mFreshCtaTransitTestRule.startOnIncognitoBlankPage();
         var incognitoTab = incognitoPageStation.getTab();
         var coordinator = getSidePanelContainerCoordinator();
-        showPanel(incognitoTab);
+        showDevPanel(incognitoTab);
         waitForContainerViewOpen(coordinator);
 
         // Act: Switch to the regular pane.
@@ -669,7 +883,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         var newTabPageStation = mResponsivePageStation.openNewTabFast();
         var tab2 = newTabPageStation.getTab();
         mResponsivePageStation = newTabPageStation.selectTabFast(tab1, WebPageStation::newBuilder);
-        showPanel(tab1);
+        showDevPanel(tab1);
         waitForContainerViewOpen(coordinator);
 
         // Act: Switch to the incognito pane.
@@ -697,7 +911,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         incognitoPageStation1 =
                 incognitoPageStation2.selectTabFast(incognitoTab1, WebPageStation::newBuilder);
         var coordinator = getSidePanelContainerCoordinator();
-        showPanel(incognitoTab1);
+        showDevPanel(incognitoTab1);
         waitForContainerViewOpen(coordinator);
 
         // Act: Switch to the regular pane.
@@ -722,7 +936,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         var newTabPageStation = mResponsivePageStation.openNewTabFast();
         var tab2 = newTabPageStation.getTab();
         mResponsivePageStation = newTabPageStation.selectTabFast(tab1, WebPageStation::newBuilder);
-        showPanel(tab1);
+        showDevPanel(tab1);
         waitForContainerViewOpen(coordinator);
 
         // Act: Switch to the incognito pane.
@@ -756,7 +970,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         incognitoPageStation1 =
                 incognitoPageStation2.selectTabFast(incognitoTab1, WebPageStation::newBuilder);
         var coordinator = getSidePanelContainerCoordinator();
-        showPanel(incognitoTab1);
+        showDevPanel(incognitoTab1);
         waitForContainerViewOpen(coordinator);
 
         // Act: Switch to the regular pane.
@@ -784,14 +998,14 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         // Arrange: Open the side panel in both the regular pane and the incognito pane.
         var coordinator = getSidePanelContainerCoordinator();
         var regularTab = mResponsivePageStation.getTab();
-        showPanel(regularTab);
+        showDevPanel(regularTab);
         waitForContainerViewOpen(coordinator);
         String regularPanelTitle = getTabTitleInContentView(coordinator);
 
         var incognitoTabPageStation = mResponsivePageStation.openNewIncognitoTabFast();
         var incognitoTab = incognitoTabPageStation.getTab();
         waitForContainerViewClose(coordinator);
-        showPanel(incognitoTab);
+        showDevPanel(incognitoTab);
         waitForContainerViewOpen(coordinator);
         String incognitoPanelTitle = getTabTitleInContentView(coordinator);
         assertNotEquals(regularPanelTitle, incognitoPanelTitle);
@@ -810,6 +1024,85 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         // Assert: The side panel remains open.
         waitForContainerViewOpen(coordinator);
         assertEquals(incognitoPanelTitle, getTabTitleInContentView(coordinator));
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_MANUAL_RESIZING)
+    public void resizePanel_restoresPersistedWidthWhenReopened() {
+        // Arrange: Show the side panel, and resize it.
+        var coordinator = getSidePanelContainerCoordinator();
+        Tab tab = mResponsivePageStation.getTab();
+        showDevPanel(tab);
+        waitForContainerViewOpen(coordinator);
+        int resizedWidthDp = getContainerWidthDp(coordinator) - 10;
+        resizePanel(coordinator, resizedWidthDp);
+
+        // Act: Close and reopen the side panel.
+        closePanel(tab);
+        waitForContainerViewClose(coordinator);
+        showDevPanel(tab);
+        waitForContainerViewOpen(coordinator);
+
+        // Assert: The side panel restores the width it was resized to.
+        waitForContainerWidth(coordinator, resizedWidthDp);
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_MANUAL_RESIZING)
+    public void replacePanelContent_restoresEachEntrysPersistedWidth() {
+        // Arrange: Show the side panel for the dev entry, and resize it.
+        var coordinator = getSidePanelContainerCoordinator();
+        Tab tab = mResponsivePageStation.getTab();
+        showDevPanel(tab);
+        waitForContainerViewOpen(coordinator);
+        int automaticWidthDp = getContainerWidthDp(coordinator);
+        int devEntryResizedWidthDp = automaticWidthDp - 10;
+        int testEntryResizedWidthDp = automaticWidthDp - 20;
+        resizePanel(coordinator, devEntryResizedWidthDp);
+
+        // Act & Assert: Show a different entry while the side panel is open, which replaces its
+        // content. The test entry has no persisted width, so it uses the automatic width.
+        showTestEntryPanel(tab);
+        waitForContainerWidth(coordinator, automaticWidthDp);
+
+        // Arrange: Resize the side panel for the test entry.
+        resizePanel(coordinator, testEntryResizedWidthDp);
+
+        // Act & Assert: Switching between the entries, without closing the side panel, restores
+        // each entry's own persisted width.
+        showDevPanel(tab);
+        waitForContainerWidth(coordinator, devEntryResizedWidthDp);
+        showTestEntryPanel(tab);
+        waitForContainerWidth(coordinator, testEntryResizedWidthDp);
+    }
+
+    @Test
+    @MediumTest
+    @DisableFeatures(ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_MANUAL_RESIZING)
+    public void showPanel_manualResizingDisabled_ignoresPersistedWidth() {
+        // Arrange: Show and close the side panel to find its automatic width, then persist a
+        // different width.
+        var coordinator = getSidePanelContainerCoordinator();
+        Tab tab = mResponsivePageStation.getTab();
+        showDevPanel(tab);
+        waitForContainerViewOpen(coordinator);
+        int automaticWidthDp = getContainerWidthDp(coordinator);
+        int persistedWidthDp = automaticWidthDp - 10;
+        closePanel(tab);
+        waitForContainerViewClose(coordinator);
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        SidePanelContainerCoordinatorIntegrationTestSupport
+                                .setPersistedDevPanelWidth(tab.getProfile(), persistedWidthDp));
+
+        // Act.
+        showDevPanel(tab);
+        waitForContainerViewOpen(coordinator);
+
+        // Assert: The side panel ignores the persisted width, and uses its automatic width.
+        waitForContainerWidth(coordinator, automaticWidthDp);
     }
 
     private SidePanelContainerCoordinatorImpl getSidePanelContainerCoordinator() {
@@ -848,10 +1141,10 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         return coordinator;
     }
 
-    private static void showPanel(Tab tab) {
+    private static void showDevPanel(Tab tab) {
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
-                        SidePanelContainerCoordinatorIntegrationTestSupport.showSidePanel(
+                        SidePanelContainerCoordinatorIntegrationTestSupport.showDevSidePanel(
                                 tab, /* suppressAnimations= */ true));
     }
 
@@ -864,6 +1157,103 @@ public class SidePanelContainerCoordinatorIntegrationTest {
                 () ->
                         SidePanelContainerCoordinatorIntegrationTestSupport.closeSidePanel(
                                 tab, suppressAnimations));
+    }
+
+    private static void showTestEntryPanel(Tab tab) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        SidePanelContainerCoordinatorIntegrationTestSupport.showTestEntrySidePanel(
+                                tab, /* suppressAnimations= */ true));
+    }
+
+    /**
+     * Drags the side panel's resize handle with touch events until the container View is {@code
+     * widthDp} wide, and waits for the container View to have that width.
+     *
+     * <p>The automatic width depends on the window, e.g. the side panel fills the available width
+     * in a narrow window, so tests should pass a width relative to it. Resizing narrower keeps the
+     * width within bounds.
+     */
+    private static void resizePanel(SidePanelContainerCoordinatorImpl coordinator, int widthDp) {
+        // Each side has its own resize handle, so also match the side panel's content description.
+        View handleView =
+                ViewFinder.waitForView(
+                                withId(R.id.side_ui_resize_handle),
+                                withContentDescription(
+                                        R.string.accessibility_side_panel_resize_handle))
+                        .getView();
+        float[] dragSpec =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            int[] location = new int[2];
+                            handleView.getLocationOnScreen(location);
+                            float startRawX = location[0] + handleView.getWidth() / 2f;
+                            float startRawY = location[1] + handleView.getHeight() / 2f;
+                            // The side panel is anchored to the right of the window, so dragging
+                            // its inner (left) edge to the right narrows it.
+                            View containerView = coordinator.getView();
+                            float deltaX =
+                                    containerView.getWidth()
+                                            - ViewUtils.dpToPx(containerView.getContext(), widthDp);
+                            return new float[] {startRawX, startRawY, deltaX};
+                        });
+        float startRawX = dragSpec[0];
+        float rawY = dragSpec[1];
+        float deltaX = dragSpec[2];
+
+        int dragSteps = 10;
+        long downTime = SystemClock.uptimeMillis();
+        dispatchTouchEvent(handleView, downTime, MotionEvent.ACTION_DOWN, startRawX, rawY);
+        for (int i = 1; i <= dragSteps; i++) {
+            float rawX = startRawX + deltaX * i / dragSteps;
+            dispatchTouchEvent(handleView, downTime, MotionEvent.ACTION_MOVE, rawX, rawY);
+        }
+        dispatchTouchEvent(handleView, downTime, MotionEvent.ACTION_UP, startRawX + deltaX, rawY);
+
+        waitForContainerWidth(coordinator, widthDp);
+    }
+
+    /** Dispatches a touch event at the given screen coordinates to {@code view}. */
+    private static void dispatchTouchEvent(
+            View view, long downTime, int action, float rawX, float rawY) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    MotionEvent event =
+                            MotionEvent.obtain(
+                                    downTime,
+                                    SystemClock.uptimeMillis(),
+                                    action,
+                                    rawX,
+                                    rawY,
+                                    /* metaState= */ 0);
+                    view.dispatchTouchEvent(event);
+                    event.recycle();
+                });
+    }
+
+    /** Returns the width (in dp) of the View of {@link SidePanelContainerCoordinator}. */
+    private static int getContainerWidthDp(SidePanelContainerCoordinatorImpl coordinator) {
+        return ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    View containerView = coordinator.getView();
+                    return ViewUtils.pxToDp(containerView.getContext(), containerView.getWidth());
+                });
+    }
+
+    /**
+     * Waits for the View of {@link SidePanelContainerCoordinator} to be {@code widthDp} wide,
+     * allowing for rounding errors.
+     */
+    private static void waitForContainerWidth(
+            SidePanelContainerCoordinatorImpl coordinator, int widthDp) {
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    View containerView = coordinator.getView();
+                    int actualWidthDp =
+                            ViewUtils.pxToDp(containerView.getContext(), containerView.getWidth());
+                    return Math.abs(actualWidthDp - widthDp) <= WIDTH_TOLERANCE_DP;
+                },
+                "The container View should be " + widthDp + "dp wide.");
     }
 
     /**
@@ -896,7 +1286,7 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         assertTrue(containerView instanceof ViewGroup);
 
         CriteriaHelper.pollUiThread(
-                () -> containerView.getWidth() > 0,
+                () -> containerView.isShown() && containerView.getWidth() > 0,
                 "The container View should have been attached and laid out.");
         return (ViewGroup) containerView;
     }
@@ -908,6 +1298,37 @@ public class SidePanelContainerCoordinatorIntegrationTest {
         CriteriaHelper.pollUiThread(
                 () -> containerView.getParent() == null,
                 "The container View should have been detached.");
+    }
+
+    /**
+     * Waits for the browser control container to be resized to accommodate the open side panel,
+     * i.e. for the two to fit within the window width.
+     *
+     * <p>Without animations, the side panel container is laid out synchronously when the side panel
+     * opens, but the browser control container is only re-laid out in a later layout pass.
+     * Interacting with the toolbar before that pass can race with the relayout, e.g. turning a tap
+     * on the tab switcher button into a long press. See crbug.com/562893806.
+     */
+    private static void waitForBrowserControlContainerWidth(
+            SidePanelContainerCoordinatorImpl coordinator) {
+        Activity activity =
+                ThreadUtils.runOnUiThreadBlocking(() -> getActivity(coordinator.getView()));
+        @Px
+        int sidePanelWidth =
+                ThreadUtils.runOnUiThreadBlocking(() -> coordinator.getView().getWidth());
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    int controlContainerWidth = getBrowserControlContainer(activity).getWidth();
+                    return controlContainerWidth > 0
+                            && controlContainerWidth + sidePanelWidth <= getWindowWidth(activity);
+                },
+                "Browser control container isn't resized to accommodate side panel.");
+    }
+
+    private static Activity getActivity(View view) {
+        Activity activity = ContextUtils.activityFromContext(view.getContext());
+        assertNotNull(activity);
+        return activity;
     }
 
     private static String getTabTitleInContentView(SidePanelContainerCoordinatorImpl coordinator) {

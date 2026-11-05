@@ -192,7 +192,8 @@ const NSTimeInterval kCollapseAnimationDuration = 0.45;
 - (UILabel*)createTitleLabelWithNumberOfLines:(NSInteger)numberOfLines {
   UILabel* label = [[UILabel alloc] init];
   label.numberOfLines = numberOfLines;
-  label.font = CreateDynamicFont(UIFontTextStyleSubheadline, UIFontWeightBold);
+  label.font =
+      PreferredFontForTextStyle(UIFontTextStyleSubheadline, UIFontWeightBold);
   label.textColor = [UIColor colorNamed:kTextPrimaryColor];
   label.translatesAutoresizingMaskIntoConstraints = NO;
   return label;
@@ -278,6 +279,8 @@ const NSTimeInterval kCollapseAnimationDuration = 0.45;
   _subtitleLabel.hidden = YES;
 
   _actionButton = [[ChromeButton alloc] initWithStyle:ChromeButtonStylePrimary];
+  _actionButton.accessibilityIdentifier =
+      kActuationTaskCardActionButtonAccessibilityIdentifier;
   _actionButton.translatesAutoresizingMaskIntoConstraints = NO;
   [_actionButton addTarget:self
                     action:@selector(didTapActionButton)

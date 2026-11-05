@@ -6,15 +6,16 @@
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_INTEGRATORS_AUTOFILL_AI_AUTOFILL_AI_WALLET_UTIL_H_
 
 #include <optional>
-#include <string>
 
 #include "base/memory/weak_ptr.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
+#include "components/autofill/core/browser/network/autofill_ai/wallet_pass_access_manager.h"
 #include "components/consent_auditor/consent_auditor.h"
 
 namespace autofill {
 
-class EntityInstance;
 class EntityDataManager;
 
 // Reacts to the response of a Wallet upsert request by writing to EDM and
@@ -36,8 +37,9 @@ void HandleWalletUpsertResponse(
     EntityInstance entity,
     std::optional<EntityInstance> wallet_response);
 
-// Returns the URL of a Wallet `entity`'s management page on wallet.google.com.
-std::string GetWalletManagementURL(const EntityInstance& entity);
+// Returns true if `url` is a valid, secure Google Wallet management URL
+// (i.e. valid GURL, HTTPS scheme, Google domain, and standard port).
+bool IsValidWalletManagementUrl(const GURL& url);
 
 // Logs a `sync_pb::UserConsentTypes::WalletPrivatePassConsent` with
 // `accepted_consent_string_id` and `accept_button_string_id` as its consent
@@ -49,6 +51,21 @@ consent_auditor::ConsentAuditor::SessionId RecordWalletPrivatePassConsent(
     int accept_button_string_id,
     consent_auditor::ConsentAuditor& consent_auditor,
     signin::IdentityManager& identity_manager);
+
+// Returns true if an entity with `type` and `record_type` is eligible for a
+// Google Wallet notice (i.e. it is a public pass stored in Google Wallet and
+// its type is not read-only).
+bool IsEligibleForWalletNotice(const EntityType& type,
+                               const EntityInstance::RecordType& record_type);
+
+// Returns true if `response` is valid for saving a public pass to Google
+// Wallet. When `user_eligibility` is `UserEligibility::kEligible`, the user
+// must be shown the legal disclosure notice, so both `legal_message_lines` and
+// `legal_message_token` must be non-empty. When the user is not `kEligible`
+// (e.g. `kIneligible`), the response is valid even without them.
+bool IsValidUpsertPassDetailsResponse(
+    const WalletPassAccessManager::GetDetailsForUpsertPassResponse& response);
+
 }  // namespace autofill
 
 #endif  // COMPONENTS_AUTOFILL_CORE_BROWSER_INTEGRATORS_AUTOFILL_AI_AUTOFILL_AI_WALLET_UTIL_H_

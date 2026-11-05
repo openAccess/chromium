@@ -6,26 +6,32 @@
 
 #include <memory>
 
+#include "ash/wallpaper/mock_sea_pen_fetcher.h"
 #include "ash/webui/personalization_app/personalization_app_ui.h"
 #include "ash/webui/personalization_app/test/fake_personalization_app_ambient_provider.h"
 #include "ash/webui/personalization_app/test/fake_personalization_app_keyboard_backlight_provider.h"
 #include "ash/webui/personalization_app/test/fake_personalization_app_user_provider.h"
+#include "base/check_deref.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_sea_pen_provider_impl.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_theme_provider_impl.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_wallpaper_provider_impl.h"
 #include "chrome/browser/ash/wallpaper_handlers/test_wallpaper_fetcher_delegate.h"
-#include "chrome/browser/browser_process.h"
 #include "content/public/browser/web_ui.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "url/gurl.h"
 
 namespace ash::personalization_app {
 
+TestPersonalizationAppWebUIProvider::TestPersonalizationAppWebUIProvider(
+    PrefService* local_state)
+    : local_state_(CHECK_DEREF(local_state)) {}
+
+TestPersonalizationAppWebUIProvider::~TestPersonalizationAppWebUIProvider() =
+    default;
+
 std::unique_ptr<content::WebUIController>
 TestPersonalizationAppWebUIProvider::NewWebUI(content::WebUI* web_ui,
                                               const GURL& url) {
-  // TODO(crbug.com/404133902): Avoid using g_browser_process.
-  PrefService* local_state = g_browser_process->local_state();
-
   auto ambient_provider =
       std::make_unique<FakePersonalizationAppAmbientProvider>(web_ui);
   auto keyboard_backlight_provider =
@@ -33,12 +39,14 @@ TestPersonalizationAppWebUIProvider::NewWebUI(content::WebUI* web_ui,
   auto sea_pen_provider =
       std::make_unique<PersonalizationAppSeaPenProviderImpl>(
           web_ui,
-          std::make_unique<wallpaper_handlers::TestWallpaperFetcherDelegate>());
+          std::make_unique<wallpaper_handlers::TestWallpaperFetcherDelegate>(),
+          /*manta_service=*/nullptr,
+          std::make_unique<testing::NiceMock<MockSeaPenFetcher>>());
   auto theme_provider =
       std::make_unique<PersonalizationAppThemeProviderImpl>(web_ui);
   auto wallpaper_provider =
       std::make_unique<PersonalizationAppWallpaperProviderImpl>(
-          local_state, web_ui,
+          &local_state_.get(), web_ui,
           std::make_unique<wallpaper_handlers::TestWallpaperFetcherDelegate>());
   auto user_provider =
       std::make_unique<FakePersonalizationAppUserProvider>(web_ui);

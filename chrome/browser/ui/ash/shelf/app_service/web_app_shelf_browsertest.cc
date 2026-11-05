@@ -14,7 +14,6 @@
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -31,7 +30,8 @@
 #include "content/public/test/browser_test.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/base/base_window.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/display/screen.h"
 #include "url/gurl.h"
 
@@ -54,7 +54,8 @@ class WebAppShelfBrowserTest : public InProcessBrowserTest {
     auto* const proxy = apps::AppServiceProxyFactory::GetForProfile(profile());
     proxy->LaunchAppWithParams(apps::AppLaunchParams(
         app_id, apps::LaunchContainer::kLaunchContainerWindow,
-        WindowOpenDisposition::NEW_WINDOW, apps::LaunchSource::kFromOmnibox));
+        ui::mojom::WindowOpenDisposition::kNewWindow,
+        apps::LaunchSource::kFromOmnibox));
     BrowserWindowInterface* app_browser = browser_created_observer.Wait();
     ash::ShelfModel::Get()->PinExistingItemWithID(app_id);
     app_browser->GetWindow()->Close();
@@ -121,7 +122,7 @@ IN_PROC_BROWSER_TEST_F(WebAppShelfBrowserTest, SwitchingBetweenApps) {
   {
     ui_test_utils::TabAddedWaiter waiter(browser());
     NavigateParams params(browser(), start_d, ui::PAGE_TRANSITION_LINK);
-    params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     ui_test_utils::NavigateToURL(&params);
     waiter.Wait();
     contents_d = browser()->GetTabStripModel()->GetActiveWebContents();

@@ -5,7 +5,9 @@
 import 'chrome://profile-picker/profile_picker.js';
 
 import type {ProfileCardElement, ProfilePickerMainViewElement, ProfileState} from 'chrome://profile-picker/profile_picker.js';
-import {loadTimeData, ManageProfilesBrowserProxyImpl, navigateTo, NavigationMixin, Routes} from 'chrome://profile-picker/profile_picker.js';
+import {loadTimeData, ManageProfilesBrowserProxyImpl, navigateTo, NavigationMixin, ProfileOrderUpdateType, Routes} from 'chrome://profile-picker/profile_picker.js';
+import type {CrCheckboxElement} from 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
+import type {CrToggleElement} from 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertGE, assertTrue} from 'chrome://webui-test/chai_assert.js';
@@ -155,15 +157,19 @@ suite('ProfilePickerMainViewTest', function() {
     assertTrue(navigationElement.changeCalled);
     assertEquals(navigationElement.route, Routes.MAIN);
     await browserProxy.whenCalled('initializeMainView');
+    const askOnStartup =
+        mainViewElement.shadowRoot
+            .querySelector<CrCheckboxElement|CrToggleElement>('#askOnStartup');
+    assertTrue(!!askOnStartup);
     // Hidden while profiles list is not yet defined.
     assertTrue(mainViewElement.$.profilesWrapper.hidden);
-    assertTrue(mainViewElement.$.askOnStartup.hidden);
+    assertTrue(askOnStartup.hidden);
     const profiles = generateProfilesList(6);
     await simulateProfilesListChanged(profiles);
     // Profiles list defined.
     assertTrue(!mainViewElement.$.profilesWrapper.hidden);
-    assertTrue(!mainViewElement.$.askOnStartup.hidden);
-    assertTrue(mainViewElement.$.askOnStartup.checked);
+    assertTrue(!askOnStartup.hidden);
+    assertTrue(askOnStartup.checked);
     // Verify profile card.
     await verifyProfileCard(
         profiles, mainViewElement.shadowRoot.querySelectorAll('profile-card'));
@@ -176,9 +182,9 @@ suite('ProfilePickerMainViewTest', function() {
     webUIListenerCallback('reset-picker-buttons');
     await microtasksFinished();
     // Ask when chrome opens.
-    mainViewElement.$.askOnStartup.click();
+    askOnStartup.click();
     await browserProxy.whenCalled('askOnStartupChanged');
-    assertTrue(!mainViewElement.$.askOnStartup.checked);
+    assertTrue(!askOnStartup.checked);
     // Update profile data.
     profiles[1] = profiles[4]!;
     await simulateProfilesListChanged(profiles);
@@ -194,13 +200,13 @@ suite('ProfilePickerMainViewTest', function() {
   test('EditLocalProfileNameDisabledForWorkProfile', async function() {
     await browserProxy.whenCalled('initializeMainView');
     const profiles = Array({
-      profilePath: `profilePath`,
-      localProfileName: `Work Profile`,
+      profilePath: 'profilePath',
+      localProfileName: 'Work Profile',
       isSyncing: true,
       needsSignin: false,
-      gaiaName: `User`,
-      userName: `User@example.com`,
-      avatarIcon: `AvatarUrl`,
+      gaiaName: 'User',
+      userName: 'User@example.com',
+      avatarIcon: 'AvatarUrl',
       avatarBadge: 'cr:domain',
       profileCardButtonLabel: '',
       hasEnterpriseLabel: true,
@@ -230,8 +236,7 @@ suite('ProfilePickerMainViewTest', function() {
 
     // Set to valid profile name.
     localProfileName.value = 'Alice';
-    localProfileName.dispatchEvent(
-        new CustomEvent('change', {bubbles: true, composed: true}));
+    localProfileName.fire('change');
     const args = await browserProxy.whenCalled('setProfileName');
     assertEquals(args[0], profiles[0]!.profilePath);
     assertEquals(args[1], 'Alice');
@@ -371,10 +376,15 @@ suite('ProfilePickerMainViewTest', function() {
               profiles,
               mainViewElement.shadowRoot.querySelectorAll('profile-card'));
           assertTrue(isChildVisible(mainViewElement, '#askOnStartup'));
-          assertTrue(mainViewElement.$.askOnStartup.checked);
-          mainViewElement.$.askOnStartup.click();
+          const askOnStartup =
+              mainViewElement.shadowRoot
+                  .querySelector<CrCheckboxElement|CrToggleElement>(
+                      '#askOnStartup');
+          assertTrue(!!askOnStartup);
+          assertTrue(askOnStartup.checked);
+          askOnStartup.click();
           await browserProxy.whenCalled('askOnStartupChanged');
-          assertTrue(!mainViewElement.$.askOnStartup.checked);
+          assertTrue(!askOnStartup.checked);
         });
   });
 
@@ -496,6 +506,11 @@ suite('ProfilePickerProfilesReorderingTest', function() {
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     mainViewElement = document.createElement('profile-picker-main-view');
+    // Disable pointer events so that an OS mouse cursor sitting over a
+    // profile card's `#nameInput` in the test window does not trigger
+    // `pointerenter` (which dispatches `toggle-drag` with `{toggle: false}`
+    // and prevents synthetic drag events from starting).
+    mainViewElement.style.pointerEvents = 'none';
     document.body.appendChild(mainViewElement);
   });
 
@@ -691,9 +706,24 @@ suite('ProfilePickerProfilesReorderingTest', function() {
       // ----------------- Start of the Drag Events -----------------
 
       const cycle = dragData.dragEventCycles[c]!;
+      // Focusing the card button simulates the mouse down event that precedes
+      // the drag start event. Use `preventScroll: true` so focusing a card on a
+      // lower row does not scroll the viewport and invalidate `initialRects`.
+      cards[cycle.dragIndex]!.$.profileCardButton.focus({preventScroll: true});
+      assertTrue(cards[cycle.dragIndex]!.matches(':focus-within'));
+
       // - Perform the Drag Start.
-      cards[cycle.dragIndex]!.dispatchEvent(new DragEvent('dragstart'));
+      const dragStartEvent = new DragEvent('dragstart');
+      Object.defineProperty(dragStartEvent, 'dataTransfer', {
+        value: {
+          effectAllowed: 'uninitialized',
+          setDragImage: () => {},
+        },
+      });
+      cards[cycle.dragIndex]!.dispatchEvent(dragStartEvent);
       assertTrue(cards[cycle.dragIndex]!.classList.contains('dragging'));
+      assertEquals(dragStartEvent.dataTransfer!.effectAllowed, 'move');
+      assertFalse(cards[cycle.dragIndex]!.matches(':focus-within'));
 
       // - Perform the list of Drag Enter events with position checks.
       for (let e = 0; e < cycle.dragEnterEvents.length; ++e) {
@@ -710,6 +740,7 @@ suite('ProfilePickerProfilesReorderingTest', function() {
       // - Perform the Drag End.
       cards[cycle.dragIndex]!.dispatchEvent(new DragEvent('dragend'));
       assertFalse(cards[cycle.dragIndex]!.classList.contains('dragging'));
+      assertFalse(cards[cycle.dragIndex]!.matches(':focus-within'));
 
       assertProfileNamesOrder(
           mainViewElement.getProfileListForTesting(),
@@ -763,6 +794,8 @@ suite('ProfilePickerProfilesReorderingTest', function() {
       dragEnterEvents: [{index: 2, expectedResultIndices: [0, 2, 1]}],
       expectedEndProfileOrder: ['profile0', 'profile2', 'profile1'],
     });
+    const args = await browserProxy.whenCalled('updateProfileOrder');
+    assertDeepEquals(args, [1, 2, ProfileOrderUpdateType.DRAG_AND_DROP]);
   });
 
   // In this test, we make sure that even in the middle of a drag event cycle
@@ -988,4 +1021,146 @@ suite('ProfilePickerProfilesReorderingTest', function() {
       ],
     });
   });
+
+  function getMenuMoveButtons(card: ProfileCardElement): {
+    moveLeftButton: HTMLButtonElement|null,
+    moveRightButton: HTMLButtonElement|null,
+  } {
+    const menu = card.shadowRoot.querySelector('profile-card-menu')!;
+    return {
+      moveLeftButton:
+          menu.shadowRoot.querySelector<HTMLButtonElement>('#moveLeftButton'),
+      moveRightButton:
+          menu.shadowRoot.querySelector<HTMLButtonElement>('#moveRightButton'),
+    };
+  }
+
+  test('ProfileReorder_ContextMenuMoveSingleProfile', async function() {
+    await setupProfileReorderingTest(1);
+
+    const card = mainViewElement.shadowRoot.querySelector<ProfileCardElement>(
+        'profile-card')!;
+    const {moveLeftButton, moveRightButton} = getMenuMoveButtons(card);
+    assertFalse(!!moveLeftButton);
+    assertFalse(!!moveRightButton);
+  });
+
+  test('ProfileReorder_ContextMenuMoveMultipleProfiles', async function() {
+    await setupProfileReorderingTest(3);
+    assertProfileNamesOrder(
+        mainViewElement.getProfileListForTesting(),
+        ['profile0', 'profile1', 'profile2'], 'Initial order check');
+
+    const cards = Array.from(
+        mainViewElement.shadowRoot.querySelectorAll<ProfileCardElement>(
+            'profile-card'));
+    assertEquals(cards.length, 3);
+
+    // Check available move options on all 3 cards: extremities only have one
+    // move direction, while middle cards have both.
+    assertFalse(!!getMenuMoveButtons(cards[0]!).moveLeftButton);
+    assertTrue(!!getMenuMoveButtons(cards[0]!).moveRightButton);
+    assertTrue(!!getMenuMoveButtons(cards[1]!).moveLeftButton);
+    assertTrue(!!getMenuMoveButtons(cards[1]!).moveRightButton);
+    assertTrue(!!getMenuMoveButtons(cards[2]!).moveLeftButton);
+    assertFalse(!!getMenuMoveButtons(cards[2]!).moveRightButton);
+
+    // Move first profile right: [profile0, profile1, profile2] ->
+    // [profile1, profile0, profile2].
+    getMenuMoveButtons(cards[0]!).moveRightButton!.click();
+    let args = await browserProxy.whenCalled('updateProfileOrder');
+    assertDeepEquals(args, [0, 1, ProfileOrderUpdateType.CONTEXT_MENU_BUTTON]);
+    await microtasksFinished();
+    assertProfileNamesOrder(
+        mainViewElement.getProfileListForTesting(),
+        ['profile1', 'profile0', 'profile2'],
+        'Order after moving first profile right');
+
+    // Move middle profile right: [profile1, profile0, profile2] ->
+    // [profile1, profile2, profile0].
+    browserProxy.resetResolver('updateProfileOrder');
+    getMenuMoveButtons(cards[1]!).moveRightButton!.click();
+    args = await browserProxy.whenCalled('updateProfileOrder');
+    assertDeepEquals(args, [1, 2, ProfileOrderUpdateType.CONTEXT_MENU_BUTTON]);
+    await microtasksFinished();
+    assertProfileNamesOrder(
+        mainViewElement.getProfileListForTesting(),
+        ['profile1', 'profile2', 'profile0'],
+        'Order after moving middle profile right');
+
+    // Move last profile left: [profile1, profile2, profile0] ->
+    // [profile1, profile0, profile2].
+    browserProxy.resetResolver('updateProfileOrder');
+    getMenuMoveButtons(cards[2]!).moveLeftButton!.click();
+    args = await browserProxy.whenCalled('updateProfileOrder');
+    assertDeepEquals(args, [2, 1, ProfileOrderUpdateType.CONTEXT_MENU_BUTTON]);
+    await microtasksFinished();
+    assertProfileNamesOrder(
+        mainViewElement.getProfileListForTesting(),
+        ['profile1', 'profile0', 'profile2'],
+        'Order after moving last profile left');
+  });
+
+  test('ProfileReorder_ScrollOnDragNearEdges', async function() {
+    await setupProfileReorderingTest(4);
+
+    const profilesContainer = mainViewElement.$.profilesContainer;
+    profilesContainer.style.maxHeight = '200px';
+    profilesContainer.style.width = '200px';
+
+    assertTrue(profilesContainer.scrollHeight > profilesContainer.clientHeight);
+    assertEquals(0, profilesContainer.scrollTop);
+
+    const cards = Array.from(
+        mainViewElement.shadowRoot.querySelectorAll<ProfileCardElement>(
+            'profile-card'));
+    const containerRect = profilesContainer.getBoundingClientRect();
+    const card0Rect = cards[0]!.getBoundingClientRect();
+    const dragX = card0Rect.left + card0Rect.width / 2;
+
+    // Drag the first profile card near the bottom edge of the container to
+    // trigger downward scrolling.
+    cards[0]!.dispatchEvent(new DragEvent('dragstart', {
+      clientX: dragX,
+      clientY: card0Rect.top + card0Rect.height / 2,
+    }));
+    mainViewElement.dispatchEvent(new DragEvent('dragover', {
+      clientX: dragX,
+      clientY: containerRect.bottom - 10,
+    }));
+
+    while (profilesContainer.scrollTop + profilesContainer.clientHeight <
+           profilesContainer.scrollHeight) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    assertTrue(profilesContainer.scrollTop > 0);
+
+    // End drag; scrolling should stop.
+    cards[0]!.dispatchEvent(new DragEvent('dragend'));
+    await microtasksFinished();
+
+    const scrollTopAfterEnd = profilesContainer.scrollTop;
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    assertEquals(scrollTopAfterEnd, profilesContainer.scrollTop);
+
+    // Drag the last profile card near the top edge to trigger upward scrolling.
+    const card3Rect = cards[3]!.getBoundingClientRect();
+    cards[3]!.dispatchEvent(new DragEvent('dragstart', {
+      clientX: dragX,
+      clientY: card3Rect.top + card3Rect.height / 2,
+    }));
+    mainViewElement.dispatchEvent(new DragEvent('dragover', {
+      clientX: dragX,
+      clientY: containerRect.top + 10,
+    }));
+
+    while (profilesContainer.scrollTop > 0) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    assertEquals(0, profilesContainer.scrollTop);
+
+    cards[3]!.dispatchEvent(new DragEvent('dragend'));
+    await microtasksFinished();
+  });
+
 });

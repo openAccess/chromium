@@ -6,7 +6,7 @@
 <script src="/webmcp/resources/helpers.js"></script>
 
 <form toolname="fill_text" tooldescription="Fill some text"
-  toolautosubmit target="hidden_iframe" action="about:blank">
+  toolautosubmit target="hidden_iframe" action="/common/blank.html">
   <input id="myinput" name="text" type="text">
   <input id="mynumber" name="number" type="number">
   <input id="mycheckbox" name="checkbox" type="checkbox" value="check1">
@@ -37,16 +37,16 @@ promise_test(async t => {
     }
   }
 
-  let inputArgs = JSON.stringify({
+  let inputObject = {
     text: "regular text",
     number: 42,
     checkbox: true,
     radio: "radio2",
     textarea: "some text area content",
     select: "opt2"
-  });
+  };
 
-  await document.modelContext.executeTool(tool, inputArgs);
+  await document.modelContext.executeTool(tool, inputObject);
 
   assert_equals(document.getElementById('myinput').value, 'regular text');
   assert_true(events['myinput'].inputFired, 'text input event should fire');

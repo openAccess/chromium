@@ -25,13 +25,12 @@ using base::SyncSocket;
 using testing::_;
 using testing::DoAll;
 using testing::Invoke;
-using testing::InvokeWithoutArgs;
 
 namespace media {
 
 namespace {
 
-const size_t kMemorySegmentCount = 10u;
+constexpr size_t kMemorySegmentCount = 10u;
 
 class MockAudioInputIPC : public AudioInputIPC {
  public:
@@ -113,6 +112,7 @@ class AudioInputDeviceTest
     shared_memory_ = base::UnsafeSharedMemoryRegion::Create(memory_size);
     shared_memory_mapping_ = shared_memory_.Map();
     ASSERT_TRUE(shared_memory_.IsValid());
+    ASSERT_TRUE(shared_memory_mapping_.IsValid());
     std::ranges::fill(shared_memory_mapping_, 0xff);
 
     ASSERT_TRUE(
@@ -128,19 +128,18 @@ class AudioInputDeviceTest
     device_->Initialize(params, &capture_callback_.value());
 
     EXPECT_CALL(*input_ipc, CreateStream(_, _, _, _))
-        .WillOnce(InvokeWithoutArgs([&]() {
+        .WillOnce([&]() {
           auto duplicated_shared_memory_region = shared_memory_.Duplicate();
           CHECK(duplicated_shared_memory_region.IsValid());
           static_cast<AudioInputIPCDelegate*>(device_.get())
               ->OnStreamCreated(std::move(duplicated_shared_memory_region),
                                 renderer_socket_.Take(), false);
-        }));
+        });
     EXPECT_CALL(*input_ipc, RecordStream());
     EXPECT_CALL(*capture_callback_, OnCaptureStarted());
     EXPECT_CALL(*input_ipc, CloseStream());
 
-    uint8_t* ptr = static_cast<uint8_t*>(shared_memory_mapping_.memory());
-    buffer_ = reinterpret_cast<AudioInputBuffer*>(ptr);
+    buffer_ = shared_memory_mapping_.GetMemoryAs<AudioInputBuffer>();
     buffer_->params.id = 0;
     buffer_->params.capture_time_us =
         (capture_time_ - base::TimeTicks()).InMicroseconds();

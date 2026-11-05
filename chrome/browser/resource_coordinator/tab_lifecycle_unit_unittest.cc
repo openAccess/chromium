@@ -38,13 +38,16 @@
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/performance_manager/embedder/performance_manager_registry.h"
 #include "components/performance_manager/public/decorators/page_live_state_decorator.h"
 #include "components/performance_manager/public/graph/graph.h"
 #include "components/performance_manager/public/graph/page_node.h"
 #include "components/performance_manager/public/performance_manager.h"
 #include "components/performance_manager/test_support/test_harness_helper.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/content_features.h"
 #include "content/public/common/referrer.h"
+#include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/web_contents_tester.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -137,6 +140,8 @@ class TabLifecycleUnitTest : public ChromeRenderViewHostTestHarness {
     tester->SetLastActiveTimeTicks(NowTicks());
     tester->SetLastActiveTime(Now());
     ResourceCoordinatorTabHelper::CreateForWebContents(web_contents_);
+    performance_manager::PerformanceManagerRegistry::GetInstance()->SetPageType(
+        web_contents_, performance_manager::PageType::kTab);
     // Commit an URL to allow discarding.
     auto navigation = content::NavigationSimulator::CreateBrowserInitiated(
         GURL("https://www.example.com"), web_contents_);
@@ -180,6 +185,8 @@ class TabLifecycleUnitTest : public ChromeRenderViewHostTestHarness {
         CreateTestWebContents();
     content::WebContents* web_contents = test_web_contents.get();
     ResourceCoordinatorTabHelper::CreateForWebContents(web_contents);
+    performance_manager::PerformanceManagerRegistry::GetInstance()->SetPageType(
+        web_contents, performance_manager::PageType::kTab);
     tab_strip_model_->AppendWebContents(std::move(test_web_contents), false);
     web_contents->WasHidden();
     return web_contents;
@@ -445,6 +452,36 @@ TEST_F(TabLifecycleUnitTest, MetricsRecordedOnFocusTriggeredReload) {
   // Finish load to cleanup state.
   tab_lifecycle_unit->DidStopLoading();
 
+  tab_strip_model_->RemoveObserver(GetTabLifecycleUnitSource());
+}
+class TabLifecycleUnitTestWithWorker : public TabLifecycleUnitTest {
+ public:
+  TabLifecycleUnitTestWithWorker() {
+    feature_list_.InitAndEnableFeature(features::kWebContentsDiscard);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(TabLifecycleUnitTestWithWorker, DiscardWithWorker) {
+  tab_strip_model_->AddObserver(GetTabLifecycleUnitSource());
+  TabLifecycleUnit* tab_lifecycle_unit = AddNewHiddenLifecycleUnitToTabStrip();
+  ASSERT_TRUE(tab_lifecycle_unit);
+
+  auto* mock_process = static_cast<content::MockRenderProcessHost*>(
+      tab_lifecycle_unit->GetWebContents()
+          ->GetPrimaryMainFrame()
+          ->GetProcess());
+  mock_process->IncrementWorkerRefCount();
+  EXPECT_FALSE(mock_process->FastShutdownStarted());
+
+  const uint64_t kMemoryEstimateBytes = 100 * 1024 * 1024;
+  EXPECT_TRUE(tab_lifecycle_unit->Discard(LifecycleUnitDiscardReason::PROACTIVE,
+                                          kMemoryEstimateBytes));
+  EXPECT_TRUE(mock_process->FastShutdownStarted());
+
+  mock_process->DecrementWorkerRefCount();
   tab_strip_model_->RemoveObserver(GetTabLifecycleUnitSource());
 }
 

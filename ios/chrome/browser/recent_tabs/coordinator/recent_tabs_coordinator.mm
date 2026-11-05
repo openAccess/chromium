@@ -4,6 +4,9 @@
 
 #import "ios/chrome/browser/recent_tabs/coordinator/recent_tabs_coordinator.h"
 
+#import <string>
+#import <utility>
+
 #import "base/ios/block_types.h"
 #import "base/memory/raw_ptr.h"
 #import "base/metrics/histogram_functions.h"
@@ -20,13 +23,15 @@
 #import "ios/chrome/browser/authentication/history_sync/coordinator/history_sync_popup_coordinator.h"
 #import "ios/chrome/browser/authentication/history_sync/model/history_sync_utils.h"
 #import "ios/chrome/browser/authentication/signin/reauth/coordinator/signin_reauth_coordinator.h"
+#import "ios/chrome/browser/authentication/ui_bundled/change_profile/change_profile_recent_tabs_continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_context_style.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin_promo_view_mediator.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
+#import "ios/chrome/browser/menu/public/menu_histograms.h"
 #import "ios/chrome/browser/menu/ui_bundled/action_factory.h"
-#import "ios/chrome/browser/menu/ui_bundled/menu_histograms.h"
 #import "ios/chrome/browser/menu/ui_bundled/tab_context_menu_delegate.h"
 #import "ios/chrome/browser/metrics/model/new_tab_page_uma.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
@@ -38,6 +43,8 @@
 #import "ios/chrome/browser/recent_tabs/ui/recent_tabs_presentation_delegate.h"
 #import "ios/chrome/browser/recent_tabs/ui/recent_tabs_table_view_controller.h"
 #import "ios/chrome/browser/sessions/model/ios_chrome_tab_restore_service_factory.h"
+#import "ios/chrome/browser/sessions/model/session_util.h"
+#import "ios/chrome/browser/settings/model/sync/utils/sync_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
@@ -48,25 +55,31 @@
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
+#import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_url_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_navigation_controller.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_navigation_controller_constants.h"
 #import "ios/chrome/browser/sharing/ui_bundled/sharing_coordinator.h"
 #import "ios/chrome/browser/sharing/ui_bundled/sharing_params.h"
+#import "ios/chrome/browser/signin/model/account_preview_data_service_factory.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
+#import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/sync/model/session_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/synced_sessions/model/distant_session.h"
+#import "ios/chrome/browser/synced_sessions/model/distant_tab.h"
 #import "ios/chrome/browser/synced_sessions/model/synced_sessions_util.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_browser_agent.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_params.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_util.h"
 #import "ios/web/public/web_state.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 @interface RecentTabsCoordinator () <HistorySyncPopupCoordinatorDelegate,
                                      RecentTabsPresentationDelegate,
+                                     SigninPromoViewMediatorDelegate,
                                      SigninReauthCoordinatorDelegate,
                                      TabContextMenuDelegate>
 // Completion block called once the recentTabsViewController is dismissed.
@@ -90,16 +103,20 @@
   raw_ptr<AuthenticationService> _authenticationService;
   raw_ptr<syncer::SyncService> _syncService;
   SigninReauthCoordinator* _reauthCoordinator;
+  SigninCoordinator* _signinCoordinator;
+  SigninPromoViewMediator* _signinPromoViewMediator;
 }
 
 - (void)dealloc {
-  CHECK(!self.recentTabsNavigationController, base::NotFatalUntil::M150);
-  CHECK(!self.recentTabsTableViewController, base::NotFatalUntil::M150);
-  CHECK(!self.mediator, base::NotFatalUntil::M150);
-  CHECK(!self.sharingCoordinator, base::NotFatalUntil::M150);
-  CHECK(!_authenticationService, base::NotFatalUntil::M150);
-  CHECK(!_syncService, base::NotFatalUntil::M150);
-  CHECK(!_reauthCoordinator, base::NotFatalUntil::M150);
+  CHECK(!self.recentTabsNavigationController);
+  CHECK(!self.recentTabsTableViewController);
+  CHECK(!self.mediator);
+  CHECK(!self.sharingCoordinator);
+  CHECK(!_authenticationService);
+  CHECK(!_syncService);
+  CHECK(!_reauthCoordinator);
+  CHECK(!_signinCoordinator, base::NotFatalUntil::M156);
+  CHECK(!_signinPromoViewMediator, base::NotFatalUntil::M156);
 }
 
 #pragma mark - ChromeCoordinator
@@ -108,15 +125,7 @@
   // Initialize and configure RecentTabsTableViewController.
   self.recentTabsTableViewController =
       [[RecentTabsTableViewController alloc] init];
-  self.recentTabsTableViewController.browser = self.browser;
   self.recentTabsTableViewController.loadStrategy = self.loadStrategy;
-  CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
-  id<SceneCommands> sceneHandler =
-      HandlerForProtocol(dispatcher, SceneCommands);
-  self.recentTabsTableViewController.sceneHandler = sceneHandler;
-  id<SettingsCommands> settingsHandler =
-      HandlerForProtocol(dispatcher, SettingsCommands);
-  self.recentTabsTableViewController.settingsHandler = settingsHandler;
   self.recentTabsTableViewController.presentationDelegate = self;
 
   self.recentTabsContextMenuHelper =
@@ -162,13 +171,28 @@
                                               restoreService:restoreService
                                                faviconLoader:faviconLoader
                                                  syncService:_syncService];
-
-  // Set the consumer first before calling [self.mediator initObservers] and
-  // then [self.mediator configureConsumer].
   self.mediator.consumer = self.recentTabsTableViewController;
   self.recentTabsTableViewController.imageDataSource = self.mediator;
-  [self.mediator initObservers];
-  [self.mediator configureConsumer];
+
+  _signinPromoViewMediator = [[SigninPromoViewMediator alloc]
+                initWithIdentityManager:identityManager
+                  accountManagerService:ChromeAccountManagerServiceFactory::
+                                            GetForProfile(profile)
+                            authService:authService
+                            prefService:profile->GetPrefs()
+              accountPreviewDataService:AccountPreviewDataServiceFactory::
+                                            GetForProfile(profile)
+                            syncService:_syncService
+                            accessPoint:signin_metrics::AccessPoint::kRecentTabs
+                               delegate:self
+               accountSettingsPresenter:nil
+      changeProfileContinuationProvider:
+          base::BindRepeating(&CreateChangeProfileRecentTabsContinuation)];
+  _signinPromoViewMediator.signinPromoAction =
+      SigninPromoAction::kSigninWithNoDefaultIdentity;
+  _signinPromoViewMediator.consumer = self.recentTabsTableViewController;
+  self.recentTabsTableViewController.signinPromoViewDelegate =
+      _signinPromoViewMediator;
 
   // Present RecentTabsNavigationController.
   self.recentTabsNavigationController = [[TableViewNavigationController alloc]
@@ -189,10 +213,13 @@
 }
 
 - (void)stop {
+  [self stopSigninCoordinator];
+  [_signinPromoViewMediator disconnect];
+  _signinPromoViewMediator = nil;
   [self stopHistorySyncPopupCoordinator];
   [self.recentTabsTableViewController dismissModals];
   self.recentTabsTableViewController.imageDataSource = nil;
-  self.recentTabsTableViewController.browser = nil;
+  self.recentTabsTableViewController.signinPromoViewDelegate = nil;
   self.recentTabsTableViewController = nil;
   [self.recentTabsNavigationController.presentingViewController
       dismissViewControllerAnimated:YES
@@ -203,6 +230,7 @@
   [self.sharingCoordinator stop];
   self.sharingCoordinator = nil;
   [self.mediator disconnect];
+  self.mediator.consumer = nil;
   self.mediator = nil;
   _syncService = nullptr;
   _authenticationService = nullptr;
@@ -234,17 +262,30 @@
   [_reauthCoordinator start];
 }
 
-- (void)openAllTabsFromSession:(const synced_sessions::DistantSession*)session {
+- (void)openAllTabsFromSession:(const std::string&)sessionTag {
+  if (!self.browser) {
+    return;
+  }
+  sync_sessions::SessionSyncService* sessionSyncService =
+      SessionSyncServiceFactory::GetForProfile(self.profile);
+  if (!sessionSyncService) {
+    return;
+  }
+  synced_sessions::DistantSession session(sessionSyncService, sessionTag);
+  if (session.tabs.empty()) {
+    return;
+  }
+
   base::RecordAction(base::UserMetricsAction(
       "MobileRecentTabManagerOpenAllTabsFromOtherDevice"));
   base::UmaHistogramCounts100(
       "Mobile.RecentTabsManager.TotalTabsFromOtherDevicesOpenAll",
-      session->tabs.size());
+      session.tabs.size());
 
   BOOL inIncognito = self.profile->IsOffTheRecord();
   UrlLoadingBrowserAgent* URLLoader =
       UrlLoadingBrowserAgent::FromBrowser(self.browser);
-  OpenDistantSessionInBackground(session, inIncognito,
+  OpenDistantSessionInBackground(&session, inIncognito,
                                  GetDefaultNumberOfTabsToLoadSimultaneously(),
                                  URLLoader, self.loadStrategy);
 
@@ -265,11 +306,54 @@
       self.profile->IsOffTheRecord(), is_ntp,
       new_tab_page_uma::ACTION_OPENED_RECENTLY_CLOSED_ENTRY);
 
-  WindowOpenDisposition disposition =
+  ui::mojom::WindowOpenDisposition disposition =
       IsNTPWithoutHistory(activeWebState)
-          ? WindowOpenDisposition::CURRENT_TAB
-          : WindowOpenDisposition::NEW_FOREGROUND_TAB;
+          ? ui::mojom::WindowOpenDisposition::kCurrentTab
+          : ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   RestoreTab(sessionId, disposition, self.browser);
+  [self showActiveRegularTabFromRecentTabs];
+}
+
+- (void)openDistantTab:(const synced_sessions::DistantTab*)distantTab {
+  if (!self.browser) {
+    return;
+  }
+  // Shouldn't reach this if in incognito.
+  DCHECK(!self.profile->IsOffTheRecord());
+
+  sync_sessions::OpenTabsUIDelegate* openTabs =
+      SessionSyncServiceFactory::GetForProfile(self.profile)
+          ->GetOpenTabsUIDelegate();
+  const sessions::SessionTab* toLoad = nullptr;
+  if (openTabs->GetForeignTab(distantTab->session_tag, distantTab->tab_id,
+                              &toLoad)) {
+    base::TimeDelta time_since_last_use = base::Time::Now() - toLoad->timestamp;
+    base::UmaHistogramCustomTimes("IOS.DistantTab.TimeSinceLastUse",
+                                  time_since_last_use, base::Minutes(1),
+                                  base::Days(24), 50);
+
+    base::RecordAction(base::UserMetricsAction(
+        "MobileRecentTabManagerTabFromOtherDeviceOpened"));
+    WebStateList* webStateList = self.browser->GetWebStateList();
+    web::WebState* currentWebState = webStateList->GetActiveWebState();
+    bool is_ntp = currentWebState &&
+                  currentWebState->GetVisibleURL() == kChromeUINewTabURL;
+    new_tab_page_uma::RecordNTPAction(
+        self.profile->IsOffTheRecord(), is_ntp,
+        new_tab_page_uma::ACTION_OPENED_FOREIGN_SESSION);
+    std::unique_ptr<web::WebState> web_state =
+        session_util::CreateWebStateWithNavigationEntries(
+            self.profile, toLoad->current_navigation_index,
+            toLoad->navigations);
+    if (IsNTPWithoutHistory(currentWebState)) {
+      webStateList->ReplaceWebStateAt(webStateList->active_index(),
+                                      std::move(web_state));
+    } else {
+      webStateList->InsertWebState(
+          std::move(web_state),
+          WebStateList::InsertionParams::Automatic().Activate());
+    }
+  }
   [self showActiveRegularTabFromRecentTabs];
 }
 
@@ -317,10 +401,54 @@
   }
 }
 
+- (void)showSigninWithCommand:(ShowSigninCommand*)command {
+  if (_signinCoordinator.viewWillPersist) {
+    return;
+  }
+  [self stopSigninCoordinator];
+  __weak __typeof(self) weakSelf = self;
+  [command addSigninCompletion:^(SigninCoordinator* coordinator,
+                                 SigninCoordinatorResultOrIdentity result) {
+    [weakSelf signinDidCompleteWithCoordinator:coordinator
+                                        result:std::move(result)];
+  }];
+  _signinCoordinator = [SigninCoordinator
+      signinCoordinatorWithCommand:command
+                           browser:signin::GetRegularBrowser(self.browser)
+                baseViewController:self.recentTabsTableViewController];
+  [_signinCoordinator start];
+}
+
 - (void)deleteForeignSession:(const std::string&)sessionTag {
   SessionSyncServiceFactory::GetForProfile(self.profile)
       ->GetOpenTabsUIDelegate()
       ->DeleteForeignSession(sessionTag);
+}
+
+- (void)didTapPromoActionButton {
+  if (!_syncService) {
+    return;
+  }
+  syncer::SyncService::UserActionableError error =
+      _syncService->GetUserActionableError();
+  if (error == syncer::SyncService::UserActionableError::kSignInNeedsUpdate) {
+    [self showPrimaryAccountReauth];
+  } else if ([self shouldShowHistorySyncOnPromoAction]) {
+    [self showHistorySyncOptInAfterDedicatedSignIn:NO];
+  } else if (ShouldShowSyncSettings(error)) {
+    CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
+    id<SettingsCommands> settingsHandler =
+        HandlerForProtocol(dispatcher, SettingsCommands);
+    [settingsHandler
+        showSyncSettingsFromViewController:self.recentTabsTableViewController];
+  } else if (error ==
+             syncer::SyncService::UserActionableError::kNeedsPassphrase) {
+    CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
+    id<SettingsCommands> settingsHandler =
+        HandlerForProtocol(dispatcher, SettingsCommands);
+    [settingsHandler showSyncPassphraseSettingsFromViewController:
+                         self.recentTabsTableViewController];
+  }
 }
 
 #pragma mark - RecentTabsContextMenuDelegate
@@ -360,6 +488,14 @@
   [self.mediator refreshSessionsView];
 }
 
+#pragma mark - SigninPromoViewMediatorDelegate
+
+- (void)showSignin:(SigninPromoViewMediator*)mediator
+           command:(ShowSigninCommand*)command {
+  CHECK_EQ(mediator, _signinPromoViewMediator);
+  [self showSigninWithCommand:command];
+}
+
 #pragma mark - SigninReauthCoordinatorDelegate
 
 - (void)reauthFinishedWithResult:(ReauthResult)result
@@ -369,6 +505,16 @@
 
 #pragma mark - Private
 
+// Returns YES if the History Sync Opt-In should be shown when the promo action
+// button is tapped.
+- (BOOL)shouldShowHistorySyncOnPromoAction {
+  // In case it's not necessary to show the history opt-in, but the promo action
+  // button is still available, sync errors should be checked to show the
+  // correct screen to handle the error (ex. passphrase screen).
+  return history_sync::GetSkipReason(_syncService, _authenticationService,
+                                     self.profile->GetPrefs(), NO) ==
+         history_sync::HistorySyncSkipReason::kNone;
+}
 
 - (void)dismissButtonTapped {
   base::RecordAction(base::UserMetricsAction("MobileRecentTabsClose"));
@@ -387,5 +533,18 @@
   _reauthCoordinator = nil;
 }
 
+- (void)stopSigninCoordinator {
+  [_signinCoordinator stop];
+  _signinCoordinator = nil;
+}
+
+- (void)signinDidCompleteWithCoordinator:(SigninCoordinator*)coordinator
+                                  result:(SigninCoordinatorResultOrIdentity)
+                                             result {
+  CHECK_EQ(_signinCoordinator, coordinator);
+  [_signinPromoViewMediator signinDidCompleteWithResult:std::move(result)];
+  [self stopSigninCoordinator];
+  [self showHistorySyncOptInAfterDedicatedSignIn:YES];
+}
 
 @end

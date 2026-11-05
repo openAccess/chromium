@@ -191,6 +191,10 @@ class ExtensionTelemetryServiceTest : public ::testing::Test {
     return telemetry_service_->activity_log_ingester_ != nullptr;
   }
 
+  void TriggerOffstoreFileDataCollection() {
+    telemetry_service_->StartOffstoreFileDataCollection();
+  }
+
   void SetEnterpriseReportingConfig(
       bool enabled,
       const std::vector<std::string>& enabled_opt_in_events) {
@@ -1172,7 +1176,7 @@ TEST_F(ExtensionTelemetryServiceTest,
   ASSERT_NE(detector, nullptr);
 
   AutocompleteMatch match(nullptr, 0, false,
-                          AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+                          omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   match.destination_url = GURL("http://www.google.com/search?q=test");
 
   telemetry_service_->OnOmniboxSearch(match);
@@ -1206,7 +1210,7 @@ TEST_F(ExtensionTelemetryServiceTest,
   telemetry_service_->SetEnabledForESB(true);
 
   AutocompleteMatch match(nullptr, 0, false,
-                          AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+                          omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   match.destination_url = GURL("http://www.google.com/search?q=test");
   telemetry_service_->OnOmniboxSearch(match);
   telemetry_service_->OnDseSerpLoaded();
@@ -1254,7 +1258,7 @@ TEST_F(ExtensionTelemetryServiceTest,
   telemetry_service_->SetEnabledForESB(true);
 
   AutocompleteMatch match(nullptr, 0, false,
-                          AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+                          omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
   match.destination_url = GURL("http://www.google.com/search?q=test");
   telemetry_service_->OnOmniboxSearch(match);
   telemetry_service_->OnDseSerpLoaded();
@@ -1755,6 +1759,23 @@ TEST_F(ExtensionTelemetryServiceTest,
   EXPECT_EQ(telemetry_report_pb->reports(1).extension().id(), kExtensionId[1]);
   EXPECT_FALSE(telemetry_report_pb->reports(1).extension().has_manifest_json());
   EXPECT_EQ(telemetry_report_pb->reports(1).extension().file_infos_size(), 0);
+}
+
+TEST_F(ExtensionTelemetryServiceTest, FileData_HandlesStopDuringCollection) {
+  // Start a collection pass so a file processor task is in flight, then
+  // toggle the service off and on before its reply runs. The stale reply is
+  // dropped, and the next scheduled pass completes normally.
+  TriggerOffstoreFileDataCollection();
+  telemetry_service_->SetEnabledForESB(false);
+  telemetry_service_->SetEnabledForESB(true);
+
+  task_environment_.FastForwardBy(
+      telemetry_service_->GetOffstoreFileDataCollectionStartupDelaySeconds());
+
+  const auto& file_data_dict =
+      prefs()->GetDict(prefs::kExtensionTelemetryFileData);
+  EXPECT_TRUE(file_data_dict.contains(kExtensionId[0]));
+  EXPECT_TRUE(file_data_dict.contains(kExtensionId[1]));
 }
 
 TEST_F(ExtensionTelemetryServiceTest, DisableOffstoreExtensions) {

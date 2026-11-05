@@ -44,14 +44,38 @@ InfoBarSpec::Builder& InfoBarSpec::Builder::SetInlineLinkCallback(
   return *this;
 }
 
+InfoBarSpec::Builder& InfoBarSpec::Builder::SetCustomViewCallback(
+    CustomViewCallback callback) {
+  spec_.custom_view_callback_ = std::move(callback);
+  return *this;
+}
+
 InfoBarSpec::Builder& InfoBarSpec::Builder::SetLinkText(
     std::u16string link_text) {
   spec_.link_text_ = std::move(link_text);
   return *this;
 }
 
+InfoBarSpec::Builder& InfoBarSpec::Builder::SetLinkAccessibleText(
+    std::u16string link_accessible_text) {
+  spec_.link_accessible_text_ = std::move(link_accessible_text);
+  return *this;
+}
+
 InfoBarSpec::Builder& InfoBarSpec::Builder::SetLinkNavigationUrl(GURL gurl) {
   spec_.link_navigation_url_ = std::move(gurl);
+  return *this;
+}
+
+InfoBarSpec::Builder& InfoBarSpec::Builder::SetShouldShowLinkBeforeButton(
+    bool should_show_link_before_button) {
+  spec_.should_show_link_before_button_ = should_show_link_before_button;
+  return *this;
+}
+
+InfoBarSpec::Builder&
+InfoBarSpec::Builder::SetLinkSpacingWhenPositionedBeforeButton(int spacing) {
+  spec_.link_spacing_when_positioned_before_button_ = spacing;
   return *this;
 }
 
@@ -106,9 +130,33 @@ InfoBarSpec::Builder& InfoBarSpec::Builder::SetIsCloseable(bool is_closeable) {
   return *this;
 }
 
+InfoBarSpec::Builder& InfoBarSpec::Builder::SetIsPromotional(
+    bool is_promotional) {
+  spec_.is_promotional_ = is_promotional;
+  return *this;
+}
+
+InfoBarSpec::Builder& InfoBarSpec::Builder::SetAllowDuplicates(
+    bool allow_duplicates) {
+  spec_.allow_duplicates_ = allow_duplicates;
+  return *this;
+}
+
 InfoBarSpec::Builder& InfoBarSpec::Builder::SetCloseOnAccept(
     bool close_on_accept) {
   spec_.close_on_accept_ = close_on_accept;
+  return *this;
+}
+
+InfoBarSpec::Builder& InfoBarSpec::Builder::SetCloseOnCancel(
+    bool close_on_cancel) {
+  spec_.close_on_cancel_ = close_on_cancel;
+  return *this;
+}
+
+InfoBarSpec::Builder& InfoBarSpec::Builder::SetCloseOnExtraButton(
+    bool close_on_extra_button) {
+  spec_.close_on_extra_button_ = close_on_extra_button;
   return *this;
 }
 
@@ -125,6 +173,14 @@ InfoBarSpec::Builder& InfoBarSpec::Builder::AddCancelButton(
     ActionCallback callback) {
   spec_.cancel_button_label_ = label;
   spec_.cancel_button_callback_ = std::move(callback);
+  return *this;
+}
+
+InfoBarSpec::Builder& InfoBarSpec::Builder::AddExtraButton(
+    const std::u16string& label,
+    ActionCallback callback) {
+  spec_.extra_button_label_ = label;
+  spec_.extra_button_callback_ = std::move(callback);
   return *this;
 }
 
@@ -155,6 +211,15 @@ InfoBarSpec::InfoBarSpec(const InfoBarSpec&) = default;
 InfoBarSpec::InfoBarSpec(InfoBarSpec&&) = default;
 InfoBarSpec::~InfoBarSpec() = default;
 InfoBarSpec& InfoBarSpec::operator=(const InfoBarSpec&) = default;
+
+InfoBarButtonParams::InfoBarButtonParams() = default;
+InfoBarButtonParams::InfoBarButtonParams(InfoBarButtonParams&&) = default;
+InfoBarButtonParams& InfoBarButtonParams::operator=(InfoBarButtonParams&&) =
+    default;
+InfoBarButtonParams::InfoBarButtonParams(const InfoBarButtonParams&) = default;
+InfoBarButtonParams& InfoBarButtonParams::operator=(
+    const InfoBarButtonParams&) = default;
+InfoBarButtonParams::~InfoBarButtonParams() = default;
 
 InfoBarShowParams::InfoBarShowParams() = default;
 InfoBarShowParams::InfoBarShowParams(InfoBarShowParams&&) = default;

@@ -20,7 +20,6 @@ static_library("files") {
 
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ash/drive",
     "//chrome/browser/ash/file_system_provider",
     "//chrome/browser/ui/webui/ash/settings/pages/files/mojom",
@@ -31,15 +30,16 @@ static_library("files") {
   deps = [
     "//ash/constants",
     "//chrome/app:generated_resources",
-    "//chrome/browser/ash/browser_delegate",
+    "//chrome/browser/ash/cloud_upload",
     "//chrome/browser/ash/file_manager",
-    "//chrome/browser/chromeos/upload_office_to_cloud",
+    "//chrome/browser/policy",
     "//chrome/browser/ui/webui/ash/settings/search",
     "//chrome/browser/ui/webui/ash/smb_shares",
     "//chrome/common",
     "//chrome/common:chrome_features",
     "//chrome/common:constants",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/browser_delegate",
     "//chromeos/ash/components/drivefs",
     "//chromeos/ash/components/system_web_apps:system_web_app_type",
     "//components/user_manager",
@@ -64,7 +64,6 @@ source_set("browser_tests") {
     "//chrome/browser/ash/drive:test_support",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/webui/ash/settings/pages/files/mojom",
     "//chrome/browser/ui/webui/ash/settings/test_support",
     "//chrome/test/data/webui/chromeos/settings:test_api_mojom",
@@ -75,8 +74,4 @@ source_set("browser_tests") {
     "//mojo/public/cpp/bindings",
     "//ui/base",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

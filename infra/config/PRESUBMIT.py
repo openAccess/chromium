@@ -16,6 +16,8 @@ def CheckFreeze(input_api, output_api):
 
 
 def CheckTests(input_api, output_api):
+  if not input_api.HasAffectedFiles(extensions='.py', recursive=False):
+    return []
   glob = input_api.os_path.join(input_api.PresubmitLocalPath(), '*_test.py')
   tests = input_api.canned_checks.GetUnitTests(
     input_api, output_api, input_api.glob(glob)
@@ -69,19 +71,15 @@ def CheckTestingBuildbot(input_api, output_api):
   return []
 
 
-def CheckLucicfgGenOutputMain(input_api, output_api):
+def CheckLucicfgGenOutput(input_api, output_api):
   return input_api.RunTests(
     input_api.canned_checks.CheckLucicfgGenOutput(
       input_api, output_api, 'main.star'
     )
-  )
-
-
-def CheckLucicfgGenOutputDev(input_api, output_api):
-  return input_api.RunTests(
-    input_api.canned_checks.CheckLucicfgGenOutput(
+    + input_api.canned_checks.CheckLucicfgGenOutput(
       input_api, output_api, 'dev.star'
-    )
+    ),
+    parallel=False,
   )
 
 
@@ -210,3 +208,7 @@ def CheckOutagesConfigOnCommit(input_api, output_api):
       ]
 
   return []
+
+
+def CheckRuff(input_api, output_api):
+  return input_api.canned_checks.RunRuff(input_api, output_api)

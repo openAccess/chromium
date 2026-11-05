@@ -19,6 +19,7 @@
   }
 
   :host #destinationSettings {
+    margin-bottom: 20px;
     margin-top: 12px;
   }
 
@@ -64,7 +65,13 @@
   </print-preview-copies-settings>
   <print-preview-layout-settings settings="[[settings]]"
       disabled="[[controlsDisabled_]]"
-      hidden$="[[!settings.layout.available]]" class="settings-section">
+      hidden$="[[hideLayout_(
+          settings.layout.available,
+          destination.allowedManagedPrintOptionsApplied.layout,
+          documentSettings.isModifiable,
+          documentSettings.isFromArc,
+          documentSettings.allPagesHaveCustomOrientation)]]"
+      class="settings-section">
   </print-preview-layout-settings>
   <print-preview-color-settings settings="[[settings]]"
       disabled="[[controlsDisabled_]]"
@@ -78,7 +85,7 @@
       disabled="[[controlsDisabled_]]"
       hidden$="[[!shouldShowMoreSettings_]]">
   </print-preview-more-settings>
-  <cr-collapse id="moreSettings"
+  <iron-collapse id="moreSettings"
       opened="[[shouldExpandSettings_(
           settingsExpandedByUser_, shouldShowMoreSettings_)]]">
     <print-preview-media-size-settings settings="[[settings]]"
@@ -140,7 +147,7 @@
         hidden$="[[!settings.vendorItems.available]]"
         class="settings-section">
     </print-preview-advanced-options-settings>
-  </cr-collapse>
+  </iron-collapse>
   <div class="cr-scrollable-bottom-shadow"></div>
 </div>
 <print-preview-button-strip destination="[[destination]]"

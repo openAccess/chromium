@@ -16,8 +16,8 @@
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 #include "media/mojo/mojom/media_types.mojom-shared.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
 #include "media/video/gpu_video_accelerator_factories.h"
 #include "third_party/blink/public/platform/media/web_media_player_delegate.h"
 #include "third_party/blink/public/platform/modules/mediastream/web_media_stream.h"
@@ -243,8 +243,10 @@ class BLINK_MODULES_EXPORT WebMediaPlayerMS
   void SetNetworkState(WebMediaPlayer::NetworkState state);
   void SetReadyState(WebMediaPlayer::ReadyState state);
 
+#if INSIDE_BLINK
   // Getter method to |client_|.
-  MediaPlayerClient* get_client() { return client_; }
+  MediaPlayerClient* get_client() { return client_.Get(); }
+#endif  // INSIDE_BLINK
 
   // To be run when tracks are added or removed.
   void Reload();
@@ -281,7 +283,10 @@ class BLINK_MODULES_EXPORT WebMediaPlayerMS
 
   const WebTimeRanges buffered_;
 
-  raw_ptr<MediaPlayerClient> client_ = nullptr;
+  WebPrivatePtrForGC<MediaPlayerClient,
+                     WebPrivatePtrDestruction::kSameThread,
+                     WebPrivatePtrStrength::kWeak>
+      client_;
 
   // WebMediaPlayer notifies the |delegate_| of playback state changes using
   // |delegate_id_|; an id provided after registering with the delegate.  The

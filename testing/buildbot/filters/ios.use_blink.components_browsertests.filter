@@ -11,7 +11,7 @@
 -DistillerPageWebContentsTest.HandlesRelativeImages
 -DistillerPageWebContentsTest.HandlesRelativeLinks
 -DistillerPageWebContentsTest.HandlesRelativeVideos
--DistillerPageWebContentsTest.MarkupInfo
+-DistillerPageWebContentsTest.HandlesShadowDOM
 -DistillerPageWebContentsTest.PageDestroyedBeforeFinishDistillation
 -DistillerPageWebContentsTest.TestNoContentDoesNotCrash
 -DistillerPageWebContentsTest.UsingCurrentWebContentsNotFinishedLoadingYet
@@ -20,7 +20,6 @@
 -DistillerPageWebContentsTest.VisibilityDetection
 -DomDistillerDistillablePageUtilsTest.TestIsDistillablePage
 -DomDistillerDistillablePageUtilsTest.TestIsNotDistillablePage
--DomDistillerJsTest.RunJsTests
 -ViewerJsTest.SanitizeLinks
 
 # These tests are hitting a NOTREACHED() in WebContentsImpl::GetSize().
@@ -28,7 +27,6 @@
 -All/PageContentProtoProviderBrowserTestSiteIsolation.*
 -PageContentProtoProviderBrowserTest.*
 -PageContentProtoProviderBrowserTestActionableElements.AIPageContent
--PageContentProtoProviderBrowserTestFencedFrame.AIPageContentFencedFrame
 -PageContentProtoProviderBrowserTestPaidContentDisabled.PaidContentDisabled
 -ScaledPageContentProtoProviderBrowserTest.ScaleSizes
 
@@ -42,38 +40,13 @@
 # https://crrev.com/c/7893748, https://crrev.com/c/8132523,
 # https://crrev.com/c/8161746, https://crrev.com/c/8194052, and
 # https://crrev.com/c/8267284 on the bot.
--SurfaceEmbedBrowserTest.AttachToFocusedEmbedHasPageFocus
--SurfaceEmbedBrowserTest.Crash
--SurfaceEmbedBrowserTest.CrashEarly
--SurfaceEmbedBrowserTest.CrashThenReattach
--SurfaceEmbedBrowserTest.CrashThenReload
--SurfaceEmbedBrowserTest.CrossProcessNavigationPixelTest
--SurfaceEmbedBrowserTest.DisplayLockThrottlingViaContentVisibility
--SurfaceEmbedBrowserTest.DisplayNonePropagates
--SurfaceEmbedBrowserTest.EmbedMultipleTagsCreatesMultiplePlugins
--SurfaceEmbedBrowserTest.EmbedPixelTest
--SurfaceEmbedBrowserTest.EmbedTagCreatesPlugin
--SurfaceEmbedBrowserTest.EmbedTagInvalidContentId
--SurfaceEmbedBrowserTest.EmbedTagRemovedDestroysHost
 -SurfaceEmbedBrowserTest.FocusByClick
 -SurfaceEmbedBrowserTest.FocusByShiftTabKeyNoPreviousFocusableElement
 -SurfaceEmbedBrowserTest.FocusByTabKey
 -SurfaceEmbedBrowserTest.FocusByTabKeyNoNextFocusableElement
 -SurfaceEmbedBrowserTest.FocusPreservedAfterNavigation
 -SurfaceEmbedBrowserTest.HtmlPopupOnSurfaceEmbeddedPage
--SurfaceEmbedBrowserTest.MultilevelDisplayLockThrottlingViaContentVisibility
--SurfaceEmbedBrowserTest.ResizeEmbedPixelTest
--SurfaceEmbedBrowserTest.VisibilityHiddenPropagates
--SurfaceEmbedBrowserTest.VisualPropertiesSync
--SurfaceEmbedBrowserTestNoHost.NoCrash
--SurfaceEmbedBrowserTest.MultilevelDisplayNonePropagates
--SurfaceEmbedBrowserTest.MultilevelVisibilityHiddenPropagates
 -SurfaceEmbedBrowserTest.FocusByShiftTabKey
--SurfaceEmbedBrowserTest.MultilevelDetachIntermediate
 -SurfaceEmbedBrowserTest.MultilevelFocusAndInput
--SurfaceEmbedBrowserTest.ThrottlingPropagation
--SurfaceEmbedAccessibilityBrowserTest.PluginSendsParentAccessibilityInfoToHost
--SurfaceEmbedWithInnerWebContentsBrowserTest.FocusAndInput
 -SurfaceEmbedBrowserTest.FocusAndInputWithInnerWebContents
 -SurfaceEmbedBrowserTest.IntersectionObserverIgnoresEmbedderScrollOffsetUnlikeIframe
--SurfaceEmbedBrowserTest.IntersectionObserverIgnoresEmbedderViewportUnlikeIframe

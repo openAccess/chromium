@@ -10,6 +10,7 @@
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/extensions/launch_util.h"
 #include "chrome/browser/extensions/sync/extension_sync_data.h"
 #include "chrome/browser/extensions/sync/extension_sync_service.h"
@@ -60,7 +61,14 @@ extensions::ExtensionRegistry* GetExtensionRegistry(Profile* profile) {
 
 class TwoClientExtensionAppsSyncTest : public AppsSyncTestBase {
  public:
-  TwoClientExtensionAppsSyncTest() : AppsSyncTestBase(TWO_CLIENT) {}
+  TwoClientExtensionAppsSyncTest() : AppsSyncTestBase(TWO_CLIENT) {
+#if !BUILDFLAG(IS_CHROMEOS)
+    // TODO(crbug.com/40066949): clean up once syncer::APPS deprecation is
+    // complete.
+    feature_list_.InitAndDisableFeature(
+        syncer::kSyncDoNotSyncAppsAndAppSettings);
+#endif
+  }
 
   TwoClientExtensionAppsSyncTest(const TwoClientExtensionAppsSyncTest&) =
       delete;
@@ -73,6 +81,11 @@ class TwoClientExtensionAppsSyncTest : public AppsSyncTestBase {
   SetupSyncMode GetSetupSyncMode() const override {
     return SetupSyncMode::kSyncTheFeature;
   }
+
+ private:
+#if !BUILDFLAG(IS_CHROMEOS)
+  base::test::ScopedFeatureList feature_list_;
+#endif
 };
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -442,6 +455,7 @@ IN_PROC_BROWSER_TEST_F(TwoClientExtensionAppsSyncTest,
   ASSERT_EQ(InstallHostedApp(GetProfile(0), 1), kHostedAppId1);
   struct HostedApp1Installed : public AppsStatusChangeChecker {
     bool IsExitConditionSatisfied(std::ostream* os) override {
+      *os << "Waiting for kHostedAppId1 to be installed.";
       return GetExtensionRegistry(sync_datatype_helper::test()->GetProfile(1))
           ->enabled_extensions()
           .Contains(kHostedAppId1);

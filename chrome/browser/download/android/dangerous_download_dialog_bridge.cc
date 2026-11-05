@@ -9,13 +9,17 @@
 
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/android/android_theme_resources.h"
 #include "chrome/browser/android/resource_mapper.h"
 #include "chrome/browser/download/android/download_controller.h"
 #include "chrome/browser/download/android/download_dialog_utils.h"
+#include "chrome/browser/download/download_ui_model.h"
+#include "components/safe_browsing/core/common/features.h"
 #include "components/url_formatter/elide_url.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/android/window_android.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
@@ -25,23 +29,26 @@
 #include "chrome/browser/download/android/jni_headers/DangerousDownloadDialogBridge_jni.h"
 
 namespace {
-// Gets the "download domain" string shown in the dialog. Currently, this is
-// derived from the download URL.
 std::u16string GetDownloadDomain(download::DownloadItem* item) {
-  const GURL& url = item->GetURL();
-  if (url::Origin::Create(url).opaque()) {
-    // Return empty string for downloads from opaque origins.
-    return std::u16string();
+  if (!base::FeatureList::IsEnabled(
+          safe_browsing::kMaliciousApkDownloadCheck)) {
+    const GURL& url = item->GetURL();
+    if (url::Origin::Create(url).opaque()) {
+      // Return empty string for downloads from opaque origins.
+      return std::u16string();
+    }
+    return url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
+        url);
   }
-  return url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
-      url);
+
+  return DownloadUIModel::GetDownloadDomainForDisplay(item);
 }
 }  // namespace
 
 DangerousDownloadDialogBridge::DangerousDownloadDialogBridge() {
   JNIEnv* env = base::android::AttachCurrentThread();
-  java_object_.Reset(Java_DangerousDownloadDialogBridge_create(
-      env, reinterpret_cast<intptr_t>(this)));
+  java_object_.Reset(
+      Java_DangerousDownloadDialogBridge_create(env, jni_zero::MakeRaw(this)));
 }
 
 DangerousDownloadDialogBridge::~DangerousDownloadDialogBridge() {
@@ -59,7 +66,10 @@ void DangerousDownloadDialogBridge::Show(download::DownloadItem* download_item,
       std::ranges::contains(download_items_, download_item)) {
     return;
   }
-  if (!window_android) {
+  // When kMaliciousApkDownloadCheck is enabled, a null `window_android` is
+  // forwarded to Java so the dialog is queued until a valid Activity resumes.
+  if (!window_android && !base::FeatureList::IsEnabled(
+                             safe_browsing::kMaliciousApkDownloadCheck)) {
     DownloadController::ScheduleRemoveDownloadItem(download_item);
     return;
   }
@@ -69,7 +79,8 @@ void DangerousDownloadDialogBridge::Show(download::DownloadItem* download_item,
   JNIEnv* env = base::android::AttachCurrentThread();
 
   Java_DangerousDownloadDialogBridge_showDialog(
-      env, java_object_, window_android->GetJavaObject(),
+      env, java_object_,
+      window_android ? window_android->GetJavaObject() : nullptr,
       download_item->GetGuid(),
       base::UTF8ToUTF16(download_item->GetFileNameToReportUser().value()),
       download_item->GetTotalBytes(), GetDownloadDomain(download_item),
@@ -77,12 +88,31 @@ void DangerousDownloadDialogBridge::Show(download::DownloadItem* download_item,
       download_item->IsDangerous());
 }
 
+void DangerousDownloadDialogBridge::OnDownloadUpdated(
+    download::DownloadItem* download_item) {
+  // Downloads awaiting user confirmation in this dialog remain IN_PROGRESS
+  // (even after all data is saved) until validated. `IsDone()` only becomes
+  // true if the download reaches a terminal state (e.g. cancelled,
+  // non-resumably interrupted, or completed elsewhere) without being destroyed.
+  if (download_item->IsDone()) {
+    DismissDialog(download_item);
+  }
+}
+
 void DangerousDownloadDialogBridge::OnDownloadDestroyed(
+    download::DownloadItem* download_item) {
+  DismissDialog(download_item);
+}
+
+void DangerousDownloadDialogBridge::DismissDialog(
     download::DownloadItem* download_item) {
   auto iter = std::ranges::find(download_items_, download_item);
   if (iter != download_items_.end()) {
     (*iter)->RemoveObserver(this);
     download_items_.erase(iter);
+    JNIEnv* env = base::android::AttachCurrentThread();
+    Java_DangerousDownloadDialogBridge_dismissDialog(env, java_object_,
+                                                     download_item->GetGuid());
   }
 }
 
@@ -117,6 +147,12 @@ void DangerousDownloadDialogBridge::Cancelled(
   if (!download->IsDone()) {
     DownloadController::ScheduleRemoveDownloadItem(download);
   }
+}
+
+// static
+std::u16string DangerousDownloadDialogBridge::GetDownloadDomainForTesting(
+    download::DownloadItem* item) {
+  return GetDownloadDomain(item);
 }
 
 DEFINE_JNI(DangerousDownloadDialogBridge)

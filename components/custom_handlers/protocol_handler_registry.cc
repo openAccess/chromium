@@ -137,6 +137,18 @@ void ProtocolHandlerRegistry::OnDenyRegisterProtocolHandler(
 void ProtocolHandlerRegistry::OnIgnoreRegisterProtocolHandler(
     const ProtocolHandler& handler) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  // The registered handlers are the ones allowed to handle the protocol, so a
+  // handler the user just refused must not stay among them: it would be
+  // offered in chrome://settings/handlers and be eligible for the promotion
+  // RemoveHandler() performs when the default handler goes away. The user may
+  // have accepted it first in the same bubble; removing it then hands the
+  // default back to the previous one.
+  //
+  // Remove before ignoring: RemoveHandler() short-circuits to
+  // RemoveIgnoredHandler() for handlers that are already ignored.
+  if (IsRegistered(handler)) {
+    RemoveHandler(handler, /*save=*/false);
+  }
   IgnoreProtocolHandler(handler, USER);
   Save();
   NotifyChanged();
@@ -632,11 +644,9 @@ void ProtocolHandlerRegistry::Save() {
   if (!prefs_)
     return;
 
-  base::Value registered_protocol_handlers(EncodeRegisteredHandlers());
-  base::Value ignored_protocol_handlers(EncodeIgnoredHandlers());
-
-  prefs_->Set(prefs::kRegisteredProtocolHandlers, registered_protocol_handlers);
-  prefs_->Set(prefs::kIgnoredProtocolHandlers, ignored_protocol_handlers);
+  prefs_->SetList(prefs::kRegisteredProtocolHandlers,
+                  EncodeRegisteredHandlers());
+  prefs_->SetList(prefs::kIgnoredProtocolHandlers, EncodeIgnoredHandlers());
   prefs_->SetBoolean(prefs::kCustomHandlersEnabled, enabled_);
 }
 

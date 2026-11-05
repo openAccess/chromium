@@ -6,7 +6,6 @@ import argparse
 import dataclasses
 import datetime
 import enum
-import glob
 import hashlib
 import logging
 import os
@@ -25,6 +24,7 @@ class PackageFormat(enum.Enum):
     DEB = "deb"
     RPM = "rpm"
     FLATPAK = "flatpak"
+    SNAP = "snap"
 
 
 class StandardPermissions:
@@ -603,13 +603,6 @@ class InstallerConfig:
                 is_optional=True,
             ),
             Artifact(
-                "libsapisid.so.stripped",
-                "libsapisid.so",
-                ArtifactType.BINARY,
-                self.shlib_perms,
-                is_optional=True,
-            ),
-            Artifact(
                 "liboptimization_guide_internal.so.stripped",
                 "liboptimization_guide_internal.so",
                 ArtifactType.BINARY,
@@ -786,27 +779,6 @@ class InstallerConfig:
                 )
             )
 
-        # Privacy Sandbox Attestation
-        psa_dir = "PrivacySandboxAttestationsPreloaded"
-        psa_manifest = self.output_dir / psa_dir / "manifest.json"
-        if psa_manifest.exists():
-            artifacts.append(
-                Artifact(
-                    f"{psa_dir}/manifest.json",
-                    f"{psa_dir}/manifest.json",
-                    ArtifactType.RESOURCE,
-                    StandardPermissions.REGULAR,
-                )
-            )
-            artifacts.append(
-                Artifact(
-                    f"{psa_dir}/privacy-sandbox-attestations.dat",
-                    f"{psa_dir}/privacy-sandbox-attestations.dat",
-                    ArtifactType.RESOURCE,
-                    StandardPermissions.REGULAR,
-                )
-            )
-
         # MEI Preload
         mei_manifest = self.output_dir / "MEIPreload/manifest.json"
         if mei_manifest.exists():
@@ -884,8 +856,9 @@ class InstallerConfig:
         # Host system integration files are only applicable to DEB and RPM
         # packages. Flatpak exports applications via standard Flatpak
         # directories (share/applications, share/metainfo, share/icons) staged
-        # separately.
-        if self.package_format == PackageFormat.FLATPAK:
+        # separately. Snap desktop integration is likewise staged separately
+        # and exported by snapd.
+        if self.package_format in (PackageFormat.FLATPAK, PackageFormat.SNAP):
             return artifacts
 
         # symlink for PACKAGE_ORIG
@@ -1061,7 +1034,10 @@ class Installer:
         install_dir = self.config.staging_dir / self.config.info_vars[
             "INSTALLDIR"
         ].lstrip("/")
-        if self.config.package_format == PackageFormat.FLATPAK:
+        if self.config.package_format in (
+            PackageFormat.FLATPAK,
+            PackageFormat.SNAP,
+        ):
             dirs = [install_dir]
         else:
             dirs = [

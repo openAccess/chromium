@@ -36,6 +36,7 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_group_suggestion.GroupSuggestionsServiceFactory;
 import org.chromium.chrome.browser.tabmodel.TabGroupObserver;
+import org.chromium.chrome.browser.tabmodel.TabGroupObserver.DidRemoveTabGroupReason;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabwindow.WindowId;
@@ -288,23 +289,25 @@ public class TabSwitcherGroupSuggestionServiceUnitTest {
 
         Tab mockTab = mock();
 
-        observer.willMergeTabToGroup(mockTab, 0, null);
+        observer.didMergeTabToGroup(mockTab, /* isDestinationTab= */ false);
         verify(mSuggestionLifecycleObserverHandler).onSuggestionIgnored();
 
         reset(mSuggestionLifecycleObserverHandler);
-        observer.willMoveTabGroup(new Token(1L, 2L), 0);
+        observer.willMoveTabGroup(new Token(1L, 2L));
         verify(mSuggestionLifecycleObserverHandler).onSuggestionIgnored();
 
         reset(mSuggestionLifecycleObserverHandler);
-        observer.willMoveTabOutOfGroup(mockTab, null);
+        observer.willMoveTabOutOfGroup(mockTab);
+        verify(mSuggestionLifecycleObserverHandler).onSuggestionIgnored();
+
+        Token tabGroupId = new Token(1L, 2L);
+
+        reset(mSuggestionLifecycleObserverHandler);
+        observer.onTabGroupCreated(tabGroupId);
         verify(mSuggestionLifecycleObserverHandler).onSuggestionIgnored();
 
         reset(mSuggestionLifecycleObserverHandler);
-        observer.didCreateNewGroup(mockTab, mTabModel);
-        verify(mSuggestionLifecycleObserverHandler).onSuggestionIgnored();
-
-        reset(mSuggestionLifecycleObserverHandler);
-        observer.didRemoveTabGroup(0, null, 0);
+        observer.didRemoveTabGroup(tabGroupId, DidRemoveTabGroupReason.CLOSE);
         verify(mSuggestionLifecycleObserverHandler).onSuggestionIgnored();
 
         reset(mSuggestionLifecycleObserverHandler);

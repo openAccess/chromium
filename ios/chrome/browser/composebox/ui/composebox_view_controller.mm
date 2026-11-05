@@ -14,13 +14,12 @@
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/ntp/ui_bundled/incognito/incognito_view.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_constants.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/omnibox/ui/popup/omnibox_popup_util.h"
 #import "ios/chrome/browser/shared/ui/elements/extended_touch_target_button.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/common/ui/util/ui_util.h"
-#import "ui/base/device_form_factor.h"
 
 namespace {
 /// The padding for the close button.
@@ -32,6 +31,7 @@ const CGFloat kInputPlateIpadWindowControlsOffset = 70.0f;
 /// The trailing and top padding for the input plate container.
 const CGFloat kInputPlateTrailingPadding = 8.0f;
 const CGFloat kInputPlateTopPadding = 4.0f;
+const CGFloat kMinInputPlateTopPadding = 8.0f;
 /// The size for the close button.
 const CGFloat kCloseButtonSize = 30.0f;
 /// The ammount of padding to add vertically to the incognito view content.
@@ -155,14 +155,7 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
   _omniboxPopupContainer.translatesAutoresizingMaskIntoConstraints = NO;
   [self.view insertSubview:_omniboxPopupContainer atIndex:0];
 
-  if (_theme.useIncognitoViewFallback) {
-    _incognitoView = [[IncognitoView alloc] init];
-    _incognitoView.translatesAutoresizingMaskIntoConstraints = NO;
-    _incognitoView.delegate = self;
-    _incognitoView.hidden = YES;
-
-    [self.view insertSubview:_incognitoView atIndex:0];
-  }
+  [self createIncognitoViewIfNeeded];
 
   [[NSNotificationCenter defaultCenter]
       addObserver:self
@@ -173,26 +166,17 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
   [self registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
                      withAction:@selector(userInterfaceStyleChanged)];
 
-  if (_theme.useIncognitoViewFallback) {
-    [self
-        registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
-                     withAction:@selector(preferredContentSizeCategoryChanged)];
-  }
-
-  if (IsComposeboxIpadEnabled()) {
-    __weak ComposeboxViewController* weakSelf = self;
-    [self registerForTraitChanges:@[ UITraitHorizontalSizeClass.class ]
-                      withHandler:^(id<UITraitEnvironment> traitEnvironment,
-                                    UITraitCollection* previousCollection) {
-                        [weakSelf setupConstraints];
-                        if (traitEnvironment.traitCollection
-                                .horizontalSizeClass !=
-                            previousCollection.horizontalSizeClass) {
-                          [weakSelf.delegate
-                                  composeboxHorizontalSizeClassDidChange];
-                        }
-                      }];
-  }
+  __weak ComposeboxViewController* weakSelf = self;
+  [self
+      registerForTraitChanges:@[ UITraitHorizontalSizeClass.class ]
+                  withHandler:^(id<UITraitEnvironment> traitEnvironment,
+                                UITraitCollection* previousCollection) {
+                    if (traitEnvironment.traitCollection.horizontalSizeClass !=
+                        previousCollection.horizontalSizeClass) {
+                      [weakSelf
+                              .delegate composeboxHorizontalSizeClassDidChange];
+                    }
+                  }];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -312,6 +296,26 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
   [self setupConstraints];
 }
 
+// Creates the Incognito fallback view if the current theme requires it and it
+// has not been created yet. The theme is swapped at runtime (e.g. on a
+// horizontal size class change), so `useIncognitoViewFallback` can become YES
+// long after `viewDidLoad`.
+- (void)createIncognitoViewIfNeeded {
+  if (!_theme.useIncognitoViewFallback || _incognitoView) {
+    return;
+  }
+
+  _incognitoView = [[IncognitoView alloc] init];
+  _incognitoView.translatesAutoresizingMaskIntoConstraints = NO;
+  _incognitoView.delegate = self;
+  _incognitoView.hidden = YES;
+
+  [self.view insertSubview:_incognitoView atIndex:0];
+
+  [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
+                     withAction:@selector(preferredContentSizeCategoryChanged)];
+}
+
 - (void)setupConstraints {
   for (NSLayoutConstraint* staleConstraint in _constraintsForCurrentPosition) {
     staleConstraint.active = NO;
@@ -343,8 +347,10 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
         constraintEqualToAnchor:safeAreaGuide.topAnchor],
   ]];
 
-  // Constraints for the incognito info view.
-  if (_theme.useIncognitoViewFallback) {
+  // Constraints for the incognito info view. `_incognitoView` is checked
+  // explicitly: passing nil anchors to the array literal below would raise an
+  // exception. See crbug.com/562100200.
+  if (_theme.useIncognitoViewFallback && _incognitoView) {
     [_constraintsForCurrentPosition addObjectsFromArray:@[
       [_incognitoView.topAnchor
           constraintEqualToAnchor:safeAreaGuide.topAnchor],
@@ -363,6 +369,11 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
   [_closeButton removeFromSuperview];
 
   [self.view insertSubview:_closeButton belowSubview:_inputViewController.view];
+  _closeButton.hidden = NO;
+  if (!ShouldApplyOmniboxPopoutLayout(self)) {
+    self.view.layer.cornerRadius = 0;
+    self.view.clipsToBounds = NO;
+  }
   switch ([self currentInputPlatePosition]) {
     case ComposeboxInputPlatePosition::kBottom: {
       _progressiveBlurEffect = [self
@@ -428,12 +439,26 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
       AddSameConstraintsToSides(_progressiveBlurEffect, safeAreaGuide,
                                 LayoutSides::kTop | LayoutSides::kHorizontal);
 
+      CGFloat leadingMargin = kInputPlateMargin;
+      if (self.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPad &&
+          !ShouldApplyOmniboxPopoutLayout(self)) {
+        BOOL isRTL = [self.view effectiveUserInterfaceLayoutDirection] ==
+                     UIUserInterfaceLayoutDirectionRightToLeft;
+        if (isRTL) {
+          // Close button is on the trailing end in RTL, so update trailing end.
+          closeButtonTrailingConstraint.constant =
+              -kInputPlateIpadWindowControlsOffset;
+        } else {
+          leadingMargin = kInputPlateIpadWindowControlsOffset;
+        }
+      }
+
       _constraintToCloseButton = [_inputViewController.view.trailingAnchor
           constraintEqualToAnchor:_closeButton.leadingAnchor
                          constant:-kInputPlateTrailingPadding];
       _constraintToLeadingEdge = [_inputViewController.view.leadingAnchor
           constraintEqualToAnchor:safeAreaGuide.leadingAnchor
-                         constant:kInputPlateMargin];
+                         constant:leadingMargin];
 
       auto constraintToMargin = [_inputViewController.view.trailingAnchor
           constraintEqualToAnchor:_closeButton.trailingAnchor
@@ -443,6 +468,15 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
       CGFloat closeButtonTopMargin = AlignComposeboxCloseButtonToInputPlateTop()
                                          ? 0
                                          : kCloseButtonTopMargin;
+
+      NSLayoutConstraint* inputPlateTopConstraint =
+          [_inputViewController.view.topAnchor
+              constraintEqualToAnchor:safeAreaGuide.topAnchor
+                             constant:kInputPlateTopPadding];
+      // Lower priority by 1 so the required minimum top padding constraint
+      // against `self.view.topAnchor` can take precedence when the top safe
+      // area inset is zero or smaller than `kMinInputPlateTopPadding`.
+      inputPlateTopConstraint.priority = UILayoutPriorityRequired - 1;
 
       [_constraintsForCurrentPosition addObjectsFromArray:@[
         _constraintToCloseButton,
@@ -455,9 +489,13 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
             constraintEqualToAnchor:safeAreaGuide.leadingAnchor],
         [_omniboxPopupContainer.trailingAnchor
             constraintEqualToAnchor:safeAreaGuide.trailingAnchor],
+        inputPlateTopConstraint,
         [_inputViewController.view.topAnchor
-            constraintEqualToAnchor:safeAreaGuide.topAnchor
-                           constant:kInputPlateTopPadding],
+            constraintGreaterThanOrEqualToAnchor:safeAreaGuide.topAnchor
+                                        constant:kInputPlateTopPadding],
+        [_inputViewController.view.topAnchor
+            constraintGreaterThanOrEqualToAnchor:self.view.topAnchor
+                                        constant:kMinInputPlateTopPadding],
         [_inputViewController.view.bottomAnchor
             constraintLessThanOrEqualToAnchor:self.view.keyboardLayoutGuide
                                                   .topAnchor
@@ -487,54 +525,26 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
       AddSameConstraintsToSides(_progressiveBlurEffect, safeAreaGuide,
                                 LayoutSides::kHorizontal);
 
-      CGFloat leadingMargin = kInputPlateIpadMargin;
-      if (!IsRegularXRegularSizeClass(self.traitCollection)) {
-        BOOL isRTL = [self.view effectiveUserInterfaceLayoutDirection] ==
-                     UIUserInterfaceLayoutDirectionRightToLeft;
-        if (isRTL) {
-          // Close button is on the trailing end in RTL, so update trailing end.
-          closeButtonTrailingConstraint.constant =
-              -kInputPlateIpadWindowControlsOffset;
-        } else {
-          leadingMargin = kInputPlateIpadWindowControlsOffset;
-        }
-      }
-
       [_constraintsForCurrentPosition addObjectsFromArray:@[
         [_inputViewController.view.leadingAnchor
             constraintEqualToAnchor:safeAreaGuide.leadingAnchor
-                           constant:leadingMargin],
+                           constant:kInputPlateIpadMargin],
         [_inputViewController.view.topAnchor
             constraintEqualToAnchor:safeAreaGuide.topAnchor
                            constant:kInputPlateIpadMargin],
+        [_inputViewController.view.trailingAnchor
+            constraintEqualToAnchor:safeAreaGuide.trailingAnchor
+                           constant:-kInputPlateIpadMargin],
       ]];
-      if (IsRegularXRegularSizeClass(self.traitCollection)) {
-        // Constraints for when the close button is hidden.
-        [closeButtonConstraints addObjectsFromArray:@[
-          [_inputViewController.view.trailingAnchor
-              constraintEqualToAnchor:safeAreaGuide.trailingAnchor
-                             constant:-kInputPlateIpadMargin]
-        ]];
-        _closeButton.hidden = YES;
-      } else {
-        // Constraints for when the close button is shown.
-        [closeButtonConstraints addObjectsFromArray:@[
-          [_inputViewController.view.trailingAnchor
-              constraintEqualToAnchor:_closeButton.leadingAnchor
-                             constant:-kInputPlateTrailingPadding],
-          [_closeButton.centerYAnchor
-              constraintEqualToAnchor:_inputViewController.omniboxContainer
-                                          .centerYAnchor]
-        ]];
-
-        _closeButton.hidden = NO;
-      }
+      _closeButton.hidden = YES;
       [_constraintsForCurrentPosition
           addObjectsFromArray:closeButtonConstraints];
       break;
     }
     case ComposeboxInputPlatePosition::kMissing:
       break;
+    case ComposeboxInputPlatePosition::kBottomSheet:
+      NOTREACHED() << "Bottom sheet position incompatible with composebox";
   }
 
   [NSLayoutConstraint activateConstraints:_constraintsForCurrentPosition];
@@ -562,6 +572,7 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
   ];
   switch (positon) {
     case ComposeboxInputPlatePosition::kiPad:  // Fall through
+    case ComposeboxInputPlatePosition::kBottomSheet:  // Fall through
     case ComposeboxInputPlatePosition::kTop:
       gradientLayer.startPoint = CGPointMake(0.5, 1.0);
       gradientLayer.endPoint = CGPointMake(0.5, 0.4);
@@ -651,6 +662,20 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
   _incognitoView.hidden = expectsClipboardSuggestion;
 }
 
+- (void)updateTheme:(ComposeboxTheme*)theme {
+  _theme = theme;
+  [self createIncognitoViewIfNeeded];
+  self.view.backgroundColor = _theme.composeboxBackgroundColor;
+  UIButtonConfiguration* config = _closeButton.configuration;
+  config.image = CloseButtonImage(_theme.closeButtonBackgroundColor, NO);
+  _closeButton.configuration = config;
+  [_presenter setPreferredOmniboxPosition:_theme.isTopInputPlate
+                                              ? ToolbarType::kPrimary
+                                              : ToolbarType::kSecondary];
+  [self updateBlurVisibility];
+  [self setupConstraints];
+}
+
 - (ComposeboxInputPlatePosition)currentInputPlatePosition {
   return _inputViewController.view ? _theme.inputPlatePosition
                                    : ComposeboxInputPlatePosition::kMissing;
@@ -661,8 +686,7 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
 - (void)preferredContentSizeDidChangeForChildContentContainer:
     (id<UIContentContainer>)container {
   [super preferredContentSizeDidChangeForChildContentContainer:container];
-  if (IsComposeboxIpadEnabled() &&
-      ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET) {
+  if (ShouldApplyOmniboxPopoutLayout(self)) {
     [self updatePreferredContentSize:container];
   }
 }
@@ -770,11 +794,15 @@ UIImage* CloseButtonImage(UIColor* backgroundColor, BOOL highlighted) {
 }
 
 - (NSArray*)keyCommands {
-  return @[ UIKeyCommand.cr_close ];
+  return @[ UIKeyCommand.cr_close, UIKeyCommand.cr_closeTab ];
 }
 
 - (void)keyCommand_close {
   [self.delegate composeboxViewControllerDidTapCloseButton:self];
+}
+
+- (void)keyCommand_closeTab {
+  [self.delegate composeboxViewControllerDidCloseTab:self];
 }
 
 @end

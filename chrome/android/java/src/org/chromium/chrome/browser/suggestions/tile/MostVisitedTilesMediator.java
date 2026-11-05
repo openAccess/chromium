@@ -20,12 +20,10 @@ import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.native_page.ContextMenuManager;
 import org.chromium.chrome.browser.ntp.NewTabPageUtils;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager.HomepageStateListener;
-import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.offlinepages.OfflinePageBridge;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.suggestions.SiteSuggestion;
@@ -66,7 +64,6 @@ public class MostVisitedTilesMediator implements TileGroup.Observer {
     private TileRenderer mRenderer;
     private TileGroup mTileGroup;
     private UserEducationHelper mUserEducationHelper;
-    private boolean mMvtContentFits;
 
     private final int mLateralMarginSum;
     private final int mTileViewEdgePaddingForTablet;
@@ -227,35 +224,29 @@ public class MostVisitedTilesMediator implements TileGroup.Observer {
     }
 
     /**
-     * Updates the width of the MV tiles container. If on a large form factor (LFF) device and the
-     * content fits, it uses WRAP_CONTENT to center the tiles. Otherwise, it applies the provided
-     * totalWidth. Also updates the lateral margins.
+     * Updates the width and lateral margins of the MVT container.
      *
-     * @param totalWidth The total width to apply or check against. If null, the applied width falls
-     *     back to MATCH_PARENT.
+     * <p>The lateral margins are symmetrically calculated based on the difference between the total
+     * width and the target MVT width. On tablets, if the content fits, the width is set to
+     * WRAP_CONTENT to cooperate with {@link MostVisitedTilesLayout}'s internal centering.
+     *
+     * @param totalWidth The total available width of the parent layout.
+     * @param mvtWidth The target width that the MVT layout should align to.
      */
-    void updateMvtWidth(@Nullable Integer totalWidth) {
-        if (mIsLff && totalWidth != null) {
-            mMvtContentFits = mMvTilesLayout.contentFitsOnLff(totalWidth);
-        }
-
+    void updateMvtWidth(int totalWidth, int mvtWidth) {
         MarginLayoutParams marginLayoutParams =
                 (MarginLayoutParams) mMvTilesContainerLayout.getLayoutParams();
-        if (mIsLff && mMvtContentFits) {
-            marginLayoutParams.width = ViewGroup.LayoutParams.WRAP_CONTENT;
-        } else if (totalWidth != null) {
-            marginLayoutParams.width = totalWidth;
-        } else {
-            marginLayoutParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
-        }
+        int lateralMargin = (totalWidth - mvtWidth) / 2;
+        marginLayoutParams.leftMargin = lateralMargin;
+        marginLayoutParams.rightMargin = lateralMargin;
 
-        int lateralPaddingId =
-                NtpCustomizationUtils.isInNarrowWindowOnLff(mIsLff, mUiConfig)
-                        ? R.dimen.ntp_search_box_lateral_margin_narrow_window_tablet
-                        : R.dimen.mvt_container_lateral_margin;
-        int lateralPaddingsForNtp = mResources.getDimensionPixelSize(lateralPaddingId);
-        marginLayoutParams.leftMargin = lateralPaddingsForNtp;
-        marginLayoutParams.rightMargin = lateralPaddingsForNtp;
+        if (mIsLff && mMvTilesLayout.contentFitsOnLff(mvtWidth)) {
+            // On tablet, use WRAP_CONTENT to permit {@link MostVisitedTilesLayout} to calculate
+            // and apply expanded edge margins to center its tiles.
+            marginLayoutParams.width = ViewGroup.LayoutParams.WRAP_CONTENT;
+        } else {
+            marginLayoutParams.width = mvtWidth;
+        }
     }
 
     /**
@@ -341,12 +332,10 @@ public class MostVisitedTilesMediator implements TileGroup.Observer {
     }
 
     private void maybeTriggerCustomizationIph(List<Tile> tiles) {
-        if (!ChromeFeatureList.sMostVisitedTilesCustomization.isEnabled()) return;
-
-        if (tiles.size() == 0) return;
+        if (tiles.isEmpty()) return;
 
         Tile firstTile = tiles.get(0);
-        if (firstTile.getData().source == TileSource.CUSTOM_LINKS) return;
+        if (firstTile.isCustomLink()) return;
 
         double firstTileScore = mTileGroup.getSuggestionScore(firstTile.getUrl());
         if (firstTileScore < MVT_CUSTOMIZATION_IPH_TILE_SCORE_THRESHOULD) return;

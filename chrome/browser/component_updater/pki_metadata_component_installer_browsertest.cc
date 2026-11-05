@@ -4,8 +4,10 @@
 
 #include "chrome/browser/component_updater/pki_metadata_component_installer.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <array>
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -22,6 +24,7 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/notreached.h"
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
@@ -31,6 +34,7 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/types/optional_ref.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/net/secure_dns_config.h"
@@ -42,6 +46,7 @@
 #include "components/certificate_transparency/certificate_transparency_config.pb.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_throttle.h"
@@ -376,17 +381,6 @@ class PKIMetadataComponentUpdaterTest
     InProcessBrowserTest::SetUpInProcessBrowserTestFixture();
     ASSERT_TRUE(component_dir_.CreateUniqueTempDir());
     host_resolver()->AddRule("*", "127.0.0.1");
-
-    // Set up a configuration that will enable or disable CT enforcement
-    // depending on the test parameter.
-    chrome_browser_certificate_transparency::CTConfig ct_config;
-    ct_config.set_disable_ct_enforcement(GetParam() ==
-                                         CTEnforcement::kDisabledByProto);
-    ct_config.mutable_log_list()->mutable_timestamp()->set_seconds(
-        SecondsSinceEpoch(base::Time::Now()));
-    ASSERT_TRUE(PKIMetadataComponentInstallerService::GetInstance()
-                    ->WriteCTDataForTesting(component_dir_.GetPath(),
-                                            ct_config.SerializeAsString()));
   }
 
   void TearDownInProcessBrowserTestFixture() override {
@@ -395,28 +389,35 @@ class PKIMetadataComponentUpdaterTest
 
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
-    // Wait for configuration set in `SetUpInProcessBrowserTestFixture` to load.
+    // Set up a configuration that will enable or disable CT enforcement
+    // depending on the test parameter.
+    chrome_browser_certificate_transparency::CTConfig ct_config;
+    ct_config.set_disable_ct_enforcement(GetParam() ==
+                                         CTEnforcement::kDisabledByProto);
+    ct_config.mutable_log_list()->mutable_timestamp()->set_seconds(
+        SecondsSinceEpoch(base::Time::Now()));
+    {
+      base::ScopedAllowBlockingForTesting allow_blocking;
+      ASSERT_TRUE(PKIMetadataComponentInstallerService::GetInstance()
+                      ->WriteCTDataForTesting(component_dir_.GetPath(),
+                                              ct_config.SerializeAsString()));
+    }
+    PKIMetadataComponentInstallerService::GetInstance()->OnComponentReady(
+        component_dir_.GetPath());
     WaitForPKIConfiguration(1);
   }
 
  protected:
-  // Waits for the PKI to have been configured at least |expected_times|.
+  // Waits for the PKI to have been processed at least |expected_times|.
   void WaitForPKIConfiguration(int expected_times) {
-    if (GetParam() == CTEnforcement::kDisabledByFeature) {
-      // When CT is disabled by the feature flag there are no callbacks to
-      // wait on, so just spin the runloop.
-      base::RunLoop().RunUntilIdle();
-      EXPECT_EQ(pki_metadata_configured_times_, 0);
-    } else {
-      expected_pki_metadata_configured_times_ = expected_times;
-      if (pki_metadata_configured_times_ >=
-          expected_pki_metadata_configured_times_) {
-        return;
-      }
-      base::RunLoop run_loop;
-      pki_metadata_config_closure_ = run_loop.QuitClosure();
-      run_loop.Run();
+    expected_pki_metadata_configured_times_ = expected_times;
+    if (pki_metadata_configured_times_ >=
+        expected_pki_metadata_configured_times_) {
+      return;
     }
+    base::RunLoop run_loop;
+    pki_metadata_config_closure_ = run_loop.QuitClosure();
+    run_loop.Run();
   }
 
   const base::FilePath& GetComponentDirPath() const {
@@ -433,7 +434,7 @@ class PKIMetadataComponentUpdaterTest
       bool expect_ct_error);
 
  private:
-  void OnCTLogListConfigured() override {
+  void OnPKIMetadataProcessed() override {
     ++pki_metadata_configured_times_;
     if (pki_metadata_config_closure_ &&
         pki_metadata_configured_times_ >=
@@ -565,8 +566,7 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentUpdaterTest, TestCTUpdate) {
   }
 
   // Should be trusted now.
-  PKIMetadataComponentInstallerService::GetInstance()
-      ->ReconfigureAfterNetworkRestart();
+  PKIMetadataComponentInstallerService::GetInstance()->ConfigurePKIMetadata();
   WaitForPKIConfiguration(2);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), https_server_ok.GetURL("example.com", "/simple.html")));
@@ -607,8 +607,7 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentUpdaterTest, TestCTUpdate) {
   // Should be untrusted again since 2 logs are required for diversity. Both
   // SCTs should verify successfully but only one of them is accepted as the
   // other has a timestamp after the log retirement state change timestamp.
-  PKIMetadataComponentInstallerService::GetInstance()
-      ->ReconfigureAfterNetworkRestart();
+  PKIMetadataComponentInstallerService::GetInstance()->ConfigurePKIMetadata();
   WaitForPKIConfiguration(3);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), https_server_ok.GetURL("example.com", "/simple.html")));
@@ -686,8 +685,7 @@ void PKIMetadataComponentUpdaterTest::DoTestAtLeastOneRFC6962LogPolicy(
                                             ct_config.SerializeAsString()));
   }
 
-  PKIMetadataComponentInstallerService::GetInstance()
-      ->ReconfigureAfterNetworkRestart();
+  PKIMetadataComponentInstallerService::GetInstance()->ConfigurePKIMetadata();
   WaitForPKIConfiguration(2);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), https_server_ok.GetURL("example.com", "/simple.html")));
@@ -819,8 +817,7 @@ class PKIMetadataComponentChromeRootStoreUpdateTest
     }
 
     CRSWaiter waiter(this);
-    PKIMetadataComponentInstallerService::GetInstance()
-        ->ConfigureChromeRootStore();
+    PKIMetadataComponentInstallerService::GetInstance()->ConfigurePKIMetadata();
     waiter.Wait();
   }
 
@@ -853,13 +850,13 @@ class PKIMetadataComponentChromeRootStoreUpdateTest
   base::ScopedTempDir component_dir_;
 
  private:
-  void OnChromeRootStoreConfigured() override {
+  void OnPKIMetadataProcessed() override {
     if (crs_config_closure_) {
       std::move(crs_config_closure_).Run();
     }
   }
 
-  void OnMtcMetadataConfigured() override {
+  void OnMtcMetadataProcessed() override {
     if (mtc_metadata_config_closure_) {
       std::move(mtc_metadata_config_closure_).Run();
     }
@@ -1319,7 +1316,8 @@ IN_PROC_BROWSER_TEST_F(PKIMetadataComponentChromeRootStoreUpdateTest,
 
 class PKIMetadataComponentChromeRootStoreMtcMetadataTest
     : public PKIMetadataComponentChromeRootStoreUpdateTest,
-      public testing::WithParamInterface<std::tuple<bool, bool, bool>> {
+      public testing::WithParamInterface<
+          std::tuple<bool, bool, bool, chrome_root_store::SpecVersion>> {
  public:
   PKIMetadataComponentChromeRootStoreMtcMetadataTest() {
     feature_list_.InitWithFeatureStates(
@@ -1342,6 +1340,39 @@ class PKIMetadataComponentChromeRootStoreMtcMetadataTest
                             : chrome_root_store::REALM_PUBLICLY_TRUSTED;
   }
 
+  chrome_root_store::SpecVersion signer_set_spec() const {
+    return std::get<3>(GetParam());
+  }
+
+  net::MtcLogBuilder::SpecVersion log_builder_spec() const {
+    switch (signer_set_spec()) {
+      case chrome_root_store::SPEC_VERSION_DRAFT05:
+        return net::MtcLogBuilder::kPlants05;
+      case chrome_root_store::SPEC_VERSION_DRAFT07:
+        return net::MtcLogBuilder::kPlants07;
+      default:
+        NOTREACHED();
+    }
+  }
+
+  net::MtcLogBuilder CreateLogBuilder(
+      base::span<const uint8_t> ca_id,
+      net::MtcLogBuilder::LogNumber log_number) const {
+    return net::MtcLogBuilder(ca_id, log_number, log_builder_spec());
+  }
+
+  chrome_root_store::Signer* AddSignerSetIssuer(
+      chrome_root_store::SignerSet& signer_set,
+      base::span<const uint8_t> log_id,
+      std::string_view operator_name,
+      std::optional<int32_t> crs_root_id) {
+    chrome_root_store::Signer* issuer =
+        net::AddSignerSetIssuer(signer_set, log_id, operator_name, crs_root_id);
+    issuer->set_spec_version(signer_set_spec());
+    issuer->set_realm(realm());
+    return issuer;
+  }
+
  private:
   base::test::ScopedFeatureList feature_list_;
 };
@@ -1349,13 +1380,30 @@ class PKIMetadataComponentChromeRootStoreMtcMetadataTest
 INSTANTIATE_TEST_SUITE_P(
     ,
     PKIMetadataComponentChromeRootStoreMtcMetadataTest,
-    testing::Combine(testing::Bool(), testing::Bool(), testing::Bool()),
+    testing::Combine(testing::Bool(),
+                     testing::Bool(),
+                     testing::Bool(),
+                     testing::Values(chrome_root_store::SPEC_VERSION_DRAFT05,
+                                     chrome_root_store::SPEC_VERSION_DRAFT07)),
     [](const testing::TestParamInfo<
         PKIMetadataComponentChromeRootStoreMtcMetadataTest::ParamType>& info) {
-      return base::StrCat(
-          {std::get<0>(info.param) ? "MtcsOn" : "MtcsOff",
-           std::get<1>(info.param) ? "TestRootsOn" : "TestRootsOff",
-           std::get<2>(info.param) ? "UseTestRealm" : "UsePublicRealm"});
+      std::string_view spec_string;
+      switch (std::get<3>(info.param)) {
+        case chrome_root_store::SPEC_VERSION_DRAFT05:
+          spec_string = "Plants05";
+          break;
+        case chrome_root_store::SPEC_VERSION_DRAFT07:
+          spec_string = "Plants07";
+          break;
+        default:
+          NOTREACHED();
+      }
+      return base::StrCat({
+          std::get<0>(info.param) ? "MtcsOn" : "MtcsOff",
+          std::get<1>(info.param) ? "TestRootsOn" : "TestRootsOff",
+          std::get<2>(info.param) ? "UseTestRealm" : "UsePublicRealm",
+          spec_string,
+      });
     });
 
 IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
@@ -1429,8 +1477,8 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
           mtc_metadata_proto.add_mtc_anchor_data();
       mtc_anchor_metadata->set_ca_id(
           base::as_string_view(kMtcCaInMetadataWithNoLandmarksId));
-      chrome_root_store::MtcIndexRange* revoked_range =
-          mtc_anchor_metadata->add_revoked_indices();
+      chrome_root_store::MtcSerialRange* revoked_range =
+          mtc_anchor_metadata->add_revoked_serials();
       revoked_range->set_start_inclusive(5);
       revoked_range->set_end_exclusive(10);
     }
@@ -1517,16 +1565,12 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
     chrome_root_store::MtcConfig mtc_config;
     mtc_config.mutable_signer_set()->mutable_timestamp()->set_seconds(
         base::Time::Now().InSecondsFSinceUnixEpoch());
-    net::AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
-                            kMtcCaStandaloneId, "op1", std::nullopt)
-        ->set_realm(realm());
-    net::AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
-                            kMtcCaWithLandmarksId, "op2", std::nullopt)
-        ->set_realm(realm());
-    net::AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
-                            kMtcCaInMetadataWithNoLandmarksId, "op3",
-                            std::nullopt)
-        ->set_realm(realm());
+    AddSignerSetIssuer(*mtc_config.mutable_signer_set(), kMtcCaStandaloneId,
+                       "op1", std::nullopt);
+    AddSignerSetIssuer(*mtc_config.mutable_signer_set(), kMtcCaWithLandmarksId,
+                       "op2", std::nullopt);
+    AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
+                       kMtcCaInMetadataWithNoLandmarksId, "op3", std::nullopt);
 
     InstallCRSUpdate(root_store_proto, mtc_config);
 
@@ -1612,16 +1656,12 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
     chrome_root_store::MtcConfig mtc_config;
     mtc_config.mutable_signer_set()->mutable_timestamp()->set_seconds(
         base::Time::Now().InSecondsFSinceUnixEpoch());
-    net::AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
-                            kMtcCaStandaloneId, "op1", std::nullopt)
-        ->set_realm(realm());
-    net::AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
-                            kMtcCaWithLandmarksId, "op2", std::nullopt)
-        ->set_realm(realm());
-    net::AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
-                            kMtcCaInMetadataWithNoLandmarksId, "op3",
-                            std::nullopt)
-        ->set_realm(realm());
+    AddSignerSetIssuer(*mtc_config.mutable_signer_set(), kMtcCaStandaloneId,
+                       "op1", std::nullopt);
+    AddSignerSetIssuer(*mtc_config.mutable_signer_set(), kMtcCaWithLandmarksId,
+                       "op2", std::nullopt);
+    AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
+                       kMtcCaInMetadataWithNoLandmarksId, "op3", std::nullopt);
 
     InstallCRSUpdate(root_store_proto, mtc_config);
 
@@ -1682,8 +1722,8 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
           mtc_metadata_proto.add_mtc_anchor_data();
       mtc_anchor_metadata->set_ca_id(
           base::as_string_view(kMtcCaInMetadataWithNoLandmarksId));
-      chrome_root_store::MtcIndexRange* revoked_range =
-          mtc_anchor_metadata->add_revoked_indices();
+      chrome_root_store::MtcSerialRange* revoked_range =
+          mtc_anchor_metadata->add_revoked_serials();
       revoked_range->set_start_inclusive(5);
       revoked_range->set_end_exclusive(10);
     }
@@ -1768,9 +1808,8 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
     chrome_root_store::MtcConfig mtc_config;
     mtc_config.mutable_signer_set()->mutable_timestamp()->set_seconds(
         base::Time::Now().InSecondsFSinceUnixEpoch());
-    net::AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
-                            kMtcCaWithLandmarksId, "op2", std::nullopt)
-        ->set_realm(realm());
+    AddSignerSetIssuer(*mtc_config.mutable_signer_set(), kMtcCaWithLandmarksId,
+                       "op2", std::nullopt);
 
     InstallCRSUpdate(root_store_proto, mtc_config);
 
@@ -1950,7 +1989,7 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
       base::ToVector(kMirrorId), crypto::keypair::PrivateKey::GenerateMldsa44(),
       bssl::SignatureAlgorithm::kMldsa44};
 
-  net::MtcLogBuilder mtc_log(kMtcCaId, /*log_number=*/1);
+  net::MtcLogBuilder mtc_log(CreateLogBuilder(kMtcCaId, /*log_number=*/1));
   // TODO(crbug.com/469624806): improve interface for creating MTC cert
   // builders.
   std::unique_ptr<net::CertBuilder> mtc_leaf =
@@ -1965,7 +2004,8 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
   // Second log builder, but with the same log id, will be used to generate a
   // MTC leaf cert with the same subject/index/issuer, but with a different
   // proof.
-  net::MtcLogBuilder different_mtc_log(kMtcCaId, /*log_number=*/1);
+  net::MtcLogBuilder different_mtc_log(
+      CreateLogBuilder(kMtcCaId, /*log_number=*/1));
   different_mtc_log.AddUnusedEntries(21, {0x02});
   uint64_t different_mtc_log_index = different_mtc_log.AddEntry(*mtc_leaf);
   different_mtc_log.AddUnusedEntries(7, {0x02});
@@ -2096,9 +2136,8 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
     chrome_root_store::MtcConfig mtc_config;
     mtc_config.mutable_signer_set()->mutable_timestamp()->set_seconds(
         base::Time::Now().InSecondsFSinceUnixEpoch());
-    auto* issuer = net::AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
-                                           kMtcCaId, "op1", kFakeCrsRootId);
-    issuer->set_realm(realm());
+    auto* issuer = AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
+                                      kMtcCaId, "op1", kFakeCrsRootId);
     issuer->set_signature_algorithm(
         chrome_root_store::SIGNATURE_ALGORITHM_ML_DSA44);
     issuer->set_key(
@@ -2280,14 +2319,12 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
     bssl::UniquePtr<CRYPTO_BUFFER> landmark_cert_buffer;
     net::EmbeddedTestServer landmark_and_legacy_server{
         net::EmbeddedTestServer::TYPE_HTTPS};
-    net::EmbeddedTestServer landmark_only_server{
-        net::EmbeddedTestServer::TYPE_HTTPS};
     bssl::UniquePtr<CRYPTO_BUFFER> standalone_cert_buffer;
     net::EmbeddedTestServer standalone_only_server{
         net::EmbeddedTestServer::TYPE_HTTPS};
     bool expect_is_revoked = false;
   };
-  std::array<TestCertData, 6> test_cert_data;
+  std::array<TestCertData, 2> test_cert_data;
 
   net::MtcLogBuilder::Cosigner ca_cosigner = {
       base::ToVector(kMtcCaId), crypto::keypair::PrivateKey::GenerateMldsa44(),
@@ -2296,7 +2333,7 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
       base::ToVector(kMirrorId), crypto::keypair::PrivateKey::GenerateMldsa44(),
       bssl::SignatureAlgorithm::kMldsa44};
 
-  net::MtcLogBuilder mtc_log(kMtcCaId, kLogNumber);
+  net::MtcLogBuilder mtc_log(CreateLogBuilder(kMtcCaId, kLogNumber));
 
   for (int i = 0; i < test_cert_data.size(); ++i) {
     TestCertData& data = test_cert_data[i];
@@ -2336,18 +2373,9 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
         "chrome/test/data");
     ASSERT_TRUE(data.landmark_and_legacy_server.Start());
 
-    // Same as landmark_cert_config, but doesn't specify trust_anchor_id since
-    // this is the only config this server is configured with.
-    net::EmbeddedTestServer::ServerCertificateConfig mtc_only_cert_config;
-    mtc_only_cert_config.cert_and_key = net::EmbeddedTestServer::CertAndKey(
-        bssl::UpRef(data.landmark_cert_buffer),
-        bssl::UpRef(data.builder->GetKey()));
-    data.landmark_only_server.SetSSLConfig({mtc_only_cert_config},
-                                           server_config);
-    data.landmark_only_server.ServeFilesFromSourceDirectory("chrome/test/data");
-    ASSERT_TRUE(data.landmark_only_server.Start());
-
-    // Same as landmark_only_server, but with the standalone MTC.
+    // Same as landmark_cert_config, but with standalone MTC and doesn't
+    // specify trust_anchor_id since this is the only config this server is
+    // configured with.
     net::EmbeddedTestServer::ServerCertificateConfig
         standalone_only_cert_config;
     data.standalone_cert_buffer = mtc_log.CreateStandaloneCertificateBuffer(
@@ -2386,9 +2414,8 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
     mtc_config.mutable_signer_set()->mutable_timestamp()->set_seconds(
         base::Time::Now().InSecondsFSinceUnixEpoch());
 
-    auto* issuer = net::AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
-                                           kMtcCaId, "op1", std::nullopt);
-    issuer->set_realm(realm());
+    auto* issuer = AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
+                                      kMtcCaId, "op1", std::nullopt);
     issuer->set_signature_algorithm(
         chrome_root_store::SIGNATURE_ALGORITHM_ML_DSA44);
     issuer->set_key(
@@ -2415,19 +2442,10 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
 
     // Add revoked range that contains 1 certificate.
     {
-      auto* revoked_range = mtc_anchor_data->add_revoked_indices();
+      auto* revoked_range = mtc_anchor_data->add_revoked_serials();
       revoked_range->set_start_inclusive(test_cert_data[1].mtc_serial);
-      revoked_range->set_end_exclusive(test_cert_data[2].mtc_serial);
+      revoked_range->set_end_exclusive(test_cert_data[1].mtc_serial + 1);
       test_cert_data[1].expect_is_revoked = true;
-    }
-
-    // Add revoked range that contains multiple certificates.
-    {
-      auto* revoked_range = mtc_anchor_data->add_revoked_indices();
-      revoked_range->set_start_inclusive(test_cert_data[3].mtc_serial);
-      revoked_range->set_end_exclusive(test_cert_data[5].mtc_serial);
-      test_cert_data[3].expect_is_revoked = true;
-      test_cert_data[4].expect_is_revoked = true;
     }
 
     InstallMtcMetadataUpdate(mtc_metadata_proto);
@@ -2488,36 +2506,6 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
     }
 
     {
-      // Attempt to load from the server which only has the landmark relative
-      // MTC cert and doesn't use trust anchor IDs. This should succeed if MTCs
-      // are enabled and the cert is not revoked, otherwise it should fail.
-      ASSERT_TRUE(ui_test_utils::NavigateToURL(
-          browser(),
-          data.landmark_only_server.GetURL(data.hostname, "/simple.html")));
-      if (!expect_test_mtc_is_used()) {
-        EXPECT_NE(chrome_test_utils::GetActiveWebContents(this)->GetTitle(),
-                  u"OK");
-        ssl_test_util::CheckAuthenticationBrokenState(
-            chrome_test_utils::GetActiveWebContents(this),
-            net::CERT_STATUS_AUTHORITY_INVALID,
-            ssl_test_util::AuthState::SHOWING_INTERSTITIAL);
-      } else if (data.expect_is_revoked) {
-        EXPECT_NE(chrome_test_utils::GetActiveWebContents(this)->GetTitle(),
-                  u"OK");
-        ssl_test_util::CheckAuthenticationBrokenState(
-            chrome_test_utils::GetActiveWebContents(this),
-            net::CERT_STATUS_REVOKED,
-            ssl_test_util::AuthState::SHOWING_INTERSTITIAL);
-      } else {
-        EXPECT_EQ(chrome_test_utils::GetActiveWebContents(this)->GetTitle(),
-                  u"OK");
-        ssl_test_util::CheckAuthenticatedState(
-            chrome_test_utils::GetActiveWebContents(this),
-            ssl_test_util::AuthState::NONE);
-      }
-    }
-
-    {
       // Attempt to load from the server which only has the standalone MTC cert
       // and doesn't use trust anchor IDs. This should succeed if MTCs are
       // enabled and the cert is not revoked, otherwise it should fail.
@@ -2564,7 +2552,7 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
       base::ToVector(kMirrorId), crypto::keypair::PrivateKey::GenerateMldsa44(),
       bssl::SignatureAlgorithm::kMldsa44};
 
-  net::MtcLogBuilder mtc_log(kMtcCaId, /*log_number=*/1);
+  net::MtcLogBuilder mtc_log(CreateLogBuilder(kMtcCaId, /*log_number=*/1));
   // TODO(crbug.com/469624806): improve interface for creating MTC cert
   // builders.
   std::unique_ptr<net::CertBuilder> mtc_leaf =
@@ -2599,9 +2587,8 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
   chrome_root_store::MtcConfig mtc_config;
   mtc_config.mutable_signer_set()->mutable_timestamp()->set_seconds(
       base::Time::Now().InSecondsFSinceUnixEpoch());
-  auto* issuer = net::AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
-                                         kMtcCaId, "op1", std::nullopt);
-  issuer->set_realm(realm());
+  auto* issuer = AddSignerSetIssuer(*mtc_config.mutable_signer_set(), kMtcCaId,
+                                    "op1", std::nullopt);
   issuer->set_signature_algorithm(
       chrome_root_store::SIGNATURE_ALGORITHM_ML_DSA44);
   issuer->set_key(
@@ -2727,7 +2714,7 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
 
   int64_t crs_version = net::CompiledChromeRootStoreVersion();
 
-  net::MtcLogBuilder mtc_log(kMtcCaId, kLogNumber);
+  net::MtcLogBuilder mtc_log(CreateLogBuilder(kMtcCaId, kLogNumber));
 
   // TODO(crbug.com/469624806): improve interface for creating MTC cert
   // builders.
@@ -2799,12 +2786,11 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentChromeRootStoreMtcMetadataTest,
     chrome_root_store::MtcConfig mtc_config;
     mtc_config.mutable_signer_set()->mutable_timestamp()->set_seconds(
         base::Time::Now().InSecondsFSinceUnixEpoch());
-    auto* issuer = net::AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
-                                           kMtcCaId, "op1", std::nullopt);
-    issuer->set_realm(realm());
+    auto* issuer = AddSignerSetIssuer(*mtc_config.mutable_signer_set(),
+                                      kMtcCaId, "op1", std::nullopt);
     auto* constraint = issuer->add_constraints();
     constraint->add_permitted_dns_names("example.org");
-    constraint->set_index_not_after((kLogNumber << 48) + mtc_log_index2);
+    constraint->set_serial_not_after((kLogNumber << 48) + mtc_log_index2);
 
     InstallCRSUpdate(root_store_proto, mtc_config);
   }
@@ -3028,27 +3014,6 @@ class PKIMetadataComponentCtAndCrsTestBase
   }
 
  protected:
-  // Waits for the CT log lists to have been configured at least
-  // |expected_times|.
-  void WaitForCtConfiguration(int expected_times,
-                              bool ct_disabled_by_feature = false) {
-    if (ct_disabled_by_feature) {
-      // When CT is disabled by the feature flag there are no callbacks to
-      // wait on, so just spin the runloop.
-      base::RunLoop().RunUntilIdle();
-      EXPECT_EQ(ct_log_list_configured_times_, 0);
-    } else {
-      expected_ct_log_list_configured_times_ = expected_times;
-      if (ct_log_list_configured_times_ >=
-          expected_ct_log_list_configured_times_) {
-        return;
-      }
-      base::RunLoop run_loop;
-      pki_metadata_config_closure_ = run_loop.QuitClosure();
-      run_loop.Run();
-    }
-  }
-
   const base::FilePath& GetComponentDirPath() const {
     return component_dir_.GetPath();
   }
@@ -3062,9 +3027,22 @@ class PKIMetadataComponentCtAndCrsTestBase
                                        root_store_proto.SerializeAsString()));
     }
 
-    CRSWaiter waiter(this);
-    PKIMetadataComponentInstallerService::GetInstance()
-        ->ConfigureChromeRootStore();
+    PKIMetadataWaiter waiter(this);
+    PKIMetadataComponentInstallerService::GetInstance()->ConfigurePKIMetadata();
+    waiter.Wait();
+  }
+
+  void InstallCTUpdate(
+      const chrome_browser_certificate_transparency::CTConfig& ct_config) {
+    {
+      base::ScopedAllowBlockingForTesting allow_blocking;
+      ASSERT_TRUE(PKIMetadataComponentInstallerService::GetInstance()
+                      ->WriteCTDataForTesting(component_dir_.GetPath(),
+                                              ct_config.SerializeAsString()));
+    }
+
+    PKIMetadataWaiter waiter(this);
+    PKIMetadataComponentInstallerService::GetInstance()->ConfigurePKIMetadata();
     waiter.Wait();
   }
 
@@ -3072,38 +3050,24 @@ class PKIMetadataComponentCtAndCrsTestBase
   base::ScopedTempDir component_dir_;
 
  private:
-  void OnCTLogListConfigured() override {
-    ++ct_log_list_configured_times_;
-    if (pki_metadata_config_closure_ &&
-        ct_log_list_configured_times_ >=
-            expected_ct_log_list_configured_times_) {
+  void OnPKIMetadataProcessed() override {
+    if (pki_metadata_config_closure_) {
       std::move(pki_metadata_config_closure_).Run();
     }
   }
 
-  void OnChromeRootStoreConfigured() override {
-    if (crs_config_closure_) {
-      std::move(crs_config_closure_).Run();
-    }
-  }
-
-  class CRSWaiter {
+  class PKIMetadataWaiter {
    public:
-    explicit CRSWaiter(PKIMetadataComponentCtAndCrsTestBase* test) {
-      test_ = test;
-      test_->crs_config_closure_ = run_loop_.QuitClosure();
+    explicit PKIMetadataWaiter(PKIMetadataComponentCtAndCrsTestBase* test) {
+      test->pki_metadata_config_closure_ = run_loop_.QuitClosure();
     }
     void Wait() { run_loop_.Run(); }
 
    private:
     base::RunLoop run_loop_;
-    raw_ptr<PKIMetadataComponentCtAndCrsTestBase> test_;
   };
 
   base::OnceClosure pki_metadata_config_closure_;
-  int expected_ct_log_list_configured_times_ = 0;
-  int ct_log_list_configured_times_ = 0;
-  base::OnceClosure crs_config_closure_;
 };
 
 class PKIMetadataComponentSctNotAfter
@@ -3155,13 +3119,7 @@ IN_PROC_BROWSER_TEST_F(PKIMetadataComponentSctNotAfter,
   // Explicitly allow a stale update to override a newer update.
   PKIMetadataComponentInstallerService::GetInstance()
       ->AllowOldCTUpdateForTesting(true);
-
-  {
-    base::ScopedAllowBlockingForTesting allow_blocking;
-    ASSERT_TRUE(PKIMetadataComponentInstallerService::GetInstance()
-                    ->WriteCTDataForTesting(GetComponentDirPath(),
-                                            ct_config.SerializeAsString()));
-  }
+  InstallCTUpdate(ct_config);
 
   // Install CRS update that trusts root with a SCTNotAfter constraint.
   {
@@ -3176,10 +3134,6 @@ IN_PROC_BROWSER_TEST_F(PKIMetadataComponentSctNotAfter,
 
     InstallCRSUpdate(root_store_proto);
   }
-
-  PKIMetadataComponentInstallerService::GetInstance()
-      ->ReconfigureAfterNetworkRestart();
-  WaitForCtConfiguration(1);
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), https_server_ok.GetURL("c.example.com", "/simple.html")));
@@ -3215,12 +3169,6 @@ class PKIMetadataComponentCtAndCrsUpdaterTest
           },
           /*disabled_features=*/{});
     }
-  }
-
- protected:
-  void WaitForCtConfiguration(int expected_times) {
-    PKIMetadataComponentCtAndCrsTestBase::WaitForCtConfiguration(
-        expected_times, GetParam() == CTEnforcement::kDisabledByFeature);
   }
 };
 
@@ -3287,17 +3235,7 @@ IN_PROC_BROWSER_TEST_P(PKIMetadataComponentCtAndCrsUpdaterTest,
       SecondsSinceEpoch(base::Time::Now()));
   AddLogToCTConfig(&ct_config, log1);
   AddLogToCTConfig(&ct_config, log2);
-
-  {
-    base::ScopedAllowBlockingForTesting allow_blocking;
-    ASSERT_TRUE(PKIMetadataComponentInstallerService::GetInstance()
-                    ->WriteCTDataForTesting(GetComponentDirPath(),
-                                            ct_config.SerializeAsString()));
-  }
-
-  PKIMetadataComponentInstallerService::GetInstance()
-      ->ReconfigureAfterNetworkRestart();
-  WaitForCtConfiguration(1);
+  InstallCTUpdate(ct_config);
 
   // Should be trusted.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(

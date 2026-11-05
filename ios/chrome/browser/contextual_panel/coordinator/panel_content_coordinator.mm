@@ -16,7 +16,6 @@
 #import "ios/chrome/browser/contextual_panel/ui/panel_content_view_controller.h"
 #import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
-#import "ios/chrome/browser/price_insights/coordinator/price_insights_modulator.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
@@ -124,11 +123,6 @@
   switch (configuration->item_type) {
     case ContextualPanelItemType::SamplePanelItem:
       return [[SampleBlockModulator alloc]
-          initWithBaseViewController:_viewController
-                             browser:self.browser
-                   itemConfiguration:configuration];
-    case ContextualPanelItemType::PriceInsightsItem:
-      return [[PriceInsightsModulator alloc]
           initWithBaseViewController:_viewController
                              browser:self.browser
                    itemConfiguration:configuration];

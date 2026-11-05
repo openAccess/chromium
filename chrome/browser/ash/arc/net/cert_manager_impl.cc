@@ -10,13 +10,12 @@
 #include <optional>
 #include <utility>
 
+#include "base/check_deref.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/net/nss_service.h"
-#include "chrome/browser/net/nss_service_factory.h"
-#include "chrome/browser/profiles/profile.h"
 #include "components/device_event_log/device_event_log.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -31,7 +30,7 @@ namespace {
 void GetCertDBOnIOThread(
     NssCertDatabaseGetter database_getter,
     base::OnceCallback<void(net::NSSCertDatabase*)> callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   auto split_callback = base::SplitOnceCallback(std::move(callback));
   net::NSSCertDatabase* cert_db =
@@ -69,7 +68,8 @@ void DeleteCertAndKeyCallback(arc::CertManagerImpl::DeleteCertCallback callback,
 
 namespace arc {
 
-CertManagerImpl::CertManagerImpl(Profile* profile) : profile_(profile) {}
+CertManagerImpl::CertManagerImpl(NssService* nss_service)
+    : nss_service_(CHECK_DEREF(nss_service)) {}
 
 CertManagerImpl::~CertManagerImpl() = default;
 
@@ -219,7 +219,7 @@ void CertManagerImpl::ImportPrivateKeyAndCertWithDB(
 
   // The ID of imported user certificate and private key is the same, use one
   // of them.
-  DCHECK(key_id == cert_id);
+  CHECK(key_id == cert_id, base::NotFatalUntil::M160);
   std::move(callback).Run(cert_id, slot_id);
 }
 
@@ -231,8 +231,7 @@ void CertManagerImpl::ImportPrivateKeyAndCert(
       FROM_HERE,
       base::BindOnce(
           &GetCertDBOnIOThread,
-          NssServiceFactory::GetForContext(profile_)
-              ->CreateNSSCertDatabaseGetterForIOThread(),
+          nss_service_->CreateNSSCertDatabaseGetterForIOThread(),
           base::BindPostTaskToCurrentDefault(base::BindOnce(
               &CertManagerImpl::DeleteAndImportPrivateKeyAndCertWithDB,
               weak_factory_.GetWeakPtr(), key_pem, cert_pem,

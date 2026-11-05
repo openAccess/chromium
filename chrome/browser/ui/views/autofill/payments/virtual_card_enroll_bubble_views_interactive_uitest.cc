@@ -30,6 +30,7 @@
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
@@ -65,7 +66,7 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
         static_cast<VirtualCardEnrollBubbleControllerImpl*>(
             VirtualCardEnrollBubbleControllerImpl::GetOrCreate(
                 browser()->GetTabStripModel()->GetActiveWebContents()));
-    DCHECK(controller);
+    CHECK(controller, base::NotFatalUntil::M162);
     CreateVirtualCardEnrollmentFields();
   }
 
@@ -164,7 +165,7 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
         BrowserView::GetBrowserViewForBrowser(browser());
     auto* provider = browser_view->toolbar_button_provider();
     auto* icon = provider->GetPageActionViewInterface(kActionVirtualCardEnroll);
-    DCHECK(icon);
+    CHECK(icon, base::NotFatalUntil::M162);
     return icon;
   }
 

@@ -77,7 +77,6 @@ domain Page
       autofill
       autoplay
       bluetooth
-      browsing-topics
       camera
       captured-surface-control
       ch-dpr
@@ -131,7 +130,6 @@ domain Page
       hid
       identity-credentials-get
       idle-detection
-      interest-cohort
       keyboard-map
       language-detector
       language-model
@@ -152,13 +150,11 @@ domain Page
       private-state-token-redemption
       publickey-credentials-create
       publickey-credentials-get
+      publickey-credentials-remote-client-data-json
       rewriter
       screen-wake-lock
+      semantic-embedder
       serial
-      # Deprecated.
-      shared-storage
-      # Deprecated.
-      shared-storage-select-url
       smart-card
       speaker-selection
       storage-access
@@ -167,6 +163,7 @@ domain Page
       sync-xhr
       tools
       translator
+      unbounded-element
       unload
       usb
       usb-unrestricted
@@ -388,6 +385,8 @@ domain Page
       number scrollOffsetY
       # Frame swap timestamp.
       optional Network.TimeSinceEpoch timestamp
+      # Frame swap timestamp as monotonic time.
+      optional Network.MonotonicTime monotonicTimestamp
 
   # Javascript dialog type.
   type DialogType extends string
@@ -804,7 +803,18 @@ domain Page
     returns
       optional binary primaryIcon
 
-  # Returns the unique (PWA) app id.
+  type SubApp extends object
+    properties
+      # Display name of the sub-app.
+      string name
+      # Scope of the sub-app.
+      string scope
+      # Manifest id of the sub-app.
+      string manifestId
+      # Start URL of the sub-app.
+      string startUrl
+
+  # Returns the unique (PWA) app id, along with IWA bundle ID and parent app info.
   # Only returns values if the feature flag 'WebAppEnableManifestId' is enabled
   experimental command getAppId
     returns
@@ -812,6 +822,20 @@ domain Page
       optional string appId
       # Recommendation for manifest's id attribute to match current id computed from start_url
       optional string recommendedId
+      # The bundle ID for an Isolated Web App (IWA)
+      optional string bundleId
+      # The name of the parent app if this app is a Sub-App
+      optional string parentAppName
+
+  # Returns the list of installed child Sub-Apps for the inspected parent app.
+  experimental command getSubApps
+    returns
+      array of SubApp subApps
+
+  # Returns the list of sibling Sub-Apps sharing the same parent app if the inspected context is a Sub-App.
+  experimental command getSiblingSubApps
+    returns
+      array of SubApp subApps
 
   experimental command getAdScriptAncestry
     parameters
@@ -823,6 +847,16 @@ domain Page
       # stack) to more distant ancestors (that created the immediately preceding
       # script). Only sent if frame is labelled as an ad and ids are available.
       optional Network.AdAncestry adScriptAncestry
+
+  # Returns the words that the frame's document added to its spell check custom
+  # dictionary with `document.spellCheckCustomDictionary.addWords()`, sorted.
+  # Page script cannot read the dictionary back; this lets developers inspect
+  # it.
+  experimental command getSpellCheckCustomDictionary
+    parameters
+      FrameId frameId
+    returns
+      array of string words
 
   # Returns present frame tree structure.
   command getFrameTree
@@ -1192,6 +1226,15 @@ domain Page
       optional integer maxHeight
       # Maximum frame rate in frames per second.
       optional integer frameRate
+      # The area to record. Defaults to `target`.
+      experimental optional enum captureArea
+        # Records only the target page.
+        target
+        # Records the browser window that shows the target, like window
+        # capture with getDisplayMedia(). If the target is a docked DevTools
+        # window, the window shows DevTools and the inspected page. Only
+        # available to trusted clients and to embedders that support it.
+        browserWindow
     returns
       # A handle of the stream that holds resulting screencast data.
       experimental IO.StreamHandle stream
@@ -1793,3 +1836,10 @@ domain Page
       # The format is defined by the `AnnotatedPageContent` message in
       # components/optimization_guide/proto/features/common_quality_data.proto
       binary content
+
+  # Configures input visualization on the page.
+  experimental command setInputVisualization
+    parameters
+      # Whether to enable click visualization.
+      optional boolean clicks
+

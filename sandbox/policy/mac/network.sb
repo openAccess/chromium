@@ -9,14 +9,35 @@
 (define network-service-storage-path-n "NETWORK_SERVICE_STORAGE_PATH_")
 (define network-service-test-certs-dir "NETWORK_SERVICE_TEST_CERTS_DIR")
 
+; Allows the network process to create symlinks.
+(define allow-network-symlink-creation "ALLOW_NETWORK_SYMLINK_CREATION")
+
 ; Allow access to the [0,N) storage location paths.
-(let ((count (string->number (param network-service-storage-paths-count))))
-  (let loop ((i 0))
-    (if (< i count)
-      (begin
-        (allow file* (subpath
-          (param (string-append network-service-storage-path-n (number->string i)))))
-        (loop (+ i 1))))))
+; TODO(https://crbug.com/567101748) remove this once we have fully rolled out
+; the TriggerNetworkDataMigration feature to macOS.
+(if (param-defined? network-service-storage-paths-count)
+  (let ((count (string->number (param network-service-storage-paths-count))))
+    (let loop ((i 0))
+      (if (< i count)
+        (begin
+          (allow file* (subpath
+              (param (string-append network-service-storage-path-n (number->string i)))))
+          (loop (+ i 1)))))))
+
+; If a user-data-dir is provided explicitly, scope our file access to known
+; subdirectories (https://crbug.com/567101748)
+(if (param-defined? user-data-dir)
+  (allow file*
+    (regex
+      (string-append "^"
+        (regex-quote (param user-data-dir))
+        #"(/[^/]+)?/(Network|Safe Browsing Network|Shared Dictionary)(/.*)?$"))))
+(if (param-defined? user-cache-dir)
+  (allow file* (subpath (param user-cache-dir))))
+
+; Disallow creating symbolic links.
+(unless (param-true? allow-network-symlink-creation)
+  (deny file-write-create (vnode-type SYMLINK)))
 
 ; DNS configuration watcher entries. This is a nesty mess of symlinks.
 (allow file-read*
@@ -46,12 +67,6 @@
   (subpath "/System/Library/Security")
   (subpath "/private/var/db/mds")
   (subpath (user-homedir-path "/Library/Keychains"))
-)
-(if (param-true? network-user-dir-access)
-  (allow file-read* file-write*
-    (subpath (param darwin-user-cache-dir))
-    (subpath (param darwin-user-temp-dir))
-  )
 )
 (if (param-defined? network-service-test-certs-dir)
   (allow file-read* (subpath (param network-service-test-certs-dir))))

@@ -156,6 +156,7 @@ found in the LICENSE file.
     <style name="Theme.Chromium.ClearDataDialogActivity"
         parent="Theme.Chromium.Activity.Fullscreen.Transparent">
         <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowDisablePreview">true</item>
         <item name="android:windowEnterAnimation">@null</item>
         <item name="android:windowExitAnimation">@null</item>
         <item name="android:windowAnimationStyle">@null</item>
@@ -191,6 +192,13 @@ found in the LICENSE file.
         <item name="android:navigationBarColor">@macro/sheet_bg_color</item>
         <item name="android:navigationBarDividerColor">@null</item>
         <item name="android:windowLightNavigationBar">false</item>
+    </style>
+    <!-- Clears fixed-height constraints so dialog wraps content to spec. -->
+    <style
+        name="ThemeOverlay.Chromium.DialogWhenLarge.ContentWrapping"
+        parent="">
+        <item name="windowFixedHeightMajor">@null</item>
+        <item name="windowFixedHeightMinor">@null</item>
     </style>
 
     <!-- Theme variation for low-end devices.
@@ -433,10 +441,6 @@ found in the LICENSE file.
         <item name="android:textAppearance">@style/TextAppearance.TextMedium.Secondary</item>
         <item name="android:layout_gravity">start</item>
     </style>
-    <style name="SigninButtonBorderlessRegular" parent="@style/TextButton">
-        <item name="android:paddingStart">0dp</item>
-        <item name="android:paddingEnd">0dp</item>
-    </style>
 
     <!-- Misc text appearance styles -->
     <style name="TextAppearance.SearchEngineRecentTitle" parent="TextAppearance.MediumStyle">
@@ -463,7 +467,7 @@ found in the LICENSE file.
     </style>
 
     <style name="TextAppearance.FakeSearchBoxTextNewStyle" parent="TextAppearance.MediumStyle">
-        <item name="android:textColorHint">?attr/colorOutline</item>
+        <item name="android:textColorHint">?attr/colorOnSurfaceVariant</item>
     </style>
 
     <!-- Similar to FakeSearchBoxText, but with text size 16sp, medium weight, Google Sans text font.
@@ -583,6 +587,42 @@ found in the LICENSE file.
     <style name="TextAppearance.RegularFolderChildCount" parent="TextAppearance.TextLarge.Primary" tools:ignore="SpUsage">
         <!-- The same as the regular style, but using dp instead of sp. -->
         <item name="android:textSize">16dp</item>
+    </style>
+
+    <!-- Corner radii of a bookmark row based on its position within a run of
+         consecutive rows. Applied when loading the
+         improved_bookmark_row_position_* backgrounds. -->
+    <style name="ThemeOverlay.BookmarkRow.ListPosition.Solo" parent="">
+        <item name="bookmarkRowTopRadius">
+            @dimen/improved_bookmark_row_outer_corner_radius
+        </item>
+        <item name="bookmarkRowBottomRadius">
+            @dimen/improved_bookmark_row_outer_corner_radius
+        </item>
+    </style>
+    <style name="ThemeOverlay.BookmarkRow.ListPosition.Top" parent="">
+        <item name="bookmarkRowTopRadius">
+            @dimen/improved_bookmark_row_outer_corner_radius
+        </item>
+        <item name="bookmarkRowBottomRadius">
+            @dimen/improved_bookmark_row_inner_corner_radius
+        </item>
+    </style>
+    <style name="ThemeOverlay.BookmarkRow.ListPosition.Middle" parent="">
+        <item name="bookmarkRowTopRadius">
+            @dimen/improved_bookmark_row_inner_corner_radius
+        </item>
+        <item name="bookmarkRowBottomRadius">
+            @dimen/improved_bookmark_row_inner_corner_radius
+        </item>
+    </style>
+    <style name="ThemeOverlay.BookmarkRow.ListPosition.Bottom" parent="">
+        <item name="bookmarkRowTopRadius">
+            @dimen/improved_bookmark_row_inner_corner_radius
+        </item>
+        <item name="bookmarkRowBottomRadius">
+            @dimen/improved_bookmark_row_outer_corner_radius
+        </item>
     </style>
 
      <!-- Magic Stack styles -->

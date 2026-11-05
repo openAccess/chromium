@@ -4,8 +4,10 @@
 
 #include "net/http/http_server_properties.h"
 
+#include <ranges>
+#include <string_view>
+
 #include "base/check_op.h"
-#include "base/containers/adapters.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -457,18 +459,17 @@ void HttpServerProperties::SetKnownQuicAlternativeService(
     return;
   }
 
-  // Wildcard suffixes are reversed and added to
-  // `reversed_known_alternative_service_suffixes_set_` to allow matching
-  // hostnames to use the corresponding known alternative service.
-  std::string reversed_host(canon_host);
-  std::ranges::reverse(reversed_host);
-  url::SchemeHostPort quic_server(url::kHttpsScheme, reversed_host, port);
-  AlternativeService alternative_service(net::NextProto::kProtoQUIC,
-                                         reversed_host,
+  WildcardAlternativeServiceKey key{std::string(canon_host),
+                                    static_cast<uint16_t>(port)};
+  AlternativeService alternative_service(net::NextProto::kProtoQUIC, canon_host,
                                          static_cast<uint16_t>(alternate_port));
-  wildcard_known_alternative_service_map_[quic_server] =
+  wildcard_known_alternative_service_map_[std::move(key)] =
       std::move(alternative_service);
-  reversed_known_alternative_service_suffixes_set_.insert(reversed_host);
+}
+
+void HttpServerProperties::SetTryQuicByDefault(bool enable) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  try_quic_by_default_ = enable;
 }
 
 void HttpServerProperties::MarkAlternativeServiceBroken(
@@ -721,7 +722,8 @@ void HttpServerProperties::SetMaxServerConfigsStoredInProperties(
   // Update the |canonical_server_info_map_| as well, so it stays in sync with
   // |quic_server_info_map_|.
   canonical_server_info_map_ = QuicCanonicalMap();
-  for (const auto& [key, server_info] : base::Reversed(quic_server_info_map_)) {
+  for (const auto& [key, server_info] :
+       std::views::reverse(quic_server_info_map_)) {
     temp_map.Put(key, server_info);
     UpdateCanonicalServerInfoMap(key);
   }
@@ -868,8 +870,9 @@ HttpServerProperties::GetAlternativeServiceInfosInternal(
     if (service_info->empty()) {
       map_it->second.alternative_services.reset();
       server_info_map_.EraseIfEmpty(map_it);
+    } else {
+      return valid_alternative_service_infos;
     }
-    return valid_alternative_service_infos;
   }
 
   // If a more specific alternative service has not been found, look for
@@ -887,55 +890,75 @@ HttpServerProperties::GetAlternativeServiceInfosInternal(
           AlternativeServiceInfo::CreateQuicAlternativeServiceInfo(
               *known_alternative_service, base::Time::Max(),
               DefaultSupportedQuicVersions()));
-      return valid_alternative_service_infos;
     }
+    return valid_alternative_service_infos;
   }
 
   auto canonical = GetCanonicalAltSvcHost(origin, network_anonymization_key);
-  if (canonical == canonical_alt_svc_map_.end()) {
-    return AlternativeServiceInfoVector();
-  }
-  map_it = server_info_map_.Get(
-      CreateServerInfoKey(canonical->second, network_anonymization_key));
-  if (map_it == server_info_map_.end() ||
-      !map_it->second.alternative_services.has_value()) {
-    return AlternativeServiceInfoVector();
-  }
-  AlternativeServiceInfoVector* service_info =
-      &map_it->second.alternative_services.value();
-  for (auto it = service_info->begin(); it != service_info->end();) {
-    if (it->expiration() < now) {
-      it = service_info->erase(it);
-      continue;
-    }
-    AlternativeService alternative_service(it->alternative_service());
-    if (alternative_service.host.empty()) {
-      alternative_service.host = canonical->second.host();
-      if (IsAlternativeServiceBroken(alternative_service,
-                                     network_anonymization_key)) {
+  if (canonical != canonical_alt_svc_map_.end()) {
+    map_it = server_info_map_.Get(
+        CreateServerInfoKey(canonical->second, network_anonymization_key));
+    if (map_it != server_info_map_.end() &&
+        map_it->second.alternative_services.has_value()) {
+      AlternativeServiceInfoVector* service_info =
+          &map_it->second.alternative_services.value();
+      for (auto it = service_info->begin(); it != service_info->end();) {
+        if (it->expiration() < now) {
+          it = service_info->erase(it);
+          continue;
+        }
+        AlternativeService alternative_service(it->alternative_service());
+        if (alternative_service.host.empty()) {
+          alternative_service.host = canonical->second.host();
+          if (IsAlternativeServiceBroken(alternative_service,
+                                         network_anonymization_key)) {
+            ++it;
+            continue;
+          }
+          alternative_service.host = origin.host();
+        } else if (IsAlternativeServiceBroken(alternative_service,
+                                              network_anonymization_key)) {
+          ++it;
+          continue;
+        }
+        if (alternative_service.protocol == NextProto::kProtoQUIC) {
+          valid_alternative_service_infos.push_back(
+              AlternativeServiceInfo::CreateQuicAlternativeServiceInfo(
+                  alternative_service, it->expiration(),
+                  it->advertised_versions()));
+        } else {
+          valid_alternative_service_infos.push_back(
+              AlternativeServiceInfo::CreateHttp2AlternativeServiceInfo(
+                  alternative_service, it->expiration()));
+        }
         ++it;
-        continue;
       }
-      alternative_service.host = origin.host();
-    } else if (IsAlternativeServiceBroken(alternative_service,
-                                          network_anonymization_key)) {
-      ++it;
-      continue;
+      if (service_info->empty()) {
+        map_it->second.alternative_services.reset();
+        server_info_map_.EraseIfEmpty(map_it);
+      } else {
+        return valid_alternative_service_infos;
+      }
     }
-    if (alternative_service.protocol == NextProto::kProtoQUIC) {
+  }
+
+  // If no alternative service was found from `server_info_map_`, known hints,
+  // wildcard suffix hints, or canonical maps, and `try_quic_by_default_` is
+  // enabled, attempt QUIC on the destination host and port for HTTPS origins
+  // (unless already marked broken).
+  if (try_quic_by_default_ && origin.scheme() == url::kHttpsScheme &&
+      origin.port() != 0 && !origin.host().empty()) {
+    AlternativeService default_alternative_service(
+        NextProto::kProtoQUIC, origin.host(), origin.port());
+    if (!IsAlternativeServiceBroken(default_alternative_service,
+                                    network_anonymization_key)) {
       valid_alternative_service_infos.push_back(
           AlternativeServiceInfo::CreateQuicAlternativeServiceInfo(
-              alternative_service, it->expiration(),
-              it->advertised_versions()));
-    } else {
-      valid_alternative_service_infos.push_back(
-          AlternativeServiceInfo::CreateHttp2AlternativeServiceInfo(
-              alternative_service, it->expiration()));
+              default_alternative_service, base::Time::Max(),
+              DefaultSupportedQuicVersions()));
     }
-    ++it;
   }
-  if (service_info->empty())
-    server_info_map_.EraseIfEmpty(map_it);
+
   return valid_alternative_service_infos;
 }
 
@@ -1153,30 +1176,20 @@ std::optional<AlternativeService> HttpServerProperties::GetKnownAltSvcHost(
   if (it != known_alternative_service_map_.end()) {
     return it->second;
   }
-  std::string reversed_host = server.host();
-  std::ranges::reverse(reversed_host);
-  const auto lower_bound_it =
-      reversed_known_alternative_service_suffixes_set_.lower_bound(
-          reversed_host);
-  // Exact matches cannot happen because wildcard suffixes are required to start
-  // with "."
-  if (lower_bound_it ==
-      reversed_known_alternative_service_suffixes_set_.begin()) {
-    return std::nullopt;
-  }
-  // lower_bound_it points to the first element greater or equal to
-  // `reversed_host`. The last element that is less than
-  // `reversed_host` contains the most likely wildcard suffix match.
-  const auto possible_prefix_it = std::prev(lower_bound_it);
-  if (!reversed_host.starts_with(*possible_prefix_it)) {
+  if (wildcard_known_alternative_service_map_.empty()) {
     return std::nullopt;
   }
 
-  url::SchemeHostPort suffix_server(kKnownAltSvcScheme, *possible_prefix_it,
-                                    server.port());
-  auto suffix_it = wildcard_known_alternative_service_map_.find(suffix_server);
-  if (suffix_it != wildcard_known_alternative_service_map_.end()) {
-    return suffix_it->second;
+  std::string_view host = server.host();
+  size_t dot_pos = host.find('.');
+  while (dot_pos != std::string_view::npos) {
+    std::string_view suffix = host.substr(dot_pos);
+    auto suffix_it = wildcard_known_alternative_service_map_.find(
+        WildcardAlternativeServiceKeyRef{suffix, server.port()});
+    if (suffix_it != wildcard_known_alternative_service_map_.end()) {
+      return suffix_it->second;
+    }
+    dot_pos = host.find('.', dot_pos + 1);
   }
 
   return std::nullopt;
@@ -1221,7 +1234,7 @@ void HttpServerProperties::RemoveAltSvcCanonicalHost(
   if (canonical == canonical_alt_svc_map_.end())
     return;
 
-  canonical_alt_svc_map_.erase(canonical->first);
+  canonical_alt_svc_map_.erase(canonical);
 }
 
 void HttpServerProperties::UpdateCanonicalServerInfoMap(
@@ -1304,7 +1317,7 @@ void HttpServerProperties::OnServerInfoLoaded(
   server_info_map_.Swap(*server_info_map);
 
   // Add the entries from the memory cache.
-  for (auto& [key, server_info] : base::Reversed(*server_info_map)) {
+  for (auto& [key, server_info] : std::views::reverse(*server_info_map)) {
     // If there's no corresponding old entry, add the new entry directly.
     auto old_entry = server_info_map_.Get(key);
     if (old_entry == server_info_map_.end()) {
@@ -1363,7 +1376,8 @@ void HttpServerProperties::OnQuicServerInfoMapLoaded(
   quic_server_info_map_.Swap(*quic_server_info_map);
 
   // Add the entries from the memory cache.
-  for (const auto& [key, server_info] : base::Reversed(*quic_server_info_map)) {
+  for (const auto& [key, server_info] :
+       std::views::reverse(*quic_server_info_map)) {
     if (quic_server_info_map_.Get(key) == quic_server_info_map_.end()) {
       quic_server_info_map_.Put(key, server_info);
     }
@@ -1372,7 +1386,8 @@ void HttpServerProperties::OnQuicServerInfoMapLoaded(
   // Repopulate |canonical_server_info_map_| to stay in sync with
   // |quic_server_info_map_|.
   canonical_server_info_map_.clear();
-  for (const auto& [key, server_info] : base::Reversed(quic_server_info_map_)) {
+  for (const auto& [key, server_info] :
+       std::views::reverse(quic_server_info_map_)) {
     UpdateCanonicalServerInfoMap(key);
   }
 }

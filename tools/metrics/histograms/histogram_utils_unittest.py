@@ -2,13 +2,95 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import io
+import pathlib
+import tempfile
 import unittest
 from unittest import mock
-import xml.dom.minidom
+import xml.etree.ElementTree as ET
 
 import setup_modules  # pylint: disable=unused-import
 
+
 import chromium_src.tools.metrics.histograms.histogram_utils as histogram_utils
+
+
+class GetNamesTest(unittest.TestCase):
+  def setUp(self):
+    temp_dir = tempfile.TemporaryDirectory()
+    self.addCleanup(temp_dir.cleanup)
+    self.histograms = pathlib.Path(temp_dir.name) / 'histograms.xml'
+    self.histograms.write_text(
+      """\
+<?xml version="1.0" encoding="utf-8"?>
+<histogram-configuration>
+  <histograms>
+    <histogram name="Test.{TestVariants}" units="count" expires_after="never">
+      <owner>test@chromium.org</owner>
+      <summary>café {TestVariants}</summary>
+    </histogram>
+  </histograms>
+</histogram-configuration>
+""",
+      encoding='utf-8',
+    )
+    self.variants = pathlib.Path(temp_dir.name) / 'variants.xml'
+    self.variants.write_text(
+      """\
+<histogram-configuration>
+  <variants name="TestVariants">
+    <variant name="One" summary="one"/>
+    <variant name="Two" summary="two"/>
+  </variants>
+</histogram-configuration>
+""",
+      encoding='utf-8',
+    )
+
+  def testFilenamesMergeBeforeExpandingVariants(self):
+    self.assertEqual(
+      histogram_utils.get_names([str(self.histograms), str(self.variants)]),
+      {'Test.One', 'Test.Two'},
+    )
+
+  def testMixedInputsLeaveCallerStreamOpen(self):
+    with self.histograms.open(encoding='utf-8') as stream:
+      self.assertEqual(
+        histogram_utils.get_names([stream, str(self.variants)]),
+        {'Test.One', 'Test.Two'},
+      )
+      self.assertFalse(stream.closed)
+
+  def testStringIOInputsRemainOpen(self):
+    with io.StringIO(self.histograms.read_text(encoding='utf-8')) as stream:
+      self.assertEqual(
+        histogram_utils.get_names([stream, str(self.variants)]),
+        {'Test.One', 'Test.Two'},
+      )
+      self.assertFalse(stream.closed)
+
+  def testParseErrorClosesFilesOpenedFromFilenames(self):
+    self.variants.write_text('<unclosed>', encoding='utf-8')
+    opened_files = []
+    real_open = open
+
+    def track_open(*args, **kwargs):
+      f = real_open(*args, **kwargs)
+      opened_files.append(f)
+      self.addCleanup(f.close)
+      return f
+
+    with mock.patch('builtins.open', side_effect=track_open):
+      with self.assertRaises(ET.ParseError):
+        histogram_utils.get_names([str(self.histograms), str(self.variants)])
+    self.assertEqual(len(opened_files), 2)
+    self.assertTrue(all(f.closed for f in opened_files))
+
+  def testParseErrorLeavesCallerStreamOpen(self):
+    with io.StringIO('<unclosed>') as stream:
+      with self.assertRaises(ET.ParseError):
+        histogram_utils.get_names([stream])
+      self.assertFalse(stream.closed)
 
 
 class HistogramUtilsTest(unittest.TestCase):
@@ -115,54 +197,11 @@ class HistogramUtilsTest(unittest.TestCase):
 </variants>
 </histogram-configuration>
 """
-    variants_doc = xml.dom.minidom.parseString(variants_xml)
+    variants_doc = ET.fromstring(variants_xml)
     names = histogram_utils.get_names_from_contents(
       contents.splitlines(), variants_doc
     )
     self.assertEqual(names, {'Test.V1', 'Test.V2'})
-
-  def testGetNamesUsingVariantsRemovesStaleAffectedHistograms(self):
-    contents = """
-<histogram-configuration>
-<histograms>
-  <histogram name="Test.{MockVariants}" units="count" expires_after="M200">
-    <owner>owner@chromium.org</owner>
-    <summary>Records the test value.</summary>
-    <token key="MockVariants" variants="MockVariants"/>
-  </histogram>
-  <histogram name="Unrelated.Histogram" units="count" expires_after="M200">
-    <owner>owner@chromium.org</owner>
-    <summary>Records the unrelated value.</summary>
-  </histogram>
-</histograms>
-<histogram_suffixes_list>
-  <histogram_suffixes name="Suffixes" separator=".">
-    <suffix name="Suffix" label="A suffix"/>
-    <affected-histogram name="Unrelated.Histogram"/>
-  </histogram_suffixes>
-</histogram_suffixes_list>
-</histogram-configuration>
-"""
-    variants_xml = """
-<histogram-configuration>
-<variants name="MockVariants">
-  <variant name="V1"/>
-</variants>
-</histogram-configuration>
-"""
-    variants_doc = xml.dom.minidom.parseString(variants_xml)
-
-    # The mock verifies that filtering out the unrelated histogram also removes
-    # its suffix reference instead of logging a missing-histogram error.
-    with mock.patch.object(
-      histogram_utils.extract_histograms.logging, 'error'
-    ) as mock_log_error:
-      names = histogram_utils.get_names_using_variants_from_contents(
-        contents.splitlines(), variants_doc, {'MockVariants'}
-      )
-
-    self.assertEqual(names, {'Test.V1'})
-    mock_log_error.assert_not_called()
 
   def testGetNamesUsingVariantsIgnoresInlineTokenKey(self):
     contents = """
@@ -185,7 +224,7 @@ class HistogramUtilsTest(unittest.TestCase):
 </variants>
 </histogram-configuration>
 """
-    variants_doc = xml.dom.minidom.parseString(variants_xml)
+    variants_doc = ET.fromstring(variants_xml)
 
     all_names = histogram_utils.get_names_from_contents(
       contents.splitlines(), variants_doc

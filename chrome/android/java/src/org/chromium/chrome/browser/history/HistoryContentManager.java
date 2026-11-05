@@ -16,13 +16,17 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.SystemClock;
 import android.provider.Browser;
+import android.text.TextUtils;
 import android.view.ContextThemeWrapper;
 import android.view.View;
+import android.view.ViewGroup;
 
-import androidx.annotation.VisibleForTesting;
+import androidx.annotation.StringDef;
+import androidx.appcompat.content.res.AppCompatResources;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.OnScrollListener;
@@ -38,7 +42,11 @@ import org.chromium.chrome.browser.ActivityUtils;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.device_lock.DeviceLockActivityLauncherImpl;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
-import org.chromium.chrome.browser.history.AppFilterCoordinator.AppInfo;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicKeyedService;
+import org.chromium.chrome.browser.glic.GlicKeyedServiceFactory;
+import org.chromium.chrome.browser.history.FilterSheetCoordinator.FilterItem;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.preferences.PrefServiceUtil;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -69,10 +77,13 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.url.GURL;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Objects;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /** Displays and manages the content view / list UI for browsing history. */
@@ -122,6 +133,20 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
     // PageTransition value to use for all URL requests triggered by the history page.
     static final int PAGE_TRANSITION_TYPE = PageTransition.AUTO_BOOKMARK;
 
+    /** Various options for filtering history by actor. */
+    @StringDef({ActorFilter.USER, ActorFilter.ACTOR, ActorFilter.ANY})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ActorFilter {
+        /** Only visits with source other than `SOURCE_ACTOR` are included. */
+        String USER = "userVisits";
+
+        /** Only visits with source `SOURCE_ACTOR` are included. */
+        String ACTOR = "actorVisits";
+
+        /** All visits are included. */
+        String ANY = "allVisits";
+    }
+
     private static @Nullable HistoryProvider sProviderForTests;
     private static @Nullable Boolean sIsScrollToLoadDisabledForTests;
 
@@ -135,8 +160,20 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
     private final HistoryUmaRecorder mUmaRecorder;
     private final @Nullable String mHostName;
     private final @Nullable Runnable mHideSoftKeyboard;
+
     private final boolean mShowAppFilter;
-    private final List<AppInfo> mAppInfoList = new ArrayList<>();
+    private final boolean mShowHostFilter;
+    private final boolean mShowClientFilter;
+    private final boolean mShowActorFilter;
+
+    private final HistoryFilterChip<String> mAppFilter;
+    private final HistoryFilterChip<String> mHostFilter;
+    private final HistoryFilterChip<List<String>> mClientFilter;
+    private final HistoryFilterChip<String> mActorFilter;
+    private final List<HistoryFilterChip<?>> mFilterChips;
+    private @Nullable View mResetFiltersButton;
+    private boolean mHostInfoListInitialized;
+
     private final @Nullable Supplier<BottomSheetController> mBottomSheetControllerSupplier;
     private final @Nullable Supplier<@Nullable Tab> mTabSupplier;
     private final AppInfoCache mAppInfoCache;
@@ -151,8 +188,7 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
     private final boolean mLaunchedForApp;
     private final PrefChangeRegistrar mPrefChangeRegistrar;
     private final @Nullable String mAppId;
-    private @Nullable AppFilterCoordinator mAppFilterSheet;
-    private @Nullable AppInfo mCurrentApp;
+
     private long mAppQueryStartMs;
     private final AsyncTabLauncher mRegularAsyncTabLauncher;
     private final AsyncTabLauncher mIncognitoAsyncTabLauncher;
@@ -213,6 +249,9 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
                 null,
                 /* launchedForApp= */ false,
                 /* showAppFilter= */ false,
+                /* showHostFilter= */ false,
+                /* showClientFilter= */ false,
+                /* showActorFilter= */ false,
                 /* shouldClusterByDomain= */ false,
                 /* openHistoryItemCallback= */ null,
                 regularAsyncTabLauncher,
@@ -305,6 +344,9 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
                 appId,
                 launchedForApp,
                 showAppFilter,
+                /* showHostFilter= */ true,
+                /* showClientFilter= */ true,
+                /* showActorFilter= */ true,
                 shouldClusterByDomain,
                 openHistoryItemCallback,
                 regularAsyncTabLauncher,
@@ -333,6 +375,9 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
             @Nullable String appId,
             boolean launchedForApp,
             boolean showAppFilter,
+            boolean showHostFilter,
+            boolean showClientFilter,
+            boolean showActorFilter,
             boolean shouldClusterByDomain,
             @Nullable Runnable openHistoryItemCallback,
             AsyncTabLauncher regularAsyncTabLauncher,
@@ -345,6 +390,9 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
         mBottomSheetControllerSupplier = bottomSheetControllerSupplier;
         mHideSoftKeyboard = hideSoftKeyboard;
         mShowAppFilter = showAppFilter;
+        mShowHostFilter = showHostFilter;
+        mShowClientFilter = showClientFilter;
+        mShowActorFilter = showActorFilter;
         mShouldShowPrivacyDisclaimers = shouldShowPrivacyDisclaimers;
         mShouldShowClearDataIfAvailable = shouldShowClearDataIfAvailable;
         mHostName = hostName;
@@ -407,9 +455,47 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
                         this,
                         sProviderForTests != null ? sProviderForTests : historyProvider,
                         mHistorySyncPromoCoordinator,
-                        shouldClusterByDomain,
-                        snackbarManager,
-                        mProfile.isOffTheRecord() ? null : mProfile);
+                        shouldClusterByDomain);
+
+        int appFilterChipText =
+                (showHostFilter() || showClientFilter() || showActorFilter())
+                        ? R.string.history_app_filter_chip_text
+                        : R.string.history_filter_by_app;
+        mAppFilter =
+                new HistoryFilterChip<>(
+                        R.id.app_history_filter_chip,
+                        /* chipTextResId= */ appFilterChipText,
+                        /* sheetHeaderResId= */ R.string.history_filter_by_app,
+                        showAppFilter(),
+                        this::onAppFilterUpdated,
+                        mUmaRecorder::recordAppFilterSheetOpened);
+        mHostFilter =
+                new HistoryFilterChip<>(
+                        R.id.host_history_filter_chip,
+                        /* chipTextResId= */ R.string.history_host_filter_chip_text,
+                        /* sheetHeaderResId= */ R.string.history_filter_by_host,
+                        showHostFilter(),
+                        this::onHostFilterUpdated,
+                        mUmaRecorder::recordHostFilterSheetOpened);
+        mClientFilter =
+                new HistoryFilterChip<>(
+                        R.id.client_history_filter_chip,
+                        /* chipTextResId= */ R.string.history_client_filter_chip_text,
+                        /* sheetHeaderResId= */ R.string.history_filter_by_client,
+                        showClientFilter(),
+                        this::onClientFilterUpdated,
+                        mUmaRecorder::recordDeviceFilterSheetOpened);
+        mActorFilter =
+                new HistoryFilterChip<>(
+                        R.id.actor_history_filter_chip,
+                        /* chipTextResId= */ R.string.history_actor_filter_chip_text,
+                        /* sheetHeaderResId= */ R.string.history_actor_filter_sheet_header,
+                        showActorFilter(),
+                        this::onActorFilterUpdated,
+                        mUmaRecorder::recordActorFilterSheetOpened);
+        mFilterChips = List.of(mAppFilter, mHostFilter, mClientFilter, mActorFilter);
+        // The actor filter offers a fixed set of options, so no query is needed to populate it.
+        maybeBuildActorInfoList();
 
         // Create a recycler view.
         mRecyclerView =
@@ -487,32 +573,103 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
         mHistoryAdapter.queryApps();
     }
 
+    /** Query all synced clients if required. */
+    void maybeQueryClients() {
+        if (!showClientFilter()) return;
+
+        mHistoryAdapter.queryClients();
+    }
+
     void onQueryAppsComplete(List<String> items) {
         mUmaRecorder.recordQueryAppDuration(SystemClock.elapsedRealtime() - mAppQueryStartMs);
         buildAppInfoList(items);
     }
 
+    void onQueryClientsComplete(List<HistoryProvider.ClientGroup> items) {
+        buildClientInfoList(items);
+    }
+
     /**
-     * Build a list of {@link AppInfo} using the app query result.
+     * Build a list of {@link FilterItem} using the app query result.
      *
      * @param appIds List of app IDs found from the history database.
      */
     private void buildAppInfoList(List<String> appIds) {
-        mAppInfoList.clear();
+        var appInfoList = new ArrayList<FilterItem<String>>();
         for (String appId : appIds) {
-            AppInfo appInfo = mAppInfoCache.get(appId);
+            FilterItem<String> appInfo = mAppInfoCache.get(appId);
             // Filter out the app whose info cannot be found. TODO: Consider keeping it with
             // a default app.
-            if (appInfo.isValid()) mAppInfoList.add(appInfo);
+            if (appInfo != null) appInfoList.add(appInfo);
         }
+        mAppFilter.setItems(appInfoList);
+    }
+
+    void maybeUpdateHostInfoList(List<HistoryItem> items) {
+        if (!showHostFilter() || mHostInfoListInitialized) return;
+        mHostInfoListInitialized = true;
+        // TODO(b/558644507): Load the real favicon for each host instead of a generic
+        // globe icon, similar to how HistoryItemView uses FaviconHelper/RoundedIconGenerator. The
+        // items need to be updated again once the favicons are fetched asynchronously.
+        Drawable icon = AppCompatResources.getDrawable(mActivity, R.drawable.ic_language_24);
+        // TODO(b/558644507): The host filter list logic should be shared across
+        // platforms.
+        Set<String> seenHosts = new HashSet<>();
+        var hostInfoList = new ArrayList<FilterItem<String>>();
+        for (HistoryItem item : items) {
+            String host = item.getUrl().getHost();
+            if (!TextUtils.isEmpty(host) && seenHosts.add(host)) {
+                hostInfoList.add(new FilterItem<>(host, icon, host));
+            }
+        }
+        mHostFilter.setItems(hostInfoList);
+    }
+
+    private void buildClientInfoList(List<HistoryProvider.ClientGroup> clients) {
+        var clientInfoList = new ArrayList<FilterItem<List<String>>>();
+        Drawable icon = AppCompatResources.getDrawable(mActivity, R.drawable.devices_black_24dp);
+        for (HistoryProvider.ClientGroup client : clients) {
+            if (client.clientIds != null && !client.clientIds.isEmpty()) {
+                // A client can be associated with multiple IDs. All of them are used when
+                // querying history for the selected client.
+                String label =
+                        (client.name != null && !client.name.isEmpty())
+                                ? client.name
+                                : client.clientIds.get(0);
+                clientInfoList.add(new FilterItem<>(client.clientIds, icon, label));
+            }
+        }
+        mClientFilter.setItems(clientInfoList);
+    }
+
+    /** Build the list of {@link FilterItem}s for the actor filter, if the filter is enabled. */
+    private void maybeBuildActorInfoList() {
+        if (!showActorFilter()) return;
+
+        var actorInfoList = new ArrayList<FilterItem<String>>();
+        actorInfoList.add(
+                new FilterItem<>(
+                        ActorFilter.USER,
+                        AppCompatResources.getDrawable(mActivity, R.drawable.ic_person_24dp),
+                        mActivity.getString(R.string.history_actor_filter_user)));
+        actorInfoList.add(
+                new FilterItem<>(
+                        ActorFilter.ACTOR,
+                        AppCompatResources.getDrawable(
+                                mActivity, R.drawable.ic_arrow_selector_spark_24dp),
+                        mActivity.getString(R.string.history_actor_filter_actor)));
+        mActorFilter.setItems(actorInfoList);
     }
 
     /**
-     * @return Whether there is apps to show in the filter UI. Could be false if the query is not
-     *     completed or the result indeed is empty.
+     * @return Whether there are any items to show in the filter UI. Could be false if the query is
+     *     not completed or the result indeed is empty.
      */
     boolean hasFilterList() {
-        return !mAppInfoList.isEmpty();
+        for (HistoryFilterChip<?> chip : mFilterChips) {
+            if (chip.isVisible()) return true;
+        }
+        return false;
     }
 
     /**
@@ -530,6 +687,11 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
     /** @return The Context for the associated history view. */
     public Context getContext() {
         return mActivity;
+    }
+
+    /** Returns the HistoryUmaRecorder for recording metrics. */
+    HistoryUmaRecorder getUmaRecorder() {
+        return mUmaRecorder;
     }
 
     /** Called when the activity/native page is destroyed. */
@@ -638,6 +800,40 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
      */
     boolean showAppFilter() {
         return HistoryManager.isAppSpecificHistoryEnabled() && mShowAppFilter;
+    }
+
+    /**
+     * @return True if history page needs to show host filter UI.
+     */
+    boolean showHostFilter() {
+        return ChromeFeatureList.sBrowsingHistoryFilterByDomainV2.isEnabled() && mShowHostFilter;
+    }
+
+    /**
+     * @return True if history page needs to show client filter UI.
+     */
+    boolean showClientFilter() {
+        return mShowClientFilter && BrowsingHistoryBridge.isBrowsingHistoryFilterByDeviceEnabled();
+    }
+
+    /**
+     * @return True if history page needs to show the actor filter UI.
+     */
+    boolean showActorFilter() {
+        return ChromeFeatureList.sBrowsingHistoryFilterByActor.isEnabled()
+                && mShowActorFilter
+                && isGlicWebActuationAvailable();
+    }
+
+    /**
+     * @return True if Glic web actuation is available for the current profile: Glic is enabled and
+     *     consented, and the user has turned on actuation on web. Mirrors the desktop check in
+     *     {@code history::PopulatePlatformDataSource}.
+     */
+    private boolean isGlicWebActuationAvailable() {
+        if (!GlicEnabling.isEnabledAndConsentForProfile(mProfile)) return false;
+        GlicKeyedService glicService = GlicKeyedServiceFactory.getForProfile(mProfile);
+        return glicService != null && glicService.getUserEnabledActuationOnWeb();
     }
 
     /** returns whether the info header will be available for user upon request. */
@@ -781,8 +977,75 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
         mObserver.onItemRemoved(item);
     }
 
-    void maybeResetAppFilterChip() {
-        if (showAppFilter()) mHistoryAdapter.resetAppFilterChip();
+    void initializeFilterChips(ViewGroup container) {
+        for (HistoryFilterChip<?> chip : mFilterChips) {
+            chip.bindView(container, mActivity, mBottomSheetControllerSupplier, mHideSoftKeyboard);
+        }
+        mResetFiltersButton = container.findViewById(R.id.reset_history_filters_button);
+        mResetFiltersButton.setOnClickListener(_ -> resetFilters());
+        updateResetFiltersButtonVisibility();
+    }
+
+    void setFilterChipsEnabled(boolean enabled) {
+        for (HistoryFilterChip<?> chip : mFilterChips) {
+            chip.setChipEnabled(enabled);
+        }
+        if (mResetFiltersButton != null) {
+            mResetFiltersButton.setEnabled(enabled);
+        }
+    }
+
+    private void onAppFilterUpdated(@Nullable String appId) {
+        if (appId != null) {
+            mUmaRecorder.recordAppFilterSelected();
+        }
+        updateResetFiltersButtonVisibility();
+        mHistoryAdapter.updateAppFilter(appId);
+    }
+
+    private void onHostFilterUpdated(@Nullable String hostName) {
+        if (hostName != null) {
+            mUmaRecorder.recordHostFilterSelected();
+        }
+        updateResetFiltersButtonVisibility();
+        mHistoryAdapter.updateHostFilter(hostName);
+    }
+
+    private void onClientFilterUpdated(@Nullable List<String> clientIds) {
+        if (clientIds != null) {
+            mUmaRecorder.recordDeviceFilterSelected();
+        }
+        updateResetFiltersButtonVisibility();
+        mHistoryAdapter.updateClientFilter(clientIds);
+    }
+
+    private void onActorFilterUpdated(@Nullable @ActorFilter String actorFilter) {
+        if (actorFilter != null) {
+            mUmaRecorder.recordActorFilterSelected();
+        }
+        updateResetFiltersButtonVisibility();
+        mHistoryAdapter.updateActorFilter(actorFilter);
+    }
+
+    private void resetFilters() {
+        mUmaRecorder.recordClearAllFilters();
+        for (HistoryFilterChip<?> chip : mFilterChips) {
+            chip.reset();
+        }
+        updateResetFiltersButtonVisibility();
+        mHistoryAdapter.resetFilters();
+    }
+
+    private boolean hasAppliedFilter() {
+        for (HistoryFilterChip<?> chip : mFilterChips) {
+            if (chip.isSelected()) return true;
+        }
+        return false;
+    }
+
+    private void updateResetFiltersButtonVisibility() {
+        if (mResetFiltersButton == null) return;
+        mResetFiltersButton.setVisibility(hasAppliedFilter() ? View.VISIBLE : View.GONE);
     }
 
     /**
@@ -796,7 +1059,10 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
 
     /** Called when a search is ended. */
     public void onEndSearch() {
-        mCurrentApp = null;
+        for (HistoryFilterChip<?> chip : mFilterChips) {
+            chip.reset();
+        }
+        updateResetFiltersButtonVisibility();
         mHistoryAdapter.onEndSearch();
     }
 
@@ -834,33 +1100,6 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
     /** Called after a user clicks the open full Chrome history button. */
     void onOpenFullChromeHistoryClicked() {
         mObserver.onOpenFullChromeHistoryClicked();
-    }
-
-    /** Called after a user clicks the filter by app button. */
-    void onAppFilterClicked() {
-        // Search mode starts with the soft keyboard open. Hide it first for the sheet
-        // to appear at the bottom as expected.
-        assumeNonNull(mHideSoftKeyboard).run();
-        if (mAppFilterSheet == null) {
-            assert mBottomSheetControllerSupplier != null;
-            mAppFilterSheet =
-                    new AppFilterCoordinator(
-                            mActivity,
-                            mActivity.getWindow().getDecorView(),
-                            mBottomSheetControllerSupplier.get(),
-                            this::onAppUpdated,
-                            mAppInfoList);
-        }
-        mAppFilterSheet.openSheet(mCurrentApp);
-        mUmaRecorder.recordAppFilterSheetOpened();
-    }
-
-    /** Callback from app filter sheet, with the newly chosen app to filter. */
-    @VisibleForTesting
-    void onAppUpdated(@Nullable AppInfo appInfo) {
-        if (Objects.equals(mCurrentApp, appInfo)) return;
-        mCurrentApp = appInfo;
-        getAdapter().updateHistory(mCurrentApp);
     }
 
     /** Removes the list header. */
@@ -919,33 +1158,33 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
     }
 
     static class AppInfoCache {
-        private static final AppInfo EMPTY_INFO = new AppInfo(null, null, "");
-        private @Nullable HashMap<String, AppInfo> mAppInfoMap;
+        private static final FilterItem<String> INVALID_ITEM = new FilterItem<>("", null, "");
+        private @Nullable HashMap<String, FilterItem<String>> mAppInfoMap;
         private PackageManager mPackageManager;
 
         public AppInfoCache(PackageManager packageManager) {
             mPackageManager = packageManager;
         }
 
-        public AppInfo get(String appId) {
+        public @Nullable FilterItem<String> get(String appId) {
             if (mAppInfoMap == null) mAppInfoMap = new HashMap<>();
-            AppInfo appInfo = mAppInfoMap.get(appId);
+            FilterItem<String> appInfo = mAppInfoMap.get(appId);
             if (appInfo == null) {
                 try {
                     PackageManager pm = mPackageManager;
                     var info = pm.getApplicationInfo(appId, PackageManager.GET_META_DATA);
                     var icon = pm.getApplicationIcon(info);
                     var label = pm.getApplicationLabel(info);
-                    appInfo = new AppInfo(appId, icon, label);
+                    appInfo = new FilterItem<>(appId, icon, label);
                 } catch (NameNotFoundException e) {
                     // Can happen if the corresponding app was uninstalled, or unavailable for any
-                    // reason. Map it with an empty info so it won't be queried again till next
+                    // reason. Map it with an invalid info so it won't be queried again till next
                     // time history UI is launched.
-                    appInfo = EMPTY_INFO;
+                    appInfo = INVALID_ITEM;
                 }
                 mAppInfoMap.put(appId, appInfo);
             }
-            return appInfo;
+            return appInfo == INVALID_ITEM ? null : appInfo;
         }
 
         void setPackageManagerForTesting(PackageManager packageManager) {
@@ -975,11 +1214,23 @@ public class HistoryContentManager implements SignInStateObserver, PrefObserver 
         mAppInfoCache.setPackageManagerForTesting(packageManager); // IN-TEST
     }
 
-    void setAppFilterSheetForTesting(AppFilterCoordinator appFilterSheet) {
-        mAppFilterSheet = appFilterSheet;
+    HistoryFilterChip<String> getAppFilterForTesting() {
+        return mAppFilter;
     }
 
-    @Nullable AppInfo getAppInfoForTesting() {
-        return mCurrentApp;
+    HistoryFilterChip<String> getHostFilterForTesting() {
+        return mHostFilter;
+    }
+
+    HistoryFilterChip<List<String>> getClientFilterForTesting() {
+        return mClientFilter;
+    }
+
+    HistoryFilterChip<String> getActorFilterForTesting() {
+        return mActorFilter;
+    }
+
+    View getResetFiltersButtonForTesting() {
+        return assumeNonNull(mResetFiltersButton);
     }
 }

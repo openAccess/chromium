@@ -17,7 +17,6 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/device_event_log/device_event_log.h"
 #include "crypto/obsolete/md5.h"
@@ -200,6 +199,8 @@ class ServerPrintersFetcher::PrivateImplementation
 
     // Preparation of the IPP frame.
     ipp::Frame request(ipp::Operation::CUPS_Get_Printers);
+    // TODO(crbug.com/563075802): CHECK-exclusion: Remove side effect from the
+    // invariant condition expression.
     DCHECK_EQ(ipp::Code::kOK,
               request.Groups(ipp::GroupTag::operation_attributes)[0].AddAttr(
                   "requested-attributes", ipp::ValueTag::keyword,

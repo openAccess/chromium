@@ -43,6 +43,7 @@ class ExtensionsClient {
   static ExtensionsClient* Get();
 
   // Initialize the extensions system with this extensions client.
+  // When |client| is null, resets the extensions client.
   static void Set(ExtensionsClient* client);
 
   ExtensionsClient();
@@ -50,6 +51,8 @@ class ExtensionsClient {
   ExtensionsClient& operator=(const ExtensionsClient&) = delete;
   virtual ~ExtensionsClient();
 
+  // Production clients set this before Set() publishes the client. Tests may
+  // replace it when no feature availability checks are running.
   void SetFeatureDelegatedAvailabilityCheckMap(
       Feature::FeatureDelegatedAvailabilityCheckMap map);
   const Feature::FeatureDelegatedAvailabilityCheckMap&
@@ -117,6 +120,10 @@ class ExtensionsClient {
 
   // Returns false if content scripts are forbidden from running on `url`.
   virtual bool IsScriptableURL(const GURL& url, std::string* error) const = 0;
+
+  // Returns false if extensions are forbidden from capturing the given `url`
+  // (e.g. via tabs.captureVisibleTab or pageCapture.saveAsMHTML).
+  virtual bool IsCapturableURL(const GURL& url, std::string* error) const;
 
   // Returns the base webstore URL prefix.
   virtual const GURL& GetWebstoreBaseURL() const = 0;

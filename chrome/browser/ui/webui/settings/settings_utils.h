@@ -8,12 +8,14 @@
 #include <string>
 
 #include "build/build_config.h"
+#include "ui/base/interaction/element_tracker.h"
 
 class GURL;
 class PrefService;
 
 namespace content {
 class WebContents;
+class WebUI;
 }
 
 // Chrome settings utility methods.
@@ -29,6 +31,19 @@ void ShowManageSSLCertificates(content::WebContents* web_contents);
 // the fixed up, valid URL if not null.
 bool FixupAndValidateStartupPage(const std::string& url_string,
                                  GURL* fixed_url);
+
+// Dispatches `event_type` on the owning browser window's
+// `kBrowserViewElementId` for Settings Critical User Journey (CUJ) telemetry.
+// Resolving the window via `webui::GetBrowserWindowInterface` lets custom
+// events emitted from both `chrome://settings` tabs and Side Panel WebUIs share
+// a per-window `ElementContext` while keeping multi-window sessions isolated.
+// No-ops when `metrics::kSettingsGlowupJourneys` is disabled or when
+// `web_contents` has no associated `BrowserWindowInterface` (e.g., in unit
+// tests using a detached `content::TestWebUI`).
+void MaybeNotifySettingsCustomEvent(content::WebContents* web_contents,
+                                    ui::CustomElementEventType event_type);
+void MaybeNotifySettingsCustomEvent(content::WebUI* web_ui,
+                                    ui::CustomElementEventType event_type);
 
 #if BUILDFLAG(IS_MAC)
 void ValidateSavedFonts(PrefService* prefs);

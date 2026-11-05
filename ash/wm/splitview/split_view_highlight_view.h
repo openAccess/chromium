@@ -5,6 +5,7 @@
 #ifndef ASH_WM_SPLITVIEW_SPLIT_VIEW_HIGHLIGHT_VIEW_H_
 #define ASH_WM_SPLITVIEW_SPLIT_VIEW_HIGHLIGHT_VIEW_H_
 
+#include <memory>
 #include <optional>
 
 #include "ash/ash_export.h"
@@ -14,6 +15,8 @@
 #include "ui/views/view.h"
 
 namespace ash {
+
+class SystemDecoration;
 
 // View that is used for displaying and animating the highlights which tell
 // users where to drag windows to enter splitview, and previews the space which
@@ -46,12 +49,23 @@ class ASH_EXPORT SplitViewHighlightView : public views::View {
       bool previews_only,
       bool can_dragged_window_be_snapped);
 
+  // views::View:
+  void AddedToWidget() override;
+  void RemovedFromWidget() override;
+  void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
+
+  SystemDecoration* highlight_border_for_testing() {
+    return highlight_border_.get();
+  }
+
  private:
   // Determines whether this particular highlight view is located at the right
   // or bottom of the screen. These highlights animate in the opposite direction
   // as left or top highlights, so when we use |SetBounds()| extra calucations
   // have to be done to ensure the animation is correct.
   const bool is_right_or_bottom_;
+
+  std::unique_ptr<SystemDecoration> highlight_border_;
 };
 
 }  // namespace ash

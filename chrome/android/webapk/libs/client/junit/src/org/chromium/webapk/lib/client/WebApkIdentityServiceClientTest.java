@@ -14,7 +14,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.Shadows;
-import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowApplication;
 
 import org.chromium.base.task.TaskTraits;
@@ -26,7 +25,6 @@ import org.chromium.webapk.test.WebApkTestHelper;
 
 /** Unit tests for {@link org.chromium.webapk.lib.client.WebApkIdentityServiceClient}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class WebApkIdentityServiceClientTest {
     static final String BROWSER_PACKAGE_NAME = "org.chromium.test";
 
@@ -63,13 +61,13 @@ public class WebApkIdentityServiceClientTest {
 
     @Before
     public void setUp() {
-        mShadowApplication = Shadows.shadowOf(RuntimeEnvironment.application);
+        mShadowApplication = Shadows.shadowOf(RuntimeEnvironment.getApplication());
         WebApkIdentityServiceClient.resetForTesting();
     }
 
     @After
     public void tearDown() {
-        WebApkIdentityServiceClient.disconnectAll(RuntimeEnvironment.application);
+        WebApkIdentityServiceClient.disconnectAll(RuntimeEnvironment.getApplication());
     }
 
     /**
@@ -175,7 +173,7 @@ public class WebApkIdentityServiceClientTest {
         TestCheckBacksWebApkCallback callback = new TestCheckBacksWebApkCallback();
         WebApkIdentityServiceClient.getInstance(TaskTraits.BEST_EFFORT_MAY_BLOCK)
                 .checkBrowserBacksWebApkAsync(
-                        RuntimeEnvironment.application, WEBAPK_PACKAGE_NAME, callback);
+                        RuntimeEnvironment.getApplication(), WEBAPK_PACKAGE_NAME, callback);
         RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         Assert.assertTrue(callback.mIsCalled);

@@ -29,6 +29,7 @@
 #include "third_party/blink/renderer/core/view_transition/view_transition.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_utils.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/graphics/compositing/paint_artifact_compositor.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
@@ -140,11 +141,11 @@ DOMViewTransition* ViewTransitionSupplement::StartTransition(
       << "SkipTransition() should finish previously active view transition";
 
   // We need to be connected to a view to have a transition.
-  if (!document.View()) {
+  if (!element.isConnected() || !document.View()) {
     return ViewTransition::CreateSkipped(
                &element, callback,
-               ViewTransition::PromiseResponse::kRejectAbort,
-               ViewTransitionSkipReason::kNoView, types)
+               ViewTransition::PromiseResponse::kRejectInvalidState,
+               ViewTransitionSkipReason::kUnsupportedCapture, types)
         ->GetScriptDelegate();
   }
 
@@ -348,9 +349,11 @@ void ViewTransitionSupplement::OnTransitionFinished(
     element_transitions_.erase(scope);
   }
 
-  if (!captured_transitions_.empty() && !HasActiveCaptures()) {
-    AdvanceCapturedTransitions();
-  }
+  // Note that this can be called during the rendering lifecycle (e.g. if the
+  // transition is skipped during view transition steps), in which case
+  // advancing the captured transitions is deferred to a task, since it runs
+  // the DOM callbacks.
+  MaybeAdvanceCapturedTransitions();
 
   // Notify the animator if the set of active view transitions is empty.
   if (!document_transition_ && element_transitions_.empty()) {
@@ -396,13 +399,7 @@ bool ViewTransitionSupplement::HasNonScriptTransitions() const {
 }
 
 bool ViewTransitionSupplement::IsEarlyCallbackEnabled() const {
-  if (!RuntimeEnabledFeatures::ViewTransitionDOMCallbackAfterCommitEnabled()) {
-    return false;
-  }
-  if (HasNonScriptTransitions()) {
-    return false;
-  }
-  return true;
+  return !HasNonScriptTransitions();
 }
 
 bool ViewTransitionSupplement::HasActiveCaptures() const {
@@ -418,6 +415,39 @@ bool ViewTransitionSupplement::HasActiveCaptures() const {
     }
   }
   return false;
+}
+
+void ViewTransitionSupplement::MaybeAdvanceCapturedTransitions() {
+  if (captured_transitions_.empty() || HasActiveCaptures()) {
+    return;
+  }
+
+  // Advancing captured transitions runs the DOM callbacks, which must not run
+  // while script is forbidden, e.g. in the middle of the rendering lifecycle:
+  // script could dirty style, layout or the DOM after the lifecycle has
+  // already processed them.
+  if (!ScriptForbiddenScope::WillBeScriptForbidden() &&
+      !ScriptForbiddenScope::IsScriptForbidden()) {
+    AdvanceCapturedTransitions();
+    return;
+  }
+
+  if (advance_captured_transitions_scheduled_) {
+    return;
+  }
+  advance_captured_transitions_scheduled_ = true;
+  document_->GetTaskRunner(TaskType::kDOMManipulation)
+      ->PostTask(FROM_HERE,
+                 BindOnce(
+                     [](ViewTransitionSupplement* supplement) {
+                       if (!supplement) {
+                         return;
+                       }
+                       supplement->advance_captured_transitions_scheduled_ =
+                           false;
+                       supplement->MaybeAdvanceCapturedTransitions();
+                     },
+                     WrapWeakPersistent(this)));
 }
 
 void ViewTransitionSupplement::AdvanceCapturedTransitions() {
@@ -441,9 +471,7 @@ void ViewTransitionSupplement::OnDOMCallbackReadyToRun(
     return;
   }
   captured_transitions_.push_back(transition);
-  if (!HasActiveCaptures()) {
-    AdvanceCapturedTransitions();
-  }
+  MaybeAdvanceCapturedTransitions();
 }
 
 void ViewTransitionSupplement::OnTransitionCaptured(
@@ -543,6 +571,7 @@ void ViewTransitionSupplement::Trace(Visitor* visitor) const {
   visitor->Trace(element_transitions_);
   visitor->Trace(skipped_with_pending_dom_callback_);
   visitor->Trace(captured_transitions_);
+  ViewTransition::Delegate::Trace(visitor);
 }
 
 void ViewTransitionSupplement::AddPendingRequest(

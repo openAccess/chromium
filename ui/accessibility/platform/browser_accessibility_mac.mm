@@ -266,18 +266,23 @@ gfx::NativeViewAccessible BrowserAccessibilityMac::GetNativeViewAccessible() {
   return gfx::NativeViewAccessible(GetNativeWrapper());
 }
 
+gfx::NativeViewAccessible BrowserAccessibilityMac::GetNSWindow() {
+  id window = [GetNativeWrapper() window];
+  return gfx::NativeViewAccessible(window);
+}
+
 AXPlatformNode* BrowserAccessibilityMac::GetAXPlatformNode() const {
   return platform_node_.get();
 }
 
 void BrowserAccessibilityMac::CreatePlatformNodes() {
-  DCHECK(!platform_node_);
+  CHECK(!platform_node_, base::NotFatalUntil::M163);
   platform_node_ = AXPlatformNode::Create(*this);
   CreateNativeWrapper();
 }
 
 BrowserAccessibilityCocoa* BrowserAccessibilityMac::CreateNativeWrapper() {
-  DCHECK(platform_node_);
+  CHECK(platform_node_, base::NotFatalUntil::M163);
 
   BrowserAccessibilityCocoa* node_cocoa =
       [[BrowserAccessibilityCocoa alloc] initWithObject:this

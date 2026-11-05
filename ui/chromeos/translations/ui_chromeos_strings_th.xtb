@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">รหัสผ่านไม่ถูกต้อง</translation>
 <translation id="5059127710849015030">เนปาล (การทับศัพท์)</translation>
 <translation id="5068919226082848014">พิซซ่า</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> ตั้งกฎการลบล้างพร็อกซี</translation>
 <translation id="5081517858322016911">ระบบจะลบไฟล์ที่รวมแล้วมีขนาด <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158">กำลังย้าย <ph name="NUMBER_OF_ITEMS" /> รายการไปยัง <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">มีข้อผิดพลาดเกิดขึ้น</translation>
-<translation id="5102922915594634436">จัดการโฟลเดอร์ที่ซิงค์</translation>
 <translation id="5109254780565519649">เกิดข้อผิดพลาด ระบบอาจไม่ได้คืนค่าบางรายการ</translation>
 <translation id="5110329002213341433">อังกฤษ (แคนาดา)</translation>
 <translation id="5119780910075847424">การซิงค์หยุดชั่วคราว</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">ฮินดี</translation>
 <translation id="7665680517722058469">ลองค้นหาด้วยข้อความอื่น</translation>
 <translation id="7689532716264131859">ย้าย <ph name="NUMBER_OF_ITEMS" /> รายการไปที่ถังขยะแล้ว</translation>
-<translation id="7693909743393669729">การฟอร์แมตไดรฟ์จะลบข้อมูลทั้งหมดที่เก็บไว้ในไดรฟ์และลบพาร์ติชันที่มีอยู่ทั้งหมด รวมถึงพาร์ติชันที่อาจมองไม่เห็น การดำเนินการนี้เลิกทำไม่ได้</translation>
 <translation id="7695430100978772476">จัดรูปแบบ <ph name="DRIVE_NAME" /> ไม่ได้</translation>
 <translation id="76959938259365003">ล้างข้อมูลในถังขยะไม่สำเร็จ</translation>
 <translation id="7705251383879779343">คัดลอก <ph name="FILE_NAME" /> แล้ว</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">Workman สหรัฐอเมริกาแบบสากล</translation>
 <translation id="7903984238293908205">คะตะคะนะ</translation>
 <translation id="7908378463497120834">ขออภัย ไม่สามารถติดตั้งอย่างน้อยหนึ่งพาร์ทิชันในอุปกรณ์จัดเก็บข้อมูลภายนอกของคุณ</translation>
-<translation id="7908793776359722643">การฟอร์แมตพาร์ติชันจะลบข้อมูลทั้งหมดที่จัดเก็บในพาร์ติชันนั้น การดำเนินการนี้เลิกทำไม่ได้</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">ไฟล์ใน "ไดรฟ์ของฉัน" จะซิงค์กับ Chromebook โดยอัตโนมัติ เพื่อให้คุณเข้าถึงได้โดยไม่ต้องเชื่อมต่ออินเทอร์เน็ต</translation>
 <translation id="7925247922861151263">การตรวจสอบ AAA ล้มเหลว</translation>

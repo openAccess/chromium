@@ -117,6 +117,8 @@ class MockDelegate : public MetricReportingManager::Delegate {
 // Manager class extension for testing purposes.
 class MetricReportingManagerForTest : public MetricReportingManager {
  public:
+  // `network_quality_tracker` must be non-null and must outlive the returned
+  // object.
   static std::unique_ptr<MetricReportingManagerForTest> Create(
       ::network::NetworkQualityTracker* network_quality_tracker,
       std::unique_ptr<Delegate> delegate,
@@ -137,6 +139,7 @@ class MetricReportingManagerForTest : public MetricReportingManager {
   FakeMetricReportQueue* kiosk_heartbeat_telemetry_queue() const;
 
  private:
+  // `network_quality_tracker` must be non-null and must outlive `this`.
   MetricReportingManagerForTest(
       ::network::NetworkQualityTracker* network_quality_tracker,
       std::unique_ptr<Delegate> delegate);

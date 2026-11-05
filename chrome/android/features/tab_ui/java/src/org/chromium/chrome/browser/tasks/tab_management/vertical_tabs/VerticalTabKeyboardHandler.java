@@ -25,7 +25,7 @@ class VerticalTabKeyboardHandler implements VerticalTabRailLayout.KeyEventListen
     private final TabListModel mPinnedTabsModelList;
     private final RecyclerView mRecyclerView;
     private final RecyclerView mPinnedTabsRecyclerView;
-    private final VerticalTabHoverCardController mHoverCardController;
+    private final VerticalTabItemHoverController mItemHoverController;
 
     /**
      * Constructs a {@link VerticalTabKeyboardHandler}.
@@ -35,7 +35,7 @@ class VerticalTabKeyboardHandler implements VerticalTabRailLayout.KeyEventListen
      * @param pinnedTabsModelList The {@link TabListModel} for pinned tabs.
      * @param recyclerView The {@link RecyclerView} displaying unpinned tabs.
      * @param pinnedTabsRecyclerView The {@link RecyclerView} displaying pinned tabs.
-     * @param hoverCardController The {@link VerticalTabHoverCardController} for hover card state.
+     * @param itemHoverController The {@link VerticalTabItemHoverController} for hover state.
      */
     VerticalTabKeyboardHandler(
             TabModelSelector tabModelSelector,
@@ -43,21 +43,21 @@ class VerticalTabKeyboardHandler implements VerticalTabRailLayout.KeyEventListen
             TabListModel pinnedTabsModelList,
             RecyclerView recyclerView,
             RecyclerView pinnedTabsRecyclerView,
-            VerticalTabHoverCardController hoverCardController) {
+            VerticalTabItemHoverController itemHoverController) {
         mTabModelSelector = tabModelSelector;
         mModelList = modelList;
         mPinnedTabsModelList = pinnedTabsModelList;
         mRecyclerView = recyclerView;
         mPinnedTabsRecyclerView = pinnedTabsRecyclerView;
-        mHoverCardController = hoverCardController;
+        mItemHoverController = itemHoverController;
     }
 
     @Override
     public boolean onKeyEvent(KeyEvent event) {
         if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE && event.hasNoModifiers()) {
-            if (mHoverCardController.isHoverCardShowing()) {
+            if (mItemHoverController.isHoverCardShowing()) {
                 if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                    mHoverCardController.hideHoverCard();
+                    mItemHoverController.hideHoverCard();
                 }
                 return true;
             }

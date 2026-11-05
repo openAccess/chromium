@@ -35,7 +35,6 @@ using testing::_;
 using testing::AtLeast;
 using testing::Bool;
 using testing::Combine;
-using testing::InvokeWithoutArgs;
 using testing::Values;
 
 namespace content {
@@ -145,6 +144,8 @@ class VideoCaptureBrowserTest
     ASSERT_TRUE(video_capture_manager_);
     video_capture_manager_->RegisterListener(&mock_stream_provider_listener_);
     video_capture_manager_->EnumerateDevices(
+        media::mojom::VideoCaptureDeviceEnumerationMode::
+            kDevicesWithCapabilities,
         base::BindOnce(&VideoCaptureBrowserTest::OnDeviceDescriptorsReceived,
                        base::Unretained(this), std::move(continuation)));
   }
@@ -172,9 +173,9 @@ class VideoCaptureBrowserTest
     // we can't store it in a lambda as gmock does not place nice and
     // base::test::RunOnceClosure() doesn't work for this scenario.
     close_callback_ = std::move(continuation);
-    EXPECT_CALL(mock_stream_provider_listener_, Closed(_, _))
-        .WillOnce(
-            InvokeWithoutArgs([&]() { std::move(close_callback_).Run(); }));
+    EXPECT_CALL(mock_stream_provider_listener_, Closed(_, _)).WillOnce([&]() {
+      std::move(close_callback_).Run();
+    });
 
     video_capture_manager_->Close(session_id_);
   }
@@ -218,8 +219,7 @@ class VideoCaptureBrowserTest
         params_.GetPixelFormatToUse());
     video_capture_manager_->ConnectClient(
         session_id_, capture_params, stub_client_id_, render_frame_host_id_,
-        &mock_controller_event_handler_, std::nullopt,
-        /*is_allowed_on_lock_screen=*/false,
+        &mock_controller_event_handler_, /*is_allowed_on_lock_screen=*/false,
         base::BindOnce(
             &VideoCaptureBrowserTest::OnConnectClientToControllerAnswer,
             base::Unretained(this), std::move(continuation)));
@@ -306,9 +306,9 @@ IN_PROC_BROWSER_TEST_P(VideoCaptureBrowserTest,
     // decoding path before the GPU decoder has started getting used.
     must_wait_for_gpu_decode_to_start = true;
     EXPECT_CALL(mock_controller_event_handler_, OnStartedUsingGpuDecode(_))
-        .WillOnce(InvokeWithoutArgs([&must_wait_for_gpu_decode_to_start]() {
+        .WillOnce([&must_wait_for_gpu_decode_to_start]() {
           must_wait_for_gpu_decode_to_start = false;
-        }));
+        });
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
   EXPECT_CALL(mock_controller_event_handler_, DoOnNewBuffer(_, _, _))

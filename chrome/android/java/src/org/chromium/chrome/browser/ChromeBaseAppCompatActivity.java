@@ -40,7 +40,6 @@ import org.chromium.base.BundleUtils;
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
-import org.chromium.base.FeatureList;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -53,6 +52,7 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.automotivetoolbar.AutomotiveBackButtonToolbarCoordinator;
 import org.chromium.chrome.browser.base.SplitChromeApplication;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.ChromeFeatures;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.language.GlobalAppLocaleController;
 import org.chromium.chrome.browser.night_mode.GlobalNightModeStateProviderHolder;
@@ -208,29 +208,6 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
-        if (savedInstanceState != null) {
-            // setClassLoader() must be called before any values are queried for it to be used for
-            // nested Parcelables & Bundles (until Android 37, which made it so you can set it
-            // later).
-            // https://crbug.com/40877199, https://crbug.com/549795122
-            ClassLoader splitClassLoader = BundleUtils.getSplitCompatClassLoader();
-            savedInstanceState.setClassLoader(splitClassLoader);
-            BundleUtils.restoreLoadedSplits(savedInstanceState);
-            if (Build.VERSION.SDK_INT < VERSION_CODES.CINNAMON_BUN) {
-                // https://cs.android.com/search?q=Activity.java%20symbol:onRestoreInstanceState
-                Bundle windowState = savedInstanceState.getBundle("android:viewHierarchyState");
-                if (windowState != null) {
-                    windowState.setClassLoader(splitClassLoader);
-                }
-            }
-            // Eager unmarshalling is required for classes using AndroidX's SavedState, since it
-            // overrides the ClassLoader that we set here.
-            // https://crbug.com/527604007#comment17
-            Bundle fragmentsState = savedInstanceState.getBundle("android:support:fragments");
-            if (fragmentsState != null) {
-                forceInflateBundleValues(fragmentsState, splitClassLoader);
-            }
-        }
         mInMultiWindowMode = isInMultiWindowMode();
 
         mEdgeToEdgeStateProvider = new EdgeToEdgeStateProvider(getWindow());
@@ -266,8 +243,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
                         mEdgeToEdgeStateProvider,
                         createSystemBarColorHelperSupplier(),
                         shouldDrawEdgeToEdgeOnCreate(),
-                        canColorStatusBarWithEdgeToEdgeHelper(),
-                        canSetTransparentStatusBarWithoutDelegate());
+                        canColorStatusBarWithEdgeToEdgeHelper());
 
         if (canColorStatusBarWithEdgeToEdgeHelper()) {
             initializeSystemBarColors(mEdgeToEdgeManager.getEdgeToEdgeSystemBarColorHelper());
@@ -316,11 +292,6 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
         return EdgeToEdgeUtils.isEdgeToEdgeEverywhereEnabled();
     }
 
-    /** Returns whether the helper may make the status bar transparent without a delegate helper. */
-    protected boolean canSetTransparentStatusBarWithoutDelegate() {
-        return false;
-    }
-
     /**
      * Returns a one-shot supplier for the {@link SystemBarColorHelper} that's appropriate for the
      * activity.
@@ -345,7 +316,8 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
                         new EdgeToEdgeControllerCreator(
                                 new WeakReference<Activity>(this),
                                 getInsetObserver(),
-                                this::ensureEdgeToEdgeController);
+                                this::ensureEdgeToEdgeController,
+                                /* supportsTopInset= */ false);
             }
         } else {
             ensureEdgeToEdgeController();
@@ -429,11 +401,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
     @Override
     public final void onMultiWindowModeChanged(boolean inMultiWindowMode) {
         // Some OEMs double-notify about multi-window mode changes (eg. Samsung tablets).
-        if (FeatureList.isNativeInitialized()
-                && ChromeFeatureList.isEnabled(ChromeFeatureList.AVOID_DOUBLE_MULTIWINDOW_CHANGES)
-                && mInMultiWindowMode == inMultiWindowMode) {
-            return;
-        }
+        if (mInMultiWindowMode == inMultiWindowMode) return;
         mInMultiWindowMode = inMultiWindowMode;
         handleMultiWindowModeChanged(inMultiWindowMode);
         super.onMultiWindowModeChanged(inMultiWindowMode);
@@ -531,7 +499,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
      * #applyOverrideConfiguration(Configuration)}.
      *
      * @param baseContext The base {@link Context} attached to this class.
-     * @param overrideConfig The {@link Configuration} that will be passed to {@link}
+     * @param overrideConfig The {@link Configuration} that will be passed to {@link
      *     #applyOverrideConfiguration(Configuration)} if necessary.
      * @return True if any configuration overrides were applied, and false otherwise.
      */
@@ -837,8 +805,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
         return new InsetObserver(
                 new ImmutableWeakReference<>(getWindow().getDecorView().getRootView()),
                 new ImmutableWeakReference<>(this),
-                ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.ACCOUNT_FOR_SUPPRESSED_KEYBOARD_INSETS),
+                ChromeFeatures.AccountForSuppressedKeyboardInsets.isEnabled(),
                 ChromeFeatureList.sEdgeToEdgeExtraLogs.isEnabled());
     }
 
@@ -871,28 +838,5 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
             return true;
         }
         return false;
-    }
-
-    /**
-     * Sets the ClassLoader on the given bundle and all nested bundles.
-     *
-     * <p>Iterates all values, and so also triggers unmarshalling of all values.
-     */
-    private static void forceInflateBundleValues(Bundle bundle, ClassLoader classLoader) {
-        bundle.setClassLoader(classLoader);
-        for (String key : bundle.keySet()) {
-            Object value;
-            try {
-                value = bundle.get(key);
-            } catch (Exception e) {
-                // Ignore unmarshalling errors.
-                continue;
-            }
-            // Bundles could also be nested in: Bundle[], List<?>, SparseArray<?>, but that has so
-            // far not come up.
-            if (value instanceof Bundle b) {
-                forceInflateBundleValues(b, classLoader);
-            }
-        }
     }
 }

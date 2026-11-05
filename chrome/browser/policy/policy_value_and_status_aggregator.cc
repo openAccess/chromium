@@ -23,8 +23,10 @@
 #include "components/policy/core/common/management/management_service.h"
 #include "components/policy/core/common/policy_logger.h"
 #include "components/policy/resources/webui/mojom/policy.mojom.h"
+#include "extensions/buildflags/buildflags.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "base/check_deref.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_local_account_policy_service.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
@@ -33,6 +35,8 @@
 #include "chrome/browser/policy/status_provider/device_cloud_policy_status_provider_chromeos.h"
 #include "chrome/browser/policy/status_provider/device_local_account_policy_status_provider.h"
 #include "chrome/browser/policy/status_provider/user_cloud_policy_status_provider_chromeos.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
 #else
 #include "chrome/browser/policy/status_provider/user_cloud_policy_status_provider.h"
@@ -53,6 +57,10 @@
 #include "chrome/browser/policy/value_provider/extension_install_policies_value_provider.h"
 #include "chrome/browser/policy/value_provider/extension_policies_value_provider.h"
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/policy/value_provider/web_app_managed_configuration_value_provider.h"
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 #include "components/policy/core/common/cloud/profile_cloud_policy_manager.h"
@@ -75,6 +83,17 @@ void MergePolicyValuesAndIds(base::DictValue policy_values,
   out_policy_values.Merge(std::move(policy_values));
 }
 
+void MergePolicyValuesAndIdsMojo(
+    base::flat_map<std::string, policy::mojom::PolicyGroupPtr> policy_values,
+    base::flat_map<std::string, policy::mojom::PolicyGroupPtr>&
+        out_policy_values,
+    std::vector<std::string>& out_policy_ids) {
+  for (auto& [id, policy_group] : policy_values) {
+    out_policy_ids.push_back(id);
+    out_policy_values.insert_or_assign(id, std::move(policy_group));
+  }
+}
+
 // Returns the PolicyStatusProvider for user policies for the current platform.
 std::unique_ptr<policy::PolicyStatusProvider> GetUserPolicyStatusProvider(
     Profile* profile) {
@@ -91,7 +110,9 @@ std::unique_ptr<policy::PolicyStatusProvider> GetUserPolicyStatusProvider(
       profile->GetUserCloudPolicyManagerAsh();
   if (local_account_service) {
     return std::make_unique<DeviceLocalAccountPolicyStatusProvider>(
-        user_manager->GetActiveUser()->GetAccountId().GetUserEmail(),
+        CHECK_DEREF(session_manager::SessionManager::Get()->GetActiveSession())
+            .account_id()
+            .GetUserEmail(),
         local_account_service);
   } else if (user_cloud_policy) {
     return std::make_unique<UserCloudPolicyStatusProviderChromeOS>(
@@ -162,6 +183,13 @@ PolicyValueAndStatusAggregator::CreateDefaultPolicyValueAndStatusAggregator(
   // Add PolicyValueProviders.
   aggregator->AddPolicyValueProvider(
       std::make_unique<ChromePoliciesValueProvider>(profile));
+#if !BUILDFLAG(IS_ANDROID)
+  if (auto web_app_managed_config_provider =
+          WebAppManagedConfigurationValueProvider::Create(profile)) {
+    aggregator->AddPolicyValueProvider(
+        std::move(web_app_managed_config_provider));
+  }
+#endif  // !BUILDFLAG(IS_ANDROID)
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   if (base::FeatureList::IsEnabled(
           policy::features::kEnableExtensionInstallPolicyFetching)) {
@@ -243,14 +271,15 @@ base::DictValue PolicyValueAndStatusAggregator::GetAggregatedPolicyStatus() {
 base::flat_map<std::string, policy::mojom::StatusPtr>
 PolicyValueAndStatusAggregator::GetAggregatedPolicyStatusMojo() {
   std::vector<std::pair<std::string, policy::mojom::StatusPtr>> entries;
-  for (const auto& status_provider_description_pair : status_providers_) {
-    DVLOG_POLICY(3, POLICY_PROCESSING)
-        << status_provider_description_pair.first
-        << " status: " << status_provider_description_pair.second->GetStatus();
-
-    entries.emplace_back(
-        status_provider_description_pair.first,
-        status_provider_description_pair.second->GetStatusMojo());
+  for (const auto& [name, provider] : status_providers_) {
+    if (auto status = provider->GetStatusMojo()) {
+      DVLOG_POLICY(3, POLICY_PROCESSING)
+          << "Processing policy status for " << name;
+      entries.emplace_back(name, std::move(status));
+    } else {
+      DVLOG_POLICY(3, POLICY_PROCESSING)
+          << "Policy status provider " << name << " returned a null status";
+    }
   }
   return base::flat_map<std::string, policy::mojom::StatusPtr>(
       std::move(entries));
@@ -285,6 +314,40 @@ base::DictValue PolicyValueAndStatusAggregator::GetAggregatedPolicyNames() {
   return policy_names;
 }
 
+base::flat_map<std::string, policy::mojom::PolicyGroupNamesPtr>
+PolicyValueAndStatusAggregator::GetAggregatedPolicyNamesMojo() {
+  base::flat_map<std::string, policy::mojom::PolicyGroupNamesPtr> policy_names;
+  for (const auto& value_provider : value_providers_) {
+    for (auto& [id, group_names] : value_provider->GetNamesMojo()) {
+      policy_names.insert_or_assign(id, std::move(group_names));
+    }
+  }
+  for (const policy::PolicyValueProvider* value_provider :
+       value_providers_unowned_) {
+    for (auto& [id, group_names] : value_provider->GetNamesMojo()) {
+      policy_names.insert_or_assign(id, std::move(group_names));
+    }
+  }
+  return policy_names;
+}
+
+policy::mojom::PolicyGroupsResponsePtr
+PolicyValueAndStatusAggregator::GetAggregatedPolicyValuesMojo() {
+  base::flat_map<std::string, policy::mojom::PolicyGroupPtr> policy_values;
+  std::vector<std::string> policy_ids;
+  for (const auto& value_provider : value_providers_) {
+    MergePolicyValuesAndIdsMojo(value_provider->GetValuesMojo(), policy_values,
+                                policy_ids);
+  }
+  for (const policy::PolicyValueProvider* value_provider :
+       value_providers_unowned_) {
+    MergePolicyValuesAndIdsMojo(value_provider->GetValuesMojo(), policy_values,
+                                policy_ids);
+  }
+  return policy::mojom::PolicyGroupsResponse::New(std::move(policy_ids),
+                                                  std::move(policy_values));
+}
+
 void PolicyValueAndStatusAggregator::Refresh() {
   for (policy::PolicyValueProvider* value_provider : value_providers_unowned_) {
     value_provider->Refresh();
@@ -312,7 +375,8 @@ void PolicyValueAndStatusAggregator::OnPolicyStatusChanged() {
 
 void PolicyValueAndStatusAggregator::OnProfileWillBeDestroyed(
     Profile* profile) {
-  DCHECK(profile_observation_.IsObservingSource(profile));
+  CHECK(profile_observation_.IsObservingSource(profile),
+        base::NotFatalUntil::M162);
   profile_observation_.Reset();
   policy_value_provider_observations_.RemoveAllObservations();
   value_providers_.clear();

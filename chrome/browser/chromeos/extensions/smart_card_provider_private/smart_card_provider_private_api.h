@@ -8,15 +8,16 @@
 #include <variant>
 
 #include "base/memory/raw_ref.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/types/id_type.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/extension_function.h"
+#include "extensions/common/event_args.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote_set.h"
 #include "services/device/public/mojom/smart_card.mojom.h"
@@ -300,7 +301,7 @@ class SmartCardProviderPrivateAPI
       base::OnceCallback<void(ResultPtr)> callback,
       void (SmartCardProviderPrivateAPI::*OnTimeout)(const std::string&,
                                                      RequestId),
-      base::ListValue event_arguments = base::ListValue(),
+      scoped_refptr<extensions::EventArgs> event_arguments = nullptr,
       std::optional<base::TimeDelta> timeout = std::nullopt);
 
   device::mojom::SmartCardConnectResultPtr CreateSmartCardConnection(
@@ -310,11 +311,12 @@ class SmartCardProviderPrivateAPI
       mojo::PendingRemote<device::mojom::SmartCardConnectionWatcher>
           connection_watcher);
 
+  struct ContextData;
+
   device::mojom::SmartCardTransactionResultPtr CreateSmartCardTransaction(
       ContextId scard_context,
-      Handle handle);
-
-  struct ContextData;
+      Handle handle,
+      ContextData& context_data);
 
   ContextData& GetContextData(ContextId scard_context);
 

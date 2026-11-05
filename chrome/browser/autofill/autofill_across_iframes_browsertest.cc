@@ -19,7 +19,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -48,6 +47,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/switches.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 using base::ASCIIToUTF16;
 using testing::AllOf;
@@ -139,6 +140,7 @@ void FillCard(content::RenderFrameHost* rfh,
   manager.FillOrPreviewForm(mojom::ActionPersistence::kFill, form.global_id(),
                             triggered_field.global_id(), &card,
                             AutofillTriggerSource::kPopup,
+                            /*require_user_confirmation=*/false,
                             /*blocked_fields=*/{});
 }
 
@@ -296,7 +298,7 @@ class AutofillAcrossIframesTest : public InProcessBrowserTest {
         browser(),
         embedded_https_test_server().GetURL(kMainHostname, relative_url),
         ui::PAGE_TRANSITION_LINK);
-    params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     ui_test_utils::NavigateToURL(&params);
     return GetOrWaitForFormWithFocusableFields(
         /*num_fields=*/num_fields);

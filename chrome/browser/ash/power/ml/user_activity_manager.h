@@ -26,12 +26,13 @@
 #include "components/session_manager/core/session_manager_observer.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote_set.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/viz/public/mojom/compositing/video_detector_observer.mojom-forward.h"
 #include "ui/aura/window.h"
 #include "ui/base/user_activity/user_activity_detector.h"
 #include "ui/base/user_activity/user_activity_observer.h"
+
+class PrefService;
 
 namespace ash {
 namespace power {
@@ -130,11 +131,16 @@ class UserActivityManager : public ui::UserActivityObserver,
   void OnSessionStateChanged() override;
 
  private:
+  friend class UserActivityManagerBrowserTest;
   friend class UserActivityManagerTest;
 
   // Data structure associated with the 1st ScreenDimImminent event. See
   // PopulatePreviousEventData function below.
   struct PreviousIdleEventData;
+
+  // Returns the primary user's prefs, or null when no user has logged in yet
+  // or their browser context has not been created.
+  const PrefService* GetPrimaryUserPrefs() const;
 
   // Updates lid state and tablet mode from received switch states.
   void OnReceiveSwitchStates(

@@ -4,11 +4,10 @@
 
 #include "chrome/browser/actor/actor_keyed_service_fake.h"
 
-#include "base/test/bind.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/execution_engine.h"
-#include "chrome/browser/actor/ui/actor_ui_state_manager_interface.h"
+#include "chrome/browser/actor/ui/actor_ui_state_manager.h"
 #include "chrome/browser/actor/ui/event_dispatcher.h"
 #include "chrome/browser/actor/ui/test_support/mock_event_dispatcher.h"
 #include "chrome/browser/actor/ui/ui_event.h"
@@ -20,7 +19,7 @@ namespace actor {
 using ::testing::_;
 
 ActorKeyedServiceFake::ActorKeyedServiceFake(Profile* profile)
-    : ActorKeyedService(profile) {}
+    : ActorKeyedService(profile), profile_(profile) {}
 
 ActorKeyedServiceFake::~ActorKeyedServiceFake() = default;
 
@@ -42,6 +41,14 @@ TaskId ActorKeyedServiceFake::CreateExperimentalTriggeringTaskForTesting() {
       glic::mojom::FeatureMode::kExperimentalTriggering);
 }
 
+TaskId
+ActorKeyedServiceFake::CreateExperimentalTriggeringTaskWithTitleForTesting(
+    const std::string& title) {
+  return CreateTaskWithDurationAndFeatureModeForTesting(  // IN-TEST
+      actor::webui::mojom::TaskDuration::kDefault,
+      glic::mojom::FeatureMode::kExperimentalTriggering, title);
+}
+
 TaskId ActorKeyedServiceFake::CreateTaskWithDurationForTesting(  // IN-TEST
     actor::webui::mojom::TaskDuration duration) {
   return CreateTaskWithDurationAndFeatureModeForTesting(  // IN-TEST
@@ -51,46 +58,31 @@ TaskId ActorKeyedServiceFake::CreateTaskWithDurationForTesting(  // IN-TEST
 TaskId ActorKeyedServiceFake::
     CreateTaskWithDurationAndFeatureModeForTesting(  // IN-TEST
         actor::webui::mojom::TaskDuration duration,
-        glic::mojom::FeatureMode feature_mode) {
+        glic::mojom::FeatureMode feature_mode,
+        const std::string& title) {
   std::unique_ptr<ui::UiEventDispatcher> ui_event_dispatcher =
       ui::NewMockUiEventDispatcher();
-  std::unique_ptr<ui::UiEventDispatcher> task_ui_event_dispatcher =
-      ui::NewMockUiEventDispatcher();
-
   auto* mock_ui_dispatcher =
       static_cast<ui::MockUiEventDispatcher*>(ui_event_dispatcher.get());
-  auto* mock_task_ui_dispatcher =
-      static_cast<ui::MockUiEventDispatcher*>(task_ui_event_dispatcher.get());
 
-  for (auto& mock : {mock_ui_dispatcher, mock_task_ui_dispatcher}) {
-    ON_CALL(*mock, OnPreTool(_, _))
-        .WillByDefault(
-            UiEventDispatcherCallback<ToolRequest>(base::BindRepeating(
-                MakeOkResult, /*requires_page_stabilization=*/true)));
-    ON_CALL(*mock, OnPostTool(_, _))
-        .WillByDefault(
-            UiEventDispatcherCallback<ToolRequest>(base::BindRepeating(
-                MakeOkResult, /*requires_page_stabilization=*/true)));
-    ON_CALL(*mock, OnActorTaskAsyncChange(_, _))
-        .WillByDefault(UiEventDispatcherCallback<
-                       ui::UiEventDispatcher::ActorTaskAsyncChange>(
-            base::BindRepeating(MakeOkResult,
-                                /*requires_page_stabilization=*/true)));
-  }
-
-  ScopedExecutionEngineFactory scoped_execution_engine_factory_(
-      base::BindLambdaForTesting([&](ActorTask& task) {
-        CHECK(ui_event_dispatcher);
-        return ExecutionEngine::CreateForTesting(
-            task, std::move(ui_event_dispatcher));
-      }));
+  ON_CALL(*mock_ui_dispatcher, OnPreTool(_, _))
+      .WillByDefault(UiEventDispatcherCallback<ToolRequest>(base::BindRepeating(
+          MakeOkResult, /*requires_page_stabilization=*/true)));
+  ON_CALL(*mock_ui_dispatcher, OnPostTool(_, _))
+      .WillByDefault(UiEventDispatcherCallback<ToolRequest>(base::BindRepeating(
+          MakeOkResult, /*requires_page_stabilization=*/true)));
+  ON_CALL(*mock_ui_dispatcher, OnActorTaskAsyncChange(_, _))
+      .WillByDefault(UiEventDispatcherCallback<
+                     ui::UiEventDispatcher::ActorTaskAsyncChange>(
+          base::BindRepeating(MakeOkResult,
+                              /*requires_page_stabilization=*/true)));
 
   auto task_options = webui::mojom::TaskOptions::New();
-  task_options->title = "Test Task";
+  task_options->title = title;
   task_options->duration = duration;
   task_options->feature_mode = feature_mode;
   return ActorKeyedService::CreateTaskForTesting(  // IN-TEST
-      std::move(task_ui_event_dispatcher), TestTaskSourceInfo(),
+      std::move(ui_event_dispatcher), TestTaskSourceInfo(),
       &no_enterprise_policy_checker_, std::move(task_options),
       /*delegate=*/nullptr);
 }
@@ -100,9 +92,11 @@ void ActorKeyedServiceFake::PauseTaskForTesting(TaskId task_id,  // IN-TEST
   GetTask(task_id)->Pause(from_actor);
   // This fake mocks out the event dispatcher, so we need to manually notify the
   // ui state manager.
-  GetActorUiStateManager()->OnUiEvent(ui::TaskStateChanged(
-      task_id, from_actor ? ActorTask::State::kPausedByActor
-                          : ActorTask::State::kPausedByUser));
+  if (auto* ui_state_manager = ui::ActorUiStateManager::Get(profile_)) {
+    ui_state_manager->OnUiEvent(ui::TaskStateChanged(
+        task_id, from_actor ? ActorTask::State::kPausedByActor
+                            : ActorTask::State::kPausedByUser));
+  }
 }
 
 void ActorKeyedServiceFake::StopTaskForTesting(  // IN-TEST
@@ -113,10 +107,13 @@ void ActorKeyedServiceFake::StopTaskForTesting(  // IN-TEST
   StopTask(task_id, stopped_reason);
   // This fake mocks out the event dispatcher, so we need to manually notify the
   // ui state manager.
-  GetActorUiStateManager()->OnUiEvent(ui::StopTask(
-      task_id, ActorTask::GetTaskStateFromStoppedReason(stopped_reason),
-      "Test Task",
-      /*last_acted_on_tab_handle=*/tabs::TabHandle(), duration, feature_mode));
+  if (auto* ui_state_manager = ui::ActorUiStateManager::Get(profile_)) {
+    ui_state_manager->OnUiEvent(ui::StopTask(
+        task_id, ActorTask::GetTaskStateFromStoppedReason(stopped_reason),
+        "Test Task",
+        /*last_acted_on_tab_handle=*/tabs::TabHandle(), duration,
+        feature_mode));
+  }
 }
 
 }  // namespace actor

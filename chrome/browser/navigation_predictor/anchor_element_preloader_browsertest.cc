@@ -69,9 +69,13 @@ class AnchorElementPreloaderBrowserTest
              GetNavigationPredictorFieldTrialParams()}};
   }
 
+  virtual std::vector<base::test::FeatureRef> GetDisabledFeatures() {
+    return {};
+  }
+
   void SetUp() override {
     feature_list_.InitWithFeaturesAndParameters(GetEnabledFeatures(),
-                                                /*disabled_features=*/{});
+                                                GetDisabledFeatures());
     https_server_ = std::make_unique<net::EmbeddedTestServer>(
         net::EmbeddedTestServer::TYPE_HTTPS);
     https_server_->ServeFilesFromSourceDirectory("chrome/test/data/preload");
@@ -125,9 +129,25 @@ class AnchorElementPreloaderBrowserTest
   }
 
   // content::PreconnectManager::Observer
-  // We observe DNS preresolution instead of preconnect, because test
-  // servers all resolve to localhost and Chrome won't preconnect
-  // given it already has a warm connection.
+  void OnPreconnectUrl(
+      const GURL& url,
+      int num_sockets,
+      bool allow_credentials,
+      const net::NetworkAnonymizationKey& network_anonymization_key,
+      mojo::PendingRemote<network::mojom::ConnectionChangeObserverClient>&
+          observer) override {
+    last_network_anonymization_key_ = network_anonymization_key;
+    if (url != GURL(kOrigin1) && url != GURL(kOrigin2)) {
+      return;
+    }
+
+    last_preresolve_success_ = true;
+    ++preresolve_count_;
+    if (run_loop_) {
+      run_loop_->Quit();
+    }
+  }
+
   void OnPreresolveFinished(
       const GURL& url,
       const net::NetworkAnonymizationKey& network_anonymization_key,
@@ -135,14 +155,17 @@ class AnchorElementPreloaderBrowserTest
           observer,
       bool success) override {
     last_network_anonymization_key_ = network_anonymization_key;
-    last_preresolve_success_ = success;
     if (url != GURL(kOrigin1) && url != GURL(kOrigin2)) {
       return;
     }
 
-    ++preresolve_count_;
-    if (run_loop_)
-      run_loop_->Quit();
+    if (!success) {
+      last_preresolve_success_ = false;
+      ++preresolve_count_;
+      if (run_loop_) {
+        run_loop_->Quit();
+      }
+    }
   }
 
   ukm::TestAutoSetUkmRecorder* test_ukm_recorder() {
@@ -199,7 +222,7 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest, OneAnchor) {
   ukm::SourceId ukm_source_id = GetPrimaryMainFrame()->GetPageUkmSourceId();
   auto ukm_entries = test_ukm_recorder()->GetEntries(
       Preloading_Attempt::kEntryName,
-      content::test::kPreloadingAttemptUkmMetrics);
+      content::test::GetPreloadingAttemptUkmMetrics());
   EXPECT_EQ(ukm_entries.size(), 1u);
   UkmEntry expected_entry = ukm_entry_builder().BuildEntry(
       ukm_source_id, content::PreloadingType::kPreconnect,
@@ -228,7 +251,7 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest, OneAnchorInaccurate) {
   ukm::SourceId ukm_source_id = GetPrimaryMainFrame()->GetPageUkmSourceId();
   auto ukm_entries = test_ukm_recorder()->GetEntries(
       Preloading_Attempt::kEntryName,
-      content::test::kPreloadingAttemptUkmMetrics);
+      content::test::GetPreloadingAttemptUkmMetrics());
   EXPECT_EQ(ukm_entries.size(), 1u);
   UkmEntry expected_entry = ukm_entry_builder().BuildEntry(
       ukm_source_id, content::PreloadingType::kPreconnect,
@@ -271,7 +294,7 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest, MAYBE_Duplicates) {
   ukm::SourceId ukm_source_id = GetPrimaryMainFrame()->GetPageUkmSourceId();
   auto ukm_entries = test_ukm_recorder()->GetEntries(
       Preloading_Attempt::kEntryName,
-      content::test::kPreloadingAttemptUkmMetrics);
+      content::test::GetPreloadingAttemptUkmMetrics());
   EXPECT_EQ(ukm_entries.size(), 3u);
   std::vector<UkmEntry> expected_entries = {
       // Successful preconnect to first origin.
@@ -314,7 +337,7 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest, InvalidHref) {
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   auto ukm_entries = test_ukm_recorder()->GetEntries(
       Preloading_Attempt::kEntryName,
-      content::test::kPreloadingAttemptUkmMetrics);
+      content::test::GetPreloadingAttemptUkmMetrics());
   EXPECT_EQ(ukm_entries.size(), 0u);
 }
 
@@ -350,7 +373,7 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest,
   ukm::SourceId ukm_source_id = GetPrimaryMainFrame()->GetPageUkmSourceId();
   auto ukm_entries = test_ukm_recorder()->GetEntries(
       Preloading_Attempt::kEntryName,
-      content::test::kPreloadingAttemptUkmMetrics);
+      content::test::GetPreloadingAttemptUkmMetrics());
   EXPECT_EQ(ukm_entries.size(), 1u);
   UkmEntry expected_entry = ukm_entry_builder().BuildEntry(
       ukm_source_id, content::PreloadingType::kPreconnect,
@@ -393,7 +416,7 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderHoldbackBrowserTest,
   ukm::SourceId ukm_source_id = GetPrimaryMainFrame()->GetPageUkmSourceId();
   auto ukm_entries = test_ukm_recorder()->GetEntries(
       Preloading_Attempt::kEntryName,
-      content::test::kPreloadingAttemptUkmMetrics);
+      content::test::GetPreloadingAttemptUkmMetrics());
   EXPECT_EQ(ukm_entries.size(), 1u);
   UkmEntry expected_entry = ukm_entry_builder().BuildEntry(
       ukm_source_id, content::PreloadingType::kPreconnect,
@@ -411,7 +434,7 @@ class AnchorElementSetIsNavigationInDomainBrowserTest
     : public AnchorElementPreloaderBrowserTest {
  public:
   base::FieldTrialParams GetNavigationPredictorFieldTrialParams() override {
-    return {{"random_anchor_sampling_period", "1"}};
+    return {{"RandomAnchorSamplingPeriod", "1"}};
   }
 };
 
@@ -530,6 +553,13 @@ class AnchorElementPreloaderConnectionAllowlistBrowserTest
         AnchorElementPreloaderBrowserTest::GetEnabledFeatures();
     enabled.push_back({network::features::kConnectionAllowlists, {}});
     return enabled;
+  }
+
+  // The connection allowlist tests verify the legacy UI-thread host preresolve
+  // allowlist check and observe OnPreresolveFinished, so disable the direct
+  // fast-path.
+  std::vector<base::test::FeatureRef> GetDisabledFeatures() override {
+    return {features::kPreconnectManagerDirectFastPath};
   }
 };
 

@@ -16,7 +16,6 @@
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/webui/ash/floating_workspace/floating_workspace_dialog.h"
 #include "chrome/browser/ui/webui/ash/floating_workspace/floating_workspace_ui.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -27,6 +26,7 @@
 #include "chromeos/ash/components/network/network_state.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "chromeos/ash/components/network/proxy/proxy_config_handler.h"
+#include "chromeos/ash/services/network_config/in_process_instance.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/constants/pref_names.h"
 #include "components/account_id/account_id.h"
@@ -41,8 +41,8 @@
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_names.h"
 #include "content/public/test/browser_task_environment.h"
-#include "content/public/test/test_web_contents_factory.h"
-#include "content/public/test/test_web_ui.h"
+#include "content/public/test/scoped_web_ui_controller_factory_registration.h"
+#include "content/public/test/test_renderer_host.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 
@@ -67,13 +67,11 @@ class TestSigninController : public NetworkPortalSigninController {
     signin_window_url_ = url.spec();
     WaitForHistograms();
   }
-  void ShowTab(Profile* profile, const GURL& url) override {
-    incognito_ = profile && profile->IsOffTheRecord();
+  void ShowTab(const GURL& url) override {
     tab_url_ = url.spec();
     WaitForHistograms();
   }
   void ShowActiveProfileTab(const GURL& url) override {
-    incognito_ = false;
     tab_url_ = url.spec();
     WaitForHistograms();
   }
@@ -81,7 +79,6 @@ class TestSigninController : public NetworkPortalSigninController {
   const std::string& signin_dialog_url() const { return signin_dialog_url_; }
   const std::string& signin_window_url() const { return signin_window_url_; }
   const std::string& tab_url() const { return tab_url_; }
-  bool incognito() const { return incognito_; }
 
  private:
   void WaitForHistograms() {
@@ -96,7 +93,6 @@ class TestSigninController : public NetworkPortalSigninController {
   std::string signin_dialog_url_;
   std::string signin_window_url_;
   std::string tab_url_;
-  bool incognito_ = false;
 };
 
 }  // namespace
@@ -111,9 +107,6 @@ class NetworkPortalSigninControllerTest : public testing::Test {
   ~NetworkPortalSigninControllerTest() override = default;
 
   void SetUp() override {
-    // AshTestHelper is needed to call webui in one of the tests.
-    ash::AshTestHelper::InitParams params;
-    ash_test_helper_.SetUp(std::move(params));
     network_helper_ = std::make_unique<NetworkHandlerTestHelper>();
     controller_ = std::make_unique<TestSigninController>(
         CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()));
@@ -121,6 +114,10 @@ class NetworkPortalSigninControllerTest : public testing::Test {
     CHECK(test_profile_manager_.SetUp());
     user_manager_ = std::make_unique<FakeChromeUserManager>();
     user_manager_->Initialize();
+
+    // AshTestHelper is needed to call webui in one of the tests.
+    ash::AshTestHelper::InitParams params;
+    ash_test_helper_.SetUp(std::move(params));
     task_environment_.RunUntilIdle();
 
     // Initialize ProfileHelper.
@@ -140,11 +137,13 @@ class NetworkPortalSigninControllerTest : public testing::Test {
 
   void TearDown() override {
     controller_.reset();
+    ProfileHelper::Get()->ClearUserToProfileMappingForTesting();
     test_profile_manager_.DeleteAllTestingProfiles();
+    ash_test_helper_.TearDown();
     user_manager_->Shutdown();
     user_manager_->Destroy();
-    ash_test_helper_.TearDown();
     user_manager_.reset();
+    ash::network_config::OverrideInProcessInstanceForTesting(nullptr);
     network_helper_.reset();
   }
 
@@ -253,6 +252,7 @@ class NetworkPortalSigninControllerTest : public testing::Test {
   }
 
   content::BrowserTaskEnvironment task_environment_;
+  content::RenderViewHostTestEnabler rvh_test_enabler_;
   std::unique_ptr<NetworkHandlerTestHelper> network_helper_;
   std::unique_ptr<TestSigninController> controller_;
   std::unique_ptr<FakeChromeUserManager> user_manager_;
@@ -299,7 +299,6 @@ TEST_F(NetworkPortalSigninControllerTest, AuthenticationIgnoresProxyFalse) {
   EXPECT_EQ(GetSigninMode(), SigninMode::kNormalTab);
   ShowSignin();
   EXPECT_EQ(controller_->tab_url(), expected_url);
-  EXPECT_FALSE(controller_->incognito());
 }
 
 TEST_F(NetworkPortalSigninControllerTest, ProbeUrl) {
@@ -347,7 +346,6 @@ TEST_F(NetworkPortalSigninControllerTest, IncognitoDisabledByPolicy) {
   EXPECT_EQ(GetSigninMode(), SigninMode::kIncognitoDisabledByPolicy);
   ShowSignin();
   EXPECT_EQ(controller_->tab_url(), expected_url);
-  EXPECT_FALSE(controller_->incognito());
 }
 
 TEST_F(NetworkPortalSigninControllerTest,
@@ -384,23 +382,11 @@ TEST_F(NetworkPortalSigninControllerTest, GuestLogin) {
 }
 
 TEST_F(NetworkPortalSigninControllerTest, FloatingWorkspaceDialog) {
-  // We need |profile| for this test, so we cannot reuse SimulateLogin().
-  const AccountId test_account_id(
-      AccountId::FromUserEmail("test_user@gmail.com"));
-  Profile* profile =
-      test_profile_manager_.CreateTestingProfile("test_user@gmail.com");
-  user_manager_->AddUser(test_account_id);
-  user_manager_->LoginUser(test_account_id);
-  user_manager_->SwitchActiveUser(test_account_id);
+  SimulateLogin();
 
-  // Set up web ui for testing.
-  auto web_contents_factory_ =
-      std::make_unique<content::TestWebContentsFactory>();
-  auto test_web_ui_ = std::make_unique<content::TestWebUI>();
-  test_web_ui_->set_web_contents(
-      web_contents_factory_->CreateWebContents(profile));
-  auto ui = std::make_unique<FloatingWorkspaceUI>(test_web_ui_.get());
-  test_web_ui_->SetController(std::move(ui));
+  content::ScopedWebUIConfigRegistration scoped_fws_ui_config(
+      std::make_unique<ash::FloatingWorkspaceUIConfig>(
+          TestingBrowserProcess::GetGlobal()->local_state()));
 
   ash::FloatingWorkspaceDialog::ShowNetworkScreen();
   EXPECT_EQ(GetSigninMode(), SigninMode::kFloatingWorkspaceDialog);

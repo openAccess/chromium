@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Неправильный пароль</translation>
 <translation id="5059127710849015030">Непальский, транслитерация</translation>
 <translation id="5068919226082848014">Пицца</translation>
+<translation id="5075336522277785691">Расширение "<ph name="EXTENSION_NAME" />" задало правила переопределения прокси-сервера</translation>
 <translation id="5081517858322016911">Будут удалены файлы общим объемом <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158">Перемещение объектов (<ph name="NUMBER_OF_ITEMS" />) в папку "<ph name="FOLDER_NAME" />"…</translation>
 <translation id="509429900233858213">Произошла ошибка.</translation>
-<translation id="5102922915594634436">Настроить синхронизированные папки</translation>
 <translation id="5109254780565519649">Произошла ошибка. Возможно, не все объекты были восстановлены.</translation>
 <translation id="5110329002213341433">Английский (Канада)</translation>
 <translation id="5119780910075847424">Синхронизация приостановлена</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">Хинди</translation>
 <translation id="7665680517722058469">Введите другой запрос.</translation>
 <translation id="7689532716264131859">Несколько объектов (<ph name="NUMBER_OF_ITEMS" />) перемещены в корзину</translation>
-<translation id="7693909743393669729">При форматировании диска все хранящиеся на нем данные и созданные разделы (включая скрытые) будут удалены. Это действие нельзя отменить.</translation>
 <translation id="7695430100978772476">Не удалось отформатировать внешнее хранилище "<ph name="DRIVE_NAME" />".</translation>
 <translation id="76959938259365003">Не удалось очистить корзину.</translation>
 <translation id="7705251383879779343">Скопировано: <ph name="FILE_NAME" />.</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">США (Workman, международная)</translation>
 <translation id="7903984238293908205">Катакана</translation>
 <translation id="7908378463497120834">Не удалось добавить один или несколько разделов внешнего накопителя.</translation>
-<translation id="7908793776359722643">При форматировании раздела все хранящиеся в нем данные будут удалены. Это действие нельзя отменить.</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">Файлы из раздела "Мой диск" будут автоматически синхронизироваться с Chromebook, чтобы у вас был доступ к ним без подключения к интернету.</translation>
 <translation id="7925247922861151263">Сбой при проверке AAA</translation>

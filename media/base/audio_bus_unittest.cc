@@ -24,6 +24,7 @@
 #include "media/base/audio_sample_types.h"
 #include "media/base/channel_layout.h"
 #include "media/base/fake_audio_render_callback.h"
+#include "media/base/limits.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace media {
@@ -223,39 +224,6 @@ TEST_F(AudioBusTest, AllChannels) {
   EXPECT_EQ(current_channel, kDefaultChannels);
 }
 
-TEST_F(AudioBusTest, AllChannelsSubspan) {
-  AllocateDataPerChannel();
-
-  std::unique_ptr<AudioBus> bus = AudioBus::CreateWrapper(kDefaultChannels);
-  bus->set_frames(kFrameCount);
-  AudioBus::ChannelVector channels;
-  int value = 1;
-  for (AlignedFloatArray& data : data_) {
-    AudioBus::Channel channel(data);
-
-    // Fill each sample with a different value.
-    for (float& sample : channel) {
-      sample = value++;
-    }
-
-    channels.push_back(channel);
-  }
-
-  bus->SetAllChannels(channels);
-
-  // Verify looping through `AllChannelsSubspan()` is equivalent to getting each
-  // channel individually and applying `subspan()` to them.
-  int current_channel = 0;
-  constexpr size_t kOffset = 3;
-  constexpr size_t kCount = 25;
-  for (auto channel : bus->AllChannelsSubspan(kOffset, kCount)) {
-    EXPECT_EQ(channel,
-              bus->channel(current_channel++).subspan(kOffset, kCount));
-  }
-
-  EXPECT_EQ(current_channel, kDefaultChannels);
-}
-
 // Verify an AudioBus created via wrapping a memory block works as advertised.
 TEST_F(AudioBusTest, WrapMemory) {
   auto verify_wrapped_memory = [&](bool use_byte_span) {
@@ -410,23 +378,23 @@ TEST_F(AudioBusTest, Zero) {
 static constexpr size_t kFrames = 5;
 static constexpr size_t kChannels = 2;
 static constexpr size_t kTotalFrames = kFrames * kChannels;
-static const std::array<uint8_t, kTotalFrames> kTestVectorUint8 = {
+static constexpr std::array<uint8_t, kTotalFrames> kTestVectorUint8 = {
     0,         -INT8_MIN,          UINT8_MAX,
     0,         INT8_MAX / 2 + 128, INT8_MIN / 2 + 128,
     -INT8_MIN, UINT8_MAX,          -INT8_MIN,
     -INT8_MIN};
-static const std::array<int16_t, kTotalFrames> kTestVectorInt16 = {
+static constexpr std::array<int16_t, kTotalFrames> kTestVectorInt16 = {
     INT16_MIN,     0, INT16_MAX, INT16_MIN, INT16_MAX / 2,
     INT16_MIN / 2, 0, INT16_MAX, 0,         0};
-static const std::array<int32_t, kTotalFrames> kTestVectorInt32 = {
+static constexpr std::array<int32_t, kTotalFrames> kTestVectorInt32 = {
     INT32_MIN,     0, INT32_MAX, INT32_MIN, INT32_MAX / 2,
     INT32_MIN / 2, 0, INT32_MAX, 0,         0};
-static const std::array<float, kTotalFrames> kTestVectorFloat32 = {
+static constexpr std::array<float, kTotalFrames> kTestVectorFloat32 = {
     -1.0f, 0.0f, 1.0f, -1.0f, 0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f};
 
 // This is based on kTestVectorFloat32, but has some of the values outside of
 // sanity.
-static const std::array<float, kTotalFrames> kTestVectorFloat32Invalid = {
+static constexpr std::array<float, kTotalFrames> kTestVectorFloat32Invalid = {
     -5.0f,
     0.0f,
     5.0f,
@@ -438,11 +406,11 @@ static const std::array<float, kTotalFrames> kTestVectorFloat32Invalid = {
     std::numeric_limits<float>::signaling_NaN(),
     std::numeric_limits<float>::quiet_NaN()};
 
-static const std::array<float, kTotalFrames> kTestVectorFloat32Sanitized = {
+static constexpr std::array<float, kTotalFrames> kTestVectorFloat32Sanitized = {
     -1.0f, 0.0f, 1.0f, -1.0f, 0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f};
 
 // Expected results.
-static const auto kExpectedPlanarData =
+static constexpr auto kExpectedPlanarData =
     std::to_array<std::array<const float, kFrames>>(
         {{-1.0f, 1.0f, 0.5f, 0.0f, 0.0f}, {0.0f, -1.0f, -0.5f, 1.0f, 0.0f}});
 
@@ -816,7 +784,7 @@ TEST_F(AudioBusTest, Scale) {
 }
 
 TEST_F(AudioBusTest, Bitstream) {
-  static const size_t kDataSize = kFrameCount / 2;
+  static constexpr size_t kDataSize = kFrameCount / 2;
   std::unique_ptr<AudioBus> bus = AudioBus::Create(1, kFrameCount);
 
   EXPECT_FALSE(bus->is_bitstream_format());
@@ -837,6 +805,61 @@ TEST_F(AudioBusTest, Bitstream) {
   bus->Zero();
   EXPECT_EQ(0u, bus->bitstream_data().size());
   EXPECT_EQ(0, bus->GetBitstreamFrames());
+}
+
+TEST_F(AudioBusTest, TryCreate) {
+  // Test valid creation.
+  auto bus = AudioBus::TryCreate(2, 512);
+  ASSERT_TRUE(bus);
+  EXPECT_EQ(2, bus->channels());
+  EXPECT_EQ(512, bus->frames());
+  VerifyReadWriteAndAlignment(bus.get());
+
+  // Test creation with AudioParameters.
+  AudioParameters params(AudioParameters::AUDIO_PCM_LINEAR,
+                         ChannelLayoutConfig::Stereo(), 48000, 512);
+  auto params_bus = AudioBus::TryCreate(params);
+  ASSERT_TRUE(params_bus);
+  EXPECT_EQ(2, params_bus->channels());
+  EXPECT_EQ(512, params_bus->frames());
+  VerifyReadWriteAndAlignment(params_bus.get());
+
+  // Test copy and scale operations on TryCreate bus.
+  auto dest_bus = AudioBus::TryCreate(2, 512);
+  ASSERT_TRUE(dest_bus);
+  CopyTest(bus.get(), dest_bus.get());
+
+  // Test max channels.
+  auto max_channels_bus = AudioBus::TryCreate(limits::kMaxChannels, 128);
+  ASSERT_TRUE(max_channels_bus);
+  EXPECT_EQ(limits::kMaxChannels, max_channels_bus->channels());
+  EXPECT_EQ(128, max_channels_bus->frames());
+
+  // Test invalid channel counts.
+  EXPECT_FALSE(AudioBus::TryCreate(0, 512));
+  EXPECT_FALSE(AudioBus::TryCreate(-1, 512));
+  EXPECT_FALSE(AudioBus::TryCreate(limits::kMaxChannels + 1, 512));
+
+  // Test invalid frame counts.
+  EXPECT_FALSE(AudioBus::TryCreate(2, 0));
+  EXPECT_FALSE(AudioBus::TryCreate(2, -1));
+
+  // Test invalid AudioParameters.
+  AudioParameters invalid_params;
+  EXPECT_FALSE(AudioBus::TryCreate(invalid_params));
+
+  // Test bitstream AudioParameters (not supported by TryCreate).
+  AudioParameters bitstream_params(AudioParameters::AUDIO_BITSTREAM_AC3,
+                                   ChannelLayoutConfig::Stereo(), 48000, 512);
+  EXPECT_FALSE(AudioBus::TryCreate(bitstream_params));
+
+#if defined(ARCH_CPU_32_BITS)
+  // Test arithmetic overflow on 32-bit platforms where
+  // channels * frames * sizeof(float) overflows uint32_t.
+  EXPECT_FALSE(AudioBus::TryCreate(2, std::numeric_limits<int>::max()));
+  EXPECT_FALSE(AudioBus::TryCreate(limits::kMaxChannels,
+                                   std::numeric_limits<int>::max() / 2));
+#endif
 }
 
 }  // namespace media

@@ -14,9 +14,9 @@
 #include "ash/app_list/views/app_list_folder_view.h"
 #include "ash/public/cpp/app_list/app_list_config.h"
 #include "ash/public/cpp/app_list/app_list_features.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
+#include "ash/style/style_util.h"
 #include "ash/style/system_textfield.h"
 #include "ash/style/system_textfield_controller.h"
 #include "base/memory/raw_ptr.h"
@@ -76,7 +76,7 @@ SkColor GetFolderBackgroundColor(bool is_active) {
   }
 
   const std::pair<SkColor, float> base_color_and_opacity =
-      ash::ColorProvider::Get()->GetInkDropBaseColorAndOpacity();
+      StyleUtil::GetInkDropBaseColorAndOpacity();
 
   return SkColorSetA(base_color_and_opacity.first,
                      base_color_and_opacity.second * 255);
@@ -119,9 +119,6 @@ class FolderHeaderView::FolderNameView : public views::Textfield,
     Textfield::OnThemeChanged();
 
     const bool is_active = has_mouse_already_entered_ || HasFocus();
-    SetBackground(views::CreateRoundedRectBackground(
-        GetFolderBackgroundColor(is_active), kFolderNameBorderRadius,
-        kFolderNameBorderThickness));
 
     SetPlaceholderTextColorId(kColorAshTextColorSecondary);
     SetTextColorId(kColorAshTextColorPrimary);
@@ -243,7 +240,9 @@ class FolderHeaderView::FolderNameView : public views::Textfield,
 
  private:
   void UpdateBackgroundColor(bool is_active) {
-    background()->SetColor(GetFolderBackgroundColor(is_active));
+    SetBackground(views::CreateRoundedRectBackground(
+        GetFolderBackgroundColor(is_active), kFolderNameBorderRadius,
+        kFolderNameBorderThickness));
     SchedulePaint();
   }
 

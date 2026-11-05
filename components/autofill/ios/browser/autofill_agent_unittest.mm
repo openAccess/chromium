@@ -6,12 +6,14 @@
 
 #import <optional>
 #import <string>
+#import <string_view>
 #import <variant>
 
 #import "base/apple/bundle_locations.h"
 #import "base/functional/callback_helpers.h"
 #import "base/json/json_writer.h"
 #import "base/memory/raw_ptr.h"
+#import "base/memory/scoped_refptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/strings/strcat.h"
 #import "base/strings/string_number_conversions.h"
@@ -50,6 +52,7 @@
 #import "components/autofill/ios/common/features.h"
 #import "components/autofill/ios/common/field_data_manager_factory_ios.h"
 #import "components/autofill/ios/form_util/form_handlers_java_script_feature.h"
+#import "components/feature_engagement/public/feature_constants.h"
 #import "components/prefs/pref_service.h"
 #import "ios/web/public/test/fakes/fake_browser_state.h"
 #import "ios/web/public/test/fakes/fake_web_frame.h"
@@ -66,6 +69,7 @@
 #import "ui/base/resource/resource_bundle.h"
 #import "ui/gfx/image/image_unittest_util.h"
 #import "url/gurl.h"
+#import "url/origin.h"
 
 using autofill::AutofillJavaScriptFeature;
 using autofill::FieldDataManager;
@@ -83,6 +87,32 @@ using autofill::AutofillDriverIOS;
 using autofill::AutofillDriverIOSFactory;
 
 constexpr char kTestFrameId[] = "11111111111111111111111111111111";
+
+// Name of the form queried by the suggestion availability tests.
+constexpr char kTestFormName[] = "form";
+// Origin of the fake main frame, which extracted forms must match.
+constexpr char kTestFrameOrigin[] = "https://example.com";
+// JavaScript function that extracts the forms of a frame.
+constexpr char kExtractFormsFunction[] = "autofill.extractForms";
+// Payload returned by `kExtractFormsFunction` that isn't valid JSON, which
+// makes form extraction yield `std::nullopt`.
+constexpr char kInvalidExtractedFormsJson[] = "not json";
+
+// Returns the JSON payload `kExtractFormsFunction` returns when the main frame
+// contains `form_count` field-less forms, all named `kTestFormName`.
+std::string ExtractedFormsJson(size_t form_count) {
+  base::ListValue forms;
+  for (size_t i = 0; i < form_count; ++i) {
+    base::DictValue form;
+    form.Set("name", kTestFormName);
+    form.Set("origin", kTestFrameOrigin);
+    form.Set("host_frame", kTestFrameId);
+    form.Set("renderer_id", base::NumberToString(i + 1));
+    form.Set("fields", base::ListValue());
+    forms.Append(std::move(form));
+  }
+  return base::WriteJson(forms).value_or("");
+}
 
 // Returns the minimal FormData content for testing filling.
 std::vector<autofill::FormFieldData::FillData>
@@ -217,6 +247,35 @@ class AutofillAgentTest : public web::WebTest {
         web::FakeWebFrame::CreateChildWebFrame();
     frame->set_browser_state(GetBrowserState());
     return frame;
+  }
+
+  // Calls `checkIfSuggestionsAvailableForForm:` for a user-initiated focus on
+  // a field of `kTestFormName` in the main frame, while form extraction in that
+  // frame returns `extracted_forms_json`, which must outlive the query.
+  // `completion_callback` receives the value the completion is invoked with.
+  void CheckIfSuggestionsAvailableWithExtractedForms(
+      base::Value* extracted_forms_json,
+      base::OnceCallback<void(BOOL)> completion_callback) {
+    fake_main_frame_->AddJsResultForFunctionCall(extracted_forms_json,
+                                                 kExtractFormsFunction);
+
+    FormSuggestionProviderQuery* form_query =
+        [[FormSuggestionProviderQuery alloc]
+            initWithFormName:base::SysUTF8ToNSString(kTestFormName)
+              formRendererID:FormRendererId(1)
+             fieldIdentifier:@"address"
+             fieldRendererID:FieldRendererId(2)
+                   fieldType:FieldType::kText
+                        type:ActivityType::kFocus
+                  typedValue:@""
+                     frameID:base::SysUTF8ToNSString(kTestFrameId)
+                onlyPassword:NO];
+    [autofill_agent_
+        checkIfSuggestionsAvailableForForm:form_query
+                            hasUserGesture:YES
+                                  webState:&fake_web_state_
+                         completionHandler:base::CallbackToBlock(
+                                               std::move(completion_callback))];
   }
 
   // The prefs_ must outlive the fake_web_state_ and the autofill_agent_,
@@ -611,6 +670,130 @@ TEST_F(AutofillAgentTest, CheckIfSuggestionsAvailable_ContentEditableDisabled) {
   web::test::WaitForBackgroundTasks();
 }
 
+// Tests that `checkIfSuggestionsAvailableForForm:` invokes its completion with
+// `NO` when no form named like the queried one is extracted, so that callers
+// querying suggestion availability don't stall.
+TEST_F(AutofillAgentTest, CheckIfSuggestionsAvailable_NoFormExtracted) {
+  base::Value extracted_forms(ExtractedFormsJson(/*form_count=*/0));
+  base::test::TestFuture<BOOL> future;
+
+  CheckIfSuggestionsAvailableWithExtractedForms(&extracted_forms,
+                                                future.GetCallback());
+
+  ASSERT_TRUE(future.Wait()) << "The completion was never invoked.";
+  EXPECT_FALSE(future.Get());
+}
+
+// Tests that `checkIfSuggestionsAvailableForForm:` invokes its completion with
+// `NO` when several forms share the queried form name, so that callers querying
+// suggestion availability don't stall.
+TEST_F(AutofillAgentTest, CheckIfSuggestionsAvailable_MultipleFormsExtracted) {
+  constexpr size_t kAmbiguousFormCount = 2;
+  base::Value extracted_forms(ExtractedFormsJson(kAmbiguousFormCount));
+
+  // Precondition: the payload yields several valid forms named like the
+  // queried one, rather than being discarded as invalid.
+  const GURL frame_url = fake_web_state_.GetLastCommittedURL();
+  const url::Origin frame_origin = fake_main_frame_->GetSecurityOrigin();
+  const std::u16string form_name =
+      base::UTF8ToUTF16(std::string_view(kTestFormName));
+  scoped_refptr<FieldDataManager> field_data_manager =
+      base::MakeRefCounted<FieldDataManager>();
+  std::optional<std::vector<autofill::FormData>> parsed_forms =
+      autofill::ExtractFormsData(
+          base::SysUTF8ToNSString(extracted_forms.GetString()), form_name,
+          frame_url, frame_origin, frame_url, *field_data_manager,
+          kTestFrameId);
+  ASSERT_TRUE(parsed_forms);
+  ASSERT_EQ(kAmbiguousFormCount, parsed_forms->size());
+
+  base::test::TestFuture<BOOL> future;
+  CheckIfSuggestionsAvailableWithExtractedForms(&extracted_forms,
+                                                future.GetCallback());
+
+  ASSERT_TRUE(future.Wait()) << "The completion was never invoked.";
+  EXPECT_FALSE(future.Get());
+}
+
+// Tests that `checkIfSuggestionsAvailableForForm:` invokes its completion with
+// `NO` when form extraction fails, so that callers querying suggestion
+// availability don't stall.
+TEST_F(AutofillAgentTest, CheckIfSuggestionsAvailable_FormExtractionFailed) {
+  base::Value extracted_forms(kInvalidExtractedFormsJson);
+  base::test::TestFuture<BOOL> future;
+
+  CheckIfSuggestionsAvailableWithExtractedForms(&extracted_forms,
+                                                future.GetCallback());
+
+  ASSERT_TRUE(future.Wait()) << "The completion was never invoked.";
+  EXPECT_FALSE(future.Get());
+}
+
+// Tests that an in-flight suggestions query is preserved and fulfilled when a
+// subsequent query completes with `NO` through the fallback branch.
+TEST_F(AutofillAgentTest,
+       CheckIfSuggestionsAvailable_PriorInFlightQueryPreserved) {
+  autofill::FormFieldData field;
+  field.set_form_control_type(autofill::FormControlType::kInputText);
+  field.set_name(u"address");
+  field.set_renderer_id(FieldRendererId(2));
+  field.set_is_focusable(true);
+
+  web::WebFrame* main_frame = fake_web_frames_manager_->GetMainWebFrame();
+  ASSERT_NE(nullptr, main_frame);
+  AutofillDriverIOS* main_frame_driver =
+      AutofillDriverIOS::FromWebStateAndWebFrame(&fake_web_state_, main_frame);
+  ASSERT_NE(nullptr, main_frame_driver);
+  field.set_host_frame(main_frame_driver->GetFrameToken());
+
+  autofill::FormData form;
+  form.set_host_frame(main_frame_driver->GetFrameToken());
+  form.set_renderer_id(autofill::FormRendererId(1));
+  field.set_host_form_id(form.renderer_id());
+  form.set_fields({field});
+  main_frame_driver->FormsSeen({form}, {});
+
+  __block BOOL first_completion_called = NO;
+  __block BOOL first_completion_success = NO;
+
+  // Issue first query via `queryAutofillForForm:`, which puts it in flight.
+  [autofill_agent_
+      queryAutofillForForm:form
+           fieldIdentifier:field.renderer_id()
+                      type:autofill::FormActivityParams::ActivityType::kFocus
+                typedValue:@""
+                     frame:fake_web_frames_manager_->GetMainWebFrame()
+                               ->AsWeakPtr()
+                  webState:fake_web_state_.GetWeakPtr()
+         completionHandler:^(BOOL success) {
+           first_completion_called = YES;
+           first_completion_success = success;
+         }];
+
+  EXPECT_FALSE(first_completion_called);
+
+  // Issue a second query that fails form extraction, invoking its completion
+  // with `NO`.
+  base::Value extracted_forms(ExtractedFormsJson(/*form_count=*/0));
+  base::test::TestFuture<BOOL> second_future;
+  CheckIfSuggestionsAvailableWithExtractedForms(&extracted_forms,
+                                                second_future.GetCallback());
+
+  ASSERT_TRUE(second_future.Wait()) << "The completion was never invoked.";
+  EXPECT_FALSE(second_future.Get());
+
+  // The first query must NOT have been cancelled by the second failed query.
+  EXPECT_FALSE(first_completion_called);
+
+  // When suggestions arrive, the first completion handler is fulfilled.
+  [autofill_agent_ onSuggestionsReady:@[
+    SimpleFormSuggestion(u"", autofill::SuggestionType::kAutocompleteEntry)
+  ]];
+
+  EXPECT_TRUE(first_completion_called);
+  EXPECT_TRUE(first_completion_success);
+}
+
 // Tests that issuing a second suggestion query while one is already in-flight
 // cleanly invokes the first completion handler with NO, and the second
 // completion handler is fulfilled when suggestions are ready.
@@ -752,7 +935,9 @@ TEST_F(AutofillAgentTest, showAutofillPopup_ShowVirtualCards) {
 
   // Make credit card suggestion.
   [autofill_agent_ showAutofillPopup:autofillSuggestions
-                  suggestionDelegate:mock_delegate.GetWeakPtr()];
+                  suggestionDelegate:mock_delegate.GetWeakPtr()
+                              formId:{}
+                             fieldId:{}];
   [autofill_agent_ retrieveSuggestionsForForm:nil
                                      webState:&fake_web_state_
                             completionHandler:completionHandler];
@@ -811,7 +996,9 @@ TEST_F(AutofillAgentTest, showAutofillPopup_EmptyIconInCreditCardSuggestion) {
 
   // Make credit card suggestion.
   [autofill_agent_ showAutofillPopup:autofillSuggestions
-                  suggestionDelegate:mock_delegate.GetWeakPtr()];
+                  suggestionDelegate:mock_delegate.GetWeakPtr()
+                              formId:{}
+                             fieldId:{}];
   [autofill_agent_ retrieveSuggestionsForForm:nil
                                      webState:&fake_web_state_
                             completionHandler:completionHandler];
@@ -853,7 +1040,9 @@ TEST_F(AutofillAgentTest,
 
   // When the custom icon is not present, the default icon should be used.
   [autofill_agent_ showAutofillPopup:autofillSuggestions
-                  suggestionDelegate:mock_delegate.GetWeakPtr()];
+                  suggestionDelegate:mock_delegate.GetWeakPtr()
+                              formId:{}
+                             fieldId:{}];
   [autofill_agent_ retrieveSuggestionsForForm:nil
                                      webState:&fake_web_state_
                             completionHandler:completionHandler];
@@ -863,7 +1052,9 @@ TEST_F(AutofillAgentTest,
   // Now set a custom icon, which should override the default.
   autofillSuggestions[0].custom_icon = custom_icon;
   [autofill_agent_ showAutofillPopup:autofillSuggestions
-                  suggestionDelegate:mock_delegate.GetWeakPtr()];
+                  suggestionDelegate:mock_delegate.GetWeakPtr()
+                              formId:{}
+                             fieldId:{}];
   [autofill_agent_ retrieveSuggestionsForForm:nil
                                      webState:&fake_web_state_
                             completionHandler:completionHandler];
@@ -890,7 +1081,9 @@ TEST_F(AutofillAgentTest, onSuggestionsReady_Undo) {
       u"", u"", autofill::Suggestion::Icon::kUndo, SuggestionType::kUndo));
   [autofill_agent_
        showAutofillPopup:autofillSuggestions
-      suggestionDelegate:base::WeakPtr<autofill::AutofillSuggestionDelegate>()];
+      suggestionDelegate:base::WeakPtr<autofill::AutofillSuggestionDelegate>()
+                  formId:{}
+                 fieldId:{}];
 
   // Retrieves the suggestions.
   auto completionHandler = ^(NSArray<FormSuggestion*>* suggestions,
@@ -947,7 +1140,9 @@ TEST_F(AutofillAgentTest, onSuggestionsReady_UndoWithGPay) {
       u"", u"", autofill::Suggestion::Icon::kUndo, SuggestionType::kUndo));
   [autofill_agent_
        showAutofillPopup:autofillSuggestions
-      suggestionDelegate:base::WeakPtr<autofill::AutofillSuggestionDelegate>()];
+      suggestionDelegate:base::WeakPtr<autofill::AutofillSuggestionDelegate>()
+                  formId:{}
+                 fieldId:{}];
 
   // Retrieves the suggestions.
   auto completionHandler = ^(NSArray<FormSuggestion*>* suggestions,
@@ -982,6 +1177,56 @@ TEST_F(AutofillAgentTest, onSuggestionsReady_UndoWithGPay) {
             completion_handler_suggestions[1].type);
   EXPECT_EQ(autofill::SuggestionType::kCreditCardEntry,
             completion_handler_suggestions[2].type);
+}
+
+// Tests that `kIPH_AutofillAmbientAutofillSpiiDisclaimer` on an Autofill AI
+// suggestion maps to
+// `SuggestionFeatureForIPH::kAutofillAmbientAutofillSpiiDisclaimer`.
+TEST_F(AutofillAgentTest,
+       onSuggestionsReady_AutofillAmbientAutofillSpiiDisclaimerIPH) {
+  __block NSArray<FormSuggestion*>* completion_handler_suggestions = nil;
+  __block BOOL completion_handler_called = NO;
+
+  autofill::Suggestion suggestion(u"1234", u"",
+                                  autofill::Suggestion::Icon::kNoIcon,
+                                  autofill::SuggestionType::kFillAutofillAi);
+  suggestion.iph_metadata = autofill::Suggestion::IPHMetadata(
+      &feature_engagement::kIPH_AutofillAmbientAutofillSpiiDisclaimer);
+
+  [autofill_agent_
+       showAutofillPopup:{suggestion}
+      suggestionDelegate:base::WeakPtr<autofill::AutofillSuggestionDelegate>()
+                  formId:{}
+                 fieldId:{}];
+
+  FormSuggestionProviderQuery* form_query = [[FormSuggestionProviderQuery alloc]
+      initWithFormName:@"form"
+        formRendererID:FormRendererId(1)
+       fieldIdentifier:@"passport"
+       fieldRendererID:FieldRendererId(2)
+             fieldType:FieldType::kText
+                  type:ActivityType::kFocus
+            typedValue:@""
+               frameID:base::SysUTF8ToNSString(kTestFrameId)
+          onlyPassword:NO];
+  [autofill_agent_
+      retrieveSuggestionsForForm:form_query
+                        webState:&fake_web_state_
+               completionHandler:^(NSArray<FormSuggestion*>* suggestions,
+                                   id<FormSuggestionProvider> delegate) {
+                 completion_handler_suggestions = [suggestions copy];
+                 completion_handler_called = YES;
+               }];
+  fake_web_state_.WasShown();
+
+  ASSERT_TRUE(
+      WaitUntilConditionOrTimeout(TestTimeouts::action_timeout(), ^bool() {
+        return completion_handler_called;
+      }));
+
+  ASSERT_EQ(1U, completion_handler_suggestions.count);
+  EXPECT_EQ(SuggestionFeatureForIPH::kAutofillAmbientAutofillSpiiDisclaimer,
+            completion_handler_suggestions[0].featureForIPH);
 }
 
 // Test that every frames are processed whatever is the order of pageloading
@@ -1235,11 +1480,13 @@ TEST_F(AutofillAgentTest, DidSelectSuggestion_AutocompleteEntry) {
       DidAcceptSuggestion(
           ::testing::Field(&autofill::Suggestion::type,
                            autofill::SuggestionType::kAutocompleteEntry),
-          ::testing::_))
+          ::testing::_, ::testing::_, ::testing::_))
       .WillOnce(
           [&](const autofill::Suggestion& suggestion,
               const autofill::AutofillSuggestionDelegate::SuggestionMetadata&
-                  metadata) {
+                  metadata,
+              const autofill::FormGlobalId& form_id,
+              const autofill::FieldGlobalId& field_id) {
             AutofillDriverIOS* driver =
                 AutofillDriverIOS::FromWebStateAndWebFrame(&fake_web_state_,
                                                            fake_main_frame_);
@@ -1256,7 +1503,9 @@ TEST_F(AutofillAgentTest, DidSelectSuggestion_AutocompleteEntry) {
   suggestions.emplace_back(field1_value,
                            autofill::SuggestionType::kAutocompleteEntry);
   [autofill_agent_ showAutofillPopup:suggestions
-                  suggestionDelegate:mock_delegate.GetWeakPtr()];
+                  suggestionDelegate:mock_delegate.GetWeakPtr()
+                              formId:{}
+                             fieldId:{}];
 
   // Select suggestion to trigger field filling.
   __block BOOL completion_handler_called = NO;
@@ -1337,13 +1586,15 @@ TEST_F(AutofillAgentTest, DidSelectSuggestion_Undo) {
       mock_delegate,
       DidAcceptSuggestion(::testing::Field(&autofill::Suggestion::type,
                                            autofill::SuggestionType::kUndo),
-                          ::testing::_));
+                          ::testing::_, ::testing::_, ::testing::_));
 
   // Show the popup to set the delegate used by didSelectSuggestion.
   std::vector<autofill::Suggestion> suggestions;
   suggestions.emplace_back(u"", autofill::SuggestionType::kUndo);
   [autofill_agent_ showAutofillPopup:suggestions
-                  suggestionDelegate:mock_delegate.GetWeakPtr()];
+                  suggestionDelegate:mock_delegate.GetWeakPtr()
+                              formId:{}
+                             fieldId:{}];
 
   // Select suggestion to trigger undo.
   FormRendererId form_id(1);
@@ -1367,8 +1618,14 @@ TEST_F(AutofillAgentTest, DidSelectSuggestion_AutocompleteAtMemoryButton) {
   id delegate_mock = OCMProtocolMock(@protocol(AutofillAgentDelegate));
   autofill_agent_.delegate = delegate_mock;
 
-  // Expect `showAtMemory` to be called.
-  OCMExpect([delegate_mock showAtMemory]);
+  // Expect `showAtMemoryForField:` to be called.
+  autofill::AutofillDriverIOS* driver =
+      autofill::AutofillDriverIOS::FromWebStateAndWebFrame(&fake_web_state_,
+                                                           fake_main_frame_);
+  ASSERT_TRUE(driver);
+  autofill::FieldGlobalId expected_field_id(driver->GetFrameToken(),
+                                            FieldRendererId(2));
+  OCMExpect([delegate_mock showAtMemoryForField:expected_field_id]);
 
   // Select suggestion to trigger AtMemory.
   __block BOOL completion_handler_called = NO;
@@ -1407,7 +1664,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(testing::Field(&autofill::Suggestion::payload,
                                            autofill::Suggestion::Payload()),
-                            testing::_));
+                            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry,
@@ -1432,7 +1689,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(
             testing::Field(&autofill::Suggestion::payload, expected_payload),
-            testing::_));
+            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry, expected_payload,
@@ -1457,7 +1714,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(
             testing::Field(&autofill::Suggestion::payload, expected_payload),
-            testing::_));
+            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry, expected_payload,
@@ -1483,7 +1740,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(
             testing::Field(&autofill::Suggestion::payload, expected_payload),
-            testing::_));
+            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry, expected_payload,
@@ -1509,7 +1766,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(
             testing::Field(&autofill::Suggestion::payload, expected_payload),
-            testing::_));
+            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry, expected_payload,
@@ -1534,7 +1791,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(
             testing::Field(&autofill::Suggestion::payload, expected_payload),
-            testing::_));
+            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry, expected_payload,
@@ -1567,7 +1824,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(testing::Field(&autofill::Suggestion::payload,
                                            autofill::Suggestion::Payload()),
-                            testing::_));
+                            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry,
@@ -1592,7 +1849,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(
             testing::Field(&autofill::Suggestion::payload, expected_payload),
-            testing::_));
+            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry, expected_payload,
@@ -1618,7 +1875,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(testing::Field(&autofill::Suggestion::payload,
                                            autofill::Suggestion::Payload()),
-                            testing::_));
+                            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry, input_payload,
@@ -1644,7 +1901,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(
             testing::Field(&autofill::Suggestion::payload, expected_payload),
-            testing::_));
+            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry, expected_payload,
@@ -1670,7 +1927,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(testing::Field(&autofill::Suggestion::payload,
                                            autofill::Suggestion::Payload()),
-                            testing::_));
+                            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry, input_payload,
@@ -1695,7 +1952,7 @@ TEST_F(AutofillAgentTest,
         mock_delegate,
         DidAcceptSuggestion(testing::Field(&autofill::Suggestion::payload,
                                            autofill::Suggestion::Payload()),
-                            testing::_));
+                            testing::_, testing::_, testing::_));
 
     FormSuggestion* form_suggestion = FormSuggestionWithPayload(
         u"", autofill::SuggestionType::kCreditCardEntry, input_payload,
@@ -1735,7 +1992,9 @@ TEST_F(AutofillAgentTest, ShowAtMemorySuggestion_AppendedWithSuggestions) {
 
   testing::NiceMock<autofill::MockAutofillSuggestionDelegate> mock_delegate;
   [autofill_agent_ showAutofillPopup:suggestions
-                  suggestionDelegate:mock_delegate.GetWeakPtr()];
+                  suggestionDelegate:mock_delegate.GetWeakPtr()
+                              formId:{}
+                             fieldId:{}];
   [autofill_agent_ retrieveSuggestionsForForm:nil
                                      webState:&fake_web_state_
                             completionHandler:completionHandler];
@@ -1769,10 +2028,188 @@ TEST_F(AutofillAgentTest, ShowAtMemorySuggestion_NotAppendedWhenEmpty) {
 
   testing::NiceMock<autofill::MockAutofillSuggestionDelegate> mock_delegate;
   [autofill_agent_ showAutofillPopup:empty_suggestions
-                  suggestionDelegate:mock_delegate.GetWeakPtr()];
+                  suggestionDelegate:mock_delegate.GetWeakPtr()
+                              formId:{}
+                             fieldId:{}];
   [autofill_agent_ retrieveSuggestionsForForm:nil
                                      webState:&fake_web_state_
                             completionHandler:completionHandler];
   EXPECT_TRUE(completion_called);
   EXPECT_EQ(0U, received_suggestions.count);
+}
+
+// Tests that form_id, field_id, and popup_suggestion_index passed to
+// showAutofillPopup: are stored in FormSuggestionMetadata and forwarded to
+// DidAcceptSuggestion.
+TEST_F(AutofillAgentTest, ShowAutofillPopup_AttachesFormAndFieldIdToMetadata) {
+  std::vector<autofill::Suggestion> suggestions = {
+      autofill::Suggestion(u"test", autofill::SuggestionType::kAddressEntry)};
+  autofill::FormGlobalId form_id(
+      autofill::LocalFrameToken(base::UnguessableToken::Create()),
+      autofill::FormRendererId(123));
+  autofill::FieldGlobalId field_id(
+      autofill::LocalFrameToken(base::UnguessableToken::Create()),
+      autofill::FieldRendererId(456));
+
+  __block std::vector<FormSuggestion*> received_suggestions;
+  auto completionHandler = ^(NSArray<FormSuggestion*>* form_suggestions,
+                             id<FormSuggestionProvider> delegate) {
+    for (FormSuggestion* suggestion in form_suggestions) {
+      received_suggestions.push_back(suggestion);
+    }
+  };
+
+  testing::NiceMock<autofill::MockAutofillSuggestionDelegate> mock_delegate;
+  [autofill_agent_ showAutofillPopup:suggestions
+                  suggestionDelegate:mock_delegate.GetWeakPtr()
+                              formId:form_id
+                             fieldId:field_id];
+  [autofill_agent_ retrieveSuggestionsForForm:nil
+                                     webState:&fake_web_state_
+                            completionHandler:completionHandler];
+
+  ASSERT_EQ(1U, received_suggestions.size());
+  EXPECT_EQ(form_id, received_suggestions[0].metadata.form_id);
+  EXPECT_EQ(field_id, received_suggestions[0].metadata.field_id);
+  EXPECT_EQ(0U, received_suggestions[0].metadata.popup_suggestion_index);
+
+  EXPECT_CALL(
+      mock_delegate,
+      DidAcceptSuggestion(testing::_,
+                          testing::Field(&autofill::AutofillSuggestionDelegate::
+                                             SuggestionMetadata::multi_index,
+                                         testing::ElementsAre(0)),
+                          form_id, field_id));
+  [autofill_agent_ didSelectSuggestion:received_suggestions[0]
+                               atIndex:0
+                                  form:@"form"
+                        formRendererID:FormRendererId(1)
+                       fieldIdentifier:@"field"
+                       fieldRendererID:FieldRendererId(2)
+                               frameID:base::SysUTF8ToNSString(kTestFrameId)
+                     completionHandler:^{
+                     }];
+}
+
+// Tests that reordering suggestions (e.g. prepending Undo to index 0) preserves
+// each suggestion's original BrowserAutofillManager popup vector index in
+// FormSuggestionMetadata and forwards the correct index to DidAcceptSuggestion.
+TEST_F(AutofillAgentTest,
+       ShowAutofillPopup_ReorderedUndoSuggestionPreservesBAMIndex) {
+  std::vector<autofill::Suggestion> suggestions = {
+      autofill::Suggestion(u"Address", autofill::SuggestionType::kAddressEntry),
+      autofill::Suggestion(u"", u"", autofill::Suggestion::Icon::kUndo,
+                           autofill::SuggestionType::kUndo)};
+  autofill::FormGlobalId form_id(
+      autofill::LocalFrameToken(base::UnguessableToken::Create()),
+      autofill::FormRendererId(123));
+  autofill::FieldGlobalId field_id(
+      autofill::LocalFrameToken(base::UnguessableToken::Create()),
+      autofill::FieldRendererId(456));
+
+  __block std::vector<FormSuggestion*> received_suggestions;
+  auto completionHandler = ^(NSArray<FormSuggestion*>* form_suggestions,
+                             id<FormSuggestionProvider> delegate) {
+    for (FormSuggestion* suggestion in form_suggestions) {
+      received_suggestions.push_back(suggestion);
+    }
+  };
+
+  testing::NiceMock<autofill::MockAutofillSuggestionDelegate> mock_delegate;
+  [autofill_agent_ showAutofillPopup:suggestions
+                  suggestionDelegate:mock_delegate.GetWeakPtr()
+                              formId:form_id
+                             fieldId:field_id];
+  [autofill_agent_ retrieveSuggestionsForForm:nil
+                                     webState:&fake_web_state_
+                            completionHandler:completionHandler];
+
+  // Undo is prepended to the UI list at index 0, while Address is at index 1.
+  ASSERT_EQ(2U, received_suggestions.size());
+  EXPECT_EQ(autofill::SuggestionType::kUndo, received_suggestions[0].type);
+  EXPECT_EQ(1U, received_suggestions[0].metadata.popup_suggestion_index);
+  EXPECT_EQ(autofill::SuggestionType::kAddressEntry,
+            received_suggestions[1].type);
+  EXPECT_EQ(0U, received_suggestions[1].metadata.popup_suggestion_index);
+
+  // Selecting Undo at UI index 0 must pass original BAM index 1 to
+  // DidAcceptSuggestion.
+  EXPECT_CALL(
+      mock_delegate,
+      DidAcceptSuggestion(testing::Field(&autofill::Suggestion::type,
+                                         autofill::SuggestionType::kUndo),
+                          testing::Field(&autofill::AutofillSuggestionDelegate::
+                                             SuggestionMetadata::multi_index,
+                                         testing::ElementsAre(1)),
+                          form_id, field_id));
+  [autofill_agent_ didSelectSuggestion:received_suggestions[0]
+                               atIndex:0
+                                  form:@"form"
+                        formRendererID:FormRendererId(1)
+                       fieldIdentifier:@"field"
+                       fieldRendererID:FieldRendererId(2)
+                               frameID:base::SysUTF8ToNSString(kTestFrameId)
+                     completionHandler:^{
+                     }];
+
+  // Selecting Address at UI index 1 must pass original BAM index 0 to
+  // DidAcceptSuggestion.
+  EXPECT_CALL(mock_delegate,
+              DidAcceptSuggestion(
+                  testing::Field(&autofill::Suggestion::type,
+                                 autofill::SuggestionType::kAddressEntry),
+                  testing::Field(&autofill::AutofillSuggestionDelegate::
+                                     SuggestionMetadata::multi_index,
+                                 testing::ElementsAre(0)),
+                  form_id, field_id));
+  [autofill_agent_ didSelectSuggestion:received_suggestions[1]
+                               atIndex:1
+                                  form:@"form"
+                        formRendererID:FormRendererId(1)
+                       fieldIdentifier:@"field"
+                       fieldRendererID:FieldRendererId(2)
+                               frameID:base::SysUTF8ToNSString(kTestFrameId)
+                     completionHandler:^{
+                     }];
+}
+
+// Tests that selecting an unbound suggestion (e.g. from the bottom sheet or
+// manual fill) falls back to the last received delegate, form_id, and field_id,
+// and uses the UI array index when popup_suggestion_index is std::nullopt.
+TEST_F(AutofillAgentTest,
+       DidSelectSuggestion_UnboundSuggestionFallsBackToLastReceivedIds) {
+  std::vector<autofill::Suggestion> suggestions = {autofill::Suggestion(
+      u"test", autofill::SuggestionType::kCreditCardEntry)};
+  autofill::FormGlobalId form_id(
+      autofill::LocalFrameToken(base::UnguessableToken::Create()),
+      autofill::FormRendererId(123));
+  autofill::FieldGlobalId field_id(
+      autofill::LocalFrameToken(base::UnguessableToken::Create()),
+      autofill::FieldRendererId(456));
+
+  testing::NiceMock<autofill::MockAutofillSuggestionDelegate> mock_delegate;
+  [autofill_agent_ showAutofillPopup:suggestions
+                  suggestionDelegate:mock_delegate.GetWeakPtr()
+                              formId:form_id
+                             fieldId:field_id];
+
+  FormSuggestion* unbound_suggestion =
+      SimpleFormSuggestion(u"test", autofill::SuggestionType::kCreditCardEntry);
+  EXPECT_FALSE(unbound_suggestion.metadata.popup_suggestion_index.has_value());
+  EXPECT_CALL(
+      mock_delegate,
+      DidAcceptSuggestion(testing::_,
+                          testing::Field(&autofill::AutofillSuggestionDelegate::
+                                             SuggestionMetadata::multi_index,
+                                         testing::ElementsAre(0)),
+                          form_id, field_id));
+  [autofill_agent_ didSelectSuggestion:unbound_suggestion
+                               atIndex:0
+                                  form:@"form"
+                        formRendererID:FormRendererId(1)
+                       fieldIdentifier:@"field"
+                       fieldRendererID:FieldRendererId(2)
+                               frameID:base::SysUTF8ToNSString(kTestFrameId)
+                     completionHandler:^{
+                     }];
 }

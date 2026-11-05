@@ -16,6 +16,8 @@
 #include "ui/base/base_window.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/widget/widget.h"
 
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kCancelButtonId);
@@ -31,7 +33,7 @@ DevToolsConnectionDialog::DevToolsConnectionDialog(
     BrowserWindowInterface* browser,
     DevToolsConnectionDialog::AcceptCallback callback)
     : browser_(browser), callback_(std::move(callback)) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   if (!browser) {
     RunCallbackAndDie(
         content::DevToolsManagerDelegate::AcceptConnectionResult::kDeny);
@@ -91,7 +93,7 @@ void DevToolsConnectionDialog::OnCancel() {
 void DevToolsConnectionDialog::OnDisable(const ui::Event& event) {
   GURL internal_url("chrome://inspect#remote-debugging");
   NavigateParams params(browser_, internal_url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   Navigate(&params);
   RunCallbackAndDie(
       content::DevToolsManagerDelegate::AcceptConnectionResult::kDeny);

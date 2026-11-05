@@ -31,13 +31,12 @@ import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.LocationBarBackgroundDrawable.HairlineBehavior;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxLayoutMode;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
 import org.chromium.chrome.browser.omnibox.status.StatusCoordinator;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
 import org.chromium.chrome.browser.theme.ThemeUtils;
-import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.base.ViewUtils;
@@ -98,6 +97,7 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
     private final @Px float mModernToolbarBackgroundInnerCornerRadius;
     private final @Px int mPopoverAdditionalWidth;
     private final @Px int mAiChipMarginEnd;
+    private final @Px int mMinTouchTargetSizePx;
     // The holder view dictates our height and width but is otherwise logic-less. It exists to allow
     // us to reparent the LocationBar without needing to explicitly reposition other elements of the
     // toolbar.
@@ -110,10 +110,10 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
     // instead of being applied as holder margins.
     private int mTargetPopoverWidth;
     private int mTargetPopoverLeftOffset;
-    private @BrandedColorScheme int mBrandedColorScheme = BrandedColorScheme.APP_DEFAULT;
     private boolean mShowFocusRing;
     private boolean mIsHovered;
     private boolean mIsGlifActive;
+    private boolean mStartGlifOnNextLayout;
 
     /** Constructor used to inflate from XML. */
     public LocationBarTablet(Context context, AttributeSet attrs) {
@@ -153,6 +153,7 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
                 resources.getDimensionPixelSize(R.dimen.omnibox_suggestion_popover_shift);
         mAiChipMarginEnd =
                 resources.getDimensionPixelSize(R.dimen.location_bar_desktop_popover_margin_end);
+        mMinTouchTargetSizePx = resources.getDimensionPixelSize(R.dimen.min_touch_target_size);
 
         @DrawableRes int highlightRes = R.drawable.modern_toolbar_text_box_background_highlight;
         mHoverDrawable = (LayerDrawable) assumeNonNull(getContext().getDrawable(highlightRes));
@@ -189,7 +190,7 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
                     switch (event.getAction()) {
                         case MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_EXIT:
                             mIsHovered = event.getAction() == MotionEvent.ACTION_HOVER_ENTER;
-                            updateForeground();
+                            updateForegroundAndGlifAnimation();
                             return true;
                         default:
                             return false;
@@ -198,7 +199,17 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
 
         setOnLongClickListener(this);
 
-        mTargets = new View[] {mUrlBar, mDeleteButton};
+        // Extends the touch targets of location bar action buttons when they are smaller than the
+        // minimum touch target size.
+        mTargets =
+                new View[] {
+                    mDeleteButton,
+                    mMicButton,
+                    mLensButton,
+                    mBookmarkButton,
+                    mZoomButton,
+                    mInstallButton,
+                };
         mScreenWidthDp = getResources().getConfiguration().screenWidthDp;
     }
 
@@ -241,12 +252,16 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
             float y = event.getY();
             float dx = distanceToRange(mCachedTargetBounds.left, mCachedTargetBounds.right, x);
             float dy = distanceToRange(mCachedTargetBounds.top, mCachedTargetBounds.bottom, y);
-            float distance = Math.abs(dx) + Math.abs(dy);
+            float maxDx = Math.max(0, mMinTouchTargetSizePx - target.getWidth()) / 2f;
+            float maxDy = Math.max(0, mMinTouchTargetSizePx - target.getHeight()) / 2f;
+            if (Math.abs(dx) > maxDx || Math.abs(dy) > maxDy) continue;
+
+            float distance = (float) Math.hypot(dx, dy);
             if (selectedTarget == null || distance < selectedDistance) {
                 selectedTarget = target;
                 selectedDistance = distance;
-                newX = x + dx;
-                newY = y + dy;
+                newX = x + dx - mCachedTargetBounds.left;
+                newY = y + dy - mCachedTargetBounds.top;
             }
         }
 
@@ -288,6 +303,17 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
             mScreenWidthDp = screenWidthDp;
             mHandler.post(() -> onFuseboxStateChanged(mFuseboxState));
         }
+
+        if (mStartGlifOnNextLayout) {
+            mStartGlifOnNextLayout = false;
+            if (mLayoutMode == FuseboxLayoutMode.SUGGESTIONS_POPOVER
+                    && (mUrlCoordinator == null || !mUrlCoordinator.hasFocus())) {
+                mIsGlifActive = false;
+            }
+            if (mIsGlifActive) {
+                mGlifBorderDrawable.start();
+            }
+        }
     }
 
     @Override
@@ -297,7 +323,7 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
             boolean isUrlFocusChangeInProgress) {
         super.setUrlFocusChangePercent(
                 ntpSearchBoxScrollFraction, urlFocusChangeFraction, isUrlFocusChangeInProgress);
-        updateForeground();
+        updateForegroundAndGlifAnimation();
     }
 
     @Override
@@ -481,37 +507,28 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
             UrlBarCoordinator urlCoordinator,
             StatusCoordinator statusCoordinator,
             LocationBarDataProvider locationBarDataProvider,
-            WindowAndroid windowAndroid) {
+            WindowAndroid windowAndroid,
+            OmniboxResourceProvider resourceProvider) {
         super.initialize(
                 autocompleteCoordinator,
                 urlCoordinator,
                 statusCoordinator,
                 locationBarDataProvider,
-                windowAndroid);
+                windowAndroid,
+                resourceProvider);
         mWindowAndroid = windowAndroid;
     }
 
     @Override
-    /* package */ void updateVisualsForState(@BrandedColorScheme int brandedColorScheme) {
-        super.updateVisualsForState(brandedColorScheme);
+    /* package */ void updateVisualsForState() {
+        super.updateVisualsForState();
 
-        mBrandedColorScheme = brandedColorScheme;
-        Context context = getContext();
-        if (mLayoutMode == FuseboxLayoutMode.SUGGESTIONS_POPOVER) {
-            @ColorInt
-            int popoverColor =
-                    OmniboxResourceProvider.getPopoverSuggestionBackgroundColor(
-                            context, mBrandedColorScheme);
-            mOuterRect.setColor(popoverColor);
-            mInnerRect.setColor(popoverColor);
-        } else {
-            mOuterRect.setColor(
-                    OmniboxResourceProvider.getSuggestionsDropdownBackgroundColor(
-                            context, mBrandedColorScheme));
-            mInnerRect.setColor(
-                    OmniboxResourceProvider.getStandardSuggestionBackgroundColor(
-                            context, mBrandedColorScheme));
-        }
+        mOuterRect.setColor(
+                mResourceProvider.getSuggestionBackgroundColor(
+                        mLayoutMode, /* isDropdownContainer= */ true));
+        mInnerRect.setColor(
+                mResourceProvider.getSuggestionBackgroundColor(
+                        mLayoutMode, /* isDropdownContainer= */ false));
 
         updateBackgroundColor();
     }
@@ -520,11 +537,8 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
         Context context = getContext();
         if (mShowFocusRing) {
             mLocationBarBackground.setBackgroundColor(
-                    OmniboxResourceProvider.getTabletToolbarTextBoxStandbyBackgroundColor(
-                            context, mBrandedColorScheme));
-            @ColorInt
-            int standbyBorderColor =
-                    OmniboxResourceProvider.getColorPrimary(context, mBrandedColorScheme);
+                    mResourceProvider.getTabletToolbarTextBoxStandbyBackgroundColor());
+            @ColorInt int standbyBorderColor = mResourceProvider.getColorPrimary();
             mLocationBarBackground.setStandbyColor(standbyBorderColor);
         } else {
             @ColorInt int color = mLocationBarDataProvider.getPrimaryColor();
@@ -533,7 +547,7 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
                     ThemeUtils.getTextBoxColorForToolbarBackgroundInNonNativePage(
                             context,
                             color,
-                            mBrandedColorScheme == BrandedColorScheme.INCOGNITO,
+                            mResourceProvider.isIncognito(),
                             /* isCustomTab= */ false);
             mLocationBarBackground.setBackgroundColor(textBoxColor);
         }
@@ -572,28 +586,24 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
 
     @Override
     public void onSpecializedFuseboxModeActivated(boolean isSpecializedRequestType) {
+        if (mIsGlifActive == isSpecializedRequestType) return;
         mIsGlifActive = isSpecializedRequestType;
-        updateForeground();
-        if (isSpecializedRequestType) {
-            mGlifBorderDrawable.start();
-        } else {
-            mGlifBorderDrawable.reset();
-        }
+        updateForegroundAndGlifAnimation();
     }
 
     @Override
     void setFuseboxLayoutMode(@FuseboxLayoutMode int layoutMode) {
         super.setFuseboxLayoutMode(layoutMode);
         mLayoutMode = layoutMode;
-        updateForeground();
+        updateForegroundAndGlifAnimation();
         // We don't expect that the layout mode will ever change back after becoming
         // SUGGESTIONS_POPOVER (it depends only on flags set at build time and startup) and thus
         // don't handle that case.
         if (layoutMode == FuseboxLayoutMode.SUGGESTIONS_POPOVER) {
             @ColorInt
             int popoverColor =
-                    OmniboxResourceProvider.getPopoverSuggestionBackgroundColor(
-                            getContext(), mBrandedColorScheme);
+                    mResourceProvider.getSuggestionBackgroundColor(
+                            layoutMode, /* isDropdownContainer= */ false);
             mOuterRect.setColor(popoverColor);
             mInnerRect.setColor(popoverColor);
             mGlifBorderDrawable.setCornerRadius(mOmniboxSuggestionDropdownRoundCornerRadius);
@@ -631,15 +641,20 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
         mLocationBarBackground.setHairlineBehavior(
                 showFocusRing ? HairlineBehavior.SOLID : HairlineBehavior.NONE);
         updateLayoutAndBackground();
-        updateForeground();
+        updateForegroundAndGlifAnimation();
         updateBackgroundColor();
     }
 
-    private void updateForeground() {
+    private void updateForegroundAndGlifAnimation() {
         // Clear any active GLIF border before updating foreground state.
         if (mGlifForegroundTarget != null) {
             mGlifForegroundTarget.setForeground(null);
             mGlifForegroundTarget = null;
+        }
+
+        if (mLayoutMode == FuseboxLayoutMode.SUGGESTIONS_POPOVER
+                && (mUrlCoordinator == null || !mUrlCoordinator.hasFocus())) {
+            mIsGlifActive = false;
         }
 
         if (mIsGlifActive) {
@@ -654,12 +669,22 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
                 setForeground(mGlifBorderDrawable);
                 mGlifForegroundTarget = this;
             }
-        } else if (mIsHovered
-                && (mLayoutMode != FuseboxLayoutMode.SUGGESTIONS_POPOVER
-                        || !mUrlCoordinator.hasFocus())) {
-            setForeground(mHoverDrawable);
+
+            if (!mGlifBorderDrawable.isRunning()) {
+                mStartGlifOnNextLayout = true;
+            }
         } else {
-            setForeground(null);
+            if (mGlifBorderDrawable.isRunning()) {
+                mGlifBorderDrawable.reset();
+            }
+
+            if (mIsHovered
+                    && (mLayoutMode != FuseboxLayoutMode.SUGGESTIONS_POPOVER
+                            || !mUrlCoordinator.hasFocus())) {
+                setForeground(mHoverDrawable);
+            } else {
+                setForeground(null);
+            }
         }
     }
 
@@ -693,10 +718,9 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
         LinearLayout.LayoutParams parentParams =
                 (LinearLayout.LayoutParams) mHolder.getLayoutParams();
         boolean isPopoverMode = mLayoutMode == FuseboxLayoutMode.SUGGESTIONS_POPOVER;
-        boolean isToolbarFuseboxActive =
-                !isPopoverMode
-                        && (mFuseboxState == FuseboxState.COMPACT
-                                || mFuseboxState == FuseboxState.EXPANDED);
+        boolean isFuseboxActive =
+                (mFuseboxState == FuseboxState.COMPACT || mFuseboxState == FuseboxState.EXPANDED);
+        boolean isToolbarFuseboxActive = !isPopoverMode && isFuseboxActive;
         boolean shouldExpandLayout =
                 !mShowFocusRing && (mIsReparentedToPopover || isToolbarFuseboxActive);
         if (shouldExpandLayout) {
@@ -742,14 +766,16 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
             super.setOutlineProvider(mOutlineProvider);
             ViewUtils.setAncestorsShouldClipToPadding(this, true, View.NO_ID);
             ViewUtils.setAncestorsShouldClipChildren(this, true, View.NO_ID);
-            // Put the focused foreground back into its starting state before swapping it out;
-            // without this, it may still display the GLIF animation when we refocus.
-            mGlifBorderDrawable.reset();
-            mIsGlifActive = false;
-            updateForeground();
             // Reset our background to reflect non-zero suggestion count, which is the typical
             // state. Not setting this risks visual glitches when returning to the fusebox.
             setBackground(mLocationBarBackground);
+        }
+
+        // Put the focused foreground back into its starting state before swapping it out;
+        // without this, it may still display the GLIF animation when we refocus.
+        if (!isFuseboxActive) {
+            mIsGlifActive = false;
+            updateForegroundAndGlifAnimation();
         }
 
         adjustBackgroundForSuggestions();
@@ -928,7 +954,7 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
                     bottomRadius, bottomRadius, bottomRadius, bottomRadius // Bottom corners
                 });
         mFocusedPopupDrawable.setLayerInsetRelative(
-                1,
+                mFocusedPopupDrawable.findIndexByLayerId(R.id.focused_popup_inner_bg),
                 mLocationBarTabletFuseboxPopupInset,
                 mLocationBarTabletFuseboxPopupInset,
                 mLocationBarTabletFuseboxPopupInset,
@@ -965,5 +991,21 @@ class LocationBarTablet extends LocationBarLayout implements OnLongClickListener
 
     LayerDrawable getHoverDrawableForTesting() {
         return mHoverDrawable;
+    }
+
+    /**
+     * Returns the width of the container view (screen width minus any sidebars like vertical tabs),
+     * falling back to the window width before the container has been laid out.
+     */
+    private @Px int getAvailableContainerWidth() {
+        if (mContainerView != null && mContainerView.getWidth() > 0) {
+            return mContainerView.getWidth();
+        }
+        return getResources().getDisplayMetrics().widthPixels;
+    }
+
+    @Override
+    /* package */ boolean isTooNarrowForExpandedActivationChip() {
+        return getAvailableContainerWidth() <= mMinWidthForExpandedActivationChip;
     }
 }

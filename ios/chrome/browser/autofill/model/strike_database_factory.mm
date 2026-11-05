@@ -4,37 +4,24 @@
 
 #import "ios/chrome/browser/autofill/model/strike_database_factory.h"
 
+#import <utility>
+
 #import "components/strike_database/strike_database.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 
 namespace autofill {
 
-// static
-strike_database::StrikeDatabase* StrikeDatabaseFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<strike_database::StrikeDatabase>(
-      profile,
-      /*create=*/true);
-}
-
-// static
-StrikeDatabaseFactory* StrikeDatabaseFactory::GetInstance() {
-  static base::NoDestructor<StrikeDatabaseFactory> instance;
-  return instance.get();
-}
-
-StrikeDatabaseFactory::StrikeDatabaseFactory()
-    : ProfileKeyedServiceFactoryIOS("AutofillStrikeDatabase") {}
-
-StrikeDatabaseFactory::~StrikeDatabaseFactory() = default;
+StrikeDatabaseFactory::StrikeDatabaseFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "AutofillStrikeDatabase") {}
 
 std::unique_ptr<KeyedService> StrikeDatabaseFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   leveldb_proto::ProtoDatabaseProvider* db_provider =
-      profile->GetProtoDatabaseProvider();
+      profile.GetProtoDatabaseProvider();
 
   return std::make_unique<strike_database::StrikeDatabase>(
-      db_provider, profile->GetStatePath());
+      db_provider, profile.GetStatePath());
 }
 
 }  // namespace autofill

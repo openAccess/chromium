@@ -29,6 +29,7 @@ import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymen
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.DECLINE_BUTTON_TEXT_ID;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.SETTINGS_LINK_CALLBACK;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.VIDEO_LINK_CALLBACK;
+import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ProgressScreenProperties.SHOW_GPAY_ICON;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SCREEN;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SCREEN_VIEW_MODEL;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SURVIVES_NAVIGATION;
@@ -791,6 +792,7 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
         runOnUiThreadBlocking(
                 () -> {
                     mModel.set(SCREEN, PROGRESS_SCREEN);
+                    mModel.get(SCREEN_VIEW_MODEL).set(SHOW_GPAY_ICON, true);
                     mModel.set(VISIBLE_STATE, SHOWN);
                 });
         BottomSheetTestSupport.waitForOpen(mBottomSheetController);
@@ -799,6 +801,27 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
         assertThat(
                 containsViewOfClass((ViewGroup) mView.getContentView(), ProgressBar.class),
                 is(true));
+        assertThat(
+                mView.getContentView().findViewById(R.id.gpay_icon).getVisibility(),
+                is(View.VISIBLE));
+    }
+
+    @Test
+    @MediumTest
+    public void testProgressScreenShown_GpayIconHidden() {
+        runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(SCREEN, PROGRESS_SCREEN);
+                    mModel.get(SCREEN_VIEW_MODEL).set(SHOW_GPAY_ICON, false);
+                    mModel.set(VISIBLE_STATE, SHOWN);
+                });
+        BottomSheetTestSupport.waitForOpen(mBottomSheetController);
+
+        assertThat(
+                containsViewOfClass((ViewGroup) mView.getContentView(), ProgressBar.class),
+                is(true));
+        assertThat(
+                mView.getContentView().findViewById(R.id.gpay_icon).getVisibility(), is(View.GONE));
     }
 
     @Test
@@ -941,10 +964,17 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
         assertThat(primaryButton.getText(), is("Got it"));
 
         TextView valueProp1 = mView.getContentView().findViewById(R.id.value_prop_message_1);
+        assertThat(
+                valueProp1.getText(), is("Pay with Pix without switching apps in Google Chrome"));
         assertNotNull(valueProp1.getCompoundDrawablesRelative()[0]);
         TextView valueProp2 = mView.getContentView().findViewById(R.id.value_prop_message_2);
+        assertThat(
+                valueProp2.getText(), is("Send Pix to friends and businesses using Google Wallet"));
         assertNotNull(valueProp2.getCompoundDrawablesRelative()[0]);
         TextView valueProp3 = mView.getContentView().findViewById(R.id.value_prop_message_3);
+        assertThat(
+                valueProp3.getText(),
+                is("Enjoy all the convenience and security that you count on from Pix"));
         assertNotNull(valueProp3.getCompoundDrawablesRelative()[0]);
     }
 
@@ -973,6 +1003,7 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                     mModel.set(SCREEN, PIX_ACCOUNT_LINKING_PROMPT);
                     mModel.get(SCREEN_VIEW_MODEL).set(ACCOUNT_EMAIL, "test@gmail.com");
                     mModel.get(SCREEN_VIEW_MODEL).set(SETTINGS_LINK_CALLBACK, emptyClickListener());
+                    mModel.get(SCREEN_VIEW_MODEL).set(VIDEO_LINK_CALLBACK, emptyClickListener());
                     mModel.get(SCREEN_VIEW_MODEL)
                             .set(
                                     DECLINE_BUTTON_TEXT_ID,
@@ -1003,10 +1034,10 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                 settingsLink.getText().toString(),
                 is(
                         "Pix account will be linked to test@gmail.com. To turn off Pix code"
-                                + " detection, go to Chrome settings"));
+                                + " detection, go to Chrome settings."));
 
         ButtonCompat acceptButton = mView.getContentView().findViewById(R.id.accept_button);
-        assertThat(acceptButton.getText(), is("Enable Pix in Wallet"));
+        assertThat(acceptButton.getText(), is("Link your account"));
         ButtonCompat declineButton = mView.getContentView().findViewById(R.id.decline_button);
         assertThat(declineButton.getText(), is("Not now"));
 
@@ -1022,6 +1053,8 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                 spannedText.getSpans(
                         0, spannedText.length(), android.text.style.ClickableSpan.class);
         assertThat(spans.length, is(1));
+        assertThat(
+                spans[0].getClass(), is((Object) org.chromium.ui.text.ChromeClickableSpan.class));
 
         runOnUiThreadBlocking(() -> spans[0].onClick(settingsLink));
         assertThat(settingsLinkClicked[0], is(true));
@@ -1051,9 +1084,10 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
         assertNotNull(productIcon);
 
         TextView title = mView.getContentView().findViewById(R.id.title);
-        assertThat(title.getText(), is("Pay with Pix without switching apps"));
+        assertThat(title.getText(), is("Pay with Pix without switching apps next time"));
 
-        TextView valuePropMessage1 = mView.getContentView().findViewById(R.id.value_prop_message_1);
+        TextView valuePropMessage1 =
+                mView.getContentView().findViewById(R.id.prompt_b_value_prop_message_1);
         assertThat(
                 valuePropMessage1.getText().toString(),
                 is("Pay without copying and pasting Pix code. See how it works"));
@@ -1068,7 +1102,7 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                 settingsLink.getText().toString(),
                 is(
                         "Pix account will be linked to test_b@gmail.com. To turn off Pix code"
-                                + " detection, go to Chrome settings"));
+                                + " detection, go to Chrome settings."));
 
         ButtonCompat acceptButton = mView.getContentView().findViewById(R.id.accept_button);
         assertThat(acceptButton.getText(), is("Link your account"));
@@ -1080,6 +1114,8 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                 spannedText.getSpans(
                         0, spannedText.length(), android.text.style.ClickableSpan.class);
         assertThat(spans.length, is(1));
+        assertThat(
+                spans[0].getClass(), is((Object) org.chromium.ui.text.ChromeClickableSpan.class));
 
         runOnUiThreadBlocking(() -> spans[0].onClick(valuePropMessage1));
         assertThat(videoLinkClicked[0], is(true));
@@ -1121,7 +1157,14 @@ public final class FacilitatedPaymentsPaymentMethodsViewTest {
                 settingsLink.getText().toString(),
                 is(
                         "Pix account will be linked to user_c@gmail.com. To turn off Pix code"
-                                + " detection, go to Chrome settings"));
+                                + " detection, go to Chrome settings."));
+        android.text.Spanned spannedText = (android.text.Spanned) settingsLink.getText();
+        android.text.style.ClickableSpan[] spans =
+                spannedText.getSpans(
+                        0, spannedText.length(), android.text.style.ClickableSpan.class);
+        assertThat(spans.length, is(1));
+        assertThat(
+                spans[0].getClass(), is((Object) org.chromium.ui.text.ChromeClickableSpan.class));
 
         ButtonCompat acceptButton = mView.getContentView().findViewById(R.id.accept_button);
         assertThat(acceptButton.getText(), is("Link your account"));

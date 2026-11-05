@@ -14,8 +14,11 @@
 #include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/grit/theme_resources.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -109,8 +112,11 @@ gfx::Rect BrowserFrameView::BoundsAndMargins::ToEnclosingRect() const {
 BrowserFrameView::BrowserFrameView(BrowserWidget* browser_widget,
                                    BrowserView* browser_view)
     : browser_widget_(browser_widget), browser_view_(browser_view) {
-  DCHECK(browser_widget_);
-  DCHECK(browser_view_);
+  CHECK(browser_widget_, base::NotFatalUntil::M162);
+  CHECK(browser_view_, base::NotFatalUntil::M162);
+  paint_as_active_subscription_ =
+      browser_widget_->RegisterPaintAsActiveChangedCallback(base::BindRepeating(
+          &BrowserFrameView::PaintAsActiveChanged, base::Unretained(this)));
   SetProperty(views::kElementIdentifierKey, kBrowserFrameElementId);
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           kShowBrowserFrameRegionsCommandLineSwitch)) {
@@ -179,6 +185,10 @@ gfx::RoundedCornersF BrowserFrameView::GetWindowRoundedCorners() const {
   return gfx::RoundedCornersF();
 }
 
+int BrowserFrameView::GetRestoredWindowCornerRadius() const {
+  return GetLayoutConstant(LayoutConstant::kToolbarCornerRadius);
+}
+
 void BrowserFrameView::UpdateFullscreenTopUI() {}
 
 bool BrowserFrameView::ShouldHideTopUIInFullscreen() const {
@@ -198,7 +208,7 @@ bool BrowserFrameView::IsFrameCondensed() const {
 
 bool BrowserFrameView::HasVisibleBackgroundTabShapes(
     BrowserFrameActiveState active_state) const {
-  DCHECK(GetBrowserView()->GetSupportsTabStrip());
+  CHECK(GetBrowserView()->GetSupportsTabStrip(), base::NotFatalUntil::M162);
 
   const bool active = ShouldPaintAsActiveForState(active_state);
   const std::optional<int> bg_id = GetCustomBackgroundId(active_state);
@@ -254,6 +264,10 @@ SkColor BrowserFrameView::GetFrameColor(
 
 std::optional<int> BrowserFrameView::GetCustomBackgroundId(
     BrowserFrameActiveState active_state) const {
+  if (GetBrowserView()->GetEnterpriseIsolatedMode()) {
+    return std::nullopt;
+  }
+
   const ui::ThemeProvider* tp = GetThemeProvider();
   const bool incognito = GetBrowserView()->GetIncognito();
   const bool active = ShouldPaintAsActiveForState(active_state);
@@ -305,10 +319,9 @@ void BrowserFrameView::PaintAsActiveChanged() {
 }
 
 ClientFrameElementInfo BrowserFrameView::GetClientFrameElementInfo() const {
-  if (auto* const browser_view = GetBrowserView()) {
-    return browser_view->GetFrameElementInfo();
-  }
-  return ClientFrameElementInfo();
+  return SafeInvoke(GetBrowserView())
+      .Then(&BrowserView::GetFrameElementInfo)
+      .value_or(ClientFrameElementInfo());
 }
 
 BrowserFrameView::BoundsAndMargins BrowserFrameView::GetCaptionButtonBounds()
@@ -338,6 +351,7 @@ gfx::ImageSkia BrowserFrameView::GetFrameImage(
 gfx::ImageSkia BrowserFrameView::GetFrameOverlayImage(
     BrowserFrameActiveState active_state) const {
   if (GetBrowserView()->GetIncognito() ||
+      GetBrowserView()->GetEnterpriseIsolatedMode() ||
       !GetBrowserView()->GetIsNormalType()) {
     return gfx::ImageSkia();
   }

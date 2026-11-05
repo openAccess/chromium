@@ -14,11 +14,14 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.shadows.ShadowLooper;
 
+import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.tab.Tab;
@@ -28,6 +31,7 @@ import org.chromium.ui.base.WindowAndroid;
 
 /** Test for {@link FindToolbarManagerTest}. */
 @RunWith(BaseRobolectricTestRunner.class)
+@SuppressWarnings("DoNotMock") // TODO(567604165): Remove mocking of Views / Activities
 public class FindToolbarManagerTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private FindToolbarManager mFindToolbarManager;
@@ -41,6 +45,7 @@ public class FindToolbarManagerTest {
     @Mock private View mAnchorView;
     @Mock private BrowserControlsStateProvider mBrowserControlsStateProvider;
     @Mock private SideUiStateProvider mSideUiStateProvider;
+    @Captor private ArgumentCaptor<FindToolbarObserver> mObserverCaptor;
 
     @Before
     public void setUp() {
@@ -56,7 +61,8 @@ public class FindToolbarManagerTest {
                         /* backPressManager= */ null,
                         mSecondaryUiContainer,
                         mAnchorView,
-                        mBrowserControlsStateProvider);
+                        mBrowserControlsStateProvider,
+                        /* sideUiStateProviderSupplier= */ null);
     }
 
     @Test
@@ -87,6 +93,35 @@ public class FindToolbarManagerTest {
         aggObserver.onFindToolbarShown();
         Mockito.verify(observer1, Mockito.times(2)).onFindToolbarShown();
         Mockito.verify(observer2, Mockito.times(1)).onFindToolbarShown();
+    }
+
+    /**
+     * Observers can be registered after the toolbar has been shown (e.g. because they subscribe
+     * through a posted callback). They must still learn that the toolbar is showing.
+     */
+    @Test
+    public void testObserverAddedWhileShown_isNotifiedOfShow() {
+        FindToolbarObserver earlyObserver = Mockito.mock(FindToolbarObserver.class);
+        mFindToolbarManager.addObserver(earlyObserver);
+        showAndNotifyShown();
+
+        FindToolbarObserver lateObserver = Mockito.mock(FindToolbarObserver.class);
+        mFindToolbarManager.addObserver(lateObserver);
+
+        Mockito.verify(lateObserver).onFindToolbarShown();
+        // The already registered observer must not be notified a second time.
+        Mockito.verify(earlyObserver, Mockito.times(1)).onFindToolbarShown();
+    }
+
+    @Test
+    public void testObserverAddedAfterHiding_isNotNotifiedOfShow() {
+        FindToolbarObserver aggObserver = showAndNotifyShown();
+        aggObserver.onFindToolbarHidden();
+
+        FindToolbarObserver lateObserver = Mockito.mock(FindToolbarObserver.class);
+        mFindToolbarManager.addObserver(lateObserver);
+
+        Mockito.verify(lateObserver, Mockito.never()).onFindToolbarShown();
     }
 
     @Test
@@ -129,9 +164,83 @@ public class FindToolbarManagerTest {
     }
 
     @Test
+    public void testSideUiStateProviderSupplier_resolvedBeforeShow() {
+        OneshotSupplierImpl<SideUiStateProvider> supplier = new OneshotSupplierImpl<>();
+        FindToolbarManager manager =
+                new FindToolbarManager(
+                        mViewStub,
+                        mTabModelSelector,
+                        mWindowAndroid,
+                        /* callback= */ null,
+                        /* backPressManager= */ null,
+                        mSecondaryUiContainer,
+                        mAnchorView,
+                        mBrowserControlsStateProvider,
+                        supplier);
+        supplier.set(mSideUiStateProvider);
+        ShadowLooper.idleMainLooper();
+        manager.showToolbar();
+        Mockito.verify(mFindToolbar).setSideUiStateProvider(mSideUiStateProvider);
+    }
+
+    @Test
+    public void testSideUiStateProviderSupplier_resolvedAfterShow() {
+        OneshotSupplierImpl<SideUiStateProvider> supplier = new OneshotSupplierImpl<>();
+        FindToolbarManager manager =
+                new FindToolbarManager(
+                        mViewStub,
+                        mTabModelSelector,
+                        mWindowAndroid,
+                        /* callback= */ null,
+                        /* backPressManager= */ null,
+                        mSecondaryUiContainer,
+                        mAnchorView,
+                        mBrowserControlsStateProvider,
+                        supplier);
+        manager.showToolbar();
+        supplier.set(mSideUiStateProvider);
+        ShadowLooper.idleMainLooper();
+        Mockito.verify(mFindToolbar).setSideUiStateProvider(mSideUiStateProvider);
+    }
+
+    @Test
+    public void testSideUiStateProviderSupplier_preResolved() {
+        OneshotSupplierImpl<SideUiStateProvider> supplier = new OneshotSupplierImpl<>();
+        supplier.set(mSideUiStateProvider);
+        ShadowLooper.idleMainLooper();
+        FindToolbarManager manager =
+                new FindToolbarManager(
+                        mViewStub,
+                        mTabModelSelector,
+                        mWindowAndroid,
+                        /* callback= */ null,
+                        /* backPressManager= */ null,
+                        mSecondaryUiContainer,
+                        mAnchorView,
+                        mBrowserControlsStateProvider,
+                        supplier);
+        manager.showToolbar();
+        Mockito.verify(mFindToolbar).setSideUiStateProvider(mSideUiStateProvider);
+    }
+
+    @Test
     public void testDestroy() {
         mFindToolbarManager.showToolbar();
         mFindToolbarManager.destroy();
         Mockito.verify(mFindToolbar).destroy();
+    }
+
+    /**
+     * Shows the toolbar and simulates the {@link FindToolbar} notifying that it is shown, which it
+     * does synchronously from within {@link FindToolbarManager#showToolbar()}.
+     *
+     * @return The observer the manager installed on the {@link FindToolbar}.
+     */
+    private FindToolbarObserver showAndNotifyShown() {
+        mFindToolbarManager.showToolbar();
+        Mockito.verify(mFindToolbar).setObserver(mObserverCaptor.capture());
+        FindToolbarObserver aggObserver = mObserverCaptor.getValue();
+        aggObserver.onFindToolbarShown();
+        return aggObserver;
     }
 }

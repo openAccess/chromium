@@ -5,6 +5,7 @@
 #include "components/optimization_guide/core/model_execution/model_broker_client.h"
 
 #include "base/task/current_thread.h"
+#include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/fake_manifest_broker.h"
@@ -33,9 +34,93 @@ TEST(ModelBrokerClientTest, DisconnectedClient) {
   ASSERT_FALSE(future.Get());
 }
 
+TEST(ModelBrokerClientTest, DisconnectedClientCanCreateSession) {
+  base::test::TaskEnvironment task_environment_;
+  OptimizationGuideLogger logger;
+
+  mojo::PendingReceiver<mojom::ModelBroker> receiver;
+  ModelBrokerClient client(receiver.InitWithNewPipeAndPassRemote(),
+                           logger.GetWeakPtr());
+
+  base::test::TestFuture<std::optional<mojom::ModelUnavailableReason>,
+                         std::optional<mojom::ModelNotSupportedDetailedReason>>
+      future;
+  client.GetSubscriber(mojom::OnDeviceFeature::kTest)
+      .CanCreateSession({}, future.GetCallback());
+  receiver.reset();
+
+  EXPECT_EQ(future.Get<0>(), mojom::ModelUnavailableReason::kNotSupported);
+}
+
+TEST(ModelBrokerClientTest, ReentrantDestructionInCanCreateSessionCallback) {
+  base::test::TaskEnvironment task_environment_;
+  mojo::Remote<mojom::ModelSubscriber> remote;
+  auto subscriber =
+      std::make_unique<ModelSubscriber>(remote.BindNewPipeAndPassReceiver());
+
+  bool first_called = false;
+  bool second_called = false;
+  subscriber->CanCreateSession(
+      {}, base::BindLambdaForTesting(
+              [&](std::optional<mojom::ModelUnavailableReason> reason,
+                  std::optional<mojom::ModelNotSupportedDetailedReason>) {
+                first_called = true;
+                EXPECT_EQ(reason,
+                          mojom::ModelUnavailableReason::kPendingAssets);
+                subscriber.reset();
+              }));
+  subscriber->CanCreateSession(
+      {}, base::BindLambdaForTesting(
+              [&](std::optional<mojom::ModelUnavailableReason> reason,
+                  std::optional<mojom::ModelNotSupportedDetailedReason>) {
+                second_called = true;
+                EXPECT_EQ(reason,
+                          mojom::ModelUnavailableReason::kPendingAssets);
+              }));
+
+  remote->CapabilitiesUpdated(on_device_model::Capabilities());
+  remote->Unavailable(mojom::ModelUnavailableReason::kPendingAssets,
+                      std::nullopt);
+  remote.FlushForTesting();
+  EXPECT_TRUE(first_called);
+  EXPECT_TRUE(second_called);
+}
+
+TEST(ModelBrokerClientTest,
+     ReentrantDestructionAcrossWaitForClientAndCanCreateSession) {
+  base::test::TaskEnvironment task_environment_;
+  mojo::Remote<mojom::ModelSubscriber> remote;
+  auto subscriber =
+      std::make_unique<ModelSubscriber>(remote.BindNewPipeAndPassReceiver());
+
+  bool wait_called = false;
+  bool can_create_called = false;
+  subscriber->WaitForClient(
+      base::BindLambdaForTesting([&](base::WeakPtr<ModelClient> client) {
+        wait_called = true;
+        EXPECT_FALSE(client);
+        subscriber.reset();
+      }));
+  subscriber->CanCreateSession(
+      {}, base::BindLambdaForTesting(
+              [&](std::optional<mojom::ModelUnavailableReason> reason,
+                  std::optional<mojom::ModelNotSupportedDetailedReason>) {
+                can_create_called = true;
+                EXPECT_EQ(reason, mojom::ModelUnavailableReason::kNotSupported);
+              }));
+
+  remote->CapabilitiesUpdated(on_device_model::Capabilities());
+  remote->Unavailable(mojom::ModelUnavailableReason::kNotSupported,
+                      std::nullopt);
+  remote.FlushForTesting();
+  EXPECT_TRUE(wait_called);
+  EXPECT_TRUE(can_create_called);
+}
+
 // Verify that when requesting a session while assets are still pending, the
 // client will wait for the assets before resolving the callback.
 TEST(ModelBrokerClientTest, PendingClient) {
+  ScopedModelBrokerFeatureList scoped_feature_list;
   base::test::TaskEnvironment task_environment_;
   OptimizationGuideLogger logger;
   FakeManifestBroker broker;
@@ -66,6 +151,7 @@ TEST(ModelBrokerClientTest, PendingClient) {
 
 // Verify that CreateSession works when all the assets are provided.
 TEST(ModelBrokerClientTest, ReadyWithSetupClient) {
+  ScopedModelBrokerFeatureList scoped_feature_list;
   base::test::TaskEnvironment task_environment_;
   OptimizationGuideLogger logger;
   FakeManifestBroker broker;
@@ -86,6 +172,7 @@ TEST(ModelBrokerClientTest, ReadyWithSetupClient) {
 // Verify that CreateSession works when all the assets are provided using a
 // custom use case string.
 TEST(ModelBrokerClientTest, ReadyWithUseCaseClient) {
+  ScopedModelBrokerFeatureList scoped_feature_list;
   base::test::TaskEnvironment task_environment_;
   OptimizationGuideLogger logger;
   FakeManifestBroker broker;
@@ -103,6 +190,7 @@ TEST(ModelBrokerClientTest, ReadyWithUseCaseClient) {
 }
 
 TEST(ModelBrokerClientTest, GetConfigNulloptWhenNotSet) {
+  ScopedModelBrokerFeatureList scoped_feature_list;
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   FakeManifestBroker broker;
@@ -121,6 +209,7 @@ TEST(ModelBrokerClientTest, GetConfigNulloptWhenNotSet) {
 // Attempts to create a Session for such features should fully resolve as
 // unavailable.
 TEST(ModelBrokerClientTest, UnavailableAdaptationRejectsSession) {
+  ScopedModelBrokerFeatureList scoped_feature_list;
   base::test::TaskEnvironment task_environment{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   FakeManifestBroker broker;

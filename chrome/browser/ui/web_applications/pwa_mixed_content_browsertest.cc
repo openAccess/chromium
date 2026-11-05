@@ -23,6 +23,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/request_handler_util.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace {
@@ -154,7 +155,7 @@ IN_PROC_BROWSER_TEST_F(PWAMixedContentBrowserTestWithAutoupgradesDisabled,
             kEnabled);
 
   ui_test_utils::UrlLoadObserver url_observer(GetMixedContentAppURL());
-  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   url_observer.Wait();
 
   // After reloading, mixed content should successfully load.
@@ -187,8 +188,7 @@ IN_PROC_BROWSER_TEST_F(PWAMixedContentBrowserTestWithAutoupgradesDisabled,
       ReparentWebContentsIntoAppBrowser(tab_contents, app_id);
 
   ASSERT_NE(app_browser, browser());
-  ASSERT_EQ(GetMixedContentAppURL(), app_browser->GetFeatures()
-                                         .tab_strip_model()
+  ASSERT_EQ(GetMixedContentAppURL(), app_browser->GetTabStripModel()
                                          ->GetActiveWebContents()
                                          ->GetLastCommittedURL());
 
@@ -197,7 +197,7 @@ IN_PROC_BROWSER_TEST_F(PWAMixedContentBrowserTestWithAutoupgradesDisabled,
   CheckMixedContentLoaded(app_browser);
 
   ui_test_utils::UrlLoadObserver url_observer(GetMixedContentAppURL());
-  chrome::Reload(app_browser, WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(app_browser, ui::mojom::WindowOpenDisposition::kCurrentTab);
   url_observer.Wait();
 
   // Mixed content should be able to load in web app windows.
@@ -232,8 +232,7 @@ IN_PROC_BROWSER_TEST_F(
   CheckMixedContentFailedToLoad(app_browser);
 
   // Change the mixed content to be acceptable.
-  content::RenderFrameHost* main_frame = app_browser->GetFeatures()
-                                             .tab_strip_model()
+  content::RenderFrameHost* main_frame = app_browser->GetTabStripModel()
                                              ->GetActiveWebContents()
                                              ->GetPrimaryMainFrame();
   content::RenderFrameHost* iframe = content::ChildFrameAt(main_frame, 0);

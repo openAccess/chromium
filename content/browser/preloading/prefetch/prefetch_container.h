@@ -222,6 +222,10 @@ class CONTENT_EXPORT PrefetchContainer
   // Equivalent to `request().key().url()`.
   const GURL& GetURL() const override;
 
+  // Returns true if the prefetch URL matches the query parameter configured for
+  // burst (e.g., pf=op).
+  bool MatchesBurstQueryParam() const { return matches_burst_query_param_; }
+
   // Equivalent to `request().no_vary_search_hint()`.
   // Exposed for `PrefetchMatchResolver`.
   const std::optional<net::HttpNoVarySearchData>& GetNoVarySearchHint()
@@ -363,6 +367,11 @@ class CONTENT_EXPORT PrefetchContainer
   // `GetCurrentSingleRedirectHopToPrefetch()`.
   void PauseAllCookieListeners();
   void ResumeAllCookieListeners();
+
+  // Determines whether embedder additional headers should be removed on a
+  // redirect to `next_url`. This also updates the internal state so that
+  // headers are only removed once per prefetch.
+  bool ShouldRemoveEmbedderAdditionalHeaders(const GURL& next_url);
 
   // The isolated network context used to make network requests, copy cookies,
   // etc. This is a per-`PrefetchContainer` instance that can be used for all
@@ -715,6 +724,10 @@ class CONTENT_EXPORT PrefetchContainer
   PrefetchServiceWorkerState service_worker_state_ =
       PrefetchServiceWorkerState::kAllowed;
 
+  // Whether embedder's additional headers are already removed during a
+  // cross-origin redirect.
+  bool is_embedder_additional_headers_removed_ = false;
+
   // The `ResourceRequest` for the current prefetch request.
   // This is initially set in `OnPrefetchStarted()`, which is called from
   // `PrefetchService` when Prefetch is dequeued and its request is actually
@@ -866,6 +879,7 @@ class CONTENT_EXPORT PrefetchContainer
       base::ObserverListPolicy::EXISTING_ONLY};
 
   bool is_likely_ahead_of_prerender_ = false;
+  const bool matches_burst_query_param_;
 
   // The time that the latest earlier prefetch unmatch happened that this
   // prefetch could've been served to.

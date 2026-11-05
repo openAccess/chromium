@@ -113,7 +113,6 @@ try_.builder(
 try_.orchestrator_builder(
     name = "android-desktop-x64-rel",
     branch_selector = branches.selector.ANDROID_BRANCHES,
-    description_html = "Run Chromium tests on Android Desktop emulators.",
     mirrors = [
         "ci/android-desktop-x64-compile-rel",
         "ci/android-desktop-x64-rel-15-tests",
@@ -137,12 +136,15 @@ try_.orchestrator_builder(
         equivalent_builder_percentage = 100,
         equivalent_builder_whitelist = "google/chrome-al-eng@google.com",
         on_default_cq = True,
+        reuse_max_commit_distance = 800 if settings.is_main else None,
     ),
     experiments = {
         # crbug.com/40617829
         "chromium.enable_cleandead": 100,
         # go/rts-project-proposal
         "chromium_rts.filter_file_analysis": 100,
+        # crbug.com/40280175
+        "chromium_checkout.expand_submodules": 100,
     },
     main_list_view = "try",
     use_clang_coverage = True,
@@ -152,7 +154,6 @@ try_.orchestrator_builder(
 try_.compilator_builder(
     name = "android-desktop-x64-rel-compilator",
     branch_selector = branches.selector.ANDROID_BRANCHES,
-    description_html = "Compilator builder for android-desktop-x64-rel",
     main_list_view = "try",
 )
 
@@ -197,6 +198,7 @@ try_.builder(
             "ci/android-desktop-arm64-deterministic-rel",
         ],
     ),
+    ssd = True,
     execution_timeout = 6 * time.hour,
 )
 
@@ -222,6 +224,7 @@ try_.builder(
             "ci/android-desktop-x64-deterministic-rel",
         ],
     ),
+    ssd = True,
     execution_timeout = 6 * time.hour,
 )
 
@@ -249,6 +252,21 @@ try_.builder(
             "release_try_builder",
         ],
     ),
+    ssd = True,
+)
+
+try_.builder(
+    name = "android-desktop-17-x64-fyi-rel",
+    mirrors = [
+        "ci/android-desktop-17-x64-fyi-rel",
+    ],
+    gn_args = gn_args.config(
+        configs = [
+            "ci/android-desktop-17-x64-fyi-rel",
+            "release_try_builder",
+        ],
+    ),
+    ssd = True,
 )
 
 try_.builder(
@@ -276,18 +294,19 @@ try_.builder(
     main_list_view = "try",
     properties = {
         "$build/binary_size": {
+            # Static initializer and expectation checks are not configured for
+            # desktop.
             "analyze_targets": [
-                "//chrome/android:trichrome_64_minimal_apks",
-                "//chrome/android:trichrome_library_64_apk",
-                "//chrome/android:validate_expectations",
+                "//chrome/android:chrome_public_minimal_apks",
                 "//tools/binary_size:binary_size_trybot_py",
             ],
             "compile_targets": [
-                "check_chrome_static_initializers",
-                "trichrome_64_minimal_apks",
-                "trichrome_library_64_apk",
-                "validate_expectations",
+                "chrome_public_minimal_apks",
             ],
+            "size_config_json": "config/ChromeDesktop_size_config.json",
+            # Tip-of-tree analysis is uploaded only for android-binary-size,
+            # which measures different artifacts.
+            "use_tot_analysis": False,
         },
     },
     siso_remote_linking = False,
@@ -318,18 +337,19 @@ try_.builder(
     main_list_view = "try",
     properties = {
         "$build/binary_size": {
+            # Static initializer and expectation checks are not configured for
+            # desktop.
             "analyze_targets": [
-                "//chrome/android:trichrome_64_minimal_apks",
-                "//chrome/android:trichrome_library_64_apk",
-                "//chrome/android:validate_expectations",
+                "//chrome/android:chrome_public_minimal_apks",
                 "//tools/binary_size:binary_size_trybot_py",
             ],
             "compile_targets": [
-                "check_chrome_static_initializers",
-                "trichrome_64_minimal_apks",
-                "trichrome_library_64_apk",
-                "validate_expectations",
+                "chrome_public_minimal_apks",
             ],
+            "size_config_json": "config/ChromeDesktop_size_config.json",
+            # Tip-of-tree analysis is uploaded only for android-binary-size,
+            # which measures different artifacts.
+            "use_tot_analysis": False,
         },
     },
     siso_remote_linking = False,

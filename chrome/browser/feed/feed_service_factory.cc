@@ -20,18 +20,15 @@
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_key.h"
-#include "chrome/browser/regional_capabilities/regional_capabilities_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/channel_info.h"
-#include "chrome/common/chrome_version.h"
 #include "chrome/common/pref_names.h"
 #include "components/background_task_scheduler/background_task_scheduler_factory.h"
 #include "components/feed/core/proto/v2/keyvalue_store.pb.h"
 #include "components/feed/core/proto/v2/store.pb.h"
 #include "components/feed/core/v2/public/feed_service.h"
 #include "components/offline_pages/core/offline_page_feature.h"
-#include "components/regional_capabilities/regional_capabilities_service.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/variations/service/variations_service_utils.h"
 #include "components/version_info/version_info.h"
@@ -142,12 +139,13 @@ class FeedServiceDelegateImpl : public FeedService::Delegate {
 // static
 FeedService* FeedServiceFactory::GetForBrowserContext(
     content::BrowserContext* context) {
-// Note that if both v1 and v2 are disabled in the build, feed::IsV2Enabled()
-// returns true. In that case, this function will return null. This prevents
-// creation of the Feed surface from triggering any other Feed behavior.
-  if (context)
+  // Note that if both v1 and v2 are disabled in the build, feed::IsV2Enabled()
+  // returns true. In that case, this function will return null. This prevents
+  // creation of the Feed surface from triggering any other Feed behavior.
+  if (context) {
     return static_cast<FeedService*>(
         GetInstance()->GetServiceForBrowserContext(context, /*create=*/true));
+  }
   return nullptr;
 }
 
@@ -178,11 +176,6 @@ FeedServiceFactory::FeedServiceFactory()
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(HistoryServiceFactory::GetInstance());
   DependsOn(TemplateURLServiceFactory::GetInstance());
-
-#if BUILDFLAG(IS_ANDROID)
-  DependsOn(
-      regional_capabilities::RegionalCapabilitiesServiceFactory::GetInstance());
-#endif
 }
 
 FeedServiceFactory::~FeedServiceFactory() = default;
@@ -209,17 +202,10 @@ FeedServiceFactory::BuildServiceInstanceForBrowserContext(
   base::FilePath feed_dir(profile->GetPath().Append(kFeedv2Folder));
 
   feed::ChromeInfo chrome_info;
-  chrome_info.version = base::Version({CHROME_VERSION});
+  chrome_info.version = version_info::GetVersion();
   chrome_info.channel = chrome::GetChannel();
 #if BUILDFLAG(IS_ANDROID)
-  regional_capabilities::RegionalCapabilitiesService* regional_capabilities =
-      regional_capabilities::RegionalCapabilitiesServiceFactory::GetForProfile(
-          profile);
-  chrome_info.is_new_tab_search_engine_url_android_enabled =
-      regional_capabilities->IsInEeaCountry();
   chrome_info.user_feedback_allowed_pref_key = ::prefs::kUserFeedbackAllowed;
-#else
-  chrome_info.is_new_tab_search_engine_url_android_enabled = false;
 #endif
 
   return std::make_unique<FeedService>(

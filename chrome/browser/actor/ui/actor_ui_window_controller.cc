@@ -11,7 +11,6 @@
 #include "chrome/browser/actor/ui/handoff_button_controller.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_command_controller.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
@@ -91,6 +90,13 @@ void ActorUiContentsContainerController::OnWebContentsAttached(
                 base::BindRepeating(&ActorUiContentsContainerController::
                                         OnActorOverlayBackgroundChange,
                                     weak_ptr_factory_.GetWeakPtr())));
+        if (base::FeatureList::IsEnabled(
+                features::kGlicActorUiMagicCursorChip)) {
+          actor_ui_tab_controller_callback_runners_.push_back(
+              tab_controller->RegisterCursorChipTextChange(base::BindRepeating(
+                  &ActorUiContentsContainerController::OnCursorChipTextChanged,
+                  weak_ptr_factory_.GetWeakPtr())));
+        }
       }
 
       if (handoff_button_controller_) {
@@ -183,6 +189,14 @@ void ActorUiContentsContainerController::OnActorOverlayBackgroundChange(
   overlay_->SetOverlayBackground(is_visible);
 }
 
+void ActorUiContentsContainerController::OnCursorChipTextChanged(
+    const std::string& text) {
+  if (!overlay_) {
+    return;
+  }
+  overlay_->SetCursorChip(text);
+}
+
 void ActorUiContentsContainerController::
     NotifyWindowOmniboxPopupVisibilityChanged() {
   if (auto* tab_controller = GetActorUiTabController()) {
@@ -233,11 +247,18 @@ void ActorUiContentsContainerController::ApplyOverlayState(
     return;
   }
   overlay_->SetBorderGlowVisibility(state.border_glow_visible);
+  // Re-send the attached tab's chip text. The overlay drops text sent before
+  // its WebUI exists, and is reused when the container switches tabs.
+  if (base::FeatureList::IsEnabled(features::kGlicActorUiMagicCursorChip)) {
+    if (auto* tab_controller = GetActorUiTabController()) {
+      overlay_->SetCursorChip(tab_controller->GetCursorChipText());
+    }
+  }
   if (state.mouse_target.has_value()) {
     // If we have a mouse target, we should not ALSO have a mouse_down state.
     // This DCHECK ensures that the ActorOverlayState will only request a mouse
     // movement OR a click, never both.
-    DCHECK(!state.mouse_down);
+    CHECK(!state.mouse_down, base::NotFatalUntil::M161);
     overlay_->MoveCursorTo(state.mouse_target.value(), runner.Release());
     return;
   } else if (state.mouse_down) {
@@ -419,5 +440,5 @@ void ActorUiWindowController::TearDown() {
 
 chrome::BrowserCommandController*
 ActorUiWindowController::GetCommandController() {
-  return browser_window_interface_->GetFeatures().browser_command_controller();
+  return chrome::BrowserCommandController::From(browser_window_interface_);
 }

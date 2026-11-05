@@ -9,10 +9,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/app_list/search/essential_search/socs_cookie_fetcher.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chromeos/constants/chromeos_features.h"
-#include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
@@ -52,7 +49,7 @@ const net::BackoffEntry::Policy
 EssentialSearchManager::EssentialSearchManager(Profile* primary_profile)
     : primary_profile_(primary_profile),
       retry_backoff_(&kFetchSocsCookieRetryBackoffPolicy) {
-  DCHECK(primary_profile_);
+  CHECK(primary_profile_, base::NotFatalUntil::M160);
   auto* session_controller = ash::SessionController::Get();
   if (!session_controller) {
     CHECK_IS_TEST();
@@ -103,11 +100,6 @@ void EssentialSearchManager::OnSessionStateChanged(
 }
 
 void EssentialSearchManager::MaybeFetchSocsCookie() {
-  // Check whether the feature flag is enabled.
-  if (!chromeos::features::IsEssentialSearchEnabled()) {
-    return;
-  }
-
   PrefService* prefs = primary_profile_->GetPrefs();
   if (prefs->GetBoolean(ash::prefs::kEssentialSearchEnabled)) {
     // If the policy is enabled, cancel all active requests then fetch SOCS

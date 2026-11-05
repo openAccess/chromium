@@ -51,7 +51,7 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_mode.h"
 #include "ui/base/clipboard/clipboard_metadata.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "ui/gfx/native_ui_types.h"
@@ -110,10 +110,11 @@ struct AXLocationAndScrollUpdates;
 namespace content {
 class BackForwardCacheImpl;
 class FrameTreeNode;
+class InitiatorNavigationState;
 class Page;
 class PrerenderHostRegistry;
 class RenderWidgetHostImpl;
-class SessionStorageNamespace;
+class SessionStorageNamespaceHandle;
 class SiteInstanceGroup;
 class SurfaceEmbedConnector;
 struct ContextMenuParams;
@@ -164,6 +165,7 @@ class CONTENT_EXPORT RenderFrameHostDelegate {
       const GURL& blocked_url,
       const GURL& initiator_url,
       const url::Origin& initiator_origin,
+      scoped_refptr<InitiatorNavigationState> initiator_navigation_state,
       blink::mojom::NavigationBlockedReason reason) {}
 
   // Called when blink.mojom.LocalFrameHost::DidFinishLoad() is invoked.
@@ -243,7 +245,12 @@ class CONTENT_EXPORT RenderFrameHostDelegate {
       RenderFrameHostImpl* render_frame_host) {}
 
   // Called when a federated login request completes.
-  virtual void OnFedCmFederatedLogin(webid::FederatedLoginResult result) {}
+  // |result| is the result of the federated login request.
+  // |idp_origin| is the origin of the identity provider. It is nullopt on all
+  // failure cases during the FedCM login flow.
+  virtual void OnFedCmFederatedLogin(
+      webid::FederatedLoginResult result,
+      const std::optional<url::Origin>& idp_origin) {}
 
   // Binds a DisplayCutoutHost object associated to |render_frame_host|.
   virtual void BindDisplayCutoutHost(
@@ -453,7 +460,7 @@ class CONTENT_EXPORT RenderFrameHostDelegate {
       const mojom::CreateNewWindowParams& params,
       bool is_new_browsing_instance,
       bool has_user_gesture,
-      SessionStorageNamespace* session_storage_namespace);
+      SessionStorageNamespaceHandle* session_storage_namespace);
 
   // Show a previously created page with the specified disposition and window
   // features. The window is identified by the |main_frame_widget_route_id|
@@ -475,7 +482,7 @@ class CONTENT_EXPORT RenderFrameHostDelegate {
   virtual WebContents* ShowCreatedWindow(
       RenderFrameHostImpl* opener,
       int main_frame_widget_route_id,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture);
 
@@ -533,7 +540,7 @@ class CONTENT_EXPORT RenderFrameHostDelegate {
 
   // Returns the light, dark and forced color maps for the ColorProvider
   // associated with this RenderFrameHost's WebContents.
-  virtual blink::ColorProviderColorMaps GetColorProviderColorMaps() const = 0;
+  virtual blink::ColorProviderColorMaps GetColorProviderColorMaps() = 0;
 
   // Returns the visibility of the delegate.
   virtual Visibility GetVisibility();
@@ -648,7 +655,11 @@ class CONTENT_EXPORT RenderFrameHostDelegate {
           receiver) {}
 
   // Return whether HTML Fullscreen requires transient activation.
-  virtual bool IsTransientActivationRequiredForHtmlFullscreen();
+  // `requesting_frame` is the frame requesting fullscreen, and `is_xr_overlay`
+  // indicates whether the request is for a WebXR DOM Overlay.
+  virtual bool IsTransientActivationRequiredForHtmlFullscreen(
+      RenderFrameHostImpl* requesting_frame,
+      bool is_xr_overlay);
 
   // Return true if the back forward cache is supported. This is not an
   // indication that the cache will be used.

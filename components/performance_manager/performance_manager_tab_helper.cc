@@ -4,6 +4,7 @@
 
 #include "components/performance_manager/performance_manager_tab_helper.h"
 
+#include <algorithm>
 #include <memory>
 #include <type_traits>
 #include <utility>
@@ -16,6 +17,7 @@
 #include "components/guest_view/buildflags/buildflags.h"
 #include "components/performance_manager/graph/frame_node_impl.h"
 #include "components/performance_manager/graph/graph_impl.h"
+#include "components/performance_manager/graph/graph_impl_operations.h"
 #include "components/performance_manager/graph/page_node_impl.h"
 #include "components/performance_manager/graph/process_node_impl.h"
 #include "components/performance_manager/performance_manager_impl.h"
@@ -81,6 +83,38 @@ bool ConnectWindowOpenRelationshipIfExists(PerformanceManagerTabHelper* helper,
   helper->primary_page_node()->SetOpenerFrameNode(opener_frame_node);
   return true;
 }
+
+// Returns true if `navigation_handle` loads a new document in the primary main
+// frame, i.e. a navigation that makes the page load.
+bool IsPrimaryMainFrameCrossDocument(
+    content::NavigationHandle* navigation_handle) {
+  return navigation_handle->IsInPrimaryMainFrame() &&
+         !navigation_handle->IsSameDocument();
+}
+
+// Returns true if `navigation_handle` was initiated by the browser (omnibox,
+// bookmarks, session restore, extension APIs, ...) or by a renderer with
+// transient user activation (e.g. a link click). `HasUserGesture()` isn't used
+// because it is filtered for navigations that go through a frame proxy.
+bool IsUserOrBrowserInitiated(content::NavigationHandle* navigation_handle) {
+  return !navigation_handle->IsRendererInitiated() ||
+         navigation_handle->StartedWithTransientActivation();
+}
+
+// A navigation that isn't user- or browser-initiated and starts within this
+// delay of the current document's commit is considered a client redirect that
+// continues the current load. This is based on the client redirect heuristic
+// of `content::RedirectChainDetector` (in
+// content/browser/btm/btm_bounce_detector.cc), which isn't exposed outside of
+// content, and matches the default of
+// `features::kBtmClientBounceDetectionTimeout`.
+//
+// Like RedirectChainDetector, the window restarts on each hop, so slow redirect
+// chains keep inheriting the value. As a consequence, a page that reloads
+// itself more often than this window also keeps inheriting it. Unlike
+// RedirectChainDetector, which restarts the window whenever a navigation
+// finishes, only commits restart it here.
+constexpr base::TimeDelta kClientRedirectInheritanceWindow = base::Seconds(10);
 
 }  // namespace
 
@@ -163,6 +197,7 @@ void PerformanceManagerTabHelper::TearDownAndSelfDelete() {
     nodes.push_back(std::move(frame_node));
   }
 
+  permission_controller_subscription_.reset();
   nodes.push_back(std::move(page_node_));
 
   frames_.clear();
@@ -174,9 +209,6 @@ void PerformanceManagerTabHelper::TearDownAndSelfDelete() {
     destruction_observer_->OnPerformanceManagerTabHelperDestroying(
         web_contents());
   }
-
-  MaybeUnsubscribeFromNotificationPermissionStatusChange(
-      web_contents()->GetBrowserContext()->GetPermissionController());
 
   // Unsubscribe from the associated WebContents.
   Observe(nullptr);
@@ -238,10 +270,11 @@ void PerformanceManagerTabHelper::RenderFrameCreated(
       process_node, page_node_.get(), parent_frame_node,
       outer_document_for_inner_frame_root, render_frame_host->GetRoutingID(),
       blink::LocalFrameToken(render_frame_host->GetFrameToken()),
+      render_frame_host->GetFrameTreeNodeId(),
       render_frame_host->GetTracingTrack(),
       site_instance->GetBrowsingInstanceId(),
-      site_instance->GetSiteInstanceGroupId(), render_frame_host->IsActive(),
-      render_frame_host->IsActive());
+      site_instance->GetSiteInstanceGroupId(),
+      /*is_active=*/render_frame_host->IsActive());
   FrameNodeImpl* frame = frame_node.get();
   frames_[render_frame_host] = std::move(frame_node);
   PerformanceManagerImpl::GetGraphImpl()->AddNewNode(frame);
@@ -302,17 +335,26 @@ void PerformanceManagerTabHelper::RenderFrameHostChanged(
     return;
   }
 
-  // Ensure the new frame's active state is in sync. This is necessary because
-  // early-commit of speculative frames goes directly from kSpeculative to
-  // kActive, skipping the RenderFrameHostStateChanged notification entirely
-  // due to a check in content/ that avoids exposing kSpeculative states to
-  // embedders.
+  // Activate `new_frame` before deactivating `old_frame` to prevent observers
+  // from seeing a transient 0-active-frame state.
   if (new_frame) {
+    // Ensure the new frame's FrameTreeNodeId is up to date in case this was a
+    // prerendered page that updated to a new FrameTreeNodeId upon
+    // activation.
+    new_frame->SetFrameTreeNodeId(new_host->GetFrameTreeNodeId());
     new_frame->SetIsActive(new_host->IsActive());
   }
 
-  FrameNodeImpl::UpdateCurrentFrame(old_frame, new_frame,
-                                    PerformanceManagerImpl::GetGraphImpl());
+  // Deactivate `old_frame` and its descendants immediately since outgoing
+  // subframes are no longer active (e.g. entering BFCache or unloading).
+  if (old_frame) {
+    CHECK(!old_host->IsActive());
+    GraphImplOperations::VisitFrameAndChildrenPreOrder(
+        old_frame, [](FrameNodeImpl* frame_node) {
+          frame_node->SetIsActive(false);
+          return true;
+        });
+  }
 }
 
 void PerformanceManagerTabHelper::RenderFrameHostStateChanged(
@@ -323,6 +365,10 @@ void PerformanceManagerTabHelper::RenderFrameHostStateChanged(
   if (!frame_node) {
     return;
   }
+  // Ensure the frame's FrameTreeNodeId is up to date in case this was a
+  // prerendered page that transferred to the primary FrameTreeNode on
+  // activation.
+  frame_node->SetFrameTreeNodeId(render_frame_host->GetFrameTreeNodeId());
   frame_node->SetIsActive(render_frame_host->IsActive());
 }
 
@@ -451,8 +497,90 @@ void PerformanceManagerTabHelper::OnFrameIsCapturingMediaStreamChanged(
   frame_node->SetIsCapturingMediaStream(is_capturing_media_stream);
 }
 
+void PerformanceManagerTabHelper::SetTickClockForTesting(
+    const base::TickClock* tick_clock) {
+  tick_clock_ = tick_clock ? tick_clock : base::DefaultTickClock::GetInstance();
+}
+
+bool PerformanceManagerTabHelper::
+    IsClientRedirectOfUserOrBrowserInitiatedDocument() const {
+  return is_current_document_user_or_browser_initiated_ &&
+         current_document_commit_time_.has_value() &&
+         tick_clock_->NowTicks() - *current_document_commit_time_ <=
+             kClientRedirectInheritanceWindow;
+}
+
+void PerformanceManagerTabHelper::UpdateIsUserOrBrowserInitiatedLoad() {
+  page_node_->SetIsUserOrBrowserInitiatedLoad(
+      pending_navigations_.empty()
+          ? is_current_document_user_or_browser_initiated_
+          : pending_navigations_.back().is_user_or_browser_initiated);
+}
+
+// The page node's IsUserOrBrowserInitiatedLoad() property is set when a
+// navigation starts, so that the new renderer process gets the right priority
+// before commit. It becomes the value of the current document when the
+// navigation commits, and reverts to it when the navigation doesn't commit.
+// When navigations overlap, the page follows the most recently started pending
+// one (see UpdateIsUserOrBrowserInitiatedLoad()).
+//
+// A navigation that isn't user- or browser-initiated but starts shortly after
+// the current document committed is a client redirect (e.g. link shorteners,
+// SSO, meta-refresh) and inherits the current document's value (see
+// kClientRedirectInheritanceWindow).
+//
+// Known gap, acceptable because it is short and at worst gives a load the
+// boost it had before this property existed (or withholds it only briefly):
+// between WebContentsObserver::DidStartLoading() and DidStartNavigation(), the
+// page is loading but still has the previous value. This window includes
+// waiting for a beforeunload handler, if the current document has one.
+// A new page's first navigation isn't affected: the initial empty document has
+// no beforeunload handler, so the navigation starts in the same task that
+// begins loading.
+//
+// Known limitation: the synchronous about:blank commit of `window.open()` is
+// renderer-initiated without transient activation, so it isn't user-initiated.
+// As a result, a navigation that follows it (e.g. `popup.location = url` from
+// the opener, whose transient activation was consumed by `window.open()`)
+// isn't user-initiated either.
+void PerformanceManagerTabHelper::DidStartNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (!IsPrimaryMainFrameCrossDocument(navigation_handle)) {
+    return;
+  }
+  const bool is_user_or_browser_initiated =
+      IsUserOrBrowserInitiated(navigation_handle) ||
+      IsClientRedirectOfUserOrBrowserInitiatedDocument();
+  pending_navigations_.push_back(
+      {navigation_handle->GetNavigationId(), is_user_or_browser_initiated});
+  UpdateIsUserOrBrowserInitiatedLoad();
+}
+
 void PerformanceManagerTabHelper::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
+  if (IsPrimaryMainFrameCrossDocument(navigation_handle)) {
+    bool is_user_or_browser_initiated;
+    auto it = std::ranges::find(pending_navigations_,
+                                navigation_handle->GetNavigationId(),
+                                &PendingNavigation::navigation_id);
+    if (it != pending_navigations_.end()) {
+      is_user_or_browser_initiated = it->is_user_or_browser_initiated;
+      pending_navigations_.erase(it);
+    } else {
+      // The navigation started before this helper observed it. Its start time
+      // is unknown, so client redirect inheritance can't be evaluated. At
+      // worst, a client redirect isn't boosted.
+      is_user_or_browser_initiated =
+          IsUserOrBrowserInitiated(navigation_handle);
+    }
+    if (navigation_handle->HasCommitted()) {
+      is_current_document_user_or_browser_initiated_ =
+          is_user_or_browser_initiated;
+      current_document_commit_time_ = tick_clock_->NowTicks();
+    }
+    UpdateIsUserOrBrowserInitiatedLoad();
+  }
+
   if (!navigation_handle->HasCommitted())
     return;
 
@@ -506,15 +634,12 @@ std::optional<blink::mojom::PermissionStatus> PerformanceManagerTabHelper::
   content::PermissionController* permission_controller =
       web_contents()->GetBrowserContext()->GetPermissionController();
   if (!permission_controller) {
-    CHECK(permission_controller_subscription_id_.is_null());
+    CHECK(!permission_controller_subscription_);
     return std::nullopt;
   }
 
-  // Cancel previous change subscription.
-  MaybeUnsubscribeFromNotificationPermissionStatusChange(permission_controller);
-
-  // Create new change subscription.
-  permission_controller_subscription_id_ =
+  // Assigning the handle cancels the previous change subscription.
+  permission_controller_subscription_ =
       permission_controller->SubscribeToPermissionResultChange(
           content::PermissionDescriptorUtil::
               CreatePermissionDescriptorForPermissionType(
@@ -541,18 +666,6 @@ std::optional<blink::mojom::PermissionStatus> PerformanceManagerTabHelper::
 void PerformanceManagerTabHelper::OnNotificationPermissionResultChange(
     content::PermissionResult permission_result) {
   page_node_->OnNotificationPermissionStatusChange(permission_result.status);
-}
-
-void PerformanceManagerTabHelper::
-    MaybeUnsubscribeFromNotificationPermissionStatusChange(
-        content::PermissionController* permission_controller) {
-  if (permission_controller_subscription_id_.is_null()) {
-    return;
-  }
-
-  CHECK(permission_controller);
-  permission_controller->UnsubscribeFromPermissionResultChange(
-      permission_controller_subscription_id_);
 }
 
 void PerformanceManagerTabHelper::FrameReceivedUserActivation(
@@ -619,8 +732,12 @@ void PerformanceManagerTabHelper::SurfaceEmbedChildWebContentsDetached(
   auto* page = helper->page_node_.get();
   CHECK(page);
 
-  CHECK(page->embedder_frame_node());
-  page->ClearEmbedderFrameNode();
+  // The embedder frame node may already have left the graph (e.g. the
+  // embedder's renderer process died), in which case the embedding
+  // relationship was already severed.
+  if (page->embedder_frame_node()) {
+    page->ClearEmbedderFrameNode();
+  }
 }
 
 void PerformanceManagerTabHelper::WebContentsDestroyed() {

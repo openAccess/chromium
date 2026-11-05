@@ -20,10 +20,9 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "chrome/browser/download/download_prefs.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/capture_mode/chrome_capture_mode_delegate.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chromeos/ash/components/dbus/cros_disks/cros_disks_client.h"
 #include "content/public/test/browser_test.h"
@@ -162,7 +161,7 @@ class RecordingServiceBrowserTest : public InProcessBrowserTest {
         browser_window->GetRootWindow(), browser_window);
     // To improve the test efficiency, we set the display to a small size.
     display::test::DisplayManagerTestApi(ash::ShellTestApi().display_manager())
-        .UpdateDisplay("300x200");
+        .UpdateDisplay("320x200");
     // To avoid flaky tests, we disable audio recording, since the bots won't
     // capture any audio and won't produce any audio frames. This will cause the
     // muxer to discard video frames if it expects audio frames but got none,
@@ -239,7 +238,7 @@ IN_PROC_BROWSER_TEST_F(RecordingServiceBrowserTest, RecordWindow) {
 
 IN_PROC_BROWSER_TEST_F(RecordingServiceBrowserTest, RecordWindowMultiDisplay) {
   display::test::DisplayManagerTestApi(ash::ShellTestApi().display_manager())
-      .UpdateDisplay("300x200,301+0-400x350");
+      .UpdateDisplay("320x200,321+0-400x350");
 
   ash::CaptureModeTestApi capture_mode_test_api;
   capture_mode_test_api.StartForWindow(/*for_video=*/true);
@@ -266,12 +265,12 @@ IN_PROC_BROWSER_TEST_F(RecordingServiceBrowserTest, RecordWindowMultiDisplay) {
 
   // Record for a little bit, then move the window to the secondary display.
   WaitForMilliseconds(600);
-  move_browser_to_display_at_point(gfx::Point(320, 50));
+  move_browser_to_display_at_point({340, 50});
   capture_mode_test_api.FlushRecordingServiceForTesting();
 
   // Record for a little bit, then resize the browser window.
   WaitForMilliseconds(600);
-  GetBrowserWindow()->SetBounds(gfx::Rect(310, 10, 300, 300));
+  GetBrowserWindow()->SetBounds({330, 10, 300, 300});
   capture_mode_test_api.FlushRecordingServiceForTesting();
 
   // Record for a little bit, then move the browser window back to the smaller

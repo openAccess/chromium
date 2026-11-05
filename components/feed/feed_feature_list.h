@@ -69,6 +69,11 @@ BASE_DECLARE_FEATURE(kRefreshFeedOnRestart);
 COMPONENT_EXPORT(COMPONENTS_FEED_FEATURE_LIST)
 BASE_DECLARE_FEATURE(kFeedContainment);
 
+// Feature that clips the top corners of the first card to the rounded top of
+// the feed containment.
+COMPONENT_EXPORT(COMPONENTS_FEED_FEATURE_LIST)
+BASE_DECLARE_FEATURE(kFeedContainmentClipFirstCard);
+
 // Feature that unmount RecyclerBinder on view detach to fix a memory leak.
 COMPONENT_EXPORT(COMPONENTS_FEED_FEATURE_LIST)
 BASE_DECLARE_FEATURE(kFeedRecyclerBinderUnmountOnDetach);
@@ -88,6 +93,13 @@ BASE_DECLARE_FEATURE(kAndroidOpenIncognitoAsWindow);
 // Feature that enables wide screen feed for foldables.
 COMPONENT_EXPORT(COMPONENTS_FEED_FEATURE_LIST)
 BASE_DECLARE_FEATURE(kWideScreenFeedForFoldables);
+
+// Feature flag for disabling the feed's item animations with a null
+// ItemAnimator while the NTP scroll position is restored, so that removed
+// items are released instead of staying drawn as stale views.
+// See b/517926260.
+COMPONENT_EXPORT(COMPONENTS_FEED_FEATURE_LIST)
+BASE_DECLARE_FEATURE(kFeedNullItemAnimatorOnScrollRestore);
 
 COMPONENT_EXPORT(COMPONENTS_FEED_FEATURE_LIST)
 BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kFeedCloseRefreshDelay);

@@ -12,6 +12,23 @@ namespace webauthn::features {
 // Controls whether device authorization keys are fetched from the server.
 BASE_DECLARE_FEATURE(kFetchDeviceAuthorizationKeys);
 
+// Cache version for stored device authorization keys. If the stored cache
+// version on the device does not match this value, local keys are invalidated
+// and re-fetched from the server.
+inline constexpr base::FeatureParam<int> kDeviceAuthorizationKeyCacheVersion{
+    &kFetchDeviceAuthorizationKeys, "cache_version", 1};
+
+// Controls whether device authorization keys are fetched silently on startup.
+BASE_DECLARE_FEATURE(kDeviceAuthorizationStartupSilentFetch);
+
+// Controls whether decrypting passkeys with the device authorization key scheme
+// is enabled.
+BASE_DECLARE_FEATURE(kDeviceAuthorizationPasskeyDecryption);
+
+// Controls whether encrypting passkeys with the device authorization key scheme
+// is enabled.
+BASE_DECLARE_FEATURE(kDeviceAuthorizationPasskeyEncryption);
+
 }  // namespace webauthn::features
 
 #endif  // COMPONENTS_WEBAUTHN_CORE_BROWSER_DEVICE_AUTHORIZATION_DEVICE_AUTHORIZATION_FEATURES_H_

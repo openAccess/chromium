@@ -21,8 +21,11 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+#include "components/sessions/core/session_id.h"
 #include "components/split_tabs/split_tab_visual_data.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
+#include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
@@ -80,8 +83,10 @@ int GetClosestValidIndexBetweenTabGroups(TabStripModel& tab_strip,
 
     // Check that `target_start` and `target_end` are not in the middle of any
     // group.
-    DCHECK(!IsInMiddleOfTabGroup(tab_strip, target_start));
-    DCHECK(!IsInMiddleOfTabGroup(tab_strip, target_end));
+    CHECK(!IsInMiddleOfTabGroup(tab_strip, target_start),
+          base::NotFatalUntil::M162);
+    CHECK(!IsInMiddleOfTabGroup(tab_strip, target_end),
+          base::NotFatalUntil::M162);
 
     // Find the offset between `index_to_check` and `target_start` and
     // `target_end` and apply the lesser of the offsets to
@@ -324,6 +329,10 @@ std::vector<tab_groups::TabGroupId> TabListBridge::ListTabGroups() {
   return tab_strip_->group_model()->ListTabGroups();
 }
 
+std::set<split_tabs::SplitTabId> TabListBridge::ListSplits() {
+  return tab_strip_->ListSplits();
+}
+
 std::optional<tab_groups::TabGroupVisualData>
 TabListBridge::GetTabGroupVisualData(tab_groups::TabGroupId group_id) {
   // Not all browsers support tab groups.
@@ -339,6 +348,14 @@ TabListBridge::GetTabGroupVisualData(tab_groups::TabGroupId group_id) {
     return std::nullopt;
   }
   return *visual_data;
+}
+
+std::optional<split_tabs::SplitTabVisualData>
+TabListBridge::GetSplitTabVisualData(split_tabs::SplitTabId split_id) {
+  if (!tab_strip_->ContainsSplit(split_id)) {
+    return std::nullopt;
+  }
+  return *tab_strip_->GetSplitData(split_id)->visual_data();
 }
 
 gfx::Range TabListBridge::GetTabGroupTabIndices(
@@ -375,7 +392,8 @@ std::optional<tab_groups::TabGroupId> TabListBridge::CreateTabGroup(
 }
 
 std::optional<split_tabs::SplitTabId> TabListBridge::CreateSplit(
-    const std::vector<tabs::TabHandle>& tabs) {
+    const std::vector<tabs::TabHandle>& tabs,
+    const split_tabs::SplitTabVisualData& visual_data) {
   std::vector<int> tab_indices;
   tab_indices.reserve(tabs.size());
   for (const auto& tab_handle : tabs) {
@@ -385,9 +403,7 @@ std::optional<split_tabs::SplitTabId> TabListBridge::CreateSplit(
     tab_indices.push_back(index);
   }
   return tab_strip_->AddToNewSplit(
-      // TODO(https://crbug.com/545736199): Update visual data to support either
-      // vertical or horizontal splits layout.
-      std::move(tab_indices), split_tabs::SplitTabVisualData(),
+      std::move(tab_indices), visual_data,
       split_tabs::SplitTabCreatedSource::kExtensionsApi);
 }
 

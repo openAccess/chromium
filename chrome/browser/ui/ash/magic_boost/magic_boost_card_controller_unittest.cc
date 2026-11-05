@@ -8,6 +8,8 @@
 #include <string>
 
 #include "ash/system/mahi/test/mock_mahi_media_app_events_proxy.h"
+#include "base/files/file_path.h"
+#include "base/i18n/language_tag.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/magic_boost/magic_boost_state.h"
@@ -23,48 +25,71 @@
 #include "chromeos/components/mahi/public/cpp/mahi_media_app_events_proxy.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/application_locale_storage/application_locale_storage.h"
+#include "components/metrics/metrics_state_manager.h"
+#include "components/metrics/startup_visibility.h"
+#include "components/metrics/test/test_enabled_state_provider.h"
+#include "components/variations/service/test_variations_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/views/view_utils.h"
 
 namespace chromeos {
 
 namespace {
-const std::string& GetApplicationLocale() {
+const base::i18n::LanguageTag& GetApplicationLocale() {
   return TestingBrowserProcess::GetGlobal()
       ->GetFeatures()
       ->application_locale_storage()
-      ->Get();
+      ->GetTag();
 }
 }  // namespace
 
 class MagicBoostCardControllerTest : public ChromeViewsTestBase {
  public:
-  MagicBoostCardControllerTest() {
-    // The magic boost card only exists when Magic Boost Revamp logic is
-    // disabled.
-    features_.InitAndDisableFeature(chromeos::features::kMagicBoostRevamp);
-  }
+  MagicBoostCardControllerTest() = default;
 
   // ChromeViewsTestBase:
   void SetUp() override {
+    // Needed for `MockMagicBoostState`.
+    PrefService* local_state =
+        TestingBrowserProcess::GetGlobal()->local_state();
+    metrics_state_manager_ = metrics::MetricsStateManager::Create(
+        local_state, &metrics_enabled_state_provider_,
+        /*backup_registry_key=*/std::wstring(),
+        /*user_data_dir=*/base::FilePath(),
+        metrics::StartupVisibility::kUnknown);
+    test_variations_service_ =
+        std::make_unique<variations::TestVariationsService>(
+            local_state, metrics_state_manager_.get());
+    TestingBrowserProcess::GetGlobal()->SetVariationsService(
+        test_variations_service_.get());
+
     ChromeViewsTestBase::SetUp();
 
     // Replace the production `MagicBoostController` with a mock for testing
     card_controller_.SetMagicBoostControllerForTesting(&controller_);
     card_controller_.SetOptInFeature(ash::magic_boost::OptInFeatures::kHmrOnly);
 
-    magic_boost_state_ = std::make_unique<ash::MockMagicBoostState>();
+    magic_boost_state_ = std::make_unique<ash::MockMagicBoostState>(
+        TestingBrowserProcess::GetGlobal()->variations_service());
     magic_boost_state_->set_editor_panel_manager_for_test(
         &mock_editor_manager_);
   }
 
   void TearDown() override {
+    // The testing `MagicBoostController` is stored in a process global, so it
+    // must be cleared here. Otherwise it dangles for any test that runs later
+    // in the same process and reaches `GetMagicBoostController()`.
+    card_controller_.SetMagicBoostControllerForTesting(nullptr);
+
     magic_boost_state_.reset();
     ChromeViewsTestBase::TearDown();
+
+    TestingBrowserProcess::GetGlobal()->SetVariationsService(nullptr);
+    test_variations_service_.reset();
+    metrics_state_manager_.reset();
   }
 
  protected:
-  base::test::ScopedFeatureList features_;
   // Providing a mock MahiMediaAppEvnetsProxy to satisfy
   // MagicBoostCardController.
   testing::NiceMock<::ash::MockMahiMediaAppEventsProxy>
@@ -74,6 +99,10 @@ class MagicBoostCardControllerTest : public ChromeViewsTestBase {
 
   testing::NiceMock<ash::MockEditorPanelManager> mock_editor_manager_;
 
+  metrics::TestEnabledStateProvider metrics_enabled_state_provider_{
+      /*consent=*/false, /*enabled=*/false};
+  std::unique_ptr<metrics::MetricsStateManager> metrics_state_manager_;
+  std::unique_ptr<variations::TestVariationsService> test_variations_service_;
   std::unique_ptr<ash::MockMagicBoostState> magic_boost_state_;
   MagicBoostCardController card_controller_{TestingBrowserProcess::GetGlobal()
                                                 ->GetFeatures()
@@ -134,10 +163,10 @@ TEST_F(MagicBoostCardControllerTest, BoundsChanged) {
 
 TEST_F(MagicBoostCardControllerTest, DisclaimerUi) {
   int expected_display_id = 2;
-  auto expected_action = ash::magic_boost::TransitionAction::kShowEditorPanel;
+  // The opt-in card flow never requests a transition to another surface.
+  auto expected_action = ash::magic_boost::TransitionAction::kDoNothing;
   auto expected_features = ash::magic_boost::OptInFeatures::kOrcaAndHmr;
 
-  card_controller_.set_transition_action(expected_action);
   card_controller_.SetOptInFeature(expected_features);
 
   EXPECT_CALL(controller_, ShowDisclaimerUi)
@@ -225,7 +254,7 @@ TEST_F(MagicBoostCardControllerTest, PdfContextMenuConsentStatus) {
 
 TEST_F(MagicBoostCardControllerTest, PdfContextMenuIncludeOrca) {
   magic_boost_state_->AsyncWriteConsentStatus(
-      chromeos::HMRConsentStatus::kUnset);
+      chromeos::HMRConsentStatus::kDeclined);
 
   ON_CALL(*magic_boost_state_, ShouldIncludeOrcaInOptIn)
       .WillByDefault([](base::OnceCallback<void(bool)> callback) {
@@ -240,7 +269,7 @@ TEST_F(MagicBoostCardControllerTest, PdfContextMenuIncludeOrca) {
 
 TEST_F(MagicBoostCardControllerTest, PdfContextMenuNotIncludeOrca) {
   magic_boost_state_->AsyncWriteConsentStatus(
-      chromeos::HMRConsentStatus::kUnset);
+      chromeos::HMRConsentStatus::kDeclined);
 
   ON_CALL(*magic_boost_state_, ShouldIncludeOrcaInOptIn)
       .WillByDefault([](base::OnceCallback<void(bool)> callback) {

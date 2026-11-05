@@ -11,7 +11,6 @@ import android.content.res.Resources;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.FrameLayout;
-import android.widget.LinearLayout;
 
 import androidx.annotation.StringRes;
 
@@ -22,6 +21,8 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
 import org.chromium.components.facilitated_payments.core.ui_utils.UiEvent;
 import org.chromium.ui.base.LocalizationUtils;
 
@@ -32,10 +33,13 @@ import org.chromium.ui.base.LocalizationUtils;
  */
 @NullMarked
 class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
-    // Contains everything to be shown in the bottom sheet. Includes the drag handler.
-    private final LinearLayout mView;
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder()
+                    .setUserCritical(UserCriticalFeature.FACILITATED_PAYMENTS_PAYMENT_METHODS)
+                    .build();
+
     // Holds the screens to be displayed in the bottom sheet. To show different screens, simply swap
-    // the view contained. Does not include the drag handler.
+    // the view contained.
     private final FrameLayout mScreenHolder;
     private final BottomSheetController mBottomSheetController;
     // The screen currently being shown.
@@ -80,18 +84,17 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
     FacilitatedPaymentsPaymentMethodsView(
             Context context, BottomSheetController bottomSheetController) {
         mBottomSheetController = bottomSheetController;
-        mView =
-                (LinearLayout)
+        mScreenHolder =
+                (FrameLayout)
                         LayoutInflater.from(context)
                                 .inflate(R.layout.facilitated_payments_sequence_view, null);
-        mScreenHolder = (FrameLayout) mView.findViewById(R.id.screen_holder);
 
         // Apply RTL layout changes.
         int layoutDirection =
                 LocalizationUtils.isLayoutRtl()
                         ? View.LAYOUT_DIRECTION_RTL
                         : View.LAYOUT_DIRECTION_LTR;
-        mView.setLayoutDirection(layoutDirection);
+        mScreenHolder.setLayoutDirection(layoutDirection);
     }
 
     /**
@@ -166,12 +169,17 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
 
     @Override
     public View getContentView() {
-        return mView;
+        return mScreenHolder;
     }
 
     @Override
     public @Nullable View getToolbarView() {
         return null;
+    }
+
+    @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
     }
 
     @Override
@@ -182,6 +190,11 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
     @Override
     public boolean swipeToDismissEnabled() {
         return false;
+    }
+
+    @Override
+    public boolean showHandlebar() {
+        return true;
     }
 
     @Override
@@ -205,12 +218,6 @@ class FacilitatedPaymentsPaymentMethodsView implements BottomSheetContent {
     @Override
     public int getVerticalScrollOffset() {
         return assumeNonNull(mCurrentScreen).getVerticalScrollOffset();
-    }
-
-    @Override
-    public String getSheetContentDescription(Context context) {
-        return context.getString(
-                R.string.facilitated_payments_payment_methods_bottom_sheet_content_description);
     }
 
     @Override

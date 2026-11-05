@@ -5,13 +5,18 @@
 #import "ios/chrome/browser/app_bar/coordinator/app_bar_mediator.h"
 
 #import <memory>
+#import <string_view>
+#import <vector>
 
+#import "base/apple/foundation_util.h"
 #import "base/base64.h"
 #import "base/run_loop.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/metrics/histogram_tester.h"
+#import "base/test/metrics/user_action_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/application_locale_storage/application_locale_storage.h"
+#import "components/lens/lens_overlay_permission_utils.h"
 #import "components/omnibox/browser/mock_aim_eligibility_service.h"
 #import "components/omnibox/browser/omnibox_prefs.h"
 #import "components/open_from_clipboard/fake_clipboard_recent_content.h"
@@ -27,18 +32,17 @@
 #import "components/tab_groups/tab_group_visual_data.h"
 #import "ios/chrome/browser/app_bar/ui/app_bar_constants.h"
 #import "ios/chrome/browser/app_bar/ui/app_bar_consumer.h"
+#import "ios/chrome/browser/browser_view/model/browser_view_visibility_notifier_browser_agent.h"
 #import "ios/chrome/browser/browsing_data/model/browsing_data_remover_factory.h"
+#import "ios/chrome/browser/bubble/model/tab_based_iph_browser_agent.h"
 #import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h"
 #import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent_observer_bridge.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/test/test_fullscreen_controller.h"
 #import "ios/chrome/browser/intelligence/bwg/model/fake_gemini_service.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_browser_agent.h"
-#import "ios/chrome/browser/intelligence/bwg/model/gemini_configuration.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
-#import "ios/chrome/browser/intelligence/bwg/model/gemini_service_impl.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
-#import "ios/chrome/browser/intelligence/bwg/utils/gemini_prefs.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/lens/ui_bundled/lens_entrypoint.h"
 #import "ios/chrome/browser/lens_overlay/model/lens_overlay_tab_helper.h"
@@ -48,6 +52,7 @@
 #import "ios/chrome/browser/ntp/model/new_tab_page_tab_helper.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/incognito_lock_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/incognito_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/lens_overlay_state_notifier.h"
@@ -56,6 +61,7 @@
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
 #import "ios/chrome/browser/shared/model/web_state_list/test/fake_web_state_list_delegate.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -75,7 +81,6 @@
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -86,6 +91,8 @@
 #import "ios/chrome/browser/url_loading/model/fake_url_loading_browser_agent.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_browser_agent.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_notifier_browser_agent.h"
+#import "ios/chrome/browser/web/model/web_navigation_browser_agent.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_variations_service.h"
 #import "ios/chrome/test/testing_application_context.h"
@@ -94,9 +101,11 @@
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "net/base/mock_network_change_notifier.h"
+#import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "ui/base/l10n/l10n_util_mac.h"
 
 @protocol TestAppBarConsumer <AppBarConsumer,
                               FullscreenUIElement,
@@ -111,15 +120,96 @@ namespace {
 
 MenuScenarioHistogram kTestMenuScenario = kMenuScenarioHistogramToolbarMenu;
 
+// Indexes of the entries of the assistant button menu when all of them are
+// available, as the unavailable entries are hidden.
+constexpr NSUInteger kAssistantButtonMenuAskGeminiIndex = 0;
+constexpr NSUInteger kAssistantButtonMenuLensIndex = 1;
+constexpr NSUInteger kAssistantButtonMenuAccountIndex = 2;
+// Number of entries of the assistant button menu when all of them are
+// available.
+constexpr NSUInteger kAssistantButtonMenuEntryCount = 3;
+
+// Value of the preferred assistant button state outside of the enum range.
+constexpr int kInvalidAssistantButtonState =
+    static_cast<int>(AppBarAssistantButtonPreferredState::kMaxValue) + 1;
+
+// User actions recorded when selecting the entries of the assistant button
+// menu.
+constexpr std::string_view kAssistantButtonMenuAskGeminiUserAction =
+    "MobileToolbarAssistantCustomizationAskGeminiSelected";
+constexpr std::string_view kAssistantButtonMenuLensUserAction =
+    "MobileToolbarAssistantCustomizationLensSelected";
+constexpr std::string_view kAssistantButtonMenuAccountUserAction =
+    "MobileToolbarAssistantCustomizationAccountSelected";
+
+// Expected entry of the assistant button menu.
+struct ExpectedAssistantButtonMenuEntry {
+  // ID of the title string of the entry.
+  int title_id;
+  // Whether the entry is checked.
+  bool checked;
+};
+
+// Expects `menu` to contain exactly `expected_entries`, in this order, all of
+// them being enabled.
+void ExpectAssistantButtonMenuEntries(
+    UIMenu* menu,
+    const std::vector<ExpectedAssistantButtonMenuEntry>& expected_entries) {
+  ASSERT_TRUE(menu);
+  ASSERT_EQ(expected_entries.size(), menu.children.count);
+  for (size_t index = 0; index < expected_entries.size(); ++index) {
+    const ExpectedAssistantButtonMenuEntry& expected = expected_entries[index];
+    NSString* title = l10n_util::GetNSString(expected.title_id);
+    SCOPED_TRACE(base::SysNSStringToUTF8(title));
+    UIAction* action =
+        base::apple::ObjCCastStrict<UIAction>(menu.children[index]);
+    EXPECT_NSEQ(title, action.title);
+    EXPECT_EQ(expected.checked ? UIMenuElementStateOn : UIMenuElementStateOff,
+              action.state);
+    EXPECT_FALSE(action.attributes & UIMenuElementAttributesDisabled);
+  }
+}
+
+// Expects `tester` to have recorded the user actions of the "Ask Gemini",
+// "Lens" and "Account" entries of the assistant button menu respectively
+// `ask_gemini_count`, `lens_count` and `account_count` times.
+void ExpectAssistantButtonMenuUserActionCounts(
+    const base::UserActionTester& tester,
+    int ask_gemini_count,
+    int lens_count,
+    int account_count) {
+  EXPECT_EQ(ask_gemini_count,
+            tester.GetActionCount(kAssistantButtonMenuAskGeminiUserAction));
+  EXPECT_EQ(lens_count,
+            tester.GetActionCount(kAssistantButtonMenuLensUserAction));
+  EXPECT_EQ(account_count,
+            tester.GetActionCount(kAssistantButtonMenuAccountUserAction));
+}
+
+// A FakeNavigationManager that records calls to `GoToIndex`.
+class TestNavigationManager : public web::FakeNavigationManager {
+ public:
+  void GoToIndex(int index) override {
+    last_navigated_index_ = index;
+    SetLastCommittedItemIndex(index);
+  }
+  int last_navigated_index() const { return last_navigated_index_; }
+
+ private:
+  int last_navigated_index_ = -1;
+};
+
 }  // namespace
 
 @interface AppBarMediator (Test)
 - (void)updateConsumer;
 - (void)updateAssistantButton;
 - (void)addNewTabInCurrentTabGroup;
+- (void)navigateToPageForItem:(web::NavigationItem*)item;
 @end
 
-class AppBarMediatorTest : public PlatformTest {
+class AppBarMediatorTest : public PlatformTest,
+                           public testing::WithParamInterface<bool> {
  protected:
   AppBarMediatorTest() {
     scoped_feature_list_.InitWithFeatures(
@@ -131,12 +221,15 @@ class AppBarMediatorTest : public PlatformTest {
                                 BuildIdentityManagerForTests));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateMockSyncService));
-    builder.AddTestingFactory(GeminiServiceFactory::GetInstance(),
-                              GeminiServiceFactory::GetDefaultFactory());
+    builder.AddTestingFactory(
+        GeminiServiceFactory::GetInstance(),
+        base::BindRepeating(
+            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
+              return std::make_unique<FakeGeminiService>();
+            }));
     builder.AddTestingFactory(
         OptimizationGuideServiceFactory::GetInstance(),
         OptimizationGuideServiceFactory::GetDefaultFactory());
@@ -144,8 +237,9 @@ class AppBarMediatorTest : public PlatformTest {
     // in IsGeminiLocationEligible().
     SetLocationEligible(true);
 
-    regular_profile_ = std::move(builder).Build();
-    incognito_profile_ = TestProfileIOS::Builder().Build();
+    regular_profile_ =
+        profile_manager_.AddProfileWithBuilder(std::move(builder));
+    incognito_profile_ = regular_profile_->GetOffTheRecordProfile();
 
     // IdentityTestEnvironment requires the SigninClient, which is created
     // when the profile is built. But it can also be used as a member.
@@ -153,19 +247,14 @@ class AppBarMediatorTest : public PlatformTest {
     // as they share the same global SystemIdentityManager.
 
     auth_service_ =
-        AuthenticationServiceFactory::GetForProfile(regular_profile_.get());
-    gemini_service_ptr_ = std::make_unique<GeminiServiceImpl>(
-        regular_profile_.get(), auth_service_,
-        IdentityManagerFactory::GetForProfile(regular_profile_.get()),
-        regular_profile_->GetTestingPrefService(),
-        OptimizationGuideServiceFactory::GetForProfile(regular_profile_.get()));
+        AuthenticationServiceFactory::GetForProfile(regular_profile_);
+    fake_gemini_service_ = static_cast<FakeGeminiService*>(
+        GeminiServiceFactory::GetForProfile(regular_profile_));
     account_manager_service_ =
-        ChromeAccountManagerServiceFactory::GetForProfile(
-            regular_profile_.get());
+        ChromeAccountManagerServiceFactory::GetForProfile(regular_profile_);
 
-    regular_browser_ = std::make_unique<TestBrowser>(regular_profile_.get());
-    incognito_browser_ =
-        std::make_unique<TestBrowser>(incognito_profile_.get());
+    regular_browser_ = std::make_unique<TestBrowser>(regular_profile_);
+    incognito_browser_ = std::make_unique<TestBrowser>(incognito_profile_);
 
     FullscreenBrowserAgent::CreateForBrowser(regular_browser_.get());
     FullscreenBrowserAgent::CreateForBrowser(incognito_browser_.get());
@@ -200,6 +289,7 @@ class AppBarMediatorTest : public PlatformTest {
                      forProtocol:@protocol(QRScannerCommands)];
 
     UrlLoadingNotifierBrowserAgent::CreateForBrowser(regular_browser_.get());
+    UrlLoadingNotifierBrowserAgent::CreateForBrowser(incognito_browser_.get());
     FakeUrlLoadingBrowserAgent::InjectForBrowser(regular_browser_.get());
 
     url_loader_ = FakeUrlLoadingBrowserAgent::FromUrlLoadingBrowserAgent(
@@ -226,44 +316,64 @@ class AppBarMediatorTest : public PlatformTest {
 
     GeminiBrowserAgent::CreateForBrowser(regular_browser_.get());
 
-    aim_eligibility_service_ = std::make_unique<MockAimEligibilityService>(
-        *regular_profile_->GetTestingPrefService(),
-        search_engines_test_environment_.template_url_service(),
-        regular_profile_->GetSharedURLLoaderFactory(),
-        IdentityManagerFactory::GetForProfile(regular_profile_.get()));
+    aim_eligibility_service_ = CreateMockAimEligibilityService();
     ON_CALL(*aim_eligibility_service_, IsAimEligible())
         .WillByDefault(testing::Return(false));
     ON_CALL(*aim_eligibility_service_, IsServerEligibilityEnabled())
         .WillByDefault(testing::Return(false));
 
+    // Lens is eligible without any tab, so disable it by default to let tests
+    // control its availability with `overrideLensAvailabilityForTesting`.
+    regular_profile_->GetPrefs()->SetInteger(
+        lens::prefs::kLensOverlaySettings,
+        static_cast<int>(
+            lens::prefs::LensOverlaySettingsPolicyValue::kDisabled));
+    WebNavigationBrowserAgent::CreateForBrowser(regular_browser_.get());
+    WebNavigationBrowserAgent::CreateForBrowser(incognito_browser_.get());
+    BrowserViewVisibilityNotifierBrowserAgent::CreateForBrowser(
+        regular_browser_.get());
+    BrowserViewVisibilityNotifierBrowserAgent::CreateForBrowser(
+        incognito_browser_.get());
+    TabBasedIPHBrowserAgent::CreateForBrowser(regular_browser_.get());
+    TabBasedIPHBrowserAgent::CreateForBrowser(incognito_browser_.get());
+
     mediator_ = [[AppBarMediator alloc]
-            initWithRegularWebStateList:regular_web_state_list_.get()
-                  incognitoWebStateList:incognito_web_state_list_.get()
-            regularFullscreenController:TestFullscreenController::FromBrowser(
-                                            regular_browser_.get())
-          incognitoFullscreenController:TestFullscreenController::FromBrowser(
-                                            incognito_browser_.get())
-          regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                            regular_browser_.get())
-        incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                            incognito_browser_.get())
-                   regularActionFactory:regular_action_factory_
-                 incognitoActionFactory:incognito_action_factory_
-                            prefService:regular_profile_
-                                            ->GetTestingPrefService()
-                     templateURLService:search_engines_test_environment_
-                                            .template_url_service()
-                  authenticationService:auth_service_
-                        identityManager:IdentityManagerFactory::GetForProfile(
-                                            regular_profile_.get())
-                          geminiService:gemini_service_ptr_.get()
-                     geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
-                                            regular_browser_.get())
-                  aimEligibilityService:aim_eligibility_service_.get()
-                              URLLoader:url_loader_
-                           tabGridState:tab_grid_state_
-                         incognitoState:incognito_state_
-               lensOverlayStateNotifier:lens_overlay_state_];
+               initWithRegularWebStateList:regular_web_state_list_.get()
+                     incognitoWebStateList:incognito_web_state_list_.get()
+               regularFullscreenController:
+                   TestFullscreenController::FromBrowser(regular_browser_.get())
+             incognitoFullscreenController:
+                 TestFullscreenController::FromBrowser(incognito_browser_.get())
+             regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                               regular_browser_.get())
+           incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                               incognito_browser_.get())
+          regularWebNavigationBrowserAgent:
+              WebNavigationBrowserAgent::FromBrowser(regular_browser_.get())
+        incognitoWebNavigationBrowserAgent:
+            WebNavigationBrowserAgent::FromBrowser(incognito_browser_.get())
+                   regularTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                               regular_browser_.get())
+                 incognitoTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                               incognito_browser_.get())
+                      regularActionFactory:regular_action_factory_
+                    incognitoActionFactory:incognito_action_factory_
+                                   profile:regular_profile_.get()
+                               prefService:regular_profile_->GetPrefs()
+                        templateURLService:search_engines_test_environment_
+                                               .template_url_service()
+                     authenticationService:auth_service_
+                           identityManager:IdentityManagerFactory::
+                                               GetForProfile(
+                                                   regular_profile_.get())
+                             geminiService:fake_gemini_service_
+                        geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                               regular_browser_.get())
+                     aimEligibilityService:aim_eligibility_service_.get()
+                                 URLLoader:url_loader_
+                              tabGridState:tab_grid_state_
+                            incognitoState:incognito_state_
+                  lensOverlayStateNotifier:lens_overlay_state_];
 
     consumer_ = OCMProtocolMock(@protocol(TestAppBarConsumer));
     mediator_.consumer = consumer_;
@@ -284,12 +394,24 @@ class AppBarMediatorTest : public PlatformTest {
     mock_tab_groups_handler_ = OCMProtocolMock(@protocol(TabGroupsCommands));
     mediator_.regularTabGroupsCommands = mock_tab_groups_handler_;
     mediator_.incognitoTabGroupsCommands = mock_tab_groups_handler_;
+    mock_delegate_ = OCMProtocolMock(@protocol(AppBarMediatorDelegate));
+    mediator_.delegate = mock_delegate_;
   }
 
   ~AppBarMediatorTest() override {
     [mediator_ disconnect];
     mediator_ = nil;
     aim_eligibility_service_.reset();
+    fake_gemini_service_ = nullptr;
+    regular_web_state_list_ = nullptr;
+    incognito_web_state_list_ = nullptr;
+    url_loader_ = nullptr;
+    regular_browser_.reset();
+    incognito_browser_.reset();
+    regular_profile_ = nullptr;
+    incognito_profile_ = nullptr;
+    auth_service_ = nullptr;
+    account_manager_service_ = nullptr;
   }
 
   void SignInAndSetCapability(bool capability) {
@@ -362,9 +484,47 @@ class AppBarMediatorTest : public PlatformTest {
     }
   }
 
-  // Wrapper for `InvokeFloaty`.
-  void InvokeFloaty(GeminiBrowserAgent* agent, GeminiConfiguration* config) {
-    agent->InvokeFloaty(config);
+  // Sets whether AI Mode is eligible.
+  void SetAimEligible(bool eligible) {
+    ON_CALL(*aim_eligibility_service_, IsAimEligible())
+        .WillByDefault(testing::Return(eligible));
+  }
+
+  // Stores `state` as the assistant button state chosen by the user.
+  void SetPreferredAssistantButtonState(
+      AppBarAssistantButtonPreferredState state) {
+    regular_profile_->GetPrefs()->SetInteger(
+        prefs::kAppBarAssistantButtonPreferredState, static_cast<int>(state));
+  }
+
+  // Updates the assistant button, verifies the expectations of the consumer and
+  // returns the menu set on the consumer for the assistant button.
+  UIMenu* UpdateAssistantButtonAndGetMenu() {
+    __block UIMenu* assistant_button_menu = nil;
+    OCMExpect([consumer_ setMenu:[OCMArg checkWithBlock:^BOOL(UIMenu* menu) {
+                           assistant_button_menu = menu;
+                           return YES;
+                         }]
+                   forButtonType:AppBarButtonTypeAssistant]);
+    [mediator_ updateAssistantButton];
+    EXPECT_OCMOCK_VERIFY(consumer_);
+    return assistant_button_menu;
+  }
+
+  // Selects the entry at `index` of the assistant button menu.
+  void SelectAssistantButtonMenuEntry(NSUInteger index) {
+    UIMenu* menu = UpdateAssistantButtonAndGetMenu();
+    ASSERT_EQ(kAssistantButtonMenuEntryCount, menu.children.count);
+    UIAction* action =
+        base::apple::ObjCCastStrict<UIAction>(menu.children[index]);
+    [action performWithSender:nil target:nil];
+  }
+
+  // Replaces `mediator_` with a new mediator, which records the on-load
+  // metrics when its consumer is set.
+  void RecreateMediator() {
+    [mediator_ disconnect];
+    mediator_ = CreateMediatorWithCustomGeminiService(fake_gemini_service_);
   }
 
   AppBarMediator* CreateMediatorWithCustomGeminiService(
@@ -376,33 +536,42 @@ class AppBarMediatorTest : public PlatformTest {
         [[BrowserActionFactory alloc] initWithBrowser:incognito_browser_.get()
                                              scenario:kTestMenuScenario];
     AppBarMediator* mediator = [[AppBarMediator alloc]
-            initWithRegularWebStateList:regular_web_state_list_.get()
-                  incognitoWebStateList:incognito_web_state_list_.get()
-            regularFullscreenController:TestFullscreenController::FromBrowser(
-                                            regular_browser_.get())
-          incognitoFullscreenController:TestFullscreenController::FromBrowser(
-                                            incognito_browser_.get())
-          regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                            regular_browser_.get())
-        incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                            incognito_browser_.get())
-                   regularActionFactory:regular_action_factory
-                 incognitoActionFactory:incognito_action_factory
-                            prefService:regular_profile_
-                                            ->GetTestingPrefService()
-                     templateURLService:search_engines_test_environment_
-                                            .template_url_service()
-                  authenticationService:auth_service_
-                        identityManager:IdentityManagerFactory::GetForProfile(
-                                            regular_profile_.get())
-                          geminiService:gemini_service
-                     geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
-                                            regular_browser_.get())
-                  aimEligibilityService:aim_eligibility_service_.get()
-                              URLLoader:url_loader_
-                           tabGridState:tab_grid_state_
-                         incognitoState:incognito_state_
-               lensOverlayStateNotifier:lens_overlay_state_];
+               initWithRegularWebStateList:regular_web_state_list_.get()
+                     incognitoWebStateList:incognito_web_state_list_.get()
+               regularFullscreenController:
+                   TestFullscreenController::FromBrowser(regular_browser_.get())
+             incognitoFullscreenController:
+                 TestFullscreenController::FromBrowser(incognito_browser_.get())
+             regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                               regular_browser_.get())
+           incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                               incognito_browser_.get())
+          regularWebNavigationBrowserAgent:
+              WebNavigationBrowserAgent::FromBrowser(regular_browser_.get())
+        incognitoWebNavigationBrowserAgent:
+            WebNavigationBrowserAgent::FromBrowser(incognito_browser_.get())
+                   regularTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                               regular_browser_.get())
+                 incognitoTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                               incognito_browser_.get())
+                      regularActionFactory:regular_action_factory
+                    incognitoActionFactory:incognito_action_factory
+                                   profile:regular_profile_.get()
+                               prefService:regular_profile_->GetPrefs()
+                        templateURLService:search_engines_test_environment_
+                                               .template_url_service()
+                     authenticationService:auth_service_
+                           identityManager:IdentityManagerFactory::
+                                               GetForProfile(
+                                                   regular_profile_.get())
+                             geminiService:gemini_service
+                        geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                               regular_browser_.get())
+                     aimEligibilityService:aim_eligibility_service_.get()
+                                 URLLoader:url_loader_
+                              tabGridState:tab_grid_state_
+                            incognitoState:incognito_state_
+                  lensOverlayStateNotifier:lens_overlay_state_];
     mediator.consumer = consumer_;
     mediator.sceneHandler = mock_scene_handler_;
     mediator.settingsHandler = mock_settings_handler_;
@@ -410,17 +579,29 @@ class AppBarMediatorTest : public PlatformTest {
     mediator.geminiHandler = mock_gemini_handler_;
     mediator.regularTabGroupsCommands = mock_tab_groups_handler_;
     mediator.incognitoTabGroupsCommands = mock_tab_groups_handler_;
+    mediator.delegate = mock_delegate_;
     return mediator;
+  }
+
+  // Creates a `MockAimEligibilityService` configured for unit tests without a
+  // `SharedURLLoaderFactory` to prevent background network requests.
+  std::unique_ptr<MockAimEligibilityService> CreateMockAimEligibilityService() {
+    return std::make_unique<MockAimEligibilityService>(
+        *regular_profile_->GetPrefs(),
+        search_engines_test_environment_.template_url_service(),
+        /*url_loader_factory=*/nullptr,
+        IdentityManagerFactory::GetForProfile(regular_profile_.get()));
   }
 
   web::WebTaskEnvironment task_environment_;
   base::test::ScopedFeatureList scoped_feature_list_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
+  TestProfileManagerIOS profile_manager_;
   IOSChromeScopedTestingVariationsService scoped_variations_service_;
   base::HistogramTester histogram_tester_;
   std::unique_ptr<MockAimEligibilityService> aim_eligibility_service_;
-  std::unique_ptr<TestProfileIOS> regular_profile_;
-  std::unique_ptr<TestProfileIOS> incognito_profile_;
+  raw_ptr<TestProfileIOS> regular_profile_;
+  raw_ptr<ProfileIOS> incognito_profile_;
   std::unique_ptr<TestBrowser> regular_browser_;
   std::unique_ptr<TestBrowser> incognito_browser_;
   AppBarMediator* __strong mediator_;
@@ -432,7 +613,7 @@ class AppBarMediatorTest : public PlatformTest {
   IncognitoState* incognito_state_;
   LensOverlayStateNotifier* lens_overlay_state_;
   raw_ptr<AuthenticationService> auth_service_;
-  std::unique_ptr<GeminiService> gemini_service_ptr_;
+  raw_ptr<FakeGeminiService> fake_gemini_service_ = nullptr;
   raw_ptr<ChromeAccountManagerService> account_manager_service_;
   id<TestAppBarConsumer> consumer_;
   id mock_fullscreen_handler_;
@@ -443,6 +624,7 @@ class AppBarMediatorTest : public PlatformTest {
   id mock_gemini_handler_;
   id mock_tab_groups_handler_;
   id mock_lens_overlay_handler_;
+  id mock_delegate_;
 };
 
 // Tests that the consumer is updated when a web state is added.
@@ -536,6 +718,31 @@ TEST_F(AppBarMediatorTest, TestSwitchToRegularTabGrid) {
   OCMExpect([consumer_ setButtonsEnabled:YES]);
   OCMExpect([consumer_ updateTabCount:1]);
   tab_grid_state_.currentPage = TabGridPageRegularTabs;
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests that the consumer tab count is updated when entering the regular tab
+// grid from incognito.
+TEST_F(AppBarMediatorTest, TestEnterTabGridCrossModeFromIncognitoToRegular) {
+  tab_grid_state_.tabGridVisible = NO;
+  tab_grid_state_.currentPage = TabGridPageIncognitoTabs;
+  incognito_state_.incognitoContentVisible = YES;
+
+  // 1 tab in incognito, 2 tabs in regular.
+  auto incognito_web_state = std::make_unique<web::FakeWebState>();
+  incognito_web_state_list_->InsertWebState(std::move(incognito_web_state));
+
+  auto regular_web_state1 = std::make_unique<web::FakeWebState>();
+  regular_web_state_list_->InsertWebState(std::move(regular_web_state1));
+  auto regular_web_state2 = std::make_unique<web::FakeWebState>();
+  regular_web_state_list_->InsertWebState(std::move(regular_web_state2));
+
+  // The active page transitions to regular before tabGridVisible becomes YES.
+  tab_grid_state_.currentPage = TabGridPageRegularTabs;
+
+  // Entering tab grid should update the consumer with regular tab count (2).
+  OCMExpect([consumer_ updateTabCount:2]);
+  tab_grid_state_.tabGridVisible = YES;
   EXPECT_OCMOCK_VERIFY(consumer_);
 }
 
@@ -828,13 +1035,22 @@ TEST_F(AppBarMediatorTest, TestFullscreenEvent) {
 }
 
 // Tests that the assistant button state is correctly updated when the Gemini
-// floaty invocation state changes and Gemini is available.
-TEST_F(AppBarMediatorTest, TestAssistantButtonHighlighted_GeminiAvailable) {
+// invocation state changes and Gemini is available.
+TEST_P(AppBarMediatorTest, TestAssistantButtonHighlighted_GeminiAvailable) {
+  const bool migration_enabled = GetParam();
   base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures({kPageActionMenu}, {});
+  if (migration_enabled) {
+    scoped_feature_list.InitWithFeatures(
+        {kPageActionMenu, kAssistantContainer, kIOSGeminiBottomSheetMigration},
+        {});
+  } else {
+    scoped_feature_list.InitWithFeatures({kPageActionMenu},
+                                         {kIOSGeminiBottomSheetMigration});
+  }
 
   GeminiBrowserAgent* agent =
       GeminiBrowserAgent::FromBrowser(regular_browser_.get());
+  ASSERT_TRUE(agent);
 
   // Add active WebState with GeminiTabHelper.
   auto web_state = std::make_unique<web::FakeWebState>();
@@ -847,25 +1063,25 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonHighlighted_GeminiAvailable) {
   regular_web_state_list_->InsertWebState(std::move(web_state));
   regular_web_state_list_->ActivateWebStateAt(0);
 
-  // Expect highlighted to be YES when floaty is invoked.
+  // Expect highlighted to be YES when Gemini is invoked.
   OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kAsk
                                    highlighted:YES
                                        enabled:YES
                                         avatar:nil
                                       signedIn:NO]);
 
-  InvokeFloaty(agent, [[GeminiConfiguration alloc] init]);
+  agent->SetContainerInvoked(true);
 
   EXPECT_OCMOCK_VERIFY(consumer_);
 
-  // Expect highlighted to be NO when floaty is dismissed.
+  // Expect highlighted to be NO when Gemini is dismissed.
   OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kAsk
                                    highlighted:NO
                                        enabled:YES
                                         avatar:nil
                                       signedIn:NO]);
 
-  agent->DismissFloaty();
+  agent->SetContainerInvoked(false);
 
   EXPECT_OCMOCK_VERIFY(consumer_);
 }
@@ -964,14 +1180,9 @@ TEST_F(AppBarMediatorTest, TestNoFallback_WhenWorkspaceExplicitlyDisabled) {
   SetLocationEligible(true);
   SignInWithTriboolCapability(signin::Tribool::kTrue);
 
-  auto fake_gemini = std::make_unique<FakeGeminiService>();
   gemini::IneligibilityReasons reasons;
   reasons.workspace = true;
-  fake_gemini->SetIneligibilityReasons(reasons);
-
-  [mediator_ disconnect];
-  gemini_service_ptr_ = std::move(fake_gemini);
-  mediator_ = CreateMediatorWithCustomGeminiService(gemini_service_ptr_.get());
+  fake_gemini_service_->SetIneligibilityReasons(reasons);
 
   OCMExpect([consumer_
       setAssistantButtonState:AppBarAssistantButtonState::kAccount
@@ -994,14 +1205,9 @@ TEST_F(AppBarMediatorTest,
   SetLocationEligible(true);
   SignInWithTriboolCapability(signin::Tribool::kTrue);
 
-  auto fake_gemini = std::make_unique<FakeGeminiService>();
   gemini::IneligibilityReasons reasons;
   reasons.workspace = true;
-  fake_gemini->SetIneligibilityReasons(reasons);
-
-  [mediator_ disconnect];
-  gemini_service_ptr_ = std::move(fake_gemini);
-  mediator_ = CreateMediatorWithCustomGeminiService(gemini_service_ptr_.get());
+  fake_gemini_service_->SetIneligibilityReasons(reasons);
 
   OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kAsk
                                    highlighted:NO
@@ -1021,7 +1227,7 @@ TEST_F(AppBarMediatorTest, TestNoFallback_WhenLocalEnterprisePolicyDisabled) {
   SetLocationEligible(true);
   SignInWithTriboolCapability(signin::Tribool::kUnknown);
 
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGenAiEnabledByPolicy,
       static_cast<int>(gemini::GenAiDefaultSettingsPolicy::kNotAllowed));
 
@@ -1101,12 +1307,7 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateAsk_WorkspacePolicyPending) {
   SetLocationEligible(true);
   SignInWithTriboolCapability(signin::Tribool::kTrue);
 
-  auto fake_gemini = std::make_unique<FakeGeminiService>();
-  fake_gemini->SetWorkspacePolicyCheckPending(true);
-
-  [mediator_ disconnect];
-  gemini_service_ptr_ = std::move(fake_gemini);
-  mediator_ = CreateMediatorWithCustomGeminiService(gemini_service_ptr_.get());
+  fake_gemini_service_->SetWorkspacePolicyCheckPending(true);
 
   OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kAsk
                                    highlighted:NO
@@ -1124,14 +1325,7 @@ TEST_F(AppBarMediatorTest,
   SetLocationEligible(true);
   SignInWithTriboolCapability(signin::Tribool::kTrue);
 
-  auto fake_gemini = std::make_unique<FakeGeminiService>();
-  fake_gemini->SetWorkspacePolicyCheckPending(true);
-  FakeGeminiService* fake_gemini_raw = fake_gemini.get();
-
-  [mediator_ disconnect];
-  gemini_service_ptr_ = std::move(fake_gemini);
-  mediator_ = CreateMediatorWithCustomGeminiService(gemini_service_ptr_.get());
-  mediator_.consumer = consumer_;
+  fake_gemini_service_->SetWorkspacePolicyCheckPending(true);
 
   // Initial update configures button for pending state (kAsk).
   [mediator_ updateAssistantButton];
@@ -1146,8 +1340,8 @@ TEST_F(AppBarMediatorTest,
 
   gemini::IneligibilityReasons reasons;
   reasons.workspace = true;
-  fake_gemini_raw->SetIneligibilityReasons(reasons);
-  fake_gemini_raw->SetWorkspacePolicyCheckPending(false);
+  fake_gemini_service_->SetIneligibilityReasons(reasons);
+  fake_gemini_service_->SetWorkspacePolicyCheckPending(false);
 
   EXPECT_OCMOCK_VERIFY(consumer_);
 }
@@ -1161,15 +1355,13 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonUpdatedOnNetworkChange) {
 
   SetLocationEligible(true);
   SignInWithTriboolCapability(signin::Tribool::kTrue);
-  auto fake_gemini = std::make_unique<FakeGeminiService>();
   gemini::IneligibilityReasons reasons;
   reasons.workspace = true;
-  fake_gemini->SetIneligibilityReasons(reasons);
+  fake_gemini_service_->SetIneligibilityReasons(reasons);
 
   // Re-instantiate the mediator so that it registers with the mock network.
   [mediator_ disconnect];
-  gemini_service_ptr_ = std::move(fake_gemini);
-  mediator_ = CreateMediatorWithCustomGeminiService(gemini_service_ptr_.get());
+  mediator_ = CreateMediatorWithCustomGeminiService(fake_gemini_service_);
   mediator_.consumer = consumer_;
 
   // Initial update configures button for offline fallback (kAsk).
@@ -1191,11 +1383,8 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonUpdatedOnNetworkChange) {
         quit_closure.Run();
       });
 
-  // Simulate network reconnecting.
   mock_network->SetConnectionTypeAndNotifyObservers(
       net::NetworkChangeNotifier::CONNECTION_WIFI);
-
-  // Process the network change notification asynchronously.
   run_loop.Run();
 
   EXPECT_OCMOCK_VERIFY(consumer_);
@@ -1213,12 +1402,109 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonTappedEligible) {
       }]
                         baseViewController:[OCMArg any]
                   showSnackbarOnCompletion:YES
-                                completion:[OCMArg any]]);
+                                completion:nil]);
   [mediator_ assistantButtonTappedWithState:AppBarAssistantButtonState::kAsk
                                    fromView:nil];
   EXPECT_OCMOCK_VERIFY(mock_gemini_handler_);
   histogram_tester_.ExpectUniqueSample(kAppBarAssistantButtonTappedHistogram,
                                        AppBarAssistantButtonState::kAsk, 1);
+}
+
+// Tests that tapping the assistant button in an incognito tab notifies the
+// delegate.
+TEST_F(AppBarMediatorTest, TestAssistantButtonTappedInIncognitoTab) {
+  SignInAndSetCapability(true);
+  [mediator_ updateAssistantButton];
+
+  incognito_state_.incognitoContentVisible = YES;
+
+  OCMExpect([mock_delegate_ appBarMediatorDidTapAssistantInIncognito]);
+
+  [mediator_ assistantButtonTappedWithState:AppBarAssistantButtonState::kAsk
+                                   fromView:nil];
+  EXPECT_OCMOCK_VERIFY(mock_delegate_);
+  histogram_tester_.ExpectUniqueSample(kAppBarAssistantButtonTappedHistogram,
+                                       AppBarAssistantButtonState::kAsk, 1);
+}
+
+// Tests that tapping the assistant button in incognito tab grid notifies the
+// delegate.
+TEST_F(AppBarMediatorTest, TestAssistantButtonTappedInIncognitoTabGrid) {
+  SignInAndSetCapability(true);
+  [mediator_ updateAssistantButton];
+
+  tab_grid_state_.tabGridVisible = YES;
+  tab_grid_state_.currentPage = TabGridPageIncognitoTabs;
+
+  OCMExpect([mock_delegate_ appBarMediatorDidTapAssistantInIncognito]);
+
+  [mediator_ assistantButtonTappedWithState:AppBarAssistantButtonState::kAsk
+                                   fromView:nil];
+  EXPECT_OCMOCK_VERIFY(mock_delegate_);
+  histogram_tester_.ExpectUniqueSample(kAppBarAssistantButtonTappedHistogram,
+                                       AppBarAssistantButtonState::kAsk, 1);
+}
+
+// Tests that the assistant button is enabled in incognito tab when state is
+// kAsk.
+TEST_F(AppBarMediatorTest, TestAssistantButtonEnabledInIncognitoForAskState) {
+  SignInAndSetCapability(true);
+  incognito_state_.incognitoContentVisible = YES;
+
+  OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kAsk
+                                   highlighted:NO
+                                       enabled:YES
+                                        avatar:nil
+                                      signedIn:YES]);
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests that the assistant button is disabled in incognito tab when state is
+// not kAsk.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonDisabledInIncognitoForAccountState) {
+  SetLocationEligible(true);
+  SignInWithTriboolCapability(signin::Tribool::kTrue);
+
+  gemini::IneligibilityReasons reasons;
+  reasons.workspace = true;
+  fake_gemini_service_->SetIneligibilityReasons(reasons);
+
+  incognito_state_.incognitoContentVisible = YES;
+
+  OCMExpect([consumer_
+      setAssistantButtonState:AppBarAssistantButtonState::kAccount
+                  highlighted:NO
+                      enabled:NO
+                       avatar:[OCMArg any]
+                     signedIn:YES]);
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests that the assistant button is disabled in incognito tab grid when state
+// is not kAsk.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonDisabledInIncognitoTabGridForAccountState) {
+  SetLocationEligible(true);
+  SignInWithTriboolCapability(signin::Tribool::kTrue);
+
+  gemini::IneligibilityReasons reasons;
+  reasons.workspace = true;
+  fake_gemini_service_->SetIneligibilityReasons(reasons);
+
+  tab_grid_state_.tabGridVisible = YES;
+  tab_grid_state_.currentPage = TabGridPageIncognitoTabs;
+
+  OCMExpect([consumer_
+      setAssistantButtonState:AppBarAssistantButtonState::kAccount
+                  highlighted:NO
+                      enabled:NO
+                       avatar:[OCMArg any]
+                     signedIn:YES]);
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
 }
 
 // Tests that the assistant button is in the kAIM state when the correct
@@ -1229,8 +1515,7 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateAIM_DisabledByPolicyLens) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures({kGeminiKillSwitch}, {kPageActionMenu});
 
-  regular_profile_->GetTestingPrefService()->SetInteger(
-      omnibox::kAIModeSettings, 1);
+  regular_profile_->GetPrefs()->SetInteger(omnibox::kAIModeSettings, 1);
   mediator_.overrideLensAvailabilityForTesting = YES;
 
   OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kLens
@@ -1249,8 +1534,7 @@ TEST_F(AppBarMediatorTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures({kGeminiKillSwitch}, {kPageActionMenu});
 
-  regular_profile_->GetTestingPrefService()->SetInteger(
-      omnibox::kAIModeSettings, 1);
+  regular_profile_->GetPrefs()->SetInteger(omnibox::kAIModeSettings, 1);
   mediator_.overrideLensAvailabilityForTesting = NO;
   SetLocationEligible(false);
 
@@ -1411,32 +1695,41 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateLensWhenIneligibleSignedIn) {
                                            scenario:kTestMenuScenario];
 
   mediator_ = [[AppBarMediator alloc]
-          initWithRegularWebStateList:regular_web_state_list_.get()
-                incognitoWebStateList:incognito_web_state_list_.get()
-          regularFullscreenController:TestFullscreenController::FromBrowser(
-                                          regular_browser_.get())
-        incognitoFullscreenController:TestFullscreenController::FromBrowser(
-                                          incognito_browser_.get())
-        regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-      incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          incognito_browser_.get())
-                 regularActionFactory:regular_action_factory
-               incognitoActionFactory:incognito_action_factory
-                          prefService:regular_profile_->GetTestingPrefService()
-                   templateURLService:search_engines_test_environment_
-                                          .template_url_service()
-                authenticationService:auth_service_
-                      identityManager:IdentityManagerFactory::GetForProfile(
-                                          regular_profile_.get())
-                        geminiService:gemini_service_ptr_.get()
-                   geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-                aimEligibilityService:aim_eligibility_service_.get()
-                            URLLoader:url_loader_
-                         tabGridState:tab_grid_state_
-                       incognitoState:incognito_state_
-             lensOverlayStateNotifier:lens_overlay_state_];
+             initWithRegularWebStateList:regular_web_state_list_.get()
+                   incognitoWebStateList:incognito_web_state_list_.get()
+             regularFullscreenController:TestFullscreenController::FromBrowser(
+                                             regular_browser_.get())
+           incognitoFullscreenController:TestFullscreenController::FromBrowser(
+                                             incognito_browser_.get())
+           regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+         incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+        regularWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+      incognitoWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                 regularTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+               incognitoTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                    regularActionFactory:regular_action_factory
+                  incognitoActionFactory:incognito_action_factory
+                                 profile:regular_profile_.get()
+                             prefService:regular_profile_->GetPrefs()
+                      templateURLService:search_engines_test_environment_
+                                             .template_url_service()
+                   authenticationService:auth_service_
+                         identityManager:IdentityManagerFactory::GetForProfile(
+                                             regular_profile_.get())
+                           geminiService:fake_gemini_service_
+                      geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+                   aimEligibilityService:aim_eligibility_service_.get()
+                               URLLoader:url_loader_
+                            tabGridState:tab_grid_state_
+                          incognitoState:incognito_state_
+                lensOverlayStateNotifier:lens_overlay_state_];
   mediator_.consumer = consumer_;
   mediator_.sceneHandler = mock_scene_handler_;
   mediator_.settingsHandler = mock_settings_handler_;
@@ -1531,6 +1824,27 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonTappedAccountSignedIn) {
                                        AppBarAssistantButtonState::kAccount, 1);
 }
 
+// Tests that tapping the assistant button in the kAccount state does nothing
+// when sign-in is disabled, even if there is a primary identity.
+TEST_F(AppBarMediatorTest, TestAssistantButtonTappedAccountSigninDisabled) {
+  SignInAndSetCapability(true);
+  GetApplicationContext()->GetLocalState()->SetBoolean(
+      prefs::kSigninAllowedOnDevice, false);
+
+  id mock_delegate = OCMProtocolMock(@protocol(AppBarMediatorDelegate));
+  mediator_.delegate = mock_delegate;
+
+  UIView* dummy_view = [[UIView alloc] init];
+  OCMReject([mock_delegate showSignin:[OCMArg any]]);
+  OCMReject([mock_delegate showAccountMenu:[OCMArg any]]);
+
+  [mediator_ assistantButtonTappedWithState:AppBarAssistantButtonState::kAccount
+                                   fromView:dummy_view];
+  EXPECT_OCMOCK_VERIFY(mock_delegate);
+  histogram_tester_.ExpectUniqueSample(kAppBarAssistantButtonTappedHistogram,
+                                       AppBarAssistantButtonState::kAccount, 1);
+}
+
 // Tests that the assistant button is in the kAccount state with an avatar when
 // signed in.
 TEST_F(AppBarMediatorTest, TestAssistantButtonStateAccountWithAvatar) {
@@ -1564,7 +1878,7 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateAccountWhenPolicyDisabled) {
   SetLocationEligible(true);
 
   // Set policy to disabled.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGeminiEnabledByPolicy,
       static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
 
@@ -1584,7 +1898,7 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateAccountGenAiPolicy) {
   SetLocationEligible(true);
 
   // Disable GenAi using the GenAiDefaultSettings enterprise policy.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGenAiEnabledByPolicy,
       static_cast<int>(gemini::GenAiDefaultSettingsPolicy::kNotAllowed));
 
@@ -1648,32 +1962,41 @@ TEST_F(AppBarMediatorTest, TestGeminiEligibilityChangeUpdatesAssistantButton) {
                                            scenario:kTestMenuScenario];
 
   AppBarMediator* mediator = [[AppBarMediator alloc]
-          initWithRegularWebStateList:regular_web_state_list_
-                incognitoWebStateList:incognito_web_state_list_
-          regularFullscreenController:TestFullscreenController::FromBrowser(
-                                          regular_browser_.get())
-        incognitoFullscreenController:TestFullscreenController::FromBrowser(
-                                          incognito_browser_.get())
-        regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-      incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          incognito_browser_.get())
-                 regularActionFactory:regular_action_factory
-               incognitoActionFactory:incognito_action_factory
-                          prefService:regular_profile_->GetTestingPrefService()
-                   templateURLService:search_engines_test_environment_
-                                          .template_url_service()
-                authenticationService:auth_service_
-                      identityManager:IdentityManagerFactory::GetForProfile(
-                                          regular_profile_.get())
-                        geminiService:&fake_gemini_service
-                   geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-                aimEligibilityService:aim_eligibility_service_.get()
-                            URLLoader:url_loader_
-                         tabGridState:tab_grid_state_
-                       incognitoState:incognito_state_
-             lensOverlayStateNotifier:lens_overlay_state_];
+             initWithRegularWebStateList:regular_web_state_list_
+                   incognitoWebStateList:incognito_web_state_list_
+             regularFullscreenController:TestFullscreenController::FromBrowser(
+                                             regular_browser_.get())
+           incognitoFullscreenController:TestFullscreenController::FromBrowser(
+                                             incognito_browser_.get())
+           regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+         incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+        regularWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+      incognitoWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                 regularTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+               incognitoTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                    regularActionFactory:regular_action_factory
+                  incognitoActionFactory:incognito_action_factory
+                                 profile:regular_profile_.get()
+                             prefService:regular_profile_->GetPrefs()
+                      templateURLService:search_engines_test_environment_
+                                             .template_url_service()
+                   authenticationService:auth_service_
+                         identityManager:IdentityManagerFactory::GetForProfile(
+                                             regular_profile_.get())
+                           geminiService:&fake_gemini_service
+                      geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+                   aimEligibilityService:aim_eligibility_service_.get()
+                               URLLoader:url_loader_
+                            tabGridState:tab_grid_state_
+                          incognitoState:incognito_state_
+                lensOverlayStateNotifier:lens_overlay_state_];
 
   id consumer = OCMProtocolMock(@protocol(TestAppBarConsumer));
   mediator.consumer = consumer;
@@ -1701,11 +2024,8 @@ TEST_F(AppBarMediatorTest, TestAimEligibilityChangeUpdatesAssistantButton) {
   feature_list.InitWithFeatures({kGeminiKillSwitch}, {kPageActionMenu});
 
   base::RepeatingClosure aim_callback;
-  auto mock_aim_service = std::make_unique<MockAimEligibilityService>(
-      *regular_profile_->GetTestingPrefService(),
-      search_engines_test_environment_.template_url_service(),
-      regular_profile_->GetSharedURLLoaderFactory(),
-      IdentityManagerFactory::GetForProfile(regular_profile_.get()));
+  std::unique_ptr<MockAimEligibilityService> mock_aim_service =
+      CreateMockAimEligibilityService();
 
   EXPECT_CALL(*mock_aim_service, RegisterEligibilityChangedCallback(testing::_))
       .WillOnce([&](base::RepeatingClosure callback) {
@@ -1724,32 +2044,41 @@ TEST_F(AppBarMediatorTest, TestAimEligibilityChangeUpdatesAssistantButton) {
                                            scenario:kTestMenuScenario];
 
   AppBarMediator* mediator = [[AppBarMediator alloc]
-          initWithRegularWebStateList:regular_web_state_list_.get()
-                incognitoWebStateList:incognito_web_state_list_.get()
-          regularFullscreenController:TestFullscreenController::FromBrowser(
-                                          regular_browser_.get())
-        incognitoFullscreenController:TestFullscreenController::FromBrowser(
-                                          incognito_browser_.get())
-        regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-      incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          incognito_browser_.get())
-                 regularActionFactory:regular_action_factory
-               incognitoActionFactory:incognito_action_factory
-                          prefService:regular_profile_->GetTestingPrefService()
-                   templateURLService:search_engines_test_environment_
-                                          .template_url_service()
-                authenticationService:auth_service_
-                      identityManager:IdentityManagerFactory::GetForProfile(
-                                          regular_profile_.get())
-                        geminiService:&fake_gemini_service
-                   geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-                aimEligibilityService:mock_aim_service.get()
-                            URLLoader:url_loader_
-                         tabGridState:tab_grid_state_
-                       incognitoState:incognito_state_
-             lensOverlayStateNotifier:lens_overlay_state_];
+             initWithRegularWebStateList:regular_web_state_list_.get()
+                   incognitoWebStateList:incognito_web_state_list_.get()
+             regularFullscreenController:TestFullscreenController::FromBrowser(
+                                             regular_browser_.get())
+           incognitoFullscreenController:TestFullscreenController::FromBrowser(
+                                             incognito_browser_.get())
+           regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+         incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+        regularWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+      incognitoWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                 regularTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+               incognitoTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                    regularActionFactory:regular_action_factory
+                  incognitoActionFactory:incognito_action_factory
+                                 profile:regular_profile_.get()
+                             prefService:regular_profile_->GetPrefs()
+                      templateURLService:search_engines_test_environment_
+                                             .template_url_service()
+                   authenticationService:auth_service_
+                         identityManager:IdentityManagerFactory::GetForProfile(
+                                             regular_profile_.get())
+                           geminiService:&fake_gemini_service
+                      geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+                   aimEligibilityService:mock_aim_service.get()
+                               URLLoader:url_loader_
+                            tabGridState:tab_grid_state_
+                          incognitoState:incognito_state_
+                lensOverlayStateNotifier:lens_overlay_state_];
 
   id consumer = OCMProtocolMock(@protocol(TestAppBarConsumer));
   mediator.consumer = consumer;
@@ -1812,7 +2141,7 @@ TEST_F(AppBarMediatorTest,
   SetLocationEligible(true);
 
   // Ensure GeminiSettings enterprise policy allows Gemini.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGeminiEnabledByPolicy,
       static_cast<int>(gemini::SettingsPolicy::kAllowed));
 
@@ -1831,7 +2160,7 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonState_HiddenWhenPolicyDisabled) {
   SetLocationEligible(true);
 
   // Disable Gemini using the GeminiSettings enterprise policy.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGeminiEnabledByPolicy,
       static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
 
@@ -1855,7 +2184,7 @@ TEST_F(AppBarMediatorTest,
   SetLocationEligible(true);
 
   // Disable GenAi using the GenAiDefaultSettings enterprise policy.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGenAiEnabledByPolicy,
       static_cast<int>(gemini::GenAiDefaultSettingsPolicy::kNotAllowed));
 
@@ -1886,7 +2215,7 @@ TEST_F(AppBarMediatorTest,
   SetLocationEligible(true);
 
   // Disable Gemini using the GeminiSettings enterprise policy.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGeminiEnabledByPolicy,
       static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
 
@@ -1913,7 +2242,7 @@ TEST_F(AppBarMediatorTest,
   SetLocationEligible(true);
 
   // Disable GenAi using the GenAiDefaultSettings enterprise policy.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGenAiEnabledByPolicy,
       static_cast<int>(gemini::GenAiDefaultSettingsPolicy::kNotAllowed));
 
@@ -1938,7 +2267,7 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateOnLoadMetric) {
 // recording.
 TEST_F(AppBarMediatorTest, TestAssistantButtonStateOnLoadMetric_Lens) {
   // Disable Gemini via policy.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGeminiEnabledByPolicy,
       static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
 
@@ -1952,32 +2281,41 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateOnLoadMetric_Lens) {
 
   base::HistogramTester local_histogram_tester;
   AppBarMediator* local_mediator = [[AppBarMediator alloc]
-          initWithRegularWebStateList:regular_web_state_list_.get()
-                incognitoWebStateList:incognito_web_state_list_.get()
-          regularFullscreenController:TestFullscreenController::FromBrowser(
-                                          regular_browser_.get())
-        incognitoFullscreenController:TestFullscreenController::FromBrowser(
-                                          incognito_browser_.get())
-        regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-      incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          incognito_browser_.get())
-                 regularActionFactory:regular_action_factory
-               incognitoActionFactory:incognito_action_factory
-                          prefService:regular_profile_->GetTestingPrefService()
-                   templateURLService:search_engines_test_environment_
-                                          .template_url_service()
-                authenticationService:auth_service_
-                      identityManager:IdentityManagerFactory::GetForProfile(
-                                          regular_profile_.get())
-                        geminiService:gemini_service_ptr_.get()
-                   geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-                aimEligibilityService:aim_eligibility_service_.get()
-                            URLLoader:url_loader_
-                         tabGridState:tab_grid_state_
-                       incognitoState:incognito_state_
-             lensOverlayStateNotifier:lens_overlay_state_];
+             initWithRegularWebStateList:regular_web_state_list_.get()
+                   incognitoWebStateList:incognito_web_state_list_.get()
+             regularFullscreenController:TestFullscreenController::FromBrowser(
+                                             regular_browser_.get())
+           incognitoFullscreenController:TestFullscreenController::FromBrowser(
+                                             incognito_browser_.get())
+           regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+         incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+        regularWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+      incognitoWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                 regularTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+               incognitoTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                    regularActionFactory:regular_action_factory
+                  incognitoActionFactory:incognito_action_factory
+                                 profile:regular_profile_.get()
+                             prefService:regular_profile_->GetPrefs()
+                      templateURLService:search_engines_test_environment_
+                                             .template_url_service()
+                   authenticationService:auth_service_
+                         identityManager:IdentityManagerFactory::GetForProfile(
+                                             regular_profile_.get())
+                           geminiService:fake_gemini_service_
+                      geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+                   aimEligibilityService:aim_eligibility_service_.get()
+                               URLLoader:url_loader_
+                            tabGridState:tab_grid_state_
+                          incognitoState:incognito_state_
+                lensOverlayStateNotifier:lens_overlay_state_];
 
   local_mediator.overrideLensAvailabilityForTesting = YES;
 
@@ -2003,7 +2341,7 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateOnLoadMetric_Lens) {
 // SetUp's recording.
 TEST_F(AppBarMediatorTest, TestAssistantButtonStateOnLoadMetric_Account) {
   // Disable Gemini via policy.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGeminiEnabledByPolicy,
       static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
 
@@ -2017,32 +2355,41 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateOnLoadMetric_Account) {
 
   base::HistogramTester local_histogram_tester;
   AppBarMediator* local_mediator = [[AppBarMediator alloc]
-          initWithRegularWebStateList:regular_web_state_list_.get()
-                incognitoWebStateList:incognito_web_state_list_.get()
-          regularFullscreenController:TestFullscreenController::FromBrowser(
-                                          regular_browser_.get())
-        incognitoFullscreenController:TestFullscreenController::FromBrowser(
-                                          incognito_browser_.get())
-        regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-      incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          incognito_browser_.get())
-                 regularActionFactory:regular_action_factory
-               incognitoActionFactory:incognito_action_factory
-                          prefService:regular_profile_->GetTestingPrefService()
-                   templateURLService:search_engines_test_environment_
-                                          .template_url_service()
-                authenticationService:auth_service_
-                      identityManager:IdentityManagerFactory::GetForProfile(
-                                          regular_profile_.get())
-                        geminiService:gemini_service_ptr_.get()
-                   geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-                aimEligibilityService:aim_eligibility_service_.get()
-                            URLLoader:url_loader_
-                         tabGridState:tab_grid_state_
-                       incognitoState:incognito_state_
-             lensOverlayStateNotifier:lens_overlay_state_];
+             initWithRegularWebStateList:regular_web_state_list_.get()
+                   incognitoWebStateList:incognito_web_state_list_.get()
+             regularFullscreenController:TestFullscreenController::FromBrowser(
+                                             regular_browser_.get())
+           incognitoFullscreenController:TestFullscreenController::FromBrowser(
+                                             incognito_browser_.get())
+           regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+         incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+        regularWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+      incognitoWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                 regularTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+               incognitoTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                    regularActionFactory:regular_action_factory
+                  incognitoActionFactory:incognito_action_factory
+                                 profile:regular_profile_.get()
+                             prefService:regular_profile_->GetPrefs()
+                      templateURLService:search_engines_test_environment_
+                                             .template_url_service()
+                   authenticationService:auth_service_
+                         identityManager:IdentityManagerFactory::GetForProfile(
+                                             regular_profile_.get())
+                           geminiService:fake_gemini_service_
+                      geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+                   aimEligibilityService:aim_eligibility_service_.get()
+                               URLLoader:url_loader_
+                            tabGridState:tab_grid_state_
+                          incognitoState:incognito_state_
+                lensOverlayStateNotifier:lens_overlay_state_];
 
   local_mediator.overrideLensAvailabilityForTesting = NO;
   SetLocationEligible(false);
@@ -2068,7 +2415,7 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateOnLoadMetric_Account) {
 // Tests the AIM state on-load metric.
 TEST_F(AppBarMediatorTest, TestAssistantButtonStateOnLoadMetric_AIM) {
   // Disable Gemini via policy.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGeminiEnabledByPolicy,
       static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
 
@@ -2089,32 +2436,41 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateOnLoadMetric_AIM) {
 
   base::HistogramTester local_histogram_tester;
   AppBarMediator* local_mediator = [[AppBarMediator alloc]
-          initWithRegularWebStateList:regular_web_state_list_.get()
-                incognitoWebStateList:incognito_web_state_list_.get()
-          regularFullscreenController:TestFullscreenController::FromBrowser(
-                                          regular_browser_.get())
-        incognitoFullscreenController:TestFullscreenController::FromBrowser(
-                                          incognito_browser_.get())
-        regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-      incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          incognito_browser_.get())
-                 regularActionFactory:regular_action_factory
-               incognitoActionFactory:incognito_action_factory
-                          prefService:regular_profile_->GetTestingPrefService()
-                   templateURLService:search_engines_test_environment_
-                                          .template_url_service()
-                authenticationService:auth_service_
-                      identityManager:IdentityManagerFactory::GetForProfile(
-                                          regular_profile_.get())
-                        geminiService:gemini_service_ptr_.get()
-                   geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-                aimEligibilityService:aim_eligibility_service_.get()
-                            URLLoader:url_loader_
-                         tabGridState:tab_grid_state_
-                       incognitoState:incognito_state_
-             lensOverlayStateNotifier:lens_overlay_state_];
+             initWithRegularWebStateList:regular_web_state_list_.get()
+                   incognitoWebStateList:incognito_web_state_list_.get()
+             regularFullscreenController:TestFullscreenController::FromBrowser(
+                                             regular_browser_.get())
+           incognitoFullscreenController:TestFullscreenController::FromBrowser(
+                                             incognito_browser_.get())
+           regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+         incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+        regularWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+      incognitoWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                 regularTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+               incognitoTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                    regularActionFactory:regular_action_factory
+                  incognitoActionFactory:incognito_action_factory
+                                 profile:regular_profile_.get()
+                             prefService:regular_profile_->GetPrefs()
+                      templateURLService:search_engines_test_environment_
+                                             .template_url_service()
+                   authenticationService:auth_service_
+                         identityManager:IdentityManagerFactory::GetForProfile(
+                                             regular_profile_.get())
+                           geminiService:fake_gemini_service_
+                      geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+                   aimEligibilityService:aim_eligibility_service_.get()
+                               URLLoader:url_loader_
+                            tabGridState:tab_grid_state_
+                          incognitoState:incognito_state_
+                lensOverlayStateNotifier:lens_overlay_state_];
 
   // We expect the consumer to be updated with kAIM.
   id local_consumer = OCMProtocolMock(@protocol(TestAppBarConsumer));
@@ -2143,17 +2499,15 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStateOnLoadMetric_AIM) {
 // executes.
 TEST_F(AppBarMediatorTest,
        TestAssistantButtonStateOnLoadMetric_AIM_DeferredUntilCallback) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
   // Disable Gemini via policy.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGeminiEnabledByPolicy,
       static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
 
   base::RepeatingClosure aim_callback;
-  auto mock_aim_service = std::make_unique<MockAimEligibilityService>(
-      *regular_profile_->GetTestingPrefService(),
-      search_engines_test_environment_.template_url_service(),
-      regular_profile_->GetSharedURLLoaderFactory(),
-      IdentityManagerFactory::GetForProfile(regular_profile_.get()));
+  std::unique_ptr<MockAimEligibilityService> mock_aim_service =
+      CreateMockAimEligibilityService();
 
   ON_CALL(*mock_aim_service, IsAimLocallyEligible())
       .WillByDefault(testing::Return(true));
@@ -2177,32 +2531,41 @@ TEST_F(AppBarMediatorTest,
 
   base::HistogramTester local_histogram_tester;
   AppBarMediator* local_mediator = [[AppBarMediator alloc]
-          initWithRegularWebStateList:regular_web_state_list_.get()
-                incognitoWebStateList:incognito_web_state_list_.get()
-          regularFullscreenController:TestFullscreenController::FromBrowser(
-                                          regular_browser_.get())
-        incognitoFullscreenController:TestFullscreenController::FromBrowser(
-                                          incognito_browser_.get())
-        regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-      incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          incognito_browser_.get())
-                 regularActionFactory:regular_action_factory
-               incognitoActionFactory:incognito_action_factory
-                          prefService:regular_profile_->GetTestingPrefService()
-                   templateURLService:search_engines_test_environment_
-                                          .template_url_service()
-                authenticationService:auth_service_
-                      identityManager:IdentityManagerFactory::GetForProfile(
-                                          regular_profile_.get())
-                        geminiService:gemini_service_ptr_.get()
-                   geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-                aimEligibilityService:mock_aim_service.get()
-                            URLLoader:url_loader_
-                         tabGridState:tab_grid_state_
-                       incognitoState:incognito_state_
-             lensOverlayStateNotifier:lens_overlay_state_];
+             initWithRegularWebStateList:regular_web_state_list_.get()
+                   incognitoWebStateList:incognito_web_state_list_.get()
+             regularFullscreenController:TestFullscreenController::FromBrowser(
+                                             regular_browser_.get())
+           incognitoFullscreenController:TestFullscreenController::FromBrowser(
+                                             incognito_browser_.get())
+           regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+         incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+        regularWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+      incognitoWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                 regularTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+               incognitoTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                    regularActionFactory:regular_action_factory
+                  incognitoActionFactory:incognito_action_factory
+                                 profile:regular_profile_.get()
+                             prefService:regular_profile_->GetPrefs()
+                      templateURLService:search_engines_test_environment_
+                                             .template_url_service()
+                   authenticationService:auth_service_
+                         identityManager:IdentityManagerFactory::GetForProfile(
+                                             regular_profile_.get())
+                           geminiService:fake_gemini_service_
+                      geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+                   aimEligibilityService:mock_aim_service.get()
+                               URLLoader:url_loader_
+                            tabGridState:tab_grid_state_
+                          incognitoState:incognito_state_
+                lensOverlayStateNotifier:lens_overlay_state_];
 
   local_mediator.overrideLensAvailabilityForTesting = NO;
   SetLocationEligible(false);
@@ -2213,6 +2576,8 @@ TEST_F(AppBarMediatorTest,
   // On initial load, AIM check is pending, so 0 metrics are recorded.
   local_histogram_tester.ExpectTotalCount(
       kAppBarAssistantButtonStateOnLoadHistogram, 0);
+  local_histogram_tester.ExpectTotalCount(
+      kAppBarAssistantButtonPreferredStateOnLoadHistogram, 0);
 
   // Simulate response arriving with AIM eligible.
   omnibox::AimEligibilityResponse response;
@@ -2247,6 +2612,10 @@ TEST_F(AppBarMediatorTest,
   local_histogram_tester.ExpectUniqueSample(
       kAppBarAssistantButtonStateOnLoadHistogram,
       AppBarAssistantButtonState::kAIM, 1);
+  // The preferred state is logged once, along with the state.
+  local_histogram_tester.ExpectUniqueSample(
+      kAppBarAssistantButtonPreferredStateOnLoadHistogram,
+      AppBarAssistantButtonPreferredState::kDefault, 1);
 
   [local_mediator disconnect];
 }
@@ -2256,7 +2625,7 @@ TEST_F(AppBarMediatorTest,
 TEST_F(AppBarMediatorTest,
        TestAssistantButtonStateOnLoadMetric_AIM_CachedInPrefs) {
   // Disable Gemini via policy.
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGeminiEnabledByPolicy,
       static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
 
@@ -2265,15 +2634,12 @@ TEST_F(AppBarMediatorTest,
   response.set_is_eligible(true);
   std::string response_string;
   response.SerializeToString(&response_string);
-  regular_profile_->GetTestingPrefService()->SetString(
+  regular_profile_->GetPrefs()->SetString(
       "aim_eligibility_service.aim_eligibility_response",
       base::Base64Encode(response_string));
 
-  auto mock_aim_service = std::make_unique<MockAimEligibilityService>(
-      *regular_profile_->GetTestingPrefService(),
-      search_engines_test_environment_.template_url_service(),
-      regular_profile_->GetSharedURLLoaderFactory(),
-      IdentityManagerFactory::GetForProfile(regular_profile_.get()));
+  std::unique_ptr<MockAimEligibilityService> mock_aim_service =
+      CreateMockAimEligibilityService();
 
   ON_CALL(*mock_aim_service, IsAimLocallyEligible())
       .WillByDefault(testing::Return(true));
@@ -2291,32 +2657,41 @@ TEST_F(AppBarMediatorTest,
 
   base::HistogramTester local_histogram_tester;
   AppBarMediator* local_mediator = [[AppBarMediator alloc]
-          initWithRegularWebStateList:regular_web_state_list_.get()
-                incognitoWebStateList:incognito_web_state_list_.get()
-          regularFullscreenController:TestFullscreenController::FromBrowser(
-                                          regular_browser_.get())
-        incognitoFullscreenController:TestFullscreenController::FromBrowser(
-                                          incognito_browser_.get())
-        regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-      incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
-                                          incognito_browser_.get())
-                 regularActionFactory:regular_action_factory
-               incognitoActionFactory:incognito_action_factory
-                          prefService:regular_profile_->GetTestingPrefService()
-                   templateURLService:search_engines_test_environment_
-                                          .template_url_service()
-                authenticationService:auth_service_
-                      identityManager:IdentityManagerFactory::GetForProfile(
-                                          regular_profile_.get())
-                        geminiService:gemini_service_ptr_.get()
-                   geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
-                                          regular_browser_.get())
-                aimEligibilityService:mock_aim_service.get()
-                            URLLoader:url_loader_
-                         tabGridState:tab_grid_state_
-                       incognitoState:incognito_state_
-             lensOverlayStateNotifier:lens_overlay_state_];
+             initWithRegularWebStateList:regular_web_state_list_.get()
+                   incognitoWebStateList:incognito_web_state_list_.get()
+             regularFullscreenController:TestFullscreenController::FromBrowser(
+                                             regular_browser_.get())
+           incognitoFullscreenController:TestFullscreenController::FromBrowser(
+                                             incognito_browser_.get())
+           regularFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+         incognitoFullscreenBrowserAgent:FullscreenBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+        regularWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+      incognitoWebNavigationBrowserAgent:WebNavigationBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                 regularTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+               incognitoTabBasedIPHAgent:TabBasedIPHBrowserAgent::FromBrowser(
+                                             incognito_browser_.get())
+                    regularActionFactory:regular_action_factory
+                  incognitoActionFactory:incognito_action_factory
+                                 profile:regular_profile_.get()
+                             prefService:regular_profile_->GetPrefs()
+                      templateURLService:search_engines_test_environment_
+                                             .template_url_service()
+                   authenticationService:auth_service_
+                         identityManager:IdentityManagerFactory::GetForProfile(
+                                             regular_profile_.get())
+                           geminiService:fake_gemini_service_
+                      geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(
+                                             regular_browser_.get())
+                   aimEligibilityService:mock_aim_service.get()
+                               URLLoader:url_loader_
+                            tabGridState:tab_grid_state_
+                          incognitoState:incognito_state_
+                lensOverlayStateNotifier:lens_overlay_state_];
 
   id local_consumer = OCMProtocolMock(@protocol(TestAppBarConsumer));
   OCMExpect([local_consumer
@@ -2372,7 +2747,7 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStatePriority_AIMOverLens) {
 
   // Keep location eligible for AIM, but disable Gemini via policy.
   SetLocationEligible(true);
-  regular_profile_->GetTestingPrefService()->SetInteger(
+  regular_profile_->GetPrefs()->SetInteger(
       prefs::kGeminiEnabledByPolicy,
       static_cast<int>(gemini::SettingsPolicy::kNotAllowed));
 
@@ -2407,6 +2782,422 @@ TEST_F(AppBarMediatorTest, TestAssistantButtonStatePriority_LensOverAccount) {
 
   [mediator_ updateAssistantButton];
   EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests that the assistant button shows Lens when the user chose it, even if
+// Gemini is eligible.
+TEST_F(AppBarMediatorTest, TestAssistantButtonCustomization_PreferredLens) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = YES;
+  SetPreferredAssistantButtonState(AppBarAssistantButtonPreferredState::kLens);
+
+  OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kLens
+                                   highlighted:NO
+                                       enabled:YES
+                                        avatar:nil
+                                      signedIn:NO]);
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests that the user choice is kept while it isn't eligible, so that the
+// assistant button shows it again once it becomes eligible.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonCustomization_UnavailableChoiceIsKept) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = NO;
+  SetPreferredAssistantButtonState(AppBarAssistantButtonPreferredState::kLens);
+  OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kAsk
+                                   highlighted:NO
+                                       enabled:YES
+                                        avatar:nil
+                                      signedIn:NO]);
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+  EXPECT_EQ(static_cast<int>(AppBarAssistantButtonPreferredState::kLens),
+            regular_profile_->GetPrefs()->GetInteger(
+                prefs::kAppBarAssistantButtonPreferredState));
+
+  mediator_.overrideLensAvailabilityForTesting = YES;
+  OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kLens
+                                   highlighted:NO
+                                       enabled:YES
+                                        avatar:nil
+                                      signedIn:NO]);
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests that choosing "Ask Gemini" uses the default priority order, so that the
+// assistant button shows AI Mode when Gemini isn't eligible.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonCustomization_PreferredAskShowsAimWhenNoGemini) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(false);
+  SetAimEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = YES;
+  SetPreferredAssistantButtonState(AppBarAssistantButtonPreferredState::kAsk);
+
+  OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kAIM
+                                   highlighted:NO
+                                       enabled:YES
+                                        avatar:nil
+                                      signedIn:NO]);
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests that the user choice also applies in incognito, so that the assistant
+// button shows the same entry point as in regular mode, and that there is no
+// assistant button menu in incognito.
+TEST_F(AppBarMediatorTest, TestAssistantButtonCustomization_Incognito) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = YES;
+  SetPreferredAssistantButtonState(
+      AppBarAssistantButtonPreferredState::kAccount);
+  incognito_state_.incognitoContentVisible = YES;
+
+  // All the entry points but Gemini are disabled in incognito.
+  OCMExpect([consumer_
+      setAssistantButtonState:AppBarAssistantButtonState::kAccount
+                  highlighted:NO
+                      enabled:NO
+                       avatar:nil
+                     signedIn:NO]);
+  EXPECT_FALSE(UpdateAssistantButtonAndGetMenu());
+}
+
+// Tests that the assistant button keeps showing Lens, disabled, when the user
+// chose Lens and there is no tab, so that the entry point is the same in
+// regular and incognito mode.
+TEST_F(AppBarMediatorTest, TestAssistantButtonCustomization_LensWithoutTab) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = NO;
+  regular_profile_->GetPrefs()->SetInteger(
+      lens::prefs::kLensOverlaySettings,
+      static_cast<int>(lens::prefs::LensOverlaySettingsPolicyValue::kEnabled));
+  SetPreferredAssistantButtonState(AppBarAssistantButtonPreferredState::kLens);
+  ASSERT_TRUE(regular_web_state_list_->empty());
+  ASSERT_TRUE(incognito_web_state_list_->empty());
+
+  OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kLens
+                                   highlighted:NO
+                                       enabled:NO
+                                        avatar:nil
+                                      signedIn:NO]);
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  incognito_state_.incognitoContentVisible = YES;
+  OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kLens
+                                   highlighted:NO
+                                       enabled:NO
+                                        avatar:nil
+                                      signedIn:NO]);
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests the content of the assistant button menu when all the entries are
+// available and the user didn't choose any. When Gemini is available, AI Mode
+// is not present in the menu even if it is eligible.
+TEST_F(AppBarMediatorTest, TestAssistantButtonCustomization_Menu) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(true);
+  SetAimEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = YES;
+
+  UIMenu* menu = UpdateAssistantButtonAndGetMenu();
+  // "Ask Gemini" is checked as the assistant button shows Gemini.
+  ExpectAssistantButtonMenuEntries(
+      menu, {{IDS_IOS_APP_BAR_ASK_GEMINI, /*checked=*/true},
+             {IDS_IOS_LENS_PRODUCT_NAME, /*checked=*/false},
+             {IDS_IOS_APP_BAR_ACCOUNT, /*checked=*/false}});
+}
+
+// Tests that the assistant button menu hides the unavailable entries, and
+// checks "Lens" as the assistant button shows Lens when neither Gemini nor AI
+// Mode is available.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonCustomization_MenuHidesUnavailableEntries) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(false);
+  SetAimEligible(false);
+  mediator_.overrideLensAvailabilityForTesting = YES;
+
+  ExpectAssistantButtonMenuEntries(
+      UpdateAssistantButtonAndGetMenu(),
+      {{IDS_IOS_LENS_PRODUCT_NAME, /*checked=*/true},
+       {IDS_IOS_APP_BAR_ACCOUNT, /*checked=*/false}});
+}
+
+// Tests that the assistant button menu shows and checks "AI Mode" when
+// Gemini isn't available but AI Mode is, matching what the assistant button
+// displays.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonCustomization_MenuShowsAimWhenGeminiUnavailable) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(false);
+  SetAimEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = YES;
+
+  OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kAIM
+                                   highlighted:NO
+                                       enabled:YES
+                                        avatar:nil
+                                      signedIn:NO]);
+  ExpectAssistantButtonMenuEntries(
+      UpdateAssistantButtonAndGetMenu(),
+      {{IDS_IOS_APP_BAR_ASK_GOOGLE, /*checked=*/true},
+       {IDS_IOS_LENS_PRODUCT_NAME, /*checked=*/false},
+       {IDS_IOS_APP_BAR_ACCOUNT, /*checked=*/false}});
+}
+
+// Tests that there is an assistant button menu when only AI Mode and Account
+// are available, so that the user can switch between them.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonCustomization_MenuWithAimAndAccountOnly) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(false);
+  SetAimEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = NO;
+  SetPreferredAssistantButtonState(
+      AppBarAssistantButtonPreferredState::kAccount);
+
+  ExpectAssistantButtonMenuEntries(
+      UpdateAssistantButtonAndGetMenu(),
+      {{IDS_IOS_APP_BAR_ASK_GOOGLE, /*checked=*/false},
+       {IDS_IOS_APP_BAR_ACCOUNT, /*checked=*/true}});
+}
+
+// Tests that the assistant button menu checks the entry of the state shown by
+// the assistant button, and not the one chosen by the user, when the chosen one
+// isn't available.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonCustomization_MenuChecksDisplayedEntry) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = NO;
+  SetPreferredAssistantButtonState(AppBarAssistantButtonPreferredState::kLens);
+
+  ExpectAssistantButtonMenuEntries(
+      UpdateAssistantButtonAndGetMenu(),
+      {{IDS_IOS_APP_BAR_ASK_GEMINI, /*checked=*/true},
+       {IDS_IOS_APP_BAR_ACCOUNT, /*checked=*/false}});
+}
+
+// Tests that there is no assistant button menu when neither Gemini, AI Mode nor
+// Lens is available, as Account would be the only choice.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonCustomization_NoMenuWhenOnlyAccountAvailable) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(false);
+  SetAimEligible(false);
+  mediator_.overrideLensAvailabilityForTesting = NO;
+
+  EXPECT_FALSE(UpdateAssistantButtonAndGetMenu());
+}
+
+// Tests that the assistant button uses the default priority order when the user
+// chose Account while signed out and sign-in is disabled, and that the menu
+// hides the Account entry. Gemini is also unavailable to signed-out users when
+// sign-in is disabled, so the button shows AI Mode.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonCustomization_PreferredAccountSigninDisabled) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(true);
+  SetAimEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = YES;
+  SetPreferredAssistantButtonState(
+      AppBarAssistantButtonPreferredState::kAccount);
+  GetApplicationContext()->GetLocalState()->SetBoolean(
+      prefs::kSigninAllowedOnDevice, false);
+
+  OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kAIM
+                                   highlighted:NO
+                                       enabled:YES
+                                        avatar:nil
+                                      signedIn:NO]);
+  ExpectAssistantButtonMenuEntries(
+      UpdateAssistantButtonAndGetMenu(),
+      {{IDS_IOS_APP_BAR_ASK_GOOGLE, /*checked=*/true},
+       {IDS_IOS_LENS_PRODUCT_NAME, /*checked=*/false}});
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests that the Account entry stays available when sign-in is disabled but the
+// user is signed in, as the account menu can still be shown.
+TEST_F(
+    AppBarMediatorTest,
+    TestAssistantButtonCustomization_PreferredAccountSignedInSigninDisabled) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SignInAndSetCapability(true);
+  SetLocationEligible(false);
+  SetAimEligible(false);
+  mediator_.overrideLensAvailabilityForTesting = YES;
+  SetPreferredAssistantButtonState(
+      AppBarAssistantButtonPreferredState::kAccount);
+  GetApplicationContext()->GetLocalState()->SetBoolean(
+      prefs::kSigninAllowedOnDevice, false);
+
+  ExpectAssistantButtonMenuEntries(
+      UpdateAssistantButtonAndGetMenu(),
+      {{IDS_IOS_LENS_PRODUCT_NAME, /*checked=*/false},
+       {IDS_IOS_APP_BAR_ACCOUNT, /*checked=*/true}});
+}
+
+// Tests that selecting an entry of the assistant button menu stores the user
+// choice and updates the assistant button.
+TEST_F(AppBarMediatorTest, TestAssistantButtonCustomization_SelectMenuEntry) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = YES;
+  UIMenu* menu = UpdateAssistantButtonAndGetMenu();
+  ASSERT_EQ(kAssistantButtonMenuEntryCount, menu.children.count);
+  UIAction* lens_action = base::apple::ObjCCastStrict<UIAction>(
+      menu.children[kAssistantButtonMenuLensIndex]);
+
+  OCMExpect([consumer_ setAssistantButtonState:AppBarAssistantButtonState::kLens
+                                   highlighted:NO
+                                       enabled:YES
+                                        avatar:nil
+                                      signedIn:NO]);
+  [lens_action performWithSender:nil target:nil];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+  EXPECT_EQ(static_cast<int>(AppBarAssistantButtonPreferredState::kLens),
+            regular_profile_->GetPrefs()->GetInteger(
+                prefs::kAppBarAssistantButtonPreferredState));
+}
+
+// Tests that selecting each entry of the assistant button menu records its own
+// user action. "Ask Gemini" is selected first, while it is already checked as
+// the user didn't choose any entry, to verify that it is recorded anyway.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonCustomization_SelectionRecordsUserActions) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(true);
+  mediator_.overrideLensAvailabilityForTesting = YES;
+  base::UserActionTester user_action_tester;
+
+  ASSERT_NO_FATAL_FAILURE(
+      SelectAssistantButtonMenuEntry(kAssistantButtonMenuAskGeminiIndex));
+  ExpectAssistantButtonMenuUserActionCounts(user_action_tester,
+                                            /*ask_gemini_count=*/1,
+                                            /*lens_count=*/0,
+                                            /*account_count=*/0);
+
+  ASSERT_NO_FATAL_FAILURE(
+      SelectAssistantButtonMenuEntry(kAssistantButtonMenuLensIndex));
+  ExpectAssistantButtonMenuUserActionCounts(user_action_tester,
+                                            /*ask_gemini_count=*/1,
+                                            /*lens_count=*/1,
+                                            /*account_count=*/0);
+
+  ASSERT_NO_FATAL_FAILURE(
+      SelectAssistantButtonMenuEntry(kAssistantButtonMenuAccountIndex));
+  ExpectAssistantButtonMenuUserActionCounts(user_action_tester,
+                                            /*ask_gemini_count=*/1,
+                                            /*lens_count=*/1,
+                                            /*account_count=*/1);
+}
+
+// Tests that the preferred state on-load metric records "Default" when the user
+// didn't choose any state.
+TEST_F(AppBarMediatorTest, TestAssistantButtonPreferredStateOnLoadMetric) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  base::HistogramTester histogram_tester;
+
+  RecreateMediator();
+  histogram_tester.ExpectUniqueSample(
+      kAppBarAssistantButtonPreferredStateOnLoadHistogram,
+      AppBarAssistantButtonPreferredState::kDefault, 1);
+}
+
+// Tests that the preferred state on-load metric records "Ask Gemini" when the
+// user chose it, distinctly from the absence of choice.
+TEST_F(AppBarMediatorTest, TestAssistantButtonPreferredStateOnLoadMetric_Ask) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetPreferredAssistantButtonState(AppBarAssistantButtonPreferredState::kAsk);
+  base::HistogramTester histogram_tester;
+
+  RecreateMediator();
+  histogram_tester.ExpectUniqueSample(
+      kAppBarAssistantButtonPreferredStateOnLoadHistogram,
+      AppBarAssistantButtonPreferredState::kAsk, 1);
+}
+
+// Tests that the preferred state on-load metric records "Default" when the
+// stored state is outside of the enum range, as it is treated as no choice.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonPreferredStateOnLoadMetric_InvalidPreference) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  regular_profile_->GetPrefs()->SetInteger(
+      prefs::kAppBarAssistantButtonPreferredState,
+      kInvalidAssistantButtonState);
+  base::HistogramTester histogram_tester;
+
+  RecreateMediator();
+  histogram_tester.ExpectUniqueSample(
+      kAppBarAssistantButtonPreferredStateOnLoadHistogram,
+      AppBarAssistantButtonPreferredState::kDefault, 1);
+}
+
+// Tests that the default state on-load metric isn't recorded when the user
+// didn't choose any state.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonDefaultStateOnLoadMetric_NoChoice) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  base::HistogramTester histogram_tester;
+
+  RecreateMediator();
+  histogram_tester.ExpectTotalCount(kAppBarAssistantButtonStateOnLoadHistogram,
+                                    1);
+  histogram_tester.ExpectTotalCount(
+      kAppBarAssistantButtonDefaultStateOnLoadHistogram, 0);
+}
+
+// Tests that the default state on-load metric records Gemini, the highest
+// priority state, when the user chose Account and Gemini is eligible, while the
+// assistant button shows Account.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonDefaultStateOnLoadMetric_ChosenAccount) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(true);
+  SetPreferredAssistantButtonState(
+      AppBarAssistantButtonPreferredState::kAccount);
+  base::HistogramTester histogram_tester;
+
+  RecreateMediator();
+  histogram_tester.ExpectUniqueSample(
+      kAppBarAssistantButtonStateOnLoadHistogram,
+      AppBarAssistantButtonState::kAccount, 1);
+  histogram_tester.ExpectUniqueSample(
+      kAppBarAssistantButtonDefaultStateOnLoadHistogram,
+      AppBarAssistantButtonState::kAsk, 1);
+}
+
+// Tests that the default state on-load metric uses the whole priority order: it
+// records AI Mode when the user chose Account and Gemini isn't eligible.
+TEST_F(AppBarMediatorTest,
+       TestAssistantButtonDefaultStateOnLoadMetric_PriorityOrder) {
+  base::test::ScopedFeatureList feature_list(kAppBarAssistantCustomization);
+  SetLocationEligible(false);
+  SetAimEligible(true);
+  SetPreferredAssistantButtonState(
+      AppBarAssistantButtonPreferredState::kAccount);
+  base::HistogramTester histogram_tester;
+
+  RecreateMediator();
+  histogram_tester.ExpectUniqueSample(
+      kAppBarAssistantButtonStateOnLoadHistogram,
+      AppBarAssistantButtonState::kAccount, 1);
+  histogram_tester.ExpectUniqueSample(
+      kAppBarAssistantButtonDefaultStateOnLoadHistogram,
+      AppBarAssistantButtonState::kAIM, 1);
 }
 
 // Tests that the assistant button is disabled when Lens Overlay is visible.
@@ -2483,3 +3274,222 @@ TEST_F(AppBarMediatorTest, TestWebStateListBatchOperation) {
 
   EXPECT_OCMOCK_VERIFY(consumer_);
 }
+
+// Tests that consumer updates are deferred while SceneState.UIEnabled is NO
+// and performed once SceneState.UIEnabled transitions to YES.
+TEST_F(AppBarMediatorTest, TestConsumerUpdatesDeferredUntilSceneUIEnabled) {
+  SceneState* scene_state = [[SceneState alloc] init];
+  ASSERT_FALSE(scene_state.UIEnabled);
+  mediator_.sceneState = scene_state;
+
+  // Use a strict mock to verify no consumer methods are invoked while
+  // UIEnabled is NO (including when setting consumer or inserting a WebState).
+  id deferred_consumer = OCMStrictProtocolMock(@protocol(TestAppBarConsumer));
+  mediator_.consumer = deferred_consumer;
+
+  auto web_state = std::make_unique<web::FakeWebState>();
+  regular_browser_->GetWebStateList()->InsertWebState(std::move(web_state));
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(deferred_consumer);
+
+  // Switch back to consumer_ (still while UIEnabled is NO, so no update yet),
+  // then enable UI and verify updateConsumer synchronizes the state.
+  mediator_.consumer = consumer_;
+  OCMExpect([consumer_ updateTabCount:1]);
+  scene_state.UIEnabled = YES;
+  EXPECT_OCMOCK_VERIFY(consumer_);
+}
+
+// Tests that when `kAppBarDisableLongPress` is enabled, long-press button menus
+// are not created or pushed to the consumer while browsing, whereas the New Tab
+// primary-action menu is still provided on the Tab Groups page.
+TEST_F(AppBarMediatorTest, TestDisableLongPress_FlagEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kAppBarDisableLongPress, kFiveButtonAppBarLayout,
+       kAppBarAssistantCustomization},
+      {});
+
+  OCMReject([consumer_ setMenu:[OCMArg any]
+                 forButtonType:AppBarButtonTypeAssistant]);
+  OCMReject([consumer_ setMenu:[OCMArg any]
+                 forButtonType:AppBarButtonTypeNewTab]);
+  OCMReject([consumer_ setMenu:[OCMArg any]
+                 forButtonType:AppBarButtonTypeTabGrid]);
+  OCMReject([consumer_ setMenu:[OCMArg any]
+                 forButtonType:AppBarButtonTypeBack]);
+  OCMReject([consumer_ setMenu:[OCMArg any]
+                 forButtonType:AppBarButtonTypeForward]);
+
+  auto web_state = std::make_unique<web::FakeWebState>();
+  auto navigation_manager = std::make_unique<web::FakeNavigationManager>();
+  navigation_manager->AddItem(GURL("https://example.com/1"),
+                              ui::PAGE_TRANSITION_LINK);
+  web_state->SetNavigationManager(std::move(navigation_manager));
+  regular_browser_->GetWebStateList()->InsertWebState(
+      std::move(web_state),
+      WebStateList::InsertionParams::AtIndex(0).Activate());
+  [mediator_ updateAssistantButton];
+  EXPECT_OCMOCK_VERIFY(consumer_);
+
+  // Switching to the Tab Groups page in the Tab Grid should still provide the
+  // New Tab button menu for primary-action tap.
+  id tab_groups_consumer = OCMProtocolMock(@protocol(TestAppBarConsumer));
+  OCMReject([tab_groups_consumer setMenu:[OCMArg any]
+                           forButtonType:AppBarButtonTypeAssistant]);
+  OCMReject([tab_groups_consumer setMenu:[OCMArg any]
+                           forButtonType:AppBarButtonTypeTabGrid]);
+  mediator_.consumer = tab_groups_consumer;
+  OCMExpect([tab_groups_consumer setMenu:[OCMArg isNotNil]
+                           forButtonType:AppBarButtonTypeNewTab]);
+  [tab_grid_state_ setCurrentPage:TabGridPageTabGroups];
+  [tab_grid_state_ setTabGridVisible:YES];
+  EXPECT_OCMOCK_VERIFY(tab_groups_consumer);
+}
+
+// Tests that when `kFiveButtonAppBarLayout` is enabled and there is no active
+// WebState, updating the consumer does not crash trying to access the
+// navigation manager on a null WebState (crbug.com/574867690).
+TEST_F(AppBarMediatorTest,
+       TestFiveButtonAppBarLayout_NoActiveWebState_DoesNotCrash) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kNextOldDesign, kFiveButtonAppBarLayout}, {});
+  RecreateMediator();
+
+  // Initially there is no active WebState in the WebStateList.
+  ASSERT_EQ(nullptr, regular_browser_->GetWebStateList()->GetActiveWebState());
+
+  // Back and forward menus should not be pushed to the consumer when there is
+  // no active WebState.
+  id empty_consumer = OCMProtocolMock(@protocol(TestAppBarConsumer));
+  OCMReject([empty_consumer setMenu:[OCMArg any]
+                      forButtonType:AppBarButtonTypeBack]);
+  OCMReject([empty_consumer setMenu:[OCMArg any]
+                      forButtonType:AppBarButtonTypeForward]);
+  mediator_.consumer = empty_consumer;
+
+  // Updating the consumer with no active WebState must not crash.
+  [mediator_ updateConsumer];
+  EXPECT_OCMOCK_VERIFY(empty_consumer);
+
+  // Insert an active WebState with navigation history.
+  auto web_state = std::make_unique<web::FakeWebState>();
+  auto nav_manager = std::make_unique<TestNavigationManager>();
+  constexpr char kTestURL1[] = "https://example.com/1";
+  constexpr char kTestURL2[] = "https://example.com/2";
+  nav_manager->AddItem(GURL(kTestURL1), ui::PAGE_TRANSITION_LINK);
+  nav_manager->AddItem(GURL(kTestURL2), ui::PAGE_TRANSITION_LINK);
+  constexpr int kCommittedIndex = 1;
+  nav_manager->SetLastCommittedItemIndex(kCommittedIndex);
+  web_state->SetNavigationManager(std::move(nav_manager));
+
+  id active_consumer = OCMProtocolMock(@protocol(TestAppBarConsumer));
+  OCMExpect([active_consumer setMenu:[OCMArg isNotNil]
+                       forButtonType:AppBarButtonTypeBack]);
+  OCMExpect([active_consumer setMenu:[OCMArg isNotNil]
+                       forButtonType:AppBarButtonTypeForward]);
+  mediator_.consumer = active_consumer;
+  regular_browser_->GetWebStateList()->InsertWebState(
+      std::move(web_state),
+      WebStateList::InsertionParams::AtIndex(0).Activate());
+  EXPECT_OCMOCK_VERIFY(active_consumer);
+
+  // Closing all WebStates enters a state with no active WebState; this must
+  // update the consumer without crashing (crbug.com/574867690).
+  CloseAllWebStates(*regular_browser_->GetWebStateList(),
+                    WebStateList::ClosingReason::kDefault);
+  EXPECT_EQ(nullptr, regular_browser_->GetWebStateList()->GetActiveWebState());
+
+  id closed_consumer = OCMProtocolMock(@protocol(TestAppBarConsumer));
+  OCMReject([closed_consumer setMenu:[OCMArg any]
+                       forButtonType:AppBarButtonTypeBack]);
+  OCMReject([closed_consumer setMenu:[OCMArg any]
+                       forButtonType:AppBarButtonTypeForward]);
+  mediator_.consumer = closed_consumer;
+  [mediator_ updateConsumer];
+  EXPECT_OCMOCK_VERIFY(closed_consumer);
+}
+
+// Tests that when `kFiveButtonAppBarLayout` is enabled and there is an active
+// WebState, `navigateToPageForItem:` navigates to the selected item rather than
+// hitting `NOTREACHED()`.
+TEST_F(AppBarMediatorTest, TestNavigateToPageForItem_NavigatesToItemIndex) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kNextOldDesign, kFiveButtonAppBarLayout}, {});
+  RecreateMediator();
+
+  auto web_state = std::make_unique<web::FakeWebState>();
+  auto nav_manager = std::make_unique<TestNavigationManager>();
+  TestNavigationManager* raw_nav_manager = nav_manager.get();
+
+  constexpr char kTestURL0[] = "https://example.com/0";
+  constexpr char kTestURL1[] = "https://example.com/1";
+  constexpr char kTestURL2[] = "https://example.com/2";
+  nav_manager->AddItem(GURL(kTestURL0), ui::PAGE_TRANSITION_LINK);
+  nav_manager->AddItem(GURL(kTestURL1), ui::PAGE_TRANSITION_LINK);
+  nav_manager->AddItem(GURL(kTestURL2), ui::PAGE_TRANSITION_LINK);
+  constexpr int kInitialIndex = 2;
+  constexpr int kTargetIndex = 0;
+  nav_manager->SetLastCommittedItemIndex(kInitialIndex);
+
+  web::NavigationItem* target_item =
+      raw_nav_manager->GetItemAtIndex(kTargetIndex);
+  web_state->SetNavigationManager(std::move(nav_manager));
+  regular_browser_->GetWebStateList()->InsertWebState(
+      std::move(web_state),
+      WebStateList::InsertionParams::AtIndex(0).Activate());
+
+  // Navigate to item at index 0 and verify `GoToIndex` was called.
+  [mediator_ navigateToPageForItem:target_item];
+  EXPECT_EQ(kTargetIndex, raw_nav_manager->last_navigated_index());
+  EXPECT_EQ(kTargetIndex, raw_nav_manager->GetLastCommittedItemIndex());
+}
+
+// Tests that `navigateToPageForItem:` safely handles the absence of an active
+// WebState or the feature flag being disabled without crashing.
+TEST_F(AppBarMediatorTest,
+       TestNavigateToPageForItem_SafeWhenNoActiveWebStateOrDisabled) {
+  // Verify that calling `navigateToPageForItem:` when `kFiveButtonAppBarLayout`
+  // is enabled but there is no active WebState does not crash.
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitWithFeatures(
+        {kNextOldDesign, kFiveButtonAppBarLayout}, {});
+    RecreateMediator();
+    ASSERT_EQ(nullptr,
+              regular_browser_->GetWebStateList()->GetActiveWebState());
+
+    std::unique_ptr<web::NavigationItem> item = web::NavigationItem::Create();
+    [mediator_ navigateToPageForItem:item.get()];
+  }
+
+  // Verify that calling `navigateToPageForItem:` when `kFiveButtonAppBarLayout`
+  // is disabled safely returns without navigating or hitting `NOTREACHED()`.
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndDisableFeature(kFiveButtonAppBarLayout);
+    RecreateMediator();
+
+    auto web_state = std::make_unique<web::FakeWebState>();
+    auto nav_manager = std::make_unique<TestNavigationManager>();
+    TestNavigationManager* raw_nav_manager = nav_manager.get();
+    constexpr char kTestURL[] = "https://example.com/0";
+    nav_manager->AddItem(GURL(kTestURL), ui::PAGE_TRANSITION_LINK);
+    constexpr int kIndex = 0;
+    web::NavigationItem* item = raw_nav_manager->GetItemAtIndex(kIndex);
+    web_state->SetNavigationManager(std::move(nav_manager));
+    regular_browser_->GetWebStateList()->InsertWebState(
+        std::move(web_state),
+        WebStateList::InsertionParams::AtIndex(0).Activate());
+
+    [mediator_ navigateToPageForItem:item];
+    constexpr int kInvalidIndex = -1;
+    EXPECT_EQ(kInvalidIndex, raw_nav_manager->last_navigated_index());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(AppBarMediatorTest,
+                         AppBarMediatorTest,
+                         testing::Bool());

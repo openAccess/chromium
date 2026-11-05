@@ -9,6 +9,7 @@
 #include "base/memory/weak_ptr.h"
 #include "components/autofill/core/common/aliases.h"
 #include "components/password_manager/core/browser/password_manager_driver.h"
+#include "url/gurl.h"
 
 namespace password_manager {
 
@@ -29,7 +30,7 @@ class StubPasswordManagerDriver : public PasswordManagerDriver {
   DriverId GetId() const override;
   void PropagateFillDataOnParsingCompletion(
       const autofill::PasswordFormFillData& form_data) override;
-  void GeneratedPasswordAccepted(const std::u16string& password) override;
+  void GeneratedPasswordAccepted(const PasswordString& password) override;
   void GeneratedPasswordRejected() override;
   void FocusNextFieldAfterPasswords() override;
   void FillField(autofill::FieldRendererId triggering_field_id,
@@ -54,7 +55,7 @@ class StubPasswordManagerDriver : public PasswordManagerDriver {
                              autofill::FieldRendererId password_element_id,
                              const std::u16string& username,
                              const std::u16string& password) override;
-  void PreviewGenerationSuggestion(const std::u16string& password) override;
+  void PreviewGenerationSuggestion(const PasswordString& password) override;
   void ClearPreviewedForm() override;
   void SetSuggestionAvailability(autofill::FieldRendererId element_id,
                                  autofill::mojom::AutofillSuggestionAvailability
@@ -68,12 +69,11 @@ class StubPasswordManagerDriver : public PasswordManagerDriver {
   bool IsNestedWithinFencedFrame() const override;
   bool CanShowAutofillUi() const override;
   int GetFrameId() const override;
+  void set_last_committed_url(const GURL& url);
   const GURL& GetLastCommittedURL() const override;
   const url::Origin& GetLastCommittedOrigin() const override;
   bool HasCrossOriginAncestor() const override;
 
-  gfx::RectF TransformToRootCoordinates(
-      const gfx::RectF& bounds_in_frame_coordinates) override;
   void CheckViewAreaVisible(autofill::FieldRendererId field_id,
                             base::OnceCallback<void(bool)>) override;
   bool HasValidURL(bool may_kill_renderer) override;
@@ -82,7 +82,8 @@ class StubPasswordManagerDriver : public PasswordManagerDriver {
   base::WeakPtr<password_manager::PasswordManagerDriver> AsWeakPtr() override;
 
  private:
-  url::Origin opaque_origin_;
+  GURL last_committed_url_;
+  url::Origin last_committed_origin_;
   base::WeakPtrFactory<StubPasswordManagerDriver> weak_ptr_factory_{this};
 };
 

@@ -693,6 +693,7 @@ int HttpStreamFactory::Job::DoWait() {
                                   NetLogEventPhase::BEGIN, "should_wait",
                                   should_wait);
   if (should_wait) {
+    wait_start_time_ = base::TimeTicks::Now();
     return ERR_IO_PENDING;
   }
 
@@ -702,6 +703,11 @@ int HttpStreamFactory::Job::DoWait() {
 int HttpStreamFactory::Job::DoWaitComplete(int result) {
   net_log_.EndEvent(NetLogEventType::HTTP_STREAM_JOB_WAITING);
   DCHECK_EQ(OK, result);
+  if (wait_start_time_.has_value()) {
+    CHECK_EQ(job_type_, JobType::MAIN);
+    base::UmaHistogramTimes("Net.HttpStreamFactory.MainJobWaitTime",
+                            base::TimeTicks::Now() - *wait_start_time_);
+  }
   next_state_ = STATE_INIT_CONNECTION;
   return OK;
 }
@@ -721,7 +727,11 @@ int HttpStreamFactory::Job::DoInitConnection() {
   net_log_.BeginEvent(NetLogEventType::HTTP_STREAM_JOB_INIT_CONNECTION);
   int result = DoInitConnectionImpl();
   if (!expect_on_quic_session_created_ && !expect_on_quic_host_resolution_) {
-    delegate_->OnConnectionInitialized(this, result);
+    int init_result =
+        result == ERR_IO_PENDING
+            ? quic_request_.last_attempt_failure().value_or(ERR_IO_PENDING)
+            : result;
+    delegate_->OnConnectionInitialized(this, init_result);
   }
   return result;
 }

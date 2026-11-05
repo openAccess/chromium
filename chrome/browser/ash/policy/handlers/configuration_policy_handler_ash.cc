@@ -30,7 +30,6 @@
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_prefs.h"
 #include "chrome/browser/web_applications/policy/app_service_web_app_policy.h"
 #include "chrome/browser/web_applications/policy/web_app_policy_manager.h"
-#include "chrome/browser/web_applications/web_app_utils.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/components/onc/onc_signature.h"
 #include "chromeos/components/onc/onc_utils.h"
@@ -190,7 +189,7 @@ bool ExternalDataPolicyHandler::CheckPolicySettings(
   }
 
   const base::Value* value = entry->value(base::Value::Type::DICT);
-  DCHECK(value);
+  CHECK(value, base::NotFatalUntil::M160);
   const base::DictValue& dict = value->GetDict();
   std::optional<std::string> url_string =
       GetSubkeyString(dict, errors, policy, kSubkeyURL);
@@ -393,6 +392,25 @@ void PinnedLauncherAppsPolicyHandler::ApplyList(base::ListValue filtered_list,
                   base::Value(std::move(pinned_apps_list)));
 }
 
+AutoLaunchAndroidAppsPolicyHandler::AutoLaunchAndroidAppsPolicyHandler()
+    : ListPolicyHandler(key::kAutoLaunchAndroidApps,
+                        base::Value::Type::STRING) {}
+
+AutoLaunchAndroidAppsPolicyHandler::~AutoLaunchAndroidAppsPolicyHandler() =
+    default;
+
+bool AutoLaunchAndroidAppsPolicyHandler::CheckListEntry(
+    const base::Value& value) {
+  return web_app::IsArcAppPolicyId(value.GetString());
+}
+
+void AutoLaunchAndroidAppsPolicyHandler::ApplyList(
+    base::ListValue filtered_list,
+    PrefValueMap* prefs) {
+  prefs->SetValue(arc::prefs::kArcAutoLaunchApps,
+                  base::Value(std::move(filtered_list)));
+}
+
 DefaultHandlersForFileExtensionsPolicyHandler::
     DefaultHandlersForFileExtensionsPolicyHandler(
         const policy::Schema& chrome_schema)
@@ -419,7 +437,7 @@ bool DefaultHandlersForFileExtensionsPolicyHandler::CheckPolicySettings(
 
     const std::string* policy_id =
         policy_entry_dict.FindString(kPolicyEntryPolicyIdKey);
-    DCHECK(policy_id);
+    CHECK(policy_id, base::NotFatalUntil::M160);
 
     if (!IsValidPolicyId(*policy_id)) {
       errors->AddError(policy_name(), IDS_POLICY_VALUE_FORMAT_ERROR,
@@ -429,7 +447,7 @@ bool DefaultHandlersForFileExtensionsPolicyHandler::CheckPolicySettings(
 
     const auto* file_extensions =
         policy_entry_dict.FindList(kPolicyEntryFileExtensionsKey);
-    DCHECK(file_extensions);
+    CHECK(file_extensions, base::NotFatalUntil::M160);
 
     for (const auto& file_extension_entry : *file_extensions) {
       const std::string& file_extension = file_extension_entry.GetString();

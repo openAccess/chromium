@@ -19,6 +19,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_multi_source_observation.h"
+#include "base/scoped_observation.h"
 #include "base/uuid.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/devtools_agent_host_observer.h"
@@ -299,6 +300,10 @@ class ProcessManager : public KeyedService,
   void RenderProcessExited(
       content::RenderProcessHost* host,
       const content::ChildProcessTerminationInfo& info) override;
+  void RenderProcessHostDestroyed(content::RenderProcessHost* host) override;
+
+  // Stops observing `host` and cleans up any service workers tracked for it.
+  void UntrackRenderProcessForWorkers(content::RenderProcessHost* host);
 
   // ExtensionHostObserver:
   void OnExtensionHostDestroyed(ExtensionHost* host) override;
@@ -421,6 +426,9 @@ class ProcessManager : public KeyedService,
   // start notification. In that case we want to avoid decrementing keepalive.
   std::map<int, raw_ptr<ExtensionHost, CtnExperimental>>
       pending_network_requests_;
+
+  base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
+      extension_registry_observation_{this};
 
   // Observers of Service Worker RPH this ProcessManager manages.
   base::ScopedMultiSourceObservation<content::RenderProcessHost,

@@ -7,6 +7,10 @@ package org.chromium.chrome.browser.ui.browser_window;
 import android.app.Activity;
 import android.graphics.Rect;
 
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -52,6 +56,12 @@ import java.util.function.Supplier;
  */
 @NullMarked
 public interface ChromeAndroidTask {
+    /**
+     * Type token for the native {@code BrowserWindowInterface}. Use it as the type argument of
+     * {@code JniPtr} and {@code JniUniquePtr} to pass a native browser window across JNI.
+     */
+    @JniType("::BrowserWindowInterface")
+    interface NativeBrowserWindowInterface extends JniTypeToken {}
 
     /** Contains objects whose lifecycle is in sync with an {@code Activity}. */
     final class ActivityScopedObjects {
@@ -115,15 +125,6 @@ public interface ChromeAndroidTask {
             ChromeAndroidTaskFeatureKey featureKey, Supplier<@Nullable T> featureSupplier);
 
     /**
-     * Removes all {@link ChromeAndroidTaskFeature}s associated with the given {@link
-     * ActivityWindowAndroid}.
-     *
-     * @param activityWindowAndroid The associated activity.
-     * @see #addFeature
-     */
-    void removeAllFeaturesForActivity(ActivityWindowAndroid activityWindowAndroid);
-
-    /**
      * Returns the currently <i>valid</i> {@link Profile}s in the {@code Activity} represented by
      * the given {@link ActivityWindowAndroid}.
      *
@@ -165,8 +166,26 @@ public interface ChromeAndroidTask {
      *     ChromeAndroidTaskFeature} and obtain {@code BrowserWindowInterface} via {@link
      *     ChromeAndroidTaskFeature#onAddedToTask(ChromeAndroidTaskFeature.InitInfo)}.
      */
+    // TODO(crbug.com/40794873): Remove once all callers use the JniPtr variant.
     @Deprecated
     long getOrCreateNativeBrowserWindowPtr(Profile profile);
+
+    /**
+     * Returns the native {@code BrowserWindowInterface} associated with the given {@link Profile}
+     * and the topmost {@code ChromeActivity} in this Task.
+     *
+     * <p>If the native object hasn't been created, this method will create it before returning it.
+     *
+     * @param profile The profile associated with the browser window.
+     * @deprecated Please do <i>not</i> call this method. To (1) obtain the correct native {@code
+     *     BrowserWindowInterface} and (2) ensure the correct destruction order of {@code
+     *     ChromeActivity}, {@code BrowserWindowInterface}, {@link Profile}, and objects managed by
+     *     a client, the client should typically be an implementation of {@link
+     *     ChromeAndroidTaskFeature} and obtain {@code BrowserWindowInterface} via {@link
+     *     ChromeAndroidTaskFeature#onAddedToTask(ChromeAndroidTaskFeature.InitInfo)}.
+     */
+    @Deprecated
+    JniPtr<NativeBrowserWindowInterface> getOrCreateNativeBrowserWindow(Profile profile);
 
     /**
      * Returns the address of the native {@code BrowserWindowInterface} that should be uniquely
@@ -180,8 +199,25 @@ public interface ChromeAndroidTask {
      *     #getOrCreateNativeBrowserWindowPtr} for the preferred way to access a native {@code
      *     BrowserWindowInterface}.
      */
+    // TODO(crbug.com/40794873): Remove once all callers use the JniPtr variant.
     @Deprecated
     long getNativeBrowserWindowPtr(Profile profile, Activity activity);
+
+    /**
+     * Returns the native {@code BrowserWindowInterface} that should be uniquely identifiable via
+     * the given {@link Profile} and the given {@link Activity}.
+     *
+     * <p>If the native object hasn't been created, this method will return null.
+     *
+     * @param profile The profile associated with the browser window.
+     * @param activity The activity associated with the browser window.
+     * @deprecated Please do <i>not</i> call this method. See the deprecation notes of {@link
+     *     #getOrCreateNativeBrowserWindow} for the preferred way to access a native {@code
+     *     BrowserWindowInterface}.
+     */
+    @Deprecated
+    @Nullable JniPtr<NativeBrowserWindowInterface> getNativeBrowserWindow(
+            Profile profile, Activity activity);
 
     /**
      * Returns an array of the all native {@code BrowserWindowInterface} addresses.
@@ -195,6 +231,22 @@ public interface ChromeAndroidTask {
      */
     @Deprecated
     List<Long> getAllNativeBrowserWindowPtrs();
+
+    /**
+     * Returns the address of the native {@code BrowserWindowInterface} that is currently active in
+     * this Task, or 0 if none is active.
+     *
+     * <p>A window is active when its {@code ChromeActivity} is the topmost one in this Task and is
+     * the top resumed Activity. If the native object hasn't been created, this method will create
+     * it before returning its address.
+     *
+     * @deprecated Please do <i>not</i> call this method. Observe activation via {@link
+     *     #addAndroidBrowserWindowObserver} instead, and see the deprecation notes of {@link
+     *     #getOrCreateNativeBrowserWindowPtr} for the preferred way to access a native {@code
+     *     BrowserWindowInterface}.
+     */
+    @Deprecated
+    long getActiveNativeBrowserWindowPtr();
 
     /**
      * Adds an {@link AndroidBrowserWindowObserver} for future {@code AndroidBrowserWindow} events.
@@ -237,6 +289,9 @@ public interface ChromeAndroidTask {
 
     /** Returns whether this {@link ChromeAndroidTask} is currently in fullscreen mode. */
     boolean isFullscreen();
+
+    /** Returns whether this {@link ChromeAndroidTask} is currently a freeform window. */
+    boolean isFreeformWindow();
 
     /** Non-maximized bounds of the task even when currently maximized or minimized. */
     Rect getRestoredBoundsInDp();

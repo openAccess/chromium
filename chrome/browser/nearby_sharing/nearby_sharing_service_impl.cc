@@ -11,6 +11,8 @@
 #include "ash/public/cpp/session/session_controller.h"
 #include "base/barrier_closure.h"
 #include "base/files/file.h"
+#include "base/files/file_path.h"
+#include "base/files/safe_base_name.h"
 #include "base/functional/bind.h"
 #include "base/hash/hash.h"
 #include "base/logging.h"
@@ -25,7 +27,6 @@
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "build/chromeos_buildflags.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/nearby_sharing/certificates/common.h"
 #include "chrome/browser/nearby_sharing/certificates/nearby_share_certificate_manager_impl.h"
@@ -55,7 +56,6 @@
 #include "chromeos/ash/services/nearby/public/mojom/nearby_connections_types.mojom.h"
 #include "chromeos/ash/services/nearby/public/mojom/nearby_decoder.mojom.h"
 #include "chromeos/ash/services/nearby/public/mojom/nearby_share_target_types.mojom.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/cross_device/logging/logging.h"
 #include "components/cross_device/nearby/nearby_features.h"
 #include "components/prefs/pref_service.h"
@@ -184,7 +184,7 @@ std::optional<std::vector<uint8_t>> GetBluetoothMacAddressFromCertificate(
 std::optional<std::string> GetDeviceName(
     const sharing::mojom::AdvertisementPtr& advertisement,
     const std::optional<NearbyShareDecryptedPublicCertificate>& certificate) {
-  DCHECK(advertisement);
+  CHECK(advertisement, base::NotFatalUntil::M160);
 
   // Device name is always included when visible to everyone.
   if (advertisement->device_name) {
@@ -255,6 +255,21 @@ int64_t GeneratePayloadId() {
   return payload_id;
 }
 
+std::optional<base::SafeBaseName> GetSafeFileAttachmentBaseName(
+    const std::string& file_name) {
+  if (file_name.empty() || file_name.find('\0') != std::string::npos) {
+    return std::nullopt;
+  }
+
+  base::FilePath file_path(file_name);
+  if (file_path != file_path.BaseName() ||
+      file_path.value() == base::FilePath::kCurrentDirectory) {
+    return std::nullopt;
+  }
+
+  return base::SafeBaseName::Create(file_path);
+}
+
 // Wraps a call to OnTransferUpdate() to filter any updates after receiving a
 // final status.
 class TransferUpdateDecorator : public TransferUpdateCallback {
@@ -309,7 +324,6 @@ NearbyShareEncryptedMetadataKey AdvertisementToKey(
 NearbySharingServiceImpl::NearbySharingServiceImpl(
     user_manager::User& user,
     Profile* profile,
-    NotificationDisplayService* notification_display_service,
     std::unique_ptr<NearbyConnectionsManager> nearby_connections_manager,
     ash::nearby::NearbyProcessManager* process_manager,
     std::unique_ptr<PowerClient> power_client,
@@ -360,9 +374,9 @@ NearbySharingServiceImpl::NearbySharingServiceImpl(
           std::make_unique<nearby::share::metrics::AttachmentMetricLogger>()),
       neaby_share_metric_logger_(
           std::make_unique<nearby::share::metrics::NearbyShareMetricLogger>()) {
-  DCHECK(profile_);
-  DCHECK(nearby_connections_manager_);
-  DCHECK(power_client_);
+  CHECK(profile_, base::NotFatalUntil::M160);
+  CHECK(nearby_connections_manager_, base::NotFatalUntil::M160);
+  CHECK(power_client_, base::NotFatalUntil::M160);
 
   nearby_connections_manager_->RegisterBandwidthUpgradeListener(
       weak_ptr_factory_.GetWeakPtr());
@@ -392,8 +406,8 @@ NearbySharingServiceImpl::NearbySharingServiceImpl(
 
   GetBluetoothAdapter();
 
-  nearby_notification_manager_ = std::make_unique<NearbyNotificationManager>(
-      notification_display_service, this, prefs_, profile_);
+  nearby_notification_manager_ =
+      std::make_unique<NearbyNotificationManager>(this, prefs_, profile_, user);
 
   net::NetworkChangeNotifier::AddNetworkChangeObserver(this);
 
@@ -409,10 +423,10 @@ NearbySharingServiceImpl::NearbySharingServiceImpl(
 
 NearbySharingServiceImpl::~NearbySharingServiceImpl() {
   // Make sure the service has been shut down properly before.
-  DCHECK(!nearby_notification_manager_);
+  CHECK(!nearby_notification_manager_, base::NotFatalUntil::M160);
 
   if (bluetooth_adapter_) {
-    DCHECK(!bluetooth_adapter_->HasObserver(this));
+    CHECK(!bluetooth_adapter_->HasObserver(this), base::NotFatalUntil::M160);
   }
 
   // Unregister observers.
@@ -501,9 +515,9 @@ NearbySharingService::StatusCodes NearbySharingServiceImpl::RegisterSendSurface(
     ShareTargetDiscoveredCallback* discovery_callback,
     SendSurfaceState state) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(transfer_callback);
-  DCHECK(discovery_callback);
-  DCHECK_NE(state, SendSurfaceState::kUnknown);
+  CHECK(transfer_callback, base::NotFatalUntil::M160);
+  CHECK(discovery_callback, base::NotFatalUntil::M160);
+  CHECK_NE(state, SendSurfaceState::kUnknown, base::NotFatalUntil::M160);
 
   if (foreground_send_transfer_callbacks_.HasObserver(transfer_callback) ||
       background_send_transfer_callbacks_.HasObserver(transfer_callback)) {
@@ -586,8 +600,8 @@ NearbySharingServiceImpl::UnregisterSendSurface(
     TransferUpdateCallback* transfer_callback,
     ShareTargetDiscoveredCallback* discovery_callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(transfer_callback);
-  DCHECK(discovery_callback);
+  CHECK(transfer_callback, base::NotFatalUntil::M160);
+  CHECK(discovery_callback, base::NotFatalUntil::M160);
   if (!foreground_send_transfer_callbacks_.HasObserver(transfer_callback) &&
       !background_send_transfer_callbacks_.HasObserver(transfer_callback)) {
     RecordNearbyShareError(
@@ -639,8 +653,8 @@ NearbySharingServiceImpl::RegisterReceiveSurface(
     TransferUpdateCallback* transfer_callback,
     ReceiveSurfaceState state) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(transfer_callback);
-  DCHECK_NE(state, ReceiveSurfaceState::kUnknown);
+  CHECK(transfer_callback, base::NotFatalUntil::M160);
+  CHECK_NE(state, ReceiveSurfaceState::kUnknown, base::NotFatalUntil::M160);
 
   // Only check these errors cases for foreground receivers.
   if (state == ReceiveSurfaceState::kForeground) {
@@ -700,7 +714,7 @@ NearbySharingService::StatusCodes
 NearbySharingServiceImpl::UnregisterReceiveSurface(
     TransferUpdateCallback* transfer_callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(transfer_callback);
+  CHECK(transfer_callback, base::NotFatalUntil::M160);
   bool is_foreground =
       foreground_receive_callbacks_.HasObserver(transfer_callback);
   bool is_background =
@@ -762,11 +776,7 @@ NearbySharingServiceImpl::ClearForegroundReceiveSurfaces() {
 }
 
 bool NearbySharingServiceImpl::IsInHighVisibility() const {
-  if (chromeos::features::IsQuickShareV2Enabled()) {
-    return prefs_->GetBoolean(prefs::kNearbySharingInHighVisibilityPrefName);
-  }
-
-  return in_high_visibility_;
+  return prefs_->GetBoolean(prefs::kNearbySharingInHighVisibilityPrefName);
 }
 
 bool NearbySharingServiceImpl::IsTransferring() const {
@@ -800,10 +810,11 @@ NearbySharingService::StatusCodes NearbySharingServiceImpl::SendAttachments(
   }
 
   // |is_scanning_| means at least one send transfer callback.
-  DCHECK(!foreground_send_transfer_callbacks_.empty() ||
-         !background_send_transfer_callbacks_.empty());
+  CHECK(!foreground_send_transfer_callbacks_.empty() ||
+            !background_send_transfer_callbacks_.empty(),
+        base::NotFatalUntil::M160);
   // |is_scanning_| and |is_transferring_| are mutually exclusive.
-  DCHECK(!is_transferring_);
+  CHECK(!is_transferring_, base::NotFatalUntil::M160);
 
   ShareTargetInfo* info = GetShareTargetInfo(share_target);
   if (!info || !info->endpoint_id()) {
@@ -817,7 +828,7 @@ NearbySharingService::StatusCodes NearbySharingServiceImpl::SendAttachments(
 
   ShareTarget share_target_copy = share_target;
   for (std::unique_ptr<Attachment>& attachment : attachments) {
-    DCHECK(attachment);
+    CHECK(attachment, base::NotFatalUntil::M160);
     attachment->MoveToShareTarget(share_target_copy);
   }
 
@@ -901,7 +912,7 @@ void NearbySharingServiceImpl::Accept(
 
   // This should probably always evaluate to true, since a sender will
   // never accept a transfer.
-  DCHECK(share_target.is_incoming);
+  CHECK(share_target.is_incoming, base::NotFatalUntil::M160);
   if (share_target.is_incoming) {
     incoming_share_accepted_timestamp_ = base::TimeTicks::Now();
 
@@ -1048,7 +1059,7 @@ void NearbySharingServiceImpl::Open(const ShareTarget& share_target,
 }
 
 void NearbySharingServiceImpl::OpenURL(GURL url) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
   ash::NewWindowDelegate::GetInstance()->OpenUrl(
       url, ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
       ash::NewWindowDelegate::Disposition::kNewForegroundTab);
@@ -1072,15 +1083,6 @@ void NearbySharingServiceImpl::SetArcTransferCleanupCallback(
   if (!is_transferring_ && arc_transfer_cleanup_callback_.is_null()) {
     arc_transfer_cleanup_callback_ = std::move(callback);
   }
-}
-
-NearbyNotificationDelegate* NearbySharingServiceImpl::GetNotificationDelegate(
-    const std::string& notification_id) {
-  if (!nearby_notification_manager_) {
-    return nullptr;
-  }
-
-  return nearby_notification_manager_->GetNotificationDelegate(notification_id);
 }
 
 void NearbySharingServiceImpl::RecordFastInitiationNotificationUsage(
@@ -1116,7 +1118,7 @@ NearbyNotificationManager* NearbySharingServiceImpl::GetNotificationManager() {
 
 void NearbySharingServiceImpl::OnNearbyProcessStopped(
     NearbyProcessShutdownReason shutdown_reason) {
-  DCHECK(process_reference_);
+  CHECK(process_reference_, base::NotFatalUntil::M160);
   CD_LOG(INFO, Feature::NS)
       << __func__ << ": Shutdown reason: " << shutdown_reason;
   CleanupAfterNearbyProcessStopped();
@@ -1214,7 +1216,6 @@ bool NearbySharingServiceImpl::ShouldRestartNearbyProcess(
       return false;
     case NearbyProcessShutdownReason::kCrash:
     case NearbyProcessShutdownReason::kConnectionsMojoPipeDisconnection:
-    case NearbyProcessShutdownReason::kPresenceMojoPipeDisconnection:
     case NearbyProcessShutdownReason::kDecoderMojoPipeDisconnection:
       break;
   }
@@ -1282,7 +1283,9 @@ void NearbySharingServiceImpl::OnIncomingConnectionAccepted(
     const std::vector<uint8_t>& endpoint_info,
     NearbyConnection* connection) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(connection);
+  CHECK(connection, base::NotFatalUntil::M160);
+  // TODO(crbug.com/568672878): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(process_reference_);
 
   sharing::mojom::NearbySharingDecoder* decoder = GetNearbySharingDecoder();
@@ -1476,15 +1479,6 @@ void NearbySharingServiceImpl::OnBandwidthUpgrade(
   for (auto& observer : observers_) {
     observer.OnBandwidthUpgrade(share_target, medium);
   }
-}
-
-void NearbySharingServiceImpl::OnBandwidthUpgradeV3(
-    nearby::presence::PresenceDevice remote_device,
-    const Medium medium) {
-  // Because `NearbySharingServiceImpl` is currently only consuming V1 APIs from
-  // `NearbyConnections`, this function is to be left as `NOTIMPLEMENTED()` as
-  // only Nearby Presence is using V3 APIs.
-  NOTIMPLEMENTED();
 }
 
 void NearbySharingServiceImpl::OnLockStateChanged(bool locked) {
@@ -1769,13 +1763,15 @@ void NearbySharingServiceImpl::HandleEndpointLost(
 }
 
 void NearbySharingServiceImpl::FinishEndpointDiscoveryEvent() {
-  DCHECK(!endpoint_discovery_events_.empty());
-  DCHECK(endpoint_discovery_events_.front().is_null());
+  CHECK(!endpoint_discovery_events_.empty(), base::NotFatalUntil::M160);
+  CHECK(endpoint_discovery_events_.front().is_null(),
+        base::NotFatalUntil::M160);
   endpoint_discovery_events_.pop();
 
   // Handle the next queued up endpoint discovered/lost event.
   if (!endpoint_discovery_events_.empty()) {
-    DCHECK(!endpoint_discovery_events_.front().is_null());
+    CHECK(!endpoint_discovery_events_.front().is_null(),
+          base::NotFatalUntil::M160);
     std::move(endpoint_discovery_events_.front()).Run();
   }
 }
@@ -2326,12 +2322,13 @@ void NearbySharingServiceImpl::StopAdvertising() {
 }
 
 void NearbySharingServiceImpl::StartScanning() {
-  DCHECK(profile_);
-  DCHECK(!power_client_->IsSuspended());
-  DCHECK(settings_.GetEnabled());
-  DCHECK(!is_screen_locked_);
-  DCHECK(HasAvailableDiscoveryMediums());
-  DCHECK(!foreground_send_transfer_callbacks_.empty());
+  CHECK(profile_, base::NotFatalUntil::M160);
+  CHECK(!power_client_->IsSuspended(), base::NotFatalUntil::M160);
+  CHECK(settings_.GetEnabled(), base::NotFatalUntil::M160);
+  CHECK(!is_screen_locked_, base::NotFatalUntil::M160);
+  CHECK(HasAvailableDiscoveryMediums(), base::NotFatalUntil::M160);
+  CHECK(!foreground_send_transfer_callbacks_.empty(),
+        base::NotFatalUntil::M160);
 
   if (is_scanning_) {
     CD_LOG(VERBOSE, Feature::NS)
@@ -2519,7 +2516,7 @@ void NearbySharingServiceImpl::InvalidateFastInitiationScanning() {
 }
 
 void NearbySharingServiceImpl::StartFastInitiationScanning() {
-  DCHECK(!fast_initiation_scanner_);
+  CHECK(!fast_initiation_scanner_, base::NotFatalUntil::M160);
   CD_LOG(VERBOSE, Feature::NS) << __func__ << ": Starting background scanning.";
   fast_initiation_scanner_ =
       FastInitiationScanner::Factory::Create(bluetooth_adapter_);
@@ -2666,12 +2663,15 @@ void NearbySharingServiceImpl::OnTransferStarted(bool is_incoming) {
 void NearbySharingServiceImpl::ReceivePayloads(
     ShareTarget share_target,
     StatusCodesCallback status_codes_callback) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
   mutual_acceptance_timeout_alarm_.Cancel();
 
   base::FilePath download_path =
       DownloadPrefs::FromDownloadManager(profile_->GetDownloadManager())
           ->DownloadPath();
+
+  auto aggregated_success = std::make_unique<bool>(true);
+  bool* aggregated_success_ptr = aggregated_success.get();
 
   // Register payload path for all valid file payloads.
   base::flat_map<int64_t, base::FilePath> valid_file_payloads;
@@ -2685,12 +2685,23 @@ void NearbySharingServiceImpl::ReceivePayloads(
       continue;
     }
 
-    base::FilePath file_path = download_path.Append(file.file_name());
+    std::optional<base::SafeBaseName> safe_file_name =
+        GetSafeFileAttachmentBaseName(file.file_name());
+    if (!safe_file_name) {
+      CD_LOG(WARNING, Feature::NS)
+          << __func__
+          << ": Failed to register payload path due to invalid file name for "
+             "attachment id - "
+          << file.id();
+      *aggregated_success = false;
+      OnPayloadPathsRegistered(share_target, std::move(aggregated_success),
+                               std::move(status_codes_callback));
+      return;
+    }
+
+    base::FilePath file_path = download_path.Append(*safe_file_name);
     valid_file_payloads.emplace(file.id(), std::move(file_path));
   }
-
-  auto aggregated_success = std::make_unique<bool>(true);
-  bool* aggregated_success_ptr = aggregated_success.get();
 
   if (valid_file_payloads.empty()) {
     OnPayloadPathsRegistered(share_target, std::move(aggregated_success),
@@ -2707,7 +2718,7 @@ void NearbySharingServiceImpl::ReceivePayloads(
 
   for (const auto& payload : valid_file_payloads) {
     std::optional<int64_t> payload_id = GetAttachmentPayloadId(payload.first);
-    DCHECK(payload_id);
+    CHECK(payload_id, base::NotFatalUntil::M160);
 
     file_handler_.GetUniquePath(
         payload.second,
@@ -2788,7 +2799,7 @@ void NearbySharingServiceImpl::OnPayloadPathsRegistered(
     const ShareTarget& share_target,
     std::unique_ptr<bool> aggregated_success,
     StatusCodesCallback status_codes_callback) {
-  DCHECK(aggregated_success);
+  CHECK(aggregated_success, base::NotFatalUntil::M160);
   if (!*aggregated_success) {
     RecordNearbyShareError(NearbyShareError::kPayloadPathsRegisteredFailed);
     CD_LOG(WARNING, Feature::NS)
@@ -3500,7 +3511,7 @@ void NearbySharingServiceImpl::OnIncomingDecryptedCertificate(
   }
 
   ShareTargetInfo* share_target_info = GetShareTargetInfo(*share_target);
-  DCHECK(share_target_info);
+  CHECK(share_target_info, base::NotFatalUntil::M160);
   share_target_info->set_connection(connection);
 
   share_target_info->set_transfer_update_callback(
@@ -3528,7 +3539,7 @@ void NearbySharingServiceImpl::RunPairedKeyVerification(
     const std::string& endpoint_id,
     base::OnceCallback<void(
         PairedKeyVerificationRunner::PairedKeyVerificationResult)> callback) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
   std::optional<std::vector<uint8_t>> token =
       nearby_connections_manager_->GetRawAuthenticationToken(endpoint_id);
   if (!token) {
@@ -3544,7 +3555,7 @@ void NearbySharingServiceImpl::RunPairedKeyVerification(
   }
 
   ShareTargetInfo* share_target_info = GetShareTargetInfo(share_target);
-  DCHECK(share_target_info);
+  CHECK(share_target_info, base::NotFatalUntil::M160);
 
   share_target_info->set_frames_reader(std::make_unique<IncomingFramesReader>(
       process_manager_, share_target_info->connection()));
@@ -3745,7 +3756,7 @@ void NearbySharingServiceImpl::ReceiveIntroduction(
       << __func__ << ": Receiving introduction from " << share_target.id;
 
   ShareTargetInfo* info = GetShareTargetInfo(share_target);
-  DCHECK(info && info->connection());
+  CHECK(info && info->connection(), base::NotFatalUntil::M160);
 
   CHECK(info->endpoint_id().has_value());
   transfer_profiler_->OnIntroductionFrameReceived(info->endpoint_id().value());
@@ -3772,7 +3783,7 @@ void NearbySharingServiceImpl::OnReceivedIntroduction(
     return;
   }
 
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
 
   if (!frame) {
     RecordNearbyShareError(NearbyShareError::kReceivedIntroductionInvalidFrame);
@@ -3801,12 +3812,25 @@ void NearbySharingServiceImpl::OnReceivedIntroduction(
       return;
     }
 
+    std::optional<base::SafeBaseName> safe_file_name =
+        GetSafeFileAttachmentBaseName(file->name);
+    if (!safe_file_name) {
+      RecordNearbyShareError(
+          NearbyShareError::kReceivedIntroductionInvalidFrame);
+      Fail(share_target, TransferMetadata::Status::kUnsupportedAttachmentType);
+      CD_LOG(WARNING, Feature::NS)
+          << __func__
+          << ": Ignore introduction, due to invalid attachment file name";
+      return;
+    }
+
     CD_LOG(VERBOSE, Feature::NS)
         << __func__ << ": Found file attachment: id=" << file->id
         << ", type= " << file->type << ", size=" << file->size
         << ", payload_id=" << file->payload_id
         << ", mime_type=" << file->mime_type;
-    FileAttachment attachment(file->id, file->size, file->name, file->mime_type,
+    FileAttachment attachment(file->id, file->size,
+                              safe_file_name->path().value(), file->mime_type,
                               file->type);
     SetAttachmentPayloadId(attachment, file->payload_id);
     share_target.file_attachments.push_back(std::move(attachment));
@@ -3915,7 +3939,7 @@ void NearbySharingServiceImpl::ReceiveConnectionResponse(
   CD_LOG(VERBOSE, Feature::NS)
       << __func__ << ": Receiving response frame from " << share_target.id;
   ShareTargetInfo* info = GetShareTargetInfo(share_target);
-  DCHECK(info && info->connection());
+  CHECK(info && info->connection(), base::NotFatalUntil::M160);
 
   info->frames_reader()->ReadFrame(
       sharing::mojom::V1Frame::Tag::kConnectionResponse,
@@ -4196,7 +4220,7 @@ void NearbySharingServiceImpl::OnFrameRead(
 
 void NearbySharingServiceImpl::HandleCertificateInfoFrame(
     const sharing::mojom::CertificateInfoFramePtr& certificate_frame) {
-  DCHECK(certificate_frame);
+  CHECK(certificate_frame, base::NotFatalUntil::M160);
 }
 
 void NearbySharingServiceImpl::OnIncomingConnectionDisconnected(
@@ -4227,7 +4251,7 @@ void NearbySharingServiceImpl::OnOutgoingConnectionDisconnected(
 
 void NearbySharingServiceImpl::OnIncomingMutualAcceptanceTimeout(
     const ShareTarget& share_target) {
-  DCHECK(share_target.is_incoming);
+  CHECK(share_target.is_incoming, base::NotFatalUntil::M160);
 
   RecordNearbyShareError(NearbyShareError::kIncomingMutualAcceptanceTimeout);
   CD_LOG(VERBOSE, Feature::NS)
@@ -4240,7 +4264,7 @@ void NearbySharingServiceImpl::OnIncomingMutualAcceptanceTimeout(
 
 void NearbySharingServiceImpl::OnOutgoingMutualAcceptanceTimeout(
     const ShareTarget& share_target) {
-  DCHECK(!share_target.is_incoming);
+  CHECK(!share_target.is_incoming, base::NotFatalUntil::M160);
 
   RecordNearbyShareError(NearbyShareError::kOutgoingMutualAcceptanceTimeout);
   CD_LOG(VERBOSE, Feature::NS)
@@ -4257,7 +4281,7 @@ std::optional<ShareTarget> NearbySharingServiceImpl::CreateShareTarget(
     const sharing::mojom::AdvertisementPtr& advertisement,
     std::optional<NearbyShareDecryptedPublicCertificate> certificate,
     bool is_incoming) {
-  DCHECK(advertisement);
+  CHECK(advertisement, base::NotFatalUntil::M160);
 
   if (!advertisement->device_name && !certificate) {
     RecordNearbyShareError(
@@ -4386,7 +4410,7 @@ void NearbySharingServiceImpl::OnPayloadTransferUpdate(
 
 bool NearbySharingServiceImpl::OnIncomingPayloadsComplete(
     ShareTarget& share_target) {
-  DCHECK(share_target.is_incoming);
+  CHECK(share_target.is_incoming, base::NotFatalUntil::M160);
 
   ShareTargetInfo* info = GetShareTargetInfo(share_target);
   if (!info || !info->connection()) {
@@ -4734,8 +4758,8 @@ void NearbySharingServiceImpl::ClearOutgoingShareTargetInfoMap() {
     RemoveOutgoingShareTargetWithEndpointId(
         /*endpoint_id=*/outgoing_share_target_map_.begin()->first);
   }
-  DCHECK(outgoing_share_target_map_.empty());
-  DCHECK(outgoing_share_target_info_map_.empty());
+  CHECK(outgoing_share_target_map_.empty(), base::NotFatalUntil::M160);
+  CHECK(outgoing_share_target_info_map_.empty(), base::NotFatalUntil::M160);
 }
 
 void NearbySharingServiceImpl::SetAttachmentPayloadId(
@@ -4874,12 +4898,8 @@ void NearbySharingServiceImpl::SetInHighVisibility(
     return;
   }
 
-  if (chromeos::features::IsQuickShareV2Enabled()) {
-    prefs_->SetBoolean(prefs::kNearbySharingInHighVisibilityPrefName,
-                       /*value=*/new_in_high_visibility);
-  } else {
-    in_high_visibility_ = new_in_high_visibility;
-  }
+  prefs_->SetBoolean(prefs::kNearbySharingInHighVisibilityPrefName,
+                     /*value=*/new_in_high_visibility);
 
   for (auto& observer : observers_) {
     observer.OnHighVisibilityChanged(new_in_high_visibility);

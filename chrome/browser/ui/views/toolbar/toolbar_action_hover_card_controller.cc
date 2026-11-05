@@ -117,7 +117,7 @@ bool ToolbarActionHoverCardController::IsHoverCardVisible() const {
 
 bool ToolbarActionHoverCardController::IsHoverCardShowingForAction(
     ToolbarActionView* action_view) const {
-  DCHECK(action_view);
+  CHECK(action_view, base::NotFatalUntil::M162);
   return extensions_container_->GetCurrentWebContents() &&
          IsHoverCardVisible() && !fade_animator_->IsFadingOut() &&
          GetTargetAnchorView() == action_view;
@@ -160,12 +160,13 @@ void ToolbarActionHoverCardController::UpdateHoverCard(
       }
       break;
     case ToolbarActionHoverCardUpdateType::kToolbarActionUpdated:
-      DCHECK(action_view);
-      DCHECK(IsHoverCardShowingForAction(action_view));
+      CHECK(action_view, base::NotFatalUntil::M162);
+      CHECK(IsHoverCardShowingForAction(action_view),
+            base::NotFatalUntil::M162);
       break;
     case ToolbarActionHoverCardUpdateType::kToolbarActionRemoved:
       // Should not have an action view associated.
-      DCHECK(!action_view);
+      CHECK(!action_view, base::NotFatalUntil::M162);
       break;
     case ToolbarActionHoverCardUpdateType::kEvent:
       // No special action taken for this type of event.
@@ -194,7 +195,7 @@ void ToolbarActionHoverCardController::UpdateHoverCard(
 void ToolbarActionHoverCardController::UpdateOrShowHoverCard(
     ToolbarActionView* action_view,
     ToolbarActionHoverCardUpdateType update_type) {
-  DCHECK(action_view);
+  CHECK(action_view, base::NotFatalUntil::M162);
 
   views::BubbleAnchor action_view_anchor = views::BubbleAnchor(action_view);
 
@@ -237,17 +238,17 @@ void ToolbarActionHoverCardController::UpdateOrShowHoverCard(
     // since delayed capture only happens when the hover card already exists,
     // and this code is only invoked if there is no hover card yet.
     delayed_show_timer_.Stop();
-    DCHECK_EQ(target_action_view_, action_view);
+    CHECK_EQ(target_action_view_, action_view, base::NotFatalUntil::M162);
     ShowHoverCard(is_initial, action_view);
   }
 }
 
 void ToolbarActionHoverCardController::UpdateHoverCardContent(
     ToolbarActionView* action_view) {
-  DCHECK(action_view);
+  CHECK(action_view, base::NotFatalUntil::M162);
   content::WebContents* web_contents =
       extensions_container_->GetCurrentWebContents();
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
 
   // If the hover card is transitioning between extensions, we need to do a
   // cross-fade.
@@ -255,23 +256,25 @@ void ToolbarActionHoverCardController::UpdateHoverCardContent(
     hover_card_->SetTextFade(0.0);
   }
 
-  std::u16string extension_name = action_view->view_model()->GetActionName();
-  std::u16string action_title =
-      action_view->view_model()->GetActionTitle(web_contents);
+  ToolbarActionViewModel* const action_view_model = action_view->view_model();
+  std::u16string extension_name = action_view_model->GetActionName();
+  std::u16string action_title = action_view_model->GetActionTitle(web_contents);
   // Hover card only uses the action title when it's different than the
   // extension name.
   action_title =
       extension_name == action_title ? std::u16string() : action_title;
   ToolbarActionViewModel::HoverCardState state =
-      action_view->view_model()->GetHoverCardState(web_contents);
+      action_view_model->GetHoverCardState(web_contents);
+  ToolbarActionViewModel::HoverCardUiState ui_state =
+      action_view_model->GetHoverCardUiState(state, web_contents);
 
-  hover_card_->UpdateCardContent(extension_name, action_title, state,
-                                 web_contents);
+  hover_card_->UpdateCardContent(extension_name, action_title,
+                                 std::move(ui_state));
 }
 
 void ToolbarActionHoverCardController::CreateHoverCard(
     ToolbarActionView* action_view) {
-  DCHECK(action_view);
+  CHECK(action_view, base::NotFatalUntil::M162);
 
   hover_card_ = new ToolbarActionHoverCardBubbleView(
       action_view, weak_ptr_factory_.GetWeakPtr());
@@ -403,7 +406,7 @@ void ToolbarActionHoverCardController::OnSlideAnimationProgressed(
 
 void ToolbarActionHoverCardController::OnSlideAnimationComplete(
     views::BubbleSlideAnimator* animator) {
-  DCHECK(hover_card_);
+  CHECK(hover_card_, base::NotFatalUntil::M162);
   // Make sure we're displaying the new text at 100% opacity, and none of the
   // old text.
   hover_card_->SetTextFade(1.0);
@@ -427,8 +430,9 @@ void ToolbarActionHoverCardController::OnViewIsDeleting(
                     ToolbarActionHoverCardUpdateType::kToolbarActionRemoved);
     // These postconditions should always be met after calling
     // UpdateHoverCard(nullptr, ...)
-    DCHECK(!target_action_view_);
-    DCHECK(!target_action_view_observation_.IsObserving());
+    CHECK(!target_action_view_, base::NotFatalUntil::M162);
+    CHECK(!target_action_view_observation_.IsObserving(),
+          base::NotFatalUntil::M162);
   }
 }
 

@@ -33,7 +33,6 @@
 #include "base/win/windows_version.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/password_manager/password_manager_util_win.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -42,15 +41,6 @@
 #include "ui/views/win/hwnd_util.h"
 
 namespace {
-
-// Enum specifying possible states of Windows Hello authentication. These
-// values are persisted to logs. Entries should not be renumbered and numeric
-// values should never be reused.
-enum class AuthenticationStateWin {
-  kStarted = 0,
-  kFinished = 1,
-  kMaxValue = kFinished,
-};
 
 using AvailabilityCallback = AuthenticatorWinInterface::AvailabilityCallback;
 using ABI::Windows::Foundation::IAsyncOperation;
@@ -224,15 +214,14 @@ void OnAuthenticationReceived(base::OnceCallback<void(bool)> callback,
     case AuthenticationResultStatusWin::kAsyncOperationFailed:
     case AuthenticationResultStatusWin::kFailedToFindBrowser:
     case AuthenticationResultStatusWin::kFailedToFindHWNDForNativeWindow:
-      // This values are not returned by UserConsentVerifier API.
+      // These values are not returned by UserConsentVerifier API.
       NOTREACHED();
   }
 }
 
-void OnAuthenticationAsyncOpFail(
-    base::OnceCallback<void(bool)> callback,
-    const std::u16string& message,
-    HRESULT hr) {
+void OnAuthenticationAsyncOpFail(base::OnceCallback<void(bool)> callback,
+                                 const std::u16string& message,
+                                 HRESULT hr) {
   RecordWindowsHelloAuthenticationResult(
       AuthenticationResultStatusWin::kAsyncOperationFailed);
   RecordAuthenticationAsyncOpFailureReson(hr);
@@ -386,7 +375,7 @@ void AuthenticatorWin::CheckIfBiometricsAvailable(
   scoped_refptr<base::SequencedTaskRunner> background_task_runner =
       base::ThreadPool::CreateCOMSTATaskRunner(
           {base::MayBlock(), base::TaskPriority::BEST_EFFORT});
-  DCHECK(background_task_runner);
+  CHECK(background_task_runner, base::NotFatalUntil::M161);
   background_task_runner->PostTask(
       FROM_HERE,
       base::BindOnce(&GetBiometricAvailabilityFromWindows, std::move(callback),

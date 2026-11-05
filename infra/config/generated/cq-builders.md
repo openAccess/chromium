@@ -94,7 +94,8 @@ builder.
 * [cronet-arm64-gn2bp-debug](https://ci.chromium.org/p/chrome/builders/try/cronet-arm64-gn2bp-debug) ([definition](https://source.corp.google.com/search?q=+file:/try/.*\.star$+""cronet-arm64-gn2bp-debug""))
 
   Location filters:
-  * [`//components/cronet/gn2bp/.+`](https://cs.chromium.org/chromium/src/components/cronet/gn2bp/)
+  * [`//components/cronet/.+`](https://cs.chromium.org/chromium/src/components/cronet/)
+  * [`//third_party/protobuf/.+`](https://cs.chromium.org/chromium/src/third_party/protobuf/)
 
 * [internal-cq-builder-verifier](https://ci.chromium.org/p/chrome/builders/try/internal-cq-builder-verifier) ([definition](https://source.corp.google.com/search?q=+file:/try/.*\.star$+""internal-cq-builder-verifier""))
 
@@ -108,6 +109,7 @@ builder.
   * [`//components/on_device_translation/.+`](https://cs.chromium.org/chromium/src/components/on_device_translation/)
   * [`//components/optimization_guide/.+`](https://cs.chromium.org/chromium/src/components/optimization_guide/)
   * [`//services/on_device_model/.+`](https://cs.chromium.org/chromium/src/services/on_device_model/)
+  * [`//testing/buildbot/internal.optimization_guide.json`](https://cs.chromium.org/search?q=+file:testing/buildbot/internal.optimization_guide.json)
   * [`//third_party/blink/web_tests/external/wpt/ai/.+`](https://cs.chromium.org/chromium/src/third_party/blink/web_tests/external/wpt/ai/)
   * [`//third_party/blink/web_tests/AIExpectations.*`](https://cs.chromium.org/search?q=+file:third_party/blink/web_tests/AIExpectations.*)
 
@@ -121,6 +123,7 @@ builder.
   * [`//components/on_device_translation/.+`](https://cs.chromium.org/chromium/src/components/on_device_translation/)
   * [`//components/optimization_guide/.+`](https://cs.chromium.org/chromium/src/components/optimization_guide/)
   * [`//services/on_device_model/.+`](https://cs.chromium.org/chromium/src/services/on_device_model/)
+  * [`//testing/buildbot/internal.optimization_guide.json`](https://cs.chromium.org/search?q=+file:testing/buildbot/internal.optimization_guide.json)
   * [`//third_party/blink/web_tests/external/wpt/ai/.+`](https://cs.chromium.org/chromium/src/third_party/blink/web_tests/external/wpt/ai/)
   * [`//third_party/blink/web_tests/AIExpectations.*`](https://cs.chromium.org/search?q=+file:third_party/blink/web_tests/AIExpectations.*)
 
@@ -134,6 +137,7 @@ builder.
   * [`//components/on_device_translation/.+`](https://cs.chromium.org/chromium/src/components/on_device_translation/)
   * [`//components/optimization_guide/.+`](https://cs.chromium.org/chromium/src/components/optimization_guide/)
   * [`//services/on_device_model/.+`](https://cs.chromium.org/chromium/src/services/on_device_model/)
+  * [`//testing/buildbot/internal.optimization_guide.json`](https://cs.chromium.org/search?q=+file:testing/buildbot/internal.optimization_guide.json)
   * [`//third_party/blink/web_tests/external/wpt/ai/.+`](https://cs.chromium.org/chromium/src/third_party/blink/web_tests/external/wpt/ai/)
   * [`//third_party/blink/web_tests/AIExpectations.*`](https://cs.chromium.org/search?q=+file:third_party/blink/web_tests/AIExpectations.*)
 
@@ -147,6 +151,7 @@ builder.
   * [`//components/on_device_translation/.+`](https://cs.chromium.org/chromium/src/components/on_device_translation/)
   * [`//components/optimization_guide/.+`](https://cs.chromium.org/chromium/src/components/optimization_guide/)
   * [`//services/on_device_model/.+`](https://cs.chromium.org/chromium/src/services/on_device_model/)
+  * [`//testing/buildbot/internal.optimization_guide.json`](https://cs.chromium.org/search?q=+file:testing/buildbot/internal.optimization_guide.json)
   * [`//third_party/blink/web_tests/external/wpt/ai/.+`](https://cs.chromium.org/chromium/src/third_party/blink/web_tests/external/wpt/ai/)
   * [`//third_party/blink/web_tests/AIExpectations.*`](https://cs.chromium.org/search?q=+file:third_party/blink/web_tests/AIExpectations.*)
 
@@ -160,6 +165,7 @@ builder.
   * [`//components/on_device_translation/.+`](https://cs.chromium.org/chromium/src/components/on_device_translation/)
   * [`//components/optimization_guide/.+`](https://cs.chromium.org/chromium/src/components/optimization_guide/)
   * [`//services/on_device_model/.+`](https://cs.chromium.org/chromium/src/services/on_device_model/)
+  * [`//testing/buildbot/internal.optimization_guide.json`](https://cs.chromium.org/search?q=+file:testing/buildbot/internal.optimization_guide.json)
   * [`//third_party/blink/web_tests/external/wpt/ai/.+`](https://cs.chromium.org/chromium/src/third_party/blink/web_tests/external/wpt/ai/)
   * [`//third_party/blink/web_tests/AIExpectations.*`](https://cs.chromium.org/search?q=+file:third_party/blink/web_tests/AIExpectations.*)
 
@@ -171,8 +177,6 @@ builder.
 
   Location filters:
   * [`//.+/3pp/.+`](https://cs.chromium.org/search?q=+file:.+/3pp/)
-  * [`//third_party/android_deps/fetch_all.py`](https://cs.chromium.org/search?q=+file:third_party/android_deps/fetch_all.py)
-  * [`//third_party/android_deps/buildSrc/src/main/groovy/.+`](https://cs.chromium.org/chromium/src/third_party/android_deps/buildSrc/src/main/groovy/)
 
 * [android-10-arm64-rel](https://ci.chromium.org/p/chromium/builders/try/android-10-arm64-rel) ([definition](https://cs.chromium.org/search?q=+file:/try/.*\.star$+""android-10-arm64-rel""))
 
@@ -270,6 +274,11 @@ builder.
   * [`//build/android/.+`](https://cs.chromium.org/chromium/src/build/android/)
   * [`//build/config/android/.+`](https://cs.chromium.org/chromium/src/build/config/android/)
   * [`//third_party/jni_zero/.+`](https://cs.chromium.org/chromium/src/third_party/jni_zero/)
+
+* [android-cronet-x86-dbg](https://ci.chromium.org/p/chromium/builders/try/android-cronet-x86-dbg) ([definition](https://cs.chromium.org/search?q=+file:/try/.*\.star$+""android-cronet-x86-dbg""))
+
+  Location filters:
+  * [`//net/.+`](https://cs.chromium.org/chromium/src/net/)
 
 * [android-cronet-x86-dbg-nougat-tests](https://ci.chromium.org/p/chromium/builders/try/android-cronet-x86-dbg-nougat-tests) ([definition](https://cs.chromium.org/search?q=+file:/try/.*\.star$+""android-cronet-x86-dbg-nougat-tests""))
 
@@ -494,6 +503,12 @@ builder.
   * [`//tools/clang/scripts/update.py`](https://cs.chromium.org/search?q=+file:tools/clang/scripts/update.py)
   * [`//ui/gl/features.gni`](https://cs.chromium.org/search?q=+file:ui/gl/features.gni)
 
+* [fuchsia-arm64-cast-receiver-rel](https://ci.chromium.org/p/chromium/builders/try/fuchsia-arm64-cast-receiver-rel) ([definition](https://cs.chromium.org/search?q=+file:/try/.*\.star$+""fuchsia-arm64-cast-receiver-rel""))
+
+  Location filters:
+  * [`//chromecast/.+`](https://cs.chromium.org/chromium/src/chromecast/)
+  * [`//build/fuchsia/sdk_override.txt`](https://cs.chromium.org/search?q=+file:build/fuchsia/sdk_override.txt)
+
 * [fuchsia-x64-accessibility-rel](https://ci.chromium.org/p/chromium/builders/try/fuchsia-x64-accessibility-rel) ([definition](https://cs.chromium.org/search?q=+file:/try/.*\.star$+""fuchsia-x64-accessibility-rel""))
 
   Location filters:
@@ -551,6 +566,7 @@ builder.
 
   Location filters:
   * [`//chrome/browser/vr/.+`](https://cs.chromium.org/chromium/src/chrome/browser/vr/)
+  * [`//content/browser/media/capture/.+`](https://cs.chromium.org/chromium/src/content/browser/media/capture/)
   * [`//content/browser/xr/.+`](https://cs.chromium.org/chromium/src/content/browser/xr/)
   * [`//content/test/data/gpu/.+`](https://cs.chromium.org/chromium/src/content/test/data/gpu/)
   * [`//content/test/gpu/.+`](https://cs.chromium.org/chromium/src/content/test/gpu/)
@@ -691,7 +707,7 @@ builder.
 * [linux-crossbench](https://ci.chromium.org/p/chromium/builders/try/linux-crossbench) ([definition](https://cs.chromium.org/search?q=+file:/try/.*\.star$+""linux-crossbench""))
 
   Location filters:
-  * [`//third_party/crossbench/.+`](https://cs.chromium.org/chromium/src/third_party/crossbench/)
+  * [`//third_party/crossbench`](https://cs.chromium.org/chromium/src/third_party/crossbench)
   * [`//third_party/speedometer/.+`](https://cs.chromium.org/chromium/src/third_party/speedometer/)
 
 * [linux-enterprise-companion-try-builder-dbg](https://ci.chromium.org/p/chromium/builders/try/linux-enterprise-companion-try-builder-dbg) ([definition](https://cs.chromium.org/search?q=+file:/try/.*\.star$+""linux-enterprise-companion-try-builder-dbg""))
@@ -801,6 +817,11 @@ builder.
 
   Location filters:
   * [`//third_party/weston/.+`](https://cs.chromium.org/chromium/src/third_party/weston/)
+
+* [linux-webdriver-bidi-rel](https://ci.chromium.org/p/chromium/builders/try/linux-webdriver-bidi-rel) ([definition](https://cs.chromium.org/search?q=+file:/try/.*\.star$+""linux-webdriver-bidi-rel""))
+
+  Location filters:
+  * [`//third_party/chromium-bidi/.+`](https://cs.chromium.org/chromium/src/third_party/chromium-bidi/)
 
 * [linux-x64-centipede-asan-rel-tests](https://ci.chromium.org/p/chromium/builders/try/linux-x64-centipede-asan-rel-tests) ([definition](https://cs.chromium.org/search?q=+file:/try/.*\.star$+""linux-x64-centipede-asan-rel-tests""))
 
@@ -930,10 +951,16 @@ builder.
   * [`//chrome/updater/.+`](https://cs.chromium.org/chromium/src/chrome/updater/)
   * [`//chrome/enterprise_companion/.+`](https://cs.chromium.org/chromium/src/chrome/enterprise_companion/)
 
+* [mac-webdriver-bidi-rel](https://ci.chromium.org/p/chromium/builders/try/mac-webdriver-bidi-rel) ([definition](https://cs.chromium.org/search?q=+file:/try/.*\.star$+""mac-webdriver-bidi-rel""))
+
+  Location filters:
+  * [`//third_party/chromium-bidi/.+`](https://cs.chromium.org/chromium/src/third_party/chromium-bidi/)
+
 * [mac_optional_gpu_tests_rel](https://ci.chromium.org/p/chromium/builders/try/mac_optional_gpu_tests_rel) ([definition](https://cs.chromium.org/search?q=+file:/try/.*\.star$+""mac_optional_gpu_tests_rel""))
 
   Location filters:
   * [`//chrome/browser/vr/.+`](https://cs.chromium.org/chromium/src/chrome/browser/vr/)
+  * [`//content/browser/media/capture/.+`](https://cs.chromium.org/chromium/src/content/browser/media/capture/)
   * [`//content/browser/xr/.+`](https://cs.chromium.org/chromium/src/content/browser/xr/)
   * [`//content/test/data/gpu/.+`](https://cs.chromium.org/chromium/src/content/test/data/gpu/)
   * [`//content/test/gpu/.+`](https://cs.chromium.org/chromium/src/content/test/gpu/)
@@ -1074,6 +1101,9 @@ by CQ. These are often used to test new configurations before they are added
 as required builders.
 
 ### chrome
+* [vuln-scan-dispatcher](https://ci.chromium.org/p/chrome/builders/try.security/vuln-scan-dispatcher) ([definition](https://source.corp.google.com/search?q=+file:/try/.*\.star$+""vuln-scan-dispatcher""))
+  * Experiment percentage: 25.0
+
 * [linux-perf-trigger](https://ci.chromium.org/p/chrome/builders/try/linux-perf-trigger) ([definition](https://source.corp.google.com/search?q=+file:/try/.*\.star$+""linux-perf-trigger""))
   * Experiment percentage: 100.0
 

@@ -15,7 +15,6 @@
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/ash/fileapi/external_file_resolver.h"
 #include "chrome/browser/ash/fileapi/external_file_url_util.h"
-#include "chrome/browser/profiles/profile.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_host.h"
@@ -104,7 +103,7 @@ class FileSystemReaderDataPipeProducer {
       const int bytes_to_read = base::checked_cast<int>(
           std::min<int64_t>(read_buffer_->size(), remaining_bytes_));
       const int read_size = stream_reader_->Read(
-          read_buffer_.get(), bytes_to_read,
+          read_buffer_, bytes_to_read,
           base::BindOnce(
               &FileSystemReaderDataPipeProducer::OnPendingReadComplete,
               weak_ptr_factory_.GetWeakPtr()));
@@ -218,7 +217,7 @@ class ExternalFileURLLoader : public network::mojom::URLLoader {
       mojo::PendingReceiver<network::mojom::URLLoader> loader,
       mojo::PendingRemote<network::mojom::URLLoaderClient> client_remote)
       : resolver_(std::make_unique<ExternalFileResolver>(profile_id)) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+    CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
     receiver_.Bind(std::move(loader));
     receiver_.set_disconnect_handler(base::BindOnce(
         &ExternalFileURLLoader::OnMojoDisconnect, base::Unretained(this)));
@@ -227,7 +226,7 @@ class ExternalFileURLLoader : public network::mojom::URLLoader {
   ~ExternalFileURLLoader() override = default;
 
   void Start(const network::ResourceRequest& request) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+    CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
     head_.request_start = base::TimeTicks::Now();
 
     resolver_->ProcessHeaders(request.headers);

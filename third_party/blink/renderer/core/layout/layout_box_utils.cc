@@ -15,6 +15,7 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/clear_collection_scope.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
@@ -37,9 +38,9 @@ class OutOfFlowDescendant {
     // Need to locate the containing block manually here. OOF fragments in a
     // fragmentation context are direct children of the enclosing fragmentainer,
     // not the actual containing block.
-    const LayoutBlock* actual_containing_block = box_->ContainingBlock();
+    const LayoutBox* actual_container = box_->ContainingBox();
     const PhysicalBoxFragment& first_container_fragment =
-        *actual_containing_block->GetPhysicalFragment(0);
+        *actual_container->GetPhysicalFragment(0);
     box_->SetLocation(
         offset_from_root_fragmentation_context_ -
         first_container_fragment.OffsetFromRootFragmentationContext());
@@ -315,16 +316,18 @@ void UpdateOffsetsFromRootFragmentationContext(
 }  // anonymous namespace
 
 LayoutUnit BoxInlineSize(const LayoutBox& box) {
+  DCHECK(!RuntimeEnabledFeatures::FragmentedOofInCbEnabled());
   DCHECK_GT(box.PhysicalFragmentCount(), 0u);
 
   // TODO(almaher): We can't assume all fragments will have the same inline
   // size.
   return ToLogicalSize(box.GetPhysicalFragment(0u)->Size(),
-                       box.StyleRef().GetWritingMode())
+                       box.Style().GetWritingMode())
       .inline_size;
 }
 
 LayoutUnit BoxTotalBlockSize(const LayoutBox& box) {
+  DCHECK(!RuntimeEnabledFeatures::FragmentedOofInCbEnabled());
   wtf_size_t num_fragments = box.PhysicalFragmentCount();
   DCHECK_GT(num_fragments, 0u);
 
@@ -334,7 +337,7 @@ LayoutUnit BoxTotalBlockSize(const LayoutBox& box) {
   while (num_fragments > 0) {
     LayoutUnit block_size =
         ToLogicalSize(box.GetPhysicalFragment(num_fragments - 1)->Size(),
-                      box.StyleRef().GetWritingMode())
+                      box.Style().GetWritingMode())
             .block_size;
     if (block_size > LayoutUnit()) {
       total_block_size += block_size;

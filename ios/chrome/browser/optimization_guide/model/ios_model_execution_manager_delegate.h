@@ -15,7 +15,7 @@ class PrivateAiService;
 }  // namespace private_ai
 
 // A delegate for ModelExecutionManager that provides iOS-specific
-// implementations for fetchers.
+// implementations.
 class IOSModelExecutionManagerDelegate
     : public optimization_guide::ModelExecutionManager::Delegate {
  public:

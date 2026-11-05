@@ -14,7 +14,6 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "components/optimization_guide/proto/features/contextual_cueing.pb.h"
 #include "components/tabs/public/tab_interface.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "ui/base/models/image_model.h"
 
 namespace content {
@@ -36,7 +35,9 @@ enum class CueTargetType {
   kGlic = 0,
   kTestSource = 1,
   kIndigo = 2,
-  kMaxValue = kIndigo
+  kContextualSearch = 3,
+  kAbaSearchJourney = 4,
+  kMaxValue = kAbaSearchJourney
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/contextual_cueing/enums.xml:CueTargetType)
 
@@ -48,6 +49,7 @@ enum class CueIntrusiveness {
 };
 
 const char* GetName(CueTargetType type);
+const char* GetName(CueIntrusiveness intrusiveness);
 
 // Glic-specific click data. Conceptually this struct should carry everything
 // needed for invoking Glic from a contextual cue.
@@ -64,7 +66,24 @@ struct GlicCueActionData {
   GlicCueActionData& operator=(const GlicCueActionData&);
 };
 
-using CueActionData = std::variant<std::monostate, GlicCueActionData>;
+// ContextualSearch-specific click data.
+struct ContextualSearchCueActionData {
+  // Query to be submitted to contextual search upon opening.
+  std::string query;
+  // Tabs that should be shared as context with contextual search.
+  std::vector<tabs::TabHandle> tabs_to_share;
+
+  ContextualSearchCueActionData();
+  ~ContextualSearchCueActionData();
+  ContextualSearchCueActionData(const ContextualSearchCueActionData&);
+  ContextualSearchCueActionData(ContextualSearchCueActionData&&);
+  ContextualSearchCueActionData& operator=(
+      const ContextualSearchCueActionData&);
+};
+
+using CueActionData = std::variant<std::monostate,
+                                   GlicCueActionData,
+                                   ContextualSearchCueActionData>;
 
 struct CueAction {
   CueActionData data;
@@ -83,6 +102,21 @@ class CueTarget {
   // Whether this target relies on the backend Model Execution Service (MES)
   // to generate cue content rather than generating content locally.
   virtual bool RequiresModelExecution() const = 0;
+
+  // Whether this target should bypass UCB scoring and take absolute precedence
+  // when eligible. NOTE: This is a highly privileged override that is strictly
+  // intended for Indigo temporarily to ensure it always wins. It should not be
+  // used by other targets.
+  virtual bool OverridesUcbScoring() const;
+
+  // Whether this target should fall back to a suggestion chip instead of fully
+  // disappearing when the anchored message is dismissed.
+  virtual bool DowngradesToQuietOnDismiss() const;
+
+  // Whether the cue is persistent across UI interactions. If true, the cue
+  // remains visible when clicked or when a side panel is opened, and can also
+  // be initially shown even if a side panel is already open.
+  virtual bool IsPersistent() const;
 
   // Returns true if this target supports the given intrusiveness level.
   // Targets requiring MES are restricted to kLoud only. Non-MES targets

@@ -8,11 +8,12 @@
 #include <memory>
 #include <string>
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/functional/callback.h"
 #include "base/values.h"
 #include "components/dom_distiller/core/distiller_options.h"
-#include "components/dom_distiller/core/dom_distiller_constants.h"
-#include "third_party/dom_distiller_js/dom_distiller.pb.h"
+#include "components/dom_distiller/core/proto/distilled_page.pb.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
 
@@ -44,7 +45,7 @@ enum class DistillationParseResult {
 class DistillerPage {
  public:
   using DistillerPageCallback = base::OnceCallback<void(
-      std::unique_ptr<proto::DomDistillerResult> distilled_page,
+      std::unique_ptr<DistilledPageProto> distilled_page,
       DistillationParseResult result)>;
 
   DistillerPage();
@@ -58,19 +59,17 @@ class DistillerPage {
                    const DistillerOptions& options,
                    DistillerPageCallback callback);
 
-  // Returns true if the distiller page should fetch distillation data for
-  // offline consumption.
-  virtual bool ShouldFetchOfflineData() = 0;
-
-  // Returns the distillation type to use to retrieve simplified page content.
-  virtual DistillerType GetDistillerType() = 0;
-
   // Called when the JavaScript execution completes. |page_url| is the url of
   // the distilled page. |value| contains data returned by the script.
   virtual void OnDistillationDone(const GURL& page_url,
                                   const base::Value* value);
 
-  void SetMinimumAllowableDistilledContentLengthForTesting(int length) {
+  // Sets the minimum word count required for distillation to succeed. Shorter
+  // pages fail with `DistillationParseResult::kContentTooShort`. Must be
+  // called when the distiller is idle with a non-negative `length`.
+  void SetMinimumAllowableDistilledContentLength(int length) {
+    DCHECK(ready_);
+    DCHECK_GE(length, 0);
     min_content_length_ = length;
   }
 

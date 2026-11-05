@@ -6,20 +6,27 @@
 
 #include <string>
 
+#include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_functions.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profiles_state.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/signin/signin_util.h"
+#include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/base/signin_pref_names.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 
 namespace {
 
@@ -38,6 +45,27 @@ ProfilePicker::AvailabilityOnStartup GetAvailabilityOnStartup() {
     default:
       NOTREACHED();
   }
+}
+
+bool IsFirstRunDisabledByPolicy(Profile& profile) {
+  const PrefService* const local_state = g_browser_process->local_state();
+  if (!local_state->GetBoolean(prefs::kPromotionsEnabled)) {
+    // Corresponding policy: PromotionsEnabled=false
+    return true;
+  }
+
+  if (!SyncServiceFactory::IsSyncAllowed(&profile)) {
+    // Corresponding policy: SyncDisabled=true
+    return true;
+  }
+
+  if (!profile.GetPrefs()->GetBoolean(prefs::kSigninAllowed) ||
+      !profile.GetPrefs()->GetBoolean(prefs::kSigninAllowedOnNextStartup)) {
+    // Corresponding policy: BrowserSignin=0
+    return true;
+  }
+
+  return false;
 }
 
 }  // namespace
@@ -154,7 +182,7 @@ ProfilePicker::Params::Params(EntryPoint entry_point,
 // static
 bool ProfilePicker::Shown() {
   PrefService* prefs = g_browser_process->local_state();
-  DCHECK(prefs);
+  CHECK(prefs, base::NotFatalUntil::M162);
   return prefs->GetBoolean(prefs::kBrowserProfilePickerShown);
 }
 
@@ -201,11 +229,37 @@ StartupProfileMode ProfilePicker::GetStartupMode() {
 
   bool pref_enabled = g_browser_process->local_state()->GetBoolean(
       prefs::kBrowserShowProfilePickerOnStartup);
-  base::UmaHistogramBoolean("ProfilePicker.AskOnStartup", pref_enabled);
   if (pref_enabled) {
     return StartupProfileMode::kProfilePicker;
   }
   return StartupProfileMode::kBrowserWindow;
+}
+
+// static
+std::optional<ProfilePicker::FirstRunFinishReason>
+ProfilePicker::ComputeFirstRunSkipReason(Profile& profile) {
+  // This check should be done prior to the profile already set up check below,
+  // because the policy `BrowserSignin=2` can cause the profile to be signed in
+  // already at this point.
+  if (signin_util::IsForceSigninEnabled()) {
+    // Corresponding policy: BrowserSignin=2
+    // Debugging note: On Linux this policy is not supported and does not get
+    // translated to the prefs (see crbug.com/41455343), but we still respond to
+    // `prefs::kForceBrowserSignin` being set (e.g. if manually edited).
+    return FirstRunFinishReason::kForceSignin;
+  }
+
+  signin::IdentityManager& identity_manager =
+      CHECK_DEREF(IdentityManagerFactory::GetForProfile(&profile));
+  if (identity_manager.HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
+    return FirstRunFinishReason::kProfileAlreadySetUp;
+  }
+
+  if (IsFirstRunDisabledByPolicy(profile)) {
+    return FirstRunFinishReason::kSkippedByPolicies;
+  }
+
+  return std::nullopt;
 }
 
 // static

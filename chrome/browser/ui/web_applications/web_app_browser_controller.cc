@@ -77,12 +77,11 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_features.h"
 #include "chrome/browser/ash/apps/apk_web_app_service.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/ash/system_web_apps/color_helpers.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/web_applications/chromeos_web_app_experiments.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/tabs/public/tab_context_menu_command.h"
 #include "ui/menus/simple_menu_model.h"
 #endif
@@ -192,7 +191,7 @@ bool WebAppBrowserController::IsWindowControlsOverlayEnabled() const {
 
 void WebAppBrowserController::ToggleWindowControlsOverlayEnabled(
     base::OnceClosure on_complete) {
-  DCHECK(AppUsesWindowControlsOverlay());
+  CHECK(AppUsesWindowControlsOverlay(), base::NotFatalUntil::M162);
 
   per_window_wco_enabled_ = !IsWindowControlsOverlayEnabled();
 
@@ -277,9 +276,6 @@ bool WebAppBrowserController::HasPendingUpdate() const {
 }
 
 bool WebAppBrowserController::HasPendingMigration() const {
-  if (!base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi)) {
-    return false;
-  }
   if (!registrar().AppMatches(app_id(),
                               WebAppFilter::IsAppValidMigrationSource())) {
     return false;
@@ -319,11 +315,6 @@ void WebAppBrowserController::CreateMetadataAndTriggerAppUpdateDialog(
 void WebAppBrowserController::CreateMetadataAndTriggerAppMigrationDialog(
     bool is_forced_migration_on_startup,
     base::TimeTicks start_time) const {
-  // This can be reached with app migration disabled when syncing a forced
-  // migration.
-  if (!base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi)) {
-    return;
-  }
   auto pending_migration_info =
       registrar().GetAppById(app_id())->pending_migration_info();
   CHECK(pending_migration_info);
@@ -465,7 +456,7 @@ void WebAppBrowserController::OnWebAppUninstalled(
 void WebAppBrowserController::OnWebAppManifestUpdated(
     const webapps::AppId& updated_app_id) {
   if (updated_app_id == app_id()) {
-    UpdateThemePack();
+    UpdateThemeSupplier();
     app_icon_.reset();
     BrowserWindow::FromBrowser(browser())->UpdateTitleBar();
 
@@ -552,8 +543,7 @@ std::optional<SkColor> WebAppBrowserController::GetThemeColor() const {
   }
 
 #if BUILDFLAG(IS_CHROMEOS)
-  if (chromeos::features::IsUploadOfficeToCloudEnabled() &&
-      ChromeOsWebAppExperiments::IgnoreManifestColor(app_id())) {
+  if (ChromeOsWebAppExperiments::IgnoreManifestColor(app_id())) {
     return std::nullopt;
   }
 
@@ -581,8 +571,7 @@ std::optional<SkColor> WebAppBrowserController::GetBackgroundColor() const {
   std::optional<SkColor> manifest_color = GetResolvedManifestBackgroundColor();
 
 #if BUILDFLAG(IS_CHROMEOS)
-  if (chromeos::features::IsUploadOfficeToCloudEnabled() &&
-      ChromeOsWebAppExperiments::IgnoreManifestColor(app_id())) {
+  if (ChromeOsWebAppExperiments::IgnoreManifestColor(app_id())) {
     manifest_color = std::nullopt;
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -664,6 +653,12 @@ bool WebAppBrowserController::IsUrlInAppScope(const GURL& url) const {
   return scope->IsInScope(url, {.allow_http_to_https_upgrade = true});
 }
 
+bool WebAppBrowserController::IsOriginAllowedForAboutBlankPopup(
+    const url::Origin& origin) const {
+  return AppBrowserController::IsOriginAllowedForAboutBlankPopup(origin) ||
+         (!origin.opaque() && IsUrlInAppScope(origin.GetURL()));
+}
+
 WebAppBrowserController* WebAppBrowserController::AsWebAppBrowserController() {
   return this;
 }
@@ -702,6 +697,20 @@ std::u16string WebAppBrowserController::GetTitle() const {
   }
 
   if (raw_title.empty()) {
+    return app_name;
+  }
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // Do not omit the page title for System Web Apps (such as Terminal, Files, or
+  // Settings), as ChromeOS window management and Tast tests rely on the active
+  // page/tab title being present in the window title.
+  if (system_app()) {
+    return base::StrCat({app_name, u" - ", raw_title});
+  }
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
+  if (!has_tab_strip() &&
+      provider_->ui_manager().GetNumWindowsForApp(app_id()) == 1) {
     return app_name;
   }
 
@@ -823,7 +832,7 @@ void WebAppBrowserController::OnLoadIcon(apps::IconValuePtr icon_value) {
 
 void WebAppBrowserController::OnReadIcon(IconPurpose purpose, SkBitmap bitmap) {
   // We request only IconPurpose::ANY icons.
-  DCHECK_EQ(purpose, IconPurpose::ANY);
+  CHECK_EQ(purpose, IconPurpose::ANY, base::NotFatalUntil::M162);
 
   if (bitmap.empty()) {
     DLOG(ERROR) << "Failed to read icon for web app";
@@ -860,8 +869,8 @@ void WebAppBrowserController::PerformDigitalAssetLinkVerification(
       apk_web_app_service->GetCertificateSha256Fingerprint(app_id());
 
   // Any web-only TWA should have an associated package name and fingerprint.
-  DCHECK(package_name.has_value());
-  DCHECK(fingerprint.has_value());
+  CHECK(package_name.has_value(), base::NotFatalUntil::M162);
+  CHECK(fingerprint.has_value(), base::NotFatalUntil::M162);
 
   CheckDigitalAssetLinkRelationshipForAndroidApp(*package_name, *fingerprint);
 #endif

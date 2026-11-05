@@ -288,7 +288,7 @@ class PasswordProtectionServiceTest : public ::testing::Test {
         &test_pref_service_, /*is_off_the_record=*/false,
         /*store_last_modified=*/false, /*restore_session=*/false,
         /*should_record_metrics=*/false);
-    database_manager_ = new MockSafeBrowsingDatabaseManager();
+    database_manager_ = base::MakeRefCounted<MockSafeBrowsingDatabaseManager>();
     password_protection_service_ =
         std::make_unique<NiceMock<TestPasswordProtectionService>>(
             database_manager_,
@@ -459,6 +459,11 @@ TEST_F(PasswordProtectionServiceTest, NoSendPingPrivateIpHostname) {
 
 TEST_F(PasswordProtectionServiceTest,
        MaybeStartPasswordFieldOnFocusRequest_TriggersCSD) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      kProactivePasswordProtection,
+      {{kCsdProactivePasswordProtectionSampleRate.name, "1.0"}});
+
   GURL main_frame_url(kTargetUrl);
   GURL password_form_action(kFormActionUrl);
   GURL password_form_frame_url(kPasswordFrameUrl);
@@ -486,6 +491,85 @@ TEST_F(PasswordProtectionServiceTest,
   password_protection_service_->MaybeStartPasswordFieldOnFocusRequest(
       web_contents_.get(), main_frame_url, password_form_action,
       password_form_frame_url);
+
+  EXPECT_EQ(0u, password_protection_service_->GetPendingRequestsCount());
+}
+
+TEST_F(PasswordProtectionServiceTest,
+       MaybeStartPasswordFieldOnFocusRequest_SampleRate) {
+  GURL main_frame_url(kTargetUrl);
+  GURL password_form_action(kFormActionUrl);
+  GURL password_form_frame_url(kPasswordFrameUrl);
+
+  {
+    // Sample rate 100%: should trigger CSD and not send a PhishGuard ping.
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeatureWithParameters(
+        kProactivePasswordProtection,
+        {{kCsdProactivePasswordProtectionSampleRate.name, "1.0"}});
+
+    EXPECT_CALL(*password_protection_service_, IsPingingEnabled(_, _))
+        .WillRepeatedly(Return(true));
+
+    EXPECT_CALL(*password_protection_service_,
+                MaybeStartPasswordFieldOnFocusRequest(_, _, _, _))
+        .WillOnce([this](content::WebContents* web_contents,
+                         const GURL& main_frame_url,
+                         const GURL& password_form_action,
+                         const GURL& password_form_frame_url) {
+          password_protection_service_
+              ->PasswordProtectionService::
+                  MaybeStartPasswordFieldOnFocusRequest(
+                      web_contents, main_frame_url, password_form_action,
+                      password_form_frame_url);
+        });
+
+    EXPECT_CALL(*password_protection_service_,
+                MaybeTriggerClientSideDetectionScan(web_contents_.get()))
+        .Times(1);
+
+    password_protection_service_->MaybeStartPasswordFieldOnFocusRequest(
+        web_contents_.get(), main_frame_url, password_form_action,
+        password_form_frame_url);
+
+    EXPECT_EQ(0u, password_protection_service_->GetPendingRequestsCount());
+    testing::Mock::VerifyAndClearExpectations(
+        password_protection_service_.get());
+  }
+
+  {
+    // Sample rate 0%: should send a PhishGuard ping and not trigger CSD.
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeatureWithParameters(
+        kProactivePasswordProtection,
+        {{kCsdProactivePasswordProtectionSampleRate.name, "0.0"}});
+
+    EXPECT_CALL(*password_protection_service_, IsPingingEnabled(_, _))
+        .WillRepeatedly(Return(true));
+
+    EXPECT_CALL(*password_protection_service_,
+                MaybeStartPasswordFieldOnFocusRequest(_, _, _, _))
+        .WillOnce([this](content::WebContents* web_contents,
+                         const GURL& main_frame_url,
+                         const GURL& password_form_action,
+                         const GURL& password_form_frame_url) {
+          password_protection_service_
+              ->PasswordProtectionService::
+                  MaybeStartPasswordFieldOnFocusRequest(
+                      web_contents, main_frame_url, password_form_action,
+                      password_form_frame_url);
+        });
+
+    EXPECT_CALL(*password_protection_service_,
+                MaybeTriggerClientSideDetectionScan(web_contents_.get()))
+        .Times(0);
+
+    password_protection_service_->MaybeStartPasswordFieldOnFocusRequest(
+        web_contents_.get(), main_frame_url, password_form_action,
+        password_form_frame_url);
+
+    EXPECT_EQ(1u, password_protection_service_->GetPendingRequestsCount());
+  }
 }
 
 class PasswordProtectionServiceBaseTest
@@ -512,7 +596,7 @@ class PasswordProtectionServiceBaseTest
         &test_pref_service_, false /* is_off_the_record */,
         false /* store_last_modified */, false /* restore_session*/,
         false /* should_record_metrics */);
-    database_manager_ = new MockSafeBrowsingDatabaseManager();
+    database_manager_ = base::MakeRefCounted<MockSafeBrowsingDatabaseManager>();
     auto token_fetcher =
         std::make_unique<StrictMock<MockSafeBrowsingTokenFetcher>>();
     raw_token_fetcher_ = token_fetcher.get();
@@ -553,10 +637,11 @@ class PasswordProtectionServiceBaseTest
     EXPECT_CALL(*database_manager_, CheckCsdAllowlistUrl(target_url, _))
         .WillRepeatedly(
             Return(match_allowlist ? AsyncMatch::MATCH : AsyncMatch::NO_MATCH));
-    request_ = new PasswordProtectionRequestContent(
+    request_ = base::MakeRefCounted<PasswordProtectionRequestContent>(
         web_contents, target_url, GURL(kFormActionUrl), GURL(kPasswordFrameUrl),
         web_contents->GetContentsMimeType(), kUserName,
-        PasswordType::PASSWORD_TYPE_UNKNOWN, {},
+        PasswordType::PASSWORD_TYPE_UNKNOWN,
+        std::vector<password_manager::MatchingReusedCredential>(),
         LoginReputationClientRequest::UNFAMILIAR_LOGIN_PAGE, true,
         password_protection_service_.get(), timeout_in_ms,
         /*otp_phishing_verdict_callback=*/std::nullopt);
@@ -575,7 +660,7 @@ class PasswordProtectionServiceBaseTest
         .WillRepeatedly(
             Return(match_allowlist ? AsyncMatch::MATCH : AsyncMatch::NO_MATCH));
 
-    request_ = new PasswordProtectionRequestContent(
+    request_ = base::MakeRefCounted<PasswordProtectionRequestContent>(
         web_contents, target_url, GURL(), GURL(),
         web_contents->GetContentsMimeType(), kUserName, type,
         matching_reused_credentials,
@@ -596,10 +681,11 @@ class PasswordProtectionServiceBaseTest
         .WillRepeatedly(
             Return(match_allowlist ? AsyncMatch::MATCH : AsyncMatch::NO_MATCH));
 
-    request_ = new PasswordProtectionRequestContent(
+    request_ = base::MakeRefCounted<PasswordProtectionRequestContent>(
         web_contents, target_url, GURL(), GURL(),
         web_contents->GetContentsMimeType(), "",
-        PasswordType::PASSWORD_TYPE_UNKNOWN, {},
+        PasswordType::PASSWORD_TYPE_UNKNOWN,
+        std::vector<password_manager::MatchingReusedCredential>(),
         LoginReputationClientRequest::ONE_TIME_PASSWORD_FIELD_DETECTED, false,
         password_protection_service_.get(), timeout_in_ms,
         std::move(otp_phishing_verdict_callback));
@@ -1561,10 +1647,10 @@ TEST_P(PasswordProtectionServiceBaseTest, VerifyShouldShowModalWarning) {
       .WillRepeatedly(Return(PHISHING_REUSE));
   EXPECT_CALL(*password_protection_service_, IsPrimaryAccountSignedIn())
       .WillRepeatedly(Return(true));
-  AccountInfo account_info;
-  account_info.account_id = CoreAccountId::FromGaiaId(GaiaId("gaia"));
-  account_info.email = "email";
-  account_info.gaia = GaiaId("gaia");
+  AccountInfo account_info =
+      AccountInfo::Builder(GaiaId("gaia"), "email")
+          .SetAccountId(CoreAccountId::FromGaiaId(GaiaId("gaia")))
+          .Build();
   EXPECT_CALL(*password_protection_service_, GetAccountInfoForUsername(_))
       .WillRepeatedly(Return(account_info));
 
@@ -1711,10 +1797,10 @@ TEST_P(PasswordProtectionServiceBaseTest,
        VerifyIsSupportedPasswordTypeForPinging) {
   EXPECT_CALL(*password_protection_service_, IsPrimaryAccountSignedIn())
       .WillRepeatedly(Return(true));
-  AccountInfo account_info;
-  account_info.account_id = CoreAccountId::FromGaiaId(GaiaId("gaia"));
-  account_info.email = "email";
-  account_info.gaia = GaiaId("gaia");
+  AccountInfo account_info =
+      AccountInfo::Builder(GaiaId("gaia"), "email")
+          .SetAccountId(CoreAccountId::FromGaiaId(GaiaId("gaia")))
+          .Build();
   EXPECT_CALL(*password_protection_service_, GetAccountInfoForUsername(_))
       .WillRepeatedly(Return(account_info));
 

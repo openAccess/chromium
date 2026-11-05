@@ -7,8 +7,10 @@
 #include <stdint.h>
 
 #include <limits>
+#include <map>
 #include <memory>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "base/files/file_enumerator.h"
@@ -20,12 +22,15 @@
 #include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/system/sys_info.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
@@ -42,10 +47,12 @@
 #include "components/services/storage/dom_storage/test_support/dom_storage_database_testing.h"
 #include "components/services/storage/dom_storage/test_support/fake_dom_storage_database.h"
 #include "components/services/storage/dom_storage/test_support/fake_dom_storage_database_factory.h"
+#include "components/services/storage/dom_storage/test_support/scoped_dom_storage_database_factory_for_testing.h"
 #include "components/services/storage/dom_storage/test_support/storage_area_test_util.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/functions.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 
 namespace storage {
@@ -70,9 +77,7 @@ class SessionStorageImplTestBase : public testing::Test {
   SessionStorageImplTestBase& operator=(const SessionStorageImplTestBase&) =
       delete;
 
-  ~SessionStorageImplTestBase() override {
-    EXPECT_TRUE(temp_dir_.Delete());
-  }
+  ~SessionStorageImplTestBase() override { EXPECT_TRUE(temp_dir_.Delete()); }
 
   void SetUp() override {
     mojo::SetDefaultProcessErrorHandler(base::BindRepeating(
@@ -213,9 +218,14 @@ class SessionStorageImplTestBase : public testing::Test {
  protected:
   // Derived fixtures must initialize `feature_list_` and then call this from
   // their constructor.
-  void InitializeTaskEnvironment() {
-    task_environment_ = std::make_unique<base::test::TaskEnvironment>();
+  void InitializeTaskEnvironment(
+      base::test::TaskEnvironment::TimeSource time_source =
+          base::test::TaskEnvironment::TimeSource::DEFAULT) {
+    task_environment_ =
+        std::make_unique<base::test::TaskEnvironment>(time_source);
   }
+
+  base::test::TaskEnvironment& task_environment() { return *task_environment_; }
 
   base::test::ScopedFeatureList feature_list_;
 
@@ -271,7 +281,7 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 TEST_P(SessionStorageImplTest, CommitRecordsUpdateMapsHistogram) {
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key =
       blink::StorageKey::CreateFromStringForTesting("http://example.com");
   DomStorageDatabase::Key key = StringViewToUint8Vector("key");
@@ -318,8 +328,7 @@ TEST_P(SessionStorageImplTest, CommitRecordsUpdateMapsHistogram) {
 TEST_P(SessionStorageImplTest, StartupShutdownSave) {
   base::HistogramTester histograms;
 
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -348,9 +357,8 @@ TEST_P(SessionStorageImplTest, StartupShutdownSave) {
   // namespace so it can be loaded again.
   session_storage()->DeleteNamespace(namespace_id1, true);
   ShutDownSessionStorage();
-  int expected_storage_areas_shutdown = 1;
-  histograms.ExpectUniqueSample("Storage.SessionStorage.ShutdownDroppedChanges",
-                                false, expected_storage_areas_shutdown);
+  histograms.ExpectTotalCount("Storage.SessionStorage.ShutdownDroppedChanges",
+                              0);
 
   // This will re-initialize Session Storage and load the persisted namespace.
   session_storage()->CreateNamespace(namespace_id1);
@@ -362,21 +370,12 @@ TEST_P(SessionStorageImplTest, StartupShutdownSave) {
   EXPECT_EQ(1ul, data.size());
   area_n1.reset();
 
-  // On low end devices, `BindStorageArea()` purges the storage area loaded from
-  // disk before rebinding.
-  if (base::SysInfo::IsLowEndDeviceOrPartialLowEndModeEnabled()) {
-    ++expected_storage_areas_shutdown;
-  }
-  histograms.ExpectUniqueSample("Storage.SessionStorage.ShutdownDroppedChanges",
-                                false, expected_storage_areas_shutdown);
-
   // Delete the namespace, shut down Session Storage, and do not persist the
   // data.
   session_storage()->DeleteNamespace(namespace_id1, false);
   ShutDownSessionStorage();
-  ++expected_storage_areas_shutdown;
-  histograms.ExpectUniqueSample("Storage.SessionStorage.ShutdownDroppedChanges",
-                                false, expected_storage_areas_shutdown);
+  histograms.ExpectTotalCount("Storage.SessionStorage.ShutdownDroppedChanges",
+                              0);
 
   // This will re-initialize Session Storage and the namespace should be empty.
   session_storage()->CreateNamespace(namespace_id1);
@@ -418,15 +417,14 @@ TEST_P(SessionStorageImplTest, StartupShutdownSave) {
       "Storage.SessionStorage.Duration.PutMetadata.OnDisk", 0);
 
   ShutDownSessionStorage();
-  ++expected_storage_areas_shutdown;
   histograms.ExpectUniqueSample("Storage.SessionStorage.ShutdownDroppedChanges",
-                                false, expected_storage_areas_shutdown);
+                                false, 1);
 }
 
 TEST_P(SessionStorageImplTest, ShutdownDroppedChanges) {
   base::HistogramTester histograms;
 
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   session_storage()->CreateNamespace(namespace_id);
 
   blink::StorageKey storage_key =
@@ -446,11 +444,10 @@ TEST_P(SessionStorageImplTest, ShutdownDroppedChanges) {
 
   // Reload the database.
   ShutDownSessionStorage();
-  int expected_storage_areas_shutdown = 1;
   histograms.ExpectUniqueSample("Storage.SessionStorage.ShutdownDroppedChanges",
-                                false, expected_storage_areas_shutdown);
+                                false, 1);
   histograms.ExpectTotalCount("Storage.SessionStorage.ShutdownDroppedChanges",
-                              expected_storage_areas_shutdown);
+                              1);
   EnsureDatabaseOpen();
 
   // Re-open the namespace.
@@ -463,19 +460,11 @@ TEST_P(SessionStorageImplTest, ShutdownDroppedChanges) {
   area.reset();
   session_storage_impl()->BindStorageArea(storage_key, namespace_id,
                                           area.BindNewPipeAndPassReceiver());
-  StorageAreaImpl* storage_area_impl =
+  SessionStorageAreaImpl* session_storage_area_impl =
       namespace_impl->GetStorageAreaForTesting(storage_key);
-  ASSERT_NE(storage_area_impl, nullptr);
-
-  // On low end devices, `BindStorageArea()` purges the storage area loaded from
-  // disk before rebinding.
-  if (base::SysInfo::IsLowEndDeviceOrPartialLowEndModeEnabled()) {
-    ++expected_storage_areas_shutdown;
-  }
-  histograms.ExpectUniqueSample("Storage.SessionStorage.ShutdownDroppedChanges",
-                                false, expected_storage_areas_shutdown);
-  histograms.ExpectTotalCount("Storage.SessionStorage.ShutdownDroppedChanges",
-                              expected_storage_areas_shutdown);
+  ASSERT_NE(session_storage_area_impl, nullptr);
+  StorageAreaImpl* storage_area_impl =
+      session_storage_area_impl->data_map()->storage_area();
 
   // Create a `RunLoop` that quits when the storage area starts loading.
   base::RunLoop storage_area_loading_run_loop;
@@ -492,16 +481,15 @@ TEST_P(SessionStorageImplTest, ShutdownDroppedChanges) {
   // Shutdown immediately after the area starts loading.
   storage_area_loading_run_loop.Run();
   ResetSessionStorage();
-  ++expected_storage_areas_shutdown;
 
   // Shutdown discards the put, which prevents `key2` and `value2` from
   // persisting to the database.
   histograms.ExpectBucketCount("Storage.SessionStorage.ShutdownDroppedChanges",
                                true, 1);
   histograms.ExpectBucketCount("Storage.SessionStorage.ShutdownDroppedChanges",
-                               false, expected_storage_areas_shutdown - 1);
+                               false, 1);
   histograms.ExpectTotalCount("Storage.SessionStorage.ShutdownDroppedChanges",
-                              expected_storage_areas_shutdown);
+                              2);
 
   // Re-open the database, which allows test tear down to wait for shutdown to
   // complete.
@@ -509,7 +497,7 @@ TEST_P(SessionStorageImplTest, ShutdownDroppedChanges) {
 }
 
 TEST_P(SessionStorageImplTest, ShutdownWithPendingSyncGetAll) {
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   session_storage()->CreateNamespace(namespace_id);
 
   blink::StorageKey storage_key =
@@ -541,9 +529,11 @@ TEST_P(SessionStorageImplTest, ShutdownWithPendingSyncGetAll) {
   area.reset();
   session_storage_impl()->BindStorageArea(storage_key, namespace_id,
                                           area.BindNewPipeAndPassReceiver());
-  StorageAreaImpl* storage_area_impl =
+  SessionStorageAreaImpl* session_storage_area_impl =
       namespace_impl->GetStorageAreaForTesting(storage_key);
-  ASSERT_NE(storage_area_impl, nullptr);
+  ASSERT_NE(session_storage_area_impl, nullptr);
+  StorageAreaImpl* storage_area_impl =
+      session_storage_area_impl->data_map()->storage_area();
 
   // Create a `RunLoop` that quits when the storage area starts loading.
   base::RunLoop storage_area_loading_run_loop;
@@ -585,10 +575,8 @@ TEST_P(SessionStorageImplTest, ShutdownWithPendingSyncGetAll) {
 }
 
 TEST_P(SessionStorageImplTest, CloneBeforeBrowserClone) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -626,10 +614,8 @@ TEST_P(SessionStorageImplTest, CloneBeforeBrowserClone) {
 TEST_P(SessionStorageImplTest, Cloning) {
   base::HistogramTester histograms;
 
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -708,12 +694,9 @@ TEST_P(SessionStorageImplTest, Cloning) {
 }
 
 TEST_P(SessionStorageImplTest, ImmediateCloning) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id3 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id3 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -781,8 +764,7 @@ TEST_P(SessionStorageImplTest, Scavenging) {
   // Storage without calling CreateNamespace.
 
   // Create, verify we have no data.
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -854,7 +836,7 @@ TEST_P(SessionStorageImplTest, Scavenging) {
 void SessionStorageImplTestBase::TestInvalidVersionOnDisk(
     std::string invalid_version_string) {
   base::HistogramTester histograms;
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
 
@@ -923,7 +905,7 @@ TEST_P(SessionStorageImplTest, WrongVersionOnDisk) {
 TEST_P(SessionStorageImplTest, CorruptionOnDisk) {
   base::HistogramTester histograms;
 
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
 
@@ -987,7 +969,7 @@ TEST_P(SessionStorageImplTest, CorruptionOnDisk) {
 TEST_P(SessionStorageImplTest, RecreateOnCommitFailure) {
   base::HistogramTester histograms;
 
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   blink::StorageKey storage_key2 =
@@ -1115,7 +1097,7 @@ TEST_P(SessionStorageImplTest, RecreateOnCommitFailure) {
 TEST_P(SessionStorageImplTest, DontRecreateOnRepeatedCommitFailure) {
   base::HistogramTester histograms;
 
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
 
@@ -1248,6 +1230,13 @@ class SessionStorageImplOnDiskSQLiteRolloutTestBase
            !base::IsDirectoryEmpty(LevelDbDir());
   }
 
+  // Returns the real migration implementation. Tests may wrap it to control
+  // when migration runs.
+  static DomStorageDatabaseFactory::MigrationCallback
+  GetDefaultMigrationCallback() {
+    return DomStorageDatabaseFactory::GetMigrationCallback();
+  }
+
   // Creates a real on-disk LevelDB database at `LevelDbDir()`. If `with_tag`
   // is true, also writes the experimental tag file next to the database.
   void CreateOnDiskLevelDb(bool with_tag) {
@@ -1310,6 +1299,7 @@ INSTANTIATE_TEST_SUITE_P(
     /*no prefix*/,
     SessionStorageImplOnDiskSQLiteRolloutTest,
     testing::Values(DomStorageSqliteRolloutStage::kUseLevelDbOnly,
+                    DomStorageSqliteRolloutStage::kUseLevelDbForNewDatabases,
                     DomStorageSqliteRolloutStage::kUseLevelDbAsControl,
                     DomStorageSqliteRolloutStage::kUseSqliteForNewDatabases,
                     DomStorageSqliteRolloutStage::kUseSqliteOnly),
@@ -1320,7 +1310,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(SessionStorageImplOnDiskSQLiteRolloutTest,
        NewDatabase_UsesConfiguredBackend) {
   base::HistogramTester histograms;
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key =
       blink::StorageKey::CreateFromStringForTesting("http://example.com");
 
@@ -1356,7 +1346,7 @@ TEST_P(SessionStorageImplOnDiskSQLiteRolloutTest,
 TEST_P(SessionStorageImplOnDiskSQLiteRolloutTest, PreExistingUntaggedLevelDb) {
   ASSERT_NO_FATAL_FAILURE(CreateOnDiskLevelDb(/*with_tag=*/false));
   base::HistogramTester histograms;
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key =
       blink::StorageKey::CreateFromStringForTesting("http://example.com");
 
@@ -1381,10 +1371,49 @@ TEST_P(SessionStorageImplOnDiskSQLiteRolloutTest, PreExistingUntaggedLevelDb) {
                                 /*expected_bucket_count=*/1);
 }
 
+TEST_P(SessionStorageImplOnDiskSQLiteRolloutTest, PreExistingSqliteDb) {
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
+  blink::StorageKey storage_key =
+      blink::StorageKey::CreateFromStringForTesting("http://example.com");
+
+  // Persist data to a SQLite database, mimicking a profile that previously
+  // used SQLite.
+  {
+    base::test::ScopedFeatureList sqlite_feature_list;
+    sqlite_feature_list.InitAndEnableFeature(kDomStorageSqlite);
+    DoTestPut(namespace_id, storage_key, "key", "value",
+              /*should_persist=*/true);
+    ShutDownSessionStorage();
+  }
+  ASSERT_TRUE(base::PathExists(SqliteDbPath()));
+  ASSERT_FALSE(LevelDbDirHasContents());
+
+  // Every stage except the LevelDB-only stages keeps using the existing SQLite
+  // database. The LevelDB-only stages create a new LevelDB, orphaning the
+  // SQLite database and its data.
+  const bool uses_existing_sqlite =
+      stage() != DomStorageSqliteRolloutStage::kUseLevelDbOnly &&
+      stage() != DomStorageSqliteRolloutStage::kUseLevelDbAsControl;
+  base::HistogramTester histograms;
+  EXPECT_EQ(DoTestGet(namespace_id, storage_key, "key"),
+            uses_existing_sqlite
+                ? std::optional(StringViewToUint8Vector("value"))
+                : std::nullopt);
+  ShutDownSessionStorage();
+
+  EXPECT_TRUE(base::PathExists(SqliteDbPath()));
+  EXPECT_EQ(LevelDbDirHasContents(), !uses_existing_sqlite);
+  histograms.ExpectUniqueSample(
+      IsExperimentalStage()
+          ? "Storage.SessionStorage.OpenDatabase.OnDiskExperimental"
+          : "Storage.SessionStorage.OpenDatabase.OnDisk",
+      /*sample=*/0, /*expected_bucket_count=*/1);
+}
+
 TEST_P(SessionStorageImplOnDiskSQLiteRolloutTest, PreExistingTaggedLevelDb) {
   ASSERT_NO_FATAL_FAILURE(CreateOnDiskLevelDb(/*with_tag=*/true));
   base::HistogramTester histograms;
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key =
       blink::StorageKey::CreateFromStringForTesting("http://example.com");
 
@@ -1418,7 +1447,7 @@ TEST_P(SessionStorageImplOnDiskSQLiteRolloutTest, PreExistingTaggedLevelDb) {
 // matches the stage's choice for a new database.
 TEST_P(SessionStorageImplOnDiskSQLiteRolloutTest,
        DestroyAndOpenNewOnDiskDatabase) {
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key =
       blink::StorageKey::CreateFromStringForTesting("http://example.com");
 
@@ -1457,6 +1486,588 @@ TEST_P(SessionStorageImplOnDiskSQLiteRolloutTest,
           ? "Storage.SessionStorage.OpenDatabase.OnDiskExperimental"
           : "Storage.SessionStorage.OpenDatabase.OnDisk",
       /*sample=*/0, /*expected_bucket_count=*/1);
+}
+
+// Test fixture for migrating an existing on-disk LevelDB to SQLite. Uses mock
+// time to control when the migration inactivity timer fires.
+class SessionStorageImplMigrationTest
+    : public SessionStorageImplOnDiskSQLiteRolloutTestBase {
+ public:
+  // The inactivity timeout must elapse before an idle on-disk LevelDB
+  // migrates to SQLite.
+  static constexpr base::TimeDelta kExceedMigrationInactivityTimeout =
+      kDomStorageSqliteMigrationInactivityTimeout +
+      kDomStorageSqliteMigrationInactivityTimeout / 2;
+
+  SessionStorageImplMigrationTest()
+      : SessionStorageImplMigrationTest(/*enable_verification=*/true) {}
+
+  bool IsSqlite() {
+    return session_storage_impl()->GetDatabaseForTesting()->is_sqlite();
+  }
+
+  // Uses `SessionStorageImpl` with migration disabled to persist each of
+  // `entries` to an on-disk LevelDB, mimicking a profile from before the
+  // migration rollout. Each entry is a namespace ID, storage key, key and
+  // value. Shuts down session storage afterwards.
+  void CreateLevelDbWithEntries(
+      const std::vector<
+          std::tuple<std::string, blink::StorageKey, std::string, std::string>>&
+          entries) {
+    {
+      base::test::ScopedFeatureList disabled_feature_list;
+      disabled_feature_list.InitWithFeatures(
+          /*enabled_features=*/{},
+          /*disabled_features=*/{kDomStorageSqliteMigration, kDomStorageSqlite,
+                                 kDomStorageSqliteNewDatabases});
+
+      for (const auto& [namespace_id, storage_key, key, value] : entries) {
+        DoTestPut(namespace_id, storage_key, key, value,
+                  /*should_persist=*/true);
+      }
+      ASSERT_FALSE(IsSqlite());
+      ShutDownSessionStorage();
+    }
+    ASSERT_TRUE(LevelDbDirHasContents());
+    ASSERT_FALSE(base::PathExists(SqliteDbPath()));
+  }
+
+  // Verifies the database map for `storage_key` in `namespace_id` contains
+  // `expected_entries`.
+  void ExpectMapEquals(
+      const std::string& namespace_id,
+      const blink::StorageKey& storage_key,
+      const std::map<DomStorageDatabase::Key, DomStorageDatabase::Value>&
+          expected_entries) {
+    const SessionStorageMetadata::NamespaceStorageKeyMap&
+        namespace_storage_key_map = session_storage_impl()
+                                        ->GetMetadataForTesting()
+                                        .namespace_storage_key_map();
+    auto namespace_it = namespace_storage_key_map.find(namespace_id);
+    ASSERT_NE(namespace_it, namespace_storage_key_map.end());
+
+    auto storage_key_it = namespace_it->second.find(storage_key);
+    ASSERT_NE(storage_key_it, namespace_it->second.end());
+
+    const DomStorageDatabase::MapLocator& map_locator = *storage_key_it->second;
+    std::map<DomStorageDatabase::Key, DomStorageDatabase::Value> actual_entries;
+    ASSERT_NO_FATAL_FAILURE(
+        ReadMapKeyValuesSync(*session_storage_impl()->GetDatabaseForTesting(),
+                             map_locator.Clone(), &actual_entries));
+    EXPECT_EQ(actual_entries, expected_entries);
+  }
+
+ protected:
+  explicit SessionStorageImplMigrationTest(bool enable_verification) {
+    feature_list_.InitWithFeaturesAndParameters(
+        /*enabled_features=*/{{kDomStorageSqliteMigration,
+                               {{kDomStorageSqliteMigrationVerification.name,
+                                 enable_verification ? "true" : "false"}}}},
+        /*disabled_features=*/{kDomStorageSqlite,
+                               kDomStorageSqliteNewDatabases});
+    InitializeTaskEnvironment(
+        base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  }
+};
+
+TEST_F(SessionStorageImplMigrationTest, MigratesAfterInactivity) {
+  const std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
+
+  const blink::StorageKey storage_key1 =
+      blink::StorageKey::CreateFromStringForTesting("http://example1.com");
+
+  const blink::StorageKey storage_key2 =
+      blink::StorageKey::CreateFromStringForTesting("http://example2.com");
+
+  const DomStorageDatabase::Key key1 = StringViewToUint8Vector("key1");
+  const DomStorageDatabase::Value value1 = StringViewToUint8Vector("value1");
+
+  const DomStorageDatabase::Key key2 = StringViewToUint8Vector("key2");
+  const DomStorageDatabase::Value value2 = StringViewToUint8Vector("value2");
+
+  const DomStorageDatabase::Key key3 = StringViewToUint8Vector("key3");
+  const DomStorageDatabase::Value value3 = StringViewToUint8Vector("value3");
+
+  ASSERT_NO_FATAL_FAILURE(CreateLevelDbWithEntries(
+      {{namespace_id, storage_key1, "key1", "value1"},
+       {namespace_id, storage_key2, "key2", "value2"}}));
+
+  // With migration enabled, `SessionStorageImpl` continues to use the existing
+  // LevelDB until the database becomes idle.
+  EnsureDatabaseOpen();
+  EXPECT_FALSE(IsSqlite());
+
+  // Keep a storage area bound across the migration to verify it keeps working
+  // after the database switches to SQLite.
+  session_storage()->CreateNamespace(namespace_id);
+  mojo::Remote<blink::mojom::StorageArea> area;
+  session_storage()->BindStorageArea(storage_key1, namespace_id,
+                                     area.BindNewPipeAndPassReceiver());
+
+  std::vector<blink::mojom::KeyValuePtr> data = test::GetAllSync(area.get());
+  ASSERT_EQ(data.size(), 1u);
+  EXPECT_EQ(data[0]->key, key1);
+  EXPECT_EQ(data[0]->value, value1);
+
+  // Trigger the migration.
+  task_environment().FastForwardBy(kExceedMigrationInactivityTimeout);
+  EXPECT_TRUE(base::test::RunUntil([&]() { return IsSqlite(); }));
+
+  // The SQLite database replaces the LevelDB on disk.
+  EXPECT_TRUE(base::PathExists(SqliteDbPath()));
+  EXPECT_FALSE(base::PathExists(LevelDbDir()));
+  EXPECT_FALSE(base::PathExists(
+      SqliteDbPath().AddExtensionASCII(kSqliteMigrationStagingExtension)));
+
+  // The migration copied all map entries and metadata.
+  ASSERT_NO_FATAL_FAILURE(ExpectMapEquals(
+      namespace_id, storage_key1, /*expected_entries=*/{{key1, value1}}));
+  ASSERT_NO_FATAL_FAILURE(ExpectMapEquals(
+      namespace_id, storage_key2, /*expected_entries=*/{{key2, value2}}));
+
+  DomStorageDatabase::Metadata all_metadata;
+  ASSERT_NO_FATAL_FAILURE(ReadAllMetadataSync(
+      *session_storage_impl()->GetDatabaseForTesting(), &all_metadata));
+  EXPECT_EQ(all_metadata.map_metadata.size(), 2u);
+
+  // The storage area bound before the migration must write to SQLite.
+  EXPECT_TRUE(test::PutSync(area.get(), key3, value3,
+                            /*client_old_value=*/std::nullopt,
+                            test::MakeStorageAreaSource()));
+  session_storage_impl()->FlushAreaForTesting(namespace_id, storage_key1);
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectMapEquals(namespace_id, storage_key1,
+                      /*expected_entries=*/{{key1, value1}, {key3, value3}}));
+  area.reset();
+
+  // Re-opening must use the migrated SQLite database.
+  ShutDownSessionStorage();
+  EnsureDatabaseOpen();
+
+  EXPECT_TRUE(IsSqlite());
+  EXPECT_FALSE(base::PathExists(LevelDbDir()));
+
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectMapEquals(namespace_id, storage_key1,
+                      /*expected_entries=*/{{key1, value1}, {key3, value3}}));
+  ASSERT_NO_FATAL_FAILURE(ExpectMapEquals(
+      namespace_id, storage_key2, /*expected_entries=*/{{key2, value2}}));
+}
+
+// Unloads a storage area with uncommitted changes while migration is in
+// progress. The area's changes must persist to the migrated SQLite database.
+TEST_F(SessionStorageImplMigrationTest,
+       UnloadStorageAreaWithPendingCommitDuringMigration) {
+  const std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
+
+  const blink::StorageKey storage_key =
+      blink::StorageKey::CreateFromStringForTesting("http://example1.com");
+
+  const DomStorageDatabase::Key key1 = StringViewToUint8Vector("key1");
+  const DomStorageDatabase::Value value1 = StringViewToUint8Vector("value1");
+
+  const DomStorageDatabase::Key key2 = StringViewToUint8Vector("key2");
+  const DomStorageDatabase::Value value2 = StringViewToUint8Vector("value2");
+
+  ASSERT_NO_FATAL_FAILURE(CreateLevelDbWithEntries(
+      {{namespace_id, storage_key, "key1", "value1"}}));
+
+  // Pause migration after it starts. The override runs on the database
+  // sequence and gives the test a closure that resumes the real migration.
+  DomStorageDatabaseFactory::MigrationCallback default_migration_callback =
+      GetDefaultMigrationCallback();
+
+  base::test::TestFuture<base::OnceClosure> migration_started_future;
+  base::OnceCallback<void(base::OnceClosure)> migration_started_callback =
+      migration_started_future.GetSequenceBoundCallback();
+
+  ScopedDomStorageDatabaseFactoryForTesting scoped_database_factory(
+      /*migration_callback=*/base::BindLambdaForTesting(
+          [&](StorageType storage_type, const base::FilePath& dir_to_open,
+              const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&
+                  memory_dump_id,
+              DomStorageDatabaseFactory::OpenResultCallback callback,
+              DomStorageDatabase* source) {
+            std::move(migration_started_callback)
+                .Run(base::BindPostTaskToCurrentDefault(base::BindOnce(
+                    default_migration_callback, storage_type, dir_to_open,
+                    memory_dump_id, std::move(callback),
+                    base::Unretained(source))));
+          }));
+
+  EnsureDatabaseOpen();
+  EXPECT_FALSE(IsSqlite());
+
+  // Load the storage area before migration starts.
+  session_storage()->CreateNamespace(namespace_id);
+  mojo::Remote<blink::mojom::StorageArea> area;
+  session_storage()->BindStorageArea(storage_key, namespace_id,
+                                     area.BindNewPipeAndPassReceiver());
+
+  std::vector<blink::mojom::KeyValuePtr> data = test::GetAllSync(area.get());
+  ASSERT_EQ(data.size(), 1u);
+  EXPECT_EQ(data[0]->key, key1);
+  EXPECT_EQ(data[0]->value, value1);
+
+  // Start the migration and wait for it to pause.
+  task_environment().FastForwardBy(kExceedMigrationInactivityTimeout);
+  base::OnceClosure resume_migration = migration_started_future.Take();
+  EXPECT_FALSE(IsSqlite());
+
+  // Change the storage area during migration, which creates a pending commit.
+  EXPECT_TRUE(test::PutSync(area.get(), key2, value2,
+                            /*client_old_value=*/std::nullopt,
+                            test::MakeStorageAreaSource()));
+
+  // Unbind and then unload the storage area while its commit is pending.
+  area.reset();
+
+  SessionStorageNamespaceImpl* namespace_impl =
+      session_storage_impl()->GetNamespaceForTesting(namespace_id);
+  ASSERT_NE(namespace_impl, nullptr);
+
+  SessionStorageAreaImpl* session_storage_area =
+      namespace_impl->GetStorageAreaForTesting(storage_key);
+  EXPECT_TRUE(
+      base::test::RunUntil([&] { return !session_storage_area->IsBound(); }));
+
+  session_storage_impl()->PurgeMemory();
+  EXPECT_TRUE(session_storage_impl()
+                  ->GetNamespaceForTesting(namespace_id)
+                  ->HasAreaForStorageKeyForTesting(storage_key));
+
+  // Finish the migration.
+  std::move(resume_migration).Run();
+  EXPECT_TRUE(base::test::RunUntil([&]() { return IsSqlite(); }));
+
+  // The unloaded storage area's change must persist after migration.
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectMapEquals(namespace_id, storage_key,
+                      /*expected_entries=*/{{key1, value1}, {key2, value2}}));
+
+  // The change must also persist after re-opening the migrated database.
+  ShutDownSessionStorage();
+  EnsureDatabaseOpen();
+
+  EXPECT_TRUE(IsSqlite());
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectMapEquals(namespace_id, storage_key,
+                      /*expected_entries=*/{{key1, value1}, {key2, value2}}));
+}
+
+// Commit errors during migration must not delete and recreate the database,
+// which would destroy the LevelDB being migrated.
+TEST_F(SessionStorageImplMigrationTest,
+       CommitErrorsDuringMigrationDoNotRecreateDatabase) {
+  const std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
+
+  const blink::StorageKey migrated_storage_key =
+      blink::StorageKey::CreateFromStringForTesting("http://example0.com");
+
+  const DomStorageDatabase::Key key = StringViewToUint8Vector("key");
+  const DomStorageDatabase::Value value = StringViewToUint8Vector("value");
+  const DomStorageDatabase::Value new_value =
+      StringViewToUint8Vector("new_value");
+
+  ASSERT_NO_FATAL_FAILURE(CreateLevelDbWithEntries(
+      {{namespace_id, migrated_storage_key, "key", "value"}}));
+
+  // Pause migration after it starts. The override runs on the database
+  // sequence and gives the test a closure that resumes the real migration.
+  DomStorageDatabaseFactory::MigrationCallback default_migration_callback =
+      GetDefaultMigrationCallback();
+
+  base::test::TestFuture<base::OnceClosure> migration_started_future;
+  base::OnceCallback<void(base::OnceClosure)> migration_started_callback =
+      migration_started_future.GetSequenceBoundCallback();
+
+  ScopedDomStorageDatabaseFactoryForTesting scoped_database_factory(
+      /*migration_callback=*/base::BindLambdaForTesting(
+          [&](StorageType storage_type, const base::FilePath& dir_to_open,
+              const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&
+                  memory_dump_id,
+              DomStorageDatabaseFactory::OpenResultCallback callback,
+              DomStorageDatabase* source) {
+            std::move(migration_started_callback)
+                .Run(base::BindPostTaskToCurrentDefault(base::BindOnce(
+                    default_migration_callback, storage_type, dir_to_open,
+                    memory_dump_id, std::move(callback),
+                    base::Unretained(source))));
+          }));
+
+  EnsureDatabaseOpen();
+  EXPECT_FALSE(IsSqlite());
+
+  // Make all commits to the LevelDB fail.
+  session_storage_impl()
+      ->GetDatabaseForTesting()
+      ->database()
+      .PostTaskWithThisObject(base::BindOnce([](DomStorageDatabase* database) {
+        database->MakeAllCommitsFailForTesting();
+      }));
+
+  // Change enough storage areas that a single failed commit exceeds the commit
+  // error threshold.
+  constexpr size_t kAreaCount = kCommitErrorThreshold + 1;
+  auto storage_key_for_area = [](size_t index) {
+    return blink::StorageKey::CreateFromStringForTesting(
+        base::StringPrintf("http://example%zu.com", index + 1));
+  };
+  session_storage()->CreateNamespace(namespace_id);
+
+  std::vector<mojo::Remote<blink::mojom::StorageArea>> areas(kAreaCount);
+  for (size_t i = 0; i < kAreaCount; ++i) {
+    base::test::TestFuture<bool> put_future;
+    session_storage()->BindStorageArea(storage_key_for_area(i), namespace_id,
+                                       areas[i].BindNewPipeAndPassReceiver());
+    areas[i]->Put(key, value, /*client_old_value=*/std::nullopt,
+                  test::MakeStorageAreaSource(), put_future.GetCallback());
+    EXPECT_TRUE(put_future.Take());
+  }
+
+  // Block the database sequence, which prevents the commit from completing
+  // until after migration starts.
+  base::WaitableEvent unblock_database;
+  base::ScopedClosureRunner scoped_unblock_database(base::BindOnce(
+      &base::WaitableEvent::Signal, base::Unretained(&unblock_database)));
+  session_storage_impl()
+      ->GetDatabaseForTesting()
+      ->database()
+      .PostTaskWithThisObject(
+          base::BindLambdaForTesting([&](DomStorageDatabase*) {
+            base::ScopedAllowBaseSyncPrimitivesForTesting allow_wait;
+            unblock_database.Wait();
+          }));
+
+  // Commit all of the storage areas' changes in a single database operation.
+  base::HistogramTester histograms;
+  session_storage_impl()->GetDatabaseForTesting()->InitiateCommit();
+
+  // Start the migration while the commit is pending.
+  session_storage_impl()->GetDatabaseForTesting()->ForceMigrationForTesting();
+  EXPECT_TRUE(session_storage_impl()->GetDatabaseForTesting()->is_migrating());
+
+  // Unblock the database. The failed commit completes before the paused
+  // migration notifies the test.
+  scoped_unblock_database.RunAndReset();
+  base::OnceClosure resume_migration = migration_started_future.Take();
+
+  // The commit failed for all storage areas.
+  histograms.ExpectTotalCount("Storage.SessionStorage.UpdateMaps.OnDisk", 1);
+  EXPECT_EQ(
+      histograms.GetBucketCount("Storage.SessionStorage.UpdateMaps.OnDisk", 0),
+      0);
+
+  // The commit errors did not recreate the database.
+  histograms.ExpectTotalCount("Storage.SessionStorage.CommitErrorCountAtReset",
+                              0);
+  EXPECT_NE(session_storage_impl()->GetDatabaseForTesting(), nullptr);
+  EXPECT_TRUE(session_storage_impl()->GetDatabaseForTesting()->is_migrating());
+  EXPECT_TRUE(session_storage_impl()
+                  ->GetNamespaceForTesting(namespace_id)
+                  ->HasAreaForStorageKeyForTesting(storage_key_for_area(0)));
+
+  // Finish the migration.
+  std::move(resume_migration).Run();
+  EXPECT_TRUE(base::test::RunUntil([&]() { return IsSqlite(); }));
+
+  // The migration preserved the LevelDB's data.
+  ASSERT_NO_FATAL_FAILURE(ExpectMapEquals(namespace_id, migrated_storage_key,
+                                          /*expected_entries=*/{{key, value}}));
+
+  // Commits succeed after migration.
+  base::test::TestFuture<bool> put_future;
+  areas[0]->Put(key, new_value, /*client_old_value=*/std::nullopt,
+                test::MakeStorageAreaSource(), put_future.GetCallback());
+  EXPECT_TRUE(put_future.Take());
+  session_storage_impl()->FlushAreaForTesting(namespace_id,
+                                              storage_key_for_area(0));
+
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectMapEquals(namespace_id, storage_key_for_area(0),
+                      /*expected_entries=*/{{key, new_value}}));
+  histograms.ExpectTotalCount(
+      "Storage.SessionStorage.Recovery.CommitErrorThresholdExceeded", 0);
+}
+
+// Shutting down during migration drops uncommitted changes because commits
+// wait for migration to finish. `SessionStorageImpl` must record the dropped
+// changes in the `MigrationDroppedChanges` histogram.
+TEST_F(SessionStorageImplMigrationTest,
+       ShutdownDuringMigrationRecordsDroppedChanges) {
+  const std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
+
+  const blink::StorageKey changed_storage_key =
+      blink::StorageKey::CreateFromStringForTesting("http://example1.com");
+  const blink::StorageKey unchanged_storage_key =
+      blink::StorageKey::CreateFromStringForTesting("http://example2.com");
+
+  const DomStorageDatabase::Key key1 = StringViewToUint8Vector("key1");
+  const DomStorageDatabase::Value value1 = StringViewToUint8Vector("value1");
+  const DomStorageDatabase::Value value2 = StringViewToUint8Vector("value2");
+
+  ASSERT_NO_FATAL_FAILURE(CreateLevelDbWithEntries(
+      {{namespace_id, changed_storage_key, "key1", "value1"},
+       {namespace_id, unchanged_storage_key, "key1", "value2"}}));
+
+  {
+    // Pause migration after it starts. The override runs on the database
+    // sequence and gives the test a closure that resumes the real migration.
+    // The test never resumes the migration.
+    DomStorageDatabaseFactory::MigrationCallback default_migration_callback =
+        GetDefaultMigrationCallback();
+
+    base::test::TestFuture<base::OnceClosure> migration_started_future;
+    base::OnceCallback<void(base::OnceClosure)> migration_started_callback =
+        migration_started_future.GetSequenceBoundCallback();
+
+    ScopedDomStorageDatabaseFactoryForTesting scoped_database_factory(
+        /*migration_callback=*/base::BindLambdaForTesting(
+            [&](StorageType storage_type, const base::FilePath& dir_to_open,
+                const std::optional<base::trace_event::MemoryAllocatorDumpGuid>&
+                    memory_dump_id,
+                DomStorageDatabaseFactory::OpenResultCallback callback,
+                DomStorageDatabase* source) {
+              std::move(migration_started_callback)
+                  .Run(base::BindPostTaskToCurrentDefault(base::BindOnce(
+                      default_migration_callback, storage_type, dir_to_open,
+                      memory_dump_id, std::move(callback),
+                      base::Unretained(source))));
+            }));
+
+    EnsureDatabaseOpen();
+    EXPECT_FALSE(IsSqlite());
+
+    // Load both storage areas before migration starts.
+    session_storage()->CreateNamespace(namespace_id);
+    mojo::Remote<blink::mojom::StorageArea> changed_area;
+    session_storage()->BindStorageArea(
+        changed_storage_key, namespace_id,
+        changed_area.BindNewPipeAndPassReceiver());
+    EXPECT_EQ(test::GetSync(changed_area.get(), key1), value1);
+
+    mojo::Remote<blink::mojom::StorageArea> unchanged_area;
+    session_storage()->BindStorageArea(
+        unchanged_storage_key, namespace_id,
+        unchanged_area.BindNewPipeAndPassReceiver());
+    EXPECT_EQ(test::GetSync(unchanged_area.get(), key1), value2);
+
+    // Start the migration and wait for it to pause.
+    task_environment().FastForwardBy(kExceedMigrationInactivityTimeout);
+    base::OnceClosure resume_migration = migration_started_future.Take();
+    ASSERT_TRUE(
+        session_storage_impl()->GetDatabaseForTesting()->is_migrating());
+
+    // Change one storage area during migration, which creates a pending
+    // commit.
+    base::test::TestFuture<bool> put_future;
+    changed_area->Put(key1, value2, /*client_old_value=*/std::nullopt,
+                      test::MakeStorageAreaSource(), put_future.GetCallback());
+    EXPECT_TRUE(put_future.Take());
+
+    ASSERT_TRUE(session_storage_impl()
+                    ->GetNamespaceForTesting(namespace_id)
+                    ->GetStorageAreaForTesting(changed_storage_key)
+                    ->data_map()
+                    ->storage_area()
+                    ->HasPendingCommit());
+    ASSERT_FALSE(session_storage_impl()
+                     ->GetNamespaceForTesting(namespace_id)
+                     ->GetStorageAreaForTesting(unchanged_storage_key)
+                     ->data_map()
+                     ->storage_area()
+                     ->HasPendingCommit());
+
+    // Shut down while migrating. Only the changed storage area drops changes.
+    base::HistogramTester histograms;
+    ShutDownSessionStorage();
+    histograms.ExpectBucketCount(
+        "Storage.SessionStorage.MigrationDroppedChanges", true, 1);
+    histograms.ExpectBucketCount(
+        "Storage.SessionStorage.MigrationDroppedChanges", false, 1);
+    histograms.ExpectBucketCount(
+        "Storage.SessionStorage.ShutdownDroppedChanges", false, 2);
+  }
+
+  // The dropped change did not persist to the LevelDB, which shutdown left
+  // intact.
+  EXPECT_TRUE(LevelDbDirHasContents());
+  EnsureDatabaseOpen();
+  ASSERT_FALSE(IsSqlite());
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectMapEquals(namespace_id, changed_storage_key,
+                      /*expected_entries=*/{{key1, value1}}));
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectMapEquals(namespace_id, unchanged_storage_key,
+                      /*expected_entries=*/{{key1, value2}}));
+}
+
+// Runs migration with the `kDomStorageSqliteMigrationVerification` feature
+// parameter disabled, which skips verifying the migrated data.
+class SessionStorageImplMigrationWithoutVerificationTest
+    : public SessionStorageImplMigrationTest {
+ public:
+  SessionStorageImplMigrationWithoutVerificationTest()
+      : SessionStorageImplMigrationTest(/*enable_verification=*/false) {}
+};
+
+TEST_F(SessionStorageImplMigrationWithoutVerificationTest,
+       MigratesAfterInactivity) {
+  ASSERT_FALSE(kDomStorageSqliteMigrationVerification.Get());
+
+  const std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
+
+  const blink::StorageKey storage_key1 =
+      blink::StorageKey::CreateFromStringForTesting("http://example1.com");
+
+  const blink::StorageKey storage_key2 =
+      blink::StorageKey::CreateFromStringForTesting("http://example2.com");
+
+  const DomStorageDatabase::Key key1 = StringViewToUint8Vector("key1");
+  const DomStorageDatabase::Value value1 = StringViewToUint8Vector("value1");
+
+  const DomStorageDatabase::Key key2 = StringViewToUint8Vector("key2");
+  const DomStorageDatabase::Value value2 = StringViewToUint8Vector("value2");
+
+  ASSERT_NO_FATAL_FAILURE(CreateLevelDbWithEntries(
+      {{namespace_id, storage_key1, "key1", "value1"},
+       {namespace_id, storage_key2, "key2", "value2"}}));
+
+  EnsureDatabaseOpen();
+  EXPECT_FALSE(IsSqlite());
+
+  // Trigger the migration.
+  task_environment().FastForwardBy(kExceedMigrationInactivityTimeout);
+  EXPECT_TRUE(base::test::RunUntil([&]() { return IsSqlite(); }));
+
+  // The SQLite database replaces the LevelDB on disk.
+  EXPECT_TRUE(base::PathExists(SqliteDbPath()));
+  EXPECT_FALSE(base::PathExists(LevelDbDir()));
+  EXPECT_FALSE(base::PathExists(
+      SqliteDbPath().AddExtensionASCII(kSqliteMigrationStagingExtension)));
+
+  // The migration copied all map entries and metadata.
+  ASSERT_NO_FATAL_FAILURE(ExpectMapEquals(
+      namespace_id, storage_key1, /*expected_entries=*/{{key1, value1}}));
+  ASSERT_NO_FATAL_FAILURE(ExpectMapEquals(
+      namespace_id, storage_key2, /*expected_entries=*/{{key2, value2}}));
+
+  DomStorageDatabase::Metadata all_metadata;
+  ASSERT_NO_FATAL_FAILURE(ReadAllMetadataSync(
+      *session_storage_impl()->GetDatabaseForTesting(), &all_metadata));
+  EXPECT_EQ(all_metadata.map_metadata.size(), 2u);
+
+  // Re-opening must use the migrated SQLite database.
+  ShutDownSessionStorage();
+  EnsureDatabaseOpen();
+
+  EXPECT_TRUE(IsSqlite());
+  EXPECT_FALSE(base::PathExists(LevelDbDir()));
+
+  ASSERT_NO_FATAL_FAILURE(ExpectMapEquals(
+      namespace_id, storage_key1, /*expected_entries=*/{{key1, value1}}));
+  ASSERT_NO_FATAL_FAILURE(ExpectMapEquals(
+      namespace_id, storage_key2, /*expected_entries=*/{{key2, value2}}));
 }
 
 // Test fixture for tests that use fake database implementations. These tests
@@ -1528,7 +2139,7 @@ TEST_P(SessionStorageImplFakeDbRolloutTest, TransientErrorsAfterRecovery) {
             std::move(callback).Run(std::move(result));
           }));
 
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
 
@@ -1871,8 +2482,7 @@ TEST_F(SessionStorageImplFakeDbTest, MetadataReadFailure) {
 }
 
 TEST_P(SessionStorageImplTest, GetUsage) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -1897,8 +2507,7 @@ TEST_P(SessionStorageImplTest, GetUsage) {
 }
 
 TEST_P(SessionStorageImplTest, DeleteStorage) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
 
@@ -1970,8 +2579,7 @@ TEST_P(SessionStorageImplTest, PurgeInactiveWrappers) {
   DomStorageDatabase::Key key = StringViewToUint8Vector("key1");
   DomStorageDatabase::Key value = StringViewToUint8Vector("value1");
 
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
 
@@ -2044,8 +2652,7 @@ TEST_P(SessionStorageImplTest, PurgeInactiveWrappers) {
 // TODO(crbug.com/40650136): Flakes when verifying no data found.
 TEST_P(SessionStorageImplTest, ClearDiskState) {
   SetBackingMode(SessionStorageImpl::BackingMode::kClearDiskStateOnOpen);
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -2101,7 +2708,7 @@ TEST_P(SessionStorageImplTest, ClearDiskStateOnOpenWithEmptyPathUsesInMemory) {
       base::DoNothing(), remote.BindNewPipeAndPassReceiver());
 
   // Trigger connection and verify data operations work.
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   remote->CreateNamespace(namespace_id);
   mojo::Remote<blink::mojom::StorageArea> area;
   remote->BindStorageArea(
@@ -2115,12 +2722,9 @@ TEST_P(SessionStorageImplTest, ClearDiskStateOnOpenWithEmptyPathUsesInMemory) {
 }
 
 TEST_P(SessionStorageImplTest, InterruptedCloneWithDelete) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id3 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id3 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -2141,12 +2745,9 @@ TEST_P(SessionStorageImplTest, InterruptedCloneWithDelete) {
 }
 
 TEST_P(SessionStorageImplTest, InterruptedCloneChainWithDelete) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id3 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id3 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -2171,14 +2772,10 @@ TEST_P(SessionStorageImplTest, InterruptedCloneChainWithDelete) {
 }
 
 TEST_P(SessionStorageImplTest, InterruptedTripleCloneChain) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id3 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id4 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id3 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id4 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -2210,14 +2807,10 @@ TEST_P(SessionStorageImplTest, InterruptedTripleCloneChain) {
 }
 
 TEST_P(SessionStorageImplTest, TotalCloneChainDeletion) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id3 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id4 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id3 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id4 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -2241,10 +2834,8 @@ TEST_P(SessionStorageImplTest, TotalCloneChainDeletion) {
 }
 
 TEST_P(SessionStorageImplTest, PurgeMemoryDoesNotCrashOrHang) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
 
@@ -2296,10 +2887,8 @@ TEST_P(SessionStorageImplTest, PurgeMemoryDoesNotCrashOrHang) {
 }
 
 TEST_P(SessionStorageImplTest, DeleteWithPersistBeforeBrowserClone) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -2332,10 +2921,8 @@ TEST_P(SessionStorageImplTest, DeleteWithPersistBeforeBrowserClone) {
 }
 
 TEST_P(SessionStorageImplTest, DeleteWithoutPersistBeforeBrowserClone) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -2368,10 +2955,8 @@ TEST_P(SessionStorageImplTest, DeleteWithoutPersistBeforeBrowserClone) {
 }
 
 TEST_P(SessionStorageImplTest, DeleteAfterCloneWithoutMojoClone) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key1 =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
   session_storage()->CreateNamespace(namespace_id1);
@@ -2404,14 +2989,176 @@ TEST_P(SessionStorageImplTest, DeleteAfterCloneWithoutMojoClone) {
   EXPECT_EQ(1ul, data.size());
 }
 
+// Regression test for https://crbug.com/574512015.
+TEST_P(SessionStorageImplTest,
+       InvalidNamespaceDeletionDoesNotLeakDataAcrossOrigins) {
+  // Create a new session that contains a map with one key/value pair.
+  const std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
+  const blink::StorageKey storage_key =
+      blink::StorageKey::CreateFromStringForTesting(
+          "https://source-origin.test");
+
+  session_storage()->CreateNamespace(namespace_id);
+
+  mojo::Remote<blink::mojom::StorageArea> area;
+  session_storage()->BindStorageArea(storage_key, namespace_id,
+                                     area.BindNewPipeAndPassReceiver());
+
+  ASSERT_TRUE(test::PutSync(area.get(), StringViewToUint8Vector("source_key"),
+                            StringViewToUint8Vector("source_value"),
+                            std::nullopt, test::MakeStorageAreaSource()));
+  session_storage_impl()->FlushAreaForTesting(namespace_id, storage_key);
+  WaitForDatabaseTasks();
+
+  // Deleting an invalid namespace must not corrupt the database.  In LevelDB,
+  // the prefix for the invalid namespace overlaps with the valid namespace
+  // from above.  This incorrectly deletes the metadata for both namespaces
+  // while leaving the key/value pairs intact.
+  const std::string invalid_namespace_id = namespace_id + "-https://source";
+  session_storage()->DeleteNamespace(invalid_namespace_id,
+                                     /*should_persist=*/false);
+  FlushMojo();
+  WaitForDatabaseTasks();
+
+  // `SessionStorageImpl` must report the invalid namespace ID as a bad message.
+  EXPECT_TRUE(bad_message_called_);
+
+  // Reopening recomputes the next map ID from the stored metadata. A new origin
+  // must not inherit data from an orphaned map's key/value pairs because it
+  // reuses the orphaned map's ID.
+  area.reset();
+  ShutDownSessionStorage();
+
+  const std::string new_namespace_id =
+      blink::AllocateSessionStorageNamespaceId();
+
+  const blink::StorageKey new_storage_key =
+      blink::StorageKey::CreateFromStringForTesting(
+          "https://other-origin.test");
+
+  session_storage()->CreateNamespace(new_namespace_id);
+  session_storage()->BindStorageArea(new_storage_key, new_namespace_id,
+                                     area.BindNewPipeAndPassReceiver());
+
+  // Since its brand new, the namespace does not attempt to load any key/value
+  // pairs from the database.
+  EXPECT_TRUE(test::GetAllSync(area.get()).empty());
+
+  // Force the new namespace to read its key/value pairs from the database.
+  const auto new_key = StringViewToUint8Vector("new_key");
+  const auto new_value = StringViewToUint8Vector("new_value");
+  ASSERT_TRUE(test::PutSync(area.get(), new_key, new_value, std::nullopt,
+                            test::MakeStorageAreaSource()));
+  session_storage_impl()->FlushAreaForTesting(new_namespace_id,
+                                              new_storage_key);
+  WaitForDatabaseTasks();
+
+  // The new namespace must not contained any orphaned key/value pairs from
+  // another origin.
+  std::vector<blink::mojom::KeyValuePtr> data = test::GetAllSync(area.get());
+  ASSERT_EQ(1u, data.size());
+  EXPECT_EQ(new_key, data[0]->key);
+  EXPECT_EQ(new_value, data[0]->value);
+}
+
+// Regression test for https://crbug.com/40761980: when the namespace a clone
+// was destined for is deleted before the renderer's `Clone()` call arrives,
+// that call must be dropped. Recreating the namespace would leak it, as the
+// object that would have deleted it is already gone.
+TEST_P(SessionStorageImplTest, CloneAfterDeleteOfPendingNamespace) {
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
+  blink::StorageKey storage_key1 =
+      blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
+  session_storage()->CreateNamespace(namespace_id1);
+  mojo::Remote<blink::mojom::SessionStorageNamespace> ss_namespace1;
+  session_storage()->BindNamespace(namespace_id1,
+                                   ss_namespace1.BindNewPipeAndPassReceiver());
+  mojo::Remote<blink::mojom::StorageArea> area_n1;
+  session_storage()->BindStorageArea(storage_key1, namespace_id1,
+                                     area_n1.BindNewPipeAndPassReceiver());
+
+  // Put some data, so the clone would have something to share.
+  EXPECT_TRUE(
+      test::PutSync(area_n1.get(), StringViewToUint8Vector("key1"),
+                    StringViewToUint8Vector("value1"), std::nullopt,
+                    test::MakeStorageAreaSource(GURL(), kTestSourceToken)));
+
+  // The browser registers the namespace for the window it is about to create,
+  // and then refuses to create that window, releasing the namespace again. Both
+  // calls arrive before the renderer's `Clone()`, which is in flight on a
+  // different pipe.
+  session_storage()->CloneNamespace(
+      namespace_id1, namespace_id2,
+      mojom::SessionStorageCloneType::kWaitForCloneOnNamespace);
+  session_storage()->DeleteNamespace(namespace_id2, /*should_persist=*/false);
+  FlushMojo();
+
+  ss_namespace1->Clone(namespace_id2);
+  ss_namespace1.FlushForTesting();
+
+  // The clone should have been dropped, leaving nothing behind for the deleted
+  // namespace.
+  EXPECT_FALSE(session_storage_impl()->GetNamespaceForTesting(namespace_id2));
+  EXPECT_FALSE(session_storage_impl()
+                   ->GetMetadataForTesting()
+                   .namespace_storage_key_map()
+                   .contains(namespace_id2));
+  EXPECT_FALSE(bad_message_called_);
+}
+
+// A namespace deleted with `should_persist` set belonged to a window that was
+// created, not one that was refused, so its clone must still be populated for
+// session restore rather than dropped.
+TEST_P(SessionStorageImplTest, CloneAfterPersistedDeleteOfPendingNamespace) {
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
+  blink::StorageKey storage_key1 =
+      blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
+  session_storage()->CreateNamespace(namespace_id1);
+  mojo::Remote<blink::mojom::SessionStorageNamespace> ss_namespace1;
+  session_storage()->BindNamespace(namespace_id1,
+                                   ss_namespace1.BindNewPipeAndPassReceiver());
+  mojo::Remote<blink::mojom::StorageArea> area_n1;
+  session_storage()->BindStorageArea(storage_key1, namespace_id1,
+                                     area_n1.BindNewPipeAndPassReceiver());
+
+  // Put some data, so the clone has something to share.
+  EXPECT_TRUE(
+      test::PutSync(area_n1.get(), StringViewToUint8Vector("key1"),
+                    StringViewToUint8Vector("value1"), std::nullopt,
+                    test::MakeStorageAreaSource(GURL(), kTestSourceToken)));
+
+  session_storage()->CloneNamespace(
+      namespace_id1, namespace_id2,
+      mojom::SessionStorageCloneType::kWaitForCloneOnNamespace);
+  session_storage()->DeleteNamespace(namespace_id2, /*should_persist=*/true);
+  FlushMojo();
+
+  ss_namespace1->Clone(namespace_id2);
+  ss_namespace1.FlushForTesting();
+
+  // The clone was not dropped, so the data is there for a later restore.
+  EXPECT_TRUE(session_storage_impl()
+                  ->GetMetadataForTesting()
+                  .namespace_storage_key_map()
+                  .contains(namespace_id2));
+  EXPECT_FALSE(bad_message_called_);
+
+  // And re-opening the namespace sees the cloned data.
+  session_storage()->CreateNamespace(namespace_id2);
+  mojo::Remote<blink::mojom::StorageArea> area_n2;
+  session_storage()->BindStorageArea(storage_key1, namespace_id2,
+                                     area_n2.BindNewPipeAndPassReceiver());
+  std::vector<blink::mojom::KeyValuePtr> data = test::GetAllSync(area_n2.get());
+  EXPECT_EQ(1ul, data.size());
+}
+
 // Regression test for https://crbug.com/1128318
 TEST_P(SessionStorageImplTest, Bug1128318) {
-  std::string namespace_id1 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id2 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string namespace_id3 =
-      base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id1 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id2 = blink::AllocateSessionStorageNamespaceId();
+  std::string namespace_id3 = blink::AllocateSessionStorageNamespaceId();
 
   // Create two namespaces by cloning.
   session_storage()->CloneNamespace(
@@ -2447,7 +3194,7 @@ TEST_P(SessionStorageImplTest, Bug1128318) {
 
 TEST_P(SessionStorageImplTest, DeleteSessionsHistogram) {
   base::HistogramTester histograms;
-  std::string namespace_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::string namespace_id = blink::AllocateSessionStorageNamespaceId();
   blink::StorageKey storage_key =
       blink::StorageKey::CreateFromStringForTesting("http://foobar.com");
 

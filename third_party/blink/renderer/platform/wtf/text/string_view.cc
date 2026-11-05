@@ -25,23 +25,6 @@
 namespace blink {
 
 namespace {
-class StackStringViewAllocator {
- public:
-  explicit StackStringViewAllocator(
-      StringView::StackBackingStore& backing_store)
-      : backing_store_(backing_store) {}
-  using ResultStringType = StringView;
-
-  template <typename CharType>
-  StringView Alloc(wtf_size_t length, base::span<CharType>& buffer) {
-    buffer = backing_store_.Realloc<CharType>(length);
-    return StringView(buffer);
-  }
-
- private:
-  StringView::StackBackingStore& backing_store_;
-};
-
 template <typename CharType1, typename CharType2>
 int CodeUnitCompareIgnoringAsciiCase(base::span<const CharType1> c1,
                                      base::span<const CharType2> c2) {
@@ -49,12 +32,6 @@ int CodeUnitCompareIgnoringAsciiCase(base::span<const CharType1> c1,
 }
 
 }  // namespace
-
-StringView::StringView(const UChar* chars)
-    // SAFETY: It's safe if `chars` points to a NUL-terminated string.
-    : StringView(UNSAFE_BUFFERS(
-          base::span(chars, chars ? LengthOfNullTerminatedString(chars) : 0))) {
-}
 
 #if DCHECK_IS_ON()
 StringView::~StringView() {
@@ -190,7 +167,7 @@ bool StringView::ContainsOnlyLatin1OrEmpty() const {
   if (empty() || Is8Bit()) {
     return true;
   }
-  return std::ranges::all_of(Span16(), [](UChar ch) { return ch < 0x0100; });
+  return ContainsOnlyLatin1(Span16());
 }
 
 bool StringView::SubstringContainsOnlyWhitespaceOrEmpty(size_type from,
@@ -372,15 +349,6 @@ bool EqualIgnoringAsciiCase(const StringView& a, const StringView& b) {
     return b.Is8Bit() ? EqualIgnoringAsciiCase(chars, b.Span8())
                       : EqualIgnoringAsciiCase(chars, b.Span16());
   });
-}
-
-StringView StringView::LowerAsciiMaybeUsingBuffer(
-    StackBackingStore& buffer) const {
-  if (ContainsNoAsciiUpper()) {
-    return *this;
-  }
-  return ConvertAsciiCase(*this, LowerConverter(),
-                          StackStringViewAllocator(buffer));
 }
 
 int CodeUnitCompareIgnoringAsciiCase(const StringView& a, const StringView& b) {

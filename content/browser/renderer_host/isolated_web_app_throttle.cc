@@ -27,7 +27,7 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "content/public/browser/page_navigator.h"
 #include "content/public/common/referrer.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #endif
 
 namespace content {
@@ -86,10 +86,9 @@ void RunNavigationInDefaultBrowser(NavigationHandle* handle) {
 
   // TODO(crbug.com/40830234): Should we set the referrer?
   // TODO(crbug.com/429618748): Rethink the default browser behavior on WML.
-  OpenURLParams params(handle->GetURL(), Referrer(),
-                       WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                       ui::PageTransition::PAGE_TRANSITION_LINK,
-                       /*is_renderer_initiated=*/false);
+  OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
+      handle->GetURL(), ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui::PageTransition::PAGE_TRANSITION_LINK);
 
   params.initiator_origin =
       handle->GetWebContents()->GetPrimaryMainFrame()->GetLastCommittedOrigin();
@@ -99,7 +98,6 @@ void RunNavigationInDefaultBrowser(NavigationHandle* handle) {
 }
 
 BASE_FEATURE(kBlockCrossIwaMainFrameNavigations,
-             "BlockCrossIwaMainFrameNavigations",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace

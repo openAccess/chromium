@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <set>
+#include <string>
 #include <utility>
 
 #include "ash/constants/ash_pref_names.h"
@@ -37,7 +39,6 @@
 #include "chrome/browser/apps/app_service/promise_apps/promise_app_metrics.h"
 #include "chrome/browser/apps/app_service/promise_apps/promise_app_service.h"
 #include "chrome/browser/apps/app_service/promise_apps/promise_app_update.h"
-#include "chrome/browser/apps/icon_standardizer.h"
 #include "chrome/browser/ash/app_list/app_list_client_impl.h"
 #include "chrome/browser/ash/app_list/app_list_controller_delegate.h"
 #include "chrome/browser/ash/app_list/app_list_syncable_service_factory.h"
@@ -46,11 +47,8 @@
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ash/app_list/md_icon_normalizer.h"
 #include "chrome/browser/ash/arc/arc_util.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/extensions/chrome_app_icon_loader.h"
-#include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/prefs/pref_service_syncable_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -74,13 +72,15 @@
 #include "chrome/browser/ui/ash/shelf/shelf_extension_app_updater.h"
 #include "chrome/browser/ui/ash/shelf/shelf_spinner_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
@@ -112,6 +112,7 @@
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/display/types/display_constants.h"
+#include "ui/gfx/image/icon_standardizer.h"
 #include "ui/resources/grit/ui_resources.h"
 
 using app_constants::kChromeAppId;
@@ -129,7 +130,7 @@ bool ItemTypeIsPinned(const ash::ShelfItem& item) {
 gfx::ImageSkia CreateStandardImageOnWorkerThread(const gfx::ImageSkia& image) {
   TRACE_EVENT0("ui",
                "chrome_shelf_controller::CreateStandardImageOnWorkerThread");
-  gfx::ImageSkia standard_image = apps::CreateStandardIconImage(image);
+  gfx::ImageSkia standard_image = gfx::CreateStandardAppIconImage(image);
   if (!standard_image.isNull()) {
     standard_image.MakeThreadSafe();
   }
@@ -285,7 +286,7 @@ ChromeShelfController::ChromeShelfController(Profile* profile,
                                              ash::ShelfModel* model)
     : model_(model), shelf_prefs_(std::make_unique<ChromeShelfPrefs>(profile)) {
   TRACE_EVENT0("ui", "ChromeShelfController::ChromeShelfController");
-  DCHECK(!g_instance);
+  CHECK(!g_instance, base::NotFatalUntil::M162);
   g_instance = this;
 
   CHECK(model_);
@@ -307,7 +308,7 @@ ChromeShelfController::ChromeShelfController(Profile* profile,
 
   // All profile relevant settings get bound to the current profile.
   AttachProfile(profile);
-  DCHECK_EQ(profile, profile_);
+  CHECK_EQ(profile, profile_, base::NotFatalUntil::M162);
   model_->AddObserver(this);
 
   shelf_spinner_controller_ = std::make_unique<ShelfSpinnerController>(this);
@@ -510,7 +511,7 @@ void ChromeShelfController::LaunchApp(const ash::ShelfID& id,
 void ChromeShelfController::SetItemImage(const ash::ShelfID& shelf_id,
                                          const gfx::ImageSkia& image) {
   TRACE_EVENT0("ui", "ChromeShelfController::SetItemImage");
-  DCHECK(!image.isNull());
+  CHECK(!image.isNull(), base::NotFatalUntil::M162);
   if (const auto* item = GetItem(shelf_id)) {
     ash::ShelfItem new_item = *item;
     new_item.image = image;
@@ -712,6 +713,21 @@ std::u16string ChromeShelfController::GetAppMenuTitle(
   return l10n_util::GetStringUTF16(IDS_NEW_TAB_TITLE);
 }
 
+std::u16string ChromeShelfController::GetAppMenuWindowTitle(
+    const ash::BrowserDelegate& browser) const {
+  const std::optional<std::string> window_title =
+      browser.GetUserDefinedWindowTitle();
+  return window_title.has_value()
+             ? base::UTF8ToUTF16(*window_title)
+             : GetAppMenuTitle(browser.GetActiveWebContents());
+}
+
+std::u16string ChromeShelfController::GetAppMenuInactiveTabTooltip(
+    const ash::BrowserDelegate& browser) const {
+  return l10n_util::GetStringFUTF16(IDS_SHELF_APP_MENU_INACTIVE_TAB_TOOLTIP,
+                                    GetAppMenuWindowTitle(browser));
+}
+
 BrowserShortcutShelfItemController*
 ChromeShelfController::GetBrowserShortcutShelfItemControllerForTesting() {
   ash::ShelfItemDelegate* delegate =
@@ -736,7 +752,7 @@ void ChromeShelfController::UpdateBrowserItemState() {
 
   int browser_index = model_->ItemIndexByID(chrome_id);
   if (browser_index < 0) {
-    DCHECK_EQ(browser_status, ash::STATUS_CLOSED);
+    CHECK_EQ(browser_status, ash::STATUS_CLOSED, base::NotFatalUntil::M162);
     return;
   }
   ash::ShelfItem browser_item = model_->items()[browser_index];
@@ -798,7 +814,7 @@ ShelfSpinnerController* ChromeShelfController::GetShelfSpinnerController() {
 ChromeShelfController::ScopedPinSyncDisabler
 ChromeShelfController::GetScopedPinSyncDisabler() {
   // Only one temporary disabler should not exist at a time.
-  DCHECK(should_sync_pin_changes_);
+  CHECK(should_sync_pin_changes_, base::NotFatalUntil::M162);
   return std::make_unique<base::AutoReset<bool>>(&should_sync_pin_changes_,
                                                  false);
 }
@@ -1283,7 +1299,7 @@ void ChromeShelfController::RestoreUnpinnedRunningApplicationOrder(
     const ash::ShelfItem* item = GetItem(ash::ShelfID(app_id));
     if (item && item->type == ash::TYPE_APP) {
       int app_index = model_->ItemIndexByID(item->id);
-      DCHECK_GE(app_index, 0);
+      CHECK_GE(app_index, 0, base::NotFatalUntil::M162);
       if (running_index != app_index) {
         model_->Move(running_index, app_index);
       }
@@ -1304,7 +1320,7 @@ void ChromeShelfController::RemoveShelfItem(const ash::ShelfID& id) {
 void ChromeShelfController::PinRunningAppInternal(
     int index,
     const ash::ShelfID& shelf_id) {
-  DCHECK_EQ(GetItem(shelf_id)->type, ash::TYPE_APP);
+  CHECK_EQ(GetItem(shelf_id)->type, ash::TYPE_APP, base::NotFatalUntil::M162);
   SetItemType(shelf_id, ash::TYPE_PINNED_APP);
   int running_index = model_->ItemIndexByID(shelf_id);
   if (running_index < index) {
@@ -1316,19 +1332,19 @@ void ChromeShelfController::PinRunningAppInternal(
 }
 
 void ChromeShelfController::UnpinRunningAppInternal(int index) {
-  DCHECK(index >= 0 && index < model_->item_count());
+  CHECK(index >= 0 && index < model_->item_count(), base::NotFatalUntil::M162);
   const ash::ShelfItem& item = model_->items()[index];
-  DCHECK_EQ(item.type, ash::TYPE_PINNED_APP);
+  CHECK_EQ(item.type, ash::TYPE_PINNED_APP, base::NotFatalUntil::M162);
   SetItemType(item.id, ash::TYPE_APP);
 }
 
 void ChromeShelfController::SyncPinPosition(const ash::ShelfID& shelf_id) {
-  DCHECK(should_sync_pin_changes_);
-  DCHECK(!shelf_id.IsNull());
+  CHECK(should_sync_pin_changes_, base::NotFatalUntil::M162);
+  CHECK(!shelf_id.IsNull(), base::NotFatalUntil::M162);
 
   const int max_index = model_->item_count();
   const int index = model_->ItemIndexByID(shelf_id);
-  DCHECK_GE(index, 0);
+  CHECK_GE(index, 0, base::NotFatalUntil::M162);
 
   ash::ShelfID shelf_id_before;
   std::vector<ash::ShelfID> shelf_ids_after;
@@ -1459,7 +1475,8 @@ bool ChromeShelfController::EnsureAppPinnedInModelAtIndex(
   // Passing current app index in model as an argument is an optimization in
   // case this method is used while looping over items that avoids extra pass
   // over items in the model to find the app index.
-  DCHECK_EQ(current_index, model_->ItemIndexByAppID(app_id));
+  CHECK_EQ(current_index, model_->ItemIndexByAppID(app_id),
+           base::NotFatalUntil::M162);
 
   if (current_index >= 0) {
     const ash::ShelfItem item = model_->items()[current_index];
@@ -1468,7 +1485,8 @@ bool ChromeShelfController::EnsureAppPinnedInModelAtIndex(
     } else {
       PinRunningAppInternal(target_index, item.id);
     }
-    DCHECK_EQ(model_->ItemIndexByID(item.id), target_index);
+    CHECK_EQ(model_->ItemIndexByID(item.id), target_index,
+             base::NotFatalUntil::M162);
     return true;
   }
 

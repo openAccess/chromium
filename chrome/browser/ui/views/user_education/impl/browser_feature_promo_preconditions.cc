@@ -32,6 +32,7 @@
 #include "components/user_education/webui/help_bubble_handler.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/events/types/event_type.h"
+#include "ui/views/event_monitor.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/interaction/view_subregion_anchor.h"
 #include "ui/views/widget/widget.h"
@@ -100,9 +101,8 @@ ContentNotFullscreenPrecondition::~ContentNotFullscreenPrecondition() = default;
 user_education::FeaturePromoResult
 ContentNotFullscreenPrecondition::CheckPrecondition(
     user_education::UnownedTypedDataCollection& data) const {
-  auto* const fullscreen_controller = browser_->GetFeatures()
-                                          .exclusive_access_manager()
-                                          ->fullscreen_controller();
+  auto* const fullscreen_controller =
+      ExclusiveAccessManager::From(&browser_.get())->fullscreen_controller();
   if (fullscreen_controller->IsWindowFullscreenForTabOrPending() ||
       fullscreen_controller->IsExtensionFullscreenOrPending()) {
     return user_education::FeaturePromoResult::kBlockedByUi;

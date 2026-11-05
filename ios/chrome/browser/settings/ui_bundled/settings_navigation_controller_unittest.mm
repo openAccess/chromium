@@ -20,7 +20,6 @@
 #import "ios/chrome/browser/metrics/model/activity_reporter.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_profile_password_store_factory.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
-#import "ios/chrome/browser/settings/ui_bundled/autofill/enhanced_autofill_table_view_controller.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
@@ -31,7 +30,6 @@
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -56,8 +54,7 @@ class SettingsNavigationControllerTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         ios::TemplateURLServiceFactory::GetInstance(),
         ios::TemplateURLServiceFactory::GetDefaultFactory());
@@ -230,21 +227,6 @@ TEST_F(SettingsNavigationControllerTest, ActivityReporting) {
   [settingsController cleanUpSettings];
   [settingsController setValue:nil forKey:@"activityReporter"];
   [mockInstance stopMocking];
-}
-
-// Tests that `showEnhancedAutofillSettings` pushes
-// `EnhancedAutofillTableViewController` to the navigation stack.
-TEST_F(SettingsNavigationControllerTest, ShowEnhancedAutofillSettings) {
-  SettingsNavigationController* settingsController =
-      [[SettingsNavigationController alloc]
-          initWithRootViewController:nil
-                             browser:browser_.get()
-                            delegate:mockDelegate_];
-  [settingsController showEnhancedAutofillSettings];
-  EXPECT_EQ(1U, [[settingsController viewControllers] count]);
-  EXPECT_TRUE([settingsController.topViewController
-      isKindOfClass:[EnhancedAutofillTableViewController class]]);
-  [settingsController cleanUpSettings];
 }
 
 }  // namespace

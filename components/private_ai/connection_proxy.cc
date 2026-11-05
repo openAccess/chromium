@@ -4,10 +4,13 @@
 
 #include "components/private_ai/connection_proxy.h"
 
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "base/base64url.h"
 #include "base/check.h"
+#include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
@@ -155,13 +158,22 @@ void ConnectionProxy::FetchToken() {
 }
 
 void ConnectionProxy::OnProxyToken(
-    std::optional<phosphor::BlindSignedAuthToken> auth_token) {
+    base::expected<phosphor::BlindSignedAuthToken,
+                   phosphor::TokenManager::Error> auth_token) {
   is_initializing_ = false;
 
-  if (!auth_token) {
-    logger_->LogError(FROM_HERE, "Failed to get auth token for proxy.");
-    CallOnDisconnect(StatusCode::kProxyTokenFetchFailed);
-    return;
+  if (!auth_token.has_value()) {
+    switch (auth_token.error()) {
+      case phosphor::TokenManager::Error::kAccountNotAvailable:
+        logger_->LogError(FROM_HERE,
+                          "Failed to get auth token for proxy: not signed in.");
+        CallOnDisconnect(StatusCode::kAccountNotAvailable);
+        return;
+      case phosphor::TokenManager::Error::kTokenFetchFailed:
+        logger_->LogError(FROM_HERE, "Failed to get auth token for proxy.");
+        CallOnDisconnect(StatusCode::kProxyTokenFetchFailed);
+        return;
+    }
   }
 
   // NOTE: If adding/modifying fields in 'context_params' here, also
@@ -189,8 +201,17 @@ void ConnectionProxy::OnProxyToken(
   network_driver_->CreateNetworkContext(
       proxied_context_.BindNewPipeAndPassReceiver(), std::move(context_params));
 
+  std::optional<bool> has_chrome_proxy = network_driver_->IsProxyConfigured();
+
   inner_connection_ =
-      std::move(inner_connection_factory_).Run(proxied_context_.get());
+      std::move(inner_connection_factory_)
+          .Run(base::BindRepeating(
+                   [](base::WeakPtr<ConnectionProxy> self)
+                       -> network::mojom::NetworkContext* {
+                     return self ? self->proxied_context_.get() : nullptr;
+                   },
+                   weak_factory_.GetWeakPtr()),
+               has_chrome_proxy);
 
   for (auto& pending : pending_requests_) {
     inner_connection_->Send(std::move(pending.request), pending.timeout,

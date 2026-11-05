@@ -46,6 +46,7 @@ public class BookmarkWidgetServiceImplTest {
     private static final String TEST_TITLE = "Test Bookmark Title";
     private static final String FOLDER_TITLE = "Test Bookmark Folder";
     private static final GURL TEST_URL = new GURL("https://www.test.com");
+    private static final GURL NTP_URL = new GURL("chrome://newtab/");
 
     private Context mContext;
     private FakeBookmarkModel mBookmarkModel;
@@ -107,6 +108,42 @@ public class BookmarkWidgetServiceImplTest {
 
     @Test
     @MediumTest
+    public void testBookmarkWithNtpUrl() {
+        // LargeIconBridge declines favicon requests for NTP URLs without running the callback.
+        // The widget must still finish loading instead of blocking forever.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    BookmarkId otherBookmarksFolder = mBookmarkModel.getOtherFolderId();
+                    mBookmarkModel.addBookmark(otherBookmarksFolder, 0, TEST_TITLE, NTP_URL);
+                    SharedPreferences prefs = BookmarkWidgetServiceImpl.getWidgetState(WIDGET_ID);
+                    prefs.edit()
+                            .putString(
+                                    "bookmarkswidget.current_folder",
+                                    otherBookmarksFolder.toString())
+                            .apply();
+                });
+
+        mFactory.onDataSetChanged();
+
+        // Position 0 is the label for the bookmark folder, so bookmark is at position 1.
+        RemoteViews views = mFactory.getViewAt(1);
+        assertNotNull(views);
+
+        View itemView = views.apply(mContext, new FrameLayout(mContext));
+        TextView titleView = itemView.findViewById(R.id.title);
+        ImageView favicon = itemView.findViewById(R.id.favicon);
+
+        assertNotNull(titleView);
+        assertNotNull(favicon);
+        assertEquals(TEST_TITLE, titleView.getText().toString());
+        assertEquals(
+                "Fallback favicon should be visible for an NTP bookmark.",
+                View.VISIBLE,
+                favicon.getVisibility());
+    }
+
+    @Test
+    @MediumTest
     public void testFolder() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -163,9 +200,10 @@ public class BookmarkWidgetServiceImplTest {
 
         mFactory.onDataSetChanged();
 
+        // Subfolder with no bookmarks has 2 items: 1 up-navigation header + 1 empty message item.
         assertEquals(
-                "Factory should have one parent folder navigation item in the empty folder.",
-                1,
+                "Factory should have a parent folder navigation item plus the empty message item.",
+                2,
                 mFactory.getCount());
 
         RemoteViews views = mFactory.getViewAt(0);
@@ -189,6 +227,40 @@ public class BookmarkWidgetServiceImplTest {
                 titleView.getText().toString());
         assertEquals("Favicon should be hidden.", View.GONE, favicon.getVisibility());
         assertEquals("Back button should be visible.", View.VISIBLE, backButton.getVisibility());
+    }
+
+    @Test
+    @MediumTest
+    public void testEmptyFolder() {
+        BookmarkId subfolderId =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            BookmarkId mobileFolderId = mBookmarkModel.getMobileFolderId();
+                            return mBookmarkModel.addFolder(mobileFolderId, 0, FOLDER_TITLE);
+                        });
+
+        SharedPreferences prefs = BookmarkWidgetServiceImpl.getWidgetState(WIDGET_ID);
+        prefs.edit().putString("bookmarkswidget.current_folder", subfolderId.toString()).apply();
+
+        mFactory.onDataSetChanged();
+
+        // The empty message is delivered atomically inside the collection (position 1) to eliminate
+        // any out-of-band IPC desync.
+        assertEquals(
+                "Empty subfolder should report 2 items (up-navigation header + empty message)",
+                2,
+                mFactory.getCount());
+
+        RemoteViews emptyViews = mFactory.getViewAt(1);
+        assertNotNull(emptyViews);
+        assertEquals(R.layout.bookmark_widget_empty_item, emptyViews.getLayoutId());
+
+        View emptyItemView = emptyViews.apply(mContext, new FrameLayout(mContext));
+        TextView emptyMessage = emptyItemView.findViewById(R.id.empty_message);
+        assertNotNull(emptyMessage);
+        assertEquals(
+                mContext.getString(R.string.bookmark_widget_empty_msg),
+                emptyMessage.getText().toString());
     }
 
     @Test

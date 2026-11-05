@@ -166,7 +166,9 @@ public class WebContentsState implements Destroyable {
      */
     @CalledByNative
     public static WebContentsStateMetadata createMetadata(
-            String title, String virtualUrl, boolean isOffTheRecord) {
+            @JniType("std::u16string") String title,
+            @JniType("std::string") String virtualUrl,
+            boolean isOffTheRecord) {
         return new WebContentsStateMetadata(title, virtualUrl, isOffTheRecord);
     }
 
@@ -436,6 +438,7 @@ public class WebContentsState implements Destroyable {
     @NativeMethods
     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
     public interface Natives {
+        @JniType("content::WebContents*")
         @Nullable WebContents restoreContentsFromByteBuffer(
                 @JniType("Profile*") Profile profile,
                 ByteBuffer buffer,
@@ -443,16 +446,17 @@ public class WebContentsState implements Destroyable {
                 boolean initiallyHidden,
                 boolean noRenderer);
 
-        @Nullable ByteBuffer getContentsStateAsByteBuffer(WebContents webcontents);
+        @Nullable ByteBuffer getContentsStateAsByteBuffer(
+                @JniType("content::WebContents*") WebContents webcontents);
 
         @Nullable ByteBuffer deleteNavigationEntries(
-                ByteBuffer state, int saveStateVersion, long predicate);
+                ByteBuffer state, int savedStateVersion, long predicate);
 
         @Nullable ByteBuffer createSingleNavigationStateAsByteBuffer(
                 @JniType("Profile*") Profile profile,
-                @JniType("std::optional<std::u16string>") @Nullable String title,
+                @JniType("std::u16string") @Nullable String title,
                 @JniType("std::string") String url,
-                @JniType("std::optional<std::string>") @Nullable String referrerUrl,
+                @JniType("std::string") @Nullable String referrerUrl,
                 int referrerPolicy,
                 @JniType("std::optional<url::Origin>") @Nullable Origin initiatorOrigin);
 
@@ -461,9 +465,9 @@ public class WebContentsState implements Destroyable {
                 ByteBuffer buffer,
                 int savedStateVersion,
                 boolean clobberCurrentEntry,
-                @JniType("std::optional<std::u16string>") @Nullable String title,
+                @JniType("std::u16string") @Nullable String title,
                 @JniType("std::string") String url,
-                @JniType("std::optional<std::string>") @Nullable String referrerUrl,
+                @JniType("std::string") @Nullable String referrerUrl,
                 int referrerPolicy,
                 @JniType("std::optional<url::Origin>") @Nullable Origin initiatorOrigin);
 

@@ -89,10 +89,12 @@
 }
 - (void)showPaymentsBottomSheet:(const autofill::FormActivityParams&)params {
 }
+- (void)dismissPaymentsBottomSheet {
+}
 - (void)showScanCardSaveAndFillBottomSheet:
     (const autofill::FormActivityParams&)params {
 }
-- (void)dismissPaymentAndScanCardSheets {
+- (void)dismissScanCardSaveAndFillBottomSheet {
 }
 - (void)showSaveCardBottomSheetOnOriginWebState:(web::WebState*)originWebState {
   _showSaveCardBottomSheet = YES;
@@ -118,9 +120,6 @@
 }
 
 - (void)dismissEditAddressBottomSheet {
-}
-
-- (void)legacyResetAutofillSuggestionsLoadingStates {
 }
 
 - (void)showAutofillErrorDialog:

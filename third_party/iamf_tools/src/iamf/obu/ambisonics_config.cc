@@ -108,7 +108,7 @@ absl::Status WriteAmbisonicsProjection(
 absl::StatusOr<AmbisonicsMonoConfig> AmbisonicsMonoConfig::Create(
     uint8_t substream_count, absl::Span<const uint8_t> channel_mapping) {
   const size_t output_channel_count = channel_mapping.size();
-  MAYBE_RETURN_IF_NOT_OK(ValidateOutputChannelCount(output_channel_count));
+  RETURN_IF_NOT_OK(ValidateOutputChannelCount(output_channel_count));
   RETURN_IF_NOT_OK(ValidateContainerSizeEqual(
       "channel_mapping", channel_mapping, output_channel_count));
   RETURN_IF_NOT_OK(ValidateInRange(size_t{substream_count},
@@ -196,9 +196,20 @@ AmbisonicsProjectionConfig::CreateFromBuffer(ReadBitBuffer& rb) {
   RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(8, substream_count));
   RETURN_IF_NOT_OK(rb.ReadUnsignedLiteral(8, coupled_substream_count));
 
+  RETURN_IF_NOT_OK(ValidateOutputChannelCount(output_channel_count));
+  if (coupled_substream_count > substream_count) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Expected coupled_substream_count= ", coupled_substream_count,
+        " to be less than or equal to substream_count= ", substream_count));
+  }
+  const size_t total_input_channels =
+      static_cast<size_t>(substream_count) + coupled_substream_count;
+  RETURN_IF_NOT_OK(ValidateInRange(total_input_channels,
+                                   {size_t{1}, size_t{output_channel_count}},
+                                   "substream_count"));
+
   const size_t demixing_matrix_size =
-      (static_cast<size_t>(substream_count) + coupled_substream_count) *
-      output_channel_count;
+      total_input_channels * output_channel_count;
   std::vector<int16_t> demixing_matrix;
   demixing_matrix.reserve(demixing_matrix_size);
   for (size_t i = 0; i < demixing_matrix_size; ++i) {

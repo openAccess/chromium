@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_COLOR_CHROME_COLOR_ID_H_
 #define CHROME_BROWSER_UI_COLOR_CHROME_COLOR_ID_H_
 
+#include "build/build_config.h"
 #include "components/color/color_id.h"
 #include "ui/color/color_id.h"
 
@@ -24,10 +25,15 @@
   E_CPONLY(kColorAppMenuHighlightPrimary) \
   E_CPONLY(kColorAppMenuExpandedForegroundDefault) \
   E_CPONLY(kColorAppMenuExpandedForegroundPrimary) \
+  E_CPONLY(kColorAppMenuChipBackground) \
+  E_CPONLY(kColorAppMenuChipBackgroundHovered) \
+  E_CPONLY(kColorAppMenuChipForeground) \
   E_CPONLY(kColorAppMenuChipInkDropHover) \
   E_CPONLY(kColorAppMenuChipInkDropRipple) \
   E_CPONLY(kColorAppMenuYourChromeBackground) \
+  E_CPONLY(kColorAppMenuYourChromeForeground) \
   E_CPONLY(kColorAppMenuToolsAndActionsBackground) \
+  E_CPONLY(kColorAppMenuToolsAndActionsForeground) \
   E_CPONLY(kColorAppMenuBlockButtonBackground) \
   E_CPONLY(kColorAppMenuBlockButtonBackgroundHovered) \
   E_CPONLY(kColorAppMenuBlockButtonBorder) \
@@ -35,6 +41,9 @@
   E_CPONLY(kColorAppMenuFooterButtonForeground) \
   E_CPONLY(kColorAppMenuFooterButtonForegroundHovered) \
   E_CPONLY(kColorAppMenuFooterButtonBackgroundHovered) \
+  E_CPONLY(kColorAppMenuZoomButtonBackground) \
+  E_CPONLY(kColorAppMenuZoomButtonHover) \
+  E_CPONLY(kColorAppMenuZoomSeparator) \
   /* Actor UI colors.*/ \
   E_CPONLY(kColorActorUiHandoffButtonBackground) \
   E_CPONLY(kColorActorUiHandoffButtonBorder) \
@@ -189,9 +198,6 @@
   E_CPONLY(kColorExtensionsMenuSecondaryText) \
   /* Extension manager WebUI colors. */ \
   E_CPONLY(kColorExtensionManagerHighlightText) \
-  /* Feature first run dialog colors. */ \
-  E_CPONLY(kColorFeatureFirstRunInfoContainerBackground) \
-  E_CPONLY(kColorFeatureFirstRunIconColor) \
   /* Feature Promo bubble colors. */ \
   E_CPONLY(kColorFeaturePromoBubbleBackground) \
   E_CPONLY(kColorFeaturePromoBubbleButtonBorder) \
@@ -241,6 +247,8 @@
   E_CPONLY(kColorInfoBarButtonIconHovered) \
   E_CPONLY(kColorInfoBarContentAreaSeparator) \
   E_CPONLY(kColorInfoBarForeground) \
+  E_CPONLY(kColorInfoBarQueuedCountPillBackground) \
+  E_CPONLY(kColorInfoBarQueuedCountPillForeground) \
   /* There is also a kColorInfoBarIcon in /ui/color/color_id.h */ \
   /* Intent Picker colors. */ \
   E_CPONLY(kColorIntentPickerItemBackgroundHovered) \
@@ -255,6 +263,7 @@
   E_CPONLY(kColorGlicBackground) \
   E_CPONLY(kColorGlicModalBackground) \
   E_CPONLY(kColorGlicModalForeground) \
+  E_CPONLY(kColorGlicPlaceholderElem) \
   E_CPONLY(kColorGlicActiveTabUnderlineGradient1) \
   E_CPONLY(kColorGlicActiveTabUnderlineGradient2) \
   E_CPONLY(kColorGlicActiveTabUnderlineGradient3) \
@@ -300,7 +309,11 @@
   E_CPONLY(kColorNewTabButtonInkDropFrameInactive) \
   E_CPONLY(kColorTabStripComboButtonSeparator) \
   E_CPONLY(kColorTabStripControlButtonInkDrop) \
+  E_CPONLY(kColorTabStripControlButtonInkDropFrameInactive) \
   E_CPONLY(kColorTabStripControlButtonInkDropRipple) \
+  E_CPONLY(kColorTabStripControlButtonInkDropRippleFrameInactive) \
+  E_CPONLY(kColorTabStripScrollButtonBackground) \
+  E_CPONLY(kColorTabStripScrollButtonIcon) \
   /* New tab button colors for ChromeRefresh.*/ \
   /* TODO (crbug.com/40883407) remove when theming works */ \
   E_CPONLY(kColorNewTabButtonCRForegroundFrameActive) \
@@ -329,7 +342,8 @@
   E_CPONLY(kColorNewTabPageActionChipTextTitle) \
   E_CPONLY(kColorNewTabPageActionChipDeepSearchIcon) \
   E_CPONLY(kColorNewTabPageThreadsRailBackground) \
-  E_CPONLY(kColorNewTabPageThreadsRailIconButton) \
+  E_CPONLY(kColorNewTabPageThreadsRailPrimaryFont) \
+  E_CPONLY(kColorNewTabPageThreadsRailHoverBackground) \
   E_CPONLY(kColorNewTabPageChipBackground) \
   E_CPONLY(kColorNewTabPageChipForeground) \
   E_CPONLY(kColorNewTabPageComposeboxSubmitButtonBackground) \
@@ -337,6 +351,7 @@
   E_CPONLY(kColorComposeboxFileChipSpinner) \
   E_CPONLY(kColorComposeboxFont) \
   E_CPONLY(kColorComposeboxFontLight) \
+  E_CPONLY(kColorComposeboxGhostCardBackground) \
   E_CPONLY(kColorComposeboxCancelButton) \
   E_CPONLY(kColorComposeboxCancelButtonLight) \
   E_CPONLY(kColorComposeboxErrorScrimBackground) \
@@ -356,7 +371,6 @@
   E_CPONLY(kColorComposeboxTypeAhead) \
   E_CPONLY(kColorComposeboxTypeAheadChip) \
   E_CPONLY(kColorComposeboxUploadButton) \
-  E_CPONLY(kColorComposeboxUploadButtonDisabled) \
   E_CPONLY(kColorComposeboxFileChipBackground) \
   E_CPONLY(kColorComposeboxFileChipFaviconBackground) \
   E_CPONLY(kColorComposeboxFileChipText) \
@@ -374,6 +388,8 @@
   E_CPONLY(kColorComposeboxLink) \
   E_CPONLY(kColorComposeboxToolChipBackground) \
   E_CPONLY(kColorComposeboxVoiceButtonHoverBackground) \
+  E_CPONLY(kColorComposeboxAimChipHoverBackground) \
+  E_CPONLY(kColorComposeboxAimChipHoverText) \
   E_CPONLY(kColorNewTabPageCommonInputPlaceholder) \
   E_CPONLY(kColorNewTabPageControlBackgroundHovered) \
   E_CPONLY(kColorNewTabPageControlBackgroundSelected) \
@@ -456,6 +472,7 @@
   /* Omnibox colors. */ \
   E_CPONLY(kColorOmniboxActionIcon) \
   E_CPONLY(kColorOmniboxActionIconHover) \
+  E_CPONLY(kColorOmniboxActionIconInactive) \
   E_CPONLY(kColorOmniboxAnswerIconGM3Background) \
   E_CPONLY(kColorOmniboxAnswerIconGM3Foreground) \
   E_CPONLY(kColorOmniboxBubbleOutline) \
@@ -487,6 +504,7 @@
   E_CPONLY(kColorOmniboxIconBackgroundTonal) \
   E_CPONLY(kColorOmniboxIconForeground) \
   E_CPONLY(kColorOmniboxIconForegroundTonal) \
+  E_CPONLY(kColorOmniboxIconForegroundTonalInactive) \
   E_CPONLY(kColorOmniboxIconHover) \
   E_CPONLY(kColorOmniboxIconPressed) \
   E_CPONLY(kColorOmniboxIntentChipBackground) \
@@ -537,6 +555,11 @@
   E_CPONLY(kColorOmniboxSelectionForeground) \
   E_CPONLY(kColorOmniboxText) \
   E_CPONLY(kColorOmniboxTextDimmed) \
+  /* Organizer Panel colors. */ \
+  E_CPONLY(kColorOrganizerPanelBackground) \
+  E_CPONLY(kColorOrganizerPanelDivider) \
+  E_CPONLY(kColorOrganizerPanelForeground) \
+  E_CPONLY(kColorOrganizerPanelForegroundSubtle) \
   /* Page Info colors */ \
   E_CPONLY(kColorPageInfoChosenObjectDeleteButtonIcon) \
   E_CPONLY(kColorPageInfoChosenObjectDeleteButtonIconDisabled) \
@@ -850,11 +873,20 @@
   E_CPONLY(kColorScreenshotCapturedImageBackground) \
   E_CPONLY(kColorScreenshotCapturedImageBorder) \
   /* Settings columned section colors. */ \
+  E_CPONLY(kColorSettingsColumnedSectionBackground) \
   E_CPONLY(kColorSettingsColumnedSectionDescriptionHeader) \
   /* Settings info card colors. */ \
   E_CPONLY(kColorSettingsInfoCardBackground) \
   /* Settings page colors. */ \
+  E_CPONLY(kColorSettingsNavMenuItemBackground) \
+  E_CPONLY(kColorSettingsNavMenuItemForeground) \
+  E_CPONLY(kColorSettingsNavMenuItemForegroundSelected) \
+  E_CPONLY(kColorSettingsNavMenuItemIcon) \
   E_CPONLY(kColorSettingsWebuiPageBackground) \
+  E_CPONLY(kColorSettingsTitleText) \
+  E_CPONLY(kColorSettingsSectionBackground) \
+  E_CPONLY(kColorSettingsRowBackgroundHovered) \
+  E_CPONLY(kColorSettingsRowBackgroundActive) \
   /* Share-this-tab dialog colors. */ \
   E_CPONLY(kColorShareThisTabAudioToggleBackground) \
   E_CPONLY(kColorShareThisTabSourceViewBorder) \
@@ -984,6 +1016,8 @@
   E_CPONLY(kColorTabForegroundActiveFrameInactive) \
   E_CPONLY(kColorTabForegroundInactiveFrameActive) \
   E_CPONLY(kColorTabForegroundInactiveFrameInactive) \
+  E_CPONLY(kColorTabForegroundInactiveHoverFrameActive) \
+  E_CPONLY(kColorTabForegroundInactiveHoverFrameInactive) \
   E_CPONLY(kColorTabDividerFrameActive) \
   E_CPONLY(kColorTabDividerFrameInactive) \
   E_CPONLY(kColorTabHoverCardBackground) \
@@ -1129,6 +1163,7 @@
   E_CPONLY(kColorToolbarSeparator) \
   E_CPONLY(kColorToolbarActionItemEngaged) \
   E_CPONLY(kColorToolbarSeparatorDefault) \
+  E_CPONLY(kColorToolbarSearchFieldTextColor) \
   E_CPONLY(kColorToolbarText) \
   E_CPONLY(kColorToolbarTextDefault) \
   E_CPONLY(kColorToolbarTextDisabled) \
@@ -1186,6 +1221,13 @@
     E_CPONLY(kColorCaptionForegroundInactive) \
     /* Tab search caption button colors. */ \
     E_CPONLY(kColorTabSearchCaptionButtonFocusRing)
+#elif BUILDFLAG(IS_ANDROID)
+#define CHROME_PLATFORM_SPECIFIC_COLOR_IDS \
+    /* History colors. */ \
+    E_CPONLY(kColorHistoryPageCardBackground) \
+    E_CPONLY(kColorHistoryPageMenuBackground) \
+    E_CPONLY(kColorHistoryPageSearchFieldBackground) \
+    E_CPONLY(kColorHistoryPageSelectionToolbarBackground)
 #else
 #define CHROME_PLATFORM_SPECIFIC_COLOR_IDS
 #endif  // BUILDFLAG(IS_WIN)

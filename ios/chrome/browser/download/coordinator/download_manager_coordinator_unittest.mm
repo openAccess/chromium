@@ -16,7 +16,6 @@
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/metrics/user_action_tester.h"
-#import "base/test/scoped_feature_list.h"
 #import "components/sync/test/test_sync_service.h"
 #import "ios/chrome/browser/download/model/confirm_download_closing_overlay.h"
 #import "ios/chrome/browser/download/model/confirm_download_replacing_overlay.h"
@@ -43,11 +42,11 @@
 #import "ios/chrome/browser/shared/public/commands/download_list_commands.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
+#import "ios/chrome/browser/shared/public/commands/save_to_drive_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/util/file_size_util.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -87,8 +86,7 @@ class DownloadManagerCoordinatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
     profile_ = std::move(builder).Build();
@@ -101,6 +99,19 @@ class DownloadManagerCoordinatorTest : public PlatformTest {
     [browser_->GetCommandDispatcher()
         startDispatchingToTarget:mock_gemini_handler_
                      forProtocol:@protocol(GeminiCommands)];
+    mock_save_to_drive_handler_ =
+        OCMProtocolMock(@protocol(SaveToDriveCommands));
+    [browser_->GetCommandDispatcher()
+        startDispatchingToTarget:mock_save_to_drive_handler_
+                     forProtocol:@protocol(SaveToDriveCommands)];
+    OCMStub([mock_save_to_drive_handler_
+                showSaveToDriveForDownload:static_cast<web::DownloadTask*>(
+                                               [OCMArg anyPointer])])
+        .andDo(^(NSInvocation* invocation) {
+          web::DownloadTask* task = nullptr;
+          [invocation getArgument:&task atIndex:2];
+          [coordinator_ downloadManagerTabHelper:nil wantsToStartDownload:task];
+        });
     presenter_ = [[FakeContainedPresenter alloc] init];
     base_view_controller_ = [[UIViewController alloc] init];
     activity_view_controller_class_ =
@@ -127,6 +138,9 @@ class DownloadManagerCoordinatorTest : public PlatformTest {
     }
 
     [browser_->GetCommandDispatcher()
+        stopDispatchingForProtocol:@protocol(SaveToDriveCommands)];
+    mock_save_to_drive_handler_ = nil;
+    [browser_->GetCommandDispatcher()
         stopDispatchingForProtocol:@protocol(GeminiCommands)];
     mock_gemini_handler_ = nil;
     [activity_view_controller_class_ stopMocking];
@@ -151,7 +165,6 @@ class DownloadManagerCoordinatorTest : public PlatformTest {
 
   // ScopedTestingLocalState needed for the authentication service.
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
-  base::test::ScopedFeatureList feature_list_;
   web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<TestBrowser> browser_;
@@ -166,6 +179,7 @@ class DownloadManagerCoordinatorTest : public PlatformTest {
   // UIApplication is not mocked after these test finish running.
   id application_;
   id mock_gemini_handler_;
+  id mock_save_to_drive_handler_;
   DownloadManagerCoordinator* coordinator_;
   base::UserActionTester user_action_tester_;
   base::HistogramTester histogram_tester_;
@@ -198,8 +212,7 @@ TEST_F(DownloadManagerCoordinatorTest, Start) {
                               task->GenerateFileName().LossyDisplayName(),
                               base::SysNSStringToUTF16(file_size)),
       viewController.statusLabel.text);
-  EXPECT_NSEQ([l10n_util::GetNSString(IDS_IOS_DOWNLOAD_MANAGER_DOWNLOAD)
-                  localizedUppercaseString],
+  EXPECT_NSEQ(l10n_util::GetNSString(IDS_IOS_DOWNLOAD_MANAGER_SAVE_ELLIPSIS),
               viewController.actionButton.configuration.title);
 }
 
@@ -296,8 +309,7 @@ TEST_F(DownloadManagerCoordinatorTest, DelegateCreatedDownload) {
                               task->GenerateFileName().LossyDisplayName(),
                               base::SysNSStringToUTF16(file_size)),
       viewController.statusLabel.text);
-  EXPECT_NSEQ([l10n_util::GetNSString(IDS_IOS_DOWNLOAD_MANAGER_DOWNLOAD)
-                  localizedUppercaseString],
+  EXPECT_NSEQ(l10n_util::GetNSString(IDS_IOS_DOWNLOAD_MANAGER_SAVE_ELLIPSIS),
               viewController.actionButton.configuration.title);
 
   // Verify that UMA action was logged.
@@ -348,8 +360,7 @@ TEST_F(DownloadManagerCoordinatorTest, DelegateReplacedDownload) {
                               task->GenerateFileName().LossyDisplayName(),
                               base::SysNSStringToUTF16(file_size)),
       viewController.statusLabel.text);
-  EXPECT_NSEQ([l10n_util::GetNSString(IDS_IOS_DOWNLOAD_MANAGER_DOWNLOAD)
-                  localizedUppercaseString],
+  EXPECT_NSEQ(l10n_util::GetNSString(IDS_IOS_DOWNLOAD_MANAGER_SAVE_ELLIPSIS),
               viewController.actionButton.configuration.title);
 }
 

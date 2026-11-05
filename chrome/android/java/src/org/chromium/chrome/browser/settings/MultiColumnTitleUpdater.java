@@ -9,7 +9,6 @@ import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
 import static org.chromium.build.NullUtil.assertNonNull;
 
 import android.content.Context;
-import android.graphics.drawable.Drawable;
 import android.graphics.text.LineBreaker;
 import android.os.Build;
 import android.os.Bundle;
@@ -22,9 +21,7 @@ import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
 
 import androidx.appcompat.widget.AppCompatTextView;
-import androidx.appcompat.widget.SearchView;
 import androidx.appcompat.widget.TooltipCompat;
-import androidx.core.content.ContextCompat;
 import androidx.core.view.ViewCompat;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentManager;
@@ -37,9 +34,7 @@ import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.components.browser_ui.settings.SearchViewProvider;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
-import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.widget.ChromeImageButton;
 
@@ -116,7 +111,12 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
 
     private boolean mMainMenuShown;
     private boolean mHasBackButton;
-    private boolean mHasSearchButton;
+
+    /**
+     * Dedicated controller for search button and search view handling. Non-null when settings is
+     * shown in a tab, and null when settings is shown in an activity.
+     */
+    private final @Nullable DetailedPaneSearchController mSearchController;
 
     /**
      * The index of the first title to show. Used to skip displaying the titles preceding {@code
@@ -138,20 +138,37 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
     private final @Nullable List<SettingsIndexData.Entry> mInitialBreadcrumbPath;
     private @Nullable List<SettingsIndexData.Entry> mCachedDeepLinkPath;
 
+    /**
+     * Whether settings is being shown in a tab. Injected by the host so that the value stays
+     * constant for the lifetime of this object, even if the screen width changes (e.g. the device
+     * is folded or unfolded).
+     */
+    private final boolean mShownInTab;
+
     MultiColumnTitleUpdater(
             @Nullable Bundle savedInstanceState,
             MultiColumnSettings multiColumnSettings,
-            Context context,
+            boolean shownInTab,
             LinearLayout container,
             Callback<String> mainTitleSetter,
             Callback<@Nullable String> titleTapCallback,
-            @Nullable List<SettingsIndexData.Entry> initialBreadcrumbPath) {
+            @Nullable List<SettingsIndexData.Entry> initialBreadcrumbPath,
+            @Nullable Runnable onSearchVisibilityChanged) {
         mMultiColumnSettings = multiColumnSettings;
-        mContext = context;
+        mShownInTab = shownInTab;
+        mContext = container.getContext();
         mContainer = container;
         mMainTitleSetter = mainTitleSetter;
         mTitleTapCallback = titleTapCallback;
         mInitialBreadcrumbPath = initialBreadcrumbPath;
+
+        if (shownInTab) {
+            mSearchController =
+                    new DetailedPaneSearchController(
+                            mContext, mContainer, mMultiColumnSettings, onSearchVisibilityChanged);
+        } else {
+            mSearchController = null;
+        }
 
         restoreInstanceState(savedInstanceState);
 
@@ -191,8 +208,8 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
                                 title.setLayoutParams(params);
                             }
                         }
-                    } else if (!mHasSearchButton) {
-                        // When mHasSearchButton is true, the title view must keep weight=1f to
+                    } else if (!hasSearchButton()) {
+                        // When a search button is present, the title view must keep weight=1f to
                         // keep the search button right-justified. Otherwise, reset weight to 0f
                         // and width to WRAP_CONTENT when not overflowing.
                         // Note: we cannot traverse in the reverse order here unlike above,
@@ -212,6 +229,10 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
                         }
                     }
                 });
+    }
+
+    private boolean hasSearchButton() {
+        return mSearchController != null && mSearchController.hasSearchButton();
     }
 
     @Override
@@ -295,16 +316,25 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
                                 .getChildFragmentManager()
                                 .findFragmentById(R.id.preferences_detail);
 
-                assertNonNull(currentFragment);
+                // The detail pane can be empty even though a title is still tracked, because
+                // titles are added when a detail fragment resumes but the detail pane may be
+                // emptied afterwards (e.g. returning to root settings under SettingsInTab), or a
+                // replacement transaction may be committed but not yet executed. There is nothing
+                // to match the deep link path against in that case, so keep the previously
+                // computed path; it is recomputed on the next update once a detail fragment
+                // exists. https://crbug.com/559531378
+                if (currentFragment != null) {
+                    String currentClass = currentFragment.getClass().getName();
+                    boolean isMatch = false;
+                    if (mInitialBreadcrumbPath != null && !mInitialBreadcrumbPath.isEmpty()) {
+                        String targetClass =
+                                mInitialBreadcrumbPath.get(mInitialBreadcrumbPath.size() - 1)
+                                        .fragment;
+                        isMatch = TextUtils.equals(currentClass, targetClass);
+                    }
 
-                boolean isMatch = false;
-                if (mInitialBreadcrumbPath != null && !mInitialBreadcrumbPath.isEmpty()) {
-                    String targetClass =
-                            mInitialBreadcrumbPath.get(mInitialBreadcrumbPath.size() - 1).fragment;
-                    isMatch = TextUtils.equals(currentFragment.getClass().getName(), targetClass);
+                    mCachedDeepLinkPath = isMatch ? new ArrayList<>(mInitialBreadcrumbPath) : null;
                 }
-
-                mCachedDeepLinkPath = isMatch ? new ArrayList<>(mInitialBreadcrumbPath) : null;
             }
 
             if (mCachedDeepLinkPath != null && mCachedDeepLinkPath.size() > 1) {
@@ -335,6 +365,10 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
     }
 
     private void updateDetailedPageTitle() {
+        if (mSearchController != null) {
+            mSearchController.reset();
+        }
+
         // Reset the current title items if exists.
         for (int i = 0; i < mContainer.getChildCount(); ++i) {
             View view = mContainer.getChildAt(i);
@@ -352,7 +386,7 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
         float scaleX = LocalizationUtils.isLayoutRtl() ? -1f : 1f;
 
         int prevIndex = titles.size() - 2;
-        mHasBackButton = SettingsInTab.isEnabled() && prevIndex >= mFirstVisibleTitleIndex;
+        mHasBackButton = mShownInTab && prevIndex >= mFirstVisibleTitleIndex;
         // Do not show the back button if the previous title is hidden (e.g. Search results).
         if (mHasBackButton) {
             // Set up a back button to go to the section for the previous title.
@@ -376,15 +410,22 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
             backButton.setMinimumHeight(minTouchTargetPx);
             var layoutParams = new LinearLayout.LayoutParams(LAYOUT_CENTER_VERTICAL);
             backButton.setLayoutParams(layoutParams);
-            backButton.setOnClickListener(v -> navigateToTitle(prevTitle, prevIndex));
-            // Set both accessibility content description and tooltip.
+            backButton.setOnClickListener(
+                    _ -> {
+                        if (handleBackAction()) {
+                            return;
+                        }
+                        navigateToTitle(prevTitle, prevIndex);
+                    });
+            // Set both tooltip and accessibility content description.
             TooltipCompat.setTooltipText(backButton, mContext.getString(R.string.back));
+            backButton.setContentDescription(mContext.getString(R.string.back));
             mContainer.addView(backButton);
         }
 
         // SettingsInTab only shows the last title, not the full breadcrumb path.
         int startIndex =
-                SettingsInTab.isEnabled()
+                mShownInTab
                         ? Math.max(mFirstVisibleTitleIndex, titles.size() - 1)
                         : mFirstVisibleTitleIndex;
         DetailedTitle lastTitleView = null;
@@ -409,71 +450,23 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
 
             if (i < titles.size() - 1) {
                 final int finalIndex = i;
-                view.setOnClickListener((View v) -> navigateToTitle(title, finalIndex));
+                view.setOnClickListener(_ -> navigateToTitle(title, finalIndex));
+            } else {
+                // The current page title is focusable but not interactive, so don't draw the
+                // default focus highlight on it, which looks like a text selection.
+                view.setDefaultFocusHighlightEnabled(false);
             }
 
             mContainer.addView(view);
             lastTitleView = view;
         }
 
-        mHasSearchButton = false;
-        if (SettingsInTab.isEnabled() && lastTitleView != null) {
+        if (mSearchController != null && lastTitleView != null) {
             Fragment detailFragment =
                     mMultiColumnSettings
                             .getChildFragmentManager()
                             .findFragmentById(R.id.preferences_detail);
-            if (detailFragment instanceof SearchViewProvider searchViewProvider) {
-                mHasSearchButton = true;
-                final DetailedTitle titleView = lastTitleView;
-                var titleParams = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
-                titleParams.gravity = Gravity.CENTER_VERTICAL;
-                titleView.setLayoutParams(titleParams);
-
-                var searchButton = new ChromeImageButton(mContext);
-                searchButton.setImageResource(R.drawable.ic_search_24dp);
-                searchButton.setScaleType(ImageView.ScaleType.CENTER);
-                searchButton.setBackgroundResource(R.drawable.default_icon_background);
-                int minTouchTargetPx = getDimenPx(R.dimen.min_touch_target_size);
-                searchButton.setMinimumWidth(minTouchTargetPx);
-                searchButton.setMinimumHeight(minTouchTargetPx);
-                TooltipCompat.setTooltipText(searchButton, mContext.getString(R.string.search));
-                searchButton.setContentDescription(mContext.getString(R.string.search));
-                searchButton.setLayoutParams(new LinearLayout.LayoutParams(LAYOUT_CENTER_VERTICAL));
-
-                var searchView = new SearchView(mContext);
-                var searchViewParams = new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f);
-                searchViewParams.gravity = Gravity.CENTER_VERTICAL;
-                searchView.setLayoutParams(searchViewParams);
-                searchView.setMaxWidth(Integer.MAX_VALUE);
-                searchView.setVisibility(View.GONE);
-                Drawable bg = ContextCompat.getDrawable(mContext, R.drawable.pill_background);
-                if (bg != null) {
-                    int tint = SemanticColorUtils.getSettingsContainerBackgroundColor(mContext);
-                    bg.mutate().setTint(tint);
-                    searchView.setBackground(bg);
-                }
-                searchViewProvider.initSearchView(searchView);
-
-                searchButton.setOnClickListener(
-                        v -> {
-                            titleView.setVisibility(View.GONE);
-                            searchButton.setVisibility(View.GONE);
-                            searchView.setVisibility(View.VISIBLE);
-                            searchView.setIconified(false);
-                            searchView.requestFocus();
-                        });
-
-                searchView.setOnCloseListener(
-                        () -> {
-                            searchView.setVisibility(View.GONE);
-                            titleView.setVisibility(View.VISIBLE);
-                            searchButton.setVisibility(View.VISIBLE);
-                            return false;
-                        });
-
-                mContainer.addView(searchButton);
-                mContainer.addView(searchView);
-            }
+            mSearchController.onTitlesUpdated(lastTitleView, detailFragment);
         }
 
         maybeUpdateMargins();
@@ -482,6 +475,29 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
         if (mContainer.getParent() instanceof HorizontalScrollView scrollView) {
             scrollView.post(() -> scrollView.fullScroll(HorizontalScrollView.FOCUS_RIGHT));
         }
+    }
+
+    void closeSearch() {
+        if (mSearchController != null) {
+            mSearchController.closeSearch();
+        }
+    }
+
+    /** Returns whether the search view in the detailed pane title is open. */
+    public boolean isSearchOpen() {
+        return mSearchController != null && mSearchController.isSearchOpen();
+    }
+
+    /**
+     * Handles back action (e.g. back press or Escape key). Closes search if open.
+     *
+     * @return True if back was consumed by closing search, false otherwise.
+     */
+    public boolean handleBackAction() {
+        if (mSearchController != null && mSearchController.handleBackAction()) {
+            return true;
+        }
+        return false;
     }
 
     private void navigateToTitle(MultiColumnSettings.Title title, int index) {
@@ -538,7 +554,7 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
                     .commitNow();
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to launch breadcrumb fragment: " + entry.fragment, e);
+            Log.e(TAG, "Failed to launch breadcrumb fragment: %s", entry.fragment, e);
         }
     }
 
@@ -600,22 +616,8 @@ class MultiColumnTitleUpdater implements MultiColumnSettings.Observer {
         // Shift titleScrollView right when the search button is shown so that the extra space
         // for the button's material design ripple background fits inside titleScrollView without
         // being clipped on the right edge.
-        int searchButtonOffsetPx = 0;
-        if (mHasSearchButton) {
-            int minTouchTargetPx = getDimenPx(R.dimen.min_touch_target_size);
-            int iconWidthPx = minTouchTargetPx / 2;
-            for (int i = 0; i < mContainer.getChildCount(); ++i) {
-                View child = mContainer.getChildAt(i);
-                if (child instanceof ChromeImageButton button
-                        && button.getId() != R.id.back_button) {
-                    if (button.getDrawable() != null) {
-                        iconWidthPx = button.getDrawable().getIntrinsicWidth();
-                    }
-                    break;
-                }
-            }
-            searchButtonOffsetPx = (minTouchTargetPx - iconWidthPx) / 2;
-        }
+        int searchButtonOffsetPx =
+                mSearchController != null ? mSearchController.getSearchButtonOffsetPx() : 0;
 
         View titleScrollView = (View) mContainer.getParent();
         if (titleScrollView == null) return;

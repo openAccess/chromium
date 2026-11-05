@@ -4,18 +4,25 @@
 
 #import "components/remote_cocoa/app_shim/bridged_content_view.h"
 
+#include <algorithm>
 #include <limits>
+#include <string_view>
 
 #import "base/apple/foundation_util.h"
 #include "base/apple/owned_objc.h"
+#include "base/auto_reset.h"
 #include "base/check_op.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
 #include "base/strings/sys_string_conversions.h"
+#include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #import "components/remote_cocoa/app_shim/drag_drop_client.h"
 #import "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
 #include "components/remote_cocoa/app_shim/native_widget_ns_window_host_helper.h"
 #include "components/remote_cocoa/common/native_widget_ns_window_host.mojom.h"
 #import "ui/base/cocoa/appkit_utils.h"
+#include "ui/base/cocoa/drag_permission.h"
 #include "ui/base/cocoa/find_pasteboard.h"
 #include "ui/base/cocoa/tracking_area.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
@@ -23,6 +30,7 @@
 #include "ui/base/ime/input_method.h"
 #include "ui/base/ime/text_edit_commands.h"
 #include "ui/base/ime/text_input_client.h"
+#include "ui/events/base_event_utils.h"
 #import "ui/events/cocoa/cocoa_event_utils.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/keycodes/dom/dom_code.h"
@@ -38,6 +46,13 @@ namespace {
 
 NSString* const kFullKeyboardAccessChangedNotification =
     @"com.apple.KeyboardUIModeDidChange";
+
+// Histograms for the cost of ending the deferral. See
+// tools/metrics/histograms/metadata/input/histograms.xml.
+constexpr char kDeferredActivationDurationHistogram[] =
+    "InputMethod.Mac.DeferredActivation.Duration";
+constexpr char kDeferredActivationKeyDelayHistogram[] =
+    "InputMethod.Mac.DeferredActivation.KeyDelay";
 
 // Convert a |point| in |source_window|'s AppKit coordinate system (origin at
 // the bottom left of the window) to |target_window|'s content rect, with the
@@ -122,14 +137,61 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
 
 }  // namespace
 
-@interface BridgedContentView ()
+// Records the action message that AppKit's key bindings produce for a key
+// event (e.g. moveToBeginningOfLine: for Cmd+Left), without the side effects
+// of running -[BridgedContentView keyDown:].
+@interface MenuKeyEquivalentInterpreter : NSResponder
+@property(assign, nonatomic) SEL commandSelector;
+@end
+
+@implementation MenuKeyEquivalentInterpreter
+@synthesize commandSelector = _commandSelector;
+
+- (void)doCommandBySelector:(SEL)selector {
+  _commandSelector = selector;
+}
+
+- (void)insertText:(id)string {
+}
+@end
+
+namespace {
+
+// Returns the text editing action that AppKit's key bindings map `event` to,
+// if BridgedContentView implements it, or nullptr. insert* actions are
+// excluded since -doCommandBySelector: leaves them to -keyDown:. The returned
+// selector names a method that returns void, so it is safe to call with
+// -performSelector: under ARC.
+SEL EditingActionForKeyEquivalent(NSEvent* event) {
+  MenuKeyEquivalentInterpreter* interpreter =
+      [[MenuKeyEquivalentInterpreter alloc] init];
+  [interpreter interpretKeyEvents:@[ event ]];
+  SEL selector = interpreter.commandSelector;
+  if (!selector || [NSStringFromSelector(selector) hasPrefix:@"insert"] ||
+      ![BridgedContentView instancesRespondToSelector:selector] ||
+      [BridgedContentView instanceMethodForSelector:selector] ==
+          [ToolTipBaseView instanceMethodForSelector:selector]) {
+    return nullptr;
+  }
+  NSMethodSignature* signature =
+      [BridgedContentView instanceMethodSignatureForSelector:selector];
+  if (std::string_view(signature.methodReturnType) != @encode(void)) {
+    return nullptr;
+  }
+  return selector;
+}
+
+}  // namespace
+
+@interface BridgedContentView () {
+  // When the -[NSApp updateWindows] call that ended the last deferral started
+  // and returned. Null when no key event can still have waited for it.
+  base::TimeTicks _deferredActivationStart;
+  base::TimeTicks _deferredActivationEnd;
+}
 
 // Dispatch |event| to |bridge_|'s host.
 - (void)dispatchKeyEvent:(ui::KeyEvent*)event;
-
-// Returns true if active menu controller corresponds to this widget. Note that
-// this will synchronously call into the browser process.
-- (BOOL)hasActiveMenuController;
 
 // Dispatch |event| to |menu_controller| and return true if |event| is
 // swallowed.
@@ -182,6 +244,10 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
 // views::View and that client is right-to-left.
 - (BOOL)isTextRTL;
 
+// Records how long |event| waited for the activation that ended the last
+// deferral, if it arrived before that activation returned.
+- (void)recordDeferredActivationKeyDelay:(NSEvent*)event;
+
 // Menu action handlers.
 - (void)undo:(id)sender;
 - (void)redo:(id)sender;
@@ -198,6 +264,7 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
 @synthesize bridge = _bridge;
 @synthesize drawMenuBackgroundForBlur = _drawMenuBackgroundForBlur;
 @synthesize keyDownEventForTesting = _keyDownEvent;
+@synthesize deferInputContextActivation = _deferInputContextActivation;
 
 - (instancetype)initWithBridge:(remote_cocoa::NativeWidgetNSWindowBridge*)bridge
                         bounds:(gfx::Rect)bounds {
@@ -258,6 +325,54 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
   }
 }
 
+- (void)setDeferInputContextActivation:(BOOL)defer {
+  if (_deferInputContextActivation == defer) {
+    return;
+  }
+  _deferInputContextActivation = defer;
+  if (defer) {
+    return;
+  }
+
+  // The deferral usually ends from a compositor callback, not from an event,
+  // so AppKit would not look at -inputContext again until it
+  // runs -[NSApp updateWindows] after the next event. Call it now, so the
+  // input method is active before that event (often a key press) is handled.
+  // This is where the activation cost moves to: it is the call that blocked
+  // the main thread while the window was being shown.
+  NSWindow* window = self.window;
+  if (_bridge && window.isKeyWindow && window.firstResponder == self &&
+      [self inputContext]) {
+    TRACE_EVENT("ui", "BridgedContentView::ActivateDeferredInputContext");
+    // The activation runs inside this synchronous call, so timing the call
+    // measures what the deferral moved here from the window's show.
+    _deferredActivationStart = base::TimeTicks::Now();
+    [NSApp updateWindows];
+    _deferredActivationEnd = base::TimeTicks::Now();
+    base::UmaHistogramTimes(kDeferredActivationDurationHistogram,
+                            _deferredActivationEnd - _deferredActivationStart);
+  }
+}
+
+- (void)recordDeferredActivationKeyDelay:(NSEvent*)event {
+  if (_deferredActivationEnd.is_null()) {
+    return;
+  }
+  const base::TimeTicks keyTime =
+      ui::EventTimeStampFromSeconds(event.timestamp);
+  if (keyTime >= _deferredActivationEnd) {
+    // Keys arrive in order, so no later key waited for this activation either.
+    _deferredActivationStart = base::TimeTicks();
+    _deferredActivationEnd = base::TimeTicks();
+    return;
+  }
+  // Count only the part of the wait the activation caused: a key that arrived
+  // before the activation started waited for all of it.
+  base::UmaHistogramTimes(
+      kDeferredActivationKeyDelayHistogram,
+      _deferredActivationEnd - std::max(keyTime, _deferredActivationStart));
+}
+
 - (bool)needsUpdateWindows {
   // If |self| was being used for the input context, and would now report a
   // different input context, manually invoke [NSApp updateWindows]. This is
@@ -267,16 +382,26 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
   // iteration through most runloop modes, it does not call it when running
   // NSEventTrackingRunLoopMode, and not _within_ a run loop iteration, where
   // the inputContext may change before further event processing.
-  NSTextInputContext* current = [NSTextInputContext currentInputContext];
-  if (!current)
-    return false;
+  NSTextInputContext* current = nil;
+  {
+    // AppKit may activate the input method for a newly focused view inside
+    // this query. With an input method such as Japanese, that waits on the
+    // input method process, so trace it.
+    TRACE_EVENT("ui", "BridgedContentView::CurrentInputContext");
+    current = [NSTextInputContext currentInputContext];
+  }
 
   NSTextInputContext* newContext = [self inputContext];
-  // If the newContext is non-nil, then it can only be [super inputContext]. So
-  // the input context is either not changing, or it was not from |self|. In
-  // both cases, there's no need to call -updateWindows.
+  // A non-nil newContext is normally either not changing or not from |self|,
+  // except when a Views menu is active and switches between menu items and a
+  // menu-hosted text input client within the same window.
   if (newContext) {
     DCHECK_EQ(newContext, [super inputContext]);
+    NSWindow* window = self.window;
+    return window.isKeyWindow && window.firstResponder == self &&
+           [self hasActiveMenuController] && current != newContext;
+  }
+  if (!current) {
     return false;
   }
 
@@ -479,6 +604,37 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
   return hasMenuController;
 }
 
+- (BOOL)performMenuKeyEquivalent:(NSEvent*)theEvent {
+  if (!_bridge || ![self hasActiveMenuController] ||
+      [theEvent type] != NSEventTypeKeyDown) {
+    return NO;
+  }
+  // As in -keyDown:, end any deferral first so -inputContext reflects a
+  // focused menu Textfield.
+  if (_deferInputContextActivation) {
+    self.deferInputContextActivation = NO;
+  }
+  // With a text input context (a focused menu Textfield), key equivalents
+  // bound to text editing actions, such as Cmd+Left and Cmd+Backspace, edit
+  // the text rather than reaching the menu or the main menu as raw keys.
+  if ([self inputContext] && ![self hasMarkedText]) {
+    if (SEL selector = EditingActionForKeyEquivalent(theEvent)) {
+      base::AutoReset<NSEvent*> key_down_event(&_keyDownEvent, theEvent);
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+      // ARC warns because it can't tell whether -performSelector: returns an
+      // object it must retain or release. `selector` is a text editing action
+      // that returns void (EditingActionForKeyEquivalent() checks this), so
+      // there is nothing to retain or release.
+      [self performSelector:selector withObject:nil];
+#pragma clang diagnostic pop
+      return YES;
+    }
+  }
+  ui::KeyEvent event((base::apple::OwnedNSEvent(theEvent)));
+  return [self dispatchKeyEventToMenuController:&event];
+}
+
 - (BOOL)dispatchKeyEventToMenuController:(ui::KeyEvent*)event {
   if (_bridge)
     return _bridge->host_helper()->DispatchKeyEventToMenuController(event);
@@ -501,6 +657,16 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
   [self handleKeyEvent:&event];
   _hasUnhandledKeyDownEvent = NO;
   return event.handled();
+}
+
+- (void)scheduleTextEditCommand:(ui::TextEditCommand)command {
+  bool out_enabled = false;
+  if (_bridge &&
+      _bridge->text_input_host()->IsTextEditCommandEnabled(command,
+                                                           &out_enabled) &&
+      out_enabled) {
+    _bridge->text_input_host()->SetTextEditCommandForNextKeyEvent(command);
+  }
 }
 
 - (void)handleAction:(ui::TextEditCommand)command
@@ -528,17 +694,26 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
     event.SetNativeEvent(base::apple::OwnedNSEvent(NSApp.currentEvent));
   }
 
-  if ([self dispatchKeyEventToMenuController:&event])
-    return;
-
   // If there's an active TextInputClient, schedule the editing command to be
-  // performed.
-  bool out_enabled = false;
-  if (_bridge &&
-      _bridge->text_input_host()->IsTextEditCommandEnabled(command,
-                                                           &out_enabled) &&
-      out_enabled) {
-    _bridge->text_input_host()->SetTextEditCommandForNextKeyEvent(command);
+  // performed. With an active menu, schedule it before dispatch: the menu
+  // routes the key to its focused Textfield, which performs the command
+  // (TextInputHost reports commands disabled while the menu has none). Up/Down
+  // move the menu selection rather than the caret of a focused menu Textfield,
+  // matching native macOS textfields embedded in menus. Otherwise, e.g. for an
+  // editable combobox menu, schedule only if the menu does not consume the key,
+  // so no command is left pending.
+  const bool has_active_menu = [self hasActiveMenuController];
+  if (has_active_menu && command != ui::TextEditCommand::MOVE_UP &&
+      command != ui::TextEditCommand::MOVE_DOWN) {
+    [self scheduleTextEditCommand:command];
+  }
+
+  if ([self dispatchKeyEventToMenuController:&event]) {
+    return;
+  }
+
+  if (!has_active_menu) {
+    [self scheduleTextEditCommand:command];
   }
 
   [self dispatchKeyEvent:&event];
@@ -629,8 +804,12 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
       return;
   }
 
-  // Forward the |text| to |textInputClient_| if no menu is active.
-  if ([self hasTextInputClient] && ![self hasActiveMenuController]) {
+  // Forward the |text| to |textInputClient_| if no menu is active, if the
+  // active menu has a text input context, or if an IME is committing text
+  // outside of a keyDown event (e.g. during -[NSApp updateWindows]).
+  if ([self hasTextInputClient] &&
+      (![self hasActiveMenuController] || [self inputContext] != nil ||
+       !_keyDownEvent)) {
     // Note we don't check isFinalInsertForKeyEvent, nor use |keyDownEvent_|
     // to generate the synthetic ui::KeyEvent since:  For composed text,
     // [keyDownEvent_ characters] might not be the same as |text|. This is
@@ -801,7 +980,7 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
 }
 
 - (BOOL)isOpaque {
-  return _bridge ? !_bridge->is_translucent_window() : NO;
+  return [self.window isOpaque];
 }
 
 // To maximize consistency with the Cocoa browser (mac_views_browser=0), accept
@@ -834,8 +1013,13 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
 }
 
 - (NSTextInputContext*)inputContext {
-  if (!_bridge)
+  // Returning nil while deferred is safe: AppKit then has no input method to
+  // activate for this view, and -interpretKeyEvents: would fall back to the
+  // key bindings path (-insertText: and -doCommandBySelector:). Keys never take
+  // that path while deferred, because -keyDown: ends the deferral first.
+  if (!_bridge || _deferInputContextActivation) {
     return nil;
+  }
   bool hasTextInputContext = false;
   _bridge->text_input_host()->HasInputContext(&hasTextInputContext);
   return hasTextInputContext ? [super inputContext] : nil;
@@ -886,6 +1070,14 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
 }
 
 - (void)keyDown:(NSEvent*)theEvent {
+  // The input method must see this key. Ending the deferral calls
+  // -[NSApp updateWindows] synchronously, so the input method is active
+  // before -interpretKeyEvents: below hands it the key.
+  if (_deferInputContextActivation) {
+    self.deferInputContextActivation = NO;
+  }
+  [self recordDeferredActivationKeyDelay:theEvent];
+
   BOOL hadMarkedTextAtKeyDown = [self hasMarkedText];
 
   // Convert the event into an action message, according to OSX key mappings.
@@ -1603,6 +1795,13 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
   return gfx::ScreenRectToNSRect(rect);
 }
 
+- (NSInteger)windowLevel {
+  if ([self hasActiveMenuController]) {
+    return NSPopUpMenuWindowLevel;
+  }
+  return [[self window] level];
+}
+
 - (BOOL)hasMarkedText {
   bool hasCompositionText = NO;
   if (_bridge)
@@ -1704,11 +1903,18 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
 }
 
 - (void)draggingSession:(NSDraggingSession*)session
+       willBeginAtPoint:(NSPoint)screenPoint {
+  ui::SetDragSessionInProgress(true);
+}
+
+- (void)draggingSession:(NSDraggingSession*)session
            endedAtPoint:(NSPoint)screenPoint
               operation:(NSDragOperation)operation {
+  ui::SetDragSessionInProgress(false);
   remote_cocoa::DragDropClient* client = [self dragDropClient];
-  if (client)
+  if (client) {
     client->EndDrag();
+  }
 }
 
 // NSAccessibility formal protocol implementation:

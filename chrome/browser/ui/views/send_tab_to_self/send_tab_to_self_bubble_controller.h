@@ -7,7 +7,6 @@
 
 #include <memory>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -19,9 +18,9 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "ui/views/widget/widget_observer.h"
-#include "url/gurl.h"
 
 class BrowserWindowInterface;
+class LocationBarBubbleDelegateView;
 class Profile;
 
 namespace actions {
@@ -40,15 +39,12 @@ namespace ui {
 class Event;
 }  // namespace ui
 
-struct AccountInfo;
+namespace syncer {
+struct RemoteDeviceInfo;
+}  // namespace syncer
 
 namespace send_tab_to_self {
 
-enum class SendTabToSelfResult;
-class SendTabToSelfBubbleView;
-struct TargetDeviceInfo;
-
-class SendTabToSelfModel;
 class TargetDeviceListWaiter;
 
 class SendTabToSelfBubbleController
@@ -65,38 +61,31 @@ class SendTabToSelfBubbleController
   // Hides send tab to self bubble.
   void HideBubble();
   // Displays send tab to self bubble.
-  void ShowBubble(ShareEntryPoint entry_point, bool show_back_button = false);
+  void ShowBubble(ShareEntryPoint entry_point);
 
   bool IsBubbleShown() const;
 
   // Returns nullptr if no bubble is currently shown.
-  SendTabToSelfBubbleView* send_tab_to_self_bubble_view() const;
-  // Returns the valid devices info map.
-  virtual std::vector<TargetDeviceInfo> GetValidDevices();
+  LocationBarBubbleDelegateView* send_tab_to_self_bubble_view() const;
+  // Returns the list of valid target devices, sorted by recency.
+  virtual std::vector<syncer::RemoteDeviceInfo> GetValidDevices();
 
-  virtual AccountInfo GetSharingAccountInfo();
-
-  // Handles the action when the user click on one valid device. Sends tab to
-  // the target device.
+  // Handles the action when the user clicks on one valid device. Sends tab to
+  // the target device; `form_factor` is the target device's form factor used
+  // to display the confirmation toast.
   // Virtual for testing.
   virtual void OnDeviceSelected(const std::string& target_device_guid,
-                                std::string_view device_name);
+                                const std::string& device_name,
+                                syncer::DeviceInfo::FormFactor form_factor);
 
   // Handler for when user clicks the link to manage their available devices.
   void OnManageDevicesClicked(const ui::Event& event);
-
-  // Close the bubble when the user clicks on the back button.
-  void OnBackButtonPressed();
-
-  bool show_back_button() const { return show_back_button_; }
 
   std::optional<ShareEntryPoint> entry_point() const { return entry_point_; }
 
   base::WeakPtr<SendTabToSelfBubbleController> AsWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
   }
-
-  void SetSelectorGenerationTimeoutForTesting(base::TimeDelta timeout);
 
  protected:
   explicit SendTabToSelfBubbleController(content::WebContents* web_contents);
@@ -105,7 +94,6 @@ class SendTabToSelfBubbleController
   friend class content::WebContentsUserData<SendTabToSelfBubbleController>;
 
   Profile* GetProfile();
-  SendTabToSelfModel* GetModel();
   virtual std::optional<EntryPointDisplayReason> GetEntryPointDisplayReason();
 
   // Prepares the anchor and initiates showing the bubble for a specific reason.
@@ -117,25 +105,25 @@ class SendTabToSelfBubbleController
                             base::WeakPtr<BrowserWindowInterface> browser,
                             BubbleAnchorResult anchor);
 
-  void HandleSendTabToDeviceResult(const GURL& url,
-                                   std::string_view device_name,
-                                   syncer::DeviceInfo::FormFactor form_factor,
-                                   SendTabToSelfResult result);
-
   // content::WebContentsObserver:
   void PrimaryPageChanged(content::Page& page) override;
 
   // views::WidgetObserver:
   void OnWidgetDestroying(views::Widget* widget) override;
 
+  bool ShouldShowNoTargetDeviceQrBubble(EntryPointDisplayReason reason,
+                                        BrowserWindowInterface* browser);
+  void OnQrBubbleClosed();
+
   void ShowBubbleWhenTargetDeviceListReady();
 
   void StartWaitingForTargetDeviceList();
 
   // Weak reference. Will be nullptr if no bubble is currently shown.
-  raw_ptr<SendTabToSelfBubbleView> send_tab_to_self_bubble_view_ = nullptr;
-  // True if the back button is currently shown.
-  bool show_back_button_ = false;
+  raw_ptr<LocationBarBubbleDelegateView> send_tab_to_self_bubble_view_ =
+      nullptr;
+  // True if the cross-device sign-in QR code bubble is currently shown.
+  bool is_qr_bubble_showing_ = false;
 
   std::optional<ShareEntryPoint> entry_point_;
 
@@ -144,7 +132,8 @@ class SendTabToSelfBubbleController
   base::ScopedObservation<views::Widget, views::WidgetObserver>
       widget_observation_{this};
 
-  // Non-null while waiting for the target device list to be ready after sign-in.
+  // Non-null while waiting for the target device list to be ready after
+  // sign-in.
   std::unique_ptr<TargetDeviceListWaiter> target_device_list_waiter_;
 
   base::WeakPtrFactory<SendTabToSelfBubbleController> weak_ptr_factory_{this};

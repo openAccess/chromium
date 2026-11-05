@@ -5,6 +5,9 @@
 #ifndef COMPONENTS_ENTERPRISE_ISOLATED_MODE_ISOLATED_MODE_SETTINGS_SERVICE_H_
 #define COMPONENTS_ENTERPRISE_ISOLATED_MODE_ISOLATED_MODE_SETTINGS_SERVICE_H_
 
+#include <optional>
+
+#include "base/auto_reset.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/version_info/channel.h"
 
@@ -25,8 +28,20 @@ class IsolatedModeSettingsService : public KeyedService {
   // Incognito.
   bool ReplacesIncognito() const { return replaces_incognito_; }
 
+  // Returns the cached evaluation of whether Milestone 2 of Isolated Mode is
+  // enabled.
+  // Does not check whether Isolated Mode itself is enabled; pair with
+  // ReplacesIncognito().
+  bool Milestone2Enabled() const { return milestone2_enabled_; }
+
  private:
-  const bool replaces_incognito_;
+  friend class ScopedIsolatedModeOverrideForTesting;
+
+  static base::AutoReset<std::optional<bool>>
+  SetDefaultReplacesIncognitoForTesting(bool replaces_incognito);
+
+  bool replaces_incognito_;
+  const bool milestone2_enabled_;
 };
 
 }  // namespace enterprise_isolated_mode

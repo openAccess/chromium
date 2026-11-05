@@ -205,7 +205,10 @@ chromium_luci.configure_builders(
         ),
         os.MAC_DEFAULT: "Mac-26",
         os.MAC_BETA: "Mac-26",
-        os.WINDOWS_DEFAULT: os.WINDOWS_10,
+        os.WINDOWS_DEFAULT: chromium_luci.os_dimension_overrides(
+            default = os.WINDOWS_10,
+            overrides = json.decode(io.read_file("//lib/windows-default.json")),
+        ),
     },
     exempted_from_description_builders = exempted_from_description_builders,
 )
@@ -226,6 +229,7 @@ chromium_luci.configure_targets(
             # The following mixins are referenced via
             # //testing/buildbot/waterfalls.pyl
             "11-x86-emulator": True,
+            "android_extra_verbosity": True,
             "amd_radeon_rx_5500_xt": True,
             "android": True,
             "blink_tests_write_run_histories": True,
@@ -235,7 +239,9 @@ chromium_luci.configure_targets(
             "chrome-swarming-pool": True,
             "chrome-tester-service-account": True,
             "chromeos-betty-finch": True,
+            "ci_only": True,
             "crosier-no-arc": True,
+            "experiments": True,
             "gce": True,
             "gpu_enable_metal_debug_layers": True,
             "gpu_force_angle_d3d11": True,
@@ -243,7 +249,6 @@ chromium_luci.configure_targets(
             "gpu_force_angle_gles": True,
             "gpu_force_angle_metal": True,
             "gpu_force_angle_swiftshader": True,
-            "gpu_force_angle_vulkan": True,
             "gpu_force_command_decoder_passthrough": True,
             "gpu_force_command_decoder_validating": True,
             "gpu_force_high_performance_gpu": True,
@@ -260,15 +265,18 @@ chromium_luci.configure_targets(
             "intel_uhd_630_or_770": True,
             "ios_runtime_cache_18_5": True,
             "use-ios-simulator-cache": True,
+            "legacy_gpu_vulkan_pixel_skia_gold_test_args": True,
+            "legacy_gpu_webgl_conformance_shards": True,
+            "legacy_gpu_webgl2_conformance_shards": True,
             "linux_gpu_high_tier_ai_wpt_dimensions": True,
             "linux_gpu_high_tier_gemma4_ai_wpt_dimensions": targets.IGNORE_UNUSED,
             "long_skylab_timeout": True,
-            "mac_14_x64": True,
             "mac_default_arm64": True,
             "mac_15_x64": True,
             "mac_toolchain": True,
             "x64_ai_wpt_shards": True,
             "non-gce": True,
+            "no_xvfb_for_real_hardware": True,
             "nvidia_geforce_gtx_1660": True,
             "out_dir_arg": True,
             "skia_gold_test": True,
@@ -280,11 +288,13 @@ chromium_luci.configure_targets(
             "skylab-rdb-native": True,
             "skylab-rdb-tast": True,
             "tfc-cq-tast": True,
+            "use_isolated_scripts_api": True,
             "vaapi_unittest_args": True,
             "vaapi_unittest_libfake_args": True,
             "win-arm64": True,
             "win10": True,
             "win10-any": True,
+            "win_gpu_ai_wpt_dimensions": targets.IGNORE_UNUSED,
             "win_gpu_gemma4_ai_wpt_dimensions": targets.IGNORE_UNUSED,
             "xcode_27_main": True,
             "xctest": True,
@@ -310,9 +320,10 @@ chromium_luci.configure_targets(
             "linux_intel_uhd_630_experimental": targets.IGNORE_UNUSED,
             "linux_intel_uhd_630_stable": targets.IGNORE_UNUSED,
             "linux_intel_uhd_770_stable": targets.IGNORE_UNUSED,
+            "linux_intel_uhd_770_wayland_stable": targets.IGNORE_UNUSED,
             "linux_nvidia_gtx_1660_experimental": targets.IGNORE_UNUSED,
             "linux_nvidia_gtx_1660_stable": targets.IGNORE_UNUSED,
-            "linux_nvidia_rtx_4070_super_stable": targets.IGNORE_UNUSED,
+            "linux_nvidia_rtx_4070_super_wayland_stable": targets.IGNORE_UNUSED,
             "mac_arm64_apple_m1_gpu_experimental": targets.IGNORE_UNUSED,
             "mac_arm64_apple_m1_gpu_stable": targets.IGNORE_UNUSED,
             "mac_arm64_apple_m2_retina_gpu_experimental": targets.IGNORE_UNUSED,
@@ -369,7 +380,6 @@ chromium_luci.configure_targets(
             "CROS_GPU_CORSOLA_RELEASE_LKGM": True,
             "CROS_GPU_SKYRIM_RELEASE_LKGM": True,
             "CROS_LKGM": True,
-            "CROS_JACUZZI_RELEASE_LKGM": True,
             "INTEL_UHD_630_OR_770": True,
             "IPHONE_13": True,
             "NVIDIA_GEFORCE_GTX_1660": True,
@@ -399,7 +409,7 @@ luci.realm(
         ),
         # Allow everyone to view Turbo CI workflows
         luci.binding(
-            roles = "role/turboci.nodeReaderExternal",
+            roles = "role/turboci.externalReader",
             groups = "all",
         ),
         # Other roles are inherited from @root which grants them to group:all.
@@ -413,6 +423,11 @@ luci.realm(
         luci.binding(
             roles = "role/resultdb.invocationCreator",
             groups = "project-chromium-ci-task-accounts",
+        ),
+        # Allow everyone to view Turbo CI workflows
+        luci.binding(
+            roles = "role/turboci.externalReader",
+            groups = "all",
         ),
     ],
 )
@@ -437,7 +452,7 @@ luci.realm(
         ),
         # Allow everyone to view Turbo CI workflows
         luci.binding(
-            roles = "role/turboci.nodeReaderExternal",
+            roles = "role/turboci.externalReader",
             groups = "all",
         ),
     ],

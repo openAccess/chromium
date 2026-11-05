@@ -84,10 +84,14 @@ export function getHtml(this: ItemElement) {
             -->${this.data.blocklistText}<!-- No whitespace; use :empty in css.
        --></span>
           <span id="unsupported-developer-extension-warning"
-              class="cr-secondary-text"
-              ?hidden="${
+              class="cr-secondary-text" ?hidden="${
                   !this.data.disableReasons.unsupportedDeveloperExtension}">
             $i18n{itemUnsupportedDeveloperMode}
+          </span>
+          <span id="disabled-by-another-extension-warning"
+              class="cr-secondary-text"
+              ?hidden="${!this.isDisabledByAnotherExtension_()}">
+            ${this.getDisabledByExtensionWarningText_()}
           </span>
         </div>
       ` : ''}

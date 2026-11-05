@@ -71,6 +71,7 @@ class CategoryResolvedKeyMetricsTest : public AutofillMetricsBaseTest,
         mojom::ActionPersistence::kFill, form.global_id(),
         form.fields().front().global_id(), &profile,
         AutofillTriggerSource::kPopup,
+        /*require_user_confirmation=*/false,
         /*blocked_fields=*/{});
   }
 
@@ -407,7 +408,7 @@ TEST_F(AutofillOnDidShowSuggestionsMetricsTest,
 
   base::HistogramTester histogram_tester;
 
-  autofill_manager().DidShowSuggestions(generated_suggestions, std::nullopt,
+  autofill_manager().DidShowSuggestions(generated_suggestions, /*metadata=*/{},
                                         form.global_id(),
                                         form.fields()[0].global_id(), {});
 
@@ -450,7 +451,7 @@ TEST_F(AutofillOnDidShowSuggestionsMetricsTest,
 
   base::HistogramTester histogram_tester;
 
-  autofill_manager().DidShowSuggestions(generated_suggestions, std::nullopt,
+  autofill_manager().DidShowSuggestions(generated_suggestions, /*metadata=*/{},
                                         form.global_id(),
                                         form.fields()[0].global_id(), {});
 

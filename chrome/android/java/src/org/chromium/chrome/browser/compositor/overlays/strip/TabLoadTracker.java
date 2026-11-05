@@ -21,6 +21,7 @@ public class TabLoadTracker {
     // Callback Tracking State
     private final int mId;
     private final TabLoadTrackerCallback mCallback;
+    private final Runnable mLoadFinishedRunnable = this::onLoadFinished;
 
     // Internal Loading State
     private boolean mLoading;
@@ -62,19 +63,13 @@ public class TabLoadTracker {
         mHandler.postDelayed(mLoadFinishedRunnable, LOAD_FINISHED_VISUAL_DELAY_MS);
     }
 
-    /**
-     * @return Whether or not this tab should be visually represented as loading.
-     */
+    /** Returns whether or not this tab should be visually represented as loading. */
     public boolean isLoading() {
         return mLoading;
     }
 
-    private final Runnable mLoadFinishedRunnable =
-            new Runnable() {
-                @Override
-                public void run() {
-                    mLoading = false;
-                    mCallback.loadStateChanged(mId);
-                }
-            };
+    private void onLoadFinished() {
+        mLoading = false;
+        mCallback.loadStateChanged(mId);
+    }
 }

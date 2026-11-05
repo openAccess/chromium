@@ -11,6 +11,7 @@
 #include "chrome/browser/browsing_data/counters/signin_data_counter.h"
 #include "chrome/browser/profiles/profile_statistics_common.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/personal_context_entity_metadata_manager.h"
 #include "components/browsing_data/core/counters/autofill_counter.h"
 #include "components/browsing_data/core/counters/bookmark_counter.h"
 #include "components/browsing_data/core/counters/history_counter.h"
@@ -23,6 +24,8 @@ ProfileStatisticsAggregator::ProfileStatisticsAggregator(
     scoped_refptr<autofill::AutofillWebDataService> autofill_web_data_service,
     autofill::PersonalDataManager* personal_data_manager,
     const autofill::EntityDataManager* entity_data_manager,
+    const autofill::PersonalContextEntityMetadataManager*
+        entity_metadata_manager,
     bookmarks::BookmarkModel* bookmark_model,
     history::HistoryService* history_service,
     scoped_refptr<password_manager::PasswordStoreInterface>
@@ -34,6 +37,7 @@ ProfileStatisticsAggregator::ProfileStatisticsAggregator(
     : autofill_web_data_service_(std::move(autofill_web_data_service)),
       personal_data_manager_(personal_data_manager),
       entity_data_manager_(entity_data_manager),
+      entity_metadata_manager_(entity_metadata_manager),
       bookmark_model_(bookmark_model),
       history_service_(history_service),
       profile_password_store_(profile_password_store),
@@ -45,8 +49,9 @@ ProfileStatisticsAggregator::~ProfileStatisticsAggregator() = default;
 
 void ProfileStatisticsAggregator::AddCallbackAndStartAggregator(
     profiles::ProfileStatisticsCallback stats_callback) {
-  if (stats_callback)
+  if (stats_callback) {
     stats_callbacks_.push_back(std::move(stats_callback));
+  }
   StartAggregator();
 }
 
@@ -61,7 +66,7 @@ void ProfileStatisticsAggregator::AddCounter(
 }
 
 void ProfileStatisticsAggregator::StartAggregator() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   profile_category_stats_.clear();
 
   // Cancel tasks.
@@ -73,7 +78,7 @@ void ProfileStatisticsAggregator::StartAggregator() {
   // Initiate history counting.
   AddCounter(std::make_unique<browsing_data::HistoryCounter>(
       history_service_,
-      browsing_data::HistoryCounter::GetUpdatedWebHistoryServiceCallback(),
+      /*web_history_service=*/nullptr,
       /*sync_service=*/nullptr));
 
   // Only count local passwords.
@@ -85,13 +90,15 @@ void ProfileStatisticsAggregator::StartAggregator() {
   // Initiate autofill counting.
   AddCounter(std::make_unique<browsing_data::AutofillCounter>(
       personal_data_manager_, autofill_web_data_service_, entity_data_manager_,
+      entity_metadata_manager_,
       /*sync_service=*/nullptr));
 }
 
 void ProfileStatisticsAggregator::OnCounterResult(
     std::unique_ptr<BrowsingDataCounter::Result> result) {
-  if (!result->Finished())
+  if (!result->Finished()) {
     return;
+  }
   const char* pref_name = result->source()->GetPrefName();
   auto* finished_result =
       static_cast<BrowsingDataCounter::FinishedResult*>(result.get());
@@ -111,7 +118,17 @@ void ProfileStatisticsAggregator::OnCounterResult(
     StatisticsCallback(profiles::kProfileStatisticsPasswords,
                        profile_passwords + signin_data_count);
   } else if (pref_name == browsing_data::prefs::kDeleteFormData) {
-    StatisticsCallback(profiles::kProfileStatisticsAutofill, count);
+    // Report all Autofill data that is deleted together with the profile, not
+    // just autocomplete entries: addresses, payment methods, Autofill AI
+    // entities and entity suppressions.
+    const auto* autofill_result =
+        static_cast<const browsing_data::AutofillCounter::AutofillResult*>(
+            result.get());
+    StatisticsCallback(
+        profiles::kProfileStatisticsAutofill,
+        autofill_result->Value() + autofill_result->num_credit_cards() +
+            autofill_result->num_addresses() + autofill_result->num_entities() +
+            autofill_result->num_suppressions());
   } else {
     NOTREACHED();
   }
@@ -124,13 +141,13 @@ void ProfileStatisticsAggregator::StatisticsCallback(const char* category,
   datum.count = count;
   profile_category_stats_.push_back(datum);
   for (const auto& stats_callback : stats_callbacks_) {
-    DCHECK(stats_callback);
+    CHECK(stats_callback, base::NotFatalUntil::M162);
     stats_callback.Run(profile_category_stats_);
   }
 
   if (profile_category_stats_.size() ==
       profiles::kProfileStatisticsCategories.size()) {
-    DCHECK(done_callback_);
+    CHECK(done_callback_, base::NotFatalUntil::M162);
     std::move(done_callback_).Run();
   }
 }

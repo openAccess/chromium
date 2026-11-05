@@ -10,6 +10,7 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -26,6 +27,12 @@ import java.util.WeakHashMap;
 @JNINamespace("ui")
 @NullMarked
 public class AccessibilityState {
+    /**
+     * The default text cursor blink interval in milliseconds. This value is used as a fallback on
+     * versions of Android where the setting is not user-configurable.
+     */
+    public static final int DEFAULT_TEXT_CURSOR_BLINK_INTERVAL_MS = 500;
+
     public static final int EVENT_TYPE_MASK_ALL = ~0;
     public static final int EVENT_TYPE_MASK_NONE = 0;
 
@@ -45,17 +52,22 @@ public class AccessibilityState {
         /**
          * Called when any aspect of the system's accessibility state changes. This can happen for
          * example when a user:
-         *     - enables/disables an accessibility service (e.g. TalkBack, VoiceAccess, etc.)
-         *     - enables/disables a pseudo-accessibility service (e.g. password manager, etc.)
-         *     - changes an accessibility-related system setting (e.g. animation duration, password
+         *
+         * <ul>
+         *   <li>enables/disables an accessibility service (e.g. TalkBack, VoiceAccess, etc.)
+         *   <li>enables/disables a pseudo-accessibility service (e.g. password manager, etc.)
+         *   <li>changes an accessibility-related system setting (e.g. animation duration, password
          *       obscuring, touch exploration, etc.)
+         * </ul>
          *
-         * For a full list of triggers, see: {AccessibilityState#registerObservers}
-         * For a full list of tracked settings, see: {AccessibilityState.State}
+         * For a full list of triggers, see:
+         * {AccessibilityStateDelegateImpl#registerObserversOnBackgroundThread} For a full list of
+         * tracked settings, see: {AccessibilityState.State}
          *
-         * This method passes both the previous and new (old current vs. now current) accessibility
-         * state. Clients that are only interested in a subset of the state should compare the
-         * oldAccessibilityState to newAccessibilityState to see if a relevant setting changed.
+         * <p>This method passes both the previous and new (old current vs. now current)
+         * accessibility state. Clients that are only interested in a subset of the state should
+         * compare the oldAccessibilityState to newAccessibilityState to see if a relevant setting
+         * changed.
          *
          * @param oldAccessibilityState The previous accessibility state
          * @param newAccessibilityState The new accessibility state
@@ -197,6 +209,12 @@ public class AccessibilityState {
         sListeners.add(listener);
     }
 
+    /** Should be called on UI thread. */
+    public static void removeListener(Listener listener) {
+        assert ThreadUtils.runningOnUiThread();
+        sListeners.remove(listener);
+    }
+
     public static Set<Listener> getListeners() {
         return sListeners;
     }
@@ -241,6 +259,7 @@ public class AccessibilityState {
         return getDelegate().isKnownScreenReaderEnabled();
     }
 
+    @CalledByNative
     public static boolean isSamsungTalkBackEnabled() {
         return getDelegate().isSamsungTalkBackEnabled();
     }
@@ -263,13 +282,13 @@ public class AccessibilityState {
 
     /**
      * Helper method to return the value that is equivalent to the deprecated approach:
-     *     ChromeAccessibilityUtil.get().isAccessibilityEnabled()
+     * ChromeAccessibilityUtil.get().isAccessibilityEnabled()
      *
-     * Avoid calling this method at all costs. The naming of this method is misleading and its
+     * <p>Avoid calling this method at all costs. The naming of this method is misleading and its
      * usage is tricky. Use the more granular methods of this class.
      *
-     * Returns true if an accessibility service is running that uses touch exploration OR a service
-     * is running that can perform gestures.
+     * <p>Returns true if an accessibility service is running that uses touch exploration OR a
+     * service is running that can perform gestures.
      *
      * @return true when touch exploration or gesture performing services are running.
      */
@@ -347,10 +366,6 @@ public class AccessibilityState {
         return getDelegate().getAccessibilityToolFlags();
     }
 
-    public static void registerObservers() {
-        getDelegate().registerObservers();
-    }
-
     public static void initializeOnStartup(AccessibilityStateVisibilityManager visibilityManager) {
         getDelegate().initializeOnStartup(visibilityManager);
     }
@@ -365,8 +380,6 @@ public class AccessibilityState {
 
         void onTextCursorBlinkIntervalChanged(int textCursorBlinkInterval);
 
-        void onSamsungTalkBackStateChanged(boolean enabled);
-
         void recordAccessibilityServiceInfoHistograms();
     }
 
@@ -375,5 +388,8 @@ public class AccessibilityState {
             sDelegate.uninitializeForTesting();
         }
         sDelegate = delegate;
+        if (delegate != null) {
+            ResettersForTesting.register(() -> setDelegateForTesting(null));
+        }
     }
 }

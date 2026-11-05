@@ -4,6 +4,7 @@
 
 #include "components/sync_bookmarks/initial_account_bookmark_deduplicator.h"
 
+#include <ranges>
 #include <utility>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/bookmarks/common/bookmark_metrics.h"
+#include "components/sync_bookmarks/scoped_bookmark_extensive_changes.h"
 
 namespace sync_bookmarks {
 
@@ -43,6 +45,8 @@ InitialAccountBookmarkDeduplicator::~InitialAccountBookmarkDeduplicator() =
     default;
 
 void InitialAccountBookmarkDeduplicator::Deduplicate() {
+  ScopedBookmarkExtensiveChanges extensive_changes(*bookmark_model_);
+
   for (const auto& [local_permanent_node, account_permanent_node] :
        GetLocalAndAccountPermanentNodePairs(bookmark_model_)) {
     std::vector<size_t> indices_to_remove;
@@ -115,7 +119,7 @@ void InitialAccountBookmarkDeduplicator::RemoveChildrenAt(
   // lead to quadratic behavior. However, A/B experiments via variations led to
   // the conclusion that this simple implementation isn't slower than more
   // sophisticated variants, even at high percentiles.
-  for (size_t index : base::Reversed(indices_to_remove)) {
+  for (size_t index : std::views::reverse(indices_to_remove)) {
     const bookmarks::BookmarkNode* child = parent->children().at(index).get();
     bookmark_model_->Remove(
         child, bookmarks::metrics::BookmarkEditSource::kOther, FROM_HERE);

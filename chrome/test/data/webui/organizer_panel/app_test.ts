@@ -4,21 +4,96 @@
 
 import 'chrome://organizer-panel.top-chrome/organizer_panel.js';
 
-import type {OrganizerPanelAppElement} from 'chrome://organizer-panel.top-chrome/organizer_panel.js';
+import type {ForeignTab, OrganizerPanelAppElement, OrganizerPanelPageRemote, RecentlyClosedSplitView, RecentlyClosedTab, RecentlyClosedTabGroup, Tab, TabGroup} from 'chrome://organizer-panel.top-chrome/organizer_panel.js';
+import {browserProxyFactory, foreignTabsBrowserProxyFactory, ForeignTabsDelegate, ForeignTabsPageHandlerRemote, OpenTabsDelegate, OpenTabsItemType, organizerPanelBrowserProxyFactory, OrganizerPanelPageHandlerRemote, PageHandlerRemote, RecentTabsDelegate, SearchApiProxyImpl, tabGroupsBrowserProxyFactory, TabGroupsDelegate, TabGroupsOrganizerPageHandlerRemote} from 'chrome://organizer-panel.top-chrome/organizer_panel.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {microtasksFinished} from 'chrome://webui-test/test_util.js';
+import {getDeepActiveElement} from 'chrome://resources/js/util.js';
+import {render} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
+import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
+import {TestMock} from 'chrome://webui-test/test_mock.js';
+import {hasStyle, microtasksFinished} from 'chrome://webui-test/test_util.js';
+
+import {TestSearchApiProxy} from './test_search_api_proxy.js';
 
 suite('OrganizerPanelAppTest', () => {
   let app: OrganizerPanelAppElement;
+  let metrics: MetricsTracker;
+  let mockOrganizerPanelHandler: TestMock<OrganizerPanelPageHandlerRemote>&
+      OrganizerPanelPageHandlerRemote;
+  let remotePage: OrganizerPanelPageRemote;
+  let mockPageHandler: PageHandlerRemote&TestMock<PageHandlerRemote>;
+  let mockTabGroupsHandler: TestMock<TabGroupsOrganizerPageHandlerRemote>&
+      TabGroupsOrganizerPageHandlerRemote;
+  let mockForeignTabsHandler: TestMock<ForeignTabsPageHandlerRemote>&
+      ForeignTabsPageHandlerRemote;
 
   setup(async () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    metrics = fakeMetricsPrivate();
     loadTimeData.resetForTesting({
       clearSearch: 'Clear search',
+      close: 'Close',
+      closeTab: 'Close tab',
+      collapse: 'Collapse',
+      createTabGroup: 'Create tab group',
+      currentlyPlaying: 'Currently playing',
+      diceSupportEnabled: true,
+      expand: 'Expand',
+      foreignTabsEnabled: false,
+      isIncognitoMode: false,
+      isUserSignedIn: true,
+      noRecentlyClosedTabs: 'No recently closed tabs',
+      noResults: 'No results',
+      options: 'Options',
+      recentlyClosed: 'Recently closed',
+      recentlyVisited: 'Recently visited',
       searchTabs: 'Search Tabs',
       shortcutText: 'Ctrl+Shift+A',
+      signInOnPhone: 'Sign in on your phone',
+      tabGroupMoreOptions: 'More options',
+      tabGroups: 'Tab groups',
+      tabsOnOtherDevices: 'Tabs on other devices',
     });
+    mockOrganizerPanelHandler =
+        TestMock.fromClass(OrganizerPanelPageHandlerRemote);
+    mockOrganizerPanelHandler.setPromiseResolveFor(
+        'getSectionState', {state: {expanded: false, showAll: false}});
+    const {instance: organizerPanelInstance, remote} =
+        organizerPanelBrowserProxyFactory.createForTest(
+            mockOrganizerPanelHandler);
+    organizerPanelBrowserProxyFactory.setInstance(organizerPanelInstance);
+    remotePage = remote;
+
+    mockPageHandler = TestMock.fromClass(PageHandlerRemote);
+    const {instance} = browserProxyFactory.createForTest(mockPageHandler);
+    browserProxyFactory.setInstance(instance);
+    mockPageHandler.setResultFor('getProfileData', Promise.resolve({
+      profileData: {
+        windows: [],
+        recentlyClosedTabs: [],
+        recentlyClosedTabGroups: [],
+        recentlyClosedSplitViews: [],
+        recentlyClosedSectionExpanded: false,
+        tabGroups: [],
+      },
+    }));
+
+    mockTabGroupsHandler =
+        TestMock.fromClass(TabGroupsOrganizerPageHandlerRemote);
+    mockTabGroupsHandler.setResultFor(
+        'getTabGroups', Promise.resolve({tabGroups: []}));
+    const {instance: tabGroupsInstance} =
+        tabGroupsBrowserProxyFactory.createForTest(mockTabGroupsHandler);
+    tabGroupsBrowserProxyFactory.setInstance(tabGroupsInstance);
+
+    mockForeignTabsHandler = TestMock.fromClass(ForeignTabsPageHandlerRemote);
+    mockForeignTabsHandler.setResultFor(
+        'getForeignTabs', Promise.resolve({tabs: []}));
+    foreignTabsBrowserProxyFactory.setInstance(
+        {handler: mockForeignTabsHandler});
+
     app = document.createElement('organizer-panel-app');
     document.body.appendChild(app);
     await microtasksFinished();
@@ -29,12 +104,559 @@ suite('OrganizerPanelAppTest', () => {
     assertEquals('Search Tabs', searchField.getAttribute('label'));
     assertEquals('Clear search', searchField.getAttribute('clear-label'));
 
-    const shortcut = searchField.querySelector('#shortcut');
+    const shortcut = app.$.shortcut;
     assertTrue(!!shortcut);
-    assertEquals('Ctrl+Shift+A', shortcut.textContent);
+    assertEquals('Ctrl+Shift+A', shortcut.textContent.trim());
+
+    assertTrue(hasStyle(searchField.$.prompt, 'text-overflow', 'ellipsis'));
+  });
+
+  test('elides placeholder when there is not enough room', async () => {
+    const searchField = app.$.searchField;
+
+    // Set search field width narrow enough that the placeholder cannot fit
+    // alongside the shortcut.
+    searchField.style.width = '120px';
+    await microtasksFinished();
+
+    const prompt = searchField.$.prompt;
+    assertTrue(prompt.clientWidth < prompt.scrollWidth);
+    assertTrue(hasStyle(prompt, 'text-overflow', 'ellipsis'));
+  });
+
+  test(
+      'focuses input when magnifying glass icon is clicked while unfocused',
+      () => {
+        const searchField = app.$.searchField;
+        const searchInput = searchField.getSearchInput();
+        searchInput.blur();
+        assertNotEquals(searchInput, searchField.shadowRoot.activeElement);
+
+        searchField.$.icon.click();
+        assertEquals(searchInput, searchField.shadowRoot.activeElement);
+      });
+
+  test('focuses input when shortcut is clicked while unfocused', () => {
+    const searchField = app.$.searchField;
+    const searchInput = searchField.getSearchInput();
+    searchInput.blur();
+    assertNotEquals(searchInput, searchField.shadowRoot.activeElement);
+
+    app.$.shortcut.click();
+    assertEquals(searchInput, searchField.shadowRoot.activeElement);
   });
 
   test('renders organizer list with expected sections', () => {
-    assertEquals(1, app.$.list.sectionDelegates.length);
+    assertEquals(3, app.$.list.sectionDelegates.length);
+    assertTrue(app.$.list.sectionDelegates.some(
+        delegate => delegate instanceof RecentTabsDelegate));
+  });
+
+  test('hides recent tabs section in incognito mode', async () => {
+    loadTimeData.overrideValues({isIncognitoMode: true});
+    const incognitoApp = document.createElement('organizer-panel-app');
+    document.body.appendChild(incognitoApp);
+    await microtasksFinished();
+
+    assertEquals(2, incognitoApp.$.list.sectionDelegates.length);
+    assertTrue(incognitoApp.$.list.sectionDelegates.every(
+        delegate => !(delegate instanceof RecentTabsDelegate)));
+  });
+
+  test('renders foreign tabs section when flag is enabled', async () => {
+    loadTimeData.overrideValues({foreignTabsEnabled: true});
+    const testApp = document.createElement('organizer-panel-app');
+    document.body.appendChild(testApp);
+    await microtasksFinished();
+
+    assertEquals(4, testApp.$.list.sectionDelegates.length);
+    assertEquals(
+        'Tabs on other devices',
+        testApp.$.list.sectionDelegates[3]!.getHeader());
+    const sections =
+        testApp.$.list.shadowRoot.querySelectorAll('organizer-list-section');
+    assertEquals(4, sections.length);
+    assertFalse(sections[3]!.hidden);
+    assertEquals(4, testApp.$.list.getVisibleSections().length);
+  });
+
+  test('hides foreign tabs section when user is signed out', async () => {
+    loadTimeData.overrideValues({
+      foreignTabsEnabled: true,
+      isUserSignedIn: false,
+    });
+    const testApp = document.createElement('organizer-panel-app');
+    document.body.appendChild(testApp);
+    await microtasksFinished();
+
+    const sections =
+        testApp.$.list.shadowRoot.querySelectorAll('organizer-list-section');
+    assertEquals(4, sections.length);
+    assertTrue(sections[3]!.hidden);
+    assertEquals(3, testApp.$.list.getVisibleSections().length);
+  });
+
+  test('updates list searchQuery when search field changes', async () => {
+    app.$.searchField.setValue('test search');
+    await microtasksFinished();
+    assertEquals('test search', app.$.list.searchQuery);
+  });
+
+  test('updates divider color when vertical tabs enabled', async () => {
+    app.style.setProperty('--color-sys-divider', 'rgb(10, 20, 30)');
+    app.style.setProperty('--color-sys-on-header-divider', 'rgb(40, 50, 60)');
+    await microtasksFinished();
+
+    const divider =
+        app.$.list.shadowRoot.querySelector<HTMLElement>('.divider');
+    assertTrue(!!divider);
+    assertFalse(app.verticalTabsEnabled);
+    assertFalse(app.hasAttribute('vertical-tabs-enabled'));
+    assertEquals('rgb(10, 20, 30)', getComputedStyle(divider).backgroundColor);
+
+    remotePage.onVerticalTabsEnabledChanged(true);
+    await microtasksFinished();
+
+    assertTrue(app.verticalTabsEnabled);
+    assertTrue(app.hasAttribute('vertical-tabs-enabled'));
+    assertEquals('rgb(40, 50, 60)', getComputedStyle(divider).backgroundColor);
+
+    remotePage.onVerticalTabsEnabledChanged(false);
+    await microtasksFinished();
+
+    assertFalse(app.verticalTabsEnabled);
+    assertFalse(app.hasAttribute('vertical-tabs-enabled'));
+    assertEquals('rgb(10, 20, 30)', getComputedStyle(divider).backgroundColor);
+  });
+
+  test(
+      'search field remains fixed and list scrolls when overflowing',
+      async () => {
+        const appStyle = window.getComputedStyle(app);
+        assertEquals('flex', appStyle.display);
+        assertEquals('column', appStyle.flexDirection);
+
+        const searchFieldStyle = window.getComputedStyle(app.$.searchField);
+        assertEquals('0', searchFieldStyle.flexShrink);
+
+        const listStyle = window.getComputedStyle(app.$.list);
+        assertEquals('0', listStyle.flexGrow);
+        assertEquals('auto', listStyle.overflowY);
+        assertEquals('hidden', listStyle.overflowX);
+        assertEquals('none', listStyle.overscrollBehavior);
+        assertEquals('8px', listStyle.paddingLeft);
+        assertEquals('0px', listStyle.paddingRight);
+        assertEquals('stable', listStyle.scrollbarGutter);
+
+        const dragRegionStyle = window.getComputedStyle(app.$.dragRegion);
+        assertEquals('1', dragRegionStyle.flexGrow);
+
+        app.style.height = '100px';
+        app.style.width = '300px';
+        const clientWidthBefore = app.$.list.clientWidth;
+        const dummy = document.createElement('div');
+        dummy.style.height = '500px';
+        app.$.list.shadowRoot.appendChild(dummy);
+        await microtasksFinished();
+
+        assertTrue(app.$.list.scrollHeight > app.$.list.clientHeight);
+        assertEquals(clientWidthBefore, app.$.list.clientWidth);
+
+        const searchFieldRectBefore = app.$.searchField.getBoundingClientRect();
+        app.$.list.scrollTop = 50;
+        assertEquals(50, app.$.list.scrollTop);
+
+        const searchFieldRectAfter = app.$.searchField.getBoundingClientRect();
+        assertEquals(searchFieldRectBefore.top, searchFieldRectAfter.top);
+      });
+
+  test('drag region expands to fill unused height', async () => {
+    app.style.height = '500px';
+    await microtasksFinished();
+
+    const dragRegionRect = app.$.dragRegion.getBoundingClientRect();
+    const listRect = app.$.list.getBoundingClientRect();
+    const appRect = app.getBoundingClientRect();
+
+    assertTrue(dragRegionRect.height > 0);
+    assertEquals(appRect.bottom, dragRegionRect.bottom);
+    assertEquals(listRect.bottom, dragRegionRect.top);
+  });
+
+  test(
+      'right clicking app prevents default and does not show context menu',
+      async () => {
+        const event = new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 50,
+          clientY: 100,
+        });
+        window.dispatchEvent(event);
+        await microtasksFinished();
+
+        assertTrue(event.defaultPrevented);
+      });
+
+  test(
+      'right clicking item without context menu prevents default', async () => {
+        const item = {
+          title: ['Open Tab'],
+        };
+        const listSection =
+            app.$.list.shadowRoot.querySelector('organizer-list-section')!;
+        listSection.items = [item];
+        await microtasksFinished();
+
+        const listItem = listSection.shadowRoot.querySelector(
+            'organizer-list-section-item')!;
+        const event = new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clientX: 50,
+          clientY: 100,
+        });
+        listItem.$.crUrlListItem.dispatchEvent(event);
+        await microtasksFinished();
+
+        assertTrue(event.defaultPrevented);
+      });
+
+  test('resets search query and scroll position on hidden', async () => {
+    app.style.height = '100px';
+    app.style.width = '300px';
+    const dummy = document.createElement('div');
+    dummy.style.height = '500px';
+    app.$.list.shadowRoot.appendChild(dummy);
+    app.$.searchField.setValue('test search');
+    await microtasksFinished();
+
+    app.$.list.scrollTop = 50;
+    assertEquals('test search', app.$.searchField.getValue());
+    assertEquals('test search', app.$.list.searchQuery);
+    assertEquals(50, app.$.list.scrollTop);
+
+    Object.defineProperty(
+        document, 'visibilityState', {value: 'hidden', writable: true});
+    document.dispatchEvent(new Event('visibilitychange'));
+    await microtasksFinished();
+
+    assertEquals('', app.$.searchField.getValue());
+    assertEquals('', app.$.list.searchQuery);
+    assertEquals(0, app.$.list.scrollTop);
+
+    Object.defineProperty(
+        document, 'visibilityState', {value: 'visible', writable: true});
+    document.dispatchEvent(new Event('visibilitychange'));
+    await microtasksFinished();
+
+    assertEquals('', app.$.searchField.getValue());
+    assertEquals('', app.$.list.searchQuery);
+    assertEquals(0, app.$.list.scrollTop);
+  });
+
+  test('clicking close button closes panel', async () => {
+    const closeBtn = app.shadowRoot.querySelector<HTMLElement>('#closeButton')!;
+    assertTrue(!!closeBtn);
+    assertEquals(0, mockOrganizerPanelHandler.getCallCount('closePanel'));
+
+    closeBtn.click();
+    await microtasksFinished();
+    assertEquals(1, mockOrganizerPanelHandler.getCallCount('closePanel'));
+
+    remotePage.onIsInTrayViewChanged(false);
+    await microtasksFinished();
+    assertFalse(app.inTrayView);
+    assertEquals(null, app.shadowRoot.querySelector('#closeButton'));
+
+    remotePage.onIsInTrayViewChanged(true);
+    await microtasksFinished();
+    assertTrue(app.inTrayView);
+    assertTrue(!!app.shadowRoot.querySelector('#closeButton'));
+  });
+
+  test('tab navigation with close button', async () => {
+    const closeBtn = app.shadowRoot.querySelector<HTMLElement>('#closeButton')!;
+    assertTrue(!!closeBtn);
+
+    // Tab on close button focuses search field input
+    closeBtn.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    await microtasksFinished();
+    assertEquals(app.$.searchField.getSearchInput(), getDeepActiveElement());
+
+    // Shift+Tab on close button focuses last section header
+    closeBtn.focus();
+    closeBtn.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    await microtasksFinished();
+    const sections = app.$.list.getVisibleSections();
+    const lastSection = sections[sections.length - 1]!;
+    assertEquals(
+        lastSection.$.header.$.expandButton.$.icon, getDeepActiveElement());
+
+    // Shift+Tab on close button focuses last section menu button when expanded
+    lastSection.expanded = true;
+    await microtasksFinished();
+    closeBtn.focus();
+    closeBtn.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    await microtasksFinished();
+    assertEquals(lastSection.$.header.$.menuButton, getDeepActiveElement());
+  });
+
+  test('focus-after-list and focus-before-list events from list', async () => {
+    // focus-before-list focuses search field
+    app.$.list.fire('focus-before-list');
+    await microtasksFinished();
+    assertEquals(app.$.searchField.getSearchInput(), getDeepActiveElement());
+
+    // When not in tray view (without close button), focus-after-list does
+    // not focus search field and does not prevent default.
+    app.inTrayView = false;
+    await microtasksFinished();
+
+    const dummyButton = document.createElement('button');
+    document.body.appendChild(dummyButton);
+    dummyButton.focus();
+    assertEquals(dummyButton, getDeepActiveElement());
+
+    const withoutCloseEvent =
+        new KeyboardEvent('keydown', {key: 'Tab', cancelable: true});
+    app.$.list.fire('focus-after-list', {sourceEvent: withoutCloseEvent});
+    await microtasksFinished();
+    assertEquals(dummyButton, getDeepActiveElement());
+    assertFalse(withoutCloseEvent.defaultPrevented);
+    dummyButton.remove();
+
+    // When in tray view (with close button), focus-after-list focuses
+    // close button and prevents default.
+    app.inTrayView = true;
+    await microtasksFinished();
+
+    const closeBtn = app.shadowRoot.querySelector<HTMLElement>('#closeButton')!;
+    assertTrue(!!closeBtn);
+
+    const withCloseEvent =
+        new KeyboardEvent('keydown', {key: 'Tab', cancelable: true});
+    app.$.list.fire('focus-after-list', {sourceEvent: withCloseEvent});
+    await microtasksFinished();
+    assertEquals(closeBtn, getDeepActiveElement());
+    assertTrue(withCloseEvent.defaultPrevented);
+  });
+
+  test(
+      'tabbing from last header menu button loops to close button or exits',
+      async () => {
+        const sections = app.$.list.getVisibleSections();
+        const lastSection = sections[sections.length - 1]!;
+        lastSection.expanded = true;
+        await microtasksFinished();
+
+        lastSection.$.header.focusMenuButton();
+        await microtasksFinished();
+        assertEquals(lastSection.$.header.$.menuButton, getDeepActiveElement());
+
+        // When not in tray view (without close button): Tab forwards
+        // focus-after-list without preventDefault, and expandButton has
+        // tabindex=-1 so focus is not trapped within the header.
+        app.inTrayView = false;
+        await microtasksFinished();
+
+        lastSection.$.header.focusMenuButton();
+        lastSection.$.header.$.menuButton.dispatchEvent(new Event('focus'));
+        await microtasksFinished();
+
+        const withoutCloseEvent = new KeyboardEvent('keydown', {
+          key: 'Tab',
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        });
+        lastSection.$.header.$.menuButton.dispatchEvent(withoutCloseEvent);
+        await microtasksFinished();
+        assertFalse(withoutCloseEvent.defaultPrevented);
+        assertEquals(-1, lastSection.$.header.$.expandButton.tabIndex);
+        assertEquals(
+            '-1',
+            lastSection.$.header.$.expandButton.$.icon.getAttribute(
+                'tabindex'));
+
+        // When in tray view (with close button): Tab focuses close
+        // button and prevents default.
+        app.inTrayView = true;
+        await microtasksFinished();
+
+        const closeBtn =
+            app.shadowRoot.querySelector<HTMLElement>('#closeButton')!;
+        assertTrue(!!closeBtn);
+
+        lastSection.$.header.focusMenuButton();
+        await microtasksFinished();
+        assertEquals(lastSection.$.header.$.menuButton, getDeepActiveElement());
+
+        const withCloseEvent = new KeyboardEvent('keydown', {
+          key: 'Tab',
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        });
+        lastSection.$.header.$.menuButton.dispatchEvent(withCloseEvent);
+        await microtasksFinished();
+        assertEquals(closeBtn, getDeepActiveElement());
+        assertTrue(withCloseEvent.defaultPrevented);
+
+        // Shift+Tab from close button focuses last section menu button.
+        const reverseEvent = new KeyboardEvent('keydown', {
+          key: 'Tab',
+          shiftKey: true,
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        });
+        closeBtn.dispatchEvent(reverseEvent);
+        await microtasksFinished();
+        assertEquals(lastSection.$.header.$.menuButton, getDeepActiveElement());
+        assertTrue(reverseEvent.defaultPrevented);
+      });
+
+  test('tab navigation from search field to list', async () => {
+    SearchApiProxyImpl.setInstance(new TestSearchApiProxy());
+    const sections = app.$.list.getVisibleSections();
+    sections[0]!.items = [{title: ['Open Tab']}];
+    await microtasksFinished();
+
+    const searchInput = app.$.searchField.getSearchInput();
+    app.$.searchField.setValue('Tab');
+    await microtasksFinished();
+
+    // Tab on searchInput does not prevent default (allowing natural Tab to the
+    // clear button).
+    searchInput.focus();
+    const inputTabEvent = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    });
+    searchInput.dispatchEvent(inputTabEvent);
+    await microtasksFinished();
+    assertFalse(inputTabEvent.defaultPrevented);
+
+    // Tab on the clear button focuses the first search result item.
+    const clearButton = app.$.searchField.shadowRoot.querySelector<HTMLElement>(
+        '#clearSearch')!;
+    assertTrue(!!clearButton);
+    clearButton.focus();
+    const clearButtonTabEvent = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    });
+    clearButton.dispatchEvent(clearButtonTabEvent);
+    await microtasksFinished();
+    assertTrue(clearButtonTabEvent.defaultPrevented);
+    assertEquals(
+        sections[0]!.getVisibleItems()[0]!.$.crUrlListItem
+            .getFocusableElement(),
+        getDeepActiveElement());
+  });
+
+  test('records user actions when delegates are interacted with', () => {
+    const openTabsDelegate =
+        app.$.list.sectionDelegates.find(d => d instanceof OpenTabsDelegate) as
+        OpenTabsDelegate;
+    assertTrue(!!openTabsDelegate);
+
+    // SwitchToTab and CloseTab
+    const dummyTabItem = {
+      title: ['Open Tab'],
+      data: {
+        type: OpenTabsItemType.TAB as const,
+        tab: {tabId: 1, alertStates: []} as unknown as Tab,
+      },
+    };
+    openTabsDelegate.onItemClick(dummyTabItem);
+    assertEquals(1, metrics.count('OrganizerPanel.SwitchToTab'));
+
+    openTabsDelegate.onItemActionButtonClicked(dummyTabItem);
+    assertEquals(1, metrics.count('OrganizerPanel.CloseTab'));
+
+    // RecentTabsDelegate: OpenRecentlyClosedTab, OpenRecentlyClosedTabGroup,
+    // OpenRecentlyClosedSplitView
+    const recentTabsDelegate =
+        app.$.list.sectionDelegates.find(
+            d => d instanceof RecentTabsDelegate) as RecentTabsDelegate;
+    assertTrue(!!recentTabsDelegate);
+
+    const recentTabItem = {
+      title: ['Recent Tab'],
+      data: {tabId: 10} as unknown as RecentlyClosedTab,
+    };
+    recentTabsDelegate.onItemClick(recentTabItem);
+    assertEquals(1, metrics.count('OrganizerPanel.OpenRecentlyClosedTab'));
+
+    const recentTabGroupItem = {
+      title: ['Recent Group'],
+      data: {sessionId: 20, color: 1} as unknown as RecentlyClosedTabGroup,
+    };
+    recentTabsDelegate.onItemClick(recentTabGroupItem);
+    assertEquals(1, metrics.count('OrganizerPanel.OpenRecentlyClosedTabGroup'));
+
+    const recentSplitItem = {
+      title: ['Recent Split'],
+      data: {sessionId: 30, tabUrls: []} as unknown as RecentlyClosedSplitView,
+    };
+    recentTabsDelegate.onItemClick(recentSplitItem);
+    assertEquals(
+        1, metrics.count('OrganizerPanel.OpenRecentlyClosedSplitView'));
+
+    // TabGroupsDelegate: OpenTabGroup and CreateTabGroup
+    const tabGroupsDelegate =
+        app.$.list.sectionDelegates.find(d => d instanceof TabGroupsDelegate) as
+        TabGroupsDelegate;
+    assertTrue(!!tabGroupsDelegate);
+
+    const groupItem = {
+      title: ['Tab Group'],
+      data: {id: 'group-1'} as TabGroup,
+    };
+    tabGroupsDelegate.onItemClick(groupItem);
+    assertEquals(1, metrics.count('OrganizerPanel.OpenTabGroup'));
+
+    // Zero state "+ Create tab group"
+    const zeroState = tabGroupsDelegate.getZeroState();
+    const container = document.createElement('div');
+    render(zeroState, container);
+    const zeroStateItem =
+        container.querySelector('organizer-list-section-item')!;
+    assertTrue(!!zeroStateItem);
+    zeroStateItem.click();
+    assertEquals(1, metrics.count('OrganizerPanel.CreateTabGroup'));
+
+    // ForeignTabsDelegate: OpenCrossDeviceTab
+    const foreignTabsDelegate = new ForeignTabsDelegate();
+    const foreignTabItem = {
+      title: ['Foreign Tab'],
+      data: {sessionTag: 'tag', sessionTabId: 40} as ForeignTab,
+    };
+    foreignTabsDelegate.onItemClick(foreignTabItem);
+    assertEquals(1, metrics.count('OrganizerPanel.OpenCrossDeviceTab'));
   });
 });

@@ -4,8 +4,6 @@
 
 #include "components/update_client/update_checker.h"
 
-#include <stddef.h>
-
 #include <algorithm>
 #include <functional>
 #include <memory>
@@ -259,9 +257,9 @@ void UpdateCheckerImpl::CheckForUpdatesHelper(
   const auto request = MakeProtocolRequest(
       !config_->IsPerUserInstall(), context->session_id, config_->GetProdId(),
       config_->GetBrowserVersion().GetString(), config_->GetChannel(),
-      config_->GetOSLongName(), config_->GetDownloadPreference(),
-      config_->IsMachineExternallyManaged(), additional_attributes,
-      updater_state_attributes, std::move(apps));
+      config_->GetOSLongName(), config_->GetDeviceFormFactor(),
+      config_->GetDownloadPreference(), config_->IsMachineExternallyManaged(),
+      additional_attributes, updater_state_attributes, std::move(apps));
 
   cancellation_->OnCancel(
       base::MakeRefCounted<RequestSender>(config_->GetNetworkFetcherFactory())

@@ -3,9 +3,13 @@
 // found in the LICENSE file.
 
 import {ExtensionPageCallbackRouter, PageCallbackRouter} from 'chrome://contextual-tasks/contextual_tasks.mojom-webui.js';
-import type {ComposeboxPosition, ContextInfo, ContextualTaskId, ContextualWindowId, ExtensionPageHandlerInterface, ExtensionPageRemote, InjectedInput, PageHandlerInterface, PageInterface, PageRemote} from 'chrome://contextual-tasks/contextual_tasks.mojom-webui.js';
+import type {ComposeboxPosition, ContextualTaskId, ContextualWindowId, ExtensionPageHandlerInterface, ExtensionPageRemote, InjectedInput, PageHandlerInterface, PageInterface, PageRemote} from 'chrome://contextual-tasks/contextual_tasks.mojom-webui.js';
 import type {BrowserProxy, ExtensionBrowserProxy} from 'chrome://contextual-tasks/contextual_tasks_browser_proxy.js';
+import {ContextualTasksToolbarUIObserverCallbackRouter, PageCallbackRouter as ToolbarPageCallbackRouter} from 'chrome://contextual-tasks/contextual_tasks_toolbar.mojom-webui.js';
+import type {ContextualTasksToolbarUIObserverRemote, ContextualTasksToolbarUIServiceInterface, InitialState, PageHandlerInterface as ToolbarPageHandlerInterface, PageRemote as ToolbarPageRemote} from 'chrome://contextual-tasks/contextual_tasks_toolbar.mojom-webui.js';
+import type {ToolbarBrowserProxy} from 'chrome://contextual-tasks/contextual_tasks_toolbar_browser_proxy.js';
 import type {PostMessageHandler} from 'chrome://contextual-tasks/post_message_handler.js';
+import type {LhsChipIdentifier} from 'chrome://contextual-tasks/toolbar_ui_api_data_model.mojom-webui.js';
 import type {UnguessableToken} from 'chrome://resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 import type {Uuid} from 'chrome://resources/mojo/mojo/public/mojom/base/uuid.mojom-webui.js';
 import type {Url} from 'chrome://resources/mojo/url/mojom/url.mojom-webui.js';
@@ -21,8 +25,6 @@ class MockPage extends TestBrowserProxy implements PageInterface {
     super([
       'hideInput',
       'postAimMessage',
-      'onAiPageStatusChanged',
-      'onContextUpdated',
       'onHandshakeComplete',
       'onLensOverlayStateChanged',
       'onSidePanelStateChanged',
@@ -39,14 +41,14 @@ class MockPage extends TestBrowserProxy implements PageInterface {
       'injectInput',
       'injectInputWithIcon',
       'removeInjectedInput',
-      'setShowReopenTabs',
       'onSidePanelPinStateChanged',
       'setInNlm',
-      'setExpandButtonEnabled',
       'turnOnSmartTabSharing',
       'showSmartTabSharingTryItIph',
       'showSmartTabSharingDefaultOnIph',
       'onWindowClosed',
+      'resetForNewThread',
+      'focusComposebox',
     ]);
   }
 
@@ -60,11 +62,6 @@ class MockPage extends TestBrowserProxy implements PageInterface {
 
   postAimMessage(message: number[]) {
     this.methodCalled('postAimMessage', message);
-  }
-
-
-  onContextUpdated(message: ContextInfo[]) {
-    this.methodCalled('onContextUpdated', message);
   }
 
   onHandshakeComplete() {
@@ -113,10 +110,6 @@ class MockPage extends TestBrowserProxy implements PageInterface {
     this.methodCalled('setInNlm', inNlm);
   }
 
-  onAiPageStatusChanged(isAiPage: boolean) {
-    this.methodCalled('onAiPageStatusChanged', isAiPage);
-  }
-
   onLensOverlayStateChanged(isOverlayShowing: boolean) {
     this.methodCalled('onLensOverlayStateChanged', isOverlayShowing);
   }
@@ -149,9 +142,6 @@ class MockPage extends TestBrowserProxy implements PageInterface {
     this.methodCalled('unlockInput');
   }
 
-  setShowReopenTabs(show: boolean) {
-    this.methodCalled('setShowReopenTabs', show);
-  }
 
   injectInput(input: InjectedInput) {
     this.methodCalled('injectInput', input);
@@ -162,10 +152,6 @@ class MockPage extends TestBrowserProxy implements PageInterface {
   }
   onSidePanelPinStateChanged(isPinned: boolean) {
     this.methodCalled('onSidePanelPinStateChanged', isPinned);
-  }
-
-  setExpandButtonEnabled(enabled: boolean) {
-    this.methodCalled('setExpandButtonEnabled', enabled);
   }
 
   turnOnSmartTabSharing() {
@@ -183,6 +169,14 @@ class MockPage extends TestBrowserProxy implements PageInterface {
   onWindowClosed(windowId: ContextualWindowId) {
     this.methodCalled('onWindowClosed', windowId);
   }
+
+  resetForNewThread(taskId: Uuid, threadUrl: Url) {
+    this.methodCalled('resetForNewThread', taskId, threadUrl);
+  }
+
+  focusComposebox() {
+    this.methodCalled('focusComposebox');
+  }
 }
 
 /**
@@ -197,12 +191,12 @@ class TestContextualTasksPageHandler extends TestBrowserProxy implements
   private isAiPageResult_: boolean = false;
   private isPendingErrorPageMap_: {[key: string]: boolean} = {};
   private isInZeroState_: boolean = false;
+  private movedToNewThread_: boolean = false;
 
 
   constructor(url: string, page: MockPage) {
     super([
       'setThreadUrl',
-      'closeSidePanel',
       'getCommonSearchParams',
       'getRecentTabs',
       'getSearchUrl',
@@ -213,37 +207,22 @@ class TestContextualTasksPageHandler extends TestBrowserProxy implements
       'isEmbeddedPageErrorDocument',
       'isShownInTab',
       'isZeroState',
-      'moveTaskUiToNewTab',
+      'moveActiveTabToNewThreadIfShared',
       'onboardingTooltipDismissed',
-      'lensSearchTooltipDismissed',
       'askGTooltipDismissed',
       'onContextMenuOpened',
-      'onFileClickedFromSourcesMenu',
-      'onImageClickedFromSourcesMenu',
-      'onTabClickedFromSourcesMenu',
       'onWebviewMessage',
-      'openFeedbackUi',
-      'openMyActivityUi',
       'openOnboardingHelpUi',
-      'openOverflowMenuHelpUi',
-      'openUrl',
-      'reopenTabs',
+      'openAskGHelpUi',
       'setTaskId',
       'setThreadTitle',
-      'showThreadHistory',
       'submitQuery',
-      'pinSidePanel',
-      'unpinSidePanel',
       'isSidePanelPinned',
       'notifySmartTabSharingTryItIphResult',
       'notifySmartTabSharingDefaultOnIphResult',
       'registerWindow',
       'onWindowClosed',
       'closeWindow',
-      'maybeTriggerPinningPromo',
-      'showPageInfoBubble',
-      'onLogoPointerDown',
-      'createNewThread',
     ]);
 
     this.url_ = url;
@@ -259,6 +238,15 @@ class TestContextualTasksPageHandler extends TestBrowserProxy implements
     return Promise.resolve({url: this.url_ as unknown as Url});
   }
 
+  setMovedToNewThread(moved: boolean) {
+    this.movedToNewThread_ = moved;
+  }
+
+  moveActiveTabToNewThreadIfShared() {
+    this.methodCalled('moveActiveTabToNewThreadIfShared');
+    return Promise.resolve({moved: this.movedToNewThread_});
+  }
+
   getUrlForTask(uuid: Uuid) {
     this.methodCalled('getUrlForTask', uuid);
     return Promise.resolve({url: this.url_ as unknown as Url});
@@ -270,14 +258,6 @@ class TestContextualTasksPageHandler extends TestBrowserProxy implements
 
   setThreadTitle(title: string) {
     this.methodCalled('setThreadTitle', title);
-  }
-
-  closeSidePanel() {
-    this.methodCalled('closeSidePanel');
-  }
-
-  showThreadHistory() {
-    this.methodCalled('showThreadHistory');
   }
 
   setIsShownInTab(isInTab: boolean) {
@@ -323,47 +303,23 @@ class TestContextualTasksPageHandler extends TestBrowserProxy implements
     return Promise.resolve({isErrorDocument: false});
   }
 
-  openMyActivityUi() {
-    this.methodCalled('openMyActivityUi');
-  }
-
-  openFeedbackUi() {
-    this.methodCalled('openFeedbackUi');
-  }
-
   openOnboardingHelpUi() {
     this.methodCalled('openOnboardingHelpUi');
   }
 
-  openOverflowMenuHelpUi() {
-    this.methodCalled('openOverflowMenuHelpUi');
-  }
-
-  openUrl(url: Url|string, disposition: number) {
-    this.methodCalled('openUrl', url, disposition);
+  // eslint-disable-next-line @typescript-eslint/naming-convention
+  openAskGHelpUi() {
+    this.methodCalled('openAskGHelpUi');
   }
 
   onboardingTooltipDismissed() {
     this.methodCalled('onboardingTooltipDismissed');
   }
 
-  lensSearchTooltipDismissed() {
-    this.methodCalled('lensSearchTooltipDismissed');
-  }
-
   // eslint-disable-next-line @typescript-eslint/naming-convention
   askGTooltipDismissed() {
     this.methodCalled('askGTooltipDismissed');
   }
-
-  moveTaskUiToNewTab() {
-    this.methodCalled('moveTaskUiToNewTab');
-  }
-
-  reopenTabs() {
-    this.methodCalled('reopenTabs');
-  }
-
 
   // This name is generated by mojom, and the convention is to use OAuth, which
   // violates the linter check. To keep conventions, disable the linter here.
@@ -386,18 +342,6 @@ class TestContextualTasksPageHandler extends TestBrowserProxy implements
       'gsc': isSidePanel ? '2' : '',
     };
     return Promise.resolve({params});
-  }
-
-  onTabClickedFromSourcesMenu(tabId: number, url: Url) {
-    this.methodCalled('onTabClickedFromSourcesMenu', tabId, url);
-  }
-
-  onFileClickedFromSourcesMenu(url: Url) {
-    this.methodCalled('onFileClickedFromSourcesMenu', url);
-  }
-
-  onImageClickedFromSourcesMenu(url: Url) {
-    this.methodCalled('onImageClickedFromSourcesMenu', url);
   }
 
   getSearchUrl(query: string) {
@@ -434,15 +378,6 @@ class TestContextualTasksPageHandler extends TestBrowserProxy implements
     return Promise.resolve();
   }
 
-
-  pinSidePanel() {
-    this.methodCalled('pinSidePanel');
-  }
-
-  unpinSidePanel() {
-    this.methodCalled('unpinSidePanel');
-  }
-
   isSidePanelPinned() {
     this.methodCalled('isSidePanelPinned');
     return Promise.resolve({isPinned: false});
@@ -471,22 +406,6 @@ class TestContextualTasksPageHandler extends TestBrowserProxy implements
 
   closeWindow(windowId: ContextualWindowId) {
     this.methodCalled('closeWindow', windowId);
-  }
-
-  maybeTriggerPinningPromo() {
-    this.methodCalled('maybeTriggerPinningPromo');
-  }
-
-  showPageInfoBubble(isPointerInteraction: boolean) {
-    this.methodCalled('showPageInfoBubble', isPointerInteraction);
-  }
-
-  onLogoPointerDown() {
-    this.methodCalled('onLogoPointerDown');
-  }
-
-  createNewThread() {
-    this.methodCalled('createNewThread');
   }
 }
 
@@ -524,13 +443,31 @@ export class TestExtensionPageHandler extends TestBrowserProxy implements
   constructor() {
     super([
       'getHandshakeMessage',
+      'getLensCropPreview',
       'onWebviewMessage',
+      'removeLensCrop',
       'setTaskId',
       'updateComposeboxHeight',
     ]);
   }
 
-  getHandshakeMessage() {
+  lensCropPreviewResult: {dataUri: string|null} = {dataUri: null};
+
+  setLensCropPreviewResult(dataUri: string|null) {
+    this.lensCropPreviewResult = {dataUri};
+  }
+
+  getLensCropPreview() {
+    this.methodCalled('getLensCropPreview');
+    return Promise.resolve(this.lensCropPreviewResult);
+  }
+
+  removeLensCrop() {
+    this.methodCalled('removeLensCrop');
+    return Promise.resolve();
+  }
+
+  getHandshakeMessage(_documentId: string|null = null) {
     this.methodCalled('getHandshakeMessage');
     return Promise.resolve({
       message: {
@@ -542,7 +479,7 @@ export class TestExtensionPageHandler extends TestBrowserProxy implements
     });
   }
 
-  onWebviewMessage(message: number[]) {
+  onWebviewMessage(message: number[], _documentId: string|null = null) {
     this.methodCalled('onWebviewMessage', message);
   }
 
@@ -571,5 +508,220 @@ export class TestExtensionBrowserProxy extends TestBrowserProxy implements
     this.callbackRouterRemote =
         this.callbackRouter.$.bindNewPipeAndPassRemote();
     this.handler = new TestExtensionPageHandler();
+  }
+}
+
+/**
+ * Test version of the contextual_tasks_toolbar PageHandler used to verify calls
+ * to the browser from the toolbar WebUI.
+ */
+export class TestToolbarPageHandler extends TestBrowserProxy implements
+    ToolbarPageHandlerInterface {
+  constructor() {
+    super([
+      'pinSidePanel',
+      'unpinSidePanel',
+      'openMyActivityUi',
+      'openOverflowMenuHelpUi',
+      'openManageAccountUi',
+      'openLogOutFlow',
+      'openFeedbackUi',
+      'moveTaskUiToNewTab',
+      'showThreadHistory',
+      'onFileClickedFromSourcesMenu',
+      'onImageClickedFromSourcesMenu',
+      'onTabClickedFromSourcesMenu',
+      'closeSidePanel',
+      'showPageInfoBubble',
+      'onLogoPointerDown',
+      'createNewThread',
+      'maybeTriggerPinningPromo',
+    ]);
+  }
+
+  pinSidePanel() {
+    this.methodCalled('pinSidePanel');
+  }
+
+  unpinSidePanel() {
+    this.methodCalled('unpinSidePanel');
+  }
+
+  openMyActivityUi() {
+    this.methodCalled('openMyActivityUi');
+  }
+
+  openOverflowMenuHelpUi() {
+    this.methodCalled('openOverflowMenuHelpUi');
+  }
+
+  openManageAccountUi() {
+    this.methodCalled('openManageAccountUi');
+  }
+
+  openLogOutFlow() {
+    this.methodCalled('openLogOutFlow');
+  }
+
+  openFeedbackUi() {
+    this.methodCalled('openFeedbackUi');
+  }
+
+  moveTaskUiToNewTab() {
+    this.methodCalled('moveTaskUiToNewTab');
+  }
+
+  showThreadHistory() {
+    this.methodCalled('showThreadHistory');
+  }
+
+  onTabClickedFromSourcesMenu(tabId: number, url: Url) {
+    this.methodCalled('onTabClickedFromSourcesMenu', tabId, url);
+  }
+
+  onFileClickedFromSourcesMenu(url: Url) {
+    this.methodCalled('onFileClickedFromSourcesMenu', url);
+  }
+
+  onImageClickedFromSourcesMenu(url: Url) {
+    this.methodCalled('onImageClickedFromSourcesMenu', url);
+  }
+
+  closeSidePanel() {
+    this.methodCalled('closeSidePanel');
+  }
+
+  showPageInfoBubble(isPointerInteraction: boolean) {
+    this.methodCalled('showPageInfoBubble', isPointerInteraction);
+  }
+
+  onLogoPointerDown() {
+    this.methodCalled('onLogoPointerDown');
+  }
+
+  createNewThread() {
+    this.methodCalled('createNewThread');
+  }
+
+  maybeTriggerPinningPromo() {
+    this.methodCalled('maybeTriggerPinningPromo');
+  }
+}
+
+/**
+ * Test version of the ContextualTasksToolbarUIService used to verify calls
+ * to the browser from the toolbar WebUI.
+ */
+export class TestContextualTasksToolbarUiService extends TestBrowserProxy
+    implements ContextualTasksToolbarUIServiceInterface {
+  private initialState_: InitialState = {
+    state: {
+      indicatorChip: createFakePermissionChip(),
+      requestChip: createFakePermissionChip(),
+      isDividerVisible: false,
+    },
+    updateStream: null as any,
+  };
+
+  constructor() {
+    super([
+      'getInitialState',
+      'onChipMousePressed',
+      'onChipClicked',
+      'onChipPointerEntered',
+      'onChipPointerExited',
+      'onChipExpandAnimationEnded',
+      'onChipCollapseAnimationEnded',
+    ]);
+  }
+
+  setInitialState(state: InitialState) {
+    this.initialState_ = state;
+  }
+
+  getInitialState(): Promise<InitialState> {
+    this.methodCalled('getInitialState');
+    return Promise.resolve(this.initialState_);
+  }
+
+  onChipMousePressed(identifier: LhsChipIdentifier) {
+    this.methodCalled('onChipMousePressed', identifier);
+  }
+
+  onChipClicked(
+      identifier: LhsChipIdentifier, isMouseInteraction: boolean,
+      stateToken: number) {
+    this.methodCalled(
+        'onChipClicked', [identifier, isMouseInteraction, stateToken]);
+  }
+
+  onChipPointerEntered(identifier: LhsChipIdentifier) {
+    this.methodCalled('onChipPointerEntered', identifier);
+  }
+
+  onChipPointerExited(identifier: LhsChipIdentifier) {
+    this.methodCalled('onChipPointerExited', identifier);
+  }
+
+  onChipExpandAnimationEnded(identifier: LhsChipIdentifier) {
+    this.methodCalled('onChipExpandAnimationEnded', identifier);
+  }
+
+  onChipCollapseAnimationEnded(identifier: LhsChipIdentifier) {
+    this.methodCalled('onChipCollapseAnimationEnded', identifier);
+  }
+}
+
+/**
+ * Returns a fake PermissionChipState with default values, overridden by
+ * `overrides`.
+ */
+export function createFakePermissionChip(overrides = {}) {
+  return {
+    isVisible: false,
+    isFullyCollapsed: false,
+    theme: 0,
+    promptStyle: 0,
+    userDecision: 0,
+    shouldShowBlockedIcon: false,
+    iconName: '',
+    message: '',
+    tooltip: '',
+    accessibilityName: '',
+    stateToken: 1,
+    ...overrides,
+  };
+}
+
+/**
+ * Test version of the ToolbarBrowserProxy used in connecting the Contextual
+ * Tasks toolbar WebUI to the browser.
+ */
+export class TestToolbarBrowserProxy extends TestBrowserProxy implements
+    ToolbarBrowserProxy {
+  callbackRouter: ToolbarPageCallbackRouter;
+  callbackRouterRemote: ToolbarPageRemote;
+  handler: TestToolbarPageHandler;
+  toolbarUiService: TestContextualTasksToolbarUiService;
+  toolbarUiObserverCallbackRouter:
+      ContextualTasksToolbarUIObserverCallbackRouter;
+
+  constructor() {
+    super([]);
+    this.callbackRouter = new ToolbarPageCallbackRouter();
+    this.callbackRouterRemote =
+        this.callbackRouter.$.bindNewPipeAndPassRemote();
+    this.handler = new TestToolbarPageHandler();
+    this.toolbarUiService = new TestContextualTasksToolbarUiService();
+    this.toolbarUiObserverCallbackRouter =
+        new ContextualTasksToolbarUIObserverCallbackRouter();
+  }
+
+  /**
+   * Binds `toolbarUiObserverCallbackRouter` and returns a remote that tests
+   * can use to push observer updates to the WebUI.
+   */
+  bindToolbarUiObserverRemote(): ContextualTasksToolbarUIObserverRemote {
+    return this.toolbarUiObserverCallbackRouter.$.bindNewPipeAndPassRemote();
   }
 }

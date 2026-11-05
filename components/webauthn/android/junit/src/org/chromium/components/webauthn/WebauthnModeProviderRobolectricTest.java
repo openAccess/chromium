@@ -9,8 +9,6 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -18,7 +16,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.webauthn.cred_man.AppCredManRequestDecorator;
@@ -27,9 +24,6 @@ import org.chromium.components.webauthn.cred_man.GpmCredManRequestDecorator;
 import org.chromium.content_public.browser.WebContents;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {})
 public class WebauthnModeProviderRobolectricTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     private final WebauthnModeProvider mProvider = WebauthnModeProvider.getInstance();
@@ -42,7 +36,6 @@ public class WebauthnModeProviderRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testGetCredManRequestDecorator_whenGlobalModeApp_thenAppDecorator() {
         mProvider.setGlobalWebauthnMode(WebauthnMode.APP);
 
@@ -51,7 +44,6 @@ public class WebauthnModeProviderRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testGetCredManRequestDecorator_whenGlobalModeBrowser_thenBrowserDecorator() {
         mProvider.setGlobalWebauthnMode(WebauthnMode.BROWSER);
 
@@ -60,7 +52,6 @@ public class WebauthnModeProviderRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testGetCredManRequestDecorator_whenGlobalModeChrome_thenChromeDecorator() {
         mProvider.setGlobalWebauthnMode(WebauthnMode.CHROME);
 
@@ -69,7 +60,6 @@ public class WebauthnModeProviderRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testGetFido2ApiCallParams_whenGlobalModeApp_thenAppApi() {
         mProvider.setGlobalWebauthnMode(WebauthnMode.APP);
 
@@ -77,7 +67,6 @@ public class WebauthnModeProviderRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testGetFido2ApiCallParams_whenGlobalModeBrowser_thenBrowserApi() {
         mProvider.setGlobalWebauthnMode(WebauthnMode.BROWSER);
 
@@ -86,7 +75,6 @@ public class WebauthnModeProviderRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testGetFido2ApiCallParams_whenGlobalModeChrome_thenBrowserApi() {
         mProvider.setGlobalWebauthnMode(WebauthnMode.CHROME);
 
@@ -95,7 +83,6 @@ public class WebauthnModeProviderRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testGetWebauthnMode_whenNoGlobalMode_thenJniCalled() {
         mProvider.setGlobalWebauthnMode(WebauthnMode.NONE);
 

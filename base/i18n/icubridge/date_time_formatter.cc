@@ -8,10 +8,14 @@
 
 #include <algorithm>
 #include <string>
+#include <string_view>
+#include <utility>
 
 #include "base/check.h"
 #include "base/containers/fixed_flat_map.h"
+#include "base/containers/flat_map.h"
 #include "base/i18n/bcp47_extensions.h"
+#include "base/i18n/icu4c_tag_converter.h"  // nogncheck
 #include "base/i18n/icubridge/icu_bridge.h"
 #include "base/i18n/icubridge/icu_bridge_helpers.h"
 #include "base/i18n/language_tag.h"
@@ -20,6 +24,8 @@
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
 #include "build/build_config.h"
 #include "third_party/icu/source/common/unicode/locid.h"
 #include "third_party/icu/source/common/unicode/unistr.h"
@@ -67,20 +73,15 @@ icu::SimpleDateFormat CreateSimpleDateFormatter(
     const icu::UnicodeString& pattern,
     const LanguageTag& locale) {
   UErrorCode status = U_ZERO_ERROR;
-  // Then, format the time using the desired pattern.
   icu::SimpleDateFormat formatter(
       pattern, IcuLocaleConverter::GetInstance().FromLanguageTag(locale),
       status);
-  if (U_SUCCESS(status)) {
-    return formatter;
+  if (U_FAILURE(status)) {
+    // Fallback if the generated pattern failed (e.g. due to unsupported fields
+    // in some locales on limited ICU data platforms).
+    formatter.applyPattern(icu::UnicodeString("yyyy-MM-dd HH:mm:ss"));
   }
-
-  // Fallback if the generated pattern failed (e.g. due to unsupported fields
-  // in some locales on limited ICU data platforms).
-  status = U_ZERO_ERROR;
-  return icu::SimpleDateFormat(
-      icu::UnicodeString("yyyy-MM-dd HH:mm:ss"),
-      IcuLocaleConverter::GetInstance().FromLanguageTag(locale), status);
+  return formatter;
 }
 
 icu::DateFormat::EStyle ToIcuStyle(DateTimeFormatterOptions::ItemLength length,
@@ -254,15 +255,15 @@ std::u16string GetYearSkeleton(const std::string& skeleton,
 
 std::u16string GetMonthSkeleton(const icu::UnicodeString& icu_initial_pattern,
                                 const std::string& skeleton,
-                                DateTimeFormatterOptions::ItemLength length,
-                                SkeletonOptions options) {
-  if (!options.has_month) {
+                                DateTimeFormatterOptions options,
+                                SkeletonOptions skeleton_options) {
+  if (!skeleton_options.has_month) {
     return u"";
   }
 
   // If there is no day or year, a separated logic is applied.
-  if (!options.has_day && !options.has_year) {
-    switch (length) {
+  if (!skeleton_options.has_day && !skeleton_options.has_year) {
+    switch (options.length) {
       case DateTimeFormatterOptions::ItemLength::kNone:
       case DateTimeFormatterOptions::ItemLength::kShort:
         return u"M";
@@ -274,16 +275,25 @@ std::u16string GetMonthSkeleton(const icu::UnicodeString& icu_initial_pattern,
   }
 
   size_t month_count = std::ranges::count(skeleton, 'M');
-  if (length == DateTimeFormatterOptions::ItemLength::kLong) {
+  if (options.length == DateTimeFormatterOptions::ItemLength::kLong) {
     month_count = std::max(month_count, static_cast<size_t>(4));
   }
-  // If there is weekday in the initial skeleton and the length is medium, the
-  // month (M) count is set to a minimum of 3.
-  if (length == DateTimeFormatterOptions::ItemLength::kMedium &&
+  // For medium-length formatting with format identifiers kMD or kMDE (month/day
+  // or month/day/weekday), force the month 'M' count to be at least 3 (i.e.
+  // 'MMM') to ensure a textual month representation (such as "Jan" or "Januar")
+  // is used rather than a numeric format (e.g. "01" or "1"). For other formats,
+  // we check if '年' (year character) is in the initial ICU pattern to
+  // similarly force textual representation.
+  if (options.length == DateTimeFormatterOptions::ItemLength::kMedium &&
       month_count < 3) {
-    // This is a special character that if present in the initial pattern, we
-    // can force it to appear again by increasing the number of 'M' symbols.
-    if (icu_initial_pattern.indexOf(u'年') != -1) {
+    if (options.format_identifier ==
+            DateTimeFormatterOptions::FormatIdentifier::kMD ||
+        options.format_identifier ==
+            DateTimeFormatterOptions::FormatIdentifier::kMDE) {
+      month_count = 3;
+    } else if (icu_initial_pattern.indexOf(u'年') != -1) {
+      // This is a special character that if present in the initial pattern, we
+      // can force it to appear again by increasing the number of 'M' symbols.
       month_count = 3;
     }
   }
@@ -291,15 +301,15 @@ std::u16string GetMonthSkeleton(const icu::UnicodeString& icu_initial_pattern,
 }
 
 std::u16string GetDaySkeleton(const std::string& skeleton,
-                              DateTimeFormatterOptions::ItemLength length,
-                              SkeletonOptions options) {
-  if (!options.has_day) {
+                              DateTimeFormatterOptions options,
+                              SkeletonOptions skeleton_options) {
+  if (!skeleton_options.has_day) {
     return u"";
   }
 
   // If there is no day or year, a separated logic is applied.
-  if (!options.has_year && !options.has_month) {
-    switch (length) {
+  if (!skeleton_options.has_year && !skeleton_options.has_month) {
+    switch (options.length) {
       case DateTimeFormatterOptions::ItemLength::kShort:
       case DateTimeFormatterOptions::ItemLength::kMedium:
         return u"d";
@@ -307,6 +317,14 @@ std::u16string GetDaySkeleton(const std::string& skeleton,
       case DateTimeFormatterOptions::ItemLength::kLong:
         return u"dd";
     }
+  }
+
+  // Temporary solution, the goal should be to land something like
+  // https://github.com/unicode-org/icu4x/pull/8492."
+  if (options.format_identifier ==
+          DateTimeFormatterOptions::FormatIdentifier::kMD &&
+      options.length == DateTimeFormatterOptions::ItemLength::kMedium) {
+    return u"d";
   }
 
   return std::u16string(std::ranges::count(skeleton, 'd'), 'd');
@@ -389,11 +407,10 @@ icu::UnicodeString GetFormattedSkeleton(
   }
   if (skeleton_options.has_month) {
     output_skeleton.append(GetMonthSkeleton(icu_initial_pattern, skeleton,
-                                            options.length, skeleton_options));
+                                            options, skeleton_options));
   }
   if (skeleton_options.has_day) {
-    output_skeleton.append(
-        GetDaySkeleton(skeleton, options.length, skeleton_options));
+    output_skeleton.append(GetDaySkeleton(skeleton, options, skeleton_options));
   }
   if (skeleton_options.has_weekday) {
     // Max between 1u and weekday_count is used to force its presence.
@@ -553,54 +570,58 @@ LanguageTag GetLocaleWithHourClockType(
   return locale.WithExtension(*u_ext);
 }
 
-std::u16string FormatWithLocale(base::Time time,
-                                const DateTimeFormatterOptions& options,
-                                const LanguageTag& locale_arg) {
-  LanguageTag locale =
-      GetLocaleWithHourClockType(locale_arg, options.hour_clock_type);
-
-  if (options.format_identifier ==
-      DateTimeFormatterOptions::FormatIdentifier::kNone) {
-    return FormatWithLocale(time, datetime_options::YMD::Medium(), locale);
-  }
-
-  icu::UnicodeString best_pattern = GetBestPattern(locale, options);
-  auto formatter = CreateSimpleDateFormatter(best_pattern, locale);
-  if (options.time_zone) {
-    std::unique_ptr<icu::TimeZone> icu_tz(icu::TimeZone::createTimeZone(
-        icu::UnicodeString::fromUTF8(options.time_zone->GetID())));
-    formatter.setTimeZone(*icu_tz);
-  }
-  return DateTimeFormat(formatter, time, options.am_pm_clock_type);
-}
-
-}  // namespace
-
-// DateTime Formatting
-std::u16string IcuBridge::DateTimeFormatter::Format(
-    base::Time time,
-    const DateTimeFormatterOptions& options) const {
-  LanguageTag default_tag = LanguageTagConverter::GetInstance().FromIcuLocale(
-      icu::Locale::getDefault());
-  return FormatWithLocale(time, options, default_tag);
-}
-
-std::u16string IcuBridge::DateTimeFormatter::Format(
-    base::Time time,
-    const LanguageTag& locale,
-    const DateTimeFormatterOptions& options) const {
-  return FormatWithLocale(time, options, locale);
-}
-
-base::HourClockType IcuBridge::DateTimeFormatter::GetHourClockType() const {
+base::HourClockType GetHourClockTypeForLocale(const LanguageTag& locale) {
   UErrorCode status = U_ZERO_ERROR;
   std::unique_ptr<icu::DateTimePatternGenerator> generator(
-      icu::DateTimePatternGenerator::createInstance(status));
+      icu::DateTimePatternGenerator::createInstance(
+          IcuLocaleConverter::GetInstance().FromLanguageTag(locale), status));
   DCHECK(U_SUCCESS(status));
   icu::UnicodeString pattern =
       generator->getBestPattern(icu::UnicodeString("j"), status);
   DCHECK(U_SUCCESS(status));
   return pattern.indexOf('a') == -1 ? base::k24HourClock : base::k12HourClock;
+}
+
+}  // namespace
+
+IcuBridge::DateTimeFormatter::DateTimeFormatter(base::PassKey<IcuBridge>,
+                                                const LanguageTag& locale)
+    : locale_(locale), hour_clock_type_(GetHourClockTypeForLocale(locale)) {}
+
+IcuBridge::DateTimeFormatter::~DateTimeFormatter() = default;
+
+icu::UnicodeString IcuBridge::DateTimeFormatter::GetCachedBestPattern(
+    const DateTimeFormatterOptions& options) const {
+  {
+    base::AutoLock auto_lock(lock_);
+    auto it = pattern_cache_.find(options);
+    if (it != pattern_cache_.end()) {
+      return it->second;
+    }
+  }
+
+  LanguageTag locale =
+      GetLocaleWithHourClockType(locale_, options.hour_clock_type);
+  icu::UnicodeString best_pattern = GetBestPattern(locale, options);
+  base::AutoLock auto_lock(lock_);
+  return pattern_cache_.emplace(options, std::move(best_pattern)).first->second;
+}
+
+std::u16string IcuBridge::DateTimeFormatter::Format(
+    base::Time time,
+    const DateTimeFormatterOptions& options) const {
+  if (options.format_identifier ==
+      DateTimeFormatterOptions::FormatIdentifier::kNone) {
+    return Format(time, datetime_options::YMD::Medium());
+  }
+
+  icu::UnicodeString best_pattern = GetCachedBestPattern(options);
+  auto formatter = CreateSimpleDateFormatter(best_pattern, locale_);
+  if (options.time_zone) {
+    formatter.adoptTimeZone(icu::TimeZone::createTimeZone(
+        icu::UnicodeString::fromUTF8(options.time_zone->GetID())));
+  }
+  return DateTimeFormat(formatter, time, options.am_pm_clock_type);
 }
 
 }  // namespace base::i18n

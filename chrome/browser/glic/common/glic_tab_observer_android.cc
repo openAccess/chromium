@@ -8,7 +8,9 @@
 #include "base/notreached.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 
 // For desktop, only certain operations are considered user initiated. This
@@ -22,6 +24,8 @@ TabCreationType ToTypeCreationType(TabModel::TabLaunchType type) {
     // Similar to ctrl + T on desktop
     case TabModel::TabLaunchType::FROM_RECENT_TABS_FOREGROUND:
     case TabModel::TabLaunchType::FROM_RECENT_TABS:
+    // Similar to reopening a recently closed tab on desktop.
+    case TabModel::TabLaunchType::FROM_UNDO_CLOSURE:
     // Programmatic tab creations via TabListInterface map to kUserInitiated
     // to align behavior with Desktop.
     case TabModel::TabLaunchType::FROM_TAB_LIST_INTERFACE:
@@ -190,8 +194,7 @@ void GlicTabObserverAndroid::DidAddTab(TabAndroid* tab,
       TabCreationEvent{tab, old_tab, opener, ToTypeCreationType(type)});
 }
 
-void GlicTabObserverAndroid::DidSelectTab(TabAndroid* tab,
-                                          TabModel::TabSelectionType type) {
+void GlicTabObserverAndroid::DidSelectTab(TabAndroid* tab) {
   if (!tab) {
     return;
   }
@@ -222,16 +225,13 @@ void GlicTabObserverAndroid::TabRemoved(TabAndroid* tab) {
   callback_.Run(TabMutationEvent{});
 }
 
-void GlicTabObserverAndroid::DidMoveTab(TabAndroid* tab,
-                                        int new_index,
-                                        int old_index) {
+void GlicTabObserverAndroid::DidMoveTab(TabAndroid* tab) {
   ResetLastActiveTab(TabModelList::GetTabModelForTabAndroid(tab));
   callback_.Run(TabMutationEvent{});
 }
 
 void GlicTabObserverAndroid::OnTabClosePending(
-    const std::vector<TabAndroid*>& tabs,
-    TabModel::TabClosingSource source) {
+    const std::vector<TabAndroid*>& tabs) {
   for (auto* tab : tabs) {
     ResetLastActiveTab(TabModelList::GetTabModelForTabAndroid(tab));
   }
@@ -254,7 +254,7 @@ void GlicTabObserverAndroid::TabClosureUndone(TabAndroid* tab) {
 
 void GlicTabObserverAndroid::OnTabCloseUndone(
     const std::vector<TabAndroid*>& tabs) {
-  for (auto* tab : tabs) {
+  for (TabAndroid* tab : tabs) {
     DidAddTab(tab, TabModel::TabLaunchType::FROM_CHROME_UI);
   }
 }
@@ -273,7 +273,7 @@ void GlicTabObserverAndroid::WillCloseTabs(
 
   // Remove closing tabs from `last_active_tab_map_` before they get detached
   // from their model.
-  for (auto* tab : tabs) {
+  for (TabAndroid* tab : tabs) {
     MaybeClearLastActiveTab(closing_tab_tab_model, tab);
   }
 }

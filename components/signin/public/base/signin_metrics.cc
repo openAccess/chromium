@@ -60,6 +60,28 @@ std::string_view ReauthFlowEventToHistogramSuffix(ReauthFlowEvent event) {
 }
 #endif  // BUILDFLAG(IS_IOS)
 
+// Returns the histogram suffix of the Signin.SigninFunnel histogram for
+// `access_point`, or an empty string if the funnel is not supported for
+// `access_point`.
+// LINT.IfChange(GetSigninFunnelAccessPointName)
+std::string_view GetSigninFunnelAccessPointName(AccessPoint access_point) {
+  switch (access_point) {
+    case AccessPoint::kStartPage:
+      return "StartPage";
+    case AccessPoint::kFullscreenSigninPromo:
+      return "FullscreenSigninPromo";
+    case AccessPoint::kForcedSignin:
+      return "ForcedSignin";
+    case AccessPoint::kDeepLinkDefault:
+      return "DeepLinkDefault";
+    case AccessPoint::kCollaborationJoinTabGroup:
+      return "CollaborationJoinTabGroup";
+    default:
+      return std::string_view();
+  }
+}
+// LINT.ThenChange(//tools/metrics/histograms/metadata/signin/histograms.xml:SigninFunnelAccessPoints)
+
 }  // namespace
 
 std::optional<AccessPoint> AccessPointFromInt(int value) {
@@ -72,7 +94,6 @@ std::optional<AccessPoint> AccessPointFromInt(int value) {
     case AccessPoint::kExtensions:
     case AccessPoint::kBookmarkBubble:
     case AccessPoint::kBookmarkManager:
-    case AccessPoint::kAvatarBubbleSignIn:
     case AccessPoint::kUserManager:
     case AccessPoint::kFullscreenSigninPromo:
     case AccessPoint::kRecentTabs:
@@ -110,7 +131,7 @@ std::optional<AccessPoint> AccessPointFromInt(int value) {
     case AccessPoint::kSettingsSignoutConfirmationPrompt:
     case AccessPoint::kOidcRedirectionInterception:
     case AccessPoint::kWebauthnModalDialog:
-    case AccessPoint::kAvatarBubbleSignInWithSyncPromo:
+    case AccessPoint::kProfileMenuPrimaryButton:
     case AccessPoint::kAccountMenuSwitchAccount:
     case AccessPoint::kProductSpecifications:
     case AccessPoint::kAccountMenuSwitchAccountFailed:
@@ -153,6 +174,12 @@ std::optional<AccessPoint> AccessPointFromInt(int value) {
     case AccessPoint::kLevelUp:
     case AccessPoint::kSignoutUndoSnackbar:
     case AccessPoint::kComposeboxDriveContextMenuOptionBubble:
+    case AccessPoint::kSkills:
+    case AccessPoint::kAccountMenuSignedOutState:
+    case AccessPoint::kAppSwitcherAISummarization:
+    case AccessPoint::kGeminiExternalAppStoreEvent:
+    case AccessPoint::kPasswordManagerCard:
+    case AccessPoint::kEnterpriseProxy:
       return access_point;
   }
 
@@ -297,11 +324,6 @@ void LogSyncOptInOffered(AccessPoint access_point) {
 
 void LogHistorySyncOptInOffered(AccessPoint access_point) {
   base::UmaHistogramEnumeration("Signin.HistorySyncOptIn.Offered",
-                                access_point);
-}
-
-void LogSyncSettingsOpened(AccessPoint access_point) {
-  base::UmaHistogramEnumeration("Signin.SyncOptIn.OpenedSyncSettings",
                                 access_point);
 }
 
@@ -527,10 +549,6 @@ void RecordSigninUserActionForAccessPoint(AccessPoint access_point) {
       base::RecordAction(
           base::UserMetricsAction("Signin_Signin_FromBookmarkManager"));
       break;
-    case AccessPoint::kAvatarBubbleSignIn:
-      base::RecordAction(
-          base::UserMetricsAction("Signin_Signin_FromAvatarBubbleSignin"));
-      break;
     case AccessPoint::kUserManager:
       base::RecordAction(
           base::UserMetricsAction("Signin_Signin_FromUserManager"));
@@ -542,6 +560,10 @@ void RecordSigninUserActionForAccessPoint(AccessPoint access_point) {
     case AccessPoint::kRecentTabs:
       base::RecordAction(
           base::UserMetricsAction("Signin_Signin_FromRecentTabs"));
+      break;
+    case AccessPoint::kHistoryPage:
+      base::RecordAction(
+          base::UserMetricsAction("Signin_Signin_FromHistoryPage"));
       break;
     case AccessPoint::kPasswordBubble:
       base::RecordAction(
@@ -581,7 +603,6 @@ void RecordSigninUserActionForAccessPoint(AccessPoint access_point) {
     case AccessPoint::kWebauthnModalDialog:
     case AccessPoint::kCctAccountMismatchNotification:
     case AccessPoint::kDriveFilePickerIos:
-    case AccessPoint::kHistoryPage:
     case AccessPoint::kWidget:
     case AccessPoint::kHistorySyncEducationalTip:
     case AccessPoint::kManagedProfileAutoSigninIos:
@@ -591,6 +612,10 @@ void RecordSigninUserActionForAccessPoint(AccessPoint access_point) {
     case AccessPoint::kAshUserSessionManager:
     case AccessPoint::kDeepLinkDefault:
     case AccessPoint::kAgeMismatchSignout:
+    case AccessPoint::kAccountMenuSignedOutState:
+    case AccessPoint::kAppSwitcherAISummarization:
+    case AccessPoint::kGeminiExternalAppStoreEvent:
+    case AccessPoint::kEnterpriseProxy:
       NOTREACHED() << "Access point " << static_cast<int>(access_point)
                    << " is not supposed to log signin user actions.";
     case AccessPoint::kCollaborationShareTabGroup:
@@ -669,9 +694,9 @@ void RecordSigninUserActionForAccessPoint(AccessPoint access_point) {
       base::RecordAction(base::UserMetricsAction(
           "Signin_Signin_FromOidcRedirectionInterception"));
       break;
-    case AccessPoint::kAvatarBubbleSignInWithSyncPromo:
+    case AccessPoint::kProfileMenuPrimaryButton:
       base::RecordAction(base::UserMetricsAction(
-          "Signin_Signin_FromAvatarBubbleSigninWithSyncPromo"));
+          "Signin_Signin_FromProfileMenuPrimaryButton"));
       break;
     case AccessPoint::kAccountMenuSwitchAccount:
       base::RecordAction(
@@ -771,6 +796,13 @@ void RecordSigninUserActionForAccessPoint(AccessPoint access_point) {
       base::RecordAction(base::UserMetricsAction(
           "Signin_Signin_FromComposeboxDriveContextMenuOptionBubble"));
       break;
+    case AccessPoint::kSkills:
+      base::RecordAction(base::UserMetricsAction("Signin_Signin_FromSkills"));
+      break;
+    case AccessPoint::kPasswordManagerCard:
+      base::RecordAction(
+          base::UserMetricsAction("Signin_Signin_FromPasswordManagerCard"));
+      break;
   }
 }
 
@@ -806,10 +838,6 @@ void RecordSigninImpressionUserActionForAccessPoint(AccessPoint access_point) {
     case AccessPoint::kBookmarkManager:
       base::RecordAction(
           base::UserMetricsAction("Signin_Impression_FromBookmarkManager"));
-      break;
-    case AccessPoint::kAvatarBubbleSignIn:
-      base::RecordAction(
-          base::UserMetricsAction("Signin_Impression_FromAvatarBubbleSignin"));
       break;
     case AccessPoint::kFullscreenSigninPromo:
       base::RecordAction(
@@ -919,6 +947,10 @@ void RecordSigninImpressionUserActionForAccessPoint(AccessPoint access_point) {
       base::RecordAction(base::UserMetricsAction(
           "Signin_Impression_FromComposeboxDriveContextMenuOptionBubble"));
       break;
+    case AccessPoint::kPasswordManagerCard:
+      base::RecordAction(
+          base::UserMetricsAction("Signin_Impression_FromPasswordManagerCard"));
+      break;
     case AccessPoint::kExtensions:
     case AccessPoint::kMachineLogon:
     case AccessPoint::kForcedSignin:
@@ -940,7 +972,7 @@ void RecordSigninImpressionUserActionForAccessPoint(AccessPoint access_point) {
     case AccessPoint::kSettingsSignoutConfirmationPrompt:
     case AccessPoint::kOidcRedirectionInterception:
     case AccessPoint::kWebauthnModalDialog:
-    case AccessPoint::kAvatarBubbleSignInWithSyncPromo:
+    case AccessPoint::kProfileMenuPrimaryButton:
     case AccessPoint::kAccountMenuSwitchAccount:
     case AccessPoint::kAccountMenuSwitchAccountFailed:
     case AccessPoint::kCctAccountMismatchNotification:
@@ -971,6 +1003,11 @@ void RecordSigninImpressionUserActionForAccessPoint(AccessPoint access_point) {
     case AccessPoint::kAgeMismatchSignout:
     case AccessPoint::kLevelUp:
     case AccessPoint::kSignoutUndoSnackbar:
+    case AccessPoint::kSkills:
+    case AccessPoint::kAccountMenuSignedOutState:
+    case AccessPoint::kAppSwitcherAISummarization:
+    case AccessPoint::kGeminiExternalAppStoreEvent:
+    case AccessPoint::kEnterpriseProxy:
       NOTREACHED() << "Signin_Impression_From* user actions are not recorded "
                       "for access point "
                    << static_cast<int>(access_point);
@@ -1091,5 +1128,20 @@ void RecordConsistencyPromoUserAction(AccountConsistencyPromoAction action,
   base::UmaHistogramEnumeration(histogram, access_point);
 }
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+
+void LogSigninFunnelEvent(AccessPoint access_point, SigninFunnelEvent event) {
+  std::string_view access_point_name =
+      GetSigninFunnelAccessPointName(access_point);
+  // The funnel is only supported for the access points that can show the
+  // fullscreen sign-in. New callers must add their access point to
+  // `GetSigninFunnelAccessPointName()` and to the histogram variants.
+  // TODO(crbug.com/512772292): In the long run, log these events for all access
+  // points.
+  CHECK(!access_point_name.empty())
+      << "Unsupported access point: " << static_cast<int>(access_point);
+
+  base::UmaHistogramEnumeration(
+      base::StrCat({"Signin.SigninFunnel.", access_point_name}), event);
+}
 
 }  // namespace signin_metrics

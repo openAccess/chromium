@@ -17,6 +17,7 @@
 #include "chrome/browser/autofill/actor/one_time_tokens/actor_login_context.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/one_time_tokens/core/browser/one_time_token_retrieval_error.h"
+#include "components/one_time_tokens/core/browser/user_data_processing_consent_states.h"
 #include "components/tabs/public/tab_interface.h"
 #include "url/origin.h"
 
@@ -48,6 +49,18 @@ enum class FormFillingContextStatus {
 // So far, this service is only intended for OTP filling.
 class ActorOneTimeTokenFillingService {
  public:
+  using FetchUserDataProcessingConsentCallback = base::OnceCallback<void(
+      std::optional<one_time_tokens::UserDataProcessingConsentStates>)>;
+
+  // The OTP type that the model predicted for a `RetrieveOtp()` request. Only
+  // used to pick the RetrieveOtp histogram suffix; never logged as a value.
+  enum class PredictedOtpType {
+    kUnknown,
+    kSms,
+    kEmail,
+    kAuthenticatorApp,
+  };
+
   virtual ~ActorOneTimeTokenFillingService() = default;
 
   // Records the start of a sign-in flow by observing navigations.
@@ -89,6 +102,7 @@ class ActorOneTimeTokenFillingService {
   virtual bool GetLoginContextShouldUseStrongMatching() const = 0;
 
   // Asynchronously retrieves an OTP for the profile associated with the tab.
+  // `predicted_otp_type` is the OTP type the model predicted for the request.
   //
   // The `callback` will be invoked with the retrieved OTP string, or an empty
   // string if retrieval fails or no OTP is available.
@@ -97,6 +111,7 @@ class ActorOneTimeTokenFillingService {
       const url::Origin& otp_frame_origin,
       const std::vector<FieldGlobalId>& trigger_field_ids,
       bool is_login_flow,
+      PredictedOtpType predicted_otp_type,
       base::OnceCallback<
           void(base::expected<std::string,
                               one_time_tokens::OneTimeTokenRetrievalError>)>
@@ -123,6 +138,11 @@ class ActorOneTimeTokenFillingService {
   virtual FormFillingContextStatus ValidateFormFillingContext(
       tabs::TabHandle tab_handle,
       base::span<const FieldGlobalId> trigger_field_ids) const = 0;
+
+  // Asynchronously fetches user data processing consent states from the
+  // backend.
+  virtual void FetchUserDataProcessingConsent(
+      FetchUserDataProcessingConsentCallback callback) = 0;
 
   // Returns a weak pointer to this service.
   virtual base::WeakPtr<ActorOneTimeTokenFillingService> GetWeakPtr() = 0;

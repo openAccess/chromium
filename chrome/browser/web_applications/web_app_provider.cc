@@ -81,7 +81,6 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_features.h"
-#include "chrome/browser/web_applications/ash/migrations/adobe_express_oem_to_default_migration.h"
 #include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_cache_manager.h"
 #include "chrome/browser/web_applications/web_app_run_on_os_login_manager.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
@@ -141,23 +140,18 @@ WebAppProvider* WebAppProvider::GetForWebContents(
     content::WebContents* web_contents) {
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   return WebAppProvider::GetForLocalAppsUnchecked(profile);
 }
 
 WebAppProvider::WebAppProvider(Profile* profile)
     : clock_(base::DefaultClock::GetInstance()), profile_(profile) {
-  DCHECK(AreWebAppsEnabled(profile_));
+  CHECK(AreWebAppsEnabled(profile_), base::NotFatalUntil::M162);
 
   // WebApp System must have only one instance in original profile.
   // Exclude secondary off-the-record profiles.
-#if BUILDFLAG(IS_CHROMEOS)
-  if (!profile_->IsGuestSession()) {
-    DCHECK(!profile_->IsOffTheRecord());
-  }
-#else
-  DCHECK(!profile_->IsOffTheRecord());
-#endif
+  CHECK(profile_->IsGuestSession() || !profile_->IsOffTheRecord(),
+        base::NotFatalUntil::M162);
 
   CreateSubsystems(profile_);
 }
@@ -448,7 +442,7 @@ void WebAppProvider::CreateSubsystems(Profile* profile) {
 }
 
 void WebAppProvider::ConnectSubsystems() {
-  DCHECK(!started_);
+  CHECK(!started_, base::NotFatalUntil::M162);
 
   base::PassKey<WebAppProvider> pass_key;
   sync_bridge_->SetProvider(pass_key, *this);
@@ -488,7 +482,7 @@ void WebAppProvider::StartSyncBridge() {
 void WebAppProvider::OnSyncBridgeReady(
     WebAppDatabaseOpenResult open_result,
     std::vector<std::pair<webapps::AppId, GURL>> salvaged_apps) {
-  DCHECK(!on_registry_ready_.is_signaled());
+  CHECK(!on_registry_ready_.is_signaled(), base::NotFatalUntil::M162);
   base::UmaHistogramEnumeration("WebApp.Database.OpenResult", open_result);
 
   switch (open_result) {
@@ -497,6 +491,7 @@ void WebAppProvider::OnSyncBridgeReady(
     case WebAppDatabaseOpenResult::kOpenError:
     case WebAppDatabaseOpenResult::kReadError:
       // TODO(crbug.com/506131577): Handle read/open errors properly.
+      on_registry_ready_.Signal();
       return;
     case WebAppDatabaseOpenResult::kDowngradeDetected:
       ui_manager_->ShowProfileErrorDialogForCorruptDB();
@@ -507,14 +502,6 @@ void WebAppProvider::OnSyncBridgeReady(
                          AsWeakPtr()));
       return;
   }
-
-    // Perform database migrations once the sync bridge is ready, but before
-    // starting the rest of the subsystems and notifying that the registry is
-    // ready.
-#if BUILDFLAG(IS_CHROMEOS)
-  web_app::migrations::MigrateAdobeExpressFromOemInstallToDefault(
-      sync_bridge_.get());
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
   base::ConcurrentClosures concurrent;
 
@@ -561,9 +548,7 @@ void WebAppProvider::OnSyncBridgeReady(
           },
           AsWeakPtr()));
 
-  if (base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi)) {
-    scheduler().ScheduleResolveWebAppPendingMigrationInfo(base::DoNothing());
-  }
+  scheduler().ScheduleResolveWebAppPendingMigrationInfo(base::DoNothing());
 
   if (profile_->GetPrefs()->GetBoolean(
           prefs::kShouldGarbageCollectStoragePartitions)) {
@@ -585,7 +570,7 @@ void WebAppProvider::OnSyncBridgeReady(
 }
 
 void WebAppProvider::OnDatabaseCorruptionRecovered() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   sync_bridge_ = std::make_unique<WebAppSyncBridge>(registrar_.get());
   sync_bridge_->SetProvider(base::PassKey<WebAppProvider>(), *this);
   StartSyncBridge();

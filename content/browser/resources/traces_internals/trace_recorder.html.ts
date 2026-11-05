@@ -278,10 +278,43 @@ export function getHtml(this: TraceRecorderElement) {
                 <div>${event.description}</div>
               </div>
             `)}
+            <div class="row">
+              <cr-toggle
+                class="config-toggle"
+                ?checked="${this.etwCallStacksEnabled}"
+                @change="${this.onEtwCallStacksChange_}">
+              </cr-toggle>
+              <div>Call stacks</div>
+              <div>
+                Enables call stacks for Event Tracing for Windows events
+              </div>
+            </div>
           </div>
         </cr-collapse>
       </div>
     </if>
+
+    <div class="card" ?hidden="${!this.encodedConfigString}">
+      <!-- Command Line Card -->
+      <cr-expand-button class="cr-row" ?expanded="${this.commandLineExpanded_}"
+          @expanded-changed="${this.onCommandLineExpandedChanged_}">
+        Command Line for Startup Tracing
+      </cr-expand-button>
+      <cr-collapse class="expanded-content"
+          ?opened="${this.commandLineExpanded_}">
+        <p>
+          Run Chrome with the following command line switch to record startup
+          trace with this configuration.
+        </p>
+        <div class="command-line-container">
+          <code class="command-line-text">${this.getCommandLine_()}</code>
+          <cr-icon-button class="icon-copy-content" title="Copy to clipboard"
+              aria-label="Copy command line"
+              @click="${this.onCopyCommandLineClick_}">
+          </cr-icon-button>
+        </div>
+      </cr-collapse>
+    </div>
 
     <cr-toast id="toast" duration="5000">
       <div>${this.toastMessage}</div>

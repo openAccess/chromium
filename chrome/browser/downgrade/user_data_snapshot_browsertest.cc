@@ -27,7 +27,6 @@
 #include "chrome/browser/first_run/scoped_relaunch_chrome_browser_override.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_result_codes.h"
@@ -36,11 +35,13 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
+#include "components/bookmarks/common/bookmark_features.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/prefs/pref_service.h"
+#include "components/sessions/core/command_storage_features.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer.h"
@@ -49,8 +50,8 @@
 #include "content/public/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 #if BUILDFLAG(IS_WIN) && BUILDFLAG(GOOGLE_CHROME_BRANDING)
 #include "base/threading/thread_restrictions.h"
@@ -191,8 +192,37 @@ class UserDataSnapshotBrowserTestBase : public InProcessBrowserTest {
       relaunch_chrome_override_;
 };
 
-class BookmarksSnapshotTest : public UserDataSnapshotBrowserTestBase {
+class BookmarksSnapshotTest
+    : public UserDataSnapshotBrowserTestBase,
+      public testing::WithParamInterface<bookmarks::BookmarkEncryptionStage> {
  protected:
+  BookmarksSnapshotTest() {
+    switch (GetParam()) {
+      case bookmarks::BookmarkEncryptionStage::kDisabled: {
+        feature_list_.InitAndDisableFeature(bookmarks::kEncryptBookmarks);
+        break;
+      }
+      case bookmarks::BookmarkEncryptionStage::kWriteBothReadOnlyClear: {
+        feature_list_.InitAndEnableFeatureWithParameters(
+            bookmarks::kEncryptBookmarks,
+            {{"stage", "write_both_read_only_clear"}});
+        break;
+      }
+      case bookmarks::BookmarkEncryptionStage::kWriteBothReadPreferEncrypted: {
+        feature_list_.InitAndEnableFeatureWithParameters(
+            bookmarks::kEncryptBookmarks,
+            {{"stage", "write_both_read_prefer_encrypted"}});
+        break;
+      }
+      case bookmarks::BookmarkEncryptionStage::
+          kWriteOnlyEncryptedReadPreferEncrypted: {
+        feature_list_.InitAndEnableFeatureWithParameters(
+            bookmarks::kEncryptBookmarks,
+            {{"stage", "write_only_encrypted_read_prefer_encrypted"}});
+        break;
+      }
+    }
+  }
   // Bookmarks as such
   // bookmark_bar_node
   // |_ folder
@@ -266,6 +296,8 @@ class BookmarksSnapshotTest : public UserDataSnapshotBrowserTestBase {
   }
 
  private:
+  base::test::ScopedFeatureList feature_list_;
+
   const GURL that_url_{"https://www.thaturl.com"};
   const GURL sub_folder_url_{"https://www.subfolder.com"};
   const GURL folder_url_{"https://www.folder.com"};
@@ -283,17 +315,27 @@ class BookmarksSnapshotTest : public UserDataSnapshotBrowserTestBase {
   const std::u16string mobile_url_title_ = u"Mobile URL";
 };
 
-IN_PROC_BROWSER_TEST_F(BookmarksSnapshotTest, PRE_PRE_PRE_Test) {}
-IN_PROC_BROWSER_TEST_F(BookmarksSnapshotTest, PRE_PRE_Test) {}
-IN_PROC_BROWSER_TEST_F(BookmarksSnapshotTest, PRE_Test) {}
+IN_PROC_BROWSER_TEST_P(BookmarksSnapshotTest, PRE_PRE_PRE_Test) {}
+IN_PROC_BROWSER_TEST_P(BookmarksSnapshotTest, PRE_PRE_Test) {}
+IN_PROC_BROWSER_TEST_P(BookmarksSnapshotTest, PRE_Test) {}
 // TODO(crbug.com/326168468): Flaky on TSan.
 #if defined(THREAD_SANITIZER)
 #define MAYBE_Test DISABLED_Test
 #else
 #define MAYBE_Test Test
 #endif
-IN_PROC_BROWSER_TEST_F(BookmarksSnapshotTest, MAYBE_Test) {}
+IN_PROC_BROWSER_TEST_P(BookmarksSnapshotTest, MAYBE_Test) {}
 #undef MAYBE_Test
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    BookmarksSnapshotTest,
+    ::testing::Values(
+        bookmarks::BookmarkEncryptionStage::kDisabled,
+        bookmarks::BookmarkEncryptionStage::kWriteBothReadOnlyClear,
+        bookmarks::BookmarkEncryptionStage::kWriteBothReadPreferEncrypted,
+        bookmarks::BookmarkEncryptionStage::
+            kWriteOnlyEncryptedReadPreferEncrypted));
 
 class HistorySnapshotTest : public UserDataSnapshotBrowserTestBase {
   struct HistoryEntry {
@@ -399,8 +441,39 @@ IN_PROC_BROWSER_TEST_F(HistorySnapshotTest, PRE_Test) {}
 IN_PROC_BROWSER_TEST_F(HistorySnapshotTest, MAYBE_Test) {}
 #undef MAYBE_Test
 
-class TabsSnapshotTest : public UserDataSnapshotBrowserTestBase {
+class TabsSnapshotTest
+    : public UserDataSnapshotBrowserTestBase,
+      public testing::WithParamInterface<sessions::EncryptSessionStorageStage> {
  protected:
+  TabsSnapshotTest() {
+    switch (GetParam()) {
+      case sessions::EncryptSessionStorageStage::kClearOnly: {
+        feature_list_.InitAndDisableFeature(sessions::kEncryptSessionStorage);
+        break;
+      }
+      case sessions::EncryptSessionStorageStage::kWriteBothReadOnlyClear: {
+        feature_list_.InitAndEnableFeatureWithParameters(
+            sessions::kEncryptSessionStorage,
+            {{"stage", "write_both_read_only_clear"}});
+        break;
+      }
+      case sessions::EncryptSessionStorageStage::
+          kWriteBothReadPreferEncrypted: {
+        feature_list_.InitAndEnableFeatureWithParameters(
+            sessions::kEncryptSessionStorage,
+            {{"stage", "write_both_read_prefer_encrypted"}});
+        break;
+      }
+      case sessions::EncryptSessionStorageStage::
+          kWriteEncryptedReadPreferEncrypted: {
+        feature_list_.InitAndEnableFeatureWithParameters(
+            sessions::kEncryptSessionStorage,
+            {{"stage", "write_encrypted_read_prefer_encrypted"}});
+        break;
+      }
+    }
+  }
+
   void SetUp() override {
     ASSERT_TRUE(embedded_test_server()->Start());
     UserDataSnapshotBrowserTestBase::SetUp();
@@ -409,18 +482,16 @@ class TabsSnapshotTest : public UserDataSnapshotBrowserTestBase {
   void SimulateUserActions() override {
     browser()->GetProfile()->GetPrefs()->SetInteger(prefs::kRestoreOnStartup,
                                                     1);
-    browser()->OpenURL(
-        content::OpenURLParams(embedded_test_server()->GetURL("/title1.html"),
-                               content::Referrer(),
-                               WindowOpenDisposition::CURRENT_TAB,
-                               ui::PAGE_TRANSITION_TYPED, false),
-        /*navigation_handle_callback=*/{});
-    browser()->OpenURL(
-        content::OpenURLParams(embedded_test_server()->GetURL("/title2.html"),
-                               content::Referrer(),
-                               WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                               ui::PAGE_TRANSITION_LINK, false),
-        /*navigation_handle_callback=*/{});
+    browser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                           embedded_test_server()->GetURL("/title1.html"),
+                           ui::mojom::WindowOpenDisposition::kCurrentTab,
+                           ui::PAGE_TRANSITION_TYPED),
+                       /*navigation_handle_callback=*/{});
+    browser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                           embedded_test_server()->GetURL("/title2.html"),
+                           ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                           ui::PAGE_TRANSITION_LINK),
+                       /*navigation_handle_callback=*/{});
   }
 
   void ValidateUserActions() override {
@@ -447,19 +518,32 @@ class TabsSnapshotTest : public UserDataSnapshotBrowserTestBase {
     EXPECT_EQ(tab_strip->GetWebContentsAt(1)->GetLastCommittedURL().GetPath(),
               "/title2.html");
   }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(TabsSnapshotTest, PRE_PRE_PRE_Test) {}
-IN_PROC_BROWSER_TEST_F(TabsSnapshotTest, PRE_PRE_Test) {}
-IN_PROC_BROWSER_TEST_F(TabsSnapshotTest, PRE_Test) {}
+IN_PROC_BROWSER_TEST_P(TabsSnapshotTest, PRE_PRE_PRE_Test) {}
+IN_PROC_BROWSER_TEST_P(TabsSnapshotTest, PRE_PRE_Test) {}
+IN_PROC_BROWSER_TEST_P(TabsSnapshotTest, PRE_Test) {}
 // TODO(crbug.com/326168468): Flaky on TSan.
 #if defined(THREAD_SANITIZER)
 #define MAYBE_Test DISABLED_Test
 #else
 #define MAYBE_Test Test
 #endif
-IN_PROC_BROWSER_TEST_F(TabsSnapshotTest, MAYBE_Test) {}
+IN_PROC_BROWSER_TEST_P(TabsSnapshotTest, MAYBE_Test) {}
 #undef MAYBE_Test
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    TabsSnapshotTest,
+    ::testing::Values(
+        sessions::EncryptSessionStorageStage::kClearOnly,
+        sessions::EncryptSessionStorageStage::kWriteBothReadOnlyClear,
+        sessions::EncryptSessionStorageStage::kWriteBothReadPreferEncrypted,
+        sessions::EncryptSessionStorageStage::
+            kWriteEncryptedReadPreferEncrypted));
 
 // Tests that Google Chrome does not takes snapshots on mid-milestone updates.
 IN_PROC_BROWSER_TEST_F(InProcessBrowserTest, SameMilestoneSnapshot) {

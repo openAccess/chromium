@@ -27,6 +27,7 @@
 #include "mojo/public/cpp/platform/platform_channel.h"
 #include "mojo/public/cpp/system/invitation.h"
 #include "mojo/public/cpp/system/message_pipe.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 
@@ -105,9 +106,9 @@ ChromeManagementService::ChromeManagementService(
     : permissions_callback_(std::move(permissions_callback)),
       rotation_callback_(std::move(rotation_callback)),
       mojo_helper_(std::move(mojo_helper)) {
-  DCHECK(permissions_callback_);
-  DCHECK(rotation_callback_);
-  DCHECK(mojo_helper_);
+  CHECK(permissions_callback_, base::NotFatalUntil::M161);
+  CHECK(rotation_callback_, base::NotFatalUntil::M161);
+  CHECK(mojo_helper_, base::NotFatalUntil::M161);
 }
 
 ChromeManagementService::~ChromeManagementService() = default;

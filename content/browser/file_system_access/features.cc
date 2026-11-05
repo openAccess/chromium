@@ -15,8 +15,8 @@ namespace content::features {
 // TODO(b/354661640): Temporarily disable this flag while investigating CrOS
 // file saving issue.
 //
-// When enabled, GetFile() and GetEntries() on a directory handle performs
-// the blocklist check on child file handles.
+// When enabled, GetFile() and GetEntries() on a directory handle, as well as
+// AsBlob() on a file handle, perform the blocklist check.
 BASE_FEATURE(kFileSystemAccessDirectoryIterationBlocklistCheck,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -82,4 +82,9 @@ BASE_FEATURE_PARAM(bool,
                    kOnlyInHomedir,
                    &kFileSystemAccessRenameRequiresParentWritePermission,
                    false);
+
+// When enabled, CreateFileWriter() and GetFile()/GetDirectory() with
+// create=true perform sensitive entry access checks for write operations.
+BASE_FEATURE(kFileSystemAccessWriteBlocklistCheck,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 }  // namespace content::features

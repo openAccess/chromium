@@ -2,18 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/command_line.h"
 #include "build/android_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/browser/chrome_browser_interface_binders_webui_parts.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui.h"
 #include "chrome/browser/glic/experimental_opt_in/glic_experimental_opt_in_ui.h"
+#include "chrome/browser/glic/host/glic_internals_ui.h"
+#include "chrome/browser/glic/host/glic_overlay_ui.h"
 #include "chrome/browser/glic/host/glic_ui.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/ui/ui_features.h"
-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
-#include "chrome/browser/ui/webui/ai_overlay_dialog/ai_overlay_dialog.mojom.h"
-#include "chrome/browser/ui/webui/ai_overlay_dialog/ai_overlay_dialog_untrusted_ui.h"
-#endif  // !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
 #include "chrome/browser/ui/webui/private_ai_internals/private_ai_internals_ui.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_features.h"
@@ -31,6 +30,16 @@
 #include "extensions/buildflags/buildflags.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
 
+#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
+#include "chrome/browser/ttc/core/buildflags.h"
+#if BUILDFLAG(ENABLE_TTC_WEBUI)
+#include "chrome/browser/ttc/core/eval_harness.mojom.h"
+#include "chrome/browser/ttc/core/switches.h"
+#endif
+#include "chrome/browser/ui/webui/ai_overlay_dialog/ai_overlay_dialog.mojom.h"
+#include "chrome/browser/ui/webui/ai_overlay_dialog/ai_overlay_dialog_untrusted_ui.h"
+#endif  // !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
+
 #if BUILDFLAG(CHROME_ROOT_STORE_CERT_MANAGEMENT_UI)
 #include "chrome/browser/resources/certificate_manager/certificate_manager.mojom.h"
 #include "chrome/browser/ui/webui/certificate_manager/certificate_manager_ui.h"
@@ -47,6 +56,14 @@
 #endif
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "chrome/browser/ui/webui/feature_showcase/default_browser.mojom.h"
+#include "chrome/browser/ui/webui/feature_showcase/feature_showcase.mojom.h"
+#include "chrome/browser/ui/webui/feature_showcase/feature_showcase_ui.h"
+#include "chrome/browser/ui/webui/feature_showcase/gemini.mojom.h"
+#include "chrome/browser/ui/webui/feature_showcase/google_lens.mojom.h"
+#include "chrome/browser/ui/webui/feature_showcase/password_manager.mojom.h"
+#include "chrome/browser/ui/webui/history/history_cross_device_signin_promo_handler.h"
+#include "chrome/browser/ui/webui/history/history_ui.h"
 #include "chrome/browser/ui/webui/signin/cross_device_signin_qr_bubble/cross_device_signin_qr_bubble.mojom.h"
 #include "chrome/browser/ui/webui/signin/cross_device_signin_qr_bubble_ui.h"
 #include "chrome/browser/ui/webui/signin/signout_confirmation/signout_confirmation.mojom.h"
@@ -100,6 +117,28 @@ void PopulateChromeWebUIFrameBindersPartsFeatures(
   RegisterWebUIControllerInterfaceBinder<
       signout_confirmation::mojom::PageHandlerFactory, SignoutConfirmationUI>(
       map);
+  RegisterWebUIControllerInterfaceBinder<
+      history_cross_device_signin_promo::mojom::
+          HistoryCrossDeviceSigninPromoHandler,
+      HistoryUI>(map);
+  RegisterWebUIControllerInterfaceBinder<
+      feature_showcase::mojom::DefaultBrowserPageHandlerFactory,
+      FeatureShowcaseUI>(map);
+  RegisterWebUIControllerInterfaceBinder<
+      feature_showcase::mojom::FeatureShowcasePageHandlerFactory,
+      FeatureShowcaseUI>(map);
+  RegisterWebUIControllerInterfaceBinder<
+      feature_showcase::mojom::PasswordManagerPageHandlerFactory,
+      FeatureShowcaseUI>(map);
+  RegisterWebUIControllerInterfaceBinder<
+      feature_showcase::mojom::ThemesAndCustomizationPageHandlerFactory,
+      FeatureShowcaseUI>(map);
+  RegisterWebUIControllerInterfaceBinder<
+      feature_showcase::mojom::GeminiPageHandlerFactory, FeatureShowcaseUI>(
+      map);
+  RegisterWebUIControllerInterfaceBinder<
+      feature_showcase::mojom::GoogleLensPageHandlerFactory, FeatureShowcaseUI>(
+      map);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
@@ -120,6 +159,8 @@ void PopulateChromeWebUIFrameBindersPartsFeatures(
     RegisterWebUIControllerInterfaceBinder<glic::mojom::PageHandlerFactory,
                                            glic::GlicUI>(map);
     RegisterWebUIControllerInterfaceBinder<
+        glic::mojom::GlicOverlayPageHandlerFactory, glic::GlicOverlayUI>(map);
+    RegisterWebUIControllerInterfaceBinder<
         glic::mojom::GlicPreloadHandlerFactory, glic::GlicUI>(map);
     RegisterWebUIControllerInterfaceBinder<
         glic::mojom::ExperimentalOptInPageHandler,
@@ -129,7 +170,8 @@ void PopulateChromeWebUIFrameBindersPartsFeatures(
   if (glic::GlicEnabling::IsInternalsWebUIEnabled(Profile::FromBrowserContext(
           render_frame_host->GetProcess()->GetBrowserContext()))) {
     RegisterWebUIControllerInterfaceBinder<
-        glic::mojom::InternalsPageHandlerFactory, glic::GlicUI>(map);
+        glic::mojom::InternalsPageHandlerFactory, glic::GlicUI,
+        glic::GlicInternalsUI>(map);
   }
 #if !BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks)) {
@@ -174,9 +216,17 @@ void PopulateChromeWebUIFrameInterfaceBrokersUntrustedPartsFeatures(
 #endif  // BUILDFLAG(ENABLE_COMPOSE)
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
-  if (base::FeatureList::IsEnabled(features::kAiOverlayDialog)) {
-    registry.ForWebUI<ttc::AiOverlayDialogUntrustedUI>()
-        .Add<ai_overlay_dialog::mojom::PageHandlerFactory>();
+  if (base::FeatureList::IsEnabled(features::kAiOverlayDialog)
+#if BUILDFLAG(ENABLE_TTC_WEBUI)
+      || base::CommandLine::ForCurrentProcess()->HasSwitch(
+             ttc::switches::kEnableTtcTestApi)
+#endif
+  ) {
+    auto registration = registry.ForWebUI<ttc::AiOverlayDialogUntrustedUI>();
+    registration.Add<ai_overlay_dialog::mojom::PageHandlerFactory>();
+#if BUILDFLAG(ENABLE_TTC_WEBUI)
+    registration.Add<ttc::mojom::HarnessPageHandlerFactory>();
+#endif
   }
 #endif  // !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
 }

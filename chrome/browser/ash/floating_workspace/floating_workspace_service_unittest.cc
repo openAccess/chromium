@@ -77,8 +77,8 @@
 #include "components/user_manager/test_helper.h"
 #include "components/user_manager/user_type.h"
 #include "content/public/test/browser_task_environment.h"
-#include "content/public/test/test_web_contents_factory.h"
-#include "content/public/test/test_web_ui.h"
+#include "content/public/test/scoped_web_ui_controller_factory_registration.h"
+#include "content/public/test/test_renderer_host.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -291,6 +291,7 @@ class FloatingWorkspaceServiceTest : public testing::Test {
     floating_workspace_service->Init(test_sync_service(),
                                      fake_desk_sync_service());
     EXPECT_TRUE(floating_workspace_service->IsObservingForTesting());
+    EXPECT_TRUE(floating_workspace_service->IsObservingSessionForTesting());
     // TODO(crbug.com/419250389): we should properly mimic entering user session
     // instead of just calling these methods manually.
     session_manager::SessionManager::Get()
@@ -383,6 +384,7 @@ class FloatingWorkspaceServiceTest : public testing::Test {
         TestingProfile::TestingFactories());
     prefs_ptr->SetManagedPref(chromeos::prefs::kFloatingWorkspaceV2Enabled,
                               base::Value(true));
+    // TODO(crbug.com/40225390): Use ProfileUserManagerController.
     fake_user_manager()->OnUserProfileCreated(account_id_, prefs_ptr);
     fake_desk_sync_service_ =
         std::make_unique<desks_storage::FakeDeskSyncService>(
@@ -399,18 +401,15 @@ class FloatingWorkspaceServiceTest : public testing::Test {
                                                              cache_.get());
     mock_desks_client_ = std::make_unique<MockDesksClient>();
 
-    web_contents_factory_ = std::make_unique<content::TestWebContentsFactory>();
-    test_web_ui_ = std::make_unique<content::TestWebUI>();
-    test_web_ui_->set_web_contents(
-        web_contents_factory_->CreateWebContents(profile_));
-    auto ui = std::make_unique<FloatingWorkspaceUI>(test_web_ui_.get());
-    test_web_ui_->SetController(std::move(ui));
+    scoped_fws_ui_config_ =
+        std::make_unique<content::ScopedWebUIConfigRegistration>(
+            std::make_unique<ash::FloatingWorkspaceUIConfig>(
+                TestingBrowserProcess::GetGlobal()->local_state()));
   }
 
   void TearDown() override {
     CloseStartupDialogIfNeeded();
-    test_web_ui_.reset();
-    web_contents_factory_.reset();
+    scoped_fws_ui_config_.reset();
     auto* floating_workspace_service =
         FloatingWorkspaceServiceFactory::GetForProfile(profile());
     if (floating_workspace_service) {
@@ -429,6 +428,7 @@ class FloatingWorkspaceServiceTest : public testing::Test {
  private:
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  content::RenderViewHostTestEnabler rvh_test_enabler_;
   syncer::TestSyncService test_sync_service_;
   std::unique_ptr<desks_storage::FakeDeskSyncService> fake_desk_sync_service_;
   std::unique_ptr<NetworkHandlerTestHelper> network_handler_test_helper_;
@@ -441,8 +441,7 @@ class FloatingWorkspaceServiceTest : public testing::Test {
   user_manager::TypedScopedUserManager<user_manager::FakeUserManager>
       fake_user_manager_;
   ash::SessionTerminationManager session_termination_manager_;
-  std::unique_ptr<content::TestWebUI> test_web_ui_;
-  std::unique_ptr<content::TestWebContentsFactory> web_contents_factory_;
+  std::unique_ptr<content::ScopedWebUIConfigRegistration> scoped_fws_ui_config_;
 
   raw_ptr<TestingProfile> profile_ = nullptr;
 };
@@ -1764,6 +1763,153 @@ TEST_F(FloatingWorkspaceServiceMultiUserTest,
       floating_workspace_service2->GetLatestFloatingWorkspaceTemplate());
 }
 
+TEST_F(FloatingWorkspaceServiceMultiUserTest,
+       NoRestoreWhenActiveUserSwitchedBeforeFirstSyncCompletes) {
+  SkipOnFirstSyncCallback();
+  PopulateAppsCache();
+  PopulateAppsCache2();
+  fake_user_manager()->SwitchActiveUser(account_id());
+  const std::string template_name = "floating_workspace_template";
+  base::RunLoop loop;
+  fake_desk_sync_service()->GetDeskModel()->AddOrUpdateEntry(
+      MakeTestFloatingWorkspaceDeskTemplate(template_name, base::Time::Now()),
+      base::BindLambdaForTesting(
+          [&](desks_storage::DeskModel::AddOrUpdateEntryStatus status,
+              std::unique_ptr<ash::DeskTemplate> new_entry) {
+            EXPECT_EQ(desks_storage::DeskModel::AddOrUpdateEntryStatus::kOk,
+                      status);
+            loop.Quit();
+          }));
+  loop.Run();
+
+  CreateFloatingWorkspaceServiceForTesting(profile());
+  CreateFloatingWorkspaceServiceForTesting(profile2());
+  FloatingWorkspaceService* floating_workspace_service =
+      InitFloatingWorkspaceServiceAndStartSession();
+  auto* floating_workspace_service2 =
+      FloatingWorkspaceServiceFactory::GetForProfile(profile2());
+  floating_workspace_service2->Init(test_sync_service2(),
+                                    fake_desk_sync_service2());
+
+  EXPECT_FALSE(mock_desks_client()->restored_desk_template());
+
+  // Switch to secondary user before first sync finishes for primary user.
+  fake_user_manager()->SwitchActiveUser(account_id2());
+  floating_workspace_service->OnActiveUserSessionChanged(account_id2());
+  floating_workspace_service2->OnActiveUserSessionChanged(account_id2());
+
+  // Late first sync update arrives for the primary user while secondary user is
+  // active.
+  test_sync_service()->SetDownloadStatusFor(
+      {syncer::DataType::WORKSPACE_DESK},
+      syncer::SyncService::DataTypeDownloadStatus::kUpToDate);
+  test_sync_service()->FireStateChanged();
+
+  // Primary user's workspace should not be restored in secondary user's
+  // session.
+  EXPECT_FALSE(mock_desks_client()->restored_desk_template());
+}
+
+TEST_F(FloatingWorkspaceServiceMultiUserTest,
+       RestoresCorrectlyWhenSwitchedBackToPrimaryUser) {
+  SkipOnFirstSyncCallback();
+  PopulateAppsCache();
+  PopulateAppsCache2();
+  fake_user_manager()->SwitchActiveUser(account_id());
+  const std::string template_name = "floating_workspace_template";
+  base::RunLoop loop;
+  fake_desk_sync_service()->GetDeskModel()->AddOrUpdateEntry(
+      MakeTestFloatingWorkspaceDeskTemplate(template_name, base::Time::Now()),
+      base::BindLambdaForTesting(
+          [&](desks_storage::DeskModel::AddOrUpdateEntryStatus status,
+              std::unique_ptr<ash::DeskTemplate> new_entry) {
+            EXPECT_EQ(desks_storage::DeskModel::AddOrUpdateEntryStatus::kOk,
+                      status);
+            loop.Quit();
+          }));
+  loop.Run();
+
+  CreateFloatingWorkspaceServiceForTesting(profile());
+  CreateFloatingWorkspaceServiceForTesting(profile2());
+  FloatingWorkspaceService* floating_workspace_service =
+      InitFloatingWorkspaceServiceAndStartSession();
+  auto* floating_workspace_service2 =
+      FloatingWorkspaceServiceFactory::GetForProfile(profile2());
+  floating_workspace_service2->Init(test_sync_service2(),
+                                    fake_desk_sync_service2());
+
+  EXPECT_FALSE(mock_desks_client()->restored_desk_template());
+
+  // Switch to secondary user before first sync finishes for primary user.
+  fake_user_manager()->SwitchActiveUser(account_id2());
+  floating_workspace_service->OnActiveUserSessionChanged(account_id2());
+  floating_workspace_service2->OnActiveUserSessionChanged(account_id2());
+
+  // Late first sync update arrives for primary user while secondary user is
+  // active.
+  test_sync_service()->SetDownloadStatusFor(
+      {syncer::DataType::WORKSPACE_DESK},
+      syncer::SyncService::DataTypeDownloadStatus::kUpToDate);
+  test_sync_service()->FireStateChanged();
+  EXPECT_FALSE(mock_desks_client()->restored_desk_template());
+
+  // Switch back to primary user.
+  fake_user_manager()->SwitchActiveUser(account_id());
+  floating_workspace_service->OnActiveUserSessionChanged(account_id());
+  floating_workspace_service2->OnActiveUserSessionChanged(account_id());
+
+  // Trigger sync state update for primary user.
+  test_sync_service()->FireStateChanged();
+
+  // Primary user's workspace should now be safely restored.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return mock_desks_client()->restored_desk_template() != nullptr;
+  }));
+  EXPECT_EQ(mock_desks_client()->restored_desk_template()->template_name(),
+            base::UTF8ToUTF16(template_name));
+}
+
+TEST_F(FloatingWorkspaceServiceMultiUserTest,
+       ObserverStateChangesOnUserSwitchAndShutdown) {
+  PopulateAppsCache();
+  PopulateAppsCache2();
+  fake_user_manager()->SwitchActiveUser(account_id());
+  CreateFloatingWorkspaceServiceForTesting(profile());
+  CreateFloatingWorkspaceServiceForTesting(profile2());
+  FloatingWorkspaceService* floating_workspace_service =
+      InitFloatingWorkspaceServiceAndStartSession();
+  auto* floating_workspace_service2 =
+      FloatingWorkspaceServiceFactory::GetForProfile(profile2());
+  floating_workspace_service2->Init(test_sync_service2(),
+                                    fake_desk_sync_service2());
+
+  // 1. When primary user is active, both IsObservingForTesting() and
+  //    IsObservingSessionForTesting() are true.
+  EXPECT_TRUE(floating_workspace_service->IsObservingForTesting());
+  EXPECT_TRUE(floating_workspace_service->IsObservingSessionForTesting());
+
+  // 2. When active user switches to secondary user, IsObservingForTesting()
+  //    becomes false, while IsObservingSessionForTesting() remains true.
+  fake_user_manager()->SwitchActiveUser(account_id2());
+  floating_workspace_service->OnActiveUserSessionChanged(account_id2());
+  floating_workspace_service2->OnActiveUserSessionChanged(account_id2());
+  EXPECT_FALSE(floating_workspace_service->IsObservingForTesting());
+  EXPECT_TRUE(floating_workspace_service->IsObservingSessionForTesting());
+
+  // 3. When switching back to primary user, both are true again.
+  fake_user_manager()->SwitchActiveUser(account_id());
+  floating_workspace_service->OnActiveUserSessionChanged(account_id());
+  floating_workspace_service2->OnActiveUserSessionChanged(account_id());
+  EXPECT_TRUE(floating_workspace_service->IsObservingForTesting());
+  EXPECT_TRUE(floating_workspace_service->IsObservingSessionForTesting());
+
+  // 4. When service is shut down (Shutdown()), IsObservingSessionForTesting()
+  //    becomes false.
+  floating_workspace_service->Shutdown();
+  EXPECT_FALSE(floating_workspace_service->IsObservingForTesting());
+  EXPECT_FALSE(floating_workspace_service->IsObservingSessionForTesting());
+}
+
 class FloatingWorkspaceServiceV2WithCookiesTest
     : public FloatingWorkspaceServiceTest {
  protected:
@@ -1869,6 +2015,7 @@ TEST_F(FloatingWorkspaceServiceSafeModeTest, NoFwsInSafeMode) {
   floating_workspace_service->Init(test_sync_service(),
                                    fake_desk_sync_service());
   EXPECT_FALSE(floating_workspace_service->IsObservingForTesting());
+  EXPECT_FALSE(floating_workspace_service->IsObservingSessionForTesting());
 }
 
 }  // namespace ash::floating_workspace

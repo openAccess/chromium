@@ -13,7 +13,7 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/test/base/android/android_browser_test.h"  // nogncheck
 #else
-#include "chrome/browser/ui/browser.h"  // nogncheck
+#include "chrome/test/base/in_process_browser_test.h"
 #endif
 #include "base/command_line.h"
 #include "base/strings/utf_string_conversions.h"
@@ -108,6 +108,7 @@ class AutofillEventHandlerBrowserTest : public InProcessBrowserTest {
     autofill_profile.SetRawInfo(ADDRESS_HOME_STATE, u"CA");
     autofill_profile.SetRawInfo(ADDRESS_HOME_ZIP, u"12345");
     autofill_profile.SetRawInfo(ADDRESS_HOME_COUNTRY, u"US");
+    autofill_profile.FinalizeAfterImport();
 
     pdm->address_data_manager().AddProfile(autofill_profile);
   }
@@ -136,11 +137,13 @@ class AutofillEventHandlerBrowserTest : public InProcessBrowserTest {
     profile.SetRawInfo(ADDRESS_HOME_STATE, u"CA");
     profile.SetRawInfo(ADDRESS_HOME_ZIP, u"12345");
     profile.SetRawInfo(ADDRESS_HOME_COUNTRY, u"US");
+    profile.FinalizeAfterImport();
 
     TestAutofillManager* manager = autofill_manager_injector_[rfh];
     manager->FillOrPreviewForm(mojom::ActionPersistence::kFill,
                                form.global_id(), triggered_field.global_id(),
                                &profile, AutofillTriggerSource::kPopup,
+                               /*require_user_confirmation=*/false,
                                /*blocked_fields=*/{});
   }
 
@@ -803,6 +806,7 @@ class AutofillEventMultiFrameBrowserTest : public InProcessBrowserTest {
     manager->FillOrPreviewForm(mojom::ActionPersistence::kFill,
                                form.global_id(), triggered_field.global_id(),
                                &card, AutofillTriggerSource::kPopup,
+                               /*require_user_confirmation=*/false,
                                /*blocked_fields=*/{});
   }
 

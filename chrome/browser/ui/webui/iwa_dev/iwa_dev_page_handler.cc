@@ -4,9 +4,9 @@
 
 #include "chrome/browser/ui/webui/iwa_dev/iwa_dev_page_handler.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "base/check.h"
@@ -28,6 +28,7 @@
 #include "chrome/browser/web_applications/model/iwa_update_info.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
+#include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_install_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
@@ -111,19 +112,6 @@ iwa_dev::mojom::IwaDevModeSourcePtr MapToMojomIwaDevModeSource(
       isolation_data.location().variant());
 }
 
-iwa_dev::mojom::IwaDevModeAppInfoPtr MapToMojomIwaDevModeAppInfo(
-    const web_app::WebApp& app) {
-  auto iwa_origin = web_app::IwaOrigin::Create(app.start_url()).value();
-  std::string web_bundle_id = iwa_origin.web_bundle_id().id();
-
-  const web_app::IsolationData& isolation_data = app.isolation_data().value();
-
-  return iwa_dev::mojom::IwaDevModeAppInfo::New(
-      app.app_id(), std::move(web_bundle_id), app.untranslated_name(),
-      MapToMojomIwaDevModeSource(isolation_data),
-      isolation_data.version().GetString());
-}
-
 template <typename T>
 base::expected<std::monostate, mojo_base::mojom::ErrorPtr>
 MapToMojomEmptyResult(base::expected<T, std::string> result) {
@@ -171,36 +159,6 @@ bool UpdateFound(web_app::IwaUpdateCheckAndPrepareSuccess status) {
     case web_app::IwaUpdateCheckAndPrepareSuccess::kNoUpdateFound:
     case web_app::IwaUpdateCheckAndPrepareSuccess::kUpdateFound:
       return false;
-  }
-}
-
-std::string UpdateCheckAndPrepareErrorToString(
-    web_app::IwaUpdateCheckAndPrepareError error) {
-  switch (error) {
-    case web_app::IwaUpdateCheckAndPrepareError::kUpdateManifestDownloadFailed:
-      return "Failed to download update manifest.";
-    case web_app::IwaUpdateCheckAndPrepareError::kUpdateManifestInvalidJson:
-      return "Update manifest contains invalid JSON.";
-    case web_app::IwaUpdateCheckAndPrepareError::kUpdateManifestInvalidManifest:
-      return "Invalid update manifest format.";
-    case web_app::IwaUpdateCheckAndPrepareError::
-        kUpdateManifestNoApplicableVersion:
-      return "No applicable version found in update manifest.";
-    case web_app::IwaUpdateCheckAndPrepareError::kIwaNotInstalled:
-      return "App not found.";
-    case web_app::IwaUpdateCheckAndPrepareError::
-        kPinnedVersionNotFoundInUpdateManifest:
-      return "Pinned version not found in update manifest.";
-    case web_app::IwaUpdateCheckAndPrepareError::kDowngradeNotAllowed:
-      return "Version downgrade is not allowed.";
-    case web_app::IwaUpdateCheckAndPrepareError::kDownloadPathCreationFailed:
-      return "Failed to create download path.";
-    case web_app::IwaUpdateCheckAndPrepareError::kBundleDownloadError:
-      return "Failed to download web bundle.";
-    case web_app::IwaUpdateCheckAndPrepareError::kUpdateDryRunFailed:
-      return "Update dry run failed.";
-    case web_app::IwaUpdateCheckAndPrepareError::kSystemShutdown:
-      return "Operation aborted.";
   }
 }
 
@@ -291,8 +249,7 @@ void IwaDevPageHandler::UninstallApp(const std::string& app_id,
                                      UninstallAppCallback callback) {
   // If the app is no longer installed (e.g. uninstalled via another window),
   // or the webui compromised, this should be ignored.
-  if (!provider_->registrar_unsafe().GetAppById(
-          app_id, web_app::WebAppFilter::IsDevModeIsolatedApp())) {
+  if (!IsDevModeAppOrSubApp(app_id)) {
     std::move(callback).Run(false);
     return;
   }
@@ -350,6 +307,22 @@ void IwaDevPageHandler::InstallAppFromUpdateManifest(
                                  std::move(update_channel)));
 }
 
+void IwaDevPageHandler::LaunchApp(const std::string& app_id,
+                                  LaunchAppCallback callback) {
+  if (!IsDevModeAppOrSubApp(app_id)) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  provider_->scheduler().LaunchApp(
+      app_id, /*url=*/std::nullopt,
+      base::BindOnce([](base::WeakPtr<BrowserWindowInterface>,
+                        base::WeakPtr<content::WebContents> web_contents,
+                        apps::LaunchContainer) {
+        return web_contents != nullptr;
+      }).Then(std::move(callback)));
+}
+
 void IwaDevPageHandler::ParseUpdateManifestFromUrl(
     const GURL& update_manifest_url,
     ParseUpdateManifestFromUrlCallback callback) {
@@ -364,7 +337,7 @@ void IwaDevPageHandler::ParseUpdateManifestFromUrl(
       base::DoNothingWithBoundArgs(std::move(fetcher));
   fetcher_ptr->FetchUpdateManifest(
       base::BindOnce(
-          [](base::expected<web_app::UpdateManifest,
+          [](base::expected<web_app::UpdateManifestWithAddressSpace,
                             web_app::UpdateManifestFetcher::Error> result)
               -> base::expected<iwa_dev::mojom::UpdateManifestPtr,
                                 mojo_base::mojom::ErrorPtr> {
@@ -375,7 +348,7 @@ void IwaDevPageHandler::ParseUpdateManifestFromUrl(
                                 web_app::UpdateManifestFetcher::ErrorToString(
                                     result.error())})));
             }
-            return MapToMojomUpdateManifest(result.value());
+            return MapToMojomUpdateManifest(result->manifest);
           })
           .Then(std::move(callback))
           .Then(std::move(fetcher_keep_alive)));
@@ -563,7 +536,7 @@ void IwaDevPageHandler::OnUpdateDiscoverAndPrepareTaskCompleted(
           std::move(*callback).Run(
               base::unexpected(mojo_base::mojom::Error::New(
                   mojo_base::mojom::Code::kInvalidArgument,
-                  UpdateCheckAndPrepareErrorToString(error))));
+                  web_app::IwaUpdateCheckAndPrepareErrorToString(error))));
         }
       });
 
@@ -622,6 +595,50 @@ IwaDevPageHandler::GetInstalledAppById(const std::string& app_id) {
   return iwa;
 }
 
+bool IwaDevPageHandler::IsDevModeAppOrSubApp(
+    const webapps::AppId& app_id) const {
+  return provider_->registrar_unsafe().AppMatches(
+      app_id, web_app::WebAppFilter::IsDevModeIsolatedApp() |
+                  web_app::WebAppFilter::IsDevModeIsolatedSubApp());
+}
+
+iwa_dev::mojom::IwaDevModeAppInfoPtr
+IwaDevPageHandler::MapToMojomIwaDevModeAppInfo(
+    const web_app::WebApp& app) const {
+  auto iwa_origin = web_app::IwaOrigin::Create(app.start_url()).value();
+  std::string web_bundle_id = iwa_origin.web_bundle_id().id();
+
+  const web_app::IsolationData& isolation_data = app.isolation_data().value();
+
+  return iwa_dev::mojom::IwaDevModeAppInfo::New(
+      app.app_id(), std::move(web_bundle_id), app.untranslated_name(),
+      MapToMojomIwaDevModeSource(isolation_data),
+      isolation_data.version().GetString(),
+      GetDevModeSubAppsInfo(app.app_id()));
+}
+
+std::vector<iwa_dev::mojom::SubAppInfoPtr>
+IwaDevPageHandler::GetDevModeSubAppsInfo(
+    const webapps::AppId& parent_app_id) const {
+  const auto& registrar = provider_->registrar_unsafe();
+  CHECK(registrar.AppMatches(parent_app_id,
+                             web_app::WebAppFilter::IsDevModeIsolatedApp()));
+  auto sub_apps =
+      base::ToVector(registrar.GetAllSubAppIds(parent_app_id),
+                     [&](const webapps::AppId& sub_app_id) {
+                       return iwa_dev::mojom::SubAppInfo::New(
+                           sub_app_id, registrar.GetAppShortName(sub_app_id));
+                     });
+  std::ranges::sort(sub_apps, {}, &iwa_dev::mojom::SubAppInfo::name);
+  return sub_apps;
+}
+
+const web_app::WebApp& IwaDevPageHandler::GetParentApp(
+    const web_app::WebApp& sub_app) const {
+  return CHECK_DEREF(
+      provider_->registrar_unsafe().GetAppById(*sub_app.parent_app_id()));
+}
+
 void IwaDevPageHandler::ApplyDevModeUpdate(
     const std::string& app_id,
     base::optional_ref<const web_app::IwaSourceDevModeWithFileOp> location,
@@ -663,24 +680,40 @@ void IwaDevPageHandler::ApplyDevModeUpdate(
 }
 
 void IwaDevPageHandler::OnWebAppInstalled(const webapps::AppId& app_id) {
-  if (const web_app::WebApp* app = provider_->registrar_unsafe().GetAppById(
+  const auto& registrar = provider_->registrar_unsafe();
+  if (const web_app::WebApp* app = registrar.GetAppById(
           app_id, web_app::WebAppFilter::IsDevModeIsolatedApp())) {
     page_->OnAppInstalled(MapToMojomIwaDevModeAppInfo(*app));
+  } else if (const web_app::WebApp* sub_app = registrar.GetAppById(
+                 app_id, web_app::WebAppFilter::IsDevModeIsolatedSubApp())) {
+    page_->OnAppUpdated(MapToMojomIwaDevModeAppInfo(GetParentApp(*sub_app)));
   }
 }
 
 void IwaDevPageHandler::OnWebAppManifestUpdated(const webapps::AppId& app_id) {
-  if (const web_app::WebApp* app = provider_->registrar_unsafe().GetAppById(
+  const auto& registrar = provider_->registrar_unsafe();
+  if (const web_app::WebApp* app = registrar.GetAppById(
           app_id, web_app::WebAppFilter::IsDevModeIsolatedApp())) {
     page_->OnAppUpdated(MapToMojomIwaDevModeAppInfo(*app));
+  } else if (const web_app::WebApp* sub_app = registrar.GetAppById(
+                 app_id, web_app::WebAppFilter::IsDevModeIsolatedSubApp())) {
+    page_->OnAppUpdated(MapToMojomIwaDevModeAppInfo(GetParentApp(*sub_app)));
   }
 }
 
 void IwaDevPageHandler::OnWebAppWillBeUninstalled(
     const webapps::AppId& app_id) {
-  if (provider_->registrar_unsafe().AppMatches(
-          app_id, web_app::WebAppFilter::IsDevModeIsolatedApp())) {
+  const auto& registrar = provider_->registrar_unsafe();
+  if (registrar.AppMatches(app_id,
+                           web_app::WebAppFilter::IsDevModeIsolatedApp())) {
     page_->OnAppUninstalled(app_id);
+  } else if (const web_app::WebApp* sub_app = registrar.GetAppById(
+                 app_id, web_app::WebAppFilter::IsDevModeIsolatedSubApp())) {
+    iwa_dev::mojom::IwaDevModeAppInfoPtr parent_info =
+        MapToMojomIwaDevModeAppInfo(GetParentApp(*sub_app));
+    std::erase_if(parent_info->sub_apps,
+                  [&](const auto& sub) { return sub->app_id == app_id; });
+    page_->OnAppUpdated(std::move(parent_info));
   }
 }
 

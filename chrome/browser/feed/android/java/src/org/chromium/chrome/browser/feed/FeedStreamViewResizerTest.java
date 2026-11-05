@@ -12,12 +12,8 @@ import android.view.View;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.junit.MockitoJUnit;
-import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
@@ -31,9 +27,8 @@ import org.chromium.components.browser_ui.widget.displaystyle.VerticalDisplaySty
 @RunWith(BaseRobolectricTestRunner.class)
 public final class FeedStreamViewResizerTest {
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private Activity mActivity;
-    @Mock private RecyclerView mRecyclerView;
+    private RecyclerView mRecyclerView;
     private UiConfig mUiConfig;
 
     private FeedStreamViewResizer mResizer;
@@ -41,6 +36,7 @@ public final class FeedStreamViewResizerTest {
     @Before
     public void setUp() {
         mActivity = Robolectric.buildActivity(Activity.class).get();
+        mRecyclerView = new RecyclerView(mActivity);
         mUiConfig = new UiConfig(new View(mActivity));
         mResizer = FeedStreamViewResizer.createAndAttach(mActivity, mRecyclerView, mUiConfig);
     }
@@ -107,6 +103,17 @@ public final class FeedStreamViewResizerTest {
                 new DisplayStyle(HorizontalDisplayStyle.NARROW, VerticalDisplayStyle.REGULAR));
         // expectedPadding = mDefaultPaddingPixels = 0
         int expectedPadding = 0;
+        assertPaddingEquals(expectedPadding);
+    }
+
+    @Config(qualifiers = "sw1820dp-w1820dp")
+    @Test
+    public void computePaddingWidthWithHorizontalInset() {
+        // screenWidthDp = 1820, horizontalInset = 600 -> availableWidth = 1220dp
+        // expectedPadding = max((1220-ntp_wide_card_width_breakpoint)/2, mMinWidePaddingPixels) =
+        // 190
+        mUiConfig.setHorizontalInset(600);
+        int expectedPadding = 190;
         assertPaddingEquals(expectedPadding);
     }
 

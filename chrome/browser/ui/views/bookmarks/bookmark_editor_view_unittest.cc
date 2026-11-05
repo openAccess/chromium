@@ -14,7 +14,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/with_feature_override.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -53,14 +52,9 @@ using bookmarks::BookmarkNode;
 class BookmarkEditorViewTest : public testing::Test,
                                public base::test::WithFeatureOverride {
  public:
-  explicit BookmarkEditorViewTest(
-      bool enable_migration_ui_changes_feature = true)
+  BookmarkEditorViewTest()
       : base::test::WithFeatureOverride(
-            switches::kSyncEnableBookmarksInTransportMode) {
-    scoped_feature_list_.InitWithFeatureState(
-        switches::kBookmarksMigrateUiChanges,
-        /*enabled=*/enable_migration_ui_changes_feature);
-  }
+            switches::kSyncEnableBookmarksInTransportMode) {}
 
   void SetUp() override {
     TestingProfile::Builder profile_builder;
@@ -122,36 +116,44 @@ class BookmarkEditorViewTest : public testing::Test,
 
   BookmarkEditorView::EditorNode* account_editor_node() {
     CHECK(AreAccountNodesCreated());
-    return editor_root()->children()[0].get();
+    return BookmarkEditorView::EditorTreeModel::AsNode(
+        editor_root()->children()[0].get());
   }
 
   BookmarkEditorView::EditorNode* account_bookmark_bar_editor_node() {
     CHECK(AreAccountNodesCreated());
-    return account_editor_node()->children()[0].get();
+    return BookmarkEditorView::EditorTreeModel::AsNode(
+        account_editor_node()->children()[0].get());
   }
 
   BookmarkEditorView::EditorNode* account_other_editor_node() {
     CHECK(AreAccountNodesCreated());
-    return account_editor_node()->children()[1].get();
+    return BookmarkEditorView::EditorTreeModel::AsNode(
+        account_editor_node()->children()[1].get());
   }
 
   BookmarkEditorView::EditorNode* local_editor_node() {
     CHECK(AreAccountNodesCreated());
-    return editor_root()->children()[1].get();
+    return BookmarkEditorView::EditorTreeModel::AsNode(
+        editor_root()->children()[1].get());
   }
 
   BookmarkEditorView::EditorNode* local_bookmark_bar_editor_node() {
     if (AreAccountNodesCreated()) {
-      return local_editor_node()->children()[0].get();
+      return BookmarkEditorView::EditorTreeModel::AsNode(
+          local_editor_node()->children()[0].get());
     }
-    return editor_root()->children()[0].get();
+    return BookmarkEditorView::EditorTreeModel::AsNode(
+        editor_root()->children()[0].get());
   }
 
   BookmarkEditorView::EditorNode* local_other_editor_node() {
     if (AreAccountNodesCreated()) {
-      return local_editor_node()->children()[1].get();
+      return BookmarkEditorView::EditorTreeModel::AsNode(
+          local_editor_node()->children()[1].get());
     }
-    return editor_root()->children()[1].get();
+    return BookmarkEditorView::EditorTreeModel::AsNode(
+        editor_root()->children()[1].get());
   }
 
   BookmarkEditorView::EditorNode* selected_editor_node() {
@@ -286,8 +288,6 @@ class BookmarkEditorViewTest : public testing::Test,
   raw_ptr<bookmarks::BookmarkModel> model_;
   ChromeTestViewsDelegate<> views_delegate_;
   std::unique_ptr<BookmarkEditorView> editor_;
-
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Makes sure the tree model matches that of the bookmark bar model.
@@ -307,17 +307,15 @@ TEST_P(BookmarkEditorViewTest, ModelsMatchWithoutAccountFolders) {
             editor_root()->children().size());
   // Verify the tree structure by directly accessing editor nodes, instead of
   // using helper functions.
-  const BookmarkEditorView::EditorNode* bookmark_bar =
-      editor_root()->children()[0].get();
-  const BookmarkEditorView::EditorNode* other =
-      editor_root()->children()[1].get();
+  const ui::TreeModelNode* bookmark_bar = editor_root()->children()[0].get();
+  const ui::TreeModelNode* other = editor_root()->children()[1].get();
 
   // The bookmark bar node should have 2 nodes: folders F1 and F2.
   ASSERT_EQ(2u, bookmark_bar->children().size());
   ASSERT_EQ(u"F1", bookmark_bar->children()[0]->GetTitle());
   ASSERT_EQ(u"F2", bookmark_bar->children()[1]->GetTitle());
   // F1 should have one child, F11
-  const BookmarkEditorView::EditorNode* F1 = bookmark_bar->children()[0].get();
+  const ui::TreeModelNode* F1 = bookmark_bar->children()[0].get();
   ASSERT_EQ(1u, F1->children().size());
   ASSERT_EQ(u"F11", F1->children()[0]->GetTitle());
   // Other node should have one child (OF1).
@@ -340,8 +338,8 @@ TEST_P(BookmarkEditorViewTest, ModelsMatchWithAccountFolders) {
 
   // The root should have two children: account and local.
   ASSERT_EQ(2u, editor_root()->children().size());
-  BookmarkEditorView::EditorNode* account = editor_root()->children()[0].get();
-  BookmarkEditorView::EditorNode* local = editor_root()->children()[1].get();
+  ui::TreeModelNode* account = editor_root()->children()[0].get();
+  ui::TreeModelNode* local = editor_root()->children()[1].get();
   EXPECT_EQ(l10n_util::GetStringUTF16(IDS_BOOKMARKS_ACCOUNT_BOOKMARKS),
             account->GetTitle());
   EXPECT_EQ(l10n_util::GetStringUTF16(IDS_BOOKMARKS_DEVICE_BOOKMARKS),
@@ -351,18 +349,15 @@ TEST_P(BookmarkEditorViewTest, ModelsMatchWithAccountFolders) {
   // bookmarks, and conditionally mobile bookmarks.
   ASSERT_EQ(model()->account_mobile_node()->IsVisible() ? 3u : 2u,
             account->children().size());
-  const BookmarkEditorView::EditorNode* account_bb =
-      account->children()[0].get();
-  const BookmarkEditorView::EditorNode* account_other =
-      account->children()[1].get();
+  const ui::TreeModelNode* account_bb = account->children()[0].get();
+  const ui::TreeModelNode* account_other = account->children()[1].get();
   // The account bookmark bar node should have 2 child nodes: folders acc_F1 and
   // acc_F2.
   ASSERT_EQ(2u, account_bb->children().size());
   EXPECT_EQ(u"acc_F1", account_bb->children()[0]->GetTitle());
   EXPECT_EQ(u"acc_F2", account_bb->children()[1]->GetTitle());
   // acc_F1 should have one child, acc_F11
-  const BookmarkEditorView::EditorNode* acc_F1 =
-      account_bb->children()[0].get();
+  const ui::TreeModelNode* acc_F1 = account_bb->children()[0].get();
   ASSERT_EQ(1u, acc_F1->children().size());
   EXPECT_EQ(u"acc_F11", acc_F1->children()[0]->GetTitle());
   // Account other node should have one child (acc_OF1).
@@ -373,17 +368,14 @@ TEST_P(BookmarkEditorViewTest, ModelsMatchWithAccountFolders) {
   // bookmarks, and conditionally mobile bookmarks.
   ASSERT_EQ(model()->mobile_node()->IsVisible() ? 3u : 2u,
             local->children().size());
-  const BookmarkEditorView::EditorNode* local_bookmark_bar =
-      local->children()[0].get();
-  const BookmarkEditorView::EditorNode* local_other =
-      local->children()[1].get();
+  const ui::TreeModelNode* local_bookmark_bar = local->children()[0].get();
+  const ui::TreeModelNode* local_other = local->children()[1].get();
   // The local bookmark bar node should have 2 child nodes: folders F1 and F2.
   ASSERT_EQ(2u, local_bookmark_bar->children().size());
   EXPECT_EQ(u"F1", local_bookmark_bar->children()[0]->GetTitle());
   EXPECT_EQ(u"F2", local_bookmark_bar->children()[1]->GetTitle());
   // F1 should have one child, F11
-  const BookmarkEditorView::EditorNode* F1 =
-      local_bookmark_bar->children()[0].get();
+  const ui::TreeModelNode* F1 = local_bookmark_bar->children()[0].get();
   ASSERT_EQ(1u, F1->children().size());
   EXPECT_EQ(u"F11", F1->children()[0]->GetTitle());
   // Local other node should have one child (OF1).
@@ -511,7 +503,8 @@ TEST_P(BookmarkEditorViewTest, MoveToNewParent) {
 
   // Create two nodes: "F21" as a child of "F2" and "F211" as a child of "F21".
   BookmarkEditorView::EditorNode* f2 =
-      local_bookmark_bar_editor_node()->children()[1].get();
+      BookmarkEditorView::EditorTreeModel::AsNode(
+          local_bookmark_bar_editor_node()->children()[1].get());
   BookmarkEditorView::EditorNode* f21 = AddNewFolder(f2);
   f21->SetTitle(u"F21");
   BookmarkEditorView::EditorNode* f211 = AddNewFolder(f21);
@@ -820,7 +813,8 @@ TEST_P(BookmarkEditorViewTest, DISABLED_EditorFullyShown) {
 
   views::TreeView* tree = tree_view();
   BookmarkEditorView::EditorNode* parent_node =
-      editor_root()->children()[1]->children()[0].get();
+      BookmarkEditorView::EditorTreeModel::AsNode(
+          editor_root()->children()[1]->children()[0].get());
   // Add more nodes to exceed the height of the viewport.
   do {
     tree->Expand(parent_node);
@@ -937,14 +931,7 @@ TEST_P(BookmarkEditorViewTest,
   EXPECT_FALSE(editor()->IsNewFolderButtonEnabledForTesting());
 }
 
-TEST_P(BookmarkEditorViewTest, DoNotOnlyExpandTrackedNodes) {
-  // Configure the local bookmarks bar to be tracked as expanded.
-  ScopedListPrefUpdate update(profile_->GetPrefs(),
-                              bookmarks::prefs::kBookmarkEditorExpandedNodes);
-  base::ListValue& initial_expanded_nodes_list = update.Get();
-  initial_expanded_nodes_list.Append(
-      base::NumberToString(model()->bookmark_bar_node()->id()));
-
+TEST_P(BookmarkEditorViewTest, OnlyExpandSelectedNodePath) {
   // Open the editor with a node saved under the local other bookmarks folder.
   CreateEditor(profile_.get(),
                BookmarkEditor::EditDetails::EditNode(GetNode("oa")),
@@ -954,13 +941,11 @@ TEST_P(BookmarkEditorViewTest, DoNotOnlyExpandTrackedNodes) {
   // The node being edited should always be visible.
   EXPECT_TRUE(GetNode("oa")->IsVisible());
 
-  // The local bookmarks bar should no longer be open in the tree view.
+  // The local bookmarks bar should not be open in the tree view.
   EXPECT_FALSE(tree_view()->IsExpanded(local_bookmark_bar_editor_node()));
 
   // The same behavior is expected with account nodes.
   if (SyncEnableBookmarksInTransportModeEnabled()) {
-    initial_expanded_nodes_list.Append(
-        base::NumberToString(model()->account_bookmark_bar_node()->id()));
     ApplyEdits();
     CreateEditor(profile_.get(),
                  BookmarkEditor::EditDetails::EditNode(GetNode("acc_oa")),
@@ -970,38 +955,6 @@ TEST_P(BookmarkEditorViewTest, DoNotOnlyExpandTrackedNodes) {
     EXPECT_FALSE(tree_view()->IsExpanded(account_bookmark_bar_editor_node()));
   }
 }
-
-class BookmarkEditorViewWithMigrationUiChangesDisabledTest
-    : public BookmarkEditorViewTest {
- public:
-  BookmarkEditorViewWithMigrationUiChangesDisabledTest()
-      : BookmarkEditorViewTest(/*enable_migration_ui_changes_feature=*/false) {}
-};
-
-TEST_P(BookmarkEditorViewWithMigrationUiChangesDisabledTest,
-       ExpandAllTrackedNodes) {
-  // Configure the local bookmarks bar to be tracked as expanded.
-  ScopedListPrefUpdate update(profile_->GetPrefs(),
-                              bookmarks::prefs::kBookmarkEditorExpandedNodes);
-  base::ListValue& initial_expanded_nodes_list = update.Get();
-  initial_expanded_nodes_list.Append(
-      base::NumberToString(model()->bookmark_bar_node()->id()));
-
-  // Open the editor with a node saved under the local other bookmarks folder.
-  CreateEditor(profile_.get(),
-               BookmarkEditor::EditDetails::EditNode(GetNode("oa")),
-               BookmarkEditorView::SHOW_TREE);
-  ExpandAndSelect();
-
-  // The node being edited should always be visible.
-  EXPECT_TRUE(GetNode("oa")->IsVisible());
-
-  // The local bookmarks bar should still be open in the tree view.
-  EXPECT_TRUE(tree_view()->IsExpanded(local_bookmark_bar_editor_node()));
-}
-
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
-    BookmarkEditorViewWithMigrationUiChangesDisabledTest);
 
 // The URL field should truncate to 500KB.
 TEST_P(BookmarkEditorViewTest, UrlTextfiledPasteTruncates) {

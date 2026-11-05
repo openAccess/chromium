@@ -46,6 +46,9 @@ BASE_DECLARE_FEATURE(kZeroSuggestPrefetchDebouncing);
 BASE_DECLARE_FEATURE(kZeroSuggestPrefetchingForComposebox);
 BASE_DECLARE_FEATURE(kZeroSuggestPrefetchingOnSRP);
 BASE_DECLARE_FEATURE(kZeroSuggestPrefetchingOnWeb);
+// Enables triggering zero-suggest prefetch when a page finishes loading on
+// Android, aligning with Desktop's page-load and tab-switch behavior.
+BASE_DECLARE_FEATURE(kZeroSuggestPrefetchOnPageLoadAndTabSwitch);
 
 // On Device Suggest.
 BASE_DECLARE_FEATURE(kOnDeviceHeadProviderIncognito);
@@ -81,11 +84,28 @@ inline constexpr base::FeatureParam<int>
         &kOmniboxFullWebUIDeferShowUntilVisualStateReady,
         "omnibox_full_webui_defer_show_until_visual_state_ready_timeout_ms",
         250};
+BASE_DECLARE_FEATURE(kOmniboxAimDeferShowUntilVisualStateReadyWithFullWebUI);
+BASE_DECLARE_FEATURE(kOmniboxAimPopupDeferCreation);
+// When false, the deferred AIM popup content is not created after the browser
+// window's first presentation, only when something needs it (showing the popup,
+// the classic popup's context menu, a location bar action), so windows that
+// never open AI Mode never create its WebContents.
+inline constexpr base::FeatureParam<bool>
+    kOmniboxAimPopupCreateOnFirstPresentation{
+        &kOmniboxAimPopupDeferCreation, "create_on_first_presentation", true};
+BASE_DECLARE_FEATURE(kOmniboxWebUIPopupDeferCreation);
+// When true, the deferred suggestion popup content is not created after every
+// browser window's first presentation, only once the omnibox has been focused
+// and the window has presented (or when the popup opens), so windows whose
+// omnibox is never focused never create it.
+inline constexpr base::FeatureParam<bool> kOmniboxWebUIPopupCreateOnFocus{
+    &kOmniboxWebUIPopupDeferCreation, "create_on_focus", false};
 BASE_DECLARE_FEATURE(kOmniboxWebUIDebounceResize);
 BASE_DECLARE_FEATURE(kOmniboxAimDebounceResize);
 BASE_DECLARE_FEATURE(kOmniboxFullWebUIDebounceResize);
 BASE_DECLARE_FEATURE(kOmniboxWebUIHeightWorkarounds);
 BASE_DECLARE_FEATURE(kOmniboxAimHeightWorkarounds);
+BASE_DECLARE_FEATURE(kOmniboxAimHeightWorkaroundsWithFullWebUI);
 BASE_DECLARE_FEATURE(kOmniboxFullWebUIHeightWorkarounds);
 BASE_DECLARE_FEATURE(kOmniboxWebUIPopupStabilizeStartupShow);
 BASE_DECLARE_FEATURE(kOmniboxAimDetachWebContentsOnHide);
@@ -94,22 +114,45 @@ BASE_DECLARE_FEATURE(kOmniboxFullWebUIDetachWebContentsOnHide);
 BASE_DECLARE_FEATURE(kOmniboxWebUIPopupMarkAsHidden);
 BASE_DECLARE_FEATURE(kOmniboxWebUIEvictOnHide);
 BASE_DECLARE_FEATURE(kOmniboxAimEvictOnHide);
+BASE_DECLARE_FEATURE(kOmniboxAimEvictOnHideWithFullWebUI);
 BASE_DECLARE_FEATURE(kOmniboxFullWebUIEvictOnHide);
+BASE_DECLARE_FEATURE(kOmniboxAimWebUIShadow);
+BASE_DECLARE_FEATURE(kOmniboxFullWebUIShadow);
+BASE_DECLARE_FEATURE(kOmniboxAimSizeWebViewToPreferredHeight);
+BASE_DECLARE_FEATURE(kOmniboxWebUISizeWebViewToPreferredHeight);
+BASE_DECLARE_FEATURE(kOmniboxFullWebUISizeWebViewToPreferredHeight);
+BASE_DECLARE_FEATURE(kOmniboxWebUIPopupHideOnCreation);
+BASE_DECLARE_FEATURE(kOmniboxWebUIPopupCreateWidgetOnShow);
+BASE_DECLARE_FEATURE(kOmniboxFullWebUIDestroyWidgetOnHide);
+BASE_DECLARE_FEATURE(kOmniboxAimDestroyWidgetOnHide);
+BASE_DECLARE_FEATURE(kOmniboxWebUIDestroyWidgetOnHide);
+BASE_DECLARE_FEATURE(kOmniboxWebUIPopupShareAcrossWindows);
+BASE_DECLARE_FEATURE(kOmniboxAimPopupRequireEligibility);
 BASE_DECLARE_FEATURE(kWebUISearchboxWithoutModelController);
 
 // Omnibox UI - these affect the UI or function of the location bar (not the
 // popup).
 BASE_DECLARE_FEATURE(kAimEligibilityComponentExtension);
+extern const base::FeatureParam<bool> kAimEligibilityUseComponentUpdater;
 BASE_DECLARE_FEATURE(kDynamicAimSubmit);
 extern const base::FeatureParam<bool> kShowRhsAimHint;
-BASE_DECLARE_FEATURE(kHideAimEntrypointOnUserInput);
-BASE_DECLARE_FEATURE(kHideAimEntrypointForUrlSuggestions);
 BASE_DECLARE_FEATURE(kOmniboxMultimodalInput);
-BASE_DECLARE_FEATURE(kAndroidDesktopAimGate);
 BASE_DECLARE_FEATURE(kOmniboxDebounceKeyboardVisibility);
+BASE_DECLARE_FEATURE(kOmniboxSkipRedundantLocationBarUpdates);
 BASE_DECLARE_FEATURE(kOmniboxDisableTabsForCanvas);
+BASE_DECLARE_FEATURE(kOmniboxAimOpenInNewTab);
 BASE_DECLARE_FEATURE(kAim3pEntrypoint);
 extern const base::FeatureParam<bool> kAim3pEntrypointDebug;
+
+// Enables popup variations (e.g. accordion menu) for mobile Fusebox.
+BASE_DECLARE_FEATURE(kOmniboxFuseboxPopupVariations);
+
+// Enables Fusebox user education features on Android.
+BASE_DECLARE_FEATURE(kOmniboxFuseboxUserEdModelSubtitles);
+BASE_DECLARE_FEATURE(kOmniboxFuseboxUserEdPlusButtonIph);
+BASE_DECLARE_FEATURE(kOmniboxFuseboxUserEdTabPickerIph);
+BASE_DECLARE_FEATURE(kOmniboxFuseboxUserEdFakeboxAnimation);
+BASE_DECLARE_FEATURE(kOmniboxFuseboxUserEdGuidedTour);
 
 // Navigation experiments.
 BASE_DECLARE_FEATURE(kDefaultTypedNavigationsToHttps);
@@ -142,6 +185,14 @@ BASE_DECLARE_FEATURE(kOmniboxPrefetchSelectedSuggestionsOmtAndroid);
 // Enables simultaneous prefetch and navigation on Enter KeyDown in Omnibox.
 BASE_DECLARE_FEATURE(kOmniboxSearchPrefetchOnEnterKeyDown);
 
+// Surfaces recent tabs, including tabs from other devices, as suggestions in
+// the Android Tab Search overlay.
+BASE_DECLARE_FEATURE(kAndroidTabSearchRecentTabs);
+
+// Shows a close button on open tab suggestions in the Android Tab Search
+// overlay, allowing users to close tabs directly from the suggestions list.
+BASE_DECLARE_FEATURE(kAndroidTabSearchCloseTabButton);
+
 // Site search/Keyword mode related features.
 BASE_DECLARE_FEATURE(kOmniboxSiteSearch);
 BASE_DECLARE_FEATURE(kStarterPackExpansion);
@@ -152,14 +203,19 @@ BASE_DECLARE_FEATURE(kAiModeStartPack);
 BASE_DECLARE_FEATURE(kAblateSearchProviderWarmup);
 BASE_DECLARE_FEATURE(kReportApplicationLanguageInSearchRequest);
 BASE_DECLARE_FEATURE(kOmniboxAppendInvocationSource);
+BASE_DECLARE_FEATURE(kTruncateSearchUrlOq);
+inline constexpr base::FeatureParam<int> kTruncateSearchUrlOqLength{
+    &kTruncateSearchUrlOq, "truncate_search_url_oq_length", 2048};
+BASE_DECLARE_FEATURE(kTruncateSearchUrlQ);
+inline constexpr base::FeatureParam<int> kTruncateSearchUrlQLength{
+    &kTruncateSearchUrlQ, "truncate_search_url_q_length", 2048};
 
-BASE_DECLARE_FEATURE(kOmniboxAsyncViewInflation);
 BASE_DECLARE_FEATURE(kOmniboxFuseboxAsyncInflation);
-BASE_DECLARE_FEATURE(kUseFusedLocationProvider);
+BASE_DECLARE_FEATURE(kOmniboxEarlyInflation);
 
 BASE_DECLARE_FEATURE(kOmniboxMobileParityUpdate);
 BASE_DECLARE_FEATURE(kOmniboxMobileParityUpdateV2);
-BASE_DECLARE_FEATURE(kOmniboxXGeoPermissionGranularity);
+BASE_DECLARE_FEATURE(kOmniboxXGeoFailClosedOnPreciseLeak);
 BASE_DECLARE_FEATURE(kExactMatchFavicons);
 BASE_DECLARE_FEATURE(kOmniboxAimImageDownscaling);
 
@@ -235,22 +291,35 @@ extern const base::FeatureParam<bool>
 BASE_DECLARE_FEATURE(kVoiceSearchCoherenceSearchbox);
 extern const base::FeatureParam<bool>
     kVoiceSearchCoherenceSearchboxWithLiveTranscription;
+extern const base::FeatureParam<bool> kVoiceSearchCoherenceRealboxAutoEndpoint;
+extern const base::FeatureParam<bool> kVoiceSearchCoherenceRealboxHelperText;
 
 #if BUILDFLAG(IS_ANDROID)
 BASE_DECLARE_FEATURE(kDiagnostics);
 BASE_DECLARE_FEATURE(kForceAndroidRealbox);
-BASE_DECLARE_FEATURE(kJumpStartOmnibox);
 BASE_DECLARE_FEATURE(kSuppressIntermediateACUpdatesOnLowEndDevices);
 // Delay focusTab to prioritize navigation (https://crbug.com/374852568).
 BASE_DECLARE_FEATURE(kPostDelayedTaskFocusTab);
 BASE_DECLARE_FEATURE(kResetSuggestionsScroll);
+// If enabled, typed-text autocomplete requests are started right after the
+// next frame is drawn, instead of after a fixed 30ms delay.
+BASE_DECLARE_FEATURE(kOmniboxPostFrameAutocompleteStart);
 BASE_DECLARE_FEATURE(kOmniboxSessionlessVoiceSearch);
 BASE_DECLARE_FEATURE(kSuppressStatusIconDuringHttpNavigation);
+BASE_DECLARE_FEATURE(kOmniboxAndroidIntranetRedirect);
+// If enabled, the Omnibox, New Tab Page and toolbar mic buttons delegate voice
+// capture and transcription to the Android Google App Voice Plate.
+BASE_DECLARE_FEATURE(kOmniboxVoicePlateIntent);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 // If enabled, X-Geo headers are sent for all search navigations on all
 // platforms.
 BASE_DECLARE_FEATURE(kPlatformAgnosticXGeo);
+
+// If enabled, URL-what-you-typed matches are made the default match instead of
+// matches for the same URL with different casing, so verbatim input casing is
+// preserved for URL paths, which may be case sensitive.
+BASE_DECLARE_FEATURE(kOmniboxPreserveVerbatimUrlCase);
 
 // If enabled, Inline Location Signaling is enabled gating all development
 // and experimentation for the feature.
@@ -297,16 +366,24 @@ extern const base::FeatureParam<bool> kAskGLensSearchHintText;
 extern const base::FeatureParam<bool> kAskGShowFirstDescription;
 // Whether to show the lens chip in omnibox composebox.
 extern const base::FeatureParam<bool> kAskGComposeboxLensChip;
-// Whether to block initial zero state suggestions in omnibox composebox
-// when we have auto added tabs so we can show the user contextual suggestions
-// from the auto added tabs instead.
-extern const base::FeatureParam<bool> kAskGBlockAutoTabZeroStateSuggestions;
 // Whether to use "Ask about this page" placeholder text in omnibox composebox.
 extern const base::FeatureParam<bool> kAskGComposeboxPlaceholder;
 // Whether to bypass the Lens privacy notice.
 extern const base::FeatureParam<bool> kAskGBypassPrivacyNotice;
 // Whether to show a chip instead of action for Ask G.
 extern const base::FeatureParam<bool> kAskGShowChip;
+// Whether the AskG entrypoint match and the contextual suggestions should use
+// an "Opens in side panel" description (with a side panel icon) instead of the
+// page host / "Ask Google about this page", when AskG opens the cobrowse side
+// panel.
+// Note that this parameter is created for a follow-up iteration of the current
+// Ask G LE. This may be moved to another base param in the future.
+extern const base::FeatureParam<bool> kAskGSuggestionSidePanelDescription;
+// Whether to show an in-product help bubble on the Lens icon (see
+// `kAskGLensIcon`) in the omnibox popup.
+// Note that this parameter is created for a follow-up iteration of the current
+// Ask G LE. This may be moved to another base param in the future.
+extern const base::FeatureParam<bool> kAskGLensIconIph;
 // Note: no new flags beyond this point.
 
 namespace flag_descriptions {

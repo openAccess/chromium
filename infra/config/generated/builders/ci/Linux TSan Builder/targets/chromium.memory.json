@@ -194,7 +194,7 @@
             "os": "Ubuntu-22.04"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 9
+          "shards": 10
         },
         "test": "blink_unittests",
         "test_id_prefix": "ninja://third_party/blink/renderer/controller:blink_unittests/"
@@ -824,8 +824,7 @@
       },
       {
         "args": [
-          "--test-launcher-print-test-stdio=always",
-          "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup"
+          "--test-launcher-print-test-stdio=always"
         ],
         "ci_only": true,
         "merge": {
@@ -1362,8 +1361,7 @@
       },
       {
         "args": [
-          "--test-launcher-print-test-stdio=always",
-          "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup"
+          "--test-launcher-print-test-stdio=always"
         ],
         "ci_only": true,
         "merge": {
@@ -1454,7 +1452,7 @@
             "os": "Ubuntu-22.04"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 14
+          "shards": 10
         },
         "test": "unit_tests",
         "test_id_prefix": "ninja://chrome/test:unit_tests/"

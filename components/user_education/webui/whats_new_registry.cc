@@ -24,14 +24,14 @@ bool WhatsNewModule::HasActiveFeature() const {
     return false;
   }
   return base::FeatureList::IsEnabled(*feature_) &&
-         feature_->default_state == base::FEATURE_DISABLED_BY_DEFAULT;
+         feature_->GetDefaultState() == base::FEATURE_DISABLED_BY_DEFAULT;
 }
 
 bool WhatsNewModule::HasRolledFeature() const {
   if (!HasFeature()) {
     return false;
   }
-  return feature_->default_state == base::FEATURE_ENABLED_BY_DEFAULT;
+  return feature_->GetDefaultState() == base::FEATURE_ENABLED_BY_DEFAULT;
 }
 
 bool WhatsNewModule::IsFeatureEnabled() const {
@@ -285,6 +285,14 @@ void WhatsNewRegistry::ClearUnregisteredEditions() const {
 
 void WhatsNewRegistry::ResetData() const {
   storage_service_->Reset();
+}
+
+void WhatsNewRegistry::ClearModuleData(std::string_view module_name) const {
+  storage_service_->ClearModules({std::string(module_name)});
+}
+
+void WhatsNewRegistry::ClearEditionData(std::string_view edition_name) const {
+  storage_service_->ClearEditions({std::string(edition_name)});
 }
 
 WhatsNewRegistry::WhatsNewRegistry(

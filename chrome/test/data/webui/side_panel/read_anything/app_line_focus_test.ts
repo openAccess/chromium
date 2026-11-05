@@ -1,0 +1,285 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+
+import type {AppElement, ContentController} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {calculateTextBounds, ContentType, LineFocusController, LineFocusMovement, LineFocusStyle, ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {assertEquals, assertFalse, assertLT, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {eventToPromise, microtasksFinished, whenCheck} from 'chrome-untrusted://webui-test/test_util.js';
+
+import {emitEvent, setupAppTestEnvironment} from './common.js';
+
+suite('AppLineFocus', () => {
+  let app: AppElement;
+  let contentController: ContentController;
+
+  function getLineFocusPadding(): number {
+    const val = app.style.getPropertyValue('--line-focus-padding');
+    return val ? parseInt(val) : 0;
+  }
+
+  setup(async () => {
+    const result = await setupAppTestEnvironment();
+    app = result.app;
+    contentController = result.contentController;
+  });
+
+  teardown(() => {
+    document.body.style.height = '';
+    app.style.height = '';
+  });
+
+  test('connected callback adds line focus mouse listener', async () => {
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
+        {detail: {data: LineFocusMovement.CURSOR}});
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.UNDERLINE}});
+    await microtasksFinished();
+    let mouseMoveInToolbar = false;
+    let mouseMove = false;
+    LineFocusController.getInstance().onMouseMove = () => {
+      mouseMove = true;
+    };
+    LineFocusController.getInstance().onMouseMoveInToolbar = () => {
+      mouseMoveInToolbar = true;
+    };
+
+    app.$.containerParent.dispatchEvent(
+        new MouseEvent('mousemove', {clientY: 10}));
+
+    assertTrue(mouseMove);
+    assertFalse(mouseMoveInToolbar);
+  });
+
+  test('new content updates padding for line focus', async () => {
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
+        {detail: {data: LineFocusMovement.STATIC}});
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.UNDERLINE}});
+    await microtasksFinished();
+    assertEquals(0, getLineFocusPadding());
+
+    app.updateContent();
+    await whenCheck(app, () => getLineFocusPadding() !== 0);
+
+    assertLT(0, getLineFocusPadding());
+  });
+
+  test(
+      'new content does not update padding for line focus with line focus off',
+      async () => {
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
+            {detail: {data: LineFocusMovement.STATIC}});
+        emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: false}});
+        await microtasksFinished();
+        assertEquals(0, getLineFocusPadding());
+
+        app.updateContent();
+        await microtasksFinished();
+
+        assertEquals(0, getLineFocusPadding());
+      });
+
+  test('line focus only shows on content', async () => {
+    contentController.setState(ContentType.NO_CONTENT);
+    await microtasksFinished();
+    assertTrue(app.$.lineFocus.hasAttribute('hidden'));
+
+    contentController.setState(ContentType.LOADING);
+    await microtasksFinished();
+    assertTrue(app.$.lineFocus.hasAttribute('hidden'));
+
+    contentController.setState(ContentType.HAS_CONTENT);
+    await microtasksFinished();
+    assertFalse(app.$.lineFocus.hasAttribute('hidden'));
+  });
+
+  test(
+      'onContentStateChange updates line focus style when enabled and ' +
+          'has content',
+      async () => {
+        emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_STYLE,
+            {detail: {data: LineFocusStyle.UNDERLINE}});
+        await microtasksFinished();
+
+        contentController.setState(ContentType.HAS_CONTENT);
+        await microtasksFinished();
+
+        assertEquals(
+            'block', app.style.getPropertyValue('--line-focus-display'));
+      });
+
+  test(
+      'onContentStateChange disables line focus style when no content',
+      async () => {
+        emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_STYLE,
+            {detail: {data: LineFocusStyle.UNDERLINE}});
+        await microtasksFinished();
+
+        contentController.setState(ContentType.NO_CONTENT);
+        await microtasksFinished();
+
+        assertEquals(
+            'none', app.style.getPropertyValue('--line-focus-display'));
+      });
+
+  test('onContentStateChange line focus showing if has content', async () => {
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.UNDERLINE}});
+    await microtasksFinished();
+
+    contentController.setState(ContentType.HAS_CONTENT);
+    await microtasksFinished();
+
+    assertTrue(app.$.toolbar.isLineFocusShowing);
+  });
+
+  test(
+      'onContentStateChange line focus not showing if off but has content',
+      async () => {
+        emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: false}});
+        await microtasksFinished();
+
+        contentController.setState(ContentType.HAS_CONTENT);
+        await microtasksFinished();
+
+        assertFalse(app.$.toolbar.isLineFocusShowing);
+      });
+
+  test(
+      'onContentStateChange line focus not showing if no content', async () => {
+        emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_STYLE,
+            {detail: {data: LineFocusStyle.UNDERLINE}});
+        await microtasksFinished();
+
+        contentController.setState(ContentType.NO_CONTENT);
+        await microtasksFinished();
+
+        assertFalse(app.$.toolbar.isLineFocusShowing);
+      });
+
+  test('showLoading marks line focus showing if enabled', async () => {
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.UNDERLINE}});
+    await microtasksFinished();
+
+    app.showLoading();
+    await microtasksFinished();
+
+    assertTrue(app.$.toolbar.isLineFocusShowing);
+  });
+
+  test('showLoading does not mark line focus showing if disabled', async () => {
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: false}});
+    await microtasksFinished();
+
+    app.showLoading();
+    await microtasksFinished();
+
+    assertFalse(app.$.toolbar.isLineFocusShowing);
+  });
+
+  test('container scroll notifies line focus of scroll', () => {
+    let scrolled = false;
+    let textLocationsChanged = false;
+    LineFocusController.getInstance().onScroll = () => {
+      scrolled = true;
+    };
+    LineFocusController.getInstance().onTextLocationsChange = () => {
+      textLocationsChanged = true;
+    };
+
+    app.$.containerScroller.dispatchEvent(new Event('scroll'));
+
+    assertTrue(scrolled);
+    assertFalse(textLocationsChanged);
+  });
+
+  test('onNeedScrollForLineFocus scrolls', () => {
+    const startingScrollTop = app.$.containerScroller.scrollTop;
+    let scrollTo = 0;
+    app.$.containerScroller.scrollTo = (options) => {
+      scrollTo = (options as ScrollToOptions).top ?? 0;
+    };
+
+    const scrollDiff = 30;
+    app.onNeedScrollForLineFocus(scrollDiff);
+
+    assertEquals(startingScrollTop + scrollDiff, scrollTo);
+  });
+
+  test(
+      'switching from static to cursor at top keeps first line focused',
+      async () => {
+        document.body.style.height = '400px';
+        app.style.height = '400px';
+        const paragraph = document.createElement('p');
+        paragraph.style.whiteSpace = 'pre';
+        paragraph.style.margin = '0';
+        paragraph.style.fontSize = '20px';
+        paragraph.style.lineHeight = '30px';
+        paragraph.textContent =
+            Array.from({length: 30}, (_, i) => `Line ${i}`).join('\n');
+        app.$.container.replaceChildren(paragraph);
+        contentController.setState(ContentType.HAS_CONTENT);
+        await microtasksFinished();
+
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_STYLE,
+            {detail: {data: LineFocusStyle.SMALL_WINDOW}});
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
+            {detail: {data: LineFocusMovement.STATIC}});
+        emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+        await microtasksFinished();
+        if (app.$.containerScroller.scrollTop !== 20) {
+          const setupScrollEnd =
+              eventToPromise('scrollend', app.$.containerScroller);
+          app.$.containerScroller.scrollTop = 20;
+          await setupScrollEnd;
+        }
+
+        assertLT(0, getLineFocusPadding());
+        const staticY =
+            Number.parseFloat(app.style.getPropertyValue('--line-focus-y'));
+
+        const cursorScrollEnd =
+            eventToPromise('scrollend', app.$.containerScroller);
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
+            {detail: {data: LineFocusMovement.CURSOR}});
+        // The mouse is over the toolbar when switching modes from the menu.
+        app.$.toolbar.dispatchEvent(
+            new MouseEvent('mousemove', {clientY: 250}));
+        await cursorScrollEnd;
+        await microtasksFinished();
+
+        assertEquals(0, getLineFocusPadding());
+        const cursorY =
+            Number.parseFloat(app.style.getPropertyValue('--line-focus-y'));
+        const firstLineTop =
+            calculateTextBounds(
+                app.$.container, app.$.appFlexParent.clientHeight)
+                .bounds[0]!.top;
+        assertLT(cursorY, staticY);
+        assertEquals(firstLineTop, cursorY);
+      });
+});

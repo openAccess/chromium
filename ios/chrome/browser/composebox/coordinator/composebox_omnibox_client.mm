@@ -44,6 +44,7 @@
 #import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/web_state.h"
 #import "ui/base/l10n/l10n_util.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #import "url/gurl.h"
 
 ComposeboxOmniboxClient::ComposeboxOmniboxClient(
@@ -193,7 +194,7 @@ void ComposeboxOmniboxClient::ProcessExtensionMatch(
     const std::u16string& text,
     const TemplateURL* template_url,
     const AutocompleteMatch& match,
-    WindowOpenDisposition disposition) {
+    ui::mojom::WindowOpenDisposition disposition) {
   // Extensions are not supported on iOS.
 }
 
@@ -205,10 +206,16 @@ void ComposeboxOmniboxClient::OnFocusChanged(OmniboxFocusState state,
   // goal of this code is to cancel prerenders when the omnibox loses focus.
   // Otherwise, they will live forever in cases where the user navigates to a
   // different URL than what is prerendered.
-  if (state == OMNIBOX_FOCUS_NONE) {
-    PrerenderBrowserAgent* agent = PrerenderBrowserAgent::FromBrowser(browser_);
-    if (agent) {
+  PrerenderBrowserAgent* agent = PrerenderBrowserAgent::FromBrowser(browser_);
+  if (agent) {
+    if (state == OMNIBOX_FOCUS_NONE) {
       agent->CancelPrerender();
+      if (IsOmniboxPrerenderOnTouchDownEnabled()) {
+        agent->SetWebStatePrecloningNeeded(false);
+      }
+    } else if (IsOmniboxPrerenderOnTouchDownEnabled() &&
+               [delegate_ composeboxMode] == ComposeboxMode::kRegularSearch) {
+      agent->SetWebStatePrecloningNeeded(true);
     }
   }
 }
@@ -245,8 +252,9 @@ void ComposeboxOmniboxClient::OnResultChanged(
   // Only prerender HISTORY_URL matches, which come from the history DB.  Do
   // not prerender other types of matches, including matches from the search
   // provider.
-  if (is_inline_autocomplete &&
-      match.type == AutocompleteMatchType::HISTORY_URL) {
+  if ([delegate_ composeboxMode] == ComposeboxMode::kRegularSearch &&
+      is_inline_autocomplete &&
+      match.type == omnibox::AutocompleteMatchType::kHistoryUrl) {
     ui::PageTransition transition = ui::PageTransitionFromInt(
         match.transition | ui::PAGE_TRANSITION_FROM_ADDRESS_BAR);
     agent->StartPrerender(
@@ -255,6 +263,25 @@ void ComposeboxOmniboxClient::OnResultChanged(
             ? PrerenderBrowserAgent::PrerenderPolicy::kNoDelay
             : PrerenderBrowserAgent::PrerenderPolicy::kDefaultDelay);
   } else {
+    agent->CancelPrerender();
+  }
+}
+
+void ComposeboxOmniboxClient::StartPrerender(const GURL& url,
+                                             ui::PageTransition transition) {
+  if ([delegate_ composeboxMode] != ComposeboxMode::kRegularSearch) {
+    return;
+  }
+  PrerenderBrowserAgent* agent = PrerenderBrowserAgent::FromBrowser(browser_);
+  if (agent) {
+    agent->StartPrerender(url, web::Referrer(), transition,
+                          PrerenderBrowserAgent::PrerenderPolicy::kNoDelay);
+  }
+}
+
+void ComposeboxOmniboxClient::CancelPrerender() {
+  PrerenderBrowserAgent* agent = PrerenderBrowserAgent::FromBrowser(browser_);
+  if (agent) {
     agent->CancelPrerender();
   }
 }
@@ -282,7 +309,7 @@ void ComposeboxOmniboxClient::OnTextChanged(
 void ComposeboxOmniboxClient::OnThumbnailOnlyAccept() {
   UrlLoadParams params = CreateOmniboxUrlLoadParams(
       GURL(),
-      /*post_content=*/nullptr, WindowOpenDisposition::CURRENT_TAB,
+      /*post_content=*/nullptr, ui::mojom::WindowOpenDisposition::kCurrentTab,
       ui::PAGE_TRANSITION_GENERATED,
       /*destination_url_entered_without_scheme=*/false,
       profile_->IsOffTheRecord());
@@ -324,9 +351,9 @@ gfx::Image ComposeboxOmniboxClient::GetFavicon() const {
 void ComposeboxOmniboxClient::OnAutocompleteAccept(
     const GURL& destination_url,
     TemplateURLRef::PostContent* post_content,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
-    AutocompleteMatchType::Type match_type,
+    omnibox::AutocompleteMatchType match_type,
     base::TimeTicks match_selection_timestamp,
     bool destination_url_entered_without_scheme,
     bool destination_url_entered_with_http_scheme,

@@ -4,8 +4,12 @@
 
 syntax = "proto2";
 
+import "components/optimization_guide/proto/features/actions_data.proto";
+
 option java_multiple_files = true;
 option java_package = "org.chromium.components.sharing_message.proto";
+
+import "timestamp.proto";
 
 package components_sharing_message;
 
@@ -40,7 +44,13 @@ message GlicExperimentalTriggering {
       optional string conversation_title = 2;
     }
     optional ParentConversationMetadata parent_conversation_metadata = 5;
+
+    // The UTC server timestamp when the message was sent. Since this timestamp
+    // originates from the server side, it is not synchronized with the
+    // client clock and is an approximation.
+    optional Timestamp server_time_stamp = 6;
   }
+
   // If the task is already running, this contains the metadata about it.
   optional TaskMetadata task_metadata = 1;
 
@@ -48,6 +58,10 @@ message GlicExperimentalTriggering {
     message TriggerActuationRequest {
       // The actual prompt that should be triggered.
       optional string initial_prompt = 1;
+
+      // Opaque payment metadata, passed through verbatim to the Glic web
+      // client in the invocation payload.
+      optional bytes payment_metadata = 2;
     }
 
     message ContinueActuationRequest {
@@ -77,12 +91,31 @@ message GlicExperimentalTriggering {
       optional bytes request_token = 3;
     }
 
+    // TODO(crbug.com/541366310): Add a script execution capability to
+    // DeviceInfo before expanding beyond a limited prototype, so the server
+    // knows whether this Chrome instance supports script execution.
+    message ExecuteActionsRequest {
+      optional optimization_guide.proto.Actions actions = 1;
+    }
+
+    // Delivers a confirmation decision made by the user on a remote surface,
+    // so that the client can resolve the corresponding pending confirmation
+    // dialog.
+    message SubmitConfirmation {
+      // The serialized confirmation response. This is opaque to Chrome, which
+      // forwards it verbatim to the client. The client is responsible for
+      // decoding it and matching it against a pending confirmation dialog.
+      optional bytes confirmation_response = 1;
+    }
+
     oneof payload {
       TriggerActuationRequest trigger_actuation_request = 1;
       StopActuationRequest stop_actuation_request = 2;
       DeviceOptInRequest device_opt_in_request = 3;
       GetScreenshotRequest get_screenshot_request = 4;
       ContinueActuationRequest continue_actuation_request = 5;
+      ExecuteActionsRequest execute_actions_request = 6;
+      SubmitConfirmation submit_confirmation = 7;
     }
   }
 
@@ -152,16 +185,57 @@ message GlicExperimentalTriggering {
       optional Status status = 1;
       // A screenshot file identifier.
       optional string file_token = 2;
-      // Detailed error message.
-      optional string error_message = 3;
+      // Deprecated: Rely on `status` enum values instead.
+      optional string error_message = 3 [deprecated = true];
       // Opaque identifier to correlate this response with its request.
       optional bytes request_token = 4;
     }
 
+    message ExecuteActionsResponse {
+      optional optimization_guide.proto.ActionsResult actions_result = 1;
+    }
+
+    // Reports whether a confirmation decision delivered via
+    // `SubmitConfirmation` was applied by the client.
+    message ConfirmationResult {
+      enum Status {
+        // Default value.
+        UNSPECIFIED = 0;
+        // The client matched the response to a pending confirmation dialog and
+        // applied it.
+        APPLIED = 1;
+        // The client received the response but did not apply it. For example,
+        // there was no pending dialog, the payload could not be decoded, the
+        // decision was no longer relevant, or the client did not reply in time.
+        NOT_APPLIED = 2;
+        // Malformed or invalid request parameters.
+        ERROR_INVALID_REQUEST = 3;
+        // The browser could not deliver the response to the client.
+        ERROR_UNAVAILABLE = 4;
+      }
+
+      // The status of the confirmation response delivery.
+      optional Status status = 1;
+      // Detailed error message.
+      optional string error_message = 2;
+    }
+
+    // `task_update` reports the lifecycle of an actuation task. It is meant
+    // only for TriggerActuationRequest, ContinueActuationRequest and
+    // StopActuationRequest, and for the task's own progress updates. Other
+    // requests are answered with their own result payload: an empty
+    // synchronous reply while the work runs asynchronously, then
+    // `device_opt_in_result`, `screenshot_result`, `execute_actions_response`
+    // or `confirmation_result` on completion or early failure.
+    // TODO(b/574916669): ExecuteActionsRequest, the Android DeviceOptInRequest
+    // path, and requests rejected before reaching a handler still report early
+    // failures as a failed `task_update`.
     oneof payload {
       TaskUpdate task_update = 3;
       DeviceOptInResult device_opt_in_result = 4;
       ScreenshotResult screenshot_result = 5;
+      ExecuteActionsResponse execute_actions_response = 6;
+      ConfirmationResult confirmation_result = 7;
     }
   }
 

@@ -78,6 +78,7 @@ source_set("unittests") {
     "//chrome/browser/ui:recently_audible_helper",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/content_settings/core/browser",
     "//components/content_settings/core/common",
     "//components/history/core/browser",
@@ -87,6 +88,7 @@ source_set("unittests") {
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/prefs:test_support",
     "//components/site_engagement/content",
+    "//components/tabs:test_support",
     "//components/ukm:test_support",
     "//content/public/browser",
     "//content/test:test_support",
@@ -108,6 +110,7 @@ source_set("unittests") {
     deps += [
       ":impl",
       "//chrome/browser/profiles:profile",
+      "//chrome/test/base:testing_browser_process",
       "//components/sync_preferences:test_support",
       "//components/user_prefs",
       "//content/test:test_support",
@@ -128,7 +131,10 @@ source_set("unittests") {
 
   if (enable_extensions) {
     sources += [ "cast_mirroring_service_host_unittest.cc" ]
-    deps += [ ":impl" ]
+    deps += [
+      ":impl",
+      "//chrome/browser/media/router:media_router_feature",
+    ]
   }
 
   if (enable_media_remoting && !is_android) {
@@ -140,6 +146,26 @@ source_set("unittests") {
       "//content/public/browser",
       "//content/test:test_support",
       "//media/mojo/mojom:remoting",
+    ]
+
+    if (enable_media_remoting_redirection) {
+      sources += [ "redirection_connector_unittest.cc" ]
+    }
+  }
+
+  if (is_android) {
+    sources += [
+      "android/cdm/media_drm_origin_id_manager_unittest.cc",
+      "android/cdm/media_drm_storage_factory_unittest.cc",
+    ]
+    deps += [
+      ":impl",
+      "//base/test:test_support",
+      "//chrome/test:test_support",
+      "//components/prefs:test_support",
+      "//content/test:test_support",
+      "//media/mojo/mojom",
+      "//mojo/public/cpp/bindings",
     ]
   }
 
@@ -219,10 +245,10 @@ source_set("browser_tests") {
       "//chrome/browser/profiles:profile",
       "//chrome/browser/speech",
       "//chrome/browser/tab_group_sync",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui:recently_audible_helper",
       "//chrome/browser/ui/tabs:tab_strip",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/base:test_launcher_utils",
       "//components/cdm/common:buildflags",
       "//components/no_state_prefetch/browser",
       "//components/no_state_prefetch/common",
@@ -299,7 +325,6 @@ source_set("media") {
       "android/cdm/media_drm_origin_id_manager.h",
       "android/cdm/media_drm_origin_id_manager_factory.h",
       "android/cdm/media_drm_storage_factory.h",
-      "android/cdm/per_device_provisioning_permission.h",
       "android/router/chrome_media_router_client.h",
     ]
     public_deps += [
@@ -333,6 +358,11 @@ source_set("media") {
       "//media/mojo/mojom:remoting",
       "//mojo/public/cpp/bindings",
     ]
+
+    if (enable_media_remoting_redirection) {
+      public += [ "redirection_connector.h" ]
+      public_deps += [ "//chrome/services/redirection/public/mojom" ]
+    }
   }
 
   if (enable_extensions) {
@@ -380,17 +410,17 @@ source_set("impl") {
     "unified_autoplay_config.cc",
   ]
 
-  public_deps = [
-    ":media",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ ":media" ]
 
   deps = [
     ":media_engagement_preload_proto",
+    "//chrome/app:generated_resources",
+    "//chrome/app/theme:theme_resources",
     "//chrome/browser:browser_process",
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/history",
     "//chrome/browser/media/webrtc",
+    "//chrome/browser/policy",
     "//chrome/browser/preloading/prefetch/no_state_prefetch",
     "//chrome/browser/ui:recently_audible_helper",
     "//chrome/browser/ui:ui_features",
@@ -414,6 +444,7 @@ source_set("impl") {
       "platform_verification_chromeos.cc",
     ]
     deps += [
+      "//chrome/browser/ui:screen_capture_notification_ui",
       "//chrome/browser/ui/ash/login",
       "//chrome/browser/ui/webui/ash/lock_screen_reauth",
       "//chromeos/ash/components/settings",
@@ -447,7 +478,6 @@ source_set("impl") {
       "android/cdm/media_drm_origin_id_manager.cc",
       "android/cdm/media_drm_origin_id_manager_factory.cc",
       "android/cdm/media_drm_storage_factory.cc",
-      "android/cdm/per_device_provisioning_permission.cc",
       "android/router/chrome_media_router_client.cc",
     ]
     deps += [
@@ -478,6 +508,15 @@ source_set("impl") {
       "//chrome/browser/media/router:media_router_feature",
       "//media/mojo/mojom:remoting",
     ]
+
+    if (enable_media_remoting_redirection) {
+      sources += [
+        "redirection_connector.cc",
+        "redirection_remoting_source_bridge.cc",
+        "redirection_remoting_source_bridge.h",
+      ]
+      deps += [ "//chrome/services/redirection/public/mojom" ]
+    }
 
     if (toolkit_views) {
       deps += [ "//chrome/browser/ui/views/media_router" ]
@@ -513,6 +552,35 @@ source_set("impl") {
 
   if (enable_library_cdms || is_win) {
     sources += [ "cdm_document_service_impl.cc" ]
+  }
+}
+
+source_set("test_support") {
+  testonly = true
+  public = [ "mock_media_engagement_service.h" ]
+  sources = [ "mock_media_engagement_service.cc" ]
+  public_deps = [
+    ":media",
+    "//testing/gmock",
+  ]
+  deps = [
+    "//chrome/browser/profiles:profile",
+    "//components/keyed_service/core",
+    "//content/public/browser",
+  ]
+  if (enable_library_cdms || is_win) {
+    public += [ "clear_key_cdm_test_helper.h" ]
+    sources += [ "clear_key_cdm_test_helper.cc" ]
+    public_deps += [
+      "//base/test:test_support",
+      "//media:media_buildflags",
+    ]
+    deps += [
+      "//base",
+      "//media",
+      "//media/cdm:cdm_paths",
+      "//media/cdm:clear_key_cdm_common",
+    ]
   }
 }
 

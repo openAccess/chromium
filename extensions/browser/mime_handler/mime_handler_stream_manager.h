@@ -5,11 +5,13 @@
 #ifndef EXTENSIONS_BROWSER_MIME_HANDLER_MIME_HANDLER_STREAM_MANAGER_H_
 #define EXTENSIONS_BROWSER_MIME_HANDLER_MIME_HANDLER_STREAM_MANAGER_H_
 
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
 
 #include "base/containers/flat_map.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -19,6 +21,7 @@
 #include "extensions/common/extension_id.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -126,10 +129,13 @@ class MimeHandlerStreamManager
   // navigating to another handled URL before the original `StreamContainer` is
   // claimed.
   // `delegate` must not be null.
+  // `navigation_id` must identify the navigation whose intercepted response
+  // created the stream.
   void AddStreamContainer(content::FrameTreeNodeId frame_tree_node_id,
                           const std::string& internal_id,
                           std::unique_ptr<StreamContainer> stream_container,
-                          std::unique_ptr<MimeHandlerStreamDelegate> delegate);
+                          std::unique_ptr<MimeHandlerStreamDelegate> delegate,
+                          int64_t navigation_id);
 
   // Returns a pointer to a stream container that `embedder_host` has claimed or
   // nullptr if `embedder_host` hasn't claimed any stream containers.
@@ -198,38 +204,53 @@ class MimeHandlerStreamManager
   // frames and the main frame (in the iframe case) are not disturbed.
   // The stream's buffered response body (if any) is captured against the
   // embedder's `FrameTreeNodeId` so the throttle can replay it on the
-  // reload instead of refetching from the network.
+  // reload instead of refetching from the network. Capturing the body may
+  // outlast this call, and a repeat call is ignored until the re-navigation
+  // settles.
   void AbortAndFallbackToNativeHandler(content::RenderFrameHost* embedder_host);
 
   // Returns true iff `frame_tree_node_id` was previously marked for
   // native-handler fallback by `AbortAndFallbackToNativeHandler()` and
-  // `response_url` matches (ignoring ref) the URL the mark was set for. The
-  // fallback re-navigation may be redirected, so the mark only applies when the
-  // final response is for the same resource the cached body was buffered from.
+  // `response_url` matches (ignoring ref) the URL the fallback was registered
+  // for. The fallback re-navigation may be redirected, so the registration only
+  // applies when the final response is for the same resource the cached body
+  // was buffered from. The registration means the handler gave the document up,
+  // so it is made from the abort itself and can be true before any body is
+  // available to replay.
   // Cleared in `DidFinishNavigation()` / `FrameDeleted()`.
   bool IsPendingNativeFallback(content::FrameTreeNodeId frame_tree_node_id,
                                const GURL& response_url) const;
 
   // Cached fallback body returned from `TakeCachedFallbackBody`.
   // `decoded_body_size` is the post-content-decoding byte count of the
-  // bytes flowing through `pipe` -- the value to report as
+  // bytes flowing through `pipe` - the value to report as
   // `URLLoaderCompletionStatus::decoded_body_length` when replaying.
   struct CachedFallbackBody {
+    network::mojom::URLResponseHeadPtr head;
     mojo::ScopedDataPipeConsumerHandle pipe;
     size_t decoded_body_size = 0;
   };
 
-  // Moves out the cached response body associated with the native-fallback mark
-  // for `frame_tree_node_id`, if any. Returns `std::nullopt` when the mark is
-  // absent, `response_url` does not match (ignoring ref) the URL the body was
-  // buffered for, no body was buffered, or the body has already been taken by a
-  // previous call. Single-use: the underlying mojo data pipe consumer handle
-  // can only be drained once, so callers must invoke this only after committing
-  // to splicing the body. The mark itself is left in place; clearing happens in
-  // `DidFinishNavigation()` / `FrameDeleted()`.
+  // Moves out the cached response body associated with the native-fallback
+  // registration for `frame_tree_node_id`, if any. Returns `std::nullopt` when
+  // the registration is absent, `response_url` does not match (ignoring ref)
+  // the URL the body was buffered for, no body was buffered, or the body has
+  // already been taken by a previous call. Single-use: the underlying mojo data
+  // pipe consumer handle can only be drained once, so callers must invoke this
+  // only after committing to splicing the body. The registration itself is left
+  // in place; clearing happens in `DidFinishNavigation()` / `FrameDeleted()`.
+  // Also returns `std::nullopt` if `navigation_id` is not the fallback
+  // navigation's.
   std::optional<CachedFallbackBody> TakeCachedFallbackBody(
       content::FrameTreeNodeId frame_tree_node_id,
+      int64_t navigation_id,
       const GURL& response_url);
+
+  // Returns true if the handler that claimed `embedder_host`'s stream may
+  // only see the CORS-safelisted response header names. Returns false when
+  // there is no claimed stream.
+  bool ShouldFilterResponseHeadersForHandler(
+      const content::RenderFrameHost* embedder_host) const;
 
   // Returns whether the handler plugin should handle save events.
   bool PluginCanSave(const content::RenderFrameHost* embedder_host) const;
@@ -332,6 +353,12 @@ class MimeHandlerStreamManager
 
  private:
   friend class content::WebContentsUserData<MimeHandlerStreamManager>;
+  FRIEND_TEST_ALL_PREFIXES(
+      MimeHandlerStreamManagerTest,
+      UncommittedNavigationErasesOnlyItsOwnUnclaimedStream);
+  FRIEND_TEST_ALL_PREFIXES(
+      MimeHandlerStreamManagerTest,
+      ReadyToCommitNavigationDoesNotClaimDifferentNavigationsStream);
   WEB_CONTENTS_USER_DATA_KEY_DECL();
 
   using StreamInfoMap =
@@ -353,9 +380,25 @@ class MimeHandlerStreamManager
   // that may empty the map must follow up with `DeleteSelfIfNoStreams()`.
   StreamInfoMap::iterator EraseStreamInfo(StreamInfoMap::iterator iter);
 
-  // Deletes `this` if there are no remaining stream infos. Callers must not
-  // touch `this` afterwards.
+  // Deletes `this` if there are no remaining stream infos or pending
+  // native-fallback registrations. Callers must not touch `this` afterwards.
   void DeleteSelfIfNoStreams();
+
+  // Continues `AbortAndFallbackToNativeHandler()` once the body cache is
+  // ready. Drops the frame's fallback registration if the stream was deleted
+  // while waiting.
+  void OnGotFallbackDataPipe(EmbedderHostInfo embedder_info,
+                             base::WeakPtr<StreamContainer> stream,
+                             mojo::ScopedDataPipeConsumerHandle body);
+
+  // Re-navigates the embedder frame to `original_url` and registers the
+  // navigation as the frame's fallback. `response` is the kept body the
+  // navigation replays; without one the navigation loads from the network.
+  // Drops the frame's registration instead if the frame left `original_url`,
+  // is no longer active, or the navigation does not start.
+  void StartFallbackNavigation(EmbedderHostInfo embedder_info,
+                               const GURL& original_url,
+                               std::optional<CachedFallbackBody> response);
 
   // Called when a RenderFrameHost in the observed WebContents is replaced or
   // deleted. If `old_host` is an extension host, deletes the associated stream.
@@ -399,16 +442,19 @@ class MimeHandlerStreamManager
   // different committed URL.
   struct PendingNativeFallback {
     GURL original_url;
-    CachedFallbackBody body;
+    std::optional<CachedFallbackBody> response;
+    // The only navigation allowed to take `response` and clear the
+    // registration. Unset until the fallback navigation is started.
+    std::optional<int64_t> navigation_id;
   };
 
   // Embedder frames marked for native-handler fallback whose pending
   // re-navigation has not yet completed, mapped to the stream's cached response
-  // body (invalid handle when no body was buffered or the body has already been
+  // body (empty when no body was buffered or the body has already been
   // taken). Keyed by `FrameTreeNodeId` so two concurrent iframes handling the
-  // same URL are distinguished, and so the mark survives cross-process RFH
-  // swaps during the scoped re-navigation (the FTN persists across same-frame
-  // navigation; only RFHs within it are replaced).
+  // same URL are distinguished, and so the registration survives cross-process
+  // RFH swaps during the scoped re-navigation (the FTN persists across
+  // same-frame navigation; only RFHs within it are replaced).
   base::flat_map<content::FrameTreeNodeId, PendingNativeFallback>
       pending_native_fallback_frames_;
 

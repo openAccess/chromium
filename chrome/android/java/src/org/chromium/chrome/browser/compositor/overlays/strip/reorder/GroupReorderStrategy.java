@@ -25,7 +25,6 @@ import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutUtils;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutView;
 import org.chromium.chrome.browser.compositor.overlays.strip.reorder.ReorderDelegate.StripUpdateDelegate;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tabmodel.TabGroupUtils;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.ui.base.LocalizationUtils;
@@ -177,8 +176,7 @@ public class GroupReorderStrategy extends ReorderStrategyBase {
         ArrayList<Animator> animationList = new ArrayList<>();
         if (isDragCancelled) {
             Token interactingTabGroupId = assumeNonNull(mInteractingGroupTitle).getTabGroupId();
-            @TabId int tabId = mModel.getGroupLastShownTabId(interactingTabGroupId);
-            mModel.moveRelatedTabs(tabId, mOriginIndex);
+            mModel.moveGroupToIndex(interactingTabGroupId, mOriginIndex);
         }
         Runnable onAnimationEnd =
                 () -> {
@@ -329,13 +327,13 @@ public class GroupReorderStrategy extends ReorderStrategyBase {
             assert adjTitle != null : "No matching group title on the tab strip.";
             if (Math.abs(offset) <= getGroupSwapThreshold(adjTitle)) return false;
 
-            movePastAdjacentGroup(stripTabs, interactingTabGroupId, adjTitle, towardEnd);
+            movePastAdjacentGroup(interactingTabGroupId, adjTitle, towardEnd);
+            animateGroupSliding(adjTitle, stripTabs);
         } else {
             // Case B: Attempt to drab past ungrouped tab.
             if (Math.abs(offset) <= getTabSwapThreshold(/* isPinned= */ false)) return false;
 
-            @TabId int tabId = mModel.getGroupLastShownTabId(interactingTabGroupId);
-            mModel.moveRelatedTabs(tabId, adjTabIndex);
+            mModel.moveGroupToIndex(interactingTabGroupId, adjTabIndex);
             animateViewSliding(adjStripTab);
         }
 
@@ -343,37 +341,19 @@ public class GroupReorderStrategy extends ReorderStrategyBase {
     }
 
     /**
-     * Reorders the interacting group past an adjacent group. Animates accordingly.
+     * Reorders the interacting group past an adjacent group.
      *
-     * @param stripTabs The list of {@link StripLayoutTab}.
      * @param interactingTabGroupId The tab group ID of the interacting group.
      * @param adjTitle The {@link StripLayoutGroupTitle} of the adjacent group.
      * @param towardEnd True if dragging towards the end of the strip.
      */
     private void movePastAdjacentGroup(
-            StripLayoutTab[] stripTabs,
-            Token interactingTabGroupId,
-            StripLayoutGroupTitle adjTitle,
-            boolean towardEnd) {
+            Token interactingTabGroupId, StripLayoutGroupTitle adjTitle, boolean towardEnd) {
         // Move the interacting group to its new position.
         List<Tab> adjTabs = mModel.getTabsInGroup(adjTitle.getTabGroupId());
         int indexTowardStart = TabGroupUtils.getFirstTabModelIndexForList(mModel, adjTabs);
         int indexTowardEnd = TabGroupUtils.getLastTabModelIndexForList(mModel, adjTabs);
         int destIndex = towardEnd ? indexTowardEnd : indexTowardStart;
-        @TabId int tabId = mModel.getGroupLastShownTabId(interactingTabGroupId);
-        mModel.moveRelatedTabs(tabId, destIndex);
-
-        // Animate the displaced views sliding to their new positions.
-        List<Animator> animators = new ArrayList<>();
-        if (!adjTitle.isCollapsed()) {
-            // Only need to animate tabs when expanded.
-            for (Tab tab : adjTabs) {
-                // Find using the IDs, since the provided stripTabs may be stale.
-                StripLayoutTab stripTab = StripLayoutUtils.findTabById(stripTabs, tab.getId());
-                if (stripTab != null) animators.add(getViewSlidingAnimator(stripTab));
-            }
-        }
-        animators.add(getViewSlidingAnimator(adjTitle));
-        mAnimationHost.queueAnimations(animators, /* listener= */ null);
+        mModel.moveGroupToIndex(interactingTabGroupId, destIndex);
     }
 }

@@ -18,17 +18,20 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.fusebox.ComposeboxQueryControllerBridge.ContextUploadObserver;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxAttachmentRecyclerViewAdapter.FuseboxAttachmentType;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.FuseboxAttachmentButtonType;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.FuseboxTabAttachStartFailureReason;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
+import org.chromium.chrome.browser.tab.utilities.TabLoadingService;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.contextual_search.ContextUploadErrorType;
 import org.chromium.components.contextual_search.ContextUploadStatus;
-import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.ui.modelutil.ListObservable.ListObserver;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -43,12 +46,10 @@ import java.util.function.Predicate;
 public class FuseboxAttachmentModelList
         implements ContextUploadObserver, Iterable<FuseboxAttachment> {
 
+    /** The maximum number of attachments that can be attached at once. */
+    public static final int MAX_ATTACHMENTS = 10;
+
     private final ModelList mModelList = new ModelList();
-
-    public static int getMaxAttachments() {
-        return OmniboxFeatures.sMultiattachmentFusebox.getValue() ? 10 : 1;
-    }
-
     private final Set<Integer> mAttachedTabIds = new ArraySet<>();
     private final ObserverList<FuseboxAttachmentChangeListener> mAttachmentChangeListeners =
             new ObserverList<>();
@@ -218,7 +219,14 @@ public class FuseboxAttachmentModelList
      * @return Whether the attachment was successfully added.
      */
     public boolean add(FuseboxAttachment attachment) {
-        if (mComposeboxQueryControllerBridge == null || getRemainingAttachments() == 0) {
+        if (mComposeboxQueryControllerBridge == null) {
+            maybeRecordTabAttachStartFailure(
+                    attachment, FuseboxTabAttachStartFailureReason.SESSION_UNAVAILABLE);
+            return false;
+        }
+        if (getRemainingAttachments() == 0) {
+            maybeRecordTabAttachStartFailure(
+                    attachment, FuseboxTabAttachStartFailureReason.ATTACHMENT_LIMIT_REACHED);
             return false;
         }
 
@@ -260,9 +268,10 @@ public class FuseboxAttachmentModelList
             mAttachedTabIds.remove(attachment.getTabId());
         }
 
-        if (isFailure) {
+        // Suggested tabs are attached automatically, so they have no attachment outcome.
+        if (isFailure && !attachment.isSuggestedTab) {
             FuseboxMetrics.notifyAttachmentFailed(attachment.startTime, attachment.buttonType);
-        } else if (!attachment.isUploadComplete()) {
+        } else if (!isFailure && attachment.isAbandonedIfRemoved()) {
             FuseboxMetrics.notifyAttachmentAbandoned(attachment.startTime, attachment.buttonType);
         }
 
@@ -329,7 +338,7 @@ public class FuseboxAttachmentModelList
         for (int index = 0; index < size(); index++) {
             var attachment = get(index);
             attachment.removeFromBackend(assumeNonNull(mComposeboxQueryControllerBridge));
-            if (!attachment.isUploadComplete()) {
+            if (attachment.isAbandonedIfRemoved()) {
                 FuseboxMetrics.notifyAttachmentAbandoned(
                         attachment.startTime, attachment.buttonType);
             }
@@ -354,7 +363,7 @@ public class FuseboxAttachmentModelList
 
     /** Returns a set of currently attached Tab IDs. */
     public Set<Integer> getAttachedTabIds() {
-        return mAttachedTabIds;
+        return Collections.unmodifiableSet(mAttachedTabIds);
     }
 
     /** Removes all suggested tab chips from the model list and backend. */
@@ -387,29 +396,53 @@ public class FuseboxAttachmentModelList
                 FuseboxMetrics.recordContextUploadError(errorType);
                 if (pendingAttachment.retryUpload(
                         assumeNonNull(mComposeboxQueryControllerBridge))) {
+                    // The attachment is uploading again; rebind so its view reflects that.
+                    mModelList.update(indexOf(pendingAttachment), pendingAttachment);
                     break;
                 }
                 notifyAttachmentUploadFailed();
+                // An upload that already succeeded and later expired is not an attachment failure.
+                boolean isFailure = !pendingAttachment.hasUploadSucceeded();
                 pendingAttachment.setUploadIsComplete();
-                remove(pendingAttachment, /* isFailure= */ true);
+                remove(pendingAttachment, isFailure);
                 break;
             case ContextUploadStatus.UPLOAD_SUCCESSFUL:
-                pendingAttachment.setUploadIsComplete();
-                int index = indexOf(pendingAttachment);
-                mModelList.update(index, pendingAttachment);
-                FuseboxMetrics.notifyAttachmentSucceeded(
-                        pendingAttachment.startTime, pendingAttachment.buttonType);
+                // Record success once, even if the upload later expires and its retry succeeds.
+                // Suggested tabs are attached automatically, so they have no attachment outcome.
+                boolean isFirstSuccess = !pendingAttachment.hasUploadSucceeded();
+                pendingAttachment.markUploadSucceeded();
+                mModelList.update(indexOf(pendingAttachment), pendingAttachment);
+                if (isFirstSuccess && !pendingAttachment.isSuggestedTab) {
+                    FuseboxMetrics.notifyAttachmentSucceeded(
+                            pendingAttachment.startTime, pendingAttachment.buttonType);
+                    maybeRecordTabAttachmentEffectiveDuration(pendingAttachment);
+                }
                 break;
         }
 
-        // Emit upload status changed when all attachments have been resolved.
+        // Emit upload status changed once nothing the user is waiting on remains in flight.
         for (int i = 0; i < size(); i++) {
-            if (!get(i).isUploadComplete()) return;
+            if (get(i).isAwaitingUpload()) return;
         }
 
         for (var listener : mAttachmentChangeListeners) {
             listener.onAttachmentUploadStatusChanged();
         }
+    }
+
+    /**
+     * Records the end-to-end preparation latency for a tab attached via the tab picker, covering
+     * any on-demand load in the picker and the subsequent upload.
+     *
+     * @param attachment The attachment whose upload just completed successfully.
+     */
+    private void maybeRecordTabAttachmentEffectiveDuration(FuseboxAttachment attachment) {
+        if (attachment.buttonType != FuseboxAttachmentButtonType.TAB_PICKER) return;
+
+        long loadDurationMs =
+                TabLoadingService.getInstance().getAndClearLoadDuration(attachment.getTabId());
+        FuseboxMetrics.recordTabAttachmentEffectiveDuration(
+                attachment.startTime, loadDurationMs, attachment.isPartOfMultiTabSelection());
     }
 
     private @Nullable FuseboxAttachment findAttachmentWithToken(String token) {
@@ -429,7 +462,7 @@ public class FuseboxAttachmentModelList
      * if needed.
      */
     public int getRemainingAttachments() {
-        return getMaxAttachments() - size();
+        return MAX_ATTACHMENTS - size();
     }
 
     private void notifyAttachmentUploadFailed() {
@@ -446,6 +479,13 @@ public class FuseboxAttachmentModelList
     /** Unregisters the listener from being notified that attachments list has been changed. */
     public void removeAttachmentChangeListener(FuseboxAttachmentChangeListener listener) {
         mAttachmentChangeListeners.removeObserver(listener);
+    }
+
+    private static void maybeRecordTabAttachStartFailure(
+            FuseboxAttachment attachment, @FuseboxTabAttachStartFailureReason int reason) {
+        if (attachment.type == FuseboxAttachmentType.ATTACHMENT_TAB) {
+            FuseboxMetrics.recordTabAttachStartFailure(reason, attachment.buttonType);
+        }
     }
 
     public ModelList getModelListForTesting() {

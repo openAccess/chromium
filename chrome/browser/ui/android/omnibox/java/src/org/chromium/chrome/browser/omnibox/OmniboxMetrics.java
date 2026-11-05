@@ -82,9 +82,15 @@ public class OmniboxMetrics {
     public static final String HISTOGRAM_SEARCH_PREFETCH_NUM_PREFETCHES_STARTED_IN_OMNIBOX_SESSION =
             "Android.Omnibox.SearchPrefetch.NumPrefetchesStartedInOmniboxSession.NavigationPrefetch";
 
-    /** The result of prefetches started by touch down events within an omnibox session */
+    /** The result of prefetches started by touch down events within an omnibox session. */
     public static final String HISTOGRAM_SEARCH_PREFETCH_TOUCH_DOWN_PREFETCH_RESULT =
             "Android.Omnibox.SearchPrefetch.TouchDownPrefetchResult.NavigationPrefetch";
+
+    public static final String HISTOGRAM_AIM_ENTRYPOINT_ACTIVATED_USER_TEXT_PRESENT =
+            "Omnibox.AimEntrypoint.Activated.UserTextPresent";
+
+    public static final String HISTOGRAM_AIM_ENTRYPOINT_ACTIVATED_VIA_KEYBOARD =
+            "Omnibox.AimEntrypoint.Activated.ViaKeyboard";
 
     @IntDef({
         ActionInSuggestIntentResult.SUCCESS,
@@ -113,9 +119,9 @@ public class OmniboxMetrics {
     public @interface PrefetchResult {
         // The last prefetch started matches the suggestion navigated to.
         int HIT = 0;
-        // The last prefetch started does NOT match the suggesiton navigated to.
+        // The last prefetch started does NOT match the suggestion navigated to.
         int MISS = 1;
-        // No prefetches were stated in the omnibox session.
+        // No prefetches were started in the omnibox session.
         int NO_PREFETCH = 2;
         int COUNT = 3;
     }
@@ -163,7 +169,7 @@ public class OmniboxMetrics {
      * Record how long the Suggestion List needed to measure its content and children in wall time.
      */
     public static TimingMetric recordSuggestionListMeasureWallTime() {
-        return TimingMetric.shortThreadTime("Android.Omnibox.SuggestionList.MeasureTime3");
+        return TimingMetric.shortUptime("Android.Omnibox.SuggestionList.MeasureTime3");
     }
 
     /**
@@ -176,7 +182,7 @@ public class OmniboxMetrics {
 
     /** Record the amount of wall time needed to create a new suggestion view. */
     public static TimingMetric recordSuggestionViewCreateWallTime() {
-        return TimingMetric.shortThreadTime("Android.Omnibox.SuggestionView.CreateTime3");
+        return TimingMetric.shortUptime("Android.Omnibox.SuggestionView.CreateTime3");
     }
 
     /** Record thread time spent inflating the Suggestion dropdown. */
@@ -232,8 +238,8 @@ public class OmniboxMetrics {
     }
 
     /**
-     * Record the total cumulative thread time spent creating all views in the PrewarmingRecycled
-     * View Pool when async view inflation is disabled.
+     * Record the total cumulative thread time spent creating all views in the
+     * PreWarmingRecycledViewPool.
      */
     public static void recordPreWarmingViewsThreadTime(long totalThreadTimeMs) {
         RecordHistogram.recordMediumTimesHistogram(
@@ -241,21 +247,12 @@ public class OmniboxMetrics {
     }
 
     /**
-     * Record the total cumulative wall time spent creating all views in the PrewarmingRecycled View
-     * Pool when async view inflation is disabled.
+     * Record the total cumulative wall time spent creating all views in the
+     * PreWarmingRecycledViewPool.
      */
     public static void recordPreWarmingViewsWallTime(long totalWallTimeMs) {
         RecordHistogram.recordMediumTimesHistogram(
                 "Android.Omnibox.SuggestionsDropdown.PreWarmingViewsWallTime", totalWallTimeMs);
-    }
-
-    /**
-     * Record the number of views successfully pre-created in the PrewarmingRecycledViewPool when
-     * async view inflation is disabled.
-     */
-    public static void recordPreWarmedViewsCount(int count) {
-        RecordHistogram.recordExactLinearHistogram(
-                "Android.Omnibox.SuggestionsDropdown.PreWarmedViewsCount", count, 30);
     }
 
     /**
@@ -302,7 +299,7 @@ public class OmniboxMetrics {
      *
      * @param requestType The request type at session end.
      * @param focusResultedInNavigation Whether the user completed interaction with navigation.
-     * @param withAttachments Whether there were any attachemnts at session end.
+     * @param withAttachments Whether there were any attachments at session end.
      */
     public static void recordOmniboxFocusResultedInNavigation(
             @AutocompleteRequestType int requestType,
@@ -492,7 +489,7 @@ public class OmniboxMetrics {
     /**
      * Records the number of prefetches started by touch down events in an omnibox session.
      *
-     * @param numPrefetchesStarted the number of prefetches started wihin the omnibox session.
+     * @param numPrefetchesStarted the number of prefetches started within the omnibox session.
      */
     public static void recordNumPrefetchesStartedInOmniboxSession(int numPrefetchesStarted) {
         RecordHistogram.recordCount100Histogram(
@@ -509,7 +506,6 @@ public class OmniboxMetrics {
      */
     public static void recordTouchDownPrefetchResult(
             AutocompleteMatch navSuggestion, @Nullable AutocompleteMatch prefetchSuggestion) {
-
         @PrefetchResult
         int result =
                 prefetchSuggestion == null
@@ -535,6 +531,38 @@ public class OmniboxMetrics {
     public static void recordZeroSuggestSuppressedOnIncognitoNtp(boolean suppressed) {
         RecordHistogram.recordBooleanHistogram(
                 HISTOGRAM_ZERO_SUGGEST_SUPPRESSED_ON_INCOGNITO_NTP, suppressed);
+    }
+
+    /**
+     * Records whether non-empty user text was present in the Omnibox when the AI Mode entrypoint
+     * was activated, unsliced and sliced by search engine party (1P Google vs 3P).
+     *
+     * @param isGoogle Whether the default search engine is Google.
+     * @param userTextPresent Whether non-empty user-entered text was present at activation.
+     */
+    public static void recordAimEntrypointActivatedUserTextPresent(
+            boolean isGoogle, boolean userTextPresent) {
+        recordAimEntrypointMetric(
+                HISTOGRAM_AIM_ENTRYPOINT_ACTIVATED_USER_TEXT_PRESENT, isGoogle, userTextPresent);
+    }
+
+    /**
+     * Records whether the AI Mode entrypoint was activated via keyboard (as opposed to touch or
+     * mouse click), unsliced and sliced by search engine party (1P Google vs 3P).
+     *
+     * @param isGoogle Whether the default search engine is Google.
+     * @param viaKeyboard Whether activation was triggered via keyboard navigation.
+     */
+    public static void recordAimEntrypointActivatedViaKeyboard(
+            boolean isGoogle, boolean viaKeyboard) {
+        recordAimEntrypointMetric(
+                HISTOGRAM_AIM_ENTRYPOINT_ACTIVATED_VIA_KEYBOARD, isGoogle, viaKeyboard);
+    }
+
+    private static void recordAimEntrypointMetric(String name, boolean isGoogle, boolean value) {
+        String partySuffix = isGoogle ? ".google" : ".3p";
+        RecordHistogram.recordBooleanHistogram(name, value);
+        RecordHistogram.recordBooleanHistogram(name + partySuffix, value);
     }
 
     /**

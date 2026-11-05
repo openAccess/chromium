@@ -5,8 +5,8 @@
 #import "ios/chrome/browser/safe_browsing/model/safe_browsing_client_factory.h"
 
 #import <memory>
+#import <utility>
 
-#import "base/no_destructor.h"
 #import "components/enterprise/connectors/core/common.h"
 #import "components/safe_browsing/core/browser/realtime/chrome_enterprise_url_lookup_service.h"
 #import "components/safe_browsing/core/browser/realtime/url_lookup_service.h"
@@ -52,22 +52,11 @@ safe_browsing::RealTimeUrlLookupServiceBase* GetUrlLookupService(
 
 }  // namespace
 
-// static
-SafeBrowsingClient* SafeBrowsingClientFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<SafeBrowsingClient>(
-      profile, /*create=*/true);
-}
-
-// static
-SafeBrowsingClientFactory* SafeBrowsingClientFactory::GetInstance() {
-  static base::NoDestructor<SafeBrowsingClientFactory> instance;
-  return instance.get();
-}
-
-SafeBrowsingClientFactory::SafeBrowsingClientFactory()
-    : ProfileKeyedServiceFactoryIOS("SafeBrowsingClient",
-                                    ProfileSelection::kOwnInstanceInIncognito) {
+SafeBrowsingClientFactory::SafeBrowsingClientFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "SafeBrowsingClient",
+          ProfileSelection::kOwnInstanceInIncognito) {
   DependsOn(HashRealTimeServiceFactory::GetInstance());
   DependsOn(V5GetHashProtocolManagerFactory::GetInstance());
   DependsOn(ChromeEnterpriseRealTimeUrlLookupServiceFactory::GetInstance());
@@ -76,16 +65,16 @@ SafeBrowsingClientFactory::SafeBrowsingClientFactory()
 }
 
 std::unique_ptr<KeyedService>
-SafeBrowsingClientFactory::BuildServiceInstanceFor(ProfileIOS* profile) const {
+SafeBrowsingClientFactory::BuildServiceInstanceFor(ProfileIOS& profile) const {
   safe_browsing::HashRealTimeService* hash_real_time_service = nullptr;
   if (base::FeatureList::IsEnabled(safe_browsing::kHashPrefixRealTimeLookups)) {
     hash_real_time_service = HashRealTimeServiceFactory::GetForProfile(profile);
   }
   return std::make_unique<SafeBrowsingClientImpl>(
-      profile->GetPrefs(), hash_real_time_service,
+      profile.GetPrefs(), hash_real_time_service,
       V5GetHashProtocolManagerFactory::GetForProfile(profile),
       // base::Unretained is safe because the RealTimeUrlLookupServiceBase will
       // be destroyed before the profile it is attached to.
-      base::BindRepeating(&GetUrlLookupService, base::Unretained(profile)),
+      base::BindRepeating(&GetUrlLookupService, base::Unretained(&profile)),
       enterprise_connectors::ConnectorsServiceFactory::GetForProfile(profile));
 }

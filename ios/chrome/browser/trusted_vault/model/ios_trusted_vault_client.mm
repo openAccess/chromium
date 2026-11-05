@@ -6,6 +6,7 @@
 
 #import "base/feature_list.h"
 #import "base/functional/callback_helpers.h"
+#import "base/notimplemented.h"
 #import "base/task/sequenced_task_runner.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/trusted_vault/features.h"
@@ -75,9 +76,24 @@ void IOSTrustedVaultClient::AddTrustedRecoveryMethod(
     const GaiaId& gaia_id,
     const std::vector<uint8_t>& public_key,
     int method_type_hint,
-    base::OnceClosure callback) {
+    base::OnceCallback<void(bool)> callback) {
   // Not used on iOS.
   NOTREACHED();
+}
+
+void IOSTrustedVaultClient::CanEnroll(const CoreAccountInfo& account_info,
+                                      base::OnceCallback<void(bool)> callback) {
+  // TODO(crbug.com/579292060): Implement for iOS.
+  NOTIMPLEMENTED();
+  std::move(callback).Run(false);
+}
+
+void IOSTrustedVaultClient::Enroll(
+    const CoreAccountInfo& account_info,
+    base::OnceCallback<void(const std::vector<uint8_t>&, int)> callback) {
+  // TODO(crbug.com/579292060): Implement for iOS.
+  NOTIMPLEMENTED();
+  std::move(callback).Run(std::vector<uint8_t>(), -1);
 }
 
 void IOSTrustedVaultClient::ClearLocalDataForAccount(

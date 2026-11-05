@@ -8,9 +8,8 @@
 #include <string>
 #include <string_view>
 
-#include "base/i18n/time_formatting.h"
-#include "base/time/time.h"
 #include "remoting/base/cpu_utils.h"
+#include "third_party/webrtc/modules/desktop_capture/desktop_geometry.h"
 #include "third_party/webrtc/modules/desktop_capture/desktop_region.h"
 
 namespace remoting {
@@ -40,11 +39,11 @@ webrtc::DesktopRect GetRowAlignedRect(const webrtc::DesktopRect rect,
 std::string ReplaceLfByCrLf(std::string_view in) {
   std::string out;
   out.reserve(2 * in.size());
-  for (char c : in) {
-    if (c == '\n') {
+  for (char ch : in) {
+    if (ch == '\n') {
       out.push_back('\r');
     }
-    out.push_back(c);
+    out.push_back(ch);
   }
   return out;
 }

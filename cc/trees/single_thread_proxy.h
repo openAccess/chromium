@@ -63,6 +63,7 @@ class CC_EXPORT SingleThreadProxy : public Proxy,
   void SetNeedsRedraw(const gfx::Rect& damage_rect) override;
   void SetTargetLocalSurfaceId(
       const viz::LocalSurfaceId& target_local_surface_id) override;
+  void SetMemoryPolicy(const ManagedMemoryPolicy& policy) override;
   void SetUnboundedFrameSink(
       std::unique_ptr<LayerTreeFrameSink> unbounded_frame_sink,
       const viz::LocalSurfaceId& local_surface_id) override;
@@ -139,6 +140,7 @@ class CC_EXPORT SingleThreadProxy : public Proxy,
   void NotifyReadyToDraw() override;
   void SetNeedsRedrawOnImplThread() override;
   void SetNeedsOneBeginImplFrameOnImplThread() override;
+  void NotifyInputEvent() override;
   void SetNeedsPrepareTilesOnImplThread() override;
   void SetNeedsCommitOnImplThread(BeginMainFrameReason reason,
                                   bool urgent,

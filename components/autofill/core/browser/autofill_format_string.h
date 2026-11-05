@@ -8,6 +8,8 @@
 #include <string>
 #include <string_view>
 
+#include "components/autofill/core/browser/field_types.h"
+
 namespace autofill {
 
 enum FormatString_Type : int;
@@ -18,7 +20,8 @@ enum FormatString_Type : int;
 // Currently, the following kinds of format stings are supported:
 // - Affix format strings: data_util::IsValidAffixFormat().
 // - Date format strings: data_util::IsValidDateFormat().
-// - Date format strings: ICU format.
+// - Date format strings: ICU format (currently, all format strings produce the
+//   same result).
 // - Flight number format strings (data_util::IsValidFlightNumberFormat().
 struct AutofillFormatString final {
   AutofillFormatString();
@@ -31,6 +34,8 @@ struct AutofillFormatString final {
   ~AutofillFormatString();
 
   static bool IsValid(std::u16string_view value, FormatString_Type type);
+  static bool IsTypeCompatible(FormatString_Type format_type,
+                               FieldType field_type);
 
   friend bool operator==(const AutofillFormatString&,
                          const AutofillFormatString&) = default;

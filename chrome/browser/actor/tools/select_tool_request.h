@@ -6,9 +6,11 @@
 #define CHROME_BROWSER_ACTOR_TOOLS_SELECT_TOOL_REQUEST_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/tools/page_tool_request.h"
 #include "chrome/common/actor.mojom-forward.h"
 
@@ -16,15 +18,27 @@ namespace actor {
 class ToolRequestVisitorFunctor;
 
 // Chooses an option in a <select> box on the page based on the value attribute
-// of the <option> children.
+// or text of the <option> children.
 class SelectToolRequest : public PageToolRequest {
  public:
   static constexpr char kName[] = "Select";
+  // Canonical model-facing name exposed in LLM prompt schemas and indexed by
+  // `ToolRegistry` for lookup and routing via `GetToolDefinition()`.
+  static constexpr std::string_view kModelFacingName = "select_option";
+  // JSON argument key for the DOM node ID of the target <select> element.
+  static constexpr std::string_view kDomNodeIdParam = "dom_node_id";
+  // JSON argument key for the value attribute of the <option> to select.
+  static constexpr std::string_view kValueParam = "value";
 
-  SelectToolRequest(tabs::TabHandle tab_handle,
+  SelectToolRequest(ActorSurfaceHandle actor_surface_handle,
                     const PageTarget& target,
-                    std::string_view value);
+                    std::string_view match_text,
+                    mojom::SelectAction::OptionMatchMode match_mode =
+                        mojom::SelectAction::OptionMatchMode::kValue);
   ~SelectToolRequest() override;
+
+  // Returns the `ToolId::kSelectOption` tool schema definition.
+  static std::optional<ToolDefinition> GetToolDefinition();
 
   void Apply(ToolRequestVisitorFunctor& f) const override;
 
@@ -37,8 +51,8 @@ class SelectToolRequest : public PageToolRequest {
   std::unique_ptr<PageToolRequest> Clone() const override;
 
  private:
-  // The <option> whose value attribute matches this parameter will be selected.
-  std::string value_;
+  std::string match_text_;
+  mojom::SelectAction::OptionMatchMode match_mode_;
 };
 
 }  // namespace actor

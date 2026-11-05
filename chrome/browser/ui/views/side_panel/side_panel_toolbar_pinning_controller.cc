@@ -16,12 +16,13 @@
 #include "chrome/browser/ui/side_panel/side_panel_metrics.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h"
+#include "chrome/browser/ui/views/extensions/extensions_container_views.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_helper.h"
 #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions_container.h"
+#include "components/contextual_tasks/public/features.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/views/view_utils.h"
 
@@ -152,13 +153,19 @@ void SidePanelToolbarPinningController::UpdatePinState(
 bool SidePanelToolbarPinningController::ShouldShowActiveInToolbar(
     const SidePanelEntry* entry) {
   if (entry && entry->key().id() == SidePanelEntryId::kContextualTasks) {
-    auto* contextual_tasks_controller =
-        contextual_tasks::ContextualTasksPanelController::From(&*browser_);
-    if (contextual_tasks_controller &&
-        contextual_tasks_controller->GetActiveEntrySource() ==
-            contextual_tasks::ContextualTasksPanelController::EntrySource::
-                kLensOverlay) {
+    if (contextual_tasks::
+            IsContextualTasksEphemeralPinButtonRefactorEnabled()) {
       return true;
+    }
+    if (!contextual_tasks::IsContextualTasksPinningV2Enabled()) {
+      auto* contextual_tasks_controller =
+          contextual_tasks::ContextualTasksPanelController::From(&*browser_);
+      if (contextual_tasks_controller &&
+          contextual_tasks_controller->GetActiveEntrySource() ==
+              contextual_tasks::ContextualTasksPanelController::EntrySource::
+                  kLensOverlay) {
+        return true;
+      }
     }
   }
   return entry && (entry->should_show_ephemerally_in_toolbar() ||
@@ -175,10 +182,8 @@ void SidePanelToolbarPinningController::UpdateActiveState(
   // Active extension side-panels have different UI in the toolbar than active
   // built-in side-panels.
   if (key.id() == SidePanelEntryId::kExtension) {
-    if (auto* extensions_container =
-            views::AsViewClass<ExtensionsToolbarDesktop>(
-                BrowserElementsViews::From(&*browser_)
-                    ->GetView(kToolbarExtensionsContainerElementId))) {
+    if (auto* extensions_container = ToolbarButtonProvider::From(&*browser_)
+                                         ->GetExtensionsContainerViews()) {
       extensions_container->UpdateSidePanelState(show_active_in_toolbar);
     }
   } else {
@@ -188,7 +193,8 @@ void SidePanelToolbarPinningController::UpdateActiveState(
     if (target_id == SidePanelEntryId::kContextualTasks) {
       auto* contextual_tasks_controller =
           contextual_tasks::ContextualTasksPanelController::From(&*browser_);
-      if (contextual_tasks_controller &&
+      if (!contextual_tasks::IsContextualTasksPinningV2Enabled() &&
+          contextual_tasks_controller &&
           contextual_tasks_controller->GetActiveEntrySource() ==
               contextual_tasks::ContextualTasksPanelController::EntrySource::
                   kLensOverlay) {

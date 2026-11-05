@@ -17,25 +17,20 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.Mockito;
-import org.mockito.junit.MockitoJUnit;
-import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.Callback;
+import org.chromium.base.CallbackUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
-import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator.CreationMode;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -43,27 +38,22 @@ import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
-import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeoutException;
 
 /** End-to-end test for closable TabListEditor. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 public class ClosableTabListEditorTest {
     @Rule
-    public AutoResetCtaTransitTestRule mActivityTestRule =
+    public final AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
-
-    @Mock private Callback<RecyclerViewPosition> mSetRecyclerViewPosition;
-    @Mock private TabListEditorCoordinator.NavigationProvider mNavigationProvider;
-    @Mock private ModalDialogManager mModalDialogManager;
-
     private final TabListEditorTestingRobot mRobot = new TabListEditorTestingRobot();
+    private final CallbackHelper mNavigationCallbackHelper = new CallbackHelper();
 
     private TabModelSelector mTabModelSelector;
     private TabListEditorCoordinator.TabListEditorController mTabListEditorController;
@@ -96,22 +86,20 @@ public class ClosableTabListEditorTest {
                                     mActivityTestRule.getActivity().getBrowserControlsManager(),
                                     currentTabModelSupplier,
                                     mActivityTestRule.getActivity().getTabContentManager(),
-                                    mSetRecyclerViewPosition,
-                                    TabListMode.GRID,
-                                    /* displayGroups= */ true,
+                                    CallbackUtils.emptyCallback(),
+                                    TabListLayoutType.GROUPED,
                                     mSnackbarManager,
                                     /* bottomSheetController= */ null,
                                     TabProperties.TabActionState.CLOSABLE,
                                     /* tabListItemOnClickListenerProvider= */ null,
-                                    mModalDialogManager,
+                                    mActivityTestRule.getActivity().getModalDialogManager(),
                                     /* desktopWindowStateManager= */ null,
                                     mEdgeToEdgeSupplier,
                                     CreationMode.FULL_SCREEN,
                                     /* itemPickerSelectionHandler= */ null,
                                     /* undoBarExplicitTrigger= */ null,
                                     /* componentId= */ null,
-                                    TabListEditorCoordinator.UNLIMITED_SELECTION,
-                                    /* isSingleContextMode= */ false);
+                                    TabListEditorCoordinator.UNLIMITED_SELECTION);
 
                     mTabListEditorController = mTabListEditorCoordinator.getController();
                     mTabListEditorLayout =
@@ -134,13 +122,6 @@ public class ClosableTabListEditorTest {
                         }
                         mTabListEditorCoordinator.destroy();
                     });
-
-            if (mActivityTestRule
-                    .getActivity()
-                    .getLayoutManager()
-                    .isLayoutVisible(LayoutType.HUB)) {
-                TabUiTestHelper.leaveTabSwitcher(mActivityTestRule.getActivity());
-            }
         }
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -204,7 +185,7 @@ public class ClosableTabListEditorTest {
 
     @Test
     @MediumTest
-    public void testCustomNavigationProvider() {
+    public void testCustomNavigationProvider() throws TimeoutException {
         prepareBlankTab(2, false);
         List<Tab> tabs = getTabsInCurrentTabModel();
 
@@ -212,11 +193,12 @@ public class ClosableTabListEditorTest {
                 () -> {
                     mTabListEditorController.show(
                             tabs, new ArrayList<>(), /* recyclerViewPosition= */ null);
-                    mTabListEditorController.setNavigationProvider(mNavigationProvider);
+                    mTabListEditorController.setNavigationProvider(
+                            mNavigationCallbackHelper::notifyCalled);
                     mTabListEditorController.handleBackPress();
                 });
 
-        Mockito.verify(mNavigationProvider).goBack();
+        mNavigationCallbackHelper.waitForOnly();
     }
 
     /** Retrieves all tabs from the current tab model */

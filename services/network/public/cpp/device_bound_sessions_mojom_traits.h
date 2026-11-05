@@ -137,6 +137,8 @@ struct EnumTraits<network::mojom::DeviceBoundSessionDeletionReason,
             kRefreshFatalError;
       case kDevTools:
         return network::mojom::DeviceBoundSessionDeletionReason::kDevTools;
+      case kReplaced:
+        return network::mojom::DeviceBoundSessionDeletionReason::kReplaced;
     }
   }
 
@@ -165,6 +167,8 @@ struct EnumTraits<network::mojom::DeviceBoundSessionDeletionReason,
         return kRefreshFatalError;
       case network::mojom::DeviceBoundSessionDeletionReason::kDevTools:
         return kDevTools;
+      case network::mojom::DeviceBoundSessionDeletionReason::kReplaced:
+        return kReplaced;
     }
     NOTREACHED();
   }
@@ -415,6 +419,9 @@ struct EnumTraits<network::mojom::DeviceBoundSessionError,
       case kAttestationSigningError:
         return network::mojom::DeviceBoundSessionError::
             kAttestationSigningError;
+      case kFederatedRegistrationRedirected:
+        return network::mojom::DeviceBoundSessionError::
+            kFederatedRegistrationRedirected;
     }
   }
 
@@ -612,6 +619,9 @@ struct EnumTraits<network::mojom::DeviceBoundSessionError,
         return kAttestationCertificationError;
       case network::mojom::DeviceBoundSessionError::kAttestationSigningError:
         return kAttestationSigningError;
+      case network::mojom::DeviceBoundSessionError::
+          kFederatedRegistrationRedirected:
+        return kFederatedRegistrationRedirected;
     }
     NOTREACHED();
   }

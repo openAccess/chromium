@@ -16,10 +16,11 @@ import {getSyncAllPrefs, getSyncAllPrefsManaged} from './sync_test_util.js';
 import {TestSyncBrowserProxy} from './test_sync_browser_proxy.js';
 
 import {PageStatus, routes, UserSelectableType, PluralStringProxyImpl} from 'chrome://settings/settings.js';
-import {BatchUploadPromoProxyImpl} from 'chrome://settings/lazy_load.js';
+import type {PageRemote} from 'chrome://settings/lazy_load.js';
+import {batchUploadPromoProxyFactory} from 'chrome://settings/lazy_load.js';
 import {TestPluralStringProxy} from 'chrome://webui-test/test_plural_string_proxy.js';
 
-import {TestBatchUploadPromoProxy} from './test_batch_upload_promo_browser_proxy.js';
+import {TestBatchUploadPromoHandler} from './test_batch_upload_promo_browser_proxy.js';
 
 // clang-format on
 
@@ -339,15 +340,19 @@ suite('SyncControlsSubpageTest', function() {
 suite('SyncControlsAccountSettingsTest', function() {
   let syncControls: SettingsSyncControlsElement;
   let browserProxy: TestSyncBrowserProxy;
-  let batchUploadPromoProxy: TestBatchUploadPromoProxy;
+  let batchUploadPromoHandler: TestBatchUploadPromoHandler;
+  let batchUploadPromoPageRemote: PageRemote;
   let pluralStringProxy: TestPluralStringProxy;
 
   setup(async function() {
     browserProxy = new TestSyncBrowserProxy();
     SyncBrowserProxyImpl.setInstance(browserProxy);
 
-    batchUploadPromoProxy = new TestBatchUploadPromoProxy();
-    BatchUploadPromoProxyImpl.setInstance(batchUploadPromoProxy);
+    batchUploadPromoHandler = new TestBatchUploadPromoHandler();
+    const {instance, remote} =
+        batchUploadPromoProxyFactory.createForTest(batchUploadPromoHandler);
+    batchUploadPromoProxyFactory.setInstance(instance);
+    batchUploadPromoPageRemote = remote;
 
     pluralStringProxy = new TestPluralStringProxy();
     PluralStringProxyImpl.setInstance(pluralStringProxy);
@@ -764,8 +769,7 @@ suite('SyncControlsAccountSettingsTest', function() {
 
   test('BatchUploadPromoWithLocalDataItemUponInitialization', async () => {
     const localDataCount = 5;
-    batchUploadPromoProxy.handler.setBatchUploadPromoLocalDataCount(
-        localDataCount);
+    batchUploadPromoHandler.setBatchUploadPromoLocalDataCount(localDataCount);
 
     // Create the sync controls again with the initial local data count.
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -790,13 +794,13 @@ suite('SyncControlsAccountSettingsTest', function() {
 
     // Notify the UI that there is one item to be uploaded and wait for the
     // batch upload promo to show.
-    batchUploadPromoProxy.page.onLocalDataCountChanged(localDataCount);
+    batchUploadPromoPageRemote.onLocalDataCountChanged(localDataCount);
     const pluralStringArgs =
         await pluralStringProxy.whenCalled('getPluralString');
     await microtasksFinished();
 
     const batchUploadElement =
-        syncControls.shadowRoot.querySelector(`#batchUploadPromo`);
+        syncControls.shadowRoot.querySelector('#batchUploadPromo');
     assertTrue(!!batchUploadElement);
     assertTrue(isVisible(batchUploadElement));
 
@@ -810,13 +814,13 @@ suite('SyncControlsAccountSettingsTest', function() {
 
     // Notify the UI that there are multiple items to be uploaded and wait for
     // the batch upload promo to show.
-    batchUploadPromoProxy.page.onLocalDataCountChanged(localDataCount);
+    batchUploadPromoPageRemote.onLocalDataCountChanged(localDataCount);
     const pluralStringArgs =
         await pluralStringProxy.whenCalled('getPluralString');
     await microtasksFinished();
 
     const batchUploadElement =
-        syncControls.shadowRoot.querySelector(`#batchUploadPromo`);
+        syncControls.shadowRoot.querySelector('#batchUploadPromo');
     assertTrue(!!batchUploadElement);
     assertTrue(isVisible(batchUploadElement));
 
@@ -832,13 +836,22 @@ suite('SyncControlsAccountSettingsTest', function() {
 
     // Notify the UI that there are multiple items to be uploaded and wait for
     // the batch upload promo to show.
-    batchUploadPromoProxy.page.onLocalDataCountChanged(localDataCount);
+    batchUploadPromoPageRemote.onLocalDataCountChanged(localDataCount);
     const pluralStringArgs =
         await pluralStringProxy.whenCalled('getPluralString');
     await microtasksFinished();
 
     assertTrue(isChildVisible(syncControls, '#batchUploadPromo'));
     assertEquals(localDataCount, pluralStringArgs.itemCount);
+
+    // Simulate an update to sync controls (e.g. prefs change) to trigger a
+    // re-render after the promo was displayed. Check crbug.com/561406312 for
+    // more details.
+    syncControls.syncStatus = {
+      signedInState: SignedInState.SIGNED_IN,
+      statusAction: StatusAction.NO_ACTION,
+    };
+    await microtasksFinished();
 
     const batchUploadLinkElement =
         syncControls.shadowRoot.querySelector<HTMLElement>(
@@ -848,9 +861,7 @@ suite('SyncControlsAccountSettingsTest', function() {
 
     // Make sure the call to open the batch upload dialog is executed.
     assertEquals(
-        1,
-        batchUploadPromoProxy.handler.getCallCount(
-            'onBatchUploadPromoClicked'));
+        1, batchUploadPromoHandler.getCallCount('onBatchUploadPromoClicked'));
   });
 });
 

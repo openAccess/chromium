@@ -11,6 +11,7 @@ android_library("java") {
     "java/src/org/chromium/chrome/browser/browserservices/intents/BrowserServicesIntentDataProvider.java",
     "java/src/org/chromium/chrome/browser/browserservices/intents/ColorProvider.java",
     "java/src/org/chromium/chrome/browser/browserservices/intents/CustomButtonParams.java",
+    "java/src/org/chromium/chrome/browser/browserservices/intents/CustomTabIntentDataHolder.java",
     "java/src/org/chromium/chrome/browser/browserservices/intents/MergedWebappInfo.java",
     "java/src/org/chromium/chrome/browser/browserservices/intents/SessionHolder.java",
     "java/src/org/chromium/chrome/browser/browserservices/intents/WebApkExtras.java",
@@ -37,7 +38,7 @@ android_library("java") {
     "//third_party/androidx:androidx_annotation_annotation_experimental_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
     "//third_party/androidx:androidx_browser_browser_java",
-    "//third_party/blink/public/mojom:mojom_platform_java",
+    "//third_party/blink/public/mojom:android_mojo_bindings_java",
     "//ui/android:ui_no_recycler_view_java",
     "//url:gurl_java",
   ]
@@ -45,6 +46,7 @@ android_library("java") {
 
 robolectric_library("junit") {
   sources = [
+    "java/src/org/chromium/chrome/browser/browserservices/intents/CustomTabIntentDataHolderUnitTest.java",
     "java/src/org/chromium/chrome/browser/browserservices/intents/MergedWebappInfoTest.java",
     "java/src/org/chromium/chrome/browser/browserservices/intents/WebApkInfoTest.java",
     "java/src/org/chromium/chrome/browser/browserservices/intents/WebappInfoTest.java",
@@ -52,19 +54,21 @@ robolectric_library("junit") {
   ]
   deps = [
     ":java",
+    "//base:base_java",
     "//base:base_junit_test_support",
     "//chrome/android:chrome_java",
     "//chrome/android/webapk/libs/common:common_java",
     "//chrome/android/webapk/libs/common:splash_java",
     "//chrome/android/webapk/test:junit_test_support",
     "//chrome/browser/android/intents:java",
+    "//chrome/browser/flags:java",
     "//chrome/test/android:chrome_java_unit_test_support",
     "//components/webapk/android/libs/common:java",
     "//components/webapps/browser/android:java",
     "//services/device/public/mojom:mojom_java",
     "//third_party/android_deps:espresso_java",
     "//third_party/androidx:androidx_browser_browser_java",
-    "//third_party/blink/public/mojom:mojom_platform_java",
+    "//third_party/blink/public/mojom:android_mojo_bindings_java",
     "//third_party/hamcrest:hamcrest_java",
     "//third_party/hamcrest:hamcrest_library_java",
     "//third_party/junit",

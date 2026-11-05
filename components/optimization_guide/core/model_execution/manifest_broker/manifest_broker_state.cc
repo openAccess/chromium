@@ -6,6 +6,8 @@
 
 #include <cstddef>
 #include <memory>
+#include <utility>
+#include <vector>
 
 #include "base/barrier_closure.h"
 #include "base/containers/extend.h"
@@ -19,8 +21,8 @@
 #include "base/trace_event/trace_event.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest_solution_factory.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest_validation.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/optimization_guide/core/model_execution/on_device_features.h"
+#include "components/optimization_guide/core/model_execution/on_device_prefs.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom.h"
 #include "components/prefs/pref_service.h"
@@ -54,7 +56,7 @@ base::flat_map<mojom::OnDeviceFeature, proto::Any> GetFeatureConfigs(
 
 ManifestBrokerState::ManifestBrokerState(
     PrefService& local_state,
-    std::unique_ptr<ManifestAssetManager::Delegate> delegate,
+    std::unique_ptr<ManifestAssetManagerDelegate> delegate,
     on_device_model::ServiceClient::LaunchFn launch_fn,
     component_updater::ComponentUpdateService* component_update_service)
     : local_state_(local_state),
@@ -110,6 +112,10 @@ void ManifestBrokerState::BindModelBrokerDebug(
     base::PassKey<on_device_internals::PageHandler> key,
     mojo::PendingReceiver<mojom::ModelBrokerDebug> receiver) {
   receivers_.Add(this, std::move(receiver));
+}
+
+OnDeviceModelControl* ManifestBrokerState::GetModelControl() {
+  return this;
 }
 
 std::unique_ptr<OnDeviceSession> ManifestBrokerState::StartSession(
@@ -191,15 +197,11 @@ void ManifestBrokerState::GetOnDeviceModelEligibilityAsync(
 }
 
 void ManifestBrokerState::EnsureInitialization(
-    ModelBrokerImpl::InitCallback callback) {
-  // Hurry the performance classifier.
+    BrokerInit::TaskCallback callback) {
+  // Hurry the performance classifier and manifest loading.
   performance_classifier_.EnsurePerformanceClassAvailable(base::DoNothing());
-  if (manifest_monitor_.manifest().has_value()) {
-    // Initialization is already complete.
-    std::move(callback).Run(GetPossibleOnDeviceCapabilities());
-    return;
-  }
-  init_callbacks_.push_back(std::move(callback));
+  manifest_monitor_.RaiseLoadPriority();
+  broker_init_.QueueTask(std::move(callback));
 }
 
 void ManifestBrokerState::OnManifestUpdated() {
@@ -214,7 +216,7 @@ void ManifestBrokerState::OnManifestUpdated() {
   auto factory = std::make_unique<ManifestSolutionFactory>(
       *manifest_monitor_.manifest(), model_broker_impl_, usage_tracker_,
       service_client_, access_controller_, performance_classifier_,
-      base::BindOnce(&ManifestBrokerState::OnInitComplete,
+      base::BindOnce(&ManifestBrokerState::OnSolutionFactoryInit,
                      weak_ptr_factory_.GetWeakPtr()),
       base::BindRepeating(
           &ManifestBrokerState::NotifyObserversOfBrokerStateChange,
@@ -229,13 +231,10 @@ void ManifestBrokerState::OnManifestUpdated() {
   NotifyObserversOfBrokerStateChange();
 }
 
-void ManifestBrokerState::OnInitComplete() {
-  TRACE_EVENT("optimization_guide", "ManifestBrokerState::OnInitComplete");
-  auto callbacks_to_run = std::move(init_callbacks_);
-  init_callbacks_.clear();
-  for (auto& callback : callbacks_to_run) {
-    std::move(callback).Run(GetPossibleOnDeviceCapabilities());
-  }
+void ManifestBrokerState::OnSolutionFactoryInit() {
+  TRACE_EVENT("optimization_guide",
+              "ManifestBrokerState::OnSolutionFactoryInit");
+  broker_init_.Complete(GetPossibleOnDeviceCapabilities());
 
   if (manifest_monitor_.manifest().has_value()) {
     const auto& manifest = *manifest_monitor_.manifest();
@@ -337,17 +336,36 @@ void ManifestBrokerState::GetStateInfo(
 
 void ManifestBrokerState::SetUseCaseRequested(const std::string& use_case,
                                               bool requested) {
-  usage_tracker_.SetPriority(
-      use_case,
-      requested ? std::make_optional(UsageTracker::Priority::kUserBlocking)
-                : std::nullopt);
+  usage_tracker_.SetPriority(use_case,
+                             requested ? UsageTracker::Priority::kUserBlocking
+                                       : UsageTracker::Priority::kEvictable);
+  if (!requested && asset_manager_) {
+    asset_manager_->RecomputeAssetPriorities();
+  }
 }
 
 void ManifestBrokerState::UninstallModels() {
-  if (asset_manager_) {
-    asset_manager_->UninstallModels();
-    OnManifestUpdated();
-  }
+  usage_tracker_.ClearAllUseCaseUsages();
+  EnsureInitialization(base::BindOnce(
+      [](base::WeakPtr<ManifestBrokerState> self,
+         const on_device_model::Capabilities&) {
+        if (self && self->asset_manager_) {
+          self->asset_manager_->UninstallAllAssets();
+        }
+      },
+      weak_ptr_factory_.GetWeakPtr()));
+}
+
+void ManifestBrokerState::UninstallCapability(
+    const std::string& model_asset_id) {
+  EnsureInitialization(base::BindOnce(
+      [](base::WeakPtr<ManifestBrokerState> self, std::string model_asset_id,
+         const on_device_model::Capabilities&) {
+        if (self && self->asset_manager_) {
+          self->asset_manager_->UninstallCapability(model_asset_id);
+        }
+      },
+      weak_ptr_factory_.GetWeakPtr(), model_asset_id));
 }
 
 void ManifestBrokerState::ResetModelCrashCount() {

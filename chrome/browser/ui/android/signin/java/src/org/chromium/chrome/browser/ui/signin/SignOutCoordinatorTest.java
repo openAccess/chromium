@@ -40,6 +40,7 @@ import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.browsing_data.BrowsingDataBridge;
@@ -60,6 +61,7 @@ import org.chromium.components.sync.DataType;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.sync.UserActionableError;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.MockitoHelper;
 
@@ -69,6 +71,7 @@ import java.util.Set;
 /** Instrumentation tests for {@link SignOutDialogCoordinator}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
+@DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(crbug.com/574521665): Re-enable.
 public class SignOutCoordinatorTest {
     @Rule
     public final BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =

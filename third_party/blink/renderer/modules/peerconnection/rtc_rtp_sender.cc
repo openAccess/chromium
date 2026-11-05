@@ -6,32 +6,58 @@
 
 #include <inttypes.h>
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <utility>
 
+#include "base/check.h"
+#include "base/check_op.h"
+#include "base/feature_list.h"
+#include "base/location.h"
+#include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
+#include "base/synchronization/lock.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/threading/thread_checker.h"
 #include "third_party/blink/public/platform/modules/webrtc/webrtc_logging.h"
+#include "third_party/blink/public/platform/task_type.h"
+#include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_value.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_degradation_preference.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoding_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_insertable_streams.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_priority_type.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_resolution_restriction.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_rtcp_parameters.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_rtp_capabilities.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_rtp_codec.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_rtp_codec_parameters.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_rtp_encoding_parameters.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_rtp_header_extension_capability.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_rtp_header_extension_parameters.h"
-#include "third_party/blink/renderer/core/dom/dom_exception.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_rtp_send_parameters.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_set_parameter_options.h"
+#include "third_party/blink/renderer/core/dom/events/event.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/core/streams/readable_stream.h"
+#include "third_party/blink/renderer/core/streams/transferable_streams.h"
 #include "third_party/blink/renderer/core/streams/writable_stream.h"
+#include "third_party/blink/renderer/core/workers/dedicated_worker.h"
+#include "third_party/blink/renderer/modules/mediastream/media_stream.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream_track.h"
 #include "third_party/blink/renderer/modules/peerconnection/peer_connection_dependency_factory.h"
-#include "third_party/blink/renderer/modules/peerconnection/peer_connection_features.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_dtls_transport.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_dtmf_sender.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_audio_sender_sink_optimizer.h"
@@ -46,22 +72,45 @@
 #include "third_party/blink/renderer/modules/peerconnection/rtc_peer_connection.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_stats_report.h"
 #include "third_party/blink/renderer/modules/peerconnection/web_rtc_stats_report_callback_resolver.h"
+#include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
+#include "third_party/blink/renderer/platform/heap/cross_thread_handle.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_persistent.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
+#include "third_party/blink/renderer/platform/mediastream/media_stream_component.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_dtmf_sender_handler.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_encoded_audio_stream_transformer.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_encoded_video_stream_transformer.h"
+#include "third_party/blink/renderer/platform/peerconnection/rtc_rtp_sender_platform.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_stats.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_void_request.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_view.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
+#include "third_party/webrtc/api/encoded_audio_frame_injector_interface.h"
+#include "third_party/webrtc/api/encoded_video_frame_injector_interface.h"
+#include "third_party/webrtc/api/media_types.h"
+#include "third_party/webrtc/api/priority.h"
+#include "third_party/webrtc/api/rtc_error.h"
+#include "third_party/webrtc/api/rtp_parameters.h"
 #include "third_party/webrtc/api/video/resolution.h"
 
 namespace blink {
 
 namespace {
+
+// TODO(crbug.com/488071544): Remove this kill switch after the new behavior
+// has been stable by M156 or M157 without regressions.
+BASE_FEATURE(kWebRtcRejectSetParametersOnStoppedTransceiver,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 webrtc::RtpCodec ToWebrtcRtpCodec(const RTCRtpCodec* codec);
 
@@ -825,6 +874,15 @@ ScriptPromise<IDLUndefined> RTCRtpSender::setParameters(
       script_state, exception_state.GetContext());
   auto promise = resolver->Promise();
 
+  if (base::FeatureList::IsEnabled(
+          kWebRtcRejectSetParametersOnStoppedTransceiver) &&
+      transceiver_ && transceiver_->stopped()) {
+    resolver->RejectWithDOMException(
+        DOMExceptionCode::kInvalidStateError,
+        "setParameters cannot be called on a stopped sender.");
+    return promise;
+  }
+
   if (!last_returned_parameters_) {
     resolver->RejectWithDOMException(
         DOMExceptionCode::kInvalidStateError,
@@ -1233,6 +1291,66 @@ void RTCRtpSender::SetVideoUnderlyingSink(
   video_to_packetizer_underlying_sink_ = new_underlying_sink;
 }
 
+ScriptPromise<IDLUndefined> RTCRtpSender::createEncodedSource(
+    ScriptState* script_state,
+    DedicatedWorker* worker,
+    ExceptionState& exception_state) {
+  return createEncodedSource(script_state, worker, ScriptValue(),
+                             HeapVector<ScriptObject>(), exception_state);
+}
+
+ScriptPromise<IDLUndefined> RTCRtpSender::createEncodedSource(
+    ScriptState* script_state,
+    DedicatedWorker* worker,
+    const ScriptValue& options,
+    ExceptionState& exception_state) {
+  return createEncodedSource(script_state, worker, options,
+                             HeapVector<ScriptObject>(), exception_state);
+}
+
+ScriptPromise<IDLUndefined> RTCRtpSender::createEncodedSource(
+    ScriptState* script_state,
+    DedicatedWorker* worker,
+    const ScriptValue& options,
+    const HeapVector<ScriptObject>& transfer,
+    ExceptionState& exception_state) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(script_state);
+  ScriptPromise<IDLUndefined> promise = resolver->Promise();
+
+  scoped_refptr<base::SingleThreadTaskRunner> main_task_runner =
+      ExecutionContext::From(script_state)
+          ->GetTaskRunner(TaskType::kInternalMediaRealTime);
+
+  if (kind_ == "video") {
+    worker->PostCustomEvent(
+        TaskType::kInternalMediaRealTime, script_state,
+        CrossThreadBindRepeating(
+            &RTCRtpSenderEncodedSource::CreateVideoEncodedSource,
+            MakeCrossThreadWeakHandle(this), main_task_runner,
+            MakeCrossThreadHandle(resolver)),
+        CrossThreadFunction<Event*(ScriptState*)>(), options, transfer,
+        exception_state);
+  } else if (kind_ == "audio") {
+    worker->PostCustomEvent(
+        TaskType::kInternalMediaRealTime, script_state,
+        CrossThreadBindRepeating(
+            &RTCRtpSenderEncodedSource::CreateAudioEncodedSource,
+            MakeCrossThreadWeakHandle(this), main_task_runner,
+            MakeCrossThreadHandle(resolver)),
+        CrossThreadFunction<Event*(ScriptState*)>(), options, transfer,
+        exception_state);
+  }
+
+  if (exception_state.HadException()) {
+    return ScriptPromise<IDLUndefined>();
+  }
+
+  return promise;
+}
+
 RTCInsertableStreams* RTCRtpSender::CreateEncodedVideoStreams(
     ScriptState* script_state) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
@@ -1300,6 +1418,29 @@ RTCInsertableStreams* RTCRtpSender::CreateEncodedVideoStreams(
 
   encoded_streams_->setWritable(writable_stream);
   return encoded_streams_;
+}
+
+scoped_refptr<webrtc::EncodedVideoFrameInjectorInterface>
+RTCRtpSender::CreateEncodedVideoFrameInjector(
+    webrtc::KeyFrameCallback keyframe_callback,
+    webrtc::BitrateInfoCallback bitrate_callback) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  if (sender_) {
+    return sender_->CreateEncodedVideoFrameInjector(
+        std::move(keyframe_callback), std::move(bitrate_callback));
+  }
+  return nullptr;
+}
+
+scoped_refptr<webrtc::EncodedAudioFrameInjectorInterface>
+RTCRtpSender::CreateEncodedAudioFrameInjector(
+    webrtc::TargetBitrateCallback bitrate_callback) {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  if (sender_) {
+    return sender_->CreateEncodedAudioFrameInjector(
+        std::move(bitrate_callback));
+  }
+  return nullptr;
 }
 
 void RTCRtpSender::setTransform(RTCRtpScriptTransform* transform,

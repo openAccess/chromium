@@ -25,8 +25,9 @@
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager_observer.h"
 #include "chrome/browser/ash/arc/test/test_arc_session_manager.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/policy/core/device_attributes_fake.h"
+#include "chrome/browser/consent_auditor/consent_auditor_factory.h"
 #include "chrome/browser/policy/developer_tools_policy_handler.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -53,12 +54,11 @@
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/core/common/remote_commands/remote_commands_queue.h"
 #include "components/policy/policy_constants.h"
-#include "components/session_manager/core/fake_session_manager_delegate.h"
-#include "components/session_manager/core/session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "components/supervised_user/core/browser/supervised_user_test_environment.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
-#include "components/user_manager/scoped_user_manager.h"
 #include "content/public/test/browser_task_environment.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -227,22 +227,31 @@ class ArcPolicyBridgeTestBase {
         .Times(1);
 
     // Set up user profile for ReportCompliance() tests.
-    fake_user_manager_.Reset(std::make_unique<ash::FakeChromeUserManager>());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
+            TestingBrowserProcess::GetGlobal()->local_state());
     const AccountId account_id(
         AccountId::FromUserEmailGaiaId(kTestUserEmail, GaiaId("1111111111")));
-    fake_user_manager_->AddUserWithAffiliation(account_id, is_affiliated);
-    fake_user_manager_->LoginUser(account_id);
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(account_id));
+
     testing_profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(testing_profile_manager_->SetUp());
+    user_session_test_environment_->LogIn(account_id);
+    user_manager::UserManager::Get()->SetUserPolicyStatus(
+        account_id, /*is_managed=*/is_affiliated,
+        /*is_affiliated=*/is_affiliated);
+
+    ash::ScopedAccountIdAnnotator annotator(
+        testing_profile_manager_->profile_manager(), account_id);
     profile_ = testing_profile_manager_->CreateTestingProfile(
         kTestUserEmail, IdentityTestEnvironmentProfileAdaptor::
                             GetIdentityTestEnvironmentFactories());
     ASSERT_TRUE(profile_);
 
-    auto identity_test_env_profile_adaptor =
+    identity_test_env_profile_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile_);
-    identity_test_env_profile_adaptor->identity_test_env()
+    identity_test_env_profile_adaptor_->identity_test_env()
         ->MakePrimaryAccountAvailable(kTestUserEmail,
                                       signin::ConsentLevel::kSignin);
 
@@ -258,7 +267,8 @@ class ArcPolicyBridgeTestBase {
         arc_dlc_installer_.get());
     ArcSessionManager::EnableCheckAndroidManagementForTesting(false);
     arc_session_manager()->SetProfile(profile());
-    arc_session_manager()->Initialize();
+    arc_session_manager()->Initialize(
+        ConsentAuditorFactory::GetForProfile(profile()));
 
     // TODO(hidehiko): Use Singleton instance tied to BrowserContext.
     policy_bridge_ = std::make_unique<ArcPolicyBridge>(
@@ -278,6 +288,7 @@ class ArcPolicyBridgeTestBase {
     policy_instance_.reset();
     policy_bridge_->RemoveObserver(&observer_);
     policy_bridge_.reset();
+    identity_test_env_profile_adaptor_.reset();
     arc_session_manager()->Shutdown();
     arc_session_manager_.reset();
     arc_dlc_installer_.reset();
@@ -286,7 +297,9 @@ class ArcPolicyBridgeTestBase {
     arc_service_manager_.reset();
     ash::DlcserviceClient::Shutdown();
     ash::ConciergeClient::Shutdown();
+    profile_ = nullptr;
     testing_profile_manager_.reset();
+    user_session_test_environment_.reset();
   }
 
  protected:
@@ -361,20 +374,23 @@ class ArcPolicyBridgeTestBase {
   ArcSessionManager* arc_session_manager() {
     return arc_session_manager_.get();
   }
+  signin::IdentityManager* identity_manager() {
+    return identity_test_env_profile_adaptor_->identity_test_env()
+        ->identity_manager();
+  }
 
  private:
   content::BrowserTaskEnvironment task_environment_;
-  user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
-      fake_user_manager_;
-  session_manager::SessionManager session_manager_{
-      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
+  std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
+      identity_test_env_profile_adaptor_;
   std::unique_ptr<TestingProfileManager> testing_profile_manager_;
   base::RunLoop run_loop_;
   raw_ptr<TestingProfile, DanglingUntriaged> profile_;
   raw_ptr<ArcBridgeService> bridge_service_;
   raw_ptr<CertStoreService, DanglingUntriaged>
       cert_store_service_;  // Not owned.
-
   std::unique_ptr<ArcServiceManager> arc_service_manager_;
   std::unique_ptr<ArcDlcInstaller> arc_dlc_installer_;
   std::unique_ptr<ArcSessionManager> arc_session_manager_;
@@ -426,7 +442,8 @@ class ArcPolicyBridgeCertStoreTest : public ArcPolicyBridgeTest {
             profile(),
             base::BindRepeating([](content::BrowserContext* profile)
                                     -> std::unique_ptr<KeyedService> {
-              return std::make_unique<CertStoreService>(nullptr);
+              return std::make_unique<CertStoreService>(
+                  /*context=*/nullptr, /*nss_service=*/nullptr);
             })));
   }
 };
@@ -812,7 +829,8 @@ TEST_F(ArcPolicyBridgeTest, VpnConfigAllowedTest) {
 
 TEST_F(ArcPolicyBridgeTest, ManualChildUserPoliciesSet) {
   // Mark profile as supervised user.
-  profile()->SetIsSupervisedProfile();
+  supervised_user::SupervisedUserTestEnvironment::EnableSupervisedAccount(
+      identity_manager());
   EXPECT_TRUE(profile()->IsChild());
 
   policy_map().Set(policy::key::kArcPolicy, policy::POLICY_LEVEL_MANDATORY,

@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.ntp;
 
-import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
-
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
 
@@ -72,8 +70,7 @@ public class NewTabPageNavigationTest {
     public void testNavigateBackToNtpViaUrl() {
         String url = mTestServer.getURL("/chrome/test/data/android/google.html");
         WebPageStation page = mNtp.loadWebPageProgrammatically(url);
-        page.loadPageProgrammatically(
-                getOriginalNativeNtpUrl(), RegularNewTabPageStation.newBuilder());
+        page.loadNtp();
     }
 
     /** Tests navigating to the tab switcher from the NTP. */

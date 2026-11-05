@@ -37,8 +37,9 @@ include_rules = [
     "+third_party/blink/common",
     "+third_party/blink/public/common",
     "+third_party/blink/public/mojom",
-    "+third_party/icu/source/common/unicode/locid.h",
+    "+third_party/icu/source/common/unicode/uchar.h",
     "+third_party/icu/source/common/unicode/unistr.h",
+    "+third_party/icu/source/common/unicode/utf16.h",
     "+ui/base/page_transition_types.h",
     "+ui/base/ui_base_switches_util.h",
     "+ui/base/mojom/menu_source_type.mojom-forward.h",
@@ -63,9 +64,13 @@ specific_include_rules = {
   '.*unittest.?.cc': [
     "+services/network/test",
     "+ui/gfx/image/image_unittest_util.h",
+    "+ui/events/event_constants.h",
     "+v8",
   ],
   'ad_display_size_utils.cc': [ "+third_party/re2/src/re2/re2.h" ],
+  'chrome_debug_urls.cc': [
+    "+partition_alloc/oom.h",
+  ],
   'content_to_visible_time_reporter*': [
     "+components/viz/common/frame_timing_details.h"
   ],

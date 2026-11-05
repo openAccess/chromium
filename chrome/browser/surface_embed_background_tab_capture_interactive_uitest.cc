@@ -2,11 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/webrtc/webrtc_browsertest_base.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -41,9 +42,16 @@ class SurfaceEmbedBackgroundTabCaptureInteractiveUiTest
 
   content::WebContents* OpenTestPageInNewTab(const std::string& test_url) {
     chrome::AddTabAt(browser(), GURL(url::kAboutBlankURL), -1, true);
+    content::WebContents* web_contents =
+        browser()->tab_strip_model()->GetActiveWebContents();
+    // Wait for the WebUI browser to finish loading and attach the
+    // SurfaceEmbedConnector to the tab before navigating and starting capture.
+    EXPECT_TRUE(base::test::RunUntil([web_contents]() {
+      return web_contents->GetSurfaceEmbedConnector() != nullptr;
+    }));
     GURL url = embedded_test_server()->GetURL(test_url);
     EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-    return browser()->tab_strip_model()->GetActiveWebContents();
+    return web_contents;
   }
 
  private:

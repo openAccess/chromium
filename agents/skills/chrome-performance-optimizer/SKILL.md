@@ -37,7 +37,12 @@ graph TD
         Imp2["Implementer & Local Tester #2"]
     end
 
-    subgraph RemoteEval["Phase 3: Async Remote Evaluation"]
+    subgraph Review["Phase 3: Pre-Upload Review & Refinement (Workspace: 'share')"]
+        Rev1["Code Reviewer & Refiner #1"]
+        Rev2["Code Reviewer & Refiner #2"]
+    end
+
+    subgraph RemoteEval["Phase 4: Async Remote Evaluation"]
         PP1["Pinpoint & Gerrit Lifecycle Worker #1"]
         PP2["Pinpoint & Gerrit Lifecycle Worker #2"]
     end
@@ -46,11 +51,18 @@ graph TD
     Discovery -->|2. Propose Macro-Hypotheses| Main
     Main -->|3. Dispatch Candidate| Execution
     Execution -->|4. Verified Patch & Smoke Test| Main
-    Main -->|5. Upload CL & Launch Pinpoint on M1| RemoteEval
-    Main -.->|6. Pipeline Next Candidate (Do not wait idle)| Execution
-    RemoteEval -->|7. Stat-Significant Win / Regressed| Main
-    Main -->|8. Accept (Keep CL) or Reject (Abandon CL)| Main
+    Main -->|5. Pre-Upload Code Review & Quality Gate| Review
+    Review -->|6a. Conceptually Flawed: Veto & Discard| Main
+    Review -->|6b. Approved & Refined Patch| Main
+    Main -->|7. Upload WIP CL & Launch Pinpoint on M1| RemoteEval
+    Main -.->|8. Pipeline Next Candidate (Do not wait idle)| Execution
+    RemoteEval -->|9. Stat-Significant Win / Regressed| Main
+    Main -->|10. Accept (Keep CL) or Reject (Abandon CL)| Main
 ```
+
+- **Subagent Model Policy**: Pass `Model: 'flash'` when invoking **Implementer**
+  and **Pinpoint** subagents; use `Model: 'inherit'` (the default) for all other
+  subagents (**Explorer**, **Profiler**, and **Reviewer**).
 
 ______________________________________________________________________
 
@@ -67,16 +79,16 @@ Crossbench CSVs.
 
 ```bash
 # 1. Top Cumulative Call Stacks (identify caller subtrees):
-vpython3 agents/skills/chrome-performance-optimizer/scripts/analyze_profile.py "pprof/?id=XYZ" --mode=cum --nodecount=30
+vpython3 .agents/skills/chrome-performance-optimizer/scripts/analyze_profile.py "pprof/?id=XYZ" --mode=cum --nodecount=30
 
 # 2. Top Flat Functions (identify hot leaf loops):
-vpython3 agents/skills/chrome-performance-optimizer/scripts/analyze_profile.py "pprof/?id=XYZ" --mode=flat --nodecount=30
+vpython3 .agents/skills/chrome-performance-optimizer/scripts/analyze_profile.py "pprof/?id=XYZ" --mode=flat --nodecount=30
 
 # 3. Inspect Callers & Callees for a Specific Symbol:
-vpython3 agents/skills/chrome-performance-optimizer/scripts/analyze_profile.py "pprof/?id=XYZ" --mode=peek --symbol="*HasOwnProperty*"
+vpython3 .agents/skills/chrome-performance-optimizer/scripts/analyze_profile.py "pprof/?id=XYZ" --mode=peek --symbol="*HasOwnProperty*"
 
 # 4. Compare Two Profiles (Diff Mode):
-vpython3 agents/skills/chrome-performance-optimizer/scripts/analyze_profile.py "pprof/?id=EXP_ID" --base="pprof/?id=BASE_ID" --mode=cum
+vpython3 .agents/skills/chrome-performance-optimizer/scripts/analyze_profile.py "pprof/?id=EXP_ID" --base="pprof/?id=BASE_ID" --mode=cum
 ```
 
 ### Mode B: When No Profile is Provided (General Opportunity Exploration)
@@ -133,15 +145,23 @@ ______________________________________________________________________
 
 > [!IMPORTANT] **Mandatory High-Impact & Novelty Standard**:
 >
-> - **Mandatory Novelty Pre-Check with `--search`**: Before writing code for any
->   candidate, run
->   `vpython3 .agents/skills/chrome-performance-optimizer/scripts/fetch_tried_cls.py --search <target_file_or_symbol>`
->   to verify that neither an accepted winner nor a rejected attempt already
->   exists for that code path.
+> - **Mandatory Automated Novelty Gate**: Before uploading any candidate CL,
+>   run:
+>   ```bash
+>   vpython3 .agents/skills/chrome-performance-optimizer/scripts/check_candidate_novelty.py
+>   ```
+>   This machine-independent tool queries Gerrit directly across
+>   `topic:chrome-perf-opt-*` and verifies that the candidate diff does not
+>   duplicate or overlap with any previously accepted or rejected attempts. If
+>   overlap is detected, the check fails immediately and the candidate must be
+>   discarded.
 > - **No Duplication & No Combining**: NEVER repeat changes listed under
 >   `topic:chrome-perf-opt-rejected` or `topic:chrome-perf-opt-accepted`. Do NOT
 >   combine multiple separate optimizations into a single CL; each optimization
 >   must stand on its own merits as an independent CL.
+> - **Avoid Changes Ineffective on LTO/PGO Builds**: Changes unlikely to make an
+>   effect on LTO/PGO builds (like moving functions to headers for better
+>   inlining) should be avoided; Pinpoint uses ThinLTO and other bots use PGO.
 > - **No Micro-Tweaks**: Do NOT propose single variable renames, isolated
 >   trivial bound checks, or micro-helpers that produce `< 0.1%` change and
 >   vanish in Pinpoint noise.
@@ -194,14 +214,93 @@ Verify correctness locally in the worktree before uploading to Gerrit:
 
    ```bash
    autoninja -C out/release chrome chromedriver
-   ./third_party/crossbench/cb.py speedometer_3.1 --browser=out/release/chrome --driver-path=out/release/chromedriver --stories=<TargetStory> --headless
+   tools/perf/cb speedometer_3.1 --browser=out/release/chrome --driver-path=out/release/chromedriver --stories=<TargetStory> --headless
    ```
 
 ______________________________________________________________________
 
-## Step 4: Submit CL to Gerrit (Work In Progress)
+## Step 4: Pre-Upload Code Review & Autonomous Refinement
 
-1. Commit all modified files with descriptive rationale:
+Before committing and uploading any candidate CL to Gerrit (even as WIP),
+dispatch a dedicated **Pre-Upload Code Reviewer & Refiner Subagent**
+(`Workspace: 'share'`) to perform an adversarial code audit and refinement pass
+on the candidate branch:
+
+1. **Conceptual Correctness Gate (Veto Decision)**:
+
+   - Determine if the candidate optimization is **conceptually sound**:
+     - Does it preserve spec compliance (DOM/CSS/HTML/JS) and engine invariants?
+     - Does it take prohibited architectural shortcuts (e.g. bypassing security
+       checks, skipping required style updates, or breaking lifecycle
+       guarantees) that only create an illusory speedup?
+     - Does it rely on changes unlikely to affect LTO/PGO builds (like moving
+       functions to headers for inlining)? These should be avoided.
+   - **Veto Rule**: If the change is fundamentally flawed, unviable, or
+     introduces irreparable correctness bugs, the subagent issues a `VETO`
+     decision and aborts immediately. The candidate is **discarded without
+     uploading to Gerrit or triggering Pinpoint**, saving hours of expensive
+     Apple Silicon bot time.
+
+2. **Chromium & V8 Code Quality Audit Checklist**: If conceptually sound, the
+   subagent audits the diff against core engine standards:
+
+   - **Oilpan GC & Memory Safety**: Verify correct GC tracing (`Trace()`),
+     absence of forbidden raw pointers to GC objects, proper `Member<T>` /
+     `WeakMember<T>` usage, and lack of leaks/UAF hazards.
+   - **Thread & Sequence Safety**: Ensure operations run on valid task runners
+     (`DCHECK_CALLED_ON_VALID_SEQUENCE`) without lock contention or thread
+     races.
+   - **Boundary & Edge Cases**: Verify handling of null pointers, empty
+     collections, zero-length inputs, integer overflow, and fallback logic for
+     unhandled types.
+   - **Chromium Style & Conventions**: Ensure const-correctness, include
+     hygiene, proper use of `base::span` / `WTF::Vector`, and clean formatting.
+   - **Performance Preservation**: Ensure cleanup fixes do NOT introduce hidden
+     allocations, virtual calls, or extra copies on the hot path.
+
+3. **Autonomous Problem Resolution & Refinement**:
+
+   - Address the review findings directly on the branch: modify code to fix
+     bugs, edge cases, and style issues.
+
+4. **Local Re-Verification Gate**:
+
+   - Format and lint:
+     ```bash
+     git cl format
+     git cl lint
+     ```
+   - Re-compile and re-run unit tests:
+     ```bash
+     # For Blink changes:
+     autoninja -C out/release blink_unittests
+     ./out/release/blink_unittests --gtest_filter="<RelevantTestPattern>"
+
+     # For V8 changes:
+     autoninja -C out/release v8:d8
+     ./out/release/d8 v8/test/mjsunit/mjsunit.js <path_to_test.js>
+     ```
+   - Re-run web tests / Crossbench smoke tests if applicable.
+   - Amend or commit the polished changes on the branch (`perf_<feature_name>`).
+   - Output `APPROVED` with a summary of resolved comments for the Orchestrator.
+
+______________________________________________________________________
+
+## Step 5: Submit CL to Gerrit (Work In Progress)
+
+1. **Verify Candidate Novelty (Mandatory Gate)**: Run the automated novelty
+   verifier against authoritative Gerrit performance records:
+
+   ```bash
+   vpython3 .agents/skills/chrome-performance-optimizer/scripts/check_candidate_novelty.py
+   ```
+
+   Ensure the check outputs `✅ NOVELTY CHECK PASSED`. If any duplicate logic,
+   re-proposals, or overlapping changes are detected, **abort immediately** and
+   do not upload.
+
+2. Commit all modified files with descriptive rationale:
+
    ```bash
    git commit -m "[<Subsystem>] <Title>
 
@@ -210,19 +309,23 @@ ______________________________________________________________________
    TAG=agy
    CONV=<conversation_id>"
    ```
-2. Upload the CL to Gerrit as **Work In Progress (WIP)** to avoid notifying
+
+3. Upload the CL to Gerrit as **Work In Progress (WIP)** to avoid notifying
    reviewers before Pinpoint validation:
+
    ```bash
-   git cl upload -o wip --no-autocc --bypass-hooks -f -m "Performance optimization for Speedometer 3"
+   git cl upload -o wip --no-autocc -m "[Description]" --cq-dry-run
    ```
-3. Retrieve the Gerrit Issue ID:
+
+4. Retrieve the Gerrit Issue ID:
+
    ```bash
    git cl issue
    ```
 
 ______________________________________________________________________
 
-## Step 5: Launch Pinpoint Try Job & Asynchronous Pipelining
+## Step 6: Launch Pinpoint Try Job & Asynchronous Pipelining
 
 Launch a 150-iteration try job on Apple Silicon M1 bots:
 
@@ -245,19 +348,18 @@ pp c -c m1 -t sp3 -r 150
 
 ______________________________________________________________________
 
-## Step 6: Evaluate Results & Autonomous Decision
+## Step 7: Evaluate Results & Autonomous Decision
 
-1. Check comparison results once the job completes:
-
-   ```bash
-   vpython3 agents/skills/chrome-performance-optimizer/scripts/pinpoint_evaluator.py --action evaluate --job-id <JOB_ID>
-   ```
-
-   Or inspect the comparison table directly:
+1. Evaluate the job once it completes:
 
    ```bash
-   pp s <JOB_ID>
+   vpython3 .agents/skills/chrome-performance-optimizer/scripts/pinpoint_evaluator.py --action evaluate --job-id <JOB_ID>
    ```
+
+   The script's `Decision:` line is the verdict. The raw table
+   (`pp s --show-all <JOB_ID>`) is for diagnostics only: it has no
+   multiple-testing correction, and without `--show-all` it hides rows with
+   `p >= 0.01`, usually including `Score`.
 
 2. **Metric Direction Interpretation**:
 
@@ -265,17 +367,49 @@ ______________________________________________________________________
      Direction is `smaller-better` (duration/latency in ms).
      - **Negative change (`-X.X%`)**: Faster / Improvement (Win).
      - **Positive change (`+X.X%`)**: Slower / Regression (Loss).
-   - **Composite Score (`Score`)**: Direction is `larger-better` (higher score =
-     faster).
+   - **Composite Score (`Score`)**: Direction is `bigger-better` /
+     `larger-better` (higher score = faster).
      - **Positive change (`+X.X%`)**: Improvement (Win).
      - **Negative change (`-X.X%`)**: Regression (Loss).
 
-3. **Decision Rules**:
+3. **Statistical Evaluation** (as implemented by `pinpoint_evaluator.py`, with
+   `alpha = 0.05`):
 
-   - ✅ **Statistically Significant Improvement ($p < 0.05$)**:
-     - Significant reduction in subtest durations (`-X%` on `smaller-better`) or
-       increase in composite `Score` with zero significant regressions.
-     - Set Gerrit topic to `chrome-perf-opt-accepted`:
+   - `Score` (`Total` for JetStream) is the primary endpoint: it counts as
+     improved or regressed at unadjusted `p < 0.05`. Because `Score` already
+     integrates all subtests, a statistically significant `Score` improvement
+     (`p < 0.05`) **always keeps the CL**, even if one or more individual
+     subtests regressed.
+   - Subtests are corrected for testing all `m` of them at once: an improvement
+     or a regression is confirmed by directional Benjamini-Hochberg
+     (`q_BH < 0.05`, FDR), applied separately to each direction. Subtests with
+     raw `p < 0.05` that fail the correction are listed as noise and ignored.
+   - Subtest-only wins (when `Score` is not significantly improved) are kept
+     only if at least one subtest has a confirmed improvement (`q_BH < 0.05`),
+     zero subtests have a confirmed regression (`q_BH < 0.05`), `Score` did not
+     regress, and no `Score` veto fired (a `Score` drop of more than 0.05% with
+     `p < 0.20` rejects a subtest-only win).
+   - The output includes 95% confidence intervals and the minimum detectable
+     effect (`MDE`) at 80% power. A non-significant result does not rule out
+     effects smaller than the `MDE`.
+   - A win confined to subtests with a non-significant `Score` is tentative, and
+     the `Decision:` line says so: some subtests (notably `Editor-TipTap`) vary
+     more between jobs than the within-job error suggests. State this when
+     proposing such a CL.
+
+4. **Decision Actions**:
+
+   - ✅ **Keep** (`Decision: Propose / Keep CL`): `Score` improved significantly
+     (`p < 0.05`), OR at least one subtest improved with zero confirmed
+     regressions and no `Score` veto.
+     - If `Score` improved significantly *and* one or more subtests had a
+       confirmed regression (`q_BH < 0.05`), **do NOT abandon or tag
+       `chrome-perf-opt-rejected`** (which would blocklist the files in
+       `check_candidate_novelty.py`). You may optionally upload a targeted
+       Patchset 2 refinement on the same CL to eliminate avoidable collateral
+       overhead on the regressed subtest(s), or accept the CL directly if the
+       tradeoff is inherent.
+     - Mark the CL as accepted on Gerrit:
        ```bash
        vpython3 .agents/skills/chrome-performance-optimizer/scripts/pinpoint_evaluator.py --action accept
        ```
@@ -284,16 +418,16 @@ ______________________________________________________________________
        git cl upload -m "Add Pinpoint M1 benchmark results (+X.X% improvement)"
        ```
      - Propose the change to the user and reviewers.
-   - ❌ **Neutral or Regressed**:
-     - Positive delta (`+X%`) on `smaller-better` metrics indicates a
-       **regression**, or no metric reaches $p < 0.05$.
-     - Set Gerrit topic to `chrome-perf-opt-rejected` and abandon the CL:
+   - ❌ **Abandon** (`Decision: Abandon CL`): `Score` did not significantly
+     improve AND either no subtest improvement survives the correction, `Score`
+     or a subtest regressed, or the `Score` veto fired.
+     - Mark as rejected on Gerrit and abandon the CL:
        ```bash
        vpython3 .agents/skills/chrome-performance-optimizer/scripts/pinpoint_evaluator.py --action reject
        ```
        *(Note: Gerrit returns `403 Forbidden` if attempting to change the topic
-       after the CL is already closed/abandoned; the topic must always be set
-       prior to abandoning).*
+       after the CL is already closed/abandoned; `pinpoint_evaluator.py` sets
+       the topic prior to calling `git cl set-close`).*
      - Free the worktree and iterate on the next candidate in the pipeline.
 
 ______________________________________________________________________
@@ -303,6 +437,7 @@ ______________________________________________________________________
 - [Multi-Agent Roles & Pipelining Guide](references/agent_roles.md)
 - [Macro-Optimization Patterns](references/optimization_patterns.md)
 - [Pinpoint & Gerrit Workflow Guide](references/pinpoint_workflow.md)
+- [Candidate Novelty Verifier Script](scripts/check_candidate_novelty.py)
 - [Fetch Previously Tried CLs Script](scripts/fetch_tried_cls.py)
 - [Profile Analyzer Script](scripts/analyze_profile.py)
 - [Pinpoint Evaluator Script](scripts/pinpoint_evaluator.py)

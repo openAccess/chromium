@@ -42,12 +42,16 @@
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/history/core/browser/top_sites.h"
 #include "components/prefs/pref_service.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/navigation_entry.h"
 #include "dbus/object_path.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/base/models/menu_separator_types.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/text_elider.h"
 
 // A line in the static menu definitions.
@@ -242,7 +246,7 @@ DbusAppmenu::~DbusAppmenu() {
 }
 
 void DbusAppmenu::Initialize(DbusMenu::InitializedCallback callback) {
-  DCHECK(!initialized_);
+  CHECK(!initialized_, base::NotFatalUntil::M162);
   initialized_ = true;
 
   // First build static menu content.
@@ -272,7 +276,7 @@ void DbusAppmenu::Initialize(DbusMenu::InitializedCallback callback) {
   }
 
   ProfileManager* profile_manager = g_browser_process->profile_manager();
-  DCHECK(profile_manager);
+  CHECK(profile_manager, base::NotFatalUntil::M162);
   avatar_menu_ = std::make_unique<AvatarMenu>(
       &profile_manager->GetProfileAttributesStorage(), this, browser_.get());
   avatar_menu_->RebuildMenu();
@@ -381,7 +385,7 @@ void DbusAppmenu::AddEntryToHistoryMenu(
 }
 
 void DbusAppmenu::GetTopSitesData() {
-  DCHECK(top_sites_);
+  CHECK(top_sites_, base::NotFatalUntil::M162);
 
   top_sites_->GetMostVisitedURLs(base::BindOnce(
       &DbusAppmenu::OnTopSitesReceived, weak_ptr_factory_.GetWeakPtr()));
@@ -641,13 +645,13 @@ void DbusAppmenu::ExecuteCommand(int command_id, int event_flags) {
     if (item->session_id.is_valid() && service) {
       service->RestoreEntryById(BrowserLiveTabContext::From(browser_),
                                 item->session_id,
-                                WindowOpenDisposition::UNKNOWN);
+                                ui::mojom::WindowOpenDisposition::kUnknown);
     } else {
-      DCHECK(item->url.is_valid());
+      CHECK(item->url.is_valid(), base::NotFatalUntil::M162);
       browser_->OpenURL(
-          content::OpenURLParams(item->url, content::Referrer(),
-                                 WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                 ui::PAGE_TRANSITION_AUTO_BOOKMARK, false),
+          content::OpenURLParams::CreateBrowserInitiated(
+              item->url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+              ui::PAGE_TRANSITION_AUTO_BOOKMARK),
           /*navigation_handle_callback=*/{});
     }
   } else if (profile_commands_.contains(command_id)) {

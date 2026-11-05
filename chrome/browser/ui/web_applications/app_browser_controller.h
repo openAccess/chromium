@@ -32,7 +32,6 @@
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 class BrowserWindowInterface;
-class BrowserThemePack;
 class CustomThemeSupplier;
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -54,6 +53,10 @@ class ColorProvider;
 class ImageModel;
 class ThemeProvider;
 }  // namespace ui
+
+namespace url {
+class Origin;
+}  // namespace url
 
 namespace web_app {
 
@@ -378,6 +381,11 @@ class AppBrowserController : public ui::ColorProviderKey::InitializerSupplier,
                        bool has_tab_strip);
   AppBrowserController(BrowserWindowInterface* browser, webapps::AppId app_id);
 
+  // Whether an about:blank popup with this inherited origin may omit the
+  // custom tab bar. The default permits only the app's start URL origin.
+  virtual bool IsOriginAllowedForAboutBlankPopup(
+      const url::Origin& origin) const;
+
   // Called once the app browser controller has determined its initial url.
   virtual void OnReceivedInitialURL();
 
@@ -388,7 +396,7 @@ class AppBrowserController : public ui::ColorProviderKey::InitializerSupplier,
   // Gets the icon to use if the app icon is not available.
   ui::ImageModel GetFallbackAppIcon() const;
 
-  void UpdateThemePack();
+  void UpdateThemeSupplier();
 
  private:
   // Sets the url that the app browser controller was created with.
@@ -399,7 +407,7 @@ class AppBrowserController : public ui::ColorProviderKey::InitializerSupplier,
   const bool has_tab_strip_;
   GURL initial_url_;
 
-  scoped_refptr<BrowserThemePack> theme_pack_;
+  scoped_refptr<CustomThemeSupplier> theme_supplier_;
   std::unique_ptr<ui::ThemeProvider> theme_provider_;
   std::optional<SkColor> last_theme_color_;
   std::optional<SkColor> last_background_color_;

@@ -38,10 +38,10 @@ void LogInitResult(WebDatabase::InitResult result) {
   base::UmaHistogramEnumeration("WebDatabase.InitResult", result);
 }
 
-// Version 151 writes tuples to one of `autofill::EntityTable`'s tables that
-// are not processed correctly by clients with version 150. As a result,
-// some `autofill::EntityInstance`s on these old clients would be incomplete.
-constexpr int kCompatibleVersionNumber = 151;
+// Version 160 recreates the `offer_data` table with a `NOT NULL` `issue_time`
+// column that has no default. Clients with version 159 and below do not write
+// that column, so they cannot insert offers into a version 160 database.
+constexpr int kCompatibleVersionNumber = 160;
 
 // Change the version number and possibly the compatibility version of
 // |meta_table_|.

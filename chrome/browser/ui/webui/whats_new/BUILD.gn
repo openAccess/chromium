@@ -41,6 +41,7 @@ source_set("whats_new") {
       "//chrome/common:constants",
       "//components/lens:features",
       "//components/prefs",
+      "//components/signin/public/identity_manager",
       "//components/user_education/webui",
       "//content/public/browser",
       "//mojo/public/cpp/bindings",
@@ -50,9 +51,8 @@ source_set("whats_new") {
     ]
   }
 }
-source_set("impl") {
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 
+source_set("impl") {
   sources = [ "whats_new_util.cc" ]
 
   deps = [
@@ -83,14 +83,16 @@ source_set("impl") {
     deps += [
       "//chrome/browser:global_features",
       "//chrome/browser/resources/whats_new:resources",
+      "//chrome/browser/signin",
+      "//chrome/browser/ui:browser_tabstrip",
       "//chrome/browser/ui/hats",
       "//chrome/browser/ui/tabs:features",
       "//chrome/browser/ui/tabs:tab_strip",
+      "//chrome/browser/ui/webui:webui_util",
       "//chrome/browser/ui/webui/browser_command",
       "//chrome/common:version_header",
       "//components/bookmarks/common",
-      "//components/history_embeddings/content",
-      "//components/history_embeddings/core",
+      "//components/language/core/browser",
       "//components/user_education/common",
       "//components/variations/service",
       "//ui/webui",
@@ -111,6 +113,7 @@ if (is_linux || is_mac || is_win) {
       ":whats_new",
       "//base",
       "//base/test:test_support",
+      "//chrome/browser/signin",
       "//chrome/browser/ui:test_support",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/hats",
@@ -119,7 +122,10 @@ if (is_linux || is_mac || is_win) {
       "//chrome/common:constants",
       "//chrome/common:version_header",
       "//chrome/test:test_support",
+      "//chrome/test/base:testing_browser_process",
       "//components/feature_engagement/public",
+      "//components/signin/public/base",
+      "//components/signin/public/identity_manager:test_support",
       "//components/user_education/common",
       "//components/user_education/webui",
       "//components/user_education/webui:test_support",
@@ -164,7 +170,7 @@ source_set("interactive_ui_tests") {
       "//base/test:test_support",
       "//chrome/browser:browser_process",
       "//chrome/browser:global_features",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:ui_features",
       "//chrome/common:version_header",
       "//chrome/test:test_support_ui",

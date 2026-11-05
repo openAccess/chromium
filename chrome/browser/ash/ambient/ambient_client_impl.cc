@@ -11,15 +11,16 @@
 #include "ash/public/cpp/ambient/ambient_prefs.h"
 #include "ash/public/cpp/image_downloader.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/functional/callback.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/channel/channel_info.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
+#include "chromeos/ash/components/signin/identity_manager_provider.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/oauth_consumer_id.h"
 #include "components/signin/public/identity_manager/access_token_fetcher.h"
@@ -29,6 +30,7 @@
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/version_info/channel.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/device_service.h"
 #include "content/public/browser/storage_partition.h"
 #include "google_apis/gaia/gaia_auth_util.h"
@@ -37,14 +39,6 @@
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace {
-
-const user_manager::User* GetActiveUser() {
-  return user_manager::UserManager::Get()->GetActiveUser();
-}
-
-const user_manager::User* GetPrimaryUser() {
-  return user_manager::UserManager::Get()->GetPrimaryUser();
-}
 
 constexpr net::NetworkTrafficAnnotationTag kAmbientClientNetworkTag =
     net::DefineNetworkTrafficAnnotation("ambient_client", R"(
@@ -71,28 +65,22 @@ constexpr net::NetworkTrafficAnnotationTag kAmbientClientNetworkTag =
            "The user setting is per device and cannot be overriden by admin."
         })");
 
-Profile* GetProfileForActiveUser() {
-  const user_manager::User* const active_user = GetActiveUser();
-  DCHECK(active_user);
-  return ash::ProfileHelper::Get()->GetProfileByUser(active_user);
-}
+bool HasPrimaryAccount(const AccountId& account_id) {
+  if (!CHECK_DEREF(user_manager::UserManager::Get()->FindUser(account_id))
+           .is_profile_created()) {
+    return false;
+  }
 
-bool IsPrimaryUser() {
-  return GetActiveUser() == GetPrimaryUser();
-}
-
-bool HasPrimaryAccount(const Profile* profile) {
-  auto* identity_manager =
-      IdentityManagerFactory::GetForProfileIfExists(profile);
+  auto* identity_manager = ash::IdentityManagerProvider::Get().Find(account_id);
   if (!identity_manager)
     return false;
 
   return identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
 }
 
-bool IsEmailDomainSupported(const user_manager::User* user) {
-  const std::string email = user->GetAccountId().GetUserEmail();
-  DCHECK(!email.empty());
+bool IsEmailDomainSupported(const AccountId& account_id) {
+  const std::string email = account_id.GetUserEmail();
+  CHECK(!email.empty(), base::NotFatalUntil::M160);
 
   constexpr char kGmailDomain[] = "gmail.com";
   constexpr char kGooglemailDomain[] = "googlemail.com";
@@ -116,29 +104,37 @@ bool AmbientClientImpl::IsAmbientModeAllowed() {
     return false;
   }
 
-  const user_manager::User* const active_user = GetActiveUser();
-  if (!active_user || !active_user->HasGaiaAccount())
+  const session_manager::Session* const active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  if (!active_session) {
     return false;
+  }
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const AccountId& account_id = active_session->account_id();
+  if (!CHECK_DEREF(user_manager::UserManager::Get()->FindUser(account_id))
+           .HasGaiaAccount()) {
+    return false;
+  }
 
-  if (!IsPrimaryUser())
+  if (account_id !=
+      CHECK_DEREF(session_manager::SessionManager::Get()->GetPrimarySession())
+          .account_id()) {
     return false;
+  }
 
   // When this check is removed to start supporting enterprise users,
   // please update kAmbientClientNetworkTag and network annotation tags
   // in ash/ambient package to reflect that this is an enterprise feature.
-  if (!IsEmailDomainSupported(active_user))
+  if (!IsEmailDomainSupported(account_id)) {
     return false;
+  }
 
-  auto* profile = GetProfileForActiveUser();
-  if (!profile)
+  // Primary account might be missing during unittests. This also covers the
+  // browser context not existing yet: HasPrimaryAccount() returns false unless
+  // the user's profile has been created.
+  if (!HasPrimaryAccount(account_id)) {
     return false;
-
-  // Primary account might be missing during unittests.
-  if (!HasPrimaryAccount(profile))
-    return false;
-
-  if (profile->IsOffTheRecord())
-    return false;
+  }
 
   return true;
 }
@@ -148,12 +144,14 @@ void AmbientClientImpl::SetAmbientModeAllowedForTesting(bool allowed) {
 }
 
 void AmbientClientImpl::RequestAccessToken(GetAccessTokenCallback callback) {
-  auto* profile = GetProfileForActiveUser();
-  DCHECK(profile);
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const session_manager::Session* const active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session, base::NotFatalUntil::M160);
 
   signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(profile);
-  DCHECK(identity_manager);
+      ash::IdentityManagerProvider::Get().Find(active_session->account_id());
+  CHECK(identity_manager, base::NotFatalUntil::M160);
 
   CoreAccountInfo account_info =
       identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
@@ -172,41 +170,49 @@ void AmbientClientImpl::RequestAccessToken(GetAccessTokenCallback callback) {
 void AmbientClientImpl::DownloadImage(
     const std::string& url,
     ash::ImageDownloader::DownloadCallback callback) {
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const session_manager::Session* const active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session, base::NotFatalUntil::M160);
+  // Bind the account now; the active session may change before the token
+  // arrives.
   RequestAccessToken(base::BindOnce(
-      [](const std::string& url,
+      [](const std::string& url, const AccountId& account_id,
          ash::ImageDownloader::DownloadCallback callback, const GaiaId& gaia_id,
          const std::string& access_token, const base::Time& expiration_time) {
         if (access_token.empty()) {
           std::move(callback).Run({});
           return;
         }
-        const auto* user = GetActiveUser();
-        DCHECK(user);
         net::HttpRequestHeaders headers;
         headers.SetHeader("Authorization", "Bearer " + access_token);
         ash::ImageDownloader::Get()->Download(
-            GURL(url), kAmbientClientNetworkTag, user->GetAccountId(), headers,
+            GURL(url), kAmbientClientNetworkTag, account_id, headers,
             std::move(callback));
       },
-      url, std::move(callback)));
+      url, active_session->account_id(), std::move(callback)));
 }
 
 scoped_refptr<network::SharedURLLoaderFactory>
 AmbientClientImpl::GetURLLoaderFactory() {
-  auto* profile = GetProfileForActiveUser();
-  DCHECK(profile);
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const session_manager::Session* const active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session, base::NotFatalUntil::M160);
+  content::BrowserContext* const browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          active_session->account_id());
+  CHECK(browser_context, base::NotFatalUntil::M160);
 
-  return profile->GetURLLoaderFactory();
+  return browser_context->GetURLLoaderFactory();
 }
 
 scoped_refptr<network::SharedURLLoaderFactory>
 AmbientClientImpl::GetSigninURLLoaderFactory() {
-  content::BrowserContext* browser_context =
+  content::BrowserContext* const browser_context =
       ash::BrowserContextHelper::Get()->GetSigninBrowserContext();
   CHECK(browser_context);
-  Profile* profile = Profile::FromBrowserContext(browser_context);
-  CHECK(profile);
-  return profile->GetURLLoaderFactory();
+  return browser_context->GetURLLoaderFactory();
 }
 
 void AmbientClientImpl::RequestWakeLockProvider(

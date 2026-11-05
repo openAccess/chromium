@@ -4,6 +4,8 @@
 
 #include "base/check_deref.h"
 #include "base/containers/to_vector.h"
+#include "base/i18n/language_tag.h"
+#include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gmock_callback_support.h"
@@ -66,7 +68,7 @@ std::set<FieldType> GetExpectedFieldTypesToBuildAddressUiForCountryCode(
   expected_address_ui_field_types.insert(FieldType::EMAIL_ADDRESS);
 
   std::vector<std::vector<AutofillAddressUIComponent>> components;
-  GetAddressComponents(country_code, "en-US",
+  GetAddressComponents(country_code, base::i18n::GetKnownLanguageTag("en-US"),
                        /*include_literals=*/false, &components, nullptr);
   for (const std::vector<AutofillAddressUIComponent>& line : components) {
     for (const AutofillAddressUIComponent& component : line) {
@@ -511,10 +513,9 @@ IN_PROC_BROWSER_TEST_F(DevToolsAutofillTest, AddressFormFilled) {
 
   // Assert the expected values used to build the address UI were sent to
   // devtools.
-  ASSERT_EQ(
-      field_types_added_to_address_ui,
-      GetExpectedFieldTypesToBuildAddressUiForCountryCode(base::UTF16ToUTF8(
-          profile.GetInfo(FieldType::ADDRESS_HOME_COUNTRY, "en-US"))));
+  ASSERT_EQ(field_types_added_to_address_ui,
+            GetExpectedFieldTypesToBuildAddressUiForCountryCode(
+                base::UTF16ToUTF8(profile.GetRawInfo(ADDRESS_HOME_COUNTRY))));
   // Assert that the filled fields sent to devtools match exactly the ones
   // filled by autofill.
   const base::ListValue* filled_fields =
@@ -537,7 +538,8 @@ IN_PROC_BROWSER_TEST_F(DevToolsAutofillTest, AddressFormFilled) {
         ff, FilledFieldHasAttributeWithValue(
                 "autofillType", base::JoinString(field_type_strings, ", ")));
     EXPECT_THAT(ff, FilledFieldHasAttributeWithValue16(
-                        "value", profile.GetInfo(af->Type(), "en-us")));
+                        "value",
+                        profile.GetInfo(af->Type().GetAddressType(), "en-us")));
     EXPECT_THAT(ff, FilledFieldHasAttributeWithValue16(
                         "frameId",
                         base::UTF8ToUTF16(
@@ -760,8 +762,46 @@ IN_PROC_BROWSER_TEST_F(DevToolsAutofillTest, TriggerAddressAutofill) {
     EXPECT_EQ("NY", state.ExtractString());
     content::EvalJsResult country = content::EvalJs(
         web_contents(), "document.getElementById('country').value");
-    EXPECT_EQ("US", country.ExtractString());
+    EXPECT_EQ(base::FeatureList::IsEnabled(
+                  autofill::features::kAutofillDisallowCountryCodeFilling)
+                  ? "United States"
+                  : "US",
+              country.ExtractString());
   }
+}
+
+// Tests that `Autofill.trigger` only responds once the renderer has applied the
+// fill, so that clients can read the filled values as soon as it returns. The
+// renderer reports the filled form to the browser while applying the fill, so
+// the browser must have received that report when the command responds.
+IN_PROC_BROWSER_TEST_F(DevToolsAutofillTest,
+                       TriggerRespondsAfterFillIsApplied) {
+  embedded_test_server()->ServeFilesFromSourceDirectory(
+      "chrome/test/data/autofill");
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL url(
+      embedded_test_server()->GetURL("/autofill_creditcard_form.html"));
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+  Attach();
+
+  EXPECT_TRUE(main_autofill_manager().WaitForFormsSeen(1));
+
+  base::DictValue params;
+  params.Set("fieldId", GetBackendNodeIdByIdAttribute("CREDIT_CARD_NUMBER"));
+  params.Set("card", GetTestCreditCard());
+
+  testing::NiceMock<MockAutofillManagerObserver> observer;
+  base::ScopedObservation<AutofillManager, AutofillManager::Observer>
+      observation(&observer);
+  observation.Observe(&main_autofill_manager());
+  EXPECT_CALL(observer, OnBeforeDidAutofillForm(_, _))
+      .Times(testing::AtLeast(1));
+
+  SendCommandSync("Autofill.trigger", std::move(params));
+  ASSERT_TRUE(result());
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  EXPECT_EQ(GetFilledOutForm(""), GetTestCreditCard());
 }
 
 IN_PROC_BROWSER_TEST_F(DevToolsAutofillTest, TriggerWithInvalidFieldId) {

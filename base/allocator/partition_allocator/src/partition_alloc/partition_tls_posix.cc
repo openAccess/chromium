@@ -54,6 +54,7 @@ PartitionTls* GetTlsSlowPath() {
     return static_cast<PartitionTls*>(existing);
   }
   PartitionTls* tls = ConstructAtInternalPartition<PartitionTls>();
+  PartitionTlsRegistry::Instance().Register(tls);
   PartitionTlsSet(key, tls);
   return tls;
 }
@@ -68,6 +69,8 @@ void TlsDestructor(void* value) {
   if (key != kInvalidTlsKey) {
     PartitionTlsSet(key, reinterpret_cast<void*>(kTombstone));
   }
+
+  PartitionTlsRegistry::Instance().Unregister(tls);
 
   for (size_t i = 0; i < kMaxThreadCacheIndex; i++) {
     auto* tcache = tls->GetThreadCache(i);

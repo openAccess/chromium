@@ -16,13 +16,13 @@
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "extensions/browser/deferred_start_render_host.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "url/gurl.h"
 
 class Profile;
 
 namespace content {
-class SessionStorageNamespace;
+class SessionStorageNamespaceHandle;
 }
 
 namespace extensions {
@@ -45,7 +45,7 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
     virtual void AddWebContents(
         std::unique_ptr<content::WebContents> new_contents,
         const GURL& target_url,
-        WindowOpenDisposition disposition,
+        ui::mojom::WindowOpenDisposition disposition,
         const blink::mojom::WindowFeatures& window_features,
         bool* was_blocked) = 0;
 
@@ -66,7 +66,7 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
       bool is_new_browsing_instance,
       Delegate* delegate,
       const content::StoragePartitionConfig& partition_config,
-      content::SessionStorageNamespace* session_storage_namespace);
+      content::SessionStorageNamespaceHandle* session_storage_namespace);
 
   BackgroundContents(const BackgroundContents&) = delete;
   BackgroundContents& operator=(const BackgroundContents&) = delete;
@@ -87,7 +87,7 @@ class BackgroundContents : public extensions::DeferredStartRenderHost,
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;

@@ -10,10 +10,9 @@ namespace enterprise_data_protection {
 
 BASE_FEATURE(kEnableForceDownloadToCloud, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kEnableTabSharingProtection, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kEnableTabSharingProtection, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kEnterpriseTabTitleReporting, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kEnterpriseTabTitleReporting, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEnableForceSaveToCloudDeferredReporting,
              base::FEATURE_DISABLED_BY_DEFAULT);

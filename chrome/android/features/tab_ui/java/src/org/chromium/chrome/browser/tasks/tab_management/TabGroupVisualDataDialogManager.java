@@ -8,11 +8,14 @@ import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.Context;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.view.ViewTreeObserver.OnWindowFocusChangeListener;
 import android.view.Window;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.inputmethod.EditorInfo;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -45,6 +48,7 @@ import org.chromium.components.sync.DataType;
 import org.chromium.components.sync.SyncService;
 import org.chromium.components.tab_groups.TabGroupColorId;
 import org.chromium.components.tab_groups.TabGroupColorPickerUtils;
+import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogManagerObserver;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogType;
@@ -75,15 +79,16 @@ public class TabGroupVisualDataDialogManager {
     private final @StringRes int mDialogTitleRes;
     // TODO(b/333921547): This class uses a member model rather than an instanced model in the
     // #showDialog call due to the possibility of a double show call being triggered for the
-    // didCreateNewGroup observer and a fix that tackles that. Once the root cause has been fixed,
+    // onTabGroupCreated observer and a fix that tackles that. Once the root cause has been fixed,
     // revert this to an instanced model within the function call for a proper lifecycle.
     private @Nullable PropertyModel mModel;
-    private ModalDialogManagerObserver mModalDialogManagerObserver;
+    private @Nullable ModalDialogManagerObserver mModalDialogManagerObserver;
     private View mCustomView;
     private TabGroupVisualDataTextInputLayout mTextInputLayout;
     private String mInitialGroupTitle;
     private TabGroupColorPickerCoordinator mTabGroupColorPickerCoordinator;
     private @TabGroupColorId int mDefaultColorId;
+    private @Nullable OnWindowFocusChangeListener mWindowFocusChangeListener;
 
     // If non-null, it means TAB_GROUP_CREATION_DIALOG_SYNC_TEXT_FEATURE was triggered and needs to
     // be marked as dismissed when the dialog is hidden.
@@ -133,7 +138,7 @@ public class TabGroupVisualDataDialogManager {
         }
 
         assert tabGroupId != null;
-        assert tabModel.tabGroupExists(tabGroupId);
+        assert tabModel.containsTabGroup(tabGroupId);
 
         mCustomView =
                 LayoutInflater.from(mContext).inflate(R.layout.tab_group_visual_data_dialog, null);
@@ -161,6 +166,23 @@ public class TabGroupVisualDataDialogManager {
                                         R.string.accessibility_tab_group_title_field,
                                         originalText));
                     }
+                });
+
+        // Listen for enter / done pressed to submit the dialog.
+        editTextView.setOnEditorActionListener(
+                (v, actionId, event) -> {
+                    if (actionId == EditorInfo.IME_ACTION_DONE
+                            || (event != null
+                                    && event.getAction() == KeyEvent.ACTION_DOWN
+                                    && event.getKeyCode() == KeyEvent.KEYCODE_ENTER)) {
+                        KeyboardVisibilityDelegate.getInstance().hideKeyboard(editTextView);
+                        if (mModel != null) {
+                            dialogController.onClick(
+                                    mModel, ModalDialogProperties.ButtonType.POSITIVE);
+                        }
+                        return true; // Consumed.
+                    }
+                    return false;
                 });
 
         List<Integer> colors = TabGroupColorPickerUtils.getTabGroupColorIdList();
@@ -198,14 +220,13 @@ public class TabGroupVisualDataDialogManager {
                             PropertyModel model, @Nullable ComponentDialog dialog) {
                         // Ensure that this dialog's model is the one that's being acted upon.
                         if (model == mModel) {
-                            // Focus the edit text and display the keyboard on dialog showing.
-                            editTextView.requestFocus();
                             // While showing the keyboard, prevent resizing of the modal dialog
                             // which could cause UI issues by setting the window to pan only.
                             Window window = assumeNonNull(assumeNonNull(dialog).getWindow());
                             window.setSoftInputMode(
                                     WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN
                                             | WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE);
+                            focusAndShowKeyboard(editTextView);
                             mModalDialogManager.removeObserver(this);
                         }
                     }
@@ -214,12 +235,42 @@ public class TabGroupVisualDataDialogManager {
         mModalDialogManager.showDialog(mModel, ModalDialogType.APP);
     }
 
+    private void focusAndShowKeyboard(View editTextView) {
+        // Focus the edit text and display the keyboard on dialog showing.
+        editTextView.requestFocus();
+        if (editTextView.hasWindowFocus()) {
+            KeyboardVisibilityDelegate.getInstance().showKeyboard(editTextView);
+            return;
+        }
+        mWindowFocusChangeListener =
+                new OnWindowFocusChangeListener() {
+                    @Override
+                    public void onWindowFocusChanged(boolean hasFocus) {
+                        if (!hasFocus) return;
+                        editTextView.requestFocus();
+                        KeyboardVisibilityDelegate.getInstance().showKeyboard(editTextView);
+                        mCustomView.getViewTreeObserver().removeOnWindowFocusChangeListener(this);
+                        mWindowFocusChangeListener = null;
+                    }
+                };
+        mCustomView
+                .getViewTreeObserver()
+                .addOnWindowFocusChangeListener(mWindowFocusChangeListener);
+    }
+
     /** Cleans up when hidden. */
     public void onHideDialog() {
         // Reset the model to null after each usage.
         mModel = null;
         if (mModalDialogManagerObserver != null) {
             mModalDialogManager.removeObserver(mModalDialogManagerObserver);
+            mModalDialogManagerObserver = null;
+        }
+        if (mWindowFocusChangeListener != null) {
+            mCustomView
+                    .getViewTreeObserver()
+                    .removeOnWindowFocusChangeListener(mWindowFocusChangeListener);
+            mWindowFocusChangeListener = null;
         }
 
         if (mTracker != null) {
@@ -318,5 +369,9 @@ public class TabGroupVisualDataDialogManager {
         }
 
         mModel = builder.build();
+    }
+
+    @Nullable OnWindowFocusChangeListener getWindowFocusChangeListenerForTesting() {
+        return mWindowFocusChangeListener;
     }
 }

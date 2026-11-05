@@ -70,13 +70,13 @@ Cq-Include-Trybots: chromium/try:android-cronet-riscv64-rel
 Cq-Include-Trybots: chromium/try:chromeos-amd64-generic-cfi-thin-lto-rel
 Cq-Include-Trybots: chromium/try:dawn-win10-x86-deps-rel
 Cq-Include-Trybots: chromium/try:fuchsia-arm64-cast-receiver-rel
-Cq-Include-Trybots: chromium/try:gpu-fyi-try-mac-intel-asan
 Cq-Include-Trybots: chromium/try:ios-catalyst,win-asan,android-official
 Cq-Include-Trybots: chromium/try:linux-cast-x64-rel
 Cq-Include-Trybots: chromium/try:linux-chromeos-dbg
 Cq-Include-Trybots: chromium/try:linux-swangle-try-x64,win-swangle-try-x86
 Cq-Include-Trybots: chromium/try:linux-v4l2-codec-rel
 Cq-Include-Trybots: chromium/try:linux-wayland-mutter-rel
+Cq-Include-Trybots: chromium/try:linux-x64-libfuzzer-msan-rel-tests
 Cq-Include-Trybots: chromium/try:linux_chromium_cfi_rel_ng
 Cq-Include-Trybots: chromium/try:linux_chromium_chromeos_msan_rel_ng
 Cq-Include-Trybots: chromium/try:linux_chromium_msan_rel_ng
@@ -257,7 +257,7 @@ def PatchRustRemoveOverride():
   REV = '([0-9a-z-]+)'
   content = re.sub(
     f'OVERRIDE_CLANG_REVISION = \'{REV}\'',
-    f'OVERRIDE_CLANG_REVISION = None',
+    'OVERRIDE_CLANG_REVISION = None',
     content,
     count=1,
   )

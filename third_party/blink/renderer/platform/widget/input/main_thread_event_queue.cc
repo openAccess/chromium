@@ -8,13 +8,16 @@
 #include <optional>
 #include <utility>
 
+#include "base/command_line.h"
 #include "base/containers/circular_deque.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
+#include "build/build_config.h"
 #include "cc/base/features.h"
 #include "cc/metrics/event_metrics.h"
 #include "third_party/blink/public/common/features.h"
@@ -22,8 +25,17 @@
 #include "third_party/blink/public/common/input/web_gesture_event.h"
 #include "third_party/blink/public/common/input/web_input_event_attribution.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
+#include "third_party/blink/public/common/switches.h"
 
 namespace blink {
+
+BASE_FEATURE(kNoUrgentMainFrameForMouseMove,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 namespace {
 
@@ -48,9 +60,22 @@ class QueuedClosure : public MainThreadEventQueueTask {
   base::OnceClosure closure_;
 };
 
-// Time interval at which touchmove events during scroll will be skipped
-// during rAF signal.
-constexpr base::TimeDelta kAsyncTouchMoveInterval = base::Milliseconds(200);
+// Default minimum time interval at which touchmove events during scroll will be
+// skipped during rAF signal.
+constexpr base::TimeDelta kDefaultAsyncTouchMoveInterval =
+    base::Milliseconds(200);
+
+base::TimeDelta GetAsyncTouchMoveInterval() {
+  int throttle_time_ms = 0;
+  if (base::StringToInt(
+          base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+              switches::kAsyncTouchMoveThrottleTimeMs),
+          &throttle_time_ms) &&
+      throttle_time_ms >= 0) {
+    return base::Milliseconds(throttle_time_ms);
+  }
+  return kDefaultAsyncTouchMoveInterval;
+}
 
 bool IsGestureScroll(WebInputEvent::Type type) {
   switch (type) {
@@ -195,7 +220,7 @@ class QueuedWebInputEvent : public MainThreadEventQueueTask {
         base::BindOnce(&QueuedWebInputEvent::HandledEvent,
                        base::Unretained(this), base::RetainedRef(queue));
     if (!queue->HandleEventOnMainThread(
-            *event_, attribution(), std::move(metrics_), std::move(callback))) {
+            *event_, Attribution(), std::move(metrics_), std::move(callback))) {
       // The |callback| won't be run, so our stored |callback_| should run
       // indicating error.
       HandledEvent(queue, mojom::blink::InputEventResultState::kNotConsumed,
@@ -258,13 +283,13 @@ class QueuedWebInputEvent : public MainThreadEventQueueTask {
     return CallbackInfo(std::move(callback_), event_->latency_info());
   }
 
-  bool originally_cancelable() const { return originally_cancelable_; }
+  bool OriginallyCancelable() const { return originally_cancelable_; }
 
-  const WebInputEventAttribution& attribution() const { return attribution_; }
+  const WebInputEventAttribution& Attribution() const { return attribution_; }
 
   const WebInputEvent& Event() const { return event_->Event(); }
 
-  WebCoalescedInputEvent* mutable_coalesced_event() { return event_.get(); }
+  WebCoalescedInputEvent* MutableCoalescedEvent() { return event_.get(); }
 
   void SetQueuedTimeStamp(base::TimeTicks queued_time) {
     event_->EventPointer()->SetQueuedTimeStamp(queued_time);
@@ -350,6 +375,7 @@ MainThreadEventQueue::MainThreadEventQueue(
     bool allow_raf_aligned_input)
     : client_(client),
       allow_raf_aligned_input_(allow_raf_aligned_input),
+      async_touch_move_interval_(GetAsyncTouchMoveInterval()),
       main_task_runner_(std::move(main_task_runner)),
       widget_scheduler_(std::move(widget_scheduler)) {
   DCHECK(widget_scheduler_);
@@ -692,8 +718,7 @@ static bool IsAsyncTouchMove(
     return false;
   const WebTouchEvent& touch_event =
       static_cast<const WebTouchEvent&>(event->Event());
-  return touch_event.moved_beyond_slop_region &&
-         !event->originally_cancelable();
+  return touch_event.moved_beyond_slop_region && !event->OriginallyCancelable();
 }
 
 void MainThreadEventQueue::RafFallbackTimerFired() {
@@ -739,7 +764,7 @@ void MainThreadEventQueue::DispatchRafAlignedInput(base::TimeTicks frame_time) {
             ShouldThrottleAsyncTouchMoves()) {
           if (shared_state_.events_.size() == 1 &&
               frame_time < shared_state_.last_async_touch_move_timestamp_ +
-                               kAsyncTouchMoveInterval) {
+                               async_touch_move_interval_) {
             break;
           }
           shared_state_.last_async_touch_move_timestamp_ = frame_time;
@@ -778,7 +803,7 @@ void MainThreadEventQueue::QueueEvent(
   if (is_input_event) {
     auto* queued_input_event = static_cast<QueuedWebInputEvent*>(event.get());
     input_event_type = queued_input_event->Event().GetType();
-    attribution = queued_input_event->attribution();
+    attribution = queued_input_event->Attribution();
     queued_input_event->SetQueuedTimeStamp(base::TimeTicks::Now());
   }
 
@@ -833,6 +858,10 @@ void MainThreadEventQueue::QueueEvent(
     bool urgent =
         ::features::IsEligibleForThrottleMainFrameTo60Hz() &&
         base::FeatureList::IsEnabled(blink::features::kUrgentMainFrameForInput);
+    if (urgent &&
+        base::FeatureList::IsEnabled(kNoUrgentMainFrameForMouseMove)) {
+      urgent = input_event_type != WebInputEvent::Type::kMouseMove;
+    }
     SetNeedsMainFrame(cc::BeginMainFrameReason::kInput, urgent);
   }
 
@@ -884,8 +913,7 @@ void MainThreadEventQueue::HandleEventResampling(
     base::TimeTicks frame_time) {
   if (item->IsWebInputEvent() && allow_raf_aligned_input_ && event_predictor_) {
     QueuedWebInputEvent* event = static_cast<QueuedWebInputEvent*>(item.get());
-    event_predictor_->HandleEvents(*event->mutable_coalesced_event(),
-                                   frame_time);
+    event_predictor_->HandleEvents(*event->MutableCoalescedEvent(), frame_time);
   }
 }
 
@@ -1027,7 +1055,7 @@ void MainThreadEventQueue::UnblockQueuedBlockingTouchEventsIfNeeded(
       }
       auto* queued_event = static_cast<QueuedWebInputEvent*>(task);
       WebInputEvent* event =
-          queued_event->mutable_coalesced_event()->EventPointer();
+          queued_event->MutableCoalescedEvent()->EventPointer();
       if (event->GetType() == WebInputEvent::Type::kTouchStart) {
         break;
       }

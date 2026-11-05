@@ -40,8 +40,8 @@ public class ExtensionAccessControlButtonCoordinator implements Destroyable {
             ExtensionsToolbarBridge extensionsToolbarBridge,
             TextView requestAccessButton,
             Callback<Boolean> visibilityObserver,
-            Supplier<Boolean> isWindowCompactSupplier) {
-
+            Supplier<Boolean> isWindowCompactSupplier,
+            Runnable clearOmniboxFocus) {
         mChangeProcessor =
                 PropertyModelChangeProcessor.create(
                         model, requestAccessButton, ExtensionAccessControlButtonViewBinder::bind);
@@ -53,7 +53,8 @@ public class ExtensionAccessControlButtonCoordinator implements Destroyable {
                         currentTabSupplier,
                         extensionsToolbarBridge,
                         visibilityObserver,
-                        isWindowCompactSupplier);
+                        isWindowCompactSupplier,
+                        clearOmniboxFocus);
     }
 
     public void requestVisibilityUpdate() {

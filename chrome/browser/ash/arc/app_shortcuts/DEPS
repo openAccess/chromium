@@ -3,10 +3,6 @@ include_rules = [
   # details.
   "-chrome",
 
-  # This directory is in //chrome, which violates the rule above. Allow this
-  # directory to #include its own files.
-  "+chrome/browser/ash/arc/app_shortcuts",
-
   # Existing dependencies within //chrome. There is an active effort to
   # refactor //chrome/browser/ash to break these dependencies; see b/332804822.
   # Whenever possible, avoid adding new //chrome dependencies to this list.
@@ -15,8 +11,13 @@ include_rules = [
   # individually. Other dependencies within //chrome are listed on a per-
   # directory basis. See //tools/chromeos/gen_deps.sh for details.
   "+chrome/browser/apps/app_service",
-  "+chrome/browser/ash/app_list",
   "+chrome/browser/ash/arc",
-  "+chrome/browser/profiles",
-  "+chrome/test/base",
 ]
+
+specific_include_rules = {
+  # Only tests need these //chrome dependencies.
+  "arc_app_shortcuts_request_unittest\\.cc": [
+    "+chrome/browser/ash/app_list",
+    "+chrome/test/base",
+  ],
+}

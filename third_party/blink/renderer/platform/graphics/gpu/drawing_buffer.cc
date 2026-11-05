@@ -33,11 +33,13 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <tuple>
 #include <utility>
 
 #include "base/byte_size.h"
 #include "base/compiler_specific.h"
 #include "base/feature_list.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/numerics/checked_math.h"
@@ -68,6 +70,7 @@
 #include "third_party/blink/public/web/blink.h"
 #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
+#include "third_party/blink/renderer/platform/graphics/exported_canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/canvas_utils.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/extensions_3d_util.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
@@ -148,6 +151,12 @@ class ScopedDrawBuffer {
   GLenum new_draw_buffer_;
 };
 
+bool IsBackgroundBufferDiscardEnabled() {
+  return base::FeatureList::IsEnabled(features::kWebGLDiscardBackBuffer) ||
+         base::FeatureList::IsEnabled(
+             ::features::kWebGLDeleteBuffersInBackground);
+}
+
 }  // namespace
 
 // Increase cache to avoid reallocation on fuchsia, see
@@ -177,6 +186,7 @@ scoped_refptr<DrawingBuffer> DrawingBuffer::Create(
     PreserveDrawingBuffer preserve,
     Platform::WebGLContextType webgl_version,
     PredefinedColorSpace color_space,
+    gfx::HDRMetadata hdr_metadata,
     gl::GpuPreference gpu_preference) {
   if (g_should_fail_drawing_buffer_creation_for_testing) {
     g_should_fail_drawing_buffer_creation_for_testing = false;
@@ -233,7 +243,7 @@ scoped_refptr<DrawingBuffer> DrawingBuffer::Create(
           std::move(extensions_util), client, discard_framebuffer_supported,
           texture_storage_enabled, want_alpha_channel, premultiplied_alpha,
           preserve, webgl_version, want_depth_buffer, want_stencil_buffer,
-          color_space, gpu_preference));
+          color_space, hdr_metadata, gpu_preference));
   if (!drawing_buffer->Initialize(size, multisample_supported)) {
     drawing_buffer->BeginDestruction();
     return scoped_refptr<DrawingBuffer>();
@@ -256,6 +266,7 @@ DrawingBuffer::DrawingBuffer(
     bool want_depth,
     bool want_stencil,
     PredefinedColorSpace color_space,
+    gfx::HDRMetadata hdr_metadata,
     gl::GpuPreference gpu_preference)
     : client_(client),
       preserve_drawing_buffer_(preserve),
@@ -278,10 +289,10 @@ DrawingBuffer::DrawingBuffer(
       want_depth_(want_depth),
       want_stencil_(want_stencil),
       color_space_(PredefinedColorSpaceToGfxColorSpace(color_space)),
+      hdr_metadata_(hdr_metadata),
       opengl_flip_y_extension_(
           ContextProvider()->GetCapabilities().mesa_framebuffer_flip_y),
-      initial_gpu_(gpu_preference),
-      current_active_gpu_(gpu_preference),
+      requested_gpu_(gpu_preference),
       weak_factory_(this) {
   // Used by browser tests to detect the use of a DrawingBuffer.
   TRACE_EVENT_INSTANT0("test_gpu", "DrawingBufferCreation",
@@ -294,6 +305,7 @@ DrawingBuffer::DrawingBuffer(
 DrawingBuffer::~DrawingBuffer() {
   DCHECK(destruction_in_progress_);
   color_buffer_pool_.reset();
+  software_resource_pool_.reset();
   if (layer_) {
     layer_->ClearClient();
     layer_ = nullptr;
@@ -306,6 +318,9 @@ DrawingBuffer::~DrawingBuffer() {
 }
 
 bool DrawingBuffer::MarkContentsChanged() {
+  if (destruction_in_progress_ || context_loss_pending_) {
+    return false;
+  }
   // IF the buffer had been discarded, it should have been recreated before
   // getting there.
   CHECK(!back_buffer_discarded_);
@@ -355,35 +370,40 @@ void DrawingBuffer::SetIsInHiddenPage(bool hidden) {
   if (is_hidden_ == hidden)
     return;
   is_hidden_ = hidden;
+  if (destruction_in_progress_ || context_loss_pending_) {
+    return;
+  }
   if (is_hidden_) {
     if (color_buffer_pool_) {
       TRACE_EVENT0("gpu", "ReleaseBuffers");
       color_buffer_pool_->Clear();
     }
-    recycled_software_resources_.clear();
+    if (software_resource_pool_) {
+      software_resource_pool_->Clear();
+    }
   }
 
   // Make sure to interrupt pixel local storage.
   ScopedStateRestorer scoped_state_restorer(this);
 
-  const bool may_discard_back_buffer =
-      base::FeatureList::IsEnabled(blink::features::kWebGLDiscardBackBuffer);
-  if (may_discard_back_buffer) {
-    if (is_hidden_) {
-      bool nothing_to_preserve =
-          preserve_drawing_buffer_ == kDiscard && !contents_changed_;
-      if (back_color_buffer_ && nothing_to_preserve) {
-        TRACE_EVENT("gpu", "DiscardBackBuffer");
-        // Detach first, clear second.
-        gl_->BindFramebuffer(GL_FRAMEBUFFER, fbo_);
-        gl_->FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                  GL_TEXTURE_2D, 0, 0);
-        back_color_buffer_ = nullptr;
-        back_buffer_discarded_ = true;
+  if (is_hidden_) {
+    bool nothing_to_preserve =
+        preserve_drawing_buffer_ == kDiscard && !contents_changed_;
+
+    if (nothing_to_preserve) {
+      if (base::FeatureList::IsEnabled(
+              blink::features::kWebGLDiscardBackBuffer)) {
+        DiscardBackBuffer();
       }
-    } else {
-      // Page became visible again, proactively allocate the back buffer.
-      EnsureBackColorBuffer();
+      if (base::FeatureList::IsEnabled(
+              ::features::kWebGLDeleteBuffersInBackground)) {
+        CHECK(contents_change_resolved_);
+        DiscardMSAADepthStencilBuffers();
+      }
+    }
+  } else {
+    if (IsBackgroundBufferDiscardEnabled() && !EnsureBuffers()) {
+      return;
     }
   }
 
@@ -394,10 +414,6 @@ void DrawingBuffer::SetIsInHiddenPage(bool hidden) {
 
   gl_->ContextVisibilityHintCHROMIUM(is_hidden_ ? GL_FALSE : GL_TRUE);
   gl_->Flush();
-}
-
-void DrawingBuffer::SetHdrMetadata(const gfx::HDRMetadata& hdr_metadata) {
-  hdr_metadata_ = hdr_metadata;
 }
 
 bool DrawingBuffer::RequiresAlphaChannelToBePreserved() {
@@ -417,6 +433,8 @@ void DrawingBuffer::SetDrawBuffer(GLenum draw_buffer) {
 void DrawingBuffer::SetSharedImageInterfaceProviderForSoftwareRenderingTest(
     std::unique_ptr<WebGraphicsSharedImageInterfaceProvider> sii_provider) {
   shared_image_interface_provider_for_bitmap_test_ = std::move(sii_provider);
+  software_resource_pool_.reset();
+  software_sii_provider_.reset();
 }
 
 WebGraphicsSharedImageInterfaceProvider*
@@ -427,7 +445,7 @@ DrawingBuffer::GetSharedImageInterfaceProviderForBitmap() {
   return SharedGpuContext::SharedImageInterfaceProvider();
 }
 
-DrawingBuffer::SoftwareResource
+scoped_refptr<gpu::ClientImage>
 DrawingBuffer::CreateOrRecycleSoftwareResource() {
   const viz::SharedImageFormat format = viz::SinglePlaneFormat::kBGRA_8888;
   const gfx::ColorSpace& color_space =
@@ -435,43 +453,31 @@ DrawingBuffer::CreateOrRecycleSoftwareResource() {
   // Must call GetSharedImageInterfaceProvider first so all base::WeakPtr
   // restored in |resource.sii_provider| is updated.
   auto* sii_provider = GetSharedImageInterfaceProviderForBitmap();
-
-  auto it = std::remove_if(
-      recycled_software_resources_.begin(), recycled_software_resources_.end(),
-      [&](const SoftwareResource& resource) {
-        return resource.shared_image->size() != size_ ||
-               resource.shared_image->color_space() != color_space ||
-               !resource.sii_provider;
-      });
-  recycled_software_resources_.Shrink(
-      static_cast<wtf_size_t>(it - recycled_software_resources_.begin()));
-
-  if (!recycled_software_resources_.empty()) {
-    SoftwareResource recycled = std::move(recycled_software_resources_.back());
-    recycled_software_resources_.pop_back();
-    return recycled;
+  if (!sii_provider) {
+    return nullptr;
   }
-
-  // There are no resources to recycle so allocate a new one.
   auto* shared_image_interface = sii_provider->SharedImageInterface();
   if (!shared_image_interface) {
-    return SoftwareResource();
+    return nullptr;
   }
   // glReadPixels always read with bottom-Left origin regardless of framebuffer
   // flip extension, so keep shared image the same so we don't need to flip
   // here.
-  auto shared_image =
-      shared_image_interface->CreateSharedImageForSoftwareCompositor(
-          {format, size_, color_space, kBottomLeft_GrSurfaceOrigin,
-           kPremul_SkAlphaType, gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY,
-           "DrawingBufferBitmap"});
-  auto sync_token = shared_image->creation_sync_token();
-  shared_image_interface->VerifySyncToken(sync_token);
+  gpu::ImageInfo info(size_, format, gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY,
+                      color_space, kBottomLeft_GrSurfaceOrigin,
+                      kPremul_SkAlphaType, std::nullopt, /*is_software=*/true);
 
-  SoftwareResource resource = {std::move(shared_image), sync_token,
-                               sii_provider->GetWeakPtr()};
+  if (software_sii_provider_.get() != sii_provider ||
+      !software_resource_pool_) {
+    software_resource_pool_.reset();
+    software_sii_provider_ = sii_provider->GetWeakPtr();
+    software_resource_pool_ = gpu::SharedImagePool<>::Create(
+        info, shared_image_interface, "DrawingBufferBitmap");
+  } else {
+    software_resource_pool_->Reconfigure(info);
+  }
 
-  return resource;
+  return software_resource_pool_->GetImage();
 }
 
 bool DrawingBuffer::PrepareTransferableResource(
@@ -500,30 +506,34 @@ bool DrawingBuffer::PrepareTransferableResource(
   } else {
     // Populate the TransferableResource with a SharedImage for the software
     // compositor.
-    SoftwareResource resource = CreateOrRecycleSoftwareResource();
-    if (!resource.shared_image) {
+    scoped_refptr<gpu::ClientImage> resource =
+        CreateOrRecycleSoftwareResource();
+    if (!resource || !resource->GetSharedImage()) {
       return false;
     }
 
-    auto mapping = resource.shared_image->Map();
+    auto mapping = resource->GetSharedImage()->Map();
+    if (!mapping) {
+      return false;
+    }
 
-    ReadBackFramebuffer(mapping->GetMemoryForPlane(0),
-                        resource.shared_image->format(), kPremul_SkAlphaType,
-                        kBottomLeft_GrSurfaceOrigin, kBackBuffer);
+    ReadBackFramebuffer(
+        mapping->GetMemoryForPlane(0), resource->GetSharedImage()->format(),
+        kPremul_SkAlphaType, kBottomLeft_GrSurfaceOrigin, kBackBuffer);
 
     *out_resource = viz::TransferableResource::Make(
-        resource.shared_image,
+        resource->GetSharedImage(),
         viz::TransferableResource::ResourceSource::kDrawingBuffer,
-        resource.sync_token);
+        resource->GetSyncToken());
 
     out_resource->hdr_metadata = hdr_metadata_;
 
     // This holds a ref on the DrawingBuffer that will keep it alive until the
     // mailbox is released (and while the release callback is running). It also
     // owns the resource.
-    *out_release_callback =
-        base::BindOnce(&DrawingBuffer::MailboxReleasedSoftware,
-                       weak_factory_.GetWeakPtr(), std::move(resource));
+    *out_release_callback = base::BindOnce(
+        &DrawingBuffer::MailboxReleasedSoftware, weak_factory_.GetWeakPtr(),
+        software_resource_pool_->GetWeakPtr(), std::move(resource));
 
     contents_changed_ = false;
     if (preserve_drawing_buffer_ == kDiscard) {
@@ -536,9 +546,9 @@ bool DrawingBuffer::PrepareTransferableResource(
 
 DrawingBuffer::CheckForDestructionResult
 DrawingBuffer::CheckForDestructionAndChangeAndResolveIfNeeded(
-    DiscardBehavior discardBehavior) {
+    DiscardBehavior discard_behavior) {
   DCHECK(state_restorer_);
-  if (destruction_in_progress_) {
+  if (destruction_in_progress_ || context_loss_pending_) {
     // It can be hit in the following sequence.
     // 1. WebGL draws something.
     // 2. The compositor begins the frame.
@@ -561,13 +571,16 @@ DrawingBuffer::CheckForDestructionAndChangeAndResolveIfNeeded(
     if (color_buffer_pool_) {
       color_buffer_pool_->Clear();
     }
+    if (software_resource_pool_) {
+      software_resource_pool_->Clear();
+    }
     return kDestroyedOrLost;
   }
 
   TRACE_EVENT0("blink,rail", "DrawingBuffer::prepareMailbox");
 
   // Resolve the multisampled buffer into the texture attached to fbo_.
-  ResolveIfNeeded(discardBehavior);
+  ResolveIfNeeded(discard_behavior);
 
   return kContentsResolvedIfNeeded;
 }
@@ -708,16 +721,17 @@ void DrawingBuffer::MailboxReleasedGpu(scoped_refptr<ColorBuffer> color_buffer,
   }
 }
 
-void DrawingBuffer::MailboxReleasedSoftware(SoftwareResource resource,
-                                            const gpu::SyncToken& sync_token,
-                                            bool lost_resource) {
-  if (destruction_in_progress_ || lost_resource || is_hidden_ ||
-      resource.shared_image->size() != size_) {
-    // Just delete the SoftwareResource.
+void DrawingBuffer::MailboxReleasedSoftware(
+    base::WeakPtr<gpu::SharedImagePool<>> pool,
+    scoped_refptr<gpu::ClientImage> resource,
+    const gpu::SyncToken& sync_token,
+    bool lost_resource) {
+  resource->SetReleaseSyncToken(sync_token);
+  if (destruction_in_progress_ || lost_resource || is_hidden_ || !pool) {
     return;
   }
 
-  recycled_software_resources_.push_back(std::move(resource));
+  pool->ReleaseImage(std::move(resource));
 }
 
 scoped_refptr<StaticBitmapImage> DrawingBuffer::TransferToStaticBitmapImage() {
@@ -837,8 +851,11 @@ DrawingBuffer::CreateOrRecycleColorBuffer() {
   return color_buffer;
 }
 
-scoped_refptr<ExternalCanvasResource>
+scoped_refptr<ExportedCanvasResource>
 DrawingBuffer::ExportLowLatencyCanvasResource() {
+  if (destruction_in_progress_ || context_loss_pending_) {
+    return nullptr;
+  }
   gpu::SyncToken sync_token;
   if (contents_changed_) {
     ScopedStateRestorer scoped_state_restorer(this);
@@ -851,13 +868,33 @@ DrawingBuffer::ExportLowLatencyCanvasResource() {
     back_color_buffer_->BeginAccess(gpu::SyncToken(), /*readonly=*/false);
   }
 
-  return ExternalCanvasResource::Create(
+  return base::MakeRefCounted<ExportedCanvasResource>(
       back_color_buffer_->shared_image, sync_token,
       viz::TransferableResource::ResourceSource::kDrawingBuffer, hdr_metadata_,
       viz::ReleaseCallback(), context_provider_->GetWeakPtr());
 }
 
-scoped_refptr<CanvasResource> DrawingBuffer::ExportCanvasResource() {
+scoped_refptr<StaticBitmapImage> DrawingBuffer::ExportLowLatencyBitmap() {
+  gpu::SyncToken sync_token;
+  if (contents_changed_) {
+    ScopedStateRestorer scoped_state_restorer(this);
+    ResolveIfNeeded(kDiscardAllowed);
+
+    // Restart SharedImage access on the back buffer to ensure a write fence is
+    // generated on it to guarantee display reads this frame completely.
+    // Display may still read parts of subsequent frames, which is okay.
+    sync_token = back_color_buffer_->EndAccess();
+    back_color_buffer_->BeginAccess(gpu::SyncToken(), /*readonly=*/false);
+  }
+
+  return AcceleratedStaticBitmapImage::CreateFromCanvasSharedImage(
+      back_color_buffer_->shared_image, sync_token, kPremul_SkAlphaType,
+      hdr_metadata_, context_provider_->GetWeakPtr(),
+      base::PlatformThread::CurrentRef(),
+      ThreadScheduler::Current()->CleanupTaskRunner(), base::DoNothing());
+}
+
+scoped_refptr<ExportedCanvasResource> DrawingBuffer::ExportCanvasResource() {
   ScopedStateRestorer scoped_state_restorer(this);
   TRACE_EVENT0("blink", "DrawingBuffer::ExportCanvasResource");
 
@@ -875,7 +912,7 @@ scoped_refptr<CanvasResource> DrawingBuffer::ExportCanvasResource() {
     return nullptr;
   }
 
-  return ExternalCanvasResource::Create(
+  return base::MakeRefCounted<ExportedCanvasResource>(
       client_si, sync_token,
       viz::TransferableResource::ResourceSource::kDrawingBuffer, hdr_metadata_,
       std::move(out_release_callback), context_provider_->GetWeakPtr());
@@ -1089,6 +1126,9 @@ std::optional<gpu::SyncToken> DrawingBuffer::CopyToPlatformInternal(
     bool dst_is_unpremul_gl,
     SourceDrawingBuffer src_buffer,
     CopyFunctionRef copy_function) {
+  if (destruction_in_progress_ || context_loss_pending_) {
+    return std::nullopt;
+  }
   ScopedStateRestorer scoped_state_restorer(this);
 
   gpu::gles2::GLES2Interface* src_gl = gl_;
@@ -1138,11 +1178,6 @@ std::optional<gpu::SyncToken> DrawingBuffer::CopyToPlatformInternal(
       }
     }
     produce_sync_token = back_color_buffer_->EndAccess();
-  }
-
-  if (!produce_sync_token.HasData()) {
-    // This should only happen if the context has been lost.
-    return std::nullopt;
   }
 
   std::optional<gpu::SyncToken> sync_token = copy_function(
@@ -1220,24 +1255,11 @@ std::optional<gpu::SyncToken> DrawingBuffer::CopyToPlatformSharedImage(
       [&](scoped_refptr<gpu::ClientSharedImage> src_shared_image,
           const gpu::SyncToken& produce_sync_token,
           SkAlphaType src_alpha_type) -> std::optional<gpu::SyncToken> {
-    std::unique_ptr<gpu::RasterScopedAccess> dst_access =
-        dst_shared_image->BeginRasterAccess(dst_raster_interface,
-                                            dst_sync_token,
-                                            /*readonly=*/false);
-    std::unique_ptr<gpu::RasterScopedAccess> src_access =
-        src_shared_image->BeginRasterAccess(dst_raster_interface,
-                                            produce_sync_token,
-                                            /*readonly=*/true);
-
-    const gfx::Size size = Size();
-    dst_raster_interface->CopySharedImage(src_shared_image->mailbox(),
-                                          dst_shared_image->mailbox(), 0, 0, 0,
-                                          0, size.width(), size.height());
-
-    gpu::SyncToken sync_token =
-        gpu::RasterScopedAccess::EndAccess(std::move(src_access));
-    sync_token = gpu::RasterScopedAccess::EndAccess(std::move(dst_access));
-    return sync_token;
+    return dst_raster_interface
+        ->CopySharedImage(src_shared_image, produce_sync_token,
+                          dst_shared_image, dst_sync_token, gfx::Rect(Size()),
+                          gfx::Point(0, 0))
+        .dest_sync_token;
   };
 
   return CopyToPlatformInternal(dst_raster_interface,
@@ -1275,6 +1297,9 @@ base::ByteSize DrawingBuffer::EstimatedSizeInBytes() const {
   }
   if (color_buffer_pool_) {
     result += color_buffer_pool_->EstimatedSizeInBytes();
+  }
+  if (software_resource_pool_) {
+    result += software_resource_pool_->EstimatedSizeInBytes();
   }
   for (const auto& buffer : exported_color_buffers_) {
     result += buffer->EstimatedSizeInBytes();
@@ -1321,6 +1346,10 @@ void DrawingBuffer::OnMemoryDump(
 
   if (color_buffer_pool_) {
     color_buffer_pool_->OnMemoryDump(pmd, dump_base_name);
+  }
+  if (software_resource_pool_) {
+    software_resource_pool_->OnMemoryDump(
+        pmd, dump_base_name + "/software_resource_pool");
   }
 
   int i = 0;
@@ -1396,6 +1425,9 @@ void DrawingBuffer::BeginDestruction() {
   if (color_buffer_pool_) {
     color_buffer_pool_->Clear();
   }
+  if (software_resource_pool_) {
+    software_resource_pool_->Clear();
+  }
 
   // If the drawing buffer is being destroyed due to a real context loss these
   // calls will be ineffective, but won't be harmful.
@@ -1443,6 +1475,10 @@ bool DrawingBuffer::ReallocateDefaultFramebuffer(const gfx::Size& size,
         info, sii, "WebGLDrawingBuffer", max_pool_size);
   } else {
     color_buffer_pool_->Reconfigure(info);
+  }
+
+  if (software_resource_pool_) {
+    software_resource_pool_->Clear();
   }
 
   // Recreate back_color_buffer_.
@@ -1514,31 +1550,7 @@ bool DrawingBuffer::ReallocateDefaultFramebuffer(const gfx::Size& size,
   }
 
   if (WantDepthOrStencil() && !only_reallocate_color) {
-    state_restorer_->SetFramebufferBindingDirty();
-    state_restorer_->SetRenderbufferBindingDirty();
-    gl_->BindFramebuffer(GL_FRAMEBUFFER,
-                         multisample_fbo_ ? multisample_fbo_ : fbo_);
-    if (!depth_stencil_buffer_)
-      gl_->GenRenderbuffers(1, &depth_stencil_buffer_);
-    gl_->BindRenderbuffer(GL_RENDERBUFFER, depth_stencil_buffer_);
-    if (anti_aliasing_mode_ == kAntialiasingModeMSAAImplicitResolve) {
-      gl_->RenderbufferStorageMultisampleEXT(GL_RENDERBUFFER, sample_count_,
-                                             GL_DEPTH24_STENCIL8_OES,
-                                             size.width(), size.height());
-    } else if (anti_aliasing_mode_ == kAntialiasingModeMSAAExplicitResolve) {
-      gl_->RenderbufferStorageMultisampleCHROMIUM(
-          GL_RENDERBUFFER, sample_count_, GL_DEPTH24_STENCIL8_OES, size.width(),
-          size.height());
-    } else {
-      gl_->RenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8_OES,
-                               size.width(), size.height());
-    }
-    // For ES 2.0 contexts DEPTH_STENCIL is not available natively, so we
-    // emulate
-    // it at the command buffer level for WebGL contexts.
-    gl_->FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
-                                 GL_RENDERBUFFER, depth_stencil_buffer_);
-    gl_->BindRenderbuffer(GL_RENDERBUFFER, 0);
+    ReallocateDepthStencilRenderbuffer(size);
   }
 
   if (WantExplicitResolve()) {
@@ -1553,14 +1565,17 @@ bool DrawingBuffer::ReallocateDefaultFramebuffer(const gfx::Size& size,
   return gl_->CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
 }
 
-void DrawingBuffer::ClearFramebuffers(GLbitfield clear_mask) {
+bool DrawingBuffer::ClearFramebuffers(GLbitfield clear_mask) {
   ScopedStateRestorer scoped_state_restorer(this);
-  ClearFramebuffersInternal(clear_mask, kClearAllFBOs);
+  return ClearFramebuffersInternal(clear_mask, kClearAllFBOs);
 }
 
-void DrawingBuffer::ClearFramebuffersInternal(GLbitfield clear_mask,
+bool DrawingBuffer::ClearFramebuffersInternal(GLbitfield clear_mask,
                                               ClearOption clear_option) {
   DCHECK(state_restorer_);
+  if (!EnsureBuffers()) {
+    return false;
+  }
   state_restorer_->SetFramebufferBindingDirty();
 
   GLenum prev_draw_buffer =
@@ -1582,6 +1597,7 @@ void DrawingBuffer::ClearFramebuffersInternal(GLbitfield clear_mask,
                                         GL_COLOR_ATTACHMENT0);
     gl_->Clear(clear_mask);
   }
+  return true;
 }
 
 void DrawingBuffer::ClearNewlyAllocatedFramebuffers(ClearOption clear_option) {
@@ -1608,7 +1624,10 @@ void DrawingBuffer::ClearNewlyAllocatedFramebuffers(ClearOption clear_option) {
     gl_->StencilMaskSeparate(GL_FRONT, 0xFFFFFFFF);
   }
 
-  ClearFramebuffersInternal(clear_mask, clear_option);
+  // Returns false when the buffers can't be reallocated, but we just allocated
+  // those. If the CHECK() below fails, this is the code invariants being
+  // incorrect, not a normal context loss or allocation failure.
+  CHECK(ClearFramebuffersInternal(clear_mask, clear_option));
 }
 
 gfx::Size DrawingBuffer::AdjustSize(const gfx::Size& desired_size,
@@ -1646,6 +1665,9 @@ bool DrawingBuffer::ResizeFramebufferInternal(GLenum requested_format,
                                               const gfx::Size& new_size) {
   DCHECK(state_restorer_);
   DCHECK(!new_size.IsEmpty());
+  if (destruction_in_progress_ || context_loss_pending_) {
+    return false;
+  }
   bool needs_reallocate = false;
 
   gfx::Size adjusted_size = AdjustSize(new_size, size_, max_texture_size_);
@@ -1711,7 +1733,6 @@ bool DrawingBuffer::ResizeFramebufferInternal(GLenum requested_format,
     } while (!adjusted_size.IsEmpty());
 
     size_ = adjusted_size;
-    recycled_software_resources_.clear();
 
     if (adjusted_size.IsEmpty())
       return false;
@@ -1727,21 +1748,39 @@ void DrawingBuffer::SetColorSpace(PredefinedColorSpace predefined_color_space) {
       PredefinedColorSpaceToGfxColorSpace(predefined_color_space);
   DCHECK_NE(color_space, color_space_);
   color_space_ = color_space;
+  if (destruction_in_progress_ || context_loss_pending_) {
+    return;
+  }
 
   ScopedStateRestorer scoped_state_restorer(this);
-
-  recycled_software_resources_.clear();
-
   if (!ReallocateDefaultFramebuffer(size_, /*only_reallocate_color=*/true)) {
     // TODO(https://crbug.com/1208480): What is the correct behavior is we fail
     // to re-allocate the buffer.
     DLOG(ERROR) << "Failed to allocate color buffer with new color space.";
   }
+  ClearNewlyAllocatedFramebuffers(kClearAllFBOs);
+}
 
+void DrawingBuffer::SetHdrMetadata(const gfx::HDRMetadata& hdr_metadata) {
+  if (hdr_metadata_ == hdr_metadata) {
+    return;
+  }
+  hdr_metadata_ = hdr_metadata;
+  if (destruction_in_progress_ || context_loss_pending_) {
+    return;
+  }
+
+  ScopedStateRestorer scoped_state_restorer(this);
+  if (!ReallocateDefaultFramebuffer(size_, /*only_reallocate_color=*/true)) {
+    DLOG(ERROR) << "Failed to allocate color buffer with new HDR metadata.";
+  }
   ClearNewlyAllocatedFramebuffers(kClearAllFBOs);
 }
 
 bool DrawingBuffer::ResolveAndBindForReadAndDraw() {
+  if (destruction_in_progress_ || context_loss_pending_) {
+    return false;
+  }
   // IF the buffer had been discarded, it should have been recreated before
   // getting there.
   CHECK(!back_buffer_discarded_);
@@ -1763,6 +1802,10 @@ void DrawingBuffer::ResolveMultisampleFramebufferInternal() {
   DCHECK(state_restorer_);
   state_restorer_->SetFramebufferBindingDirty();
   if (WantExplicitResolve()) {
+    // The MSAA buffer should only have been discarded if there were no
+    // unresolved draw commands, and should have been recreated if something
+    // happens that will necessitate a resolve.
+    CHECK(multisample_renderbuffer_);
     state_restorer_->SetClearStateDirty();
     gl_->BindFramebuffer(GL_READ_FRAMEBUFFER_ANGLE, multisample_fbo_);
     gl_->BindFramebuffer(GL_DRAW_FRAMEBUFFER_ANGLE, fbo_);
@@ -1791,11 +1834,11 @@ void DrawingBuffer::ResolveMultisampleFramebufferInternal() {
   gl_->BindFramebuffer(GL_FRAMEBUFFER, fbo_);
 }
 
-void DrawingBuffer::ResolveIfNeeded(DiscardBehavior discardBehavior) {
+void DrawingBuffer::ResolveIfNeeded(DiscardBehavior discard_behavior) {
   DCHECK(state_restorer_);
   if (anti_aliasing_mode_ != kAntialiasingModeNone) {
     if (preserve_drawing_buffer_ == kDiscard &&
-        discard_framebuffer_supported_ && discardBehavior == kDiscardAllowed &&
+        discard_framebuffer_supported_ && discard_behavior == kDiscardAllowed &&
         !transient_framebuffers_discarded_) {
       // Discard the depth and stencil buffers as early as possible, before
       // making any potentially-unneeded calls to BindFramebuffer (even no-ops),
@@ -1813,62 +1856,6 @@ void DrawingBuffer::ResolveIfNeeded(DiscardBehavior discardBehavior) {
     }
   }
   contents_change_resolved_ = true;
-
-  auto* gl = ContextProvider()->ContextGL();
-  gl::GpuPreference active_gpu = gl::GpuPreference::kDefault;
-  if (gl->DidGpuSwitch(&active_gpu) == GL_TRUE) {
-    // This code path is mainly taken on macOS (the only platform which, as of
-    // this writing, dispatches the GPU-switched notifications), and the
-    // comments below focus only on macOS.
-    //
-    // The code below attempts to deduce whether, if a GPU switch occurred,
-    // it's really necessary to lose the context because certain GPU resources
-    // are no longer accessible. Resources only become inaccessible if
-    // CGLSetVirtualScreen is explicitly called against a GL context to change
-    // its renderer ID. GPU switching notifications are highly asynchronous.
-    //
-    // The tests below, of the initial and currently active GPU, replicate
-    // some logic in GLContextCGL::ForceGpuSwitchIfNeeded. Basically, if a
-    // context requests the high-performance GPU, then CGLSetVirtualScreen
-    // will never be called to migrate that context to the low-power
-    // GPU. However, contexts that were allocated on the integrated GPU will
-    // be migrated to the discrete GPU, and back, when the discrete GPU is
-    // activated and deactivated. Also, if the high-performance GPU was
-    // requested, then that request took effect during context bringup, even
-    // though the GPU switching notification is generally dispatched a couple
-    // of seconds after that, so it's not necessary to either lose the context
-    // or reallocate the multisampled renderbuffers when that initial
-    // notification is received.
-    if (initial_gpu_ == gl::GpuPreference::kLowPower &&
-        current_active_gpu_ != active_gpu) {
-      if ((WantExplicitResolve() && preserve_drawing_buffer_ == kPreserve) ||
-          client_
-              ->DrawingBufferClientUserAllocatedMultisampledRenderbuffers()) {
-        // In these situations there are multisampled renderbuffers whose
-        // content the application expects to be preserved, but which can not
-        // be. Forcing a lost context is the only option to keep applications
-        // rendering correctly.
-        client_->DrawingBufferClientForceLostContextWithAutoRecovery(
-            "Losing WebGL context because multisampled renderbuffers were "
-            "allocated, to work around macOS OpenGL driver bugs");
-      } else if (WantExplicitResolve()) {
-        ReallocateMultisampleRenderbuffer(size_);
-
-        // This does a bit more work than desired - clearing any depth and
-        // stencil renderbuffers is unnecessary, since they weren't reallocated
-        // - but reusing this code reduces complexity. Note that we do not clear
-        // the non-multisampled framebuffer, as doing so can cause users'
-        // content to disappear unexpectedly.
-        //
-        // TODO(crbug.com/1046146): perform this clear at the beginning rather
-        // than at the end of a frame in order to eliminate rendering glitches.
-        // This should also simplify the code, allowing removal of the
-        // ClearOption.
-        ClearNewlyAllocatedFramebuffers(kClearOnlyMultisampledFBO);
-      }
-    }
-    current_active_gpu_ = active_gpu;
-  }
 }
 
 bool DrawingBuffer::ReallocateMultisampleRenderbuffer(const gfx::Size& size) {
@@ -1901,6 +1888,32 @@ bool DrawingBuffer::ReallocateMultisampleRenderbuffer(const gfx::Size& size) {
   gl_->FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                GL_RENDERBUFFER, multisample_renderbuffer_);
   return true;
+}
+
+void DrawingBuffer::ReallocateDepthStencilRenderbuffer(const gfx::Size& size) {
+  if (!depth_stencil_buffer_) {
+    gl_->GenRenderbuffers(1, &depth_stencil_buffer_);
+  }
+  state_restorer_->SetFramebufferBindingDirty();
+  state_restorer_->SetRenderbufferBindingDirty();
+  gl_->BindRenderbuffer(GL_RENDERBUFFER, depth_stencil_buffer_);
+  if (anti_aliasing_mode_ == kAntialiasingModeMSAAImplicitResolve) {
+    gl_->RenderbufferStorageMultisampleEXT(GL_RENDERBUFFER, sample_count_,
+                                           GL_DEPTH24_STENCIL8_OES,
+                                           size.width(), size.height());
+  } else if (anti_aliasing_mode_ == kAntialiasingModeMSAAExplicitResolve) {
+    gl_->RenderbufferStorageMultisampleCHROMIUM(GL_RENDERBUFFER, sample_count_,
+                                                GL_DEPTH24_STENCIL8_OES,
+                                                size.width(), size.height());
+  } else {
+    gl_->RenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8_OES,
+                             size.width(), size.height());
+  }
+  gl_->BindFramebuffer(GL_FRAMEBUFFER,
+                       multisample_fbo_ ? multisample_fbo_ : fbo_);
+  gl_->FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                               GL_RENDERBUFFER, depth_stencil_buffer_);
+  gl_->BindRenderbuffer(GL_RENDERBUFFER, 0);
 }
 
 void DrawingBuffer::RestoreFramebufferBindings() {
@@ -1951,8 +1964,23 @@ bool DrawingBuffer::Multisample() const {
   return anti_aliasing_mode_ != kAntialiasingModeNone;
 }
 
-void DrawingBuffer::Bind(GLenum target) {
-  EnsureBackColorBuffer();
+bool DrawingBuffer::Bind(GLenum target) {
+  bool ensured = EnsureBuffers();
+  if (!destruction_in_progress_) {
+    // Bind the DrawingBuffer's default FBO even when EnsureBuffers() fails so
+    // a previously bound user WebGLFramebuffer (or FBO 0) does not stay bound
+    // in GL while WebGLRenderingContextBase believes the default framebuffer is
+    // bound.
+    gl_->BindFramebuffer(target,
+                         WantExplicitResolve() ? multisample_fbo_ : fbo_);
+  }
+  return ensured;
+}
+
+void DrawingBuffer::RestoreDefaultFramebufferBinding(GLenum target) {
+  if (destruction_in_progress_) {
+    return;
+  }
   gl_->BindFramebuffer(target, WantExplicitResolve() ? multisample_fbo_ : fbo_);
 }
 
@@ -1963,6 +1991,9 @@ GLenum DrawingBuffer::StorageFormat() const {
 scoped_refptr<StaticBitmapImage>
 DrawingBuffer::GetRGBAUnacceleratedStaticBitmapImage(
     SourceDrawingBuffer source_buffer) {
+  if (destruction_in_progress_ || context_loss_pending_) {
+    return nullptr;
+  }
   // Readback in native GL byte order (RGBA).
   viz::SharedImageFormat format = viz::SinglePlaneFormat::kRGBA_8888;
   if (RuntimeEnabledFeatures::WebGLDrawingBufferStorageEnabled() &&
@@ -1981,6 +2012,9 @@ DrawingBuffer::GetUnacceleratedStaticBitmapImage(
     viz::SharedImageFormat format,
     SkAlphaType alpha_type,
     GrSurfaceOrigin origin) {
+  if (destruction_in_progress_ || context_loss_pending_) {
+    return nullptr;
+  }
   ScopedStateRestorer scoped_state_restorer(this);
 
   // The callers should only get there where another code path that
@@ -2116,7 +2150,7 @@ gpu::ImageInfo DrawingBuffer::CreateImageInfo(const gfx::Size& size) {
                                    gpu::SHARED_IMAGE_USAGE_GLES2_WRITE |
                                    gpu::SHARED_IMAGE_USAGE_DISPLAY_READ |
                                    gpu::SHARED_IMAGE_USAGE_RASTER_READ;
-  if (initial_gpu_ == gl::GpuPreference::kHighPerformance) {
+  if (requested_gpu_ == gl::GpuPreference::kHighPerformance) {
     usage |= gpu::SHARED_IMAGE_USAGE_HIGH_PERFORMANCE_GPU;
   }
   GrSurfaceOrigin origin = opengl_flip_y_extension_
@@ -2248,22 +2282,141 @@ void DrawingBuffer::AttachColorBufferToReadFramebuffer() {
   }
 }
 
-void DrawingBuffer::EnsureBackColorBuffer() {
+void DrawingBuffer::DiscardBackBuffer() {
+  DCHECK(state_restorer_);
+  if (back_color_buffer_) {
+    TRACE_EVENT("gpu", "DiscardBackBuffer");
+    state_restorer_->SetFramebufferBindingDirty();
+    // Detach first, clear second.
+    gl_->BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+    gl_->FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                              GL_TEXTURE_2D, 0, 0);
+    back_color_buffer_ = nullptr;
+    back_buffer_discarded_ = true;
+  }
+}
+
+void DrawingBuffer::DiscardMSAADepthStencilBuffers() {
+  TRACE_EVENT("gpu", __PRETTY_FUNCTION__);
+  DCHECK(state_restorer_);
+  state_restorer_->SetFramebufferBindingDirty();
+  state_restorer_->SetRenderbufferBindingDirty();
+  if (multisample_fbo_) {
+    gl_->BindFramebuffer(GL_FRAMEBUFFER, multisample_fbo_);
+    gl_->FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                 GL_RENDERBUFFER, 0);
+    gl_->FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                                 GL_RENDERBUFFER, 0);
+  }
+  if (fbo_) {
+    gl_->BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+    gl_->FramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                                 GL_RENDERBUFFER, 0);
+  }
+  gl_->BindRenderbuffer(GL_RENDERBUFFER, 0);
+  if (multisample_renderbuffer_) {
+    gl_->DeleteRenderbuffers(1, &multisample_renderbuffer_);
+    multisample_renderbuffer_ = 0;
+  }
+  if (depth_stencil_buffer_) {
+    gl_->DeleteRenderbuffers(1, &depth_stencil_buffer_);
+    depth_stencil_buffer_ = 0;
+  }
+  gl_->Flush();
+}
+
+bool DrawingBuffer::EnsureBuffers() {
+  if (destruction_in_progress_ || context_loss_pending_) {
+    return false;
+  }
+  const bool had_discarded_back_buffer = back_buffer_discarded_;
+  if (!EnsureBackColorBuffer() || !EnsureMSAADepthStencilBuffers()) {
+    if (had_discarded_back_buffer && back_color_buffer_) {
+      ScopedStateRestorer scoped_state_restorer(this);
+      DiscardBackBuffer();
+    }
+    // Can't allocate the buffers, meaning the context is unusable, trigger a
+    // context loss. Since it's asynchronous, mark it as pending immediately.
+    //
+    // Note: Previously, there were CHECK()s that buffer allocation worked, but
+    // field trials showed that crashes happened due to context loss, which is
+    // why it is now handled.
+    context_loss_pending_ = true;
+    if (client_) {
+      client_->DrawingBufferClientForceLostContextWithAutoRecovery(
+          "Failed to reallocate WebGL drawing buffer resources.");
+    }
+    return false;
+  }
+  return true;
+}
+
+bool DrawingBuffer::EnsureBackColorBuffer() {
   const bool may_discard_back_buffer =
       base::FeatureList::IsEnabled(blink::features::kWebGLDiscardBackBuffer);
   if (may_discard_back_buffer && back_buffer_discarded_ &&
       !back_color_buffer_) {
     ScopedStateRestorer scoped_state_restorer(this);
     back_color_buffer_ = CreateOrRecycleColorBuffer();
-    // We had a back buffer before, we can't allocate one now. We can't
-    // continue, so we could lose the context, but for now, just crash, if this
-    // shows up in crash reports, just lose the context. Crashing here makes
-    // state management simpler elsewhere, since we don't have to deal with the
-    // case where we tried and failed to recreate the buffer.
-    CHECK(back_color_buffer_);
+    if (!back_color_buffer_) {
+      return false;
+    }
     AttachColorBufferToReadFramebuffer();
+    if (gl_->CheckFramebufferStatus(GL_FRAMEBUFFER) !=
+        GL_FRAMEBUFFER_COMPLETE) {
+      DiscardBackBuffer();
+      return false;
+    }
     back_buffer_discarded_ = false;
   }
+  return true;
+}
+
+bool DrawingBuffer::EnsureMSAADepthStencilBuffers() {
+  if (!base::FeatureList::IsEnabled(
+          ::features::kWebGLDeleteBuffersInBackground)) {
+    return true;
+  }
+  bool need_multisample = WantExplicitResolve() && !multisample_renderbuffer_;
+  bool need_depth_stencil = WantDepthOrStencil() && !depth_stencil_buffer_;
+  if (!need_multisample && !need_depth_stencil) {
+    return true;
+  }
+
+  ScopedStateRestorer scoped_state_restorer(this);
+  scoped_state_restorer.SetFramebufferBindingDirty();
+  scoped_state_restorer.SetRenderbufferBindingDirty();
+  if (need_multisample) {
+    gl_->GenRenderbuffers(1, &multisample_renderbuffer_);
+    if (!ReallocateMultisampleRenderbuffer(size_)) {
+      DiscardMSAADepthStencilBuffers();
+      return false;
+    }
+  }
+  if (need_depth_stencil) {
+    ReallocateDepthStencilRenderbuffer(size_);
+  }
+  // In ANGLE, modifying framebuffer attachments defers validation of
+  // framebuffer completeness and render target synchronization until
+  // CheckFramebufferStatus (or a draw call) is executed.
+  // Eagerly checking completeness here forces ANGLE to validate the
+  // framebuffers after reallocation. Note that `fbo_` must be checked even
+  // when WantExplicitResolve() is true, because its depth/stencil attachment
+  // state was mutated (detached) during background discard.
+  if (WantExplicitResolve()) {
+    gl_->BindFramebuffer(GL_FRAMEBUFFER, multisample_fbo_);
+    if (gl_->CheckFramebufferStatus(GL_FRAMEBUFFER) !=
+        GL_FRAMEBUFFER_COMPLETE) {
+      DiscardMSAADepthStencilBuffers();
+      return false;
+    }
+  }
+  gl_->BindFramebuffer(GL_FRAMEBUFFER, fbo_);
+  if (gl_->CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+    DiscardMSAADepthStencilBuffers();
+    return false;
+  }
+  return true;
 }
 
 bool DrawingBuffer::WantExplicitResolve() {
@@ -2292,8 +2445,9 @@ DrawingBuffer::ScopedStateRestorer::~ScopedStateRestorer() {
   DCHECK_EQ(drawing_buffer_->state_restorer_, this);
   drawing_buffer_->state_restorer_ = previous_state_restorer_;
   Client* client = drawing_buffer_->client_;
-  if (!client)
+  if (!client || drawing_buffer_->destruction_in_progress_) {
     return;
+  }
 
   if (clear_state_dirty_) {
     client->DrawingBufferClientRestoreScissorTest();
@@ -2304,10 +2458,12 @@ DrawingBuffer::ScopedStateRestorer::~ScopedStateRestorer() {
     client->DrawingBufferClientRestorePixelPackParameters();
   if (texture_binding_dirty_)
     client->DrawingBufferClientRestoreTexture2DBinding();
-  if (renderbuffer_binding_dirty_)
+  if (renderbuffer_binding_dirty_) {
     client->DrawingBufferClientRestoreRenderbufferBinding();
-  if (framebuffer_binding_dirty_)
+  }
+  if (framebuffer_binding_dirty_) {
     client->DrawingBufferClientRestoreFramebufferBinding();
+  }
   if (pixel_unpack_buffer_binding_dirty_)
     client->DrawingBufferClientRestorePixelUnpackBufferBinding();
   if (pixel_pack_buffer_binding_dirty_)

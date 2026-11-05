@@ -40,10 +40,13 @@ WaylandPopup::WaylandPopup(PlatformWindowDelegate* delegate,
          "show up.";
 }
 
-WaylandPopup::~WaylandPopup() = default;
+WaylandPopup::~WaylandPopup() {
+  // Child popups must be unmapped before `xdg_popup_` is destroyed.
+  HideChildPopups();
+}
 
 bool WaylandPopup::CreateShellPopup() {
-  DCHECK(parent_window() && !xdg_popup_);
+  CHECK(parent_window() && !xdg_popup_, base::NotFatalUntil::M163);
 
   // Use `xdg_parent_window` and do appropriate origin transformations when
   // sending requests through Wayland.
@@ -129,7 +132,7 @@ void WaylandPopup::Show(bool inactive) {
 
   // Map parent window as WaylandPopup cannot become a visible child of a
   // window that is not mapped.
-  DCHECK(parent_window());
+  CHECK(parent_window(), base::NotFatalUntil::M163);
   auto weak_this = AsWeakPtr();
   if (!parent_window()->IsVisible()) {
     parent_window()->Show(false);
@@ -155,8 +158,10 @@ void WaylandPopup::Hide() {
     return;
   }
 
-  if (child_popup()) {
-    child_popup()->Hide();
+  auto weak_this = AsWeakPtr();
+  HideChildPopups();
+  if (!weak_this || !xdg_popup_) {
+    return;
   }
 
   // Note that the xdg_popup object should be destroyed before we touch
@@ -170,7 +175,12 @@ void WaylandPopup::Hide() {
   // buffer to the root surface. However, compositors often get it wrong, and it
   // makes sense only if the xdg_popup object is going to be reused, which is
   // not the case here.
-  parent_window()->set_child_popup(nullptr);
+  //
+  // The parent may have had another popup shown after this one, in which case
+  // its `child_popup_` refers to that popup and must not be reset.
+  if (parent_window() && parent_window()->child_popup() == this) {
+    parent_window()->set_child_popup(nullptr);
+  }
   xdg_popup_.reset();
 
   WaylandWindow::Hide();
@@ -300,13 +310,13 @@ base::WeakPtr<WaylandWindow> WaylandPopup::AsWeakPtr() {
 void WaylandPopup::OnCloseRequest() {
   // Before calling OnCloseRequest, the `xdg_popup_` must become hidden and
   // only then call OnCloseRequest().
-  DCHECK(!xdg_popup_);
+  CHECK(!xdg_popup_, base::NotFatalUntil::M163);
   WaylandWindow::OnCloseRequest();
 }
 
 bool WaylandPopup::OnInitialize(PlatformWindowInitProperties properties,
                                 PlatformWindowDelegate::State* state) {
-  DCHECK(parent_window());
+  CHECK(parent_window(), base::NotFatalUntil::M163);
 
   // `window_state` is always `kNormal` on WaylandPopup.
   state->window_state = PlatformWindowState::kNormal;

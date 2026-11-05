@@ -26,7 +26,9 @@
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/gfx/image/image_skia.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
@@ -64,7 +66,7 @@ class WebAppLaunchDialogDelegate : public WebAppModalDialogDelegate {
     if (provider) {
       apps::AppLaunchParams params(
           app_id_, apps::LaunchContainer::kLaunchContainerWindow,
-          WindowOpenDisposition::NEW_WINDOW,
+          ui::mojom::WindowOpenDisposition::kNewWindow,
           apps::LaunchSource::kFromWebInstallApi);
 
       provider->command_manager().ScheduleCommand(

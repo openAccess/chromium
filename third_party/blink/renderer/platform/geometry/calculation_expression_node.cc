@@ -6,13 +6,15 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
+#include <limits>
 #include <numeric>
 
 #include "base/notreached.h"
+#include "base/numerics/angle_conversions.h"
 #include "third_party/blink/renderer/platform/geometry/length.h"
 #include "third_party/blink/renderer/platform/geometry/length_functions.h"
 #include "third_party/blink/renderer/platform/geometry/math_functions.h"
-#include "third_party/blink/renderer/platform/wtf/math_extras.h"
 
 namespace blink {
 
@@ -131,7 +133,8 @@ float CalculationExpressionColorChannelKeywordNode::Evaluate(
   if (evaluation_input.color_channel_keyword_values.empty()) {
     return 0;
   }
-  return evaluation_input.color_channel_keyword_values.at(channel_);
+  // If the value is missing ('none'), return zero.
+  return evaluation_input.color_channel_keyword_values.at(channel_).value_or(0);
 }
 
 // ------ CalculationExpressionPixelsAndPercentNode ------
@@ -175,8 +178,10 @@ bool ShouldConvertRad2DegForOperator(CalculationOperator op) {
 
 // static
 const CalculationExpressionNode*
-CalculationExpressionOperationNode::CreateSimplified(Children&& children,
-                                                     CalculationOperator op) {
+CalculationExpressionOperationNode::CreateSimplified(
+    Children&& children,
+    CalculationOperator op,
+    ProgressClamping clamping) {
   switch (op) {
     case CalculationOperator::kAdd:
     case CalculationOperator::kSubtract: {
@@ -321,10 +326,11 @@ CalculationExpressionOperationNode::CreateSimplified(Children&& children,
       if (!can_simplify) {
         break;
       }
-      float value = operand_pixels.size() == 1u
-                        ? std::log(operand_pixels.front())
-                        : std::log2(operand_pixels.front()) /
-                              std::log2(operand_pixels.back());
+      std::optional<float> b;
+      if (operand_pixels.size() == 2u) {
+        b = operand_pixels.back();
+      }
+      float value = EvaluateLogFunction(operand_pixels.front(), b);
       return MakeGarbageCollected<CalculationExpressionPixelsAndPercentNode>(
           PixelsAndPercent(value));
     }
@@ -347,7 +353,7 @@ CalculationExpressionOperationNode::CreateSimplified(Children&& children,
       }
       float value = 0;
       for (float operand : operand_pixels) {
-        value = std::hypot(value, operand);
+        value = EvaluateHypotIteration(value, operand);
       }
       return MakeGarbageCollected<CalculationExpressionPixelsAndPercentNode>(
           PixelsAndPercent(value));
@@ -385,7 +391,7 @@ CalculationExpressionOperationNode::CreateSimplified(Children&& children,
       } else {
         if (ShouldConvertRad2DegForOperator(op) &&
             children.front()->IsNumber()) {
-          value = Rad2deg(value);
+          value = base::RadToDeg(value);
         }
         value = EvaluateTrigonometricFunction(op, value);
         return MakeGarbageCollected<CalculationExpressionNumberNode>(value);
@@ -409,14 +415,8 @@ CalculationExpressionOperationNode::CreateSimplified(Children&& children,
       if (!can_simplify) {
         break;
       }
-      float progress_px = operand_pixels[0];
-      float from_px = operand_pixels[1];
-      float to_px = operand_pixels[2];
-      float progress_value = (progress_px - from_px) / (to_px - from_px);
-      if (std::isnan(progress_value)) {
-        return MakeGarbageCollected<CalculationExpressionNumberNode>(NAN);
-      }
-      float progress = std::clamp(progress_value, 0.f, 1.f);
+      float progress = EvaluateProgressFunction(
+          operand_pixels[0], operand_pixels[1], operand_pixels[2], clamping);
       return MakeGarbageCollected<CalculationExpressionNumberNode>(progress);
     }
     case CalculationOperator::kCalcSize:
@@ -430,7 +430,7 @@ CalculationExpressionOperationNode::CreateSimplified(Children&& children,
       if (!children.front()->IsNumber() || !children.back()->IsNumber()) {
         break;
       }
-      float value = std::pow(
+      float value = EvaluatePowFunction(
           To<CalculationExpressionNumberNode>(*children.front()).Value(),
           To<CalculationExpressionNumberNode>(*children.back()).Value());
       return MakeGarbageCollected<CalculationExpressionNumberNode>(value);
@@ -459,13 +459,14 @@ CalculationExpressionOperationNode::CreateSimplified(Children&& children,
     }
   }
   return MakeGarbageCollected<CalculationExpressionOperationNode>(
-      std::move(children), op);
+      std::move(children), op, clamping);
 }
 
 CalculationExpressionOperationNode::CalculationExpressionOperationNode(
     Children&& children,
-    CalculationOperator op)
-    : children_(std::move(children)), operator_(op) {
+    CalculationOperator op,
+    ProgressClamping clamping)
+    : children_(std::move(children)), operator_(op), clamping_(clamping) {
   if (op == CalculationOperator::kCalcSize) {
     // "A calc-size() is treated, in all respects, as if it were its
     // calc-size basis."  This is particularly relevant for ignoring the
@@ -529,16 +530,26 @@ float CalculationExpressionOperationNode::Evaluate(
     case CalculationOperator::kMin: {
       DCHECK(!children_.empty());
       float minimum = children_[0]->Evaluate(max_value, input);
-      for (auto& child : children_) {
-        minimum = std::min(minimum, child->Evaluate(max_value, input));
+      for (wtf_size_t i = 1; i < children_.size(); ++i) {
+        float value = children_[i]->Evaluate(max_value, input);
+        // std::min() drops a NaN second argument.
+        if (std::isnan(value)) {
+          return value;
+        }
+        minimum = std::min(minimum, value);
       }
       return minimum;
     }
     case CalculationOperator::kMax: {
       DCHECK(!children_.empty());
       float maximum = children_[0]->Evaluate(max_value, input);
-      for (auto& child : children_) {
-        maximum = std::max(maximum, child->Evaluate(max_value, input));
+      for (wtf_size_t i = 1; i < children_.size(); ++i) {
+        float value = children_[i]->Evaluate(max_value, input);
+        // std::max() drops a NaN second argument.
+        if (std::isnan(value)) {
+          return value;
+        }
+        maximum = std::max(maximum, value);
       }
       return maximum;
     }
@@ -547,7 +558,12 @@ float CalculationExpressionOperationNode::Evaluate(
       float min = children_[0]->Evaluate(max_value, input);
       float val = children_[1]->Evaluate(max_value, input);
       float max = children_[2]->Evaluate(max_value, input);
-      // clamp(MIN, VAL, MAX) is identical to max(MIN, min(VAL, MAX))
+      // Any operation with a NaN argument produces NaN.
+      // https://drafts.csswg.org/css-values-4/#calc-type-checking
+      if (std::isnan(min) || std::isnan(val) || std::isnan(max)) {
+        return std::numeric_limits<float>::quiet_NaN();
+      }
+      // clamp(MIN, VAL, MAX) is identical to max(MIN, min(VAL, MAX)).
       return std::max(min, std::min(val, max));
     }
     case CalculationOperator::kRoundNearest:
@@ -564,17 +580,19 @@ float CalculationExpressionOperationNode::Evaluate(
     case CalculationOperator::kLog: {
       DCHECK_GE(children_.size(), 1u);
       DCHECK_LE(children_.size(), 2u);
-      return children_.size() == 1u
-                 ? std::log(children_.front()->Evaluate(max_value, input))
-                 : std::log2(children_.front()->Evaluate(max_value, input)) /
-                       std::log2(children_.back()->Evaluate(max_value, input));
+      float a = children_.front()->Evaluate(max_value, input);
+      std::optional<float> b;
+      if (children_.size() == 2u) {
+        b = children_.back()->Evaluate(max_value, input);
+      }
+      return EvaluateLogFunction(a, b);
     }
     case CalculationOperator::kHypot: {
       DCHECK_GE(children_.size(), 1u);
       float value = 0;
       for (const Member<const CalculationExpressionNode>& operand : children_) {
         float a = operand->Evaluate(max_value, input);
-        value = std::hypot(value, a);
+        value = EvaluateHypotIteration(value, a);
       }
       return value;
     }
@@ -611,21 +629,17 @@ float CalculationExpressionOperationNode::Evaluate(
     case CalculationOperator::kProgress:
     case CalculationOperator::kMediaProgress:
     case CalculationOperator::kContainerProgress: {
-      DCHECK(!children_.empty());
+      CHECK_EQ(children_.size(), 3u);
       float progress = children_[0]->Evaluate(max_value, input);
-      float from = children_[1]->Evaluate(max_value, input);
-      float to = children_[2]->Evaluate(max_value, input);
-      float progress_value = (progress - from) / (to - from);
-      if (std::isnan(progress_value)) {
-        return NAN;
-      }
-      return std::clamp(progress_value, 0.f, 1.f);
+      float start = children_[1]->Evaluate(max_value, input);
+      float end = children_[2]->Evaluate(max_value, input);
+      return EvaluateProgressFunction(progress, start, end, clamping_);
     }
     case CalculationOperator::kPow: {
       DCHECK_EQ(children_.size(), 2u);
       float a = children_[0]->Evaluate(max_value, input);
       float b = children_[1]->Evaluate(max_value, input);
-      return std::pow(a, b);
+      return EvaluatePowFunction(a, b);
     }
     case CalculationOperator::kSin:
     case CalculationOperator::kCos:
@@ -637,7 +651,7 @@ float CalculationExpressionOperationNode::Evaluate(
       float a = children_[0]->Evaluate(max_value, input);
       if (ShouldConvertRad2DegForOperator(operator_) &&
           children_.front()->EvaluatesToNumber()) {
-        a = Rad2deg(a);
+        a = base::RadToDeg(a);
       }
       std::optional<float> b =
           operator_ == CalculationOperator::kAtan2
@@ -717,7 +731,8 @@ bool CalculationExpressionOperationNode::Equals(
   if (!other_operation) {
     return false;
   }
-  if (operator_ != other_operation->GetOperator()) {
+  if (operator_ != other_operation->GetOperator() ||
+      clamping_ != other_operation->Clamping()) {
     return false;
   }
   using ValueType = Children::value_type;
@@ -732,7 +747,7 @@ const CalculationExpressionNode* CalculationExpressionOperationNode::Zoom(
       children_, [factor](const CalculationExpressionNode* child) {
         return child->Zoom(factor);
       });
-  return CreateSimplified(std::move(cloned_operands), operator_);
+  return CreateSimplified(std::move(cloned_operands), operator_, clamping_);
 }
 
 bool CalculationExpressionOperationNode::HasMinContent() const {

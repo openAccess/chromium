@@ -10,6 +10,7 @@
 #include <memory>
 #include <utility>
 
+#include "ash/constants/ash_paths.h"
 #include "ash/constants/ash_switches.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
@@ -43,8 +44,6 @@
 #include "chrome/browser/device_identity/device_oauth2_token_service_factory.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/policy/messaging_layer/public/report_client_test_util.h"
-#include "chrome/browser/prefs/browser_prefs.h"
-#include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/attestation/fake_certificate.h"
@@ -82,6 +81,7 @@
 #include "content/public/test/test_utils.h"
 #include "google_apis/gaia/gaia_oauth_client.h"
 #include "google_apis/gaia/gaia_urls.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -230,7 +230,7 @@ class DeviceCloudPolicyManagerAshTest
         base::SingleThreadTaskRunner::GetCurrentDefault(), &state_keys_broker_);
 
     manager_->Init(&schema_registry_);
-    manager_->SetSigninProfileSchemaRegistry(&schema_registry_);
+    manager_->AddAuthScreenSchemaRegistry(&schema_registry_);
 
     // SharedURLLoaderFactory and LocalState singletons have to be set since
     // they are accessed by EnrollmentHandler and StartupUtils.
@@ -683,7 +683,7 @@ TEST_F(DeviceCloudPolicyManagerAshObserverTest, GetSchemaRegistry) {
 
   EXPECT_FALSE(manager_->HasSchemaRegistry());
 
-  manager_->SetSigninProfileSchemaRegistry(&schema_registry_);
+  manager_->AddAuthScreenSchemaRegistry(&schema_registry_);
 
   EXPECT_TRUE(manager_->HasSchemaRegistry());
 }
@@ -719,7 +719,7 @@ class DeviceCloudPolicyManagerAshEnrollmentTest
 
     CHECK(temp_dir_.CreateUniqueTempDir());
     token_path_override_ = std::make_unique<base::ScopedPathOverride>(
-        chrome::FILE_CHROME_OS_DEVICE_REFRESH_TOKEN,
+        ash::FILE_DEVICE_REFRESH_TOKEN,
         temp_dir_.GetPath().Append("device_refresh_token"),
         /*is_absolute=*/true,
         /*create=*/false);

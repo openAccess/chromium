@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/arc/nearby_share/ui/progress_bar_dialog_view.h"
 
 #include <memory>
+#include <utility>
 
 #include "ash/style/ash_color_id.h"
 #include "base/functional/bind.h"
@@ -13,6 +14,7 @@
 #include "chromeos/ash/experiences/arc/compat_mode/style/arc_color_provider.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/strings/grit/ui_strings.h"
@@ -44,7 +46,7 @@ ProgressBarDialogView::ProgressBarDialogView(bool is_multiple_files)
 
   auto border = std::make_unique<views::BubbleBorder>(
       views::BubbleBorder::NONE, views::BubbleBorder::STANDARD_SHADOW);
-  border->SetColor(ash::kColorAshDialogBackgroundColor);
+  border->set_background_color(ash::kColorAshDialogBackgroundColor);
   border->set_rounded_corners(gfx::RoundedCornersF(kCornerRadius));
   SetBackground(std::make_unique<views::BubbleBackground>(border.get()));
   SetBorder(std::move(border));
@@ -59,7 +61,6 @@ ProgressBarDialogView::ProgressBarDialogView(bool is_multiple_files)
   message_label_->SetMultiLine(true);
   message_label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   message_label_->SetVerticalAlignment(gfx::ALIGN_TOP);
-  AddChildViewRaw(message_label_.get());
 
   progress_bar_ = AddChildView(std::make_unique<views::ProgressBar>());
   progress_bar_->SetPreferredHeight(kProgressBarHeight);
@@ -67,6 +68,7 @@ ProgressBarDialogView::ProgressBarDialogView(bool is_multiple_files)
   progress_bar_->SetPreferredSize(
       gfx::Size(kProgressBarWidth, kProgressBarHeight));
   progress_bar_->SizeToPreferredSize();
+  progress_bar_->SetBackgroundColor(ash::kColorAshDialogBackgroundColor);
 }
 
 ProgressBarDialogView::~ProgressBarDialogView() {
@@ -96,33 +98,25 @@ void ProgressBarDialogView::AddedToWidget() {
   GetWidget()->GetRootView()->GetViewAccessibility().SetName(view_name);
 }
 
-void ProgressBarDialogView::OnThemeChanged() {
-  DCHECK(progress_bar_);
-
-  views::BoxLayoutView::OnThemeChanged();
-  progress_bar_->SetBackgroundColor(
-      GetColorProvider()->GetColor(ash::kColorAshDialogBackgroundColor));
-}
-
 void ProgressBarDialogView::Show(aura::Window* parent,
-                                 ProgressBarDialogView* view) {
-  NearbyShareOverlayView::Show(parent, view);
+                                 std::unique_ptr<ProgressBarDialogView> view) {
+  NearbyShareOverlayView::Show(parent, std::move(view));
 }
 
 void ProgressBarDialogView::UpdateProgressBarValue(double value) {
-  DCHECK(progress_bar_);
+  CHECK(progress_bar_, base::NotFatalUntil::M160);
 
   progress_bar_->SetValue(value);
 }
 
 double ProgressBarDialogView::GetProgressBarValue() const {
-  DCHECK(progress_bar_);
+  CHECK(progress_bar_, base::NotFatalUntil::M160);
 
   return progress_bar_->GetValue();
 }
 
 void ProgressBarDialogView::UpdateInterpolatedProgressBarValue() {
-  DCHECK(progress_bar_);
+  CHECK(progress_bar_, base::NotFatalUntil::M160);
 
   constexpr double kStepSize = 0.075;
   constexpr double kStepFactor = 3;  // Larger value = smaller step progression.
@@ -137,5 +131,8 @@ void ProgressBarDialogView::UpdateInterpolatedProgressBarValue() {
     progress_bar_->SetValue(next_value);
   }
 }
+
+BEGIN_METADATA(ProgressBarDialogView)
+END_METADATA
 
 }  // namespace arc

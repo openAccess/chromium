@@ -185,7 +185,7 @@ void HostedAppBrowserController::Uninstall(
     return;
   }
 
-  DCHECK(!uninstall_dialog_);
+  CHECK(!uninstall_dialog_, base::NotFatalUntil::M162);
   uninstall_dialog_ = ExtensionUninstallDialog::Create(
       browser()->GetProfile(),
       browser()->GetWindow() ? browser()->GetWindow()->GetNativeWindow()
@@ -220,7 +220,9 @@ void HostedAppBrowserController::OnTabInserted(content::WebContents* contents) {
 void HostedAppBrowserController::OnTabRemoved(content::WebContents* contents) {
   AppBrowserController::OnTabRemoved(contents);
 
-  extensions::AppTabHelper::FromWebContents(contents)->SetExtensionApp(nullptr);
+  if (auto* tab_helper = extensions::AppTabHelper::FromWebContents(contents)) {
+    tab_helper->SetExtensionApp(nullptr);
+  }
 }
 
 void HostedAppBrowserController::LoadAppIcon(

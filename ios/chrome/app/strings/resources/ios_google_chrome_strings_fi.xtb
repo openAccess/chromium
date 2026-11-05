@@ -1,7 +1,6 @@
 <?xml version="1.0" ?>
 <!DOCTYPE translationbundle>
 <translationbundle lang="fi">
-<translation id="1035560095760914532">Sijoita Chrome alaosaan, niin voit käyttää sitä milloin tahansa</translation>
 <translation id="1076643793026027628">Chrome avaa YouTuben incognito-linkit automaattisesti incognito-tilassa.</translation>
 <translation id="1081114897601629648">Seuraavia salasanoja ei tuotu Google Salasanoihin, koska ne eivät täytä vaatimuksia.</translation>
 <translation id="1086486568852410168">Hae Google Lensilla</translation>
@@ -41,12 +40,15 @@ Huomioitavaa:
 <translation id="1580570086594302477">Avaa uuden incognito-välilehden Chromessa.</translation>
 <translation id="1605168141396675642">Vältä kopioinnin vaiva. Avaa linkit suoraan Chromessa.</translation>
 <translation id="1646463005043273333">Avaa asetuksen, jolla voi valita Chromen oletusselaimeksi.</translation>
+<translation id="1665695109862533986">Valitse Chrome oletusselaimeksi, niin voit avata linkit yhdellä napautuksella</translation>
+<translation id="1668930590094369898">Käytä Chromea oletuksena</translation>
 <translation id="1670609221633730681">Chrome-vinkki: Valitse osoitepalkin sijainti</translation>
 <translation id="1683863426423719967">Jos haluat saada Chromen välilehtimuistutuksia, laita ilmoitukset päälle iOS-asetuksista.</translation>
 <translation id="1759842336958782510">Chrome</translation>
 <translation id="1784567647421309104">Salasanojen tallentaminen Chromeen</translation>
 <translation id="1790080846677398234">Lisää URL-osoitteet Chromen kirjanmerkkeihin.</translation>
 <translation id="1799920918471566157">Vinkkejä Chromen käyttöön</translation>
+<translation id="1802420021606590788">Chrome käsittelee sivujen otsikoita ja URL-osoitteita yksityisessä tilassa pilvessä</translation>
 <translation id="1830634592642484976">Tämä osoite on tällä hetkellä tallennettu Chromeen. Jos haluat käyttää sitä Googlen tuotteissa, tallenna se Google-tilillesi (<ph name="USER_EMAIL" />).</translation>
 <translation id="1891812034154776216">Piilota avoimet incognito-välilehdet, kun poistut Chromesta</translation>
 <translation id="1894434821386148799">Löydät täältä Chromen asetukset ja muuta</translation>
@@ -57,6 +59,7 @@ Huomioitavaa:
 <translation id="1973910962341002002">Laita "Chrome" päälle asetuksista (<ph name="TEXT_OF_THE_SETTINGS_MENU_ITEM" />)</translation>
 <translation id="1984705450038014246">Chrome-datan synkronointi</translation>
 <translation id="1987779152850321833">Näillä ehdotuksilla saat Chromesta mahdollisimman paljon irti.</translation>
+<translation id="2049569996960148258">Piilota "Käytä Chromea oletuksena"</translation>
 <translation id="2055826352861631739">Käytä oletuksena iPadin Chromea</translation>
 <translation id="2056123005618757196">Helppokäyttöisellä, turvallisella ja entistäkin nopeammalla Google Chromella saat enemmän aikaan.</translation>
 <translation id="2120238739383482109">Avaa Chrome-kirjanmerkit.</translation>
@@ -90,7 +93,6 @@ Huomioitavaa:
 <translation id="288992067439702510">Olet saavuttanut Google Chromen <ph name="LIMIT" /> kirjanmerkin rajan, joten kaikkia kirjanmerkkejäsi ei ole vielä tallennettu Google-tilillesi.
 
 Uusia kirjanmerkkejä ei voi tallentaa tilillesi, ennen kuin poistat joitakin. Jos kirjaudut ulos nyt, tallentamattomat kirjanmerkit poistetaan.</translation>
-<translation id="2901621928549457170">Avaa Chrome heti, kun käytät iPadia</translation>
 <translation id="2922914028977213693">Napauta tästä, niin saat parhaan hyödyn Chromesta iPadilla.</translation>
 <translation id="292371311537977079">Chromen asetukset</translation>
 <translation id="2923827943290349720">Lukitse incognito-välilehdet, kun suljet Chromen</translation>
@@ -139,16 +141,19 @@ Uusia kirjanmerkkejä ei voi tallentaa tilillesi, ennen kuin poistat joitakin. J
 <translation id="3984746313391923992">Organisaatiosi edellyttää, että et kirjaudu sisään Chromeen.</translation>
 <translation id="3988789688219830639">Google Chrome ei voi käyttää kuviasi tai videoitasi. Anna käyttöoikeus kohdassa iOS-asetukset &gt; Tietosuoja &gt; Kuvat.</translation>
 <translation id="4064699917955374540">Chrome-datan käyttö ja tallennus Google-tilillä edellyttää, että vahvistat henkilöllisyytesi.</translation>
+<translation id="4093789416346364876">Tee Chromesta oletusselain, niin saat Gemini-vinkkejä mitä tahansa selaatkin</translation>
 <translation id="411154422556990518">Pysy ajan tasalla hintaseurannan päivityksistä ja Chrome-vinkeistä.</translation>
 <translation id="417201473131094001">Ei tueta Chrome Canaryssa</translation>
 <translation id="424864128008805179">Kirjaudutaanko ulos Chromesta?</translation>
 <translation id="4314240881330431451">Google Lens in Chromella voit hakea mitä tahansa näkemiäsi asioita</translation>
+<translation id="4315292299997584267">Kirjaudu tälle sivustolle ja Chromeen, niin voit käyttää esimerkiksi salasanoja laitteelta (<ph name="DEVICE_TYPE" />)</translation>
 <translation id="4409545895715116037">Seuraavia avainkoodeja ei tuotu Google Salasanoihin, koska ne eivät täytä vaatimuksia.</translation>
 <translation id="4430797724889237570">Avaa Gmailin, Mapsin, YouTuben ja muiden sovellusten linkit Chromessa</translation>
 <translation id="447252321002412580">Auta parantamaan Chromen ominaisuuksia ja suorituskykyä</translation>
 <translation id="4523886039239821078">Jokin laajennus kaataa Chromen. Kokeile poistaa seuraavat:</translation>
 <translation id="4568024439284012497">Avaa Chrome nopeammin iPhonen aloitusnäytöltä.</translation>
 <translation id="4574806550936185355">Laita "Lukitse incognito-välilehdet, kun suljet Chromen" päälle</translation>
+<translation id="457825396414281646">Valitse Chrome oletusselaimeksi, niin voit avata linkit yhdellä napautuksella</translation>
 <translation id="4633328489441962921">Chrome ei voi tarkistaa päivityksiä</translation>
 <translation id="4636900170638246267">Kirjaudu tälle sivustolle ja Chromeen.</translation>
 <translation id="4647910807533196601">Avaa edellinen välilehti Chromessa.</translation>
@@ -159,6 +164,7 @@ Uusia kirjanmerkkejä ei voi tallentaa tilillesi, ennen kuin poistat joitakin. J
 <translation id="4742795653798179840">Chrome-data poistettu</translation>
 <translation id="4761869838909035636">Tee Chromen turvatarkistus</translation>
 <translation id="4798859546468762093">Voit käyttää personointia ja muita ominaisuuksia, kun lisäät Chromen näihin: <ph name="FEATURE_NAME_1" /> ja <ph name="FEATURE_NAME_2" /></translation>
+<translation id="4807700370495020449">Kirjaudu tälle sivustolle ja Chromeen, niin voit käyttää tallennettuja tietoja ja muuta sisältöä kaikilla laitteilla</translation>
 <translation id="4819268619367838612">Chrome lähettää käyttö- ja kaatumisdataa Googlelle sovelluksen kehittämiseksi. <ph name="BEGIN_LINK" />Muokkaa<ph name="END_LINK" /></translation>
 <translation id="4830799082179398588">Tehdäänkö Chromesta oletusselain?</translation>
 <translation id="484033449593719797">Ei tueta Chrome Betassa</translation>
@@ -169,14 +175,13 @@ Uusia kirjanmerkkejä ei voi tallentaa tilillesi, ennen kuin poistat joitakin. J
 <translation id="496747131578053942">Chrome-vinkki: Hae näkemiäsi asioita Google Lensillä</translation>
 <translation id="498985224078955265">Jos haluat lähettää välilehden toiselle laitteelle, kirjaudu Chromeen molemmilla laitteilla.</translation>
 <translation id="5030102366287574140">Chrome voi auttaa suojaamaan sinua esim. tietosuojaloukkauksilta ja riskialttiilta verkkosivustoilta.</translation>
+<translation id="5085038751173179818">Kirjaudu tälle sivustolle ja Chromeen, niin voit käyttää kirjanmerkkejä ja muita asetuksia kaikilla laitteillasi</translation>
 <translation id="5109169629909011627">Chrome-kirjanmerkkien näyttäminen</translation>
 <translation id="5112925986883715005">Näytä Chromen lukulista</translation>
 <translation id="5116239826668864748">Voit käyttää Chromea aina, kun napautat linkkejä viesteissä, dokumenteissa tai muissa sovelluksissa</translation>
 <translation id="5119391094379141756">Valitse Chrome</translation>
 <translation id="5123188916260706415">Hae puhumalla Chromesta</translation>
 <translation id="5162467219239570114">Chrome on vanhentunut. Jos päivitystä ei ole saatavilla <ph name="BEGIN_LINK" />sovelluskaupasta<ph name="END_LINK" />, laitteesi ei välttämättä enää tue Chromen uusia versioita.</translation>
-<translation id="5172049865623113551">Avaa Chrome heti, kun käytät iPhonea</translation>
-<translation id="5179095426828744632">Käytä Chromea nopeammin alapalkista</translation>
 <translation id="5184329579814168207">Avaa Chromessa</translation>
 <translation id="5190139289262548459">Organisaatiosi (<ph name="DOMAIN" />) ylläpitää tiliä, jolla olet kirjautuneena sisään ja sitä, miten Chromea käytetään.</translation>
 <translation id="5209238444239954363">Chrome ei voinut tarkistaa, onko päivityksiä saatavilla. Yritä myöhemmin uudelleen.</translation>
@@ -188,12 +193,11 @@ Odota muutama minuutti ennen uloskirjautumista. Jos kirjaudut ulos nyt, tämä d
 <translation id="5395376160638294582">Varmista, että voit aina käyttää Chrome-dataa Google-tilillä</translation>
 <translation id="5404252374083197467">Valitaanko Chrome oletukseksi?</translation>
 <translation id="5439191312780166229">Varoittaa vaarallisista sivustoista, myös niistä, joista Google ei ole tiennyt aiemmin, analysoimalla enemmän dataa sivustoilta kuin Perustason suojaus. Voit ohittaa Chromen varoitukset.</translation>
+<translation id="544285856361623600">Kirjaudu tälle sivustolle ja Chromeen, niin voit käyttää esimerkiksi kirjanmerkkejä laitteelta (<ph name="DEVICE_TYPE" />)</translation>
 <translation id="5453077102022695084">Koko näytön video Chromen asettamisesta oletusselaimeksi</translation>
 <translation id="5460571915754665838">4. Valitse Chrome</translation>
 <translation id="5492504007368565877">Google Salasanat ei voi tarkistaa salasanojasi.</translation>
-<translation id="5525095647255982834">Jos haluat lähettää välilehden toiselle laitteelle, kirjaudu sillä Chromeen.</translation>
 <translation id="5527026824954593399">Valitse "Katso Google Mapsin avulla Chromessa".</translation>
-<translation id="5552137475244467770">Chrome vertaa salasanojasi säännöllisesti listoihin salasanoista, jotka on julkaistu verkossa. Tätä varten salasanat ja käyttäjänimet salataan, joten kukaan (myöskään Google) ei voi lukea niitä.</translation>
 <translation id="5554520618550346933">Kun käytät salasanaa, Chrome varoittaa, jos se on julkaistu verkossa. Tätä varten salasanat ja käyttäjänimet salataan, joten kukaan (myöskään Google) ei voi lukea niitä.</translation>
 <translation id="5601180634394228718">Siirry <ph name="BEGIN_LINK" />Googlen palveluihin<ph name="END_LINK" />, jos haluat nähdä lisää asetuksia, jotka käyttävät dataa Chromen käyttökokemuksen parantamiseen.</translation>
 <translation id="5639704535586432836">Avaa Asetukset &gt; Tietosuoja &gt; Kamera &gt; Google Chrome ja ota kamera käyttöön.</translation>
@@ -234,23 +238,19 @@ Odota muutama minuutti ennen tilin vaihtamista. Jos vaihdat tiliä nyt, tämä d
 <translation id="6348855835728304880">Käytä esimerkiksi Chromen salasanoja tällä laitteella muissa sovelluksissa.</translation>
 <translation id="6373751563207403289">Turvatarkistus suojaa sinua esimerkiksi tietosuojaloukkauksilta ja riskialttiilta verkkosivustoilta. Saat ilmoituksia kaikista yksityisyys- tai tietoturvaongelmista, jotka Chrome havaitsee puolestasi.</translation>
 <translation id="6389317667633680932">Tutustu uusiin ominaisuuksiin, joiden avulla saat parhaan hyödyn Chromesta.</translation>
-<translation id="6412673304250309937">Tarkistaa URL-osoitteet Chromeen tallennetun vaarallisten sivustojen luettelon avulla. Jos sivusto yrittää varastaa salasanaasi tai jos lataat haitallisen tiedoston, Chrome voi myös lähettää Selaussuojan tarkistettavaksi URL-osoitteita, mukaan lukien osia sivujen sisällöstä.</translation>
 <translation id="6427126399757991875">Organisaatiosi ottaa käyttöön Chromea…</translation>
 <translation id="6481963882741794338">Linkitä Chrome ja muita Googlen palveluja esimerkiksi personointia varten</translation>
 <translation id="6484712497741564393">Kirjautuneena tilillä <ph name="EMAIL" />.
 
 Datasi salataan tunnuslauseella. Lisää se, niin voit käyttää ja tallentaa Chrome-dataa Google-tililläsi.</translation>
-<translation id="6511034852811155835">Ota Chrome mukaasi</translation>
 <translation id="6533470733797826516">Kirjaudu sisään nopeammin Chromen automaattisen täytön avulla</translation>
 <translation id="6536544321553662809">Valitse Chrome oletusselaimeksi, niin voit helposti jakaa ja avata linkkejä</translation>
 <translation id="6545449117344801102">Chrome tunnistaa osoitteet ja tarjoaa Google Mapsin avulla reittiohjeita ja paikallisia tietoja.</translation>
 <translation id="660537754475262202">Valitse Chrome oletusselaimeksi, niin voit avata linkkejä täällä heti.</translation>
 <translation id="6611692150236062461">Löydät muiden sovellusten tallennetut salasanat helposti käyttämällä Chromea automaattiseen täyttöön.</translation>
 <translation id="6636941099779251629">Organisaatiosi edellyttää sisäänkirjautumista, jotta voit käyttää Chromea. <ph name="BEGIN_LINK" />Lue lisää<ph name="END_LINK" /></translation>
-<translation id="6646696210740573446">Lähettää osan URL-osoitteesta obfuskoituna Googlelle yksityisen palvelimen kautta, jolloin IP-osoitteesi piilotetaan. Jos sivusto yrittää varastaa salasanaasi tai jos lataat haitallisen tiedoston, Chrome voi myös lähettää Googlelle URL-osoitteita, mukaan lukien osia sivujen sisällöstä</translation>
 <translation id="6647304104688527905">Avaa uuden välilehden Chromessa.</translation>
 <translation id="6684809838922667136">Entistä parempi Chrome</translation>
-<translation id="6695698548122852044">{THRESHOLD,plural, =1{Näin käy, kun Chromea ei ole käytetty {THRESHOLD} minuuttiin. Data, joka on tallennettu vain tälle laitteelle ollessasi kirjautuneena sisään, poistetaan. Tämä koskee esimerkiksi historiaa ja salasanoja.}other{Näin käy, kun Chromea ei ole käytetty {THRESHOLD} minuuttiin. Data, joka on tallennettu vain tälle laitteelle ollessasi kirjautuneena sisään, poistetaan. Tämä koskee esimerkiksi historiaa ja salasanoja.}}</translation>
 <translation id="6709398533399187136">Salasanasi vaarantui tietosuojaloukkauksessa. Googlen Salasanojen ylläpito suosittelee, että vaihdat sen heti.</translation>
 <translation id="6820553595690137150">Tunnuslauseella ei salata maksutapoja ja osoitteita.
 
@@ -262,13 +262,14 @@ Jos haluat muuttaa tätä asetusta, <ph name="BEGIN_LINK" />poista tilin Chrome-
 Siirry <ph name="BEGIN_LINK" />Googlen palveluihin<ph name="END_LINK" />, jos haluat nähdä lisää asetuksia, jotka käyttävät dataa Chromen käyttökokemuksen parantamiseen.</translation>
 <translation id="6922332667202044570">Poista selausdata Chromessa.</translation>
 <translation id="6924922227983877439">Avaa linkit oletuksena Chromessa</translation>
+<translation id="6926395711547387358">Aseta Chrome oletukseksi</translation>
 <translation id="6975725306479268850">Chromen valinta automaattiseen täyttöön</translation>
-<translation id="7001031184470316752">Siirrä Chrome alapalkkiin</translation>
 <translation id="7038674195294813388">Avaa Oletussovellukset-asetukset iOS:llä, napauta sitten "Selainsovellus" ja valitse Chrome.</translation>
 <translation id="7056826488869329999">Avaa ja suorittaa turvatarkistuksen Chromessa.</translation>
 <translation id="7061455974939528301">Paina Chrome-kuvaketta pitkään ja klikkaa "Muokkaa aloitusnäyttöä"</translation>
 <translation id="7095110968493193530">Googlen Salasanojen ylläpitoon: <ph name="EMAIL" /></translation>
 <translation id="7124339256045485976">Pidä Chrome ajan tasalla</translation>
+<translation id="7135936755418321901">Jos haluat jakaa sijaintisi verkkosivustoille, valitse Asetukset ja anna Chromelle lupa käyttää sijaintiasi.</translation>
 <translation id="7145599899567697473">Tallenna ja täytä salasanoja automaattisesti Chromessa</translation>
 <translation id="7161390184744336561">Google Chrome on vanhentunut</translation>
 <translation id="7165736900384873061">Aloita Google Chromen QR-lukijan käyttö</translation>
@@ -283,6 +284,7 @@ Siirry <ph name="BEGIN_LINK" />Googlen palveluihin<ph name="END_LINK" />, jos ha
 <translation id="7272930098487145294">Anna Chromen lisätä uusia kuvia valitsemalla Asetukset, niin voit tallentaa kuvia.</translation>
 <translation id="7275945473750112644"><ph name="HOSTED_DOMAIN" /> ylläpitää tiliäsi, joten Chrome-datasi poistetaan tältä laitteelta</translation>
 <translation id="7284245284340063465">Jos unohdit tunnuslauseen tai haluat muuttaa asetusta, <ph name="BEGIN_LINK" />poista tilin Chrome-data<ph name="END_LINK" />.</translation>
+<translation id="7287957555760192025">Jos valitset ehdotuksen tai ohitat sen, Chrome mukautuu näyttämään sinulle osuvampia ehdotuksia jatkossa.</translation>
 <translation id="7296102444587051536">Chrome iOS:lle</translation>
 <translation id="7299681342915173313">Voit nyt käyttää Chromea aina, kun napautat linkkejä sähköpostiviesteissä, dokumenteissa tai muissa sovelluksissa</translation>
 <translation id="7334364820047587268">Sinulla on jo salasanoja näillä tileillä Googlen Salasanoissa. Jos päätät viedä alla olevan salasanan, se korvaa aiemman salasanan.</translation>
@@ -307,6 +309,7 @@ Siirry <ph name="BEGIN_LINK" />Googlen palveluihin<ph name="END_LINK" />, jos ha
 <translation id="7642373780953416937">Saat ilmoituksia kaikista yksityisyys- tai tietoturvaongelmista, jotka Chrome havaitsee automaattisesti puolestasi.</translation>
 <translation id="7660356333829433649">Jatkossa löydät lisää hyödyllisiä vinkkejä, joiden avulla saat parhaan hyödyn Chromesta.</translation>
 <translation id="7662994914830945754">Kirjaudu sisään ja laita synkronointi päälle, jotta voit nähdä Chrome-välilehtesi missä tahansa</translation>
+<translation id="767157537088426800">Kirjaudu tälle sivustolle ja Chromeen, niin voit käyttää salasanoja ja muita tietoja kaikilla laitteilla</translation>
 <translation id="7693590760643069321">Voit nyt käyttää Chromea aina, kun napautat linkkejä viesteissä, dokumenteissa tai muissa sovelluksissa.</translation>
 <translation id="7698568245838009292">Chrome pyytää kameran käyttöoikeutta</translation>
 <translation id="7707877166818730835">Avaa edellinen välilehti Chromessa</translation>
@@ -356,10 +359,12 @@ Datasi salataan tunnuslauseella <ph name="TIME" />. Lisää se, niin voit käytt
 <translation id="8544583291890527417">Ilmoittaa yksityisyys- tai tietoturvaongelmista, jotka Chrome havaitsee puolestasi.</translation>
 <translation id="855027533751209304">Chrome-vinkki: Hae näkemiäsi asioita</translation>
 <translation id="8558480467877843976">Voit nyt käyttää Chromea aina selatessasi ja kun napautat linkkejä viesteissä, dokumenteissa tai muissa sovelluksissa.</translation>
+<translation id="8589791109349384456">Ehdotusten laittaminen pois päältä ei vaikuta siihen, miten Chrome käsittelee sivujen otsikoita ja URL-osoitteita muiden ominaisuuksien osalta. Voit muuttaa pääsyä tähän dataan <ph name="BEGIN_LINK" />synkronointiasetuksista<ph name="END_LINK" />.</translation>
 <translation id="8603022514504485810">Google Salasanat ei voinut tarkistaa kaikkia salasanoja. Yritä uudelleen huomenna tai <ph name="BEGIN_LINK" />tarkista salasanat Google-tililtä<ph name="END_LINK" />.</translation>
 <translation id="8610372330814566250">Käytä Safarin salasanoja, historiaa, kirjanmerkkejä ja credit-kortteja Chromessa</translation>
 <translation id="8630122478628016441">Laita päälle "Lukitse incognito-välilehdet, kun suljet Chromen".</translation>
 <translation id="8673726683583791503">Osta Google Lensin avulla</translation>
+<translation id="869525545193934083">Koko näytön video Chromen asettamisesta oletusselaimeksi: Avaa Chromen asetukset iOS:lla, napauta "Oletusselainsovellus" ja valitse Chrome.</translation>
 <translation id="8765470054473112089">Kun kirjoitat osoitepalkkiin tai hakukenttään, Chrome lähettää kirjoittamasi tekstin oletushakukoneellesi, niin saat parempia ehdotuksia. Tämä on poissa päältä incognito-tilassa.</translation>
 <translation id="8772179140489533211">Näytä kehotteet kirjautua Chromeen.</translation>
 <translation id="8788269841521769222">Sinun ei tarvitse muistaa tätä salasanaa. Se tallennetaan Googlen Salasanojen ylläpitoon sähköpostiosoitteella <ph name="EMAIL" /></translation>
@@ -382,6 +387,7 @@ Datasi salataan tunnuslauseella <ph name="TIME" />. Lisää se, niin voit käytt
 <translation id="9122931302567044771">Tämä tarkoittaa, että Chrome pyytää aina tietokonesivustoa.</translation>
 <translation id="9176561303811134420">Hallinnoi maksutapoja Chromessa</translation>
 <translation id="9181628561061032322">Avaa Chromen viimeaikaiset välilehdet.</translation>
+<translation id="9199610579638564405">Kirjaudu tälle sivustolle ja Chromeen, niin voit käyttää tallennettuja tietoja ja muuta sisältöä laitteelta (<ph name="DEVICE_TYPE" />)</translation>
 <translation id="924447568950697217">Valitse Chrome oletusselaimeksi</translation>
 <translation id="948597495737267756">Avaa Chromen historiasivun.</translation>
 <translation id="954347330803595209">Tuo data, jotta voit käyttää salasanoja, historiaa, kirjanmerkkejä ja credit-kortteja Chromessa</translation>

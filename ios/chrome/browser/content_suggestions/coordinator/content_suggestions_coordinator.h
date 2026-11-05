@@ -51,8 +51,16 @@ class WebState;
 // Refreshes the contents owned by this coordinator.
 - (void)refresh;
 
+// Logs the visibility of any ephemeral card whose impression was deferred
+// because the NTP was bypassed when the card was initially shown.
+- (void)logDeferredEphemeralCardVisibilityIfNeeded;
+
 // Stops child coordinators presenting UI.
 - (void)clearPresentedState;
+
+// Dismisses the NTP Theme tip if active and commits any uncommitted inline
+// theme when the main Home Customization menu is opened.
+- (void)didOpenMainCustomizationMenu;
 
 @end
 

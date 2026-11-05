@@ -67,6 +67,7 @@ consoles.console_view(
 
 ci.builder(
     name = "chromeos-amd64-generic-asan-rel",
+    description_html = "Compile-only builder for ChromeOS amd64-generic release with AddressSanitizer.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -105,6 +106,7 @@ ci.builder(
             "chromiumos_preflight",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "simple|release|x64",
         short_name = "asn",
@@ -116,6 +118,7 @@ ci.builder(
 
 ci.builder(
     name = "chromeos-amd64-generic-cfi-thin-lto-rel",
+    description_html = "Compile-only builder for ChromeOS amd64-generic release with CFI and ThinLTO.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -155,6 +158,7 @@ ci.builder(
             "chromiumos_preflight",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "simple|release|x64",
         short_name = "cfi",
@@ -174,6 +178,7 @@ ci.builder(
 ci.builder(
     name = "chromeos-amd64-generic-dbg",
     branch_selector = branches.selector.CROS_BRANCHES,
+    description_html = "Compile-only builder for ChromeOS amd64-generic debug.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -211,6 +216,7 @@ ci.builder(
             "chromiumos_preflight",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "simple|debug|x64",
         short_name = "dbg",
@@ -267,6 +273,7 @@ ci.builder(
             "chromiumos_preflight",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "simple|release|x64",
         short_name = "compile",
@@ -309,12 +316,14 @@ ci.thin_tester(
         ],
         mixins = [
             "chromeos-generic-vm",
+            "no_ssd",
         ],
     ),
     targets_settings = targets.settings(
         browser_config = targets.browser_config.CROS_CHROME,
         os_type = targets.os_type.CROS,
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "simple|release|x64",
         short_name = "gtest",
@@ -328,6 +337,7 @@ ci.thin_tester(
 
 ci.builder(
     name = "chromeos-arm-generic-dbg",
+    description_html = "Compile-only builder for ChromeOS arm-generic debug.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -365,6 +375,7 @@ ci.builder(
             "chromiumos_preflight",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "simple|debug",
         short_name = "arm",
@@ -377,6 +388,7 @@ ci.builder(
 ci.builder(
     name = "chromeos-arm-generic-rel",
     branch_selector = branches.selector.CROS_LTS_BRANCHES,
+    description_html = "Compile-only builder for ChromeOS arm-generic release.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -407,6 +419,7 @@ ci.builder(
             "chromiumos_preflight",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "simple|release",
         short_name = "arm",
@@ -420,6 +433,7 @@ ci.builder(
 ci.builder(
     name = "chromeos-arm64-generic-rel",
     branch_selector = branches.selector.CROS_LTS_BRANCHES,
+    description_html = "Builds and runs ChromeOS ARM64 generic release tests on VM.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -459,6 +473,7 @@ ci.builder(
     targets_settings = targets.settings(
         browser_config = targets.browser_config.CROS_CHROME,
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "simple|release",
         short_name = "a64",
@@ -471,6 +486,7 @@ ci.builder(
 ci.builder(
     name = "linux-chromeos-dbg",
     branch_selector = branches.selector.CROS_BRANCHES,
+    description_html = "Builds and tests Ash Chrome debug builds on Linux x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -506,6 +522,7 @@ ci.builder(
         mixins = [
             "x86-64",
             "linux-jammy",
+            "no_ssd",
         ],
         per_test_modifications = {
             "angle_unittests": targets.mixin(
@@ -514,12 +531,8 @@ ci.builder(
                 ],
             ),
             "browser_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
-                    shards = 200,
+                    shards = 270,
                 ),
             ),
             "content_browsertests": targets.mixin(
@@ -528,12 +541,8 @@ ci.builder(
                 ),
             ),
             "interactive_ui_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
-                    shards = 24,
+                    shards = 28,
                 ),
             ),
             "net_unittests": targets.mixin(
@@ -545,10 +554,6 @@ ci.builder(
                 reason = "pthreadpool is not built for ChromeOS currently.",
             ),
             "sync_integration_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
                     shards = 12,
                 ),
@@ -563,6 +568,7 @@ ci.builder(
             ),
         },
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "default",
         short_name = "dbg",
@@ -587,6 +593,7 @@ ci.builder(
 ci.builder(
     name = "linux-chromeos-rel",
     branch_selector = branches.selector.CROS_LTS_BRANCHES,
+    description_html = "Builds and tests Ash Chrome release builds on Linux x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -641,11 +648,10 @@ ci.builder(
                 # Re-enable cq when the issue is fixed.
                 ci_only = True,
             ),
+            "ash_unittests": targets.mixin(
+                enable_rts_filtering = True,
+            ),
             "browser_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
                     dimensions = {
                         "kvm": "1",
@@ -661,16 +667,16 @@ ci.builder(
                     shards = 60,
                 ),
             ),
+            "components_unittests": targets.mixin(
+                enable_rts_filtering = True,
+            ),
             "content_browsertests": targets.mixin(
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
                     shards = 6,
                 ),
             ),
             "interactive_ui_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
                     shards = 5,
                 ),
@@ -679,10 +685,6 @@ ci.builder(
                 reason = "pthreadpool is not built for ChromeOS currently.",
             ),
             "sync_integration_tests": targets.mixin(
-                args = [
-                    # TODO(crbug.com/542347163): Re-enable when the runtime regression is fixed.
-                    "--disable-features=WebUIOmniboxPopup,WebUIOmniboxAimPopup",
-                ],
                 swarming = targets.swarming(
                     shards = 2,
                 ),
@@ -692,6 +694,8 @@ ci.builder(
                     shards = 2,
                 ),
             ),
+            # TODO(crbug.com/579035594): Remove once e4 failures are fixed.
+            "wayland_client_perftests": "e2-standard-8",
         },
     ),
     # See crbug.com/1345687. This builder need higher memory.
@@ -734,12 +738,25 @@ ci.thin_tester(
             "interactive_ui_tests",
             "unit_tests",
         ],
+        mixins = [
+            "x86-64",
+            "isolate_profile_data",
+            "linux-jammy",
+        ],
         per_test_modifications = {
             "browser_tests": targets.mixin(
                 args = [
                     "--disable-features=InitialWebUI,WebUIReloadButton,SkipIPCChannelPausingForNonGuests,WebUIInProcessResourceLoadingV2,InitialWebUISyncNavStartToCommit",
                 ],
                 swarming = targets.swarming(
+                    dimensions = {
+                        "kvm": "1",
+                    },
+                    optional_dimensions = {
+                        30: {
+                            "cpu": "x86-64-e4",
+                        },
+                    },
                     shards = 14,
                 ),
             ),
@@ -758,6 +775,7 @@ ci.thin_tester(
             ),
         },
     ),
+    ssd = None,
     # TODO(crbug.com/505579819): Enable gardening once the bot is stable.
     gardener_rotations = args.ignore_default(None),
     tree_closing = False,
@@ -773,6 +791,7 @@ ci.thin_tester(
 # For Chromebox for meetings(CfM)
 ci.builder(
     name = "linux-cfm-rel",
+    description_html = "Builds and tests ChromeOS Chromebox for Meetings (CfM) release builds on Linux x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -809,6 +828,7 @@ ci.builder(
             "x86-64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "default|cfm",
         short_name = "cfm",

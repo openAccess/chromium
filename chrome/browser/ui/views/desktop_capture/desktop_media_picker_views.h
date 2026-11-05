@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_DESKTOP_CAPTURE_DESKTOP_MEDIA_PICKER_VIEWS_H_
 #define CHROME_BROWSER_UI_VIEWS_DESKTOP_CAPTURE_DESKTOP_MEDIA_PICKER_VIEWS_H_
 
+#include <optional>
 #include <string>
 
 #include "base/feature_list.h"
@@ -33,13 +34,10 @@ class MdTextButton;
 
 class DesktopMediaPickerImpl;
 
-
 const DesktopMediaSourceViewStyle& GetGenericScreenStyle();
 const DesktopMediaSourceViewStyle& GetSingleScreenStyle();
 
 // Dialog view used for DesktopMediaPickerImpl.
-//
-// TODO(crbug.com/40637301): Consider renaming this class.
 class DesktopMediaPickerDialogView : public views::DialogDelegateView,
                                      public views::TabbedPaneListener {
   METADATA_HEADER(DesktopMediaPickerDialogView, views::DialogDelegateView)
@@ -262,13 +260,12 @@ class DesktopMediaPickerDialogView : public views::DialogDelegateView,
   // For recording dialog-duration UMA histograms.
   const base::TimeTicks dialog_open_time_;
 
+  base::OnceClosure on_picker_destroying_;
+
   base::WeakPtrFactory<DesktopMediaPickerDialogView> weak_factory_{this};
 };
 
 // Implementation of DesktopMediaPicker for Views.
-//
-// TODO(crbug.com/40637301): Consider merging with DesktopMediaPickerController
-// and naming the merged class just DesktopMediaPicker.
 class DesktopMediaPickerImpl : public DesktopMediaPicker {
  public:
   DesktopMediaPickerImpl();

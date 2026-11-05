@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "base/containers/flat_map.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/notreached.h"
 #include "base/stl_util.h"
@@ -38,6 +39,7 @@ using TokenResponseBuilder = OAuth2AccessTokenConsumer::TokenResponse::Builder;
 AccountInfo AccountInfoFromDeviceAccount(const DeviceAccountInfo& account) {
   AccountInfo::Builder builder(account.GetGaiaId(), account.GetEmail());
   if (std::string hosted_domain = account.GetHostedDomain();
+      !base::FeatureList::IsEnabled(switches::kUseAccountInfoFetcherIos) &&
       !hosted_domain.empty()) {
     builder.SetHostedDomain(hosted_domain);
   }
@@ -99,7 +101,7 @@ void SSOAccessTokenFetcher::Start(const std::string& client_id,
                                   const std::vector<std::string>& scopes) {
   std::set<std::string> scopes_set(scopes.begin(), scopes.end());
   provider_->GetAccessToken(
-      account_.gaia, client_id, scopes_set,
+      account_.GetGaiaId(), client_id, scopes_set,
       base::BindOnce(&SSOAccessTokenFetcher::OnAccessTokenResponse,
                      weak_factory_.GetWeakPtr()));
 }
@@ -168,9 +170,11 @@ void ProfileOAuth2TokenServiceIOSDelegate::LoadCredentialsInternal(
   } else {
     // Account must have been seeded before (when the primary account was set).
     DCHECK(!account_tracker_service_->GetAccountInfo(primary_account_id)
-                .gaia.empty());
+                .GetGaiaId()
+                .empty());
     DCHECK(!account_tracker_service_->GetAccountInfo(primary_account_id)
-                .email.empty());
+                .GetEmail()
+                .empty());
 
     // For whatever reason, we failed to load the device account for the primary
     // account. There must always be an account for the primary account
@@ -383,8 +387,11 @@ void ProfileOAuth2TokenServiceIOSDelegate::AddOrUpdateAccount(
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
   // Account must have been seeded before attempting to add it.
-  DCHECK(!account_tracker_service_->GetAccountInfo(account_id).gaia.empty());
-  DCHECK(!account_tracker_service_->GetAccountInfo(account_id).email.empty());
+  DCHECK(!account_tracker_service_->GetAccountInfo(account_id)
+              .GetGaiaId()
+              .empty());
+  DCHECK(
+      !account_tracker_service_->GetAccountInfo(account_id).GetEmail().empty());
 
   if (accounts_.contains(account_id) && GetAuthError(account_id) == error) {
     // No need to update the account if it is already a known account and if

@@ -7,16 +7,15 @@
 
 #include <stdint.h>
 
+#include <iosfwd>
 #include <string>
 #include <string_view>
-#include <tuple>
+#include <variant>
 #include <vector>
 
-#include "base/check.h"
 #include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
-#include "base/notreached.h"
 #include "components/cbor/cbor_export.h"
 
 namespace cbor {
@@ -25,65 +24,11 @@ namespace cbor {
 // This does not support indefinite-length encodings.
 class CBOR_EXPORT Value {
  public:
-  struct Less {
+  struct CBOR_EXPORT Less {
     // Comparison predicate to order keys in a dictionary as required by the
-    // canonical CBOR order defined in
-    // https://tools.ietf.org/html/rfc7049#section-3.9
-    // TODO(crbug.com/40560917): Clarify where this stands.
-    bool operator()(const Value& a, const Value& b) const {
-      // The current implementation only supports integer, text string, byte
-      // string and invalid UTF8 keys.
-      DCHECK((a.is_integer() || a.is_string() || a.is_bytestring() ||
-              a.is_invalid_utf8()) &&
-             (b.is_integer() || b.is_string() || b.is_bytestring() ||
-              b.is_invalid_utf8()));
-
-      // Below text from https://tools.ietf.org/html/rfc7049 errata 4409:
-      // *  If the major types are different, the one with the lower value
-      //    in numerical order sorts earlier.
-      if (a.type() != b.type())
-        return a.type() < b.type();
-
-      // *  If two keys have different lengths, the shorter one sorts
-      //    earlier;
-      // *  If two keys have the same length, the one with the lower value
-      //    in (byte-wise) lexical order sorts earlier.
-      switch (a.type()) {
-        case Type::UNSIGNED:
-          // For unsigned integers, the smaller value has shorter length,
-          // and (byte-wise) lexical representation.
-          return a.GetInteger() < b.GetInteger();
-        case Type::NEGATIVE:
-          // For negative integers, the value closer to zero has shorter length,
-          // and (byte-wise) lexical representation.
-          return a.GetInteger() > b.GetInteger();
-        case Type::STRING: {
-          const auto& a_str = a.GetString();
-          const size_t a_length = a_str.size();
-          const auto& b_str = b.GetString();
-          const size_t b_length = b_str.size();
-          return std::tie(a_length, a_str) < std::tie(b_length, b_str);
-        }
-        case Type::BYTE_STRING: {
-          const auto& a_str = a.GetBytestring();
-          const size_t a_length = a_str.size();
-          const auto& b_str = b.GetBytestring();
-          const size_t b_length = b_str.size();
-          return std::tie(a_length, a_str) < std::tie(b_length, b_str);
-        }
-        case Type::INVALID_UTF8: {
-          const auto& a_str = a.GetInvalidUTF8();
-          const size_t a_length = a_str.size();
-          const auto& b_str = b.GetInvalidUTF8();
-          const size_t b_length = b_str.size();
-          return std::tie(a_length, a_str) < std::tie(b_length, b_str);
-        }
-        default:
-          break;
-      }
-
-      NOTREACHED();
-    }
+    // CTAP2 canonical CBOR encoding form:
+    // https://fidoalliance.org/specs/fido-v2.0-ps-20190130/fido-client-to-authenticator-protocol-v2.0-ps-20190130.html#ctap2-canonical-cbor-encoding-form
+    bool operator()(const Value& a, const Value& b) const;
 
     using is_transparent = void;
   };
@@ -101,18 +46,27 @@ class CBOR_EXPORT Value {
     MAP = 5,
     // TAG = 6, but not actually supported.
     SIMPLE_VALUE = 7,
-    NONE = -1,
     INVALID_UTF8 = -2,
   };
 
-  enum class SimpleValue {
-    FALSE_VALUE = 20,
-    TRUE_VALUE = 21,
-    NULL_VALUE = 22,
-    UNDEFINED = 23,
+  struct Null final {
+    constexpr explicit Null() = default;
 
-    kMinValue = FALSE_VALUE,
-    kMaxValue = UNDEFINED,
+    friend bool operator==(const Null&, const Null&) { return true; }
+  };
+  static constexpr Null null;
+
+  struct Undefined final {
+    constexpr explicit Undefined() = default;
+
+    friend bool operator==(const Undefined&, const Undefined&) { return true; }
+  };
+  static constexpr Undefined undefined;
+
+  struct InvalidUTF8 final {
+    BinaryValue bytes;
+
+    friend bool operator==(const InvalidUTF8&, const InvalidUTF8&) = default;
   };
 
   // Returns a Value with Type::INVALID_UTF8. This factory method lets tests
@@ -120,24 +74,28 @@ class CBOR_EXPORT Value {
   // tests since encoding may yield invalid CBOR data.
   static Value InvalidUTF8StringValueForTesting(std::string_view in_string);
 
-  Value(Value&& that) noexcept;
-  Value() noexcept;  // A NONE value.
+  // Use std::optional<Value> to represent an absent value.
+  Value() = delete;
 
-  explicit Value(SimpleValue in_simple);
-  explicit Value(bool boolean_value);
+  explicit Value(bool boolean_value) noexcept;
+  explicit Value(Null) noexcept;
+  explicit Value(Undefined) noexcept;
+
   explicit Value(float float_value) = delete;
   explicit Value(double float_value) = delete;
 
   explicit Value(int integer_value);
-  explicit Value(int64_t integer_value);
+  explicit Value(int64_t integer_value) noexcept;
   explicit Value(uint64_t integer_value) = delete;
 
+  // Constructors for `Type::BYTE_STRING`.
   explicit Value(base::span<const uint8_t> in_bytes);
   explicit Value(BinaryValue&& in_bytes) noexcept;
 
-  explicit Value(const char* in_string, Type type = Type::STRING);
-  explicit Value(std::string&& in_string, Type type = Type::STRING) noexcept;
-  explicit Value(std::string_view in_string, Type type = Type::STRING);
+  // Constructors for `Type::STRING`.
+  explicit Value(const char* in_string);
+  explicit Value(std::string&& in_string) noexcept;
+  explicit Value(std::string_view in_string);
 
   explicit Value(const ArrayValue& in_array);
   explicit Value(ArrayValue&& in_array) noexcept;
@@ -145,7 +103,12 @@ class CBOR_EXPORT Value {
   explicit Value(const MapValue& in_map);
   explicit Value(MapValue&& in_map) noexcept;
 
-  Value& operator=(Value&& that) noexcept;
+  // Prevent pointers from implicitly converting to `bool`.
+  template <typename T>
+  explicit Value(const T*) = delete;
+
+  Value(Value&&) noexcept;
+  Value& operator=(Value&&) noexcept;
 
   Value(const Value&) = delete;
   Value& operator=(const Value&) = delete;
@@ -157,59 +120,149 @@ class CBOR_EXPORT Value {
   Value Clone() const;
 
   // Returns the type of the value stored by the current Value object.
-  Type type() const { return type_; }
+  Type type() const;
 
-  // Returns true if the current object represents a given type.
-  bool is_type(Type type) const { return type == type_; }
-  bool is_none() const { return type() == Type::NONE; }
-  bool is_invalid_utf8() const { return type() == Type::INVALID_UTF8; }
-  bool is_simple() const { return type() == Type::SIMPLE_VALUE; }
-  bool is_bool() const {
-    return is_simple() && (simple_value_ == SimpleValue::TRUE_VALUE ||
-                           simple_value_ == SimpleValue::FALSE_VALUE);
+  bool is_invalid_utf8() const {
+    return std::holds_alternative<InvalidUTF8>(data_);
   }
-  bool is_unsigned() const { return type() == Type::UNSIGNED; }
-  bool is_negative() const { return type() == Type::NEGATIVE; }
-  bool is_integer() const { return is_unsigned() || is_negative(); }
-  bool is_bytestring() const { return type() == Type::BYTE_STRING; }
-  bool is_string() const { return type() == Type::STRING; }
-  bool is_array() const { return type() == Type::ARRAY; }
-  bool is_map() const { return type() == Type::MAP; }
+  bool is_simple() const { return is_bool() || is_null() || is_undefined(); }
+  bool is_bool() const { return std::holds_alternative<bool>(data_); }
+  bool is_unsigned() const { return is_integer() && GetInteger() >= 0; }
+  bool is_negative() const { return is_integer() && GetInteger() < 0; }
+  bool is_integer() const { return std::holds_alternative<int64_t>(data_); }
+  bool is_bytestring() const {
+    return std::holds_alternative<BinaryValue>(data_);
+  }
+  bool is_string() const { return std::holds_alternative<std::string>(data_); }
+  bool is_array() const { return std::holds_alternative<ArrayValue>(data_); }
+  bool is_map() const { return std::holds_alternative<MapValue>(data_); }
+  bool is_null() const { return std::holds_alternative<Null>(data_); }
+  bool is_undefined() const { return std::holds_alternative<Undefined>(data_); }
 
   // These will all fatally assert if the type doesn't match.
-  SimpleValue GetSimpleValue() const;
   bool GetBool() const;
-  const int64_t& GetInteger() const LIFETIME_BOUND;
-  const int64_t& GetUnsigned() const LIFETIME_BOUND;
-  const int64_t& GetNegative() const LIFETIME_BOUND;
+  int64_t GetInteger() const;
+  int64_t GetUnsigned() const;
+  int64_t GetNegative() const;
   const BinaryValue& GetBytestring() const LIFETIME_BOUND;
   std::string_view GetBytestringAsString() const LIFETIME_BOUND;
   // Returned string may contain NUL characters.
   const std::string& GetString() const LIFETIME_BOUND;
   const ArrayValue& GetArray() const LIFETIME_BOUND;
+  ArrayValue& GetArray() LIFETIME_BOUND;
   const MapValue& GetMap() const LIFETIME_BOUND;
+  MapValue& GetMap() LIFETIME_BOUND;
   const BinaryValue& GetInvalidUTF8() const LIFETIME_BOUND;
+
+  template <typename Visitor>
+  auto Visit(Visitor&& visitor) const {
+    return std::visit(std::forward<Visitor>(visitor), data_);
+  }
+
+  CBOR_EXPORT friend bool operator==(const Value&, const Value&);
 
  private:
   friend class Reader;
-  // This constructor allows INVALID_UTF8 values to be created, which only
-  // |Reader| and InvalidUTF8StringValueForTesting() may do.
-  Value(base::span<const uint8_t> in_bytes, Type type);
 
-  Type type_;
-
-  union {
-    SimpleValue simple_value_;
-    int64_t integer_value_;
-    BinaryValue bytestring_value_;
-    std::string string_value_;
-    ArrayValue array_value_;
-    MapValue map_value_;
+  struct invalid_utf8_t final {
+    constexpr explicit invalid_utf8_t() = default;
   };
+  static constexpr invalid_utf8_t invalid_utf8;
 
-  void InternalMoveConstructFrom(Value&& that);
-  void InternalCleanup();
+  // This constructor creates `INVALID_UTF8` values, which only
+  // `Reader` and `InvalidUTF8StringValueForTesting()` may do.
+  Value(invalid_utf8_t, base::span<const uint8_t> in_bytes);
+
+  using Storage = std::variant<Null,
+                               Undefined,
+                               bool,
+                               int64_t,
+                               BinaryValue,
+                               std::string,
+                               ArrayValue,
+                               MapValue,
+                               InvalidUTF8>;
+
+  Storage data_;
 };
+
+class CBOR_EXPORT ValueView final {
+ public:
+  ValueView() = delete;
+
+  ValueView(bool) noexcept;
+  ValueView(Value::Null) noexcept;
+  ValueView(Value::Undefined) noexcept;
+
+  explicit ValueView(float value) = delete;
+  explicit ValueView(double value) = delete;
+
+  ValueView(int value);
+  ValueView(int64_t value) noexcept;
+  explicit ValueView(uint64_t value) = delete;
+
+  // Constructors for `Type::BYTE_STRING`.
+  ValueView(const Value::BinaryValue& value LIFETIME_BOUND) noexcept
+      : ValueView(base::span(value)) {}
+  ValueView(base::span<const uint8_t> value LIFETIME_BOUND) noexcept;
+
+  template <size_t N>
+  ValueView(base::span<const uint8_t, N> value LIFETIME_BOUND) noexcept
+      : ValueView(base::span<const uint8_t>(value)) {}
+
+  // Constructors for `Type::STRING`.
+  ValueView(const char* value LIFETIME_BOUND) noexcept
+      : ValueView(std::string_view(value)) {}
+  ValueView(std::string_view value LIFETIME_BOUND) noexcept;
+
+  ValueView(const Value::ArrayValue& value LIFETIME_BOUND) noexcept
+      : ValueView(base::span(value)) {}
+  ValueView(base::span<const Value> value LIFETIME_BOUND) noexcept;
+
+  template <size_t N>
+  ValueView(base::span<const Value, N> value LIFETIME_BOUND) noexcept
+      : ValueView(base::span<const Value>(value)) {}
+
+  ValueView(const Value::MapValue& value LIFETIME_BOUND) noexcept;
+
+  ValueView(const Value& value LIFETIME_BOUND) noexcept;
+
+  // Prevent pointers from implicitly converting to `bool`.
+  template <typename T>
+  explicit ValueView(const T*) = delete;
+
+  ValueView(ValueView&&) noexcept = default;
+  ValueView& operator=(ValueView&&) noexcept = default;
+
+  ValueView(const ValueView&) noexcept = default;
+  ValueView& operator=(const ValueView&) noexcept = default;
+
+  ~ValueView() = default;
+
+  template <typename Visitor>
+  auto Visit(Visitor&& visitor) const {
+    return std::visit(std::forward<Visitor>(visitor), data_);
+  }
+
+ private:
+  using Storage =
+      std::variant<Value::Null,
+                   Value::Undefined,
+                   bool,
+                   int64_t,
+                   base::span<const uint8_t>,
+                   std::string_view,
+                   base::span<const Value>,
+                   std::reference_wrapper<const Value::MapValue>,
+                   std::reference_wrapper<const Value::InvalidUTF8>>;
+
+  Storage data_;
+};
+
+// Stream operators so for pretty-printing in tests.
+CBOR_EXPORT std::ostream& operator<<(std::ostream&, const Value&);
+CBOR_EXPORT std::ostream& operator<<(std::ostream&, ValueView);
+CBOR_EXPORT std::ostream& operator<<(std::ostream&, Value::Type);
 
 }  // namespace cbor
 

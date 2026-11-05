@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <complex>
 #include <limits>
+#include <numbers>
 
 #include "base/containers/span.h"
 #include "base/numerics/safe_conversions.h"
@@ -53,11 +54,10 @@ constexpr size_t kBiquadBufferSize = 1024;
 
 // Compute 10^x = exp(x*log(10))
 static double pow10(double x) {
-  return fdlibm::expf(x * 2.30258509299404568402);
+  return fdlibm::expf(x * std::numbers::ln10);
 }
 
-Biquad::Biquad(unsigned render_quantum_frames)
-    : has_sample_accurate_values_(false) {
+Biquad::Biquad(unsigned render_quantum_frames) {
 #if BUILDFLAG(IS_MAC)
   // Allocate two samples more for filter history
   input_buffer_.Allocate(kBiquadBufferSize + 2);
@@ -268,7 +268,7 @@ void Biquad::SetLowpassParams(int index, double cutoff, double resonance) {
 
     resonance = pow10(resonance / 20);
 
-    double theta = kPiDouble * cutoff;
+    double theta = std::numbers::pi * cutoff;
     double alpha = fdlibm::sin(theta) / (2 * resonance);
     double cosw = fdlibm::cos(theta);
     double beta = (1 - cosw) / 2;
@@ -300,7 +300,7 @@ void Biquad::SetHighpassParams(int index, double cutoff, double resonance) {
     // Compute biquad coefficients for highpass filter
 
     resonance = pow10(resonance / 20);
-    double theta = kPiDouble * cutoff;
+    double theta = std::numbers::pi * cutoff;
     double alpha = fdlibm::sin(theta) / (2 * resonance);
     double cosw = fdlibm::cos(theta);
     double beta = (1 + cosw) / 2;
@@ -349,7 +349,7 @@ void Biquad::SetLowShelfParams(int index, double frequency, double db_gain) {
     // The z-transform is a constant gain.
     SetNormalizedCoefficients(index, a * a, 0, 0, 1, 0, 0);
   } else if (frequency > 0) {
-    double w0 = kPiDouble * frequency;
+    double w0 = std::numbers::pi * frequency;
     double s = 1;  // filter slope (1 is max value)
     double alpha = 0.5 * fdlibm::sin(w0) * sqrt((a + 1 / a) * (1 / s - 1) + 2);
     double k = fdlibm::cos(w0);
@@ -381,7 +381,7 @@ void Biquad::SetHighShelfParams(int index, double frequency, double db_gain) {
     // The z-transform is 1.
     SetNormalizedCoefficients(index, 1, 0, 0, 1, 0, 0);
   } else if (frequency > 0) {
-    double w0 = kPiDouble * frequency;
+    double w0 = std::numbers::pi * frequency;
     double s = 1;  // filter slope (1 is max value)
     double alpha = 0.5 * fdlibm::sin(w0) * sqrt((a + 1 / a) * (1 / s - 1) + 2);
     double k = fdlibm::cos(w0);
@@ -417,7 +417,7 @@ void Biquad::SetPeakingParams(int index,
 
   if (frequency > 0 && frequency < 1) {
     if (q > 0) {
-      double w0 = kPiDouble * frequency;
+      double w0 = std::numbers::pi * frequency;
       double alpha = fdlibm::sin(w0) / (2 * q);
       double k = fdlibm::cos(w0);
 
@@ -450,7 +450,7 @@ void Biquad::SetAllpassParams(int index, double frequency, double q) {
 
   if (frequency > 0 && frequency < 1) {
     if (q > 0) {
-      double w0 = kPiDouble * frequency;
+      double w0 = std::numbers::pi * frequency;
       double alpha = fdlibm::sin(w0) / (2 * q);
       double k = fdlibm::cos(w0);
 
@@ -483,7 +483,7 @@ void Biquad::SetNotchParams(int index, double frequency, double q) {
 
   if (frequency > 0 && frequency < 1) {
     if (q > 0) {
-      double w0 = kPiDouble * frequency;
+      double w0 = std::numbers::pi * frequency;
       double alpha = fdlibm::sin(w0) / (2 * q);
       double k = fdlibm::cos(w0);
 
@@ -515,7 +515,7 @@ void Biquad::SetBandpassParams(int index, double frequency, double q) {
   q = std::max(0.0, q);
 
   if (frequency > 0 && frequency < 1) {
-    double w0 = kPiDouble * frequency;
+    double w0 = std::numbers::pi * frequency;
     if (q > 0) {
       double alpha = fdlibm::sin(w0) / (2 * q);
       double k = fdlibm::cos(w0);
@@ -580,7 +580,7 @@ void Biquad::GetFrequencyResponse(base::span<const float> frequency,
       mag_response[k] = std::numeric_limits<float>::quiet_NaN();
       phase_response[k] = std::numeric_limits<float>::quiet_NaN();
     } else {
-      double omega = -kPiDouble * frequency[k];
+      double omega = -std::numbers::pi * frequency[k];
       std::complex<double> z =
           std::complex<double>(fdlibm::cos(omega), fdlibm::sin(omega));
       std::complex<double> numerator = b0 + (b1 + b2 * z) * z;
@@ -644,7 +644,7 @@ static double RootFinder(double low,
   DCHECK(std::isfinite(f_high));
   DCHECK_LE(f_low * f_high, 0);
 
-  int iteration;
+  int iteration = 0;
   for (iteration = 0; iteration < kMaxIterations; ++iteration) {
     root = (f_low * high - f_high * low) / (f_low - f_high);
     if (fabs(high - low) < kAccuracyThreshold * fabs(high + low)) {
@@ -782,7 +782,7 @@ double Biquad::TailFrame(int coef_index, double max_frame) const {
   // this, we assume that we've reached the tail of the response.
   // Currently, this means that the impulse is less than 1 bit of a
   // 16-bit PCM value.
-  const double kMaxTailAmplitude = 1 / 32768.0;
+  constexpr double kMaxTailAmplitude = 1 / 32768.0;
 
   // Find the roots of 1+a1/z+a2/z^2 = 0.  Or equivalently,
   // z^2+a1*z+a2 = 0.  From the quadratic formula the roots are

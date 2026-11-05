@@ -51,13 +51,6 @@ config("mediapipe_internal_config") {
 
     # MediaPipe's CHECK macros are redefined from absl's.
     "-Wno-macro-redefined",
-
-    # Upstream MediaPipe does not seem to use C++20, so it can rely on implicit
-    # `this` capture in lambdas. C++20 deprecated that, so we need to disable
-    # the warning.
-    # TODO(http://crbug.com/372293769): remove once upstream MediaPipe stops
-    # relying on implicit `this` capture.
-    "-Wno-deprecated-this-capture",
   ]
 }
 
@@ -105,6 +98,7 @@ proto_library("mediapipe_proto") {
     "src/mediapipe/calculators/tensor/image_to_tensor_calculator.proto",
     "src/mediapipe/calculators/tensor/inference_calculator.proto",
     "src/mediapipe/calculators/tensor/regex_preprocessor_calculator.proto",
+    "src/mediapipe/calculators/tensor/sentencepiece_preprocessor_calculator.proto",
     "src/mediapipe/calculators/tensor/tensors_to_classification_calculator.proto",
     "src/mediapipe/calculators/tensor/tensors_to_detections_calculator.proto",
     "src/mediapipe/calculators/tflite/ssd_anchors_calculator.proto",
@@ -151,6 +145,7 @@ proto_library("mediapipe_proto") {
     "src/mediapipe/tasks/cc/core/proto/inference_subgraph.proto",
     "src/mediapipe/tasks/cc/core/proto/model_resources_calculator.proto",
     "src/mediapipe/tasks/cc/text/text_classifier/proto/text_classifier_graph_options.proto",
+    "src/mediapipe/tasks/metadata/bundle_manifest.proto",
     "src/mediapipe/util/label_map.proto",
   ]
 
@@ -182,6 +177,7 @@ source_set("com_google_audio_tools_portable") {
   ]
   public_configs = [ ":com_google_audio_tools_config" ]
 }
+
 source_set("com_google_audio_tools") {
   sources = [
     "src/third_party/com_google_audio_tools/audio/dsp/bessel_functions.cc",
@@ -205,6 +201,7 @@ source_set("com_google_audio_tools") {
   deps = [
     ":com_google_audio_tools_portable",
     ":mediapipe_shims",
+    "//third_party/pffft",
   ]
 
   if (is_win) {
@@ -379,7 +376,6 @@ tflite_static_library("mediapipe_core") {
     "src/mediapipe/framework/delegating_executor.cc",
     "src/mediapipe/framework/delegating_executor.h",
     "src/mediapipe/framework/demangle.h",
-    "src/mediapipe/framework/deps/canonical_errors.h",
     "src/mediapipe/framework/deps/clock.cc",
     "src/mediapipe/framework/deps/clock.h",
     "src/mediapipe/framework/deps/file_helpers.cc",
@@ -404,10 +400,6 @@ tflite_static_library("mediapipe_core") {
     "src/mediapipe/framework/deps/ret_check.h",
     "src/mediapipe/framework/deps/safe_int.h",
     "src/mediapipe/framework/deps/source_location.h",
-    "src/mediapipe/framework/deps/status.cc",
-    "src/mediapipe/framework/deps/status.h",
-    "src/mediapipe/framework/deps/status_builder.cc",
-    "src/mediapipe/framework/deps/status_builder.h",
     "src/mediapipe/framework/deps/status_macros.h",
     "src/mediapipe/framework/deps/strong_int.h",
     "src/mediapipe/framework/deps/threadpool.h",

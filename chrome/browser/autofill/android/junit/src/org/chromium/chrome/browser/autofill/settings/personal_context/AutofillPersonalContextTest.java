@@ -10,7 +10,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import androidx.fragment.app.testing.FragmentScenario;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -36,10 +35,7 @@ import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 
 /** Unit tests for {@link AutofillPersonalContextFragment}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@EnableFeatures({
-    ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
-    ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
-})
+@EnableFeatures(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA)
 public class AutofillPersonalContextTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -74,7 +70,6 @@ public class AutofillPersonalContextTest {
     }
 
     @Test
-    @SmallTest
     public void testPersonalContextSwitchToggleOff() {
         when(mMockEntityDataManagerJni.isPersonalContextEnabled(0L)).thenReturn(true);
 
@@ -96,8 +91,6 @@ public class AutofillPersonalContextTest {
     }
 
     @Test
-    @SmallTest
-    @EnableFeatures(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA)
     public void testPersonalContextSwitchToggleOn() {
         when(mMockEntityDataManagerJni.isPersonalContextEnabled(0L)).thenReturn(false);
 
@@ -119,7 +112,6 @@ public class AutofillPersonalContextTest {
     }
 
     @Test
-    @SmallTest
     public void testPersonalContextSwitchManagedByEnterprisePolicy() {
         when(mMockEntityDataManagerJni.isPersonalContextEnabled(0L)).thenReturn(false);
         when(mMockEntityDataManagerJni.isPersonalContextDisabledByEnterprisePolicy(0L))
@@ -135,7 +127,6 @@ public class AutofillPersonalContextTest {
     }
 
     @Test
-    @SmallTest
     public void testPersonalContextManageConnectedAppsClick() {
         final String testUrl = "https://test.com/apps";
         when(mMockEntityDataManagerJni.getPersonalContextManageConnectedAppsUrl())
@@ -157,11 +148,7 @@ public class AutofillPersonalContextTest {
     }
 
     @Test
-    @SmallTest
-    @DisableFeatures({
-        ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
-    })
+    @DisableFeatures(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA)
     public void testSearchIndexWhenFeaturesDisabled() {
         AutofillPersonalContextFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
                 RuntimeEnvironment.getApplication(), mSearchIndexDataMock, mProfile);
@@ -179,7 +166,6 @@ public class AutofillPersonalContextTest {
     }
 
     @Test
-    @SmallTest
     public void testSearchIndexWhenCategoryNotVisible() {
         when(mMockEntityDataManagerJni.isPersonalContextPreferenceVisible(0L)).thenReturn(false);
 

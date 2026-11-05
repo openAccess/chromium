@@ -288,8 +288,9 @@ class ASH_EXPORT ScrollableShelfView : public views::AccessiblePaneView,
   bool ShouldShowTooltipForView(const views::View* view) const override;
   bool ShouldHideTooltip(const gfx::Point& cursor_location,
                          views::View* delegate_view) const override;
-  const std::vector<aura::Window*> GetOpenWindowsForView(
-      views::View* view) override;
+  base::expected<aura::Window*, NoPreviewReason> GetPreviewWindowOrShowAppMenu(
+      views::View* view,
+      bool show_app_menu) override;
   std::u16string GetTitleForView(const views::View* view) const override;
   views::View* GetViewForEvent(const ui::Event& event) override;
 

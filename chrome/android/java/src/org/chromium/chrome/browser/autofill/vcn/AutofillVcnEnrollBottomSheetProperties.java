@@ -16,7 +16,6 @@ import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.VirtualCardEnrollmentLinkType;
 import org.chromium.components.autofill.payments.LegalMessageLine;
 import org.chromium.ui.modelutil.PropertyKey;
-import org.chromium.ui.modelutil.PropertyModel.ReadableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.ReadableObjectPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.url.GURL;
@@ -163,9 +162,6 @@ import java.util.function.Function;
     static final ReadableObjectPropertyKey<Description> DESCRIPTION =
             new ReadableObjectPropertyKey<>();
 
-    /** Whether or not to display the Google Pay icon. */
-    static final ReadableBooleanPropertyKey IS_GPAY_LOGO_VISIBLE = new ReadableBooleanPropertyKey();
-
     /** The icon for the card. */
     static final ReadableObjectPropertyKey<IssuerIcon> ISSUER_ICON =
             new ReadableObjectPropertyKey<>();
@@ -189,13 +185,20 @@ import java.util.function.Function;
     static final ReadableObjectPropertyKey<String> CANCEL_BUTTON_LABEL =
             new ReadableObjectPropertyKey<>();
 
+    /** The callback to run when the button that enrolls a virtual card is clicked. */
+    static final ReadableObjectPropertyKey<Runnable> ON_ACCEPT_BUTTON_CLICK_ACTION =
+            new ReadableObjectPropertyKey<>();
+
+    /** The callback to run when the button that cancels enrollment is clicked. */
+    static final ReadableObjectPropertyKey<Runnable> ON_CANCEL_BUTTON_CLICK_ACTION =
+            new ReadableObjectPropertyKey<>();
+
     /** Indicates whether the bottom sheet is in a loading state. */
     static final WritableBooleanPropertyKey SHOW_LOADING_STATE = new WritableBooleanPropertyKey();
 
     static final PropertyKey[] ALL_KEYS = {
         MESSAGE_TEXT,
         DESCRIPTION,
-        IS_GPAY_LOGO_VISIBLE,
         ISSUER_ICON,
         ISSUER_ICON_FETCH_CALLBACK,
         CARD_LABEL,
@@ -203,6 +206,8 @@ import java.util.function.Function;
         ISSUER_LEGAL_MESSAGES,
         ACCEPT_BUTTON_LABEL,
         CANCEL_BUTTON_LABEL,
+        ON_ACCEPT_BUTTON_CLICK_ACTION,
+        ON_CANCEL_BUTTON_CLICK_ACTION,
         SHOW_LOADING_STATE
     };
 

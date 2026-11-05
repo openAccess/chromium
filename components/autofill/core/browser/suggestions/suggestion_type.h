@@ -124,7 +124,7 @@ enum class SuggestionType {
 
   // Promotion suggestions.
   kMerchantPromoCodeEntry = 41,
-  kSeePromoCodeDetails = 42,
+  // kSeePromoCodeDetails = 42, // DEPRECATED
 
   // Federated profiles suggestions.
   kIdentityCredential = 66,
@@ -144,7 +144,16 @@ enum class SuggestionType {
   kWebauthnPasskeyQrCode = 86,
 
   // One time password suggestions.
+  // Represents an SMS OTP suggestion.
   kOneTimePasswordEntry = 74,
+  // Represents a Gmail OTP suggestion. Having a separate suggestion type allows
+  // recording distinct acceptance/impression metrics in AutofillSuggestionType
+  // histograms and configuring differing UI styling (e.g. Gmail icon and sender
+  // email labels vs Android Messages icon) without risking regressions to SMS
+  // OTP flows.
+  kGmailOneTimePasswordEntry = 100,
+  // Suggestion action to open Gmail for OTPs when no OTP was detected.
+  kOpenGmailForOtps = 101,
 
   // Other suggestions.
   kTitle = 45,
@@ -174,6 +183,10 @@ enum class SuggestionType {
   // kPendingStateSignin suggestion is displayed when the user is in the pending
   // state. On click the user will be directed to sign in.
   kPendingStateSignin = 65,
+
+  // Suggestion displayed when the user is in a pending state due to a trusted
+  // vault error. On click the user will be directed to resolve the error.
+  kPendingStateTrustedVaultError = 104,
 
   // Throbber suggestion to indicate loading state.
   kLoadingThrobber = 77,
@@ -246,9 +259,15 @@ enum class SuggestionType {
   // entity source info.
   kAutofillAiSourceAttribution = 99,
 
-  // Next ID: 100
+  // Suggestion to manage Wallet Direct Offers.
+  kManageOffers = 102,
 
-  kMaxValue = kAutofillAiSourceAttribution
+  // Suggestion to display the keyboard shortcut settings promo for AtMemory.
+  kAtMemoryShortcutSettingsPromo = 103,
+
+  // Next ID: 105
+
+  kMaxValue = kPendingStateTrustedVaultError
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:SuggestionType)
 

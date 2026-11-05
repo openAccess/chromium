@@ -51,6 +51,14 @@ const std::string DeviceTrustErrorToString(DeviceTrustError error) {
       return errors::kFailedToParseChallenge;
     case DeviceTrustError::kFailedToCreateResponse:
       return errors::kFailedToCreateResponse;
+    case DeviceTrustError::kTooManyRequests:
+      return errors::kTooManyRequests;
+    case DeviceTrustError::kUrlNotAllowed:
+      return errors::kUrlNotAllowed;
+    case DeviceTrustError::kServiceUnavailable:
+      return errors::kServiceUnavailable;
+    case DeviceTrustError::kInvalidOrigin:
+      return errors::kInvalidOrigin;
   }
 }
 

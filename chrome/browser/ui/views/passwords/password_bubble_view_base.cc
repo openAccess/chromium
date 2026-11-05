@@ -34,6 +34,7 @@
 #include "chrome/browser/ui/views/webauthn/passkey_upgrade_bubble_view.h"
 #include "components/password_manager/core/common/password_manager_ui.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
@@ -57,8 +58,9 @@ void PasswordBubbleViewBase::ShowBubble(content::WebContents* web_contents,
   if (!browser) {
     return;
   }
-  DCHECK(!g_manage_passwords_bubble_ ||
-         !g_manage_passwords_bubble_->GetWidget()->IsVisible());
+  CHECK(!g_manage_passwords_bubble_ ||
+            !g_manage_passwords_bubble_->GetWidget()->IsVisible(),
+        base::NotFatalUntil::M162);
 
   auto* button_provider = ToolbarButtonProvider::From(browser);
   if (!button_provider) {
@@ -69,8 +71,8 @@ void PasswordBubbleViewBase::ShowBubble(content::WebContents* web_contents,
       button_provider->GetBubbleAnchor(kActionShowPasswordsBubbleOrPage);
 
   PasswordBubbleViewBase* bubble = CreateBubble(web_contents, anchor, reason);
-  DCHECK(bubble);
-  DCHECK_EQ(bubble, g_manage_passwords_bubble_);
+  CHECK(bubble, base::NotFatalUntil::M162);
+  CHECK_EQ(bubble, g_manage_passwords_bubble_, base::NotFatalUntil::M162);
   // TODO(crbug.com/40218026): In non-DCHECK mode we could fall through here and
   // hard-crash if we requested a bubble and were in the wrong state. In the
   // meantime we will abort if we did not create a bubble.
@@ -204,7 +206,7 @@ void PasswordBubbleViewBase::CloseCurrentBubble() {
     // open2, close2].
     PasswordBubbleControllerBase* controller =
         g_manage_passwords_bubble_->GetController();
-    DCHECK(controller);
+    CHECK(controller, base::NotFatalUntil::M162);
     controller->OnBubbleClosing();
     if (auto* const widget = g_manage_passwords_bubble_->GetWidget()) {
       widget->Close();
@@ -214,14 +216,15 @@ void PasswordBubbleViewBase::CloseCurrentBubble() {
 
 // static
 void PasswordBubbleViewBase::ActivateBubble() {
-  DCHECK(g_manage_passwords_bubble_);
-  DCHECK(g_manage_passwords_bubble_->GetWidget()->IsVisible());
+  CHECK(g_manage_passwords_bubble_, base::NotFatalUntil::M162);
+  CHECK(g_manage_passwords_bubble_->GetWidget()->IsVisible(),
+        base::NotFatalUntil::M162);
   g_manage_passwords_bubble_->GetWidget()->Activate();
 }
 
 const content::WebContents* PasswordBubbleViewBase::GetWebContents() const {
   const PasswordBubbleControllerBase* controller = GetController();
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
   return controller->GetWebContents();
 }
 
@@ -262,9 +265,7 @@ void PasswordBubbleViewBase::SetBubbleHeader(int light_image_id,
   ui::ResourceBundle& bundle = ui::ResourceBundle::GetSharedInstance();
   auto image_view = std::make_unique<ThemeTrackingNonAccessibleImageView>(
       *bundle.GetImageSkiaNamed(light_image_id),
-      *bundle.GetImageSkiaNamed(dark_image_id),
-      base::BindRepeating(&views::BubbleDialogDelegate::background_color,
-                          base::Unretained(this)));
+      *bundle.GetImageSkiaNamed(dark_image_id), background_color());
 
   gfx::Size preferred_size = image_view->GetPreferredSize();
   if (preferred_size.width()) {
@@ -299,7 +300,7 @@ void PasswordBubbleViewBase::SetBubbleHeaderLottie(int lottie_image_id) {
 void PasswordBubbleViewBase::Init() {
   LocationBarBubbleDelegateView::Init();
   const PasswordBubbleControllerBase* controller = GetController();
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
   SetTitle(controller->GetTitle());
   SetShowTitle(!controller->GetTitle().empty());
 }

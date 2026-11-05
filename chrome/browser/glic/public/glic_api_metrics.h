@@ -8,8 +8,13 @@
 #include <stdint.h>
 
 #include <string_view>
+#include <utility>
 
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/time/time.h"
+#include "base/timer/elapsed_timer.h"
+#include "chrome/browser/glic/host/glic.mojom-shared.h"
 
 namespace glic {
 
@@ -30,7 +35,6 @@ enum class GlicHostApiRequestId {
   kStopActorTask = 13,
   kPauseActorTask = 14,
   kResumeActorTask = 15,
-  kCaptureScreenshot = 16,
   kResizeWindow = 17,
   kEnableDragResize = 18,
   kSetMinimumWidgetSize = 20,
@@ -66,6 +70,7 @@ enum class GlicHostApiRequestId {
   kUnpinAllTabs = 51,
   kSubscribeToPinCandidates = 52,
   kGetZeroStateSuggestionsForFocusedTab = 54,
+  kGetZeroStateSuggestionsAndSubscribe = 55,
   kSetClosedCaptioningSetting = 56,
   kDropScrollToHighlight = 57,
   kMaybeRefreshUserStatus = 58,
@@ -111,8 +116,15 @@ enum class GlicHostApiRequestId {
   kActivateTabWithUrl = 102,
   kUpdateActorTaskStepProgress = 103,
   kOpenPinnedTabPicker = 104,
+  kOpenContactInfoSettingsPage = 105,
+  kSetClientStorageItem = 106,
+  kClearClientStorage = 107,
+  kGetSendTabToSelfDevices = 108,
+  kOnInputFocused = 109,
 };
-// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicHostApiRequestType)
+// LINT.ThenChange(
+// //tools/metrics/histograms/metadata/glic/histograms.xml:ApiRequestType,
+// //tools/metrics/histograms/metadata/glic/enums.xml:GlicHostApiRequestType)
 
 // Returns the string name for a GlicHostApiRequestId (e.g. "CreateSkill").
 std::string_view ToString(GlicHostApiRequestId request_id);
@@ -127,6 +139,31 @@ inline void LogApiRequestCount(
     int32_t request_type_id,
     mojom::GlicRequestEvent event = mojom::GlicRequestEvent::kRequestReceived) {
   LogApiRequestCount(static_cast<GlicHostApiRequestId>(request_type_id), event);
+}
+
+// Records the Glic.Api.RequestHostLatency.{request_type} UMA histogram.
+void LogApiRequestLatency(GlicHostApiRequestId request_type_id,
+                          base::TimeDelta latency);
+
+template <typename... Args>
+base::OnceCallback<void(Args...)> WrapCallbackToLogApiRequestLatency(
+    GlicHostApiRequestId request_id,
+    base::OnceCallback<void(Args...)> callback) {
+  return base::BindOnce(
+      [](GlicHostApiRequestId request_id, base::ElapsedTimer timer,
+         base::OnceCallback<void(Args...)> callback, Args... args) {
+        LogApiRequestLatency(request_id, timer.Elapsed());
+        std::move(callback).Run(std::forward<Args>(args)...);
+      },
+      request_id, base::ElapsedTimer(), std::move(callback));
+}
+
+template <typename... Args>
+base::OnceCallback<void(Args...)> WrapCallbackToLogApiRequestWithLatency(
+    GlicHostApiRequestId request_id,
+    base::OnceCallback<void(Args...)> callback) {
+  LogApiRequestCount(request_id);
+  return WrapCallbackToLogApiRequestLatency(request_id, std::move(callback));
 }
 
 }  // namespace glic

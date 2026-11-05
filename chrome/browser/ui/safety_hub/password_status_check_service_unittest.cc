@@ -22,9 +22,11 @@
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/password_manager/core/browser/leak_detection/bulk_leak_check_service.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/safety_check/features.h"
@@ -54,6 +56,7 @@ using password_manager::InsecureType;
 using password_manager::IsLeaked;
 using password_manager::LeakCheckCredential;
 using password_manager::PasswordForm;
+using password_manager::PasswordString;
 using password_manager::TestPasswordStore;
 using safety_hub::SafetyHubCardState;
 using safety_hub_test_util::MakeForm;
@@ -421,23 +424,24 @@ TEST_F(PasswordStatusCheckServiceBaseTest, PasswordCheckNoPasswords) {
   RunUntilIdle();
 }
 
-// TODO: sideyilmaz@chromium.org - Investigate why this test fails.
 TEST_F(PasswordStatusCheckServiceBaseTest,
-       DISABLED_PasswordCheckSignedOutWithPasswords) {
+       PasswordCheckSignedOutWithPasswords) {
   profile_store().AddLogin(password_manager::FromPasswordForm(
       MakeForm(kUsername1, kPassword, kOrigin1)));
 
+  service()->SetPasswordCheckSchedulePrefsWithInterval(base::Time::Now() +
+                                                       base::Minutes(10));
+  service()->StartRepeatedUpdates();
+
   ::testing::StrictMock<MockObserver> observer(bulk_leak_check_service());
 
-  task_environment()->AdvanceClock(
-      service()->GetScheduledPasswordCheckInterval());
   EXPECT_CALL(observer,
               OnStateChanged(BulkLeakCheckService::State::kSignedOut));
+  task_environment()->AdvanceClock(base::Minutes(10));
   RunUntilIdle();
 }
 
-TEST_F(PasswordStatusCheckServiceBaseTest,
-       DISABLED_PasswordCheck_FindCompromised) {
+TEST_F(PasswordStatusCheckServiceBaseTest, PasswordCheck_FindCompromised) {
   identity_test_env().MakePrimaryAccountAvailable(
       kTestEmail, signin::ConsentLevel::kSignin);
 
@@ -448,16 +452,20 @@ TEST_F(PasswordStatusCheckServiceBaseTest,
 
   EXPECT_EQ(service()->compromised_credential_count(), 0UL);
 
+  service()->SetPasswordCheckSchedulePrefsWithInterval(base::Time::Now() +
+                                                       base::Minutes(10));
+  service()->StartRepeatedUpdates();
+
   // When leak check runs, mock the result for this credential coming back
   // positive.
-  task_environment()->AdvanceClock(
-      service()->GetScheduledPasswordCheckInterval());
+  task_environment()->AdvanceClock(base::Minutes(10));
   RunUntilIdle();
 
-  // Enumlate response from leak check server.
+  // Emulate response from leak check server.
   static_cast<BulkLeakCheckDelegateInterface*>(bulk_leak_check_service())
-      ->OnFinishedCredential(LeakCheckCredential(kUsername1, kPassword),
-                             IsLeaked(true));
+      ->OnFinishedCredential(
+          LeakCheckCredential(kUsername1, PasswordString(kPassword)),
+          IsLeaked(true));
 
   bulk_leak_check_service()->set_state_and_notify(
       BulkLeakCheckService::State::kIdle);
@@ -467,7 +475,7 @@ TEST_F(PasswordStatusCheckServiceBaseTest,
   EXPECT_EQ(service()->compromised_credential_count(), 1UL);
 }
 
-TEST_F(PasswordStatusCheckServiceBaseTest, DISABLED_PasswordCheck_Error) {
+TEST_F(PasswordStatusCheckServiceBaseTest, PasswordCheck_Error) {
   identity_test_env().MakePrimaryAccountAvailable(
       kTestEmail, signin::ConsentLevel::kSignin);
   profile_store().AddLogin(password_manager::FromPasswordForm(
@@ -476,16 +484,17 @@ TEST_F(PasswordStatusCheckServiceBaseTest, DISABLED_PasswordCheck_Error) {
   UpdateInsecureCredentials();
   EXPECT_EQ(service()->compromised_credential_count(), 0UL);
 
-  ::testing::StrictMock<MockObserver> observer(bulk_leak_check_service());
+  service()->SetPasswordCheckSchedulePrefsWithInterval(base::Time::Now() +
+                                                       base::Minutes(10));
+  service()->StartRepeatedUpdates();
 
-  task_environment()->AdvanceClock(
-      service()->GetScheduledPasswordCheckInterval());
-  RunUntilIdle();
+  ::testing::StrictMock<MockObserver> observer(bulk_leak_check_service());
 
   EXPECT_CALL(observer, OnStateChanged(BulkLeakCheckService::State::kRunning));
   EXPECT_CALL(observer,
               OnStateChanged(BulkLeakCheckService::State::kServiceError));
 
+  task_environment()->AdvanceClock(base::Minutes(10));
   RunUntilIdle();
 
   bulk_leak_check_service()->set_state_and_notify(
@@ -504,7 +513,8 @@ TEST_F(PasswordStatusCheckServiceBaseTest, PrefInitialized) {
 
   EXPECT_GE(service()->GetScheduledPasswordCheckTime(), base::Time::Now());
   EXPECT_LT(service()->GetScheduledPasswordCheckTime(),
-            base::Time::Now() + service()->GetScheduledPasswordCheckInterval());
+            base::Time::Now() + service()->GetScheduledPasswordCheckInterval() +
+                base::Days(1));
 }
 
 // If interval changes, the scheduled time at which the password check runs
@@ -719,7 +729,7 @@ TEST_F(PasswordStatusCheckServiceBaseTest, IgnoredSavedPasswords) {
       url::SchemeHostPort(GURL("https://idp.com"));
   federated_from.password_value.clear();
   federated_from.signon_realm = "federation://example.com/accounts.com";
-  federated_from.match_type = PasswordForm::MatchType::kExact;
+  federated_from.match_type = affiliations::MatchType::kExact;
   profile_store().AddLogin(password_manager::FromPasswordForm(federated_from));
   AdvanceClockForWeakAndReusedChecks();
   ASSERT_EQ(1UL, service()->weak_credential_count());
@@ -965,10 +975,13 @@ TEST_P(PasswordStatusCheckServiceParameterizedSchedulingTest,
   ::testing::StrictMock<MockObserver> observer(bulk_leak_check_service());
 
   // Make the probabality of all other days 0, except the current week day.
-  // Current week day should be selected to run the checks.
+  // Current week day should be selected to run the checks. The interval is set
+  // to 7 days so that every week day falls within the scheduling window.
   feature_list.InitAndEnableFeatureWithParameters(
       safety_check::features::kSafetyHub,
       {
+          {safety_check::features::kBackgroundPasswordCheckInterval.name,
+           "7d"},
           {"password-check-sun-weight", GetWeightForDay(0)},
           {"password-check-mon-weight", GetWeightForDay(1)},
           {"password-check-tue-weight", GetWeightForDay(2)},

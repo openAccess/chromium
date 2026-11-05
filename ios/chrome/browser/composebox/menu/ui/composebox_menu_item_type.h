@@ -5,24 +5,26 @@
 #ifndef IOS_CHROME_BROWSER_COMPOSEBOX_MENU_UI_COMPOSEBOX_MENU_ITEM_TYPE_H_
 #define IOS_CHROME_BROWSER_COMPOSEBOX_MENU_UI_COMPOSEBOX_MENU_ITEM_TYPE_H_
 
+#import "ios/chrome/browser/composebox/public/composebox_mode.h"
+
 enum class ComposeboxMenuItemType {
   kUnknown = 0,
   kAIM,
   kCreateImage,
   kDeepSearch,
   kCanvas,
-  kModelRegular,
-  kModelAuto,
-  kModelThinking,
+  kModel,
   kCurrentTab,
-  kModelThinkingNoGenUI,
-  kModelFlash,
   kAttachmentTabs,
   kAttachmentCamera,
   kAttachmentGallery,
   kAttachmentFiles,
   kAttachmentDrive,
   kAttachmentSharedTabs,
+  kMoreOptionsSubmenu,
 };
+
+// Maps a tool mode to its corresponding menu item type.
+ComposeboxMenuItemType MenuItemTypeForTool(ComposeboxMode mode);
 
 #endif  // IOS_CHROME_BROWSER_COMPOSEBOX_MENU_UI_COMPOSEBOX_MENU_ITEM_TYPE_H_

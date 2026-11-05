@@ -10,8 +10,8 @@
 
 #include "base/android/scoped_java_ref.h"
 #include "base/memory/raw_ref.h"
-#include "chrome/browser/ui/autofill/autofill_dialog_controller.h"
-#include "chrome/browser/ui/autofill/autofill_dialog_view.h"
+#include "chrome/browser/ui/android/autofill/autofill_dialog_controller.h"
+#include "chrome/browser/ui/android/autofill/autofill_dialog_view.h"
 
 namespace autofill {
 
@@ -28,15 +28,16 @@ class AutofillDialogViewAndroid : public AutofillDialogView {
   // --------------------------------------------------------------------------
   // Methods called from Java via JNI
   // --------------------------------------------------------------------------
-  void OnPositiveButtonClicked(JNIEnv* env);
-  void OnDismissed(JNIEnv* env);
+  void OnPositiveButtonClicked();
+  void OnNegativeButtonClicked();
+  void OnDismissed();
 
  private:
   void InitJavaObject();
 
   raw_ref<AutofillDialogController> controller_;
   // The corresponding java object.
-  base::android::ScopedJavaGlobalRef<jobject> java_object_;
+  jni_zero::ScopedJavaGlobalRef<jobject> java_object_;
 };
 }  // namespace autofill
 

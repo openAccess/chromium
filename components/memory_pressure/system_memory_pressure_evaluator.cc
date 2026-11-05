@@ -13,15 +13,19 @@
 #if BUILDFLAG(IS_FUCHSIA)
 #include "components/memory_pressure/system_memory_pressure_evaluator_fuchsia.h"
 #elif BUILDFLAG(IS_APPLE)
+#include "components/memory_pressure/disk_space_memory_pressure_evaluator_mac.h"
 #include "components/memory_pressure/system_memory_pressure_evaluator_mac.h"
-#elif BUILDFLAG(IS_WIN)
-#include "components/memory_pressure/system_memory_pressure_evaluator_win.h"
+#endif
+
+#if BUILDFLAG(IS_MAC)
+#include "components/memory_pressure/free_memory_pressure_evaluator.h"
+#endif
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#include "components/memory_pressure/threshold_memory_pressure_evaluator.h"
 #endif
 
 namespace memory_pressure {
-
-const base::TimeDelta SystemMemoryPressureEvaluator::kRenotifyVotePeriod =
-    base::Seconds(5);
 
 // static
 std::unique_ptr<SystemMemoryPressureEvaluator>
@@ -32,17 +36,59 @@ SystemMemoryPressureEvaluator::CreateDefaultSystemEvaluator(
       memory_pressure::SystemMemoryPressureEvaluatorFuchsia>(
       monitor->CreateVoter());
 #elif BUILDFLAG(IS_APPLE)
+  // The native OS evaluator is always constructed so that the OS pressure
+  // signal keeps being observed and reported in every experiment arm. The
+  // feature flags control whether it votes, not whether it exists. When an
+  // evaluator replaces it, it runs as a shadow evaluator with no voter.
+  bool os_signal_replaced = false;
+#if BUILDFLAG(IS_MAC)
+  os_signal_replaced =
+      base::FeatureList::IsEnabled(
+          memory_pressure::features::kMacAvailableMemoryPressureEvaluator) ||
+      base::FeatureList::IsEnabled(
+          memory_pressure::features::kMacFreeMemoryPressureEvaluator);
+#endif
   return std::make_unique<memory_pressure::mac::SystemMemoryPressureEvaluator>(
-      monitor->CreateVoter());
+      os_signal_replaced ? nullptr : monitor->CreateVoter());
 #elif BUILDFLAG(IS_WIN)
-  auto evaluator =
-      std::make_unique<memory_pressure::win::SystemMemoryPressureEvaluator>(
-          monitor->CreateVoter());
-  return evaluator;
+  return ThresholdMemoryPressureEvaluator::CreateWithWinDefaults(
+      monitor->CreateVoter());
 #else
   // Chrome OS and Chromecast evaluators are created in separate components.
   return nullptr;
 #endif
+}
+
+// static
+std::vector<std::unique_ptr<SystemMemoryPressureEvaluator>>
+SystemMemoryPressureEvaluator::CreateDefaultAuxiliaryEvaluators(
+    MultiSourceMemoryPressureMonitor* monitor) {
+  std::vector<std::unique_ptr<SystemMemoryPressureEvaluator>> evaluators;
+#if BUILDFLAG(IS_APPLE)
+  auto disk_space_evaluator =
+      std::make_unique<memory_pressure::mac::DiskSpaceMemoryPressureEvaluator>(
+          monitor->CreateVoter(/*is_disk_voter=*/true));
+  disk_space_evaluator->Start();
+  evaluators.push_back(std::move(disk_space_evaluator));
+#endif
+
+#if BUILDFLAG(IS_MAC)
+  // Chrome-computed evaluators that can replace the native OS signal. Each is
+  // an independent auxiliary voter.
+  if (base::FeatureList::IsEnabled(
+          memory_pressure::features::kMacAvailableMemoryPressureEvaluator)) {
+    evaluators.push_back(
+        ThresholdMemoryPressureEvaluator::CreateWithMacFeatureParams(
+            monitor->CreateVoter()));
+  }
+  if (base::FeatureList::IsEnabled(
+          memory_pressure::features::kMacFreeMemoryPressureEvaluator)) {
+    evaluators.push_back(
+        FreeMemoryPressureEvaluator::CreateWithMacFeatureParams(
+            monitor->CreateVoter()));
+  }
+#endif
+  return evaluators;
 }
 
 SystemMemoryPressureEvaluator::SystemMemoryPressureEvaluator(
@@ -58,8 +104,23 @@ void SystemMemoryPressureEvaluator::SetCurrentVote(
   current_vote_ = level;
 }
 
+void SystemMemoryPressureEvaluator::SendCurrentVote() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Shadow evaluators are constructed without a voter. They observe and report
+  // the system signal without influencing the aggregated pressure level.
+  if (!voter_) {
+    return;
+  }
+  voter_->SetVote(current_vote_);
+}
+
 void SystemMemoryPressureEvaluator::SendCurrentVote(bool notify) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Shadow evaluators are constructed without a voter. They observe and report
+  // the system signal without influencing the aggregated pressure level.
+  if (!voter_) {
+    return;
+  }
   voter_->SetVote(current_vote_, notify);
 }
 

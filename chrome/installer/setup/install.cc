@@ -24,7 +24,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/version_info/channel.h"
-#include "base/win/shortcut.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/install_static/install_util.h"
 #include "chrome/installer/setup/install_params.h"
 #include "chrome/installer/setup/install_worker.h"
@@ -58,15 +58,17 @@ void LogShortcutOperation(ShellUtil::ShortcutLocation location,
   // thus this method does not handle logging a message for it.
   DCHECK(operation != ShellUtil::SHELL_SHORTCUT_UPDATE_EXISTING);
   std::string message;
-  if (failed)
+  if (failed) {
     message.append("Failed: ");
+  }
   message.append(
       (operation == ShellUtil::SHELL_SHORTCUT_CREATE_ALWAYS ||
        operation == ShellUtil::SHELL_SHORTCUT_CREATE_IF_NO_SYSTEM_LEVEL)
           ? "Creating "
           : "Overwriting ");
-  if (failed && operation == ShellUtil::SHELL_SHORTCUT_REPLACE_EXISTING)
+  if (failed && operation == ShellUtil::SHELL_SHORTCUT_REPLACE_EXISTING) {
     message.append("(maybe the shortcut doesn't exist?) ");
+  }
   message.append((properties.level == ShellUtil::CURRENT_USER) ? "per-user "
                                                                : "all-users ");
   switch (location) {
@@ -89,26 +91,31 @@ void LogShortcutOperation(ShellUtil::ShortcutLocation location,
   }
 
   message.push_back('"');
-  if (properties.has_shortcut_name())
+  if (properties.has_shortcut_name()) {
     message.append(base::WideToUTF8(properties.shortcut_name));
-  else
+  } else {
     message.append(base::WideToUTF8(InstallUtil::GetDisplayName()));
+  }
   message.push_back('"');
 
   message.append(" shortcut to ");
   message.append(base::WideToUTF8(properties.target.value()));
-  if (properties.has_arguments())
+  if (properties.has_arguments() || properties.has_arguments_to_merge()) {
+    message.push_back(' ');
     message.append(base::WideToUTF8(properties.arguments));
+  }
 
-  if (properties.pin_to_taskbar && CanPinShortcutToTaskbar())
+  if (properties.pin_to_taskbar && CanPinShortcutToTaskbar()) {
     message.append(" and pinning to the taskbar");
+  }
 
   message.push_back('.');
 
-  if (failed)
+  if (failed) {
     LOG(WARNING) << message;
-  else
+  } else {
     VLOG(1) << message;
+  }
 }
 
 void ExecuteAndLogShortcutOperation(
@@ -119,8 +126,9 @@ void ExecuteAndLogShortcutOperation(
   bool pinned = false;
   bool success = ShellUtil::CreateOrUpdateShortcut(location, properties,
                                                    operation, &pinned);
-  if (!success)
+  if (!success) {
     LogShortcutOperation(location, properties, operation, /*failed=*/true);
+  }
 
   // For Start Menu shortcut creation on versions of Win10 that support
   // pinning, record whether or not the installer pinned Chrome.
@@ -140,8 +148,9 @@ void AddChromeToMediaPlayerList() {
       HKEY_LOCAL_MACHINE, reg_path, WorkItem::kWow64Default));
 
   // if the operation fails we log the error but still continue
-  if (!work_item.get()->Do())
+  if (!work_item.get()->Do()) {
     LOG(ERROR) << "Could not add Chrome to media player inclusion list.";
+  }
 }
 
 // Copy the initial preferences file provided to installer, in the same folder
@@ -266,6 +275,14 @@ InstallStatus InstallNewVersion(const InstallParams& install_params,
   return INSTALL_FAILED;
 }
 
+// Returns `--source-shortcut-location=<location_value>` for shortcut tagging.
+std::wstring GetSourceShortcutLocationArg(std::string_view location_value) {
+  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
+  command_line.AppendSwitchASCII(::switches::kSourceShortcutLocation,
+                                 location_value);
+  return command_line.GetArgumentsString();
+}
+
 }  // namespace
 
 void CreateOrUpdateShortcuts(const base::FilePath& target,
@@ -275,8 +292,9 @@ void CreateOrUpdateShortcuts(const base::FilePath& target,
   bool do_not_create_any_shortcuts = false;
   prefs.GetBool(initial_preferences::kDoNotCreateAnyShortcuts,
                 &do_not_create_any_shortcuts);
-  if (do_not_create_any_shortcuts)
+  if (do_not_create_any_shortcuts) {
     return;
+  }
 
   // Extract shortcut preferences from |prefs|.
   bool do_not_create_desktop_shortcut = false;
@@ -323,8 +341,11 @@ void CreateOrUpdateShortcuts(const base::FilePath& target,
 
   if (!do_not_create_desktop_shortcut ||
       shortcut_operation == ShellUtil::SHELL_SHORTCUT_REPLACE_EXISTING) {
+    ShellUtil::ShortcutProperties desktop_properties(base_properties);
+    desktop_properties.set_arguments_to_merge(GetSourceShortcutLocationArg(
+        ::switches::kSourceShortcutLocationDesktop));
     ExecuteAndLogShortcutOperation(ShellUtil::SHORTCUT_LOCATION_DESKTOP,
-                                   base_properties, shortcut_operation);
+                                   desktop_properties, shortcut_operation);
   }
 
   if (!do_not_create_quick_launch_shortcut ||
@@ -338,6 +359,8 @@ void CreateOrUpdateShortcuts(const base::FilePath& target,
   }
 
   ShellUtil::ShortcutProperties start_menu_properties(base_properties);
+  start_menu_properties.set_arguments_to_merge(GetSourceShortcutLocationArg(
+      ::switches::kSourceShortcutLocationStartMenu));
   if (shortcut_operation == ShellUtil::SHELL_SHORTCUT_CREATE_ALWAYS ||
       shortcut_operation ==
           ShellUtil::SHELL_SHORTCUT_CREATE_IF_NO_SYSTEM_LEVEL) {
@@ -345,8 +368,9 @@ void CreateOrUpdateShortcuts(const base::FilePath& target,
   }
 
   const CLSID toast_activator_clsid = install_static::GetToastActivatorClsid();
-  if (toast_activator_clsid != CLSID_NULL)
+  if (toast_activator_clsid != CLSID_NULL) {
     start_menu_properties.set_toast_activator_clsid(toast_activator_clsid);
+  }
 
   ExecuteAndLogShortcutOperation(ShellUtil::SHORTCUT_LOCATION_START_MENU_ROOT,
                                  start_menu_properties, shortcut_operation);
@@ -362,8 +386,9 @@ void RegisterChromeOnMachine(const InstallerState& installer_state,
 
   // Register the event log provider for system-level installs only, as it
   // requires admin privileges.
-  if (installer_state.system_install())
+  if (installer_state.system_install()) {
     RegisterEventLogProvider(installer_state.target_path(), version);
+  }
 
   // Register Chrome as a browser with Windows.
   const base::FilePath chrome_exe(
@@ -384,12 +409,14 @@ void RunShortcutCreationInChildProc(
     InstallShortcutOperation install_operation) {
   base::CommandLine command_line(setup_path);
   InstallUtil::AppendModeAndChannelSwitches(&command_line);
-  if (installer_state.system_install())
+  if (installer_state.system_install()) {
     command_line.AppendSwitch(switches::kSystemLevel);
+  }
 
   command_line.AppendSwitch(switches::kVerboseLogging);
-  if (prefs_path.has_value())
+  if (prefs_path.has_value()) {
     command_line.AppendSwitchPath(switches::kInstallerData, prefs_path.value());
+  }
 
   command_line.AppendSwitchASCII(switches::kCreateShortcuts,
                                  base::NumberToString(install_operation));
@@ -444,8 +471,9 @@ InstallStatus InstallOrUpdateProduct(const InstallParams& install_params,
 
     const bool use_initial_prefs =
         result == FIRST_INSTALL_SUCCESS && !prefs_path.empty();
-    if (use_initial_prefs)
+    if (use_initial_prefs) {
       CopyPreferenceFileForFirstRun(installer_state, prefs_path);
+    }
 
     installer_state.SetStage(CREATING_SHORTCUTS);
     InstallShortcutOperation install_operation =
@@ -503,8 +531,9 @@ void LaunchDeleteOldVersionsProcess(const base::FilePath& setup_path,
   InstallUtil::AppendModeAndChannelSwitches(&command_line);
   command_line.AppendSwitch(switches::kDeleteOldVersions);
 
-  if (installer_state.system_install())
+  if (installer_state.system_install()) {
     command_line.AppendSwitch(switches::kSystemLevel);
+  }
   // Unconditionally enable verbose logging for now to make diagnosing potential
   // failures possible.
   command_line.AppendSwitch(switches::kVerboseLogging);
@@ -568,10 +597,11 @@ void HandleOsUpgradeForBrowser(const InstallerState& installer_state,
     UpdateActiveSetupVersionWorkItem active_setup_work_item(
         install_static::GetActiveSetupPath(),
         UpdateActiveSetupVersionWorkItem::UPDATE_AND_BUMP_SELECTIVE_TRIGGER);
-    if (active_setup_work_item.Do())
+    if (active_setup_work_item.Do()) {
       VLOG(1) << "Bumped Active Setup Version on-os-upgrade.";
-    else
+    } else {
       LOG(ERROR) << "Failed to bump Active Setup Version on-os-upgrade.";
+    }
   }
 }
 

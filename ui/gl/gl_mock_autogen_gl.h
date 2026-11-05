@@ -286,6 +286,10 @@ MOCK_METHOD6(DrawRangeElements,
                   const void* indices));
 MOCK_METHOD2(EGLImageTargetRenderbufferStorageOES,
              void(GLenum target, GLeglImageOES image));
+MOCK_METHOD3(EGLImageTargetTexStorageEXT,
+             void(GLenum target,
+                  GLeglImageOES image,
+                  const GLint* attrib_list));
 MOCK_METHOD2(EGLImageTargetTexture2DOES,
              void(GLenum target, GLeglImageOES image));
 MOCK_METHOD1(Enable, void(GLenum cap));
@@ -1087,6 +1091,7 @@ MOCK_METHOD4(TransformFeedbackVaryings,
                   GLsizei count,
                   const char* const* varyings,
                   GLenum bufferMode));
+MOCK_METHOD1(TrimMemoryANGLE, void(GLenum trimLevel));
 MOCK_METHOD2(Uniform1f, void(GLint location, GLfloat x));
 MOCK_METHOD3(Uniform1fv, void(GLint location, GLsizei count, const GLfloat* v));
 MOCK_METHOD2(Uniform1i, void(GLint location, GLint x));

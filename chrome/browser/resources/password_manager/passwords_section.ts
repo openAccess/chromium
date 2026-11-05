@@ -12,7 +12,7 @@ import './user_utils_mixin.js';
 import './notification_cards/notification_card.js';
 import './notification_cards/notification_cards_browser_proxy.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
+import {PrefServiceObserverMixin} from '/shared/settings/prefs2/pref_service_observer_mixin.js';
 import {getInstance as getAnnouncerInstance} from 'chrome://resources/cr_elements/cr_a11y_announcer/cr_a11y_announcer.js';
 import type {CrButtonElement} from 'chrome://resources/cr_elements/cr_button/cr_button.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
@@ -30,6 +30,7 @@ import type {NotificationCard} from './notification_cards/notification_cards_bro
 import {NotificationCardsProxyImpl} from './notification_cards/notification_cards_browser_proxy.js';
 import {PasswordManagerImpl} from './password_manager_proxy.js';
 import {getTemplate} from './passwords_section.html.js';
+import {isSavingNewPasswordsBlockedByMandatoryPolicy} from './prefs/policy_utils.js';
 import type {Route} from './router.js';
 import {Page, RouteObserverMixin, Router, UrlParam} from './router.js';
 import {UserUtilMixin} from './user_utils_mixin.js';
@@ -46,8 +47,8 @@ export interface PasswordsSectionElement {
   };
 }
 
-const PasswordsSectionElementBase =
-    PrefsMixin(UserUtilMixin(RouteObserverMixin(I18nMixin(PolymerElement))));
+const PasswordsSectionElementBase = PrefServiceObserverMixin(
+    UserUtilMixin(RouteObserverMixin(I18nMixin(PolymerElement))));
 
 export class PasswordsSectionElement extends PasswordsSectionElementBase {
   static get is() {
@@ -113,17 +114,16 @@ export class PasswordsSectionElement extends PasswordsSectionElementBase {
         value: null,
       },
 
-      passwordManagerDisabled_: {
+      passwordSavingBlockedByPolicy_: {
         type: Boolean,
-        computed: 'computePasswordManagerDisabled_(' +
-            'prefs.credentials_enable_service.enforcement, ' +
-            'prefs.credentials_enable_service.value)',
+        value: false,
       },
 
       shouldShowNotificationCard_: {
         type: Boolean,
         computed: 'computeShouldShowNotificationCard_(' +
-            'notificationCard_, isAccountStoreUser, passwordsOnDevice_)',
+            'notificationCard_, isAccountStoreUser, accountEmail, ' +
+            'passwordsOnDevice_)',
       },
 
       /**
@@ -150,7 +150,7 @@ export class PasswordsSectionElement extends PasswordsSectionElementBase {
   declare private showPasswordsDescription_: boolean;
   declare private movePasswordsText_: string;
   declare private notificationCard_: NotificationCard|null;
-  declare private passwordManagerDisabled_: boolean;
+  declare private passwordSavingBlockedByPolicy_: boolean;
   declare private shouldShowNotificationCard_: boolean;
   declare private activeListItem_: HTMLElement|null;
 
@@ -160,6 +160,11 @@ export class PasswordsSectionElement extends PasswordsSectionElementBase {
 
   override connectedCallback() {
     super.connectedCallback();
+
+    this.addPrefObserver<boolean>('credentials_enable_service', pref => {
+      this.passwordSavingBlockedByPolicy_ =
+          isSavingNewPasswordsBlockedByMandatoryPolicy(pref);
+    });
     const updateGroups = () => {
       PasswordManagerImpl.getInstance().getCredentialGroups().then(groups => {
         this.groups_ = groups;
@@ -192,7 +197,7 @@ export class PasswordsSectionElement extends PasswordsSectionElementBase {
         this.setSavedPasswordsListener_);
     this.setSavedPasswordsListener_ = null;
     assert(this.authTimedOutListener_);
-    window.removeEventListener('hashchange', this.authTimedOutListener_);
+    window.removeEventListener('auth-timed-out', this.authTimedOutListener_);
     this.authTimedOutListener_ = null;
   }
 
@@ -289,15 +294,14 @@ export class PasswordsSectionElement extends PasswordsSectionElementBase {
 
   private showImportPasswordsOption_(): boolean {
     if (this.groups_ === null || this.actionableError === null ||
-        this.passwordManagerDisabled_) {
+        this.passwordSavingBlockedByPolicy_) {
       return false;
     }
     return this.groups_.length === 0 && !this.isTrustedVaultKeyNeeded();
   }
 
   private showTrustedVaultUnlockOption_(): boolean {
-    if (this.groups_ === null || this.actionableError === null ||
-        this.passwordManagerDisabled_) {
+    if (this.groups_ === null || this.actionableError === null) {
       return false;
     }
     return this.groups_.length === 0 && this.isTrustedVaultKeyNeeded();
@@ -338,22 +342,6 @@ export class PasswordsSectionElement extends PasswordsSectionElementBase {
 
   private onCardClosed_() {
     this.notificationCard_ = null;
-  }
-
-  private computePasswordManagerDisabled_(): boolean {
-    const pref = this.getPref('credentials_enable_service');
-
-    const isPolicyEnforced =
-        pref.enforcement === chrome.settingsPrivate.Enforcement.ENFORCED;
-
-    const isPolicyControlledByExtension =
-        pref.controlledBy === chrome.settingsPrivate.ControlledBy.EXTENSION;
-
-    if (isPolicyControlledByExtension) {
-      return false;
-    }
-
-    return !pref.value && isPolicyEnforced;
   }
 
   private computeShowPasswordsDescription_(): boolean {
@@ -409,6 +397,10 @@ export class PasswordsSectionElement extends PasswordsSectionElementBase {
   private computeShouldShowNotificationCard_(): boolean {
     if (!this.notificationCard_) {
       return false;
+    }
+    if (this.notificationCard_.id ===
+        NotificationCardId.ACCOUNT_AWARE_PASSWORD_SIGNIN) {
+      return !this.isAccountStoreUser && !this.accountEmail;
     }
     if (this.notificationCard_.id !== NotificationCardId.MOVE_PASSWORDS) {
       return true;

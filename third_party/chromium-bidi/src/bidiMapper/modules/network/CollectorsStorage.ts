@@ -44,7 +44,7 @@ export class CollectorsStorage {
     this.#logger = logger;
   }
 
-  addDataCollector(params: Network.AddDataCollectorParameters) {
+  addDataCollector(params: Network.AddDataCollectorParameters): string {
     if (
       params.maxEncodedDataSize < 1 ||
       params.maxEncodedDataSize > this.#maxEncodedDataSize
@@ -55,9 +55,13 @@ export class CollectorsStorage {
         `Max encoded data size should be between 1 and ${this.#maxEncodedDataSize}`,
       );
     }
-    const collectorId = uuidv4();
+    const collectorId: string = uuidv4();
     this.#collectors.set(collectorId, params);
     return collectorId;
+  }
+
+  hasCollectors(): boolean {
+    return this.#collectors.size > 0;
   }
 
   isCollected(
@@ -117,7 +121,7 @@ export class CollectorsStorage {
     requestId: Network.Request,
     dataType: Network.DataType,
     collectorId?: string,
-  ) {
+  ): void {
     const requestToCollectorsMap = this.#getRequestToCollectorMap(dataType);
     if (collectorId !== undefined) {
       requestToCollectorsMap.get(requestId)?.delete(collectorId);
@@ -175,7 +179,8 @@ export class CollectorsStorage {
 
     if (
       dataType === Network.DataType.Response &&
-      request.encodedResponseBodySize > collector.maxEncodedDataSize
+      (request.encodedResponseBodySize ?? request.responseBytesReceived) >
+        collector.maxEncodedDataSize
     ) {
       this.#logger?.(LogType.debug)?.(
         `Request's ${request.id} response is too big for the collector ${collectorId}`,
@@ -194,7 +199,7 @@ export class CollectorsStorage {
     dataType: Network.DataType,
     topLevelBrowsingContext: BrowsingContext.BrowsingContext,
     userContext: Browser.UserContext,
-  ) {
+  ): void {
     const collectorIds = [...this.#collectors.keys()].filter((collectorId) =>
       this.#shouldCollectRequest(
         collectorId,
@@ -209,6 +214,8 @@ export class CollectorsStorage {
         request.id,
         new Set(collectorIds),
       );
+    } else {
+      this.#getRequestToCollectorMap(dataType).delete(request.id);
     }
   }
 

@@ -58,7 +58,7 @@
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/webauthn/model/ios_passkey_model_factory.h"
 #import "ios/chrome/common/ui/elements/branded_navigation_item_title_view.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
+#import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "net/base/apple/url_conversions.h"
@@ -151,7 +151,7 @@ constexpr const char* kDeleteAllSavedDataButtonClicked =
   __weak id<SceneCommands> _dispatcher;
 
   // Module handling reauthentication before accessing sensitive data.
-  ReauthenticationModule* _reauthModule;
+  id<ReauthenticationProtocol> _reauthModule;
 
   // Coordinator for the "Passwords in Other Apps" screen.
   PasswordsInOtherAppsCoordinator* _passwordsInOtherAppsCoordinator;
@@ -449,7 +449,10 @@ constexpr const char* kDeleteAllSavedDataButtonClicked =
 - (void)showOnDeviceEncryptionSetUp {
   GURL URL = google_util::AppendGoogleLocaleParam(
       GURL(kOnDeviceEncryptionOptInURL),
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get());
+      std::string(GetApplicationContext()
+                      ->GetApplicationLocaleStorage()
+                      ->GetTag()
+                      .tag_string()));
   OpenNewTabCommand* command = [OpenNewTabCommand commandWithURLFromChrome:URL];
   [_dispatcher closePresentedViewsAndOpenURL:command];
 }

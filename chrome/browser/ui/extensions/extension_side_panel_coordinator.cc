@@ -13,6 +13,7 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/extensions/api/side_panel.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_icon_placeholder.h"
 #include "extensions/browser/extension_registry.h"
@@ -23,6 +24,7 @@
 #include "extensions/common/permissions/permissions_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/layout.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 
 namespace extensions {
@@ -63,10 +65,11 @@ ExtensionSidePanelCoordinator::ExtensionSidePanelCoordinator(
       delegate_(CreateDelegate(this)) {
   // Only one of `browser` or `tab_interface` should be defined when
   // constructing this class.
-  DCHECK(browser != nullptr ^ tab_interface != nullptr);
+  CHECK(browser != nullptr ^ tab_interface != nullptr,
+        base::NotFatalUntil::M162);
 
   // The registry should always be available for this class.
-  DCHECK(registry_);
+  CHECK(registry_, base::NotFatalUntil::M162);
 
   SidePanelService* service = SidePanelService::Get(profile);
   // `service` can be null for some tests.
@@ -102,6 +105,8 @@ ExtensionSidePanelCoordinator::ExtensionSidePanelCoordinator(
 }
 
 ExtensionSidePanelCoordinator::~ExtensionSidePanelCoordinator() {
+  DeregisterEntry();
+
   // If the panel was active when its coordinator is destroyed (e.g., due to
   // a tab/window closing), fire the onClosed event.
   if (is_panel_active_) {
@@ -116,7 +121,7 @@ SidePanelType ExtensionSidePanelCoordinator::GetPanelType() {
 
 content::WebContents*
 ExtensionSidePanelCoordinator::GetHostWebContentsForTesting() const {
-  DCHECK(host_);
+  CHECK(host_, base::NotFatalUntil::M162);
   return host_->host_contents();
 }
 
@@ -223,13 +228,13 @@ void ExtensionSidePanelCoordinator::OnViewDestroyed() {
 
 void ExtensionSidePanelCoordinator::OnExtensionHostDestroyed(
     ExtensionHost* host) {
-  DCHECK_EQ(host_.get(), host);
+  CHECK_EQ(host_.get(), host, base::NotFatalUntil::M162);
   scoped_host_observation_.Reset();
 }
 
 void ExtensionSidePanelCoordinator::OnExtensionHostDidStopFirstLoad(
     const ExtensionHost* host) {
-  DCHECK_EQ(host_.get(), host);
+  CHECK_EQ(host_.get(), host, base::NotFatalUntil::M162);
   if (is_panel_active_) {
     OnOpened();
   }
@@ -238,7 +243,7 @@ void ExtensionSidePanelCoordinator::OnExtensionHostDidStopFirstLoad(
 void ExtensionSidePanelCoordinator::CreateAndRegisterEntry() {
   // The extension icon should be initialized in the constructor, so this should
   // not be null.
-  DCHECK(extension_icon_);
+  CHECK(extension_icon_, base::NotFatalUntil::M162);
 
   if (delegate_) {
     delegate_->OnEntryRegistered();
@@ -269,13 +274,13 @@ void ExtensionSidePanelCoordinator::CreateAndRegisterEntry() {
 
 SidePanelNativeView ExtensionSidePanelCoordinator::CreateView(
     SidePanelEntryScope& scope) {
+  CHECK(!host_, base::NotFatalUntil::M162);
   if (delegate_) {
     host_ = delegate_->CreateHost(side_panel_url_);
   }
 
   if (host_) {
     // Observe the host to dispatch onOpened after its initial load completes.
-    scoped_host_observation_.Reset();
     scoped_host_observation_.Observe(host_.get());
 
     // Handle the containing view calling window.close();
@@ -307,11 +312,6 @@ void ExtensionSidePanelCoordinator::OnEntryShown(SidePanelEntry* entry) {
   // Store the current `window_id_`. If the window later closes, the browser may
   // no longer be retrievable.
   window_id_ = ExtensionTabUtil::GetWindowId(GetBrowser());
-
-  // Focus on the host's view when the side panel is first shown.
-  if (host_ && host_->host_contents()) {
-    host_->host_contents()->Focus();
-  }
 }
 
 // There are three scenarios that trigger OnClosed():
@@ -380,7 +380,7 @@ void ExtensionSidePanelCoordinator::OnClosed() {
 
 void ExtensionSidePanelCoordinator::HandleCloseExtensionSidePanel(
     ExtensionHost* host) {
-  DCHECK_EQ(host, host_.get());
+  CHECK_EQ(host, host_.get(), base::NotFatalUntil::M162);
   if (delegate_) {
     delegate_->CloseSidePanel(GetEntry());
   }
@@ -389,10 +389,10 @@ void ExtensionSidePanelCoordinator::HandleCloseExtensionSidePanel(
 void ExtensionSidePanelCoordinator::NavigateIfNecessary() {
   // Sanity check that this is called when the view exists for this extension's
   // SidePanelEntry.
-  DCHECK(host_);
+  CHECK(host_, base::NotFatalUntil::M162);
 
   auto* host_contents = host_->host_contents();
-  DCHECK(host_contents);
+  CHECK(host_contents, base::NotFatalUntil::M162);
   if (side_panel_url_ != host_contents->GetLastCommittedURL()) {
     // Since the navigation happens automatically when the URL is changed from
     // an API call, this counts as a top level navigation.

@@ -9,7 +9,6 @@
 
 #include "base/run_loop.h"
 #include "base/test/bind.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/web_applications/model/pending_migration_info.h"
 #include "chrome/browser/web_applications/proto/web_app.pb.h"
@@ -26,7 +25,6 @@
 #include "chrome/browser/web_applications/web_app_registry_update.h"
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/image/image_unittest_util.h"
@@ -43,8 +41,6 @@ class AppMigrationDataReadCommandTest : public WebAppTest {
  public:
   void SetUp() override {
     WebAppTest::SetUp();
-    scoped_feature_list_.InitAndEnableFeature(
-        blink::features::kWebAppMigrationApi);
     test::AwaitStartWebAppProviderAndSubsystems(profile());
   }
 
@@ -81,9 +77,6 @@ class AppMigrationDataReadCommandTest : public WebAppTest {
     PendingMigrationInfo info(manifest_id, MigrationBehavior::kSuggest);
     app->SetPendingMigrationInfo(info);
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(AppMigrationDataReadCommandTest, SignificantIconChange) {

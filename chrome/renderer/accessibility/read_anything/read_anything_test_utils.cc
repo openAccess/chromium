@@ -75,11 +75,20 @@ ui::AXNodeData LinkNode(ui::AXNodeID id, const std::string& url) {
   return node;
 }
 
-ui::AXNodeData GenericContainerNode(ui::AXNodeID id) {
+ui::AXNodeData ContainerNode(ui::AXNodeID id,
+                             ax::mojom::Role role,
+                             std::vector<ui::AXNodeID> child_ids) {
   ui::AXNodeData node;
   node.id = id;
-  node.role = ax::mojom::Role::kGenericContainer;
+  node.role = role;
+  node.child_ids = std::move(child_ids);
   return node;
+}
+
+ui::AXNodeData GenericContainerNode(ui::AXNodeID id,
+                                    std::vector<ui::AXNodeID> child_ids) {
+  return ContainerNode(id, ax::mojom::Role::kGenericContainer,
+                       std::move(child_ids));
 }
 
 ui::AXNodeData SuperscriptNode(ui::AXNodeID id,
@@ -108,15 +117,6 @@ std::vector<ui::AXTreeUpdate> CreateSimpleUpdateList(
     updates.push_back(update);
   }
   return updates;
-}
-
-testing::Matcher<ReadAloudTextSegment> TextSegmentMatcher(TextRange range) {
-  return testing::AllOf(
-      ::testing::Field(&ReadAloudTextSegment::id, ::testing::Eq(range.id)),
-      ::testing::Field(&ReadAloudTextSegment::text_start,
-                       ::testing::Eq(range.start)),
-      ::testing::Field(&ReadAloudTextSegment::text_end,
-                       ::testing::Eq(range.end)));
 }
 
 base::File GetValidModelFile() {

@@ -18,7 +18,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/ash/account_manager/account_manager_policy_controller_factory.h"
 #include "chrome/browser/ash/account_manager/child_account_type_changed_user_data.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -28,11 +27,12 @@
 #include "components/account_id/account_id.h"
 #include "components/account_manager_core/account.h"
 #include "components/account_manager_core/chromeos/account_manager.h"
-#include "components/account_manager_core/pref_names.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/user_manager/test_helper.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/test/browser_test.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -79,8 +79,8 @@ class AccountManagerPolicyControllerTest : public InProcessBrowserTest {
     // Prep private fields.
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     TestingProfile::Builder profile_builder;
-    profile_builder.SetPath(temp_dir_.GetPath().AppendASCII(
-        BrowserContextHelper::GetUserBrowserContextDirName(
+    profile_builder.SetPath(
+        temp_dir_.GetPath().AppendASCII(user_manager::User::GetDirName(
             user_manager::TestHelper::GetFakeUsernameHash(account_id))));
     profile_builder.SetProfileName(kFakePrimaryUsername);
     profile_ = IdentityTestEnvironmentProfileAdaptor::
@@ -95,16 +95,17 @@ class AccountManagerPolicyControllerTest : public InProcessBrowserTest {
         identity_test_env->MakePrimaryAccountAvailable(
             kFakePrimaryUsername, signin::ConsentLevel::kSignin);
     ASSERT_EQ(account_id,
-              AccountId::FromUserEmailGaiaId(primary_account_info.email,
-                                             primary_account_info.gaia));
+              AccountId::FromUserEmailGaiaId(primary_account_info.GetEmail(),
+                                             primary_account_info.GetGaiaId()));
 
     // Add accounts in Account Manager.
     auto* account_manager =
         ash::AccountManagerFactory::Get()->GetAccountManager(
             profile_->GetPath().value());
     account_manager->UpsertAccount(
-        ::account_manager::AccountKey::FromGaiaId(primary_account_info.gaia),
-        primary_account_info.email,
+        ::account_manager::AccountKey::FromGaiaId(
+            primary_account_info.GetGaiaId()),
+        primary_account_info.GetEmail(),
         account_manager::AccountManager::kInvalidToken);
     account_manager->UpsertAccount(
         ::account_manager::AccountKey::FromGaiaId(kFakeSecondaryGaiaId),
@@ -157,7 +158,7 @@ IN_PROC_BROWSER_TEST_F(AccountManagerPolicyControllerTest,
   // Use default policy value for |kSecondaryGoogleAccountSigninAllowed|
   // (|true|).
   profile()->GetPrefs()->SetBoolean(
-      ::account_manager::prefs::kSecondaryGoogleAccountSigninAllowed, true);
+      policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed, true);
   ChildAccountTypeChangedUserData::GetForProfile(profile())->SetValue(false);
 
   base::RunLoop().RunUntilIdle();
@@ -177,7 +178,7 @@ IN_PROC_BROWSER_TEST_F(
 
   // Disallow secondary account sign-ins.
   profile()->GetPrefs()->SetBoolean(
-      ::account_manager::prefs::kSecondaryGoogleAccountSigninAllowed, false);
+      policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed, false);
 
   base::RunLoop().RunUntilIdle();
 

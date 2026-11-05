@@ -33,7 +33,9 @@ using type_info = ::type_info;
 
 #include "absl/base/attributes.h"
 #include "absl/base/optimization.h"
+#include "absl/hash/hash.h"
 #include "absl/log/absl_check.h"
+#include "absl/strings/str_format.h"
 #include "google/protobuf/arena_align.h"
 #include "google/protobuf/arena_allocation_policy.h"
 #include "google/protobuf/port.h"
@@ -58,7 +60,7 @@ class MessageLite;
 template <typename Key, typename T>
 class Map;
 namespace internal {
-struct RepeatedFieldBase;
+class RepeatedFieldBase;
 class ExtensionSet;
 }  // namespace internal
 
@@ -67,7 +69,6 @@ class ReflectionTester;  // defined in test_util.h
 }  // namespace TestUtil
 
 namespace internal {
-
 
 struct ArenaTestPeer;        // defined in arena_test_util.h
 class InternalMetadata;      // defined in metadata_lite.h
@@ -175,7 +176,7 @@ struct ABSL_ATTRIBUTE_WARN_UNUSED ArenaOptions final {
   // individual arena allocation request occurs with a size larger than this
   // maximum). Requested block sizes increase up to this value, then remain
   // here.
-  size_t max_block_size = internal::AllocationPolicy::kDefaultMaxBlockSize;
+  size_t max_block_size = internal::AllocationPolicy::DefaultMaxBlockSize();
 
   // An initial block of memory for the arena to use, or nullptr for none. If
   // provided, the block must live at least as long as the arena itself. The
@@ -268,7 +269,8 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8)
   template <typename T>
   class
       ABSL_MUST_USE_RESULT
-          ABSL_ATTRIBUTE_TRIVIAL_ABI ABSL_NULLABILITY_COMPATIBLE UniquePtr;
+          ABSL_ATTRIBUTE_TRIVIAL_ABI ABSL_NULLABILITY_COMPATIBLE
+          PROTOBUF_NULL_AFTER_MOVE UniquePtr;
 
   // A smart pointer type for holding objects that are statically known to be
   // owned by an `Arena`. Even though it is a smart pointer, `Ptr` does not
@@ -425,9 +427,9 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8)
   PROTOBUF_FUTURE_ADD_EARLY_NODISCARD PROTOBUF_NDEBUG_INLINE static T*
       PROTOBUF_NONNULL
       CreateArray(Arena* PROTOBUF_NULLABLE arena, size_t num_elements) {
-    static_assert(std::is_trivially_default_constructible<T>::value,
+    static_assert(std::is_trivially_default_constructible_v<T>,
                   "CreateArray requires a trivially constructible type");
-    static_assert(std::is_trivially_destructible<T>::value,
+    static_assert(std::is_trivially_destructible_v<T>,
                   "CreateArray requires a trivially destructible type");
     ABSL_CHECK_LE(num_elements,
                   // Max rounded down to the 8 byte alignment.
@@ -476,8 +478,8 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8)
     // Collapsing all template instantiations to one for generic Message reduces
     // code size, using the virtual destructor instead.
     using TypeToUse =
-        std::conditional_t<std::is_convertible<T*, MessageLite*>::value,
-                           MessageLite, T>;
+        std::conditional_t<std::is_convertible_v<T*, MessageLite*>, MessageLite,
+                           T>;
     if (object != nullptr) {
       impl_.AddCleanup(static_cast<TypeToUse*>(object),
                        &internal::arena_delete_object<TypeToUse>);
@@ -512,8 +514,7 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8)
     // A SFINAE friendly trait that probes for `U` but always evalues to
     // `Arena*`.
     template <typename U>
-    using EnableIfArena =
-        typename std::enable_if<std::is_same<Arena*, U>::value, Arena*>::type;
+    using EnableIfArena = std::enable_if_t<std::is_same_v<Arena*, U>, Arena*>;
 
     // Use go/ranked-overloads for dispatching.
     struct Rank0 {};
@@ -686,7 +687,7 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8)
 
   template <typename T, typename... Args>
   static constexpr auto GetConstructType() {
-    return std::is_base_of<MessageLite, T>::value
+    return std::is_base_of_v<MessageLite, T>
                ? decltype(ProbeConstructType<T>(std::declval<Args>()...))::value
                : ConstructType::kUnknown;
   }
@@ -729,7 +730,7 @@ class PROTOBUF_EXPORT PROTOBUF_ALIGNAS(8)
     }
   }
 
-  template <typename T, bool trivial = std::is_trivially_destructible<T>::value>
+  template <typename T, bool trivial = std::is_trivially_destructible_v<T>>
   PROTOBUF_NDEBUG_INLINE void* PROTOBUF_NONNULL AllocateInternal() {
     if (trivial) {
       return AllocateAligned(sizeof(T), alignof(T));
@@ -887,6 +888,19 @@ struct ArenaPtrCmpBase {
 
 };
 
+// Transparent hasher that supports the same types as equality above.
+// This allows for heterogeneous lookup on UniquePtr and Ptr keyed associative
+// containers.
+struct ArenaPtrContainerHash {
+  using is_transparent = void;
+
+  template <typename T>
+  auto operator()(const T& value) const
+      -> decltype(absl::HashOf(ArenaPtrCmpBase::Unpack(value))) {
+    return absl::HashOf(ArenaPtrCmpBase::Unpack(value));
+  }
+};
+
 // The deleter type used for implementing UniquePtr.
 // Only deletes an element if the Arena* passed at construction time is
 // nullptr.
@@ -905,6 +919,7 @@ template <typename T>
 class
     ABSL_MUST_USE_RESULT
         ABSL_ATTRIBUTE_TRIVIAL_ABI ABSL_NULLABILITY_COMPATIBLE
+        PROTOBUF_NULL_AFTER_MOVE
             Arena::UniquePtr final : internal::ArenaPtrCmpBase {
  public:
   using pointer = T*;
@@ -1006,6 +1021,24 @@ class
     return ptr_.get_deleter().arena;
   }
 
+  template <typename Sink>
+  friend void AbslStringify(Sink& sink, const UniquePtr& ptr) {
+    if constexpr (std::is_base_of_v<MessageLite, T>) {
+      if (ptr != nullptr) {
+        absl::Format(&sink, "points to (%p) with value <%v>", ptr.get(), *ptr);
+        return;
+      }
+    }
+    absl::Format(&sink, "%p", ptr.get());
+  }
+
+  using absl_container_hash = internal::ArenaPtrContainerHash;
+
+  template <typename H>
+  friend H AbslHashValue(H h, const UniquePtr& u) {
+    return H::combine(std::move(h), u.ptr_);
+  }
+
  private:
   friend Arena;
 
@@ -1060,6 +1093,22 @@ class ABSL_MUST_USE_RESULT ABSL_ATTRIBUTE_TRIVIAL_ABI Arena::Ptr final
 
   // Return a pointer to the Arena pointer that owns the pointed to message.
   Arena* PROTOBUF_NONNULL GetOwningArena() const { return arena_; }
+
+  template <typename Sink>
+  friend void AbslStringify(Sink& sink, Ptr ptr) {
+    if constexpr (std::is_base_of_v<MessageLite, T>) {
+      absl::Format(&sink, "points to (%p) with value <%v>", ptr.get(), *ptr);
+    } else {
+      absl::Format(&sink, "%p", ptr.get());
+    }
+  }
+
+  using absl_container_hash = internal::ArenaPtrContainerHash;
+
+  template <typename H>
+  friend H AbslHashValue(H h, Ptr u) {
+    return H::combine(std::move(h), u.ptr_);
+  }
 
  private:
   friend Arena;

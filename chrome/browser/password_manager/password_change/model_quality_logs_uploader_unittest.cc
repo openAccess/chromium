@@ -13,6 +13,7 @@
 #include "base/test/test_future.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
+#include "chrome/browser/password_manager/password_change/change_password_form_waiter.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -495,8 +496,6 @@ TEST_F(ModelQualityLogsUploaderTest, LoginCheckRetryCountSet) {
   logs_uploader.SetLoggedInCheckQuality(
       login_state_checks,
       CreateLoggingDataForLoginCheck(/*is_logged_in=*/true));
-  const optimization_guide::proto::LogAiDataRequest final_log =
-      logs_uploader.GetFinalLog();
   VerifyLoginCheckStep(logs_uploader.GetFinalLog(), quality_status,
                        /*expected_retry_count=*/login_state_checks - 1,
                        /*was_skipped=*/false);
@@ -510,8 +509,6 @@ TEST_F(ModelQualityLogsUploaderTest, LoginCheckReachedMaxAttempts) {
   logs_uploader.SetLoggedInCheckQuality(
       login_state_checks,
       CreateLoggingDataForLoginCheck(/*is_logged_in=*/false));
-  const optimization_guide::proto::LogAiDataRequest final_log =
-      logs_uploader.GetFinalLog();
   VerifyLoginCheckStep(logs_uploader.GetFinalLog(), quality_status,
                        /*expected_retry_count=*/login_state_checks - 1,
                        /*was_skipped=*/false);
@@ -1114,4 +1111,35 @@ TEST_F(ModelQualityLogsUploaderTest, SetPasswordRequirementsSpec) {
   EXPECT_EQ(proto_spec.lower_case().min(), 1u);
   EXPECT_EQ(proto_spec.lower_case().max(), 10u);
   EXPECT_EQ(proto_spec.lower_case().character_set(), "abc");
+}
+
+TEST_F(ModelQualityLogsUploaderTest, RecordDiscardedForms) {
+  ModelQualityLogsUploader logs_uploader(web_contents(),
+                                         GURL(kChangePasswordURL));
+
+  password_manager::PasswordForm password_form;
+  password_form.url = GURL(kChangePasswordURL);
+
+  logs_uploader.RecordDiscardedForms({
+      {password_form,
+       password_change::FormDiscardReason::kUsernameFieldEmptyAndFocusable},
+      // Duplicate form + reason should be deduplicated.
+      {password_form,
+       password_change::FormDiscardReason::kUsernameFieldEmptyAndFocusable},
+      // Same form with a different discard reason should be recorded.
+      {password_form, password_change::FormDiscardReason::kFormNotVisible},
+  });
+
+  const auto& quality =
+      logs_uploader.GetFinalLog().password_change_submission().quality();
+  ASSERT_EQ(quality.discarded_forms_data_size(), 2);
+  EXPECT_EQ(quality.discarded_forms_data(0).url(), kChangePasswordURL);
+  EXPECT_EQ(
+      quality.discarded_forms_data(0).discard_reason(),
+      optimization_guide::proto::
+          PasswordChangeQuality_FormData_DiscardReason_USERNAME_FIELD_EMPTY_AND_FOCUSABLE);
+  EXPECT_EQ(quality.discarded_forms_data(1).url(), kChangePasswordURL);
+  EXPECT_EQ(quality.discarded_forms_data(1).discard_reason(),
+            optimization_guide::proto::
+                PasswordChangeQuality_FormData_DiscardReason_FORM_NOT_VISIBLE);
 }

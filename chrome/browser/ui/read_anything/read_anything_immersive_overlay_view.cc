@@ -11,13 +11,18 @@
 #include "chrome/browser/ui/read_anything/read_anything_immersive_web_view.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/frame/contents_web_view.h"
-#include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/tabs/public/tab_interface.h"
+#include "printing/buildflags/buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/layout/fill_layout.h"
+
+#if BUILDFLAG(ENABLE_PRINTING)
+#include "chrome/browser/printing/scoped_tab_print_target_override.h"
+#include "ui/accessibility/accessibility_features.h"
+#endif
 
 ReadAnythingImmersiveOverlayView::ReadAnythingImmersiveOverlayView(
     ContentsWebView* contents_web_view)
@@ -93,7 +98,9 @@ void ReadAnythingImmersiveOverlayView::OnShowImmersive(
 
 void ReadAnythingImmersiveOverlayView::OnCloseImmersive() {
   ReadAnythingContentsWrapper wrapper = CloseUI();
-  if (wrapper && controller_) {
+  CHECK(controller_);
+  if (wrapper) {
+    controller_->OnEntryHidden();
     controller_->TransferWebUiOwnership(
         std::move(wrapper),
         ReadAnythingController::PresentationState::kInImmersiveOverlay);
@@ -116,8 +123,8 @@ void ReadAnythingImmersiveOverlayView::ShowUI(
 
   auto immersive_web_view = std::make_unique<ReadAnythingImmersiveWebView>(
       base::BindOnce(&ReadAnythingImmersiveOverlayView::OnShowUI,
-                     base::Unretained(this)),
-      std::move(contents_wrapper).release(), trigger);
+                     base::Unretained(this), trigger),
+      std::move(contents_wrapper).release());
   immersive_web_view_ = AddChildView(std::move(immersive_web_view));
   immersive_view_focus_subscription_ =
       immersive_web_view_->AddWebContentsFocusedCallback(base::BindRepeating(
@@ -137,7 +144,8 @@ void ReadAnythingImmersiveOverlayView::ShowUI(
   }
 }
 
-void ReadAnythingImmersiveOverlayView::OnShowUI() {
+void ReadAnythingImmersiveOverlayView::OnShowUI(
+    ReadAnythingOpenTrigger trigger) {
   SetVisible(true);
 
   // We set the underlying web contents to be not accessible while IRM is open,
@@ -150,6 +158,19 @@ void ReadAnythingImmersiveOverlayView::OnShowUI() {
     scoped_tab_modal_ui_ = tab->ShowModalUI();
   }
 
+#if BUILDFLAG(ENABLE_PRINTING)
+  // Print the IRM contents instead of the hidden main page while IRM is open.
+  // TODO(crbug.com/481315131): Attribute these print jobs to the tab's page
+  // (enterprise policy checks, title and URL) before enabling
+  // kImmersiveReadAnythingPrint.
+  if (features::IsImmersiveReadAnythingPrintEnabled() && tab &&
+      immersive_web_view_ && immersive_web_view_->GetWebContents()) {
+    scoped_print_target_override_ =
+        std::make_unique<printing::ScopedTabPrintTargetOverride>(
+            *tab, *immersive_web_view_->GetWebContents());
+  }
+#endif
+
   GetViewAccessibility().AnnouncePolitely(l10n_util::GetStringUTF16(
       IDS_IMMERSIVE_READING_MODE_OPENED_ANNOUNCEMENT));
 
@@ -159,6 +180,9 @@ void ReadAnythingImmersiveOverlayView::OnShowUI() {
   if (immersive_web_view_ && (!tab || tab->IsActivated())) {
     immersive_web_view_->RequestFocus();
   }
+
+  CHECK(controller_);
+  controller_->OnEntryShown(trigger);
 }
 
 ReadAnythingContentsWrapper ReadAnythingImmersiveOverlayView::CloseUI() {
@@ -171,6 +195,14 @@ ReadAnythingContentsWrapper ReadAnythingImmersiveOverlayView::CloseUI() {
 
   scoped_tab_modal_ui_.reset();
 
+#if BUILDFLAG(ENABLE_PRINTING)
+  // Restore normal tab printing so subsequent print commands target the main
+  // webpage once IRM is closed.
+  if (features::IsImmersiveReadAnythingPrintEnabled()) {
+    scoped_print_target_override_.reset();
+  }
+#endif
+
   CHECK(immersive_web_view_);
   std::unique_ptr<ReadAnythingImmersiveWebView> web_view =
       RemoveChildViewT(immersive_web_view_);
@@ -182,7 +214,7 @@ ReadAnythingContentsWrapper ReadAnythingImmersiveOverlayView::CloseUI() {
     contents_web_view_->RequestFocus();
   }
 
-  return ReadAnythingContentsWrapper(web_view->CloseAndTakeContentsWrapper());
+  return ReadAnythingContentsWrapper(web_view->TakeContentsWrapper());
 }
 
 base::CallbackListSubscription

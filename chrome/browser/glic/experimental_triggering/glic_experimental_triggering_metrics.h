@@ -7,6 +7,11 @@
 
 #include <optional>
 
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
+#include "components/sharing_message/proto/glic_experimental_triggering.pb.h"
+
+class Profile;
+
 namespace glic {
 
 // The processing outcome or early return / failure reason for an incoming
@@ -34,9 +39,41 @@ enum class GlicExperimentalTriggeringIncomingMessageResult {
   // A processing path exited without setting a result. Any samples in this
   // bucket indicate an instrumentation gap that should be fixed.
   kResultNotSet = 15,
-  kMaxValue = kResultNotSet,
+  kScriptToolsDisabled = 16,
+  kNonScriptToolAction = 17,
+  // No open tab matched the document identifier of a requested action, e.g.
+  // because the user navigated away or closed the tab.
+  kTabNotFound = 18,
+  // A request arrived for a context that is already executing a task.
+  kTaskAlreadyRunning = 19,
+  // The profile is not allowed to act on the web, either because of enterprise
+  // policy or because the account is not eligible.
+  kCannotActOnWeb = 20,
+  kMaxValue = kCannotActOnWeb,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicExperimentalTriggeringIncomingMessageResult)
+
+// The execution outcome or failure reason for an experimental triggering
+// actuation request.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(GlicExperimentalTriggeringExecutionOutcome)
+enum class GlicExperimentalTriggeringExecutionOutcome {
+  kSuccess = 0,
+  kTimeoutWaitingForClient = 1,
+  kTimeoutWaitingForActuation = 2,
+  kInvokeErrorInvokeInProgress = 3,
+  kInvokeErrorTabClosed = 4,
+  kInvokeErrorOther = 5,
+  kUpdatesRegistrationFailed = 6,
+  kClientDisconnectedBeforeResponse = 7,
+  kTerminalFailed = 8,
+  kTerminalStopped = 9,
+  kDestroyedBeforeCompletion = 10,
+  kMaxValue = kDestroyedBeforeCompletion,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicExperimentalTriggeringExecutionOutcome)
 
 // Helper RAII class to log the
 // Glic.ExperimentalTriggering.IncomingMessageResult.{Channel} histogram for
@@ -56,7 +93,8 @@ class ScopedIncomingMessageResultLogger {
     kBrowserActuatorTransport,
   };
 
-  explicit ScopedIncomingMessageResultLogger(Channel channel);
+  explicit ScopedIncomingMessageResultLogger(GlicMetricReporter reporter,
+                                             Channel channel);
 
   // Move operations transfer logging responsibility to the new instance and
   // mark the moved-from instance as disarmed so its destructor will do nothing
@@ -80,6 +118,7 @@ class ScopedIncomingMessageResultLogger {
   // No-op if already disarmed (moved from).
   void LogAndDisarm();
 
+  GlicMetricReporter metric_reporter_;
   Channel channel_;
   std::optional<GlicExperimentalTriggeringIncomingMessageResult> result_;
 
@@ -88,6 +127,15 @@ class ScopedIncomingMessageResultLogger {
   // on destruction.
   bool disarmed_ = false;
 };
+
+// Records the approximate time elapsed between when the server sent the initial
+// experimental triggering sharing message and when Chrome received it. This is
+// only logged for the first sharing message arriving in Chrome (i.e.
+// DeviceOptInRequest or TriggerActuationRequest). If the calculated duration is
+// negative due to clock skew between client and server, it is clamped to 0.
+void MaybeRecordInitialSharingMessageDeliveryLatency(
+    const GlicMetricReporter& reporter,
+    const components_sharing_message::GlicExperimentalTriggering& triggering);
 
 }  // namespace glic
 

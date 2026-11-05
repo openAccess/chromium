@@ -11,6 +11,7 @@
 
 #include "base/file_version_info.h"
 #include "base/functional/bind.h"
+#include "base/process/process.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -80,7 +81,7 @@ void UpdateProcessTypeAndTitles(
     return;
 
   WebContents* contents = WebContents::FromRenderFrameHost(rfh);
-  DCHECK(contents);
+  CHECK(contents, base::NotFatalUntil::M162);
 
   // The rest of this block will happen only once per WebContents.
   GURL page_url = contents->GetLastCommittedURL();
@@ -190,7 +191,8 @@ ProcessData& ProcessData::operator=(const ProcessData& rhs) {
 void MemoryDetails::StartFetch() {
   // This might get called from the UI or FILE threads, but should not be
   // getting called from the IO thread.
-  DCHECK(!BrowserThread::CurrentlyOn(BrowserThread::IO));
+  CHECK(!BrowserThread::CurrentlyOn(BrowserThread::IO),
+        base::NotFatalUntil::M162);
 
   std::vector<ProcessMemoryInformation> child_info;
 
@@ -198,11 +200,14 @@ void MemoryDetails::StartFetch() {
   // the process is being launched, so we skip it.
   for (BrowserChildProcessHostIterator iter; !iter.Done(); ++iter) {
     ProcessMemoryInformation info;
-    if (!iter.GetData().GetProcess().IsValid())
+    const base::Process& process = iter.GetProcess();
+    if (!process.IsValid()) {
       continue;
-    info.pid = iter.GetData().GetProcess().Pid();
-    if (!info.pid)
+    }
+    info.pid = process.Pid();
+    if (!info.pid) {
       continue;
+    }
 
     info.process_type = iter.GetData().process_type;
     info.renderer_type = ProcessMemoryInformation::RENDERER_UNKNOWN;
@@ -259,7 +264,8 @@ std::string MemoryDetails::ToLogString(bool include_tab_title) {
 }
 
 void MemoryDetails::CollectChildInfoOnUIThread() {
-  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::UI));
+  CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI),
+        base::NotFatalUntil::M162);
   ProcessData* const chrome_browser = ChromeBrowser();
 
   // First pass, collate the widgets by process ID.
@@ -301,11 +307,11 @@ void MemoryDetails::CollectChildInfoOnUIThread() {
           render_process_host->GetBrowserContext();
       extensions::ExtensionRegistry* extension_registry =
           extensions::ExtensionRegistry::Get(context);
-      DCHECK(extension_registry);
+      CHECK(extension_registry, base::NotFatalUntil::M162);
       extension_set = &extension_registry->enabled_extensions();
       extensions::ProcessMap* process_map =
           extensions::ProcessMap::Get(context);
-      DCHECK(process_map);
+      CHECK(process_map, base::NotFatalUntil::M162);
       content::ChildProcessId rph_id = render_process_host->GetID();
       process_is_for_extensions = process_map->Contains(rph_id);
 

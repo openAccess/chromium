@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -40,7 +41,7 @@ AutofillWebDataService::AutofillWebDataService(
     : WebDataServiceBase(std::move(wdbs), ui_task_runner),
       ui_task_runner_(std::move(ui_task_runner)),
       autofill_backend_(nullptr) {
-  autofill_backend_ = new AutofillWebDataBackendImpl(
+  autofill_backend_ = base::MakeRefCounted<AutofillWebDataBackendImpl>(
       wdbs_->GetBackend(), ui_task_runner_, wdbs_->GetDbSequence());
 }
 
@@ -151,11 +152,20 @@ WebDataServiceBase::Handle AutofillWebDataService::GetAutofillProfiles(
 void AutofillWebDataService::AddOrUpdateEntityInstance(
     EntityInstance entity,
     base::OnceCallback<void(EntityInstanceChange)> on_success) {
+  AddOrUpdateEntityInstance(std::move(entity),
+                            /*legal_message_token=*/std::nullopt,
+                            std::move(on_success));
+}
+
+void AutofillWebDataService::AddOrUpdateEntityInstance(
+    EntityInstance entity,
+    std::optional<std::string> legal_message_token,
+    base::OnceCallback<void(EntityInstanceChange)> on_success) {
   wdbs_->ScheduleDBTask(
       FROM_HERE,
       base::BindOnce(&AutofillWebDataBackendImpl::AddOrUpdateEntityInstance,
                      autofill_backend_, std::move(entity),
-                     std::move(on_success)));
+                     std::move(legal_message_token), std::move(on_success)));
 }
 
 void AutofillWebDataService::UpdateEntityMetadata(
@@ -222,6 +232,15 @@ AutofillWebDataService::GetCountOfValuesContainedBetween(
       base::BindOnce(
           &AutofillWebDataBackendImpl::GetCountOfValuesContainedBetween,
           autofill_backend_, begin, end),
+      std::move(consumer));
+}
+
+WebDataServiceBase::Handle AutofillWebDataService::GetAutocompleteTableStats(
+    WebDataServiceRequestCallback consumer) {
+  return wdbs_->ScheduleDBTaskWithResult(
+      FROM_HERE,
+      base::BindOnce(&AutofillWebDataBackendImpl::GetAutocompleteTableStats,
+                     autofill_backend_),
       std::move(consumer));
 }
 

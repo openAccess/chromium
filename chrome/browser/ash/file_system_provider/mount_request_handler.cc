@@ -9,7 +9,7 @@
 #include "chrome/browser/ash/file_system_provider/provided_file_system_info.h"
 #include "chrome/browser/ash/file_system_provider/request_dispatcher_impl.h"
 #include "chrome/browser/ash/file_system_provider/service.h"
-#include "chrome/common/extensions/api/file_system_provider.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider.h"
 #include "extensions/browser/event_router.h"
 
 namespace ash::file_system_provider {
@@ -21,9 +21,9 @@ MountRequestHandler::MountRequestHandler(RequestDispatcher* dispatcher,
 MountRequestHandler::~MountRequestHandler() = default;
 
 bool MountRequestHandler::Execute(int request_id) {
-  base::ListValue event_args;
-  event_args.reserve(1);
-  event_args.Append(base::Value(request_id));
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>();
+  event_args->data.reserve(1);
+  event_args->data.Append(base::Value(request_id));
 
   auto event = std::make_unique<extensions::Event>(
       extensions::events::FILE_SYSTEM_PROVIDER_ON_MOUNT_REQUESTED,
@@ -38,14 +38,14 @@ void MountRequestHandler::OnSuccess(/*request_id=*/int,
                                     /*result=*/const RequestValue&,
                                     bool has_more) {
   // File handle is the same as request id of the OpenFile operation.
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
   std::move(callback_).Run(base::File::FILE_OK);
 }
 
 void MountRequestHandler::OnError(/*request_id=*/int,
                                   /*result=*/const RequestValue&,
                                   base::File::Error error) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
   std::move(callback_).Run(error);
 }
 

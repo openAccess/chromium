@@ -19,6 +19,7 @@
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
+#include "third_party/blink/renderer/platform/fonts/generic_font_family_settings.h"
 #include "third_party/blink/renderer/platform/loader/fetch/memory_cache.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
@@ -113,7 +114,8 @@ DevToolsEmulator::DevToolsEmulator(WebViewImpl* web_view)
           web_view->GetPage()->GetSettings().GetTextSizeAdjustEnabled()),
       touch_event_emulation_enabled_(false),
       double_tap_to_zoom_enabled_(false),
-      original_max_touch_points_(0),
+      embedder_max_touch_points_(
+          web_view->GetPage()->GetSettings().GetMaxTouchPoints()),
       embedder_script_enabled_(
           web_view->GetPage()->GetSettings().GetScriptEnabled()),
       script_execution_disabled_(false),
@@ -228,22 +230,29 @@ void DevToolsEmulator::SetShrinksViewportContentToFit(
 
 void DevToolsEmulator::SetViewportEnabled(bool enabled) {
   embedder_viewport_enabled_ = enabled;
-  if (!emulate_mobile_enabled()) {
+  if (!force_viewport_meta_ && !emulate_mobile_enabled()) {
     web_view_->GetPage()->GetSettings().SetViewportEnabled(enabled);
   }
 }
 
 void DevToolsEmulator::SetViewportMetaEnabled(bool enabled) {
   embedder_viewport_meta_enabled_ = enabled;
-  if (!emulate_mobile_enabled()) {
+  if (!force_viewport_meta_) {
     web_view_->GetPage()->GetSettings().SetViewportMetaEnabled(enabled);
   }
 }
 
 void DevToolsEmulator::SetTextSizeAdjustEnabled(bool enabled) {
   embedder_text_size_adjust_enabled_ = enabled;
-  if (!emulate_mobile_enabled()) {
+  if (!force_text_size_adjust_) {
     web_view_->GetPage()->GetSettings().SetTextSizeAdjustEnabled(enabled);
+  }
+}
+
+void DevToolsEmulator::SetMaxTouchPoints(int max_touch_points) {
+  embedder_max_touch_points_ = max_touch_points;
+  if (!touch_event_emulation_enabled_) {
+    web_view_->GetPage()->GetSettings().SetMaxTouchPoints(max_touch_points);
   }
 }
 
@@ -289,7 +298,11 @@ gfx::Transform DevToolsEmulator::EnableDeviceEmulation(
       emulation_params_.viewport_offset == params.viewport_offset &&
       emulation_params_.viewport_scale == params.viewport_scale &&
       emulation_params_.force_android_overlay_scrollbar ==
-          params.force_android_overlay_scrollbar) {
+          params.force_android_overlay_scrollbar &&
+      emulation_params_.force_viewport_meta ==
+          params.force_viewport_meta &&
+      emulation_params_.force_text_size_adjust ==
+          params.force_text_size_adjust) {
     return ComputeRootLayerTransform();
   }
   if ((emulation_params_.device_scale_factor != params.device_scale_factor ||
@@ -316,12 +329,16 @@ gfx::Transform DevToolsEmulator::EnableDeviceEmulation(
   const ViewportEmulationMode previous_mode = GetViewportEmulationMode();
   emulation_params_ = params;
   device_metrics_enabled_ = true;
-  const bool needs_lifecycle_update = ApplyViewportEmulationMode(previous_mode);
+  bool needs_lifecycle_update = ApplyViewportEmulationMode(previous_mode);
+
+  needs_lifecycle_update |= SetForceViewportMeta(params.force_viewport_meta);
+  needs_lifecycle_update |= SetForceTextSizeAdjust(params.force_text_size_adjust);
+  needs_lifecycle_update |= SetForceAndroidOverlayScrollbar(
+      params.force_android_overlay_scrollbar);
+
   if (needs_lifecycle_update) {
     UpdateLifecycleAfterEmulationProfileChange();
   }
-
-  SetForceAndroidOverlayScrollbar(params.force_android_overlay_scrollbar);
 
   web_view_->SetCompositorDeviceScaleFactorOverride(params.device_scale_factor);
 
@@ -353,11 +370,14 @@ void DevToolsEmulator::DisableDeviceEmulation() {
     DisableMobileEmulation();
   }
   device_metrics_enabled_ = false;
-  const bool needs_lifecycle_update = ApplyViewportEmulationMode(previous_mode);
+  bool needs_lifecycle_update = ApplyViewportEmulationMode(previous_mode);
+  needs_lifecycle_update |= SetForceAndroidOverlayScrollbar(false);
+  needs_lifecycle_update |= SetForceViewportMeta(false);
+  needs_lifecycle_update |= SetForceTextSizeAdjust(false);
+
   if (needs_lifecycle_update) {
     UpdateLifecycleAfterEmulationProfileChange();
   }
-  SetForceAndroidOverlayScrollbar(false);
   web_view_->SetCompositorDeviceScaleFactorOverride(0.f);
 
   if (web_view_->MainFrameImpl()) {
@@ -471,8 +491,9 @@ void DevToolsEmulator::EnableMobileEmulation() {
   global_overrides_ = ScopedGlobalOverrides::AssureInstalled();
   web_view_->GetPage()->GetSettings().SetViewportStyle(
       mojom::blink::ViewportStyle::kMobile);
+  // ViewportEnabled activates mobile viewport layout semantics and enables
+  // VisualViewport scrollbar layers (checked in VisualViewportSuppliesScrollbars).
   web_view_->GetPage()->GetSettings().SetViewportEnabled(true);
-  web_view_->GetPage()->GetSettings().SetViewportMetaEnabled(true);
   web_view_->GetPage()->GetSettings().SetTextSizeAdjustEnabled(true);
   web_view_->GetPage()->GetSettings().SetShrinksViewportContentToFit(true);
   web_view_->GetPage()->GetSettings().SetLCDTextPreference(
@@ -498,8 +519,6 @@ void DevToolsEmulator::DisableMobileEmulation() {
   global_overrides_.reset();
   web_view_->GetPage()->GetSettings().SetViewportEnabled(
       embedder_viewport_enabled_);
-  web_view_->GetPage()->GetSettings().SetViewportMetaEnabled(
-      embedder_viewport_meta_enabled_);
   web_view_->GetPage()->GetSettings().SetTextSizeAdjustEnabled(
       embedder_text_size_adjust_enabled_);
   web_view_->GetPage()->GetVisualViewport().InitializeScrollbars();
@@ -591,16 +610,12 @@ float DevToolsEmulator::InputEventsScaleForEmulation() {
 
 void DevToolsEmulator::SetTouchEventEmulationEnabled(bool enabled,
                                                      int max_touch_points) {
-  if (!touch_event_emulation_enabled_) {
-    original_max_touch_points_ =
-        web_view_->GetPage()->GetSettings().GetMaxTouchPoints();
-  }
   touch_event_emulation_enabled_ = enabled;
   web_view_->GetPage()
       ->GetSettings()
       .SetForceTouchEventFeatureDetectionForInspector(enabled);
   web_view_->GetPage()->GetSettings().SetMaxTouchPoints(
-      enabled ? max_touch_points : original_max_touch_points_);
+      enabled ? max_touch_points : embedder_max_touch_points_);
   web_view_->GetPage()->GetSettings().SetAvailablePointerTypes(
       enabled ? static_cast<int>(mojom::blink::PointerType::kPointerCoarseType)
               : embedder_available_pointer_types_);
@@ -633,10 +648,10 @@ void DevToolsEmulator::SetScrollbarsHidden(bool hidden) {
       scrollbars_hidden_ || embedder_hide_scrollbars_);
 }
 
-void DevToolsEmulator::SetForceAndroidOverlayScrollbar(
+bool DevToolsEmulator::SetForceAndroidOverlayScrollbar(
     bool force_android_overlay_scrollbar) {
   if (force_android_overlay_scrollbar_ == force_android_overlay_scrollbar) {
-    return;
+    return false;
   }
   force_android_overlay_scrollbar_ = force_android_overlay_scrollbar;
   web_view_->GetPage()->GetSettings().SetForceAndroidOverlayScrollbar(
@@ -648,10 +663,40 @@ void DevToolsEmulator::SetForceAndroidOverlayScrollbar(
 
   web_view_->GetPage()->UsesOverlayScrollbarsChanged();
 
-  if (web_view_->MainFrameImpl()) {
-    web_view_->MainFrameImpl()->GetFrameView()->UpdateLifecycleToLayoutClean(
-        DocumentUpdateReason::kInspector);
+  return true;
+}
+
+bool DevToolsEmulator::SetForceViewportMeta(bool force_viewport_meta) {
+  if (force_viewport_meta_ == force_viewport_meta) {
+    return false;
   }
+  force_viewport_meta_ = force_viewport_meta;
+  // ViewportMetaEnabled enables parsing of <meta name="viewport">, while
+  // ViewportEnabled activates the layout constraint pipeline to apply the
+  // resolved viewport size to the main frame.
+  web_view_->GetPage()->GetSettings().SetViewportMetaEnabled(
+      force_viewport_meta_ || embedder_viewport_meta_enabled_);
+  web_view_->GetPage()->GetSettings().SetViewportEnabled(
+      force_viewport_meta_ || emulate_mobile_enabled() ||
+      embedder_viewport_enabled_);
+
+  return true;
+}
+
+bool DevToolsEmulator::SetForceTextSizeAdjust(bool force_text_size_adjust) {
+  force_text_size_adjust_ = force_text_size_adjust;
+  const bool enabled =
+      force_text_size_adjust_ || embedder_text_size_adjust_enabled_;
+  if (web_view_->GetPage()->GetSettings().GetTextSizeAdjustEnabled() ==
+      enabled) {
+    return false;
+  }
+  // TODO(https://crbug.com/564804235): `SetTextSizeAdjustEnabled` does not
+  // clear `MatchedPropertiesCache`, so already-rendered elements only update
+  // after navigation or cache invalidation.
+  web_view_->GetPage()->GetSettings().SetTextSizeAdjustEnabled(enabled);
+
+  return true;
 }
 
 void DevToolsEmulator::SetDocumentCookieDisabled(bool disabled) {
@@ -660,6 +705,107 @@ void DevToolsEmulator::SetDocumentCookieDisabled(bool disabled) {
   document_cookie_disabled_ = disabled;
   web_view_->GetPage()->GetSettings().SetCookieEnabled(
       !document_cookie_disabled_ && embedder_cookie_enabled_);
+}
+
+void DevToolsEmulator::SetForceDarkModeEnabled(bool enabled) {
+  embedder_force_dark_mode_enabled_ = enabled;
+  if (!auto_dark_overriden_) {
+    web_view_->GetPage()->GetSettings().SetForceDarkModeEnabled(enabled);
+  }
+}
+
+void DevToolsEmulator::SetGenericFontFamily(GenericFontFamily family,
+                                            const AtomicString& name,
+                                            UScriptCode script) {
+  if (embedder_font_families_) {
+    embedder_font_families_->Update(family, name, script);
+  }
+  if (font_family_override_scripts_[static_cast<size_t>(family)].Contains(
+          script)) {
+    return;
+  }
+  Settings& settings = web_view_->GetPage()->GetSettings();
+  if (settings.GetGenericFontFamilySettings().Update(family, name, script)) {
+    settings.NotifyGenericFontFamilyChange();
+  }
+}
+
+void DevToolsEmulator::SetGenericFontFamilyOverrides(
+    const Vector<GenericFontFamilyOverride>& overrides) {
+  if (overrides.empty()) {
+    return;
+  }
+  Settings& settings = web_view_->GetPage()->GetSettings();
+  if (!embedder_font_families_) {
+    embedder_font_families_.emplace(settings.GetGenericFontFamilySettings());
+  }
+  bool changed = false;
+  for (const GenericFontFamilyOverride& entry : overrides) {
+    Vector<UScriptCode>& override_scripts =
+        font_family_override_scripts_[static_cast<size_t>(entry.family)];
+    if (!override_scripts.Contains(entry.script)) {
+      override_scripts.push_back(entry.script);
+    }
+    changed |= settings.GetGenericFontFamilySettings().Update(
+        entry.family, entry.name, entry.script);
+  }
+  if (changed) {
+    settings.NotifyGenericFontFamilyChange();
+  }
+}
+
+void DevToolsEmulator::SetDefaultFontSize(int size) {
+  if (default_font_size_override_) {
+    embedder_default_font_size_ = size;
+    return;
+  }
+  web_view_->GetPage()->GetSettings().SetDefaultFontSize(size);
+}
+
+void DevToolsEmulator::SetDefaultFixedFontSize(int size) {
+  if (default_fixed_font_size_override_) {
+    embedder_default_fixed_font_size_ = size;
+    return;
+  }
+  web_view_->GetPage()->GetSettings().SetDefaultFixedFontSize(size);
+}
+
+void DevToolsEmulator::SetDefaultFontSizeOverride(int size) {
+  Settings& settings = web_view_->GetPage()->GetSettings();
+  if (!default_font_size_override_) {
+    embedder_default_font_size_ = settings.GetDefaultFontSize();
+  }
+  default_font_size_override_ = size;
+  settings.SetDefaultFontSize(size);
+}
+
+void DevToolsEmulator::SetDefaultFixedFontSizeOverride(int size) {
+  Settings& settings = web_view_->GetPage()->GetSettings();
+  if (!default_fixed_font_size_override_) {
+    embedder_default_fixed_font_size_ = settings.GetDefaultFixedFontSize();
+  }
+  default_fixed_font_size_override_ = size;
+  settings.SetDefaultFixedFontSize(size);
+}
+
+void DevToolsEmulator::ResetFontOverrides() {
+  Settings& settings = web_view_->GetPage()->GetSettings();
+  if (embedder_font_families_) {
+    settings.GetGenericFontFamilySettings() = *embedder_font_families_;
+    embedder_font_families_.reset();
+    settings.NotifyGenericFontFamilyChange();
+  }
+  for (Vector<UScriptCode>& override_scripts : font_family_override_scripts_) {
+    override_scripts.clear();
+  }
+  if (default_font_size_override_) {
+    default_font_size_override_.reset();
+    settings.SetDefaultFontSize(embedder_default_font_size_);
+  }
+  if (default_fixed_font_size_override_) {
+    default_fixed_font_size_override_.reset();
+    settings.SetDefaultFixedFontSize(embedder_default_fixed_font_size_);
+  }
 }
 
 void DevToolsEmulator::SetAutoDarkModeOverride(bool enabled) {

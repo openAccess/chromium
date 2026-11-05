@@ -84,7 +84,6 @@ def _get_test_runner(
     return create_executable_test_runner(runner_args, test_args)
 
 
-# pylint: disable=too-many-statements,too-many-branches
 def main():
     """E2E method for installing packages and running a test."""
     # Always add time stamps to the logs.
@@ -132,7 +131,7 @@ def main():
     use_orchestrate = (
         runner_args.orchestrate
         and not runner_args.device
-        and get_host_arch() == 'x64'
+        and get_host_arch() in {'x64', 'arm64'}
         and support_orchestrate(runner_args.test_type)
     )
 
@@ -150,23 +149,33 @@ def main():
             )
 
         if use_orchestrate:
-            target_cmd = [
-                os.path.join(
-                    os.path.dirname(__file__), 'run_executable_test.py'
-                ),
-                '--test-name',
-                runner_args.test_type,
-                '--out-dir',
-                runner_args.out_dir,
-            ]
+            if os.path.isfile(
+                os.path.join(os.path.dirname(__file__), runner_args.test_type)
+            ):
+                target_cmd = [
+                    os.path.join(
+                        os.path.dirname(__file__), runner_args.test_type
+                    ),
+                    '--mypid',
+                    str(os.getpid()),
+                ]
+                packages = runner_args.packages or []
+            else:
+                target_cmd = [
+                    os.path.join(
+                        os.path.dirname(__file__), 'run_executable_test.py'
+                    ),
+                    '--test-name',
+                    runner_args.test_type,
+                ]
+                packages = read_package_paths(
+                    runner_args.out_dir, runner_args.test_type
+                )
+            target_cmd.extend(['--out-dir', runner_args.out_dir])
             if runner_args.logs_dir:
                 target_cmd.extend(['--logs-dir', runner_args.logs_dir])
             if test_args:
                 target_cmd.extend(test_args)
-
-            packages = read_package_paths(
-                runner_args.out_dir, runner_args.test_type
-            )
             logging.info(
                 'Resolving package archives for \'%s\': %s',
                 runner_args.test_type,

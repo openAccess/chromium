@@ -14,6 +14,7 @@
 #include "base/auto_reset.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/stack_allocated.h"
+#include "base/types/optional_ref.h"
 #include "components/autofill/content/common/mojom/autofill_agent.mojom.h"
 #include "components/autofill/content/common/mojom/autofill_driver.mojom.h"
 #include "components/autofill/content/renderer/renderer_save_password_progress_logger.h"
@@ -23,6 +24,7 @@
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-forward.h"
 #include "third_party/blink/public/web/web_input_element.h"
 
 namespace autofill {
@@ -74,7 +76,7 @@ class PasswordGenerationAgent : public content::RenderFrameObserver,
   // can be used to optimize form extractions occurring synchronously after this
   // function call.
   bool TextDidChangeInTextField(const blink::WebInputElement& element,
-                                const SynchronousFormCache& form_cache);
+                                SynchronousFormCache& form_cache);
 
   // Returns true if the newly focused node caused the generation UI to show.
   bool ShowPasswordGenerationSuggestions(
@@ -144,7 +146,7 @@ class PasswordGenerationAgent : public content::RenderFrameObserver,
 
   // RenderFrameObserver:
   void DidCommitProvisionalLoad(ui::PageTransition transition) override;
-  void DidChangeScrollOffset() override;
+  void DidChangeScrollOffset(blink::mojom::ScrollType) override;
   void OnDestruct() override;
 
   // Helper function which takes care of the form processing and collecting the
@@ -168,7 +170,8 @@ class PasswordGenerationAgent : public content::RenderFrameObserver,
 #endif  // !BUILDFLAG(IS_ANDROID)
 
   // Stops treating a password as generated.
-  void PasswordNoLongerGenerated();
+  void PasswordNoLongerGenerated(
+      base::optional_ref<SynchronousFormCache> form_cache);
 
   // Creates |current_generation_item_| for |element| if |element| is a
   // generation enabled element. If |current_generation_item_| is already

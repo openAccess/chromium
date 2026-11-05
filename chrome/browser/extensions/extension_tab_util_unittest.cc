@@ -7,11 +7,15 @@
 #include "base/json/json_reader.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/gmock_expected_support.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/browser/extensions/extension_util.h"
+#include "chrome/browser/extensions/test_standalone_window_controller.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/web_contents_tester.h"
 #include "extensions/browser/extension_registrar.h"
@@ -19,11 +23,17 @@
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
+#include "extensions/common/extension_features.h"
+#include "extensions/common/manifest_handlers/options_page_info.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/common/permissions/permission_set.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "extensions/common/url_pattern_set.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/webui/os_feedback_ui/url_constants.h"
+#endif
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -62,6 +72,51 @@ TEST(ExtensionTabUtilTest, ScrubTabBehaviorForHostPermission) {
           GURL("http://www.google.com/some/path"));
   EXPECT_EQ(ExtensionTabUtil::kDontScrubTab, scrub_tab_behavior.committed_info);
   EXPECT_EQ(ExtensionTabUtil::kDontScrubTab, scrub_tab_behavior.pending_info);
+}
+
+TEST(ExtensionTabUtilTest, ScrubTabBehaviorForPolicyBlockedHost) {
+  auto extension = ExtensionBuilder("Extension with host permission")
+                       .AddHostPermission("*://www.google.com/*")
+                       .Build();
+  URLPatternSet policy_blocked_hosts;
+  policy_blocked_hosts.AddOrigin(Extension::kValidHostPermissionSchemes,
+                                 GURL("http://www.google.com"));
+  extension->permissions_data()->SetPolicyHostRestrictions(policy_blocked_hosts,
+                                                           URLPatternSet());
+
+  ExtensionTabUtil::ScrubTabBehavior scrub_tab_behavior =
+      ExtensionTabUtil::GetScrubTabBehavior(
+          extension.get(), mojom::ContextType::kUnspecified,
+          GURL("http://www.google.com/some/path"));
+  EXPECT_EQ(ExtensionTabUtil::kScrubTabFully,
+            scrub_tab_behavior.committed_info);
+  EXPECT_EQ(ExtensionTabUtil::kScrubTabFully, scrub_tab_behavior.pending_info);
+}
+
+TEST(ExtensionTabUtilTest, ScrubTabBehaviorForUserBlockedHost) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      extensions_features::kExtensionsMenuAccessControl);
+
+  constexpr int kContextId = 1;
+  auto extension = ExtensionBuilder("Extension with host permission")
+                       .AddHostPermission("*://www.google.com/*")
+                       .Build();
+  extension->permissions_data()->SetContextId(kContextId);
+
+  URLPatternSet user_blocked_hosts;
+  user_blocked_hosts.AddOrigin(Extension::kValidHostPermissionSchemes,
+                               GURL("http://www.google.com"));
+  PermissionsData::SetUserHostRestrictions(
+      kContextId, std::move(user_blocked_hosts), URLPatternSet());
+
+  ExtensionTabUtil::ScrubTabBehavior scrub_tab_behavior =
+      ExtensionTabUtil::GetScrubTabBehavior(
+          extension.get(), mojom::ContextType::kUnspecified,
+          GURL("http://www.google.com/some/path"));
+  EXPECT_EQ(ExtensionTabUtil::kScrubTabFully,
+            scrub_tab_behavior.committed_info);
+  EXPECT_EQ(ExtensionTabUtil::kScrubTabFully, scrub_tab_behavior.pending_info);
 }
 
 TEST(ExtensionTabUtilTest, ScrubTabBehaviorForExtensionOwnOrigin_GURL) {
@@ -115,6 +170,12 @@ TEST(ExtensionTabUtilTest, ResolvePossiblyRelativeURL) {
       GURL("chrome-extension://jpignaibiiemhngfjkcpokkamffknabf/path"));
   EXPECT_EQ(ExtensionTabUtil::ResolvePossiblyRelativeURL("path", nullptr),
             GURL("path"));
+}
+
+// Verifies that ExtensionTabUtil::SupportsTabGroups returns false gracefully
+// when passed a null BrowserWindowInterface.
+TEST(ExtensionTabUtilTest, SupportsTabGroups_NullBrowser) {
+  EXPECT_FALSE(ExtensionTabUtil::SupportsTabGroups(nullptr));
 }
 
 class ChromeExtensionNavigationTest : public ExtensionServiceTestBase {
@@ -351,6 +412,121 @@ TEST_F(ChromeExtensionNavigationTest,
       kChromeUntrustedURL, extension.get(), browser_context());
   EXPECT_THAT(url, base::test::ErrorIs(
                        ExtensionTabUtil::kCannotNavigateToChromeUntrusted));
+}
+
+TEST_F(ChromeExtensionNavigationTest, PrepareURLForNavigationOnFeedback) {
+  const std::string kFeedbackURL("chrome://feedback/");
+  auto extension = ExtensionBuilder("test").Build();
+  auto url = ExtensionTabUtil::PrepareURLForNavigation(
+      kFeedbackURL, extension.get(), browser_context());
+  EXPECT_THAT(url, base::test::ErrorIs(
+                       ExtensionTabUtil::kCannotNavigateToInternalPage));
+
+  // Non-extension contexts (e.g. WebUI) should be allowed to navigate to
+  // feedback.
+  auto non_extension_url = ExtensionTabUtil::PrepareURLForNavigation(
+      kFeedbackURL, /*extension=*/nullptr, browser_context());
+  ASSERT_TRUE(non_extension_url.has_value());
+  EXPECT_EQ(GURL(kFeedbackURL), *non_extension_url);
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // Repeat the test for the chromeos-specific URL.
+  url = ExtensionTabUtil::PrepareURLForNavigation(
+      ash::kChromeUIOSFeedbackUrl, extension.get(), browser_context());
+  EXPECT_THAT(url, base::test::ErrorIs(
+                       ExtensionTabUtil::kCannotNavigateToInternalPage));
+
+  non_extension_url = ExtensionTabUtil::PrepareURLForNavigation(
+      ash::kChromeUIOSFeedbackUrl, /*extension=*/nullptr, browser_context());
+  ASSERT_TRUE(non_extension_url.has_value());
+  EXPECT_EQ(GURL(ash::kChromeUIOSFeedbackUrl), *non_extension_url);
+#endif
+}
+
+// Verifies that ExtensionTabUtil::OpenOptionsPageFromWebContents returns false
+// when invoked from a standalone WebContents without a BrowserWindowInterface.
+TEST_F(ChromeExtensionNavigationTest,
+       OpenOptionsPageFromWebContents_StandaloneWebContents) {
+  auto extension = ExtensionBuilder("options_ext")
+                       .SetManifestKey("options_page", "options.html")
+                       .Build();
+  ASSERT_TRUE(OptionsPageInfo::HasOptionsPage(extension.get()));
+  std::unique_ptr<content::WebContents> web_contents(
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
+
+  EXPECT_FALSE(ExtensionTabUtil::OpenOptionsPageFromWebContents(
+      extension.get(), web_contents.get()));
+}
+
+// Verifies that ExtensionTabUtil::GetTabById resolves a WebContents hosted in a
+// standalone WindowController that has no BrowserWindowInterface.
+TEST_F(ChromeExtensionNavigationTest, GetTabById_StandaloneWindowController) {
+  std::unique_ptr<content::WebContents> web_contents(
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
+  sessions::SessionTabHelper::CreateForWebContents(web_contents.get(),
+                                                   base::NullCallback());
+  const int tab_id = ExtensionTabUtil::GetTabId(web_contents.get());
+  ASSERT_NE(tab_id, api::tabs::TAB_ID_NONE);
+
+  const SessionID window_id = SessionID::NewUnique();
+  TestStandaloneWindowController controller(
+      /*base_window=*/nullptr, profile(), window_id, web_contents.get());
+  ASSERT_EQ(nullptr, controller.GetBrowserWindowInterface());
+
+  WindowController* found_window = nullptr;
+  content::WebContents* found_contents = nullptr;
+  int found_index = -1;
+  EXPECT_TRUE(ExtensionTabUtil::GetTabById(
+      tab_id, profile(), /*include_incognito=*/false, &found_window,
+      &found_contents, &found_index));
+  EXPECT_EQ(&controller, found_window);
+  EXPECT_EQ(web_contents.get(), found_contents);
+  EXPECT_EQ(0, found_index);
+}
+
+// Verifies that ExtensionTabUtil::CreateTabObject treats a standalone
+// WebContents without a TabInterface as active and selected.
+TEST_F(ChromeExtensionNavigationTest,
+       CreateTabObject_StandaloneWebContentsIsActive) {
+  std::unique_ptr<content::WebContents> web_contents(
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
+  sessions::SessionTabHelper::CreateForWebContents(web_contents.get(),
+                                                   base::NullCallback());
+
+  api::tabs::Tab tab_object = ExtensionTabUtil::CreateTabObject(
+      web_contents.get(),
+      {ExtensionTabUtil::kDontScrubTab, ExtensionTabUtil::kDontScrubTab},
+      /*extension=*/nullptr, /*tab_list=*/nullptr, /*tab_index=*/0);
+  EXPECT_TRUE(tab_object.active);
+  EXPECT_TRUE(tab_object.selected);
+  EXPECT_FALSE(tab_object.highlighted);
+}
+
+// Verifies that ExtensionTabUtil::GetWindowControllerOfTab falls back to
+// resolving the WindowController via SessionTabHelper window ID when the
+// WebContents is hosted in a standalone WindowController.
+TEST_F(ChromeExtensionNavigationTest,
+       GetWindowControllerOfTab_StandaloneWindowController) {
+  std::unique_ptr<content::WebContents> web_contents(
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr));
+  sessions::SessionTabHelper::CreateForWebContents(web_contents.get(),
+                                                   base::NullCallback());
+  const SessionID window_id = SessionID::NewUnique();
+  sessions::SessionTabHelper::FromWebContents(web_contents.get())
+      ->SetWindowID(window_id);
+
+  {
+    TestStandaloneWindowController controller(
+        /*base_window=*/nullptr, profile(), window_id, web_contents.get());
+    ASSERT_EQ(nullptr, controller.GetBrowserWindowInterface());
+    EXPECT_EQ(&controller,
+              ExtensionTabUtil::GetWindowControllerOfTab(web_contents.get()));
+  }
+
+  // Once the standalone WindowController is destroyed and unregistered,
+  // GetWindowControllerOfTab should return nullptr.
+  EXPECT_EQ(nullptr,
+            ExtensionTabUtil::GetWindowControllerOfTab(web_contents.get()));
 }
 
 }  // namespace extensions

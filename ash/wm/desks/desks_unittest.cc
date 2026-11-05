@@ -42,9 +42,9 @@
 #include "ash/shelf/shelf_widget.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/style/close_button.h"
 #include "ash/style/color_util.h"
+#include "ash/style/system_decoration.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/test/ash_test_helper.h"
 #include "ash/test/ash_test_util.h"
@@ -101,6 +101,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -137,7 +138,7 @@
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
 #include "ui/compositor/test/layer_animation_stopped_waiter.h"
-#include "ui/compositor_extra/shadow.h"
+#include "ui/decoration/decoration.h"
 #include "ui/display/display.h"
 #include "ui/display/display_switches.h"
 #include "ui/display/screen.h"
@@ -1711,10 +1712,11 @@ TEST_P(DesksTest, DragWindowToDesk) {
   wm::ActivateWindow(win1.get());
   EXPECT_EQ(win1.get(), window_util::GetActiveWindow());
 
-  ui::Shadow* shadow = ::wm::ShadowController::GetShadowForWindow(win1.get());
-  ASSERT_TRUE(shadow);
-  ASSERT_TRUE(shadow->layer());
-  EXPECT_TRUE(shadow->layer()->GetTargetVisibility());
+  ui::Decoration* shadow_decoration =
+      ::wm::ShadowController::GetShadowDecorationForWindow(win1.get());
+  ASSERT_TRUE(shadow_decoration);
+  ASSERT_TRUE(shadow_decoration->layer());
+  EXPECT_TRUE(shadow_decoration->layer()->GetTargetVisibility());
 
   auto* overview_controller = OverviewController::Get();
   EnterOverview();
@@ -1723,7 +1725,7 @@ TEST_P(DesksTest, DragWindowToDesk) {
   EXPECT_EQ(2u, overview_grid->GetNumWindows());
 
   // While in overview mode, the window's shadow is hidden.
-  EXPECT_FALSE(shadow->layer()->GetTargetVisibility());
+  EXPECT_FALSE(shadow_decoration->layer()->GetTargetVisibility());
 
   auto* overview_session = overview_controller->overview_session();
   auto* overview_item = overview_session->GetOverviewItemForWindow(win1.get());
@@ -1782,7 +1784,7 @@ TEST_P(DesksTest, DragWindowToDesk) {
 
   // After the window is dropped onto another desk, its shadow should be
   // restored properly.
-  EXPECT_TRUE(shadow->layer()->GetTargetVisibility());
+  EXPECT_TRUE(shadow_decoration->layer()->GetTargetVisibility());
 }
 
 // Tests that theme change during drag to close does not trigger any crashes.
@@ -4102,8 +4104,9 @@ class DesksPerDeskZOrderTest : public AshTestBase {
           [&](Desk* desk, aura::Window* root,
               const std::vector<int>& expected_windows,
               const std::string& debug_info) {
-            SCOPED_TRACE("Verify " + base::UTF16ToUTF8(desk->name()) + " " +
-                         root->GetName() + " " + debug_info);
+            SCOPED_TRACE(
+                base::StrCat({"Verify ", base::UTF16ToUTF8(desk->name()), " ",
+                              root->GetName(), " ", debug_info}));
             ToggleOverview();
 
             // Retrieves the mirrored layers `mirrored_layers` of application
@@ -4796,39 +4799,29 @@ class DesksMultiUserTest : public NoSessionAshTestBase {
   MultiUserWindowManager* multi_user_window_manager() {
     return Shell::Get()->multi_user_window_manager();
   }
-  PrefService* user_1_prefs() { return user_1_prefs_; }
-  PrefService* user_2_prefs() { return user_2_prefs_; }
-
-  // AshTestBase:
-  void SetUp() override {
-    NoSessionAshTestBase::SetUp();
-
-    owned_user_1_prefs_ =
-        ash::TestPrefServiceProvider::CreateUserPrefServiceSimple();
-    user_1_prefs_ = owned_user_1_prefs_.get();
-    owned_user_2_prefs_ =
-        ash::TestPrefServiceProvider::CreateUserPrefServiceSimple();
-    user_2_prefs_ = owned_user_2_prefs_.get();
+  PrefService* user_1_prefs() {
+    return GetSessionControllerClient()->GetUserPrefService(
+        GetUser1AccountId());
+  }
+  PrefService* user_2_prefs() {
+    return GetSessionControllerClient()->GetUserPrefService(
+        GetUser2AccountId());
   }
 
-  void TearDown() override {
-    user_1_prefs_ = nullptr;
-    user_2_prefs_ = nullptr;
-    NoSessionAshTestBase::TearDown();
-  }
-
-  void SimulateUser1Login() {
-    auto account_id = SimulateUserLogin({kUser1Email}, std::nullopt,
-                                        std::move(owned_user_1_prefs_));
+  void SimulateUser1Login(
+      std::optional<base::DictValue> init_prefs = std::nullopt) {
+    SimulateUserLogin({.account_id = AccountId::FromUserEmail(kUser1Email),
+                       .init_pref_service_value = std::move(init_prefs)});
     MultiUserWindowManager::Get()->SetAnimationSpeedForTest(
         MultiUserWindowManager::ANIMATION_SPEED_DISABLED);
     GetSessionControllerClient()->SetSessionState(
         session_manager::SessionState::ACTIVE);
   }
 
-  void SimulateUser2Login() {
-    SimulateUserLogin({kUser2Email}, std::nullopt,
-                      std::move(owned_user_2_prefs_));
+  void SimulateUser2Login(
+      std::optional<base::DictValue> init_prefs = std::nullopt) {
+    SimulateUserLogin({.account_id = AccountId::FromUserEmail(kUser2Email),
+                       .init_pref_service_value = std::move(init_prefs)});
   }
 
   AccountId GetUser1AccountId() const {
@@ -4841,29 +4834,21 @@ class DesksMultiUserTest : public NoSessionAshTestBase {
 
   // Initializes the given |prefs| with a desks restore data of 3 desks, with
   // the third desk named "code", and the rest are default-named.
-  void InitPrefsWithDesksRestoreData(PrefService* prefs) {
+  void InitPrefsWithDesksRestoreData(base::DictValue& prefs) {
     InitPrefsWithDesksRestoreData(
         prefs, {std::string(), std::string(), std::string("code")});
   }
 
   // Initializes the given |prefs| with a desks restore data from the
   // |desk_names| list.
-  void InitPrefsWithDesksRestoreData(PrefService* prefs,
+  void InitPrefsWithDesksRestoreData(base::DictValue& prefs,
                                      std::vector<std::string> desk_names) {
-    DCHECK(prefs);
-    ScopedListPrefUpdate update(prefs, prefs::kDesksNamesList);
-    base::ListValue& pref_data = update.Get();
-    ASSERT_TRUE(pref_data.empty());
+    base::ListValue pref_data;
     for (auto desk_name : desk_names) {
       pref_data.Append(desk_name);
     }
+    prefs.Set(prefs::kDesksNamesList, std::move(pref_data));
   }
-
- private:
-  std::unique_ptr<PrefService> owned_user_1_prefs_;
-  std::unique_ptr<PrefService> owned_user_2_prefs_;
-  raw_ptr<PrefService> user_1_prefs_ = nullptr;
-  raw_ptr<PrefService> user_2_prefs_ = nullptr;
 };
 
 TEST_F(DesksMultiUserTest, SwitchUsersBackAndForth) {
@@ -5034,12 +5019,13 @@ using DesksRestoreMultiUserTest = DesksMultiUserTest;
 TEST_F(DesksRestoreMultiUserTest, DesksRestoredFromPrimaryUserPrefsOnly) {
   constexpr int kDefaultActiveDesk = 0;
   constexpr int kUser1StoredActiveDesk = 2;
-  InitPrefsWithDesksRestoreData(user_1_prefs());
+  base::DictValue user_1_init_prefs;
+  InitPrefsWithDesksRestoreData(user_1_init_prefs);
 
   // Set the primary user1's active desk prefs to kUser1StoredActiveDesk.
-  user_1_prefs()->SetInteger(prefs::kDesksActiveDesk, kUser1StoredActiveDesk);
+  user_1_init_prefs.Set(prefs::kDesksActiveDesk, kUser1StoredActiveDesk);
 
-  SimulateUser1Login();
+  SimulateUser1Login(std::move(user_1_init_prefs));
   // User 1 is the first to login, hence the primary user.
   auto* controller = DesksController::Get();
   const auto& desks = controller->desks();
@@ -5083,8 +5069,9 @@ TEST_F(DesksRestoreMultiUserTest, DesksRestoredFromPrimaryUserPrefsOnly) {
 
 TEST_F(DesksRestoreMultiUserTest,
        ChangesMadeBySecondaryUserAffectsOnlyPrimaryUserPrefs) {
-  InitPrefsWithDesksRestoreData(user_1_prefs());
-  SimulateUser1Login();
+  base::DictValue user_1_init_prefs;
+  InitPrefsWithDesksRestoreData(user_1_init_prefs);
+  SimulateUser1Login(std::move(user_1_init_prefs));
 
   auto* controller = DesksController::Get();
   const auto& desks = controller->desks();
@@ -5130,10 +5117,11 @@ TEST_F(DesksRestoreMultiUserTest,
   // initial order. Set the user1 active desk to the fourth desk.
   const int n_desks_per_user = 4;
   int user_1_active_desk_index = 3;
-  user_1_prefs()->SetInteger(prefs::kDesksActiveDesk, user_1_active_desk_index);
-  InitPrefsWithDesksRestoreData(user_1_prefs(),
+  base::DictValue user_1_init_prefs;
+  user_1_init_prefs.Set(prefs::kDesksActiveDesk, user_1_active_desk_index);
+  InitPrefsWithDesksRestoreData(user_1_init_prefs,
                                 std::vector<std::string>{"0", "1", "2", "3"});
-  SimulateUser1Login();
+  SimulateUser1Login(std::move(user_1_init_prefs));
   auto* controller = DesksController::Get();
   const auto& desks = controller->desks();
   ASSERT_EQ(4u, desks.size());
@@ -6137,7 +6125,7 @@ TEST_P(DesksTest, ScrollButtonsVisibility) {
 TEST_P(DesksTest, GradientsVisibility) {
   // Set a flat display size to make sure there are multiple pages in the desks
   // bar with maximum number of desks.
-  UpdateDisplay("800x150");
+  UpdateDisplay("800x200");
   const size_t max_desks_size = desks_util::GetMaxNumberOfDesks();
   for (size_t i = 1; i < max_desks_size; i++) {
     NewDesk();
@@ -6244,7 +6232,7 @@ TEST_P(DesksTest, ContinueScrollBar) {
           base::Milliseconds(scroll_timeout_ms));
 
   // Make a flat long window to generate multiple pages on desks bar.
-  UpdateDisplay("800x150");
+  UpdateDisplay("325x200");
   const size_t max_desks_size = desks_util::GetMaxNumberOfDesks();
   for (size_t i = 1; i < max_desks_size; i++) {
     NewDesk();
@@ -7252,7 +7240,7 @@ TEST_P(DesksTest, ScrollBarByDraggedDesk) {
           base::Milliseconds(scroll_timeout_ms));
 
   // Make a flat long window to generate multiple pages on desks bar.
-  UpdateDisplay("800x150");
+  UpdateDisplay("325x200");
   const size_t max_desks_size = desks_util::GetMaxNumberOfDesks();
   for (size_t i = 1; i < max_desks_size; i++) {
     NewDesk();
@@ -8933,12 +8921,15 @@ class DeskBarTest : public AshTestBase,
   DeskBarTest()
       : test_close_all_window_close_timeout_(
             DesksTestApi::SetCloseAllWindowCloseTimeout(
-                base::Milliseconds(20))) {
-    set_add_default_shelf_icon(false);
-  }
+                base::Milliseconds(20))) {}
   DeskBarTest(const DeskBarTest&) = delete;
   DeskBarTest& operator=(const DeskBarTest&) = delete;
   ~DeskBarTest() override = default;
+
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
 
   void SetUp() override {
     std::tie(use_touch_gestures_, use_16_desks_, bar_type_) = GetParam();
@@ -10575,12 +10566,17 @@ class DeskButtonTest
     : public AshTestBase,
       public ::testing::WithParamInterface<DeskButtonTestParams> {
  public:
-  DeskButtonTest() { set_add_default_shelf_icon(false); }
+  DeskButtonTest() = default;
   DeskButtonTest(const DeskButtonTest&) = delete;
   DeskButtonTest& operator=(const DeskButtonTest&) = delete;
   ~DeskButtonTest() override = default;
 
   // AshTestBase:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
+
   void SetUp() override {
     AshTestBase::SetUp();
     shelf_test_api_ = std::make_unique<ShelfViewTestAPI>(
@@ -11376,6 +11372,40 @@ TEST_P(DeskButtonTest, DeskSwitchButtonContextMenu) {
   }
 }
 
+TEST_P(DeskButtonTest, DeskBarBackgroundDecoration) {
+  ClickDeskButton();
+  auto* desk_bar_view =
+      DesksController::Get()->desk_bar_controller()->GetDeskBarView(
+          Shell::GetPrimaryRootWindow());
+  ASSERT_TRUE(desk_bar_view);
+  views::test::RunScheduledLayout(desk_bar_view);
+
+  views::View* background_view = desk_bar_view->background_view();
+  ASSERT_TRUE(background_view);
+  ASSERT_TRUE(background_view->layer());
+  EXPECT_EQ(ui::LAYER_SOLID_COLOR, background_view->layer()->type());
+
+  SystemDecoration* decoration = desk_bar_view->decoration_for_testing();
+  ASSERT_TRUE(decoration);
+  EXPECT_FALSE(decoration->HasShadow());
+  EXPECT_TRUE(decoration->HasHighlightBorder());
+  EXPECT_TRUE(decoration->GetHighlightBorderValueForTesting().has_value());
+  EXPECT_EQ(background_view->GetLocalBounds(), decoration->GetContentBounds());
+  EXPECT_EQ(background_view->layer(), decoration->GetLayer()->parent());
+
+  // Adding a desk animates `background_view->layer()` with a scale transform;
+  // `decoration->GetLayer()` is parented under it so it inherits the transform
+  // and tracks the updated content bounds.
+  gfx::ScopedAnimationDurationScaleMode animation_scale(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  LeftClickOn(desk_bar_view->new_desk_button());
+  views::test::RunScheduledLayout(desk_bar_view);
+  EXPECT_FALSE(background_view->layer()->transform().IsIdentity());
+  EXPECT_EQ(background_view->layer(), decoration->GetLayer()->parent());
+  EXPECT_EQ(background_view->GetLocalBounds(), decoration->GetContentBounds());
+  background_view->layer()->GetAnimator()->StopAnimating();
+}
+
 // Tests that metrics are being recorded when a desk animation screenshot is
 // taken.
 TEST_P(DesksAcceleratorsTest, DeskSwitchScreenshotMetricsRecording) {
@@ -11397,10 +11427,6 @@ TEST_P(DesksAcceleratorsTest, DeskSwitchScreenshotMetricsRecording) {
 
 TEST_P(DesksTest, DeskCreationBlockedDuringKioskSession) {
   // Enter Kiosk session.
-  TestingPrefServiceSimple local_state;
-  user_manager::UserManager::RegisterPrefs(local_state.registry());
-  user_manager::ScopedUserManager user_manager(
-      std::make_unique<user_manager::FakeUserManager>(&local_state));
   chromeos::SetUpFakeChromeAppKioskSession();
 
   DesksController* desks_controller = DesksController::Get();

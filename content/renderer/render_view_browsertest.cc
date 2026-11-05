@@ -78,6 +78,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
+#include "third_party/blink/public/common/input/web_gesture_event.h"
 #include "third_party/blink/public/common/navigation/navigation_params.h"
 #include "third_party/blink/public/common/origin_trials/scoped_test_origin_trial_policy.h"
 #include "third_party/blink/public/common/origin_trials/trial_token_validator.h"
@@ -542,7 +543,7 @@ class RenderViewImplScaleFactorTest : public RenderViewImplTest {
         MakeVisualPropertiesWithDeviceScaleFactor(dsf));
 
     ASSERT_EQ(dsf, GetMainRenderFrame()->GetDeviceScaleFactor());
-    ASSERT_EQ(dsf, widget->GetOriginalScreenInfo().device_scale_factor);
+    ASSERT_EQ(dsf, widget->GetOriginalDeviceScaleFactor());
   }
 
   blink::VisualProperties MakeVisualPropertiesWithDeviceScaleFactor(float dsf) {
@@ -581,8 +582,7 @@ class RenderViewImplScaleFactorTest : public RenderViewImplTest {
     EXPECT_EQ(height, emulated_height);
     EXPECT_TRUE(ExecuteJavaScriptAndReturnIntValue(get_dpr, &emulated_dpr));
     EXPECT_EQ(static_cast<int>(dpr * 10), emulated_dpr);
-    ASSERT_EQ(dsf,
-              main_frame_widget()->GetOriginalScreenInfo().device_scale_factor);
+    ASSERT_EQ(dsf, main_frame_widget()->GetOriginalDeviceScaleFactor());
   }
 
   void EnableAutoResize(const gfx::Size& min_size, const gfx::Size& max_size) {
@@ -1035,15 +1035,13 @@ TEST_F(RenderViewImplScaleFactorTest, DeviceEmulationWithOOPIF) {
   // Verify that the system device scale factor has propagated into the
   // WebRemoteFrame.
   EXPECT_EQ(device_scale, GetMainRenderFrame()->GetDeviceScaleFactor());
-  EXPECT_EQ(device_scale,
-            main_frame_widget()->GetOriginalScreenInfo().device_scale_factor);
+  EXPECT_EQ(device_scale, main_frame_widget()->GetOriginalDeviceScaleFactor());
 
   TestEmulatedSizeDprDsf(640, 480, 3.f, device_scale);
 
   // Verify that the WebRemoteFrame device scale factor is still the same.
   EXPECT_EQ(3.f, GetMainRenderFrame()->GetDeviceScaleFactor());
-  EXPECT_EQ(device_scale,
-            main_frame_widget()->GetOriginalScreenInfo().device_scale_factor);
+  EXPECT_EQ(device_scale, main_frame_widget()->GetOriginalDeviceScaleFactor());
 
   ReceiveDisableDeviceEmulation();
 
@@ -1171,7 +1169,7 @@ TEST_F(RenderViewImplScaleFactorTest, DeviceScaleCorrectAfterCrossOriginNav) {
       blink::mojom::TreeScopeType::kDocument, std::move(replication_state),
       std::move(widget_params), blink::mojom::FrameOwnerProperties::New(),
       /*is_on_initial_empty_document=*/true, blink::DocumentToken(),
-      base::UnguessableToken::Create(), CreateStubPolicyContainer(),
+      blink::InitiatorStateToken(), CreateStubPolicyContainer(),
       /*is_for_nested_main_frame=*/false);
 
   TestRenderFrame* provisional_frame =
@@ -1243,7 +1241,7 @@ TEST_F(RenderViewImplTest, DetachingProxyAlsoDestroysProvisionalFrame) {
       blink::mojom::TreeScopeType::kDocument, std::move(replication_state),
       /*widget_params=*/nullptr, blink::mojom::FrameOwnerProperties::New(),
       /*is_on_initial_empty_document=*/true, blink::DocumentToken(),
-      base::UnguessableToken::Create(), CreateStubPolicyContainer(),
+      blink::InitiatorStateToken(), CreateStubPolicyContainer(),
       /*is_for_nested_main_frame=*/false);
   {
     TestRenderFrame* provisional_frame =

@@ -28,18 +28,20 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "net/base/url_util.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 
 constexpr char kStaticLoadingScreenURL[] =
     "https://www.gstatic.com/diner/chrome/atp_loading.html";
 
 namespace {
 content::OpenURLParams CreateOpenUrlParams(const GURL& url) {
-  return content::OpenURLParams(
-          net::AppendOrReplaceQueryParameter(
-              url, kMerchantTrustContextParameterName,
-              kMerchantTrustContextParameterValue),
-      content::Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false);
+  return content::OpenURLParams::CreateBrowserInitiated(
+      net::AppendOrReplaceQueryParameter(url,
+                                         kMerchantTrustContextParameterName,
+                                         kMerchantTrustContextParameterValue),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui::PAGE_TRANSITION_LINK);
 }
 }  // namespace
 
@@ -114,8 +116,8 @@ void MerchantTrustSidePanelCoordinator::RegisterEntryAndShow(
 std::unique_ptr<views::View>
 MerchantTrustSidePanelCoordinator::CreateMerchantTrustWebView(
     SidePanelEntryScope& scope) {
-  DCHECK(GetBrowserView());
-  DCHECK(last_url_info_);
+  CHECK(GetBrowserView(), base::NotFatalUntil::M162);
+  CHECK(last_url_info_, base::NotFatalUntil::M162);
   if (registered_but_not_shown_) {
     registered_but_not_shown_ = false;
   }
@@ -139,7 +141,7 @@ SidePanelUI* MerchantTrustSidePanelCoordinator::GetSidePanelUI() {
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
           web_contents());
-  return browser ? browser->GetFeatures().side_panel_ui() : nullptr;
+  return browser ? SidePanelUI::From(browser) : nullptr;
 }
 
 GURL MerchantTrustSidePanelCoordinator::GetOpenInNewTabUrl() {
@@ -198,7 +200,7 @@ void MerchantTrustSidePanelCoordinator::DidFinishNavigation(
       web_view_side_panel_view_) {
     auto* entry = registry->GetEntryForKey(
         SidePanelEntry::Key(SidePanelEntry::Id::kMerchantTrust));
-    DCHECK(entry);
+    CHECK(entry, base::NotFatalUntil::M162);
     entry->ClearCachedView();
   }
 }

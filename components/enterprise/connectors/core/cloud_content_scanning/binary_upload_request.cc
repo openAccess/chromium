@@ -16,6 +16,7 @@
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/safe_browsing/core/common/safebrowsing_switches.h"
 #include "net/base/url_util.h"
+#include "services/network/public/cpp/resource_request_body.h"
 
 namespace enterprise_connectors {
 
@@ -35,6 +36,7 @@ BinaryUploadRequest::Data& BinaryUploadRequest::Data::operator=(
   size = other.size;
   mime_type = other.mime_type;
   page = other.page.Duplicate();
+  request_body = other.request_body;
   is_obfuscated = other.is_obfuscated;
   return *this;
 }
@@ -253,6 +255,14 @@ void BinaryUploadRequest::set_content_hash_in_final_call(
 
 void BinaryUploadRequest::set_file_size(uint64_t file_size) {
   content_analysis_request_.mutable_request_data()->set_file_size(file_size);
+}
+
+void BinaryUploadRequest::set_extension_initiator(
+    safe_browsing::ExtensionTelemetryReportRequest::ExtensionInfo
+        extension_initiator) {
+  *content_analysis_request_.mutable_request_data()
+       ->mutable_initiator()
+       ->mutable_chrome_extension() = std::move(extension_initiator);
 }
 
 std::string BinaryUploadRequest::SetRandomRequestToken() {

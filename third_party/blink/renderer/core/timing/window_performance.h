@@ -68,6 +68,7 @@ class InteractionContentfulPaint;
 class InteractiveDetector;
 class LocalDOMWindow;
 class Node;
+class PerformanceElementTiming;
 class PerformanceSoftNavigation;
 class PerformanceTimingForReporting;
 class SoftNavigationContext;
@@ -87,7 +88,10 @@ class CORE_EXPORT WindowPerformance final : public Performance,
 
   // Clears any metrics state that should not persist when the initially empty
   // document is cleared.
-  static void ClearForWindowReuse(LocalDOMWindow&);
+  // TODO(crbug.com/580495627): Evaluate encapsulating per-Document state on
+  // Performance / WindowPerformance so it cannot leak across LocalDOMWindow
+  // reuse.
+  void ClearForWindowReuse() override;
 
   ExecutionContext* GetExecutionContext() const override;
 
@@ -112,9 +116,6 @@ class CORE_EXPORT WindowPerformance final : public Performance,
     navigation_destination_url_ = pending_navigation_destination_url_;
   }
   uint64_t interactionCount() const override;
-
-  void PopulateContainerTimingEntries() override;
-  void SetHasContainerTimingChanges();
 
   // Caches the runtime feature flag (and origin trial) to see if
   // ContainerTiming support is enabled
@@ -154,15 +155,7 @@ class CORE_EXPORT WindowPerformance final : public Performance,
   void OnPaintFinished();
   void OnBeginMainFrame(viz::BeginFrameId frame_id);
 
-  void AddElementTiming(const AtomicString& name,
-                        const String& url,
-                        const gfx::RectF& rect,
-                        const DOMPaintTimingInfo&,
-                        base::TimeTicks load_time,
-                        const AtomicString& identifier,
-                        const gfx::Size& intrinsic_size,
-                        const AtomicString& id,
-                        Element*);
+  void AddElementTiming(PerformanceElementTiming*);
 
   void AddContainerTiming(const DOMPaintTimingInfo& paint_timing_info,
                           const gfx::Rect& rect,
@@ -222,13 +215,7 @@ class CORE_EXPORT WindowPerformance final : public Performance,
   void PageVisibilityChangedWithTimestamp(
       base::TimeTicks visibility_change_timestamp);
 
-  void OnLargestContentfulPaintUpdated(
-      const DOMPaintTimingInfo& paint_timing_info,
-      uint64_t paint_size,
-      base::TimeTicks load_time,
-      const AtomicString& id,
-      const String& url,
-      Element*);
+  void OnLargestContentfulPaintUpdated(LargestContentfulPaint*);
 
   void OnInteractionContentfulPaintUpdated(InteractionContentfulPaint*);
 
@@ -347,7 +334,6 @@ class CORE_EXPORT WindowPerformance final : public Performance,
   bool autoscroll_active_ = false;
 
   std::optional<bool> container_timing_enabled_;
-  bool has_container_timing_changes_ = false;
 
   // Calculate responsiveness metrics and record UKM for them.
   Member<ResponsivenessMetrics> responsiveness_metrics_;

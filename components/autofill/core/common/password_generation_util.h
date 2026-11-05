@@ -16,9 +16,6 @@ namespace autofill {
 
 namespace password_generation {
 
-// Minimal length of the generated password.
-inline constexpr int kMinimumPasswordLength = 9;
-
 // Minimum password length that allows to label the password as strong in the
 // UI. Must stay in sync with LENGTH_SUFFICIENT_FOR_STRONG_LABEL in
 // TouchToFillPasswordGenerationView.java
@@ -106,23 +103,7 @@ enum class PasswordGenerationType {
   kTouchToFill,
 };
 
-// Wrapper to store the user interactions with the password generation bubble.
-struct PasswordGenerationActions {
-  // Whether the user has clicked on the learn more link.
-  bool learn_more_visited;
 
-  // Whether the user has accepted the generated password.
-  bool password_accepted;
-
-  // Whether the user has manually edited password entry.
-  bool password_edited;
-
-  // Whether the user has clicked on the regenerate button.
-  bool password_regenerated;
-
-  PasswordGenerationActions();
-  ~PasswordGenerationActions();
-};
 
 struct PasswordGenerationUIData {
   PasswordGenerationUIData(const gfx::RectF& bounds,

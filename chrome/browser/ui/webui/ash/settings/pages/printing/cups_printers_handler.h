@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ash/printing/cups_printers_manager.h"
@@ -35,6 +36,10 @@ namespace local_discovery {
 class EndpointResolver;
 }  // namespace local_discovery
 
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
+
 namespace printing {
 struct PrinterStatus;
 }  // namespace printing
@@ -56,10 +61,14 @@ class CupsPrintersHandler : public content::WebUIMessageHandler,
  public:
   static std::unique_ptr<CupsPrintersHandler> CreateForTesting(
       Profile* profile,
-      scoped_refptr<chromeos::PpdProvider> ppd_provider,
+      std::unique_ptr<chromeos::PpdProvider> ppd_provider,
       CupsPrintersManager* printers_manager);
 
-  CupsPrintersHandler(Profile* profile, CupsPrintersManager* printers_manager);
+  // `url_loader_factory` must be non-null.
+  CupsPrintersHandler(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      Profile* profile,
+      CupsPrintersManager* printers_manager);
 
   CupsPrintersHandler(const CupsPrintersHandler&) = delete;
   CupsPrintersHandler& operator=(const CupsPrintersHandler&) = delete;
@@ -75,7 +84,7 @@ class CupsPrintersHandler : public content::WebUIMessageHandler,
 
  private:
   CupsPrintersHandler(Profile* profile,
-                      scoped_refptr<chromeos::PpdProvider> ppd_provider,
+                      std::unique_ptr<chromeos::PpdProvider> ppd_provider,
                       CupsPrintersManager* printers_manager);
 
   // Gets all CUPS printers and return it to WebUI.
@@ -287,7 +296,7 @@ class CupsPrintersHandler : public content::WebUIMessageHandler,
   // used by callbacks that may be issued immediately by printers_manager_.
   //
   // TODO(crbug/757887) - Remove this subtle initialization constraint.
-  scoped_refptr<chromeos::PpdProvider> ppd_provider_;
+  std::unique_ptr<chromeos::PpdProvider> ppd_provider_;
 
   // Cached list of {printer name, PpdReference} pairs for each manufacturer
   // that has been resolved in the lifetime of this object.

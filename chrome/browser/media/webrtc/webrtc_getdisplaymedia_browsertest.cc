@@ -18,6 +18,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "build/config/chromebox_for_meetings/buildflags.h"  // PLATFORM_CFM
@@ -27,12 +28,14 @@
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tab_sharing/tab_sharing_infobar_delegate.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/infobars/content/content_infobar_manager.h"
+#include "components/infobars/core/confirm_infobar_delegate.h"
 #include "components/infobars/core/infobar.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
@@ -44,6 +47,8 @@
 #include "components/url_formatter/elide_url.h"
 #include "content/public/browser/audio_service.h"
 #include "content/public/browser/host_zoom_map.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
@@ -60,7 +65,6 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "base/mac/mac_util.h"
-#include "chrome/browser/media/webrtc/system_media_capture_permissions_mac.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -98,8 +102,7 @@ static const char kMainHtmlTitle[] = "WebRTC Automated Test";
 // The captured tab is identified by its title.
 static const char kCapturedTabTitle[] = "totally-unique-captured-page-title";
 static const char kCapturedPageMain[] = "/webrtc/captured_page_main.html";
-static const std::u16string kShareThisTabInsteadMessage =
-    u"Share this tab instead";
+constexpr char16_t kShareThisTabInsteadMessage[] = u"Share this tab instead";
 
 constexpr TabSharingInfoBarButton kCscIndicator =
     TabSharingInfoBarButton::kCapturedSurfaceControlIndicator;
@@ -175,9 +178,7 @@ std::string DisplaySurfaceTypeAsString(
 
 void RunGetDisplayMedia(content::WebContents* tab,
                         const std::string& constraints,
-                        bool is_fake_ui,
                         bool expect_success,
-                        bool is_tab_capture,
                         const std::string& expected_error = "",
                         bool with_user_gesture = true) {
   DCHECK(!expect_success || expected_error.empty());
@@ -192,14 +193,6 @@ void RunGetDisplayMedia(content::WebContents* tab,
                           ? content::EXECUTE_SCRIPT_DEFAULT_OPTIONS
                           : content::EXECUTE_SCRIPT_NO_USER_GESTURE)
           .ExtractString();
-
-#if BUILDFLAG(IS_MAC)
-  if (!is_fake_ui && !is_tab_capture &&
-      system_media_permissions::CheckSystemScreenCapturePermission() !=
-          system_permission_settings::SystemPermission::kAllowed) {
-    expect_success = false;
-  }
-#endif
 
   EXPECT_EQ(result, expect_success           ? "capture-success"
                     : expected_error.empty() ? "capture-failure"
@@ -243,26 +236,67 @@ infobars::ContentInfoBarManager* GetInfoBarManager(
   return infobars::ContentInfoBarManager::FromWebContents(web_contents);
 }
 
-TabSharingInfoBarDelegate* GetDelegate(content::WebContents* web_contents,
+// The tab sharing infobar is a TabSharingInfoBarDelegate, unless the
+// centralized infobar framework shows it (MigratedTabSharing). Then it is a
+// ConfirmInfoBarDelegate whose cancel button is "Share this tab instead" and
+// whose extra button is the Captured Surface Control indicator.
+infobars::InfoBarDelegate* GetDelegate(content::WebContents* web_contents,
                                        size_t infobar_index = 0) {
-  return static_cast<TabSharingInfoBarDelegate*>(
-      GetInfoBarManager(web_contents)->infobars()[infobar_index]->delegate());
+  return GetInfoBarManager(web_contents)->infobars()[infobar_index]->delegate();
+}
+
+TabSharingInfoBarDelegate* AsTabSharingDelegate(
+    infobars::InfoBarDelegate* delegate) {
+  CHECK_EQ(delegate->GetIdentifier(),
+           infobars::InfoBarDelegate::TAB_SHARING_INFOBAR_DELEGATE);
+  CHECK(!delegate->AsConfirmInfoBarDelegate());
+  return static_cast<TabSharingInfoBarDelegate*>(delegate);
 }
 
 bool HasCscIndicator(content::WebContents* web_contents) {
-  return GetDelegate(web_contents)->GetButtons() & kCscIndicator;
+  infobars::InfoBarDelegate* delegate = GetDelegate(web_contents);
+  if (ConfirmInfoBarDelegate* confirm_delegate =
+          delegate->AsConfirmInfoBarDelegate()) {
+    return confirm_delegate->GetButtons() &
+           ConfirmInfoBarDelegate::BUTTON_EXTRA;
+  }
+  return AsTabSharingDelegate(delegate)->GetButtons() & kCscIndicator;
 }
 
 bool HasShareThisTabInsteadButton(content::WebContents* web_contents) {
-  return GetDelegate(web_contents)->GetButtons() &
+  infobars::InfoBarDelegate* delegate = GetDelegate(web_contents);
+  if (ConfirmInfoBarDelegate* confirm_delegate =
+          delegate->AsConfirmInfoBarDelegate()) {
+    return confirm_delegate->GetButtons() &
+           ConfirmInfoBarDelegate::BUTTON_CANCEL;
+  }
+  return AsTabSharingDelegate(delegate)->GetButtons() &
          TabSharingInfoBarButton::kShareThisTabInstead;
 }
 
 std::u16string GetShareThisTabInsteadButtonLabel(
     content::WebContents* web_contents) {
   DCHECK(HasShareThisTabInsteadButton(web_contents));  // Test error otherwise.
-  return GetDelegate(web_contents)
-      ->GetButtonLabel(TabSharingInfoBarButton::kShareThisTabInstead);
+  infobars::InfoBarDelegate* delegate = GetDelegate(web_contents);
+  if (ConfirmInfoBarDelegate* confirm_delegate =
+          delegate->AsConfirmInfoBarDelegate()) {
+    return confirm_delegate->GetButtonLabel(
+        ConfirmInfoBarDelegate::BUTTON_CANCEL);
+  }
+  return AsTabSharingDelegate(delegate)->GetButtonLabel(
+      TabSharingInfoBarButton::kShareThisTabInstead);
+}
+
+void ClickShareThisTabInsteadButton(content::WebContents* web_contents,
+                                    size_t infobar_index = 0) {
+  infobars::InfoBarDelegate* delegate =
+      GetDelegate(web_contents, infobar_index);
+  if (ConfirmInfoBarDelegate* confirm_delegate =
+          delegate->AsConfirmInfoBarDelegate()) {
+    confirm_delegate->Cancel();
+    return;
+  }
+  AsTabSharingDelegate(delegate)->ShareThisTabInstead();
 }
 
 void AdjustCommandLineForZeroCopyCapture(base::CommandLine* command_line) {
@@ -337,7 +371,11 @@ class WebRtcScreenCaptureBrowserTestWithPicker
     : public WebRtcScreenCaptureBrowserTest,
       public testing::WithParamInterface<std::tuple<bool, bool>> {
  public:
-  WebRtcScreenCaptureBrowserTestWithPicker() : test_config_(GetParam()) {}
+  WebRtcScreenCaptureBrowserTestWithPicker() : test_config_(GetParam()) {
+#if BUILDFLAG(IS_MAC)
+    feature_list_.InitAndEnableFeature(media::kUseSCContentSharingPicker);
+#endif
+  }
 
   void SetUpOnMainThread() override {
     WebRtcScreenCaptureBrowserTest::SetUpOnMainThread();
@@ -356,6 +394,13 @@ class WebRtcScreenCaptureBrowserTestWithPicker
       // Therefore we can't capture screens.
       GTEST_SKIP() << "Skipping desktop capture tests";
     }
+#elif BUILDFLAG(IS_MAC)
+    if (!test_config_.should_prefer_current_tab &&
+        base::mac::MacOSVersion() < 15'00'00) {
+      // Automated desktop capture without system-level TCC permissions uses
+      // the fake native picker, which is only enabled on macOS 15.0+.
+      GTEST_SKIP() << "Skipping desktop capture tests on macOS < 15.0";
+    }
 #endif
   }
 
@@ -367,13 +412,10 @@ class WebRtcScreenCaptureBrowserTestWithPicker
                                      ? switches::kThisTabCaptureAutoAccept
                                      : switches::kThisTabCaptureAutoReject);
     } else {
-#if BUILDFLAG(IS_CHROMEOS)
-      command_line->AppendSwitchASCII(switches::kAutoSelectDesktopCaptureSource,
-                                      "Display");
-#else
-      command_line->AppendSwitchASCII(switches::kAutoSelectDesktopCaptureSource,
-                                      "Entire screen");
-#endif  // BUILDFLAG(IS_CHROMEOS)
+      command_line->AppendSwitch(switches::kAutoSelectScreenCaptureSource);
+#if BUILDFLAG(IS_MAC)
+      command_line->AppendSwitch(switches::kUseFakeNativeScreenCapturePicker);
+#endif
     }
   }
 
@@ -382,6 +424,11 @@ class WebRtcScreenCaptureBrowserTestWithPicker
   }
 
   const TestConfigForPicker test_config_;
+
+#if BUILDFLAG(IS_MAC)
+ private:
+  base::test::ScopedFeatureList feature_list_;
+#endif
 };
 
 INSTANTIATE_TEST_SUITE_P(
@@ -401,12 +448,11 @@ INSTANTIATE_TEST_SUITE_P(
 // TODO(crbug.com/40744542): Real desktop capture is flaky on below platforms.
 // TODO(crbug.com/41493366): enable this flaky test.
 // TODO(crbug.com/461258716): enable this flaky test.
-#if BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER))
+#if BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER)
 #define MAYBE_ScreenCaptureVideo DISABLED_ScreenCaptureVideo
 #else
 #define MAYBE_ScreenCaptureVideo ScreenCaptureVideo
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || (BUILDFLAG(IS_LINUX) &&
-        // defined(MEMORY_SANITIZER))
+#endif  // BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER)
 IN_PROC_BROWSER_TEST_P(WebRtcScreenCaptureBrowserTestWithPicker,
                        MAYBE_ScreenCaptureVideo) {
   if (!test_config_.should_prefer_current_tab &&
@@ -420,9 +466,7 @@ IN_PROC_BROWSER_TEST_P(WebRtcScreenCaptureBrowserTestWithPicker,
   RunGetDisplayMedia(tab,
                      GetConstraints(
                          /*video=*/true, /*audio=*/false),
-                     /*is_fake_ui=*/false,
-                     /*expect_success=*/test_config_.accept_this_tab_capture,
-                     /*is_tab_capture=*/PreferCurrentTab());
+                     /*expect_success=*/test_config_.accept_this_tab_capture);
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -440,9 +484,7 @@ IN_PROC_BROWSER_TEST_P(WebRtcScreenCaptureBrowserTestWithPicker,
   RunGetDisplayMedia(tab,
                      GetConstraints(
                          /*video=*/true, /*audio=*/false),
-                     /*is_fake_ui=*/false,
-                     /*expect_success=*/test_config_.accept_this_tab_capture,
-                     /*is_tab_capture=*/PreferCurrentTab());
+                     /*expect_success=*/test_config_.accept_this_tab_capture);
 
   if (!test_config_.accept_this_tab_capture) {
     // This test is not relevant for this parameterized test case because it
@@ -474,10 +516,8 @@ IN_PROC_BROWSER_TEST_P(WebRtcScreenCaptureBrowserTestWithPicker,
 // TODO(crbug.com/40744542): Real desktop capture is flaky on below platforms.
 // TODO(crbug.com/41493366): enable this flaky test.
 // TODO(crbug.com/461258716): enable this flaky test.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_ScreenCaptureVideoAndAudio DISABLED_ScreenCaptureVideoAndAudio
 // On linux debug bots, it's flaky as well.
-#elif BUILDFLAG(IS_LINUX) && !defined(NDEBUG)
+#if BUILDFLAG(IS_LINUX) && !defined(NDEBUG)
 #define MAYBE_ScreenCaptureVideoAndAudio DISABLED_ScreenCaptureVideoAndAudio
 // On linux asan and msan bots, it's flaky as well.
 #elif BUILDFLAG(IS_LINUX) && \
@@ -485,7 +525,7 @@ IN_PROC_BROWSER_TEST_P(WebRtcScreenCaptureBrowserTestWithPicker,
 #define MAYBE_ScreenCaptureVideoAndAudio DISABLED_ScreenCaptureVideoAndAudio
 #else
 #define MAYBE_ScreenCaptureVideoAndAudio ScreenCaptureVideoAndAudio
-#endif  // BUILDFLAG(IS_WIN)
+#endif
 IN_PROC_BROWSER_TEST_P(WebRtcScreenCaptureBrowserTestWithPicker,
                        MAYBE_ScreenCaptureVideoAndAudio) {
   if (!test_config_.should_prefer_current_tab &&
@@ -499,9 +539,7 @@ IN_PROC_BROWSER_TEST_P(WebRtcScreenCaptureBrowserTestWithPicker,
   RunGetDisplayMedia(tab,
                      GetConstraints(
                          /*video=*/true, /*audio=*/true),
-                     /*is_fake_ui=*/false,
-                     /*expect_success=*/test_config_.accept_this_tab_capture,
-                     /*is_tab_capture=*/PreferCurrentTab());
+                     /*expect_success=*/test_config_.accept_this_tab_capture);
 }
 
 // Top level test for getDisplayMedia().
@@ -547,8 +585,7 @@ IN_PROC_BROWSER_TEST_P(WebRtcScreenCaptureBrowserTestWithFakeUI,
   RunGetDisplayMedia(tab,
                      GetConstraints(
                          /*video=*/true, /*audio=*/false),
-                     /*is_fake_ui=*/true, /*expect_success=*/true,
-                     /*is_tab_capture=*/PreferCurrentTab());
+                     /*expect_success=*/true);
 
   EXPECT_EQ(content::EvalJs(tab->GetPrimaryMainFrame(),
                             "getDisplaySurfaceSetting();"),
@@ -570,8 +607,7 @@ IN_PROC_BROWSER_TEST_P(WebRtcScreenCaptureBrowserTestWithFakeUI,
   RunGetDisplayMedia(tab,
                      GetConstraints(
                          /*video=*/true, /*audio=*/true),
-                     /*is_fake_ui=*/true, /*expect_success=*/true,
-                     /*is_tab_capture=*/PreferCurrentTab());
+                     /*expect_success=*/true);
 
   EXPECT_EQ(content::EvalJs(tab->GetPrimaryMainFrame(), "hasAudioTrack();"),
             "true");
@@ -596,9 +632,7 @@ IN_PROC_BROWSER_TEST_P(WebRtcScreenCaptureBrowserTestWithFakeUI,
       "%s}",
       kMaxWidth, kMaxFrameRate,
       base::ToString(test_config_.should_prefer_current_tab));
-  RunGetDisplayMedia(tab, constraints,
-                     /*is_fake_ui=*/true, /*expect_success=*/true,
-                     /*is_tab_capture=*/PreferCurrentTab());
+  RunGetDisplayMedia(tab, constraints, /*expect_success=*/true);
   auto result =
       content::EvalJs(tab->GetPrimaryMainFrame(), "getWidthSetting();")
           .ExtractString();
@@ -764,9 +798,7 @@ IN_PROC_BROWSER_TEST_F(WebRtcAppWindowCaptureBrowserTestWithPicker,
       CreateAppWindowWithTitle(base::UTF8ToUTF16(std::string(kAppWindowTitle)));
   content::WebContents* capturing_tab = OpenTestPageInNewTab(kMainHtmlPage);
 
-  RunGetDisplayMedia(capturing_tab, "{video: true}", /*is_fake_ui=*/false,
-                     /*expect_success=*/true,
-                     /*is_tab_capture=*/true);
+  RunGetDisplayMedia(capturing_tab, "{video: true}", /*expect_success=*/true);
   CloseAppWindow(app_window);
 }
 
@@ -821,8 +853,7 @@ IN_PROC_BROWSER_TEST_F(WebRtcSameOriginPolicyBrowserTest,
   RunGetDisplayMedia(capturing_tab,
                      GetConstraints(
                          /*video=*/true, /*audio=*/true),
-                     /*is_fake_ui=*/false, /*expect_success=*/true,
-                     /*is_tab_capture=*/true);
+                     /*expect_success=*/true);
 
   // Though the target tab should've been focused as a result of starting the
   // capture, we don't want to take a dependency on that behavior. Ensure that
@@ -861,8 +892,7 @@ IN_PROC_BROWSER_TEST_F(WebRtcSameOriginPolicyBrowserTest,
   RunGetDisplayMedia(capturing_tab,
                      GetConstraints(
                          /*video=*/true, /*audio=*/true),
-                     /*is_fake_ui=*/false, /*expect_success=*/true,
-                     /*is_tab_capture=*/true);
+                     /*expect_success=*/true);
 
   // Though the target tab should've been focused as a result of starting the
   // capture, we don't want to take a dependency on that behavior. Ensure that
@@ -1126,8 +1156,7 @@ IN_PROC_BROWSER_TEST_P(GetDisplayMediaHiDpiBrowserTest, Capture) {
       base::StringPrintf("{video: {width: {max: %d}, height: {max: %d}}, "
                          "preferCurrentTab: true}",
                          constraint_width(), constraint_height()),
-      /*is_fake_ui=*/false, /*expect_success=*/true,
-      /*is_tab_capture=*/true);
+      /*expect_success=*/true);
 
   // Ensure that the video is larger than the source tab to encourage use of a
   // higher-resolution video stream. The size is arbitrary, but it should be
@@ -1259,9 +1288,7 @@ IN_PROC_BROWSER_TEST_P(GetDisplayMediaChangeSourceBrowserTest,
   content::WebContents* other_tab = OpenTestPageInNewTab(kMainHtmlPage);
   content::WebContents* capturing_tab = OpenTestPageInNewTab(kMainHtmlPage);
 
-  RunGetDisplayMedia(capturing_tab, GetConstraints(), /*is_fake_ui=*/false,
-                     /*expect_success=*/true,
-                     /*is_tab_capture=*/true);
+  RunGetDisplayMedia(capturing_tab, GetConstraints(), /*expect_success=*/true);
 
   EXPECT_TRUE(captured_tab->IsBeingCaptured());
   EXPECT_FALSE(other_tab->IsBeingCaptured());
@@ -1288,7 +1315,7 @@ IN_PROC_BROWSER_TEST_P(GetDisplayMediaChangeSourceBrowserTest,
             kShareThisTabInsteadMessage);
 
   // Click the share-this-tab-instead secondary button.
-  GetDelegate(other_tab)->ShareThisTabInstead();
+  ClickShareThisTabInsteadButton(other_tab);
 
   // Wait until the capture of the other tab has started.
   while (!other_tab->IsBeingCaptured()) {
@@ -1327,12 +1354,10 @@ IN_PROC_BROWSER_TEST_P(GetDisplayMediaChangeSourceBrowserTest,
   content::WebContents* other_tab = OpenTestPageInNewTab(kMainHtmlPage);
   content::WebContents* capturing_tab = OpenTestPageInNewTab(kMainHtmlPage);
 
-  RunGetDisplayMedia(capturing_tab, GetConstraints(), /*is_fake_ui=*/false,
-                     /*expect_success=*/true,
-                     /*is_tab_capture=*/true);
+  RunGetDisplayMedia(capturing_tab, GetConstraints(), /*expect_success=*/true);
 
   // Click the share-this-tab-instead secondary button.
-  GetDelegate(other_tab)->ShareThisTabInstead();
+  ClickShareThisTabInsteadButton(other_tab);
 
   // Wait until the capture of the other tab has started.
   while (!other_tab->IsBeingCaptured()) {
@@ -1354,9 +1379,7 @@ IN_PROC_BROWSER_TEST_P(GetDisplayMediaChangeSourceBrowserTest,
   content::WebContents* other_tab = OpenTestPageInNewTab(kMainHtmlPage);
   content::WebContents* capturing_tab = OpenTestPageInNewTab(kMainHtmlPage);
 
-  RunGetDisplayMedia(capturing_tab, GetConstraints(), /*is_fake_ui=*/false,
-                     /*expect_success=*/true,
-                     /*is_tab_capture=*/true);
+  RunGetDisplayMedia(capturing_tab, GetConstraints(), /*expect_success=*/true);
 
   EXPECT_TRUE(captured_tab->IsBeingCaptured());
   EXPECT_FALSE(other_tab->IsBeingCaptured());
@@ -1393,7 +1416,7 @@ IN_PROC_BROWSER_TEST_P(GetDisplayMediaChangeSourceBrowserTest,
 
   // Click the share-this-tab-instead secondary button. This is rejected since
   // screen capture is not allowed by the above policy.
-  GetDelegate(other_tab)->ShareThisTabInstead();
+  ClickShareThisTabInsteadButton(other_tab);
 
   // When "Share this tab instead" fails for other_tab, the focus goes back to
   // the captured tab. Wait until that happens:
@@ -1498,8 +1521,7 @@ IN_PROC_BROWSER_TEST_P(GetDisplayMediaSelfBrowserSurfaceBrowserTest,
 
   // Success expected either way, with the *other* tab being captured
   // when selfBrowserCapture is set to "exclude".
-  RunGetDisplayMedia(capturing_tab, GetConstraints(), /*is_fake_ui=*/false,
-                     /*expect_success=*/true, /*is_tab_capture=*/true);
+  RunGetDisplayMedia(capturing_tab, GetConstraints(), /*expect_success=*/true);
 
   EXPECT_EQ(!IsSelfBrowserSurfaceExclude(), capturing_tab->IsBeingCaptured());
   EXPECT_EQ(IsSelfBrowserSurfaceExclude(), other_tab->IsBeingCaptured());
@@ -1525,8 +1547,7 @@ IN_PROC_BROWSER_TEST_P(GetDisplayMediaSelfBrowserSurfaceBrowserTest,
                        "'MediaDevices': Self-contradictory configuration "
                        "(preferCurrentTab and selfBrowserSurface=exclude).";
   RunGetDisplayMedia(capturing_tab, GetConstraints(/*prefer_current_tab=*/true),
-                     /*is_fake_ui=*/false, expect_success,
-                     /*is_tab_capture=*/true, expected_error);
+                     expect_success, expected_error);
 
   EXPECT_EQ(!IsSelfBrowserSurfaceExclude(), capturing_tab->IsBeingCaptured());
   EXPECT_FALSE(other_tab->IsBeingCaptured());
@@ -1625,9 +1646,7 @@ IN_PROC_BROWSER_TEST_P(GetDisplayMediaTransientActivationRequiredTest, Check) {
             "(user gesture).";
 
   RunGetDisplayMedia(tab, GetConstraints(/*video=*/true, /*audio=*/true),
-                     /*is_fake_ui=*/true, expect_success,
-                     /*is_tab_capture=*/false, expected_error,
-                     with_user_gesture_);
+                     expect_success, expected_error, with_user_gesture_);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1728,8 +1747,7 @@ IN_PROC_BROWSER_TEST_P(GetDisplayMediaConfersTransientActivationTest,
   RunGetDisplayMedia(
       capturing_tab,
       GetConstraints(/*video=*/true, /*audio=*/true, prefer_current_tab_),
-      /*is_fake_ui=*/false, /*expect_success=*/user_accepts_,
-      /*is_tab_capture=*/true, /*expected_error=*/"",
+      /*expect_success=*/user_accepts_, /*expected_error=*/"",
       /*with_user_gesture=*/false);
 
   EXPECT_EQ(capturing_tab->GetPrimaryMainFrame()->HasTransientUserActivation(),
@@ -1855,9 +1873,7 @@ class CaptureSessionDetails {
   void RunGetDisplayMedia() {
     ::RunGetDisplayMedia(capturing_tab_,
                          "{video: true, surfaceSwitching: \"include\"}",
-                         /*is_fake_ui=*/false,
-                         /*expect_success=*/true,
-                         /*is_tab_capture=*/true);
+                         /*expect_success=*/true);
   }
 
   // Sets a factory that produces mock controllers for Captured Surface Control
@@ -2252,7 +2268,7 @@ IN_PROC_BROWSER_TEST_F(CapturedSurfaceControlTest,
   const base::expected<std::vector<int>, std::string> result =
       capture_session.GetSupportedZoomLevels();
   EXPECT_FALSE(result.has_value());
-  EXPECT_NE(result.error().find("InvalidStateError"), std::string::npos);
+  EXPECT_TRUE(result.error().contains("InvalidStateError"));
 }
 
 IN_PROC_BROWSER_TEST_F(CapturedSurfaceControlTest,
@@ -2299,7 +2315,7 @@ IN_PROC_BROWSER_TEST_F(CapturedSurfaceControlTest,
   const base::expected<std::vector<int>, std::string> result =
       capture_session.GetSupportedZoomLevels();
   EXPECT_FALSE(result.has_value());
-  EXPECT_NE(result.error().find("InvalidStateError"), std::string::npos);
+  EXPECT_TRUE(result.error().contains("InvalidStateError"));
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -2509,7 +2525,7 @@ void CapturedSurfaceControlTest::RunChangingCapturedTabZoomChangeEventTest(
             100 * zoom_level_first_tab);
   ASSERT_EQ(capture_session.GetZoomLevelChangeEventsSinceLast(), 0);
 
-  GetDelegate(second_captured_tab)->ShareThisTabInstead();
+  ClickShareThisTabInsteadButton(second_captured_tab);
   capture_session.WaitForCaptureOf(CapturedTab::kOtherTab);
   ASSERT_EQ(capture_session.GetCapturedTab(), second_captured_tab);
   ASSERT_EQ(GetZoomLevelPercentage(second_captured_tab),
@@ -2584,7 +2600,7 @@ IN_PROC_BROWSER_TEST_F(CapturedSurfaceControlTest,
   // Expect that clicking "share this tab instead" will pipe a notification of
   // the change to the captured surface controller.
   capture_session.SetExpectUpdateCaptureTarget();
-  GetDelegate(capture_session.other_tab())->ShareThisTabInstead();
+  ClickShareThisTabInsteadButton(capture_session.other_tab());
   capture_session.WaitForCaptureOf(CapturedTab::kOtherTab);
 
   capture_session.VerifyAndClearExpectations();
@@ -2615,9 +2631,9 @@ void CapturedSurfaceControlTest::RunChangeSourceWorksOnCorrectCaptureSession(
       (session_experiencing_change == 0) ? capture_session_0
                                          : capture_session_1;
   capture_session_experiencing_change.SetExpectUpdateCaptureTarget();
-  GetDelegate(capture_session_experiencing_change.other_tab(),
-              /*infobar_index=*/session_experiencing_change)
-      ->ShareThisTabInstead();
+  ClickShareThisTabInsteadButton(
+      capture_session_experiencing_change.other_tab(),
+      /*infobar_index=*/session_experiencing_change);
   capture_session_experiencing_change.WaitForCaptureOf(CapturedTab::kOtherTab);
 
   capture_session_0.VerifyAndClearExpectations();
@@ -2766,7 +2782,7 @@ IN_PROC_BROWSER_TEST_P(
   capture_session.ExpectCapturedTab(CapturedTab::kInitiallyCapturedTab);
 
   // Note absence of call to MakeValidApiCall() before share-this-tab-instead.
-  GetDelegate(capture_session.other_tab())->ShareThisTabInstead();
+  ClickShareThisTabInsteadButton(capture_session.other_tab());
 
   // The capturing tab's infobar does not show the CSC indicator because
   // a write-access CSC action was not invoked.
@@ -2790,7 +2806,7 @@ IN_PROC_BROWSER_TEST_P(
   capture_session.ExpectCapturedTab(CapturedTab::kInitiallyCapturedTab);
 
   MakeValidApiCall(capture_session, action_);
-  GetDelegate(capture_session.other_tab())->ShareThisTabInstead();
+  ClickShareThisTabInsteadButton(capture_session.other_tab());
 
   // The capturing tab's infobar show the CSC indicator if the action
   // was a write-access action.
@@ -2840,9 +2856,7 @@ IN_PROC_BROWSER_TEST_P(WebRtcScreenCaptureBrowserTestUserRejection,
       capturing_tab,
       GetConstraints(
           /*video=*/true, /*audio=*/false),
-      /*is_fake_ui=*/false,
       /*expect_success=*/false,
-      /*is_tab_capture=*/true,
       /*expected_error=*/"NotAllowedError: Permission denied by user");
 }
 
@@ -2857,6 +2871,9 @@ class GetDisplayMediaRestrictOwnAudioTest
   void SetUpCommandLine(base::CommandLine* command_line) override {
     command_line->AppendSwitch(switches::kAutoSelectScreenCaptureSource);
     command_line->AppendSwitch(switches::kSystemAudioCaptureDefaultChecked);
+#if BUILDFLAG(IS_MAC)
+    command_line->AppendSwitch(switches::kUseFakeNativeScreenCapturePicker);
+#endif
   }
 
   void SetUpOnMainThread() override {
@@ -2870,26 +2887,20 @@ class GetDisplayMediaRestrictOwnAudioTest
       GTEST_SKIP() << "Missing audio devices: skipping test...";
     }
 #if BUILDFLAG(IS_MAC)
-    // The API for system audio sharing is available from macOS 14.2. If macOS
-    // older then 14.2 is used, there will be no option in the UI for sharing
-    // system audio, and we will not have an audio track in the test.
-    int mac_os_version = base::mac::MacOSVersion();
-    int major_mac_os_version = mac_os_version / 1'00'00;
-    int minor_mac_os_version = (mac_os_version / 1'00) % 1'00;
-    if (major_mac_os_version <= 13 ||
-        (major_mac_os_version == 14 && minor_mac_os_version < 2)) {
-      GTEST_SKIP() << "macOS version do not support system audio sharing: "
-                      "skipping test...";
+    // Automated screen capture without system-level TCC permissions uses the
+    // fake native picker, which is only enabled from macOS 15.0.
+    if (base::mac::MacOSVersion() < 15'00'00) {
+      GTEST_SKIP() << "Skipping test on macOS < 15.0...";
     }
 #endif
   }
 
   void SetUpInProcessBrowserTestFixture() override {
 #if BUILDFLAG(IS_MAC)
-    feature_list_.InitWithFeatures({media::kMacCatapLoopbackAudioForCast,
-                                    media::kMacCatapLoopbackAudioForScreenShare,
-                                    blink::features::kRestrictOwnAudio},
-                                   {media::kUseSCContentSharingPicker});
+    feature_list_.InitWithFeatures(
+        {media::kMacCatapLoopbackAudioForCast,
+         blink::features::kRestrictOwnAudio, media::kUseSCContentSharingPicker},
+        {});
 #elif BUILDFLAG(IS_WIN)
     feature_list_.InitWithFeatures({blink::features::kRestrictOwnAudio}, {});
 #endif
@@ -2970,9 +2981,7 @@ IN_PROC_BROWSER_TEST_P(GetDisplayMediaRestrictOwnAudioTest,
       tab,
       GetConstraintsSystemAudio(test_config_.suppress_local_audio_playback,
                                 test_config_.restrict_own_audio),
-      /*is_fake_ui=*/false,
-      /*expect_success=*/true,
-      /*is_tab_capture=*/false);
+      /*expect_success=*/true);
   EXPECT_EQ(content::EvalJs(tab->GetPrimaryMainFrame(), "hasAudioTrack();"),
             "true");
   EXPECT_EQ(

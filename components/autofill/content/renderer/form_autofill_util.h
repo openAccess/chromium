@@ -65,18 +65,18 @@ namespace form_util {
 // heuristics for a given form element.
 using ButtonTitlesCache = base::flat_map<FormRendererId, ButtonTitleList>;
 
-// Extract FormData from `form_element` or the unowned form if
-// `form_element.IsNull()`.
+// Extracts FormData from the form element with `form_id`, or the unowned form
+// if `form_id.is_null()`.
 //
 // The document must be the one we want to extract fields from. In other words:
-// Do not blindly pass "some" WebDocument for `document`! If `form_element` is
-// non-null, `document` must obviously be `form_element`'s document. As a rule
-// of thumb, avoid passing "the current frame's document" but instead, whenever
-// possible, pass WebForm[Control]Element::GetDocument() of the form or of the
-// field whose form that we want to extract.
+// Do not blindly pass "some" WebDocument for `document`! If `form_id` is
+// non-null, `document` must obviously be the form element's document. As a
+// rule of thumb, avoid passing "the current frame's document" but instead,
+// whenever possible, pass WebForm[Control]Element::GetDocument() of the form or
+// of the field whose form that we want to extract.
 std::optional<FormData> ExtractFormData(
     const blink::WebDocument& document,
-    const blink::WebFormElement& form_element,
+    FormRendererId form_id,
     const FieldDataManager& field_data_manager,
     const CallTimerState& timer_state,
     ButtonTitlesCache* button_titles_cache);
@@ -105,6 +105,14 @@ bool IsAutofillableElement(const blink::WebFormControlElement& element);
 // `element` ever was an <input type=password>.
 std::optional<FormControlType> GetAutofillFormControlType(
     const blink::WebFormControlElement& element);
+
+// Maps a Blink FormControlTypeForAutofill() value to Autofill's
+// FormControlType. Returns std::nullopt for types that Autofill does not
+// handle. AutofillAgent::DidChangeFormRelatedElementDynamically() relies on
+// this depending on the type only; see MayBeRelevantFormControlChange() there
+// if that ever needs to change.
+std::optional<FormControlType> GetAutofillFormControlType(
+    blink::mojom::FormControlType type);
 
 // Returns true iff `element` has a "webauthn" autocomplete attribute.
 bool IsWebauthnTaggedElement(const blink::WebFormControlElement& element);

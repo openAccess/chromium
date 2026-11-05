@@ -13,8 +13,10 @@ import android.content.Context;
 import android.graphics.Rect;
 import android.util.AttributeSet;
 import android.view.Gravity;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.ViewPropertyAnimator;
 import android.view.animation.AccelerateInterpolator;
@@ -29,6 +31,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.chromium.base.Callback;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.TraceEvent;
 import org.chromium.build.annotations.EnsuresNonNull;
 import org.chromium.build.annotations.NullMarked;
@@ -36,9 +39,9 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.keyboard_accessory.R;
 import org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryStyle.NotchPosition;
+import org.chromium.components.browser_ui.widget.security.SecurityTouchEventInterceptionHelper;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.ui.base.ViewUtils;
-import org.chromium.ui.widget.ViewRectProvider;
 
 /**
  * The Accessory sitting above the keyboard and below the content area. It is used for autofill
@@ -52,8 +55,8 @@ class KeyboardAccessoryView extends LinearLayout {
     private static final int FADE_ANIMATION_DURATION_MS = 150; // Total duration of show/hide.
     private static final int HIDING_ANIMATION_DELAY_MS = 50; // Shortens animation duration.
 
+    private final SecurityTouchEventInterceptionHelper mSecurityHelper;
     private @Nullable Tracker mFeatureEngagementTracker;
-    private @Nullable Callback<Integer> mObfuscatedLastChildAt;
     private @Nullable Callback<Boolean> mOnTouchEvent;
     private @Nullable ObjectAnimator mAnimator;
     private @Nullable AnimationListener mAnimationListener;
@@ -79,20 +82,6 @@ class KeyboardAccessoryView extends LinearLayout {
          */
         void onFadeInEnd();
     }
-
-    // Records the first time a user scrolled to suppress an IPH explaining how scrolling works.
-    private final RecyclerView.OnScrollListener mScrollingIphCallback =
-            new RecyclerView.OnScrollListener() {
-                @Override
-                public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
-                    if (newState != RecyclerView.SCROLL_STATE_IDLE) {
-                        mBarItemsView.removeOnScrollListener(mScrollingIphCallback);
-                        if (mFeatureEngagementTracker != null) {
-                            KeyboardAccessoryIphUtils.emitScrollingEvent(mFeatureEngagementTracker);
-                        }
-                    }
-                }
-            };
 
     /**
      * This decoration ensures that the last item is right-aligned. To do this, it subtracts the
@@ -179,23 +168,48 @@ class KeyboardAccessoryView extends LinearLayout {
     /** Constructor for inflating from XML which is why it must be public. */
     public KeyboardAccessoryView(Context context, AttributeSet attrs) {
         super(context, attrs);
+        mSecurityHelper = new SecurityTouchEventInterceptionHelper();
+    }
+
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent motionEvent) {
+        if (motionEvent.getAction() == MotionEvent.ACTION_SCROLL
+                && motionEvent.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
+            return onGenericMotionEvent(motionEvent);
+        }
+        return super.dispatchGenericMotionEvent(motionEvent);
     }
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent motionEvent) {
+        if (motionEvent.getAction() != MotionEvent.ACTION_SCROLL
+                || !motionEvent.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
+            return true;
+        }
+        float vScroll = motionEvent.getAxisValue(MotionEvent.AXIS_VSCROLL);
+        float hScroll = motionEvent.getAxisValue(MotionEvent.AXIS_HSCROLL);
+        if (vScroll == 0 && hScroll == 0) {
+            return true;
+        }
+        int rtlFactor = isLayoutRtl() ? -1 : 1;
+        float scrollAmount = hScroll == 0 ? vScroll : hScroll;
+        float scrollStep = ViewConfiguration.get(getContext()).getScaledHorizontalScrollFactor();
+        int scrollPixels = Math.round(-scrollAmount * scrollStep * rtlFactor);
+        mBarItemsView.scrollBy(scrollPixels, 0);
+
         return true; // Accessory view is a sink for all events. Touch/Click is handled earlier.
+    }
+
+    public boolean wasClickedWhenObscured() {
+        return mSecurityHelper.isWindowObscured();
     }
 
     @Override
     public boolean onInterceptTouchEvent(MotionEvent event) {
-        final boolean isViewObscured =
-                (event.getFlags()
-                                & (MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED
-                                        | MotionEvent.FLAG_WINDOW_IS_OBSCURED))
-                        != 0;
+        mSecurityHelper.registerMotionEvent(event);
         // The event is filtered out when the keyboard accessory view is fully or partially obscured
         // given that no user education bubbles are shown to the user.
-        final boolean shouldFilterEvent = isViewObscured && !mAllowClicksWhileObscured;
+        final boolean shouldFilterEvent = wasClickedWhenObscured() && !mAllowClicksWhileObscured;
         if (mOnTouchEvent != null) {
             mOnTouchEvent.onResult(shouldFilterEvent);
         }
@@ -249,7 +263,6 @@ class KeyboardAccessoryView extends LinearLayout {
         int pad = getResources().getDimensionPixelSize(R.dimen.keyboard_accessory_bar_item_padding);
         // Ensure the last element (although scrollable) is always end-aligned.
         mBarItemsView.addItemDecoration(new StickyLastItemDecoration(pad));
-        mBarItemsView.addOnScrollListener(mScrollingIphCallback);
 
         // Remove any paddings that might be inherited since this messes up the fading edge.
         mBarItemsView.setPaddingRelative(0, 0, 0, 0);
@@ -295,15 +308,6 @@ class KeyboardAccessoryView extends LinearLayout {
         mAnimationListener = animationListener;
     }
 
-    @Nullable
-    ViewRectProvider getSwipingIphRect() {
-        @Nullable View lastChild = getLastChild();
-        if (lastChild == null) return null;
-        ViewRectProvider provider = new ViewRectProvider(lastChild);
-        provider.setIncludePadding(true);
-        return provider;
-    }
-
     void setStyle(KeyboardAccessoryStyle style) {
         mMaxWidth = style.getMaxWidth();
         mHorizontalOffset = style.getHorizontalOffset();
@@ -325,8 +329,10 @@ class KeyboardAccessoryView extends LinearLayout {
     private void applyUndockedStyle(
             CoordinatorLayout.LayoutParams params, KeyboardAccessoryStyle style) {
         boolean isDynamicPositioningEnabled =
-                ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.AUTOFILL_ANDROID_KEYBOARD_ACCESSORY_DYNAMIC_POSITIONING);
+                DeviceInfo.isDesktop()
+                        && ChromeFeatureList.isEnabled(
+                                ChromeFeatureList
+                                        .AUTOFILL_ANDROID_KEYBOARD_ACCESSORY_DYNAMIC_POSITIONING);
         // To provide an experience similar to desktop popup, animations are disabled.
         mDisableAnimations = isDynamicPositioningEnabled;
         if (isDynamicPositioningEnabled) {
@@ -399,6 +405,7 @@ class KeyboardAccessoryView extends LinearLayout {
         super.onMeasure(widthMeasureSpec, heightMeasureSpec);
 
         if (mIsUndocked
+                && DeviceInfo.isDesktop()
                 && ChromeFeatureList.isEnabled(
                         ChromeFeatureList
                                 .AUTOFILL_ANDROID_KEYBOARD_ACCESSORY_DYNAMIC_POSITIONING)) {
@@ -415,6 +422,7 @@ class KeyboardAccessoryView extends LinearLayout {
         }
 
         if (mIsUndocked
+                && DeviceInfo.isDesktop()
                 && ChromeFeatureList.isEnabled(
                         ChromeFeatureList
                                 .AUTOFILL_ANDROID_KEYBOARD_ACCESSORY_DYNAMIC_POSITIONING)) {
@@ -479,10 +487,6 @@ class KeyboardAccessoryView extends LinearLayout {
         }
     }
 
-    void setObfuscatedLastChildAt(Callback<Integer> obfuscatedLastChildAt) {
-        mObfuscatedLastChildAt = obfuscatedLastChildAt;
-    }
-
     void setOnTouchEventCallback(Callback<Boolean> onTouchEvent) {
         mOnTouchEvent = onTouchEvent;
     }
@@ -542,7 +546,6 @@ class KeyboardAccessoryView extends LinearLayout {
                             view.scrollToPosition(0);
                         }
                         view.invalidateItemDecorations();
-                        onItemsChanged();
                     }
                 });
         view.setAdapter(adapter);
@@ -599,34 +602,6 @@ class KeyboardAccessoryView extends LinearLayout {
                                     setVisibility(View.GONE);
                                     mRunningAnimation = null;
                                 });
-    }
-
-    private boolean isLastChildObfuscated() {
-        View lastChild = getLastChild();
-        RecyclerView.Adapter adapter = mBarItemsView.getAdapter();
-        // The recycler view isn't ready yet, so no children can be considered:
-        if (lastChild == null || adapter == null) return false;
-        // The last child wasn't even rendered, so it's definitely not visible:
-        if (mBarItemsView.indexOfChild(lastChild) < adapter.getItemCount()) return true;
-        // The last child is partly off screen:
-        return getLayoutDirection() == LAYOUT_DIRECTION_RTL
-                ? lastChild.getX() < 0
-                : lastChild.getX() + lastChild.getWidth() > mBarItemsView.getWidth();
-    }
-
-    private void onItemsChanged() {
-        if (mObfuscatedLastChildAt != null && isLastChildObfuscated()) {
-            mObfuscatedLastChildAt.onResult(mBarItemsView.indexOfChild(getLastChild()));
-        }
-    }
-
-    private @Nullable View getLastChild() {
-        for (int i = mBarItemsView.getChildCount() - 1; i >= 0; --i) {
-            View lastChild = mBarItemsView.getChildAt(i);
-            if (lastChild == null) continue;
-            return lastChild;
-        }
-        return null;
     }
 
     private void animateSuggestionArrival() {

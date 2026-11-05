@@ -5,6 +5,7 @@
 #ifndef NET_COOKIES_COOKIE_UTIL_H_
 #define NET_COOKIES_COOKIE_UTIL_H_
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -16,10 +17,7 @@
 #include "net/base/net_export.h"
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_options.h"
-#include "net/cookies/cookie_setting_override.h"
 #include "net/cookies/site_for_cookies.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
-#include "net/first_party_sets/first_party_sets_cache_filter.h"
 #include "net/storage_access_api/status.h"
 #include "url/origin.h"
 
@@ -31,9 +29,7 @@ class CanonicalCookie;
 class CookieAccessDelegate;
 class CookieInclusionStatus;
 class CookiePartitionKey;
-class IsolationInfo;
 class ParsedCookie;
-class SchemefulSite;
 
 struct CookieAccessResult;
 struct CookieWithAccessResult;
@@ -47,25 +43,6 @@ namespace cookie_util {
 const int kVlogPerCookieMonster = 1;
 const int kVlogSetCookies = 7;
 const int kVlogGarbageCollection = 5;
-
-// This enum must match the numbering for StorageAccessResult in
-// histograms/metadata/storage/enums.xml. Do not reorder or remove items, only
-// add new items at the end.
-enum class StorageAccessResult {
-  ACCESS_BLOCKED = 0,
-  ACCESS_ALLOWED = 1,
-  ACCESS_ALLOWED_STORAGE_ACCESS_GRANT = 2,
-  // OBSOLETE_ACCESS_ALLOWED_FORCED = 3 /*(DEPRECATED)*/,
-  ACCESS_ALLOWED_TOP_LEVEL_STORAGE_ACCESS_GRANT = 4,
-  // ACCESS_ALLOWED_3PCD_TRIAL = 5,  // Deprecated
-  // ACCESS_ALLOWED_3PCD_METADATA_GRANT = 6,  // Deprecated
-  // ACCESS_ALLOWED_3PCD_HEURISTICS_GRANT = 7,  // Deprecated
-  // ACCESS_ALLOWED_CORS_EXCEPTION = 8,  // Deprecated
-  // ACCESS_ALLOWED_TOP_LEVEL_3PCD_TRIAL = 9,  // Deprecated
-  ACCESS_ALLOWED_SCHEME = 10,
-  ACCESS_ALLOWED_SANDBOX_VALUE = 11,
-  kMaxValue = ACCESS_ALLOWED_SANDBOX_VALUE,
-};
 
 // This enum's values correspond to the values of the HTTP request header
 // `Sec-Fetch-Storage-Access`, which is applied to cross-site requests.
@@ -124,10 +101,6 @@ enum class ActivateStorageAccessLoadOutcome {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/storage/enums.xml:ActivateStorageAccessLoadOutcome)
 
-// Helper to fire telemetry indicating if a given request for storage was
-// allowed or not by the provided |result|.
-NET_EXPORT void FireStorageAccessHistogram(StorageAccessResult result);
-
 // Returns the effective TLD+1 for a given host. This only makes sense for http
 // and https schemes. For other schemes, the host will be returned unchanged
 // (minus any leading period).
@@ -145,6 +118,13 @@ NET_EXPORT std::optional<std::string> GetCookieDomainWithString(
     const GURL& url,
     std::string_view domain_string,
     CookieInclusionStatus& status);
+
+// Returns true if `url`'s host is valid for setting or retrieving cookies per
+// rfc6265bis §5.1.2. For HTTP/HTTPS/WS/WSS URLs with non-IP hosts, requires a
+// DNS-compliant canonicalized host (via `net::IsCanonicalizedHostCompliant()`).
+// Non-web schemes (e.g. `file://`, `chrome-extension://`) and IP literals are
+// considered valid.
+NET_EXPORT bool IsCookieUrlHostValid(const GURL& url);
 
 // Returns true if a domain string represents a host-only cookie,
 // i.e. it doesn't begin with a leading '.' character.
@@ -376,15 +356,6 @@ NET_EXPORT bool IsOriginBoundCookiesPartiallyEnabled();
 
 NET_EXPORT bool IsTimeLimitedInsecureCookiesEnabled();
 
-// Computes the First-Party Sets metadata and cache match information.
-// `isolation_info` must be fully populated.
-[[nodiscard]] NET_EXPORT
-    std::pair<FirstPartySetMetadata, FirstPartySetsCacheFilter::MatchInfo>
-    ComputeFirstPartySetMetadata(
-        const SchemefulSite& request_site,
-        const IsolationInfo& isolation_info,
-        const CookieAccessDelegate* cookie_access_delegate);
-
 // Converts a string representing the http request method to its enum
 // representation.
 NET_EXPORT CookieOptions::SameSiteCookieContext::ContextMetadata::HttpMethod
@@ -427,6 +398,9 @@ NET_EXPORT bool IsForceThirdPartyCookieBlockingEnabled();
     const GURL& url,
     StorageAccessApiStatus api_status,
     base::optional_ref<const url::Origin> request_initiator);
+
+// Returns the combined size in bytes of `cc`'s name and value.
+NET_EXPORT size_t NameValueSizeBytes(const CanonicalCookie& cc);
 
 }  // namespace cookie_util
 

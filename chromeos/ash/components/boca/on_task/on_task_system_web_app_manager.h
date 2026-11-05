@@ -24,11 +24,10 @@ class OnTaskSystemWebAppManager {
       delete;
   virtual ~OnTaskSystemWebAppManager() = default;
 
-  // Launches the Boca SWA with homepage url and triggers the specified callback
-  // to convey the caller if the launch succeeded.
+  // Launches the Boca SWA and triggers the specified callback to convey the
+  // caller if the launch succeeded.
   virtual void LaunchSystemWebAppAsync(
-      base::OnceCallback<void(bool)> callback,
-      const GURL& url = GURL(kChromeBocaAppUntrustedIndexURL)) = 0;
+      base::OnceCallback<void(bool)> callback) = 0;
 
   // Closes the specified Boca SWA window.
   virtual void CloseSystemWebAppWindow(SessionID window_id) = 0;
@@ -49,7 +48,7 @@ class OnTaskSystemWebAppManager {
   // id.
   virtual void SetWindowTrackerForSystemWebAppWindow(
       SessionID window_id,
-      const std::vector<boca::BocaWindowObserver*> observers) = 0;
+      const std::vector<raw_ptr<boca::BocaWindowObserver>> observers) = 0;
 
   // Creates a background tab with the given URL and restriction_level in the
   // specified Boca SWA window.

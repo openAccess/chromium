@@ -30,7 +30,7 @@ source_set("tab_model") {
     "//components/sync_sessions",
     "//components/tab_groups",
     "//components/tabs:public",
-    "//components/tabs/public/android",
+    "//third_party/jni_zero",
     "//ui/base/unowned_user_data",
     "//url",
   ]
@@ -49,8 +49,6 @@ source_set("impl") {
     "tab_model_observer_jni_bridge.cc",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     ":tab_model",
     "//chrome/android:chrome_jni_headers",
@@ -58,18 +56,20 @@ source_set("impl") {
     "//chrome/browser/android:tabs_public",
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/glic",
+    "//chrome/browser/performance_manager",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/sessions",
     "//chrome/browser/sync",
     "//chrome/browser/tab",
     "//chrome/browser/tab_contents",
     "//chrome/browser/ui/browser_window",
-    "//chrome/browser/ui/browser_window/internal",
     "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/tabs:tabs_public",
     "//components/content_settings/core/browser",
     "//content/public/browser",
     "//content/public/common",
+    "//ui/android",
+    "//ui/base",
     "//ui/base:types",
   ]
 }
@@ -86,7 +86,6 @@ source_set("test_support") {
   ]
   public_deps = [
     ":tab_model",
-    "//chrome/browser",
     "//content/test:test_support",
     "//ui/base/unowned_user_data",
   ]
@@ -103,9 +102,19 @@ source_set("unit_tests") {
   testonly = true
   sources = [ "tab_model_list_unittest.cc" ]
   deps = [
+    ":tab_model",
     ":test_support",
+    "//base",
+    "//chrome/browser/android:tabs_public",
+    "//chrome/browser/ui/navigator",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//components/sessions",
+    "//components/sessions:session_id",
     "//content/public/browser",
+    "//testing/gtest",
+    "//ui/base",
+    "//url",
   ]
 }
 
@@ -119,6 +128,8 @@ source_set("browser_tests") {
   deps = [
     ":test_support",
     "//chrome/browser/content_settings:content_settings_factory",
+    "//chrome/browser/flags:flags_android",
+    "//chrome/browser/performance_manager",
     "//chrome/test:test_support",
     "//content/public/browser",
   ]

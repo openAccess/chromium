@@ -16,6 +16,7 @@
 #include "base/types/to_address.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/extensions/extensions_overrides/simple_overrides.h"
+#include "chrome/browser/ui/extensions/search_override_stack.h"
 #include "chrome/browser/ui/hats/hats_service.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/survey_config.h"
@@ -62,9 +63,9 @@ ShownExtensionSet* GetShownExtensionSet(Profile& profile,
 
 void MarkShownFor(Profile& profile, const ExtensionId& id) {
   ShownExtensionSet* shown_set = GetShownExtensionSet(profile, true);
-  DCHECK(shown_set);
+  CHECK(shown_set, base::NotFatalUntil::M162);
   bool inserted = shown_set->shown_ids.insert(id).second;
-  DCHECK(inserted);
+  CHECK(inserted, base::NotFatalUntil::M162);
 }
 
 }  // namespace
@@ -89,7 +90,7 @@ ExtensionSettingsOverriddenDialog::ExtensionSettingsOverriddenDialog(
     Params params,
     Profile& profile)
     : params_(std::move(params)), profile_(profile) {
-  DCHECK(!params_.controlling_extension_id.empty());
+  CHECK(!params_.controlling_extension_id.empty(), base::NotFatalUntil::M162);
 }
 
 ExtensionSettingsOverriddenDialog::~ExtensionSettingsOverriddenDialog() =
@@ -173,7 +174,7 @@ bool ExtensionSettingsOverriddenDialog::ShouldShow() {
       extensions::ExtensionRegistry::Get(base::to_address(profile_))
           ->enabled_extensions()
           .GetByID(params_.controlling_extension_id);
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M162);
 
   // Don't display the dialog for force-installed extensions that can't be
   // disabled.
@@ -196,35 +197,43 @@ bool ExtensionSettingsOverriddenDialog::ShouldShow() {
 
 SettingsOverriddenDialogController::ShowParams
 ExtensionSettingsOverriddenDialog::GetShowParams() {
-  DCHECK(ShouldShow());
+  CHECK(ShouldShow(), base::NotFatalUntil::M162);
 
   const extensions::Extension* extension =
       extensions::ExtensionRegistry::Get(base::to_address(profile_))
           ->enabled_extensions()
           .GetByID(params_.controlling_extension_id);
 
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M162);
 
   return params_.content;
 }
 
 void ExtensionSettingsOverriddenDialog::OnDialogWillBeShown() {
-  DCHECK(ShouldShow());
+  CHECK(ShouldShow(), base::NotFatalUntil::M162);
   show_time_ = base::TimeTicks::Now();
 
   if (!params_.unlimited_shows) {
     MarkShownFor(*profile_, params_.controlling_extension_id);
   }
+  // Extension state lives on the original profile; so does the dedupe.
+  if (params_.search_override_stack) {
+    extensions::RecordSearchOverrideStackMetricsOnce(
+        *profile_->GetOriginalProfile(), params_.controlling_extension_id,
+        *params_.search_override_stack);
+  }
 }
 
 void ExtensionSettingsOverriddenDialog::HandleDialogResult(
     DialogResult result) {
-  DCHECK(!params_.controlling_extension_id.empty());
-  DCHECK(!HasAcknowledgedExtension(
-      *profile_, params_.controlling_extension_id,
-      params_.extension_acknowledged_preference_name));
-  DCHECK(params_.unlimited_shows ||
-         HasShownFor(*profile_, params_.controlling_extension_id));
+  CHECK(!params_.controlling_extension_id.empty(), base::NotFatalUntil::M162);
+  CHECK(
+      !HasAcknowledgedExtension(*profile_, params_.controlling_extension_id,
+                                params_.extension_acknowledged_preference_name),
+      base::NotFatalUntil::M162);
+  CHECK(params_.unlimited_shows ||
+            HasShownFor(*profile_, params_.controlling_extension_id),
+        base::NotFatalUntil::M162);
 
   // It's possible the extension was removed or disabled while the dialog was
   // being displayed. If this is the case, bail early.
@@ -248,6 +257,10 @@ void ExtensionSettingsOverriddenDialog::HandleDialogResult(
   }
 
   base::UmaHistogramEnumeration(params_.dialog_result_histogram_name, result);
+  if (params_.search_override_stack) {
+    extensions::RecordSearchOverrideStackDialogResult(
+        *params_.search_override_stack, result);
+  }
 
   if (dialog_result_callback_) {
     CHECK(base::FeatureList::IsEnabled(

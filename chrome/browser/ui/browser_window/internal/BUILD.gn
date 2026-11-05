@@ -26,9 +26,21 @@ source_set("internal") {
   ]
 
   if (is_android) {
+    # On Android, this target shouldn't be used by anything outside this
+    # directory, except //c/b/ui, which is the C++ "glue" that links the
+    # implementation into libchrome.so.
+    #
+    # Browser window features should depend on the public targets in
+    # //c/b/ui/browser_window.
+    visibility = [
+      ":*",
+      "//chrome/browser",
+    ]
     sources += [
       "android/android_base_window.cc",
+      "android/android_base_window.h",
       "android/android_browser_window.cc",
+      "android/android_browser_window.h",
       "android/android_browser_window_enumerator.cc",
       "android/android_browser_window_enumerator.h",
       "android/browser_window_interface_iterator_android.cc",
@@ -56,37 +68,39 @@ source_set("internal") {
       "embedder_browser_window_features.cc",
       "global_browser_collection_platform_delegate_non_android.cc",
     ]
-    public_deps = [
-      "//chrome/browser:browser_public_dependencies",
-      "//chrome/browser/ui:browser_live_tab_context",
-    ]
+    public_deps = [ "//chrome/browser/ui:browser_live_tab_context" ]
 
     deps += [
       "//chrome/browser:global_features",
       "//chrome/browser/actor/ui",
-      "//chrome/browser/actor/ui/task_list_bubble:controller",
       "//chrome/browser/autocomplete:aim_eligibility_service",
       "//chrome/browser/collaboration",
       "//chrome/browser/contextual_tasks:ui",
       "//chrome/browser/devtools",
-      "//chrome/browser/geic",
-      "//chrome/browser/geic:ui",
       "//chrome/browser/glic",
       "//chrome/browser/glic/browser_ui",
+      "//chrome/browser/glic/browser_ui/activity_list_bubble:controller",
       "//chrome/browser/lens/region_search",
       "//chrome/browser/media/router:media_router_feature",
       "//chrome/browser/prefs",
+      "//chrome/browser/signin",
       "//chrome/browser/skills:public",
       "//chrome/browser/tab_group_sync:factories",
+      "//chrome/browser/ttc/core",
       "//chrome/browser/ui:browser_actions",
+      "//chrome/browser/ui:browser_command_controller",
+      "//chrome/browser/ui:browser_content_setting_bubble_model_delegate",
+      "//chrome/browser/ui:browser_header",
       "//chrome/browser/ui:browser_init_state",
-      "//chrome/browser/ui:ui_controller_factory",
+      "//chrome/browser/ui:browser_manager_service",
+      "//chrome/browser/ui:browser_tab_menu_model_delegate",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/animation",
       "//chrome/browser/ui/bookmarks",
       "//chrome/browser/ui/browser_active_state_manager",
       "//chrome/browser/ui/browser_ui_controller",
       "//chrome/browser/ui/browser_web_contents_delegate",
+      "//chrome/browser/ui/browser_window_theme_observer",
       "//chrome/browser/ui/call_to_action",
       "//chrome/browser/ui/commerce",
       "//chrome/browser/ui/context_highlight",
@@ -117,6 +131,7 @@ source_set("internal") {
       "//chrome/browser/ui/tabs/tab_strip_api/controllers",
       "//chrome/browser/ui/tabs/tab_strip_api/tab_strip_model_impl",
       "//chrome/browser/ui/toasts",
+      "//chrome/browser/ui/toolbar",
       "//chrome/browser/ui/toolbar/chrome_labs",
       "//chrome/browser/ui/views:color_provider_browser_helper",
       "//chrome/browser/ui/views/animations",
@@ -124,13 +139,15 @@ source_set("internal") {
       "//chrome/browser/ui/views/data_sharing",
       "//chrome/browser/ui/views/download",
       "//chrome/browser/ui/views/frame:contents_border_controller",
+      "//chrome/browser/ui/views/frame:find_bar_owner_views",
+      "//chrome/browser/ui/views/frame:horizontal_tab_strip_region_view",
+      "//chrome/browser/ui/views/frame:multi_contents_view",
       "//chrome/browser/ui/views/fullscreen_control",
       "//chrome/browser/ui/views/interaction:impl",
       "//chrome/browser/ui/views/location_bar:impl",
       "//chrome/browser/ui/views/location_bar/cookie_controls",
       "//chrome/browser/ui/views/media_router",
       "//chrome/browser/ui/views/new_tab_footer",
-      "//chrome/browser/ui/views/qrcode_generator",
       "//chrome/browser/ui/views/send_tab_to_self",
       "//chrome/browser/ui/views/sharing",
       "//chrome/browser/ui/views/side_panel",
@@ -174,6 +191,7 @@ source_set("internal") {
     if (is_win || is_mac || is_linux) {
       deps += [
         "//chrome/browser/download/bubble",
+        "//chrome/browser/ui/views/profiles:profile_customization_bubble_sync_controller",
         "//chrome/browser/ui/views/session_restore_infobar",
       ]
     }
@@ -196,16 +214,22 @@ source_set("internal") {
         "//chrome/browser/ui/views:incognito_clear_browsing_data_dialog",
         "//chrome/browser/ui/views:upgrade_notification_controller",
         "//chrome/browser/ui/views/extensions:extensions_views_utils",
+        "//chrome/browser/ui/views/frame:scrim_view_controller",
+        "//chrome/browser/ui/views/profiles:profile_menu_coordinator",
       ]
     }
 
     if (use_aura) {
       deps += [ "//chrome/browser/ui:overscroll_pref_manager" ]
     }
-  }
 
-  if (enable_extensions_core) {
-    deps += [ "//chrome/browser/extensions" ]
+    if (is_win) {
+      deps += [ "//chrome/browser/ui/views/frame:windows_taskbar_icon_updater" ]
+    }
+
+    if (enable_extensions_core) {
+      deps += [ "//chrome/browser/extensions" ]
+    }
   }
 
   if (!is_android) {
@@ -214,6 +238,9 @@ source_set("internal") {
       "//chrome/browser/ui:browser_instant_controller",
       "//chrome/browser/ui:browser_location_bar_model_delegate",
       "//chrome/browser/ui:browser_select_file_dialog_controller",
+      "//chrome/browser/ui:browser_window_header",
+      "//chrome/browser/ui/search",
+      "//chrome/browser/ui/views/frame:browser_view_header",
     ]
   }
 }
@@ -226,6 +253,7 @@ source_set("unit_tests") {
     "//chrome/browser/ui:test_support",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/browser_window/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//testing/gmock",
     "//testing/gtest",
   ]
@@ -283,7 +311,6 @@ if (is_android) {
     ]
     deps = [
       "//base:base_java",
-      "//base:flagged_apis_java",
       "//base:log_java",
       "//base:tasks_java",
       "//base:time_utils_java",
@@ -312,6 +339,7 @@ if (is_android) {
   }
 
   generate_jni("jni") {
+    visibility = [ ":*" ]
     sources = [
       "android/java/src/org/chromium/chrome/browser/ui/browser_window/AndroidBaseWindow.java",
       "android/java/src/org/chromium/chrome/browser/ui/browser_window/AndroidBrowserWindow.java",
@@ -320,6 +348,7 @@ if (is_android) {
       "android/java/src/org/chromium/chrome/browser/ui/browser_window/BrowserWindowInterfaceIteratorAndroid.java",
       "android/java/src/org/chromium/chrome/browser/ui/browser_window/GlobalBrowserCollectionPlatformDelegate.java",
     ]
+    deps = [ "//chrome/browser/ui/browser_window/public/android:jni" ]
   }
 
   robolectric_library("junit") {
@@ -339,7 +368,6 @@ if (is_android) {
       "//base:base_java_test_support",
       "//base:base_java_test_support_uncommon",
       "//base:base_junit_test_support",
-      "//base:flagged_apis_java",
       "//base:tasks_java",
       "//base:time_utils_java",
       "//build/android:build_java",
@@ -358,6 +386,7 @@ if (is_android) {
       "//content/public/android:content_full_java",
       "//third_party/androidx:androidx_core_core_java",
       "//third_party/androidx:androidx_test_core_java",
+      "//third_party/jni_zero:jni_zero_java",
       "//third_party/junit",
       "//third_party/mockito:mockito_java",
       "//ui/android:ui_no_recycler_view_java",
@@ -371,9 +400,10 @@ if (is_android) {
     sources = [ "android/java/src/org/chromium/chrome/browser/ui/browser_window/ChromeAndroidTaskIntegrationTest.java" ]
     deps = [
       ":java",
+      "//base:base_java",
       "//base:base_java_test_support",
-      "//base:flagged_apis_java",
       "//base/test:public_transit_java",
+      "//chrome/android:chrome_java",
       "//chrome/android:chrome_test_java",
       "//chrome/android/javatests:chrome_test_java_helper",
       "//chrome/browser/flags:java",
@@ -381,9 +411,11 @@ if (is_android) {
       "//chrome/browser/tab:java",
       "//chrome/browser/tabmodel:java",
       "//chrome/browser/ui/browser_window/public/android:java",
+      "//chrome/browser/util:java",
       "//chrome/test/android:chrome_java_integration_test_support",
       "//chrome/test/android:chrome_java_test_support_common",
       "//chrome/test/android:chrome_java_transit",
+      "//third_party/androidx:androidx_annotation_annotation_java",
       "//third_party/androidx:androidx_test_runner_java",
       "//third_party/hamcrest:hamcrest_core_java",
       "//third_party/hamcrest:hamcrest_library_java",
@@ -405,6 +437,7 @@ if (is_android) {
       "android/create_browser_window_android_browsertest.cc",
     ]
     deps = [
+      ":internal",
       "//base",
       "//chrome/browser",
       "//chrome/browser/flags:flags_android",
@@ -415,6 +448,7 @@ if (is_android) {
       "//chrome/browser/ui/browser_window:create_browser_window",
       "//chrome/browser/ui/browser_window/test:android_browser_test_support",
       "//chrome/browser/ui/navigator",
+      "//chrome/test:test_support_jni_headers",
       "//chrome/test:test_support_ui_android",
       "//components/feed:feature_list",
       "//net:test_support",

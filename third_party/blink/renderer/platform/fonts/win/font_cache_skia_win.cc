@@ -277,7 +277,7 @@ const SimpleFontData* FontCache::PlatformFallbackFontForCharacter(
 
   FontFallbackPriority fallback_priority_with_emoji_text = fallback_priority;
   if (fallback_priority == FontFallbackPriority::kText &&
-      Character::IsEmoji(character)) {
+      unicode::IsEmoji(character)) {
     fallback_priority_with_emoji_text = FontFallbackPriority::kEmojiText;
   }
 
@@ -410,7 +410,7 @@ const FontPlatformData* FontCache::CreateFontPlatformData(
     AlternateFontName alternate_font_name) {
   TRACE_EVENT0("ui", "FontCache::CreateFontPlatformData");
 
-  DCHECK_EQ(creation_params.CreationType(), kCreateFontByFamily);
+  DCHECK_EQ(creation_params.CreationType(), FontFaceCreationType::kFamily);
   sk_sp<SkTypeface> typeface;
 
   std::string name;
@@ -498,7 +498,7 @@ const FontPlatformData* FontCache::CreateFontPlatformData(
       font_description.Orientation());
 
   result->SetAvoidEmbeddedBitmaps(
-      BitmapGlyphsBlockList::ShouldAvoidEmbeddedBitmapsForTypeface(*typeface));
+      ShouldAvoidEmbeddedBitmapsForTypeface(*typeface));
 
   return result;
 }

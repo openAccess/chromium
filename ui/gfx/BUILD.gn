@@ -44,7 +44,6 @@ component("gfx_skia") {
     "skia_util.cc",
     "skia_util.h",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
   public_deps = [
     "//base",
     "//skia",
@@ -83,6 +82,7 @@ component("gfx") {
     "delegated_ink_metadata.h",
     "delegated_ink_point.cc",
     "delegated_ink_point.h",
+    "draggable_region.h",
     "extension_set.cc",
     "extension_set.h",
     "favicon_size.cc",
@@ -98,6 +98,7 @@ component("gfx") {
     "font_render_params.h",
     "font_util.cc",
     "font_util.h",
+    "frame_data.cc",
     "frame_data.h",
     "gpu_extra_info.cc",
     "gpu_extra_info.h",
@@ -161,7 +162,6 @@ component("gfx") {
   configs += [
     ":gfx_impl_define",
     "//build/config:precompiled_headers",
-    "//build/config/compiler:wexit_time_destructors",
   ]
 
   public_deps = [
@@ -191,6 +191,7 @@ component("gfx") {
     "//device/vr/buildflags",
     "//mojo/public/cpp/bindings:struct_traits",
     "//skia",
+    "//third_party/abseil-cpp:absl",
     "//third_party/zlib",
     "//ui/base:features",
     "//ui/base:ozone_buildflags",
@@ -373,6 +374,8 @@ component("gfx") {
       "harfbuzz_font_skia.h",
       "image/canvas_image_source.cc",
       "image/canvas_image_source.h",
+      "image/icon_standardizer.cc",
+      "image/icon_standardizer.h",
       "image/image_generic.cc",
       "image/image_skia_operations.cc",
       "image/image_skia_operations.h",
@@ -388,8 +391,6 @@ component("gfx") {
       "render_text_harfbuzz.h",
       "scoped_canvas.cc",
       "scoped_canvas.h",
-      "shadow_util.cc",
-      "shadow_util.h",
       "skia_paint_util.cc",
       "skia_paint_util.h",
       "text_utils_skia.cc",
@@ -436,10 +437,10 @@ component("color_space") {
     "hdr_metadata.h",
     "hdr_static_metadata.cc",
     "hdr_static_metadata.h",
-    "icc_profile.cc",
-    "icc_profile.h",
     "skia_color_space_util.cc",
     "skia_color_space_util.h",
+    "tone_map_util.cc",
+    "tone_map_util.h",
   ]
   if (is_win) {
     sources += [
@@ -544,10 +545,7 @@ source_set("selection_bound_sources") {
     "selection_bound.h",
   ]
 
-  configs += [
-    ":gfx_impl_define",
-    "//build/config/compiler:wexit_time_destructors",
-  ]
+  configs += [ ":gfx_impl_define" ]
 
   public_deps = [
     "//base",
@@ -608,10 +606,7 @@ source_set("memory_buffer_sources") {
     ]
   }
 
-  configs += [
-    ":gfx_impl_define",
-    "//build/config/compiler:wexit_time_destructors",
-  ]
+  configs += [ ":gfx_impl_define" ]
 
   public_deps = [ ":buffer_types" ]
 
@@ -651,6 +646,8 @@ source_set("memory_buffer_sources") {
       "mac/mtl_shared_event_fence.h",
       "mac/mtl_shared_event_fence.mm",
     ]
+
+    deps += [ "//skia:skcms" ]
 
     public_deps += [
       "//components/viz/common/resources:shared_image_format",
@@ -699,10 +696,7 @@ static_library("test_support") {
     "geometry/test/geometry_util.h",
     "image/image_unittest_util.cc",
     "image/image_unittest_util.h",
-    "test/font_fallback_test_data.cc",
     "test/font_fallback_test_data.h",
-    "test/icc_profiles.cc",
-    "test/icc_profiles.h",
     "test/scoped_default_font_description.h",
     "test/sk_color_eq.cc",
     "test/sk_color_eq.h",
@@ -742,10 +736,6 @@ static_library("test_support") {
 
     deps += [ "//third_party/harfbuzz" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 test("gfx_unittests") {
@@ -833,6 +823,7 @@ test("gfx_unittests") {
       "color_space_unittest.cc",
       "color_utils_unittest.cc",
       "delegated_ink_unittest.cc",
+      "draggable_region_unittest.cc",
       "font_fallback_unittest.cc",
       "font_list_unittest.cc",
       "geometry/axis_transform2d_unittest.cc",
@@ -861,7 +852,7 @@ test("gfx_unittests") {
       "geometry/vector2d_f_unittest.cc",
       "geometry/vector2d_unittest.cc",
       "geometry/vector3d_f_unittest.cc",
-      "icc_profile_unittest.cc",
+      "image/icon_standardizer_unittest.cc",
       "image/image_skia_operations_unittest.cc",
       "image/image_util_unittest.cc",
       "mojom/mojom_traits_unittest.cc",
@@ -873,7 +864,6 @@ test("gfx_unittests") {
       "selection_bound_unittest.cc",
       "selection_model_unittest.cc",
       "sequential_id_generator_unittest.cc",
-      "shadow_util_unittest.cc",
       "shadow_value_unittest.cc",
       "skbitmap_operations_unittest.cc",
       "skia_util_unittest.cc",
@@ -893,6 +883,7 @@ test("gfx_unittests") {
     ":gfx",
     ":test_support",
     "//base",
+    "//base/i18n:test_support",
     "//base/test:test_support",
     "//skia",
     "//skia:skcms",
@@ -969,6 +960,7 @@ test("gfx_unittests") {
       "//mojo/public/cpp/test_support:test_utils",
       "//ui/gfx/geometry/mojom:unit_test",
       "//ui/gfx/image/mojom:unit_test",
+      "//ui/gfx/mojom:hdr_metadata",
       "//ui/gfx/mojom:test_interfaces",
       "//ui/gfx/range/mojom:unit_test",
     ]
@@ -994,10 +986,6 @@ test("gfx_unittests") {
     additional_manifest_fragments =
         [ "//build/config/fuchsia/test/test_fonts.shard.test-cml" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 if (is_android) {
@@ -1044,6 +1032,7 @@ if (is_ios) {
     testonly = true
     filelist_name = "test/data/codec/unit_tests_bundle_data.filelist"
   }
+
   bundle_data_from_filelist("compositor_tests_bundle_data") {
     testonly = true
     filelist_name = "test/data/compositor/unit_tests_bundle_data.filelist"

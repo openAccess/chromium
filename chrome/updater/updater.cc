@@ -58,6 +58,8 @@
 #include "third_party/crashpad/crashpad/client/settings.h"
 
 #if BUILDFLAG(IS_WIN)
+#include <objbase.h>
+
 #include "base/debug/alias.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/win/process_startup_helper.h"
@@ -137,10 +139,24 @@ int HandleUpdaterCommands(UpdaterScope updater_scope,
     base::ThreadPoolInstance* thread_pool = base::ThreadPoolInstance::Get();
     thread_pool->Shutdown();
     thread_pool->JoinForTesting();  // IN-TEST
-    base::ThreadPoolInstance::Set(nullptr);
+
+    // The thread pool instance is intentionally leaked. On Windows, the MTA is
+    // kept alive until the process exits (see below), so COM can dispatch RPC
+    // calls to the COM server objects after this point, and these objects use
+    // `base::ThreadPool`. Posting to a shut down thread pool is a no-op, but
+    // using a destroyed one crashes (crbug.com/452661602).
   }));
 
 #if BUILDFLAG(IS_WIN)
+  // Keeps the process-wide COM state alive until the process exits, so that
+  // the last `CoUninitialize` in this process never runs combase's
+  // `ProcessUninitialize`, which has been observed to crash on some hosts.
+  {
+    CO_MTA_USAGE_COOKIE cookie = nullptr;
+    const HRESULT hr = ::CoIncrementMTAUsage(&cookie);
+    LOG_IF(ERROR, FAILED(hr)) << "CoIncrementMTAUsage failed; hr: " << hr;
+  }
+
   base::win::ScopedCOMInitializer com_initializer(
       base::win::ScopedCOMInitializer::kMTA);
   if (!com_initializer.Succeeded()) {

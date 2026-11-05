@@ -3,7 +3,6 @@
 # found in the LICENSE file.
 
 import("//build/config/chromeos/args.gni")
-import("//printing/buildflags/buildflags.gni")
 
 assert(is_chromeos)
 
@@ -20,6 +19,7 @@ static_library("print_management") {
   ]
 
   deps = [
+    "//ash/constants",
     "//ash/webui/print_management",
     "//ash/webui/settings/public/constants:mojom",
     "//chrome/browser/ash/printing/history",
@@ -27,6 +27,7 @@ static_library("print_management") {
     "//chrome/common:constants",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/experiences/settings_ui",
+    "//chromeos/printing",
     "//components/pref_registry",
     "//components/session_manager/core",
     "//components/user_manager",
@@ -37,7 +38,6 @@ static_library("print_management") {
   public_deps = [
     "//ash/webui/print_management/backend",
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ash/printing/history:print_job_info_proto",
     "//chrome/browser/profiles:profile",
     "//chromeos/components/print_management/mojom",
@@ -46,10 +46,6 @@ static_library("print_management") {
     "//components/prefs",
     "//mojo/public/cpp/bindings",
   ]
-
-  if (use_cups) {
-    deps += [ "//chrome/browser/chromeos/printing" ]
-  }
 }
 
 source_set("unit_tests") {
@@ -65,6 +61,7 @@ source_set("unit_tests") {
     ":print_management",
     "//base/test:test_support",
     "//chrome/browser",
+    "//chrome/browser/ash/login/users:test_support",
     "//chrome/browser/ash/printing",
     "//chrome/browser/ash/printing:test_support",
     "//chrome/browser/ash/printing/history",
@@ -73,15 +70,14 @@ source_set("unit_tests") {
     "//chrome/browser/printing",
     "//chrome/test:test_support",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/printing",
     "//components/history/core/test",
     "//components/prefs:test_support",
+    "//components/user_manager",
     "//content/test:test_support",
     "//testing/gtest",
+    "//ui/message_center",
   ]
-
-  if (use_cups) {
-    deps += [ "//chrome/browser/chromeos/printing" ]
-  }
 }
 
 source_set("browser_tests") {
@@ -115,7 +111,6 @@ if (!is_chromeos_device) {
       "//ash/webui/print_management:url_constants",
       "//ash/webui/settings/public/constants:mojom",
       "//chrome/browser/ash/printing/history",
-      "//chrome/browser/ui",
       "//chrome/test:test_support",
       "//chrome/test/base/ash/interactive:test_support",
       "//components/keyed_service/content",

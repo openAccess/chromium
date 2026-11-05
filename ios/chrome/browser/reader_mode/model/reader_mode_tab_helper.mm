@@ -17,14 +17,12 @@
 #import "components/translate/core/browser/translate_infobar_delegate.h"
 #import "components/translate/core/browser/translate_manager.h"
 #import "components/translate/core/browser/translate_prefs.h"
-#import "ios/chrome/browser/dom_distiller/model/offline_page_distiller_viewer.h"
 #import "ios/chrome/browser/flags/chrome_switches.h"
 #import "ios/chrome/browser/infobars/model/infobar_ios.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
 #import "ios/chrome/browser/infobars/model/overlays/infobar_overlay_request_inserter.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/language/model/language_model_manager_factory.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_content_tab_helper.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_distiller_page.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_distiller_viewer.h"
@@ -298,12 +296,6 @@ void ReaderModeTabHelper::ReaderModeContentDidLoadData(
   }
   metrics_helper_.RecordDataLoadCompleted();
 
-  reader_mode_web_state_content_loaded_ = true;
-  for (auto& observer : observers_) {
-    observer.ReaderModeWebStateDidLoadContent(this,
-                                              reader_mode_web_state_.get());
-  }
-
   // Create the Reader Mode infobar.
   infobars::InfoBarManager* info_bar_manager =
       InfoBarManagerImpl::FromWebState(web_state_);
@@ -315,6 +307,12 @@ void ReaderModeTabHelper::ReaderModeContentDidLoadData(
         /* skip_banner= */ true);
     reader_mode_infobar->set_accepted(true);
     info_bar_manager->AddInfoBar(std::move(reader_mode_infobar));
+  }
+
+  reader_mode_web_state_content_loaded_ = true;
+  for (auto& observer : observers_) {
+    observer.ReaderModeWebStateDidLoadContent(this,
+                                              reader_mode_web_state_.get());
   }
 
   // Ensure that any infobars created outside Reading Mode state are removed
@@ -408,7 +406,6 @@ void ReaderModeTabHelper::PageDistillationCompleted(
     ReaderModeAccessPoint access_point,
     const GURL& page_url,
     const std::string& html,
-    const std::vector<DistillerViewerInterface::ImageInfo>& images,
     const std::string& title,
     const std::string& csp_nonce) {
   // Cancel the distillation timeout request if page distillation completes.

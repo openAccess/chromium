@@ -19,7 +19,6 @@
 #include "chrome/common/extensions/api/developer_private.h"
 #include "chrome/common/pref_names.h"
 #include "components/signin/public/base/signin_switches.h"
-#include "components/sync/base/features.h"
 #include "content/public/browser/render_frame_host.h"
 #include "extensions/browser/disable_reason.h"
 #include "extensions/browser/event_router.h"
@@ -102,13 +101,8 @@ DeveloperPrivateEventRouter::DeveloperPrivateEventRouter(Profile* profile)
       base::BindRepeating(&DeveloperPrivateEventRouter::OnProfilePrefChanged,
                           base::Unretained(this)));
 
-#if BUILDFLAG(IS_CHROMEOS)
-  if (base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos))
-#endif
-  {
-    account_extension_tracker_observation_.Observe(
-        AccountExtensionTracker::Get(profile));
-  }
+  account_extension_tracker_observation_.Observe(
+      AccountExtensionTracker::Get(profile));
 }
 
 DeveloperPrivateEventRouter::~DeveloperPrivateEventRouter() = default;
@@ -126,8 +120,8 @@ void DeveloperPrivateEventRouter::RemoveExtensionId(
 void DeveloperPrivateEventRouter::OnExtensionLoaded(
     content::BrowserContext* browser_context,
     const Extension* extension) {
-  DCHECK(
-      profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)));
+  CHECK(profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)),
+        base::NotFatalUntil::M161);
   BroadcastItemStateChanged(developer::EventType::kLoaded, extension->id());
 }
 
@@ -135,8 +129,8 @@ void DeveloperPrivateEventRouter::OnExtensionUnloaded(
     content::BrowserContext* browser_context,
     const Extension* extension,
     UnloadedExtensionReason reason) {
-  DCHECK(
-      profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)));
+  CHECK(profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)),
+        base::NotFatalUntil::M161);
   BroadcastItemStateChanged(developer::EventType::kUnloaded, extension->id());
 }
 
@@ -144,8 +138,8 @@ void DeveloperPrivateEventRouter::OnExtensionInstalled(
     content::BrowserContext* browser_context,
     const Extension* extension,
     bool is_update) {
-  DCHECK(
-      profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)));
+  CHECK(profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)),
+        base::NotFatalUntil::M161);
   BroadcastItemStateChanged(developer::EventType::kInstalled, extension->id());
 }
 
@@ -153,8 +147,8 @@ void DeveloperPrivateEventRouter::OnExtensionUninstalled(
     content::BrowserContext* browser_context,
     const Extension* extension,
     extensions::UninstallReason reason) {
-  DCHECK(
-      profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)));
+  CHECK(profile_->IsSameOrParent(Profile::FromBrowserContext(browser_context)),
+        base::NotFatalUntil::M161);
   if (ui_util::ShouldDisplayInExtensionSettings(*extension)) {
     BroadcastItemStateChanged(developer::EventType::kUninstalled,
                               extension->id());
@@ -238,8 +232,8 @@ void DeveloperPrivateEventRouter::OnUserPermissionsSettingsChanged(
     const PermissionsManager::UserPermissionsSettings& settings) {
   developer::UserSiteSettings user_site_settings =
       ConvertToUserSiteSettings(settings);
-  base::ListValue args;
-  args.Append(user_site_settings.ToValue());
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(user_site_settings.ToValue());
 
   auto event = std::make_unique<Event>(
       events::DEVELOPER_PRIVATE_ON_USER_SITE_SETTINGS_CHANGED,
@@ -256,8 +250,8 @@ void DeveloperPrivateEventRouter::OnExtensionPermissionsUpdated(
 }
 
 void DeveloperPrivateEventRouter::OnExtensionManagementSettingsChanged() {
-  base::ListValue args;
-  args.Append(CreateProfileInfo(profile_).ToValue());
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(CreateProfileInfo(profile_).ToValue());
 
   auto event = std::make_unique<Event>(
       events::DEVELOPER_PRIVATE_ON_PROFILE_STATE_CHANGED,
@@ -301,8 +295,8 @@ void DeveloperPrivateEventRouter::OnExtensionsUploadabilityChanged() {
 }
 
 void DeveloperPrivateEventRouter::OnProfilePrefChanged() {
-  base::ListValue args;
-  args.Append(CreateProfileInfo(profile_).ToValue());
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(CreateProfileInfo(profile_).ToValue());
   auto event = std::make_unique<Event>(
       events::DEVELOPER_PRIVATE_ON_PROFILE_STATE_CHANGED,
       developer::OnProfileStateChanged::kEventName, std::move(args));
@@ -345,7 +339,7 @@ void DeveloperPrivateEventRouter::BroadcastItemStateChangedHelper(
     const ExtensionId& extension_id,
     std::unique_ptr<ExtensionInfoGenerator> info_generator,
     ExtensionInfoGenerator::ExtensionInfoList infos) {
-  DCHECK_LE(infos.size(), 1u);
+  CHECK_LE(infos.size(), 1u, base::NotFatalUntil::M161);
 
   developer::EventData event_data;
   event_data.event_type = event_type;
@@ -354,8 +348,8 @@ void DeveloperPrivateEventRouter::BroadcastItemStateChangedHelper(
     event_data.extension_info = std::move(infos[0]);
   }
 
-  base::ListValue args;
-  args.Append(event_data.ToValue());
+  auto args = base::MakeRefCounted<EventArgs>();
+  args->data.Append(event_data.ToValue());
   auto event = std::make_unique<Event>(
       events::DEVELOPER_PRIVATE_ON_ITEM_STATE_CHANGED,
       developer::OnItemStateChanged::kEventName, std::move(args));

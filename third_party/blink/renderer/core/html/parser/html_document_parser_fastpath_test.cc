@@ -5,6 +5,8 @@
 #include "third_party/blink/renderer/core/html/parser/html_document_parser_fastpath.h"
 
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/tracing/trace_event_analyzer.h"
+#include "base/test/tracing/trace_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_supported_type.h"
@@ -21,7 +23,6 @@
 #include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/core/testing/null_execution_context.h"
 #include "third_party/blink/renderer/core/xml/dom_parser.h"
-#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
@@ -84,43 +85,24 @@ TEST(HTMLDocumentParserFastpathTest,
 }
 
 TEST(HTMLDocumentParserFastpathTest, LongTextIsNotSplit) {
-  ScopedSplitLargeTextNodesForTest disabled(false);
   test::TaskEnvironment task_environment;
   ScopedNullExecutionContext execution_context;
   auto* document =
       HTMLDocument::CreateForTest(execution_context.GetExecutionContext());
   document->write("<body></body>");
   auto* div = MakeGarbageCollected<HTMLDivElement>(*document);
-  std::vector<LChar> chars(
-      HTMLConstructionSite::kObsoleteTextNodeLengthLimit + 1, 'a');
+
+  // We previously split nodes at 64k.
+  constexpr wtf_size_t kLargeTextLength = (1 << 16) + 1;
+  std::vector<LChar> chars(kLargeTextLength, 'a');
   div->SetInnerHTMLWithoutTrustedTypes(String(base::span(chars)));
   Text* text_node = To<Text>(div->firstChild());
   ASSERT_TRUE(text_node);
+
   // Text nodes are no longer split by length, so the entire run of text is kept
   // in a single Text node.
-  EXPECT_EQ(HTMLConstructionSite::kObsoleteTextNodeLengthLimit + 1,
-            text_node->length());
+  EXPECT_EQ(kLargeTextLength, text_node->length());
   EXPECT_FALSE(text_node->nextSibling());
-}
-
-TEST(HTMLDocumentParserFastpathTest, LongTextIsSplitWhenFeatureEnabled) {
-  ScopedSplitLargeTextNodesForTest enabled(true);
-  test::TaskEnvironment task_environment;
-  ScopedNullExecutionContext execution_context;
-  auto* document =
-      HTMLDocument::CreateForTest(execution_context.GetExecutionContext());
-  document->write("<body></body>");
-  auto* div = MakeGarbageCollected<HTMLDivElement>(*document);
-  std::vector<LChar> chars(
-      HTMLConstructionSite::kObsoleteTextNodeLengthLimit + 1, 'a');
-  div->SetInnerHTMLWithoutTrustedTypes(String(base::span(chars)));
-  Text* text_node = To<Text>(div->firstChild());
-  ASSERT_TRUE(text_node);
-  // With the feature enabled, text is split at the length limit, leaving a
-  // sibling Text node with the remainder.
-  EXPECT_EQ(HTMLConstructionSite::kObsoleteTextNodeLengthLimit,
-            text_node->length());
-  EXPECT_TRUE(text_node->nextSibling());
 }
 
 TEST(HTMLDocumentParserFastpathTest, MaximumHTMLParserDOMTreeDepth) {
@@ -433,6 +415,71 @@ TEST(HTMLDocumentParserFastpathTest, Escaped8BitText) {
   ASSERT_TRUE(text_node);
   // "&amp;" should be represented as 8-bit.
   EXPECT_TRUE(text_node->data().Is8Bit());
+}
+
+TEST(HTMLDocumentParserFastpathTest, TraceExportFragmentFastAndSlowPaths) {
+  test::TaskEnvironment task_environment;
+  base::test::TracingEnvironment tracing_environment;
+  ScopedNullExecutionContext execution_context;
+  auto* document =
+      HTMLDocument::CreateForTest(execution_context.GetExecutionContext());
+  document->SetURL(KURL("https://example.test/search"));
+  document->write("<body></body>");
+  auto* div = MakeGarbageCollected<HTMLDivElement>(*document);
+  div->SetIdAttribute(AtomicString("slot-1"));
+  div->setAttribute(html_names::kClassAttr, AtomicString("aio-card"));
+  document->body()->AppendChild(div);
+
+  trace_analyzer::Start(
+      "blink," TRACE_DISABLED_BY_DEFAULT("blink.debug.html_content"));
+
+  const char kFastHtml[] = "<p>fast path content</p>";
+  const char kSlowHtml[] = "<table><tr><td>slow path</td></tr></table>";
+  div->SetInnerHTMLWithoutTrustedTypes(kFastHtml);
+  div->SetInnerHTMLWithoutTrustedTypes(kSlowHtml);
+
+  auto analyzer = trace_analyzer::Stop();
+  analyzer->AssociateBeginEndEvents();
+  analyzer->MergeAssociatedEventArgs();
+
+  using trace_analyzer::Query;
+  Query is_slice_start = Query::EventPhaseIs(TRACE_EVENT_PHASE_BEGIN) ||
+                         Query::EventPhaseIs(TRACE_EVENT_PHASE_COMPLETE);
+
+  trace_analyzer::TraceEventVector fragment_events;
+  analyzer->FindEvents(
+      Query::EventNameIs("ParseHTMLFragment") && is_slice_start,
+      &fragment_events);
+  ASSERT_EQ(2u, fragment_events.size());
+
+  EXPECT_TRUE(fragment_events[0]->GetKnownArgAsBool("parsed_fast_path"));
+  EXPECT_EQ("DIV id='slot-1' class='aio-card'",
+            fragment_events[0]->GetKnownArgAsString("context_element"));
+  EXPECT_EQ("slot-1",
+            fragment_events[0]->GetKnownArgAsString("context_element_id"));
+  EXPECT_GT(fragment_events[0]->GetKnownArgAsInt("context_node_id"), 0);
+  EXPECT_EQ("https://example.test/search",
+            fragment_events[0]->GetKnownArgAsString("document_url"));
+  EXPECT_EQ(kFastHtml, fragment_events[0]->GetKnownArgAsString("html_content"));
+
+  EXPECT_FALSE(fragment_events[1]->GetKnownArgAsBool("parsed_fast_path"));
+  EXPECT_EQ("DIV id='slot-1' class='aio-card'",
+            fragment_events[1]->GetKnownArgAsString("context_element"));
+  EXPECT_EQ("slot-1",
+            fragment_events[1]->GetKnownArgAsString("context_element_id"));
+  EXPECT_EQ(fragment_events[0]->GetKnownArgAsInt("context_node_id"),
+            fragment_events[1]->GetKnownArgAsInt("context_node_id"));
+  EXPECT_EQ(kSlowHtml, fragment_events[1]->GetKnownArgAsString("html_content"));
+
+  // Only the slow-path fragment should invoke HTMLDocumentParser::append, and
+  // it should not duplicate html_content already exported on ParseHTMLFragment.
+  trace_analyzer::TraceEventVector append_events;
+  analyzer->FindEvents(
+      Query::EventNameIs("HTMLDocumentParser::append") && is_slice_start,
+      &append_events);
+  ASSERT_EQ(1u, append_events.size());
+  EXPECT_TRUE(append_events[0]->GetKnownArgAsBool("is_fragment"));
+  EXPECT_FALSE(append_events[0]->HasStringArg("html_content"));
 }
 
 }  // namespace

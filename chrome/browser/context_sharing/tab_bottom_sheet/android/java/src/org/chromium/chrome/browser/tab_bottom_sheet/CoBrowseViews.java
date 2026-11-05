@@ -50,7 +50,6 @@ public class CoBrowseViews {
 
     private final TabBottomSheetWebUiContainer mWebUiContainer;
     private final ViewGroup mPeekContainer;
-    private final @Nullable View mHandleBar;
 
     private @Nullable PeekViewManager mPeekViewManager;
     private @Nullable View mPeekView;
@@ -88,7 +87,6 @@ public class CoBrowseViews {
         // Cache view lookups.
         mWebUiContainer = assertNonNull(containerView.findViewById(R.id.web_ui_container));
         mPeekContainer = assertNonNull(containerView.findViewById(R.id.peek_view_container));
-        mHandleBar = containerView.findViewById(R.id.handle_bar);
 
         mWebContentsSupplier.set(getWebContents());
         populateViewHierarchy();
@@ -102,6 +100,20 @@ public class CoBrowseViews {
             mPeekViewManager = mPeekViewManagerSupplier.get();
         }
         return mPeekViewManager;
+    }
+
+    /**
+     * Destroys the cached {@link PeekViewManager}, if any, and clears the cache so that a fresh
+     * instance is created the next time {@link #getOrCreatePeekViewManager()} is called.
+     *
+     * <p>The cached instance must never outlive its {@link PeekViewManager#destroy()} call: a
+     * destroyed manager has unregistered its observers and will no longer update the peek view.
+     */
+    public void destroyPeekViewManager() {
+        if (mPeekViewManager != null) {
+            mPeekViewManager.destroy();
+            mPeekViewManager = null;
+        }
     }
 
     /** Returns the custom content provider if one was specified, null otherwise. */
@@ -207,6 +219,7 @@ public class CoBrowseViews {
             mPeekContainer.removeAllViews();
             mPeekView = null;
         }
+        destroyPeekViewManager();
     }
 
     /** Returns whether the placeholder view is set up. */
@@ -231,6 +244,7 @@ public class CoBrowseViews {
         return mClientType;
     }
 
+    @CalledByNative
     @Nullable WebContents getWebContents() {
         return mWebUi != null ? mWebUi.getWebContents() : null;
     }
@@ -262,10 +276,6 @@ public class CoBrowseViews {
 
     private void updateForContainerType() {
         if (mContainerType == CoBrowseContainerType.SIDE_PANEL) {
-            if (mHandleBar != null) {
-                mHandleBar.setVisibility(View.GONE);
-            }
-
             MarginLayoutParams layoutParams =
                     (MarginLayoutParams) mWebUiContainer.getLayoutParams();
             layoutParams.topMargin = 0;

@@ -11,8 +11,11 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/geometry/dom_rect.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
+#include "third_party/blink/renderer/core/page/focus_controller.h"
+#include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 
 namespace blink {
@@ -96,7 +99,7 @@ TEST_F(SelectionControllerTest, setNonDirectionalSelectionIfNeeded) {
   SetBodyContent(body_content);
   ShadowRoot* shadow_root = SetShadowContent(shadow_content, "host");
 
-  Node* top = GetDocument().getElementById(AtomicString("top"))->firstChild();
+  Node* top = GetElementById("top")->firstChild();
   Node* bottom =
       shadow_root->getElementById(AtomicString("bottom"))->firstChild();
 
@@ -528,7 +531,7 @@ TEST_F(SelectionControllerTest, AdjustSelectionByUserSelectWithInput) {
     </div>
     <div id="two">22</div>)HTML");
 
-  Element* one = GetDocument().getElementById(AtomicString("one"));
+  Element* one = GetElementById("one");
   const SelectionInFlatTree& selection =
       ExpandWithGranularity(SelectionInFlatTree::Builder()
                                 .Collapse(PositionInFlatTree(one, 0))
@@ -550,8 +553,8 @@ TEST_F(SelectionControllerTest, AdjustSelectionByUserSelectWithSpan) {
       <span style="user-select:text"> lo </span>
       <span id="two" style="user-select:text">there</span></div>)HTML");
 
-  Element* one = GetDocument().getElementById(AtomicString("one"));
-  Element* two = GetDocument().getElementById(AtomicString("two"));
+  Element* one = GetElementById("one");
+  Element* two = GetElementById("two");
 
   const SelectionInFlatTree& selection =
       ExpandWithGranularity(SelectionInFlatTree::Builder()
@@ -574,8 +577,8 @@ TEST_F(SelectionControllerTest, AdjustSelectionByUserSelectWithComment) {
       <span id="two">after comment Hello World!</span>
     </div>)HTML");
 
-  Element* one = GetDocument().getElementById(AtomicString("one"));
-  Element* two = GetDocument().getElementById(AtomicString("two"));
+  Element* one = GetElementById("one");
+  Element* two = GetElementById("two");
 
   const SelectionInFlatTree& selection =
       ExpandWithGranularity(SelectionInFlatTree::Builder()
@@ -590,6 +593,30 @@ TEST_F(SelectionControllerTest, AdjustSelectionByUserSelectWithComment) {
   EXPECT_EQ(adjust_selection.Focus(), selection.Focus());
   EXPECT_EQ(adjust_selection.Focus(),
             PositionInFlatTree::LastPositionInNode(*two->firstChild()));
+}
+
+// http://crbug.com/553831659
+TEST_F(SelectionControllerTest,
+       AdjustSelectionByUserSelectWithNonEditableWidget) {
+  SetBodyContent(R"HTML(
+    <div contenteditable><p>
+      <span id="one">Triple click this line, which has an</span>
+      <span contenteditable="false"><span
+          style="user-select:none">EMBED</span></span>
+      <span id="two">inline widget inside it</span></p></div>)HTML");
+
+  Node* const one = GetElementById("one")->firstChild();
+  const SelectionInFlatTree& selection =
+      ExpandWithGranularity(SelectionInFlatTree::Builder()
+                                .Collapse(PositionInFlatTree(one, 0))
+                                .Build(),
+                            TextGranularity::kParagraph);
+  const SelectionInFlatTree adjusted_selection =
+      AdjustSelectionByUserSelect(one, selection);
+
+  EXPECT_EQ(adjusted_selection.Anchor(), selection.Anchor());
+  EXPECT_EQ(adjusted_selection.Focus(), selection.Focus());
+  EXPECT_TRUE(CreateVisibleSelection(adjusted_selection).IsRange());
 }
 
 // https://crbug.com/399412221
@@ -621,6 +648,77 @@ TEST_F(SelectionControllerTest, MAYBE_MiddleClickPasteToggle) {
                                  WebInputEvent::kIsCompatibilityEventForTouch,
                                  WebInputEvent::GetStaticTimeStampForTests());
   EXPECT_FALSE(Controller().HandlePasteGlobalSelection(mouse_event_down));
+}
+
+// http://crbug.com/362901608
+TEST_F(SelectionControllerTest, ClickOnPseudoElementLockedByItsOwnFocus) {
+  InsertStyleElement(
+      "li:focus-within > ul { display: block; }"
+      "li:focus-within > ul:focus { content-visibility: hidden; }"
+      "li:focus-within > ul:not(:focus)::before {"
+      "  content: '#'; display: block; position: absolute;"
+      "  top: 0px; left: 0px; width: 20px; height: 20px; }"
+      "ul ul { display: none; position: relative; }"
+      "li { position: relative; }");
+  SetBodyContent(
+      "<ul><li id=item tabindex=0>item"
+      "<ul id=sub tabindex=-1><li tabindex=0>sub item</li></ul>"
+      "</li></ul>");
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+  GetElementById("item")->Focus();
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* const sub = GetElementById("sub");
+  DOMRect* const rect = sub->GetBoundingClientRect();
+  const gfx::PointF point(rect->x() + 3, rect->y() + 3);
+  WebMouseEvent mouse_down(WebInputEvent::Type::kMouseDown, point, point,
+                           WebMouseEvent::Button::kLeft, 1,
+                           WebInputEvent::Modifiers::kLeftButtonDown,
+                           WebInputEvent::GetStaticTimeStampForTests());
+  GetFrame().GetEventHandler().HandleMousePressEvent(mouse_down);
+
+  EXPECT_EQ(sub, GetDocument().FocusedElement());
+}
+
+TEST_F(SelectionControllerTest, HandleGestureLongPressOnNonSelectable) {
+  SetBodyContent(
+      "<div id='sample' style='user-select: none;'>Non-selectable text</div>");
+  UpdateAllLifecyclePhasesForTest();
+
+  HitTestLocation location((gfx::Point(8, 8)));
+  HitTestResult hit_test_result =
+      GetFrame().GetEventHandler().HitTestResultAtLocation(location);
+
+  // Dirty style/layout AFTER the hit test to simulate a JS handler modifying
+  // the page
+  GetDocument()
+      .getElementById(AtomicString("sample"))
+      ->setAttribute(html_names::kStyleAttr,
+                     AtomicString("user-select: none; color: blue;"));
+
+  // This should not crash when the fix is applied.
+  Controller().HandleGestureLongPress(hit_test_result);
+}
+
+TEST_F(SelectionControllerTest, HandleGestureLongPressWithSelectStartMutation) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  SetBodyContent("<span id='sample'>Selectable text</span>");
+  Element* script = GetDocument().CreateRawElement(html_names::kScriptTag);
+  script->SetInnerHTMLWithoutTrustedTypes(
+      "document.addEventListener('selectstart', (e) => {"
+      "  document.getElementById('sample').style.fontSize = '20px';"
+      "  e.preventDefault();"
+      "});");
+  GetDocument().body()->AppendChild(script);
+  UpdateAllLifecyclePhasesForTest();
+
+  HitTestLocation location((gfx::Point(8, 8)));
+  HitTestResult hit_test_result =
+      GetFrame().GetEventHandler().HitTestResultAtLocation(location);
+
+  // This should not crash when the fix is applied.
+  Controller().HandleGestureLongPress(hit_test_result);
 }
 
 }  // namespace blink

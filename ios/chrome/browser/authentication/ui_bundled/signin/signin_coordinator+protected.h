@@ -13,11 +13,9 @@
 @interface SigninCoordinator (Protected)
 
 // Runs the sign-in completion callback.
-// `signinResult` is the state of sign-in at add account flow completion.
-// `completionIdentity` is the info about the sign-in completion.
-- (void)runCompletionWithSigninResult:(SigninCoordinatorResult)signinResult
-                   completionIdentity:(id<SystemIdentity>)completionIdentity
-    NS_REQUIRES_SUPER;
+// `signinResult` is the state of sign-in at completion.
+- (void)runCompletionWithSigninResult:
+    (SigninCoordinatorResultOrIdentity)signinResult NS_REQUIRES_SUPER;
 
 @end
 

@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/check_deref.h"
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/rand_util.h"
@@ -172,11 +173,12 @@ KURL GetBestFitImageURL(const Document& document,
                         const KURL& href,
                         const String& image_srcset,
                         const String& image_sizes) {
-  float source_size = SizesAttributeParser(media_values, image_sizes,
-                                           document.GetExecutionContext())
-                          .Size();
+  SizesAttributeParser sizes_parser(media_values, image_sizes,
+                                    document.GetExecutionContext());
+  // A link element has no dimension attribute aspect ratio.
   ImageCandidate candidate = BestFitSourceForImageAttributes(
-      media_values->DevicePixelRatio(), source_size, href, image_srcset);
+      media_values->DevicePixelRatio(), sizes_parser.Size(),
+      /*default_aspect_ratio=*/std::nullopt, href, image_srcset);
   return base_url.IsNull() ? document.CompleteURL(candidate.ToString())
                            : KURL(base_url, candidate.ToString());
 }
@@ -535,11 +537,11 @@ void PreloadHelper::PreloadIfNeeded(
       resource_type == ResourceType::kFont) {
     if (!integrity_attr.empty()) {
       IntegrityMetadataSet metadata_set;
-      SubresourceIntegrity::ParseIntegrityAttribute(
-          integrity_attr, metadata_set, document.GetExecutionContext());
+      SubresourceIntegrity::ParseIntegrityAttribute(integrity_attr,
+                                                    metadata_set);
       link_fetch_params.SetIntegrityMetadata(metadata_set);
       link_fetch_params.MutableResourceRequest().SetFetchIntegrity(
-          integrity_attr, document.GetExecutionContext());
+          integrity_attr);
     }
   } else {
     if (!integrity_attr.empty()) {
@@ -731,8 +733,7 @@ void PreloadHelper::ModulePreloadIfNeeded(
   if (!integrity_value.empty()) {
     IntegrityReport integrity_report;
     SubresourceIntegrity::ParseIntegrityAttribute(
-        params.integrity, integrity_metadata, document.GetExecutionContext(),
-        &integrity_report);
+        params.integrity, integrity_metadata, &integrity_report);
     integrity_report.SendReports(document.GetExecutionContext());
   } else if (integrity_value.IsNull()) {
     // Step 10. "If el does not have an integrity attribute, then set integrity
@@ -1080,7 +1081,7 @@ void PreloadHelper::FetchCompressionDictionaryIfNeeded(
         document.GetExecutionContext()->GetSecurityOrigin(), cross_origin);
   }
   IdleRequestOptions* idle_options = IdleRequestOptions::Create();
-  ScriptedIdleTaskController::From(*document.GetExecutionContext())
+  ScriptedIdleTaskController::From(CHECK_DEREF(document.domWindow()))
       .RegisterCallback(MakeGarbageCollected<LoadDictionaryWhenIdleTask>(
                             std::move(link_fetch_params), document.Fetcher(),
                             pending_preload),

@@ -56,7 +56,7 @@ class MEDIA_EXPORT DecoderStream {
   using InitCB = base::OnceCallback<void(bool success)>;
 
   // Indicates completion of a DecoderStream read.
-  using ReadResult = DecoderStatus::Or<scoped_refptr<Output>>;
+  using ReadResult = base::expected<scoped_refptr<Output>, DecoderStatus>;
   using ReadCB = base::OnceCallback<void(ReadResult)>;
 
   DecoderStream(std::unique_ptr<DecoderStreamTraits<StreamType>> traits,
@@ -135,7 +135,7 @@ class MEDIA_EXPORT DecoderStream {
     decoder_change_observer_cb_ = std::move(decoder_change_observer_cb);
   }
 
-  void set_fallback_observer(PipelineStatusCB fallback_cb) {
+  void set_fallback_observer(RepeatingPipelineStatusCallback fallback_cb) {
     fallback_cb_ = std::move(fallback_cb);
   }
 
@@ -187,7 +187,7 @@ class MEDIA_EXPORT DecoderStream {
   // |decrypting_demuxer_stream| was also populated if a DecryptingDemuxerStream
   // is created to help decrypt the encrypted stream.
   void OnDecoderSelected(
-      DecoderStatus::Or<std::unique_ptr<Decoder>> decoder_or_error,
+      base::expected<std::unique_ptr<Decoder>, DecoderStatus> decoder_or_error,
       std::unique_ptr<DecryptingDemuxerStream> decrypting_demuxer_stream);
 
   // Satisfy pending |read_cb_| with |result|.
@@ -239,7 +239,7 @@ class MEDIA_EXPORT DecoderStream {
   StatisticsCB statistics_cb_;
   InitCB init_cb_;
   WaitingCB waiting_cb_;
-  PipelineStatusCB fallback_cb_;
+  RepeatingPipelineStatusCallback fallback_cb_;
 
   ReadCB read_cb_;
   base::OnceClosure reset_cb_;

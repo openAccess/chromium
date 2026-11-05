@@ -14,17 +14,11 @@
 #include "chrome/browser/flags/android/chrome_session_state.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/android/tab_model/android_live_tab_context.h"
-#include "components/omnibox/browser/location_bar_model.h"
-#include "components/omnibox/browser/location_bar_model_delegate.h"
 #include "components/sessions/core/session_id.h"
 #include "components/sync_sessions/synced_window_delegate.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 struct NavigateParams;
-
-namespace browser_sync {
-class SyncedWindowDelegateAndroid;
-}
 
 namespace content {
 class WebContents;
@@ -43,6 +37,7 @@ class AndroidTabStripModelAdapter;
 }
 
 class Profile;
+class SyncedWindowDelegateAndroid;
 class TabAndroid;
 class TabModelObserver;
 
@@ -58,7 +53,7 @@ class TabModel : public TabListInterface {
   // LINT.ThenChange(//chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/TabList.java:INVALID_TAB_INDEX)
 
   // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.tabmodel
-  enum class TabModelType {
+  enum class TabModelType : uint8_t {
     // A standard tab model that contains tabs from a profile.
     kStandard,
     // An empty tab model that contains no tabs.
@@ -157,7 +152,10 @@ class TabModel : public TabListInterface {
     // Used for tab pre-warming where the reason for tab creation is not yet
     // known.
     UNSET,
-    // Used when creating a tab to keep synced tab groups up to date.
+    // Used when opening a tab in the background at an explicit index (e.g., to
+    // keep synced tab groups up to date, or for tabs received via Send Tab to
+    // Self). This does not trigger adjacency logic in Java, allowing the
+    // requested position to be respected.
     FROM_SYNC_BACKGROUND,
     // Open most recent tab in foregroud, used by ctrl-shift-t to restore
     // most recently closed tab or tabs.
@@ -191,6 +189,11 @@ class TabModel : public TabListInterface {
     // Opened to load the first URL specified in the session startup URLs user
     // preference.
     FROM_SESSION_STARTUP_WITH_URLS_PREF,
+    // Opened to load an omnibox search query in a new tab in the background.
+    FROM_OMNIBOX_BACKGROUND,
+    // Restored by undoing a tab closure: created in the background at the
+    // requested index; selection is handled by the restore logic.
+    FROM_UNDO_CLOSURE,
     // Must be last.
     SIZE
   };
@@ -206,17 +209,29 @@ class TabModel : public TabListInterface {
   //
   // Multiple lines are not supported by IFTTT.
   // clang-format off
-  // LINT.ThenChange(//tools/metrics/histograms/metadata/new_tab_page/enums.xml:TabLaunchType,//chrome/android/java/src/org/chromium/chrome/browser/tabmodel/ChromeTabCreator.java,//chrome/browser/tabpersistence/android/java/src/org/chromium/chrome/browser/tabpersistence/flatbuffer/tab_state_common.fbs,//chrome/browser/tabpersistence/android/java/src/org/chromium/chrome/browser/tabpersistence/FlatBufferTabStateSerializer.java)
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/new_tab_page/enums.xml:TabLaunchType,//chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/TabLaunchTypeUtils.java,//chrome/browser/tabpersistence/android/java/src/org/chromium/chrome/browser/tabpersistence/flatbuffer/tab_state_common.fbs,//chrome/browser/tabpersistence/android/java/src/org/chromium/chrome/browser/tabpersistence/FlatBufferTabStateSerializer.java)
   // clang-format on
 
   // Various ways tabs can be closed.
   // Values must be numbered from 0 and can't have gaps.
-  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.tab
+  // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.tabmodel
   enum class TabClosingSource {
     // Tab closing from all other sources.
     UNKNOWN,
-    // Tab closing from tablet tab strip.
+    // Tab closing is from tablet tab strip.
     TABLET_TAB_STRIP,
+    // Tab closing is from keyboard shortcut.
+    KEYBOARD_SHORTCUT,
+    // Tab closing is from vertical tab strip.
+    VERTICAL_TAB_STRIP,
+    // Tab closing is from Quick Delete.
+    QUICK_DELETE,
+    // Tab closing is from grid tab switcher.
+    GRID_TAB_SWITCHER,
+    // Tab closing is from bottom tab group strip.
+    BOTTOM_TAB_GROUP_STRIP,
+    // Tab closing is from Clear Browsing Data.
+    CLEAR_BROWSING_DATA,
     // Must be last.
     SIZE
   };
@@ -294,6 +309,14 @@ class TabModel : public TabListInterface {
       TabLaunchType type,
       bool should_pin) = 0;
 
+  using TabListInterface::OpenTab;
+  // Opens a new tab at `index` with `launch_type`. Activates the newly created
+  // tab unless `launch_type` is
+  // `TabLaunchType::FROM_TAB_LIST_INTERFACE_BACKGROUND`.
+  virtual tabs::TabInterface* OpenTab(const GURL& url,
+                                      int index,
+                                      TabLaunchType launch_type) = 0;
+
   virtual void HandlePopupNavigation(TabAndroid* parent,
                                      NavigateParams* params) = 0;
 
@@ -330,9 +353,12 @@ class TabModel : public TabListInterface {
       base::PassKey<tabs_api::AndroidTabStripModelAdapter>) = 0;
 
   chrome::android::ActivityType activity_type() const { return activity_type_; }
-  const std::optional<chrome::android::CustomTabProfileType>&
-  custom_tab_profile_type() const {
-    return custom_tab_profile_type_;
+  std::optional<chrome::android::CustomTabProfileType> custom_tab_profile_type()
+      const {
+    if (has_custom_tab_profile_type_) {
+      return custom_tab_profile_type_value_;
+    }
+    return std::nullopt;
   }
   TabModelType GetTabModelType() const { return tab_model_type_; }
   bool IsEmptyRegularModelForEphemeralOrIncognitoCct() const;
@@ -349,8 +375,6 @@ class TabModel : public TabListInterface {
   // loaded from storage.
   void BroadcastSessionRestoreComplete();
 
-  LocationBarModel* GetLocationBarModel();
-
   // Sets the `SessionID`.
   //
   // `BrowserWindowInterface` is the source of truth for `SessionID`. This
@@ -359,24 +383,25 @@ class TabModel : public TabListInterface {
   void SetSessionId(SessionID sessionId);
 
  private:
-  raw_ptr<Profile, DanglingUntriaged> profile_;
-
-  chrome::android::ActivityType activity_type_;
-  std::optional<chrome::android::CustomTabProfileType> custom_tab_profile_type_;
-  TabModelType tab_model_type_;
-
   // The LiveTabContext associated with TabModel.
   // Used to restore closed tabs through the TabRestoreService.
   std::unique_ptr<AndroidLiveTabContext> live_tab_context_;
 
   // The SyncedWindowDelegate associated with this TabModel.
-  std::unique_ptr<browser_sync::SyncedWindowDelegateAndroid>
-      synced_window_delegate_;
+  std::unique_ptr<SyncedWindowDelegateAndroid> synced_window_delegate_;
+
+  raw_ptr<Profile, DanglingUntriaged> profile_;
 
   // Unique identifier of this TabModel for session restore. This id is only
   // unique within the current session, and is not guaranteed to be unique
   // across sessions.
   SessionID session_id_;
+
+  chrome::android::ActivityType activity_type_;
+  TabModelType tab_model_type_;
+  chrome::android::CustomTabProfileType custom_tab_profile_type_value_ =
+      chrome::android::CustomTabProfileType::kRegular;
+  bool has_custom_tab_profile_type_ = false;
 
   // Records metrics about which percentage of syncable tabs are actually
   // synced.

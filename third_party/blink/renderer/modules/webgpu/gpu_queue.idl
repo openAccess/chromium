@@ -42,13 +42,8 @@
         GPUExtent3D copySize);
 
     [RuntimeEnabled=CanvasDrawElement, RaisesException, MeasureAs=HTMLInCanvas]
-    void copyElementImageToTexture(
-        GPUCopyElementImageSource source,
-        GPUCopyElementImageDestination destination);
-
-    [RuntimeEnabled=CanvasDrawElement, RaisesException, MeasureAs=HTMLInCanvas]
     void drawElementImageToTexture(
         GPUDrawElementImageSource source,
-        GPUCopyElementImageDestination destination);
+        GPUDrawElementImageDestination destination);
 };
 GPUQueue includes GPUObjectBase;

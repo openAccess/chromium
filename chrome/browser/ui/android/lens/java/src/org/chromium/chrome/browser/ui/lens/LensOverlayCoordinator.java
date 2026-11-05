@@ -16,7 +16,10 @@ import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Log;
@@ -57,6 +60,9 @@ import java.util.UUID;
 @JNINamespace("lens")
 @NullMarked
 public class LensOverlayCoordinator implements UserData {
+    @JniType("::lens::LensOverlayControllerAndroid")
+    interface NativeLensOverlayControllerAndroid extends JniTypeToken {}
+
     private static final String TAG = "LensOverlay";
     static final String LENS_OVERLAY_IMPL_DEFAULT =
             LensSupportStatusHelper.LENS_OVERLAY_IMPL_INTENT;
@@ -77,7 +83,8 @@ public class LensOverlayCoordinator implements UserData {
     }
 
     private final Tab mTab;
-    private long mNativeLensOverlayControllerAndroid;
+    private @Nullable JniUniquePtr<NativeLensOverlayControllerAndroid>
+            mNativeLensOverlayControllerAndroid;
     private @Nullable ThinWebView mThinWebView;
     private @Nullable WebContents mOverlayWebContents;
 
@@ -112,7 +119,8 @@ public class LensOverlayCoordinator implements UserData {
      * @return Whether the overlay was successfully started.
      */
     public boolean start(@LensOverlayInvocationSource int invocationSource) {
-        if (LensOverlayTabHelper.isOverlayShowing(mTab)) {
+        if (mNativeLensOverlayControllerAndroid == null
+                || LensOverlayTabHelper.isOverlayShowing(mTab)) {
             return false;
         }
 
@@ -132,7 +140,10 @@ public class LensOverlayCoordinator implements UserData {
         // - If capture fails to start, start() returns failure immediately.
         // - If capture fails asynchronously (e.g., GPU crash), onCaptureError() is called.
         if (!LensOverlayCoordinatorJni.get()
-                .showUI(mNativeLensOverlayControllerAndroid, invocationSource)) {
+                .showUI(
+                        mNativeLensOverlayControllerAndroid,
+                        invocationSource,
+                        isWebUiImplementationEnabled())) {
             Log.e(TAG, "Failed to show Lens Overlay UI");
             setShowing(false);
             return false;
@@ -367,9 +378,9 @@ public class LensOverlayCoordinator implements UserData {
 
     @Override
     public void destroy() {
-        if (mNativeLensOverlayControllerAndroid != 0) {
-            LensOverlayCoordinatorJni.get().destroy(mNativeLensOverlayControllerAndroid);
-            mNativeLensOverlayControllerAndroid = 0;
+        if (mNativeLensOverlayControllerAndroid != null) {
+            mNativeLensOverlayControllerAndroid.destroy();
+            mNativeLensOverlayControllerAndroid = null;
         }
         close();
     }
@@ -379,16 +390,42 @@ public class LensOverlayCoordinator implements UserData {
         return window.getIntentRequestTracker();
     }
 
+    void addWebUiDebugString(String s) {
+        if (mOverlayWebContents != null) {
+            String jsFormat =
+                    """
+                    const el = document.getElementById('div-debug');
+                    const div = document.createElement('div');
+                    div.textContent = '%s';
+                    el.appendChild(div);
+                    """;
+            // TODO(crbug.com/538670163): Move this to a proper file. Note that the text replacement
+            // below is for convenience, but not robust (e.g., it does not escape "</script>"
+            // literal, which on a browser would premature end a "<script>" block.
+            String js = String.format(jsFormat, s.replace("\\", "\\\\").replace("'", "\\'"));
+            mOverlayWebContents.evaluateJavaScript(js, null);
+        }
+    }
+
+    /**
+     * Called by the C++ controller when the backend responds with the processed objects. This is a
+     * temporary tracer bullet to verify the data pipeline.
+     */
+    @CalledByNative
+    void onObjectsReceived(int objectCount) {
+        ThreadUtils.assertOnUiThread();
+        addWebUiDebugString("Received Backend Objects: " + objectCount);
+    }
+
     @NativeMethods
     interface Natives {
-        long init(
+        JniUniquePtr<NativeLensOverlayControllerAndroid> init(
                 LensOverlayCoordinator caller,
                 @JniType("content::WebContents*") WebContents webContents);
 
         boolean showUI(
-                long nativeLensOverlayControllerAndroid,
-                @LensOverlayInvocationSource int invocationSource);
-
-        void destroy(long nativeLensOverlayControllerAndroid);
+                JniPtr<NativeLensOverlayControllerAndroid> self,
+                @LensOverlayInvocationSource int invocationSource,
+                boolean useWebUi);
     }
 }

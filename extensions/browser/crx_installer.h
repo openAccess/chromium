@@ -16,6 +16,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/scoped_observation.h"
+#include "base/types/pass_key.h"
 #include "base/values.h"
 #include "base/version.h"
 #include "components/sync/model/string_ordinal.h"
@@ -73,7 +74,7 @@ class ScopedBrowserContextKeepAlive;
 // IMPORTANT: Callers should keep a reference to a CrxInstaller while they are
 // working with it, eg:
 //
-// scoped_refptr<CrxInstaller> installer(new CrxInstaller(...));
+// scoped_refptr<CrxInstaller> installer(CrxInstaller::Create(...));
 // installer->set_foo();
 // installer->set_bar();
 // installer->InstallCrx(...);
@@ -100,8 +101,19 @@ class CrxInstaller : public SandboxedUnpackerClient {
   // installation.
   enum WithholdingBehavior { kWithholdPermissions, kDontWithholdPermissions };
 
-  CrxInstaller(const CrxInstaller&) = delete;
-  CrxInstaller& operator=(const CrxInstaller&) = delete;
+  // LINT.IfChange(CrxInstallerReloadManifestVerificationResult)
+  // Recorded in `CrxInstaller::ReloadExtensionAfterInstall` to track whether
+  // the manifest reloaded from the final install directory matched the
+  // unpacked manifest validated in `OnUnpackSuccess`.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class ReloadManifestVerificationResult {
+    kMatch = 0,
+    kMismatch = 1,
+    kSharedCopyMismatchFallback = 2,
+    kMaxValue = kSharedCopyMismatchFallback,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/extensions/enums.xml:ExtensionCrxInstallerReloadManifestVerificationResult)
 
   static void EnsureShutdownNotifierFactoryBuilt();
 
@@ -122,6 +134,13 @@ class CrxInstaller : public SandboxedUnpackerClient {
       content::BrowserContext* context,
       std::unique_ptr<ExtensionInstallPromptClient> client,
       const InstallApproval* approval);
+
+  CrxInstaller(base::PassKey<CrxInstaller>,
+               content::BrowserContext* context,
+               std::unique_ptr<ExtensionInstallPromptClient> client,
+               const InstallApproval* approval);
+  CrxInstaller(const CrxInstaller&) = delete;
+  CrxInstaller& operator=(const CrxInstaller&) = delete;
 
   // Install the crx in `source_file`. The file must be a CRX3. A publisher
   // proof in the file is required unless off-webstore installation is allowed.
@@ -162,6 +181,9 @@ class CrxInstaller : public SandboxedUnpackerClient {
   void set_creation_flags(int val) { creation_flags_ = val; }
 
   const base::FilePath& source_file() const { return source_file_; }
+
+  const GURL& download_url() const { return download_url_; }
+  void set_download_url(const GURL& val) { download_url_ = val; }
 
   mojom::ManifestLocation install_source() const { return install_source_; }
   void set_install_source(mojom::ManifestLocation source) {

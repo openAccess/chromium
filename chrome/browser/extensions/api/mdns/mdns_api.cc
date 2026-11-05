@@ -23,7 +23,9 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
+#include "extensions/common/mojom/api_permission_id.mojom.h"
 #include "extensions/common/mojom/event_dispatcher.mojom.h"
+#include "extensions/common/permissions/permissions_data.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -33,11 +35,17 @@ namespace mdns = api::mdns;
 
 using DnsSdRegistry = media_router::DnsSdRegistry;
 
+namespace {
+
+constexpr int kMaxListenersPerExtension = 10;
+
+}  // namespace
+
 MDnsAPI::MDnsAPI(content::BrowserContext* context)
     : browser_context_(context), dns_sd_registry_(nullptr) {
-  DCHECK(browser_context_);
+  CHECK(browser_context_, base::NotFatalUntil::M161);
   extensions::EventRouter* event_router = EventRouter::Get(context);
-  DCHECK(event_router);
+  CHECK(event_router, base::NotFatalUntil::M161);
   event_router->RegisterObserver(this, mdns::OnServiceList::kEventName);
 }
 
@@ -70,13 +78,13 @@ void MDnsAPI::SetDnsSdRegistryForTesting(DnsSdRegistry* dns_sd_registry) {
 }
 
 void MDnsAPI::ForceDiscovery() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M161);
   DnsSdRegistry* registry = dns_sd_registry();
   return registry->ResetAndDiscover();
 }
 
 DnsSdRegistry* MDnsAPI::dns_sd_registry() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M161);
   if (!dns_sd_registry_) {
     dns_sd_registry_ = media_router::DnsSdRegistry::GetInstance();
     dns_sd_registry_->AddObserver(this);
@@ -85,12 +93,12 @@ DnsSdRegistry* MDnsAPI::dns_sd_registry() {
 }
 
 void MDnsAPI::OnListenerAdded(const EventListenerInfo& details) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M161);
   UpdateMDnsListeners();
 }
 
 void MDnsAPI::OnListenerRemoved(const EventListenerInfo& details) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M161);
   UpdateMDnsListeners();
 }
 
@@ -142,7 +150,7 @@ void MDnsAPI::UpdateMDnsListeners() {
 
 void MDnsAPI::OnDnsSdEvent(const std::string& service_type,
                            const DnsSdRegistry::DnsSdServiceList& services) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M161);
 
   std::vector<mdns::MDnsService> args;
   for (const auto& service : services) {
@@ -169,10 +177,11 @@ void MDnsAPI::OnDnsSdEvent(const std::string& service_type,
     args.push_back(std::move(mdns_service));
   }
 
-  auto results = mdns::OnServiceList::Create(args);
+  auto event_args =
+      base::MakeRefCounted<EventArgs>(mdns::OnServiceList::Create(args));
   auto event = std::make_unique<Event>(events::MDNS_ON_SERVICE_LIST,
                                        mdns::OnServiceList::kEventName,
-                                       std::move(results), browser_context_);
+                                       std::move(event_args), browser_context_);
   event->filter_info->service_type = service_type;
 
   // TODO(justinlin): To avoid having listeners without filters getting all
@@ -194,13 +203,17 @@ bool MDnsAPI::IsMDnsAllowed(const ExtensionId& extension_id) const {
       ExtensionRegistry::Get(browser_context_)
           ->enabled_extensions()
           .GetByID(extension_id);
-  return extension;
+  // TODO(crbug.com/562119518): Upgrade this permission check to a CHECK once
+  // EventRouter enforces permission checks on listener registration.
+  return extension && extension->permissions_data()->HasAPIPermission(
+                          extensions::mojom::APIPermissionID::kMDns);
 }
 
 void MDnsAPI::GetValidOnServiceListListeners(
     const std::string& service_type_filter,
     std::set<ExtensionId>* extension_ids,
     ServiceTypeCounts* service_type_counts) {
+  std::map<ExtensionId, int> extension_listener_counts;
   for (const auto& listener : GetEventListeners()) {
     const base::DictValue* filter = listener->filter();
 
@@ -211,13 +224,19 @@ void MDnsAPI::GetValidOnServiceListListeners(
       continue;
     }
 
-    // Match service type when filter isn't ""
-    if (!service_type_filter.empty() && service_type_filter != *service_type) {
+    // Don't listen for services associated only with disabled or unauthorized
+    // extensions.
+    if (!IsMDnsAllowed(listener->extension_id())) {
       continue;
     }
 
-    // Don't listen for services associated only with disabled extensions.
-    if (!IsMDnsAllowed(listener->extension_id())) {
+    if (++extension_listener_counts[listener->extension_id()] >
+        kMaxListenersPerExtension) {
+      continue;
+    }
+
+    // Match service type when filter isn't ""
+    if (!service_type_filter.empty() && service_type_filter != *service_type) {
       continue;
     }
 

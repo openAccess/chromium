@@ -2,10 +2,18 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+source_set("metrics_constants") {
+  sources = [ "composebox_metrics_constants.h" ]
+}
+
 source_set("metrics") {
   sources = [
     "composebox_metrics_recorder.h",
     "composebox_metrics_recorder.mm",
+  ]
+  public_deps = [
+    ":metrics_constants",
+    "//third_party/omnibox_proto",
   ]
   deps = [
     "//base",
@@ -14,7 +22,7 @@ source_set("metrics") {
     "//components/omnibox/browser",
     "//ios/chrome/browser/composebox/public:composebox_mode",
     "//ios/chrome/browser/composebox/public:entrypoint",
-    "//ios/chrome/browser/composebox/public:model_options",
+    "//ios/chrome/browser/ntp/ui_bundled:feature_flags",
     "//skia",
   ]
 }

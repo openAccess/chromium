@@ -29,6 +29,10 @@ class AwVariationsServiceClient : public variations::VariationsServiceClient {
   ~AwVariationsServiceClient() override;
 
   bool EnableSignatureVerificationOnLoad() override;
+  metrics::MetricsService::RotateUmaLogResult RotateUmaLogForRuntimeMutability(
+      metrics::MetricsService::RuntimeMutabilityPassKey passkey) override;
+  bool ShouldDelayRuntimeMutability(
+      metrics::MetricsService::RuntimeMutabilityPassKey passkey) override;
 
  private:
   base::Version GetVersionForSimulation() override;

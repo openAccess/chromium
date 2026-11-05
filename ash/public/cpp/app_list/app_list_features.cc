@@ -11,16 +11,9 @@
 namespace app_list_features {
 
 BASE_FEATURE(kEnableAppListLaunchRecording, base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kEnableExactMatchForNonLatinLocale,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 // DO NOT REMOVE: Tast integration tests use this feature. (See crbug/1340267)
 BASE_FEATURE(kForceShowContinueSection, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kDynamicSearchUpdateAnimation, base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE(kAppsCollections, base::FEATURE_DISABLED_BY_DEFAULT);
-
-bool IsExactMatchForNonLatinLocaleEnabled() {
-  return base::FeatureList::IsEnabled(kEnableExactMatchForNonLatinLocale);
-}
 
 bool IsAppListLaunchRecordingEnabled() {
   return base::FeatureList::IsEnabled(kEnableAppListLaunchRecording);
@@ -39,20 +32,6 @@ base::TimeDelta DynamicSearchUpdateAnimationDuration() {
 
 bool IsForceShowContinueSectionEnabled() {
   return base::FeatureList::IsEnabled(kForceShowContinueSection);
-}
-
-bool IsAppsCollectionsEnabled() {
-  return base::FeatureList::IsEnabled(kAppsCollections);
-}
-
-bool IsAppsCollectionsEnabledCounterfactually() {
-  return IsAppsCollectionsEnabled() &&
-         kAppsCollectionsEnabledCounterfactually.Get();
-}
-
-bool IsAppsCollectionsEnabledWithModifiedOrder() {
-  return IsAppsCollectionsEnabled() &&
-         kAppsCollectionsEnabledWithModifiedOrder.Get();
 }
 
 }  // namespace app_list_features

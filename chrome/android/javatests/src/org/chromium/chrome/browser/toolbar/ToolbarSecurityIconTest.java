@@ -5,6 +5,7 @@ package org.chromium.chrome.browser.toolbar;
 
 import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 
@@ -15,13 +16,13 @@ import androidx.annotation.ColorRes;
 import androidx.test.annotation.UiThreadTest;
 import androidx.test.filters.SmallTest;
 
+import org.jni_zero.JniUniquePtr;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
@@ -52,7 +53,6 @@ import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
-import java.util.Random;
 import java.util.concurrent.ExecutionException;
 
 /** Instrumentation tests for the toolbar security icon. */
@@ -94,6 +94,10 @@ public final class ToolbarSecurityIconTest {
 
     @Mock private LocationBarModel.Natives mLocationBarModelJni;
 
+    @Mock
+    private JniUniquePtr<LocationBarModel.NativeLocationBarModelAndroid>
+            mNativeLocationBarModelAndroid;
+
     @Mock private ChromeAutocompleteSchemeClassifier.Natives mChromeAutocompleteSchemeClassifierJni;
 
     @Mock private Profile mMockProfile;
@@ -102,24 +106,20 @@ public final class ToolbarSecurityIconTest {
 
     @Before
     public void setUp() throws ExecutionException {
-
         NativeLibraryTestUtils.loadNativeLibraryNoBrowserProcess();
         SecurityStateModelJni.setInstanceForTesting(mSecurityStateMocks);
         ChromeAutocompleteSchemeClassifierJni.setInstanceForTesting(
                 mChromeAutocompleteSchemeClassifierJni);
+        doAnswer(invocation -> JniUniquePtr.createForTesting(1L))
+                .when(mChromeAutocompleteSchemeClassifierJni)
+                .createAutocompleteClassifier(any());
         LocationBarModelJni.setInstanceForTesting(mLocationBarModelJni);
 
         GURL exampleUrl = JUnitTestGURLs.EXAMPLE_URL;
-        doReturn(exampleUrl)
-                .when(mLocationBarModelJni)
-                .getUrlOfVisibleNavigationEntry(Mockito.anyLong());
-        doReturn(exampleUrl.getSpec())
-                .when(mLocationBarModelJni)
-                .getFormattedFullURL(Mockito.anyLong());
-        doReturn(exampleUrl.getSpec())
-                .when(mLocationBarModelJni)
-                .getURLForDisplay(Mockito.anyLong());
-        doReturn(new Random().nextLong()).when(mLocationBarModelJni).init(Mockito.any());
+        doReturn(exampleUrl).when(mLocationBarModelJni).getUrlOfVisibleNavigationEntry(any());
+        doReturn(exampleUrl.getSpec()).when(mLocationBarModelJni).getFormattedFullURL(any());
+        doReturn(exampleUrl.getSpec()).when(mLocationBarModelJni).getURLForDisplay(any());
+        doReturn(mNativeLocationBarModelAndroid).when(mLocationBarModelJni).init(any());
 
         Context context =
                 new ContextThemeWrapper(

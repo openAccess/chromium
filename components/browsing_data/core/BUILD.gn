@@ -47,8 +47,6 @@ static_library("core") {
     "//components/webdata/common",
     "//ui/base",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 source_set("cookie_or_cache_deletion_choice") {
@@ -61,6 +59,7 @@ if (is_android) {
     visibility = [ ":*" ]
     sources = [ "browsing_data_utils.h" ]
   }
+
   java_cpp_enum("cookie_or_cache_deletion_choice_javagen") {
     # External code should depend on ":java" instead.
     visibility = [ ":*" ]
@@ -84,11 +83,6 @@ source_set("unit_tests") {
     "counters/browsing_data_counter_unittest.cc",
     "history_notice_utils_unittest.cc",
   ]
-
-  if (is_ios) {
-    # pref_names_unittest.cc tests a method only available in iOS.
-    sources += [ "pref_names_unittest.cc" ]
-  }
 
   deps = [
     ":core",

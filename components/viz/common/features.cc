@@ -23,9 +23,6 @@
 #include "media/media_buildflags.h"
 #include "ui/gl/gl_switches.h"
 
-#if BUILDFLAG(IS_ANDROID)
-#include "base/android/device_info.h"
-#endif
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_version.h"
@@ -41,6 +38,18 @@ namespace features {
 BASE_FEATURE(kAndroidDumpForBadCompositedUiState,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Enables the use of SurfaceControl underlays/overlays for HDR content on
+// Android. When disabled (default), HDR video is composited directly by
+// SkiaRenderer to prevent tone-mapping mismatches between
+// SurfaceFlinger/RenderEngine and Skia when UI controls are shown/hidden.
+BASE_FEATURE(kAndroidSurfaceControlHdrOverlays,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When a window is occluded, whether it should become invisible, and the
+// visibility update should be propagated to viz. This is required to reclaim
+// buffers service-side.
+BASE_FEATURE(kPropagateOcclusionToVizAndroid,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 // If enabled, each render pass eligible for scanout gets its own BufferQueue.
@@ -65,6 +74,12 @@ BASE_FEATURE(kUseDrmBlackFullscreenOptimization,
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kUseFrameIntervalDeciderAdaptiveFrameRate,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, FrameIntervalDecider uses ContinuousRangeSettings bounded by the
+// display's max supported refresh rate, instead of passing matched frame
+// intervals through unbounded.
+BASE_FEATURE(kAndroidFrameIntervalContinuousRange,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, `ExternalBeginFrameSourceAndroid::AChoreographerImpl` derives a
 // VSync interval from the frame timelines that the OS provided via the callback
@@ -205,7 +220,7 @@ const base::FeatureParam<int> kCALayerNewLimitManyVideos{&kCALayerNewLimit,
 BASE_FEATURE(kVSyncAlignedPresentationForScrolling,
              base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kVSyncAlignedPresentation, base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kUseDisplayRefreshRateForTimer, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kUseDisplayRefreshRateForTimer, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
 BASE_FEATURE(kAllowUndamagedNonrootRenderPassToSkip,
@@ -255,6 +270,14 @@ BASE_FEATURE(kEnableADPFScrollNoRendererMain,
 // ADPF(Android Dynamic Performance Framework) method on a worker thread
 // instead of Viz. The goal is to prevent Viz from blocking on a binder call.
 BASE_FEATURE(kEnableADPFAsyncSetThreads, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, Chrome includes the main thread of a main frame Renderer into
+// the ADPF(Android Dynamic Performance Framework) hint session as soon as the
+// Renderer has registered its threads, instead of only after it contributed
+// to a drawn frame. This only affects Renderers whose frame sink has not
+// activated a surface yet, i.e. the Renderer committing a page load until it
+// produces its first frame.
+BASE_FEATURE(kEnableADPFPendingRendererMain, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, we immediately send acks to clients when a viz surface
 // activates. This effectively removes back-pressure. This can result in wasted
@@ -341,7 +364,7 @@ BASE_FEATURE(kMixedFixedIntervalMatcher, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, the FrameEvictionManager scales its limit of max number of saved
 // frames dynamically based on memory pressure.
-BASE_FEATURE(kScalableFrameEviction, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kScalableFrameEviction, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Remove gpu process reference if gpu context is loss, and gpu channel cannot
 // be established due to said gpu process exiting.
@@ -391,21 +414,45 @@ BASE_FEATURE(kCrosContentAdjustedRefreshRate,
              base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+// Do not create GLContext on DrDC thread (and Android WebView render thread) if
+// GL is not used by viz (eg when vulkan is used).
+BASE_FEATURE(kSkipDisabledGLContextOnDrDC, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kNoCompositorFrameAcks, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<int> kNumberPendingFramesUntilThrottle{
     &kNoCompositorFrameAcks, "pending_frames", 1};
+BASE_FEATURE(kNoUndrawnFrameThrottleWhileEmbedderWaits,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kDisplaySchedulerAsClient, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables optimizations in `DirectRenderer` and `OcclusionCuller` that reuses
-// pre-existing loops to access filter data from `AggregatedRenderPassDrawQuad`.
-// This is a temporary flag to work as a kill switch for the optimization and
-// should be removed as soon as we confirm that the optimization is stable.
-BASE_FEATURE(kRpdqFilterLookupOptimizations, base::FEATURE_ENABLED_BY_DEFAULT);
+// Kill switch for constraining render pass texture sampling to logical content
+// bounds. Remove after the behavior is stable.
+BASE_FEATURE(kRenderPassBackingLogicalBounds, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, bypasses deadlocks caused by outdated activation dependency
 // tokens when parent frame submission lags behind child surface execution.
 BASE_FEATURE(kBypassOutdatedSurfaceActivation,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When enabled, a non-mergeable surface's root render pass backing is resized
+// to match the scale at which the frame's content was rasterized. This avoids
+// downsampling and then upsampling the content, keeping text sharp
+// (crbug.com/513611535).
+BASE_FEATURE(kRenderNonMergedSurfaceAtBackingScale,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Kill switch for https://crbug.com/569098933. When enabled, SoftwareRenderer
+// reads an unscaled copy into a client provided SharedImage directly, instead
+// of into an intermediate bitmap that is then drawn into the SharedImage.
+BASE_FEATURE(kSoftwareReadbackIntoBlitDestination,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Kill switch for https://crbug.com/569098933. When enabled, SoftwareRenderer
+// draws the first quad in a freshly cleared transparent render pass with
+// kSrcOver whenever the quad's blend mode evaluates to the source color onto a
+// transparent destination, allowing Skia to use its fast legacy blitters.
+BASE_FEATURE(kUseSrcOverForFirstQuadInTransparentPass,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_WIN)
 // Use BufferQueue for the primary plane instead of a DXGI swap chain or DComp
@@ -545,6 +592,17 @@ bool ShouldUseAdpfForSoc(std::string_view soc_allowlist,
 bool ShouldDiscardVizBufferQueueOnVisibilityChange() {
   return kAllowVizBufferQueueDiscardOnVisibilityChange &&
          base::FeatureList::IsEnabled(kVizBufferQueueDiscardOnVisibilityChange);
+}
+
+// When enabled, deadlines are tracked per activation dependency of a
+// CompositorFrame independently. Each dependent surface uses its own specified
+// deadline policy (e.g., from cc::DeadlinePolicy), allowing the frame to
+// activate once all its dependencies have individually resolved or expired,
+// without being bounded by the frame's overall global deadline.
+BASE_FEATURE(kPerDependencyDeadlines, base::FEATURE_DISABLED_BY_DEFAULT);
+
+bool UsePerDependencyDeadlines() {
+  return base::FeatureList::IsEnabled(kPerDependencyDeadlines);
 }
 
 }  // namespace features

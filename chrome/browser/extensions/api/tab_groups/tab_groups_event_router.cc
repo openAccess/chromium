@@ -6,17 +6,19 @@
 
 #include <utility>
 
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "components/tab_groups/tab_group_color.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "extensions/browser/event_router.h"
+#include "extensions/buildflags/buildflags.h"
+#include "extensions/common/event_args.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/scoped_multi_source_observation.h"
@@ -27,6 +29,8 @@
 #else
 #include "chrome/browser/ui/browser_tab_strip_tracker.h"
 #include "chrome/browser/ui/browser_tab_strip_tracker_delegate.h"
+#include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -108,8 +112,7 @@ class TabGroupsEventRouter::PlatformDelegate : public TabModelListObserver,
     owner_->DispatchGroupRemoved(group_id);
   }
 
-  void OnTabGroupMoved(tab_groups::TabGroupId group_id,
-                       int old_index) override {
+  void OnTabGroupMoved(tab_groups::TabGroupId group_id) override {
     owner_->DispatchGroupMoved(group_id);
   }
 
@@ -208,9 +211,10 @@ void TabGroupsEventRouter::DispatchGroupCreated(tab_groups::TabGroupId group) {
     // May be nullopt in tests.
     return;
   }
-  auto args(api::tab_groups::OnCreated::Create(*tab_group));
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::tab_groups::OnCreated::Create(*tab_group));
   DispatchEvent(events::TAB_GROUPS_ON_CREATED,
-                api::tab_groups::OnCreated::kEventName, std::move(args));
+                api::tab_groups::OnCreated::kEventName, std::move(event_args));
 }
 
 void TabGroupsEventRouter::DispatchGroupRemoved(tab_groups::TabGroupId group) {
@@ -220,9 +224,10 @@ void TabGroupsEventRouter::DispatchGroupRemoved(tab_groups::TabGroupId group) {
     // May be nullopt in tests.
     return;
   }
-  auto args(api::tab_groups::OnRemoved::Create(*tab_group));
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::tab_groups::OnRemoved::Create(*tab_group));
   DispatchEvent(events::TAB_GROUPS_ON_REMOVED,
-                api::tab_groups::OnRemoved::kEventName, std::move(args));
+                api::tab_groups::OnRemoved::kEventName, std::move(event_args));
 }
 
 void TabGroupsEventRouter::DispatchGroupMoved(tab_groups::TabGroupId group) {
@@ -232,9 +237,10 @@ void TabGroupsEventRouter::DispatchGroupMoved(tab_groups::TabGroupId group) {
     // May be nullopt in tests.
     return;
   }
-  auto args(api::tab_groups::OnMoved::Create(*tab_group));
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::tab_groups::OnMoved::Create(*tab_group));
   DispatchEvent(events::TAB_GROUPS_ON_MOVED,
-                api::tab_groups::OnMoved::kEventName, std::move(args));
+                api::tab_groups::OnMoved::kEventName, std::move(event_args));
 }
 
 void TabGroupsEventRouter::DispatchGroupUpdated(tab_groups::TabGroupId group) {
@@ -244,14 +250,15 @@ void TabGroupsEventRouter::DispatchGroupUpdated(tab_groups::TabGroupId group) {
     // May be nullopt in tests.
     return;
   }
-  auto args(api::tab_groups::OnUpdated::Create(*tab_group));
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::tab_groups::OnUpdated::Create(*tab_group));
   DispatchEvent(events::TAB_GROUPS_ON_UPDATED,
-                api::tab_groups::OnUpdated::kEventName, std::move(args));
+                api::tab_groups::OnUpdated::kEventName, std::move(event_args));
 }
 
 void TabGroupsEventRouter::DispatchEvent(events::HistogramValue histogram_value,
                                          const std::string& event_name,
-                                         base::ListValue args) {
+                                         scoped_refptr<const EventArgs> args) {
   // |event_router_| can be null in tests.
   if (!event_router_) {
     return;

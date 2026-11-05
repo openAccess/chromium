@@ -24,6 +24,7 @@ UnmaskDetails& UnmaskDetails::operator=(const UnmaskDetails& other) {
     fido_request_options = other.fido_request_options.Clone();
   }
   fido_eligible_card_ids = other.fido_eligible_card_ids;
+  verified_instrument_ids = other.verified_instrument_ids;
   return *this;
 }
 
@@ -307,6 +308,21 @@ GetDetailsForUpdateBnplPaymentInstrumentRequestDetails::operator=(
 GetDetailsForUpdateBnplPaymentInstrumentRequestDetails::
     ~GetDetailsForUpdateBnplPaymentInstrumentRequestDetails() = default;
 
+GetDetailsForUpdateCardRequestDetails::GetDetailsForUpdateCardRequestDetails() =
+    default;
+GetDetailsForUpdateCardRequestDetails::GetDetailsForUpdateCardRequestDetails(
+    const GetDetailsForUpdateCardRequestDetails& other) = default;
+GetDetailsForUpdateCardRequestDetails&
+GetDetailsForUpdateCardRequestDetails::operator=(
+    const GetDetailsForUpdateCardRequestDetails& other) = default;
+GetDetailsForUpdateCardRequestDetails::GetDetailsForUpdateCardRequestDetails(
+    GetDetailsForUpdateCardRequestDetails&&) = default;
+GetDetailsForUpdateCardRequestDetails&
+GetDetailsForUpdateCardRequestDetails::operator=(
+    GetDetailsForUpdateCardRequestDetails&&) = default;
+GetDetailsForUpdateCardRequestDetails::
+    ~GetDetailsForUpdateCardRequestDetails() = default;
+
 UpdateBnplPaymentInstrumentRequestDetails::
     UpdateBnplPaymentInstrumentRequestDetails() = default;
 UpdateBnplPaymentInstrumentRequestDetails::
@@ -323,6 +339,17 @@ UpdateBnplPaymentInstrumentRequestDetails::operator=(
     UpdateBnplPaymentInstrumentRequestDetails&&) = default;
 UpdateBnplPaymentInstrumentRequestDetails::
     ~UpdateBnplPaymentInstrumentRequestDetails() = default;
+
+UpdateCardRequestDetails::UpdateCardRequestDetails() = default;
+UpdateCardRequestDetails::UpdateCardRequestDetails(
+    const UpdateCardRequestDetails&) = default;
+UpdateCardRequestDetails& UpdateCardRequestDetails::operator=(
+    const UpdateCardRequestDetails& other) = default;
+UpdateCardRequestDetails::UpdateCardRequestDetails(UpdateCardRequestDetails&&) =
+    default;
+UpdateCardRequestDetails& UpdateCardRequestDetails::operator=(
+    UpdateCardRequestDetails&&) = default;
+UpdateCardRequestDetails::~UpdateCardRequestDetails() = default;
 
 GetWalletReminderNoticeRequestDetails::GetWalletReminderNoticeRequestDetails() =
     default;
@@ -370,5 +397,27 @@ RecordLegalReminderAcknowledgmentRequestDetails::operator=(
     RecordLegalReminderAcknowledgmentRequestDetails&&) = default;
 RecordLegalReminderAcknowledgmentRequestDetails::
     ~RecordLegalReminderAcknowledgmentRequestDetails() = default;
+
+GetDataForAgentRequestDetails::GetDataForAgentRequestDetails() = default;
+GetDataForAgentRequestDetails::GetDataForAgentRequestDetails(
+    const GetDataForAgentRequestDetails& other) = default;
+GetDataForAgentRequestDetails& GetDataForAgentRequestDetails::operator=(
+    const GetDataForAgentRequestDetails& other) = default;
+GetDataForAgentRequestDetails::GetDataForAgentRequestDetails(
+    GetDataForAgentRequestDetails&&) = default;
+GetDataForAgentRequestDetails& GetDataForAgentRequestDetails::operator=(
+    GetDataForAgentRequestDetails&&) = default;
+GetDataForAgentRequestDetails::~GetDataForAgentRequestDetails() = default;
+
+GetDataForAgentResponseDetails::GetDataForAgentResponseDetails() = default;
+GetDataForAgentResponseDetails::GetDataForAgentResponseDetails(
+    const GetDataForAgentResponseDetails& other) = default;
+GetDataForAgentResponseDetails& GetDataForAgentResponseDetails::operator=(
+    const GetDataForAgentResponseDetails& other) = default;
+GetDataForAgentResponseDetails::GetDataForAgentResponseDetails(
+    GetDataForAgentResponseDetails&&) = default;
+GetDataForAgentResponseDetails& GetDataForAgentResponseDetails::operator=(
+    GetDataForAgentResponseDetails&&) = default;
+GetDataForAgentResponseDetails::~GetDataForAgentResponseDetails() = default;
 
 }  // namespace autofill::payments

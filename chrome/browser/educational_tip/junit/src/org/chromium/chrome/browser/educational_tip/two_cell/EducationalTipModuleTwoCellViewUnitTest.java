@@ -15,7 +15,6 @@ import android.widget.ImageView;
 import android.widget.TextView;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -25,14 +24,12 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chrome.browser.educational_tip.R;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class EducationalTipModuleTwoCellViewUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -54,7 +51,6 @@ public class EducationalTipModuleTwoCellViewUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetModuleTitle() {
         TextView moduleTitleView = mModuleView.findViewById(R.id.educational_tip_module_title);
         String testTitle = "Test Module Title";
@@ -63,7 +59,6 @@ public class EducationalTipModuleTwoCellViewUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetOnClickListenerSeeMore() {
         TextView seeMoreTextView = mModuleView.findViewById(R.id.see_more);
         mModuleView.setSeeMoreOnClickListener(mSeeMoreClickListener);
@@ -74,7 +69,6 @@ public class EducationalTipModuleTwoCellViewUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetItem1() {
         TextView item1TitleView = mModuleView.findViewById(R.id.two_cell_item_1_title);
         TextView item1DescriptionView = mModuleView.findViewById(R.id.two_cell_item_1_description);
@@ -102,7 +96,6 @@ public class EducationalTipModuleTwoCellViewUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetItem2() {
         TextView item2TitleView = mModuleView.findViewById(R.id.two_cell_item_2_title);
         TextView item2DescriptionView = mModuleView.findViewById(R.id.two_cell_item_2_description);
@@ -130,7 +123,6 @@ public class EducationalTipModuleTwoCellViewUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetItem1Completed_True() {
         TextView item1TitleView = mModuleView.findViewById(R.id.two_cell_item_1_title);
         TextView item1DescriptionView = mModuleView.findViewById(R.id.two_cell_item_1_description);
@@ -148,7 +140,6 @@ public class EducationalTipModuleTwoCellViewUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetItem2Completed_True() {
         TextView item2TitleView = mModuleView.findViewById(R.id.two_cell_item_2_title);
         TextView item2DescriptionView = mModuleView.findViewById(R.id.two_cell_item_2_description);
@@ -166,7 +157,6 @@ public class EducationalTipModuleTwoCellViewUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetItem1Completed_DoesNotAffectItem2() {
         TextView item2TitleView = mModuleView.findViewById(R.id.two_cell_item_2_title);
         TextView item2DescriptionView = mModuleView.findViewById(R.id.two_cell_item_2_description);

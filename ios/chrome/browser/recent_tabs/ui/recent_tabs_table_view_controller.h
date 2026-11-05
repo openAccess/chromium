@@ -5,11 +5,10 @@
 #ifndef IOS_CHROME_BROWSER_RECENT_TABS_UI_RECENT_TABS_TABLE_VIEW_CONTROLLER_H_
 #define IOS_CHROME_BROWSER_RECENT_TABS_UI_RECENT_TABS_TABLE_VIEW_CONTROLLER_H_
 
+#import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_consumer.h"
 #import "ios/chrome/browser/recent_tabs/ui/recent_tabs_consumer.h"
 #import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_controller.h"
-#include "ui/base/window_open_disposition.h"
 
-class Browser;
 enum class UrlLoadStrategy;
 
 namespace synced_sessions {
@@ -18,19 +17,15 @@ struct DistantSession;
 
 @protocol RecentTabsMenuProvider;
 @protocol RecentTabsPresentationDelegate;
-@protocol SceneCommands;
-@protocol SettingsCommands;
+@protocol SigninPromoViewDelegate;
 @protocol TableViewFaviconDataSource;
 
 @interface RecentTabsTableViewController
     : LegacyChromeTableViewController <RecentTabsConsumer,
+                                       SigninPromoViewConsumer,
                                        UIAdaptivePresentationControllerDelegate>
-// The Browser for the tabs being restored. It's an error to pass a nullptr
-// Browser.
-@property(nonatomic, assign) Browser* browser;
-// The command handlers used by this ViewController.
-@property(nonatomic, weak) id<SceneCommands> sceneHandler;
-@property(nonatomic, weak) id<SettingsCommands> settingsHandler;
+// Delegate for the signin-promo subview.
+@property(nonatomic, weak) id<SigninPromoViewDelegate> signinPromoViewDelegate;
 
 // Opaque instructions on how to open urls.
 @property(nonatomic) UrlLoadStrategy loadStrategy;

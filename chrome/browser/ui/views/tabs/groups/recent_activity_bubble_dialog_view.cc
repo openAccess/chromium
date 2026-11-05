@@ -29,6 +29,7 @@
 #include "chrome/browser/ui/views/data_sharing/data_sharing_bubble_controller.h"
 #include "chrome/browser/ui/views/data_sharing/data_sharing_utils.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "chrome/browser/ui/views/tabs/groups/tab_group_editor_bubble_view.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/collaboration/public/collaboration_flow_entry_point.h"
@@ -43,10 +44,12 @@
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/signin/public/base/avatar_icon_util.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/canvas.h"
@@ -55,12 +58,14 @@
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/image_button_factory.h"
 #include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/menu/menu_types.h"
 #include "ui/views/controls/styled_label.h"
+#include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/style/platform_style.h"
@@ -235,8 +240,9 @@ void RecentActivityBubbleDialogView::CreateTabActivity() {
       ChromeLayoutProvider::Get()->GetDistanceMetric(
           DISTANCE_RECENT_ACTIVITY_CONTAINER_VERTICAL_PADDING);
   // Border radius for the container.
-  const int container_radius = ChromeLayoutProvider::Get()->GetDistanceMetric(
-      DISTANCE_RECENT_ACTIVITY_CONTAINER_RADIUS);
+  const int container_radius =
+      ChromeLayoutProvider::Get()->GetCornerRadiusMetric(
+          kRecentActivityContainerRadius);
 
   // Tab activity container label.
   auto* label = AddChildView(std::make_unique<views::Label>(
@@ -296,8 +302,9 @@ void RecentActivityBubbleDialogView::CreateGroupActivity() {
       ChromeLayoutProvider::Get()->GetDistanceMetric(
           DISTANCE_RECENT_ACTIVITY_CONTAINER_VERTICAL_PADDING);
   // Border radius for the container.
-  const int container_radius = ChromeLayoutProvider::Get()->GetDistanceMetric(
-      DISTANCE_RECENT_ACTIVITY_CONTAINER_RADIUS);
+  const int container_radius =
+      ChromeLayoutProvider::Get()->GetCornerRadiusMetric(
+          kRecentActivityContainerRadius);
 
   // Group activity container label.
   auto* label = AddChildView(std::make_unique<views::Label>(
@@ -612,7 +619,7 @@ void RecentActivityRowView::ReopenTab() {
           group_id.value())) {
     tab_groups::SavedTabGroupUtils::OpenTabInBrowser(
         GURL(tab_url.value()), browser, browser->GetProfile(),
-        WindowOpenDisposition::NEW_BACKGROUND_TAB, std::nullopt,
+        ui::mojom::WindowOpenDisposition::kNewBackgroundTab, std::nullopt,
         group_id.value());
   }
 }
@@ -666,8 +673,8 @@ RecentActivityRowImageView::RecentActivityRowImageView(ActivityLogItem item,
   const int avatar_size = ChromeLayoutProvider::Get()->GetDistanceMetric(
       DISTANCE_RECENT_ACTIVITY_AVATAR_SIZE);
   const int favicon_container_radius =
-      ChromeLayoutProvider::Get()->GetDistanceMetric(
-          DISTANCE_RECENT_ACTIVITY_FAVICON_CONTAINER_RADIUS);
+      ChromeLayoutProvider::Get()->GetCornerRadiusMetric(
+          kRecentActivityFaviconContainerRadius);
   const int favicon_container_offset =
       ChromeLayoutProvider::Get()->GetDistanceMetric(
           DISTANCE_RECENT_ACTIVITY_FAVICON_CONTAINER_OFFSET_FROM_AVATAR);
@@ -794,8 +801,8 @@ void RecentActivityRowImageView::FetchFavicon() {
 void RecentActivityRowImageView::SetFavicon(
     const favicon_base::FaviconImageResult& favicon) {
   const int favicon_container_radius =
-      ChromeLayoutProvider::Get()->GetDistanceMetric(
-          DISTANCE_RECENT_ACTIVITY_FAVICON_CONTAINER_RADIUS);
+      ChromeLayoutProvider::Get()->GetCornerRadiusMetric(
+          kRecentActivityFaviconContainerRadius);
   const int favicon_container_padding =
       ChromeLayoutProvider::Get()->GetDistanceMetric(
           DISTANCE_RECENT_ACTIVITY_FAVICON_CONTAINER_PADDING);
@@ -816,8 +823,8 @@ void RecentActivityRowImageView::SetFavicon(
 void RecentActivityRowImageView::PaintFavicon(gfx::Canvas* canvas,
                                               const gfx::Rect& avatar_bounds) {
   const int favicon_container_radius =
-      ChromeLayoutProvider::Get()->GetDistanceMetric(
-          DISTANCE_RECENT_ACTIVITY_FAVICON_CONTAINER_RADIUS);
+      ChromeLayoutProvider::Get()->GetCornerRadiusMetric(
+          kRecentActivityFaviconContainerRadius);
   const int favicon_container_border_width =
       ChromeLayoutProvider::Get()->GetDistanceMetric(
           DISTANCE_RECENT_ACTIVITY_FAVICON_CONTAINER_BORDER_WIDTH);
@@ -925,7 +932,8 @@ RecentActivityBubbleCoordinator* RecentActivityBubbleCoordinator::From(
 
 void RecentActivityBubbleCoordinator::OnWidgetDestroying(
     views::Widget* widget) {
-  DCHECK(bubble_widget_observation_.IsObservingSource(widget));
+  CHECK(bubble_widget_observation_.IsObservingSource(widget),
+        base::NotFatalUntil::M162);
   bubble_widget_observation_.Reset();
 }
 
@@ -974,7 +982,7 @@ bool RecentActivityBubbleCoordinator::IsShowing() {
 
 void RecentActivityBubbleCoordinator::ShowCommon(
     std::unique_ptr<RecentActivityBubbleDialogView> bubble) {
-  DCHECK(!tracker_.view());
+  CHECK(!tracker_.view(), base::NotFatalUntil::M162);
   tracker_.SetView(bubble.get());
   auto* widget =
       RecentActivityBubbleDialogView::CreateBubble(std::move(bubble));

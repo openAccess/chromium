@@ -38,7 +38,6 @@
 #include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/clipboard/clipboard_util_mac.h"
 #include "ui/base/clipboard/custom_data_helper.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/point.h"
 
 using blink::DragOperationsMask;
@@ -242,6 +241,8 @@ void OnWebContentsViewDelegatePerformingDropComplete(
   if (_webContents->ShouldIgnoreInputEvents()) {
     return NSDragOperationNone;
   }
+
+  _canceled = false;
 
   // Save off the RVH so we can tell if it changes during a drag. If it does,
   // we need to send a new enter message in draggingUpdated:.
@@ -505,10 +506,12 @@ void OnWebContentsViewDelegatePerformingDropComplete(
       content::RenderWidgetHostViewBase* currentDragView =
           static_cast<content::RenderWidgetHostViewBase*>(
               _currentRWHForDrag->GetView());
-      rootView->TransformPointToCoordSpaceForView(
-          transformedLeavePoint, currentDragView, &transformedLeavePoint);
-      rootView->TransformPointToCoordSpaceForView(
-          transformedScreenPoint, currentDragView, &transformedScreenPoint);
+      if (rootView && currentDragView) {
+        rootView->TransformPointToCoordSpaceForView(
+            transformedLeavePoint, currentDragView, &transformedLeavePoint);
+        rootView->TransformPointToCoordSpaceForView(
+            transformedScreenPoint, currentDragView, &transformedScreenPoint);
+      }
       _currentRWHForDrag->DragTargetDragLeave(transformedLeavePoint,
                                               transformedScreenPoint);
     }
@@ -736,6 +739,10 @@ void OnWebContentsViewDelegatePerformingDropComplete(
   _dragSecurityInfo.OnDragInitiated(rwhi, dropData);
 }
 
+- (bool)didInitiateDrag {
+  return _dragSecurityInfo.did_initiate();
+}
+
 - (void)endDrag:(base::OnceClosure)closure {
   _dragSecurityInfo.OnDragEnded();
 
@@ -774,6 +781,10 @@ void OnWebContentsViewDelegatePerformingDropComplete(
   _dropInProgress = true;
 }
 
+- (bool)isDragCanceledForTesting {
+  return _canceled || !_pendingDragEnteredInfo;
+}
+
 @end
 
 namespace content {
@@ -789,6 +800,13 @@ DropData PopulateDropDataFromPasteboard(NSPasteboard* pboard) {
       [types containsObject:ui::kUTTypeChromiumRendererInitiatedDrag];
   drop_data.is_from_privileged =
       [types containsObject:ui::kUTTypeChromiumPrivilegedInitiatedDrag];
+  if ([types containsObject:ui::kUTTypeChromiumDragId]) {
+    NSString* drag_id_str = [pboard stringForType:ui::kUTTypeChromiumDragId];
+    if (drag_id_str) {
+      drop_data.drag_id = base::UnguessableToken::DeserializeFromString(
+          base::SysNSStringToUTF8(drag_id_str));
+    }
+  }
 
   // Get URL if possible. To avoid exposing file system paths to web content,
   // filenames in the drag are not converted to file URLs.

@@ -97,6 +97,7 @@ component("native_theme") {
   if (is_win) {
     sources += [
       "caption_style_win.cc",
+      "caption_style_win.h",
       "native_theme_win.cc",
       "native_theme_win.h",
       "os_settings_provider_win.cc",
@@ -174,6 +175,7 @@ test("native_theme_unittests") {
 
   if (is_win || is_linux) {
     sources += [ "native_theme_fluent_unittest.cc" ]
+    deps += [ "//skia:test_fonts" ]
   }
 
   if (is_android) {

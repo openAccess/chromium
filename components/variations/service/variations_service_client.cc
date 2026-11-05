@@ -122,4 +122,15 @@ bool VariationsServiceClient::EnableSignatureVerificationOnLoad() {
 #endif
 }
 
+metrics::MetricsService::RotateUmaLogResult
+VariationsServiceClient::RotateUmaLogForRuntimeMutability(
+    metrics::MetricsService::RuntimeMutabilityPassKey) {
+  return metrics::MetricsService::RotateUmaLogResult::kNotSupported;
+}
+
+bool VariationsServiceClient::ShouldDelayRuntimeMutability(
+    metrics::MetricsService::RuntimeMutabilityPassKey) {
+  return false;
+}
+
 }  // namespace variations

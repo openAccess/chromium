@@ -15,7 +15,6 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment.AutofillSettingsReferrer;
 import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsFragment;
 import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsReferrer;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
@@ -27,12 +26,10 @@ public class SettingsNavigationHelper {
      * Tries showing the Autofill and passwords settings page.
      *
      * @param context The {@link Context} required to start the settings page. Noop without it.
-     * @return True if the context is valid, feature enabled and `startSettings` was called.
+     * @return True if the context is valid and `startSettings` was called.
      */
     public static boolean showAutofillAndPasswordsSettings(@Nullable Context context) {
-        if (context == null
-                || !ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)) {
+        if (context == null) {
             return false;
         }
 
@@ -41,7 +38,7 @@ public class SettingsNavigationHelper {
         fragmentArgs.putInt(
                 AutofillAndPasswordsFragment.EXTRA_REFERRER,
                 AutofillSettingsReferrer.SETTINGS_MENU);
-        SettingsNavigationFactory.createSettingsNavigation()
+        SettingsNavigationFactory.createSettingsNavigation(context)
                 .startSettings(context, AutofillAndPasswordsFragment.class, fragmentArgs);
         return true;
     }
@@ -56,7 +53,7 @@ public class SettingsNavigationHelper {
         if (context == null) {
             return false;
         }
-        SettingsNavigationFactory.createSettingsNavigation()
+        SettingsNavigationFactory.createSettingsNavigation(context)
                 .startSettings(
                         context,
                         AutofillIdentityDocsFragment.class,
@@ -75,7 +72,7 @@ public class SettingsNavigationHelper {
         if (context == null) {
             return false;
         }
-        SettingsNavigationFactory.createSettingsNavigation()
+        SettingsNavigationFactory.createSettingsNavigation(context)
                 .startSettings(
                         context,
                         AutofillShoppingFragment.class,
@@ -90,9 +87,8 @@ public class SettingsNavigationHelper {
      * @param context The {@link Context} required to start the settings page. Noop without it.
      * @return True if the context is valid and `startSettings` was called.
      */
-    public static boolean showAutofillPersonalContextSettings(
-            @Nullable Context context, @AutofillOptionsReferrer int referrer) {
-        return PersonalContextSettingsLauncher.showPersonalContextSettings(context, referrer);
+    public static boolean showAutofillPersonalContextSettings(@Nullable Context context) {
+        return PersonalContextSettingsLauncher.showPersonalContextSettings(context);
     }
 
     /**
@@ -105,7 +101,7 @@ public class SettingsNavigationHelper {
         if (context == null) {
             return false;
         }
-        SettingsNavigationFactory.createSettingsNavigation()
+        SettingsNavigationFactory.createSettingsNavigation(context)
                 .startSettings(
                         context,
                         AutofillTravelFragment.class,
@@ -124,7 +120,7 @@ public class SettingsNavigationHelper {
         if (context == null) {
             return false;
         }
-        SettingsNavigationFactory.createSettingsNavigation()
+        SettingsNavigationFactory.createSettingsNavigation(context)
                 .startSettings(
                         context,
                         AutofillOptionsFragment.class,
@@ -158,7 +154,7 @@ public class SettingsNavigationHelper {
         }
         RecordUserAction.record("AutofillAddressesViewed");
 
-        SettingsNavigationFactory.createSettingsNavigation()
+        SettingsNavigationFactory.createSettingsNavigation(context)
                 .startSettings(
                         context,
                         AutofillProfilesFragment.class,
@@ -192,7 +188,7 @@ public class SettingsNavigationHelper {
         }
         RecordUserAction.record("AutofillCreditCardsViewed");
 
-        SettingsNavigationFactory.createSettingsNavigation()
+        SettingsNavigationFactory.createSettingsNavigation(context)
                 .startSettings(
                         context,
                         AutofillPaymentMethodsFragment.class,
@@ -237,11 +233,10 @@ public class SettingsNavigationHelper {
     }
 
     @CalledByNative
-    private static void showAutofillPersonalContextSettings(
-            WebContents webContents, @AutofillOptionsReferrer int referrer) {
+    private static void showAutofillPersonalContextSettings(WebContents webContents) {
         WindowAndroid windowAndroid = webContents.getTopLevelNativeWindow();
         if (windowAndroid == null) return;
-        showAutofillPersonalContextSettings(windowAndroid.getActivity().get(), referrer);
+        showAutofillPersonalContextSettings(windowAndroid.getActivity().get());
     }
 
     @CalledByNative

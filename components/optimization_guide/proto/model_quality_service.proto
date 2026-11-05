@@ -35,10 +35,12 @@ import "components/optimization_guide/proto/features/password_change_submission.
 import "components/optimization_guide/proto/features/product_specifications.proto";
 import "components/optimization_guide/proto/features/prompt_api.proto";
 import "components/optimization_guide/proto/features/proofreader_api.proto";
+import "components/optimization_guide/proto/features/quick_answers.proto";
 import "components/optimization_guide/proto/features/read_aloud_generate_text.proto";
 import "components/optimization_guide/proto/features/read_aloud_synthesize.proto";
 import "components/optimization_guide/proto/features/scam_detection.proto";
 import "components/optimization_guide/proto/features/skills.proto";
+import "components/optimization_guide/proto/features/smart_selection_suggestions.proto";
 import "components/optimization_guide/proto/features/summarize.proto";
 import "components/optimization_guide/proto/features/updater_chat.proto";
 import "components/optimization_guide/proto/features/walletable_pass_extraction.proto";
@@ -147,6 +149,10 @@ message LogAiDataRequest {
     ReadAloudSynthesizeLoggingData read_aloud_synthesize = 46;
 
     ContextHubLoggingData context_hub = 47;
+
+    SmartSelectionSuggestionsLoggingData smart_selection_suggestions = 48;
+
+    QuickAnswersLoggingData quick_answers = 49;
 
     DefaultLoggingData default = 1000;
   }

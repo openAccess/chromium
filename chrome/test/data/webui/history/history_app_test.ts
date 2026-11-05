@@ -5,15 +5,15 @@
 // clang-format off
 import 'chrome://history/history.js';
 
-import type {HistoryAppElement} from 'chrome://history/history.js';
-import {BrowserProxyImpl, CrRouter, historyEmbeddingsBrowserProxyFactory, HistoryEmbeddingsPageHandlerRemote, userEducationProxyFactory} from 'chrome://history/history.js';
+import type {HistoryAppElement, HistoryFilterChipsElement} from 'chrome://history/history.js';
+import {BrowserProxyImpl, CrRouter} from 'chrome://history/history.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {eventToPromise, isChildVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {TestUserEducationMixedTrustHandler} from 'chrome://webui-test/test_user_education_mixed_trust_handler.js';
 import {COLORS_CSS_SELECTOR} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
+import {TimePeriodOptionId} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
 // <if expr="not is_chromeos">
+import {AccessPoint} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {HistorySignInState, SyncState} from 'chrome://history/history.js';
 
@@ -26,39 +26,12 @@ import {TestHistoryBrowserProxy} from './test_browser_proxy.js';
 suite('HistoryAppTest', function() {
   let element: HistoryAppElement;
   let browserProxy: TestHistoryBrowserProxy;
-  let embeddingsHandler: TestMock<HistoryEmbeddingsPageHandlerRemote>&
-      HistoryEmbeddingsPageHandlerRemote;
-  let userEducationHandler: TestUserEducationMixedTrustHandler;
-
-  // Force cr-history-embeddings to be in the DOM for testing.
-  function forceHistoryEmbeddingsElement() {
-    loadTimeData.overrideValues({historyEmbeddingsSearchMinimumWordCount: 0});
-    element.dispatchEvent(new CustomEvent(
-        'change-query',
-        {bubbles: true, composed: true, detail: {search: 'some fake input'}}));
-    return microtasksFinished();
-  }
 
   setup(() => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
-    loadTimeData.overrideValues({
-      historyEmbeddingsSearchMinimumWordCount: 2,
-      enableHistoryEmbeddings: true,
-      maybeShowEmbeddingsIph: false,
-    });
-
     browserProxy = new TestHistoryBrowserProxy();
     BrowserProxyImpl.setInstance(browserProxy);
-    userEducationHandler = new TestUserEducationMixedTrustHandler();
-    userEducationProxyFactory.setInstance({handler: userEducationHandler});
-
-    embeddingsHandler = TestMock.fromClass(HistoryEmbeddingsPageHandlerRemote);
-    const {instance} =
-        historyEmbeddingsBrowserProxyFactory.createForTest(embeddingsHandler);
-    historyEmbeddingsBrowserProxyFactory.setInstance(instance);
-    embeddingsHandler.setResultFor(
-        'search', Promise.resolve({result: {items: []}}));
 
     // Some of the tests below assume the query state is fully reset to empty
     // between tests.
@@ -87,307 +60,12 @@ suite('HistoryAppTest', function() {
         element.getScrollTargetForTesting());
   });
 
-  test('ShowsHistoryEmbeddings', async () => {
-    // By default, embeddings should not even be in the DOM.
-    assertFalse(!!element.shadowRoot.querySelector('cr-history-embeddings'));
-
-    element.dispatchEvent(new CustomEvent(
-        'change-query',
-        {bubbles: true, composed: true, detail: {search: 'one'}}));
-    await microtasksFinished();
-    assertFalse(!!element.shadowRoot.querySelector('cr-history-embeddings'));
-
-    element.dispatchEvent(new CustomEvent(
-        'change-query',
-        {bubbles: true, composed: true, detail: {search: 'two words'}}));
-    await microtasksFinished();
-    assertTrue(!!element.shadowRoot.querySelector('cr-history-embeddings'));
-
-    element.dispatchEvent(new CustomEvent(
-        'change-query',
-        {bubbles: true, composed: true, detail: {search: 'one'}}));
-    await microtasksFinished();
-    assertFalse(!!element.shadowRoot.querySelector('cr-history-embeddings'));
+  // <if expr="not is_android">
+  test('AndroidStylesNotApplied', () => {
+    assertFalse(
+        getComputedStyle(element).fontFamily.includes('Google Sans Text'));
   });
-
-  test('SetsScrollOffset', async () => {
-    function resizeAndWait(height: number) {
-      const historyEmbeddingsContainer =
-          element.shadowRoot.querySelector<HTMLElement>(
-              '#historyEmbeddingsContainer');
-      assertTrue(!!historyEmbeddingsContainer);
-
-      return new Promise<void>((resolve) => {
-        const observer = new ResizeObserver(() => {
-          if (historyEmbeddingsContainer.offsetHeight === height) {
-            resolve();
-            observer.unobserve(historyEmbeddingsContainer);
-          }
-        });
-        observer.observe(historyEmbeddingsContainer);
-        historyEmbeddingsContainer.style.height = `${height}px`;
-      });
-    }
-
-    await resizeAndWait(700);
-    await microtasksFinished();
-    assertEquals(700, element.$.history.scrollOffset);
-
-    await resizeAndWait(400);
-    await microtasksFinished();
-    assertEquals(400, element.$.history.scrollOffset);
-  });
-
-  test('QueriesMoreFromSiteFromHistoryEmbeddings', async () => {
-    element.dispatchEvent(new CustomEvent(
-        'change-query',
-        {bubbles: true, composed: true, detail: {search: 'two words'}}));
-    await microtasksFinished();
-    const historyEmbeddings =
-        element.shadowRoot.querySelector('cr-history-embeddings');
-    assertTrue(!!historyEmbeddings);
-
-    const changeQueryEventPromise = eventToPromise('change-query', element);
-    historyEmbeddings.dispatchEvent(new CustomEvent('more-from-site-click', {
-      detail: {
-        title: 'Google',
-        url: 'http://google.com',
-        urlForDisplay: 'google.com',
-        relativeTime: '2 hours ago',
-        sourcePassage: 'Google description',
-        lastUrlVisitTimestamp: 1000,
-      },
-    }));
-    const changeQueryEvent = await changeQueryEventPromise;
-    assertEquals('host:google.com', changeQueryEvent.detail.search);
-  });
-
-  test('RemovesItemFromHistoryEmbeddings', async () => {
-    element.dispatchEvent(new CustomEvent(
-        'change-query',
-        {bubbles: true, composed: true, detail: {search: 'two words'}}));
-    await microtasksFinished();
-    const historyEmbeddings =
-        element.shadowRoot.querySelector('cr-history-embeddings');
-    assertTrue(!!historyEmbeddings);
-
-    historyEmbeddings.dispatchEvent(new CustomEvent('remove-item-click', {
-      detail: {
-        title: 'Google',
-        url: 'http://google.com',
-        urlForDisplay: 'google.com',
-        relativeTime: '2 hours ago',
-        sourcePassage: 'Google description',
-        lastUrlVisitTimestamp: 1000,
-      },
-    }));
-    const removeVisitsArg =
-        await browserProxy.handler.whenCalled('removeVisits');
-    assertEquals(1, removeVisitsArg.length);
-    assertEquals('http://google.com', removeVisitsArg[0].url);
-    assertEquals(1, removeVisitsArg[0].timestamps.length);
-    assertEquals(1000, removeVisitsArg[0].timestamps[0]);
-  });
-
-  test('ChangesQueryStateWithFilterChips', async () => {
-    const filterChips =
-        element.shadowRoot.querySelector('cr-history-embeddings-filter-chips')!;
-    const changeQueryEventPromise = eventToPromise('change-query', element);
-    filterChips.dispatchEvent(new CustomEvent('selected-suggestion-changed', {
-      detail: {
-        value: {
-          timeRangeStart: new Date('2011-01-01T00:00:00'),
-        },
-      },
-      composed: true,
-      bubbles: true,
-    }));
-    const changeQueryEvent = await changeQueryEventPromise;
-    assertEquals('', changeQueryEvent.detail.search);
-    assertEquals('2011-01-01', changeQueryEvent.detail.after);
-  });
-
-  test('UpdatesBindingsOnChangeQuery', async () => {
-    // Change query to a multi-word search term and an after date.
-    element.dispatchEvent(new CustomEvent('change-query', {
-      bubbles: true,
-      composed: true,
-      detail: {
-        search: 'two words',
-        after: '2022-04-02',
-      },
-    }));
-    await microtasksFinished();
-
-    const expectedDateObject = new Date('2022-04-02T00:00:00');
-
-    const filterChips =
-        element.shadowRoot.querySelector('cr-history-embeddings-filter-chips')!;
-    assertTrue(!!filterChips);
-    assertEquals(
-        expectedDateObject.getTime(), filterChips.timeRangeStart?.getTime());
-
-    const historyEmbeddings =
-        element.shadowRoot.querySelector('cr-history-embeddings');
-    assertTrue(!!historyEmbeddings);
-    const timeRangeStartObj = historyEmbeddings.timeRangeStart;
-    assertTrue(!!timeRangeStartObj);
-    assertEquals(expectedDateObject.getTime(), timeRangeStartObj.getTime());
-
-    // Update only the search term. Verify that the date object has not changed.
-    element.dispatchEvent(new CustomEvent('change-query', {
-      bubbles: true,
-      composed: true,
-      detail: {
-        search: 'two words updated',
-        after: '2022-04-02',
-      },
-    }));
-    await microtasksFinished();
-    assertEquals(timeRangeStartObj, historyEmbeddings.timeRangeStart);
-
-    // Clear the after date query.
-    element.dispatchEvent(new CustomEvent('change-query', {
-      bubbles: true,
-      composed: true,
-      detail: {
-        search: 'two words',
-      },
-    }));
-    await microtasksFinished();
-    assertEquals(undefined, historyEmbeddings.timeRangeStart);
-  });
-
-  test('UsesMinWordCount', async () => {
-    loadTimeData.overrideValues({historyEmbeddingsSearchMinimumWordCount: 4});
-    element.dispatchEvent(new CustomEvent('change-query', {
-      bubbles: true,
-      composed: true,
-      detail: {search: 'two words'},
-    }));
-    await microtasksFinished();
-
-    let historyEmbeddings =
-        element.shadowRoot.querySelector('cr-history-embeddings');
-    assertFalse(!!historyEmbeddings);
-
-    element.dispatchEvent(new CustomEvent('change-query', {
-      bubbles: true,
-      composed: true,
-      detail: {search: 'at least four words'},
-    }));
-    await microtasksFinished();
-    historyEmbeddings =
-        element.shadowRoot.querySelector('cr-history-embeddings');
-    assertTrue(!!historyEmbeddings);
-  });
-
-  test('CountsCharacters', async () => {
-    await forceHistoryEmbeddingsElement();
-
-    function dispatchNativeInput(
-        inputEvent: Partial<InputEvent>, inputValue: string) {
-      element.$.toolbar.dispatchEvent(new CustomEvent(
-          'search-term-native-before-input', {detail: {e: inputEvent}}));
-      element.$.toolbar.dispatchEvent(
-          new CustomEvent('search-term-native-input', {
-            detail: {e: inputEvent, inputValue},
-            composed: true,
-            bubbles: true,
-          }));
-      return microtasksFinished();
-    }
-
-    function getCount() {
-      const historyEmbeddingsElement =
-          element.shadowRoot.querySelector('cr-history-embeddings')!;
-      return historyEmbeddingsElement.numCharsForQuery;
-    }
-
-    await dispatchNativeInput({data: 'a'}, 'a');
-    assertEquals(1, getCount(), 'counts normal characters');
-    await dispatchNativeInput({data: 'b'}, 'ab');
-    await dispatchNativeInput({data: 'c'}, 'abc');
-    assertEquals(3, getCount(), 'counts additional characters');
-
-    await dispatchNativeInput({data: 'pasted text'}, 'pasted text');
-    assertEquals(1, getCount(), 'insert that replaces all text counts as 1');
-
-    await dispatchNativeInput({data: 'more text'}, 'pasted text more text');
-    assertEquals(
-        2, getCount(), 'insert that adds to existing input increments count');
-
-    await dispatchNativeInput({data: null}, 'pasted text more tex');
-    assertEquals(3, getCount(), 'deletion increments');
-
-    await dispatchNativeInput({data: null}, '');
-    assertEquals(0, getCount(), 'deletion of entire input resets counter');
-
-    element.$.toolbar.dispatchEvent(new CustomEvent('search-term-cleared'));
-    assertEquals(0, getCount(), 'resets on clear');
-  });
-
-  test('RegistersAndMaybeShowsPromo', async () => {
-    assertEquals(
-        0, userEducationHandler.getCallCount('maybeShowFeaturePromo'),
-        'promo is disabled in setup');
-
-    // Recreate the app with the promo enabled.
-    loadTimeData.overrideValues({maybeShowEmbeddingsIph: true});
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    element = document.createElement('history-app');
-    document.body.appendChild(element);
-    await microtasksFinished();
-    assertDeepEquals(
-        element.getSortedAnchorStatusesForTesting(),
-        [
-          ['kHistorySearchInputElementId', true],
-        ],
-    );
-    await userEducationHandler.whenCalled('maybeShowFeaturePromo');
-    assertEquals(
-        1, userEducationHandler.getCallCount('maybeShowFeaturePromo'),
-        'promo is disabled in setup');
-  });
-
-  test('PassesDisclaimerLinkClicksToEmbeddings', async () => {
-    await forceHistoryEmbeddingsElement();
-    const historyEmbeddingsElement =
-        element.shadowRoot.querySelector('cr-history-embeddings');
-    assertTrue(!!historyEmbeddingsElement);
-    assertFalse(historyEmbeddingsElement.forceSuppressLogging);
-    element.$.historyEmbeddingsDisclaimerLink.click();
-    await microtasksFinished();
-    assertTrue(historyEmbeddingsElement.forceSuppressLogging);
-  });
-
-  test('PassesDisclaimerLinkAuxClicksToEmbeddings', async () => {
-    await forceHistoryEmbeddingsElement();
-    const historyEmbeddingsElement =
-        element.shadowRoot.querySelector('cr-history-embeddings');
-    assertTrue(!!historyEmbeddingsElement);
-    assertFalse(historyEmbeddingsElement.forceSuppressLogging);
-    element.$.historyEmbeddingsDisclaimerLink.dispatchEvent(
-        new MouseEvent('auxclick'));
-    await microtasksFinished();
-    assertTrue(historyEmbeddingsElement.forceSuppressLogging);
-  });
-
-  test('SetsDateTimeFormatForEmbeddings', async () => {
-    await forceHistoryEmbeddingsElement();
-    const historyEmbeddingsElement =
-        element.shadowRoot.querySelector('cr-history-embeddings');
-    assertTrue(!!historyEmbeddingsElement);
-    assertFalse(historyEmbeddingsElement.showRelativeTimes);
-
-    element.$.router.selectedPage = 'grouped';
-    await microtasksFinished();
-    assertTrue(historyEmbeddingsElement.showRelativeTimes);
-
-    element.$.router.selectedPage = 'history';
-    await microtasksFinished();
-    assertFalse(historyEmbeddingsElement.showRelativeTimes);
-  });
+  // </if>
 });
 
 // <if expr="not is_chromeos">
@@ -407,6 +85,11 @@ suite('HistoryAppUnoPhase2FollowUpTest', () => {
         'shouldShowHistoryPageHistorySyncPromo', Promise.resolve({
           shouldShow: true,
         }));
+
+    // Some of the tests below assume the query state is fully reset to empty
+    // between tests.
+    window.history.replaceState({}, '', '/');
+    CrRouter.resetForTesting();
 
     element = document.createElement('history-app');
     document.body.appendChild(element);
@@ -474,6 +157,14 @@ suite('HistoryAppUnoPhase2FollowUpTest', () => {
     assertFalse(isChildVisible(
         historySyncPromo, '#sign-in-pending-not-syncing-history-description'));
     assertFalse(isChildVisible(historySyncPromo, '#verify-its-you-button'));
+
+    const button = historySyncPromo.shadowRoot.querySelector<HTMLElement>(
+        '#sync-history-button');
+    assertTrue(!!button);
+    button.click();
+    const accessPoint =
+        await browserProxy.handler.whenCalled('turnOnHistorySync');
+    assertEquals(AccessPoint.kHistoryPage, accessPoint);
   });
 
   test('HistorySyncPromoElementPendingSignInWithHistorySyncOn', async () => {
@@ -492,6 +183,10 @@ suite('HistoryAppUnoPhase2FollowUpTest', () => {
     assertTrue(isChildVisible(
         historySyncPromo, '#sign-in-pending-syncing-history-description'));
     assertTrue(isChildVisible(historySyncPromo, '#verify-its-you-button'));
+    assertEquals(1, browserProxy.getCallCount('recordSigninPendingOffered'));
+    assertEquals(
+        AccessPoint.kHistoryPage,
+        await browserProxy.whenCalled('recordSigninPendingOffered'));
 
     // The other states promo elements should not be visible.
     assertFalse(isChildVisible(historySyncPromo, '#signed-out-description'));
@@ -540,6 +235,11 @@ suite('HistoryAppUnoPhase2FollowUpTest', () => {
     // The promo elements for current state are shown correctly.
     assertTrue(
         isChildVisible(historySyncPromo, '#web-only-signed-in-description'));
+    assertEquals(
+        loadTimeData.getString('historySyncPromoBodyWebOnlySignedIn'),
+        historySyncPromo.shadowRoot
+            .querySelector<HTMLElement>(
+                '#web-only-signed-in-description')!.textContent.trim());
     assertTrue(isChildVisible(historySyncPromo, '#profile-info-row'));
     assertTrue(isChildVisible(historySyncPromo, '#sync-history-button'));
 
@@ -565,6 +265,11 @@ suite('HistoryAppUnoPhase2FollowUpTest', () => {
     // The promo elements for current state are shown correctly.
     assertTrue(isChildVisible(historySyncPromo, '#sync-history-illustration'));
     assertTrue(isChildVisible(historySyncPromo, '#signed-out-description'));
+    assertEquals(
+        loadTimeData.getString('historySyncPromoBodySignedOut'),
+        historySyncPromo.shadowRoot
+            .querySelector<HTMLElement>(
+                '#signed-out-description')!.textContent.trim());
     assertTrue(isChildVisible(historySyncPromo, '#sync-history-button'));
 
     // The other states promo elements should not be visible.
@@ -578,9 +283,10 @@ suite('HistoryAppUnoPhase2FollowUpTest', () => {
 
 suite('HistoryFilterChipsVisibility', function() {
   let element: HistoryAppElement;
+  let browserProxy: TestHistoryBrowserProxy;
 
   setup(() => {
-    const browserProxy = new TestHistoryBrowserProxy();
+    browserProxy = new TestHistoryBrowserProxy();
     BrowserProxyImpl.setInstance(browserProxy);
 
     // Some of the tests below assume the query state is fully reset to empty
@@ -599,40 +305,118 @@ suite('HistoryFilterChipsVisibility', function() {
     return microtasksFinished();
   }
 
-  test('FilterChipsVisible', async () => {
+  test('FilterChipsNotVisible_AllFiltersOff', async () => {
     loadTimeData.overrideValues({
-      isBrowsingHistoryActorIntegrationM3Enabled: true,
+      isGlicWebActuationAvailable: false,
+      isBrowsingHistoryFilterByDeviceEnabled: false,
+      isBrowsingHistoryFilterByTimePeriodEnabled: false,
+    });
+    browserProxy.handler.setResultFor(
+        'getSyncedDevicesForFiltering', Promise.resolve({
+          devices: [
+            {name: 'Device 1', isLocalDevice: true, ids: ['id1']},
+            {name: 'Device 2', isLocalDevice: false, ids: ['id2']},
+          ],
+        }));
+    // Re-create the element to pick up the new loadTimeData.
+    await createPage();
+    assertFalse(isChildVisible(element, '#historyFilterChips'));
+  });
+
+  test('FilterChipsVisible_ActorFilterOnly', async () => {
+    loadTimeData.overrideValues({
       isGlicWebActuationAvailable: true,
+      isBrowsingHistoryFilterByDeviceEnabled: false,
+      isBrowsingHistoryFilterByTimePeriodEnabled: false,
     });
     // Re-create the element to pick up the new loadTimeData.
     await createPage();
     assertTrue(isChildVisible(element, '#historyFilterChips'));
   });
 
-  test('FilterChipsNotVisible_M3Off', async () => {
+  test('FilterChipsVisible_DeviceFilterOnly', async () => {
     loadTimeData.overrideValues({
-      isBrowsingHistoryActorIntegrationM3Enabled: false,
-      isGlicWebActuationAvailable: true,
+      isGlicWebActuationAvailable: false,
+      isBrowsingHistoryFilterByDeviceEnabled: true,
+      isBrowsingHistoryFilterByTimePeriodEnabled: false,
     });
+    browserProxy.handler.setResultFor(
+        'getSyncedDevicesForFiltering', Promise.resolve({
+          devices: [
+            {name: 'Device 1', isLocalDevice: true, ids: ['id1']},
+            {name: 'Device 2', isLocalDevice: false, ids: ['id2']},
+          ],
+        }));
     // Re-create the element to pick up the new loadTimeData.
     await createPage();
+    assertEquals(
+        1, browserProxy.handler.getCallCount('getSyncedDevicesForFiltering'));
+    assertTrue(isChildVisible(element, '#historyFilterChips'));
+  });
+
+  test('FilterChipsNotVisible_SingleDevice', async () => {
+    loadTimeData.overrideValues({
+      isGlicWebActuationAvailable: false,
+      isBrowsingHistoryFilterByDeviceEnabled: true,
+      isBrowsingHistoryFilterByTimePeriodEnabled: false,
+    });
+    browserProxy.handler.setResultFor(
+        'getSyncedDevicesForFiltering', Promise.resolve({
+          devices: [{name: 'Device 1', isLocalDevice: true, ids: ['id1']}],
+        }));
+    // Re-create the element to pick up the new loadTimeData.
+    await createPage();
+    assertEquals(
+        1, browserProxy.handler.getCallCount('getSyncedDevicesForFiltering'));
     assertFalse(isChildVisible(element, '#historyFilterChips'));
   });
 
-  test('FilterChipsNotVisibile_GlicActuationOff', async () => {
+  test('FilterChipsVisible_TimePeriodFilterOnly', async () => {
     loadTimeData.overrideValues({
-      isBrowsingHistoryActorIntegrationM3Enabled: true,
       isGlicWebActuationAvailable: false,
+      isBrowsingHistoryFilterByDeviceEnabled: false,
+      isBrowsingHistoryFilterByTimePeriodEnabled: true,
     });
+    browserProxy.handler.setResultFor('getTimePeriodOptions', Promise.resolve({
+      options: [{
+        id: TimePeriodOptionId.kYesterday,
+        label: 'Yesterday',
+        beginTime: 0,
+        endTime: 1,
+      }],
+    }));
     // Re-create the element to pick up the new loadTimeData.
     await createPage();
+    await browserProxy.handler.whenCalled('getTimePeriodOptions');
+    await microtasksFinished();
+    assertTrue(isChildVisible(element, '#historyFilterChips'));
+  });
+
+  test('FilterChipsNotVisible_TimePeriodFilterDisabled', async () => {
+    loadTimeData.overrideValues({
+      isGlicWebActuationAvailable: false,
+      isBrowsingHistoryFilterByDeviceEnabled: false,
+      isBrowsingHistoryFilterByTimePeriodEnabled: false,
+    });
+    browserProxy.handler.setResultFor('getTimePeriodOptions', Promise.resolve({
+      options: [{
+        id: TimePeriodOptionId.kYesterday,
+        label: 'Yesterday',
+        beginTime: 0,
+        endTime: 1,
+      }],
+    }));
+    await createPage();
+    await browserProxy.handler.whenCalled('getTimePeriodOptions');
+    await microtasksFinished();
     assertFalse(isChildVisible(element, '#historyFilterChips'));
   });
 
   test('PropagatesFilterChanges', async () => {
     loadTimeData.overrideValues({
-      isBrowsingHistoryActorIntegrationM3Enabled: true,
       isGlicWebActuationAvailable: true,
+      isBrowsingHistoryFilterByDeviceEnabled: true,
+      isBrowsingHistoryFilterByTimePeriodEnabled: false,
     });
     await createPage();
 
@@ -644,12 +428,14 @@ suite('HistoryFilterChipsVisibility', function() {
       search: string,
       includeUserVisits: boolean,
       includeActorVisits: boolean,
+      clientIds: string[],
     }>>('change-query', element);
 
     filterChips.dispatchEvent(new CustomEvent('filter-changed', {
       detail: {
         userVisits: false,
         actorVisits: true,
+        clientIds: ['device_1', 'device_2'],
       },
       bubbles: true,
       composed: true,
@@ -660,14 +446,23 @@ suite('HistoryFilterChipsVisibility', function() {
     // The query sent to the manager includes the new filters.
     assertFalse(event.detail.includeUserVisits);
     assertTrue(event.detail.includeActorVisits);
+    assertDeepEquals(['device_1', 'device_2'], event.detail.clientIds);
     assertEquals('', event.detail.search);
   });
 
   test('HidesFilterChipsOnGroupedView', async () => {
     loadTimeData.overrideValues({
-      isBrowsingHistoryActorIntegrationM3Enabled: true,
       isGlicWebActuationAvailable: true,
+      isBrowsingHistoryFilterByDeviceEnabled: true,
+      isBrowsingHistoryFilterByTimePeriodEnabled: true,
     });
+    browserProxy.handler.setResultFor(
+        'getSyncedDevicesForFiltering', Promise.resolve({
+          devices: [
+            {name: 'Device 1', isLocalDevice: true, ids: ['id1']},
+            {name: 'Device 2', isLocalDevice: false, ids: ['id2']},
+          ],
+        }));
     await createPage();
 
     assertTrue(isChildVisible(element, '#historyFilterChips'));
@@ -682,32 +477,57 @@ suite('HistoryFilterChipsVisibility', function() {
     await microtasksFinished();
     assertTrue(isChildVisible(element, '#historyFilterChips'));
   });
+
+  test('PreservesFilterChipsStateAfterGroupedView', async () => {
+    loadTimeData.overrideValues({
+      isGlicWebActuationAvailable: true,
+      isBrowsingHistoryFilterByDeviceEnabled: true,
+    });
+    browserProxy.handler.setResultFor(
+        'getSyncedDevicesForFiltering', Promise.resolve({
+          devices: [
+            {name: 'Device 1', isLocalDevice: true, ids: ['id1']},
+            {name: 'Device 2', isLocalDevice: false, ids: ['id2', 'id3']},
+          ],
+        }));
+    await createPage();
+
+    let filterChips =
+        element.shadowRoot.querySelector<HistoryFilterChipsElement>(
+            '#historyFilterChips');
+    assertTrue(!!filterChips);
+    filterChips.fire('filter-changed', {
+      userVisits: false,
+      actorVisits: true,
+      clientIds: ['id2', 'id3'],
+    });
+    await microtasksFinished();
+
+    element.$.router.selectedPage = 'grouped';
+    await microtasksFinished();
+
+    element.$.router.selectedPage = 'history';
+    await microtasksFinished();
+
+    filterChips = element.shadowRoot.querySelector<HistoryFilterChipsElement>(
+        '#historyFilterChips');
+    assertTrue(!!filterChips);
+    assertFalse(filterChips.userVisits);
+    assertTrue(filterChips.actorVisits);
+    assertDeepEquals(['id2', 'id3'], filterChips.clientIds);
+  });
 });
 
 suite('WebuiRefresh2026', function() {
   const WEBUI_REFRESH_ATTR = 'webui-refresh-2026';
   let element: HistoryAppElement;
   let browserProxy: TestHistoryBrowserProxy;
-  let embeddingsHandler: TestMock<HistoryEmbeddingsPageHandlerRemote>&
-      HistoryEmbeddingsPageHandlerRemote;
 
   setup(() => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
-    loadTimeData.overrideValues({
-      historyEmbeddingsSearchMinimumWordCount: 2,
-      enableHistoryEmbeddings: true,
-      maybeShowEmbeddingsIph: false,
-    });
-
     browserProxy = new TestHistoryBrowserProxy();
     BrowserProxyImpl.setInstance(browserProxy);
-    embeddingsHandler = TestMock.fromClass(HistoryEmbeddingsPageHandlerRemote);
-    const {instance} =
-        historyEmbeddingsBrowserProxyFactory.createForTest(embeddingsHandler);
-    historyEmbeddingsBrowserProxyFactory.setInstance(instance);
-    embeddingsHandler.setResultFor(
-        'search', Promise.resolve({result: {items: []}}));
 
     window.history.replaceState({}, '', '/');
     CrRouter.resetForTesting();
@@ -726,10 +546,63 @@ suite('WebuiRefresh2026', function() {
     assertNotEquals(null, document.body.querySelector(COLORS_CSS_SELECTOR));
   });
 
+  // Android links colors.css whether or not the refresh is enabled.
+  // <if expr="not is_android">
   test('Disabled', async () => {
     loadTimeData.overrideValues({webuiRefresh2026: ''});
     await createPage();
 
     assertEquals(null, document.body.querySelector(COLORS_CSS_SELECTOR));
   });
+  // </if>
 });
+
+// <if expr="is_android">
+suite('HistoryAppTestAndroid', function() {
+  setup(() => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+
+    loadTimeData.overrideValues({
+      webuiRefresh2026: 'webui-refresh-2026',
+    });
+
+    BrowserProxyImpl.setInstance(new TestHistoryBrowserProxy());
+
+    window.history.replaceState({}, '', '/');
+    CrRouter.resetForTesting();
+  });
+
+  test('ColorsCssLinkedOnce', async () => {
+    loadTimeData.overrideValues({webuiRefresh2026: ''});
+    // Count the page's insertions. ColorChangeUpdater can replace the link
+    // with one that has a version parameter, so those are not counted.
+    let added = 0;
+    const count = (records: MutationRecord[]) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node instanceof Element && node.matches(COLORS_CSS_SELECTOR) &&
+              !new URL(node.getAttribute('href')!, location.href)
+                   .searchParams.has('version')) {
+            added++;
+          }
+        }
+      }
+    };
+    const observer = new MutationObserver(count);
+    observer.observe(document.body, {childList: true});
+    document.body.appendChild(document.createElement('history-app'));
+    await microtasksFinished();
+    count(observer.takeRecords());
+    observer.disconnect();
+
+    assertEquals(1, added);
+  });
+
+  test('FontFamily', async () => {
+    const app = document.createElement('history-app');
+    document.body.appendChild(app);
+    await microtasksFinished();
+    assertTrue(getComputedStyle(app).fontFamily.includes('Google Sans Text'));
+  });
+});
+// </if>

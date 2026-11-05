@@ -61,6 +61,7 @@
 #include "third_party/blink/public/common/page/drag_operation.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
+#include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/common/widget/device_emulation_params.h"
 #include "third_party/blink/public/mojom/frame/tree_scope_type.mojom-blink.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
@@ -93,12 +94,15 @@
 #include "third_party/blink/renderer/core/css/media_query_list_listener.h"
 #include "third_party/blink/renderer/core/css/media_query_matcher.h"
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
+#include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
+#include "third_party/blink/renderer/core/dom/events/event.h"
 #include "third_party/blink/renderer/core/dom/focus_params.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
 #include "third_party/blink/renderer/core/editing/ime/input_method_controller.h"
 #include "third_party/blink/renderer/core/editing/markers/document_marker_controller.h"
+#include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/exported/web_page_popup_impl.h"
 #include "third_party/blink/renderer/core/exported/web_settings_impl.h"
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"
@@ -134,6 +138,7 @@
 #include "third_party/blink/renderer/core/page/drag_state.h"
 #include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/page/page.h"
+#include "third_party/blink/renderer/core/page/page_animator.h"
 #include "third_party/blink/renderer/core/page/page_hidden_state.h"
 #include "third_party/blink/renderer/core/page/page_popup_client.h"
 #include "third_party/blink/renderer/core/page/print_context.h"
@@ -159,6 +164,7 @@
 #include "third_party/blink/renderer/platform/keyboard_codes.h"
 #include "third_party/blink/renderer/platform/loader/fetch/memory_cache.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
+#include "third_party/blink/renderer/platform/testing/font_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
@@ -172,6 +178,7 @@
 #include "ui/base/cursor/mojom/cursor_type.mojom-blink.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-blink.h"
 #include "ui/base/mojom/menu_source_type.mojom-blink.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/events/keycodes/dom/dom_key.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
@@ -556,8 +563,7 @@ TEST_F(WebViewTest, SetBaseBackgroundColorBeforeMainFrame) {
   frame_test_helpers::TestWebFrameClient web_frame_client;
   WebLocalFrame* frame = WebLocalFrame::CreateMainFrame(
       web_view, &web_frame_client, nullptr, mojo::NullRemote(),
-      LocalFrameToken(), DocumentToken(), base::UnguessableToken::Create(),
-      nullptr);
+      LocalFrameToken(), DocumentToken(), InitiatorStateToken(), nullptr);
   web_frame_client.Bind(frame);
 
   frame_test_helpers::TestWebFrameWidget* widget =
@@ -647,10 +653,13 @@ TEST_F(WebViewTest, SetBaseBackgroundColorWithColorScheme) {
 
   mojom::blink::ColorScheme color_scheme = mojom::blink::ColorScheme::kLight;
   Color system_background_color = LayoutTheme::GetTheme().SystemColor(
-      CSSValueID::kCanvas, color_scheme,
-      web_view->GetPage()->GetColorProviderForPainting(
-          color_scheme, /*in_forced_colors=*/true),
-      document->IsInWebAppScope() && document->IsInitialProfile());
+      CSSValueID::kCanvas,
+      /*theme_info=*/
+      {.color_provider = web_view->GetPage()->GetColorProviderForPainting(
+           color_scheme, /*in_forced_colors=*/true),
+       .color_scheme = color_scheme,
+       .can_expose_system_accent_color =
+           document->IsInWebAppScope() && document->IsInitialProfile()});
   EXPECT_EQ(system_background_color, frame_view->BaseBackgroundColor());
 
   color_scheme_helper.SetInForcedColors(*document, /*in_forced_colors=*/false);
@@ -793,6 +802,43 @@ TEST_F(WebViewTest, PlatformColorsChangedOnDeviceEmulation) {
   EXPECT_EQ(original, OutlineColor(span1));
   EXPECT_EQ(original, OutlineColor(span2));
   EXPECT_EQ(original, OutlineColor(span3));
+}
+
+TEST_F(WebViewTest, UpdateColorProvidersInvalidatesOnlyTargetPage) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ::features::kThemeChangeOptimizationV2);
+
+  WebViewImpl* web_view_1 = web_view_helper_.Initialize();
+  frame_test_helpers::WebViewHelper web_view_helper_2;
+  WebViewImpl* web_view_2 = web_view_helper_2.Initialize();
+
+  WebURL base_url = url_test_helpers::ToKURL("http://example.com/");
+  frame_test_helpers::LoadHTMLString(web_view_1->MainFrameImpl(),
+                                     "<div>Page 1</div>", base_url);
+  frame_test_helpers::LoadHTMLString(web_view_2->MainFrameImpl(),
+                                     "<div>Page 2</div>", base_url);
+
+  web_view_1->MainFrameViewWidget()->UpdateAllLifecyclePhases(
+      DocumentUpdateReason::kTest);
+  web_view_2->MainFrameViewWidget()->UpdateAllLifecyclePhases(
+      DocumentUpdateReason::kTest);
+
+  Document& doc_1 = *web_view_1->MainFrameImpl()->GetFrame()->GetDocument();
+  Document& doc_2 = *web_view_2->MainFrameImpl()->GetFrame()->GetDocument();
+  ASSERT_FALSE(doc_1.NeedsLayoutTreeUpdate());
+  ASSERT_FALSE(doc_2.NeedsLayoutTreeUpdate());
+
+  ColorProviderColorMaps color_maps = ColorProviderColorMaps::CreateDefault();
+  color_maps
+      .light_colors_map[color::mojom::RendererColorId::kColorCssSystemBtnFace] =
+      SK_ColorRED;
+
+  web_view_1->UpdateColorProviders(color_maps);
+
+  EXPECT_TRUE(doc_1.NeedsLayoutTreeUpdate());
+  EXPECT_TRUE(doc_1.GetLayoutView()->ShouldCheckForPaintInvalidation());
+  EXPECT_FALSE(doc_2.NeedsLayoutTreeUpdate());
+  EXPECT_FALSE(doc_2.GetLayoutView()->ShouldCheckForPaintInvalidation());
 }
 
 TEST_F(WebViewTest, ActiveState) {
@@ -1196,6 +1242,480 @@ TEST_F(WebViewTest, AutoResizeDoesNotResetWithoutLayout) {
   web_view_helper_.Reset();
 }
 
+TEST_F(WebViewTest, AutoResizeDoesNotRemeasureScrollWidthWithoutLayout) {
+  ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
+  AutoResizeWebViewClient client;
+  WebLocalFrameImpl* frame = InitializeAutoResizeWebView(
+      R"HTML(
+        <!DOCTYPE html>
+        <style>
+          body { margin: 0; font-size: 12px; }
+          table { border-spacing: 0; width: 100%; }
+          td { vertical-align: top; }
+          .bar {
+            margin-left: 2px;
+            padding: 2px;
+            border: 2px solid;
+            white-space: nowrap;
+          }
+          .item { display: inline-block; max-width: 24px; }
+          .icon { margin: 1px 2px; width: 18px; height: 18px; }
+          .badge {
+            position: relative;
+            left: -12px;
+            width: 12px;
+            height: 12px;
+            vertical-align: bottom;
+          }
+        </style>
+        <div id="bar"></div>
+        <script>
+          const item = '<div class=item><img class=icon></div>';
+          bar.innerHTML =
+              '<table><td class=bar>' + item.repeat(13) +
+              '<td><td class=bar width=100%>' + item.repeat(6) +
+              '<td><td class=bar>' + item.repeat(7) +
+              '<div class=item><img class=icon><img class=badge></div>' +
+              '</table>';
+        </script>
+      )HTML",
+      client);
+
+  const gfx::Size stable_size = frame->GetFrame()->View()->Size();
+  const int resize_count = client.ResizeCount();
+  for (int i = 0; i < 3; ++i) {
+    UpdateAllLifecyclePhases();
+    EXPECT_EQ(stable_size, frame->GetFrame()->View()->Size());
+  }
+  EXPECT_EQ(resize_count, client.ResizeCount());
+
+  const unsigned layout_count =
+      frame->GetFrame()->View()->LayoutCountForTesting();
+  frame->ExecuteScript(WebScriptSource("bar.style.backgroundColor = 'red';"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(layout_count, frame->GetFrame()->View()->LayoutCountForTesting());
+  EXPECT_EQ(stable_size, frame->GetFrame()->View()->Size());
+  EXPECT_EQ(resize_count, client.ResizeCount());
+
+  web_view_helper_.Reset();
+}
+
+TEST_F(WebViewTest, AutoResizeRemeasuresHeightAfterWidthChanges) {
+  ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
+  AutoResizeWebViewClient client;
+  WebLocalFrameImpl* frame = InitializeAutoResizeWebView(
+      "<!DOCTYPE html><style>"
+      "body { margin: 0; width: 400px; height: 50vw; }"
+      "</style>",
+      client);
+  EXPECT_EQ(gfx::Size(400, 200), frame->GetFrame()->View()->Size());
+
+  frame->ExecuteScript(WebScriptSource("document.body.style.width = '200px';"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(gfx::Size(200, 100), frame->GetFrame()->View()->Size());
+
+  const int resize_count = client.ResizeCount();
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(gfx::Size(200, 100), frame->GetFrame()->View()->Size());
+  EXPECT_EQ(resize_count, client.ResizeCount());
+
+  web_view_helper_.Reset();
+}
+
+TEST_F(WebViewTest, AutoResizeRemeasuresAfterTransformChanges) {
+  ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
+  AutoResizeWebViewClient client;
+  WebLocalFrameImpl* frame = InitializeAutoResizeWebView(
+      R"HTML(
+        <!DOCTYPE html>
+        <style>
+          body { margin: 0; width: 200px; height: 100px; }
+          #child { width: 100px; height: 50px; transform: translate(0px); }
+        </style>
+        <div id="child"></div>
+      )HTML",
+      client);
+  auto* frame_view = frame->GetFrame()->View();
+  EXPECT_EQ(gfx::Size(200, 100), frame_view->Size());
+
+  for (bool update_style_separately : {false, true}) {
+    for (bool expand : {true, false}) {
+      frame->ExecuteScript(WebScriptSource(WebString::FromUtf8(
+          expand ? "document.getElementById('child').style.transform = "
+                   "'translate(300px, 200px)';"
+                 : "document.getElementById('child').style.transform = "
+                   "'translate(0px)';")));
+      if (update_style_separately) {
+        // Overflow can be recalculated in a separate style update, without
+        // layout.
+        const unsigned layout_count = frame_view->LayoutCountForTesting();
+        frame->GetFrame()->GetDocument()->UpdateStyleAndLayoutTree();
+        EXPECT_EQ(layout_count, frame_view->LayoutCountForTesting());
+      }
+      UpdateAllLifecyclePhases();
+      const gfx::Size expected_size =
+          expand ? gfx::Size(400, 250) : gfx::Size(200, 100);
+      EXPECT_EQ(expected_size, frame_view->Size());
+      const int resize_count = client.ResizeCount();
+      UpdateAllLifecyclePhases();
+      EXPECT_EQ(expected_size, frame_view->Size());
+      EXPECT_EQ(resize_count, client.ResizeCount());
+    }
+  }
+
+  web_view_helper_.Reset();
+}
+
+TEST_F(WebViewTest, AutoResizeReportsOnlyStableSize) {
+  ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
+  AutoResizeWebViewClient client;
+  WebLocalFrameImpl* frame = InitializeAutoResizeWebView(
+      R"HTML(
+        <!DOCTYPE html>
+        <style>
+          body {
+            box-sizing: border-box;
+            width: 400px;
+            height: 600px;
+            margin: 0;
+            padding: 12px;
+          }
+          #overlay {
+            position: fixed;
+            left: 12px;
+            top: 130px;
+            min-width: 160px;
+            padding: 8px;
+            opacity: 0;
+            transform: translateY(-4px);
+            pointer-events: none;
+          }
+          #overlay.open {
+            opacity: 1;
+            transform: translateY(0);
+            pointer-events: auto;
+          }
+          #log { margin-top: 120px; white-space: pre-wrap; }
+        </style>
+        <div id="overlay"></div>
+        <div id="log"></div>
+        <script>
+          window.resizeCount = 0;
+          window.visualViewportResizeCount = 0;
+          window.resizeEventOrder = [];
+          window.echoResizeEvents = false;
+          window.addEventListener('resize', () => {
+            ++resizeCount;
+            resizeEventOrder.push('window');
+            document.documentElement.dataset.resizeCount = resizeCount;
+            document.documentElement.dataset.resizeEventOrder =
+                resizeEventOrder.join(',');
+            document.documentElement.dataset.lastResizeSize =
+                `${innerWidth}x${innerHeight}`;
+            if (echoResizeEvents) {
+              log.textContent += `resize ${resizeCount}\n`;
+            }
+          });
+          visualViewport.addEventListener('resize', () => {
+            resizeEventOrder.push('visualViewport');
+            document.documentElement.dataset.visualViewportResizeCount =
+                ++visualViewportResizeCount;
+            document.documentElement.dataset.resizeEventOrder =
+                resizeEventOrder.join(',');
+          });
+        </script>
+      )HTML",
+      client);
+  Document* document = frame->GetFrame()->GetDocument();
+  Element* document_element = document->documentElement();
+  ASSERT_EQ(400, client.GetTestData().Width());
+  ASSERT_EQ(600, client.GetTestData().Height());
+
+  document->GetPage()->Animator().ServiceScriptedAnimations(
+      base::TimeTicks::Now());
+
+  EXPECT_EQ(1, client.ResizeCount());
+  EXPECT_EQ("1",
+            document_element->getAttribute(AtomicString("data-resize-count")));
+  EXPECT_EQ("1", document_element->getAttribute(
+                     AtomicString("data-visual-viewport-resize-count")));
+  EXPECT_EQ(
+      "window,visualViewport",
+      document_element->getAttribute(AtomicString("data-resize-event-order")));
+  EXPECT_EQ("400x600", document_element->getAttribute(
+                           AtomicString("data-last-resize-size")));
+
+  frame->ExecuteScript(WebScriptSource(
+      "resizeCount = 0; visualViewportResizeCount = 0; resizeEventOrder = []; "
+      "document.documentElement.dataset.resizeCount = 0; "
+      "document.documentElement.dataset.visualViewportResizeCount = 0; "
+      "document.documentElement.dataset.resizeEventOrder = '';"));
+  const int resize_count = client.ResizeCount();
+  frame->ExecuteScript(WebScriptSource(
+      "overlay.replaceChildren(...['Option A', 'Option B', 'Option C'].map("
+      "    label => Object.assign(document.createElement('div'), "
+      "                           {textContent: label}))); "
+      "overlay.classList.add('open');"));
+  UpdateAllLifecyclePhases();
+  document->GetPage()->Animator().ServiceScriptedAnimations(
+      base::TimeTicks::Now());
+
+  EXPECT_EQ(400, client.GetTestData().Width());
+  EXPECT_EQ(600, client.GetTestData().Height());
+  EXPECT_EQ(resize_count, client.ResizeCount());
+  EXPECT_EQ("0",
+            document_element->getAttribute(AtomicString("data-resize-count")));
+  EXPECT_EQ("0", document_element->getAttribute(
+                     AtomicString("data-visual-viewport-resize-count")));
+  EXPECT_EQ("", document_element->getAttribute(
+                    AtomicString("data-resize-event-order")));
+
+  // A stable size change is reported once, even when its handler modifies the
+  // DOM.
+  frame->ExecuteScript(WebScriptSource(
+      "echoResizeEvents = true; document.body.style.width = '300px';"));
+  UpdateAllLifecyclePhases();
+  document->GetPage()->Animator().ServiceScriptedAnimations(
+      base::TimeTicks::Now());
+
+  EXPECT_EQ(300, client.GetTestData().Width());
+  EXPECT_EQ(600, client.GetTestData().Height());
+  EXPECT_EQ(resize_count + 1, client.ResizeCount());
+  EXPECT_EQ("1",
+            document_element->getAttribute(AtomicString("data-resize-count")));
+  EXPECT_EQ("1", document_element->getAttribute(
+                     AtomicString("data-visual-viewport-resize-count")));
+  EXPECT_EQ(
+      "window,visualViewport",
+      document_element->getAttribute(AtomicString("data-resize-event-order")));
+  EXPECT_EQ("300x600", document_element->getAttribute(
+                           AtomicString("data-last-resize-size")));
+
+  for (int i = 0; i < 3; ++i) {
+    UpdateAllLifecyclePhases();
+    document->GetPage()->Animator().ServiceScriptedAnimations(
+        base::TimeTicks::Now());
+  }
+  EXPECT_EQ(resize_count + 1, client.ResizeCount());
+  EXPECT_EQ("1",
+            document_element->getAttribute(AtomicString("data-resize-count")));
+  EXPECT_EQ("1", document_element->getAttribute(
+                     AtomicString("data-visual-viewport-resize-count")));
+  EXPECT_EQ(
+      "window,visualViewport",
+      document_element->getAttribute(AtomicString("data-resize-event-order")));
+
+  web_view_helper_.Reset();
+}
+
+TEST_F(WebViewTest, AutoResizePreservesHeightDuringWidthRemeasurement) {
+  ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
+  AutoResizeWebViewClient client;
+  WebLocalFrameImpl* frame = InitializeAutoResizeWebView(
+      R"HTML(
+        <!DOCTYPE html>
+        <style>
+          body { margin: 8px; }
+          main { width: 300px; height: 650px; overflow-y: hidden; }
+        </style>
+        <main></main>
+      )HTML",
+      client);
+  ASSERT_EQ(600, client.GetTestData().Height());
+
+  frame->ExecuteScript(WebScriptSource(
+      "document.querySelector('main').style.height = '100vh';"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(600, client.GetTestData().Height());
+
+  frame->GetFrame()->View()->SetNeedsLayout();
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(600, client.GetTestData().Height());
+
+  web_view_helper_.Reset();
+}
+
+TEST_F(WebViewTest, AutoResizePreservesTransitionAcrossRemeasurement) {
+  ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
+  AutoResizeWebViewClient client;
+  WebLocalFrameImpl* frame = InitializeAutoResizeWebView(
+      R"HTML(
+        <!DOCTYPE html>
+        <style>
+          body { margin: 0; width: 400px; }
+          #container { container-type: inline-size; width: 10px; }
+          @container (min-width: 1px) {
+            #container-dependent { color: green; }
+          }
+          #target { opacity: 0; transition: opacity 100s linear; }
+          @media (max-width: 100px) { #target { color: red; } }
+        </style>
+        <div id="target">content</div>
+        <div id="container"><div id="container-dependent"></div></div>
+        <select id="select"><option>option</option></select>
+      )HTML",
+      client);
+  ASSERT_EQ(400, client.GetTestData().Width());
+  Document& document = *frame->GetFrame()->GetDocument();
+  Element* target = document.getElementById(AtomicString("target"));
+  ASSERT_TRUE(target);
+  auto* select =
+      To<HTMLSelectElement>(document.getElementById(AtomicString("select")));
+  ASSERT_TRUE(select);
+  ASSERT_TRUE(select->UsesMenuList());
+  ASSERT_TRUE(document.GetStyleEngine().StyleAffectedByLayout());
+  ASSERT_TRUE(document.GetStyleEngine().MayHaveViewportDependentMediaQueries());
+  ASSERT_TRUE(target->getAnimations().empty());
+
+  frame->ExecuteScript(WebScriptSource(
+      "document.body.style.width = '200px';"
+      "document.getElementById('target').style.opacity = '1';"));
+  // The size container query marks document style as layout-dependent, causing
+  // MenuListSelectType's style update to upgrade to layout. Autosize then
+  // recalculates #target before its pending transition update is applied.
+  select->DispatchEvent(*Event::Create(event_type_names::kChange));
+
+  EXPECT_EQ(200, client.GetTestData().Width());
+  EXPECT_EQ(1u, target->getAnimations().size());
+
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(200, client.GetTestData().Width());
+  EXPECT_EQ(1u, target->getAnimations().size());
+
+  web_view_helper_.Reset();
+}
+
+TEST_F(WebViewTest, AutoResizePreservesDocumentScrollOffsetAfterFormChanges) {
+  ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
+  AutoResizeWebViewClient client;
+  WebLocalFrameImpl* frame = InitializeAutoResizeWebView(
+      R"HTML(
+        <!DOCTYPE html>
+        <style>
+          body { margin: 0; width: 400px; }
+          #spacer { height: 400px; }
+          #tail { height: 500px; }
+          @media (max-width: 100px) { #tail { display: none; } }
+        </style>
+        <div id="spacer"></div>
+        <input id="input">
+        <div id="layout-trigger"></div>
+        <div id="tail"></div>
+        <script>
+          const input = document.getElementById('input');
+          const layoutTrigger = document.getElementById('layout-trigger');
+          input.addEventListener('input', () => {
+            layoutTrigger.style.width = input.value.length + 'px';
+          });
+          input.addEventListener('blur', () => {
+            layoutTrigger.style.height = '1px';
+          });
+        </script>
+      )HTML",
+      client);
+  Document* document = frame->GetFrame()->GetDocument();
+
+  ASSERT_GE(document->scrollingElement()->scrollHeight() -
+                document->scrollingElement()->clientHeight(),
+            250);
+  frame->ExecuteScript(WebScriptSource("scrollTo(0, 250); input.focus();"));
+  UpdateAllLifecyclePhases();
+  ASSERT_EQ(250, document->scrollingElement()->scrollTop());
+
+  std::vector<ui::ImeTextSpan> empty_ime_text_spans;
+  frame->FrameWidget()->GetActiveWebInputMethodController()->CommitText(
+      "x", empty_ime_text_spans, WebRange(), 0);
+  UpdateAllLifecyclePhases();
+  ASSERT_GE(document->scrollingElement()->scrollHeight() -
+                document->scrollingElement()->clientHeight(),
+            250);
+  EXPECT_EQ(250, document->scrollingElement()->scrollTop());
+
+  frame->ExecuteScript(WebScriptSource("scrollTo(0, 250); input.blur();"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(250, document->scrollingElement()->scrollTop());
+
+  web_view_helper_.Reset();
+}
+
+TEST_F(WebViewTest, AutoResizePreservesScrollOffsetAfterFormChanges) {
+  ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
+  AutoResizeWebViewClient client;
+  WebLocalFrameImpl* frame = InitializeAutoResizeWebView(
+      R"HTML(
+        <!DOCTYPE html>
+        <style>
+          body { margin: 0; width: 400px; }
+          #scroller { height: 300px; overflow: auto; }
+          #spacer, #tail { height: 300px; }
+          @media (max-width: 100px) { #scroller { height: auto; } }
+        </style>
+        <div id="scroller">
+          <div id="spacer"></div>
+          <input id="input">
+          <button id="button">Change setting</button>
+          <div id="layout-trigger"></div>
+          <div id="tail"></div>
+        </div>
+        <script>
+          const scroller = document.getElementById('scroller');
+          const input = document.getElementById('input');
+          const layoutTrigger = document.getElementById('layout-trigger');
+          const button = document.getElementById('button');
+          const tail = document.getElementById('tail');
+          input.addEventListener('input', () => {
+            layoutTrigger.style.width = input.value.length + 'px';
+          });
+          input.addEventListener('blur', () => {
+            layoutTrigger.style.height = '1px';
+          });
+          button.addEventListener('click', () => {
+            layoutTrigger.style.marginTop = '1px';
+          });
+        </script>
+      )HTML",
+      client);
+  Element* scroller = frame->GetFrame()->GetDocument()->getElementById(
+      AtomicString("scroller"));
+  ASSERT_TRUE(scroller);
+
+  frame->ExecuteScript(
+      WebScriptSource("scroller.scrollTop = 250; input.focus();"));
+  UpdateAllLifecyclePhases();
+  ASSERT_EQ(250, scroller->scrollTop());
+
+  std::vector<ui::ImeTextSpan> empty_ime_text_spans;
+  frame->FrameWidget()->GetActiveWebInputMethodController()->CommitText(
+      "x", empty_ime_text_spans, WebRange(), 0);
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(250, scroller->scrollTop());
+
+  frame->ExecuteScript(
+      WebScriptSource("scroller.scrollTop = 250; button.click();"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(250, scroller->scrollTop());
+
+  frame->ExecuteScript(
+      WebScriptSource("scroller.scrollTop = 250; input.blur();"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(250, scroller->scrollTop());
+
+  frame->ExecuteScript(WebScriptSource(
+      "scroller.scrollTop = 250; layoutTrigger.style.display = 'none';"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(250, scroller->scrollTop());
+
+  // A genuinely smaller final scroll range must still clamp the offset.
+  frame->ExecuteScript(WebScriptSource(
+      "scroller.scrollTop = 250; tail.style.display = 'none';"));
+  UpdateAllLifecyclePhases();
+  EXPECT_LT(scroller->scrollTop(), 250);
+  EXPECT_EQ(scroller->scrollHeight() - scroller->clientHeight(),
+            scroller->scrollTop());
+
+  web_view_helper_.Reset();
+}
+
 TEST_F(WebViewTest, AutoResizeShrinksFromMaximumWidth) {
   ScopedAutoSizeUsesScrollWidthForOverflowForTest scoped_feature(true);
   AutoResizeWebViewClient client;
@@ -1259,6 +1779,20 @@ TEST_F(WebViewTest, AutoResizeWithViewportMetaDoesNotZoomOut) {
   EXPECT_EQ(1.0f, web_view->PageScaleFactor());
   EXPECT_EQ(450, client.GetTestData().Width());
   EXPECT_EQ(500, client.GetTestData().Height());
+
+  // Re-applying SetIgnoreViewportTagScaleLimits (as ApplyWebPreferences does
+  // on Android) should not clobber the auto-resize minimum scale constraint.
+  web_view->SetIgnoreViewportTagScaleLimits(false);
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(1.0f, web_view->MinimumPageScaleFactor());
+  EXPECT_EQ(1.0f, web_view->PageScaleFactor());
+  EXPECT_EQ(gfx::Size(450, 500), web_view->MainFrameSize());
+
+  web_view->SetIgnoreViewportTagScaleLimits(true);
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(1.0f, web_view->MinimumPageScaleFactor());
+  EXPECT_EQ(1.0f, web_view->PageScaleFactor());
+  EXPECT_EQ(gfx::Size(450, 500), web_view->MainFrameSize());
 
   web_view_helper_.Reset();
 }
@@ -3239,6 +3773,7 @@ TEST_F(WebViewTest, MouseDragDropSuppressesPointerStream) {
   const gfx::PointF center = GetElementCenterPoint(
       web_view->MainFrameImpl()->GetDocument().GetElementById("target"));
   mouse_event.SetPositionInWidget(center.x(), center.y());
+  mouse_event.SetPositionInScreen(center.x(), center.y());
   mouse_event.button = WebMouseEvent::Button::kLeft;
   mouse_event.click_count = 1;
   web_view->MainFrameWidget()->HandleInputEvent(
@@ -3248,6 +3783,7 @@ TEST_F(WebViewTest, MouseDragDropSuppressesPointerStream) {
                                  WebInputEvent::Modifiers::kNoModifiers,
                                  WebInputEvent::GetStaticTimeStampForTests());
   mouse_drag_event.SetPositionInWidget(center.x() + 50, center.y());
+  mouse_drag_event.SetPositionInScreen(center.x() + 50, center.y());
   mouse_drag_event.button = WebMouseEvent::Button::kLeft;
   web_view->MainFrameWidget()->HandleInputEvent(
       WebCoalescedInputEvent(mouse_drag_event, ui::LatencyInfo()));
@@ -3353,6 +3889,7 @@ class WebViewDragWithLayoutChangeTest
                                 WebInputEvent::kNoModifiers,
                                 WebInputEvent::GetStaticTimeStampForTests());
       mouse_event.SetPositionInWidget(center.x(), center.y());
+      mouse_event.SetPositionInScreen(center.x(), center.y());
       mouse_event.button = WebMouseEvent::Button::kLeft;
       mouse_event.click_count = 1;
       web_view->MainFrameWidget()->HandleInputEvent(
@@ -3364,6 +3901,7 @@ class WebViewDragWithLayoutChangeTest
           WebInputEvent::Modifiers::kNoModifiers,
           WebInputEvent::GetStaticTimeStampForTests());
       mouse_drag_event.SetPositionInWidget(center.x() + 50, center.y());
+      mouse_drag_event.SetPositionInScreen(center.x() + 50, center.y());
       mouse_drag_event.button = WebMouseEvent::Button::kLeft;
       web_view->MainFrameWidget()->HandleInputEvent(
           WebCoalescedInputEvent(mouse_drag_event, ui::LatencyInfo()));
@@ -3575,8 +4113,7 @@ TEST_F(WebViewTest, ClientTapHandlingNullWebViewClient) {
   frame_test_helpers::TestWebFrameClient web_frame_client;
   WebLocalFrame* local_frame = WebLocalFrame::CreateMainFrame(
       web_view, &web_frame_client, nullptr, mojo::NullRemote(),
-      LocalFrameToken(), DocumentToken(), base::UnguessableToken::Create(),
-      nullptr);
+      LocalFrameToken(), DocumentToken(), InitiatorStateToken(), nullptr);
   web_frame_client.Bind(local_frame);
   WebNonCompositedWidgetClient widget_client;
   frame_test_helpers::TestWebFrameWidget* widget =
@@ -3746,7 +4283,7 @@ TEST_F(WebViewTest, LongPressLink) {
                         WebInputEvent::kNoModifiers,
                         WebInputEvent::GetStaticTimeStampForTests(),
                         WebGestureDevice::kTouchscreen);
-  event.SetPositionInWidget(gfx::PointF(500, 300));
+  event.SetPositionInWidget(gfx::PointF(499, 299));
 
   EXPECT_EQ(WebInputEventResult::kHandledSystem,
             web_view->MainFrameWidget()->HandleInputEvent(
@@ -5142,7 +5679,7 @@ class CreateChildCounterFrameClient
       base::FunctionRef<void(
           WebLocalFrame*,
           const DocumentToken&,
-          const base::UnguessableToken& initiator_state_token,
+          const InitiatorStateToken& initiator_state_token,
           CrossVariantMojoRemote<mojom::BrowserInterfaceBrokerInterfaceBase>,
           std::unique_ptr<base::UnguessableToken> sandbox_origin_token)>
           complete_initialization) override;
@@ -5165,7 +5702,7 @@ WebLocalFrame* CreateChildCounterFrameClient::CreateChildFrame(
     base::FunctionRef<
         void(WebLocalFrame*,
              const DocumentToken&,
-             const base::UnguessableToken& initiator_state_token,
+             const InitiatorStateToken& initiator_state_token,
              CrossVariantMojoRemote<mojom::BrowserInterfaceBrokerInterfaceBase>,
              std::unique_ptr<base::UnguessableToken> sandbox_origin_token)>
         complete_initialization) {
@@ -5871,14 +6408,16 @@ class MojoTestHelper {
   }
 
   ~MojoTestHelper() {
-    web_view_helper_.Reset();  // Remove dependency on locally scoped client.
+    web_view_helper_->Reset();  // Remove dependency on locally scoped client.
   }
 
   WebViewImpl* WebView() const { return web_view_; }
 
  private:
-  WebViewImpl* web_view_;
-  frame_test_helpers::WebViewHelper& web_view_helper_;
+  raw_ptr<WebViewImpl, UnprotectedInRelease | DanglingUntriaged> web_view_;
+  const raw_ref<frame_test_helpers::WebViewHelper,
+                UnprotectedInRelease | DanglingUntriaged>
+      web_view_helper_;
   frame_test_helpers::TestWebFrameClient web_frame_client_;
 };
 
@@ -5981,7 +6520,7 @@ class ShowUnhandledTapTest : public WebViewTest {
     EXPECT_EQ(expected, mock_notifier_.WasUnhandledTap());
   }
 
-  WebViewImpl* web_view_;
+  raw_ptr<WebViewImpl, UnprotectedInRelease | DanglingUntriaged> web_view_;
   MockUnhandledTapNotifierImpl mock_notifier_;
 
  private:
@@ -6324,6 +6863,77 @@ TEST_F(WebViewTest, ForceAndResetViewport) {
   matrix = dev_tools_emulator->ResetViewportForTesting();
   expected_matrix.MakeIdentity();
   EXPECT_EQ(expected_matrix, matrix);
+}
+
+TEST_F(WebViewTest, TouchEmulationSurvivesWebPreferencesRepush) {
+  WebViewImpl* web_view_impl = web_view_helper_.Initialize();
+  Settings& settings = web_view_impl->GetPage()->GetSettings();
+  DevToolsEmulator* emulator = web_view_impl->GetDevToolsEmulator();
+
+  web_pref::WebPreferences prefs;
+  prefs.pointer_events_max_touch_points = 0;
+  WebView::ApplyWebPreferences(prefs, web_view_impl);
+  EXPECT_EQ(0, settings.GetMaxTouchPoints());
+
+  constexpr int kEmulatedMaxTouchPoints = 5;
+  emulator->SetTouchEventEmulationEnabled(true, kEmulatedMaxTouchPoints);
+  EXPECT_EQ(kEmulatedMaxTouchPoints, settings.GetMaxTouchPoints());
+
+  // Android can push new WebPreferences while emulation is active. The
+  // override remains visible, while the latest embedder value is retained for
+  // restoration.
+  constexpr int kUpdatedEmbedderMaxTouchPoints = 2;
+  prefs.pointer_events_max_touch_points = kUpdatedEmbedderMaxTouchPoints;
+  WebView::ApplyWebPreferences(prefs, web_view_impl);
+  EXPECT_EQ(kEmulatedMaxTouchPoints, settings.GetMaxTouchPoints());
+
+  emulator->SetTouchEventEmulationEnabled(false, 0);
+  EXPECT_EQ(kUpdatedEmbedderMaxTouchPoints, settings.GetMaxTouchPoints());
+}
+
+TEST_F(WebViewTest, ApplyWebPreferencesSkipsPrewarmingEmptyFontFamilies) {
+  WebViewImpl* web_view_impl = web_view_helper_.Initialize();
+  GenericFontFamilySettings& font_settings =
+      web_view_impl->GetPage()->GetSettings().GetGenericFontFamilySettings();
+
+  web_pref::WebPreferences empty_font_prefs;
+  empty_font_prefs.standard_font_family_map.clear();
+  empty_font_prefs.fixed_font_family_map.clear();
+  empty_font_prefs.serif_font_family_map.clear();
+  empty_font_prefs.sans_serif_font_family_map.clear();
+  empty_font_prefs.cursive_font_family_map.clear();
+  empty_font_prefs.fantasy_font_family_map.clear();
+  empty_font_prefs.math_font_family_map.clear();
+
+  {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
+    test::ScopedTestFontPrewarmer prewarmer;
+#endif
+    WebView::ApplyWebPreferences(empty_font_prefs, web_view_impl);
+    EXPECT_TRUE(font_settings.Get(GenericFontFamily::kSerif).empty());
+    EXPECT_TRUE(font_settings.Get(GenericFontFamily::kSansSerif).empty());
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
+    EXPECT_TRUE(prewarmer.PrewarmedFamilyNames().empty());
+#endif
+  }
+
+  {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
+    test::ScopedTestFontPrewarmer prewarmer;
+#endif
+    web_pref::WebPreferences default_prefs;
+    WebView::ApplyWebPreferences(default_prefs, web_view_impl);
+    EXPECT_EQ("Times New Roman", font_settings.Get(GenericFontFamily::kSerif));
+    EXPECT_EQ("Arial", font_settings.Get(GenericFontFamily::kSansSerif));
+#if BUILDFLAG(IS_WIN)
+    ASSERT_EQ(2u, prewarmer.PrewarmedFamilyNames().size());
+    EXPECT_EQ("Times New Roman", prewarmer.PrewarmedFamilyNames()[0]);
+    EXPECT_EQ("Arial", prewarmer.PrewarmedFamilyNames()[1]);
+#elif BUILDFLAG(IS_ANDROID)
+    ASSERT_EQ(1u, prewarmer.PrewarmedFamilyNames().size());
+    EXPECT_EQ("Arial", prewarmer.PrewarmedFamilyNames()[0]);
+#endif
+  }
 }
 
 TEST_F(WebViewTest, ViewportOverrideIntegratesDeviceMetricsOffsetAndScale) {
@@ -6690,15 +7300,19 @@ TEST_F(WebViewTest, SetZoomLevelWhilePluginFocused) {
 }
 
 // Tests that a layout update that detaches a plugin doesn't crash if the
-// plugin tries to execute script while being destroyed.
+// plugin tries to execute script while being destroyed, and that script
+// execution is forbidden during plugin disposal.
 TEST_F(WebViewTest, DetachPluginInLayout) {
   class ScriptInDestroyPlugin : public FakeWebPlugin {
    public:
-    ScriptInDestroyPlugin(WebLocalFrame* frame, const WebPluginParams& params)
-        : FakeWebPlugin(params), frame_(frame) {}
+    ScriptInDestroyPlugin(WebLocalFrame* frame,
+                          const WebPluginParams& params,
+                          bool* destroyed)
+        : FakeWebPlugin(params), frame_(frame), destroyed_(destroyed) {}
 
     // WebPlugin overrides:
     void Destroy() override {
+      *destroyed_ = true;
       frame_->ExecuteScript(WebScriptSource("console.log('done')"));
       // Deletes this.
       FakeWebPlugin::Destroy();
@@ -6707,6 +7321,7 @@ TEST_F(WebViewTest, DetachPluginInLayout) {
    private:
     raw_ptr<WebLocalFrame, UnprotectedInRelease | DanglingUntriaged>
         frame_;  // Unowned
+    raw_ptr<bool> destroyed_;
   };
 
   class PluginCreatingWebFrameClient
@@ -6714,7 +7329,7 @@ TEST_F(WebViewTest, DetachPluginInLayout) {
    public:
     // WebLocalFrameClient overrides:
     WebPlugin* CreatePlugin(const WebPluginParams& params) override {
-      return new ScriptInDestroyPlugin(Frame(), params);
+      return new ScriptInDestroyPlugin(Frame(), params, &plugin_destroyed_);
     }
 
     void DidAddMessageToConsole(const WebConsoleMessage& message,
@@ -6725,9 +7340,11 @@ TEST_F(WebViewTest, DetachPluginInLayout) {
     }
 
     const String& Message() const { return message_; }
+    bool PluginDestroyed() const { return plugin_destroyed_; }
 
    private:
     String message_;
+    bool plugin_destroyed_ = false;
   };
 
   PluginCreatingWebFrameClient frame_client;
@@ -6750,7 +7367,8 @@ TEST_F(WebViewTest, DetachPluginInLayout) {
   EXPECT_TRUE(plugin_element->OwnedPlugin());
   UpdateAllLifecyclePhases();
   EXPECT_FALSE(plugin_element->OwnedPlugin());
-  EXPECT_EQ("done", frame_client.Message());
+  EXPECT_TRUE(frame_client.PluginDestroyed());
+  EXPECT_TRUE(frame_client.Message().IsNull());
   web_view_helper_.Reset();  // Remove dependency on locally scoped client.
 }
 
@@ -6875,7 +7493,7 @@ TEST_F(WebViewTest, InputDelayReported) {
       "PageLoad.InteractiveTiming.InputTimestamp3", 170, 1);
 }
 
-// TODO(npm): Improve this test to receive real input sequences and avoid hacks.
+// TODO: Improve this test to receive real input sequences and avoid hacks.
 // Check that first input delay is correctly reported to the document when the
 // first input is a pointer down event, and we receive a pointer up event.
 TEST_F(WebViewTest, PointerDownUpFirstInputDelay) {
@@ -7207,10 +7825,10 @@ TEST_F(WebViewTest, EmulatingPopupRect) {
       MakeGarbageCollected<EmptyChromeClient>(), *select);
   {
     // Make a popup widget.
-    WebPagePopup* popup = web_view->OpenPagePopup(menu);
+    WebPagePopupImpl* popup = web_view->OpenPagePopup(menu);
 
     // Fake that the browser showed it.
-    static_cast<WebPagePopupImpl*>(popup)->DidShowPopup();
+    popup->DidShowPopup();
 
     // Set its size.
     popup->SetScreenRects(widget_screen_rect, window_screen_rect);
@@ -7221,7 +7839,7 @@ TEST_F(WebViewTest, EmulatingPopupRect) {
     EXPECT_EQ(widget_screen_rect, gfx::Rect(popup->ViewRect()));
     EXPECT_EQ(screen_rect, gfx::Rect(popup->GetScreenInfo().rect));
 
-    static_cast<WebPagePopupImpl*>(popup)->ClosePopup();
+    popup->ClosePopup();
   }
 
   // Enable device emulation on the parent widget.
@@ -7236,10 +7854,10 @@ TEST_F(WebViewTest, EmulatingPopupRect) {
 
   {
     // Make a popup again. It should inherit device emulation params.
-    WebPagePopup* popup = web_view->OpenPagePopup(menu);
+    WebPagePopupImpl* popup = web_view->OpenPagePopup(menu);
 
     // Fake that the browser showed it.
-    static_cast<WebPagePopupImpl*>(popup)->DidShowPopup();
+    popup->DidShowPopup();
 
     // Set its size again.
     popup->SetScreenRects(widget_screen_rect, window_screen_rect);
@@ -7278,8 +7896,135 @@ TEST_F(WebViewTest, EmulatingPopupRect) {
     EXPECT_EQ(emulated_widget_rect,
               gfx::Rect(web_view->MainFrameWidget()->GetScreenInfo().rect));
 
-    static_cast<WebPagePopupImpl*>(popup)->ClosePopup();
+    popup->ClosePopup();
   }
+}
+
+TEST_F(WebViewTest, PopupConstrainedByLineOfDeathAndWorkArea) {
+  if (!RuntimeEnabledFeatures::PagePopupEnabled()) {
+    return;
+  }
+  WebViewImpl* web_view = web_view_helper_.Initialize();
+  WebURL base_url = url_test_helpers::ToKURL("http://example.com/");
+  StringBuilder html;
+  html.Append("<!DOCTYPE html><select id='select'>");
+  for (int i = 0; i < 30; ++i) {
+    html.Append("<option>Option</option>");
+  }
+  html.Append("</select>");
+  frame_test_helpers::LoadHTMLString(web_view->MainFrameImpl(),
+                                     html.ToString().Utf8(), base_url);
+
+  // Set up an 800x600 screen with a 40px taskbar at the bottom (work area
+  // height 560) and position the main frame widget near the bottom of the
+  // screen at y = 400 (line of death = 400).
+  const int kLineOfDeath = 400;
+  const int kWorkAreaBottom = 560;
+  blink::VisualProperties visual_properties;
+  visual_properties.screen_infos = display::ScreenInfos(display::ScreenInfo());
+  visual_properties.new_size_device_px = gfx::Size(400, 160);
+  visual_properties.visible_viewport_size_device_px = gfx::Size(400, 160);
+  visual_properties.screen_infos.mutable_current().rect = gfx::Rect(800, 600);
+  visual_properties.screen_infos.mutable_current().available_rect =
+      gfx::Rect(0, 0, 800, kWorkAreaBottom);
+  web_view->MainFrameWidget()->ApplyVisualProperties(visual_properties);
+  static_cast<WebFrameWidgetImpl*>(web_view->MainFrameViewWidget())
+      ->SetScreenRects(gfx::Rect(0, kLineOfDeath, 400, 160),
+                       gfx::Rect(0, kLineOfDeath - 50, 400, 210));
+  UpdateAllLifecyclePhases();
+
+  LocalFrame* frame = web_view->MainFrameImpl()->GetFrame();
+  auto* select = To<HTMLSelectElement>(
+      frame->GetDocument()->getElementById(AtomicString("select")));
+  ASSERT_TRUE(select);
+
+  auto* menu = MakeGarbageCollected<InternalPopupMenu>(
+      &frame->GetPage()->GetChromeClient(), *select);
+  scoped_refptr<WebPagePopupImpl> popup = web_view->OpenPagePopup(menu);
+  ASSERT_TRUE(popup);
+  popup->DidShowPopup();
+
+  // Because available space above the <select> is constrained by the line of
+  // death (400), there is more space below the <select> than above it. The
+  // popup should open below the <select> and fit above the taskbar (560).
+  gfx::Rect popup_rect = popup->WindowRect();
+  EXPECT_GE(popup_rect.y(), kLineOfDeath);
+  EXPECT_LE(popup_rect.bottom(), kWorkAreaBottom);
+
+  // Verify that GetScreenInfos does not crash if opener_web_view_ is cleared.
+  web_view->CleanupPagePopup();
+  Document* popup_doc = popup->GetDocument().Unwrap<Document>();
+  EXPECT_FALSE(popup_doc->GetPage()
+                   ->GetChromeClient()
+                   .GetScreenInfos(*popup_doc->GetFrame())
+                   .current()
+                   .available_rect.IsEmpty());
+
+  popup->ClosePopup();
+}
+
+TEST_F(WebViewTest, PopupBrowserConstrainedResize) {
+  if (!RuntimeEnabledFeatures::PagePopupEnabled()) {
+    return;
+  }
+  WebViewImpl* web_view = web_view_helper_.Initialize();
+  WebURL base_url = url_test_helpers::ToKURL("http://example.com/");
+  StringBuilder html;
+  html.Append("<!DOCTYPE html><select id='select'>");
+  for (int i = 0; i < 10; ++i) {
+    html.Append(i == 9 ? "<option selected>Long option text</option>"
+                       : "<option>Long option text</option>");
+  }
+  html.Append("</select>");
+  frame_test_helpers::LoadHTMLString(web_view->MainFrameImpl(),
+                                     html.ToString().Utf8(), base_url);
+
+  blink::VisualProperties visual_properties;
+  visual_properties.screen_infos = display::ScreenInfos(display::ScreenInfo());
+  visual_properties.new_size_device_px = gfx::Size(400, 400);
+  visual_properties.visible_viewport_size_device_px = gfx::Size(400, 400);
+  visual_properties.screen_infos.mutable_current().rect = gfx::Rect(800, 600);
+  visual_properties.screen_infos.mutable_current().available_rect =
+      gfx::Rect(0, 0, 800, 600);
+  web_view->MainFrameWidget()->ApplyVisualProperties(visual_properties);
+  UpdateAllLifecyclePhases();
+
+  LocalFrame* frame = web_view->MainFrameImpl()->GetFrame();
+  auto* select = To<HTMLSelectElement>(
+      frame->GetDocument()->getElementById(AtomicString("select")));
+  ASSERT_TRUE(select);
+
+  auto* menu = MakeGarbageCollected<InternalPopupMenu>(
+      &frame->GetPage()->GetChromeClient(), *select);
+  WebPagePopupImpl* popup = web_view->OpenPagePopup(menu);
+  ASSERT_TRUE(popup);
+  popup->DidShowPopup();
+
+  gfx::Rect initial_rect = popup->WindowRect();
+  ASSERT_GT(initial_rect.height(), 60);
+
+  // Simulate the browser constraining the popup's y position and height (e.g.
+  // for an OOPIF popup).
+  const int kConstrainedY = initial_rect.y() + 50;
+  const int kConstrainedHeight = 60;
+  gfx::Rect constrained_rect(initial_rect.x(), kConstrainedY,
+                             initial_rect.width(), kConstrainedHeight);
+  popup->SetScreenRects(constrained_rect, constrained_rect);
+  popup->Resize(constrained_rect.size());
+  Document* popup_doc = popup->GetDocument().Unwrap<Document>();
+  popup_doc->GetPage()->Animate(base::TimeTicks::Now());
+  popup->UpdateLifecycle(WebLifecycleUpdate::kAll, DocumentUpdateReason::kTest);
+
+  // The internal listbox should shrink and scroll the selected option into
+  // view.
+  EXPECT_EQ(popup->WindowRect().y(), kConstrainedY);
+  EXPECT_EQ(popup->WindowRect().height(), kConstrainedHeight);
+  auto* internal_select = popup_doc->QuerySelector(AtomicString("select"));
+  ASSERT_TRUE(internal_select);
+  EXPECT_EQ(internal_select->OffsetHeight(), kConstrainedHeight);
+  EXPECT_GT(internal_select->scrollTop(), 0);
+
+  popup->ClosePopup();
 }
 
 TEST_F(WebViewTest, HiddenButPaintingIsSentToObservers) {
@@ -7593,6 +8338,7 @@ TEST_F(WebViewTest, DragAndDropMouseHistogramsTest) {
                             WebInputEvent::kNoModifiers,
                             WebInputEvent::GetStaticTimeStampForTests());
   mouse_event.SetPositionInWidget(250, 8);
+  mouse_event.SetPositionInScreen(250, 8);
   mouse_event.button = WebMouseEvent::Button::kLeft;
   mouse_event.click_count = 1;
   web_view->MainFrameWidget()->HandleInputEvent(
@@ -7602,6 +8348,7 @@ TEST_F(WebViewTest, DragAndDropMouseHistogramsTest) {
                                  WebInputEvent::Modifiers::kNoModifiers,
                                  WebInputEvent::GetStaticTimeStampForTests());
   mouse_drag_event.SetPositionInWidget(300, 8);
+  mouse_drag_event.SetPositionInScreen(300, 8);
   mouse_drag_event.button = WebMouseEvent::Button::kLeft;
   web_view->MainFrameWidget()->HandleInputEvent(
       WebCoalescedInputEvent(mouse_drag_event, ui::LatencyInfo()));
@@ -7681,6 +8428,7 @@ TEST_F(WebViewTest, DragAndDropPenButtonHistogramsTest) {
                           WebInputEvent::kNoModifiers,
                           WebInputEvent::GetStaticTimeStampForTests());
   pen_event.SetPositionInWidget(250, 8);
+  pen_event.SetPositionInScreen(250, 8);
   pen_event.button = WebPointerProperties::Button::kLeft;
   pen_event.pointer_type = blink::WebPointerProperties::PointerType::kPen;
   pen_event.click_count = 1;
@@ -7691,6 +8439,7 @@ TEST_F(WebViewTest, DragAndDropPenButtonHistogramsTest) {
                                WebInputEvent::Modifiers::kNoModifiers,
                                WebInputEvent::GetStaticTimeStampForTests());
   pen_drag_event.SetPositionInWidget(300, 8);
+  pen_drag_event.SetPositionInScreen(300, 8);
   pen_drag_event.button = WebPointerProperties::Button::kLeft;
   pen_drag_event.pointer_type = blink::WebPointerProperties::PointerType::kPen;
   web_view->MainFrameWidget()->HandleInputEvent(
@@ -7795,6 +8544,49 @@ TEST_F(WebViewTest, KeyboardFocusOnTabindexLinkShowsBubble) {
 
   // Verify target_url_ (Status bubble) is showing the link URL
   EXPECT_EQ(KURL("http://example.com/"), web_view->target_url_);
+}
+
+TEST_F(WebViewTest, MainFrameLayoutUpdatedDuringOnPageVisibilityChanged) {
+  class LayoutUpdatingVisibilityObserver : public WebViewObserver {
+   public:
+    explicit LayoutUpdatingVisibilityObserver(WebView* web_view)
+        : WebViewObserver(web_view) {}
+    ~LayoutUpdatingVisibilityObserver() override = default;
+
+    void OnPageVisibilityChanged(
+        blink::mojom::PageVisibilityState visibility_state) override {
+      Document* document = To<WebViewImpl>(GetWebView())
+                               ->MainFrameImpl()
+                               ->GetFrame()
+                               ->GetDocument();
+      Element* target = document->getElementById(AtomicString("target"));
+      target->setAttribute(html_names::kStyleAttr,
+                           AtomicString("width: 200px"));
+      // Reading innerText forces a synchronous style and layout update, which
+      // calls WebViewImpl::MainFrameLayoutUpdated() while SetVisibilityState()
+      // is iterating `observers_`.
+      target->innerText();
+    }
+
+    void DidUpdateMainFrameLayout() override { ++layout_updated_count_; }
+
+    void OnDestruct() override {}
+
+    int layout_updated_count() const { return layout_updated_count_; }
+
+   private:
+    int layout_updated_count_ = 0;
+  };
+
+  WebViewImpl* web_view = web_view_helper_.Initialize();
+  frame_test_helpers::LoadHTMLString(
+      web_view->MainFrameImpl(), "<div id='target'>Hello</div>",
+      url_test_helpers::ToKURL("http://example.com/"));
+
+  LayoutUpdatingVisibilityObserver observer(web_view);
+  web_view->SetVisibilityState(mojom::blink::PageVisibilityState::kHidden,
+                               /*is_initial_state=*/false);
+  EXPECT_GE(observer.layout_updated_count(), 1);
 }
 
 }  // namespace blink

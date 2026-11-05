@@ -70,9 +70,9 @@ ConfiguredProxyResolutionRequest::ConfiguredProxyResolutionRequest(
 ConfiguredProxyResolutionRequest::~ConfiguredProxyResolutionRequest() {
   if (service_) {
     service_->RemovePendingRequest(this);
-    Cancel();
+    CancelActiveJob();
 
-    // This should be emitted last, after any message `Cancel()` may
+    // This should be emitted last, after any message `CancelActiveJob()` may
     // trigger.
     net_log_.EndEvent(NetLogEventType::PROXY_RESOLUTION_SERVICE);
   }
@@ -136,59 +136,87 @@ int ConfiguredProxyResolutionRequest::Start() {
   return ContinueProxyResolution();
 }
 
-void ConfiguredProxyResolutionRequest::
-    StartAndCompleteCheckingForSynchronous() {
-  int rv = service_->TryToCompleteSynchronously(
-      url_, /*bypass_override_rules=*/false, net_log_, results_);
-  if (rv == ERR_IO_PENDING) {
-    rv = Start();
+void ConfiguredProxyResolutionRequest::ResumeOrCompleteSynchronously() {
+  int rv;
+  if (override_rules_evaluated_) {
+    rv = ContinueProxyResolution();
+  } else {
+    rv = service_->TryResolveSynchronously(
+        url_, /*bypass_override_rules=*/false, net_log_, results_);
+    if (rv == ERR_IO_PENDING) {
+      rv = Start();
+    }
   }
 
   if (rv != ERR_IO_PENDING) {
-    QueryComplete(rv);
+    OnAsyncResolutionComplete(rv);
   }
 }
 
-void ConfiguredProxyResolutionRequest::Cancel() {
+void ConfiguredProxyResolutionRequest::CancelActiveJob() {
   net_log_.AddEvent(NetLogEventType::CANCELLED);
 
   if (!applicable_override_rules_.empty()) {
     net_log_.EndEvent(NetLogEventType::PROXY_RESOLUTION_OVERRIDE_RULES);
   }
 
-  Reset();
+  ResetActiveJobState();
   CHECK(!is_started());
 }
 
-int ConfiguredProxyResolutionRequest::QueryDidComplete(int result_code) {
+bool ConfiguredProxyResolutionRequest::CancelResolveJob() {
+  if (!resolve_job_) {
+    return false;
+  }
+
+  net_log_.AddEvent(NetLogEventType::CANCELLED);
+  resolve_job_.reset();
+  override_rules_evaluated_ = true;
+  CHECK(!is_started());
+  return true;
+}
+
+int ConfiguredProxyResolutionRequest::FinalizeRequestResult(int result_code) {
   CHECK(!was_completed());
 
   // Clear state so that `is_started()` returns false while
-  // DidFinishResolvingProxy() runs.
+  // ProcessResolutionResult() runs.
   if (is_started()) {
-    Reset();
+    ResetActiveJobState();
   }
 
-  // Note that DidFinishResolvingProxy might modify `results_`.
-  int rv = service_->DidFinishResolvingProxy(url_, network_anonymization_key_,
-                                             method_, results_, result_code,
-                                             net_log_);
+  // Detach `service_` and `results_` before `ProcessResolutionResult()` in case
+  // a sibling callback synchronously destroys `this` or `results` (avoids
+  // double-removal in our destructor and dangling raw_ptrs).
+  ConfiguredProxyResolutionService* service = std::exchange(service_, nullptr);
+  ProxyInfo* results = std::exchange(results_, nullptr);
+  base::WeakPtr<ConfiguredProxyResolutionRequest> weak_this =
+      weak_factory_.GetWeakPtr();
+
+  // Note that ProcessResolutionResult might modify `results`.
+  int rv =
+      service->ProcessResolutionResult(url_, network_anonymization_key_,
+                                       method_, results, result_code, net_log_);
+  if (!weak_this) {
+    return ERR_ABORTED;
+  }
 
   // Make a note in the results which configuration was in use at the
   // time of the resolve.
-  results_->set_proxy_resolve_start_time(creation_time_);
-  results_->set_proxy_resolve_end_time(base::TimeTicks::Now());
+  results->set_proxy_resolve_start_time(creation_time_);
+  results->set_proxy_resolve_end_time(base::TimeTicks::Now());
 
-  // If annotation is not already set, e.g. through TryToCompleteSynchronously
+  // If annotation is not already set, e.g. through TryResolveSynchronously
   // function, use in-progress-resolve annotation.
-  if (!results_->traffic_annotation().is_valid())
-    results_->set_traffic_annotation(traffic_annotation_);
+  if (!results->traffic_annotation().is_valid()) {
+    results->set_traffic_annotation(traffic_annotation_);
+  }
 
   // If proxy is set without error, ensure that an annotation is provided.
   if (result_code != ERR_ABORTED && !rv) {
     // TODO(crbug.com/469006851): Turn this back into a CHECK once crashes were
     // fully fixed.
-    DCHECK(results_->traffic_annotation().is_valid());
+    DCHECK(results->traffic_annotation().is_valid());
   }
 
   // Reset the state associated with in-progress-resolve.
@@ -197,11 +225,22 @@ int ConfiguredProxyResolutionRequest::QueryDidComplete(int result_code) {
   return rv;
 }
 
-int ConfiguredProxyResolutionRequest::QueryDidCompleteSynchronously(
-    int result_code) {
-  int rv = QueryDidComplete(result_code);
-  service_ = nullptr;
-  return rv;
+void ConfiguredProxyResolutionRequest::BeginWaitEvent(
+    NetLogEventType event_type) {
+  if (current_wait_event_ == event_type) {
+    return;
+  }
+  EndWaitEvent();
+  current_wait_event_ = event_type;
+  net_log_.BeginEvent(event_type);
+}
+
+void ConfiguredProxyResolutionRequest::EndWaitEvent() {
+  if (!current_wait_event_) {
+    return;
+  }
+  net_log_.EndEvent(*current_wait_event_);
+  current_wait_event_.reset();
 }
 
 LoadState ConfiguredProxyResolutionRequest::GetLoadState() const {
@@ -214,16 +253,20 @@ LoadState ConfiguredProxyResolutionRequest::GetLoadState() const {
   return LOAD_STATE_RESOLVING_PROXY_FOR_URL;
 }
 
-// Callback for when the ProxyResolver request has completed.
-void ConfiguredProxyResolutionRequest::QueryComplete(int result_code) {
+void ConfiguredProxyResolutionRequest::OnAsyncResolutionComplete(
+    int result_code) {
   CHECK(!was_completed());
 
   // Remove `this` from the service before notifying it of completion to
   // prevent re-entrant dispatch if the service re-initializes synchronously.
   service_->RemovePendingRequest(this);
 
-  result_code = QueryDidComplete(result_code);
-  service_ = nullptr;
+  base::WeakPtr<ConfiguredProxyResolutionRequest> weak_this =
+      weak_factory_.GetWeakPtr();
+  result_code = FinalizeRequestResult(result_code);
+  if (!weak_this) {
+    return;
+  }
 
   CompletionOnceCallback callback = std::move(user_callback_);
   user_callback_.Reset();
@@ -238,23 +281,35 @@ int ConfiguredProxyResolutionRequest::ContinueProxyResolution() {
     }
   }
 
-  if (service_->ApplyPacBypassRules(url_, results_)) {
-    return OK;
+  if (!service_->IsReady()) {
+    // A dynamic routing config update started while override rule DNS probes
+    // were in flight. Pause here (with `is_started() == false`) so the service
+    // resumes this request once ready.
+    CHECK(service_->IsPacReady());
+    BeginWaitEvent(
+        NetLogEventType::
+            PROXY_RESOLUTION_SERVICE_WAITING_FOR_DYNAMIC_PROXY_CONFIGS);
+    return ERR_IO_PENDING;
   }
 
   // Required in case some override rules needed to run asynchronously, but
-  // ended up not applying, and there are e.g. manual proxy settings as
-  // fallback.
-  int rv = service_->TryToCompleteSynchronously(
+  // ended up not applying, and there are e.g. dynamic routing rules or manual
+  // proxy settings as fallback.
+  int rv = service_->TryResolveSynchronously(
       url_, /*bypass_override_rules=*/true, net_log_, results_);
   if (rv != ERR_IO_PENDING) {
     return rv;
   }
 
+  if (service_->ApplyPacBypassRules(url_, results_)) {
+    return OK;
+  }
+
   return service_->GetProxyResolver()->GetProxyForURL(
       url_, network_anonymization_key_, results_,
-      base::BindOnce(&ConfiguredProxyResolutionRequest::QueryComplete,
-                     base::Unretained(this)),
+      base::BindOnce(
+          &ConfiguredProxyResolutionRequest::OnAsyncResolutionComplete,
+          base::Unretained(this)),
       &resolve_job_, net_log_);
 }
 
@@ -281,20 +336,17 @@ void ConfiguredProxyResolutionRequest::OnDnsHostResolved(
                                                /*was_resolved_sync=*/false);
   });
 
-  if (!service_ || !service_->IsReady()) {
-    // Something happened during DNS resolution which invalidated the
-    // service's state (e.g. config update). The service will resume
-    // the current request if/when needed.
+  if (!service_) {
     return;
   }
 
   int rv = ContinueProxyResolution();
   if (rv == ERR_IO_PENDING) {
-    // Missing a required DNS resolution.
+    // Missing a required DNS resolution, or waiting on service readiness / PAC.
     return;
   }
 
-  QueryComplete(rv);
+  OnAsyncResolutionComplete(rv);
 }
 
 int ConfiguredProxyResolutionRequest::EvaluateApplicableOverrideRules() {
@@ -328,15 +380,17 @@ int ConfiguredProxyResolutionRequest::EvaluateApplicableOverrideRules() {
     applicable_override_rules_.pop();
   }
 
+  override_rules_evaluated_ = results_->is_empty();
   dns_results_.clear();
   net_log_.EndEvent(NetLogEventType::PROXY_RESOLUTION_OVERRIDE_RULES);
   return OK;
 }
 
-void ConfiguredProxyResolutionRequest::Reset() {
+void ConfiguredProxyResolutionRequest::ResetActiveJobState() {
   // The request may already be running in the resolver.
   resolve_job_.reset();
   applicable_override_rules_ = base::queue<ProxyConfig::ProxyOverrideRule>();
+  override_rules_evaluated_ = false;
   dns_results_.clear();
 }
 

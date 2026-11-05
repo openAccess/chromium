@@ -5,10 +5,10 @@
 #ifndef CHROMEOS_ASH_EXPERIENCES_ISOLATED_WEB_APP_SET_SHAPE_SERVICE_IMPL_H_
 #define CHROMEOS_ASH_EXPERIENCES_ISOLATED_WEB_APP_SET_SHAPE_SERVICE_IMPL_H_
 
-#include <optional>
 #include <vector>
 
 #include "base/component_export.h"
+#include "base/scoped_observation.h"
 #include "content/public/browser/document_user_data.h"
 #include "content/public/browser/permission_controller.h"
 #include "content/public/browser/permission_result.h"
@@ -16,6 +16,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "third_party/blink/public/mojom/set_shape/set_shape.mojom.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/views/widget/widget_observer.h"
 
 namespace content {
 class RenderFrameHost;
@@ -30,7 +31,8 @@ namespace ash {
 // Implements the mojo service for IWA blink extensions in ChromeOS.
 class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_ISOLATED_WEB_APP)
     SetShapeServiceImpl : public content::DocumentUserData<SetShapeServiceImpl>,
-                          public blink::mojom::SetShapeService {
+                          public blink::mojom::SetShapeService,
+                          public views::WidgetObserver {
  public:
   // If the `render_frame_host` is allowed to access this service, this function
   // creates an instance for the document and binds `receiver` to it. Otherwise
@@ -58,14 +60,20 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_ISOLATED_WEB_APP)
   void SetShape(const std::vector<gfx::Rect>& rects,
                 SetShapeCallback callback) override;
 
+  // views::WidgetObserver:
+  void OnWidgetBoundsChanged(views::Widget* widget,
+                             const gfx::Rect& new_bounds) override;
+  void OnWidgetDestroying(views::Widget* widget) override;
+
  private:
   friend class content::DocumentUserData<SetShapeServiceImpl>;
   DOCUMENT_USER_DATA_KEY_DECL();
 
   explicit SetShapeServiceImpl(content::RenderFrameHost* render_frame_host);
 
-  // Resets any custom shape and event targeter in the window back to default.
-  void ResetShape();
+  // Resets any custom shape in the window back to default and stops observing
+  // the widget.
+  void ResetShapeAndWidgetObservation();
 
   // Callback triggered when WINDOW_MANAGEMENT permission changes.
   void OnWindowManagementPermissionChanged(content::PermissionResult result);
@@ -86,9 +94,13 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_ISOLATED_WEB_APP)
 
   mojo::Receiver<blink::mojom::SetShapeService> receiver_{this};
 
-  // The ID set when a WINDOW_MANAGEMENT subscription is active.
-  std::optional<content::PermissionController::SubscriptionId>
-      permission_subscription_id_;
+  // Non-null while a WINDOW_MANAGEMENT subscription is active. Unsubscribes on
+  // destruction.
+  std::unique_ptr<content::PermissionController::PermissionSubscription>
+      permission_subscription_;
+
+  base::ScopedObservation<views::Widget, views::WidgetObserver>
+      widget_observation_{this};
 
   // When true the API is enabled for every document. Must only be set in tests.
   bool force_enable_api_for_testing_ = false;

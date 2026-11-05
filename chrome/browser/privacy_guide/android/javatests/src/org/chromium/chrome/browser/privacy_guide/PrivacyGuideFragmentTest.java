@@ -52,6 +52,7 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
@@ -89,13 +90,12 @@ import java.util.Map;
 /** Tests {@link PrivacyGuideFragment} */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DisableFeatures({ChromeFeatureList.SETTINGS_MULTI_COLUMN})
 @DoNotBatch(reason = "Manages sign-in state, which is global.")
 public class PrivacyGuideFragmentTest {
     private static final String SETTINGS_STATES_HISTOGRAM = "Settings.PrivacyGuide.SettingsStates";
     private static final String NEXT_NAVIGATION_HISTOGRAM = "Settings.PrivacyGuide.NextNavigation";
     private static final String ENTRY_EXIT_HISTOGRAM = "Settings.PrivacyGuide.EntryExit";
-    private static final int RENDER_TEST_REVISION = 3;
+    private static final int RENDER_TEST_REVISION = 5;
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule public SigninTestRule mSigninTestRule = new SigninTestRule();
@@ -113,6 +113,7 @@ public class PrivacyGuideFragmentTest {
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(ChromeRenderTestRule.Component.UI_SETTINGS_PRIVACY)
                     .setRevision(RENDER_TEST_REVISION)
+                    .setDescription("Vectorize expand_more and expand_less icons")
                     .build();
 
     @Mock private PrivacyGuideMetricsDelegate mPrivacyGuideMetricsDelegateMock;
@@ -179,6 +180,8 @@ public class PrivacyGuideFragmentTest {
         }
         @FragmentType int nextCardType = getNextCardType(cardType);
         onViewWaiting(withText(mTitleNames.get(nextCardType)));
+        CriteriaHelper.pollUiThread(
+                () -> mPrivacyGuideTestRule.getFragment().isViewPagerIdleForTesting());
     }
 
     private void navigateFromCardToPrevious(@FragmentType int cardType) {
@@ -187,6 +190,8 @@ public class PrivacyGuideFragmentTest {
         onViewWaiting(withText(R.string.back)).perform(click());
         @FragmentType int previousCardType = getPreviousCardType(cardType);
         onViewWaiting(withText(mTitleNames.get(previousCardType)));
+        CriteriaHelper.pollUiThread(
+                () -> mPrivacyGuideTestRule.getFragment().isViewPagerIdleForTesting());
     }
 
     private void goToCard(@FragmentType int cardType) {
@@ -264,10 +269,11 @@ public class PrivacyGuideFragmentTest {
     }
 
     private void clickOnArrowNextToRadioButtonWithText(int textId) {
-        onView(
+        onViewWaiting(
                         allOf(
                                 withId(R.id.expand_arrow),
-                                withParent(hasSibling(withChild(withText(textId))))))
+                                withParent(hasSibling(withChild(withText(textId))))),
+                        displayingAtLeastOption(0))
                 .perform(scrollTo(), click());
     }
 
@@ -278,7 +284,6 @@ public class PrivacyGuideFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    @DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testRenderWelcomeCard() throws IOException {
         launchPrivacyGuide();
         mRenderTestRule.render(getRootView(), "privacy_guide_welcome");
@@ -287,7 +292,6 @@ public class PrivacyGuideFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    @DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testRenderMSBBCard() throws IOException {
         launchPrivacyGuide();
         goToCard(FragmentType.MSBB);
@@ -298,7 +302,6 @@ public class PrivacyGuideFragmentTest {
     @LargeTest
     @Feature({"RenderTest"})
     @RequiresRestart("crbug.com/344675713")
-    @DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testRenderHistorySyncCard() throws IOException {
         launchPrivacyGuide();
         goToCard(FragmentType.HISTORY_SYNC);
@@ -308,7 +311,6 @@ public class PrivacyGuideFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    @DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511289221
     public void testRenderSBCard() throws IOException {
         launchPrivacyGuide();
@@ -319,7 +321,6 @@ public class PrivacyGuideFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    @DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511289221
     public void testRenderSBEnhancedBottomSheet() throws IOException {
         launchPrivacyGuide();
@@ -332,7 +333,6 @@ public class PrivacyGuideFragmentTest {
     @LargeTest
     @Feature({"RenderTest"})
     @RequiresRestart("crbug.com/344675713")
-    @DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testRenderCookiesCard() throws IOException {
         launchPrivacyGuide();
         goToCard(FragmentType.COOKIES);
@@ -342,7 +342,6 @@ public class PrivacyGuideFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    @DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testRenderCompletionCard() throws IOException {
         launchPrivacyGuide();
         goToCard(FragmentType.DONE);
@@ -1194,6 +1193,9 @@ public class PrivacyGuideFragmentTest {
     @Test
     @LargeTest
     @Feature({"PrivacyGuide"})
+    // TODO(crbug.com/574950567): Remove once the bottom sheet opens after recreation when
+    // settings is shown in a tab.
+    @DisableFeatures({ChromeFeatureList.SETTINGS_IN_TAB, ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP})
     public void testBottomSheetControllerOnRecreate() {
         launchPrivacyGuide();
         goToCard(FragmentType.SAFE_BROWSING);

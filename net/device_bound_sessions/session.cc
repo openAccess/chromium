@@ -389,7 +389,6 @@ bool Session::IsInScope(DbscRequest& request) {
 
 base::TimeDelta Session::MinimumBoundCookieLifetime(
     DbscRequest& request,
-    const FirstPartySetMetadata& first_party_set_metadata,
     const SessionKey& session_key) {
   base::Time current_time = base::Time::Now();
 
@@ -434,8 +433,7 @@ base::TimeDelta Session::MinimumBoundCookieLifetime(
   // CanonicalCookie.
   base::TimeDelta minimum_remaining_lifetime = base::TimeDelta::Max();
   for (const CookieCraving& craving : cookie_cravings_) {
-    if (!craving.ShouldIncludeForRequest(request, first_party_set_metadata,
-                                         options, params)) {
+    if (!craving.ShouldIncludeForRequest(request, options, params)) {
       continue;
     }
     // Note that in general if a CanonicalCookie isn't included, then the
@@ -531,6 +529,10 @@ void Session::RecordAccess() {
 
 bool Session::IncludesUrl(const GURL& url) const {
   return inclusion_rules_.EvaluateRequestUrl(url) == InclusionResult::kInclude;
+}
+
+bool Session::IsVisibleToOrigin(const url::Origin& origin) const {
+  return inclusion_rules_.MayIncludeOrigin(origin);
 }
 
 bool Session::AllowedToInitiateRefresh(
@@ -652,6 +654,7 @@ void Session::InformOfRefreshResult(bool was_proactive,
     case kPreProvisionedKeyNotFound:
     case kAttestationCertificationError:
     case kAttestationSigningError:
+    case kFederatedRegistrationRedirected:
       NOTREACHED();
   }
 
@@ -664,9 +667,7 @@ void Session::InformOfRefreshResult(bool was_proactive,
   }
 }
 
-bool Session::CanSetBoundCookie(
-    DbscRequest& request,
-    const FirstPartySetMetadata& first_party_set_metadata) const {
+bool Session::CanSetBoundCookie(DbscRequest& request) const {
   // TODO(crbug.com/438783631): Refactor this.
   // The below is all copied from
   // UrlRequestHttpJob::SaveCookiesAndNotifyHeadersComplete. We should refactor
@@ -700,8 +701,7 @@ bool Session::CanSetBoundCookie(
   options.set_same_site_cookie_context(same_site_context);
 
   for (const CookieCraving& cookie_craving : cookie_cravings_) {
-    if (cookie_craving.CanSetBoundCookie(request, first_party_set_metadata,
-                                         &options)) {
+    if (cookie_craving.CanSetBoundCookie(request, &options)) {
       return true;
     }
   }

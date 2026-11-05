@@ -7,10 +7,6 @@ assert(is_chromeos)
 static_library("file_system_provider") {
   sources = [
     "abort_callback.h",
-    "cloud_file_info.cc",
-    "cloud_file_info.h",
-    "cloud_file_system.cc",
-    "cloud_file_system.h",
     "extension_provider.cc",
     "extension_provider.h",
     "icon_set.cc",
@@ -25,8 +21,6 @@ static_library("file_system_provider") {
     "observer.h",
     "odfs_metrics.cc",
     "odfs_metrics.h",
-    "opened_cloud_file.cc",
-    "opened_cloud_file.h",
     "operation_request_manager.cc",
     "operation_request_manager.h",
     "provided_file_system.cc",
@@ -65,22 +59,16 @@ static_library("file_system_provider") {
     "watcher.h",
   ]
 
-  public_deps = [
-    "//chrome/browser:browser_public_dependencies",
-    "//components/app_icon_loader",
-  ]
+  public_deps = [ "//components/app_icon_loader" ]
 
   deps = [
     "//ash/constants",
     "//base",
     "//chrome/browser:browser_process",
-    "//chrome/browser/ash/browser_delegate",
     "//chrome/browser/ash/file_manager",
-    "//chrome/browser/ash/file_system_provider/content_cache",
     "//chrome/browser/ash/file_system_provider/operations",
     "//chrome/browser/ash/guest_os",
     "//chrome/browser/ash/policy/dlp",
-    "//chrome/browser/ash/profiles",
     "//chrome/browser/ash/smb_client",
     "//chrome/browser/ash/system_web_apps/apps",
     "//chrome/browser/profiles",
@@ -88,6 +76,9 @@ static_library("file_system_provider") {
     "//chrome/browser/ui/ash/multi_user",
     "//chrome/browser/ui/browser_window",
     "//chrome/common",
+    "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/browser_delegate",
+    "//chromeos/ash/experiences/extensions/common",
     "//chromeos/constants",
     "//components/pref_registry",
     "//components/user_manager",
@@ -105,7 +96,6 @@ static_library("file_system_provider") {
 
   allow_circular_includes_from = [
     "//chrome/browser/ash/file_manager",
-    "//chrome/browser/ash/file_system_provider/content_cache",
     "//chrome/browser/ash/file_system_provider/operations",
     "//chrome/browser/ash/policy/dlp",
     "//chrome/browser/ash/smb_client",
@@ -140,7 +130,6 @@ source_set("unit_tests") {
   testonly = true
 
   sources = [
-    "cloud_file_system_unittest.cc",
     "fake_registry.cc",
     "fake_registry.h",
     "logging_observer.cc",
@@ -160,11 +149,12 @@ source_set("unit_tests") {
     ":file_system_provider",
     ":test_support",
     "//base/test:test_support",
-    "//chrome/browser/ash/file_system_provider/content_cache",
     "//chrome/browser/ash/login/users:test_support",
     "//chrome/browser/profiles:profile",
     "//chrome/common",
     "//chrome/test:test_support",
+    "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/experiences/extensions/common",
     "//components/keyed_service/core",
     "//components/user_manager",
     "//content/test:test_support",
@@ -177,34 +167,8 @@ source_set("unit_tests") {
     "//url",
 
     # Gather unit tests from subdirectories.
-    "//chrome/browser/ash/file_system_provider/content_cache:unit_tests",
     "//chrome/browser/ash/file_system_provider/fileapi:unit_tests",
     "//chrome/browser/ash/file_system_provider/operations:unit_tests",
-  ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
-}
-
-source_set("browser_tests") {
-  testonly = true
-
-  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
-
-  sources = [ "cloud_file_system_browsertest.cc" ]
-
-  deps = [
-    ":file_system_provider",
-    ":test_support",
-    "//ash/constants",
-    "//base",
-    "//base/test:test_support",
-    "//chrome/browser/ash/file_manager:test_support",
-    "//chrome/browser/ui",
-    "//chrome/common",
-    "//chrome/test:test_support",
-    "//chromeos/constants",
-    "//content/test:test_support",
+    "//chrome/test/base:testing_browser_process",
   ]
 }

@@ -191,7 +191,7 @@ API_AVAILABLE(macos(14.0))
 
 - (void)startWithFilter:(SCContentFilter*)filter
           configuration:(SCStreamConfiguration*)config {
-  DCHECK(_taskRunner->RunsTasksInCurrentSequence());
+  CHECK(_taskRunner->RunsTasksInCurrentSequence(), base::NotFatalUntil::M160);
   NSError* error = nil;
   _stream = [[SCStream alloc] initWithFilter:filter
                                configuration:config
@@ -230,7 +230,7 @@ API_AVAILABLE(macos(14.0))
 - (void)stream:(SCStream*)stream
     didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
                    ofType:(SCStreamOutputType)type {
-  DCHECK(_taskRunner->RunsTasksInCurrentSequence());
+  CHECK(_taskRunner->RunsTasksInCurrentSequence(), base::NotFatalUntil::M160);
   if (type != SCStreamOutputTypeScreen || !_callback) {
     return;
   }
@@ -394,7 +394,7 @@ NativeScreenCapturePickerMac::CaptureSession::~CaptureSession() = default;
 
 NativeScreenCapturePickerMac::NativeScreenCapturePickerMac()
     : device_task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(!g_instance.load())
       << "Only one instance of NativeScreenCapturePickerMac is allowed.";
   g_instance.store(this);
@@ -411,10 +411,18 @@ void NativeScreenCapturePickerMac::Open(
     base::OnceClosure cancel_callback,
     base::OnceClosure error_callback,
     base::OnceCallback<void(DesktopMediaID::Id)> stop_audio_callback) {
-  DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
   CHECK(type == DesktopMediaID::Type::TYPE_SCREEN ||
         type == DesktopMediaID::Type::TYPE_WINDOW);
   if (@available(macOS 14.0, *)) {
+    if (picker_callback_) {
+      // The system picker is already showing for another request; reject this
+      // one rather than displacing the in-flight selection.
+      std::move(error_callback).Run();
+      return;
+    }
+
     active_picker_source_id_++;
     active_picker_type_ = type;
     LogSessionEvent(SCContentSharingPickerSessionEvent::kPickerOpened);
@@ -461,6 +469,14 @@ void NativeScreenCapturePickerMac::Open(
     } else {
       config.allowsChangingSelectedContent = false;
     }
+    NSMutableArray<NSNumber*>* excluded_window_ids = [NSMutableArray array];
+    for (NSWindow* window in [NSApp windows]) {
+      if (![window isVisible] && ![window isMiniaturized] &&
+          [window windowNumber] > 0) {
+        [excluded_window_ids addObject:@([window windowNumber])];
+      }
+    }
+    config.excludedWindowIDs = excluded_window_ids;
     NSNumber* max_stream_count = @(kMaxContentShareCountValue.Get());
     if (type == DesktopMediaID::Type::TYPE_SCREEN) {
       config.allowedPickerModes = SCContentSharingPickerModeSingleDisplay;
@@ -536,7 +552,8 @@ void NativeScreenCapturePickerMac::UpdateAudioStatusForSession(
 void NativeScreenCapturePickerMac::OnPickerObserverUpdated(
     SCContentFilter* filter,
     SCStream* stream) {
-  DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
 
   DesktopMediaID::Id session_id = 0;
   if (stream) {
@@ -550,6 +567,13 @@ void NativeScreenCapturePickerMac::OnPickerObserverUpdated(
 
   if (session_id == 0) {
     VLOG(1) << "NSCPM::OnPickerObserverUpdated: session_id is 0";
+    return;
+  }
+
+  if (!stream && !picker_callback_) {
+    VLOG(1) << "NSCPM::OnPickerObserverUpdated: "
+               "picker_callback_ is null for source id = "
+            << session_id;
     return;
   }
 
@@ -576,13 +600,6 @@ void NativeScreenCapturePickerMac::OnPickerObserverUpdated(
     return;
   }
 
-  if (!picker_callback_) {
-    VLOG(1) << "NSCPM::OnPickerObserverUpdated: "
-               "picker_callback_ is null for source id = "
-            << session_id;
-    return;
-  }
-
   VLOG(1) << "NSCPM::OnPickerObserverUpdated: for source id = " << session_id;
 
   if (!session.received_first_response) {
@@ -590,13 +607,22 @@ void NativeScreenCapturePickerMac::OnPickerObserverUpdated(
     LogUpdateToUma(active_picker_type_);
   }
 
+  cancel_callback_.Reset();
+  error_callback_.Reset();
+
   Source source;
   source.id = session_id;
+  if (@available(macOS 15.2, *)) {
+    if (filter && filter.includedDisplays.count > 0) {
+      source.display_id = filter.includedDisplays.firstObject.displayID;
+    }
+  }
   std::move(picker_callback_).Run(source);
 }
 
 void NativeScreenCapturePickerMac::OnPickerObserverCancelled(SCStream* stream) {
-  DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
   if (stream) {
     auto it = stream_to_id_map_.find(stream);
     if (it != stream_to_id_map_.end()) {
@@ -610,6 +636,13 @@ void NativeScreenCapturePickerMac::OnPickerObserverCancelled(SCStream* stream) {
     return;
   }
 
+  if (!cancel_callback_) {
+    VLOG(1) << "NSCPM::OnPickerObserverCancelled: "
+               "cancel_callback_ is null for source id = "
+            << active_picker_source_id_;
+    return;
+  }
+
   VLOG(1) << "NSCPM::OnPickerObserverCancelled: sourcce id = "
           << active_picker_source_id_;
   auto& session = GetOrCreateCaptureSession(active_picker_source_id_);
@@ -617,14 +650,23 @@ void NativeScreenCapturePickerMac::OnPickerObserverCancelled(SCStream* stream) {
     session.received_first_response = true;
     LogCancelToUma(active_picker_type_);
   }
-  if (cancel_callback_) {
-    std::move(cancel_callback_).Run();
-  }
+  picker_callback_.Reset();
+  error_callback_.Reset();
+  std::move(cancel_callback_).Run();
+  MaybeDeactivatePicker();
 }
 
 void NativeScreenCapturePickerMac::OnPickerObserverEncounteredError(
     NSError* error) {
-  DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
+
+  if (!error_callback_) {
+    VLOG(1) << "NSCPM::OnPickerObserverEncounteredError: "
+               "error_callback_ is null for source id = "
+            << active_picker_source_id_;
+    return;
+  }
 
   VLOG(1) << "NSCPM::OnPickerObserverEncounteredError: source id = "
           << active_picker_source_id_ << ", code = " << [error code]
@@ -635,14 +677,16 @@ void NativeScreenCapturePickerMac::OnPickerObserverEncounteredError(
     session.received_first_response = true;
     LogErrorToUma(active_picker_type_);
   }
-  if (error_callback_) {
-    std::move(error_callback_).Run();
-  }
+  picker_callback_.Reset();
+  cancel_callback_.Reset();
+  std::move(error_callback_).Run();
+  MaybeDeactivatePicker();
 }
 
 void NativeScreenCapturePickerMac::UpdateStreamMap(DesktopMediaID::Id id,
                                                    SCStream* stream) {
-  DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
   if (@available(macOS 14.0, *)) {
     if (!stream) {
       return;
@@ -656,15 +700,17 @@ void NativeScreenCapturePickerMac::UpdateStreamMap(DesktopMediaID::Id id,
 }
 
 void NativeScreenCapturePickerMac::Close(DesktopMediaID device_id) {
-  DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
   if (@available(macOS 14.0, *)) {
+    if (device_id.id == active_picker_source_id_) {
+      picker_callback_.Reset();
+      cancel_callback_.Reset();
+      error_callback_.Reset();
+    }
     ScheduleCleanup(device_id.id);
     active_source_ids_.erase(device_id.id);
-    // Don't deactivate the picker if there are any active capture sessions.
-    if (active_source_ids_.empty()) {
-      SCContentSharingPicker* picker = [SCContentSharingPicker sharedPicker];
-      picker.active = false;
-    }
+    MaybeDeactivatePicker();
     VLOG(1) << "NSCPM::Close: for source id = " << device_id.id;
   } else {
     NOTREACHED();
@@ -674,7 +720,8 @@ void NativeScreenCapturePickerMac::Close(DesktopMediaID device_id) {
 void NativeScreenCapturePickerMac::GetApplicationAudioCaptureId(
     DesktopMediaID::Id session_id,
     GetApplicationAudioCaptureIdCallback callback) {
-  DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
   std::optional<desktop_capture::ApplicationAudioCaptureId>
       application_audio_capture_id;
 
@@ -693,7 +740,8 @@ void NativeScreenCapturePickerMac::GetApplicationAudioCaptureId(
 
 std::unique_ptr<media::VideoCaptureDevice>
 NativeScreenCapturePickerMac::CreateDevice(const DesktopMediaID& source) {
-  DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
 
   auto& session = GetOrCreateCaptureSession(source.id);
   session.cleanup_timer.Stop();
@@ -712,7 +760,8 @@ NativeScreenCapturePickerMac::CreateDevice(const DesktopMediaID& source) {
 }
 
 void NativeScreenCapturePickerMac::ScheduleCleanup(DesktopMediaID::Id id) {
-  DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
   // We need to retain the content filter for some time in case the device is
   // restarted, e.g., when ApplyConstraints is called on a MediaStreamTrack.
   GetOrCreateCaptureSession(id).cleanup_timer.Start(
@@ -724,7 +773,8 @@ void NativeScreenCapturePickerMac::ScheduleCleanup(DesktopMediaID::Id id) {
 }
 
 void NativeScreenCapturePickerMac::CleanupContentFilter(DesktopMediaID::Id id) {
-  DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
   sessions_.erase(id);
   absl::erase_if(stream_to_id_map_, [&](const auto& stream_to_id_pair) {
     return stream_to_id_pair.second == id;
@@ -737,17 +787,13 @@ void NativeScreenCapturePickerMac::CleanupContentFilter(DesktopMediaID::Id id) {
 
 NativeScreenCapturePickerMac::CaptureSession&
 NativeScreenCapturePickerMac::GetOrCreateCaptureSession(DesktopMediaID::Id id) {
-  DCHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
   std::unique_ptr<CaptureSession>& session = sessions_[id];
   if (!session) {
     session = std::make_unique<CaptureSession>();
   }
   return *session;
-}
-
-base::WeakPtr<NativeScreenCapturePicker>
-NativeScreenCapturePickerMac::GetWeakPtr() {
-  return weak_ptr_factory_.GetWeakPtr();
 }
 
 void NativeScreenCapturePickerMac::CaptureScreenshot(
@@ -774,6 +820,7 @@ void NativeScreenCapturePickerMac::CaptureScreenshotInternal(
   // (e.g., if the user cancelled the picker or the window became invalid),
   // we cannot take a screenshot. Return a null bitmap.
   if (it == sessions_.end() || !it->second->filter) {
+    MaybeDeactivatePicker();
     std::move(callback).Run(SkBitmap());
     return;
   }
@@ -810,14 +857,39 @@ void NativeScreenCapturePickerMac::CaptureScreenshotInternal(
 
   config.queueDepth = kScreenshotQueueDepth;
 
-  EphemeralFrameGrabber* grabber =
-      [[EphemeralFrameGrabber alloc] initWithCallback:std::move(callback)];
+  EphemeralFrameGrabber* grabber = [[EphemeralFrameGrabber alloc]
+      initWithCallback:base::BindOnce(
+                           &NativeScreenCapturePickerMac::OnScreenshotCaptured,
+                           weak_ptr_factory_.GetWeakPtr(), session_id,
+                           std::move(callback))];
   [grabber startWithFilter:filter configuration:config];
+}
+
+void NativeScreenCapturePickerMac::OnScreenshotCaptured(
+    DesktopMediaID::Id session_id,
+    base::OnceCallback<void(const SkBitmap&)> callback,
+    const SkBitmap& bitmap) {
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence());
+  CleanupContentFilter(session_id);
+  MaybeDeactivatePicker();
+  std::move(callback).Run(bitmap);
+}
+
+void NativeScreenCapturePickerMac::MaybeDeactivatePicker() {
+  CHECK(device_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M160);
+  // Don't deactivate the picker if there are any active capture sessions.
+  if (active_source_ids_.empty()) {
+    SCContentSharingPicker* picker = [SCContentSharingPicker sharedPicker];
+    picker.active = false;
+  }
 }
 
 void CaptureScreenshotFromMacNativePicker(
     DesktopMediaID::Id session_id,
     base::OnceCallback<void(const SkBitmap&)> callback) {
+  auto bound_callback = base::BindPostTask(
+      base::SingleThreadTaskRunner::GetCurrentDefault(), std::move(callback));
   if (@available(macOS 14.0, *)) {
     content::GetUIThreadTaskRunner({})->PostTask(
         FROM_HERE,
@@ -830,13 +902,10 @@ void CaptureScreenshotFromMacNativePicker(
                 std::move(callback).Run(SkBitmap());
               }
             },
-            session_id,
-            base::BindPostTask(
-                base::SingleThreadTaskRunner::GetCurrentDefault(),
-                std::move(callback))));
+            session_id, std::move(bound_callback)));
     return;
   }
-  std::move(callback).Run(SkBitmap());
+  std::move(bound_callback).Run(SkBitmap());
 }
 
 std::unique_ptr<NativeScreenCapturePicker>

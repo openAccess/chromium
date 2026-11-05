@@ -17,7 +17,6 @@ import '../controls/settings_toggle_button.js';
 import '../settings_shared.css.js';
 import 'chrome://resources/ash/common/cr_elements/localized_link/localized_link.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {WebUiListenerMixin} from 'chrome://resources/ash/common/cr_elements/web_ui_listener_mixin.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
@@ -26,7 +25,8 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 import {DeepLinkingMixin} from '../common/deep_linking_mixin.js';
 import {RouteOriginMixin} from '../common/route_origin_mixin.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
-import type {Route} from '../router.js';
+import type {Route} from '../os_settings_routes.js';
+import {PrefsMixin} from '../prefs/prefs_mixin.js';
 import {Router, routes} from '../router.js';
 
 import {getTemplate} from './display_and_magnification_subpage.html.js';
@@ -85,29 +85,6 @@ export class SettingsDisplayAndMagnificationSubpageElement extends
         },
       },
 
-      /**
-       * Whether the reduced animations feature is enabled.
-       */
-      isAccessibilityReducedAnimationsEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean(
-            'isAccessibilityReducedAnimationsEnabled');
-        },
-      },
-
-      /**
-       * Whether the magnifier following ChromeVox focus feature is
-       * enabled.
-       */
-      isAccessibilityMagnifierFollowsChromeVoxEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean(
-              'isAccessibilityMagnifierFollowsChromeVoxEnabled');
-        },
-      },
-
       colorVisionDeficiencyTypeOptions_: {
         readOnly: true,
         type: Array,
@@ -159,8 +136,6 @@ export class SettingsDisplayAndMagnificationSubpageElement extends
       {[key: string]: number};
   declare private screenMagnifierZoomOptions_:
       Array<{value: number, name: string}>;
-  declare private isAccessibilityReducedAnimationsEnabled_: boolean;
-  declare private isAccessibilityMagnifierFollowsChromeVoxEnabled_: boolean;
 
   constructor() {
     super();

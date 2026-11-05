@@ -14,14 +14,10 @@
 
 #include "base/component_export.h"
 #include "base/functional/callback.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/version.h"
 #include "chromeos/printing/printer_configuration.h"
 #include "chromeos/printing/usb_printer_id.h"
-
-namespace network::mojom {
-class URLLoaderFactory;
-}
 
 namespace chromeos {
 
@@ -77,9 +73,13 @@ struct COMPONENT_EXPORT(CHROMEOS_PRINTING) PrinterSearchData {
 // based on manufacturer/model of the printer.
 //
 // All functions in this class must be called from a sequenced context.
-class COMPONENT_EXPORT(CHROMEOS_PRINTING) PpdProvider
-    : public base::RefCounted<PpdProvider> {
+class COMPONENT_EXPORT(CHROMEOS_PRINTING) PpdProvider {
  public:
+  PpdProvider(const PpdProvider&) = delete;
+  PpdProvider& operator=(const PpdProvider&) = delete;
+
+  virtual ~PpdProvider() = default;
+
   // Possible result codes of a Resolve*() call.
   enum CallbackResultCode {
     SUCCESS,
@@ -170,14 +170,8 @@ class COMPONENT_EXPORT(CHROMEOS_PRINTING) PpdProvider
                               const std::string& manufacturer,
                               const std::string& model)>;
 
-  // Called to get the current URLLoaderFactory on demand. Needs to be
-  // Repeating since it gets called once per fetch.
-  using LoaderFactoryGetter =
-      base::RepeatingCallback<network::mojom::URLLoaderFactory*()>;
-
   // Create and return a new PpdProvider with the given cache and options.
-  // A references to |url_context_getter| is taken.
-  static scoped_refptr<PpdProvider> Create(
+  static std::unique_ptr<PpdProvider> Create(
       const base::Version& current_version,
       scoped_refptr<PpdCache> cache,
       std::unique_ptr<PpdMetadataManager> metadata_manager,
@@ -247,8 +241,7 @@ class COMPONENT_EXPORT(CHROMEOS_PRINTING) PpdProvider
   static std::string PpdBasenameToCacheKey(std::string_view ppd_basename);
 
  protected:
-  friend class base::RefCounted<PpdProvider>;
-  virtual ~PpdProvider() {}
+  PpdProvider() = default;
 };
 
 }  // namespace chromeos

@@ -14,13 +14,12 @@ source_set("management_identity_impl") {
 
   sources = [ "management_identity.cc" ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     ":management_identity",
     "//chrome/browser:browser_process",
     "//chrome/browser:browser_process_platform_part",
     "//chrome/browser/enterprise",
+    "//chrome/browser/policy",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/profiles:profile_util",
     "//chrome/browser/ui:ui_features",
@@ -48,7 +47,6 @@ if (!is_android) {
     deps = [
       "//base",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//content/test:test_support",
       "//testing/gmock",
     ]

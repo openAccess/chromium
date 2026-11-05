@@ -27,6 +27,7 @@ void AccountPreviewDataService::RegisterProfilePrefs(
   registry->RegisterTimePref(prefs::kAccountPreviewDataLastUpdatePref,
                              base::Time());
   registry->RegisterDictionaryPref(prefs::kAccountPreviewPreference);
+  registry->RegisterDictionaryPref(prefs::kAccountPreviewSwitchingPreference);
   registry->RegisterIntegerPref(prefs::kAccountPreviewNonPeriodicFetchCountPref,
                                 0);
   registry->RegisterTimePref(prefs::kAccountPreviewDataLast429TimePref,
@@ -34,6 +35,8 @@ void AccountPreviewDataService::RegisterProfilePrefs(
   registry->RegisterTimePref(
       prefs::kAccountPreviewSelectionHeuristicScoresLastRecordedPref,
       base::Time());
+  registry->RegisterTimePref(
+      prefs::kAccountPreviewSwitchingHeuristicLastRecordedPref, base::Time());
 #if BUILDFLAG(IS_ANDROID)
   registry->RegisterDictionaryPref(prefs::kAccountPreviewExternalAppAccount);
 #endif

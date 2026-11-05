@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 
+#include "base/types/expected.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/form_group.h"
 #include "components/autofill/core/browser/field_types.h"
@@ -18,13 +19,22 @@ namespace autofill {
 
 class AddressComponent;
 class AlternativeFullName;
-class AutofillType;
 class NameFull;
 enum class VerificationStatus;
 
 // A form group that stores name information.
 class NameInfo : public FormGroup {
  public:
+  // Reason for a failure of a merge between two `NameInfo` objects.
+  enum class MergeFailureReason {
+    // The full name failed to merge but alternative was mergeable.
+    kNameFullFailed = 0,
+    // The full name was mergeable but the alternative name could not be merged.
+    kAlternativeNameFailed = 1,
+    // Both full and alternative names could not be merged.
+    kBothFailed = 2,
+  };
+
   // See `AutofillProfile::kDatabaseStoredTypes` for a documentation of the
   // purpose of this constant.
   static constexpr FieldTypeSet kDatabaseStoredTypes{NAME_HONORIFIC_PREFIX,
@@ -40,60 +50,36 @@ class NameInfo : public FormGroup {
                                                      ALTERNATIVE_FAMILY_NAME};
   explicit NameInfo(bool alternative_names_supported);
   NameInfo(const NameInfo& info);
+  NameInfo(NameInfo&& info) noexcept;
   NameInfo(std::unique_ptr<NameFull> name,
            std::unique_ptr<AlternativeFullName> alternative_name);
   NameInfo& operator=(const NameInfo& info);
+  NameInfo& operator=(NameInfo&& info) noexcept;
   ~NameInfo() override;
 
-  // Populates `result_name_info` with the result of merging the names in
-  // `new_name_info` and `old_name_info`. Returns true if successful. Expects
-  // that `new_name_info` and `old_name_info` have already been found to be
-  // mergeable. Regular names are merged first, after they are done, merging of
-  // alternative names starts.
+  // Populates and returns the result of merging the names in `new_name_info`
+  // and `old_name_info`. Returns `MergeFailureReason` outlining which
+  // part of the merge has failed (full, alternative, both) on failure.
   // TODO(crbug.com/359768803): Make this function non-static when NameInfo
   // becomes CountryCode aware.
-  static bool MergeNames(const NameInfo& new_name_info,
-                         AddressCountryCode new_country_code,
-                         const NameInfo& old_name_info,
-                         AddressCountryCode old_country_code,
-                         bool newer_was_more_recently_used,
-                         NameInfo& result_name_info);
-
-  // Returns true if `name_info_1` and `name_info_2` names are mergeable,
-  // that is one of the names is empty, the names are the same, or one name is a
-  // variation of the other. The comparison is insensitive to case, punctuation
-  // and diacritics.
-  // TODO(crbug.com/359768803): Make this function non-static when NameInfo
-  // becomes CountryCode aware.
-  static bool AreNamesMergeable(const NameInfo& name_info_1,
-                                const AddressCountryCode country_code_1,
-                                const NameInfo& name_info_2,
-                                const AddressCountryCode country_code_2);
-
-  // Returns true if `name_info_1` and `name_info_2` alternative names are
-  // mergeable, that is one of the alternative names is empty, alternative names
-  // are the same, or one alternative name is a variation of the other. The
-  // comparison is insensitive to case, punctuation and diacritics.
-  // TODO(crbug.com/359768803): Make this function non-static when NameInfo
-  // becomes CountryCode aware.
-  static bool AreAlternativeNamesMergeable(
-      const NameInfo& name_info_1,
-      const AddressCountryCode country_code_1,
-      const NameInfo& name_info_2,
-      const AddressCountryCode country_code_2);
+  static base::expected<NameInfo, MergeFailureReason> MergeNames(
+      const NameInfo& new_name_info,
+      const AddressCountryCode& new_country_code,
+      const NameInfo& old_name_info,
+      const AddressCountryCode& old_country_code,
+      bool newer_was_more_recently_used);
 
   bool operator==(const NameInfo& other) const;
 
   // FormGroup:
-  using FormGroup::GetInfo;
-  std::u16string GetInfo(const AutofillType& type,
+  std::u16string GetInfo(FieldType type,
                          std::string_view app_locale) const override;
   std::u16string GetRawInfo(FieldType type) const override;
 
   void SetRawInfoWithVerificationStatus(FieldType type,
                                         std::u16string_view value,
                                         VerificationStatus status) override;
-  bool SetInfoWithVerificationStatus(const AutofillType& type,
+  bool SetInfoWithVerificationStatus(FieldType type,
                                      std::u16string_view value,
                                      std::string_view app_locale,
                                      VerificationStatus status) override;
@@ -111,13 +97,11 @@ class NameInfo : public FormGroup {
   // cannot be completed.
   bool FinalizeAfterImport();
 
-  // Returns true if the structured-name information in |this| and |newer| are
-  // mergeable. Note, returns false if |newer| is variant of |this| or vice
+  // Merges the structured name-information of |newer| into |this|. Returns true
+  // if the merge succeeded, false otherwise.
+  // |newer| and |this| are mergeable if |newer| is variant of |this| or vice
   // versa. A name variant is a variation that allows for abbreviations, a
   // reordering and omission of the tokens.
-  bool IsStructuredNameMergeable(const NameInfo& newer) const;
-
-  // Merges the structured name-information of |newer| into |this|.
   bool MergeStructuredName(const NameInfo& newer,
                            bool newer_was_more_recently_used);
 
@@ -135,17 +119,6 @@ class NameInfo : public FormGroup {
   // Returns the storable type of `type`, if it exists.
   // It should only be used for `FieldTypeGroup::kName` types.
   std::optional<FieldType> GetStorableTypeOf(FieldType type) const;
-
-  // Returns true if the regular name should be migrated to a phonetic name.
-  // The incorrect assignment happened in the past when we did not have proper
-  // support for phonetic names.
-  // TODO(crbug.com/359768803): Remove this method once the migration is done.
-  bool HasNameEligibleForPhoneticNameMigration() const;
-
-  // Moves the regular name data to the phonetic name fields and clears the
-  // regular name tree.
-  // TODO(crbug.com/359768803): Remove this method once the migration is done.
-  void MigrateRegularNameToPhoneticName();
 
   // Convenience method to get the value of `field_type` to be used for
   // comparison. Returns an empty string if `field_type` is not
@@ -167,14 +140,14 @@ class NameInfo : public FormGroup {
   // (depending on the support).
   void OnCountryChange(const AddressCountryCode& new_country_code);
 
+  // Returns if the `alternative_name_` tree exists.
+  bool IsAlternativeNameSupported() const;
+
  private:
   // Returns the root node of either `name_` or `alternative_name_`
   // depending on the `type`.
   // This node is unique by definition.
   AddressComponent* GetRootForType(FieldType type);
-
-  // Returns if the `alternative_name_` tree exists.
-  bool IsAlternativeNameSupported() const;
 
   void CreateAlternativeNameTree();
   void DeleteAlternativeNameTree();
@@ -186,7 +159,7 @@ class NameInfo : public FormGroup {
 
   // This data structures store structured representation of the name and
   // alternative (e.g. phonetic) name.
-  const std::unique_ptr<NameFull> name_;
+  std::unique_ptr<NameFull> name_;
   // Exists only if `this` supports alternative names. Currently it is
   // only used for japanese profiles.
   std::unique_ptr<AlternativeFullName> alternative_name_;

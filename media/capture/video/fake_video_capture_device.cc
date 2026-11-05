@@ -162,6 +162,7 @@ gfx::ColorSpace GetDefaultColorSpace(VideoPixelFormat format) {
     case PIXEL_FORMAT_YUV420AP10:
     case PIXEL_FORMAT_YUV422AP10:
     case PIXEL_FORMAT_YUV444AP10:
+    case PIXEL_FORMAT_Y410:
       return gfx::ColorSpace::CreateREC601();
     case PIXEL_FORMAT_ARGB:
     case PIXEL_FORMAT_XRGB:
@@ -843,8 +844,8 @@ void OwnBufferFrameDeliverer::PaintAndDeliverNextFrame(
   base::TimeTicks now = base::TimeTicks::Now();
 
   VideoFrameMetadata metadata;
-  metadata.source_size = gfx::Size(frame_format.frame_size.width(),
-                                   frame_format.frame_size.height());
+  metadata.capture.source_size = gfx::Size(frame_format.frame_size.width(),
+                                           frame_format.frame_size.height());
   metadata.device_scale_factor = 1.0f;
   client()->OnIncomingCapturedData(
       buffer_, device_state()->format,

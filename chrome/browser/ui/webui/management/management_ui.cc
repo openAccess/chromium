@@ -34,7 +34,7 @@
 #include "ui/webui/webui_util.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/webui/theme_source.h"
+#include "chrome/browser/ui/webui/theme_source.h"  // nogncheck
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -203,10 +203,10 @@ void ManagementUI::GetLocalizedStrings(
       {kManagementScreenCaptureEvent, IDS_MANAGEMENT_SCREEN_CAPTURE_EVENT},
       {kManagementScreenCaptureData, IDS_MANAGEMENT_SCREEN_CAPTURE_DATA},
 #endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#if !BUILDFLAG(IS_CHROMEOS)
       {kManagementDeviceSignalsDisclosure,
        IDS_MANAGEMENT_DEVICE_SIGNALS_DISCLOSURE},
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#endif  // !BUILDFLAG(IS_CHROMEOS)
       {"browserReporting", IDS_MANAGEMENT_BROWSER_REPORTING},
       {"browserReportingExplanation",
        IDS_MANAGEMENT_BROWSER_REPORTING_EXPLANATION},
@@ -244,6 +244,8 @@ void ManagementUI::GetLocalizedStrings(
       {kThreatProtectionTitle, IDS_MANAGEMENT_THREAT_PROTECTION},
       {"connectorEvent", IDS_MANAGEMENT_CONNECTORS_EVENT},
       {"connectorVisibleData", IDS_MANAGEMENT_CONNECTORS_VISIBLE_DATA},
+      {"secureGatewayTitle", IDS_MANAGEMENT_SECURE_GATEWAY_TITLE},
+      {"secureGatewayDisclosure", IDS_MANAGEMENT_SECURE_GATEWAY_DISCLOSURE},
       {kManagementEnterpriseReportingEvent,
        IDS_MANAGEMENT_ENTERPRISE_REPORTING_EVENT},
       {kManagementEnterpriseReportingVisibleData,
@@ -257,6 +259,9 @@ void ManagementUI::GetLocalizedStrings(
       {kManagementOnBulkDataEntryEvent, IDS_MANAGEMENT_TEXT_ENTERED_EVENT},
       {kManagementOnBulkDataEntryVisibleData,
        IDS_MANAGEMENT_TEXT_ENTERED_VISIBLE_DATA},
+      {kManagementOnDataCopiedEvent, IDS_MANAGEMENT_TEXT_COPIED_EVENT},
+      {kManagementOnDataCopiedVisibleData,
+       IDS_MANAGEMENT_TEXT_COPIED_VISIBLE_DATA},
       {kManagementOnPrintEvent, IDS_MANAGEMENT_PAGE_PRINTED_EVENT},
       {kManagementOnPrintVisibleData, IDS_MANAGEMENT_PAGE_PRINTED_VISIBLE_DATA},
       {kManagementOnPageVisitedEvent, IDS_MANAGEMENT_PAGE_VISITED_EVENT},

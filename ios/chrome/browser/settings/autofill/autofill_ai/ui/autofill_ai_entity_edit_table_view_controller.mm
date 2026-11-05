@@ -6,8 +6,11 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_constants.h"
 #import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_ui_util.h"
+#import "ios/chrome/browser/autofill/model/message/autofill_legal_message_line.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/settings/autofill/autofill_ai/public/autofill_ai_settings_constants.h"
 #import "ios/chrome/browser/settings/autofill/autofill_ai/ui/autofill_ai_entity_country_item.h"
@@ -32,6 +35,14 @@ namespace {
 // the footer text 24pt.
 constexpr CGFloat kAttributesSectionFooterHeight = 16.0;
 
+// Blank line separating the storage notice from the disclosure legal messages
+// in the footer text.
+NSString* const kStorageNoticeSeparator = @"\n\n";
+
+// Line break separating consecutive disclosure legal messages in the footer
+// text.
+NSString* const kDisclosureLegalMessageSeparator = @"\n";
+
 typedef NS_ENUM(NSInteger, SectionIdentifier) {
   SectionIdentifierAttributes = kSectionIdentifierEnumZero,
   SectionIdentifierFooter,
@@ -40,6 +51,16 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
 typedef NS_ENUM(NSInteger, ItemType) {
   ItemTypeFooter = kItemTypeEnumZero,
 };
+
+// Returns whether `urls` contains an entry matching `target_url`.
+bool ContainsURL(NSArray<CrURL*>* urls, const GURL& target_url) {
+  for (CrURL* url in urls) {
+    if (url.gurl == target_url) {
+      return true;
+    }
+  }
+  return false;
+}
 }  // namespace
 
 @interface AutofillAIEntityEditTableViewController () <
@@ -57,8 +78,20 @@ typedef NS_ENUM(NSInteger, ItemType) {
   // Denotes the entity is saved in wallet.
   BOOL _isServerWalletItem;
 
+  // Denotes the entity is a private wallet pass.
+  BOOL _isPrivateWalletPass;
+
   // The user's email address to display in the footer.
   NSString* _userEmail;
+
+  // Legal message lines to display in the footer.
+  NSArray<AutofillLegalMessageLine*>* _legalMessages;
+
+  // URLs from the legal message lines displayed in the footer.
+  NSArray<CrURL*>* _legalMessageURLs;
+
+  // Whether `kLegalMessageShown` has already been logged for this presentation.
+  BOOL _hasLoggedLegalMessageShown;
 
   // The bottom save button displayed when creating a new entity.
   ChromeButton* _saveButton;
@@ -84,6 +117,9 @@ typedef NS_ENUM(NSInteger, ItemType) {
   // Guard to prevent re-entrant layout calls during date picker presentation
   // style transitions.
   BOOL _isTransitioningDatePickerStyle;
+
+  // The mode in which this view controller operates.
+  AutofillAIEntityEditMode _mode;
 }
 
 #pragma mark - UIViewController
@@ -95,7 +131,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   self.toolbarItems = @[];
   self.tableView.allowsSelectionDuringEditing = YES;
 
-  if (self.mode == AutofillAIEntityEditMode::kCreate) {
+  if (_mode == AutofillAIEntityEditMode::kCreate) {
     [self setEditing:YES animated:NO];
     self.shouldHideDoneButton = YES;
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
@@ -152,20 +188,11 @@ typedef NS_ENUM(NSInteger, ItemType) {
     }
   }
 
-  TableViewLinkHeaderFooterItem* footer =
-      [[TableViewLinkHeaderFooterItem alloc] initWithType:ItemTypeFooter];
-
-  if (_isServerWalletItem && _userEmail.length > 0) {
-    footer.text = autofill::GetSaveEntityToWalletFooterText(_userEmail);
-    footer.urls =
-        @[ [[CrURL alloc] initWithGURL:autofill::GetManageYourInfoURL()] ];
-  } else {
-    footer.text =
-        l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_SAVED_LOCALLY_FOOTER);
+  if (![model hasSectionForSectionIdentifier:SectionIdentifierFooter]) {
+    [model addSectionWithIdentifier:SectionIdentifierFooter];
   }
-
-  [model addSectionWithIdentifier:SectionIdentifierFooter];
-  [model setFooter:footer forSectionWithIdentifier:SectionIdentifierFooter];
+  [model setFooter:[self createFooterItem]
+      forSectionWithIdentifier:SectionIdentifierFooter];
 }
 
 #pragma mark - Setup
@@ -198,7 +225,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
 #pragma mark - SettingsRootTableViewController
 
 - (BOOL)shouldShowEditButton {
-  if (self.mode == AutofillAIEntityEditMode::kCreate) {
+  if (_mode == AutofillAIEntityEditMode::kCreate) {
     return NO;
   }
   return _editingAllowed || _isServerWalletItem;
@@ -206,17 +233,21 @@ typedef NS_ENUM(NSInteger, ItemType) {
 
 - (BOOL)shouldShowEditDoneButton {
   // Only show the top right Done button if we are editing an existing entity.
-  return self.mode == AutofillAIEntityEditMode::kViewAndEdit;
+  return _mode == AutofillAIEntityEditMode::kViewAndEdit;
 }
 
 #pragma mark - AutofillAIEntityEditConsumer
+
+- (void)setMode:(AutofillAIEntityEditMode)mode {
+  _mode = mode;
+}
 
 - (void)setTitle:(NSString*)title {
   // Store a copy to ensure we can regenerate the title if `_isServerWalletItem`
   // is set after this method is called.
   _titleText = [title copy];
   BOOL shouldUseBrandedTitle =
-      _isServerWalletItem && self.mode == AutofillAIEntityEditMode::kCreate;
+      _isServerWalletItem && _mode == AutofillAIEntityEditMode::kCreate;
   if (shouldUseBrandedTitle) {
     self.navigationItem.titleView =
         autofill::CreateBrandedTitleForWalletSave(title);
@@ -249,10 +280,32 @@ typedef NS_ENUM(NSInteger, ItemType) {
   if (_titleText.length > 0) {
     [self setTitle:_titleText];
   }
+  [self reloadFooterIfNotVisible];
+}
+
+- (void)setIsPrivateWalletPass:(BOOL)isPrivateWalletPass {
+  if (_isPrivateWalletPass == isPrivateWalletPass) {
+    return;
+  }
+  _isPrivateWalletPass = isPrivateWalletPass;
+  [self reloadFooterIfNotVisible];
 }
 
 - (void)setUserEmail:(NSString*)userEmail {
   _userEmail = [userEmail copy];
+  [self reloadFooterIfNotVisible];
+}
+
+// Sets the legal messages to be displayed in the footer.
+// Note: Like the other footer inputs, this does not reload the footer once the
+// view is on screen, intentionally preventing legal disclosures from jarringly
+// appearing mid-session (e.g. while the user is typing or scrolling).
+// Re-entering the view (e.g. closing and tapping "+Add" again) creates a brand
+// new `UIViewController` instance, so the updated legal messages will be
+// cleanly rendered during the next presentation.
+- (void)setLegalMessages:(NSArray<AutofillLegalMessageLine*>*)legalMessages {
+  _legalMessages = [legalMessages copy];
+  [self reloadFooterIfNotVisible];
 }
 
 - (void)updateItem:(TableViewItem*)item {
@@ -296,7 +349,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
 - (void)didFinishSavingWithLocalFallback:(BOOL)isLocalFallback {
   if (isLocalFallback) {
     [self.delegate showLocalSaveFallbackAlert];
-  } else if (self.mode == AutofillAIEntityEditMode::kCreate) {
+  } else if (_mode == AutofillAIEntityEditMode::kCreate) {
     [self.delegate dismissViewController:self];
   }
 }
@@ -382,7 +435,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
 }
 
 - (void)didTapSaveNewEntity {
-  CHECK(self.mode == AutofillAIEntityEditMode::kCreate);
+  CHECK(_mode == AutofillAIEntityEditMode::kCreate);
   if (![self validateFields]) {
     return;
   }
@@ -584,6 +637,11 @@ typedef NS_ENUM(NSInteger, ItemType) {
 #pragma mark - TableViewLinkHeaderFooterItemDelegate
 
 - (void)view:(TableViewLinkHeaderFooterView*)view didTapLinkURL:(CrURL*)URL {
+  if (ContainsURL(_legalMessageURLs, URL.gurl)) {
+    autofill::LogWalletNoticeFunnelEvent(
+        autofill::AutofillAiWalletNoticeFunnelEvents::kLinkClicked,
+        /*in_settings=*/true);
+  }
   [self.delegate didTapLinkWithURL:URL];
 }
 
@@ -671,7 +729,7 @@ typedef NS_ENUM(NSInteger, ItemType) {
   }
   BOOL isValid = missingFields.empty();
   BOOL buttonEnabled = isValid && !_loadingState;
-  if (self.mode == AutofillAIEntityEditMode::kCreate) {
+  if (_mode == AutofillAIEntityEditMode::kCreate) {
     if (_saveButton) {
       _saveButton.enabled = buttonEnabled;
     }
@@ -810,6 +868,96 @@ typedef NS_ENUM(NSInteger, ItemType) {
     }
   }
   _isTransitioningDatePickerStyle = NO;
+}
+
+// Returns the storage notice text shown at the top of the footer, which
+// explains where the entity is saved (this device or Google Wallet). This text
+// is authored by Chrome, as opposed to the disclosure legal messages below it,
+// which come from the server. Appends the URL it links to, if any, to `urls`.
+- (NSString*)textForStorageNoticeAppendingURLsTo:(NSMutableArray<CrURL*>*)urls {
+  if (!_isServerWalletItem || _userEmail.length == 0) {
+    return l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_SAVED_LOCALLY_FOOTER);
+  }
+
+  // Entities already stored in Wallet cannot be updated from settings, so the
+  // Wallet notice always describes saving the entity to Wallet.
+  return autofill::GetSaveEntityToWalletFooterTextAppendingURLsTo(
+      _userEmail, _isPrivateWalletPass, urls);
+}
+
+// Rebuilds the footer so it reflects the latest footer inputs, without touching
+// the attributes section. This keeps the footer correct regardless of the order
+// in which the mediator calls the consumer setters. Skipped before the view is
+// loaded, since `loadModel` builds the footer from the latest inputs anyway,
+// and once the view is on screen, so that the footer (notably the legal
+// disclosures) never changes under the user mid-session.
+- (void)reloadFooterIfNotVisible {
+  if (!self.isViewLoaded || self.view.window) {
+    return;
+  }
+
+  TableViewModel* model = self.tableViewModel;
+  if (![model hasSectionForSectionIdentifier:SectionIdentifierFooter]) {
+    return;
+  }
+
+  [model setFooter:[self createFooterItem]
+      forSectionWithIdentifier:SectionIdentifierFooter];
+  NSInteger footerSectionIndex =
+      [model sectionForSectionIdentifier:SectionIdentifierFooter];
+  [self.tableView
+        reloadSections:[NSIndexSet indexSetWithIndex:footerSectionIndex]
+      withRowAnimation:UITableViewRowAnimationNone];
+}
+
+// Creates and configures the footer item based on current model data. Any
+// setter of a property contributing to it, such as `_isServerWalletItem`,
+// `_userEmail` and `_legalMessages`, must call `reloadFooterIfNotVisible`.
+- (TableViewLinkHeaderFooterItem*)createFooterItem {
+  // `urls` must be filled in the same order the links appear in the text, so
+  // the storage notice is built before the disclosure legal messages.
+  NSMutableArray<CrURL*>* urls = [NSMutableArray array];
+  NSString* storageNoticeText = [self textForStorageNoticeAppendingURLsTo:urls];
+
+  NSMutableArray<CrURL*>* legalMessageURLs = [NSMutableArray array];
+  NSMutableArray<NSString*>* disclosureLegalMessageTexts =
+      [NSMutableArray array];
+  for (AutofillLegalMessageLine* disclosureLegalMessage in _legalMessages) {
+    NSString* lineText = autofill::TextForDisclosureLegalMessageAppendingURLsTo(
+        disclosureLegalMessage, legalMessageURLs);
+    if (lineText.length > 0) {
+      [disclosureLegalMessageTexts addObject:lineText];
+    }
+  }
+  [urls addObjectsFromArray:legalMessageURLs];
+  _legalMessageURLs = legalMessageURLs;
+
+  // The disclosure legal messages form a single block, separated from the
+  // storage notice by a blank line.
+  BOOL hasLegalMessages = disclosureLegalMessageTexts.count > 0;
+  NSString* text = storageNoticeText;
+  if (hasLegalMessages) {
+    text = [NSString
+        stringWithFormat:
+            @"%@%@%@", storageNoticeText, kStorageNoticeSeparator,
+            [disclosureLegalMessageTexts
+                componentsJoinedByString:kDisclosureLegalMessageSeparator]];
+  }
+
+  TableViewLinkHeaderFooterItem* footer =
+      [[TableViewLinkHeaderFooterItem alloc] initWithType:ItemTypeFooter];
+  footer.text = text;
+  footer.urls = urls;
+  if (hasLegalMessages) {
+    if (!_hasLoggedLegalMessageShown) {
+      _hasLoggedLegalMessageShown = YES;
+      autofill::LogWalletNoticeFunnelEvent(
+          autofill::AutofillAiWalletNoticeFunnelEvents::kLegalMessageShown,
+          /*in_settings=*/true);
+    }
+    footer.accessibilityIdentifier = kAutofillAISaveEntityLegalDisclosureId;
+  }
+  return footer;
 }
 
 @end

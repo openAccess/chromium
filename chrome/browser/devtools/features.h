@@ -16,7 +16,6 @@ extern const base::FeatureParam<std::string> kDevToolsConsoleInsightsModelId;
 extern const base::FeatureParam<double> kDevToolsConsoleInsightsTemperature;
 extern const base::FeatureParam<bool> kDevToolsConsoleInsightsOptIn;
 
-
 enum class DevToolsFreestylerUserTier {
   // Users who are internal testers or validators.
   // AIDA does not log these users in product usage metrics.
@@ -93,8 +92,10 @@ extern const base::FeatureParam<DevToolsFreestylerUserTier>
     kDevToolsAiCodeGenerationUserTier;
 
 BASE_DECLARE_FEATURE(kDevToolsAiCodeCompletionStyles);
-extern const base::FeatureParam<std::string> kDevToolsAiCodeCompletionStylesModelId;
-extern const base::FeatureParam<double> kDevToolsAiCodeCompletionStylesTemperature;
+extern const base::FeatureParam<std::string>
+    kDevToolsAiCodeCompletionStylesModelId;
+extern const base::FeatureParam<double>
+    kDevToolsAiCodeCompletionStylesTemperature;
 extern const base::FeatureParam<DevToolsFreestylerUserTier>
     kDevToolsAiCodeCompletionStylesUserTier;
 
@@ -119,8 +120,6 @@ BASE_DECLARE_FEATURE(kDevToolsEnableDurableMessages);
 
 BASE_DECLARE_FEATURE(kDevToolsAcceptDebuggingConnections);
 
-BASE_DECLARE_FEATURE(kDevToolsShowPolicyDialog);
-
 BASE_DECLARE_FEATURE(kDevToolsAiAssistanceContextSelectionAgent);
 
 BASE_DECLARE_FEATURE(kDevToolsConsoleInsightsTeasers);
@@ -128,6 +127,8 @@ extern const base::FeatureParam<bool>
     kDevToolsConsoleInsightsTeasersAllowWithoutGpu;
 
 BASE_DECLARE_FEATURE(kDevToolsAiV2Architecture);
+extern const base::FeatureParam<DevToolsFreestylerUserTier>
+    kDevToolsAiV2ArchitectureUserTier;
 
 BASE_DECLARE_FEATURE(kDevToolsComments);
 
@@ -150,6 +151,10 @@ BASE_DECLARE_FEATURE(kDevToolsAriaLiveRecording);
 BASE_DECLARE_FEATURE(kDevToolsMobileSafeAreaEmulation);
 
 BASE_DECLARE_FEATURE(kDevToolsTargetLevelEvaluation);
+
+BASE_DECLARE_FEATURE(kDevToolsNetworkBackendLinking);
+
+BASE_DECLARE_FEATURE(kDevToolsAiNaturalLanguageInterface);
 }  // namespace features
 
 #endif  // CHROME_BROWSER_DEVTOOLS_FEATURES_H_

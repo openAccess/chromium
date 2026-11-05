@@ -17,6 +17,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
+#include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
@@ -52,6 +53,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 using base::Bucket;
@@ -196,6 +198,7 @@ class TestSaveCardBubbleControllerImpl : public SaveCardBubbleControllerImpl {
     handle.set_has_committed(true);
     DidFinishNavigation(&handle);
   }
+
  protected:
   bool IsPaymentsSyncTransportEnabledWithoutSyncFeature() const override {
     return false;
@@ -228,8 +231,10 @@ class SaveCardBubbleControllerImplTest
         .WillByDefault(testing::Return(tab_strip_model_.get()));
     ON_CALL(mock_browser_window_, OpenGURL(testing::_, testing::_))
         .WillByDefault(
-            [this](const GURL& url, WindowOpenDisposition disposition) {
-              if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB) {
+            [this](const GURL& url,
+                   ui::mojom::WindowOpenDisposition disposition) {
+              if (disposition ==
+                  ui::mojom::WindowOpenDisposition::kNewForegroundTab) {
                 content::WebContents* new_contents = AddTab(url);
                 int new_index =
                     tab_strip_model_->GetIndexOfWebContents(new_contents);
@@ -355,9 +360,6 @@ class SaveCardBubbleControllerImplTest
       CloseBubble(close_reason);
     }
     controller()->OnBubbleClosed(close_reason);
-    if (controller()->ShouldShowPaymentSavedLabelAnimation()) {
-      controller()->OnAnimationEnded();
-    }
   }
 
   void AddCreditCard(const CreditCard& card) {
@@ -1678,8 +1680,6 @@ TEST_F(SaveCardBubbleControllerImplTest,
   ASSERT_NE(nullptr, controller()->GetPaymentBubbleView());
   EXPECT_EQ(controller()->GetWindowTitle(), u"Card saved");
   EXPECT_EQ(controller()->GetSavePaymentIconTooltipText(), u"Save card");
-  EXPECT_EQ(controller()->GetSaveSuccessAnimationStringId(),
-            IDS_AUTOFILL_CARD_SAVED);
 }
 
 TEST_F(SaveCardBubbleControllerImplTest,
@@ -1701,8 +1701,6 @@ TEST_F(SaveCardBubbleControllerImplTest,
   ASSERT_NE(nullptr, controller()->GetPaymentBubbleView());
   EXPECT_EQ(controller()->GetWindowTitle(), u"CVC saved");
   EXPECT_EQ(controller()->GetSavePaymentIconTooltipText(), u"Save CVC");
-  EXPECT_EQ(controller()->GetSaveSuccessAnimationStringId(),
-            IDS_AUTOFILL_CVC_SAVED);
 }
 
 TEST_F(SaveCardBubbleControllerImplTest,
@@ -2205,9 +2203,7 @@ TEST_F(SaveCardBubbleControllerImplTest,
 }
 
 class SaveCardBubbleControllerImplTestWithCvCStorageAndFilling
-    : public SaveCardBubbleControllerImplTest {
-
-};
+    : public SaveCardBubbleControllerImplTest {};
 
 TEST_F(SaveCardBubbleControllerImplTestWithCvCStorageAndFilling,
        LocalCardSaveOnlyDialogContent) {
@@ -2242,6 +2238,214 @@ TEST_F(SaveCardBubbleControllerImplTestWithCvCStorageAndFilling,
   EXPECT_EQ(controller()->GetExplanatoryMessage(),
             u"To pay faster next time, save your card and encrypted security "
             u"code to your device");
+}
+
+// Tests that invoking save card bubble flows on a non-tab WebContents (where
+// TabInterface::MaybeGetFromContents returns nullptr, such as in an extension
+// side panel or popup) does not crash, mutate state, or log metrics.
+TEST_F(SaveCardBubbleControllerImplTest,
+       NonTabWebContentsDoesNotCrashOrShowBubble) {
+  base::HistogramTester histogram_tester;
+  // `web_contents()` from ChromeRenderViewHostTestHarness is not added to
+  // `tab_strip_model_`, so it has no `TabInterface`.
+  ASSERT_EQ(tabs::TabInterface::MaybeGetFromContents(web_contents()), nullptr);
+
+  SaveCardBubbleControllerImpl::CreateForWebContents(web_contents());
+  auto* non_tab_controller =
+      SaveCardBubbleControllerImpl::FromWebContents(web_contents());
+  ASSERT_NE(non_tab_controller, nullptr);
+
+  for (bool show_prompt : {true, false}) {
+    non_tab_controller->OfferLocalSave(
+        autofill::test::GetCreditCard(),
+        SaveCreditCardOptions().with_show_prompt(show_prompt),
+        base::DoNothing());
+    EXPECT_EQ(non_tab_controller->GetPaymentBubbleView(), nullptr);
+    EXPECT_EQ(non_tab_controller->GetPaymentsBubbleType(),
+              PaymentsBubbleType::kInactive);
+    EXPECT_FALSE(non_tab_controller->IsIconVisible());
+
+    non_tab_controller->OfferUploadSave(
+        autofill::test::GetCreditCard(), LegalMessageLines(),
+        SaveCreditCardOptions().with_show_prompt(show_prompt),
+        base::DoNothing());
+    EXPECT_EQ(non_tab_controller->GetPaymentBubbleView(), nullptr);
+    EXPECT_EQ(non_tab_controller->GetPaymentsBubbleType(),
+              PaymentsBubbleType::kInactive);
+    EXPECT_FALSE(non_tab_controller->IsIconVisible());
+  }
+
+  histogram_tester.ExpectTotalCount(
+      "Autofill.SaveCreditCardPromptOffer.Local.FirstShow", 0);
+  histogram_tester.ExpectTotalCount(
+      "Autofill.SaveCreditCardPromptOffer.Upload.FirstShow", 0);
+}
+
+TEST_F(SaveCardBubbleControllerImplTest,
+       UploadCardholderNameUpdateOnlyDialogContent) {
+  ShowUploadBubble(
+      /*options=*/SaveCreditCardOptions()
+          .with_card_save_type(CardSaveType::kCardholderNameUpdateOnly)
+          .with_show_prompt(true));
+
+  ASSERT_EQ(PaymentsBubbleType::kUploadCardholderNameUpdate,
+            controller()->GetPaymentsBubbleType());
+  ASSERT_NE(nullptr, controller()->GetPaymentBubbleView());
+  EXPECT_EQ(controller()->GetWindowTitle(),
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_PROMPT_UPLOAD_SAVE_TITLE));
+  EXPECT_EQ(
+      controller()->GetExplanatoryMessage(),
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_PROMPT_UPLOAD_SAVE_EXPLANATION));
+  EXPECT_EQ(controller()->GetAcceptButtonText(),
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_BUBBLE_UPLOAD_SAVE_ACCEPT));
+  EXPECT_EQ(
+      controller()->GetDeclineButtonText(),
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_NO_THANKS_DESKTOP_UPLOAD_SAVE));
+  EXPECT_TRUE(controller()->GetLegalMessageLines().empty());
+}
+
+TEST_F(SaveCardBubbleControllerImplTest,
+       UploadCardholderNameUpdateOnly_OnSave_TrimsNameAndRunsCallback) {
+  base::MockCallback<
+      payments::PaymentsAutofillClient::UploadSaveCardPromptCallback>
+      callback;
+  controller()->OfferUploadSave(
+      autofill::test::GetMaskedServerCard(), LegalMessageLines(),
+      SaveCreditCardOptions()
+          .with_card_save_type(CardSaveType::kCardholderNameUpdateOnly)
+          .with_show_prompt(true),
+      callback.Get());
+
+  ASSERT_EQ(PaymentsBubbleType::kUploadCardholderNameUpdate,
+            controller()->GetPaymentsBubbleType());
+
+  EXPECT_CALL(callback,
+              Run(payments::PaymentsAutofillClient::SaveCardOfferUserDecision::
+                      kAccepted,
+                  testing::Field(&payments::PaymentsAutofillClient::
+                                     UserProvidedCardDetails::cardholder_name,
+                                 u"John Doe")));
+
+  payments::PaymentsAutofillClient::UserProvidedCardDetails details;
+  details.cardholder_name = u"  John Doe  ";
+  controller()->OnSaveButton(details);
+
+  EXPECT_EQ(PaymentsBubbleType::kUploadInProgress,
+            controller()->GetPaymentsBubbleType());
+  EXPECT_EQ(controller()->GetWindowTitle(),
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_PROMPT_UPLOAD_SAVE_TITLE));
+  EXPECT_EQ(
+      controller()->GetExplanatoryMessage(),
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_PROMPT_UPLOAD_SAVE_EXPLANATION));
+}
+
+TEST_F(SaveCardBubbleControllerImplTest,
+       UploadCardholderNameUpdateOnly_OnDecline_RunsCallback) {
+  base::MockCallback<
+      payments::PaymentsAutofillClient::UploadSaveCardPromptCallback>
+      callback;
+  controller()->OfferUploadSave(
+      autofill::test::GetMaskedServerCard(), LegalMessageLines(),
+      SaveCreditCardOptions()
+          .with_card_save_type(CardSaveType::kCardholderNameUpdateOnly)
+          .with_show_prompt(true),
+      callback.Get());
+
+  EXPECT_CALL(callback,
+              Run(payments::PaymentsAutofillClient::SaveCardOfferUserDecision::
+                      kDeclined,
+                  testing::Field(&payments::PaymentsAutofillClient::
+                                     UserProvidedCardDetails::cardholder_name,
+                                 u"")));
+
+  CloseBubble(PaymentsUiClosedReason::kCancelled);
+
+  EXPECT_EQ(PaymentsBubbleType::kInactive,
+            controller()->GetPaymentsBubbleType());
+}
+
+TEST_F(SaveCardBubbleControllerImplTest,
+       UploadCardholderNameUpdateOnly_OnSave_ShowConfirmationBubbleView) {
+  ShowUploadBubble(
+      /*options=*/SaveCreditCardOptions()
+          .with_card_save_type(CardSaveType::kCardholderNameUpdateOnly)
+          .with_show_prompt(true));
+  ASSERT_EQ(PaymentsBubbleType::kUploadCardholderNameUpdate,
+            controller()->GetPaymentsBubbleType());
+
+  payments::PaymentsAutofillClient::UserProvidedCardDetails details;
+  details.cardholder_name = u"John Doe";
+  controller()->OnSaveButton(details);
+  EXPECT_EQ(PaymentsBubbleType::kUploadInProgress,
+            controller()->GetPaymentsBubbleType());
+  EXPECT_TRUE(IsSaveCardBubbleVisible());
+  EXPECT_FALSE(IsConfirmationBubbleVisible());
+
+  ShowConfirmationBubbleView(/*card_saved=*/true);
+  EXPECT_EQ(PaymentsBubbleType::kUploadComplete,
+            controller()->GetPaymentsBubbleType());
+  EXPECT_FALSE(IsSaveCardBubbleVisible());
+  EXPECT_TRUE(IsConfirmationBubbleVisible());
+  EXPECT_TRUE(controller()->GetConfirmationUiParams().is_success);
+  EXPECT_TRUE(
+      controller()->GetConfirmationUiParams().should_display_wallet_logo);
+  EXPECT_EQ(
+      controller()->GetConfirmationUiParams().title_text,
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_CONFIRMATION_SUCCESS_TITLE_TEXT));
+  EXPECT_EQ(
+      controller()->GetConfirmationUiParams().description_text,
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_CONFIRMATION_SUCCESS_DESCRIPTION_TEXT));
+
+  controller()->HideSaveCardBubble();
+  EXPECT_EQ(PaymentsBubbleType::kInactive,
+            controller()->GetPaymentsBubbleType());
+  EXPECT_FALSE(IsConfirmationBubbleVisible());
+  EXPECT_FALSE(controller()->IsIconVisible());
+}
+
+TEST_F(
+    SaveCardBubbleControllerImplTest,
+    UploadCardholderNameUpdateOnly_OnSaveFailure_ShowFailureConfirmationBubbleView) {
+  ShowUploadBubble(
+      /*options=*/SaveCreditCardOptions()
+          .with_card_save_type(CardSaveType::kCardholderNameUpdateOnly)
+          .with_show_prompt(true));
+  ASSERT_EQ(PaymentsBubbleType::kUploadCardholderNameUpdate,
+            controller()->GetPaymentsBubbleType());
+
+  payments::PaymentsAutofillClient::UserProvidedCardDetails details;
+  details.cardholder_name = u"John Doe";
+  controller()->OnSaveButton(details);
+  EXPECT_EQ(PaymentsBubbleType::kUploadInProgress,
+            controller()->GetPaymentsBubbleType());
+  EXPECT_TRUE(IsSaveCardBubbleVisible());
+  EXPECT_FALSE(IsConfirmationBubbleVisible());
+
+  ShowConfirmationBubbleView(/*card_saved=*/false);
+  EXPECT_EQ(PaymentsBubbleType::kUploadComplete,
+            controller()->GetPaymentsBubbleType());
+  EXPECT_FALSE(IsSaveCardBubbleVisible());
+  EXPECT_TRUE(IsConfirmationBubbleVisible());
+  // The full set of UI params attributes is verified in
+  // SavePaymentMethodAndVirtualCardEnrollConfirmationUiParamsTest.
+  EXPECT_FALSE(controller()->GetConfirmationUiParams().is_success);
+  EXPECT_EQ(
+      controller()->GetConfirmationUiParams().title_text,
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_CARDHOLDER_NAME_CONFIRMATION_FAILURE_TITLE_TEXT));
+
+  controller()->HideSaveCardBubble();
+  EXPECT_EQ(PaymentsBubbleType::kInactive,
+            controller()->GetPaymentsBubbleType());
+  EXPECT_FALSE(IsConfirmationBubbleVisible());
+  EXPECT_FALSE(controller()->IsIconVisible());
 }
 
 }  // namespace

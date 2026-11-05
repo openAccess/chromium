@@ -7,9 +7,7 @@ package org.chromium.chrome.browser.media;
 import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
-import static org.mockito.Mockito.withSettings;
 
 import android.app.Activity;
 import android.view.ViewGroup;
@@ -47,9 +45,14 @@ public class TabSharingToolbarUiCoordinatorTest {
     @Mock private TopControlsStacker mTopControlsStacker;
     @Mock private Tab mTab;
     @Mock private Profile mWindowProfile;
-    @Mock private TabSharingUIBridge mBridge;
+    @Mock private TabSharingUiBridge mBridge;
+
+    @Mock(extraInterfaces = {WebContentsObserver.Observable.class})
     private WebContents mCapturer;
-    @Mock private WebContents mCapturee;
+
+    @Mock(extraInterfaces = {WebContentsObserver.Observable.class})
+    private WebContents mCapturee;
+
     @Mock private Profile mSessionProfile;
     @Mock private UrlFormatter.Natives mUrlFormatterJniMock;
     @Mock private MediaCaptureDevicesDispatcherAndroid.Natives mMediaCaptureJniMock;
@@ -61,10 +64,6 @@ public class TabSharingToolbarUiCoordinatorTest {
     @Before
     public void setUp() {
         MediaCaptureDevicesDispatcherAndroidJni.setInstanceForTesting(mMediaCaptureJniMock);
-        mCapturer =
-                mock(
-                        WebContents.class,
-                        withSettings().extraInterfaces(WebContentsObserver.Observable.class));
         Activity activity = Robolectric.buildActivity(Activity.class).create().get();
         activity.setTheme(R.style.Theme_BrowserUI_DayNight);
         mParentView = new FrameLayout(activity);
@@ -185,7 +184,7 @@ public class TabSharingToolbarUiCoordinatorTest {
         mCoordinator.onSharingSessionStopped(mBridge);
 
         // Start multiple sessions and destroy coordinator directly
-        TabSharingUIBridge bridge2 = Mockito.mock(TabSharingUIBridge.class);
+        TabSharingUiBridge bridge2 = Mockito.mock(TabSharingUiBridge.class);
         when(bridge2.getCapturer()).thenReturn(mCapturer);
         when(bridge2.getCapturee()).thenReturn(mCapturee);
         mCoordinator.onSharingSessionStarted(mBridge);
@@ -214,7 +213,7 @@ public class TabSharingToolbarUiCoordinatorTest {
         assertEquals(originalView, container.getChildAt(0));
 
         // The new session starts: the toolbar is swapped in place, still a single child.
-        TabSharingUIBridge newBridge = Mockito.mock(TabSharingUIBridge.class);
+        TabSharingUiBridge newBridge = Mockito.mock(TabSharingUiBridge.class);
         when(newBridge.getCapturer()).thenReturn(mCapturer);
         when(newBridge.getCapturee()).thenReturn(mCapturee);
         mCoordinator.onSharingSessionStarted(newBridge);

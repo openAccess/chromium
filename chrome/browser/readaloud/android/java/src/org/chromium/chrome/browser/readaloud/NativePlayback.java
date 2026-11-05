@@ -30,7 +30,9 @@ import org.chromium.content_public.browser.WebContents;
  *   <li>Created by {@link ReadAloudController} when audio playback is requested on an active tab.
  *   <li>Reuses a single anonymous {@link PlaybackListener.PlaybackData} instance across
  *       high-frequency progress notifications ({@code notifyPlaybackProgressUpdated}) to guarantee
- *       zero heap allocations and prevent GC pauses.
+ *       zero heap allocations and prevent GC pauses. The same applies to the {@link
+ *       PlaybackListener.PhraseTiming} instance reused across word highlight notifications ({@code
+ *       notifyWordHighlightUpdated}).
  *   <li>Delegates native control commands and pointer safety to {@link ReadAloudNativeBridge}.
  * </ul>
  */
@@ -40,10 +42,16 @@ class NativePlayback implements Playback {
     private final NativeMetadata mMetadata;
     private final @Nullable WebContents mWebContents;
     private final PlaybackListener.PlaybackData mPlaybackData;
+    private final PlaybackListener.PhraseTiming mPhraseTiming;
     private final ReadAloudNativeBridge mNativeBridge;
-    private @PlaybackListener.State int mState = PlaybackListener.State.BUFFERING;
+    private @PlaybackListener.State int mState = PlaybackListener.State.PLAYBACK_CREATION;
     private long mAbsolutePositionNanos;
     private long mTotalDurationNanos;
+    private int mPhraseAbsoluteStartIndex;
+    private int mPhraseAbsoluteEndIndex;
+    // False once the native service reports that the current content can't be highlighted
+    // (e.g. an overview, whose text isn't on the page).
+    private boolean mHighlightingSupported = true;
 
     NativePlayback(
             ReadAloudNativeBridge nativeBridge,
@@ -97,6 +105,41 @@ class NativePlayback implements Playback {
                         return mTotalDurationNanos;
                     }
                 };
+        // Reused across word highlight updates to prevent heap allocations and GC pauses.
+        // Listeners must read it synchronously in onPhraseChanged().
+        mPhraseTiming =
+                new PlaybackListener.PhraseTiming() {
+                    @Override
+                    public int absoluteStartIndex() {
+                        return mPhraseAbsoluteStartIndex;
+                    }
+
+                    @Override
+                    public int absoluteEndIndex() {
+                        return mPhraseAbsoluteEndIndex;
+                    }
+
+                    // The native service doesn't report times or paragraph-relative offsets.
+                    @Override
+                    public long startTimeMillis() {
+                        return 0;
+                    }
+
+                    @Override
+                    public long endTimeMillis() {
+                        return 0;
+                    }
+
+                    @Override
+                    public int relativeStartIndex() {
+                        return 0;
+                    }
+
+                    @Override
+                    public int relativeEndIndex() {
+                        return 0;
+                    }
+                };
     }
 
     /**
@@ -107,6 +150,50 @@ class NativePlayback implements Playback {
         ThreadUtils.assertOnUiThread();
         mMetadata.setTitle(title);
         mMetadata.setPublisher(publisher);
+        notifyMetadataChanged();
+    }
+
+    /**
+     * Called by {@link ReadAloudController} when the C++ service dispatches {@code OnTextChunked}
+     * via JNI with DOM article text segmented into paragraph chunks.
+     */
+    void onTextChunked(@Nullable String @Nullable [] chunks) {
+        ThreadUtils.assertOnUiThread();
+        if (chunks == null || chunks.length == 0) {
+            mMetadata.setFullText("");
+            mMetadata.setParagraphs(null);
+            notifyMetadataChanged();
+            return;
+        }
+
+        int estimatedSize = 0;
+        for (String chunk : chunks) {
+            if (chunk != null && !chunk.isEmpty()) {
+                estimatedSize += chunk.length() + 1;
+            }
+        }
+
+        StringBuilder fullText = new StringBuilder(estimatedSize);
+        Playback.PlaybackTextPart[] paragraphs = new Playback.PlaybackTextPart[chunks.length];
+        for (int i = 0; i < chunks.length; ++i) {
+            String chunk = chunks[i];
+            int offset = fullText.length();
+            int length = 0;
+            if (chunk != null && !chunk.isEmpty()) {
+                if (fullText.length() > 0) {
+                    fullText.append(" ");
+                }
+                offset = fullText.length();
+                fullText.append(chunk);
+                length = chunk.length();
+            }
+            paragraphs[i] =
+                    new NativeMetadata.TextPart(
+                            i, offset, length, Playback.PlaybackTextType.TEXT_TYPE_NORMAL);
+        }
+
+        mMetadata.setFullText(fullText.toString());
+        mMetadata.setParagraphs(paragraphs);
         notifyMetadataChanged();
     }
 
@@ -135,6 +222,38 @@ class NativePlayback implements Playback {
         mAbsolutePositionNanos = elapsedNanos;
         mTotalDurationNanos = durationNanos;
         notifyPlaybackDataChanged();
+    }
+
+    /**
+     * Called by {@link ReadAloudController} when the C++ service dispatches {@code
+     * OnHighlightingSupported} via JNI.
+     */
+    void setHighlightingSupported(boolean supported) {
+        ThreadUtils.assertOnUiThread();
+        mHighlightingSupported = supported;
+    }
+
+    /** Returns false if the native service reported that the content can't be highlighted. */
+    boolean isHighlightingSupported() {
+        ThreadUtils.assertOnUiThread();
+        return mHighlightingSupported;
+    }
+
+    /**
+     * Called by {@link ReadAloudController} when the C++ service dispatches {@code
+     * OnWordHighlightUpdated} via JNI. The offsets are in the same space as the metadata's full
+     * text and paragraphs. Dropped if highlighting isn't supported for the current content.
+     */
+    void notifyWordHighlightUpdated(int absoluteStartIndex, int absoluteEndIndex) {
+        ThreadUtils.assertOnUiThread();
+        if (!mHighlightingSupported) {
+            return;
+        }
+        mPhraseAbsoluteStartIndex = absoluteStartIndex;
+        mPhraseAbsoluteEndIndex = absoluteEndIndex;
+        for (PlaybackListener listener : mListeners) {
+            listener.onPhraseChanged(mPhraseTiming);
+        }
     }
 
     private void notifyPlaybackDataChanged() {
@@ -208,7 +327,7 @@ class NativePlayback implements Playback {
     @Override
     public void seekToWord(int paragraphIndex, int wordIndex) {
         ThreadUtils.assertOnUiThread();
-        // TODO(b/522834235): Implement word seeking in the native service.
+        mNativeBridge.seekToWord(paragraphIndex, wordIndex);
     }
 
     @Override

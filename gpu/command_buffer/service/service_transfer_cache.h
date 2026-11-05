@@ -17,6 +17,8 @@
 #include "base/functional/function_ref.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/memory_pressure_listener.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory_coordinator/memory_limit.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/trace_event/memory_dump_provider.h"
@@ -29,9 +31,9 @@
 #include "third_party/skia/include/core/SkRefCnt.h"
 #include "third_party/skia/include/core/SkYUVAInfo.h"
 
-class GrDirectContext;
-
 namespace gpu {
+
+class SharedContextState;
 
 // ServiceTransferCache is a GPU process interface for retrieving cached entries
 // from the transfer cache. These entries are populated by client calls to the
@@ -48,14 +50,15 @@ class GPU_GLES2_EXPORT ServiceTransferCache
   struct GPU_GLES2_EXPORT EntryKey {
     EntryKey(int decoder_id,
              cc::TransferCacheEntryType entry_type,
-             uint32_t entry_id);
+             uint64_t entry_id);
     int decoder_id;
     cc::TransferCacheEntryType entry_type;
-    uint32_t entry_id;
+    uint64_t entry_id;
   };
 
   ServiceTransferCache(const GpuPreferences& preferences,
-                       base::RepeatingClosure flush_callback);
+                       base::RepeatingClosure flush_callback,
+                       SharedContextState* shared_context_state = nullptr);
 
   ServiceTransferCache(const ServiceTransferCache&) = delete;
   ServiceTransferCache& operator=(const ServiceTransferCache&) = delete;
@@ -64,8 +67,6 @@ class GPU_GLES2_EXPORT ServiceTransferCache
 
   bool CreateLockedEntry(const EntryKey& key,
                          ServiceDiscardableHandle handle,
-                         GrDirectContext* context,
-                         skgpu::graphite::Recorder* graphite_recorder,
                          base::span<uint8_t> data);
   void CreateLocalEntry(const EntryKey& key,
                         std::unique_ptr<cc::ServiceTransferCacheEntry> entry);
@@ -77,10 +78,10 @@ class GPU_GLES2_EXPORT ServiceTransferCache
   // Memory coordinator interface:
   // Triggers immediate eviction of transfer cache entries down to
   // `memory_limit`.
-  void OnReleaseMemory(int memory_limit);
+  void OnReleaseMemory(base::MemoryLimit memory_limit);
   // Updates the target cache size limit non-destructively without forcing
   // immediate eviction.
-  void OnUpdateMemoryLimit(int memory_limit);
+  void OnUpdateMemoryLimit(base::MemoryLimit memory_limit);
 
   // base::trace_event::MemoryDumpProvider implementation.
   bool OnMemoryDump(const base::trace_event::MemoryDumpArgs& args,
@@ -88,11 +89,13 @@ class GPU_GLES2_EXPORT ServiceTransferCache
 
   // Test-only functions:
   void SetCacheSizeLimitForTesting(size_t cache_size_limit) {
+    EnsureContextCurrent();
     max_cache_size_limit_ = cache_size_limit;
     cache_size_limit_ = cache_size_limit;
     EnforceLimits();
   }
   void SetMaxCacheEntriesForTesting(size_t max_cache_entries) {
+    EnsureContextCurrent();
     max_cache_entries_ = max_cache_entries;
     EnforceLimits();
   }
@@ -101,6 +104,8 @@ class GPU_GLES2_EXPORT ServiceTransferCache
 
  private:
   FRIEND_TEST_ALL_PREFIXES(ServiceTransferCacheTest, PurgeEntryOnTimer);
+  FRIEND_TEST_ALL_PREFIXES(ServiceTransferCacheContextTest,
+                           PruneOldEntriesMakesContextCurrent);
 
   struct CacheEntryInternal {
     CacheEntryInternal(std::optional<ServiceDiscardableHandle> handle,
@@ -129,6 +134,8 @@ class GPU_GLES2_EXPORT ServiceTransferCache
 
   using EntryCache = base::LRUCache<EntryKey, CacheEntryInternal, EntryKeyComp>;
 
+  bool EnsureContextCurrent();
+  void AssertContextCurrentOrLost() const;
   void EnforceLimits();
   void MaybePostPruneOldEntries();
   void PruneOldEntries();
@@ -142,6 +149,7 @@ class GPU_GLES2_EXPORT ServiceTransferCache
   Iterator ForceDeleteEntry(Iterator it);
 
   const base::RepeatingClosure flush_callback_;
+  const raw_ptr<SharedContextState> shared_context_state_;
 
   EntryCache entries_;
 

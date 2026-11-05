@@ -17,6 +17,7 @@
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
@@ -32,7 +33,7 @@
 #include "net/proxy_resolution/win/windows_system_proxy_resolution_service.h"
 #include "net/proxy_resolution/win/winhttp_status.h"
 #include "net/test/test_with_task_environment.h"
-#include "services/proxy_resolver/public/mojom/proxy_resolver.mojom.h"
+#include "services/proxy_resolver/public/mojom/system_proxy_resolver.mojom.h"
 #include "services/proxy_resolver_win/winhttp_api_wrapper.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -396,7 +397,7 @@ class MockWinHttpAPIWrapper final : public WinHttpAPIWrapper {
   bool did_call_set_status_callback_ = false;
   bool did_call_get_ie_proxy_config_ = false;
   int proxy_resolver_identifier_ = 1;
-  std::set<HINTERNET> opened_proxy_resolvers_;
+  std::set<base::RawPtrIfPtrT<HINTERNET>> opened_proxy_resolvers_;
   bool did_call_create_proxy_resolver_ = false;
   bool did_call_get_proxy_for_url_ = false;
   bool did_call_get_proxy_result_ = false;

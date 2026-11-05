@@ -192,7 +192,7 @@ IN_PROC_BROWSER_TEST_F(GlicDelegatingSharingManagerBrowserTest,
   auto pin_event_sub = manager_.AddTabPinningStatusEventCallback(
       pin_event_future.GetRepeatingCallback());
 
-  base::test::TestFuture<const std::vector<tabs::TabInterface*>&>
+  base::test::TestFuture<const std::vector<raw_ptr<tabs::TabInterface>>&>
       pinned_tabs_future;
   auto pinned_tabs_sub = manager_.AddPinnedTabsChangedCallback(
       pinned_tabs_future.GetRepeatingCallback());
@@ -525,9 +525,6 @@ class GlicStablePinningDelegatingSharingManagerBrowserTest
 
 // TODO(b:479854184): make this work on Android.
 #if BUILDFLAG(IS_ANDROID)
-#define MAYBE_StablePinningDelegateSwap DISABLED_StablePinningDelegateSwap
-// TODO(crbug.com/542347163): Re-enable test.
-#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_StablePinningDelegateSwap DISABLED_StablePinningDelegateSwap
 #else
 #define MAYBE_StablePinningDelegateSwap StablePinningDelegateSwap

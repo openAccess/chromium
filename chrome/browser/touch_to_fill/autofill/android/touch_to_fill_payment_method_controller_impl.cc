@@ -19,22 +19,27 @@
 #include "chrome/browser/touch_to_fill/autofill/android/touch_to_fill_payment_method_view.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+#include "chrome/browser/ui/autofill/autofill_popup_hide_helper.h"
 #include "chrome/browser/ui/autofill/autofill_suggestion_controller_utils.h"
 #include "chrome/browser/ui/autofill/payments/android_bnpl_ui_delegate.h"
 #include "components/autofill/content/browser/content_autofill_client.h"
 #include "components/autofill/content/browser/content_autofill_driver.h"
+#include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
+#include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/bnpl_issuer.h"
 #include "components/autofill/core/browser/data_model/valuables/android/loyalty_card_android.h"
 #include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/integrators/touch_to_fill/touch_to_fill_payment_method_delegate.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/payments/bnpl_util.h"
 #include "components/autofill/core/browser/payments/payments_util.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/android/window_android.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -97,13 +102,27 @@ bool TouchToFillPaymentMethodControllerImpl::ShowPaymentMethods(
     return false;
   }
 
+  const bool show_scan_credit_card = delegate->ShouldShowScanCreditCard();
   if (!view->ShowPaymentMethods(
           this, suggestions,
           payments::TouchToFillDisplayOptions{
-              .show_scan_credit_card = delegate->ShouldShowScanCreditCard(),
+              .show_scan_credit_card = show_scan_credit_card,
               .show_gpay_logo = delegate->ShouldShowGPayLogo()})) {
     ResetJavaObject();
     return false;
+  }
+
+  if (show_scan_credit_card) {
+    bool is_new_user = true;
+    if (auto* client = ContentAutofillClient::FromWebContents(web_contents())) {
+      is_new_user = client->GetPersonalDataManager()
+                        .payments_data_manager()
+                        .GetCreditCards()
+                        .empty();
+    }
+    autofill::AutofillMetrics::LogScanCreditCardPromptShown(
+        autofill::AutofillMetrics::ScanCreditCardPromptEntryPoint::kBottomsheet,
+        is_new_user);
   }
 
   view_ = std::move(view);
@@ -277,14 +296,12 @@ bool TouchToFillPaymentMethodControllerImpl::ShowBnplIssuerTos(
     payments::BnplTosModel bnpl_tos_model,
     base::OnceClosure accept_callback,
     base::OnceClosure cancel_callback) {
-  if (!view_ ||
-      !view_->ShowBnplIssuerTos(
-          payments::BnplIssuerTosDetail(
-              bnpl_tos_model.issuer.issuer_id(),
-              /*is_linked_issuer=*/
-              bnpl_tos_model.issuer.payment_instrument().has_value(),
-              bnpl_tos_model.issuer.GetDisplayName(),
-              bnpl_tos_model.legal_message_lines))) {
+  if (!view_ || !view_->ShowBnplIssuerTos(payments::BnplIssuerTosDetail(
+                    bnpl_tos_model.issuer.issuer_id(),
+                    /*is_linked_issuer=*/
+                    bnpl_tos_model.issuer.payment_instrument().has_value(),
+                    bnpl_tos_model.issuer.GetDisplayName(),
+                    bnpl_tos_model.legal_message_lines))) {
     ResetJavaObject();
     return false;
   }
@@ -343,6 +360,16 @@ void TouchToFillPaymentMethodControllerImpl::OnDismissed(JNIEnv* env,
 
 void TouchToFillPaymentMethodControllerImpl::ScanCreditCard(JNIEnv* env) {
   if (delegate_) {
+    bool is_new_user = true;
+    if (auto* client = ContentAutofillClient::FromWebContents(web_contents())) {
+      is_new_user = client->GetPersonalDataManager()
+                        .payments_data_manager()
+                        .GetCreditCards()
+                        .empty();
+    }
+    autofill::AutofillMetrics::LogScanCreditCardPromptSelected(
+        autofill::AutofillMetrics::ScanCreditCardPromptEntryPoint::kBottomsheet,
+        is_new_user);
     delegate_->ScanCreditCard();
   }
 }
@@ -442,7 +469,7 @@ TouchToFillPaymentMethodControllerImpl::GetJavaObject() {
   if (!java_object_) {
     java_object_ = Java_TouchToFillPaymentMethodControllerBridge_create(
         base::android::AttachCurrentThread(),
-        reinterpret_cast<intptr_t>(
+        jni_zero::MakeRaw(
             static_cast<TouchToFillPaymentMethodViewController*>(this)),
         web_contents()->GetTopLevelNativeWindow()->GetJavaObject());
   }

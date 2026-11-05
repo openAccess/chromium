@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -31,6 +32,7 @@
 #include "ui/accessibility/platform/ax_platform_for_test.h"
 #include "ui/accessibility/platform/ax_platform_node.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
+#include "ui/base/ime/input_method.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/menu_source_type.mojom-shared.h"
@@ -41,6 +43,7 @@
 #include "ui/events/event_constants.h"
 #include "ui/events/event_handler.h"
 #include "ui/events/event_utils.h"
+#include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point.h"
@@ -49,6 +52,9 @@
 #include "ui/views/accessibility/ax_update_observer.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/button/menu_button.h"
+#include "ui/views/controls/button/menu_button_controller.h"
+#include "ui/views/controls/menu/menu_config.h"
 #include "ui/views/controls/menu/menu_controller_delegate.h"
 #include "ui/views/controls/menu/menu_delegate.h"
 #include "ui/views/controls/menu/menu_host.h"
@@ -57,6 +63,7 @@
 #include "ui/views/controls/menu/menu_scroll_view_container.h"
 #include "ui/views/controls/menu/menu_types.h"
 #include "ui/views/controls/menu/submenu_view.h"
+#include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/style/platform_style.h"
 #include "ui/views/test/ax_event_counter.h"
 #include "ui/views/test/menu_test_utils.h"
@@ -84,6 +91,10 @@
 
 #if BUILDFLAG(SUPPORTS_OZONE_X11)
 #include "ui/events/test/events_test_utils_x11.h"
+#endif
+
+#if BUILDFLAG(IS_MAC)
+#include "ui/views/controls/menu/menu_closure_animation_mac.h"
 #endif
 
 namespace views {
@@ -370,11 +381,14 @@ class MenuControllerTest : public ViewsTestBase,
                             bool control_or_command,
                             bool caps_lock);
 
-  gfx::Rect CalculateMenuBounds(const MenuBoundsOptions& options);
+  gfx::Rect CalculateMenuBounds(const MenuBoundsOptions& options,
+                                MenuItemView* menu_item = nullptr,
+                                ui::OwnedWindowAnchor* anchor_out = nullptr);
 
   gfx::Rect CalculateBubbleMenuBoundsWithoutInsets(
       const MenuBoundsOptions& options,
-      MenuItemView* menu_item = nullptr);
+      MenuItemView* menu_item = nullptr,
+      ui::OwnedWindowAnchor* anchor_out = nullptr);
 
   MenuItemView::MenuPosition menu_item_actual_position() const {
     return menu_item_->actual_menu_position();
@@ -502,6 +516,7 @@ class MenuControllerTest : public ViewsTestBase,
   bool ProcessMouseDragged(SubmenuView* source, const ui::MouseEvent& event);
   void ProcessMouseReleased(SubmenuView* source, const ui::MouseEvent& event);
   void ProcessMouseMoved(SubmenuView* source, const ui::MouseEvent& event);
+  bool ProcessMouseWheel(SubmenuView* source, const ui::MouseWheelEvent& event);
   void ProcessGestureEvent(SubmenuView* source, const ui::GestureEvent& event);
   void ProcessTouchEvent(SubmenuView* source, const ui::TouchEvent& event);
 
@@ -556,6 +571,10 @@ class MenuControllerTest : public ViewsTestBase,
 
   void DestroyMenuItem();
 
+  void SetHasMnemonics(bool has_mnemonics) {
+    menu_item_->has_mnemonics_ = has_mnemonics;
+  }
+
   Button* hot_button() { return menu_controller_->hot_button_; }
 
   void SetHotTrackedButton(Button* hot_button);
@@ -585,6 +604,12 @@ class MenuControllerTest : public ViewsTestBase,
   std::unique_ptr<test::TestMenuDelegate> menu_delegate_;
   raw_ptr<MenuController> menu_controller_ = nullptr;
   std::optional<base::i18n::ScopedRTLForTesting> scoped_rtl_;
+#if BUILDFLAG(IS_MAC)
+  // test::WaitForMenuClosureAnimation() only completes the closure when
+  // animations are disabled.
+  MenuClosureAnimationMac::ScopedDisableAnimationsForTesting
+      disable_closure_animations_;
+#endif
 };
 
 void MenuControllerTest::SetUp() {
@@ -623,12 +648,12 @@ void MenuControllerTest::CreateMenu(const CreateMenuOptions& options) {
     menu_controller_ =
         new MenuController(for_drop(), menu_controller_delegate_.get());
   }
-  menu_item_->set_controller(menu_controller_);
+  menu_item_->SetController(menu_controller_);
 
   if (options.show) {
     MenuItemView* root_item =
         options.item ? options.item.get() : menu_item_.get();
-    root_item->set_controller(menu_controller_);
+    root_item->SetController(menu_controller_);
     menu_controller_->Run(owner(), nullptr, root_item, gfx::Rect(),
                           options.position, ui::mojom::MenuSourceType::kNone,
                           options.menu_type);
@@ -684,18 +709,28 @@ void MenuControllerTest::DispatchKeyWithFlags(ui::KeyboardCode key_code,
 }
 
 gfx::Rect MenuControllerTest::CalculateMenuBounds(
-    const MenuBoundsOptions& options) {
-  SetUpMenuControllerForCalculateBounds(options, menu_item_.get());
+    const MenuBoundsOptions& options,
+    MenuItemView* menu_item,
+    ui::OwnedWindowAnchor* anchor_out) {
+  if (!menu_item) {
+    menu_item = menu_item_.get();
+  }
+  SetUpMenuControllerForCalculateBounds(options, menu_item);
   MenuController::MenuOpenDirection resulting_direction;
   ui::OwnedWindowAnchor anchor;
-  return menu_controller_->CalculateMenuBounds(
-      menu_item_.get(), MenuController::MenuOpenDirection::kLeading,
+  const gfx::Rect bounds = menu_controller_->CalculateMenuBounds(
+      menu_item, MenuController::MenuOpenDirection::kLeading,
       &resulting_direction, &anchor);
+  if (anchor_out) {
+    *anchor_out = anchor;
+  }
+  return bounds;
 }
 
 gfx::Rect MenuControllerTest::CalculateBubbleMenuBoundsWithoutInsets(
     const MenuBoundsOptions& options,
-    MenuItemView* menu_item) {
+    MenuItemView* menu_item,
+    ui::OwnedWindowAnchor* anchor_out) {
   if (!menu_item) {
     menu_item = menu_item_.get();
   }
@@ -708,6 +743,9 @@ gfx::Rect MenuControllerTest::CalculateBubbleMenuBoundsWithoutInsets(
   bounds.Inset(menu_item->GetSubmenu()
                    ->GetScrollViewContainer()
                    ->outside_border_insets());
+  if (anchor_out) {
+    *anchor_out = anchor;
+  }
   return bounds;
 }
 
@@ -717,6 +755,7 @@ gfx::Rect MenuControllerTest::CalculateExpectedMenuAnchorRect(
     return menu_controller_->state_.initial_bounds;
   }
   gfx::Rect bounds = menu_item->GetBoundsInScreen();
+  bounds.Inset(menu_item->GetHighlightInsets());
   bounds.set_height(1);
   return bounds;
 }
@@ -773,7 +812,7 @@ void MenuControllerTest::TestMenuControllerReplacementDuringDrag() {
   menu_item()->GetSubmenu()->Close();
   menu_controller_ =
       new MenuController(/*for_drop=*/false, menu_controller_delegate_.get());
-  menu_item_->set_controller(menu_controller_);
+  menu_item_->SetController(menu_controller_);
   menu_controller_->Run(owner_.get(), nullptr, menu_item(), gfx::Rect(),
                         MenuAnchorPosition::kTopLeft);
   EXPECT_TRUE(showing());
@@ -990,6 +1029,11 @@ void MenuControllerTest::ProcessMouseMoved(SubmenuView* source,
   menu_controller_->OnMouseMoved(source, ConvertEvent(source, event));
 }
 
+bool MenuControllerTest::ProcessMouseWheel(SubmenuView* source,
+                                           const ui::MouseWheelEvent& event) {
+  return menu_controller_->OnMouseWheel(source, ConvertEvent(source, event));
+}
+
 void MenuControllerTest::ProcessGestureEvent(SubmenuView* source,
                                              const ui::GestureEvent& event) {
   ui::GestureEvent converted_event = ConvertEvent(source, event);
@@ -1063,13 +1107,8 @@ void MenuControllerTest::DestroyMenuController() {
     return;
   }
 
-  if (!owner_->IsClosed()) {
-    owner_->RemoveObserver(menu_controller_);
-  }
-
-  menu_controller_->showing_ = false;
-  menu_controller_->owner_ = nullptr;
-  delete menu_controller_.ExtractAsDangling();
+  menu_controller_->ClearOwner();
+  menu_controller_.ExtractAsDangling()->Destroy();
 }
 
 // static
@@ -1220,6 +1259,89 @@ TEST_F(MenuControllerTest, InitialSelectedItem) {
   check_has_command(FindInitialSelectableMenuItemDown(menu_item()), 2);
   // The last selectable item should be item "Two".
   check_has_command(FindInitialSelectableMenuItemUp(menu_item()), 2);
+}
+
+// Tests that disabled titles (section headers) are only traversable by
+// keyboard when a screen reader is active, whereas other disabled items are
+// traversable whenever native accessibility APIs are in use.
+TEST_F(MenuControllerTest, DisabledTitleTraversableOnlyWithScreenReader) {
+  CreateMenu();
+  // The title is appended after item "Four".
+  MenuItemView* const title = menu_item()->AppendTitle(u"Title");
+  title->SetEnabled(false);
+  MenuItemView* const disabled_item =
+      menu_item()->GetSubmenu()->GetMenuItemAt(0);
+  disabled_item->SetEnabled(false);
+
+  // Without assistive technology, neither is traversable.
+  EXPECT_FALSE(title->IsTraversableByKeyboard());
+  EXPECT_FALSE(disabled_item->IsTraversableByKeyboard());
+  EXPECT_EQ(4, FindInitialSelectableMenuItemUp(menu_item())->GetCommand());
+
+  {
+    // With native accessibility APIs but no screen reader (common on Windows),
+    // the disabled item is traversable but the title is not.
+    const ui::ScopedAXModeSetter ax_mode_setter(ui::AXMode::kNativeAPIs);
+    EXPECT_FALSE(title->IsTraversableByKeyboard());
+    EXPECT_TRUE(disabled_item->IsTraversableByKeyboard());
+    EXPECT_EQ(4, FindInitialSelectableMenuItemUp(menu_item())->GetCommand());
+  }
+
+  {
+    // With a screen reader, both are traversable.
+    const ui::ScopedAXModeSetter ax_mode_setter(
+        ui::AXMode(ui::AXMode::kNativeAPIs | ui::AXMode::kScreenReader));
+    EXPECT_TRUE(title->IsTraversableByKeyboard());
+    EXPECT_TRUE(disabled_item->IsTraversableByKeyboard());
+    EXPECT_EQ(title, FindInitialSelectableMenuItemUp(menu_item()));
+  }
+
+  {
+    // ChromeOS can set kScreenReader without kNativeAPIs. The title is
+    // traversable, while other disabled items still depend on kNativeAPIs.
+    const ui::ScopedAXModeSetter ax_mode_setter(ui::AXMode::kScreenReader);
+    EXPECT_TRUE(title->IsTraversableByKeyboard());
+    EXPECT_FALSE(disabled_item->IsTraversableByKeyboard());
+  }
+}
+
+// Tests that accessibility indices of a disabled title match its keyboard
+// traversability, i.e. it is only counted when a screen reader is active.
+TEST_F(MenuControllerTest, AccessibilityDisabledTitleIndices) {
+  CreateMenu();
+  MenuItemView* const title = menu_item()->AppendTitle(u"Title");
+  title->SetEnabled(false);
+  const MenuItemView* const first_item =
+      menu_item()->GetSubmenu()->GetMenuItemAt(0);
+  ui::AXNodeData data;
+
+  {
+    const ui::ScopedAXModeSetter ax_mode_setter(ui::AXMode::kNativeAPIs);
+    OpenMenu(menu_item());
+
+    title->GetViewAccessibility().GetAccessibleNodeData(&data);
+    EXPECT_FALSE(data.HasIntAttribute(ax::mojom::IntAttribute::kPosInSet));
+    data = ui::AXNodeData();
+    first_item->GetViewAccessibility().GetAccessibleNodeData(&data);
+    EXPECT_EQ(1, data.GetIntAttribute(ax::mojom::IntAttribute::kPosInSet));
+    EXPECT_EQ(4, data.GetIntAttribute(ax::mojom::IntAttribute::kSetSize));
+  }
+
+  {
+    const ui::ScopedAXModeSetter ax_mode_setter(
+        ui::AXMode(ui::AXMode::kNativeAPIs | ui::AXMode::kScreenReader));
+    // Recompute the indices under the new mode.
+    MenuChildrenChanged(menu_item());
+
+    data = ui::AXNodeData();
+    title->GetViewAccessibility().GetAccessibleNodeData(&data);
+    EXPECT_EQ(5, data.GetIntAttribute(ax::mojom::IntAttribute::kPosInSet));
+    EXPECT_EQ(5, data.GetIntAttribute(ax::mojom::IntAttribute::kSetSize));
+    data = ui::AXNodeData();
+    first_item->GetViewAccessibility().GetAccessibleNodeData(&data);
+    EXPECT_EQ(1, data.GetIntAttribute(ax::mojom::IntAttribute::kPosInSet));
+    EXPECT_EQ(5, data.GetIntAttribute(ax::mojom::IntAttribute::kSetSize));
+  }
 }
 
 // Verifies that the scroll arrow is shown when the menu content
@@ -1760,11 +1882,30 @@ TEST_F(MenuControllerTest, ChildButtonHotTrackedWhenNested) {
   EXPECT_EQ(button2, hot_button());
 }
 
+// Tests that destroying a non-root MenuItemView subtree notifies the
+// MenuController so it drops its references to the destroyed items. Only the
+// root item holds a direct controller pointer, so the destructor has to walk up
+// to the root. Regression test for crbug.com/571434516.
+TEST_F(MenuControllerTest, NonRootItemDestructionClearsControllerState) {
+  CreateMenu();
+  MenuItemView* const submenu_item = menu_item()->AppendSubMenu(10, u"Submenu");
+  MenuItemView* const child = submenu_item->AppendMenuItem(11, u"Child");
+  ShowSubmenu(submenu_item->GetSubmenu());
+  SetState(child);
+  ASSERT_EQ(child, pending_state_item());
+
+  // Detach and destroy the subtree directly, bypassing ChildrenChanged() (which
+  // would move the selection away first).
+  menu_item()->GetSubmenu()->RemoveChildViewT(submenu_item).reset();
+
+  EXPECT_EQ(nullptr, pending_state_item());
+  EXPECT_EQ(nullptr, menu_controller()->GetSelectedMenuItem());
+}
+
 // Tests that a menu opened asynchronously, will notify its
 // MenuControllerDelegate when Accept is called.
 TEST_F(MenuControllerTest, AsynchronousAccept) {
   CreateMenu();
-  views::test::DisableMenuClosureAnimations();
 
   EXPECT_EQ(0, menu_controller_delegate()->on_menu_closed_called());
 
@@ -2120,7 +2261,6 @@ TEST_F(MenuControllerTest, ForwardsEventsToNativeViewForGestures) {
 // gesture events to owner.
 TEST_F(MenuControllerTest, NoTouchCloseWhenSendingGesturesToOwner) {
   CreateMenu();
-  views::test::DisableMenuClosureAnimations();
 
   // Owner wants the gesture events.
   menu_controller()->set_send_gesture_events_to_owner(true);
@@ -2156,7 +2296,6 @@ TEST_F(MenuControllerTest, NoTouchCloseWhenSendingGesturesToOwner) {
 // occur.
 TEST_F(MenuControllerTest, AsynchronousRepostEvent) {
   CreateMenu();
-  views::test::DisableMenuClosureAnimations();
 
   auto nested_delegate = std::make_unique<TestMenuControllerDelegate>();
   menu_controller()->AddNestedDelegate(nested_delegate.get());
@@ -2189,11 +2328,54 @@ TEST_F(MenuControllerTest, AsynchronousRepostEvent) {
   EXPECT_EQ(MenuController::ExitType::kAll, menu_controller()->exit_type());
 }
 
+// Tests that clicking outside the menu (including on the owning MenuButton)
+// releases the button's pressed lock immediately while the Mac closure
+// animation runs, and that activating the MenuButton again interrupts any
+// in-progress closure animation so the menu can reopen.
+TEST_F(MenuControllerTest, RepostEventReleasesPressedLockAndAllowsReopen) {
+  CreateMenu();
+
+  bool reopened_while_not_showing = false;
+  auto* button = owner()->SetContentsView(
+      std::make_unique<MenuButton>(base::BindLambdaForTesting([&]() {
+                                     reopened_while_not_showing = !showing();
+                                   }),
+                                   u"Menu Button"));
+  button->SetBoundsRect(gfx::Rect(200, 0, 50, 50));
+
+  menu_controller()->Run(owner(), button->button_controller(), menu_item(),
+                         button->GetBoundsInScreen(),
+                         MenuAnchorPosition::kTopLeft);
+  EXPECT_EQ(Button::STATE_PRESSED, button->GetState());
+
+  ShowSubmenu();
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+  const gfx::Point button_loc = View::ConvertPointFromScreen(
+      submenu, button->GetBoundsInScreen().CenterPoint());
+
+  SetSelectionOnPointerDown(
+      submenu,
+      ui::MouseEvent(ui::EventType::kMousePressed, button_loc, button_loc,
+                     ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON, 0));
+
+  // The button's pressed lock should be released immediately (without waiting
+  // for MenuClosureAnimationMac) so the 100ms post-close debounce starts right
+  // away.
+  EXPECT_NE(Button::STATE_PRESSED, button->GetState());
+
+  // Activating the button while the closure animation may still be in flight
+  // should finish canceling the closing menu before running the button
+  // callback.
+  button->button_controller()->Activate(nullptr);
+  EXPECT_TRUE(reopened_while_not_showing);
+  EXPECT_FALSE(showing());
+  EXPECT_EQ(1, menu_controller_delegate()->on_menu_closed_called());
+}
+
 // Tests that an asynchronous menu reposts touch events that occur outside of
 // the bounds of the menu, and that the menu closes.
 TEST_F(MenuControllerTest, AsynchronousTouchEventRepostEvent) {
   CreateMenu();
-  views::test::DisableMenuClosureAnimations();
 
   // Show a sub menu to target with a touch event. However have the event
   // occur outside of the bounds of the entire menu.
@@ -2223,7 +2405,6 @@ TEST_F(MenuControllerTest, AsynchronousTouchEventRepostEvent) {
 TEST_F(MenuControllerTest, AsynchronousRepostEventDeletesController) {
   // Don't show menu yet; test adds nested delegate before running the menu.
   CreateMenu({.show = false});
-  views::test::DisableMenuClosureAnimations();
   auto nested_delegate = std::make_unique<TestMenuControllerDelegate>();
   menu_controller()->AddNestedDelegate(nested_delegate.get());
   EXPECT_EQ(nested_delegate.get(), current_controller_delegate());
@@ -2260,7 +2441,6 @@ TEST_F(MenuControllerTest, AsynchronousRepostEventDeletesController) {
 TEST_F(MenuControllerTest, AsynchronousGestureDeletesController) {
   // Don't show menu yet; test adds nested delegate before running the menu.
   CreateMenu({.show = false});
-  views::test::DisableMenuClosureAnimations();
 
   auto nested_delegate = std::make_unique<TestMenuControllerDelegate>();
   menu_controller()->AddNestedDelegate(nested_delegate.get());
@@ -2540,6 +2720,76 @@ TEST_P(MenuControllerTest, TestSubmenuFitsOnScreen) {
   }
 }
 
+// Test that submenus are anchored to the parent item's highlight (rather than
+// its full bounds) so the hover states of the parent item and the submenu abut.
+TEST_P(MenuControllerTest, SubmenuAnchoredToParentItemHighlight) {
+  CreateMenu();
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+  const std::vector<MenuItemView*> menu_items = submenu->GetMenuItems();
+  std::ranges::for_each(base::span(menu_items).subspan<1>(),
+                        [&](auto* item) { menu_item()->RemoveMenuItem(item); });
+  MenuItemView* const sub_item = submenu->GetMenuItemAt(0);
+  sub_item->AppendMenuItem(11, u"Subitem.One");
+
+  // Put the parent menu onscreen, far from the monitor edges so the submenu
+  // never flips sides, so that `sub_item` has valid screen bounds.
+  const gfx::Rect parent_bounds(900, 100, 200, 40);
+  ShowSubmenu(submenu, [&](auto& params) {
+    params.bounds = parent_bounds;
+    params.bounds.Inset(-submenu->GetScrollViewContainer()->GetInsets());
+  });
+
+  const MenuBoundsOptions options = {
+      .monitor_bounds = gfx::Rect(0, 0, 2000, 2000),
+      .menu_size = GetPreferredSizeForSubmenu(*sub_item->GetSubmenu())};
+
+  ui::OwnedWindowAnchor anchor;
+  const gfx::Rect bubble_bounds_without_background =
+      CalculateBubbleMenuBoundsWithoutInsets(options, sub_item);
+  const gfx::Rect bounds_without_background =
+      CalculateMenuBounds(options, sub_item);
+
+  constexpr int kHorizontalMargin = 12;
+  constexpr int kTopPadding = 4;
+  MenuItemView::MenuItemBackground background(
+      ui::kColorMenuBackground, /*top_radius=*/0, /*bottom_radius=*/0,
+      kHorizontalMargin);
+  background.top_padding = kTopPadding;
+  sub_item->SetMenuItemBackground(background);
+  EXPECT_EQ(
+      sub_item->GetHighlightInsets(),
+      gfx::Insets::TLBR(kTopPadding, kHorizontalMargin, 0, kHorizontalMargin));
+
+  // The submenu opens towards the trailing side: right in LTR, left in RTL. In
+  // either case, it moves towards the parent by the highlight's horizontal
+  // inset, and down by the highlight's top inset.
+  const int expected_dx =
+      base::i18n::IsRTL() ? kHorizontalMargin : -kHorizontalMargin;
+
+  const gfx::Rect bubble_bounds_with_background =
+      CalculateBubbleMenuBoundsWithoutInsets(options, sub_item, &anchor);
+  EXPECT_EQ(bubble_bounds_with_background.x(),
+            bubble_bounds_without_background.x() + expected_dx);
+  EXPECT_EQ(bubble_bounds_with_background.y(),
+            bubble_bounds_without_background.y() + kTopPadding);
+  EXPECT_EQ(anchor.anchor_rect, CalculateExpectedMenuAnchorRect(sub_item));
+  const gfx::Rect item_bounds = sub_item->GetBoundsInScreen();
+  EXPECT_EQ(anchor.anchor_rect,
+            gfx::Rect(item_bounds.x() + kHorizontalMargin,
+                      item_bounds.y() + kTopPadding,
+                      item_bounds.width() - 2 * kHorizontalMargin, 1));
+
+  const gfx::Rect bounds_with_background =
+      CalculateMenuBounds(options, sub_item, &anchor);
+  EXPECT_EQ(bounds_with_background.x(),
+            bounds_without_background.x() + expected_dx);
+  EXPECT_EQ(bounds_with_background.y(),
+            bounds_without_background.y() + kTopPadding);
+  EXPECT_EQ(anchor.anchor_rect, CalculateExpectedMenuAnchorRect(sub_item));
+
+  submenu->Close();
+}
+
 // Test that a menu that was originally drawn below the anchor does not get
 // squished or move above the anchor when it grows vertically and horizontally
 // beyond the monitor bounds.
@@ -2588,7 +2838,7 @@ TEST_F(MenuControllerTest, MouseAtMenuItemOnShow) {
   auto menu_item = std::make_unique<MenuItemView>(menu_delegate());
   const MenuItemView* const first_item = menu_item->AppendMenuItem(1, u"One");
   menu_item->AppendMenuItem(2, u"Two");
-  menu_item->set_controller(menu_controller());
+  menu_item->SetController(menu_controller());
 
   // Move the mouse to where the first menu item will be shown,
   // and show the menu.
@@ -2803,7 +3053,7 @@ TEST_F(MenuControllerTest, RepostEventToEmptyMenuItem) {
   auto nested_menu_delegate_1 = std::make_unique<test::TestMenuDelegate>();
   auto nested_menu_item_1 =
       std::make_unique<MenuItemView>(nested_menu_delegate_1.get());
-  nested_menu_item_1->set_controller(menu_controller());
+  nested_menu_item_1->SetController(menu_controller());
   SubmenuView* const nested_menu_submenu = nested_menu_item_1->CreateSubmenu();
   ShowSubmenu(nested_menu_submenu);
   menu_host_for_submenu(nested_menu_submenu)
@@ -2856,7 +3106,7 @@ TEST_F(MenuControllerTest, RepostEventToEmptyMenuItem) {
   auto nested_menu_delegate_2 = std::make_unique<test::TestMenuDelegate>();
   auto nested_menu_item_2 =
       std::make_unique<MenuItemView>(nested_menu_delegate_2.get());
-  nested_menu_item_2->set_controller(menu_controller());
+  nested_menu_item_2->SetController(menu_controller());
   auto nested_controller_delegate_2 =
       std::make_unique<TestMenuControllerDelegate>();
   menu_controller()->AddNestedDelegate(nested_controller_delegate_2.get());
@@ -2906,7 +3156,7 @@ TEST_F(MenuControllerTest,
   // Create context menu
   auto context_menu = std::make_unique<MenuItemView>(menu_delegate());
   context_menu->AppendMenuItem(1, u"Action");
-  context_menu->set_controller(menu_controller());
+  context_menu->SetController(menu_controller());
 
   auto context_delegate = std::make_unique<TestMenuControllerDelegate>();
   menu_controller()->AddNestedDelegate(context_delegate.get());
@@ -3160,7 +3410,7 @@ TEST_F(MenuControllerTest, NoUseAfterFreeWhenMenuCanceledOnMousePress) {
 
   // Creating own MenuItem for a minimal test environment.
   auto item = std::make_unique<MenuItemView>(menu_delegate());
-  item->set_controller(menu_controller());
+  item->SetController(menu_controller());
   item->SetBounds(0, 0, 50, 50);
 
   SubmenuView* const submenu = item->CreateSubmenu();
@@ -3359,6 +3609,79 @@ TEST_F(MenuControllerTest,
   // first SetSelection() clears the hot-tracked button and destroys the
   // controller mid-selection.
   DispatchKey(ui::VKEY_RIGHT);
+
+  EXPECT_TRUE(observer.fired());
+  EXPECT_EQ(nullptr, menu_controller());
+}
+
+TEST_F(MenuControllerTest, IncrementSelectionUseAfterFreeViaActiveDescendant) {
+  CreateMenu();
+  MenuItemView* const item_with_buttons = AddButtonMenuItems(false);
+  SetPendingStateItem(item_with_buttons);
+
+  CallbackOnAXEventObserver observer(
+      ax::mojom::Event::kActiveDescendantChanged,
+      base::BindLambdaForTesting([this]() { DestroyMenuController(); }));
+
+  IncrementSelection();
+
+  EXPECT_TRUE(observer.fired());
+  EXPECT_EQ(nullptr, menu_controller());
+}
+
+TEST_F(MenuControllerTest,
+       SetHotTrackedButtonWithControllerDeletedDuringActiveDescendant) {
+  CreateMenu();
+  MenuItemView* const item_with_buttons = AddButtonMenuItems(true);
+  GET_CHILD_BUTTON(button, item_with_buttons, 0);
+  SetPendingStateItem(item_with_buttons);
+
+  CallbackOnAXEventObserver observer(
+      ax::mojom::Event::kActiveDescendantChanged,
+      base::BindLambdaForTesting([this]() { DestroyMenuController(); }));
+
+  SetHotTrackedButton(button);
+
+  EXPECT_TRUE(observer.fired());
+  EXPECT_EQ(nullptr, menu_controller());
+}
+
+TEST_F(MenuControllerTest, CloseSubmenuWithControllerDeletedDuringSelection) {
+  CreateMenu();
+  MenuItemView* const submenu_item = menu_item()->AppendSubMenu(10, u"Submenu");
+  MenuItemView* const child_item = submenu_item->AppendMenuItem(11, u"Child");
+  MenuItemView* const item_with_buttons = AddButtonMenuItems(true);
+  GET_CHILD_BUTTON(button, item_with_buttons, 0);
+  ShowSubmenu(submenu_item->GetSubmenu());
+
+  SetState(submenu_item);
+  SetPendingStateItem(child_item);
+  SetHotTrackedButton(button);
+
+  CallbackOnAXEventObserver observer(
+      ax::mojom::Event::kActiveDescendantChanged,
+      base::BindLambdaForTesting([this]() { DestroyMenuController(); }));
+
+  ui::AXActionData action_data;
+  action_data.action = ax::mojom::Action::kCollapse;
+  submenu_item->HandleAccessibleAction(action_data);
+
+  EXPECT_TRUE(observer.fired());
+  EXPECT_EQ(nullptr, menu_controller());
+}
+
+TEST_F(MenuControllerTest, SelectByCharWithControllerDeletedDuringSelection) {
+  CreateMenu();
+  MenuItemView* const item_with_buttons = AddButtonMenuItems(true);
+  GET_CHILD_BUTTON(button, item_with_buttons, 0);
+  SetPendingStateItem(item_with_buttons);
+  SetHotTrackedButton(button);
+
+  CallbackOnAXEventObserver observer(
+      ax::mojom::Event::kActiveDescendantChanged,
+      base::BindLambdaForTesting([this]() { DestroyMenuController(); }));
+
+  SelectByChar('t');
 
   EXPECT_TRUE(observer.fired());
   EXPECT_EQ(nullptr, menu_controller());
@@ -3614,7 +3937,6 @@ TEST_F(MenuControllerTest, SetSelectionIndices_ChildrenChanged) {
 // MenuControllerDelegate when accessibility performs a do default action.
 TEST_F(MenuControllerTest, AccessibilityDoDefaultCallsAccept) {
   CreateMenu();
-  views::test::DisableMenuClosureAnimations();
 
   EXPECT_EQ(0, menu_controller_delegate()->on_menu_closed_called());
 
@@ -3810,7 +4132,6 @@ class ExecuteCommandWithoutClosingMenuTest : public MenuControllerTest {
   void SetUp() override {
     MenuControllerTest::SetUp();
 
-    views::test::DisableMenuClosureAnimations();
     CreateMenu();
 
     ShowSubmenu();
@@ -4362,6 +4683,724 @@ TEST_F(MenuControllerTest, GetForOwnerWidgetAndCancelAllActive) {
 
   MenuController::CancelAllActive();
   EXPECT_EQ(MenuController::ExitType::kAll, menu_controller()->exit_type());
+}
+
+TEST_F(MenuControllerTest, SelectChildButtonViewByMnemonic) {
+  if (!MenuConfig::instance().use_mnemonics) {
+    GTEST_SKIP() << "Mnemonics are not enabled on this platform";
+  }
+
+  CreateMenu();
+  SetHasMnemonics(true);
+  MenuItemView* const buttons_item = AddButtonMenuItems(/*single_child=*/false);
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+  SubmenuView* const root_submenu = menu_item()->GetSubmenu();
+  root_submenu->GetMenuItemAt(0)->SetTitle(u"&One");
+  const View* const buttons_view = submenu->children()[4];
+  ASSERT_NE(nullptr, buttons_view);
+  GET_CHILD_BUTTON(button1, buttons_view, 0);
+  GET_CHILD_BUTTON(button2, buttons_view, 1);
+  GET_CHILD_BUTTON(button3, buttons_view, 2);
+
+  int button1_clicks = 0;
+  int button2_clicks = 0;
+  int button3_clicks = 0;
+  button1->SetCallback(base::BindRepeating([](int* count) { ++(*count); },
+                                           base::Unretained(&button1_clicks)));
+  button2->SetCallback(base::BindRepeating([](int* count) { ++(*count); },
+                                           base::Unretained(&button2_clicks)));
+  button3->SetCallback(base::BindRepeating([](int* count) { ++(*count); },
+                                           base::Unretained(&button3_clicks)));
+
+  button1->SetProperty(kMenuMnemonicKey, u'z');
+  button2->SetProperty(kMenuMnemonicKey, u'o');
+  button3->SetProperty(kMenuMnemonicKey, u'o');
+
+  // Unique match on button1 via mnemonic 'z' hot-tracks and activates button1.
+  SelectByChar('z');
+  EXPECT_EQ(buttons_item, pending_state_item());
+  EXPECT_EQ(button1, hot_button());
+  EXPECT_EQ(1, button1_clicks);
+
+  // Multiple matches: item 1 has mnemonic 'o', button2 has mnemonic 'o', and
+  // button3 has mnemonic 'o'. Pressing 'o' cycles from the currently
+  // hot-tracked button1 to button2 -> button3 -> item 1 without triggering any
+  // button.
+  SelectByChar('o');
+  EXPECT_EQ(buttons_item, pending_state_item());
+  EXPECT_EQ(button2, hot_button());
+  EXPECT_EQ(0, button2_clicks);
+
+  SelectByChar('o');
+  EXPECT_EQ(buttons_item, pending_state_item());
+  EXPECT_EQ(button3, hot_button());
+  EXPECT_EQ(0, button3_clicks);
+
+  // Wrap around back to item 1.
+  SelectByChar('o');
+  EXPECT_EQ(1, pending_state_item()->GetCommand());
+  EXPECT_EQ(nullptr, hot_button());
+
+  // Next 'o' advances to button2 again.
+  SelectByChar('o');
+  EXPECT_EQ(buttons_item, pending_state_item());
+  EXPECT_EQ(button2, hot_button());
+  EXPECT_EQ(0, button2_clicks);
+}
+
+TEST_F(MenuControllerTest, SelectChildButtonViewWithSubmenuByMnemonic) {
+  if (!MenuConfig::instance().use_mnemonics) {
+    GTEST_SKIP() << "Mnemonics are not enabled on this platform";
+  }
+
+  CreateMenu();
+  SetHasMnemonics(true);
+  MenuItemView* const buttons_item = AddButtonMenuItems(/*single_child=*/true);
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+  const View* const buttons_view = submenu->children()[4];
+  ASSERT_NE(nullptr, buttons_view);
+  GET_CHILD_BUTTON(button1, buttons_view, 0);
+
+  MenuItemView* const anchored_submenu =
+      menu_item()->AppendSubMenu(6, std::u16string());
+  anchored_submenu->SetVisible(false);
+  MenuItemView* const sub_item = anchored_submenu->AppendMenuItem(7, u"About");
+  anchored_submenu->SetAnchorView(button1);
+
+  button1->SetProperty(kMenuMnemonicKey, u'e');
+
+  // Pressing 'e' should open the anchored submenu and select its first item.
+  SelectByChar('e');
+  EXPECT_TRUE(anchored_submenu->SubmenuIsShowing());
+  EXPECT_EQ(sub_item, pending_state_item());
+  EXPECT_EQ(buttons_item, buttons_item);
+
+  anchored_submenu->SetAnchorView(nullptr);
+}
+
+TEST_F(MenuControllerTest, DragBetweenButtonsAndMenuItems) {
+  MenuController::TurnOffMenuSelectionHoldForTest();
+  CreateMenu();
+  menu_delegate()->set_should_execute_command_without_closing_menu(true);
+  menu_delegate()->set_should_drag_activate_child_buttons(true);
+  AddButtonMenuItems(/*single_child=*/false);
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+  const View* const buttons_view = submenu->children()[4];
+  ASSERT_NE(nullptr, buttons_view);
+  GET_CHILD_BUTTON(button1, buttons_view, 0);
+  GET_CHILD_BUTTON(button2, buttons_view, 1);
+  MenuItemView* const item1 = submenu->GetMenuItemAt(0);
+
+  int button1_clicks = 0;
+  int button2_clicks = 0;
+  button1->SetCallback(base::BindRepeating([](int* count) { ++(*count); },
+                                           base::Unretained(&button1_clicks)));
+  button2->SetCallback(base::BindRepeating([](int* count) { ++(*count); },
+                                           base::Unretained(&button2_clicks)));
+
+  const gfx::Point loc1 = View::ConvertPointToTarget(
+      button1, submenu, button1->GetLocalBounds().CenterPoint());
+  const gfx::Point loc2 = View::ConvertPointToTarget(
+      button2, submenu, button2->GetLocalBounds().CenterPoint());
+  const gfx::Point loc_item1 = item1->bounds().CenterPoint();
+
+  // 1. Drag from button1 to button2 and release: activates button2.
+  ProcessMousePressed(
+      submenu, ui::MouseEvent(ui::EventType::kMousePressed, loc1, loc1,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(button1, hot_button());
+
+  ProcessMouseDragged(
+      submenu, ui::MouseEvent(ui::EventType::kMouseDragged, loc2, loc2,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(button2, hot_button());
+
+  ProcessMouseReleased(
+      submenu, ui::MouseEvent(ui::EventType::kMouseReleased, loc2, loc2,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(0, button1_clicks);
+  EXPECT_EQ(1, button2_clicks);
+
+  // 2. Drag from item1 to button1 and release: activates button1.
+  ProcessMousePressed(
+      submenu,
+      ui::MouseEvent(ui::EventType::kMousePressed, loc_item1, loc_item1,
+                     ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                     ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(item1, pending_state_item());
+
+  ProcessMouseDragged(
+      submenu, ui::MouseEvent(ui::EventType::kMouseDragged, loc1, loc1,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(button1, hot_button());
+
+  ProcessMouseReleased(
+      submenu, ui::MouseEvent(ui::EventType::kMouseReleased, loc1, loc1,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(1, button1_clicks);
+
+  // 3. Drag from button1 to item1 and release: activates item1.
+  ProcessMousePressed(
+      submenu, ui::MouseEvent(ui::EventType::kMousePressed, loc1, loc1,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(button1, hot_button());
+
+  ProcessMouseDragged(
+      submenu,
+      ui::MouseEvent(ui::EventType::kMouseDragged, loc_item1, loc_item1,
+                     ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                     ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(nullptr, hot_button());
+  EXPECT_EQ(item1, pending_state_item());
+
+  ProcessMouseReleased(
+      submenu,
+      ui::MouseEvent(ui::EventType::kMouseReleased, loc_item1, loc_item1,
+                     ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                     ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(1, menu_delegate()->execute_command_id());
+}
+
+TEST_F(MenuControllerTest, DragBetweenButtonsDefaultDoesNotActivate) {
+  MenuController::TurnOffMenuSelectionHoldForTest();
+  CreateMenu();
+  menu_delegate()->set_should_execute_command_without_closing_menu(true);
+  // Default is ShouldDragActivateChildButtons() == false.
+  ASSERT_FALSE(menu_delegate()->ShouldDragActivateChildButtons());
+  AddButtonMenuItems(/*single_child=*/false);
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+  const View* const buttons_view = submenu->children()[4];
+  ASSERT_NE(nullptr, buttons_view);
+  GET_CHILD_BUTTON(button1, buttons_view, 0);
+  GET_CHILD_BUTTON(button2, buttons_view, 1);
+
+  int button1_clicks = 0;
+  int button2_clicks = 0;
+  button1->SetCallback(base::BindRepeating([](int* count) { ++(*count); },
+                                           base::Unretained(&button1_clicks)));
+  button2->SetCallback(base::BindRepeating([](int* count) { ++(*count); },
+                                           base::Unretained(&button2_clicks)));
+
+  const gfx::Point loc1 = View::ConvertPointToTarget(
+      button1, submenu, button1->GetLocalBounds().CenterPoint());
+  const gfx::Point loc2 = View::ConvertPointToTarget(
+      button2, submenu, button2->GetLocalBounds().CenterPoint());
+
+  // Drag from button1 to button2 and release: button2 is NOT activated because
+  // the drag click was cancelled on button1, preserving default button
+  // behavior.
+  ProcessMousePressed(
+      submenu, ui::MouseEvent(ui::EventType::kMousePressed, loc1, loc1,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  ProcessMouseDragged(
+      submenu, ui::MouseEvent(ui::EventType::kMouseDragged, loc2, loc2,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  ProcessMouseReleased(
+      submenu, ui::MouseEvent(ui::EventType::kMouseReleased, loc2, loc2,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(0, button1_clicks);
+  EXPECT_EQ(0, button2_clicks);
+}
+
+TEST_F(MenuControllerTest, DragFromMenuItemToButtonDefaultDoesNotActivate) {
+  MenuController::TurnOffMenuSelectionHoldForTest();
+  CreateMenu();
+  menu_delegate()->set_should_execute_command_without_closing_menu(true);
+  // Default is ShouldDragActivateChildButtons() == false.
+  ASSERT_FALSE(menu_delegate()->ShouldDragActivateChildButtons());
+  AddButtonMenuItems(/*single_child=*/false);
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+  const View* const buttons_view = submenu->children()[4];
+  ASSERT_NE(nullptr, buttons_view);
+  GET_CHILD_BUTTON(button1, buttons_view, 0);
+  MenuItemView* const item1 = submenu->GetMenuItemAt(0);
+
+  int button1_clicks = 0;
+  button1->SetCallback(base::BindRepeating([](int* count) { ++(*count); },
+                                           base::Unretained(&button1_clicks)));
+
+  const gfx::Point loc_item1 = item1->bounds().CenterPoint();
+  const gfx::Point loc1 = View::ConvertPointToTarget(
+      button1, submenu, button1->GetLocalBounds().CenterPoint());
+
+  // Drag from item1 to button1 and release: button1 is NOT activated when
+  // ShouldDragActivateChildButtons is false, and this must not crash.
+  ProcessMousePressed(
+      submenu,
+      ui::MouseEvent(ui::EventType::kMousePressed, loc_item1, loc_item1,
+                     ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                     ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(item1, pending_state_item());
+
+  ProcessMouseDragged(
+      submenu, ui::MouseEvent(ui::EventType::kMouseDragged, loc1, loc1,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(nullptr, hot_button());
+
+  ProcessMouseReleased(
+      submenu, ui::MouseEvent(ui::EventType::kMouseReleased, loc1, loc1,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  EXPECT_EQ(0, button1_clicks);
+}
+
+namespace {
+
+// Replaces the title of `item` with a focusable Textfield and returns it.
+Textfield* AddTextfieldToMenuItem(MenuItemView* item) {
+  item->SetTitle(std::u16string());
+  auto* const textfield = item->AddChildView(std::make_unique<Textfield>());
+  textfield->SetBoundsRect(gfx::Rect(0, 0, 80, 20));
+  textfield->GetViewAccessibility().SetName(u"Search");
+  return textfield;
+}
+
+}  // namespace
+
+// Keyboard focus, key routing, and traversal for a Textfield that shares a
+// menu item with a button.
+TEST_F(MenuControllerTest, MenuHostedTextfieldKeyboardNavigation) {
+  CreateMenu({.show = false});
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+  MenuItemView* const first_item = submenu->GetMenuItemAt(0);
+  MenuItemView* const last_item = submenu->GetMenuItemAt(3);
+  Textfield* const textfield = AddTextfieldToMenuItem(first_item);
+  auto* const sibling_button = first_item->AddChildView(
+      std::make_unique<LabelButton>(Button::PressedCallback(), u"Action"));
+  sibling_button->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+  menu_controller()->Run(owner(), /*button_controller=*/nullptr, menu_item(),
+                         gfx::Rect(), MenuAnchorPosition::kTopLeft,
+                         ui::mojom::MenuSourceType::kKeyboard);
+  const ui::ScopedAXModeSetter ax_mode_setter(ui::AXMode::kNativeAPIs);
+  const test::AXEventCounter ax_counter(views::AXUpdateNotifier::Get());
+  auto active_descendant_id = [&] {
+    ui::AXNodeData data;
+    submenu->GetViewAccessibility().GetAccessibleNodeData(&data);
+    return data.GetIntAttribute(ax::mojom::IntAttribute::kActivedescendantId);
+  };
+  // Returns true if the menu consumed `event`, false if it only marked it
+  // handled so the InputMethod can still insert or compose.
+  auto consumed = [&](ui::KeyEvent event) {
+    const ui::PostDispatchAction action =
+        menu_controller()->OnWillDispatchKeyEvent(&event);
+    EXPECT_TRUE(event.handled());
+    return action == ui::POST_DISPATCH_NONE && event.stopped_propagation();
+  };
+
+  // Opening from the keyboard never focuses the textfield, so mnemonics keep
+  // working; Windows pre-selects `first_item` for screen readers.
+  EXPECT_EQ(views::PlatformStyle::kAutoSelectFirstMenuItemFromKeyboard,
+            first_item->IsSelected());
+  EXPECT_FALSE(textfield->HasFocus());
+
+  DispatchKey(ui::VKEY_DOWN);
+  ASSERT_TRUE(textfield->HasFocus());
+  EXPECT_TRUE(menu_controller()->HasFocusedTextfield());
+  EXPECT_EQ(nullptr, hot_button());
+  EXPECT_EQ(1, ax_counter.GetCount(ax::mojom::Event::kFocus, textfield));
+  EXPECT_EQ(textfield->GetViewAccessibility().GetUniqueId(),
+            active_descendant_id());
+
+  // Editing keys, including Shift+Down, go to the textfield.
+  textfield->SetText(u"ab");
+  DispatchKey(ui::VKEY_BACK);
+  EXPECT_EQ(u"a", textfield->GetText());
+  DispatchKeyWithFlags(ui::VKEY_DOWN, /*alt=*/false, /*shift=*/true,
+                       /*control_or_command=*/false, /*caps_lock=*/false);
+  EXPECT_TRUE(textfield->HasFocus());
+  EXPECT_EQ(first_item, pending_state_item());
+
+  // Unconsumed Return and Tab stop at the menu; key presses stay available to
+  // the InputMethod without reaching the owner widget.
+  EXPECT_FALSE(consumed(
+      ui::KeyEvent(ui::EventType::kKeyPressed, ui::VKEY_PROCESSKEY, 0)));
+  EXPECT_FALSE(
+      consumed(ui::KeyEvent(ui::EventType::kKeyPressed, ui::VKEY_C, 0)));
+  EXPECT_TRUE(
+      consumed(ui::KeyEvent(ui::EventType::kKeyPressed, ui::VKEY_RETURN, 0)));
+  EXPECT_TRUE(
+      consumed(ui::KeyEvent(ui::EventType::kKeyPressed, ui::VKEY_TAB, 0)));
+
+  // Character events are typed into the textfield by the menu, once.
+  EXPECT_TRUE(consumed(
+      ui::KeyEvent::FromCharacter(u'c', ui::VKEY_C, ui::DomCode::NONE, 0)));
+  EXPECT_EQ(u"ac", textfield->GetText());
+
+  // Keys the IME passes through mid-composition are not consumed, since that
+  // resets the composition; Escape cancels the composition, not the menu.
+  ui::CompositionText composition;
+  composition.text = u"x";
+  textfield->SetCompositionText(composition);
+  for (const ui::KeyboardCode key :
+       {ui::VKEY_DOWN, ui::VKEY_UP, ui::VKEY_RETURN, ui::VKEY_TAB}) {
+    SCOPED_TRACE(key);
+    EXPECT_FALSE(consumed(ui::KeyEvent(ui::EventType::kKeyPressed, key, 0)));
+    EXPECT_TRUE(textfield->HasCompositionText());
+    EXPECT_EQ(first_item, pending_state_item());
+  }
+  DispatchKey(ui::VKEY_ESCAPE);
+  EXPECT_FALSE(textfield->HasCompositionText());
+  EXPECT_EQ(MenuController::ExitType::kNone, menu_exit_type());
+
+  // Down moves to the sibling button, then the next item; Up comes back.
+  DispatchKey(ui::VKEY_DOWN);
+  EXPECT_FALSE(textfield->HasFocus());
+  EXPECT_EQ(sibling_button, hot_button());
+  EXPECT_EQ(sibling_button->GetViewAccessibility().GetUniqueId(),
+            active_descendant_id());
+  DispatchKey(ui::VKEY_DOWN);
+  EXPECT_EQ(nullptr, hot_button());
+  EXPECT_EQ(submenu->GetMenuItemAt(1), pending_state_item());
+  EXPECT_EQ(submenu->GetMenuItemAt(1)->GetViewAccessibility().GetUniqueId(),
+            active_descendant_id());
+  DispatchKey(ui::VKEY_UP);
+  EXPECT_EQ(sibling_button, hot_button());
+  DispatchKey(ui::VKEY_UP);
+  EXPECT_TRUE(textfield->HasFocus());
+  EXPECT_EQ(nullptr, hot_button());
+
+  // Home that lands on the textfield does not also move its caret.
+  DispatchKey(ui::VKEY_DOWN);
+  DispatchKey(ui::VKEY_DOWN);
+  DispatchKey(ui::VKEY_END);
+  ASSERT_EQ(last_item, pending_state_item());
+  textfield->SetText(u"ab");
+  textfield->SetSelectedRange(gfx::Range(1));
+  DispatchKey(ui::VKEY_HOME);
+  ASSERT_TRUE(textfield->HasFocus());
+  EXPECT_EQ(gfx::Range(1), textfield->GetSelectedRange());
+
+  DispatchKey(ui::VKEY_ESCAPE);
+  EXPECT_EQ(MenuController::ExitType::kAll, menu_exit_type());
+  EXPECT_FALSE(textfield->HasFocus());
+}
+
+// Mouse, wheel, and visibility changes around a focused Textfield keep focus
+// and screen-reader focus consistent.
+TEST_F(MenuControllerTest, MenuHostedTextfieldMouseAndVisibility) {
+  MenuController::TurnOffMenuSelectionHoldForTest();
+  CreateMenu({.show = false});
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+  MenuItemView* const first_item = submenu->GetMenuItemAt(0);
+  MenuItemView* const second_item = submenu->GetMenuItemAt(1);
+  Textfield* const textfield = AddTextfieldToMenuItem(first_item);
+  // A non-focusable button inside the textfield, like a search field's clear
+  // button.
+  auto* const inline_button = textfield->AddChildView(
+      std::make_unique<LabelButton>(Button::PressedCallback(), u"X"));
+  inline_button->SetFocusBehavior(View::FocusBehavior::NEVER);
+  auto* const sibling_button = first_item->AddChildView(
+      std::make_unique<LabelButton>(Button::PressedCallback(), u"Action"));
+  sibling_button->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+  menu_controller()->Run(owner(), /*button_controller=*/nullptr, menu_item(),
+                         gfx::Rect(), MenuAnchorPosition::kTopLeft,
+                         ui::mojom::MenuSourceType::kMouse);
+  // After layout, so the button sits inside the textfield and clear of its
+  // center.
+  inline_button->SetBoundsRect(
+      gfx::Rect(0, 0, textfield->width() / 4, textfield->height()));
+  const ui::ScopedAXModeSetter ax_mode_setter(ui::AXMode::kNativeAPIs);
+  const test::AXEventCounter ax_counter(views::AXUpdateNotifier::Get());
+  // Reads the popup focus override from whichever store the platform uses
+  // (AXPlatformNode with native accessibility, AXAuraObjCache otherwise).
+  auto has_popup_focus = [](View* view) {
+    return view->GetViewAccessibility().IsFocusedForTesting();
+  };
+  auto move_to = [&](const gfx::Point& loc, int flags = 0) {
+    ProcessMouseMoved(submenu,
+                      ui::MouseEvent(ui::EventType::kMouseMoved, loc, loc,
+                                     ui::EventTimeForNow(), flags, 0));
+  };
+  const gfx::Point tf_loc = View::ConvertPointToTarget(
+      textfield, submenu, textfield->GetLocalBounds().CenterPoint());
+  const gfx::Point second_loc = second_item->bounds().CenterPoint();
+  const gfx::Point outside(-50, -50);
+
+  // Clicking the textfield focuses it and selects its item.
+  ProcessMousePressed(
+      submenu, ui::MouseEvent(ui::EventType::kMousePressed, tf_loc, tf_loc,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  ProcessMouseReleased(
+      submenu, ui::MouseEvent(ui::EventType::kMouseReleased, tf_loc, tf_loc,
+                              ui::EventTimeForNow(), ui::EF_LEFT_MOUSE_BUTTON,
+                              ui::EF_LEFT_MOUSE_BUTTON));
+  ASSERT_TRUE(textfield->HasFocus());
+  EXPECT_EQ(first_item, pending_state_item());
+  EXPECT_EQ(1, ax_counter.GetCount(ax::mojom::Event::kFocus, textfield));
+#if !BUILDFLAG(IS_MAC)
+  // macOS skips the override while the app is inactive, as in SetSelection().
+  EXPECT_TRUE(has_popup_focus(textfield));
+#endif
+
+  // Hovering the inline button, wheel-scrolling over another item, and
+  // synthesized moves (e.g. from relayout while typing) keep focus.
+  move_to(View::ConvertPointToTarget(
+      inline_button, submenu, inline_button->GetLocalBounds().CenterPoint()));
+  EXPECT_TRUE(textfield->HasFocus());
+  EXPECT_EQ(nullptr, hot_button());
+  ProcessMouseWheel(
+      submenu,
+      ui::MouseWheelEvent(gfx::Vector2d(0, -ui::MouseWheelEvent::kWheelDelta),
+                          second_loc, second_loc, ui::EventTimeForNow(), 0, 0));
+  EXPECT_TRUE(textfield->HasFocus());
+  EXPECT_EQ(first_item, pending_state_item());
+  move_to(second_loc, ui::EF_IS_SYNTHESIZED);
+  EXPECT_TRUE(textfield->HasFocus());
+  EXPECT_EQ(first_item, pending_state_item());
+
+  // Leaving the menu keeps focus, the selection, and the popup focus override
+  // on the textfield.
+  move_to(outside);
+  EXPECT_EQ(first_item, pending_state_item());
+  EXPECT_TRUE(textfield->HasFocus());
+#if !BUILDFLAG(IS_MAC)
+  EXPECT_TRUE(has_popup_focus(textfield));
+#endif
+
+  // A real move to another item clears focus; Return on the textfield's item
+  // focuses it instead of accepting.
+  move_to(second_loc);
+  EXPECT_FALSE(textfield->HasFocus());
+  EXPECT_EQ(second_item, pending_state_item());
+  move_to(tf_loc);
+  EXPECT_FALSE(textfield->HasFocus());
+  DispatchKey(ui::VKEY_RETURN);
+  EXPECT_NE(MenuController::ExitType::kAll, menu_exit_type());
+  EXPECT_TRUE(textfield->HasFocus());
+  EXPECT_EQ(2, ax_counter.GetCount(ax::mojom::Event::kFocus, textfield));
+
+  // Down moves from the textfield to the sibling button and Up returns, also
+  // after the pointer leaves the menu.
+  move_to(outside);
+  EXPECT_TRUE(textfield->HasFocus());
+  DispatchKey(ui::VKEY_DOWN);
+  EXPECT_EQ(first_item, pending_state_item());
+  EXPECT_EQ(sibling_button, hot_button());
+  EXPECT_FALSE(textfield->HasFocus());
+  DispatchKey(ui::VKEY_UP);
+  ASSERT_TRUE(textfield->HasFocus());
+
+  // Hiding the textfield clears focus and the override without moving focus to
+  // the sibling.
+  textfield->SetVisible(false);
+  EXPECT_FALSE(textfield->HasFocus());
+  EXPECT_FALSE(sibling_button->HasFocus());
+  EXPECT_FALSE(has_popup_focus(textfield));
+
+  // Focus requested directly (by the hosting view or a gesture tap) while
+  // another item is selected moves the selection to the textfield's item.
+  textfield->SetVisible(true);
+  move_to(second_loc);
+  ASSERT_EQ(second_item, pending_state_item());
+  textfield->RequestFocus();
+  ASSERT_TRUE(textfield->HasFocus());
+  EXPECT_EQ(first_item, pending_state_item());
+  EXPECT_EQ(4, ax_counter.GetCount(ax::mojom::Event::kFocus, textfield));
+#if !BUILDFLAG(IS_MAC)
+  EXPECT_TRUE(has_popup_focus(textfield));
+#endif
+
+  menu_controller()->Cancel(MenuController::ExitType::kAll);
+  EXPECT_FALSE(has_popup_focus(textfield));
+}
+
+// A Textfield in a nested submenu takes focus and input. With
+// arrow_key_selection_wraps off (the macOS default), its submenu stops at the
+// boundaries like any other submenu.
+TEST_F(MenuControllerTest, MenuHostedTextfieldInNestedSubmenu) {
+  base::AutoReset<bool> disable_wrap(
+      &const_cast<MenuConfig&>(MenuConfig::instance())
+           .arrow_key_selection_wraps,
+      false);
+  CreateMenu({.show = false});
+  MenuItemView* const parent_item = menu_item()->GetSubmenu()->GetMenuItemAt(0);
+  MenuItemView* const nested_first =
+      parent_item->AppendMenuItem(101, std::u16string());
+  Textfield* const nested_textfield = AddTextfieldToMenuItem(nested_first);
+  MenuItemView* const nested_second =
+      parent_item->AppendMenuItem(102, u"Nested Two");
+  menu_controller()->Run(owner(), /*button_controller=*/nullptr, menu_item(),
+                         gfx::Rect(), MenuAnchorPosition::kTopLeft,
+                         ui::mojom::MenuSourceType::kNone);
+
+  DispatchKey(ui::VKEY_DOWN);
+  ASSERT_EQ(parent_item, pending_state_item());
+  DispatchKey(ui::VKEY_RIGHT);
+  ASSERT_EQ(nested_first, pending_state_item());
+  DispatchKey(ui::VKEY_DOWN);
+  ASSERT_TRUE(nested_textfield->HasFocus());
+  EXPECT_TRUE(menu_controller()->HasFocusedTextfield());
+  nested_textfield->SetText(u"xy");
+  DispatchKey(ui::VKEY_BACK);
+  EXPECT_EQ(u"x", nested_textfield->GetText());
+
+  DispatchKey(ui::VKEY_UP);
+  EXPECT_EQ(nested_first, pending_state_item());
+  EXPECT_TRUE(nested_textfield->HasFocus());
+
+  DispatchKey(ui::VKEY_DOWN);
+  EXPECT_EQ(nested_second, pending_state_item());
+  EXPECT_FALSE(nested_textfield->HasFocus());
+  EXPECT_FALSE(menu_controller()->HasFocusedTextfield());
+  DispatchKey(ui::VKEY_DOWN);
+  EXPECT_EQ(nested_second, pending_state_item());
+
+  menu_controller()->Cancel(MenuController::ExitType::kAll);
+}
+
+// Right-clicking a menu-hosted Textfield neither closes the menu nor blurs the
+// textfield.
+TEST_F(MenuControllerTest, MenuHostedTextfieldRightClickKeepsMenuOpen) {
+  MenuController::TurnOffMenuSelectionHoldForTest();
+  CreateMenu({.show = false});
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+  Textfield* const textfield =
+      AddTextfieldToMenuItem(submenu->GetMenuItemAt(0));
+  menu_controller()->Run(owner(), /*button_controller=*/nullptr, menu_item(),
+                         gfx::Rect(), MenuAnchorPosition::kTopLeft,
+                         ui::mojom::MenuSourceType::kNone);
+  DispatchKey(ui::VKEY_DOWN);
+  ASSERT_TRUE(textfield->HasFocus());
+
+  const gfx::Point tf_loc = View::ConvertPointToTarget(
+      textfield, submenu, textfield->GetLocalBounds().CenterPoint());
+  ProcessMousePressed(
+      submenu, ui::MouseEvent(ui::EventType::kMousePressed, tf_loc, tf_loc,
+                              ui::EventTimeForNow(), ui::EF_RIGHT_MOUSE_BUTTON,
+                              ui::EF_RIGHT_MOUSE_BUTTON));
+  ProcessMouseReleased(
+      submenu, ui::MouseEvent(ui::EventType::kMouseReleased, tf_loc, tf_loc,
+                              ui::EventTimeForNow(), ui::EF_RIGHT_MOUSE_BUTTON,
+                              ui::EF_RIGHT_MOUSE_BUTTON));
+  EXPECT_EQ(MenuController::ExitType::kNone, menu_exit_type());
+  EXPECT_TRUE(textfield->HasFocus());
+
+  menu_controller()->Cancel(MenuController::ExitType::kAll);
+}
+
+// Up arrow from a hot-tracked button that became disabled selects the last
+// enabled button in the item, as it did before menu-hosted Textfield support.
+TEST_F(MenuControllerTest, DecrementSelectionFromDisabledHotButton) {
+  CreateMenu();
+  AddButtonMenuItems(/*single_child=*/false);
+  SelectByChar('f');
+  ASSERT_EQ(4, pending_state_item()->GetCommand());
+
+  const View* const buttons_view = menu_item()->GetSubmenu()->children()[4];
+  ASSERT_NE(nullptr, buttons_view);
+  GET_CHILD_BUTTON(button2, buttons_view, 1);
+  GET_CHILD_BUTTON(button3, buttons_view, 2);
+  IncrementSelection();
+  IncrementSelection();
+  ASSERT_EQ(button2, hot_button());
+
+  button2->SetEnabled(false);
+  DecrementSelection();
+  EXPECT_EQ(button3, hot_button());
+}
+
+TEST_F(MenuControllerTest, MenuHostedTextfieldOwnerWidgetDestruction) {
+  std::unique_ptr<Widget> active_owner =
+      CreateTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET);
+  auto* const owner_textfield =
+      active_owner->SetContentsView(std::make_unique<Textfield>());
+  active_owner->Show();
+  owner_textfield->RequestFocus();
+  ASSERT_TRUE(owner_textfield->HasFocus());
+  ASSERT_EQ(owner_textfield,
+            active_owner->GetInputMethod()->GetTextInputClient());
+
+  CreateMenu({.show = false});
+  SubmenuView* const submenu = menu_item()->GetSubmenu();
+  MenuItemView* const first_item = submenu->GetMenuItemAt(0);
+  first_item->SetTitle(std::u16string());
+  auto* const textfield =
+      first_item->AddChildView(std::make_unique<Textfield>());
+  textfield->GetViewAccessibility().SetName(u"Search");
+  auto* const sibling_button = first_item->AddChildView(
+      std::make_unique<LabelButton>(Button::PressedCallback(), u"Action"));
+  sibling_button->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+
+  menu_controller()->Run(active_owner.get(), /*button_controller=*/nullptr,
+                         menu_item(), gfx::Rect(), MenuAnchorPosition::kTopLeft,
+                         ui::mojom::MenuSourceType::kNone);
+
+  // Focusing a Textfield inside an open MenuHost succeeds without activating
+  // the MenuHost widget and attaches the Textfield to the owner's InputMethod.
+  textfield->RequestFocus();
+  EXPECT_TRUE(textfield->HasFocus());
+  EXPECT_FALSE(submenu->GetWidget()->IsActive());
+  EXPECT_EQ(textfield,
+            submenu->GetWidget()->GetInputMethod()->GetTextInputClient());
+  EXPECT_EQ(textfield, active_owner->GetInputMethod()->GetTextInputClient());
+
+  // Hiding the focused Textfield in an inactive MenuHost clears focus without
+  // advancing FocusManager focus to sibling_button, and re-attaches the owner
+  // widget's focused Textfield to the shared InputMethod.
+  textfield->SetVisible(false);
+  EXPECT_FALSE(textfield->HasFocus());
+  EXPECT_FALSE(sibling_button->HasFocus());
+  EXPECT_EQ(owner_textfield,
+            active_owner->GetInputMethod()->GetTextInputClient());
+
+  textfield->SetVisible(true);
+  textfield->RequestFocus();
+  ASSERT_TRUE(textfield->HasFocus());
+  ASSERT_EQ(textfield, active_owner->GetInputMethod()->GetTextInputClient());
+
+  // Destroying the owner widget while the menu-hosted textfield is focused
+  // cleanly clears focus and exits the menu without UAF.
+  active_owner.reset();
+  EXPECT_FALSE(textfield->HasFocus());
+}
+
+TEST_F(MenuControllerTest, MenuHostedTextfieldYieldsToOwnerFocusChange) {
+  std::unique_ptr<Widget> owner =
+      CreateTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET);
+  auto* const contents = owner->SetContentsView(std::make_unique<View>());
+  auto* const owner_textfield =
+      contents->AddChildView(std::make_unique<Textfield>());
+  auto* const other_owner_textfield =
+      contents->AddChildView(std::make_unique<Textfield>());
+  owner->Show();
+  owner_textfield->RequestFocus();
+  ASSERT_TRUE(owner_textfield->HasFocus());
+
+  CreateMenu({.show = false});
+  auto* const textfield =
+      menu_item()->GetSubmenu()->GetMenuItemAt(0)->AddChildView(
+          std::make_unique<Textfield>());
+  textfield->GetViewAccessibility().SetName(u"Search");
+  menu_controller()->Run(owner.get(), /*button_controller=*/nullptr,
+                         menu_item(), gfx::Rect(), MenuAnchorPosition::kTopLeft,
+                         ui::mojom::MenuSourceType::kNone);
+  ui::InputMethod* const input_method = owner->GetInputMethod();
+
+  // Moving the owner's focus takes the shared InputMethod back from the menu.
+  textfield->RequestFocus();
+  ASSERT_EQ(textfield, input_method->GetTextInputClient());
+  other_owner_textfield->RequestFocus();
+  EXPECT_FALSE(textfield->HasFocus());
+  EXPECT_TRUE(other_owner_textfield->HasFocus());
+  EXPECT_EQ(other_owner_textfield, input_method->GetTextInputClient());
+
+  // Clearing the owner's focus leaves no menu client on the InputMethod.
+  textfield->RequestFocus();
+  ASSERT_EQ(textfield, input_method->GetTextInputClient());
+  owner->GetFocusManager()->ClearFocus();
+  EXPECT_FALSE(textfield->HasFocus());
+  EXPECT_FALSE(input_method->GetTextInputClient());
 }
 
 }  // namespace views

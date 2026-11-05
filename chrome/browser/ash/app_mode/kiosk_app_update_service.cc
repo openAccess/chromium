@@ -8,11 +8,11 @@
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/ash/system/automatic_reboot_manager.h"
 #include "chrome/browser/extensions/updater/extension_updater.h"
 #include "chrome/browser/extensions/updater/extension_updater_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "extensions/browser/api/runtime/runtime_api.h"
 #include "extensions/browser/extension_system_provider.h"
 #include "extensions/browser/extensions_browser_client.h"
@@ -35,7 +35,7 @@ KioskAppUpdateService::KioskAppUpdateService(
 KioskAppUpdateService::~KioskAppUpdateService() = default;
 
 void KioskAppUpdateService::Init(const std::string& app_id) {
-  DCHECK(app_id_.empty());
+  CHECK(app_id_.empty(), base::NotFatalUntil::M160);
   app_id_ = app_id;
 
   update_observation_.Observe(extensions::ExtensionUpdater::Get(profile_));

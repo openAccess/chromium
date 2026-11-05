@@ -25,7 +25,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/media/webrtc/webrtc_browsertest_base.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
 #include "components/variations/pref_names.h"
@@ -52,10 +51,8 @@ std::string CreateJpgBytes() {
 class VcBackgroundUISeaPenProviderImplTest : public InProcessBrowserTest {
  public:
   VcBackgroundUISeaPenProviderImplTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {features::kVcBackgroundReplace,
-         features::kFeatureManagementVideoConference},
-        {});
+    scoped_feature_list_.InitAndEnableFeature(
+        features::kFeatureManagementVideoConference);
   }
 
   VcBackgroundUISeaPenProviderImplTest(
@@ -80,7 +77,8 @@ class VcBackgroundUISeaPenProviderImplTest : public InProcessBrowserTest {
     web_ui_.set_web_contents(web_contents);
     sea_pen_provider_ = std::make_unique<VcBackgroundUISeaPenProviderImpl>(
         &web_ui_,
-        std::make_unique<wallpaper_handlers::TestWallpaperFetcherDelegate>());
+        std::make_unique<wallpaper_handlers::TestWallpaperFetcherDelegate>(),
+        /*manta_service=*/nullptr);
     sea_pen_provider_->BindInterface(
         sea_pen_provider_remote_.BindNewPipeAndPassReceiver());
 

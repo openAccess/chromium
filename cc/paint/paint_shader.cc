@@ -28,7 +28,7 @@
 
 namespace cc {
 namespace {
-base::AtomicSequenceNumber g_next_shader_id;
+base::AtomicSequenceNumberT<uint64_t> g_next_shader_id;
 
 sk_sp<SkPicture> ToSkPicture(const PaintRecord& record,
                              const SkRect& bounds,
@@ -316,8 +316,7 @@ size_t PaintShader::GetSerializedSize(const PaintShader* shader) {
 PaintShader::PaintShader(Type type) : shader_type_(type) {}
 PaintShader::~PaintShader() = default;
 
-bool PaintShader::HasDiscardableImages(
-    gfx::ContentColorUsage* content_color_usage) const {
+bool PaintShader::HasDiscardableImages() const {
   switch (shader_type_) {
     case Type::kEmpty:
     case Type::kColor:
@@ -328,23 +327,54 @@ bool PaintShader::HasDiscardableImages(
     case Type::kSkSLCommand:
       return false;
     case Type::kImage:
-      if (image_ && !image_.IsTextureBacked()) {
-        if (content_color_usage) {
-          *content_color_usage =
-              std::max(*content_color_usage, image_.GetContentColorUsage());
-        }
-        return true;
-      }
-      return false;
+      return image_ && !image_.IsTextureBacked();
     case Type::kPaintRecord:
-      if (record_ && record_->has_discardable_images()) {
-        if (content_color_usage) {
-          *content_color_usage =
-              std::max(*content_color_usage, record_->content_color_usage());
-        }
-        return true;
-      }
+      return record_ && record_->has_discardable_images();
+    case Type::kShaderCount:
+      NOTREACHED();
+  }
+}
+
+bool PaintShader::HasReadBackDisallowedContent() const {
+  switch (shader_type_) {
+    case Type::kEmpty:
+    case Type::kColor:
+    case Type::kLinearGradient:
+    case Type::kRadialGradient:
+    case Type::kTwoPointConicalGradient:
+    case Type::kSweepGradient:
+    case Type::kSkSLCommand:
       return false;
+    case Type::kImage:
+      return image_ && image_.is_read_back_disallowed();
+    case Type::kPaintRecord:
+      return record_ && record_->has_read_back_disallowed_content();
+    case Type::kShaderCount:
+      NOTREACHED();
+  }
+}
+
+void PaintShader::UnionColorVolumeInto(
+    gfx::ContentColorVolume& color_volume) const {
+  switch (shader_type_) {
+    case Type::kEmpty:
+    case Type::kColor:
+    case Type::kLinearGradient:
+    case Type::kRadialGradient:
+    case Type::kTwoPointConicalGradient:
+    case Type::kSweepGradient:
+    case Type::kSkSLCommand:
+      break;
+    case Type::kImage:
+      if (image_) {
+        image_.UnionColorVolumeInto(color_volume);
+      }
+      break;
+    case Type::kPaintRecord:
+      if (record_) {
+        color_volume.UnionWith(record_->content_color_volume());
+      }
+      break;
     case Type::kShaderCount:
       NOTREACHED();
   }
@@ -482,6 +512,7 @@ sk_sp<PaintShader> PaintShader::CreateDecodedImage(
             .set_id(image_.stable_id())
             .set_texture_image(std::move(sk_image),
                                image_.GetContentIdForFrame(0u))
+            .set_is_read_back_disallowed(image_.is_read_back_disallowed())
             .TakePaintImage();
   }
 

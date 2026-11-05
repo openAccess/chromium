@@ -7,8 +7,8 @@
 
 #include <memory>
 #include <string_view>
-#include <vector>
 
+#include "base/containers/span.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -52,7 +52,7 @@ class WebuiOmniboxHandler;
 namespace content {
 class NavigationHandle;
 class WebUIDataSource;
-}
+}  // namespace content
 
 class WebUIToolbarUI : public TopChromeWebUIController,
                        public content::WebContentsObserver,
@@ -72,8 +72,8 @@ class WebUIToolbarUI : public TopChromeWebUIController,
     virtual toolbar_ui_api::ToolbarUIService::ToolbarUIServiceDelegate*
     GetToolbarUIServiceDelegate() = 0;
     // Cannot be null.
-    virtual std::unique_ptr<toolbar_ui_api::NavigationControlsStateFetcher>
-    GetNavigationControlsStateFetcher() = 0;
+    virtual std::unique_ptr<toolbar_ui_api::ToolbarStateFetcher>
+    GetToolbarStateFetcher() = 0;
     // Cannot be null.
     virtual std::unique_ptr<toolbar_ui_api::IconTableFetcher>
     GetIconTableFetcher() = 0;
@@ -112,9 +112,14 @@ class WebUIToolbarUI : public TopChromeWebUIController,
   void BindInterface(
       mojo::PendingReceiver<searchbox::mojom::PageHandlerFactory> receiver);
 
-  virtual void OnNavigationControlsStateChanged(
-      const toolbar_ui_api::mojom::NavigationControlsState& state);
+  virtual void OnToolbarStateChanged(
+      const toolbar_ui_api::mojom::ToolbarState& state);
   void OnFocusRequested(toolbar_ui_api::mojom::FocusRequestTarget target);
+  void ShowSplitTabsContextMenu();
+
+  // Blocks until every ToolbarUIObserver message sent so far has been
+  // dispatched by the WebUI. No-op before the service is bound.
+  void FlushToolbarUIObserversForTesting();
 
   // The |depdency_provider| is expected to outlive this class.
   void Init(DependencyProvider* dependency_provider);
@@ -128,8 +133,8 @@ class WebUIToolbarUI : public TopChromeWebUIController,
   // 1. Decide which resources to expose, e.g. only expose "chrome://theme"
   //    resources to trusted "chrome://" origins.
   // 2. Generate correct CORS headers. Since resources added here often belong
-  //    to a different origin than the page loading them, they need a CORS header
-  //    that explicitly allow `current_origin`.
+  //    to a different origin than the page loading them, they need a CORS
+  //    header that explicitly allow `current_origin`.
   void PopulateLocalResourceLoaderConfig(
       blink::mojom::LocalResourceLoaderConfig* config,
       const url::Origin& requesting_origin) override;
@@ -147,6 +152,11 @@ class WebUIToolbarUI : public TopChromeWebUIController,
       mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandler> handler)
       override;
 
+  void FinishCreateHelpBubbleHandler(
+      mojo::PendingRemote<help_bubble::mojom::HelpBubbleClient> client,
+      mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandler> handler,
+      base::WeakPtr<ui::TrackedElementHandler> tracked_element_handler);
+
   // searchbox::mojom::PageHandlerFactory:
   void CreatePageHandler(
       mojo::PendingRemote<searchbox::mojom::Page> page,
@@ -158,7 +168,13 @@ class WebUIToolbarUI : public TopChromeWebUIController,
   // Returns the list of known element identifiers. These elements are HTML
   // elements tracked by ui/webui/tracked_element. Used for anchoring secondary
   // UIs.
-  static const std::vector<ui::ElementIdentifier> GetKnownElementIdentifiers();
+  static base::span<const ui::ElementIdentifier> GetKnownElementIdentifiers();
+
+  OmniboxController* omnibox_controller_for_testing() const {
+    return omnibox_controller_;
+  }
+
+  bool is_initialized() const { return is_initialized_; }
 
  private:
   FRIEND_TEST_ALL_PREFIXES(WebUIToolbarUITest,
@@ -179,6 +195,11 @@ class WebUIToolbarUI : public TopChromeWebUIController,
   contextual_search::ContextualSearchSessionHandle*
   GetOrCreateContextualSessionHandle();
 
+  // Returns the profile of the window of the toolbar. See
+  // webui::GetUserProfile().
+  Profile* GetUserProfile() const;
+
+  bool is_initialized_ = false;
   raw_ptr<OmniboxController> omnibox_controller_ = nullptr;
 
   // Must outlive `omnibox_handler_`.
@@ -223,6 +244,13 @@ class WebUIToolbarUI : public TopChromeWebUIController,
 
   mojo::Receiver<searchbox::mojom::PageHandlerFactory>
       searchbox_page_factory_receiver_{this};
+
+  // These two are used if searchbox CreatePageHandler is called before Init();
+  mojo::PendingRemote<searchbox::mojom::Page> delayed_searchbox_page_;
+  mojo::PendingReceiver<searchbox::mojom::PageHandler>
+      delayed_searchbox_receiver_;
+
+  base::WeakPtrFactory<WebUIToolbarUI> weak_ptr_factory_{this};
 
   /////////////////////////////////////////////////////////////////////////////
 

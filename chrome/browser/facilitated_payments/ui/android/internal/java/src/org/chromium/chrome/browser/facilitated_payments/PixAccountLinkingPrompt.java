@@ -89,7 +89,7 @@ public class PixAccountLinkingPrompt implements FacilitatedPaymentsSequenceView 
         } else if (propertyKey == SETTINGS_LINK_CALLBACK) {
             updateSettingsLink(model, view);
         } else if (propertyKey == VIDEO_LINK_CALLBACK) {
-            TextView valueProp1 = view.findViewById(R.id.value_prop_message_1);
+            TextView valueProp1 = view.findViewById(R.id.prompt_b_value_prop_message_1);
             if (valueProp1 != null) {
                 valueProp1.setText(
                         SpanApplier.applySpans(
@@ -103,14 +103,7 @@ public class PixAccountLinkingPrompt implements FacilitatedPaymentsSequenceView 
                                         "</link1>",
                                         new ChromeClickableSpan(
                                                 valueProp1.getContext(),
-                                                v -> model.get(VIDEO_LINK_CALLBACK).onClick(v)) {
-                                            @Override
-                                            public void updateDrawState(
-                                                    android.text.TextPaint textPaint) {
-                                                super.updateDrawState(textPaint);
-                                                textPaint.setUnderlineText(false);
-                                            }
-                                        })));
+                                                v -> model.get(VIDEO_LINK_CALLBACK).onClick(v)))));
                 valueProp1.setMovementMethod(LinkMovementMethod.getInstance());
             }
         } else {
@@ -142,13 +135,7 @@ public class PixAccountLinkingPrompt implements FacilitatedPaymentsSequenceView 
                                             if (model.get(SETTINGS_LINK_CALLBACK) != null) {
                                                 model.get(SETTINGS_LINK_CALLBACK).onClick(v);
                                             }
-                                        }) {
-                                    @Override
-                                    public void updateDrawState(android.text.TextPaint textPaint) {
-                                        super.updateDrawState(textPaint);
-                                        textPaint.setUnderlineText(false);
-                                    }
-                                })));
+                                        }))));
         settingsLink.setMovementMethod(LinkMovementMethod.getInstance());
     }
 }

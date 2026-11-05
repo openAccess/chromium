@@ -54,7 +54,6 @@ include_rules = [
   "+components/app_restore",
   "+components/application_locale_storage",
   "+components/apps/link_capturing",
-  "+components/assist_ranker",
   "+components/autofill/android",
   "+components/autofill/content/browser",
   "+components/autofill/content/common",
@@ -153,6 +152,8 @@ include_rules = [
   "+components/exo",
   "+components/external_intents",
   "+components/facilitated_payments/core/features",
+  "+components/facilitated_payments/core/mojom",
+  "+components/fcm",
   "+components/favicon_base",
   "+components/favicon/android",
   "+components/favicon/content",
@@ -214,8 +215,6 @@ include_rules = [
   "+components/media_router/browser",
   "+components/history_clusters",
   "+components/history_clusters/history_clusters_internals",
-  "+components/history_embeddings/content",
-  "+components/history_embeddings/core",
   "+components/manta",
   "+components/multistep_filter/core",
   "+components/media_effects",
@@ -347,7 +346,6 @@ include_rules = [
   "+components/sharing_message",
   "+components/signin/core/browser",
   "+components/signin/public",
-  "+components/skills:features",
   "+components/site_token_provider",
   "+components/site_engagement",
   "+components/site_isolation",
@@ -395,6 +393,7 @@ include_rules = [
   "+components/translate/core/language_detection",
   "+components/translate/translate_internals",
   "+components/trusted_vault",
+  "+components/ttc/features.h",
   "+components/ui_devtools",
   "+components/ui_metrics",
   "+components/ukm",
@@ -461,6 +460,7 @@ include_rules = [
   "+media/gpu/buildflags.h",
   "+media/remoting/device_capability_checker.h",
   "+media/capture",
+  "+media/gfx",
   "+media/midi",  # For midi switches
   "+media/mojo",  # For mojo media services.
   "+media/renderers",
@@ -490,8 +490,10 @@ include_rules = [
   "+services/proxy_resolver/public/mojom",
   "+services/resource_coordinator/public",
   "+services/screen_ai",
+  "+services/shape_detection/public/mojom",
   "+services/strings",
   "+services/webnn/public/mojom/features.mojom-features.h",
+  "+services/webnn/public/cpp/webnn_buildflags.h",
   "+services/tracing/public/cpp",
   "+services/video_capture/public",
   "+services/viz/public",
@@ -549,6 +551,13 @@ include_rules = [
   "!chrome/browser/glic/test_support/glic_functional_browsertest.h",
   "!chrome/browser/glic/test_support/interactive_glic_test.h",
   "!chrome/browser/glic/test_support/non_interactive_glic_test.h",
+
+  # geic_enabling is a GLiC-internal helper rather than a general purpose
+  # enablement check; see the comment in geic_enabling.h. Callers should go
+  # through GLiC's enablement utilities instead. The allowlist lives in
+  # chrome/browser/glic/host/DEPS; please loop in the GEiC owners before adding
+  # to it.
+  "-chrome/browser/glic/gemini_enterprise/geic_enabling.h",
 
   # Ensure that only the public interface of performance_manager gets used.
   "-chrome/browser/performance_manager",
@@ -624,7 +633,6 @@ specific_include_rules = {
   ],
   r"chrome_content_browser_client\.cc" : [
     "+ash/shell.h",
-    "+ash/multi_capture/multi_capture_service.h",
     "+content/public/browser/tts_controller.h",
   ],
   "chrome_navigation_browsertest.cc" : [
@@ -661,8 +669,5 @@ specific_include_rules = {
   ],
   r"android/omnibox/composebox_query_controller_bridge\.cc": [
     "+components/contextual_search/internal",
-  ],
-  "spellcheck_service.cc": [
-    "+chrome/browser/search/search.h",
   ],
 }

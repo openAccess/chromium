@@ -39,7 +39,6 @@
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "third_party/dom_distiller_js/dom_distiller.pb.h"
 #include "ui/base/l10n/l10n_util.h"
 
 using content::ContentBrowserTest;
@@ -88,6 +87,7 @@ namespace dom_distiller {
 
 const char* kSimpleArticlePath = "/simple_article.html";
 const char* kVideoArticlePath = "/video_article.html";
+const char* kShadowDomArticlePath = "/shadow_dom_article.html";
 
 class DistillerPageWebContentsTest : public ContentBrowserTest {
  public:
@@ -116,7 +116,7 @@ class DistillerPageWebContentsTest : public ContentBrowserTest {
 
   void OnPageDistillationFinished(
       base::OnceClosure quit_closure,
-      std::unique_ptr<proto::DomDistillerResult> distiller_result,
+      std::unique_ptr<DistilledPageProto> distiller_result,
       DistillationParseResult /*result*/) {
     distiller_result_ = std::move(distiller_result);
     std::move(quit_closure).Run();
@@ -128,7 +128,7 @@ class DistillerPageWebContentsTest : public ContentBrowserTest {
                                     bool wait_for_document_loaded);
 
   raw_ptr<DistillerPageWebContents, DanglingUntriaged> distiller_page_;
-  std::unique_ptr<proto::DomDistillerResult> distiller_result_;
+  std::unique_ptr<DistilledPageProto> distiller_result_;
 };
 
 // Use this class to be able to leak the WebContents, which is needed for when
@@ -147,7 +147,7 @@ class TestDistillerPageWebContents : public DistillerPageWebContents {
         new_web_contents_created_(false) {}
 
   void CreateNewWebContents(const GURL& url) override {
-    ASSERT_EQ(true, expect_new_web_contents_);
+    EXPECT_TRUE(expect_new_web_contents_);
     new_web_contents_created_ = true;
     DistillerPageWebContents::CreateNewWebContents(url);
     EXPECT_TRUE(GetUserDataForTesting());
@@ -178,12 +178,9 @@ IN_PROC_BROWSER_TEST_F(DistillerPageWebContentsTest,
   run_loop.Run();
 
   EXPECT_EQ("Test Page Title", distiller_result_->title());
-  EXPECT_THAT(distiller_result_->distilled_content().html(),
-              HasSubstr("Lorem ipsum"));
-  EXPECT_THAT(distiller_result_->distilled_content().html(),
+  EXPECT_THAT(distiller_result_->html(), HasSubstr("Lorem ipsum"));
+  EXPECT_THAT(distiller_result_->html(),
               Not(HasSubstr("questionable content")));
-  EXPECT_EQ("", distiller_result_->pagination_info().next_page());
-  EXPECT_EQ("", distiller_result_->pagination_info().prev_page());
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -204,9 +201,9 @@ IN_PROC_BROWSER_TEST_F(DistillerPageWebContentsTest,
   run_loop.Run();
 
   // A relative link should've been updated.
-  EXPECT_THAT(distiller_result_->distilled_content().html(),
+  EXPECT_THAT(distiller_result_->html(),
               ContainsRegex("href=\"http://127.0.0.1:.*/relativelink.html\""));
-  EXPECT_THAT(distiller_result_->distilled_content().html(),
+  EXPECT_THAT(distiller_result_->html(),
               HasSubstr("href=\"http://www.google.com/absolutelink.html\""));
 }
 
@@ -228,9 +225,9 @@ IN_PROC_BROWSER_TEST_F(DistillerPageWebContentsTest,
   run_loop.Run();
 
   // A relative link should've been updated.
-  EXPECT_THAT(distiller_result_->distilled_content().html(),
+  EXPECT_THAT(distiller_result_->html(),
               ContainsRegex("src=\"http://127.0.0.1:.*/relativeimage.png\""));
-  EXPECT_THAT(distiller_result_->distilled_content().html(),
+  EXPECT_THAT(distiller_result_->html(),
               HasSubstr("src=\"http://www.google.com/absoluteimage.png\""));
 }
 
@@ -252,9 +249,9 @@ IN_PROC_BROWSER_TEST_F(DistillerPageWebContentsTest,
   run_loop.Run();
 
   // A relative source should've been updated.
-  EXPECT_THAT(distiller_result_->distilled_content().html(),
+  EXPECT_THAT(distiller_result_->html(),
               ContainsRegex("src=\"http://127.0.0.1:.*/relative_video.webm\""));
-  EXPECT_THAT(distiller_result_->distilled_content().html(),
+  EXPECT_THAT(distiller_result_->html(),
               HasSubstr("src=\"http://www.google.com/absolute_video.ogg\""));
 }
 
@@ -278,17 +275,74 @@ IN_PROC_BROWSER_TEST_F(DistillerPageWebContentsTest,
     base::RunLoop run_loop;
     DistillPage(run_loop.QuitClosure(), "/visible_style.html");
     run_loop.Run();
-    EXPECT_THAT(distiller_result_->distilled_content().html(),
-                HasSubstr("Lorem ipsum"));
+    EXPECT_THAT(distiller_result_->html(), HasSubstr("Lorem ipsum"));
   }
 
   {
     base::RunLoop run_loop;
     DistillPage(run_loop.QuitClosure(), "/invisible_style.html");
     run_loop.Run();
-    EXPECT_THAT(distiller_result_->distilled_content().html(),
-                Not(HasSubstr("Lorem ipsum")));
+    EXPECT_THAT(distiller_result_->html(), Not(HasSubstr("Lorem ipsum")));
   }
+}
+
+IN_PROC_BROWSER_TEST_F(DistillerPageWebContentsTest, HandlesShadowDOM) {
+  DistillerPageWebContents distiller_page(
+      shell()->web_contents()->GetBrowserContext(),
+      shell()->web_contents()->GetContainerBounds().size(),
+      std::unique_ptr<SourcePageHandleWebContents>());
+  distiller_page_ = &distiller_page;
+
+  base::RunLoop run_loop;
+  DistillPage(run_loop.QuitClosure(), kShadowDomArticlePath);
+  run_loop.Run();
+
+  const std::string& html = distiller_result_->html();
+
+  EXPECT_EQ("Shadow DOM Test Page Title", distiller_result_->title());
+
+  // The article body lives in an open shadow root, which cloneNode() does not
+  // copy. Without flattening, the distiller sees an empty <custom-article> and
+  // produces nothing at all.
+  EXPECT_THAT(html,
+              HasSubstr("The city botanical garden was established in the late "
+                        "nineteenth"));
+
+  // Light DOM slotted into the shadow tree. Note this text alone does not
+  // prove much -- it survives a plain deep clone too -- but it would be lost
+  // by a flattening clone that descends into the shadow root without
+  // resolving <slot> assignments.
+  EXPECT_THAT(html, HasSubstr("The central glass conservatory and palm house"));
+
+  // A <slot> with nothing assigned renders its fallback content.
+  EXPECT_THAT(
+      html,
+      HasSubstr("Seasonal exhibitions and educational tours are offered"));
+
+  // Content re-projected through a nested shadow root's default slot.
+  EXPECT_THAT(
+      html,
+      HasSubstr("The newly renovated alpine pavilion houses a wide variety"));
+
+  // A <slot> outside any shadow tree is an ordinary element that renders its
+  // children; it has no assigned nodes.
+  EXPECT_THAT(
+      html, HasSubstr("The conservatory's research library contains extensive "
+                      "historical"));
+
+  // "continue-read-break" contains the substring "ad-break". Before the token
+  // was anchored, unlikelyCandidates matched it and _grabArticle deleted this
+  // whole paragraph.
+  EXPECT_THAT(
+      html, HasSubstr("Horticultural specialists and groundskeepers maintain"));
+
+  // The anchored token must still match a real ad break.
+  EXPECT_THAT(html,
+              Not(HasSubstr("Commercial sponsor banner and advertisement")));
+
+  // Light DOM that is not assigned to any slot is not rendered, so it must not
+  // appear in the distilled output.
+  EXPECT_THAT(html, Not(HasSubstr("Unslotted sidebar navigation links")));
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -327,10 +381,11 @@ IN_PROC_BROWSER_TEST_F(DistillerPageWebContentsTest,
 IN_PROC_BROWSER_TEST_F(DistillerPageWebContentsTest,
                        MAYBE_UsingCurrentWebContentsWrongUrl) {
   std::string url("/bogus");
-  bool expect_new_web_contents = true;
+  bool expect_new_web_contents = false;
   bool wait_for_document_loaded = true;
   RunUseCurrentWebContentsTest(url, expect_new_web_contents,
                                wait_for_document_loaded);
+  EXPECT_EQ("", distiller_result_->title());
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -347,6 +402,7 @@ IN_PROC_BROWSER_TEST_F(DistillerPageWebContentsTest,
   bool wait_for_document_loaded = false;
   RunUseCurrentWebContentsTest(url, expect_new_web_contents,
                                wait_for_document_loaded);
+  EXPECT_EQ("Test Page Title", distiller_result_->title());
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -363,6 +419,7 @@ IN_PROC_BROWSER_TEST_F(DistillerPageWebContentsTest,
   bool wait_for_document_loaded = true;
   RunUseCurrentWebContentsTest(url, expect_new_web_contents,
                                wait_for_document_loaded);
+  EXPECT_EQ("Test Page Title", distiller_result_->title());
 }
 
 void DistillerPageWebContentsTest::RunUseCurrentWebContentsTest(
@@ -394,7 +451,6 @@ void DistillerPageWebContentsTest::RunUseCurrentWebContentsTest(
 
   // Sanity check of distillation process.
   EXPECT_EQ(expect_new_web_contents, distiller_page.new_web_contents_created());
-  EXPECT_EQ("Test Page Title", distiller_result_->title());
 }
 
 #if BUILDFLAG(IS_WIN)

@@ -14,8 +14,6 @@ import android.graphics.Bitmap;
 import android.view.View;
 import android.widget.TextView;
 
-import androidx.test.filters.MediumTest;
-
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -42,7 +40,6 @@ import org.chromium.url.GURL;
 @RunWith(BaseRobolectricTestRunner.class)
 public class PwaUniversalInstallBottomSheetCoordinatorTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
-    Activity mActivity;
 
     @Mock private BottomSheetController mBottomSheetControllerMock;
 
@@ -64,7 +61,6 @@ public class PwaUniversalInstallBottomSheetCoordinatorTest {
     private void onOpenAppCalled() {}
 
     @Test
-    @MediumTest
     public void testShowing() {
         final Activity activity = Robolectric.buildActivity(Activity.class).create().get();
 
@@ -130,7 +126,6 @@ public class PwaUniversalInstallBottomSheetCoordinatorTest {
     }
 
     @Test
-    @MediumTest
     @EnableFeatures({WebappsFeatureMap.ALWAYS_SHOW_INSTALL_DISAMBIGUATION_DIALOG})
     public void testOnAppDataFetched_alwaysShowDisambiguationFlagEnabled() {
         doReturn(true).when(mBottomSheetControllerMock).requestShowContent(any(), anyBoolean());
@@ -161,10 +156,57 @@ public class PwaUniversalInstallBottomSheetCoordinatorTest {
         Assert.assertFalse(installCalled[0]);
         org.mockito.Mockito.verify(mBottomSheetControllerMock)
                 .requestShowContent(any(), org.mockito.ArgumentMatchers.eq(true));
+        Assert.assertEquals(
+                "Install",
+                ((TextView)
+                                coordinator
+                                        .getBottomSheetViewForTesting()
+                                        .findViewById(R.id.option_text_install))
+                        .getText());
     }
 
     @Test
-    @MediumTest
+    @EnableFeatures({WebappsFeatureMap.ALWAYS_SHOW_INSTALL_DISAMBIGUATION_DIALOG})
+    public void testOnAppDataFetched_diyAppShowsInstallPageAsApp() {
+        doReturn(true).when(mBottomSheetControllerMock).requestShowContent(any(), anyBoolean());
+        final Activity activity = Robolectric.buildActivity(Activity.class).create().get();
+        MockWebContents webContents = mock(MockWebContents.class);
+        GURL url = new GURL("http://www.example.com/");
+        doReturn(url).when(webContents).getLastCommittedUrl();
+
+        boolean[] installCalled = new boolean[1];
+        PwaUniversalInstallBottomSheetCoordinator coordinator =
+                new PwaUniversalInstallBottomSheetCoordinator(
+                        activity,
+                        webContents,
+                        () -> installCalled[0] = true,
+                        this::onAddShortcutCalled,
+                        this::onOpenAppCalled,
+                        /* webAppAlreadyInstalled= */ false,
+                        mBottomSheetControllerMock,
+                        /* arrowId= */ 0,
+                        /* installOverlayId= */ 0,
+                        /* shortcutOverlayId= */ 0);
+
+        Bitmap icon = Bitmap.createBitmap(10, 10, Bitmap.Config.ARGB_8888);
+        coordinator.onAppDataFetched(AppType.WEBAPK_DIY, icon, /* adaptive= */ false);
+
+        Assert.assertFalse(installCalled[0]);
+        org.mockito.Mockito.verify(mBottomSheetControllerMock)
+                .requestShowContent(any(), org.mockito.ArgumentMatchers.eq(true));
+        View view = coordinator.getBottomSheetViewForTesting();
+        Assert.assertEquals(
+                "Install page as app",
+                ((TextView) view.findViewById(R.id.option_text_install)).getText());
+        Assert.assertEquals(
+                View.GONE, view.findViewById(R.id.option_text_install_explanation).getVisibility());
+        Assert.assertEquals(View.VISIBLE, view.findViewById(R.id.arrow_install).getVisibility());
+
+        view.findViewById(R.id.option_install).performClick();
+        Assert.assertTrue(installCalled[0]);
+    }
+
+    @Test
     @DisableFeatures({WebappsFeatureMap.ALWAYS_SHOW_INSTALL_DISAMBIGUATION_DIALOG})
     public void testOnAppDataFetched_flagDisabled_autoRedirectsOnRoot() {
         final Activity activity = Robolectric.buildActivity(Activity.class).create().get();

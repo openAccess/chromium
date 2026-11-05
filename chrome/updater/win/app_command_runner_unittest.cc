@@ -8,6 +8,7 @@
 
 #include <shellapi.h>
 #include <shlobj.h>
+#include <stddef.h>
 
 #include <algorithm>
 #include <array>
@@ -115,6 +116,11 @@ INSTANTIATE_TEST_SUITE_P(
     AppCommandFormatComponentsInvalidPathsTest,
     ::testing::ValuesIn(std::vector<
                         AppCommandFormatComponentsInvalidPathsTestCase>{
+        // An empty command format is invalid. `::CommandLineToArgvW` would
+        // otherwise return the path of the current executable.
+        {UpdaterScope::kUser, L""},
+        {UpdaterScope::kSystem, L""},
+
         // Relative paths are invalid.
         {UpdaterScope::kUser, L"process.exe"},
 
@@ -163,6 +169,7 @@ struct AppCommandFormatParameterTestCase {
   const wchar_t* const format_string;
   const wchar_t* const expected_output;
   const std::vector<std::wstring> substitutions;
+  const std::wstring caller_sid = {};
 };
 
 class AppCommandFormatParameterTest
@@ -189,6 +196,37 @@ INSTANTIATE_TEST_SUITE_P(
         {L"%12", L"p12", {L"p1", L"p2", L"p3"}},
         {L"%1%2", L"p1p2", {L"p1", L"p2", L"p3"}},
 
+        // Format string has %CALLER_SID%.
+        {L"%CALLER_SID%", L"S-1-5-21-1", {}, L"S-1-5-21-1"},
+        {L"--user-sid=%CALLER_SID%",
+         L"--user-sid=S-1-5-21-1",
+         {},
+         L"S-1-5-21-1"},
+        {L"--user-sid=\"%CALLER_SID%\"",
+         L"--user-sid=\"S-1-5-21-1\"",
+         {},
+         L"S-1-5-21-1"},
+        {L"--user-sid=%CALLER_SID% --udd=%1",
+         L"--user-sid=S-1-5-21-1 --udd=p1",
+         {L"p1"},
+         L"S-1-5-21-1"},
+        {L"%%CALLER_SID%%", L"%CALLER_SID%", {}, L"S-1-5-21-1"},
+        {L"%%%CALLER_SID%", L"%S-1-5-21-1", {}, L"S-1-5-21-1"},
+        {L"%caller_sid%", nullptr, {}, L"S-1-5-21-1"},
+        {L"%CALLER_SID", nullptr, {}, L"S-1-5-21-1"},
+        {L"%CALLER_SID%%", nullptr, {}, L"S-1-5-21-1"},
+        {L"%%CALLER_SID", L"%CALLER_SID", {}, L"S-1-5-21-1"},
+        {L"%1%CALLER_SID%", L"p1S-1-5-21-1", {L"p1"}, L"S-1-5-21-1"},
+        {L"--a=%CALLER_SID% --b=%CALLER_SID%",
+         L"--a=S-1-5-21-1 --b=S-1-5-21-1",
+         {},
+         L"S-1-5-21-1"},
+        {L"%1", L"%CALLER_SID%", {L"%CALLER_SID%"}, L"S-1-5-21-1"},
+
+        // Format string has %CALLER_SID% but no caller_sid.
+        {L"%CALLER_SID%", nullptr, {}},
+        {L"--user-sid=%CALLER_SID%", nullptr, {}},
+
         // Format string has incorrect escaped `%` signs.
         {L"unescaped percent %", nullptr, {L"p1", L"p2", L"p3"}},
         {L"unescaped %%% percents", nullptr, {L"p1", L"p2", L"p3"}},
@@ -211,7 +249,8 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST_P(AppCommandFormatParameterTest, TestCases) {
   std::optional<std::wstring> output = AppCommandRunner::FormatParameter(
-      GetParam().format_string, GetParam().substitutions);
+      GetParam().format_string, GetParam().substitutions,
+      [&] { return GetParam().caller_sid; });
   if (GetParam().expected_output) {
     EXPECT_EQ(output.value(), GetParam().expected_output);
   } else {
@@ -223,6 +262,7 @@ struct AppCommandFormatComponentsAndCommandLineTestCase {
   const std::vector<std::wstring> input;
   const wchar_t* const output;
   const std::vector<std::wstring> substitutions;
+  const std::wstring caller_sid = {};
 };
 
 class AppCommandFormatComponentsAndCommandLineTest
@@ -310,6 +350,17 @@ INSTANTIATE_TEST_SUITE_P(
             {{L"%1"}, L"\"abcdef \"", {L"abcdef "}},
             // leading space.
             {{L"%1"}, L"\" abcdef\"", {L" abcdef"}},
+
+            // %CALLER_SID% parameter.
+            {{L"--user-sid=%CALLER_SID%"},
+             L"--user-sid=S-1-5-21-1",
+             {},
+             L"S-1-5-21-1"},
+            {{L"--user-sid=%CALLER_SID%", L"--udd=%1"},
+             L"--user-sid=S-1-5-21-1 --udd=p1",
+             {L"p1"},
+             L"S-1-5-21-1"},
+            {{L"--user-sid=%CALLER_SID%"}, nullptr, {}},
         }));
 
 TEST_P(AppCommandFormatComponentsAndCommandLineTest, TestCases) {
@@ -329,8 +380,9 @@ TEST_P(AppCommandFormatComponentsAndCommandLineTest, TestCases) {
   EXPECT_EQ(parameters.size(), GetParam().input.size());
 
   std::optional<std::wstring> command_line =
-      AppCommandRunner::FormatAppCommandLine(parameters,
-                                             GetParam().substitutions);
+      AppCommandRunner::FormatAppCommandLine(
+          parameters, GetParam().substitutions,
+          [&] { return GetParam().caller_sid; });
   if (!GetParam().output) {
     EXPECT_EQ(command_line, std::nullopt);
     return;
@@ -347,7 +399,7 @@ TEST_P(AppCommandFormatComponentsAndCommandLineTest, TestCases) {
   std::wstring cmd = base::StrCat({L"process.exe ", command_line.value()});
   int num_args = 0;
   base::win::ScopedLocalAllocTyped<wchar_t*> argv_handle(
-      ::CommandLineToArgvW(&cmd[0], &num_args));
+      ::CommandLineToArgvW(cmd.c_str(), &num_args));
   ASSERT_TRUE(argv_handle);
   EXPECT_EQ(num_args, 2) << "substitution '" << GetParam().substitutions[0]
                          << "' gave command line '" << cmd
@@ -368,6 +420,7 @@ struct AppCommandTestCase {
   const std::vector<std::wstring> input;
   const std::vector<std::wstring> substitutions;
   const int expected_exit_code;
+  const std::wstring caller_sid = {};
 };
 
 TEST_F(AppCommandRunnerTest, NoApp) {
@@ -395,6 +448,7 @@ INSTANTIATE_TEST_SUITE_P(RunAppCommandFormatTestCases,
                          ::testing::ValuesIn(std::vector<AppCommandTestCase>{
                              {{L"/c", L"exit 7"}, {}, 7},
                              {{L"/c", L"exit %1"}, {L"5420"}, 5420},
+                             {{L"/c", L"exit %CALLER_SID%"}, {}, 42, L"42"},
                          }));
 
 TEST_P(RunAppCommandFormatTest, TestCases) {
@@ -411,13 +465,25 @@ TEST_P(RunAppCommandFormatTest, TestCases) {
           kAppId1, kCmdId1,
           base::StrCat({cmd_exe_command_line_.GetCommandLineString(), L" ",
                         base::JoinString(GetParam().input, L" ")})));
-  ASSERT_HRESULT_SUCCEEDED(
-      app_command_runner->Run(GetParam().substitutions, process));
+  ASSERT_HRESULT_SUCCEEDED(app_command_runner->Run(
+      GetParam().substitutions, [&] { return GetParam().caller_sid; },
+      process));
 
   int exit_code = 0;
   EXPECT_TRUE(process.WaitForExitWithTimeout(TestTimeouts::action_max_timeout(),
                                              &exit_code));
   EXPECT_EQ(exit_code, GetParam().expected_exit_code);
+}
+
+TEST_F(AppCommandRunnerTest, RunCallerSidMissing) {
+  base::Process process;
+  ASSERT_OK_AND_ASSIGN(
+      scoped_refptr<AppCommandRunner> app_command_runner,
+      CreateAppCommandRunner(
+          kAppId1, kCmdId1,
+          base::StrCat({cmd_exe_command_line_.GetCommandLineString(),
+                        L" /c exit %CALLER_SID%"})));
+  EXPECT_EQ(app_command_runner->Run({}, process), E_INVALIDARG);
 }
 
 TEST_F(AppCommandRunnerTest, CheckChromeBrandedName) {
@@ -656,6 +722,7 @@ TEST_P(AppCommandOutputTest, TestCases) {
       app_command_runner->TimedWait(TestTimeouts::action_max_timeout()));
   EXPECT_FALSE(process.IsRunning());
   EXPECT_EQ(app_command_runner->output(), GetParam().expected_output);
+  EXPECT_EQ(app_command_runner->exit_code(), 0U);
 }
 
 }  // namespace updater

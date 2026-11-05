@@ -11,7 +11,7 @@
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/ec_signing_key.h"
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/persistence/mock_key_persistence_delegate.h"
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/signing_key_pair.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -25,16 +25,16 @@ namespace {
 
 std::unique_ptr<crypto::UnexportableSigningKey> GenerateHardwareSigningKey() {
   auto provider = crypto::GetUnexportableKeyProvider(/*config=*/{});
-  DCHECK(provider);
-  auto acceptable_algorithms = {crypto::SignatureVerifier::ECDSA_SHA256};
+  CHECK(provider, base::NotFatalUntil::M161);
+  auto acceptable_algorithms = {crypto::sign::ECDSA_SHA256};
   auto signing_key = provider->GenerateSigningKeySlowly(acceptable_algorithms);
-  DCHECK(signing_key);
+  CHECK(signing_key, base::NotFatalUntil::M161);
   return signing_key;
 }
 
 std::unique_ptr<crypto::UnexportableSigningKey> GenerateECSigningKey() {
   auto ec_key_provider = std::make_unique<ECSigningKeyProvider>();
-  auto acceptable_algorithms = {crypto::SignatureVerifier::ECDSA_SHA256};
+  auto acceptable_algorithms = {crypto::sign::ECDSA_SHA256};
   return ec_key_provider->GenerateSigningKeySlowly(acceptable_algorithms);
 }
 
@@ -136,7 +136,7 @@ bool ScopedInMemoryKeyPersistenceDelegateFactory::StoreKeyPair(
     std::vector<uint8_t> wrapped) {
   if (trust_level == BPKUR::KEY_TRUST_LEVEL_UNSPECIFIED) {
     // Remove key
-    DCHECK_EQ(wrapped.size(), 0u);
+    CHECK_EQ(wrapped.size(), 0u, base::NotFatalUntil::M161);
     key_map_.erase(KeyStorageType::kPermanent);
     return true;
   }
@@ -173,7 +173,7 @@ ScopedInMemoryKeyPersistenceDelegateFactory::LoadKeyPair(
 
 scoped_refptr<SigningKeyPair>
 ScopedInMemoryKeyPersistenceDelegateFactory::CreateKeyPair() {
-  auto algorithm = {crypto::SignatureVerifier::ECDSA_SHA256};
+  auto algorithm = {crypto::sign::ECDSA_SHA256};
   auto signing_key =
       std::make_unique<ECSigningKeyProvider>()->GenerateSigningKeySlowly(
           algorithm);

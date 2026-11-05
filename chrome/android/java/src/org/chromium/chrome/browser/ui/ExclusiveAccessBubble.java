@@ -4,12 +4,18 @@
 
 package org.chromium.chrome.browser.ui;
 
-import org.jni_zero.CalledByNative;
+import android.app.Activity;
 
+import org.jni_zero.CalledByNative;
+import org.jni_zero.JniType;
+
+import org.chromium.base.DeviceInfo;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.ui.UiUtils;
 import org.chromium.ui.base.DeviceInput;
 
 /**
@@ -43,46 +49,53 @@ public class ExclusiveAccessBubble {
 
     @CalledByNative
     public void show() {
-        if (mText == null || mSnackbar != null) return;
-        SnackbarManager snackbarManager = mParentContext.getSnackbarManager();
-        if (snackbarManager != null) {
-            mSnackbar =
-                    Snackbar.make(
-                                    mText,
-                                    mSnackbarController,
-                                    Snackbar.TYPE_ACTION,
-                                    Snackbar.UMA_EXCLUSIVE_ACCESS_BUBBLE)
-                            // The exclusive access notice is security-critical and should not
-                            // be discarded by the timeout of other action snackbars in the queue.
-                            .setHighPriority(true)
-                            // Use a Java-side timeout so that the timer only starts when
-                            // the notice is actually visible to the user.
-                            .setDuration(EXCLUSIVE_ACCESS_SNACKBAR_DURATION_MS);
-            snackbarManager.showSnackbar(mSnackbar);
+        if (mText == null || mSnackbar != null) {
+            return;
         }
+        SnackbarManager snackbarManager = mParentContext.getSnackbarManager();
+        if (snackbarManager == null || !snackbarManager.canShowSnackbar()) {
+            return;
+        }
+
+        mSnackbar =
+                Snackbar.make(
+                                mText,
+                                mSnackbarController,
+                                Snackbar.TYPE_ACTION,
+                                Snackbar.UMA_EXCLUSIVE_ACCESS_BUBBLE)
+                        // The exclusive access notice is security-critical and should not
+                        // be discarded by the timeout of other action snackbars in the queue.
+                        .setHighPriority(true)
+                        // Allow up to MAX_LINES (5) so the origin and exit instructions are
+                        // never clipped on narrow screens.
+                        .setDefaultLines(false)
+                        // Use a Java-side timeout so that the timer only starts when
+                        // the notice is actually visible to the user.
+                        .setDuration(EXCLUSIVE_ACCESS_SNACKBAR_DURATION_MS);
+        snackbarManager.showSnackbar(mSnackbar);
     }
 
     @CalledByNative
-    public void update(String text) {
-        if (mText != null && mText.equals(text) && mSnackbar != null) return;
+    public void update(@JniType("std::u16string") String text) {
         SnackbarManager snackbarManager = mParentContext.getSnackbarManager();
-        if (snackbarManager == null) return;
+        if (snackbarManager == null || !snackbarManager.canShowSnackbar()) {
+            mText = text;
+            hide();
+            return;
+        }
 
+        // Avoid re-triggering the view or resetting the display timer if the text has not changed.
+        if (mText != null && mText.equals(text) && mSnackbar != null) {
+            return;
+        }
         mText = text;
+
         if (mSnackbar != null) {
-            mSnackbar =
-                    Snackbar.make(
-                                    text,
-                                    mSnackbarController,
-                                    Snackbar.TYPE_ACTION,
-                                    Snackbar.UMA_EXCLUSIVE_ACCESS_BUBBLE)
-                            .setHighPriority(true)
-                            .setDuration(EXCLUSIVE_ACCESS_SNACKBAR_DURATION_MS);
+            mSnackbar.setText(text);
             // This will trigger SnackbarManager.updateView() and update the existing view.
             snackbarManager.showSnackbar(mSnackbar);
             return;
         }
-        hide();
         show();
     }
 
@@ -103,5 +116,32 @@ public class ExclusiveAccessBubble {
     @CalledByNative
     public boolean isKeyboardConnected() {
         return DeviceInput.supportsAlphabeticKeyboard();
+    }
+
+    @CalledByNative
+    public @JniType("std::optional<std::u16string>") @Nullable String
+            getCustomFullscreenExitInstruction(
+                    @JniType("std::optional<std::u16string>") @Nullable String origin) {
+        Activity activity = mParentContext.getActivity();
+        if (activity == null) return null;
+        if (DeviceInfo.isAutomotive()) {
+            return origin != null
+                    ? activity.getString(
+                            R.string
+                                    .immersive_fullscreen_automotive_toolbar_improvements_with_origin,
+                            origin)
+                    : activity.getString(
+                            R.string.immersive_fullscreen_automotive_toolbar_improvements);
+        }
+        if (activity.getWindow() != null && UiUtils.isGestureNavigationMode(activity.getWindow())) {
+            return origin != null
+                    ? activity.getString(
+                            R.string
+                                    .immersive_fullscreen_gesture_navigation_mode_api_notification_with_origin,
+                            origin)
+                    : activity.getString(
+                            R.string.immersive_fullscreen_gesture_navigation_mode_api_notification);
+        }
+        return null;
     }
 }

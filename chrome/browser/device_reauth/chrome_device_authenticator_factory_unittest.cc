@@ -4,17 +4,21 @@
 
 #include "chrome/browser/device_reauth/chrome_device_authenticator_factory.h"
 
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
 #include "components/device_reauth/device_authenticator_common.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "components/prefs/testing_pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/native_ui_types.h"
+
 #if BUILDFLAG(IS_ANDROID)
 #include "ui/android/window_android.h"
 #endif
@@ -70,10 +74,10 @@ class ChromeDeviceAuthenticatorFactoryTest : public testing::Test {
   device_reauth::DeviceAuthParams device_authenticator_params_;
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  raw_ptr<TestingProfile> profile_ptr1_;
-  raw_ptr<TestingProfile> profile_ptr2_;
-  raw_ptr<TestingProfile> guest_profile_ptr_;
-  gfx::NativeWindow window_;
+  raw_ptr<TestingProfile> profile_ptr1_ = nullptr;
+  raw_ptr<TestingProfile> profile_ptr2_ = nullptr;
+  raw_ptr<TestingProfile> guest_profile_ptr_ = nullptr;
+  gfx::NativeWindow window_ = gfx::NativeWindow();
 
 #if BUILDFLAG(IS_ANDROID)
   std::unique_ptr<ui::WindowAndroid::ScopedWindowAndroidForTesting>
@@ -120,4 +124,24 @@ TEST_F(ChromeDeviceAuthenticatorFactoryTest, NeedAuthentication) {
 TEST_F(ChromeDeviceAuthenticatorFactoryTest, Guest) {
   ChromeDeviceAuthenticatorFactory::GetForProfile(
       guest_profile(), native_window(), GetDeviceAuthenticatorParams());
+}
+
+// Checks that an availability checker can be created.
+TEST_F(ChromeDeviceAuthenticatorFactoryTest, CreateAvailabilityChecker) {
+  base::test::ScopedFeatureList feature_list(
+      password_manager::features::kDeviceReauthRefactor);
+  EXPECT_NE(ChromeDeviceAuthenticatorFactory::CreateAvailabilityChecker(),
+            nullptr);
+}
+
+// The availability checker must be created regardless of
+// `kDeviceReauthRefactor`. Callers gate on the flag, and a `nullptr` checker
+// would make `IsReauthBeforeFillingRequired` skip reauth.
+TEST_F(ChromeDeviceAuthenticatorFactoryTest,
+       CreateAvailabilityCheckerIgnoresDeviceReauthRefactor) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      password_manager::features::kDeviceReauthRefactor);
+  EXPECT_NE(ChromeDeviceAuthenticatorFactory::CreateAvailabilityChecker(),
+            nullptr);
 }

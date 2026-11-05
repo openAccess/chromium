@@ -11,6 +11,7 @@
 #include "base/containers/extend.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
+#include "base/notreached.h"
 #include "components/device_event_log/device_event_log.h"
 #include "crypto/cose.h"
 #include "crypto/keypair.h"
@@ -20,15 +21,18 @@ namespace device {
 
 namespace {
 
-std::unique_ptr<PublicKey> ParseEcP256CoseKey(
-    int32_t algorithm,
-    base::span<const uint8_t> cbor_bytes,
-    const cbor::Value::MapValue& map) {
+std::unique_ptr<PublicKey> ParseEc2CoseKey(int32_t algorithm,
+                                           base::span<const uint8_t> cbor_bytes,
+                                           const cbor::Value::MapValue& map) {
   const auto crv_it =
       map.find(cbor::Value(static_cast<int64_t>(CoseKeyKey::kEllipticCurve)));
-  if (crv_it == map.end() || !crv_it->second.is_integer() ||
-      crv_it->second.GetInteger() != static_cast<int64_t>(CoseCurves::kP256)) {
+  if (crv_it == map.end() || !crv_it->second.is_integer()) {
     return nullptr;
+  }
+  if (crv_it->second.GetInteger() != static_cast<int64_t>(CoseCurves::kP256)) {
+    // Unknown or unsupported curve.
+    FIDO_LOG(EVENT) << "Unsupported EC2 curve " << crv_it->second.GetInteger();
+    return std::make_unique<PublicKey>(algorithm, cbor_bytes, std::nullopt);
   }
 
   const auto x_it =
@@ -63,16 +67,19 @@ std::unique_ptr<PublicKey> ParseEcP256CoseKey(
                                      key->ToSubjectPublicKeyInfo());
 }
 
-std::unique_ptr<PublicKey> ParseEd25519CoseKey(
-    int32_t algorithm,
-    base::span<const uint8_t> cbor_bytes,
-    const cbor::Value::MapValue& map) {
+std::unique_ptr<PublicKey> ParseOkpCoseKey(int32_t algorithm,
+                                           base::span<const uint8_t> cbor_bytes,
+                                           const cbor::Value::MapValue& map) {
   const auto crv_it =
       map.find(cbor::Value(static_cast<int64_t>(CoseKeyKey::kEllipticCurve)));
-  if (crv_it == map.end() || !crv_it->second.is_integer() ||
-      crv_it->second.GetInteger() !=
-          static_cast<int64_t>(CoseCurves::kEd25519)) {
+  if (crv_it == map.end() || !crv_it->second.is_integer()) {
     return nullptr;
+  }
+  if (crv_it->second.GetInteger() !=
+      static_cast<int64_t>(CoseCurves::kEd25519)) {
+    // Unknown or unsupported curve.
+    FIDO_LOG(EVENT) << "Unsupported OKP curve " << crv_it->second.GetInteger();
+    return std::make_unique<PublicKey>(algorithm, cbor_bytes, std::nullopt);
   }
 
   const auto x_it =
@@ -113,6 +120,41 @@ std::unique_ptr<PublicKey> ParseRsaCoseKey(int32_t algorithm,
                                      key->ToSubjectPublicKeyInfo());
 }
 
+std::unique_ptr<PublicKey> ParseMldsaCoseKey(
+    int32_t algorithm,
+    base::span<const uint8_t> cbor_bytes,
+    const cbor::Value::MapValue& map) {
+  const auto pubkey_it =
+      map.find(cbor::Value(static_cast<int64_t>(CoseKeyKey::kAkpPublicKey)));
+  if (pubkey_it == map.end() || !pubkey_it->second.is_bytestring()) {
+    return nullptr;
+  }
+
+  std::optional<crypto::keypair::PublicKey> key;
+  switch (static_cast<CoseAlgorithmIdentifier>(algorithm)) {
+    case CoseAlgorithmIdentifier::kMlDsa44:
+      key = crypto::keypair::PublicKey::FromMldsa44PublicKey(
+          pubkey_it->second.GetBytestring());
+      break;
+    case CoseAlgorithmIdentifier::kMlDsa65:
+      key = crypto::keypair::PublicKey::FromMldsa65PublicKey(
+          pubkey_it->second.GetBytestring());
+      break;
+    case CoseAlgorithmIdentifier::kMlDsa87:
+      key = crypto::keypair::PublicKey::FromMldsa87PublicKey(
+          pubkey_it->second.GetBytestring());
+      break;
+    default:
+      NOTREACHED();
+  }
+  if (!key) {
+    FIDO_LOG(ERROR) << "Invalid ML-DSA public key";
+    return nullptr;
+  }
+  return std::make_unique<PublicKey>(algorithm, cbor_bytes,
+                                     key->ToSubjectPublicKeyInfo());
+}
+
 }  // namespace
 
 // static
@@ -128,13 +170,23 @@ std::unique_ptr<PublicKey> PublicKey::FromCOSEKey(
 
   const int64_t kty = kty_it->second.GetInteger();
   if (kty == static_cast<int64_t>(CoseKeyTypes::kEC2)) {
-    return ParseEcP256CoseKey(algorithm, cbor_bytes, map);
+    return ParseEc2CoseKey(algorithm, cbor_bytes, map);
   }
   if (kty == static_cast<int64_t>(CoseKeyTypes::kOKP)) {
-    return ParseEd25519CoseKey(algorithm, cbor_bytes, map);
+    return ParseOkpCoseKey(algorithm, cbor_bytes, map);
   }
   if (kty == static_cast<int64_t>(CoseKeyTypes::kRSA)) {
     return ParseRsaCoseKey(algorithm, cbor_bytes, map);
+  }
+  if (kty == static_cast<int64_t>(CoseKeyTypes::kAKP)) {
+    switch (static_cast<CoseAlgorithmIdentifier>(algorithm)) {
+      case CoseAlgorithmIdentifier::kMlDsa44:
+      case CoseAlgorithmIdentifier::kMlDsa65:
+      case CoseAlgorithmIdentifier::kMlDsa87:
+        return ParseMldsaCoseKey(algorithm, cbor_bytes, map);
+      default:
+        return std::make_unique<PublicKey>(algorithm, cbor_bytes, std::nullopt);
+    }
   }
 
   return std::make_unique<PublicKey>(algorithm, cbor_bytes, std::nullopt);
@@ -145,7 +197,8 @@ std::unique_ptr<PublicKey> PublicKey::FromSpkiDer(
     int32_t algorithm,
     base::span<const uint8_t> spki_der) {
   auto key = crypto::keypair::PublicKey::FromSubjectPublicKeyInfo(spki_der);
-  if (!key || (!key->IsEcP256() && !key->IsRsa() && !key->IsEd25519())) {
+  if (!key || (!key->IsEcP256() && !key->IsRsa() && !key->IsEd25519() &&
+               !key->IsMldsa44() && !key->IsMldsa65() && !key->IsMldsa87())) {
     return nullptr;
   }
   return std::make_unique<PublicKey>(

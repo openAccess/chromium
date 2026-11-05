@@ -187,8 +187,6 @@ enum class AppListItemContext {
   kAppsGrid,
   // Recent apps.
   kRecentApps,
-  // The apps collections grid.
-  kAppsCollectionsGrid,
 };
 
 // All possible orders to sort app list items.
@@ -292,8 +290,6 @@ enum class AppListBubblePage {
   kNone = 0,
   // The apps grid, as well as continue tasks and recent apps.
   kApps,
-  // The apps collections page.
-  kAppsCollections,
   // The search page.
   kSearch,
   // The assistant page.
@@ -312,10 +308,6 @@ enum class AppListToastType {
   // Shows the notification that the apps are temporarily sorted and allows
   // users to undo the sorting actions.
   kReorderUndo,
-
-  // Show the notification that the tutorial view is showing in the bubble
-  // launcher. Allows user to exit the tutorial view into the default apps view.
-  kTutorialViewNudge,
 };
 
 ASH_PUBLIC_EXPORT std::ostream& operator<<(std::ostream& os,
@@ -374,7 +366,7 @@ enum class AppListLaunchedFrom {
   kLaunchedFromRecentApps = 5,
   kLaunchedFromContinueTask = 6,
   kLaunchedFromQuickAppAccess = 7,
-  kLaunchedFromAppsCollections = 8,
+  DEPRECATED_kLaunchedFromAppsCollections = 8,
   kLaunchedFromDiscoveryChip = 9,
   kLaunchedFromSearchBoxIcon = 10,
   kMaxValue = kLaunchedFromSearchBoxIcon,
@@ -412,7 +404,6 @@ enum class AppListSearchResultType {
   kDriveSearch,            // Drive file search results.
   kKeyboardShortcut,       // Keyboard shortcut search results.
   kOpenTab,                // Open tab search results.
-  kGames,                  // Game sarch results.
   kPersonalization,        // Personalization search results.
   kZeroStateHelpApp,       // Help App (aka Explore) results for zero-state.
   kZeroStateApp,           // App recommendations for zero-state / recent apps.
@@ -894,21 +885,6 @@ struct SearchResultIdWithPositionIndex {
 
   // The position index of the result.
   int position_index;
-};
-
-// `ScopedIphSession` manages an IPH session. A UI must show an IPH once an
-// IPH session gets created. Also the UI must destroy
-// `ScopedIphSession` when it has stopped showing an IPH.
-class ASH_PUBLIC_EXPORT ScopedIphSession {
- public:
-  ScopedIphSession() = default;
-  virtual ~ScopedIphSession() = default;
-
-  ScopedIphSession(const ScopedIphSession&) = delete;
-  ScopedIphSession& operator=(const ScopedIphSession&) = delete;
-
-  // Notify an IPH event with name of `event`.
-  virtual void NotifyEvent(const std::string& event) = 0;
 };
 
 using SearchResultIdWithPositionIndices =

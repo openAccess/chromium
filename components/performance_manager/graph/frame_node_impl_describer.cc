@@ -82,13 +82,14 @@ base::DictValue FrameNodeImplDescriber::DescribeFrameNodeData(
   ret.Set("is_holding_weblock", impl->is_holding_weblock_.value());
   ret.Set("is_holding_blocking_indexeddb_lock",
           impl->is_holding_blocking_indexeddb_lock_.value());
-  ret.Set("is_current", impl->IsCurrent());
+  ret.Set("is_active", impl->IsActive());
+  ret.Set("frame_tree_node_id", impl->GetFrameTreeNodeId().value());
   ret.Set("priority", PriorityAndReasonToValue(impl->GetPriorityAndReason()));
   ret.Set("is_audible", impl->is_audible_.value());
   ret.Set("is_capturing_media_stream",
           impl->is_capturing_media_stream_.value());
   ret.Set("viewport_intersection",
-          ViewportIntersectionToString(impl->viewport_intersection_.value()));
+          ViewportIntersectionToString(impl->GetViewportIntersection()));
   ret.Set("visibility", impl->visibility_->ToString());
   ret.Set("is_intersecting_large_area", impl->IsIntersectingLargeArea());
   ret.Set("is_important", impl->is_important_.value());

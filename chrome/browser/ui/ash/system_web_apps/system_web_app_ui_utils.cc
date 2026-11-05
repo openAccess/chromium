@@ -14,10 +14,7 @@
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
-#include "chrome/browser/ash/browser_delegate/browser_type.h"
-#include "chrome/browser/ash/browser_delegate/browser_type_conversion.h"
+#include "chrome/browser/ash/profiles/user_profile_migration.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
@@ -32,52 +29,18 @@
 #include "chrome/browser/web_applications/web_app_utils.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
+#include "chromeos/ash/components/browser_delegate/browser_type.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
+#include "components/crash/core/common/crash_key.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/user_manager/user.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/display/scoped_display_for_new_windows.h"
 
 namespace ash {
-
-namespace {
-
-// Returns the profile where we should launch System Web Apps into. It returns
-// the most appropriate profile for launching, if the provided |profile| is
-// unsuitable. It returns nullptr if the we can't find a suitable profile.
-Profile* GetProfileForSystemWebAppLaunch(Profile* profile) {
-  DCHECK(profile);
-
-  // We can't launch into certain profiles, and we can't find a suitable
-  // alternative.
-  if (profile->IsSystemProfile()) {
-    return nullptr;
-  }
-  if (IsSigninBrowserContext(profile)) {
-    return nullptr;
-  }
-
-  // For a guest sessions, launch into the primary off-the-record profile, which
-  // is used for browsing in guest sessions. We do this because the "original"
-  // profile of the guest session can't create windows.
-  if (profile->IsGuestSession()) {
-    return profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
-  }
-
-  // We don't support launching SWA in incognito profiles, use the original
-  // profile if an incognito profile is provided (with the exception of guest
-  // session, which is implemented with an incognito profile, thus it is handled
-  // above).
-  if (profile->IsIncognitoProfile()) {
-    return profile->GetOriginalProfile();
-  }
-
-  // Use the profile provided in other scenarios.
-  return profile;
-}
-
-}  // namespace
 
 std::optional<SystemWebAppType> GetSystemWebAppTypeForAppId(
     Profile* profile,
@@ -107,7 +70,7 @@ std::optional<apps::AppLaunchParams> CreateSystemWebAppLaunchParams(
   }
 
   auto* provider = SystemWebAppManager::GetWebAppProvider(profile);
-  DCHECK(provider);
+  CHECK(provider, base::NotFatalUntil::M162);
 
   web_app::DisplayMode display_mode =
       provider->registrar_unsafe().GetAppEffectiveDisplayMode(app_id.value());
@@ -146,10 +109,11 @@ void LaunchSystemWebAppAsyncContinue(Profile* profile_for_launch,
 
   auto* app_service =
       apps::AppServiceProxyFactory::GetForProfile(profile_for_launch);
-  DCHECK(app_service);
+  CHECK(app_service, base::NotFatalUntil::M162);
 
-  auto event_flags = apps::GetEventFlags(WindowOpenDisposition::NEW_WINDOW,
-                                         /* prefer_container */ false);
+  auto event_flags =
+      apps::GetEventFlags(ui::mojom::WindowOpenDisposition::kNewWindow,
+                          /* prefer_container */ false);
 
   if (!params.launch_paths.empty()) {
     DCHECK(!params.url.has_value())
@@ -160,7 +124,7 @@ void LaunchSystemWebAppAsyncContinue(Profile* profile_for_launch,
   }
 
   if (params.url) {
-    DCHECK(params.url->is_valid());
+    CHECK(params.url->is_valid(), base::NotFatalUntil::M162);
     app_service->LaunchAppWithUrl(*app_id, event_flags, *params.url,
                                   params.launch_source, std::move(window_info),
                                   std::move(callback));
@@ -177,29 +141,50 @@ void LaunchSystemWebAppAsync(Profile* profile,
                              const SystemAppLaunchParams& params,
                              apps::WindowInfoPtr window_info,
                              std::optional<apps::LaunchCallback> callback) {
-  DCHECK(profile);
   // Terminal should be launched with crostini::LaunchTerminal*.
-  DCHECK(type != SystemWebAppType::TERMINAL);
+  CHECK(type != SystemWebAppType::TERMINAL, base::NotFatalUntil::M162);
   // Callback is only supported when launching with an URL.
-  DCHECK(!callback || params.url.has_value());
+  CHECK(!callback || params.url.has_value(), base::NotFatalUntil::M162);
 
-  // TODO(crbug.com/40723875): Implement a confirmation dialog when
-  // changing to a different profile.
-  Profile* profile_for_launch = GetProfileForSystemWebAppLaunch(profile);
-  if (profile_for_launch == nullptr) {
-    // We can't find a suitable profile to launch. Complain about this so we
-    // can identify the call site, and ask them to pick the right profile.
-    // Note that this is fatal in developer builds.
-    DUMP_WILL_BE_NOTREACHED()
-        << "LaunchSystemWebAppAsync is called on a profile that can't launch "
-           "system web apps. The launch request is ignored. Please check the "
-           "profile you are using is correct.";
-
-    // Early return if we can't find a profile to launch.
-    return;
+  base::expected<void, NonUserRepresentativeProfileReason> ok =
+      IsUserRepresentativeProfileForMigration(profile);
+  if (!ok) {
+    switch (ok.error()) {
+      case NonUserRepresentativeProfileReason::kNullProfile:
+        LOG(FATAL) << "Null Profile";
+      case NonUserRepresentativeProfileReason::kAshSignInProfile:
+      case NonUserRepresentativeProfileReason::kAshLockScreenProfile:
+      case NonUserRepresentativeProfileReason::kAshShimlessRmaAppProfile:
+      case NonUserRepresentativeProfileReason::kMissingAccountId:
+      case NonUserRepresentativeProfileReason::kMissingUser: {
+        // We can't find a suitable profile to launch. Complain about this so we
+        // can identify the call site, and ask them to pick the right profile.
+        // Note that this is fatal in developer builds.
+        static crash_reporter::CrashKeyString<32> crash_key(
+            "non-user-profile-reason");
+        crash_key.Set(NonUserRepresentativeProfileReasonToString(ok.error()));
+        DUMP_WILL_BE_NOTREACHED()
+            << "LaunchSystemWebAppAsync is called on a "
+               "profile that can't launch "
+               "system web apps. The launch request is "
+               "ignored. Please check the "
+               "profile you are using is correct: "
+            << NonUserRepresentativeProfileReasonToString(ok.error());
+        crash_key.Clear();
+        // Early return if we can't find a profile to launch.
+        return;
+      }
+      case NonUserRepresentativeProfileReason::kNonPrimaryOTRGuestProfile:
+      case NonUserRepresentativeProfileReason::kOTRRegularProfile:
+        // TODO(crbug.com/40723875): Implement a confirmation dialog when
+        // changing to a different profile.
+        profile = GetUserRepresentativeProfileForMigration(profile);
+        CHECK(profile);
+        break;
+    }
   }
 
-  SystemWebAppManager* manager = SystemWebAppManager::Get(profile_for_launch);
+  SystemWebAppManager* manager = SystemWebAppManager::Get(profile);
   if (!manager) {
     return;
   }
@@ -207,8 +192,8 @@ void LaunchSystemWebAppAsync(Profile* profile,
   // Wait for all SWAs to be registered before continuing.
   manager->on_apps_synchronized().Post(
       FROM_HERE,
-      base::BindOnce(&LaunchSystemWebAppAsyncContinue, profile_for_launch, type,
-                     params, std::move(window_info),
+      base::BindOnce(&LaunchSystemWebAppAsyncContinue, profile, type, params,
+                     std::move(window_info),
                      callback.has_value() ? std::move(callback.value())
                                           : base::DoNothing()));
 }
@@ -237,10 +222,11 @@ BrowserDelegate* LaunchSystemWebAppImpl(Profile* profile,
   auto* system_app = swa_manager->GetSystemApp(app_type);
 
 #if BUILDFLAG(IS_CHROMEOS)
-  DCHECK(url.DeprecatedGetOriginAsURL() == provider->registrar_unsafe()
-                                               .GetAppLaunchUrl(params.app_id)
-                                               .DeprecatedGetOriginAsURL() ||
-         system_app && system_app->IsUrlInSystemAppScope(url));
+  CHECK(url.DeprecatedGetOriginAsURL() == provider->registrar_unsafe()
+                                              .GetAppLaunchUrl(params.app_id)
+                                              .DeprecatedGetOriginAsURL() ||
+            system_app && system_app->IsUrlInSystemAppScope(url),
+        base::NotFatalUntil::M162);
 #endif
 
   if (!system_app) {
@@ -336,6 +322,9 @@ bool IsBrowserForSystemWebApp(const BrowserDelegate& browser,
 
 std::optional<SystemWebAppType> GetCapturingSystemAppForURL(Profile* profile,
                                                             const GURL& url) {
+  if (!url.is_valid() || url.IsAboutBlank()) {
+    return std::nullopt;
+  }
   SystemWebAppManager* swa_manager = SystemWebAppManager::Get(profile);
   return swa_manager ? swa_manager->GetCapturingSystemAppForURL(url)
                      : std::nullopt;

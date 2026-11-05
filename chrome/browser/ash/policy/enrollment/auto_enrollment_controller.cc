@@ -21,7 +21,6 @@
 #include "chrome/browser/ash/policy/enrollment/psm/rlwe_dmserver_client_impl.h"
 #include "chrome/browser/ash/policy/server_backed_state/server_backed_state_keys_broker.h"
 #include "chrome/browser/ash/settings/device_settings_service.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/network/network_handler.h"
@@ -251,8 +250,9 @@ void AutoEnrollmentController::StartCleanupForcedReEnrollment() {
 
 void AutoEnrollmentController::StartRemoveFirmwareManagementParameters(
     bool service_is_ready) {
-  DCHECK(state_ == AutoEnrollmentResult::kNoEnrollment ||
-         state_ == AutoEnrollmentResult::kSuggestedEnrollment);
+  CHECK(state_ == AutoEnrollmentResult::kNoEnrollment ||
+            state_ == AutoEnrollmentResult::kSuggestedEnrollment,
+        base::NotFatalUntil::M160);
   if (!service_is_ready) {
     LOG(ERROR) << "Failed waiting for cryptohome D-Bus service availability.";
     progress_callbacks_.Notify(state_.value());
@@ -285,8 +285,9 @@ void AutoEnrollmentController::OnFirmwareManagementParametersRemoved(
 
 void AutoEnrollmentController::StartClearBlockDevmodeVpd(
     bool service_is_ready) {
-  DCHECK(state_ == AutoEnrollmentResult::kNoEnrollment ||
-         state_ == AutoEnrollmentResult::kSuggestedEnrollment);
+  CHECK(state_ == AutoEnrollmentResult::kNoEnrollment ||
+            state_ == AutoEnrollmentResult::kSuggestedEnrollment,
+        base::NotFatalUntil::M160);
   if (!service_is_ready) {
     LOG(ERROR)
         << "Failed waiting for session_manager D-Bus service availability.";

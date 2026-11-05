@@ -10,6 +10,7 @@
 #include "build/build_config.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "printing/buildflags/buildflags.h"
+#include "third_party/blink/public/public_buildflags.h"
 
 namespace gfx {
 struct VectorIcon;
@@ -20,6 +21,9 @@ namespace permissions {
 // The type of the request that will be seen by the user. Values are only
 // defined on the platforms where they are used and should be kept alphabetized.
 enum class RequestType {
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+  kAmbientLogin,
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   kArSession,
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   kCameraPanTiltZoom,
@@ -29,7 +33,6 @@ enum class RequestType {
   kCapturedSurfaceControl,
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   kClipboard,
-  kTopLevelStorageAccess,
   kDiskQuota,
   kFileSystemAccess,
   kGeolocation,
@@ -58,7 +61,7 @@ enum class RequestType {
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   kRegisterProtocolHandler,
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
   kSmartCard,
 #endif
   kSensors,

@@ -17,9 +17,8 @@ static_library("diagnostics") {
     "//ash/webui/diagnostics_ui/backend",
     "//base",
     "//chrome/browser/ash/net/network_health",
-    "//chrome/browser/ash/profiles",
-    "//chrome/browser/profiles",
     "//chromeos/services/network_health/public/mojom",
+    "//components/session_manager/core",
     "//components/user_manager",
   ]
 }
@@ -33,15 +32,17 @@ source_set("unit_tests") {
     ":diagnostics",
     "//base",
     "//chrome/browser",
-    "//chrome/browser/ash/login/users:test_support",
+    "//chrome/browser/ash/login/test:test_support",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/login/login_state",
     "//components/account_id",
-    "//components/prefs:test_support",
+    "//components/session_manager/test:test_support",
     "//components/user_manager",
     "//content/test:test_support",
+    "//google_apis",
     "//testing/gtest",
   ]
 }

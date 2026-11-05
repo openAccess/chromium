@@ -125,6 +125,10 @@ bool WebViewPlugin::Initialize(WebPluginContainer* container) {
   return true;
 }
 
+void WebViewPlugin::DetachDelegate() {
+  delegate_ = nullptr;
+}
+
 void WebViewPlugin::Destroy() {
   weak_factory_.InvalidateWeakPtrs();
 
@@ -291,7 +295,7 @@ WebViewPlugin::WebViewHelper::WebViewHelper(
 
   WebLocalFrame* web_frame = WebLocalFrame::CreateMainFrame(
       web_view_, this, nullptr, mojo::NullRemote(), blink::LocalFrameToken(),
-      blink::DocumentToken(), base::UnguessableToken::Create(), nullptr);
+      blink::DocumentToken(), blink::InitiatorStateToken(), nullptr);
   blink::WebFrameWidget* frame_widget = web_frame->InitializeFrameWidget(
       blink::CrossVariantMojoAssociatedRemote<
           blink::mojom::FrameWidgetHostInterfaceBase>(),

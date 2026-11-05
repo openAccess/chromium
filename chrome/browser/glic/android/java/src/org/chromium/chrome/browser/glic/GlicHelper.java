@@ -7,28 +7,34 @@ package org.chromium.chrome.browser.glic;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
-import android.content.Intent;
-import android.net.Uri;
-import android.provider.Settings;
+import android.content.pm.PackageManager;
 
 import androidx.annotation.IntDef;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 
+import org.chromium.base.ActivityState;
+import org.chromium.base.ApplicationStatus;
+import org.chromium.base.ApplicationStatus.ActivityStateListener;
+import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
-import org.chromium.base.IntentUtils;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.actor.ActorKeyedService;
 import org.chromium.chrome.browser.actor.ActorKeyedServiceFactory;
+import org.chromium.chrome.browser.actor.ActorUtils;
+import org.chromium.chrome.browser.glic.ui.GlicMicPermissionDialogCoordinator;
+import org.chromium.chrome.browser.glic.ui.GlicUiUtils;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager.SnackbarController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager.SnackbarManageable;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -48,6 +54,16 @@ public class GlicHelper {
 
     private static final WeakHashMap<SnackbarManageable, Boolean> sShownSnackbars =
             new WeakHashMap<>();
+
+    /**
+     * Returns whether this device can run a Glic task in the background, i.e. {@link
+     * ActorUtils#isBackgroundActuationEnabled()}. That also requires Actor notifications while the
+     * require-notifications feature param is set, which is the default.
+     */
+    @CalledByNative
+    static boolean canActuateInBackground() {
+        return ActorUtils.isBackgroundActuationEnabled();
+    }
 
     /**
      * Shows a snackbar indicating the microphone is disabled, with a settings action button.
@@ -74,14 +90,7 @@ public class GlicHelper {
                     public void onAction(@Nullable Object actionData) {
                         RecordUserAction.record(
                                 "Glic.Interaction.MicDisabledSnackbar.SettingsClicked");
-                        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                        intent.setData(
-                                Uri.parse(
-                                        "package:"
-                                                + ContextUtils.getApplicationContext()
-                                                        .getPackageName()));
-                        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        IntentUtils.safeStartActivity(ContextUtils.getApplicationContext(), intent);
+                        GlicUiUtils.openAppDetailsSettings(ContextUtils.getApplicationContext());
                     }
 
                     @Override
@@ -94,6 +103,87 @@ public class GlicHelper {
                                 Snackbar.TYPE_ACTION,
                                 Snackbar.UMA_GLIC_MIC_DISABLED)
                         .setAction(activity.getString(R.string.settings), null));
+    }
+
+    /**
+     * Shows a Chrome-owned modal dialog asking the user for microphone permission for Gemini.
+     *
+     * <p>This is a pre-prompt shown before the Android OS permission dialog so that the user
+     * understands why Gemini needs the microphone.
+     *
+     * @param windowAndroid The window hosting the activity.
+     * @param callback Invoked exactly once with true if the user taps "Allow", or false if the
+     *     dialog is rejected or dismissed for any other reason. The dialog can outlive the object
+     *     that requested it, so the native callback must be bound to a weak pointer (see
+     *     glic_helper_android.h).
+     */
+    @CalledByNative
+    static void showMicPermissionDialog(
+            WindowAndroid windowAndroid,
+            @JniType("base::OnceCallback<void(bool)>&&") Callback<Boolean> callback) {
+        Activity activity = windowAndroid.getActivity().get();
+        ModalDialogManager modalDialogManager = windowAndroid.getModalDialogManager();
+        if (activity == null || modalDialogManager == null) {
+            callback.onResult(false);
+            return;
+        }
+
+        new GlicMicPermissionDialogCoordinator(activity, modalDialogManager).show(callback);
+    }
+
+    /**
+     * Requests the Android RECORD_AUDIO permission. Android shows its prompt, or denies right away
+     * if it won't show it anymore.
+     *
+     * @param windowAndroid The window hosting the activity.
+     * @param callback Run with whether the permission is granted.
+     */
+    @CalledByNative
+    static void requestMicOsPermission(
+            WindowAndroid windowAndroid,
+            @JniType("base::OnceCallback<void(bool)>&&") Callback<Boolean> callback) {
+        if (windowAndroid.hasPermission(Manifest.permission.RECORD_AUDIO)) {
+            callback.onResult(true);
+            return;
+        }
+        Activity activity = windowAndroid.getActivity().get();
+        if (activity == null) {
+            callback.onResult(false);
+            return;
+        }
+        MicOsPermissionRequest request = new MicOsPermissionRequest(activity, callback);
+        windowAndroid.requestPermissions(
+                new String[] {Manifest.permission.RECORD_AUDIO},
+                (permissions, grantResults) ->
+                        request.finish(
+                                grantResults.length > 0
+                                        && grantResults[0] == PackageManager.PERMISSION_GRANTED));
+    }
+
+    /**
+     * Runs the callback for a mic permission request once. Android never answers the request if the
+     * activity is destroyed while its prompt is up, so that counts as denied.
+     */
+    private static class MicOsPermissionRequest implements ActivityStateListener {
+        private @Nullable Callback<Boolean> mCallback;
+
+        MicOsPermissionRequest(Activity activity, Callback<Boolean> callback) {
+            mCallback = callback;
+            ApplicationStatus.registerStateListenerForActivity(this, activity);
+        }
+
+        @Override
+        public void onActivityStateChange(Activity activity, @ActivityState int newState) {
+            if (newState == ActivityState.DESTROYED) finish(false);
+        }
+
+        void finish(boolean granted) {
+            Callback<Boolean> callback = mCallback;
+            if (callback == null) return;
+            mCallback = null;
+            ApplicationStatus.unregisterActivityStateListener(this);
+            callback.onResult(granted);
+        }
     }
 
     /**

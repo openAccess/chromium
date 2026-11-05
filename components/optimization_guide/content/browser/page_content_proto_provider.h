@@ -22,6 +22,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom-forward.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content_metadata.mojom.h"
 #include "ui/gfx/geometry/rect.h"
@@ -100,6 +101,44 @@ class AIPageContentMetricsLogger
   base::WeakPtrFactory<AIPageContentMetricsLogger> weak_ptr_factory_{this};
 };
 
+inline constexpr char kAIPageContentExtractionStatusHistogram[] =
+    "OptimizationGuide.AIPageContent.ExtractionStatus2";
+
+// Tracks the outcome of a `GetAIPageContent()` extraction request.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(AIPageContentExtractionStatus)
+enum class AIPageContentExtractionStatus {
+  kUnknown = 0,
+  kSuccess = 1,
+  kMainFrameNotLive = 2,
+  kMainFrameTimeout = 3,
+  kMainFrameEmptyOrDisconnectedRendererResponse = 4,
+  kMainFrameRedacted = 5,
+  kMainFrameTornDown = 6,
+  kAttributeTypeMismatch = 7,
+  kMissingIframeData = 8,
+  kSubframeTornDown = 9,
+  kIframeNotChildOfCurrentFrame = 10,
+  kRemoteFrameHasChildNodes = 11,
+  kRemoteFrameHasInlineContent = 12,
+  kLocalFrameMissingContent = 13,
+  kUnexpectedIframeInPopup = 14,
+  kMaxValue = kUnexpectedIframeInPopup,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/optimization/enums.xml:AIPageContentExtractionStatus)
+
+// Maps the name of each WebMCP script tool that a document reported in the page
+// content to the tool's browser-internal unique ID.
+using ToolNameToToolId = base::flat_map<std::string, blink::ScriptToolToken>;
+
+// Maps a serialized document identifier (as used in
+// `AIPageContentResult::document_identifiers`) to that document's script tools.
+using DocumentIdentifierToScriptTools =
+    base::flat_map<std::string, ToolNameToToolId>;
+
 // The result of a call to GetAIPageContent.  It contains the
 // AnnotatedPageContent proto and metadata about the page content.
 struct AIPageContentResult {
@@ -119,12 +158,30 @@ struct AIPageContentResult {
   // Final screenshot redaction boxes. The converter folds together renderer
   // password boxes plus browser-derived sensitive payment and OTP boxes.
   std::vector<gfx::Rect> visible_bounding_boxes_for_redaction;
+  // The script tools of all documents in `proto`, keyed by document identifier
+  // and then by the tools' names in `proto`, mapping each tool to its
+  // browser-internal unique ID. Callers use this to target exactly the tool
+  // that was observed, rather than whichever tool has the same name at time of
+  // use. The IDs are deliberately not part of `proto`, so that they're never
+  // sent to the server.
+  DocumentIdentifierToScriptTools script_tool_ids;
+};
+
+// Describes an error that occurred during `GetAIPageContent()`.
+struct AIPageContentError {
+  AIPageContentExtractionStatus status =
+      AIPageContentExtractionStatus::kUnknown;
+  std::string message;
+
+  friend bool operator==(const AIPageContentError&,
+                         const AIPageContentError&) = default;
 };
 
 // Provides AIPageContentResult (AnnotatedPageContent proto and metadata) for
-// the primary page displayed in a WebContents or an error string on failure.
+// the primary page displayed in a WebContents or an AIPageContentError on
+// failure.
 using AIPageContentResultOrError =
-    base::expected<AIPageContentResult, std::string>;
+    base::expected<AIPageContentResult, AIPageContentError>;
 using OnAIPageContentDone =
     base::OnceCallback<void(AIPageContentResultOrError)>;
 

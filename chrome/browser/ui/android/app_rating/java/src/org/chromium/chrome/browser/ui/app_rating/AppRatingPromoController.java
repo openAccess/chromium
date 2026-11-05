@@ -11,10 +11,14 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.Pref;
+import org.chromium.chrome.browser.prefs.LocalStatePrefs;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.segmentation_platform.SegmentationPlatformServiceFactory;
 import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.FeatureProperties;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.feature_engagement.UiFormat;
+import org.chromium.components.prefs.PrefService;
 import org.chromium.components.segmentation_platform.ClassificationResult;
 import org.chromium.components.segmentation_platform.InputContext;
 import org.chromium.components.segmentation_platform.PredictionOptions;
@@ -24,6 +28,7 @@ import org.chromium.components.segmentation_platform.prediction_status.Predictio
 import org.chromium.components.user_prefs.UserPrefs;
 
 import java.lang.ref.WeakReference;
+import java.util.Locale;
 
 /**
  * Controller for coordinating the app rating promotion based on user engagement. This class handles
@@ -46,24 +51,36 @@ public class AppRatingPromoController {
      *
      * @param profile The current user profile.
      * @param activity The current activity.
+     * @param countryCode The variations country code, or null if unavailable.
      * @return Whether we launched an asynchronous process to check the segmentation result and show
      *     the promo if the user is eligible.
      */
-    public static boolean maybeShowPromo(Profile profile, Activity activity) {
+    public static boolean maybeShowPromo(
+            Profile profile, Activity activity, @Nullable String countryCode) {
         if (!ChromeFeatureList.sAndroidAppRatingPrompt.isEnabled()
                 || !UserPrefs.areNativePrefsLoaded(profile)) {
             return false;
         }
 
-        // Bypasses all eligibility checks (Segmentation, prefs, etc.) for manual QA.
+        // Bypasses all eligibility checks (country, Segmentation, prefs, etc.) for manual QA.
         if (ChromeFeatureList.sAndroidAppRatingPromptBypassChecks.getValue()) {
             if (activity != null && !activity.isFinishing() && !activity.isDestroyed()) {
-                triggerAppRatingReviewFlow(activity, profile, null);
+                triggerAppRatingReviewFlow(activity, profile, /* tracker= */ null);
             }
             return true;
         }
 
-        // Ensure the prompt is only shown once
+        // Check if the enterprise policy AppStoreRatingEnabled is disabled.
+        PrefService localState = LocalStatePrefs.get();
+        if (localState == null || !localState.getBoolean(Pref.APP_RATING_POLICY_ENABLED)) {
+            return false;
+        }
+
+        if (!Locale.CANADA.getCountry().equalsIgnoreCase(countryCode)) {
+            return false;
+        }
+
+        // Ensure the prompt is only shown once.
         if (UserPrefs.get(profile).getBoolean(Pref.APP_RATING_PROMPT_SHOWN)) {
             return false;
         }
@@ -117,9 +134,18 @@ public class AppRatingPromoController {
         // Double-check eligibility and officially claim the UI state.
         // This is necessary because another promo might have been triggered while we were waiting
         // for the async segmentation result.
-        if (mTracker != null
-                && !mTracker.shouldTriggerHelpUi(FeatureConstants.APP_RATING_PROMPT_FEATURE)) {
-            return;
+        if (mTracker != null) {
+            boolean isCooldownEnabled =
+                    ChromeFeatureList.sUserEducationInterruptiveCooldownGroup.isEnabled();
+            FeatureProperties featureProperties =
+                    new FeatureProperties(
+                            UiFormat.DIALOG,
+                            /* isBlockedByCooldownGroup= */ isCooldownEnabled,
+                            /* blocksCooldownGroup= */ isCooldownEnabled);
+            if (!mTracker.shouldTriggerHelpUi(
+                    FeatureConstants.APP_RATING_PROMPT_FEATURE, featureProperties)) {
+                return;
+            }
         }
 
         triggerAppRatingReviewFlow(activity, mProfile, mTracker);

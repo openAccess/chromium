@@ -16,6 +16,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/process/process.h"
 #include "base/rand_util.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
@@ -32,6 +33,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/process_type.h"
 #include "gpu/config/gpu_finch_features.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/android/resources/resource_manager.h"
 #include "ui/android/resources/ui_resource_provider.h"
@@ -51,27 +53,27 @@ static bool JNI_CompositorView_IsSurfaceControlEnabled(JNIEnv* env) {
   return features::IsAndroidSurfaceControlEnabled();
 }
 
-static int64_t JNI_CompositorView_Init(
+static jni_zero::JniUniquePtr<CompositorView> JNI_CompositorView_Init(
     JNIEnv* env,
     const JavaRef<jobject>& obj,
     const JavaRef<jobject>& jwindow_android,
     const JavaRef<jobject>& jtab_content_manager) {
-  CompositorView* view;
   ui::WindowAndroid* window_android =
       ui::WindowAndroid::FromJavaWindowAndroid(jwindow_android);
   TabContentManager* tab_content_manager =
       TabContentManager::FromJavaObject(jtab_content_manager);
 
-  DCHECK(tab_content_manager);
+  CHECK(tab_content_manager, base::NotFatalUntil::M161);
 
   // TODO(clholgat): Remove the compositor tabstrip flag.
-  view = new CompositorView(env, obj, window_android, tab_content_manager);
+  auto view = jni_zero::MakeUnique<CompositorView>(
+      env, obj, window_android, tab_content_manager);
 
   if (tab_content_manager) {
     tab_content_manager->SetUIResourceProvider(view->GetUIResourceProvider());
   }
 
-  return reinterpret_cast<intptr_t>(view);
+  return view;
 }
 
 static bool JNI_CompositorView_PreferRgb565ForDisplay(JNIEnv* env) {
@@ -125,10 +127,6 @@ CompositorView::CompositorView(JNIEnv* env,
 CompositorView::~CompositorView() {
   content::BrowserChildProcessObserver::Remove(this);
   tab_content_manager_->OnUIResourcesWereEvicted();
-}
-
-void CompositorView::Destroy(JNIEnv* env) {
-  delete this;
 }
 
 ui::ResourceManager* CompositorView::GetResourceManager() {
@@ -211,7 +209,7 @@ std::optional<int> CompositorView::SurfaceChanged(
   }
 
   std::optional<int> surface_handle;
-  DCHECK(surface);
+  CHECK(surface, base::NotFatalUntil::M161);
   if (current_surface_format_ != format) {
     current_surface_format_ = format;
     surface_handle = compositor_->SetSurface(
@@ -388,11 +386,19 @@ void CompositorView::SetDrawPaused(JNIEnv* env, bool paused) {
   compositor_->SetDrawPaused(paused);
 }
 
+void CompositorView::BrowserChildProcessLaunchedAndConnected(
+    const content::ChildProcessData& data,
+    const base::Process& process) {
+  DVLOG(1) << "Child process launched (type=" << data.process_type
+           << ", id=" << data.GetChildProcessId() << ", pid=" << process.Pid()
+           << ")";
+}
+
 void CompositorView::BrowserChildProcessKilled(
     const content::ChildProcessData& data,
     const content::ChildProcessTerminationInfo& info) {
-  LOG(WARNING) << "Child process died (type=" << data.process_type
-               << ") pid=" << data.GetProcess().Pid() << ")";
+  DVLOG(1) << "Child process died (type=" << data.process_type
+           << ", id=" << data.GetChildProcessId() << ")";
 
   // On Android R surface control layers leak if GPU process crashes, so we need
   // to re-create surface to get rid of them.

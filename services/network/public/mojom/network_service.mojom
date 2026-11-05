@@ -15,13 +15,11 @@ import "mojo/public/mojom/base/values.mojom";
 import "sandbox/policy/mojom/context.mojom";
 import "sandbox/policy/mojom/sandbox.mojom";
 import "services/network/public/mojom/client_security_state.mojom";
-import "services/network/public/mojom/first_party_sets.mojom";
 import "services/network/public/mojom/host_resolver.mojom";
 import "services/network/public/mojom/http_raw_headers.mojom";
 import "services/network/public/mojom/http_response_headers.mojom";
 import "services/network/public/mojom/ip_address_space.mojom";
 import "services/network/public/mojom/ip_endpoint.mojom";
-import "services/network/public/mojom/key_pinning.mojom";
 import "services/network/public/mojom/mutable_network_traffic_annotation_tag.mojom";
 import "services/network/public/mojom/net_log.mojom";
 import "services/network/public/mojom/network_annotation_monitor.mojom";
@@ -55,6 +53,9 @@ import "services/network/public/mojom/ct_log_info.mojom";
 [EnableIf=enable_vrp_flags]
 import "components/vrp_flags/vrp_flags.mojom";
 
+[EnableIf=chrome_key_pinning_supported]
+import "services/network/public/mojom/key_pinning.mojom";
+
 // Values for configuring HTTP authentication that can only be set once.
 struct HttpAuthStaticParams {
   // File name the GSSAPI library to load. Only supported on platforms where an
@@ -74,6 +75,11 @@ struct HttpAuthDynamicParams {
   // `allowed_schemes`. The accepted format is documented at
   // http://www.chromium.org/administrators/url-blocklist-filter-format.
   array<string> patterns_allowed_to_use_all_schemes;
+
+  // List of proxy server patterns that are allowed the use of all the HTTP
+  // auth schemes recognized and supported by the browser regardless of
+  // `allowed_schemes`.
+  array<string> patterns_allowed_to_use_all_schemes_for_proxies;
 
   // Comma / semi-colon delimited allowlist of server origins which the network
   // service may send the default credentials for NTLM or Negotiate
@@ -137,13 +143,15 @@ struct NetworkServiceParams {
   // but if it does not, this default will be used.
   pending_remote<URLLoaderNetworkServiceObserver> default_observer;
 
-  // A boolean provided by the Browser Process in order to plumb into the
-  // First-Party Sets attribute during NetworkService::Initialize().
-  bool first_party_sets_enabled;
-
   // A SystemDnsResolver to provide out-of-process system DNS resolution, in
   // case the system DNS resolver cannot always run sandboxed.
   pending_remote<SystemDnsResolver>? system_dns_resolver;
+
+  // Initial mode of operation of the insecure portion of the built-in DNS
+  // resolver. Can be updated later via `ConfigureStubHostResolver()`. Platform
+  // modes (`ENABLED_PLATFORM` and `ENABLED_PLATFORM_NO_SYSTEM`) may only be
+  // used if `net::features::IsDnsPlatformSupported()` is true.
+  InsecureDnsMode initial_insecure_dns_mode = InsecureDnsMode.DISABLED;
 };
 
 // Configuration settings for SCT Auditing.
@@ -500,7 +508,8 @@ interface NetworkService {
   // Updates the key pinnning pin list. `update_time` should contain the
   // timestamp that the pins list was considered fresh/current, in order to
   // ensure that key pinning is not enforced if the list is too out of date.
-  UpdateKeyPinsList(PinList pin_list, mojo_base.mojom.Time update_time);
+  [EnableIf=chrome_key_pinning_supported]
+  UpdateKeyPinsList(PinList pin_list, mojo_base.mojom.Time update_time) => ();
 
   // Calls base::debug::DumpWithoutCrashing for the network process.
   // TODO(http://crbug.com/934317): Remove this once done debugging renderer
@@ -511,12 +520,6 @@ interface NetworkService {
   // Binds the test service's testing interface. Available only in some test
   // environments.
   BindTestInterfaceForTesting(pending_receiver<NetworkServiceTest> receiver);
-
-  // Sets the global First-Party Sets data.
-  //
-  // Only the first call can have any effect, subsequent invocations are
-  // ignored.
-  SetFirstPartySets(GlobalFirstPartySets sets);
 
   // Sets the list of ports which will be permitted even if they normally would
   // be restricted.
@@ -640,6 +643,12 @@ struct NetworkDurableMessageConfig {
   uint64 http_storage_max_size;
 };
 
+// Represents a single search match in a durable message.
+struct MessageSearchMatch {
+  int32 line_number;
+  string line_content;
+};
+
 // DurableMessageCollector interface represents a single response body
 // collector. Each instance is self-owned, and is destroyed when the
 // receiver is disconnected. The collector is created by the NetworkService
@@ -665,4 +674,13 @@ interface DurableMessageCollector {
   // if one is available.
   Retrieve(string devtools_request_id)
       => (mojo_base.mojom.BigBuffer? message);
+
+  // Searches within a collected Durable Message for the given DevTools
+  // request ID. Returns null if the message was not found or incomplete, or
+  // the list of matches (capped at 1000).
+  Search(string devtools_request_id,
+         string query_regex,
+         bool case_sensitive)
+      => (array<MessageSearchMatch>? matches);
 };
+

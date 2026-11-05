@@ -87,11 +87,24 @@ std::optional<lens::LensOverlayInvocationSource>
 GetLensInvocationSourceForAimZeroState(
     omnibox::ChromeAimEntryPoint entry_point) {
   switch (entry_point) {
-    case omnibox::ChromeAimEntryPoint::DESKTOP_CHROME_COBROWSE_TOOLBAR_BUTTON:
-      return lens::LensOverlayInvocationSource::kCobrowseToolbarButton;
     case omnibox::ChromeAimEntryPoint::
         DESKTOP_CHROME_COBROWSE_PINNED_TOOLBAR_BUTTON:
       return lens::LensOverlayInvocationSource::kCobrowsePinnedToolbarButton;
+    case omnibox::ChromeAimEntryPoint::DESKTOP_CHROME_COBROWSE_OMNIBOX_ACTION:
+    case omnibox::ChromeAimEntryPoint::
+        DESKTOP_CHROME_COBROWSE_OMNIBOX_TAB_SEARCH:
+      return lens::LensOverlayInvocationSource::kOmniboxPageAction;
+    case omnibox::ChromeAimEntryPoint::
+        DESKTOP_CHROME_PAGE_CONTEXT_MENU_ASK_GOOGLE:
+      return lens::LensOverlayInvocationSource::
+          kContentAreaContextMenuPageAskGoogle;
+    case omnibox::ChromeAimEntryPoint::DESKTOP_CHROME_APP_MENU_ASK_GOOGLE:
+      return lens::LensOverlayInvocationSource::kAppMenuAskGoogle;
+    case omnibox::ChromeAimEntryPoint::
+        DESKTOP_CHROME_CHROMNIENT_HOMEWORK_ACTION_CHIP:
+      return lens::LensOverlayInvocationSource::kHomeworkActionChip;
+    case omnibox::ChromeAimEntryPoint::DESKTOP_CHROME_CONTEXTUAL_CUE:
+      return lens::LensOverlayInvocationSource::kContextualCue;
     case omnibox::ChromeAimEntryPoint::IOS_CHROME_APP_BAR_ENTRY_POINT:
       return lens::LensOverlayInvocationSource::kAppBarAimButton;
     default:

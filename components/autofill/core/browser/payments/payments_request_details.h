@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/values.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
@@ -48,6 +49,9 @@ struct UnmaskDetails {
   base::DictValue fido_request_options;
   // Set of credit cards ids that are eligible for FIDO Authentication.
   std::set<std::string> fido_eligible_card_ids;
+  // Set of card instrument IDs that have already been CVC-verified on this
+  // device.
+  base::flat_set<int64_t> verified_instrument_ids;
 };
 
 // A collection of the information required to make a credit card unmask
@@ -144,7 +148,7 @@ struct UnmaskIbanRequestDetails {
   ~UnmaskIbanRequestDetails();
 
   int64_t billing_customer_number = 0;
-  int64_t instrument_id;
+  int64_t instrument_id = 0;
 };
 
 // Information required to either opt-in or opt-out a user for FIDO
@@ -331,7 +335,7 @@ struct UploadCardRequestDetails {
   ~UploadCardRequestDetails();
 
   int64_t billing_customer_number = 0;
-  int detected_values;
+  int detected_values = 0;
   CreditCard card;
   std::u16string cvc;
   std::vector<AutofillProfile> profiles;
@@ -586,6 +590,27 @@ struct GetDetailsForUpdateBnplPaymentInstrumentRequestDetails {
   std::string issuer_id;
 };
 
+// Information required to make a GetDetailsForUpdateCard request.
+struct GetDetailsForUpdateCardRequestDetails {
+  GetDetailsForUpdateCardRequestDetails();
+  GetDetailsForUpdateCardRequestDetails(
+      const GetDetailsForUpdateCardRequestDetails& other);
+  GetDetailsForUpdateCardRequestDetails& operator=(
+      const GetDetailsForUpdateCardRequestDetails& other);
+  GetDetailsForUpdateCardRequestDetails(
+      GetDetailsForUpdateCardRequestDetails&&);
+  GetDetailsForUpdateCardRequestDetails& operator=(
+      GetDetailsForUpdateCardRequestDetails&&);
+  ~GetDetailsForUpdateCardRequestDetails();
+
+  // The Chrome locale.
+  std::string app_locale;
+  // The billing customer number for the account this request is sent to.
+  int64_t billing_customer_number = 0;
+  // The platform identifier for the instrument being updated.
+  int64_t instrument_id = 0;
+};
+
 // A collection of information required to create an update BNPL payment
 // instrument request.
 struct UpdateBnplPaymentInstrumentRequestDetails {
@@ -625,6 +650,31 @@ struct UpdateBnplPaymentInstrumentRequestDetails {
   // The type of the UpdateBnplPaymentInstrument request.
   UpdateBnplPaymentInstrumentType type =
       UpdateBnplPaymentInstrumentType::kUnknown;
+};
+
+// Information required to make an UpdateCard request.
+struct UpdateCardRequestDetails {
+  UpdateCardRequestDetails();
+  UpdateCardRequestDetails(const UpdateCardRequestDetails& other);
+  UpdateCardRequestDetails& operator=(const UpdateCardRequestDetails& other);
+  UpdateCardRequestDetails(UpdateCardRequestDetails&&);
+  UpdateCardRequestDetails& operator=(UpdateCardRequestDetails&&);
+  ~UpdateCardRequestDetails();
+
+  // The Chrome locale.
+  std::string app_locale;
+  // The billing customer number for the account this request is sent to.
+  int64_t billing_customer_number = 0;
+  // The platform identifier for the instrument being updated.
+  int64_t instrument_id = 0;
+  // The cardholder name provided by the user to update.
+  std::u16string cardholder_name;
+  // The CVC entered by the user to verify and update the card.
+  std::u16string cvc;
+  // An opaque token returned by the preflight request chaining this update.
+  std::string context_token;
+  // Client encoded risk data.
+  std::string risk_data;
 };
 
 // Information required to make a GetWalletReminderNotice request.
@@ -706,6 +756,43 @@ struct RecordLegalReminderAcknowledgmentRequestDetails {
   std::string legal_message_token;
   // Represents the feature recording the legal reminder acknowledgment.
   FlowType flow_type = FlowType::kUnknown;
+};
+
+// Details for a request to retrieve the card credentials that Google Payments
+// associated with an opaque token.
+struct GetDataForAgentRequestDetails {
+  GetDataForAgentRequestDetails();
+  GetDataForAgentRequestDetails(const GetDataForAgentRequestDetails& other);
+  GetDataForAgentRequestDetails& operator=(
+      const GetDataForAgentRequestDetails& other);
+  GetDataForAgentRequestDetails(GetDataForAgentRequestDetails&&);
+  GetDataForAgentRequestDetails& operator=(GetDataForAgentRequestDetails&&);
+  ~GetDataForAgentRequestDetails();
+
+  // The single-use opaque token issued by Google Payments. Chrome must not
+  // interpret or modify it.
+  std::string opaque_token;
+  // The Chrome locale.
+  std::string app_locale;
+};
+
+// The card credentials returned by a GetDataForAgent request.
+struct GetDataForAgentResponseDetails {
+  GetDataForAgentResponseDetails();
+  GetDataForAgentResponseDetails(const GetDataForAgentResponseDetails& other);
+  GetDataForAgentResponseDetails& operator=(
+      const GetDataForAgentResponseDetails& other);
+  GetDataForAgentResponseDetails(GetDataForAgentResponseDetails&&);
+  GetDataForAgentResponseDetails& operator=(GetDataForAgentResponseDetails&&);
+  ~GetDataForAgentResponseDetails();
+
+  std::string card_number;
+  // May be empty because Google Payments does not have a CVC for every card.
+  std::string cvc;
+  // The expiration month (1-12).
+  int expiration_month = 0;
+  // The four-digit expiration year.
+  int expiration_year = 0;
 };
 
 }  // namespace autofill::payments

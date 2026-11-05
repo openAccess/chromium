@@ -10,8 +10,8 @@
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/strings/strcat.h"
 #include "build/build_config.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/v5_search_hashes_cache.h"
 #include "components/safe_browsing/core/browser/db/v5_search_hashes_util.h"
 #include "components/safe_browsing/core/common/utils.h"
@@ -104,6 +104,9 @@ bool IsHashDetailRelevantForLocalChecks(
       return true;
 
     case V5::ThreatType::MALWARE:
+    // POTENTIALLY_HARMFUL_APPLICATION is used for mobile/iOS malware
+    // ("pha-4b").
+    case V5::ThreatType::POTENTIALLY_HARMFUL_APPLICATION:
     case V5::ThreatType::MALICIOUS_BINARY:
     case V5::ThreatType::UNWANTED_SOFTWARE:
     case V5::ThreatType::TRICK_TO_BILL:
@@ -112,7 +115,6 @@ bool IsHashDetailRelevantForLocalChecks(
       return !has_canary;
 
     case V5::ThreatType::THREAT_TYPE_UNSPECIFIED:
-    case V5::ThreatType::POTENTIALLY_HARMFUL_APPLICATION:
     case V5::ThreatType::SUBRESOURCE_FILTER:
       // These types are not supported/relevant for V5 local DB queries.
       return false;
@@ -126,15 +128,30 @@ bool IsHashDetailRelevantForLocalChecks(
 
 }  // namespace
 
+V5GetHashProtocolManager::V5GetHashLookup::V5GetHashLookup() = default;
+V5GetHashProtocolManager::V5GetHashLookup::V5GetHashLookup(
+    const V5GetHashLookup&) = default;
+V5GetHashProtocolManager::V5GetHashLookup&
+V5GetHashProtocolManager::V5GetHashLookup::operator=(const V5GetHashLookup&) =
+    default;
+V5GetHashProtocolManager::V5GetHashLookup::V5GetHashLookup(V5GetHashLookup&&) =
+    default;
+V5GetHashProtocolManager::V5GetHashLookup&
+V5GetHashProtocolManager::V5GetHashLookup::operator=(V5GetHashLookup&&) =
+    default;
+V5GetHashProtocolManager::V5GetHashLookup::~V5GetHashLookup() = default;
+
 V5GetHashProtocolManager::V5GetHashProtocolManager(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    const V4ProtocolConfig& config,
-    V5SearchHashesCache* cache)
+    const SBProtocolConfig& config,
+    V5SearchHashesCache* cache,
+    WebUIDelegate* webui_delegate)
     : url_loader_factory_(url_loader_factory),
       config_(config),
       cache_(cache),
       backoff_entry_(
-          std::make_unique<net::BackoffEntry>(&kV5GetHashBackoffPolicy)) {}
+          std::make_unique<net::BackoffEntry>(&kV5GetHashBackoffPolicy)),
+      webui_delegate_(webui_delegate) {}
 
 V5GetHashProtocolManager::~V5GetHashProtocolManager() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -145,10 +162,15 @@ void V5GetHashProtocolManager::Shutdown() {
   pending_loaders_.clear();
 }
 
+bool V5GetHashProtocolManager::HasWebUIListener() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return webui_delegate_ && webui_delegate_->HasListener();
+}
+
 void V5GetHashProtocolManager::GetFullHashes(
-    const std::map<FullHashStr, std::vector<SBThreatType>>&
-        full_hash_to_threat_types,
-    FullHashCallback callback) {
+    std::map<FullHashStr, std::vector<SBThreatType>> full_hash_to_threat_types,
+    FullHashCallback callback,
+    std::optional<CheckContext> check_context) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(!full_hash_to_threat_types.empty());
 
@@ -284,10 +306,8 @@ void V5GetHashProtocolManager::GetFullHashes(
   resource_request->method = "GET";
   resource_request->load_flags = net::LOAD_DISABLE_CACHE;
   resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
-  // TODO(crbug.com/362791941): share with v5_update_protocol_manager
-  resource_request->headers.SetHeader(
-      net::HttpRequestHeaders::kUserAgent,
-      base::StrCat({config_.client_name, " ", config_.version}));
+  SBProtocolManagerUtil::SetV5UserAgentHeader(&resource_request->headers,
+                                              config_);
 
   std::unique_ptr<network::SimpleURLLoader> owned_loader =
       network::SimpleURLLoader::Create(std::move(resource_request),
@@ -296,11 +316,12 @@ void V5GetHashProtocolManager::GetFullHashes(
   base::TimeTicks request_start_time = base::TimeTicks::Now();
   loader->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
       url_loader_factory_.get(),
-      base::BindOnce(
-          &V5GetHashProtocolManager::OnURLLoaderComplete,
-          weak_factory_.GetWeakPtr(), loader, full_hash_to_threat_types,
-          std::move(hash_prefixes_to_request), std::move(cached_full_hashes),
-          std::move(callback), request_start_time));
+      base::BindOnce(&V5GetHashProtocolManager::OnURLLoaderComplete,
+                     weak_factory_.GetWeakPtr(), loader,
+                     std::move(full_hash_to_threat_types), std::move(request),
+                     std::move(hash_prefixes_to_request),
+                     std::move(cached_full_hashes), std::move(callback),
+                     request_start_time, std::move(check_context)));
 
   pending_loaders_.insert(std::move(owned_loader));
 }
@@ -308,10 +329,12 @@ void V5GetHashProtocolManager::GetFullHashes(
 void V5GetHashProtocolManager::OnURLLoaderComplete(
     network::SimpleURLLoader* url_loader,
     std::map<FullHashStr, std::vector<SBThreatType>> full_hash_to_threat_types,
+    V5::SearchHashesRequest request,
     std::vector<std::string> requested_prefixes,
     std::vector<V5::FullHash> cached_full_hashes,
     FullHashCallback callback,
     base::TimeTicks request_start_time,
+    std::optional<CheckContext> check_context,
     std::optional<std::string> response_body) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
@@ -347,12 +370,17 @@ void V5GetHashProtocolManager::OnURLLoaderComplete(
 
   // Return upon error.
   if (!parse_info.has_value()) {
+    MaybeLogLookupToWebUI(/*lookup_succeeded=*/false, std::move(check_context),
+                          full_hash_to_threat_types, std::move(request),
+                          response_code, net_error,
+                          /*response_proto=*/std::nullopt,
+                          /*result=*/nullptr);
     CompleteLookup(std::move(callback), parse_info.error(),
                    SBThreatType::SB_THREAT_TYPE_SAFE, ThreatMetadata());
     return;
   }
 
-  const V5::SearchHashesResponse& response_proto = parse_info->response;
+  V5::SearchHashesResponse response_proto = std::move(parse_info->response);
   std::vector<V5::FullHash> response_full_hashes(
       response_proto.full_hashes().begin(), response_proto.full_hashes().end());
   // Update the local cache.
@@ -370,6 +398,12 @@ void V5GetHashProtocolManager::OnURLLoaderComplete(
 
   ThreatTypeAndMetadata result = DetermineMostSevereThreatForLocalChecks(
       matches, full_hash_to_threat_types);
+
+  MaybeLogLookupToWebUI(/*lookup_succeeded=*/true, std::move(check_context),
+                        full_hash_to_threat_types, std::move(request),
+                        response_code, net_error, std::move(response_proto),
+                        &result);
+
   CompleteLookup(std::move(callback), OperationOutcome::kSuccess,
                  result.threat_type, result.metadata);
 }
@@ -471,6 +505,43 @@ void V5GetHashProtocolManager::CompleteLookup(FullHashCallback callback,
   base::UmaHistogramEnumeration("SafeBrowsing.V5GetHash.OperationOutcome",
                                 outcome);
   std::move(callback).Run(threat_type, metadata);
+}
+
+void V5GetHashProtocolManager::MaybeLogLookupToWebUI(
+    bool lookup_succeeded,
+    std::optional<CheckContext> check_context,
+    const std::map<FullHashStr, std::vector<SBThreatType>>&
+        full_hash_to_threat_types,
+    V5::SearchHashesRequest request_proto,
+    int response_code,
+    int net_error,
+    std::optional<V5::SearchHashesResponse> response_proto,
+    const ThreatTypeAndMetadata* result) {
+  if (!HasWebUIListener() || !check_context) {
+    return;
+  }
+
+  V5GetHashLookup lookup;
+  lookup.urls = std::move(check_context->urls);
+  lookup.check_type = check_context->check_type;
+  base::flat_set<SBThreatType> local_threat_types;
+  for (const auto& [hash, threat_types] : full_hash_to_threat_types) {
+    local_threat_types.insert(threat_types.begin(), threat_types.end());
+  }
+  lookup.local_threat_types = std::move(local_threat_types).extract();
+  lookup.request_proto = std::move(request_proto);
+  lookup.response_code = response_code;
+  lookup.net_error = net_error;
+
+  if (lookup_succeeded) {
+    CHECK(response_proto);
+    CHECK(result);
+    lookup.response_proto = std::move(*response_proto);
+    lookup.severest_threat_type = result->threat_type;
+    lookup.metadata = result->metadata;
+  }
+
+  webui_delegate_->AddToV5GetHashLookups(std::move(lookup));
 }
 
 }  // namespace safe_browsing

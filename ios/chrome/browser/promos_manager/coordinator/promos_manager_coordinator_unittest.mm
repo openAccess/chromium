@@ -23,14 +23,13 @@
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
-#import "ios/chrome/browser/shared/public/commands/credential_provider_promo_commands.h"
 #import "ios/chrome/browser/shared/public/commands/docking_promo_commands.h"
 #import "ios/chrome/browser/shared/public/commands/picture_in_picture_commands.h"
 #import "ios/chrome/browser/shared/public/commands/promos_manager_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
@@ -55,8 +54,7 @@ class PromosManagerCoordinatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
     profile_ = std::move(builder).Build();
@@ -106,14 +104,17 @@ class PromosManagerCoordinatorTest : public PlatformTest {
     [browser->GetCommandDispatcher()
         startDispatchingToTarget:mock_scene_handler_
                      forProtocol:@protocol(SceneCommands)];
+    mock_scene_sign_in_handler_ =
+        OCMProtocolMock(@protocol(SceneSignInCommands));
+    [browser->GetCommandDispatcher()
+        startDispatchingToTarget:mock_scene_sign_in_handler_
+                     forProtocol:@protocol(SceneSignInCommands)];
 
     coordinator_ = [[PromosManagerCoordinator alloc]
-            initWithBaseViewController:view_controller_
-                               browser:browser
-                          sceneHandler:OCMStrictProtocolMock(
-                                           @protocol(SceneCommands))
-        credentialProviderPromoHandler:OCMStrictProtocolMock(@protocol(
-                                           CredentialProviderPromoCommands))];
+        initWithBaseViewController:view_controller_
+                           browser:browser
+                      sceneHandler:OCMStrictProtocolMock(
+                                       @protocol(SceneCommands))];
   }
 
   // Forces the test promo for display.
@@ -141,6 +142,7 @@ class PromosManagerCoordinatorTest : public PlatformTest {
   id mock_pip_handler_;
   id mock_promos_manager_handler_;
   id mock_scene_handler_;
+  id mock_scene_sign_in_handler_;
 };
 
 }  // namespace

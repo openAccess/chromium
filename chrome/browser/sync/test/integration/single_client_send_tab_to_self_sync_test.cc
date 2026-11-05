@@ -6,19 +6,14 @@
 #include <string_view>
 
 #include "base/base64.h"
-#include "base/callback_list.h"
 #include "base/functional/callback_helpers.h"
-#include "base/run_loop.h"
-#include "base/task/single_thread_task_runner.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/run_until.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/send_tab_to_self/send_tab_to_self_client_service.h"
-#include "chrome/browser/send_tab_to_self/send_tab_to_self_client_service_factory.h"
-#include "chrome/browser/send_tab_to_self/send_tab_to_self_scroll_observer.h"
+#include "chrome/browser/send_tab_to_self/send_tab_to_self_page_handler.h"
 #include "chrome/browser/send_tab_to_self/send_tab_to_self_util.h"
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
 #include "chrome/browser/sync/test/integration/send_tab_to_self_helper.h"
@@ -27,39 +22,28 @@
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/browser/sync/test/integration/user_events_helper.h"
 #include "chrome/browser/sync/user_event_service_factory.h"
-#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
-#include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_toolbar_icon_controller.h"
+#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_util.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_bubble_controller.h"
-#include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_toolbar_bubble_controller.h"
-#include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/keyed_service/core/service_access_type.h"
-#include "components/send_tab_to_self/features.h"
 #include "components/send_tab_to_self/metrics_util.h"
 #include "components/send_tab_to_self/page_context.h"
 #include "components/send_tab_to_self/send_tab_to_self_model.h"
 #include "components/send_tab_to_self/send_tab_to_self_sync_service.h"
-#include "components/signin/public/identity_manager/account_info.h"
+#include "components/send_tab_to_self/test_send_tab_to_self_entity_builder.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
-#include "components/sync/base/time.h"
-#include "components/sync/engine/loopback_server/persistent_unique_client_entity.h"
 #include "components/sync/nigori/cryptographer_impl.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
 #include "components/sync/protocol/send_tab_to_self_specifics.pb.h"
 #include "components/sync/protocol/sync_entity.pb.h"
 #include "components/sync/protocol/user_event_specifics.pb.h"
+#include "components/sync_device_info/device_info.h"
 #include "components/sync_user_events/user_event_service.h"
-#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/hit_test_region_observer.h"
-#include "content/public/test/test_navigation_observer.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -68,6 +52,7 @@
 
 namespace {
 
+using FormFactor = syncer::DeviceInfo::FormFactor;
 using send_tab_to_self_helper::GetFormFieldValueById;
 using send_tab_to_self_helper::PopulateFormField;
 using testing::AllOf;
@@ -75,19 +60,29 @@ using testing::AnyOf;
 using testing::Eq;
 using testing::Field;
 using testing::HasSubstr;
+using testing::Not;
 using testing::Property;
 using testing::UnorderedElementsAre;
+using testing::WithParamInterface;
+
+constexpr char kGuid[] = "kGuid";
+constexpr char kUrl[] = "https://www.example.com";
+constexpr char kTitle[] = "example";
+constexpr char kTargetDeviceSyncCacheGuid[] = "target_guid";
+constexpr char kSenderDeviceName[] = "device_name";
+
+constexpr char kAutofillTestFormPath[] = "/autofill/autofill_test_form.html";
+constexpr char kScrollPagePath[] = "/send_tab_to_self/scroll.html";
+constexpr char kEmptyPagePath[] = "/empty.html";
+
+constexpr char kName[] = "John";
+constexpr char kEmail[] = "john@example.com";
 
 class SingleClientSendTabToSelfSyncTest
     : public SyncTest,
-      public testing::WithParamInterface<SyncTest::SetupSyncMode> {
+      public WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  SingleClientSendTabToSelfSyncTest() : SyncTest(SINGLE_CLIENT) {
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitAndEnableFeature(
-          syncer::kReplaceSyncPromosWithSignInPromos);
-    }
-  }
+  SingleClientSendTabToSelfSyncTest() : SyncTest(SINGLE_CLIENT) {}
 
   SingleClientSendTabToSelfSyncTest(const SingleClientSendTabToSelfSyncTest&) =
       delete;
@@ -99,9 +94,6 @@ class SingleClientSendTabToSelfSyncTest
   SyncTest::SetupSyncMode GetSetupSyncMode() const override {
     return GetParam();
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(,
@@ -109,85 +101,44 @@ INSTANTIATE_TEST_SUITE_P(,
                          GetSyncTestModes(),
                          testing::PrintToStringParamName());
 
+// Tests that a SendTabToSelf entry injected on the FakeServer is downloaded and
+// added to the model when sync is enabled.
 IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
                        DownloadWhenSyncEnabled) {
-  const std::string kUrl("https://www.example.com");
-  const std::string kGuid("kGuid");
-  sync_pb::EntitySpecifics specifics;
-  sync_pb::SendTabToSelfSpecifics* send_tab_to_self =
-      specifics.mutable_send_tab_to_self();
-  send_tab_to_self->set_url(kUrl);
-  send_tab_to_self->set_guid(kGuid);
-  send_tab_to_self->set_shared_time_usec(
-      base::Time::Now().ToDeltaSinceWindowsEpoch().InMicroseconds());
+  const GURL url(kUrl);
 
   fake_server_->InjectEntity(
-      syncer::PersistentUniqueClientEntity::CreateFromSpecificsForTesting(
-          "non_unique_name", kGuid, specifics,
-          /*creation_time=*/syncer::TimeToProtoTime(base::Time::Now()),
-          /*last_modified_time=*/syncer::TimeToProtoTime(base::Time::Now())));
+      send_tab_to_self::TestSendTabToSelfEntityBuilder(url)
+          .SetGuid(kGuid)
+          .Build(*fake_server_));
 
   ASSERT_TRUE(SetupSync());
 
-  EXPECT_TRUE(send_tab_to_self_helper::SendTabToSelfUrlChecker(
-                  SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0)),
-                  GURL(kUrl))
-                  .Wait());
+  EXPECT_TRUE(
+      send_tab_to_self_helper::SendTabToSelfUrlChecker(
+          SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0)), url)
+          .Wait());
 }
 
+// Tests that form fields attached to an encrypted SendTabToSelf entry are
+// received and correctly populate fields in the target web page.
 IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
                        ShouldReceiveFormFields) {
   ASSERT_TRUE(SetupSync());
 
-  const std::string kName = "John";
-  const std::string kEmail = "john@example.com";
-  const GURL kUrl =
-      embedded_test_server()->GetURL("/autofill/autofill_test_form.html");
-  const std::string kGuid = "kGuid";
-
-  sync_pb::EntitySpecifics specifics;
-  sync_pb::SendTabToSelfSpecifics* send_tab_to_self =
-      specifics.mutable_send_tab_to_self();
-  send_tab_to_self->set_url(kUrl.spec());
-  send_tab_to_self->set_guid(kGuid);
-  send_tab_to_self->set_shared_time_usec(
-      base::Time::Now().ToDeltaSinceWindowsEpoch().InMicroseconds());
-  {
-    sync_pb::FormField* field = send_tab_to_self->mutable_page_context()
-                                    ->mutable_form_field_info()
-                                    ->add_fields();
-    field->set_id_attribute("NAME_FIRST");
-    field->set_name_attribute("");
-    field->set_form_control_type("text");
-    field->set_value(kName);
-  }
-  {
-    sync_pb::FormField* field = send_tab_to_self->mutable_page_context()
-                                    ->mutable_form_field_info()
-                                    ->add_fields();
-    field->set_id_attribute("EMAIL_ADDRESS");
-    field->set_name_attribute("");
-    field->set_form_control_type("text");
-    field->set_value(kEmail);
-  }
-  ASSERT_TRUE(
-      syncer::CryptographerImpl::FromSingleKeyForTesting(
-          base::Base64Encode(fake_server_->GetKeystoreKeys().back()),
-          syncer::KeyDerivationParams::CreateForPbkdf2())
-          ->Encrypt(send_tab_to_self->page_context(),
-                    send_tab_to_self->mutable_encrypted_page_context()));
-  send_tab_to_self->clear_page_context();
+  const GURL url = embedded_test_server()->GetURL(kAutofillTestFormPath);
 
   fake_server_->InjectEntity(
-      syncer::PersistentUniqueClientEntity::CreateFromSpecificsForTesting(
-          "non_unique_name", kGuid, specifics,
-          /*creation_time=*/syncer::TimeToProtoTime(base::Time::Now()),
-          /*last_modified_time=*/syncer::TimeToProtoTime(base::Time::Now())));
+      send_tab_to_self::TestSendTabToSelfEntityBuilder(url)
+          .SetGuid(kGuid)
+          .AddFormField("NAME_FIRST", kName)
+          .AddFormField("EMAIL_ADDRESS", kEmail)
+          .Build(*fake_server_));
 
   send_tab_to_self::SendTabToSelfSyncService* service =
       SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0));
   ASSERT_TRUE(
-      send_tab_to_self_helper::SendTabToSelfUrlChecker(service, kUrl).Wait());
+      send_tab_to_self_helper::SendTabToSelfUrlChecker(service, url).Wait());
 
   const send_tab_to_self::SendTabToSelfEntry* entry =
       service->GetSendTabToSelfModel()->GetEntryByGUID(kGuid);
@@ -197,9 +148,9 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
 
   // Mimic the user opening the received tab.
   content::WebContents* web_contents =
-      chrome::AddAndReturnTabAt(GetBrowser(0), kUrl, -1, true);
+      chrome::AddAndReturnTabAt(GetBrowser(0), url, -1, true);
 
-  send_tab_to_self::FillWebContents(web_contents, url::Origin::Create(kUrl),
+  send_tab_to_self::FillWebContents(web_contents, url::Origin::Create(url),
                                     entry->GetPageContext());
 
   // Wait for filling to complete.
@@ -211,15 +162,12 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
 
 IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
                        ShouldSendFormFields) {
-  const std::string kName = "John";
-  const std::string kEmail = "john@example.com";
-  const GURL kUrl =
-      embedded_test_server()->GetURL("/autofill/autofill_test_form.html");
+  const GURL url = embedded_test_server()->GetURL(kAutofillTestFormPath);
   ASSERT_TRUE(SetupSync());
 
   // Open tab and fill form.
   content::WebContents* web_contents =
-      chrome::AddAndReturnTabAt(GetBrowser(0), kUrl, -1, true);
+      chrome::AddAndReturnTabAt(GetBrowser(0), url, -1, true);
   ASSERT_TRUE(content::WaitForLoadStop(web_contents));
 
   // Wait for Autofill to cache the form fields.
@@ -248,22 +196,21 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
             AllOf(Field(&send_tab_to_self::PageContext::FormField::id_attribute,
                         Eq(u"NAME_FIRST")),
                   Field(&send_tab_to_self::PageContext::FormField::value,
-                        Eq(base::UTF8ToUTF16(kName)))),
+                        Eq(base::UTF8ToUTF16(std::string_view(kName))))),
             AllOf(Field(&send_tab_to_self::PageContext::FormField::id_attribute,
                         Eq(u"EMAIL_ADDRESS")),
                   Field(&send_tab_to_self::PageContext::FormField::value,
-                        Eq(base::UTF8ToUTF16(kEmail))))))
+                        Eq(base::UTF8ToUTF16(std::string_view(kEmail)))))))
         << os.str();
   }
 
   // Trigger sending.
-  const std::string target_guid = "target_guid";
   send_tab_to_self::PageContext context;
   context.form_field_info =
       send_tab_to_self::ExtractFormFieldsFromWebContents(web_contents);
   SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0))
       ->GetSendTabToSelfModel()
-      ->SendEntry(kUrl, "example", target_guid, context,
+      ->SendEntry(url, kTitle, kTargetDeviceSyncCacheGuid, context,
                   send_tab_to_self::NavigationHistory(), base::DoNothing(),
                   send_tab_to_self::ShareEntryPoint::kShareSheet);
 
@@ -278,8 +225,9 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
   const sync_pb::SendTabToSelfSpecifics& specifics =
       entities[0].specifics().send_tab_to_self();
 
-  ASSERT_EQ(specifics.url(), kUrl.spec());
-  ASSERT_EQ(specifics.target_device_sync_cache_guid(), target_guid);
+  ASSERT_EQ(specifics.url(), url.spec());
+  ASSERT_EQ(specifics.target_device_sync_cache_guid(),
+            kTargetDeviceSyncCacheGuid);
   EXPECT_FALSE(specifics.has_page_context());
   ASSERT_TRUE(specifics.has_encrypted_page_context());
 
@@ -330,53 +278,43 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
       GetBrowser(0)->tab_strip_model()->GetActiveWebContents()));
 }
 
+// Tests that deleting a shared entry is coordinated with history deletion
+// for the corresponding URL.
 IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
                        DeleteSharedEntryWithHistory) {
-  const std::string kUrl("https://www.example.com");
-  const std::string kGuid("kGuid");
-  const base::Time kNavigationTime(base::Time::Now());
-
-  sync_pb::EntitySpecifics specifics;
-  sync_pb::SendTabToSelfSpecifics* send_tab_to_self =
-      specifics.mutable_send_tab_to_self();
-  send_tab_to_self->set_url(kUrl);
-  send_tab_to_self->set_guid(kGuid);
-  send_tab_to_self->set_shared_time_usec(
-      base::Time::Now().ToDeltaSinceWindowsEpoch().InMicroseconds());
+  const GURL url(kUrl);
+  const base::Time navigation_time(base::Time::Now());
 
   fake_server_->InjectEntity(
-      syncer::PersistentUniqueClientEntity::CreateFromSpecificsForTesting(
-          "non_unique_name", kGuid, specifics,
-          /*creation_time=*/syncer::TimeToProtoTime(base::Time::Now()),
-          /*last_modified_time=*/syncer::TimeToProtoTime(base::Time::Now())));
+      send_tab_to_self::TestSendTabToSelfEntityBuilder(url)
+          .SetGuid(kGuid)
+          .Build(*fake_server_));
 
   ASSERT_TRUE(SetupSync());
 
   history::HistoryService* history_service =
       HistoryServiceFactory::GetForProfile(GetProfile(0),
                                            ServiceAccessType::EXPLICIT_ACCESS);
-  history_service->AddPage(GURL(kUrl), kNavigationTime, history::SOURCE_SYNCED);
+  history_service->AddPage(url, navigation_time, history::SOURCE_SYNCED);
 
-  ASSERT_TRUE(send_tab_to_self_helper::SendTabToSelfUrlChecker(
-                  SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0)),
-                  GURL(kUrl))
-                  .Wait());
+  ASSERT_TRUE(
+      send_tab_to_self_helper::SendTabToSelfUrlChecker(
+          SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0)), url)
+          .Wait());
 
-  history_service->DeleteURLs({GURL(kUrl)});
+  history_service->DeleteURLs({url});
 
-  EXPECT_TRUE(send_tab_to_self_helper::SendTabToSelfUrlDeletedChecker(
-                  SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0)),
-                  GURL(kUrl))
-                  .Wait());
+  EXPECT_TRUE(
+      send_tab_to_self_helper::SendTabToSelfUrlDeletedChecker(
+          SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0)), url)
+          .Wait());
 }
 
 // An unconsented primary account is not supported on ChromeOS.
 #if !BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
                        ShouldCleanupOnSignout) {
-  const GURL kUrl("https://www.example.com");
-  const std::string kTitle("example");
-  const std::string kTargetDeviceSyncCacheGuid("target");
+  const GURL url(kUrl);
 
   ASSERT_TRUE(SignIn());
 
@@ -385,24 +323,22 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
           ->GetSendTabToSelfModel();
 
   ASSERT_TRUE(model->SendEntry(
-      kUrl, kTitle, kTargetDeviceSyncCacheGuid, send_tab_to_self::PageContext(),
+      url, kTitle, kTargetDeviceSyncCacheGuid, send_tab_to_self::PageContext(),
       send_tab_to_self::NavigationHistory(), base::DoNothing(),
       send_tab_to_self::ShareEntryPoint::kShareSheet));
 
   GetClient(0)->SignOutPrimaryAccount();
 
-  EXPECT_TRUE(send_tab_to_self_helper::SendTabToSelfUrlDeletedChecker(
-                  SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0)),
-                  GURL(kUrl))
-                  .Wait());
+  EXPECT_TRUE(
+      send_tab_to_self_helper::SendTabToSelfUrlDeletedChecker(
+          SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0)), url)
+          .Wait());
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
 IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
                        ShouldNotUploadInSyncPausedState) {
-  const GURL kUrl("https://www.example.com");
-  const std::string kTitle("example");
-  const std::string kTargetDeviceSyncCacheGuid("target");
+  const GURL url(kUrl);
 
   ASSERT_TRUE(SetupSync());
 
@@ -419,7 +355,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
           ->GetSendTabToSelfModel();
 
   ASSERT_FALSE(model->SendEntry(
-      kUrl, kTitle, kTargetDeviceSyncCacheGuid, send_tab_to_self::PageContext(),
+      url, kTitle, kTargetDeviceSyncCacheGuid, send_tab_to_self::PageContext(),
       send_tab_to_self::NavigationHistory(), base::DoNothing(),
       send_tab_to_self::ShareEntryPoint::kShareSheet));
 
@@ -434,100 +370,63 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
   }
   ASSERT_FALSE(GetSyncService(0)->GetAuthError().IsPersistentError());
 
-  // Just checking that we don't see test_event isn't very convincing yet,
-  // because it may simply not have reached the server yet. So let's send
-  // something else through the system that we can wait on before checking.
+  // Just checking that the test event isn't seen isn't very convincing yet,
+  // because it may simply not have reached the server yet. Send
+  // something else through the system to wait on before checking.
   syncer::UserEventService* user_event_service =
-      browser_sync::UserEventServiceFactory::GetForProfile(GetProfile(0));
+      UserEventServiceFactory::GetForProfile(GetProfile(0));
   user_event_service->RecordUserEvent(
       std::make_unique<sync_pb::UserEventSpecifics>(
           user_events_helper::CreateTestEvent(base::Time::Now())));
   ASSERT_TRUE(ServerCountMatchStatusChecker(syncer::USER_EVENTS, 1).Wait());
 
-  // Repurpose the deleted checker to ensure url wasn't added.
-  EXPECT_TRUE(send_tab_to_self_helper::SendTabToSelfUrlDeletedChecker(
-                  SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0)),
-                  GURL(kUrl))
-                  .Wait());
+  // Repurpose the deleted checker to ensure `url` wasn't added.
+  EXPECT_TRUE(
+      send_tab_to_self_helper::SendTabToSelfUrlDeletedChecker(
+          SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0)), url)
+          .Wait());
 }
 
-class SingleClientSendTabToSelfTextFragmentSyncTest
-    : public SingleClientSendTabToSelfSyncTest {
- public:
-  SingleClientSendTabToSelfTextFragmentSyncTest() {
-    text_fragment_feature_list_.InitAndEnableFeature(
-        send_tab_to_self::kSendTabToSelfPropagateScrollPosition);
-  }
+// Tests that after sync is set up, context menu display reason is valid
+// for HTTP/HTTPS URLs.
+IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
+                       ContextMenuDisplayReasonIsValidForHttpUrl) {
+  ASSERT_TRUE(SetupSync());
 
- private:
-  base::test::ScopedFeatureList text_fragment_feature_list_;
-};
+  GURL test_url = embedded_test_server()->GetURL(kEmptyPagePath);
+  content::WebContents* web_contents =
+      chrome::AddAndReturnTabAt(GetBrowser(0), test_url, -1, true);
+  ASSERT_TRUE(content::WaitForLoadStop(web_contents));
 
-INSTANTIATE_TEST_SUITE_P(,
-                         SingleClientSendTabToSelfTextFragmentSyncTest,
-                         GetSyncTestModes(),
-                         testing::PrintToStringParamName());
-
-void SimulateOpeningReceivedTab(
-    BrowserWindowInterface* browser,
-    const send_tab_to_self::SendTabToSelfEntry& entry) {
-  send_tab_to_self::SendTabToSelfToolbarBubbleController* controller =
-      send_tab_to_self::SendTabToSelfToolbarBubbleController::From(browser);
-
-  if (!controller->IsBubbleShowing()) {
-    PinnedToolbarActions* pinned_controller =
-        browser->GetFeatures().pinned_toolbar_actions();
-    pinned_controller->ShowActionEphemerallyInToolbar(kActionSendTabToSelf,
-                                                      true);
-    auto anchor = pinned_controller->GetBubbleAnchor(kActionSendTabToSelf);
-    controller->ShowBubble(entry, anchor);
-  }
-
-  ASSERT_TRUE(controller->IsBubbleShowing());
-  controller->bubble()->OpenInNewTab();
+  // Verify that GetEntryPointDisplayReason() returns kInformNoTargetDevice
+  // (not nullopt) for HTTP/HTTPS URLs when Sync is enabled without target
+  // devices, allowing the context menu promo item to be shown.
+  std::optional<send_tab_to_self::EntryPointDisplayReason> reason =
+      send_tab_to_self::GetEntryPointDisplayReason(web_contents, test_url);
+  ASSERT_TRUE(reason.has_value());
+  EXPECT_EQ(*reason,
+            send_tab_to_self::EntryPointDisplayReason::kInformNoTargetDevice);
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfTextFragmentSyncTest,
+// Tests that text fragment directives attached to an encrypted `SendTabToSelf`
+// entry are received and trigger scrolling on page load.
+IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
                        ShouldReceiveTextFragment) {
   ASSERT_TRUE(SetupSync());
 
-  const GURL kUrl =
-      embedded_test_server()->GetURL("/send_tab_to_self/scroll.html");
-  constexpr char kGuid[] = "kGuid";
+  const GURL url = embedded_test_server()->GetURL(kScrollPagePath);
   constexpr char kTextStart[] = "quick brown fox";
 
-  sync_pb::EntitySpecifics specifics;
-  sync_pb::SendTabToSelfSpecifics* send_tab_to_self =
-      specifics.mutable_send_tab_to_self();
-  send_tab_to_self->set_url(kUrl.spec());
-  send_tab_to_self->set_guid(kGuid);
-  send_tab_to_self->set_shared_time_usec(
-      base::Time::Now().ToDeltaSinceWindowsEpoch().InMicroseconds());
-
-  sync_pb::ScrollPosition* scroll_position =
-      send_tab_to_self->mutable_page_context()->mutable_scroll_position();
-  sync_pb::TextFragmentData* text_fragment =
-      scroll_position->mutable_text_fragment();
-  text_fragment->set_text_start(kTextStart);
-
-  ASSERT_TRUE(
-      syncer::CryptographerImpl::FromSingleKeyForTesting(
-          base::Base64Encode(fake_server_->GetKeystoreKeys().back()),
-          syncer::KeyDerivationParams::CreateForPbkdf2())
-          ->Encrypt(send_tab_to_self->page_context(),
-                    send_tab_to_self->mutable_encrypted_page_context()));
-  send_tab_to_self->clear_page_context();
-
   fake_server_->InjectEntity(
-      syncer::PersistentUniqueClientEntity::CreateFromSpecificsForTesting(
-          "non_unique_name", kGuid, specifics,
-          /*creation_time=*/syncer::TimeToProtoTime(base::Time::Now()),
-          /*last_modified_time=*/syncer::TimeToProtoTime(base::Time::Now())));
+      send_tab_to_self::TestSendTabToSelfEntityBuilder(url)
+          .SetGuid(kGuid)
+          .SetTextFragment(kTextStart)
+          .Build(*fake_server_));
 
   send_tab_to_self::SendTabToSelfSyncService* service =
       SendTabToSelfSyncServiceFactory::GetForProfile(GetProfile(0));
   ASSERT_TRUE(
-      send_tab_to_self_helper::SendTabToSelfUrlChecker(service, kUrl).Wait());
+      send_tab_to_self_helper::SendTabToSelfUrlChecker(service, url).Wait());
 
   const send_tab_to_self::SendTabToSelfEntry* entry =
       service->GetSendTabToSelfModel()->GetEntryByGUID(kGuid);
@@ -539,18 +438,20 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfTextFragmentSyncTest,
 
   content::WebContentsAddedObserver web_contents_added_observer;
 
-  SimulateOpeningReceivedTab(GetBrowser(0), *entry);
+  send_tab_to_self::OpenEntryInNewForegroundTab(
+      GetProfile(0), *entry,
+      send_tab_to_self::ShareActivatedEntryPoint::kAutoOpened);
 
   // Wait until the entry is marked opened in the model.
   ASSERT_TRUE(
-      send_tab_to_self_helper::SendTabToSelfUrlOpenedChecker(service, kUrl)
+      send_tab_to_self_helper::SendTabToSelfUrlOpenedChecker(service, url)
           .Wait());
 
   content::WebContents* web_contents =
       web_contents_added_observer.GetWebContents();
   content::WaitForLoadStop(web_contents);
 
-  EXPECT_EQ(web_contents->GetLastCommittedURL(), kUrl);
+  EXPECT_EQ(web_contents->GetLastCommittedURL(), url);
 
   // Wait for the scroll to be applied and verify it.
   // The text fragment is in the middle of a very long test page.
@@ -560,12 +461,13 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfTextFragmentSyncTest,
                   .Wait());
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfTextFragmentSyncTest,
+// Tests that sharing a scrolled page generates a text fragment selector and
+// commits it in the encrypted `PageContext` on the sync server.
+IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
                        ShouldSendTextFragment) {
   ASSERT_TRUE(SetupSync());
 
-  GURL test_url =
-      embedded_test_server()->GetURL("/send_tab_to_self/scroll.html");
+  GURL test_url = embedded_test_server()->GetURL(kScrollPagePath);
 
   content::WebContents* web_contents =
       chrome::AddAndReturnTabAt(GetBrowser(0), test_url, -1, true);
@@ -588,10 +490,12 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfTextFragmentSyncTest,
       send_tab_to_self::SendTabToSelfBubbleController::
           GetOrCreateForWebContents(web_contents);
   // Increase the timeout to avoid flakiness on slow bots.
-  controller->SetSelectorGenerationTimeoutForTesting(base::Seconds(2));
+  send_tab_to_self::SendTabToSelfPageHandler::GetOrCreateForWebContents(
+      web_contents)
+      ->SetSelectorGenerationTimeoutForTesting(base::Seconds(2));
 
-  constexpr char kTargetGuid[] = "target_guid";
-  controller->OnDeviceSelected(kTargetGuid, "device_name");
+  controller->OnDeviceSelected(kTargetDeviceSyncCacheGuid, kSenderDeviceName,
+                               FormFactor::kDesktop);
 
   ASSERT_TRUE(
       ServerCountMatchStatusChecker(syncer::SEND_TAB_TO_SELF, 1).Wait());
@@ -603,7 +507,8 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfTextFragmentSyncTest,
       entities[0].specifics().send_tab_to_self();
 
   ASSERT_EQ(specifics.url(), test_url.spec());
-  ASSERT_EQ(specifics.target_device_sync_cache_guid(), kTargetGuid);
+  ASSERT_EQ(specifics.target_device_sync_cache_guid(),
+            kTargetDeviceSyncCacheGuid);
   EXPECT_FALSE(specifics.has_page_context());
   ASSERT_TRUE(specifics.has_encrypted_page_context());
 
@@ -625,11 +530,12 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfTextFragmentSyncTest,
               AnyOf(HasSubstr("fox"), HasSubstr("jumps"), HasSubstr("dog")));
 }
 
-IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfTextFragmentSyncTest,
-                       ShouldSendEmptyPage) {
+// Tests that sharing an empty page commits the `SendTabToSelf` entry without
+// attaching any scroll position data.
+IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest, ShouldSendEmptyPage) {
   ASSERT_TRUE(SetupSync());
 
-  GURL test_url = embedded_test_server()->GetURL("/empty.html");
+  GURL test_url = embedded_test_server()->GetURL(kEmptyPagePath);
   content::WebContents* web_contents =
       chrome::AddAndReturnTabAt(GetBrowser(0), test_url, -1, true);
   ASSERT_TRUE(content::WaitForLoadStop(web_contents));
@@ -638,8 +544,8 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfTextFragmentSyncTest,
       send_tab_to_self::SendTabToSelfBubbleController::
           GetOrCreateForWebContents(web_contents);
 
-  constexpr char kTargetGuid[] = "target_guid";
-  controller->OnDeviceSelected(kTargetGuid, "device_name");
+  controller->OnDeviceSelected(kTargetDeviceSyncCacheGuid, kSenderDeviceName,
+                               FormFactor::kDesktop);
 
   ASSERT_TRUE(
       ServerCountMatchStatusChecker(syncer::SEND_TAB_TO_SELF, 1).Wait());
@@ -653,32 +559,12 @@ IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfTextFragmentSyncTest,
   ASSERT_EQ(specifics.url(), test_url.spec());
   // Verify that no text fragment data is erroneously generated or appended
   // to the URL.
-  EXPECT_THAT(specifics.url(), testing::Not(testing::HasSubstr("#:~:text=")));
-  ASSERT_EQ(specifics.target_device_sync_cache_guid(), kTargetGuid);
+  EXPECT_THAT(specifics.url(), Not(HasSubstr("#:~:text=")));
+  ASSERT_EQ(specifics.target_device_sync_cache_guid(),
+            kTargetDeviceSyncCacheGuid);
 
   // No scroll position since there's no text on the empty page.
   EXPECT_FALSE(specifics.page_context().has_scroll_position());
-}
-
-// Tests that after sync is set up, context menu display reason is valid
-// for HTTP/HTTPS URLs.
-IN_PROC_BROWSER_TEST_P(SingleClientSendTabToSelfSyncTest,
-                       ContextMenuDisplayReasonIsValidForHttpUrl) {
-  ASSERT_TRUE(SetupSync());
-
-  GURL test_url = embedded_test_server()->GetURL("/empty.html");
-  content::WebContents* web_contents =
-      chrome::AddAndReturnTabAt(GetBrowser(0), test_url, -1, true);
-  ASSERT_TRUE(content::WaitForLoadStop(web_contents));
-
-  // Verify that GetEntryPointDisplayReason() returns kInformNoTargetDevice
-  // (not nullopt) for HTTP/HTTPS URLs when Sync is enabled without target
-  // devices, allowing the context menu promo item to be shown.
-  std::optional<send_tab_to_self::EntryPointDisplayReason> reason =
-      send_tab_to_self::GetEntryPointDisplayReason(web_contents, test_url);
-  ASSERT_TRUE(reason.has_value());
-  EXPECT_EQ(*reason,
-            send_tab_to_self::EntryPointDisplayReason::kInformNoTargetDevice);
 }
 
 }  // namespace

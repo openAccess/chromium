@@ -50,6 +50,9 @@ suite('SpeedPage', function() {
 
     speedPage = document.createElement('settings-speed-page');
     document.body.appendChild(speedPage);
+    // Wait for the initial pref value to propagate to the radio group and
+    // buttons before tests interact with them.
+    await microtasksFinished();
   });
 
   test('PreloadPagesDefault', function() {
@@ -157,6 +160,7 @@ suite('CpuPerformanceOverride', function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     loadTimeData.overrideValues({
       cpuPerformanceEnabled: true,
+      settingsRefresh2026: '',
     });
 
     pluralStringProxy = new TestPluralStringProxy();
@@ -255,6 +259,29 @@ suite('CpuPerformanceOverride', function() {
 
     // Verify the UI displays the enforced value.
     assertEquals('4', dropdown.$.dropdownMenu.value);
+  });
+
+  test('SplitSectionWhenSettingsRefresh2026Enabled', async function() {
+    assertEquals(
+        1, speedPage.shadowRoot.querySelectorAll('settings-section').length);
+
+    loadTimeData.overrideValues({
+      settingsRefresh2026: 'settings-refresh-2026',
+    });
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    performanceBrowserProxy.resetResolver('getCpuPerformanceInfo');
+
+    speedPage = document.createElement('settings-speed-page');
+    document.body.appendChild(speedPage);
+    await performanceBrowserProxy.whenCalled('getCpuPerformanceInfo');
+    await microtasksFinished();
+
+    const sections = speedPage.shadowRoot.querySelectorAll('settings-section');
+    assertEquals(2, sections.length);
+    assertNull(sections[0]!.querySelector('#cpuPerformanceInfo'));
+    assertNull(sections[0]!.querySelector('#cpuPerformanceOverrideDropdown'));
+    assertTrue(!!sections[1]!.querySelector('#cpuPerformanceInfo'));
+    assertTrue(!!sections[1]!.querySelector('#cpuPerformanceOverrideDropdown'));
   });
 });
 

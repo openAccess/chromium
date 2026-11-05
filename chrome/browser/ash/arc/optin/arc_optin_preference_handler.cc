@@ -9,6 +9,7 @@
 #include "ash/constants/geolocation_access_level.h"
 #include "ash/system/privacy_hub/geolocation_privacy_switch_controller.h"
 #include "ash/system/privacy_hub/privacy_hub_controller.h"
+#include "base/check.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "chrome/browser/ash/arc/optin/arc_optin_preference_handler_observer.h"
@@ -17,10 +18,14 @@
 #include "chrome/browser/extensions/api/settings_private/prefs_util.h"
 #include "chrome/browser/metrics/metrics_reporting_state.h"
 #include "chrome/browser/metrics/per_user_state_manager_chromeos.h"
-#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "components/metrics/metrics_service.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user_manager.h"
 
 namespace arc {
 
@@ -31,9 +36,9 @@ ArcOptInPreferenceHandler::ArcOptInPreferenceHandler(
     : observer_(observer),
       pref_service_(pref_service),
       metrics_service_(metrics_service) {
-  DCHECK(observer_);
-  DCHECK(pref_service_);
-  DCHECK(metrics_service_);
+  CHECK(observer_, base::NotFatalUntil::M160);
+  CHECK(pref_service_, base::NotFatalUntil::M160);
+  CHECK(metrics_service_, base::NotFatalUntil::M160);
 }
 
 void ArcOptInPreferenceHandler::Start() {
@@ -80,7 +85,7 @@ ArcOptInPreferenceHandler::~ArcOptInPreferenceHandler() = default;
 
 void ArcOptInPreferenceHandler::OnMetricsPreferenceChanged() {
   auto* const device_settings_service = ash::DeviceSettingsService::Get();
-  DCHECK(device_settings_service);
+  CHECK(device_settings_service, base::NotFatalUntil::M160);
 
   // Async callback guarantees device ownership status is known.
   device_settings_service->GetOwnershipStatusAsync(
@@ -104,11 +109,18 @@ void ArcOptInPreferenceHandler::EnableMetricsOnOwnershipKnown(
   } else {
     // Handles case in which device is either not owned or per-user is not
     // enabled.
+    // TODO(crbug.com/278643115): Take the account_id from the callers.
+    const auto* active_session =
+        session_manager::SessionManager::Get()->GetActiveSession();
+    CHECK(active_session);
     ash::StatsReportingController::Get()->SetEnabled(
-        ProfileManager::GetActiveUserProfile(), metrics_enabled);
+        Profile::FromBrowserContext(
+            ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+                active_session->account_id())),
+        metrics_enabled);
   }
 
-  DCHECK(enable_metrics_callback_);
+  CHECK(enable_metrics_callback_, base::NotFatalUntil::M160);
   std::move(enable_metrics_callback_).Run();
 }
 
@@ -167,7 +179,7 @@ void ArcOptInPreferenceHandler::SendLocationServicesMode() {
 void ArcOptInPreferenceHandler::EnableMetrics(bool is_enabled,
                                               base::OnceClosure callback) {
   auto* device_settings_service = ash::DeviceSettingsService::Get();
-  DCHECK(device_settings_service);
+  CHECK(device_settings_service, base::NotFatalUntil::M160);
 
   device_settings_service->GetOwnershipStatusAsync(
       base::BindOnce(&ArcOptInPreferenceHandler::EnableMetricsOnOwnershipKnown,
@@ -208,7 +220,7 @@ bool ArcOptInPreferenceHandler::IsAllowedToUpdateUserChoice(
 
   // Unmanaged guest sessions can be started while ownership status is None.
   // Guest sessions use per-user choice, asked during the ToS in guest OOBE.
-  if (ProfileManager::GetActiveUserProfile()->IsGuestSession()) {
+  if (user_manager::UserManager::Get()->IsLoggedInAsGuest()) {
     return true;
   }
 
@@ -259,7 +271,7 @@ bool ArcOptInPreferenceHandler::GetUserMetrics() {
 
   // No value means user is not eligible for per-user choice. This should be
   // caught by IsAllowedToUpdateUserChoice().
-  DCHECK(metrics_enabled.has_value());
+  CHECK(metrics_enabled.has_value(), base::NotFatalUntil::M160);
 
   return *metrics_enabled;
 }

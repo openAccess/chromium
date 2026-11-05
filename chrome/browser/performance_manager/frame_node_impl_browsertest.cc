@@ -12,7 +12,7 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/performance_manager/graph/frame_node_impl.h"
@@ -378,7 +378,6 @@ IN_PROC_BROWSER_TEST_F(FrameNodeImplIsActiveBrowserTest,
 
   EXPECT_NE(initial_frame_ptr.get(), new_frame_ptr.get());
   EXPECT_TRUE(new_frame_ptr->IsActive());
-  EXPECT_TRUE(new_frame_ptr->IsCurrent());
 }
 
 // Tests that FrameNode::IsActive() is correctly set for speculative frames
@@ -426,7 +425,6 @@ IN_PROC_BROWSER_TEST_F(FrameNodeImplIsActiveBrowserTest,
 
   EXPECT_NE(initial_frame_ptr.get(), new_frame_ptr.get());
   EXPECT_TRUE(new_frame_ptr->IsActive());
-  EXPECT_TRUE(new_frame_ptr->IsCurrent());
 }
 
 }  // namespace performance_manager

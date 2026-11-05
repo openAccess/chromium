@@ -4,7 +4,10 @@
 
 #include "chrome/browser/extensions/api/glic_private/glic_private_api.h"
 
+#include <algorithm>
+#include <array>
 #include <optional>
+#include <string_view>
 
 #include "base/base64.h"
 #include "base/json/json_reader.h"
@@ -16,6 +19,7 @@
 #include "chrome/browser/extensions/glic_util.h"
 #include "chrome/browser/glic/actor/glic_actor_policy_checker.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
@@ -44,6 +48,8 @@
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_features.h"
+#include "url/gurl.h"
+#include "url/origin.h"
 
 namespace extensions {
 
@@ -367,8 +373,19 @@ content::RenderFrameHost* GetRfhForDocumentId(
 std::optional<extensions::api::glic_private::ErrorCode> ValidateRenderFrameHost(
     Profile* profile,
     content::RenderFrameHost* rfh) {
-  if (!rfh || !rfh->IsInPrimaryMainFrame()) {
+  // Reject documents outside the primary page, e.g. in prerendered,
+  // back/forward cached or fenced frame pages.
+  if (!rfh || !rfh->GetMainFrame()->IsInPrimaryMainFrame()) {
     return api::glic_private::ErrorCode::kLocalInvalidDocumentId;
+  }
+  // Subframes (e.g. Universal Cart embedded in gemini.google.com) are only
+  // allowed if every ancestor is a Gemini Web frame. Otherwise another page
+  // could embed a Google subframe to make Glic act on that page.
+  for (content::RenderFrameHost* ancestor = rfh->GetParent(); ancestor;
+       ancestor = ancestor->GetParent()) {
+    if (!glic::IsGeminiOrigin(ancestor->GetLastCommittedOrigin())) {
+      return api::glic_private::ErrorCode::kLocalInvalidDocumentId;
+    }
   }
   if (!IsAccountConsistent(IdentityManagerFactory::GetForProfile(profile),
                            *rfh)) {

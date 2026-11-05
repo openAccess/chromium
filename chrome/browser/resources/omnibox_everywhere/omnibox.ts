@@ -7,17 +7,16 @@ import '//resources/cr_components/searchbox/searchbox_input.js';
 import '//resources/cr_components/searchbox/searchbox_compose_button.js';
 import '//resources/cr_components/search/animated_glow.js';
 import '//resources/cr_components/composebox/composebox_file_inputs.js';
-import '//resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
+import '//resources/cr_components/composebox/contextual_entrypoint_button.js';
 import './profile_icon.js';
 
-import {ContextType, recordContextAdditionMethod, recordContextualElementClickedMetric, TabSuggestionsState} from '//resources/cr_components/composebox/common.js';
-import type {ComposeboxState, ContextualUpload, DriveUpload, TabUpload, TabUploadOrigin} from '//resources/cr_components/composebox/common.js';
-import type {ComposeboxFileInputsElement} from '//resources/cr_components/composebox/composebox_file_inputs.js';
-import type {ContextualEntrypointAndMenuElement} from '//resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
+import {recordContextAdditionMethod} from '//resources/cr_components/composebox/common.js';
+import type {ComposeboxState, ContextualUpload} from '//resources/cr_components/composebox/common.js';
 import {HelpBubbleMixinLit} from '//resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
 import {ComposeboxContextAddedMethod, GlowAnimationState} from '//resources/cr_components/search/constants.js';
 import {DragAndDropHandler} from '//resources/cr_components/search/drag_drop_handler.js';
 import type {DragAndDropHost} from '//resources/cr_components/search/drag_drop_host.js';
+import {PlaceholderTextCycler} from '//resources/cr_components/searchbox/placeholder_text_cycler.js';
 import {SearchboxBrowserProxy} from '//resources/cr_components/searchbox/searchbox_browser_proxy.js';
 import type {ComposeClickEventDetail} from '//resources/cr_components/searchbox/searchbox_compose_button.js';
 import type {SearchboxDropdownElement} from '//resources/cr_components/searchbox/searchbox_dropdown.js';
@@ -27,26 +26,35 @@ import {SearchboxMixin} from '//resources/cr_components/searchbox/searchbox_mixi
 import {SearchboxSelectionMixin} from '//resources/cr_components/searchbox/searchbox_selection_mixin.js';
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
 import {WebUiListenerMixinLit} from '//resources/cr_elements/web_ui_listener_mixin_lit.js';
+import {assert} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
-import {DriveDisclaimerStatus} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import type {DriveUploadError, PageCallbackRouter, PageHandlerInterface, TabInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {SelectionLineState} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {AutocompleteMatch, AutocompleteResult, DriveUploadError, OmniboxPopupSelection, PageCallbackRouter, PageHandlerInterface, SelectionDirection, SelectionStep} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {ModelMode, ToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import type {InputState} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
-import type {Url} from '//resources/mojo/url/mojom/url.mojom-webui.js';
+import {MenuSourceType} from '//resources/mojo/ui/base/mojom/menu_source_type.mojom-webui.js';
 
+import {OmniboxEverywhereBrowserProxyImpl} from './browser_proxy.js';
 import {getCss} from './omnibox.css.js';
 import {getHtml} from './omnibox.html.js';
-import {UnboundedMenuManager} from './unbounded_utils.js';
+import type {OmniboxEverywhereProfileIconElement} from './profile_icon.js';
 
+
+// Default hold and cross-fade durations for rotating placeholder hints,
+// matching `NTPComposeboxConfig_PlaceholderConfig` defaults (4000ms hold, 250ms
+// fade).
+const DEFAULT_PLACEHOLDER_CHANGE_INTERVAL_MS = 4000;
+const DEFAULT_PLACEHOLDER_FADE_DURATION_MS = 250;
 
 export interface OmniboxEverywhereOmniboxElement {
   $: {
     input: SearchboxInputElement,
     inputWrapper: HTMLElement,
     matches: SearchboxDropdownElement,
-    fileInputs: ComposeboxFileInputsElement,
+    overflowMenuButton: HTMLButtonElement,
+    profileIcon: OmniboxEverywhereProfileIconElement,
   };
 }
 
@@ -63,7 +71,11 @@ export class OmniboxEverywhereOmniboxElement extends
   }
 
   override get showContextEntrypoint(): boolean {
-    return false;
+    return this.isFuseboxEnabled;
+  }
+
+  override openContextMenu(): void {
+    this.onContextMenuEntrypointClick_();
   }
 
   static get is() {
@@ -80,6 +92,13 @@ export class OmniboxEverywhereOmniboxElement extends
 
   static override get properties() {
     return {
+      multiLineEnabled: {
+        type: Boolean,
+        reflect: true,
+      },
+      singleLineOnInlineAutocomplete: {
+        type: Boolean,
+      },
       virtualFocusEnabled: {
         type: Boolean,
       },
@@ -116,12 +135,14 @@ export class OmniboxEverywhereOmniboxElement extends
       composeButtonEnabled: {type: Boolean, reflect: true},
       profileAvatarUrl_: {type: String},
       isFuseboxEnabled: {type: Boolean, reflect: true},
-      hasUserInput_: {type: Boolean},
+      hasUserInput_: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'has-user-input',
+      },
       ntpRealboxDynamicAiModeButtonEnabled_: {type: Boolean},
       inputState_: {type: Object},
-      tabSuggestions_: {type: Array},
       searchboxLayoutMode: {type: String},
-      tabSuggestionsState_: {type: Number},
       contextManagementInComposeboxEnabled: {type: Boolean},
       isDraggingFile: {
         reflect: true,
@@ -134,9 +155,32 @@ export class OmniboxEverywhereOmniboxElement extends
         type: Boolean,
         reflect: true,
       },
+      isContextMenuOpen: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'is-context-menu-open',
+      },
+      isOverflowMenuOpen: {
+        type: Boolean,
+        reflect: true,
+      },
+      isActive: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'is-active',
+      },
+      isLensHelpBubbleShowing: {type: Boolean},
     };
   }
 
+  accessor isActive: boolean = true;
+  accessor isLensHelpBubbleShowing: boolean = false;
+  override accessor multiLineEnabled: boolean =
+      loadTimeData.getBoolean('searchboxMultiline');
+  // Keeps the input on a single line during inline autocomplete when enabled,
+  // preventing multiline mode from suppressing the suggestions dropdown.
+  override accessor singleLineOnInlineAutocomplete: boolean =
+      loadTimeData.getBoolean('singleLineOnInlineAutocomplete');
   override accessor virtualFocusEnabled: boolean =
       loadTimeData.valueExists('omniboxEverywhereVirtualFocusNavigation') &&
       loadTimeData.getBoolean('omniboxEverywhereVirtualFocusNavigation');
@@ -144,6 +188,8 @@ export class OmniboxEverywhereOmniboxElement extends
   accessor entrypointName: string = 'OmniboxEverywhere';
   accessor isDraggingFile: boolean = false;
   accessor isScreenshotMenuOpen: boolean = false;
+  accessor isContextMenuOpen: boolean = false;
+  accessor isOverflowMenuOpen: boolean = false;
   protected dragAndDropHandler: DragAndDropHandler;
   protected accessor energyEffectAnimationEnabled_: boolean =
       loadTimeData.getBoolean('energyEffectAnimationEnabled');
@@ -156,7 +202,7 @@ export class OmniboxEverywhereOmniboxElement extends
   accessor contextManagementInComposeboxEnabled: boolean =
       loadTimeData.getBoolean('contextManagementInComposeboxEnabled');
   protected accessor searchboxIcon_: string =
-      '//resources/cr_components/searchbox/icons/google_g.svg';
+      '//resources/cr_components/searchbox/icons/google_g_gradient.svg';
   protected accessor searchboxVoiceSearchEnabled_: boolean =
       loadTimeData.getBoolean('searchboxVoiceSearch');
   protected accessor searchboxLensSearchEnabled_: boolean =
@@ -173,11 +219,8 @@ export class OmniboxEverywhereOmniboxElement extends
   protected accessor ntpRealboxDynamicAiModeButtonEnabled_: boolean =
       loadTimeData.getBoolean('ntpRealboxDynamicAiModeButton');
   protected accessor inputState_: InputState|null = null;
-  protected accessor tabSuggestions_: TabInfo[] = [];
   protected accessor searchboxLayoutMode: string =
       loadTimeData.getString('searchboxLayoutMode');
-  protected accessor tabSuggestionsState_: TabSuggestionsState =
-      TabSuggestionsState.NOT_STARTED;
 
   private pageHandler_: PageHandlerInterface;
   private callbackRouter_: PageCallbackRouter;
@@ -185,6 +228,11 @@ export class OmniboxEverywhereOmniboxElement extends
   private inputStateListenerId_: number|null = null;
   private aimPopupEligibilityListenerId_: number|null = null;
   private screenshotMenuClosedListenerId_: number|null = null;
+  private placeholderCycler_: PlaceholderTextCycler|null = null;
+  private currentCyclerTextsKey_: string = '';
+  private currentCyclerInputEl_: HTMLInputElement|HTMLTextAreaElement|null =
+      null;
+  private isPlaceholderCycling_: boolean = false;
 
   constructor() {
     super();
@@ -193,6 +241,29 @@ export class OmniboxEverywhereOmniboxElement extends
     this.callbackRouter_ = browserProxy.callbackRouter;
     this.dragAndDropHandler =
         new DragAndDropHandler(this, this.fileContextEnabled_);
+
+    // Intercept action execution (e.g., "Switch to this tab", Chrome Pedals)
+    // to ensure that the searchbox input and dropdown results are cleared when
+    // an action is triggered. Since Omnibox Everywhere keeps its WebContents
+    // alive in the background across hide/show cycles, un-cleared input would
+    // otherwise linger into subsequent invocations.
+    //
+    // Note: `originalExecuteAction` MUST be dispatched before calling
+    // `clearAutocompleteMatches()`. `clearAutocompleteMatches()` issues
+    // `stopAutocomplete(/*clearResult=*/ true)` which invalidates the result
+    // list in C++ `AutocompleteController`; dispatching `originalExecuteAction`
+    // first guarantees the browser processes the action against valid matches.
+    //
+    // TODO(b/565416805): Consider moving executeAction to the mixin
+    // and overriding from there.
+    const originalExecuteAction =
+        this.pageHandler_.executeAction.bind(this.pageHandler_);
+    this.pageHandler_.executeAction = (...args) => {
+      const result = originalExecuteAction(...args);
+      this.setInputText('');
+      this.clearAutocompleteMatches();
+      return result;
+    };
   }
 
   override connectedCallback() {
@@ -208,10 +279,8 @@ export class OmniboxEverywhereOmniboxElement extends
     this.aimPopupEligibilityListenerId_ =
         this.callbackRouter_.updateAimPopupEligibility.addListener(
             (aiModePrefEnabled: boolean) => {
-              this.composeButtonEnabled = aiModePrefEnabled &&
-                  loadTimeData.getBoolean('searchboxShowComposeEntrypoint');
-              this.isFuseboxEnabled = aiModePrefEnabled &&
-                  loadTimeData.getBoolean('isFuseboxEnabled');
+              this.composeButtonEnabled = aiModePrefEnabled;
+              this.isFuseboxEnabled = aiModePrefEnabled;
             });
     this.screenshotMenuClosedListenerId_ =
         this.callbackRouter_.onScreenshotMenuClosed.addListener(() => {
@@ -241,21 +310,59 @@ export class OmniboxEverywhereOmniboxElement extends
       this.callbackRouter_.removeListener(this.screenshotMenuClosedListenerId_);
       this.screenshotMenuClosedListenerId_ = null;
     }
+    this.placeholderCycler_?.stop();
+    this.isPlaceholderCycling_ = false;
+    this.removeAttribute('has-expanded');
+  }
+
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
+    // `has-expanded` marks that the omnibox has been expanded at least once in
+    // the current session so collapsing back to `!dropdownIsVisible &&
+    // !hasUserInput_` plays the collapse animation on `#bottomControls`
+    // (whereas initial mount does not). `willUpdate()` re-applies
+    // `has-expanded` on every subsequent expansion after it is cleared by
+    // voice search or `onBottomControlsAnimationEnd_()`.
+    if (this.inVoiceSearchMode) {
+      this.removeAttribute('has-expanded');
+    } else if (this.dropdownIsVisible || this.hasUserInput_) {
+      this.toggleAttribute('has-expanded', true);
+    }
   }
 
   override firstUpdated(changedProperties: PropertyValues<this>) {
     super.firstUpdated(changedProperties);
-    this.initialInputScrollHeight = this.$.input.scrollHeight;
     const lensButton =
         this.shadowRoot?.querySelector<HTMLElement>('#lensSearchButton');
     if (lensButton) {
       this.registerHelpBubble(
-          'kOmniboxEverywhereLensButtonElementId', lensButton);
+          'kOmniboxEverywhereLensButtonElementId', lensButton, {
+            onHelpBubbleShown: () => {
+              this.isLensHelpBubbleShowing = true;
+            },
+            onHelpBubbleHidden: () => {
+              this.isLensHelpBubbleShowing = false;
+            },
+          });
     }
+  }
+
+  override updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
+    this.updatePlaceholderCycler_();
   }
 
   focusInput() {
     this.$.input.focus();
+  }
+
+  // Returns the current text value of the Omnibox search input. Used by
+  // `OmniboxEverywhereAppElement` to seamlessly migrate user-typed queries into
+  // the Composebox input field when transitioning into Composebox mode (e.g.
+  // when clicking a tool or attaching a tab from the '+' context menu) so typed
+  // text is never lost.
+  getInputText(): string {
+    return this.$.input?.getInputValue() || '';
   }
 
   setInputText(text: string) {
@@ -317,17 +424,83 @@ export class OmniboxEverywhereOmniboxElement extends
     this.pageHandler_.onFocusChanged(true);
   }
 
-  isInputEmpty(): boolean {
-    // If this is called before first render, the input element will not exist.
-    if (!this.shadowRoot?.querySelector('#input') || !this.$.input) {
-      return true;
-    }
-    return !this.$.input.getInputValue().trim();
+  override stepCyclesSelection(
+      _result: AutocompleteResult|null, _from: OmniboxPopupSelection,
+      _direction: SelectionDirection, _step: SelectionStep): boolean {
+    // In Omnibox, cycle within the popup matches rather than exiting.
+    return false;
   }
 
-  protected showVoiceAndLensButtons_(isEnabled: boolean): boolean {
-    return isEnabled && this.isInputEmpty() &&
-        !(this.dropdownIsVisible && this.composeButtonEnabled);
+  protected isVoiceSearchVirtualFocused_(): boolean {
+    return this.selection.state ===
+        SelectionLineState.kFocusedButtonVoiceSearch;
+  }
+
+  protected isLensSearchVirtualFocused_(): boolean {
+    return this.selection.state === SelectionLineState.kFocusedButtonLensSearch;
+  }
+
+  override getAvailableSelections(result: AutocompleteResult|null):
+      OmniboxPopupSelection[] {
+    const available = super.getAvailableSelections(result);
+    if (!result || available.length === 0) {
+      return available;
+    }
+    if (this.showVoiceSearchButton_()) {
+      available.push({
+        line: -1,
+        state: SelectionLineState.kFocusedButtonVoiceSearch,
+        actionIndex: 0,
+      });
+    }
+    if (this.showLensSearchButton_()) {
+      available.push({
+        line: -1,
+        state: SelectionLineState.kFocusedButtonLensSearch,
+        actionIndex: 0,
+      });
+    }
+    return available;
+  }
+
+  override getSelectionA11yLabel(
+      match: AutocompleteMatch|null, selection: OmniboxPopupSelection): string {
+    switch (selection.state) {
+      case SelectionLineState.kFocusedButtonVoiceSearch:
+        return this.i18n('voiceSearchButtonLabel');
+      case SelectionLineState.kFocusedButtonLensSearch:
+        return this.i18n('lensSearchButtonLabel');
+      default:
+        return super.getSelectionA11yLabel(match, selection);
+    }
+  }
+
+  override handleVirtualFocusEnter(e: KeyboardEvent): boolean {
+    if (this.isVoiceSearchVirtualFocused_()) {
+      e.preventDefault();
+      const button =
+          this.shadowRoot.querySelector<HTMLElement>('#voiceSearchButton');
+      assert(button);
+      button.click();
+      return true;
+    }
+    if (this.isLensSearchVirtualFocused_()) {
+      e.preventDefault();
+      const button =
+          this.shadowRoot.querySelector<HTMLElement>('#lensSearchButton');
+      assert(button);
+      button.click();
+      return true;
+    }
+    return super.handleVirtualFocusEnter(e);
+  }
+
+  protected showVoiceSearchButton_(): boolean {
+    return this.searchboxVoiceSearchEnabled_;
+  }
+
+  protected showLensSearchButton_(): boolean {
+    return this.isFuseboxEnabled && this.searchboxLensSearchEnabled_;
   }
 
   protected computePlaceholderText_(): string {
@@ -338,6 +511,79 @@ export class OmniboxEverywhereOmniboxElement extends
       return this.i18n('searchBoxHintAskOrType');
     }
     return this.i18n('searchBoxHint');
+  }
+
+  protected onSearchboxInputEmptyChanged_(e: CustomEvent<{value: boolean}>) {
+    // `SearchboxMixin` clears `<cr-searchbox-input>` directly via
+    // `getInputElement().setInput({text: '', inline: ''})` on `Escape` and
+    // `focusout` without firing `searchbox-input-text-updated`. Reset
+    // `hasUserInput_` whenever the input becomes empty so the omnibox does not
+    // stay stuck in the 2-line expanded `[has-user-input]` state.
+    if (e.detail.value) {
+      this.hasUserInput_ = false;
+    }
+  }
+
+  private computeCyclingPlaceholderTexts_(): string[] {
+    if (this.placeholderText || !this.isFuseboxEnabled) {
+      return [];
+    }
+    const texts: string[] = [this.i18n('searchBoxHintAskOrType')];
+    if (this.showLensSearchButton_()) {
+      texts.push(this.i18n('searchBoxHintLens'));
+    }
+    texts.push(this.i18n('searchBoxHintFileOrImage'));
+    if (this.canAddFileContext_()) {
+      texts.push(this.i18n('searchBoxHintDragAndDrop'));
+    }
+    return texts.filter(Boolean);
+  }
+
+  private updatePlaceholderCycler_() {
+    const inputEl =
+        this.$.input?.shadowRoot
+            ?.querySelector<HTMLInputElement|HTMLTextAreaElement>('#input') ??
+        null;
+    if (!inputEl) {
+      this.$.input?.updateComplete.then(() => {
+        if (this.isConnected) {
+          this.updatePlaceholderCycler_();
+        }
+      });
+      return;
+    }
+
+    const texts = this.computeCyclingPlaceholderTexts_();
+    const shouldCycle = texts.length > 1 && this.isActive &&
+        !this.hasUserInput_ && !this.inKeywordMode && !this.inVoiceSearchMode;
+
+    if (!shouldCycle) {
+      if (this.isPlaceholderCycling_) {
+        this.placeholderCycler_?.stop();
+        this.isPlaceholderCycling_ = false;
+      }
+      inputEl.placeholder = this.inKeywordMode ?
+          (this.inputKeywordModel?.placeholder || '') :
+          this.computePlaceholderText_();
+      return;
+    }
+
+    const textsKey = texts.join('\n');
+    if (!this.placeholderCycler_ || this.currentCyclerTextsKey_ !== textsKey ||
+        this.currentCyclerInputEl_ !== inputEl) {
+      this.placeholderCycler_?.stop();
+      this.placeholderCycler_ = new PlaceholderTextCycler(
+          inputEl, texts, DEFAULT_PLACEHOLDER_CHANGE_INTERVAL_MS,
+          DEFAULT_PLACEHOLDER_FADE_DURATION_MS);
+      this.currentCyclerTextsKey_ = textsKey;
+      this.currentCyclerInputEl_ = inputEl;
+      this.isPlaceholderCycling_ = false;
+    }
+
+    if (!this.isPlaceholderCycling_) {
+      this.isPlaceholderCycling_ = true;
+      this.placeholderCycler_.start();
+    }
   }
 
   protected onSearchboxInputTextUpdated_(
@@ -355,10 +601,32 @@ export class OmniboxEverywhereOmniboxElement extends
         new Event('open-voice-search', {bubbles: true, composed: true}));
   }
 
+  private wasScreenshotMenuOpenOnPointerDown_: boolean = false;
+
+  protected onLensSearchPointerdown_(e: PointerEvent) {
+    if (e.button !== 0) {
+      return;
+    }
+    this.wasScreenshotMenuOpenOnPointerDown_ = this.isScreenshotMenuOpen;
+  }
+
+  protected onLensSearchPointercancel_() {
+    this.wasScreenshotMenuOpenOnPointerDown_ = false;
+  }
+
   protected onLensSearchClick_(e: Event) {
+    const wasOpen =
+        this.wasScreenshotMenuOpenOnPointerDown_ || this.isScreenshotMenuOpen;
+    this.wasScreenshotMenuOpenOnPointerDown_ = false;
+    if (wasOpen) {
+      this.isScreenshotMenuOpen = false;
+      return;
+    }
     this.notifyHelpBubbleAnchorActivated(
         'kOmniboxEverywhereLensButtonElementId');
+    this.hideHelpBubble('kOmniboxEverywhereLensButtonElementId');
     this.isScreenshotMenuOpen = true;
+    this.finishAnimations_();
     const anchor = e.currentTarget as HTMLElement;
     const rect = anchor.getBoundingClientRect();
     this.pageHandler_.showScreenshotMenu({
@@ -369,57 +637,51 @@ export class OmniboxEverywhereOmniboxElement extends
     });
   }
 
-  protected async onOpenDriveUpload_() {
-    // Check if the user has accepted the Drive disclaimer. This handles
-    // the edge case where a user sees the drive option in the menu, but
-    // then revokes Drive permissions.
-    const {status} = await this.pageHandler().getDriveDisclaimerStatus();
-    if (status === DriveDisclaimerStatus.kRestricted) {
+  private wasOverflowMenuOpenOnPointerDown_: boolean = false;
+  private overflowMenuPointerType_: string = '';
+
+  protected onOverflowMenuPointerdown_(e: PointerEvent) {
+    if (e.button !== 0) {
       return;
     }
-
-    const {response} = await this.pageHandler().onDriveUploadClicked();
-
-    const driveUploads: DriveUpload[] =
-        response.files.map(file => ({
-                             token: file.token,
-                             mimeType: file.mimeType,
-                             fileName: file.fileName,
-                             thumbnailUrl: file.thumbnailUrl ?? null,
-                             iconUrl: file.iconUrl ?? null,
-                           }));
-
-    recordContextualElementClickedMetric(
-        this.composeboxSource, 'ClassicPopup', ContextType.DRIVE);
-
-    if (driveUploads.length > 0 || response.error !== null) {
-      this.openComposebox_(
-          driveUploads, ToolMode.kUnspecified, ModelMode.kUnspecified,
-          response.error ?? undefined);
-    }
+    e.preventDefault();
+    this.wasOverflowMenuOpenOnPointerDown_ = this.isOverflowMenuOpen;
+    this.overflowMenuPointerType_ = e.pointerType;
   }
 
-  protected onAddTabContext_(e: CustomEvent<{
-    id: number,
-    title: string,
-    url: Url,
-    delayUpload: boolean,
-    origin: TabUploadOrigin,
-  }>) {
-    const tabUpload: TabUpload = {
-      tabId: e.detail.id,
-      title: e.detail.title,
-      url: e.detail.url,
-      delayUpload: e.detail.delayUpload,
-      origin: e.detail.origin,
-    };
-    recordContextualElementClickedMetric(
-        this.composeboxSource, 'ClassicPopup', ContextType.TAB);
-    const contextMenu =
-        this.shadowRoot?.querySelector<ContextualEntrypointAndMenuElement>(
-            '#context');
-    contextMenu?.closeMenu();
-    this.openComposebox_([tabUpload]);
+  protected onOverflowMenuPointercancel_() {
+    this.wasOverflowMenuOpenOnPointerDown_ = false;
+  }
+
+  protected onOverflowMenuClick_(e: MouseEvent) {
+    // A click with `detail` 0 wasn't produced by a pointer: it came from the
+    // keyboard (Enter/Space) or a programmatic click(). Telling the browser
+    // lets a keyboard-opened menu select its first item.
+    const sourceType = e.detail === 0             ? MenuSourceType.kKeyboard :
+        this.overflowMenuPointerType_ === 'touch' ? MenuSourceType.kTouch :
+                                                    MenuSourceType.kMouse;
+    const wasOpen =
+        this.wasOverflowMenuOpenOnPointerDown_ || this.isOverflowMenuOpen;
+    this.wasOverflowMenuOpenOnPointerDown_ = false;
+    this.overflowMenuPointerType_ = '';
+    if (wasOpen) {
+      // The click that dismissed the native menu should not reopen it.
+      this.isOverflowMenuOpen = false;
+      return;
+    }
+    this.isOverflowMenuOpen = true;
+    this.finishAnimations_();
+    // `rect` is in WebUI viewport coordinates (CSS DIPs); the browser converts
+    // it to screen coordinates to anchor the native menu.
+    const rect = this.$.overflowMenuButton.getBoundingClientRect();
+    OmniboxEverywhereBrowserProxyImpl.getInstance().handler.showOverflowMenu(
+        {
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+        sourceType);
   }
 
   protected onFileChange_(e: CustomEvent<{files: FileList}>) {
@@ -431,10 +693,39 @@ export class OmniboxEverywhereOmniboxElement extends
     this.processFiles_(e.detail.files, ComposeboxContextAddedMethod.COPY_PASTE);
   }
 
+  // Files are attached as AI Mode context, so they can only be added when AI
+  // Mode is available and policy allows sharing context with search.
+  protected canAddFileContext_(): boolean {
+    return this.fileContextEnabled_ && this.isFuseboxEnabled;
+  }
+
+  protected onInputWrapperDragover_(e: DragEvent) {
+    this.dragAndDropHandler.handleDragOver(e);
+    // Keep calling preventDefault() via `handleDragOver` so Blink treats the
+    // drag as handled by the page (instead of navigating the WebContents on
+    // drop), and set `dropEffect = 'none'` when file context cannot be added so
+    // the OS shows the no-drop cursor instead of the copy (+) cursor.
+    if (!this.canAddFileContext_() && e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'none';
+    }
+  }
+
+  // The drag-and-drop handler stays enabled when AI Mode is unavailable, so it
+  // keeps calling preventDefault() on drops and a drop can't navigate this
+  // WebContents to the file. Hide its glow in that case, since the drop does
+  // nothing.
+  protected computeGlowAnimationState_(): GlowAnimationState {
+    if (this.animationState === GlowAnimationState.DRAGGING &&
+        !this.canAddFileContext_()) {
+      return GlowAnimationState.NONE;
+    }
+    return this.animationState;
+  }
+
   protected processFiles_(
       files: FileList|null,
       contextAdditionMethod: ComposeboxContextAddedMethod) {
-    if (!files || files.length === 0) {
+    if (!files || files.length === 0 || !this.canAddFileContext_()) {
       return;
     }
     recordContextAdditionMethod(contextAdditionMethod, 'OmniboxEverywhere');
@@ -490,66 +781,62 @@ export class OmniboxEverywhereOmniboxElement extends
     }
   }
 
-  protected onContextMenuEntrypointClick_() {
+  protected onContextMenuEntrypointClick_(e?: CustomEvent<{
+    anchorRect?: {x: number, y: number, width: number, height: number},
+  }>) {
     this.pageHandler().activateMetricsFunnel('PlusButton');
-  }
-
-  protected async refreshTabSuggestions_(forceRefresh: boolean = false) {
-    if (this.tabSuggestionsState_ === TabSuggestionsState.LOADING ||
-        (this.tabSuggestionsState_ === TabSuggestionsState.LOADED &&
-         !forceRefresh)) {
-      return;
-    }
-    this.tabSuggestionsState_ = TabSuggestionsState.LOADING;
-    try {
-      const {tabs} = await this.pageHandler_.getRecentTabs();
-      this.tabSuggestions_ = [...tabs];
-      this.tabSuggestionsState_ = TabSuggestionsState.LOADED;
-    } finally {
-      if (this.tabSuggestionsState_ === TabSuggestionsState.LOADING) {
-        this.tabSuggestionsState_ = TabSuggestionsState.NOT_STARTED;
-      }
+    this.isContextMenuOpen = true;
+    this.finishAnimations_();
+    // `anchorRect` is in WebUI viewport coordinates (CSS DIPs). Forward the
+    // full bounding box so C++ can translate it to screen coordinates and
+    // position the native context menu.
+    const rect = e?.detail?.anchorRect ||
+        this.shadowRoot?.querySelector('#context')?.getBoundingClientRect();
+    if (rect) {
+      OmniboxEverywhereBrowserProxyImpl.getInstance()
+          .handler.showContextActionMenu({
+            x: Math.round(rect.x),
+            y: Math.round(rect.y),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          });
     }
   }
 
-  private unboundedMenuManager_ = new UnboundedMenuManager(
-      () => this.shadowRoot?.querySelector('#context') ?? null);
-  protected onContextMenuOpened_() {
-    this.refreshTabSuggestions_(/*forceRefresh=*/ true);
-    this.unboundedMenuManager_.onContextMenuOpened();
+  // `#bottomControls` animates on both expand (`loomniboxBottomControlsExpand`)
+  // and collapse (`loomniboxTopControlsEnter`). Clear `has-expanded` only when
+  // the collapse animation finishes (`!dropdownIsVisible && !hasUserInput_`) so
+  // the 1-line pill is back at rest until the next expansion.
+  protected onBottomControlsAnimationEnd_(e: AnimationEvent) {
+    if (e.target === e.currentTarget &&
+        e.animationName === 'loomniboxTopControlsEnter' &&
+        !this.dropdownIsVisible && !this.hasUserInput_) {
+      this.removeAttribute('has-expanded');
+    }
   }
 
-  protected onContextMenuClosed_() {
-    this.tabSuggestionsState_ = TabSuggestionsState.NOT_STARTED;
-    this.unboundedMenuManager_.onContextMenuClosed();
+  // Fast-forwards active shadow root animations so native menu anchor rects are
+  // sampled at their final resting positions.
+  private finishAnimations_() {
+    this.shadowRoot?.getAnimations().forEach(a => a.finish());
+  }
+
+  onContextMenuClosed() {
+    this.isContextMenuOpen = false;
+  }
+
+  onOverflowMenuClosed() {
+    this.isOverflowMenuOpen = false;
   }
 
   override onInputWrapperFocusout(e: FocusEvent) {
-    if (this.unboundedMenuManager_.isDialogOpen() ||
-        this.isScreenshotMenuOpen) {
+    // Native menus take focus from the WebContents while open; keep the
+    // searchbox state (input, matches) intact until they close.
+    if (this.isContextMenuOpen || this.isOverflowMenuOpen ||
+        this.$.profileIcon.isMenuOpen) {
       return;
     }
     super.onInputWrapperFocusout(e);
-  }
-
-  protected onRequestTabSuggestionsLoad() {
-    this.refreshTabSuggestions_(/*forceRefresh=*/ true);
-  }
-
-  protected onToolClick_(e: CustomEvent<{toolMode: ToolMode}>) {
-    this.openComposeboxWithMode_(e.detail.toolMode);
-  }
-
-  protected onDeepSearchClick_() {
-    this.openComposeboxWithMode_(ToolMode.kDeepSearch);
-  }
-
-  protected onCreateImageClick_() {
-    this.openComposeboxWithMode_(ToolMode.kImageGen);
-  }
-
-  protected onModelClick_(e: CustomEvent<{model: ModelMode}>) {
-    this.openComposeboxWithMode_(ToolMode.kUnspecified, e.detail.model);
   }
 }
 

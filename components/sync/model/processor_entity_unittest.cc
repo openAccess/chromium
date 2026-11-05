@@ -6,10 +6,16 @@
 
 #include <utility>
 
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/hash/hash.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/protobuf_matchers.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "components/sync/base/client_tag_hash.h"
 #include "components/sync/base/collaboration_id.h"
@@ -26,6 +32,7 @@
 #include "components/version_info/version_info.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 namespace syncer {
 
@@ -33,6 +40,7 @@ namespace {
 
 using base::test::EqualsProto;
 using testing::Not;
+using testing::Optional;
 
 constexpr char kKey[] = "key";
 constexpr char kId[] = "id";
@@ -40,6 +48,9 @@ constexpr char kName[] = "name";
 constexpr char kValue1[] = "value1";
 constexpr char kValue2[] = "value2";
 constexpr char kValue3[] = "value3";
+constexpr char kUploadUrl[] = "https://example.com/upload";
+constexpr char kFilePath[] = "/tmp/attachment.bin";
+constexpr char kTemporaryBlobId[] = "temp_blob_abc";
 
 sync_pb::EntitySpecifics GenerateSpecifics(const std::string& name,
                                            const std::string& value) {
@@ -169,6 +180,14 @@ class ProcessorEntityTest : public ::testing::Test {
     return ProcessorEntity::CreateNew("", hash(), "", ctime_);
   }
 
+  std::unique_ptr<ProcessorEntity> CreateUnsynced() {
+    std::unique_ptr<ProcessorEntity> entity = CreateNew();
+    entity->RecordLocalUpdate(GenerateEntityData(hash(), kName, kValue1),
+                              /*trimmed_specifics=*/{},
+                              /*unique_position=*/std::nullopt);
+    return entity;
+  }
+
   std::unique_ptr<ProcessorEntity> CreateSynced() {
     std::unique_ptr<ProcessorEntity> entity = CreateNew();
     UpdateResponseData update =
@@ -198,7 +217,25 @@ class ProcessorEntityTest : public ::testing::Test {
   const ClientTagHash& hash() const { return hash_; }
   base::Time ctime() const { return ctime_; }
 
+  base::FilePath CreateStagingFile() {
+    if (!temp_dir_.IsValid()) {
+      CHECK(temp_dir_.CreateUniqueTempDir());
+    }
+    base::FilePath file_path;
+    CHECK(base::CreateTemporaryFileInDir(temp_dir_.GetPath(), &file_path));
+    return file_path;
+  }
+
+  void FlushThreadPoolTasks() {
+    base::test::TestFuture<void> future;
+    base::ThreadPoolInstance::Get()->FlushAsyncForTesting(
+        future.GetSequenceBoundCallback());
+    EXPECT_TRUE(future.Wait());
+  }
+
  private:
+  base::test::TaskEnvironment task_environment_;
+  base::ScopedTempDir temp_dir_;
   const base::Time ctime_;
   const ClientTagHash hash_{ClientTagHash::FromHashed("hash")};
 };
@@ -878,7 +915,6 @@ TEST_F(ProcessorEntityTest, LocalCreationConflictsWithServerTombstone) {
 
   // Generate a commit request. The server ID should have been reused from the
   // otherwise ignored update.
-  const sync_pb::EntityMetadata metadata_v1 = entity->metadata();
   CommitRequestData request;
   entity->InitializeCommitRequestData(&request);
   EXPECT_EQ(kId, request.entity->id);
@@ -1031,6 +1067,145 @@ TEST_F(ProcessorEntityTest, ShouldPopulateCollaborationForTombstones) {
   ASSERT_TRUE(request.entity->collaboration_metadata.has_value());
   EXPECT_EQ(request.entity->collaboration_metadata->collaboration_id(),
             CollaborationId("collaboration"));
+}
+
+// Verifies that `ProcessorEntity` holds back commit requests while an
+// attachment upload is pending, deletes the staging file and populates
+// `EntityData::attachment_metadata` once the upload completes.
+TEST_F(ProcessorEntityTest, ShouldHoldBackCommitWhileAttachmentUploadPending) {
+  std::unique_ptr<ProcessorEntity> entity = CreateUnsynced();
+  const base::FilePath file_path = CreateStagingFile();
+
+  // Queuing the upload and recording the resumable session URL both hold back
+  // the entity from commit requests.
+  entity->RecordAttachmentUploadQueued(file_path);
+  EXPECT_FALSE(entity->RequiresCommitRequest());
+
+  entity->RecordAttachmentUploadResumeUrlReceived(GURL(kUploadUrl));
+  EXPECT_FALSE(entity->RequiresCommitRequest());
+
+  // Completing the upload unblocks the commit request and deletes the staging
+  // file asynchronously on a background sequence.
+  entity->RecordAttachmentUploadCompleted(kTemporaryBlobId);
+  EXPECT_TRUE(entity->RequiresCommitRequest());
+  FlushThreadPoolTasks();
+  EXPECT_FALSE(base::PathExists(file_path));
+
+  CommitRequestData request;
+  entity->InitializeCommitRequestData(&request);
+  EXPECT_THAT(request.entity->attachment_metadata,
+              Optional(AttachmentMetadata::ForNew(kTemporaryBlobId)));
+}
+
+// Verifies that `RecordAttachmentUploadFailed()`,
+// `ClearPendingAttachmentUpload()`, `RecordLocalDeletion()`, and
+// `RecordForcedRemoteUpdate()` clear the pending upload and delete the staging
+// file on disk, with `RecordAttachmentUploadFailed()` not invoking the
+// already-completed upload's cancellation callback.
+TEST_F(ProcessorEntityTest,
+       ShouldCancelPendingAttachmentUploadAndDeleteStagingFile) {
+  std::unique_ptr<ProcessorEntity> entity = CreateUnsynced();
+  const base::FilePath file_path0 = CreateStagingFile();
+
+  // Recording a failed upload clears the in-flight state, cancels the pending
+  // upload, unblocks commit requests, and deletes the staging file without
+  // invoking the already-finished upload's cancellation callback.
+  base::test::TestFuture<void> unused_cancel_future;
+  entity->RecordAttachmentUploadQueued(file_path0);
+  EXPECT_FALSE(entity->HasAttachmentUploadInProgress());
+  entity->RecordAttachmentUploadStarted(unused_cancel_future.GetCallback());
+  EXPECT_TRUE(entity->HasAttachmentUploadInProgress());
+  entity->RecordAttachmentUploadFailed();
+  FlushThreadPoolTasks();
+  EXPECT_FALSE(entity->HasAttachmentUploadInProgress());
+  EXPECT_FALSE(unused_cancel_future.IsReady());
+  EXPECT_FALSE(entity->HasPendingAttachmentUpload());
+  EXPECT_TRUE(entity->RequiresCommitRequest());
+  EXPECT_FALSE(base::PathExists(file_path0));
+
+  // Cancelling an active upload invokes the registered cancel callback, clears
+  // `pending_upload`, and deletes the staging file on a background sequence.
+  const base::FilePath file_path1 = CreateStagingFile();
+  base::test::TestFuture<void> cancel_future;
+  entity->RecordAttachmentUploadQueued(file_path1);
+  entity->RecordAttachmentUploadStarted(cancel_future.GetCallback());
+  entity->ClearPendingAttachmentUpload();
+  FlushThreadPoolTasks();
+
+  EXPECT_TRUE(cancel_future.IsReady());
+  EXPECT_FALSE(entity->HasPendingAttachmentUpload());
+  EXPECT_FALSE(entity->HasAttachmentUploadInProgress());
+  EXPECT_FALSE(base::PathExists(file_path1));
+
+  // `RecordForcedRemoteUpdate()` also cancels any pending upload and deletes
+  // its staging file.
+  const base::FilePath file_path2 = CreateStagingFile();
+  base::test::TestFuture<void> cancel_future2;
+  entity->RecordAttachmentUploadQueued(file_path2);
+  entity->RecordAttachmentUploadStarted(cancel_future2.GetCallback());
+  entity->RecordForcedRemoteUpdate(
+      GenerateUpdate(*entity, hash(), kId, kName, kValue2, base::Time::Now(),
+                     /*version=*/1),
+      /*trimmed_specifics=*/{}, /*unique_position=*/std::nullopt);
+  FlushThreadPoolTasks();
+
+  EXPECT_TRUE(cancel_future2.IsReady());
+  EXPECT_FALSE(entity->HasPendingAttachmentUpload());
+  EXPECT_FALSE(base::PathExists(file_path2));
+}
+
+// Verifies that `SetCommitData()` populates `EntityData::attachment_metadata`
+// from `EntityMetadata` when a completed `temporary_blob_id` is present.
+TEST_F(ProcessorEntityTest, ShouldPopulateAttachmentInSetCommitData) {
+  std::unique_ptr<ProcessorEntity> entity = CreateUnsynced();
+  entity->RecordAttachmentUploadQueued(
+      base::FilePath::FromUTF8Unsafe(kFilePath));
+  entity->RecordAttachmentUploadResumeUrlReceived(GURL(kUploadUrl));
+  entity->RecordAttachmentUploadCompleted(kTemporaryBlobId);
+
+  // Restore from persisted `EntityMetadata` so cached `commit_data_` is empty
+  // and must be populated via `SetCommitData()` (simulating browser restart).
+  entity = RestoreFromMetadata(entity->metadata());
+  entity->SetCommitData(GenerateEntityData(hash(), kName, kValue1));
+
+  EXPECT_THAT(entity->GetCommitDataForTesting().attachment_metadata,
+              Optional(AttachmentMetadata::ForNew(kTemporaryBlobId)));
+}
+
+// Verifies that `PauseAttachmentUpload()` runs the registered abort callback,
+// clears the in-flight upload state, and preserves the pending upload metadata,
+// staging file on disk, and commit holdback so the upload can be resumed later.
+TEST_F(ProcessorEntityTest, ShouldPauseAttachmentUploadAndRetainPendingState) {
+  // Queue an attachment upload, record its resumable upload URL, and mark the
+  // upload as in flight with an abort callback.
+  std::unique_ptr<ProcessorEntity> entity = CreateUnsynced();
+  const base::FilePath file_path = CreateStagingFile();
+  base::test::TestFuture<void> abort_future;
+  entity->RecordAttachmentUploadQueued(file_path);
+  entity->RecordAttachmentUploadResumeUrlReceived(GURL(kUploadUrl));
+  entity->RecordAttachmentUploadStarted(abort_future.GetCallback());
+  ASSERT_TRUE(entity->HasAttachmentUploadInProgress());
+
+  // Pausing the upload runs the abort callback and clears in-flight state while
+  // keeping `pending_upload`, the staging file on disk, and the commit holdback.
+  entity->PauseAttachmentUpload();
+  FlushThreadPoolTasks();
+
+  EXPECT_TRUE(abort_future.IsReady());
+  EXPECT_FALSE(entity->HasAttachmentUploadInProgress());
+  EXPECT_TRUE(entity->HasPendingAttachmentUpload());
+  EXPECT_FALSE(entity->RequiresCommitRequest());
+  EXPECT_TRUE(base::PathExists(file_path));
+  EXPECT_EQ(
+      entity->metadata().attachment_metadata().pending_upload().upload_url(),
+      kUploadUrl);
+
+  // Calling `PauseAttachmentUpload()` again when no upload is in progress is a
+  // no-op and retains the pending upload metadata and staging file.
+  entity->PauseAttachmentUpload();
+  FlushThreadPoolTasks();
+  EXPECT_TRUE(entity->HasPendingAttachmentUpload());
+  EXPECT_TRUE(base::PathExists(file_path));
 }
 
 }  // namespace syncer

@@ -19,8 +19,9 @@ class PLATFORM_EXPORT ScopedRasterTimer {
 
  public:
   class Host;
-  // raster_interface: pass null if rasterization is not gpu-accelerated
-  ScopedRasterTimer(gpu::raster::RasterInterface* raster_interface, Host& host);
+  // `raster_interface` and `host`: pass null if rasterization is not
+  // gpu-accelerated (`host` is only used when `raster_interface` is non-null).
+  ScopedRasterTimer(gpu::raster::RasterInterface* raster_interface, Host* host);
   ~ScopedRasterTimer();
 
   // Histogram names.
@@ -59,11 +60,12 @@ class PLATFORM_EXPORT ScopedRasterTimer {
   };
 
  public:
-  // Classes with methods that use ScopedRasterTimer must inherit
-  // ScopedRasterTimer::Host
+  // Classes with methods that use ScopedRasterTimer with GPU rasterization
+  // must inherit ScopedRasterTimer::Host.
   class PLATFORM_EXPORT Host {
    public:
     void CheckGpuTimers(gpu::raster::RasterInterface* raster_interface);
+    void ClearGpuTimers() { gpu_timers_.clear(); }
     void AddGpuTimer(std::unique_ptr<AsyncGpuRasterTimer>);
 
    private:
@@ -76,7 +78,7 @@ class PLATFORM_EXPORT ScopedRasterTimer {
   gpu::raster::RasterInterface* const raster_interface_;
   std::optional<base::ElapsedTimer> timer_;
   std::unique_ptr<AsyncGpuRasterTimer> gpu_timer_;
-  Host& host_;
+  Host* const host_;
 };
 
 }  // namespace blink

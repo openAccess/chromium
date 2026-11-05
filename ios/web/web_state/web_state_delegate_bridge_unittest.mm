@@ -18,6 +18,7 @@
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #import "ui/base/page_transition_types.h"
 
 // Class which conforms to CRWWebStateDelegate protocol, but does not implement
@@ -26,6 +27,25 @@
 @end
 
 @implementation TestEmptyWebStateDelegate
+@end
+
+// Class which conforms to CRWWebStateDelegate protocol and only implements
+// `webState:didRequestHTTPAuthForProtectionSpace...`.
+@interface TestHTTPAuthOnlyWebStateDelegate : NSObject <CRWWebStateDelegate>
+@property(nonatomic, readonly) BOOL httpAuthenticationRequested;
+@end
+
+@implementation TestHTTPAuthOnlyWebStateDelegate
+- (void)webState:(web::WebState*)webState
+    didRequestHTTPAuthForProtectionSpace:(NSURLProtectionSpace*)protectionSpace
+                      proposedCredential:(NSURLCredential*)proposedCredential
+                       completionHandler:(void (^)(NSString* username,
+                                                   NSString* password))handler {
+  _httpAuthenticationRequested = YES;
+  if (handler) {
+    handler(@"http_user", @"http_password");
+  }
+}
 @end
 
 namespace web {
@@ -84,7 +104,8 @@ TEST_F(WebStateDelegateBridgeTest, OpenURLFromWebState) {
   web::WebState::OpenURLParams params(
       GURL("https://chromium.test/"), GURL("https://virtual.chromium.test/"),
       web::Referrer(GURL("https://chromium2.test/"), ReferrerPolicyNever),
-      WindowOpenDisposition::NEW_WINDOW, ui::PAGE_TRANSITION_FORM_SUBMIT, true);
+      ui::mojom::WindowOpenDisposition::kNewWindow,
+      ui::PAGE_TRANSITION_FORM_SUBMIT, true);
   EXPECT_EQ(&fake_web_state_,
             bridge_->OpenURLFromWebState(&fake_web_state_, params));
 
@@ -164,6 +185,40 @@ TEST_F(WebStateDelegateBridgeTest,
   EXPECT_TRUE(callback_called);
 }
 
+// Tests `RequestGeolocationPermission` forwarding.
+TEST_F(WebStateDelegateBridgeTest, RequestGeolocationPermission) {
+  __block bool callback_called = false;
+  EXPECT_FALSE([delegate_ geolocationRequestHandled]);
+  EXPECT_FALSE([delegate_ webState]);
+  const GURL origin("https://example.com");
+  bridge_->RequestGeolocationPermission(
+      &fake_web_state_, origin, ^(PermissionDecision decision) {
+        EXPECT_EQ(decision, PermissionDecisionGrant);
+        callback_called = true;
+      });
+  EXPECT_TRUE([delegate_ geolocationRequestHandled]);
+  EXPECT_EQ(origin, [delegate_ lastRequestedGeolocationOrigin]);
+  EXPECT_EQ(&fake_web_state_, [delegate_ webState]);
+  EXPECT_TRUE(callback_called);
+}
+
+// Tests `RequestGeolocationPermission` forwarding to delegate which does not
+// implement `webState:requestGeolocation:decisionHandler:` method.
+TEST_F(WebStateDelegateBridgeTest,
+       RequestGeolocationPermissionWithNoDelegateMethod) {
+  __block bool callback_called = false;
+  const GURL origin("https://example.com");
+  empty_delegate_bridge_->RequestGeolocationPermission(
+      nullptr, origin, ^(PermissionDecision decision) {
+        // Default decision `PermissionDecisionShowDefaultPrompt` will be used
+        // when delegate doesn't implement
+        // `webState:requestGeolocation:decisionHandler:` method.
+        EXPECT_EQ(decision, PermissionDecisionShowDefaultPrompt);
+        callback_called = true;
+      });
+  EXPECT_TRUE(callback_called);
+}
+
 // Tests `OnAuthRequired` forwarding.
 TEST_F(WebStateDelegateBridgeTest, OnHTTPAuthRequired) {
   EXPECT_FALSE([delegate_ httpAuthenticationRequested]);
@@ -204,6 +259,79 @@ TEST_F(WebStateDelegateBridgeTest,
   empty_delegate_bridge_->OnAuthRequired(&fake_web_state_, nil,
                                          std::move(callback));
   EXPECT_TRUE(callback_called);
+}
+
+// Tests `OnProxyAuthChallenge` forwarding.
+TEST_F(WebStateDelegateBridgeTest, OnProxyAuthChallenge) {
+  if (@available(iOS 18.1, *)) {
+    EXPECT_FALSE([delegate_ proxyAuthenticationRequested]);
+    EXPECT_FALSE([delegate_ webState]);
+    NSURLProtectionSpace* protection_space =
+        [[NSURLProtectionSpace alloc] init];
+    NSURLCredential* credential = [[NSURLCredential alloc] init];
+    NSURLResponse* failure_response = [[NSURLResponse alloc] init];
+    __block bool callback_called = false;
+    WebStateDelegate::ProxyAuthCallback callback = base::BindOnce(
+        ^(NSString* username, NSString* password, NSError* error) {
+          EXPECT_NSEQ(@"user", username);
+          EXPECT_NSEQ(@"password", password);
+          EXPECT_FALSE(error);
+          callback_called = true;
+        });
+    bridge_->OnProxyAuthChallenge(&fake_web_state_, protection_space,
+                                  credential, failure_response,
+                                  std::move(callback));
+    EXPECT_TRUE([delegate_ proxyAuthenticationRequested]);
+    EXPECT_EQ(&fake_web_state_, [delegate_ webState]);
+    EXPECT_TRUE(callback_called);
+  } else {
+    GTEST_SKIP() << "Proxy auth challenges require iOS 18.1+.";
+  }
+}
+
+// Tests `OnProxyAuthChallenge` forwarding to delegate which does not implement
+// `webState:didRequestProxyAuthForProtectionSpace:...` method.
+TEST_F(WebStateDelegateBridgeTest, OnProxyAuthChallengeWithNoDelegateMethod) {
+  if (@available(iOS 18.1, *)) {
+    __block bool callback_called = false;
+    WebStateDelegate::ProxyAuthCallback callback = base::BindOnce(
+        ^(NSString* username, NSString* password, NSError* error) {
+          EXPECT_FALSE(username);
+          EXPECT_FALSE(password);
+          EXPECT_FALSE(error);
+          callback_called = true;
+        });
+    empty_delegate_bridge_->OnProxyAuthChallenge(&fake_web_state_, nil, nil,
+                                                 nil, std::move(callback));
+    EXPECT_TRUE(callback_called);
+  } else {
+    GTEST_SKIP() << "Proxy auth challenges require iOS 18.1+.";
+  }
+}
+
+// Tests `OnProxyAuthChallenge` fallback to `OnAuthRequired` when delegate
+// implements `webState:didRequestHTTPAuthForProtectionSpace:...` but not
+// `webState:didRequestProxyAuthForProtectionSpace:...`.
+TEST_F(WebStateDelegateBridgeTest, OnProxyAuthChallengeFallbackToHTTPAuth) {
+  if (@available(iOS 18.1, *)) {
+    TestHTTPAuthOnlyWebStateDelegate* http_auth_delegate =
+        [[TestHTTPAuthOnlyWebStateDelegate alloc] init];
+    WebStateDelegateBridge bridge(http_auth_delegate);
+    __block bool callback_called = false;
+    WebStateDelegate::ProxyAuthCallback callback = base::BindOnce(
+        ^(NSString* username, NSString* password, NSError* error) {
+          EXPECT_NSEQ(@"http_user", username);
+          EXPECT_NSEQ(@"http_password", password);
+          EXPECT_FALSE(error);
+          callback_called = true;
+        });
+    bridge.OnProxyAuthChallenge(&fake_web_state_, nil, nil, nil,
+                                std::move(callback));
+    EXPECT_TRUE([http_auth_delegate httpAuthenticationRequested]);
+    EXPECT_TRUE(callback_called);
+  } else {
+    GTEST_SKIP() << "Proxy auth challenges require iOS 18.1+.";
+  }
 }
 
 // Tests `ShouldAllowCopy` forwarding.

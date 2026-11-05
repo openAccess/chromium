@@ -47,10 +47,6 @@ namespace {
 
 WindowRestoreController* g_instance = nullptr;
 
-// Callback for testing which is run when `SaveWindowImpl()` triggers a write to
-// file.
-WindowRestoreController::SaveWindowCallback g_save_window_callback_for_testing;
-
 // The list of possible app window parents.
 constexpr ShellWindowId kAppParentContainers[19] = {
     kShellWindowId_DeskContainerA,       kShellWindowId_DeskContainerB,
@@ -186,7 +182,7 @@ bool WindowRestoreController::CanActivateRestoredWindow(
     return true;
 
   // Only the topmost unminimize restored window can be activated.
-  auto siblings = desk_container->children();
+  const auto& siblings = desk_container->children();
   for (aura::Window* const sibling : std::views::reverse(siblings)) {
     if (WindowState::Get(sibling)->IsMinimized())
       continue;
@@ -208,7 +204,7 @@ bool WindowRestoreController::CanActivateAppList(const aura::Window* window) {
     return true;
 
   for (aura::Window* root_window : Shell::GetAllRootWindows()) {
-    auto active_desk_children =
+    const auto& active_desk_children =
         desks_util::GetActiveDeskContainerForRoot(root_window)->children();
 
     // Find the topmost unminimized window.
@@ -485,7 +481,7 @@ void WindowRestoreController::StackWindow(aura::Window* window) {
   Shell::Get()->mru_window_tracker()->OnWindowAlteredByWindowRestore(window);
 
   // Stack the window.
-  auto siblings = window->parent()->children();
+  const auto& siblings = window->parent()->children();
   auto insertion_point = GetWindowToInsertBefore(window, siblings);
   if (insertion_point != siblings.end())
     window->parent()->StackChildBelow(window, *insertion_point);
@@ -535,8 +531,9 @@ void WindowRestoreController::SaveWindowImpl(
       BuildWindowInfo(window, activation_index, mru_windows);
   ::full_restore::SaveWindowInfo(*window_info);
 
-  if (g_save_window_callback_for_testing)
-    g_save_window_callback_for_testing.Run(*window_info);
+  if (save_window_callback_for_testing_) {
+    save_window_callback_for_testing_.Run(*window_info);
+  }
 }
 
 void WindowRestoreController::RestoreStateTypeAndClearLaunchedKey(
@@ -630,7 +627,7 @@ void WindowRestoreController::CancelAndRemoveRestorePropertyClearCallback(
 
 void WindowRestoreController::SetSaveWindowCallbackForTesting(
     SaveWindowCallback callback) {
-  g_save_window_callback_for_testing = std::move(callback);
+  save_window_callback_for_testing_ = std::move(callback);
 }
 
 }  // namespace ash

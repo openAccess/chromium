@@ -48,10 +48,11 @@ _bookmarks_eg2tests_deps = [
 ]
 
 _integration_eg2tests_deps = [
+  "//ios/chrome/browser/autofill/ambient_autofill/test:eg2_tests",
   "//ios/chrome/browser/autofill/atmemory/test:eg2_tests",
+  "//ios/chrome/browser/autofill/branding/test:eg2_tests",
   "//ios/chrome/browser/autofill/manual_fill/test:eg2_tests",
   "//ios/chrome/browser/autofill/ui_bundled:eg2_tests",
-  "//ios/chrome/browser/autofill/ui_bundled/branding:eg2_tests",
   "//ios/chrome/browser/content_suggestions/tab_resumption/test:eg2_tests",
   "//ios/chrome/browser/content_suggestions/test:eg2_tests",
   "//ios/chrome/browser/context_menu/ui_bundled:eg2_tests",
@@ -80,6 +81,7 @@ _integration_eg2tests_deps = [
   "//ios/chrome/browser/sync/model/prefs:eg2_tests",
   "//ios/chrome/browser/sync/test:eg2_tests",
   "//ios/chrome/browser/tips_notifications/eg_test:eg2_tests",
+  "//ios/chrome/browser/tracing:eg2_tests",
   "//ios/chrome/browser/variations/model:eg2_tests",
   "//ios/chrome/browser/webauthn/test:eg2_tests",
 ]
@@ -92,6 +94,7 @@ _settings_eg2tests_deps = [
   "//ios/chrome/browser/settings/clear_browsing_data/quick_delete_other_data/test:eg2_tests",
   "//ios/chrome/browser/settings/clear_browsing_data/test:eg2_tests",
   "//ios/chrome/browser/settings/google_services/test:eg2_tests",
+  "//ios/chrome/browser/settings/manage_accounts/test:eg2_tests",
   "//ios/chrome/browser/settings/manage_sync/test:eg2_tests",
   "//ios/chrome/browser/settings/ui_bundled:eg2_tests",
   "//ios/chrome/browser/settings/ui_bundled/autofill:eg2_tests",
@@ -127,7 +130,10 @@ _signin_eg2tests_deps = [
   "//ios/chrome/browser/signin/model:eg2_tests",
 ]
 
-_smoke_eg2tests_deps = [ "//ios/chrome/test/earl_grey2:eg2_tests" ]
+_smoke_eg2tests_deps = [
+  "//ios/chrome/test/earl_grey:eg2_tests",
+  "//ios/chrome/test/earl_grey2:eg2_tests",
+]
 
 _ui_eg2tests_deps = [
   "//ios/chrome/app/application_delegate:eg2_tests",
@@ -154,7 +160,9 @@ _ui_eg2tests_deps = [
   "//ios/chrome/browser/dialogs/ui_bundled:eg2_tests",
   "//ios/chrome/browser/download/ui:eg2_tests",
   "//ios/chrome/browser/drive_file_picker/test:eg2_tests",
+  "//ios/chrome/browser/enterprise/connectors/device_trust/test:eg2_tests",
   "//ios/chrome/browser/enterprise/data_controls/test:eg2_tests",
+  "//ios/chrome/browser/enterprise/signals/test:eg2_tests",
   "//ios/chrome/browser/file_upload_panel/test:eg2_tests",
   "//ios/chrome/browser/first_run/animated_lens/test:eg2_tests",
   "//ios/chrome/browser/first_run/best_features/test:eg2_tests",
@@ -168,10 +176,12 @@ _ui_eg2tests_deps = [
   "//ios/chrome/browser/infobars/ui_bundled:eg2_tests",
   "//ios/chrome/browser/intelligence/actor/tools/test:eg2_tests",
   "//ios/chrome/browser/intelligence/actor/ui/test:eg2_tests",
+  "//ios/chrome/browser/intelligence/bwg/first_run/ui:eg2_tests",
   "//ios/chrome/browser/intelligence/bwg/ui:eg2_tests",
   "//ios/chrome/browser/intelligence/proto_wrappers:eg2_tests",
   "//ios/chrome/browser/keyboard/ui_bundled:eg2_tests",
   "//ios/chrome/browser/lens_overlay/ui:eg2_tests",
+  "//ios/chrome/browser/level_up/test:eg2_tests",
   "//ios/chrome/browser/link_to_text/ui_bundled:eg2_tests",
   "//ios/chrome/browser/location_bar/badge/ui:eg2_tests",
   "//ios/chrome/browser/ntp/ui_bundled:eg2_tests",
@@ -215,8 +225,10 @@ _ui_eg2tests_deps = [
   "//ios/chrome/browser/toolbar/tab_group/test:eg2_tests",
   "//ios/chrome/browser/toolbar/test:eg2_tests",
   "//ios/chrome/browser/unit_conversion/ui_bundled:eg2_tests",
+  "//ios/chrome/browser/web_extension/test:eg2_tests",
   "//ios/chrome/browser/webui/ui_bundled:eg2_tests",
   "//ios/chrome/browser/webui/ui_bundled/interstitials:eg2_tests",
+  "//ios/chrome/browser/webui/ui_bundled/management:eg2_tests",
   "//ios/chrome/browser/webui/ui_bundled/optimization_guide_internals:eg2_tests",
   "//ios/chrome/browser/webui/ui_bundled/private_ai_internals:eg2_tests",
 ]
@@ -233,10 +245,9 @@ _web_eg2tests_deps = [ "//ios/chrome/browser/web/model:eg2_tests" ]
 chrome_ios_eg2_test("ios_chrome_all_eg2tests_module") {
   xcode_test_application_name = "ios_chrome_eg2tests"
 
-  deps = _autofill_automation_eg2tests_deps + _bookmarks_eg2tests_deps +
-         _integration_eg2tests_deps + _settings_eg2tests_deps +
-         _signin_eg2tests_deps + _smoke_eg2tests_deps + _ui_eg2tests_deps +
-         _web_eg2tests_deps
+  deps = _bookmarks_eg2tests_deps + _integration_eg2tests_deps +
+         _settings_eg2tests_deps + _signin_eg2tests_deps +
+         _smoke_eg2tests_deps + _ui_eg2tests_deps + _web_eg2tests_deps
   data_deps = [ ":ios_chrome_eg2tests" ]
 }
 
@@ -355,6 +366,14 @@ chrome_ios_eg2_test("ios_chrome_web_eg2tests_module") {
   data_deps = [ ":ios_chrome_eg2tests" ]
 }
 
+chrome_ios_eg2_test("ios_chrome_perf_benchmarks_eg2tests_module") {
+  xcode_test_application_name = "ios_chrome_eg2tests"
+
+  deps = [ "//ios/chrome/test/perf:eg2_tests" ]
+  data_deps = [ ":ios_chrome_eg2tests" ]
+  data = [ "//third_party/catapult/tracing/" ]
+}
+
 source_set("eg2_tests") {
   configs += [ "//build/config/ios:xctest_config" ]
   testonly = true
@@ -365,6 +384,7 @@ source_set("eg2_tests") {
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/bookmarks/test:eg_test_support+eg2",
     "//ios/chrome/browser/device_reauth/test:eg_test_support+eg2",
+    "//ios/chrome/browser/settings/ui_bundled:constants",
     "//ios/chrome/browser/settings/ui_bundled:settings_root_constants",
     "//ios/chrome/browser/settings/ui_bundled/password:password_constants",
     "//ios/chrome/browser/settings/ui_bundled/password/password_settings:password_settings_constants",

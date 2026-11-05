@@ -5,11 +5,13 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_RTP_SENDER_IMPL_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_RTP_SENDER_IMPL_H_
 
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "base/functional/callback.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/modules/peerconnection/webrtc_media_stream_track_adapter_map.h"
@@ -17,8 +19,14 @@
 #include "third_party/blink/renderer/platform/peerconnection/rtc_rtp_sender_platform.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_rtp_transceiver_platform.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_stats.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "third_party/webrtc/api/dtls_transport_interface.h"
+#include "third_party/webrtc/api/encoded_audio_frame_injector_interface.h"
+#include "third_party/webrtc/api/encoded_video_frame_injector_interface.h"
 #include "third_party/webrtc/api/peer_connection_interface.h"
+#include "third_party/webrtc/api/rtp_parameters.h"
 #include "third_party/webrtc/api/rtp_sender_interface.h"
 #include "third_party/webrtc/api/scoped_refptr.h"
 
@@ -155,6 +163,13 @@ class MODULES_EXPORT RTCRtpSenderImpl : public blink::RTCRtpSenderPlatform {
       const override;
   RTCEncodedVideoStreamTransformer* GetEncodedVideoStreamTransformer()
       const override;
+  scoped_refptr<webrtc::EncodedVideoFrameInjectorInterface>
+  CreateEncodedVideoFrameInjector(
+      webrtc::KeyFrameCallback keyframe_callback,
+      webrtc::BitrateInfoCallback bitrate_callback) override;
+  scoped_refptr<webrtc::EncodedAudioFrameInjectorInterface>
+  CreateEncodedAudioFrameInjector(
+      webrtc::TargetBitrateCallback bitrate_callback) override;
 
   // The ReplaceTrack() that takes a blink::RTCVoidRequest is implemented on
   // top of this, which returns the result in a callback instead. Allows doing

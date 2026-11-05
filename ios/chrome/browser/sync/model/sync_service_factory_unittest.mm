@@ -57,7 +57,7 @@ class SyncServiceFactoryTest : public PlatformTest {
  protected:
   // Returns the collection of default datatypes.
   syncer::DataTypeSet DefaultDatatypes() {
-    static_assert(65 == syncer::GetNumDataTypes(),
+    static_assert(64 == syncer::GetNumDataTypes(),
                   "When adding a new type, you probably want to add it here as "
                   "well (assuming it is already enabled).");
 
@@ -73,7 +73,6 @@ class SyncServiceFactoryTest : public PlatformTest {
     datatypes.Put(syncer::AUTOFILL_WALLET_CREDENTIAL);
     datatypes.Put(syncer::AUTOFILL_WALLET_DATA);
     datatypes.Put(syncer::AUTOFILL_WALLET_METADATA);
-    datatypes.Put(syncer::AUTOFILL_WALLET_OFFER);
     datatypes.Put(syncer::BOOKMARKS);
     datatypes.Put(syncer::CONTACT_INFO);
     datatypes.Put(syncer::DEVICE_INFO);
@@ -94,10 +93,7 @@ class SyncServiceFactoryTest : public PlatformTest {
     if (data_sharing::features::IsDataSharingFunctionalityEnabled()) {
       datatypes.Put(syncer::COLLABORATION_GROUP);
       datatypes.Put(syncer::SHARED_TAB_GROUP_DATA);
-      if (base::FeatureList::IsEnabled(
-              syncer::kSyncSharedTabGroupAccountData)) {
-        datatypes.Put(syncer::SHARED_TAB_GROUP_ACCOUNT_DATA);
-      }
+      datatypes.Put(syncer::SHARED_TAB_GROUP_ACCOUNT_DATA);
     }
     datatypes.Put(syncer::WEBAUTHN_CREDENTIAL);
     if (base::FeatureList::IsEnabled(syncer::kSyncSharedComment)) {
@@ -137,6 +133,9 @@ class SyncServiceFactoryTest : public PlatformTest {
     }
     if (base::FeatureList::IsEnabled(syncer::kSyncJourney)) {
       datatypes.Put(syncer::JOURNEY);
+    }
+    if (base::FeatureList::IsEnabled(syncer::kSyncAutofillEntitySuppression)) {
+      datatypes.Put(syncer::AUTOFILL_ENTITY_SUPPRESSION);
     }
     return datatypes;
   }

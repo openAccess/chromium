@@ -19,6 +19,7 @@
 #include "base/trace_event/memory_pressure_level_proto.h"
 #include "base/trace_event/named_trigger.h"
 #include "base/trace_event/typed_macros.h"
+#include "build/build_config.h"
 #include "chrome/browser/performance_manager/mechanisms/page_loader.h"
 #include "chrome/browser/performance_manager/policies/background_tab_loading_policy_helpers.h"
 #include "chrome/browser/performance_manager/public/background_tab_loading_policy.h"
@@ -50,6 +51,16 @@ constexpr base::MemoryConsumerTraits kBackgroundTabLoadingPolicyTraits(
     base::MemoryConsumerTraits::ConsumerType::kPassive,
     // Prevents allocations in renderer processes (out-of-process).
     base::MemoryConsumerTraits::InProcess::kNo);
+
+#if BUILDFLAG(IS_ANDROID)
+// On Android, BrowserMemoryCoordinator may be destroyed during test or process
+// teardown before the PerformanceManager graph is destroyed.
+constexpr auto kBackgroundTabLoadingPolicyCheckUnregister =
+    base::MemoryConsumerRegistration::CheckUnregister::kDisabled;
+#else
+constexpr auto kBackgroundTabLoadingPolicyCheckUnregister =
+    base::MemoryConsumerRegistration::CheckUnregister::kEnabled;
+#endif
 
 }  // namespace
 
@@ -94,7 +105,7 @@ void ScheduleLoadForRestoredTabs(
   TRACE_EVENT("browser", "ScheduleLoadForRestoredTabs", "tabs_count",
               web_contents_vector.size());
 
-  DCHECK(!web_contents_vector.empty());
+  CHECK(!web_contents_vector.empty(), base::NotFatalUntil::M163);
 
   std::vector<BackgroundTabLoadingPolicy::PageNodeData> page_node_data_vector;
   page_node_data_vector.reserve(web_contents_vector.size());
@@ -114,8 +125,9 @@ void ScheduleLoadForRestoredTabs(
     // Cannot use GetPermissionStatusForCurrentDocument() because the navigation
     // hasn't been committed in the RenderFrameHost yet, as evidenced by the
     // DCHECK below.
-    DCHECK_EQ(content->GetPrimaryMainFrame()->GetLastCommittedURL(), GURL());
-    DCHECK_NE(content->GetLastCommittedURL(), GURL());
+    CHECK_EQ(content->GetPrimaryMainFrame()->GetLastCommittedURL(), GURL(),
+             base::NotFatalUntil::M163);
+    CHECK_NE(content->GetLastCommittedURL(), GURL(), base::NotFatalUntil::M163);
 
     auto permission_descriptor = content::PermissionDescriptorUtil::
         CreatePermissionDescriptorForPermissionType(
@@ -162,9 +174,11 @@ BackgroundTabLoadingPolicy::BackgroundTabLoadingPolicy(
     : all_restored_tabs_loaded_callback_(
           std::move(all_restored_tabs_loaded_callback)),
       page_loader_(std::make_unique<mechanism::PageLoader>()),
-      memory_consumer_registration_("BackgroundTabLoadingPolicy",
-                                    kBackgroundTabLoadingPolicyTraits,
-                                    this) {
+      memory_consumer_registration_(
+          "BackgroundTabLoadingPolicy",
+          kBackgroundTabLoadingPolicyTraits,
+          this,
+          kBackgroundTabLoadingPolicyCheckUnregister) {
   max_simultaneous_tab_loads_ = CalculateMaxSimultaneousTabLoads(
       kMinSimultaneousTabLoads, kMaxSimultaneousTabLoads,
       kCoresPerSimultaneousTabLoad, base::SysInfo::NumberOfProcessors());
@@ -187,7 +201,8 @@ void BackgroundTabLoadingPolicy::OnLoadingStateChanged(
     const PageNode* page_node,
     PageNode::LoadingState previous_state) {
   TRACE_EVENT("browser", "BackgroundTabLoadingPolicy::OnLoadingStateChanged");
-  DCHECK_EQ(has_restored_tabs_to_load_, HasRestoredTabsToLoad());
+  CHECK_EQ(has_restored_tabs_to_load_, HasRestoredTabsToLoad(),
+           base::NotFatalUntil::M163);
 
   switch (page_node->GetLoadingState()) {
     // Loading is complete or stalled.
@@ -211,9 +226,11 @@ void BackgroundTabLoadingPolicy::OnLoadingStateChanged(
         // The PageNode remained in |page_nodes_loading_| when it transitioned
         // from |kLoading| to |kLoadedBusy|, so no change is necessary when it
         // transitions back to |kLoading|.
-        DCHECK(page_nodes_loading_.contains(page_node));
-        DCHECK(!std::ranges::contains(page_nodes_load_initiated_, page_node));
-        DCHECK(!FindPageNodeToLoadData(page_node));
+        CHECK(page_nodes_loading_.contains(page_node),
+              base::NotFatalUntil::M163);
+        CHECK(!std::ranges::contains(page_nodes_load_initiated_, page_node),
+              base::NotFatalUntil::M163);
+        CHECK(!FindPageNodeToLoadData(page_node), base::NotFatalUntil::M163);
         return;
       }
 
@@ -229,7 +246,8 @@ void BackgroundTabLoadingPolicy::OnLoadingStateChanged(
 
       // Keep track of all PageNodes that are loading, even when the load isn't
       // initiated by this policy.
-      DCHECK(!page_nodes_loading_.contains(page_node));
+      CHECK(!page_nodes_loading_.contains(page_node),
+            base::NotFatalUntil::M163);
       page_nodes_loading_.emplace(page_node, erased);
 
       if (erased_page_node_to_load) {
@@ -245,9 +263,10 @@ void BackgroundTabLoadingPolicy::OnLoadingStateChanged(
     case PageNode::LoadingState::kLoadedBusy: {
       // The PageNode should have been added to |page_nodes_loading_| when it
       // transitioned to |kLoading|.
-      DCHECK(page_nodes_loading_.contains(page_node));
-      DCHECK(!std::ranges::contains(page_nodes_load_initiated_, page_node));
-      DCHECK(!FindPageNodeToLoadData(page_node));
+      CHECK(page_nodes_loading_.contains(page_node), base::NotFatalUntil::M163);
+      CHECK(!std::ranges::contains(page_nodes_load_initiated_, page_node),
+            base::NotFatalUntil::M163);
+      CHECK(!FindPageNodeToLoadData(page_node), base::NotFatalUntil::M163);
       return;
     }
   }
@@ -275,9 +294,10 @@ void BackgroundTabLoadingPolicy::ScheduleLoadForRestoredTabs(
     if (!page_node)
       continue;
 
-    DCHECK_EQ(page_node->GetType(), PageType::kTab);
-    DCHECK(!FindPageNodeToLoadData(page_node));
-    DCHECK(!std::ranges::contains(page_nodes_load_initiated_, page_node));
+    CHECK_EQ(page_node->GetType(), PageType::kTab, base::NotFatalUntil::M163);
+    CHECK(!FindPageNodeToLoadData(page_node), base::NotFatalUntil::M163);
+    CHECK(!std::ranges::contains(page_nodes_load_initiated_, page_node),
+          base::NotFatalUntil::M163);
 
     // Setting main frame restored state ensures that the notification
     // permission status and background title/favicon update properties are set
@@ -354,8 +374,8 @@ bool BackgroundTabLoadingPolicy::PageNodeToLoadData::
 struct BackgroundTabLoadingPolicy::ScoredTabComparator {
   bool operator()(const PageNodeToLoadData& tab0,
                   const PageNodeToLoadData& tab1) {
-    DCHECK(tab0.score.has_value());
-    DCHECK(tab1.score.has_value());
+    CHECK(tab0.score.has_value(), base::NotFatalUntil::M163);
+    CHECK(tab1.score.has_value(), base::NotFatalUntil::M163);
     // Greater scores sort first.
     return tab0.score > tab1.score;
   }
@@ -474,7 +494,7 @@ SiteDataReader* BackgroundTabLoadingPolicy::GetSiteDataReader(
 
 void BackgroundTabLoadingPolicy::ScoreTab(
     PageNodeToLoadData* page_node_to_load_data) {
-  DCHECK(!page_node_to_load_data->score.has_value());
+  CHECK(!page_node_to_load_data->score.has_value(), base::NotFatalUntil::M163);
   float score = 0.0f;
 
   // Give higher priorities to tabs used in the background, and lowest
@@ -534,7 +554,8 @@ void BackgroundTabLoadingPolicy::InitiateLoad(const PageNode* page_node) {
     // Extra page nodes that weren't passed to ScheduleLoadForRestoredTabs() may
     // already be loading.
     if (to_load != page_node && page_nodes_loading_.contains(to_load)) {
-      DCHECK(!std::ranges::contains(page_nodes_load_initiated_, to_load));
+      CHECK(!std::ranges::contains(page_nodes_load_initiated_, to_load),
+            base::NotFatalUntil::M163);
       continue;
     }
     InitiateSinglePageLoad(to_load);
@@ -544,14 +565,15 @@ void BackgroundTabLoadingPolicy::InitiateLoad(const PageNode* page_node) {
 void BackgroundTabLoadingPolicy::InitiateSinglePageLoad(
     const PageNode* page_node) {
   // The page shouldn't already be loading.
-  DCHECK(!std::ranges::contains(page_nodes_load_initiated_, page_node));
-  DCHECK(!page_nodes_loading_.contains(page_node));
-  DCHECK_EQ(tabs_scored_, page_nodes_to_load_.size());
+  CHECK(!std::ranges::contains(page_nodes_load_initiated_, page_node),
+        base::NotFatalUntil::M163);
+  CHECK(!page_nodes_loading_.contains(page_node), base::NotFatalUntil::M163);
+  CHECK_EQ(tabs_scored_, page_nodes_to_load_.size(), base::NotFatalUntil::M163);
 
   // Mark |page_node| as load initiated. Ensure that InitiateLoad is only called
   // for a PageNode that is tracked by the policy.
   ErasePageNodeToLoadData(page_node);
-  DCHECK(!FindPageNodeToLoadData(page_node));
+  CHECK(!FindPageNodeToLoadData(page_node), base::NotFatalUntil::M163);
   page_nodes_load_initiated_.push_back(page_node);
   tab_loads_started_++;
 
@@ -617,8 +639,8 @@ size_t BackgroundTabLoadingPolicy::GetMaxNewTabLoads() const {
 
 void BackgroundTabLoadingPolicy::LoadNextTab() {
   TRACE_EVENT("browser", "BackgroundTabLoadingPolicy::LoadNextTab");
-  DCHECK(!page_nodes_to_load_.empty());
-  DCHECK_EQ(tabs_scored_, page_nodes_to_load_.size());
+  CHECK(!page_nodes_to_load_.empty(), base::NotFatalUntil::M163);
+  CHECK_EQ(tabs_scored_, page_nodes_to_load_.size(), base::NotFatalUntil::M163);
 
   // Find the next PageNode to load.
   while (!page_nodes_to_load_.empty()) {
@@ -652,7 +674,7 @@ bool BackgroundTabLoadingPolicy::ErasePageNodeToLoadData(
       if (it->score.has_value()) {
         // If the PageNode has already been scored, remove it from the
         // |tabs_scored_| count.
-        DCHECK_GT(tabs_scored_, 0U);
+        CHECK_GT(tabs_scored_, 0U, base::NotFatalUntil::M163);
         --tabs_scored_;
       }
 
@@ -687,7 +709,7 @@ bool BackgroundTabLoadingPolicy::HasRestoredTabsToLoad() const {
 
 void BackgroundTabLoadingPolicy::UpdateHasRestoredTabsToLoad() {
   if (!has_restored_tabs_to_load_) {
-    DCHECK(!HasRestoredTabsToLoad());
+    CHECK(!HasRestoredTabsToLoad(), base::NotFatalUntil::M163);
     return;
   }
   if (HasRestoredTabsToLoad())

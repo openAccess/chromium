@@ -4,7 +4,7 @@
 <link rel="match" href="custom-scrollbar-cross-domain-image-ref.html">
 <script src="/common/reftest-wait.js"></script>
 <style> body { margin: 0; }</style>
-<canvas id="canvas" layoutsubtree width="200" height="200"></canvas>
+<canvas id="canvas" content=drawable width="200" height="200"></canvas>
 
 <script>
 (async () => {
@@ -12,6 +12,7 @@
   const imageUrl = 'https://{{hosts[alt][]}}:{{ports[https][0]}}/images/red.png';
 
   const iframe = document.createElement('iframe');
+  iframe.setAttribute('drawable', '');
   iframe.style.cssText = 'width: 150px; height: 150px; border: none;';
   const iframeLoaded = new Promise(resolve => { iframe.onload = resolve; });
   iframe.srcdoc = `

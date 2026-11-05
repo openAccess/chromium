@@ -11,6 +11,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/run_until.h"
 #include "chrome/browser/ash/login/users/profile_user_manager_controller.h"
+#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -20,9 +21,9 @@
 #include "chromeos/ash/components/local_search_service/public/cpp/local_search_service_proxy.h"
 #include "components/account_id/account_id.h"
 #include "components/account_manager_core/chromeos/account_manager.h"
-#include "components/account_manager_core/pref_names.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/test/browser_task_environment.h"
@@ -72,8 +73,9 @@ class PeopleSectionTest : public testing::Test {
  protected:
   void SetUp() override {
     UserDataAuthClient::InitializeFake();
-    test_user_session_manager_ = std::make_unique<test::TestUserSessionManager>(
-        TestingBrowserProcess::GetGlobal()->local_state());
+    user_session_test_environment_ =
+        std::make_unique<test::UserSessionTestEnvironment>(
+            TestingBrowserProcess::GetGlobal()->local_state());
     profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(profile_manager_->SetUp());
@@ -83,9 +85,11 @@ class PeopleSectionTest : public testing::Test {
             user_manager::UserManager::Get());
 
     const AccountId primary_account_id = PrimaryAccountId();
-    user_ = test_user_session_manager_->AddRegularUser(primary_account_id);
+    user_ = user_session_test_environment_->AddRegularUser(primary_account_id);
     ASSERT_TRUE(user_);
-    test_user_session_manager_->LogIn(primary_account_id);
+    user_session_test_environment_->LogIn(primary_account_id);
+    ScopedAccountIdAnnotator annotator(profile_manager_->profile_manager(),
+                                       primary_account_id);
     profile_ = profile_manager_->CreateTestingProfile(kPrimaryEmail);
     ASSERT_TRUE(profile_);
 
@@ -96,7 +100,7 @@ class PeopleSectionTest : public testing::Test {
     ASSERT_TRUE(base::test::RunUntil(
         [&]() { return account_manager_->IsInitialized(); }));
     profile_->GetPrefs()->SetBoolean(
-        ::account_manager::prefs::kSecondaryGoogleAccountSigninAllowed, true);
+        policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed, true);
 
     AddAccount(kPrimaryGaiaId, kPrimaryEmail);
   }
@@ -109,7 +113,7 @@ class PeopleSectionTest : public testing::Test {
 
     profile_manager_.reset();
     profile_user_manager_controller_.reset();
-    test_user_session_manager_.reset();
+    user_session_test_environment_.reset();
 
     UserDataAuthClient::Shutdown();
   }
@@ -138,7 +142,8 @@ class PeopleSectionTest : public testing::Test {
 
  private:
   content::BrowserTaskEnvironment task_environment_;
-  std::unique_ptr<test::TestUserSessionManager> test_user_session_manager_;
+  std::unique_ptr<test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<ProfileUserManagerController>
       profile_user_manager_controller_;
   std::unique_ptr<TestingProfileManager> profile_manager_;

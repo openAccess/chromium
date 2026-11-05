@@ -24,7 +24,6 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
-#include "components/viz/common/gpu/vulkan_context_provider.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/command_buffer/client/test_shared_image_interface.h"
 #include "gpu/command_buffer/service/feature_info.h"
@@ -33,6 +32,7 @@
 #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
+#include "gpu/command_buffer/service/vulkan_context_provider.h"
 #include "gpu/config/gpu_driver_bug_workarounds.h"
 #include "gpu/config/gpu_feature_info.h"
 #include "gpu/config/gpu_preferences.h"
@@ -84,6 +84,11 @@ class MockCommandBufferHelper : public CommandBufferHelper {
   MOCK_METHOD(void,
               WaitForSyncToken,
               (gpu::SyncToken sync_token, base::OnceClosure done_cb),
+              (override));
+  MOCK_METHOD(void,
+              WaitForSyncTokens,
+              (std::vector<gpu::SyncToken> sync_tokens,
+               base::OnceClosure done_cb),
               (override));
   MOCK_METHOD(gpu::SharedImageManager*, GetSharedImageManager, (), (override));
 
@@ -218,7 +223,9 @@ class NdkVideoEncoderAcceleratorTest
     auto mailbox = gpu::Mailbox::Generate();
     auto color_space = software_frame->ColorSpace();
     GrSurfaceOrigin surface_origin = kTopLeft_GrSurfaceOrigin;
-    SkAlphaType alpha_type = kPremul_SkAlphaType;
+    SkAlphaType alpha_type = software_frame->format() == PIXEL_FORMAT_NV12
+                                 ? kUnpremul_SkAlphaType
+                                 : kPremul_SkAlphaType;
     auto sync_token = gpu::SyncToken();
     gpu::SharedImageUsageSet usage = gpu::SHARED_IMAGE_USAGE_GLES2_READ |
                                      gpu::SHARED_IMAGE_USAGE_DISPLAY_READ |
@@ -535,16 +542,16 @@ class NdkVideoEncoderAcceleratorTest
 
     backing_factory_ =
         std::make_unique<gpu::AHardwareBufferImageBackingFactory>(
-            context_state_->feature_info(), gpu_preferences,
-            context_state_->vk_context_provider());
+            context_state_->feature_info(), gpu_preferences, context_state_);
 
     auto runner = task_environment_.GetMainThreadTaskRunner();
     auto command_buffer_helper =
         base::MakeRefCounted<MockCommandBufferHelper>(fake_gpu_runner_);
-    ON_CALL(*command_buffer_helper, WaitForSyncToken)
-        .WillByDefault([runner](gpu::SyncToken, base::OnceClosure done_cb) {
-          runner->PostTask(FROM_HERE, std::move(done_cb));
-        });
+    ON_CALL(*command_buffer_helper, WaitForSyncTokens)
+        .WillByDefault(
+            [runner](std::vector<gpu::SyncToken>, base::OnceClosure done_cb) {
+              runner->PostTask(FROM_HERE, std::move(done_cb));
+            });
     ON_CALL(*command_buffer_helper, GetSharedImageManager())
         .WillByDefault(Return(&shared_image_manager_));
     command_buffer_helper_ = command_buffer_helper;

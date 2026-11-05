@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+type AccountInfo = chrome.autofillPrivate.AccountInfo;
 type AttributeType = chrome.autofillPrivate.AttributeType;
 type EntityInstance = chrome.autofillPrivate.EntityInstance;
 type EntityInstanceWithLabels = chrome.autofillPrivate.EntityInstanceWithLabels;
 type EntityType = chrome.autofillPrivate.EntityType;
+type UpsertPassDetails = chrome.autofillPrivate.UpsertPassDetails;
 
 export type EntityInstancesChangedListener =
     (entityInstances: EntityInstanceWithLabels[]) => void;
@@ -15,6 +17,11 @@ export type EntityInstancesChangedListener =
  * manager related methods.
  */
 export interface EntityDataManagerProxy {
+  /**
+   * Gets currently signed-in user account info, or undefined if not signed-in.
+   */
+  getAccountInfo(): Promise<AccountInfo|undefined>;
+
   /**
    * Adds a new entity instance if it doesn't exist yet. Otherwise, it updates
    * the entity instance.
@@ -102,9 +109,26 @@ export interface EntityDataManagerProxy {
    * Sets the opt-in status for walletable pass detection for the current user.
    */
   setWalletablePassDetectionOptInStatus(optedIn: boolean): Promise<boolean>;
+
+  /**
+   * Preloads legal disclosure lines and context token for upserting a public
+   * pass into the backend cache.
+   */
+  preloadDetailsForUpsertPass(entityTypeName: number): void;
+
+  /**
+   * Fetches legal disclosure lines and context token for upserting a public
+   * pass.
+   */
+  getDetailsForUpsertPass(entityTypeName: number):
+      Promise<UpsertPassDetails|null>;
 }
 
 export class EntityDataManagerProxyImpl implements EntityDataManagerProxy {
+  getAccountInfo(): Promise<AccountInfo|undefined> {
+    return chrome.autofillPrivate.getAccountInfo();
+  }
+
   addOrUpdateEntityInstance(entityInstance: EntityInstance): Promise<void> {
     return chrome.autofillPrivate.addOrUpdateEntityInstance(entityInstance);
   }
@@ -168,6 +192,15 @@ export class EntityDataManagerProxyImpl implements EntityDataManagerProxy {
   setWalletablePassDetectionOptInStatus(optedIn: boolean) {
     return chrome.autofillPrivate.setWalletablePassDetectionOptInStatus(
         optedIn);
+  }
+
+  preloadDetailsForUpsertPass(entityTypeName: number): void {
+    chrome.autofillPrivate.preloadDetailsForUpsertPass(entityTypeName);
+  }
+
+  getDetailsForUpsertPass(entityTypeName: number):
+      Promise<UpsertPassDetails|null> {
+    return chrome.autofillPrivate.getDetailsForUpsertPass(entityTypeName);
   }
 
   static getInstance() {

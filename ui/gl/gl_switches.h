@@ -8,8 +8,10 @@
 // Defines all the command-line switches used by ui/gl.
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include <optional>
+#include <string>
 
 #include "base/containers/span.h"
 #include "base/feature_list.h"
@@ -89,6 +91,8 @@ GL_EXPORT extern const char kDisableD3D11Warp[];
 GL_EXPORT extern const char kDirectCompositionVideoSwapChainFormat[];
 GL_EXPORT extern const char kTintDcLayer[];
 
+GL_EXPORT extern const char kWebViewDrawFunctorUsesVulkan[];
+
 // These flags are used by the test harness code, not passed in by users.
 GL_EXPORT extern const char kDisableGLDrawingForTests[];
 GL_EXPORT extern const char kOverrideUseSoftwareGLForTests[];
@@ -119,26 +123,53 @@ GL_EXPORT std::optional<base::TimeDelta> GetFakeVsyncIntervalFromCommandLine();
 
 namespace features {
 
+// Mirrors a subset of information from VkPhysicalDeviceProperties.
+struct GL_EXPORT VulkanPhysicalDeviceProperties {
+  VulkanPhysicalDeviceProperties();
+  ~VulkanPhysicalDeviceProperties();
+
+  uint32_t driver_version = 0;
+  uint32_t vendor_id = 0;
+  uint32_t device_id = 0;
+  std::string device_name;
+};
+
 GL_EXPORT BASE_DECLARE_FEATURE(kDCompDebugVisualization);
 GL_EXPORT BASE_DECLARE_FEATURE(kDCompTripleBufferVideoSwapChain);
 GL_EXPORT BASE_DECLARE_FEATURE(kDirectCompositionSoftwareOverlays);
 GL_EXPORT BASE_DECLARE_FEATURE(kDirectCompositionLetterboxVideoOptimization);
 GL_EXPORT BASE_DECLARE_FEATURE(kDirectCompositionUnlimitedOverlays);
 GL_EXPORT BASE_DECLARE_FEATURE(kDesktopPlaneRemovalForMFFullScreenLetterbox);
+#if BUILDFLAG(IS_WIN)
+GL_EXPORT BASE_DECLARE_FEATURE(kDCLayerTree2);
+enum class DCLayerTree2Mode {
+  // Enable the `DCLayerTree2` to update incrementally.
+  kIncremental,
+  // Force the `DCLayerTree2` to not update incrementally and instead build each
+  // frame from scratch. This can help diagnose issues in the incremental update
+  // algorithm.
+  kFromScratch,
+};
+extern const GL_EXPORT base::FeatureParam<DCLayerTree2Mode>
+    kDCLayerTree2ModeParam;
+#endif
 GL_EXPORT BASE_DECLARE_FEATURE(kEGLDualGPURendering);
 GL_EXPORT BASE_DECLARE_FEATURE(kIntelVpSuperResolution);
-GL_EXPORT BASE_DECLARE_FEATURE(kDefaultANGLEMetal);
 GL_EXPORT BASE_DECLARE_FEATURE(kDefaultANGLEVulkan);
 GL_EXPORT BASE_DECLARE_FEATURE(kTrackCurrentShaders);
 GL_EXPORT BASE_DECLARE_FEATURE(kVulkanFromANGLE);
 GL_EXPORT BASE_DECLARE_FEATURE(kDXGIWaitableSwapChain);
 GL_EXPORT BASE_DECLARE_FEATURE(kGpuVsync);
 GL_EXPORT BASE_DECLARE_FEATURE(kSkipVulkanBlocklist);
+GL_EXPORT BASE_DECLARE_FEATURE(kVulkan);
 GL_EXPORT extern const base::FeatureParam<int>
     kDXGIWaitableSwapChainMaxQueuedFrames;
 GL_EXPORT BASE_DECLARE_FEATURE(kDXGISwapChainPresentInterval0);
 
 GL_EXPORT bool IsDefaultANGLEVulkan();
+GL_EXPORT bool IsUsingVulkan();
+GL_EXPORT bool CheckVulkanCompatibilities(
+    const VulkanPhysicalDeviceProperties& device_properties);
 
 GL_EXPORT bool SupportsEGLDualGPURendering();
 

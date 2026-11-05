@@ -10,7 +10,6 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "crypto/sha2.h"
 #include "google_apis/gaia/gaia_constants.h"
 
 namespace signin_internals_util {
@@ -35,6 +34,7 @@ std::string SigninStatusFieldToString(TimedSigninStatusField field) {
   switch (field) {
     ENUM_CASE(AUTHENTICATION_RESULT_RECEIVED);
     ENUM_CASE(REFRESH_TOKEN_RECEIVED);
+    ENUM_CASE(LAST_REFRESH_TOKEN_ACCOUNT_ID);
     ENUM_CASE(LAST_SIGNIN_ACCESS_POINT);
     ENUM_CASE(LAST_SIGNOUT_SOURCE);
     case TIMED_FIELDS_END:

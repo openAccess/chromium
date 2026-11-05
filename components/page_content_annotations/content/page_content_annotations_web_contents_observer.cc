@@ -12,6 +12,7 @@
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
 #include "components/page_content_annotations/core/page_content_annotations_service.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
@@ -20,25 +21,22 @@ namespace page_content_annotations {
 
 namespace {
 
-// Creates a HistoryVisit based on the current state of |web_contents|.
-HistoryVisit CreateHistoryVisitFromWebContents(
-    content::WebContents* web_contents) {
-  HistoryVisit visit(
-      web_contents->GetController().GetLastCommittedEntry()->GetTimestamp(),
-      web_contents->GetLastCommittedURL());
-  return visit;
+base::Time GetTimestampFromWebContents(content::WebContents* web_contents) {
+  return web_contents->GetController().GetLastCommittedEntry()->GetTimestamp();
 }
 
 }  // namespace
 
+DEFINE_USER_DATA(PageContentAnnotationsWebContentsObserver);
+
 PageContentAnnotationsWebContentsObserver::
     PageContentAnnotationsWebContentsObserver(
+        tabs::TabInterface& tab,
         content::WebContents* web_contents,
         PageContentAnnotationsService& page_content_annotations_service)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<PageContentAnnotationsWebContentsObserver>(
-          *web_contents),
-      page_content_annotations_service_(page_content_annotations_service) {
+      page_content_annotations_service_(page_content_annotations_service),
+      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
   page_content_annotations_service_->AddObserver(
       AnnotationType::kContentVisibility, this);
 }
@@ -47,6 +45,21 @@ PageContentAnnotationsWebContentsObserver::
     ~PageContentAnnotationsWebContentsObserver() {
   page_content_annotations_service_->RemoveObserver(
       AnnotationType::kContentVisibility, this);
+}
+
+// static
+PageContentAnnotationsWebContentsObserver*
+PageContentAnnotationsWebContentsObserver::From(tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
+
+// static
+PageContentAnnotationsWebContentsObserver*
+PageContentAnnotationsWebContentsObserver::FromWebContents(
+    content::WebContents* web_contents) {
+  return web_contents
+             ? From(tabs::TabInterface::MaybeGetFromContents(web_contents))
+             : nullptr;
 }
 
 void PageContentAnnotationsWebContentsObserver::
@@ -58,13 +71,13 @@ void PageContentAnnotationsWebContentsObserver::
     return;
   }
 
-  HistoryVisit history_visit =
-      CreateHistoryVisitFromWebContents(web_contents());
   search_result_extractor_client_.RequestData(
       web_contents(), {continuous_search::mojom::ResultType::kRelatedSearches},
       base::BindOnce(&PageContentAnnotationsWebContentsObserver::
                          OnRelatedSearchesExtracted,
-                     weak_ptr_factory_.GetWeakPtr(), history_visit));
+                     weak_ptr_factory_.GetWeakPtr(),
+                     GetTimestampFromWebContents(web_contents()),
+                     web_contents()->GetLastCommittedURL()));
   LOCAL_HISTOGRAM_BOOLEAN(
       "OptimizationGuide.PageContentAnnotationsWebContentsObserver."
       "RelatedSearchesExtractRequest",
@@ -80,27 +93,24 @@ void PageContentAnnotationsWebContentsObserver::DidFinishNavigation(
 }
 
 void PageContentAnnotationsWebContentsObserver::OnRelatedSearchesExtracted(
-    const HistoryVisit& visit,
+    base::Time navigation_timestamp,
+    const GURL& navigation_url,
     continuous_search::SearchResultExtractorClientStatus status,
     continuous_search::mojom::CategoryResultsPtr results) {
   page_content_annotations_service_->OnRelatedSearchesExtracted(
-      visit, status, std::move(results));
+      navigation_timestamp, navigation_url, status, std::move(results));
 }
 
 void PageContentAnnotationsWebContentsObserver::OnPageContentAnnotated(
     const HistoryVisit& annotated_visit,
     const PageContentAnnotationsResult& result) {
-  HistoryVisit history_visit =
-      CreateHistoryVisitFromWebContents(web_contents());
-  if (history_visit.nav_entry_timestamp !=
+  if (GetTimestampFromWebContents(web_contents()) !=
           annotated_visit.nav_entry_timestamp ||
-      history_visit.url != annotated_visit.url) {
+      web_contents()->GetLastCommittedURL() != annotated_visit.url) {
     return;
   }
 
   content_visibility_score_ = result.GetContentVisibilityScore();
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(PageContentAnnotationsWebContentsObserver);
 
 }  // namespace page_content_annotations

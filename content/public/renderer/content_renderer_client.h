@@ -53,6 +53,7 @@ class WebFrame;
 class WebLocalFrame;
 class WebPlugin;
 class WebPrescientNetworking;
+class WebSecurityOrigin;
 class WebServiceWorkerContextProxy;
 class WebURL;
 class WebURLRequest;
@@ -140,6 +141,9 @@ class CONTENT_EXPORT ContentRendererClient {
   // and sessionStorage.
   virtual bool IsDomStorageDisabled() const;
 
+  // Specifies whether to disable dedicated workers.
+  virtual bool AreDedicatedWorkersDisabled() const;
+
   // Returns a scriptable object which implements custom javascript API for the
   // given element. This is used for external plugin handlers for providing
   // custom API such as|postMessage| for <embed> and <object>.
@@ -206,6 +210,12 @@ class CONTENT_EXPORT ContentRendererClient {
   virtual bool ShouldUseCodeCacheWithHashing(
       const blink::WebURL& request_url) const;
 
+  // Returns true if windows with the given origin should allocate isolated
+  // WindowAgents per BrowsingInstance rather than sharing a process-global
+  // agent.
+  virtual bool ShouldUsePerBrowsingInstanceWindowAgent(
+      const url::Origin& origin);
+
   // Called immediately after the sandbox is initialized on the main thread.
   // (If the renderer is run with --no-sandbox, it is still called in
   // RendererMain at about the same time.)
@@ -227,6 +237,13 @@ class CONTENT_EXPORT ContentRendererClient {
 
   // Returns true if a popup window should be allowed.
   virtual bool AllowPopup();
+
+  // Returns true if documents with the given `origin` are allowed to use the
+  // privileged Unbounded Element API (for example, specific component
+  // extensions). This is called for both the current frame's origin and its
+  // top frame's origin, so it must not depend on the frame being local.
+  virtual bool IsUnboundedElementAllowed(
+      const blink::WebSecurityOrigin& origin);
 
   // Service worker may react on the activity. For example, reset the idle
   // timer.

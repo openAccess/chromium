@@ -3,6 +3,9 @@
 // found in the LICENSE file.
 package org.chromium.chrome.browser.gesturenav;
 
+import android.view.View;
+import android.view.ViewGroup;
+
 import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
@@ -18,12 +21,14 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.resources.dynamics.CaptureResult;
 
 import java.util.concurrent.TimeoutException;
@@ -44,6 +49,8 @@ public class NativePageBitmapCapturerTest {
 
     @Test
     @SmallTest
+    // Tests the Java native NTP, which is not used on desktop (it uses the WebUI NTP).
+    @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
     public void testWithNativePage() throws TimeoutException {
         RegularNewTabPageStation ntp = mTabbedActivityTestRule.startOnNtp();
 
@@ -67,6 +74,8 @@ public class NativePageBitmapCapturerTest {
     @Test
     @SmallTest
     @DisableIf.Build(sdk_is_less_than = 31)
+    // Tests the Java native NTP, which is not used on desktop (it uses the WebUI NTP).
+    @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
     public void testWithNativePageHardwareBuffer() throws TimeoutException {
         RegularNewTabPageStation ntp = mTabbedActivityTestRule.startOnNtp();
 
@@ -112,5 +121,38 @@ public class NativePageBitmapCapturerTest {
                 () -> {
                     Assert.assertEquals(0, callbackHelper.getCallCount());
                 });
+    }
+
+    @Test
+    @SmallTest
+    // Tests the Java native NTP, which is not used on desktop (it uses the WebUI NTP).
+    @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
+    public void testWithNullView() throws TimeoutException {
+        RegularNewTabPageStation ntp = mTabbedActivityTestRule.startOnNtp();
+
+        CallbackHelper callbackHelper = new CallbackHelper();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    var tab = ntp.getTab();
+                    View view = tab.getView();
+                    ((ViewGroup) view.getParent()).removeView(view);
+                    tab.freezeNativePage();
+                    Assert.assertTrue(tab.isNativePage());
+                    Assert.assertNull(tab.getView());
+
+                    Assert.assertNull(
+                            NativePageBitmapCapturer.maybeCaptureNativeViewSync(
+                                    tab, /* topControlsHeight= */ 0));
+                    Assert.assertTrue(
+                            NativePageBitmapCapturer.maybeCaptureNativeView(
+                                    tab,
+                                    (result) -> {
+                                        Assert.assertNull(result);
+                                        callbackHelper.notifyCalled();
+                                    },
+                                    CaptureResult.Destination.BITMAP));
+                });
+
+        callbackHelper.waitForOnly();
     }
 }

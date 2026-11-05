@@ -7,12 +7,18 @@
 
 #include "base/files/scoped_file.h"
 #include "base/gtest_prod_util.h"
+#include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
+#include "build/build_config.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "third_party/blink/public/common/oom_intervention/oom_intervention_types.h"
 #include "third_party/blink/public/mojom/crash/crash_memory_metrics_reporter.mojom-blink.h"
 #include "third_party/blink/renderer/controller/controller_export.h"
+
+#if BUILDFLAG(IS_ANDROID)
 #include "third_party/blink/renderer/platform/timer.h"
+#endif
 
 namespace blink {
 
@@ -30,6 +36,10 @@ class CONTROLLER_EXPORT CrashMemoryMetricsReporterImpl
   void SetSharedMemory(
       base::UnsafeSharedMemoryRegion shared_metrics_buffer) override;
 
+#if BUILDFLAG(IS_ANDROID)
+  void SetRendererVisible(bool visible);
+#endif
+
   // This method tracks when an allocation failure occurs. It should be hooked
   // into all platform allocation failure handlers in a process such as
   // base::TerminateBecauseOutOfMemory() and OOM_CRASH() in PartitionAlloc.
@@ -37,19 +47,35 @@ class CONTROLLER_EXPORT CrashMemoryMetricsReporterImpl
   // failures and base::TerminateBecauseOutOfMemory(), too.
   static void OnOOMCallback();
 
+  void ResetForTesting();
+
  protected:
   CrashMemoryMetricsReporterImpl();
 
  private:
   FRIEND_TEST_ALL_PREFIXES(OomInterventionImplTest, CalculateProcessFootprint);
 
-  void WriteIntoSharedMemory();
+  void WriteIntoSharedMemory() EXCLUSIVE_LOCKS_REQUIRED(lock_);
+#if BUILDFLAG(IS_ANDROID)
   void SampleMemoryState(TimerBase*);
+  void UpdateTimer();
+#endif
 
-  OomInterventionMetrics last_reported_metrics_;
-  base::WritableSharedMemoryMapping shared_metrics_mapping_;
+  base::Lock lock_;
+  OomInterventionMetrics last_reported_metrics_ GUARDED_BY(lock_);
+  base::WritableSharedMemoryMapping shared_metrics_mapping_ GUARDED_BY(lock_);
   mojo::Receiver<mojom::blink::CrashMemoryMetricsReporter> receiver_{this};
+#if BUILDFLAG(IS_ANDROID)
+  // Accessed only on the main thread (unlike `last_reported_metrics_` and
+  // `shared_metrics_mapping_`, which are guarded by `lock_` because
+  // `OnOOMCallback` can run on any thread).
   TaskRunnerTimer<CrashMemoryMetricsReporterImpl> timer_;
+  // RenderProcessHostImpl initializes applied_priority_.visible to false
+  // (!kLaunchingProcessIsBackgrounded) on Android and only sends
+  // SetProcessState when visibility or priority changes from that initial
+  // state.
+  bool is_visible_ = false;
+#endif
 };
 }  // namespace blink
 

@@ -4,13 +4,23 @@
 
 #include "third_party/blink/renderer/platform/peerconnection/stats_collecting_decoder.h"
 
-#include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <utility>
 
 #include "base/check.h"
 #include "base/logging.h"
-#include "media/base/video_codecs.h"
+#include "base/sequence_checker.h"
+#include "base/synchronization/lock.h"
+#include "base/time/time.h"
+#include "third_party/blink/renderer/platform/peerconnection/stats_collector.h"
 #include "third_party/blink/renderer/platform/webrtc/webrtc_video_utils.h"
+#include "third_party/webrtc/api/video/encoded_image.h"
+#include "third_party/webrtc/api/video/video_frame.h"
+#include "third_party/webrtc/api/video_codecs/sdp_video_format.h"
+#include "third_party/webrtc/api/video_codecs/video_decoder.h"
 #include "third_party/webrtc/modules/video_coding/include/video_error_codes.h"
 
 namespace blink {
@@ -116,12 +126,12 @@ webrtc::VideoDecoder::DecoderInfo StatsCollectingDecoder::GetDecoderInfo()
 }
 
 // Implementation of webrtc::DecodedImageCallback.
-int32_t StatsCollectingDecoder::Decoded(webrtc::VideoFrame& decodedImage) {
-  Decoded(decodedImage, std::nullopt, std::nullopt);
+int32_t StatsCollectingDecoder::Decoded(webrtc::VideoFrame& decoded_image) {
+  Decoded(decoded_image, std::nullopt, std::nullopt);
   return WEBRTC_VIDEO_CODEC_OK;
 }
 
-void StatsCollectingDecoder::Decoded(webrtc::VideoFrame& decodedImage,
+void StatsCollectingDecoder::Decoded(webrtc::VideoFrame& decoded_image,
                                      std::optional<int32_t> decode_time_ms,
                                      std::optional<uint8_t> qp) {
   // Decoded() may be called on either the decoding sequence (SW decoding) or
@@ -132,7 +142,7 @@ void StatsCollectingDecoder::Decoded(webrtc::VideoFrame& decodedImage,
   // are finished. However, in rare cases, a delayed "straggler" callback could
   // fire on the media sequence concurrently with the active decoding sequence.
   DCHECK(decoded_callback_);
-  decoded_callback_->Decoded(decodedImage, decode_time_ms, qp);
+  decoded_callback_->Decoded(decoded_image, decode_time_ms, qp);
 
   std::optional<StatsCollector::Stats> stats_to_report;
   {
@@ -160,11 +170,12 @@ void StatsCollectingDecoder::Decoded(webrtc::VideoFrame& decodedImage,
       }
     }
 
-    if (stats_collector_.is_active() && decodedImage.processing_time()) {
-      int pixel_size = static_cast<int>(decodedImage.size());
+    if (stats_collector_.is_active() && decoded_image.processing_time()) {
+      int pixel_size = static_cast<int>(decoded_image.size());
       bool is_hardware_accelerated =
           decoder_->GetDecoderInfo().is_hardware_accelerated;
-      float processing_time_ms = decodedImage.processing_time()->Elapsed().ms();
+      float processing_time_ms =
+          decoded_image.processing_time()->Elapsed().ms();
 
       stats_to_report = stats_collector_.AddProcessingTimeAndGetStats(
           pixel_size, is_hardware_accelerated, processing_time_ms,

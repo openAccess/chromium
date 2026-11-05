@@ -6,12 +6,12 @@
 
 #include <optional>
 
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_waiter.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
-#include "chrome/browser/ui/views/side_panel/side_panel_helper.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_web_ui_view.h"
 #include "chrome/browser/ui/webui_browser/webui_browser_window.h"
 #include "content/public/browser/web_contents.h"
@@ -29,15 +29,9 @@ content::WebContents* GetContainingWebContents(views::View* view) {
 
 }  // namespace
 
-WebUIBrowserSidePanelUI::WebUIBrowserSidePanelUI(Browser* browser)
-    : SidePanelUIBase(browser) {
-  // TODO(webium): Currently only reading list and bookmarks side panel
-  // coordinators are constructed prior to this call. For the remaining
-  // global entries, we should either move construction to
-  // BrowserWindowFeatures::Init() or else explicitly disable support.
-  SidePanelHelper::PopulateGlobalEntries(browser,
-                                         SidePanelRegistry::From(browser));
-}
+WebUIBrowserSidePanelUI::WebUIBrowserSidePanelUI(
+    BrowserWindowInterface* browser)
+    : SidePanelUIBase(browser) {}
 
 WebUIBrowserSidePanelUI::~WebUIBrowserSidePanelUI() = default;
 
@@ -72,6 +66,14 @@ void WebUIBrowserSidePanelUI::ShowFrom(
   SidePanelUI::Show(entry_key);
 }
 
+void WebUIBrowserSidePanelUI::OverrideContentsWidth(int width) {
+  // TODO(crbug.com/580036068): Implement.
+}
+
+void WebUIBrowserSidePanelUI::ResetContentsWidthOverride() {
+  // TODO(crbug.com/580036068): Implement.
+}
+
 void WebUIBrowserSidePanelUI::DisableAnimationsForTesting() {}
 
 void WebUIBrowserSidePanelUI::SetNoDelaysForTesting(
@@ -89,7 +91,7 @@ void WebUIBrowserSidePanelUI::Show(
     std::optional<SidePanelOpenTrigger> open_trigger,
     bool suppress_animations) {
   // Side panel is not supported for non-normal browsers.
-  if (browser()->GetType() != Browser::Type::TYPE_NORMAL) {
+  if (browser()->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL) {
     return;
   }
 

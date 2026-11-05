@@ -4,9 +4,11 @@
 
 #include "third_party/blink/renderer/platform/wtf/text/case_map.h"
 
+#include <unicode/brkiter.h>
 #include <unicode/casemap.h>
+#include <unicode/uchar.h>
+#include <unicode/utf.h>
 
-#include "base/compiler_specific.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
@@ -34,7 +36,7 @@ inline bool LocaleIdMatchesLang(const AtomicString& locale_id,
   if (locale_id_impl->length() == lang_length) {
     return true;
   }
-  const UChar maybe_delimiter = UNSAFE_TODO((*locale_id_impl)[lang_length]);
+  const UChar maybe_delimiter = locale_id[lang_length];
   return maybe_delimiter == '-' || maybe_delimiter == '_' ||
          maybe_delimiter == '@';
 }
@@ -61,6 +63,39 @@ icu::Edits DecreaseFirstEditLength(const icu::Edits& edits) {
   }
   DCHECK(U_SUCCESS(error));
   return new_edits;
+}
+
+// Thread-local word `BreakIterator` reused across `icu::CaseMap::toTitle`
+// calls. The iterator picks word boundaries only; title mapping of each
+// starting code point is driven by the locale passed to `toTitle` itself,
+// so a root-locale iterator is sufficient. The iterator is intentionally
+// leaked at thread exit, matching `WordBreakIteratorPool` in
+// `text_break_iterator_icu.cc`.
+icu::BreakIterator* GetThreadLocalWordBreakIteratorForTitleCasing() {
+  thread_local icu::BreakIterator* cached_iter = []() -> icu::BreakIterator* {
+    UErrorCode status = U_ZERO_ERROR;
+    icu::BreakIterator* iter =
+        icu::BreakIterator::createWordInstance(icu::Locale::getRoot(), status);
+    if (U_FAILURE(status)) {
+      delete iter;
+      return nullptr;
+    }
+    return iter;
+  }();
+  return cached_iter;
+}
+
+bool ShouldUseLetterSentinel(UChar32 previous_character) {
+  if (U_IS_BMP(previous_character)) {
+    return u_isalpha(previous_character);
+  }
+
+  // For supplementary characters, choose the sentinel based on the
+  // word-break property, which determines whether a word boundary occurs
+  // between the preceding code point and a following letter. An ALetter
+  // does not create such a boundary.
+  return u_getIntPropertyValue(previous_character, UCHAR_WORD_BREAK) ==
+         U_WB_ALETTER;
 }
 
 scoped_refptr<StringImpl> CaseConvert(CaseMapType type,
@@ -97,6 +132,17 @@ scoped_refptr<StringImpl> CaseConvert(CaseMapType type,
             status);
         break;
       case CaseMapType::kTitle: {
+        icu::BreakIterator* word_iter =
+            GetThreadLocalWordBreakIteratorForTitleCasing();
+        // With no preceding letter, ICU starts at a word boundary.
+        if (!u_isalpha(previous_character)) [[likely]] {
+          target_length = icu::CaseMap::toTitle(
+              locale, U_TITLECASE_NO_LOWERCASE, word_iter, source16.data(),
+              int_source_length, data16.data(),
+              base::checked_cast<int32_t>(data16.size()), &edits, status);
+          break;
+        }
+
         wtf_size_t source_length = static_cast<wtf_size_t>(source16.size());
         StringBuffer<UChar> string_buffer(source_length + 1);
         base::span<UChar> string_with_previous = string_buffer.Span();
@@ -108,13 +154,13 @@ scoped_refptr<StringImpl> CaseConvert(CaseMapType type,
         string_with_previous.subspan(1u).copy_from(source16);
 
         // Add a space of the previous character at the start.
-        unsigned data_with_previous_length =
+        wtf_size_t data_with_previous_length =
             (target_length ? target_length : source_length) + 1;
         StringBuffer<UChar> data_buffer(data_with_previous_length);
         base::span<UChar> data_with_previous = data_buffer.Span();
 
         target_length = icu::CaseMap::toTitle(
-            locale, U_TITLECASE_NO_LOWERCASE, /* iter */ nullptr,
+            locale, U_TITLECASE_NO_LOWERCASE, word_iter,
             string_with_previous.data(),
             base::checked_cast<int32_t>(string_with_previous.size()),
             data_with_previous.data(),
@@ -436,6 +482,15 @@ String CaseMap::ToTitle(const String& source,
                        previous_character);
   }
   return String();
+}
+
+String CaseMap::ToTitle(const String& source,
+                        TextOffsetMap* offset_map,
+                        UChar32 previous_character) const {
+  return ToTitle(source, offset_map,
+                 ShouldUseLetterSentinel(previous_character)
+                     ? u'A'
+                     : blink::uchar::kSpace);
 }
 
 }  // namespace blink

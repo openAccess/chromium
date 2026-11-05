@@ -77,6 +77,8 @@ PLATFORM_EXPORT BASE_DECLARE_FEATURE(
     kPreventExtensionResourceFetchAcrossIsolatedWorlds);
 PLATFORM_EXPORT BASE_DECLARE_FEATURE(
     kPreventCrossWorldServiceWorkerResourceReuse);
+PLATFORM_EXPORT BASE_DECLARE_FEATURE(
+    kPreventDifferentSkipServiceWorkerResourceReuse);
 
 class BackgroundResponseProcessorFactory;
 class BlobDataHandle;
@@ -171,6 +173,19 @@ class PLATFORM_EXPORT Resource : public GarbageCollected<Resource>,
 
     // Match fails because it's a cross-world service worker resource request.
     kCrossWorldServiceWorkerResourceMismatch,
+
+    // Match fails because the response status code is 304 (Not Modified)
+    // without a body, but all other request parameters matched.
+    k304NotModified,
+
+    // Match fails due to different ServiceWorker policies (SkipServiceWorker).
+    kSkipServiceWorkerDoesNotMatch,
+
+    // Match fails because cross-`WorldForCsp()` reuse is prevented.
+    kPreventAllCrossWorldForCspReuse,
+
+    // Match fails because cross-`TargetWorld()` reuse is prevented.
+    kPreventAllCrossTargetWorldReuse,
   };
 
   Resource(const Resource&) = delete;
@@ -235,7 +250,6 @@ class PLATFORM_EXPORT Resource : public GarbageCollected<Resource>,
     return std::make_pair(std::nullopt, std::nullopt);
   }
 
-  virtual bool HasNonDegenerateContentSize() const { return false; }
   virtual bool IsAboveSpeculativeDecodeSizeThreshold() const { return false; }
 
   // If this Resource is already finished when AddClient is called, the
@@ -544,9 +558,6 @@ class PLATFORM_EXPORT Resource : public GarbageCollected<Resource>,
   const HeapHashCountedSet<WeakMember<ResourceClient>>& Clients() const {
     return clients_;
   }
-
-  void SetCachePolicyBypassingCache();
-  void ClearRangeRequestHeader();
 
   SharedBuffer* Data() const { return data_.get(); }
   void ClearData();

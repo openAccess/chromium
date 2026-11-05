@@ -126,8 +126,7 @@ void RasterSource::PlaybackDisplayListToCanvas(
   CHECK(display_list_);
   int repeat_count = std::max(1, slow_down_raster_scale_factor_for_debug_);
   PlaybackParams params(settings.image_provider, SkM44());
-  params.raster_inducing_scroll_offsets =
-      settings.raster_inducing_scroll_offsets;
+  params.raster_inducing_values = settings.raster_inducing_values;
   params.destination_hdr_headroom = settings.hdr_headroom;
   for (int i = 0; i < repeat_count; ++i) {
     display_list_->Raster(raster_canvas, params);
@@ -173,9 +172,9 @@ void RasterSource::AsValueInto(base::trace_event::TracedValue* array) const {
                                   array);
 }
 
-void RasterSource::DidBeginTracing() {
+void RasterSource::DidBeginTracing(int layer_id) {
   if (display_list_.get())
-    display_list_->EmitTraceSnapshot();
+    display_list_->EmitTraceSnapshot(layer_id);
 }
 
 RasterSource::PlaybackSettings::PlaybackSettings() = default;

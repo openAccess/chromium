@@ -30,14 +30,15 @@
 #include "media/base/video_encoder_metrics_provider.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_util.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 #include "media/media_buildflags.h"
 #include "media/muxers/muxer.h"
 #include "media/muxers/webm_muxer.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
 #include "media/video/gpu_video_accelerator_factories.h"
 #include "media/video/video_encode_accelerator_adapter.h"
 #include "media/video/video_encoder_info.h"
 #include "media/video/vpx_video_encoder.h"
+#include "third_party/blink/public/platform/modules/mediastream/web_media_stream_sink.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
 #include "third_party/blink/renderer/modules/mediarecorder/media_recorder_encoder_wrapper.h"
@@ -49,9 +50,6 @@
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_source.h"
 #include "third_party/blink/renderer/platform/wtf/bind_post_task.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_media.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/sequence_bound.h"
@@ -445,9 +443,11 @@ VideoTrackRecorderImpl::Encoder::~Encoder() = default;
 
 void VideoTrackRecorderImpl::Encoder::InitializeEncoder(
     KeyFrameRequestProcessor::Configuration key_frame_config,
+    bool cross_origin_isolated_capability,
     std::unique_ptr<media::VideoEncoderMetricsProvider> metrics_provider,
     size_t frame_buffer_pool_limit) {
-  key_frame_processor_.UpdateConfig(key_frame_config);
+  key_frame_processor_.UpdateConfig(key_frame_config,
+                                    cross_origin_isolated_capability);
   metrics_provider_ = std::move(metrics_provider);
   frame_buffer_pool_limit_ = frame_buffer_pool_limit;
   Initialize();
@@ -800,11 +800,13 @@ VideoTrackRecorderImpl::VideoTrackRecorderImpl(
     WeakCell<CallbackInterface>* callback_interface,
     uint32_t bits_per_second,
     KeyFrameRequestProcessor::Configuration key_frame_config,
+    bool cross_origin_isolated_capability,
     size_t frame_buffer_pool_limit)
     : VideoTrackRecorder(std::move(main_thread_task_runner),
                          callback_interface),
       track_(track),
       key_frame_config_(key_frame_config),
+      cross_origin_isolated_capability_(cross_origin_isolated_capability),
       codec_profile_(codec_profile),
       bits_per_second_(bits_per_second),
       frame_buffer_pool_limit_(frame_buffer_pool_limit) {
@@ -1020,8 +1022,8 @@ void VideoTrackRecorderImpl::InitializeEncoder(
           : nullptr;
 
   encoder_.AsyncCall(&Encoder::InitializeEncoder)
-      .WithArgs(key_frame_config_, std::move(metrics_provider),
-                frame_buffer_pool_limit_);
+      .WithArgs(key_frame_config_, cross_origin_isolated_capability_,
+                std::move(metrics_provider), frame_buffer_pool_limit_);
   if (should_pause_encoder_on_initialization_) {
     encoder_.AsyncCall(&Encoder::SetPaused).WithArgs(true);
   }
@@ -1043,8 +1045,8 @@ void VideoTrackRecorderImpl::OnHardwareEncoderError(
 
 void VideoTrackRecorderImpl::ConnectToTrack(
     const VideoCaptureDeliverFrameCB& callback) {
-  track_->AddSink(this, callback, MediaStreamVideoSink::IsSecure::kNo,
-                  MediaStreamVideoSink::UsesAlpha::kDefault);
+  track_->AddSink(this, callback, WebMediaStreamSink::IsSecure::kNo,
+                  WebMediaStreamSink::UsesAlpha::kDefault);
 }
 
 void VideoTrackRecorderImpl::DisconnectFromTrack() {
@@ -1057,11 +1059,12 @@ VideoTrackRecorderPassthrough::VideoTrackRecorderPassthrough(
     scoped_refptr<base::SingleThreadTaskRunner> main_thread_task_runner,
     MediaStreamComponent* track,
     WeakCell<CallbackInterface>* callback_interface,
-    KeyFrameRequestProcessor::Configuration key_frame_config)
+    KeyFrameRequestProcessor::Configuration key_frame_config,
+    bool cross_origin_isolated_capability)
     : VideoTrackRecorder(std::move(main_thread_task_runner),
                          callback_interface),
       track_(track),
-      key_frame_processor_(key_frame_config) {
+      key_frame_processor_(key_frame_config, cross_origin_isolated_capability) {
   CHECK(main_thread_task_runner_);
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_checker_);
   // HandleEncodedVideoFrame() will be called on Render Main thread.

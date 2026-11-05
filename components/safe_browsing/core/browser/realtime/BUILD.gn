@@ -7,8 +7,6 @@ static_library("policy_engine") {
     "policy_engine.cc",
     "policy_engine.h",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
   deps = [
     "//base",
     "//components/enterprise/connectors/core",
@@ -30,8 +28,6 @@ static_library("url_lookup_service") {
     "url_lookup_service.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   deps = [
     ":policy_engine",
     ":url_lookup_service_base",
@@ -44,7 +40,7 @@ static_library("url_lookup_service") {
     "//components/safe_browsing/core/browser:referring_app_info",
     "//components/safe_browsing/core/browser:token_fetcher",
     "//components/safe_browsing/core/browser:verdict_cache_manager",
-    "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
+    "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
     "//components/safe_browsing/core/browser/utils",
     "//components/safe_browsing/core/common",
     "//components/safe_browsing/core/common:safe_browsing_prefs",
@@ -80,6 +76,7 @@ static_library("enterprise_url_lookup_service") {
     "//components/safe_browsing/core/common:features",
     "//components/safe_browsing/core/common/proto:csd_proto",
     "//components/safe_browsing/core/common/proto:realtimeapi_proto",
+    "//components/sessions:session_id",
     "//components/signin/public/identity_manager",
     "//net/traffic_annotation",
     "//services/network/public/cpp",
@@ -93,8 +90,6 @@ static_library("url_lookup_service_base") {
     "url_lookup_service_base.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   deps = [
     "//base",
     "//components/enterprise/common/proto:connectors_proto",
@@ -107,7 +102,7 @@ static_library("url_lookup_service_base") {
     "//components/safe_browsing/core/browser:referring_app_info",
     "//components/safe_browsing/core/browser:token_fetcher",
     "//components/safe_browsing/core/browser:verdict_cache_manager",
-    "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
+    "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
     "//components/safe_browsing/core/browser/utils",
     "//components/safe_browsing/core/common",
     "//components/safe_browsing/core/common:safe_browsing_prefs",
@@ -163,6 +158,7 @@ source_set("unit_tests") {
     "//components/unified_consent",
     "//components/user_prefs",
     "//components/variations/service",
+    "//net:test_support",
     "//services/network:test_support",
     "//services/network/public/cpp",
     "//services/network/public/mojom",

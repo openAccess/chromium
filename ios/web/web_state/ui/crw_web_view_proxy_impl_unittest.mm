@@ -15,6 +15,13 @@
 // The typedef doesn't work with OCMock. Create a real class to be able to mock
 // it.
 @interface CRWFakeContentView : CRWContentView
+// The last values passed to `setMinimumViewportInset:maximumViewportInset:`.
+@property(nonatomic, readonly) UIEdgeInsets minimumViewportInset;
+@property(nonatomic, readonly) UIEdgeInsets maximumViewportInset;
+// The number of calls to `setMinimumViewportInset:maximumViewportInset:`.
+@property(nonatomic, readonly) int viewportInsetsCallCount;
+// The number of calls to `setObscuredInsets:initialVelocity:`.
+@property(nonatomic, readonly) int obscuredInsetsCallCount;
 @end
 
 @implementation CRWFakeContentView
@@ -28,13 +35,21 @@
   return YES;
 }
 
+- (void)setObscuredInsets:(UIEdgeInsets)obscuredInsets {
+  [self setObscuredInsets:obscuredInsets initialVelocity:0.0];
+}
+
 - (void)setObscuredInsets:(UIEdgeInsets)obscuredInsets
           initialVelocity:(CGFloat)initialVelocity {
   _obscuredInsets = obscuredInsets;
+  _obscuredInsetsCallCount++;
 }
 
 - (void)setMinimumViewportInset:(UIEdgeInsets)minInset
            maximumViewportInset:(UIEdgeInsets)maxInset {
+  _minimumViewportInset = minInset;
+  _maximumViewportInset = maxInset;
+  _viewportInsetsCallCount++;
 }
 
 @end
@@ -69,6 +84,93 @@ TEST_F(CRWWebViewProxyImplTest, ContentViewPresent) {
   fakeContentView.shouldUseViewContentInset = NO;
   proxy.shouldUseViewContentInset = YES;
   EXPECT_TRUE(fakeContentView.shouldUseViewContentInset);
+}
+
+// Tests that `shouldUseViewContentInset`, viewport insets, and `obscuredInsets`
+// set before a content view exists are applied once it is set, which happens
+// for WebStates shown before their web view is created (e.g. windows opened by
+// DOM or navigating away from the NTP).
+TEST_F(CRWWebViewProxyImplTest, AppliesCachedValuesToLaterContentView) {
+  CRWWebViewProxyImpl* proxy = [[CRWWebViewProxyImpl alloc] init];
+  const UIEdgeInsets minInset = UIEdgeInsetsMake(10, 0, 0, 0);
+  const UIEdgeInsets maxInset = UIEdgeInsetsMake(20, 0, 30, 0);
+  const UIEdgeInsets obscuredInsets = UIEdgeInsetsMake(20, 0, 30, 0);
+  proxy.shouldUseViewContentInset = YES;
+  [proxy setMinimumViewportInset:minInset maximumViewportInset:maxInset];
+  proxy.obscuredInsets = obscuredInsets;
+
+  CRWFakeContentView* fakeContentView = [[CRWFakeContentView alloc] init];
+  proxy.contentView = fakeContentView;
+  EXPECT_TRUE(fakeContentView.shouldUseViewContentInset);
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(
+      minInset, fakeContentView.minimumViewportInset));
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(
+      maxInset, fakeContentView.maximumViewportInset));
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(obscuredInsets,
+                                            fakeContentView.obscuredInsets));
+
+  // A replacement content view receives the same values.
+  CRWFakeContentView* replacementContentView =
+      [[CRWFakeContentView alloc] init];
+  proxy.contentView = replacementContentView;
+  EXPECT_TRUE(replacementContentView.shouldUseViewContentInset);
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(
+      minInset, replacementContentView.minimumViewportInset));
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(
+      maxInset, replacementContentView.maximumViewportInset));
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(
+      obscuredInsets, replacementContentView.obscuredInsets));
+}
+
+// Tests that the cached values are re-applied to a content view set after the
+// previous one was cleared.
+TEST_F(CRWWebViewProxyImplTest, AppliesCachedValuesAfterContentViewCleared) {
+  CRWWebViewProxyImpl* proxy = [[CRWWebViewProxyImpl alloc] init];
+  CRWFakeContentView* initialContentView = [[CRWFakeContentView alloc] init];
+  proxy.contentView = initialContentView;
+  const UIEdgeInsets minInset = UIEdgeInsetsMake(10, 0, 0, 0);
+  const UIEdgeInsets maxInset = UIEdgeInsetsMake(20, 0, 30, 0);
+  const UIEdgeInsets obscuredInsets = UIEdgeInsetsMake(20, 0, 30, 0);
+  proxy.shouldUseViewContentInset = YES;
+  [proxy setMinimumViewportInset:minInset maximumViewportInset:maxInset];
+  proxy.obscuredInsets = obscuredInsets;
+
+  [proxy clearContentViewAndAddPlaceholder:YES];
+  EXPECT_FALSE(proxy.shouldUseViewContentInset);
+
+  CRWFakeContentView* fakeContentView = [[CRWFakeContentView alloc] init];
+  proxy.contentView = fakeContentView;
+  EXPECT_TRUE(fakeContentView.shouldUseViewContentInset);
+  EXPECT_TRUE(proxy.shouldUseViewContentInset);
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(
+      minInset, fakeContentView.minimumViewportInset));
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(
+      maxInset, fakeContentView.maximumViewportInset));
+  EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(obscuredInsets,
+                                            fakeContentView.obscuredInsets));
+}
+
+// Tests that the last `shouldUseViewContentInset` value is the one applied to
+// a new content view.
+TEST_F(CRWWebViewProxyImplTest, AppliesLatestShouldUseViewContentInset) {
+  CRWWebViewProxyImpl* proxy = [[CRWWebViewProxyImpl alloc] init];
+  proxy.shouldUseViewContentInset = YES;
+  proxy.shouldUseViewContentInset = NO;
+
+  CRWFakeContentView* fakeContentView = [[CRWFakeContentView alloc] init];
+  fakeContentView.shouldUseViewContentInset = YES;
+  proxy.contentView = fakeContentView;
+  EXPECT_FALSE(fakeContentView.shouldUseViewContentInset);
+}
+
+// Tests that viewport and obscured insets are not forwarded to a new content
+// view if they were never set.
+TEST_F(CRWWebViewProxyImplTest, DoesNotApplyUnsetViewportInsets) {
+  CRWWebViewProxyImpl* proxy = [[CRWWebViewProxyImpl alloc] init];
+  CRWFakeContentView* fakeContentView = [[CRWFakeContentView alloc] init];
+  proxy.contentView = fakeContentView;
+  EXPECT_EQ(0, fakeContentView.viewportInsetsCallCount);
+  EXPECT_EQ(0, fakeContentView.obscuredInsetsCallCount);
 }
 
 // Tests allowsBackForwardNavigationGestures property is delegated to
@@ -124,6 +226,46 @@ TEST_F(CRWWebViewProxyImplTest, IgnoreObscuredInsets) {
   proxy.obscuredInsets = obscuredInsets;
   EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(obscuredInsets,
                                             fakeContentView.obscuredInsets));
+}
+
+// Tests obscuredContentInsets property is delegated to CRWWebController.
+TEST_F(CRWWebViewProxyImplTest, ObscuredContentInsets) {
+  if (@available(iOS 26.0, *)) {
+    CRWWebController* mockWebController =
+        OCMStrictClassMock([CRWWebController class]);
+    CRWWebViewProxyImpl* proxy =
+        [[CRWWebViewProxyImpl alloc] initWithWebController:mockWebController];
+
+    UIEdgeInsets test_insets = UIEdgeInsetsMake(10, 20, 30, 40);
+    OCMStub([mockWebController obscuredContentInsets]).andReturn(test_insets);
+    EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(test_insets,
+                                              proxy.obscuredContentInsets));
+
+    OCMExpect([mockWebController setObscuredContentInsets:test_insets]);
+    proxy.obscuredContentInsets = test_insets;
+    EXPECT_OCMOCK_VERIFY((id)mockWebController);
+  }
+}
+
+// Tests that `shouldSuppressInputViews` is delegated to `CRWWebController`.
+TEST_F(CRWWebViewProxyImplTest, ShouldSuppressInputViews) {
+  CRWWebController* mockWebController =
+      OCMStrictClassMock([CRWWebController class]);
+  CRWWebViewProxyImpl* proxy =
+      [[CRWWebViewProxyImpl alloc] initWithWebController:mockWebController];
+
+  OCMExpect([mockWebController shouldSuppressInputViews]).andReturn(YES);
+  EXPECT_TRUE(proxy.shouldSuppressInputViews);
+
+  OCMExpect([mockWebController setShouldSuppressInputViews:YES]);
+  proxy.shouldSuppressInputViews = YES;
+
+  OCMExpect([mockWebController shouldSuppressInputViews]).andReturn(NO);
+  EXPECT_FALSE(proxy.shouldSuppressInputViews);
+
+  OCMExpect([mockWebController setShouldSuppressInputViews:NO]);
+  proxy.shouldSuppressInputViews = NO;
+  EXPECT_OCMOCK_VERIFY((id)mockWebController);
 }
 
 }  // namespace

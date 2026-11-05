@@ -26,6 +26,7 @@
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/background.h"
+#include "ui/views/layout/box_layout.h"
 
 namespace {
 constexpr int kCloseButtonSize = 16;
@@ -87,6 +88,9 @@ void ToolbarGlicButton::AddedToWidget() {
                                     : kColorToolbarGlicButtonBackgroundDefault);
   }
   GlicButton<ToolbarButton>::AddedToWidget();
+  if (ShouldApplyCustomThemeFallback()) {
+    SetEnabledTextColors(GetHighlightTextColor());
+  }
 }
 
 bool ToolbarGlicButton::IsWidgetAlive() const {
@@ -143,6 +147,9 @@ int ToolbarGlicButton::GetIconSize() const {
 
 void ToolbarGlicButton::UpdateColors() {
   ToolbarButton::UpdateColorsAndInsets();
+  if (ShouldApplyCustomThemeFallback()) {
+    SetEnabledTextColors(GetHighlightTextColor());
+  }
 }
 
 void ToolbarGlicButton::UpdateStyle(bool should_match_toolbar) {
@@ -177,16 +184,6 @@ void ToolbarGlicButton::AddCloseButton(PressedCallback pressed_callback) {
   close_button->SetTooltipText(
       l10n_util::GetStringUTF16(IDS_TOOLTIP_GLIC_CLOSE));
 
-  const ui::ImageModel icon_image_model = ui::ImageModel::FromVectorIcon(
-      features::IsRoundedIconsEnabled()
-          ? vector_icons::kCloseIcon
-          : vector_icons::kCloseChromeRefreshOldIcon,
-      kColorTabSearchButtonCRForegroundFrameActive, kCloseButtonSize);
-
-  close_button->SetImageModel(views::Button::STATE_NORMAL, icon_image_model);
-  close_button->SetImageModel(views::Button::STATE_HOVERED, icon_image_model);
-  close_button->SetImageModel(views::Button::STATE_PRESSED, icon_image_model);
-
   close_button->SetPaintToLayer();
   close_button->layer()->SetFillsBoundsOpaquely(false);
 
@@ -194,8 +191,6 @@ void ToolbarGlicButton::AddCloseButton(PressedCallback pressed_callback) {
       ->SetMode(views::InkDropHost::InkDropMode::ON);
   views::InkDrop::Get(close_button.get())->SetHighlightOpacity(0.16f);
   views::InkDrop::Get(close_button.get())->SetVisibleOpacity(0.14f);
-  views::InkDrop::Get(close_button.get())
-      ->SetBaseColor(kColorTabSearchButtonCRForegroundFrameActive);
 
   auto ink_drop_highlight_path =
       std::make_unique<views::CircleHighlightPathGenerator>(gfx::Insets());
@@ -210,7 +205,30 @@ void ToolbarGlicButton::AddCloseButton(PressedCallback pressed_callback) {
   close_button->SetProperty(views::kMarginsKey, margin);
 
   close_button_ = AddChildView(std::move(close_button));
+  UpdateCloseButton();
   SetIsShowingNudge(false);
+}
+
+void ToolbarGlicButton::UpdateCloseButton() {
+  if (!close_button_) {
+    return;
+  }
+  const ui::ColorId close_button_color =
+      ShouldApplyCustomThemeFallback()
+          ? GetCustomThemeForegroundId()
+          : kColorTabSearchButtonCRForegroundFrameActive;
+
+  const ui::ImageModel icon_image_model = ui::ImageModel::FromVectorIcon(
+      features::IsRoundedIconsEnabled()
+          ? vector_icons::kCloseIcon
+          : vector_icons::kCloseChromeRefreshOldIcon,
+      close_button_color, kCloseButtonSize);
+
+  auto* close_btn = static_cast<views::LabelButton*>(close_button_);
+  close_btn->SetImageModel(views::Button::STATE_NORMAL, icon_image_model);
+  close_btn->SetImageModel(views::Button::STATE_HOVERED, icon_image_model);
+  close_btn->SetImageModel(views::Button::STATE_PRESSED, icon_image_model);
+  views::InkDrop::Get(close_btn)->SetBaseColor(close_button_color);
 }
 
 BrowserFrameView* ToolbarGlicButton::GetBrowserFrameView() const {
@@ -270,8 +288,28 @@ void ToolbarGlicButton::OnBoundsChanged(const gfx::Rect& previous_bounds) {
   }
 }
 
+void ToolbarGlicButton::SetIsShowingNudge(bool is_showing) {
+  GlicButton<ToolbarButton>::SetIsShowingNudge(is_showing);
+}
+
 bool ToolbarGlicButton::GetIsShowingNudge() const {
   return width_state_ == WidthState::kNudge;
+}
+
+void ToolbarGlicButton::SetNudgeLabel(std::string label) {
+  GlicButton<ToolbarButton>::SetNudgeLabel(std::move(label));
+}
+
+void ToolbarGlicButton::SetVisible(bool visible) {
+  GlicButton<ToolbarButton>::SetVisible(visible);
+}
+
+bool ToolbarGlicButton::IsVisible() const {
+  return views::View::GetVisible();
+}
+
+void ToolbarGlicButton::SetGlicPanelIsOpen(bool open) {
+  GlicButton<ToolbarButton>::SetGlicPanelIsOpen(open);
 }
 
 void ToolbarGlicButton::ResetSplitButtonCornerStyling() {
@@ -290,12 +328,19 @@ ui::ColorId ToolbarGlicButton::GetCustomThemeForegroundId() const {
   return kColorAvatarButtonHighlightDefaultForeground;
 }
 
+SkColor ToolbarGlicButton::GetForegroundColor(ButtonState state) const {
+  if (const auto color = GetHighlightTextColor()) {
+    return *color;
+  }
+  return ToolbarButton::GetForegroundColor(state);
+}
+
 std::optional<SkColor> ToolbarGlicButton::GetHighlightTextColor() const {
   if (ShouldApplyCustomThemeFallback() && GetColorProvider()) {
     return GetColorProvider()->GetColor(
         kColorAvatarButtonHighlightDefaultForeground);
   }
-  return GlicButton<ToolbarButton>::GetHighlightTextColor();
+  return ToolbarButton::GetHighlightTextColor();
 }
 
 void ToolbarGlicButton::OnThemeChanged() {
@@ -311,6 +356,10 @@ void ToolbarGlicButton::OnThemeChanged() {
                                     : kColorToolbarGlicButtonBackgroundDefault);
   }
   ToolbarButton::OnThemeChanged();
+  if (ShouldApplyCustomThemeFallback()) {
+    SetEnabledTextColors(GetHighlightTextColor());
+  }
+  UpdateCloseButton();
 }
 
 BEGIN_METADATA(ToolbarGlicButton)

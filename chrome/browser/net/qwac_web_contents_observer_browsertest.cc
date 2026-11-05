@@ -15,6 +15,7 @@
 #include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/network_service_instance.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
@@ -262,10 +263,13 @@ class QwacWebContentsObserverBrowserTest
     additional_cert->set_der(base::as_string_view(eutl_cert->cert_span()));
     additional_cert->set_eutl(true);
 
+    auto update = cert_verifier::mojom::PKIMetadataUpdate::New();
+    update->chrome_root_store =
+        cert_verifier::mojom::ChromeRootStoreUpdate::New(
+            mojo_base::ProtoWrapper(root_store_proto), std::nullopt);
     base::RunLoop update_run_loop;
-    content::GetCertVerifierServiceFactory()->UpdateChromeRootStore(
-        mojo_base::ProtoWrapper(root_store_proto), std::nullopt,
-        update_run_loop.QuitClosure());
+    content::GetCertVerifierServiceFactory()->UpdatePKIMetadata(
+        std::move(update), update_run_loop.QuitClosure());
     update_run_loop.Run();
   }
 

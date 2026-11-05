@@ -6,8 +6,6 @@
 
 #include <algorithm>
 
-#include "ash/constants/ash_features.h"
-#include "ash/display/display_alignment_controller.h"
 #include "ash/display/display_highlight_controller.h"
 #include "ash/display/screen_orientation_controller.h"
 #include "ash/display/screen_orientation_controller_test_api.h"
@@ -19,7 +17,6 @@
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
-#include "base/test/scoped_feature_list.h"
 #include "ui/display/display_switches.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/manager/test/touch_transform_controller_test_api.h"
@@ -87,8 +84,6 @@ class CrosDisplayConfigTest : public AshTestBase {
   ~CrosDisplayConfigTest() override = default;
 
   void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(features::kDisplayAlignAssist);
-
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
         switches::kUseFirstDisplayAsInternal);
     AshTestBase::SetUp();
@@ -171,22 +166,10 @@ class CrosDisplayConfigTest : public AshTestBase {
     cros_display_config_->HighlightDisplay(id);
   }
 
-  void DragDisplayDelta(int64_t id, int32_t delta_x, int32_t delta_y) {
-    cros_display_config_->DragDisplayDelta(id, delta_x, delta_y);
-  }
-
-  bool PreviewIndicatorsExist() {
-    return !Shell::Get()
-                ->display_alignment_controller()
-                ->GetActiveIndicatorsForTesting()
-                .empty();
-  }
-
   CrosDisplayConfigImpl* cros_display_config() { return cros_display_config_; }
 
  private:
   raw_ptr<CrosDisplayConfigImpl> cros_display_config_ = nullptr;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(CrosDisplayConfigTest, OnDisplayConfigChanged) {
@@ -462,22 +445,85 @@ TEST_F(CrosDisplayConfigTest, SetDisplayPropertiesPrimary) {
 }
 
 TEST_F(CrosDisplayConfigTest, SetDisplayPropertiesOverscan) {
-  UpdateDisplay("1200x600,600x1000*2");
+  UpdateDisplay("1200x600,1200x1920*2");
   const display::Display& secondary =
       display::test::DisplayManagerTestApi(display_manager())
           .GetSecondaryDisplay();
 
+  // Secondary display is 1200x1920*2 (600x960 DIP), so max overscan per side
+  // is 150 DIP horizontally and 240 DIP vertically.
   DisplayConfigProperties properties;
-  properties.overscan = gfx::Insets::TLBR(199, 20, 51, 130);
+  properties.overscan = gfx::Insets::TLBR(240, 20, 51, 150);
   DisplayConfigResult result = SetDisplayProperties(secondary.id(), properties);
   EXPECT_EQ(DisplayConfigResult::kSuccess, result);
-  EXPECT_EQ(gfx::Rect(1200, 0, 150, 250), secondary.bounds());
-  const gfx::Insets overscan =
-      display_manager()->GetOverscanInsets(secondary.id());
-  EXPECT_EQ(199, overscan.top());
-  EXPECT_EQ(20, overscan.left());
-  EXPECT_EQ(51, overscan.bottom());
-  EXPECT_EQ(130, overscan.right());
+  EXPECT_EQ((gfx::Rect{1200, 0, 430, 669}), secondary.bounds());
+  EXPECT_EQ(gfx::Insets::TLBR(240, 20, 51, 150),
+            display_manager()->GetOverscanInsets(secondary.id()));
+
+  // Maximum 1/4 per side on all 4 edges succeeds and preserves 1/2 bounds.
+  properties.overscan = gfx::Insets::TLBR(240, 150, 240, 150);
+  EXPECT_EQ(DisplayConfigResult::kSuccess,
+            SetDisplayProperties(secondary.id(), properties));
+  EXPECT_EQ((gfx::Rect{1200, 0, 300, 480}), secondary.bounds());
+  EXPECT_EQ(gfx::Insets::TLBR(240, 150, 240, 150),
+            display_manager()->GetOverscanInsets(secondary.id()));
+
+  // Exceeding 1/4 on any single edge fails even if opposite edges sum <= 1/2.
+  properties.overscan = gfx::Insets::TLBR(241, 20, 10, 20);
+  EXPECT_EQ(DisplayConfigResult::kPropertyValueOutOfRangeError,
+            SetDisplayProperties(secondary.id(), properties));
+  properties.overscan = gfx::Insets::TLBR(10, 20, 10, 151);
+  EXPECT_EQ(DisplayConfigResult::kPropertyValueOutOfRangeError,
+            SetDisplayProperties(secondary.id(), properties));
+  EXPECT_EQ(gfx::Insets::TLBR(240, 150, 240, 150),
+            display_manager()->GetOverscanInsets(secondary.id()));
+
+  // Validation uses unrotated, unzoomed pixel dimensions even when the display
+  // is rotated 90 degrees or zoomed.
+  display_manager()->SetDisplayRotation(secondary.id(),
+                                        display::Display::ROTATE_90,
+                                        display::Display::RotationSource::USER);
+  display_manager()->UpdateZoomFactor(secondary.id(), 1.5f);
+  properties.overscan = gfx::Insets::TLBR(240, 150, 240, 150);
+  EXPECT_EQ(DisplayConfigResult::kSuccess,
+            SetDisplayProperties(secondary.id(), properties));
+  properties.overscan = gfx::Insets::TLBR(10, 20, 10, 151);
+  EXPECT_EQ(DisplayConfigResult::kPropertyValueOutOfRangeError,
+            SetDisplayProperties(secondary.id(), properties));
+
+  // When oversized overscan exists (e.g. from stale prefs or a mode change),
+  // GetDisplayUnitInfoList() reports the clamped DIP insets, and passing that
+  // value back to SetDisplayProperties() succeeds.
+  display_manager()->SetOverscanInsets(secondary.id(), gfx::Insets(500));
+  std::vector<DisplayUnitInfo> unit_info_list = GetDisplayUnitInfoList();
+  ASSERT_EQ(2u, unit_info_list.size());
+  EXPECT_EQ(gfx::Insets::TLBR(240, 150, 240, 150), unit_info_list[1].overscan);
+  properties.overscan = unit_info_list[1].overscan;
+  EXPECT_EQ(DisplayConfigResult::kSuccess,
+            SetDisplayProperties(secondary.id(), properties));
+
+  // Fractional DSF (1366x768*1.25): valid small DIP insets round-trip without
+  // truncation loss, and oversized DIP insets clamp to max valid DIPs
+  // (341 px -> 272 DIP horizontally, 192 px -> 153 DIP vertically).
+  UpdateDisplay("1200x600,1366x768*1.25");
+  const display::Display& fractional_secondary =
+      display::test::DisplayManagerTestApi(display_manager())
+          .GetSecondaryDisplay();
+  properties.overscan = gfx::Insets(3);
+  EXPECT_EQ(DisplayConfigResult::kSuccess,
+            SetDisplayProperties(fractional_secondary.id(), properties));
+  unit_info_list = GetDisplayUnitInfoList();
+  ASSERT_EQ(2u, unit_info_list.size());
+  EXPECT_EQ(gfx::Insets(3), unit_info_list[1].overscan);
+
+  display_manager()->SetOverscanInsets(fractional_secondary.id(),
+                                       gfx::Insets(500));
+  unit_info_list = GetDisplayUnitInfoList();
+  ASSERT_EQ(2u, unit_info_list.size());
+  EXPECT_EQ(gfx::Insets::VH(153, 272), unit_info_list[1].overscan);
+  properties.overscan = unit_info_list[1].overscan;
+  EXPECT_EQ(DisplayConfigResult::kSuccess,
+            SetDisplayProperties(fractional_secondary.id(), properties));
 }
 
 TEST_F(CrosDisplayConfigTest, SetDisplayPropertiesRotation) {
@@ -559,11 +605,11 @@ TEST_F(CrosDisplayConfigTest, SetDisplayPropertiesBoundsOrigin) {
 }
 
 TEST_F(CrosDisplayConfigTest, SetDisplayPropertiesDisplayZoomFactor) {
-  static std::string configs[] = {
+  static constexpr const char* kConfigs[] = {
       "1200x600, 1600x1000#1600x1000",  // landscape
       "600x1200, 1000x1600#1000x1600",  // portrait
   };
-  for (auto config : configs) {
+  for (const char* config : kConfigs) {
     SCOPED_TRACE(config);
     UpdateDisplay(config);
     display::DisplayIdList display_id_list =
@@ -918,18 +964,6 @@ TEST_F(CrosDisplayConfigTest, HighlightDisplayInvalid) {
 
   EXPECT_EQ(Shell::Get()->display_highlight_controller()->GetWidgetForTesting(),
             nullptr);
-}
-
-TEST_F(CrosDisplayConfigTest, DragDisplayDelta) {
-  UpdateDisplay("500x400,500x400");
-
-  const auto& display = display_manager()->GetDisplayAt(0);
-
-  EXPECT_FALSE(PreviewIndicatorsExist());
-
-  DragDisplayDelta(display.id(), 0, 16);
-
-  EXPECT_TRUE(PreviewIndicatorsExist());
 }
 
 }  // namespace ash

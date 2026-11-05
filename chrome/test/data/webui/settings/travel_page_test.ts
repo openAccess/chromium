@@ -6,55 +6,71 @@ import 'chrome://settings/settings.js';
 
 import {AiEnterpriseFeaturePrefName, EntityDataManagerProxyImpl} from 'chrome://settings/lazy_load.js';
 import type {SettingsAutofillAiEntriesListElement, SettingsTravelPageElement} from 'chrome://settings/lazy_load.js';
-import {CrSettingsPrefs, loadTimeData, ModelExecutionEnterprisePolicyValue, resetRouterForTesting, Router} from 'chrome://settings/settings.js';
-import type {SettingsPrefsElement} from 'chrome://settings/settings.js';
-import {MetricsBrowserProxyImpl} from 'chrome://settings/settings.js';
+import {loadTimeData, MetricsBrowserProxyImpl, ModelExecutionEnterprisePolicyValue, PrefsBrowserProxy, PrefService, resetRouterForTesting, Router} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
+import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestEntityDataManagerProxy} from './test_entity_data_manager_proxy.js';
 import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 
 suite('TravelPage', function() {
   let entityDataManager: TestEntityDataManagerProxy;
-  let settingsPrefs: SettingsPrefsElement;
+  let prefsBrowserProxy: TestPrefsBrowserProxy;
+  let prefService: PrefService;
 
-  suiteSetup(function() {
-    settingsPrefs = document.createElement('settings-prefs');
-    return CrSettingsPrefs.initialized;
-  });
-
-  setup(function() {
+  setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    prefsBrowserProxy = new TestPrefsBrowserProxy([
+      {
+        key: 'autofill.autofill_ai.travel_entities_enabled',
+        type: chrome.settingsPrivate.PrefType.BOOLEAN,
+        value: true,
+      },
+      {
+        key: 'autofill.profile_enabled',
+        type: chrome.settingsPrivate.PrefType.BOOLEAN,
+        value: true,
+      },
+      {
+        key: AiEnterpriseFeaturePrefName.AUTOFILL_AI,
+        type: chrome.settingsPrivate.PrefType.NUMBER,
+        value: ModelExecutionEnterprisePolicyValue.ALLOW,
+      },
+      {
+        key: 'autofill.types_blocked',
+        type: chrome.settingsPrivate.PrefType.LIST,
+        value: [],
+      },
+    ]);
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+    PrefService.resetInstanceForTesting();
+    prefService = PrefService.getInstance();
+    await prefService.whenInitialized();
+
     entityDataManager = new TestEntityDataManagerProxy();
     EntityDataManagerProxyImpl.setInstance(entityDataManager);
   });
 
   async function setupPage(): Promise<SettingsTravelPageElement> {
     const page = document.createElement('settings-travel-page');
-    page.prefs = settingsPrefs.prefs!;
     document.body.appendChild(page);
-    await flushTasks();
+    await microtasksFinished();
     return page;
   }
-
-  suiteTeardown(function() {
-    CrSettingsPrefs.resetForTesting();
-  });
 
   [{travelOptIn: true},
    {travelOptIn: false},
   ].forEach(({travelOptIn}) => {
-    test(`Toggle should show current opt-in status`, async function() {
+    test('Toggle should show current opt-in status', async function() {
       loadTimeData.overrideValues({
         canEnableOrDisableAutofillAi: true,
       });
 
       entityDataManager.setGetOptInStatusResponse(true);
 
-      settingsPrefs.set(
-          'prefs.autofill.autofill_ai.travel_entities_enabled.value',
-          travelOptIn);
+      prefService.setPrefValue(
+          'autofill.autofill_ai.travel_entities_enabled', travelOptIn);
 
       const page = await setupPage();
 
@@ -63,32 +79,36 @@ suite('TravelPage', function() {
     });
   });
 
-  test(`Toggle should switch opt-in status in prefs`, async function() {
+  test('Toggle should switch opt-in status in prefs', async function() {
     loadTimeData.overrideValues({canEnableOrDisableAutofillAi: true});
 
     entityDataManager.setGetOptInStatusResponse(true);
 
-    settingsPrefs.set(
-        'prefs.autofill.autofill_ai.travel_entities_enabled.value', true);
+    prefService.setPrefValue(
+        'autofill.autofill_ai.travel_entities_enabled', true);
 
     const page = await setupPage();
 
     assertTrue(page.$.optInToggle.checked);
-    assertTrue(settingsPrefs.get(
-        'prefs.autofill.autofill_ai.travel_entities_enabled.value'));
+    assertTrue(
+        prefService
+            .getPref<boolean>('autofill.autofill_ai.travel_entities_enabled')
+            .value);
 
     const entriesList =
-        page.shadowRoot!.querySelector<SettingsAutofillAiEntriesListElement>(
+        page.shadowRoot.querySelector<SettingsAutofillAiEntriesListElement>(
             'settings-autofill-ai-entries-list')!;
     assertTrue(!!entriesList);
     assertTrue(entriesList.allowNewEntitiesAdditionPref!.value);
 
     page.$.optInToggle.click();
-    await flushTasks();
+    await microtasksFinished();
 
     assertFalse(page.$.optInToggle.checked);
-    assertFalse(settingsPrefs.get(
-        'prefs.autofill.autofill_ai.travel_entities_enabled.value'));
+    assertFalse(
+        prefService
+            .getPref<boolean>('autofill.autofill_ai.travel_entities_enabled')
+            .value);
     assertFalse(entriesList.allowNewEntitiesAdditionPref!.value);
   });
 
@@ -135,7 +155,7 @@ suite('TravelPage', function() {
    },
   ].forEach(({experimentEnabled, addressAutofillStatus, toggleDisabled}) => {
     test(
-        `Toggle takes into account address opt in status ` +
+        'Toggle takes into account address opt in status ' +
             `experimentEnabled(${experimentEnabled}) ` +
             `addressAutofillStatus(${addressAutofillStatus})`,
         async function() {
@@ -146,10 +166,10 @@ suite('TravelPage', function() {
 
           entityDataManager.setGetOptInStatusResponse(true);
 
-          settingsPrefs.set(
-              'prefs.autofill.autofill_ai.travel_entities_enabled.value', true);
-          settingsPrefs.set(
-              'prefs.autofill.profile_enabled.value', addressAutofillStatus);
+          prefService.setPrefValue(
+              'autofill.autofill_ai.travel_entities_enabled', true);
+          prefService.setPrefValue(
+              'autofill.profile_enabled', addressAutofillStatus);
 
           const page = await setupPage();
 
@@ -166,19 +186,20 @@ suite('TravelPage', function() {
           canEnableOrDisableAutofillAi: true,
         });
 
-        settingsPrefs.set(
-            'prefs.autofill.autofill_ai.travel_entities_enabled.value', true);
-        settingsPrefs.set('prefs.autofill.profile_enabled', {
+        prefService.setPrefValue(
+            'autofill.autofill_ai.travel_entities_enabled', true);
+        prefsBrowserProxy.fakeApi.sendPrefChanges([{
+          key: 'autofill.profile_enabled',
           value: false,
           enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
           controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
-        });
+        }]);
 
         const page = await setupPage();
-        const policyIndicator = page.$.optInToggle.shadowRoot!.querySelector(
+        const policyIndicator = page.$.optInToggle.shadowRoot.querySelector(
             'cr-policy-pref-indicator');
         const extensionControlledIndicator =
-            page.shadowRoot!.querySelector('#autofillExtensionIndicator');
+            page.shadowRoot.querySelector('#autofillExtensionIndicator');
 
         assertTrue(!!policyIndicator);
         assertFalse(!!extensionControlledIndicator);
@@ -194,20 +215,21 @@ suite('TravelPage', function() {
           canEnableOrDisableAutofillAi: true,
         });
 
-        settingsPrefs.set(
-            'prefs.autofill.autofill_ai.travel_entities_enabled.value', true);
-        settingsPrefs.set('prefs.autofill.profile_enabled', {
+        prefService.setPrefValue(
+            'autofill.autofill_ai.travel_entities_enabled', true);
+        prefsBrowserProxy.fakeApi.sendPrefChanges([{
+          key: 'autofill.profile_enabled',
           value: false,
           enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
           controlledBy: chrome.settingsPrivate.ControlledBy.EXTENSION,
           extensionId: 'test-extension-id',
-        });
+        }]);
 
         const page = await setupPage();
-        const policyIndicator = page.$.optInToggle.shadowRoot!.querySelector(
+        const policyIndicator = page.$.optInToggle.shadowRoot.querySelector(
             'cr-policy-pref-indicator');
         const extensionControlledIndicator =
-            page.shadowRoot!.querySelector('#autofillExtensionIndicator');
+            page.shadowRoot.querySelector('#autofillExtensionIndicator');
 
         assertFalse(!!policyIndicator);
         assertTrue(!!extensionControlledIndicator);
@@ -223,18 +245,19 @@ suite('TravelPage', function() {
           canEnableOrDisableAutofillAi: true,
         });
 
-        settingsPrefs.set(
-            'prefs.autofill.autofill_ai.travel_entities_enabled.value', false);
-        settingsPrefs.set('prefs.autofill.profile_enabled', {
+        prefService.setPrefValue(
+            'autofill.autofill_ai.travel_entities_enabled', false);
+        prefsBrowserProxy.fakeApi.sendPrefChanges([{
+          key: 'autofill.profile_enabled',
           value: true,
           enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
           controlledBy: chrome.settingsPrivate.ControlledBy.EXTENSION,
           extensionId: 'test-extension-id',
-        });
+        }]);
 
         const page = await setupPage();
         const extensionControlledIndicator =
-            page.shadowRoot!.querySelector('#autofillExtensionIndicator');
+            page.shadowRoot.querySelector('#autofillExtensionIndicator');
 
         assertFalse(!!extensionControlledIndicator);
         assertFalse(page.$.optInToggle.checked);
@@ -249,16 +272,17 @@ suite('TravelPage', function() {
           canEnableOrDisableAutofillAi: true,
         });
 
-        settingsPrefs.set(
-            'prefs.autofill.autofill_ai.travel_entities_enabled.value', true);
-        settingsPrefs.set(`prefs.${AiEnterpriseFeaturePrefName.AUTOFILL_AI}`, {
+        prefService.setPrefValue(
+            'autofill.autofill_ai.travel_entities_enabled', true);
+        prefsBrowserProxy.fakeApi.sendPrefChanges([{
+          key: AiEnterpriseFeaturePrefName.AUTOFILL_AI,
           value: ModelExecutionEnterprisePolicyValue.DISABLE,
           enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
           controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
-        });
+        }]);
 
         const page = await setupPage();
-        const policyIndicator = page.$.optInToggle.shadowRoot!.querySelector(
+        const policyIndicator = page.$.optInToggle.shadowRoot.querySelector(
             'cr-policy-pref-indicator');
 
         assertTrue(!!policyIndicator);
@@ -274,16 +298,17 @@ suite('TravelPage', function() {
           canEnableOrDisableAutofillAi: true,
         });
 
-        settingsPrefs.set(
-            'prefs.autofill.autofill_ai.travel_entities_enabled.value', true);
-        settingsPrefs.set(`prefs.${AiEnterpriseFeaturePrefName.AUTOFILL_AI}`, {
+        prefService.setPrefValue(
+            'autofill.autofill_ai.travel_entities_enabled', true);
+        prefsBrowserProxy.fakeApi.sendPrefChanges([{
+          key: AiEnterpriseFeaturePrefName.AUTOFILL_AI,
           value: ModelExecutionEnterprisePolicyValue.ALLOW,
           enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
           controlledBy: chrome.settingsPrivate.ControlledBy.USER_POLICY,
-        });
+        }]);
 
         const page = await setupPage();
-        const policyIndicator = page.$.optInToggle.shadowRoot!.querySelector(
+        const policyIndicator = page.$.optInToggle.shadowRoot.querySelector(
             'cr-policy-pref-indicator');
 
         assertFalse(!!policyIndicator);
@@ -299,14 +324,14 @@ suite('TravelPage', function() {
           canEnableOrDisableAutofillAi: true,
         });
 
-        settingsPrefs.set(
-            'prefs.autofill.autofill_ai.travel_entities_enabled.value', true);
-        settingsPrefs.set('prefs.autofill.types_blocked', {
-          value: [{url_pattern: '*', blocked_types: ['travel']}],
-        });
+        prefService.setPrefValue(
+            'autofill.autofill_ai.travel_entities_enabled', true);
+        prefService.setPrefValue(
+            'autofill.types_blocked',
+            [{url_pattern: '*', blocked_types: ['travel']}]);
 
         const page = await setupPage();
-        const policyIndicator = page.$.optInToggle.shadowRoot!.querySelector(
+        const policyIndicator = page.$.optInToggle.shadowRoot.querySelector(
             'cr-policy-pref-indicator');
 
         assertTrue(!!policyIndicator);
@@ -314,9 +339,8 @@ suite('TravelPage', function() {
         assertFalse(page.$.optInToggle.checked);
 
         const entriesList =
-            page.shadowRoot!
-                .querySelector<SettingsAutofillAiEntriesListElement>(
-                    'settings-autofill-ai-entries-list')!;
+            page.shadowRoot.querySelector<SettingsAutofillAiEntriesListElement>(
+                'settings-autofill-ai-entries-list')!;
         assertTrue(!!entriesList);
         assertFalse(entriesList.allowNewEntitiesAdditionPref!.value);
       });
@@ -330,14 +354,14 @@ suite('TravelPage', function() {
           canEnableOrDisableAutofillAi: true,
         });
 
-        settingsPrefs.set(
-            'prefs.autofill.autofill_ai.travel_entities_enabled.value', true);
-        settingsPrefs.set('prefs.autofill.types_blocked', {
-          value: [{url_pattern: '*', blocked_types: ['all']}],
-        });
+        prefService.setPrefValue(
+            'autofill.autofill_ai.travel_entities_enabled', true);
+        prefService.setPrefValue(
+            'autofill.types_blocked',
+            [{url_pattern: '*', blocked_types: ['all']}]);
 
         const page = await setupPage();
-        const policyIndicator = page.$.optInToggle.shadowRoot!.querySelector(
+        const policyIndicator = page.$.optInToggle.shadowRoot.querySelector(
             'cr-policy-pref-indicator');
 
         assertTrue(!!policyIndicator);
@@ -345,11 +369,33 @@ suite('TravelPage', function() {
         assertFalse(page.$.optInToggle.checked);
 
         const entriesList =
-            page.shadowRoot!
-                .querySelector<SettingsAutofillAiEntriesListElement>(
-                    'settings-autofill-ai-entries-list')!;
+            page.shadowRoot.querySelector<SettingsAutofillAiEntriesListElement>(
+                'settings-autofill-ai-entries-list')!;
         assertTrue(!!entriesList);
         assertFalse(entriesList.allowNewEntitiesAdditionPref!.value);
+      });
+
+  test(
+      'types_blocked policy is ignored when enterprise policy flag is disabled',
+      async function() {
+        loadTimeData.overrideValues({
+          AutofillSettingsEnterprisePolicyEnabled: false,
+          canEnableOrDisableAutofillAi: true,
+        });
+
+        prefService.setPrefValue(
+            'autofill.autofill_ai.travel_entities_enabled', true);
+        prefService.setPrefValue(
+            'autofill.types_blocked',
+            [{url_pattern: '*', blocked_types: ['travel']}]);
+
+        const page = await setupPage();
+        const policyIndicator = page.$.optInToggle.shadowRoot.querySelector(
+            'cr-policy-pref-indicator');
+
+        assertFalse(!!policyIndicator);
+        assertFalse(page.$.optInToggle.controlDisabled());
+        assertTrue(page.$.optInToggle.checked);
       });
 
   suite('SuggestionsFromGemini', function() {
@@ -379,7 +425,7 @@ suite('TravelPage', function() {
 
       const page = await setupPage();
 
-      const button = page.shadowRoot!.querySelector<HTMLElement>(
+      const button = page.shadowRoot.querySelector<HTMLElement>(
           '#suggestionsFromGeminiLinkRow');
       assertTrue(!!button);
 
@@ -398,7 +444,7 @@ suite('TravelPage', function() {
 
       const page = await setupPage();
 
-      const button = page.shadowRoot!.querySelector<HTMLElement>(
+      const button = page.shadowRoot.querySelector<HTMLElement>(
           '#suggestionsFromGeminiLinkRow');
       assertFalse(!!button);
     });

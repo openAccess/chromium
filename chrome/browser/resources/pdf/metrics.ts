@@ -115,11 +115,6 @@ export enum UserAction {
   SAVE_FIRST = 13,
   SAVE = 14,
 
-  // Recorded when the user triggers a save of the document and the document
-  // has been modified by annotations.
-  SAVE_WITH_ANNOTATION_FIRST = 15,
-  SAVE_WITH_ANNOTATION = 16,
-
   PRINT_FIRST = 17,
   PRINT = 18,
 
@@ -310,7 +305,15 @@ export enum UserAction {
   DELETE_INK2_TEXT_ANNOTATION_FIRST = 113,
   DELETE_INK2_TEXT_ANNOTATION = 114,
 
-  NUMBER_OF_ACTIONS = 115,
+  // Recorded when the user enters Ink2 signature mode.
+  ENTER_INK2_SIGNATURE_MODE_FIRST = 115,
+  ENTER_INK2_SIGNATURE_MODE = 116,
+
+  // Recorded when the user exits Ink2 signature mode.
+  EXIT_INK2_SIGNATURE_MODE_FIRST = 117,
+  EXIT_INK2_SIGNATURE_MODE = 118,
+
+  NUMBER_OF_ACTIONS = 119,
 }
 
 function createFirstMap(): Map<UserAction, UserAction> {

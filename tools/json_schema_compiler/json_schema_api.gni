@@ -129,6 +129,7 @@ template("generated_json_strings") {
   }
 
   generated_config_name = target_name + "_generated_config"
+
   config(generated_config_name) {
     include_dirs = [ include_dir ]
   }
@@ -186,7 +187,6 @@ template("generated_json_strings") {
     deps = lib_deps
     public_deps = lib_public_deps
     configs += lib_extra_configs
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
     public_configs = [ ":$generated_config_name" ]
 
     if (defined(invoker.visibility)) {
@@ -249,6 +249,7 @@ template("function_registration") {
   }
 
   generated_config_name = target_name + "_generated_config"
+
   config(generated_config_name) {
     include_dirs = [ include_dir ]
   }
@@ -332,7 +333,6 @@ template("function_registration") {
     deps = lib_deps
     public_deps = []
     configs += lib_extra_configs
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
     public_configs = [ ":$generated_config_name" ]
 
     if (defined(invoker.visibility)) {
@@ -371,6 +371,7 @@ template("generated_types") {
   }
 
   generated_config_name = target_name + "_generated_config"
+
   config(generated_config_name) {
     include_dirs = [ include_dir ]
   }
@@ -433,7 +434,6 @@ template("generated_types") {
     deps = lib_deps
     public_deps = lib_public_deps
     configs += lib_extra_configs
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
     public_configs = [ ":$generated_config_name" ]
 
     if (defined(invoker.visibility)) {

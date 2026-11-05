@@ -4,15 +4,11 @@
 
 package org.chromium.chrome.browser.touch_to_fill.autofill;
 
-import android.content.Context;
-
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.chrome.browser.touch_to_fill.common.BottomSheetFocusHelper;
-import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 
 /**
- * This component allows prompting the user with the Ambient Autofill notice bottom sheet (Personal
- * Context Notice) and managing its lifecycle.
+ * This component allows prompting the user with an Autofill notice bottom sheet and managing its
+ * lifecycle.
  */
 @NullMarked
 public interface TouchToFillAutofillComponent {
@@ -28,22 +24,11 @@ public interface TouchToFillAutofillComponent {
         void onDismissed();
     }
 
-    /**
-     * Initializes the component.
-     *
-     * @param context A {@link Context} to create views and retrieve resources.
-     * @param sheetController A {@link BottomSheetController} used to show/hide the sheet.
-     * @param delegate A {@link Delegate} that handles interaction events.
-     * @param bottomSheetFocusHelper A {@link BottomSheetFocusHelper} to restore focus upon close.
-     */
-    void initialize(
-            Context context,
-            BottomSheetController sheetController,
-            Delegate delegate,
-            BottomSheetFocusHelper bottomSheetFocusHelper);
-
     /** Displays the Personal Context Notice bottom sheet. */
-    void show();
+    void showPersonalContextNotice();
+
+    /** Displays the Autofill AI private inference notice bottom sheet. */
+    void showPrivateInferenceNotice();
 
     /** Hides the bottom sheet if shown. */
     void hide();

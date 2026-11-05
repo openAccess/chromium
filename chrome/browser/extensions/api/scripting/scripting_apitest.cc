@@ -25,6 +25,7 @@
 #include "extensions/browser/disable_reason.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/extension_system.h"
 #include "extensions/browser/script_executor.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/features/feature_channel.h"
@@ -35,7 +36,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "pdf/buildflags.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
@@ -414,7 +415,8 @@ IN_PROC_BROWSER_TEST_F(ScriptingAPITest, ExecuteScriptBeforeInitialCommit) {
     // navigation to have ended because we want executeScript to run before the
     // navigation has committed.
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), target_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        browser(), target_url,
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
     content::WebContents* web_contents =
         browser()->GetTabStripModel()->GetActiveWebContents();
@@ -465,7 +467,8 @@ IN_PROC_BROWSER_TEST_F(ScriptingAPITest, ExecuteScriptBeforeInitialCommit) {
     // navigation to have ended because we want executeScript to run before the
     // navigation has committed.
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), target_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        browser(), target_url,
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
     content::WebContents* web_contents =
         browser()->GetTabStripModel()->GetActiveWebContents();
@@ -530,7 +533,7 @@ IN_PROC_BROWSER_TEST_F(ScriptingAPITest, InjectImmediately) {
   const GURL page_url =
       embedded_test_server()->GetURL("example.com", kSimulatedResourcePath);
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), page_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), page_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
   controllable_http_response().WaitForRequest();
 

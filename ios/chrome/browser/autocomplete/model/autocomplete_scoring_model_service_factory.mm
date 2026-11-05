@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/autocomplete/model/autocomplete_scoring_model_service_factory.h"
 
+#import <utility>
+
 #import "components/omnibox/browser/autocomplete_scoring_model_service.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
@@ -11,33 +13,19 @@
 
 namespace ios {
 
-// static
-AutocompleteScoringModelServiceFactory*
-AutocompleteScoringModelServiceFactory::GetInstance() {
-  static base::NoDestructor<AutocompleteScoringModelServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-AutocompleteScoringModelService*
-AutocompleteScoringModelServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<AutocompleteScoringModelService>(
-      profile, /*create=*/true);
-}
-
-AutocompleteScoringModelServiceFactory::AutocompleteScoringModelServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("AutocompleteScoringModelService",
-                                    ProfileSelection::kOwnInstanceInIncognito,
-                                    TestingCreation::kNoServiceForTests) {
+AutocompleteScoringModelServiceFactory::AutocompleteScoringModelServiceFactory(
+    PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "AutocompleteScoringModelService",
+          ProfileSelection::kOwnInstanceInIncognito,
+          TestingCreation::kNoServiceForTests) {
   DependsOn(OptimizationGuideServiceFactory::GetInstance());
 }
 
-AutocompleteScoringModelServiceFactory::
-    ~AutocompleteScoringModelServiceFactory() = default;
-
 std::unique_ptr<KeyedService>
 AutocompleteScoringModelServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   OptimizationGuideService* optimization_guide =
       OptimizationGuideServiceFactory::GetForProfile(profile);
   return optimization_guide ? std::make_unique<AutocompleteScoringModelService>(

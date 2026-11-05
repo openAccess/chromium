@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
 import android.animation.ObjectAnimator;
 import android.app.Activity;
 import android.content.res.Resources;
@@ -117,6 +115,7 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
     private @Nullable ImageView mShadowView;
     private @Nullable AnimatedDragShadowBuilder mCurrentDragShadowBuilder;
     private final TabSwitcherBackPressHandlerManager mDragHandlerManager;
+    private final boolean mFadeDragShadow;
 
     /**
      * Tracks whether this specific drag handler instance processed {@link DragEvent#ACTION_DROP}.
@@ -134,15 +133,19 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
      * @param multiInstanceManager {@link MultiInstanceManager} to perform move action when drop
      *     completes.
      * @param dragAndDropDelegate {@link DragAndDropDelegate} to initiate tab drag and drop.
+     * @param dragHandlerManager Manager for back press handling during drag.
+     * @param fadeDragShadow Whether the drag shadow should animate alpha during drag.
      */
     public TabSwitcherDragHandler(
             Supplier<@Nullable Activity> activitySupplier,
             MultiInstanceManager multiInstanceManager,
             DragAndDropDelegate dragAndDropDelegate,
-            TabSwitcherBackPressHandlerManager dragHandlerManager) {
+            TabSwitcherBackPressHandlerManager dragHandlerManager,
+            boolean fadeDragShadow) {
         super(activitySupplier, multiInstanceManager, dragAndDropDelegate);
         mDragHandlerManager = dragHandlerManager;
         mDragHandlerManager.addHandler(this);
+        mFadeDragShadow = fadeDragShadow;
     }
 
     public void onDragStateChanged(boolean isDragInProcess) {
@@ -155,7 +158,14 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
 
     @Override
     public Boolean handleEscPress() {
-        assumeNonNull(mDragHandlerDelegate);
+        if (mDragHandlerDelegate == null) {
+            return super.handleEscPress();
+        }
+        // If an external Android view drag is actively in progress, ESC always cancels the OS
+        // drag via cancelDragAndDrop().
+        if (isViewDraggingInProgress()) {
+            return super.handleEscPress();
+        }
         if (mDragHandlerDelegate.isDragInProcess()) {
             return mDragHandlerDelegate.handleInternalDragEnd() == BackPressResult.SUCCESS;
         }
@@ -208,7 +218,7 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
             return false;
         }
 
-        ChromeDropDataAndroid dropData = prepareGroupDropData(tabGroupId, false);
+        ChromeDropDataAndroid dropData = prepareGroupDropData(tabGroupId);
         return startDragInternal(dropData, startPoint, dragSourceView, dragShadowView);
     }
 
@@ -222,9 +232,13 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
     }
 
     /**
-     * Toggles visibility of the external drag shadow using an attached view to ensure OS delivery.
+     * Toggles visibility of the external drag shadow.
      *
-     * @param attachedView An attached View in the current window to dispatch the update through.
+     * <p>The redraw is dispatched through a view in the window that started the drag, since only
+     * that window holds the drag surface.
+     *
+     * @param attachedView Fallback view to dispatch the update through when no originating-window
+     *     view is attached.
      * @param show True to display the drag shadow, false to hide it (draw empty/transparent).
      */
     public void showDragShadow(@Nullable View attachedView, boolean show) {
@@ -266,7 +280,11 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
         // TODO(crbug.com/425901698): consider using {@link AnimatedImageDragShadowBuilder}.
         AnimatedDragShadowBuilder builder =
                 new AnimatedDragShadowBuilder(
-                        dragSourceView, mShadowView, startPoint, DRAG_SHADOW_ANIMATION_DURATION_MS);
+                        dragSourceView,
+                        mShadowView,
+                        startPoint,
+                        DRAG_SHADOW_ANIMATION_DURATION_MS,
+                        mFadeDragShadow);
         mCurrentDragShadowBuilder = builder;
 
         // Hide the item before trying to start drag. Hiding it at the ItemTouchHelper2 is too late
@@ -333,6 +351,7 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
         super.destroy();
         destroyShadowView();
         mCurrentDragShadowBuilder = null;
+        mDragHandlerDelegate = null;
     }
 
     @Override
@@ -428,17 +447,23 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
         private final long mAnimationDuration;
         private final float mStartWidth;
         private final float mStartHeight;
+        private final boolean mFadeDragShadow;
 
         private float mProgress;
         private boolean mShowDragShadow = true;
 
         public AnimatedDragShadowBuilder(
-                View view, View dragShadowView, PointF startPointF, long animationDuration) {
+                View view,
+                View dragShadowView,
+                PointF startPointF,
+                long animationDuration,
+                boolean fadeDragShadow) {
             super(dragShadowView);
             mOriginalView = view;
             mAnimationDuration = animationDuration;
             mStartWidth = dragShadowView.getWidth();
             mStartHeight = dragShadowView.getHeight();
+            mFadeDragShadow = fadeDragShadow;
 
             if (dragShadowView != mOriginalView) {
                 // If using a custom shadow representing a grid card, mimic horizontal tab strip
@@ -461,7 +486,9 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
                 mTouchPointF = new PointF(mStartWidth * relativeX, mStartHeight * relativeY);
             }
 
-            dragShadowView.post(this::animate);
+            if (mFadeDragShadow) {
+                dragShadowView.post(this::animate);
+            }
         }
 
         /**
@@ -474,10 +501,13 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
         }
 
         /**
-         * Updates the drag shadow visibility using an attached view to ensure OS delivery.
+         * Updates the drag shadow visibility.
          *
-         * @param attachedView An attached View in the current window to dispatch the update
-         *     through.
+         * <p>The redraw is dispatched through a view in the window that started the drag, since
+         * only that window holds the drag surface.
+         *
+         * @param attachedView Fallback view to dispatch the update through when no
+         *     originating-window view is attached.
          * @param show True to display the drag shadow, false to hide it.
          */
         public void update(@Nullable View attachedView, boolean show) {
@@ -516,21 +546,21 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
         }
 
         private void updateDragShadow(@Nullable View attachedView) {
+            // View#updateDragShadow draws through the drag surface held by the AttachInfo of the
+            // window that called startDragAndDrop. Views in any other window silently no-op, so
+            // prefer views that live in the originating window: the drag source view and the
+            // shadow ImageView inflated into the source window's decor view. The caller's
+            // attachedView is only a last resort; when the drag hovers a different window it is
+            // the wrong window entirely.
             View viewToUse = null;
-            View originalRoot = mOriginalView != null ? mOriginalView.getRootView() : null;
             View shadowView = getView();
-            View shadowRoot = shadowView != null ? shadowView.getRootView() : null;
 
-            if (attachedView != null && attachedView.isAttachedToWindow()) {
-                viewToUse = attachedView;
-            } else if (mOriginalView != null && mOriginalView.isAttachedToWindow()) {
+            if (mOriginalView != null && mOriginalView.isAttachedToWindow()) {
                 viewToUse = mOriginalView;
-            } else if (originalRoot != null && originalRoot.isAttachedToWindow()) {
-                viewToUse = originalRoot;
             } else if (shadowView != null && shadowView.isAttachedToWindow()) {
                 viewToUse = shadowView;
-            } else if (shadowRoot != null && shadowRoot.isAttachedToWindow()) {
-                viewToUse = shadowRoot;
+            } else if (attachedView != null && attachedView.isAttachedToWindow()) {
+                viewToUse = attachedView;
             }
 
             if (viewToUse != null) {
@@ -557,6 +587,10 @@ public class TabSwitcherDragHandler extends TabDragHandlerBase {
             }
             View view = getView();
             if (view != null) {
+                if (!mFadeDragShadow) {
+                    view.draw(canvas);
+                    return;
+                }
                 float progress = getProgress();
                 // Apply alpha value.
                 Paint paint = new Paint();

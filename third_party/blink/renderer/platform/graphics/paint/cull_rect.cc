@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/platform/graphics/paint/cull_rect.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/metrics/field_trial_params.h"
@@ -312,9 +313,12 @@ bool CullRect::ApplyPaintProperties(
 
   if (abnormal_hierarchy) {
     // Either the transform or the clip of |source| is not an ancestor of
-    // |destination|. Map infinite rect from the root.
+    // |destination|. Map infinite rect from the root. If |source| is already
+    // the root, the clip of |destination| is not under the root either, and
+    // mapping from the root again would recurse forever; keep the infinite
+    // rect instead.
     *this = Infinite();
-    return root != destination &&
+    return root != source && root != destination &&
            ApplyPaintProperties(root, root, destination, old_cull_rect,
                                 expansion_ratio);
   }
@@ -329,7 +333,8 @@ bool CullRect::ApplyPaintProperties(
   // this class. The client has to use infinite cull rect in the case.
   // TODO(wangxianzhu): support clip rect expansion for pixel-moving filters.
   const auto& effect_root = EffectPaintPropertyNode::Root();
-  for (const auto& scroll_translation : base::Reversed(scroll_translations)) {
+  for (const auto& scroll_translation :
+       std::views::reverse(scroll_translations)) {
     const auto* overflow_clip =
         scroll_translation->ScrollNode()->OverflowClipNode();
     if (!overflow_clip) {

@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/views/extensions/extensions_menu_main_page_view.h"
 
 #include "base/containers/to_vector.h"
+#include "base/functional/callback_helpers.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -15,6 +16,7 @@
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_ui_util.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_button.h"
@@ -25,6 +27,7 @@
 #include "chrome/browser/ui/views/extensions/extensions_request_access_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_browsertest.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_button.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/web_contents.h"
@@ -42,7 +45,9 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/toggle_button.h"
+#include "ui/views/controls/label.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/views_switches.h"
 
@@ -121,8 +126,9 @@ class ExtensionsMenuMainPageViewBrowserTest
 };
 
 ExtensionsMenuMainPageViewBrowserTest::ExtensionsMenuMainPageViewBrowserTest() {
-  scoped_feature_list_.InitAndEnableFeature(
-      extensions_features::kExtensionsMenuAccessControl);
+  scoped_feature_list_.InitWithFeatures(
+      /*enabled_features=*/{extensions_features::kExtensionsMenuAccessControl},
+      /*disabled_features=*/{features::kWebUIExtensionsContainer});
 }
 
 void ExtensionsMenuMainPageViewBrowserTest::ShowMenu() {
@@ -820,7 +826,7 @@ IN_PROC_BROWSER_TEST_F(
   {
     extensions::PermissionsManagerWaiter waiter(
         extensions::PermissionsManager::Get(browser()->GetProfile()));
-    action_runner->GrantTabPermissions({extension.get()});
+    action_runner->GrantTabPermissions({extension.get()}, base::DoNothing());
     waiter.WaitForActiveTabPermissionGranted(extension->id());
   }
   EXPECT_EQ(GetSiteInteraction(*extension, web_contents),
@@ -892,7 +898,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewBrowserTest,
       extensions::ActiveTabPermissionGranter::FromWebContents(
           browser()->GetTabStripModel()->GetActiveWebContents());
   ASSERT_TRUE(active_tab_permission_granter);
-  active_tab_permission_granter->GrantIfRequested(extension.get());
+  active_tab_permission_granter->GrantIfRequested(extension.get(),
+                                                  base::DoNothing());
   EXPECT_TRUE(menu_entry->site_permissions_button_for_testing()->GetVisible());
   EXPECT_TRUE(menu_entry->site_permissions_button_for_testing()->GetEnabled());
   EXPECT_EQ(menu_entry->site_permissions_button_for_testing()->GetText(),
@@ -1488,6 +1495,39 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewBrowserTest, UserBlockedSite) {
   EXPECT_FALSE(menu_entry->site_permissions_button_for_testing()->GetVisible());
 }
 
+// Tests that updating the optional section keeps the main page at the size
+// given by the menu. Blocking extensions on a site hides the menu item
+// controls, which reduces the page's preferred width below the menu width.
+IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewBrowserTest,
+                       UpdateOptionalSectionKeepsPageSize) {
+  InstallExtensionWithHostPermissions("Extension", {"<all_urls>"});
+
+  const GURL url =
+      embedded_test_server()->GetURL("example.com", "/title1.html");
+  NavigateAndCommit(url);
+
+  // Block all extensions on `url`.
+  UpdateUserSiteSetting(
+      PermissionsManager::UserSiteSetting::kBlockAllExtensions, url);
+  ASSERT_EQ(GetUserSiteSetting(url),
+            PermissionsManager::UserSiteSetting::kBlockAllExtensions);
+
+  ShowMenu();
+  LayoutMenuIfNecessary();
+
+  ExtensionsMenuMainPageView* page = main_page();
+  ASSERT_TRUE(page);
+  ASSERT_FALSE(page->reload_section()->GetVisible());
+  const gfx::Size page_size = page->size();
+
+  // The menu updates the optional section whenever the main page is updated
+  // (e.g. when an extension action changes), even if no section visibility
+  // changes.
+  page->SetOptionalSectionVisibility(
+      ExtensionsMenuViewModel::OptionalSection::kNone);
+  EXPECT_EQ(page->size(), page_size);
+}
+
 // Test that user controls for enterprise extensions in the menu are disabled on
 // user blocked sites, since user cannot change the individual extension's site
 // access.
@@ -1920,4 +1960,145 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuMainPageViewBrowserTest,
   EXPECT_TRUE(requests_section->GetVisible());
   EXPECT_THAT(GetExtensionsInRequestsSection(),
               testing::ElementsAre(extension->id()));
+}
+
+// Verifies that synchronously closing the extensions menu bubble from inside an
+// accessibility event callback (e.g. Windows UIA ::UiaRaiseAutomationEvent
+// spinning the COM STA message loop on kTextChanged and servicing
+// accDoDefaultAction on the toolbar button) while UpdateMainPage() is on the
+// stack does not cause a Use-After-Free.
+IN_PROC_BROWSER_TEST_F(
+    ExtensionsMenuMainPageViewBrowserTest,
+    CloseMenuSynchronouslyDuringSiteSettingsTextChangedEvent) {
+  InstallExtensionWithHostPermissions("Extension", {"<all_urls>"});
+
+  const GURL url_a =
+      embedded_test_server()->GetURL("a.com", "/extensions/test_file.html");
+  const GURL url_b =
+      embedded_test_server()->GetURL("b.com", "/extensions/test_file.html");
+  NavigateAndCommit(url_a);
+
+  ShowMenu();
+  ASSERT_TRUE(main_page());
+  views::Label* site_settings_label =
+      main_page()->GetSiteSettingsLabelForTesting();
+  ASSERT_TRUE(site_settings_label);
+
+  bool callback_invoked = false;
+  ExtensionsMenuCoordinator* coordinator =
+      extensions_container()->GetExtensionsMenuCoordinatorForTesting();
+  ASSERT_TRUE(coordinator);
+  ASSERT_TRUE(coordinator->IsShowing());
+
+  site_settings_label->GetViewAccessibility().set_accessibility_events_callback(
+      base::BindRepeating(
+          [](ExtensionsMenuCoordinator* coordinator, bool* invoked,
+             const ui::AXPlatformNodeDelegate*, ax::mojom::Event event) {
+            if (event == ax::mojom::Event::kTextChanged) {
+              *invoked = true;
+              coordinator->Hide();
+            }
+          },
+          coordinator, &callback_invoked));
+
+  // Navigating to a different host updates the open menu's site settings label
+  // text ("Allow extensions on b.com"), firing kTextChanged and synchronously
+  // invoking coordinator->Hide() while UpdateMainPage() is on the stack.
+  NavigateAndCommit(url_b);
+
+  EXPECT_TRUE(callback_invoked);
+  EXPECT_FALSE(coordinator->IsShowing());
+
+  // Re-opening the menu immediately via ShowMenu() (before the asynchronous
+  // widget close task runs) must cleanly close the previous bubble without
+  // dangling raw_ptrs.
+  ShowMenu();
+  EXPECT_TRUE(coordinator->IsShowing());
+}
+
+// Verifies that synchronously closing the extensions menu bubble from inside a
+// kCheckedStateChanged accessibility event callback on the site settings toggle
+// or an extension entry toggle while UpdateMainPage() is on the stack does not
+// cause a Use-After-Free.
+IN_PROC_BROWSER_TEST_F(
+    ExtensionsMenuMainPageViewBrowserTest,
+    CloseMenuSynchronouslyDuringToggleAndMenuEntryUpdateEvents) {
+  InstallExtensionWithHostPermissions("Extension A", {"*://a.com/*"});
+  InstallExtensionWithHostPermissions("Extension B", {"<all_urls>"});
+
+  const GURL url_a =
+      embedded_test_server()->GetURL("a.com", "/extensions/test_file.html");
+  const GURL url_b =
+      embedded_test_server()->GetURL("b.com", "/extensions/test_file.html");
+  UpdateUserSiteSetting(
+      PermissionsManager::UserSiteSetting::kBlockAllExtensions, url_b);
+  NavigateAndCommit(url_a);
+
+  // 1. Synchronous close on site_settings_toggle_ kCheckedStateChanged.
+  {
+    ShowMenu();
+    ASSERT_TRUE(main_page());
+    views::ToggleButton* site_settings_toggle =
+        main_page()->GetSiteSettingsToggleForTesting();
+    ASSERT_TRUE(site_settings_toggle);
+
+    bool callback_invoked = false;
+    ExtensionsMenuCoordinator* coordinator =
+        extensions_container()->GetExtensionsMenuCoordinatorForTesting();
+    ASSERT_TRUE(coordinator);
+    ASSERT_TRUE(coordinator->IsShowing());
+
+    site_settings_toggle->GetViewAccessibility()
+        .set_accessibility_events_callback(base::BindRepeating(
+            [](ExtensionsMenuCoordinator* coordinator, bool* invoked,
+               const ui::AXPlatformNodeDelegate*, ax::mojom::Event event) {
+              if (event == ax::mojom::Event::kCheckedStateChanged) {
+                *invoked = true;
+                coordinator->Hide();
+              }
+            },
+            coordinator, &callback_invoked));
+
+    // Navigating to url_b (where extensions are blocked) flips
+    // site_settings_toggle_ from on to off, firing kCheckedStateChanged.
+    NavigateAndCommit(url_b);
+
+    EXPECT_TRUE(callback_invoked);
+    EXPECT_FALSE(coordinator->IsShowing());
+  }
+
+  // 2. Synchronous close during menu_entry->Update() in UpdateMainPage()'s
+  // loop over menu entries.
+  {
+    ShowMenu();
+    ASSERT_TRUE(main_page());
+    std::vector<ExtensionsMenuEntryView*> entries = menu_entries();
+    ASSERT_EQ(entries.size(), 2u);
+
+    bool callback_invoked = false;
+    ExtensionsMenuCoordinator* coordinator =
+        extensions_container()->GetExtensionsMenuCoordinatorForTesting();
+    ASSERT_TRUE(coordinator);
+    ASSERT_TRUE(coordinator->IsShowing());
+
+    entries[0]
+        ->site_access_toggle_for_testing()
+        ->GetViewAccessibility()
+        .set_accessibility_events_callback(base::BindRepeating(
+            [](ExtensionsMenuCoordinator* coordinator, bool* invoked,
+               const ui::AXPlatformNodeDelegate*, ax::mojom::Event event) {
+              if (event == ax::mojom::Event::kCheckedStateChanged) {
+                *invoked = true;
+                coordinator->Hide();
+              }
+            },
+            coordinator, &callback_invoked));
+
+    // Navigating back to url_a flips the first menu entry's site access toggle
+    // from off to on inside the menu_entries loop in UpdateMainPage().
+    NavigateAndCommit(url_a);
+
+    EXPECT_TRUE(callback_invoked);
+    EXPECT_FALSE(coordinator->IsShowing());
+  }
 }

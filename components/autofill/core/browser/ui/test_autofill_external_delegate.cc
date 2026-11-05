@@ -22,11 +22,10 @@ TestAutofillExternalDelegate::~TestAutofillExternalDelegate() = default;
 
 void TestAutofillExternalDelegate::OnSuggestionsShown(
     base::span<const Suggestion> suggestions,
-    base::optional_ref<const SuggestionMetadata> parent_suggestion_metadata) {
+    const SuggestionUiMetadata& metadata) {
   popup_hidden_ = false;
 
-  AutofillExternalDelegate::OnSuggestionsShown(suggestions,
-                                               parent_suggestion_metadata);
+  AutofillExternalDelegate::OnSuggestionsShown(suggestions, metadata);
 }
 
 void TestAutofillExternalDelegate::OnSuggestionsHidden(
@@ -44,7 +43,20 @@ void TestAutofillExternalDelegate::OnQuery(
   on_query_seen_ = true;
   on_suggestions_returned_seen_ = false;
   trigger_source_ = trigger_source;
+  form_id_ = form.global_id();
+  field_id_ = field.global_id();
   AutofillExternalDelegate::OnQuery(form, field, caret_bounds, trigger_source);
+}
+
+void TestAutofillExternalDelegate::DidSelectSuggestion(
+    const Suggestion& suggestion) {
+  DidSelectSuggestion(suggestion, form_id_, field_id_);
+}
+
+void TestAutofillExternalDelegate::DidAcceptSuggestion(
+    const Suggestion& suggestion,
+    const SuggestionMetadata& metadata) {
+  DidAcceptSuggestion(suggestion, metadata, form_id_, field_id_);
 }
 
 void TestAutofillExternalDelegate::OnSuggestionsReturned(

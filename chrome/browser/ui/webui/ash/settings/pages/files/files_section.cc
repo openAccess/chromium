@@ -11,14 +11,13 @@
 #include "base/containers/span.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/ash/cloud_upload/upload_office_to_cloud.h"
 #include "chrome/browser/ash/drive/file_system_util.h"
-#include "chrome/browser/chromeos/upload_office_to_cloud/upload_office_to_cloud.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
 #include "chrome/browser/ui/webui/ash/smb_shares/smb_handler.h"
 #include "chrome/browser/ui/webui/ash/smb_shares/smb_shares_localized_strings_provider.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "components/user_manager/user.h"
@@ -126,7 +125,7 @@ FilesSection::FilesSection(Profile* profile,
     : OsSettingsSection(profile, search_tag_registry) {
   SearchTagRegistry::ScopedTagUpdater updater = registry()->StartUpdate();
   updater.AddSearchTags(GetDefaultSearchConcepts());
-  if (chromeos::IsEligibleAndEnabledUploadOfficeToCloud(profile)) {
+  if (IsEligibleAndEnabledUploadOfficeToCloud(profile)) {
     updater.AddSearchTags(GetFilesMicrosoft365SearchConcepts());
     updater.AddSearchTags(GetFilesOneDriveSearchConcepts());
   }
@@ -247,13 +246,7 @@ void FilesSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
       {"alwaysMoveToOneDrivePreferenceLabel",
        IDS_SETTINGS_ALWAYS_MOVE_OFFICE_TO_ONEDRIVE_PREFERENCE_LABEL},
       {"smbSharesTitleDescription",
-       IDS_OS_SETTINGS_DOWNLOADS_SMB_SHARES_DESCRIPTION},
-      {"googleDriveFileSyncSectionTitle",
-       IDS_SETTINGS_GOOGLE_DRIVE_FILE_SYNC_SECTION_TITLE},
-      {"googleDriveMirrorSyncLabel",
-       IDS_SETTINGS_GOOGLE_DRIVE_MIRROR_SYNC_TOGGLE_LABEL},
-      {"googleDriveMirrorSyncDescription",
-       IDS_SETTINGS_GOOGLE_DRIVE_MIRROR_SYNC_TOGGLE_DESCRIPTION}};
+       IDS_OS_SETTINGS_DOWNLOADS_SMB_SHARES_DESCRIPTION}};
   html_source->AddLocalizedStrings(kLocalizedStrings);
 
   smb_dialog::AddLocalizedStrings(html_source);
@@ -279,7 +272,7 @@ void FilesSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
 
   html_source->AddBoolean(
       "showOfficeSettings",
-      chromeos::cloud_upload::IsMicrosoftOfficeCloudUploadAllowed(profile()));
+      ash::cloud_upload::IsMicrosoftOfficeCloudUploadAllowed(profile()));
 
   const user_manager::User* user =
       BrowserContextHelper::Get()->GetUserByBrowserContext(profile());
@@ -300,11 +293,8 @@ void FilesSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
 
   html_source->AddBoolean(
       "enableSkyVault",
-      base::FeatureList::IsEnabled(::features::kSkyVault) &&
+      base::FeatureList::IsEnabled(::ash::features::kSkyVault) &&
           base::FeatureList::IsEnabled(ash::features::kSkyVaultV2));
-
-  html_source->AddBoolean("enableDriveFsMirrorSync",
-                          drive::util::IsDriveFsMirrorSyncAvailable(profile()));
 }
 
 void FilesSection::AddHandlers(content::WebUI* web_ui) {

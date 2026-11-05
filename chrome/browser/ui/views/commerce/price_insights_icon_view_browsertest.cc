@@ -5,9 +5,9 @@
 #include "base/strings/string_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/commerce/commerce_ui_tab_helper.h"
 #include "chrome/browser/ui/commerce/mock_commerce_ui_tab_helper.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/commerce/price_insights_page_action_view_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -64,10 +64,8 @@ class PriceInsightsIconViewBaseBrowserTest : public UiBrowserTest {
 
   MockCommerceUiTabHelper* getTabHelper() {
     return static_cast<MockCommerceUiTabHelper*>(
-        browser()
-            ->GetActiveTabInterface()
-            ->GetTabFeatures()
-            ->commerce_ui_tab_helper());
+        commerce::CommerceUiTabHelper::From(
+            browser()->GetActiveTabInterface()));
   }
 
   void ShowUi(const std::string& name) override {
@@ -185,13 +183,13 @@ class PriceInsightsIconViewWithLabelBrowserTest
     std::string test_name =
         testing::UnitTest::GetInstance()->current_test_info()->name();
     if (test_name == "InvokeUi_show_price_insights_icon_with_low_price_label") {
-      EXPECT_TRUE(accessor.IsChipVisible());
+      EXPECT_TRUE(accessor.ShouldShowSuggestionChip());
       EXPECT_EQ(base::ToLowerASCII(accessor.GetText()), u"price is low");
 
       // TODO(meiliang): Add pixel test.
     } else if (test_name ==
                "InvokeUi_show_price_insights_icon_with_high_price_label") {
-      EXPECT_TRUE(accessor.IsChipVisible());
+      EXPECT_TRUE(accessor.ShouldShowSuggestionChip());
       EXPECT_EQ(base::ToLowerASCII(accessor.GetText()), u"price is high");
 
       // TODO(meiliang): Add pixel test.

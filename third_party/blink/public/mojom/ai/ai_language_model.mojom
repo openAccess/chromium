@@ -49,6 +49,9 @@ struct AILanguageModelInstanceInfo {
   // Supported prompt input types for the session.
   array<AILanguageModelPromptType>? input_types;
 
+  // Supported prompt output types for the session.
+  array<AILanguageModelPromptType>? output_types;
+
   // Multimodal input format parameters for preprocessing.
   int32? audio_sample_rate_hz;
   int32? audio_channel_count;
@@ -75,6 +78,7 @@ enum AILanguageModelPromptType {
 
 // Categorical sampling modes for ongoing parameter control explorations.
 // See LanguageModelSamplingMode in IDL.
+// LINT.IfChange(AILanguageModelSamplingMode)
 enum AILanguageModelSamplingMode {
   kMostPredictable = 0,
   kPredictable = 1,
@@ -84,6 +88,7 @@ enum AILanguageModelSamplingMode {
   kSlightlyPredictable = 5,
   kSlightlyCreative = 6,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/ai/enums.xml:AILanguageModelSamplingMode)
 
 // The expected data type and languages specified with session creation.
 // See LanguageModelExpected in IDL.
@@ -105,13 +110,13 @@ union AILanguageModelPromptContent {
   on_device_model.mojom.AudioData audio;
 
   // Tool call provided as input (from JavaScript LanguageModelToolCall).
-  // Format: {"callID": "...", "name": "...", "arguments": {...}}
+  // Format: {"callId": "...", "name": "...", "arguments": {...}}
   mojo_base.mojom.DictionaryValue tool_call;
 
   // Tool response provided as input (from JavaScript LanguageModelToolSuccess
   // or LanguageModelToolError).
-  // Success format: {"callID": "...", "name": "...", "result": [...]}
-  // Error format: {"callID": "...", "name": "...", "errorMessage": "..."}
+  // Success format: {"callId": "...", "name": "...", "result": [...]}
+  // Error format: {"callId": "...", "name": "...", "errorMessage": "..."}
   mojo_base.mojom.DictionaryValue tool_response;
 };
 

@@ -4,12 +4,14 @@
 
 package org.chromium.chrome.browser.ui.bottombar;
 
+import android.content.Context;
+
 import androidx.annotation.IntDef;
 import androidx.annotation.StringDef;
 
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.chrome.browser.glic.GlicButtonStateController;
+import org.chromium.chrome.browser.glic.toolbar_button.GlicButtonStateController;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -17,38 +19,75 @@ import java.lang.annotation.RetentionPolicy;
 /** Utility class for recording Android Bottom Bar metrics. */
 @NullMarked
 public class BottomBarMetrics {
-    // LINT.IfChange(AndroidBottomBarPromoEvent)
-    /** Events associated with the display of the bottom bar promo dialog. */
-    @IntDef({PromoEvent.SHOWN, PromoEvent.ACCEPTED, PromoEvent.DISMISSED})
+    // LINT.IfChange(AndroidBottomBarEducationOnboardingEvent)
+    /** Events associated with the bottom bar education bubble and opt-in dialog. */
+    @IntDef({
+        EducationOnboardingEvent.SHOWN,
+        EducationOnboardingEvent.ACCEPTED,
+        EducationOnboardingEvent.DECLINED,
+        EducationOnboardingEvent.SETTINGS_CLICKED,
+        EducationOnboardingEvent.DISMISSED_OTHER,
+        EducationOnboardingEvent.TAPPED_SCRIM,
+        EducationOnboardingEvent.TAPPED_BOTTOM_BAR,
+        EducationOnboardingEvent.BACK_PRESSED
+    })
     @Retention(RetentionPolicy.SOURCE)
-    public @interface PromoEvent {
+    public @interface EducationOnboardingEvent {
         int SHOWN = 0;
         int ACCEPTED = 1;
-        int DISMISSED = 2;
-        int COUNT = 3;
+        int DECLINED = 2;
+        int SETTINGS_CLICKED = 3;
+        int DISMISSED_OTHER = 4;
+        int TAPPED_SCRIM = 5;
+        int TAPPED_BOTTOM_BAR = 6;
+        int BACK_PRESSED = 7;
+        int COUNT = 8;
     }
 
-    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidBottomBarPromoEvent)
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidBottomBarEducationOnboardingEvent)
+
+    // LINT.IfChange(AndroidBottomBarEducationOnboardingType)
+    /** The education UI that recorded the event; the {OnboardingType} histogram variant. */
+    @StringDef({
+        EducationOnboardingType.DEFAULT_BUBBLE,
+        EducationOnboardingType.GEMINI_BUBBLE,
+        EducationOnboardingType.OPT_IN_DIALOG
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface EducationOnboardingType {
+        String DEFAULT_BUBBLE = "DefaultBubble";
+        String GEMINI_BUBBLE = "GeminiBubble";
+        String OPT_IN_DIALOG = "OptInDialog";
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/histograms.xml:AndroidBottomBarEducationOnboardingType)
 
     // LINT.IfChange(AndroidBottomBarIphEvent)
-    /** Events representing showing or dismissing Bottom Bar In-Product Helps (IPH). */
-    @IntDef({IphEvent.SHOWN, IphEvent.DISMISSED})
+    /** Events representing showing, dismissing, or acting on Bottom Bar In-Product Helps (IPH). */
+    @IntDef({IphEvent.SHOWN, IphEvent.DISMISSED, IphEvent.MOVED_TO_BOTTOM})
     @Retention(RetentionPolicy.SOURCE)
     public @interface IphEvent {
         int SHOWN = 0;
         int DISMISSED = 1;
-        int COUNT = 2;
+        int MOVED_TO_BOTTOM = 2;
+        int COUNT = 3;
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidBottomBarIphEvent)
 
     // LINT.IfChange(AndroidBottomBarIphFeature)
-    @StringDef({IphFeature.GLIC, IphFeature.NEW_TAB, IphFeature.AIM})
+    @StringDef({
+        IphFeature.ADDRESS_BAR,
+        IphFeature.GLIC,
+        IphFeature.NEW_TAB,
+        IphFeature.TAB_SWITCHER
+    })
     @Retention(RetentionPolicy.SOURCE)
     public @interface IphFeature {
+        String ADDRESS_BAR = "AddressBar";
         String GLIC = "Glic";
         String NEW_TAB = "NewTab";
-        String AIM = "Aim";
+        String TAB_SWITCHER = "TabSwitcher";
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/android/histograms.xml:AndroidBottomBarIphFeature)
@@ -88,12 +127,12 @@ public class BottomBarMetrics {
 
     // LINT.IfChange(AndroidBottomBarCandidateAction)
     /** Candidate action resolved for the bottom bar's extra button container slot. */
-    @IntDef({CandidateAction.NONE, CandidateAction.GLIC, CandidateAction.AIM})
+    @IntDef({CandidateAction.NONE, CandidateAction.GLIC, CandidateAction.DEPRECATED_AIM})
     @Retention(RetentionPolicy.SOURCE)
     public @interface CandidateAction {
         int NONE = 0;
         int GLIC = 1;
-        int AIM = 2;
+        int DEPRECATED_AIM = 2;
         int COUNT = 3;
     }
 
@@ -103,56 +142,30 @@ public class BottomBarMetrics {
     /** Reasons why Glic was determined ineligible or not shown in the bottom bar. */
     @IntDef({
         GlicIneligibilityReason.PROFILE_INELIGIBLE,
-        GlicIneligibilityReason.COUNTRY_GEOFENCED,
+        GlicIneligibilityReason.DEPRECATED_COUNTRY_GEOFENCED,
         GlicIneligibilityReason.USER_DISABLED_IN_SETTINGS
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface GlicIneligibilityReason {
         int PROFILE_INELIGIBLE = 0;
-        int COUNTRY_GEOFENCED = 1;
+        int DEPRECATED_COUNTRY_GEOFENCED = 1;
         int USER_DISABLED_IN_SETTINGS = 2;
         int COUNT = 3;
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidBottomBarGlicIneligibilityReason)
 
-    // LINT.IfChange(AndroidBottomBarAimIneligibilityReason)
-    /** Reasons why AI Mode was determined ineligible or not shown in the bottom bar. */
-    @IntDef({
-        AimIneligibilityReason.FEATURE_FLAG_DISABLED,
-        AimIneligibilityReason.COUNTRY_GEOFENCED,
-        AimIneligibilityReason.COUNTRY_IN_GLIC_SOON_LIST,
-        AimIneligibilityReason.PREEMPTED_BY_GLIC,
-        AimIneligibilityReason.DEFAULT_SEARCH_ENGINE_NOT_GOOGLE
-    })
-    @Retention(RetentionPolicy.SOURCE)
-    public @interface AimIneligibilityReason {
-        int FEATURE_FLAG_DISABLED = 0;
-        int COUNTRY_GEOFENCED = 1;
-        int COUNTRY_IN_GLIC_SOON_LIST = 2;
-        int PREEMPTED_BY_GLIC = 3;
-        int DEFAULT_SEARCH_ENGINE_NOT_GOOGLE = 4;
-        int COUNT = 5;
+    /**
+     * Records whether the bottom bar is enabled on an eligible device when bottom controls are
+     * initialized.
+     *
+     * @param context The context to check device eligibility against.
+     */
+    public static void maybeRecordEnabledState(Context context) {
+        if (!BottomBarConfigUtils.isBottomBarEligible(context)) return;
+        RecordHistogram.recordBooleanHistogram(
+                "Android.BottomBar.EnabledState", BottomBarConfigUtils.isBottomBarEnabled(context));
     }
-
-    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidBottomBarAimIneligibilityReason)
-
-    // LINT.IfChange(AndroidBottomBarAimLaunchResult)
-    /** Results of attempting to launch AI Mode from the bottom bar. */
-    @IntDef({
-        AimLaunchResult.SUCCESS,
-        AimLaunchResult.TAB_NULL,
-        AimLaunchResult.MISSING_OR_INVALID_URL
-    })
-    @Retention(RetentionPolicy.SOURCE)
-    public @interface AimLaunchResult {
-        int SUCCESS = 0;
-        int TAB_NULL = 1;
-        int MISSING_OR_INVALID_URL = 2;
-        int COUNT = 3;
-    }
-
-    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidBottomBarAimLaunchResult)
 
     /**
      * Records the visual state of the Glic button in the bottom bar at the moment of the user
@@ -198,20 +211,25 @@ public class BottomBarMetrics {
     }
 
     /**
-     * Records introductory promo dialog events.
+     * Records education dialog and bubble events.
      *
-     * @param event The promo event (Shown, Accepted, or Dismissed).
+     * @param onboardingType The onboarding type (e.g. "DefaultBubble", "OptInDialog").
+     * @param event The event type.
      */
-    public static void recordPromoEvent(@PromoEvent int event) {
+    public static void recordEducationOnboardingEvent(
+            @EducationOnboardingType String onboardingType, @EducationOnboardingEvent int event) {
         RecordHistogram.recordEnumeratedHistogram(
-                "Android.BottomBar.Promo.Event", event, PromoEvent.COUNT);
+                "Android.BottomBar.Education.Onboarding." + onboardingType + ".Event",
+                event,
+                EducationOnboardingEvent.COUNT);
     }
 
     /**
      * Records In-Product Help (IPH) trigger events for Bottom Bar actions.
      *
-     * @param event The IPH event (Shown or Dismissed).
-     * @param featureType The feature type suffix for the histogram (e.g. "Glic", "NewTab", "Aim").
+     * @param event The IPH event (Shown, Dismissed, or MovedToBottom).
+     * @param featureType The feature type suffix for the histogram (e.g. "AddressBar", "Glic",
+     *     "NewTab").
      */
     public static void recordIphEvent(@IphEvent int event, @IphFeature String featureType) {
         RecordHistogram.recordEnumeratedHistogram(
@@ -231,7 +249,7 @@ public class BottomBarMetrics {
 
     /**
      * Records the decision and processing time taken to evaluate candidate extra action resolution
-     * (GLIC vs AI Mode) in the bottom bar.
+     * in the bottom bar.
      *
      * @param durationMs The elapsed time in milliseconds.
      */
@@ -243,7 +261,7 @@ public class BottomBarMetrics {
     /**
      * Records the candidate extra action resolved for the bottom bar.
      *
-     * @param candidateAction The candidate extra action (None, Glic, or Aim).
+     * @param candidateAction The candidate extra action (None or Glic).
      */
     public static void recordCandidateExtraAction(@CandidateAction int candidateAction) {
         RecordHistogram.recordEnumeratedHistogram(
@@ -262,25 +280,5 @@ public class BottomBarMetrics {
                 "Android.BottomBar.Glic.IneligibilityReason",
                 reason,
                 GlicIneligibilityReason.COUNT);
-    }
-
-    /**
-     * Records the reason why AI Mode was determined ineligible or not shown in the bottom bar.
-     *
-     * @param reason The ineligibility reason.
-     */
-    public static void recordAimIneligibilityReason(@AimIneligibilityReason int reason) {
-        RecordHistogram.recordEnumeratedHistogram(
-                "Android.BottomBar.Aim.IneligibilityReason", reason, AimIneligibilityReason.COUNT);
-    }
-
-    /**
-     * Records the result of attempting to launch AI Mode from the bottom bar.
-     *
-     * @param result The launch result (Success, TabNull, or MissingOrInvalidUrl).
-     */
-    public static void recordAimLaunchResult(@AimLaunchResult int result) {
-        RecordHistogram.recordEnumeratedHistogram(
-                "Android.BottomBar.Aim.LaunchResult", result, AimLaunchResult.COUNT);
     }
 }

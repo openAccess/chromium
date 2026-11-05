@@ -294,8 +294,6 @@ class ServiceProxyImpl : public ServiceProxy {
 
 class SimpleMessageReceiver : public mojo::MessageReceiverWithResponder {
  public:
-  bool PrefersSerializedMessages() override { return true; }
-
   bool Accept(mojo::Message* message) override {
     // Imagine some IPC happened here.
 
@@ -321,7 +319,7 @@ class SimpleMessageReceiver : public mojo::MessageReceiverWithResponder {
 
 using BindingsSampleTest = mojo::BindingsTestBase;
 
-TEST_P(BindingsSampleTest, Basic) {
+TEST_F(BindingsSampleTest, Basic) {
   SimpleMessageReceiver receiver;
 
   // User has a proxy to a Service somehow.
@@ -342,7 +340,7 @@ TEST_P(BindingsSampleTest, Basic) {
   delete service;
 }
 
-TEST_P(BindingsSampleTest, DefaultValues) {
+TEST_F(BindingsSampleTest, DefaultValues) {
   DefaultsTestPtr defaults(DefaultsTest::New());
   EXPECT_EQ(-12, defaults->a0);
   EXPECT_EQ(kTwelve, defaults->a1);
@@ -373,8 +371,6 @@ TEST_P(BindingsSampleTest, DefaultValues) {
   EXPECT_EQ(0x123456789, defaults->a24);
   EXPECT_EQ(-0x123456789, defaults->a25);
 }
-
-INSTANTIATE_MOJO_BINDINGS_TEST_SUITE_P(BindingsSampleTest);
 
 }  // namespace
 }  // namespace sample

@@ -26,6 +26,7 @@
 #include "components/omnibox/browser/base_search_provider.h"
 #include "content/public/browser/web_contents.h"
 #include "services/network/public/cpp/constants.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "url/gurl.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -34,21 +35,17 @@
 using predictors::AutocompleteActionPredictor;
 using predictors::AutocompleteActionPredictorFactory;
 
-OmniboxPrerender::OmniboxPrerender(JNIEnv* env,
-                                   const jni_zero::JavaRef<jobject>& obj)
-    : weak_java_omnibox_(env, obj) {}
+OmniboxPrerender::OmniboxPrerender() = default;
 
 OmniboxPrerender::~OmniboxPrerender() = default;
 
-static int64_t JNI_OmniboxPrerender_Init(
-    JNIEnv* env,
-    const jni_zero::JavaRef<jobject>& obj) {
-  OmniboxPrerender* omnibox = new OmniboxPrerender(env, obj);
-  return reinterpret_cast<intptr_t>(omnibox);
+static jni_zero::JniUniquePtr<OmniboxPrerender> JNI_OmniboxPrerender_Init(
+    JNIEnv* env) {
+  return jni_zero::MakeUnique<OmniboxPrerender>();
 }
 
 void OmniboxPrerender::Clear(Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
   if (!profile)
     return;
   AutocompleteActionPredictor* action_predictor =
@@ -134,10 +131,10 @@ void OmniboxPrerender::PrerenderMaybe(const std::u16string& url_string,
 void OmniboxPrerender::DoPrerender(const AutocompleteMatch& match,
                                    Profile* profile,
                                    content::WebContents* web_contents) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
   if (!profile)
     return;
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
   if (!web_contents)
     return;
 
@@ -146,7 +143,8 @@ void OmniboxPrerender::DoPrerender(const AutocompleteMatch& match,
   // more information.
   // SearchPrefetchService is responsible for handling search
   // AutocompleteMatches and preloading search result pages when needed.
-  DCHECK(!AutocompleteMatch::IsSearchType(match.type));
+  CHECK(!AutocompleteMatch::IsSearchType(match.type),
+        base::NotFatalUntil::M161);
   predictors::AutocompleteActionPredictorFactory::GetForProfile(profile)
       ->StartPrerendering(match.destination_url, *web_contents);
 }

@@ -22,12 +22,19 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "content/public/browser/security_principal.h"
+#include "content/public/browser/site_instance.h"
+#include "content/public/browser/storage_partition.h"
+#include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/embedded_worker_instance_test_harness.h"
+#include "content/public/test/navigation_simulator.h"
 #include "content/public/test/web_contents_tester.h"
 #include "extensions/buildflags/buildflags.h"
 #include "google_apis/gaia/gaia_id.h"
+#include "services/device/public/cpp/device_features.h"
 #include "services/device/public/cpp/test/fake_hid_manager.h"
 #include "services/device/public/cpp/test/hid_test_util.h"
 #include "services/device/public/cpp/test/scoped_usb_device_manager_overrider.h"
@@ -43,7 +50,7 @@
 #include "chrome/browser/hid/hid_connection_tracker_factory.h"
 #endif
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "base/command_line.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/test_extension_system.h"
@@ -51,7 +58,7 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_builder.h"
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
@@ -84,11 +91,11 @@ constexpr AccountId::Literal kTestAccountId =
     AccountId::Literal::FromUserEmailGaiaId(kTestUserEmail, kTestUserGaiaId);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 constexpr std::string_view kPrivilegedExtensionId{
     "ckcendljdlmgnhghiaomidhiiclmapok"};
 constexpr std::string_view kExtensionDocumentFileName{"index.html"};
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 MATCHER_P(HasGuid, matcher, "") {
   return ExplainMatchResult(matcher, arg->guid, result_listener);
@@ -113,13 +120,13 @@ device::mojom::HidDeviceInfoPtr CreateIncompleteFakeDevice() {
   return device;
 }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 device::mojom::HidDeviceInfoPtr CreateFakeFidoDevice() {
   return device::CreateDeviceFromReportDescriptor(
       /*vendor_id=*/0x1234,
       /*product_id=*/0xabcd, device::TestReportDescriptors::FidoU2fHid());
 }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 // A mock HidManagerClient implementation that can be used to listen for HID
 // device connection events.
@@ -187,7 +194,14 @@ class MockHidConnectionTracker : public HidConnectionTracker {
 class ChromeHidTestHelper {
  public:
   ChromeHidTestHelper() {
+#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+    feature_list_.InitWithFeatures(
+        {blink::features::kWebHID,
+         features::kWebHidOnDesktopAndroidServiceWorkers},
+        {});
+#else
     feature_list_.InitAndEnableFeature(blink::features::kWebHID);
+#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
   }
 
   void SimulateDeviceServiceCrash() {
@@ -238,7 +252,7 @@ class ChromeHidTestHelper {
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // Creates a fake extension with the specified `extension_id` so that it can
   // exercise behaviors that are only enabled for privileged extensions.
   scoped_refptr<const extensions::Extension> CreateExtensionWithId(
@@ -272,7 +286,7 @@ class ChromeHidTestHelper {
     extension_ = CreateExtensionWithId(kPrivilegedExtensionId);
     origin_url_ = extension_->origin().GetURL();
   }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
   void SetUpWebPageOriginUrl() { origin_url_ = GURL(kDefaultTestUrl); }
 
@@ -806,7 +820,7 @@ class ChromeHidTestHelper {
     }
   }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   void TestFidoDeviceAllowedWithPrivilegedOrigin(
       content::WebContents* web_contents) {
     auto origin = url::Origin::Create(origin_url_);
@@ -908,7 +922,7 @@ class ChromeHidTestHelper {
           std::make_unique<user_manager::FakeUserManagerDelegate>(),
           TestingBrowserProcess::GetGlobal()->GetTestingLocalState())};
 #endif
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   scoped_refptr<const extensions::Extension> extension_;
 #endif
   MockHidManagerClient hid_manager_client_;
@@ -985,6 +999,7 @@ class ChromeHidDelegateRenderFrameTestBase
 
 #if BUILDFLAG(IS_CHROMEOS)
     // Notify ChromeOS User that its profile is created.
+    // TODO(crbug.com/40225390): Use ProfileUserManagerController.
     user_manager::UserManager::Get()->OnUserProfileCreated(
         kTestAccountId, profile_->GetPrefs());
 #endif
@@ -1155,7 +1170,7 @@ class ChromeHidDelegateServiceWorkerTest
   void SetUpOriginUrl() override { SetUpWebPageOriginUrl(); }
 };
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 class ChromeHidDelegateExtensionServiceWorkerTest
     : public ChromeHidDelegateServiceWorkerTestBase {
@@ -1167,6 +1182,20 @@ class ChromeHidDelegateExtensionServiceWorkerTest
   void SetUpOriginUrl() override { SetUpExtensionOriginUrl(); }
 };
 
+#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+class ChromeHidDelegateExtensionServiceWorkerFeatureDisabledTest
+    : public ChromeHidDelegateExtensionServiceWorkerTest {
+ public:
+  ChromeHidDelegateExtensionServiceWorkerFeatureDisabledTest() {
+    disabled_feature_list_.InitAndDisableFeature(
+        features::kWebHidOnDesktopAndroidServiceWorkers);
+  }
+
+ private:
+  base::test::ScopedFeatureList disabled_feature_list_;
+};
+#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+
 class ChromeHidDelegateExtensionRenderFrameTest
     : public ChromeHidDelegateRenderFrameTestBase {
  public:
@@ -1176,7 +1205,7 @@ class ChromeHidDelegateExtensionRenderFrameTest
   // ChromeHidTestHelper
   void SetUpOriginUrl() override { SetUpExtensionOriginUrl(); }
 };
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 }  // namespace
 
@@ -1217,7 +1246,7 @@ TEST_F(ChromeHidDelegateServiceWorkerTest, HidServiceNotConnected) {
   TestHidServiceNotConnected();
 }
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 TEST_F(ChromeHidDelegateExtensionRenderFrameTest,
        FidoDeviceAllowedWithPrivilegedOrigin) {
   TestFidoDeviceAllowedWithPrivilegedOrigin(web_contents());
@@ -1285,7 +1314,17 @@ TEST_F(ChromeHidDelegateExtensionServiceWorkerTest, ConnectAndDisconnect) {
 TEST_F(ChromeHidDelegateExtensionServiceWorkerTest, ConnectAndRemove) {
   TestConnectAndRemove(/*web_contents=*/nullptr);
 }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+
+#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+TEST_F(ChromeHidDelegateExtensionServiceWorkerFeatureDisabledTest,
+       FeatureDisabledOnDesktopAndroid) {
+  ChromeHidDelegate chrome_hid_delegate;
+  EXPECT_FALSE(chrome_hid_delegate.IsServiceWorkerAllowedForOrigin(
+      url::Origin::Create(origin_url_)));
+  TestHidServiceNotConnected();
+}
+#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 TEST(ChromeHidDelegateBrowserContextTest, BrowserContextIsNull) {
   ChromeHidDelegate chrome_hid_delegate;
@@ -1302,4 +1341,185 @@ TEST(ChromeHidDelegateBrowserContextTest, BrowserContextIsNull) {
                          base::Uuid::GenerateRandomV4().AsLowercaseString()));
   EXPECT_FALSE(chrome_hid_delegate.IsFidoAllowedForOrigin(
       /*browser_context=*/nullptr, origin));
+}
+
+class ChromeHidDelegateStoragePartitionTest
+    : public ChromeRenderViewHostTestHarness {
+ public:
+  std::unique_ptr<content::WebContents> CreateGuestPartitionWebContents(
+      const GURL& url) {
+    const content::StoragePartitionConfig guest_config =
+        content::StoragePartitionConfig::Create(
+            profile(), "test_partition", "guest_partition", /*in_memory=*/true);
+    scoped_refptr<content::SiteInstance> guest_instance =
+        content::SiteInstance::CreateForGuest(profile(), guest_config);
+    std::unique_ptr<content::WebContents> guest_contents =
+        content::WebContentsTester::CreateTestWebContents(profile(),
+                                                          guest_instance);
+    content::WebContentsTester::For(guest_contents.get())
+        ->NavigateAndCommit(url);
+    return guest_contents;
+  }
+
+  std::unique_ptr<content::WebContents> CreateCustomPartitionWebContents(
+      const GURL& url) {
+    const content::StoragePartitionConfig custom_config =
+        content::StoragePartitionConfig::Create(profile(), "test_partition",
+                                                "custom_partition",
+                                                /*in_memory=*/true);
+    scoped_refptr<content::SiteInstance> custom_instance =
+        content::SiteInstance::CreateForFixedStoragePartition(profile(), url,
+                                                              custom_config);
+    std::unique_ptr<content::WebContents> custom_contents =
+        content::WebContentsTester::CreateTestWebContents(profile(),
+                                                          custom_instance);
+    content::WebContentsTester::For(custom_contents.get())
+        ->NavigateAndCommit(url);
+    return custom_contents;
+  }
+};
+
+TEST_F(ChromeHidDelegateStoragePartitionTest,
+       IsHidAllowedForFrame_BlocksGuestViews) {
+  ChromeHidDelegate chrome_hid_delegate;
+
+  // 1. Test HTTPS Guest (should be blocked)
+  {
+    const GURL guest_url("https://example.com/");
+
+    std::unique_ptr<content::WebContents> guest =
+        CreateGuestPartitionWebContents(guest_url);
+    content::RenderFrameHost* rfh = guest->GetPrimaryMainFrame();
+
+    ASSERT_TRUE(rfh->GetSiteInstance()->GetSecurityPrincipal().IsGuest());
+    ASSERT_NE(rfh->GetStoragePartition(),
+              rfh->GetBrowserContext()->GetDefaultStoragePartition());
+
+    EXPECT_FALSE(chrome_hid_delegate.IsHidAllowedForFrame(rfh));
+  }
+
+  // 2. Test about:blank Guest (should be blocked)
+  {
+    const GURL guest_url("about:blank");
+
+    std::unique_ptr<content::WebContents> guest =
+        CreateGuestPartitionWebContents(guest_url);
+    content::RenderFrameHost* rfh = guest->GetPrimaryMainFrame();
+
+    EXPECT_FALSE(chrome_hid_delegate.IsHidAllowedForFrame(rfh));
+  }
+}
+
+TEST_F(ChromeHidDelegateStoragePartitionTest,
+       IsHidAllowedForFrame_CustomStoragePartition) {
+  ChromeHidDelegate chrome_hid_delegate;
+
+  // 1. Test HTTPS in custom StoragePartition (should be blocked)
+  {
+    const GURL url("https://example.com/");
+
+    std::unique_ptr<content::WebContents> custom_contents =
+        CreateCustomPartitionWebContents(url);
+    content::RenderFrameHost* rfh = custom_contents->GetPrimaryMainFrame();
+
+    ASSERT_FALSE(rfh->GetSiteInstance()->GetSecurityPrincipal().IsGuest());
+    ASSERT_NE(rfh->GetStoragePartition(),
+              rfh->GetBrowserContext()->GetDefaultStoragePartition());
+
+    EXPECT_FALSE(chrome_hid_delegate.IsHidAllowedForFrame(rfh));
+  }
+
+  // 2. Test non-HTTP/HTTPS in custom StoragePartition (should be allowed)
+  {
+    const GURL url("chrome://version/");
+
+    std::unique_ptr<content::WebContents> custom_contents =
+        CreateCustomPartitionWebContents(url);
+    content::RenderFrameHost* rfh = custom_contents->GetPrimaryMainFrame();
+
+    ASSERT_FALSE(rfh->GetSiteInstance()->GetSecurityPrincipal().IsGuest());
+    ASSERT_NE(rfh->GetStoragePartition(),
+              rfh->GetBrowserContext()->GetDefaultStoragePartition());
+
+    EXPECT_TRUE(chrome_hid_delegate.IsHidAllowedForFrame(rfh));
+  }
+
+  // 3. Test HTTPS subframe inside non-HTTP/HTTPS custom StoragePartition
+  // (should be allowed; HID grants are keyed by the main frame origin)
+  {
+    const GURL url("chrome://version/");
+    const GURL child_url("https://example.com/");
+
+    std::unique_ptr<content::WebContents> custom_contents =
+        CreateCustomPartitionWebContents(url);
+    content::RenderFrameHost* main_rfh = custom_contents->GetPrimaryMainFrame();
+    content::RenderFrameHost* child_rfh =
+        content::NavigationSimulator::NavigateAndCommitFromDocument(
+            child_url,
+            content::RenderFrameHostTester::For(main_rfh)->AppendChild(
+                "child"));
+
+    ASSERT_FALSE(
+        child_rfh->GetSiteInstance()->GetSecurityPrincipal().IsGuest());
+    ASSERT_NE(child_rfh->GetStoragePartition(),
+              child_rfh->GetBrowserContext()->GetDefaultStoragePartition());
+    ASSERT_EQ(child_rfh->GetLastCommittedOrigin(),
+              url::Origin::Create(child_url));
+
+    EXPECT_TRUE(chrome_hid_delegate.IsHidAllowedForFrame(child_rfh));
+  }
+
+  // 4. Test about:blank subframe with inherited HTTPS origin in custom
+  // StoragePartition (should be blocked)
+  {
+    const GURL url("https://example.com/");
+    const url::Origin origin = url::Origin::Create(url);
+
+    std::unique_ptr<content::WebContents> custom_contents =
+        CreateCustomPartitionWebContents(url);
+    content::RenderFrameHost* main_rfh = custom_contents->GetPrimaryMainFrame();
+    content::RenderFrameHost* child_rfh =
+        content::NavigationSimulator::NavigateAndCommitFromDocument(
+            GURL("about:blank"),
+            content::RenderFrameHostTester::For(main_rfh)->AppendChild(
+                "child"));
+
+    ASSERT_FALSE(
+        child_rfh->GetSiteInstance()->GetSecurityPrincipal().IsGuest());
+    ASSERT_NE(main_rfh->GetStoragePartition(),
+              child_rfh->GetBrowserContext()->GetDefaultStoragePartition());
+    ASSERT_EQ(child_rfh->GetLastCommittedOrigin(), origin);
+
+    EXPECT_FALSE(chrome_hid_delegate.IsHidAllowedForFrame(child_rfh));
+  }
+
+  // 5. Test opaque origin in custom StoragePartition (should be blocked)
+  {
+    const GURL url("data:text/html,<html></html>");
+
+    std::unique_ptr<content::WebContents> custom_contents =
+        CreateCustomPartitionWebContents(url);
+    content::RenderFrameHost* rfh = custom_contents->GetPrimaryMainFrame();
+
+    ASSERT_TRUE(rfh->GetLastCommittedOrigin().opaque());
+    ASSERT_NE(rfh->GetStoragePartition(),
+              rfh->GetBrowserContext()->GetDefaultStoragePartition());
+
+    EXPECT_FALSE(chrome_hid_delegate.IsHidAllowedForFrame(rfh));
+  }
+}
+
+TEST_F(ChromeHidDelegateStoragePartitionTest,
+       IsHidAllowedForFrame_AllowsDefaultPartition) {
+  const GURL url("https://example.com/");
+
+  NavigateAndCommit(url);
+  content::RenderFrameHost* rfh = main_rfh();
+
+  ASSERT_FALSE(rfh->GetSiteInstance()->GetSecurityPrincipal().IsGuest());
+  ASSERT_EQ(rfh->GetStoragePartition(),
+            rfh->GetBrowserContext()->GetDefaultStoragePartition());
+
+  ChromeHidDelegate chrome_hid_delegate;
+  EXPECT_TRUE(chrome_hid_delegate.IsHidAllowedForFrame(rfh));
 }

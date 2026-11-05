@@ -8,14 +8,12 @@ import org.junit.After;
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.android_webview.CompatQuirks;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 
 /** Robolectric unit tests for {@link CompatQuirks}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class CompatQuirksTest {
     @After
     public void tearDown() {
@@ -26,6 +24,7 @@ public class CompatQuirksTest {
     public void testWithoutDelegateReturnsFalse() {
         Assert.assertFalse(CompatQuirks.isEnabled(CompatQuirks.Quirk.LEGACY_DARK_MODE));
         Assert.assertFalse(CompatQuirks.isEnabled(CompatQuirks.Quirk.ALLOW_SNIFFING_FILE_URLS));
+        Assert.assertFalse(CompatQuirks.isEnabled(CompatQuirks.Quirk.ALLOW_ALL_CLEARTEXT_TRAFFIC));
     }
 
     @Test

@@ -9,6 +9,7 @@ import org.chromium.chrome.browser.about_settings.AboutChromeSettings;
 import org.chromium.chrome.browser.about_settings.LegalInformationSettings;
 import org.chromium.chrome.browser.appearance.settings.AppearanceSettingsFragment;
 import org.chromium.chrome.browser.appearance.settings.BookmarkBarSettingsFragment;
+import org.chromium.chrome.browser.appearance.settings.TabPositionSettingsFragment;
 import org.chromium.chrome.browser.autofill.settings.AndroidPaymentAppsFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillAndPasswordsFragment;
 import org.chromium.chrome.browser.autofill.settings.AutofillBuyNowPayLaterFragment;
@@ -26,7 +27,7 @@ import org.chromium.chrome.browser.browsing_data.ClearBrowsingDataFragment;
 import org.chromium.chrome.browser.commerce.PriceNotificationSettingsFragment;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchSettingsFragment;
 import org.chromium.chrome.browser.download.settings.DownloadSettings;
-import org.chromium.chrome.browser.glic.GlicSettings;
+import org.chromium.chrome.browser.glic.settings.GlicSettings;
 import org.chromium.chrome.browser.homepage.settings.HomepageSettings;
 import org.chromium.chrome.browser.image_descriptions.ImageDescriptionsSettings;
 import org.chromium.chrome.browser.language.settings.LanguageSettings;
@@ -43,13 +44,14 @@ import org.chromium.chrome.browser.safety_hub.SafetyHubFragment;
 import org.chromium.chrome.browser.search_engines.settings.SearchEngineSettings;
 import org.chromium.chrome.browser.search_engines.settings.SiteSearchSettings;
 import org.chromium.chrome.browser.settings.MainSettings;
+import org.chromium.chrome.browser.settings.startup.OnStartupSettingsFragment;
 import org.chromium.chrome.browser.ssl.HttpsFirstModeSettingsFragment;
 import org.chromium.chrome.browser.sync.settings.AccountManagementFragment;
 import org.chromium.chrome.browser.sync.settings.GoogleServicesSettings;
 import org.chromium.chrome.browser.sync.settings.ManageSyncSettings;
 import org.chromium.chrome.browser.sync.settings.PersonalizeGoogleServicesSettings;
-import org.chromium.chrome.browser.tasks.tab_management.TabArchiveSettingsFragment;
 import org.chromium.chrome.browser.tasks.tab_management.TabsSettings;
+import org.chromium.chrome.browser.tasks.tab_management.archived_tabs.TabArchiveSettingsFragment;
 import org.chromium.chrome.browser.toolbar.adaptive.settings.AdaptiveToolbarSettingsFragment;
 import org.chromium.chrome.browser.tracing.settings.DeveloperSettings;
 import org.chromium.chrome.browser.tracing.settings.TracingCategoriesSettings;
@@ -93,6 +95,7 @@ public final class SearchIndexProviderRegistry {
                     UniversalOptOutSettings.SEARCH_INDEX_DATA_PROVIDER,
                     HomepageSettings.SEARCH_INDEX_DATA_PROVIDER,
                     LegalInformationSettings.SEARCH_INDEX_DATA_PROVIDER,
+                    OnStartupSettingsFragment.SEARCH_INDEX_DATA_PROVIDER,
                     SearchEngineSettings.SEARCH_INDEX_DATA_PROVIDER,
                     SiteSearchSettings.SEARCH_INDEX_DATA_PROVIDER,
                     PersonalizeGoogleServicesSettings.SEARCH_INDEX_DATA_PROVIDER,
@@ -115,6 +118,7 @@ public final class SearchIndexProviderRegistry {
                     AndroidPaymentAppsFragment.SEARCH_INDEX_DATA_PROVIDER,
                     AppearanceSettingsFragment.SEARCH_INDEX_DATA_PROVIDER,
                     BookmarkBarSettingsFragment.SEARCH_INDEX_DATA_PROVIDER,
+                    TabPositionSettingsFragment.SEARCH_INDEX_DATA_PROVIDER,
                     AutofillAndPasswordsFragment.SEARCH_INDEX_DATA_PROVIDER,
                     AutofillBuyNowPayLaterFragment.SEARCH_INDEX_DATA_PROVIDER,
                     AutofillCardBenefitsFragment.SEARCH_INDEX_DATA_PROVIDER,

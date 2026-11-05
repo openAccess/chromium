@@ -7,9 +7,9 @@
 #include "chrome/browser/ash/input_device_settings/peripherals_app_delegate_impl.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_profile.h"
-#include "components/services/app_service/public/cpp/app_types.h"
-#include "components/services/app_service/public/cpp/package_id.h"
+#include "components/account_id/account_id.h"
 #include "content/public/test/browser_test.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -17,10 +17,11 @@
 namespace ash {
 namespace {
 
-const apps::PackageId kTestPackageId(apps::PackageType::kWeb,
-                                     "test.package.name");
 constexpr char kAppName[] = "app_name";
 constexpr char kTestDeviceKey[] = "0000:0001";
+// Canonical string form of an `apps::PackageId` for a web app, i.e.
+// "<package_type_name>:<identifier>".
+constexpr char kTestPackageId[] = "web:test.package.name";
 
 }  // namespace
 
@@ -60,16 +61,17 @@ class PeripheralsAppDelegateImplTest : public InProcessBrowserTest {
 IN_PROC_BROWSER_TEST_F(PeripheralsAppDelegateImplTest,
                        GetCompanionAppResponse_Valid) {
   apps::proto::PeripheralsGetResponse response;
-  response.set_package_id(kTestPackageId.ToString());
+  response.set_package_id(kTestPackageId);
   response.set_name(kAppName);
   url_loader_factory_.AddResponse(delegate()->GetServerUrl().spec(),
                                   response.SerializeAsString(), net::HTTP_OK);
   base::test::TestFuture<const std::optional<mojom::CompanionAppInfo>&>
       app_info;
-  delegate()->GetCompanionAppInfo(kTestDeviceKey, app_info.GetCallback());
+  delegate()->GetCompanionAppInfo(EmptyAccountId(), kTestDeviceKey,
+                                  app_info.GetCallback());
   const auto info = app_info.Get();
   EXPECT_EQ(kAppName, info->app_name);
-  EXPECT_EQ(kTestPackageId.ToString(), info->package_id);
+  EXPECT_EQ(kTestPackageId, info->package_id);
 }
 
 IN_PROC_BROWSER_TEST_F(PeripheralsAppDelegateImplTest,
@@ -79,7 +81,8 @@ IN_PROC_BROWSER_TEST_F(PeripheralsAppDelegateImplTest,
                                   response.SerializeAsString());
   base::test::TestFuture<const std::optional<mojom::CompanionAppInfo>&>
       app_info;
-  delegate()->GetCompanionAppInfo(kTestDeviceKey, app_info.GetCallback());
+  delegate()->GetCompanionAppInfo(EmptyAccountId(), kTestDeviceKey,
+                                  app_info.GetCallback());
   EXPECT_FALSE(app_info.Take().has_value());
 }
 

@@ -12,6 +12,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/login/users/profile_user_manager_controller.h"
+#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -19,10 +20,11 @@
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
+#include "chromeos/ash/components/signin/fake_identity_manager_provider.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_type.h"
 #include "content/public/test/browser_task_environment.h"
@@ -42,8 +44,8 @@ class AmbientClientImplTest : public testing::Test {
   ~AmbientClientImplTest() override = default;
 
   void SetUp() override {
-    test_user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
             TestingBrowserProcess::GetGlobal()->local_state());
 
     profile_manager_ = std::make_unique<TestingProfileManager>(
@@ -57,16 +59,23 @@ class AmbientClientImplTest : public testing::Test {
 
     image_downloader_ = std::make_unique<ash::TestImageDownloader>();
     ambient_client_ = std::make_unique<AmbientClientImpl>();
+
+    // Nothing else in this test registers an ash::IdentityManagerProvider.
+    // The map starts empty, so Find() returns nullptr until LogIn() registers
+    // the real IdentityManager for the account being logged in.
+    identity_manager_provider_ =
+        std::make_unique<ash::FakeIdentityManagerProvider>();
   }
 
   void TearDown() override {
+    identity_manager_provider_.reset();
     ambient_client_.reset();
     identity_test_env_adaptor_.reset();
     profile_ = nullptr;
     profile_manager_.reset();
 
     profile_user_manager_controller_.reset();
-    test_user_session_manager_.reset();
+    user_session_test_environment_.reset();
   }
 
  protected:
@@ -74,14 +83,16 @@ class AmbientClientImplTest : public testing::Test {
   TestingProfile* profile() { return profile_; }
 
   void AddAndLoginUser(const AccountId& account_id) {
-    ASSERT_TRUE(test_user_session_manager_->AddRegularUser(account_id));
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(account_id));
     LogIn(account_id);
   }
 
   void LogIn(const AccountId& account_id) {
-    test_user_session_manager_->LogIn(account_id);
+    user_session_test_environment_->LogIn(account_id);
 
     CHECK(!profile_);
+    ash::ScopedAccountIdAnnotator annotator(profile_manager_->profile_manager(),
+                                            account_id);
     profile_ = profile_manager_->CreateTestingProfile(
         account_id.GetUserEmail(), /*prefs=*/{},
         base::UTF8ToUTF16(account_id.GetUserEmail()),
@@ -90,6 +101,8 @@ class AmbientClientImplTest : public testing::Test {
             GetIdentityTestEnvironmentFactories());
     identity_test_env_adaptor_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile_);
+    identity_manager_provider_->SetIdentityManagerForAccount(
+        account_id, identity_test_env()->identity_manager());
 
     if (!identity_test_env()->identity_manager()->HasPrimaryAccount(
             signin::ConsentLevel::kSignin)) {
@@ -103,8 +116,8 @@ class AmbientClientImplTest : public testing::Test {
     return identity_test_env_adaptor_->identity_test_env();
   }
 
-  ash::test::TestUserSessionManager& test_user_session_manager() {
-    return CHECK_DEREF(test_user_session_manager_.get());
+  ash::test::UserSessionTestEnvironment& user_session_test_environment() {
+    return CHECK_DEREF(user_session_test_environment_.get());
   }
 
  private:
@@ -112,7 +125,8 @@ class AmbientClientImplTest : public testing::Test {
 
   ash::ScopedStubInstallAttributes install_attributes_;
   ash::ScopedTestingCrosSettings testing_cros_settings_;
-  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<ash::ProfileUserManagerController>
       profile_user_manager_controller_;
 
@@ -121,6 +135,7 @@ class AmbientClientImplTest : public testing::Test {
   raw_ptr<TestingProfile> profile_ = nullptr;
   std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
       identity_test_env_adaptor_;
+  std::unique_ptr<ash::FakeIdentityManagerProvider> identity_manager_provider_;
   std::unique_ptr<ash::TestImageDownloader> image_downloader_;
   std::unique_ptr<AmbientClientImpl> ambient_client_;
 };
@@ -137,12 +152,13 @@ TEST_F(AmbientClientImplTest, DisallowedByNonPrimaryUser) {
       AccountId::FromUserEmailGaiaId("user2@gmail.com", GaiaId("987654321"));
   const auto account_id =
       AccountId::FromUserEmailGaiaId(kTestProfileName, kTestGaiaId);
-  ASSERT_TRUE(test_user_session_manager().AddRegularUser(primary_account_id));
-  ASSERT_TRUE(test_user_session_manager().AddRegularUser(account_id));
+  ASSERT_TRUE(
+      user_session_test_environment().AddRegularUser(primary_account_id));
+  ASSERT_TRUE(user_session_test_environment().AddRegularUser(account_id));
 
   // Primary log-in first, followed by log-in for the target user including
   // its profile creation.
-  test_user_session_manager().LogIn(primary_account_id);
+  user_session_test_environment().LogIn(primary_account_id);
   ASSERT_EQ(
       session_manager::SessionManager::Get()->GetActiveSession()->account_id(),
       primary_account_id);

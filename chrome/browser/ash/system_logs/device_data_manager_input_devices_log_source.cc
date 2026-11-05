@@ -10,6 +10,7 @@
 #include "base/strings/stringprintf.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/manager/touch_device_manager.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/events/devices/device_data_manager.h"
 
 namespace system_logs {
@@ -131,7 +132,7 @@ void DescribeAndCountAllInputDevices(ui::DeviceDataManager* device_data_manager,
                                      SystemLogsResponse* response) {
   std::stringstream str;
 
-  DCHECK(response);
+  CHECK(response, base::NotFatalUntil::M160);
 
   if (!device_data_manager) {
     constexpr char kFailureMessage[] = "No DeviceDataManager instance";
@@ -218,7 +219,7 @@ DeviceDataManagerInputDevicesLogSource::
 
 void DeviceDataManagerInputDevicesLogSource::Fetch(
     SysLogsSourceCallback callback) {
-  DCHECK(!callback.is_null());
+  CHECK(!callback.is_null(), base::NotFatalUntil::M160);
 
   auto response = std::make_unique<SystemLogsResponse>();
   ui::DeviceDataManager* device_data_manager =

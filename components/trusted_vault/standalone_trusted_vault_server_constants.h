@@ -8,6 +8,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/containers/span.h"
@@ -29,11 +30,13 @@ inline constexpr char kQueryParameterAlternateOutputKey[] = "alt";
 inline constexpr char kQueryParameterAlternateOutputProto[] = "proto";
 
 std::vector<uint8_t> GetConstantTrustedVaultKey();
-GURL GetGetSecurityDomainMembersURL(
+GURL GetListSecurityDomainMembersURL(
     const GURL& server_url,
     const std::set<SecurityDomainId>& security_domain_filter,
     const std::set<trusted_vault_pb::SecurityDomainMember_MemberType>&
-        member_filter);
+        member_filter,
+    std::optional<std::string_view> next_page_token,
+    bool force_strong_read);
 GURL GetGetSecurityDomainMemberURL(const GURL& server_url,
                                    base::span<const uint8_t> public_key);
 GURL GetGetSecurityDomainURL(const GURL& server_url,
@@ -45,12 +48,13 @@ GURL GetRotateSharedKeyURL(const GURL& server_url,
                            SecurityDomainId security_domain);
 
 // Computes full URL, including alternate proto param.
-GURL GetGetSecurityDomainMembersURLForTesting(
-    const std::optional<std::string>& next_page_token,
+GURL GetFullListSecurityDomainMembersURLForTesting(
     const GURL& server_url,
     const std::set<SecurityDomainId>& security_domain_filter,
     const std::set<trusted_vault_pb::SecurityDomainMember_MemberType>&
-        member_filter);
+        member_filter,
+    std::optional<std::string_view> next_page_token,
+    bool force_strong_read);
 GURL GetFullJoinSecurityDomainsURLForTesting(const GURL& server_url,
                                              SecurityDomainId security_domain);
 GURL GetFullGetSecurityDomainMemberURLForTesting(

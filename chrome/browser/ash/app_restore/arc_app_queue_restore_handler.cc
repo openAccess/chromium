@@ -51,6 +51,7 @@
 #include "components/services/app_service/public/cpp/intent.h"
 #include "components/services/app_service/public/cpp/types_util.h"
 #include "ui/display/display.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/wm/public/activation_client.h"
 
 namespace ash::app_restore {
@@ -89,7 +90,7 @@ constexpr char kGhostWindowPopToArcHistogram[] = "Arc.LaunchedWithGhostWindow";
 }  // namespace
 
 ArcAppQueueRestoreHandler::ArcAppQueueRestoreHandler(
-    SchedulerConfigurationManager* scheduler_configuration_manager) {
+    SchedulerConfigurationManagerBase* scheduler_configuration_manager) {
   if (aura::Env::HasInstance())
     env_observer_.Observe(aura::Env::GetInstance());
 
@@ -130,14 +131,15 @@ ArcAppQueueRestoreHandler::~ArcAppQueueRestoreHandler() {
 
 void ArcAppQueueRestoreHandler::RestoreArcApps(
     AppLaunchHandler* app_launch_handler) {
-  DCHECK(app_launch_handler);
+  CHECK(app_launch_handler, base::NotFatalUntil::M160);
   handler_ = app_launch_handler;
 
   if (!arc::IsArcPlayStoreEnabledForProfile(handler_->profile()))
     return;
 
-  DCHECK(apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(
-      handler_->profile()));
+  CHECK(apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(
+            handler_->profile()),
+        base::NotFatalUntil::M160);
 
   LoadRestoreData();
   if (app_ids_.empty()) {
@@ -229,7 +231,7 @@ void ArcAppQueueRestoreHandler::LaunchApp(const std::string& app_id) {
   if (!IsAppReady(app_id))
     return;
 
-  DCHECK(handler_);
+  CHECK(handler_, base::NotFatalUntil::M160);
   const auto it =
       handler_->restore_data()->app_id_to_launch_list().find(app_id);
   if (it == handler_->restore_data()->app_id_to_launch_list().end())
@@ -316,7 +318,7 @@ void ArcAppQueueRestoreHandler::OnWindowInitialized(aura::Window* window) {
 }
 
 void ArcAppQueueRestoreHandler::OnWindowDestroying(aura::Window* window) {
-  DCHECK(observed_windows_.IsObservingSource(window));
+  CHECK(observed_windows_.IsObservingSource(window), base::NotFatalUntil::M160);
   observed_windows_.RemoveObservation(window);
 
   const auto session_id = arc::GetWindowSessionId(window);
@@ -348,15 +350,16 @@ void ArcAppQueueRestoreHandler::OnConfigurationSet(bool success,
 }
 
 void ArcAppQueueRestoreHandler::LoadRestoreData() {
-  DCHECK(handler_);
+  CHECK(handler_, base::NotFatalUntil::M160);
   for (const auto& it : handler_->restore_data()->app_id_to_launch_list())
     app_ids_.insert(it.first);
 }
 
 void ArcAppQueueRestoreHandler::AddWindows(const std::string& app_id) {
-  DCHECK(handler_);
+  CHECK(handler_, base::NotFatalUntil::M160);
   auto it = handler_->restore_data()->app_id_to_launch_list().find(app_id);
-  DCHECK(it != handler_->restore_data()->app_id_to_launch_list().end());
+  CHECK(it != handler_->restore_data()->app_id_to_launch_list().end(),
+        base::NotFatalUntil::M160);
   const auto& launch_list = it->second;
   for (const auto& [window_id, app_restore_data] : launch_list) {
     if (app_restore_data->window_info.activation_index.has_value()) {
@@ -418,7 +421,7 @@ void ArcAppQueueRestoreHandler::PrepareLaunchApps() {
 }
 
 void ArcAppQueueRestoreHandler::PrepareAppLaunching(const std::string& app_id) {
-  DCHECK(handler_);
+  CHECK(handler_, base::NotFatalUntil::M160);
   app_ids_.erase(app_id);
 
   const auto it =
@@ -439,7 +442,7 @@ void ArcAppQueueRestoreHandler::PrepareAppLaunching(const std::string& app_id) {
   for (const auto& [window_id, app_restore_data] : launch_list) {
     handler_->RecordRestoredAppLaunch(apps::AppTypeName::kArc);
 
-    DCHECK(app_restore_data->event_flag.has_value());
+    CHECK(app_restore_data->event_flag.has_value(), base::NotFatalUntil::M160);
 
     // Set an ARC session id to find the restore window id based on the newly
     // created ARC task id. Note that the desk template launch ID must be set
@@ -558,7 +561,7 @@ bool ArcAppQueueRestoreHandler::IsUnderCPUUsageLimiting() {
 }
 
 bool ArcAppQueueRestoreHandler::IsAppReady(const std::string& app_id) {
-  DCHECK(handler_);
+  CHECK(handler_, base::NotFatalUntil::M160);
   ArcAppListPrefs* prefs = ArcAppListPrefs::Get(handler_->profile());
   if (!prefs)
     return false;
@@ -619,7 +622,7 @@ void ArcAppQueueRestoreHandler::MaybeLaunchApp() {
 
 void ArcAppQueueRestoreHandler::LaunchAppWindow(const std::string& app_id,
                                                 int32_t window_id) {
-  DCHECK(handler_);
+  CHECK(handler_, base::NotFatalUntil::M160);
 
   const auto it =
       handler_->restore_data()->app_id_to_launch_list().find(app_id);
@@ -641,9 +644,9 @@ void ArcAppQueueRestoreHandler::LaunchAppWindow(const std::string& app_id,
 
   auto* proxy =
       apps::AppServiceProxyFactory::GetForProfile(handler_->profile());
-  DCHECK(proxy);
+  CHECK(proxy, base::NotFatalUntil::M160);
 
-  DCHECK(app_restore_data->event_flag.has_value());
+  CHECK(app_restore_data->event_flag.has_value(), base::NotFatalUntil::M160);
 
   apps::WindowInfoPtr window_info =
       full_restore::HandleArcWindowInfo(app_restore_data->GetAppWindowInfo());
@@ -732,7 +735,7 @@ void ArcAppQueueRestoreHandler::RemoveWindow(const std::string& app_id,
 
 void ArcAppQueueRestoreHandler::MaybeReStartTimer(
     const base::TimeDelta& delay) {
-  DCHECK(app_launch_timer_);
+  CHECK(app_launch_timer_, base::NotFatalUntil::M160);
 
   // If there is no window to be launched, stop the timer.
   if (!HasRestoreData()) {

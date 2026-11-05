@@ -60,6 +60,7 @@
 #include "third_party/blink/renderer/core/style/font_size_style.h"
 #include "third_party/blink/renderer/core/style/gap_data_list.h"
 #include "third_party/blink/renderer/core/style/scroll_marker_group.h"
+#include "third_party/blink/renderer/core/style/style_animated_sources.h"
 #include "third_party/blink/renderer/core/style/style_cached_data.h"
 #include "third_party/blink/renderer/core/style/style_highlight_data.h"
 #include "third_party/blink/renderer/core/style/style_scrollbar_color.h"
@@ -141,7 +142,10 @@ class InternalVisitedCaretColor;
 class InternalVisitedColor;
 class InternalVisitedColumnRuleColor;
 class InternalVisitedFill;
+class InternalVisitedFloodColor;
+class InternalVisitedLightingColor;
 class InternalVisitedOutlineColor;
+class InternalVisitedStopColor;
 class InternalVisitedStroke;
 class InternalVisitedTextDecorationColor;
 class InternalVisitedTextEmphasisColor;
@@ -170,7 +174,7 @@ class TextDecoration;
 // Blink. It acts as a container where the computed value of every CSS property
 // can be retrieved after its created using a builder.
 //
-//   ComputedStyleBuilder builder(*ComputedStyle::GetInitialStyleSingleton());
+//   ComputedStyleBuilder builder(ComputedStyle::GetInitialStyleSingleton());
 //   builder.SetDisplay(EDisplay::kNone); //'display' keyword property
 //   auto style = builder.TakeStyle();
 //   style->Display();
@@ -264,7 +268,10 @@ class ComputedStyle final : public ComputedStyleBase {
   friend class css_longhand::InternalVisitedColor;
   friend class css_longhand::InternalVisitedColumnRuleColor;
   friend class css_longhand::InternalVisitedFill;
+  friend class css_longhand::InternalVisitedFloodColor;
+  friend class css_longhand::InternalVisitedLightingColor;
   friend class css_longhand::InternalVisitedOutlineColor;
+  friend class css_longhand::InternalVisitedStopColor;
   friend class css_longhand::InternalVisitedStroke;
   friend class css_longhand::InternalVisitedTextDecorationColor;
   friend class css_longhand::InternalVisitedTextEmphasisColor;
@@ -347,7 +354,7 @@ class ComputedStyle final : public ComputedStyleBase {
   // Singletons to be used for StyleBuilder. The instances are
   // context-independent and must always be used as `const` versions to avoid
   // pollution of the style. Instances are allocated as per-thread singletons.
-  CORE_EXPORT static const ComputedStyle* GetInitialStyleSingleton();
+  CORE_EXPORT static const ComputedStyle& GetInitialStyleSingleton();
 
   static const ComputedStyle* NullifyEnsured(const ComputedStyle* style) {
     if (!style) {
@@ -464,6 +471,8 @@ class ComputedStyle final : public ComputedStyleBase {
     return CustomHighlightNamesInternal().get();
   }
 
+  CORE_EXPORT AnimatedSource GetAnimatedSource(CSSPropertyID property) const;
+
   /**
    * ComputedStyle properties
    *
@@ -491,11 +500,6 @@ class ComputedStyle final : public ComputedStyleBase {
    * class, and be kept to a minimum.
    */
 
-  // anchor-name
-  bool AnchorNameDataEquivalent(const ComputedStyle& o) const {
-    return base::ValuesEquivalent(AnchorName(), o.AnchorName());
-  }
-
   // Regular (non-interleaved) style resolutions happen without an
   // AnchorEvaluator, which means any anchor*() function will use
   // the fallback. Since anchor*() functions resolve computed-value time,
@@ -512,8 +516,8 @@ class ComputedStyle final : public ComputedStyleBase {
                StylePositionAnchor::Type::kAuto &&
            HasOutOfFlowPosition() &&
            (HasAnchorFunctions() ||
-            AlignSelf().GetPosition() == ItemPosition::kAnchorCenter ||
-            JustifySelf().GetPosition() == ItemPosition::kAnchorCenter);
+            AlignSelf().GetComputedPosition() == ItemPosition::kAnchorCenter ||
+            JustifySelf().GetComputedPosition() == ItemPosition::kAnchorCenter);
   }
 
   // For containing blocks, use |HasNonInitialBackdropFilter()| which includes
@@ -774,9 +778,6 @@ class ComputedStyle final : public ComputedStyleBase {
 
   // list-style-type
   const AtomicString& ListStyleStringValue() const;
-  bool ListStyleTypeDataEquivalent(const ComputedStyle& other) const {
-    return base::ValuesEquivalent(ListStyleType(), other.ListStyleType());
-  }
 
   // list-style-position
 
@@ -938,6 +939,9 @@ class ComputedStyle final : public ComputedStyleBase {
   // accent-color
   // An empty optional means the accent-color is 'auto'
   std::optional<blink::Color> AccentColorResolved() const;
+  // Returns the color mirrored by AccentColor/AccentColorText, or nullopt when
+  // the keywords should use the system accent color.
+  CORE_EXPORT std::optional<blink::Color> ResolveMirroredAccentColor() const;
 
   // scrollbar-color
   // An empty optional means the scrollbar-color is 'auto'
@@ -962,7 +966,7 @@ class ComputedStyle final : public ComputedStyleBase {
   void SetChildHasExplicitInheritance() const {
     // Child-dependent flags are contextual, and must not mutate the shared
     // initial-style singleton.
-    DCHECK(this != GetInitialStyleSingleton());
+    DCHECK(this != &GetInitialStyleSingleton());
     ComputedStyleBase::SetChildHasExplicitInheritance();
   }
 
@@ -1259,7 +1263,7 @@ class ComputedStyle final : public ComputedStyleBase {
   // text-transform utility functions.
   [[nodiscard]] CORE_EXPORT String
   ApplyTextTransform(const String&,
-                     UChar previous_character = ' ',
+                     UChar32 previous_character = ' ',
                      TextOffsetMap* offset_map = nullptr) const;
 
   // Line-height utility functions.
@@ -1481,7 +1485,6 @@ class ComputedStyle final : public ComputedStyleBase {
 
   // Float utility functions.
   bool IsFloating() const { return Floating() != EFloat::kNone; }
-  EFloat UnresolvedFloating() const { return Floating(); }
 
   EFloat Floating(const ComputedStyle& cb_style) const {
     return Floating(cb_style.Direction());
@@ -1564,9 +1567,15 @@ class ComputedStyle final : public ComputedStyleBase {
     return DefaultAnchorData(PositionAnchor(), GetPositionArea());
   }
 
+  bool ReferencesDefaultAnchor() const {
+    return !GetPositionArea().IsNone() ||
+           AlignSelf().GetComputedPosition() == ItemPosition::kAnchorCenter ||
+           JustifySelf().GetComputedPosition() == ItemPosition::kAnchorCenter ||
+           HasDefaultAnchorFunctions();
+  }
+
   // Clear utility functions.
   bool HasClear() const { return Clear() != EClear::kNone; }
-  EClear UnresolvedClear() const { return Clear(); }
 
   EClear Clear(const ComputedStyle& cb_style) const {
     return Clear(cb_style.Direction());
@@ -1807,6 +1816,12 @@ class ComputedStyle final : public ComputedStyleBase {
             display == EDisplay::kInlineListItem);
   }
 
+  bool AllowsZIndexOnChildren() const {
+    return IsDisplayFlex() || IsDisplayWebkitBox() || IsDisplayGrid() ||
+           IsDisplayGridLanes() ||
+           (Display() == EDisplay::kContents && IsInZIndexAllowingDisplay());
+  }
+
   // Isolation utility functions.
   bool HasIsolation() const { return Isolation() != EIsolation::kAuto; }
 
@@ -1829,7 +1844,6 @@ class ComputedStyle final : public ComputedStyleBase {
   bool HasResize() const {
     return StyleType() == kPseudoIdNone && Resize() != EResize::kNone;
   }
-  EResize UnresolvedResize() const { return Resize(); }
 
   EResize UsedResize() const {
     EResize value = Resize();
@@ -2055,8 +2069,7 @@ class ComputedStyle final : public ComputedStyleBase {
            HasCurrentFilterAnimation() || HasCurrentBackdropFilterAnimation() ||
            (RuntimeEnabledFeatures::CompositeClipPathAnimationEnabled() &&
             HasCurrentClipPathAnimation()) ||
-           (RuntimeEnabledFeatures::CompositeBGColorAnimationEnabled() &&
-            HasCurrentBackgroundColorAnimation());
+           HasCurrentBackgroundColorAnimation();
   }
   bool ShouldCompositeForCurrentAnimations() const {
     return HasCurrentOpacityAnimation() ||
@@ -2090,8 +2103,7 @@ class ComputedStyle final : public ComputedStyleBase {
     if (BorderCollapse() == EBorderCollapse::kCollapse) {
       return LogicalSize();
     }
-    return LogicalSize(LayoutUnit(HorizontalBorderSpacing()),
-                       LayoutUnit(VerticalBorderSpacing()));
+    return LogicalSize(HorizontalBorderSpacing(), VerticalBorderSpacing());
   }
 
   // Returns true if the computed style contains a 3D transform operation. This
@@ -2338,12 +2350,6 @@ class ComputedStyle final : public ComputedStyleBase {
     return ShouldBreakOnlyAfterWhiteSpace() && ShouldWrapLine();
   }
 
-  bool ShouldBreakWords() const {
-    return (WordBreak() == EWordBreak::kBreakWord ||
-            OverflowWrap() != EOverflowWrap::kNormal) &&
-           ShouldWrapLine();
-  }
-
   // Text direction utility functions.
   bool ShouldPlaceBlockDirectionScrollbarOnLogicalLeft() const {
     return !IsLeftToRightDirection() && IsHorizontalWritingMode();
@@ -2515,12 +2521,6 @@ class ComputedStyle final : public ComputedStyleBase {
     if (pseudo == kPseudoIdBackdrop && Overlay() == EOverlay::kNone) {
       return false;
     }
-    // ::overscroll-backdrop is generated for overscroll targets (which have
-    // -internal-overscroll-position: auto).
-    if (pseudo == kPseudoIdOverscrollBackdrop &&
-        !IsInternalOverscrollPositionAuto()) {
-      return false;
-    }
     if (pseudo == kPseudoIdScrollMarkerGroupBefore) {
       return HasScrollMarkerGroupBefore() && IsScrollContainer();
     }
@@ -2562,6 +2562,15 @@ class ComputedStyle final : public ComputedStyleBase {
       return std::nullopt;
     }
     return GetScrollMarkerGroup()->Mode();
+  }
+
+  // Empty value means scroll-marker-group: none.
+  std::optional<ScrollMarkerGroup::ScrollMarkerPosition>
+  ScrollMarkerGroupPosition() const {
+    if (!GetScrollMarkerGroup()) {
+      return std::nullopt;
+    }
+    return GetScrollMarkerGroup()->Position();
   }
 
   bool ScrollMarkerGroupNone() const { return !GetScrollMarkerGroup(); }
@@ -2659,9 +2668,6 @@ class ComputedStyle final : public ComputedStyleBase {
            type == EOverscrollContainerType::kPush;
   }
 
-  bool IsInternalOverscrollPositionAuto() const {
-    return InternalOverscrollPosition() == EInternalOverscrollPosition::kAuto;
-  }
   bool IsUnboundedElementActive() const {
     return InternalUnbounded() == EInternalUnbounded::kActive;
   }
@@ -2889,12 +2895,6 @@ class ComputedStyle final : public ComputedStyleBase {
                                   BorderLeftWidth());
   }
 
-  PhysicalToLogical<EBorderStyle> PhysicalBorderStyleToLogical() const {
-    return PhysicalToLogical<EBorderStyle>(
-        GetWritingDirection(), BorderTopStyle(), BorderRightStyle(),
-        BorderBottomStyle(), BorderLeftStyle());
-  }
-
   static Difference ComputeDifferenceIgnoringInheritedFirstLineStyle(
       const ComputedStyle& old_style,
       const ComputedStyle& new_style);
@@ -3041,7 +3041,7 @@ class ComputedStyleBuilder final : public ComputedStyleBuilderBase {
   FillLayer& AccessBackgroundLayers() { return MutableBackgroundInternal(); }
   void AdjustBackgroundLayers() {
     if (BackgroundInternal().Next()) {
-      AccessBackgroundLayers().CullEmptyLayers();
+      AccessBackgroundLayers().CullUnusedLayers();
       AccessBackgroundLayers().FillUnsetProperties();
     }
   }
@@ -3129,6 +3129,10 @@ class ComputedStyleBuilder final : public ComputedStyleBuilderBase {
   blink::Color GetCurrentColor() const {
     return Color().Resolve(blink::Color(), UsedColorScheme());
   }
+
+  // accent-color
+  std::optional<blink::Color> ResolveMirroredAccentColor(
+      mojom::blink::ColorScheme color_scheme) const;
 
   // column-count
   void SetColumnCount(uint16_t c) {
@@ -3381,7 +3385,7 @@ class ComputedStyleBuilder final : public ComputedStyleBuilderBase {
   FillLayer& AccessMaskLayers() { return MutableMaskInternal(); }
   void AdjustMaskLayers() {
     if (MaskInternal().Next()) {
-      AccessMaskLayers().CullEmptyLayers();
+      AccessMaskLayers().CullUnusedLayers();
       AccessMaskLayers().FillUnsetProperties();
     }
   }
@@ -3413,6 +3417,22 @@ class ComputedStyleBuilder final : public ComputedStyleBuilderBase {
     float v = ClampTo<float>(f, 0, 1);
     SetOpacityInternal(v);
   }
+
+  // Sets the element animating the given property.
+  // Must be called after the base style has been resolved, since base styles
+  // can be shared between elements and must not record a specific element.
+  CORE_EXPORT void SetAnimatedSource(CSSPropertyID property,
+                                     Element& animating_element);
+
+  // Copies the animated source for the given property from a parent style
+  // (e.g. when inheriting from a parent style), preserving any untracked
+  // dependencies already on the parent's source.
+  CORE_EXPORT void CopyAnimatedSourceFrom(CSSPropertyID property,
+                                          const ComputedStyle* parent_style,
+                                          bool has_untracked_dependencies);
+
+  // Clears any animated source recorded for the given property.
+  CORE_EXPORT void ClearAnimatedSource(CSSPropertyID property);
 
   // orphans
   void SetOrphans(int16_t o) { SetOrphansInternal(ClampTo<int16_t>(o, 1)); }
@@ -3568,6 +3588,11 @@ class ComputedStyleBuilder final : public ComputedStyleBuilderBase {
     SetFontDescription(description);
   }
 
+  // -internal-unbounded
+  bool IsUnboundedElementActive() const {
+    return InternalUnbounded() == EInternalUnbounded::kActive;
+  }
+
   // z-index
   void SetZIndex(int v) {
     SetHasAutoZIndexInternal(false);
@@ -3667,8 +3692,6 @@ class ComputedStyleBuilder final : public ComputedStyleBuilderBase {
                                    bool is_inherited_property) const;
   CORE_EXPORT StyleInheritedVariables& MutableInheritedVariables();
   CORE_EXPORT StyleNonInheritedVariables& MutableNonInheritedVariables();
-  void SetInheritedVariablesFrom(const ComputedStyle*);
-  void SetNonInheritedVariablesFrom(const ComputedStyle*);
   CORE_EXPORT void SetVariableData(const AtomicString& name,
                                    CSSVariableData* value,
                                    bool is_inherited_property) {
@@ -3722,6 +3745,10 @@ class ComputedStyleBuilder final : public ComputedStyleBuilderBase {
   }
 
  private:
+  void UpdateAnimatedSource(AnimatedSourceProperty property,
+                            const CSSProperty& css_property,
+                            AnimatedSource source);
+
   mutable bool has_own_animations_ = false;
   mutable bool has_own_transitions_ = false;
 };

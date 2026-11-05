@@ -18,6 +18,7 @@
 #include "chrome/browser/ui/views/close_bubble_on_tab_activation_helper.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "components/signin/public/identity_manager/account_info.h"
+#include "components/user_education/common/new_badge/new_badge_controller.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -32,6 +33,7 @@
 #include "ui/views/view_tracker.h"
 
 class BrowserWindowInterface;
+class ProfileAttributesEntry;
 
 namespace views {
 class Button;
@@ -163,6 +165,10 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
   ProfileMenuViewBase(const ProfileMenuViewBase&) = delete;
   ProfileMenuViewBase& operator=(const ProfileMenuViewBase&) = delete;
 
+  // Returns a formatted profile display name based on the name form in `entry`.
+  static std::u16string GetProfileIdentifier(
+      const ProfileAttributesEntry& entry);
+
   // Resizes and crops `image_model` to a circular shape.
   // Note: if the image is backed by a vector icon, it is actually not cropped.
   // Cropping it would require theme colors which are not necessarily available,
@@ -181,7 +187,7 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
                         base::RepeatingClosure action,
                         const gfx::VectorIcon& icon,
                         float icon_to_image_ratio = 1.0f,
-                        bool is_new = false);
+                        user_education::DisplayNewBadge display_new_badge = {});
   void SetProfileManagementHeading(const std::u16string& heading);
 
   // Does not resize the image.
@@ -246,15 +252,12 @@ class ProfileMenuViewBase : public content::WebContentsDelegate,
 
   void CreateAXWidgetObserver(views::Widget* widget);
 
-  // `badge_view` is a view positioned on the trailing edge of the button (e.g.
-  // a "New" badge or status icon) that sits flush on the far right opposite of
-  // the main title.
   std::unique_ptr<HoverButton> CreateMenuRowButton(
       base::RepeatingClosure action,
       std::unique_ptr<views::View> icon_view,
       const std::u16string& text,
       int icon_offset = 0,
-      std::unique_ptr<views::View> badge_view = nullptr);
+      user_education::DisplayNewBadge display_new_badge = {});
 
   const raw_ref<Profile> profile_;
 

@@ -12,7 +12,9 @@
 // Only to be included in one .cc file.
 // Name is based on the java file name: *.java -> jni/*_jni.h
 #include "third_party/jni_zero/test/test_jni/SampleForAnnotationProcessor_jni.h"
+#include "third_party/jni_zero/test/test_jni/SampleForKotlinTests_jni.h"
 #include "third_party/jni_zero/test/test_jni/SampleForTests_jni.h"
+#include "third_party/jni_zero/test/test_jni/SampleSafePointersKotlin_jni.h"
 
 #if defined(__cpp_concepts) && __cpp_concepts >= 201907L
 // Tests for concepts.
@@ -177,6 +179,74 @@ static std::vector<bool> JNI_SampleForTests_PrimitiveArrays(
 static MyEnum JNI_SampleForTests_ReturnFromEnum(JNIEnv* env) {
   return MyEnum::kFirstOption;
 }
+
+// Stubs for SampleForKotlinTests.kt.
+class SampleForKotlinTests {
+ public:
+  void Init(JNIEnv* env) {}
+};
+
+static int32_t JNI_SampleForKotlinTests_Calculate(JNIEnv* env,
+                                                  int32_t a,
+                                                  int32_t b) {
+  return a + b;
+}
+
+static ScopedJavaLocalRef<JArray<int32_t>> JNI_SampleForKotlinTests_ToInts(
+    JNIEnv* env,
+    const JavaRef<JArray<int8_t>>& bytes) {
+  // Non-null, since the Kotlin return type is non-null.
+  return ScopedJavaLocalRef<JArray<int32_t>>::Adopt(env, env->NewIntArray(0));
+}
+
+static std::string JNI_SampleForKotlinTests_EchoCppString(
+    JNIEnv* env,
+    const std::string& str) {
+  return str;
+}
+
+static ScopedJavaLocalRef<jstring> JNI_SampleForKotlinTests_Maybe(
+    JNIEnv* env,
+    const JavaRef<jstring>& s) {
+  return nullptr;
+}
+
+static std::vector<std::string> JNI_SampleForKotlinTests_Strings(
+    JNIEnv* env,
+    const std::vector<std::string>& list) {
+  return list;
+}
+
+static ScopedJavaLocalRef<jclass> JNI_SampleForKotlinTests_Clazz(
+    JNIEnv* env,
+    const JavaRef<jclass>& c) {
+  // Non-null, since the Kotlin return type is non-null.
+  return ScopedJavaLocalRef<jclass>(c);
+}
+
+static ScopedJavaLocalRef<jobject> JNI_SampleForKotlinTests_Any(
+    JNIEnv* env,
+    const JavaRef<jobject>& o) {
+  return nullptr;
+}
+
+static jni_zero::JniRawPtr<KotlinNativeObj>
+JNI_SampleSafePointersKotlin_BorrowRaw(JNIEnv* env) {
+  return nullptr;
+}
+
+static jni_zero::JniRawPtr<KotlinNativeObj>
+JNI_SampleSafePointersKotlin_MaybeBorrowRaw(JNIEnv* env) {
+  return nullptr;
+}
+
+static jni_zero::JniUniquePtr<KotlinNativeObj>
+JNI_SampleSafePointersKotlin_CreateOwned(JNIEnv* env) {
+  return nullptr;
+}
+
+static void JNI_SampleSafePointersKotlin_UseNullablePtr(JNIEnv* env,
+                                                        KotlinNativeObj* ptr) {}
 
 }  // namespace jni_zero::tests
 
@@ -388,8 +458,22 @@ int main() {
   clazz =
       jni_zero::tests::Java_SampleForTests_getClass(env, my_java_object, clazz);
 
+  SampleForTestsJni::Set_sJavaStringField(
+      env, SampleForTestsJni::Get_sJavaStringField(env));
+  ScopedJavaLocalRef<JSampleForTests> typed_java_object =
+      SampleForTestsJni::New(env, 1, 2);
+  if (typed_java_object->Get_mFinalField(env)) {
+    typed_java_object->Set_mJavaField(
+        env, typed_java_object->Get_mJavaField(env) + 1);
+  }
+
+  jni_zero::tests::KotlinNativeObj kotlin_obj;
+  jni_zero::tests::Java_SampleSafePointersKotlin_onPtr(env, my_java_object,
+                                                       &kotlin_obj, nullptr);
   return 0;
 }
 
 DEFINE_JNI(SampleForAnnotationProcessor)
+DEFINE_JNI(SampleForKotlinTests)
 DEFINE_JNI(SampleForTests)
+DEFINE_JNI(SampleSafePointersKotlin)

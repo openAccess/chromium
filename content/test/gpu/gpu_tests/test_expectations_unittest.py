@@ -190,7 +190,7 @@ class GpuTestExpectationsValidation(unittest.TestCase):
 
   def testWebglTestPathsExist(self) -> None:
     def _CheckWebglConformanceTestPathIsValid(pattern: str) -> None:
-      if not 'WebglExtension_' in pattern:
+      if 'WebglExtension_' not in pattern:
         full_path = os.path.normpath(
           os.path.join(webgl_test_util.conformance_path, pattern)
         )
@@ -276,6 +276,26 @@ class GpuTestExpectationsValidation(unittest.TestCase):
       CheckTestExpectationsAreForExistingTests(
         self, webgl_test_class, args, test_names
       )
+
+  def testWebglOnWebgpuExpectations(self) -> None:
+    for test_class, version in (
+      (webgl1_cit.WebGL1ConformanceIntegrationTest, '1.0.4'),
+      (webgl2_cit.WebGL2ConformanceIntegrationTest, '2.0.1'),
+    ):
+      args = gpu_helper.GetMockArgs(webgl_version=version)
+      args.browser_options = mock.MagicMock(
+        extra_browser_args=['--enable-features=WebGLOnWebGPU']
+      )
+      CheckTestExpectationsAreForExistingTests(self, test_class, args)
+      with open(test_class.ExpectationsFiles()[0], encoding='utf-8') as f:
+        self.assertEqual(
+          CheckTestExpectationPatternsForConflicts(
+            f.read(),
+            os.path.basename(f.name),
+            test_class.GetTagConflictChecker(),
+          ),
+          '',
+        )
 
   def testForBrokenGpuTestExpectations(self) -> None:
     options = gpu_helper.GetMockArgs()

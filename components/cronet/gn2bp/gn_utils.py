@@ -9,42 +9,49 @@ import copy
 import json
 import logging as log
 import os
-import pathlib
+import pathlib  # noqa: F401
 import re
 import sys
 import shlex
 
 REPOSITORY_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir))
+    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir)
+)
 sys.path.insert(0, REPOSITORY_ROOT)
-import components.cronet.gn2bp.common as gn2bp_common  # pylint: disable=wrong-import-position
-from components.cronet.gn2bp.arguments import CommandLineUtility
+import components.cronet.gn2bp.common as gn2bp_common  # noqa: E402
+from components.cronet.gn2bp.arguments import CommandLineUtility  # noqa: E402
 
 TOOLCHAIN_SUFFIX = "__toolchain_"
 HOST_TOOLCHAIN_TO_SUFFIX = {
-    '//build/toolchain/linux:clang_x64':
-    'clang',
-    '//build/toolchain/linux:clang_x64_for_rust_host_build_tools':
-    'clang_for_rust',
+    '//build/toolchain/linux:clang_x64': 'clang',
+    '//build/toolchain/linux:clang_x64_for_rust_host_build_tools': 'clang_for_rust',
 }
-LINKER_UNIT_TYPES = ('executable', 'shared_library', 'static_library',
-                     'source_set')
+LINKER_UNIT_TYPES = (
+    'executable',
+    'shared_library',
+    'static_library',
+    'source_set',
+)
 RESPONSE_FILE = '{{response_file_name}}'
 TESTING_SUFFIX = "__testing"
 AIDL_INCLUDE_DIRS_REGEX = r'--includes=\[(.*)\]'
 PROTO_IMPORT_DIRS_REGEX = r'--import-dir=(.*)'
 POSSIBLE_SUFFIXES = [
-    "{}{}".format(suffix_1, suffix_2) for suffix_1 in [""] + [
+    "{}{}".format(suffix_1, suffix_2)
+    for suffix_1 in [""]
+    + [
         TOOLCHAIN_SUFFIX + toolchain_suffix
         for toolchain_suffix in HOST_TOOLCHAIN_TO_SUFFIX.values()
-    ] for suffix_2 in ["", TESTING_SUFFIX]
+    ]
+    for suffix_2 in ["", TESTING_SUFFIX]
 ]
 
 
 def repo_root():
     """Returns an absolute path to the repository root."""
-    return os.path.join(os.path.realpath(os.path.dirname(__file__)),
-                        os.path.pardir)
+    return os.path.join(
+        os.path.realpath(os.path.dirname(__file__)), os.path.pardir
+    )
 
 
 def _get_build_path_from_label(target_name: str) -> str:
@@ -53,8 +60,9 @@ def _get_build_path_from_label(target_name: str) -> str:
 
 
 def _clean_string(string):
-    return string.replace('\\', '').replace('../../', '').replace('"',
-                                                                  '').strip()
+    return (
+        string.replace('\\', '').replace('../../', '').replace('"', '').strip()
+    )
 
 
 def _extract_rust_package_version(env_args):
@@ -71,8 +79,7 @@ def _extract_includes_from_aidl_args(args):
         if is_match:
             local_includes = is_match.group(1).split(",")
             return [
-                _clean_string(local_include)
-                for local_include in local_includes
+                _clean_string(local_include) for local_include in local_includes
             ]
     return []
 
@@ -128,11 +135,18 @@ def _filter_defines(defines):
     # but they do create annoying diff noise on Android.bp files, so we drop them
     # for aesthetic/convenience reasons.
     EXCLUDED_DEFINES = {
-        "CR_CLANG_REVISION", "CR_LIBCXX_REVISION", "ANDROID_NDK_VERSION_ROLL"
+        "CR_CLANG_REVISION",
+        "CR_LIBCXX_REVISION",
+        "ANDROID_NDK_VERSION_ROLL",
     }
-    return (define for define in defines if not any(
-        define.startswith(f"{excluded_define}=")
-        for excluded_define in EXCLUDED_DEFINES))
+    return (
+        define
+        for define in defines
+        if not any(
+            define.startswith(f"{excluded_define}=")
+            for excluded_define in EXCLUDED_DEFINES
+        )
+    )
 
 
 def _determine_target_type(target_name, desc):
@@ -146,8 +160,10 @@ def _determine_target_type(target_name, desc):
     # The reason why we do this now and not alongside the java_library logic is
     # so that, if this target is a builtin (see below), it is still returned as
     # a java_library, not as a group (which would just get ignored).
-    if any(metadata_key in metadata
-           for metadata_key in ("java_library_deps", "java_library_sources")):
+    if any(
+        metadata_key in metadata
+        for metadata_key in ("java_library_deps", "java_library_sources")
+    ):
         return 'java_library'
 
     if type_ == "executable" and desc.get("crate_root", None):
@@ -159,6 +175,14 @@ def _determine_target_type(target_name, desc):
     if script == "//build/android/gyp/aidl.py":
         return "aidl_interface"
 
+    # In GN, `cpp_api_from_rust` expands into a `source_set` header target (plus
+    # internal `_crubit_action` and `_crubit_impl` targets) that attaches
+    # `crate_header`, `crate_namespace`, and `rust_target` metadata. Surface it
+    # as a dedicated `crubit_cpp_from_rust` target type so gn2bp can translate
+    # it into Soong's native `crubit_cpp_from_rust` module.
+    if "crate_header" in metadata:
+        return "crubit_cpp_from_rust"
+
     if script == "//build/rust/gni_impl/run_bindgen.py":
         return "rust_bindgen"
 
@@ -167,7 +191,8 @@ def _determine_target_type(target_name, desc):
     # //base:build_date_header. As the list of supported copy target grows, we might
     # need to revisit this decision.
     if type_ == 'copy' and target_name in [
-            '//base:build_date_header', '//base:build_date_header__testing'
+        '//base:build_date_header',
+        '//base:build_date_header__testing',
     ]:
         return 'action'
 
@@ -198,9 +223,8 @@ class GnParser:
         source_set dependency is encountered.
         """
 
-        class Arch():
-            """Architecture-dependent properties
-        """
+        class Arch:
+            """Architecture-dependent properties"""
 
             def __init__(self):
                 self.sources = set()
@@ -223,13 +247,28 @@ class GnParser:
         def __init__(self, name, gn_type):
             self.name = name  # e.g. //src/ipc:ipc
 
-            VALID_TYPES = ('static_library', 'shared_library', 'executable',
-                           'group', 'action', 'source_set', 'proto_library',
-                           'copy', 'action_foreach', 'generated_file',
-                           "rust_library", "rust_proc_macro", "java_library",
-                           "rust_executable", "aidl_interface", "rust_bindgen")
-            assert (gn_type in VALID_TYPES
-                    ), f"Unable to parse target {name} with type {gn_type}."
+            VALID_TYPES = (
+                'static_library',
+                'shared_library',
+                'executable',
+                'group',
+                'action',
+                'source_set',
+                'proto_library',
+                'copy',
+                'action_foreach',
+                'generated_file',
+                "rust_library",
+                "rust_proc_macro",
+                "java_library",
+                "rust_executable",
+                "aidl_interface",
+                "rust_bindgen",
+                "crubit_cpp_from_rust",
+            )
+            assert gn_type in VALID_TYPES, (
+                f"Unable to parse target {name} with type {gn_type}."
+            )
             self.type = gn_type
             self.testonly = False
             self.toolchain = None
@@ -273,9 +312,16 @@ class GnParser:
             self.build_file_path = ""
             self.crate_name = None
             self.crate_root = None
+            # Populated for `crubit_cpp_from_rust` targets from their GN
+            # metadata (`crate_header`, `crate_namespace`, `rust_target`).
+            self.crubit_rust_target = None
+            self.source_stem = None
+            self.source_subdir = None
+            self.cpp_namespace = None
 
             self.java_jar_excluded_patterns = []
             self.java_jar_included_patterns = []
+            self.java_prevent_excluded_classes_from_classpath = False
             # This is only populated for build script actions. It refers to the directory for which
             # the original source files are.
             self.rust_source_dir = None
@@ -294,8 +340,9 @@ class GnParser:
             if isinstance(other, self.__class__):
                 return self.name < other.name
             raise TypeError(
-                '\'<\' not supported between instances of \'%s\' and \'%s\'' %
-                (type(self).__name__, type(other).__name__))
+                '\'<\' not supported between instances of \'%s\' and \'%s\''
+                % (type(self).__name__, type(other).__name__)
+            )
 
         def __repr__(self):
             return json.dumps(
@@ -304,7 +351,8 @@ class GnParser:
                     for (k, v) in self.__dict__.items()
                 },
                 indent=4,
-                sort_keys=True)
+                sort_keys=True,
+            )
 
         def update(self, other, arch):
             for key in ('defines', 'deps', 'include_dirs'):
@@ -318,13 +366,15 @@ class GnParser:
             if arch in self.arch and arch in other.arch:
                 for key_in_arch in ('defines', 'include_dirs', 'deps', 'libs'):
                     getattr(self.arch[arch], key_in_arch).update(
-                        getattr(other.arch[arch], key_in_arch))
+                        getattr(other.arch[arch], key_in_arch)
+                    )
                 for key_in_arch in ('cflags', 'ldflags'):
                     getattr(self.arch[arch], key_in_arch).extend(
-                        getattr(other.arch[arch], key_in_arch))
+                        getattr(other.arch[arch], key_in_arch)
+                    )
 
         def get_archs(self):
-            """ Returns a dict of archs """
+            """Returns a dict of archs"""
             return self.arch
 
         def _finalize_set_attribute(self, key):
@@ -333,7 +383,8 @@ class GnParser:
             if not archs:
                 return
             intersection = set.intersection(
-                *[getattr(arch, key) for arch in archs])
+                *[getattr(arch, key) for arch in archs]
+            )
             getattr(self.common, key).update(intersection)
             for arch in archs:
                 getattr(arch, key).difference_update(intersection)
@@ -359,8 +410,8 @@ class GnParser:
         def finalize(self):
             """Move common properties out of arch-dependent subobjects to Target object.
 
-        TODO: find a better name for this function.
-        """
+            TODO: find a better name for this function.
+            """
             if self.is_finalized:
                 return
             self.is_finalized = True
@@ -368,13 +419,24 @@ class GnParser:
             if not self.arch:
                 return
 
-            for key in ('sources', 'cflags', 'defines', 'include_dirs', 'deps',
-                        'inputs', 'outputs', 'args', 'response_file_contents',
-                        'ldflags', 'rust_flags', 'libs'):
+            for key in (
+                'sources',
+                'cflags',
+                'defines',
+                'include_dirs',
+                'deps',
+                'inputs',
+                'outputs',
+                'args',
+                'response_file_contents',
+                'ldflags',
+                'rust_flags',
+                'libs',
+            ):
                 self._finalize_attribute(key)
 
         def get_target_name(self):
-            return self.name[self.name.find(":") + 1:]
+            return self.name[self.name.find(":") + 1 :]
 
     def __init__(self, builtin_deps, build_script_outputs):
         self.builtin_deps = builtin_deps
@@ -388,7 +450,8 @@ class GnParser:
         # GN's behavior.
         return ' '.join(
             shlex.quote(arg)
-            for arg in action_desc.get('response_file_contents', []))
+            for arg in action_desc.get('response_file_contents', [])
+        )
 
     def _is_java_group(self, type_, target_name):
         # Per https://chromium.googlesource.com/chromium/src/build/+/HEAD/android/docs/java_toolchain.md
@@ -411,24 +474,30 @@ class GnParser:
             return 'host', 'host'
         raise TypeError(f"Unknown toolchain found: {toolchain}")
 
+    def _label_with_toolchain(self, label, toolchain):
+        return f"{label}({toolchain})"
+
     def get_target(self, gn_target_name):
         """Returns a Target object from the fully qualified GN target name.
 
-      get_target() requires that parse_gn_desc() has already been called.
-      """
+        get_target() requires that parse_gn_desc() has already been called.
+        """
         # Run this every time as parse_gn_desc can be called at any time.
         for target in self.all_targets.values():
             target.finalize()
 
-        return self.all_targets[gn2bp_common.label_without_toolchain(
-            gn_target_name)]
+        return self.all_targets[
+            gn2bp_common.label_without_toolchain(gn_target_name)
+        ]
 
-    def parse_gn_desc(self,
-                      gn_desc,
-                      gn_target_name,
-                      is_test_target=False,
-                      custom_processor=None,
-                      override_deps=None):
+    def parse_gn_desc(
+        self,
+        gn_desc,
+        gn_target_name,
+        is_test_target=False,
+        custom_processor=None,
+        override_deps=None,
+    ):
         """Parses a gn desc tree and resolves all target dependencies.
 
         It bubbles up variables from source_set dependencies as described in the
@@ -449,7 +518,6 @@ class GnParser:
 
         if is_test_target:
             target_name += TESTING_SUFFIX
-
 
         target = self.all_targets.get(target_name)
         if target is None:
@@ -487,23 +555,30 @@ class GnParser:
             target.arch[arch].sources.update(desc.get('sources', []))
             target.arch[arch].inputs.update(desc.get('inputs', []))
             target.arch[arch].outputs.update(
-                _remove_out_prefix(output) for output in desc['outputs'])
+                _remove_out_prefix(output) for output in desc['outputs']
+            )
             target.arch[arch].args = desc['args']
         elif target.type == 'source_set':
             target.arch[arch].sources.update(
-                source for source in desc.get('sources', [])
-                if not source.startswith("//out"))
+                source
+                for source in desc.get('sources', [])
+                if not source.startswith("//out")
+            )
         elif target.is_linker_unit_type():
             target.arch[arch].sources.update(
-                source for source in desc.get('sources', [])
-                if not source.startswith("//out"))
+                source
+                for source in desc.get('sources', [])
+                if not source.startswith("//out")
+            )
         elif target.type == 'aidl_interface':
             # It's assumed that all of AIDLs' attributes are not arch-specific.
             target.common.sources.update(desc.get('sources', {}))
             target.common.outputs.update(
-                [_remove_out_prefix(x) for x in desc['outputs']])
+                [_remove_out_prefix(x) for x in desc['outputs']]
+            )
             target.aidl_includes = _extract_includes_from_aidl_args(
-                desc.get('args', ''))
+                desc.get('args', '')
+            )
         elif target.type == "java_library":
             log.info('Found Java Target %s', target.name)
 
@@ -538,27 +613,42 @@ class GnParser:
             # structure of the `java_library` GN subtargets.
 
             inputs = metadata.get("java_library_inputs", [])
-            target.common.sources.update(input for input in inputs
-                                         if not input.startswith('//out/'))
+            target.common.sources.update(
+                input for input in inputs if not input.startswith('//out/')
+            )
             target.common.inputs.update(
-                _remove_out_prefix(input) for input in inputs)
+                _remove_out_prefix(input) for input in inputs
+            )
 
             deps.clear()
             deps.extend(metadata.get("java_library_deps", []))
 
             target.java_jar_excluded_patterns = metadata.get(
-                "java_library_jar_excluded_patterns", [])
+                "java_library_jar_excluded_patterns", []
+            )
             target.java_jar_included_patterns = metadata.get(
-                "java_library_jar_included_patterns", [])
+                "java_library_jar_included_patterns", []
+            )
+            target.java_prevent_excluded_classes_from_classpath = bool(
+                metadata.get(
+                    "java_library_prevent_excluded_classes_from_classpath",
+                    [False],
+                )[0]
+            )
 
-            android_sdk_dep = metadata.get("java_library_android_sdk_dep",
-                                           None)
+            android_sdk_dep = metadata.get("java_library_android_sdk_dep", None)
             if android_sdk_dep is not None:
                 assert len(android_sdk_dep) == 1, target.name
                 android_sdk_dep = android_sdk_dep[0]
-                if android_sdk_dep == "//third_party/android_sdk:android_sdk_java":
+                if (
+                    android_sdk_dep
+                    == "//third_party/android_sdk:android_sdk_java"
+                ):
                     target.sdk_version = "current"
-                elif android_sdk_dep == "//third_party/android_sdk:public_framework_system_java":
+                elif (
+                    android_sdk_dep
+                    == "//third_party/android_sdk:public_framework_system_java"
+                ):
                     target.sdk_version = "system_current"
                 else:
                     raise ValueError(
@@ -566,9 +656,10 @@ class GnParser:
                     )
         elif target.type == "rust_bindgen":
             # rust_bindgen is a supported module in Soong but GN depend on actions
-            # so we need to copy the action fields (sources, outputs and args) in
+            # so we need to copy the action fields (sources, inputs, outputs and args) in
             # order to correctly generate the `rust_bindgen` module.
             target.arch[arch].sources.update(desc.get('sources', []))
+            target.arch[arch].inputs.update(desc.get('inputs', []))
             outs = [_remove_out_prefix(x) for x in desc['outputs']]
             target.arch[arch].outputs.update(outs)
             target.arch[arch].args = desc['args']
@@ -587,13 +678,14 @@ class GnParser:
                     arg.replace('$', '$$') for arg in desc['args']
                 ]
             target.arch[
-                arch].response_file_contents = self._get_response_file_contents(
-                    desc)
+                arch
+            ].response_file_contents = self._get_response_file_contents(desc)
             # _get_jni_registration_deps will return the dependencies of a target if
             # the target is of type `generate_final_jni` otherwise it will
             # return an empty set.
             target.jni_registration_java_deps.update(
-                _get_jni_registration_deps(gn_target_name, gn_desc))
+                _get_jni_registration_deps(gn_target_name, gn_desc)
+            )
             # JNI java sources are embedded as metadata inside `jni_headers` targets.
             # See https://source.chromium.org/chromium/chromium/src/+/main:third_party/jni_zero/jni_zero.gni;l=421;drc=78e8e27142ed3fddf04fbcd122507517a87cb9ad
             # for more details
@@ -604,29 +696,83 @@ class GnParser:
                 target.transitive_jni_java_sources.update(sources)
                 self.jni_java_sources.update(sources)
             if gn2bp_common.is_rust_build_script(target.script):
-
-                target.rust_source_dir = CommandLineUtility(
-                    desc['args']).get_flag_value('--src-dir').replace(
-                        "../../", "")
+                target.rust_source_dir = (
+                    CommandLineUtility(desc['args'])
+                    .get_flag_value('--src-dir')
+                    .replace("../../", "")
+                )
                 # Don't continue the dependencies exploration.
                 return target
         elif target.type == 'group':
             # Group targets are bubbled upward without creating an equivalent GN target.
             pass
+        elif target.type == 'generated_file':
+            # generated_file() targets are evaluated by GN at `gn gen` time:
+            # they write a file (e.g. jni_zero's `*__type_catalogs.json`) by
+            # walking the metadata of their deps. They have no Ninja build step
+            # and no Soong equivalent, so we never emit a module for them (see
+            # create_modules_from_target). Their deps merely define the scope of
+            # that metadata walk rather than describing real build inputs, so
+            # stop the traversal here instead of pulling targets that Soong does
+            # not need into the graph.
+            return target
         elif target.type == 'copy':
             # Copy targets, except for a few exception (see handling of action
             # targets above), are bubbled upward without creating an equivalent
             # GN target.
             pass
+        elif target.type == 'crubit_cpp_from_rust':
+            crate_header_rel_path = metadata["crate_header"][0]
+            target.source_subdir = (
+                os.path.dirname(crate_header_rel_path) or None
+            )
+            target.source_stem = os.path.basename(
+                crate_header_rel_path
+            ).removesuffix(".h")
+            if "crate_namespace" in metadata and metadata["crate_namespace"]:
+                target.cpp_namespace = metadata["crate_namespace"][0]
+            # Parse the underlying Rust library target to obtain its crate_name
+            # and wire it as the `rust_library` dependency in Soong.
+            rust_target_label = metadata["rust_target"][0]
+            if arch == 'host':
+                rust_target_label = self._label_with_toolchain(
+                    rust_target_label, desc["toolchain"]
+                )
+            rust_target = self.parse_gn_desc(
+                gn_desc, rust_target_label, is_test_target
+            )
+            target.crubit_rust_target = rust_target.name
+            target.crate_name = rust_target.crate_name
+            # Drop GN's internal Crubit helper subtargets (`_crubit_action`,
+            # `_crubit_impl`, `_crubit_rspgen`), as Soong's `crubit_cpp_from_rust`
+            # module invokes `cc_bindings_from_rs` and compiles the generated
+            # Rust/C++ thunks natively from the underlying `rust_library`.
+            deps = [
+                d
+                for d in deps
+                if not gn2bp_common.label_without_toolchain(d).endswith(
+                    ("_crubit_action", "_crubit_impl", "_crubit_rspgen")
+                )
+            ]
+            deps.append(rust_target_label)
         elif target.type in [
-                "rust_library", "rust_proc_macro", "rust_executable"
+            "rust_library",
+            "rust_proc_macro",
+            "rust_executable",
         ]:
             target.arch[arch].sources.update(
-                source for source in desc.get('sources', [])
-                if not source.startswith("//out"))
-            target.arch[arch].inputs.update(desc.get('inputs', []))
+                source
+                for source in desc.get('sources', [])
+                if not source.startswith("//out")
+            )
+            target.arch[arch].inputs.update(
+                inp
+                for inp in desc.get('inputs', [])
+                if not inp.startswith("//out")
+            )
             target.rust_package_version = _extract_rust_package_version(
-                desc['rustenv'])
+                desc['rustenv']
+            )
         else:
             raise Exception(
                 f"Encountered GN target with unknown type\nCulprit target: {gn_target_name}\ntype: {target.type}"
@@ -641,20 +787,29 @@ class GnParser:
         target.public_headers.update(public_headers)
         target.build_file_path = _get_build_path_from_label(target_name)
         target.arch[arch].cflags.extend(
-            _filter_cflags(desc.get('cflags', []) + desc.get('cflags_cc', [])))
+            _filter_cflags(desc.get('cflags', []) + desc.get('cflags_cc', []))
+        )
         target.arch[arch].libs.update(desc.get('libs', []))
         target.arch[arch].ldflags.extend(desc.get('ldflags', []))
         target.arch[arch].defines.update(
-            _filter_defines(desc.get('defines', [])))
+            _filter_defines(desc.get('defines', []))
+        )
         target.arch[arch].include_dirs.update(desc.get('include_dirs', []))
         target.output_name = desc.get('output_name', None)
-        target.crate_name = desc.get("crate_name", None)
-        target.crate_root = desc.get("crate_root", None)
+        # Only overwrite `crate_name` and `crate_root` when present in `desc`;
+        # for `crubit_cpp_from_rust` targets (which are `source_set`s in GN and
+        # do not have `crate_name` in their own `desc`), `target.crate_name` was
+        # already populated above from the underlying Rust target.
+        if "crate_name" in desc:
+            target.crate_name = desc["crate_name"]
+        if "crate_root" in desc:
+            target.crate_root = desc["crate_root"]
         target.arch[arch].rust_flags = desc.get("rustflags", list())
         target.arch[arch].rust_flags.extend(
             self.build_script_outputs.get(
-                gn2bp_common.label_without_toolchain(gn_target_name),
-                {}).get(chromium_arch, list()))
+                gn2bp_common.label_without_toolchain(gn_target_name), {}
+            ).get(chromium_arch, list())
+        )
 
         if "-frtti" in target.arch[arch].cflags:
             target.rtti = True
@@ -694,8 +849,10 @@ class GnParser:
     def get_proto_in_dir(self, proto_desc):
         args = proto_desc.get('args')
         return re.sub(
-            '^\.\./\.\./', '',
-            CommandLineUtility(args).get_flag_value('--proto-in-dir'))
+            '^\.\./\.\./',
+            '',
+            CommandLineUtility(args).get_flag_value('--proto-in-dir'),
+        )
 
     def propagate_properties(self):
         visited = set()
@@ -725,14 +882,16 @@ class GnParser:
             if dep_name in self.all_targets:
                 dep = self.all_targets[dep_name]
                 target.transitive_jni_java_sources.update(
-                    dep.transitive_jni_java_sources)
+                    dep.transitive_jni_java_sources
+                )
 
         # 2. Arch-specific propagation
         for arch in sorted(target.arch.keys()):
             arch_obj = target.arch[arch]
 
-            for dep_name in sorted(arch_obj.direct_deps
-                                   | arch_obj.direct_build_only_deps):
+            for dep_name in sorted(
+                arch_obj.direct_deps | arch_obj.direct_build_only_deps
+            ):
                 if dep_name not in self.all_targets:
                     continue
 
@@ -745,11 +904,21 @@ class GnParser:
                 elif dep.type == 'group':
                     target.update(dep, arch)
                     target.transitive_jni_java_sources.update(
-                        dep.transitive_jni_java_sources)
+                        dep.transitive_jni_java_sources
+                    )
+                elif dep.type == 'generated_file':
+                    # generated_file() targets must not contribute anything to
+                    # their dependents - see parse_gn_desc(), which stops
+                    # traversing at them, so they have no deps to propagate in
+                    # the first place. `continue` (as opposed to `pass`) also
+                    # skips the transitive static_library/source_set bubbling
+                    # below, which must not run for a dep we never traversed.
+                    continue
                 elif dep.type in ['action', 'action_foreach']:
                     arch_obj.deps.add(dep.name)
                     target.transitive_jni_java_sources.update(
-                        dep.transitive_jni_java_sources)
+                        dep.transitive_jni_java_sources
+                    )
                 elif dep.is_linker_unit_type():
                     arch_obj.deps.add(dep.name)
                 elif dep.type == 'aidl_interface':
@@ -761,19 +930,27 @@ class GnParser:
                         # Chromium builds Java code against the unfiltered dependencies
                         # (_java__header). This reproduces this behavior.
                         target.build_only_deps.add(
-                            dep.unfiltered_java_target.name)
+                            dep.unfiltered_java_target.name
+                        )
                     else:
                         target.common.deps.add(dep.name)
                     target.transitive_jni_java_sources.update(
-                        dep.transitive_jni_java_sources)
+                        dep.transitive_jni_java_sources
+                    )
                 elif dep.type in [
-                        'rust_binary', "rust_library", "rust_proc_macro",
-                        "rust_bindgen"
+                    'rust_binary',
+                    "rust_library",
+                    "rust_proc_macro",
+                    "rust_bindgen",
+                    "crubit_cpp_from_rust",
                 ]:
                     arch_obj.deps.add(dep.name)
 
                 if dep.type in [
-                        'static_library', 'source_set', 'rust_library'
+                    'static_library',
+                    'source_set',
+                    'rust_library',
+                    'crubit_cpp_from_rust',
                 ]:
                     # Bubble up static_libs and source_set. Necessary, since soong does not propagate
                     # static_libs up the build tree.
@@ -782,7 +959,9 @@ class GnParser:
                     arch_obj.transitive_static_libs_deps.add(dep.name)
 
                 if arch in dep.arch and dep.type not in [
-                        'rust_proc_macro', 'rust_executable', 'executable'
+                    'rust_proc_macro',
+                    'rust_executable',
+                    'executable',
                 ]:
                     # rust_proc_macro must never propagate their dependency upward the tree. proc_macros are only used
                     # during compilations on host as they allow extending the compiler with custom macros, their dependency should
@@ -792,5 +971,6 @@ class GnParser:
                     # A dependency on the executable means that the output of the target (the executable) should
                     # be used, rather than its dependency.
                     arch_obj.transitive_static_libs_deps.update(
-                        dep.arch[arch].transitive_static_libs_deps)
+                        dep.arch[arch].transitive_static_libs_deps
+                    )
                     arch_obj.deps.update(arch_obj.transitive_static_libs_deps)

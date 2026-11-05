@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <string>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/notification_utils.h"
@@ -30,7 +29,6 @@
 #include "chrome/browser/ash/child_accounts/time_limits/app_time_limits_allowlist_policy_wrapper.h"
 #include "chrome/browser/ash/child_accounts/time_limits/app_time_policy_helpers.h"
 #include "chrome/browser/ash/child_accounts/time_limits/app_types.h"
-#include "chrome/browser/ash/child_accounts/time_limits/web_time_activity_provider.h"
 #include "chrome/browser/extensions/launch_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/grit/generated_resources.h"
@@ -203,11 +201,6 @@ AppActivityRegistry* AppTimeController::TestApi::app_registry() {
   return controller_->app_registry_.get();
 }
 
-WebTimeActivityProvider*
-AppTimeController::TestApi::web_time_activity_provider() {
-  return controller_->web_time_activity_provider_.get();
-}
-
 // static
 void AppTimeController::RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterInt64Pref(ash::prefs::kPerAppTimeLimitsLastResetTime, 0);
@@ -226,12 +219,7 @@ AppTimeController::AppTimeController(
                                                 this,
                                                 profile->GetPrefs())),
       on_policy_updated_callback_(on_policy_updated_callback) {
-  if (base::FeatureList::IsEnabled(
-          ash::features::kUnicornChromeActivityReporting)) {
-    web_time_activity_provider_ = std::make_unique<WebTimeActivityProvider>(
-        this, app_service_wrapper_.get());
-  }
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
 }
 
 AppTimeController::~AppTimeController() {
@@ -334,7 +322,8 @@ void AppTimeController::RegisterProfilePrefObservers(
 }
 
 void AppTimeController::TimeLimitsPolicyUpdated(const std::string& pref_name) {
-  DCHECK_EQ(pref_name, ash::prefs::kPerAppTimeLimitsPolicy);
+  CHECK_EQ(pref_name, ash::prefs::kPerAppTimeLimitsPolicy,
+           base::NotFatalUntil::M160);
 
   const base::DictValue& policy =
       pref_registrar_->prefs()->GetDict(ash::prefs::kPerAppTimeLimitsPolicy);
@@ -374,7 +363,8 @@ void AppTimeController::TimeLimitsPolicyUpdated(const std::string& pref_name) {
 
 void AppTimeController::TimeLimitsAllowlistPolicyUpdated(
     const std::string& pref_name) {
-  DCHECK_EQ(pref_name, ash::prefs::kPerAppTimeLimitsAllowlistPolicy);
+  CHECK_EQ(pref_name, ash::prefs::kPerAppTimeLimitsAllowlistPolicy,
+           base::NotFatalUntil::M160);
 
   const base::DictValue& policy = pref_registrar_->prefs()->GetDict(
       ash::prefs::kPerAppTimeLimitsAllowlistPolicy);
@@ -389,7 +379,7 @@ void AppTimeController::ShowAppTimeLimitNotification(
     const AppId& app_id,
     const std::optional<base::TimeDelta>& time_limit,
     AppNotification notification) {
-  DCHECK_NE(AppNotification::kUnknown, notification);
+  CHECK_NE(AppNotification::kUnknown, notification, base::NotFatalUntil::M160);
 
   if (notification == AppNotification::kTimeLimitReached) {
     return;
@@ -528,7 +518,7 @@ void AppTimeController::SetLastResetTime(base::Time timestamp) {
   }
 
   PrefService* service = profile_->GetPrefs();
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M160);
   service->SetInt64(
       ash::prefs::kPerAppTimeLimitsLastResetTime,
       last_limits_reset_time_.ToDeltaSinceWindowsEpoch().InMicroseconds());
@@ -553,8 +543,8 @@ void AppTimeController::OpenFamilyLinkApp() {
   }
   // No Family Link Help app installed, so try to launch Play Store to Family
   // Link Help app install page.
-  DCHECK(
-      apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(profile_));
+  CHECK(apps::AppServiceProxyFactory::IsAppServiceAvailableForProfile(profile_),
+        base::NotFatalUntil::M160);
   apps::AppServiceProxyFactory::GetForProfile(profile_)->LaunchAppWithUrl(
       arc::kPlayStoreAppId, ui::EF_NONE, GURL(kFamilyLinkHelperAppPlayStoreURL),
       apps::LaunchSource::kFromChromeInternal);
@@ -565,15 +555,18 @@ void AppTimeController::ShowNotificationForApp(
     AppNotification notification,
     std::optional<base::TimeDelta> time_limit,
     std::optional<gfx::ImageSkia> icon) {
-  DCHECK(notification == AppNotification::kFiveMinutes ||
-         notification == AppNotification::kOneMinute ||
-         notification == AppNotification::kTimeLimitChanged ||
-         notification == AppNotification::kBlocked ||
-         notification == AppNotification::kAvailable);
+  CHECK(notification == AppNotification::kFiveMinutes ||
+            notification == AppNotification::kOneMinute ||
+            notification == AppNotification::kTimeLimitChanged ||
+            notification == AppNotification::kBlocked ||
+            notification == AppNotification::kAvailable,
+        base::NotFatalUntil::M160);
 
-  DCHECK(notification == AppNotification::kTimeLimitChanged ||
-         notification == AppNotification::kBlocked ||
-         notification == AppNotification::kAvailable || time_limit.has_value());
+  CHECK(notification == AppNotification::kTimeLimitChanged ||
+            notification == AppNotification::kBlocked ||
+            notification == AppNotification::kAvailable ||
+            time_limit.has_value(),
+        base::NotFatalUntil::M160);
 
   // Alright we have all the messages that we want.
   const std::u16string app_name_16 = base::UTF8ToUTF16(app_name);
@@ -599,7 +592,7 @@ void AppTimeController::ShowNotificationForApp(
 
   auto message_center_notification = CreateSystemNotificationPtr(
       message_center::NOTIFICATION_TYPE_SIMPLE, notification_id, title, message,
-      notification_source, GURL(), notifier_id, option_fields,
+      notification_source, notifier_id, option_fields,
       notification == AppNotification::kTimeLimitChanged
           ? base::MakeRefCounted<
                 message_center::HandleNotificationClickDelegate>(

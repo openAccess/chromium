@@ -46,6 +46,7 @@ enum class ViewportFit;
 }  // namespace blink
 
 namespace gfx {
+class Rect;
 class Size;
 }  // namespace gfx
 
@@ -80,6 +81,7 @@ class RenderViewHost;
 class RenderWidgetHost;
 class Page;
 struct CookieAccessDetails;
+struct DropData;
 struct EntryChangedDetails;
 struct FocusedNodeDetails;
 struct GlobalRequestID;
@@ -422,6 +424,22 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // The page has made some progress loading. |progress| is a value between 0.0
   // (nothing loaded) to 1.0 (page fully loaded).
   virtual void LoadProgressChanged(double progress) {}
+
+  // Called for every find-in-page request issued earlier via
+  // WebContents::Find().
+  // `request_id` matches the id passed to `Find()`; check it to find the reply
+  // for a specific request.
+  // `final_update` is true when this is the last reply for `request_id`.
+  // Exactly one call with `final_update` true is guaranteed for every request
+  // issued through `Find()`, even if the search text was not found, there was
+  // no frame available to search, or the request's session was superseded by
+  // another one started through a concurrent call to `Find()`. See also a
+  // note in documentation for Find() about concurrent calls.
+  virtual void DidReceiveFindReply(int request_id,
+                                   int number_of_matches,
+                                   const gfx::Rect& selection_rect,
+                                   int active_match_ordinal,
+                                   bool final_update) {}
 
   // This method is invoked once the window.document element of the primary main
   // frame's current document (i.e., |render_frame_host|) is ready. This happens
@@ -954,6 +972,11 @@ class CONTENT_EXPORT WebContentsObserver : public base::CheckedObserver {
   // Called when text selection is changed.
   virtual void OnTextSelectionChanged(RenderFrameHost* render_frame_host,
                                       std::u16string_view selected_text) {}
+
+  // Called when a drag started from `source_rfh` within this WebContents.
+  // `drop_data` has already been security-filtered and assigned its `drag_id`.
+  virtual void DidStartDrag(RenderFrameHost* source_rfh,
+                            const DropData& drop_data) {}
 
   // Notification that the |render_widget_host| for this WebContents has gained
   // focus.

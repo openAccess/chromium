@@ -49,6 +49,7 @@
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/user_browser_context.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_view_delegate.h"
@@ -263,6 +264,9 @@ void PrepareDragData(RenderFrameHost& source_rfh,
                      const DropData& drop_data,
                      ui::OSExchangeDataProvider* provider) {
   provider->MarkRendererTaintedFromOrigin(source_rfh.GetLastCommittedOrigin());
+  if (drop_data.drag_id.has_value()) {
+    provider->SetChromeDragId(*drop_data.drag_id);
+  }
 #if BUILDFLAG(IS_WIN)
   // Put download before file contents to prefer the download of a image over
   // its thumbnail link.
@@ -373,6 +377,13 @@ aura::Window* GetHostWindow(aura::Window* window) {
     return host_window_ptr->get();
   }
   return window->parent();
+}
+
+// Returns whether drag-and-drop data from or to `web_contents` is
+// off-the-record.
+bool IsOffTheRecordForDragAndDrop(WebContents& web_contents) {
+  return GetUserBrowserContext(*web_contents.GetPrimaryMainFrame())
+      ->IsOffTheRecord();
 }
 
 }  // namespace
@@ -724,6 +735,7 @@ void WebContentsViewAura::PrepareDropData(
   drop_data->did_originate_from_renderer = data.IsRendererTainted();
 #endif
   drop_data->is_from_privileged = data.IsFromPrivileged();
+  drop_data->drag_id = data.GetChromeDragId();
 
   if (std::optional<std::u16string> string = data.GetString();
       string.has_value() && !string->empty()) {
@@ -849,7 +861,8 @@ void WebContentsViewAura::EndDrag(
   // |client_loc| is in the root coordinate space, for non-root
   // RenderWidgetHosts it needs to be transformed.
   gfx::PointF transformed_point = client_loc;
-  if (source_rwh && web_contents_->GetRenderWidgetHostView()) {
+  if (source_rwh && web_contents_->GetRenderWidgetHostView() &&
+      source_rwh->GetView() != web_contents_->GetRenderWidgetHostView()) {
     static_cast<RenderWidgetHostViewBase*>(
         web_contents_->GetRenderWidgetHostView())
         ->TransformPointToCoordSpaceForView(
@@ -1067,7 +1080,14 @@ RenderWidgetHostViewBase* WebContentsViewAura::CreateViewForWidget(
       g_create_render_widget_host_view
           ? g_create_render_widget_host_view(render_widget_host)
           : new RenderWidgetHostViewAura(render_widget_host);
+  // InitAsChild() can run a nested message loop (e.g. UpdateLegacyWin() and
+  // SetInputScope() on Windows) in which the view is destroyed, e.g. if the
+  // renderer goes away.
+  base::WeakPtr<RenderWidgetHostViewBase> weak_view = view->GetWeakPtr();
   view->InitAsChild(GetRenderWidgetHostViewParent());
+  if (!weak_view) {
+    return nullptr;
+  }
 
   // We listen to drag drop events in the newly created view's window.
   aura::client::SetDragDropDelegate(view->GetNativeView(), this);
@@ -1263,8 +1283,7 @@ void WebContentsViewAura::StartDragging(
   data->SetSource(std::make_unique<ui::DataTransferEndpoint>(
       web_contents_->GetPrimaryMainFrame()->GetLastCommittedURL(),
       ui::DataTransferEndpointOptions{
-          .off_the_record =
-              web_contents_->GetBrowserContext()->IsOffTheRecord()}));
+          .off_the_record = IsOffTheRecordForDragAndDrop(*web_contents_)}));
   WebContentsDelegate* delegate = web_contents_->GetDelegate();
   if (delegate && delegate->IsPrivileged())
     data->MarkAsFromPrivileged();
@@ -1279,36 +1298,46 @@ void WebContentsViewAura::StartDragging(
 
   // We need to enable recursive tasks on the message loop so we can get
   // updates while in the system DoDragDrop loop.
-  DragOperation result_op;
+  DragOperation result_op = DragOperation::kNone;
   {
     gfx::NativeView content_native_view = GetContentNativeView();
     // The renderer-supplied `event_info.location` is untrusted. On Windows, a
     // touch event would reach `::SendInput` via
     // DesktopWindowTreeHostWin::StartTouchDrag and could redirect the
     // synthesized click to an overlapping HWND (e.g. a permission bubble).
-    // Require an in-flight touch or mouse button, depending on the event
-    // source, and refuse the drag if requirement is not met.
-    gfx::Point trusted_location = event_info.location;
+    // Require a touch or a left mouse press on the web contents, depending on
+    // the event source, and refuse the drag if the requirement is not met.
+    gfx::Point trusted_location;
     aura::Env* env = aura::Env::GetInstance();
-    if ((event_info.source == ui::mojom::DragEventSource::kTouch &&
-         !env->is_touch_down()) ||
-        (event_info.source == ui::mojom::DragEventSource::kMouse &&
-         !env->IsMouseButtonDown())) {
-      web_contents_->SystemDragEnded(source_rwh);
-      return;
-    }
     if (event_info.source == ui::mojom::DragEventSource::kTouch) {
-      trusted_location =
-          env->GetLastPointerPoint(event_info.source, content_native_view,
-                                   /*fallback=*/event_info.location);
+      // A touch elsewhere (e.g. holding the window caption to move the
+      // window), or a touch that already started a drag and whose release was
+      // consumed by the platform drag loop, must not satisfy this check.
+      std::optional<gfx::Point> touch_location =
+          env->ConsumeTouchForDrag(content_native_view);
+      if (!touch_location) {
+        EndDrag(std::move(source_rwh_weak_ptr), result_op);
+        return;
+      }
+      trusted_location = *touch_location;
     } else {
+      // Likewise, a left button held elsewhere (e.g. on the window caption or
+      // a draggable region of a frameless app window to move the window), or
+      // a press that already started a drag and whose release was consumed by
+      // the platform drag loop or the window manager, must not satisfy this
+      // check.
+      if (event_info.source == ui::mojom::DragEventSource::kMouse &&
+          !env->ConsumeLeftMousePressForDrag(content_native_view)) {
+        EndDrag(std::move(source_rwh_weak_ptr), result_op);
+        return;
+      }
       trusted_location = env->last_mouse_location();
     }
     // Make sure event is within the web contents, and the web contents are
     // visible.
     if (!content_native_view->GetBoundsInScreen().Contains(trusted_location) ||
         !content_native_view->IsVisible()) {
-      web_contents_->SystemDragEnded(source_rwh);
+      EndDrag(std::move(source_rwh_weak_ptr), result_op);
       return;
     }
     base::CurrentThread::ScopedAllowApplicationTasksInNativeNestedLoop allow;
@@ -1345,8 +1374,10 @@ void WebContentsViewAura::StartDragging(
   }
 }
 
-void WebContentsViewAura::UpdateDragOperation(DragOperation operation,
-                                              bool document_is_handling_drag) {
+void WebContentsViewAura::UpdateDragOperation(
+    DragOperation operation,
+    bool document_is_handling_drag,
+    RenderWidgetHostImpl* source_rwh) {
   // This asynchronous update may arrive after a drop has already been cancelled
   // or completed, in which case `current_drag_data_` will have been reset.
   if (current_drag_data_) {
@@ -1652,12 +1683,11 @@ aura::client::DragUpdateInfo WebContentsViewAura::OnDragUpdated(
   }
   aura::client::DragUpdateInfo drag_info;
   auto* focused_frame = web_contents_->GetFocusedFrame();
-  if (focused_frame && !web_contents_->GetBrowserContext()->IsOffTheRecord() &&
+  if (focused_frame && !IsOffTheRecordForDragAndDrop(*web_contents_) &&
       web_contents_->GetPrimaryMainFrame()->GetLastCommittedURL().is_valid()) {
     drag_info.data_endpoint = ui::DataTransferEndpoint(
         web_contents_->GetPrimaryMainFrame()->GetLastCommittedURL(),
-        {.off_the_record =
-             web_contents_->GetBrowserContext()->IsOffTheRecord()});
+        {.off_the_record = IsOffTheRecordForDragAndDrop(*web_contents_)});
   }
 
   std::unique_ptr<DropData> drop_data = std::make_unique<DropData>();

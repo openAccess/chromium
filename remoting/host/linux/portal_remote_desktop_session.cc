@@ -21,6 +21,8 @@
 #include "remoting/base/loggable.h"
 #include "remoting/base/logging.h"
 #include "remoting/host/delegating_desktop_display_info_monitor.h"
+#include "remoting/host/linux/dbus_interfaces/org_freedesktop_host_portal_Registry.h"
+#include "remoting/host/linux/dbus_interfaces/org_freedesktop_portal_Clipboard.h"
 #include "remoting/host/linux/dbus_interfaces/org_freedesktop_portal_RemoteDesktop.h"
 #include "remoting/host/linux/ei_sender_session.h"
 #include "remoting/host/linux/gdbus_connection_ref.h"
@@ -146,6 +148,7 @@ void PortalRemoteDesktopSession::OnInitError(std::string_view error_message,
                                              Loggable error_context) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   initialization_state_ = InitializationState::kNotInitialized;
+  clipboard_.reset();
   portal_session_.reset();
   create_session_request_.reset();
   select_devices_request_.reset();
@@ -159,6 +162,32 @@ void PortalRemoteDesktopSession::OnConnectionCreated(
     GDBusConnectionRef connection) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   connection_ = std::move(connection);
+
+  connection_.Call<org_freedesktop_host_portal_Registry::Register>(
+      kPortalBusName, kPortalObjectPath,
+      std::make_tuple(kPortalApplicationId, GVariantDictBuilder().Build()),
+      base::BindOnce(&PortalRemoteDesktopSession::OnRegisterResponse,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void PortalRemoteDesktopSession::OnRegisterResponse(
+    base::expected<std::tuple<>, Loggable> result) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (result.has_value()) {
+    HOST_LOG << "Host.Registry.Register succeeded for " << kPortalApplicationId;
+  } else {
+    // If the host registry portal is not supported (e.g. older
+    // xdg-desktop-portal) or registration fails, continue anyway with an
+    // unassigned app ID.
+    LOG(WARNING) << "Host.Registry.Register failed: "
+                 << result.error().ToString();
+  }
+
+  CreateSession();
+}
+
+void PortalRemoteDesktopSession::CreateSession() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   create_session_request_ = std::make_unique<ScopedPortalRequest>(
       connection_,
@@ -212,6 +241,28 @@ void PortalRemoteDesktopSession::OnCreateSessionResponse(
 void PortalRemoteDesktopSession::OnSelectDevicesResponse(
     gvariant::GVariantRef<"a{sv}"> result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  HOST_LOG << "RemoteDesktop.SelectDevices succeeded.";
+
+  connection_.Call<org_freedesktop_portal_Clipboard::RequestClipboard>(
+      kPortalBusName, kPortalObjectPath,
+      std::make_tuple(portal_session_->session_handle(),
+                      gvariant::EmptyArrayOf<"{sv}">()),
+      base::BindOnce(&PortalRemoteDesktopSession::OnRequestClipboardResponse,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void PortalRemoteDesktopSession::OnRequestClipboardResponse(
+    base::expected<std::tuple<>, Loggable> result) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (result.has_value()) {
+    HOST_LOG << "Clipboard.RequestClipboard succeeded.";
+    clipboard_ = std::make_unique<ClipboardPortal>(
+        connection_, portal_session_->session_handle());
+  } else {
+    LOG(WARNING) << "RequestClipboard failed (clipboard may be unsupported by "
+                    "the portal backend): "
+                 << result.error();
+  }
 
   capture_stream_manager_.Init(
       create_virtual_monitor_, connection_, portal_session_->session_handle(),
@@ -237,6 +288,11 @@ void PortalRemoteDesktopSession::OnCaptureStreamInitResult(
     OnInitError("Failed to initialize capture stream manager",
                 Loggable(FROM_HERE, result.error()));
     return;
+  }
+
+  if (clipboard_ && !capture_stream_manager_.clipboard_enabled()) {
+    LOG(WARNING) << "Portal did not enable clipboard for the session.";
+    clipboard_.reset();
   }
 
   HOST_LOG << "Capture stream initialized.";

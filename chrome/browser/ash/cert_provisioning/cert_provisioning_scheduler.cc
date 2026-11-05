@@ -77,18 +77,20 @@ FailedWorkerInfo& FailedWorkerInfo::operator=(const FailedWorkerInfo&) =
 std::unique_ptr<CertProvisioningScheduler>
 CertProvisioningSchedulerImpl::CreateUserCertProvisioningScheduler(
     Profile* profile) {
-  PrefService* pref_service = profile->GetPrefs();
+  CHECK(profile);
   policy::CloudPolicyClient* cloud_policy_client =
       GetCloudPolicyClientForUser(profile);
   platform_keys::PlatformKeysService* platform_keys_service =
       GetPlatformKeysService(CertScope::kUser, profile);
   NetworkStateHandler* network_state_handler = GetNetworkStateHandler();
 
-  if (!profile || !pref_service || !cloud_policy_client ||
-      !network_state_handler) {
+  if (!cloud_policy_client || !network_state_handler) {
     LOG(ERROR) << "Failed to create user certificate provisioning scheduler";
     return nullptr;
   }
+
+  PrefService* pref_service = profile->GetPrefs();
+  CHECK(pref_service);
 
   return std::make_unique<CertProvisioningSchedulerImpl>(
       CertScope::kUser, profile, pref_service,
@@ -162,7 +164,7 @@ CertProvisioningSchedulerImpl::CertProvisioningSchedulerImpl(
 CertProvisioningSchedulerImpl::~CertProvisioningSchedulerImpl() = default;
 
 void CertProvisioningSchedulerImpl::ScheduleInitialUpdate() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
@@ -171,7 +173,7 @@ void CertProvisioningSchedulerImpl::ScheduleInitialUpdate() {
 }
 
 void CertProvisioningSchedulerImpl::ScheduleDailyUpdate() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
@@ -182,7 +184,7 @@ void CertProvisioningSchedulerImpl::ScheduleDailyUpdate() {
 
 void CertProvisioningSchedulerImpl::ScheduleRetry(
     const CertProfileId& profile_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // TODO: b/299054905 - Instead of using a hardcoded delay time, trigger a
   // policy refresh and restart workers when policies have been applied.
@@ -196,7 +198,7 @@ void CertProvisioningSchedulerImpl::ScheduleRetry(
 void CertProvisioningSchedulerImpl::ScheduleRenewal(
     const CertProfileId& profile_id,
     base::TimeDelta delay) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (scheduled_renewals_.contains(profile_id)) {
     return;
@@ -210,13 +212,13 @@ void CertProvisioningSchedulerImpl::ScheduleRenewal(
 }
 
 void CertProvisioningSchedulerImpl::InitialUpdateCerts() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   DeleteCertsWithoutPolicy();
 }
 
 void CertProvisioningSchedulerImpl::DeleteCertsWithoutPolicy() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   // No-op if the PlatformKeysService has already been shut down.
   if (!platform_keys_service_) {
     return;
@@ -232,7 +234,7 @@ void CertProvisioningSchedulerImpl::DeleteCertsWithoutPolicy() {
 
 void CertProvisioningSchedulerImpl::OnDeleteCertsWithoutPolicyDone(
     chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (status != chromeos::platform_keys::Status::kSuccess) {
     LOG(ERROR) << "Failed to delete certificates without policies: "
@@ -244,7 +246,7 @@ void CertProvisioningSchedulerImpl::OnDeleteCertsWithoutPolicyDone(
 }
 
 void CertProvisioningSchedulerImpl::CleanVaKeysIfIdle() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (!workers_.empty()) {
     OnCleanVaKeysIfIdleDone(true);
@@ -259,7 +261,7 @@ void CertProvisioningSchedulerImpl::CleanVaKeysIfIdle() {
 
 void CertProvisioningSchedulerImpl::OnCleanVaKeysIfIdleDone(
     bool delete_result) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (!delete_result) {
     LOG(ERROR) << "Failed to delete keys while idle";
@@ -270,7 +272,7 @@ void CertProvisioningSchedulerImpl::OnCleanVaKeysIfIdleDone(
 }
 
 void CertProvisioningSchedulerImpl::RegisterForPrefsChanges() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   pref_change_registrar_.Init(pref_service_);
   pref_change_registrar_.Add(
@@ -280,7 +282,7 @@ void CertProvisioningSchedulerImpl::RegisterForPrefsChanges() {
 }
 
 void CertProvisioningSchedulerImpl::DailyUpdateWorkers() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   ClearFailedWorkers();
   UpdateAllWorkers();
@@ -288,7 +290,7 @@ void CertProvisioningSchedulerImpl::DailyUpdateWorkers() {
 }
 
 void CertProvisioningSchedulerImpl::DeserializeWorkers() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   const base::DictValue& saved_workers =
       pref_service_->GetDict(GetPrefNameForSerialization(cert_scope_));
@@ -315,7 +317,7 @@ void CertProvisioningSchedulerImpl::DeserializeWorkers() {
 }
 
 void CertProvisioningSchedulerImpl::OnPrefsChange() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   ClearFailedWorkers();
   UpdateAllWorkers();
 }
@@ -328,7 +330,7 @@ void CertProvisioningSchedulerImpl::InitiateRenewal(
 
 bool CertProvisioningSchedulerImpl::UpdateOneWorker(
     const CertProfileId& cert_profile_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   auto worker_iter = workers_.find(cert_profile_id);
   if (worker_iter == workers_.end()) {
@@ -343,7 +345,7 @@ bool CertProvisioningSchedulerImpl::UpdateOneWorker(
 
 void CertProvisioningSchedulerImpl::UpdateOneWorkerImpl(
     const CertProfileId& cert_profile_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   RemoveFailedWorker(cert_profile_id);
 
@@ -356,7 +358,7 @@ void CertProvisioningSchedulerImpl::UpdateOneWorkerImpl(
 }
 
 void CertProvisioningSchedulerImpl::UpdateAllWorkers() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   std::vector<CertProfile> profiles = GetCertProfiles();
   CancelWorkersWithoutPolicy(profiles);
@@ -370,7 +372,7 @@ void CertProvisioningSchedulerImpl::UpdateAllWorkers() {
 
 void CertProvisioningSchedulerImpl::UpdateWorkerList(
     std::vector<CertProfile> profiles) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // No-op if the PlatformKeysService has already been shut down.
   if (!platform_keys_service_) {
@@ -397,7 +399,7 @@ void CertProvisioningSchedulerImpl::UpdateWorkerListWithExistingCerts(
     base::flat_map<CertProfileId, scoped_refptr<net::X509Certificate>>
         existing_certs_with_ids,
     chromeos::platform_keys::Status status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (status != chromeos::platform_keys::Status::kSuccess) {
     LOG(ERROR) << "Failed to get existing cert ids: "
@@ -452,7 +454,7 @@ void CertProvisioningSchedulerImpl::UpdateWorkerListWithExistingCerts(
 
 void CertProvisioningSchedulerImpl::ProcessProfile(
     const CertProfile& cert_profile) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   CertProvisioningWorker* worker = FindWorker(cert_profile.profile_id);
   if (!worker) {
@@ -480,7 +482,7 @@ void CertProvisioningSchedulerImpl::ProcessProfile(
 
 void CertProvisioningSchedulerImpl::CreateCertProvisioningWorker(
     CertProfile cert_profile) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   std::string id = GenerateCertProvisioningId();
   if (id.empty()) {
@@ -506,7 +508,7 @@ void CertProvisioningSchedulerImpl::OnProfileFinished(
     CertProfile profile,
     std::string process_id,
     CertProvisioningWorkerState state) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   auto worker_iter = workers_.find(profile.profile_id);
   if (worker_iter == workers_.end()) {
@@ -557,7 +559,7 @@ void CertProvisioningSchedulerImpl::OnProfileFinished(
 
 bool CertProvisioningSchedulerImpl::ResetOneWorker(
     const CertProfileId& cert_profile_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   RemoveFailedWorker(cert_profile_id);
 
@@ -580,7 +582,7 @@ bool CertProvisioningSchedulerImpl::ResetOneWorker(
 
 CertProvisioningWorker* CertProvisioningSchedulerImpl::FindWorker(
     CertProfileId profile_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   auto iter = workers_.find(profile_id);
   if (iter == workers_.end()) {
@@ -629,7 +631,7 @@ void CertProvisioningSchedulerImpl::ClearFailedWorkers() {
 
 std::optional<CertProfile> CertProvisioningSchedulerImpl::GetOneCertProfile(
     const CertProfileId& cert_profile_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   const base::Value& profile_list = pref_service_->GetValue(pref_name_);
 
@@ -647,7 +649,7 @@ std::optional<CertProfile> CertProvisioningSchedulerImpl::GetOneCertProfile(
 }
 
 std::vector<CertProfile> CertProvisioningSchedulerImpl::GetCertProfiles() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   const base::Value& profile_list = pref_service_->GetValue(pref_name_);
 
@@ -667,14 +669,14 @@ std::vector<CertProfile> CertProvisioningSchedulerImpl::GetCertProfiles() {
 }
 
 const WorkerMap& CertProvisioningSchedulerImpl::GetWorkers() const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   return workers_;
 }
 
 const base::flat_map<CertProfileId, FailedWorkerInfo>&
 CertProvisioningSchedulerImpl::GetFailedCertProfileIds() const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   return failed_cert_profiles_;
 }
@@ -698,7 +700,7 @@ bool CertProvisioningSchedulerImpl::MaybeWaitForInternetConnection() {
 }
 
 void CertProvisioningSchedulerImpl::WaitForInternetConnection() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (is_waiting_for_online_) {
     return;
@@ -717,7 +719,7 @@ void CertProvisioningSchedulerImpl::WaitForInternetConnection() {
 
 void CertProvisioningSchedulerImpl::OnNetworkChange(
     const NetworkState* network) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // If waiting for connection and some network becomes online, try to continue.
   if (is_waiting_for_online_ && network && network->IsOnline()) {
@@ -736,21 +738,21 @@ void CertProvisioningSchedulerImpl::OnNetworkChange(
 
 void CertProvisioningSchedulerImpl::DefaultNetworkChanged(
     const NetworkState* network) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   OnNetworkChange(network);
 }
 
 void CertProvisioningSchedulerImpl::NetworkConnectionStateChanged(
     const NetworkState* network) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   OnNetworkChange(network);
 }
 
 void CertProvisioningSchedulerImpl::UpdateFailedCertProfiles(
     const CertProvisioningWorker& worker) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   FailedWorkerInfo info;
   info.process_id = worker.GetProcessId();
@@ -764,7 +766,7 @@ void CertProvisioningSchedulerImpl::UpdateFailedCertProfiles(
 }
 
 void CertProvisioningSchedulerImpl::OnPlatformKeysServiceShutDown() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // The |platform_keys_service_| will only return errors going forward, so
   // stop using it. Shutdown all workers, as if this CertProvisioningScheduler
@@ -782,7 +784,7 @@ void CertProvisioningSchedulerImpl::OnPlatformKeysServiceShutDown() {
 
 void CertProvisioningSchedulerImpl::CancelWorkersWithoutPolicy(
     const std::vector<CertProfile>& profiles) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (workers_.empty()) {
     return;
@@ -805,7 +807,7 @@ void CertProvisioningSchedulerImpl::CancelWorkersWithoutPolicy(
 }
 
 void CertProvisioningSchedulerImpl::OnVisibleStateChanged() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // |notify_observers_pending_| prevents the scheduler from sending multiple
   // notifications from a single synchronous code execution sequence. Extra
@@ -844,7 +846,7 @@ void CertProvisioningSchedulerImpl::OnHoldBackUpdatesTimerExpired() {
 }
 
 void CertProvisioningSchedulerImpl::NotifyObserversVisibleStateChanged() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   notify_observers_pending_ = false;
   observers_.Notify();
 }

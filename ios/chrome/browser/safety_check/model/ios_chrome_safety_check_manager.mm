@@ -12,6 +12,7 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/time/time.h"
 #import "base/values.h"
+#import "base/version.h"
 #import "components/password_manager/core/browser/leak_detection/leak_detection_request_utils.h"
 #import "components/password_manager/core/browser/ui/credential_ui_entry.h"
 #import "components/prefs/pref_service.h"
@@ -22,6 +23,7 @@
 #import "components/version_info/version_info.h"
 #import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
 #import "ios/chrome/browser/ntp/shared/metrics/home_metrics.h"
+#import "ios/chrome/browser/omaha/model/omaha_service.h"
 #import "ios/chrome/browser/safety_check/model/ios_chrome_safety_check_manager_utils.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
@@ -61,10 +63,6 @@ IOSChromeSafetyCheckManager::IOSChromeSafetyCheckManager(
   password_check_manager_->AddObserver(this);
   if (base::FeatureList::IsEnabled(kSafetyCheckClearPasswordOnSignOut)) {
     identity_manager_observation_.Observe(identity_manager_);
-  }
-
-  if (IsOmahaServiceRefactorEnabled()) {
-    OmahaService::AddObserver(this);
   }
 
   pref_change_registrar_.Init(pref_service);
@@ -111,14 +109,6 @@ IOSChromeSafetyCheckManager::~IOSChromeSafetyCheckManager() {
 void IOSChromeSafetyCheckManager::Shutdown() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // `OmahaService` instances are not currently destroyed due to the
-  // `NoDestructor` implementation. This prevents `OmahaServiceObserver`'s
-  // `ServiceWillShutdown()` from being called as intended. As a workaround,
-  // manually remove the observation here to ensure proper cleanup.
-  if (IsOmahaServiceRefactorEnabled()) {
-    OmahaService::RemoveObserver(this);
-  }
-
   for (auto& observer : observers_) {
     observer.ManagerWillShutdown(this);
   }
@@ -135,10 +125,6 @@ void IOSChromeSafetyCheckManager::Shutdown() {
   if (password_check_manager_) {
     password_check_manager_->RemoveObserver(this);
     password_check_manager_ = nullptr;
-  }
-
-  if (IsOmahaServiceRefactorEnabled()) {
-    CHECK(!OmahaServiceObserver::IsInObserverList());
   }
 }
 
@@ -306,33 +292,6 @@ void IOSChromeSafetyCheckManager::ManagerWillShutdown(
   CHECK_EQ(password_check_manager, password_check_manager_);
   password_check_manager_->RemoveObserver(this);
   password_check_manager_ = nullptr;
-}
-
-void IOSChromeSafetyCheckManager::OnServiceStarted(
-    OmahaService* omaha_service) {
-  CHECK(IsOmahaServiceRefactorEnabled());
-
-  if (omaha_check_queued_) {
-    omaha_check_queued_ = false;
-    StartOmahaCheck();
-  }
-}
-
-void IOSChromeSafetyCheckManager::UpgradeRecommendedDetailsChanged(
-    UpgradeRecommendedDetails details) {
-  CHECK(IsOmahaServiceRefactorEnabled());
-
-  task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&IOSChromeSafetyCheckManager::HandleOmahaResponse,
-                     weak_ptr_factory_.GetWeakPtr(), details));
-}
-
-void IOSChromeSafetyCheckManager::ServiceWillShutdown(
-    OmahaService* omaha_service) {
-  CHECK(IsOmahaServiceRefactorEnabled());
-
-  omaha_service->RemoveObserver(this);
 }
 
 #pragma mark - signin::IdentityManager::Observer implementation.
@@ -581,12 +540,6 @@ void IOSChromeSafetyCheckManager::UpdateSafeBrowsingCheckState() {
 // TODO(crbug.com/40922030): Add UMA logs related to the Update Chrome check.
 void IOSChromeSafetyCheckManager::StartOmahaCheck() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  if (IsOmahaServiceRefactorEnabled() && !OmahaService::HasStarted()) {
-    omaha_check_queued_ = true;
-    return;
-  }
-
   StartOmahaCheckInternal();
 }
 
@@ -601,9 +554,10 @@ void IOSChromeSafetyCheckManager::StartOmahaCheckInternal() {
     case version_info::Channel::BETA:
     case version_info::Channel::DEV:
     case version_info::Channel::CANARY: {
-      OmahaService::CheckNow(
-          base::BindOnce(&IOSChromeSafetyCheckManager::HandleOmahaResponse,
-                         weak_ptr_factory_.GetWeakPtr()));
+      omaha_ping_subscription_ =
+          GetApplicationContext()->GetOmahaService().CheckNow(
+              base::BindOnce(&IOSChromeSafetyCheckManager::HandleOmahaResponse,
+                             weak_ptr_factory_.GetWeakPtr()));
       break;
     }
     default:
@@ -625,7 +579,7 @@ void IOSChromeSafetyCheckManager::StartOmahaCheckInternal() {
 // For now, all Omaha data will be maintained in-memory and tied to the
 // lifecycle of the this class.
 void IOSChromeSafetyCheckManager::HandleOmahaResponse(
-    UpgradeRecommendedDetails details) {
+    const UpgradeRecommendedDetails& details) {
   UpdateChromeSafetyCheckState state = UpdateChromeSafetyCheckState::kDefault;
 
   if (details.is_up_to_date) {
@@ -658,6 +612,7 @@ void IOSChromeSafetyCheckManager::HandleOmahaResponse(
 void IOSChromeSafetyCheckManager::HandleOmahaError() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  omaha_ping_subscription_ = {};
   if (update_chrome_check_state_ == UpdateChromeSafetyCheckState::kRunning) {
     SetUpdateChromeCheckState(UpdateChromeSafetyCheckState::kOmahaError);
   }

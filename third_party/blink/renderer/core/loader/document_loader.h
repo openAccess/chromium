@@ -49,7 +49,6 @@
 #include "third_party/blink/public/common/permissions_policy/document_policy.h"
 #include "third_party/blink/public/common/scheduler/task_attribution_id.h"
 #include "third_party/blink/public/common/subresource_load_metrics.h"
-#include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-blink.h"
 #include "third_party/blink/public/mojom/frame/triggering_event_info.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/loader/content_security_notifier.mojom-blink.h"
 #include "third_party/blink/public/mojom/loader/mhtml_load_result.mojom-blink-forward.h"
@@ -426,10 +425,10 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   bool ConsumeTextFragmentToken();
 
   // Returns the text fragment to scroll to and clears it.
-  std::optional<String> TakeInternalScrollToTextFragment();
+  String TakeInternalScrollToTextFragment();
 
   bool HasInternalScrollToTextFragment() const {
-    return internal_scroll_to_text_fragment_.has_value();
+    return !internal_scroll_to_text_fragment_.IsNull();
   }
 
   // For testing purposes.
@@ -712,7 +711,7 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   const std::optional<blink::mojom::FetchCacheMode> force_fetch_cache_mode_;
   const FramePolicy frame_policy_;
   std::optional<uint64_t> visited_link_salt_;
-  base::UnguessableToken initiator_state_token_;
+  InitiatorStateToken initiator_state_token_;
 
   Member<LocalFrame> frame_;
 
@@ -800,6 +799,10 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   // window's SecurityContext.
   bool is_secure_context_root_ = false;
 
+  // Whether the document may bind RestrictedDeviceBoundSessionManager, from
+  // the commit params. Applied to the LocalDOMWindow for every new document.
+  bool can_use_device_bound_session_js_api_ = false;
+
   // Policy controlling script injection tracking and protections for this
   // document.
   mojom::blink::ScriptInjectionPolicy script_injection_policy_ =
@@ -828,7 +831,7 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
 
   // If set, the document should attempt to scroll this text fragment into view
   // upon load, without highlighting it.
-  std::optional<String> internal_scroll_to_text_fragment_;
+  String internal_scroll_to_text_fragment_;
 
   // See WebNavigationParams for definition.
   const bool was_discarded_ = false;
@@ -898,9 +901,6 @@ class CORE_EXPORT DocumentLoader : public GarbageCollected<DocumentLoader>,
   std::optional<Vector<KURL>> ad_auction_components_;
 
   std::unique_ptr<ExtraData> extra_data_;
-
-  // Reduced accept language for top-level frame.
-  const AtomicString reduced_accept_language_;
 
   const network::mojom::NavigationDeliveryType navigation_delivery_type_;
 

@@ -9,7 +9,6 @@
 <translation id="207576718733492531">タップ操作で入力する認証情報のリストは閉じています。</translation>
 <translation id="2652129567809778422">パスワードを選択</translation>
 <translation id="2903493209154104877">住所</translation>
-<translation id="3399357656427473483">タップ操作で入力する認証情報のリスト。</translation>
 <translation id="3688051737190211318"><ph name="ORIGIN" /> を信頼できる場合は、保存済みのパスワードを使用してログインできます</translation>
 <translation id="4110818514910776249">より多くの Google ウォレットの情報を自動入力できるようになりました。[設定] で情報を管理したり、入力候補を表示しないよう設定したりできます。</translation>
 <translation id="4553044860350038560">その他のパスキー</translation>
@@ -28,11 +27,10 @@
 <translation id="6736243959894955139">アドレス</translation>
 <translation id="6745212570062463886">Google アカウントから名前とメールアドレスを自動入力します</translation>
 <translation id="6851249282047649312">パスワードをロック解除</translation>
+<translation id="7087807086191250928">Gemini は不正確な情報を表示することがあるため、候補を長押しして元のソースをチェックし、この情報が正確であることを確認してください。</translation>
 <translation id="7286867818472074330">パスキーを選択</translation>
-<translation id="7594473730623999723">スワイプして他の候補を表示</translation>
 <translation id="7873973044507799456">保存した住所を表示します</translation>
 <translation id="7923276689696325192">高精度の自動入力機能で、Gmail やフォトなどのアプリから情報を探して入力できるようになりました</translation>
-<translation id="7992095260806105436">Chrome の自動入力候補を使用する</translation>
 <translation id="8118489163946903409">お支払い方法</translation>
 <translation id="8705308553596171387">パスワードなし</translation>
 <translation id="879180780857354295">キーボード上部で別の入力候補を選択できます</translation>

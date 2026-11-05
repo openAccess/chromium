@@ -37,18 +37,18 @@ What are interface jars?:
 * Dependant targets use interface `.jar` files to skip having to be rebuilt
   when only private implementation details change.
 
-For prebuilt `.jar` files: we use [//third_party/ijar] to create interface
-`.jar` files from the prebuilt ones.
+For prebuilt `.jar` files: we use [`ijar`] to create interface `.jar` files
+from the prebuilt ones.
 
-For non-prebuilt `.jar` files`: we use [//third_party/turbine] to create
+For non-prebuilt `.jar` files`: we use [`//third_party/turbine`] to create
 interface `.jar` files directly from `.java` source files. Turbine is faster
 than javac because it does not compile method bodies. Although Turbine causes
 us to compile files twice, it speeds up builds by allowing `javac` compilation
 of targets to happen concurrently with their dependencies. We also use Turbine
 to run our annotation processors.
 
-[//third_party/ijar]: /third_party/ijar/README.chromium
-[//third_party/turbine]: /third_party/turbine/README.chromium
+[`ijar`]: /third_party/android_build_tools/bazel_tools/README.chromium
+[`//third_party/turbine`]: /third_party/turbine/README.chromium
 
 ### Step 2a: Compile with javac
 
@@ -77,6 +77,9 @@ This step can be disabled via GN arg: `use_errorprone_java_compiler = false`
   patterns, including some [custom to Chromium][ep_plugins].
 * ErrorProne used to replace step 1a, but was changed to a concurrent step after
   being identified as being slower.
+* Large targets are split across multiple concurrent ErrorProne processes
+  (based on their size and on the number of CPUs). Each process finds
+  classes from the other shards via the target's header jar.
 
 [ErrorProne]: https://errorprone.info/
 [ep_plugins]: /tools/android/errorprone_plugin/
@@ -118,15 +121,19 @@ This step happens only when targets have `supports_android = true`.
 
 * [d8] converts `.jar` files containing `.class` files into `.dex.jar` files
   containing `classes.dex` files.
-* Dexing is incremental - it will reuse dex'ed classes from a previous build if
-  the corresponding `.class` file is unchanged.
-* These per-library `.dex.jar` files are used directly by [incremental install],
-  and are inputs to the Apk step when `enable_proguard = false`.
+* Desugaring some constructs (e.g. Java `record` classes) makes d8 emit
+  "global synthetics": classes shared by the whole app rather than owned by one
+  library. Per-library dexing discards them (`--ignore-globals` in
+  `dex.py`) and the final dex step of debug APKs adds
+  `//third_party/r8/cipd/lib/global_synthetics.dex.jar`, built by the r8 3pp
+  package and holding every global synthetic for `min_supported_sdk_version`.
+  R8 builds need nothing extra.
+* These per-library `.dex.jar` files are inputs to the Apk step when
+  `enable_proguard = false`.
   * Even when `is_java_debug = false`, many apk targets do not enable ProGuard
     (e.g. unit tests).
 
 [d8]: https://developer.android.com/studio/command-line/d8
-[incremental install]: /build/android/incremental_install/README.md
 
 ### Step 7: Apk / Bundle Module Compile
 
@@ -141,8 +148,6 @@ This step happens only when targets have `supports_android = true`.
 
 ### Step 8: Final Dexing
 
-This step is skipped when building using [Incremental Install].
-
 When `is_java_debug = true`:
 * [d8] merges all library `.dex.jar` files into a final `.mergeddex.jar`.
 
@@ -151,7 +156,6 @@ When `is_java_debug = false`:
   files and outputs a final `.r8dex.jar`.
   * For App Bundles, R8 creates a `.r8dex.jar` for each module.
 
-[Incremental Install]: /build/android/incremental_install/README.md
 [R8]: https://r8.googlesource.com/r8
 
 ## Test APKs with apk_under_test

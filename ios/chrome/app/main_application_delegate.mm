@@ -13,6 +13,7 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/time/time.h"
 #import "components/download/public/background_service/background_download_service.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
@@ -98,7 +99,7 @@ constexpr base::TimeDelta kMainIntentCheckDelay = base::Seconds(1);
       [UNUserNotificationCenter currentNotificationCenter];
   center.delegate = _pushNotificationDelegate;
 
-  _appState.startupInformation.didFinishLaunchingTime = base::TimeTicks::Now();
+  _appState.startupInformation.didFinishLaunchingTime = base::LiveTicks::Now();
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   [defaults
       setInteger:[defaults integerForKey:
@@ -191,6 +192,8 @@ constexpr base::TimeDelta kMainIntentCheckDelay = base::Seconds(1);
     didReceiveRemoteNotification:(NSDictionary*)userInfo
           fetchCompletionHandler:
               (void (^)(UIBackgroundFetchResult result))completionHandler {
+  [_appState.startupInformation
+      maybeSetLaunchReason:IOSLaunchReason::kBackgroundSilentNotification];
   // This method is invoked by iOS to process an incoming remote push
   // notification for the application and fetch any additional data.
   //
@@ -240,6 +243,8 @@ constexpr base::TimeDelta kMainIntentCheckDelay = base::Seconds(1);
 - (void)application:(UIApplication*)application
     handleEventsForBackgroundURLSession:(NSString*)identifier
                       completionHandler:(void (^)())completionHandler {
+  [_appState.startupInformation
+      maybeSetLaunchReason:IOSLaunchReason::kBackgroundURLSession];
   if (![identifier
           hasPrefix:base::SysUTF8ToNSString(
                         download::kBackgroundDownloadIdentifierPrefix)]) {

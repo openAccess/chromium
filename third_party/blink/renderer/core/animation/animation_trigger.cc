@@ -13,6 +13,7 @@
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/platform/animation/compositor_animation.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "ui/gfx/animation/keyframe/keyframe_model.h"
 
 namespace blink {
@@ -269,7 +270,7 @@ void AnimationTrigger::addAnimation(
     V8AnimationTriggerBehavior activate_behavior,
     V8AnimationTriggerBehavior deactivate_behavior,
     ExceptionState& exception_state) {
-  CHECK(!is_activating_or_deactivating_);
+  CHECK(!forbid_behavior_map_updates_);
 
   if (!animation) {
     return;
@@ -300,7 +301,7 @@ void AnimationTrigger::addAnimation(
 }
 
 void AnimationTrigger::removeAnimation(Animation* animation) {
-  CHECK(!is_activating_or_deactivating_);
+  CHECK(!forbid_behavior_map_updates_);
 
   if (!animation) {
     return;
@@ -342,13 +343,14 @@ void AnimationTrigger::DidRemoveAnimation(Animation* animation) {}
 void AnimationTrigger::UpdateBehaviorMap(Animation& animation,
                                          Behavior activate_behavior,
                                          Behavior deactivate_behavior) {
+  CHECK(!forbid_behavior_map_updates_);
   animation_behavior_map_.Set(
       &animation, std::make_pair<>(activate_behavior, deactivate_behavior));
 }
 
 void AnimationTrigger::PerformActivate(
     std::optional<base::TimeDelta> async_activate_time) {
-  base::AutoReset<bool> is_activating(&is_activating_or_deactivating_, true);
+  base::AutoReset<bool> forbid_updates(&forbid_behavior_map_updates_, true);
 
   for (auto [animation, behaviors] : animation_behavior_map_) {
     if (HasPausedCSSPlayState(animation)) {
@@ -364,7 +366,7 @@ void AnimationTrigger::PerformActivate(
 
 void AnimationTrigger::PerformDeactivate(
     std::optional<base::TimeDelta> async_deactivate_time) {
-  base::AutoReset<bool> is_deactivating(&is_activating_or_deactivating_, true);
+  base::AutoReset<bool> forbid_updates(&forbid_behavior_map_updates_, true);
 
   for (auto [animation, behaviors] : animation_behavior_map_) {
     if (HasPausedCSSPlayState(animation)) {
@@ -382,6 +384,7 @@ void AnimationTrigger::PerformDeactivate(
 void AnimationTrigger::UpdateCompositorTriggerAnimations(
     const PaintArtifactCompositor* paint_artifact_compositor) {
   CHECK(compositor_trigger_);
+  base::AutoReset<bool> forbid_updates(&forbid_behavior_map_updates_, true);
 
   std::vector<cc::AnimationTrigger::AnimationData> animation_data;
   for (auto& [animation, behaviors] : animation_behavior_map_) {
@@ -398,7 +401,6 @@ void AnimationTrigger::UpdateCompositorTriggerAnimations(
     }
 
     CompositorAnimation* compositor_anim = animation->GetCompositorAnimation();
-    compositor_anim = animation->GetCompositorAnimation();
     DCHECK(compositor_anim);
     cc::Animation* cc_animation = compositor_anim->CcAnimation();
     DCHECK(cc_animation);

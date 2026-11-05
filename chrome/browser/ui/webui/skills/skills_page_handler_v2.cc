@@ -7,9 +7,11 @@
 #include <optional>
 
 #include "base/check_deref.h"
+#include "base/command_line.h"
 #include "base/supports_user_data.h"
 #include "chrome/browser/glic/host/glic_cookie_synchronizer.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/signin_ui_util.h"
 #include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/skills/skills_ui_tab_controller_interface.h"
 #include "chrome/browser/skills/skills_ui_window_controller.h"
@@ -17,14 +19,18 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/webui/skills/skills_dialog_delegate.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/common/webui_url_constants.h"
+#include "components/signin/public/base/signin_buildflags.h"
+#include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/skills/public/skill.h"
 #include "components/skills/public/skills_service.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace skills {
@@ -72,6 +78,7 @@ SkillsPageHandlerV2::SkillsPageHandlerV2(
     base::WeakPtr<SkillsDialogDelegate> delegate)
     : receiver_(this, std::move(receiver)),
       profile_(CHECK_DEREF(profile)),
+      identity_manager_(identity_manager),
       web_contents_(CHECK_DEREF(web_contents)),
       cookie_synchronizer_(std::make_unique<glic::GlicCookieSynchronizer>(
           &profile_.get(),
@@ -139,7 +146,21 @@ void SkillsPageHandlerV2::OnProvidedSkillsChanged(SkillsProvider* provider) {
   page_->LoadProvidedSkills(std::move(skills));
 }
 
+void SkillsPageHandlerV2::OnSkillUpdated(
+    std::string_view skill_id,
+    SkillsService::UpdateSource update_source,
+    bool is_position_changed) {
+  if (page_.is_bound()) {
+    page_->OnUserSkillsUpdated();
+  }
+}
+
 void SkillsPageHandlerV2::SyncCookies(SyncCookiesCallback callback) {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+          switches::kSkillsV2Origin)) {
+    std::move(callback).Run(true);
+    return;
+  }
   cookie_synchronizer_->CopyCookiesToWebviewStoragePartition(
       std::move(callback));
 }
@@ -229,7 +250,16 @@ void SkillsPageHandlerV2::SendPrompt(const std::string& prompt) {
   tabs::TabInterface* tab =
       tabs::TabInterface::MaybeGetFromContents(&web_contents_.get());
   if (!tab) {
-    return;
+    // In the dialog the WebUI is hosted by a views::WebView rather than a tab,
+    // so fall back to the tab the dialog was opened over.
+    BrowserWindowInterface* browser = GetBrowserWindow();
+    if (!browser) {
+      return;
+    }
+    tab = browser->GetActiveTabInterface();
+    if (!tab) {
+      return;
+    }
   }
   if (auto* tab_controller = SkillsUiTabControllerInterface::From(tab)) {
     tab_controller->SendPrompt(prompt);
@@ -238,19 +268,19 @@ void SkillsPageHandlerV2::SendPrompt(const std::string& prompt) {
 
 void SkillsPageHandlerV2::CloseDialog(
     skills::mojom::PendingEditorDataPtr data) {
-  if (!delegate_) {
-    return;
-  }
   // First store any data in user data, then proceed with dialog and handler
   // destruction.
   if (data) {
     PendingEditorDataHandler::GetOrCreateForProfile(&profile_.get())
         ->StoreData(std::move(data));
-    delegate_->GetBrowserWindowInterface()->OpenGURL(
-        GURL("chrome://skills/editor"),
-        WindowOpenDisposition::NEW_FOREGROUND_TAB);
+    if (BrowserWindowInterface* browser = GetBrowserWindow()) {
+      browser->OpenGURL(GURL("chrome://skills/editor"),
+                        ui::mojom::WindowOpenDisposition::kNewForegroundTab);
+    }
   }
-  delegate_->CloseDialog();
+  if (delegate_) {
+    delegate_->CloseDialog();
+  }
 }
 
 void SkillsPageHandlerV2::GetPendingEditorData(
@@ -259,6 +289,29 @@ void SkillsPageHandlerV2::GetPendingEditorData(
                   ->RetrieveData();
   // Note: Data is cleared when this callback runs.
   std::move(callback).Run(std::move(data));
+}
+
+void SkillsPageHandlerV2::SignIn() {
+  if (!identity_manager_) {
+    return;
+  }
+
+  CoreAccountInfo primary_account_info =
+      identity_manager_->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
+
+#if !BUILDFLAG(IS_ANDROID)
+  if (!primary_account_info.IsEmpty()) {
+    signin_ui_util::ShowReauthForAccount(&profile_.get(),
+                                         primary_account_info.email,
+                                         signin_metrics::AccessPoint::kSkills);
+  } else {
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+    signin_ui_util::SignInFromSingleAccountPromo(
+        &profile_.get(), CoreAccountInfo(),
+        signin_metrics::AccessPoint::kSkills);
+#endif
+  }
+#endif
 }
 
 BrowserWindowInterface* SkillsPageHandlerV2::GetBrowserWindow() {

@@ -27,7 +27,6 @@
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
-#import "ios/chrome/browser/badges/model/features.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_constants.h"
 #import "ios/chrome/browser/infobars/ui_bundled/banners/infobar_banner_constants.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
@@ -45,6 +44,7 @@
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/base/apple/url_conversions.h"
 #import "net/test/embedded_test_server/default_handlers.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -276,15 +276,6 @@ void LoginOnUff() {
         password_manager::features::kMarkAllCredentialsAsLeaked);
   }
 
-  if ([self isRunningTest:@selector(testSavePromptAppearsOnFormSubmission)] ||
-      [self isRunningTest:@selector(testUpdatePromptAppearsOnFormSubmission)] ||
-      [self isRunningTest:@selector(
-                              testSyntheticTouchendOnBtnElementIsIgnored)] ||
-      [self isRunningTest:@selector(testProgrammaticSubmissionFails)]) {
-    // These tests need a badge.
-    config.features_disabled.push_back(kAutofillBadgeRemoval);
-  }
-
   // The proactive password generation bottom sheet isn't tested here, it
   // is tested in its own suite in password_suggestion_egtest.mm.
   config.features_disabled.push_back(
@@ -309,7 +300,7 @@ void LoginOnUff() {
 }
 
 - (std::optional<std::string_view>)enterpriseReportingEventForTest {
-  if ([self isRunningTest:@selector(testLoginEventReported)]) {
+  if ([self isRunningTest:@selector(DISABLED_testLoginEventReported)]) {
     return "loginEvent";
   } else if ([self isRunningTest:@selector
                    (FLAKY_testPasswordBreachEventReported)]) {
@@ -343,6 +334,7 @@ void LoginOnUff() {
 #pragma mark - Tests
 
 // Tests that save password prompt is shown on new login.
+TAG_SMOKE_TEST(PasswordControllerEGTest, testSavePromptAppearsOnFormSubmission);
 - (void)testSavePromptAppearsOnFormSubmission {
   [self loadLoginPage];
 
@@ -360,11 +352,11 @@ void LoginOnUff() {
       waitForUIElementToAppearWithMatcher:
           PasswordInfobarLabels(IDS_IOS_PASSWORD_MANAGER_SAVE_PASSWORD_PROMPT)];
 
-  // Verify that the password badge is in the omnibox.
+  // Verify that the password badge is not in the omnibox.
   [[EarlGrey
       selectElementWithMatcher:
           grey_accessibilityID(kBadgeButtonSavePasswordAccessibilityIdentifier)]
-      assertWithMatcher:grey_notNil()];
+      assertWithMatcher:grey_nil()];
 
   // Tap to save password.
   [[EarlGrey selectElementWithMatcher:PasswordInfobarButton(
@@ -452,11 +444,11 @@ void LoginOnUff() {
       waitForUIElementToAppearWithMatcher:
           PasswordInfobarLabels(IDS_IOS_PASSWORD_MANAGER_UPDATE_PASSWORD)];
 
-  // Verify that the password badge is in the omnibox.
+  // Verify that the password badge is not in the omnibox.
   [[EarlGrey selectElementWithMatcher:
                  grey_accessibilityID(
                      kBadgeButtonUpdatePasswordAccessibilityIdentifier)]
-      assertWithMatcher:grey_notNil()];
+      assertWithMatcher:grey_nil()];
 
   // Tap to update password.
   [[EarlGrey
@@ -665,6 +657,11 @@ void LoginOnUff() {
       [NSString stringWithFormat:@"document.getElementById('%s').value === ''",
                                  kFormPassword];
   [ChromeEarlGrey waitForJavaScriptCondition:emptyFieldCondition];
+
+  // TODO(crbug.com/508127830): Find a better solution to fix the flakiness of
+  // this test.
+  // Wait for the page and WebKit layout to settle before tapping the field.
+  base::test::ios::SpinRunLoopWithMinDelay(base::Seconds(1));
 
   // Bring up the keyboard.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
@@ -938,7 +935,8 @@ void LoginOnUff() {
 }
 
 // Tests that a login event is reported to an enterprise connector.
-- (void)testLoginEventReported {
+// TODO(crbug.com/567129485): Flaky on iOS Simulator.
+- (void)DISABLED_testLoginEventReported {
   [self loadLoginPage];
 
   // Simulate login.

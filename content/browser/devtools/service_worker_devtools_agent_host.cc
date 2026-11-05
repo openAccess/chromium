@@ -34,6 +34,7 @@
 #include "services/network/public/cpp/constants.h"
 #include "services/network/public/mojom/client_security_state.mojom.h"
 #include "services/network/public/mojom/network_context.mojom-forward.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_database.mojom-forward.h"
 
 namespace content {
 
@@ -222,7 +223,7 @@ bool ServiceWorkerDevToolsAgentHost::Activate() {
 void ServiceWorkerDevToolsAgentHost::Reload() {}
 
 bool ServiceWorkerDevToolsAgentHost::Close() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   if (ServiceWorkerVersion* version =
           context_wrapper_->GetLiveVersion(version_id_)) {
     version->StopWorker(base::DoNothing());
@@ -239,7 +240,16 @@ void ServiceWorkerDevToolsAgentHost::WorkerVersionDoomed() {
   version_doomed_time_ = base::Time::Now();
 }
 
-void ServiceWorkerDevToolsAgentHost::WorkerMainScriptFetchingFailed() {
+void ServiceWorkerDevToolsAgentHost::StorageWiped() {
+  WorkerVersionDoomed();
+  DiscardPendingMessages();
+  // Version IDs restart from 0 in the wiped storage. Make sure this host is
+  // never matched against, and never acts on, a new version that happens to
+  // get the same version ID.
+  version_id_ = blink::mojom::kInvalidServiceWorkerVersionId;
+}
+
+void ServiceWorkerDevToolsAgentHost::DiscardPendingMessages() {
   for (DevToolsSession* session : sessions()) {
     session->ClearPendingMessages(/*did_crash=*/false);
   }
@@ -270,7 +280,7 @@ bool ServiceWorkerDevToolsAgentHost::AttachSession(DevToolsSession* session) {
   auto* target_handler = session->CreateAndAddHandler<protocol::TargetHandler>(
       protocol::TargetHandler::AccessMode::kAutoAttachOnly, GetId(),
       auto_attacher_.get(), session);
-  DCHECK(target_handler);
+  CHECK(target_handler, base::NotFatalUntil::M159);
   target_handler->DisableAutoAttachOfServiceWorkers();
 
   if (state_ == WORKER_READY && sessions().empty()) {
@@ -280,7 +290,7 @@ bool ServiceWorkerDevToolsAgentHost::AttachSession(DevToolsSession* session) {
 }
 
 void ServiceWorkerDevToolsAgentHost::ForceUpdateOnReloadIfModified() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   context_wrapper_->SetForceUpdateOnPageLoad(true);
 }
 
@@ -318,7 +328,7 @@ protocol::TargetAutoAttacher* ServiceWorkerDevToolsAgentHost::auto_attacher() {
 void ServiceWorkerDevToolsAgentHost::WorkerReadyForInspection(
     mojo::PendingRemote<blink::mojom::DevToolsAgent> agent_remote,
     mojo::PendingReceiver<blink::mojom::DevToolsAgentHost> host_receiver) {
-  DCHECK_EQ(WORKER_NOT_READY, state_);
+  CHECK_EQ(WORKER_NOT_READY, state_, base::NotFatalUntil::M159);
   state_ = WORKER_READY;
   pending_agent_remote_ = std::move(agent_remote);
   pending_agent_host_receiver_ = std::move(host_receiver);
@@ -339,7 +349,7 @@ void ServiceWorkerDevToolsAgentHost::UpdateClientSecurityState(
         coep_reporter,
     mojo::PendingRemote<network::mojom::DocumentIsolationPolicyReporter>
         dip_reporter) {
-  DCHECK(client_security_state);
+  CHECK(client_security_state, base::NotFatalUntil::M159);
   client_security_state_ = std::move(client_security_state);
   coep_reporter_.Bind(std::move(coep_reporter));
   dip_reporter_.Bind(std::move(dip_reporter));
@@ -348,7 +358,8 @@ void ServiceWorkerDevToolsAgentHost::UpdateClientSecurityState(
 void ServiceWorkerDevToolsAgentHost::WorkerStarted(
     ChildProcessId worker_process_id,
     int worker_route_id) {
-  DCHECK(state_ == WORKER_NOT_READY || state_ == WORKER_TERMINATED);
+  CHECK(state_ == WORKER_NOT_READY || state_ == WORKER_TERMINATED,
+        base::NotFatalUntil::M159);
   state_ = WORKER_NOT_READY;
   worker_process_id_ = worker_process_id;
   worker_route_id_ = worker_route_id;
@@ -356,7 +367,7 @@ void ServiceWorkerDevToolsAgentHost::WorkerStarted(
 }
 
 void ServiceWorkerDevToolsAgentHost::WorkerStopped() {
-  DCHECK_NE(WORKER_TERMINATED, state_);
+  CHECK_NE(WORKER_TERMINATED, state_, base::NotFatalUntil::M159);
   state_ = WORKER_TERMINATED;
   worker_process_id_ = ChildProcessId();
   worker_route_id_ = IPC::mojom::kRoutingIdNone;
@@ -373,7 +384,7 @@ void ServiceWorkerDevToolsAgentHost::WorkerStopped() {
 }
 
 void ServiceWorkerDevToolsAgentHost::UpdateIsAttached(bool attached) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   if (ServiceWorkerVersion* version =
           context_wrapper_->GetLiveVersion(version_id_)) {
@@ -413,7 +424,7 @@ void ServiceWorkerDevToolsAgentHost::UpdateLoaderFactories(
   const url::Origin origin = url::Origin::Create(url_);
 
   // There should never be a COEP reporter without a client security state.
-  DCHECK(!coep_reporter_ || client_security_state_);
+  CHECK(!coep_reporter_ || client_security_state_, base::NotFatalUntil::M159);
 
   mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>
       coep_reporter_for_script_loader;
@@ -427,7 +438,7 @@ void ServiceWorkerDevToolsAgentHost::UpdateLoaderFactories(
   }
 
   // There should never be a DIP reporter without a client security state.
-  DCHECK(!dip_reporter_ || client_security_state_);
+  CHECK(!dip_reporter_ || client_security_state_, base::NotFatalUntil::M159);
   mojo::PendingRemote<network::mojom::DocumentIsolationPolicyReporter>
       dip_reporter;
   if (dip_reporter_) {
@@ -461,8 +472,13 @@ void ServiceWorkerDevToolsAgentHost::UpdateLoaderFactories(
 DevToolsAgentHostImpl::NetworkLoaderFactoryParamsAndInfo
 ServiceWorkerDevToolsAgentHost::CreateNetworkFactoryParamsForDevTools() {
   RenderProcessHost* rph = RenderProcessHost::FromID(worker_process_id_);
-  const url::Origin origin = url::Origin::Create(url_);
   const auto* version = context_wrapper_->GetLiveVersion(version_id_);
+  if (!rph || !version) {
+    // The worker is not running, or its version is gone (e.g. because the
+    // storage was wiped, see StorageWiped()).
+    return {};
+  }
+  const url::Origin origin = url::Origin::Create(url_);
   // TODO(crbug.com/40190528): make sure client_security_state is no longer
   // nullptr anywhere.
   auto factory = URLLoaderFactoryParamsHelper::CreateForWorker(

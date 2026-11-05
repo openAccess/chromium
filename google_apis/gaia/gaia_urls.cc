@@ -41,6 +41,8 @@ constexpr char kDefaultClassroomApiBaseUrl[] =
 constexpr char kDefaultTasksApiBaseUrl[] = "https://tasks.googleapis.com";
 constexpr std::string_view kDefaultPeopleApiBaseUrl =
     "https://people.googleapis.com";
+constexpr std::string_view kDefaultKidsManagementApiBaseUrl =
+    "https://kidsmanagement-pa.googleapis.com";
 
 // API calls from accounts.google.com
 const char kEmbeddedSetupChromeOsUrlSuffix[] = "embedded/setup/v2/chromeos";
@@ -275,10 +277,6 @@ GURL GaiaUrls::SigninChromeSyncKeysRetrievalUrl(size_t account_index) const {
 }
 
 GURL GaiaUrls::SigninChromePasskeyUnlockUrl(size_t account_index) const {
-  if (!base::FeatureList::IsEnabled(
-          gaia::features::kSigninChromePasskeyUnlockUrlUsesAccountIndex)) {
-    return signin_chrome_passkey_unlock_url_;
-  }
   return net::AppendQueryParameter(signin_chrome_passkey_unlock_url_,
                                    "authuser",
                                    base::NumberToString(account_index));
@@ -302,10 +300,6 @@ GURL GaiaUrls::SigninChromeSyncKeysRecoverabilityDegradedUrl(
 
 GURL GaiaUrls::SigninChromePasskeyUnlockDesktopEmbeddedUrl(
     size_t account_index) const {
-  if (!base::FeatureList::IsEnabled(
-          gaia::features::kSigninChromePasskeyUnlockUrlUsesAccountIndex)) {
-    return signin_chrome_passkey_unlock_desktop_embedded_url_;
-  }
   return net::AppendQueryParameter(
       signin_chrome_passkey_unlock_desktop_embedded_url_, "authuser",
       base::NumberToString(account_index));
@@ -395,6 +389,10 @@ const GURL& GaiaUrls::people_api_origin_url() const {
   return people_api_origin_url_;
 }
 
+const GURL& GaiaUrls::kids_management_api_origin_url() const {
+  return kids_management_api_origin_url_;
+}
+
 const GURL& GaiaUrls::blank_page_url() const {
   return blank_page_url_;
 }
@@ -473,6 +471,9 @@ void GaiaUrls::InitializeDefault() {
   }
   if (!people_api_origin_url_.is_valid()) {
     people_api_origin_url_ = GURL(kDefaultPeopleApiBaseUrl);
+  }
+  if (!kids_management_api_origin_url_.is_valid()) {
+    kids_management_api_origin_url_ = GURL(kDefaultKidsManagementApiBaseUrl);
   }
 
   CHECK(!gaia_origin_.opaque());
@@ -580,6 +581,7 @@ void GaiaUrls::InitializeFromConfig() {
   config->GetURLIfExists(URL_KEY_AND_PTR(classroom_api_origin_url));
   config->GetURLIfExists(URL_KEY_AND_PTR(tasks_api_origin_url));
   config->GetURLIfExists(URL_KEY_AND_PTR(people_api_origin_url));
+  config->GetURLIfExists(URL_KEY_AND_PTR(kids_management_api_origin_url));
   config->GetURLIfExists(URL_KEY_AND_PTR(embedded_setup_chromeos_url));
   config->GetURLIfExists(
       URL_KEY_AND_PTR(embedded_setup_chromeos_kid_signup_url));

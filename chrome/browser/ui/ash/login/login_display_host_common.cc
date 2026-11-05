@@ -24,7 +24,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
-#include "base/types/pass_key.h"
 #include "base/values.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
@@ -55,10 +54,7 @@
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/profiles/signin_profile_handler.h"
 #include "chrome/browser/ash/system/device_disabling_manager.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/signin/chrome_device_id_helper.h"
 #include "chrome/browser/ui/ash/login/login_feedback.h"
 #include "chrome/browser/ui/ash/login/signin_ui.h"
 #include "chrome/browser/ui/ash/system/system_tray_client_impl.h"
@@ -84,9 +80,12 @@
 #include "chromeos/ash/components/login/auth/auth_performer.h"
 #include "chromeos/ash/components/osauth/public/auth_session_storage.h"
 #include "components/application_locale_storage/application_locale_storage.h"
+#include "components/component_updater/ash/component_manager_ash.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
+#include "components/signin/public/base/device_id_helper.h"
 #include "components/strings/grit/components_strings.h"
 #include "extensions/common/features/feature_session_type.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/ime/ash/input_method_manager.h"
 #include "ui/base/ime/ash/input_method_util.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -112,7 +111,7 @@ void PushFrontImIfNotExists(const std::string& input_method_id,
 }
 
 void SetGaiaInputMethods(PrefService& local_state,
-                         const std::string& application_locale,
+                         const base::i18n::LanguageTag& application_locale,
                          const AccountId& account_id) {
   input_method::InputMethodManager* imm =
       input_method::InputMethodManager::Get();
@@ -220,7 +219,7 @@ CreateSecondDeviceAuthBroker() {
 
   // TODO(b:286850431) - Fix device id generation.
   const std::string device_id =
-      GenerateSigninScopedDeviceId(/*for_ephemeral=*/false);
+      signin::GenerateSigninScopedDeviceId(/*for_ephemeral=*/false);
   auto* signin_profile = ProfileHelper::GetSigninProfile();
   return std::make_unique<quick_start::SecondDeviceAuthBroker>(
       device_id, signin_profile->GetURLLoaderFactory(),
@@ -231,14 +230,28 @@ CreateSecondDeviceAuthBroker() {
 
 LoginDisplayHostCommon::LoginDisplayHostCommon(
     PrefService* local_state,
+    ::metrics::MetricsService* metrics_service,
     ApplicationLocaleStorage* application_locale_storage,
     scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    scoped_refptr<component_updater::ComponentManagerAsh> component_manager_ash,
+    policy::DeviceRestrictionScheduleController*
+        device_restriction_schedule_controller,
+    const user_manager::MultiUserSignInPolicyController*
+        multi_user_sign_in_policy_controller,
+    system::SystemClock* system_clock,
     bool update_geolocation_usage_allowed)
     : local_state_(CHECK_DEREF(local_state)),
+      metrics_service_(CHECK_DEREF(metrics_service)),
       application_locale_storage_(CHECK_DEREF(application_locale_storage)),
       shared_url_loader_factory_(std::move(shared_url_loader_factory)),
       browser_policy_connector_ash_(CHECK_DEREF(browser_policy_connector_ash)),
+      component_manager_ash_(std::move(component_manager_ash)),
+      device_restriction_schedule_controller_(
+          CHECK_DEREF(device_restriction_schedule_controller)),
+      multi_user_sign_in_policy_controller_(
+          CHECK_DEREF(multi_user_sign_in_policy_controller)),
+      system_clock_(CHECK_DEREF(system_clock)),
       keep_alive_(KeepAliveOrigin::LOGIN_DISPLAY_HOST_WEBUI,
                   KeepAliveRestartOption::DISABLED),
       kiosk_app_menu_controller_(local_state),
@@ -246,20 +259,10 @@ LoginDisplayHostCommon::LoginDisplayHostCommon(
           local_state,
           update_geolocation_usage_allowed)),
       wizard_context_(std::make_unique<WizardContext>()),
-      // TODO(crbug.com/446058312): OobeMetricsHelper ctor should take a
-      // `PrefService` pointer as parameter (g_browser_process->local_state()).
-      // However, given the lifecycle of LoginDisplayHostCommon (that schedules
-      // its deletion or self-deletes it), it is not trivial to ensure that
-      // this PrefService reference won't become dangling.
-      // Pass a getter callback for safity until the ownership described is
-      // reworked.
-      oobe_metrics_helper_(std::make_unique<OobeMetricsHelper>(
-          base::PassKey<LoginDisplayHostCommon>(),
-          base::BindRepeating(
-              []() { return g_browser_process->local_state(); }),
-          base::BindRepeating(
-              []() { return g_browser_process->metrics_service(); }))) {
+      oobe_metrics_helper_(
+          std::make_unique<OobeMetricsHelper>(local_state, metrics_service)) {
   CHECK(shared_url_loader_factory_);
+  CHECK(component_manager_ash_);
 
   if (features::IsOobeCrosEventsEnabled()) {
     oobe_cros_events_metrics_ = std::make_unique<OobeCrosEventsMetrics>(
@@ -629,7 +632,7 @@ void LoginDisplayHostCommon::StartEncryptionMigration(
   EncryptionMigrationScreen* migration_screen =
       GetWizardController()->GetScreen<EncryptionMigrationScreen>();
 
-  DCHECK(migration_screen);
+  CHECK(migration_screen, base::NotFatalUntil::M162);
   migration_screen->SetUserContext(std::move(user_context));
   migration_screen->SetMode(migration_mode);
   migration_screen->SetSkipMigrationCallback(std::move(on_skip_migration));
@@ -763,7 +766,7 @@ void LoginDisplayHostCommon::ShowGaiaDialogCommon(
   if (GetExistingUserController()->IsSigninInProgress()) {
     return;
   }
-  SetGaiaInputMethods(local_state_.get(), application_locale_storage_->Get(),
+  SetGaiaInputMethods(local_state_.get(), application_locale_storage_->GetTag(),
                       prefilled_account);
 
   if (!prefilled_account.is_valid()) {
@@ -776,7 +779,7 @@ void LoginDisplayHostCommon::ShowGaiaDialogCommon(
 
 void LoginDisplayHostCommon::AddWizardCreatedObserverForTests(
     base::RepeatingClosure on_created) {
-  DCHECK(!on_wizard_controller_created_for_tests_);
+  CHECK(!on_wizard_controller_created_for_tests_, base::NotFatalUntil::M162);
   on_wizard_controller_created_for_tests_ = std::move(on_created);
 }
 

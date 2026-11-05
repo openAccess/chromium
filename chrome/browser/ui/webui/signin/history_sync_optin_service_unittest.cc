@@ -166,8 +166,6 @@ class HistorySyncOptinServiceTestBase : public testing::Test {
  public:
   HistorySyncOptinServiceTestBase()
       : profile_manager_(TestingBrowserProcess::GetGlobal()) {
-    feature_list_.InitAndEnableFeature(
-        syncer::kReplaceSyncPromosWithSignInPromos);
     CHECK(profile_manager_.SetUp());
     profile_ = CreateNewProfile(profile_manager_, "TestingProfile");
     identity_test_env_adaptor_ =
@@ -422,7 +420,8 @@ TEST_P(HistorySyncOptinServiceTest,
         AccountInfo updated_info =
             new_profile_adaptor.identity_test_env()
                 ->identity_manager()
-                ->FindExtendedAccountInfo(original_managed_account_info);
+                ->FindExtendedAccountInfo(
+                    original_managed_account_info.GetCoreAccountInfo());
         updated_info = AccountInfo::Builder(updated_info)
                            .SetFullName("updated name")
                            .Build();
@@ -447,7 +446,7 @@ TEST_P(HistorySyncOptinServiceTest,
   // invoke the history sync screen.
   EXPECT_CALL(*new_profile_delegate_ptr,
               ShowHistorySyncOptinScreen(new_managed_profile, testing::_))
-      .WillOnce(testing::InvokeWithoutArgs([&future] { future.SetValue(); }));
+      .WillOnce([&future] { future.SetValue(); });
 
   // Start the history sync opt-in flow with the managed account.
   bool flow_started = service_->StartHistorySyncOptinFlow(
@@ -565,7 +564,7 @@ TEST_P(HistorySyncOptinServiceTest,
   auto delegate = std::make_unique<MockHistorySyncOptinHelperDelegate>();
   auto* delegate_ptr = delegate.get();
   EXPECT_CALL(*delegate_ptr, ShowHistorySyncOptinScreen(testing::_, testing::_))
-      .WillOnce(testing::InvokeWithoutArgs([&future] { future.SetValue(); }));
+      .WillOnce([&future] { future.SetValue(); });
 
   // Start the history sync opt-in flow with the managed account.
   bool flow_started = service_->StartHistorySyncOptinFlow(
@@ -743,7 +742,7 @@ TEST_P(ManagedDataTypeErrorScreenServiceTest,
       static_cast<MockHistorySyncOptinService*>(service_);
   EXPECT_CALL(*history_sync_optin_service,
               ShowErrorDialogWithMessage(testing::_))
-      .WillOnce(testing::InvokeWithoutArgs([&future] { future.SetValue(); }));
+      .WillOnce([&future] { future.SetValue(); });
 
   MockProfileManagementDisclaimerService* disclaimer_service =
       static_cast<MockProfileManagementDisclaimerService*>(
@@ -813,7 +812,7 @@ TEST_P(ManagedDataTypeErrorScreenServiceTest,
           HistorySyncOptinServiceFactory::GetForProfile(new_managed_profile));
   EXPECT_CALL(*new_history_sync_optin_service,
               ShowErrorDialogWithMessage(testing::_))
-      .WillOnce(testing::InvokeWithoutArgs([&future] { future.SetValue(); }));
+      .WillOnce([&future] { future.SetValue(); });
 
   // Sigin the user to the browser. This triggers the flow to enable tab syncing
   // and shows an error screen (due to syncing disabled by policies).
@@ -830,6 +829,8 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Values(
             ManagedDataTypeTestParam(syncer::UserSelectableType::kTabs,
                                      signin_metrics::AccessPoint::kRecentTabs),
+            ManagedDataTypeTestParam(syncer::UserSelectableType::kHistory,
+                                     signin_metrics::AccessPoint::kHistoryPage),
             ManagedDataTypeTestParam(
                 syncer::UserSelectableType::kSavedTabGroups,
                 signin_metrics::AccessPoint::kCollaborationJoinTabGroup),

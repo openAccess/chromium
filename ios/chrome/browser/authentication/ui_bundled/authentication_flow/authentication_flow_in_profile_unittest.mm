@@ -8,28 +8,22 @@
 
 #import "base/functional/callback_helpers.h"
 #import "base/run_loop.h"
-#import "base/test/scoped_feature_list.h"
 #import "base/test/test_future.h"
-#import "ios/chrome/app/change_profile_continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_in_profile_performer.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_in_profile_performer_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
-#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
-#import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/gtest_support.h"
 #import "third_party/ocmock/ocmock_extensions.h"
@@ -46,8 +40,7 @@ class AuthenticationFlowInProfileTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               SyncServiceFactory::GetDefaultFactory());
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
@@ -185,29 +178,18 @@ TEST_F(AuthenticationFlowInProfileTest, TestSignOutAndSignIn) {
                                     access_point);
   // Start `authentication_flow_in_profile_` for `identity1_`.
   base::test::TestFuture<signin_ui::CancelationReason> future;
-  [authentication_flow_in_profile_
-      startSignInWithCompletion:base::CallbackToBlock(future.GetCallback())];
   // Expect sign-out request.
-  __block std::unique_ptr<base::RunLoop> run_loop =
-      std::make_unique<base::RunLoop>();
   OCMExpect([performer_mock_ signOutForAccountSwitchWithProfile:profile_.get()])
       .andDo(^(NSInvocation* invocation) {
-        run_loop->Quit();
+        authentication_service->SignOut(
+            signin_metrics::ProfileSignout::kSignoutForAccountSwitching);
       });
-  run_loop->Run();
-  run_loop = std::make_unique<base::RunLoop>();
-  // Perform sign-out request, simulating what the real performer would do..
-  authentication_service->SignOut(
-      signin_metrics::ProfileSignout::kSignoutForAccountSwitching,
-      base::CallbackToBlock(run_loop->QuitClosure()));
-  run_loop->Run();
-  // Continue AuthenticationFlowInProfile flow.
   // Expect to call the performer to sign-in.
   OCMExpect([performer_mock_ signInIdentity:identity1_
                               atAccessPoint:access_point
                              currentProfile:profile_.get()]);
-  [GetAuthenticationFlowInProfilePerformerDelegate()
-      didSignOutForAccountSwitch];
+  [authentication_flow_in_profile_
+      startSignInWithCompletion:base::CallbackToBlock(future.GetCallback())];
   EXPECT_TRUE(future.Wait());
 }
 

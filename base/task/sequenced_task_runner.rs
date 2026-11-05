@@ -40,8 +40,6 @@ pub mod ffi {
 
         fn RunsTasksInCurrentSequence(runner: &SequencedTaskRunner) -> bool;
 
-        // TODO(crbug.com/472552387): Tweak `cxx` to make this `allow` obsolete.
-        #[allow(clippy::missing_safety_doc)]
         /// # Safety
         ///
         /// The caller must assert that it owns 1 ref-count of this
@@ -52,8 +50,8 @@ pub mod ffi {
         unsafe fn Release(runner: &SequencedTaskRunner);
 
         // We need a shim here because the normal `GetCurrentDefault` function
-        // returns a scoped_refptr, and we can't pass arbitrary generic/templated
-        // types across the bridge.
+        // returns a scoped_refptr, and we can't pass arbitrary
+        // generic/templated types across the bridge.
         fn GetCurrentDefaultSequencedTaskRunnerForRust() -> *mut SequencedTaskRunner;
     }
 }
@@ -92,11 +90,18 @@ unsafe impl Sync for ffi::SequencedTaskRunner {}
 pub struct SequencedTaskRunnerHandle(ScopedRefPtr<ffi::SequencedTaskRunner>);
 
 impl SequencedTaskRunnerHandle {
+    /// Creates a handle from an existing SequencedTaskRunner reference by
+    /// incrementing its ref count.
+    pub fn clone_from_ref(runner: &ffi::SequencedTaskRunner) -> Self {
+        SequencedTaskRunnerHandle(ScopedRefPtr::clone_from_ref(runner))
+    }
+
     /// Get the current default task runner. This function corresponds to
     /// `base::SequencedTaskRunner::GetCurrentDefault` in C++.
     pub fn get_current_default() -> Option<Self> {
         let default_ptr = ffi::GetCurrentDefaultSequencedTaskRunnerForRust();
-        // SAFETY: The ffi function above returns a pointer that owns one ref-count
+        // SAFETY: The ffi function above returns a pointer that owns one
+        // ref-count
         unsafe { ScopedRefPtr::wrap_ref_counted(default_ptr) }.map(SequencedTaskRunnerHandle)
     }
 

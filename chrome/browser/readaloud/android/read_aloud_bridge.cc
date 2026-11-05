@@ -4,14 +4,18 @@
 
 #include "chrome/browser/readaloud/android/read_aloud_bridge.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "base/android/jni_string.h"
+#include "base/notreached.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/readaloud/read_aloud_service_factory.h"
+#include "chrome/browser/readaloud/read_aloud_voice_catalog.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "url/android/gurl_android.h"
 
 // JNI header generated automatically by JNI Zero.
@@ -23,12 +27,119 @@ using jni_zero::ScopedJavaLocalRef;
 
 namespace readaloud {
 
+namespace {
+
+// Maps the Mojo playback state onto the integer values of the Java
+// PlaybackListener.State @IntDef. The Java values are authoritative here, and
+// deliberately do not match the Mojo enum's own numbering.
+//
+// TODO(b/522838540): Remove this mapping once PlaybackListener.State is
+// renumbered to match read_aloud.mojom.PlaybackState. This switch exists only
+// to bridge the legacy Android numbering.
+int32_t ToJavaPlaybackState(read_aloud::mojom::PlaybackState state) {
+  // No `default:` case, so a new mojom state fails to compile here.
+  switch (state) {
+    case read_aloud::mojom::PlaybackState::kError:
+      return 1;  // PlaybackListener.State.ERROR
+    case read_aloud::mojom::PlaybackState::kBuffering:
+      return 3;  // PlaybackListener.State.BUFFERING
+    case read_aloud::mojom::PlaybackState::kPaused:
+    case read_aloud::mojom::PlaybackState::kEndOfStream:
+      return 4;  // PlaybackListener.State.PAUSED
+    case read_aloud::mojom::PlaybackState::kPlaying:
+      return 5;  // PlaybackListener.State.PLAYING
+    case read_aloud::mojom::PlaybackState::kStopped:
+      return 6;  // PlaybackListener.State.STOPPED
+    case read_aloud::mojom::PlaybackState::kPlaybackCreation:
+      return 7;  // PlaybackListener.State.PLAYBACK_CREATION
+  }
+  NOTREACHED();
+}
+
+// Maps Pitch onto the integer values of Java PlaybackVoice.Pitch @IntDef.
+int32_t ToJavaVoicePitch(Pitch pitch) {
+  switch (pitch) {
+    case Pitch::kNone:
+      return 0;
+    case Pitch::kLow:
+      return 1;
+    case Pitch::kMid:
+      return 2;
+  }
+  NOTREACHED();
+}
+
+// Maps Tone onto the integer values of Java PlaybackVoice.Tone @IntDef.
+int32_t ToJavaVoiceTone(Tone tone) {
+  switch (tone) {
+    case Tone::kNone:
+      return 0;
+    case Tone::kBold:
+      return 1;
+    case Tone::kCalm:
+      return 2;
+    case Tone::kSteady:
+      return 3;
+    case Tone::kSmooth:
+      return 4;
+    case Tone::kRelaxed:
+      return 5;
+    case Tone::kWarm:
+      return 6;
+    case Tone::kSerene:
+      return 7;
+    case Tone::kGentle:
+      return 8;
+    case Tone::kBright:
+      return 9;
+    case Tone::kBreezy:
+      return 10;
+    case Tone::kSoothing:
+      return 11;
+    case Tone::kPeaceful:
+      return 12;
+  }
+  NOTREACHED();
+}
+
+// Maps the integer values of Java PlaybackArgs.PlaybackMode onto
+// ReadAloudService::PlaybackMode.
+ReadAloudService::PlaybackMode FromJavaPlaybackMode(int mode) {
+  switch (mode) {
+    case 0:
+      return ReadAloudService::PlaybackMode::kUnspecified;
+    case 1:
+      return ReadAloudService::PlaybackMode::kClassic;
+    case 2:
+      return ReadAloudService::PlaybackMode::kOverview;
+  }
+  NOTREACHED();
+}
+
+// Maps the integer values of Java Feedback.FeedbackType onto
+// ReadAloudService::FeedbackType.
+ReadAloudService::FeedbackType FromJavaFeedbackType(int feedback_type) {
+  switch (feedback_type) {
+    case 0:
+      return ReadAloudService::FeedbackType::kNone;
+    case 1:
+      return ReadAloudService::FeedbackType::kPositive;
+    case 2:
+      return ReadAloudService::FeedbackType::kNegative;
+  }
+  NOTREACHED();
+}
+
+}  // namespace
+
 ReadAloudBridge::ReadAloudBridge(JNIEnv* env,
                                  const JavaRef<jobject>& j_native_bridge,
                                  ReadAloudService* service)
     : weak_java_native_bridge_(env, j_native_bridge), service_(service) {}
 
-ReadAloudBridge::~ReadAloudBridge() = default;
+ReadAloudBridge::~ReadAloudBridge() {
+  OnNativeDestroyed();
+}
 
 // ============================================================================
 // ReadAloudService::Delegate (Outbound Callbacks: C++ -> Java)
@@ -57,35 +168,46 @@ void ReadAloudBridge::OnPlaybackProgressUpdated(base::TimeDelta elapsed,
 }
 
 void ReadAloudBridge::OnPlaybackStateChanged(
-    ReadAloudService::PlaybackState playback_state) {
+    read_aloud::mojom::PlaybackState playback_state) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> j_bridge = weak_java_native_bridge_.get(env);
   if (!j_bridge) {
     return;
   }
   Java_ReadAloudNativeBridge_onPlaybackStateChanged(
-      env, j_bridge, static_cast<jint>(playback_state));
+      env, j_bridge, ToJavaPlaybackState(playback_state));
 }
 
-void ReadAloudBridge::OnVoicesAvailable(
-    const std::vector<ReadAloudService::Voice>& voices,
-    std::string_view selected_voice_id) {
-  std::vector<std::string> ids;
-  std::vector<std::string> display_names;
-  ids.reserve(voices.size());
-  display_names.reserve(voices.size());
-  for (const auto& voice : voices) {
-    ids.push_back(voice.id);
-    display_names.push_back(voice.display_name);
-  }
-
+void ReadAloudBridge::OnVoicesAvailable(base::span<const VoiceInfo> voices) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> j_bridge = weak_java_native_bridge_.get(env);
   if (!j_bridge) {
     return;
   }
+
+  std::vector<std::string> ids;
+  std::vector<std::string> display_names;
+  std::vector<std::string> langs;
+  std::vector<std::string> regions;
+  std::vector<int32_t> pitches;
+  std::vector<int32_t> tones;
+  ids.reserve(voices.size());
+  display_names.reserve(voices.size());
+  langs.reserve(voices.size());
+  regions.reserve(voices.size());
+  pitches.reserve(voices.size());
+  tones.reserve(voices.size());
+  for (const auto& voice : voices) {
+    ids.emplace_back(voice.id);
+    display_names.emplace_back(voice.display_name);
+    langs.emplace_back(voice.lang);
+    regions.emplace_back(voice.region);
+    pitches.push_back(ToJavaVoicePitch(voice.pitch));
+    tones.push_back(ToJavaVoiceTone(voice.tone));
+  }
+
   Java_ReadAloudNativeBridge_onVoicesAvailable(
-      env, j_bridge, ids, display_names, std::string(selected_voice_id));
+      env, j_bridge, ids, display_names, langs, regions, pitches, tones);
 }
 
 void ReadAloudBridge::OnWordHighlightUpdated(int absolute_start_index,
@@ -97,6 +219,15 @@ void ReadAloudBridge::OnWordHighlightUpdated(int absolute_start_index,
   }
   Java_ReadAloudNativeBridge_onWordHighlightUpdated(
       env, j_bridge, absolute_start_index, absolute_end_index);
+}
+
+void ReadAloudBridge::OnTextChunked(const std::vector<std::u16string>& chunks) {
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> j_bridge = weak_java_native_bridge_.get(env);
+  if (!j_bridge) {
+    return;
+  }
+  Java_ReadAloudNativeBridge_onTextChunked(env, j_bridge, chunks);
 }
 
 void ReadAloudBridge::OnHighlightingSupported(bool supported) {
@@ -129,14 +260,15 @@ void ReadAloudBridge::OnPlaybackError(std::string_view error_message) {
 
 void ReadAloudBridge::OnVoicePreviewPlaybackStateChanged(
     std::string_view voice_id,
-    ReadAloudService::PlaybackState playback_state) {
+    read_aloud::mojom::PlaybackState playback_state) {
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> j_bridge = weak_java_native_bridge_.get(env);
   if (!j_bridge) {
     return;
   }
   Java_ReadAloudNativeBridge_onVoicePreviewPlaybackStateChanged(
-      env, j_bridge, std::string(voice_id), static_cast<jint>(playback_state));
+      env, j_bridge, std::string(voice_id),
+      ToJavaPlaybackState(playback_state));
 }
 
 void ReadAloudBridge::OnReadabilityResult(const GURL& url, bool is_readable) {
@@ -163,22 +295,22 @@ void ReadAloudBridge::OnNativeDestroyed() {
 // JNI Inbound Methods (Java -> C++ Commands)
 // ============================================================================
 
-static jlong JNI_ReadAloudNativeBridge_Init(
+static jni_zero::JniRawPtr<ReadAloudBridge> JNI_ReadAloudNativeBridge_Init(
     JNIEnv* env,
     Profile* profile,
     const JavaRef<jobject>& j_native_bridge) {
   if (!profile) {
-    return 0;
+    return nullptr;
   }
   ReadAloudService* service = ReadAloudServiceFactory::GetForProfile(profile);
   if (!service) {
-    return 0;
+    return nullptr;
   }
   auto bridge =
       std::make_unique<ReadAloudBridge>(env, j_native_bridge, service);
   auto* bridge_ptr = bridge.get();
   service->SetDelegate(std::move(bridge));
-  return reinterpret_cast<jlong>(bridge_ptr);
+  return jni_zero::MakeRaw(bridge_ptr);
 }
 
 void ReadAloudBridge::InitializeSession(JNIEnv* env,
@@ -206,9 +338,11 @@ void ReadAloudBridge::Stop(JNIEnv* env) {
   }
 }
 
-void ReadAloudBridge::SeekToWordIndex(JNIEnv* env, jint word_index) {
+void ReadAloudBridge::SeekToWord(JNIEnv* env,
+                                 int32_t segment_index,
+                                 int32_t character_offset) {
   if (service_) {
-    service_->SeekToWordIndex(word_index);
+    service_->SeekToWord(segment_index, character_offset);
   }
 }
 
@@ -236,9 +370,24 @@ void ReadAloudBridge::SetVoice(JNIEnv* env, const std::string& voice_id) {
   }
 }
 
-void ReadAloudBridge::PreviewVoice(JNIEnv* env, const std::string& voice_id) {
+void ReadAloudBridge::SetLanguageCode(JNIEnv* env,
+                                      const std::string& language_code) {
   if (service_) {
-    service_->PreviewVoice(voice_id);
+    service_->SetLanguageCode(language_code);
+  }
+}
+
+void ReadAloudBridge::PreviewVoice(JNIEnv* env,
+                                   const std::string& voice_id,
+                                   const std::u16string& preview_text) {
+  if (service_) {
+    service_->PreviewVoice(voice_id, preview_text);
+  }
+}
+
+void ReadAloudBridge::PauseVoicePreview(JNIEnv* env) {
+  if (service_) {
+    service_->PauseVoicePreview();
   }
 }
 
@@ -248,10 +397,9 @@ void ReadAloudBridge::StopVoicePreview(JNIEnv* env) {
   }
 }
 
-void ReadAloudBridge::SetPlaybackMode(JNIEnv* env, jint mode) {
+void ReadAloudBridge::SetPlaybackMode(JNIEnv* env, int32_t mode) {
   if (service_) {
-    service_->SetPlaybackMode(
-        static_cast<ReadAloudService::PlaybackMode>(mode));
+    service_->SetPlaybackMode(FromJavaPlaybackMode(mode));
   }
 }
 
@@ -261,10 +409,9 @@ void ReadAloudBridge::SetHighlightingEnabled(JNIEnv* env, jboolean enabled) {
   }
 }
 
-void ReadAloudBridge::SendFeedback(JNIEnv* env, jint feedback_type) {
+void ReadAloudBridge::SendFeedback(JNIEnv* env, int32_t feedback_type) {
   if (service_) {
-    service_->SendFeedback(
-        static_cast<ReadAloudService::FeedbackType>(feedback_type));
+    service_->SendFeedback(FromJavaFeedbackType(feedback_type));
   }
 }
 
@@ -274,7 +421,17 @@ void ReadAloudBridge::CheckReadability(JNIEnv* env, const GURL& url) {
   }
 }
 
+void ReadAloudBridge::InitVoices(JNIEnv* env) {
+  if (service_) {
+    service_->InitVoices();
+  }
+}
+
 void ReadAloudBridge::Destroy(JNIEnv* env) {
+  if (ScopedJavaLocalRef<jobject> j_bridge =
+          weak_java_native_bridge_.get(env)) {
+    Java_ReadAloudNativeBridge_releaseNativePtr(env, j_bridge);
+  }
   weak_java_native_bridge_.reset();
   if (service_) {
     service_->SetDelegate(nullptr);

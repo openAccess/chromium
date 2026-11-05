@@ -101,8 +101,6 @@ constexpr int kUpNextBetweenChildSpacing = 8;
 // between the bottom and top of the 'nub'.
 constexpr int kUpNextOverlapInPx = 12;
 
-// Returns true if the Multi-Calendar Support feature is enabled.
-bool IsMultiCalendarEnabled();
 
 // Checks if the `selected_date` is local time today.
 bool IsToday(const base::Time selected_date);
@@ -205,10 +203,6 @@ ASH_EXPORT base::Time GetMaxTime(const base::Time d1, const base::Time d2);
 // Gets date with lesser value between `d1` and `d2`.
 ASH_EXPORT base::Time GetMinTime(const base::Time d1, const base::Time d2);
 
-// Colors.
-SkColor GetPrimaryTextColor();
-SkColor GetSecondaryTextColor();
-SkColor GetDisabledTextColor();
 
 // Get the first day of the month that includes |date|.
 ASH_EXPORT base::Time GetFirstDayOfMonth(const base::Time& date);

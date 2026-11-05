@@ -14,6 +14,7 @@
 class BrowserAnimationController;
 class ExclusiveAccessBubbleViews;
 class ImmersiveModeController;
+enum class OrganizerPanelLocation;
 
 namespace gfx {
 class Rect;
@@ -34,8 +35,10 @@ class BrowserViewLayoutDelegate {
     kFullscreenWithToolbar
   };
 
-  virtual bool ShouldDrawTabStrip() const = 0;
-  virtual bool ShouldDrawVerticalTabStrip() const = 0;
+  // The style of tab strip present, if any.
+  enum class TabStripType { kNone, kVertical, kHorizontal };
+
+  virtual TabStripType GetTabStripType() const = 0;
   virtual bool IsVerticalTabStripCollapsed() const = 0;
   virtual bool ShouldDrawWebAppFrameToolbar() const = 0;
   virtual bool GetUnframedModeEnabled() const = 0;
@@ -52,6 +55,7 @@ class BrowserViewLayoutDelegate {
   virtual const ImmersiveModeController* GetImmersiveModeController() const = 0;
   virtual BrowserAnimationController* GetAnimationController() const = 0;
   virtual ExclusiveAccessBubbleViews* GetExclusiveAccessBubble() const = 0;
+  virtual OrganizerPanelLocation GetOrganizerPanelLocation() const = 0;
   virtual bool IsTopControlsSlideBehaviorEnabled() const = 0;
   virtual float GetTopControlsSlideBehaviorShownRatio() const = 0;
   virtual gfx::NativeView GetHostViewForAnchoring() const = 0;
@@ -62,10 +66,10 @@ class BrowserViewLayoutDelegate {
       const gfx::Rect& available_titlebar_area) = 0;
   virtual bool ShouldLayoutTabStrip() const = 0;
   virtual int GetExtraInfobarOffset() const = 0;
-  virtual bool IsOrganizerPanelVisible() const = 0;
   virtual base::CallbackListSubscription AddOnGlassModeChangedCallback(
       base::RepeatingCallback<void(bool)> callback,
       bool* current_state_out) = 0;
+  virtual int GetRestoredWindowCornerRadius() const = 0;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_LAYOUT_BROWSER_VIEW_LAYOUT_DELEGATE_H_

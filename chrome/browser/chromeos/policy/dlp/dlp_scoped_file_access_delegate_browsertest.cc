@@ -15,6 +15,7 @@
 #include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_file_access_copy_or_move_delegate_factory.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_files_controller.h"
@@ -24,9 +25,10 @@
 #include "chrome/browser/chromeos/policy/dlp/test/mock_dlp_rules_manager.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/file_system_access/chrome_file_system_access_permission_context.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chromeos/dbus/dlp/dlp_client.h"
 #include "chromeos/dbus/dlp/dlp_service.pb.h"
@@ -42,6 +44,8 @@
 #include "net/dns/mock_host_resolver.h"
 #include "storage/browser/file_system/file_system_url.h"
 #include "ui/base/metadata/base_type_conversion.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/shell_dialogs/select_file_dialog_factory.h"
 #include "ui/shell_dialogs/select_file_policy.h"
 #include "ui/shell_dialogs/selected_file_info.h"
@@ -106,7 +110,7 @@ class TestFileSystemAccessPermissionContext
       const url::Origin& origin,
       const content::PathInfo& path_info,
       HandleType handle_type,
-      UserAction user_action,
+      AccessTrigger access_trigger,
       content::GlobalRenderFrameHostId frame_id,
       base::OnceCallback<void(SensitiveEntryResult)> callback) override {
     std::move(callback).Run(ChromeFileSystemAccessPermissionContext::
@@ -117,24 +121,24 @@ class TestFileSystemAccessPermissionContext
   GetReadPermissionGrant(const url::Origin& origin,
                          const content::PathInfo& path_info,
                          HandleType handle_type,
-                         UserAction user_action) override {
+                         AccessTrigger access_trigger) override {
     if (read_grant_) {
       return read_grant_;
     }
     return ChromeFileSystemAccessPermissionContext::GetReadPermissionGrant(
-        origin, path_info, handle_type, user_action);
+        origin, path_info, handle_type, access_trigger);
   }
 
   scoped_refptr<content::FileSystemAccessPermissionGrant>
   GetWritePermissionGrant(const url::Origin& origin,
                           const content::PathInfo& path_info,
                           HandleType handle_type,
-                          UserAction user_action) override {
+                          AccessTrigger access_trigger) override {
     if (write_grant_) {
       return write_grant_;
     }
     return ChromeFileSystemAccessPermissionContext::GetWritePermissionGrant(
-        origin, path_info, handle_type, user_action);
+        origin, path_info, handle_type, access_trigger);
   }
 
   scoped_refptr<content::FileSystemAccessPermissionGrant> read_grant_;
@@ -405,7 +409,7 @@ IN_PROC_BROWSER_TEST_F(DlpScopedFileAccessDelegateBrowserTest,
 
   NavigateParams params(browser(), GURL("about:blank"),
                         ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
-  params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   Navigate(&params);
 
   TestJSAction("document.getElementById('idb_cached').click()",
@@ -432,7 +436,7 @@ IN_PROC_BROWSER_TEST_F(DlpScopedFileAccessDelegateBrowserTest,
 
   NavigateParams params(browser(), GURL("about:blank"),
                         ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
-  params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   Navigate(&params);
 
   TestJSAction("document.getElementById('idb_cached').click()",

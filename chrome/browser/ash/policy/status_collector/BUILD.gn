@@ -28,8 +28,6 @@ static_library("status_collector") {
     "tpm_status_combiner.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash/constants",
     "//base",
@@ -54,6 +52,7 @@ static_library("status_collector") {
     "//chrome/common:chrome_features",
     "//chrome/common:constants",
     "//chromeos/ash/components/audio",
+    "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/channel",
     "//chromeos/ash/components/dbus/attestation",
     "//chromeos/ash/components/dbus/attestation:attestation_proto",
@@ -144,6 +143,7 @@ source_set("unit_tests") {
     "//chrome/browser/web_applications",
     "//chrome/browser/web_applications:web_applications_test_support",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/dbus/attestation",
     "//chromeos/ash/components/dbus/seneschal",
@@ -158,6 +158,7 @@ source_set("unit_tests") {
     "//chromeos/ash/services/cros_healthd/public/mojom",
     "//chromeos/dbus/power",
     "//chromeos/dbus/power:power_manager_proto",
+    "//components/account_id:test_support",
     "//components/policy/proto:",
     "//components/prefs",
     "//components/prefs:test_support",
@@ -174,8 +175,4 @@ source_set("unit_tests") {
     "//testing/gtest",
     "//ui/message_center",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

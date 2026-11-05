@@ -4,7 +4,6 @@
 
 #import "ios/chrome/browser/settings/autofill/payments/coordinator/autofill_add_credit_card_mediator.h"
 
-#import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/application_locale_storage/application_locale_storage.h"
@@ -49,8 +48,10 @@
                      expirationYear:(NSString*)expirationYear
                        cardNickname:(NSString*)cardNickname
                             cardCvc:(NSString*)cardCvc {
-  const std::string& appLocal =
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get();
+  std::string appLocal(GetApplicationContext()
+                           ->GetApplicationLocaleStorage()
+                           ->GetTag()
+                           .tag_string());
   autofill::CreditCard creditCard =
       [AutofillCreditCardUtil creditCardWithHolderName:cardHolderName
                                             cardNumber:cardNumber
@@ -113,10 +114,6 @@
   } else {
     base::RecordAction(
         base::UserMetricsAction("MobileAddCreditCard.CreditCardAdded"));
-    base::UmaHistogramCounts100(
-        "Autofill.PaymentMethods.SettingsPage."
-        "StoredCreditCardCountBeforeCardAdded",
-        _personalDataManager->payments_data_manager().GetCreditCards().size());
     if (!creditCard.cvc().empty()) {
       base::RecordAction(
           base::UserMetricsAction("AutofillCreditCardsAddedWithCvc"));
@@ -137,9 +134,10 @@
             isValidCreditCardNumber:(NSString*)cardNumber {
   return [AutofillCreditCardUtil
       isValidCreditCardNumber:cardNumber
-                     appLocal:GetApplicationContext()
-                                  ->GetApplicationLocaleStorage()
-                                  ->Get()];
+                     appLocal:std::string(GetApplicationContext()
+                                              ->GetApplicationLocaleStorage()
+                                              ->GetTag()
+                                              .tag_string())];
 }
 
 - (bool)addCreditCardViewController:
@@ -154,9 +152,11 @@
     isValidCreditCardExpirationYear:(NSString*)expirationYear {
   return [AutofillCreditCardUtil
       isValidCreditCardExpirationYear:expirationYear
-                             appLocal:GetApplicationContext()
-                                          ->GetApplicationLocaleStorage()
-                                          ->Get()];
+                             appLocal:std::string(
+                                          GetApplicationContext()
+                                              ->GetApplicationLocaleStorage()
+                                              ->GetTag()
+                                              .tag_string())];
 }
 
 - (bool)addCreditCardViewController:
@@ -178,8 +178,10 @@
                      expirationYear:(NSString*)expirationYear
                        cardNickname:(NSString*)cardNickname
                             cardCvc:(NSString*)cardCvc {
-  const std::string& appLocal =
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get();
+  std::string appLocal(GetApplicationContext()
+                           ->GetApplicationLocaleStorage()
+                           ->GetTag()
+                           .tag_string());
   return ([AutofillCreditCardUtil isValidCreditCardNumber:cardNumber
                                                  appLocal:appLocal] &&
           [AutofillCreditCardUtil

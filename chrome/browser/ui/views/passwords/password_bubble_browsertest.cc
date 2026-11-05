@@ -26,12 +26,14 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
+#include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
 #include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/browser/ui/views/passwords/password_auto_sign_in_view.h"
 #include "chrome/browser/ui/views/passwords/password_bubble_view_base.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "content/public/test/browser_test.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/test/ax_event_counter.h"
 
 using base::StartsWith;
@@ -253,7 +255,7 @@ class PasswordAutoSignInToastTest : public base::test::WithFeatureOverride,
             password_manager::features::kCredentialManagementUnifiedUi) {}
 
   ToastController* GetToastController() {
-    return browser()->GetFeatures().toast_controller();
+    return ToastController::From(browser());
   }
 
   page_actions::PageActionTestAccessor GetIconAccessor() {

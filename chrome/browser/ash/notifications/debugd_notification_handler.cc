@@ -65,7 +65,7 @@ std::unique_ptr<Notification> DebugdNotificationHandler::CreateNotification() {
       message_center::NOTIFICATION_TYPE_SIMPLE, kPacketCaptureNotificationId,
       l10n_util::GetStringUTF16(IDS_ASH_DEBUG_PACKET_CAPTURE_STARTED),
       /*message=*/std::u16string(),
-      /*display_source=*/std::u16string(), GURL(),
+      /*display_source=*/std::u16string(),
       message_center::NotifierId(message_center::NotifierType::SYSTEM_COMPONENT,
                                  kNotifierPacketCapture,
                                  NotificationCatalogName::kPacketCapture),
@@ -93,7 +93,7 @@ void DebugdNotificationHandler::OnButtonClick(std::optional<int> button_index) {
     return;
 
   // button_index should be 0 since there's only one button on the notification.
-  DCHECK(button_index == 0);
+  CHECK(button_index == 0, base::NotFatalUntil::M160);
 
   // Send empty argument to StopPacketCapture function to stop all on-going
   // packet capture operations.

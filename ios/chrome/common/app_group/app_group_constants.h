@@ -56,6 +56,10 @@ extern NSString* const kChromeUserIsEligibleForGeminiCapability;
 // links in chrome.
 extern NSString* const kChromeSupportOpenLinksParametersFromCapability;
 
+// Capability declaring whether the current version of Chrome supports remote
+// actor credential sharing.
+extern NSString* const kChromeSupportsRemoteActorCredentialSharingCapability;
+
 // Share default browser promo status capability.
 extern NSString* const kChromeSupportShareDefaultBrowserStatusCapability;
 
@@ -126,6 +130,10 @@ extern const char kChromeAppGroupSearchPasswordsCommand[];
 // The key in kChromeAppGroupCommandPreference containing a NSDate at which
 // `kChromeAppGroupCommandAppPreference` issued the command.
 extern const char kChromeAppGroupCommandTimePreference[];
+
+// The timeout after which an app group command is considered expired (in
+// seconds).
+extern const NSTimeInterval kAppGroupCommandTimeout;
 
 // The key in kChromeAppGroupCommandPreference containing the text use for the
 // command if it requires one. This could be a URL, a string, etc.

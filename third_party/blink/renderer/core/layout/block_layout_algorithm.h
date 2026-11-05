@@ -81,7 +81,7 @@ struct BlockLineClampData {
 
   bool IsPastClampPoint() const { return data.IsPastClampPoint(); }
 
-  bool ShouldHideForPaint() const { return data.ShouldHideForPaint(); }
+  bool IsHidden() const { return data.IsHidden(); }
 
   bool ShouldRelayoutWithNoForcedTruncate() const {
     if (!previous_inflow_position_when_clamped.has_value()) {
@@ -120,9 +120,6 @@ struct BlockLineClampData {
   }
 
   LineClampData data;
-
-  // Set to true when we relayout ignoring line clamp.
-  bool ignore_line_clamp = false;
 
   // TODO(abotella): Make the following fields into a union.
 
@@ -164,7 +161,7 @@ class CORE_EXPORT BlockLayoutAlgorithm
   void SetupRelayoutData(const BlockLayoutAlgorithm& previous, RelayoutType);
   void SetBoxType(PhysicalFragment::BoxType type);
 
-  MinMaxSizesResult ComputeMinMaxSizes(const MinMaxSizesFloatInput&);
+  MinMaxSizesResult ComputeMinMaxSizes(const MinMaxSizesInput&);
   const LayoutResult* Layout();
   LayoutUnit ComputeInitialBlockStartAnnotationSpace() const;
 
@@ -236,8 +233,7 @@ class CORE_EXPORT BlockLayoutAlgorithm
       bool is_new_fc,
       const std::optional<LayoutUnit> bfc_block_offset = std::nullopt,
       bool has_clearance_past_adjoining_floats = false,
-      LayoutUnit block_start_annotation_space = LayoutUnit(),
-      LayoutUnit previous_sibling_block_end_annotation_space = LayoutUnit());
+      LayoutUnit block_start_annotation_space = LayoutUnit());
 
   // @return Estimated BFC block offset for the "to be layout" child.
   InflowChildData ComputeChildData(const PreviousInflowPosition&,
@@ -302,14 +298,14 @@ class CORE_EXPORT BlockLayoutAlgorithm
   // Returns false if we need to abort layout, because a previously unknown BFC
   // block offset has now been resolved.
   LayoutResult::EStatus HandleNewFormattingContext(
-      LayoutInputNode child,
+      BlockNode child,
       const BlockBreakToken* child_break_token,
       PreviousInflowPosition*);
 
   // Performs the actual layout of a new formatting context. This may be called
   // multiple times from HandleNewFormattingContext.
   const LayoutResult* LayoutNewFormattingContext(
-      LayoutInputNode child,
+      BlockNode child,
       const BlockBreakToken* child_break_token,
       const InflowChildData&,
       BfcOffset origin_offset,
@@ -337,6 +333,11 @@ class CORE_EXPORT BlockLayoutAlgorithm
       PreviousInflowPosition*,
       InlineChildLayoutContext*,
       const InlineBreakToken** previous_inline_break_token);
+
+  const LayoutResult* LayoutInflow(const ConstraintSpace& child_space,
+                                   LayoutInputNode child,
+                                   const BreakToken* child_break_token,
+                                   InlineChildLayoutContext*);
 
   // Update text box trim state after child layout.
   void UpdateTextBoxTrim(LayoutInputNode child,

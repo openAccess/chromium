@@ -58,7 +58,6 @@
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/scrollbar/scroll_bar.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/table_layout.h"
@@ -268,18 +267,12 @@ void StopViewLayerAnimation(views::View* view) {
 class CalendarLabel : public views::Label {
  public:
   explicit CalendarLabel(const std::u16string& text) : views::Label(text) {
-    views::Label::SetEnabledColor(calendar_utils::GetPrimaryTextColor());
+    views::Label::SetEnabledColor(cros_tokens::kTextColorPrimary);
     views::Label::SetAutoColorReadabilityEnabled(false);
   }
   CalendarLabel(const CalendarLabel&) = delete;
   CalendarLabel& operator=(const CalendarLabel&) = delete;
   ~CalendarLabel() override = default;
-
-  void OnThemeChanged() override {
-    views::Label::OnThemeChanged();
-
-    views::Label::SetEnabledColor(calendar_utils::GetPrimaryTextColor());
-  }
 };
 
 // Resets the `view`'s opacity and position.
@@ -563,9 +556,7 @@ CalendarView::CalendarView(bool use_glanceables_container_style)
   content_view_->SetPaintToLayer();
   content_view_->layer()->SetFillsBoundsOpaquely(false);
 
-  if (calendar_utils::IsMultiCalendarEnabled()) {
-    calendar_list_model_->FetchCalendars();
-  }
+  calendar_list_model_->FetchCalendars();
 
   SetMonthViews();
 
@@ -577,6 +568,7 @@ CalendarView::CalendarView(bool use_glanceables_container_style)
   calendar_sliding_surface_->SetProperty(views::kViewIgnoredByLayoutKey, true);
   // This layer is required for animations.
   calendar_sliding_surface_->SetPaintToLayer();
+  calendar_sliding_surface_->layer()->SetName("CalendarView:SlidingSurface");
   calendar_sliding_surface_->layer()->SetFillsBoundsOpaquely(false);
 
   // Override the default focus order so the calendar contents (which contains
@@ -984,15 +976,9 @@ void CalendarView::MaybeCreateUpNextView() {
 }
 
 void CalendarView::MaybeUpdateLoadingBarVisibility() {
-  bool visible;
-  if (calendar_utils::IsMultiCalendarEnabled()) {
-    visible = !(!calendar_list_model_->get_fetch_in_progress() &&
-                EventsFetchComplete());
-  } else {
-    visible = !EventsFetchComplete();
-  }
   progress_bar_->UpdateProgressBarVisibility(
-      /*visible=*/visible);
+      /*visible=*/!(!calendar_list_model_->get_fetch_in_progress() &&
+                    EventsFetchComplete()));
 }
 
 void CalendarView::FadeInCurrentMonth() {

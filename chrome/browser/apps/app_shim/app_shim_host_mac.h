@@ -19,6 +19,7 @@
 #include "chrome/common/mac/app_shim.mojom.h"
 #include "components/metrics/histogram_child_process.h"
 #include "content/public/browser/scoped_accessibility_mode.h"
+#include "content/public/common/child_process_id.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -91,9 +92,13 @@ class AppShimHost : public chrome::mojom::AppShimHost,
     virtual void OnShimWillTerminate(AppShimHost* host) = 0;
 
     // Invoked by the shim host when a change to the system level notification
-    // permission status has been detected.
+    // permission status has been detected. `previous_status` is the status
+    // previously reported by this shim host, or nullopt if this is the first
+    // status reported since the shim connected.
     virtual void OnNotificationPermissionStatusChanged(
         AppShimHost* host,
+        std::optional<mac_notifications::mojom::PermissionStatus>
+            previous_status,
         mac_notifications::mojom::PermissionStatus status) = 0;
   };
 
@@ -133,6 +138,11 @@ class AppShimHost : public chrome::mojom::AppShimHost,
   virtual chrome::mojom::AppShim* GetAppShim() const;
 
   void SetOnShimConnectedForTesting(base::OnceClosure closure);
+
+  // Overrides the notification permission status for this host and ignores any
+  // subsequent status updates reported by the app shim process.
+  void SetNotificationPermissionStatusForTesting(
+      mac_notifications::mojom::PermissionStatus status);
 
   // Returns kNullProcessId if no process has connected to this host yet.
   base::ProcessId GetAppShimPid() const;
@@ -204,7 +214,7 @@ class AppShimHost : public chrome::mojom::AppShimHost,
   // Not a system-level PID, rather an ID assigned by content::ChildProcessHost
   // used to identify this process when registering with
   // metrics::SubprocessMetricsProvider.
-  const int child_process_host_id_;
+  const content::ChildProcessId child_process_id_;
 
   // This holds the histogram allocator to be used for this app shim before it
   // gets passed to the remote host when it finished launching.
@@ -243,6 +253,13 @@ class AppShimHost : public chrome::mojom::AppShimHost,
   // Used to distinguish between success on first try vs success after recreate
   // for metrics.
   bool shim_recreated_ = false;
+
+  // Last permission status for the shim sent to
+  // `OnNotificationPermissionStatusChanged()`. This is `std::nullopt` if the
+  // shim hasn't reported a status yet.
+  std::optional<mac_notifications::mojom::PermissionStatus>
+      last_notification_permission_status_;
+  bool notification_permission_status_overridden_for_testing_ = false;
 
   // This weak factory is used for launch callbacks only.
   base::WeakPtrFactory<AppShimHost> launch_weak_factory_;

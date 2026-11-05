@@ -9,10 +9,12 @@
 #include <utility>
 
 #include "base/memory/ref_counted.h"
+#include "base/memory/ref_counted_memory.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/omnibox/browser/autocomplete_input.h"
@@ -29,6 +31,7 @@
 #include "third_party/metrics_proto/omnibox_focus_type.pb.h"
 #include "third_party/omnibox_proto/groups.pb.h"
 #include "ui/gfx/image/image.h"
+#include "ui/gfx/image/image_png_rep.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "url/gurl.h"
@@ -176,7 +179,8 @@ TEST_F(ClipboardProviderTest, MatchesImage) {
                      base::Unretained(this)),
       image_bytes);
   ASSERT_TRUE(matches_image_match_);
-  EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_IMAGE, matches_image_match_->type);
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardImage,
+            matches_image_match_->type);
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -202,7 +206,7 @@ TEST_F(ClipboardProviderTest, CreateBlankURLMatchOnStart) {
       CreateAutocompleteInput(metrics::OmniboxFocusType::INTERACTION_FOCUS),
       false);
   ASSERT_GE(provider_->matches().size(), 1U);
-  EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_URL,
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardUrl,
             provider_->matches().back().type);
 
   // Check the match is empty.
@@ -217,7 +221,7 @@ TEST_F(ClipboardProviderTest, CreateBlankTextMatchOnStart) {
       CreateAutocompleteInput(metrics::OmniboxFocusType::INTERACTION_FOCUS),
       false);
   ASSERT_GE(provider_->matches().size(), 1U);
-  EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_TEXT,
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardText,
             provider_->matches().back().type);
 
   // Check the match is empty.
@@ -235,7 +239,7 @@ TEST_F(ClipboardProviderTest, CreateBlankImageMatchOnStart) {
       CreateAutocompleteInput(metrics::OmniboxFocusType::INTERACTION_FOCUS),
       false);
   ASSERT_GE(provider_->matches().size(), 1U);
-  EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_IMAGE,
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardImage,
             provider_->matches().back().type);
   EXPECT_FALSE(provider_->matches().back().post_content.get());
 }
@@ -271,7 +275,7 @@ TEST_F(ClipboardProviderTest, CreateURLMatchWithContent) {
     waiter.WaitForMatchUpdated();
 
     EXPECT_EQ(GURL(kClipboardURL), match.destination_url);
-    EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_URL, match.type);
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardUrl, match.type);
   }
 
   {
@@ -283,7 +287,7 @@ TEST_F(ClipboardProviderTest, CreateURLMatchWithContent) {
 
     EXPECT_EQ(u"alert()", match.contents);
     EXPECT_EQ(u"alert()", match.fill_into_edit);
-    EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_TEXT, match.type);
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardText, match.type);
   }
 
   {
@@ -295,7 +299,7 @@ TEST_F(ClipboardProviderTest, CreateURLMatchWithContent) {
 
     EXPECT_EQ(u"alert()", match.contents);
     EXPECT_EQ(u"alert()", match.fill_into_edit);
-    EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_TEXT, match.type);
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardText, match.type);
   }
   {
     SCOPED_TRACE("Match destroyed");
@@ -324,7 +328,7 @@ TEST_F(ClipboardProviderTest, CreateTextMatchWithContent) {
 
     EXPECT_EQ(kClipboardText, match.contents);
     EXPECT_EQ(kClipboardText, match.fill_into_edit);
-    EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_TEXT, match.type);
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardText, match.type);
   }
 
   {
@@ -336,7 +340,7 @@ TEST_F(ClipboardProviderTest, CreateTextMatchWithContent) {
 
     EXPECT_EQ(u"alert()", match.contents);
     EXPECT_EQ(u"alert()", match.fill_into_edit);
-    EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_TEXT, match.type);
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardText, match.type);
   }
 
   {
@@ -348,7 +352,7 @@ TEST_F(ClipboardProviderTest, CreateTextMatchWithContent) {
 
     EXPECT_EQ(u"alert()", match.contents);
     EXPECT_EQ(u"alert()", match.fill_into_edit);
-    EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_TEXT, match.type);
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardText, match.type);
   }
 
   {
@@ -360,7 +364,7 @@ TEST_F(ClipboardProviderTest, CreateTextMatchWithContent) {
 
     EXPECT_EQ(u"alert()", match.contents);
     EXPECT_EQ(u"alert()", match.fill_into_edit);
-    EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_TEXT, match.type);
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardText, match.type);
   }
   {
     SCOPED_TRACE("Match destroyed");
@@ -387,7 +391,7 @@ TEST_F(ClipboardProviderTest, CreateImageMatchWithContent) {
 
     EXPECT_FALSE(match.post_content->first.empty());
     EXPECT_FALSE(match.post_content->second.empty());
-    EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_IMAGE, match.type);
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardImage, match.type);
   }
   {
     SCOPED_TRACE("Match destroyed");
@@ -402,6 +406,38 @@ TEST_F(ClipboardProviderTest, CreateImageMatchWithContent) {
     // Should be fine.
     waiter.WaitForMatchUpdated();
   }
+}
+
+// Test that `NewClipboardImageMatch` returns `std::nullopt` instead of crashing
+// when given an empty `gfx::Image` or a `gfx::Image` whose conversion to
+// `gfx::ImageSkia` produces a null `ImageSkia`.
+TEST_F(ClipboardProviderTest, NewClipboardImageMatchWithEmptyOrNullImageSkia) {
+  {
+    SCOPED_TRACE("Nullopt image");
+    base::test::TestFuture<std::optional<AutocompleteMatch>> future;
+    provider_->NewClipboardImageMatch(std::nullopt, future.GetCallback());
+    EXPECT_EQ(std::nullopt, future.Get());
+  }
+  {
+    SCOPED_TRACE("Empty gfx::Image");
+    base::test::TestFuture<std::optional<AutocompleteMatch>> future;
+    provider_->NewClipboardImageMatch(gfx::Image(), future.GetCallback());
+    EXPECT_EQ(std::nullopt, future.Get());
+  }
+#if BUILDFLAG(IS_IOS)
+  {
+    SCOPED_TRACE("Non-empty gfx::Image with null ToImageSkia()");
+    std::vector<gfx::ImagePNGRep> reps = {gfx::ImagePNGRep(
+        base::MakeRefCounted<base::RefCountedString>("invalid"), -1.0f)};
+    gfx::Image invalid_image(reps);
+    ASSERT_FALSE(invalid_image.IsEmpty());
+    ASSERT_TRUE(invalid_image.ToImageSkia()->isNull());
+
+    base::test::TestFuture<std::optional<AutocompleteMatch>> future;
+    provider_->NewClipboardImageMatch(invalid_image, future.GetCallback());
+    EXPECT_EQ(std::nullopt, future.Get());
+  }
+#endif  // BUILDFLAG(IS_IOS)
 }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -421,7 +457,7 @@ TEST_F(ClipboardProviderTest, Android_MergedWithPZPSGroupOnNTP) {
   // the content.
   ASSERT_EQ(provider_->matches().size(), 1U);
   const auto& match = provider_->matches().back();
-  EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_TEXT, match.type);
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardText, match.type);
   EXPECT_EQ(omnibox::GROUP_PERSONALIZED_ZERO_SUGGEST,
             match.suggestion_group_id);
 }
@@ -443,7 +479,7 @@ TEST_F(ClipboardProviderTest, Android_StandaloneSuggestionOnSearchActivity) {
   // the content.
   ASSERT_EQ(provider_->matches().size(), 1U);
   const auto& match = provider_->matches().back();
-  EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_TEXT, match.type);
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardText, match.type);
   EXPECT_EQ(omnibox::GROUP_MOBILE_CLIPBOARD, match.suggestion_group_id);
 }
 
@@ -462,7 +498,7 @@ TEST_F(ClipboardProviderTest, Android_StandaloneSuggestionInNonNTPContext) {
   // the content.
   ASSERT_EQ(provider_->matches().size(), 1U);
   const auto& match = provider_->matches().back();
-  EXPECT_EQ(AutocompleteMatchType::CLIPBOARD_TEXT, match.type);
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kClipboardText, match.type);
   EXPECT_EQ(omnibox::GROUP_MOBILE_CLIPBOARD, match.suggestion_group_id);
 }
 #endif

@@ -4,8 +4,6 @@
 
 #include "components/password_manager/core/browser/password_store/password_store_built_in_backend.h"
 
-#include <variant>
-
 #include "base/functional/bind.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
@@ -13,6 +11,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "base/types/expected.h"
 #include "base/types/pass_key.h"
 #include "components/os_crypt/async/browser/os_crypt_async.h"
 #include "components/os_crypt/async/common/encryptor.h"
@@ -39,8 +38,7 @@ namespace {
 
 using SuccessStatus = PasswordStoreBackendMetricsRecorder::SuccessStatus;
 
-// Template function to create a callback which accepts LoginsResultOrError or
-// PasswordChangesOrError as a result.
+// Creates a metrics callback for expected read or write results.
 template <typename Result>
 base::OnceCallback<Result(Result)> ReportMetricsForResultCallback(
     MethodName method_name) {
@@ -51,9 +49,8 @@ base::OnceCallback<Result(Result)> ReportMetricsForResultCallback(
   return base::BindOnce(
       [](PasswordStoreBackendMetricsRecorder reporter,
          Result result) -> Result {
-        if (std::holds_alternative<PasswordStoreBackendError>(result)) {
-          reporter.RecordMetrics(SuccessStatus::kError,
-                                 std::get<PasswordStoreBackendError>(result));
+        if (!result.has_value()) {
+          reporter.RecordMetrics(SuccessStatus::kError, result.error());
         } else {
           reporter.RecordMetrics(SuccessStatus::kSuccess, std::nullopt);
         }
@@ -64,13 +61,15 @@ base::OnceCallback<Result(Result)> ReportMetricsForResultCallback(
 
 // Records in a pref that passwords were deleted via sync. The pref is used to
 // report metrics.
-PasswordChangesOrError MaybeRecordPasswordDeletionViaSync(
+base::expected<std::optional<PasswordStoreChangeList>,
+               PasswordStoreBackendError>
+MaybeRecordPasswordDeletionViaSync(
     base::RepeatingCallback<void(password_manager::IsAccountStore)>
         write_prefs_callback,
     std::optional<PasswordStoreChangeList> password_store_change_list,
     bool is_account_store) {
   bool hasCredentialRemoval = std::ranges::any_of(
-      password_store_change_list.value(), [](PasswordStoreChange change) {
+      *password_store_change_list, [](const PasswordStoreChange& change) {
         return change.type() == PasswordStoreChange::REMOVE;
       });
   if (hasCredentialRemoval) {
@@ -87,6 +86,9 @@ bool ShouldForwardSyncErrorToStore(
     case SyncError::kTrustedVaultRecoverabilityDegradedForPasswords:
     case SyncError::kTrustedVaultRecoverabilityDegradedForEverything:
     case SyncError::kBookmarksLimitExceeded:
+#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
+    case SyncError::kPasskeysLocked:
+#endif  // !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
 #if BUILDFLAG(IS_IOS)
     case SyncError::kDeviceManagementError:
       // TODO(crbug.com/539816393): Update this case if it needs to block saving
@@ -111,8 +113,9 @@ bool ShouldForwardSyncErrorToStore(
   }
 }
 
-PasswordChangesOrError SyncErrorToBackendError(
-    syncer::SyncService::UserActionableError error) {
+base::expected<std::optional<PasswordStoreChangeList>,
+               PasswordStoreBackendError>
+SyncErrorToBackendError(syncer::SyncService::UserActionableError error) {
   using SyncError = syncer::SyncService::UserActionableError;
   using BackendError = PasswordStoreBackendErrorType;
   switch (error) {
@@ -120,18 +123,24 @@ PasswordChangesOrError SyncErrorToBackendError(
     case SyncError::kBookmarksLimitExceeded:
     case SyncError::kTrustedVaultRecoverabilityDegradedForPasswords:
     case SyncError::kTrustedVaultRecoverabilityDegradedForEverything:
+#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
+    case SyncError::kPasskeysLocked:
+#endif  // !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
 #if BUILDFLAG(IS_IOS)
     case SyncError::kDeviceManagementError:
 #endif  // BUILDFLAG(IS_IOS)
 
       return std::nullopt;  // These errors aren't directly actionable (yet).
     case SyncError::kNeedsPassphrase:
-      return PasswordStoreBackendError(BackendError::kNeedsPassphrase);
+      return base::unexpected(
+          PasswordStoreBackendError(BackendError::kNeedsPassphrase));
     case SyncError::kSignInNeedsUpdate:
-      return PasswordStoreBackendError(BackendError::kAuthErrorResolvable);
+      return base::unexpected(
+          PasswordStoreBackendError(BackendError::kAuthErrorResolvable));
     case SyncError::kNeedsTrustedVaultKeyForPasswords:
     case SyncError::kNeedsTrustedVaultKeyForEverything:
-      return PasswordStoreBackendError(BackendError::kKeyRetrievalRequired);
+      return base::unexpected(
+          PasswordStoreBackendError(BackendError::kKeyRetrievalRequired));
 #if !BUILDFLAG(IS_IOS)
     case SyncError::kNeedsSettingsConfirmation:
     case SyncError::kUnrecoverableError:
@@ -141,7 +150,8 @@ PasswordChangesOrError SyncErrorToBackendError(
 #endif
     case SyncError::kNeedsClientUpgrade:
       // Errors that aren't categorized will block saving.
-      return PasswordStoreBackendError(BackendError::kUncategorized);
+      return base::unexpected(
+          PasswordStoreBackendError(BackendError::kUncategorized));
   }
 }
 
@@ -160,6 +170,9 @@ ActionableError SyncErrorToActionableError(
       return ActionableError::kTrustedVaultKeyNeeded;
     case SyncError::kTrustedVaultRecoverabilityDegradedForPasswords:
     case SyncError::kTrustedVaultRecoverabilityDegradedForEverything:
+#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
+    case SyncError::kPasskeysLocked:
+#endif  // !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
       return ActionableError::kNoError;
 #if !BUILDFLAG(IS_IOS)
     case SyncError::kNeedsSettingsConfirmation:
@@ -283,7 +296,8 @@ void PasswordStoreBuiltInBackend::GetAllLoginsAsync(
       base::BindOnce(
           &LoginDatabaseAsyncHelper::GetAllLogins,
           base::Unretained(helper_.get())),  // Safe until `Shutdown()`.
-      ReportMetricsForResultCallback<StoredCredentialsResultOrError>(
+      ReportMetricsForResultCallback<base::expected<
+          std::vector<StoredCredential>, PasswordStoreBackendError>>(
           MethodName("GetAllLoginsAsync"))
           .Then(std::move(callback)));
 }
@@ -307,7 +321,8 @@ void PasswordStoreBuiltInBackend::GetAutofillableLoginsAsync(
       base::BindOnce(
           &LoginDatabaseAsyncHelper::GetAutofillableLogins,
           base::Unretained(helper_.get())),  // Safe until `Shutdown()`.
-      ReportMetricsForResultCallback<StoredCredentialsResultOrError>(
+      ReportMetricsForResultCallback<base::expected<
+          std::vector<StoredCredential>, PasswordStoreBackendError>>(
           MethodName("GetAutofillableLoginsAsync"))
           .Then(std::move(callback)));
 }
@@ -319,7 +334,7 @@ void PasswordStoreBuiltInBackend::FillMatchingLoginsAsync(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(helper_);
   if (forms.empty()) {
-    std::move(callback).Run(BackendLoginsResult());
+    std::move(callback).Run(std::vector<StoredCredential>());
     return;
   }
 
@@ -329,7 +344,8 @@ void PasswordStoreBuiltInBackend::FillMatchingLoginsAsync(
           &LoginDatabaseAsyncHelper::FillMatchingLogins,
           base::Unretained(helper_.get()),  // Safe until `Shutdown()`.
           forms, include_psl),
-      ReportMetricsForResultCallback<StoredCredentialsResultOrError>(
+      ReportMetricsForResultCallback<base::expected<
+          std::vector<StoredCredential>, PasswordStoreBackendError>>(
           MethodName("FillMatchingLoginsAsync"))
           .Then(std::move(callback)));
 }
@@ -353,7 +369,8 @@ void PasswordStoreBuiltInBackend::AddLoginAsync(
       FROM_HERE,
       base::BindOnce(&LoginDatabaseAsyncHelper::AddLogin,
                      base::Unretained(helper_.get()), std::move(cred)),
-      ReportMetricsForResultCallback<PasswordChangesOrError>(
+      ReportMetricsForResultCallback<base::expected<
+          std::optional<PasswordStoreChangeList>, PasswordStoreBackendError>>(
           MethodName("AddLoginAsync"))
           .Then(std::move(callback)));
 }
@@ -367,7 +384,8 @@ void PasswordStoreBuiltInBackend::UpdateLoginAsync(
       FROM_HERE,
       base::BindOnce(&LoginDatabaseAsyncHelper::UpdateLogin,
                      base::Unretained(helper_.get()), std::move(cred)),
-      ReportMetricsForResultCallback<PasswordChangesOrError>(
+      ReportMetricsForResultCallback<base::expected<
+          std::optional<PasswordStoreChangeList>, PasswordStoreBackendError>>(
           MethodName("UpdateLoginAsync"))
           .Then(std::move(callback)));
 }
@@ -384,7 +402,8 @@ void PasswordStoreBuiltInBackend::RemoveLoginAsync(
           &LoginDatabaseAsyncHelper::RemoveLogin,
           base::Unretained(helper_.get()),  // Safe until `Shutdown()`.
           location, std::move(cred)),
-      ReportMetricsForResultCallback<PasswordChangesOrError>(
+      ReportMetricsForResultCallback<base::expected<
+          std::optional<PasswordStoreChangeList>, PasswordStoreBackendError>>(
           MethodName("RemoveLoginAsync"))
           .Then(std::move(callback)));
 }
@@ -402,7 +421,8 @@ void PasswordStoreBuiltInBackend::RemoveLoginsCreatedBetweenAsync(
           &LoginDatabaseAsyncHelper::RemoveLoginsCreatedBetween,
           base::Unretained(helper_.get()),  // Safe until `Shutdown()`.
           location, delete_begin, delete_end),
-      ReportMetricsForResultCallback<PasswordChangesOrError>(
+      ReportMetricsForResultCallback<base::expected<
+          std::optional<PasswordStoreChangeList>, PasswordStoreBackendError>>(
           MethodName("RemoveLoginsCreatedBetweenAsync"))
           .Then(std::move(callback)));
 }
@@ -545,16 +565,15 @@ void PasswordStoreBuiltInBackend::RemoveStatisticsByOriginAndTime(
 
 void PasswordStoreBuiltInBackend::InjectAffiliationAndBrandingInformation(
     BackendLoginsOrErrorReply callback,
-    BackendLoginsResultOrError result) {
-  if (!affiliated_match_helper_ ||
-      std::holds_alternative<PasswordStoreBackendError>(result) ||
-      std::get<BackendLoginsResult>(result).empty()) {
+    base::expected<std::vector<StoredCredential>, PasswordStoreBackendError>
+        result) {
+  if (!affiliated_match_helper_ || !result || result->empty()) {
     std::move(callback).Run(std::move(result));
     return;
   }
 
   affiliated_match_helper_->InjectAffiliationAndBrandingInformation(
-      std::get<BackendLoginsResult>(std::move(result)), std::move(callback));
+      std::move(*result), std::move(callback));
 }
 
 void PasswordStoreBuiltInBackend::OnInitComplete(

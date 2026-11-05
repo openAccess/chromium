@@ -84,7 +84,6 @@ void BeginRasterCHROMIUMImmediate(GLfloat r,
                                   GLuint msaa_sample_count,
                                   gpu::raster::MsaaMode msaa_mode,
                                   GLboolean can_use_lcd_text,
-                                  GLboolean visible,
                                   GLfloat hdr_headroom,
                                   const GLbyte* mailbox) {
   const uint32_t size =
@@ -94,7 +93,7 @@ void BeginRasterCHROMIUMImmediate(GLfloat r,
           size);
   if (c) {
     c->Init(r, g, b, a, needs_clear, msaa_sample_count, msaa_mode,
-            can_use_lcd_text, visible, hdr_headroom, mailbox);
+            can_use_lcd_text, hdr_headroom, mailbox);
   }
 }
 
@@ -158,7 +157,7 @@ void UnlockTransferCacheEntryINTERNAL(GLuint entry_type, GLuint entry_id) {
   }
 }
 
-void DeletePaintCachePathsINTERNALImmediate(GLsizei n, const GLuint* ids) {
+void DeletePaintCachePathsINTERNALImmediate(GLsizei n, const GLuint64* ids) {
   const uint32_t size =
       raster::cmds::DeletePaintCachePathsINTERNALImmediate::ComputeSize(n);
   raster::cmds::DeletePaintCachePathsINTERNALImmediate* c =
@@ -179,7 +178,7 @@ void DeletePaintCachePathsINTERNAL(GLsizei n,
   }
 }
 
-void DeletePaintCacheEffectsINTERNALImmediate(GLsizei n, const GLuint* ids) {
+void DeletePaintCacheEffectsINTERNALImmediate(GLsizei n, const GLuint64* ids) {
   const uint32_t size =
       raster::cmds::DeletePaintCacheEffectsINTERNALImmediate::ComputeSize(n);
   raster::cmds::DeletePaintCacheEffectsINTERNALImmediate* c =

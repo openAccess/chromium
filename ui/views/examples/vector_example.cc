@@ -140,7 +140,7 @@ class VectorIconGallery : public View, public TextfieldController {
       return;
     }
 
-    DCHECK_EQ(color_input_, sender);
+    CHECK_EQ(color_input_, sender, base::NotFatalUntil::M163);
     if (new_contents.size() != 8u) {
       return;
     }
@@ -268,7 +268,8 @@ END_METADATA
 
 }  // namespace
 
-std::string CleanUpContents(const std::string& file_content) {
+std::string CleanUpContents(const std::string& file_content,
+                            bool first_icon_only) {
   // Skip over comments.
   // This handles very basic cases of // and /*. More complicated edge
   // cases such as /* /* */ */ are not handled.
@@ -284,6 +285,13 @@ std::string CleanUpContents(const std::string& file_content) {
        slashes = output.find("/*")) {
     size_t eol = output.find("*/", slashes);
     output.erase(slashes, eol - slashes + 2);
+  }
+
+  // Callers that can handle an icon with more than one representation (i.e.
+  // those that go through gfx::ParsePathElements() rather than
+  // gfx::CreateVectorIconFromSource()) want every section preserved.
+  if (!first_icon_only) {
+    return output;
   }
 
   // CreateVectorIconFromSource does not work well if there are multiple icon

@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ssl/typed_navigation_upgrade_throttle.h"
+
 #include <algorithm>
 #include <vector>
 
@@ -17,13 +19,13 @@
 #include "chrome/browser/interstitials/security_interstitial_page_test_utils.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/ssl/https_upgrades_interceptor.h"
-#include "chrome/browser/ssl/typed_navigation_upgrade_throttle.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_tab_helper.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
@@ -126,7 +128,7 @@ GURL MakeURLWithPort(const std::string& url_without_scheme,
                      const std::string& scheme,
                      int port) {
   GURL url(scheme + "://" + url_without_scheme);
-  DCHECK(!url.GetPort().empty());
+  CHECK(!url.GetPort().empty(), base::NotFatalUntil::M163);
 
   GURL::Replacements replacements;
   const std::string port_str = base::NumberToString(port);
@@ -179,6 +181,7 @@ class TypedNavigationUpgradeThrottleBrowserTest
     disabled_features.push_back(features::kHttpsFirstBalancedModeAutoEnable);
     disabled_features.push_back(
         features::kHttpsUpgradesTypedSchemelessNavigationNoTimeoutFallback);
+    disabled_features.push_back(features::kWebUILocationBar);
     feature_list_.InitWithFeaturesAndParameters(enabled_features,
                                                 disabled_features);
   }
@@ -1189,7 +1192,8 @@ IN_PROC_BROWSER_TEST_P(
 // 6. The navigation ends up showing an interstitial.
 
 // TODO(crbug.com/378576546): Re-enable this test on Linux debug builds.
-#if BUILDFLAG(IS_LINUX) && !defined(NDEBUG)
+// TODO(crbug.com/570802137): Fix flakiness on ChromeOS debug builds.
+#if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)) && !defined(NDEBUG)
 #define MAYBE_UrlTypedWithoutScheme_BadHttps_Redirected_ShouldFallback \
   DISABLED_UrlTypedWithoutScheme_BadHttps_Redirected_ShouldFallback
 #else
@@ -1284,7 +1288,8 @@ IN_PROC_BROWSER_TEST_P(
 // Same as UrlTypedWithoutScheme_BadHttps_Redirected_ShouldFallback, but the
 // redirect ends up on a net error instead of an SSL error.
 // TODO(crbug.com/402833505): Flaky on Linux.
-#if BUILDFLAG(IS_LINUX)
+// TODO(crbug.com/570812226): Flaky on ChromeOS.
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_UrlTypedWithoutScheme_NetError_Redirected_ShouldFallback \
   DISABLED_UrlTypedWithoutScheme_NetError_Redirected_ShouldFallback
 #else

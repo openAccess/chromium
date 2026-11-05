@@ -128,8 +128,9 @@ void LegacyRenderWidgetHostHWND::UpdateParent(HWND new_parent) {
   // call altogether.
   const HWND current_parent = GetParent();
   if (current_parent != new_parent) {
-    // ::SetParent and CreateDirectManipulationHelper (CoCreateInstance /
-    // IDirectManipulationManager::Activate / Enable) can synchronously dispatch
+    // ::SetParent, CreateDirectManipulationHelper (CoCreateInstance /
+    // IDirectManipulationManager::Activate / Enable), and UpdateTooltip
+    // (NotifyWinEvent / UiaRaiseAutomationEvent) can synchronously dispatch
     // window messages. Re-entrant dispatch may reach
     // RenderWidgetHostViewAura::OnWindowDestroying ->
     // LegacyRenderWidgetHostHWND::Destroy() -> ::DestroyWindow() ->
@@ -153,6 +154,9 @@ void LegacyRenderWidgetHostHWND::UpdateParent(HWND new_parent) {
     // Reset tooltips when parent changed; otherwise tooltips could stay open as
     // the former parent wouldn't be forwarded any mouse leave messages.
     host_->UpdateTooltip(std::u16string());
+    if (!ref) {
+      return;
+    }
 
     // Store parent before hide to reroute pointer events while hidden.
     // See comment in OnPointer for more details.
@@ -239,7 +243,7 @@ bool LegacyRenderWidgetHostHWND::InitOrDeleteSelf(HWND parent) {
   set_window_class_name(ui::kLegacyRenderWidgetHostHwnd);
   set_window_name(L"Chrome Legacy Window");
 
-  // WindowImpl::Init (::CreateWindowEx), NotifyWinEvent, and
+  // WindowImpl::Init (::CreateWindowEx), NotifyWinEvent, UpdateTooltip, and
   // DirectManipulationHelper::CreateInstance (CoCreateInstance / Activate /
   // Enable) can synchronously dispatch window messages. Re-entrant dispatch may
   // reach RenderWidgetHostViewAura::OnWindowDestroying ->
@@ -254,16 +258,14 @@ bool LegacyRenderWidgetHostHWND::InitOrDeleteSelf(HWND parent) {
     return false;
   }
 
-  // We create a system caret regardless of accessibility mode since not all
+  // Create a system caret regardless of accessibility mode since not all
   // assistive software that makes use of a caret is classified as a screen
   // reader, e.g. the built-in Windows Magnifier.
-  ax_system_caret_ = std::make_unique<ui::AXSystemCaretWin>(hwnd());
-
-  // If we failed to create the child, then return false.
-  if (!::IsWindow(hwnd())) {
-    delete this;
+  auto ax_system_caret = std::make_unique<ui::AXSystemCaretWin>(hwnd());
+  if (!ref) {
     return false;
   }
+  ax_system_caret_ = std::move(ax_system_caret);
 
   // Ignore failure from this call. Some SKUs of Windows such as Hololens do not
   // support MSAA, and this call failing should not stop us from initializing
@@ -318,6 +320,9 @@ bool LegacyRenderWidgetHostHWND::InitOrDeleteSelf(HWND parent) {
   base::win::DisableFlicks(hwnd());
 
   host_->UpdateTooltip(std::u16string());
+  if (!ref) {
+    return false;
+  }
 
   // Instruct aura::WindowTreeHost to use the HWND's parent for lookup.
   window_tree_host_prop_ = std::make_unique<ui::ViewProp>(

@@ -2,13 +2,13 @@ extension ILType {
 {%- for m in maps %}
     fileprivate static let {{m|format_il_type}}: ILType =
         .createJsMapType(
-            ofKeyType: .{{m.key_kind|format_il_type(primitive_with_suffix=True)}},
-            ofValueType: .{{m.value_kind|format_il_type(primitive_with_suffix=True)}}
+            ofKeyType: .{{m.key_kind|format_il_type}},
+            ofValueType: .{{m.value_kind|format_il_type}}
         )
 {%- endfor %}
 }
 
-{%- for m in maps %}
+{%- for m in js_maps %}
     {%- if loop.first %}
 
 /// Generate a map with only one element. As Fuzzilli runs, the OperationMutator
@@ -27,9 +27,9 @@ private let Mojo{{m|format_unique_name}}Generator = CodeGenerator(
     "Mojo{{m|format_unique_name}}Generator",
     inputs: .one,
     produces: [.{{m|format_il_type}}]
-) { b, _, _ in
-    let key = b.findOrGenerateType(.{{m.key_kind|format_il_type(primitive_with_suffix=True)}})
-    let val = b.findOrGenerateType(.{{m.value_kind|format_il_type(primitive_with_suffix=True)}})
+) { b, _ in
+    let key = b.findOrGenerateType(.{{m.key_kind|format_il_type}})
+    let val = b.findOrGenerateType(.{{m.value_kind|format_il_type}})
     var keys: [Variable] = [key]
     var values: [Variable] = [val]
 {%- if m.value_kind.is_nullable %}
@@ -46,15 +46,6 @@ private let Mojo{{m|format_unique_name}}Generator = CodeGenerator(
        }
     }
 {%- endif %}
-    b.createMap(
-        withKeys: keys,
-        withValues: values,
-        keyGroupName: ObjectGroup.
-            {{- m.key_kind|format_unique_name(primitive_with_suffix=True)|to_camel(True) -}}
-            .name,
-        valueGroupName: ObjectGroup.
-            {{- m.value_kind|format_unique_name(primitive_with_suffix=True)|to_camel(True) -}}
-            .name
-    )
+    b.createMap(withKeys: keys, withValues: values)
 }
 {%- endfor %}

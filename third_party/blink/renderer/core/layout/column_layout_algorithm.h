@@ -16,6 +16,7 @@ class BlockBreakToken;
 class BlockNode;
 class ColumnSpannerPath;
 class ConstraintSpace;
+class FragmentedOofContainer;
 enum class BreakStatus;
 struct LogicalSize;
 struct MarginStrut;
@@ -78,7 +79,9 @@ class CORE_EXPORT ColumnLayoutAlgorithm
 
   const LayoutResult* Layout();
 
-  MinMaxSizesResult ComputeMinMaxSizes(const MinMaxSizesFloatInput&);
+  const LayoutResult* LayoutInternal();
+
+  MinMaxSizesResult ComputeMinMaxSizes(const MinMaxSizesInput&);
 
   // Create an empty column fragment, modeled after an existing column. The
   // resulting column may then be used and mutated by the out-of-flow layout
@@ -90,7 +93,8 @@ class CORE_EXPORT ColumnLayoutAlgorithm
 
  private:
   MinMaxSizesResult ComputeSpannersMinMaxSizes(
-      const BlockNode& search_parent) const;
+      const BlockNode& search_parent,
+      const MinMaxSizesInput& input) const;
 
   // Lay out as many children as we can. If |kNeedsEarlierBreak| is returned, it
   // means that we ran out of space at an unappealing location, and need to
@@ -116,6 +120,7 @@ class CORE_EXPORT ColumnLayoutAlgorithm
                                  LayoutUnit line_offset,
                                  LayoutUnit miminum_column_block_size,
                                  bool has_wrapped,
+                                 LayoutUnit block_start_annotation_space,
                                  MarginStrut*);
 
   // Lay out a column spanner. The return value will tell whether to break
@@ -241,6 +246,23 @@ class CORE_EXPORT ColumnLayoutAlgorithm
     return LayoutUnit(Style().ColumnHeight());
   }
 
+  bool HasRowGap() const {
+    return gap_accumulator_ && row_gap_size_ > LayoutUnit();
+  }
+
+  const FragmentedOofContainer* FragmentedOofContainerForColumns() const {
+    if (fragmented_oof_container_for_children_) {
+      // Only the outermost fragmentation context root may set
+      // fragmented_oof_container_for_children_.
+      DCHECK(!GetConstraintSpace().HasBlockFragmentation());
+
+      return fragmented_oof_container_for_children_;
+    }
+    // Fragmentainers have an entry in the FragmentedOofContainer tree, too, so
+    // get the child.
+    return container_builder_.FragmentedOofContainerForChildNode(Node());
+  }
+
   // Convert a line offset (which is relative to the block-start of the multicol
   // fragment under construction) to an offset relatively to the start of the
   // current row.
@@ -260,6 +282,8 @@ class CORE_EXPORT ColumnLayoutAlgorithm
   bool IsPastStartInWrappingRow(LayoutUnit line_offset) const;
 
   const ColumnSpannerPath* spanner_path_ = nullptr;
+  const FragmentedOofContainer* fragmented_oof_container_for_children_ =
+      nullptr;
 
   int used_column_count_;
 
@@ -292,6 +316,12 @@ class CORE_EXPORT ColumnLayoutAlgorithm
   // Accumulates gap-decoration state when CSS gap decorations are enabled and
   // the style has a gap rule. Null otherwise.
   std::optional<ColumnGapAccumulator> gap_accumulator_;
+
+  // Index of the first row gap not processed by preceding fragments.
+  wtf_size_t first_unprocessed_row_gap_index_ = 0;
+
+  // Number of row gaps suppressed at outer fragment boundaries.
+  wtf_size_t suppressed_row_gap_count_ = 0;
 };
 
 }  // namespace blink

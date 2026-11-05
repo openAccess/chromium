@@ -10,14 +10,18 @@
 chromium::import! {
     "//mojo/public/rust/mojom_value_parser";
     "//mojo/public/rust/system";
+    "//mojo/public/rust/bindings:helper_functions_cxx";
 }
 
 use crate::message_header::*;
+use helper_functions_cxx::ffi as cxx_helpers;
 pub use system::message::{
     BadMessageError, ReadableBytesOnlyMessage, ReadableWithHandlesMessage, SendableMessage,
     WritableMessage,
 };
 use system::mojo_types::UntypedHandle;
+
+use mojom_value_parser::InterfaceId;
 
 /// Represents a Mojom message with a structured header and unstructured
 /// payload.
@@ -32,8 +36,9 @@ pub struct MojomMessage {
     pub header: MessageHeader,
     pub payload: Vec<u8>,
     pub handles: Vec<UntypedHandle>,
-    // we keep the raw handle around so we can report a bad message later if
-    // necessary.
+    pub associated_ids: Vec<InterfaceId>,
+    // We keep the original message handle around so we can
+    // report a bad message later if necessary.
     pub raw_message_handle: Option<ReadableBytesOnlyMessage>,
 }
 
@@ -46,7 +51,30 @@ impl MojomMessage {
         let (handles, mut msg_bytes_only) = msg.read_data().unwrap();
 
         let raw_bytes = msg_bytes_only.read_bytes().unwrap();
+
+        // Run the C++ message validation. Rust doesn't need this except to fail
+        // early, but C++ requires it since it reads from the message
+        // using raw pointers.
+        if !cxx_helpers::ValidateMessageHeader(raw_bytes) {
+            let _ = msg_bytes_only.report_bad_message("Malformed message header");
+            return None;
+        }
+
         let (remaining_bytes, header) = match MessageHeader::deserialize(raw_bytes) {
+            Ok(data) => data,
+            Err(err) => {
+                let _ = msg_bytes_only.report_bad_message(&err.to_string());
+                return None;
+            }
+        };
+
+        // We need to extract these immediately, because the message might
+        // never get deserialized (e.g. if its destination got shut down),
+        // in which case we need to close the associated interfaces.
+        let (_, associated_ids) = match mojom_value_parser::extract_interface_ids(
+            remaining_bytes,
+            header.interface_ids_offset(),
+        ) {
             Ok(data) => data,
             Err(err) => {
                 let _ = msg_bytes_only.report_bad_message(&err.to_string());
@@ -57,10 +85,16 @@ impl MojomMessage {
         // We might be able to avoid allocating here if we had a better
         // MojomMessage type.
         let payload = remaining_bytes.to_vec();
-        Some(MojomMessage { header, payload, handles, raw_message_handle: Some(msg_bytes_only) })
+        Some(MojomMessage {
+            header,
+            payload,
+            handles,
+            associated_ids,
+            raw_message_handle: Some(msg_bytes_only),
+        })
     }
 
-    /// Parse the given raw message into a structured representation.
+    /// Report this (incoming) message as malformed.
     pub fn report_bad_message(&mut self, error_msg: &str) -> Result<(), BadMessageError> {
         match &mut self.raw_message_handle {
             Some(raw_msg) => raw_msg.report_bad_message(error_msg),
@@ -81,9 +115,10 @@ impl MojomMessage {
 
 impl From<MojomMessage> for SendableMessage {
     fn from(msg: MojomMessage) -> Self {
-        // This is more of a sanity check. There is nothing stopping us from re-sending
-        // a message given that the handle is there, but we should never end up in that
-        // situation, hence a technical bug somewhere.
+        // This is more of a sanity check. There is nothing stopping us from
+        // re-sending a message given that the handle is there, but we
+        // should never end up in that situation, hence a technical bug
+        // somewhere.
         assert!(msg.raw_message_handle.is_none(), "Cannot re-send an incoming message");
         let (payload, handles) = msg.into_data();
         // This can only fail if we're out of memory

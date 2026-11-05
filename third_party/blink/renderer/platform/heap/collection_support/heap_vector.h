@@ -38,7 +38,11 @@ class BasicHeapVector final
   BasicHeapVector(wtf_size_t size, const T& val) : BaseVector(size, val) {}
 
   // NOLINTNEXTLINE(google-explicit-constructor)
-  BasicHeapVector(const BasicHeapVector& other) : BaseVector(other) {}
+  BasicHeapVector(const BasicHeapVector& other)
+      // The cast makes this an exact match for BaseVector's copy constructor,
+      // so that the compiler doesn't have to check the constraints of
+      // BaseVector's constructor templates for every HeapVector type.
+      : BaseVector(static_cast<const BaseVector&>(other)) {}
 
   template <wtf_size_t otherCapacity>
   // NOLINTNEXTLINE(google-explicit-constructor)
@@ -168,8 +172,9 @@ using HeapVector = BasicHeapVector<internal::HeapCollectionType::kDisallowNew,
                                    T,
                                    inlineCapacity>;
 static_assert(IsDisallowNew<HeapVector<int>>);
-#if !BUILDFLAG(ENABLE_HEAP_VECTOR_ACTIVE_ITERATOR_CHECKS) && \
-    !BUILDFLAG(ENABLE_VECTOR_ACTIVE_ITERATOR_CHECKS)
+#if DCHECK_IS_ON() ||                                     \
+    BUILDFLAG(ENABLE_HEAP_VECTOR_MODIFICATION_CHECKS) == \
+        BUILDFLAG(ENABLE_VECTOR_MODIFICATION_CHECKS)
 ASSERT_SIZE(Vector<int>, HeapVector<int>);
 #endif
 
@@ -178,8 +183,9 @@ template <typename T, wtf_size_t inlineCapacity = 0>
 using GCedHeapVector =
     BasicHeapVector<internal::HeapCollectionType::kGCed, T, inlineCapacity>;
 static_assert(!IsDisallowNew<GCedHeapVector<int>>);
-#if !BUILDFLAG(ENABLE_HEAP_VECTOR_ACTIVE_ITERATOR_CHECKS) && \
-    !BUILDFLAG(ENABLE_VECTOR_ACTIVE_ITERATOR_CHECKS)
+#if DCHECK_IS_ON() ||                                     \
+    BUILDFLAG(ENABLE_HEAP_VECTOR_MODIFICATION_CHECKS) == \
+        BUILDFLAG(ENABLE_VECTOR_MODIFICATION_CHECKS)
 ASSERT_SIZE(Vector<int>, GCedHeapVector<int>);
 #endif
 

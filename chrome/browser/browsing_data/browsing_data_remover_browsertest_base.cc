@@ -20,11 +20,14 @@
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_model_delegate.h"
 #include "chrome/browser/browsing_data/counters/site_data_counting_helper.h"
+#include "chrome/browser/download/download_core_service.h"
+#include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -47,11 +50,11 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "third_party/leveldatabase/env_chromium.h"
 #include "third_party/re2/src/re2/re2.h"
-#include "ui/base/models/tree_model.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/download/download_browsertest_utils.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/ui_test_utils.h"
 #endif
 
@@ -85,6 +88,10 @@ class DownloadManagerWaiter : public content::DownloadManager::Observer {
   ~DownloadManagerWaiter() override { download_manager_->RemoveObserver(this); }
 
   void WaitForInitialized() {
+    if (auto* service = DownloadCoreServiceFactory::GetForBrowserContext(
+            download_manager_->GetBrowserContext())) {
+      service->InitializeHistory();
+    }
     initialized_ = download_manager_->IsManagerInitialized();
     if (initialized_)
       return;

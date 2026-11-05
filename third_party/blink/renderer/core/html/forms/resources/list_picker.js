@@ -80,6 +80,7 @@ class ListPicker extends Picker {
     this.selectElement_.addEventListener(
         'change', this.handleChange_.bind(this));
     window.addEventListener('message', this.handleWindowMessage_.bind(this));
+    window.addEventListener('resize', this.handleWindowResize_.bind(this));
     window.addEventListener(
         'mousemove', this.handleWindowMouseMove_.bind(this));
     window.addEventListener(
@@ -95,7 +96,9 @@ class ListPicker extends Picker {
     this.trackingTouchId_ = null;
 
     this.applyInitialLayout_();
-    this.selectElement_.focus();
+    // The popup has no size yet, so scrolling on focus would center the select
+    // horizontally and hide option starts if the popup ends up narrower.
+    this.selectElement_.focus({preventScroll: true});
     this.selectElement_.value = this.config_.selectedIndex;
   }
 
@@ -309,11 +312,41 @@ class ListPicker extends Picker {
       windowRect = adjustWindowRect(
           desiredWindowWidth / scale, windowRect.height, windowRect.width,
           windowRect.height);
+      expectingScrollbar = true;
     }
+    this.expectingScrollbar_ = expectingScrollbar;
     this.selectElement_.style.width = (windowRect.width * scale) + 'px';
     this.selectElement_.style.height = (windowRect.height * scale) + 'px';
     this.element_.style.height = (windowRect.height * scale) + 'px';
     setWindowRect(windowRect);
+  }
+
+  handleWindowResize_() {
+    if (window.innerHeight > 0 &&
+        this.selectElement_.offsetHeight > window.innerHeight) {
+      this.selectElement_.style.height = window.innerHeight + 'px';
+      this.element_.style.height = window.innerHeight + 'px';
+      if (!this.expectingScrollbar_ &&
+          this.selectElement_.scrollHeight > this.selectElement_.clientHeight) {
+        this.expectingScrollbar_ = true;
+        const scale = this.config_.scaleFactor;
+        const desiredWindowWidth =
+            this.selectElement_.offsetWidth + getScrollbarWidth();
+        const windowRect = adjustWindowRect(
+            desiredWindowWidth / scale, window.innerHeight / scale,
+            this.selectElement_.offsetWidth / scale, window.innerHeight / scale,
+            /*allowOverlapWithAnchor=*/ false);
+        windowRect.y = window.screenY;
+        windowRect.height = Math.ceil(window.innerHeight / scale);
+        this.selectElement_.style.width = (windowRect.width * scale) + 'px';
+        setWindowRect(windowRect);
+      }
+      const selectedOption =
+          this.selectElement_.options[this.selectElement_.selectedIndex];
+      if (selectedOption) {
+        selectedOption.scrollIntoView(false);
+      }
+    }
   }
 
   calculateScrollHeight_() {

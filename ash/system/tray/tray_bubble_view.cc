@@ -13,12 +13,12 @@
 #include "ash/bubble/bubble_constants.h"
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/accelerators.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/root_window_controller.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shell.h"
 #include "ash/style/ash_color_id.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/style_util.h"
+#include "ash/style/system_decoration.h"
 #include "ash/system/notification_center/notification_center_tray.h"
 #include "ash/system/tray/system_tray_notifier.h"
 #include "ash/system/tray/tray_constants.h"
@@ -38,7 +38,7 @@
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_type.h"
-#include "ui/compositor_extra/shadow.h"
+#include "ui/decoration/shadow.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/events/event.h"
 #include "ui/events/types/event_type.h"
@@ -51,7 +51,6 @@
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/bubble/bubble_frame_view.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/layout_manager_base.h"
 #include "ui/views/painter.h"
@@ -354,9 +353,6 @@ TrayBubbleView::TrayBubbleView(const InitParams& init_params)
     layer()->SetRoundedCornerRadius(
         gfx::RoundedCornersF{static_cast<float>(params_.corner_radius)});
     layer()->SetIsFastRoundedCorner(true);
-    SetBorder(std::make_unique<views::HighlightBorder>(
-        params_.corner_radius,
-        views::HighlightBorder::Type::kHighlightBorderOnShadow));
 
     const bool is_translucent =
         init_params.translucent && chromeos::features::IsSystemBlurEnabled();
@@ -370,16 +366,19 @@ TrayBubbleView::TrayBubbleView(const InitParams& init_params)
                        : cros_tokens::kCrosSysSystemBaseElevatedOpaque));
     layer()->SetFillsBoundsOpaquely(!is_translucent);
     if (is_translucent) {
-      layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
-      layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+      layer()->SetBackgroundBlur(StyleUtil::kBackgroundBlurSigma);
+      layer()->SetBackdropFilterQuality(StyleUtil::kBackgroundBlurQuality);
     }
   }
 
-  if (params_.has_shadow) {
-    shadow_ = SystemShadow::CreateShadowOnNinePatchLayerForView(
-        this, params_.shadow_type);
-    shadow_->SetRoundedCorners(gfx::RoundedCornersF(params_.corner_radius));
-  }
+  decoration_ = SystemDecoration::CreateForView(
+      this,
+      params_.has_shadow ? params_.shadow_type
+                         : SystemDecoration::ShadowType::kNone,
+      init_params.transparent
+          ? SystemDecoration::HighlightBorderMode::kNone
+          : SystemDecoration::HighlightBorderMode::kHighlightBorder);
+  decoration_->SetRoundedCorners(gfx::RoundedCornersF(params_.corner_radius));
 
   auto layout = std::make_unique<BottomAlignedBoxLayout>(this);
   layout_ = SetLayoutManager(std::move(layout))->box_layout();
@@ -545,7 +544,7 @@ std::unique_ptr<FrameView> TrayBubbleView::CreateFrameView(Widget* widget) {
     bubble_border->set_rounded_corners(gfx::RoundedCornersF(GetCornerRadius()));
   }
 
-  bubble_border->SetColor(background_color());
+  bubble_border->set_background_color(background_color());
   bubble_border->set_avoid_shadow_overlap(true);
   if (params_.insets.has_value()) {
     bubble_border->set_insets(params_.insets.value());

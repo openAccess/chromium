@@ -6,6 +6,7 @@
 
 #include <jni.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <numeric>
@@ -31,6 +32,9 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_jni_bridge.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_observer.h"
+#include "components/sessions/core/session_id.h"
+#include "components/split_tabs/split_tab_visual_data.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
@@ -48,7 +52,19 @@ TestTabModel::TestTabModel(Profile* profile,
                            TabModelType tab_model_type)
     : TabModel(profile, activity_type, std::nullopt, tab_model_type) {}
 
-TestTabModel::~TestTabModel() = default;
+TestTabModel::~TestTabModel() {
+  // TabModelList is a process-wide singleton that holds raw pointers, and
+  // TabModel's destructor does not unregister itself. gtest runs many tests in
+  // a single process, so a TestTabModel that is registered but never removed
+  // leaves a dangling pointer behind that causes a use-after-free in whichever
+  // unrelated test next walks TabModelList::models(). Defensively unregister
+  // here so that a missing RemoveTabModel() call can't corrupt other tests.
+  TabModel* self = this;
+  if (std::ranges::contains(TabModelList::models(), self)) {
+    TabModelList::RemoveTabModel(self);
+  }
+  TabModelList::RemoveArchivedTabModel(self);
+}
 
 void TestTabModel::AddTabListInterfaceObserver(
     TabListInterfaceObserver* observer) {
@@ -187,6 +203,13 @@ tabs::TabInterface* TestTabModel::OpenTab(const GURL& url,
   return nullptr;
 }
 
+tabs::TabInterface* TestTabModel::OpenTab(const GURL& url,
+                                          int index,
+                                          TabLaunchType launch_type) {
+  NOTIMPLEMENTED();
+  return nullptr;
+}
+
 void TestTabModel::SetOpenerForTab(tabs::TabHandle target,
                                    tabs::TabHandle opener) {
   NOTIMPLEMENTED();
@@ -262,8 +285,19 @@ std::vector<tab_groups::TabGroupId> TestTabModel::ListTabGroups() {
   return {};
 }
 
+std::set<split_tabs::SplitTabId> TestTabModel::ListSplits() {
+  NOTIMPLEMENTED();
+  return {};
+}
+
 std::optional<tab_groups::TabGroupVisualData>
 TestTabModel::GetTabGroupVisualData(tab_groups::TabGroupId group_id) {
+  NOTIMPLEMENTED();
+  return std::nullopt;
+}
+
+std::optional<split_tabs::SplitTabVisualData>
+TestTabModel::GetSplitTabVisualData(split_tabs::SplitTabId split_id) {
   NOTIMPLEMENTED();
   return std::nullopt;
 }
@@ -281,7 +315,8 @@ std::optional<tab_groups::TabGroupId> TestTabModel::CreateTabGroup(
 }
 
 std::optional<split_tabs::SplitTabId> TestTabModel::CreateSplit(
-    const std::vector<tabs::TabHandle>& tabs) {
+    const std::vector<tabs::TabHandle>& tabs,
+    const split_tabs::SplitTabVisualData& visual_data) {
   NOTIMPLEMENTED();
   return std::nullopt;
 }
@@ -345,8 +380,13 @@ void TestTabModel::AssociateWithBrowserWindow(BrowserWindowInterface* browser) {
 OwningTestTabModel::OwningTestTabModel(
     Profile* profile,
     chrome::android::ActivityType activity_type,
-    TabModelType tab_model_type)
-    : TabModel(profile, activity_type, std::nullopt, tab_model_type) {
+    TabModelType tab_model_type,
+    std::optional<chrome::android::CustomTabProfileType>
+        custom_tab_profile_type)
+    : TabModel(profile,
+               activity_type,
+               custom_tab_profile_type,
+               tab_model_type) {
   TabModelList::AddTabModel(this);
 }
 
@@ -418,7 +458,7 @@ bool OwningTestTabModel::HasTab(TabAndroid* tab) const {
 
 void OwningTestTabModel::SetActiveIndex(int index) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  SelectTab(GetTabAt(index), TabModel::TabSelectionType::FROM_USER);
+  SelectTab(GetTabAt(index));
 }
 
 void OwningTestTabModel::ForceCloseAllTabs() {
@@ -488,7 +528,7 @@ void OwningTestTabModel::CloseTabsAt(const std::vector<int>& indices) {
         }
       }
     }
-    SelectTab(new_active_tab, TabModel::TabSelectionType::FROM_CLOSE);
+    SelectTab(new_active_tab);
   }
 
   std::vector<std::unique_ptr<TabAndroid>> removed_tabs;
@@ -607,6 +647,13 @@ tabs::TabInterface* OwningTestTabModel::OpenTab(const GURL& url,
   return nullptr;
 }
 
+tabs::TabInterface* OwningTestTabModel::OpenTab(const GURL& url,
+                                                int index,
+                                                TabLaunchType launch_type) {
+  NOTIMPLEMENTED();
+  return nullptr;
+}
+
 void OwningTestTabModel::SetOpenerForTab(tabs::TabHandle target,
                                          tabs::TabHandle opener) {
   NOTIMPLEMENTED();
@@ -685,7 +732,8 @@ std::optional<tab_groups::TabGroupId> OwningTestTabModel::CreateTabGroup(
 }
 
 std::optional<split_tabs::SplitTabId> OwningTestTabModel::CreateSplit(
-    const std::vector<tabs::TabHandle>& tabs) {
+    const std::vector<tabs::TabHandle>& tabs,
+    const split_tabs::SplitTabVisualData& visual_data) {
   NOTIMPLEMENTED();
   return std::nullopt;
 }
@@ -695,8 +743,19 @@ std::vector<tab_groups::TabGroupId> OwningTestTabModel::ListTabGroups() {
   return {};
 }
 
+std::set<split_tabs::SplitTabId> OwningTestTabModel::ListSplits() {
+  NOTIMPLEMENTED();
+  return {};
+}
+
 std::optional<tab_groups::TabGroupVisualData>
 OwningTestTabModel::GetTabGroupVisualData(tab_groups::TabGroupId group_id) {
+  NOTIMPLEMENTED();
+  return std::nullopt;
+}
+
+std::optional<split_tabs::SplitTabVisualData>
+OwningTestTabModel::GetSplitTabVisualData(split_tabs::SplitTabId split_id) {
   NOTIMPLEMENTED();
   return std::nullopt;
 }
@@ -778,14 +837,12 @@ TabAndroid* OwningTestTabModel::AddTabFromWebContents(
   std::unique_ptr<TabAndroid> tab = TabAndroid::CreateForTesting(
       GetProfile(), next_tab_id_++, std::move(web_contents));
   TabAndroid* raw_tab = tab.get();
-
-  observer_list_.Notify(&TabModelObserver::WillAddTab, raw_tab, launch_type);
   owned_tabs_.insert(owned_tabs_.begin() + index, std::move(tab));
   observer_list_.Notify(&TabModelObserver::DidAddTab, raw_tab, launch_type);
 
   // The first tab will always be selected.
   if (select || owned_tabs_.size() == 1) {
-    SelectTab(raw_tab, TabModel::TabSelectionType::FROM_NEW);
+    SelectTab(raw_tab);
   }
 
   return raw_tab;
@@ -796,20 +853,18 @@ void OwningTestTabModel::SetIsActiveModel(bool is_active) {
   is_active_model_ = is_active;
 }
 
-void OwningTestTabModel::SelectTab(TabAndroid* tab,
-                                   TabModel::TabSelectionType selection_type) {
+void OwningTestTabModel::SelectTab(TabAndroid* tab) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (active_tab_) {
+  if (active_tab_ && active_tab_->web_contents()) {
     active_tab_->web_contents()->UpdateWebContentsVisibility(
         content::Visibility::HIDDEN);
   }
   active_tab_ = tab;
-  if (active_tab_) {
+  if (active_tab_ && active_tab_->web_contents()) {
     active_tab_->web_contents()->UpdateWebContentsVisibility(
         content::Visibility::VISIBLE);
   }
-  observer_list_.Notify(&TabModelObserver::DidSelectTab, active_tab_.get(),
-                        selection_type);
+  observer_list_.Notify(&TabModelObserver::DidSelectTab, active_tab_.get());
 }
 
 TabAndroidLoadedWaiter::TabAndroidLoadedWaiter(TabAndroid* tab) {

@@ -15,12 +15,11 @@
 #include "base/timer/timer.h"
 #include "chromeos/ash/components/drivefs/drivefs_bootstrap.h"
 #include "chromeos/ash/components/drivefs/drivefs_host.h"
-#include "chromeos/ash/components/drivefs/drivefs_http_client.h"
 #include "chromeos/ash/components/drivefs/drivefs_search.h"
 #include "chromeos/ash/components/drivefs/drivefs_search_query.h"
 #include "chromeos/ash/components/drivefs/mojom/drivefs.mojom.h"
+#include "chromeos/ash/components/drivefs/mojom/drivefs_native_messaging.mojom.h"
 #include "chromeos/ash/components/drivefs/mojom/notifications.mojom.h"
-#include "chromeos/components/drivefs/mojom/drivefs_native_messaging.mojom.h"
 #include "components/account_id/account_id.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "services/network/public/cpp/network_connection_tracker.h"
@@ -73,8 +72,6 @@ class DriveFsHost::MountState : public DriveFsSession {
         bool{host->account_token_delegate_->GetCachedAccessToken()};
     search_ = std::make_unique<DriveFsSearch>(
         drivefs_interface(), host_->network_connection_tracker_, host_->clock_);
-    http_client_ = std::make_unique<DriveFsHttpClient>(
-        host_->delegate_->GetURLLoaderFactory());
   }
 
   MountState(const MountState&) = delete;
@@ -100,10 +97,10 @@ class DriveFsHost::MountState : public DriveFsSession {
         std::move(access_token),
         auth_delegate->IsMetricsCollectionEnabled(),
         delegate->GetLostAndFoundDirectoryName(),
-        base::FeatureList::IsEnabled(ash::features::kDriveFsMirroring),
+        /*enable_experimental_mirroring=*/false,
         delegate->IsVerboseLoggingEnabled(),
         mojom::CSESupport::kListing,
-        ash::features::IsLauncherContinueSectionWithRecentsEnabled(),
+        /*fetch_modifying_user_metadata=*/true,
         ash::features::IsShowSharingUserInLauncherContinueSectionEnabled(),
     };
     return DriveFsConnection::Create(delegate->CreateMojoListener(),
@@ -169,12 +166,7 @@ class DriveFsHost::MountState : public DriveFsSession {
     }
   }
 
-  void OnMirrorSyncingStatusUpdate(mojom::SyncingStatusPtr status) override {
-    for (Observer& observer : host_->observers_) {
-      DCHECK_EQ(observer.GetHost(), host_);
-      observer.OnMirrorSyncingStatusUpdate(*status);
-    }
-  }
+  void OnMirrorSyncingStatusUpdate(mojom::SyncingStatusPtr status) override {}
 
   void OnFilesChanged(std::vector<mojom::FileChangePtr> changes) override {
     std::vector<mojom::FileChange> changes_values;
@@ -224,52 +216,28 @@ class DriveFsHost::MountState : public DriveFsSession {
                     std::move(callback), mojom::DialogResult::kNotDisplayed));
   }
 
-  void ExecuteHttpRequest(
+  void DEPRECATED_ExecuteHttpRequest(
       mojom::HttpRequestPtr request,
       mojo::PendingRemote<mojom::HttpDelegate> delegate) override {
-    if (!http_client_) {
-      // The Chrome Network Service <-> DriveFS bridge is not enabled. Ignore
-      // the request and allow the |delegate| to close itself. DriveFS will
-      // pick up on the |delegate| closure and fallback to cURL.
-      return;
-    }
-    http_client_->ExecuteHttpRequest(std::move(request), std::move(delegate));
+    // This feature is deprecated.
+    return;
   }
 
   void GetMachineRootID(GetMachineRootIDCallback callback) override {
-    if (!ash::features::IsDriveFsMirroringEnabled()) {
-      std::move(callback).Run({});
-      return;
-    }
-    std::move(callback).Run(host_->delegate_->GetMachineRootID());
+    std::move(callback).Run({});
   }
 
-  void PersistMachineRootID(const std::string& id) override {
-    if (!ash::features::IsDriveFsMirroringEnabled()) {
-      return;
-    }
-    host_->delegate_->PersistMachineRootID(std::move(id));
-  }
+  void PersistMachineRootID(const std::string& id) override {}
 
   void OnNotificationReceived(
-      mojom::DriveFsNotificationPtr notification) override {
-    if (!ash::features::IsDriveFsMirroringEnabled()) {
-      return;
-    }
-    host_->delegate_->PersistNotification(std::move(notification));
-  }
+      mojom::DriveFsNotificationPtr notification) override {}
 
-  void OnMirrorSyncError(mojom::MirrorSyncErrorListPtr error_list) override {
-    if (ash::features::IsDriveFsMirroringEnabled()) {
-      host_->delegate_->PersistSyncErrors(std::move(error_list));
-    }
-  }
+  void OnMirrorSyncError(mojom::MirrorSyncErrorListPtr error_list) override {}
 
   // Owns |this|.
   const raw_ptr<DriveFsHost> host_;
 
   std::unique_ptr<DriveFsSearch> search_;
-  std::unique_ptr<DriveFsHttpClient> http_client_;
 
   bool token_fetch_attempted_ = false;
 

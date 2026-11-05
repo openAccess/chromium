@@ -10,7 +10,9 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -33,13 +35,20 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
+import org.chromium.base.FeatureOverrides;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.chrome.browser.ChromeCommandIds;
+import org.chromium.chrome.browser.KeyboardShortcuts;
+import org.chromium.chrome.browser.KeyboardShortcutsJni;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabContextMenuCoordinator.TabStripLayoutType;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.glic.GlicPrefNames;
+import org.chromium.chrome.browser.glic.GlicUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.multiwindow.UiUtils.NameWindowDialogSource;
@@ -54,10 +63,14 @@ import org.chromium.chrome.browser.task_manager.TaskManagerFactory;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
+import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils.ExpandOnHoverToggleEntryPoint;
 import org.chromium.chrome.tab_ui.R;
+import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.components.user_prefs.UserPrefsJni;
+import org.chromium.ui.base.DeviceInput;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.listmenu.ListItemType;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
@@ -87,9 +100,11 @@ public class TabStripContextMenuCoordinatorUnitTest {
     @Mock private Runnable mOnNewTabClick;
     @Mock private RectProvider mRectProvider;
     @Mock private Profile mProfile;
+    @Mock private Tracker mTracker;
     @Mock private PrefService mPrefService;
     @Mock private UserPrefs.Natives mUserPrefsJniMock;
     @Mock private TaskManager mTaskManager;
+    @Mock private KeyboardShortcuts.Natives mKeyboardShortcutsJniMock;
 
     private Activity mActivity;
     private TabStripContextMenuCoordinator mCoordinator;
@@ -99,6 +114,8 @@ public class TabStripContextMenuCoordinatorUnitTest {
 
     @Before
     public void setUp() {
+        DeviceInput.setSupportsPrecisionPointerForTesting(true);
+        TrackerFactory.setTrackerForTests(mTracker);
         GlicEnabling.setEnabledForTesting(ChromeFeatureList.isEnabled(ChromeFeatureList.GLIC));
         mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
@@ -130,14 +147,16 @@ public class TabStripContextMenuCoordinatorUnitTest {
                         mSnackbarManager,
                         mOnNewTabClick,
                         /* canActivateTabLayoutToggleMenuSupplier= */ null,
-                        layout);
+                        layout,
+                        /* onMenuDismissedCallback= */ null);
     }
 
     @After
     public void tearDown() {
         ChromeSharedPreferences.getInstance().removeKey(ChromePreferenceKeys.VERTICAL_TABS_ENABLED);
         ChromeSharedPreferences.getInstance()
-                .removeKey(ChromePreferenceKeys.VERTICAL_TABS_LAYOUT_TOGGLE_VIEW_COUNT);
+                .removeKey(ChromePreferenceKeys.VERTICAL_TABS_EXPAND_ON_HOVER);
+        DeviceInfo.resetIsDesktopForTesting();
     }
 
     private void runToggleLayoutMenuTest(boolean isVerticalTabsEnabled, int expectedTitleRes) {
@@ -194,6 +213,112 @@ public class TabStripContextMenuCoordinatorUnitTest {
     @Test
     @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
     @Config(qualifiers = "sw600dp")
+    public void showMenu_vertical_expandOnHoverOn_showsCheckedItem() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.ANDROID_VERTICAL_TABS, "expand_on_hover", true);
+        MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+        initializeCoordinatorForTesting(TabStripLayoutType.VERTICAL);
+
+        mCoordinator.showMenu(mRectProvider, false, mActivity);
+
+        // Baseline items (4) + divider (1) + layout toggle (1) + expand-on-hover toggle (1) +
+        // desktop-only task manager divider (1) + task manager (1).
+        verifyMenuState(/* expectedNumItems= */ 9);
+        PropertyModel expandOnHoverItemModel = getItemModelAtPosition(6);
+        assertEquals(
+                R.id.toggle_expand_tabs_on_hover_menu_id,
+                expandOnHoverItemModel.get(ListMenuItemProperties.MENU_ITEM_ID));
+        assertEquals(
+                R.string.expand_tabs_on_hover,
+                expandOnHoverItemModel.get(ListMenuItemProperties.TITLE_ID));
+        assertTrue(expandOnHoverItemModel.get(ListMenuItemProperties.CHECKABLE));
+        assertTrue(expandOnHoverItemModel.get(ListMenuItemProperties.CHECKED));
+        assertEquals(
+                R.drawable.material_ic_check_24dp,
+                expandOnHoverItemModel.get(ListMenuItemProperties.END_ICON_ID));
+        assertEquals(
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(
+                                R.dimen.vertical_tabs_expand_on_hover_menu_end_icon_margin),
+                expandOnHoverItemModel.get(ListMenuItemProperties.END_ICON_MARGIN_START));
+
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.VerticalTabs.ExpandOnHoverToggle.Disable",
+                        ExpandOnHoverToggleEntryPoint.TAB_STRIP_CONTEXT_MENU);
+        mCoordinator
+                .getListMenuDelegate(mContentView)
+                .onItemSelected(expandOnHoverItemModel, mListView);
+
+        assertFalse(VerticalTabUtils.isExpandOnHoverEnabled());
+        histogramWatcher.assertExpected();
+        assertFalse(mMenuWindow.isShowing());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    @Config(qualifiers = "sw600dp")
+    public void showMenu_vertical_expandOnHoverOff_showsUncheckedItem() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.ANDROID_VERTICAL_TABS, "expand_on_hover", true);
+        VerticalTabUtils.setExpandOnHoverEnabledInSharedPref(
+                false, ExpandOnHoverToggleEntryPoint.SETTINGS);
+        MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+        initializeCoordinatorForTesting(TabStripLayoutType.VERTICAL);
+
+        mCoordinator.showMenu(mRectProvider, false, mActivity);
+
+        verifyMenuState(/* expectedNumItems= */ 9);
+        PropertyModel expandOnHoverItemModel = getItemModelAtPosition(6);
+        assertEquals(
+                R.string.expand_tabs_on_hover,
+                expandOnHoverItemModel.get(ListMenuItemProperties.TITLE_ID));
+        assertTrue(expandOnHoverItemModel.get(ListMenuItemProperties.CHECKABLE));
+        assertFalse(expandOnHoverItemModel.get(ListMenuItemProperties.CHECKED));
+        assertEquals(0, expandOnHoverItemModel.get(ListMenuItemProperties.END_ICON_ID));
+        assertEquals(0, expandOnHoverItemModel.get(ListMenuItemProperties.END_ICON_MARGIN_START));
+
+        mCoordinator
+                .getListMenuDelegate(mContentView)
+                .onItemSelected(expandOnHoverItemModel, mListView);
+
+        assertTrue(VerticalTabUtils.isExpandOnHoverEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    @Config(qualifiers = "sw600dp")
+    public void showMenu_horizontal_noExpandOnHoverItem() {
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.ANDROID_VERTICAL_TABS, "expand_on_hover", true);
+        MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+        initializeCoordinatorForTesting(TabStripLayoutType.HORIZONTAL);
+
+        mCoordinator.showMenu(mRectProvider, false, mActivity);
+
+        verifyMenuState(/* expectedNumItems= */ 6);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    @Config(qualifiers = "sw600dp")
+    public void showMenu_vertical_expandOnHoverFeatureDisabled_noExpandOnHoverItem() {
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.ANDROID_VERTICAL_TABS, "expand_on_hover", false);
+        MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+        initializeCoordinatorForTesting(TabStripLayoutType.VERTICAL);
+
+        mCoordinator.showMenu(mRectProvider, false, mActivity);
+
+        verifyMenuState(/* expectedNumItems= */ 6);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    @Config(qualifiers = "sw600dp")
     public void showMenu_verifyVerticalTabsDisabledWhenCannotActivate() {
         mCoordinator =
                 TabStripContextMenuCoordinator.createContextMenuCoordinator(
@@ -203,7 +328,8 @@ public class TabStripContextMenuCoordinatorUnitTest {
                         mSnackbarManager,
                         mOnNewTabClick,
                         () -> false,
-                        TabStripLayoutType.HORIZONTAL);
+                        TabStripLayoutType.HORIZONTAL,
+                        /* onMenuDismissedCallback= */ null);
         MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
 
         mCoordinator.showMenu(mRectProvider, false, mActivity);
@@ -222,8 +348,8 @@ public class TabStripContextMenuCoordinatorUnitTest {
     public void showMenu_verifyVerticalTabsEntryPoint_showsNewBadge() {
         MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
         VerticalTabUtils.setVerticalTabsEnabled(false);
-        ChromeSharedPreferences.getInstance()
-                .writeInt(ChromePreferenceKeys.VERTICAL_TABS_LAYOUT_TOGGLE_VIEW_COUNT, 0);
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.ANDROID_VERTICAL_TABS_NEW_LABEL))
+                .thenReturn(true);
 
         mCoordinator.showMenu(mRectProvider, false, mActivity);
 
@@ -240,37 +366,31 @@ public class TabStripContextMenuCoordinatorUnitTest {
         Object[] spans = spannableTitle.getSpans(0, spannableTitle.length(), Object.class);
         assertTrue("Spannable title should contain badge styling spans.", spans.length > 0);
 
-        // Verify view count incremented from 0 to 1 upon showing.
-        assertEquals(1, VerticalTabUtils.getNewBadgeViewCount());
+        verify(mTracker).shouldTriggerHelpUi(FeatureConstants.ANDROID_VERTICAL_TABS_NEW_LABEL);
+        verify(mTracker).dismissed(FeatureConstants.ANDROID_VERTICAL_TABS_NEW_LABEL);
     }
 
     @Test
     @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
     @Config(qualifiers = "sw600dp")
-    public void showMenu_clickVerticalTabsEntryPoint_dismissesBadge() {
+    public void showMenu_suppressesBadgeWhenTrackerReturnsFalse() {
         MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
-        // Start with the horizontal tab.
         VerticalTabUtils.setVerticalTabsEnabled(false);
-        ChromeSharedPreferences.getInstance()
-                .writeInt(ChromePreferenceKeys.VERTICAL_TABS_LAYOUT_TOGGLE_VIEW_COUNT, 0);
+        when(mTracker.shouldTriggerHelpUi(FeatureConstants.ANDROID_VERTICAL_TABS_NEW_LABEL))
+                .thenReturn(false);
 
         mCoordinator.showMenu(mRectProvider, false, mActivity);
 
-        verifyMenuState(6);
+        verifyMenuState(/* expectedNumItems= */ 6);
 
         PropertyModel toggleLayoutItemModel = getItemModelAtPosition(5);
-
-        // Act: Select the toggle option.
-        mCoordinator
-                .getListMenuDelegate(mContentView)
-                .onItemSelected(toggleLayoutItemModel, mListView);
-
-        // Simulate enabling vertical tabs as a result of the user selection.
-        VerticalTabUtils.setVerticalTabsEnabled(true);
-
-        // Verify view count was set to Max count (3), permanently suppressing the badge.
-        assertEquals(
-                VerticalTabUtils.NEW_BADGE_MAX_VIEW_COUNT, VerticalTabUtils.getNewBadgeViewCount());
+        CharSequence title = toggleLayoutItemModel.get(ListMenuItemProperties.TITLE);
+        assertNotNull(title);
+        assertTrue(title.toString().contains(mActivity.getString(R.string.show_tabs_vertically)));
+        assertFalse("Title should not contain New text", title.toString().contains("New"));
+        assertFalse("Title should not carry badge spans", title instanceof Spannable);
+        verify(mTracker).shouldTriggerHelpUi(FeatureConstants.ANDROID_VERTICAL_TABS_NEW_LABEL);
+        verify(mTracker, never()).dismissed(any());
     }
 
     @Test
@@ -279,8 +399,6 @@ public class TabStripContextMenuCoordinatorUnitTest {
     public void showMenu_desktopDevice_suppressesNewBadge() {
         MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
         VerticalTabUtils.setVerticalTabsEnabled(false);
-        ChromeSharedPreferences.getInstance()
-                .writeInt(ChromePreferenceKeys.VERTICAL_TABS_LAYOUT_TOGGLE_VIEW_COUNT, 0);
 
         // Mock device form factor as Desktop.
         DeviceInfo.setIsDesktopForTesting(true);
@@ -288,9 +406,22 @@ public class TabStripContextMenuCoordinatorUnitTest {
         mCoordinator.showMenu(mRectProvider, false, mActivity);
         verifyMenuState(/* expectedNumItems= */ 8);
 
-        // View count should remain 0 because Desktop suppresses the badge. This feature is only for
-        // tablets.
-        assertEquals(0, VerticalTabUtils.getNewBadgeViewCount());
+        PropertyModel toggleLayoutItemModel = null;
+        for (int i = 0; i < mListView.getAdapter().getCount(); i++) {
+            ListItem item = (ListItem) mListView.getAdapter().getItem(i);
+            if (item.model.containsKey(ListMenuItemProperties.MENU_ITEM_ID)
+                    && item.model.get(ListMenuItemProperties.MENU_ITEM_ID)
+                            == R.id.toggle_tab_layout_menu_id) {
+                toggleLayoutItemModel = item.model;
+                break;
+            }
+        }
+        assertNotNull(toggleLayoutItemModel);
+        CharSequence title = toggleLayoutItemModel.get(ListMenuItemProperties.TITLE);
+        assertNotNull(title);
+        assertTrue(title.toString().contains(mActivity.getString(R.string.show_tabs_vertically)));
+        assertFalse("Title should not carry badge spans on desktop", title instanceof Spannable);
+        verify(mTracker, never()).shouldTriggerHelpUi(any());
     }
 
     @Test
@@ -495,6 +626,7 @@ public class TabStripContextMenuCoordinatorUnitTest {
     public void showMenu_verifyPinGlicOption() {
         // Arrange.
         MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+        GlicUtils.setIsSidePanelFormFactorForTesting(true);
         when(mPrefService.getBoolean(GlicPrefNames.GLIC_PINNED_TO_TABSTRIP)).thenReturn(false);
         mCoordinator.showMenu(mRectProvider, false, mActivity);
         verifyMenuState(/* expectedNumItems= */ 6);
@@ -516,6 +648,7 @@ public class TabStripContextMenuCoordinatorUnitTest {
     public void showMenu_verifyUnpinGlicOption() {
         // Arrange.
         MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+        GlicUtils.setIsSidePanelFormFactorForTesting(true);
         when(mPrefService.getBoolean(GlicPrefNames.GLIC_PINNED_TO_TABSTRIP)).thenReturn(true);
         mCoordinator.showMenu(mRectProvider, false, mActivity);
         verifyMenuState(/* expectedNumItems= */ 6);
@@ -566,6 +699,55 @@ public class TabStripContextMenuCoordinatorUnitTest {
         // Verify.
         verify(mTaskManager).launch(ContextUtils.getApplicationContext());
         assertFalse(mMenuWindow.isShowing());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ANDROID_KEYBOARD_SHORTCUT_HINTS,
+        ChromeFeatureList.TASK_MANAGER_CLANK
+    })
+    public void showMenu_verifyShortcutTextPopulatedWhenEnabled() {
+        MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+        KeyboardShortcutsJni.setInstanceForTesting(mKeyboardShortcutsJniMock);
+        when(mKeyboardShortcutsJniMock.getShortcutTextForCommandId(anyInt())).thenReturn("");
+        when(mKeyboardShortcutsJniMock.getShortcutTextForCommandId(ChromeCommandIds.NEW_TAB))
+                .thenReturn("Ctrl+T");
+        when(mKeyboardShortcutsJniMock.getShortcutTextForCommandId(ChromeCommandIds.RESTORE_TAB))
+                .thenReturn("Ctrl+Shift+T");
+        when(mKeyboardShortcutsJniMock.getShortcutTextForCommandId(
+                        ChromeCommandIds.BOOKMARK_ALL_TABS))
+                .thenReturn("Ctrl+Shift+D");
+        when(mKeyboardShortcutsJniMock.getShortcutTextForCommandId(
+                        ChromeCommandIds.TASK_MANAGER_SHORTCUT))
+                .thenReturn("Ctrl+Esc");
+
+        mCoordinator.showMenu(mRectProvider, false, mActivity);
+
+        // Baseline (4) + Divider (1) + Task Manager (1) = 6 items.
+        verifyMenuState(/* expectedNumItems= */ 6);
+        assertEquals("Ctrl+T", getItemModelAtPosition(0).get(ListMenuItemProperties.SHORTCUT_TEXT));
+        assertEquals(
+                "Ctrl+Shift+T",
+                getItemModelAtPosition(1).get(ListMenuItemProperties.SHORTCUT_TEXT));
+        assertEquals(
+                "Ctrl+Shift+D",
+                getItemModelAtPosition(2).get(ListMenuItemProperties.SHORTCUT_TEXT));
+        assertNull(getItemModelAtPosition(3).get(ListMenuItemProperties.SHORTCUT_TEXT));
+        assertEquals(
+                "Ctrl+Esc", getItemModelAtPosition(5).get(ListMenuItemProperties.SHORTCUT_TEXT));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_KEYBOARD_SHORTCUT_HINTS)
+    public void showMenu_verifyShortcutTextNullWhenDisabled() {
+        MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
+
+        mCoordinator.showMenu(mRectProvider, false, mActivity);
+
+        verifyMenuState(/* expectedNumItems= */ 4);
+        for (int i = 0; i < 4; i++) {
+            assertNull(getItemModelAtPosition(i).get(ListMenuItemProperties.SHORTCUT_TEXT));
+        }
     }
 
     private void verifyMenuState(int expectedNumItems) {

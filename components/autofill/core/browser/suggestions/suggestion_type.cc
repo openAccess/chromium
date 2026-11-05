@@ -41,6 +41,8 @@ std::string_view SuggestionTypeToStringView(SuggestionType type) {
       return "kManageIban";
     case SuggestionType::kManageLoyaltyCard:
       return "kManageLoyaltyCard";
+    case SuggestionType::kManageOffers:
+      return "kManageOffers";
     case SuggestionType::kComposeResumeNudge:
       return "kComposeResumeNudge";
     case SuggestionType::kComposeDisable:
@@ -91,8 +93,6 @@ std::string_view SuggestionTypeToStringView(SuggestionType type) {
       return "kBnplEntry";
     case SuggestionType::kMerchantPromoCodeEntry:
       return "kMerchantPromoCodeEntry";
-    case SuggestionType::kSeePromoCodeDetails:
-      return "kSeePromoCodeDetails";
     case SuggestionType::kWebauthnCredential:
       return "kWebauthnCredential";
     case SuggestionType::kWebauthnSignInWithAnotherDevice:
@@ -117,6 +117,8 @@ std::string_view SuggestionTypeToStringView(SuggestionType type) {
       return "kFillAutofillAi";
     case SuggestionType::kPendingStateSignin:
       return "kPendingStateSignin";
+    case SuggestionType::kPendingStateTrustedVaultError:
+      return "kPendingStateTrustedVaultError";
     case SuggestionType::kAtMemorySearchResult:
       return "kAtMemorySearchResult";
     case SuggestionType::kAtMemoryInactivityNudge:
@@ -163,6 +165,12 @@ std::string_view SuggestionTypeToStringView(SuggestionType type) {
       return "kRemoveAutofillAi";
     case SuggestionType::kAutofillAiSourceAttribution:
       return "kAutofillAiSourceAttribution";
+    case SuggestionType::kGmailOneTimePasswordEntry:
+      return "kGmailOneTimePasswordEntry";
+    case SuggestionType::kOpenGmailForOtps:
+      return "kOpenGmailForOtps";
+    case SuggestionType::kAtMemoryShortcutSettingsPromo:
+      return "kAtMemoryShortcutSettingsPromo";
   }
   NOTREACHED();
 }

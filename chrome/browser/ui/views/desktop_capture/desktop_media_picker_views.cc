@@ -17,6 +17,7 @@
 #include "base/strings/strcat.h"
 #include "base/types/expected.h"
 #include "build/build_config.h"
+#include "chrome/browser/enterprise/data_protection/data_protection_features.h"
 #include "chrome/browser/media/webrtc/desktop_media_list.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker_controller.h"
 #include "chrome/browser/media/webrtc/desktop_media_picker_manager.h"
@@ -35,6 +36,7 @@
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -76,7 +78,6 @@
 #if defined(USE_AURA)
 #include "ui/aura/window_tree_host.h"
 #endif
-
 
 using ::blink::mojom::MediaStreamRequestResult;
 using ::content::DesktopMediaID;
@@ -166,7 +167,7 @@ void RecordUmaSelection(content::GlobalRenderFrameHostId capturer_global_id,
                         const DesktopMediaID& selected_media,
                         DesktopMediaList::Type source_type,
                         base::TimeTicks dialog_open_time) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   switch (source_type) {
     case DesktopMediaList::Type::kNone:
@@ -465,7 +466,8 @@ DesktopMediaPickerDialogView::DesktopMediaPickerDialogView(
               ? params.web_contents->GetPrimaryMainFrame()->GetGlobalId()
               : content::GlobalRenderFrameHostId()),
       parent_(parent),
-      dialog_open_time_(base::TimeTicks::Now()) {
+      dialog_open_time_(base::TimeTicks::Now()),
+      on_picker_destroying_(std::move(params.on_picker_destroying)) {
   CHECK(!params.force_audio_checkboxes_to_default_checked ||
         !params.exclude_system_audio);
   RecordAction(base::UserMetricsAction("GetDisplayMedia.ShowDialog"));
@@ -668,7 +670,7 @@ DesktopMediaPickerDialogView::DesktopMediaPickerDialogView(
         l10n_util::GetStringUTF16(IDS_SEARCHBOX_PICKER_DESCRIPTION));
   }
 
-  DCHECK(!categories_.empty());
+  CHECK(!categories_.empty(), base::NotFatalUntil::M162);
 
   if (params.restricted_by_policy) {
     AddChildView(CreatePolicyRestrictedView());
@@ -678,12 +680,16 @@ DesktopMediaPickerDialogView::DesktopMediaPickerDialogView(
   ConfigureUIForNewPane(previously_selected_category_);
 
   bool modal_dialog = MediaPickerCanShowAsWebModal(params.web_contents);
+  // Pass `params.context` or fallback to `params.parent` (which Mac callers
+  // often set instead of `context`) so that `CreateMediaPickerDialogWidget` can
+  // identify the target display and parent window.
   views::Widget* widget = CreateMediaPickerDialogWidget(
       modal_dialog ? GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
                          params.web_contents)
                    : nullptr,
       params.web_contents,
-      /*delegate=*/this, params.context, /*parent=*/gfx::NativeView());
+      /*delegate=*/this, params.context ? params.context : params.parent,
+      /*parent=*/gfx::NativeView());
 
   extensions::SecurityDialogTracker::GetInstance()->AddSecurityDialog(widget);
 
@@ -737,6 +743,9 @@ DesktopMediaPickerDialogView::DesktopMediaPickerDialogView(
 }
 
 DesktopMediaPickerDialogView::~DesktopMediaPickerDialogView() {
+  if (on_picker_destroying_) {
+    std::move(on_picker_destroying_).Run();
+  }
 #if BUILDFLAG(IS_WIN)
   if (!pip_exclusion_session_id_) {
     return;
@@ -996,8 +1005,9 @@ DesktopMediaPickerDialogView::GetSelectedController() {
 DesktopMediaList::Type DesktopMediaPickerDialogView::GetSelectedSourceListType()
     const {
   const int index = GetSelectedTabIndex();
-  DCHECK_GE(index, 0);
-  DCHECK_LT(static_cast<size_t>(index), categories_.size());
+  CHECK_GE(index, 0, base::NotFatalUntil::M162);
+  CHECK_LT(static_cast<size_t>(index), categories_.size(),
+           base::NotFatalUntil::M162);
   return categories_[index].type;
 }
 
@@ -1072,7 +1082,7 @@ void DesktopMediaPickerDialogView::RecordSourceCountsUma() {
 
 void DesktopMediaPickerDialogView::RecordAudioToggleUma(
     const content::DesktopMediaID& source) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   if (request_source_ != RequestSource::kGetDisplayMedia) {
     return;
@@ -1133,7 +1143,7 @@ void DesktopMediaPickerDialogView::RecordAudioToggleUma(
 
 void DesktopMediaPickerDialogView::RecordTabDiscardedStatusUma(
     const DesktopMediaID& source) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   if (source.type != DesktopMediaID::Type::TYPE_WEB_CONTENTS) {
     return;
@@ -1160,7 +1170,7 @@ void DesktopMediaPickerDialogView::RecordTabDiscardedStatusUma(
 #if BUILDFLAG(IS_MAC)
 void DesktopMediaPickerDialogView::RecordUserActionOnDeniedAudioPermissionUma(
     std::optional<content::DesktopMediaID> source) const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   if (request_source_ != RequestSource::kGetDisplayMedia) {
     return;
@@ -1270,9 +1280,24 @@ std::u16string DesktopMediaPickerDialogView::GetWindowTitle() const {
 
 bool DesktopMediaPickerDialogView::IsDialogButtonEnabled(
     ui::mojom::DialogButton button) const {
-  return button != ui::mojom::DialogButton::kOk ||
-         GetSelectedController()->GetSelection().has_value() ||
-         accepted_source_.has_value();
+  if (button != ui::mojom::DialogButton::kOk) {
+    return true;
+  }
+  const DesktopMediaListController* controller = GetSelectedController();
+  std::optional<content::DesktopMediaID> selection =
+      accepted_source_.has_value() ? accepted_source_
+                                   : controller->GetSelection();
+  if (!selection.has_value()) {
+    return false;
+  }
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (base::FeatureList::IsEnabled(
+          enterprise_data_protection::kEnableTabSharingProtection) &&
+      controller->IsSourceSharingBlocked(*selection)) {
+    return false;
+  }
+#endif
+  return true;
 }
 
 views::View* DesktopMediaPickerDialogView::GetInitiallyFocusedView() {
@@ -1340,12 +1365,30 @@ void DesktopMediaPickerDialogView::OnSelectionChanged() {
 }
 
 void DesktopMediaPickerDialogView::AcceptSource() {
-  // This will call Accept() and close the dialog.
-  AcceptDialog();
+  if (IsDialogButtonEnabled(ui::mojom::DialogButton::kOk)) {
+    // This will call Accept() and close the dialog.
+    AcceptDialog();
+  }
 }
 
 void DesktopMediaPickerDialogView::AcceptSpecificSource(
     const DesktopMediaID& source) {
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (base::FeatureList::IsEnabled(
+          enterprise_data_protection::kEnableTabSharingProtection)) {
+    // Only the category matching `source.type` can own `source`; the other
+    // controllers would scan their full source list only to report no match.
+    for (const auto& category : categories_) {
+      if (AsDesktopMediaIdType(category.type) != source.type) {
+        continue;
+      }
+      if (category.controller->IsSourceSharingBlocked(source)) {
+        return;
+      }
+      break;
+    }
+  }
+#endif
   VLOG(1) << "DMPDV::AcceptSpecificSource: source_id = " << source.id;
 
   if (tabbed_pane_) {
@@ -1432,8 +1475,6 @@ void DesktopMediaPickerDialogView::OnPermissionUpdate(bool has_permission) {
   }
 }
 
-
-
 void DesktopMediaPickerDialogView::OnAudioSharingApprovedByUserUpdate() {
   UpdateAudioPermissionsWarningState(GetSelectedTabIndex());
 }
@@ -1505,7 +1546,7 @@ void DesktopMediaPickerImpl::Show(
 
 void DesktopMediaPickerImpl::NotifyDialogResult(
     base::expected<DesktopMediaID, MediaStreamRequestResult> result) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   // Once this method is called the |dialog_| will close and destroy itself.
   dialog_->DetachParent();

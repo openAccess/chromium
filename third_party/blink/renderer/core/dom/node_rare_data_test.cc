@@ -5,9 +5,15 @@
 #include "third_party/blink/renderer/core/dom/node_rare_data.h"
 
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/flat_tree_node_data.h"
+#include "third_party/blink/renderer/core/dom/node-inl.h"
 #include "third_party/blink/renderer/core/dom/node_lists_node_data.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/html/html_div_element.h"
+#include "third_party/blink/renderer/core/html/html_slot_element.h"
+#include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
@@ -33,10 +39,18 @@ class NodeRareDataTest : public PageTestBase {
   void SetFieldToNullIfExists(NodeRareData* data, FieldId id) {
     data->SetFieldToNullIfExists(id);
   }
+
+  class TestElement : public HTMLDivElement {
+   public:
+    explicit TestElement(Document& document) : HTMLDivElement(document) {}
+    using Node::EnsureRareData;
+    using Node::RareData;
+  };
 };
 
 TEST_F(NodeRareDataTest, BasicOperations) {
-  NodeRareData* rare_data = NodeRareData::Create();
+  TestElement* node = MakeGarbageCollected<TestElement>(GetDocument());
+  NodeRareData* rare_data = &node->EnsureRareData();
   ASSERT_NE(nullptr, rare_data);
   EXPECT_EQ(0u, GetSize(rare_data));
 
@@ -50,18 +64,19 @@ TEST_F(NodeRareDataTest, BasicOperations) {
 
   // Set NodeId (wrapped int32_t).
   NodeRareData* prev_ptr = rare_data;
-  auto [node_id_ref, new_rare_data] = rare_data->NodeId();
-  rare_data = new_rare_data;
+  int32_t& node_id_ref = rare_data->NodeId().RefreshNodeAndUnwrap(*node);
+  rare_data = node->RareData();
   // Initial capacity is kMinimumVectorSize (2), so setting first field should
   // not reallocate.
   EXPECT_EQ(prev_ptr, rare_data);
-  node_id_ref.get() = 42;
+  node_id_ref = 42;
   EXPECT_EQ(42, get_node_id());
   EXPECT_EQ(1u, GetSize(rare_data));
 
   // Set Nonce (wrapped AtomicString).
   prev_ptr = rare_data;
-  rare_data = rare_data->SetNonce(AtomicString("test-nonce"));
+  rare_data->SetNonce(AtomicString("test-nonce")).RefreshNode(*node);
+  rare_data = node->RareData();
   // Size reaches kMinimumVectorSize, still within capacity.
   EXPECT_EQ(prev_ptr, rare_data);
   EXPECT_EQ(AtomicString("test-nonce"), rare_data->GetNonce());
@@ -72,7 +87,8 @@ TEST_F(NodeRareDataTest, BasicOperations) {
   // as the new size (3) will be greater than the capacity (kMinimumVectorSize =
   // 2).
   prev_ptr = rare_data;
-  rare_data = rare_data->SetIsValue(AtomicString("test-is-value"));
+  rare_data->SetIsValue(AtomicString("test-is-value")).RefreshNode(*node);
+  rare_data = node->RareData();
   EXPECT_NE(prev_ptr, rare_data);  // Reallocation expected!
   EXPECT_EQ(AtomicString("test-is-value"), rare_data->IsValue());
   EXPECT_EQ(AtomicString("test-nonce"), rare_data->GetNonce());
@@ -81,7 +97,9 @@ TEST_F(NodeRareDataTest, BasicOperations) {
 
   // Set SavedLayerScrollOffset (wrapped ScrollOffset/gfx::Vector2dF).
   prev_ptr = rare_data;
-  rare_data = rare_data->SetSavedLayerScrollOffset(gfx::Vector2dF(1.0f, 2.0f));
+  rare_data->SetSavedLayerScrollOffset(gfx::Vector2dF(1.0f, 2.0f))
+      .RefreshNode(*node);
+  rare_data = node->RareData();
   // Size reaches kMinimumVectorSize * 2 (4), still within capacity.
   EXPECT_EQ(prev_ptr, rare_data);
   EXPECT_EQ(gfx::Vector2dF(1.0f, 2.0f), rare_data->SavedLayerScrollOffset());
@@ -94,7 +112,9 @@ TEST_F(NodeRareDataTest, BasicOperations) {
   // reallocation as the new size (5) will be greater than the capacity
   // (kMinimumVectorSize * 2 = 4).
   prev_ptr = rare_data;
-  rare_data = rare_data->SetLastSentUnboundedBounds(gfx::Rect(10, 20, 30, 40));
+  rare_data->SetLastSentUnboundedBounds(gfx::Rect(10, 20, 30, 40))
+      .RefreshNode(*node);
+  rare_data = node->RareData();
   EXPECT_NE(prev_ptr, rare_data);  // Reallocation expected!
   EXPECT_EQ(gfx::Rect(10, 20, 30, 40), rare_data->LastSentUnboundedBounds());
   EXPECT_EQ(gfx::Vector2dF(1.0f, 2.0f), rare_data->SavedLayerScrollOffset());
@@ -105,34 +125,41 @@ TEST_F(NodeRareDataTest, BasicOperations) {
 }
 
 TEST_F(NodeRareDataTest, OverwriteAndNullify) {
-  NodeRareData* rare_data = NodeRareData::Create();
+  TestElement* node = MakeGarbageCollected<TestElement>(GetDocument());
+  NodeRareData* rare_data = &node->EnsureRareData();
 
   // Set and overwrite Nonce.
-  rare_data = rare_data->SetNonce(AtomicString("nonce1"));
+  rare_data->SetNonce(AtomicString("nonce1")).RefreshNode(*node);
+  rare_data = node->RareData();
   EXPECT_EQ(AtomicString("nonce1"), rare_data->GetNonce());
   EXPECT_EQ(1u, GetSize(rare_data));
 
   NodeRareData* prev_ptr = rare_data;
-  rare_data = rare_data->SetNonce(AtomicString("nonce2"));
+  rare_data->SetNonce(AtomicString("nonce2")).RefreshNode(*node);
+  rare_data = node->RareData();
   EXPECT_EQ(prev_ptr, rare_data);
   EXPECT_EQ(AtomicString("nonce2"), rare_data->GetNonce());
   EXPECT_EQ(1u, GetSize(rare_data));
 
-  rare_data = rare_data->SetNonce(g_null_atom);
+  rare_data->SetNonce(g_null_atom).RefreshNode(*node);
+  rare_data = node->RareData();
   EXPECT_TRUE(rare_data->GetNonce().IsNull());
   EXPECT_EQ(1u, GetSize(rare_data));
 }
 
 TEST_F(NodeRareDataTest, SetFieldToNullIfExists) {
-  NodeRareData* rare_data = NodeRareData::Create();
+  TestElement* node = MakeGarbageCollected<TestElement>(GetDocument());
+  NodeRareData* rare_data = &node->EnsureRareData();
 
   // Initially HasField is false.
   EXPECT_FALSE(HasField(rare_data, FieldId::kNodeLists));
   EXPECT_EQ(nullptr, GetField(rare_data, FieldId::kNodeLists));
 
   // Ensure it (creates it).
-  auto [node_lists_ref, new_rare_data] = rare_data->EnsureNodeLists();
-  rare_data = new_rare_data;
+  NodeListsNodeData& node_lists =
+      rare_data->EnsureNodeLists().RefreshNodeAndUnwrap(*node);
+  rare_data = node->RareData();
+  EXPECT_EQ(&node_lists, rare_data->NodeLists());
   EXPECT_NE(nullptr, rare_data->NodeLists());
   EXPECT_TRUE(HasField(rare_data, FieldId::kNodeLists));
   EXPECT_NE(nullptr, GetField(rare_data, FieldId::kNodeLists));
@@ -151,7 +178,8 @@ TEST_F(NodeRareDataTest, SetFieldToNullIfExists) {
 }
 
 TEST_F(NodeRareDataTest, PseudoElementReallocation) {
-  NodeRareData* rare_data = NodeRareData::Create();
+  TestElement* node = MakeGarbageCollected<TestElement>(GetDocument());
+  NodeRareData* rare_data = &node->EnsureRareData();
   EXPECT_EQ(0u, GetSize(rare_data));
 
   // Create a parent element and a pseudo element.
@@ -160,7 +188,8 @@ TEST_F(NodeRareDataTest, PseudoElementReallocation) {
   ASSERT_NE(nullptr, pseudo);
 
   // Set PseudoElement (size 1).
-  rare_data = rare_data->SetPseudoElement(kPseudoIdBefore, pseudo);
+  rare_data->SetPseudoElement(kPseudoIdBefore, pseudo).RefreshNode(*node);
+  rare_data = node->RareData();
   EXPECT_TRUE(rare_data->HasAnyPseudos());
   EXPECT_EQ(pseudo, rare_data->GetPseudoElement(kPseudoIdBefore));
   EXPECT_EQ(1u, GetSize(rare_data));
@@ -168,13 +197,15 @@ TEST_F(NodeRareDataTest, PseudoElementReallocation) {
   // Trigger reallocation by adding two other fields.
   // Add 1st extra field: Nonce (size reaches kMinimumVectorSize, no realloc).
   NodeRareData* prev_ptr = rare_data;
-  rare_data = rare_data->SetNonce(AtomicString("nonce"));
+  rare_data->SetNonce(AtomicString("nonce")).RefreshNode(*node);
+  rare_data = node->RareData();
   EXPECT_EQ(prev_ptr, rare_data);
   EXPECT_EQ(kMinimumVectorSize, GetSize(rare_data));
 
   // Add 2nd extra field: IsValue (size 3 > kMinimumVectorSize, reallocation
   // expected).
-  rare_data = rare_data->SetIsValue(AtomicString("is-value"));
+  rare_data->SetIsValue(AtomicString("is-value")).RefreshNode(*node);
+  rare_data = node->RareData();
   EXPECT_NE(prev_ptr, rare_data);
   EXPECT_EQ(3u, GetSize(rare_data));
 
@@ -198,6 +229,60 @@ TEST_F(NodeRareDataTest, PseudoElementReallocation) {
   // `DCHECK(!GetField(FieldId::kPseudoElementData))` in its destructor.
   ThreadState::Current()->CollectAllGarbageForTesting(
       ThreadState::StackState::kNoHeapPointers);
+}
+
+TEST_F(NodeRareDataTest, ReentrantEnsureDisplayLockContextPreservesFields) {
+  GetPage().GetFocusController().SetActive(true);
+  GetPage().GetFocusController().SetFocused(true);
+
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(
+      "<div id=\"host\">"
+      "<template shadowrootmode=\"open\">"
+      "<slot id=\"slot\"></slot>"
+      "</template>"
+      "<input id=\"input\">"
+      "</div>");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* host = GetElementById("host");
+  Element* input = GetElementById("input");
+  HTMLSlotElement* slot = To<HTMLSlotElement>(
+      host->GetShadowRoot()->getElementById(AtomicString("slot")));
+  input->Focus();
+  ASSERT_EQ(input, GetDocument().FocusedElement());
+
+  // Populate kMinimumVectorSize fields so that adding another field during
+  // slot assignment recalc will reallocate NodeRareData.
+  TestElement* node = MakeGarbageCollected<TestElement>(GetDocument());
+  NodeRareData* rare_data = &node->EnsureRareData();
+  rare_data->SetNonce(AtomicString("test-nonce")).RefreshNode(*node);
+  rare_data = node->RareData();
+  rare_data->SetIsValue(AtomicString("test-is-value")).RefreshNode(*node);
+  rare_data = node->RareData();
+  ASSERT_EQ(kMinimumVectorSize, GetSize(rare_data));
+
+  // Appending `node` to `host` marks `host`'s shadow root as needing slot
+  // assignment recalc without creating `node`'s FlatTreeNodeData yet.
+  host->AppendChild(node);
+  ASSERT_TRUE(host->GetShadowRoot()->NeedsSlotAssignmentRecalc());
+  ASSERT_FALSE(HasField(node->RareData(), FieldId::kFlatTreeNodeData));
+
+  // Constructing DisplayLockContext walks the flat tree from the focused
+  // element (`input`), triggering slot assignment recalc on `host`'s shadow
+  // root, which re-enters `node`'s NodeRareData via EnsureFlatTreeNodeData()
+  // and reallocates it.
+  DisplayLockContext& context = node->EnsureDisplayLockContext();
+  EXPECT_FALSE(host->GetShadowRoot()->NeedsSlotAssignmentRecalc());
+
+  rare_data = node->RareData();
+  EXPECT_EQ(4u, GetSize(rare_data));
+  EXPECT_TRUE(HasField(rare_data, FieldId::kFlatTreeNodeData));
+  EXPECT_NE(nullptr, rare_data->GetFlatTreeNodeData());
+  EXPECT_EQ(slot, node->AssignedSlot());
+  EXPECT_TRUE(HasField(rare_data, FieldId::kDisplayLockContext));
+  EXPECT_EQ(&context, rare_data->GetDisplayLockContext());
+  EXPECT_EQ(AtomicString("test-nonce"), rare_data->GetNonce());
+  EXPECT_EQ(AtomicString("test-is-value"), rare_data->IsValue());
 }
 
 }  // namespace blink

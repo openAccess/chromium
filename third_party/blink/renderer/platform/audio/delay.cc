@@ -28,8 +28,6 @@
 #include <cmath>
 
 #include "base/compiler_specific.h"
-#include "base/notreached.h"
-#include "base/numerics/safe_conversions.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
 #include "third_party/blink/renderer/platform/audio/vector_math.h"
@@ -110,15 +108,6 @@ std::tuple<size_t, size_t> Delay::ProcessARateVector(
   return std::make_tuple(0, write_index_);
 }
 
-void Delay::HandleNaN(base::span<float> delay_times,
-                      size_t frames_to_process,
-                      float max_time) {
-  for (size_t k = 0; k < frames_to_process; ++k) {
-    if (std::isnan(delay_times[k])) {
-      delay_times[k] = max_time;
-    }
-  }
-}
 #endif
 
 size_t Delay::ProcessARateScalar(size_t start,
@@ -169,15 +158,10 @@ void Delay::ProcessARate(base::span<const float> source,
                          size_t frames_to_process) {
   DCHECK_LT(write_index_, buffer_.size());
 
-  // Any NaN's get converted to max time
-  // TODO(crbug.com/1013345): Don't need this if that bug is fixed
-  double max_time = MaxDelayTime();
-  HandleNaN(delay_times_.as_span(), frames_to_process, max_time);
-
   CopyToCircularBuffer(buffer_.as_span(), write_index_, source,
                        frames_to_process);
 
-  size_t frames_processed;
+  size_t frames_processed = 0;
   std::tie(frames_processed, write_index_) =
       ProcessARateVector(destination, frames_to_process);
 
@@ -246,8 +230,9 @@ void Delay::ProcessKRate(base::span<const float> source,
   // If interpolation_factor = 0, we don't need to do any interpolation and
   // destination contains the desired values.  We can skip the following code.
   if (interpolation_factor != 0) {
-    base::span<float> temp_span = temp_buffer_.as_span();
-    DCHECK_LE(frames_to_process, temp_span.size());
+    DCHECK_LE(frames_to_process, temp_buffer_.size());
+    base::span<float> temp_span =
+        temp_buffer_.as_span().first(frames_to_process);
     const size_t read_index2 = (read_index1 + 1) % buffer_length;
     remainder = buffer_length - read_index2;
     first_size = std::min(frames_to_process, remainder);
@@ -262,15 +247,14 @@ void Delay::ProcessKRate(base::span<const float> source,
     // Interpolate samples, where f = interpolation_factor
     //   dest[k] = dest[k] + f*(temp_span[k] - dest[k]);
 
-    auto frames_to_process_32 = base::checked_cast<uint32_t>(frames_to_process);
+    base::span<float> destination_span = destination.first(frames_to_process);
     // temp_span[k] = temp_span[k] - dest[k]
-    vector_math::Vsub(temp_span, destination, temp_span, frames_to_process_32);
+    vector_math::Vsub(temp_span, destination_span, temp_span);
 
     // dest[k] = dest[k] + f*temp_span[k]
     //         = dest[k] + f*(temp_span[k] - dest[k]);
     //
-    vector_math::Vsma(temp_span, interpolation_factor, destination,
-                      frames_to_process_32);
+    vector_math::Vsma(temp_span, interpolation_factor, destination_span);
   }
 }
 

@@ -63,7 +63,6 @@
 #include "content/browser/renderer_host/render_frame_metadata_provider_impl.h"
 #include "content/browser/renderer_host/render_frame_proxy_host.h"
 #include "content/browser/renderer_host/render_process_host_impl.h"
-#include "content/browser/renderer_host/render_widget_host_factory.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_child_frame.h"
 #include "content/browser/screen_orientation/screen_orientation_provider.h"
@@ -123,13 +122,13 @@
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "partition_alloc/page_allocator.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "services/network/public/mojom/network_service_test.mojom.h"
-#include "storage/browser/blob/blob_url_registry.h"
 #include "storage/browser/file_system/file_system_context.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -137,8 +136,8 @@
 #include "third_party/blink/public/common/chrome_debug_urls.h"
 #include "third_party/blink/public/common/frame/frame_visual_properties.h"
 #include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
+#include "third_party/blink/public/common/input/web_touch_event.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
-#include "third_party/blink/public/mojom/blob/blob_url_store.mojom-test-utils.h"
 #include "third_party/blink/public/mojom/filesystem/file_system.mojom.h"
 #include "third_party/blink/public/mojom/keyboard_lock/keyboard_lock.mojom-shared.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -950,6 +949,18 @@ void SimulateUnresponsivePrimaryMainFrameAndWaitForExit(
   EXPECT_TRUE(web_contents->IsCrashed());
 }
 
+void SimulateOOMPrimaryMainFrameAndWaitForExit(WebContents* web_contents) {
+  RenderProcessHost* rph = web_contents->GetPrimaryMainFrame()->GetProcess();
+  RenderProcessHostWatcher watcher(
+      rph, RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+
+  EXPECT_TRUE(
+      rph->Shutdown(partition_alloc::kTerminateOnCommitFailureExitCode));
+  watcher.Wait();
+  EXPECT_FALSE(watcher.did_exit_normally());
+  EXPECT_TRUE(web_contents->IsCrashed());
+}
+
 void PwnCommitIPC(WebContents* web_contents,
                   const GURL& target_url,
                   const GURL& new_url,
@@ -965,9 +976,10 @@ bool CanCommitURLForTesting(int child_id, const GURL& url) {
 
 void SimulateUnresponsiveRenderer(WebContents* web_contents,
                                   RenderWidgetHost* widget) {
-  static_cast<WebContentsImpl*>(web_contents)
-      ->RendererUnresponsive(RenderWidgetHostImpl::From(widget),
-                             base::DoNothing());
+  RenderWidgetHostImpl::From(widget)->RendererIsUnresponsive(
+      RenderWidgetHostImpl::RendererIsUnresponsiveReason::
+          kOnInputEventAckTimeout,
+      base::DoNothing());
 }
 
 #if defined(USE_AURA)
@@ -1209,10 +1221,20 @@ void SimulateMouseEvent(WebContents* web_contents,
     aura::Env::GetInstance()->set_mouse_button_flags(
         aura::Env::GetInstance()->mouse_button_flags() |
         get_event_flags_for_button(button));
+    // Renderer-initiated mouse drags also require the left button press to
+    // have been dispatched to the web contents.
+    if (button == blink::WebMouseEvent::Button::kLeft) {
+      aura::test::EnvTestHelper(aura::Env::GetInstance())
+          .SetLeftMousePressTarget(rwhvb->GetNativeView());
+    }
   } else if (type == blink::WebInputEvent::Type::kMouseUp) {
     int flags = aura::Env::GetInstance()->mouse_button_flags() &
                 ~get_event_flags_for_button(button);
     aura::Env::GetInstance()->set_mouse_button_flags(flags);
+    if (button == blink::WebMouseEvent::Button::kLeft) {
+      aura::test::EnvTestHelper(aura::Env::GetInstance())
+          .SetLeftMousePressTarget(nullptr);
+    }
     if (flags == 0) {
       aura::test::EnvTestHelper(aura::Env::GetInstance())
           .SetInputStateLookup(std::move(*g_saved_input_state_lookup));
@@ -1376,6 +1398,27 @@ void SimulateGestureEvent(WebContents* web_contents,
   RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
       web_contents->GetRenderWidgetHostView());
   view->ProcessGestureEvent(gesture_event, latency);
+}
+
+void SimulateRoutedGestureEvent(WebContents* web_contents,
+                                const blink::WebGestureEvent& gesture_event) {
+  auto* web_contents_impl = static_cast<WebContentsImpl*>(web_contents);
+  auto* root_view = static_cast<RenderWidgetHostViewBase*>(
+      web_contents->GetRenderWidgetHostView());
+  CHECK(root_view);
+  web_contents_impl->GetInputEventRouter()->RouteGestureEvent(
+      root_view, &gesture_event, ui::LatencyInfo());
+}
+
+void SimulateRoutedTouchEvent(WebContents* web_contents,
+                              const blink::WebTouchEvent& touch_event) {
+  auto* web_contents_impl = static_cast<WebContentsImpl*>(web_contents);
+  auto* root_view = static_cast<RenderWidgetHostViewBase*>(
+      web_contents->GetRenderWidgetHostView());
+  CHECK(root_view);
+  blink::WebTouchEvent routed_event(touch_event);
+  web_contents_impl->GetInputEventRouter()->RouteTouchEvent(
+      root_view, &routed_event, ui::LatencyInfo());
 }
 
 void SimulateTouchGestureAt(WebContents* web_contents,
@@ -3698,7 +3741,7 @@ void TestNavigationManager::RenderFrameCreated(
   NavigationRequest* request =
       host_impl->frame_tree_node()->navigation_request();
   if (host_impl->lifecycle_state() ==
-          RenderFrameHostImpl::LifecycleStateImpl::kSpeculative &&
+          RenderFrameHostLifecycleStateImpl::kSpeculative &&
       IsRequestCompatibleWithSpeculativeRFH(request) &&
       request->GetURL() == url_ &&
       (request == request_ || request_ == nullptr)) {
@@ -4331,7 +4374,7 @@ bool PwnMessageHelper::OpenPopup(RenderFrameHost* render_frame_host,
   params->allow_popup =
       true;  // The compromised renderer lies and sets this to true
   params->window_container_type = mojom::WindowContainerType::NORMAL;
-  params->disposition = WindowOpenDisposition::NEW_POPUP;
+  params->disposition = WindowOpenDisposition::kNewPopup;
   params->features = blink::mojom::WindowFeatures::New();
   params->referrer = blink::mojom::Referrer::New();
 
@@ -4353,9 +4396,14 @@ void PwnMessageHelper::OpenURL(RenderFrameHost* render_frame_host,
                                const GURL& url) {
   auto params = blink::mojom::OpenURLParams::New();
   params->url = url;
-  params->disposition = WindowOpenDisposition::CURRENT_TAB;
+  params->disposition = WindowOpenDisposition::kCurrentTab;
   params->should_replace_current_entry = false;
   params->user_gesture = true;
+  params->initiator_state_token =
+      static_cast<RenderFrameHostImpl*>(render_frame_host)
+          ->current_initiator_state_token();
+  params->initiator_document_token =
+      static_cast<RenderFrameHostImpl*>(render_frame_host)->GetDocumentToken();
   static_cast<mojom::FrameHost*>(
       static_cast<RenderFrameHostImpl*>(render_frame_host))
       ->OpenURL(std::move(params));
@@ -4457,33 +4505,6 @@ size_t GetLockedCompositorFrameCount() {
 void PurgeUnlockedCompositorFrames() {
   viz::FrameEvictionManager::GetInstance()->PurgeAllUnlockedFrames();
 }
-
-// static
-void BlobURLStoreInterceptor::Intercept(GURL target_url,
-                                        storage::BlobUrlRegistry* registry,
-                                        mojo::ReceiverId receiver_id) {
-  auto interceptor = base::WrapUnique(new BlobURLStoreInterceptor(target_url));
-  auto* raw_interceptor = interceptor.get();
-  auto impl = registry->receivers_for_testing().SwapImplForTesting(
-      receiver_id, std::move(interceptor));
-  raw_interceptor->url_store_ = std::move(impl);
-}
-
-blink::mojom::BlobURLStore* BlobURLStoreInterceptor::GetForwardingInterface() {
-  return url_store_.get();
-}
-
-void BlobURLStoreInterceptor::Register(
-    mojo::PendingRemote<blink::mojom::Blob> blob,
-    const GURL& url,
-    RegisterCallback callback) {
-  GetForwardingInterface()->Register(std::move(blob), target_url_,
-                                     std::move(callback));
-}
-
-BlobURLStoreInterceptor::BlobURLStoreInterceptor(GURL target_url)
-    : target_url_(target_url) {}
-BlobURLStoreInterceptor::~BlobURLStoreInterceptor() = default;
 
 namespace {
 
@@ -4938,7 +4959,7 @@ void SpeculativeRenderFrameHostObserver::RenderFrameCreated(
   NavigationRequest* request =
       host_impl->frame_tree_node()->navigation_request();
   if (host_impl->lifecycle_state() ==
-          RenderFrameHostImpl::LifecycleStateImpl::kSpeculative &&
+          RenderFrameHostLifecycleStateImpl::kSpeculative &&
       IsRequestCompatibleWithSpeculativeRFH(request) &&
       request->GetURL() == url_) {
     run_loop_.Quit();
@@ -5016,6 +5037,7 @@ void SetCapturedSurfaceControllerFactoryForTesting(
 
 std::optional<int> GetDOMNodeId(RenderFrameHost& rfh,
                                 std::string_view query_selector) {
+  CHECK(static_cast<RenderFrameHostImpl&>(rfh).is_local_root());
   ScopedTestDevToolsProtocolClient devtools_client(rfh);
 
   // Get the document node.
@@ -5050,11 +5072,12 @@ std::optional<int> GetDOMNodeId(RenderFrameHost& rfh,
   return dom_node_id;
 }
 
-std::optional<int> GetDOMNodeIdFromSubframe(
-    content::RenderFrameHost& rfh,
+std::optional<int> GetDOMNodeIdFromLocalSubframe(
+    content::RenderFrameHost& parent_rfh,
     std::string_view subframe_query_selector,
     std::string_view query_selector) {
-  content::ScopedTestDevToolsProtocolClient devtools_client(rfh);
+  CHECK(static_cast<RenderFrameHostImpl&>(parent_rfh).is_local_root());
+  content::ScopedTestDevToolsProtocolClient devtools_client(parent_rfh);
 
   // Get the main document node.
   const base::DictValue* result =
@@ -5173,182 +5196,6 @@ std::vector<RenderWidgetHost*> GetPopupWidgets(WebContents* web_contents) {
   return popup_widgets;
 }
 
-CreateNewPopupWidgetInterceptor::CreateNewPopupWidgetInterceptor(
-    RenderFrameHost* rfh,
-    base::OnceCallback<void(RenderWidgetHost*)> did_create_callback)
-    : swapped_impl_(static_cast<RenderFrameHostImpl*>(rfh)
-                        ->local_frame_host_receiver_for_testing(),
-                    this),
-      did_create_callback_(std::move(did_create_callback)) {}
-
-CreateNewPopupWidgetInterceptor::~CreateNewPopupWidgetInterceptor() = default;
-
-void CreateNewPopupWidgetInterceptor::CreateNewPopupWidget(
-    mojo::PendingAssociatedReceiver<blink::mojom::PopupWidgetHost>
-        blink_popup_widget_host,
-    mojo::PendingAssociatedReceiver<blink::mojom::WidgetHost> blink_widget_host,
-    mojo::PendingAssociatedRemote<blink::mojom::Widget> blink_widget) {
-  class PopupWidgetCreationObserver : public RenderWidgetHostFactory {
-   public:
-    PopupWidgetCreationObserver() { RegisterFactory(this); }
-
-    ~PopupWidgetCreationObserver() override { UnregisterFactory(); }
-
-    // RenderWidgetHostFactory overrides:
-    RenderWidgetHostImpl* CreateSelfOwnedRenderWidgetHost(
-        FrameTree* frame_tree,
-        RenderWidgetHostDelegate* delegate,
-        base::SafeRef<SiteInstanceGroup> site_instance_group,
-        int32_t routing_id,
-        bool hidden,
-        GlobalRenderFrameHostId popup_creator_frame_id) override {
-      CHECK(!last_created_widget_);
-      last_created_widget_ =
-          RenderWidgetHostFactory::CreateSelfOwnedRenderWidgetHost(
-              frame_tree, delegate, std::move(site_instance_group), routing_id,
-              hidden, popup_creator_frame_id);
-      return last_created_widget_;
-    }
-
-    RenderWidgetHostImpl* TakeLastCreatedWidget() {
-      return std::exchange(last_created_widget_, nullptr);
-    }
-
-   private:
-    raw_ptr<RenderWidgetHostImpl> last_created_widget_;
-  };
-
-  PopupWidgetCreationObserver creation_observer;
-
-  GetForwardingInterface()->CreateNewPopupWidget(
-      std::move(blink_popup_widget_host), std::move(blink_widget_host),
-      std::move(blink_widget));
-
-  if (!did_create_callback_) {
-    return;
-  }
-
-  if (auto* widget = creation_observer.TakeLastCreatedWidget(); widget) {
-    std::move(did_create_callback_).Run(widget);
-  }
-}
-
-blink::mojom::LocalFrameHost*
-CreateNewPopupWidgetInterceptor::GetForwardingInterface() {
-  return swapped_impl_.old_impl();
-}
-
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
-ShowPopupWidgetWaiter::ShowPopupMenuInterceptor::ShowPopupMenuInterceptor(
-    RenderFrameHost* rfh,
-    base::OnceCallback<void(const gfx::Rect&)> did_show_popup_menu_callback)
-    : swapped_impl_(static_cast<RenderFrameHostImpl*>(rfh)
-                        ->local_frame_host_receiver_for_testing(),
-                    this),
-      did_show_popup_menu_callback_(std::move(did_show_popup_menu_callback)) {}
-
-ShowPopupWidgetWaiter::ShowPopupMenuInterceptor::~ShowPopupMenuInterceptor() =
-    default;
-
-void ShowPopupWidgetWaiter::ShowPopupMenuInterceptor::ShowPopupMenu(
-    mojo::PendingRemote<blink::mojom::PopupMenuClient> popup_client,
-    const gfx::Rect& bounds,
-    double font_size,
-    int32_t selected_item,
-    std::vector<blink::mojom::MenuItemPtr> menu_items,
-    bool right_aligned,
-    bool allow_multiple_selection) {
-  if (did_show_popup_menu_callback_) {
-    std::move(did_show_popup_menu_callback_).Run(bounds);
-    mojo::Remote<blink::mojom::PopupMenuClient>(std::move(popup_client))
-        ->DidCancel();
-    return;
-  }
-
-  GetForwardingInterface()->ShowPopupMenu(
-      std::move(popup_client), bounds, font_size, selected_item,
-      std::move(menu_items), right_aligned, allow_multiple_selection);
-}
-
-blink::mojom::LocalFrameHost*
-ShowPopupWidgetWaiter::ShowPopupMenuInterceptor::GetForwardingInterface() {
-  return swapped_impl_.old_impl();
-}
-#endif
-
-ShowPopupWidgetWaiter::ShowPopupWidgetWaiter(WebContents* web_contents,
-                                             RenderFrameHost* frame_host)
-    : create_new_popup_widget_interceptor_(
-          static_cast<RenderFrameHostImpl*>(frame_host),
-          base::BindOnce(&ShowPopupWidgetWaiter::DidCreatePopupWidget,
-                         base::Unretained(this))),
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
-      show_popup_menu_interceptor_(
-          frame_host,
-          base::BindOnce(&ShowPopupWidgetWaiter::DidShowPopupMenu,
-                         base::Unretained(this))),
-#endif
-
-      frame_host_(frame_host) {
-}
-
-ShowPopupWidgetWaiter::~ShowPopupWidgetWaiter() {
-  if (auto* rwhi = RenderWidgetHostImpl::FromID(process_id_, routing_id_)) {
-    std::ignore =
-        rwhi->popup_widget_host_receiver_for_testing().SwapImplForTesting(rwhi);
-  }
-}
-
-void ShowPopupWidgetWaiter::Wait() {
-  run_loop_.Run();
-}
-
-blink::mojom::PopupWidgetHost* ShowPopupWidgetWaiter::GetForwardingInterface() {
-  DCHECK_NE(IPC::mojom::kRoutingIdNone, routing_id_);
-  return RenderWidgetHostImpl::FromID(process_id_, routing_id_);
-}
-
-void ShowPopupWidgetWaiter::ShowPopup(const gfx::Rect& initial_rect,
-                                      const gfx::Rect& initial_anchor_rect,
-                                      ShowPopupCallback callback) {
-  GetForwardingInterface()->ShowPopup(initial_rect, initial_anchor_rect,
-                                      std::move(callback));
-  initial_rect_ = initial_rect;
-  run_loop_.Quit();
-}
-
-void ShowPopupWidgetWaiter::DidCreatePopupWidget(
-    RenderWidgetHost* render_widget_host) {
-  process_id_ = render_widget_host->GetProcess()->GetDeprecatedID();
-  routing_id_ = render_widget_host->GetRoutingID();
-  // Swapped back in destructor from process_id_ and routing_id_ lookup.
-  std::ignore = static_cast<RenderWidgetHostImpl*>(render_widget_host)
-                    ->popup_widget_host_receiver_for_testing()
-                    .SwapImplForTesting(this);
-}
-
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
-void ShowPopupWidgetWaiter::DidShowPopupMenu(const gfx::Rect& bounds) {
-  initial_rect_ = bounds;
-  run_loop_.Quit();
-}
-#endif
-
-RequestCloseWidgetInterceptor::RequestCloseWidgetInterceptor(
-    RenderWidgetHost* render_widget_host)
-    : swapped_impl_(static_cast<RenderWidgetHostImpl*>(render_widget_host)
-                        ->popup_widget_host_receiver_for_testing(),
-                    this) {}
-
-RequestCloseWidgetInterceptor::~RequestCloseWidgetInterceptor() = default;
-
-blink::mojom::PopupWidgetHost*
-RequestCloseWidgetInterceptor::GetForwardingInterface() {
-  return swapped_impl_.old_impl();
-}
-
-void RequestCloseWidgetInterceptor::RequestClosePopup() {}
-
 void SimulateCharTyped(WebContents* web_contents, char16_t character) {
   ui::DomKey dom_key;
   ui::DomCode dom_code;
@@ -5392,6 +5239,13 @@ void SimulateCharTyped(WebContents* web_contents, char16_t character) {
       process, RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
   process->Shutdown(content::RESULT_CODE_KILLED);
   return watcher.Wait();
+}
+
+void SimulateDragStartForTesting(RenderFrameHost* source_rfh,
+                                 DropData* drop_data) {
+  auto* web_contents = static_cast<WebContentsImpl*>(
+      WebContents::FromRenderFrameHost(source_rfh));
+  web_contents->OnStartDragging(drop_data, source_rfh->GetGlobalFrameToken());
 }
 
 }  // namespace content

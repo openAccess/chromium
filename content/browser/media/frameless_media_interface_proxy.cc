@@ -15,11 +15,11 @@
 #include "media/mojo/mojom/media_service.mojom.h"
 #include "media/mojo/mojom/renderer_extensions.mojom.h"
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #include "content/public/browser/oop_video_decoder_factory.h"
 #include "media/base/media_switches.h"
 #include "mojo/public/cpp/bindings/message.h"
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 namespace content {
 
@@ -58,37 +58,35 @@ void FramelessMediaInterfaceProxy::CreateVideoDecoder(
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   // The browser process cannot act as a proxy for video decoding and clients
   // should not attempt to use it that way.
-  DCHECK(!dst_video_decoder);
+  CHECK(!dst_video_decoder, base::NotFatalUntil::M160);
 
   InterfaceFactory* factory = GetMediaInterfaceFactory();
   if (!factory)
     return;
 
   mojo::PendingRemote<media::mojom::VideoDecoder> oop_video_decoder;
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-  if (media::IsOutOfProcessVideoDecodingEnabled()) {
-    if (!render_process_host_) {
-      if (!vd_factory_remote_.is_bound()) {
-        LaunchOOPVideoDecoderFactory(
-            vd_factory_remote_.BindNewPipeAndPassReceiver(), /*gpu_remote=*/{});
-        vd_factory_remote_.reset_on_disconnect();
-      }
-
-      CHECK(vd_factory_remote_.is_bound());
-
-      vd_factory_remote_->CreateVideoDecoderWithTracker(
-          oop_video_decoder.InitWithNewPipeAndPassReceiver(), /*tracker=*/{});
-    } else {
-      render_process_host_->CreateOOPVideoDecoder(
-          oop_video_decoder.InitWithNewPipeAndPassReceiver());
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
+  if (!render_process_host_) {
+    if (!vd_factory_remote_.is_bound()) {
+      LaunchOOPVideoDecoderFactory(
+          vd_factory_remote_.BindNewPipeAndPassReceiver(), /*gpu_remote=*/{});
+      vd_factory_remote_.reset_on_disconnect();
     }
+
+    CHECK(vd_factory_remote_.is_bound());
+
+    vd_factory_remote_->CreateVideoDecoderWithTracker(
+        oop_video_decoder.InitWithNewPipeAndPassReceiver(), /*tracker=*/{});
+  } else {
+    render_process_host_->CreateOOPVideoDecoder(
+        oop_video_decoder.InitWithNewPipeAndPassReceiver());
   }
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   factory->CreateVideoDecoder(std::move(receiver),
                               std::move(oop_video_decoder));
 }
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 void FramelessMediaInterfaceProxy::CreateVideoDecoderWithTracker(
     mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
     mojo::PendingRemote<media::mojom::VideoDecoderTracker> tracker) {
@@ -100,7 +98,7 @@ void FramelessMediaInterfaceProxy::CreateVideoDecoderWithTracker(
   CHECK(mojo::IsInMessageDispatch());
   mojo::ReportBadMessage("CreateVideoDecoderWithTracker() called unexpectedly");
 }
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 void FramelessMediaInterfaceProxy::CreateAudioEncoder(
     mojo::PendingReceiver<media::mojom::AudioEncoder> receiver) {
@@ -158,7 +156,7 @@ FramelessMediaInterfaceProxy::GetMediaInterfaceFactory() {
 void FramelessMediaInterfaceProxy::ConnectToMediaService() {
   DVLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(!interface_factory_remote_);
+  CHECK(!interface_factory_remote_, base::NotFatalUntil::M160);
 
   mojo::PendingRemote<media::mojom::FrameInterfaceFactory> interfaces;
   std::ignore = interfaces.InitWithNewPipeAndPassReceiver();

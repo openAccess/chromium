@@ -44,11 +44,8 @@ class ContentSettingBackedBooleanTest : public PlatformTest {
   }
 
   HostContentSettingsMap* SettingsMap() {
-    return ios::HostContentSettingsMapFactory::GetForProfile(profile_.get());
-  }
-
-  sync_preferences::TestingPrefServiceSyncable* PrefService() {
-    return profile_->GetTestingPrefService();
+    return ios::HostContentSettingsMapFactory::GetForProfile(profile_.get())
+        .get();
   }
 
   ContentSettingBackedBoolean* GetObservableBoolean() {

@@ -10,13 +10,17 @@
 #include "base/json/json_reader.h"
 #include "base/run_loop.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_command_controller.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/location_bar/location_bar.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/theme_colors_source_manager.h"
 #include "chrome/browser/ui/webui/theme_colors_source_manager_factory.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
-#include "chrome/browser/ui/webui/webui_toolbar/adapters/navigation_controls_state_fetcher_impl.h"
+#include "chrome/browser/ui/webui/webui_toolbar/adapters/toolbar_state_fetcher_impl.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_test_utils.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -123,7 +127,8 @@ class MockToolbarUIDelegate
               HandleContextMenu,
               (toolbar_ui_api::mojom::ContextMenuType menu_type,
                const gfx::RectF& bounds,
-               ui::mojom::MenuSourceType source),
+               ui::mojom::MenuSourceType source,
+               std::optional<uint32_t> show_menu_token),
               (override));
   MOCK_METHOD(void,
               ShowOverflowMenu,
@@ -144,14 +149,6 @@ class MockToolbarUIDelegate
               OnContentSettingImagePointerDown,
               (::toolbar_ui_api::mojom::ContentSettingImageType type),
               (override));
-  MOCK_METHOD(void,
-              OnContentSettingImageAnimationEnded,
-              (::toolbar_ui_api::mojom::ContentSettingImageType),
-              (override));
-  MOCK_METHOD(void,
-              OnPageActionPointerDown,
-              (::toolbar_ui_api::mojom::PageActionId action_id),
-              (override));
   MOCK_METHOD(
       void,
       OnPageActionClick,
@@ -163,6 +160,7 @@ class MockToolbarUIDelegate
   MOCK_METHOD(void,
               OnPageActionChipShowingChanged,
               (::toolbar_ui_api::mojom::PageActionId action_id,
+               bool is_showing,
                ::toolbar_ui_api::mojom::ToolbarUIService::
                    OnPageActionChipShowingChangedCallback callback),
               (override));
@@ -195,7 +193,7 @@ class MockToolbarUIDelegate
               (override));
   MOCK_METHOD(void,
               OnLhsChipClicked,
-              (toolbar_ui_api::mojom::LhsChipIdentifier, bool),
+              (toolbar_ui_api::mojom::LhsChipIdentifier, bool, uint32_t),
               (override));
   MOCK_METHOD(void,
               OnLhsChipPointerEntered,
@@ -220,15 +218,11 @@ class MockToolbarUIDelegate
               (override));
   MOCK_METHOD(void, OnHomeButtonDropUrl, (const GURL&), (override));
   MOCK_METHOD(void, OnHomeButtonDropFile, (const gfx::PointF&), (override));
+  MOCK_METHOD(void, OnHomeButtonDropText, (const std::string&), (override));
   MOCK_METHOD(void, OnToolbarDropFile, (const gfx::PointF&), (override));
-  MOCK_METHOD(void,
-              OnPerformanceInterventionButtonClicked,
-              (bool is_mouse_interaction),
-              (override));
-  MOCK_METHOD(void,
-              OnPerformanceInterventionButtonMousePressed,
-              (),
-              (override));
+  MOCK_METHOD(void, OnPerformanceInterventionButtonClicked, (), (override));
+  MOCK_METHOD(void, OnMediaButtonClicked, (), (override));
+  MOCK_METHOD(void, OnGlicButtonClicked, (), (override));
   MOCK_METHOD((base::expected<std::monostate, mojo_base::mojom::ErrorPtr>),
               OnOmniboxAction,
               (toolbar_ui_api::mojom::OmniboxActionPtr action_ptr),
@@ -263,12 +257,21 @@ class MockToolbarUIDelegate
 class WebUIToolbarUIBrowserTest : public InProcessBrowserTest,
                                   public WebUIToolbarUI::DependencyProvider {
  public:
-  WebUIToolbarUIBrowserTest() {
-    feature_list_.InitWithFeatures(
-        {features::kInitialWebUI, features::kWebUIReloadButton,
-         features::kWebUIInProcessResourceLoadingV2,
-         features::kWebUIPinnedToolbarActions, features::kDebugTopChromeWebUI},
-        {});
+  explicit WebUIToolbarUIBrowserTest(bool enable_location_bar = false) {
+    std::vector<base::test::FeatureRef> enabled_features = {
+        features::kInitialWebUI,
+        features::kWebUIReloadButton,
+        features::kWebUIInProcessResourceLoadingV2,
+        features::kWebUIPinnedToolbarActions,
+        features::kDebugTopChromeWebUI,
+    };
+    std::vector<base::test::FeatureRef> disabled_features;
+    if (enable_location_bar) {
+      enabled_features.push_back(features::kWebUILocationBar);
+    } else {
+      disabled_features.push_back(features::kWebUILocationBar);
+    }
+    feature_list_.InitWithFeatures(enabled_features, disabled_features);
   }
   ~WebUIToolbarUIBrowserTest() override = default;
 
@@ -311,11 +314,10 @@ class WebUIToolbarUIBrowserTest : public InProcessBrowserTest,
   GetToolbarUIServiceDelegate() override {
     return &toolbar_ui_delegate_;
   }
-  std::unique_ptr<toolbar_ui_api::NavigationControlsStateFetcher>
-  GetNavigationControlsStateFetcher() override {
-    return std::make_unique<toolbar_ui_api::NavigationControlsStateFetcherImpl>(
-        base::BindRepeating(
-            [&] { return CreateValidNavigationControlsState(); }));
+  std::unique_ptr<toolbar_ui_api::ToolbarStateFetcher> GetToolbarStateFetcher()
+      override {
+    return std::make_unique<toolbar_ui_api::ToolbarStateFetcherImpl>(
+        base::BindRepeating([&] { return CreateValidToolbarState(); }));
   }
   std::unique_ptr<toolbar_ui_api::IconTableFetcher> GetIconTableFetcher()
       override {
@@ -324,9 +326,8 @@ class WebUIToolbarUIBrowserTest : public InProcessBrowserTest,
 
   CommandUpdater* GetCommandUpdater() override {
     return reinterpret_cast<CommandUpdater*>(
-        webui::GetBrowserWindowInterface(web_ui()->GetWebContents())
-            ->GetFeatures()
-            .browser_command_controller());
+        chrome::BrowserCommandController::From(
+            webui::GetBrowserWindowInterface(web_ui()->GetWebContents())));
   }
 
   OmniboxController* GetOmniboxController() override { return nullptr; }
@@ -387,29 +388,62 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarUIBrowserTest, MovePinnedToolbarActionBy) {
   service_remote.FlushForTesting();
 }
 
-// Tests that OnNavigationControlsStateChanged calls the browser controls
+// Tests that OnToolbarStateChanged calls the browser controls
 // observer with the correct parameters.
 IN_PROC_BROWSER_TEST_F(WebUIToolbarUIBrowserTest, SetReloadButtonState) {
   ToolbarUIServiceConnectionManager connection(ui());
 
-  auto state = CreateValidNavigationControlsState();
+  auto state = CreateValidToolbarState();
   state->reload_control_state->is_navigation_loading = true;
   connection.RegisterObserver();
 
   EXPECT_CALL(
       connection.mock_observer(),
-      OnNavigationControlsStateChanged(
-          testing::_, testing::Pointee(testing::Field(
-                          &toolbar_ui_api::mojom::NavigationControlsState::
-                              reload_control_state,
-                          testing::Pointee(testing::Field(
-                              &toolbar_ui_api::mojom::ReloadControlState::
-                                  is_navigation_loading,
-                              true))))))
+      OnToolbarStateChanged(
+          testing::_,
+          testing::Pointee(testing::Field(
+              &toolbar_ui_api::mojom::ToolbarState::reload_control_state,
+              testing::Pointee(
+                  testing::Field(&toolbar_ui_api::mojom::ReloadControlState::
+                                     is_navigation_loading,
+                                 true))))))
       .Times(1);
-  ui()->OnNavigationControlsStateChanged(*state);
+  ui()->OnToolbarStateChanged(*state);
   connection.mock_observer().FlushForTesting();
 }
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+IN_PROC_BROWSER_TEST_F(WebUIToolbarUIBrowserTest, SetMediaButtonState) {
+  ToolbarUIServiceConnectionManager connection(ui());
+
+  auto state = CreateValidToolbarState();
+  state->media_control_state->should_be_shown = true;
+  connection.RegisterObserver();
+
+  EXPECT_CALL(
+      connection.mock_observer(),
+      OnToolbarStateChanged(
+          testing::_,
+          testing::Pointee(testing::Field(
+              &toolbar_ui_api::mojom::ToolbarState::media_control_state,
+              testing::Pointee(testing::Field(
+                  &toolbar_ui_api::mojom::MediaControlState::should_be_shown,
+                  true))))))
+      .Times(1);
+  ui()->OnToolbarStateChanged(*state);
+  connection.mock_observer().FlushForTesting();
+}
+
+IN_PROC_BROWSER_TEST_F(WebUIToolbarUIBrowserTest, OnMediaButtonClicked) {
+  mojo::Remote<toolbar_ui_api::mojom::ToolbarUIService> service_remote;
+  ui()->BindInterface(service_remote.BindNewPipeAndPassReceiver());
+
+  EXPECT_CALL(toolbar_ui_delegate(), OnMediaButtonClicked()).Times(1);
+
+  service_remote->OnMediaButtonClicked();
+  service_remote.FlushForTesting();
+}
+#endif
 
 // Tests that the BindInterface method for BrowserControlsService works
 // correctly.
@@ -531,8 +565,116 @@ IN_PROC_BROWSER_TEST_F(WebUIToolbarUIBrowserTest,
   EXPECT_TRUE(dict->contains("layoutConstantsVersion"));
   EXPECT_TRUE(dict->contains("touchUi"));
   EXPECT_TRUE(dict->contains("isFallbackPrewarming"));
+  EXPECT_TRUE(dict->contains("isProfileEligibleForGlic"));
+  EXPECT_TRUE(dict->contains("canShowAvatarForProfile"));
 
   EXPECT_TRUE(dict->contains("initialWebUISurfaceSyncEnabled"));
+}
+
+// Verifies that when `features::kWebUILocationBar` is disabled,
+// `WebUIToolbarUI` does not populate Searchbox-specific `loadTimeData` keys
+// while keeping `omniboxResizingPrioritizationEnabled` populated.
+IN_PROC_BROWSER_TEST_F(WebUIToolbarUIBrowserTest,
+                       LoadTimeData_LocationBarDisabled) {
+  ASSERT_FALSE(features::IsWebUILocationBarEnabled());
+  EXPECT_TRUE(ui()->is_initialized());
+
+  content::RenderFrameHost* rfh =
+      web_ui()->GetWebContents()->GetPrimaryMainFrame();
+  ASSERT_TRUE(rfh);
+
+  EXPECT_EQ(
+      false,
+      content::EvalJs(
+          rfh,
+          "import('/strings.m.js').then(() => "
+          "import('//resources/js/load_time_data.js')).then(({"
+          "loadTimeData}) => loadTimeData.getBoolean('enableLocationBar'))"));
+  EXPECT_EQ(
+      true,
+      content::EvalJs(
+          rfh,
+          "import('//resources/js/load_time_data.js').then(({"
+          "loadTimeData}) => "
+          "loadTimeData.valueExists('omniboxResizingPrioritizationEnabled'))"));
+  EXPECT_EQ(
+      false,
+      content::EvalJs(
+          rfh,
+          "import('//resources/js/load_time_data.js').then(({"
+          "loadTimeData}) => loadTimeData.valueExists('reportMetrics'))"));
+  EXPECT_EQ(false, content::EvalJs(
+                       rfh,
+                       "import('//resources/js/load_time_data.js').then(({"
+                       "loadTimeData}) => "
+                       "loadTimeData.valueExists('isTopChromeSearchbox'))"));
+  EXPECT_EQ(
+      false,
+      content::EvalJs(
+          rfh,
+          "import('//resources/js/load_time_data.js').then(({"
+          "loadTimeData}) => loadTimeData.valueExists('searchBoxHint'))"));
+}
+
+class WebUIToolbarUILocationBarEnabledBrowserTest
+    : public WebUIToolbarUIBrowserTest {
+ public:
+  WebUIToolbarUILocationBarEnabledBrowserTest()
+      : WebUIToolbarUIBrowserTest(/*enable_location_bar=*/true) {}
+
+  OmniboxController* GetOmniboxController() override {
+    auto* browser_window = BrowserWindow::FromBrowser(browser());
+    auto* location_bar =
+        browser_window ? browser_window->GetLocationBar() : nullptr;
+    return location_bar ? location_bar->GetOmniboxController() : nullptr;
+  }
+};
+
+// Verifies that when `features::kWebUILocationBar` is enabled, Searchbox
+// `loadTimeData` keys are populated as expected.
+IN_PROC_BROWSER_TEST_F(WebUIToolbarUILocationBarEnabledBrowserTest,
+                       LoadTimeData_LocationBarEnabled) {
+  ASSERT_TRUE(features::IsWebUILocationBarEnabled());
+  EXPECT_TRUE(ui()->is_initialized());
+
+  content::RenderFrameHost* rfh =
+      web_ui()->GetWebContents()->GetPrimaryMainFrame();
+  ASSERT_TRUE(rfh);
+
+  EXPECT_EQ(
+      true,
+      content::EvalJs(
+          rfh,
+          "import('/strings.m.js').then(() => "
+          "import('//resources/js/load_time_data.js')).then(({"
+          "loadTimeData}) => loadTimeData.getBoolean('enableLocationBar'))"));
+  EXPECT_EQ(
+      true,
+      content::EvalJs(
+          rfh,
+          "import('//resources/js/load_time_data.js').then(({"
+          "loadTimeData}) => "
+          "loadTimeData.valueExists('omniboxResizingPrioritizationEnabled'))"));
+  EXPECT_EQ(
+      true,
+      content::EvalJs(
+          rfh,
+          "import('//resources/js/load_time_data.js').then(({"
+          "loadTimeData}) => loadTimeData.valueExists('reportMetrics'))"));
+  EXPECT_EQ(
+      true,
+      content::EvalJs(
+          rfh,
+          "import('//resources/js/load_time_data.js').then(({"
+          "loadTimeData}) => "
+          "loadTimeData.getBoolean('isTopChromeSearchbox'))"));
+  EXPECT_EQ(
+      true,
+      content::EvalJs(
+          rfh,
+          "import('//resources/js/load_time_data.js').then(({"
+          "loadTimeData}) => loadTimeData.valueExists('searchBoxHint') && "
+          "loadTimeData.getString('searchBoxHint').length > 0)"));
 }
 
 }  // namespace

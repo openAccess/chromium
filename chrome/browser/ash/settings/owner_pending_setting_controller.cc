@@ -11,7 +11,6 @@
 #include "chrome/browser/ash/ownership/owner_settings_service_ash.h"
 #include "chrome/browser/ash/ownership/owner_settings_service_ash_factory.h"
 #include "chrome/browser/ash/settings/device_settings_service.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "components/ownership/owner_settings_service.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -30,7 +29,7 @@ OwnerPendingSettingController::OwnerPendingSettingController(
 }
 
 void OwnerPendingSettingController::Set(Profile* profile, base::Value value) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (GetOwnershipStatus() ==
@@ -66,15 +65,16 @@ std::optional<base::Value> OwnerPendingSettingController::GetValue() const {
 
 base::CallbackListSubscription OwnerPendingSettingController::AddObserver(
     const base::RepeatingClosure& callback) {
-  DCHECK(!callback.is_null());
+  CHECK(!callback.is_null(), base::NotFatalUntil::M160);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return callback_list_.Add(callback);
 }
 
 void OwnerPendingSettingController::OnOwnershipTaken(
     ownership::OwnerSettingsService* service) {
-  DCHECK_EQ(GetOwnershipStatus(),
-            DeviceSettingsService::OwnershipStatus::kOwnershipTaken);
+  CHECK_EQ(GetOwnershipStatus(),
+           DeviceSettingsService::OwnershipStatus::kOwnershipTaken,
+           base::NotFatalUntil::M160);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   VLOG(1) << "OnOwnershipTaken";
 

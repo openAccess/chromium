@@ -25,8 +25,10 @@
 #include "components/policy/core/common/cloud/cloud_policy_util.h"
 #include "components/policy/core/common/policy_logger.h"
 #include "components/policy/core/common/policy_switches.h"
+#include "components/policy/proto/cloud_policy.pb.h"
 #include "components/policy/proto/device_management_backend.pb.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/keypair.h"
+#include "crypto/sign.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_id.h"
 
@@ -264,14 +266,13 @@ bool CloudPolicyValidatorBase::VerifySignature(const std::string& data,
                                                const std::string& key,
                                                const std::string& signature,
                                                SignatureType signature_type) {
-  crypto::SignatureVerifier verifier;
-  crypto::SignatureVerifier::SignatureAlgorithm algorithm;
+  crypto::sign::SignatureKind algorithm;
   switch (signature_type) {
     case em::PolicyFetchRequest::SHA1_RSA:
-      algorithm = crypto::SignatureVerifier::RSA_PKCS1_SHA1;
+      algorithm = crypto::sign::RSA_PKCS1_SHA1;
       break;
     case em::PolicyFetchRequest::SHA256_RSA:
-      algorithm = crypto::SignatureVerifier::RSA_PKCS1_SHA256;
+      algorithm = crypto::sign::RSA_PKCS1_SHA256;
       break;
     default:
       // Treat `em::PolicyFetchRequest::NONE` as unsigned blobs, which is
@@ -281,14 +282,16 @@ bool CloudPolicyValidatorBase::VerifySignature(const std::string& data,
       return false;
   }
 
-  if (!verifier.VerifyInit(algorithm, base::as_byte_span(signature),
-                           base::as_byte_span(key))) {
+  std::optional<crypto::keypair::PublicKey> public_key =
+      crypto::keypair::PublicKey::FromSubjectPublicKeyInfo(
+          base::as_byte_span(key));
+  if (!public_key || !public_key->IsRsa()) {
     DLOG_POLICY(ERROR, CBCM_ENROLLMENT)
         << "Invalid verification signature/key format";
     return false;
   }
-  verifier.VerifyUpdate(base::as_byte_span(data));
-  return verifier.VerifyFinal();
+  return crypto::sign::Verify(algorithm, *public_key, base::as_byte_span(data),
+                              base::as_byte_span(signature));
 }
 
 CloudPolicyValidatorBase::CloudPolicyValidatorBase(
@@ -722,14 +725,13 @@ CloudPolicyValidatorBase::Status CloudPolicyValidatorBase::CheckDMToken() {
        policy_data_->request_token().empty())) {
     LOG_POLICY(ERROR, POLICY_FETCHING)
         << PolicyTypeLogPrefix(policy_type_, settings_entity_id_)
-        << "Empty DM token encountered - expected: " << dm_token_;
+        << "Empty DM token encountered";
     return VALIDATION_BAD_DM_TOKEN;
   }
   if (!dm_token_.empty() && policy_data_->request_token() != dm_token_) {
     LOG_POLICY(ERROR, POLICY_FETCHING)
         << PolicyTypeLogPrefix(policy_type_, settings_entity_id_)
-        << "Invalid DM token: " << policy_data_->request_token()
-        << " - expected: " << dm_token_;
+        << "Invalid DM token encountered";
     return VALIDATION_BAD_DM_TOKEN;
   }
 

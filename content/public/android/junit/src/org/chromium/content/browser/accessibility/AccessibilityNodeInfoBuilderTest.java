@@ -7,7 +7,6 @@ package org.chromium.content.browser.accessibility;
 import android.view.View;
 
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -28,8 +27,8 @@ public class AccessibilityNodeInfoBuilderTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private AccessibilityNodeInfoBuilder.BuilderDelegate mDelegate;
-    @Mock private View mView;
 
+    private final View mView = new View(ContextUtils.getApplicationContext());
     private AccessibilityNodeInfoBuilder mBuilder;
 
     @Before
@@ -40,7 +39,6 @@ public class AccessibilityNodeInfoBuilderTest {
     }
 
     @Test
-    @SmallTest
     public void testSetAccessibilityNodeInfoText_LinkWithContentDescription() {
         AccessibilityNodeInfoCompat node = AccessibilityNodeInfoCompat.obtain();
 
@@ -71,7 +69,6 @@ public class AccessibilityNodeInfoBuilderTest {
     }
 
     @Test
-    @SmallTest
     public void testSetAccessibilityNodeInfoText_LinkWithoutContentDescription() {
         AccessibilityNodeInfoCompat node = AccessibilityNodeInfoCompat.obtain();
 
@@ -104,7 +101,6 @@ public class AccessibilityNodeInfoBuilderTest {
     }
 
     @Test
-    @SmallTest
     public void testSetAccessibilityNodeInfoText_NotLink() {
         AccessibilityNodeInfoCompat node = AccessibilityNodeInfoCompat.obtain();
 

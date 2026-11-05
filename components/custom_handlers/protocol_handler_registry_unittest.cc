@@ -277,6 +277,42 @@ TEST_F(ProtocolHandlerRegistryTest, DeniedProtocolIsntHandledUntilAccepted) {
   ASSERT_TRUE(registry()->IsHandledProtocol("news"));
 }
 
+// A refused handler must not be offered for the scheme, nor be promoted when
+// the accepted handler is removed.
+TEST_F(ProtocolHandlerRegistryTest,
+       IgnoredHandlerIsNotAllowedToHandleProtocol) {
+  ProtocolHandler accepted = CreateProtocolHandler("news", "accepted");
+  ProtocolHandler refused = CreateProtocolHandler("news", "refused");
+  registry()->OnAcceptRegisterProtocolHandler(accepted);
+  registry()->OnIgnoreRegisterProtocolHandler(refused);
+
+  EXPECT_FALSE(registry()->IsRegistered(refused));
+  EXPECT_TRUE(registry()->IsIgnored(refused));
+
+  registry()->RemoveDefaultHandler("news");
+
+  EXPECT_FALSE(registry()->IsDefault(refused));
+  EXPECT_TRUE(registry()->GetHandlerFor("news").IsEmpty());
+  EXPECT_FALSE(registry()->IsHandledProtocol("news"));
+}
+
+// Refusing a handler that is currently the default, e.g. after "Allow" then
+// "Deny" in the same bubble, removes it and hands the default back to the
+// handler that had it before.
+TEST_F(ProtocolHandlerRegistryTest, IgnoringTheDefaultFallsBackToOldDefault) {
+  ProtocolHandler ph1 = CreateProtocolHandler("news", "test1");
+  ProtocolHandler ph2 = CreateProtocolHandler("news", "test2");
+  registry()->OnAcceptRegisterProtocolHandler(ph1);
+  registry()->OnAcceptRegisterProtocolHandler(ph2);
+  ASSERT_TRUE(registry()->IsDefault(ph2));
+
+  registry()->OnIgnoreRegisterProtocolHandler(ph2);
+
+  EXPECT_TRUE(registry()->IsDefault(ph1));
+  EXPECT_FALSE(registry()->IsRegistered(ph2));
+  EXPECT_TRUE(registry()->IsIgnored(ph2));
+}
+
 TEST_F(ProtocolHandlerRegistryTest, ClearDefaultMakesProtocolNotHandled) {
   registry()->OnAcceptRegisterProtocolHandler(test_protocol_handler());
   registry()->ClearDefault("news");
@@ -1474,73 +1510,24 @@ TEST_P(ProtocolHandlerRegistrySchemeTest, SafelistedSchemes) {
   }
 }
 
-namespace {
-
-enum class CredentialsTestMode {
-  kStripCredentials,
-  kKeepCredentials,
-};
-
-}  // namespace
-
-class ProtocolHandlerRegistryCredentialsTest
-    : public ProtocolHandlerRegistryTest,
-      public ::testing::WithParamInterface<CredentialsTestMode> {
- public:
-  ~ProtocolHandlerRegistryCredentialsTest() override = default;
-
- private:
-  void SetUp() override {
-    ProtocolHandlerRegistryTest::SetUp();
-    if (GetParam() == CredentialsTestMode::kStripCredentials) {
-      scoped_feature_list_.InitAndEnableFeature(
-          features::kStripCredentialsForExternalProtocolHandler);
-    } else {
-      scoped_feature_list_.InitAndDisableFeature(
-          features::kStripCredentialsForExternalProtocolHandler);
-    }
-  }
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    ProtocolHandlerRegistryCredentialsTest,
-    testing::Values(CredentialsTestMode::kStripCredentials,
-                    CredentialsTestMode::kKeepCredentials));
-
 // See
 // https://html.spec.whatwg.org/multipage/system-state.html#security-and-privacy
 // guidance on mitigating credential leaks.
-TEST_P(ProtocolHandlerRegistryCredentialsTest,
-       NoCredentialsForStandardSchemes) {
+TEST_F(ProtocolHandlerRegistryTest, NoCredentialsForStandardSchemes) {
   ProtocolHandler ph =
       CreateProtocolHandler("ftp", GURL("https://example.com/url=%s"));
   registry()->OnAcceptRegisterProtocolHandler(ph);
 
   EXPECT_EQ(ph.TranslateUrl(GURL("ftp://example/y")),
             GURL("https://example.com/url=ftp%3A%2F%2Fexample%2Fy"));
-  if (GetParam() == CredentialsTestMode::kStripCredentials) {
-    EXPECT_EQ(ph.TranslateUrl(GURL("ftp://user@example/y")),
-              GURL("https://example.com/url=ftp%3A%2F%2Fexample%2Fy"));
-    EXPECT_EQ(ph.TranslateUrl(GURL("ftp://:password@example/y")),
-              GURL("https://example.com/url=ftp%3A%2F%2Fexample%2Fy"));
-    EXPECT_EQ(ph.TranslateUrl(GURL("ftp://user:password@example/y")),
-              GURL("https://example.com/url=ftp%3A%2F%2Fexample%2Fy"));
-    EXPECT_EQ(ph.TranslateUrl(GURL("ftp://user:password@example/y#ref")),
-              GURL("https://example.com/url=ftp%3A%2F%2Fexample%2Fy%23ref"));
-  } else {
-    EXPECT_EQ(ph.TranslateUrl(GURL("ftp://user@example/y")),
-              GURL("https://example.com/url=ftp%3A%2F%2Fuser%40example%2Fy"));
-    EXPECT_EQ(
-        ph.TranslateUrl(GURL("ftp://:password@example/y")),
-        GURL("https://example.com/url=ftp%3A%2F%2F%3Apassword%40example%2Fy"));
-    EXPECT_EQ(ph.TranslateUrl(GURL("ftp://user:password@example/y")),
-              GURL("https://example.com/"
-                   "url=ftp%3A%2F%2Fuser%3Apassword%40example%2Fy"));
-    EXPECT_EQ(ph.TranslateUrl(GURL("ftp://user:password@example/y#ref")),
-              GURL("https://example.com/"
-                   "url=ftp%3A%2F%2Fuser%3Apassword%40example%2Fy%23ref"));
-  }
+  EXPECT_EQ(ph.TranslateUrl(GURL("ftp://user@example/y")),
+            GURL("https://example.com/url=ftp%3A%2F%2Fexample%2Fy"));
+  EXPECT_EQ(ph.TranslateUrl(GURL("ftp://:password@example/y")),
+            GURL("https://example.com/url=ftp%3A%2F%2Fexample%2Fy"));
+  EXPECT_EQ(ph.TranslateUrl(GURL("ftp://user:password@example/y")),
+            GURL("https://example.com/url=ftp%3A%2F%2Fexample%2Fy"));
+  EXPECT_EQ(ph.TranslateUrl(GURL("ftp://user:password@example/y#ref")),
+            GURL("https://example.com/url=ftp%3A%2F%2Fexample%2Fy%23ref"));
 }
 
 TEST_F(ProtocolHandlerRegistryTest, CredentialsForNonStandardSchemes) {

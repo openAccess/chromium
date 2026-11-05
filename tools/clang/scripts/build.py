@@ -21,9 +21,9 @@ this build script on Mac:
 
 import argparse
 import atexit
+import datetime
 import glob
 import io
-import json
 import multiprocessing
 import os
 import shlex
@@ -34,9 +34,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib
-import urllib.error
-import urllib.request
 
 from update import (
   CDS_URL,
@@ -90,6 +87,17 @@ FUCHSIA_SDK_DIR = os.path.join(
 )
 PINNED_CLANG_DIR = os.path.join(LLVM_BUILD_TOOLS_DIR, 'pinned-clang')
 
+# Depot_tools ships git as `git.bat` on Windows.  `RunCommand` goes through a
+# shell, which finds it by itself, but `subprocess` needs the exact name.
+GIT_EXE = 'git.bat' if sys.platform.startswith('win') else 'git'
+
+# Name of the file that `WriteGitCommitInfo` writes into a git checkout.
+GIT_COMMIT_INFO_FILENAME = 'git-commit-info'
+
+# Retry policy for `GitOutputWithRetry`.
+GIT_NETWORK_MAX_TRIES = 5
+GIT_NETWORK_INITIAL_RETRY_DELAY_SECONDS = 1
+
 BUG_REPORT_URL = (
   'https://crbug.com in the Tools>LLVM component,'
   ' run tools/clang/scripts/process_crashreports.py'
@@ -102,7 +110,7 @@ ZSTD_VERSION = 'zstd-1.5.5'
 # This must be less than or equal to the lowest target used in Chromium. See
 # e.g. mac_deployment_target in //build/config/mac/mac_sdk.gni and min_version
 # in //chrome/installer/gcapi_mac/BUILD.gn.
-DEFAULT_MACOSX_DEPLOYMENT_TARGET = '10.12'
+DEFAULT_MACOSX_DEPLOYMENT_TARGET = '11.0'
 
 win_sdk_dir = None
 
@@ -226,14 +234,14 @@ def CheckoutGitRepo(name, git_url, commit, dir):
 
 # Git commits include timing and author metadata in their hash.
 # To ensure we get a consistent hash when applying local changes,
-# set everything to fixed values via environment variable
+# set everything to fixed values via environment variable.
 GIT_METADATA_OVERRIDES = {
   'GIT_AUTHOR_NAME': 'Dummy Author',
   'GIT_AUTHOR_EMAIL': 'none@none.com',
-  'GIT_AUTHOR_DATE': '2099-01-01 10:10:10',
+  'GIT_AUTHOR_DATE': '2099-01-01 10:10:10 -0800',
   'GIT_COMMITTER_NAME': 'Dummy Committer',
   'GIT_COMMITTER_EMAIL': 'none@none.com',
-  'GIT_COMMITTER_DATE': '2099-01-01 10:10:10',
+  'GIT_COMMITTER_DATE': '2099-01-01 10:10:10 -0800',
 }
 
 
@@ -307,53 +315,80 @@ def GitRevert(git_repository, commit):
   )
 
 
-def FetchUrl(url, max_tries=5, delay_seconds=1):
-  """Fetch content from a URL. If the fetch fails, retry several times after a
-  short delay."""
-  for i in range(max_tries):
-    try:
-      with urllib.request.urlopen(url) as response:
-        return response.read()
-    except (ConnectionError, urllib.error.URLError) as e:
-      # If this was the last try or a permanent 404 client error, re-raise.
-      if i >= max_tries - 1 or (
-        isinstance(e, urllib.error.HTTPError) and e.code == 404
-      ):
-        raise e
+def GitOutputWithRetry(git_args):
+  """Returns the stdout (as `bytes`) of `git <git_args>`.
 
-      reason = getattr(e, 'reason', e)
+  Network operations against Git can fail transiently,
+  so failures are retried with exponential backoff."""
+  delay_seconds = GIT_NETWORK_INITIAL_RETRY_DELAY_SECONDS
+  for i in range(GIT_NETWORK_MAX_TRIES):
+    try:
+      return subprocess.check_output([GIT_EXE] + git_args)
+    except subprocess.CalledProcessError as e:
+      if i >= GIT_NETWORK_MAX_TRIES - 1:
+        raise e
       print(
-        f"Failed to fetch {url}: {reason} (attempt {i + 1}/{max_tries}). "
-        f"Retrying in {delay_seconds}s..."
+        f'Failed to run `git {" ".join(git_args)}` '
+        f'(attempt {i + 1}/{GIT_NETWORK_MAX_TRIES}). '
+        f'Retrying in {delay_seconds}s...'
       )
       time.sleep(delay_seconds)
       delay_seconds *= 2
 
 
-def GetLatestCommit(url):
-  """Get the latest commit hash from a git repository's JSON output. If the
-  fetch fails, retry several times after a short delay."""
-  main = json.loads(FetchUrl(url).decode("utf-8").replace(")]}'", ""))
-  return main['commit']
+def GetLatestCommit(git_url, ref='refs/heads/main'):
+  """Returns the commit hash that `ref` points to in the remote `git_url`."""
+  output = GitOutputWithRetry(['ls-remote', git_url, ref]).decode('utf-8')
+  # Each line is `<hash>\t<ref>`.  `git ls-remote` matches patterns against the
+  # tail of ref names, so compare the full name to rule out e.g.
+  # `refs/heads/foo/refs/heads/main`.
+  for line in output.splitlines():
+    commit, remote_ref = line.split('\t')
+    if remote_ref == ref:
+      return commit
+  raise RuntimeError(f'`{ref}` not found in {git_url}')
+
+
+def FetchGitFile(git_url, commit, path):
+  """Returns the contents (as `bytes`) of `path` at `commit` in the remote
+  `git_url`, without cloning the whole repository.
+
+  A shallow, blobless fetch only downloads the commit and its trees; `git show`
+  then lazily fetches the single blob for `path`."""
+  git_dir = tempfile.mkdtemp()
+  try:
+    GitOutputWithRetry(['init', '--quiet', git_dir])
+    GitOutputWithRetry(
+      [
+        '-C',
+        git_dir,
+        'fetch',
+        '--quiet',
+        '--depth=1',
+        '--filter=blob:none',
+        git_url,
+        commit,
+      ]
+    )
+    return GitOutputWithRetry(['-C', git_dir, 'show', f'{commit}:{path}'])
+  finally:
+    # `RmTree` (rather than `tempfile.TemporaryDirectory`) handles the
+    # read-only files that git creates on Windows.
+    RmTree(git_dir)
 
 
 def GetLatestLLVMCommit():
   """Get the latest commit hash in the LLVM monorepo."""
-  url = (
-    'https://chromium.googlesource.com/external/'
-    + 'github.com/llvm/llvm-project/+/refs/heads/main?format=JSON'
-  )
-  return GetLatestCommit(url)
+  return GetLatestCommit(LLVM_GIT_URL)
 
 
 def GetCommitDescription(commit):
   """Get the output of `git describe`.
 
   Needs to be called from inside the git repository dir."""
-  git_exe = 'git.bat' if sys.platform.startswith('win') else 'git'
   return subprocess.check_output(
     [
-      git_exe,
+      GIT_EXE,
       'describe',
       '--long',
       '--abbrev=8',
@@ -362,6 +397,46 @@ def GetCommitDescription(commit):
     ],
     universal_newlines=True,
   ).rstrip()
+
+
+def WriteGitCommitInfo(git_repository, commit, tz):
+  """Record `commit`'s metadata in `<git_repository>/git-commit-info`.
+
+  Source tarballs contain the checkout, but not its `.git` directory - see
+  https://ci.chromium.org/ui/p/infra/builders/cron/publish_tarball.  Builds
+  from such a tarball can therefore only get the git metadata from a file that
+  was written while the `.git` directory was still around.
+
+  `git-commit-info` is an upstream Rust convention: Rust's bootstrap build
+  system (`x.py` / `x.ps1`) writes it into Rust's own source tarballs, and
+  reads it when `.git` is missing (see `fn read_commit_info_file` in the
+  `rust-lang/rust` repo [1]).  We also co-opt this convention for the LLVM
+  checkout (read by `build_crubit.py` for `CRUBIT_LLVM_DEV_DATE` after
+  https://crrev.com/c/8265258).
+
+  The file format is therefore fixed by upstream Rust and must not change (at
+  least for the Rust checkout): 3 lines - the commit hash, the short commit
+  hash, and the commit date in `YYYY-MM-DD` format.
+
+  `tz` is the timezone of the date.  `None` keeps the timezone that the commit
+  itself records (this matches Rust's bootstrap [2]).
+
+  [1] https://github.com/rust-lang/rust/blob/77027b64d82d1e92f9ce2ea9042081c4567f5524/src/bootstrap/src/utils/channel.rs#L145-L163
+  [2] https://github.com/rust-lang/rust/blob/77027b64d82d1e92f9ce2ea9042081c4567f5524/src/bootstrap/src/utils/channel.rs#L63-L70
+  """
+  commit_hash, commit_date_str = subprocess.check_output(
+    [GIT_EXE, '-C', git_repository, 'log', '-1', '--format=%H %cI', commit],
+    universal_newlines=True,
+  ).split()
+  commit_date = datetime.datetime.fromisoformat(commit_date_str)
+  if tz is not None:
+    commit_date = commit_date.astimezone(tz)
+  info_file = os.path.join(git_repository, GIT_COMMIT_INFO_FILENAME)
+  print(f'Writing {commit_hash} / {commit_date:%Y-%m-%d} to {info_file}')
+  with open(info_file, 'w') as f:
+    f.write(f'{commit_hash}\n')
+    f.write(f'{commit_hash[:9]}\n')
+    f.write(f'{commit_date:%Y-%m-%d}\n')
 
 
 def AddCMakeToPath():
@@ -482,6 +557,28 @@ def GetLibXml2Dirs():
   return LibXmlDirs()
 
 
+def GetThirdPartyCMakeArgs(cc, cxx, cmake_sysroot, mac_deployment_target):
+  """Returns the CMake args for building a third-party static library.
+
+  The library can then be linked into LLVM (see `BuildLibXml2` and
+  `BuildZStd`), or into other toolchain binaries (e.g. see
+  `//tools/rust/build_crubit.py`).  The caller has to add
+  `CMAKE_INSTALL_PREFIX` and the library-specific args.
+  """
+  cmake_args = [
+    '-DCMAKE_C_COMPILER=' + cc,
+    '-DCMAKE_CXX_COMPILER=' + cxx,
+    '-DCMAKE_BUILD_TYPE=Release',
+    '-DCMAKE_INSTALL_LIBDIR=lib',
+    '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',  # /MT to match LLVM.
+  ]
+  if cmake_sysroot:
+    cmake_args.append('-DCMAKE_SYSROOT=' + cmake_sysroot)
+  if sys.platform == 'darwin':
+    cmake_args.append('-DCMAKE_OSX_DEPLOYMENT_TARGET=' + mac_deployment_target)
+  return cmake_args
+
+
 def BuildLibXml2(cc, cxx, cmake_sysroot, mac_deployment_target):
   """Download and build libxml2"""
   # The .tar.gz on GCS was uploaded as follows.
@@ -504,13 +601,10 @@ def BuildLibXml2(cc, cxx, cmake_sysroot, mac_deployment_target):
   # Disable everything except WITH_TREE and WITH_OUTPUT, both needed by LLVM's
   # WindowsManifestMerger.
   # Also enable WITH_THREADS, else libxml doesn't compile on Linux.
-  cmake_args = [
-    '-DCMAKE_C_COMPILER=' + cc,
-    '-DCMAKE_CXX_COMPILER=' + cxx,
-    '-DCMAKE_BUILD_TYPE=Release',
+  cmake_args = GetThirdPartyCMakeArgs(
+    cc, cxx, cmake_sysroot, mac_deployment_target
+  ) + [
     '-DCMAKE_INSTALL_PREFIX=install',
-    '-DCMAKE_INSTALL_LIBDIR=lib',
-    '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',  # /MT to match LLVM.
     '-DBUILD_SHARED_LIBS=OFF',
     '-DLIBXML2_WITH_C14N=OFF',
     '-DLIBXML2_WITH_CATALOG=OFF',
@@ -548,10 +642,6 @@ def BuildLibXml2(cc, cxx, cmake_sysroot, mac_deployment_target):
     '-DLIBXML2_WITH_XPTR=OFF',
     '-DLIBXML2_WITH_ZLIB=OFF',
   ]
-  if cmake_sysroot:
-    cmake_args.append('-DCMAKE_SYSROOT=' + cmake_sysroot)
-  if sys.platform == 'darwin':
-    cmake_args.append('-DCMAKE_OSX_DEPLOYMENT_TARGET=' + mac_deployment_target)
 
   RunCommand(['cmake', '-GNinja'] + cmake_args + ['..'], setenv=True)
   RunCommand(['ninja', 'install'], setenv=True)
@@ -615,19 +705,12 @@ def BuildZStd(cc, cxx, cmake_sysroot, mac_deployment_target):
   os.mkdir(dirs.build_dir)
   os.chdir(dirs.build_dir)
 
-  cmake_args = [
-    '-DCMAKE_C_COMPILER=' + cc,
-    '-DCMAKE_CXX_COMPILER=' + cxx,
-    '-DCMAKE_BUILD_TYPE=Release',
+  cmake_args = GetThirdPartyCMakeArgs(
+    cc, cxx, cmake_sysroot, mac_deployment_target
+  ) + [
     '-DCMAKE_INSTALL_PREFIX=install',
-    '-DCMAKE_INSTALL_LIBDIR=lib',
-    '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded',  # /MT to match LLVM.
     '-DZSTD_BUILD_SHARED=OFF',
   ]
-  if cmake_sysroot:
-    cmake_args.append('-DCMAKE_SYSROOT=' + cmake_sysroot)
-  if sys.platform == 'darwin':
-    cmake_args.append('-DCMAKE_OSX_DEPLOYMENT_TARGET=' + mac_deployment_target)
   RunCommand(
     ['cmake', '-GNinja'] + cmake_args + ['../build/cmake'], setenv=True
   )
@@ -649,7 +732,7 @@ def BuildZStd(cc, cxx, cmake_sysroot, mac_deployment_target):
 
 
 def DownloadPinnedClang():
-  PINNED_CLANG_VERSION = 'llvmorg-21-init-5118-g52cd27e6-4'
+  PINNED_CLANG_VERSION = 'llvmorg-24-init-7747-g62397f8b-27'
   DownloadAndUnpackPackage(
     'clang', PINNED_CLANG_DIR, GetDefaultHostOs(), PINNED_CLANG_VERSION
   )
@@ -1066,8 +1149,17 @@ def main():
       CheckoutGitRepo(
         'LLVM monorepo', LLVM_GIT_URL, checkout_revision, LLVM_DIR
       )
+      # Record the revision that we checked out, so that builds from a source
+      # tarball (which has no `.git` directory) can still read it.  We use
+      # `checkout_revision` rather than `HEAD`, because the cherry-picks below
+      # (if any) commit with a dummy date (see `GIT_METADATA_OVERRIDES`).  The
+      # date has to be UTC, because that is what Crubit expects (see
+      # `crubit/cargo/build/get_llvm_commit_date.py`).
+      WriteGitCommitInfo(LLVM_DIR, checkout_revision, tz=datetime.timezone.utc)
       # TODO(crbug.com/549080734): remove once we roll past this revision
       GitCherryPick(LLVM_DIR, '061865f32607cd064ab944407cc863186702d6f1')
+      # TODO(crbug.com/559560868): remove once we roll past this revision
+      GitCherryPick(LLVM_DIR, 'b8007a8e4020b8bca2b12e941660e10bf5bf6716')
 
   if args.llvm_force_head_revision:
     CLANG_REVISION = GetCommitDescription(checkout_revision)
@@ -1144,6 +1236,7 @@ def main():
     '-DCLANG_PLUGIN_SUPPORT=OFF',
     '-DCLANG_ENABLE_STATIC_ANALYZER=OFF',
     '-DCLANG_ENABLE_ARCMT=OFF',
+    '-DCLANG_ENABLE_CIR=OFF',
     '-DBUG_REPORT_URL=' + BUG_REPORT_URL,
     # See crbug.com/1126219: Use native symbolizer instead of DIA
     '-DLLVM_ENABLE_DIA_SDK=OFF',
@@ -1170,8 +1263,14 @@ def main():
     isysroot = subprocess.check_output(
       ['xcrun', '--show-sdk-path'], universal_newlines=True
     ).rstrip()
+
+    # Maps to -Wl,-no_exported_symbols which only exists on darwin.
+    # Not exporting symbols speeds up executable startup a bit.
+    base_cmake_args.append('-DLLVM_ENABLE_EXPORTED_SYMBOLS_IN_EXECUTABLES=OFF')
+
     # TODO(crbug.com/522267458): Remove this when class stub is implemented for lld.
     base_cmake_args.append('-DHOST_LINK_VERSION=1249')
+
   base_cmake_args += ['-DLLVM_ENABLE_UNWIND_TABLES=OFF']
 
   compiler_wrapper_cmake_args = []
@@ -1703,9 +1802,16 @@ def main():
         'SANITIZER_MIN_OSX_VERSION=' + deployment_target,
         'COMPILER_RT_ENABLE_MACCATALYST=ON',
         'COMPILER_RT_ENABLE_IOS=ON',
-        'COMPILER_RT_ENABLE_WATCHOS=ON',
-        'COMPILER_RT_ENABLE_TVOS=ON',
-        'COMPILER_RT_ENABLE_XROS=ON',
+        # Only builtin libraries are packaged for watchOS, tvOS, and visionOS;
+        # pass them via BUILTINS_CMAKE_ARGS so runtimes skips their sanitizers.
+        'BUILTINS_CMAKE_ARGS='
+        + ';'.join(
+          [
+            '-DCOMPILER_RT_ENABLE_WATCHOS=ON',
+            '-DCOMPILER_RT_ENABLE_TVOS=ON',
+            '-DCOMPILER_RT_ENABLE_XROS=ON',
+          ]
+        ),
         'DARWIN_ios_ARCHS=arm64',
         'DARWIN_iossim_ARCHS=arm64;x86_64',
         'DARWIN_osx_ARCHS=arm64;x86_64',
@@ -1726,7 +1832,7 @@ def main():
         target_triple = 'armv7'
       api_level = '21'
       if target_arch == 'riscv64':
-        api_level = '36'
+        api_level = '37'
       target_triple += '-linux-android' + api_level
       android_cflags = [
         '--sysroot=%s/sysroot' % toolchain_dir,

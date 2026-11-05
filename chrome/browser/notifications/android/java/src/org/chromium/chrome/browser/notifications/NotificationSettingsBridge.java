@@ -91,14 +91,18 @@ public class NotificationSettingsBridge {
         }
 
         public NotificationChannel toChannel() {
+            int importance = NotificationManager.IMPORTANCE_DEFAULT;
+            if (mStatus == NotificationChannelStatus.BLOCKED) {
+                importance = NotificationManager.IMPORTANCE_NONE;
+            } else if (ChromeChannelDefinitions.isHighPrioritySiteNotificationsEnabled()) {
+                importance = NotificationManager.IMPORTANCE_HIGH;
+            }
             NotificationChannel channel =
                     new NotificationChannel(
                             mId,
                             UrlFormatter.formatUrlForSecurityDisplay(
                                     mOrigin, SchemeDisplay.OMIT_HTTP_AND_HTTPS),
-                            mStatus == NotificationChannelStatus.BLOCKED
-                                    ? NotificationManager.IMPORTANCE_NONE
-                                    : NotificationManager.IMPORTANCE_DEFAULT);
+                            importance);
             channel.setGroup(ChromeChannelDefinitions.ChannelGroupId.SITES);
             return channel;
         }
@@ -120,6 +124,9 @@ public class NotificationSettingsBridge {
     interface Natives {
         void onGetSiteChannelsDone(long callbackId, SiteChannel[] channels);
 
-        void onChannelStateChanged(String channelId, String origin, boolean blocked);
+        void onChannelStateChanged(
+                @JniType("std::string") String channelId,
+                @JniType("std::string") String origin,
+                boolean blocked);
     }
 }

@@ -5,16 +5,23 @@
 #include "components/autofill/core/browser/integrators/at_memory/at_memory_string_filtering_util.h"
 
 #include <cstddef>
-#include <string>
 #include <string_view>
-#include <vector>
 
 #include "base/i18n/break_iterator.h"
+#include "base/notreached.h"
 #include "base/strings/levenshtein_distance.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
+#include "base/strings/whitespace_constants.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_normalization_util.h"
 
 namespace autofill {
 
 namespace {
+
+// Minimum number of characters, excluding whitespace, that a query needs to
+// match.
+constexpr size_t kMinQueryLength = 2;
 
 std::vector<std::u16string> TokenizeString(std::u16string_view text) {
   std::vector<std::u16string> tokens;
@@ -28,6 +35,12 @@ std::vector<std::u16string> TokenizeString(std::u16string_view text) {
     }
   }
   return tokens;
+}
+
+std::u16string RemoveWhitespace(std::u16string_view text) {
+  std::u16string result;
+  base::RemoveChars(text, base::kWhitespaceUTF16, &result);
+  return result;
 }
 
 }  // namespace
@@ -64,20 +77,8 @@ bool FuzzyMatchesSingleToken(std::u16string_view target_token,
   return false;
 }
 
-bool FuzzyMatchesOrderedTokens(std::u16string_view normalized_target,
-                               std::u16string_view normalized_filter) {
-  if (normalized_filter.empty()) {
-    return true;
-  }
-
-  const std::vector<std::u16string> query_tokens =
-      TokenizeString(normalized_filter);
-  if (query_tokens.empty()) {
-    return true;
-  }
-
-  const std::vector<std::u16string> target_tokens =
-      TokenizeString(normalized_target);
+bool FuzzyMatchesOrderedTokens(base::span<const std::u16string> target_tokens,
+                               base::span<const std::u16string> query_tokens) {
   if (query_tokens.size() > target_tokens.size()) {
     return false;
   }
@@ -99,6 +100,61 @@ bool FuzzyMatchesOrderedTokens(std::u16string_view normalized_target,
   }
 
   return true;
+}
+
+bool TokenizeAndFuzzyMatchOrderedTokens(std::u16string_view normalized_target,
+                                        std::u16string_view normalized_filter) {
+  if (normalized_filter.empty()) {
+    return true;
+  }
+
+  const std::vector<std::u16string> query_tokens =
+      TokenizeString(normalized_filter);
+  if (query_tokens.empty()) {
+    return true;
+  }
+
+  return FuzzyMatchesOrderedTokens(TokenizeString(normalized_target),
+                                   query_tokens);
+}
+
+RawValueQuery::RawValueQuery(std::u16string_view query) {
+  const std::u16string normalized_query =
+      normalization::NormalizeForComparison(query);
+  normalized_without_whitespace = RemoveWhitespace(normalized_query);
+  tokens = TokenizeString(normalized_query);
+}
+
+RawValueQuery::~RawValueQuery() = default;
+
+bool RawValueQuery::CanMatch() const {
+  // Only the characters of word tokens count: symbols such as "+" survive
+  // normalization but are not tokenized, so e.g. "+1" has a single character
+  // to match. This also rejects queries without any tokens.
+  size_t length = 0;
+  for (const std::u16string& token : tokens) {
+    length += token.size();
+  }
+  return length >= kMinQueryLength;
+}
+
+bool MatchesRawValueQuery(MemoryDataType type,
+                          std::u16string_view normalized_target,
+                          const RawValueQuery& query) {
+  if (!query.CanMatch()) {
+    return false;
+  }
+  switch (GetRawValueMatchMode(type)) {
+    case RawValueMatchMode::kCode:
+      return RemoveWhitespace(normalized_target)
+          .contains(query.normalized_without_whitespace);
+    case RawValueMatchMode::kText:
+      return FuzzyMatchesOrderedTokens(TokenizeString(normalized_target),
+                                       query.tokens);
+    case RawValueMatchMode::kNone:
+      return false;
+  }
+  NOTREACHED();
 }
 
 }  // namespace autofill

@@ -80,9 +80,6 @@ class SafetyHubMagicStackMediator implements TabModelSelectorObserver, MagicStac
         }
 
         switch (magicStackEntry.getModuleType()) {
-            case MagicStackEntry.ModuleType.NOTIFICATION_PERMISSIONS:
-                bindNotificationReviewView(magicStackEntry.getDescription());
-                break;
             case MagicStackEntry.ModuleType.REVOKED_PERMISSIONS:
                 bindRevokedPermissionsView(magicStackEntry.getDescription());
                 break;
@@ -176,37 +173,7 @@ class SafetyHubMagicStackMediator implements TabModelSelectorObserver, MagicStac
         mModel.set(
                 SafetyHubMagicStackViewProperties.BUTTON_ON_CLICK_LISTENER,
                 (view) -> {
-                    SettingsNavigationFactory.createSettingsNavigation()
-                            .startSettings(mContext, SafetyHubFragment.class);
-                    recordExternalInteractions(ExternalInteractions.OPEN_FROM_MAGIC_STACK);
-                });
-    }
-
-    private void bindNotificationReviewView(String summary) {
-        mModel.set(
-                SafetyHubMagicStackViewProperties.HEADER,
-                mContext.getString(R.string.safety_hub_magic_stack_module_name));
-        mModel.set(
-                SafetyHubMagicStackViewProperties.TITLE,
-                mContext.getString(R.string.safety_hub_magic_stack_notifications_title));
-        mModel.set(SafetyHubMagicStackViewProperties.SUMMARY, summary);
-        mModel.set(
-                SafetyHubMagicStackViewProperties.BUTTON_TEXT,
-                mContext.getString(R.string.safety_hub_magic_stack_safe_state_button_text));
-        mModel.set(
-                SafetyHubMagicStackViewProperties.BUTTON_CONTENT_DESCRIPTION,
-                mContext.getString(
-                        R.string.safety_hub_magic_stack_safe_state_button_content_description));
-        mModel.set(
-                SafetyHubMagicStackViewProperties.ICON_DRAWABLE,
-                SettingsUtils.getTintedIcon(
-                        mContext,
-                        R.drawable.safety_hub_notifications_icon,
-                        R.color.default_icon_color_accent1_tint_list));
-        mModel.set(
-                SafetyHubMagicStackViewProperties.BUTTON_ON_CLICK_LISTENER,
-                (view) -> {
-                    SettingsNavigationFactory.createSettingsNavigation()
+                    SettingsNavigationFactory.createSettingsNavigation(mContext)
                             .startSettings(mContext, SafetyHubFragment.class);
                     recordExternalInteractions(ExternalInteractions.OPEN_FROM_MAGIC_STACK);
                 });
@@ -235,7 +202,7 @@ class SafetyHubMagicStackMediator implements TabModelSelectorObserver, MagicStac
         mModel.set(
                 SafetyHubMagicStackViewProperties.BUTTON_ON_CLICK_LISTENER,
                 (view) -> {
-                    SettingsNavigationFactory.createSettingsNavigation()
+                    SettingsNavigationFactory.createSettingsNavigation(mContext)
                             .startSettings(mContext, SafeBrowsingSettingsFragment.class);
                     recordExternalInteractions(
                             ExternalInteractions.OPEN_SAFE_BROWSING_FROM_MAGIC_STACK);

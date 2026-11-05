@@ -6,8 +6,6 @@ package org.chromium.chrome.browser.educational_tip;
 
 import static org.mockito.Mockito.verify;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -15,7 +13,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.CallbackController;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -23,7 +20,6 @@ import org.chromium.chrome.browser.educational_tip.cards.NtpThemePromoCoordinato
 
 /** Test relating to {@link NtpThemePromoCoordinator} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class NtpThemePromoCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private Runnable mOnModuleClickedCallback;
@@ -39,7 +35,6 @@ public class NtpThemePromoCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testClickNtpThemePromoCard() {
         mNtpThemePromoCoordinator.onCardClicked();
         verify(mActionDelegate).openNtpThemeCustomizationBottomSheet();

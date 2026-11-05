@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+chromium::import! {
+    "//components/cbor/rust:cbor";
+}
+
 use cbor::*;
 use rust_gtest_interop::prelude::*;
 
@@ -96,13 +100,13 @@ fn test_inputs() {
             "a101a101a101a101a101a101a101a101a101a101a101a101a101a101a101a101a101a101a101a0",
             Err(Error::TooMuchNesting),
         ),
-        ("a202010102", Err(Error::OutOfOrderKey)),
+        ("a202010102", Err(Error::OutOfOrderOrDuplicateKey)),
         ("a1810101", Err(Error::IncorrectMapKeyType)),
         ("f4", Ok(Value::Boolean(false))),
         ("f5", Ok(Value::Boolean(true))),
         ("f6", Ok(Value::Null)),
         ("f7", Ok(Value::Undefined)),
-        ("a201010102", Err(Error::DuplicateKey)),
+        ("a201010102", Err(Error::OutOfOrderOrDuplicateKey)),
         ("f93c00", Err(Error::UnsupportedFloatingPointValue)),
         ("fa3f801000", Err(Error::UnsupportedFloatingPointValue)),
         ("fb3ff0000000000001", Err(Error::UnsupportedFloatingPointValue)),
@@ -157,7 +161,7 @@ fn test_corner_cases() {
 fn test_map_unsupported_simple_values() {
     let bytes_key = hex::decode("a1f002").unwrap();
     let result_key = parse_bytes(&bytes_key);
-    assert_eq!(result_key, Err(Error::UnsupportedSimpleValue));
+    assert_eq!(result_key, Err(Error::IncorrectMapKeyType));
 
     let bytes_value = hex::decode("a102f0").unwrap();
     let result_value = parse_bytes(&bytes_value);
@@ -172,8 +176,8 @@ fn test_error_to_string() {
         "Prematurely terminated CBOR data byte array."
     );
     assert_eq!(
-        Error::OutOfOrderKey.to_str(),
-        "Map keys must be strictly monotonically increasing based on byte length and then by byte-wise lexical order."
+        Error::OutOfOrderOrDuplicateKey.to_str(),
+        "Map keys must be strictly monotonically increasing based on major type, byte length and then by byte-wise lexical order."
     );
 }
 
@@ -198,4 +202,81 @@ fn test_map_lookups() {
 
     assert_eq!(map.get(&MapKey::Bytestring(&[1, 2])), Some(&Value::Int(42)));
     assert_eq!(map.get(&MapKey::Bytestring(&[1, 3])), None);
+}
+
+#[gtest(CBORReaderRustTest, TestReadArrayHeader)]
+fn test_read_array_header() {
+    let mut data: &[u8] = &[0x85, 0x01, 0x02];
+    assert_eq!(read_array_header(&mut data), Ok(5));
+    assert_eq!(data, &[0x01, 0x02]);
+
+    // Wrong major type (bytestring instead of array) does not consume data.
+    let mut wrong_type: &[u8] = &[0x44, 0x01, 0x02, 0x03, 0x04];
+    assert_eq!(read_array_header(&mut wrong_type), Err(Error::UnsupportedMajorType));
+    assert_eq!(wrong_type, &[0x44, 0x01, 0x02, 0x03, 0x04]);
+
+    // Non-minimal encoding.
+    let mut non_minimal: &[u8] = &[0x98, 0x05];
+    assert_eq!(read_array_header(&mut non_minimal), Err(Error::NonMinimalCborEncoding));
+
+    // Incomplete header does not consume data.
+    let mut incomplete: &[u8] = &[0x98];
+    assert_eq!(read_array_header(&mut incomplete), Err(Error::IncompleteCborData));
+    assert_eq!(incomplete, &[0x98]);
+}
+
+#[gtest(CBORReaderRustTest, TestReadBytestringHeader)]
+fn test_read_bytestring_header() {
+    let mut data: &[u8] = &[0x48, 0xF0, 0x9F];
+    assert_eq!(read_bytestring_header(&mut data), Ok(8));
+    assert_eq!(data, &[0xF0, 0x9F]);
+
+    // Wrong major type (array instead of bytestring) does not consume data.
+    let mut wrong_type: &[u8] = &[0x82, 0x01, 0x02];
+    assert_eq!(read_bytestring_header(&mut wrong_type), Err(Error::UnsupportedMajorType));
+    assert_eq!(wrong_type, &[0x82, 0x01, 0x02]);
+
+    // Non-minimal encoding.
+    let mut non_minimal: &[u8] = &[0x58, 0x04];
+    assert_eq!(read_bytestring_header(&mut non_minimal), Err(Error::NonMinimalCborEncoding));
+
+    // Incomplete header does not consume data.
+    let mut incomplete: &[u8] = &[0x59, 0x01];
+    assert_eq!(read_bytestring_header(&mut incomplete), Err(Error::IncompleteCborData));
+    assert_eq!(incomplete, &[0x59, 0x01]);
+}
+
+#[gtest(CBORReaderRustTest, TestReadBytestring)]
+fn test_read_bytestring() {
+    let mut data: &[u8] = &[0x44, 0x01, 0x02, 0x03, 0x04, 0xFF];
+    assert_eq!(read_bytestring(&mut data), Ok(&[0x01, 0x02, 0x03, 0x04][..]));
+    assert_eq!(data, &[0xFF]);
+
+    // Incomplete payload leaves slice unconsumed.
+    let mut incomplete: &[u8] = &[0x44, 0x01, 0x02];
+    assert_eq!(read_bytestring(&mut incomplete), Err(Error::IncompleteCborData));
+    assert_eq!(incomplete, &[0x44, 0x01, 0x02]);
+}
+
+#[gtest(CBORReaderRustTest, TestReadCompleteBytestring)]
+fn test_read_complete_bytestring() {
+    let mut data: &[u8] = &[0x44, 0x01, 0x02, 0x03, 0x04, 0xFF];
+    let len = read_bytestring_header(&mut data).unwrap();
+    assert_eq!(read_complete_bytestring(&mut data, len), Ok(&[0x01, 0x02, 0x03, 0x04][..]));
+    assert_eq!(data, &[0xFF]);
+}
+
+#[gtest(CBORReaderRustTest, TestOnePassHugeMapLengthNoOverflow)]
+fn test_one_pass_huge_map_length_no_overflow() {
+    // Map with length 0x9595959595959595 (> u64::MAX / 2).
+    // An array [21] followed by 0xBF (unsupported additional info 31).
+    let data: &[u8] = &[
+        0xBB, 0x95, 0x95, 0x95, 0x95, 0x95, 0x95, 0x95, 0x95, // Map header
+        0x95, // Array of length 21 (invalid map key type)
+        0x15, // Uint 21
+        0xBF, // Map with additional info 31 (invalid)
+        0xBE, 0x3B, 0x4F, 0x2F, 0x9E,
+    ];
+    let res = parse_with_config(data, Config::default());
+    assert_eq!(res, Err(Error::IncorrectMapKeyType));
 }

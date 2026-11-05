@@ -10,6 +10,7 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/password_settings/password_settings_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_root_table_constants.h"
+#import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -79,7 +80,7 @@
   if ([ChromeEarlGrey isYourSavedInfoSettingsPageIosEnabled]) {
     [ChromeEarlGreyUI
         tapSettingsMenuButton:grey_accessibilityID(
-                                  @"kSettingsAutofillAndPasswordsCellId")];
+                                  kSettingsAutofillAndPasswordsCellId)];
     [[EarlGrey selectElementWithMatcher:chrome_test_util::
                                             SettingsMenuPasswordsButton()]
         performAction:grey_tap()];
@@ -352,7 +353,60 @@
   [ChromeEarlGrey userStringPref:prefs::kDefaultCharset];
 }
 
+// Exercises posture and orientation states on the iPhone Duo simulator.
+- (void)testDuoHingeAndOrientation {
+  if (![ChromeEarlGrey isDuoSimulator]) {
+    EARL_GREY_TEST_SKIPPED(@"Test only supported on iPhone Duo simulator.");
+  }
+
+  if (@available(iOS 27.1, *)) {
+    const UIHingeStatus kHingeStatuses[] = {
+        UIHingeStatusClosed,         // Cover display, compact width
+        UIHingeStatusPartiallyOpen,  // Book (inner display, regular width)
+        UIHingeStatusFullyOpen,      // Open (inner display, regular width)
+    };
+    const UIDeviceOrientation kOrientations[] = {
+        UIDeviceOrientationPortrait,
+        UIDeviceOrientationLandscapeLeft,
+    };
+
+    for (UIHingeStatus status : kHingeStatuses) {
+      [ChromeEarlGrey setSimulatedDuoHingeStatus:status];
+      BOOL isCoverDisplay = (status == UIHingeStatusClosed);
+      for (UIDeviceOrientation orientation : kOrientations) {
+        [ChromeEarlGrey setSimulatedDuoOrientation:orientation];
+        UIInterfaceOrientation interfaceOrientation =
+            [ChromeEarlGrey interfaceOrientation];
+        BOOL deviceIsPortrait = (orientation == UIDeviceOrientationPortrait);
+        // Unfolding the inner display (951x669) makes the screen wider than
+        // tall when held in portrait, inverting the interface orientation
+        // relative to the device orientation.
+        BOOL expectPortraitInterface =
+            isCoverDisplay ? deviceIsPortrait : !deviceIsPortrait;
+        if (expectPortraitInterface) {
+          GREYAssertTrue(
+              UIInterfaceOrientationIsPortrait(interfaceOrientation),
+              @"Expected portrait interface orientation for status %ld",
+              static_cast<long>(status));
+        } else {
+          GREYAssertTrue(
+              UIInterfaceOrientationIsLandscape(interfaceOrientation),
+              @"Expected landscape interface orientation for status %ld",
+              static_cast<long>(status));
+        }
+        GREYAssertEqual(
+            [ChromeEarlGrey isCompactWidth], isCoverDisplay,
+            @"Unexpected horizontal size class for hinge status %ld",
+            static_cast<long>(status));
+        [ChromeEarlGrey waitForUIElementToAppearWithMatcher:
+                            chrome_test_util::ToolsMenuButton()];
+      }
+    }
+  }
+}
+
 // A test designed to fail, to verify test expectations.
+// TODO(crbug.com/568719330): This test is currently crashing instead of failing.
 - (void)testFailingMethod {
   GREYAssertTrue(NO, @"This test is expected to fail.");
 }
@@ -364,6 +418,7 @@
 }
 
 // A test designed to fail (or pass), to verify flaky expectations.
+// TODO(crbug.com/568719330): This test is currently crashing instead of failing.
 - (void)testFlakyFailureMethod {
   GREYAssertTrue(NO, @"This test is expected to fail flakily.");
 }

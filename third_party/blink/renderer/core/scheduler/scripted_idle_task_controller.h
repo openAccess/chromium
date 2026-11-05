@@ -5,7 +5,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_SCHEDULER_SCRIPTED_IDLE_TASK_CONTROLLER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_SCHEDULER_SCRIPTED_IDLE_TASK_CONTROLLER_H_
 
-#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
@@ -19,12 +18,9 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/prefinalizer.h"
-#include "third_party/blink/renderer/platform/supplementable.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
-
-CORE_EXPORT BASE_DECLARE_FEATURE(kRemoveCancelledScriptedIdleTasks);
 
 class IdleRequestOptions;
 class ScriptedIdleTaskController;
@@ -65,7 +61,6 @@ class CORE_EXPORT IdleTask : public GarbageCollected<IdleTask>,
 class CORE_EXPORT ScriptedIdleTaskController
     : public GarbageCollected<ScriptedIdleTaskController>,
       public ExecutionContextLifecycleStateObserver,
-      public Supplement<ExecutionContext>,
       public NameClient {
   USING_PRE_FINALIZER(ScriptedIdleTaskController, Dispose);
 
@@ -90,9 +85,7 @@ class CORE_EXPORT ScriptedIdleTaskController
     RefCountedCounter counter_;
   };
 
-  static const char kSupplementName[];
-
-  static ScriptedIdleTaskController& From(ExecutionContext& context);
+  static ScriptedIdleTaskController& From(LocalDOMWindow&);
 
   explicit ScriptedIdleTaskController(ExecutionContext*);
   ~ScriptedIdleTaskController() override;

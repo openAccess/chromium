@@ -11,7 +11,6 @@
 #include "content/browser/buckets/bucket_manager.h"
 #include "content/browser/buckets/bucket_manager_host.h"
 #include "content/browser/locks/lock_manager.h"
-#include "content/browser/renderer_host/indexed_db_client_state_checker_factory.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/public/browser/browser_context.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
@@ -40,7 +39,7 @@ BucketHost::~BucketHost() = default;
 mojo::PendingRemote<blink::mojom::BucketHost>
 BucketHost::CreateStorageBucketBinding(
     base::WeakPtr<BucketContext> bucket_context) {
-  DCHECK(bucket_context);
+  CHECK(bucket_context, base::NotFatalUntil::M160);
   mojo::PendingRemote<blink::mojom::BucketHost> remote;
   receivers_.Add(this, remote.InitWithNewPipeAndPassReceiver(), bucket_context);
   return remote;
@@ -49,7 +48,7 @@ BucketHost::CreateStorageBucketBinding(
 void BucketHost::PassStorageBucketBinding(
     base::WeakPtr<BucketContext> bucket_context,
     mojo::PendingReceiver<blink::mojom::BucketHost> receiver) {
-  DCHECK(bucket_context);
+  CHECK(bucket_context, base::NotFatalUntil::M160);
   receivers_.Add(this, std::move(receiver), bucket_context);
 }
 
@@ -170,16 +169,8 @@ void BucketHost::GetIdbFactory(
     return;
   }
 
-  storage::BucketClientInfo client_info = bucket_context->GetBucketClientInfo();
-  auto state_checker =
-      IndexedDBClientStateCheckerFactory::InitializePendingRemote(client_info);
-  if (!state_checker) {
-    // The client is not in a valid state to use IndexedDB.
-    return;
-  }
-
   bucket_manager_host_->GetStoragePartition()->BindIndexedDB(
-      bucket_info_.ToBucketLocator(), client_info, std::move(state_checker),
+      bucket_info_.ToBucketLocator(), bucket_context->GetBucketClientInfo(),
       std::move(receiver));
 }
 

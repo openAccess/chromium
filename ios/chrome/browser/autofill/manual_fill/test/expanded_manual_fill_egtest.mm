@@ -88,11 +88,20 @@ id<GREYMatcher> KeyboardAccessoryPasswordSuggestionChip(
     EmbeddedTestServer* test_server) {
   NSString* username = @"concrete username";
   if ([ChromeEarlGrey isIPadIdiom]) {
-    // On iPad, the suggestion text is an attributed string containing the
-    // signon realm on the 2nd line.
+    // On iPad, the suggestion text is an attributed string containing either
+    // the credential type (`Password`) when passkey conditional login is
+    // enabled, or the signon realm on the second line when passkey conditional
+    // login is disabled.
     NSString* realm = base::SysUTF8ToNSString(password_manager::GetShownOrigin(
         url::Origin::Create(test_server->base_url())));
-    return grey_text([NSString stringWithFormat:@"%@\n%@", username, realm]);
+    NSString* passwordSubtext =
+        l10n_util::GetNSString(IDS_IOS_PASSWORD_SUBTEXT);
+    // TODO(crbug.com/460517275): remove the signon realm case once the
+    // kIOSPasskeyConditionalLoginWithShim feature is launched.
+    return grey_anyOf(
+        grey_text(
+            [NSString stringWithFormat:@"%@\n%@", username, passwordSubtext]),
+        grey_text([NSString stringWithFormat:@"%@\n%@", username, realm]), nil);
   } else {
     return grey_text(username);
   }
@@ -252,9 +261,6 @@ GREYElementInteraction* SearchAutofillFormButton(id<GREYMatcher> scroll_view) {
   AppLaunchConfiguration config;
   config.relaunch_policy = ForceRelaunchByCleanShutdown;
 
-  config.features_disabled.push_back(kIOSPasskeyConditionalLoginWithShim);
-  config.features_disabled.push_back(kIOSPasskeyModalLoginWithShim);
-
   return config;
 }
 
@@ -305,6 +311,8 @@ GREYElementInteraction* SearchAutofillFormButton(id<GREYMatcher> scroll_view) {
 // manual fill view.
 - (void)openExpandedManualFillViewForDataType:(ManualFillDataType)dataType
                                   fieldToFill:(std::string)fieldToFill {
+  [ChromeEarlGrey scrollWebStateElementIntoViewWithID:fieldToFill];
+
   // Tap on the provided field.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId(fieldToFill)];
@@ -584,6 +592,7 @@ GREYElementInteraction* SearchAutofillFormButton(id<GREYMatcher> scroll_view) {
   LoadForm(self.testServer, ManualFillDataType::kOther);
 
   // Tap on a field that's not associated to password, payment or address.
+  [ChromeEarlGrey scrollWebStateElementIntoViewWithID:kOtherStuffFieldID];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId(kOtherStuffFieldID)];
 
@@ -635,6 +644,7 @@ GREYElementInteraction* SearchAutofillFormButton(id<GREYMatcher> scroll_view) {
   // Now focus a password-related field.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:grey_scrollToContentEdge(kGREYContentEdgeTop)];
+  [ChromeEarlGrey scrollWebStateElementIntoViewWithID:kPasswordFieldID];
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
       performAction:chrome_test_util::TapWebElementWithId(kPasswordFieldID)];
 

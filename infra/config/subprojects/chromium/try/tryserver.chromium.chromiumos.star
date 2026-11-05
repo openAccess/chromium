@@ -45,6 +45,8 @@ try_.builder(
         "ci/chromeos-amd64-generic-asan-rel",
     ],
     gn_args = "ci/chromeos-amd64-generic-asan-rel",
+    ssd = True,
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
 )
 
 try_.builder(
@@ -55,6 +57,8 @@ try_.builder(
     # TODO(crbug.com/40605913): Enable DCHECKS on the two amd64-generic bots
     # when the PFQ has it enabled.
     gn_args = "ci/chromeos-amd64-generic-cfi-thin-lto-rel",
+    ssd = True,
+    contact_team_email = "chromeos-chrome-build@google.com",
 )
 
 try_.builder(
@@ -68,6 +72,8 @@ try_.builder(
             "ci/chromeos-amd64-generic-dbg",
         ],
     ),
+    ssd = True,
+    contact_team_email = "chromeos-chrome-build@google.com",
     cq_settings = try_.cq_settings(
         location_filters = [
             "content/gpu/.+",
@@ -80,7 +86,6 @@ try_.builder(
 try_.builder(
     name = "chromeos-amd64-generic-rel",
     branch_selector = branches.selector.CROS_LTS_BRANCHES,
-    description_html = "This is an Ash chrome builder which runs gtests.",
     mirrors = [
         "ci/chromeos-amd64-generic-rel",
         "ci/chromeos-amd64-generic-rel-gtest",
@@ -91,6 +96,7 @@ try_.builder(
             "dcheck_always_on",
         ],
     ),
+    ssd = True,
     contact_team_email = "chromeos-chrome-build@google.com",
     main_list_view = "try",
 )
@@ -101,6 +107,8 @@ try_.builder(
         "ci/chromeos-arm-generic-dbg",
     ],
     gn_args = "ci/chromeos-arm-generic-dbg",
+    ssd = True,
+    contact_team_email = "chromeos-chrome-build@google.com",
 )
 
 try_.builder(
@@ -113,6 +121,8 @@ try_.builder(
             "dcheck_always_on",
         ],
     ),
+    ssd = True,
+    contact_team_email = "chromeos-chrome-build@google.com",
     experiments = {
         # crbug/940930
         "chromium.enable_cleandead": 100,
@@ -131,14 +141,19 @@ try_.builder(
         ],
     ),
     builderless = not settings.is_main,
+    ssd = None if settings.is_main else True,
+    contact_team_email = "chromeos-chrome-build@google.com",
     cq_settings = try_.cq_settings(
         on_default_cq = True,
+        reuse_max_commit_distance = 800 if settings.is_main else None,
     ),
     experiments = {
         # crbug/940930
         "chromium.enable_cleandead": 100,
         # go/rts-project-proposal
         "chromium_rts.filter_file_analysis": 100,
+        # crbug.com/40280175
+        "chromium_checkout.expand_submodules": 100,
     },
     main_list_view = "try",
     siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
@@ -146,8 +161,6 @@ try_.builder(
 
 try_.builder(
     name = "chromeos-libfuzzer-asan-rel",
-    # TODO(crbug.com/41492669): Can delete this description when it's
-    # automatically generated.
     executable = "recipe:chromium/fuzz",
     mirrors = ["ci/Libfuzzer Upload Chrome OS ASan"],
     gn_args = gn_args.config(
@@ -158,6 +171,7 @@ try_.builder(
             "skip_generate_fuzzer_owners",
         ],
     ),
+    ssd = True,
     contact_team_email = "chrome-fuzzing-core@google.com",
 )
 
@@ -178,8 +192,11 @@ try_.builder(
         ],
     ),
     builderless = not settings.is_main,
+    ssd = None if settings.is_main else True,
+    contact_team_email = "chromeos-chrome-build@google.com",
     cq_settings = try_.cq_settings(
         on_default_cq = True,
+        reuse_max_commit_distance = 800 if settings.is_main else None,
     ),
     experiments = {
         # crbug/940930
@@ -208,12 +225,14 @@ try_.orchestrator_builder(
         ],
     ),
     compilator = "linux-chromeos-rel-compilator",
+    contact_team_email = "chromeos-chrome-build@google.com",
     coverage_test_types = ["unit", "overall"],
     # TODO(crbug.com/40241638): Use orchestrator pool once overloaded test pools
     # are addressed
     # use_orchestrator_pool = True,
     cq_settings = try_.cq_settings(
         on_default_cq = True,
+        reuse_max_commit_distance = 800 if settings.is_main else None,
     ),
     experiments = {
         # go/nplus1shardsproposal
@@ -222,6 +241,8 @@ try_.orchestrator_builder(
         "chromium.enable_cleandead": 100,
         # go/rts-project-proposal
         "chromium_rts.filter_file_analysis": 100,
+        # crbug.com/40280175
+        "chromium_checkout.expand_submodules": 100,
     },
     main_list_view = "try",
     use_clang_coverage = True,
@@ -231,6 +252,7 @@ try_.compilator_builder(
     name = "linux-chromeos-rel-compilator",
     branch_selector = branches.selector.CROS_LTS_BRANCHES,
     cores = 32,
+    contact_team_email = "chromeos-chrome-build@google.com",
     main_list_view = "try",
 )
 
@@ -248,23 +270,23 @@ try_.builder(
         ],
     ),
     ssd = 1,
+    contact_team_email = "chromeos-chrome-build@google.com",
 )
 
 try_.builder(
     name = "linux-chromeos-annotator-rel",
-    description_html = "Runs tests for the Network Traffic Annotation Auditor on ChromeOS, mirroring linux-chromeos-annotator-rel.",
     mirrors = [
         "ci/linux-chromeos-annotator-rel",
     ],
     gn_args = gn_args.config(
         configs = [
             "ci/linux-chromeos-annotator-rel",
-            "try_builder",
-            "no_symbols",
+            "release_try_builder",
             "enable_dangling_raw_ptr_feature_flag",
             "enable_backup_ref_ptr_feature_flag",
         ],
     ),
+    ssd = True,
     contact_team_email = "cbe-compliance@google.com",
 )
 
@@ -279,6 +301,8 @@ try_.builder(
             "release_try_builder",
         ],
     ),
+    ssd = True,
+    contact_team_email = "core-devices-eng@google.com",
     cq_settings = try_.cq_settings(
         location_filters = [
             "chromeos/ash/components/chromebox_for_meetings/.+",
@@ -296,16 +320,8 @@ try_.builder(
         "ci/linux-chromeos-treesinviz-disabled-rel",
     ],
     gn_args = "ci/linux-chromeos-treesinviz-disabled-rel",
+    ssd = True,
     contact_team_email = "chrome-gpu-team@google.com",
-)
-
-try_.builder(
-    name = "linux-chromeos-tsgo-rel",
-    mirrors = [
-        "ci/linux-chromeos-tsgo-rel",
-    ],
-    gn_args = "ci/linux-chromeos-tsgo-rel",
-    contact_team_email = "chrome-webui@google.com",
 )
 
 try_.builder(
@@ -318,6 +334,7 @@ try_.builder(
         is_compile_only = True,
     ),
     gn_args = "ci/linux-chromeos-archive-rel",
+    ssd = True,
     contact_team_email = "chrome-browser-infra-team@google.com",
     properties = {
         # The format of these properties is defined at archive/properties.proto
@@ -331,6 +348,9 @@ try_.builder(
             "verify_paths_only": True,
         },
     },
+    # Download the build outputs so that the "Verify Archive Paths" step can
+    # find them.
+    siso_output_local_strategy = "greedy",
     siso_remote_jobs = siso.remote_jobs.LOW_JOBS_FOR_CQ,
 )
 
@@ -346,5 +366,6 @@ try_.builder(
             "release_try_builder",
         ],
     ),
+    ssd = True,
     contact_team_email = "chrome-webium-product-eng@google.com",
 )

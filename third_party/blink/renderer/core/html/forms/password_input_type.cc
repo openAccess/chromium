@@ -36,6 +36,7 @@
 #include "third_party/blink/renderer/core/dom/dom_token_list.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
+#include "third_party/blink/renderer/core/events/before_text_inserted_event.h"
 #include "third_party/blink/renderer/core/events/keyboard_event.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
@@ -181,7 +182,10 @@ void PasswordInputType::UpdatePasswordRevealButton() {
     button->SetInlineStyleProperty(CSSPropertyID::kDisplay, CSSValueID::kNone);
     // Always obscure password when the reveal button is hidden.
     // (ex. out of focus)
-    GetElement().SetShouldRevealPassword(false);
+    // Keep this automatic reset silent because it is not an explicit user
+    // request to hide the password.
+    GetElement().SetShouldRevealPassword(
+        false, PasswordVisibilityAnnouncement::kSilent);
   }
 }
 
@@ -206,14 +210,20 @@ void PasswordInputType::HandleBlurEvent() {
 
 void PasswordInputType::HandleBeforeTextInsertedEvent(
     BeforeTextInsertedEvent& event) {
+  DCHECK(!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled());
+  event.SetText(FilterBeforeTextInserted(event.GetText()));
+}
+
+String PasswordInputType::FilterBeforeTextInserted(const String& text) {
   if (RuntimeEnabledFeatures::PasswordRevealEnabled()) {
     // This is the only scenario we go from no reveal button to showing the
     // reveal button: the password is empty and we have some user input.
-    if (GetElement().Value().empty())
+    if (GetElement().Value().empty() && !text.empty()) {
       should_show_reveal_button_ = true;
+    }
   }
 
-  TextFieldInputType::HandleBeforeTextInsertedEvent(event);
+  return TextFieldInputType::FilterBeforeTextInserted(text);
 }
 
 void PasswordInputType::HandleKeydownEvent(KeyboardEvent& event) {
@@ -222,7 +232,8 @@ void PasswordInputType::HandleKeydownEvent(KeyboardEvent& event) {
       // Alt-F8 to reveal/obscure password
       if (event.altKey() && event.key() == "F8") {
         GetElement().SetShouldRevealPassword(
-            !GetElement().ShouldRevealPassword());
+            !GetElement().ShouldRevealPassword(),
+            PasswordVisibilityAnnouncement::kAnnounce);
         UpdatePasswordRevealButton();
         event.SetDefaultHandled();
       }

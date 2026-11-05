@@ -10,7 +10,6 @@
 #include "chrome/browser/ash/guest_os/guest_os_external_protocol_handler.h"
 #include "chrome/browser/platform_util.h"
 #include "chrome/browser/platform_util_internal.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
@@ -70,7 +69,7 @@ void ShowWarningOnOpenOperationResult(Profile* profile,
 }  // namespace
 
 void ShowItemInFolder(Profile* profile, const base::FilePath& full_path) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   file_manager::util::ShowItemInFolder(
       profile, full_path,
       base::BindOnce(&ShowWarningOnOpenOperationResult, profile, full_path));
@@ -80,7 +79,7 @@ void OpenItem(Profile* profile,
               const base::FilePath& full_path,
               OpenItemType item_type,
               OpenOperationCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   file_manager::util::OpenItem(
       profile, full_path, item_type,
       callback.is_null() ? base::BindOnce(&ShowWarningOnOpenOperationResult,
@@ -97,7 +96,7 @@ void OpenExternal(Profile* profile, const GURL& url) {
   // ExternalProtocolDialog::OnDialogAccepted invokes this, or the dialog has
   // previously been accepted with "Always allow ..." and this is called from
   // ChromeContentBrowserClient::HandleExternalProtocol.
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 
   std::optional<guest_os::GuestOsUrlHandler> handler =
       guest_os::GuestOsUrlHandler::GetForUrl(profile, url);
@@ -115,7 +114,7 @@ bool IsBrowserLockedFullscreen(const BrowserWindowInterface* browser) {
   if (!window)
     return false;
   return ash::GetWindowPinType(window) ==
-         chromeos::WindowPinType::kLockedFullscreen;
+         chromeos::WindowPinType::kTrustedPinned;
 }
 
 }  // namespace platform_util

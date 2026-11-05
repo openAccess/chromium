@@ -27,7 +27,6 @@
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/settings/cros_settings_holder.h"
 #include "chrome/browser/ash/settings/device_settings_test_helper.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
@@ -52,7 +51,9 @@
 #include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "content/public/test/test_utils.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -364,7 +365,7 @@ void CloudExternalDataPolicyObserverTest::LogInAsDeviceLocalAccount(
       std::make_unique<PolicyServiceImpl>(std::move(providers));
   builder.SetPolicyService(std::move(policy_service));
   builder.SetPath(ash::ProfileHelper::Get()->GetProfilePathByUserIdHash(
-      user_manager::FakeUserManager::GetFakeUsernameHash(account_id)));
+      user_manager::TestHelper::GetFakeUsernameHash(account_id)));
 
   profile_ = builder.Build();
   profile_->set_profile_name(account_id.GetUserEmail());
@@ -403,7 +404,7 @@ void CloudExternalDataPolicyObserverTest::LogInAsRegularUser() {
       std::make_unique<PolicyServiceImpl>(std::move(providers));
   builder.SetPolicyService(std::move(policy_service));
   builder.SetPath(ash::ProfileHelper::Get()->GetProfilePathByUserIdHash(
-      user_manager::FakeUserManager::GetFakeUsernameHash(account_id)));
+      user_manager::TestHelper::GetFakeUsernameHash(account_id)));
 
   profile_ = builder.Build();
   profile_->set_profile_name(kRegularUserID);

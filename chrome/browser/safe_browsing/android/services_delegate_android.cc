@@ -6,6 +6,7 @@
 
 #include "base/check_op.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_delegate_android.h"
@@ -39,18 +40,18 @@ std::unique_ptr<ServicesDelegate> ServicesDelegate::CreateForTest(
 ServicesDelegateAndroid::ServicesDelegateAndroid(
     SafeBrowsingServiceImpl* safe_browsing_service)
     : ServicesDelegate(safe_browsing_service, /*services_creator=*/nullptr) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 }
 
 ServicesDelegateAndroid::ServicesDelegateAndroid(
     SafeBrowsingServiceImpl* safe_browsing_service,
     ServicesDelegate::ServicesCreator* services_creator)
     : ServicesDelegate(safe_browsing_service, services_creator) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 }
 
 ServicesDelegateAndroid::~ServicesDelegateAndroid() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 }
 
 const scoped_refptr<SafeBrowsingDatabaseManager>&
@@ -61,7 +62,7 @@ ServicesDelegateAndroid::database_manager() const {
 void ServicesDelegateAndroid::Initialize() {
   if (!database_manager_set_for_tests_) {
     database_manager_ =
-        base::WrapRefCounted(new RemoteSafeBrowsingDatabaseManager());
+        base::MakeRefCounted<RemoteSafeBrowsingDatabaseManager>();
   }
 
   download_service_.reset(
@@ -101,14 +102,14 @@ void ServicesDelegateAndroid::AddDownloadManager(
     content::DownloadManager* download_manager) {}
 
 DownloadProtectionService* ServicesDelegateAndroid::GetDownloadService() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   return download_service_.get();
 }
 
 void ServicesDelegateAndroid::StartOnUIThread(
     scoped_refptr<network::SharedURLLoaderFactory> browser_url_loader_factory,
-    const V4ProtocolConfig& v4_config) {
-  database_manager_->StartOnUIThread(browser_url_loader_factory, v4_config);
+    const SBProtocolConfig& config) {
+  database_manager_->StartOnUIThread(browser_url_loader_factory, config);
 }
 
 void ServicesDelegateAndroid::StopOnUIThread(bool shutdown) {
@@ -116,18 +117,18 @@ void ServicesDelegateAndroid::StopOnUIThread(bool shutdown) {
 }
 
 void ServicesDelegateAndroid::CreateTelemetryService(Profile* profile) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(profile);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(profile, base::NotFatalUntil::M162);
 
   if (profile->IsOffTheRecord())
     return;
 
-  DCHECK(!telemetry_service_);
+  CHECK(!telemetry_service_, base::NotFatalUntil::M162);
   telemetry_service_ = std::make_unique<AndroidTelemetryService>(profile);
 }
 
 void ServicesDelegateAndroid::RemoveTelemetryService(Profile* profile) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (telemetry_service_ && telemetry_service_->profile() == profile)
     telemetry_service_.reset();
 }

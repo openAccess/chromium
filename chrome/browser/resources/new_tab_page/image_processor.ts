@@ -2,18 +2,35 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+
 import {checkTransparency} from './transparency.js';
 
 export const SUPPORTED_FILE_TYPES = [
   'image/bmp',
-  'image/heic',
-  'image/heif',
   'image/jpeg',
   'image/png',
   'image/tiff',
   'image/webp',
   'image/x-icon',
 ];
+
+export const MAX_C2PA_SEARCH_BYTES = 256 * 1024;
+export const C2PA_MARKER = 'urn:c2pa:';
+export const MAX_C2PA_PIXELS = 3000000;
+
+export const SUPPORTED_C2PA_FILE_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+];
+
+export async function hasC2paMetadata(file: File): Promise<boolean> {
+  const slice = file.slice(0, MAX_C2PA_SEARCH_BYTES);
+  const buffer = await slice.arrayBuffer();
+  const text = new TextDecoder('utf-8', {fatal: false}).decode(buffer);
+  return text.includes(C2PA_MARKER);
+}
 
 type MimeType = typeof SUPPORTED_FILE_TYPES[number];
 
@@ -22,10 +39,8 @@ const MIME_TYPE_TO_EXTENSION_MAP: ReadonlyMap<MimeType, string> =
       ['image/png', '.png'],
       ['image/webp', '.webp'],
       ['image/bmp', '.bmp'],
-      ['image/heif', '.heif'],
       ['image/jpeg', '.jpg'],
       ['image/tiff', '.tif'],
-      ['image/heic', '.heic'],
       ['image/x-icon', '.ico'],
     ]);
 
@@ -59,6 +74,19 @@ export async function processFile(
 
   const originalImageWidth = image.width;
   const originalImageHeight = image.height;
+
+  const isC2paBypassEnabled =
+      loadTimeData.getBoolean('lensBypassCompressionForC2pa');
+  if (isC2paBypassEnabled && SUPPORTED_C2PA_FILE_TYPES.includes(file.type) &&
+      (originalImageWidth * originalImageHeight <= MAX_C2PA_PIXELS)) {
+    if (await hasC2paMetadata(file)) {
+      return {
+        processedFile: file,
+        imageWidth: originalImageWidth,
+        imageHeight: originalImageHeight,
+      };
+    }
+  }
 
   const hasTransparency = checkTransparency(await file.arrayBuffer());
 

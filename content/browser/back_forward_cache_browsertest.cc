@@ -19,7 +19,6 @@
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/system/sys_info.h"
-#include "base/task/common/task_annotator.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -35,6 +34,7 @@
 #include "content/browser/back_forward_cache/back_forward_cache_impl.h"
 #include "content/browser/bad_message.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/navigation_request.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/should_swap_browsing_instance.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -52,7 +52,6 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/commit_message_delayer.h"
 #include "content/public/test/content_browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_navigation_throttle.h"
@@ -184,9 +183,6 @@ void BackForwardCacheBrowserTest::SetUpCommandLine(
   DisableFeature(features::kBackForwardCacheEntryTimeout);
   EnableFeatureAndSetParams(features::kBackForwardCache,
                             "message_handling_when_cached", "log");
-  EnableFeatureAndSetParams(
-      blink::features::kLogUnexpectedIPCPostedToBackForwardCachedDocuments,
-      "delay_before_tracking_ms", "0");
   // Allow unlimited network during tests. Override this if you want to test the
   // network limiting.
   EnableFeatureAndSetParams(blink::features::kLoadingTasksUnfreezable,
@@ -314,13 +310,6 @@ BackForwardCacheBrowserTest::render_frame_host_manager() {
 
 std::string BackForwardCacheBrowserTest::DepictFrameTree(FrameTreeNode* node) {
   return visualizer_.DepictFrameTree(node);
-}
-
-bool BackForwardCacheBrowserTest::HistogramContainsIntValue(
-    base::HistogramBase::Sample32 sample,
-    std::vector<base::Bucket> histogram_values) {
-  return std::ranges::contains(histogram_values, static_cast<int>(sample),
-                               &base::Bucket::min);
 }
 
 void BackForwardCacheBrowserTest::EvictByJavaScript(RenderFrameHostImpl* rfh) {
@@ -1112,9 +1101,10 @@ IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
   delete_rfh_a2.WaitUntilDeleted();
 }
 
-// Sub-frame doesn't transition from LifecycleStateImpl::kInBackForwardCache to
-// LifecycleStateImpl::kRunningUnloadHandlers even when the sub-frame having
-// unload handlers is being evicted from BackForwardCache.
+// Sub-frame doesn't transition from
+// RenderFrameHostLifecycleStateImpl::kInBackForwardCache to
+// RenderFrameHostLifecycleStateImpl::kRunningUnloadHandlers even when the
+// sub-frame having unload handlers is being evicted from BackForwardCache.
 IN_PROC_BROWSER_TEST_F(BackForwardCacheUnloadBrowserTest,
                        SubframeWithUnloadHandler) {
   ASSERT_TRUE(embedded_test_server()->Start());
@@ -3568,57 +3558,6 @@ INSTANTIATE_TEST_SUITE_P(
     &BackForwardCacheWithSubframeNavigationWithParamBrowserTest::
         DescribeParams);
 
-class BackForwardCacheFencedFrameBrowserTest
-    : public BackForwardCacheBrowserTest {
- public:
-  BackForwardCacheFencedFrameBrowserTest() = default;
-  ~BackForwardCacheFencedFrameBrowserTest() override = default;
-  BackForwardCacheFencedFrameBrowserTest(
-      const BackForwardCacheFencedFrameBrowserTest&) = delete;
-
-  BackForwardCacheFencedFrameBrowserTest& operator=(
-      const BackForwardCacheFencedFrameBrowserTest&) = delete;
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    BackForwardCacheBrowserTest::SetUpCommandLine(command_line);
-    fenced_frame_helper_ = std::make_unique<test::FencedFrameTestHelper>();
-  }
-
-  test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return *fenced_frame_helper_;
-  }
-
- private:
-  std::unique_ptr<test::FencedFrameTestHelper> fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(BackForwardCacheFencedFrameBrowserTest,
-                       FencedFramePageNotStoredInBackForwardCache) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-  GURL url_a(embedded_test_server()->GetURL("a.com", "/title1.html"));
-  GURL url_b(
-      embedded_test_server()->GetURL("b.com", "/fenced_frames/title1.html"));
-  GURL url_c(
-      embedded_test_server()->GetURL("c.com", "/fenced_frames/title1.html"));
-
-  // 1) Navigate to A.
-  EXPECT_TRUE(NavigateToURL(shell(), url_a));
-
-  // 2) Create a fenced frame.
-  content::RenderFrameHostImpl* fenced_frame_host =
-      static_cast<content::RenderFrameHostImpl*>(
-          fenced_frame_test_helper().CreateFencedFrame(
-              web_contents()->GetPrimaryMainFrame(), url_b));
-  RenderFrameHostWrapper fenced_frame_host_wrapper(fenced_frame_host);
-
-  // 3) Navigate to C on the fenced frame host.
-  fenced_frame_test_helper().NavigateFrameInFencedFrameTree(fenced_frame_host,
-                                                            url_c);
-  EXPECT_TRUE(WaitForLoadStop(shell()->web_contents()));
-
-  if (!fenced_frame_host_wrapper.IsRenderFrameDeleted())
-    EXPECT_FALSE(fenced_frame_host->IsInBackForwardCache());
-}
 
 IN_PROC_BROWSER_TEST_F(BackForwardCacheBrowserTest,
                        RendererInitiatedNavigateToSameUrl) {

@@ -47,8 +47,6 @@ EnumTraits<blink::mojom::ReportingDestination,
       return blink::mojom::ReportingDestination::kSeller;
     case blink::FencedFrame::ReportingDestination::kComponentSeller:
       return blink::mojom::ReportingDestination::kComponentSeller;
-    case blink::FencedFrame::ReportingDestination::kSharedStorageSelectUrl:
-      return blink::mojom::ReportingDestination::kSharedStorageSelectUrl;
     case blink::FencedFrame::ReportingDestination::kDirectSeller:
       return blink::mojom::ReportingDestination::kDirectSeller;
   }
@@ -95,8 +93,6 @@ EnumTraits<blink::mojom::ReportingDestination,
       return blink::FencedFrame::ReportingDestination::kSeller;
     case blink::mojom::ReportingDestination::kComponentSeller:
       return blink::FencedFrame::ReportingDestination::kComponentSeller;
-    case blink::mojom::ReportingDestination::kSharedStorageSelectUrl:
-      return blink::FencedFrame::ReportingDestination::kSharedStorageSelectUrl;
     case blink::mojom::ReportingDestination::kDirectSeller:
       return blink::FencedFrame::ReportingDestination::kDirectSeller;
   }
@@ -125,41 +121,6 @@ bool StructTraits<blink::mojom::AdAuctionDataDataView,
       !data.ReadInterestGroupName(&out_data->interest_group_name)) {
     return false;
   }
-  return true;
-}
-
-// static
-const net::SchemefulSite&
-StructTraits<blink::mojom::SharedStorageBudgetMetadataDataView,
-             blink::FencedFrame::SharedStorageBudgetMetadata>::
-    site(const blink::FencedFrame::SharedStorageBudgetMetadata& input) {
-  return input.site;
-}
-// static
-double StructTraits<blink::mojom::SharedStorageBudgetMetadataDataView,
-                    blink::FencedFrame::SharedStorageBudgetMetadata>::
-    budget_to_charge(
-        const blink::FencedFrame::SharedStorageBudgetMetadata& input) {
-  return input.budget_to_charge;
-}
-// static
-bool StructTraits<blink::mojom::SharedStorageBudgetMetadataDataView,
-                  blink::FencedFrame::SharedStorageBudgetMetadata>::
-    top_navigated(
-        const blink::FencedFrame::SharedStorageBudgetMetadata& input) {
-  return input.top_navigated;
-}
-
-// static
-bool StructTraits<blink::mojom::SharedStorageBudgetMetadataDataView,
-                  blink::FencedFrame::SharedStorageBudgetMetadata>::
-    Read(blink::mojom::SharedStorageBudgetMetadataDataView data,
-         blink::FencedFrame::SharedStorageBudgetMetadata* out_data) {
-  if (!data.ReadSite(&out_data->site)) {
-    return false;
-  }
-  out_data->budget_to_charge = data.budget_to_charge();
-  out_data->top_navigated = data.top_navigated();
   return true;
 }
 
@@ -364,50 +325,6 @@ UnionTraits<blink::mojom::PotentiallyOpaqueConfigVectorDataView,
   return blink::mojom::PotentiallyOpaqueConfigVectorDataView::Tag::kOpaque;
 }
 
-// static
-bool UnionTraits<
-    blink::mojom::PotentiallyOpaqueSharedStorageBudgetMetadataDataView,
-    Prop<blink::FencedFrame::SharedStorageBudgetMetadata>>::
-    Read(
-        blink::mojom::PotentiallyOpaqueSharedStorageBudgetMetadataDataView data,
-        Prop<blink::FencedFrame::SharedStorageBudgetMetadata>* out) {
-  switch (data.tag()) {
-    case blink::mojom::PotentiallyOpaqueSharedStorageBudgetMetadataDataView::
-        Tag::kTransparent: {
-      blink::FencedFrame::SharedStorageBudgetMetadata
-          shared_storage_budget_metadata;
-      if (!data.ReadTransparent(&shared_storage_budget_metadata))
-        return false;
-      out->potentially_opaque_value.emplace(
-          std::move(shared_storage_budget_metadata));
-      return true;
-    }
-    case blink::mojom::PotentiallyOpaqueSharedStorageBudgetMetadataDataView::
-        Tag::kOpaque: {
-      blink::FencedFrame::Opaque opaque;
-      if (!data.ReadOpaque(&opaque))
-        return false;
-      return true;
-    }
-  }
-  NOTREACHED();
-}
-
-// static
-blink::mojom::PotentiallyOpaqueSharedStorageBudgetMetadataDataView::Tag
-UnionTraits<blink::mojom::PotentiallyOpaqueSharedStorageBudgetMetadataDataView,
-            Prop<blink::FencedFrame::SharedStorageBudgetMetadata>>::
-    GetTag(const Prop<blink::FencedFrame::SharedStorageBudgetMetadata>&
-               shared_storage_budget_metadata) {
-  if (shared_storage_budget_metadata.potentially_opaque_value.has_value()) {
-    return blink::mojom::PotentiallyOpaqueSharedStorageBudgetMetadataDataView::
-        Tag::kTransparent;
-  }
-
-  return blink::mojom::PotentiallyOpaqueSharedStorageBudgetMetadataDataView::
-      Tag::kOpaque;
-}
-
 bool StructTraits<blink::mojom::FencedFrameConfigDataView,
                   blink::FencedFrame::RedactedFencedFrameConfig>::
     Read(blink::mojom::FencedFrameConfigDataView data,
@@ -421,8 +338,6 @@ bool StructTraits<blink::mojom::FencedFrameConfigDataView,
           &out_config->deprecated_should_freeze_initial_size_) ||
       !data.ReadAdAuctionData(&out_config->ad_auction_data_) ||
       !data.ReadNestedConfigs(&out_config->nested_configs_) ||
-      !data.ReadSharedStorageBudgetMetadata(
-          &out_config->shared_storage_budget_metadata_) ||
       !data.ReadEffectiveEnabledPermissions(
           &out_config->effective_enabled_permissions_) ||
       !data.ReadParentPermissionsInfo(&out_config->parent_permissions_info_)) {
@@ -474,8 +389,6 @@ bool StructTraits<blink::mojom::FencedFramePropertiesDataView,
           &out_properties->deprecated_should_freeze_initial_size_) ||
       !data.ReadAdAuctionData(&out_properties->ad_auction_data_) ||
       !data.ReadNestedUrnConfigPairs(&nested_urn_config_pairs) ||
-      !data.ReadSharedStorageBudgetMetadata(
-          &out_properties->shared_storage_budget_metadata_) ||
       !data.ReadEffectiveEnabledPermissions(
           &out_properties->effective_enabled_permissions_) ||
       !data.ReadParentPermissionsInfo(

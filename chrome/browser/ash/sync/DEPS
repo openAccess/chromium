@@ -15,15 +15,26 @@ include_rules = [
   # individually. Other dependencies within //chrome are listed on a per-
   # directory basis. See //tools/chromeos/gen_deps.sh for details.
   "+chrome/browser/ash/login/users",
-  "+chrome/browser/notifications",
   "+chrome/browser/profiles",
-  "+chrome/browser/sync",
-  "+chrome/browser/ui/ash/multi_user",
   "+chrome/browser/ui/chrome_pages.h",
   "+chrome/browser/ui/scoped_tabbed_browser_displayer.h",
   "+chrome/browser/ui/settings_window_manager_chromeos.h",
   "+chrome/browser/ui/webui/signin",
-  "+chrome/common/url_constants.h",
   "+chrome/grit",
   "+chrome/test/base",
+
+  # Dependencies outside of //chrome:
+  "+ui/message_center/message_center.h",
 ]
+
+specific_include_rules = {
+  # The keyed service factories are the //chrome seam: they resolve the
+  # syncer::SyncService the ash classes take by constructor.
+  "(sync_appsync_service_factory|sync_error_notifier_factory)\\.cc": [
+    "+chrome/browser/sync/sync_service_factory.h",
+  ],
+  # sync_ui_util owns the browser-side sync error UI entry points.
+  "sync_error_notifier\\.cc": [
+    "+chrome/browser/sync/sync_ui_util.h",
+  ],
+}

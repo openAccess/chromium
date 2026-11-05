@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_CRITICAL_ACTIONS_CRITICAL_ACTION_UI_UTILS_H_
 #define CHROME_BROWSER_CRITICAL_ACTIONS_CRITICAL_ACTION_UI_UTILS_H_
 
+#include <optional>
 #include <string>
 
 #include "components/critical_actions/core/browser/critical_action_types.h"
@@ -12,9 +13,14 @@
 
 namespace critical_actions {
 
-// Returns the destination linkout URL for the given critical action based on
-// its action type and associated URL.
-std::string GetCriticalActionLinkoutUrl(const CriticalActionEntry& action);
+// Returns the destination linkout URL for a critical action of type
+// `action_type`, or `std::nullopt` if the action type has no linkout
+// destination. `page_url` is the URL of the history visit the action is
+// associated with; it refines the destination for action types that are
+// page-specific. It may be empty, in which case a generic destination is
+// returned.
+std::optional<std::string> GetCriticalActionLinkoutUrl(ActionType action_type,
+                                                       const GURL& page_url);
 
 }  // namespace critical_actions
 

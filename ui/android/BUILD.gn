@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/buildflag_header.gni")
 import("//build/config/android/rules.gni")
 import("//build/rust/rust_executable.gni")
 import("//build/rust/rust_static_library.gni")
@@ -11,21 +10,6 @@ import("//third_party/jni_zero/jni_zero.gni")
 import("//tools/grit/grit_rule.gni")
 
 assert(is_android)
-
-declare_args() {
-  # Include the new texture compressor in build (still subject to feature
-  # flags).
-  # If toolchain roll breaks due to usage of nightly features, it is OK to flip
-  # this off. Please ping OWNERS of texture_compressor on the CL.
-  enable_new_texture_compressor = true
-}
-
-buildflag_header("buildflags") {
-  header = "buildflags.h"
-  flags = [
-    "UI_ANDROID_ENABLE_NEW_TEXTURE_COMPRESSOR=$enable_new_texture_compressor",
-  ]
-}
 
 component("android") {
   output_name = "ui_android"
@@ -90,8 +74,8 @@ component("android") {
   defines = [ "UI_ANDROID_IMPLEMENTATION" ]
 
   deps = [
-    ":buildflags",
     ":java_enums_srcjar",
+    ":texture_compressor",
     "//base",
     "//cc/slim",
     "//components/viz/client",
@@ -105,6 +89,7 @@ component("android") {
     "//ui/base/cursor",
     "//ui/base/cursor/mojom:cursor_type",
     "//ui/base/interaction",
+    "//ui/color",
     "//ui/color:mixers",
     "//ui/compositor",
     "//ui/display",
@@ -119,10 +104,6 @@ component("android") {
     "//ui/touch_selection",
     "//url",
   ]
-
-  if (enable_new_texture_compressor) {
-    deps += [ ":texture_compressor" ]
-  }
 
   public_deps = [
     ":ui_android_feature_map_jni",
@@ -170,6 +151,7 @@ static_library("test_support") {
     ":ui_javatest_jni_headers",
     "//ui/android",
     "//ui/display",
+    "//ui/gfx/geometry",
   ]
 }
 
@@ -225,6 +207,7 @@ java_cpp_enum("java_enums_srcjar") {
     "../events/back_gesture_event.h",
     "../gfx/android/java_bitmap.h",
     "../gfx/overlay_transform.h",
+    "accelerator_manager_android.h",
     "overscroll_refresh.h",
     "resources/resource_manager.h",
     "resources/system_ui_resource_type.h",
@@ -269,39 +252,29 @@ android_resources("ui_java_resources") {
     "java/res/color/toast_color.xml",
     "java/res/drawable-hdpi/btn_close.png",
     "java/res/drawable-hdpi/gshield_colorful.png",
-    "java/res/drawable-hdpi/ic_expand_less_black_24dp.png",
-    "java/res/drawable-hdpi/ic_expand_more_black_24dp.png",
     "java/res/drawable-hdpi/popup_bg.9.png",
     "java/res/drawable-hdpi/popup_bg_16dp.9.png",
     "java/res/drawable-hdpi/popup_bg_24dp.9.png",
     "java/res/drawable-hdpi/popup_bg_8dp.9.png",
     "java/res/drawable-mdpi/btn_close.png",
     "java/res/drawable-mdpi/gshield_colorful.png",
-    "java/res/drawable-mdpi/ic_expand_less_black_24dp.png",
-    "java/res/drawable-mdpi/ic_expand_more_black_24dp.png",
     "java/res/drawable-mdpi/popup_bg.9.png",
     "java/res/drawable-mdpi/popup_bg_16dp.9.png",
     "java/res/drawable-mdpi/popup_bg_24dp.9.png",
     "java/res/drawable-mdpi/popup_bg_8dp.9.png",
     "java/res/drawable-xhdpi/btn_close.png",
     "java/res/drawable-xhdpi/gshield_colorful.png",
-    "java/res/drawable-xhdpi/ic_expand_less_black_24dp.png",
-    "java/res/drawable-xhdpi/ic_expand_more_black_24dp.png",
     "java/res/drawable-xhdpi/popup_bg.9.png",
     "java/res/drawable-xhdpi/popup_bg_16dp.9.png",
     "java/res/drawable-xhdpi/popup_bg_24dp.9.png",
     "java/res/drawable-xhdpi/popup_bg_8dp.9.png",
     "java/res/drawable-xxhdpi/btn_close.png",
     "java/res/drawable-xxhdpi/gshield_colorful.png",
-    "java/res/drawable-xxhdpi/ic_expand_less_black_24dp.png",
-    "java/res/drawable-xxhdpi/ic_expand_more_black_24dp.png",
     "java/res/drawable-xxhdpi/popup_bg.9.png",
     "java/res/drawable-xxhdpi/popup_bg_16dp.9.png",
     "java/res/drawable-xxhdpi/popup_bg_24dp.9.png",
     "java/res/drawable-xxhdpi/popup_bg_8dp.9.png",
     "java/res/drawable-xxxhdpi/btn_close.png",
-    "java/res/drawable-xxxhdpi/ic_expand_less_black_24dp.png",
-    "java/res/drawable-xxxhdpi/ic_expand_more_black_24dp.png",
     "java/res/drawable-xxxhdpi/popup_bg.9.png",
     "java/res/drawable-xxxhdpi/popup_bg_16dp.9.png",
     "java/res/drawable-xxxhdpi/popup_bg_24dp.9.png",
@@ -316,6 +289,8 @@ android_resources("ui_java_resources") {
     "java/res/drawable/ic_apps_blue_24dp.xml",
     "java/res/drawable/ic_arrow_back_24dp.xml",
     "java/res/drawable/ic_delete_fill_24dp.xml",
+    "java/res/drawable/ic_expand_less_black_24dp.xml",
+    "java/res/drawable/ic_expand_more_black_24dp.xml",
     "java/res/drawable/ic_expand_more_horizontal_black_24dp.xml",
     "java/res/drawable/ic_globe_24dp.xml",
     "java/res/drawable/ic_globe_48dp.xml",
@@ -341,9 +316,9 @@ android_resources("ui_java_resources") {
     "java/res/values-ldrtl/dimens.xml",
     "java/res/values-ldrtl/values.xml",
     "java/res/values-night/colors.xml",
+    "java/res/values-sw1200dp/values.xml",
     "java/res/values-sw600dp/dimens.xml",
     "java/res/values-sw600dp/values.xml",
-    "java/res/values-sw720dp/values.xml",
     "java/res/values-v31/colors.xml",
     "java/res/values/attrs.xml",
     "java/res/values/color_palette.xml",
@@ -747,6 +722,7 @@ android_library("ui_java_test_support") {
     "javatests/src/org/chromium/ui/test/util/MockitoHelper.java",
     "javatests/src/org/chromium/ui/test/util/NightModeTestUtils.java",
     "javatests/src/org/chromium/ui/test/util/RenderTestRule.java",
+    "javatests/src/org/chromium/ui/test/util/TestHapticFeedbackView.java",
     "javatests/src/org/chromium/ui/test/util/TestViewAndroidDelegate.java",
     "javatests/src/org/chromium/ui/test/util/UiDisableIfSkipCheck.java",
     "javatests/src/org/chromium/ui/test/util/UiRestriction.java",
@@ -781,6 +757,7 @@ android_library("ui_java_test_support") {
     "//third_party/junit",
     "//third_party/mockito:mockito_java",
     "//ui/android:ui_no_recycler_view_java",
+    "//ui/base/cursor/mojom:cursor_type_java",
   ]
 }
 
@@ -788,6 +765,7 @@ android_resources("ui_junit_resources") {
   testonly = true
   sources = [
     "junit/res/font/custom_font.xml",
+    "junit/res/font/test_font_file.ttf",
     "junit/res/layout/inflated_view.xml",
     "junit/res/layout/layout_view_builder_test.xml",
     "junit/res/layout/list_menu_button_unittest.xml",
@@ -806,6 +784,8 @@ robolectric_library("ui_android_junit_tests") {
     "java/src/org/chromium/ui/text/DownloadableFontTextAppearanceSpanTest.java",
     "junit/src/org/chromium/ui/AsyncViewProviderTest.java",
     "junit/src/org/chromium/ui/AsyncViewStubTest.java",
+    "junit/src/org/chromium/ui/TextAppearanceFontFeaturesTest.java",
+    "junit/src/org/chromium/ui/UiUtilsUnitTest.java",
     "junit/src/org/chromium/ui/animation/AnimationHandlerUnitTest.java",
     "junit/src/org/chromium/ui/animation/AnimationPerformanceTrackerUnitTest.java",
     "junit/src/org/chromium/ui/animation/CommonAnimationsFactoryUnitTest.java",
@@ -852,6 +832,7 @@ robolectric_library("ui_android_junit_tests") {
     "junit/src/org/chromium/ui/insets/InsetsRectProviderTest.java",
     "junit/src/org/chromium/ui/insets/WindowInsetsUtilsUnitTest.java",
     "junit/src/org/chromium/ui/listmenu/KeyboardAccessibleListViewUnitTest.java",
+    "junit/src/org/chromium/ui/listmenu/ListMenuButtonUnitTest.java",
     "junit/src/org/chromium/ui/listmenu/ListMenuHostUnitTest.java",
     "junit/src/org/chromium/ui/listmenu/ListMenuItemViewBinderUnitTest.java",
     "junit/src/org/chromium/ui/listmenu/ListMenuItemWithSubmenuViewBinderUnitTest.java",
@@ -864,6 +845,7 @@ robolectric_library("ui_android_junit_tests") {
     "junit/src/org/chromium/ui/modelutil/ModelListCleanerTest.java",
     "junit/src/org/chromium/ui/modelutil/ModelListPropertyChangeFilterTest.java",
     "junit/src/org/chromium/ui/modelutil/PropertyListModelTest.java",
+    "junit/src/org/chromium/ui/modelutil/PropertyModelAnimatorFactoryTest.java",
     "junit/src/org/chromium/ui/modelutil/PropertyModelTest.java",
     "junit/src/org/chromium/ui/modelutil/SimpleListObservableTest.java",
     "junit/src/org/chromium/ui/modelutil/SimpleRecyclerViewAdapterTest.java",
@@ -876,6 +858,7 @@ robolectric_library("ui_android_junit_tests") {
     "junit/src/org/chromium/ui/test/util/WindowInsetsTestUtilsUnitTest.java",
     "junit/src/org/chromium/ui/text/SpanApplierTest.java",
     "junit/src/org/chromium/ui/theme/FillInContextThemeWrapperUnitTest.java",
+    "junit/src/org/chromium/ui/theme/ThemeResourceWrapperJavaUnitTest.java",
     "junit/src/org/chromium/ui/theme/ThemeResourceWrapperProviderUnitTest.java",
     "junit/src/org/chromium/ui/theme/ThemeResourceWrapperUnitTest.java",
     "junit/src/org/chromium/ui/util/ColorBlendAnimationFactoryTest.java",
@@ -893,6 +876,7 @@ robolectric_library("ui_android_junit_tests") {
     "junit/src/org/chromium/ui/widget/PopupSpecCalculatorTest.java",
     "junit/src/org/chromium/ui/widget/SpanBackgroundHelperTest.java",
     "junit/src/org/chromium/ui/widget/TextViewWithClickableSpansTest.java",
+    "junit/src/org/chromium/ui/widget/TextViewWithLeadingUnitTest.java",
     "junit/src/org/chromium/ui/widget/ToastManagerTest.java",
     "junit/src/org/chromium/ui/widget/ToastTest.java",
     "junit/src/org/chromium/ui/widget/ViewLookupCachingFrameLayoutTest.java",
@@ -908,10 +892,9 @@ robolectric_library("ui_android_junit_tests") {
     ":ui_junit_test_support",
     "//base:base_java",
     "//base:base_java_test_support",
+    "//base:base_java_test_support_uncommon",
     "//base:base_junit_test_support",
-    "//base:flagged_apis_java",
     "//base:holder_java",
-    "//base:service_loader_java",
     "//base/test:test_support_java",
     "//build/android:build_java",
     "//components/cached_flags:java",
@@ -919,15 +902,16 @@ robolectric_library("ui_android_junit_tests") {
     "//third_party/android_deps:material_design_java",
     "//third_party/androidx:androidx_activity_activity_java",
     "//third_party/androidx:androidx_annotation_annotation_java",
+    "//third_party/androidx:androidx_appcompat_appcompat_java",
     "//third_party/androidx:androidx_appcompat_appcompat_resources_java",
     "//third_party/androidx:androidx_core_core_java",
+    "//third_party/androidx:androidx_fragment_fragment_java",
     "//third_party/androidx:androidx_lifecycle_lifecycle_common_java",
     "//third_party/androidx:androidx_recyclerview_recyclerview_java",
     "//third_party/androidx:androidx_recyclerview_recyclerview_overrides_java",
     "//third_party/androidx:androidx_test_core_java",
     "//third_party/androidx:androidx_test_ext_junit_java",
     "//third_party/androidx:androidx_test_monitor_java",
-    "//third_party/androidx:androidx_test_runner_java",
     "//third_party/google-truth:google_truth_java",
     "//third_party/hamcrest:hamcrest_java",
     "//third_party/jni_zero:jni_zero_java",
@@ -958,6 +942,7 @@ test("ui_android_unittests") {
     ":android",
     ":java_enums_srcjar",
     ":test_support",
+    ":texture_compressor_unittests",
     ":ui_java",
     ":ui_java_test_support",
     ":ui_javatest_jni_headers",
@@ -973,7 +958,10 @@ test("ui_android_unittests") {
     "//ui/base",
     "//ui/base/clipboard",
     "//ui/base/clipboard:clipboard_test_support",
+    "//ui/base/cursor",
+    "//ui/base/cursor/mojom:cursor_type",
     "//ui/base/interaction:test_support",
+    "//ui/color",
     "//ui/color:mixers",
     "//ui/compositor",
     "//ui/display",
@@ -985,9 +973,6 @@ test("ui_android_unittests") {
     "//ui/gfx/geometry",
     "//ui/resources:ui_test_pak",
   ]
-  if (enable_new_texture_compressor) {
-    deps += [ ":texture_compressor_unittests" ]
-  }
 
   # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
   # enable the diagnostic by removing this line.
@@ -1029,8 +1014,6 @@ android_library("ui_unit_device_javatests") {
   mergeable_android_manifests = [ "junit/AndroidManifest.xml" ]
 
   sources = [
-    "java/src/org/chromium/ui/UiUtilsTest.java",
-    "java/src/org/chromium/ui/listmenu/ListMenuButtonTest.java",
     "java/src/org/chromium/ui/widget/TextViewWithTightWrapTest.java",
     "javatests/src/org/chromium/ui/animation/RenderTestAnimationUtils.java",
     "javatests/src/org/chromium/ui/animation/ViewArcAnimatorRenderTest.java",
@@ -1038,9 +1021,7 @@ android_library("ui_unit_device_javatests") {
     "javatests/src/org/chromium/ui/base/EventForwarderDeviceTest.java",
     "javatests/src/org/chromium/ui/hierarchicalmenu/HierarchicalMenuTest.java",
     "javatests/src/org/chromium/ui/insets/WindowInsetsUtilsJavaUnitTest.java",
-    "javatests/src/org/chromium/ui/theme/ThemeResourceWrapperJavaUnitTest.java",
     "javatests/src/org/chromium/ui/widget/OutlineOverlayHelperJavaUnitTest.java",
-    "junit/src/org/chromium/ui/widget/TextViewWithLeadingTest.java",
   ]
 
   deps = [
@@ -1070,6 +1051,7 @@ android_library("ui_unit_device_javatests") {
     "//third_party/jni_zero:gendeps_java",
     "//third_party/junit",
     "//third_party/mockito:mockito_java",
+    "//ui/base:clipboard_jni_headers_java",
   ]
 }
 
@@ -1089,61 +1071,59 @@ generate_jni("motion_event_test_utils_jni_headers") {
   sources = [ "junit/src/org/chromium/ui/base/MotionEventTestUtils.java" ]
 }
 
-if (enable_new_texture_compressor) {
-  rust_static_library("texture_compressor") {
-    crate_root = "texture_compressor/lib.rs"
-    sources = [
-      "texture_compressor/cxx.rs",
-      "texture_compressor/decoder.rs",
-      "texture_compressor/dither.rs",
-      "texture_compressor/lib.rs",
-      "texture_compressor/quant.rs",
-      "texture_compressor/selectors.rs",
-    ]
-    allow_unsafe = true
-    cxx_bindings = [ "texture_compressor/cxx.rs" ]
-    deps = [ "//third_party/rust/bytemuck/v1:lib" ]
+rust_static_library("texture_compressor") {
+  crate_root = "texture_compressor/lib.rs"
+  sources = [
+    "texture_compressor/cxx.rs",
+    "texture_compressor/decoder.rs",
+    "texture_compressor/dither.rs",
+    "texture_compressor/lib.rs",
+    "texture_compressor/quant.rs",
+    "texture_compressor/selectors.rs",
+  ]
+  allow_unsafe = true
+  cxx_bindings = [ "texture_compressor/cxx.rs" ]
+  deps = [ "//third_party/rust/bytemuck/v1:lib" ]
 
-    # Required for #[feature(portable_simd)]
-    configs -= [ "//build/config/compiler:disallow_unstable_features" ]
-    rustflags = [ "-Zallow-features=portable_simd" ]
-  }
+  # Required for #[feature(portable_simd)]
+  configs -= [ "//build/config/compiler:disallow_unstable_features" ]
+  rustflags = [ "-Zallow-features=portable_simd" ]
+}
 
-  rust_static_library("texture_compressor_unittests") {
-    testonly = true
-    is_gtest_unittests = true
-    crate_root = "texture_compressor/tests.rs"
-    sources = [
-      "texture_compressor/decoder_tests.rs",
-      "texture_compressor/lib_tests.rs",
-      "texture_compressor/quant_tests.rs",
-      "texture_compressor/selectors_tests.rs",
-      "texture_compressor/tests.rs",
-    ]
+rust_static_library("texture_compressor_unittests") {
+  testonly = true
+  is_gtest_unittests = true
+  crate_root = "texture_compressor/tests.rs"
+  sources = [
+    "texture_compressor/decoder_tests.rs",
+    "texture_compressor/lib_tests.rs",
+    "texture_compressor/quant_tests.rs",
+    "texture_compressor/selectors_tests.rs",
+    "texture_compressor/tests.rs",
+  ]
 
-    deps = [
-      ":texture_compressor",
-      "//testing/rust_gtest_interop",
-    ]
+  deps = [
+    ":texture_compressor",
+    "//testing/rust_gtest_interop",
+  ]
 
-    # Required for #[feature(portable_simd)]
-    configs -= [ "//build/config/compiler:disallow_unstable_features" ]
-    rustflags = [ "-Zallow-features=portable_simd" ]
-  }
+  # Required for #[feature(portable_simd)]
+  configs -= [ "//build/config/compiler:disallow_unstable_features" ]
+  rustflags = [ "-Zallow-features=portable_simd" ]
+}
 
-  rust_executable("texture_compressor_benchmark") {
-    testonly = true
-    crate_root = "texture_compressor/main.rs"
-    sources = [ "texture_compressor/main.rs" ]
+rust_executable("texture_compressor_benchmark") {
+  testonly = true
+  crate_root = "texture_compressor/main.rs"
+  sources = [ "texture_compressor/main.rs" ]
 
-    deps = [
-      ":texture_compressor",
-      "//third_party/rust/bytemuck/v1:lib",
-      "//third_party/rust/png/v0_18:lib",
-    ]
+  deps = [
+    ":texture_compressor",
+    "//third_party/rust/bytemuck/v1:lib",
+    "//third_party/rust/png/v0_18:lib",
+  ]
 
-    # Required for #[feature(portable_simd)]
-    configs -= [ "//build/config/compiler:disallow_unstable_features" ]
-    rustflags = [ "-Zallow-features=portable_simd" ]
-  }
+  # Required for #[feature(portable_simd)]
+  configs -= [ "//build/config/compiler:disallow_unstable_features" ]
+  rustflags = [ "-Zallow-features=portable_simd" ]
 }

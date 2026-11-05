@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {html} from '//resources/lit/v3_0/lit.rollup.js';
+import {html} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import type {NtpComposeboxElement} from './ntp_composebox.js';
 
@@ -37,19 +37,20 @@ export function getHtml(this: NtpComposeboxElement) {
       .recentTabId="${this.recentTabId}"
       .smartTabSharingActive="${this.smartTabSharingActive}"
       .contextManagementInComposeboxEnabled="${this.contextManagementInComposeboxEnabled}"
+      .composeboxContextMenuTooltipsEnabled="${
+          this.composeboxContextMenuTooltipsEnabled}"
       .smartTabSharingVisible="${this.smartTabSharingVisible}"
       .searchboxLayoutMode="${this.searchboxLayoutMode}"
       .tabSuggestions="${this.tabSuggestions}"
       .hasImageFiles="${this.hasImageFiles()}"
       .selectedTabIds="${this.addedTabsIds}"
       .aimThreadRestoredTabs="${this.aimThreadRestoredTabs}"
-      .fileNum="${this.files.size}"
+      .fileNum="${this.attachedContext.size}"
       .sharedTabs="${this.getSharedTabs()}"
       .tabSuggestionsState="${this.tabSuggestionsState}"
       .glifAnimationState="${this.glifAnimationState}"
       .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
       .disableFallbackGlifAnimation="${true}"
-      ?upload-button-disabled="${this.uploadButtonDisabled}"
       ?show-context-menu-description="${this.showContextMenuDescription}">
   </cr-composebox-contextual-entrypoint-and-menu>
 </div>

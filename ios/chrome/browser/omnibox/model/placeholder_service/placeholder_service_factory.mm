@@ -4,10 +4,11 @@
 
 #import "ios/chrome/browser/omnibox/model/placeholder_service/placeholder_service_factory.h"
 
+#import <utility>
+
 #import "base/check_deref.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback.h"
-#import "base/no_destructor.h"
 #import "components/search_engines/template_url_service.h"
 #import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/omnibox/model/placeholder_service/placeholder_service.h"
@@ -17,7 +18,7 @@
 namespace ios {
 namespace {
 
-std::unique_ptr<KeyedService> BuildPlaceholderService(ProfileIOS* profile) {
+std::unique_ptr<KeyedService> BuildPlaceholderService(ProfileIOS& profile) {
   return std::make_unique<PlaceholderService>(
       IOSChromeFaviconLoaderFactory::GetForProfile(profile),
       ios::TemplateURLServiceFactory::GetForProfile(profile));
@@ -26,36 +27,23 @@ std::unique_ptr<KeyedService> BuildPlaceholderService(ProfileIOS* profile) {
 }  // namespace
 
 // static
-PlaceholderService* PlaceholderServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<PlaceholderService>(
-      profile, /*create=*/true);
-}
-
-// static
-PlaceholderServiceFactory* PlaceholderServiceFactory::GetInstance() {
-  static base::NoDestructor<PlaceholderServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-PlaceholderServiceFactory::TestingFactory
+PlaceholderServiceFactory::TestingFactoryByRef
 PlaceholderServiceFactory::GetDefaultFactory() {
   return base::BindOnce(&BuildPlaceholderService);
 }
 
-PlaceholderServiceFactory::PlaceholderServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("PlaceholderService",
-                                    ProfileSelection::kRedirectedInIncognito,
-                                    TestingCreation::kNoServiceForTests) {
+PlaceholderServiceFactory::PlaceholderServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "PlaceholderService",
+          ProfileSelection::kRedirectedInIncognito,
+          TestingCreation::kNoServiceForTests) {
   DependsOn(ios::TemplateURLServiceFactory::GetInstance());
   DependsOn(IOSChromeFaviconLoaderFactory::GetInstance());
 }
 
-PlaceholderServiceFactory::~PlaceholderServiceFactory() {}
-
 std::unique_ptr<KeyedService>
-PlaceholderServiceFactory::BuildServiceInstanceFor(ProfileIOS* profile) const {
+PlaceholderServiceFactory::BuildServiceInstanceFor(ProfileIOS& profile) const {
   return BuildPlaceholderService(profile);
 }
 

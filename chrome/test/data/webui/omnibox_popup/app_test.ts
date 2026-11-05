@@ -13,6 +13,7 @@ import {RenderType, SelectionDirection, SelectionLineState, SelectionStep, SideT
 import type {TabInfo} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {WindowOpenDisposition} from 'chrome://resources/mojo/ui/base/mojom/window_open_disposition.mojom-webui.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {createSuggestTemplateInfo} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {$$, eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
@@ -40,7 +41,6 @@ suite('AppTest', function() {
     loadTimeData.overrideValues({
       hideClassicContextButton: false,
       composeboxShowContextMenuDescription: false,
-      omniboxShowContextButtonSuggestionLabel: false,
       addContext: 'Add tabs and more',
       contextButtonShapeIsOblong: false,
       composeboxShowLensIcon: false,
@@ -88,6 +88,7 @@ suite('AppTest', function() {
       url: 'https://tab1.com/',
       showInCurrentTabChip: true,
       showInPreviousTabChip: false,
+      isLoading: false,
       lastActive: {internalValue: 1n},
     };
 
@@ -120,6 +121,7 @@ suite('AppTest', function() {
   test('LensIconShown', async () => {
     loadTimeData.overrideValues({
       composeboxShowLensIcon: true,
+      composeboxShowChip: false,
     });
 
     // Re-create app to apply loadTimeData overrides.
@@ -241,7 +243,6 @@ suite('AppTest', function() {
       document.body.innerHTML = window.trustedTypes!.emptyHTML;
       loadTimeData.overrideValues({
         omniboxAimPopupEnabled: true,
-        omniboxShowContextButtonSuggestionLabel: false,
         searchboxLayoutMode: 'TallBottomContext',
       });
 
@@ -290,7 +291,6 @@ suite('AppTest', function() {
       // Re-create app with `hideClassicContextButton` set to true.
       document.body.innerHTML = window.trustedTypes!.emptyHTML;
       loadTimeData.overrideValues({
-        omniboxShowContextButtonSuggestionLabel: false,
         hideClassicContextButton: true,
       });
       localApp = document.createElement('omnibox-popup-app');
@@ -318,7 +318,6 @@ suite('AppTest', function() {
       document.body.innerHTML = window.trustedTypes!.emptyHTML;
       loadTimeData.overrideValues({
         omniboxAimPopupEnabled: true,
-        omniboxShowContextButtonSuggestionLabel: false,
         composeboxShowContextMenuDescription: true,
         searchboxLayoutMode: 'TallBottomContext',
       });
@@ -427,7 +426,6 @@ suite('AppTestSelectionControl', () => {
   setup(() => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     loadTimeData.overrideValues({
-      omniboxShowContextButtonSuggestionLabel: false,
       webuiOmniboxPopupSelectionControlEnabled: true,
     });
     testProxy = new TestSearchboxBrowserProxy();
@@ -439,10 +437,16 @@ suite('AppTestSelectionControl', () => {
     testProxy.page.autocompleteResultChanged(
         createAutocompleteResultForTesting({
           matches: [
-            createSearchMatchForTesting({contents: 'a'}),
-            createSearchMatchForTesting(
-                {contents: 'b', supportsDeletion: true}),
-            createSearchMatchForTesting({contents: 'c'}),
+            createSearchMatchForTesting({
+              suggestTemplate: createSuggestTemplateInfo({primaryText: 'a'}),
+            }),
+            createSearchMatchForTesting({
+              suggestTemplate: createSuggestTemplateInfo({primaryText: 'b'}),
+              supportsDeletion: true,
+            }),
+            createSearchMatchForTesting({
+              suggestTemplate: createSuggestTemplateInfo({primaryText: 'c'}),
+            }),
           ],
         }));
     return microtasksFinished();
@@ -459,10 +463,10 @@ suite('AppTestSelectionControl', () => {
         SelectionDirection.kForward, SelectionStep.kWholeLine);
     testProxy.page.stepSelection(
         SelectionDirection.kBackward, SelectionStep.kStateOrLine);
-    testProxy.page.openCurrentSelection(WindowOpenDisposition.CURRENT_TAB);
+    testProxy.page.openCurrentSelection(WindowOpenDisposition.kCurrentTab);
     const [_sequenceId, selection, disposition] =
         await testProxy.handler.whenCalled('openPopupSelection');
-    assertEquals(WindowOpenDisposition.CURRENT_TAB, disposition);
+    assertEquals(WindowOpenDisposition.kCurrentTab, disposition);
     assertDeepEquals(
         {
           line: 1,
@@ -479,10 +483,10 @@ suite('AppTestSelectionControl', () => {
         SelectionDirection.kBackward, SelectionStep.kWholeLine);
     testProxy.page.stepSelection(
         SelectionDirection.kBackward, SelectionStep.kWholeLine);
-    testProxy.page.openCurrentSelection(WindowOpenDisposition.CURRENT_TAB);
+    testProxy.page.openCurrentSelection(WindowOpenDisposition.kCurrentTab);
     const [_sequenceId, selection, disposition] =
         await testProxy.handler.whenCalled('openPopupSelection');
-    assertEquals(WindowOpenDisposition.CURRENT_TAB, disposition);
+    assertEquals(WindowOpenDisposition.kCurrentTab, disposition);
     assertDeepEquals(
         {
           line: 0,

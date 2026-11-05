@@ -125,7 +125,6 @@ class FakeSkiaOutputSurface : public SkiaOutputSurface {
   std::unique_ptr<ImageContext> CreateImageContext(
       const TransferableResource& resource,
       bool concurrent_reads,
-      bool raw_draw_if_possible,
       uint32_t client_id) override;
 
   gpu::SharedImageInterface* GetSharedImageInterface();
@@ -170,7 +169,7 @@ class FakeSkiaOutputSurface : public SkiaOutputSurface {
     BUILDFLAG(USE_V4L2_CODEC)
   void DetileOverlay(gpu::Mailbox input,
                      const gfx::Size& input_visible_size,
-                     gpu::SyncToken input_sync_token,
+                     std::vector<gpu::SyncToken> input_sync_tokens,
                      gpu::Mailbox output,
                      const gfx::RectF& display_rect,
                      const gfx::RectF& crop_rect,

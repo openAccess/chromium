@@ -9,10 +9,10 @@
 #include <utility>
 
 #include "base/android/android_info.h"
-#include "base/android/locale_utils.h"
 #include "base/check.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/i18n/android_locale.h"
 #include "base/json/values_util.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
@@ -49,26 +49,20 @@
 //
 // {
 //     "origin_ids": [ $origin_id, ... ]
-//     "expirable_token": $expiration_time,
 //     "last_provisioning_attempt_time": $last_provisioning_attempt_time,
 // }
-//
-// If specified, "expirable_token" is stored as a string representing the
-// int64_t (base::NumberToString()) form of the number of microseconds since
-// Windows epoch (1601-01-01 00:00:00 UTC). It is the latest time that this
-// code should attempt to pre-provision more origins on some devices.
 //
 // "last_provisioning_attempt_time" is only used on Android R due to bugs in
 // the OS. The OS can get into a weird state where provisioning attempts crash,
 // although rebooting the device is expected to clear this condition. However,
 // as the code attempts to pre-provision some origin IDs if needed shortly
 // after launch, this can result in Chrome randomly crashing every time it is
-// started. "last_provisioning_attempt_time" is a time like "expirable_token"
-// and represents the last time a provisioning attempt was made (roughly, as
-// the attempt is posted as a delayed task). If set, another attempt at
-// provisioning won't be made until |kProvisioningDelta| has passed. If
-// provisioning returns, then provisioning doesn't crash, so this value is
-// cleared and provisioning can be checked every time Chrome starts.
+// started. "last_provisioning_attempt_time" represents the last time a
+// provisioning attempt was made (roughly, as the attempt is posted as a
+// delayed task). If set, another attempt at provisioning won't be made until
+// |kProvisioningDelta| has passed. If provisioning returns, then provisioning
+// doesn't crash, so this value is cleared and provisioning can be checked
+// every time Chrome starts.
 // Note that this does not affect requests for an origin. If a page needs one,
 // then provisioning will be attempted. This may still crash.
 // TODO(b/253295050): Remove this workaround if Android R patched to fix this.
@@ -76,7 +70,6 @@
 namespace {
 
 const char kMediaDrmOriginIds[] = "media.media_drm_origin_ids";
-const char kExpirableToken[] = "expirable_token";
 const char kOriginIds[] = "origin_ids";
 const char kLastProvisioningAttemptTimeToken[] =
     "last_provisioning_attempt_time";
@@ -85,7 +78,8 @@ std::string_view GetDetailedUserAgent() {
   // Use NoDestructor to avoid computing this string multiple times for every
   // provisioning request.
   static const base::NoDestructor<std::string> user_agent([] {
-    std::string locale = base::android::GetDefaultLocaleString();
+    std::string locale =
+        std::string(base::i18n::GetAndroidDefaultLocale().tag_string());
     // Example Format: Widevine CDM v1.0 (Linux; U; Android 35;
     // en-US; Build/BP1A.250505.005; user)
     return base::StringPrintf(
@@ -104,9 +98,6 @@ constexpr int kMaxPreProvisionedOriginIds = 2;
 
 // The maximum number of origin IDs logged to UMA.
 constexpr int kUMAMaxPreProvisionedOriginIds = 10;
-
-// "expirable_token" is only good for 24 hours.
-constexpr base::TimeDelta kExpirationDelta = base::Hours(24);
 
 // Only try provisioning once a week (Android R only due to crashes).
 constexpr base::TimeDelta kProvisioningDelta = base::Days(7);
@@ -134,23 +125,6 @@ enum class ProvisioningResult {
 void ReportProvisioningResultUMA(ProvisioningResult result) {
   base::UmaHistogramEnumeration("Media.EME.MediaDrm.Provisioning", result);
 }
-// When unable to get an origin ID, only attempt to pre-provision more if
-// pre-provision is called within |kExpirationDelta| of the time of this
-// failure. This is not needed on devices that support per-application
-// provisioning.
-void SetExpirableToken(PrefService* const pref_service) {
-  DVLOG(3) << __func__;
-
-  ScopedDictPrefUpdate update(pref_service, kMediaDrmOriginIds);
-  update->Set(kExpirableToken,
-              base::TimeToValue(base::Time::Now() + kExpirationDelta));
-}
-
-void RemoveExpirableToken(base::DictValue& origin_id_dict) {
-  DVLOG(3) << __func__;
-  origin_id_dict.Remove(kExpirableToken);
-}
-
 // On Android R a bug in the OS can cause MediaDrm::getProvisionRequest()
 // to crash. As this runs shortly after startup, Chrome will be unusable
 // if that happens. So use |kLastProvisioningAttemptTimeToken| to keep track of
@@ -166,7 +140,7 @@ bool IsAndroidR() {
 
 bool ShouldAttemptProvisioning(base::DictValue& origin_id_dict) {
   DVLOG(3) << __func__;
-  DCHECK(IsAndroidR());
+  CHECK(IsAndroidR(), base::NotFatalUntil::M161);
 
   const base::Value* token_value =
       origin_id_dict.Find(kLastProvisioningAttemptTimeToken);
@@ -189,7 +163,7 @@ bool ShouldAttemptProvisioning(base::DictValue& origin_id_dict) {
 
 void SetLastProvisioningTime(base::DictValue& origin_id_dict) {
   DVLOG(3) << __func__;
-  DCHECK(IsAndroidR());
+  CHECK(IsAndroidR(), base::NotFatalUntil::M161);
 
   origin_id_dict.Set(kLastProvisioningAttemptTimeToken,
                      base::TimeToValue(base::Time::Now()));
@@ -197,46 +171,9 @@ void SetLastProvisioningTime(base::DictValue& origin_id_dict) {
 
 void RemoveLastProvisioningTime(base::DictValue& origin_id_dict) {
   DVLOG(3) << __func__;
-  DCHECK(IsAndroidR());
+  CHECK(IsAndroidR(), base::NotFatalUntil::M161);
 
   origin_id_dict.Remove(kLastProvisioningAttemptTimeToken);
-}
-
-// On devices that don't support per-application provisioning attempts to
-// pre-provision more origin IDs should only happen if an origin ID was
-// requested recently and failed. This code checks that the time saved in
-// |kExpirableToken| is less than the current time. If |kExpirableToken| doesn't
-// exist then this function returns false. On devices that support per
-// application provisioning pre-provisioning is always allowed. If
-// |kExpirableToken| is expired or corrupt, it will be removed for privacy
-// reasons.
-bool CanPreProvision(bool is_per_application_provisioning_supported,
-                     base::DictValue& origin_id_dict) {
-  DVLOG(3) << __func__;
-
-  // On devices that support per-application provisioning, this is always true.
-  if (is_per_application_provisioning_supported)
-    return true;
-
-  // Device doesn't support per-application provisioning, so check if
-  // "expirable_token" is still valid.
-  const base::Value* token_value = origin_id_dict.Find(kExpirableToken);
-  if (!token_value)
-    return false;
-
-  std::optional<base::Time> expiration_time = base::ValueToTime(*token_value);
-  if (!expiration_time) {
-    RemoveExpirableToken(origin_id_dict);
-    return false;
-  }
-
-  if (base::Time::Now() > *expiration_time) {
-    DVLOG(3) << __func__ << ": Token exists but has expired";
-    RemoveExpirableToken(origin_id_dict);
-    return false;
-  }
-
-  return true;
 }
 
 int CountAvailableOriginIds(const base::DictValue& origin_id_dict) {
@@ -288,7 +225,7 @@ class MediaDrmProvisionHelper {
       std::unique_ptr<network::PendingSharedURLLoaderFactory>
           pending_shared_url_loader_factory) {
     DVLOG(1) << __func__;
-    DCHECK(pending_shared_url_loader_factory);
+    CHECK(pending_shared_url_loader_factory, base::NotFatalUntil::M161);
     create_fetcher_cb_ =
         base::BindRepeating(&content::CreateProvisionFetcherWithUserAgent,
                             network::SharedURLLoaderFactory::Create(
@@ -310,7 +247,7 @@ class MediaDrmProvisionHelper {
     if (!result.has_value()) {
       // Unable to create mediaDrm for L3, so try L1.
       DVLOG(1) << "Unable to create MediaDrmBridge for L3, CreateCdmStatus: "
-               << (media::StatusCodeType)result.code();
+               << static_cast<int>(result.error());
       ProvisionLevel1(false);
       return;
     }
@@ -342,7 +279,7 @@ class MediaDrmProvisionHelper {
       // Unable to create MediaDrm for L1, so quit. Note that L3 provisioning
       // may or may not have worked.
       DVLOG(1) << "Unable to create MediaDrmBridge for L1, CreateCdmStatus: "
-               << (media::StatusCodeType)result.code();
+               << static_cast<int>(result.error());
       ProvisionDone(L3_success, false);
       return;
     }
@@ -535,7 +472,7 @@ MediaDrmOriginIdManager::MediaDrmOriginIdManager(
     base::PassKey<MediaDrmOriginIdManagerFactory>)
     : pref_service_(pref_service) {
   DVLOG(1) << __func__;
-  DCHECK(pref_service_);
+  CHECK(pref_service_, base::NotFatalUntil::M161);
 
   // This manager can be started when the user's profile is loaded, if
   // |kMediaDrmPreprovisioning| is enabled. If that flag is not set, then this
@@ -610,39 +547,16 @@ void MediaDrmOriginIdManager::PreProvisionIfNecessary() {
   if (is_provisioning_)
     return;
 
-  // Checking if per-application provisioning is supported is known to be
-  // expensive (see crbug.com/40866724). Calling it on a low priority thread
-  // to avoid slowing down the main thread, and then resuming pre-provisioning
-  // back on this thread (as access to the PrefService must be done on the
-  // UI thread).
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE,
-      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
-       base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
-      base::BindOnce(
-          &media::MediaDrmBridge::IsPerApplicationProvisioningSupported),
-      base::BindOnce(&MediaDrmOriginIdManager::ResumePreProvisionIfNecessary,
-                     weak_factory_.GetWeakPtr()));
+  ResumePreProvisionIfNecessary();
 }
 
-void MediaDrmOriginIdManager::ResumePreProvisionIfNecessary(
-    bool is_per_application_provisioning_supported) {
+void MediaDrmOriginIdManager::ResumePreProvisionIfNecessary() {
   DVLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  is_per_application_provisioning_supported_ =
-      is_per_application_provisioning_supported;
-
-  // On devices that need to, check that the user has recently requested
-  // an origin ID. If not, then skip pre-provisioning on those devices.
-  ScopedDictPrefUpdate update(pref_service_, kMediaDrmOriginIds);
-  if (!CanPreProvision(is_per_application_provisioning_supported, *update)) {
-    // Disable any network monitoring, if it exists.
-    network_observer_.reset();
-    return;
-  }
 
   // No need to pre-provision if there are already enough existing
   // pre-provisioned origin IDs.
+  ScopedDictPrefUpdate update(pref_service_, kMediaDrmOriginIds);
   if (CountAvailableOriginIds(*update) >= kMaxPreProvisionedOriginIds) {
     // Disable any network monitoring, if it exists.
     network_observer_.reset();
@@ -688,7 +602,7 @@ void MediaDrmOriginIdManager::GetOriginId(ProvisionedOriginIdCB callback) {
 void MediaDrmOriginIdManager::StartProvisioningAsync(bool run_in_background) {
   DVLOG(1) << __func__ << " run_in_background: " << run_in_background;
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(is_provisioning_);
+  CHECK(is_provisioning_, base::NotFatalUntil::M161);
 
   // Run StartProvisioning() later. This is done on a separate thread to avoid
   // scroll jank, especially when pre-provisioning is happening (as the origin
@@ -736,7 +650,7 @@ void MediaDrmOriginIdManager::OriginIdProvisioned(
   DVLOG(1) << __func__
            << " origin_id: " << (origin_id ? origin_id->ToString() : "null");
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  DCHECK(is_provisioning_);
+  CHECK(is_provisioning_, base::NotFatalUntil::M161);
 
   // On Android R, clear |kLastProvisioningAttemptTimeToken| as provisioning()
   // didn't crash.
@@ -770,12 +684,6 @@ void MediaDrmOriginIdManager::OriginIdProvisioned(
     if (!pending_provisioned_origin_id_cbs_.empty()) {
       // This failure results from a user request (as opposed to
       // pre-provisioning having been started).
-
-      if (!IsPerApplicationProvisioningSupported()) {
-        // Token is only required if per application provisioning is not
-        // supported.
-        SetExpirableToken(pref_service_);
-      }
 
       // As this failed, satisfy all pending requests by returning false.
       base::queue<ProvisionedOriginIdCB> pending_requests;
@@ -815,7 +723,6 @@ void MediaDrmOriginIdManager::OriginIdProvisioned(
     // Stop watching for network change events.
     if (CountAvailableOriginIds(*update) >= kMaxPreProvisionedOriginIds) {
       network_observer_.reset();
-      RemoveExpirableToken(*update);
       is_provisioning_ = false;
       return;
     }
@@ -829,17 +736,6 @@ void MediaDrmOriginIdManager::OriginIdProvisioned(
       /*run_in_background=*/pending_provisioned_origin_id_cbs_.empty());
 }
 
-bool MediaDrmOriginIdManager::IsPerApplicationProvisioningSupported() {
-  // `is_per_application_provisioning_supported_` should be set in
-  // PreProvisionIfNecessary(). However, in case it's not (e.g. flag
-  // kMediaDrmPreprovisioningAtStartup is disabled), determine it now.
-  if (!is_per_application_provisioning_supported_.has_value()) {
-    is_per_application_provisioning_supported_ =
-        media::MediaDrmBridge::IsPerApplicationProvisioningSupported();
-  }
-  return is_per_application_provisioning_supported_.value();
-}
-
 void MediaDrmOriginIdManager::RecordCountOfPreprovisionedOriginIds() {
   DVLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
@@ -847,13 +743,7 @@ void MediaDrmOriginIdManager::RecordCountOfPreprovisionedOriginIds() {
   const auto& pref = pref_service_->GetDict(kMediaDrmOriginIds);
   int available_origin_ids = CountAvailableOriginIds(pref);
 
-  if (IsPerApplicationProvisioningSupported()) {
-    base::UmaHistogramExactLinear(
-        "Media.EME.MediaDrm.PreprovisionedOriginId.PerAppProvisioningDevice",
-        available_origin_ids, kUMAMaxPreProvisionedOriginIds);
-  } else {
-    base::UmaHistogramExactLinear(
-        "Media.EME.MediaDrm.PreprovisionedOriginId.NonPerAppProvisioningDevice",
-        available_origin_ids, kUMAMaxPreProvisionedOriginIds);
-  }
+  base::UmaHistogramExactLinear(
+      "Media.EME.MediaDrm.PreprovisionedOriginId.PerAppProvisioningDevice",
+      available_origin_ids, kUMAMaxPreProvisionedOriginIds);
 }

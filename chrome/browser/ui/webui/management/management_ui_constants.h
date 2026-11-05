@@ -16,9 +16,9 @@ extern const char kManagementScreenCaptureEvent[];
 extern const char kManagementScreenCaptureData[];
 #endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || (BUILDFLAG(IS_ANDROID) && BUILDFLAG(ENABLE_EXTENSIONS_CORE))
+#if !BUILDFLAG(IS_CHROMEOS)
 extern const char kManagementDeviceSignalsDisclosure[];
-#endif  // #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || (BUILDFLAG(IS_ANDROID) && BUILDFLAG(ENABLE_EXTENSIONS_CORE))
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_CHROMEOS)
 extern const char kManagementLogUploadEnabled[];
@@ -73,6 +73,8 @@ extern const char kManagementOnFileDownloadedEvent[];
 extern const char kManagementOnFileDownloadedVisibleData[];
 extern const char kManagementOnBulkDataEntryEvent[];
 extern const char kManagementOnBulkDataEntryVisibleData[];
+extern const char kManagementOnDataCopiedEvent[];
+extern const char kManagementOnDataCopiedVisibleData[];
 extern const char kManagementOnPrintEvent[];
 extern const char kManagementOnPrintVisibleData[];
 extern const char kManagementOnPageVisitedEvent[];

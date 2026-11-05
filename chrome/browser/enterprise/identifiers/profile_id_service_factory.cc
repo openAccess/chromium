@@ -14,7 +14,7 @@ namespace enterprise {
 
 // static
 ProfileIdService* ProfileIdServiceFactory::GetForProfile(Profile* profile) {
-  if (profile->IsGuestSession() || profile->IsOffTheRecord()) {
+  if (profile->IsGuestSession()) {
     return nullptr;
   }
 
@@ -33,6 +33,7 @@ ProfileIdServiceFactory::ProfileIdServiceFactory()
           "ProfileIdService",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOriginalOnly)
+              .WithIsolatedMode(ProfileSelection::kRedirectedToOriginal)
               // TODO(crbug.com/41488885): Check if this service is needed for
               // Ash Internals.
               .WithAshInternals(ProfileSelection::kOriginalOnly)
@@ -44,7 +45,7 @@ std::unique_ptr<KeyedService>
 ProfileIdServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   auto* profile = Profile::FromBrowserContext(context);
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
   return std::make_unique<ProfileIdService>(
       std::make_unique<ProfileIdDelegateImpl>(profile), profile->GetPrefs());
 }

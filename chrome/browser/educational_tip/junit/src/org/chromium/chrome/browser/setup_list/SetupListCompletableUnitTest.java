@@ -12,7 +12,6 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.when;
 
 import androidx.annotation.DrawableRes;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -21,7 +20,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.educational_tip.EducationalTipCardProvider;
@@ -29,7 +27,6 @@ import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 
 /** Test relating to {@link SetupListCompletable} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class SetupListCompletableUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -49,7 +46,6 @@ public class SetupListCompletableUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetCompletionState_NotSetupListModule() {
         when(mSetupListManager.isSetupListModule(anyInt())).thenReturn(false);
 
@@ -60,7 +56,6 @@ public class SetupListCompletableUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetCompletionState_SetupListModule_Completable_NotComplete() {
         when(mSetupListManager.isSetupListModule(TEST_MODULE_TYPE)).thenReturn(true);
         when(mMockCompletableProvider.isComplete()).thenReturn(false);
@@ -74,7 +69,6 @@ public class SetupListCompletableUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetCompletionState_SetupListModule_Completable_IsComplete() {
         when(mSetupListManager.isSetupListModule(TEST_MODULE_TYPE)).thenReturn(true);
         when(mMockCompletableProvider.isComplete()).thenReturn(true);
@@ -88,7 +82,6 @@ public class SetupListCompletableUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetCompletionState_AwaitingAnimation() {
         when(mSetupListManager.isSetupListModule(TEST_MODULE_TYPE)).thenReturn(true);
         when(mSetupListManager.isModuleAwaitingCompletionAnimation(TEST_MODULE_TYPE))

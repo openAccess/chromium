@@ -12,6 +12,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace content {
 
@@ -149,9 +150,9 @@ void FakeIdentityRequestDialogController::ShowUrl(LinkType link_type,
     return;
   }
 
-  OpenURLParams params(
-      url, Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui::PAGE_TRANSITION_AUTO_TOPLEVEL, /*is_renderer_initiated=*/false);
+  OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
+      url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
   web_contents_->GetDelegate()->OpenURLFromTab(
       web_contents_, params, /*navigation_handle_callback=*/{});
 }
@@ -168,9 +169,9 @@ WebContents* FakeIdentityRequestDialogController::ShowModalDialog(
 
   popup_dismiss_callback_ = std::move(dismiss_callback);
   // This follows the code in FedCmModalDialogView::ShowPopupWindow.
-  OpenURLParams params(url, Referrer(), WindowOpenDisposition::NEW_POPUP,
-                       ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                       /*is_renderer_initiated=*/false);
+  OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
+      url, ui::mojom::WindowOpenDisposition::kNewPopup,
+      ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
   popup_window_ = web_contents_->GetDelegate()->OpenURLFromTab(
       web_contents_, params, /*navigation_handle_callback=*/{});
   Observe(popup_window_);
@@ -191,10 +192,14 @@ void FakeIdentityRequestDialogController::CloseModalDialog() {
 }
 
 void FakeIdentityRequestDialogController::WebContentsDestroyed() {
-  if (popup_dismiss_callback_) {
-    std::move(popup_dismiss_callback_).Run(DismissReason::kOther);
-  }
   popup_window_ = nullptr;
+  if (popup_dismiss_callback_) {
+    // Running `popup_dismiss_callback_` can trigger FedCM cleanup and delete
+    // `this`. Run it asynchronously to avoid destroying `this` while still
+    // handling the WebContentsDestroyed observer notification.
+    PostTask(FROM_HERE, base::BindOnce(std::move(popup_dismiss_callback_),
+                                       DismissReason::kOther));
+  }
 }
 
 void FakeIdentityRequestDialogController::RequestIdPRegistrationPermision(

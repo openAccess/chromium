@@ -28,6 +28,7 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/text_elider.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/message_box_view.h"
@@ -100,7 +101,7 @@ void ExternalProtocolHandler::RunExternalProtocolDialog(
     const std::optional<url::Origin>& initiating_origin,
     content::WeakDocumentPtr initiator_document,
     const std::u16string& program_name) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
 
   if (program_name.empty()) {
     // ShellExecute won't do anything. Don't bother warning the user.
@@ -178,6 +179,14 @@ ExternalProtocolDialog::ExternalProtocolDialog(
 
   constrained_window::ShowWebModalDialogViews(this, web_contents);
   picture_in_picture_watcher_ = std::make_unique<PictureInPictureWatcher>(this);
+  // Observe the top-level widget hosting the WebContents (the browser
+  // window), not the web-modal child widget: only top-level widgets receive
+  // native activation changes.
+  if (views::Widget* host_widget =
+          views::Widget::GetTopLevelWidgetForNativeView(
+              web_contents->GetNativeView())) {
+    widget_observation_.Observe(host_widget);
+  }
 }
 
 ExternalProtocolDialog::~ExternalProtocolDialog() = default;
@@ -204,7 +213,7 @@ void ExternalProtocolDialog::OnDialogAccepted() {
   }
 
   if (remember) {
-    DCHECK(initiating_origin_);
+    CHECK(initiating_origin_, base::NotFatalUntil::M162);
     Profile* profile =
         Profile::FromBrowserContext(web_contents_->GetBrowserContext());
 
@@ -219,6 +228,22 @@ void ExternalProtocolDialog::OnDialogAccepted() {
 
 void ExternalProtocolDialog::TriggerInputProtection() {
   GetDialogClientView()->TriggerInputProtection();
+}
+
+void ExternalProtocolDialog::OnWidgetActivationChanged(views::Widget* widget,
+                                                       bool active) {
+  // Re-arm the input protector whenever the dialog's widget becomes active
+  // again. Without this, a background window hosting this dialog can be
+  // raised under the user's cursor (e.g. via an opener's popup.focus() call)
+  // and the first click ever delivered to the dialog is accepted against the
+  // stale protection timestamp from the original show.
+  if (active) {
+    GetDialogClientView()->TriggerInputProtection(/*force_early=*/true);
+  }
+}
+
+void ExternalProtocolDialog::OnWidgetDestroying(views::Widget* widget) {
+  widget_observation_.Reset();
 }
 
 bool ExternalProtocolDialog::ShouldIgnoreButtonPressedEventHandling(

@@ -19,6 +19,9 @@
 #include "chrome/browser/ash/accessibility/live_caption/system_live_caption_service_factory.h"
 #include "chrome/browser/ash/arc/session/arc_service_launcher.h"
 #include "chrome/browser/ash/boca/boca_manager_factory.h"
+#include "chrome/browser/ash/borealis/borealis_disk_cleanup_manager.h"
+#include "chrome/browser/ash/borealis/borealis_service.h"
+#include "chrome/browser/ash/borealis/borealis_service_factory.h"
 #include "chrome/browser/ash/calendar/calendar_keyed_service_factory.h"
 #include "chrome/browser/ash/camera_mic/vm_camera_mic_manager.h"
 #include "chrome/browser/ash/child_accounts/child_status_reporting_service_factory.h"
@@ -35,9 +38,7 @@
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part_ash.h"
-#include "chrome/browser/component_updater/crl_set_component_installer.h"
 #include "chrome/browser/google/google_brand_chromeos.h"
-#include "chrome/browser/manta/manta_service_factory.h"
 #include "chrome/browser/net/nss_service.h"
 #include "chrome/browser/net/nss_service_factory.h"
 #include "chrome/browser/net/server_certificate_database_service_factory.h"
@@ -48,14 +49,16 @@
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service_factory.h"
 #include "chrome/browser/ui/ash/media_client/media_client_impl.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/privacy/peripheral_data_access_handler.h"
-#include "chrome/common/chrome_features.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
 #include "chromeos/ash/components/boca/boca_role_util.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/consent_auditor/consent_auditor_provider.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/pciguard/pciguard_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
+#include "chromeos/ash/components/manta/manta_service_provider.h"
 #include "chromeos/ash/components/network/network_cert_loader.h"
 #include "chromeos/ash/components/peripheral_notification/peripheral_notification_manager.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
@@ -104,7 +107,7 @@ UserSessionInitializer::RlzInitParams CollectRlzParams() {
 void GetCertDBOnIOThread(
     NssCertDatabaseGetter database_getter,
     base::OnceCallback<void(net::NSSCertDatabase*)> callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M161);
 
   auto split_callback = base::SplitOnceCallback(std::move(callback));
   net::NSSCertDatabase* cert_db =
@@ -134,13 +137,13 @@ UserSessionInitializer::UserSessionInitializer(
     session_manager::SessionManager* session_manager)
     : local_state_(CHECK_DEREF(local_state)) {
   CHECK(session_manager);
-  DCHECK(!g_instance);
+  CHECK(!g_instance, base::NotFatalUntil::M161);
   g_instance = this;
   session_manager_observation_.Observe(session_manager);
 }
 
 UserSessionInitializer::~UserSessionInitializer() {
-  DCHECK(g_instance);
+  CHECK(g_instance, base::NotFatalUntil::M161);
   session_manager_observation_.Reset();
   g_instance = nullptr;
 }
@@ -165,13 +168,12 @@ void UserSessionInitializer::OnUserProfileLoaded(const AccountId& account_id) {
 
     InitRlz(profile);
     InitializeCerts(profile);
-    InitializeCRLSetFetcher();
     InitializePrimaryProfileServices(profile, user);
 
     FamilyUserMetricsServiceFactory::GetForBrowserContext(profile);
     if (features::IsCrosSafetyServiceEnabled()) {
       cros_safety_service_ = std::make_unique<CrosSafetyService>(
-          manta::MantaServiceFactory::GetForProfile(profile));
+          MantaServiceProvider::Get().Find(account_id));
     }
   }
 
@@ -234,13 +236,6 @@ void UserSessionInitializer::InitializeCerts(Profile* profile) {
   }
 }
 
-void UserSessionInitializer::InitializeCRLSetFetcher() {
-  component_updater::ComponentUpdateService* cus =
-      g_browser_process->component_updater();
-  if (cus)
-    component_updater::RegisterCRLSetComponent(cus);
-}
-
 void UserSessionInitializer::InitializePrimaryProfileServices(
     Profile* profile,
     const user_manager::User* user) {
@@ -260,7 +255,16 @@ void UserSessionInitializer::InitializePrimaryProfileServices(
         &local_state_.get(), profile);
   }
 
-  arc::ArcServiceLauncher::Get()->OnPrimaryUserProfilePrepared(profile);
+  // ConsentAuditor exists only for regular profiles: a guest session's profile
+  // is off the record, and ARC -- the only consumer of this instance -- is not
+  // available there either.
+  consent_auditor::ConsentAuditor* consent_auditor = nullptr;
+  if (profile->IsRegularProfile()) {
+    consent_auditor = ConsentAuditorProvider::Get().Find(
+        CHECK_DEREF(AnnotatedAccountId::Get(profile)));
+  }
+  arc::ArcServiceLauncher::Get()->OnPrimaryUserProfilePrepared(profile,
+                                                               consent_auditor);
   guest_os::GuestOsSessionTrackerFactory::GetForProfile(profile);
 
   crostini::CrostiniManager* crostini_manager =
@@ -278,7 +282,7 @@ void UserSessionInitializer::InitializePrimaryProfileServices(
 
 void UserSessionInitializer::OnUserSessionStarted(bool is_primary_user) {
   Profile* profile = ProfileManager::GetActiveUserProfile();
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   // Ensure that the `HoldingSpaceKeyedService` for `profile` is created.
   HoldingSpaceKeyedServiceFactory::GetInstance()->GetService(profile);
@@ -301,7 +305,7 @@ void UserSessionInitializer::OnUserSessionStarted(bool is_primary_user) {
   screen_ai::dlc_installer::ManageInstallation(&local_state_.get());
 
   if (is_primary_user) {
-    DCHECK_EQ(primary_profile_, profile);
+    CHECK_EQ(primary_profile_, profile, base::NotFatalUntil::M161);
 
     // Ensure that one `BirchKeyedService` is created for the primary profile.
     BirchKeyedServiceFactory::GetInstance()->GetService(profile);
@@ -311,18 +315,23 @@ void UserSessionInitializer::OnUserSessionStarted(bool is_primary_user) {
     phonehub::PhoneHubManagerFactory::GetForProfile(profile);
     eche_app::EcheAppManagerFactory::GetForProfile(profile);
 
-    VmCameraMicManager::Get()->OnPrimaryUserSessionStarted(primary_profile_);
+    VmCameraMicManager::Get()->OnPrimaryUserSessionStarted();
+
+    if (auto* borealis_service =
+            borealis::BorealisServiceFactory::GetForProfile(profile)) {
+      borealis_service->DiskCleanupManager().CheckDiskSpace();
+    }
 
     // Pciguard can only be set by non-guest, primary users. By default,
     // Pciguard is turned on.
+    const bool pref_state =
+        settings::PeripheralDataAccessHandler::GetPrefState(local_state_.get());
     if (PeripheralNotificationManager::IsInitialized()) {
       PeripheralNotificationManager::Get()->SetPcieTunnelingAllowedState(
-          settings::PeripheralDataAccessHandler::GetPrefState());
+          pref_state);
     }
-    PciguardClient::Get()->SendExternalPciDevicesPermissionState(
-        settings::PeripheralDataAccessHandler::GetPrefState());
-    TypecdClient::Get()->SetPeripheralDataAccessPermissionState(
-        settings::PeripheralDataAccessHandler::GetPrefState());
+    PciguardClient::Get()->SendExternalPciDevicesPermissionState(pref_state);
+    TypecdClient::Get()->SetPeripheralDataAccessPermissionState(pref_state);
 
     CrasAudioHandler::Get()->RefreshVoiceIsolationState();
     CrasAudioHandler::Get()->RefreshVoiceIsolationPreferredEffect();

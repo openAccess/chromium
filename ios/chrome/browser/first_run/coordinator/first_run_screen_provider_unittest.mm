@@ -18,7 +18,9 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
+#import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
+#import "testing/gmock/include/gmock/gmock.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 
@@ -33,8 +35,6 @@ std::unique_ptr<KeyedService> BuildRegionalCapabilitiesServiceWithFakeClient(
 
 class FirstRunScreenProviderTest : public PlatformTest {
  protected:
-  void SetUp() override { PlatformTest::SetUp(); }
-
   std::unique_ptr<TestProfileIOS> CreateProfile(std::string country_code) {
     policy_service_ = std::make_unique<policy::MockPolicyService>();
     ON_CALL(*policy_service_.get(),
@@ -68,6 +68,7 @@ class FirstRunScreenProviderTest : public PlatformTest {
   }
 
   web::WebTaskEnvironment task_environment_;
+  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   base::test::ScopedFeatureList feature_list_;
   policy::SchemaRegistry schema_registry_;
   std::unique_ptr<policy::MockPolicyService> policy_service_;
@@ -121,56 +122,6 @@ TEST_F(FirstRunScreenProviderTest, KeepUpdatedSequenceWhenNotChoiceEligible) {
   // Assert that kDefaultBrowserPromo is the first screen.
   ASSERT_FALSE(screens.empty());
   EXPECT_EQ(screens.front(), kDefaultBrowserPromo);
-}
-
-// Tests that the Default Browser Promo is kept when the sign-in screen is
-// removed.
-TEST_F(FirstRunScreenProviderTest, DBPromoKeptWhenSignInRemoved) {
-  feature_list_.InitWithFeaturesAndParameters(
-      /*enabled_features=*/{{first_run::kSkipDefaultBrowserPromoInFirstRun, {}},
-                            {first_run::kUpdatedFirstRunSequence,
-                             {{"updated-first-run-sequence-param",
-                               "2"}}}},  // kRemoveSignInSync
-      /*disabled_features=*/{});
-
-  // Create a profile in the EEA (where DB promo is usually skipped).
-  std::unique_ptr<TestProfileIOS> profile = CreateProfile("BE");
-
-  // Get the screen sequence from the provider.
-  FirstRunScreenProvider* provider =
-      [[FirstRunScreenProvider alloc] initForProfile:profile.get()];
-  std::vector<ScreenType> screens = GetScreensSequence(provider);
-
-  // Assert that kSignIn is NOT included (because there are no identities).
-  EXPECT_FALSE(std::ranges::contains(screens, kSignIn));
-
-  // Assert that kDefaultBrowserPromo IS included because kSignIn was removed.
-  EXPECT_TRUE(std::ranges::contains(screens, kDefaultBrowserPromo));
-}
-
-// Tests that the Default Browser Promo is removed when the sign-in screen is
-// present.
-TEST_F(FirstRunScreenProviderTest, DBPromoRemovedWhenSignInPresent) {
-  feature_list_.InitWithFeaturesAndParameters(
-      /*enabled_features=*/{{first_run::kSkipDefaultBrowserPromoInFirstRun, {}},
-                            {first_run::kUpdatedFirstRunSequence,
-                             {{"updated-first-run-sequence-param",
-                               "1"}}}},  // kDBPromoFirst
-      /*disabled_features=*/{});
-
-  // Create a profile in the EEA (where DB promo is usually skipped).
-  std::unique_ptr<TestProfileIOS> profile = CreateProfile("BE");
-
-  // Get the screen sequence from the provider.
-  FirstRunScreenProvider* provider =
-      [[FirstRunScreenProvider alloc] initForProfile:profile.get()];
-  std::vector<ScreenType> screens = GetScreensSequence(provider);
-
-  // Assert that kSignIn IS included.
-  EXPECT_TRUE(std::ranges::contains(screens, kSignIn));
-
-  // Assert that kDefaultBrowserPromo is NOT included (skipped).
-  EXPECT_FALSE(std::ranges::contains(screens, kDefaultBrowserPromo));
 }
 
 }  // namespace

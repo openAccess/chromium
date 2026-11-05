@@ -24,9 +24,7 @@
 namespace ash {
 namespace {
 
-const GURL kActiveUrl = GURL("https://wwww.test.com");
-const GURL kEmptyUrl;
-
+constexpr char kActiveUrl[] = "https://wwww.test.com";
 constexpr char kNonMatchingPattern[] = "google.com";
 constexpr char kMatchingPattern[] = "test.com";
 constexpr char kWildcardPattern[] = "*";
@@ -49,12 +47,15 @@ class FullscreenControllerTest : public AshTestBase {
   ~FullscreenControllerTest() override = default;
 
   // AshTestBase:
-  void SetUp() override {
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
     // Create a test shell delegate which can return fake responses.
     auto test_shell_delegate = std::make_unique<TestShellDelegate>();
     test_shell_delegate_ = test_shell_delegate.get();
+    init_params.delegate = std::move(test_shell_delegate);
+  }
 
-    set_shell_delegate(std::move(test_shell_delegate));
+  void SetUp() override {
     AshTestBase::SetUp();
 
     CreateFullscreenWindow();
@@ -84,7 +85,7 @@ class FullscreenControllerTest : public AshTestBase {
         std::move(list));
   }
 
-  void SetUpShellDelegate(GURL url = kActiveUrl) {
+  void SetUpShellDelegate(const GURL& url = GURL(kActiveUrl)) {
     test_shell_delegate_->SetLastCommittedURLForWindow(url);
   }
 
@@ -170,7 +171,7 @@ TEST_F(FullscreenControllerTest, KeepFullscreenIfWildcardPref) {
 // Test that full screen is exited after session unlock if the URL is not
 // available.
 TEST_F(FullscreenControllerTest, ExitFullscreenIfUnsetUrlUnsetPref) {
-  SetUpShellDelegate(kEmptyUrl);
+  SetUpShellDelegate(GURL());
 
   EXPECT_TRUE(window_state_->IsFullscreen());
 
@@ -186,7 +187,7 @@ TEST_F(FullscreenControllerTest, ExitFullscreenIfUnsetUrlUnsetPref) {
 // Test that full screen is not exited after session unlock if the allow list
 // includes the wildcard character and the URL is not available.
 TEST_F(FullscreenControllerTest, KeepFullscreenIfUnsetUrlWildcardPref) {
-  SetUpShellDelegate(kEmptyUrl);
+  SetUpShellDelegate(GURL());
 
   SetKeepFullscreenWithoutNotificationAllowList(kWildcardPattern);
 

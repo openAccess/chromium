@@ -4,14 +4,20 @@
 
 #include "extensions/browser/extension_pref_value_map.h"
 
+#include <algorithm>
+#include <tuple>
 #include <utility>
+#include <vector>
 
+#include "base/containers/to_vector.h"
 #include "base/memory/ptr_util.h"
 #include "base/observer_list.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "components/prefs/pref_value_map.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/common/api/types.h"
+#include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
 
 struct ExtensionPrefValueMap::ExtensionEntry {
@@ -34,8 +40,17 @@ struct ExtensionPrefValueMap::ExtensionEntry {
   PrefValueMap incognito_profile_preferences_session_only;
 };
 
-ExtensionPrefValueMap::ExtensionPrefValueMap() : destroyed_(false) {
+ExtensionPrefValueMap::ExtensionPrefValueMap(
+    extensions::ExtensionRegistry* registry)
+    : destroyed_(false) {
+  // The registry can be null in unit tests.
+  if (registry) {
+    registry_observation_.Observe(registry);
+  }
 }
+
+ExtensionPrefValueMap::ExtensionPrefValueMap()
+    : ExtensionPrefValueMap(nullptr) {}
 
 ExtensionPrefValueMap::~ExtensionPrefValueMap() {
   if (!destroyed_) {
@@ -45,8 +60,30 @@ ExtensionPrefValueMap::~ExtensionPrefValueMap() {
 }
 
 void ExtensionPrefValueMap::Shutdown() {
+  registry_observation_.Reset();
   NotifyOfDestruction();
   destroyed_ = true;
+}
+
+void ExtensionPrefValueMap::OnExtensionLoaded(
+    content::BrowserContext* browser_context,
+    const extensions::Extension* extension) {
+  SetExtensionState(extension->id(), true);
+  SetExtensionIncognitoState(
+      extension->id(),
+      extensions::util::IsIncognitoEnabled(extension, browser_context));
+}
+
+void ExtensionPrefValueMap::OnExtensionUnloaded(
+    content::BrowserContext* browser_context,
+    const extensions::Extension* extension,
+    extensions::UnloadedExtensionReason reason) {
+  SetExtensionState(extension->id(), false);
+}
+
+void ExtensionPrefValueMap::OnShutdown(
+    extensions::ExtensionRegistry* registry) {
+  registry_observation_.Reset();
 }
 
 void ExtensionPrefValueMap::SetExtensionPref(const std::string& ext_id,
@@ -93,7 +130,7 @@ bool ExtensionPrefValueMap::CanExtensionControlPref(
 }
 
 void ExtensionPrefValueMap::ClearAllIncognitoSessionOnlyPreferences() {
-  typedef std::set<std::string> KeySet;
+  using KeySet = std::set<std::string>;
   KeySet deleted_keys;
 
   for (const auto& entry : entries_) {
@@ -400,6 +437,33 @@ std::string ExtensionPrefValueMap::GetExtensionControllingPref(
     return std::string();
   }
   return winner->first;
+}
+
+extensions::ExtensionIdList
+ExtensionPrefValueMap::GetExtensionsSettingPrefByPrecedence(
+    const std::string& pref_key) const {
+  // Candidates as GetEffectivePrefValueController() picks them for a regular
+  // profile.
+  std::vector<ExtensionEntryMap::const_iterator> candidates;
+  for (auto i = entries_.cbegin(); i != entries_.cend(); ++i) {
+    const ExtensionEntry& entry = *i->second;
+    if (!entry.enabled) {
+      continue;
+    }
+    const base::Value* value = nullptr;
+    if (entry.regular_profile_preferences.GetValue(pref_key, &value) ||
+        entry.regular_only_profile_preferences.GetValue(pref_key, &value)) {
+      candidates.push_back(i);
+    }
+  }
+  // Later install wins; GetEffectivePrefValueController() breaks ties toward
+  // the later entry in `entries_`, i.e. the greater ID.
+  std::ranges::sort(candidates, [](const auto& a, const auto& b) {
+    return std::tie(a->second->install_time, a->first) >
+           std::tie(b->second->install_time, b->first);
+  });
+  return base::ToVector(candidates,
+                        [](const auto& candidate) { return candidate->first; });
 }
 
 void ExtensionPrefValueMap::NotifyInitializationCompleted() {

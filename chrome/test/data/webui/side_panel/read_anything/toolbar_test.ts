@@ -7,7 +7,7 @@ import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js'
 import type {CrButtonElement} from '//resources/cr_elements/cr_button/cr_button.js';
 import type {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
-import {MENU_SHOW_DELAY_MS, SettingsOption, ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {KEYBOARD_NAV_CLASS, MENU_SHOW_DELAY_MS, SettingsOption, ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import type {ReadAnythingToolbarElement, SettingsMenuElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertEquals, assertFalse, assertNotEquals, assertStringContains, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {keyDownOn} from 'chrome-untrusted://webui-test/keyboard_mock_interactions.js';
@@ -83,12 +83,6 @@ suite('Toolbar', () => {
   suite('rate button', () => {
     let rateButton: CrButtonElement;
 
-    async function changeRate(rate: number) {
-      toolbar.$.rateMenu.dispatchEvent(
-          new CustomEvent(ToolbarEvent.RATE, {detail: {data: rate}}));
-      await microtasksFinished();
-    }
-
     setup(() => {
       const rate = shadowRoot.querySelector<CrButtonElement>('#rate');
       assertTrue(!!rate);
@@ -106,12 +100,14 @@ suite('Toolbar', () => {
       assertStringContains(rateButton.textContent, '1x');
     });
 
-    test('rate change updates rate button', async () => {
-      await changeRate(2);
+    test('speechRate prop updates rate button', async () => {
+      toolbar.speechRate = 2;
+      await microtasksFinished();
       assertStringContains(rateButton.ariaLabel!, '2x');
       assertStringContains(rateButton.textContent, '2x');
 
-      await changeRate(0.5);
+      toolbar.speechRate = 0.5;
+      await microtasksFinished();
       assertStringContains(rateButton.ariaLabel!, '0.5');
       assertStringContains(rateButton.textContent, '0.5');
     });
@@ -346,24 +342,18 @@ suite('Toolbar', () => {
         await microtasksFinished();
 
         assertTrue(aiPlaybackButton.classList.contains('active'));
+        assertTrue(
+            await audioBrowserProxy.whenCalled('onAiPlaybackStateChanged'));
+        audioBrowserProxy.resetResolver('onAiPlaybackStateChanged');
 
         aiPlaybackButton.click();
         await microtasksFinished();
 
         assertFalse(aiPlaybackButton.classList.contains('active'));
+        assertFalse(
+            await audioBrowserProxy.whenCalled('onAiPlaybackStateChanged'));
       });
     });
-  });
-
-  test('restoreSettingsFromPrefs event updates toolbar', async () => {
-    audioBrowserProxy.speechRate = 1.5;
-
-    visualBrowserProxy.restoreSettingsFromPrefs.callListeners();
-    await microtasksFinished();
-
-    const rateButton = shadowRoot.querySelector('#rate');
-    assertTrue(!!rateButton);
-    assertEquals('1.5', rateButton.textContent.trim());
   });
 
   suite('settings menu', () => {
@@ -385,7 +375,7 @@ suite('Toolbar', () => {
       settingsMenu = toolbar.$.settingsMenu;
 
       moreButton.click();
-      settingsMenu.$.lazyMenu.get();
+      settingsMenu.$.lazyMenu.get().classList.remove(KEYBOARD_NAV_CLASS);
       await microtasksFinished();
     });
 
@@ -423,9 +413,14 @@ suite('Toolbar', () => {
     });
 
     test('opens appearance submenu on click when flag enabled', async () => {
-      settingsMenu.settingsPrefs = {...settingsMenu.settingsPrefs};
       visualBrowserProxy.readAnythingImprovedUiEnabled = true;
+      toolbar.remove();
+      await createToolbar();
+      settingsMenu = toolbar.$.settingsMenu;
+      getButton('more')!.click();
+      settingsMenu.$.lazyMenu.get();
       await microtasksFinished();
+
       const targetItem = getMenuItem(SettingsOption.APPEARANCE);
       assertTrue(!!targetItem);
       targetItem.click();
@@ -648,13 +643,5 @@ suite('Toolbar', () => {
           assertTrue(actionMenu.open);
           assertTrue(fontSubmenu.$.menu.$.lazyMenu.get().open);
         });
-
-    test('invokes visualBrowserProxy on translation requested event', () => {
-      visualBrowserProxy.translateEntryPointEnabled = true;
-      settingsMenu.dispatchEvent(
-          new CustomEvent(ToolbarEvent.TRANSLATION_REQUESTED));
-      assertEquals(
-          1, visualBrowserProxy.getCallCount('onTranslationRequested'));
-    });
   });
 });

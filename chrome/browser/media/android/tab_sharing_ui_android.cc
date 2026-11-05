@@ -20,9 +20,10 @@
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/common/mediastream/media_stream_request.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
-#include "chrome/android/chrome_jni_headers/TabSharingUIBridge_jni.h"
+#include "chrome/android/chrome_jni_headers/TabSharingUiBridge_jni.h"
 
 namespace {
 // The MediaStreamUI interface specifies returning 0 if no window ID is
@@ -44,7 +45,7 @@ TabSharingUIAndroid::~TabSharingUIAndroid() {
   StopSharing();
   if (java_bridge_) {
     JNIEnv* env = base::android::AttachCurrentThread();
-    Java_TabSharingUIBridge_destroy(env, java_bridge_);
+    Java_TabSharingUiBridge_destroy(env, java_bridge_);
     java_bridge_.Reset();
   }
 }
@@ -88,9 +89,10 @@ gfx::NativeViewId TabSharingUIAndroid::OnStarted(
     content::MediaStreamUI::SourceCallback source_callback,
     const std::vector<content::DesktopMediaID>& media_ids) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(media_id_.type == content::DesktopMediaID::TYPE_WEB_CONTENTS);
+  CHECK(media_id_.type == content::DesktopMediaID::TYPE_WEB_CONTENTS,
+        base::NotFatalUntil::M161);
 
-  DCHECK(!stop_callback_);
+  CHECK(!stop_callback_, base::NotFatalUntil::M161);
   stop_callback_ = std::move(stop_callback);
   source_callback_ = std::move(source_callback);
 
@@ -124,8 +126,8 @@ gfx::NativeViewId TabSharingUIAndroid::OnStarted(
         base::FeatureList::IsEnabled(
             chrome::android::kTabSharingToolbarAndroid)) {
       JNIEnv* env = base::android::AttachCurrentThread();
-      java_bridge_ = Java_TabSharingUIBridge_create(
-          env, reinterpret_cast<intptr_t>(this), capturer_web_contents_.get(),
+      java_bridge_ = Java_TabSharingUiBridge_create(
+          env, jni_zero::MakeRaw(this), capturer_web_contents_.get(),
           web_contents, !source_callback_.is_null(),
           app_preferred_current_tab_);
     }
@@ -136,4 +138,4 @@ gfx::NativeViewId TabSharingUIAndroid::OnStarted(
   return kNoWindowId;
 }
 
-DEFINE_JNI(TabSharingUIBridge)
+DEFINE_JNI(TabSharingUiBridge)

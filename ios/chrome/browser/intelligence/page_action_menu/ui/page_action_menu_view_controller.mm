@@ -4,6 +4,9 @@
 
 #import "ios/chrome/browser/intelligence/page_action_menu/ui/page_action_menu_view_controller.h"
 
+#import <vector>
+
+#import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
 #import "build/branding_buildflags.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
@@ -72,6 +75,82 @@ const CGFloat kFeatureRowHeight = 56;
 // The width for the vertical feature row divider.
 const CGFloat kDividerWidth = 1.0;
 
+// The point size of the permission dropdown's chevron, and the spacing between
+// the dropdown's title and that chevron.
+constexpr CGFloat kChevronSymbolSize = 14;
+constexpr CGFloat kChevronPadding = 8;
+
+// Returns the title of the dropdown option for `setting`.
+NSString* PermissionSettingTitle(PageActionMenuPermissionSetting setting) {
+  switch (setting) {
+    case PageActionMenuPermissionSetting::kAlwaysAllow:
+      return l10n_util::GetNSString(IDS_IOS_PERMISSIONS_SETTING_ALLOWED);
+    case PageActionMenuPermissionSetting::kAllowOnce:
+      return l10n_util::GetNSString(IDS_IOS_PERMISSIONS_SETTING_ALLOWED_ONCE);
+    case PageActionMenuPermissionSetting::kNeverAllow:
+      return l10n_util::GetNSString(IDS_IOS_PERMISSIONS_SETTING_NOT_ALLOWED);
+  }
+}
+
+// Returns the styled title displaying `setting` in a permission dropdown for
+// the given `trait_collection`.
+NSAttributedString* PermissionDropdownTitle(
+    PageActionMenuPermissionSetting setting,
+    UITraitCollection* trait_collection) {
+  UIFont* font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline
+                     compatibleWithTraitCollection:trait_collection];
+  return [[NSAttributedString alloc]
+      initWithString:PermissionSettingTitle(setting)
+          attributes:@{
+            NSFontAttributeName : font,
+            NSForegroundColorAttributeName :
+                [UIColor colorNamed:kTextSecondaryColor],
+          }];
+}
+
+// Returns the accessibility label of the permission dropdown for
+// `feature_type`.
+NSString* PermissionDropdownAccessibilityLabel(
+    PageActionMenuFeatureType feature_type) {
+  switch (feature_type) {
+    case PageActionMenuCameraPermission:
+      return l10n_util::GetNSString(
+          IDS_IOS_AI_HUB_CAMERA_PERMISSION_DROPDOWN_ACCESSIBILITY_LABEL);
+    case PageActionMenuMicrophonePermission:
+      return l10n_util::GetNSString(
+          IDS_IOS_AI_HUB_MICROPHONE_PERMISSION_DROPDOWN_ACCESSIBILITY_LABEL);
+    case PageActionMenuTranslate:
+    case PageActionMenuPopupBlocker:
+      NOTREACHED();
+  }
+}
+
+// Returns the ID of the disclaimer message describing `setting` for
+// `feature_type`. The message takes the site domain as its only parameter.
+int PermissionDisclaimerMessageID(PageActionMenuFeatureType feature_type,
+                                  PageActionMenuPermissionSetting setting) {
+  if (setting == PageActionMenuPermissionSetting::kAllowOnce) {
+    return IDS_IOS_AI_HUB_PERMISSION_SITE_EXPLANATION;
+  }
+
+  const BOOL alwaysAllowed =
+      setting == PageActionMenuPermissionSetting::kAlwaysAllow;
+  switch (feature_type) {
+    case PageActionMenuCameraPermission:
+      return alwaysAllowed
+                 ? IDS_IOS_AI_HUB_CAMERA_PERMISSION_ALWAYS_ALLOWED_EXPLANATION
+                 : IDS_IOS_AI_HUB_CAMERA_PERMISSION_BLOCKED_EXPLANATION;
+    case PageActionMenuMicrophonePermission:
+      return alwaysAllowed
+                 ? IDS_IOS_AI_HUB_MICROPHONE_PERMISSION_ALWAYS_ALLOWED_EXPLANATION
+                 : IDS_IOS_AI_HUB_MICROPHONE_PERMISSION_BLOCKED_EXPLANATION;
+
+    case PageActionMenuTranslate:
+    case PageActionMenuPopupBlocker:
+      NOTREACHED();
+  }
+}
+
 }  // namespace
 
 @interface PageActionMenuViewController ()
@@ -106,6 +185,11 @@ const CGFloat kDividerWidth = 1.0;
 
   // Stack view containing dynamically generated ineligibility reasons.
   UIStackView* _footerStackView;
+
+  // The permission dropdowns and disclaimer labels currently displayed, keyed
+  // by feature type.
+  NSMutableDictionary<NSNumber*, UIButton*>* _permissionDropdowns;
+  NSMutableDictionary<NSNumber*, UILabel*>* _permissionDisclaimers;
 }
 
 - (void)viewDidLoad {
@@ -210,6 +294,20 @@ const CGFloat kDividerWidth = 1.0;
 
 - (void)pageLoadStatusChanged {
   [self updateGeminiAvailability];
+}
+
+- (void)permissionStateChanged {
+  if (!IsProactiveSuggestionsFrameworkEnabled() ||
+      !IsDomainLevelSitePermissionsEnabled()) {
+    return;
+  }
+  for (PageActionMenuFeature* feature in [self.mutator activeFeatures]) {
+    if ([self isPermissionFeature:feature] &&
+        _permissionDropdowns[@(feature.featureType)]) {
+      [self showPermissionSetting:feature.permissionSetting
+                       forFeature:feature.featureType];
+    }
+  }
 }
 
 #pragma mark - UITextViewDelegate
@@ -686,23 +784,9 @@ const CGFloat kDividerWidth = 1.0;
       [self.mutator allowBlockedPopups];
       [self.pageActionMenuHandler dismissPageActionMenuWithCompletion:nil];
       break;
-    case PageActionMenuPriceTracking: {
-      [self handlePriceTrackingRowTap];
-      break;
-    }
     default:
       break;
   }
-}
-
-// Handles taps on the price tracking feature row.
-- (void)handlePriceTrackingRowTap {
-  CHECK(IsProactiveSuggestionsFrameworkEnabled());
-  // Capture the mutator before dismissal.
-  id<PageActionMenuMutator> mutator = self.mutator;
-  [self.pageActionMenuHandler dismissPageActionMenuWithCompletion:^{
-    [mutator openPriceInsightsPanel];
-  }];
 }
 
 // Handles taps on the left side of split action feature rows.
@@ -934,6 +1018,8 @@ const CGFloat kDividerWidth = 1.0;
     [_featureRowsStackView removeArrangedSubview:view];
     [view removeFromSuperview];
   }
+  _permissionDropdowns = [[NSMutableDictionary alloc] init];
+  _permissionDisclaimers = [[NSMutableDictionary alloc] init];
 
   // Get active features from mediator.
   NSArray<PageActionMenuFeature*>* activeFeatures =
@@ -944,13 +1030,30 @@ const CGFloat kDividerWidth = 1.0;
   for (PageActionMenuFeature* feature in activeFeatures) {
     UIView* featureRow = [self createFeatureRowWithData:feature];
     [_featureRowsStackView addArrangedSubview:featureRow];
-    [_featureRowsStackView setCustomSpacing:kSpacingMedium
-                                  afterView:featureRow];
     lastView = featureRow;
+
+    // Every dropdown permission row carries its own disclaimer.
+    const BOOL hasDisclaimer =
+        [self isPermissionFeature:feature] &&
+        feature.actionType == PageActionMenuDropdownAction;
+    [_featureRowsStackView
+        setCustomSpacing:hasDisclaimer ? kSpacingSmall : kSpacingMedium
+               afterView:featureRow];
+    if (!hasDisclaimer) {
+      continue;
+    }
+
+    UILabel* disclaimer =
+        [self createPermissionDisclaimerLabelForFeature:feature];
+    [_featureRowsStackView addArrangedSubview:disclaimer];
+    [_featureRowsStackView setCustomSpacing:kSpacingMedium
+                                  afterView:disclaimer];
+    lastView = disclaimer;
   }
 
-  // Add permission explanation if needed.
-  if ([self hasPermissionFeatures:activeFeatures]) {
+  // Add shared permission explanation if any toggle-based permission rows are
+  // shown.
+  if ([self hasTogglePermissionFeatures:activeFeatures]) {
     UILabel* explanation = [self createPermissionExplanationLabel];
     [_featureRowsStackView addArrangedSubview:explanation];
     lastView = explanation;
@@ -1075,93 +1178,30 @@ const CGFloat kDividerWidth = 1.0;
       break;
     }
     case PageActionMenuButtonAction: {
-      if (feature.featureType == PageActionMenuPriceTracking) {
-        UIStackView* accessoryStack = [[UIStackView alloc] init];
-        accessoryStack.translatesAutoresizingMaskIntoConstraints = NO;
-        accessoryStack.axis = UILayoutConstraintAxisHorizontal;
-        accessoryStack.alignment = UIStackViewAlignmentCenter;
-        accessoryStack.spacing = 8.0;
-        [accessoryStack
-            setContentHuggingPriority:UILayoutPriorityDefaultHigh + 1
-                              forAxis:UILayoutConstraintAxisHorizontal];
+      if (feature.actionText && feature.actionText.length > 0) {
+        UIButton* actionButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        [actionButton setTitle:feature.actionText
+                      forState:UIControlStateNormal];
+        actionButton.titleLabel.font = PreferredFontForTextStyle(
+            UIFontTextStyleSubheadline, UIFontWeightMedium);
+        [actionButton setTitleColor:[UIColor colorNamed:kBlue600Color]
+                           forState:UIControlStateNormal];
+        actionButton.tag = feature.featureType;
+        [actionButton addTarget:self
+                         action:@selector(handleFeatureButton:)
+               forControlEvents:UIControlEventTouchUpInside];
+        [stackView addArrangedSubview:actionButton];
 
-        if (feature.actionText && feature.actionText.length > 0) {
-          UILabel* trackingLabel = [self secondaryLabel];
-          trackingLabel.text = feature.actionText;
-          trackingLabel.font = PreferredFontForTextStyle(
-              UIFontTextStyleSubheadline, UIFontWeightMedium);
-          trackingLabel.textAlignment = NSTextAlignmentRight;
-          [trackingLabel
-              setContentHuggingPriority:UILayoutPriorityRequired
-                                forAxis:UILayoutConstraintAxisHorizontal];
-          [accessoryStack addArrangedSubview:trackingLabel];
-        }
-
-        UIImageView* chevronIcon = [self createNavigationChevron];
-        UIButton* chevronButton = [UIButton buttonWithType:UIButtonTypeCustom];
-        chevronButton.translatesAutoresizingMaskIntoConstraints = NO;
-        [chevronButton addSubview:chevronIcon];
-
-        [NSLayoutConstraint activateConstraints:@[
-          [chevronIcon.centerXAnchor
-              constraintEqualToAnchor:chevronButton.centerXAnchor],
-          [chevronIcon.centerYAnchor
-              constraintEqualToAnchor:chevronButton.centerYAnchor],
-          [chevronButton.widthAnchor
-              constraintEqualToConstant:chevronIcon.intrinsicContentSize.width],
-          [chevronButton.heightAnchor
-              constraintEqualToConstant:chevronIcon.intrinsicContentSize.height]
-        ]];
-
-        [chevronButton
-            setContentHuggingPriority:UILayoutPriorityRequired
-                              forAxis:UILayoutConstraintAxisHorizontal];
-        [chevronButton
-            setContentHuggingPriority:UILayoutPriorityRequired
-                              forAxis:UILayoutConstraintAxisVertical];
-
-        // Set accessibility label based on subscription status.
-        chevronButton.accessibilityLabel =
-            feature.actionText
-                ? l10n_util::GetNSString(
-                      IDS_IOS_AI_HUB_OPEN_PRICE_TRACKING_ACCESSIBILITY_LABEL)
-                : l10n_util::GetNSString(
-                      IDS_IOS_AI_HUB_OPEN_PRICE_TRACK_ACCESSIBILITY_LABEL);
-
-        chevronButton.tag = feature.featureType;
-        [chevronButton addTarget:self
-                          action:@selector(handleFeatureButton:)
-                forControlEvents:UIControlEventTouchUpInside];
-        [accessoryStack addArrangedSubview:chevronButton];
-        [stackView addArrangedSubview:accessoryStack];
-
-        // Make the entire row tappable
-        UITapGestureRecognizer* tapRecognizer = [[UITapGestureRecognizer alloc]
-            initWithTarget:self
-                    action:@selector(handlePriceTrackingRowTap)];
-        tapRecognizer.cancelsTouchesInView = NO;
-        [containerView addGestureRecognizer:tapRecognizer];
-      } else {
-        if (feature.actionText && feature.actionText.length > 0) {
-          UIButton* actionButton = [UIButton buttonWithType:UIButtonTypeSystem];
-          [actionButton setTitle:feature.actionText
-                        forState:UIControlStateNormal];
-          actionButton.titleLabel.font = PreferredFontForTextStyle(
-              UIFontTextStyleSubheadline, UIFontWeightMedium);
-          [actionButton setTitleColor:[UIColor colorNamed:kBlue600Color]
-                             forState:UIControlStateNormal];
-          actionButton.tag = feature.featureType;
-          [actionButton addTarget:self
-                           action:@selector(handleFeatureButton:)
-                 forControlEvents:UIControlEventTouchUpInside];
-          [stackView addArrangedSubview:actionButton];
-
-          if (feature.featureType == PageActionMenuPopupBlocker) {
-            actionButton.accessibilityLabel = l10n_util::GetNSString(
-                IDS_IOS_AI_HUB_ALWAYS_SHOW_POPUPS_ACCESSIBILITY_LABEL);
-          }
+        if (feature.featureType == PageActionMenuPopupBlocker) {
+          actionButton.accessibilityLabel = l10n_util::GetNSString(
+              IDS_IOS_AI_HUB_ALWAYS_SHOW_POPUPS_ACCESSIBILITY_LABEL);
         }
       }
+      break;
+    }
+    case PageActionMenuDropdownAction: {
+      [stackView
+          addArrangedSubview:[self createPermissionDropdownForFeature:feature]];
       break;
     }
     case PageActionMenuSettingsAction:
@@ -1169,8 +1209,7 @@ const CGFloat kDividerWidth = 1.0;
       break;
   }
 
-  BOOL hasNavigation = (feature.actionType == PageActionMenuSettingsAction ||
-                        feature.featureType == PageActionMenuPriceTracking);
+  BOOL hasNavigation = feature.actionType == PageActionMenuSettingsAction;
   CGFloat rowHeight = hasNavigation ? kSmallButtonHeight : kFeatureRowHeight;
 
   [NSLayoutConstraint activateConstraints:@[
@@ -1206,11 +1245,162 @@ const CGFloat kDividerWidth = 1.0;
   return label;
 }
 
-// Returns true if any features in the array are permission-based features.
-- (BOOL)hasPermissionFeatures:(NSArray<PageActionMenuFeature*>*)features {
+// Creates the disclaimer label describing the effect of the permission setting
+// currently selected for `feature`.
+- (UILabel*)createPermissionDisclaimerLabelForFeature:
+    (PageActionMenuFeature*)feature {
+  CHECK(IsDomainLevelSitePermissionsEnabled());
+  UILabel* label = [self secondaryLabel];
+  label.text =
+      [self permissionDisclaimerTextForFeature:feature.featureType
+                                       setting:feature.permissionSetting];
+  label.textAlignment = NSTextAlignmentLeft;
+  _permissionDisclaimers[@(feature.featureType)] = label;
+  return label;
+}
+
+// Returns the disclaimer describing what `setting` means for `featureType` on
+// the current site.
+- (NSString*)
+    permissionDisclaimerTextForFeature:(PageActionMenuFeatureType)featureType
+                               setting:
+                                   (PageActionMenuPermissionSetting)setting {
+  NSString* domain = [self.mutator currentSiteDomain];
+  return l10n_util::GetNSStringF(
+      PermissionDisclaimerMessageID(featureType, setting),
+      base::SysNSStringToUTF16(domain));
+}
+
+// Creates the pull-down button used to pick the site permission setting for
+// `feature`.
+- (UIButton*)createPermissionDropdownForFeature:
+    (PageActionMenuFeature*)feature {
+  UIButtonConfiguration* configuration =
+      [UIButtonConfiguration plainButtonConfiguration];
+  configuration.image =
+      SymbolWithPointSize(SymbolChevronUpDown, kChevronSymbolSize);
+  configuration.baseForegroundColor = [UIColor colorNamed:kTextQuaternaryColor];
+  configuration.imagePlacement = NSDirectionalRectEdgeTrailing;
+  configuration.imagePadding = kChevronPadding;
+  configuration.contentInsets = NSDirectionalEdgeInsetsZero;
+
+  UIButton* dropdown = [UIButton buttonWithConfiguration:configuration
+                                           primaryAction:nil];
+  dropdown.translatesAutoresizingMaskIntoConstraints = NO;
+  dropdown.showsMenuAsPrimaryAction = YES;
+  dropdown.menu = [self permissionMenuForFeature:feature.featureType
+                                 selectedSetting:feature.permissionSetting];
+  dropdown.maximumContentSizeCategory = UIContentSizeCategoryExtraExtraLarge;
+  configuration.attributedTitle = PermissionDropdownTitle(
+      feature.permissionSetting, dropdown.traitCollection);
+  dropdown.configuration = configuration;
+  dropdown.accessibilityLabel =
+      PermissionDropdownAccessibilityLabel(feature.featureType);
+  dropdown.accessibilityValue =
+      PermissionSettingTitle(feature.permissionSetting);
+  [dropdown setContentHuggingPriority:UILayoutPriorityRequired
+                              forAxis:UILayoutConstraintAxisHorizontal];
+  [dropdown
+      setContentCompressionResistancePriority:UILayoutPriorityDefaultHigh
+                                      forAxis:UILayoutConstraintAxisHorizontal];
+  _permissionDropdowns[@(feature.featureType)] = dropdown;
+  return dropdown;
+}
+
+// Creates the menu listing the permission settings available for `featureType`,
+// with `selectedSetting` checked. "Allowed once" is only offered when it is the
+// current setting.
+- (UIMenu*)permissionMenuForFeature:(PageActionMenuFeatureType)featureType
+                    selectedSetting:
+                        (PageActionMenuPermissionSetting)selectedSetting {
+  __weak PageActionMenuViewController* weakSelf = self;
+
+  NSMutableArray<UIAction*>* actions = [NSMutableArray array];
+  std::vector<PageActionMenuPermissionSetting> settings = {
+      PageActionMenuPermissionSetting::kAlwaysAllow,
+  };
+  if (selectedSetting == PageActionMenuPermissionSetting::kAllowOnce) {
+    settings.push_back(PageActionMenuPermissionSetting::kAllowOnce);
+  }
+  settings.push_back(PageActionMenuPermissionSetting::kNeverAllow);
+
+  for (PageActionMenuPermissionSetting setting : settings) {
+    UIAction* action =
+        [UIAction actionWithTitle:PermissionSettingTitle(setting)
+                            image:nil
+                       identifier:nil
+                          handler:^(UIAction* selectedAction) {
+                            [weakSelf didSelectPermissionSetting:setting
+                                                      forFeature:featureType];
+                          }];
+    action.state = setting == selectedSetting ? UIMenuElementStateOn
+                                              : UIMenuElementStateOff;
+    [actions addObject:action];
+  }
+
+  return [UIMenu menuWithTitle:@""
+                         image:nil
+                    identifier:nil
+                       options:UIMenuOptionsSingleSelection
+                      children:actions];
+}
+
+// Applies the permission setting selected in the dropdown.
+- (void)didSelectPermissionSetting:(PageActionMenuPermissionSetting)setting
+                        forFeature:(PageActionMenuFeatureType)featureType {
+  CHECK(IsDomainLevelSitePermissionsEnabled());
+  [self.mutator updatePermissionSetting:setting forFeature:featureType];
+  [self showPermissionSetting:setting forFeature:featureType];
+}
+
+// Updates the dropdown and the disclaimer of the row for `featureType` in place
+// so that they display `setting`.
+- (void)showPermissionSetting:(PageActionMenuPermissionSetting)setting
+                   forFeature:(PageActionMenuFeatureType)featureType {
+  NSNumber* key = @(featureType);
+  UIButton* dropdown = _permissionDropdowns[key];
+  if (!dropdown) {
+    return;
+  }
+  NSString* settingTitle = PermissionSettingTitle(setting);
+  if ([dropdown.accessibilityValue isEqualToString:settingTitle]) {
+    return;
+  }
+
+  UIButtonConfiguration* configuration = [dropdown.configuration copy];
+  configuration.attributedTitle =
+      PermissionDropdownTitle(setting, dropdown.traitCollection);
+  dropdown.configuration = configuration;
+  dropdown.menu = [self permissionMenuForFeature:featureType
+                                 selectedSetting:setting];
+  dropdown.accessibilityValue = settingTitle;
+
+  _permissionDisclaimers[key].text =
+      [self permissionDisclaimerTextForFeature:featureType setting:setting];
+
+  [self.view setNeedsLayout];
+  UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification,
+                                  dropdown);
+}
+
+// Returns true if `feature` is a permission-based feature.
+- (BOOL)isPermissionFeature:(PageActionMenuFeature*)feature {
+  switch (feature.featureType) {
+    case PageActionMenuCameraPermission:
+    case PageActionMenuMicrophonePermission:
+      return YES;
+    case PageActionMenuTranslate:
+    case PageActionMenuPopupBlocker:
+      return NO;
+  }
+}
+
+// Returns true if any features in the array are toggle-based permission
+// features.
+- (BOOL)hasTogglePermissionFeatures:(NSArray<PageActionMenuFeature*>*)features {
   for (PageActionMenuFeature* feature in features) {
-    if (feature.featureType == PageActionMenuCameraPermission ||
-        feature.featureType == PageActionMenuMicrophonePermission) {
+    if ([self isPermissionFeature:feature] &&
+        feature.actionType == PageActionMenuToggleAction) {
       return YES;
     }
   }

@@ -13,13 +13,14 @@
 #include "base/test/test_future.h"
 #include "base/trace_event/trace_event.h"
 #include "base/version.h"
+#include "components/optimization_guide/core/model_execution/configs/manifest_builder.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest_broker_state.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/fake_manifest_broker.h"
-#include "components/optimization_guide/core/model_execution/manifest_broker/test/manifest_builder.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/scenario_builder.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/test_manifest_asset_manager_component_state.h"
 #include "components/optimization_guide/core/model_execution/model_broker_client.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_names.h"
+#include "components/optimization_guide/core/model_execution/on_device_prefs.h"
 #include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
 #include "components/optimization_guide/core/model_execution/test/request_builder.h"
@@ -48,6 +49,7 @@ class ManifestSolutionFactoryTest : public testing::Test {
   }
 
  protected:
+  ScopedModelBrokerFeatureList scoped_feature_list_;
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   FakeManifestBroker fake_;
@@ -261,50 +263,12 @@ TEST_F(ManifestSolutionFactoryTest, ExecuteTestFeatureWithAdaptation) {
   EXPECT_EQ(*response.value(), expected_response);
 }
 
-TEST_F(ManifestSolutionFactoryTest, ExecuteTestFeatureWithSafety) {
-  ScenarioBuilder(fake_.component_state())
-      .AddBaseModel("model_A")
-      .AddSafetyModel("safety")
-      .AddSafeSolution(
-          "test", "model_A", "safety",
-          []() {
-            proto::SolutionConfig solution_config;
-            *solution_config.mutable_feature() = SimpleComposeConfig();
-            *solution_config.mutable_safety() = ComposeSafetyConfig();
-            return solution_config;
-          }())
-      .Finish();
-  fake_.Startup();
-  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> session_future;
-  fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
-                               SessionConfigParams{},
-                               session_future.GetCallback());
-
-  auto session = session_future.Take();
-  ASSERT_TRUE(session);
-
-  ResponseHolder response;
-  session->ExecuteModel(UserInputRequest("hello"),
-                        response.GetStreamingCallback());
-
-  EXPECT_TRUE(response.GetFinalStatus());
-  EXPECT_EQ(response.error(), std::nullopt);
-
-  std::string expected_response =
-      ("Encoder cache weight: 1016"
-       "Adapter cache weight: 1017"
-       "execute:hello max:1024"
-       "TopK: 64, Temp: 1");
-  EXPECT_EQ(*response.value(), expected_response);
-}
-
 // Stuff should still work even if we use a bunch of models at the same time,
 // as long as the backend supports it.
 TEST_F(ManifestSolutionFactoryTest, ModelContention) {
-  auto safe_config = []() {
+  auto config = []() {
     proto::SolutionConfig solution_config;
     *solution_config.mutable_feature() = SimpleComposeConfig();
-    *solution_config.mutable_safety() = ComposeSafetyConfig();
     return solution_config;
   }();
 
@@ -313,12 +277,11 @@ TEST_F(ManifestSolutionFactoryTest, ModelContention) {
       .AddBaseModel("model_B")
       .AddAdaptation("model_A1", "model_A")
       .AddAdaptation("model_A2", "model_A")
-      .AddSafetyModel("safety")
-      .AddSafeSolution("case_A", "model_A", "safety", safe_config)
-      .AddSafeSolution("case_A1", "model_A1", "safety", safe_config)
-      .AddSafeSolution("case_A2a", "model_A2", "safety", safe_config)
-      .AddSafeSolution("case_A2b", "model_A2", "safety", safe_config)
-      .AddSafeSolution("case_B", "model_B", "safety", safe_config)
+      .AddUnsafeSolution("case_A", "model_A", config)
+      .AddUnsafeSolution("case_A1", "model_A1", config)
+      .AddUnsafeSolution("case_A2a", "model_A2", config)
+      .AddUnsafeSolution("case_A2b", "model_A2", config)
+      .AddUnsafeSolution("case_B", "model_B", config)
       .Finish();
   fake_.Startup();
 
@@ -360,8 +323,7 @@ TEST_F(ManifestSolutionFactoryTest, PropagatesModelCapabilities) {
   }();
   ScenarioBuilder(fake_.component_state())
       .AddBaseModel("model_A")
-      .AddSafetyModel("safety")
-      .AddSafeSolution("case_A", "model_A", "safety", solution_config)
+      .AddUnsafeSolution("case_A", "model_A", solution_config)
       .Finish();
   fake_.Startup();
 
@@ -394,6 +356,153 @@ TEST_F(ManifestSolutionFactoryTest, PropagatesModelCapabilities) {
 
   auto [audio_reason, audio_detailed_reason] = audio_future.Take();
   EXPECT_EQ(audio_reason, mojom::ModelUnavailableReason::kNotSupported);
+}
+
+TEST_F(ManifestSolutionFactoryTest, IdleTimeoutOverride) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      kOnDeviceModelIdleTimeout, {{"on_device_model_idle_timeout", "10s"}});
+
+  auto config = []() {
+    proto::SolutionConfig solution_config;
+    *solution_config.mutable_feature() = SimpleComposeConfig();
+    return solution_config;
+  }();
+
+  ScenarioBuilder(fake_.component_state())
+      .AddBaseModel("model_A")
+      .AddUnsafeSolution("test", "model_A", config)
+      .Finish();
+  fake_.Startup();
+
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> session_future;
+  fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
+                               SessionConfigParams{},
+                               session_future.GetCallback());
+  auto session = session_future.Take();
+  ASSERT_TRUE(session);
+
+  ResponseHolder response;
+  session->ExecuteModel(UserInputRequest("hello"),
+                        response.GetStreamingCallback());
+  ASSERT_TRUE(response.GetFinalStatus());
+  EXPECT_TRUE(fake_.launcher().is_service_running());
+
+  // Destroy the active session so the model remotes become idle.
+  session.reset();
+  task_environment_.FastForwardBy(base::Seconds(9));
+  EXPECT_TRUE(fake_.launcher().is_service_running());
+
+  // Once the 10s idle timeout elapses, the base model unloads and the service
+  // shuts down (instead of waiting for the default 1m timeout).
+  task_environment_.FastForwardBy(base::Seconds(2));
+  EXPECT_FALSE(fake_.launcher().is_service_running());
+}
+
+TEST_F(ManifestSolutionFactoryTest, ExecuteModelWithPostprocessor) {
+  base::test::ScopedFeatureList feature_list{kOnDeviceWebSpeechPolisherModel};
+
+  ScenarioBuilder(fake_.component_state())
+      .AddBaseModel("model_A", FakeBaseModelAsset::Content{.weight = 1})
+      .AddBaseModel("polisher", FakeBaseModelAsset::Content{.weight = 2})
+      .AddPostprocessedModel("postprocessed_A", "model_A", "polisher")
+      .AddUnsafeSolution("test", "postprocessed_A")
+      .Finish();
+  fake_.Startup();
+
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> session_future;
+  fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
+                               SessionConfigParams{},
+                               session_future.GetCallback());
+  auto session = session_future.Take();
+  ASSERT_TRUE(session);
+
+  proto::ExampleForTestingRequest request;
+  request.set_string_value("hello");
+
+  ResponseHolder response;
+  session->ExecuteModel(request, response.GetStreamingCallback());
+  ASSERT_TRUE(response.GetFinalStatus());
+  EXPECT_EQ(*response.value(),
+            "Base model: 1"
+            "Postprocessor model: 2"
+            "hello max:1024"
+            "TopK: 64, Temp: 1");
+}
+
+TEST_F(ManifestSolutionFactoryTest, ResolvesBaseModelForBaseModel) {
+  ScenarioBuilder(fake_.component_state())
+      .AddBaseModel("gemma4_component")
+      .AddUnsafeSolution("test", "gemma4_component")
+      .Finish();
+  fake_.Startup();
+
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> session_future;
+  fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
+                               SessionConfigParams{},
+                               session_future.GetCallback());
+  auto session = session_future.Take();
+  ASSERT_TRUE(session);
+  ASSERT_TRUE(
+      fake_.client().GetSubscriber(mojom::OnDeviceFeature::kTest).client());
+  EXPECT_EQ(fake_.client()
+                .GetSubscriber(mojom::OnDeviceFeature::kTest)
+                .client()
+                ->base_model(),
+            OnDeviceBaseModel::kGemma4);
+}
+
+TEST_F(ManifestSolutionFactoryTest, ResolvesBaseModelUnwrapsAdaptation) {
+  ScenarioBuilder(fake_.component_state())
+      .AddBaseModel("nano_v3_gpu_component")
+      .AddAdaptation("test_adaptation", "nano_v3_gpu_component")
+      .AddUnsafeSolution("test", "test_adaptation")
+      .Finish();
+  fake_.Startup();
+
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> session_future;
+  fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
+                               SessionConfigParams{},
+                               session_future.GetCallback());
+  auto session = session_future.Take();
+  ASSERT_TRUE(session);
+  ASSERT_TRUE(
+      fake_.client().GetSubscriber(mojom::OnDeviceFeature::kTest).client());
+  EXPECT_EQ(fake_.client()
+                .GetSubscriber(mojom::OnDeviceFeature::kTest)
+                .client()
+                ->base_model(),
+            OnDeviceBaseModel::kV3NanoGpu);
+}
+
+TEST_F(ManifestSolutionFactoryTest,
+       ResolvesBaseModelUnwrapsPostprocessedModel) {
+  base::test::ScopedFeatureList feature_list{kOnDeviceWebSpeechPolisherModel};
+
+  ScenarioBuilder(fake_.component_state())
+      .AddBaseModel("speech_recognition_small_expert_model_component",
+                    FakeBaseModelAsset::Content{.weight = 1})
+      .AddBaseModel("polisher", FakeBaseModelAsset::Content{.weight = 2})
+      .AddPostprocessedModel("postprocessed_speech",
+                             "speech_recognition_small_expert_model_component",
+                             "polisher")
+      .AddUnsafeSolution("test", "postprocessed_speech")
+      .Finish();
+  fake_.Startup();
+
+  base::test::TestFuture<ModelBrokerClient::CreateSessionResult> session_future;
+  fake_.client().CreateSession(mojom::OnDeviceFeature::kTest,
+                               SessionConfigParams{},
+                               session_future.GetCallback());
+  auto session = session_future.Take();
+  ASSERT_TRUE(session);
+  ASSERT_TRUE(
+      fake_.client().GetSubscriber(mojom::OnDeviceFeature::kTest).client());
+  EXPECT_EQ(fake_.client()
+                .GetSubscriber(mojom::OnDeviceFeature::kTest)
+                .client()
+                ->base_model(),
+            OnDeviceBaseModel::kSpeechRecognitionSmallExpert);
 }
 
 }  // namespace optimization_guide

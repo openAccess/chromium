@@ -57,10 +57,7 @@ struct CORE_EXPORT GlobalScopeCreationParams final {
       scoped_refptr<WebWorkerFetchContext>,
       Vector<network::mojom::blink::ContentSecurityPolicyPtr>
           outside_content_security_policies,
-      Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-          response_content_security_policies,
       network::mojom::ReferrerPolicy referrer_policy,
-      DocumentPolicy::DocumentPolicyBundle document_policy,
       const SecurityOrigin*,
       bool starter_secure_context,
       HttpsState starter_https_state,
@@ -144,17 +141,8 @@ struct CORE_EXPORT GlobalScopeCreationParams final {
   // filesystem:). Other worker and worklet types leave it empty.
   DocumentPolicy::DocumentPolicyBundle creator_document_policy;
 
-  // This is used only for classic dedicated workers with off-the-main-thread
-  // fetch disabled.
-  //
-  // TODO(https://crbug.com/835717): Remove this after dedicated workers support
-  // off-the-main-thread script fetch by default.
-  Vector<network::mojom::blink::ContentSecurityPolicyPtr>
-      response_content_security_policies;
-
+  // Only for worklets.
   network::mojom::ReferrerPolicy referrer_policy;
-
-  DocumentPolicy::DocumentPolicyBundle document_policy;
 
   // Origin trial features to be inherited by worker/worklet from the document
   // loading it.
@@ -267,6 +255,10 @@ struct CORE_EXPORT GlobalScopeCreationParams final {
   // Timestamp of the dedicated worker start.
   // i.e. when DedicatedWorkerStart() was called.
   std::optional<base::TimeTicks> dedicated_worker_start_time;
+
+  // Initiator URL for the dedicated worker script's ResourceTiming entry.
+  // Shared and service worker scripts have no ResourceTiming entry.
+  KURL dedicated_worker_script_initiator_url;
 
   // The parent ExecutionContext's Storage Access API status.
   const net::StorageAccessApiStatus parent_storage_access_api_status;

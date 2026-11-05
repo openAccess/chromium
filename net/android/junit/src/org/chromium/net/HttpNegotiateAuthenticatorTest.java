@@ -59,9 +59,7 @@ import java.util.List;
 
 /** Robolectric tests for HttpNegotiateAuthenticator */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {HttpNegotiateAuthenticatorTest.ExtendedShadowAccountManager.class})
+@Config(shadows = {HttpNegotiateAuthenticatorTest.ExtendedShadowAccountManager.class})
 public class HttpNegotiateAuthenticatorTest {
     private static final long MOCK_NATIVE_POINTER = 42;
     private static final String MOCK_TOKEN_TYPE = "foo";
@@ -228,7 +226,7 @@ public class HttpNegotiateAuthenticatorTest {
         // Verify that the broadcast receiver is registered
         Intent intent = new Intent(AccountManager.LOGIN_ACCOUNTS_CHANGED_ACTION);
         ShadowApplication shadowApplication =
-                shadowOf((Application) RuntimeEnvironment.application);
+                shadowOf((Application) RuntimeEnvironment.getApplication());
         List<BroadcastReceiver> receivers = shadowApplication.getReceiversForIntent(intent);
         assertWithMessage("There is one registered broadcast receiver")
                 .that(receivers.size())
@@ -236,7 +234,7 @@ public class HttpNegotiateAuthenticatorTest {
 
         // Send the intent to the receiver.
         BroadcastReceiver receiver = receivers.get(0);
-        receiver.onReceive(RuntimeEnvironment.application.getApplicationContext(), intent);
+        receiver.onReceive(RuntimeEnvironment.getApplication().getApplicationContext(), intent);
 
         // Verify that the auth token is properly requested from the account manager.
         verify(sMockAccountManager)

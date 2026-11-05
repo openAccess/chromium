@@ -28,6 +28,10 @@
 #include "content/public/browser/global_routing_id.h"
 #include "google_apis/gaia/gaia_id.h"
 
+#if BUILDFLAG(IS_MAC)
+#include "chrome/browser/webauthn/icloud_recovery.h"
+#endif  // BUILDFLAG(IS_MAC)
+
 namespace base {
 class TickClock;
 class SequencedTaskRunner;
@@ -194,6 +198,9 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
 
   AccountState account_state_for_testing() const;
 
+  // Returns true if a transaction is blocked waiting for CMTG device keys.
+  bool is_waiting_for_cmtg_keys_for_testing() const;
+
   // Returns the ready state of the account.
   AccountReadyState account_ready_state() const;
   // Runs `callback` once the account state is no longer `kLoading` or
@@ -272,11 +279,9 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
   void EnrollICloudRecoveryKey(
       std::unique_ptr<trusted_vault::ICloudRecoveryKey> key);
 
-  // Called when Chrome has retrieved the iCloud recovery keys present in the
-  // current device.
-  void OnICloudKeysRetrievedForRecovery(
-      std::vector<std::unique_ptr<trusted_vault::ICloudRecoveryKey>>
-          local_icloud_keys);
+  // Called when Chrome has attempted recovery using the iCloud recovery keys
+  // present in the current device.
+  void OnICloudKeychainRecoveryComplete(webauthn::ICloudRecoveryResult result);
 #endif  // BUILDFLAG(IS_MAC)
 
   // Called when the enclave enrollment is complete.
@@ -384,6 +389,10 @@ class GPMEnclaveController : public AuthenticatorRequestDialogModel::Observer,
   // The list of iCloud recovery key members known to the security domain
   // service.
   std::vector<trusted_vault::VaultMember> security_domain_icloud_recovery_keys_;
+
+#if BUILDFLAG(IS_MAC)
+  std::unique_ptr<webauthn::ICloudRecovery> icloud_recovery_;
+#endif  // BUILDFLAG(IS_MAC)
 
   // |recovered_with_icloud_keychain_| is true if this controller performed a
   // successful recovery from iCloud keychain. This is reset on OnKeysStored().

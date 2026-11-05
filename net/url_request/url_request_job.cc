@@ -42,6 +42,7 @@
 #include "net/url_request/redirect_info.h"
 #include "net/url_request/redirect_util.h"
 #include "net/url_request/url_request_context.h"
+#include "net/url_request/url_request_http_transaction_factory_override.h"
 
 namespace net {
 
@@ -419,10 +420,8 @@ void URLRequestJob::NotifySSLCertificateError(int net_error,
 bool URLRequestJob::CanSetCookie(
     const net::CanonicalCookie& cookie,
     CookieOptions* options,
-    const net::FirstPartySetMetadata& first_party_set_metadata,
     CookieInclusionStatus* inclusion_status) const {
-  return request_->CanSetCookie(cookie, options, first_party_set_metadata,
-                                inclusion_status);
+  return request_->CanSetCookie(cookie, options, inclusion_status);
 }
 
 void URLRequestJob::NotifyHeadersComplete() {
@@ -766,7 +765,11 @@ void URLRequestJob::RecordBytesRead(int bytes_read) {
   // If prefilter_bytes_read_ is equal to bytes_read, it indicates this is the
   // first raw read of the response body. This is used as the signal that
   // response headers have been received.
-  if (request_->context()->network_quality_estimator()) {
+  // Requests running under simulated network conditions are excluded: their
+  // observations would contaminate the global network-quality estimate.
+  if (request_->context()->network_quality_estimator() &&
+      !HttpTransactionFactoryOverride::DisablesNetworkQualityEstimation(
+          request_)) {
     if (prefilter_bytes_read() == byte_size_read) {
       request_->context()->network_quality_estimator()->NotifyHeadersReceived(
           *request_);

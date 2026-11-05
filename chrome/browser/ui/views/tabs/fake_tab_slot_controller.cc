@@ -7,6 +7,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/tabs/tab_container.h"
 #include "chrome/browser/ui/views/tabs/tab_strip_controller.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "ui/views/view_utils.h"
 
 FakeTabSlotController::FakeTabSlotController(
@@ -124,6 +125,20 @@ bool FakeTabSlotController::IsGroupCollapsed(
 std::optional<tab_groups::TabGroupId> FakeTabSlotController::GetFocusedGroup()
     const {
   return tab_strip_controller_->GetFocusedGroup();
+}
+
+void FakeTabSlotController::EnterFocusMode(
+    const tab_groups::TabGroupId& group) {
+  if (tab_strip_controller_) {
+    tab_strip_controller_->EnterFocusMode(group);
+  }
+}
+
+void FakeTabSlotController::ExitFocusMode(
+    std::optional<TabGroupFocusExitReason> reason) {
+  if (tab_strip_controller_) {
+    tab_strip_controller_->ExitFocusMode(reason);
+  }
 }
 
 SkColor FakeTabSlotController::GetPaintedGroupColor(

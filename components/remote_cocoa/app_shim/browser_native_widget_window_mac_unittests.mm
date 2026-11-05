@@ -22,6 +22,7 @@
 #include "testing/platform_test.h"
 #include "ui/accelerated_widget_mac/ca_transaction_observer.h"
 #include "ui/base/cocoa/window_size_constants.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/display/screen.h"
 #import "ui/gfx/mac/coordinate_conversion.h"
 
@@ -136,6 +137,7 @@ class DummyNativeWidgetNSWindowHost
  private:
   void OnVisibilityChanged(bool visible) override {}
   void OnSpaceActivationChanged(bool is_space_active) override {}
+  void OnWindowOcclusionChanged(bool occluded) override {}
   void OnWindowNativeThemeChanged() override {}
   void OnViewSizeChanged(const gfx::Size& new_size) override {}
   void SetKeyboardAccessible(bool enabled) override {}
@@ -249,14 +251,15 @@ class DummyNativeWidgetNSWindowHost
     std::move(callback).Run(
         remote_cocoa::mojom::ValidateUserInterfaceItemResult::New());
   }
-  void WillExecuteCommand(int32_t command,
-                          WindowOpenDisposition window_open_disposition,
-                          bool is_before_first_responder,
-                          ExecuteCommandCallback callback) override {
+  void WillExecuteCommand(
+      int32_t command,
+      ui::mojom::WindowOpenDisposition window_open_disposition,
+      bool is_before_first_responder,
+      ExecuteCommandCallback callback) override {
     std::move(callback).Run(false);
   }
   void ExecuteCommand(int32_t command,
-                      WindowOpenDisposition window_open_disposition,
+                      ui::mojom::WindowOpenDisposition window_open_disposition,
                       bool is_before_first_responder,
                       ExecuteCommandCallback callback) override {
     std::move(callback).Run(false);
@@ -597,7 +600,8 @@ TEST(NativeWidgetMacNSWindowTest, SetBoundsUpdatesMoveLoopBaseFrame) {
     bridge->SetWindowMoveLoopForTesting(std::move(move_loop));
 
     gfx::Rect new_bounds(500, 300, 600, 400);
-    bridge->SetBounds(new_bounds, gfx::Size(100, 100), std::nullopt);
+    bridge->SetBounds(new_bounds.origin(), new_bounds.size(),
+                      gfx::Size(100, 100), std::nullopt);
 
     EXPECT_EQ(gfx::ScreenRectFromNSRect([window frame]), new_bounds);
     EXPECT_TRUE(NSEqualRects(

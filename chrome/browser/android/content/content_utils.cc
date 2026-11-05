@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/android/device_info.h"
 #include "base/android/jni_string.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/version_info/version_info.h"
@@ -48,13 +49,17 @@ static void JNI_ContentUtils_SetUserAgentOverride(
     // GetUserAgentMetadata() for consistency with the non-override path.
     spoofed_ua.ua_metadata_override->platform_version = std::string();
   }
-  spoofed_ua.ua_metadata_override->model = std::string();
+  if (!base::FeatureList::IsEnabled(blink::features::kAndroidDesktopUAModel) ||
+      !base::android::device_info::is_desktop()) {
+    spoofed_ua.ua_metadata_override->model = std::string();
+  }
   spoofed_ua.ua_metadata_override->mobile = false;
   spoofed_ua.ua_metadata_override->form_factors =
       embedder_support::GetFormFactorsClientHint(metadata, /*is_mobile=*/false);
   // Match the above "CpuInfo" string, which is also the most common Linux
-  // CPU architecture and bitness.`
-  spoofed_ua.ua_metadata_override->architecture = "x86";
+  // CPU architecture and bitness.
+  spoofed_ua.ua_metadata_override->architecture =
+      embedder_support::GetAndroidDesktopCpuArchitecture();
   spoofed_ua.ua_metadata_override->bitness = "64";
   spoofed_ua.ua_metadata_override->wow64 = false;
 

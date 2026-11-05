@@ -38,6 +38,7 @@
 namespace blink {
 
 class ExceptionState;
+class HTMLBRElement;
 class V8SelectionMode;
 class OpaqueRange;
 
@@ -71,7 +72,8 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
 
   void ForwardEvent(Event&);
 
-  void SetFocused(bool, mojom::blink::FocusType) override;
+  using HTMLFormControlElementWithState::SetFocused;
+  void SetFocused(bool, mojom::blink::FocusType, BlurEventBehavior) override;
 
   bool IsRichlyEditableForAccessibility() const override { return false; }
 
@@ -169,7 +171,7 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
   // value), meaning callers have no Text node to anchor geometry to.
   std::pair<Text*, unsigned> ResolveValueOffset(unsigned target) const;
 
-  Node* CreatePlaceholderBreakElement() const;
+  HTMLBRElement* CreatePlaceholderBreakElement() const;
   // Returns true if the specified node was created by
   // CreatePlaceholderBreakElement().
   static bool IsPlaceholderBreakElement(const Node* node);
@@ -192,6 +194,9 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
   // set to WebAutofillState::kNotFilled.
   void SetAutofillValue(const String& value,
                         WebAutofillState = WebAutofillState::kAutofilled);
+
+  void SetAutofillState(
+      WebAutofillState = WebAutofillState::kAutofilled) override;
 
   // A null value indicates that the suggested value should be hidden.
   virtual void SetSuggestedValue(const String& value);
@@ -265,10 +270,13 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
   void RestoreCachedSelection();
 
   void DefaultEventHandler(Event&) override;
+  void NotifyEditableContentChanged() override;
   virtual void SubtreeHasChanged() = 0;
 
   void SetLastChangeWasNotUserEdit() { last_change_was_user_edit_ = false; }
   void AdjustPlaceholderBreakElement();
+  // Updates aria-hidden of the placeholder break element for `value`.
+  void UpdatePlaceholderBreakAriaHidden(const String& value);
   String ValueWithHardLineBreaks() const;
 
   void CloneNonAttributePropertiesFrom(const Element&,
@@ -340,10 +348,6 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
   void ScheduleSelectionchangeEventOnThisOrDocument();
   void DisabledOrReadonlyAttributeChanged(const QualifiedName&);
 
-  // Called in dispatchFocusEvent(), after placeholder process, before calling
-  // parent's dispatchFocusEvent().
-  virtual void HandleFocusEvent(Element* /* oldFocusedNode */,
-                                mojom::blink::FocusType) {}
   // Called in dispatchBlurEvent(), after placeholder process, before calling
   // parent's dispatchBlurEvent().
   virtual void HandleBlurEvent() {}
@@ -373,11 +377,6 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
   // zero-length String. Null String means the field doesn't have any data yet,
   // and zero-length String is a valid data.
   String value_before_first_user_edit_;
-  bool last_change_was_user_edit_;
-
-  unsigned cached_selection_start_;
-  unsigned cached_selection_end_;
-  TextFieldSelectionDirection cached_selection_direction_;
 
   // Value to display in the text element without actually changing its
   // `Value()`. This is introduced to be able to display information on an
@@ -402,6 +401,11 @@ class CORE_EXPORT TextControlElement : public HTMLFormControlElementWithState {
 
   // Holds OpaqueRange instances that observe this text control.
   HeapVector<Member<OpaqueRange>> opaque_ranges_;
+
+  unsigned cached_selection_start_;
+  unsigned cached_selection_end_;
+  TextFieldSelectionDirection cached_selection_direction_;
+  bool last_change_was_user_edit_;
 
   // RAII helper that temporarily skips SetValue()'s automatic OpaqueRange
   // full-value diff for this scope. The flag is restored on destruction.
@@ -468,8 +472,9 @@ DEFINE_TEXT_CONTROL_CASTS(const TextControlElement, const Node);
 template <>
 struct DowncastTraits<TextControlElement> {
   static bool AllowFrom(const Node& node) {
-    return node.HasTagName(html_names::kInputTag) ||
-           node.HasTagName(html_names::kTextareaTag);
+    const ElementType type = node.GetElementType();
+    return type == ElementType::kHTMLInputElement ||
+           type == ElementType::kHTMLTextAreaElement;
   }
 };
 

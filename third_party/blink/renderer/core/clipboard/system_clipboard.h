@@ -23,13 +23,13 @@
 namespace blink {
 
 class DataObject;
+class ExecutionContext;
 class Image;
 class KURL;
-class LocalFrame;
 class ScopedSystemClipboardSnapshot;
 
 // SystemClipboard:
-// - is a LocalFrame bounded object.
+// - is an ExecutionContext bounded object.
 // - provides sanitized, platform-neutral read/write access to the clipboard.
 // - mediates between core classes and mojom::ClipboardHost.
 //
@@ -41,7 +41,7 @@ class CORE_EXPORT SystemClipboard final
  public:
   enum SmartReplaceOption { kCanSmartReplace, kCannotSmartReplace };
 
-  explicit SystemClipboard(LocalFrame* frame);
+  explicit SystemClipboard(ExecutionContext* execution_context);
   SystemClipboard(const SystemClipboard&) = delete;
   SystemClipboard& operator=(const SystemClipboard&) = delete;
 
@@ -210,14 +210,14 @@ class CORE_EXPORT SystemClipboard final
 
    private:
     struct BufferData {
-      std::optional<String> plain_text_;
+      String plain_text_;
 
-      std::optional<String> html_;
+      String html_;
       KURL url_;
       unsigned fragment_start_ = 0;
       unsigned fragment_end_ = 0;
 
-      std::optional<String> rtf_;
+      String rtf_;
 
       std::optional<mojo_base::BigBuffer> png_;
 

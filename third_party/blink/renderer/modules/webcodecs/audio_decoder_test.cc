@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/modules/webcodecs/audio_decoder.h"
 
+#include <string_view>
+
 #include "media/base/audio_codecs.h"
 #include "media/base/supported_types.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -12,6 +14,8 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_decoder_config.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_decoder_support.h"
+#include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
+#include "third_party/blink/renderer/modules/webcodecs/array_buffer_util.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
@@ -74,6 +78,118 @@ TEST_F(AudioDecoderTest, IsConfigSupported_Invalid) {
   auto* support = ToAudioDecoderSupport(&scope, tester.Value());
   ASSERT_TRUE(support);
   EXPECT_FALSE(support->supported());
+}
+
+TEST_F(AudioDecoderTest, IsConfigSupported_Opus_Non48k) {
+  V8TestingScope scope;
+  auto* config = AudioDecoderConfig::Create();
+  config->setCodec("opus");
+  config->setNumberOfChannels(2);
+  config->setSampleRate(44100);
+
+  ScriptPromise promise = AudioDecoder::isConfigSupported(
+      scope.GetScriptState(), config, scope.GetExceptionState());
+  ASSERT_FALSE(scope.GetExceptionState().HadException());
+
+  ScriptPromiseTester tester(scope.GetScriptState(), promise);
+  tester.WaitUntilSettled();
+  ASSERT_TRUE(tester.IsFulfilled());
+
+  auto* support = ToAudioDecoderSupport(&scope, tester.Value());
+  ASSERT_TRUE(support);
+  EXPECT_TRUE(support->supported());
+}
+
+TEST_F(AudioDecoderTest, IsConfigSupported_WithoutDescription) {
+  V8TestingScope scope;
+
+  struct TestCase {
+    const char* codec;
+    uint32_t channels;
+  };
+  constexpr uint32_t kSampleRate = 48000;
+  constexpr TestCase kTestCases[] = {
+      {"flac", 2},
+      {"vorbis", 2},
+      {"opus", 6},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.codec);
+    auto* config = AudioDecoderConfig::Create();
+    config->setCodec(test_case.codec);
+    config->setNumberOfChannels(test_case.channels);
+    config->setSampleRate(kSampleRate);
+
+    ScriptPromise<AudioDecoderSupport> promise =
+        AudioDecoder::isConfigSupported(scope.GetScriptState(), config,
+                                        scope.GetExceptionState());
+    ASSERT_FALSE(scope.GetExceptionState().HadException());
+
+    ScriptPromiseTester tester(scope.GetScriptState(), promise);
+    tester.WaitUntilSettled();
+    ASSERT_TRUE(tester.IsFulfilled());
+
+    auto* support = ToAudioDecoderSupport(&scope, tester.Value());
+    ASSERT_TRUE(support);
+    EXPECT_TRUE(support->supported());
+
+    // `MakeMediaAudioDecoderConfig()` (used during `configure()`) should still
+    // reject missing descriptions for these configurations.
+    String js_error_message;
+    EXPECT_FALSE(
+        AudioDecoder::MakeMediaAudioDecoderConfig(*config, &js_error_message)
+            .has_value());
+    EXPECT_FALSE(js_error_message.empty());
+  }
+}
+
+TEST_F(AudioDecoderTest, MakeMediaAudioDecoderConfig_InvalidDescriptions) {
+  V8TestingScope scope;
+  constexpr uint32_t kSampleRate = 48000;
+
+  // Empty description for FLAC, Vorbis, or Opus (mono/stereo and multi-channel)
+  // should be rejected.
+  struct EmptyDescTestCase {
+    std::string_view codec;
+    uint32_t channels;
+  };
+  constexpr EmptyDescTestCase kEmptyDescTestCases[] = {
+      {"flac", 2},
+      {"vorbis", 2},
+      {"opus", 2},
+      {"opus", 6},
+  };
+  for (const auto& test_case : kEmptyDescTestCases) {
+    auto* config = AudioDecoderConfig::Create();
+    config->setCodec(String(test_case.codec));
+    config->setNumberOfChannels(test_case.channels);
+    config->setSampleRate(kSampleRate);
+    config->setDescription(MakeGarbageCollected<AllowSharedBufferSource>(
+        DOMArrayBuffer::Create(static_cast<size_t>(0), 1)));
+
+    String js_error_message;
+    EXPECT_FALSE(
+        AudioDecoder::MakeMediaAudioDecoderConfig(*config, &js_error_message)
+            .has_value());
+    EXPECT_FALSE(js_error_message.empty());
+  }
+
+  // Non-empty Opus descriptions shorter than 19 bytes should be rejected.
+  {
+    auto* config = AudioDecoderConfig::Create();
+    config->setCodec("opus");
+    config->setNumberOfChannels(2);
+    config->setSampleRate(kSampleRate);
+    config->setDescription(MakeGarbageCollected<AllowSharedBufferSource>(
+        DOMArrayBuffer::Create(static_cast<size_t>(10), 1)));
+
+    String js_error_message;
+    EXPECT_FALSE(
+        AudioDecoder::MakeMediaAudioDecoderConfig(*config, &js_error_message)
+            .has_value());
+    EXPECT_FALSE(js_error_message.empty());
+  }
 }
 
 }  // namespace blink

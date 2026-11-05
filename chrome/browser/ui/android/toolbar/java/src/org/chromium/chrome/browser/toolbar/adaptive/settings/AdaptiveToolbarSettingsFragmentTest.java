@@ -8,7 +8,11 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.preferences.ChromePreferenceKeys.ADAPTIVE_TOOLBAR_CUSTOMIZATION_ENABLED;
@@ -21,7 +25,6 @@ import android.view.View;
 import androidx.fragment.app.Fragment;
 import androidx.fragment.app.FragmentFactory;
 import androidx.fragment.app.testing.FragmentScenario;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -32,7 +35,9 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.glic.GlicEnabling;
@@ -49,6 +54,7 @@ import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarPrefs;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarStatePredictor;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
+import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.browser_ui.widget.RadioButtonWithDescription;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.search_engines.TemplateUrlService;
@@ -66,6 +72,7 @@ public class AdaptiveToolbarSettingsFragmentTest {
     @Mock private PrefService mPrefService;
     @Mock private TemplateUrlService mTemplateUrlService;
     @Mock private GlicEnabling.Natives mGlicEnablingNatives;
+    @Mock private SettingsIndexData mIndexData;
 
     private ChromeSwitchPreference mSwitchPreference;
     private RadioButtonGroupAdaptiveToolbarPreference mRadioPreference;
@@ -101,7 +108,6 @@ public class AdaptiveToolbarSettingsFragmentTest {
     }
 
     @Test
-    @SmallTest
     public void testSelectShortcuts() {
         FragmentScenario<AdaptiveToolbarSettingsFragment> scenario = buildFragmentScenario();
         scenario.onFragment(
@@ -209,7 +215,6 @@ public class AdaptiveToolbarSettingsFragmentTest {
     }
 
     @Test
-    @SmallTest
     public void testReadAloudOption_Enabled() {
         FragmentScenario<AdaptiveToolbarSettingsFragment> scenario = buildFragmentScenario();
         scenario.onFragment(
@@ -239,7 +244,6 @@ public class AdaptiveToolbarSettingsFragmentTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.GLIC)
     public void testGlicOption_Enabled() {
         FragmentScenario<AdaptiveToolbarSettingsFragment> scenario = buildFragmentScenario();
@@ -269,7 +273,6 @@ public class AdaptiveToolbarSettingsFragmentTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({ChromeFeatureList.ANDROID_BOTTOM_BAR, ChromeFeatureList.GLIC})
     public void testOptionsHiddenWithBottomBar() {
         FragmentScenario<AdaptiveToolbarSettingsFragment> scenario = buildFragmentScenario();
@@ -292,7 +295,6 @@ public class AdaptiveToolbarSettingsFragmentTest {
     }
 
     @Test
-    @SmallTest
     public void testTranslateOption_Disabled() {
         // Disable translate.
         doReturn(true).when(mPrefService).isManagedPreference(Pref.OFFER_TRANSLATE_ENABLED);
@@ -312,6 +314,76 @@ public class AdaptiveToolbarSettingsFragmentTest {
                             View.GONE,
                             getButton(AdaptiveToolbarButtonVariant.TRANSLATE).getVisibility());
                 });
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testTitleAndSearchIndex_WhenMoveToolbarSettingsToAppearanceEnabled() {
+        FragmentScenario<AdaptiveToolbarSettingsFragment> scenario = buildFragmentScenario();
+        scenario.onFragment(
+                fragment -> {
+                    String expectedTitle = fragment.getString(R.string.address_bar_shortcut);
+                    assertEquals(expectedTitle, fragment.getPageTitle().get());
+                    mSwitchPreference =
+                            fragment.findPreference(
+                                    AdaptiveToolbarSettingsFragment.PREF_TOOLBAR_SHORTCUT_SWITCH);
+                    assertEquals(expectedTitle, mSwitchPreference.getTitle());
+                });
+
+        AdaptiveToolbarSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                ContextUtils.getApplicationContext(), mIndexData);
+        verify(mIndexData)
+                .updateEntryForKey(
+                        AdaptiveToolbarSettingsFragment.class.getName(),
+                        AdaptiveToolbarSettingsFragment.PREF_TOOLBAR_SHORTCUT_SWITCH,
+                        R.string.address_bar_shortcut);
+    }
+
+    @Test
+    @EnableFeatures(
+            ChromeFeatureList.ANDROID_BOTTOM_BAR + ":move_toolbar_settings_to_appearance/false")
+    public void testTitleAndSearchIndex_WhenMoveToolbarSettingsToAppearanceDisabled() {
+        FragmentScenario<AdaptiveToolbarSettingsFragment> scenario = buildFragmentScenario();
+        scenario.onFragment(
+                fragment -> {
+                    String expectedTitle = fragment.getString(R.string.toolbar_shortcut);
+                    assertEquals(expectedTitle, fragment.getPageTitle().get());
+                    mSwitchPreference =
+                            fragment.findPreference(
+                                    AdaptiveToolbarSettingsFragment.PREF_TOOLBAR_SHORTCUT_SWITCH);
+                    assertEquals(expectedTitle, mSwitchPreference.getTitle());
+                });
+
+        AdaptiveToolbarSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                ContextUtils.getApplicationContext(), mIndexData);
+        verify(mIndexData, never())
+                .updateEntryForKey(
+                        eq(AdaptiveToolbarSettingsFragment.class.getName()),
+                        eq(AdaptiveToolbarSettingsFragment.PREF_TOOLBAR_SHORTCUT_SWITCH),
+                        anyInt());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testTitleAndSearchIndex_WhenBottomBarDisabled() {
+        FragmentScenario<AdaptiveToolbarSettingsFragment> scenario = buildFragmentScenario();
+        scenario.onFragment(
+                fragment -> {
+                    String expectedTitle = fragment.getString(R.string.toolbar_shortcut);
+                    assertEquals(expectedTitle, fragment.getPageTitle().get());
+                    mSwitchPreference =
+                            fragment.findPreference(
+                                    AdaptiveToolbarSettingsFragment.PREF_TOOLBAR_SHORTCUT_SWITCH);
+                    assertEquals(expectedTitle, mSwitchPreference.getTitle());
+                });
+
+        AdaptiveToolbarSettingsFragment.SEARCH_INDEX_DATA_PROVIDER.updateDynamicPreferences(
+                ContextUtils.getApplicationContext(), mIndexData);
+        verify(mIndexData, never())
+                .updateEntryForKey(
+                        eq(AdaptiveToolbarSettingsFragment.class.getName()),
+                        eq(AdaptiveToolbarSettingsFragment.PREF_TOOLBAR_SHORTCUT_SWITCH),
+                        anyInt());
     }
 
     private RadioButtonWithDescription getButton(@AdaptiveToolbarButtonVariant int type) {

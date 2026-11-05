@@ -25,9 +25,10 @@ include_rules = [
   "+media/formats",
   "+media/media_buildflags.h",
   "+media/mojo/mojom",
-  "+media/renderers/paint_canvas_video_renderer.h",
+  "+media/gfx/paint_canvas_video_renderer.h",
   "+net/base/data_url.h",
   "+net/base/net_errors.h",
+  "+net/base/url_util.h",
   "+net/http/http_byte_range.h",
   "+net/http/http_version.h",
   "+net/url_request/url_request_job.h",
@@ -39,6 +40,7 @@ include_rules = [
   "+third_party/blink/renderer/platform/scheduler/public",
   "+third_party/blink/renderer/platform/weborigin",
   "+third_party/blink/renderer/platform/wtf",
+  "+third_party/blink/renderer/platform/heap",
 ]
 
 specific_include_rules = {

@@ -33,13 +33,11 @@
 #include "remoting/host/file_transfer/ipc_file_operations.h"
 #include "remoting/host/mojom/chromoting_host_services.mojom.h"
 #include "remoting/host/mojom/desktop_session.mojom.h"
-#include "remoting/host/mojom/remoting_mojom_traits.h"
 #include "remoting/host/remote_open_url/url_forwarder_configurator.h"
 #include "remoting/host/webauthn/remote_webauthn_state_change_notifier.h"
 #include "remoting/proto/control.pb.h"
 #include "remoting/proto/coordinates.pb.h"
 #include "remoting/proto/event.pb.h"
-#include "remoting/proto/url_forwarder_control.pb.h"
 #include "remoting/protocol/audio_sample_info.h"
 #include "remoting/protocol/clipboard_stub.h"
 #include "remoting/protocol/desktop_capturer.h"
@@ -130,10 +128,10 @@ class DesktopSessionProxy
   void DetachFromDesktop();
 
   // Registers `audio_capturer` to receive captured audio packets. This method
-  // is called on the audio sequence where `audio_capturer` is bound, and will
-  // also record the current sequence task runner as the audio task runner.
-  // `audio_capturer_` must only be accessed from the audio sequence.
-  void SetAudioCapturer(const base::WeakPtr<IpcAudioCapturer>& audio_capturer);
+  // is called on the audio sequence where `audio_capturer` is bound, and posts
+  // a task to `main_task_runner_` to record the capturer and the current
+  // sequence task runner.
+  void SetAudioCapturer(base::WeakPtr<IpcAudioCapturer> audio_capturer);
 
   // Stores |mouse_cursor_monitor| to be used to post mouse cursor changes.
   void SetMouseCursorMonitor(
@@ -254,18 +252,18 @@ class DesktopSessionProxy
   //     is called back.
   //   - background I/O is served on `io_task_runner_`.
   scoped_refptr<base::SequencedTaskRunner> main_task_runner_;
-  scoped_refptr<base::SequencedTaskRunner> audio_capture_task_runner_;
+  scoped_refptr<base::SequencedTaskRunner> audio_capture_task_runner_
+      GUARDED_BY_CONTEXT(sequence_checker_);
   scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
   scoped_refptr<base::SingleThreadTaskRunner> ipc_task_runner_;
 
   // Points to the audio capturer receiving captured audio packets. This is
-  // registered by `IpcAudioCapturer::Start()` calling
-  // `SetAudioCapturer()` on `audio_capture_task_runner_`.
-  // When IPC audio packets arrive from the desktop process on
-  // `main_task_runner_` in `OnAudioPacket()`, this class hops sequences by
-  // posting a task to `audio_capture_task_runner_`, where `audio_capturer_`
-  // is dereferenced safely on its native sequence.
-  base::WeakPtr<IpcAudioCapturer> audio_capturer_;
+  // registered on `main_task_runner_` by a task posted from
+  // `SetAudioCapturer()`. It is never dereferenced on `main_task_runner_`, and
+  // is only copied into `base::BindOnce()` to be invoked on
+  // `audio_capture_task_runner_`.
+  base::WeakPtr<IpcAudioCapturer> audio_capturer_
+      GUARDED_BY_CONTEXT(sequence_checker_);
 
   // Points to the client stub passed to StartInputInjector().
   std::unique_ptr<protocol::ClipboardStub> client_clipboard_
@@ -354,12 +352,6 @@ class DesktopSessionProxy
   mojom::UrlForwarderState current_url_forwarder_state_ GUARDED_BY_CONTEXT(
       sequence_checker_) = mojom::UrlForwarderState::kUnknown;
 
-  // Whether the host cursor is rendered by the client.
-  // TODO: crbug.com/455622961 - Remove this once the clientRenderedHostCursor
-  // experiment is fully rolled out, where this is always set to true.
-  bool host_cursor_rendered_by_client_ GUARDED_BY_CONTEXT(sequence_checker_) =
-      false;
-
   // Boolean to ensure desktop_session_control_->StartAudioInjector() is
   // called when StartAudioInjector() is called before
   // `desktop_session_control_` is bound.
@@ -372,9 +364,9 @@ class DesktopSessionProxy
   base::OnceCallback<void(bool)> pending_audio_format_ack_callback_
       GUARDED_BY_CONTEXT(sequence_checker_);
 
-  void SetAudioCaptureTaskRunner(
+  void SetAudioCapturerOnMainSequence(
+      base::WeakPtr<IpcAudioCapturer> audio_capturer,
       scoped_refptr<base::SequencedTaskRunner> audio_capture_task_runner);
-  void DispatchAudioPacketOnAudioSequence(std::unique_ptr<AudioPacket> packet);
 
   SEQUENCE_CHECKER(sequence_checker_);
 };

@@ -59,6 +59,8 @@
 #include "chromeos/components/mgs/managed_guest_session_utils.h"
 #include "components/embedder_support/user_agent_utils.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
@@ -329,10 +331,11 @@ void ShowContactAdminDialog() {
 void SharePathIfRequired(ConvertToContentUrlsAndShareCallback callback,
                          const std::vector<GURL>& content_urls,
                          const std::vector<base::FilePath>& paths_to_share) {
-  DCHECK(arc::IsArcVmEnabled() || paths_to_share.empty());
+  CHECK(arc::IsArcVmEnabled() || paths_to_share.empty(),
+        base::NotFatalUntil::M160);
   std::vector<base::FilePath> path_list;
   Profile* const profile = ProfileManager::GetPrimaryUserProfile();
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
   for (const auto& path : paths_to_share) {
     if (!guest_os::GuestOsSharePathFactory::GetForProfile(profile)
              ->IsPathShared(kArcVmName, path)) {
@@ -517,7 +520,7 @@ bool IsArcPlayStoreEnabledPreferenceManagedForProfile(const Profile* profile) {
 }
 
 bool SetArcPlayStoreEnabledForProfile(Profile* profile, bool enabled) {
-  DCHECK(IsArcAllowedForProfile(profile));
+  CHECK(IsArcAllowedForProfile(profile), base::NotFatalUntil::M160);
   if (IsArcPlayStoreEnabledPreferenceManagedForProfile(profile)) {
     if (enabled && !IsArcPlayStoreEnabledForProfile(profile)) {
       LOG(WARNING) << "Attempt to enable disabled by policy ARC.";
@@ -584,10 +587,13 @@ bool IsArcOobeOptInActive() {
   // ARC OOBE opt-in will only be active if the user did not complete the
   // onboarding flow yet. The OnboardingCompletedVersion preference will only be
   // saved after the onboarding flow is completed.
-  AccountId account_id =
-      user_manager::UserManager::Get()->GetActiveUser()->GetAccountId();
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session);
   user_manager::KnownUser known_user(g_browser_process->local_state());
-  return !known_user.GetOnboardingCompletedVersion(account_id).has_value();
+  return !known_user.GetOnboardingCompletedVersion(active_session->account_id())
+              .has_value();
 }
 
 bool IsArcOobeOptInConfigurationBased() {
@@ -614,7 +620,7 @@ bool IsArcOobeOptInConfigurationBased() {
 }
 
 bool IsArcTermsOfServiceNegotiationNeeded(const Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
   // Don't show in session ARC OptIn dialog for managed user.
   // For more info see crbug.com/40621882.
   // Skip to show UI asking users to set up ARC OptIn preferences, if all of
@@ -702,7 +708,7 @@ void UpdateArcFileSystemCompatibilityPrefIfNeeded(
     const AccountId& account_id,
     const base::FilePath& profile_path,
     base::OnceClosure callback) {
-  DCHECK(callback);
+  CHECK(callback, base::NotFatalUntil::M160);
 
   // If ARC is not available, skip the check.
   // This shortcut is just for marginally improving the log-in performance on
@@ -731,8 +737,8 @@ void UpdateArcFileSystemCompatibilityPrefIfNeeded(
 }
 
 ArcManagementTransition GetManagementTransition(const Profile* profile) {
-  DCHECK(profile);
-  DCHECK(profile->GetPrefs());
+  CHECK(profile, base::NotFatalUntil::M160);
+  CHECK(profile->GetPrefs(), base::NotFatalUntil::M160);
 
   const ArcManagementTransition management_transition =
       static_cast<ArcManagementTransition>(
@@ -772,7 +778,7 @@ aura::Window* GetArcWindow(int32_t task_id) {
 std::unique_ptr<content::WebContents> CreateArcCustomTabWebContents(
     Profile* profile,
     const GURL& url) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   scoped_refptr<content::SiteInstance> site_instance =
       tab_util::GetSiteInstanceForNewTab(profile, url);

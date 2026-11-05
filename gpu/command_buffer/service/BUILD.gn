@@ -11,7 +11,6 @@ import("//ui/gl/features.gni")
 
 config("implementation") {
   defines = [ "GPU_COMMAND_BUFFER_SERVICE_IMPLEMENTATION" ]
-  configs = [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 component("service") {
@@ -31,6 +30,7 @@ if (is_component_build) {
 } else {
   link_target_type = "static_library"
 }
+
 source_set("service_sources") {
   # External code should depend on this via //gpu/command_buffer/service above
   # rather than depending on this directly or the component build will break.
@@ -72,7 +72,7 @@ source_set("service_sources") {
   configs += [
     "//build/config:precompiled_headers",
     ":implementation",
-    "//third_party/khronos:khronos_headers",
+    "//gpu:gl_headers",
   ]
 
   public_deps = [
@@ -250,6 +250,8 @@ target(link_target_type, "gles2_sources") {
     "shared_image/egl_image_backing.h",
     "shared_image/egl_image_backing_factory.cc",
     "shared_image/egl_image_backing_factory.h",
+    "shared_image/end_access_state.cc",
+    "shared_image/end_access_state.h",
     "shared_image/gl_common_image_backing_factory.cc",
     "shared_image/gl_common_image_backing_factory.h",
     "shared_image/gl_repack_utils.cc",
@@ -262,10 +264,6 @@ target(link_target_type, "gles2_sources") {
     "shared_image/gl_texture_image_backing_factory.h",
     "shared_image/gl_texture_passthrough_fallback_image_representation.cc",
     "shared_image/gl_texture_passthrough_fallback_image_representation.h",
-    "shared_image/raw_draw_image_backing.cc",
-    "shared_image/raw_draw_image_backing.h",
-    "shared_image/raw_draw_image_backing_factory.cc",
-    "shared_image/raw_draw_image_backing_factory.h",
     "shared_image/shared_image_backing.cc",
     "shared_image/shared_image_backing.h",
     "shared_image/shared_image_backing_factory.cc",
@@ -360,7 +358,7 @@ target(link_target_type, "gles2_sources") {
     "//gpu:gpu_gles2_implementation",
     "//gpu:raster_implementation",
     "//gpu:webgpu_implementation",
-    "//third_party/khronos:khronos_headers",
+    "//gpu:gl_headers",
   ]
 
   # This target pulls in angle headers that can't be built with this
@@ -438,10 +436,7 @@ target(link_target_type, "gles2_sources") {
   }
 
   if (enable_vulkan) {
-    deps += [
-      "//components/viz/common:vulkan_context_provider",
-      "//gpu/vulkan",
-    ]
+    deps += [ "//gpu/vulkan" ]
 
     sources += [
       "shared_image/angle_vulkan_image_backing.cc",
@@ -450,9 +445,12 @@ target(link_target_type, "gles2_sources") {
       "shared_image/angle_vulkan_image_backing_factory.h",
       "shared_image/texture_holder_vk.cc",
       "shared_image/texture_holder_vk.h",
+      "vulkan_context_provider.h",
+      "vulkan_in_process_context_provider.cc",
+      "vulkan_in_process_context_provider.h",
     ]
 
-    if (is_linux || is_fuchsia || is_win) {
+    if (is_linux || is_fuchsia) {
       sources += [
         "external_semaphore.cc",
         "external_semaphore.h",
@@ -526,7 +524,6 @@ target(link_target_type, "gles2_sources") {
       "shared_image/iosurface_image_backing.mm",
       "shared_image/iosurface_image_backing_factory.h",
       "shared_image/iosurface_image_backing_factory.mm",
-      "shared_image/shared_image_format_service_utils_mac.mm",
     ]
 
     # Do not compile with ARC because Dawn is not (yet) compatible with being
@@ -599,6 +596,12 @@ target(link_target_type, "gles2_sources") {
       "texture_owner.cc",
       "texture_owner.h",
     ]
+    if (skia_use_graphite_vulkan) {
+      sources += [
+        "shared_image/skia_graphite_vk_android_image_representation.cc",
+        "shared_image/skia_graphite_vk_android_image_representation.h",
+      ]
+    }
 
     # For AImageReader.
     libs = [ "mediandk" ]
@@ -632,6 +635,7 @@ target(link_target_type, "gles2_sources") {
       "dxgi_shared_handle_manager.h",
       "shared_image/d3d11_image_same_adapter_copy_strategy.cc",
       "shared_image/d3d11_image_same_adapter_copy_strategy.h",
+      "shared_image/d3d_access_object.h",
       "shared_image/d3d_image_backing.cc",
       "shared_image/d3d_image_backing.h",
       "shared_image/d3d_image_backing_factory.cc",

@@ -109,7 +109,7 @@ String ExceptionMessages::FailedToConvertJSValue(const char* type) {
 
 String ExceptionMessages::FailedToConstruct(const char* type,
                                             const String& detail) {
-  String type_string = String(type);
+  StringView type_string = type;
   if (type_string.empty()) {
     return detail;
   }
@@ -205,55 +205,30 @@ String ExceptionMessages::FailedToDeleteNamed(const String& property,
                  "': ", detail});
 }
 
-String ExceptionMessages::ConstructorNotCallableAsFunction(const char* type) {
-  return FailedToConstruct(type,
-                           "Please use the 'new' operator, this DOM object "
-                           "constructor cannot be called as a function.");
-}
-
 String ExceptionMessages::ConstructorCalledAsFunction() {
   return (
       "Please use the 'new' operator, this DOM object constructor cannot "
       "be called as a function.");
 }
 
-String ExceptionMessages::IncorrectPropertyType(const String& property,
-                                                const String& detail) {
-  return StrCat({"The '", property, "' property ", detail});
-}
-
-String ExceptionMessages::InvalidArity(const char* expected,
-                                       unsigned provided) {
-  return StrCat({"Valid arities are: ", expected, ", but ",
-                 String::Number(provided), " arguments provided."});
-}
-
 String ExceptionMessages::ArgumentNullOrIncorrectType(
     int argument_index,
     const String& expected_type) {
-  return StrCat({"The ", OrdinalNumber(argument_index),
-                 " argument provided is either null, or an invalid ",
-                 expected_type, " object."});
+  return Format(
+      "The {} argument provided is either null, or an invalid {} object.",
+      OrdinalNumber(argument_index), expected_type);
 }
 
 String ExceptionMessages::ArgumentNotOfType(int argument_index,
                                             const char* expected_type) {
-  return StrCat({"parameter ", String::Number(argument_index + 1),
-                 " is not of type '", expected_type, "'."});
-}
-
-String ExceptionMessages::NotASequenceTypeProperty(
-    const String& property_name) {
-  return StrCat(
-      {"'", property_name,
-       "' property is neither an array, nor does it have indexed properties."});
+  return Format("parameter {} is not of type '{}'.", argument_index + 1,
+                expected_type);
 }
 
 String ExceptionMessages::NotEnoughArguments(unsigned expected,
                                              unsigned provided) {
-  return StrCat({String::Number(expected), " argument", expected > 1 ? "s" : "",
-                 " required, but only ", String::Number(provided),
-                 " present."});
+  return Format("{} argument{} required, but only {} present.", expected,
+                expected > 1 ? "s" : "", provided);
 }
 
 String ExceptionMessages::NotAFiniteNumber(double value, const char* name) {

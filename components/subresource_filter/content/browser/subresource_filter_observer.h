@@ -5,7 +5,7 @@
 #ifndef COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_SUBRESOURCE_FILTER_OBSERVER_H_
 #define COMPONENTS_SUBRESOURCE_FILTER_CONTENT_BROWSER_SUBRESOURCE_FILTER_OBSERVER_H_
 
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/subresource_filter/content/browser/subresource_filter_safe_browsing_client.h"
 #include "components/subresource_filter/core/common/activation_decision.h"
 #include "components/subresource_filter/core/common/load_policy.h"
@@ -61,12 +61,10 @@ class SubresourceFilterObserver {
       content::NavigationHandle* navigation_handle,
       LoadPolicy load_policy) {}
 
-  // Called when a frame is tagged or untagged as an ad, along with the frame's
-  // current status as an ad frame and the evidence which resulted in the
-  // change. This will be called prior to commit time in the case of an initial
-  // synchronous load or at ReadyToCommitNavigation otherwise.
-  virtual void OnIsAdFrameChanged(content::RenderFrameHost* render_frame_host,
-                                  bool is_ad_frame) {}
+  // Called when a frame is tagged as an ad. This will be called prior to commit
+  // time in the case of an initial synchronous load or at
+  // ReadyToCommitNavigation otherwise.
+  virtual void OnFrameTaggedAsAd(content::RenderFrameHost* render_frame_host) {}
 };
 
 }  // namespace subresource_filter

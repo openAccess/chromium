@@ -4,6 +4,7 @@
 
 #include "components/safe_browsing/core/common/visual_utils.h"
 
+#include <algorithm>
 #include <unordered_map>
 #include <vector>
 
@@ -102,9 +103,22 @@ bool GetBlurredImage(const SkBitmap& image,
   // average to be consistent with the backend.
   // TODO(drubery): Investigate whether this is necessary for performance or
   // not.
-  SkBitmap downsampled = skia::ImageOperations::Resize(
-      image, skia::ImageOperations::RESIZE_GOOD, GetPHashDownsampleWidth(),
-      GetPHashDownsampleHeight());
+  SkBitmap downsampled;
+  if (image.width() == GetPHashDownsampleWidth() &&
+      image.height() == GetPHashDownsampleHeight()) {
+    // If the input bitmap has already been pre-downscaled to the target pHash
+    // dimensions (e.g. via `GetBitmapForVisualFeatures()` on iOS), bypass
+    // `skia::ImageOperations::Resize()` to avoid redundant software scaling
+    // overhead.
+    downsampled = image;
+  } else {
+    // If the dimensions do not match exactly (e.g. on non-iOS platforms, where
+    // the caller passes through the full-resolution bitmap), fall back to
+    // resizing here.
+    downsampled = skia::ImageOperations::Resize(
+        image, skia::ImageOperations::RESIZE_GOOD, GetPHashDownsampleWidth(),
+        GetPHashDownsampleHeight());
+  }
 
   std::unique_ptr<SkBitmap> blurred =
       BlockMeanAverage(downsampled, kPHashBlockSize);
@@ -234,16 +248,30 @@ CanExtractVisualFeaturesResult CanExtractVisualFeatures(bool is_user_opted_in,
   return CanExtractVisualFeaturesResult::kCanExtractVisualFeatures;
 }
 
-std::unique_ptr<VisualFeatures> ExtractVisualFeatures(const gfx::Image& image) {
-  auto features = std::make_unique<VisualFeatures>();
-  GetBlurredImage(image.AsBitmap(), features->mutable_image());
-  return features;
+SkBitmap GetBitmapForVisualFeatures(const gfx::Image& image) {
+#if BUILDFLAG(IS_IOS)
+  if (image.IsEmpty() || image.Size().IsEmpty()) {
+    return SkBitmap();
+  }
+
+  // Resize the image directly to the target pHash pixel dimensions.
+  //
+  // `gfx::ResizedImage(...).AsBitmap()` is deliberately not used here:
+  // `AsBitmap()` upsamples by the maximum supported resource scale factor, so
+  // that pattern requires pre-dividing the target dimensions by the same
+  // factor. The shrink and the upsample cancel out dimensionally, but the image
+  // ends up rendered at only 1/scale of the pHash resolution and the
+  // interpolated upsample bleeds detail across `kPHashBlockSize` boundaries.
+  return GetResizedImageAsSkBitmap(
+      image, gfx::Size(GetPHashDownsampleWidth(), GetPHashDownsampleHeight()));
+#else
+  return image.AsBitmap();
+#endif
 }
 
-std::unique_ptr<VisualFeatures> ExtractVisualFeatures(
-    const SkBitmap& screenshot) {
+std::unique_ptr<VisualFeatures> ExtractVisualFeatures(const SkBitmap& bitmap) {
   auto features = std::make_unique<VisualFeatures>();
-  GetBlurredImage(screenshot, features->mutable_image());
+  GetBlurredImage(bitmap, features->mutable_image());
   return features;
 }
 

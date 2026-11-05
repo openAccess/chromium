@@ -29,7 +29,6 @@
 #include "gpu/ipc/host/gpu_disk_cache.h"
 #include "gpu/webgpu/dawn_commit_hash.h"
 #include "mojo/public/cpp/bindings/sync_call_restrictions.h"
-#include "services/webnn/host/weights_file_provider.h"
 #include "skia/buildflags.h"
 #include "skia/ext/skia_commit_hash.h"
 #include "ui/gfx/font_render_params.h"
@@ -39,9 +38,6 @@
 #endif
 
 #if BUILDFLAG(IS_WIN)
-#include "services/webnn/host/execution_provider_initializer.h"
-#include "services/webnn/public/cpp/context_properties.h"
-#include "services/webnn/public/cpp/ep_device_info.h"
 #include "ui/gfx/win/rendering_window_manager.h"
 #elif BUILDFLAG(IS_MAC)
 #include "ui/accelerated_widget_mac/window_resize_helper_mac.h"
@@ -296,16 +292,13 @@ void GpuHostImpl::ConnectFrameSinkManager(
 
 void GpuHostImpl::EstablishGpuChannel(int client_id,
                                       uint64_t client_tracing_id,
-                                      bool is_gpu_host,
-                                      bool enable_extra_handles_validation,
+                                      mojom::GpuClientType client_type,
                                       bool sync,
                                       mojo::ScopedMessagePipeHandle handle,
                                       EstablishChannelCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   TRACE_EVENT2("gpu", "GpuHostImpl::EstablishGpuChannel", "client_id",
-               client_id, "is_gpu_host", is_gpu_host);
-  DCHECK(!(is_gpu_host && enable_extra_handles_validation));
-
+               client_id, "client_type", client_type);
   shutdown_timeout_.Stop();
 
   if (gpu::IsReservedClientId(client_id)) {
@@ -327,22 +320,20 @@ void GpuHostImpl::EstablishGpuChannel(int client_id,
     {
       mojo::SyncCallRestrictions::ScopedAllowSyncCall scoped_allow;
       gpu_service_remote_->EstablishGpuChannel(
-          client_id, client_tracing_id, is_gpu_host,
-          enable_extra_handles_validation, std::move(handle), &success,
-          &gpu_info, &gpu_feature_info, &shared_image_capabilities);
+          client_id, client_tracing_id, client_type, std::move(handle),
+          &success, &gpu_info, &gpu_feature_info, &shared_image_capabilities);
     }
     OnChannelEstablished(client_id, /*sync=*/true, /*success=*/success,
                          gpu_info, gpu_feature_info, shared_image_capabilities);
   } else {
     gpu_service_remote_->EstablishGpuChannel(
-        client_id, client_tracing_id, is_gpu_host,
-        enable_extra_handles_validation, std::move(handle),
+        client_id, client_tracing_id, client_type, std::move(handle),
         base::BindOnce(&GpuHostImpl::OnChannelEstablished,
                        weak_ptr_factory_.GetWeakPtr(), client_id, false));
   }
 
   // The gpu host channel uses the same cache as the compositor client.
-  if (is_gpu_host &&
+  if (client_type == mojom::GpuClientType::kBrowser &&
       !base::FeatureList::IsEnabled(features::kGpuPersistentCache)) {
     SetChannelDiskCacheHandle(client_id,
                               gpu::kDisplayCompositorGpuDiskCacheHandle);
@@ -543,6 +534,11 @@ void GpuHostImpl::SetChannelPersistentCachePendingBackend(
       factory->DeletePendingBackendAsync(std::move(pending_backend));
     }
     return;
+  }
+  // Only record the size of the caches that the GPU process uses.
+  if (auto* factory = PersistentCacheSandboxedFileFactory::GetInstance()) {
+    factory->RecordDiskSizeAsync(
+        GetGpuDiskCacheSubdir(gpu::GetHandleType(handle)));
   }
   gpu_service()->SetChannelPersistentCachePendingBackend(
       client_id, handle, std::move(pending_backend));
@@ -838,56 +834,6 @@ void GpuHostImpl::ClearGrShaderDiskCache() {
           cache, base::Time(), base::Time::Max(), base::DoNothing());
     }
   }
-}
-
-#if BUILDFLAG(IS_WIN)
-void GpuHostImpl::EnsureWebNNExecutionProvidersReady(
-    EnsureWebNNExecutionProvidersReadyCallback cb) {
-  webnn::EnsureExecutionProvidersReady(std::move(cb));
-}
-
-void GpuHostImpl::Delegate::RequestWebNNCompilerContext(
-    webnn::mojom::CreateContextOptionsPtr context_options,
-    const webnn::ContextProperties& context_properties,
-    const webnn::EpDeviceInfo& target_device,
-    mojo::PendingReceiver<webnn::mojom::WebNNCompilerContext>
-        compiler_context_receiver,
-    mojo::PendingRemote<webnn::mojom::WebNNModelLoader> model_loader_remote,
-    RequestWebNNCompilerContextResultCallback callback) {
-  std::move(callback).Run(false);
-}
-
-void GpuHostImpl::RequestWebNNCompilerContext(
-    webnn::mojom::CreateContextOptionsPtr context_options,
-    const webnn::ContextProperties& context_properties,
-    const webnn::EpDeviceInfo& target_device,
-    mojo::PendingReceiver<webnn::mojom::WebNNCompilerContext>
-        compiler_context_receiver,
-    mojo::PendingRemote<webnn::mojom::WebNNModelLoader> model_loader_remote,
-    RequestWebNNCompilerContextCallback callback) {
-  delegate_->RequestWebNNCompilerContext(
-      std::move(context_options), context_properties, target_device,
-      std::move(compiler_context_receiver), std::move(model_loader_remote),
-      std::move(callback));
-}
-#endif  // BUILDFLAG(IS_WIN)
-
-#if BUILDFLAG(IS_APPLE)
-void GpuHostImpl::Delegate::CopyWebNNCompiledModel(
-    const base::FilePath& compiler_model_path,
-    CopyWebNNCompiledModelCallback callback) {
-  std::move(callback).Run(std::nullopt);
-}
-
-void GpuHostImpl::CopyWebNNCompiledModel(
-    const base::FilePath& compiler_model_path,
-    CopyWebNNCompiledModelCallback callback) {
-  delegate_->CopyWebNNCompiledModel(compiler_model_path, std::move(callback));
-}
-#endif
-
-void GpuHostImpl::CreateWebNNWeightsFile(CreateWebNNWeightsFileCallback cb) {
-  webnn::CreateWeightsFile(std::move(cb));
 }
 
 void GpuHostImpl::RecordLogMessage(int32_t severity,

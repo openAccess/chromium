@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
+
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
@@ -10,21 +12,41 @@
 #include "build/build_config.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_test.h"
-#include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/gfx/animation/animation_test_api.h"
+#include "ui/menus/simple_menu_model.h"
+#include "ui/views/controls/menu/menu_controller.h"
+#include "ui/views/controls/menu/menu_runner.h"
+#include "ui/views/controls/menu/menu_types.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
 
 #if BUILDFLAG(IS_OZONE)
 #include "ui/ozone/public/ozone_platform.h"
 #endif
+
+namespace {
+
+// The menu's contents are irrelevant to these tests; all that matters is that
+// a menu is open and therefore capable of covering the bubble.
+class TestMenuDelegate : public ui::SimpleMenuModel::Delegate {
+ public:
+  void ExecuteCommand(int command_id, int event_flags) override {}
+  bool GetAcceleratorForCommandId(int command_id,
+                                  ui::Accelerator* accelerator) const override {
+    return false;
+  }
+};
+
+}  // namespace
 
 class ExclusiveAccessBubbleViewsTest : public ExclusiveAccessTest,
                                        public views::WidgetObserver {
@@ -36,6 +58,11 @@ class ExclusiveAccessBubbleViewsTest : public ExclusiveAccessTest,
   ExclusiveAccessBubbleViewsTest& operator=(
       const ExclusiveAccessBubbleViewsTest&) = delete;
 
+  void TearDownOnMainThread() override {
+    CloseMenu();
+    ExclusiveAccessTest::TearDownOnMainThread();
+  }
+
   ExclusiveAccessBubbleViewsContext* GetContext() {
     return BrowserView::GetBrowserViewForBrowser(browser())
         ->GetExclusiveAccessBubbleViewsContextForTesting();
@@ -43,6 +70,37 @@ class ExclusiveAccessBubbleViewsTest : public ExclusiveAccessTest,
 
   void ClearSnooze() {
     GetExclusiveAccessBubbleView()->snooze_until_ = base::TimeTicks::Min();
+  }
+
+  void ClearMustShowOnNextInteraction() {
+    GetExclusiveAccessBubbleView()->must_show_next_interaction_ = false;
+  }
+
+  bool MustShowOnNextInteraction() {
+    return GetExclusiveAccessBubbleView()->must_show_next_interaction_;
+  }
+
+  // Opens a menu owned by the browser window. Views menus are asynchronous, so
+  // this returns while the menu is still open.
+  void OpenMenu() {
+    menu_model_ = std::make_unique<ui::SimpleMenuModel>(&menu_delegate_);
+    menu_model_->AddItem(/*command_id=*/1, u"Item");
+    menu_runner_ = std::make_unique<views::MenuRunner>(
+        menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
+    views::Widget* const widget =
+        BrowserView::GetBrowserViewForBrowser(browser())->GetWidget();
+    menu_runner_->RunMenuAt(
+        widget, /*button_controller=*/nullptr,
+        gfx::Rect(widget->GetWindowBoundsInScreen().CenterPoint(), gfx::Size()),
+        views::MenuAnchorPosition::kTopLeft, ui::mojom::MenuSourceType::kMouse);
+  }
+
+  void CloseMenu() {
+    if (menu_runner_) {
+      menu_runner_->Cancel();
+      menu_runner_.reset();
+      menu_model_.reset();
+    }
   }
 
   // WidgetObserver:
@@ -56,6 +114,11 @@ class ExclusiveAccessBubbleViewsTest : public ExclusiveAccessTest,
  protected:
   bool was_destroying_ = false;
   bool was_observing_in_destroying_ = false;
+
+ private:
+  TestMenuDelegate menu_delegate_;
+  std::unique_ptr<ui::SimpleMenuModel> menu_model_;
+  std::unique_ptr<views::MenuRunner> menu_runner_;
 };
 
 // Simulate obscure codepaths resulting in the bubble Widget being closed before
@@ -208,8 +271,11 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
   EXPECT_TRUE(GetExclusiveAccessBubbleView());
   EXPECT_TRUE(IsFullscreenForBrowser() || IsWindowFullscreenForTabOrPending());
 
-  // Wait for the watchdog to fire (timeout is 1.5s).
-  Wait(base::Milliseconds(2000));
+  // Wait for the watchdog to fire (timeout is 1.5s after the browser window is
+  // presented).
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return !IsFullscreenForBrowser() && !IsWindowFullscreenForTabOrPending();
+  }));
 
   // The watchdog should have fired, and we should have exited fullscreen.
   EXPECT_FALSE(IsFullscreenForBrowser() || IsWindowFullscreenForTabOrPending());
@@ -219,10 +285,51 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
   ExclusiveAccessBubbleViews::set_simulate_gpu_hang_for_testing(false);
 }
 
+// TODO(crbug.com/528276492): Reenable on Mac.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_PresentationWatchdogWaitsForBrowserWindow \
+  DISABLED_PresentationWatchdogWaitsForBrowserWindow
+#else
+#define MAYBE_PresentationWatchdogWaitsForBrowserWindow \
+  PresentationWatchdogWaitsForBrowserWindow
+#endif
+// The watchdog must not exit fullscreen while the browser window itself isn't
+// being presented, e.g. because the system compositor considers it hidden. In
+// that case the fullscreen contents aren't visible either. See
+// crbug.com/541504510.
+IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
+                       MAYBE_PresentationWatchdogWaitsForBrowserWindow) {
+  ExclusiveAccessBubbleViews::set_simulate_gpu_hang_for_testing(true);
+  ExclusiveAccessBubbleViews::
+      set_simulate_unpresented_browser_window_for_testing(true);
+  absl::Cleanup reset_test_hooks = [] {
+    ExclusiveAccessBubbleViews::
+        set_simulate_unpresented_browser_window_for_testing(false);
+    ExclusiveAccessBubbleViews::set_simulate_gpu_hang_for_testing(false);
+  };
+
+  EnterActiveTabFullscreen();
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+  EXPECT_TRUE(IsFullscreenForBrowser() || IsWindowFullscreenForTabOrPending());
+
+  // Wait longer than the watchdog timeout. Fullscreen should be retained since
+  // the browser window was never presented.
+  Wait(base::Milliseconds(2000));
+  EXPECT_TRUE(IsFullscreenForBrowser() || IsWindowFullscreenForTabOrPending());
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+
+  // Once the browser window is presented without the bubble, the watchdog
+  // should exit fullscreen.
+  GetExclusiveAccessBubbleView()->SimulateBrowserWindowPresentedForTesting();
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return !IsFullscreenForBrowser() && !IsWindowFullscreenForTabOrPending();
+  }));
+  EXPECT_FALSE(GetExclusiveAccessBubbleView());
+}
+
 // This test is Windows-only because it tests Win32-specific pointer-lock
-// behavior (unadjusted movement drifting cursor to screen boundaries causing
-// DWM caption click interception) and utilizes Win32-specific APIs
-// (GetCursorPos).
+// behavior (unadjusted movement drifting the cursor to the fullscreen window's
+// top boundary, where resize-border hit testing can intercept clicks).
 #if BUILDFLAG(IS_WIN)
 IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
                        PointerLockUnadjustedMovementFullscreenClickAtTop) {
@@ -230,14 +337,17 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
 
   // Focus the tab content.
-  ui_test_utils::ClickOnView(browser(), VIEW_ID_TAB_CONTAINER);
+  ui_test_utils::FocusView(browser(), VIEW_ID_TAB_CONTAINER);
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_TAB_CONTAINER,
+                                  /*focused=*/true);
 
   // Enter tab fullscreen.
-  EnterActiveTabFullscreen();
-  ASSERT_TRUE(IsWindowFullscreenForTabOrPending());
-
   content::WebContents* web_contents =
       browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::ExecJs(web_contents,
+                              "document.documentElement.requestFullscreen()"));
+  ASSERT_EQ(true,
+            content::EvalJs(web_contents, "!!document.fullscreenElement"));
 
   // Set up listeners for lock and mouse events.
   ASSERT_TRUE(content::ExecJs(web_contents, R"(
@@ -254,10 +364,10 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
   )"));
 
   // Send a click in the center of the window to trigger pointer lock.
-  gfx::Rect window_bounds =
-      BrowserView::GetBrowserViewForBrowser(browser())->GetBoundsInScreen();
-  gfx::Point center_point = window_bounds.CenterPoint();
-  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(center_point));
+  views::Widget* widget =
+      BrowserView::GetBrowserViewForBrowser(browser())->GetWidget();
+  const gfx::Point center = widget->GetWindowBoundsInScreen().CenterPoint();
+  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(center));
   ASSERT_TRUE(ui_test_utils::SendMouseEventsSync(
       ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP));
 
@@ -267,30 +377,159 @@ IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
                 .ExtractString()
                 .empty();
   }));
-  EXPECT_EQ(content::EvalJs(web_contents, "window.lockStatus").ExtractString(),
+  ASSERT_EQ(content::EvalJs(web_contents, "window.lockStatus").ExtractString(),
             "success");
+  ASSERT_EQ(
+      1, content::EvalJs(web_contents, "window.mousedownCount").ExtractInt());
+  ASSERT_EQ(1,
+            content::EvalJs(web_contents, "window.mouseupCount").ExtractInt());
 
-  // Move the mouse to the top edge of the screen (y = bounds.y()).
-  gfx::Point top_point(window_bounds.CenterPoint().x(), window_bounds.y());
-  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(top_point));
+  // Verify capture is not held. Otherwise, the click could be delivered to the
+  // page regardless of the hit-test result.
+  ASSERT_EQ(nullptr, ::GetCapture());
 
-  // Check the physical cursor position.
-  // The cursor should have drifted to the top and been clipped by ClipCursor
-  // (which insets by 5 pixels).
-  POINT cursor_pos;
-  ASSERT_TRUE(::GetCursorPos(&cursor_pos));
-  EXPECT_LE(cursor_pos.y, 5);
+  // Move the mouse to the top of the pointer-lock clipping region.
+  RECT clip;
+  ASSERT_TRUE(::GetClipCursor(&clip));
+  INPUT move = {};
+  move.type = INPUT_MOUSE;
+  move.mi.dy = -10000;
+  move.mi.dwFlags = MOUSEEVENTF_MOVE;
+  ASSERT_EQ(1u, ::SendInput(1, &move, sizeof(move)));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    POINT position;
+    return ::GetCursorPos(&position) && position.y == clip.top;
+  }));
 
   // Click at the top edge.
-  ASSERT_TRUE(ui_test_utils::SendMouseEventsSync(
+  ASSERT_TRUE(ui_controls::SendMouseEvents(
       ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP));
 
+  // Wait for the top-edge mouse down and up events to reach the page.
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return content::EvalJs(
+               web_contents,
+               "window.mousedownCount >= 2 && window.mouseupCount >= 2")
+        .ExtractBool();
+  }));
+
   // Check if mouse down and up events were registered on the page.
-  // With the OnNCHitTest fix, the click should be routed to the client area
-  // and reach the page.
   EXPECT_EQ(
       2, content::EvalJs(web_contents, "window.mousedownCount").ExtractInt());
   EXPECT_EQ(2,
             content::EvalJs(web_contents, "window.mouseupCount").ExtractInt());
 }
-#endif
+#endif  // BUILDFLAG(IS_WIN)
+
+// Menus are excluded on Mac because `MenuRunner` runs a blocking native menu
+// there, and because the fullscreen transition only cancels menus once the
+// AppKit animation completes. See crbug.com/40060516.
+#if !BUILDFLAG(IS_MAC)
+
+// The exit instruction must not be covered by a menu when a page takes the
+// screen. `MenuController` cancels menus when the browser widget's show state
+// changes, which covers this case today, but that is incidental; this test
+// pins the behavior down.
+IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
+                       MenuDismissedEnteringTabFullscreen) {
+  OpenMenu();
+  ASSERT_TRUE(views::MenuController::GetActiveInstance());
+
+  EnterActiveTabFullscreen();
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+
+  EXPECT_FALSE(views::MenuController::GetActiveInstance());
+}
+
+// As above, but the window is already fullscreen when the page requests
+// fullscreen. No show state change occurs in that case, so the bubble itself is
+// responsible for dismissing the menu.
+IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
+                       MenuDismissedEnteringTabFullscreenWhileFullscreen) {
+  GetFullscreenController()->ToggleBrowserFullscreenMode(
+      /*user_initiated=*/true);
+  WaitAndVerifyFullscreenState(/*browser_fullscreen=*/true,
+                               /*tab_fullscreen=*/false);
+
+  OpenMenu();
+  ASSERT_TRUE(views::MenuController::GetActiveInstance());
+
+  EnterActiveTabFullscreen();
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+
+  EXPECT_FALSE(views::MenuController::GetActiveInstance());
+}
+
+// A menu that opens after the bubble is already showing can cover it for the
+// bubble's entire lifetime. Such a show must not consume `kSnoozeTime`, which
+// would otherwise suppress the exit instruction for the next 15 minutes.
+IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
+                       ObscuredBubbleReshowsOnNextInteraction) {
+  EnterActiveTabFullscreen();
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+
+  // `EnterActiveTabFullscreen()` does not deliver a real user gesture, so the
+  // bubble already arms a re-show. Clear it to observe the menu's effect alone.
+  ClearMustShowOnNextInteraction();
+  ASSERT_FALSE(MustShowOnNextInteraction());
+
+  OpenMenu();
+  ASSERT_TRUE(views::MenuController::GetActiveInstance());
+
+  // Let the show time elapse, so the bubble hides while the menu is still open.
+  Wait(ExclusiveAccessBubble::kShowTime * 2);
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+
+  EXPECT_TRUE(MustShowOnNextInteraction());
+}
+
+// Counterpart to the above: an unobscured show is allowed to consume the snooze
+// period as usual.
+IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
+                       UnobscuredBubbleDoesNotReshowOnNextInteraction) {
+  EnterActiveTabFullscreen();
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+
+  ClearMustShowOnNextInteraction();
+  ASSERT_FALSE(MustShowOnNextInteraction());
+
+  Wait(ExclusiveAccessBubble::kShowTime * 2);
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+  ASSERT_FALSE(views::MenuController::GetActiveInstance());
+
+  EXPECT_FALSE(MustShowOnNextInteraction());
+}
+
+// Browser-initiated fullscreen is user-initiated, and the user commonly opens
+// the app menu while the bubble is still showing. That must not arm a re-show,
+// or the exit instruction unexpectedly reappears on the next interaction. See
+// crbug.com/574452272.
+//
+// Excluded on ChromeOS because browser fullscreen uses immersive mode there and
+// suppresses the exit instruction bubble (see
+// `ShouldUseImmersiveFullscreenForUrl()` in `browser_view.cc`).
+#if !BUILDFLAG(IS_CHROMEOS)
+IN_PROC_BROWSER_TEST_F(ExclusiveAccessBubbleViewsTest,
+                       MenuDuringBrowserFullscreenDoesNotReshowBubble) {
+  GetFullscreenController()->ToggleBrowserFullscreenMode(
+      /*user_initiated=*/true);
+  WaitAndVerifyFullscreenState(/*browser_fullscreen=*/true,
+                               /*tab_fullscreen=*/false);
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+
+  ClearMustShowOnNextInteraction();
+  ASSERT_FALSE(MustShowOnNextInteraction());
+
+  OpenMenu();
+  ASSERT_TRUE(views::MenuController::GetActiveInstance());
+
+  // Let the show time elapse, so the bubble hides while the menu is still open.
+  Wait(ExclusiveAccessBubble::kShowTime * 2);
+  ASSERT_TRUE(GetExclusiveAccessBubbleView());
+  ASSERT_TRUE(views::MenuController::GetActiveInstance());
+
+  EXPECT_FALSE(MustShowOnNextInteraction());
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
+#endif  // !BUILDFLAG(IS_MAC)

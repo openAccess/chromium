@@ -14,13 +14,12 @@ import {ConsoleTestRunner} from 'console_test_runner';
     var danglingNode = document.implementation.createDocument("", "books");
     console.dirxml(danglingNode.createElement("Book"));
   `);
-  await TestRunner.showPanel('elements');
 
-  // Warm up elements renderer.
-  ConsoleTestRunner.expandConsoleMessages(callback);
-
-  async function callback() {
-    await ConsoleTestRunner.dumpConsoleMessages();
-    TestRunner.completeTest();
+  await ConsoleTestRunner.expandConsoleMessagesPromise();
+  if (ConsoleTestRunner.waitForAllPopulations) {
+    await ConsoleTestRunner.waitForAllPopulations();
   }
+
+  await ConsoleTestRunner.dumpConsoleMessages();
+  TestRunner.completeTest();
 })();

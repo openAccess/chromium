@@ -8,22 +8,17 @@
 #include "chrome/browser/contextual_cueing/contextual_cueing_service.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/page_transition_types.h"
 
 namespace contextual_cueing {
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(ContextualCueingWebContentsObserver);
 
 ContextualCueingWebContentsObserver::ContextualCueingWebContentsObserver(
     content::WebContents* web_contents,
     ContextualCueingService* service)
-    : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<ContextualCueingWebContentsObserver>(
-          *web_contents),
-      service_(service) {}
+    : content::WebContentsObserver(web_contents), service_(service) {}
 
 ContextualCueingWebContentsObserver::~ContextualCueingWebContentsObserver() =
     default;
@@ -39,7 +34,6 @@ void ContextualCueingWebContentsObserver::DidFinishNavigation(
   if (!navigation_handle->IsInPrimaryMainFrame()) {
     return;
   }
-  should_evaluate_cues_on_load_ = false;
   if (!navigation_handle->HasCommitted()) {
     return;
   }
@@ -65,20 +59,20 @@ void ContextualCueingWebContentsObserver::DidFinishNavigation(
     }
   }
 
-  auto* tab = tabs::TabInterface::MaybeGetFromContents(&GetWebContents());
+  auto* tab = tabs::TabInterface::MaybeGetFromContents(web_contents());
   if (!tab) {
     return;
   }
 
-  if (auto* controller =
-          ContextualCueingController::GetForWebContents(GetWebContents())) {
+  if (auto* controller = ContextualCueingController::From(tab)) {
     controller->HideCue();
     if (tab->IsActivated()) {
       controller->OnUrlChanged(navigation_handle->GetURL());
     }
-    if (navigation_handle->IsServedFromBackForwardCache()) {
+    if (navigation_handle->IsServedFromBackForwardCache() ||
+        navigation_handle->IsSameDocument()) {
       controller->EvaluateCues();
-    } else if (!navigation_handle->IsSameDocument()) {
+    } else {
       should_evaluate_cues_on_load_ = true;
     }
   }
@@ -91,7 +85,7 @@ void ContextualCueingWebContentsObserver::DidFinishNavigation(
           continue;
         }
         if (auto* other_controller =
-                other_tab->GetTabFeatures()->contextual_cueing_controller()) {
+                ContextualCueingController::From(other_tab)) {
           other_controller->OnTabNavigated(tab);
         }
       }
@@ -106,13 +100,12 @@ void ContextualCueingWebContentsObserver::
   }
   should_evaluate_cues_on_load_ = false;
 
-  auto* tab = tabs::TabInterface::MaybeGetFromContents(&GetWebContents());
+  auto* tab = tabs::TabInterface::MaybeGetFromContents(web_contents());
   if (!tab) {
     return;
   }
 
-  if (auto* controller =
-          ContextualCueingController::GetForWebContents(GetWebContents())) {
+  if (auto* controller = ContextualCueingController::From(tab)) {
     controller->EvaluateCues();
   }
 }

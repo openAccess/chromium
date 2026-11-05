@@ -11,7 +11,7 @@
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_test_util.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/signin/signin_ui_delegate.h"
+#include "chrome/browser/signin/mock_signin_ui_delegate.h"
 #include "chrome/browser/signin/signin_ui_util.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
@@ -31,29 +31,7 @@
 
 namespace {
 
-class MockSigninUiDelegate : public signin_ui_util::SigninUiDelegate {
- public:
-  MOCK_METHOD(void,
-              ShowSigninUI,
-              (Profile*,
-               bool,
-               signin_metrics::AccessPoint,
-               signin_metrics::PromoAction,
-               const std::string&),
-              (override));
-  MOCK_METHOD(void,
-              ShowReauthUI,
-              (Profile*,
-               const std::string&,
-               bool,
-               signin_metrics::AccessPoint,
-               signin_metrics::PromoAction),
-              (override));
-  MOCK_METHOD(void,
-              ShowCrossDeviceSigninQrBubble,
-              (BrowserWindowInterface*, base::OnceClosure),
-              (override));
-};
+using signin_ui_util::MockSigninUiDelegate;
 
 std::unique_ptr<KeyedService> BuildTestSyncService(
     content::BrowserContext* context) {
@@ -112,7 +90,7 @@ TEST_F(SigninUtilsHandlerTest, StartSignin) {
       signin::ConsentLevel::kSignin));
 
   EXPECT_CALL(mock_signin_ui_delegate,
-              ShowSigninUI(profile(), /*enable_sync=*/true,
+              ShowSigninUI(profile(), /*enable_history_sync=*/true,
                            signin_metrics::AccessPoint::kSettings,
                            signin_metrics::PromoAction::
                                PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT,
@@ -146,7 +124,7 @@ TEST_F(SigninUtilsHandlerTest, HandleStartSigninManaged) {
 
   EXPECT_CALL(
       mock_signin_ui_delegate,
-      ShowReauthUI(profile(), kManagedEmail, /*enable_sync=*/false,
+      ShowReauthUI(profile(), kManagedEmail, /*enable_history_sync=*/false,
                    signin_metrics::AccessPoint::kSettings,
                    signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO));
 

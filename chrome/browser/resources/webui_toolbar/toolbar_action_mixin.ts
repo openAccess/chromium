@@ -4,10 +4,9 @@
 
 import {assertNotReached} from '//resources/js/assert.js';
 import type {CrLitElement, PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import type {HelpBubbleAnchor} from '/shared/toolbar_button.js';
+import {HelpBubbleAnchorMixin, HighlightTracker, setHasHelpBubble} from '/shared/toolbar_button.js';
 import type {HelpBubbleMixinInterface} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin_interface.js';
-
-import type {HelpBubbleAnchor} from './toolbar_button.js';
-import {HelpBubbleAnchorMixin, setHasHelpBubble} from './toolbar_button.js';
 
 type Constructor<T> = new (...args: any[]) => T;
 
@@ -15,8 +14,10 @@ export interface ToolbarActionMixinInterface<T> extends
     HelpBubbleMixinInterface, HelpBubbleAnchor {
   state: T;
   // Set if the TrackedElementManager indicates the element should be
-  // highlighted.
+  // highlighted. A reactive mirror of `highlightTracker.highlighted`, for
+  // rendering.
   trackedHighlighted: boolean;
+  highlightTracker: HighlightTracker;
   getElementId(state: T): string|undefined;
   getSecondaryElementId(): string|undefined;
   getMimeType(): string;
@@ -55,11 +56,33 @@ export const ToolbarActionMixin =
 
         accessor state: T = initialState;
         accessor trackedHighlighted: boolean = false;
+        highlightTracker: HighlightTracker = new HighlightTracker();
 
         private registerHelpBubbleController_: AbortController|null = null;
+        // Set when HelpBubbleMixin has dropped this element's help bubble
+        // registrations due to a disconnect, and they must be re-registered
+        // when the element is re-attached.
+        private needsReregistrationOnConnect_: boolean = false;
+
+        override connectedCallback() {
+          super.connectedCallback();
+          if (this.needsReregistrationOnConnect_) {
+            this.needsReregistrationOnConnect_ = false;
+            this.abortPendingRegistration_();
+            const id = this.state ? this.getElementId(this.state) : undefined;
+            if (id) {
+              this.registerHelpBubble_(id);
+            }
+          }
+        }
 
         override disconnectedCallback() {
           super.disconnectedCallback();
+          this.abortPendingRegistration_();
+          this.needsReregistrationOnConnect_ = true;
+        }
+
+        private abortPendingRegistration_() {
           if (this.registerHelpBubbleController_) {
             this.registerHelpBubbleController_.abort();
             this.registerHelpBubbleController_ = null;
@@ -76,10 +99,7 @@ export const ToolbarActionMixin =
                 this.state ? this.getElementId(this.state) : undefined;
 
             if (oldId !== newId) {
-              if (this.registerHelpBubbleController_) {
-                this.registerHelpBubbleController_.abort();
-                this.registerHelpBubbleController_ = null;
-              }
+              this.abortPendingRegistration_();
               if (oldId) {
                 this.unregisterHelpBubble(oldId);
               }
@@ -107,6 +127,7 @@ export const ToolbarActionMixin =
         }
 
         private async registerHelpBubble_(newId: string) {
+          this.needsReregistrationOnConnect_ = false;
           this.registerHelpBubbleController_ = new AbortController();
           const signal = this.registerHelpBubbleController_.signal;
 
@@ -134,9 +155,15 @@ export const ToolbarActionMixin =
             return;
           }
 
+          // Ensure responsive toolbar controls have been laid out before
+          // registering with TrackedElementManager, which synchronously reads
+          // getBoundingClientRect().
+          this.fire('layout-now');
+
           this.registerHelpBubble(newId, this, {
             secondaryId: this.getSecondaryElementId(),
             onHighlightChanged: (highlighted: boolean) => {
+              this.highlightTracker.onHighlightChanged(highlighted);
               this.trackedHighlighted = highlighted;
             },
             onHelpBubbleShown: () => setHasHelpBubble(this, true),
@@ -150,8 +177,10 @@ export const ToolbarActionMixin =
         // configured with delegatesFocus, which Lit doesn't do by default for
         // wrapper elements.
         override focus() {
-          const button = this.shadowRoot?.querySelector(
-                             'cr-icon-button, cr-button') as HTMLElement;
+          const button =
+              this.shadowRoot?.querySelector(
+                  'toolbar-chip-button, cr-icon-button, cr-button') as
+              HTMLElement;
           if (button) {
             button.focus();
           }

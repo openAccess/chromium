@@ -109,14 +109,6 @@ std::string ToString(const T x) {
   return (std::ostringstream() << drivefs::pinning::NiceNum << x).str();
 }
 
-std::string ToString(const drive::FileError error) {
-  std::string s = drive::FileErrorToString(error);
-  if (const std::string_view prefix = "FILE_ERROR_"; s.starts_with(prefix)) {
-    s.erase(0, prefix.size());
-  }
-  return s;
-}
-
 template <typename T>
 std::string ToPercent(const T num, const T total) {
   if (num >= 0 && total > 0) {
@@ -138,7 +130,8 @@ std::string ToPercent(const T num, const T total) {
 // The list is sorted by the path.
 std::pair<base::ListValue, base::DictValue> GetGCacheContents(
     const FilePath& root_path) {
-  DCHECK(!BrowserThread::CurrentlyOn(BrowserThread::UI));
+  CHECK(!BrowserThread::CurrentlyOn(BrowserThread::UI),
+        base::NotFatalUntil::M162);
 
   // Use this map to sort the result list by the path.
   std::map<FilePath, base::DictValue> files;
@@ -287,7 +280,7 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
   template <typename... Values>
   void FireWebUIListenerIfAllowed(std::string_view event_name,
                                   const Values&... values) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
     if (IsJavascriptAllowed()) {
       FireWebUIListener(event_name, values...);
     }
@@ -318,20 +311,6 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
         base::BindRepeating(
             &DriveInternalsWebUIHandler::SetVerboseLoggingEnabled,
             weak_ptr_factory_.GetWeakPtr()));
-    web_ui()->RegisterMessageCallback(
-        "setMirroringEnabled",
-        base::BindRepeating(&DriveInternalsWebUIHandler::SetMirroringEnabled,
-                            weak_ptr_factory_.GetWeakPtr()));
-    web_ui()->RegisterMessageCallback(
-        "addSyncPath",
-        base::BindRepeating(&DriveInternalsWebUIHandler::ToggleSyncPath,
-                            weak_ptr_factory_.GetWeakPtr(),
-                            drivefs::mojom::MirrorPathStatus::kStart));
-    web_ui()->RegisterMessageCallback(
-        "removeSyncPath",
-        base::BindRepeating(&DriveInternalsWebUIHandler::ToggleSyncPath,
-                            weak_ptr_factory_.GetWeakPtr(),
-                            drivefs::mojom::MirrorPathStatus::kStop));
     web_ui()->RegisterMessageCallback(
         "enableTracing",
         base::BindRepeating(&DriveInternalsWebUIHandler::SetTracingEnabled,
@@ -408,7 +387,6 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
     UpdateCacheContentsSection();
     UpdateInFlightOperationsSection();
     UpdateDriveDebugSection();
-    UpdateMirrorSyncSection();
 
     // When the drive-internals page is reloaded by the reload key, the page
     // content is recreated, but this WebUI object is not (instead, OnPageLoaded
@@ -423,7 +401,7 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
 
   // Called when the page requests periodic update.
   void OnPeriodicUpdate(const base::ListValue& args) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 
     DriveIntegrationService* const service = GetIntegrationService();
     if (!service) {
@@ -521,80 +499,6 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
     }
   }
 
-  void UpdateMirrorSyncSection() {
-    if (!features::IsDriveFsMirroringEnabled()) {
-      SetSectionEnabled("mirror-sync-section", false);
-      return;
-    }
-
-    SetSectionEnabled("mirror-sync-section", true);
-
-    bool mirroring_enabled =
-        GetPrefs()->GetBoolean(drive::prefs::kDriveFsEnableMirrorSync);
-    FireWebUIListenerIfAllowed("updateMirroring",
-                               base::Value(mirroring_enabled));
-    SetSectionEnabled("mirror-sync-paths", mirroring_enabled);
-    SetSectionEnabled("mirror-path-form", mirroring_enabled);
-    if (!mirroring_enabled) {
-      return;
-    }
-
-    DriveIntegrationService* const service = GetIntegrationService();
-    if (!service) {
-      return;
-    }
-
-    service->GetSyncingPaths(
-        base::BindOnce(&DriveInternalsWebUIHandler::OnGetSyncingPaths,
-                       weak_ptr_factory_.GetWeakPtr()));
-  }
-
-  void OnGetSyncingPaths(drive::FileError status,
-                         const std::vector<FilePath>& paths) {
-    if (status != drive::FILE_ERROR_OK) {
-      LOG(ERROR) << "Error retrieving syncing paths: " << status;
-      return;
-    }
-    for (const FilePath& sync_path : paths) {
-      FireWebUIListenerIfAllowed("onAddSyncPath",
-                                 base::Value(sync_path.value()),
-                                 base::Value(ToString(drive::FILE_ERROR_OK)));
-    }
-  }
-
-  void ToggleSyncPath(drivefs::mojom::MirrorPathStatus status,
-                      const base::ListValue& args) {
-    if (!features::IsDriveFsMirroringEnabled()) {
-      return;
-    }
-
-    DriveIntegrationService* const service = GetIntegrationService();
-    if (!service) {
-      return;
-    }
-
-    if (args.size() == 1 && args[0].is_string()) {
-      const FilePath sync_path(args[0].GetString());
-      auto callback =
-          base::BindOnce((status == drivefs::mojom::MirrorPathStatus::kStart)
-                             ? &DriveInternalsWebUIHandler::OnAddSyncPath
-                             : &DriveInternalsWebUIHandler::OnRemoveSyncPath,
-                         weak_ptr_factory_.GetWeakPtr(), sync_path);
-      service->ToggleSyncForPath(sync_path, status, std::move(callback));
-    }
-  }
-
-  void OnAddSyncPath(const FilePath& sync_path, drive::FileError status) {
-    FireWebUIListenerIfAllowed("onAddSyncPath", base::Value(sync_path.value()),
-                               base::Value(ToString(status)));
-  }
-
-  void OnRemoveSyncPath(const FilePath& sync_path, drive::FileError status) {
-    FireWebUIListenerIfAllowed("onRemoveSyncPath",
-                               base::Value(sync_path.value()),
-                               base::Value(ToString(status)));
-  }
-
   void UpdateBulkPinningDeveloperSection() {
     DriveIntegrationService* const service = GetIntegrationService();
     if (!service) {
@@ -681,8 +585,8 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
 
   // Called when GetStartupArguments() is complete.
   void OnGetStartupArguments(const std::string& arguments) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    DCHECK(developer_mode_);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
+    CHECK(developer_mode_, base::NotFatalUntil::M162);
     FireWebUIListenerIfAllowed("updateStartupArguments",
                                base::Value(arguments));
     SetSectionEnabled("developer-mode-controls", true);
@@ -691,7 +595,7 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
 
   // Called when AmountOfFreeDiskSpace() is complete.
   void OnGetFreeDiskSpace(std::optional<int64_t> free_space) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
     base::DictValue local_storage_summary;
     local_storage_summary.Set("free_space",
                               static_cast<double>(free_space.value_or(-1)));
@@ -708,7 +612,6 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
         drive::prefs::kDriveFsWasLaunchedAtLeastOnce,
         drive::prefs::kDriveFsPinnedMigrated,
         drive::prefs::kDriveFsEnableVerboseLogging,
-        drive::prefs::kDriveFsEnableMirrorSync,
     };
 
     PrefService* const prefs = GetPrefs();
@@ -818,7 +721,7 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
   // Called when GetGCacheContents() is complete.
   void OnGetGCacheContents(
       std::pair<base::ListValue, base::DictValue> response) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
     FireWebUIListenerIfAllowed("updateGCacheContents",
                                base::Value(std::move(response.first)),
                                base::Value(std::move(response.second)));
@@ -837,21 +740,6 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
       GetPrefs()->SetBoolean(drive::prefs::kDriveFsEnableVerboseLogging,
                              enabled);
       RestartDrive(base::ListValue());
-    }
-  }
-
-  void SetMirroringEnabled(const base::ListValue& args) {
-    AllowJavascript();
-    DriveIntegrationService* const service = GetIntegrationService();
-    if (!service) {
-      return;
-    }
-
-    if (args.size() == 1 && args[0].is_bool()) {
-      bool enabled = args[0].GetBool();
-      GetPrefs()->SetBoolean(drive::prefs::kDriveFsEnableMirrorSync, enabled);
-      SetSectionEnabled("mirror-sync-paths", enabled);
-      SetSectionEnabled("mirror-path-form", enabled);
     }
   }
 
@@ -908,8 +796,8 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
   }
 
   void OnSetStartupArguments(bool success) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
-    DCHECK(developer_mode_);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
+    CHECK(developer_mode_, base::NotFatalUntil::M162);
     if (success) {
       RestartDrive(base::ListValue());
     }
@@ -989,7 +877,7 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
 
   // Called after file system reset for ResetDriveFileSystem is done.
   void ResetFinished(bool success) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
     FireWebUIListenerIfAllowed("updateResetStatus", base::Value(success));
   }
 
@@ -999,7 +887,7 @@ class DriveInternalsWebUIHandler : public content::WebUIMessageHandler,
   // Returns a DriveIntegrationService, if any.
   // May return nullptr in guest/incognito mode.
   DriveIntegrationService* GetIntegrationService() {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
     DriveIntegrationService* const service =
         drive::DriveIntegrationServiceFactory::FindForProfile(profile());
 
@@ -1092,7 +980,7 @@ class LogsZipper : public download::AllDownloadItemNotifier::Observer {
   }
 
   void OnZipDone(const scoped_refptr<ZipFileCreator> creator) {
-    DCHECK(creator);
+    CHECK(creator, base::NotFatalUntil::M162);
     if (!drive_internals_ || creator->GetResult() != ZipFileCreator::kSuccess) {
       CleanUp();
       return;

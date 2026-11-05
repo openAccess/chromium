@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/process/kill.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/host/host.h"
@@ -9,9 +11,17 @@
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/common/referrer.h"
+#include "content/public/common/result_codes.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/no_renderer_crashes_assertion.h"
 #include "net/dns/mock_host_resolver.h"
+#include "ui/base/page_transition_types.h"
 
 namespace glic {
 
@@ -22,7 +32,12 @@ class GlicWebUiBrowserTest : public glic::GlicBrowserTest {
         {
             {features::kGlicCSPConfig, {}},
         },
-        {});
+        {
+            // WebUI host page tests (metrics recorded on the WebUI contents and
+            // WebUI error panel transitions) are specific to the <webview>
+            // architecture and not applicable in NoWebview mode.
+            features::kGlicNoWebview,
+        });
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -59,7 +74,13 @@ IN_PROC_BROWSER_TEST_F(GlicWebUiBrowserTest,
 
   GURL untrusted_guest_url = embedded_test_server()->GetURL(
       "b.com", "/glic/browser_tests/minimal_client.html");
-  ASSERT_TRUE(content::NavigateToURL(guest_contents, untrusted_guest_url));
+  // Start the navigation without waiting for it to finish. Committing a page
+  // without API access sends the host page to the error panel, which destroys
+  // the <webview> and with it `guest_contents`, so anything that inspects the
+  // guest after the commit would be reading freed memory.
+  guest_contents->GetController().LoadURL(
+      untrusted_guest_url, content::Referrer(), ui::PAGE_TRANSITION_TYPED,
+      std::string());
 
   // 3. Verify Glic API/Mojo connection is immediately revoked
   EXPECT_TRUE(
@@ -72,6 +93,61 @@ IN_PROC_BROWSER_TEST_F(GlicWebUiBrowserTest,
       FROM_HERE, run_loop.QuitClosure(), base::Milliseconds(500));
   run_loop.Run();
   EXPECT_FALSE(instance->host().IsWebClientConnected());
+}
+
+IN_PROC_BROWSER_TEST_F(GlicWebUiBrowserTest,
+                       RecordsNavigationCommitAndLoadCompleteMetricsOnce) {
+  base::HistogramTester histogram_tester;
+
+  ASSERT_OK_AND_ASSIGN(auto* instance, OpenGlicForActiveTab());
+  ASSERT_TRUE(WaitForGlicClient(instance).has_value());
+
+  histogram_tester.ExpectTotalCount("Glic.Contents.NavigationCommitTime2", 1);
+  histogram_tester.ExpectTotalCount("Glic.Contents.LoadCompleteTime2", 1);
+
+  // Trigger a second navigation on the WebUI WebContents.
+  content::WebContents* webui_contents = instance->host().webui_contents();
+  ASSERT_TRUE(webui_contents);
+  webui_contents->GetController().Reload(content::ReloadType::NORMAL,
+                                         /*check_for_repost=*/false);
+  EXPECT_TRUE(content::WaitForLoadStop(webui_contents));
+
+  // The metrics must not be recorded again for subsequent navigations.
+  histogram_tester.ExpectTotalCount("Glic.Contents.NavigationCommitTime2", 1);
+  histogram_tester.ExpectTotalCount("Glic.Contents.LoadCompleteTime2", 1);
+}
+
+IN_PROC_BROWSER_TEST_F(GlicWebUiBrowserTest,
+                       RecordsWebUiCrashTerminationStatus) {
+  base::HistogramTester histogram_tester;
+
+  ASSERT_OK_AND_ASSIGN(auto* instance, OpenGlicForActiveTab());
+  ASSERT_TRUE(WaitForGlicClient(instance).has_value());
+
+  content::WebContents* webui_contents = instance->host().webui_contents();
+  ASSERT_TRUE(webui_contents);
+  content::RenderProcessHost* process =
+      webui_contents->GetPrimaryMainFrame()->GetProcess();
+  ASSERT_TRUE(process);
+
+  // Kill the WebUI renderer process. content::CrashTab() is not used here
+  // because it accesses the WebContents after the process exits, and the glic
+  // host destroys the WebUI contents synchronously when its process goes away.
+  {
+    content::ScopedAllowRendererCrashes scoped_allow_renderer_crashes;
+    content::RenderProcessHostWatcher watcher(
+        process, content::RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+    EXPECT_TRUE(process->Shutdown(content::RESULT_CODE_KILLED));
+    watcher.Wait();
+  }
+
+  // The exact termination status depends on the platform, but it must not be
+  // a normal termination.
+  histogram_tester.ExpectTotalCount(
+      "Glic.Contents.WebUiCrash.TerminationStatus", 1);
+  histogram_tester.ExpectBucketCount(
+      "Glic.Contents.WebUiCrash.TerminationStatus",
+      base::TERMINATION_STATUS_NORMAL_TERMINATION, 0);
 }
 
 }  // namespace glic

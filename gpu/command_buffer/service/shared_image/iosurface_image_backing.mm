@@ -78,28 +78,6 @@ struct ScopedIOSurfaceLock {
   const IOSurfaceLockOptions options_;
 };
 
-// Returns planar format for given multiplanar `format`.
-viz::SharedImageFormat GetFormatForPlane(viz::SharedImageFormat format,
-                                         int plane) {
-  DCHECK(format.is_multi_plane());
-  DCHECK(format.IsValidPlaneIndex(plane));
-
-  // IOSurfaceBacking does not support external sampler use cases.
-  int num_channels = format.NumChannelsInPlane(plane);
-  DCHECK_LE(num_channels, 2);
-  switch (format.channel_format()) {
-    case viz::SharedImageFormat::ChannelFormat::k8:
-      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_88
-                               : viz::SinglePlaneFormat::kR_8;
-    case viz::SharedImageFormat::ChannelFormat::k10:
-    case viz::SharedImageFormat::ChannelFormat::k16:
-    case viz::SharedImageFormat::ChannelFormat::k16F:
-      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_1616
-                               : viz::SinglePlaneFormat::kR_16;
-  }
-  NOTREACHED();
-}
-
 wgpu::Texture CreateWGPUTexture(wgpu::SharedTextureMemory shared_texture_memory,
                                 SharedImageUsageSet shared_image_usage,
                                 const gfx::Size& io_surface_size,
@@ -708,6 +686,72 @@ bool IOSurfaceImageBacking::OverlayRepresentation::IsInUseByWindowServer()
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// VideoRepresentation
+
+// Hands the IOSurface to a video consumer (VTVideoEncodeAccelerator) that
+// wraps it in a CVPixelBuffer. Read access is synchronized the same way as
+// OverlayRepresentation: VideoToolbox, like CoreAnimation, has no other way to
+// wait for pending GPU work on the IOSurface.
+class IOSurfaceImageBacking::VideoRepresentation final
+    : public VideoImageRepresentation {
+ public:
+  VideoRepresentation(SharedImageManager* manager,
+                      SharedImageBacking* backing,
+                      MemoryTypeTracker* tracker,
+                      gfx::ScopedIOSurface io_surface)
+      : VideoImageRepresentation(manager, backing, tracker),
+        io_surface_(std::move(io_surface)) {}
+  ~VideoRepresentation() override = default;
+
+ private:
+  bool BeginWriteAccess() override;
+  void EndWriteAccess() override;
+  bool BeginReadAccess() override;
+  void EndReadAccess() override;
+  gfx::ScopedIOSurface GetIOSurface() const override;
+
+  gfx::ScopedIOSurface io_surface_;
+};
+
+bool IOSurfaceImageBacking::VideoRepresentation::BeginWriteAccess() {
+  // The only video consumer on Apple platforms is the VideoToolbox encoder,
+  // which reads the IOSurface. Writes go through the GL, Skia or Dawn
+  // representations.
+  NOTIMPLEMENTED();
+  return false;
+}
+
+void IOSurfaceImageBacking::VideoRepresentation::EndWriteAccess() {
+  NOTREACHED();
+}
+
+bool IOSurfaceImageBacking::VideoRepresentation::BeginReadAccess() {
+  auto* iosurface_backing = static_cast<IOSurfaceImageBacking*>(backing());
+  AutoLock auto_lock(iosurface_backing);
+
+  if (!iosurface_backing->BeginAccess(/*readonly=*/true)) {
+    return false;
+  }
+
+  // This will transition the image to be accessed by VideoToolbox.
+  iosurface_backing->WaitForCommandsToBeScheduled();
+
+  return true;
+}
+
+void IOSurfaceImageBacking::VideoRepresentation::EndReadAccess() {
+  auto* iosurface_backing = static_cast<IOSurfaceImageBacking*>(backing());
+  AutoLock auto_lock(iosurface_backing);
+
+  iosurface_backing->EndAccess(/*readonly=*/true);
+}
+
+gfx::ScopedIOSurface IOSurfaceImageBacking::VideoRepresentation::GetIOSurface()
+    const {
+  return io_surface_;
+}
+
+///////////////////////////////////////////////////////////////////////////////
 // DawnRepresentation
 
 class IOSurfaceImageBacking::DawnRepresentation final
@@ -1255,6 +1299,16 @@ IOSurfaceImageBacking::ProduceOverlay(SharedImageManager* manager,
                                                  io_surface_);
 }
 
+std::unique_ptr<VideoImageRepresentation> IOSurfaceImageBacking::ProduceVideo(
+    SharedImageManager* manager,
+    MemoryTypeTracker* tracker,
+    VideoDevice device) {
+  // `device` is a D3D concept; on Apple platforms VideoToolbox consumes the
+  // IOSurface directly, so there is no device to bind to and it is ignored.
+  return std::make_unique<VideoRepresentation>(manager, this, tracker,
+                                               io_surface_);
+}
+
 int IOSurfaceImageBacking::TrackBeginAccessToWGPUTexture(
     wgpu::Texture texture) {
   AssertLockAcquired();
@@ -1520,7 +1574,7 @@ bool IOSurfaceImageBacking::IsPurgeable() const {
   return purgeable_;
 }
 
-void IOSurfaceImageBacking::Update(std::unique_ptr<gfx::GpuFence> in_fence) {
+void IOSurfaceImageBacking::Update(gfx::GpuFenceHandle in_fence) {
   AutoLock auto_lock(this);
 #if BUILDFLAG(IS_IOS)
   {
@@ -1691,27 +1745,20 @@ bool IOSurfaceImageBacking::IOSurfaceBackingEGLStateBeginAccess(
     std::vector<std::unique_ptr<gl::ScopedEGLSurfaceIOSurface>> egl_surfaces;
     for (int plane_index = 0; plane_index < format().NumberOfPlanes();
          plane_index++) {
-      viz::SharedImageFormat plane_format;
-      if (format().is_single_plane()) {
-        plane_format = format();
-        // See comments in IOSurfaceImageBackingFactory::CreateSharedImage about
-        // RGBA versus BGRA when using Skia Ganesh GL backend or ANGLE.
-        if (io_surface_format_ == 'BGRA') {
-          if (plane_format == viz::SinglePlaneFormat::kRGBA_8888) {
-            plane_format = viz::SinglePlaneFormat::kBGRA_8888;
-          } else if (plane_format == viz::SinglePlaneFormat::kRGBX_8888) {
-            plane_format = viz::SinglePlaneFormat::kBGRX_8888;
-          }
+      viz::SharedImageFormat buffer_format = format();
+      // See comments in IOSurfaceImageBackingFactory::CreateSharedImage about
+      // RGBA versus BGRA when using Skia Ganesh GL backend or ANGLE.
+      if (io_surface_format_ == 'BGRA') {
+        if (buffer_format == viz::SinglePlaneFormat::kRGBA_8888) {
+          buffer_format = viz::SinglePlaneFormat::kBGRA_8888;
+        } else if (buffer_format == viz::SinglePlaneFormat::kRGBX_8888) {
+          buffer_format = viz::SinglePlaneFormat::kBGRX_8888;
         }
-      } else {
-        // For multiplanar formats (without external sampler) get planar buffer
-        // format.
-        plane_format = GetFormatForPlane(format(), plane_index);
       }
 
       auto egl_surface = gl::ScopedEGLSurfaceIOSurface::Create(
           egl_state->egl_display_, egl_state->GetGLTarget(), io_surface_.get(),
-          plane_index, plane_format);
+          plane_index, buffer_format);
       if (!egl_surface) {
         LOG(ERROR) << "Failed to create ScopedEGLSurfaceIOSurface.";
         EndAccess(readonly);

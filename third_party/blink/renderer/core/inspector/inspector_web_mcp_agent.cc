@@ -13,6 +13,7 @@
 #include "third_party/blink/renderer/core/inspector/v8_inspector_string.h"
 #include "third_party/blink/renderer/core/script_tools/model_context_supplement.h"
 #include "third_party/blink/renderer/core/script_tools/script_tool_types.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
 
 namespace blink {
@@ -51,7 +52,12 @@ std::unique_ptr<protocol::Value> ParseJSON(const String& value) {
   std::vector<uint8_t> cbor;
 
   if (value.Is8Bit()) {
-    crdtp::json::ConvertJSONToCBOR(crdtp::span<uint8_t>(value.Span8()), &cbor);
+    // 8-bit Blink strings are Latin-1, while ConvertJSONToCBOR(span<uint8_t>)
+    // expects UTF-8. StringUtf8Adaptor avoids copying when the string is ASCII
+    // and transcodes Latin-1 (U+0080-U+00FF) to UTF-8 when needed.
+    StringUtf8Adaptor utf8(value);
+    crdtp::json::ConvertJSONToCBOR(
+        crdtp::span<uint8_t>(base::as_byte_span(utf8)), &cbor);
   } else {
     crdtp::json::ConvertJSONToCBOR(crdtp::span<uint16_t>(value.SpanUint16()),
                                    &cbor);
@@ -72,6 +78,7 @@ std::unique_ptr<protocol::WebMCP::Annotation> BuildAnnotations(
     builder.setReadOnly(annotations->read_only);
     builder.setUntrustedContent(annotations->untrusted_content);
     builder.setConsequential(annotations->consequential);
+    builder.setDebugging(annotations->debugging);
     has_annotations = true;
   }
   if (element && element->FastHasAttribute(html_names::kToolautosubmitAttr)) {
@@ -88,6 +95,7 @@ std::unique_ptr<protocol::WebMCP::Tool> InspectorWebMCPAgent::BuildProtocolTool(
   DCHECK(frame);
 
   auto tool = protocol::WebMCP::Tool::create()
+                  .setToolId(String(tool_data.Id().ToString()))
                   .setName(tool_data.Name())
                   .setDescription(tool_data.ScriptTool().description)
                   .setFrameId(IdentifiersFactory::FrameId(frame))
@@ -96,6 +104,12 @@ std::unique_ptr<protocol::WebMCP::Tool> InspectorWebMCPAgent::BuildProtocolTool(
     if (auto parsed =
             protocol::DictionaryValue::cast(ParseJSON(input_schema))) {
       tool->setInputSchema(std::move(parsed));
+    }
+  }
+  if (auto output_schema = tool_data.ScriptTool().output_schema) {
+    if (auto parsed =
+            protocol::DictionaryValue::cast(ParseJSON(output_schema))) {
+      tool->setOutputSchema(std::move(parsed));
     }
   }
 
@@ -138,9 +152,12 @@ protocol::Response InspectorWebMCPAgent::disable() {
 
 protocol::Response InspectorWebMCPAgent::cancelInvocation(
     const String& invocationId) {
-  auto invocation_token =
-      base::UnguessableToken::DeserializeFromString(invocationId.Ascii());
-  if (!invocation_token) {
+  std::optional<ToolInvocationToken> invocation_id =
+      base::UnguessableToken::DeserializeFromString(invocationId.Ascii())
+          .transform([](const base::UnguessableToken& token) {
+            return ToolInvocationToken(token);
+          });
+  if (!invocation_id) {
     return protocol::Response::InvalidParams("Invalid invocation id");
   }
 
@@ -149,7 +166,7 @@ protocol::Response InspectorWebMCPAgent::cancelInvocation(
   bool cancelled = false;
   for (LocalFrame* frame : *inspected_frames_) {
     if (auto* model_context = GetModelContext(frame)) {
-      if (model_context->CancelTool(*invocation_token)) {
+      if (model_context->CancelTool(*invocation_id)) {
         cancelled = true;
         break;
       }
@@ -184,6 +201,7 @@ void InspectorWebMCPAgent::WebMCPToolRemoved(Document* document,
   auto tools =
       std::make_unique<protocol::Array<protocol::WebMCP::RemovedTool>>();
   tools->push_back(protocol::WebMCP::RemovedTool::create()
+                       .setToolId(String(tool.Id().ToString()))
                        .setName(tool.Name())
                        .setFrameId(IdentifiersFactory::FrameId(frame))
                        .build());
@@ -193,22 +211,28 @@ void InspectorWebMCPAgent::WebMCPToolRemoved(Document* document,
 void InspectorWebMCPAgent::WebMCPToolExecuted(
     Document* document,
     const String& name,
+    const std::optional<ScriptToolToken>& tool_id,
     const String& input_arguments,
-    const base::UnguessableToken& invocation_id) {
+    const ToolInvocationToken& invocation_id) {
   if (!enabled_.Get()) {
     return;
   }
   if (LocalFrame* frame = document->GetFrame()) {
-    GetFrontend()->toolInvoked(name, IdentifiersFactory::FrameId(frame),
-                               String(invocation_id.ToString()),
-                               input_arguments);
+    std::optional<String> protocol_name =
+        name.IsNull() ? std::nullopt : std::make_optional(name);
+    std::optional<String> protocol_tool_id =
+        tool_id ? std::make_optional<String>(tool_id->ToString())
+                : std::nullopt;
+    GetFrontend()->toolInvoked(
+        IdentifiersFactory::FrameId(frame), String(invocation_id.ToString()),
+        input_arguments, std::move(protocol_name), std::move(protocol_tool_id));
   }
 }
 
 void InspectorWebMCPAgent::WebMCPToolResponded(
     Document* document,
     const String& result,
-    const base::UnguessableToken& invocation_id) {
+    const ToolInvocationToken& invocation_id) {
   if (!enabled_.Get()) {
     return;
   }
@@ -220,7 +244,7 @@ void InspectorWebMCPAgent::WebMCPToolResponded(
 void InspectorWebMCPAgent::WebMCPToolFailed(
     Document* document,
     const ScriptToolError& error,
-    const base::UnguessableToken& invocation_id,
+    const ToolInvocationToken& invocation_id,
     std::optional<std::pair<ScriptValue, ScriptState*>> exception) {
   if (!enabled_.Get()) {
     return;

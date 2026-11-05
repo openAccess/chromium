@@ -39,6 +39,9 @@ export interface SettingsOmniboxEverywhereSectionElement {
   };
 }
 
+const SYNTHETIC_SHOW_SHORTCUTS_PREF_KEY =
+    'synthetic.settings.omnibox_everywhere.show_shortcuts';
+
 const SettingsOmniboxEverywhereSectionElementBase =
     PrefServiceObserverMixinLit(I18nMixinLit(CrLitElement));
 
@@ -60,13 +63,11 @@ export class SettingsOmniboxEverywhereSectionElement extends
     return {
       registeredShortcut_: {type: String},
       isEnabled_: {type: Boolean},
-      isShortcutsShowing_: {type: Boolean},
     };
   }
 
   protected accessor registeredShortcut_: string = '';
   protected accessor isEnabled_: boolean = false;
-  protected accessor isShortcutsShowing_: boolean = false;
   private showShortcutsPrefValue_: number = ShowShortcutsPrefValue.UNSET;
   private ntpShortcutsVisible_: boolean = true;
   private browserProxy_: OmniboxEverywhereBrowserProxy =
@@ -100,14 +101,29 @@ export class SettingsOmniboxEverywhereSectionElement extends
   }
 
   private updateShortcutsShowing_() {
-    if (this.showShortcutsPrefValue_ === ShowShortcutsPrefValue.ENABLED) {
-      this.isShortcutsShowing_ = true;
-    } else if (
-        this.showShortcutsPrefValue_ === ShowShortcutsPrefValue.DISABLED) {
-      this.isShortcutsShowing_ = false;
-    } else {
-      this.isShortcutsShowing_ = this.ntpShortcutsVisible_;
+    let isShortcutsShowing: boolean;
+    switch (this.showShortcutsPrefValue_) {
+      case ShowShortcutsPrefValue.ENABLED:
+        isShortcutsShowing = true;
+        break;
+      case ShowShortcutsPrefValue.DISABLED:
+        isShortcutsShowing = false;
+        break;
+      default:
+        isShortcutsShowing = this.ntpShortcutsVisible_;
+        break;
     }
+    PrefService.getInstance().setPrefValue(
+        SYNTHETIC_SHOW_SHORTCUTS_PREF_KEY, isShortcutsShowing);
+  }
+
+  protected async onMainToggleChange_(event: Event) {
+    const target = event.target as SettingsToggleButtonElement;
+    const isChecked = target.checked;
+    await PrefService.getInstance().setPrefValue(
+        'omnibox_everywhere.launch_on_startup', isChecked);
+    await PrefService.getInstance().setPrefValue(
+        'omnibox_everywhere.background_mode', isChecked);
   }
 
   protected async onShowShortcutsToggleChange_(event: Event) {

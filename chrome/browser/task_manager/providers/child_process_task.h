@@ -11,12 +11,17 @@
 
 #include "base/byte_size.h"
 #include "chrome/browser/task_manager/providers/task.h"
-#include "chrome/common/buildflags.h"
+#include "content/public/common/child_process_id.h"
 
 class ProcessResourceUsage;
 
+namespace base {
+class Process;
+}  // namespace base
+
 namespace content {
 struct ChildProcessData;
+class RenderProcessHost;
 }  // namespace content
 
 namespace task_manager {
@@ -45,10 +50,14 @@ class ChildProcessTask : public Task {
     kUnknownRenderProcess,
   };
 
-  // Creates a child process task given its |data| which is
+  // Creates a child process task given its |data| and |process| which are
   // received from observing |content::BrowserChildProcessObserver|.
   ChildProcessTask(const content::ChildProcessData& data,
-                   ProcessSubtype subtype);
+                   const base::Process& process);
+
+  // Creates a child process task for a render process (such as a spare,
+  // Glic, or unknown render process host).
+  ChildProcessTask(content::RenderProcessHost& host, ProcessSubtype subtype);
 
   ChildProcessTask(const ChildProcessTask&) = delete;
   ChildProcessTask& operator=(const ChildProcessTask&) = delete;
@@ -61,7 +70,7 @@ class ChildProcessTask : public Task {
                int64_t refresh_flags) override;
   Type GetType() const override;
   SubType GetSubType() const override;
-  int GetChildProcessUniqueID() const override;
+  content::ChildProcessId GetChildProcessUniqueID() const override;
   std::optional<base::ByteSize> GetV8MemoryAllocated() const override;
   std::optional<base::ByteSize> GetV8MemoryUsed() const override;
 
@@ -77,8 +86,7 @@ class ChildProcessTask : public Task {
   std::optional<base::ByteSize> v8_memory_used_;
 
   // The unique ID of the child process. It is not the PID of the process.
-  // See |content::ChildProcessData::id|.
-  const int unique_child_process_id_;
+  const content::ChildProcessId unique_child_process_id_;
 
   // The type of the child process. See |content::ProcessType|.
   const int process_type_;

@@ -4,7 +4,13 @@
 
 package org.chromium.chrome.browser.native_page;
 
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.ui.native_page.NativePageTest.INVALID_URLS;
 import static org.chromium.chrome.browser.ui.native_page.NativePageTest.VALID_URLS;
@@ -21,6 +27,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -28,15 +35,20 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
+import org.chromium.chrome.browser.native_page.NativePageFactory.TabShim;
 import org.chromium.chrome.browser.pdf.PdfInfo;
 import org.chromium.chrome.browser.pdf.PdfPage;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabSelectionType;
+import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.chrome.browser.ui.native_page.NativePage.NativePageType;
 import org.chromium.chrome.browser.ui.native_page.NativePageTest.UrlCombo;
 import org.chromium.chrome.browser.url_constants.ExtensionsUrlOverrideRegistry;
 import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.url.JUnitTestOrigins;
+import org.chromium.url.Origin;
 
 /** Tests public methods in NativePageFactory. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -47,7 +59,7 @@ public class NativePageFactoryTest {
     @Mock private Tab mTab;
     @Mock private BrowserControlsManager mBrowserControlsManager;
     @Mock private TabModelSelector mTabModelSelector;
-    @Mock private Activity mActivity;
+    private Activity mActivity;
     private NativePageFactory mNativePageFactory;
     private PdfInfo mPdfInfo;
     private static final String PDF_LINK = "https://www.foo.com/testfiles/pdf/sample.pdf";
@@ -148,6 +160,7 @@ public class NativePageFactoryTest {
 
     @Before
     public void setUp() {
+        mActivity = Robolectric.buildActivity(Activity.class).get();
         mNativePageFactory =
                 new NativePageFactory(
                         null, null, null, null, null, null, null, null, null, null, null, null,
@@ -221,16 +234,17 @@ public class NativePageFactoryTest {
     @Test
     @EnableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
     @Config(qualifiers = "sw320dp")
-    public void testCreateSettingsPageOnPhone_ReturnsNull() {
+    public void testCreateSettingsPageOnPhone() {
         MockNativePage page =
                 (MockNativePage)
                         mNativePageFactory.createNativePageForURL(
                                 UrlConstants.SETTINGS_URL, null, mTab, false, null);
-        Assert.assertNull(page);
+        Assert.assertNotNull(page);
+        Assert.assertEquals(NativePageType.SETTINGS, page.type);
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.SETTINGS_IN_TAB)
+    @DisableFeatures({ChromeFeatureList.SETTINGS_IN_TAB, ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP})
     @Config(qualifiers = "sw600dp")
     public void testCreateSettingsPage_SettingsInTabDisabled() {
         MockNativePage page =
@@ -277,17 +291,20 @@ public class NativePageFactoryTest {
                         mActivity);
         Assert.assertNull("Only pdf native page is supported on custom tab.", page);
 
+        Origin initiatorOrigin = JUnitTestOrigins.createTuple("https", "initiator.example", 443);
+        PdfInfo pdfInfoWithInitiator = PdfInfo.initReuse(/* preferReuse= */ false, initiatorOrigin);
         page =
                 NativePageFactory.createNativePageForCustomTab(
                         PDF_LINK,
                         mCandidatePage,
                         mTab,
-                        mPdfInfo,
+                        pdfInfoWithInitiator,
                         mBrowserControlsManager,
                         mTabModelSelector,
                         mActivity);
         Assert.assertEquals(
                 "Candidate page should be reused when the url matches.", mCandidatePage, page);
+        verify(mCandidatePage).setInitiatorOrigin(initiatorOrigin);
 
         page =
                 NativePageFactory.createNativePageForCustomTab(
@@ -299,6 +316,48 @@ public class NativePageFactoryTest {
                         mTabModelSelector,
                         mActivity);
         Assert.assertEquals("A new pdf page should be created.", mPdfPage, page);
+    }
+
+    @Test
+    public void testCreateNativePageForURL_ReusedPdfUpdatesInitiatorOrigin() {
+        Origin initiatorOrigin = JUnitTestOrigins.createTuple("https", "initiator.example", 443);
+        PdfInfo pdfInfoWithInitiator = PdfInfo.initReuse(/* preferReuse= */ true, initiatorOrigin);
+        doReturn(true).when(mCandidatePage).isPdf();
+        doReturn(true)
+                .when(mCandidatePage)
+                .shouldReusePage(PDF_LINK, PDF_LINK, /* preferReuse= */ true);
+
+        NativePage page =
+                mNativePageFactory.createNativePageForURL(
+                        PDF_LINK,
+                        mCandidatePage,
+                        mTab,
+                        /* isIncognito= */ false,
+                        pdfInfoWithInitiator);
+        Assert.assertSame(mCandidatePage, page);
+        verify(mCandidatePage).setInitiatorOrigin(initiatorOrigin);
+    }
+
+    @Test
+    public void testCreateNativePageForCustomTab_doesNotReuseFrozenCandidate() {
+        doReturn(true).when(mCandidatePage).isFrozen();
+
+        NativePage page =
+                NativePageFactory.createNativePageForCustomTab(
+                        PDF_LINK,
+                        mCandidatePage,
+                        mTab,
+                        mPdfInfo,
+                        mBrowserControlsManager,
+                        mTabModelSelector,
+                        mActivity);
+
+        // crbug.com/568278676: a frozen page has no view and must never be handed back.
+        Assert.assertEquals(
+                "A frozen candidate page must not be reused even when the url matches.",
+                mPdfPage,
+                page);
+        verify(mCandidatePage, never()).updateForUrl(PDF_LINK);
     }
 
     @Test
@@ -371,5 +430,58 @@ public class NativePageFactoryTest {
                 "Incognito history should always be a native page.",
                 mNativePageFactory.createNativePageForURL(historyUrl, null, mTab, true, null));
         ExtensionsUrlOverrideRegistry.setHistoryPageOverrideEnabled(false);
+    }
+
+    @Test
+    public void testTabShim_SelectTab_AlreadyVisible() {
+        when(mTabModelSelector.getCurrentTab()).thenReturn(mTab);
+        TabShim tabShim = new TabShim(mTab, mBrowserControlsManager, mTabModelSelector, null);
+
+        tabShim.selectTab();
+
+        verify(mTabModelSelector, never()).getModelForTabId(anyInt());
+        verify(mTabModelSelector, never()).selectModel(anyBoolean());
+    }
+
+    @Test
+    public void testTabShim_SelectTab_Closing() {
+        when(mTab.isClosing()).thenReturn(true);
+        TabShim tabShim = new TabShim(mTab, mBrowserControlsManager, mTabModelSelector, null);
+
+        tabShim.selectTab();
+
+        verify(mTabModelSelector, never()).getModelForTabId(anyInt());
+        verify(mTabModelSelector, never()).selectModel(anyBoolean());
+    }
+
+    @Test
+    public void testTabShim_SelectTab_Destroyed() {
+        when(mTab.isDestroyed()).thenReturn(true);
+        TabShim tabShim = new TabShim(mTab, mBrowserControlsManager, mTabModelSelector, null);
+
+        tabShim.selectTab();
+
+        verify(mTabModelSelector, never()).getModelForTabId(anyInt());
+        verify(mTabModelSelector, never()).selectModel(anyBoolean());
+    }
+
+    @Test
+    public void testTabShim_SelectTab_SwitchesTab() {
+        int tabId = 123;
+        when(mTab.getId()).thenReturn(tabId);
+        when(mTabModelSelector.getCurrentTab()).thenReturn(mock(Tab.class));
+
+        TabModel model = mock(TabModel.class);
+        when(mTabModelSelector.getModelForTabId(tabId)).thenReturn(model);
+        when(model.isIncognito()).thenReturn(false);
+        when(model.getTabById(tabId)).thenReturn(mTab);
+        when(model.indexOf(mTab)).thenReturn(2);
+
+        TabShim tabShim = new TabShim(mTab, mBrowserControlsManager, mTabModelSelector, null);
+
+        tabShim.selectTab();
+
+        verify(mTabModelSelector).selectModel(false);
+        verify(model).setIndex(2, TabSelectionType.FROM_USER);
     }
 }

@@ -56,7 +56,6 @@ using ::testing::AtLeast;
 using ::testing::Ge;
 using ::testing::Gt;
 using ::testing::InSequence;
-using ::testing::InvokeWithoutArgs;
 using ::testing::Lt;
 using ::testing::Mock;
 using ::testing::Return;
@@ -171,7 +170,8 @@ class MediaRecorderHandlerFixture : public ScopedMockOverlayScrollbars {
         has_audio_(has_audio),
         media_recorder_handler_(MakeGarbageCollected<MediaRecorderHandler>(
             scheduler::GetSingleThreadTaskRunnerForTesting(),
-            KeyFrameRequestProcessor::Configuration())),
+            KeyFrameRequestProcessor::Configuration(),
+            /*cross_origin_isolated_capability=*/false)),
         audio_source_(kTestAudioChannels,
                       440 /* freq */,
                       kTestAudioSampleRate) {
@@ -264,6 +264,11 @@ class MediaRecorderHandlerFixture : public ScopedMockOverlayScrollbars {
       base::TimeTicks timestamp) {
     media_recorder_handler_->OnEncodedAudio(params, std::move(encoded_data),
                                             std::nullopt, timestamp);
+  }
+
+  static base::TimeTicks CoarsenTimestamp(const MediaRecorderHandler& handler,
+                                          base::TimeTicks timestamp) {
+    return handler.CoarsenTimestamp(timestamp);
   }
 
   void OnAudioBusForTesting(const media::AudioBus& audio_bus) {
@@ -1331,6 +1336,41 @@ class MediaRecorderHandlerAudioVideoTest
     : public testing::Test,
       public MediaRecorderHandlerAudioVideoBase {};
 
+// Timestamps reach the page via the muxed bytes, so the deltas between them
+// must not be finer than what performance.now() exposes.
+TEST_F(MediaRecorderHandlerAudioVideoTest, CoarsensMuxerTimestamps) {
+  auto* handler = MakeGarbageCollected<MediaRecorderHandler>(
+      scheduler::GetSingleThreadTaskRunnerForTesting(),
+      KeyFrameRequestProcessor::Configuration(),
+      /*cross_origin_isolated_capability=*/false);
+  const base::TimeTicks t1 =
+      base::TimeTicks() + base::Seconds(1000) + base::Microseconds(33);
+  const base::TimeTicks t2 = t1 + base::Microseconds(33);
+  const base::TimeDelta delta =
+      CoarsenTimestamp(*handler, t2) - CoarsenTimestamp(*handler, t1);
+  EXPECT_EQ(delta % base::Microseconds(100), base::TimeDelta());
+  EXPECT_LE(delta.magnitude(), base::Microseconds(100));
+  EXPECT_TRUE(CoarsenTimestamp(*handler, base::TimeTicks()).is_null());
+  media_recorder_handler_ = nullptr;
+}
+
+TEST_F(MediaRecorderHandlerAudioVideoTest,
+       CoarsensMuxerTimestampsLessWhenCrossOriginIsolated) {
+  auto* handler = MakeGarbageCollected<MediaRecorderHandler>(
+      scheduler::GetSingleThreadTaskRunnerForTesting(),
+      KeyFrameRequestProcessor::Configuration(),
+      /*cross_origin_isolated_capability=*/true);
+  const base::TimeTicks t1 =
+      base::TimeTicks() + base::Seconds(1000) + base::Microseconds(33);
+  const base::TimeTicks t2 = t1 + base::Microseconds(33);
+  const base::TimeDelta delta =
+      CoarsenTimestamp(*handler, t2) - CoarsenTimestamp(*handler, t1);
+  EXPECT_EQ(delta % base::Microseconds(5), base::TimeDelta());
+  EXPECT_GE(delta, base::Microseconds(25));
+  EXPECT_LE(delta, base::Microseconds(40));
+  media_recorder_handler_ = nullptr;
+}
+
 TEST_F(MediaRecorderHandlerAudioVideoTest, IgnoresStaleEncodedMediaOnRestart) {
   AddTracks();
   V8TestingScope scope;
@@ -1597,7 +1637,8 @@ class MediaRecorderHandlerPassthroughTest
     ON_CALL(*video_source_, SupportsEncodedOutput).WillByDefault(Return(true));
     media_recorder_handler_ = MakeGarbageCollected<MediaRecorderHandler>(
         scheduler::GetSingleThreadTaskRunnerForTesting(),
-        KeyFrameRequestProcessor::Configuration());
+        KeyFrameRequestProcessor::Configuration(),
+        /*cross_origin_isolated_capability=*/false);
     EXPECT_FALSE(media_recorder_handler_->recording_);
   }
 
@@ -1675,10 +1716,10 @@ TEST_F(MediaRecorderHandlerPassthroughTest, ErrorsOutOnCodecSwitch) {
   // The expectation here works around this issue.
   EXPECT_CALL(*recorder, WriteData).Times(AtLeast(1));
 
-  EXPECT_CALL(*recorder, OnError).WillOnce(InvokeWithoutArgs([&]() {
+  EXPECT_CALL(*recorder, OnError).WillOnce([&]() {
     // Simulate MediaRecorder behavior which is to Stop() the handler on error.
     media_recorder_handler_->Stop();
-  }));
+  });
   OnVideoFrameForTesting(FakeEncodedVideoFrame::Builder()
                              .WithKeyFrame(true)
                              .WithCodec(media::VideoCodec::kVP8)

@@ -18,8 +18,6 @@ from pylib.local.emulator.proto import avd_pb2
 
 def CreateAvdSettings():
     # python generated codes are simplified since Protobuf v3.20.0 and cause
-    # pylint error: https://github.com/protocolbuffers/protobuf/issues/9730
-    # pylint: disable=no-member
     return avd_pb2.AvdSettings()
 
 
@@ -371,7 +369,6 @@ class AvdInstallCreateUninstallTest(unittest.TestCase):
         mock_rmtree.assert_not_called()
 
 
-# pylint: disable=protected-access
 class AvdEnsureSystemSettingsTest(unittest.TestCase):
     class _FakeDevice:
         build_version_sdk = avd.version_codes.MARSHMALLOW
@@ -427,6 +424,83 @@ class AvdEnsureSystemSettingsTest(unittest.TestCase):
         self.assertNotIn(
             ['setprop', 'persist.sys.timezone', 'Etc/UTC'], commands
         )
+
+
+class AvdSetNetworkTest(unittest.TestCase):
+    @patch('os.makedirs')
+    @patch('pylib.local.emulator.avd.tempfile_ext.TemporaryFileName')
+    @patch('pylib.local.emulator.avd.AvdConfig._InstallCipdPackages')
+    @patch('pylib.local.emulator.avd._AvdManagerAgent')
+    @patch('pylib.local.emulator.ini.update_ini_file')
+    @patch('pylib.local.emulator.avd.AvdConfig._UpdateAvdConfigFile')
+    @patch('pylib.local.emulator.avd.AvdConfig._Initialize')
+    @patch('pylib.local.emulator.avd._AvdInstance')
+    @patch('pylib.local.emulator.avd._SetNetwork')
+    def testCreateDisablesNetwork(
+        self,
+        mock_set_network,
+        mock_avd_instance,
+        _mock_init,
+        _mock_update_config,
+        _mock_update_ini,
+        _mock_avd_manager,
+        _mock_install_cipd,
+        _mock_temp_file,
+        _mock_makedirs,
+    ):
+        config = """
+        avd_name: "android_33_google_apis_x64"
+        system_image_name: "system-images;android-33;google_apis;x86_64"
+        system_image_package {
+          package_name: "system_image"
+          version: "1.0"
+        }
+        """
+        with patch('builtins.open', mock_open(read_data=config)):
+            avd_config = avd.AvdConfig('/path/to/creation.textpb')
+            avd_config.Create(dry_run=True)
+
+        mock_set_network.assert_called_once_with(
+            mock_avd_instance.return_value.device, False
+        )
+
+    @patch('os.makedirs')
+    @patch('pylib.local.emulator.avd.tempfile_ext.TemporaryFileName')
+    @patch('socket.socket')
+    @patch('pylib.local.emulator.avd.cmd_helper.Popen')
+    @patch(
+        'pylib.local.emulator.avd.timeout_retry.Run',
+        return_value='emulator-5554',
+    )
+    @patch('pylib.local.emulator.avd.device_utils.DeviceUtils')
+    @patch('pylib.local.emulator.avd._EnsureSystemSettings')
+    @patch('pylib.local.emulator.avd._SetNetwork')
+    def testStartSetsNetwork(
+        self,
+        mock_set_network,
+        _mock_ensure_settings,
+        _mock_device_utils,
+        _mock_timeout_run,
+        _mock_popen,
+        _mock_socket,
+        _mock_temp_file,
+        _mock_makedirs,
+    ):
+        config = 'avd_name: "android_33_google_apis_x64"'
+        with patch('builtins.open', mock_open(read_data=config)):
+            avd_config = avd.AvdConfig('/path/to/creation.textpb')
+            instance = avd._AvdInstance(avd_config)
+
+            instance.Start(enable_network=False)
+            mock_set_network.assert_called_once_with(instance.device, False)
+
+            mock_set_network.reset_mock()
+            instance.Start(enable_network=True)
+            mock_set_network.assert_called_once_with(instance.device, True)
+
+            mock_set_network.reset_mock()
+            instance.Start(ensure_system_settings=False)
+            mock_set_network.assert_not_called()
 
 
 class AvdProcessRawSystemImageTest(unittest.TestCase):
@@ -704,6 +778,25 @@ class AvdProcessRawSystemImageTest(unittest.TestCase):
                 'google_apis',
                 'x86_64',
             ),
+        )
+
+    @patch('pylib.local.emulator.ini.load')
+    def testProcessSourcePropsCommaInTagId(self, mock_ini_load):
+        mock_ini_load.return_value = {
+            'AndroidVersion.ApiLevel': '35',
+            'SystemImage.TagId': 'android-desktop,google_apis_playstore',
+            'SystemImage.Abi': 'x86_64',
+        }
+        mock_open_obj = mock_open(read_data='template')
+        with patch('builtins.open', mock_open_obj):
+            package_path = avd._ProcessSourceProps(
+                '/fake/source.properties', '1.0'
+            )
+
+        self.assertEqual(
+            'system-images;android-35;'
+            'android-desktop_google_apis_playstore;x86_64',
+            package_path,
         )
 
 

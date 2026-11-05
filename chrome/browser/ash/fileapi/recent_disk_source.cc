@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ash/fileapi/recent_disk_source.h"
 
+#include <optional>
+#include <string_view>
 #include <utility>
 
 #include "base/files/file_path.h"
@@ -39,7 +41,7 @@ void OnReadDirectoryOnIOThread(
     base::File::Error result,
     storage::FileSystemOperation::FileEntryList entries,
     bool has_more) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
@@ -50,7 +52,7 @@ void ReadDirectoryOnIOThread(
     scoped_refptr<storage::FileSystemContext> file_system_context,
     const storage::FileSystemURL& url,
     const storage::FileSystemOperation::ReadDirectoryCallback& callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
   file_system_context->operation_runner()->ReadDirectory(
       url, base::BindRepeating(&OnReadDirectoryOnIOThread, callback));
@@ -60,7 +62,7 @@ void OnGetMetadataOnIOThread(
     storage::FileSystemOperation::GetMetadataCallback callback,
     base::File::Error result,
     const base::File::Info& info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce(std::move(callback), result, info));
@@ -71,7 +73,7 @@ void GetMetadataOnIOThread(
     const storage::FileSystemURL& url,
     storage::FileSystemOperation::GetMetadataFieldSet fields,
     storage::FileSystemOperation::GetMetadataCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
 
   file_system_context->operation_runner()->GetMetadata(
       url, fields,
@@ -100,17 +102,18 @@ RecentDiskSource::RecentDiskSource(
       ignore_dotfiles_(ignore_dotfiles),
       max_depth_(max_depth),
       uma_histogram_name_(std::move(uma_histogram_name)) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 }
 
 RecentDiskSource::~RecentDiskSource() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 }
 
 void RecentDiskSource::GetRecentFiles(const Params& params,
                                       GetRecentFilesCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(context_map_.Lookup(params.call_id()) == nullptr);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(context_map_.Lookup(params.call_id()) == nullptr,
+        base::NotFatalUntil::M160);
 
   // Return immediately if mount point does not exist.
   storage::ExternalMountPoints* mount_points =
@@ -129,7 +132,7 @@ void RecentDiskSource::GetRecentFiles(const Params& params,
 }
 
 std::vector<RecentFile> RecentDiskSource::Stop(const int32_t call_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CallContext* context = context_map_.Lookup(call_id);
   if (context == nullptr) {
     // The Stop method was called after we already responded. Just return empty
@@ -145,7 +148,7 @@ std::vector<RecentFile> RecentDiskSource::Stop(const int32_t call_id) {
 void RecentDiskSource::ScanDirectory(const int32_t call_id,
                                      const base::FilePath& path,
                                      int depth) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   // If context is gone, that is Stop() has been called, exit immediately.
   CallContext* context = context_map_.Lookup(call_id);
@@ -173,7 +176,7 @@ void RecentDiskSource::OnReadDirectory(
     base::File::Error result,
     storage::FileSystemOperation::FileEntryList entries,
     bool has_more) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // If context is gone, that is Stop() has been called, exit immediately.
   CallContext* context = context_map_.Lookup(call_id);
   if (context == nullptr) {
@@ -231,7 +234,7 @@ void RecentDiskSource::OnGotMetadata(const int32_t call_id,
                                      const storage::FileSystemURL& url,
                                      base::File::Error result,
                                      const base::File::Info& info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   // If context is gone, that is Stop() has been called, exit immediately.
   CallContext* context = context_map_.Lookup(call_id);
   if (context == nullptr) {
@@ -250,16 +253,16 @@ void RecentDiskSource::OnGotMetadata(const int32_t call_id,
 }
 
 void RecentDiskSource::OnReadOrStatFinished(const int32_t call_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CallContext* context = context_map_.Lookup(call_id);
   // If context is gone, that is Stop() has been called, exit immediately.
   if (context == nullptr) {
     return;
   }
 
-  DCHECK(context->inflight_stats == 0);
-  DCHECK(context->inflight_readdirs == 0);
-  DCHECK(!context->build_start_time.is_null());
+  CHECK(context->inflight_stats == 0, base::NotFatalUntil::M160);
+  CHECK(context->inflight_readdirs == 0, base::NotFatalUntil::M160);
+  CHECK(!context->build_start_time.is_null(), base::NotFatalUntil::M160);
 
   // All reads/scans completed.
   UmaHistogramTimes(uma_histogram_name_,
@@ -272,7 +275,7 @@ void RecentDiskSource::OnReadOrStatFinished(const int32_t call_id) {
 storage::FileSystemURL RecentDiskSource::BuildDiskURL(
     const Params& params,
     const base::FilePath& path) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   storage::ExternalMountPoints* mount_points =
       storage::ExternalMountPoints::GetSystemInstance();
@@ -293,20 +296,21 @@ bool RecentDiskSource::MatchesFileType(const base::FilePath& path,
   // TODO(fukino): It is better to have better coverage of file extensions to be
   // consistent with file-type detection on Android system. crbug.com/1034874.
   const auto ext = base::ToLowerASCII(path.Extension());
-  if (!file_types_data::kExtensionToMIME.contains(ext)) {
+  const std::optional<std::string_view> mime_type =
+      file_types_data::GetMimeTypeForExtension(ext);
+  if (!mime_type) {
     return false;
   }
-  std::string mime_type = file_types_data::kExtensionToMIME.at(ext);
 
   switch (file_type) {
     case RecentSource::FileType::kAudio:
-      return net::MatchesMimeType(kAudioMimeType, mime_type);
+      return net::MatchesMimeType(kAudioMimeType, *mime_type);
     case RecentSource::FileType::kImage:
-      return net::MatchesMimeType(kImageMimeType, mime_type);
+      return net::MatchesMimeType(kImageMimeType, *mime_type);
     case RecentSource::FileType::kVideo:
-      return net::MatchesMimeType(kVideoMimeType, mime_type);
+      return net::MatchesMimeType(kVideoMimeType, *mime_type);
     case RecentSource::FileType::kDocument:
-      return file_types_data::kDocumentMIMETypes.contains(mime_type);
+      return file_types_data::IsDocumentMimeType(*mime_type);
     default:
       return false;
   }

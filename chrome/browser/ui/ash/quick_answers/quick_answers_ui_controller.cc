@@ -21,10 +21,6 @@
 #include "chrome/browser/ui/ash/quick_answers/ui/magic_boost_user_consent_view.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/quick_answers_util.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/quick_answers_view.h"
-#include "chrome/browser/ui/ash/quick_answers/ui/rich_answers_definition_view.h"
-#include "chrome/browser/ui/ash/quick_answers/ui/rich_answers_translation_view.h"
-#include "chrome/browser/ui/ash/quick_answers/ui/rich_answers_unit_conversion_view.h"
-#include "chrome/browser/ui/ash/quick_answers/ui/rich_answers_view.h"
 #include "chrome/browser/ui/ash/quick_answers/ui/user_consent_view.h"
 #include "chrome/browser/ui/ash/read_write_cards/read_write_cards_ui_controller.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -33,7 +29,6 @@
 #include "chromeos/components/quick_answers/public/cpp/controller/quick_answers_controller.h"
 #include "chromeos/components/quick_answers/public/cpp/quick_answers_state.h"
 #include "chromeos/components/quick_answers/quick_answers_model.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -46,7 +41,6 @@
 
 namespace {
 
-using quick_answers::QuickAnswer;
 using quick_answers::QuickAnswersExitPoint;
 
 constexpr char kFeedbackDescriptionTemplate[] = "#QuickAnswers\nQuery:%s\n";
@@ -56,19 +50,6 @@ void OpenUrl(Profile* profile, const GURL& url) {
   ash::NewWindowDelegate::GetInstance()->OpenUrl(
       url, ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
       ash::NewWindowDelegate::Disposition::kNewForegroundTab);
-}
-
-quick_answers::Design GetDesign(QuickAnswersState::FeatureType feature_type) {
-  switch (feature_type) {
-    case QuickAnswersState::FeatureType::kQuickAnswers:
-      return chromeos::features::IsQuickAnswersMaterialNextUIEnabled()
-                 ? quick_answers::Design::kRefresh
-                 : quick_answers::Design::kCurrent;
-    case QuickAnswersState::FeatureType::kHmr:
-      return quick_answers::Design::kMagicBoost;
-  }
-
-  NOTREACHED() << "Invalid feature type enum value provided";
 }
 
 }  // namespace
@@ -96,12 +77,14 @@ void QuickAnswersUiController::CreateQuickAnswersView(
     std::optional<quick_answers::Intent> intent,
     QuickAnswersState::FeatureType feature_type,
     bool is_internal) {
-  CreateQuickAnswersViewInternal(profile, query, intent,
-                                 {
-                                     .title = title,
-                                     .design = GetDesign(feature_type),
-                                     .is_internal = is_internal,
-                                 });
+  CreateQuickAnswersViewInternal(
+      profile, query, intent,
+      {
+          .title = title,
+          .is_magic_boost =
+              feature_type == QuickAnswersState::FeatureType::kHmr,
+          .is_internal = is_internal,
+      });
 }
 
 void QuickAnswersUiController::CreateQuickAnswersViewForPixelTest(
@@ -126,7 +109,7 @@ void QuickAnswersUiController::CreateQuickAnswersViewInternal(
     CloseQuickAnswersView();
   }
 
-  DCHECK(!IsShowingUserConsentView());
+  CHECK(!IsShowingUserConsentView(), base::NotFatalUntil::M162);
   SetActiveQuery(profile, query);
 
   auto* view = GetReadWriteCardsUiController().SetQuickAnswersUi(
@@ -147,36 +130,9 @@ void QuickAnswersUiController::CreateQuickAnswersViewInternal(
   quick_answers_view_.SetView(view);
 }
 
-void QuickAnswersUiController::CreateRichAnswersView() {
-  CHECK(controller_->quick_answer());
-
-  views::UniqueWidgetPtr widget = quick_answers::RichAnswersView::CreateWidget(
-      controller_->anchor_bounds(), weak_factory_.GetWeakPtr(),
-      *controller_->quick_answer(), *controller_->structured_result());
-
-  if (!widget) {
-    // If the rich card widget cannot be created, fall-back to open the query
-    // in Google Search.
-    OpenUrl(profile_, quick_answers::GetDetailsUrlForQuery(query_));
-    controller_->OnQuickAnswersResultClick();
-  }
-
-  rich_answers_widget_ = std::move(widget);
-  rich_answers_widget_->Show();
-  controller_->SetVisibility(QuickAnswersVisibility::kRichAnswersVisible);
-  return;
-}
-
 void QuickAnswersUiController::OnQuickAnswersViewPressed() {
   // Route dismissal through |controller_| for logging impressions.
   controller_->DismissQuickAnswers(QuickAnswersExitPoint::kQuickAnswersClick);
-
-  // Trigger the corresponding rich card view if the feature is enabled.
-  if (chromeos::features::IsQuickAnswersRichCardEnabled() &&
-      controller_->quick_answer() != nullptr) {
-    CreateRichAnswersView();
-    return;
-  }
 
   OpenWebUrl(quick_answers::GetDetailsUrlForQuery(query_));
 
@@ -196,14 +152,6 @@ bool QuickAnswersUiController::CloseQuickAnswersView() {
   if (controller_->GetQuickAnswersVisibility() ==
       QuickAnswersVisibility::kQuickAnswersVisible) {
     GetReadWriteCardsUiController().RemoveQuickAnswersUi();
-    return true;
-  }
-  return false;
-}
-
-bool QuickAnswersUiController::CloseRichAnswersView() {
-  if (IsShowingRichAnswersView()) {
-    rich_answers_widget_->Close();
     return true;
   }
   return false;
@@ -237,7 +185,7 @@ void QuickAnswersUiController::RenderQuickAnswersViewWithResult(
   // QuickAnswersView was initiated with a loading page and will be updated
   // when quick answers result from server side is ready.
   quick_answers_view()->SetResult(structured_result,
-                                  application_locale_storage_->Get());
+                                  application_locale_storage_->GetTag());
 }
 
 void QuickAnswersUiController::SetActiveQuery(Profile* profile,
@@ -259,34 +207,11 @@ void QuickAnswersUiController::CreateUserConsentView(
     const gfx::Rect& anchor_bounds,
     quick_answers::IntentType intent_type,
     const std::u16string& intent_text) {
-  CreateUserConsentViewInternal(
-      profile, anchor_bounds, intent_type, intent_text,
-      /*use_refreshed_design=*/
-      chromeos::features::IsQuickAnswersMaterialNextUIEnabled());
-}
-
-void QuickAnswersUiController::CreateUserConsentViewForPixelTest(
-    const gfx::Rect& anchor_bounds,
-    quick_answers::IntentType intent_type,
-    const std::u16string& intent_text,
-    bool use_refreshed_design) {
-  CHECK_IS_TEST();
-  CreateUserConsentViewInternal(/*profile=*/nullptr, anchor_bounds, intent_type,
-                                intent_text, use_refreshed_design);
-}
-
-void QuickAnswersUiController::CreateUserConsentViewInternal(
-    Profile* profile,
-    const gfx::Rect& anchor_bounds,
-    quick_answers::IntentType intent_type,
-    const std::u16string& intent_text,
-    bool use_refreshed_design) {
   CHECK_EQ(controller_->GetQuickAnswersVisibility(),
            QuickAnswersVisibility::kPending);
 
-  if (chromeos::features::IsMagicBoostRevampForQuickAnswersEnabled() &&
-      QuickAnswersState::GetFeatureType() ==
-          QuickAnswersState::FeatureType::kHmr) {
+  if (QuickAnswersState::GetFeatureType() ==
+      QuickAnswersState::FeatureType::kHmr) {
     // Directing to the right settings toggle requires an active profile.
     profile_ = profile;
     user_consent_view_.SetView(
@@ -310,7 +235,7 @@ void QuickAnswersUiController::CreateUserConsentViewInternal(
         GetReadWriteCardsUiController().SetQuickAnswersUi(
             views::Builder<quick_answers::UserConsentView>(
                 std::make_unique<quick_answers::UserConsentView>(
-                    use_refreshed_design, GetReadWriteCardsUiController()))
+                    GetReadWriteCardsUiController()))
                 .SetIntentType(intent_type)
                 .SetIntentText(intent_text)
                 // It is safe to do `base::Unretained(this)`. UIs are destructed
@@ -330,6 +255,15 @@ void QuickAnswersUiController::CreateUserConsentViewInternal(
   user_consent_view_.view()->GetViewAccessibility().AnnounceText(
       l10n_util::GetStringUTF16(
           IDS_QUICK_ANSWERS_USER_NOTICE_VIEW_A11Y_INFO_ALERT_TEXT));
+}
+
+void QuickAnswersUiController::CreateUserConsentViewForPixelTest(
+    const gfx::Rect& anchor_bounds,
+    quick_answers::IntentType intent_type,
+    const std::u16string& intent_text) {
+  CHECK_IS_TEST();
+  CreateUserConsentView(/*profile=*/nullptr, anchor_bounds, intent_type,
+                        intent_text);
 }
 
 void QuickAnswersUiController::CloseUserConsentView() {
@@ -433,7 +367,7 @@ void QuickAnswersUiController::OnUserConsentAllowPressed() {
 }
 
 void QuickAnswersUiController::OnUserConsentResult(bool consented) {
-  DCHECK(IsShowingUserConsentView());
+  CHECK(IsShowingUserConsentView(), base::NotFatalUntil::M162);
   controller_->OnUserConsentResult(consented);
 
   if (consented && IsShowingQuickAnswersView()) {
@@ -463,11 +397,6 @@ bool QuickAnswersUiController::IsShowingQuickAnswersView() const {
   }
 
   return false;
-}
-
-bool QuickAnswersUiController::IsShowingRichAnswersView() const {
-  return rich_answers_widget_ && !rich_answers_widget_->IsClosed() &&
-         rich_answers_widget_->GetContentsView();
 }
 
 chromeos::ReadWriteCardsUiController&

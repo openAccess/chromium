@@ -128,7 +128,8 @@ export default [
       // No point linting auto-generated files.
       'tools/typescript/definitions/**/*',
 
-      // Ignore generated checked-in JS file.
+      // Ignore generated checked-in JS files.
+      'components/variations/proto/devtools/client_variations.js',
       'ios/tools/documents_statistics_viewer/tsc/viewer.js',
 
       // No point checking minify_js expected output tests.
@@ -586,9 +587,7 @@ export default [
       'chrome/browser/resources/contextual_tasks/composebox.ts',
       'chrome/browser/resources/contextual_tasks/onboarding_tooltip.ts',
       'chrome/browser/resources/lens/overlay/side_panel/side_panel_app.ts',
-      'chrome/browser/resources/new_tab_page/app.ts',
       'chrome/browser/resources/new_tab_page/lazy_load.ts',
-      'chrome/browser/resources/omnibox_popup/aim_app.ts',
       'chrome/test/data/webui/contextual_tasks/composebox_misc_inputs_test.ts',
       'chrome/test/data/webui/cr_components/composebox/composebox_drag_drop_test.ts',
       'chrome/test/data/webui/cr_components/composebox/composebox_input_placeholder_test.ts',

@@ -12,9 +12,7 @@ import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.Visibility.GONE;
 import static androidx.test.espresso.matcher.ViewMatchers.Visibility.VISIBLE;
-import static androidx.test.espresso.matcher.ViewMatchers.isCompletelyDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withEffectiveVisibility;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
@@ -23,9 +21,11 @@ import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.core.AllOf.allOf;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import static org.chromium.base.test.transit.ViewElement.displayingAtLeastOption;
 import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.closeFirstTabGroupInTabSwitcher;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.closeFirstTabInTabSwitcher;
@@ -37,7 +37,6 @@ import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.g
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.mergeAllNormalTabsToAGroup;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.verifyTabModelTabCount;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.verifyTabSwitcherCardCount;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
@@ -84,7 +83,7 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
-import org.chromium.chrome.browser.tab.TabUtils;
+import org.chromium.chrome.browser.tab_ui.TabCardThemeUtil;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabThumbnailView;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
@@ -216,10 +215,10 @@ public class TabSwitcherLayoutTest {
     public void testThumbnailAspectRatio_default() {
         prepareTabs(2, 0, "about:blank");
         enterTabSwitcher(mActivityTestRule.getActivity());
-        onViewWaiting(tabSwitcherViewMatcher())
+        waitForView(tabSwitcherViewMatcher())
                 .check(
                         ThumbnailAspectRatioAssertion.havingAspectRatio(
-                                TabUtils.getTabThumbnailAspectRatio(
+                                TabCardThemeUtil.getTabThumbnailAspectRatio(
                                         mActivityTestRule.getActivity(),
                                         mActivityTestRule
                                                 .getActivity()
@@ -243,14 +242,12 @@ public class TabSwitcherLayoutTest {
 
         enterTabSwitcher(mActivityTestRule.getActivity());
 
-        onViewWaiting(
-                        allOf(
-                                isDescendantOfA(
-                                        withId(
-                                                TabUiTestHelper.getTabSwitcherAncestorId(
-                                                        mActivityTestRule.getActivity()))),
-                                withId(R.id.tab_thumbnail)))
-                .check(matches(isDisplayed()));
+        waitForView(
+                isDescendantOfA(
+                        withId(
+                                TabUiTestHelper.getTabSwitcherAncestorId(
+                                        mActivityTestRule.getActivity()))),
+                withId(R.id.tab_thumbnail));
 
         histograms.assertExpected();
     }
@@ -414,7 +411,6 @@ public class TabSwitcherLayoutTest {
                         InstrumentationRegistry.getInstrumentation(), ChromeTabbedActivity.class);
         assertTrue(ColorUtils.inNightMode(ctaNightMode));
         CriteriaHelper.pollUiThread(ctaNightMode.getTabModelSelector()::isTabStateInitialized);
-        enterTabSwitcher(ctaNightMode);
         verifyTabSwitcherCardCount(ctaNightMode, 2);
     }
 
@@ -939,7 +935,7 @@ public class TabSwitcherLayoutTest {
         // Merge tab group of 2 at first index with the 3rd tab.
         mergeAllNormalTabsToAGroup(cta);
 
-        onViewWaiting(withId(R.id.snackbar_button)).check(matches(isCompletelyDisplayed()));
+        waitForView(withId(R.id.snackbar_button), displayingAtLeastOption(100));
 
         String ungroupButtonText = cta.getString(R.string.ungroup_tab_group_menu_item);
         onView(withId(R.id.action_button)).perform(click());
@@ -1171,7 +1167,6 @@ public class TabSwitcherLayoutTest {
     public void testUndoClosure_AcceptGroupClosure() {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
         SnackbarManager snackbarManager = mActivityTestRule.getActivity().getSnackbarManager();
-        TabModel tabModel = getCurrentModel();
         createTabs(cta, false, 2);
 
         enterTabSwitcher(cta);
@@ -1191,9 +1186,10 @@ public class TabSwitcherLayoutTest {
         assertEquals(nextSuggestedColorId, getTabGroupColorForTabAt(1));
         ThreadUtils.runOnUiThreadBlocking(() -> snackbarManager.dismissAllSnackbars());
 
-        // Temporarily save the rootID to check during closure.
+        // Check that the tab group ID is set before closure.
         Tab tab2 = ThreadUtils.runOnUiThreadBlocking(() -> normalTabModel.getTabAt(1));
         Token groupId = tab2.getTabGroupId();
+        assertNotNull(groupId);
 
         closeFirstTabGroupInTabSwitcher(cta);
         assertTrue(
@@ -1248,7 +1244,7 @@ public class TabSwitcherLayoutTest {
 
     private void simulateJpegHasCachedWithDefaultAspectRatio() throws IOException {
         simulateJpegHasCachedWithAspectRatio(
-                TabUtils.getTabThumbnailAspectRatio(
+                TabCardThemeUtil.getTabThumbnailAspectRatio(
                         mActivityTestRule.getActivity(),
                         mActivityTestRule.getActivity().getBrowserControlsManager()));
     }

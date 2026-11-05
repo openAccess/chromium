@@ -18,6 +18,7 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -31,6 +32,7 @@
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace {
 
@@ -148,7 +150,7 @@ IN_PROC_BROWSER_TEST_F(ZeroSuggestPrefetchTabHelperBrowserTestOnNTP,
 
     EXPECT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
         browser(), chrome::ChromeUINewTabPageURLAsGURL(),
-        WindowOpenDisposition::CURRENT_TAB,
+        ui::mojom::WindowOpenDisposition::kCurrentTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
     ASSERT_EQ(1, browser()->GetTabStripModel()->count());
 
@@ -162,7 +164,7 @@ IN_PROC_BROWSER_TEST_F(ZeroSuggestPrefetchTabHelperBrowserTestOnNTP,
 
     EXPECT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
         browser(), chrome::ChromeUINewTabPageURLAsGURL(),
-        WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
     ASSERT_EQ(2, browser()->GetTabStripModel()->count());
 
@@ -199,7 +201,7 @@ IN_PROC_BROWSER_TEST_F(ZeroSuggestPrefetchTabHelperBrowserTestOnSRP,
     EXPECT_CALL(*controller_, Start).Times(0);
 
     EXPECT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-        browser(), GURL(srp_url), WindowOpenDisposition::CURRENT_TAB,
+        browser(), GURL(srp_url), ui::mojom::WindowOpenDisposition::kCurrentTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
     ASSERT_EQ(1, browser()->GetTabStripModel()->count());
 
@@ -212,7 +214,8 @@ IN_PROC_BROWSER_TEST_F(ZeroSuggestPrefetchTabHelperBrowserTestOnSRP,
     EXPECT_CALL(*controller_, Start).Times(0);
 
     EXPECT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-        browser(), GURL(srp_url), WindowOpenDisposition::NEW_BACKGROUND_TAB,
+        browser(), GURL(srp_url),
+        ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
     ASSERT_EQ(2, browser()->GetTabStripModel()->count());
 
@@ -225,7 +228,8 @@ IN_PROC_BROWSER_TEST_F(ZeroSuggestPrefetchTabHelperBrowserTestOnSRP,
     EXPECT_CALL(*controller_, Start).Times(0);
 
     EXPECT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-        browser(), GURL(srp_url), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        browser(), GURL(srp_url),
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
     ASSERT_EQ(3, browser()->GetTabStripModel()->count());
 
@@ -261,7 +265,7 @@ IN_PROC_BROWSER_TEST_F(ZeroSuggestPrefetchTabHelperBrowserTestOnWeb,
     EXPECT_CALL(*controller_, Start).Times(0);
 
     EXPECT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-        browser(), GURL(web_url), WindowOpenDisposition::CURRENT_TAB,
+        browser(), GURL(web_url), ui::mojom::WindowOpenDisposition::kCurrentTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
     ASSERT_EQ(1, browser()->GetTabStripModel()->count());
 
@@ -274,7 +278,8 @@ IN_PROC_BROWSER_TEST_F(ZeroSuggestPrefetchTabHelperBrowserTestOnWeb,
     EXPECT_CALL(*controller_, Start).Times(0);
 
     EXPECT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-        browser(), GURL(web_url), WindowOpenDisposition::NEW_BACKGROUND_TAB,
+        browser(), GURL(web_url),
+        ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
     ASSERT_EQ(2, browser()->GetTabStripModel()->count());
 
@@ -287,7 +292,8 @@ IN_PROC_BROWSER_TEST_F(ZeroSuggestPrefetchTabHelperBrowserTestOnWeb,
     EXPECT_CALL(*controller_, Start).Times(0);
 
     EXPECT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-        browser(), GURL(web_url), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        browser(), GURL(web_url),
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
     ASSERT_EQ(3, browser()->GetTabStripModel()->count());
 

@@ -8,7 +8,10 @@
 #include <optional>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
+#include "chrome/browser/ui/waap/initial_webui_metrics_dispatcher.h"
 #include "chrome/browser/ui/waap/waap_utils.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
@@ -45,8 +48,13 @@ class InitialWebUIWindowMetricsManager {
   static InitialWebUIWindowMetricsManager* From(
       BrowserWindowInterface* browser_window_interface);
 
+  // Returns the metrics dispatcher used by native views (e.g. the Views
+  // `ReloadButton`) in this window.
+  InitialWebUIMetricsDispatcher& GetMetricsDispatcher();
+
   // Sets the window creation info. This should be called immediately after the
-  // `Browser` object is created.
+  // `Browser` object is created, with `creation_time` sampled prior to calling
+  // `CreateBrowserWindow()` so synchronous window construction is included.
   void SetWindowCreationInfo(waap::NewWindowCreationSource source,
                              base::TimeTicks creation_time);
 
@@ -61,37 +69,82 @@ class InitialWebUIWindowMetricsManager {
   // Called when the browser window is created.
   void OnBrowserWindowCreated();
 
-  // Called when the ReloadButton is created.
-  void OnReloadButtonCreated();
+  // Called by `InitialWebUIMetricsDispatcher` when the ReloadButton paints its
+  // first frame. This handles reload button paint delta and new window metrics.
+  // `is_startup` is decided by the dispatcher; when true, the startup metric
+  // has already been recorded, and the paint delta is recorded as a startup
+  // metric instead of a new window metric.
+  void OnReloadButtonFirstPaint(base::TimeTicks timestamp, bool is_startup);
 
-  // Called when the ReloadButton paints its first frame.
-  // This handles reload button metrics in both startup window and new window.
-  void OnReloadButtonFirstPaint(base::TimeTicks timestamp);
+  // Called by `InitialWebUIMetricsDispatcher` when the ReloadButton paints its
+  // first contentful paint. This handles reload button new window metrics.
+  void OnReloadButtonFirstContentfulPaint(base::TimeTicks timestamp,
+                                          bool is_startup);
 
-  // Called when the ReloadButton paints its first contentful paint.
-  // This handles reload button metrics in both startup window and new window.
-  void OnReloadButtonFirstContentfulPaint(base::TimeTicks timestamp);
+  // Called when the reload button renderer process terminates or crashes.
+  void OnReloadButtonRenderProcessGone();
 
-  // Called when the renderer process is created and launched.
-  void OnReloadButtonRendererProcessCreatedAndLaunched(
-      base::TimeTicks created_timestamp,
-      base::TimeTicks launched_timestamp);
+  // Returns true if latency metrics should be skipped for this window (e.g.
+  // when the window is initially shown or restored in a minimized state).
+  bool should_skip_latency_metrics() const {
+    return should_skip_latency_metrics_;
+  }
 
-  // Skips recording startup metrics for testing.
+  // Returns true if startup metrics should not be recorded for this window.
+  // Only set via `SkipStartupForTesting()`.
+  bool should_skip_startup_metrics() const {
+    return skip_startup_metrics_for_testing_;
+  }
+
+  // Skips recording startup metrics for this window, for testing.
   void SkipStartupForTesting();
 
   // Resets the static markers tracking whether startup metrics have been
   // emitted.
   static void ResetForTesting();
 
+  base::OneShotTimer* GetUnpainted10sTimerForTesting() {
+    return &unpainted_10s_timer_;
+  }
+
+  waap::NewWindowCreationSource GetCreationSourceForTesting() const {
+    return creation_source_;
+  }
+
  private:
+  enum class UnpaintedTerminationReason {
+    kWindowClosed,
+    kRenderProcessGone,
+  };
+
+  // Helper to record unpainted termination metrics on window close or crash.
+  void RecordUnpaintedTermination(UnpaintedTerminationReason reason);
+
+  // Helper to record visual readiness at browser first presentation.
+  void RecordPaintedAtBrowserFirstPaint(bool painted);
+
+  // Helper to record 10-second SLO metric and stop the timer.
+  void RecordPaintedWithin10Seconds(bool painted);
+
+  // Helper to record surface sync outcome when feature is enabled.
+  void RecordSurfaceSyncResult(waap::InitialWebUISurfaceSyncResult result);
+
+  // Helper to record latency to paint after deadline when feature is enabled.
+  void RecordSurfaceSyncTimeToPaintAfterDeadline(base::TimeDelta delta);
+
   // Helper to emit the delta metric once both timestamps are available.
   void RecordPaintDeltaIfAvailable();
 
-  // The service used to record metrics. May be null if the profile is null.
+  // Invoked when 10 seconds elapse after browser window presentation without
+  // reload button paint.
+  void OnUnpainted10sTimeout();
+
+  // The service used to record metrics. Never null.
   const raw_ptr<WaapUIMetricsService> waap_service_;
 
   const raw_ptr<BrowserWindowInterface> browser_;
+
+  InitialWebUINativeMetricsDispatcher metrics_dispatcher_;
 
   ui::ScopedUnownedUserData<InitialWebUIWindowMetricsManager>
       scoped_data_holder_;
@@ -111,12 +164,21 @@ class InitialWebUIWindowMetricsManager {
   bool is_new_window_reload_button_first_paint_recorded_ = false;
   bool is_new_window_reload_button_first_contentful_paint_recorded_ = false;
 
-  bool startup_delta_recorded_ = false;
   bool new_window_delta_recorded_ = false;
+
+  base::OneShotTimer unpainted_10s_timer_;
+  bool painted_at_browser_first_paint_recorded_ = false;
+  bool painted_within_10s_recorded_ = false;
+  bool surface_sync_result_recorded_ = false;
+  bool unpainted_termination_recorded_ = false;
 
   // Track timestamps to calculate the delta between the two paint events.
   std::optional<base::TimeTicks> browser_window_first_paint_time_;
   std::optional<base::TimeTicks> reload_button_first_paint_time_;
+
+  // Whether the reload button first paint above was recorded as the startup
+  // paint, as decided by `InitialWebUIMetricsDispatcher`.
+  bool is_startup_reload_button_first_paint_ = false;
 
   // Track the first time a request to show the window was made.
   std::optional<base::TimeTicks> window_show_first_requested_time_;
@@ -124,6 +186,9 @@ class InitialWebUIWindowMetricsManager {
   bool skip_startup_metrics_for_testing_ = false;
   bool was_created_with_existing_windows_ = false;
   bool should_skip_latency_metrics_ = false;
+
+  base::WeakPtrFactory<InitialWebUIWindowMetricsManager> weak_ptr_factory_{
+      this};
 };
 
 #endif  // CHROME_BROWSER_UI_WAAP_INITIAL_WEBUI_WINDOW_METRICS_MANAGER_H_

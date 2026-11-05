@@ -4,6 +4,8 @@
 
 #include "components/subresource_filter/content/browser/child_frame_navigation_filtering_throttle.h"
 
+#include <stddef.h>
+
 #include <optional>
 #include <sstream>
 #include <utility>
@@ -14,6 +16,7 @@
 #include "base/debug/dump_without_crashing.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
 #include "components/subresource_filter/content/browser/subresource_filter_observer_manager.h"
@@ -37,11 +40,11 @@ ChildFrameNavigationFilteringThrottle::ChildFrameNavigationFilteringThrottle(
     base::RepeatingCallback<std::string(const GURL& url)>
         disallow_message_callback)
     : content::NavigationThrottle(registry),
-      parent_frame_filter_(parent_frame_filter),
       alias_check_enabled_(alias_check_enabled),
       disallow_message_callback_(std::move(disallow_message_callback)) {
   CHECK(!IsInSubresourceFilterRoot(&registry.GetNavigationHandle()));
-  CHECK(parent_frame_filter_);
+  CHECK(parent_frame_filter);
+  parent_frame_filter_ = parent_frame_filter->GetWeakPtr();
 }
 
 ChildFrameNavigationFilteringThrottle::
@@ -60,6 +63,13 @@ ChildFrameNavigationFilteringThrottle::WillRedirectRequest() {
 content::NavigationThrottle::ThrottleCheckResult
 ChildFrameNavigationFilteringThrottle::WillProcessResponse() {
   CHECK_NE(load_policy_, LoadPolicy::DISALLOW);
+
+  if (!parent_frame_filter_) {
+    load_policy_ = LoadPolicy::EXPLICITLY_ALLOW;
+    matched_subdomain_disallow_rule_ = false;
+    NotifyLoadPolicy();
+    return PROCEED;
+  }
 
   if (alias_check_enabled_) {
     std::vector<GURL> alias_urls;
@@ -88,6 +98,11 @@ ChildFrameNavigationFilteringThrottle::WillProcessResponse() {
     }
   }
 
+  bool is_ad_tag_ready = pending_load_policy_calculations_ == 0;
+  base::UmaHistogramBoolean(
+      "Navigation.OriginAgentCluster.AdTagReadyAtProcessSelection",
+      is_ad_tag_ready);
+
   // Load policy notifications should go out by WillProcessResponse, unless
   // we received CNAME aliases in the response and alias checking is enabled.
   // Defer if we are still performing any ruleset checks. If we are here,
@@ -106,6 +121,10 @@ ChildFrameNavigationFilteringThrottle::WillProcessResponse() {
 }
 
 void ChildFrameNavigationFilteringThrottle::HandleDisallowedLoad() {
+  if (!parent_frame_filter_) {
+    return;
+  }
+
   if (parent_frame_filter_->activation_state().enable_logging) {
     std::string console_message =
         disallow_message_callback_.Run(navigation_handle()->GetURL());
@@ -128,6 +147,18 @@ content::NavigationThrottle::ThrottleCheckResult
 ChildFrameNavigationFilteringThrottle::MaybeDeferToCalculateLoadPolicy() {
   CHECK_NE(load_policy_, LoadPolicy::DISALLOW);
 
+  if (!parent_frame_filter_) {
+    load_policy_ = LoadPolicy::EXPLICITLY_ALLOW;
+    matched_subdomain_disallow_rule_ = false;
+    return PROCEED;
+  }
+
+  // `matched_subdomain_disallow_rule_` is intentionally reset at each redirect
+  // hop to prevent an attacker from bypassing origin isolation by redirecting
+  // an ad URL to a victim URL. Only the results for the current URL and its DNS
+  // aliases set `matched_subdomain_disallow_rule_`.
+  matched_subdomain_disallow_rule_ = false;
+
   // Even if `load_policy_` is already WOULD_DISALLOW from an earlier redirect
   // hop in dry-run mode, we still need to perform the filter list check for
   // subsequent URLs in the redirect chain so that
@@ -138,7 +169,8 @@ ChildFrameNavigationFilteringThrottle::MaybeDeferToCalculateLoadPolicy() {
       navigation_handle()->GetURL(),
       base::BindOnce(
           &ChildFrameNavigationFilteringThrottle::OnCalculatedLoadPolicyForUrl,
-          weak_ptr_factory_.GetWeakPtr()));
+          weak_ptr_factory_.GetWeakPtr(),
+          navigation_handle()->GetRedirectChain().size()));
 
   if (ShouldDeferNavigation()) {
     DeferStart(DeferStage::kWillStartOrRedirectRequest);
@@ -151,11 +183,23 @@ ChildFrameNavigationFilteringThrottle::MaybeDeferToCalculateLoadPolicy() {
 
 void ChildFrameNavigationFilteringThrottle::OnCalculatedLoadPolicy(
     LoadPolicy policy) {
+  CHECK_GT(pending_load_policy_calculations_, 0);
+  pending_load_policy_calculations_ -= 1;
+
+  if (!parent_frame_filter_) {
+    load_policy_ = LoadPolicy::EXPLICITLY_ALLOW;
+    matched_subdomain_disallow_rule_ = false;
+    if (pending_load_policy_calculations_ == 0 &&
+        defer_stage_ != DeferStage::kNotDeferring) {
+      ResumeNavigation();
+    }
+    return;
+  }
+
   // TODO(https://crbug.com/40116607): Modify this call in cases where the new
   // |policy| matches an explicitly allowed rule, rather than using the most
   // restrictive policy for the redirect chain.
   load_policy_ = MoreRestrictiveLoadPolicy(policy, load_policy_);
-  pending_load_policy_calculations_ -= 1;
 
   if (pending_load_policy_calculations_ == 0) {
     OnCalculatedLoadPolicyFinished();
@@ -187,6 +231,7 @@ void ChildFrameNavigationFilteringThrottle::OnCalculatedLoadPolicy(
 }
 
 void ChildFrameNavigationFilteringThrottle::OnCalculatedLoadPolicyForUrl(
+    size_t redirect_chain_size,
     AsyncDocumentSubresourceFilter::LoadPolicyResult result) {
   if (result.load_policy != load_policy_ &&
       result.load_policy ==
@@ -194,10 +239,14 @@ void ChildFrameNavigationFilteringThrottle::OnCalculatedLoadPolicyForUrl(
     // Child frame's hostname check determined the load policy.
     did_alias_check_determine_load_policy_ = false;
   }
-  // Note: `matched_subdomain_disallow_rule_` is intentionally reset on redirect
-  // to prevent an attacker from bypassing origin isolation by redirecting an ad
-  // URL to a victim URL.
-  matched_subdomain_disallow_rule_ = result.matched_subdomain_disallow_rule;
+  // Ignore the subdomain match for an earlier hop. This throttle can receive
+  // that result after a redirect due to the check running in parallel with the
+  // network request (in dry-run mode) or due to a different throttle deferring
+  // WillRedirectRequest(). MaybeDeferToCalculateLoadPolicy() clears the flag at
+  // each hop, so `|=` only combines results for the current hop.
+  if (redirect_chain_size == navigation_handle()->GetRedirectChain().size()) {
+    matched_subdomain_disallow_rule_ |= result.matched_subdomain_disallow_rule;
+  }
   OnCalculatedLoadPolicy(result.load_policy);
 }
 

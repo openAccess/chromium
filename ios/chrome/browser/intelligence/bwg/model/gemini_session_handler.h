@@ -17,17 +17,9 @@ namespace feature_engagement {
 class Tracker;
 }
 
+@protocol GeminiChatMessageHandler;
 @protocol GeminiCommands;
 @protocol SettingsCommands;
-
-// Callback type invoked when a request to detach a tab is made.
-typedef void (^GeminiTabDetachRequestCallback)(NSString* tabID);
-
-// Callback type invoked when a tab has been attached by the Floaty.
-typedef void (^GeminiTabAttachedCallback)(NSString* tabID);
-
-// Callback type invoked when a tab has been detached by the Floaty.
-typedef void (^GeminiTabDetachedCallback)(NSString* tabID);
 
 // Handler for the Gemini sessions.
 @interface GeminiSessionHandler : NSObject <GeminiSessionDelegate>
@@ -45,27 +37,15 @@ typedef void (^GeminiTabDetachedCallback)(NSString* tabID);
 // The Gemini commands handler used by this session handler.
 @property(nonatomic, weak) id<GeminiCommands> geminiHandler;
 
+// The handler consulted before user chat messages are sent. Nil when no
+// feature intercepts chat messages, in which case every message is sent.
+@property(nonatomic, weak) id<GeminiChatMessageHandler> chatMessageHandler;
+
 // The settings commands handler used by this session handler.
 @property(nonatomic, weak) id<SettingsCommands> settingsHandler;
 
 // Whether the current session is the first session.
 @property(nonatomic, assign) BOOL isFirstSession;
-
-// Provider for the number of attached tabs.
-@property(nonatomic, copy) NSUInteger (^attachedTabsCountProvider)(void);
-
-// Provider for whether a multi-tab prompt was used.
-@property(nonatomic, copy) BOOL (^isMultiTabUsedProvider)(void);
-
-// Callback invoked when the user requests to detach a tab from the floaty.
-@property(nonatomic, copy)
-    GeminiTabDetachRequestCallback tabDetachRequestCallback;
-
-// Callback invoked when the user attaches a tab via the floaty.
-@property(nonatomic, copy) GeminiTabAttachedCallback tabAttachedCallback;
-
-// Callback invoked when the user detaches a tab via the floaty.
-@property(nonatomic, copy) GeminiTabDetachedCallback tabDetachedCallback;
 
 @end
 

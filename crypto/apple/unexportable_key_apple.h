@@ -6,14 +6,22 @@
 #define CRYPTO_APPLE_UNEXPORTABLE_KEY_APPLE_H_
 
 #include <memory>
+#include <string>
 
 #include "base/compiler_specific.h"
+#include "build/build_config.h"
 
 #if defined(__OBJC__)
 #import <LocalAuthentication/LocalAuthentication.h>
 #endif  // defined(__OBJC__)
 
 #include "crypto/unexportable_key.h"
+
+#if BUILDFLAG(IS_MAC)
+namespace crypto::internal {
+enum class MacKeyHardwareSupport;
+}  // namespace crypto::internal
+#endif  // BUILDFLAG(IS_MAC)
 
 namespace crypto::apple {
 
@@ -44,8 +52,7 @@ class UnexportableKeyProviderApple : public StatefulUnexportableKeyProvider {
   // an authenticated LAContext to avoid having macOS prompt the user for user
   // verification.
   std::unique_ptr<UnexportableSigningKey> GenerateSigningKeySlowly(
-      base::span<const SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms,
+      base::span<const sign::SignatureKind> acceptable_algorithms,
       LAContext* lacontext);
 
   // Like UnexportableKeyProvider::FromWrappedAttestationKeySlowly, but lets you
@@ -59,23 +66,19 @@ class UnexportableKeyProviderApple : public StatefulUnexportableKeyProvider {
   // pass an authenticated LAContext to avoid having macOS prompt the user for
   // user verification.
   std::unique_ptr<UnexportableAttestationKey> GenerateAttestationKeySlowly(
-      base::span<const SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms,
+      base::span<const sign::SignatureKind> acceptable_algorithms,
       LAContext* lacontext);
 #endif  // defined(__OBJC__)
 
   // UnexportableKeyProvider:
-  std::optional<SignatureVerifier::SignatureAlgorithm> SelectAlgorithm(
-      base::span<const SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms) override;
+  std::optional<sign::SignatureKind> SelectAlgorithm(
+      base::span<const sign::SignatureKind> acceptable_algorithms) override;
   std::unique_ptr<UnexportableSigningKey> GenerateSigningKeySlowly(
-      base::span<const SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms) override;
+      base::span<const sign::SignatureKind> acceptable_algorithms) override;
   std::unique_ptr<UnexportableSigningKey> FromWrappedSigningKeySlowly(
       base::span<const uint8_t> wrapped_key) override;
   std::unique_ptr<UnexportableAttestationKey> GenerateAttestationKeySlowly(
-      base::span<const SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms) override;
+      base::span<const sign::SignatureKind> acceptable_algorithms) override;
   std::unique_ptr<UnexportableAttestationKey> FromWrappedAttestationKeySlowly(
       base::span<const uint8_t> wrapped_key) override;
   StatefulUnexportableKeyProvider* AsStatefulUnexportableKeyProvider()
@@ -99,6 +102,14 @@ class UnexportableKeyProviderApple : public StatefulUnexportableKeyProvider {
 
 std::unique_ptr<UnexportableKeyProviderApple> GetUnexportableKeyProviderApple(
     UnexportableKeyProvider::Config config);
+
+#if BUILDFLAG(IS_MAC)
+// Returns whether there is a Secure Enclave and the executable has the
+// keychain-access-groups entitlement for `keychain_access_group`, or which of
+// the two is missing. `GetUnexportableKeyProviderApple()` needs both.
+internal::MacKeyHardwareSupport GetKeyHardwareSupportMac(
+    const std::string& keychain_access_group);
+#endif  // BUILDFLAG(IS_MAC)
 
 }  // namespace crypto::apple
 

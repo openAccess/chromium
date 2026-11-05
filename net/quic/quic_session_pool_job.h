@@ -6,12 +6,14 @@
 #define NET_QUIC_QUIC_SESSION_POOL_JOB_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/time/time.h"
 #include "net/base/load_timing_internal_info.h"
 #include "net/base/net_error_details.h"
 #include "net/base/request_priority.h"
 #include "net/log/net_log_with_source.h"
 #include "net/quic/quic_session_attempt.h"
 #include "net/quic/quic_session_pool.h"
+#include "net/spdy/multiplexed_session_creation_initiator.h"
 
 namespace net {
 
@@ -35,6 +37,7 @@ class QuicSessionPool::Job : public QuicSessionAttempt::Delegate {
       QuicSessionAliasKey key,
       std::unique_ptr<CryptoClientConfigHandle> client_config_handle,
       RequestPriority priority,
+      MultiplexedSessionCreationInitiator session_creation_initiator,
       QuicConnectionReuseDetails quic_connection_reuse_details,
       const NetLogWithSource& net_log);
 
@@ -68,6 +71,12 @@ class QuicSessionPool::Job : public QuicSessionAttempt::Delegate {
   }
   RequestPriority priority() const { return priority_; }
   QuicSessionPool* pool() const { return pool_.get(); }
+  MultiplexedSessionCreationInitiator session_creation_initiator() const {
+    return session_creation_initiator_;
+  }
+  // Records the time taken for this Job to complete. `session` must be non-null
+  // when the job succeeded, and nullptr when it failed.
+  void RecordCompleteTime(const QuicChromiumClientSession* session) const;
 
   // Associate this job with another source.
   void AssociateWithNetLogSource(
@@ -97,12 +106,14 @@ class QuicSessionPool::Job : public QuicSessionAttempt::Delegate {
   const QuicSessionAliasKey key_;
   const std::unique_ptr<CryptoClientConfigHandle> client_config_handle_;
   RequestPriority priority_;
+  const MultiplexedSessionCreationInitiator session_creation_initiator_;
   const NetLogWithSource net_log_;
   std::set<raw_ptr<QuicSessionRequest, SetExperimental>> requests_;
   const QuicConnectionReuseDetails quic_connection_reuse_details_;
 
  private:
   bool is_deleting_ = false;
+  const base::TimeTicks creation_time_ = base::TimeTicks::Now();
 };
 
 }  // namespace net

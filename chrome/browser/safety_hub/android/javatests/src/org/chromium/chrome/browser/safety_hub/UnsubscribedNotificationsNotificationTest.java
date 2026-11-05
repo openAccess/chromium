@@ -5,33 +5,41 @@
 package org.chromium.chrome.browser.safety_hub;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import android.app.Activity;
 import android.app.Notification;
+import android.app.PendingIntent;
 import android.os.Build;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.lifecycle.Stage;
 
 import org.junit.Assert;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.ApplicationStatus;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.notifications.NotificationTestRule;
 import org.chromium.chrome.browser.settings.SettingsActivity;
+import org.chromium.chrome.browser.settings.SettingsHostFragment;
+import org.chromium.chrome.browser.settings.SettingsInTab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.components.browser_ui.notifications.MockNotificationManagerProxy;
 import org.chromium.components.browser_ui.notifications.NotificationFeatureMap;
 import org.chromium.ui.test.util.DeviceRestriction;
@@ -44,15 +52,27 @@ import java.util.List;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Features.EnableFeatures({
     NotificationFeatureMap.CACHE_NOTIIFICATIONS_ENABLED,
-    ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION + ":shadow_run/false"
+    ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION
 })
-@DisableFeatures(ChromeFeatureList.SETTINGS_IN_TAB) // crbug.com/521895796
 @Batch(Batch.PER_CLASS)
 @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
 // For some reason these tests are flaky on earlier versions of Android.
 @MinAndroidSdkLevel(Build.VERSION_CODES.S)
 public final class UnsubscribedNotificationsNotificationTest {
-    @Rule public NotificationTestRule mNotificationTestRule = new NotificationTestRule();
+    public final FreshCtaTransitTestRule mCtaTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
+
+    public final NotificationTestRule mNotificationTestRule =
+            new NotificationTestRule(mCtaTestRule);
+
+    @Rule
+    public final RuleChain mRuleChain =
+            RuleChain.outerRule(mNotificationTestRule).around(mCtaTestRule);
+
+    @Before
+    public void setUp() {
+        mCtaTestRule.startOnNtp();
+    }
 
     @Test
     @SmallTest
@@ -71,26 +91,7 @@ public final class UnsubscribedNotificationsNotificationTest {
         assertEquals("Review", notification.actions[0].title);
         Assert.assertNotNull(notification.actions[0].actionIntent);
 
-        SettingsActivity settingsActivity =
-                ApplicationTestUtils.waitForActivityWithClass(
-                        SettingsActivity.class,
-                        // In SettingsSingleActivity mode, if there already
-                        // exists the settings activity, it will be reused.
-                        // In such cases, the activity state is set to
-                        // PAUSED, rather than CREATED.
-                        // Because there's no guarantee of the existing
-                        // settings activity, we wait for either condition.
-                        ChromeFeatureList.sSettingsSingleActivity.isEnabled()
-                                ? EnumSet.of(Stage.PAUSED, Stage.CREATED)
-                                : EnumSet.of(Stage.CREATED),
-                        () -> {
-                            try {
-                                notification.actions[0].actionIntent.send();
-                            } catch (Exception e) {
-                                fail(e.getMessage());
-                            }
-                        });
-        assertTrue(settingsActivity.getMainFragment() instanceof SafetyHubPermissionsFragment);
+        sendIntentAndWaitForSafetyHubPermissions(notification.actions[0].actionIntent);
     }
 
     @Test
@@ -109,25 +110,54 @@ public final class UnsubscribedNotificationsNotificationTest {
         Notification notification = notifications.get(0).getNotification();
         Assert.assertNotNull(notification.contentIntent);
 
-        SettingsActivity settingsActivity =
-                ApplicationTestUtils.waitForActivityWithClass(
-                        SettingsActivity.class,
-                        // In SettingsSingleActivity mode, if there already
-                        // exists the settings activity, it will be reused.
-                        // In such cases, the activity state is set to
-                        // PAUSED, rather than CREATED.
-                        // Because there's no guarantee of the existing
-                        // settings activity, we wait for either condition.
-                        ChromeFeatureList.sSettingsSingleActivity.isEnabled()
-                                ? EnumSet.of(Stage.PAUSED, Stage.CREATED)
-                                : EnumSet.of(Stage.CREATED),
-                        () -> {
-                            try {
-                                notification.contentIntent.send();
-                            } catch (Exception e) {
-                                fail(e.getMessage());
-                            }
-                        });
-        assertTrue(settingsActivity.getMainFragment() instanceof SafetyHubPermissionsFragment);
+        sendIntentAndWaitForSafetyHubPermissions(notification.contentIntent);
+    }
+
+    /**
+     * Sends {@code pendingIntent} and waits for SafetyHubPermissionsFragment to show, either in a
+     * {@link SettingsActivity} or in a settings tab, depending on {@link
+     * SettingsInTab#shouldOpenSettingsInTab()}.
+     */
+    private static void sendIntentAndWaitForSafetyHubPermissions(PendingIntent pendingIntent) {
+        Runnable send =
+                () -> {
+                    try {
+                        pendingIntent.send();
+                    } catch (Exception e) {
+                        fail(e.getMessage());
+                    }
+                };
+        if (!SettingsInTab.shouldOpenSettingsInTab()) {
+            SettingsActivity settingsActivity =
+                    ApplicationTestUtils.waitForActivityWithClass(
+                            SettingsActivity.class,
+                            // If there already exists the settings activity, it will be reused.
+                            // In such cases, the activity state is set to PAUSED, rather than
+                            // CREATED. Because there's no guarantee of the existing settings
+                            // activity, we wait for either condition.
+                            EnumSet.of(Stage.PAUSED, Stage.CREATED),
+                            send);
+            CriteriaHelper.pollUiThread(
+                    () ->
+                            settingsActivity.getMainFragment()
+                                    instanceof SafetyHubPermissionsFragment);
+            return;
+        }
+
+        // Settings open in a browser tab, hosted by a SettingsHostFragment in whichever activity
+        // ChromeLauncherActivity dispatches the intent to.
+        send.run();
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    for (Activity activity : ApplicationStatus.getRunningActivities()) {
+                        SettingsHostFragment hostFragment = SettingsHostFragment.get(activity);
+                        if (hostFragment != null
+                                && hostFragment.getMainFragment()
+                                        instanceof SafetyHubPermissionsFragment) {
+                            return true;
+                        }
+                    }
+                    return false;
+                });
     }
 }

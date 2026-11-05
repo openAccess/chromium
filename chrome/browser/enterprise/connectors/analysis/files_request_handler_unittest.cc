@@ -146,6 +146,9 @@ class BaseTest : public testing::Test {
   Profile* profile() { return profile_; }
 
  protected:
+  // Must outlive `task_environment_` so that ThreadPool tasks never observe
+  // the FeatureList being torn down while they are still running.
+  base::test::ScopedFeatureList scoped_feature_list_;
   content::BrowserTaskEnvironment task_environment_;
   TestingPrefServiceSimple pref_service_;
   TestingProfileManager profile_manager_;
@@ -305,6 +308,7 @@ class FilesRequestHandlerTest : public BaseTest {
       EXPECT_FALSE(token_and_action.first.empty());
     }
 
+    fake_files_request_handler_.reset();
     return future.Take();
   }
 
@@ -455,7 +459,6 @@ class FilesRequestHandlerTest : public BaseTest {
   // To verify user action requests count in local content analysis request is
   // set correctly.
   uint64_t expected_user_action_requests_count_ = 0;
-  base::test::ScopedFeatureList scoped_feature_list_;
   bool upload_performed_ = false;
 
  protected:
@@ -540,6 +543,9 @@ TEST_F(FilesRequestHandlerTest, FileDataPositiveMalwareVerdict) {
                   true, FinalContentAnalysisResult::SUCCESS, ""));
 }
 
+// Android doesn't detect encrypted archives (`FileAnalysisRequest` only runs
+// the sandboxed archive analyzers on desktop), so they're uploaded as encrypted blobs
+#if !BUILDFLAG(IS_ANDROID)
 TEST_F(FilesRequestHandlerTest, FileIsEncrypted) {
   content::InProcessUtilityThreadHelper in_process_utility_thread_helper;
 
@@ -575,6 +581,7 @@ TEST_F(FilesRequestHandlerTest, FileIsEncrypted) {
                   false, FinalContentAnalysisResult::ENCRYPTED_FILES, ""));
   EXPECT_FALSE(was_upload_performed());
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 // With a local service provider, a scan should not terminate early due to
 // encryption.
@@ -966,6 +973,111 @@ TEST_F(FilesRequestHandlerTest, DestructorReportsCancelled) {
       "Enterprise.OnFileAttach.Cancelled.BatchSize", 2, 1);
   histogram_tester_->ExpectTotalCount(
       "Enterprise.OnFileAttach.Cancelled.Duration", 1);
+}
+
+// Tests that StopFileWork() reaches the FileOpeningJob and does not disrupt the
+// cancellation reporting that follows. This is the path taken when the user
+// cancels from the UI: signal first, then tear down.
+TEST_F(FilesRequestHandlerTest, StopFileWorkThenDestructorReportsCancelled) {
+  enterprise_connectors::test::EventReportValidatorHelper
+      event_report_validator_helper(profile_);
+
+  GURL url(kTestUrl);
+  std::vector<base::FilePath> paths = CreateFilesForTest(
+      {FILE_PATH_LITERAL("foo.doc"), FILE_PATH_LITERAL("bar.doc")});
+
+  std::optional<AnalysisSettings> settings = GetSettings();
+  ASSERT_TRUE(settings.has_value());
+
+  TestContentAnalysisInfo info(*settings, paths.size());
+
+  using ResultFuture =
+      base::test::TestFuture<std::vector<RequestHandlerResult>>;
+  ResultFuture future;
+
+  fake_files_request_handler_ = std::make_unique<test::FakeFilesRequestHandler>(
+      base::BindRepeating(
+          &FilesRequestHandlerTest_StopFileWorkThenDestructorReportsCancelled_Test::
+              FakeFileUploadCallback,
+          weak_ptr_factory_.GetWeakPtr(),
+          settings->cloud_or_local_settings.is_cloud_analysis()),
+      /*content_analysis_info=*/&info,
+      /*upload_service=*/nullptr, profile_, GURL(kTestUrl), "", "",
+      kContentTransferMethod, DeepScanAccessPoint::UPLOAD, paths,
+      future.GetCallback());
+
+  base::RunLoop run_loop;
+
+  auto validator = event_report_validator_helper.CreateValidator();
+  validator.SetDoneClosure(run_loop.QuitClosure());
+
+  chrome::cros::reporting::proto::UnscannedFileEvent expected_event;
+  expected_event.set_url(kTestUrl);
+  expected_event.set_tab_url(kTestUrl);
+  expected_event.set_source("");
+  expected_event.set_destination("");
+  expected_event.set_trigger(chrome::cros::reporting::proto::FILE_UPLOAD);
+  expected_event.set_unscanned_reason(
+      chrome::cros::reporting::proto::UnscannedFileEvent::USER_CANCELLED);
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EVENT_RESULT_CANCELLED_BY_USER);
+  expected_event.set_profile_user_name("test-user@chromium.org");
+  expected_event.set_profile_identifier(profile_->GetPath().AsUTF8Unsafe());
+  expected_event.set_content_transfer_method(
+      chrome::cros::reporting::proto::CONTENT_TRANSFER_METHOD_FILE_PICKER);
+  expected_event.set_content_size(7);
+
+  std::set<std::string> expected_mimetypes = {""};
+  validator.ExpectUnscannedFileEvents(
+      std::move(expected_event),
+      /*expected_filenames=*/{paths[0].AsUTF8Unsafe(), paths[1].AsUTF8Unsafe()},
+      /*expected_sha256s=*/{"", ""},
+      /*expected_scan_ids=*/{"", ""},
+      /*expected_mimetypes=*/&expected_mimetypes);
+
+  fake_files_request_handler_->UploadData();
+
+  // The user's cancel action, which must not block on the file workers.
+  fake_files_request_handler_->StopFileWork();
+  fake_files_request_handler_.reset();
+
+  run_loop.Run();
+
+  histogram_tester_->ExpectUniqueSample(
+      "Enterprise.OnFileAttach.Cancelled.BatchSize", 2, 1);
+}
+
+// Tests that StopFileWork() is a no-op before UploadData() has created a
+// FileOpeningJob.
+TEST_F(FilesRequestHandlerTest, StopFileWorkWithoutFileOpeningJob) {
+  GURL url(kTestUrl);
+  std::vector<base::FilePath> paths =
+      CreateFilesForTest({FILE_PATH_LITERAL("foo.doc")});
+
+  std::optional<AnalysisSettings> settings = GetSettings();
+  ASSERT_TRUE(settings.has_value());
+
+  TestContentAnalysisInfo info(*settings, paths.size());
+
+  using ResultFuture =
+      base::test::TestFuture<std::vector<RequestHandlerResult>>;
+  ResultFuture future;
+
+  fake_files_request_handler_ = std::make_unique<test::FakeFilesRequestHandler>(
+      base::BindRepeating(
+          &FilesRequestHandlerTest_StopFileWorkWithoutFileOpeningJob_Test::
+              FakeFileUploadCallback,
+          weak_ptr_factory_.GetWeakPtr(),
+          settings->cloud_or_local_settings.is_cloud_analysis()),
+      /*content_analysis_info=*/&info,
+      /*upload_service=*/nullptr, profile_, GURL(kTestUrl), "", "",
+      kContentTransferMethod, DeepScanAccessPoint::UPLOAD, paths,
+      future.GetCallback());
+
+  fake_files_request_handler_->StopFileWork();
+
+  EXPECT_FALSE(future.IsReady());
+  fake_files_request_handler_.reset();
 }
 
 TEST_F(FilesRequestHandlerTest, DestructorReportsCancelled_FileDeleted) {

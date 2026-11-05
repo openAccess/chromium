@@ -30,7 +30,6 @@
 #include "chrome/browser/net/profile_network_context_service_factory.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/safe_browsing_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
@@ -52,6 +51,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/proxy_config/proxy_config_dictionary.h"
 #include "components/proxy_config/proxy_config_pref_names.h"
+#include "components/safe_browsing/buildflags.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/network_service_instance.h"
@@ -64,6 +64,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/simple_url_loader_test_helper.h"
+#include "extensions/buildflags/buildflags.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe_utils.h"
 #include "net/base/address_list.h"
@@ -107,6 +108,10 @@
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "url/gurl.h"
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#include "chrome/browser/safe_browsing/safe_browsing_service.h"
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+
 #if BUILDFLAG(IS_MAC)
 #include "base/mac/mac_util.h"
 #endif
@@ -146,10 +151,13 @@ enum class NetworkContextType {
   kOnDiskAppWithIncognitoProfile,
 };
 
-// This list should be kept in sync with the NetworkContextType enum.
+// Network context types available in this build. Keep this list in sync with
+// NetworkContextType and the corresponding build flags.
 const NetworkContextType kNetworkContextTypes[] = {
     NetworkContextType::kSystem,
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     NetworkContextType::kSafeBrowsing,
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
     NetworkContextType::kProfile,
     NetworkContextType::kIncognitoProfile,
     NetworkContextType::kOnDiskApp,
@@ -372,9 +380,13 @@ class NetworkContextConfigurationBrowserTest
         return g_browser_process->system_network_context_manager()
             ->GetURLLoaderFactory();
       case NetworkContextType::kSafeBrowsing:
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
         return g_browser_process->safe_browsing_service()
             ->GetURLLoaderFactory(browser()->GetProfile())
             .get();
+#else
+        NOTREACHED();
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
       case NetworkContextType::kProfile:
       case NetworkContextType::kIncognitoProfile:
       case NetworkContextType::kOnDiskApp:
@@ -398,8 +410,12 @@ class NetworkContextConfigurationBrowserTest
         return g_browser_process->system_network_context_manager()
             ->GetContext();
       case NetworkContextType::kSafeBrowsing:
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
         return g_browser_process->safe_browsing_service()->GetNetworkContext(
             browser()->GetProfile());
+#else
+        NOTREACHED();
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
       case NetworkContextType::kProfile:
       case NetworkContextType::kIncognitoProfile:
       case NetworkContextType::kOnDiskApp:
@@ -619,9 +635,13 @@ class NetworkContextConfigurationBrowserTest
             ->FlushNetworkInterfaceForTesting();
         break;
       case NetworkContextType::kSafeBrowsing:
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
         g_browser_process->safe_browsing_service()
             ->FlushNetworkInterfaceForTesting(GetProfile());
         break;
+#else
+        NOTREACHED();
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
       case NetworkContextType::kProfile:
       case NetworkContextType::kIncognitoProfile:
       case NetworkContextType::kInMemoryApp:
@@ -1943,6 +1963,17 @@ class NetworkContextConfigurationProxySettingsBrowserTest
   }
 
   void RunMaxConnectionsPerProxyTest() {
+    // TODO(crbug.com/540592485): There's a linux specific issue with this test permutation.
+    // It's unclear why and ideally we would fix the flake.
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+    if ((GetParam().network_context_type ==
+             NetworkContextType::kOnDiskAppWithIncognitoProfile ||
+         GetParam().network_context_type == NetworkContextType::kInMemoryApp) &&
+        GetParam().network_service_state == NetworkServiceState::kEnabled) {
+      return;
+    }
+#endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+
     // At this point in the test, we've set up a proxy that points to our
     // embedded test server. We've also set things up to hang all incoming
     // requests and record how many concurrent connections we have running. To
@@ -1955,6 +1986,7 @@ class NetworkContextConfigurationProxySettingsBrowserTest
     base::RunLoop expected_connections_run_loop;
     expected_connections_loop_ptr_.store(&expected_connections_run_loop);
 
+    std::vector<std::unique_ptr<content::SimpleURLLoaderTestHelper>> helpers;
     std::vector<std::unique_ptr<network::SimpleURLLoader>> loaders;
     for (unsigned int i = 0; i < kTestMaxConnectionsPerProxy + 1; ++i) {
       std::unique_ptr<network::ResourceRequest> request =
@@ -1964,13 +1996,15 @@ class NetworkContextConfigurationProxySettingsBrowserTest
                                          base::StringPrintf("/hung_%u", i));
       request->credentials_mode = network::mojom::CredentialsMode::kOmit;
 
-      content::SimpleURLLoaderTestHelper simple_loader_helper;
+      std::unique_ptr<content::SimpleURLLoaderTestHelper> simple_helper =
+          std::make_unique<content::SimpleURLLoaderTestHelper>();
       std::unique_ptr<network::SimpleURLLoader> simple_loader =
           network::SimpleURLLoader::Create(std::move(request),
                                            TRAFFIC_ANNOTATION_FOR_TESTS);
 
       simple_loader->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
-          loader_factory(), simple_loader_helper.GetCallback());
+          loader_factory(), simple_helper->GetCallback());
+      helpers.emplace_back(std::move(simple_helper));
       loaders.emplace_back(std::move(simple_loader));
     }
     expected_connections_run_loop.Run();
@@ -2029,7 +2063,8 @@ class NetworkContextConfigurationProxySettingsBrowserTest
           /*throttling_profile_id=*/std::nullopt,
           /*network_restrictions_id=*/
           network::GetTestNetworkRestrictionsId(),
-          /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown);
+          /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown,
+          /*target_network=*/std::nullopt);
       waiters.emplace_back(std::move(client));
     }
     expected_connections_run_loop.Run();
@@ -2057,6 +2092,7 @@ class NetworkContextConfigurationProxySettingsBrowserTest
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
+// TODO(crbug.com/540592485): Enabled test once flakiness is fixed.
 IN_PROC_BROWSER_TEST_P(NetworkContextConfigurationProxySettingsBrowserTest,
                        MaxConnectionsPerProxy) {
   RunMaxConnectionsPerProxyTest();
@@ -2358,22 +2394,29 @@ IN_PROC_BROWSER_TEST_P(NetworkContextConfigurationReportingAndNelBrowserTest,
 #define INSTANTIATE_EXTENSION_TESTS(TestFixture)
 #endif  // !BUILDFLAG(ENABLE_EXTENSIONS)
 
-#define INSTANTIATE_TEST_CASES_FOR_TEST_FIXTURE(TestFixture)             \
-  INSTANTIATE_EXTENSION_TESTS(TestFixture)                               \
-  INSTANTIATE_TEST_SUITE_P(                                              \
-      SystemNetworkContext, TestFixture,                                 \
-      ::testing::Values(TEST_CASES(NetworkContextType::kSystem)));       \
-                                                                         \
-  INSTANTIATE_TEST_SUITE_P(                                              \
-      SafeBrowsingNetworkContext, TestFixture,                           \
-      ::testing::Values(TEST_CASES(NetworkContextType::kSafeBrowsing))); \
-                                                                         \
-  INSTANTIATE_TEST_SUITE_P(                                              \
-      ProfileMainNetworkContext, TestFixture,                            \
-      ::testing::Values(TEST_CASES(NetworkContextType::kProfile)));      \
-                                                                         \
-  INSTANTIATE_TEST_SUITE_P(                                              \
-      IncognitoProfileMainNetworkContext, TestFixture,                   \
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#define INSTANTIATE_SAFE_BROWSING_TESTS(TestFixture) \
+  INSTANTIATE_TEST_SUITE_P(                          \
+      SafeBrowsingNetworkContext, TestFixture,       \
+      ::testing::Values(TEST_CASES(NetworkContextType::kSafeBrowsing)));
+#else
+#define INSTANTIATE_SAFE_BROWSING_TESTS(TestFixture)
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+
+#define INSTANTIATE_TEST_CASES_FOR_TEST_FIXTURE(TestFixture)        \
+  INSTANTIATE_EXTENSION_TESTS(TestFixture)                          \
+  INSTANTIATE_TEST_SUITE_P(                                         \
+      SystemNetworkContext, TestFixture,                            \
+      ::testing::Values(TEST_CASES(NetworkContextType::kSystem)));  \
+                                                                    \
+  INSTANTIATE_SAFE_BROWSING_TESTS(TestFixture)                      \
+                                                                    \
+  INSTANTIATE_TEST_SUITE_P(                                         \
+      ProfileMainNetworkContext, TestFixture,                       \
+      ::testing::Values(TEST_CASES(NetworkContextType::kProfile))); \
+                                                                    \
+  INSTANTIATE_TEST_SUITE_P(                                         \
+      IncognitoProfileMainNetworkContext, TestFixture,              \
       ::testing::Values(TEST_CASES(NetworkContextType::kIncognitoProfile)))
 
 INSTANTIATE_TEST_CASES_FOR_TEST_FIXTURE(NetworkContextConfigurationBrowserTest);

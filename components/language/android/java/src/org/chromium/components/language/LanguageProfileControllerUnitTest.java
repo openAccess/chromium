@@ -4,13 +4,10 @@
 
 package org.chromium.components.language;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.ServiceLoaderUtil;
 import org.chromium.base.ThreadUtils;
@@ -23,7 +20,6 @@ import java.util.concurrent.TimeoutException;
 
 /** Tests for LanguageProfileController. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class LanguageProfileControllerUnitTest {
     @Before
     public void setUp() {
@@ -31,7 +27,6 @@ public class LanguageProfileControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSuccess() {
         ServiceLoaderUtil.setInstanceForTesting(
                 LanguageProfileDelegate.class,
@@ -71,7 +66,6 @@ public class LanguageProfileControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSignedOut() {
         ServiceLoaderUtil.setInstanceForTesting(
                 LanguageProfileDelegate.class,
@@ -111,7 +105,6 @@ public class LanguageProfileControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testNotAvailable() {
         LanguageProfileController.getLanguagePreferences("myaccount");
 
@@ -127,7 +120,6 @@ public class LanguageProfileControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testTimeout() {
         ServiceLoaderUtil.setInstanceForTesting(
                 LanguageProfileDelegate.class,
@@ -153,7 +145,6 @@ public class LanguageProfileControllerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testFailure() {
         ServiceLoaderUtil.setInstanceForTesting(
                 LanguageProfileDelegate.class,

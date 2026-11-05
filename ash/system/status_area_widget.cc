@@ -136,9 +136,7 @@ void StatusAreaWidget::Initialize() {
 
   media_tray_ = AddTrayButton(std::make_unique<MediaTray>(shelf_));
 
-  if (features::IsEcheSWAEnabled()) {
-    eche_tray_ = AddTrayButton(std::make_unique<EcheTray>(shelf_));
-  }
+  eche_tray_ = AddTrayButton(std::make_unique<EcheTray>(shelf_));
 
   if (features::IsPhoneHubEnabled()) {
     phone_hub_tray_ = AddTrayButton(std::make_unique<PhoneHubTray>(shelf_));
@@ -415,10 +413,10 @@ void StatusAreaWidget::UpdateTargetBoundsForGesture(int shelf_position) {
 }
 
 void StatusAreaWidget::OnPinnedStateChanged(aura::Window* pinned_window) {
-  // Close all tray bubbles when in locked fullscreen mode to prevent users from
+  // Close all tray bubbles when in trusted pinned mode to prevent users from
   // exiting this mode.
   if (GetWindowPinType(pinned_window) ==
-      chromeos::WindowPinType::kLockedFullscreen) {
+      chromeos::WindowPinType::kTrustedPinned) {
     for (ash::TrayBackgroundView* const tray_button : tray_buttons_) {
       tray_button->CloseBubble(
           TrayBackgroundView::CloseReason::kWindowActivation);

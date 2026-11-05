@@ -28,7 +28,6 @@
 
 #include <utility>
 
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/expected.h"
@@ -59,6 +58,7 @@
 #include "third_party/blink/renderer/platform/loader/fetch/webui_bundled_cached_metadata_handler.h"
 #include "third_party/blink/renderer/platform/loader/subresource_integrity.h"
 #include "third_party/blink/renderer/platform/network/mime/mime_type_registry.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
@@ -227,7 +227,6 @@ const ParkableString& ScriptResource::GetSourceText() {
   CHECK(IsLoaded());
 
   if (source_text_.IsNull() && Data()) {
-    SCOPED_UMA_HISTOGRAM_TIMER_MICROS("Blink.Script.SourceTextTime");
     String source_text = DecodedText();
     if (!(base::FeatureList::IsEnabled(
               blink::features::kJavaScriptSourcePhaseImports) &&
@@ -299,37 +298,46 @@ void ScriptResource::SetSerializedCachedMetadata(mojo_base::BigBuffer data) {
   if (cached_metadata_handler_) {
     cached_metadata_handler_->SetSerializedCachedMetadata(std::move(data));
   }
-  if (consume_cache_state_ == ConsumeCacheState::kWaitingForCache) {
-    // If `background_streamer_` has decoded the code cache, use the decoded
-    // code cache.
-    if (background_streamer_ &&
-        background_streamer_->HasConsumeCodeCacheTask()) {
-      cache_consumer_ = MakeGarbageCollected<ScriptCacheConsumer>(
-          isolate_if_main_thread_,
-          V8CodeCache::GetCachedMetadata(
-              CacheHandler(), CachedMetadataHandler::kAllowUnchecked),
-          background_streamer_->TakeConsumeCodeCacheTask(), Url(),
-          InspectorId());
-      AdvanceConsumeCacheState(ConsumeCacheState::kRunningOffThread);
-      return;
+  if (consume_cache_state_ == ConsumeCacheState::kWaitingForCache &&
+      V8CodeCache::HasCodeCache(cached_metadata_handler_,
+                                CachedMetadataHandler::kAllowUnchecked)) {
+    if (background_streamer_) {
+      // If `background_streamer_` has decoded the code cache, use the decoded
+      // code cache.
+      if (background_streamer_->HasConsumeCodeCacheTask()) {
+        cache_consumer_ = MakeGarbageCollected<ScriptCacheConsumer>(
+            isolate_if_main_thread_,
+            V8CodeCache::GetCachedMetadata(
+                CacheHandler(), CachedMetadataHandler::kAllowUnchecked),
+            background_streamer_->TakeConsumeCodeCacheTask(), Url(),
+            InspectorId());
+        AdvanceConsumeCacheState(ConsumeCacheState::kRunningOffThread);
+        return;
+      }
+      // Note: If `background_streamer_` abandoned `consume_code_cache_task_`
+      // due to a background SHA-256 mismatch, it stripped the V8 bytecode
+      // payload from `data` (leaving only `CachedMetadataHeaderWithHash`), so
+      // `V8CodeCache::HasCodeCache` above is already false. Reaching here means
+      // `BackgroundProcessor::MaybeStartProcessingResponse` opted out or
+      // `MaybeCreateConsumeCodeCacheTask` did not start a background consume
+      // task, so we can safely fall through to main-thread
+      // `ScriptCacheConsumer` creation.
     }
 
     // If `cached_metadata_handler_` has a valid code cache, use the code cache.
-    if (V8CodeCache::HasCodeCache(
-            cached_metadata_handler_,
-            // It's safe to access unchecked cached metadata here, because the
-            // ScriptCacheConsumer result will be ignored if the cached metadata
-            // check fails later.
-            CachedMetadataHandler::kAllowUnchecked)) {
-      CHECK(isolate_if_main_thread_);
-      cache_consumer_ = MakeGarbageCollected<ScriptCacheConsumer>(
-          isolate_if_main_thread_,
-          V8CodeCache::GetCachedMetadata(
-              CacheHandler(), CachedMetadataHandler::kAllowUnchecked),
-          Url(), InspectorId());
-      AdvanceConsumeCacheState(ConsumeCacheState::kRunningOffThread);
-      return;
-    }
+    // Note that ClassicPendingScript::NotifyFinished runs
+    // CachedMetadataHandler::Check() before calling
+    // ScriptCacheConsumer::NotifyClientWaiting(), ensuring that
+    // SourceTextAvailable() and MergeWithExistingScript() only run after the
+    // metadata has passed validation.
+    CHECK(isolate_if_main_thread_);
+    cache_consumer_ = MakeGarbageCollected<ScriptCacheConsumer>(
+        isolate_if_main_thread_,
+        V8CodeCache::GetCachedMetadata(CacheHandler(),
+                                       CachedMetadataHandler::kAllowUnchecked),
+        Url(), InspectorId());
+    AdvanceConsumeCacheState(ConsumeCacheState::kRunningOffThread);
+    return;
   }
 
   DisableOffThreadConsumeCache();
@@ -411,6 +419,10 @@ void ScriptResource::ResponseReceived(const ResourceResponse& response) {
   }
 
   cached_metadata_handler_ = nullptr;
+  if (response.WasFetchedViaServiceWorker() &&
+      !RuntimeEnabledFeatures::ServiceWorkerCodeCacheEnabled()) {
+    return;
+  }
   // Currently we support the metadata caching only for HTTP family and any
   // schemes defined by SchemeRegistry as requiring a hash check.
   bool http_family = GetResourceRequest().Url().ProtocolIsInHttpFamily() &&
@@ -422,9 +434,10 @@ void ScriptResource::ResponseReceived(const ResourceResponse& response) {
           response.CurrentRequestUrl().Protocol());
 
   // There is also a flag on ResourceResponse so that hash-based code caching
-  // can be used on resources other than those specified by the scheme registry.
+  // can be used on HTTP(S) resources other than those specified by the scheme
+  // registry.
   code_cache_with_hashing_supported |=
-      response.ShouldUseSourceHashForJSCodeCache();
+      http_family && response.ShouldUseSourceHashForJSCodeCache();
 
   // Embedders may override whether hash-based code caching can be used for a
   // given resource request.
@@ -450,7 +463,10 @@ void ScriptResource::ResponseReceived(const ResourceResponse& response) {
     cached_metadata_handler_ =
         MakeGarbageCollected<ScriptCachedMetadataHandlerWithHashing>(
             Encoding(), std::move(sender));
-  } else if (http_family) {
+  } else if (http_family && !response.ShouldUseSourceHashForJSCodeCache() &&
+             (!response.WasFetchedViaServiceWorker() ||
+              !RuntimeEnabledFeatures::
+                  ServiceWorkerCodeCacheHashingEnabled())) {
     std::unique_ptr<CachedMetadataSender> sender = CachedMetadataSender::Create(
         response, mojom::blink::CodeCacheType::kJavascript,
         GetResourceRequest().RequestorOrigin());

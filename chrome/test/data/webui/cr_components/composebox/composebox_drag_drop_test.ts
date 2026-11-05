@@ -272,8 +272,7 @@ suite('ComposeboxDragAndDrop', () => {
   test('sets is-dragging-file attribute on dragenter', async () => {
     await createComposeboxElement();
     await microtasksFinished();
-    const dropZone = composeboxElement.shadowRoot.querySelector('#composebox');
-    assertTrue(!!dropZone);
+    const dropZone = composeboxElement.$.composebox;
 
     assertFalse(composeboxElement.hasAttribute('is-dragging-file'));
 
@@ -290,8 +289,7 @@ suite('ComposeboxDragAndDrop', () => {
   test('removes is-dragging-file attribute on dragleave', async () => {
     await createComposeboxElement();
     await microtasksFinished();
-    const dropZone = composeboxElement.shadowRoot.querySelector('#composebox');
-    assertTrue(!!dropZone);
+    const dropZone = composeboxElement.$.composebox;
 
     composeboxElement.animationState = GlowAnimationState.DRAGGING;
     dropZone?.dispatchEvent(new DragEvent('dragenter', {
@@ -437,9 +435,7 @@ suite('ComposeboxDragAndDrop', () => {
     await createComposeboxElement();
     await microtasksFinished();
 
-    const contextEntrypoint =
-        composeboxElement.shadowRoot.querySelector('#contextEntrypoint');
-    assertTrue(!!contextEntrypoint);
+    const contextEntrypoint = composeboxElement.$.contextEntrypoint;
     contextEntrypoint.dispatchEvent(new CustomEvent('tool-click', {
       detail: {tool: ToolMode.kDeepSearch},
     }));
@@ -479,9 +475,7 @@ suite('ComposeboxDragAndDrop', () => {
     await createComposeboxElement();
     await microtasksFinished();
 
-    const contextEntrypoint =
-        composeboxElement.shadowRoot.querySelector('#contextEntrypoint');
-    assertTrue(!!contextEntrypoint);
+    const contextEntrypoint = composeboxElement.$.contextEntrypoint;
     contextEntrypoint.dispatchEvent(new CustomEvent('tool-click', {
       detail: {tool: ToolMode.kImageGen},
     }));
@@ -530,9 +524,7 @@ suite('ComposeboxDragAndDrop', () => {
     await createComposeboxElement();
     await microtasksFinished();
 
-    const contextEntrypoint =
-        composeboxElement.shadowRoot.querySelector('#contextEntrypoint');
-    assertTrue(!!contextEntrypoint);
+    const contextEntrypoint = composeboxElement.$.contextEntrypoint;
     contextEntrypoint.dispatchEvent(new CustomEvent('tool-click', {
       detail: {tool: ToolMode.kCanvas},
     }));
@@ -556,4 +548,31 @@ suite('ComposeboxDragAndDrop', () => {
     await searchboxHandler.whenCalled(ADD_FILE_CONTEXT_FN);
     assertEquals(1, searchboxHandler.getCallCount(ADD_FILE_CONTEXT_FN));
   });
+
+  test(
+      'handles dropped directory when file.arrayBuffer() rejects', async () => {
+        loadTimeData.overrideValues({'lensSendRawFileMediaTypesEnabled': true});
+        await createComposeboxElement();
+        await microtasksFinished();
+
+        // On macOS/POSIX, a directory reports a non-zero stat size (e.g. 64
+        // bytes on APFS) with an empty MIME type, bypassing initial size/type
+        // checks, and then rejects with NotFoundError when read via
+        // arrayBuffer().
+        const directoryFile =
+            new File([new Uint8Array(64)], 'EmptyFolder', {type: ''});
+        directoryFile.arrayBuffer = () => Promise.reject(new DOMException(
+            'A requested file or directory could not be found at the time an ' +
+                'operation was processed.',
+            'NotFoundError'));
+
+        await dispatchDragAndDropEvent(composeboxElement, [directoryFile]);
+        await microtasksFinished();
+
+        assertEquals(0, searchboxHandler.getCallCount(ADD_FILE_CONTEXT_FN));
+        assertEquals(0, composeboxElement.attachedContext.size);
+        assertEquals(
+            composeboxElement.i18n('composeboxFileUploadFailed'),
+            composeboxElement.errorMessage);
+      });
 });

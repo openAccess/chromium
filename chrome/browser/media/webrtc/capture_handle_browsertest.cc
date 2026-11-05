@@ -18,9 +18,9 @@
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "chrome/browser/media/webrtc/webrtc_browsertest_base.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -453,7 +453,7 @@ IN_PROC_BROWSER_TEST_F(
 IN_PROC_BROWSER_TEST_F(CaptureHandleBrowserTest, CanExposeOnlyHandle) {
   TabInfo captured_tab =
       SetUpCapturedPage(/*expose_origin=*/false, "handle", {"*"});
-  ASSERT_EQ(captured_tab.capture_handle.find("origin"), std::string::npos);
+  ASSERT_FALSE(captured_tab.capture_handle.contains("origin"));
 
   TabInfo capturing_tab = SetUpCapturingPage(/*start_capturing=*/true);
 
@@ -466,7 +466,7 @@ IN_PROC_BROWSER_TEST_F(CaptureHandleBrowserTest,
   TabInfo captured_tab =
       SetUpCapturedPage(/*expose_origin=*/true, /*handle=*/"", {"*"});
   // Still expecting "handle: \"\"" in there.
-  ASSERT_NE(captured_tab.capture_handle.find("handle"), std::string::npos);
+  ASSERT_TRUE(captured_tab.capture_handle.contains("handle"));
 
   TabInfo capturing_tab = SetUpCapturingPage(/*start_capturing=*/true);
 

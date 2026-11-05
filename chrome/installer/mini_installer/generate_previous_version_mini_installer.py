@@ -18,6 +18,13 @@ def main():
     parser.add_argument('--mini_installer', help='Path to input mini_installer')
     parser.add_argument('--out', help='Path to the generated mini_installer.')
     parser.add_argument('--path_7za', help='Path to 7za.exe')
+    parser.add_argument(
+        '--fast_archive_compression',
+        action='store_true',
+        default=False,
+        help='This will enable fast compression of chrome.7z into '
+        'chrome.packed.7z.',
+    )
     args = parser.parse_args()
     assert args.alternate_version_generator
     assert args.mini_installer
@@ -32,11 +39,13 @@ def main():
         '--out=' + args.out,
         '--7za_path=' + args.path_7za,
     ]
+    if args.fast_archive_compression:
+        cmd.append('--fast_archive_compression')
 
     try:
         # Run |cmd|, redirecting stderr to stdout in order for captured errors
         # to be inline with corresponding stdout.
-        output = subprocess.check_output(
+        output = subprocess.check_output(  # noqa: F841
             cmd, stderr=subprocess.STDOUT, encoding='utf-8', text=True
         )
     except subprocess.CalledProcessError as e:

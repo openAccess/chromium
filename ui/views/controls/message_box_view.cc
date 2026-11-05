@@ -18,12 +18,12 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/geometry/insets.h"
-#include "ui/views/accessibility/accessibility_paint_checks.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/button/checkbox.h"
@@ -128,15 +128,17 @@ MessageBoxView::MessageBoxView(const std::u16string& message,
               .ClipHeightTo(0, provider->GetDistanceMetric(
                                    DISTANCE_DIALOG_SCROLLABLE_AREA_MAX_HEIGHT))
               .SetContents(std::move(message_contents)),
-          // TODO(crbug.com/40185544): Remove this, this is in place temporarily
-          // to be able to submit accessibility checks, but this focusable View
-          // needs to add a name so that the screen reader knows what to
-          // announce.
+          // The message doubles as the accessible name of the prompt field;
+          // see SetPromptField(). A page may open a prompt without a message
+          // (window.prompt() with no arguments), in which case the focusable
+          // field has to state explicitly that it has no name.
           Builder<Textfield>()
               .CopyAddressTo(&prompt_field_)
-              .SetProperty(kSkipAccessibilityPaintChecks, true)
               .SetProperty(kMarginsKey, horizontal_insets)
-              .SetAccessibleName(message)
+              .SetAccessibleName(
+                  message, message.empty()
+                               ? ax::mojom::NameFrom::kAttributeExplicitlyEmpty
+                               : ax::mojom::NameFrom::kAttribute)
               .SetVisible(false)
               .CustomConfigure(base::BindOnce([](Textfield* prompt_field) {
                 prompt_field->GetViewAccessibility().SetIsIgnored(true);
@@ -209,7 +211,7 @@ bool MessageBoxView::IsCheckBoxSelected() {
 }
 
 void MessageBoxView::SetCheckBoxLabel(const std::u16string& label) {
-  DCHECK(checkbox_);
+  CHECK(checkbox_, base::NotFatalUntil::M163);
   if (checkbox_->GetVisible() && checkbox_->GetText() == label) {
     return;
   }
@@ -229,9 +231,9 @@ void MessageBoxView::SetCheckBoxSelected(bool selected) {
 
 void MessageBoxView::SetLink(const std::u16string& text,
                              Link::ClickedCallback callback) {
-  DCHECK(!text.empty());
-  DCHECK(!callback.is_null());
-  DCHECK(link_);
+  CHECK(!text.empty(), base::NotFatalUntil::M163);
+  CHECK(!callback.is_null(), base::NotFatalUntil::M163);
+  CHECK(link_, base::NotFatalUntil::M163);
 
   link_->SetCallback(std::move(callback));
   if (link_->GetVisible() && link_->GetText() == text) {
@@ -261,7 +263,7 @@ void MessageBoxView::SetMessageWidth(int width) {
 }
 
 void MessageBoxView::SetPromptField(const std::u16string& default_prompt) {
-  DCHECK(prompt_field_);
+  CHECK(prompt_field_, base::NotFatalUntil::M163);
   if (prompt_field_->GetVisible() &&
       prompt_field_->GetText() == default_prompt) {
     return;
@@ -296,8 +298,8 @@ void MessageBoxView::ViewHierarchyChanged(
 
 bool MessageBoxView::AcceleratorPressed(const ui::Accelerator& accelerator) {
   // We only accept Ctrl-C.
-  DCHECK_EQ(accelerator.key_code(), 'C');
-  DCHECK(accelerator.IsCtrlDown());
+  CHECK_EQ(accelerator.key_code(), 'C', base::NotFatalUntil::M163);
+  CHECK(accelerator.IsCtrlDown(), base::NotFatalUntil::M163);
 
   // We must not intercept Ctrl-C when we have a text box and it's focused.
   if (prompt_field_ && prompt_field_->HasFocus()) {

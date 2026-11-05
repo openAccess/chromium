@@ -11,8 +11,8 @@
 #include <utility>
 
 #include "base/scoped_observation.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/util.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/subresource_filter/content/browser/subresource_filter_observer.h"
 #include "components/subresource_filter/content/browser/subresource_filter_observer_manager.h"
 #include "components/subresource_filter/core/common/load_policy.h"
@@ -50,8 +50,7 @@ class TestSubresourceFilterObserver : public SubresourceFilterObserver,
   void OnChildFrameNavigationEvaluated(
       content::NavigationHandle* navigation_handle,
       LoadPolicy load_policy) override;
-  void OnIsAdFrameChanged(content::RenderFrameHost* render_frame_host,
-                          bool is_ad_frame) override;
+  void OnFrameTaggedAsAd(content::RenderFrameHost* render_frame_host) override;
 
   // content::WebContentsObserver
   void DidFinishNavigation(

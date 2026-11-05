@@ -13,6 +13,7 @@
 
 namespace content {
 
+class PrefetchRequest;
 class PrefetchType;
 
 // The url of the tunnel proxy.
@@ -40,8 +41,9 @@ CONTENT_EXPORT bool PrefetchServiceSendDecoyRequestForIneligblePrefetch(
     bool disabled_based_on_user_settings);
 
 // The amount of time to allow a prefetch to take before considering it a
-// timeout error.
-base::TimeDelta PrefetchTimeoutDuration();
+// timeout error. Non-positive value means no timeout.
+base::TimeDelta PrefetchTimeoutDuration(
+    const PrefetchRequest& prefetch_request);
 
 // The maximum body length allowed to be prefetched for mainframe responses in
 // bytes.
@@ -96,8 +98,7 @@ int PrefetchCanaryCheckRetries();
 // The maximum amount of time to block until the head of a prefetch is received.
 // If the value is zero or less, then a navigation can be blocked indefinitely.
 CONTENT_EXPORT base::TimeDelta PrefetchBlockUntilHeadTimeout(
-    const PrefetchType& prefetch_type,
-    bool should_disable_block_until_head_timeout,
+    const PrefetchRequest& prefetch_request,
     bool is_nav_prerender);
 
 // Gets the histogram suffix for the given `prefetch_type` and

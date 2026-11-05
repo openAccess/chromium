@@ -6,6 +6,7 @@
 
 #include "chrome/browser/actor/actor_task_metadata.h"
 #include "chrome/browser/actor/actor_test_util.h"
+#include "chrome/browser/actor/ui/actor_ui_state_manager.h"
 #include "chrome/common/chrome_switches.h"
 
 using actor::ExpectOkResult;
@@ -30,7 +31,8 @@ void ActorUiInteractiveBrowserTest::StartActingOnTab(
   task_options->duration = duration;
   task_id_ = actor_keyed_service()->CreateTaskWithOptions(
       actor::TestTaskSourceInfo(), actor::NoEnterprisePolicyChecker(),
-      std::move(task_options), nullptr);
+      std::move(task_options), nullptr,
+      actor::ui::ActorUiStateManager::Get(browser()->GetProfile()));
   TestFuture<actor::mojom::ActionResultPtr> future;
   actor_keyed_service()->GetTask(task_id_)->AddTab(
       browser()->GetActiveTabInterface()->GetHandle(),

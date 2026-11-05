@@ -16,6 +16,7 @@
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "components/prefs/testing_pref_store.h"
+#include "components/signin/public/base/signin_pref_names.h"
 #include "components/supervised_user/core/browser/device_parental_controls_noop_impl.h"
 #include "components/supervised_user/core/browser/supervised_user_pref_store.h"
 #include "components/supervised_user/core/browser/supervised_user_url_filtering_service.h"
@@ -37,6 +38,14 @@ const char kAtomicItemName[] = "X-Wombat";
 const char kSettingsName[] = "TestingSetting";
 const char kSettingsValue[] = "SettingsValue";
 const char kSplitItemName[] = "X-SuperMoosePowers";
+
+struct ValuePropagationTestParam {
+  std::string test_name;
+  std::string setting_name;
+  std::string pref_name;
+  // Params of tests must be copyable but base::Value is only movable.
+  base::Value (*value_factory)();
+};
 
 class MockSubscriber {
  public:
@@ -446,35 +455,110 @@ TEST_F(FamilyLinkSettingsServiceTest, RecordLocalWebsiteApproval) {
                        "ContentPackManualBehaviorHosts:youtube.com");
 }
 
-TEST_F(FamilyLinkSettingsServiceTest, DeactivationClearsConsumingPrefStore) {
-  // Example pref store that consumes changes in the settings service. Has a
-  // private destructor.
+TEST_F(FamilyLinkSettingsServiceTest, CheckDefaultValues) {
+  // Asserts that initialized pref store writes default values when pref store
+  // dependencies are not initialized.
   DeviceParentalControlsNoOpImpl device_parental_controls;
   scoped_refptr<SupervisedUserPrefStore> pref_store =
       new SupervisedUserPrefStore(&settings_service_, device_parental_controls);
   StartSyncing(syncer::SyncDataList());
 
-  // Implementation detail: SupervisedUserPrefStore presets value of
-  // kSafeSitesEnabled. This is why this tests checks both values to avoid
-  // situation where verified value is that default.
-  for (bool setting : {true, false}) {
-    syncer::SyncChangeList change_list;
-    change_list.emplace_back(
-        FROM_HERE, syncer::SyncChange::ACTION_ADD,
-        FamilyLinkSettingsService::CreateSyncDataForSetting(
-            kSafeSitesEnabled, base::Value(setting)));
-    settings_service_.ProcessSyncChanges(FROM_HERE, change_list);
+  settings_service_.SetActive(true);
 
-    const base::Value* value = nullptr;
-    ASSERT_TRUE(pref_store->GetValue(prefs::kSupervisedUserSafeSites, &value));
-    EXPECT_EQ(*value, base::Value(setting));
-  }
+  // Verify that the pref store is initialized with default values.
+  const base::Value* value = nullptr;
+  EXPECT_TRUE(pref_store->GetValue(prefs::kSigninAllowed, &value));
+  ASSERT_TRUE(value->is_bool());
+  EXPECT_TRUE(value->GetBool());
 
+  EXPECT_TRUE(pref_store->GetValue(prefs::kSigninAllowedOnNextStartup, &value));
+  ASSERT_TRUE(value->is_bool());
+  EXPECT_TRUE(value->GetBool());
+
+  // These prefs are written to the pref store, but have no default values set
+  // at settings service initialization.
+  EXPECT_FALSE(pref_store->GetValue(
+      prefs::kSkipParentApprovalToInstallExtensions, &value));
+  EXPECT_FALSE(pref_store->GetValue(
+      prefs::kDefaultSupervisedUserFilteringBehavior, &value));
+}
+
+class FamilyLinkSettingsServiceValuePropagationTest
+    : public FamilyLinkSettingsServiceTest,
+      public ::testing::WithParamInterface<ValuePropagationTestParam> {};
+
+TEST_P(FamilyLinkSettingsServiceValuePropagationTest, CheckValuePropagation) {
+  // Asserts that values are propagated to the pref store (simply copied).
+  DeviceParentalControlsNoOpImpl device_parental_controls;
+  scoped_refptr<SupervisedUserPrefStore> pref_store =
+      new SupervisedUserPrefStore(&settings_service_, device_parental_controls);
+  StartSyncing(syncer::SyncDataList());
+
+  settings_service_.SetActive(true);
+
+  syncer::SyncChangeList change_list;
+  change_list.emplace_back(
+      FROM_HERE, syncer::SyncChange::ACTION_ADD,
+      FamilyLinkSettingsService::CreateSyncDataForSetting(
+          GetParam().setting_name, GetParam().value_factory()));
+  settings_service_.ProcessSyncChanges(FROM_HERE, change_list);
+
+  const base::Value* value = nullptr;
+  ASSERT_TRUE(pref_store->GetValue(GetParam().pref_name, &value));
+  EXPECT_EQ(*value, GetParam().value_factory());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    FamilyLinkSettingsServiceValuePropagationTest,
+    testing::ValuesIn<ValuePropagationTestParam>({
+        {"kSigninAllowed", supervised_user::kSigninAllowed,
+         prefs::kSigninAllowed, []() { return base::Value(true); }},
+        {"kSigninAllowedOnNextStartup",
+         supervised_user::kSigninAllowedOnNextStartup,
+         prefs::kSigninAllowedOnNextStartup,
+         []() { return base::Value(true); }},
+        {"kSkipParentApprovalToInstallExtensions",
+         supervised_user::kSkipParentApprovalToInstallExtensions,
+         prefs::kSkipParentApprovalToInstallExtensions,
+         []() { return base::Value(true); }},
+        {"kDefaultSupervisedUserFilteringBehavior",
+         supervised_user::kContentPackDefaultFilteringBehavior,
+         prefs::kDefaultSupervisedUserFilteringBehavior,
+         []() { return base::Value(0); }},
+    }),
+    [](const testing::TestParamInfo<
+        FamilyLinkSettingsServiceValuePropagationTest::ParamType>& info) {
+      return info.param.test_name;
+    });
+
+// Tests that `SetActive(true)` emits a single settings notification.
+TEST_F(FamilyLinkSettingsServiceTest, ActivationEmitsNotificationOnce) {
   settings_service_.SetActive(false);
-  {
-    const base::Value* value = nullptr;
-    EXPECT_FALSE(pref_store->GetValue(prefs::kSupervisedUserSafeSites, &value));
-  }
+
+  base::DictValue empty_settings;
+
+  MockSubscriber mock_subscriber;
+  // Notification sent on subscription while inactive.
+  EXPECT_CALL(mock_subscriber,
+              OnNewSettingsAvailable(testing::Eq(std::ref(empty_settings))))
+      .Times(1);
+  // Single notification sent on activation despite multiple local settings
+  // being updated.
+  EXPECT_CALL(mock_subscriber,
+              OnNewSettingsAvailable(testing::Ne(std::ref(empty_settings))))
+      .Times(1);
+
+  base::CallbackListSubscription subscription =
+      settings_service_.SubscribeForSettingsChange(
+          base::BindRepeating(&MockSubscriber::OnNewSettingsAvailable,
+                              base::Unretained(&mock_subscriber)));
+
+  // Activate several times to verify that a single notification is emitted.
+  settings_service_.SetActive(true);
+  EXPECT_TRUE(settings_service_.IsActive());
+
+  settings_service_.SetActive(true);
 }
 
 TEST_F(FamilyLinkSettingsServiceTest, DeactivationEmitsEmptyNotificationOnce) {
@@ -579,11 +663,10 @@ TEST_F(FamilyLinkSettingsServiceTest,
   settings_service_.SetLocalSetting(kContentPackManualBehaviorHosts,
                                     std::move(hosts));
 
-  EXPECT_EQ(full_url,
-            settings_service_.GetEffectiveUrlToUnblock(
-                {.url = full_url,
-                 .behavior = FilteringBehavior::kBlock,
-                 .reason = FilteringBehaviorReason::MANUAL}));
+  EXPECT_EQ(full_url, settings_service_.GetEffectiveUrlToUnblock(
+                          {.url = full_url,
+                           .behavior = FilteringBehavior::kBlock,
+                           .reason = FilteringBehaviorReason::MANUAL}));
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)

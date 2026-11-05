@@ -48,7 +48,7 @@
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/ukm/content/source_url_recorder.h"
 #include "components/ukm/test_ukm_recorder.h"
-#include "components/user_manager/scoped_user_manager.h"
+#include "content/public/browser/navigation_entry.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -56,8 +56,9 @@
 #include "ash/constants/ash_pref_names.h"
 #include "chrome/browser/ash/app_mode/kiosk_cryptohome_remover.h"
 #include "chrome/browser/ash/app_mode/web_app/kiosk_web_app_manager.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
-#endif
+#include "chrome/browser/ash/policy/core/device_local_account.h"
+#include "components/user_manager/user_type.h"  // nogncheck
+#endif                                          // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_ANDROID)
 #include "components/permissions/android/android_permission_util.h"
@@ -69,17 +70,14 @@ class PermissionRequestManagerTest
  public:
   PermissionRequestManagerTest()
       : ChromeRenderViewHostTestHarness(
-            base::test::TaskEnvironment::TimeSource::MOCK_TIME),
-        params_request1_(permissions::RequestType::kGeolocation,
-                         permissions::PermissionRequestGestureType::GESTURE),
-        params_request2_(permissions::RequestType::kMultipleDownloads,
-                         permissions::PermissionRequestGestureType::NO_GESTURE),
-        params_request_mic_(
-            permissions::RequestType::kMicStream,
-            permissions::PermissionRequestGestureType::NO_GESTURE),
-        params_request_camera_(
-            permissions::RequestType::kCameraStream,
-            permissions::PermissionRequestGestureType::NO_GESTURE) {}
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+
+#if BUILDFLAG(IS_CHROMEOS)
+  explicit PermissionRequestManagerTest(LogInParams log_in_params)
+      : ChromeRenderViewHostTestHarness(
+            std::move(log_in_params),
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
@@ -96,6 +94,7 @@ class PermissionRequestManagerTest
 
   void TearDown() override {
     prompt_factory_ = nullptr;
+    manager_ = nullptr;
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
@@ -129,48 +128,6 @@ class PermissionRequestManagerTest
     manager_->NavigationEntryCommitted(details);
   }
 
-#if BUILDFLAG(IS_CHROMEOS)
-  void SetKioskBrowserPermissionsAllowedForOrigins(const std::string& origin) {
-    profile()->GetPrefs()->SetList(
-        ash::prefs::kKioskBrowserPermissionsAllowedForOrigins,
-        base::ListValue().Append(std::move(origin)));
-  }
-
-  std::unique_ptr<
-      permissions::MockPermissionRequest::MockPermissionRequestState>
-  MakeRequestInWebKioskMode(const GURL& url, const GURL& app_url) {
-    const AccountId account_id = AccountId::FromUserEmail("lala@example.com");
-
-    auto fake_user_manager = std::make_unique<ash::FakeChromeUserManager>();
-    // Stealing the pointer from unique ptr before it goes to the scoped user
-    // manager.
-    ash::FakeChromeUserManager* user_manager = fake_user_manager.get();
-    auto scoped_user_manager =
-        std::make_unique<user_manager::ScopedUserManager>(
-            std::move(fake_user_manager));
-    user_manager->AddKioskWebAppUser(account_id);
-    user_manager->LoginUser(account_id);
-
-    ash::KioskCryptohomeRemover cryptohome_remover(
-        TestingBrowserProcess::GetGlobal()->local_state());
-    auto kiosk_app_manager = std::make_unique<ash::KioskWebAppManager>(
-        TestingBrowserProcess::GetGlobal()->local_state(),
-        TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
-        &cryptohome_remover);
-    kiosk_app_manager->AddAppForTesting(account_id, app_url);
-
-    NavigateAndCommit(url);
-    auto request_state = std::make_unique<
-        permissions::MockPermissionRequest::MockPermissionRequestState>();
-    auto request = std::make_unique<permissions::MockPermissionRequest>(
-        url, permissions::RequestType::kGeolocation,
-        request_state->GetWeakPtr());
-    manager_->AddRequest(web_contents()->GetPrimaryMainFrame(),
-                         std::move(request));
-    return request_state;
-  }
-#endif
-
  protected:
   std::unique_ptr<permissions::MockPermissionRequest> CreateRequest(
       std::pair<permissions::RequestType,
@@ -180,14 +137,20 @@ class PermissionRequestManagerTest
   }
 
   std::pair<permissions::RequestType, permissions::PermissionRequestGestureType>
-      params_request1_;
+      params_request1_{permissions::RequestType::kGeolocation,
+                       permissions::PermissionRequestGestureType::GESTURE};
   std::pair<permissions::RequestType, permissions::PermissionRequestGestureType>
-      params_request2_;
+      params_request2_{permissions::RequestType::kMultipleDownloads,
+                       permissions::PermissionRequestGestureType::NO_GESTURE};
   std::pair<permissions::RequestType, permissions::PermissionRequestGestureType>
-      params_request_mic_;
+      params_request_mic_{
+          permissions::RequestType::kMicStream,
+          permissions::PermissionRequestGestureType::NO_GESTURE};
   std::pair<permissions::RequestType, permissions::PermissionRequestGestureType>
-      params_request_camera_;
-  raw_ptr<permissions::PermissionRequestManager, DanglingUntriaged> manager_;
+      params_request_camera_{
+          permissions::RequestType::kCameraStream,
+          permissions::PermissionRequestGestureType::NO_GESTURE};
+  raw_ptr<permissions::PermissionRequestManager> manager_;
   std::unique_ptr<permissions::MockPermissionPromptFactory> prompt_factory_;
 };
 
@@ -387,20 +350,76 @@ TEST_F(PermissionRequestManagerTest, TestEmbargoForEmbeddedPermissionRequest) {
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
-TEST_F(PermissionRequestManagerTest, TestWebKioskModeSameOrigin) {
+class PermissionRequestManagerWebKioskTest
+    : public PermissionRequestManagerTest {
+ public:
+  PermissionRequestManagerWebKioskTest()
+      : PermissionRequestManagerTest(
+            {.account_id = WebKioskAccountId(),
+             .user_type = user_manager::UserType::kKioskWebApp}) {}
+
+  void SetUp() override {
+    PermissionRequestManagerTest::SetUp();
+
+    auto* browser_process = TestingBrowserProcess::GetGlobal();
+    PrefService* local_state = browser_process->local_state();
+    cryptohome_remover_ =
+        std::make_unique<ash::KioskCryptohomeRemover>(local_state);
+    kiosk_app_manager_ = std::make_unique<ash::KioskWebAppManager>(
+        local_state, browser_process->shared_url_loader_factory(),
+        cryptohome_remover_.get());
+    kiosk_app_manager_->AddAppForTesting(WebKioskAccountId(),
+                                         GURL("https://google.com/launch"));
+  }
+
+  void TearDown() override {
+    kiosk_app_manager_.reset();
+    cryptohome_remover_.reset();
+    PermissionRequestManagerTest::TearDown();
+  }
+
+  void SetKioskBrowserPermissionsAllowedForOrigins(const std::string& origin) {
+    profile()->GetPrefs()->SetList(
+        ash::prefs::kKioskBrowserPermissionsAllowedForOrigins,
+        base::ListValue().Append(origin));
+  }
+
+  std::unique_ptr<
+      permissions::MockPermissionRequest::MockPermissionRequestState>
+  MakeRequestInWebKioskMode(const GURL& url) {
+    NavigateAndCommit(url);
+    auto request_state = std::make_unique<
+        permissions::MockPermissionRequest::MockPermissionRequestState>();
+    auto request = std::make_unique<permissions::MockPermissionRequest>(
+        url, permissions::RequestType::kGeolocation,
+        request_state->GetWeakPtr());
+    manager_->AddRequest(web_contents()->GetPrimaryMainFrame(),
+                         std::move(request));
+    return request_state;
+  }
+
+ private:
+  static AccountId WebKioskAccountId() {
+    return AccountId::FromUserEmail(policy::GenerateDeviceLocalAccountUserId(
+        "lala", policy::DeviceLocalAccountType::kWebKioskApp));
+  }
+
+  std::unique_ptr<ash::KioskCryptohomeRemover> cryptohome_remover_;
+  std::unique_ptr<ash::KioskWebAppManager> kiosk_app_manager_;
+};
+
+TEST_F(PermissionRequestManagerWebKioskTest, TestWebKioskModeSameOrigin) {
   auto request_state =
-      MakeRequestInWebKioskMode(/*url*/ GURL("https://google.com/page"),
-                                /*app_url*/ GURL("https://google.com/launch"));
+      MakeRequestInWebKioskMode(GURL("https://google.com/page"));
 
   WaitForBubbleToBeShown();
   // It should be granted by default.
   EXPECT_TRUE(request_state->granted);
 }
 
-TEST_F(PermissionRequestManagerTest, TestWebKioskModeDifferentOrigin) {
+TEST_F(PermissionRequestManagerWebKioskTest, TestWebKioskModeDifferentOrigin) {
   auto request_state =
-      MakeRequestInWebKioskMode(/*url*/ GURL("https://example.com/page"),
-                                /*app_url*/ GURL("https://google.com/launch"));
+      MakeRequestInWebKioskMode(GURL("https://example.com/page"));
 
   WaitForBubbleToBeShown();
   // It should not be granted by default.
@@ -408,7 +427,7 @@ TEST_F(PermissionRequestManagerTest, TestWebKioskModeDifferentOrigin) {
   EXPECT_TRUE(request_state->finished);
 }
 
-TEST_F(PermissionRequestManagerTest,
+TEST_F(PermissionRequestManagerWebKioskTest,
        TestWebKioskModeDifferentOriginWhenFeatureIsDisabled) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndDisableFeature(
@@ -416,8 +435,7 @@ TEST_F(PermissionRequestManagerTest,
   SetKioskBrowserPermissionsAllowedForOrigins("https://example.com/page");
 
   auto request_state =
-      MakeRequestInWebKioskMode(/*url*/ GURL("https://example.com/page"),
-                                /*app_url*/ GURL("https://google.com/launch"));
+      MakeRequestInWebKioskMode(GURL("https://example.com/page"));
 
   WaitForBubbleToBeShown();
 
@@ -426,7 +444,7 @@ TEST_F(PermissionRequestManagerTest,
   EXPECT_TRUE(request_state->finished);
 }
 
-TEST_P(PermissionRequestManagerTest,
+TEST_P(PermissionRequestManagerWebKioskTest,
        TestWebKioskModeDifferentOriginWhenAllowedByFeature) {
   base::test::ScopedFeatureList feature_list;
   base::FieldTrialParams feature_params;
@@ -438,8 +456,7 @@ TEST_P(PermissionRequestManagerTest,
       feature_params);
 
   auto request_state =
-      MakeRequestInWebKioskMode(/*url*/ GURL("https://example.com/page"),
-                                /*app_url*/ GURL("https://google.com/launch"));
+      MakeRequestInWebKioskMode(GURL("https://example.com/page"));
 
   WaitForBubbleToBeShown();
 
@@ -448,7 +465,7 @@ TEST_P(PermissionRequestManagerTest,
   EXPECT_TRUE(request_state->finished);
 }
 
-TEST_P(PermissionRequestManagerTest,
+TEST_P(PermissionRequestManagerWebKioskTest,
        TestWebKioskModeDifferentOriginAllowedByKioskBrowserPref) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(
@@ -456,8 +473,7 @@ TEST_P(PermissionRequestManagerTest,
   SetKioskBrowserPermissionsAllowedForOrigins(GetParam().first);
 
   auto request_state =
-      MakeRequestInWebKioskMode(/*url*/ GURL("https://example.com/page"),
-                                /*app_url*/ GURL("https://google.com/launch"));
+      MakeRequestInWebKioskMode(GURL("https://example.com/page"));
 
   WaitForBubbleToBeShown();
 
@@ -468,7 +484,7 @@ TEST_P(PermissionRequestManagerTest,
 
 INSTANTIATE_TEST_SUITE_P(
     TestWebKioskModeDifferentOriginWhenAllowedByFeature,
-    PermissionRequestManagerTest,
+    PermissionRequestManagerWebKioskTest,
     testing::ValuesIn(
         {std::pair<std::string, bool>("*", false),
          std::pair<std::string, bool>(".example.com", false),

@@ -19,6 +19,9 @@
 #include "build/build_config.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/public/browser/initiator_navigation_state.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/webui_config_map.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
@@ -29,8 +32,10 @@
 #include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/resource_load_observer.h"
+#include "content/public/test/web_ui_browsertest_util.h"
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
+#include "net/base/net_errors.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_byte_range.h"
 #include "net/http/http_util.h"
@@ -41,6 +46,7 @@
 #include "services/network/public/cpp/ip_address_space_overrides_test_utils.h"
 #include "services/network/public/cpp/network_switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/webui/untrusted_web_ui_browsertest_util.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -815,6 +821,29 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessBrowserTest,
   ASSERT_FALSE(security_state.is_null());
   EXPECT_TRUE(security_state->is_web_secure_context);
   EXPECT_EQ(network::mojom::IPAddressSpace::kLoopback,
+            security_state->ip_address_space);
+}
+
+// This test verifies that the chrome-untrusted:// scheme is not considered
+// loopback for the purpose of Local Network Access, unlike chrome://.
+// Documents in this scheme process untrustworthy content in an ordinary
+// renderer, so they are classified as `unknown` (equivalent to `public`) and
+// are subject to Local Network Access checks like any web page.
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessBrowserTest,
+                       ClientSecurityStateForSpecialSchemeChromeUntrustedURL) {
+  WebUIConfigMap::GetInstance().AddUntrustedWebUIConfig(
+      std::make_unique<ui::TestUntrustedWebUIConfig>("test-host"));
+
+  EXPECT_TRUE(
+      NavigateToURL(shell(), GetChromeUntrustedUIURL("test-host/title1.html")));
+  EXPECT_TRUE(root_frame_host()->GetLastCommittedURL().SchemeIs(
+      kChromeUIUntrustedScheme));
+
+  const network::mojom::ClientSecurityStatePtr security_state =
+      root_frame_host()->BuildClientSecurityState();
+  ASSERT_FALSE(security_state.is_null());
+  EXPECT_TRUE(security_state->is_web_secure_context);
+  EXPECT_EQ(network::mojom::IPAddressSpace::kUnknown,
             security_state->ip_address_space);
 }
 
@@ -2565,6 +2594,32 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessBrowserTest,
 }
 
 // This test verifies that requests:
+//  - from a chrome-untrusted:// page
+//  - to a loopback IP address
+// are blocked when the permission is not granted, just as they are for a
+// public web page.
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessBrowserTest,
+                       FromChromeUntrustedToLoopbackNoPermissionIsBlocked) {
+  // chrome-untrusted:// data sources default to "default-src 'self';", which
+  // would block the fetch below at the CSP stage, before the Local Network
+  // Access check runs. Relax it so that LNA is the only thing that can block
+  // the request, which is what this test is about.
+  TestUntrustedDataSourceHeaders headers;
+  headers.default_src = "default-src https:;";
+  WebUIConfigMap::GetInstance().AddUntrustedWebUIConfig(
+      std::make_unique<ui::TestUntrustedWebUIConfig>("test-host", headers));
+
+  EXPECT_TRUE(
+      NavigateToURL(shell(), GetChromeUntrustedUIURL("test-host/title1.html")));
+
+  // We load the resource from a secure origin to avoid running afoul of mixed
+  // content restrictions.
+  EXPECT_EQ(false,
+            EvalJs(root_frame_host(),
+                   FetchSubresourceScript(SecureLoopbackURL(kCorsPath))));
+}
+
+// This test verifies that requests:
 //  - from a secure page served from a local IP address
 //  - to a loopback IP address
 // are not blocked.
@@ -2855,6 +2910,34 @@ IN_PROC_BROWSER_TEST_F(LocalNetworkAccessBrowserTest,
 }
 
 // This test verifies that iframe requests:
+//  - from a chrome-untrusted:// page
+//  - to a loopback IP address
+// are blocked when the permission is not granted, just as they are for a
+// public web page.
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessBrowserTest,
+                       IframeFromChromeUntrustedToLoopbackIsBlocked) {
+  // Without this, the iframe below is blocked by the data source's default
+  // "default-src 'self';" (child-src falls back to it), and the test would
+  // pass without ever reaching the Local Network Access check.
+  TestUntrustedDataSourceHeaders headers;
+  headers.child_src = "child-src *;";
+  WebUIConfigMap::GetInstance().AddUntrustedWebUIConfig(
+      std::make_unique<ui::TestUntrustedWebUIConfig>("test-host", headers));
+  EXPECT_TRUE(
+      NavigateToURL(shell(), GetChromeUntrustedUIURL("test-host/title1.html")));
+
+  GURL url = InsecureLoopbackURL("/empty.html");
+
+  TestNavigationManager child_navigation_manager(shell()->web_contents(), url);
+
+  AddChildFromURLWithoutWaiting(root_frame_host(), url);
+  ASSERT_TRUE(child_navigation_manager.WaitForNavigationFinished());
+
+  // Check that the child iframe failed to fetch.
+  EXPECT_FALSE(child_navigation_manager.was_successful());
+}
+
+// This test verifies that iframe requests:
 //  - from a secure page served from a public IP address
 //  - to a loopback IP address
 // are blocked.
@@ -3008,6 +3091,100 @@ IN_PROC_BROWSER_TEST_F(
   // The origin is opaque though, a symptom of the failed navigation.
   EXPECT_EQ(expected_url, child_frame->GetLastCommittedURL());
   EXPECT_TRUE(child_frame->GetLastCommittedOrigin().opaque());
+}
+
+// ===========================
+// NO-STATE PREFETCH LOAD TESTS
+// ===========================
+//
+// These tests exercise `ContentBrowserClient::IsNoStatePrefetch()`, which
+// embedders use to identify `WebContents` that load documents never displayed
+// to the user. Such loads must not fetch from an address space more private
+// than the initiator's, since there is no surface on which to prompt the user.
+
+namespace {
+
+class NoStatePrefetchTestContentBrowserClient
+    : public ContentBrowserTestContentBrowserClient {
+ public:
+  explicit NoStatePrefetchTestContentBrowserClient(WebContents* web_contents)
+      : no_state_prefetch_web_contents_(web_contents) {}
+
+  bool IsNoStatePrefetch(WebContents* web_contents) override {
+    return web_contents == no_state_prefetch_web_contents_;
+  }
+
+ private:
+  raw_ptr<WebContents> no_state_prefetch_web_contents_;
+};
+
+// Starts a load of `url` in `shell` marked as a no-state prefetch, on behalf
+// of the given initiator state, and waits for it to finish. Returns the net
+// error code of the navigation.
+int LoadAsNoStatePrefetch(
+    Shell* shell,
+    const GURL& url,
+    scoped_refptr<InitiatorNavigationState> initiator_navigation_state) {
+  NoStatePrefetchTestContentBrowserClient client(shell->web_contents());
+  TestNavigationObserver observer(shell->web_contents());
+  NavigationController::LoadURLParams params(url);
+  params.initiator_navigation_state = std::move(initiator_navigation_state);
+  shell->web_contents()->GetController().LoadURLWithParams(params);
+  observer.Wait();
+  return observer.last_net_error_code();
+}
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessBrowserTest,
+                       NoStatePrefetchLoadFromPublicToLoopbackIsBlocked) {
+  EXPECT_TRUE(NavigateToURL(shell(), SecurePublicURL(kDefaultPath)));
+
+  EXPECT_EQ(net::ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS,
+            LoadAsNoStatePrefetch(
+                shell(), SecureLoopbackURL(kDefaultPath),
+                root_frame_host()->GetCurrentInitiatorNavigationState()));
+}
+
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessBrowserTest,
+                       NoStatePrefetchLoadFromPublicToLocalIsBlocked) {
+  EXPECT_TRUE(NavigateToURL(shell(), SecurePublicURL(kDefaultPath)));
+
+  EXPECT_EQ(net::ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS,
+            LoadAsNoStatePrefetch(
+                shell(), SecureLocalURL(kDefaultPath),
+                root_frame_host()->GetCurrentInitiatorNavigationState()));
+}
+
+// A load marked as a no-state prefetch with no initiator state at all is
+// treated as coming from the most public address space, and may only fetch
+// from the public address space.
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessBrowserTest,
+                       NoStatePrefetchLoadWithoutInitiatorStateIsBlocked) {
+  EXPECT_EQ(net::ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS,
+            LoadAsNoStatePrefetch(shell(), SecureLoopbackURL(kDefaultPath),
+                                  /*initiator_navigation_state=*/nullptr));
+}
+
+// A no-state prefetch load is allowed when the target is not in a more
+// private address space than the initiator. The committed document then uses
+// the blocking policy for its own subresource fetches.
+IN_PROC_BROWSER_TEST_F(LocalNetworkAccessBrowserTest,
+                       NoStatePrefetchLoadFromLoopbackToLoopbackIsAllowed) {
+  EXPECT_TRUE(NavigateToURL(shell(), SecureLoopbackURL(kDefaultPath)));
+
+  EXPECT_EQ(net::OK,
+            LoadAsNoStatePrefetch(
+                shell(), OtherSecureLoopbackURL(kDefaultPath),
+                root_frame_host()->GetCurrentInitiatorNavigationState()));
+  EXPECT_EQ(OtherSecureLoopbackURL(kDefaultPath),
+            root_frame_host()->GetLastCommittedURL());
+
+  const network::mojom::ClientSecurityStatePtr security_state =
+      root_frame_host()->BuildClientSecurityState();
+  ASSERT_FALSE(security_state.is_null());
+  EXPECT_EQ(security_state->local_network_access_request_policy,
+            network::mojom::LocalNetworkAccessRequestPolicy::kBlock);
 }
 
 }  // namespace content

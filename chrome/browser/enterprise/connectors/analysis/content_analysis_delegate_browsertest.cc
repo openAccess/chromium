@@ -14,6 +14,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/connectors/analysis/content_analysis_dialog_controller.h"
@@ -31,6 +32,7 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_paths.h"
 #include "components/enterprise/browser/identifiers/profile_id_service.h"
@@ -112,6 +114,12 @@ class FakeBinaryUploadService : public CloudBinaryUploadServiceBase {
     prepared_file_responses_[path] = response;
   }
 
+  void SetResponseForPage(ScanRequestUploadResult result,
+                          const ContentAnalysisResponse& response) {
+    prepared_page_result_ = result;
+    prepared_page_response_ = response;
+  }
+
   void SetExpectedFinalAction(
       const std::string& request_token,
       ContentAnalysisAcknowledgement::FinalAction final_action) {
@@ -173,16 +181,17 @@ class FakeBinaryUploadService : public CloudBinaryUploadServiceBase {
               }));
           break;
         case AnalysisConnector::PRINT:
-          // Since this path is only used for prints that are too large, calling
-          // GetRequestData should then call FinishRequest with FILE_TOO_LARGE.
-          request_raw->GetRequestData(base::BindOnce(
-              [](std::unique_ptr<BinaryUploadRequest> request,
-                 ScanRequestUploadResult result,
-                 BinaryUploadRequest::Data data) {
-                ASSERT_EQ(result, ScanRequestUploadResult::kFileTooLarge);
-                request->FinishRequest(result, ContentAnalysisResponse());
-              },
-              std::move(request)));
+          // This path is reached when `block_large_files` is disabled, allowing
+          // pages > 50 MB (up to `kMaxContentAnalysisFileSizeMB`) to be
+          // uploaded and scanned successfully.
+          request_raw->GetRequestData(
+              base::BindLambdaForTesting([this, request = std::move(request)](
+                                             ScanRequestUploadResult result,
+                                             BinaryUploadRequest::Data data) {
+                ASSERT_EQ(result, ScanRequestUploadResult::kSuccess);
+                request->FinishRequest(prepared_page_result_,
+                                       prepared_page_response_);
+              }));
           break;
         case AnalysisConnector::ANALYSIS_CONNECTOR_UNSPECIFIED:
         case AnalysisConnector::FILE_DOWNLOADED:
@@ -203,6 +212,9 @@ class FakeBinaryUploadService : public CloudBinaryUploadServiceBase {
   uint64_t prepared_image_data_size_;
   ScanRequestUploadResult prepared_image_result_;
   ContentAnalysisResponse prepared_image_response_;
+
+  ScanRequestUploadResult prepared_page_result_;
+  ContentAnalysisResponse prepared_page_response_;
 
   std::map<std::string, ScanRequestUploadResult> prepared_file_results_;
   std::map<std::string, ContentAnalysisResponse> prepared_file_responses_;
@@ -411,7 +423,7 @@ class ContentAnalysisDelegateBrowserTest
   }
 
   content::ClipboardEndpoint SourceEndpoint() {
-    return content::ClipboardEndpoint(
+    return content::ClipboardEndpoint::ForFrame(
         ui::DataTransferEndpoint(GURL("https://source.com")),
         base::BindLambdaForTesting([this]() {
           return static_cast<content::BrowserContext*>(browser()->GetProfile());
@@ -423,7 +435,7 @@ class ContentAnalysisDelegateBrowserTest
   }
 
   content::ClipboardEndpoint IncognitoSourceEndpoint() {
-    return content::ClipboardEndpoint(
+    return content::ClipboardEndpoint::ForFrame(
         ui::DataTransferEndpoint(GURL("https://source.com")),
         base::BindLambdaForTesting([this]() {
           return static_cast<content::BrowserContext*>(
@@ -1183,8 +1195,7 @@ class ContentAnalysisDelegateBlockingSettingBrowserTest
   ContentAnalysisDelegateBlockingSettingBrowserTest()
       : ContentAnalysisDelegateBrowserTestBase(machine_scope()) {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{kDlpScanPastedImages},
-        /*disabled_features=*/{});
+        /*enabled_features=*/{kDlpScanPastedImages}, /*disabled_features=*/{});
   }
 
   bool machine_scope() const { return std::get<0>(GetParam()); }
@@ -1328,9 +1339,8 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
     content_analysis_run_loop.Run();
 }
 
-// TODO(crbug.com/417992384) re-enable after the experiment is launched.
 IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
-                       DISABLED_BlockLargeFiles) {
+                       BlockLargeFiles) {
   // When the resumable protocol is in use and the `blocked_large_files` setting
   // is off, the final verdict is determined by the server, not by the policy
   // value. So this specific test case only applies to multi-part upload.
@@ -1456,18 +1466,8 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
   reporting_run_loop.Run();
 }
 
-// TODO(crbug.com/417992384) re-enable after the experiment is launched.
 IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
-                       DISABLED_BlockLargePages) {
-  // When the resumable protocol is in use and the `blocked_large_files` setting
-  // is off, the final verdict is determined by the server, not by the policy
-  // value. So this specific test case only applies to multi-part upload.
-  //
-  // TODO(b/341264970): Add test support when setting_param is on.
-  if (!setting_param()) {
-    return;
-  }
-
+                       BlockLargePages) {
   base::ScopedAllowBlockingForTesting allow_blocking;
 
   // Set up delegate and upload service.
@@ -1500,14 +1500,17 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
   constexpr int64_t kLargeSize = 51 * 1024 * 1024;
   base::MappedReadOnlyRegion page =
       base::ReadOnlySharedMemoryRegion::Create(kLargeSize);
-  std::ranges::fill(base::span(page.mapping), 'a');
   data.page = std::move(page.region);
 
   ASSERT_TRUE(ContentAnalysisDelegate::IsEnabled(browser()->GetProfile(),
                                                  GURL(kTestUrl), &data, PRINT));
 
-  // The page should be reported as unscanned.
+  base::RunLoop reporting_run_loop;
   test::EventReportValidator validator(client());
+  if (setting_param()) {
+    // The page should be reported as unscanned when `block_large_files` is
+    // enabled.
+    validator.SetDoneClosure(reporting_run_loop.QuitClosure());
     chrome::cros::reporting::proto::UnscannedFileEvent expected_event;
     expected_event.set_url("about:blank");
     expected_event.set_tab_url("about:blank");
@@ -1521,12 +1524,8 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
     expected_event.set_trigger(
         chrome::cros::reporting::proto::DataTransferEventTrigger::PAGE_PRINT);
     expected_event.set_scan_id("");
-    expected_result()
-        ? expected_event.set_event_result(
-              chrome::cros::reporting::proto::EventResult::EVENT_RESULT_ALLOWED)
-        : expected_event.set_event_result(
-              chrome::cros::reporting::proto::EventResult::
-                  EVENT_RESULT_BLOCKED);
+    expected_event.set_event_result(
+        chrome::cros::reporting::proto::EventResult::EVENT_RESULT_BLOCKED);
     expected_event.set_clicked_through(false);
 
     expected_event.set_profile_identifier(GetProfileIdentifier());
@@ -1538,6 +1537,19 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
     }
 
     validator.ExpectUnscannedFileEvent(std::move(expected_event));
+  } else {
+    ContentAnalysisResponse response;
+    response.set_request_token(kScanId1);
+    auto* result = response.add_results();
+    result->set_status(ContentAnalysisResponse::Result::SUCCESS);
+    result->set_tag("dlp");
+
+    FakeBinaryUploadServiceStorage()->SetResponseForPage(
+        ScanRequestUploadResult::kSuccess, response);
+    FakeBinaryUploadServiceStorage()->SetExpectedFinalAction(
+        kScanId1, ContentAnalysisAcknowledgement::ALLOW);
+    validator.ExpectNoReport();
+  }
 
   bool called = false;
   base::RunLoop run_loop;
@@ -1569,11 +1581,19 @@ IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
   // Ensure the ContentAnalysisDelegate is destroyed before the end of the
   // test.
   content_analysis_run_loop.Run();
+
+  if (setting_param()) {
+    reporting_run_loop.Run();
+    ASSERT_EQ(FakeBinaryUploadServiceStorage()->requests_count(), 0);
+    ASSERT_EQ(FakeBinaryUploadServiceStorage()->ack_count(), 0);
+  } else {
+    ASSERT_EQ(FakeBinaryUploadServiceStorage()->requests_count(), 2);
+    ASSERT_EQ(FakeBinaryUploadServiceStorage()->ack_count(), 1);
+  }
 }
 
-// TODO(crbug.com/413427796): Fix flaky test.
 IN_PROC_BROWSER_TEST_P(ContentAnalysisDelegateBlockingSettingBrowserTest,
-                       DISABLED_BlockUntilVerdict) {
+                       BlockUntilVerdict) {
   base::ScopedAllowBlockingForTesting allow_blocking;
 
   // Set up delegate and upload service.

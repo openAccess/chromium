@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 
 namespace content {
@@ -18,7 +19,8 @@ namespace android_webview {
 
 // Handles the WebView find-in-page API requests.
 // Lifetime: WebView
-class FindHelper : public content::WebContentsUserData<FindHelper> {
+class FindHelper : public content::WebContentsUserData<FindHelper>,
+                   public content::WebContentsObserver {
  public:
   class Listener {
    public:
@@ -42,10 +44,6 @@ class FindHelper : public content::WebContentsUserData<FindHelper> {
 
   // Asynchronous API.
   void FindAllAsync(const std::u16string& search_string);
-  void HandleFindReply(int request_id,
-                       int match_count,
-                       int active_ordinal,
-                       bool finished);
 
   // Methods valid in both synchronous and asynchronous modes.
   void FindNext(bool forward);
@@ -55,6 +53,13 @@ class FindHelper : public content::WebContentsUserData<FindHelper> {
   friend class content::WebContentsUserData<FindHelper>;
 
   explicit FindHelper(content::WebContents* web_contents);
+
+  // content::WebContentsObserver:
+  void DidReceiveFindReply(int request_id,
+                           int number_of_matches,
+                           const gfx::Rect& selection_rect,
+                           int active_match_ordinal,
+                           bool final_update) override;
 
   void StartNewSession(const std::u16string& search_string);
   bool MaybeHandleEmptySearch(const std::u16string& search_string);
@@ -66,9 +71,9 @@ class FindHelper : public content::WebContentsUserData<FindHelper> {
   // Used to check the validity of FindNext operations.
   bool async_find_started_ = false;
 
-  // Used to provide different IDs to each request and for result
-  // verification in asynchronous calls.
-  int find_request_id_counter_ = 0;
+  // Used for result verification in asynchronous calls. IDs themselves come
+  // from WebContents::Find(), shared with every other caller of Find() on
+  // this WebContents.
   int current_request_id_ = 0;
 
   // Used to mark the beginning of the current find session. This is the ID of

@@ -12,11 +12,17 @@ import org.chromium.base.DeviceInfo;
 import org.chromium.base.TimeUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
+import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.FeatureProperties;
+import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.feature_engagement.UiFormat;
 import org.chromium.components.signin.AccountManagerFacade;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.AccountUtils;
@@ -54,13 +60,34 @@ public final class FullscreenSigninPromoLauncher {
             return false;
         }
 
-        if (!createAndLaunchActivity(
-                context,
-                profile,
-                signinAndHistorySyncActivityLauncher,
-                SigninAccessPoint.FULLSCREEN_SIGNIN_PROMO)) {
+        // Pass `shouldCallTrackerDismissed` based on whether the interruptive cooldown group is
+        // enabled, because this startup promo flow gates display on
+        // `shouldTriggerFullscreenPromo()`
+        // (which calls `Tracker#shouldTriggerHelpUi` when the flag is enabled), so
+        // `FullscreenSigninAndHistorySyncCoordinator#destroy()` must pair it with a call to
+        // `Tracker#dismissed()`. Other fullscreen flows (e.g. `launchPromoIfForced` and
+        // `launchForcedSigninFlow`) bypass the tracker check and pass `false`.
+        @Nullable Intent intent =
+                createActivityIntent(
+                        context,
+                        profile,
+                        signinAndHistorySyncActivityLauncher,
+                        SigninAccessPoint.FULLSCREEN_SIGNIN_PROMO,
+                        /* shouldCallTrackerDismissed= */ ChromeFeatureList
+                                .sUserEducationInterruptiveCooldownGroup
+                                .isEnabled());
+        if (intent == null) {
             return false;
         }
+
+        // Check `shouldTriggerFullscreenPromo` only after `createActivityIntent` returns a
+        // non-null Intent so we don't trigger the FET feature (and start the cooldown) when the
+        // sign-in/history-sync UI cannot be shown.
+        if (!shouldTriggerFullscreenPromo(profile)) {
+            return false;
+        }
+
+        context.startActivity(intent);
 
         prefManager.setSigninPromoLastShownTimeWithRandomOffset(getCurrentTimeWithRandomOffset());
         prefManager.setSigninPromoLastShownVersion(currentMajorVersion);
@@ -73,7 +100,7 @@ public final class FullscreenSigninPromoLauncher {
     }
 
     /**
-     * Launches the {@link SigninAndHistorySyncActivity} when forcing the display.
+     * Launches the {@link SigninAndHistorySyncActivity} when forcing the display with a flag.
      *
      * @param context The {@link Context} to launch the {@link SigninAndHistorySyncActivity}.
      * @param profile The active user profile.
@@ -85,26 +112,51 @@ public final class FullscreenSigninPromoLauncher {
             Context context,
             Profile profile,
             SigninAndHistorySyncActivityLauncher signinAndHistorySyncActivityLauncher) {
-        boolean shouldDisplayForForcedSigninPolicy =
-                ForcedSigninController.shouldDisplayForcedSignin(profile);
-        if (!SigninFeatureMap.isEnabled(SigninFeatures.FORCE_STARTUP_SIGNIN_PROMO)
-                && !shouldDisplayForForcedSigninPolicy) {
+        if (!SigninFeatureMap.isEnabled(SigninFeatures.FORCE_STARTUP_SIGNIN_PROMO)) {
             return false;
         }
         return createAndLaunchActivity(
                 context,
                 profile,
                 signinAndHistorySyncActivityLauncher,
-                shouldDisplayForForcedSigninPolicy
-                        ? SigninAccessPoint.FORCED_SIGNIN
-                        : SigninAccessPoint.FULLSCREEN_SIGNIN_PROMO);
+                SigninAccessPoint.FULLSCREEN_SIGNIN_PROMO);
     }
 
-    private static boolean createAndLaunchActivity(
+    /**
+     * Launches the {@link SigninAndHistorySyncActivity} for the forced sign-in flow. Callers are
+     * responsible for checking whether the forced sign-in flow should be displayed, see {@link
+     * ForcedSigninController#showFullscreenSigninPromptIfRequired()}.
+     *
+     * @param context The {@link Context} to launch the {@link SigninAndHistorySyncActivity}.
+     * @param profile The active user profile.
+     * @param signinAndHistorySyncActivityLauncher launcher used to launch the {@link
+     *     SigninAndHistorySyncActivity}.
+     * @return Whether the signin promo is shown.
+     */
+    public static boolean launchForcedSigninFlow(
+            Context context,
+            Profile profile,
+            SigninAndHistorySyncActivityLauncher signinAndHistorySyncActivityLauncher) {
+        return createAndLaunchActivity(
+                context,
+                profile,
+                signinAndHistorySyncActivityLauncher,
+                SigninAccessPoint.FORCED_SIGNIN);
+    }
+
+    /**
+     * Creates an {@link Intent} for launching {@link SigninAndHistorySyncActivity}.
+     *
+     * @param shouldCallTrackerDismissed Whether this flow is gated by the Feature Engagement {@link
+     *     Tracker} and must call {@link Tracker#dismissed} when the fullscreen coordinator is
+     *     destroyed.
+     */
+    private static @Nullable Intent createActivityIntent(
             Context context,
             Profile profile,
             SigninAndHistorySyncActivityLauncher signinAndHistorySyncActivityLauncher,
-            @SigninAccessPoint int accessPoint) {
+            @SigninAccessPoint int accessPoint,
+            boolean shouldCallTrackerDismissed) {
         FullscreenSigninAndHistorySyncConfig config =
                 FullscreenSigninAndHistorySyncConfig.builder(
                                 context.getString(R.string.signin_fre_title),
@@ -112,10 +164,24 @@ public final class FullscreenSigninPromoLauncher {
                                 context.getString(R.string.signin_fre_stay_signed_out_button),
                                 context.getString(R.string.history_sync_title),
                                 context.getString(R.string.history_sync_subtitle))
+                        .shouldCallTrackerDismissed(shouldCallTrackerDismissed)
                         .build();
+        return signinAndHistorySyncActivityLauncher.createFullscreenSigninIntent(
+                context, profile, config, accessPoint);
+    }
+
+    private static boolean createAndLaunchActivity(
+            Context context,
+            Profile profile,
+            SigninAndHistorySyncActivityLauncher signinAndHistorySyncActivityLauncher,
+            @SigninAccessPoint int accessPoint) {
         @Nullable Intent intent =
-                signinAndHistorySyncActivityLauncher.createFullscreenSigninIntent(
-                        context, profile, config, accessPoint);
+                createActivityIntent(
+                        context,
+                        profile,
+                        signinAndHistorySyncActivityLauncher,
+                        accessPoint,
+                        /* shouldCallTrackerDismissed= */ false);
         if (intent == null) {
             return false;
         }
@@ -201,6 +267,27 @@ public final class FullscreenSigninPromoLauncher {
         // Don't show if no new accounts have been added after the last time promo was shown.
         return previousAccountEmails == null
                 || !previousAccountEmails.containsAll(currentAccountEmails);
+    }
+
+    /**
+     * Queries the Feature Engagement {@link Tracker} to check whether the fullscreen sign-in promo
+     * is allowed to be shown under the enterprise promotion policy and the cross-promo interruptive
+     * IPH cooldown group rules (which rate-limit how frequently interruptive promos can be shown
+     * across Chrome). If this returns {@code true}, {@link Tracker#dismissed} must be called when
+     * the promo UI is dismissed.
+     */
+    private static boolean shouldTriggerFullscreenPromo(Profile profile) {
+        if (!ChromeFeatureList.sUserEducationInterruptiveCooldownGroup.isEnabled()) {
+            return true;
+        }
+        Tracker tracker = TrackerFactory.getTrackerForProfile(profile);
+        FeatureProperties featureProperties =
+                new FeatureProperties(
+                        UiFormat.FRE,
+                        /* isBlockedByCooldownGroup= */ true,
+                        /* blocksCooldownGroup= */ true);
+        return tracker.shouldTriggerHelpUi(
+                FeatureConstants.FULLSCREEN_SIGNIN_PROMO_FEATURE, featureProperties);
     }
 
     // Returns a random time offset in the past between [0..14) days in milliseconds.

@@ -4,7 +4,6 @@
 
 # It's reasonable for unittests to be messing with protected members.
 # Additionally, there is a lot to test, so line count is expected to be large.
-# pylint: disable=protected-access,too-many-lines
 
 
 import copy
@@ -17,13 +16,17 @@ from typing import Any, Type
 import unittest
 from unittest import mock
 
-# Needed in order for the tools/perf and Telemetry imports to work.
-# pylint: disable=unused-import,wrong-import-order
-from gpu_path_util import setup_telemetry_paths
-from gpu_path_util import setup_tools_perf_paths
+# vpython-provided modules.
+from pyfakefs import fake_filesystem_unittest
 
-# pylint: enable=unused-import,wrong-import-order
+# Needed in order for the tools/perf and Telemetry imports to work.
+# pylint: disable=unused-import
+from gpu_path_util import setup_telemetry_paths  # noqa: F401
+from gpu_path_util import setup_tools_perf_paths  # noqa: F401
+
+# pylint: disable=unused-import
 from chrome_telemetry_build import chromium_config
+import py_utils
 from py_utils import tempfile_ext
 from telemetry.internal.browser import browser_options as bo
 from telemetry.internal.util import binary_manager
@@ -35,6 +38,7 @@ from telemetry.testing import serially_executed_browser_test_case
 
 import gpu_path_util
 import gpu_project_config
+from gpu_tests import common_browser_args as cba
 from gpu_tests import common_typing as ct
 from gpu_tests import context_lost_integration_test
 from gpu_tests import gpu_helper
@@ -47,7 +51,6 @@ import run_gpu_integration_test
 
 # Unittest test cases are defined as public methods, so ignore complaints about
 # having too many.
-# pylint: disable=too-many-public-methods
 
 VENDOR_NVIDIA = 0x10DE
 VENDOR_AMD = 0x1002
@@ -60,7 +63,7 @@ GpuTestClass = gpu_integration_test.GpuIntegrationTest
 GpuTestClassType = Type[GpuTestClass]
 
 
-def _GetSystemInfo(  # pylint: disable=too-many-arguments
+def _GetSystemInfo(
   gpu: int = 0,
   device: int = 0,
   vendor_string: str = '',
@@ -87,6 +90,7 @@ def _GetSystemInfo(  # pylint: disable=too-many-arguments
         'is_asan': is_asan,
         'is_clang_coverage': is_clang_coverage,
         'target_cpu_bits': target_cpu_bits,
+        'skia_backend_type': 'GaneshGL',
       },
       'feature_status': {'gpu_compositing': 'enabled', 'opengl': 'enabled_on'},
     },
@@ -213,7 +217,6 @@ class GpuIntegrationTestUnittest(unittest.TestCase):
     self._RunGpuIntegrationTests('simple_integration_unittest')
     self.assertIn('expected_failure', self._test_result['tests'])
 
-  # pylint: disable=too-many-arguments
   def _TestTagGenerationForMockPlatform(
     self,
     test_class: GpuTestClassType,
@@ -239,8 +242,6 @@ class GpuIntegrationTestUnittest(unittest.TestCase):
       ).issubset(tag_set)
     )
     return tag_set
-
-  # pylint: enable=too-many-arguments
 
   def testGenerateContextLostExampleTagsForAsan(self) -> None:
     args = gpu_helper.GetMockArgs()
@@ -330,14 +331,20 @@ class GpuIntegrationTestUnittest(unittest.TestCase):
       '_RunConformanceTest'
     )
     instance._is_asan = False
-    self.assertEqual(instance._GetTestTimeout(), 300)
+    with mock.patch.object(instance, '_IsSlowTest', return_value=False):
+      self.assertEqual(instance._GetTestTimeout(), 300)
+    with mock.patch.object(instance, '_IsSlowTest', return_value=True):
+      self.assertEqual(instance._GetTestTimeout(), 1200)
 
   def testWebGlConformanceTimeoutAsan(self) -> None:
     instance = webgl1_cit.WebGL1ConformanceIntegrationTest(
       '_RunConformanceTest'
     )
     instance._is_asan = True
-    self.assertEqual(instance._GetTestTimeout(), 600)
+    with mock.patch.object(instance, '_IsSlowTest', return_value=False):
+      self.assertEqual(instance._GetTestTimeout(), 600)
+    with mock.patch.object(instance, '_IsSlowTest', return_value=True):
+      self.assertEqual(instance._GetTestTimeout(), 2400)
 
   def testAsanClassMemberSetCorrectly(self):
     test_class = gpu_integration_test.GpuIntegrationTest
@@ -849,7 +856,6 @@ def CreateGpuInfo(
 # changing when it expects it to stay constant throughout the entire
 # suite.
 class FeatureVerificationUnittest(unittest.TestCase):
-  # pylint: disable=no-self-use
   def testVerifyGLBackendSuccessUnspecified(self):
     """Tests GL backend verification that passes w/o a backend specified."""
     gpu_info = CreateGpuInfo(
@@ -1017,11 +1023,8 @@ class FeatureVerificationUnittest(unittest.TestCase):
         ['--disable-skia-graphite'], gpu_info
       )
 
-  # pylint: enable=no-self-use
-
 
 class FeatureVerificationWebGPUCompatUnittest(unittest.TestCase):
-  # pylint: disable=no-self-use
   def testVerifyCompatContextSuccessUnspecified(self):
     """Tests WebGPU compat verification that passes w/o the es31 flag."""
     gpu_info = CreateGpuInfo(
@@ -1224,6 +1227,7 @@ class IsolatedWaylandDisplaysUnittest(unittest.TestCase):
     options.no_browser_restart_on_failure = False
     options.disable_log_uploads = False
     options.enforce_browser_version = False
+    options.clear_system_shader_cache = False
     options.Copy.return_value = options
 
     with (
@@ -1249,6 +1253,344 @@ class IsolatedWaylandDisplaysUnittest(unittest.TestCase):
 
       mock_server.Stop.assert_called_once()
       self.assertIsNone(GpuTestClass._wayland_server)
+
+
+class RetrieveAboutGpuUnittest(unittest.TestCase):
+  def setUp(self):
+    GpuTestClass._args_changed_this_browser_start = True
+    GpuTestClass._about_gpu_content = None
+    GpuTestClass._test_that_started_browser = None
+    GpuTestClass._about_gpu_cache = {}
+    GpuTestClass._last_launched_browser_info = (
+      gpu_integration_test._BrowserLaunchInfo()
+    )
+    GpuTestClass.browser = mock.MagicMock()
+    GpuTestClass.browser.browser_type = 'release'
+    GpuTestClass.tab = mock.MagicMock()
+
+  def testRetrieveAboutGpuSkipsDawnInfoByDefault(self):
+    expected_content = 'a' * 2000
+    action_runner = GpuTestClass.tab.action_runner
+    action_runner.EvaluateJavaScript.return_value = expected_content
+
+    with mock.patch.object(py_utils, 'WaitFor') as mock_wait_for:
+      GpuTestClass._RetrieveAboutGpu()
+
+    GpuTestClass.tab.Navigate.assert_called_once_with(
+      'chrome://gpu?skip-dawn-info'
+    )
+    action_runner.WaitForElement.assert_called_once_with(selector='info-view')
+    action_runner.WaitForJavaScriptCondition.assert_called_once_with(
+      'document.getElementsByTagName("info-view")[0].getSelectionText '
+      '!= undefined'
+    )
+    mock_wait_for.assert_not_called()
+    action_runner.EvaluateJavaScript.assert_called_once_with(
+      'document.getElementsByTagName("info-view")[0].getSelectionText(true)'
+    )
+    self.assertEqual(GpuTestClass._about_gpu_content, expected_content)
+
+  def testRetrieveAboutGpuWaitsForDawnInfoWhenOptedIn(self):
+    expected_content = 'a' * 2000
+    action_runner = GpuTestClass.tab.action_runner
+    action_runner.EvaluateJavaScript.side_effect = [
+      True,
+      expected_content,
+    ]
+
+    with mock.patch.object(
+      GpuTestClass, '_ShouldCollectDawnInfoInAboutGpu', return_value=True
+    ):
+      GpuTestClass._RetrieveAboutGpu()
+
+    GpuTestClass.tab.Navigate.assert_called_once_with('chrome://gpu')
+    action_runner.WaitForElement.assert_called_once_with(selector='info-view')
+    action_runner.WaitForJavaScriptCondition.assert_called_once_with(
+      'document.getElementsByTagName("info-view")[0].getSelectionText '
+      '!= undefined'
+    )
+    self.assertEqual(
+      action_runner.EvaluateJavaScript.call_args_list,
+      [
+        mock.call(
+          'document.getElementsByTagName("info-view")[0]'
+          '.getSelectionText(true).includes("Dawn Info")'
+        ),
+        mock.call(
+          'document.getElementsByTagName("info-view")[0].getSelectionText(true)'
+        ),
+      ],
+    )
+    self.assertEqual(GpuTestClass._about_gpu_content, expected_content)
+
+  def testRetrieveAboutGpuDawnInfoTimeoutStillCapturesContent(self):
+    expected_content = 'a' * 2000
+    GpuTestClass.tab.action_runner.EvaluateJavaScript.return_value = (
+      expected_content
+    )
+
+    with (
+      mock.patch.object(
+        GpuTestClass, '_ShouldCollectDawnInfoInAboutGpu', return_value=True
+      ),
+      mock.patch.object(
+        py_utils, 'WaitFor', side_effect=py_utils.TimeoutException('Timed out')
+      ) as mock_wait_for,
+    ):
+      GpuTestClass._RetrieveAboutGpu()
+
+    mock_wait_for.assert_called_once_with(mock.ANY, timeout=15)
+    self.assertEqual(GpuTestClass._about_gpu_content, expected_content)
+
+  def testRetrieveAboutGpuSkipsDawnInfoWaitWhenGpuDisabled(self):
+    expected_content = 'a' * 2000
+    GpuTestClass._last_launched_browser_info = (
+      gpu_integration_test._BrowserLaunchInfo(browser_args={cba.DISABLE_GPU})
+    )
+    GpuTestClass.tab.action_runner.EvaluateJavaScript.return_value = (
+      expected_content
+    )
+
+    with (
+      mock.patch.object(
+        GpuTestClass, '_ShouldCollectDawnInfoInAboutGpu', return_value=True
+      ),
+      mock.patch.object(py_utils, 'WaitFor') as mock_wait_for,
+    ):
+      GpuTestClass._RetrieveAboutGpu()
+
+    GpuTestClass.tab.Navigate.assert_called_once_with(
+      'chrome://gpu?skip-dawn-info'
+    )
+    mock_wait_for.assert_not_called()
+    GpuTestClass.tab.action_runner.EvaluateJavaScript.assert_called_once_with(
+      'document.getElementsByTagName("info-view")[0].getSelectionText(true)'
+    )
+    self.assertEqual(GpuTestClass._about_gpu_content, expected_content)
+
+  def testRetrieveAboutGpuCachesByBrowserArgs(self):
+    content_a = 'a' * 2000
+    content_b = 'b' * 2000
+    GpuTestClass.tab.action_runner.EvaluateJavaScript.side_effect = [
+      content_a,
+      content_b,
+    ]
+    instance = GpuTestClass('runTest')
+    instance.artifacts = mock.MagicMock()
+
+    # First launch with --arg-a.
+    GpuTestClass._last_launched_browser_info = (
+      gpu_integration_test._BrowserLaunchInfo(browser_args={'--arg-a'})
+    )
+    GpuTestClass._args_changed_this_browser_start = True
+    GpuTestClass._RetrieveAboutGpu()
+    instance._ReportAboutGpu('test_a1')
+    self.assertEqual(GpuTestClass._about_gpu_content, content_a)
+    self.assertEqual(GpuTestClass._test_that_started_browser, 'test_a1')
+    self.assertEqual(GpuTestClass.tab.Navigate.call_count, 1)
+
+    # Switch to --arg-b.
+    GpuTestClass._last_launched_browser_info = (
+      gpu_integration_test._BrowserLaunchInfo(browser_args={'--arg-b'})
+    )
+    GpuTestClass._args_changed_this_browser_start = True
+    GpuTestClass._RetrieveAboutGpu()
+    instance._ReportAboutGpu('test_b1')
+    self.assertEqual(GpuTestClass._about_gpu_content, content_b)
+    self.assertEqual(GpuTestClass._test_that_started_browser, 'test_b1')
+    self.assertEqual(GpuTestClass.tab.Navigate.call_count, 2)
+
+    # Switch back to --arg-a: should use cache without navigating to
+    # chrome://gpu.
+    GpuTestClass._last_launched_browser_info = (
+      gpu_integration_test._BrowserLaunchInfo(browser_args={'--arg-a'})
+    )
+    GpuTestClass._args_changed_this_browser_start = True
+    GpuTestClass._RetrieveAboutGpu()
+    self.assertEqual(GpuTestClass.tab.Navigate.call_count, 2)
+    self.assertEqual(GpuTestClass._about_gpu_content, content_a)
+    self.assertEqual(GpuTestClass._test_that_started_browser, 'test_a1')
+
+    instance._ReportAboutGpu('test_a2')
+    instance.artifacts.CreateInMemoryTextArtifact.assert_called_once_with(
+      'about_gpu', 'See artifacts for test_a1'
+    )
+
+  def testRetrieveAboutGpuCachesSeparatelyForCollectDawnInfo(self):
+    content_no_dawn = 'a' * 2000
+    content_with_dawn = 'b' * 2000
+    GpuTestClass.tab.action_runner.EvaluateJavaScript.side_effect = [
+      content_no_dawn,
+      True,
+      content_with_dawn,
+    ]
+    instance = GpuTestClass('runTest')
+    instance.artifacts = mock.MagicMock()
+
+    # Launch with --arg-a and collect_dawn_info=False.
+    GpuTestClass._last_launched_browser_info = (
+      gpu_integration_test._BrowserLaunchInfo(
+        browser_args={'--arg-a'}, collect_dawn_info=False
+      )
+    )
+    GpuTestClass._args_changed_this_browser_start = True
+    GpuTestClass._RetrieveAboutGpu()
+    instance._ReportAboutGpu('test_no_dawn')
+    self.assertEqual(GpuTestClass._about_gpu_content, content_no_dawn)
+    self.assertEqual(GpuTestClass._test_that_started_browser, 'test_no_dawn')
+    GpuTestClass.tab.Navigate.assert_called_once_with(
+      'chrome://gpu?skip-dawn-info'
+    )
+
+    # Same --arg-a, but collect_dawn_info=True: should re-fetch chrome://gpu
+    # with Dawn Info instead of reusing the skip-dawn-info cache entry.
+    GpuTestClass._last_launched_browser_info = (
+      gpu_integration_test._BrowserLaunchInfo(
+        browser_args={'--arg-a'}, collect_dawn_info=True
+      )
+    )
+    GpuTestClass._args_changed_this_browser_start = True
+    GpuTestClass._RetrieveAboutGpu()
+    instance._ReportAboutGpu('test_with_dawn')
+    self.assertEqual(GpuTestClass._about_gpu_content, content_with_dawn)
+    self.assertEqual(GpuTestClass._test_that_started_browser, 'test_with_dawn')
+    self.assertEqual(
+      GpuTestClass.tab.Navigate.call_args_list,
+      [
+        mock.call('chrome://gpu?skip-dawn-info'),
+        mock.call('chrome://gpu'),
+      ],
+    )
+
+  def testRestartBrowserClearsArgsChangedFlag(self):
+    GpuTestClass._args_changed_this_browser_start = True
+    GpuTestClass.platform = mock.MagicMock()
+    GpuTestClass._finder_options = mock.MagicMock()
+    with (
+      mock.patch.object(GpuTestClass, 'StopBrowser'),
+      mock.patch.object(GpuTestClass, 'SetBrowserOptions'),
+      mock.patch.object(GpuTestClass, 'StartBrowser'),
+    ):
+      GpuTestClass._RestartBrowser('test failure')
+
+    self.assertFalse(GpuTestClass._args_changed_this_browser_start)
+
+
+class ClearSystemShaderCacheUnittest(fake_filesystem_unittest.TestCase):
+  def setUp(self):
+    self.setUpPyfakefs()
+    self.fs.CreateDirectory(tempfile.gettempdir())
+    GpuTestClass.child = None
+    mock_process = mock.MagicMock()
+    mock_process.pid = 1234
+    mock_process.create_time.return_value = 5678.9
+    process_patcher = mock.patch.object(
+      gpu_integration_test.psutil, 'Process', return_value=mock_process
+    )
+    process_patcher.start()
+    self.addCleanup(process_patcher.stop)
+
+  def tearDown(self):
+    GpuTestClass.child = None
+
+  def _CreateMockFinderOptions(
+    self, clear_system_shader_cache: bool
+  ) -> mock.MagicMock:
+    options = mock.MagicMock()
+    options.use_isolated_wayland_displays = False
+    options.extra_overlay_config_json = None
+    options.browser_type = 'exact'
+    options.skip_post_test_cleanup_and_debug_info = False
+    options.no_browser_restart_on_failure = False
+    options.disable_log_uploads = False
+    options.enforce_browser_version = False
+    options.clear_system_shader_cache = clear_system_shader_cache
+    options.Copy.return_value = options
+    return options
+
+  def testSetUpProcessSkipsShaderCacheClearByDefault(self):
+    GpuTestClass._finder_options = self._CreateMockFinderOptions(False)
+    with (
+      mock.patch.object(
+        gpu_integration_test.serially_executed_browser_test_case.SeriallyExecutedBrowserTestCase,
+        'SetUpProcess',
+      ),
+      mock.patch.object(GpuTestClass, '_ClearSystemShaderCache') as mock_clear,
+    ):
+      GpuTestClass.SetUpProcess()
+    mock_clear.assert_not_called()
+
+  def testSetUpProcessCallsShaderCacheClearWhenEnabled(self):
+    GpuTestClass._finder_options = self._CreateMockFinderOptions(True)
+    with (
+      mock.patch.object(
+        gpu_integration_test.serially_executed_browser_test_case.SeriallyExecutedBrowserTestCase,
+        'SetUpProcess',
+      ),
+      mock.patch.object(GpuTestClass, '_ClearSystemShaderCache') as mock_clear,
+    ):
+      GpuTestClass.SetUpProcess()
+    mock_clear.assert_called_once_with()
+
+  def testClearSystemShaderCacheWorker1RemovesDirsOnWindows(self):
+    home_dir = os.path.join(os.path.sep, 'Users', 'chrome-bot')
+    local_dir = os.path.join(home_dir, 'AppData', 'Local')
+    locallow_dxcache = os.path.join(
+      home_dir, 'AppData', 'LocalLow', 'NVIDIA', 'DXCache'
+    )
+    local_dxcache = os.path.join(local_dir, 'NVIDIA', 'DXCache')
+    cache_file_1 = os.path.join(locallow_dxcache, 'test1.nvph')
+    cache_file_2 = os.path.join(local_dxcache, 'test2.nvph')
+    self.fs.CreateFile(cache_file_1, contents='1234')
+    self.fs.CreateFile(cache_file_2, contents='5678')
+
+    GpuTestClass.child = mock.MagicMock(worker_num=1)
+    with (
+      mock.patch.object(
+        gpu_integration_test.host_information,
+        'IsWindows',
+        return_value=True,
+      ),
+      mock.patch.object(os.path, 'expanduser', return_value=home_dir),
+      mock.patch.dict(os.environ, {'LOCALAPPDATA': local_dir}),
+    ):
+      GpuTestClass._ClearSystemShaderCache()
+
+    self.assertFalse(os.path.exists(cache_file_1))
+    self.assertFalse(os.path.exists(cache_file_2))
+    self.assertFalse(os.path.exists(locallow_dxcache))
+    self.assertFalse(os.path.exists(local_dxcache))
+    sentinel_file = os.path.join(
+      tempfile.gettempdir(), 'cleared_shader_cache_1234_5678'
+    )
+    self.assertTrue(os.path.exists(sentinel_file))
+
+  def testClearSystemShaderCacheOtherWorkersWaitForRemoval(self):
+    sentinel_file = os.path.join(
+      tempfile.gettempdir(), 'cleared_shader_cache_1234_5678'
+    )
+
+    def _simulate_worker1_sentinel(condition, timeout):
+      del timeout
+      self.assertFalse(condition())
+      self.fs.CreateFile(sentinel_file)
+      self.assertTrue(condition())
+
+    GpuTestClass.child = mock.MagicMock(worker_num=2)
+    with (
+      mock.patch.object(
+        gpu_integration_test.host_information,
+        'IsWindows',
+        return_value=True,
+      ),
+      mock.patch.object(
+        py_utils, 'WaitFor', side_effect=_simulate_worker1_sentinel
+      ) as mock_wait_for,
+    ):
+      GpuTestClass._ClearSystemShaderCache()
+
+    mock_wait_for.assert_called_once()
+    self.assertTrue(os.path.exists(sentinel_file))
 
 
 def _ExtractTestResults(

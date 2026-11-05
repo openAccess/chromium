@@ -209,12 +209,9 @@ void MailboxVideoFrameConverter::WrapSharedImageAndVideoFrameAndOutput(
       frame->format(), shared_image, shared_image_sync_token,
       /*shared_image_release_cb=*/{}, frame->visible_rect(),
       frame->natural_size(), frame->timestamp());
-  mailbox_frame->set_color_space(shared_image->color_space());
   mailbox_frame->set_hdr_metadata(frame->hdr_metadata());
   mailbox_frame->set_metadata(frame->metadata());
   mailbox_frame->metadata().read_lock_fences_enabled = true;
-  mailbox_frame->metadata().is_webgpu_compatible =
-      frame->metadata().is_webgpu_compatible;
 
   mailbox_frame->AddDestructionObserver(
       base::DoNothingWithBoundArgs(std::move(frame)));
@@ -259,13 +256,14 @@ MailboxVideoFrameConverter::GenerateSharedImage(
     shared_image_usage |= gpu::SHARED_IMAGE_USAGE_SCANOUT;
   }
 
+#if BUILDFLAG(IS_CHROMEOS)
   // These SharedImages might also be used for zero-copy import into WebGPU to
   // serve as the sources of WebGPU reads (e.g., for video effects processing).
-  if (origin_frame->metadata().is_webgpu_compatible &&
-      !shared_image_interface_->GetCapabilities()
+  if (!shared_image_interface_->GetCapabilities()
            .disable_webgpu_shared_images) {
     shared_image_usage |= gpu::SHARED_IMAGE_USAGE_WEBGPU_READ;
   }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   gfx::ColorSpace color_space = frame->ColorSpace();
   // Set a default color space on the SharedImage if the frame color space is

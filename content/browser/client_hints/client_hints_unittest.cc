@@ -66,7 +66,7 @@ class ClientHintsTest : public RenderViewHostImplTestHarness {
         /*frame_token=*/blink::LocalFrameToken(),
         /*devtools_frame_token=*/base::UnguessableToken::Create(),
         /*document_token=*/blink::DocumentToken(),
-        /*initiator_state_token=*/base::UnguessableToken::Create(),
+        /*initiator_state_token=*/blink::InitiatorStateToken(),
         /*frame_policy=*/blink::FramePolicy(),
         /*frame_owner_properties=*/blink::mojom::FrameOwnerProperties(),
         /*owner_type=*/blink::FrameOwnerElementType::kIframe,
@@ -84,7 +84,7 @@ class ClientHintsTest : public RenderViewHostImplTestHarness {
         /*frame_token=*/blink::LocalFrameToken(),
         /*devtools_frame_token=*/base::UnguessableToken::Create(),
         /*document_token=*/blink::DocumentToken(),
-        /*initiator_state_token=*/base::UnguessableToken::Create(),
+        /*initiator_state_token=*/blink::InitiatorStateToken(),
         /*frame_policy=*/blink::FramePolicy(),
         /*frame_owner_properties=*/blink::mojom::FrameOwnerProperties(),
         /*owner_type=*/blink::FrameOwnerElementType::kFencedframe,
@@ -93,39 +93,36 @@ class ClientHintsTest : public RenderViewHostImplTestHarness {
 
   std::optional<ClientHintsVector> ParseAndPersist(
       const GURL& url,
-      net::CertStatus cert_status,
       const net::HttpResponseHeaders* response_header,
       const std::string& accept_ch_str,
       FrameTreeNode* frame_tree_node,
       MockClientHintsControllerDelegate* delegate) {
     auto parsed_headers = network::mojom::ParsedHeaders::New();
     parsed_headers->accept_ch = network::ParseClientHintsHeader(accept_ch_str);
-    net::SSLInfo ssl_info;
-    ssl_info.cert_status = cert_status;
 
     return ParseAndPersistAcceptCHForNavigation(
-        url::Origin::Create(url), ssl_info, parsed_headers, response_header,
+        url::Origin::Create(url), parsed_headers, response_header,
         browser_context(), delegate, frame_tree_node);
   }
 
   std::string HintsToString(std::optional<ClientHintsVector> hints) {
-    if (!hints)
+    if (!hints) {
       return "";
+    }
 
-    std::vector<std::string> hints_list;
-    const auto& map = network::GetClientHintToNameMap();
+    std::vector<std::string_view> hints_list;
     std::ranges::transform(hints.value(), std::back_inserter(hints_list),
-                           [&map](network::mojom::WebClientHintsType hint) {
-                             return map.at(hint);
+                           [](network::mojom::WebClientHintsType hint) {
+                             return network::kClientHintToNameMap.at(hint);
                            });
 
     return base::JoinString(hints_list, ",");
   }
 
   std::pair<std::string, ClientHintsVector> GetAllClientHints() {
-    std::vector<std::string> accept_ch_tokens;
+    std::vector<std::string_view> accept_ch_tokens;
     ClientHintsVector hints_list;
-    for (const auto& pair : network::GetClientHintToNameMap()) {
+    for (const auto& pair : network::kClientHintToNameMap) {
       hints_list.push_back(pair.first);
       accept_ch_tokens.push_back(pair.second);
     }
@@ -271,38 +268,25 @@ TEST_F(ClientHintsTest, IntegrationTestsOnParseLookUp) {
     std::string description;
     std::string accept_ch_str;
     raw_ptr<FrameTreeNode> frame_tree_node;
-    net::CertStatus cert_status;
     std::optional<ClientHintsVector> expect_hints;
     ClientHintsVector expect_commit_hints;
   } tests[] = {
-      {"Fail to persist due to cert status error",
-       "sec-ch-ua-platform, sec-ch-ua-bitness", main_frame_node,
-       net::CERT_STATUS_ALL_ERRORS, std::nullopt, ClientHintsVector{}},
       {"Persist hints for main frame", "sec-ch-ua-platform, sec-ch-ua-bitness",
        main_frame_node,
-       /*cert_status=*/0,
        std::make_optional(ClientHintsVector{WebClientHintsType::kUAPlatform,
                                             WebClientHintsType::kUABitness}),
        ClientHintsVector{WebClientHintsType::kUAPlatform,
                          WebClientHintsType::kUABitness}},
-      {"Fail to persist hints for sub frame",
-       "sec-ch-ua-platform, sec-ch-ua-bitness", sub_frame_node,
-       /*cert_status=*/0, std::nullopt,
-       ClientHintsVector{WebClientHintsType::kUAPlatform,
-                         WebClientHintsType::kUABitness}},
-      {"Fail to update due to cert status error",
-       all_non_origin_trial_hints_pair.first, main_frame_node,
-       net::CERT_STATUS_ALL_ERRORS, std::nullopt,
+      {"No persist hints for sub frame",
+       "sec-ch-ua-platform, sec-ch-ua-bitness", sub_frame_node, std::nullopt,
        ClientHintsVector{WebClientHintsType::kUAPlatform,
                          WebClientHintsType::kUABitness}},
       {"All client hints for main frame", all_non_origin_trial_hints_pair.first,
        main_frame_node,
-       /*cert_status=*/0,
        std::make_optional(all_non_origin_trial_hints_pair.second),
        all_non_origin_trial_hints_pair.second},
       {"All client hints for sub frame", all_non_origin_trial_hints_pair.first,
-       sub_frame_node, /*cert_status=*/0, std::nullopt,
-       all_non_origin_trial_hints_pair.second},
+       sub_frame_node, std::nullopt, all_non_origin_trial_hints_pair.second},
   };
 
   for (const auto& test : tests) {
@@ -310,8 +294,8 @@ TEST_F(ClientHintsTest, IntegrationTestsOnParseLookUp) {
         base::MakeRefCounted<net::HttpResponseHeaders>("HTTP/1.1 200 OK\n");
 
     auto actual_hints =
-        ParseAndPersist(url, test.cert_status, response_headers.get(),
-                        test.accept_ch_str, test.frame_tree_node, &delegate);
+        ParseAndPersist(url, response_headers.get(), test.accept_ch_str,
+                        test.frame_tree_node, &delegate);
     EXPECT_EQ(test.expect_hints, actual_hints)
         << "Test case [" << test.description << "]: expected hints "
         << HintsToString(test.expect_hints) << " but got "
@@ -350,9 +334,8 @@ TEST_F(ClientHintsTest, SubFrame) {
 
   // We shouldn't parse accept-ch in subframe, it should not overwrite existing
   // hints.
-  auto actual_updated_hints =
-      ParseAndPersist(url, /*cert_status=*/0, response_headers.get(),
-                      accept_ch_str, sub_frame_node, &delegate);
+  auto actual_updated_hints = ParseAndPersist(
+      url, response_headers.get(), accept_ch_str, sub_frame_node, &delegate);
 
   EXPECT_EQ(std::nullopt, actual_updated_hints);
   blink::EnabledClientHints current_hints;
@@ -384,9 +367,8 @@ TEST_F(ClientHintsTest, FencedFrame) {
 
   // We shouldn't parse accept-ch in fenced frame, it should not overwrite
   // existing hints.
-  auto actual_updated_hints =
-      ParseAndPersist(url, /*cert_status=*/0, response_headers.get(),
-                      accept_ch_str, fenced_frame_node, &delegate);
+  auto actual_updated_hints = ParseAndPersist(
+      url, response_headers.get(), accept_ch_str, fenced_frame_node, &delegate);
 
   EXPECT_EQ(std::nullopt, actual_updated_hints);
   blink::EnabledClientHints current_hints;
@@ -412,7 +394,7 @@ TEST_F(ClientHintsTest, GetEnabledClientHintsMainFrame) {
   };
   delegate.SetAdditionalClientHints(expected_types);
   // Add default ClientHints.
-  for (const auto& [hint, _] : network::GetClientHintToNameMap()) {
+  for (const auto& [hint, _] : network::kClientHintToNameMap) {
     if (blink::IsClientHintSentByDefault(hint)) {
       expected_types.push_back(hint);
     }
@@ -444,7 +426,7 @@ TEST_F(ClientHintsTest, GetEnabledClientHintsSubframe) {
 
   // Add default ClientHints.
   std::vector<network::mojom::WebClientHintsType> expected_types;
-  for (const auto& [hint, _] : network::GetClientHintToNameMap()) {
+  for (const auto& [hint, _] : network::kClientHintToNameMap) {
     if (blink::IsClientHintSentByDefault(hint)) {
       expected_types.push_back(hint);
     }
@@ -646,7 +628,7 @@ TEST_F(ClientHintsTest, GetEnabledClientHintsSubframeNotAllowed) {
   std::vector<network::mojom::WebClientHintsType> expected_allowed_hints;
   std::vector<network::mojom::WebClientHintsType> expected_not_allowed_hints;
 
-  for (const auto& [hint, _] : network::GetClientHintToNameMap()) {
+  for (const auto& [hint, _] : network::kClientHintToNameMap) {
     if (blink::IsClientHintSentByDefault(hint)) {
       expected_allowed_hints.push_back(hint);
     } else {

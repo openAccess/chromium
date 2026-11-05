@@ -71,7 +71,7 @@ void PrefetchStreamingURLLoader::Start(
       &PrefetchStreamingURLLoader::OnComplete, weak_ptr_factory_.GetWeakPtr(),
       network::URLLoaderCompletionStatus(net::ERR_ABORTED)));
 
-  if (!timeout_duration.is_zero()) {
+  if (timeout_duration.is_positive()) {
     timeout_timer_.Start(
         FROM_HERE, timeout_duration,
         base::BindOnce(&PrefetchStreamingURLLoader::OnComplete,
@@ -453,7 +453,28 @@ void PrefetchStreamingURLLoader::ServiceWorkerInterceptorLoaderCallback(
     // PrePrefetch request is also an initial request), but we don't explicitly
     // care about redirects, because currently redirects are not allowed for
     // ServiceWorker-controlled prefetch.
-    OnComplete(network::URLLoaderCompletionStatus(net::ERR_ABORTED));
+    //
+    // Even in this case, the final `PrefetchServiceWorkerState` should be
+    // determined (as `kControlled`, because a controlling ServiceWorker is
+    // found) before failing the prefetch, because `PrefetchMatchResolver` may
+    // already be waiting for this prefetch while it is `kAllowed`, and expects
+    // that the `PrefetchServiceWorkerState` is no longer `kAllowed` in
+    // `OnDeterminedHead()`, which is triggered by `OnComplete()` below.
+    std::move(on_service_worker_state_determined_callback_)
+        .Run(PrefetchServiceWorkerState::kControlled);
+
+    // Fail the prefetch in a separate task. This method can be called
+    // synchronously inside `CreateAndStart()`, i.e. inside
+    // `PrefetchService::StartSinglePrefetch()`, when the ServiceWorker
+    // registration lookup completes synchronously (e.g. when the registration
+    // is already live and cached), but `PrefetchService` expects to be
+    // notified of the failure only after `PrefetchScheduler` marks this
+    // prefetch as active. If `this` is cancelled before the task runs,
+    // `OnComplete()` does nothing.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&PrefetchStreamingURLLoader::OnComplete, GetWeakPtr(),
+                       network::URLLoaderCompletionStatus(net::ERR_ABORTED)));
     return;
   }
 

@@ -6,10 +6,10 @@
 
 #include <string>
 
-#include "ash/constants/ash_features.h"
 #include "ash/webui/help_app_ui/help_app_ui.mojom.h"
 #include "ash/webui/help_app_ui/url_constants.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
+#include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
@@ -20,21 +20,18 @@
 #include "chrome/browser/ash/borealis/borealis_features.h"
 #include "chrome/browser/ash/borealis/borealis_service.h"
 #include "chrome/browser/ash/borealis/borealis_service_factory.h"
+#include "chrome/browser/ash/cloud_upload/upload_office_to_cloud.h"
 #include "chrome/browser/ash/login/session/user_session_manager.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/upload_office_to_cloud/upload_office_to_cloud.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
-#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_dialog.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
+#include "components/user_manager/user.h"
 #include "content/public/browser/web_contents.h"
 #include "url/gurl.h"
-#include "url/origin.h"
 #include "url/url_constants.h"
 
 namespace ash {
@@ -128,13 +125,9 @@ void ChromeHelpAppUIDelegate::TriggerWelcomeTipCallToAction(
   return;
 }
 
-PrefService* ChromeHelpAppUIDelegate::GetLocalState() {
-  return g_browser_process->local_state();
-}
-
 void ChromeHelpAppUIDelegate::LaunchMicrosoft365Setup() {
   Profile* profile = Profile::FromWebUI(web_ui_);
-  if (!chromeos::cloud_upload::IsMicrosoftOfficeCloudUploadAllowed(profile)) {
+  if (!ash::cloud_upload::IsMicrosoftOfficeCloudUploadAllowed(profile)) {
     return;
   }
   ash::cloud_upload::LaunchMicrosoft365Setup(
@@ -175,26 +168,11 @@ ChromeHelpAppUIDelegate::OpenUrlInBrowserAndTriggerInstallDialog(
 
   GURL origin_url = GURL(kChromeUIHelpAppUntrustedURL);
   Profile* profile = Profile::FromWebUI(web_ui_);
-  if (base::FeatureList::IsEnabled(
-          features::kHelpAppAutoTriggerInstallDialog)) {
-    web_app::WebAppProvider* provider =
-        web_app::WebAppProvider::GetForWebApps(profile);
-    CHECK(provider);
-    provider->scheduler().ScheduleNavigateAndTriggerInstallDialog(
-        url, origin_url, /*is_renderer_initiated=*/true, base::DoNothing());
-    return std::nullopt;
-  }
-
-  // We specify a different page transition here because the common
-  // `ui::PAGE_TRANSITION_LINK` can be intercepted by URL capturing logic.
-  NavigateParams params(profile, url, ui::PAGE_TRANSITION_FROM_API);
-  // This method is initiated by the Help app renderer process via Mojo.
-  params.is_renderer_initiated = true;
-  // The `Navigate` implementation requires renderer-initiated navigations to
-  // specify an initiator origin. Set this to chrome-untrusted://help-app.
-  params.initiator_origin = url::Origin::Create(origin_url);
-  Navigate(&params);
-
+  web_app::WebAppProvider* provider =
+      web_app::WebAppProvider::GetForWebApps(profile);
+  CHECK(provider);
+  provider->scheduler().ScheduleNavigateAndTriggerInstallDialog(
+      url, origin_url, /*is_renderer_initiated=*/true, base::DoNothing());
   return std::nullopt;
 }
 

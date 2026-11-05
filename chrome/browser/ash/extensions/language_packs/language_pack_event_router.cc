@@ -7,8 +7,8 @@
 #include <memory>
 
 #include "chrome/browser/ash/extensions/language_packs/language_packs_extensions_util.h"
-#include "chrome/common/extensions/api/input_method_private.h"
 #include "chromeos/ash/components/language_packs/language_pack_manager.h"
+#include "chromeos/ash/experiences/extensions/common/api/input_method_private.h"
 #include "extensions/browser/event_router.h"
 #include "ui/base/ime/ash/input_method_manager.h"
 #include "ui/base/ime/ash/input_method_util.h"
@@ -47,11 +47,11 @@ void LanguagePackEventRouter::OnPackStateChanged(
           ->GetInputMethodIdsFromHandwritingLanguage(pack_result.language_code);
   change.status = LanguagePackResultToExtensionStatus(pack_result);
 
-  base::ListValue args = OnLanguagePackStatusChanged::Create(change);
-
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      OnLanguagePackStatusChanged::Create(change));
   auto event = std::make_unique<extensions::Event>(
       extensions::events::INPUT_METHOD_PRIVATE_ON_LANGUAGE_PACK_STATUS_CHANGED,
-      OnLanguagePackStatusChanged::kEventName, std::move(args), context_);
+      OnLanguagePackStatusChanged::kEventName, std::move(event_args), context_);
   router->BroadcastEvent(std::move(event));
 }
 

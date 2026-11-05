@@ -2,15 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h"
+
 #include "base/test/metrics/user_action_tester.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/bookmarks/saved_tab_groups/saved_tab_group_everything_menu.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/system_menu_model_builder.h"
-#include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h"
+#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_interactive_test_mixin.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -18,6 +24,7 @@
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
+#include "ui/base/hit_test.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/interaction_test_util.h"
 #include "ui/base/test/ui_controls.h"
@@ -29,6 +36,12 @@ namespace {
 class VerticalTabStripTopContainerInteractiveUiTest
     : public VerticalTabsInteractiveTestMixin<InteractiveBrowserTest> {
  public:
+  const std::vector<base::test::FeatureRef> GetDisabledFeatures() override {
+    // TODO(crbug.com/579025166): Fix test failures related to missing tab
+    // search bubble.
+    return {organizer_panel::kOrganizerPanel};
+  }
+
   auto SendTabSearchAccelerator() {
 #if BUILDFLAG(IS_MAC)
     constexpr int kModifiers = ui::EF_SHIFT_DOWN | ui::EF_COMMAND_DOWN;
@@ -93,6 +106,11 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripTopContainerInteractiveUiTest,
                        VerifyTabGroupButton) {
   browser()->GetProfile()->GetPrefs()->SetBoolean(
       prefs::kEverythingMenuPinnedToTabstrip, true);
+  EXPECT_TRUE(browser()
+                  ->GetProfile()
+                  ->GetPrefs()
+                  ->GetTime(prefs::kVerticalTabsEverythingMenuLastPressed)
+                  .is_null());
   RunTestSequence(
       CheckResult([this]() { return browser()->GetTabStripModel()->count(); },
                   1),
@@ -100,6 +118,15 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripTopContainerInteractiveUiTest,
       WaitForShow(kSavedTabGroupButtonElementId),
       PressButton(kSavedTabGroupButtonElementId,
                   ui::test::InteractionTestUtil::InputType::kDontCare),
+      CheckResult(
+          [this]() {
+            return browser()
+                ->GetProfile()
+                ->GetPrefs()
+                ->GetTime(prefs::kVerticalTabsEverythingMenuLastPressed)
+                .is_null();
+          },
+          false),
       EnsurePresent(tab_groups::STGEverythingMenu::kCreateNewTabGroup),
       SelectMenuItem(tab_groups::STGEverythingMenu::kCreateNewTabGroup),
       WaitForShow(kTabGroupHeaderElementId),
@@ -125,6 +152,62 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripTopContainerInteractiveUiTest,
       // Press Collapse Button
       PressButton(kVerticalTabStripCollapseButtonElementId),
       // Verify collapsed
+      CheckResult(
+          [this]() {
+            return vertical_tab_strip_state_controller()->GetCollapseState() !=
+                   tabs::VerticalTabStripCollapseState::kExpanded;
+          },
+          true));
+}
+
+// This test checks that we can click the collapse button in the vertical tab
+// strip while in fullscreen mode. Regression test for crbug.com/539273345.
+IN_PROC_BROWSER_TEST_F(VerticalTabStripTopContainerInteractiveUiTest,
+                       VerifyCollapseButtonInFullscreen) {
+  gfx::ScopedAnimationDurationScaleMode disable_animation(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  RunTestSequence(
+      // Enter fullscreen mode.
+      Do([this]() {
+        BrowserWindowFullscreenController::From(browser())
+            ->set_should_hide_ui_for_fullscreen_for_testing(false);
+        ui_test_utils::ToggleFullscreenModeAndWait(browser());
+#if BUILDFLAG(IS_MAC)
+        BrowserView* browser_view =
+            BrowserView::GetBrowserViewForBrowser(browser());
+        if (browser_view->tab_overlay_widget()) {
+          browser_view->tab_overlay_widget()->SetBounds(
+              browser_view->vertical_tab_strip_region_view_for_testing()
+                  ->GetBoundsInScreen());
+          browser_view->tab_overlay_widget()->Hide();
+        }
+#endif
+      }),
+      // Verify not collapsed.
+      CheckResult(
+          [this]() {
+            return vertical_tab_strip_state_controller()->GetCollapseState() !=
+                   tabs::VerticalTabStripCollapseState::kExpanded;
+          },
+          false),
+      WaitForShow(kVerticalTabStripTopContainerElementId),
+      EnsurePresent(kVerticalTabStripCollapseButtonElementId),
+      // Verify NonClientHitTest on the collapse button returns HTCLIENT.
+      CheckView(
+          kVerticalTabStripCollapseButtonElementId,
+          [this](views::View* button) {
+            BrowserView* browser_view =
+                BrowserView::GetBrowserViewForBrowser(browser());
+            gfx::Point point_in_ncv = button->GetBoundsInScreen().CenterPoint();
+            views::View::ConvertPointFromScreen(
+                browser_view->GetWidget()->non_client_view(), &point_in_ncv);
+            return browser_view->GetWidget()
+                       ->non_client_view()
+                       ->NonClientHitTest(point_in_ncv) == HTCLIENT;
+          }),
+      // Move mouse to the collapse button and click it.
+      MoveMouseTo(kVerticalTabStripCollapseButtonElementId), ClickMouse(),
+      // Verify collapsed.
       CheckResult(
           [this]() {
             return vertical_tab_strip_state_controller()->GetCollapseState() !=

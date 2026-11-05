@@ -4,6 +4,7 @@
 
 #include "components/safe_browsing/core/browser/db/sb_database.h"
 
+#include <optional>
 #include <unordered_map>
 #include <utility>
 
@@ -15,6 +16,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/numerics/byte_conversions.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
@@ -34,7 +36,7 @@
 
 namespace safe_browsing {
 
-// TODO(crbug.com/362791941): Handle references to v4.
+// TODO(crbug.com/372395685): Delete references to v4.
 class FakeV4Store : public V4Store {
  public:
   FakeV4Store(const scoped_refptr<base::SequencedTaskRunner>& task_runner,
@@ -64,7 +66,7 @@ class FakeV4Store : public V4Store {
 
 // This factory creates a "fake" store. It allows the caller to specify whether
 // the store has a hash prefix matching a full hash. This is used to test the
-// |GetStoresMatchingFullHash()| method in |SBDatabase|.
+// `GetStoresMatchingFullHash()` method in `SBDatabase`.
 class FakeV4StoreFactory : public V4StoreFactory {
  public:
   explicit FakeV4StoreFactory(bool hash_prefix_matches)
@@ -263,12 +265,23 @@ class SBDatabaseTest : public PlatformTest {
 class SBDatabaseTest_V4V5 : public SBDatabaseTest,
                             public ::testing::WithParamInterface<bool> {
  public:
-  SBDatabaseTest_V4V5() {
-    if (GetParam()) {
-      feature_list_.InitAndEnableFeature(kLocalListsUseSBv5);
+  SBDatabaseTest_V4V5()
+      : SBDatabaseTest_V4V5(/*enable_delete_unused_stores=*/true) {}
+
+  explicit SBDatabaseTest_V4V5(bool enable_delete_unused_stores) {
+    std::vector<base::test::FeatureRef> enabled_features;
+    std::vector<base::test::FeatureRef> disabled_features;
+    if (IsV5Enabled()) {
+      enabled_features.push_back(kLocalListsUseSBv5);
     } else {
-      feature_list_.InitAndDisableFeature(kLocalListsUseSBv5);
+      disabled_features.push_back(kLocalListsUseSBv5);
     }
+    if (enable_delete_unused_stores) {
+      enabled_features.push_back(kSafeBrowsingDeleteUnusedStores);
+    } else {
+      disabled_features.push_back(kSafeBrowsingDeleteUnusedStores);
+    }
+    feature_list_.InitWithFeatures(enabled_features, disabled_features);
   }
 
   bool IsV5Enabled() const { return GetParam(); }
@@ -358,8 +371,155 @@ class SBDatabaseTest_V4V5 : public SBDatabaseTest,
     return update_map;
   }
 
+  // Creates an update response map containing a single 4-byte hash prefix for
+  // each store in `store_state_map`.
+  std::unique_ptr<SBUpdateResponseMap> CreateUpdateResponseMapWithPrefix(
+      const StoreStateMap& store_state_map,
+      std::string_view prefix) {
+    CHECK_EQ(prefix.size(), 4u);
+    auto update_map = std::make_unique<SBUpdateResponseMap>();
+    std::string checksum_str(
+        base::as_string_view(crypto::hash::Sha256(base::as_byte_span(prefix))));
+
+    for (const auto& store_state_iter : store_state_map) {
+      ListIdentifier identifier = store_state_iter.first;
+      auto sb_response = std::make_unique<SBUpdateResponse>();
+      if (IsV5Enabled()) {
+        auto v5_response = std::make_unique<V5::HashList>();
+        v5_response->set_version(store_state_iter.second);
+        v5_response->set_sha256_checksum(checksum_str);
+        V5::RiceDeltaEncoded32Bit* additions =
+            v5_response->mutable_additions_four_bytes();
+        additions->set_entries_count(0);
+        additions->set_first_value(
+            base::U32FromBigEndian(base::as_byte_span(prefix).first<4u>()));
+        additions->set_rice_parameter(3);
+        sb_response->v5_response = std::move(v5_response);
+      } else {
+        auto lur = std::make_unique<ListUpdateResponse>();
+        lur->set_platform_type(identifier.platform_type());
+        lur->set_threat_entry_type(identifier.threat_entry_type());
+        lur->set_threat_type(identifier.threat_type());
+        lur->set_new_client_state(store_state_iter.second);
+        lur->set_response_type(ListUpdateResponse::FULL_UPDATE);
+        lur->mutable_checksum()->set_sha256(checksum_str);
+        ThreatEntrySet* additions = lur->add_additions();
+        additions->set_compression_type(RAW);
+        additions->mutable_raw_hashes()->set_prefix_size(4);
+        additions->mutable_raw_hashes()->set_raw_hashes(std::string(prefix));
+        sb_response->v4_response = std::move(lur);
+      }
+      update_map->insert({identifier, std::move(sb_response)});
+    }
+    return update_map;
+  }
+
+  // Helper to test startup cleanup behavior under various feature and file
+  // configurations.
+  void RunStartupInactiveStoreFilesCleanupTest(
+      bool create_unused_files,
+      bool expect_unused_files_deleted,
+      bool expect_time_recorded,
+      std::optional<bool> expected_cleanup_needed_sample) {
+    base::HistogramTester histogram_tester;
+    RegisterFactory();
+
+    ASSERT_FALSE(expected_store_paths_.empty());
+    ASSERT_TRUE(base::CreateDirectory(database_dirname_));
+
+    // Create active store files on disk.
+    for (const auto& expected_path : expected_store_paths_) {
+      ASSERT_TRUE(base::WriteFile(expected_path, "active_store"));
+    }
+
+    base::FilePath deprecated_store =
+        database_dirname_.AppendASCII("CertCsdDownloadAllowlist.store");
+    base::FilePath deprecated_store_hash =
+        database_dirname_.AppendASCII("CertCsdDownloadAllowlist.store.0");
+    base::FilePath ip_malware_store =
+        database_dirname_.AppendASCII("IpMalware.store");
+    base::FilePath stale_hash =
+        expected_store_paths_[0].AddExtensionASCII("old_ext");
+    base::FilePath non_store_file =
+        database_dirname_.AppendASCII("unrelated_file.txt");
+
+    if (create_unused_files) {
+      ASSERT_TRUE(base::WriteFile(deprecated_store, "deprecated"));
+      ASSERT_TRUE(base::WriteFile(deprecated_store_hash, "deprecated_hash"));
+      ASSERT_TRUE(base::WriteFile(ip_malware_store, "ip_malware"));
+      ASSERT_TRUE(base::WriteFile(stale_hash, "stale_hash"));
+      ASSERT_TRUE(base::WriteFile(non_store_file, "unrelated"));
+    }
+
+    WaitForSBDatabaseReady(CreateTaskRunner(),
+                           /*simple_task_runners_to_wait_for=*/{});
+
+    // Active store files should always exist.
+    for (const auto& expected_path : expected_store_paths_) {
+      EXPECT_TRUE(base::PathExists(expected_path));
+    }
+
+    if (create_unused_files) {
+      // Unrelated non-store file should never be touched by cleanup.
+      EXPECT_TRUE(base::PathExists(non_store_file));
+
+      if (expect_unused_files_deleted) {
+        EXPECT_FALSE(base::PathExists(deprecated_store));
+        EXPECT_FALSE(base::PathExists(deprecated_store_hash));
+        EXPECT_FALSE(base::PathExists(ip_malware_store));
+        EXPECT_FALSE(base::PathExists(stale_hash));
+      } else {
+        EXPECT_TRUE(base::PathExists(deprecated_store));
+        EXPECT_TRUE(base::PathExists(deprecated_store_hash));
+        EXPECT_TRUE(base::PathExists(ip_malware_store));
+        EXPECT_TRUE(base::PathExists(stale_hash));
+      }
+    }
+
+    histogram_tester.ExpectTotalCount("SafeBrowsing.UnusedStoresCleanup.Time",
+                                      expect_time_recorded ? 1 : 0);
+
+    if (expected_cleanup_needed_sample.has_value()) {
+      histogram_tester.ExpectUniqueSample(
+          "SafeBrowsing.UnusedStoresCleanup.Needed",
+          /*sample=*/expected_cleanup_needed_sample.value(),
+          /*expected_bucket_count=*/1);
+    } else {
+      histogram_tester.ExpectTotalCount(
+          "SafeBrowsing.UnusedStoresCleanup.Needed", 0);
+    }
+
+    if (expect_unused_files_deleted) {
+      histogram_tester.ExpectUniqueSample(
+          "SafeBrowsing.UnusedStoresCleanup.FileCount.Cleaned", /*sample=*/4,
+          /*expected_bucket_count=*/1);
+      histogram_tester.ExpectUniqueSample(
+          "SafeBrowsing.UnusedStoresCleanup.FileCount.DeleteFailed",
+          /*sample=*/0, /*expected_bucket_count=*/1);
+      histogram_tester.ExpectUniqueSample(
+          "SafeBrowsing.UnusedStoresCleanup.FileCount.ActiveRemaining",
+          /*sample=*/expected_store_paths_.size(),
+          /*expected_bucket_count=*/1);
+    } else {
+      histogram_tester.ExpectTotalCount(
+          "SafeBrowsing.UnusedStoresCleanup.FileCount.Cleaned", 0);
+      histogram_tester.ExpectTotalCount(
+          "SafeBrowsing.UnusedStoresCleanup.FileCount.DeleteFailed", 0);
+      histogram_tester.ExpectTotalCount(
+          "SafeBrowsing.UnusedStoresCleanup.FileCount.ActiveRemaining", 0);
+    }
+  }
+
  private:
   base::test::ScopedFeatureList feature_list_;
+};
+
+// Fixture for testing behavior when kSafeBrowsingDeleteUnusedStores is
+// disabled.
+class SBDatabaseTest_DeleteUnusedStoresDisabled : public SBDatabaseTest_V4V5 {
+ public:
+  SBDatabaseTest_DeleteUnusedStoresDisabled()
+      : SBDatabaseTest_V4V5(/*enable_delete_unused_stores=*/false) {}
 };
 
 // Test to set up the database with fake stores.
@@ -399,6 +559,77 @@ TEST_P(SBDatabaseTest_V4V5, TestApplyUpdateWithNewStates) {
   callback_db_updated_run_loop.Run();
 
   VerifyExpectedStoresState(true);
+}
+
+// Test to verify that after a store update completes, the old store's hash
+// file is cleaned up and deleted from disk, while the new store file and new
+// hash file are retained.
+TEST_P(SBDatabaseTest_V4V5, CleanupExtraFilesAfterUpdate) {
+  RegisterFactory();
+
+  WaitForSBDatabaseReady(CreateTaskRunner(),
+                         /*simple_task_runners_to_wait_for=*/{});
+
+  EXPECT_TRUE(sb_database_);
+  const StoreMap* db_stores = GetStoreMap();
+  ASSERT_FALSE(db_stores->empty());
+
+  // Apply an initial update with hash prefixes to create initial hash files.
+  StoreStateMap state_map_1;
+  for (const auto& [identifier, store] : *db_stores) {
+    state_map_1[identifier] = "version_1";
+  }
+
+  base::RunLoop run_loop_1;
+  sb_database_->ApplyUpdate(
+      CreateUpdateResponseMapWithPrefix(state_map_1, "abcd"),
+      run_loop_1.QuitClosure());
+  run_loop_1.Run();
+
+  // Verify that each store has a store file and an active hash file on disk.
+  struct StoreFiles {
+    base::FilePath store_path;
+    base::FilePath old_hash_file;
+  };
+  std::unordered_map<ListIdentifier, StoreFiles> stores_files;
+  for (const auto& [identifier, store] : *db_stores) {
+    const base::FilePath store_path = store->store_path();
+    std::vector<base::FilePath> paths = store->GetPathsInUse();
+    ASSERT_EQ(paths.size(), 2u);
+    EXPECT_EQ(paths[0], store_path);
+    const base::FilePath old_hash_file = paths[1];
+    ASSERT_TRUE(base::PathExists(store_path));
+    ASSERT_TRUE(base::PathExists(old_hash_file));
+    stores_files[identifier] = {store_path, old_hash_file};
+  }
+
+  // Apply a second update with different hash prefixes.
+  StoreStateMap state_map_2;
+  for (const auto& [identifier, store] : *db_stores) {
+    state_map_2[identifier] = "version_2";
+  }
+
+  base::RunLoop run_loop_2;
+  sb_database_->ApplyUpdate(
+      CreateUpdateResponseMapWithPrefix(state_map_2, "wxyz"),
+      run_loop_2.QuitClosure());
+  run_loop_2.Run();
+
+  // Verify that for each store, the old hash file is deleted, and the new store
+  // and hash file exist.
+  for (const auto& [identifier, files] : stores_files) {
+    ASSERT_TRUE(db_stores->contains(identifier));
+    const SBStorePtr& store = db_stores->at(identifier);
+    std::vector<base::FilePath> new_paths = store->GetPathsInUse();
+    ASSERT_EQ(new_paths.size(), 2u);
+    EXPECT_EQ(new_paths[0], files.store_path);
+    const base::FilePath new_hash_file = new_paths[1];
+
+    EXPECT_NE(files.old_hash_file, new_hash_file);
+    EXPECT_FALSE(base::PathExists(files.old_hash_file));
+    EXPECT_TRUE(base::PathExists(new_hash_file));
+    EXPECT_TRUE(base::PathExists(files.store_path));
+  }
 }
 
 // Test to ensure no state updates leads to no store updates.
@@ -495,7 +726,8 @@ TEST_P(SBDatabaseTest_V4V5, TestAllStoresMatchFullHash) {
       {expected_identifiers_[0], expected_identifiers_[1]});
   base::test::TestFuture<DbLookupResult> results;
   sb_database_->GetStoresMatchingFullHash({"anything"}, stores_to_check,
-                                          results.GetCallback());
+                                          results.GetCallback(),
+                                          /*reply_task_runner=*/nullptr);
   FullHashToStoreAndHashPrefixesMap map = results.Get().results;
   StoreAndHashPrefixes store_and_hash_prefixes = map["anything"];
   EXPECT_EQ(2u, store_and_hash_prefixes.size());
@@ -504,6 +736,40 @@ TEST_P(SBDatabaseTest_V4V5, TestAllStoresMatchFullHash) {
     stores_found.insert(it.list_id);
   }
   EXPECT_EQ(stores_to_check, stores_found);
+}
+
+// Verifies that when `reply_task_runner` is provided to
+// `GetStoresMatchingFullHash`, the completion callback is posted onto
+// `reply_task_runner` instead of the caller's default task runner.
+TEST_P(SBDatabaseTest_V4V5, TestGetStoresMatchingFullHashReplyTaskRunner) {
+  RegisterFactory(/*hash_prefix_matches=*/true);
+
+  auto db_task_runner = base::MakeRefCounted<base::TestSimpleTaskRunner>();
+  WaitForSBDatabaseReady(db_task_runner,
+                         /*simple_task_runners_to_wait_for=*/{db_task_runner});
+
+  auto reply_task_runner = base::MakeRefCounted<base::TestSimpleTaskRunner>();
+  bool callback_called = false;
+  sb_database_->GetStoresMatchingFullHash(
+      {"anything"},
+      StoresToCheck({expected_identifiers_[0], expected_identifiers_[1]}),
+      base::BindOnce(
+          [](bool* called, DbLookupResult result) {
+            *called = true;
+            EXPECT_EQ(2u, result.results["anything"].size());
+          },
+          &callback_called),
+      reply_task_runner);
+
+  db_task_runner->RunPendingTasks();
+  EXPECT_FALSE(callback_called);
+  EXPECT_TRUE(reply_task_runner->HasPendingTask());
+
+  reply_task_runner->RunPendingTasks();
+  EXPECT_TRUE(callback_called);
+
+  sb_database_.reset();
+  db_task_runner->RunPendingTasks();
 }
 
 // Test to ensure the case that no stores match a given full hash.
@@ -518,7 +784,7 @@ TEST_P(SBDatabaseTest_V4V5, TestNoStoreMatchesFullHash) {
   sb_database_->GetStoresMatchingFullHash(
       {"anything"},
       StoresToCheck({expected_identifiers_[0], expected_identifiers_[1]}),
-      results.GetCallback());
+      results.GetCallback(), /*reply_task_runner=*/nullptr);
   FullHashToStoreAndHashPrefixesMap map = results.Get().results;
   StoreAndHashPrefixes store_and_hash_prefixes = map["anything"];
   EXPECT_TRUE(store_and_hash_prefixes.empty());
@@ -550,7 +816,7 @@ TEST_P(SBDatabaseTest_V4V5, TestSomeStoresMatchFullHash) {
   sb_database_->GetStoresMatchingFullHash(
       {"anything"},
       StoresToCheck({expected_identifiers_[0], expected_identifiers_[1]}),
-      results.GetCallback());
+      results.GetCallback(), /*reply_task_runner=*/nullptr);
   FullHashToStoreAndHashPrefixesMap map = results.Get().results;
   StoreAndHashPrefixes store_and_hash_prefixes = map["anything"];
   EXPECT_EQ(1u, store_and_hash_prefixes.size());
@@ -572,7 +838,7 @@ TEST_P(SBDatabaseTest_V4V5, TestSomeStoresMatchFullHashBecauseOfStoresToMatch) {
   base::test::TestFuture<DbLookupResult> results;
   sb_database_->GetStoresMatchingFullHash(
       {"anything"}, StoresToCheck({expected_identifiers_[1]}),
-      results.GetCallback());
+      results.GetCallback(), /*reply_task_runner=*/nullptr);
   FullHashToStoreAndHashPrefixesMap map = results.Get().results;
   StoreAndHashPrefixes store_and_hash_prefixes = map["anything"];
   EXPECT_EQ(1u, store_and_hash_prefixes.size());
@@ -594,6 +860,113 @@ TEST_P(SBDatabaseTest_V4V5, VerifyChecksumCalledAsync) {
   // asynchronously.
   EXPECT_FALSE(verify_checksum_future.IsReady());
   EXPECT_TRUE(verify_checksum_future.Wait());
+}
+
+TEST_P(SBDatabaseTest_V4V5, VerifyChecksumCorruptedStoreAndReset) {
+  scoped_refptr<base::SingleThreadTaskRunner> db_task_runner =
+      CreateTaskRunner();
+  WaitForSBDatabaseReady(db_task_runner,
+                         /*simple_task_runners_to_wait_for=*/{});
+
+  const StoreMap* db_stores = GetStoreMap();
+  ASSERT_FALSE(db_stores->empty());
+  StoreStateMap state_map;
+  for (const auto& [identifier, store] : *db_stores) {
+    state_map[identifier] = "version_1";
+  }
+
+  base::test::TestFuture<void> update_future;
+  sb_database_->ApplyUpdate(
+      CreateUpdateResponseMapWithPrefix(state_map, "abcd"),
+      update_future.GetRepeatingCallback());
+  EXPECT_TRUE(update_future.Wait());
+
+  const ListIdentifier& corrupted_id = expected_identifiers_[0];
+  const ListIdentifier& healthy_id = expected_identifiers_[1];
+
+  auto check_matching_stores = [&](const FullHashStr& full_hash) {
+    base::test::TestFuture<DbLookupResult> results;
+    sb_database_->GetStoresMatchingFullHash(
+        {full_hash}, StoresToCheck({corrupted_id, healthy_id}),
+        results.GetCallback(), /*reply_task_runner=*/nullptr);
+    FullHashToStoreAndHashPrefixesMap map = results.Get().results;
+    std::unordered_set<ListIdentifier> matched;
+    for (const auto& match : map[full_hash]) {
+      matched.insert(match.list_id);
+    }
+    return matched;
+  };
+
+  const FullHashStr full_hash_1 = std::string("abcd") + std::string(28, '\x00');
+  EXPECT_EQ(check_matching_stores(full_hash_1),
+            StoresToCheck({corrupted_id, healthy_id}));
+
+  // Corrupt the active hash file for `corrupted_id` on disk. Destroy the
+  // existing database first so its memory-mapped file handles are closed before
+  // overwriting the file on Windows.
+  std::vector<base::FilePath> paths =
+      db_stores->at(corrupted_id)->GetPathsInUse();
+  ASSERT_EQ(paths.size(), 2u);
+  sb_database_.reset();
+  base::test::TestFuture<void> destroy_future;
+  db_task_runner->PostTask(FROM_HERE,
+                           destroy_future.GetSequenceBoundCallback());
+  EXPECT_TRUE(destroy_future.Wait());
+  ASSERT_TRUE(base::WriteFile(paths[1], "xxxx"));
+
+  // Simulate startup by recreating SBDatabase from disk.
+  WaitForSBDatabaseReady(db_task_runner,
+                         /*simple_task_runners_to_wait_for=*/{});
+
+  base::test::TestFuture<const std::vector<ListIdentifier>&>
+      verify_checksum_future;
+  sb_database_->VerifyChecksum(verify_checksum_future.GetCallback());
+  std::vector<ListIdentifier> stores_to_reset = verify_checksum_future.Get();
+  EXPECT_EQ(stores_to_reset, std::vector<ListIdentifier>{corrupted_id});
+
+  sb_database_->ResetStores(stores_to_reset);
+  EXPECT_TRUE(GetStoreMap()->at(corrupted_id)->GetStoreState().empty());
+  EXPECT_EQ(check_matching_stores(full_hash_1), StoresToCheck({healthy_id}));
+
+  // Verify that applying a valid update with a new version recovers the reset
+  // store.
+  for (auto& [identifier, state] : state_map) {
+    state = "version_2";
+  }
+  base::test::TestFuture<void> recover_future;
+  const FullHashStr full_hash_2 = std::string("efgh") + std::string(28, '\x00');
+  sb_database_->ApplyUpdate(
+      CreateUpdateResponseMapWithPrefix(state_map, "efgh"),
+      recover_future.GetRepeatingCallback());
+  EXPECT_TRUE(recover_future.Wait());
+  EXPECT_TRUE(GetStoreMap()->at(corrupted_id)->HasValidData());
+  EXPECT_EQ(check_matching_stores(full_hash_2),
+            StoresToCheck({corrupted_id, healthy_id}));
+}
+
+TEST_P(SBDatabaseTest_V4V5, DeleteUnusedStoreFilesOnStartup) {
+  RunStartupInactiveStoreFilesCleanupTest(
+      /*create_unused_files=*/true,
+      /*expect_unused_files_deleted=*/true,
+      /*expect_time_recorded=*/true,
+      /*expected_cleanup_needed_sample=*/true);
+}
+
+TEST_P(SBDatabaseTest_V4V5, DeleteUnusedStoreFilesOnStartup_NoUnusedFiles) {
+  RunStartupInactiveStoreFilesCleanupTest(
+      /*create_unused_files=*/false,
+      /*expect_unused_files_deleted=*/false,
+      /*expect_time_recorded=*/true,
+      /*expected_cleanup_needed_sample=*/false);
+}
+
+TEST_P(SBDatabaseTest_DeleteUnusedStoresDisabled,
+       UnusedStoreFilesNotDeletedWhenFeatureDisabled) {
+  RunStartupInactiveStoreFilesCleanupTest(
+      /*create_unused_files=*/true,
+      /*expect_unused_files_deleted=*/false,
+      /*expect_time_recorded=*/false,
+      /*expected_cleanup_needed_sample=*/std::nullopt);
 }
 
 TEST_P(SBDatabaseTest_V4V5, VerifyChecksumCancelled) {
@@ -1020,5 +1393,8 @@ TEST(SBDatabaseListInfoTest, TestNonSyncProperties) {
 }
 
 INSTANTIATE_TEST_SUITE_P(All, SBDatabaseTest_V4V5, ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(All,
+                         SBDatabaseTest_DeleteUnusedStoresDisabled,
+                         ::testing::Bool());
 
 }  // namespace safe_browsing

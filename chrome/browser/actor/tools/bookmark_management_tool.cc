@@ -19,7 +19,6 @@
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
-#include "components/tabs/public/tab_interface.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
 
 namespace actor {
@@ -120,8 +119,8 @@ BookmarkManagementTool::GetObservationDelayer(
   return nullptr;
 }
 
-tabs::TabHandle BookmarkManagementTool::GetTargetTab() const {
-  return tabs::TabHandle::Null();
+ActorSurfaceHandle BookmarkManagementTool::GetTargetActorSurface() const {
+  return ActorSurfaceHandle::Null();
 }
 
 }  // namespace actor

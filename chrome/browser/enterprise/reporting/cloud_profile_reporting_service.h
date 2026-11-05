@@ -6,16 +6,18 @@
 #define CHROME_BROWSER_ENTERPRISE_REPORTING_CLOUD_PROFILE_REPORTING_SERVICE_H_
 
 #include <memory>
+#include <optional>
+#include <string>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "components/enterprise/browser/reporting/browser_launch/browser_launch_event_controller.h"
 #include "components/enterprise/browser/reporting/report_scheduler.h"
 #include "components/enterprise/browser/reporting/saas_usage/saas_usage_report_scheduler.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_core.h"
-#include "components/enterprise/browser/reporting/browser_launch/browser_launch_event_controller.h"
 
 class Profile;
 
@@ -31,19 +33,31 @@ class CloudProfileReportingService : public KeyedService,
   ~CloudProfileReportingService() override;
 
   ReportScheduler* report_scheduler() { return report_scheduler_.get(); }
+  SaasUsageReportScheduler* saas_usage_report_scheduler() {
+    return saas_usage_report_scheduler_.get();
+  }
+  policy::CloudPolicyClient* cloud_policy_client() {
+    return cloud_policy_client_.get();
+  }
 
   void CreateReportScheduler();
 
-  // policy::CloudPolicyCore::Observer
+  // KeyedService:
+  void Shutdown() override;
+
+  // policy::CloudPolicyCore::Observer:
   void OnCoreConnected(policy::CloudPolicyCore* core) override;
   void OnRefreshSchedulerStarted(policy::CloudPolicyCore* core) override;
   void OnCoreDisconnecting(policy::CloudPolicyCore* core) override;
+  void OnCoreDestruction(policy::CloudPolicyCore* core) override;
 
   void InitForTesting();
 
  private:
   void Init();
+  void ResetReportScheduler();
 
+  std::optional<std::string> active_dm_token_;
   std::unique_ptr<policy::CloudPolicyClient> cloud_policy_client_;
   std::unique_ptr<ReportScheduler> report_scheduler_;
   std::unique_ptr<SaasUsageReportScheduler> saas_usage_report_scheduler_;

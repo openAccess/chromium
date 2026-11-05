@@ -5,16 +5,20 @@
 #include "components/viz/host/persistent_cache_sandboxed_file_factory.h"
 
 #include "base/files/file_enumerator.h"
+#include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/gmock_expected_support.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/types/expected.h"
+#include "build/build_config.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -23,6 +27,10 @@ namespace viz {
 namespace {
 
 using ::base::test::TestFuture;
+
+constexpr base::FilePath::CharType kCacheId[] = FILE_PATH_LITERAL("123");
+constexpr char kProduct[] = "Chrome/1.0.0.0";
+constexpr char kDiskSizeHistogram[] = "GPU.ShaderCache.DiskSize.Persistent123";
 
 // RAII class to save and restore the current directory.
 class ScopedCurrentDirectory {
@@ -37,9 +45,6 @@ class ScopedCurrentDirectory {
  private:
   base::FilePath original_cwd_;
 };
-
-const base::FilePath::StringType kCacheId = FILE_PATH_LITERAL("123");
-const std::string kProduct = "Chrome/1.0.0.0";
 
 std::vector<base::FilePath> GetDirsInDir(const base::FilePath& dir) {
   std::vector<base::FilePath> dirs;
@@ -102,6 +107,22 @@ class PersistentCacheSandboxedFileFactoryTest : public testing::Test {
   scoped_refptr<base::SequencedTaskRunner> main_thread_task_runner() {
     CHECK(base::SingleThreadTaskRunner::GetCurrentDefault());
     return base::SingleThreadTaskRunner::GetCurrentDefault();
+  }
+
+  // Calls CreateFilesAsync() for `kCacheId` and waits for the result. Returns
+  // whether the files were created.
+  bool CreateFilesAsyncAndWait(PersistentCacheSandboxedFileFactory* factory) {
+    TestFuture<std::optional<persistent_cache::PendingBackend>> future;
+    factory->CreateFilesAsync(kCacheId, kProduct, future.GetCallback());
+    return future.Get().has_value();
+  }
+
+  // Calls RecordDiskSizeAsync() for `kCacheId` and waits for the size to be
+  // recorded. The factory must use main_thread_task_runner().
+  void RecordDiskSizeAndWait(PersistentCacheSandboxedFileFactory* factory) {
+    factory->RecordDiskSizeAsync(kCacheId);
+    FlushMainThreadTasks();
+    base::ThreadPoolInstance::Get()->FlushForTesting();
   }
 
   base::ScopedTempDir temp_dir_;
@@ -207,6 +228,75 @@ TEST_F(PersistentCacheSandboxedFileFactoryTest, ClearFilesAsync) {
   EXPECT_EQ(0u, GetDirsInDir(cache_dir).size());
 }
 
+#if BUILDFLAG(IS_WIN)
+TEST_F(PersistentCacheSandboxedFileFactoryTest, RecordsDiskSizeOncePerCacheId) {
+  base::HistogramTester histogram_tester;
+  const base::FilePath cache_dir = cache_root_path().Append(kCacheId);
+  auto factory = base::MakeRefCounted<TestFactory>(cache_root_path(),
+                                                   main_thread_task_runner());
+
+  // Create the cache files from a previous session and add some data.
+  ASSERT_OK(factory->CreateFiles(kCacheId, kProduct));
+  FlushMainThreadTasks();
+  ASSERT_EQ(1u, GetDirsInDir(cache_dir).size());
+  const base::FilePath version_dir = GetDirsInDir(cache_dir)[0];
+  ASSERT_TRUE(base::WriteFile(version_dir.AppendASCII("data"),
+                              std::string(64 * 1024, 'x')));
+  const int64_t expected_size_kb =
+      base::ComputeDirectorySize(version_dir) / 1024;
+  ASSERT_GE(expected_size_kb, 64);
+
+  // The synchronous CreateFiles() call doesn't record the size, and neither
+  // does CreateFilesAsync(), since the cache might not be used.
+  ASSERT_TRUE(CreateFilesAsyncAndWait(factory.get()));
+  base::ThreadPoolInstance::Get()->FlushForTesting();
+  histogram_tester.ExpectTotalCount(kDiskSizeHistogram, 0);
+
+  RecordDiskSizeAndWait(factory.get());
+  histogram_tester.ExpectUniqueSample(kDiskSizeHistogram, expected_size_kb, 1);
+
+  // Using the cache again, e.g. after the GPU process restarts, doesn't record
+  // the size again.
+  ASSERT_TRUE(CreateFilesAsyncAndWait(factory.get()));
+  RecordDiskSizeAndWait(factory.get());
+  histogram_tester.ExpectUniqueSample(kDiskSizeHistogram, expected_size_kb, 1);
+}
+
+TEST_F(PersistentCacheSandboxedFileFactoryTest,
+       DoesNotRecordDiskSizeForNewCache) {
+  base::HistogramTester histogram_tester;
+  auto factory = base::MakeRefCounted<TestFactory>(cache_root_path(),
+                                                   main_thread_task_runner());
+
+  // CreateFilesAsync() creates the database, so the cache is new.
+  ASSERT_TRUE(CreateFilesAsyncAndWait(factory.get()));
+  RecordDiskSizeAndWait(factory.get());
+  histogram_tester.ExpectTotalCount(kDiskSizeHistogram, 0);
+
+  // Using the cache again, e.g. after the GPU process restarts, doesn't record
+  // the size either, even though the database exists by then.
+  ASSERT_TRUE(CreateFilesAsyncAndWait(factory.get()));
+  RecordDiskSizeAndWait(factory.get());
+  histogram_tester.ExpectTotalCount(kDiskSizeHistogram, 0);
+}
+#else
+TEST_F(PersistentCacheSandboxedFileFactoryTest, DoesNotRecordDiskSize) {
+  base::HistogramTester histogram_tester;
+  auto factory = base::MakeRefCounted<TestFactory>(cache_root_path(),
+                                                   main_thread_task_runner());
+
+  // Create the cache files from a previous session.
+  ASSERT_OK(factory->CreateFiles(kCacheId, kProduct));
+  FlushMainThreadTasks();
+
+  ASSERT_TRUE(CreateFilesAsyncAndWait(factory.get()));
+  RecordDiskSizeAndWait(factory.get());
+
+  // The sizes are only recorded on Windows.
+  histogram_tester.ExpectTotalCount(kDiskSizeHistogram, 0);
+}
+#endif  // BUILDFLAG(IS_WIN)
+
 // Tests for async retry logic.
 using PersistentCacheSandboxedFileFactoryAsyncTest =
     PersistentCacheSandboxedFileFactoryTest;
@@ -215,12 +305,12 @@ TEST_F(PersistentCacheSandboxedFileFactoryAsyncTest, SuccessOnFirstTry) {
   auto factory = base::MakeRefCounted<MockFactory>(
       cache_root_path(), base::SingleThreadTaskRunner::GetCurrentDefault());
 
-  EXPECT_CALL(*factory, CreateFiles(kCacheId, kProduct))
-      .WillOnce(testing::InvokeWithoutArgs([]() {
+  EXPECT_CALL(*factory, CreateFiles(testing::Eq(kCacheId), kProduct))
+      .WillOnce([]() {
         return base::expected<persistent_cache::PendingBackend,
                               persistent_cache::TransactionError>(
             persistent_cache::PendingBackend());
-      }));
+      });
 
   TestFuture<std::optional<persistent_cache::PendingBackend>> future;
   factory->CreateFilesAsync(
@@ -236,18 +326,18 @@ TEST_F(PersistentCacheSandboxedFileFactoryAsyncTest, RetryOnTransientError) {
 
   // Expect 1 transient failure, then success.
   testing::InSequence s;
-  EXPECT_CALL(*factory, CreateFiles(kCacheId, kProduct))
-      .WillOnce(testing::InvokeWithoutArgs([]() {
+  EXPECT_CALL(*factory, CreateFiles(testing::Eq(kCacheId), kProduct))
+      .WillOnce([]() {
         return base::expected<persistent_cache::PendingBackend,
                               persistent_cache::TransactionError>(
             base::unexpected(persistent_cache::TransactionError::kTransient));
-      }));
-  EXPECT_CALL(*factory, CreateFiles(kCacheId, kProduct))
-      .WillOnce(testing::InvokeWithoutArgs([]() {
+      });
+  EXPECT_CALL(*factory, CreateFiles(testing::Eq(kCacheId), kProduct))
+      .WillOnce([]() {
         return base::expected<persistent_cache::PendingBackend,
                               persistent_cache::TransactionError>(
             persistent_cache::PendingBackend());
-      }));
+      });
 
   TestFuture<std::optional<persistent_cache::PendingBackend>> future;
   factory->CreateFilesAsync(
@@ -263,13 +353,13 @@ TEST_F(PersistentCacheSandboxedFileFactoryAsyncTest,
       cache_root_path(), base::SingleThreadTaskRunner::GetCurrentDefault());
 
   // Expect 4 transient failures (1 initial + 3 retries).
-  EXPECT_CALL(*factory, CreateFiles(kCacheId, kProduct))
+  EXPECT_CALL(*factory, CreateFiles(testing::Eq(kCacheId), kProduct))
       .Times(4)
-      .WillRepeatedly(testing::InvokeWithoutArgs([]() {
+      .WillRepeatedly([]() {
         return base::expected<persistent_cache::PendingBackend,
                               persistent_cache::TransactionError>(
             base::unexpected(persistent_cache::TransactionError::kTransient));
-      }));
+      });
 
   TestFuture<std::optional<persistent_cache::PendingBackend>> future;
   factory->CreateFilesAsync(
@@ -285,12 +375,12 @@ TEST_F(PersistentCacheSandboxedFileFactoryAsyncTest,
       cache_root_path(), base::SingleThreadTaskRunner::GetCurrentDefault());
 
   // Expect 1 permanent failure, no retries.
-  EXPECT_CALL(*factory, CreateFiles(kCacheId, kProduct))
-      .WillOnce(testing::InvokeWithoutArgs([]() {
+  EXPECT_CALL(*factory, CreateFiles(testing::Eq(kCacheId), kProduct))
+      .WillOnce([]() {
         return base::expected<persistent_cache::PendingBackend,
                               persistent_cache::TransactionError>(
             base::unexpected(persistent_cache::TransactionError::kPermanent));
-      }));
+      });
 
   TestFuture<std::optional<persistent_cache::PendingBackend>> future;
   factory->CreateFilesAsync(

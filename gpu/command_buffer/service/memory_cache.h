@@ -10,6 +10,7 @@
 #include "base/containers/linked_list.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory_coordinator/memory_limit.h"
 #include "base/synchronization/lock.h"
 #include "base/trace_event/memory_dump_provider.h"
 #include "gpu/gpu_gles2_export.h"
@@ -17,7 +18,7 @@
 namespace gpu {
 // MemoryCacheEntry class for LRU tracking and holding key/value pair.
 class GPU_GLES2_EXPORT MemoryCacheEntry
-    : public base::LinkNode<MemoryCacheEntry>,
+    : public base::UnsafeLinkNode<MemoryCacheEntry>,
       public base::RefCountedThreadSafe<MemoryCacheEntry> {
  public:
   MemoryCacheEntry(std::string_view key, base::span<const uint8_t> data);
@@ -52,10 +53,10 @@ class GPU_GLES2_EXPORT MemoryCache : public base::RefCounted<MemoryCache> {
 
   // Memory coordinator interface:
   // Triggers immediate eviction of cache entries down to `memory_limit`.
-  void OnReleaseMemory(int memory_limit);
+  void OnReleaseMemory(base::MemoryLimit memory_limit);
   // Updates the target cache size limit non-destructively without forcing
   // immediate eviction.
-  void OnUpdateMemoryLimit(int memory_limit);
+  void OnUpdateMemoryLimit(base::MemoryLimit memory_limit);
 
   void OnMemoryDump(const std::string& dump_name,
                     base::trace_event::ProcessMemoryDump* pmd);
@@ -90,7 +91,7 @@ class GPU_GLES2_EXPORT MemoryCache : public base::RefCounted<MemoryCache> {
 
   base::Lock mutex_;
   base::flat_set<scoped_refptr<MemoryCacheEntry>> entries_ GUARDED_BY(mutex_);
-  base::LinkedList<MemoryCacheEntry> lru_ GUARDED_BY(mutex_);
+  base::UnsafeLinkedList<MemoryCacheEntry> lru_ GUARDED_BY(mutex_);
 
   const size_t max_size_;
   size_t size_limit_ GUARDED_BY(mutex_) = 0;

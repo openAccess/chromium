@@ -5,11 +5,12 @@
 #include "ui/ozone/platform/wayland/gpu/gl_surface_wayland.h"
 
 #include <wayland-egl.h>
+
 #include <memory>
 #include <utility>
 
 #include "base/functional/bind.h"
-#include "third_party/khronos/EGL/egl.h"
+#include "third_party/angle/include/EGL/egl.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/presentation_feedback.h"
 #include "ui/gl/gl_surface_presentation_helper.h"
@@ -38,8 +39,8 @@ GLSurfaceWayland::GLSurfaceWayland(gl::GLDisplayEGL* display,
           nullptr),
       egl_window_(std::move(egl_window)),
       window_(window) {
-  DCHECK(egl_window_);
-  DCHECK(window_);
+  CHECK(egl_window_, base::NotFatalUntil::M163);
+  CHECK(window_, base::NotFatalUntil::M163);
   window_->root_surface()->ForceImmediateStateApplication();
 }
 
@@ -97,7 +98,8 @@ gfx::SwapResult GLSurfaceWayland::SwapBuffers(PresentationCallback callback,
     return scoped_swap_buffers.result();
   }
   window_->root_surface()->set_surface_buffer_scale(scale_factor_);
-  return gl::NativeViewGLSurfaceEGL::SwapBuffers(std::move(callback), data);
+  return gl::NativeViewGLSurfaceEGL::SwapBuffers(std::move(callback),
+                                                 std::move(data));
 }
 
 gfx::SwapResult GLSurfaceWayland::PostSubBuffer(int x,
@@ -116,8 +118,8 @@ gfx::SwapResult GLSurfaceWayland::PostSubBuffer(int x,
     return scoped_swap_buffers.result();
   }
   window_->root_surface()->set_surface_buffer_scale(scale_factor_);
-  return gl::NativeViewGLSurfaceEGL::PostSubBuffer(x, y, width, height,
-                                                   std::move(callback), data);
+  return gl::NativeViewGLSurfaceEGL::PostSubBuffer(
+      x, y, width, height, std::move(callback), std::move(data));
 }
 
 GLSurfaceWayland::~GLSurfaceWayland() {

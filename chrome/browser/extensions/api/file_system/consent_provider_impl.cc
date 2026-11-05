@@ -12,7 +12,6 @@
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
-#include "chrome/browser/extensions/api/file_system/request_file_system_notification.h"
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/ui/views/extensions/dialogs/request_file_system_dialog.h"
 #include "content/public/browser/render_frame_host.h"
@@ -53,7 +52,7 @@ ui::mojom::DialogButton g_auto_dialog_button_for_test =
 content::WebContents* GetWebContentsForAppId(Profile* profile,
                                              const std::string& app_id) {
   AppWindowRegistry* const registry = AppWindowRegistry::Get(profile);
-  DCHECK(registry);
+  CHECK(registry, base::NotFatalUntil::M161);
   AppWindow* const app_window = registry->GetCurrentAppWindowForApp(app_id);
   return app_window ? app_window->web_contents() : nullptr;
 }
@@ -91,7 +90,7 @@ ConsentProviderImpl::DelegateInterface::~DelegateInterface() = default;
 ConsentProviderImpl::ConsentProviderImpl(
     std::unique_ptr<DelegateInterface> delegate)
     : delegate_(std::move(delegate)) {
-  DCHECK(delegate_);
+  CHECK(delegate_, base::NotFatalUntil::M161);
 }
 
 ConsentProviderImpl::~ConsentProviderImpl() = default;
@@ -102,7 +101,7 @@ void ConsentProviderImpl::RequestConsent(content::RenderFrameHost* host,
                                          const std::string& volume_label,
                                          bool writable,
                                          ConsentCallback callback) {
-  DCHECK(IsGrantable(extension));
+  CHECK(IsGrantable(extension), base::NotFatalUntil::M161);
 
   // If an allowlisted component, then no need to ask or inform the user.
   if (extension.location() == mojom::ManifestLocation::kComponent &&
@@ -112,11 +111,8 @@ void ConsentProviderImpl::RequestConsent(content::RenderFrameHost* host,
     return;
   }
 
-  // If auto-launched kiosk app, then no need to ask user either, but show the
-  // notification.
+  // If auto-launched kiosk app, then no need to ask user either.
   if (delegate_->IsAutoLaunched(extension)) {
-    delegate_->ShowNotification(extension.id(), extension.name(), volume_id,
-                                volume_label, writable);
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), CONSENT_GRANTED));
     return;
@@ -152,7 +148,7 @@ bool ConsentProviderImpl::IsGrantable(const Extension& extension) {
 
 ConsentProviderDelegate::ConsentProviderDelegate(Profile* profile)
     : profile_(profile) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M161);
   profile_observation_.Observe(profile_);
 }
 
@@ -165,7 +161,7 @@ void ConsentProviderDelegate::SetAutoDialogButtonForTest(
 }
 
 void ConsentProviderDelegate::OnProfileWillBeDestroyed(Profile* profile) {
-  DCHECK_EQ(profile_, profile);
+  CHECK_EQ(profile_, profile, base::NotFatalUntil::M161);
   profile_observation_.Reset();
   profile_ = nullptr;
 }
@@ -178,7 +174,7 @@ void ConsentProviderDelegate::ShowDialog(
     const std::string& volume_label,
     bool writable,
     file_system_api::ConsentProviderImpl::ShowDialogCallback callback) {
-  DCHECK(host);
+  CHECK(host, base::NotFatalUntil::M161);
   // Reject if |profile_| is gone.
   if (!profile_) {
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
@@ -222,22 +218,6 @@ void ConsentProviderDelegate::ShowDialog(
   ShowRequestFileSystemDialog(web_contents, extension_name,
                               volume_label.empty() ? volume_id : volume_label,
                               writable, std::move(callback));
-}
-
-void ConsentProviderDelegate::ShowNotification(
-    const extensions::ExtensionId& extension_id,
-    const std::string& extension_name,
-    const std::string& volume_id,
-    const std::string& volume_label,
-    bool writable) {
-  // Skip if |profile_| is gone.
-  if (!profile_) {
-    return;
-  }
-
-  ShowNotificationForAutoGrantedRequestFileSystem(profile_, extension_id,
-                                                  extension_name, volume_id,
-                                                  volume_label, writable);
 }
 
 bool ConsentProviderDelegate::IsAutoLaunched(const Extension& extension) {

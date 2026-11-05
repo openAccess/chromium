@@ -7,6 +7,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "components/page_load_metrics/browser/page_load_metrics_util.h"
 #include "content/public/browser/navigation_handle.h"
+#include "ui/base/page_transition_types.h"
 
 page_load_metrics::PageLoadMetricsObserver::ObservePolicy
 SchemePageLoadMetricsObserver::OnStart(
@@ -69,8 +70,9 @@ void SchemePageLoadMetricsObserver::OnParseStart(
 
 void SchemePageLoadMetricsObserver::OnFirstContentfulPaintInPage(
     const page_load_metrics::mojom::PageLoadTiming& timing) {
-  DCHECK(GetDelegate().GetUrl().GetScheme() == url::kHttpScheme ||
-         GetDelegate().GetUrl().GetScheme() == url::kHttpsScheme);
+  CHECK(GetDelegate().GetUrl().GetScheme() == url::kHttpScheme ||
+            GetDelegate().GetUrl().GetScheme() == url::kHttpsScheme,
+        base::NotFatalUntil::M161);
 
   base::TimeDelta fcp = timing.paint_timing->first_contentful_paint.value();
   base::TimeDelta parse_start_to_fcp =

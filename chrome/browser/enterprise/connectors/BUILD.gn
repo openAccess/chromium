@@ -11,12 +11,17 @@ source_set("unit_tests") {
   # destructors.
   configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 
-  sources = [ "interstitials/enterprise_page_unittest.cc" ]
+  sources = [
+    "interstitials/delayed_interstitial_reporter_unittest.cc",
+    "interstitials/enterprise_page_unittest.cc",
+  ]
 
   deps = [
     "//base",
     "//chrome/browser/enterprise:impl",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//chrome/test/base:testing_browser_process",
     "//testing/gtest",
   ]
 
@@ -30,6 +35,7 @@ source_set("unit_tests") {
       "//chrome/browser/enterprise/connectors/test:test_support",
       "//chrome/browser/profiles:test_support",
       "//components/enterprise:test_support",
+      "//components/enterprise/isolated_mode",
     ]
 
     if (is_chromeos) {

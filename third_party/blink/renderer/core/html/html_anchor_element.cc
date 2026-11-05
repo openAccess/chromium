@@ -67,6 +67,7 @@
 #include "third_party/blink/renderer/core/loader/render_blocking_resource_manager.h"
 #include "third_party/blink/renderer/core/navigation_api/navigation_api.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
+#include "third_party/blink/renderer/core/page/create_window.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/scroll/scroll_into_view_util.h"
 #include "third_party/blink/renderer/core/speculation_rules/document_speculation_rules.h"
@@ -161,7 +162,7 @@ static void AppendServerMapMousePosition(StringBuilder& url, Event* event) {
       To<LayoutBox>(layout_object)->PhysicalContentBoxRect().offset);
 
   // CSS zoom is not reflected in the map coordinates.
-  float scale_factor = 1 / layout_object->StyleRef().EffectiveZoom();
+  float scale_factor = 1 / layout_object->Style().EffectiveZoom();
   map_point.Scale(scale_factor, scale_factor);
 
   // Negative coordinates are clamped to 0 such that clicks in the left and
@@ -175,6 +176,24 @@ static void AppendServerMapMousePosition(StringBuilder& url, Event* event) {
   url.AppendNumber(clamped_point.y());
 }
 
+void HTMLAnchorElementBase::RunActivationBehaviorBeforeDOMActivate(
+    Event& event,
+    EventDispatchHandlingState*) {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    return;
+  }
+  if (event.defaultPrevented() || event.DefaultHandled()) {
+    return;
+  }
+
+  if (AnchorElementUtils::IsLinkClick(event) && IsLiveLink()) {
+    // IsLinkClick validates that |event| is a MouseEvent. `HandleClick()` marks
+    // the event as default-handled, which suppresses the DOMActivate event that
+    // `Node::DefaultEventHandler()` would otherwise dispatch.
+    HandleClick(To<MouseEvent>(event));
+  }
+}
+
 void HTMLAnchorElementBase::DefaultEventHandler(Event& event) {
   if (IsLink()) {
     if (IsFocused() && KeyboardEvent::IsEnterKeyKeydownEvent(event) &&
@@ -184,10 +203,19 @@ void HTMLAnchorElementBase::DefaultEventHandler(Event& event) {
       return;
     }
 
-    if (AnchorElementUtils::IsLinkClick(event) && IsLiveLink()) {
-      // IsLinkClick validates that |event| is a MouseEvent.
-      HandleClick(To<MouseEvent>(event));
-      return;
+    if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+      if (AnchorElementUtils::IsLinkClick(event) && IsLiveLink()) {
+        // IsLinkClick validates that |event| is a MouseEvent.
+        HandleClick(To<MouseEvent>(event));
+        return;
+      }
+    } else {
+      if (event.type() == event_type_names::kAuxclick &&
+          AnchorElementUtils::IsLinkClick(event) && IsLiveLink()) {
+        // IsLinkClick validates that |event| is a MouseEvent.
+        HandleClick(To<MouseEvent>(event));
+        return;
+      }
     }
   }
 
@@ -388,8 +416,17 @@ void HTMLAnchorElementBase::NavigateToHyperlink(
   frame_request.SetNavigationPolicy(navigation_policy);
   frame_request.SetClientNavigationReason(ClientNavigationReason::kAnchorClick);
   frame_request.SetSourceElement(this);
-  const AtomicString& target =
+  AtomicString target =
       frame_request.CleanNavigationTarget(GetEffectiveTarget());
+  if (RuntimeEnabledFeatures::WindowOpenSplitTabEnabled()) {
+    WebWindowFeatures window_features = GetWindowFeaturesFromAttribute(
+        FastGetAttribute(html_names::kWindowfeaturesAttr));
+    frame_request.SetFeaturesForWindowOpen(window_features);
+    if (target.empty() &&
+        (window_features.is_split || window_features.is_popup)) {
+      target = AtomicString("_blank");
+    }
+  }
 
   AnchorElementUtils::HandleRelAttribute(frame_request, frame->GetSettings(),
                                          GetExecutionContext(), target,

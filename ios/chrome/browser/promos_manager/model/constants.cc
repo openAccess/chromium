@@ -80,11 +80,6 @@ std::optional<Promo> PromoForName(std::string_view promo) {
     return promos_manager::Promo::FullscreenSignin;
   }
 
-  if (promo == "promos_manager::Promo::WelcomeBack") {
-    return promos_manager::Promo::WelcomeBack;
-  }
-
-
   if (promo == "promos_manager::Promo::SafariImportRemindMeLater") {
     return promos_manager::Promo::SafariImportRemindMeLater;
   }
@@ -95,6 +90,18 @@ std::optional<Promo> PromoForName(std::string_view promo) {
 
   if (promo == "promos_manager::Promo::HomeBackgroundCustomization") {
     return promos_manager::Promo::HomeBackgroundCustomization;
+  }
+
+  if (promo == "promos_manager::Promo::LevelUp") {
+    return promos_manager::Promo::LevelUp;
+  }
+
+  if (promo == "promos_manager::Promo::EphemeralTheme") {
+    return promos_manager::Promo::EphemeralTheme;
+  }
+
+  if (promo == "promos_manager::Promo::AccountSwitching") {
+    return promos_manager::Promo::AccountSwitching;
   }
 
   return std::nullopt;
@@ -136,14 +143,18 @@ std::string_view ShortNameForPromo(Promo promo) {
       return "PostDefaultAbandonment";
     case promos_manager::Promo::FullscreenSignin:
       return "FullscreenSignin";
-    case promos_manager::Promo::WelcomeBack:
-      return "WelcomeBack";
     case promos_manager::Promo::SafariImportRemindMeLater:
       return "SafariImportRemindMeLater";
     case promos_manager::Promo::DefaultBrowserOffCycle:
       return "DefaultBrowserOffCycle";
     case promos_manager::Promo::HomeBackgroundCustomization:
       return "HomeBackgroundCustomization";
+    case promos_manager::Promo::LevelUp:
+      return "LevelUp";
+    case promos_manager::Promo::EphemeralTheme:
+      return "EphemeralTheme";
+    case promos_manager::Promo::AccountSwitching:
+      return "AccountSwitching";
   }
 }
 

@@ -9,10 +9,13 @@
 
 #include "base/memory/raw_span.h"
 #include "base/memory/ref_counted.h"
+#include "base/test/gtest_util.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/time/time.h"
 #include "crypto/keypair.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "net/cert/x509_certificate.h"
+#include "net/test/cert_builder.h"
 #include "net/test/cert_test_util.h"
 #include "net/test/key_util.h"
 #include "net/test/test_data_directory.h"
@@ -661,7 +664,7 @@ bool DigestSign(EVP_PKEY* key,
 
 }  // namespace
 
-TEST(X509UtilTest, SignatureVerifierInitWithCertificate) {
+TEST(X509UtilTest, CreateSignatureVerifierWithCertificate) {
   static const uint8_t kMessage[] = {'h', 'e', 'l', 'l', 'o'};
   static const uint8_t kWrongMessage[] = {'n', 'o', 'p', 'e'};
 
@@ -686,47 +689,40 @@ TEST(X509UtilTest, SignatureVerifierInitWithCertificate) {
 
   struct Test {
     const char* cert;
-    crypto::SignatureVerifier::SignatureAlgorithm algorithm;
+    crypto::sign::SignatureKind algorithm;
     base::raw_span<const uint8_t> signature;
     bool ok;
   } kTests[] = {
       // The certificate must support the digitalSignature key usage.
-      {"key_usage_p256_digitalsignature.pem",
-       crypto::SignatureVerifier::ECDSA_SHA256, p256Signature, true},
-      {"key_usage_p256_both.pem", crypto::SignatureVerifier::ECDSA_SHA256,
+      {"key_usage_p256_digitalsignature.pem", crypto::sign::ECDSA_SHA256,
        p256Signature, true},
-      {"key_usage_rsa_digitalsignature.pem",
-       crypto::SignatureVerifier::RSA_PKCS1_SHA256, rsaSignaturePKCS1, true},
-      {"key_usage_rsa_digitalsignature.pem",
-       crypto::SignatureVerifier::RSA_PSS_SHA256, rsaSignaturePSS, true},
-      {"key_usage_rsa_both.pem", crypto::SignatureVerifier::RSA_PKCS1_SHA256,
+      {"key_usage_p256_both.pem", crypto::sign::ECDSA_SHA256, p256Signature,
+       true},
+      {"key_usage_rsa_digitalsignature.pem", crypto::sign::RSA_PKCS1_SHA256,
        rsaSignaturePKCS1, true},
-      {"key_usage_rsa_both.pem", crypto::SignatureVerifier::RSA_PSS_SHA256,
+      {"key_usage_rsa_digitalsignature.pem", crypto::sign::RSA_PSS_SHA256,
        rsaSignaturePSS, true},
+      {"key_usage_rsa_both.pem", crypto::sign::RSA_PKCS1_SHA256,
+       rsaSignaturePKCS1, true},
+      {"key_usage_rsa_both.pem", crypto::sign::RSA_PSS_SHA256, rsaSignaturePSS,
+       true},
 
       // Omitting the extension entirely is also accepted.
-      {"key_usage_p256_no_extension.pem",
-       crypto::SignatureVerifier::ECDSA_SHA256, p256Signature, true},
-      {"key_usage_rsa_no_extension.pem",
-       crypto::SignatureVerifier::RSA_PKCS1_SHA256, rsaSignaturePKCS1, true},
-      {"key_usage_rsa_no_extension.pem",
-       crypto::SignatureVerifier::RSA_PSS_SHA256, rsaSignaturePSS, true},
+      {"key_usage_p256_no_extension.pem", crypto::sign::ECDSA_SHA256,
+       p256Signature, true},
+      {"key_usage_rsa_no_extension.pem", crypto::sign::RSA_PKCS1_SHA256,
+       rsaSignaturePKCS1, true},
+      {"key_usage_rsa_no_extension.pem", crypto::sign::RSA_PSS_SHA256,
+       rsaSignaturePSS, true},
 
       // If the extension is present but digitalSignature is missing, the
       // signature is rejected.
-      {"key_usage_p256_keyagreement.pem",
-       crypto::SignatureVerifier::ECDSA_SHA256, p256Signature, false},
-      {"key_usage_rsa_keyencipherment.pem",
-       crypto::SignatureVerifier::RSA_PKCS1_SHA256, rsaSignaturePKCS1, false},
-      {"key_usage_rsa_keyencipherment.pem",
-       crypto::SignatureVerifier::RSA_PSS_SHA256, rsaSignaturePSS, false},
-
-      // The key and signature must match, rather than only extracting the hash
-      // function.
-      {"key_usage_p256_digitalsignature.pem",
-       crypto::SignatureVerifier::RSA_PKCS1_SHA256, p256Signature, false},
-      {"key_usage_rsa_digitalsignature.pem",
-       crypto::SignatureVerifier::ECDSA_SHA256, rsaSignaturePKCS1, false},
+      {"key_usage_p256_keyagreement.pem", crypto::sign::ECDSA_SHA256,
+       p256Signature, false},
+      {"key_usage_rsa_keyencipherment.pem", crypto::sign::RSA_PKCS1_SHA256,
+       rsaSignaturePKCS1, false},
+      {"key_usage_rsa_keyencipherment.pem", crypto::sign::RSA_PSS_SHA256,
+       rsaSignaturePSS, false},
   };
 
   for (const auto& test : kTests) {
@@ -735,20 +731,38 @@ TEST(X509UtilTest, SignatureVerifierInitWithCertificate) {
         ImportCertFromFile(GetTestCertsDirectory(), test.cert);
     ASSERT_TRUE(cert);
 
-    crypto::SignatureVerifier verifier;
-    bool ok = SignatureVerifierInitWithCertificate(
-        &verifier, test.algorithm, test.signature, cert->cert_buffer());
-    EXPECT_EQ(ok, test.ok);
-    if (ok) {
-      verifier.VerifyUpdate(kMessage);
-      EXPECT_TRUE(verifier.VerifyFinal());
+    std::optional<crypto::sign::Verifier> verifier =
+        CreateSignatureVerifierWithCertificate(test.algorithm, test.signature,
+                                               cert->cert_buffer());
+    EXPECT_EQ(verifier.has_value(), test.ok);
+    if (verifier) {
+      verifier->Update(kMessage);
+      EXPECT_TRUE(verifier->Finish());
 
-      ASSERT_TRUE(SignatureVerifierInitWithCertificate(
-          &verifier, test.algorithm, test.signature, cert->cert_buffer()));
-      verifier.VerifyUpdate(kWrongMessage);
-      EXPECT_FALSE(verifier.VerifyFinal());
+      std::optional<crypto::sign::Verifier> verifier2 =
+          CreateSignatureVerifierWithCertificate(test.algorithm, test.signature,
+                                                 cert->cert_buffer());
+      ASSERT_TRUE(verifier2);
+      verifier2->Update(kWrongMessage);
+      EXPECT_FALSE(verifier2->Finish());
     }
   }
+
+  // Mismatched public key and signature algorithm CHECK-fails in
+  // crypto::sign::Verifier.
+  scoped_refptr<X509Certificate> p256_cert = ImportCertFromFile(
+      GetTestCertsDirectory(), "key_usage_p256_digitalsignature.pem");
+  ASSERT_TRUE(p256_cert);
+  EXPECT_CHECK_DEATH(std::ignore = CreateSignatureVerifierWithCertificate(
+                         crypto::sign::RSA_PKCS1_SHA256, p256Signature,
+                         p256_cert->cert_buffer()));
+
+  scoped_refptr<X509Certificate> rsa_cert = ImportCertFromFile(
+      GetTestCertsDirectory(), "key_usage_rsa_digitalsignature.pem");
+  ASSERT_TRUE(rsa_cert);
+  EXPECT_CHECK_DEATH(std::ignore = CreateSignatureVerifierWithCertificate(
+                         crypto::sign::ECDSA_SHA256, rsaSignaturePKCS1,
+                         rsa_cert->cert_buffer()));
 }
 
 TEST(X509UtilTest, HasRsaPkcs1Sha1Signature) {
@@ -987,6 +1001,60 @@ TEST(X509UtilTest, TrustAnchorIDsToString) {
   };
   EXPECT_EQ("44363.48.7, 44363.48.7.127",
             TrustAnchorIDsToString(trust_anchor_ids));
+}
+
+TEST(X509UtilTest, CreateParsedCertificateHistograms) {
+  const struct {
+    std::vector<uint8_t> serial;
+    SerialNumberType expected_type;
+  } kTests[] = {
+      // Positive serial numbers.
+      {{0x01}, SerialNumberType::kPositive},
+      {{0x7f}, SerialNumberType::kPositive},
+      {{0x00, 0x80}, SerialNumberType::kPositive},
+      {std::vector<uint8_t>(21, 0x01), SerialNumberType::kPositive},
+
+      // Zero serial number.
+      {{0x00}, SerialNumberType::kZero},
+
+      // Negative serial numbers.
+      {{0x80}, SerialNumberType::kNegative},
+      {{0xff}, SerialNumberType::kNegative},
+      {{0x80, 0x01}, SerialNumberType::kNegative},
+      {{0xff, 0x7f}, SerialNumberType::kNegative},
+
+      // Invalid (empty or non-minimally encoded) serial numbers.
+      {{}, SerialNumberType::kInvalid},
+      {{0x00, 0x00}, SerialNumberType::kInvalid},
+      {{0x00, 0x01}, SerialNumberType::kInvalid},
+      {{0x00, 0x7f}, SerialNumberType::kInvalid},
+      {{0xff, 0x80}, SerialNumberType::kInvalid},
+      {{0xff, 0xff}, SerialNumberType::kInvalid},
+  };
+
+  std::unique_ptr<CertBuilder> builder =
+      std::move(CertBuilder::CreateSimpleChain(1)[0]);
+  for (const auto& test : kTests) {
+    base::HistogramTester histogram_tester;
+    builder->SetSerialNumber(test.serial);
+
+    std::shared_ptr<const bssl::ParsedCertificate> cert =
+        CreateParsedCertificate(builder->DupCertBuffer(), nullptr);
+    ASSERT_TRUE(cert);
+
+    histogram_tester.ExpectUniqueSample("Net.Certificate.SerialNumberLength",
+                                        test.serial.size(), 1);
+    histogram_tester.ExpectUniqueSample("Net.Certificate.SerialNumberType",
+                                        test.expected_type, 1);
+  }
+
+  // Failed parses should not record histograms.
+  base::HistogramTester histogram_tester;
+  static const uint8_t kInvalidCert[] = {0x30, 0x00};
+  EXPECT_FALSE(
+      CreateParsedCertificate(CreateCryptoBuffer(kInvalidCert), nullptr));
+  histogram_tester.ExpectTotalCount("Net.Certificate.SerialNumberLength", 0);
+  histogram_tester.ExpectTotalCount("Net.Certificate.SerialNumberType", 0);
 }
 
 }  // namespace net::x509_util

@@ -30,7 +30,6 @@ namespace autofill {
 
 enum class BubbleType;
 
-class AutofillBubbleHandler;
 class PaymentsDataManager;
 
 // Implementation of per-tab class to control the local/server save credit card
@@ -86,7 +85,9 @@ class SaveCardBubbleControllerImpl
   // offer-to-save card bubble is shown. If the value is
   // `CardSaveType::kCardSaveWithCvc`, the offer-to-save card bubble is shown,
   // and the users are informed that the CVC will also be stored. If the type is
-  // `CardSaveType::kCvcSaveOnly`, the offer-to-save CVC bubble is shown.
+  // `CardSaveType::kCvcSaveOnly`, the offer-to-save CVC bubble is shown. If the
+  // type is `CardSaveType::kCardholderNameUpdateOnly`, the offer-to-save
+  // cardholder name bubble is shown.
   void OfferUploadSave(
       const CreditCard& card,
       const LegalMessageLines& legal_message_lines,
@@ -153,12 +154,8 @@ class SaveCardBubbleControllerImpl
 
   // SavePaymentIconController:
   std::u16string GetSavePaymentIconTooltipText() const override;
-  bool ShouldShowSavingPaymentAnimation() const override;
-  bool ShouldShowPaymentSavedLabelAnimation() const override;
-  void OnAnimationEnded() override;
   bool IsIconVisible() const override;
   AutofillBubbleBase* GetPaymentBubbleView() const override;
-  int GetSaveSuccessAnimationStringId() const override;
 
   // BubbleControllerBase:
   void OnBubbleDiscarded() override;
@@ -232,9 +229,6 @@ class SaveCardBubbleControllerImpl
   const raw_ref<PaymentsDataManager> payments_data_manager_;
   const raw_ptr<syncer::SyncService> sync_service_;
 
-  // Is true only if the [Card saved] label animation should be shown.
-  bool should_show_card_saved_label_animation_ = false;
-
   // The type of bubble that is either currently being shown or would
   // be shown when the save card icon is clicked.
   PaymentsBubbleType current_bubble_type_ = PaymentsBubbleType::kInactive;
@@ -303,7 +297,6 @@ class SaveCardBubbleControllerImpl
   // stopped once the bubble is closed.
   base::OneShotTimer auto_close_confirmation_timer_;
 
-  AutofillBubbleHandler* GetAutofillBubbleHandler();
   // Weak pointer factory for this save card bubble controller.
   base::WeakPtrFactory<SaveCardBubbleControllerImpl> weak_ptr_factory_{this};
 

@@ -16,7 +16,6 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
@@ -26,7 +25,6 @@ import java.util.List;
 
 /** Tests for LocalBroadcastReceiverScope. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class LocalBroadcastReceiverScopeTest {
     @Test
     public void testConstructorRegistersReceiver() {
@@ -35,7 +33,7 @@ public class LocalBroadcastReceiverScopeTest {
         filter.addAction(action);
         List<String> result = new ArrayList<>();
         LocalBroadcastManager broadcastManager =
-                LocalBroadcastManager.getInstance(RuntimeEnvironment.application);
+                LocalBroadcastManager.getInstance(RuntimeEnvironment.getApplication());
         new LocalBroadcastReceiverScope(
                 broadcastManager,
                 filter,
@@ -54,7 +52,7 @@ public class LocalBroadcastReceiverScopeTest {
         filter.addAction(helloAction);
         List<String> result = new ArrayList<>();
         LocalBroadcastManager broadcastManager =
-                LocalBroadcastManager.getInstance(RuntimeEnvironment.application);
+                LocalBroadcastManager.getInstance(RuntimeEnvironment.getApplication());
         new LocalBroadcastReceiverScope(
                 broadcastManager,
                 filter,
@@ -71,7 +69,7 @@ public class LocalBroadcastReceiverScopeTest {
         filter.addAction(action);
         List<String> result = new ArrayList<>();
         LocalBroadcastManager broadcastManager =
-                LocalBroadcastManager.getInstance(RuntimeEnvironment.application);
+                LocalBroadcastManager.getInstance(RuntimeEnvironment.getApplication());
         // Wrap scope in try-with-resources to call close() on it.
         try (AutoCloseable scope =
                 new LocalBroadcastReceiverScope(

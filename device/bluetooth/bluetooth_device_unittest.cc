@@ -14,6 +14,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "device/bluetooth/bluetooth_remote_gatt_service.h"
@@ -30,8 +31,6 @@
 #include "device/bluetooth/test/bluetooth_test_mac.h"
 #elif BUILDFLAG(IS_WIN)
 #include "device/bluetooth/test/bluetooth_test_win.h"
-#elif defined(USE_CAST_BLUETOOTH_ADAPTER)
-#include "device/bluetooth/test/bluetooth_test_cast.h"
 #elif BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
 #include "device/bluetooth/test/bluetooth_test_bluez.h"
 #elif BUILDFLAG(IS_FUCHSIA)
@@ -633,8 +632,7 @@ TEST_F(BluetoothTest, MAYBE_GetServiceDataUUIDs_GetServiceDataForUUID) {
 
 // TODO(crbug.com/41310506): Remove #if once the BlueZ caching behavior is
 // changed.
-#if (BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)) && \
-    !defined(USE_CAST_BLUETOOTH_ADAPTER)
+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
   // On ChromeOS and Linux, BlueZ persists all service data meaning if
   // a device stops advertising service data for a UUID, BlueZ will
   // still return the cached value for that UUID.
@@ -1713,6 +1711,38 @@ TEST_F(BluetoothTest, MAYBE_BluetoothGattConnection_SimulateDisconnect) {
 }
 
 #if BUILDFLAG(IS_ANDROID)
+TEST_F(BluetoothTest, BluetoothGattConnection_NullAndroidGattAfterDisconnect) {
+  InitWithFakeAdapter();
+  StartLowEnergyDiscoverySession();
+  BluetoothDevice* device = SimulateLowEnergyDevice(3);
+
+  base::test::TestFuture<std::unique_ptr<BluetoothGattConnection>,
+                         std::optional<BluetoothDevice::ConnectErrorCode>>
+      connected;
+  device->CreateGattConnection(connected.GetCallback(), std::nullopt);
+  SimulateGattConnection(device);
+  ASSERT_TRUE(connected.Get<0>());
+  SimulateGattDisconnection(device);
+  ASSERT_TRUE(base::test::RunUntil(
+      [device] { return !device->IsGattConnected(); }));
+
+  FailNextGattConnection(device);
+  base::test::TestFuture<std::unique_ptr<BluetoothGattConnection>,
+                         std::optional<BluetoothDevice::ConnectErrorCode>>
+      failed;
+  device->CreateGattConnection(failed.GetCallback(), std::nullopt);
+  EXPECT_FALSE(failed.Get<0>());
+  EXPECT_EQ(BluetoothDevice::ERROR_FAILED, failed.Get<1>());
+  device->DisconnectGatt();
+
+  base::test::TestFuture<std::unique_ptr<BluetoothGattConnection>,
+                         std::optional<BluetoothDevice::ConnectErrorCode>>
+      retried;
+  device->CreateGattConnection(retried.GetCallback(), std::nullopt);
+  SimulateGattConnection(device);
+  EXPECT_TRUE(retried.Get<0>());
+}
+
 TEST_F(BluetoothTest, BluetoothGattConnection_DisconnectGattWithoutCallback) {
   InitWithFakeAdapter();
   StartLowEnergyDiscoverySession();
@@ -2223,13 +2253,11 @@ TEST_F(BluetoothTest, GetDeviceTransportType) {
   BluetoothDevice* device = SimulateLowEnergyDevice(1);
   EXPECT_EQ(BLUETOOTH_TRANSPORT_LE, device->GetType());
 
-#if !defined(USE_CAST_BLUETOOTH_ADAPTER)
   BluetoothDevice* device2 = SimulateLowEnergyDevice(6);
   EXPECT_EQ(BLUETOOTH_TRANSPORT_DUAL, device2->GetType());
 
   BluetoothDevice* device3 = SimulateClassicDevice();
   EXPECT_EQ(BLUETOOTH_TRANSPORT_CLASSIC, device3->GetType());
-#endif  // !defined(USE_CAST_BLUETOOTH_ADAPTER)
 }
 #endif  // BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_ANDROID)

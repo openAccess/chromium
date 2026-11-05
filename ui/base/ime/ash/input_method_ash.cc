@@ -18,6 +18,7 @@
 #include "base/check.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/char_iterator.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_util.h"
@@ -206,19 +207,23 @@ ui::EventDispatchDetails InputMethodAsh::DispatchKeyEvent(ui::KeyEvent* event) {
   // See http://crbug.com/1392491.
   dispatch_details_.reset();
 
-  handling_key_event_ = true;
+  base::ScopedClosureRunner in_flight = StartHandlingKeyEvent();
   GetEngine()->ProcessKeyEvent(
       *event, base::BindOnce(&InputMethodAsh::ProcessKeyEventDone,
                              weak_ptr_factory_.GetWeakPtr(),
                              // Pass the ownership of the new copied event.
-                             base::Owned(new ui::KeyEvent(*event))));
+                             base::Owned(new ui::KeyEvent(*event)),
+                             std::move(in_flight)));
   return dispatch_details_.value_or(ui::EventDispatchDetails());
 }
 
 void InputMethodAsh::ProcessKeyEventDone(
     ui::KeyEvent* event,
+    base::ScopedClosureRunner in_flight,
     ui::ime::KeyEventHandledState handled_state) {
   DCHECK(event);
+  in_flight.ReplaceClosure(base::BindOnce(
+      &InputMethodAsh::FinishHandlingKeyEvent, weak_ptr_factory_.GetWeakPtr()));
   bool is_handled_by_char_composer = false;
   if (event->type() == ui::EventType::kKeyPressed) {
     if (handled_state != ui::ime::KeyEventHandledState::kNotHandled) {
@@ -250,7 +255,38 @@ void InputMethodAsh::ProcessKeyEventDone(
     dispatch_details_ = ProcessKeyEventPostIME(event, handled_state_to_process,
                                                /* stopped_propagation */ false);
   }
-  handling_key_event_ = false;
+  // The key event is no longer in flight. If the engine drops the callback
+  // instead, `in_flight`'s destructor runs `OnKeyEventCallbackDropped()`.
+  in_flight.RunAndReset();
+}
+
+base::ScopedClosureRunner InputMethodAsh::StartHandlingKeyEvent() {
+  ++num_handling_key_events_;
+  return base::ScopedClosureRunner(
+      base::BindOnce(&InputMethodAsh::OnKeyEventCallbackDropped,
+                     weak_ptr_factory_.GetWeakPtr()));
+}
+
+void InputMethodAsh::FinishHandlingKeyEvent() {
+  CHECK_GT(num_handling_key_events_, 0u);
+  --num_handling_key_events_;
+}
+
+void InputMethodAsh::OnKeyEventCallbackDropped() {
+  FinishHandlingKeyEvent();
+  if (IsHandlingKeyEvent()) {
+    return;  // A still-in-flight key event will flush pending results.
+  }
+  // Nothing will flush results buffered for the dropped key event, so discard
+  // them to avoid leaking stale pending state into subsequent operations.
+  pending_composition_ = std::nullopt;
+  pending_composition_range_.reset();
+  pending_commit_ = std::nullopt;
+  composition_changed_ = false;
+  if (pending_autocorrect_range_) {
+    std::move(pending_autocorrect_range_->callback).Run(false);
+    pending_autocorrect_range_.reset();
+  }
 }
 
 void InputMethodAsh::OnTextInputTypeChanged(TextInputClient* client) {
@@ -324,6 +360,9 @@ void InputMethodAsh::OnCaretBoundsChanged(const TextInputClient* client) {
     Bounds bounds;
     bounds.caret = caret_rect;
     bounds.autocorrect = client->GetAutocorrectCharacterBounds();
+    if (bounds.autocorrect.IsEmpty()) {
+      bounds.autocorrect = caret_rect;
+    }
     assistive_window->SetBounds(bounds);
   }
 
@@ -404,6 +443,12 @@ void InputMethodAsh::OnBlur() {
 
 void InputMethodAsh::OnWillChangeFocusedClient(TextInputClient* focused_before,
                                                TextInputClient* focused) {
+  // Discard any buffered commit for `focused_before` before confirming
+  // composition so it is not leaked if the new focus target is nullptr,
+  // password, or NONE (where `ResetContext()` in `OnDidChangeFocusedClient()`
+  // returns early), and so `ConfirmComposition()` does not early-return when
+  // only `pending_commit_` is queued.
+  pending_commit_ = std::nullopt;
   ConfirmComposition(/* reset_engine */ true);
 
   // Remove any autocorrect range in the unfocused TextInputClient.
@@ -484,7 +529,7 @@ bool InputMethodAsh::SetComposingRange(
 
   // If we have pending key events, then delay the operation until
   // |ProcessKeyEventPostIME|. Otherwise, process it immediately.
-  if (handling_key_event_) {
+  if (IsHandlingKeyEvent()) {
     composition_changed_ = true;
     pending_composition_range_ =
         PendingSetCompositionRange{composition_range, non_empty_text_spans};
@@ -513,7 +558,7 @@ void InputMethodAsh::SetAutocorrectRange(
 
   // If we have pending key events, then delay the operation until
   // |ProcessKeyEventPostIME|. Otherwise, process it immediately.
-  if (handling_key_event_) {
+  if (IsHandlingKeyEvent()) {
     if (pending_autocorrect_range_) {
       std::move(pending_autocorrect_range_->callback).Run(false);
     }
@@ -553,20 +598,32 @@ void InputMethodAsh::ConfirmComposition(bool reset_engine) {
   base::WeakPtr<TextInputClient> client =
       GetTextInputClient() ? GetTextInputClient()->AsWeakPtr() : nullptr;
   // TODO(b/223075193): Quick fix for the case where we have a pending commit.
-  // Without this, then we would lose the pending commit after confirming the
-  // composition text.
+  // Without this, confirming composition when no pending composition update is
+  // queued would prematurely confirm any existing client composition text and
+  // reset `composing_text_` before `MaybeProcessPendingInputMethodResult()`
+  // processes `pending_commit_`.
   // Fix this properly by getting rid of the pending mechanism completely.
   if (pending_commit_ && !pending_composition_range_ && !pending_composition_) {
     // Only a pending commit, so confirming the composition is a no-op.
     return;
   }
+  if (client && pending_composition_range_) {
+    const PendingSetCompositionRange range =
+        std::move(*pending_composition_range_);
+    pending_composition_range_ = std::nullopt;
+    composition_changed_ = false;
+    // `SetComposingRange()` defers setting `composing_text_` while a key event
+    // is in flight; set it here so `ResetContext()` below knows composition was
+    // active and resets the engine when `reset_engine` is true.
+    composing_text_ = true;
+    client->SetCompositionFromExistingText(range.range, range.text_spans);
+  }
   // TODO(b/225723475): Similar to the comment above, this is a quick fix to
   // solve the autocorrect issue outlined in the linked bug. This is due to the
   // pending composition being reset before it could be applied to the current
   // text. Again we need to fix this properly by removing the pending mechanism.
-  if (client && pending_composition_ && !pending_commit_ &&
-      !pending_composition_range_) {
-    ui::CompositionText composition = std::move(*pending_composition_);
+  if (client && pending_composition_) {
+    const CompositionText composition = std::move(*pending_composition_);
     pending_composition_ = std::nullopt;
     composition_changed_ = false;
     client->SetCompositionText(composition);
@@ -577,8 +634,15 @@ void InputMethodAsh::ConfirmComposition(bool reset_engine) {
         client->ConfirmCompositionText(/*keep_selection*/ true);
     typing_session_manager_.CommitCharacters(characters_committed);
   }
+  std::optional<PendingCommit> pending_commit = std::move(pending_commit_);
   // See https://crbug.com/984472.
   ResetContext(reset_engine);
+  // Only restore `pending_commit_` if the target client is still alive and
+  // focused; composition callbacks above may have detached or changed the
+  // focused client.
+  if (client && client.get() == GetTextInputClient()) {
+    pending_commit_ = std::move(pending_commit);
+  }
 }
 
 void InputMethodAsh::ResetContext(bool reset_engine) {
@@ -586,9 +650,14 @@ void InputMethodAsh::ResetContext(bool reset_engine) {
     return;
   }
 
-  const bool was_composing = composing_text_;
+  // `SetComposingRange()` does not set `composing_text_` while handling a key
+  // event, so also check `pending_composition_range_` when deciding whether the
+  // engine needs to be reset.
+  const bool was_composing =
+      composing_text_ || pending_composition_range_.has_value();
 
   pending_composition_ = std::nullopt;
+  pending_composition_range_ = std::nullopt;
   pending_commit_ = std::nullopt;
   composing_text_ = false;
   composition_changed_ = false;
@@ -620,11 +689,6 @@ void InputMethodAsh::UpdateContextFocusState() {
   }
 
   IMEBridge::Get()->SetCurrentInputContext(GetInputContext());
-
-  TextInputClient* client = GetTextInputClient();
-  focused_url_ = client && !IsPasswordOrNoneInputFieldFocused()
-                     ? client->GetTextEditingContext().page_url
-                     : GURL();
 }
 
 ui::EventDispatchDetails InputMethodAsh::ProcessKeyEventPostIME(
@@ -871,10 +935,15 @@ void InputMethodAsh::CommitText(
 
   // If we are not handling key event, do not bother sending text result if the
   // focused text input client does not support text input.
-  if (!handling_key_event_ && !IsTextInputTypeNone()) {
+  if (!IsHandlingKeyEvent() && !IsTextInputTypeNone()) {
+    const base::WeakPtr<TextInputClient> prev_client =
+        GetTextInputClient() ? GetTextInputClient()->AsWeakPtr() : nullptr;
     if (!SendFakeProcessKeyEvent(true)) {
-      GetTextInputClient()->InsertText(text, cursor_behavior);
-      typing_session_manager_.CommitCharacters(text.length());
+      TextInputClient* const client = GetTextInputClient();
+      if (client && client == prev_client.get()) {
+        client->InsertText(text, cursor_behavior);
+        typing_session_manager_.CommitCharacters(text.length());
+      }
     }
     SendFakeProcessKeyEvent(false);
     pending_commit_ = std::nullopt;
@@ -916,11 +985,16 @@ void InputMethodAsh::UpdateCompositionText(const CompositionText& text,
     composing_text_ = true;
   }
 
-  if (!handling_key_event_) {
+  if (!IsHandlingKeyEvent()) {
     // If we receive a composition text without pending key event, then we need
     // to send it to the focused text input client directly.
+    const base::WeakPtr<TextInputClient> prev_client =
+        GetTextInputClient() ? GetTextInputClient()->AsWeakPtr() : nullptr;
     if (!SendFakeProcessKeyEvent(true)) {
-      GetTextInputClient()->SetCompositionText(*pending_composition_);
+      TextInputClient* const client = GetTextInputClient();
+      if (client && client == prev_client.get() && pending_composition_) {
+        client->SetCompositionText(*pending_composition_);
+      }
     }
     SendFakeProcessKeyEvent(false);
     composition_changed_ = false;
@@ -937,11 +1011,15 @@ void InputMethodAsh::HidePreeditText() {
   composition_changed_ = true;
   pending_composition_ = std::nullopt;
 
-  if (!handling_key_event_) {
-    TextInputClient* client = GetTextInputClient();
-    if (client && client->HasCompositionText()) {
+  if (!IsHandlingKeyEvent()) {
+    const base::WeakPtr<TextInputClient> prev_client =
+        GetTextInputClient() ? GetTextInputClient()->AsWeakPtr() : nullptr;
+    if (prev_client && prev_client->HasCompositionText()) {
       if (!SendFakeProcessKeyEvent(true)) {
-        client->ClearCompositionText();
+        TextInputClient* const client = GetTextInputClient();
+        if (client && client == prev_client.get()) {
+          client->ClearCompositionText();
+        }
       }
       SendFakeProcessKeyEvent(false);
     }
@@ -989,6 +1067,10 @@ void InputMethodAsh::SendKeyEvent(ui::KeyEvent* event) {
 }
 
 SurroundingTextInfo InputMethodAsh::GetSurroundingTextInfo() {
+  if (IsPasswordOrNoneInputFieldFocused()) {
+    return SurroundingTextInfo();
+  }
+
   gfx::Range text_range;
   SurroundingTextInfo info;
   TextInputClient* client = GetTextInputClient();

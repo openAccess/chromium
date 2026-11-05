@@ -8,6 +8,7 @@
 
 #include "build/build_config.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
@@ -15,6 +16,7 @@
 #include "chrome/browser/ui/global_media_controls/media_notification_service.h"
 #include "chrome/browser/ui/global_media_controls/media_notification_service_factory.h"
 #include "chrome/browser/ui/global_media_controls/media_toolbar_button_controller.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/media_router/media_router_ui.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
@@ -24,7 +26,12 @@
 #include "chrome/browser/ui/views/media_router/cast_dialog_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "components/media_router/browser/presentation/start_presentation_context.h"
+#include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
+#include "ui/base/interaction/element_tracker.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/views/bubble/bubble_anchor.h"
 
 using content::WebContents;
@@ -48,9 +55,28 @@ MediaRouterDialogControllerViews::~MediaRouterDialogControllerViews() {
 
 bool MediaRouterDialogControllerViews::ShowMediaRouterDialogForPresentation(
     std::unique_ptr<StartPresentationContext> context) {
+  // Block tab fullscreen to prevent UI spoofing. The GMC device picker is a
+  // trusted browser surface that should not coexist with attacker-controlled
+  // fullscreen content.
+  // Note that dropping fullscreen may spin the message loop (e.g. on Windows)
+  // and destroy the WebContents (and consequently this WebContentsUserData).
+  base::WeakPtr<MediaRouterDialogControllerViews> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
+  auto blocker =
+      initiator()->ForSecurityDropFullscreen(display::kInvalidDisplayId);
+  if (!weak_this || !blocker) {
+    return false;
+  }
 #if BUILDFLAG(IS_CHROMEOS)
+  // On ChromeOS, presentation UI is delegated to Ash's shelf/system tray
+  // (which is outside the browser window and does not track widget lifetime
+  // here). Dropping fullscreen once is sufficient to prevent spoofing without
+  // permanently blocking fullscreen.
   ShowGlobalMediaControlsDialog(std::move(context));
 #else
+  // On desktop platforms, keep fullscreen blocked until the MediaDialogView
+  // widget is destroyed.
+  fullscreen_blocker_ = std::move(*blocker);
   ShowGlobalMediaControlsDialogAsync(std::move(context));
 #endif  // BUILDFLAG(IS_CHROMEOS)
   return true;
@@ -72,18 +98,32 @@ void MediaRouterDialogControllerViews::CreateMediaRouterDialog(
   // Block tab fullscreen. There is no toolbar to anchor the cast dialog to in
   // tab fullscreen mode. It is unsafe to show the dialog entirely within the
   // content area, as this would make it susceptible to spoofing attacks.
+  // Note that dropping fullscreen may spin the message loop (e.g. on Windows)
+  // and destroy the WebContents (and consequently this WebContentsUserData).
+  base::WeakPtr<MediaRouterDialogControllerViews> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
   auto blocker =
       initiator()->ForSecurityDropFullscreen(display::kInvalidDisplayId);
-  if (!blocker) {
+  if (!weak_this || !blocker) {
     return;
   }
+
+  CastDialogCoordinator::AfterShownCallback callback =
+      base::BindOnce(&MediaRouterDialogControllerViews::OnDialogCreated,
+                     weak_ptr_factory_.GetWeakPtr(), activation_location);
+
+  // Fail gracefully if dropping fullscreen closed the browser window.
+  BrowserWindowInterface* browser_after_drop =
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(initiator());
+  if (browser && !browser_after_drop) {
+    std::move(callback).Run(ShowCastDialogStatus::kWindowClosed);
+    return;
+  }
+  browser = browser_after_drop;
   fullscreen_blocker_ = std::move(*blocker);
 
   BrowserView* browser_view =
       browser ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
-  CastDialogCoordinator::AfterShownCallback callback =
-      base::BindOnce(&MediaRouterDialogControllerViews::OnDialogCreated,
-                     weak_ptr_factory_.GetWeakPtr(), activation_location);
   if (browser_view) {
     // Show the Cast dialog anchored to the Cast toolbar button.
     if (browser_view->toolbar_button_provider()
@@ -137,25 +177,35 @@ bool MediaRouterDialogControllerViews::IsShowingMediaRouterDialog() const {
 }
 
 void MediaRouterDialogControllerViews::Reset() {
-  // If |ui_| is null, Reset() has already been called.
+  media_button_shown_subscription_ = {};
+  // If |ui_| is null, Reset() has already been called for Cast dialogs.
   if (ui_) {
     if (GetActionController()) {
       GetActionController()->OnDialogHidden();
     }
     ui_.reset();
-    fullscreen_blocker_.RunAndReset();
     MediaRouterDialogController::Reset();
   }
+
+  // Fullscreen blocker must be released regardless of whether |ui_| was set,
+  // as presentation requests hold a blocker while |ui_| is null.
+  fullscreen_blocker_.RunAndReset();
 }
 
 void MediaRouterDialogControllerViews::OnWidgetDestroying(
     views::Widget* widget) {
-  DCHECK(scoped_widget_observations_.IsObservingSource(widget));
+  CHECK(scoped_widget_observations_.IsObservingSource(widget),
+        base::NotFatalUntil::M162);
   if (ui_) {
     ui_->LogMediaSinkStatus();
   }
-  Reset();
+  // Remove the observation before calling Reset() and only reset if no other
+  // dialog widgets are currently observed. This prevents a closing dialog from
+  // prematurely resetting state while a newer dialog is already active.
   scoped_widget_observations_.RemoveObservation(widget);
+  if (!scoped_widget_observations_.IsObservingAnySource()) {
+    Reset();
+  }
 }
 
 void MediaRouterDialogControllerViews::SetDialogCreationCallbackForTesting(
@@ -173,7 +223,7 @@ MediaRouterDialogControllerViews::MediaRouterDialogControllerViews(
           *web_contents),
       MediaRouterDialogController(web_contents),
       media_router_ui_service_(GetMediaRouterUIService(web_contents)) {
-  DCHECK(media_router_ui_service_);
+  CHECK(media_router_ui_service_, base::NotFatalUntil::M162);
   media_router_ui_service_->AddObserver(this);
 }
 
@@ -231,6 +281,8 @@ void MediaRouterDialogControllerViews::ShowGlobalMediaControlsDialogAsync(
 }
 
 void MediaRouterDialogControllerViews::ShowGlobalMediaControlsDialog() {
+  media_button_shown_subscription_ = {};
+
   Profile* const profile =
       Profile::FromBrowserContext(initiator()->GetBrowserContext());
   MediaNotificationService* const service =
@@ -238,10 +290,28 @@ void MediaRouterDialogControllerViews::ShowGlobalMediaControlsDialog() {
   MediaToolbarButton* const media_button = GetMediaButton();
   // If there exists a media button, anchor the dialog to this media button.
   if (media_button) {
+    tabs::TabInterface* const tab =
+        tabs::TabInterface::MaybeGetFromContents(initiator());
+    BrowserWindowInterface* const browser =
+        tab ? tab->GetBrowserWindowInterface() : nullptr;
+    BrowserElements* const elements =
+        browser ? BrowserElements::From(browser) : nullptr;
+    if (elements && !elements->GetElement(kToolbarMediaButtonElementId)) {
+      media_button_shown_subscription_ =
+          ui::ElementTracker::GetElementTracker()->AddElementShownCallback(
+              kToolbarMediaButtonElementId, elements->GetContext(),
+              base::BindRepeating(
+                  &MediaRouterDialogControllerViews::OnMediaButtonShown,
+                  weak_ptr_factory_.GetWeakPtr()));
+      return;
+    }
     scoped_widget_observations_.AddObservation(MediaDialogView::ShowDialog(
         media_button->GetBubbleAnchor(), views::BubbleBorder::TOP_RIGHT,
         service, profile, initiator(),
         global_media_controls::GlobalMediaControlsEntryPoint::kPresentation));
+    if (dialog_creation_callback_) {
+      dialog_creation_callback_.Run();
+    }
     return;
   }
   BrowserWindowInterface* const browser =
@@ -266,6 +336,14 @@ void MediaRouterDialogControllerViews::ShowGlobalMediaControlsDialog() {
             global_media_controls::GlobalMediaControlsEntryPoint::
                 kPresentation));
   }
+  if (dialog_creation_callback_) {
+    dialog_creation_callback_.Run();
+  }
+}
+
+void MediaRouterDialogControllerViews::OnMediaButtonShown(
+    ui::TrackedElement* element) {
+  ShowGlobalMediaControlsDialog();
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 

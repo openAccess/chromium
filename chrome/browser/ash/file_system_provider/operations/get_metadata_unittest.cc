@@ -19,9 +19,9 @@
 #include "chrome/browser/ash/file_system_provider/icon_set.h"
 #include "chrome/browser/ash/file_system_provider/operations/test_util.h"
 #include "chrome/browser/ash/file_system_provider/provided_file_system_interface.h"
-#include "chrome/common/extensions/api/file_system_provider.h"
-#include "chrome/common/extensions/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
-#include "chrome/common/extensions/api/file_system_provider_internal.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider_internal.h"
 #include "extensions/browser/event_router.h"
 #include "storage/browser/file_system/async_file_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -306,7 +306,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, Execute) {
   EXPECT_EQ(
       extensions::api::file_system_provider::OnGetMetadataRequested::kEventName,
       event->event_name);
-  const base::ListValue& event_args = event->event_args;
+  const base::ListValue& event_args = event->args();
   ASSERT_EQ(1u, event_args.size());
 
   const base::Value* options_as_value = &event_args[0];
@@ -346,8 +346,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess) {
           ProvidedFileSystemInterface::METADATA_FIELD_MODIFICATION_TIME |
           ProvidedFileSystemInterface::METADATA_FIELD_MIME_TYPE |
           ProvidedFileSystemInterface::METADATA_FIELD_THUMBNAIL |
-          ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_IDENTIFIER |
-          ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_FILE_INFO,
+          ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_IDENTIFIER,
       base::BindOnce(&CallbackLogger::OnGetMetadata,
                      base::Unretained(&callback_logger)));
 
@@ -372,9 +371,6 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess) {
       "    \"cloudIdentifier\": {\n"
       "      \"providerName\": \"provider-name\",\n"
       "      \"id\": \"abc123\"\n"
-      "    },\n"
-      "    \"cloudFileInfo\": {\n"
-      "      \"versionTag\": \"aYzpFNjgwQ0QxNTg5QjI0NTAyITI0NC4yNTg\""
       "    }\n"
       "  },\n"
       "  0\n"  // execution_time
@@ -400,8 +396,6 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess) {
   EXPECT_EQ(kThumbnail, *metadata->thumbnail);
   EXPECT_EQ(CloudIdentifier("provider-name", "abc123"),
             *metadata->cloud_identifier);
-  EXPECT_EQ(CloudFileInfo("aYzpFNjgwQ0QxNTg5QjI0NTAyITI0NC4yNTg"),
-            *metadata->cloud_file_info);
 }
 
 TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess_InvalidMetadata) {
@@ -416,8 +410,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess_InvalidMetadata) {
           ProvidedFileSystemInterface::METADATA_FIELD_MODIFICATION_TIME |
           ProvidedFileSystemInterface::METADATA_FIELD_MIME_TYPE |
           ProvidedFileSystemInterface::METADATA_FIELD_THUMBNAIL |
-          ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_IDENTIFIER |
-          ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_FILE_INFO,
+          ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_IDENTIFIER,
       base::BindOnce(&CallbackLogger::OnGetMetadata,
                      base::Unretained(&callback_logger)));
 
@@ -442,9 +435,6 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess_InvalidMetadata) {
       "    \"cloudIdentifier\": {\n"
       "      \"providerName\": \"provider-name\",\n"
       "      \"id\": \"abc123\"\n"
-      "    },\n"
-      "    \"cloudFileInfo\": {\n"
-      "      \"versionTag\": \"aYzpFNjgwQ0QxNTg5QjI0NTAyITI0NC4yNTg\""
       "    }\n"
       "  },\n"
       "  0\n"  // execution_time

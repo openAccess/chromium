@@ -5,10 +5,14 @@
 package org.chromium.chrome.browser.history;
 
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.lenient;
 
 import static org.chromium.chrome.browser.history.HistoryTestUtils.checkAdapterContents;
 
-import android.widget.TextView;
+import android.app.Activity;
+import android.view.LayoutInflater;
+
+import androidx.recyclerview.widget.RecyclerView;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -19,17 +23,20 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.history.AppFilterCoordinator.AppInfo;
+import org.chromium.chrome.browser.history.HistoryContentManager.ActorFilter;
 import org.chromium.chrome.browser.ui.signin.signin_promo.SigninPromoCoordinator;
 import org.chromium.components.browser_ui.widget.MoreProgressButton;
-import org.chromium.components.browser_ui.widget.chips.ChipView;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /** Tests for the {@link HistoryAdapter}. */
@@ -39,26 +46,30 @@ public class HistoryAdapterTest {
     private StubbedHistoryProvider mHistoryProvider;
     private HistoryAdapter mAdapter;
 
-    @Mock private MoreProgressButton mMockButton;
     @Mock private HistoryContentManager mContentManager;
-    @Mock private ChipView mAppFilterChip;
-    @Mock private TextView mTextView;
     @Mock private SigninPromoCoordinator mHistorySyncPromoCoordinator;
+
+    private MoreProgressButton mButton;
+    private RecyclerView mRecyclerView;
 
     @Before
     public void setUp() {
+        lenient().doReturn(new HistoryUmaRecorder()).when(mContentManager).getUmaRecorder();
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        activity.setTheme(R.style.Theme_BrowserUI_DayNight);
+        mButton =
+                (MoreProgressButton)
+                        LayoutInflater.from(activity).inflate(R.layout.more_progress_button, null);
+        mRecyclerView = new RecyclerView(activity);
         mHistoryProvider = new StubbedHistoryProvider();
         mAdapter =
                 new HistoryAdapter(
                         mContentManager,
                         mHistoryProvider,
                         mHistorySyncPromoCoordinator,
-                        /* shouldClusterByDomain= */ false,
-                        /* snackbarManager= */ null,
-                        /* profile= */ null);
+                        /* shouldClusterByDomain= */ false);
         mAdapter.generateHeaderItemsForTest();
-        mAdapter.generateFooterItemsForTest(mMockButton);
-        doReturn(mTextView).when(mAppFilterChip).getPrimaryTextView();
+        mAdapter.generateFooterItemsForTest(mButton);
     }
 
     private boolean showSourceApp() {
@@ -114,13 +125,10 @@ public class HistoryAdapterTest {
                         mContentManager,
                         mHistoryProvider,
                         mHistorySyncPromoCoordinator,
-                        /* shouldClusterByDomain= */ false,
-                        /* snackbarManager= */ null,
-                        /* profile= */ null);
+                        /* shouldClusterByDomain= */ false);
 
         mAdapter.generateHeaderItemsForTest();
-        mAdapter.generateFooterItemsForTest(mMockButton);
-        mAdapter.setAppFilterButtonForTest(mAppFilterChip);
+        mAdapter.generateFooterItemsForTest(mButton);
         Assert.assertTrue("Source app should be on", showSourceApp());
         Assert.assertEquals("App id should be null", null, getAppId());
 
@@ -129,21 +137,114 @@ public class HistoryAdapterTest {
         mAdapter.onSearchStart();
         Assert.assertTrue("Source app should remain on when entering search", showSourceApp());
 
-        mAdapter.updateHistory(new AppInfo("org.great.app", null, "Great App"));
+        mAdapter.updateAppFilter("org.great.app");
         Assert.assertFalse("No source app when app filter is on", showSourceApp());
         Assert.assertEquals("App id should switch to greatapp", "org.great.app", getAppId());
 
-        mAdapter.updateHistory(null);
+        mAdapter.updateAppFilter(null);
         Assert.assertTrue("Source app when app filter is reset", showSourceApp());
         Assert.assertEquals("App id should switch to null", null, getAppId());
 
-        mAdapter.updateHistory(new AppInfo("org.awesome.app", null, "Awesome App"));
+        mAdapter.updateAppFilter("org.awesome.app");
         Assert.assertFalse("No source app when app filter is on again", showSourceApp());
         Assert.assertEquals("App id should switch to awesomeapp", "org.awesome.app", getAppId());
 
         mAdapter.onEndSearch();
         Assert.assertTrue("Should show source app when search is exited", showSourceApp());
         Assert.assertEquals("App id should reverted to null", null, getAppId());
+    }
+
+    @Test
+    public void testSearch_HostAndClientFilter() {
+        doReturn(true).when(mContentManager).showAppFilter();
+        doReturn(true).when(mContentManager).showHostFilter();
+        doReturn(true).when(mContentManager).showClientFilter();
+        mAdapter =
+                new HistoryAdapter(
+                        mContentManager,
+                        mHistoryProvider,
+                        mHistorySyncPromoCoordinator,
+                        /* shouldClusterByDomain= */ false);
+        mAdapter.generateHeaderItemsForTest();
+        mAdapter.generateFooterItemsForTest(mButton);
+
+        mAdapter.onSearchStart();
+        Assert.assertNull(mAdapter.getHostNameForTest());
+        Assert.assertTrue(mAdapter.getClientIdsForTest().isEmpty());
+
+        mAdapter.updateHostFilter("www.google.com");
+        Assert.assertEquals("www.google.com", mAdapter.getHostNameForTest());
+        Assert.assertEquals(
+                new QueryOptions(
+                        null,
+                        "www.google.com",
+                        Collections.emptyList(),
+                        /* includeUserVisits= */ true,
+                        /* includeActorVisits= */ true),
+                mHistoryProvider.getLastQueryOptions());
+
+        mAdapter.updateClientFilter(List.of("client_123", "client_456"));
+        Assert.assertEquals(List.of("client_123", "client_456"), mAdapter.getClientIdsForTest());
+        Assert.assertEquals(
+                new QueryOptions(
+                        null,
+                        "www.google.com",
+                        List.of("client_123", "client_456"),
+                        /* includeUserVisits= */ true,
+                        /* includeActorVisits= */ true),
+                mHistoryProvider.getLastQueryOptions());
+
+        mAdapter.onEndSearch();
+        Assert.assertNull(mAdapter.getHostNameForTest());
+        Assert.assertTrue(mAdapter.getClientIdsForTest().isEmpty());
+    }
+
+    @Test
+    public void testSearch_ActorFilter() {
+        doReturn(true).when(mContentManager).showActorFilter();
+        mAdapter =
+                new HistoryAdapter(
+                        mContentManager,
+                        mHistoryProvider,
+                        mHistorySyncPromoCoordinator,
+                        /* shouldClusterByDomain= */ false);
+        mAdapter.generateHeaderItemsForTest();
+        mAdapter.generateFooterItemsForTest(mButton);
+
+        mAdapter.onSearchStart();
+        Assert.assertEquals(ActorFilter.ANY, mAdapter.getActorFilterForTest());
+
+        @ActorFilter String[] actorFilters = {ActorFilter.USER, ActorFilter.ACTOR, ActorFilter.ANY};
+        for (String filter : actorFilters) {
+            mAdapter.updateActorFilter(filter);
+            Assert.assertEquals(filter, mAdapter.getActorFilterForTest());
+            Assert.assertEquals(
+                    new QueryOptions(
+                            null,
+                            null,
+                            Collections.emptyList(),
+                            !filter.equals(ActorFilter.ACTOR),
+                            !filter.equals(ActorFilter.USER)),
+                    mHistoryProvider.getLastQueryOptions());
+        }
+
+        // Clearing the filter resets to ANY and includes both again.
+        mAdapter.updateActorFilter(ActorFilter.USER);
+        mAdapter.updateActorFilter(null);
+        Assert.assertEquals(ActorFilter.ANY, mAdapter.getActorFilterForTest());
+        Assert.assertEquals(
+                new QueryOptions(
+                        null,
+                        null,
+                        Collections.emptyList(),
+                        /* includeUserVisits= */ true,
+                        /* includeActorVisits= */ true),
+                mHistoryProvider.getLastQueryOptions());
+
+        // Ending the search resets the filter.
+        mAdapter.updateActorFilter(ActorFilter.USER);
+        mAdapter.onEndSearch();
+        Assert.assertEquals(ActorFilter.ANY, mAdapter.getActorFilterForTest());
     }
 
     @Test
@@ -399,9 +500,7 @@ public class HistoryAdapterTest {
                         mContentManager,
                         mHistoryProvider,
                         mHistorySyncPromoCoordinator,
-                        /* shouldClusterByDomain= */ true,
-                        /* snackbarManager= */ null,
-                        /* profile= */ null);
+                        /* shouldClusterByDomain= */ true);
         mAdapter.generateHeaderItemsForTest();
 
         Date today = new Date();
@@ -449,9 +548,7 @@ public class HistoryAdapterTest {
                         mContentManager,
                         mHistoryProvider,
                         mHistorySyncPromoCoordinator,
-                        /* shouldClusterByDomain= */ true,
-                        /* snackbarManager= */ null,
-                        /* profile= */ null);
+                        /* shouldClusterByDomain= */ true);
         mAdapter.generateHeaderItemsForTest();
 
         Date today = new Date();
@@ -480,9 +577,7 @@ public class HistoryAdapterTest {
                         mContentManager,
                         mHistoryProvider,
                         mHistorySyncPromoCoordinator,
-                        /* shouldClusterByDomain= */ true,
-                        /* snackbarManager= */ null,
-                        /* profile= */ null);
+                        /* shouldClusterByDomain= */ true);
         mAdapter.generateHeaderItemsForTest();
 
         Date today = new Date();
@@ -527,9 +622,7 @@ public class HistoryAdapterTest {
                         mContentManager,
                         mHistoryProvider,
                         mHistorySyncPromoCoordinator,
-                        /* shouldClusterByDomain= */ true,
-                        /* snackbarManager= */ null,
-                        /* profile= */ null);
+                        /* shouldClusterByDomain= */ true);
         mAdapter.generateHeaderItemsForTest();
 
         Date today = new Date();
@@ -568,9 +661,7 @@ public class HistoryAdapterTest {
                         mContentManager,
                         mHistoryProvider,
                         mHistorySyncPromoCoordinator,
-                        /* shouldClusterByDomain= */ true,
-                        /* snackbarManager= */ null,
-                        /* profile= */ null);
+                        /* shouldClusterByDomain= */ true);
         mAdapter.generateHeaderItemsForTest();
 
         Date today = new Date();
@@ -633,15 +724,21 @@ public class HistoryAdapterTest {
                         mContentManager,
                         mockProvider,
                         mHistorySyncPromoCoordinator,
-                        /* shouldClusterByDomain= */ false,
-                        /* snackbarManager= */ null,
-                        /* profile= */ null);
+                        /* shouldClusterByDomain= */ false);
 
         Assert.assertFalse(mAdapter.canLoadMoreItems());
 
         mAdapter.search("query");
 
-        Mockito.verify(mockProvider).queryHistory("query", null);
+        Mockito.verify(mockProvider)
+                .queryHistory(
+                        "query",
+                        new QueryOptions(
+                                null,
+                                null,
+                                Collections.emptyList(),
+                                /* includeUserVisits= */ true,
+                                /* includeActorVisits= */ true));
         // While the query is ongoing, no more items can be loaded.
         Assert.assertFalse(mAdapter.canLoadMoreItems());
 
@@ -649,5 +746,245 @@ public class HistoryAdapterTest {
         // available), more items can be loaded.
         mAdapter.onQueryHistoryComplete(new ArrayList<>(), true);
         Assert.assertTrue(mAdapter.canLoadMoreItems());
+    }
+
+    @Test
+    public void testQueryDurationHistogram() {
+        HistogramWatcher initialWatcher =
+                HistogramWatcher.newSingleRecordWatcher("Android.HistoryPage.QueryDuration");
+        mAdapter.startLoadingItems();
+        initialWatcher.assertExpected();
+
+        // Continuation query should also record QueryDuration.
+        mHistoryProvider.setPaging(2);
+        for (int i = 0; i < 5; ++i) {
+            mHistoryProvider.addItem(
+                    StubbedHistoryProvider.createHistoryItem(i, new Date().getTime()));
+        }
+        mAdapter.startLoadingItems();
+
+        HistogramWatcher continuationWatcher =
+                HistogramWatcher.newSingleRecordWatcher("Android.HistoryPage.QueryDuration");
+        mAdapter.loadMoreItems();
+        continuationWatcher.assertExpected();
+
+        // Search query should also record QueryDuration.
+        HistogramWatcher searchWatcher =
+                HistogramWatcher.newSingleRecordWatcher("Android.HistoryPage.QueryDuration");
+        mAdapter.search("query");
+        searchWatcher.assertExpected();
+    }
+
+    @Test
+    public void testTimeToFirstVisibleContentHistogram() {
+        mAdapter.onAttachedToRecyclerView(mRecyclerView);
+
+        Date today = new Date();
+        HistoryItem item = StubbedHistoryProvider.createHistoryItem(0, today.getTime());
+        mHistoryProvider.addItem(item);
+
+        HistogramWatcher durationWatcher =
+                HistogramWatcher.newSingleRecordWatcher("Android.HistoryPage.QueryDuration");
+        HistogramWatcher fcpWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.HistoryPage.TimeToFirstVisibleContent");
+
+        mAdapter.startLoadingItems();
+
+        durationWatcher.assertExpected();
+
+        mRecyclerView.getViewTreeObserver().dispatchOnPreDraw();
+        // The listener removes itself, so a second pre-draw must not record again.
+        mRecyclerView.getViewTreeObserver().dispatchOnPreDraw();
+
+        fcpWatcher.assertExpected();
+    }
+
+    @Test
+    public void testTimeToFirstVisibleContent_EmptyListDoesNotRecordAndResetsTimestamp() {
+        mAdapter.onAttachedToRecyclerView(mRecyclerView);
+
+        // Initial load with empty history.
+        HistogramWatcher emptyWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectAnyRecord("Android.HistoryPage.QueryDuration")
+                        .expectNoRecords("Android.HistoryPage.TimeToFirstVisibleContent")
+                        .build();
+
+        mAdapter.startLoadingItems();
+        mRecyclerView.getViewTreeObserver().dispatchOnPreDraw();
+
+        emptyWatcher.assertExpected();
+
+        // Subsequent query after adding items must NOT fire initial TimeToFirstVisibleContent.
+        Date today = new Date();
+        mHistoryProvider.addItem(StubbedHistoryProvider.createHistoryItem(0, today.getTime()));
+
+        HistogramWatcher searchWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectAnyRecord("Android.HistoryPage.QueryDuration")
+                        .expectNoRecords("Android.HistoryPage.TimeToFirstVisibleContent")
+                        .build();
+
+        mAdapter.search("test");
+        mRecyclerView.getViewTreeObserver().dispatchOnPreDraw();
+
+        searchWatcher.assertExpected();
+    }
+
+    @Test
+    public void testTimeToFirstVisibleContent_DestroyedDoesNotRecord() {
+        mAdapter.onAttachedToRecyclerView(mRecyclerView);
+
+        Date today = new Date();
+        HistoryItem item = StubbedHistoryProvider.createHistoryItem(0, today.getTime());
+        mHistoryProvider.addItem(item);
+
+        mAdapter.startLoadingItems();
+
+        // Destroy the adapter before the pre-draw callback fires.
+        mAdapter.onDestroyed();
+
+        HistogramWatcher fcpWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.HistoryPage.TimeToFirstVisibleContent")
+                        .build();
+
+        mRecyclerView.getViewTreeObserver().dispatchOnPreDraw();
+        fcpWatcher.assertExpected();
+    }
+
+    @Test
+    public void testTimeToFirstVisibleContent_OnlyRecordedOnInitialLoad() {
+        mAdapter.onAttachedToRecyclerView(mRecyclerView);
+
+        Date today = new Date();
+        HistoryItem item = StubbedHistoryProvider.createHistoryItem(0, today.getTime());
+        mHistoryProvider.addItem(item);
+
+        HistogramWatcher initialWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.HistoryPage.TimeToFirstVisibleContent");
+        mAdapter.startLoadingItems();
+        mRecyclerView.getViewTreeObserver().dispatchOnPreDraw();
+        initialWatcher.assertExpected();
+
+        // Subsequent reloads via startLoadingItems(), onEndSearch(), and onHistoryDeleted()
+        // should record QueryDuration but not TimeToFirstVisibleContent.
+        HistogramWatcher reloadWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectAnyRecord("Android.HistoryPage.QueryDuration")
+                        .expectNoRecords("Android.HistoryPage.TimeToFirstVisibleContent")
+                        .build();
+        mAdapter.startLoadingItems();
+        mRecyclerView.getViewTreeObserver().dispatchOnPreDraw();
+        reloadWatcher.assertExpected();
+
+        HistogramWatcher endSearchWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectAnyRecord("Android.HistoryPage.QueryDuration")
+                        .expectNoRecords("Android.HistoryPage.TimeToFirstVisibleContent")
+                        .build();
+        mAdapter.onEndSearch();
+        mRecyclerView.getViewTreeObserver().dispatchOnPreDraw();
+        endSearchWatcher.assertExpected();
+
+        HistogramWatcher historyDeletedWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectAnyRecord("Android.HistoryPage.QueryDuration")
+                        .expectNoRecords("Android.HistoryPage.TimeToFirstVisibleContent")
+                        .build();
+        mAdapter.onHistoryDeleted();
+        mRecyclerView.getViewTreeObserver().dispatchOnPreDraw();
+        historyDeletedWatcher.assertExpected();
+    }
+
+    @Test
+    public void testTimeToFirstVisibleContent_SupersededBySearchDoesNotRecord() {
+        HistoryProvider mockProvider = Mockito.mock(HistoryProvider.class);
+        mAdapter =
+                new HistoryAdapter(
+                        mContentManager,
+                        mockProvider,
+                        mHistorySyncPromoCoordinator,
+                        /* shouldClusterByDomain= */ false);
+        mAdapter.generateHeaderItemsForTest();
+        mAdapter.onAttachedToRecyclerView(mRecyclerView);
+
+        // Start initial load (remains in flight).
+        mAdapter.startLoadingItems();
+
+        // Supersede the in-flight initial load with a search query.
+        mAdapter.search("query");
+
+        Date today = new Date();
+        ArrayList<HistoryItem> items = new ArrayList<>();
+        items.add(StubbedHistoryProvider.createHistoryItem(0, today.getTime()));
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectAnyRecord("Android.HistoryPage.QueryDuration")
+                        .expectNoRecords("Android.HistoryPage.TimeToFirstVisibleContent")
+                        .build();
+
+        mAdapter.onQueryHistoryComplete(items, /* hasMorePotentialMatches= */ false);
+        mRecyclerView.getViewTreeObserver().dispatchOnPreDraw();
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testHostNameFilterDoesNotRecordHistograms() {
+        mAdapter.onAttachedToRecyclerView(mRecyclerView);
+        mAdapter.setHostName("www.example.com");
+
+        mHistoryProvider.setPaging(2);
+        for (int i = 0; i < 5; ++i) {
+            mHistoryProvider.addItem(
+                    StubbedHistoryProvider.createHistoryItem(i, new Date().getTime()));
+        }
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.HistoryPage.QueryDuration")
+                        .expectNoRecords("Android.HistoryPage.TimeToFirstVisibleContent")
+                        .build();
+
+        mAdapter.startLoadingItems();
+        mAdapter.loadMoreItems();
+        mRecyclerView.getViewTreeObserver().dispatchOnPreDraw();
+
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testCombinedFilters() {
+        HistoryProvider mockProvider = Mockito.mock(HistoryProvider.class);
+        mAdapter =
+                new HistoryAdapter(
+                        mContentManager,
+                        mockProvider,
+                        mHistorySyncPromoCoordinator,
+                        /* shouldClusterByDomain= */ false);
+
+        mAdapter.setAppId("com.example.app");
+        mAdapter.setHostName("example.com");
+        mAdapter.setClientIds(List.of("client_123"));
+
+        @ActorFilter String[] actorFilters = {ActorFilter.USER, ActorFilter.ACTOR, ActorFilter.ANY};
+        for (String filter : actorFilters) {
+            mAdapter.setActorFilter(filter);
+            mAdapter.search("test_query");
+
+            Mockito.verify(mockProvider)
+                    .queryHistory(
+                            "test_query",
+                            new QueryOptions(
+                                    "com.example.app",
+                                    "example.com",
+                                    List.of("client_123"),
+                                    !filter.equals(ActorFilter.ACTOR),
+                                    !filter.equals(ActorFilter.USER)));
+        }
     }
 }

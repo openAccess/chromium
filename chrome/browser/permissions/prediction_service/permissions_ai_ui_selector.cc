@@ -10,8 +10,6 @@
 #include "base/rand_util.h"
 #include "base/strings/strcat.h"
 #include "base/time/default_clock.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/permissions/permission_actions_history_factory.h"
 #include "chrome/browser/permissions/prediction_service/passage_embedder_delegate.h"
 #include "chrome/browser/permissions/prediction_service/prediction_model_handler_provider.h"
@@ -372,7 +370,7 @@ void PermissionsAiUiSelector::SelectUiToUse(
     return;
   }
 
-  DCHECK(!request_);
+  CHECK(!request_, base::NotFatalUntil::M162);
   PredictionRequestMetadata request_metadata = {
       .prediction_source = prediction_source,
       .request_type = request->request_type()};
@@ -624,8 +622,9 @@ bool PermissionsAiUiSelector::ShouldHoldBack(
     const PredictionRequestMetadata& request_metadata) const {
   permissions::RequestType request_type = request_metadata.request_type;
   PredictionSource prediction_source = request_metadata.prediction_source;
-  DCHECK(request_type == permissions::RequestType::kNotifications ||
-         request_type == permissions::RequestType::kGeolocation);
+  CHECK(request_type == permissions::RequestType::kNotifications ||
+            request_type == permissions::RequestType::kGeolocation,
+        base::NotFatalUntil::M162);
 
   // Holdback probability for this request.
   const double holdback_chance = base::RandDouble();
@@ -638,7 +637,8 @@ bool PermissionsAiUiSelector::ShouldHoldBack(
 
   switch (prediction_source) {
     case PredictionSource::kOnDeviceCpssV1Model:
-      DCHECK(cpss_v1_model_holdback_probability_.has_value());
+      CHECK(cpss_v1_model_holdback_probability_.has_value(),
+            base::NotFatalUntil::M162);
       should_holdback = holdback_chance < *cpss_v1_model_holdback_probability_;
       prediction_model = PredictionModelType::kOnDeviceCpssV1Model;
       break;
@@ -819,8 +819,9 @@ void PermissionsAiUiSelector::ExecuteOnDeviceAivXModel(
 
     switch (model_data.model_type) {
       case PredictionModelType::kOnDeviceAiV4Model: {
-        DCHECK(model_data.snapshot.has_value());
-        DCHECK(model_data.inner_text_embedding.has_value());
+        CHECK(model_data.snapshot.has_value(), base::NotFatalUntil::M162);
+        CHECK(model_data.inner_text_embedding.has_value(),
+              base::NotFatalUntil::M162);
         if (PermissionsAiv4Handler* aiv4_handler =
                 prediction_model_handler_provider->GetPermissionsAiv4Handler(
                     request_type)) {

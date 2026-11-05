@@ -14,6 +14,7 @@ enum class BadgeType {
   kNone,             // No badge.
   kNotificationDot,  // The blue notification dot.
   kNew,              // The "new" ("N") IPH badge.
+  kWarning,          // The warning badge.
 };
 
 // TableViewDetailIconItem is a model class for a cell with details and icon.
@@ -52,7 +53,9 @@ enum class BadgeType {
 
 // Selects the badge shown in the Cell. These are only supported when
 // `textLayoutConstraintAxis` is set to `UILayoutConstraintAxisHorizontal`.
-// Default in no badge (BadgeType::kNone).
+// Warning badge is displayed at the trailing side of the cell, while other
+// badges are inlined at the end of the text. Default is no badge
+// (BadgeType::kNone).
 @property(nonatomic, assign) BadgeType badgeType;
 
 // Maximum number of lines for the `text`. Default is 1.
@@ -65,6 +68,15 @@ enum class BadgeType {
 // Line break mode for the labels. Defaults to NSLineBreakByTruncatingTail.
 @property(nonatomic, assign) NSLineBreakMode textLineBreakMode;
 @property(nonatomic, assign) NSLineBreakMode detailTextLineBreakMode;
+
+// The vertical alignment of the cell content. Defaults to
+// UIStackViewAlignmentCenter.
+@property(nonatomic, assign) UIStackViewAlignment verticalAlignment;
+
+// Whether the cell should reserve horizontal space for a leading icon even if
+// no icon is provided. Used to align text with other cells that display an
+// icon. Defaults to NO.
+@property(nonatomic, assign) BOOL reservesLeadingSpace;
 
 @end
 

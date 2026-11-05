@@ -4,13 +4,34 @@
 
 #include "chrome/browser/ui/passwords/remote_actor_selection_dialog_controller.h"
 
+#include "base/check.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/ui/passwords/password_dialog_prompts.h"
+#include "components/password_manager/core/common/remote_actor/remote_actor_features.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/url_formatter/elide_url.h"
+#include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
+#include "url/url_constants.h"
 
 namespace password_manager {
+
+namespace {
+
+constexpr char kRemoteActorDataHandlingHelpUrl[] =
+    "https://support.google.com/gemini?p=lm_gpm_data";
+
+std::u16string GetActorName() {
+  std::string actor_name =
+      features::kRemoteActorCredentialSharingActorNameForTesting.Get();
+  return base::UTF8ToUTF16(actor_name.empty() ? "Gemini" : actor_name);
+}
+
+}  // namespace
 
 RemoteActorSelectionDialogController::RemoteActorSelectionDialogController(
     content::WebContents* web_contents,
@@ -37,6 +58,12 @@ void RemoteActorSelectionDialogController::Show() {
   view_->ShowAccountChooser();
 }
 
+void RemoteActorSelectionDialogController::SetActorIconUrl(
+    GURL actor_icon_url) {
+  CHECK(!view_);
+  actor_icon_url_ = std::move(actor_icon_url);
+}
+
 PasswordCombinedSelectorController::DisplayType
 RemoteActorSelectionDialogController::GetDisplayType() const {
   return DisplayType::kRemoteActor;
@@ -46,25 +73,55 @@ bool RemoteActorSelectionDialogController::ShouldShowTopIllustration() const {
   return true;
 }
 
+GURL RemoteActorSelectionDialogController::GetActorIconUrl() const {
+  if (actor_icon_url_.is_valid() &&
+      actor_icon_url_.SchemeIs(url::kHttpsScheme)) {
+    return actor_icon_url_;
+  }
+  return GURL();
+}
+
 std::u16string RemoteActorSelectionDialogController::GetTitle() const {
-  // TODO(crbug.com/535945530): Use localized string.
-  return u"Allow Gemini Spark to sign in to " +
-         url_formatter::FormatUrlForSecurityDisplay(
-             GURL(credential_domain_),
-             url_formatter::SchemeDisplay::OMIT_CRYPTOGRAPHIC) +
-         u" for you?";
+  std::u16string formatted_domain = url_formatter::FormatUrlForSecurityDisplay(
+      GURL(credential_domain_),
+      url_formatter::SchemeDisplay::OMIT_CRYPTOGRAPHIC);
+  return l10n_util::GetStringFUTF16(IDS_REMOTE_ACTOR_SHARING_DIALOG_TITLE,
+                                    GetActorName(), formatted_domain);
 }
 
 std::u16string RemoteActorSelectionDialogController::GetSubtitle() const {
-  // TODO(crbug.com/535945530): Use localized string.
-  // TODO(crbug.com/535854168): Make "Learn how Spark handles your data" a link.
-  return u"Spark can use Google Password Manager to sign in for you. Learn how "
-         u"Spark handles your data";
+  std::vector<size_t> offsets;
+  std::u16string subtitle = l10n_util::GetStringFUTF16(
+      IDS_REMOTE_ACTOR_SHARING_DIALOG_SUBTITLE,
+      {std::u16string(), std::u16string(), GetActorName()}, &offsets);
+  if (offsets.size() >= 2) {
+    subtitle_link_range_ = gfx::Range(offsets[0], offsets[1]);
+  }
+  return subtitle;
+}
+
+gfx::Range RemoteActorSelectionDialogController::GetSubtitleLinkRange() const {
+  if (subtitle_link_range_.is_empty()) {
+    GetSubtitle();
+  }
+  return subtitle_link_range_;
+}
+
+void RemoteActorSelectionDialogController::OnSubtitleLinkClicked() {
+  if (!web_contents_) {
+    return;
+  }
+  content::OpenURLParams params(
+      GURL(kRemoteActorDataHandlingHelpUrl), content::Referrer(),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui::PAGE_TRANSITION_LINK,
+      /*is_renderer_initiated=*/false);
+  web_contents_->OpenURL(params, /*navigation_handle_callback=*/{});
 }
 
 std::u16string RemoteActorSelectionDialogController::GetOkButtonLabel() const {
-  // TODO(crbug.com/535945530): Use localized string.
-  return u"Allow this time";
+  return l10n_util::GetStringUTF16(
+      IDS_REMOTE_ACTOR_SHARING_DIALOG_ALLOW_BUTTON);
 }
 
 const PasswordCombinedSelectorController::FormsVector&

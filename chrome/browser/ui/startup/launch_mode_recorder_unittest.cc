@@ -29,6 +29,11 @@ struct PathKeyAndLaunchMode {
   LaunchMode launch_mode;
 };
 
+struct LocationAndLaunchMode {
+  const char* location_switch;
+  LaunchMode launch_mode;
+};
+
 }  // namespace
 
 class LaunchModeRecorderTest : public testing::Test {
@@ -76,6 +81,43 @@ TEST_F(LaunchModeRecorderTest, SimpleMetric) {
                                       1);
 }
 
+// Omnibox Everywhere launches are not browser launches and are recorded in
+// their own bucket, even when launched from a shortcut or with an AppId.
+TEST_F(LaunchModeRecorderTest, OmniboxEverywhere) {
+  base::CommandLine cmd_line(base::CommandLine::NO_PROGRAM);
+  cmd_line.AppendSwitch(switches::kOmniboxEverywhere);
+  ComputeLaunchModeAndVerify(cmd_line, LaunchMode::kOmniboxEverywhere);
+
+#if BUILDFLAG(IS_WIN)
+  // Taskbar pin launch, rendezvoused with an AppId and shortcut location.
+  base::CommandLine taskbar_cmd_line(base::CommandLine::NO_PROGRAM);
+  taskbar_cmd_line.AppendSwitch(switches::kOmniboxEverywhere);
+  taskbar_cmd_line.AppendSwitchNative(switches::kSourceAppId, L"ChromeAppId");
+  taskbar_cmd_line.AppendSwitchASCII(switches::kSourceShortcutLocation,
+                                     switches::kSourceShortcutLocationTaskbar);
+  ComputeLaunchModeAndVerify(taskbar_cmd_line, LaunchMode::kOmniboxEverywhere);
+
+  // Start Menu shortcut launch.
+  base::FilePath start_menu_path;
+  ASSERT_TRUE(base::PathService::Get(base::DIR_START_MENU, &start_menu_path));
+  base::CommandLine start_menu_cmd_line(base::CommandLine::NO_PROGRAM);
+  start_menu_cmd_line.AppendSwitch(switches::kOmniboxEverywhere);
+  start_menu_cmd_line.AppendSwitchPath(switches::kSourceShortcut,
+                                       start_menu_path);
+  ComputeLaunchModeAndVerify(start_menu_cmd_line,
+                             LaunchMode::kOmniboxEverywhere);
+#endif  // BUILDFLAG(IS_WIN)
+}
+
+TEST_F(LaunchModeRecorderTest, OmniboxEverywhereRecorded) {
+  base::HistogramTester histogram_tester;
+  base::CommandLine cmd_line(base::CommandLine::NO_PROGRAM);
+  cmd_line.AppendSwitch(switches::kOmniboxEverywhere);
+  ComputeAndRecordLaunchMode(cmd_line);
+  histogram_tester.ExpectUniqueSample(kLaunchModeMetric,
+                                      LaunchMode::kOmniboxEverywhere, 1);
+}
+
 #if BUILDFLAG(IS_WIN)
 TEST_F(LaunchModeRecorderTest, WinNotification) {
   base::CommandLine cmd_line(base::CommandLine::NO_PROGRAM);
@@ -94,6 +136,13 @@ TEST_F(LaunchModeRecorderTest, SlowModeChrome) {
       base::StrCat({L"program --single-argument ", L"http://www.google.com"}));
   ComputeLaunchModeAndVerify(single_arg_cl, LaunchMode::kProtocolHandler);
 
+  // Isolated browser launch from shell registration with a URL, where
+  // `--single-argument` was replaced by `--source-single-argument` and `--`.
+  base::CommandLine isolated_single_arg_url_cl = base::CommandLine::FromString(
+      L"program --isolated --source-single-argument -- http://www.google.com");
+  ComputeLaunchModeAndVerify(isolated_single_arg_url_cl,
+                             LaunchMode::kProtocolHandler);
+
   // Normal launch with a file.
   base::CommandLine cmd_line_file(base::CommandLine::NO_PROGRAM);
   base::ScopedTempDir test_dir;
@@ -108,6 +157,16 @@ TEST_F(LaunchModeRecorderTest, SlowModeChrome) {
   single_arg_cl = base::CommandLine::FromString(
       base::StrCat({L"program --single-argument ", test_file.value()}));
   ComputeLaunchModeAndVerify(single_arg_cl, LaunchMode::kFileTypeHandler);
+
+  // Isolated browser launch from shell registration with a file, where
+  // `--single-argument` was replaced by `--source-single-argument` and `--`.
+  base::CommandLine isolated_single_arg_file_cl(base::CommandLine::NO_PROGRAM);
+  isolated_single_arg_file_cl.AppendSwitch(switches::kIsolated);
+  isolated_single_arg_file_cl.AppendSwitch(switches::kSourceSingleArgument);
+  isolated_single_arg_file_cl.AppendArgNative(L"--");
+  isolated_single_arg_file_cl.AppendArgPath(test_file);
+  ComputeLaunchModeAndVerify(isolated_single_arg_file_cl,
+                             LaunchMode::kFileTypeHandler);
 }
 
 TEST_F(LaunchModeRecorderTest, SlowModeWebApp) {
@@ -185,6 +244,61 @@ TEST_F(LaunchModeRecorderTest, SlowModeWebAppShortcut) {
     cmd_line.AppendSwitchASCII(switches::kAppId, "abcdefg");
     ComputeLaunchModeAndVerify(cmd_line, path_key_and_mode.launch_mode);
   }
+}
+
+TEST_F(LaunchModeRecorderTest, SlowModeChromeShortcutLocation) {
+  static constexpr LocationAndLaunchMode kLocationsAndModes[] = {
+      {switches::kSourceShortcutLocationDesktop, LaunchMode::kShortcutDesktop},
+      {switches::kSourceShortcutLocationTaskbar, LaunchMode::kShortcutTaskbar},
+      {switches::kSourceShortcutLocationStartMenu,
+       LaunchMode::kShortcutStartMenu},
+  };
+  for (const auto& [location_switch, expected_mode] : kLocationsAndModes) {
+    // Test standalone launch.
+    base::CommandLine cmd_line(base::CommandLine::NO_PROGRAM);
+    cmd_line.AppendSwitchASCII(switches::kSourceShortcutLocation,
+                               location_switch);
+    ComputeLaunchModeAndVerify(cmd_line, expected_mode);
+
+    // Test rendezvous launch where --source-app-id is also present.
+    base::CommandLine rendezvous_cmd_line(base::CommandLine::NO_PROGRAM);
+    rendezvous_cmd_line.AppendSwitchNative(switches::kSourceAppId,
+                                           L"ChromeAppId");
+    rendezvous_cmd_line.AppendSwitchASCII(switches::kSourceShortcutLocation,
+                                          location_switch);
+    ComputeLaunchModeAndVerify(rendezvous_cmd_line, expected_mode);
+  }
+
+  // An unexpected location string should fall back to kWithAppId.
+  base::CommandLine invalid_cmd_line(base::CommandLine::NO_PROGRAM);
+  invalid_cmd_line.AppendSwitchASCII(switches::kSourceShortcutLocation,
+                                     "invalid_location");
+  ComputeLaunchModeAndVerify(invalid_cmd_line, LaunchMode::kWithAppId);
+}
+
+TEST_F(LaunchModeRecorderTest, SlowModeWebAppShortcutLocation) {
+  static constexpr LocationAndLaunchMode kLocationsAndModes[] = {
+      {switches::kSourceShortcutLocationDesktop,
+       LaunchMode::kWebAppShortcutDesktop},
+      {switches::kSourceShortcutLocationTaskbar,
+       LaunchMode::kWebAppShortcutTaskbar},
+      {switches::kSourceShortcutLocationStartMenu,
+       LaunchMode::kWebAppShortcutStartMenu},
+  };
+  for (const auto& [location_switch, expected_mode] : kLocationsAndModes) {
+    base::CommandLine cmd_line(base::CommandLine::NO_PROGRAM);
+    cmd_line.AppendSwitchASCII(switches::kAppId, "abcdefg");
+    cmd_line.AppendSwitchASCII(switches::kSourceShortcutLocation,
+                               location_switch);
+    ComputeLaunchModeAndVerify(cmd_line, expected_mode);
+  }
+
+  // An unexpected location string for web app should fall back to kWebAppOther.
+  base::CommandLine invalid_cmd_line(base::CommandLine::NO_PROGRAM);
+  invalid_cmd_line.AppendSwitchASCII(switches::kAppId, "abcdefg");
+  invalid_cmd_line.AppendSwitchASCII(switches::kSourceShortcutLocation,
+                                     "invalid_location");
+  ComputeLaunchModeAndVerify(invalid_cmd_line, LaunchMode::kWebAppOther);
 }
 
 class LaunchModeRecorderNoneTest

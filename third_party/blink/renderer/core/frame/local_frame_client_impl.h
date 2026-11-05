@@ -38,10 +38,10 @@
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "third_party/blink/public/common/subresource_load_metrics.h"
 #include "third_party/blink/public/mojom/devtools/devtools_agent.mojom-blink-forward.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-blink-forward.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
@@ -140,7 +140,7 @@ class CORE_EXPORT LocalFrameClientImpl final : public LocalFrameClient {
       base::TimeTicks actual_navigation_start,
       const String& href_translate,
       const LocalFrameToken* initiator_frame_token,
-      const base::UnguessableToken& initiator_state_token,
+      const InitiatorStateToken& initiator_state_token,
       const DocumentToken& initiator_document_token,
       SourceLocation* source_location,
       mojo::PendingRemote<mojom::blink::NavigationStateKeepAliveHandle>
@@ -149,7 +149,8 @@ class CORE_EXPORT LocalFrameClientImpl final : public LocalFrameClient {
       bool has_rel_opener,
       mojo::PendingReceiver<
           mojom::blink::NavigationResumeDeferredCommitListener>,
-      std::optional<base::UnguessableToken> script_tool_invocation_id) override;
+      std::optional<ToolInvocationToken> script_tool_invocation_id,
+      const String& script_injector_host) override;
   void DispatchWillSendSubmitEvent(HTMLFormElement*) override;
   void DidStartLoading() override;
   void DidStopLoading() override;
@@ -168,7 +169,8 @@ class CORE_EXPORT LocalFrameClientImpl final : public LocalFrameClient {
       base::TimeTicks max_event_end,
       PerformanceTimelineEntryIdInfo interaction_id,
       PerformanceTimelineEntryIdInfo navigation_id) override;
-  void DidChangeCpuTiming(base::TimeDelta) override;
+  void DidChangeCpuTiming(base::TimeDelta time,
+                          base::TimeDelta ad_time) override;
   void DidObserveLoadingBehavior(LoadingBehaviorFlag) override;
   void DidObserveJavaScriptFrameworks(
       const JavaScriptFrameworkDetectionResult&) override;
@@ -199,11 +201,6 @@ class CORE_EXPORT LocalFrameClientImpl final : public LocalFrameClient {
   LocalFrame* CreateFrame(const AtomicString& name,
                           HTMLFrameOwnerElement*) override;
 
-  RemoteFrame* CreateFencedFrame(
-      HTMLFencedFrameElement*,
-      mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>)
-      override;
-
   WebPluginContainerImpl* CreatePlugin(HTMLPlugInElement&,
                                        const KURL&,
                                        const Vector<String>&,
@@ -215,7 +212,7 @@ class CORE_EXPORT LocalFrameClientImpl final : public LocalFrameClient {
       const WebMediaPlayerSource&,
       WebMediaPlayerClient*) override;
   RemotePlaybackClient* CreateRemotePlaybackClient(HTMLMediaElement&) override;
-  void DidChangeScrollOffset() override;
+  void DidChangeScrollOffset(mojom::blink::ScrollType) override;
   void NotifyCurrentHistoryItemChanged() override;
   void DidUpdateCurrentHistoryItem() override;
 
@@ -305,6 +302,7 @@ class CORE_EXPORT LocalFrameClientImpl final : public LocalFrameClient {
       override;
 
   bool IsDomStorageDisabled() const override;
+  bool AreDedicatedWorkersDisabled() const override;
 
  private:
   bool IsLocalFrameClientImpl() const override { return true; }

@@ -8,11 +8,14 @@
 #include <stdint.h>
 
 #include <memory>
+#include <new>
+#include <optional>
 #include <queue>
 #include <string>
 
 #include "ash/constants/ash_features.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/i18n/char_iterator.h"
 #include "base/memory/raw_ptr.h"
@@ -27,6 +30,7 @@
 #include "ui/base/ime/ash/mock_ime_candidate_window_handler.h"
 #include "ui/base/ime/ash/mock_ime_engine_handler.h"
 #include "ui/base/ime/ash/mock_input_method_manager.h"
+#include "ui/base/ime/ash/scoped_input_method_manager_for_testing.h"
 #include "ui/base/ime/ash/text_input_method.h"
 #include "ui/base/ime/ash/text_input_target.h"
 #include "ui/base/ime/composition_text.h"
@@ -53,7 +57,7 @@ using ::ui::CompositionText;
 using ::ui::FakeTextInputClient;
 using ::ui::TextInputClient;
 
-const std::u16string kSampleText = u"あいうえお";
+constexpr char16_t kSampleText[] = u"あいうえお";
 
 using KeyEventCallback = TextInputMethod::KeyEventDoneCallback;
 
@@ -270,9 +274,7 @@ class InputMethodAshTest : public ui::ImeKeyEventDispatcher,
     input_method_ash_ = std::make_unique<TestableInputMethodAsh>(this);
     input_method_ash_->SetFocusedTextInputClient(this);
 
-    // InputMethodManager owns and delete it in InputMethodManager::Shutdown().
-    input_method_manager_ = new TestInputMethodManager();
-    input_method::InputMethodManager::Initialize(input_method_manager_);
+    input_method_manager_.emplace();
   }
 
   void TearDown() override {
@@ -284,7 +286,7 @@ class InputMethodAshTest : public ui::ImeKeyEventDispatcher,
     IMEBridge::Get()->SetCandidateWindowHandler(nullptr);
     mock_ime_engine_handler_.reset();
     mock_ime_candidate_window_handler_.reset();
-    input_method::InputMethodManager::Shutdown();
+    input_method_manager_.reset();
 
     ResetFlags();
   }
@@ -293,6 +295,9 @@ class InputMethodAshTest : public ui::ImeKeyEventDispatcher,
   ui::EventDispatchDetails DispatchKeyEventPostIME(
       ui::KeyEvent* event) override {
     dispatched_key_event_ = *event;
+    if (on_dispatch_key_event_post_ime_) {
+      std::move(on_dispatch_key_event_post_ime_).Run();
+    }
     if (stop_propagation_post_ime_) {
       event->StopPropagation();
     }
@@ -415,7 +420,14 @@ class InputMethodAshTest : public ui::ImeKeyEventDispatcher,
 
   bool stop_propagation_post_ime_;
 
-  raw_ptr<TestInputMethodManager, DanglingUntriaged> input_method_manager_;
+  // If set, run synchronously from within DispatchKeyEventPostIME() to
+  // simulate event handling that runs while a key event is being dispatched
+  // and that may change or destroy the focused text input client.
+  base::OnceClosure on_dispatch_key_event_post_ime_;
+
+  std::optional<
+      input_method::ScopedInputMethodManagerForTesting<TestInputMethodManager>>
+      input_method_manager_;
 
   base::test::TaskEnvironment task_environment_;
 };
@@ -1520,26 +1532,26 @@ TEST_F(InputMethodAshKeyEventTest, JP106KeyTest) {
   ui::KeyEvent eventConvert(ui::EventType::kKeyPressed, ui::VKEY_CONVERT,
                             ui::EF_NONE);
   input_method_ash_->DispatchKeyEvent(&eventConvert);
-  EXPECT_FALSE(input_method_manager_->state()->is_jp_kbd());
-  EXPECT_TRUE(input_method_manager_->state()->is_jp_ime());
+  EXPECT_FALSE(input_method_manager_->get()->state()->is_jp_kbd());
+  EXPECT_TRUE(input_method_manager_->get()->state()->is_jp_ime());
 
   ui::KeyEvent eventNonConvert(ui::EventType::kKeyPressed, ui::VKEY_NONCONVERT,
                                ui::EF_NONE);
   input_method_ash_->DispatchKeyEvent(&eventNonConvert);
-  EXPECT_TRUE(input_method_manager_->state()->is_jp_kbd());
-  EXPECT_FALSE(input_method_manager_->state()->is_jp_ime());
+  EXPECT_TRUE(input_method_manager_->get()->state()->is_jp_kbd());
+  EXPECT_FALSE(input_method_manager_->get()->state()->is_jp_ime());
 
   ui::KeyEvent eventDbeSbc(ui::EventType::kKeyPressed, ui::VKEY_DBE_SBCSCHAR,
                            ui::EF_NONE);
   input_method_ash_->DispatchKeyEvent(&eventDbeSbc);
-  EXPECT_FALSE(input_method_manager_->state()->is_jp_kbd());
-  EXPECT_TRUE(input_method_manager_->state()->is_jp_ime());
+  EXPECT_FALSE(input_method_manager_->get()->state()->is_jp_kbd());
+  EXPECT_TRUE(input_method_manager_->get()->state()->is_jp_ime());
 
   ui::KeyEvent eventDbeDbc(ui::EventType::kKeyPressed, ui::VKEY_DBE_DBCSCHAR,
                            ui::EF_NONE);
   input_method_ash_->DispatchKeyEvent(&eventDbeDbc);
-  EXPECT_TRUE(input_method_manager_->state()->is_jp_kbd());
-  EXPECT_FALSE(input_method_manager_->state()->is_jp_ime());
+  EXPECT_TRUE(input_method_manager_->get()->state()->is_jp_kbd());
+  EXPECT_FALSE(input_method_manager_->get()->state()->is_jp_ime());
 }
 
 TEST_F(InputMethodAshKeyEventTest, SetAutocorrectRangeRunsAfterKeyEvent) {
@@ -1805,6 +1817,128 @@ TEST_F(InputMethodAshTest, CommitTextThenKeyEventOnlyInsertsOnce) {
   EXPECT_EQ(fake_text_input_client.text(), u"a");
 }
 
+TEST_F(InputMethodAshTest, CommitTextIgnoresClientDestroyedDuringDispatch) {
+  auto client = std::make_unique<FakeTextInputClient>(ui::TEXT_INPUT_TYPE_TEXT);
+  InputMethodAsh ime(this);
+  ime.SetFocusedTextInputClient(client.get());
+
+  // Simulates the focused client being destroyed while the fabricated key
+  // event is being dispatched.
+  on_dispatch_key_event_post_ime_ = base::BindLambdaForTesting([&] {
+    ime.DetachTextInputClient(client.get());
+    client.reset();
+  });
+  ime.CommitText(
+      u"abc", TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+
+  EXPECT_EQ(ime.GetTextInputClient(), nullptr);
+}
+
+TEST_F(InputMethodAshTest, CommitTextIgnoresClientChangedDuringDispatch) {
+  FakeTextInputClient old_client(ui::TEXT_INPUT_TYPE_TEXT);
+  FakeTextInputClient new_client(ui::TEXT_INPUT_TYPE_TEXT);
+  InputMethodAsh ime(this);
+  ime.SetFocusedTextInputClient(&old_client);
+
+  // Simulates the focus moving to a different client while the fabricated
+  // key event is being dispatched.
+  on_dispatch_key_event_post_ime_ = base::BindLambdaForTesting(
+      [&] { ime.SetFocusedTextInputClient(&new_client); });
+  ime.CommitText(
+      u"abc", TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+
+  EXPECT_EQ(old_client.text(), u"");
+  EXPECT_EQ(new_client.text(), u"");
+
+  ime.SetFocusedTextInputClient(nullptr);
+}
+
+TEST_F(InputMethodAshTest,
+       CommitTextIgnoresClientRecreatedAtSameAddressDuringDispatch) {
+  alignas(FakeTextInputClient) char client_storage[sizeof(FakeTextInputClient)];
+  auto* client =
+      new (client_storage) FakeTextInputClient(ui::TEXT_INPUT_TYPE_TEXT);
+  InputMethodAsh ime(this);
+  ime.SetFocusedTextInputClient(client);
+
+  // Simulates the focused client being destroyed and a new client being
+  // allocated at the exact same memory address while the fabricated key event
+  // is being dispatched.
+  on_dispatch_key_event_post_ime_ = base::BindLambdaForTesting([&] {
+    ime.DetachTextInputClient(client);
+    client->~FakeTextInputClient();
+    client = new (client_storage) FakeTextInputClient(ui::TEXT_INPUT_TYPE_TEXT);
+    ime.SetFocusedTextInputClient(client);
+  });
+  ime.CommitText(
+      u"abc", TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+
+  EXPECT_EQ(client->text(), u"");
+
+  ime.SetFocusedTextInputClient(nullptr);
+  client->~FakeTextInputClient();
+}
+
+TEST_F(InputMethodAshTest,
+       UpdateCompositionTextIgnoresClientDestroyedDuringDispatch) {
+  auto client = std::make_unique<FakeTextInputClient>(ui::TEXT_INPUT_TYPE_TEXT);
+  InputMethodAsh ime(this);
+  ime.SetFocusedTextInputClient(client.get());
+
+  // Simulates the focused client being destroyed while the fabricated key
+  // event is being dispatched.
+  on_dispatch_key_event_post_ime_ = base::BindLambdaForTesting([&] {
+    ime.DetachTextInputClient(client.get());
+    client.reset();
+  });
+  CompositionText composition;
+  composition.text = u"abc";
+  ime.UpdateCompositionText(composition, /*cursor_pos=*/3, /*visible=*/true);
+
+  EXPECT_EQ(ime.GetTextInputClient(), nullptr);
+}
+
+TEST_F(InputMethodAshTest,
+       UpdateCompositionTextIgnoresCompositionCanceledDuringDispatch) {
+  FakeTextInputClient client(ui::TEXT_INPUT_TYPE_TEXT);
+  InputMethodAsh ime(this);
+  ime.SetFocusedTextInputClient(&client);
+
+  // Simulates the composition being canceled while the fabricated key event
+  // is being dispatched.
+  on_dispatch_key_event_post_ime_ =
+      base::BindLambdaForTesting([&] { ime.CancelComposition(&client); });
+  CompositionText composition;
+  composition.text = u"abc";
+  ime.UpdateCompositionText(composition, /*cursor_pos=*/3, /*visible=*/true);
+
+  EXPECT_FALSE(client.HasCompositionText());
+
+  ime.SetFocusedTextInputClient(nullptr);
+}
+
+TEST_F(InputMethodAshTest,
+       HidePreeditTextIgnoresClientDestroyedDuringDispatch) {
+  auto client = std::make_unique<FakeTextInputClient>(ui::TEXT_INPUT_TYPE_TEXT);
+  InputMethodAsh ime(this);
+  ime.SetFocusedTextInputClient(client.get());
+  CompositionText composition;
+  composition.text = u"abc";
+  ime.UpdateCompositionText(composition, /*cursor_pos=*/3, /*visible=*/true);
+  ASSERT_TRUE(client->HasCompositionText());
+
+  // Simulates the focused client being destroyed while the fabricated key
+  // event is being dispatched.
+  on_dispatch_key_event_post_ime_ = base::BindLambdaForTesting([&] {
+    ime.DetachTextInputClient(client.get());
+    client.reset();
+  });
+  ime.UpdateCompositionText(CompositionText(), /*cursor_pos=*/0,
+                            /*visible=*/false);
+
+  EXPECT_EQ(ime.GetTextInputClient(), nullptr);
+}
+
 TEST_F(InputMethodAshTest, AddsAndClearsGrammarFragments) {
   input_type_ = ui::TEXT_INPUT_TYPE_TEXT;
   std::vector<ui::GrammarFragment> fragments;
@@ -1830,6 +1964,243 @@ TEST_F(InputMethodAshTest, GetsGrammarFragments) {
   EXPECT_EQ(input_method_ash_->GetGrammarFragmentAtCursor(), std::nullopt);
   input_method_ash_->SetEditableSelectionRange(gfx::Range(4, 7));
   EXPECT_EQ(input_method_ash_->GetGrammarFragmentAtCursor(), std::nullopt);
+}
+
+TEST_F(InputMethodAshTest, GetSurroundingTextInfoInTextField) {
+  input_type_ = ui::TEXT_INPUT_TYPE_TEXT;
+  input_method_ash_->OnTextInputTypeChanged(this);
+
+  surrounding_text_ = u"abcdef";
+  text_range_ = gfx::Range(0, 6);
+  selection_range_ = gfx::Range(3, 3);
+
+  SurroundingTextInfo info = input_method_ash_->GetSurroundingTextInfo();
+  EXPECT_EQ(info.surrounding_text, u"abcdef");
+  EXPECT_EQ(info.selection_range, gfx::Range(3, 3));
+  EXPECT_EQ(info.offset, 0u);
+}
+
+TEST_F(InputMethodAshTest, GetSurroundingTextInfoInPasswordField) {
+  input_type_ = ui::TEXT_INPUT_TYPE_PASSWORD;
+  input_method_ash_->OnTextInputTypeChanged(this);
+
+  surrounding_text_ = u"secretpassword";
+  text_range_ = gfx::Range(0, 14);
+  selection_range_ = gfx::Range(14, 14);
+
+  SurroundingTextInfo info = input_method_ash_->GetSurroundingTextInfo();
+  EXPECT_TRUE(info.surrounding_text.empty());
+}
+
+TEST_F(InputMethodAshTest, GetSurroundingTextInfoInNoneField) {
+  input_type_ = ui::TEXT_INPUT_TYPE_NONE;
+  input_method_ash_->OnTextInputTypeChanged(this);
+
+  surrounding_text_ = u"sometext";
+  text_range_ = gfx::Range(0, 8);
+  selection_range_ = gfx::Range(0, 0);
+
+  SurroundingTextInfo info = input_method_ash_->GetSurroundingTextInfo();
+  EXPECT_TRUE(info.surrounding_text.empty());
+}
+
+TEST_F(InputMethodAshKeyEventTest,
+       PipelinedKeyEventsHandledByImeDoNotDropCommits) {
+  input_type_ = ui::TEXT_INPUT_TYPE_TEXT;
+  input_method_ash_->OnTextInputTypeChanged(this);
+
+  ui::KeyEvent event1(ui::EventType::kKeyPressed, ui::VKEY_T, ui::DomCode::US_T,
+                      ui::EF_NONE, ui::DomKey::FromCharacter('t'),
+                      ui::EventTimeForNow());
+  input_method_ash_->DispatchKeyEvent(&event1);
+  KeyEventCallback first_callback =
+      mock_ime_engine_handler_->last_passed_callback();
+
+  ui::KeyEvent event2(ui::EventType::kKeyPressed, ui::VKEY_E, ui::DomCode::US_E,
+                      ui::EF_NONE, ui::DomKey::FromCharacter('e'),
+                      ui::EventTimeForNow());
+  input_method_ash_->DispatchKeyEvent(&event2);
+  KeyEventCallback second_callback =
+      mock_ime_engine_handler_->last_passed_callback();
+
+  // First key event completes in the IME engine.
+  input_method_ash_->ConfirmComposition(/*reset_engine=*/false);
+  input_method_ash_->CommitText(
+      u"t", TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+  EXPECT_EQ(0, inserted_char_);
+  std::move(first_callback).Run(ui::ime::KeyEventHandledState::kHandledByIME);
+
+  EXPECT_EQ(u't', inserted_char_);
+  EXPECT_TRUE(inserted_text_.empty());
+  EXPECT_EQ(dispatched_key_event_.key_code(), ui::VKEY_T);
+
+  inserted_char_ = 0;
+
+  // Second key event is still in flight; its commit should remain buffered
+  // until its ProcessKeyEvent callback runs, and then dispatch the real key
+  // event rather than a fabricated VKEY_PROCESSKEY.
+  input_method_ash_->ConfirmComposition(/*reset_engine=*/false);
+  input_method_ash_->CommitText(
+      u"e", TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+  EXPECT_EQ(0, inserted_char_);
+  EXPECT_TRUE(inserted_text_.empty());
+
+  std::move(second_callback).Run(ui::ime::KeyEventHandledState::kHandledByIME);
+
+  EXPECT_EQ(u'e', inserted_char_);
+  EXPECT_TRUE(inserted_text_.empty());
+  EXPECT_EQ(dispatched_key_event_.key_code(), ui::VKEY_E);
+}
+
+TEST_F(InputMethodAshKeyEventTest,
+       DroppedKeyEventCallbackDiscardsBufferedResultsAndUnblocksCommits) {
+  input_type_ = ui::TEXT_INPUT_TYPE_TEXT;
+  input_method_ash_->OnTextInputTypeChanged(this);
+
+  ui::KeyEvent event1(ui::EventType::kKeyPressed, ui::VKEY_T, ui::DomCode::US_T,
+                      ui::EF_NONE, ui::DomKey::FromCharacter('t'),
+                      ui::EventTimeForNow());
+  input_method_ash_->DispatchKeyEvent(&event1);
+  KeyEventCallback dropped_callback =
+      mock_ime_engine_handler_->last_passed_callback();
+
+  // Buffer IME operations while the key event is in flight.
+  input_method_ash_->CommitText(
+      u"stale",
+      TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+  input_method_ash_->SetComposingRange(0, 1, {});
+  std::optional<bool> autocorrect_result;
+  input_method_ash_->SetAutocorrectRange(
+      gfx::Range(0, 1), base::BindOnce([](std::optional<bool>* out,
+                                          bool result) { *out = result; },
+                                       &autocorrect_result));
+  EXPECT_FALSE(autocorrect_result.has_value());
+
+  // Drop the callback without invoking it (e.g. when InputMethodEngine
+  // discards a callback after the input context changes).
+  dropped_callback.Reset();
+
+  // Buffered autocorrect callback should be resolved with false and buffered
+  // operations discarded.
+  EXPECT_EQ(false, autocorrect_result);
+  EXPECT_TRUE(inserted_text_.empty());
+
+  // Subsequent non-key-event commits (such as virtual keyboard or candidate
+  // selection) should be committed immediately rather than buffered forever.
+  input_method_ash_->CommitText(
+      u"x", TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+  EXPECT_EQ(u"x", inserted_text_);
+}
+
+TEST_F(InputMethodAshKeyEventTest,
+       ConfirmCompositionAppliesPendingCompositionRangeWhileHandlingKeyEvent) {
+  input_type_ = ui::TEXT_INPUT_TYPE_TEXT;
+  input_method_ash_->OnTextInputTypeChanged(this);
+
+  surrounding_text_ = u"abc";
+  text_range_ = gfx::Range(0, 3);
+  selection_range_ = gfx::Range(0, 0);
+
+  ui::KeyEvent event(ui::EventType::kKeyPressed, ui::VKEY_SPACE,
+                     ui::DomCode::SPACE, ui::EF_NONE,
+                     ui::DomKey::FromCharacter(' '), ui::EventTimeForNow());
+  input_method_ash_->DispatchKeyEvent(&event);
+
+  EXPECT_TRUE(
+      input_method_ash_->SetCompositionRange(/*before=*/0, /*after=*/2, {}));
+  input_method_ash_->ConfirmComposition(/*reset_engine=*/true);
+
+  EXPECT_EQ(u"ab", confirmed_text_.text);
+  EXPECT_TRUE(composition_text_.text.empty());
+  EXPECT_EQ(1, mock_ime_engine_handler_->reset_call_count());
+
+  std::move(mock_ime_engine_handler_->last_passed_callback())
+      .Run(ui::ime::KeyEventHandledState::kHandledByIME);
+
+  EXPECT_TRUE(composition_text_.text.empty());
+}
+
+TEST_F(InputMethodAshKeyEventTest,
+       CancelCompositionResetsEngineWhenPendingCompositionRangePresent) {
+  input_type_ = ui::TEXT_INPUT_TYPE_TEXT;
+  input_method_ash_->OnTextInputTypeChanged(this);
+
+  surrounding_text_ = u"abc";
+  text_range_ = gfx::Range(0, 3);
+  selection_range_ = gfx::Range(0, 0);
+
+  ui::KeyEvent event(ui::EventType::kKeyPressed, ui::VKEY_SPACE,
+                     ui::DomCode::SPACE, ui::EF_NONE,
+                     ui::DomKey::FromCharacter(' '), ui::EventTimeForNow());
+  input_method_ash_->DispatchKeyEvent(&event);
+
+  EXPECT_TRUE(
+      input_method_ash_->SetCompositionRange(/*before=*/0, /*after=*/2, {}));
+  input_method_ash_->CancelComposition(this);
+
+  EXPECT_EQ(1, mock_ime_engine_handler_->reset_call_count());
+
+  std::move(mock_ime_engine_handler_->last_passed_callback())
+      .Run(ui::ime::KeyEventHandledState::kHandledByIME);
+
+  EXPECT_TRUE(composition_text_.text.empty());
+}
+
+TEST_F(InputMethodAshKeyEventTest,
+       ConfirmCompositionPreservesPendingCommitWhenPendingCompositionPresent) {
+  input_type_ = ui::TEXT_INPUT_TYPE_TEXT;
+  input_method_ash_->OnTextInputTypeChanged(this);
+
+  ui::KeyEvent event(ui::EventType::kKeyPressed, ui::VKEY_SPACE,
+                     ui::DomCode::SPACE, ui::EF_NONE,
+                     ui::DomKey::FromCharacter(' '), ui::EventTimeForNow());
+  input_method_ash_->DispatchKeyEvent(&event);
+
+  CompositionText composition;
+  composition.text = u"abc";
+  input_method_ash_->UpdateCompositionText(composition, /*cursor_pos=*/3,
+                                           /*visible=*/true);
+  input_method_ash_->CommitText(
+      u" ", TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+  input_method_ash_->ConfirmComposition(/*reset_engine=*/false);
+
+  EXPECT_EQ(u"abc", confirmed_text_.text);
+  EXPECT_EQ(0, inserted_char_);
+
+  std::move(mock_ime_engine_handler_->last_passed_callback())
+      .Run(ui::ime::KeyEventHandledState::kHandledByIME);
+
+  EXPECT_EQ(u' ', inserted_char_);
+}
+
+TEST_F(InputMethodAshKeyEventTest,
+       FocusChangeToPasswordDoesNotLeakPendingCommitFromPreviousClient) {
+  input_type_ = ui::TEXT_INPUT_TYPE_TEXT;
+  input_method_ash_->OnTextInputTypeChanged(this);
+
+  ui::KeyEvent event(ui::EventType::kKeyPressed, ui::VKEY_SPACE,
+                     ui::DomCode::SPACE, ui::EF_NONE,
+                     ui::DomKey::FromCharacter(' '), ui::EventTimeForNow());
+  input_method_ash_->DispatchKeyEvent(&event);
+
+  CompositionText composition;
+  composition.text = u"abc";
+  input_method_ash_->UpdateCompositionText(composition, /*cursor_pos=*/3,
+                                           /*visible=*/true);
+  input_method_ash_->CommitText(
+      u"xy", TextInputClient::InsertTextCursorBehavior::kMoveCursorAfterText);
+
+  // Moving focus to a password client confirms composition on `this` and must
+  // not leak `pending_commit_` into `password_client`.
+  FakeTextInputClient password_client(ui::TEXT_INPUT_TYPE_PASSWORD);
+  input_method_ash_->SetFocusedTextInputClient(&password_client);
+  EXPECT_EQ(u"abc", confirmed_text_.text);
+
+  std::move(mock_ime_engine_handler_->last_passed_callback())
+      .Run(ui::ime::KeyEventHandledState::kHandledByIME);
+
+  EXPECT_EQ(u"", password_client.text());
+  input_method_ash_->SetFocusedTextInputClient(nullptr);
 }
 
 }  // namespace ash

@@ -126,10 +126,6 @@ class PermissionManager : public KeyedService,
       const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
       content::RenderProcessHost* render_process_host,
       const GURL& worker_origin) override;
-  content::PermissionResult GetPermissionResultForEmbeddedRequester(
-      const blink::mojom::PermissionDescriptorPtr& permission_descriptor,
-      content::RenderFrameHost* render_frame_host,
-      const url::Origin& requesting_origin) override;
   bool IsPermissionOverridable(
       blink::PermissionType permission,
       base::optional_ref<const url::Origin> requesting_origin,
@@ -176,6 +172,10 @@ class PermissionManager : public KeyedService,
       const GURL& embedding_origin,
       bool should_include_device_status);
 
+  base::OnceCallback<void(content::PermissionResult)> CreatePermissionCallback(
+      ContentSettingsType permission,
+      std::unique_ptr<PermissionResponseCallback> response_callback);
+
   raw_ptr<content::BrowserContext> browser_context_;
 
   PendingRequestsMap pending_requests_;
@@ -201,6 +201,13 @@ class PermissionManager : public KeyedService,
     GURL embedding_origin;
     base::RepeatingCallback<void(const PermissionSetting&)> callback;
     PermissionSetting last_setting;
+
+    base::WeakPtr<ContentSettingsTypeSubscription> GetWeakPtr() {
+      return weak_factory_.GetWeakPtr();
+    }
+
+   private:
+    base::WeakPtrFactory<ContentSettingsTypeSubscription> weak_factory_{this};
   };
 
   base::IDMap<std::unique_ptr<ContentSettingsTypeSubscription>,

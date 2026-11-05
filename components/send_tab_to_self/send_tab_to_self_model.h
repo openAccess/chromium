@@ -11,13 +11,12 @@
 #include <vector>
 
 #include "base/functional/callback.h"
-#include "base/functional/callback_helpers.h"
 #include "base/observer_list.h"
 #include "components/send_tab_to_self/metrics_util.h"
 #include "components/send_tab_to_self/page_context.h"
 #include "components/send_tab_to_self/send_tab_to_self_entry.h"
 #include "components/send_tab_to_self/send_tab_to_self_model_observer.h"
-#include "components/send_tab_to_self/target_device_info.h"
+#include "components/sync_device_info/remote_device_info.h"
 #include "url/gurl.h"
 
 namespace send_tab_to_self {
@@ -56,7 +55,10 @@ class SendTabToSelfModel {
   // Returns a vector of entry IDs in the model.
   virtual std::vector<std::string> GetAllGuids() const = 0;
 
-  // Returns a specific entry. Returns null if the entry does not exist.
+  // Returns a specific entry, or `nullptr` if the entry does not exist. The
+  // returned pointer is owned by the model and may be invalidated at any point
+  // without a notification; callers should store the entry's GUID across
+  // asynchronous callbacks and re-query `GetEntryByGUID()`.
   virtual const SendTabToSelfEntry* GetEntryByGUID(
       std::string_view guid) const = 0;
 
@@ -89,9 +91,9 @@ class SendTabToSelfModel {
       base::OnceCallback<void(SendTabToSelfResult)> commit_confirmation,
       ShareEntryPoint entry_point) = 0;
 
-  // Dismiss entry with key `guid`. Allows clients to modify the state
-  // of the model as driven by user behaviors.
-  virtual void DismissEntry(std::string_view guid) = 0;
+  // Marks the notification for the entry with key `guid` as dismissed. The
+  // entry itself remains unopened in the model.
+  virtual void DismissEntryNotification(std::string_view guid) = 0;
 
   // If an entry with `guid` exists, marks it as opened.
   // Otherwise, the guid is queued in-memory, and if an entry with
@@ -107,8 +109,9 @@ class SendTabToSelfModel {
                                   ShareActivatedEntryPoint entry_point) = 0;
 
   // Guarantee that the model is operational and syncing, i.e., the local
-  // database is started and the initial data has been downloaded.
-  // This call and SendTabToSelfModelObserver::SendTabToSelfModelLoaded overlap,
+  // database is started, the initial data has been downloaded, and the device
+  // info tracker is syncing.
+  // This call and SendTabToSelfModelObserver::OnModelReady overlap,
   // but this call allows non observers to infer if it is safe to interact with
   // the model without first becoming an observer and creating a new bridge.
   // This provides a more direct path for classes that would like to modify the
@@ -120,17 +123,24 @@ class SendTabToSelfModel {
   void AddObserver(SendTabToSelfModelObserver* observer);
   void RemoveObserver(SendTabToSelfModelObserver* observer);
 
-  // Returns true if the user has valid target device.
+  // Returns `true` if the user has at least one non-expired target device.
+  // Device expiration is evaluated against the current clock on every call
+  // without caching.
   virtual bool HasValidTargetDevice() = 0;
 
   // Returns a vector of information about possible target devices, ordered by
   // the last updated time stamp of the device with the most recently used
-  // device listed first. This is a thin layer on top of DeviceInfoTracker.
-  virtual std::vector<TargetDeviceInfo> GetTargetDeviceInfoSortedList() = 0;
+  // device listed first. This is a thin layer on top of `DeviceInfoTracker`
+  // that re-evaluates device expiration against the current clock on every
+  // call without caching; callers must handle an empty return vector even if
+  // `HasValidTargetDevice()` or `GetEntryPointDisplayReason()` recently
+  // indicated that a target device was available.
+  virtual std::vector<syncer::RemoteDeviceInfo>
+  GetTargetDeviceInfoSortedList() = 0;
 
   // Returns information about a specific target device by its cache GUID, or
   // std::nullopt if the device is not found or is expired.
-  virtual std::optional<TargetDeviceInfo> GetTargetDeviceInfo(
+  virtual std::optional<syncer::RemoteDeviceInfo> GetTargetDeviceInfo(
       std::string_view cache_guid) = 0;
 
  protected:

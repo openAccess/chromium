@@ -10,6 +10,7 @@
 #include "base/memory/weak_ptr.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_phish_guard_delegate.h"
 #include "components/safe_browsing/buildflags.h"
+#include "url/gurl.h"
 
 namespace content {
 class WebContents;
@@ -17,7 +18,9 @@ class WebContents;
 
 namespace autofill {
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 class OtpFillingSafeBrowsingCheckerClient;
+#endif
 
 class ChromeOtpPhishGuardDelegate : public OtpPhishGuardDelegate {
  public:
@@ -26,8 +29,7 @@ class ChromeOtpPhishGuardDelegate : public OtpPhishGuardDelegate {
 
   // OtpPhishGuardDelegate:
   void StartOtpPhishGuardCheck(
-      const GURL& main_frame_url,
-      const GURL& frame_to_fill_url,
+      LocalFrameToken frame_to_fill,
       base::OnceCallback<void(bool)> callback) override;
 
  private:
@@ -38,8 +40,10 @@ class ChromeOtpPhishGuardDelegate : public OtpPhishGuardDelegate {
 #endif
 
   const raw_ref<content::WebContents> web_contents_;
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   std::unique_ptr<OtpFillingSafeBrowsingCheckerClient>
       safe_browsing_checker_client_;
+#endif
 
   base::WeakPtrFactory<ChromeOtpPhishGuardDelegate> weak_factory_{this};
 };

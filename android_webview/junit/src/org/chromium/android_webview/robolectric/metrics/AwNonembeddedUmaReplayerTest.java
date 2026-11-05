@@ -7,8 +7,6 @@ package org.chromium.android_webview.robolectric.metrics;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -38,7 +36,6 @@ public class AwNonembeddedUmaReplayerTest {
     }
 
     @Test
-    @SmallTest
     public void testReplayBooleanHistogram() {
         String histogramName = "testReplayTrueBooleanHistogram";
         HistogramRecord trueHistogramProto =
@@ -59,7 +56,6 @@ public class AwNonembeddedUmaReplayerTest {
     }
 
     @Test
-    @SmallTest
     public void testReplayExponentialHistogram() {
         String histogramName = "testReplayExponentialHistogram";
         int sample = 100;
@@ -75,13 +71,22 @@ public class AwNonembeddedUmaReplayerTest {
                         .setMax(max)
                         .setNumBuckets(numBuckets)
                         .build();
+        HistogramRecord missingArgsProto =
+                HistogramRecord.newBuilder()
+                        .setRecordType(RecordType.HISTOGRAM_EXPONENTIAL)
+                        .setHistogramName(histogramName)
+                        .setSample(sample)
+                        .build();
+        HistogramRecord missingNumBucketsProto =
+                recordProto.toBuilder().clearNumBuckets().build();
         AwNonembeddedUmaReplayer.replayMethodCall(recordProto);
-        verify(mUmaRecorder)
+        AwNonembeddedUmaReplayer.replayMethodCall(missingArgsProto);
+        AwNonembeddedUmaReplayer.replayMethodCall(missingNumBucketsProto);
+        verify(mUmaRecorder, times(1))
                 .recordExponentialHistogram(histogramName, sample, min, max, numBuckets);
     }
 
     @Test
-    @SmallTest
     public void testReplayLinearHistogram() {
         String histogramName = "testReplayLinearHistogram";
         int sample = 100;
@@ -97,12 +102,19 @@ public class AwNonembeddedUmaReplayerTest {
                         .setMax(max)
                         .setNumBuckets(numBuckets)
                         .build();
+        HistogramRecord missingArgsProto =
+                HistogramRecord.newBuilder()
+                        .setRecordType(RecordType.HISTOGRAM_LINEAR)
+                        .setHistogramName(histogramName)
+                        .setSample(sample)
+                        .build();
         AwNonembeddedUmaReplayer.replayMethodCall(recordProto);
-        verify(mUmaRecorder).recordLinearHistogram(histogramName, sample, min, max, numBuckets);
+        AwNonembeddedUmaReplayer.replayMethodCall(missingArgsProto);
+        verify(mUmaRecorder, times(1))
+                .recordLinearHistogram(histogramName, sample, min, max, numBuckets);
     }
 
     @Test
-    @SmallTest
     public void testReplaySparseHistogram() {
         String histogramName = "testReplaySparseHistogram";
         int sample = 10;
@@ -117,7 +129,6 @@ public class AwNonembeddedUmaReplayerTest {
     }
 
     @Test
-    @SmallTest
     public void testReplayUserAction() {
         String histogramName = "testReplayUserAction";
         long elapsedRealtimeMillis = 123456789101112L;

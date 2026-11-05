@@ -16,6 +16,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/history/history_test_utils.h"
@@ -63,7 +64,8 @@
 #include "services/metrics/public/cpp/ukm_source.h"
 #include "services/network/public/cpp/network_switches.h"
 #include "services/network/public/cpp/simple_url_loader.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
@@ -131,10 +133,7 @@ void SetEngagementScore(BrowserWindowInterface* browser,
 }
 
 bool IsUrlShowing(BrowserWindowInterface* browser) {
-  return !browser->GetFeatures()
-              .location_bar_model()
-              ->GetFormattedFullURL()
-              .empty();
+  return !LocationBarModel::From(browser)->GetFormattedFullURL().empty();
 }
 
 // Navigate to |url| and wait for the load to complete before returning.
@@ -148,7 +147,7 @@ void NavigateToURLSync(BrowserWindowInterface* browser, const GURL& url) {
 
   NavigateParams params(browser, url, ui::PAGE_TRANSITION_LINK);
   params.initiator_origin = url::Origin::Create(GURL("about:blank"));
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   params.is_renderer_initiated = true;
   ui_test_utils::NavigateToURL(&params);
 
@@ -262,7 +261,7 @@ class LookalikeUrlNavigationThrottleBrowserTest : public InProcessBrowserTest {
   void SetUp() override {
     // TODO(b:507481593): Some tests are failing when enabling these features.
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features*/ {},
+        /*enabled_features*/ {kOptimizeLookalikeUrlNavigationThrottle},
         /*disabled_features*/ {omnibox::internal::kWebUIOmniboxPopup,
                                omnibox::internal::kWebUIOmniboxAimPopup});
     InProcessBrowserTest::SetUp();
@@ -1052,6 +1051,34 @@ IN_PROC_BROWSER_TEST_F(LookalikeUrlNavigationThrottleBrowserTest,
   test_helper()->CheckNoLookalikeUkm();
 }
 
+// Tests that navigations to non-HTTP(S) URLs, which can't be lookalikes, are
+// not deferred until the engaged sites list is updated.
+IN_PROC_BROWSER_TEST_F(LookalikeUrlNavigationThrottleBrowserTest,
+                       NonHttpNavigationNotDeferredForEngagedSites) {
+  base::HistogramTester histograms;
+  // Advance clock to make the engaged sites list stale.
+  test_clock()->Advance(base::Hours(1));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
+                                           GURL(chrome::kChromeUIVersionURL)));
+  histograms.ExpectTotalCount(
+      "NavigationSuggestion.UpdateEngagedSitesDeferTime", 0);
+}
+
+// Tests that navigations to URLs that early-return in CheckUrlForLookalikes()
+// before inspecting engaged sites (such as top domains or safe TLDs) are not
+// deferred when the engaged sites list is stale.
+IN_PROC_BROWSER_TEST_F(LookalikeUrlNavigationThrottleBrowserTest,
+                       TopDomainNavigationNotDeferredForEngagedSites) {
+  base::HistogramTester histograms;
+  // Advance clock to make the engaged sites list stale.
+  test_clock()->Advance(base::Hours(1));
+  NavigateToURLSync(browser(), GetURL("google.com"));
+  test_clock()->Advance(base::Hours(1));
+  NavigateToURLSync(browser(), GetURL("site.gov"));
+  histograms.ExpectTotalCount(
+      "NavigationSuggestion.UpdateEngagedSitesDeferTime", 0);
+}
+
 // TODO(crbug.com/40146482): Enable test when MacOS flake is fixed.
 // TODO(crbug.com/40706320): Enable test when Win/Linux flake is fixed.
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
@@ -1574,7 +1601,7 @@ IN_PROC_BROWSER_TEST_F(LookalikeUrlNavigationThrottleBrowserTest,
   // Reload the interstitial twice. Should still work.
   for (size_t i = 0; i < 2; i++) {
     content::TestNavigationObserver navigation_observer(web_contents);
-    chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+    chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
     navigation_observer.Wait();
 
     EXPECT_EQ(LookalikeUrlBlockingPage::kTypeForTesting,

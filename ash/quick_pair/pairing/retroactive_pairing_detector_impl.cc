@@ -25,6 +25,7 @@
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/bluetooth/bluetooth_device.h"
 #include "device/bluetooth/floss/floss_features.h"
+#include "device/bluetooth/public/cpp/bluetooth_uuid.h"
 
 namespace {
 
@@ -164,8 +165,7 @@ void RetroactivePairingDetectorImpl::OnDevicePaired(
   // With the introduction of BLE Fast Pair devices, some devices could be
   // paired with their BLE address. Check BLE address for false positives as
   // well.
-  if (ash::features::IsFastPairKeyboardsEnabled() &&
-      potential_retroactive_addresses_.contains(device->ble_address())) {
+  if (potential_retroactive_addresses_.contains(device->ble_address())) {
     CD_LOG(VERBOSE, Feature::FP)
         << __func__
         << ": encountered a false positive for a potential retroactive pairing "
@@ -250,7 +250,8 @@ void RetroactivePairingDetectorImpl::AttemptRetroactivePairing(
   if (  // Fast Pair HID only works on Floss.
       floss::features::IsFlossEnabled() &&
       device->GetType() == device::BLUETOOTH_TRANSPORT_LE &&
-      device->GetUUIDs().contains(kFastPairBluetoothUuid)) {
+      device->GetUUIDs().contains(
+          device::BluetoothUUID(kFastPairBluetoothUuid))) {
     CD_LOG(VERBOSE, Feature::FP)
         << __func__
         << ": BLE fast pair device detected, creating GATT connection";

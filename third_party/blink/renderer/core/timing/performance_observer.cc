@@ -57,16 +57,17 @@ PerformanceObserver* PerformanceObserver::Create(
 // static
 PerformanceEntryType PerformanceObserver::supportedEntryTypeMask(
     ScriptState* script_state) {
-  constexpr PerformanceEntryType types_always_supported =
+  constexpr PerformanceEntryType kTypesAlwaysSupported =
       PerformanceEntry::kMark | PerformanceEntry::kMeasure |
       PerformanceEntry::kResource;
-  constexpr PerformanceEntryType types_supported_on_window =
-      types_always_supported | PerformanceEntry::kNavigation |
-      PerformanceEntry::kLongTask | PerformanceEntry::kPaint |
+  constexpr PerformanceEntryType kTypesSupportedOnWindow =
+      kTypesAlwaysSupported | PerformanceEntry::kElement |
       PerformanceEntry::kEvent | PerformanceEntry::kFirstInput |
-      PerformanceEntry::kElement | PerformanceEntry::kLayoutShift |
+      PerformanceEntry::kInteractionContentfulPaint |
       PerformanceEntry::kLargestContentfulPaint |
-      PerformanceEntry::kVisibilityState;
+      PerformanceEntry::kLayoutShift | PerformanceEntry::kLongTask |
+      PerformanceEntry::kNavigation | PerformanceEntry::kPaint |
+      PerformanceEntry::kSoftNavigation | PerformanceEntry::kVisibilityState;
 
   auto* execution_context = ExecutionContext::From(script_state);
 
@@ -78,21 +79,16 @@ PerformanceEntryType PerformanceObserver::supportedEntryTypeMask(
     if (execution_context->IsDedicatedWorkerGlobalScope() &&
         RuntimeEnabledFeatures::LongAnimationFrameWorkerEnabled(
             execution_context)) {
-      return types_always_supported | PerformanceEntry::kLongAnimationFrame;
+      return kTypesAlwaysSupported | PerformanceEntry::kLongAnimationFrame;
     }
-    return types_always_supported;
+    return kTypesAlwaysSupported;
   }
 
-  PerformanceEntryType mask = types_supported_on_window;
+  PerformanceEntryType mask = kTypesSupportedOnWindow;
   if (RuntimeEnabledFeatures::
           BackForwardCacheRestorationPerformanceEntryEnabled(
               execution_context)) {
     mask |= PerformanceEntry::kBackForwardCacheRestoration;
-  }
-  if (RuntimeEnabledFeatures::SoftNavigationHeuristicsEnabled(
-          execution_context)) {
-    mask |= PerformanceEntry::kSoftNavigation |
-            PerformanceEntry::kInteractionContentfulPaint;
   }
   mask |= PerformanceEntry::kLongAnimationFrame;
   if (RuntimeEnabledFeatures::ContainerTimingEnabled(execution_context)) {
@@ -299,7 +295,7 @@ void PerformanceObserver::observe(ScriptState* script_state,
     }
     if (entry_type == PerformanceEntry::kEvent &&
         observer_init->hasDurationThreshold()) {
-      // TODO(npm): should we do basic validation (like negative values etc?).
+      // TODO: should we do basic validation (like negative values etc?).
       duration_threshold_ = std::max(16.0, observer_init->durationThreshold());
     }
     filter_options_ |= entry_type;
@@ -332,14 +328,24 @@ void PerformanceObserver::observe(ScriptState* script_state,
   }
   if (filter_options_ & PerformanceEntry::kContainer) {
     UseCounter::Count(GetExecutionContext(),
-                      WebFeature::kContainerTimingObserverRegistered);
+                      WebFeature::kContainerTimingExplicitlyRequested);
+  }
+  if (filter_options_ & PerformanceEntry::kSoftNavigation) {
+    UseCounter::Count(GetExecutionContext(),
+                      WebFeature::kSoftNavigationExplicitlyRequested);
+  }
+  if (filter_options_ & PerformanceEntry::kInteractionContentfulPaint) {
+    UseCounter::Count(
+        GetExecutionContext(),
+        WebFeature::kInteractionContentfulPaintExplicitlyRequested);
   }
 
   requires_dropped_entries_ = true;
-  if (is_registered_)
+  if (is_registered_) {
     performance_->UpdatePerformanceObserverFilterOptions();
-  else
+  } else {
     performance_->RegisterPerformanceObserver(*this);
+  }
   is_registered_ = true;
   if (is_buffered) {
     UseCounter::Count(GetExecutionContext(),
@@ -350,8 +356,9 @@ void PerformanceObserver::observe(ScriptState* script_state,
 
 void PerformanceObserver::disconnect() {
   performance_entries_.clear();
-  if (performance_)
+  if (performance_) {
     performance_->UnregisterPerformanceObserver(*this);
+  }
   is_registered_ = false;
   filter_options_ = PerformanceEntry::kInvalid;
 }
@@ -364,13 +371,15 @@ PerformanceEntryVector PerformanceObserver::takeRecords() {
 
 void PerformanceObserver::EnqueuePerformanceEntry(PerformanceEntry& entry) {
   performance_entries_.push_back(&entry);
-  if (performance_)
+  if (performance_) {
     performance_->ActivateObserver(*this);
+  }
 }
 
 bool PerformanceObserver::CanObserve(const PerformanceEntry& entry) const {
-  if (entry.EntryTypeEnum() != PerformanceEntry::kEvent)
+  if (entry.EntryTypeEnum() != PerformanceEntry::kEvent) {
     return true;
+  }
   return entry.duration() >= duration_threshold_;
 }
 
@@ -379,12 +388,14 @@ bool PerformanceObserver::HasPendingActivity() const {
 }
 
 void PerformanceObserver::Deliver(std::optional<int> dropped_entries_count) {
-  if (!GetExecutionContext())
+  if (!GetExecutionContext()) {
     return;
+  }
   DCHECK(!GetExecutionContext()->IsContextPaused());
 
-  if (performance_entries_.empty())
+  if (performance_entries_.empty()) {
     return;
+  }
 
   PerformanceEntryVector performance_entries;
   performance_entries.swap(performance_entries_);
@@ -400,10 +411,11 @@ void PerformanceObserver::Deliver(std::optional<int> dropped_entries_count) {
 
 void PerformanceObserver::ContextLifecycleStateChanged(
     mojom::FrameLifecycleState state) {
-  if (state == mojom::FrameLifecycleState::kRunning)
+  if (state == mojom::FrameLifecycleState::kRunning) {
     performance_->ActivateObserver(*this);
-  else
+  } else {
     performance_->SuspendObserver(*this);
+  }
 }
 
 void PerformanceObserver::Trace(Visitor* visitor) const {

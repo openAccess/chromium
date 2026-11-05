@@ -7,10 +7,7 @@ include_rules = [
   # directory to #include its own files.
   "+chrome/browser/ui/webui/ash/settings/services/settings_manager",
 
-  # Existing dependencies within //chrome. There is an active effort to
-  # refactor //chrome/browser/ui/ash to break these dependencies; see b/332804822.
-  # Whenever possible, avoid adding new //chrome dependencies to this list.
-  "+chrome/browser/apps/app_service",
+  # Other ash directories in //chrome.
   "+chrome/browser/ash/app_list/arc",
   "+chrome/browser/ash/arc",
   "+chrome/browser/ash/eche_app",
@@ -19,19 +16,31 @@ include_rules = [
   "+chrome/browser/ash/multidevice_setup",
   "+chrome/browser/ash/phonehub",
   "+chrome/browser/ash/printing",
-  "+chrome/browser/nearby_sharing",
-  "+chrome/browser/profiles",
-  "+chrome/browser/signin/identity_manager_factory.h",
   "+chrome/browser/ui/ash/graduation",
   "+chrome/browser/ui/webui/ash/settings/constants",
   "+chrome/browser/ui/webui/ash/settings/pages",
   "+chrome/browser/ui/webui/ash/settings/search",
   "+chrome/browser/ui/webui/ash/settings/services/metrics",
+
+  # Existing dependencies within //chrome. There is an active effort to
+  # refactor //chrome/browser/ui/ash to break these dependencies; see b/332804822.
+  # Whenever possible, avoid adding new //chrome dependencies to this list.
+  "+chrome/browser/apps/app_service",
+  "+chrome/browser/nearby_sharing",
+  "+chrome/browser/profiles",
+  "+chrome/browser/signin/identity_manager_factory.h",
   "+chrome/test",
 ]
 
 specific_include_rules = {
-  "os_settings_manager_unittest\\.cc": [
+  "os_settings_manager_factory\\.cc": [
+    "+chrome/browser/ash/policy/core/browser_policy_connector_ash.h",
+    "+chrome/browser/browser_process.h",
+    "+chrome/browser/browser_process_platform_part.h",
     "+chrome/browser/global_features.h",
-  ]
+  ],
+  "os_settings_manager_unittest\\.cc": [
+    "+chrome/browser/browser_process_platform_part.h",
+    "+chrome/browser/global_features.h",
+  ],
 }

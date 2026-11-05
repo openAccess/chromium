@@ -2,19 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/test/base/ash/web_ui_browser_test.h"
+
 #include <string>
 
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/test_switches.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "chrome/test/base/ash/web_ui_browser_test.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_message_handler.h"
 #include "content/public/test/browser_test.h"
@@ -24,9 +26,8 @@
 using content::WebUIMessageHandler;
 
 namespace {
-const GURL& DummyUrl() {
-  static GURL url(content::GetWebUIURLString("DummyURL"));
-  return url;
+GURL DummyUrl() {
+  return GURL(content::GetWebUIURLString("DummyURL"));
 }
 }  // namespace
 

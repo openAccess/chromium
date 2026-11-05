@@ -4,7 +4,9 @@
 
 #include "chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.h"
 
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -16,7 +18,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "chrome/browser/ui/views/location_bar/zoom_bubble_manager.h"
 #include "chrome/browser/ui/views/location_bar/zoom_bubble_view.h"
@@ -125,6 +126,12 @@ void ZoomBubbleCoordinator::Show(
     return;
   }
 
+  // Close any existing bubble, whether it is currently visible or not. A bubble
+  // can be hidden without being closed (e.g. when its parent window is hidden
+  // by the OS during a sleep/wake cycle on macOS), and a zoom change from an
+  // extension may then request a new bubble before the old one has been
+  // closed. Hide() must therefore close every widget we still observe, not just
+  // visible ones, so that the state below is consistent.
   Hide();
 
   if (widget_observation_.IsObserving()) {
@@ -176,11 +183,21 @@ void ZoomBubbleCoordinator::OnImmersiveModeControllerDestroyed() {
 }
 
 void ZoomBubbleCoordinator::Hide() {
-  if (!IsShowing()) {
+  // Do not gate this on IsShowing(): that also requires the widget to be
+  // visible, but a bubble widget may be hidden without being closed (for
+  // example when the OS hides the parent window). Such a widget is still being
+  // observed and must be closed here, otherwise Show() would later find an
+  // observed widget that was never closed.
+  if (!widget_observation_.IsObserving()) {
     return;
   }
 
-  widget_observation_.GetSource()->Close();
+  views::Widget* widget = widget_observation_.GetSource();
+  if (widget->IsClosed()) {
+    return;
+  }
+
+  widget->Close();
 }
 
 bool ZoomBubbleCoordinator::RefreshIfShowing(content::WebContents* contents) {
@@ -241,11 +258,10 @@ void ZoomBubbleCoordinator::UpdateZoomBubbleStateAndIconVisibility(
   // UpdateZoomIconVisibility() sees the correct value bubble state value.
   UpdateBubbleVisibilityState(base::to_address(browser_), is_bubble_visible);
 
-  auto* tab_feature = tab_interface->GetTabFeatures();
-  CHECK(tab_feature);
-  tab_feature->zoom_view_controller()->UpdateBubbleVisibility(
+  auto* zoom_view_controller = zoom::ZoomViewController::From(tab_interface);
+  CHECK(zoom_view_controller);
+  zoom_view_controller->UpdateBubbleVisibility(
       /*prefer_to_show_bubble=*/is_bubble_visible,
       /*from_user_gesture=*/false);
-  tab_feature->zoom_view_controller()->UpdatePageActionIconVisibility(
-      is_bubble_visible);
+  zoom_view_controller->UpdatePageActionIconVisibility(is_bubble_visible);
 }

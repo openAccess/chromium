@@ -21,6 +21,7 @@
 #include "third_party/blink/renderer/core/page/drag_data.h"
 #include "third_party/blink/renderer/core/page/drag_image.h"
 #include "third_party/blink/renderer/core/page/drag_state.h"
+#include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
@@ -29,6 +30,7 @@
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
+#include "ui/gfx/geometry/size_conversions.h"
 
 namespace blink {
 
@@ -106,10 +108,10 @@ class DragControllerTest : public RenderingTest {
                       drop_client_point),
                   drop_client_point,
                   static_cast<DragOperationsMask>(kDragOperationMove), false);
-    GetFrame().GetPage()->GetDragController().DragEnteredOrUpdated(&data,
+    GetFrame().GetPage()->GetDragController().DragEnteredOrUpdated(data,
                                                                    GetFrame());
     GetFrame().GetPage()->GetDragController().PerformDrop(
-        &data, GetFrame(), DragController::Operation());
+        data, GetFrame(), DragController::Operation());
   }
 
   // Injects a fully decoded 6 MP (3000x2000) image into an <img> and starts an
@@ -137,8 +139,7 @@ class DragControllerTest : public RenderingTest {
     bitmap_image->SetData(image_data, true);
     EXPECT_GT(bitmap_image->Size().Area64(), int64_t{1500} * 1500);
 
-    auto* image_element = To<HTMLImageElement>(
-        GetDocument().getElementById(AtomicString("image")));
+    auto* image_element = To<HTMLImageElement>(GetElementById("image"));
     EXPECT_TRUE(image_element);
     image_element->SetImageForTest(
         ImageResourceContent::CreateLoaded(bitmap_image.get()));
@@ -263,7 +264,7 @@ TEST_F(DragControllerSimTest, ThrottledDocumentHandled) {
       false);
 
   WebView().GetPage()->GetDragController().DragEnteredOrUpdated(
-      &data, *GetDocument().GetFrame());
+      data, *GetDocument().GetFrame());
 
   // Throttle updates, which prevents hit testing from yielding a node.
   WebView()
@@ -272,7 +273,7 @@ TEST_F(DragControllerSimTest, ThrottledDocumentHandled) {
       ->SetLifecycleUpdatesThrottledForTesting();
 
   WebView().GetPage()->GetDragController().PerformDrop(
-      &data, *GetDocument().GetFrame(), DragController::Operation());
+      data, *GetDocument().GetFrame(), DragController::Operation());
 
   // Test passes if we don't crash.
 }
@@ -298,7 +299,7 @@ TEST_F(DragControllerSimTest, LargeImageStartsDrag) {
   test::RunPendingTasks();
   Compositor().BeginFrame();
 
-  Element* image_element = GetDocument().getElementById(AtomicString("big"));
+  Element* image_element = GetElementById("big");
   ASSERT_TRUE(image_element);
 
   const gfx::Point drag_origin(50, 50);
@@ -339,7 +340,7 @@ TEST_F(DragControllerSimTest, ImageDragWithEmptyUrlDoesNotStartDrag) {
   )HTML");
   Compositor().BeginFrame();
 
-  Element* image_element = GetDocument().getElementById(AtomicString("empty"));
+  Element* image_element = GetElementById("empty");
   ASSERT_TRUE(image_element);
 
   const gfx::Point drag_origin(50, 50);
@@ -377,7 +378,7 @@ TEST_F(DragControllerSimTest, LinkDragWithEmptyHrefDoesNotStartDrag) {
   )HTML");
   Compositor().BeginFrame();
 
-  Element* link_element = GetDocument().getElementById(AtomicString("link"));
+  Element* link_element = GetElementById("link");
   ASSERT_TRUE(link_element);
 
   const gfx::Point drag_origin(10, 10);
@@ -665,7 +666,7 @@ TEST_F(DragControllerTest, DragImageOffsetWithPageScaleFactor) {
 
   auto& drag_state = GetFrame().GetPage()->GetDragController().GetDragState();
   drag_state.drag_type_ = kDragSourceActionSelection;
-  drag_state.drag_src_ = GetDocument().getElementById(AtomicString("drag"));
+  drag_state.drag_src_ = GetElementById("drag");
   drag_state.drag_data_transfer_ = DataTransfer::Create(
       DataTransfer::kDragAndDrop, DataTransferAccessPolicy::kWritable,
       DataObject::Create());
@@ -734,7 +735,7 @@ TEST_F(DragControllerTest, DragLinkWithPageScaleFactor) {
 
   auto& drag_state = GetFrame().GetPage()->GetDragController().GetDragState();
   drag_state.drag_type_ = kDragSourceActionLink;
-  drag_state.drag_src_ = GetDocument().getElementById(AtomicString("drag"));
+  drag_state.drag_src_ = GetElementById("drag");
   drag_state.drag_data_transfer_ = DataTransfer::Create(
       DataTransfer::kDragAndDrop, DataTransferAccessPolicy::kWritable,
       DataObject::Create());
@@ -770,10 +771,10 @@ TEST_F(DragControllerTest, DragAndDropUrlFromTextareaToTextarea) {
     <textarea id='drag'>httts://www.example.com/index.html</textarea>
     <textarea id='drop'></textarea>
   )HTML");
-  HTMLTextAreaElement* drag_text_area = DynamicTo<HTMLTextAreaElement>(
-      *(GetDocument().getElementById(AtomicString("drag"))));
-  HTMLTextAreaElement* drop_text_area = DynamicTo<HTMLTextAreaElement>(
-      *(GetDocument().getElementById(AtomicString("drop"))));
+  HTMLTextAreaElement* drag_text_area =
+      DynamicTo<HTMLTextAreaElement>(*(GetElementById("drag")));
+  HTMLTextAreaElement* drop_text_area =
+      DynamicTo<HTMLTextAreaElement>(*(GetElementById("drop")));
   WebDragData web_drag_data;
   WebDragData::StringItem item1;
   item1.type = "text/uri-list";
@@ -810,9 +811,9 @@ TEST_F(DragControllerTest, DragAndDropUrlFromTextareaToRichlyEditableDiv) {
     <textarea id='drag'>httts://www.example.com/index.html</textarea>
     <div id='drop' contenteditable='true'></div>
   )HTML");
-  HTMLTextAreaElement* drag_text_area = DynamicTo<HTMLTextAreaElement>(
-      *(GetDocument().getElementById(AtomicString("drag"))));
-  Element* drop_div_rich = GetDocument().getElementById(AtomicString("drop"));
+  HTMLTextAreaElement* drag_text_area =
+      DynamicTo<HTMLTextAreaElement>(*(GetElementById("drag")));
+  Element* drop_div_rich = GetElementById("drop");
   WebDragData web_drag_data;
   WebDragData::StringItem item1;
   item1.type = "text/uri-list";
@@ -851,9 +852,9 @@ TEST_F(DragControllerTest,
     <textarea id='drag'>httts://www.example.com/index.html</textarea>
     <div id='drop' contenteditable='plaintext-only'></div>
   )HTML");
-  HTMLTextAreaElement* drag_text_area = DynamicTo<HTMLTextAreaElement>(
-      *(GetDocument().getElementById(AtomicString("drag"))));
-  Element* drop_div_plain = GetDocument().getElementById(AtomicString("drop"));
+  HTMLTextAreaElement* drag_text_area =
+      DynamicTo<HTMLTextAreaElement>(*(GetElementById("drag")));
+  Element* drop_div_plain = GetElementById("drop");
   WebDragData web_drag_data;
   WebDragData::StringItem item1;
   item1.type = "text/uri-list";
@@ -890,10 +891,9 @@ TEST_F(DragControllerTest,
     <textarea id='drag'>httts://www.example.com/index.html</textarea>
     <p id='drop' contenteditable='true'></p>
   )HTML");
-  HTMLTextAreaElement* drag_text_area = DynamicTo<HTMLTextAreaElement>(
-      *(GetDocument().getElementById(AtomicString("drag"))));
-  Element* drop_paragraph_rich =
-      GetDocument().getElementById(AtomicString("drop"));
+  HTMLTextAreaElement* drag_text_area =
+      DynamicTo<HTMLTextAreaElement>(*(GetElementById("drag")));
+  Element* drop_paragraph_rich = GetElementById("drop");
   WebDragData web_drag_data;
   WebDragData::StringItem item1;
   item1.type = "text/uri-list";
@@ -930,10 +930,9 @@ TEST_F(DragControllerTest,
     <textarea id='drag'>httts://www.example.com/index.html</textarea>
     <p id='drop' contenteditable='plaintext-only'></p>
   )HTML");
-  HTMLTextAreaElement* drag_text_area = DynamicTo<HTMLTextAreaElement>(
-      *(GetDocument().getElementById(AtomicString("drag"))));
-  Element* drop_paragraph_plain =
-      GetDocument().getElementById(AtomicString("drop"));
+  HTMLTextAreaElement* drag_text_area =
+      DynamicTo<HTMLTextAreaElement>(*(GetElementById("drag")));
+  Element* drop_paragraph_plain = GetElementById("drop");
   WebDragData web_drag_data;
   WebDragData::StringItem item1;
   item1.type = "text/uri-list";
@@ -996,6 +995,82 @@ TEST_F(DragControllerTest, ResumeCaretBlinkingAfterDrag) {
   EXPECT_TRUE(Selection().IsCaretBlinkingSuspended());
   drag_controller.DragEnded();
   EXPECT_FALSE(Selection().IsCaretBlinkingSuspended());
+}
+
+// Regression test for https://crbug.com/576941265: mutating the dragged
+// image's attributes from a synchronous `blur` event listener during image
+// drag preparation must not cause a use-after-free of the borrowed `alt`
+// attribute string.
+TEST_F(DragControllerSimTest, ImageDragAltAttributeReallocatedDuringBlur) {
+  WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+  SimRequest main_resource("https://example.com/test.html", "text/html");
+  SimRequest image_resource("https://example.com/img.png", "image/png");
+  LoadURL("https://example.com/test.html");
+  WebView().MainFrameViewWidget()->SetFocus(true);
+  WebView().GetPage()->GetFocusController().SetActive(true);
+  WebView().GetPage()->GetFocusController().SetFocusedFrame(
+      GetDocument().GetFrame());
+  main_resource.Complete(R"HTML(
+    <!DOCTYPE html>
+    <style>* { margin: 0; }</style>
+    <input id="focused">
+    <div id="other"></div>
+    <div contenteditable="true">
+      <img id="img" src="img.png" alt="initial-alt" width="100" height="100">
+    </div>
+    <script>
+      const img = document.getElementById('img');
+      const other = document.getElementById('other');
+      const focused = document.getElementById('focused');
+      // Force UniqueElementData with out-of-line Vector<Attribute> storage.
+      for (let i = 0; i < 12; ++i) {
+        img.setAttribute('data-pre-' + i, 'v' + i);
+      }
+      focused.focus();
+      focused.addEventListener('blur', () => {
+        for (let i = 0; i < 64; ++i) {
+          img.setAttribute('data-post-' + i, 'value-' + i);
+        }
+        for (let i = 0; i < 16; ++i) {
+          other.setAttribute('data-other-' + i, 'overwritten');
+        }
+      });
+    </script>
+  )HTML");
+
+  image_resource.Complete(*test::ReadFromFile(
+      test::CoreTestDataPath("notifications/3000x2000.png")));
+  test::RunPendingTasks();
+  Compositor().BeginFrame();
+
+  Element* image_element = GetElementById("img");
+  ASSERT_TRUE(image_element);
+  const gfx::Rect img_rect = image_element->BoundsInWidget();
+  const gfx::Point drag_origin = img_rect.CenterPoint();
+
+  WebMouseEvent mouse_event(WebInputEvent::Type::kMouseDown,
+                            WebInputEvent::kNoModifiers,
+                            WebInputEvent::GetStaticTimeStampForTests());
+  mouse_event.button = WebMouseEvent::Button::kLeft;
+  mouse_event.SetPositionInWidget(drag_origin.x(), drag_origin.y());
+
+  DragController& drag_controller = WebView().GetPage()->GetDragController();
+  DragState& drag_state = drag_controller.GetDragState();
+  drag_state.drag_type_ = kDragSourceActionImage;
+  drag_state.drag_src_ = image_element;
+  DataObject* data_object = DataObject::Create();
+  drag_state.drag_data_transfer_ =
+      DataTransfer::Create(DataTransfer::kDragAndDrop,
+                           DataTransferAccessPolicy::kWritable, data_object);
+
+  EXPECT_TRUE(drag_controller.PopulateDragDataTransfer(
+      GetDocument().GetFrame(), drag_state, drag_origin,
+      gfx::ToFlooredPoint(mouse_event.PositionInRootFrame())));
+
+  String url;
+  String title;
+  data_object->UrlAndTitle(url, &title);
+  EXPECT_EQ("initial-alt", title);
 }
 
 }  // namespace blink

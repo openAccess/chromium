@@ -35,6 +35,7 @@
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
+#import "ios/chrome/browser/intelligence/contextual_cueing/contextual_cueing_tab_helper.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/location_bar/badge/coordinator/location_bar_badge_mediator_delegate.h"
 #import "ios/chrome/browser/location_bar/badge/model/badge_type.h"
@@ -46,6 +47,7 @@
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/contextual_panel_entrypoint_iph_commands.h"
@@ -54,7 +56,6 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -84,14 +85,12 @@ class FakeContextualPanelTabHelper : public ContextualPanelTabHelper {
  public:
   explicit FakeContextualPanelTabHelper(
       web::WebState* web_state,
-      std::map<ContextualPanelItemType,
-               raw_ptr<ContextualPanelModel>> models)
+      std::map<ContextualPanelItemType, raw_ptr<ContextualPanelModel>> models)
       : ContextualPanelTabHelper(web_state, models) {}
 
   static void CreateForWebState(
       web::WebState* web_state,
-      std::map<ContextualPanelItemType,
-               raw_ptr<ContextualPanelModel>> models) {
+      std::map<ContextualPanelItemType, raw_ptr<ContextualPanelModel>> models) {
     web_state->SetUserData(
         UserDataKey(),
         std::make_unique<FakeContextualPanelTabHelper>(web_state, models));
@@ -165,39 +164,36 @@ class LocationBarBadgeMediatorTest : public PlatformTest {
                               base::BindRepeating(&CreateTestTracker));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
-    builder.AddTestingFactory(GeminiServiceFactory::GetInstance(),
-                              GeminiServiceFactory::GetDefaultFactory());
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateMockSyncService));
     builder.AddTestingFactory(
         OptimizationGuideServiceFactory::GetInstance(),
         OptimizationGuideServiceFactory::GetDefaultFactory());
 
-    profile_ = std::move(builder).Build();
-    SetUpPrefs(profile_.get()->GetPrefs());
-    browser_ = std::make_unique<TestBrowser>(profile_.get());
+    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
+    SetUpPrefs(profile_->GetPrefs());
+    browser_ = std::make_unique<TestBrowser>(profile_);
     tracker_ = static_cast<feature_engagement::test::MockTracker*>(
-        feature_engagement::TrackerFactory::GetForProfile(profile_.get()));
+        feature_engagement::TrackerFactory::GetForProfile(profile_));
     web_state_list_ = browser_->GetWebStateList();
 
     // Create WebState to pass Gemini eligibility.
     std::unique_ptr<web::FakeWebState> web_state =
         std::make_unique<web::FakeWebState>();
-    web_state->SetBrowserState(profile_.get());
+    web_state->SetBrowserState(profile_);
     web_state->SetCurrentURL(GURL("https://www.google.com"));
     web_state->SetContentsMimeType("text/html");
     web_state->WasShown();
 
     // Contextual Panel setup.
-    std::map<ContextualPanelItemType,
-             raw_ptr<ContextualPanelModel>>
-        models;
+    std::map<ContextualPanelItemType, raw_ptr<ContextualPanelModel>> models;
     FakeContextualPanelTabHelper::CreateForWebState(web_state.get(), models);
     InfoBarManagerImpl::CreateForWebState(web_state.get());
     InfobarBadgeTabHelper::CreateForWebState(web_state.get());
     GeminiTabHelper::CreateForWebState(web_state.get());
+    contextual_cueing::ContextualCueingTabHelper::CreateForWebState(
+        web_state.get());
 
     web_state_list_->InsertWebState(
         std::move(web_state),
@@ -211,9 +207,9 @@ class LocationBarBadgeMediatorTest : public PlatformTest {
     mediator_ = [[LocationBarBadgeMediator alloc]
         initWithWebStateList:web_state_list_
                      tracker:feature_engagement::TrackerFactory::GetForProfile(
-                                 profile_.get())
-                 prefService:profile_.get()->GetPrefs()
-               geminiService:GeminiServiceFactory::GetForProfile(profile_.get())
+                                 profile_)
+                 prefService:profile_->GetPrefs()
+               geminiService:GeminiServiceFactory::GetForProfile(profile_)
           geminiBrowserAgent:GeminiBrowserAgent::FromBrowser(browser_.get())];
     SignInAndSetCapability(true);
 
@@ -227,7 +223,6 @@ class LocationBarBadgeMediatorTest : public PlatformTest {
         OCMProtocolMock(@protocol(ContextualSheetCommands));
     mock_entrypoint_iph_handler_ =
         OCMProtocolMock(@protocol(ContextualPanelEntrypointIPHCommands));
-    mock_gemini_handler_ = OCMProtocolMock(@protocol(GeminiCommands));
     mediator_.contextualSheetHandler = mock_contextual_sheet_handler_;
     mediator_.entrypointHelpHandler = mock_entrypoint_iph_handler_;
     [browser_->GetCommandDispatcher()
@@ -237,12 +232,22 @@ class LocationBarBadgeMediatorTest : public PlatformTest {
         startDispatchingToTarget:mock_entrypoint_iph_handler_
                      forProtocol:@protocol(
                                      ContextualPanelEntrypointIPHCommands)];
-    [browser_->GetCommandDispatcher()
-        startDispatchingToTarget:mock_gemini_handler_
-                     forProtocol:@protocol(GeminiCommands)];
   }
 
-  ~LocationBarBadgeMediatorTest() override { [mediator_ disconnect]; }
+  void TearDown() override {
+    [mediator_ disconnect];
+    mediator_ = nil;
+    mock_consumer_ = nil;
+    mock_delegate_ = nil;
+    mock_contextual_sheet_handler_ = nil;
+    mock_entrypoint_iph_handler_ = nil;
+    mock_gemini_handler_ = nil;
+    tracker_ = nullptr;
+    web_state_list_ = nullptr;
+    browser_.reset();
+    profile_ = nullptr;
+    PlatformTest::TearDown();
+  }
 
   void SetUpPrefs(PrefService* pref_service) {
     pref_service->SetInteger(prefs::kGeminiEnabledByPolicy, 0);
@@ -259,11 +264,11 @@ class LocationBarBadgeMediatorTest : public PlatformTest {
     system_identity_manager->AddIdentity(identity);
 
     AuthenticationService* auth_service =
-        AuthenticationServiceFactory::GetForProfile(profile_.get());
+        AuthenticationServiceFactory::GetForProfile(profile_);
     auth_service->SignIn(identity, signin_metrics::AccessPoint::kStartPage);
 
     signin::IdentityManager* identity_manager =
-        IdentityManagerFactory::GetForProfile(profile_.get());
+        IdentityManagerFactory::GetForProfile(profile_);
     AccountInfo account_info =
         identity_manager->FindExtendedAccountInfoByAccountId(
             identity_manager->GetPrimaryAccountId(
@@ -305,27 +310,23 @@ class LocationBarBadgeMediatorTest : public PlatformTest {
         .WillRepeatedly(testing::Return(true));
   }
 
-  void SetFloatyInvoked(bool invoked) {
-    GeminiBrowserAgent::FromBrowser(browser_.get())->is_floaty_invoked_ =
-        invoked;
-  }
-
   web::WebTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   signin::IdentityTestEnvironment identity_test_env_;
-  std::unique_ptr<TestProfileIOS> profile_;
+  TestProfileManagerIOS profile_manager_;
+  raw_ptr<TestProfileIOS> profile_ = nullptr;
   std::unique_ptr<TestBrowser> browser_;
-  raw_ptr<WebStateList> web_state_list_;
-  raw_ptr<feature_engagement::test::MockTracker> tracker_;
-  LocationBarBadgeMediator* mediator_;
-  id mock_gemini_handler_;
-  id mock_consumer_;
-  id mock_delegate_;
+  raw_ptr<WebStateList> web_state_list_ = nullptr;
+  raw_ptr<feature_engagement::test::MockTracker> tracker_ = nullptr;
+  LocationBarBadgeMediator* mediator_ = nil;
+  id mock_gemini_handler_ = nil;
+  id mock_consumer_ = nil;
+  id mock_delegate_ = nil;
   base::test::ScopedFeatureList scoped_feature_list_;
   feature_engagement::test::ScopedIphFeatureList iph_feature_list_;
-  id mock_contextual_sheet_handler_;
-  id mock_entrypoint_iph_handler_;
+  id mock_contextual_sheet_handler_ = nil;
+  id mock_entrypoint_iph_handler_ = nil;
 };
 
 // Tests that the consumer is updated when the badge configuration is updated.
@@ -394,13 +395,22 @@ TEST_F(LocationBarBadgeMediatorTest, TestGeminiContextualChipTimestampUpdated) {
 // Tests that tapping the gemini chip calls the BWG command handler and logs
 // FET metrics.
 TEST_F(LocationBarBadgeMediatorTest, TestGeminiChipTapped) {
+  auto* tab_helper = contextual_cueing::ContextualCueingTabHelper::FromWebState(
+      web_state_list_->GetActiveWebState());
+  ASSERT_TRUE(tab_helper);
+  optimization_guide::proto::ContextualCue cue;
+  cue.mutable_gemini_in_chrome_surface()->set_prompt("Summarize this page");
+  tab_helper->SetContextualCueForTesting(std::move(cue));
+
   OCMExpect([mock_delegate_
                   locationBarBadgeMediator:mediator_
       startGeminiEntryFlowWithStartupState:[OCMArg checkWithBlock:^BOOL(
                                                        GeminiStartupState*
                                                            state) {
-        return state.entryPoint == gemini::EntryPoint::OmniboxChip &&
-               state.prepopulatedPrompt == nil;
+        return state.entryPoint == gemini::EntryPoint::ContextualCueChip &&
+               [state.prepopulatedPrompt
+                   isEqualToString:@"Summarize this page"] &&
+               state.shouldAutoSubmit == NO;
       }]]);
 
   EXPECT_CALL(
@@ -411,6 +421,34 @@ TEST_F(LocationBarBadgeMediatorTest, TestGeminiChipTapped) {
   config.badgeText = kTestAccessibilityLabel;
   [mediator_ badgeTapped:config];
   EXPECT_OCMOCK_VERIFY(mock_delegate_);
+}
+
+// Tests that hideBadgeForType hides the badge when the current badge type
+// matches, and ignores when it does not match.
+TEST_F(LocationBarBadgeMediatorTest, TestHideBadgeForType) {
+  LocationBarBadgeConfiguration* config =
+      CreateBadgeConfiguration(LocationBarBadgeType::kGeminiContextualCueChip);
+  config.badgeText = kTestAccessibilityLabel;
+  AllowGeminiChipToShow(/*show_gemini_chip=*/true, /*trigger_help_ui=*/true,
+                        /*badge_is_visible=*/false);
+  MockValidChipCheck();
+  [mediator_ updateBadgeConfig:config];
+  task_environment_.FastForwardBy(base::Seconds(3));
+  EXPECT_OCMOCK_VERIFY(mock_consumer_);
+
+  // Calling hide for an unrelated badge type should not hide the badge.
+  [[mock_consumer_ reject] hideBadge];
+  [mediator_ hideBadgeForType:LocationBarBadgeType::kReaderMode];
+  EXPECT_OCMOCK_VERIFY(mock_consumer_);
+
+  // Reset consumer to clear previous reject expectation before testing hide.
+  mock_consumer_ = OCMProtocolMock(@protocol(LocationBarBadgeConsumer));
+  mediator_.consumer = mock_consumer_;
+
+  // Calling hide for the matching badge type hides the badge.
+  OCMExpect([mock_consumer_ hideBadge]);
+  [mediator_ hideBadgeForType:LocationBarBadgeType::kGeminiContextualCueChip];
+  EXPECT_OCMOCK_VERIFY(mock_consumer_);
 }
 // Tests that the Gemini contextual cue chip is not shown if it was recently
 // displayed.
@@ -441,7 +479,7 @@ TEST_F(LocationBarBadgeMediatorTest, TestGeminiChipNotShownIfTooRecent) {
 // Tests that the Gemini contextual cue chip is not shown if the floaty is
 // already invoked.
 TEST_F(LocationBarBadgeMediatorTest, TestGeminiChipNotShownIfFloatyInvoked) {
-  SetFloatyInvoked(true);
+  GeminiBrowserAgent::FromBrowser(browser_.get())->SetContainerInvoked(true);
 
   AllowGeminiChipToShow(/*show_gemini_chip=*/false, /*trigger_help_ui=*/true,
                         /*badge_is_visible=*/false);
@@ -452,6 +490,30 @@ TEST_F(LocationBarBadgeMediatorTest, TestGeminiChipNotShownIfFloatyInvoked) {
 
   [mediator_ updateBadgeConfig:config];
   EXPECT_OCMOCK_VERIFY(mock_consumer_);
+}
+
+// Tests that collapsing the Gemini contextual cue chip records cue dismissal.
+TEST_F(LocationBarBadgeMediatorTest,
+       TestGeminiContextualCueChipCollapsedDismissed) {
+  auto* tab_helper = contextual_cueing::ContextualCueingTabHelper::FromWebState(
+      web_state_list_->GetActiveWebState());
+  ASSERT_TRUE(tab_helper);
+  optimization_guide::proto::ContextualCue cue;
+  cue.mutable_gemini_in_chrome_surface()->set_prompt("Summarize this page");
+  tab_helper->SetContextualCueForTesting(std::move(cue));
+
+  EXPECT_CALL(*tracker_,
+              ShouldTriggerHelpUI(testing::Ref(
+                  feature_engagement::kIPHiOSGeminiContextualCueChip)))
+      .WillOnce(testing::Return(true));
+  ASSERT_TRUE(tab_helper->RecordCueShown());
+
+  EXPECT_CALL(*tracker_,
+              Dismissed(testing::Ref(
+                  feature_engagement::kIPHiOSGeminiContextualCueChip)));
+
+  [mediator_ handleBadgeContainerCollapse:LocationBarBadgeType::
+                                              kGeminiContextualCueChip];
 }
 
 #pragma mark - Contextual Panel Tests
@@ -714,9 +776,7 @@ TEST_F(LocationBarBadgeMediatorTest, TestContextualPanelWebStateListChanged) {
   auto web_state = std::make_unique<web::FakeWebState>();
   web_state->SetBrowserState(profile_.get());
   web_state->WasShown();
-  std::map<ContextualPanelItemType,
-           raw_ptr<ContextualPanelModel>>
-      models;
+  std::map<ContextualPanelItemType, raw_ptr<ContextualPanelModel>> models;
   FakeContextualPanelTabHelper::CreateForWebState(web_state.get(), models);
   InfoBarManagerImpl::CreateForWebState(web_state.get());
   InfobarBadgeTabHelper::CreateForWebState(web_state.get());

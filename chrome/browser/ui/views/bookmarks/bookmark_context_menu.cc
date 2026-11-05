@@ -11,7 +11,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/ui/bookmarks/bookmark_utils.h"
+#include "chrome/browser/bookmarks/bookmark_bar_utils.h"
 #include "chrome/common/chrome_switches.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
 #include "ui/gfx/native_ui_types.h"
@@ -90,7 +90,7 @@ BookmarkContextMenu::BookmarkContextMenu(
 BookmarkContextMenu::~BookmarkContextMenu() = default;
 
 void BookmarkContextMenu::InstallPreRunCallback(base::OnceClosure callback) {
-  DCHECK(PreRunCallback().is_null());
+  CHECK(PreRunCallback().is_null(), base::NotFatalUntil::M162);
   PreRunCallback() = std::move(callback);
 }
 

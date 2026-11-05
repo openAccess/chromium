@@ -112,51 +112,51 @@ TEST_F(ShelfWidgetTest, TestAlignment) {
 }
 
 TEST_F(ShelfWidgetTest, TestAlignmentForMultipleDisplays) {
-  UpdateDisplay("301x300,501x500");
-  const int shelf_inset_first = 300 - ShelfConfig::Get()->shelf_size();
+  UpdateDisplay("321x320,501x500");
+  const int shelf_inset_first = 320 - ShelfConfig::Get()->shelf_size();
   const int shelf_inset_second = 500 - ShelfConfig::Get()->shelf_size();
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
   {
     SCOPED_TRACE("Primary Bottom");
     TestLauncherAlignment(root_windows[0], ShelfAlignment::kBottom,
-                          gfx::Rect(0, 0, 301, shelf_inset_first));
+                          {321, shelf_inset_first});
   }
   {
     SCOPED_TRACE("Primary Locked");
     TestLauncherAlignment(root_windows[0], ShelfAlignment::kBottomLocked,
-                          gfx::Rect(0, 0, 301, shelf_inset_first));
+                          {321, shelf_inset_first});
   }
   {
     SCOPED_TRACE("Primary Right");
     TestLauncherAlignment(root_windows[0], ShelfAlignment::kRight,
-                          gfx::Rect(0, 0, shelf_inset_first + 1, 300));
+                          {shelf_inset_first + 1, 320});
   }
   {
     SCOPED_TRACE("Primary Left");
-    TestLauncherAlignment(root_windows[0], ShelfAlignment::kLeft,
-                          gfx::Rect(ShelfConfig::Get()->shelf_size(), 0,
-                                    shelf_inset_first + 1, 300));
+    TestLauncherAlignment(
+        root_windows[0], ShelfAlignment::kLeft,
+        {ShelfConfig::Get()->shelf_size(), 0, shelf_inset_first + 1, 320});
   }
   {
     SCOPED_TRACE("Secondary Bottom");
     TestLauncherAlignment(root_windows[1], ShelfAlignment::kBottom,
-                          gfx::Rect(301, 0, 501, shelf_inset_second));
+                          {321, 0, 501, shelf_inset_second});
   }
   {
     SCOPED_TRACE("Secondary Locked");
     TestLauncherAlignment(root_windows[1], ShelfAlignment::kBottomLocked,
-                          gfx::Rect(301, 0, 501, shelf_inset_second));
+                          {321, 0, 501, shelf_inset_second});
   }
   {
     SCOPED_TRACE("Secondary Right");
     TestLauncherAlignment(root_windows[1], ShelfAlignment::kRight,
-                          gfx::Rect(301, 0, shelf_inset_second + 1, 500));
+                          {321, 0, shelf_inset_second + 1, 500});
   }
   {
     SCOPED_TRACE("Secondary Left");
     TestLauncherAlignment(root_windows[1], ShelfAlignment::kLeft,
-                          gfx::Rect(301 + ShelfConfig::Get()->shelf_size(), 0,
-                                    shelf_inset_second + 1, 500));
+                          {321 + ShelfConfig::Get()->shelf_size(), 0,
+                           shelf_inset_second + 1, 500});
   }
 }
 
@@ -386,7 +386,7 @@ TEST_F(ShelfWidgetTest, DontReferenceShelfAfterDeletion) {
 // See http://crbug.com/252533
 TEST_F(ShelfWidgetTest, ShelfInitiallySizedAfterLogin) {
   ClearLogin();
-  UpdateDisplay("300x200,400x300");
+  UpdateDisplay("320x200,400x300");
 
   // Both displays have a shelf controller.
   aura::Window::Windows roots = Shell::GetAllRootWindows();
@@ -497,7 +497,13 @@ TEST_F(ShelfWidgetTest, HiddenShelfHitTestTouch) {
 
 class ShelfWidgetHitTest : public ShelfWidgetTest {
  public:
-  ShelfWidgetHitTest() { set_add_default_shelf_icon(false); }
+  ShelfWidgetHitTest() = default;
+
+  // ShelfWidgetTest:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    ShelfWidgetTest::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
 };
 
 // Tests that the shelf lets mouse-events close to the edge fall through to the
@@ -1110,7 +1116,7 @@ TEST_F(ShelfWidgetViewsVisibilityTest, LoginViewsLockViews) {
   ExpectVisible(SessionState::OOBE, kLoginShelf, kNone);
   ExpectVisible(SessionState::LOGIN_PRIMARY, kLoginShelf, kNone);
 
-  SimulateUserLogin({"user1@test.com"});
+  SimulateUserLogin(AccountId::FromUserEmail("user1@test.com"));
 
   ExpectVisible(SessionState::LOGGED_IN_NOT_ACTIVE, kLoginShelf, kNone);
   ExpectVisible(SessionState::ACTIVE, kShelf, kShelf);
@@ -1122,9 +1128,14 @@ TEST_F(ShelfWidgetViewsVisibilityTest, LoginViewsLockViews) {
 
 class ShelfWidgetVirtualKeyboardTest : public AshTestBase {
  public:
-  ShelfWidgetVirtualKeyboardTest() { set_add_default_shelf_icon(false); }
+  ShelfWidgetVirtualKeyboardTest() = default;
 
  protected:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
+
   void SetUp() override {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
         keyboard::switches::kEnableVirtualKeyboard);

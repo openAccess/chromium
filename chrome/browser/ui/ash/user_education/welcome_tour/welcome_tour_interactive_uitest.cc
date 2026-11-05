@@ -5,7 +5,6 @@
 #include "ash/ash_element_identifiers.h"
 #include "ash/constants/ash_features.h"
 #include "ash/constants/web_app_id_constants.h"
-#include "ash/public/cpp/app_list/app_list_features.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/pill_button.h"
@@ -48,7 +47,6 @@ using ::testing::Matches;
 using ::testing::Property;
 
 using TestVariantsParam = std::tuple<
-    /*is_apps_collections_enabled=*/bool,
     /*is_welcome_tour_v3_enabled=*/bool,
     /*is_welcome_tour_counterfactaully_enabled=*/bool>;
 
@@ -64,26 +62,20 @@ MATCHER_P(RootWindow, matcher, "") {
 
 // Helpers ---------------------------------------------------------------------
 
-bool IsAppsCollectionsEnabled(TestVariantsParam param) {
+bool IsWelcomeTourV3Enabled(TestVariantsParam param) {
   return std::get<0>(param);
 }
 
-bool IsWelcomeTourV3Enabled(TestVariantsParam param) {
-  return std::get<1>(param);
-}
-
 bool IsWelcomeTourCounterfactuallyEnabled(TestVariantsParam param) {
-  return std::get<2>(param);
+  return std::get<1>(param);
 }
 
 std::string GenerateTestSuffix(
     const testing::TestParamInfo<TestVariantsParam>& info) {
-  return base::StrCat(
-      {IsWelcomeTourV3Enabled(info.param) ? "V3" : "V1", "_",
-       IsWelcomeTourCounterfactuallyEnabled(info.param) ? "Counterfactual_"
-                                                        : "",
-       IsAppsCollectionsEnabled(info.param) ? "AppsCollectionsEnabled"
-                                            : "AppsCollectionsDisabled"});
+  return base::StrCat({IsWelcomeTourV3Enabled(info.param) ? "V3" : "V1",
+                       IsWelcomeTourCounterfactuallyEnabled(info.param)
+                           ? "_Counterfactual"
+                           : ""});
 }
 
 }  // namespace
@@ -101,14 +93,12 @@ class WelcomeTourInteractiveUiTest
     // Only one of `kWelcomeTourHoldbackArm`, `kWelcomeTourCounterfactualArm`
     // and `kWelcomeTourV3` can be enabled at a time.
     scoped_feature_list_.InitWithFeatureStates(
-        {{ash::features::kWelcomeTour, true},
-         {ash::features::kWelcomeTourForceUserEligibility, true},
+        {{ash::features::kWelcomeTourForceUserEligibility, true},
          {ash::features::kWelcomeTourV3,
           IsWelcomeTourV3Enabled() && !IsWelcomeTourCounterfactuallyEnabled()},
          {ash::features::kWelcomeTourCounterfactualArm,
           IsWelcomeTourCounterfactuallyEnabled()},
-         {ash::features::kWelcomeTourHoldbackArm, false},
-         {app_list_features::kAppsCollections, IsAppsCollectionsEnabled()}});
+         {ash::features::kWelcomeTourHoldbackArm, false}});
 
     // TODO(http://b/277091006): Remove after preventing app launches.
     // Prevent the browser from launching as it is not needed to fully exercise
@@ -122,9 +112,6 @@ class WelcomeTourInteractiveUiTest
   void SetUpOnMainThread() override {
     InteractiveBrowserTest::SetUpOnMainThread();
 
-    ash::AppsCollectionsController::Get()->ForceAppsCollectionsForTesting(
-        IsAppsCollectionsEnabled());
-
     // Install system apps.
     // NOTE: This test requires the "Help" and "Settings" apps to be installed.
     Profile* const profile = ProfileManager::GetActiveUserProfile();
@@ -136,14 +123,9 @@ class WelcomeTourInteractiveUiTest
     // Ensure that the widget context for the test interaction sequence matches
     // the initial element context used to start the Welcome Tour.
     SetContextWidget(
-        views::ElementTrackerViews::GetInstance()->GetWidgetForContext(
-            ash::WelcomeTourController::Get()->GetInitialElementContext()));
-  }
-
-  // Returns whether the AppsCollections feature is enabled in the Welcome Tour
-  // given test parameterization.
-  bool IsAppsCollectionsEnabled() const {
-    return ::IsAppsCollectionsEnabled(GetParam());
+        views::ElementTrackerViews::GetInstance()
+            ->GetPrimaryWindowWidgetForContext(
+                ash::WelcomeTourController::Get()->GetInitialElementContext()));
   }
 
   // Returns whether the WelcomeTourV3 feature is enabled given test
@@ -188,15 +170,14 @@ class WelcomeTourInteractiveUiTest
 
   // Returns a builder for an interaction step that checks the visibility of
   // app list bubble.
-  [[nodiscard]] static auto CheckAppListBubbleVisibility(bool visible) {
+  [[nodiscard]] auto CheckAppListBubbleVisibility(bool visible) {
     return CheckViewProperty(ash::kAppListBubbleViewElementId,
                              &views::View::GetVisible, visible);
   }
 
   // Returns a builder for an interaction step that checks the browser is
   // for a web app associated with the specified `app_id`.
-  [[nodiscard]] static auto CheckBrowserIsForWebApp(
-      const webapps::AppId& app_id) {
+  [[nodiscard]] auto CheckBrowserIsForWebApp(const webapps::AppId& app_id) {
     return CheckView(kBrowserViewElementId,
                      [app_id](BrowserView* browser_view) {
                        return web_app::AppBrowserController::IsForWebApp(
@@ -206,7 +187,7 @@ class WelcomeTourInteractiveUiTest
 
   // Returns a builder for an interaction step that checks whether the dialog
   // accept button is focused.
-  [[nodiscard]] static auto CheckDialogAcceptButtonFocus(bool focused) {
+  [[nodiscard]] auto CheckDialogAcceptButtonFocus(bool focused) {
     return CheckViewProperty(
         ash::SystemDialogDelegateView::kAcceptButtonIdForTesting,
         &views::MdTextButton::HasFocus, focused);
@@ -214,7 +195,7 @@ class WelcomeTourInteractiveUiTest
 
   // Returns a builder for an interaction step that checks the dialog accept
   // button text.
-  [[nodiscard]] static auto CheckDialogAcceptButtonText() {
+  [[nodiscard]] auto CheckDialogAcceptButtonText() {
     return CheckViewProperty(
         ash::SystemDialogDelegateView::kAcceptButtonIdForTesting,
         &ash::PillButton::GetText,
@@ -224,7 +205,7 @@ class WelcomeTourInteractiveUiTest
 
   // Returns a builder for an interaction step that checks the dialog cancel
   // button text.
-  [[nodiscard]] static auto CheckDialogCancelButtonText() {
+  [[nodiscard]] auto CheckDialogCancelButtonText() {
     return CheckViewProperty(
         ash::SystemDialogDelegateView::kCancelButtonIdForTesting,
         &ash::PillButton::GetText,
@@ -234,7 +215,7 @@ class WelcomeTourInteractiveUiTest
 
   // Returns a builder for an interaction step that checks the dialog
   // description.
-  [[nodiscard]] static auto CheckDialogDescription(int message_id) {
+  [[nodiscard]] auto CheckDialogDescription(int message_id) {
     const std::u16string product_name = ui::GetChromeOSDeviceName();
     return CheckViewProperty(
         ash::SystemDialogDelegateView::kDescriptionTextIdForTesting,
@@ -243,7 +224,7 @@ class WelcomeTourInteractiveUiTest
   }
 
   // Returns a builder for an interaction step that checks the dialog title.
-  [[nodiscard]] static auto CheckDialogTitle(int message_id) {
+  [[nodiscard]] auto CheckDialogTitle(int message_id) {
     const std::u16string product_name = ui::GetChromeOSDeviceName();
     return CheckViewProperty(
         ash::SystemDialogDelegateView::kTitleTextIdForTesting,
@@ -254,8 +235,7 @@ class WelcomeTourInteractiveUiTest
   // Returns a builder for an interaction step that checks that the anchor of a
   // help bubble (a) matches the specified `element_id`, and (b) is contained
   // within the primary root window.
-  [[nodiscard]] static auto CheckHelpBubbleAnchor(
-      ui::ElementIdentifier element_id) {
+  [[nodiscard]] auto CheckHelpBubbleAnchor(ui::ElementIdentifier element_id) {
     return CheckViewProperty<ash::HelpBubbleViewAsh, views::View*>(
         ash::HelpBubbleViewAsh::kHelpBubbleElementIdForTesting,
         &ash::HelpBubbleViewAsh::GetAnchorView,
@@ -265,22 +245,21 @@ class WelcomeTourInteractiveUiTest
 
   // Returns a builder for an interaction step that checks that the body text of
   // a help bubble matches the specified `body_text`.
-  [[nodiscard]] static auto CheckHelpBubbleBodyText(
-      const std::u16string& body_text) {
+  [[nodiscard]] auto CheckHelpBubbleBodyText(const std::u16string& body_text) {
     return CheckViewProperty(ash::HelpBubbleViewAsh::kBodyTextIdForTesting,
                              &views::Label::GetText, body_text);
   }
 
   // Returns a builder for an interaction step that checks whether the help
   // bubble default button is focused.
-  [[nodiscard]] static auto CheckHelpBubbleDefaultButtonFocus(bool focused) {
+  [[nodiscard]] auto CheckHelpBubbleDefaultButtonFocus(bool focused) {
     return CheckViewProperty(ash::HelpBubbleViewAsh::kDefaultButtonIdForTesting,
                              &views::MdTextButton::HasFocus, focused);
   }
 
   // Returns a builder for an interaction step that checks that the default
   // button text of a help bubble matches the specified `message_id`.
-  [[nodiscard]] static auto CheckHelpBubbleDefaultButtonText(int message_id) {
+  [[nodiscard]] auto CheckHelpBubbleDefaultButtonText(int message_id) {
     return CheckViewProperty(ash::HelpBubbleViewAsh::kDefaultButtonIdForTesting,
                              &views::LabelButton::GetText,
                              l10n_util::GetStringUTF16(message_id));
@@ -307,7 +286,6 @@ INSTANTIATE_TEST_SUITE_P(
     All,
     WelcomeTourInteractiveUiTest,
     testing::Combine(
-        /*is_apps_collections_enabled=*/testing::Bool(),
         /*is_welcome_tour_v3_enabled=*/testing::Bool(),
         /*is_welcome_tour_counterfactually_enabled=*/testing::Bool()),
     &GenerateTestSuffix);

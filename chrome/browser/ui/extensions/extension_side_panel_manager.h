@@ -12,6 +12,7 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/common/extension_id.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 class BrowserWindowInterface;
 class Profile;
@@ -36,6 +37,8 @@ class Extension;
 // extension's ExtensionSidePanelCoordinator.
 class ExtensionSidePanelManager : public ExtensionRegistryObserver {
  public:
+  DECLARE_USER_DATA(ExtensionSidePanelManager);
+
   ExtensionSidePanelManager(BrowserWindowInterface* browser,
                             SidePanelRegistry* registry);
   ExtensionSidePanelManager(Profile* profile,
@@ -46,6 +49,13 @@ class ExtensionSidePanelManager : public ExtensionRegistryObserver {
   ExtensionSidePanelManager& operator=(const ExtensionSidePanelManager&) =
       delete;
   ~ExtensionSidePanelManager() override;
+
+  // Returns the window-scoped manager for `browser`, or null if there is
+  // none.
+  static ExtensionSidePanelManager* From(BrowserWindowInterface* browser);
+
+  // Returns the tab-scoped manager for `tab`, or null if there is none.
+  static ExtensionSidePanelManager* From(tabs::TabInterface* tab);
 
   ExtensionSidePanelCoordinator* GetExtensionCoordinatorForTesting(
       const ExtensionId& extension_id);
@@ -88,6 +98,9 @@ class ExtensionSidePanelManager : public ExtensionRegistryObserver {
 
   base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
       extension_registry_observation_{this};
+
+  ui::ScopedUnownedUserData<ExtensionSidePanelManager>
+      scoped_unowned_user_data_;
 };
 
 }  // namespace extensions

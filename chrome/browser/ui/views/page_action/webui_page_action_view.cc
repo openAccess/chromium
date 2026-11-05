@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/views/page_action/webui_page_action_view.h"
 
 #include "base/notreached.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
@@ -29,20 +30,21 @@ views::BubbleAnchor WebUIPageActionView::GetBubbleAnchor() {
   }
 
   PageActionPropertiesProvider provider;
-  if (!provider.Contains(action_id_)) {
-    return views::BubbleAnchor();
+  if (provider.Contains(action_id_)) {
+    ui::ElementIdentifier element_id =
+        provider.GetProperties(action_id_).element_identifier;
+    if (element_id) {
+      ui::TrackedElement* element =
+          BrowserElements::From(browser)->GetElement(element_id);
+      if (element) {
+        return views::BubbleAnchor(element);
+      }
+    }
   }
 
-  ui::ElementIdentifier element_id =
-      provider.GetProperties(action_id_).element_identifier;
-  if (!element_id) {
-    return views::BubbleAnchor();
-  }
-
-  ui::TrackedElement* element =
-      BrowserElements::From(browser)->GetElement(element_id);
-  if (element) {
-    return views::BubbleAnchor(element);
+  if (ui::TrackedElement* location_bar =
+          BrowserElements::From(browser)->GetElement(kLocationBarElementId)) {
+    return views::BubbleAnchor(location_bar);
   }
 
   return views::BubbleAnchor();
@@ -74,13 +76,6 @@ void WebUIPageActionView::SetVisible(bool visible) {
   } else {
     controller->Hide(action_id_);
   }
-}
-
-IconLabelBubbleView* WebUIPageActionView::GetIconLabelBubbleViewNotMigrated() {
-  // It is a configuration issue if this gets called, as Chrome should never
-  // start up with some page actions not migrated while running with WebUI
-  // toolbar at the same time.
-  NOTREACHED();
 }
 
 }  // namespace page_actions

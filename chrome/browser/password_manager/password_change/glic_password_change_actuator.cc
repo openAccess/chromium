@@ -4,6 +4,7 @@
 
 #include "chrome/browser/password_manager/password_change/glic_password_change_actuator.h"
 
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -12,10 +13,11 @@
 #include "base/json/json_reader.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/single_thread_task_runner.h"
 #include "base/values.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_proto_conversion.h"
 #include "chrome/browser/actor/execution_engine.h"
+#include "chrome/browser/affiliations/affiliation_service_factory.h"
 #include "chrome/browser/glic/actor/glic_actor_task_manager.h"
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_manager.h"
 #include "chrome/browser/glic/public/glic_instance.h"
@@ -23,35 +25,34 @@
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_passkeys.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
-#include "chrome/browser/password_manager/password_change/change_password_form_waiter.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/actor_webui.mojom.h"
 #include "chrome/grit/browser_resources.h"
+#include "components/affiliations/core/browser/affiliation_service.h"
+#include "components/affiliations/core/browser/affiliation_utils.h"
 #include "components/autofill/core/browser/logging/log_manager.h"
-#include "components/password_manager/content/browser/content_password_manager_driver.h"
+#include "components/origin_gating/core/task_policy_config.h"
 #include "components/password_manager/core/browser/actor_login/password_change_from_checkup_actor_login_service.h"
 #include "components/password_manager/core/browser/browser_save_password_progress_logger.h"
-#include "components/password_manager/core/browser/password_form_manager.h"
-#include "components/password_manager/core/browser/password_generation_frame_helper.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
 #include "components/password_manager/core/browser/password_manager_util.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
+#include "net/base/schemeful_site.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/base/window_open_disposition.h"
+#include "url/gurl.h"
 
 namespace {
 
 using Logger = password_manager::BrowserSavePasswordProgressLogger;
-
-constexpr char kDefaultPostSubmissionPrompt[] =
-    "Verify password change submission.";
 
 std::unique_ptr<Logger> GetLoggerIfAvailable(
     content::WebContents* web_contents) {
@@ -106,46 +107,6 @@ std::string GetReachFormPrompt(const std::string& domain,
 #endif
 }
 
-std::string GetPostSubmissionPrompt() {
-#if defined(IDR_APC_PROMPTS_JSON)
-  std::string json_data =
-      ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(
-          IDR_APC_PROMPTS_JSON);
-
-  if (!json_data.empty()) {
-    std::optional<base::Value> parsed_json =
-        base::JSONReader::Read(json_data, base::JSON_PARSE_RFC);
-
-    if (parsed_json.has_value() && parsed_json->is_dict()) {
-      const std::string* system_prompt =
-          parsed_json->GetDict().FindStringByDottedPath(
-              "prompts.verify_password_change_submission.system_prompt");
-
-      if (system_prompt && !system_prompt->empty()) {
-        return *system_prompt;
-      }
-    }
-  }
-#endif
-
-  return kDefaultPostSubmissionPrompt;
-}
-
-std::u16string GeneratePassword(
-    const password_manager::PasswordForm& form,
-    password_manager::PasswordGenerationFrameHelper* generation_helper) {
-  auto iter = std::ranges::find(form.form_data.fields(),
-                                form.new_password_element_renderer_id,
-                                &autofill::FormFieldData::renderer_id);
-  CHECK(iter != form.form_data.fields().end());
-
-  return generation_helper->GeneratePassword(
-      form.url,
-      autofill::password_generation::PasswordGenerationType::kAutomatic,
-      autofill::CalculateFormSignature(form.form_data),
-      autofill::CalculateFieldSignatureForField(*iter), iter->max_length());
-}
-
 std::optional<GlicPasswordChangeActuator::TaskResult> ParseTaskResult(
     const std::string& response_text) {
   std::string clean_text = base::CollapseWhitespaceASCII(
@@ -155,9 +116,6 @@ std::optional<GlicPasswordChangeActuator::TaskResult> ParseTaskResult(
       std::string::npos) {
     return GlicPasswordChangeActuator::TaskResult::
         kPasswordChangeFinishedSuccessfully;
-  }
-  if (clean_text.find("CHANGE_PASSWORD_FORM_FOUND") != std::string::npos) {
-    return GlicPasswordChangeActuator::TaskResult::kPasswordFormFound;
   }
   if (clean_text.find("FAILED_TO_FIND_CHANGE_PASSWORD_FORM") !=
       std::string::npos) {
@@ -175,6 +133,31 @@ std::optional<GlicPasswordChangeActuator::TaskResult> ParseTaskResult(
   }
 
   return std::nullopt;
+}
+
+origin_gating::TaskPolicyConfig BuildPasswordChangeContainerConfig(
+    const std::set<net::SchemefulSite>& allowed_origins) {
+  origin_gating::TaskPolicyConfig::LocationRules rules;
+
+  origin_gating::TaskPolicyConfig::Rule rule(
+      /*navigation_sources=*/{},
+      /*resources=*/
+      {origin_gating::TaskPolicyConfig::Rule::Resource::kSession},
+      /*allowed_tools=*/actor::GetAllActorTools());
+
+  for (const auto& origin : allowed_origins) {
+    rules.emplace(origin_gating::TaskPolicyConfig::Location(origin), rule);
+  }
+
+  return origin_gating::TaskPolicyConfig(
+      std::move(rules),
+      origin_gating::ClientTool(
+          optimization_guide::proto::RuleMetadata::CAPABILITY_NAVIGATE));
+}
+
+affiliations::FacetURI GetFacetURI(const GURL& url) {
+  return affiliations::FacetURI::FromPotentiallyInvalidSpec(
+      url.GetWithEmptyPath().spec());
 }
 
 }  // namespace
@@ -201,7 +184,35 @@ void GlicPasswordChangeActuator::Start() {
 
   GURL target_url =
       change_password_url_.is_empty() ? credential_.url : change_password_url_;
+  if (affiliations::AffiliationService* affiliation_service =
+          GetAffiliationService()) {
+    affiliation_service->GetAffiliationsAndBranding(
+        GetFacetURI(target_url),
+        base::BindOnce(&GlicPasswordChangeActuator::OnAffiliationsReceived,
+                       weak_ptr_factory_.GetWeakPtr(), target_url));
+  } else {
+    OnAffiliationsReceived(target_url, {}, /*success=*/false);
+  }
+}
 
+void GlicPasswordChangeActuator::OnAffiliationsReceived(
+    const GURL& target_url,
+    const affiliations::AffiliatedFacets& results,
+    bool success) {
+  if (!originator_ || !success) {
+    NotifyStateChanged(PasswordChangeActuator::State::kPasswordChangeFailed);
+    return;
+  }
+
+  for (const auto& facet : results) {
+    if (facet.uri.IsValidWebFacetURI()) {
+      allowed_origins_.emplace(GURL(facet.uri.canonical_spec()));
+    }
+  }
+  GlicPasswordChangeActuator::StartActuation(target_url);
+}
+
+void GlicPasswordChangeActuator::StartActuation(const GURL& target_url) {
   std::string site_domain(target_url.host());
   std::string reach_form_prompt = GetReachFormPrompt(
       site_domain, base::UTF16ToUTF8(credential_.username_value));
@@ -219,11 +230,10 @@ void GlicPasswordChangeActuator::Start() {
     return;
   }
 
-  content::OpenURLParams open_url_params(
-      target_url, content::Referrer(),
-      WindowOpenDisposition::NEW_BACKGROUND_TAB,
-      ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams open_url_params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          target_url, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
+          ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
 
   content::WebContents* new_contents =
       originator_->OpenURL(open_url_params, /*navigation_handle_callback=*/{});
@@ -292,12 +302,6 @@ content::WebContents* GlicPasswordChangeActuator::GetExecutorWebContents()
 
 void GlicPasswordChangeActuator::OpenPasswordChangeTab(
     content::WebContents* originator) {
-  if (saved_form_manager_) {
-    saved_form_manager_->OnUpdateUsernameFromPrompt(credential_.username_value);
-    saved_form_manager_->Save();
-    saved_form_manager_.reset();
-  }
-
   if (actuation_web_contents_) {
     tabs::TabInterface* tab_interface =
         tabs::TabInterface::MaybeGetFromContents(actuation_web_contents_.get());
@@ -327,15 +331,15 @@ void GlicPasswordChangeActuator::OpenPasswordChangeTab(
     GURL target_url = change_password_url_.is_empty() ? credential_.url
                                                       : change_password_url_;
     originator->OpenURL(
-        content::OpenURLParams(target_url, content::Referrer(),
-                               WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                               ui::PAGE_TRANSITION_LINK,
-                               /*is_renderer_initiated=*/false),
+        content::OpenURLParams::CreateBrowserInitiated(
+            target_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            ui::PAGE_TRANSITION_LINK),
         /*navigation_handle_callback=*/{});
   }
 }
 
-std::u16string GlicPasswordChangeActuator::GetGeneratedPassword() const {
+password_manager::PasswordString
+GlicPasswordChangeActuator::GetGeneratedPassword() const {
   return generated_password_;
 }
 
@@ -377,161 +381,39 @@ void GlicPasswordChangeActuator::OnActorTaskStateChanged(
   tabs::TabInterface* actuation_tab =
       tabs::TabInterface::MaybeGetFromContents(actuation_web_contents_.get());
   // Ignore updates coming from other tabs, then we initiated actuation in.
-  if (!actuation_tab || !task.GetTabs().contains(actuation_tab->GetHandle())) {
+  if (!actuation_tab || !task.HasActorSurface(actor::ActorSurfaceHandle::From(
+                            actuation_tab->GetHandle()))) {
     return;
   }
 
-  // TODO (crbug.com/543263568): Refactor to get rid of find_form_task_id_ and
-  // verification_task_id_.
-  if (!saved_form_manager_ && !find_form_task_id_.has_value()) {
-    find_form_task_id_ = task.id();
-  } else if (saved_form_manager_ && !verification_task_id_.has_value()) {
-    verification_task_id_ = task.id();
-  } else {
+  if (task_id_.has_value()) {
     return;
   }
+  task_id_ = task.id();
 
   task.GetExecutionEngine().SetActorLoginService(
       std::make_unique<actor_login::PasswordChangeFromCheckupActorLoginService>(
           password_manager::CloneStoredCredential(credential_)));
 
+  // TODO(crbug.com/559497033): Inject TaskPolicyConfig through API when
+  // it's ready
+  CHECK(!task.GetExecutionEngine()
+             .GetOriginGatingChecker()
+             .task_policy_config_slot()
+             .has_value());
+  allowed_origins_.emplace(credential_.url);
+  if (change_password_url_.is_valid()) {
+    allowed_origins_.emplace(change_password_url_);
+  }
+
+  task.GetExecutionEngine()
+      .GetOriginGatingChecker()
+      .task_policy_config_slot()
+      .Assign(BuildPasswordChangeContainerConfig(allowed_origins_));
+
   if (auto logger = GetLoggerIfAvailable(originator_.get())) {
     logger->LogMessage(
-        verification_task_id_.has_value()
-            ? Logger::STRING_PASSWORD_CHANGE_FROM_CHECKUP_VERIFICATION_CREATED
-            : Logger::STRING_PASSWORD_CHANGE_FROM_CHECKUP_FIND_FORM_TASK_FOUND);
-  }
-}
-
-void GlicPasswordChangeActuator::OnChangePasswordFormManagerFound(
-    password_manager::PasswordFormManager* form_manager) {
-  form_waiter_.reset();
-
-  if (!actuation_web_contents_ || !form_manager) {
-    CloseGlicSession();
-    NotifyStateChanged(
-        PasswordChangeActuator::State::kChangePasswordFormNotFound);
-    return;
-  }
-
-  generated_password_ = GeneratePassword(
-      *form_manager->GetParsedObservedForm(),
-      form_manager->GetDriver()->GetPasswordGenerationHelper());
-
-  if (auto logger = GetLoggerIfAvailable(originator_.get())) {
-    logger->LogMessage(Logger::STRING_PASSWORD_CHANGE_FROM_CHECKUP_FORM_FOUND);
-  }
-
-  NotifyStateChanged(PasswordChangeActuator::State::kChangingPassword);
-
-  form_filler_ = std::make_unique<ChangePasswordFormFiller>(
-      actuation_web_contents_.get(),
-      ChromePasswordManagerClient::FromWebContents(
-          actuation_web_contents_.get()),
-      /*logs_uploader=*/nullptr);
-
-  form_filler_->FillForm(
-      form_manager, credential_.username_value,
-      credential_.password_value.value(), generated_password_,
-      base::BindOnce(&GlicPasswordChangeActuator::OnChangePasswordFormFilled,
-                     weak_ptr_factory_.GetWeakPtr()));
-}
-
-void GlicPasswordChangeActuator::OnChangePasswordFormFilled(
-    ChangePasswordFormFiller::FillingResult result) {
-  form_filler_.reset();
-
-  if (!result.has_value()) {
-    CloseGlicSession();
-    NotifyStateChanged(PasswordChangeActuator::State::kPasswordChangeFailed);
-    return;
-  }
-
-  saved_form_manager_ = std::move(result).value();
-  if (!actuation_web_contents_) {
-    CloseGlicSession();
-    NotifyStateChanged(PasswordChangeActuator::State::kPasswordChangeFailed);
-    return;
-  }
-
-  if (auto logger = GetLoggerIfAvailable(originator_.get())) {
-    logger->LogMessage(Logger::STRING_PASSWORD_CHANGE_FROM_CHECKUP_FORM_FILLED);
-  }
-
-  glic::GlicKeyedService* glic_service = GetGlicService();
-  if (!glic_service) {
-    CloseGlicSession();
-    NotifyStateChanged(PasswordChangeActuator::State::kPasswordChangeFailed);
-    return;
-  }
-
-  tabs::TabInterface* tab_interface =
-      tabs::TabInterface::MaybeGetFromContents(actuation_web_contents_.get());
-  if (!tab_interface) {
-    CloseGlicSession();
-    NotifyStateChanged(PasswordChangeActuator::State::kPasswordChangeFailed);
-    return;
-  }
-
-  std::string post_submission_prompt = GetPostSubmissionPrompt();
-
-  if (post_submission_prompt.empty()) {
-    CloseGlicSession();
-    NotifyStateChanged(PasswordChangeActuator::State::kPasswordChangeFailed);
-    return;
-  }
-
-  CloseGlicSession();
-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE,
-      base::BindOnce(&GlicPasswordChangeActuator::InvokeVerificationFlow,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     std::move(post_submission_prompt)));
-}
-
-void GlicPasswordChangeActuator::InvokeVerificationFlow(
-    std::string post_submission_prompt) {
-  glic::GlicKeyedService* glic_service = GetGlicService();
-  if (!glic_service || !actuation_web_contents_) {
-    CloseGlicSession();
-    NotifyStateChanged(PasswordChangeActuator::State::kPasswordChangeFailed);
-    return;
-  }
-
-  tabs::TabInterface* tab_interface =
-      tabs::TabInterface::MaybeGetFromContents(actuation_web_contents_.get());
-  if (!tab_interface) {
-    CloseGlicSession();
-    NotifyStateChanged(PasswordChangeActuator::State::kPasswordChangeFailed);
-    return;
-  }
-
-  glic::Target target = glic::Target(*tab_interface, glic::NewConversation());
-  glic::GlicInvokeOptions options(
-      std::move(target), glic::mojom::InvocationSource::kPasswordChange);
-  options.feature_mode = glic::mojom::FeatureMode::kPasswordChange;
-  options.prompts.push_back(std::move(post_submission_prompt));
-  options.target.actuation_target =
-      glic::mojom::ActuationTarget::kTargetSurface;
-  options.on_client_connected =
-      base::BindOnce(&GlicPasswordChangeActuator::SubscribeForTriggeringUpdates,
-                     weak_ptr_factory_.GetWeakPtr());
-  glic::GlicInvokeWithAutoSubmitOptions auto_submit_options;
-  auto_submit_options.show_panel = false;
-  glic_instance_ = glic_service->InvokeWithAutoSubmit(
-      glic::InvokeWithAutoSubmitPasskeyProvider::GetPassKey(),
-      std::move(options), std::move(auto_submit_options));
-}
-
-void GlicPasswordChangeActuator::HandleMaybeSuccessfulPasswordChange() {
-  if (saved_form_manager_) {
-    saved_form_manager_->OnUpdateUsernameFromPrompt(credential_.username_value);
-    saved_form_manager_->Save();
-    saved_form_manager_.reset();
-    NotifyStateChanged(
-        PasswordChangeActuator::State::kPasswordSuccessfullyChanged);
-  } else {
-    NotifyStateChanged(PasswordChangeActuator::State::kPasswordChangeFailed);
+        Logger::STRING_PASSWORD_CHANGE_FROM_CHECKUP_FIND_FORM_TASK_FOUND);
   }
 }
 
@@ -544,33 +426,25 @@ void GlicPasswordChangeActuator::CloseGlicSession() {
 
 void GlicPasswordChangeActuator::ResetInternalState(
     actor::ActorTask::StoppedReason stop_reason) {
+  allowed_origins_.clear();
+  weak_ptr_factory_.InvalidateWeakPtrs();
   if (actuation_web_contents_) {
     actor::ActorKeyedService* actor_service =
         actor::ActorKeyedService::Get(Profile::FromBrowserContext(
             actuation_web_contents_->GetBrowserContext()));
-    if (actor_service) {
-      if (find_form_task_id_.has_value() &&
-          actor_service->GetTask(*find_form_task_id_)) {
-        actor_service->StopTask(*find_form_task_id_, stop_reason);
-      }
-      if (verification_task_id_.has_value() &&
-          actor_service->GetTask(*verification_task_id_)) {
-        actor_service->StopTask(*verification_task_id_, stop_reason);
-      }
+    if (actor_service && task_id_.has_value() &&
+        actor_service->GetTask(*task_id_)) {
+      actor_service->StopTask(*task_id_, stop_reason);
     }
   }
 
   CloseGlicSession();
 
   tab_will_detach_subscription_ = {};
-  form_filler_.reset();
-  form_waiter_.reset();
-  saved_form_manager_.reset();
   updates_receiver_.reset();
   actor_task_state_subscription_ = {};
 
-  find_form_task_id_ = std::nullopt;
-  verification_task_id_ = std::nullopt;
+  task_id_ = std::nullopt;
 }
 
 void GlicPasswordChangeActuator::NotifyStateChanged(
@@ -671,18 +545,8 @@ void GlicPasswordChangeActuator::OnUpdate(
       CloseGlicSession();
       switch (*parsed) {
         case TaskResult::kPasswordChangeFinishedSuccessfully:
-          HandleMaybeSuccessfulPasswordChange();
-          return;
-        case TaskResult::kPasswordFormFound:
-          form_waiter_ =
-              ChangePasswordFormWaiter::Builder(
-                  actuation_web_contents_.get(),
-                  ChromePasswordManagerClient::FromWebContents(
-                      actuation_web_contents_.get()),
-                  base::BindOnce(&GlicPasswordChangeActuator::
-                                     OnChangePasswordFormManagerFound,
-                                 weak_ptr_factory_.GetWeakPtr()))
-                  .Build();
+          NotifyStateChanged(
+              PasswordChangeActuator::State::kPasswordSuccessfullyChanged);
           return;
         case TaskResult::kFailedToFindChangePasswordForm:
           NotifyStateChanged(
@@ -698,4 +562,16 @@ void GlicPasswordChangeActuator::OnUpdate(
           return;
       }
   }
+}
+
+affiliations::AffiliationService*
+GlicPasswordChangeActuator::GetAffiliationService() {
+  if (profile_) {
+    return AffiliationServiceFactory::GetForProfile(profile_);
+  }
+  if (originator_) {
+    return AffiliationServiceFactory::GetForProfile(
+        Profile::FromBrowserContext(originator_->GetBrowserContext()));
+  }
+  return nullptr;
 }

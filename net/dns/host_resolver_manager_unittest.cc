@@ -13682,14 +13682,12 @@ class MockAddressSorter : public AddressSorter {
 TEST_F(HostResolverManagerDnsTest, ResultsAreSorted) {
   AddScopedFeatureList().InitAndEnableFeature(features::kUseHostResolverCache);
 
-  // Expect sorter to be separately called with A and AAAA results. For the
-  // AAAA, sort to reversed order.
+  // Expect sorter to be called only with AAAA results (not A results). Sort
+  // AAAA to reversed order.
   auto sorter = std::make_unique<testing::StrictMock<MockAddressSorter>>();
   sorter->ExpectCall(
       {CreateExpected("::1", 0), CreateExpected("2001:4860:4860::8888", 0)},
       {CreateExpected("2001:4860:4860::8888", 0), CreateExpected("::1", 0)});
-  sorter->ExpectCall({CreateExpected("127.0.0.1", 0)},
-                     {CreateExpected("127.0.0.1", 0)});
 
   DnsResponse a_response =
       BuildTestDnsAddressResponse("host.test", IPAddress::IPv4Localhost());
@@ -13772,14 +13770,11 @@ TEST_F(HostResolverManagerDnsTest, ResultsAreSortedWithHostCache) {
           CreateExpected("127.0.0.1", 80), CreateExpected("::1", 80)))));
 }
 
-TEST_F(HostResolverManagerDnsTest, Ipv4OnlyResultsAreSorted) {
+TEST_F(HostResolverManagerDnsTest, Ipv4OnlyResultsNotSorted) {
   AddScopedFeatureList().InitAndEnableFeature(features::kUseHostResolverCache);
 
-  // Sort to reversed order.
+  // Expect no sort calls for IPv4-only results.
   auto sorter = std::make_unique<testing::StrictMock<MockAddressSorter>>();
-  sorter->ExpectCall(
-      {CreateExpected("127.0.0.1", 0), CreateExpected("127.0.0.2", 0)},
-      {CreateExpected("127.0.0.2", 0), CreateExpected("127.0.0.1", 0)});
 
   DnsResponse a_response = BuildTestDnsResponse(
       "host.test", dns_protocol::kTypeA,
@@ -13803,11 +13798,11 @@ TEST_F(HostResolverManagerDnsTest, Ipv4OnlyResultsAreSorted) {
 
   EXPECT_THAT(response.result_error(), IsOk());
 
-  // Expect results in the order given by the sorter.
+  // Expect results in original unsorted order.
   EXPECT_THAT(
       response.request()->GetEndpointResults(),
       testing::ElementsAre(ExpectEndpointResult(testing::ElementsAre(
-          CreateExpected("127.0.0.2", 80), CreateExpected("127.0.0.1", 80)))));
+          CreateExpected("127.0.0.1", 80), CreateExpected("127.0.0.2", 80)))));
 }
 
 TEST_F(HostResolverManagerDnsTest, Ipv4OnlyResultsNotSortedWithHostCache) {
@@ -13906,10 +13901,9 @@ TEST_F(HostResolverManagerDnsTest, ResultsSortedAsUnreachable) {
   sorter->ExpectCall(
       {CreateExpected("::1", 0), CreateExpected("2001:4860:4860::8888", 0)},
       {});
-  sorter->ExpectCall({CreateExpected("127.0.0.1", 0)}, {});
 
   DnsResponse a_response =
-      BuildTestDnsAddressResponse("host.test", IPAddress::IPv4Localhost());
+      BuildTestDnsResponse("host.test", dns_protocol::kTypeA, /*answers=*/{});
   DnsResponse aaaa_response = BuildTestDnsResponse(
       "host.test", dns_protocol::kTypeAAAA,
       {BuildTestAddressRecord("host.test", IPAddress::IPv6Localhost()),
@@ -14071,10 +14065,8 @@ TEST_F(HostResolverManagerDnsTest, PartialSortFailure) {
   constexpr std::string_view kHost = "host.test";
   constexpr base::TimeDelta kMinTtl = base::Minutes(3);
 
-  // Successfully sort A. Fail to sort AAAA.
+  // A is not sorted. Fail to sort AAAA.
   auto sorter = std::make_unique<testing::StrictMock<MockAddressSorter>>();
-  sorter->ExpectCall({IPEndPoint(IPAddress::IPv4Localhost(), 0)},
-                     {IPEndPoint(IPAddress::IPv4Localhost(), 0)});
   sorter->ExpectCallAndFailSort({IPEndPoint(IPAddress::IPv6Localhost(), 0),
                                  CreateExpected("2001:4860:4860::8888", 0)});
 
@@ -14699,6 +14691,91 @@ TEST_F(HostResolverManagerDnsTest,
   // Even if some transactions have already received results successfully, a
   // malformed response means the entire request fails and nothing should be
   // cached to the HostCache.
+  EXPECT_FALSE(GetCacheHit(HostCache::Key(
+      std::string(kHost), DnsQueryType::UNSPECIFIED, /*host_resolver_flags=*/0,
+      HostResolverSource::ANY, kNetworkAnonymizationKey,
+      handles::kInvalidNetworkHandle)));
+  EXPECT_EQ(resolve_context_->host_cache()->size(), 0u);
+}
+
+TEST_F(HostResolverManagerDnsTest,
+       AllowPartialAddressResults_SucceedsAndCachesInHostCache) {
+  AddScopedFeatureList().InitWithFeatures(
+      /*enabled_features=*/{features::
+                                kPartitionConnectionsByNetworkIsolationKey,
+                            features::kDnsTaskAllowPartialAddressResults},
+      /*disabled_features=*/{features::kUseHostResolverCache});
+
+  constexpr std::string_view kHost = "host.test";
+
+  MockDnsClientRuleList rules;
+  rules.emplace_back(std::string(kHost), dns_protocol::kTypeA, /*secure=*/false,
+                     MockDnsClientRule::Result(
+                         MockDnsClientRule::ResultType::kFail,
+                         /*response=*/std::nullopt, ERR_DNS_SERVER_FAILURE),
+                     /*delay=*/false);
+  rules.emplace_back(
+      std::string(kHost), dns_protocol::kTypeAAAA, /*secure=*/false,
+      MockDnsClientRule::Result(MockDnsClientRule::ResultType::kOk),
+      /*delay=*/false);
+  CreateResolver();
+  UseMockDnsClient(CreateValidDnsConfig(), std::move(rules));
+  set_allow_fallback_to_systemtask(false);
+
+  SchemefulSite site(GURL("https://site.test/"));
+  const auto kNetworkAnonymizationKey =
+      NetworkAnonymizationKey::CreateSameSite(std::move(site));
+
+  ResolveHostResponseHelper response(resolver_->CreateRequest(
+      HostPortPair(kHost, 80), kNetworkAnonymizationKey,
+      handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt,
+      resolve_context_.get()));
+  ASSERT_THAT(response.result_error(), IsOk());
+  EXPECT_THAT(response.request()->GetAddressResults().endpoints(),
+              ElementsAre(CreateExpected("::1", 80)));
+
+  EXPECT_TRUE(GetCacheHit(HostCache::Key(
+      std::string(kHost), DnsQueryType::UNSPECIFIED, /*host_resolver_flags=*/0,
+      HostResolverSource::ANY, kNetworkAnonymizationKey,
+      handles::kInvalidNetworkHandle)));
+}
+
+TEST_F(HostResolverManagerDnsTest,
+       AllowPartialAddressResults_OneFailsOtherNodataDoesNotCacheNegative) {
+  AddScopedFeatureList().InitWithFeatures(
+      /*enabled_features=*/{features::
+                                kPartitionConnectionsByNetworkIsolationKey,
+                            features::kDnsTaskAllowPartialAddressResults},
+      /*disabled_features=*/{features::kUseHostResolverCache});
+
+  constexpr std::string_view kHost = "host.test";
+
+  MockDnsClientRuleList rules;
+  rules.emplace_back(std::string(kHost), dns_protocol::kTypeA, /*secure=*/false,
+                     MockDnsClientRule::Result(
+                         MockDnsClientRule::ResultType::kFail,
+                         /*response=*/std::nullopt, ERR_DNS_SERVER_FAILURE),
+                     /*delay=*/false);
+  rules.emplace_back(
+      std::string(kHost), dns_protocol::kTypeAAAA, /*secure=*/false,
+      MockDnsClientRule::Result(MockDnsClientRule::ResultType::kEmpty),
+      /*delay=*/false);
+  CreateResolver();
+  UseMockDnsClient(CreateValidDnsConfig(), std::move(rules));
+  set_allow_fallback_to_systemtask(false);
+
+  SchemefulSite site(GURL("https://site.test/"));
+  const auto kNetworkAnonymizationKey =
+      NetworkAnonymizationKey::CreateSameSite(std::move(site));
+
+  ResolveHostResponseHelper response(resolver_->CreateRequest(
+      HostPortPair(kHost, 80), kNetworkAnonymizationKey,
+      handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt,
+      resolve_context_.get()));
+  ASSERT_THAT(response.result_error(), IsError(ERR_DNS_SERVER_FAILURE));
+
+  // Must not negatively cache ERR_NAME_NOT_RESOLVED when one transaction failed
+  // and the sibling returned NODATA.
   EXPECT_FALSE(GetCacheHit(HostCache::Key(
       std::string(kHost), DnsQueryType::UNSPECIFIED, /*host_resolver_flags=*/0,
       HostResolverSource::ANY, kNetworkAnonymizationKey,
@@ -15515,6 +15592,33 @@ TEST_F(HostResolverManagerTest,
 TEST_F(HostResolverManagerTest,
        IPv4AddressLiteralInIPv6OnlyNetworkBadAddressSync) {
   IPv4AddressLiteralInIPv6OnlyNetworkBadAddressTest(false);
+}
+
+TEST_F(HostResolverManagerTest, IPv4LoopbackLiteralInIPv6OnlyNetwork) {
+  HostResolver::ManagerOptions options = DefaultOptions();
+  CreateResolverWithOptionsAndParams(std::move(options), DefaultParams(proc_),
+                                     /*ipv6_reachable=*/true,
+                                     /*is_async=*/false,
+                                     /*ipv4_reachable=*/false);
+  proc_->AddRule("ipv4only.arpa", ADDRESS_FAMILY_IPV6,
+                 "64:ff9b::c000:aa,64:ff9b::c000:ab");
+
+  // Loopback IPv4 literals are always locally reachable via `lo` and must never
+  // undergo NAT64 synthesis, even on IPv6-only networks or when bound to an
+  // unreachable/invalid `target_network`.
+  std::unique_ptr<HostResolver::ResolveHostRequest> request =
+      resolver_->CreateRequest(HostPortPair("127.0.0.1", 80),
+                               NetworkAnonymizationKey(), /*target_network=*/1,
+                               NetLogWithSource(), std::nullopt,
+                               resolve_context_.get());
+  EXPECT_THAT(request->Start(base::BindOnce([](int) { ADD_FAILURE(); })),
+              IsOk());
+  EXPECT_THAT(request->GetAddressResults(),
+              testing::ElementsAre(CreateExpected("127.0.0.1", 80)));
+  EXPECT_THAT(request->GetEndpointResults(),
+              testing::ElementsAre(ExpectEndpointResult(
+                  testing::ElementsAre(CreateExpected("127.0.0.1", 80)))));
+  EXPECT_TRUE(proc_->GetCaptureList().empty());
 }
 
 // Regression test for crbug.com/513714124.

@@ -18,13 +18,13 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
-#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/accessibility/platform/ax_mode_observer.h"
 #include "ui/accessibility/platform/ax_platform.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/views/accessibility/tree/widget_ax_manager_observer.h"
 #include "ui/views/controls/native/native_view_host.h"
+#include "ui/views/controls/webview/web_contents_delegate_views.h"
 #include "ui/views/controls/webview/webview_export.h"
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
@@ -57,7 +57,7 @@ class WidgetAXManager;
 // the aspect ratio of the capture video resolution, and scaling will be avoided
 // whenever possible.
 class WEBVIEW_EXPORT WebView : public View,
-                               public content::WebContentsDelegate,
+                               public WebContentsDelegateViews<WebView>,
                                public content::WebContentsObserver,
                                public ui::AXModeObserver,
                                public WidgetAXManagerObserver {
@@ -134,6 +134,8 @@ class WEBVIEW_EXPORT WebView : public View,
   // WebContents' size.
   void EnableSizingFromWebContents(const gfx::Size& min_size,
                                    const gfx::Size& max_size);
+  const gfx::Size& AutoResizeMinSize() const;
+  const gfx::Size& AutoResizeMaxSize() const;
 
   // A scoped object that disconnects the webview from the accessibility tree.
   // When destroyed, it restores the previous accessibility state.
@@ -208,10 +210,15 @@ class WEBVIEW_EXPORT WebView : public View,
 
   // When used to host UI, we need to explicitly allow accelerators to be
   // processed. Default is false.
-  void set_allow_accelerators(bool allow_accelerators) {
-    allow_accelerators_ = allow_accelerators;
+  //
+  // TODO(https://crbug.com/576327952): This should be migrated to/merged with
+  // `SetAcceleratorHandling()`.
+  void set_allow_accelerators_deprecated(bool allow_accelerators) {
+    allow_accelerators_deprecated_ = allow_accelerators;
   }
-  bool allow_accelerators() const { return allow_accelerators_; }
+  bool allow_accelerators_deprecated() const {
+    return allow_accelerators_deprecated_;
+  }
 
   // When `lock = true` changes in web contents will not reset the override.
   // Default is false.
@@ -251,9 +258,6 @@ class WEBVIEW_EXPORT WebView : public View,
   virtual void OnLetterboxingChanged() {}
   bool is_letterboxing() const { return is_letterboxing_; }
 
-  const gfx::Size& min_size() const { return min_size_; }
-  const gfx::Size& max_size() const { return max_size_; }
-
   // View:
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
   void ViewHierarchyChanged(
@@ -285,6 +289,7 @@ class WEBVIEW_EXPORT WebView : public View,
 
   // WidgetAXManagerObserver:
   void OnWidgetAXManagerEnabled() override;
+  void OnWidgetAXManagerDisabled() override;
 
   bool IsWebContentsAlive() const;
 
@@ -305,7 +310,7 @@ class WEBVIEW_EXPORT WebView : public View,
   void SetNativeViewHostAccessibleParent(View* parent);
   void NotifyAccessibilityWebContentsChanged();
   void UpdateAccessibilityDisconnectState(bool disconnect);
-  void HandleWidgetAXManagerEnablement();
+  void UpdateWidgetAXManagerObservation();
 
   // Called when the main frame in the renderer becomes present.
   void SetUpNewMainFrame(content::RenderFrameHost* frame_host);
@@ -346,7 +351,7 @@ class WEBVIEW_EXPORT WebView : public View,
   // view, to preserve its aspect ratio).
   bool is_letterboxing_ = false;
   raw_ptr<content::BrowserContext> browser_context_;
-  bool allow_accelerators_ = false;
+  bool allow_accelerators_deprecated_ = false;
   ViewTracker crashed_overlay_view_;
   bool is_primary_web_contents_for_window_ = false;
 
@@ -380,7 +385,7 @@ VIEW_BUILDER_METHOD(EnableSizingFromWebContents,
                     const gfx::Size&,
                     const gfx::Size&)
 VIEW_BUILDER_METHOD(set_is_primary_web_contents_for_window, bool)
-VIEW_BUILDER_METHOD(set_allow_accelerators, bool)
+VIEW_BUILDER_METHOD(SetAcceleratorHandling, WebContentsAcceleratorHandling)
 END_VIEW_BUILDER
 
 }  // namespace views

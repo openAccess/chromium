@@ -4,6 +4,8 @@
 
 #include "chrome/browser/glic/host/context/glic_empty_pinned_tab_manager.h"
 
+#include "chrome/browser/glic/host/glic.mojom.h"
+
 namespace glic {
 
 GlicEmptyPinnedTabManager::GlicEmptyPinnedTabManager() = default;
@@ -72,8 +74,8 @@ std::optional<GlicPinnedTabUsage> GlicEmptyPinnedTabManager::GetPinnedTabUsage(
   return std::nullopt;
 }
 
-std::vector<tabs::TabInterface*> GlicEmptyPinnedTabManager::GetPinnedTabs()
-    const {
+std::vector<raw_ptr<tabs::TabInterface>>
+GlicEmptyPinnedTabManager::GetPinnedTabs() const {
   return {};
 }
 

@@ -39,6 +39,7 @@
 #include "third_party/blink/renderer/core/frame/web_frame_widget_impl.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
+#include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/html_anchor_element.h"
 #include "third_party/blink/renderer/core/html/html_area_element.h"
@@ -441,6 +442,108 @@ TEST_F(ContextMenuControllerTest, WritingDirectionFromPlugin) {
   EXPECT_EQ(context_menu_data.writing_direction_right_to_left,
             ContextMenuData::kCheckableMenuItemEnabled |
                 ContextMenuData::kCheckableMenuItemChecked);
+}
+
+TEST_F(ContextMenuControllerTest, TranslateFromPlugin) {
+  frame_test_helpers::LoadFrame(LocalMainFrame(), R"HTML(data:text/html,
+  <html>
+    <body>
+      <embed id="plugin-generic" type="application/x-webkit-test-webplugin"></embed>
+      <embed id="plugin-pdf" type="application/pdf"></embed>
+      <embed id="plugin-chrome-pdf" type="application/x-google-chrome-pdf"></embed>
+      <embed id="plugin-pdf-uppercase" type="APPLICATION/PDF"></embed>
+    </body>
+  </html>
+  )HTML");
+
+  Document* document = GetDocument();
+
+  Element* plugin_generic =
+      document->getElementById(AtomicString("plugin-generic"));
+  auto* embedded_generic =
+      DynamicTo<LayoutEmbeddedContent>(plugin_generic->GetLayoutObject());
+  ASSERT_TRUE(embedded_generic && embedded_generic->Plugin());
+  auto* test_plugin_generic = DynamicTo<ContextMenuControllerTestPlugin>(
+      embedded_generic->Plugin()->Plugin());
+  ASSERT_TRUE(test_plugin_generic);
+  test_plugin_generic->SetAttributesForTesting(
+      {/*can_copy=*/true, /*selected_text=*/"some text"});
+
+  ASSERT_TRUE(ShowContextMenuForElement(
+      plugin_generic, ui::mojom::blink::MenuSourceType::kMouse));
+  ContextMenuData context_menu_data_generic =
+      GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ(context_menu_data_generic.edit_flags &
+                ContextMenuDataEditFlags::kCanTranslate,
+            0);
+  EXPECT_EQ(context_menu_data_generic.edit_flags &
+                ContextMenuDataEditFlags::kCanCopy,
+            ContextMenuDataEditFlags::kCanCopy);
+
+  Element* plugin_pdf = document->getElementById(AtomicString("plugin-pdf"));
+  auto* embedded_pdf =
+      DynamicTo<LayoutEmbeddedContent>(plugin_pdf->GetLayoutObject());
+  ASSERT_TRUE(embedded_pdf && embedded_pdf->Plugin());
+  auto* test_plugin_pdf = DynamicTo<ContextMenuControllerTestPlugin>(
+      embedded_pdf->Plugin()->Plugin());
+  ASSERT_TRUE(test_plugin_pdf);
+  test_plugin_pdf->SetAttributesForTesting(
+      {/*can_copy=*/true, /*selected_text=*/"some text"});
+
+  ASSERT_TRUE(ShowContextMenuForElement(
+      plugin_pdf, ui::mojom::blink::MenuSourceType::kMouse));
+  ContextMenuData context_menu_data_pdf =
+      GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ(context_menu_data_pdf.edit_flags &
+                ContextMenuDataEditFlags::kCanTranslate,
+            ContextMenuDataEditFlags::kCanTranslate);
+  EXPECT_EQ(context_menu_data_pdf.edit_flags &
+                ContextMenuDataEditFlags::kCanCopy,
+            ContextMenuDataEditFlags::kCanCopy);
+
+  Element* plugin_chrome_pdf =
+      document->getElementById(AtomicString("plugin-chrome-pdf"));
+  auto* embedded_chrome_pdf =
+      DynamicTo<LayoutEmbeddedContent>(plugin_chrome_pdf->GetLayoutObject());
+  ASSERT_TRUE(embedded_chrome_pdf && embedded_chrome_pdf->Plugin());
+  auto* test_plugin_chrome_pdf = DynamicTo<ContextMenuControllerTestPlugin>(
+      embedded_chrome_pdf->Plugin()->Plugin());
+  ASSERT_TRUE(test_plugin_chrome_pdf);
+  test_plugin_chrome_pdf->SetAttributesForTesting(
+      {/*can_copy=*/true, /*selected_text=*/"some text"});
+
+  ASSERT_TRUE(ShowContextMenuForElement(
+      plugin_chrome_pdf, ui::mojom::blink::MenuSourceType::kMouse));
+  ContextMenuData context_menu_data_chrome_pdf =
+      GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ(context_menu_data_chrome_pdf.edit_flags &
+                ContextMenuDataEditFlags::kCanTranslate,
+            ContextMenuDataEditFlags::kCanTranslate);
+  EXPECT_EQ(context_menu_data_chrome_pdf.edit_flags &
+                ContextMenuDataEditFlags::kCanCopy,
+            ContextMenuDataEditFlags::kCanCopy);
+
+  Element* plugin_pdf_uppercase =
+      document->getElementById(AtomicString("plugin-pdf-uppercase"));
+  auto* embedded_pdf_uppercase = DynamicTo<LayoutEmbeddedContent>(
+      plugin_pdf_uppercase->GetLayoutObject());
+  ASSERT_TRUE(embedded_pdf_uppercase && embedded_pdf_uppercase->Plugin());
+  auto* test_plugin_pdf_uppercase = DynamicTo<ContextMenuControllerTestPlugin>(
+      embedded_pdf_uppercase->Plugin()->Plugin());
+  ASSERT_TRUE(test_plugin_pdf_uppercase);
+  test_plugin_pdf_uppercase->SetAttributesForTesting(
+      {/*can_copy=*/true, /*selected_text=*/"some text"});
+
+  ASSERT_TRUE(ShowContextMenuForElement(
+      plugin_pdf_uppercase, ui::mojom::blink::MenuSourceType::kMouse));
+  ContextMenuData context_menu_data_pdf_uppercase =
+      GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ(context_menu_data_pdf_uppercase.edit_flags &
+                ContextMenuDataEditFlags::kCanTranslate,
+            ContextMenuDataEditFlags::kCanTranslate);
+  EXPECT_EQ(context_menu_data_pdf_uppercase.edit_flags &
+                ContextMenuDataEditFlags::kCanCopy,
+            ContextMenuDataEditFlags::kCanCopy);
 }
 
 TEST_F(ContextMenuControllerTest, VideoNotLoaded) {
@@ -1002,6 +1105,83 @@ TEST_F(ContextMenuControllerTest,
 }
 #endif
 
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(ContextMenuControllerTest, AndroidKeyboardContextMenuKeyDown) {
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(
+      "<a href=\"http://example.test/link1\" id=\"link1\">Link 1</a>"
+      "<a href=\"http://example.test/link2\" id=\"link2\">Link 2</a>");
+
+  Document* document = GetDocument();
+  Element* link1 = document->getElementById(AtomicString("link1"));
+  Element* link2 = document->getElementById(AtomicString("link2"));
+
+  // When kAndroidKeyboardContextMenu is disabled, kKeyDown for VKEY_APPS and
+  // Shift+F10 should not open the context menu.
+  {
+    base::test::ScopedFeatureList disabled_feature_list;
+    disabled_feature_list.InitAndDisableFeature(
+        features::kAndroidKeyboardContextMenu);
+
+    link1->Focus();
+    document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+
+    WebKeyboardEvent menu_key_event(
+        WebInputEvent::Type::kKeyDown, WebInputEvent::kNoModifiers,
+        WebInputEvent::GetStaticTimeStampForTests());
+    menu_key_event.windows_key_code = ui::VKEY_APPS;
+    EXPECT_EQ(WebInputEventResult::kNotHandled,
+              GetWebView()->MainFrameWidget()->HandleInputEvent(
+                  WebCoalescedInputEvent(menu_key_event, ui::LatencyInfo())));
+    EXPECT_TRUE(GetWebFrameClient().GetContextMenuData().link_url.is_empty());
+
+    WebKeyboardEvent shift_f10_event(
+        WebInputEvent::Type::kKeyDown, WebInputEvent::kShiftKey,
+        WebInputEvent::GetStaticTimeStampForTests());
+    shift_f10_event.windows_key_code = ui::VKEY_F10;
+    EXPECT_EQ(WebInputEventResult::kNotHandled,
+              GetWebView()->MainFrameWidget()->HandleInputEvent(
+                  WebCoalescedInputEvent(shift_f10_event, ui::LatencyInfo())));
+    EXPECT_TRUE(GetWebFrameClient().GetContextMenuData().link_url.is_empty());
+  }
+
+  // When kAndroidKeyboardContextMenu is enabled, kKeyDown for VKEY_APPS and
+  // Shift+F10 should open a keyboard-sourced context menu.
+  {
+    base::test::ScopedFeatureList enabled_feature_list;
+    enabled_feature_list.InitAndEnableFeature(
+        features::kAndroidKeyboardContextMenu);
+
+    link1->Focus();
+    document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+
+    WebKeyboardEvent menu_key_event(
+        WebInputEvent::Type::kKeyDown, WebInputEvent::kNoModifiers,
+        WebInputEvent::GetStaticTimeStampForTests());
+    menu_key_event.windows_key_code = ui::VKEY_APPS;
+    EXPECT_EQ(WebInputEventResult::kHandledSystem,
+              GetWebView()->MainFrameWidget()->HandleInputEvent(
+                  WebCoalescedInputEvent(menu_key_event, ui::LatencyInfo())));
+    ContextMenuData data1 = GetWebFrameClient().GetContextMenuData();
+    EXPECT_EQ(GURL("http://example.test/link1"), data1.link_url);
+    EXPECT_EQ(ui::mojom::MenuSourceType::kKeyboard, data1.source_type);
+
+    link2->Focus();
+    document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+
+    WebKeyboardEvent shift_f10_event(
+        WebInputEvent::Type::kKeyDown, WebInputEvent::kShiftKey,
+        WebInputEvent::GetStaticTimeStampForTests());
+    shift_f10_event.windows_key_code = ui::VKEY_F10;
+    EXPECT_EQ(WebInputEventResult::kHandledSystem,
+              GetWebView()->MainFrameWidget()->HandleInputEvent(
+                  WebCoalescedInputEvent(shift_f10_event, ui::LatencyInfo())));
+    ContextMenuData data2 = GetWebFrameClient().GetContextMenuData();
+    EXPECT_EQ(GURL("http://example.test/link2"), data2.link_url);
+    EXPECT_EQ(ui::mojom::MenuSourceType::kKeyboard, data2.source_type);
+  }
+}
+#endif
+
 TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestSVGImageElement) {
   RegisterMockedImageURLLoad("http://test.png");
   Document* document = GetDocument();
@@ -1131,6 +1311,7 @@ TEST_F(ContextMenuControllerTest,
   EXPECT_EQ("http://test.png/", context_menu_data.src_url.spec());
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kImage,
             context_menu_data.media_type);
+  EXPECT_EQ(gfx::Rect(0, 0, 100, 100), context_menu_data.image_bounds);
 
   histograms.ExpectBucketCount(
       "Blink.ContextMenu.ImageSelection.Outcome",
@@ -1149,6 +1330,43 @@ TEST_F(ContextMenuControllerTest,
       "Blink.ContextMenu.ImageSelection.Outcome",
       ContextMenuController::ImageSelectionOutcome::kBlockedByCrossFrameNode,
       0);
+}
+
+TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestClippedImageBounds) {
+  RegisterMockedImageURLLoad("http://test.png");
+  ContextMenuAllowedScope context_menu_allowed_scope;
+
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <body>
+      <style>
+        #clip {
+          top: 10px;
+          left: 20px;
+          position: absolute;
+          width: 40px;
+          height: 30px;
+          overflow: hidden;
+        }
+        #target {
+          width: 100px;
+          height: 100px;
+        }
+      </style>
+      <div id="clip">
+        <img id="target" src="http://test.png">
+      </div>
+    </body>
+  )HTML");
+
+  PhysicalOffset location(LayoutUnit(25), LayoutUnit(15));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
+
+  ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ("http://test.png/", context_menu_data.src_url.spec());
+  EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kImage,
+            context_menu_data.media_type);
+  EXPECT_EQ(gfx::Rect(20, 10, 40, 30), context_menu_data.image_bounds);
 }
 
 // Test that image selection can penetrate through a fully transparent div
@@ -1193,6 +1411,7 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestSucceededPenetrating) {
   EXPECT_EQ("http://test.png/", context_menu_data.src_url.spec());
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kImage,
             context_menu_data.media_type);
+  EXPECT_EQ(gfx::Rect(0, 0, 100, 100), context_menu_data.image_bounds);
 
   histograms.ExpectBucketCount(
       "Blink.ContextMenu.ImageSelection.Outcome",
@@ -1244,6 +1463,7 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestStandardCanvas) {
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kCanvas,
             context_menu_data.media_type);
+  EXPECT_TRUE(context_menu_data.has_image_contents);
 
   histograms.ExpectBucketCount(
       "Blink.ContextMenu.ImageSelection.Outcome",
@@ -1262,6 +1482,23 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestStandardCanvas) {
       "Blink.ContextMenu.ImageSelection.Outcome",
       ContextMenuController::ImageSelectionOutcome::kBlockedByCrossFrameNode,
       0);
+}
+
+TEST_F(ContextMenuControllerTest, TaintedCanvasHasNoCopyableImageContents) {
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <body style="margin:0">
+      <canvas id="target" width="100" height="100"></canvas>
+    </body>
+  )HTML");
+  auto* canvas = To<HTMLCanvasElement>(
+      GetDocument()->getElementById(AtomicString("target")));
+  canvas->SetOriginTainted();
+
+  ASSERT_TRUE(ShowContextMenuForElement(
+      canvas, ui::mojom::blink::MenuSourceType::kMouse));
+  const ContextMenuData& data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kCanvas, data.media_type);
+  EXPECT_FALSE(data.has_image_contents);
 }
 
 // Test that  an image node will not be selected through an opaque div
@@ -2409,7 +2646,38 @@ TEST_F(InterestForTouchscreenTest, LinkWithInterestFor) {
   // Simulate choosing the "Show details" context menu item
   document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
   EXPECT_EQ(link->GetInterestState(), Element::InterestState::kNoInterest);
-  link->ShowInterestNow();
+  document->GetFrame()->ShowInterestInElement(
+      context_menu_data.interest_for_node_id);
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(link->GetInterestState(),
+            Element::InterestState::kExplicitInterest);
+}
+
+TEST_F(InterestForTouchscreenTest, ShowInterestInElementWrongDocument) {
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"(
+    <a href="foo.html" interestfor=target id=link>Link</a>
+    <div id=target popover>Target</div>
+    <iframe id=iframe></iframe>
+    )");
+  Document* document = GetDocument();
+  Element* link = document->getElementById(AtomicString("link"));
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  ASSERT_TRUE(link);
+  EXPECT_EQ(link->GetInterestState(), Element::InterestState::kNoInterest);
+
+  LocalFrame* main_frame = document->GetFrame();
+  ASSERT_TRUE(main_frame);
+  LocalFrame* child_frame = To<LocalFrame>(main_frame->Tree().FirstChild());
+  ASSERT_TRUE(child_frame);
+
+  // Calling ShowInterestInElement on a different frame than the element's
+  // document should be a no-op.
+  child_frame->ShowInterestInElement(link->GetDomNodeId());
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(link->GetInterestState(), Element::InterestState::kNoInterest);
+
+  // Calling ShowInterestInElement on the element's own frame succeeds.
+  main_frame->ShowInterestInElement(link->GetDomNodeId());
   document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
   EXPECT_EQ(link->GetInterestState(),
             Element::InterestState::kExplicitInterest);

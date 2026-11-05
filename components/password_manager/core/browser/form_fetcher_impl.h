@@ -13,6 +13,7 @@
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "base/types/expected.h"
 #include "components/password_manager/core/browser/form_fetcher.h"
 #include "components/password_manager/core/browser/http_password_store_migrator.h"
 #include "components/password_manager/core/browser/password_form.h"
@@ -88,12 +89,16 @@ class FormFetcherImpl : public FormFetcher,
   void OnGetSiteStatistics(std::vector<InteractionsStats> stats) override;
   void OnGetPasswordStoreResultsOrErrorFrom(
       PasswordStoreInterface* store,
-      LoginsResultOrError results_or_error) override;
+      base::expected<std::vector<StoredCredential>, PasswordStoreBackendError>
+          results_or_error) override;
 
   // HttpPasswordStoreMigrator::Consumer:
   void ProcessMigratedForms(std::vector<PasswordForm> forms) override;
 
-  void AggregatePasswordStoreResults(std::vector<StoredCredential> results);
+  // Appends `results` to `partial_results_` and decrements `wait_counter_`.
+  // Once all pending store queries and HTTP migrations finish, splits matches
+  // and notifies consumers (or triggers a queued refetch).
+  void AddResultsAndFinishIfDone(std::vector<StoredCredential> results);
 
   // PasswordStore results will be fetched for this description.
   const PasswordFormDigest form_digest_;
@@ -125,7 +130,8 @@ class FormFetcherImpl : public FormFetcher,
   // always false for non HTML forms.
   const bool should_migrate_http_passwords_;
 
-  // Does the actual migration.
+  // Active HTTP-to-HTTPS migrators keyed by the password store being migrated
+  // (profile and/or account store).
   base::flat_map<PasswordStoreInterface*,
                  std::unique_ptr<HttpPasswordStoreMigrator>>
       http_migrators_;
@@ -144,7 +150,12 @@ class FormFetcherImpl : public FormFetcher,
   // form fetcher.
   bool filter_grouped_credentials_ = true;
 
+  // Number of in-flight store queries and HTTP migrations for the active
+  // `Fetch()`. Reaching 0 finishes the fetch.
   int wait_counter_ = 0;
+
+  // Credentials accumulated across stores and HTTP migrators while
+  // `wait_counter_ > 0`, before `SplitResults()` partitions them.
   std::vector<StoredCredential> partial_results_;
 
   // Statistics for the current domain.

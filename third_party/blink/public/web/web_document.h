@@ -126,12 +126,6 @@ class BLINK_EXPORT WebDocument : public WebNode {
   // cookie blocking.
   net::SiteForCookies SiteForCookies() const;
 
-  // `StorageAccessApiStatus` is used to describe how/if this document has opted
-  // into accessing cross-site cookies using the Storage Access API. This is
-  // relevant when attempting to access cookies in a context where third-party
-  // cookies may be blocked.
-  net::StorageAccessApiStatus StorageAccessApiStatus() const;
-
   WebSecurityOrigin TopFrameOrigin() const;
   WebElement DocumentElement() const;
   WebElement Body() const;
@@ -216,26 +210,37 @@ class BLINK_EXPORT WebDocument : public WebNode {
   // Returns the number of times the document's cookies have been modified.
   uint64_t CookieModificationCount() const;
 
-  // Executes a script tool with the given `name` and `input_arguments`.
+  // Executes exactly the script tool with the internal ID `tool_id`, with the
+  // given `input_arguments`. If that tool is no longer registered, this fails,
+  // even if a different tool has since been registered under the same name.
   //
   // The associated callback is invoked once the async execution of the tool is
   // finished along with the result of the execution and the tool declaration.
   // Returns true for success.
-  bool ExecuteScriptTool(const base::UnguessableToken& invocation_id,
-                         const WebString& name,
+  bool ExecuteScriptTool(const ToolInvocationToken& invocation_id,
+                         const ScriptToolToken& tool_id,
                          const WebString& input_arguments,
                          WebScriptToolResultCallback tool_result_cb);
+
+  // Like `ExecuteScriptTool()`, but executes whichever tool is registered under
+  // `name` at the time of the call. Only for callers that don't have a tool ID:
+  // if the tool the caller saw has been replaced by another tool with the same
+  // name, this executes the new tool.
+  bool ExecuteScriptToolByName(const ToolInvocationToken& invocation_id,
+                               const WebString& name,
+                               const WebString& input_arguments,
+                               WebScriptToolResultCallback tool_result_cb);
 
   // Provides the result of a script tool execution initiated on an old
   // Document.
   using CrossDocumentScriptToolResultCallback =
       base::OnceCallback<void(WebString)>;
   void GetCrossDocumentScriptToolResult(
-      const base::UnguessableToken& invocation_id,
+      const ToolInvocationToken& invocation_id,
       CrossDocumentScriptToolResultCallback result_callback);
 
   // Cancels a script tool with the given execution ID.
-  void CancelScriptTool(const base::UnguessableToken& invocation_id);
+  void CancelScriptTool(const ToolInvocationToken& invocation_id);
 
   // Returns whether the AutofillEvent runtime feature is enabled for this
   // document's execution context (including origin trial tokens).

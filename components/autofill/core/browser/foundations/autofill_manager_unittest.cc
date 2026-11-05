@@ -64,10 +64,11 @@ class MockAutofillDriver : public TestAutofillDriver {
   explicit MockAutofillDriver(TestAutofillClient* client)
       : TestAutofillDriver(client) {
     ON_CALL(*this, TriggerFormExtractionInAllFrames)
-        .WillByDefault([this](base::OnceCallback<void(bool)>
+        .WillByDefault([this](bool force,
+                              base::OnceCallback<void(bool)>
                                   form_extraction_finished_callback) {
           TestAutofillDriver::TriggerFormExtractionInAllFrames(
-              std::move(form_extraction_finished_callback));
+              force, std::move(form_extraction_finished_callback));
         });
   }
   MockAutofillDriver(const MockAutofillDriver&) = delete;
@@ -77,9 +78,8 @@ class MockAutofillDriver : public TestAutofillDriver {
   MOCK_METHOD(bool, CanShowAutofillUi, (), (const));
   MOCK_METHOD(void,
               TriggerFormExtractionInAllFrames,
-              (base::OnceCallback<void(bool)>),
-              ());
-  MOCK_METHOD(void, ClearFormCacheInAllFrames, (), (override));
+              (bool, base::OnceCallback<void(bool)>),
+              (override));
 };
 
 class MockFieldClassificationModelHandler
@@ -338,9 +338,6 @@ class AutofillManagerTest_ObserverCalls
     InitAutofillClient();
     CreateAutofillDriver();
     ON_CALL(autofill_manager(), ShouldParseForms).WillByDefault(Return(true));
-    ON_CALL(autofill_manager(), ReparseKnownForms).WillByDefault([this] {
-      autofill_manager().AutofillManager::ReparseKnownForms();
-    });
     observation_.Observe(&autofill_manager());
   }
 
@@ -719,9 +716,10 @@ TEST_F(AutofillManagerTest_ObserverCalls, OnFormSubmitted) {
   std::move(run_loop).Run();
 }
 
-// Tests that calling ReparseKnownForms() fires OnBeforeFormsSeen(),
-// OnAfterFormsSeen(), and re-determines field types for known forms.
-TEST_F(AutofillManagerTest_ObserverCalls, ReparseKnownForms) {
+// Tests that calling TriggerFormExtractionInAllFrames() fires
+// OnBeforeFormsSeen(), OnAfterFormsSeen(), and re-determines field types for
+// known forms.
+TEST_F(AutofillManagerTest_ObserverCalls, TriggerFormExtractionInAllFrames) {
   std::vector<FormData> forms = CreateTestForms(2);
   SeeForms(forms);
 
@@ -745,7 +743,8 @@ TEST_F(AutofillManagerTest_ObserverCalls, ReparseKnownForms) {
   EXPECT_CALL(observer(),
               OnAfterFormsSeen(m, UnorderedElementsAre(f, g), IsEmpty()))
       .WillOnce(RunClosure(run_loop.QuitClosure()));
-  autofill_manager().ReparseKnownForms();
+  autofill_manager().TriggerFormExtractionInAllFrames(/*force=*/true,
+                                                      base::DoNothing());
   std::move(run_loop).Run();
 }
 
@@ -898,14 +897,14 @@ TEST_F(AutofillManagerTest, CanShowAutofillUi) {
 }
 
 TEST_F(AutofillManagerTest, TriggerFormExtractionInAllFrames) {
-  EXPECT_CALL(autofill_driver(), TriggerFormExtractionInAllFrames);
-  autofill_manager().TriggerFormExtractionInAllFrames(base::DoNothing());
-}
-
-TEST_F(AutofillManagerTest, ReparseKnownForms) {
-  EXPECT_CALL(autofill_driver(), ClearFormCacheInAllFrames);
-  EXPECT_CALL(autofill_driver(), TriggerFormExtractionInAllFrames);
-  autofill_manager().ReparseKnownForms();
+  EXPECT_CALL(autofill_driver(),
+              TriggerFormExtractionInAllFrames(/*force=*/false, _));
+  autofill_manager().TriggerFormExtractionInAllFrames(/*force=*/false,
+                                                      base::DoNothing());
+  EXPECT_CALL(autofill_driver(),
+              TriggerFormExtractionInAllFrames(/*force=*/true, _));
+  autofill_manager().TriggerFormExtractionInAllFrames(/*force=*/true,
+                                                      base::DoNothing());
 }
 
 // Ensure that `FieldClassificationModelHandler`s are called when parsing the
@@ -1135,9 +1134,6 @@ TEST_F(AutofillManagerTest, GetHeuristicPredictionForForm) {
 // OnLoadedServerPredictions() adds a new form structure to the cache.
 TEST_F(AutofillManagerTest,
        EarlyServerPredictions_QueryServerPredictions_StartQueryRequestCalled) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   std::vector<FormData> forms = CreateTestForms(1);
   std::vector<FormSignature> form_signatures = {
       CalculateFormSignature(forms[0])};
@@ -1166,9 +1162,6 @@ TEST_F(AutofillManagerTest,
 // same form ID but different form signature and lower version.
 TEST_F(AutofillManagerTest,
        EarlyServerPredictions_QueryServerPredictions_UpdatesExistingFormId) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   // Create a form and add it to the form cache via OnFormsSeen().
   EXPECT_CALL(autofill_manager(), ShouldParseForms).WillOnce(Return(true));
   TestAutofillManagerWaiter waiter(autofill_manager());
@@ -1219,9 +1212,6 @@ TEST_F(AutofillManagerTest,
 TEST_F(
     AutofillManagerTest,
     EarlyServerPredictions_QueryServerPredictions_UpdatesExistingFormIdWithSameSignature) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   // Create a form and add it to the form cache via OnFormsSeen().
   EXPECT_CALL(autofill_manager(), ShouldParseForms).WillOnce(Return(true));
   TestAutofillManagerWaiter waiter(autofill_manager());
@@ -1278,9 +1268,6 @@ TEST_F(
 TEST_F(
     AutofillManagerTest,
     EarlyServerPredictions_QueryServerPredictions_DoesNotOverridesExistingFormIdWithHigherVersion) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   // Create a form and add it to the form cache via OnFormsSeen().
   EXPECT_CALL(autofill_manager(), ShouldParseForms).WillOnce(Return(true));
   TestAutofillManagerWaiter waiter(autofill_manager());
@@ -1328,9 +1315,6 @@ TEST_F(
 // their signature is not part of the query response.
 TEST_F(AutofillManagerTest,
        EarlyServerPredictions_QueryServerPredictions_MissingSignature) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   std::vector<FormData> forms = {
       test::CreateTestAddressFormData(/*unique_id=*/"0"),
       test::CreateTestAddressFormData(/*unique_id=*/"1")};
@@ -1360,9 +1344,6 @@ TEST_F(AutofillManagerTest,
 TEST_F(
     AutofillManagerTest,
     EarlyServerPredictions_OnLoadedServerPredictions_QueryServerPredictions_RespectsCacheSize) {
-  base::test::ScopedFeatureList feature_list{
-      features::kAutofillServerQueryPredictionsEarly};
-
   std::vector<FormData> forms;
   for (size_t i = 0; i < kAutofillManagerMaxFormCacheSize + 1; ++i) {
     forms.push_back(test::CreateTestAddressFormData(

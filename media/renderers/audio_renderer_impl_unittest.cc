@@ -17,9 +17,11 @@
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "media/base/audio_buffer_converter.h"
@@ -99,7 +101,7 @@ class AudioRendererImplTest : public ::testing::Test,
     if (!enter_pending_decoder_init_) {
       EXPECT_CALL(*decoder, Initialize_(_, _, _, _, _))
           .WillOnce(
-              DoAll(SaveArg<3>(&output_cb_),
+              DoAll(SaveArg<0>(&decoder_config_), SaveArg<3>(&output_cb_),
                     RunOnceCallback<2>(expected_init_result_
                                            ? DecoderStatus::Codes::kOk
                                            : DecoderStatus::Codes::kFailed)));
@@ -291,9 +293,13 @@ class AudioRendererImplTest : public ::testing::Test,
     hardware_params_.Reset(AudioParameters::AUDIO_BITSTREAM_EAC3,
                            ChannelLayoutConfig::FromLayout<kChannelLayout>(),
                            kOutputSamplesPerSecond, 512);
+    hardware_params_.set_hardware_capabilities(
+        AudioParameters::HardwareCapabilities(
+            AudioParameters::AUDIO_BITSTREAM_EAC3,
+            /*require_encapsulation=*/false));
     sink_ = base::MakeRefCounted<FakeAudioRendererSink>(hardware_params_);
     AudioDecoderConfig audio_config(
-        AudioCodec::kAC3, kSampleFormatEac3,
+        AudioCodec::kEAC3, kSampleFormatEac3,
         ChannelLayoutConfig::FromLayout<kChannelLayout>(),
         kInputSamplesPerSecond, EmptyExtraData(),
         EncryptionScheme::kUnencrypted);
@@ -306,6 +312,7 @@ class AudioRendererImplTest : public ::testing::Test,
         base::BindRepeating(&AudioRendererImplTest::CreateAudioDecoderForTest,
                             base::Unretained(this)),
         &media_log_, MediaPlayerLoggingID(0), this);
+    renderer_->tick_clock_ = &tick_clock_;
 
     Initialize();
   }
@@ -564,6 +571,10 @@ class AudioRendererImplTest : public ::testing::Test,
     return renderer_->algorithm_->channel_mask_for_testing();
   }
 
+  const AudioParameters& audio_parameters() const {
+    return renderer_->audio_parameters_;
+  }
+
   bool ended() const { return ended_; }
 
   void DecodeDecoder(scoped_refptr<DecoderBuffer> buffer,
@@ -635,6 +646,7 @@ class AudioRendererImplTest : public ::testing::Test,
 
   // Used for satisfying reads.
   AudioDecoder::OutputCB output_cb_;
+  AudioDecoderConfig decoder_config_;
   AudioDecoder::DecodeCB decode_cb_;
   base::OnceClosure reset_cb_;
   std::unique_ptr<AudioTimestampHelper> next_timestamp_;
@@ -1027,6 +1039,109 @@ TEST_F(AudioRendererImplTest, ChannelMask_DownmixDiscreteLayout) {
   ASSERT_EQ(mask.size(), static_cast<size_t>(audio_channels));
   for (int ch = 0; ch < audio_channels; ++ch)
     ASSERT_TRUE(mask[ch]);
+}
+
+// Characterizes the layout negotiation in OnDeviceInfoReceived(): a discrete
+// stream layout selects the hardware path even when the demuxer stream does not
+// support config changes. The hardware here is stereo, so the CHANNEL_LAYOUT_
+// DISCRETE squash is not exercised and the decoder target is simply the
+// hardware layout.
+TEST_F(AudioRendererImplTest, DiscreteStreamLayoutForcesHardwarePath) {
+  constexpr int kDiscreteChannels = 9;
+
+  AudioDecoderConfig audio_config(
+      AudioCodec::kOpus, kSampleFormat,
+      ChannelLayoutConfig(CHANNEL_LAYOUT_DISCRETE, kDiscreteChannels),
+      kInputSamplesPerSecond, EmptyExtraData(), EncryptionScheme::kUnencrypted);
+  demuxer_stream_.set_audio_decoder_config(audio_config);
+
+  ConfigureDemuxerStream(false);
+
+  Initialize();
+
+  EXPECT_EQ(CHANNEL_LAYOUT_DISCRETE, audio_parameters().channel_layout());
+  EXPECT_EQ(kDiscreteChannels, audio_parameters().channels());
+
+  EXPECT_EQ(kOutputSamplesPerSecond, audio_parameters().sample_rate());
+
+  EXPECT_EQ(CHANNEL_LAYOUT_STEREO,
+            decoder_config_.target_output_channel_layout().channel_layout());
+}
+
+// Verify that a discrete hardware layout is always passed through for IAMF,
+// regardless of channel count, rather than being permanently downmixed.
+TEST_F(AudioRendererImplTest, IamfKeepsDiscreteHardwareLayouts) {
+  // We start with 9, which is our first DISCRETE case, and go past 12, our last
+  // nonDISCRETE case. 16 was arbitrarily chosen as a value past 12.
+  for (int channels = 9; channels <= 16; ++channels) {
+    SCOPED_TRACE(base::StringPrintf("channels=%d", channels));
+
+    AudioParameters hardware_params(
+        AudioParameters::AUDIO_PCM_LOW_LATENCY,
+        ChannelLayoutConfig(CHANNEL_LAYOUT_DISCRETE, channels),
+        kOutputSamplesPerSecond, 512);
+    ConfigureConfigChangeRenderer(hardware_params, hardware_params);
+
+    AudioDecoderConfig stream_config(AudioCodec::kIAMF, kSampleFormat,
+                                     ChannelLayoutConfig::Stereo(),
+                                     kInputSamplesPerSecond, EmptyExtraData(),
+                                     EncryptionScheme::kUnencrypted);
+    demuxer_stream_.set_audio_decoder_config(stream_config);
+
+    Initialize();
+
+    EXPECT_EQ(ChannelLayoutConfig(CHANNEL_LAYOUT_DISCRETE, channels),
+              decoder_config_.target_output_channel_layout());
+    EXPECT_EQ(ChannelLayoutConfig(CHANNEL_LAYOUT_DISCRETE, channels),
+              audio_parameters().channel_layout_config());
+  }
+}
+
+// Codecs other than IAMF continue to downmix to stereo.
+TEST_F(AudioRendererImplTest, NonIamfDiscreteHardwareLayoutSquashedToStereo) {
+  constexpr int kDiscreteChannels = 12;
+
+  AudioParameters hardware_params(
+      AudioParameters::AUDIO_PCM_LOW_LATENCY,
+      ChannelLayoutConfig(CHANNEL_LAYOUT_DISCRETE, kDiscreteChannels),
+      kOutputSamplesPerSecond, 512);
+  ConfigureConfigChangeRenderer(hardware_params, hardware_params);
+
+  AudioDecoderConfig stream_config(
+      AudioCodec::kOpus, kSampleFormat, ChannelLayoutConfig::Stereo(),
+      kInputSamplesPerSecond, EmptyExtraData(), EncryptionScheme::kUnencrypted);
+  demuxer_stream_.set_audio_decoder_config(stream_config);
+
+  Initialize();
+
+  EXPECT_EQ(ChannelLayoutConfig::Stereo(),
+            decoder_config_.target_output_channel_layout());
+  EXPECT_EQ(ChannelLayoutConfig::Stereo(),
+            audio_parameters().channel_layout_config());
+}
+
+// Verify that a named hardware layout reaches the decoder unchanged. Only
+// discrete layouts are squashed.
+TEST_F(AudioRendererImplTest, IamfNamedHardwareLayoutIsNotSquashed) {
+  AudioParameters::HardwareCapabilities capabilities(128, 4096);
+  capabilities.total_channels = 16;
+  AudioParameters hardware_params(
+      AudioParameters::AUDIO_PCM_LOW_LATENCY,
+      ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_7_1_4>(),
+      kOutputSamplesPerSecond, 512, capabilities);
+  ConfigureConfigChangeRenderer(hardware_params, hardware_params);
+
+  AudioDecoderConfig stream_config(
+      AudioCodec::kIAMF, kSampleFormat, ChannelLayoutConfig::Stereo(),
+      kInputSamplesPerSecond, EmptyExtraData(), EncryptionScheme::kUnencrypted);
+  demuxer_stream_.set_audio_decoder_config(stream_config);
+
+  Initialize();
+
+  EXPECT_EQ(ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_7_1_4>(),
+            decoder_config_.target_output_channel_layout());
+  EXPECT_EQ(ChannelLayoutConfig::FromLayout<CHANNEL_LAYOUT_7_1_4>(),
+            audio_parameters().channel_layout_config());
 }
 
 TEST_F(AudioRendererImplTest, Underflow_Flush) {
@@ -1568,6 +1683,89 @@ TEST_F(AudioRendererImplTest, BitstreamEndOfStream) {
   SetMediaClient(nullptr);
 }
 
+TEST_F(AudioRendererImplTest, BitstreamEndOfStreamWithDelay) {
+  // The sink keeps reporting `kHardwareDelay`, even after EOS.
+  const base::TimeDelta kHardwareDelay = AudioTimestampHelper::FramesToTime(
+      kInputFramesChunk, kInputSamplesPerSecond);
+  constexpr base::TimeDelta kPostEosDuration = base::Milliseconds(20);
+
+  InitializeBitstreamFormat();
+  Preroll();
+  StartTicking();
+
+  // Leave one packet so the renderer reads again, then end the stream.
+  EXPECT_TRUE(ConsumeBitstreamBufferedData(
+      OutputFrames(frames_buffered().value - kInputFramesChunk),
+      kHardwareDelay));
+  WaitForPendingRead();
+  DeliverEndOfStream();
+  EXPECT_TRUE(ConsumeBitstreamBufferedData(frames_buffered(), kHardwareDelay));
+
+  auto render_after = [&](base::TimeDelta elapsed) {
+    tick_clock_.Advance(elapsed);
+    EXPECT_FALSE(ConsumeBitstreamBufferedData(OutputFrames(1), kHardwareDelay));
+    base::RunLoop run_loop;
+    main_thread_task_runner_->PostTask(FROM_HERE, run_loop.QuitClosure());
+    run_loop.Run();
+  };
+
+  // `kHardwareDelay` is still in the sink, so we haven't ended yet.
+  render_after(base::TimeDelta());
+  EXPECT_FALSE(ended());
+  const base::TimeDelta eos_time = CurrentMediaTime();
+
+  // The sink drains in real time, even though its delay doesn't change.
+  render_after(kHardwareDelay / 2);
+  EXPECT_FALSE(ended());
+  EXPECT_EQ(CurrentMediaTime(), eos_time + kHardwareDelay / 2);
+
+  render_after(kHardwareDelay / 2);
+  EXPECT_TRUE(ended());
+  EXPECT_EQ(CurrentMediaTime(), eos_time + kHardwareDelay);
+
+  // Media time keeps moving after EOS.
+  render_after(kPostEosDuration);
+  EXPECT_EQ(CurrentMediaTime(), eos_time + kHardwareDelay + kPostEosDuration);
+
+  SetMediaClient(nullptr);
+}
+
+TEST_F(AudioRendererImplTest,
+       BitstreamUnderflowDoesNotAdvanceClockOrLeaveStaleData) {
+  const base::TimeDelta kHardwareDelay = AudioTimestampHelper::FramesToTime(
+      kInputFramesChunk, kInputSamplesPerSecond);
+
+  InitializeBitstreamFormat();
+  Preroll();
+  StartTicking();
+
+  testing::Mock::VerifyAndClearExpectations(this);
+  base::test::TestFuture<void> underflow;
+  EXPECT_CALL(*this, OnBufferingStateChange(BUFFERING_HAVE_NOTHING, _))
+      .WillOnce(base::test::RunOnceClosure(underflow.GetCallback()));
+
+  // Render one packet into `bus`, then drain the rest.
+  std::unique_ptr<AudioBus> bus = AudioBus::Create(hardware_params_);
+  int frames_read = 0;
+  EXPECT_TRUE(sink_->Render(bus.get(), kHardwareDelay, &frames_read));
+  ASSERT_EQ(frames_read, kInputFramesChunk);
+  EXPECT_TRUE(ConsumeBitstreamBufferedData(frames_buffered(), kHardwareDelay));
+
+  // Underflow with `kHardwareDelay` still in the sink. `bus` must not keep the
+  // previous packet.
+  EXPECT_TRUE(sink_->Render(bus.get(), kHardwareDelay, &frames_read));
+  EXPECT_EQ(frames_read, 0);
+  EXPECT_TRUE(bus->bitstream_data().empty());
+
+  // Underflowing again with the same delay must not move media time.
+  const base::TimeDelta media_time = CurrentMediaTime();
+  EXPECT_TRUE(sink_->Render(bus.get(), kHardwareDelay, &frames_read));
+  EXPECT_EQ(CurrentMediaTime(), media_time);
+
+  EXPECT_TRUE(underflow.Wait());
+  SetMediaClient(nullptr);
+}
+
 TEST_F(AudioRendererImplTest, MutedPlaybackBadDeviceInfo) {
   mock_sink_ = base::MakeRefCounted<MockAudioRendererSink>(
       std::string(), OUTPUT_DEVICE_STATUS_ERROR_NOT_AUTHORIZED,
@@ -1590,7 +1788,7 @@ TEST_F(AudioRendererImplTest, MutedPlaybackBadDeviceInfo) {
   Preroll();
   StartTicking();
 
-  EXPECT_CALL(*mock_sink_, Pause()).Times(0);
+  EXPECT_CALL(*mock_sink_, Pause(_)).Times(0);
   StopTicking();
   EXPECT_CALL(*mock_sink_, Play()).Times(0);
   StartTicking();
@@ -1601,7 +1799,7 @@ TEST_F(AudioRendererImplTest, MutedPlaybackBadDeviceInfo) {
   EXPECT_CALL(*mock_sink_, Play()).Times(0);
   renderer_->SetVolume(1);
 
-  EXPECT_CALL(*mock_sink_, Pause()).Times(0);
+  EXPECT_CALL(*mock_sink_, Pause(_)).Times(0);
   StopTicking();
   EXPECT_CALL(*mock_sink_, Stop()).Times(0);
 }
@@ -1619,7 +1817,7 @@ TEST_F(AudioRendererImplTest, BasicMutedPlayback) {
   StartTicking();
 
   // Play pause should all function as normal on the muted sink.
-  EXPECT_CALL(*mock_sink_, Pause()).Times(0);
+  EXPECT_CALL(*mock_sink_, Pause(_)).Times(0);
   StopTicking();
   EXPECT_CALL(*mock_sink_, Play()).Times(0);
   StartTicking();
@@ -1632,7 +1830,8 @@ TEST_F(AudioRendererImplTest, BasicMutedPlayback) {
   renderer_->SetVolume(1);
 
   // Play pause should all function as normal on the normal sink.
-  EXPECT_CALL(*mock_sink_, Pause());
+  EXPECT_CALL(*mock_sink_,
+              Pause(AudioRendererSink::PauseReason::kWaitingForData));
   StopTicking();
   EXPECT_CALL(*mock_sink_, Play());
   StartTicking();
@@ -1640,7 +1839,8 @@ TEST_F(AudioRendererImplTest, BasicMutedPlayback) {
 
   // Muting again should pause the real sink.
   EXPECT_CALL(*mock_sink_, SetVolume(0));
-  EXPECT_CALL(*mock_sink_, Pause());
+  EXPECT_CALL(*mock_sink_,
+              Pause(AudioRendererSink::PauseReason::kPlaybackPaused));
   renderer_->SetVolume(0);
   testing::Mock::VerifyAndClearExpectations(mock_sink_.get());
 
@@ -1650,7 +1850,8 @@ TEST_F(AudioRendererImplTest, BasicMutedPlayback) {
   renderer_->SetVolume(0.5f);
   testing::Mock::VerifyAndClearExpectations(mock_sink_.get());
 
-  EXPECT_CALL(*mock_sink_, Pause());
+  EXPECT_CALL(*mock_sink_,
+              Pause(AudioRendererSink::PauseReason::kWaitingForData));
   StopTicking();
   EXPECT_CALL(*mock_sink_, Stop());
 }
@@ -1675,13 +1876,14 @@ TEST_F(AudioRendererImplTest, RenderMutedAudio) {
   // Muting should not pause the sink.
   renderer_->SetRenderMutedAudio(true);
   EXPECT_CALL(*mock_sink_, SetVolume(0));
-  EXPECT_CALL(*mock_sink_, Pause()).Times(0);
+  EXPECT_CALL(*mock_sink_, Pause(_)).Times(0);
   renderer_->SetVolume(0);
   EXPECT_EQ(renderer_->was_unmuted_for_testing(), 1);
   testing::Mock::VerifyAndClearExpectations(mock_sink_.get());
 
   // Setting render muted audio to false should pause the sink.
-  EXPECT_CALL(*mock_sink_, Pause());
+  EXPECT_CALL(*mock_sink_,
+              Pause(AudioRendererSink::PauseReason::kPlaybackPaused));
   renderer_->SetRenderMutedAudio(false);
   testing::Mock::VerifyAndClearExpectations(mock_sink_.get());
 
@@ -1691,7 +1893,8 @@ TEST_F(AudioRendererImplTest, RenderMutedAudio) {
   testing::Mock::VerifyAndClearExpectations(mock_sink_.get());
 
   // Setting render muted audio to false should pause the sink.
-  EXPECT_CALL(*mock_sink_, Pause());
+  EXPECT_CALL(*mock_sink_,
+              Pause(AudioRendererSink::PauseReason::kPlaybackPaused));
   renderer_->SetRenderMutedAudio(false);
   testing::Mock::VerifyAndClearExpectations(mock_sink_.get());
 
@@ -1951,12 +2154,59 @@ TEST_F(AudioRendererImplTest, UnmuteWhilePlaying) {
 
   // Muting should pause the sink.
   EXPECT_CALL(*mock_sink_, SetVolume(0));
-  EXPECT_CALL(*mock_sink_, Pause());
+  EXPECT_CALL(*mock_sink_,
+              Pause(AudioRendererSink::PauseReason::kPlaybackPaused));
   renderer_->SetVolume(0);
   EXPECT_EQ(renderer_->was_unmuted_for_testing(), 1);
 
   StopTicking();
   EXPECT_CALL(*mock_sink_, Stop());
+}
+
+TEST_F(AudioRendererImplTest,
+       StopTickingPassesWaitingForDataAndExplicitPausePassesPlaybackPaused) {
+  Initialize();
+  Preroll();
+  StartTicking();
+
+  // `StopTicking()` while `playback_rate_ > 0` (e.g. underflow or seek flush)
+  // should pause the sink with `kWaitingForData`.
+  StopTicking();
+  EXPECT_EQ(sink_->state(), FakeAudioRendererSink::kPaused);
+  EXPECT_EQ(sink_->last_pause_reason(),
+            AudioRendererSink::PauseReason::kWaitingForData);
+
+  // Resume rendering and then explicitly pause via `SetPlaybackRate(0.0)` while
+  // actively rendering, which should also pause with `kPlaybackPaused`.
+  StartTicking();
+  EXPECT_EQ(sink_->state(), FakeAudioRendererSink::kPlaying);
+  renderer_->SetPlaybackRate(0.0);
+  EXPECT_EQ(sink_->state(), FakeAudioRendererSink::kPaused);
+  EXPECT_EQ(sink_->last_pause_reason(),
+            AudioRendererSink::PauseReason::kPlaybackPaused);
+}
+
+TEST_F(AudioRendererImplTest, StopTickingAtEndOfStreamPassesPlaybackPaused) {
+  Initialize();
+  Preroll();
+  StartTicking();
+
+  EXPECT_TRUE(ConsumeBufferedData(frames_buffered()));
+  WaitForPendingRead();
+  DeliverEndOfStream();
+  EXPECT_TRUE(ConsumeBufferedData(frames_buffered()));
+
+  // Trigger `rendered_end_of_stream_ = true`.
+  EXPECT_FALSE(ConsumeBufferedData(OutputFrames(1)));
+  ASSERT_TRUE(base::test::RunUntil([this]() { return ended(); }));
+
+  // When `RendererImpl::OnRendererEnded()` calls `StopTicking()` before
+  // `SetPlaybackRate(0.0)` arrives, `rendered_end_of_stream_` is true so the
+  // sink should be paused with `kPlaybackPaused`.
+  StopTicking();
+  EXPECT_EQ(sink_->state(), FakeAudioRendererSink::kPaused);
+  EXPECT_EQ(sink_->last_pause_reason(),
+            AudioRendererSink::PauseReason::kPlaybackPaused);
 }
 
 TEST_F(AudioRendererImplTest, DecodeAudioReadyPreemptsFlush) {

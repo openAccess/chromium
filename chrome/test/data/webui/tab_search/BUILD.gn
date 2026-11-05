@@ -31,12 +31,16 @@ build_webui_tests("build") {
     "chrome://tab-search.top-chrome/tab_search.js|" + rebase_path(
             "$root_gen_dir/chrome/browser/resources/tab_search/tsc/tab_search.d.ts",
             target_gen_dir),
+    "/tab_group_shared/*|" + rebase_path(
+            "$root_gen_dir/chrome/browser/resources/tab_group_shared/tsc/*",
+            target_gen_dir),
     "chrome://webui-test/metrics_reporter/*|" +
         rebase_path(
             "$root_gen_dir/chrome/test/data/webui/metrics_reporter/tsc/*",
             target_gen_dir),
   ]
   ts_deps = [
+    "//chrome/browser/resources/tab_group_shared:build_ts",
     "//chrome/browser/resources/tab_search:build_ts",
     "//third_party/lit/v3_0:build_ts",
     "//ui/webui/resources/js:build_ts",

@@ -4,7 +4,12 @@
 
 import("//mojo/public/tools/bindings/mojom.gni")
 
-mojom("mojom") {
+# A component so that generated non-inline code (e.g. the `operator<<` of
+# `ui.mojom.WindowOpenDisposition`) is exported in component builds.
+mojom_component("mojom") {
+  output_prefix = "ui_base_mojom"
+  macro_prefix = "UI_BASE_MOJOM"
+  generate_blink = true
   generate_java = true
   sources = [
     "themes.mojom",
@@ -36,19 +41,6 @@ mojom("mojom") {
     ]
   }
 
-  cpp_typemaps += [
-    {
-      types = [
-        {
-          mojom = "ui.mojom.WindowOpenDisposition"
-          cpp = "::WindowOpenDisposition"
-        },
-      ]
-      traits_headers = [ "window_open_disposition_mojom_traits.h" ]
-      traits_public_deps = [ "//ui/base:types" ]
-    },
-  ]
-
   export_class_attribute_blink = "BLINK_PLATFORM_EXPORT"
   export_define_blink = "BLINK_PLATFORM_IMPLEMENTATION=1"
   export_header_blink = "third_party/blink/public/platform/web_common.h"
@@ -64,6 +56,7 @@ mojom("mojom") {
 # TODO(crbug.com/370252254): Move back `MenuSourceType` enum to
 # ui_base_types.mojom.
 mojom("ui_base_types") {
+  generate_blink = true
   generate_java = true
   sources = [
     "dialog_button.mojom",

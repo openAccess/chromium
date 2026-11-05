@@ -8,7 +8,6 @@
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shelf/shelf.h"
 #include "ash/style/ash_color_id.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/style/typography.h"
 #include "ash/system/tray/tray_constants.h"
 #include "ash/wm/collision_detection/collision_detection_utils.h"
@@ -44,16 +43,14 @@ ContextualNudge::ContextualNudge(views::View* anchor,
                                  const gfx::Insets& margins,
                                  const std::u16string& text,
                                  const base::RepeatingClosure& tap_callback)
-    : views::BubbleDialogDelegateView(anchor,
-                                      GetArrowForPosition(position),
-                                      views::BubbleBorder::NO_SHADOW),
+    : views::BubbleDialogDelegateView(anchor, GetArrowForPosition(position)),
       tap_callback_(tap_callback) {
   SetBackgroundColor(SK_ColorTRANSPARENT);
   set_close_on_deactivate(false);
   set_margins(gfx::Insets());
   set_accept_events(!tap_callback.is_null());
   SetCanActivate(false);
-  set_shadow(views::BubbleBorder::NO_SHADOW);
+  set_shadow_config({.shadow_type = views::BubbleBorder::NO_SHADOW});
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   set_layer_type(ui::LAYER_NOT_DRAWN);
 
@@ -77,13 +74,8 @@ ContextualNudge::ContextualNudge(views::View* anchor,
   TypographyProvider::Get()->StyleLabel(TypographyToken::kCrosAnnotation1,
                                         *label_);
 
-  views::BubbleDialogDelegateView::CreateBubble(this);
-
-  // TODO(sanchit.abrol@microsoft.com): Move back among the other setters after
-  // the platform default setting is moved from
-  // |BubbleDialogDelegateView::CreateBubble| to being the default value at
-  // bubble construction.
   set_adjust_if_offscreen(false);
+  views::BubbleDialogDelegateView::CreateBubble(this);
 
   // Text box for shelf nudge should be ignored for collision detection.
   CollisionDetectionUtils::IgnoreWindowForCollisionDetection(

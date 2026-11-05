@@ -21,6 +21,9 @@
 
 #include "third_party/blink/renderer/core/paint/theme_painter.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include "build/build_config.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -43,8 +46,12 @@
 #include "third_party/blink/renderer/platform/graphics/graphics_context_state_saver.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_canvas.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/writing_mode.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/gfx/geometry/point_conversions.h"
+#include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/gfx/geometry/size_conversions.h"
 #include "ui/native_theme/native_theme.h"
 
 // The methods in this file are shared by all themes on every platform.
@@ -52,6 +59,20 @@
 namespace blink {
 
 using mojom::blink::FormControlType;
+
+gfx::Rect ThemePainter::SnapRectForPaint(const PhysicalRect& paint_rect,
+                                         AppearanceValue appearance) {
+  if (RuntimeEnabledFeatures::ConsistentFormControlPaintSnappingEnabled() &&
+      (appearance == AppearanceValue::kCheckbox ||
+       appearance == AppearanceValue::kRadio)) {
+    // Rounding the size on its own, rather than snapping both edges, keeps
+    // the painted size independent of the sub-pixel position.
+    const gfx::RectF rect(paint_rect);
+    return gfx::Rect(gfx::ToRoundedPoint(rect.origin()),
+                     gfx::ToRoundedSize(rect.size()));
+  }
+  return ToPixelSnappedRect(paint_rect);
+}
 
 namespace {
 
@@ -96,8 +117,8 @@ bool ThemePainter::Paint(const LayoutObject& o,
                          const PaintInfo& paint_info,
                          const gfx::Rect& r) {
   Document& doc = o.GetDocument();
-  const ComputedStyle& style = o.StyleRef();
-  AppearanceValue appearance = o.StyleRef().EffectiveAppearance();
+  const ComputedStyle& style = o.Style();
+  AppearanceValue appearance = o.Style().EffectiveAppearance();
   // LayoutTheme::AdjustAppearanceWithElementType() ensures |node| is a
   // non-null Element.
   DCHECK(o.GetNode());
@@ -327,7 +348,7 @@ void ThemePainter::PaintSliderTicks(const LayoutObject& o,
   if (min >= max)
     return;
 
-  const ComputedStyle& style = o.StyleRef();
+  const ComputedStyle& style = o.Style();
   AppearanceValue appearance = style.EffectiveAppearance();
   // We don't support ticks on alternate sliders like MediaVolumeSliders.
   bool is_slider_vertical =
@@ -369,16 +390,24 @@ void ThemePainter::PaintSliderTicks(const LayoutObject& o,
   const float tick_inline_size = kSliderTickInlineSize * zoom_factor;
   const float tick_block_size = kSliderTickBlockSize * zoom_factor;
   const float tick_offset_from_center = kSliderTickOffset * zoom_factor;
+  // The painted size is floored to whole pixels to keep the ticks crisp, but it
+  // has to stay at least one pixel. kSliderTickInlineSize is 1, so any zoom
+  // factor below 1 (e.g. 90% page zoom on a 1x display) would otherwise floor
+  // to zero and no ticks would be painted at all.
+  const float snapped_tick_inline_size =
+      std::max(1.0f, std::floor(tick_inline_size));
+  const float snapped_tick_block_size =
+      std::max(1.0f, std::floor(tick_block_size));
   const auto writing_direction = style.GetWritingDirection();
   if (is_horizontal) {
-    tick_rect.set_size({floor(tick_inline_size), floor(tick_block_size)});
+    tick_rect.set_size({snapped_tick_inline_size, snapped_tick_block_size});
     tick_rect.set_y(
         floor(rect.y() + rect.height() / 2.0 + tick_offset_from_center));
     tick_region_side_margin =
         track_bounds.x() + (thumb_size.width() - tick_inline_size) / 2.0;
     tick_region_width = track_bounds.width() - thumb_size.width();
   } else {
-    tick_rect.set_size({floor(tick_block_size), floor(tick_inline_size)});
+    tick_rect.set_size({snapped_tick_block_size, snapped_tick_inline_size});
     const float slider_center = rect.x() + rect.width() / 2.0;
     const float tick_x =
         (style.IsHorizontalTypographicMode() &&

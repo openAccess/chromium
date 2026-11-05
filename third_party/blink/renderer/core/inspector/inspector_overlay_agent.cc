@@ -35,6 +35,7 @@
 #include "build/build_config.h"
 #include "cc/layers/content_layer_client.h"
 #include "cc/layers/picture_layer.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -504,7 +505,6 @@ InspectorOverlayAgent::InspectorOverlayAgent(
           &InspectorOverlayAgent::OnResizeTimer),
       dom_agent_(dom_agent),
       swallow_next_mouse_up_(false),
-      backend_node_id_to_inspect_(0),
       show_ad_highlights_(&agent_state_, false),
       show_debug_borders_(&agent_state_, false),
       show_fps_counter_(&agent_state_, false),
@@ -556,8 +556,10 @@ void InspectorOverlayAgent::Trace(Visitor* visitor) const {
 void InspectorOverlayAgent::Init(CoreProbeSink* instrumenting_agents,
                                  protocol::UberDispatcher* dispatcher,
                                  InspectorSessionState* state,
-                                 V8SessionHolder v8_session) {
-  InspectorBaseAgent::Init(instrumenting_agents, dispatcher, state, v8_session);
+                                 V8SessionHolder v8_session,
+                                 ClientIsTrusted client_is_trusted) {
+  InspectorBaseAgent::Init(instrumenting_agents, dispatcher, state, v8_session,
+                           client_is_trusted);
   const auto* reattach_state = state->ReattachState();
   if (reattach_state && reattach_state->browser_originating_session_state) {
     const auto& browser_state =
@@ -595,10 +597,9 @@ protocol::Response InspectorOverlayAgent::enable() {
   }
   enabled_ = true;
   if (backend_node_id_to_inspect_) {
-    GetFrontend()->inspectNodeRequested(
-        static_cast<int>(backend_node_id_to_inspect_));
+    GetFrontend()->inspectNodeRequested(backend_node_id_to_inspect_.value());
   }
-  backend_node_id_to_inspect_ = 0;
+  backend_node_id_to_inspect_ = DOMNodeIdType();
   SetNeedsUnbufferedInput(true);
   return protocol::Response::Success();
 }
@@ -1556,20 +1557,8 @@ void InspectorOverlayAgent::LoadOverlayPageResource() {
   Settings& settings = GetFrame()->GetPage()->GetSettings();
   Settings& overlay_settings = overlay_page_->GetSettings();
 
-  overlay_settings.GetGenericFontFamilySettings().UpdateStandard(
-      settings.GetGenericFontFamilySettings().Standard());
-  overlay_settings.GetGenericFontFamilySettings().UpdateFixed(
-      settings.GetGenericFontFamilySettings().Fixed());
-  overlay_settings.GetGenericFontFamilySettings().UpdateSerif(
-      settings.GetGenericFontFamilySettings().Serif());
-  overlay_settings.GetGenericFontFamilySettings().UpdateSansSerif(
-      settings.GetGenericFontFamilySettings().SansSerif());
-  overlay_settings.GetGenericFontFamilySettings().UpdateCursive(
-      settings.GetGenericFontFamilySettings().Cursive());
-  overlay_settings.GetGenericFontFamilySettings().UpdateFantasy(
-      settings.GetGenericFontFamilySettings().Fantasy());
-  overlay_settings.GetGenericFontFamilySettings().UpdateMath(
-      settings.GetGenericFontFamilySettings().Math());
+  overlay_settings.GetGenericFontFamilySettings() =
+      settings.GetGenericFontFamilySettings();
   overlay_settings.SetMinimumFontSize(settings.GetMinimumFontSize());
   overlay_settings.SetMinimumLogicalFontSize(
       settings.GetMinimumLogicalFontSize());
@@ -1585,7 +1574,7 @@ void InspectorOverlayAgent::LoadOverlayPageResource() {
       nullptr, mojo::NullRemote());
   frame->SetView(MakeGarbageCollected<LocalFrameView>(*frame));
   frame->Init(/*opener=*/nullptr, DocumentToken(),
-              /*initiator_state_token=*/base::UnguessableToken::Create(),
+              /*initiator_state_token=*/InitiatorStateToken(),
               /*policy_container=*/nullptr, StorageKey(),
               /*document_ukm_source_id=*/ukm::kInvalidSourceId,
               /*creator_base_url=*/NullUrl());
@@ -1791,7 +1780,7 @@ void InspectorOverlayAgent::Inspect(Node* inspected_node) {
     return;
   }
 
-  DOMNodeId backend_node_id = node->GetDomNodeId();
+  DOMNodeIdType backend_node_id(node->GetDomNodeId());
   if (!enabled_) {
     backend_node_id_to_inspect_ = backend_node_id;
     return;
@@ -2096,6 +2085,52 @@ InspectorOverlayAgent::ToContainerQueryContainerHighlightConfig(
 }
 
 // static
+std::unique_ptr<InspectorImcbHighlightConfig>
+InspectorOverlayAgent::ToImcbHighlightConfig(
+    protocol::Overlay::ImcbHighlightConfig* config) {
+  if (!config) {
+    return nullptr;
+  }
+  std::unique_ptr<InspectorImcbHighlightConfig> highlight_config =
+      std::make_unique<InspectorImcbHighlightConfig>();
+
+  if (config->hasImcbBorderColor()) {
+    LineStyle line_style;
+    line_style.color = ParseColor(config->getImcbBorderColor(nullptr));
+    line_style.pattern = "dashed";
+    highlight_config->imcb_border = line_style;
+  }
+  highlight_config->imcb_background_color =
+      ParseColor(config->getImcbBackgroundColor(nullptr));
+  highlight_config->insets_background_color =
+      ParseColor(config->getInsetsBackgroundColor(nullptr));
+  highlight_config->insets_hatch_color =
+      ParseColor(config->getInsetsHatchColor(nullptr));
+
+  if (config->hasAnchorBorderColor()) {
+    LineStyle line_style;
+    line_style.color = ParseColor(config->getAnchorBorderColor(nullptr));
+    line_style.pattern = "solid";
+    highlight_config->anchor_border = line_style;
+  }
+  highlight_config->anchor_background_color =
+      ParseColor(config->getAnchorBackgroundColor(nullptr));
+  highlight_config->show_position_area_grid =
+      config->getShowPositionAreaGrid(false);
+  if (config->hasPositionAreaGridLineColor()) {
+    LineStyle line_style;
+    line_style.color =
+        ParseColor(config->getPositionAreaGridLineColor(nullptr));
+    line_style.pattern = "dashed";
+    highlight_config->position_area_grid_line_color = line_style;
+  }
+  highlight_config->position_area_active_region_color =
+      ParseColor(config->getPositionAreaActiveRegionColor(nullptr));
+
+  return highlight_config;
+}
+
+// static
 std::unique_ptr<InspectorFlexItemHighlightConfig>
 InspectorOverlayAgent::ToFlexItemHighlightConfig(
     protocol::Overlay::FlexItemHighlightConfig* config) {
@@ -2228,6 +2263,10 @@ InspectorOverlayAgent::ToHighlightConfig(
   highlight_config->container_query_container_highlight_config =
       InspectorOverlayAgent::ToContainerQueryContainerHighlightConfig(
           config->getContainerQueryContainerHighlightConfig(nullptr));
+
+  highlight_config->imcb_highlight_config =
+      InspectorOverlayAgent::ToImcbHighlightConfig(
+          config->getImcbHighlightConfig(nullptr));
 
   return highlight_config;
 }

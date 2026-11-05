@@ -7,8 +7,7 @@
 
 #include <optional>
 
-#include "base/types/expected.h"
-#include "components/facilitated_payments/core/mojom/pix_code_validator.mojom.h"
+#include "base/containers/enum_set.h"
 #include "components/facilitated_payments/core/utils/facilitated_payments_ui_utils.h"
 #include "components/facilitated_payments/core/utils/facilitated_payments_utils.h"
 #include "components/facilitated_payments/core/validation/payment_link_validator.h"
@@ -156,8 +155,9 @@ enum class EwalletNewAccountLinkingFlowExitedReason {
 //
 // LINT.IfChange(PixFlowExitedReason)
 enum class PixFlowExitedReason {
-  // The code validator encountered an error.
-  kCodeValidatorFailed = 0,
+  // Obsolete: Pix codes are validated in-process by the Rust validator, which
+  // cannot fail this way.
+  // kCodeValidatorFailed = 0,
   // The code for the payflow is not valid.
   kInvalidCode = 1,
   // The user has opted out of the payflow.
@@ -217,11 +217,15 @@ enum class AccountLinkingFlowExitedReason {
   kScreenClosedNotByUser = 1,
   kScreenClosedByUser = 2,
   kUserDeclined = 3,
-  kWalletNotInstalled = 4,
-  kWalletVersionNotSupported = 5,
+  // Obsolete: Only used by the Wallet-redirect account linking flow, which has
+  // been replaced by native account linking.
+  // kWalletNotInstalled = 4,
+  // kWalletVersionNotSupported = 5,
   kUserOptedOut = 6,
   kNoScreenlockOrBiometricSetup = 7,
-  kServerSideIneligible = 8,
+  // Obsolete: Replaced by `kGetDetailsFailed` and
+  // `kNotEligiblePerPaymentsBackend`.
+  // kServerSideIneligible = 8,
   kTabIsNotActive = 9,
   kUserSwitchedWebsite = 10,
   kMaxStrikes = 11,
@@ -239,8 +243,10 @@ enum class AccountLinkingFlowExitedReason {
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/facilitated_payments/enums.xml:FacilitatedPayments.AccountLinking.FlowExitedReason)
 
-// This contains a subset of the variants in the Rust `PixQrCodeResult` enum, as
-// some values are not interesting for metrics, e.g. they'd be too noisy/spammy.
+// A subset of the variants in the Rust `PixQrCodeResult` enum. Variants that
+// indicate the text was not a payment code at all are omitted, as random text
+// copied by the user is likely to end up classified into one of the "not a
+// payment code" buckets and make the resulting metrics much noisier.
 // LINT.IfChange(PixCodeRustValidationResult)
 enum class PixCodeRustValidationResult {
   // The input was successfully parsed as a dynamic Pix code.
@@ -263,20 +269,6 @@ enum class PixCodeRustValidationResult {
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/facilitated_payments/enums.xml:FacilitatedPayments.Pix.PaymentCodeValidation.RustResult)
 
-// LINT.IfChange(PixCodeValidationResult)
-enum class PixCodeValidationResult {
-  // The code is dynamic.
-  kDynamic = 0,
-  // The code is static.
-  kStatic = 1,
-  // The code is invalid.
-  kInvalid = 2,
-  // The validator failed to validate the code.
-  kValidatorFailed = 3,
-  kMaxValue = kValidatorFailed
-};
-// LINT.ThenChange(/tools/metrics/histograms/metadata/facilitated_payments/enums.xml:FacilitatedPayments.PixCodeValidationResult)
-
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 //
@@ -290,6 +282,47 @@ enum class PixIframeUrlType {
   kMaxValue = kNonEmptyAndSameOriginAsMainFrame
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/facilitated_payments/enums.xml:FacilitatedPayments.Pix.IframeUrlType)
+
+// The outcome of one payment QR code decoding pass.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(QrCodeDetectionResult)
+enum class QrCodeDetectionResult {
+  // No image on the page passed the extraction filters.
+  kImagesNotFound = 0,
+  // Image extraction or barcode decoding could not run, or was interrupted.
+  kDetectorUnavailable = 1,
+  // Images were decoded, but no QR code was found.
+  kQrCodeNotFound = 2,
+  // Exactly one QR code was decoded.
+  kSingleQrCodeFound = 3,
+  // More than one QR code was decoded.
+  kMultipleQrCodesFound = 4,
+  kMaxValue = kMultipleQrCodesFound,
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/facilitated_payments/enums.xml:FacilitatedPayments.QrCode.DetectionResult)
+
+// The renderer's heuristic signals that started a QR code decoding pass. Each
+// value is a bit in the logged sample, so that every combination of signals
+// has its own bucket.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(QrCodeHeuristicSignal)
+enum class QrCodeHeuristicSignal {
+  kFacilitatedPaymentLink = 0,
+  kSquareCandidate = 1,
+  kUrlKeywordMatch = 2,
+  kTextKeywordMatch = 3,
+  kMaxValue = kTextKeywordMatch,
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/facilitated_payments/enums.xml:FacilitatedPayments.QrCode.HeuristicSignals)
+
+using QrCodeHeuristicSignals =
+    base::EnumSet<QrCodeHeuristicSignal,
+                  QrCodeHeuristicSignal::kFacilitatedPaymentLink,
+                  QrCodeHeuristicSignal::kMaxValue>;
 
 // Converts `PaymentLinkValidator::Scheme` to a string for logging.
 std::string SchemeToString(PaymentLinkValidator::Scheme scheme);
@@ -307,6 +340,18 @@ void LogPixIframeUrlType(PixIframeUrlType url_type);
 // Log if the iframe is same-origin with the main frame when a Pix code is
 // copied in an iframe.
 void LogPixIframeIsSameOriginAsMainFrame(bool is_same_origin);
+
+// Logs the outcome of one payment QR code decoding pass.
+void LogQrCodeDetectionResult(QrCodeDetectionResult result);
+
+// Logs the heuristic `signals` that started a QR code decoding pass, split by
+// whether the pass decoded a QR code.
+void LogQrCodeHeuristicSignals(QrCodeHeuristicSignals signals,
+                               bool qr_code_found);
+
+// Logs the 1-based index of the decoding pass that first decoded a QR code on
+// a page.
+void LogQrCodeSuccessfulAttemptIndex(int attempt_index);
 
 // Log when a given payment link in a certain page for an eWallet push payment
 // flow is detected.
@@ -355,17 +400,8 @@ void LogNonCardPaymentMethodsFopSelected(
     PaymentLinkFopSelectorAction payment_link_fop_selector_action,
     std::optional<PaymentLinkValidator::Scheme> scheme);
 
-// Logs the result of the Rust Pix code validator. Always logged, even when the
-// C++ validator is in use.
+// Logs the result of the Rust Pix code validator.
 void LogPaymentCodeRustValidationResult(PixCodeRustValidationResult result);
-
-// Log the result and latency for validating a payment code using
-// `data_decoder::DataDecoder`, as well as whether the C++ validator agrees with
-// the Rust validator.
-void LogPaymentCodeValidationResultAndLatency(
-    PixCodeValidationResult result,
-    std::optional<PixCodeRustValidationResult> rust_result,
-    base::TimeDelta duration);
 
 // Log the result of whether the facilitated payments is available or not and
 // the check's latency.
@@ -526,9 +562,6 @@ void LogAccountLinkingPromptInteractionDuration(
 
 // Logs that the Pix account linking prompt was shown.
 void LogPixAccountLinkingPromptShown();
-
-// Logs that the Pix account linking prompt was accepted by user.
-void LogPixAccountLinkingPromptAccepted();
 
 // Logs the result and latency of the client token fetch during account linking.
 void LogAccountLinkingGetClientTokenResultAndLatency(

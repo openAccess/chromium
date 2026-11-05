@@ -23,6 +23,7 @@
 #include "components/search/search.h"
 #include "components/search_engines/search_engines_test_environment.h"
 #include "components/search_engines/template_url_service.h"
+#include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/variations/pref_names.h"
 #include "components/variations/scoped_variations_ids_provider.h"
 #include "net/base/url_util.h"
@@ -66,11 +67,12 @@ class MockAimEligibilityServiceForInterception : public AimEligibilityService {
       PrefService& pref_service,
       TemplateURLService* template_url_service,
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      Configuration configuration = {})
+      Configuration configuration = {},
+      signin::IdentityManager* identity_manager = nullptr)
       : AimEligibilityService(pref_service,
                               template_url_service,
                               std::move(url_loader_factory),
-                              nullptr,
+                              identity_manager,
                               "en-US",
                               std::move(configuration)) {}
   ~MockAimEligibilityServiceForInterception() override = default;
@@ -108,12 +110,14 @@ class AimEligibilityServiceTest : public testing::Test {
   }
 
   void CreateService(
-      const AimEligibilityService::Configuration& configuration = {}) {
+      const AimEligibilityService::Configuration& configuration = {},
+      signin::IdentityManager* identity_manager = nullptr) {
     aim_eligibility_service_ =
         std::make_unique<MockAimEligibilityServiceForInterception>(
             search_engines_test_environment_.pref_service(),
             search_engines_test_environment_.template_url_service(),
-            test_url_loader_factory_.GetSafeWeakWrapper(), configuration);
+            test_url_loader_factory_.GetSafeWeakWrapper(), configuration,
+            identity_manager);
   }
 
   void TearDown() override { aim_eligibility_service_ = nullptr; }
@@ -125,6 +129,7 @@ class AimEligibilityServiceTest : public testing::Test {
       variations::VariationsIdsProvider::Mode::kUseSignedInState};
   search_engines::SearchEnginesTestEnvironment search_engines_test_environment_;
   network::TestURLLoaderFactory test_url_loader_factory_;
+  signin::IdentityTestEnvironment identity_test_env_{&test_url_loader_factory_};
   std::unique_ptr<MockAimEligibilityServiceForInterception>
       aim_eligibility_service_;
 };
@@ -241,10 +246,58 @@ TEST_F(AimEligibilityServiceTest, IsAimUrl) {
   EXPECT_FALSE(aim_eligibility_service_->IsAimUrl(
       GURL("https://google.com/feature?a=1&b=2"), std::nullopt));
 
-  // Check that the host override works correctly
+  // Check that the host override works correctly with and without ports
   EXPECT_FALSE(aim_eligibility_service_->IsAimUrl(
       GURL("https://goo.gl/feature?a=1&b=2"),
       contextual_tasks::HostOverride::FromString("goo.gl")));
+  EXPECT_TRUE(aim_eligibility_service_->IsAimUrl(
+      GURL("https://goo.gl/search?a=1&b=2"),
+      contextual_tasks::HostOverride::FromString("goo.gl")));
+  EXPECT_TRUE(aim_eligibility_service_->IsAimUrl(
+      GURL("https://goo.gl:8888/search?a=1&b=2"),
+      contextual_tasks::HostOverride::FromString("goo.gl:8888")));
+  EXPECT_FALSE(aim_eligibility_service_->IsAimUrl(
+      GURL("https://goo.gl:9999/search?a=1&b=2"),
+      contextual_tasks::HostOverride::FromString("goo.gl:8888")));
+  EXPECT_FALSE(aim_eligibility_service_->IsAimUrl(
+      GURL("https://goo.gl/search?a=1&b=2"),
+      contextual_tasks::HostOverride::FromString("goo.gl:8888")));
+
+  // g.ai and www.g.ai should be recognized as AIM URLs without requiring query
+  // params or specific paths, as long as the scheme is HTTP or HTTPS.
+  EXPECT_TRUE(
+      aim_eligibility_service_->IsAimUrl(GURL("https://g.ai/"), std::nullopt));
+  EXPECT_TRUE(aim_eligibility_service_->IsAimUrl(GURL("https://www.g.ai/"),
+                                                 std::nullopt));
+  EXPECT_TRUE(aim_eligibility_service_->IsAimUrl(GURL("http://g.ai/path"),
+                                                 std::nullopt));
+  EXPECT_FALSE(
+      aim_eligibility_service_->IsAimUrl(GURL("chrome://g.ai/"), std::nullopt));
+  EXPECT_FALSE(
+      aim_eligibility_service_->IsAimUrl(GURL("file://g.ai/"), std::nullopt));
+  EXPECT_FALSE(aim_eligibility_service_->IsAimUrl(
+      GURL("chrome://google.com/search?a=1&b=2"), std::nullopt));
+  EXPECT_FALSE(aim_eligibility_service_->IsAimUrl(GURL(), std::nullopt));
+}
+
+TEST_F(AimEligibilityServiceTest, IsAimHost_HostOverrideWithPort) {
+  contextual_tasks::HostOverride override_with_port{"localhost.corp.google.com",
+                                                    8888};
+  EXPECT_TRUE(aim_eligibility_service_->IsAimHost(
+      GURL("https://localhost.corp.google.com:8888/search"),
+      override_with_port));
+  EXPECT_FALSE(aim_eligibility_service_->IsAimHost(
+      GURL("https://localhost.corp.google.com:9999/search"),
+      override_with_port));
+  EXPECT_FALSE(aim_eligibility_service_->IsAimHost(
+      GURL("https://localhost.corp.google.com/search"), override_with_port));
+
+  contextual_tasks::HostOverride override_no_port{"localhost.corp.google.com",
+                                                  std::nullopt};
+  EXPECT_TRUE(aim_eligibility_service_->IsAimHost(
+      GURL("https://localhost.corp.google.com/search"), override_no_port));
+  EXPECT_FALSE(aim_eligibility_service_->IsAimHost(
+      GURL("https://localhost.corp.google.com:8888/search"), override_no_port));
 }
 
 TEST_F(AimEligibilityServiceTest, IsAimUrl_HostWildcard) {
@@ -777,6 +830,94 @@ TEST_F(AimEligibilityServiceTest, CoBrowseUserAgentSuffix) {
   EXPECT_EQ(*ua_value2, "UA with Suffix");
 }
 
+TEST_F(AimEligibilityServiceTest, SearchCapabilitiesHeader) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      omnibox::kAimServerEligibilitySendSearchCapabilitiesHeaderEnabled);
+
+  AimEligibilityService::Configuration config;
+  config.search_capabilities_version = "1";
+  CreateService(config);
+
+  // Trigger a request.
+  test_url_loader_factory_.pending_requests()->clear();
+  aim_eligibility_service_->StartServerEligibilityRequestForDebugging();
+
+  ASSERT_EQ(test_url_loader_factory_.NumPending(), 1);
+  const network::ResourceRequest& request =
+      test_url_loader_factory_.GetPendingRequest(0)->request;
+
+  std::optional<std::string> header_value = request.headers.GetHeader(
+      contextual_tasks::kContextualTasksSearchCapabilitiesHeaderName);
+  EXPECT_TRUE(header_value.has_value());
+  EXPECT_EQ(*header_value, "1");
+}
+
+TEST_F(AimEligibilityServiceTest, SearchCapabilitiesHeader_Disabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      omnibox::kAimServerEligibilitySendSearchCapabilitiesHeaderEnabled);
+
+  AimEligibilityService::Configuration config;
+  config.search_capabilities_version = "1";
+  CreateService(config);
+
+  // Trigger a request.
+  test_url_loader_factory_.pending_requests()->clear();
+  aim_eligibility_service_->StartServerEligibilityRequestForDebugging();
+
+  ASSERT_EQ(test_url_loader_factory_.NumPending(), 1);
+  const network::ResourceRequest& request =
+      test_url_loader_factory_.GetPendingRequest(0)->request;
+
+  EXPECT_FALSE(request.headers.HasHeader(
+      contextual_tasks::kContextualTasksSearchCapabilitiesHeaderName));
+}
+
+TEST_F(AimEligibilityServiceTest, SearchCapabilitiesHeader_Empty) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      omnibox::kAimServerEligibilitySendSearchCapabilitiesHeaderEnabled);
+
+  AimEligibilityService::Configuration config;
+  config.search_capabilities_version = "";
+  CreateService(config);
+
+  // Trigger a request.
+  test_url_loader_factory_.pending_requests()->clear();
+  aim_eligibility_service_->StartServerEligibilityRequestForDebugging();
+
+  ASSERT_EQ(test_url_loader_factory_.NumPending(), 1);
+  const network::ResourceRequest& request =
+      test_url_loader_factory_.GetPendingRequest(0)->request;
+
+  EXPECT_FALSE(request.headers.HasHeader(
+      contextual_tasks::kContextualTasksSearchCapabilitiesHeaderName));
+}
+
+TEST_F(AimEligibilityServiceTest, SearchCapabilitiesHeader_CustomVersion) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      omnibox::kAimServerEligibilitySendSearchCapabilitiesHeaderEnabled);
+
+  AimEligibilityService::Configuration config;
+  config.search_capabilities_version = "2.0";
+  CreateService(config);
+
+  // Trigger a request.
+  test_url_loader_factory_.pending_requests()->clear();
+  aim_eligibility_service_->StartServerEligibilityRequestForDebugging();
+
+  ASSERT_EQ(test_url_loader_factory_.NumPending(), 1);
+  const network::ResourceRequest& request =
+      test_url_loader_factory_.GetPendingRequest(0)->request;
+
+  std::optional<std::string> header_value = request.headers.GetHeader(
+      contextual_tasks::kContextualTasksSearchCapabilitiesHeaderName);
+  EXPECT_TRUE(header_value.has_value());
+  EXPECT_EQ(*header_value, "2.0");
+}
+
 TEST_F(AimEligibilityServiceTest, IsFuseboxEligible_FeatureEnabled) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(
@@ -808,6 +949,33 @@ TEST_F(AimEligibilityServiceTest, IsFuseboxEligible_FeatureDisabled) {
 
   // Should be true regardless of response if feature is disabled.
   EXPECT_TRUE(aim_eligibility_service_->IsFuseboxEligible());
+}
+
+TEST_F(AimEligibilityServiceTest, IsCsbEligible) {
+  omnibox::AimEligibilityResponse response;
+  response.set_is_eligible(true);
+  response.set_is_contextual_searchbox_eligible(true);
+  aim_eligibility_service_->SetAimEligibilityResponse(std::move(response));
+  EXPECT_TRUE(aim_eligibility_service_->IsCsbEligible());
+
+  omnibox::AimEligibilityResponse response2;
+  response2.set_is_eligible(true);
+  response2.set_is_contextual_searchbox_eligible(false);
+  aim_eligibility_service_->SetAimEligibilityResponse(std::move(response2));
+  EXPECT_FALSE(aim_eligibility_service_->IsCsbEligible());
+
+  // If field is not filled, fall back to IsFuseboxEligible().
+  omnibox::AimEligibilityResponse response3;
+  response3.set_is_eligible(true);
+  response3.set_is_fusebox_eligible(true);
+  aim_eligibility_service_->SetAimEligibilityResponse(std::move(response3));
+  EXPECT_TRUE(aim_eligibility_service_->IsCsbEligible());
+
+  omnibox::AimEligibilityResponse response4;
+  response4.set_is_eligible(true);
+  response4.set_is_fusebox_eligible(false);
+  aim_eligibility_service_->SetAimEligibilityResponse(std::move(response4));
+  EXPECT_FALSE(aim_eligibility_service_->IsCsbEligible());
 }
 
 TEST_F(AimEligibilityServiceTest, IsIetfBcp47) {
@@ -852,27 +1020,62 @@ TEST_F(AimEligibilityServiceTest, LogsFuseboxEligibilityHistogram) {
       1);
 }
 
-TEST_F(AimEligibilityServiceTest, FetchEligibilityWithLocaleChange) {
-  base::HistogramTester histogram_tester;
-  omnibox::AimEligibilityResponse response;
-  response.set_is_eligible(true);
-
+TEST_F(AimEligibilityServiceTest,
+       RefreshesOnCookieChangeWhenOAuthDisabledAndPrimaryAccountValid) {
+  identity_test_env_.SetCookieAccounts({});
   test_url_loader_factory_.pending_requests()->clear();
-  aim_eligibility_service_->FetchEligibility(
-      AimEligibilityService::RequestSource::kLocaleChange);
+
+  CreateService(AimEligibilityService::Configuration{},
+                identity_test_env_.identity_manager());
+  task_environment_.FastForwardBy(
+      omnibox::kAimEligibilityServiceDebounceDelay.Get());
 
   ASSERT_EQ(test_url_loader_factory_.NumPending(), 1);
-  const network::ResourceRequest& request =
-      test_url_loader_factory_.GetPendingRequest(0)->request;
-
-  std::string response_string;
-  response.SerializeToString(&response_string);
+  omnibox::AimEligibilityResponse startup_response;
+  startup_response.set_is_eligible(true);
+  std::string startup_response_str;
+  startup_response.SerializeToString(&startup_response_str);
   test_url_loader_factory_.SimulateResponseForPendingRequest(
-      request.url.spec(), response_string, net::HTTP_OK);
+      test_url_loader_factory_.GetPendingRequest(0)->request.url.spec(),
+      startup_response_str, net::HTTP_OK);
 
-  histogram_tester.ExpectUniqueSample(
-      "Omnibox.AimEligibility.EligibilityResponse.LocaleChange.is_eligible",
-      true, 1);
-  histogram_tester.ExpectUniqueSample(
-      "Omnibox.AimEligibility.EligibilityResponse.is_eligible", true, 1);
+  AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
+      "test@gmail.com", signin::ConsentLevel::kSignin);
+  task_environment_.FastForwardBy(
+      omnibox::kAimEligibilityServiceDebounceDelay.Get());
+  EXPECT_EQ(test_url_loader_factory_.NumPending(), 0);
+
+  identity_test_env_.SetCookieAccounts(
+      {{std::string(account_info.GetEmail()), account_info.GetGaiaId()}});
+  task_environment_.FastForwardBy(
+      omnibox::kAimEligibilityServiceDebounceDelay.Get());
+  EXPECT_EQ(test_url_loader_factory_.NumPending(), 1);
+}
+
+TEST_F(AimEligibilityServiceTest, GetLhsRailConfig) {
+  EXPECT_EQ(aim_eligibility_service_->GetLhsRailConfig(), nullptr);
+
+  omnibox::AimEligibilityResponse response;
+  omnibox::LhsRailConfig* lhs_config = response.mutable_lhs_rail_config();
+  auto* item = lhs_config->add_lhs_items();
+  item->set_icon_svg("<svg></svg>");
+  item->set_name("New chat");
+  item->mutable_click_action()->set_client_action(
+      omnibox::LhsRailConfig::ClickAction::CLIENT_ACTION_FOCUS_REALBOX_AIM);
+  item->mutable_click_action()->mutable_link()->set_relative_url(
+      "/search?udm=50");
+
+  aim_eligibility_service_->SetAimEligibilityResponse(std::move(response));
+
+  const omnibox::LhsRailConfig* actual_config =
+      aim_eligibility_service_->GetLhsRailConfig();
+  ASSERT_NE(actual_config, nullptr);
+  ASSERT_EQ(actual_config->lhs_items_size(), 1);
+  EXPECT_EQ(actual_config->lhs_items(0).icon_svg(), "<svg></svg>");
+  EXPECT_EQ(actual_config->lhs_items(0).name(), "New chat");
+  EXPECT_EQ(
+      actual_config->lhs_items(0).click_action().client_action(),
+      omnibox::LhsRailConfig::ClickAction::CLIENT_ACTION_FOCUS_REALBOX_AIM);
+  EXPECT_EQ(actual_config->lhs_items(0).click_action().link().relative_url(),
+            "/search?udm=50");
 }

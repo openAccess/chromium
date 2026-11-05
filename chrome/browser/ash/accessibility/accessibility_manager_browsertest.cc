@@ -5,6 +5,8 @@
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 
 #include <optional>
+#include <string>
+#include <string_view>
 
 #include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_features.h"
@@ -37,14 +39,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
-#include "chrome/browser/speech/speech_recognition_constants.h"
 #include "chrome/browser/speech/speech_recognition_test_helper.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/experiences/extensions/browser/speech/speech_recognition_constants.h"
 #include "components/account_id/account_id.h"
 #include "components/live_caption/pref_names.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
@@ -57,6 +57,7 @@
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_names.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "extensions/browser/extension_host_test_helper.h"
@@ -68,6 +69,7 @@
 #include "ui/base/ime/ash/component_extension_ime_manager.h"
 #include "ui/base/ime/ash/extension_ime_util.h"
 #include "ui/base/ime/ash/input_method_manager.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_switches.h"
 #include "ui/display/test/display_manager_test_api.h"
 #include "ui/gfx/scoped_animation_duration_scale_mode.h"
@@ -93,22 +95,23 @@ constexpr char kSodaUnsupportedLocale[] = "af-ZA";
 
 // Dictation notification titles and descriptions. '*'s are used as placeholders
 // for languages, which are substituted in at a later time.
-std::u16string kDictationAllDlcsDownloadedTitle = u"* speech files downloaded";
-std::u16string kDictationAllDlcsDownloadedDesc =
+constexpr char16_t kDictationAllDlcsDownloadedTitle[] =
+    u"* speech files downloaded";
+constexpr char16_t kDictationAllDlcsDownloadedDesc[] =
     u"Speech is now processed locally and Dictation works offline";
-std::u16string kDictationNoDlcsDownloadedTitle =
+constexpr char16_t kDictationNoDlcsDownloadedTitle[] =
     u"Couldn't download * speech files";
-std::u16string kDictationNoDlcsDownloadedDesc =
+constexpr char16_t kDictationNoDlcsDownloadedDesc[] =
     u"Download will be attempted later. Speech will be sent to Google for "
     u"processing for now.";
-std::u16string kDicationOnlyPumpkinDownloadedTitle =
+constexpr char16_t kDicationOnlyPumpkinDownloadedTitle[] =
     u"* speech files partially downloaded";
-std::u16string kDicationOnlyPumpkinDownloadedDesc =
+constexpr char16_t kDicationOnlyPumpkinDownloadedDesc[] =
     u"Download will be attempted later. Speech will be sent to Google for "
     u"processing for now.";
-std::u16string kDictationOnlySodaDownloadedTitle =
+constexpr char16_t kDictationOnlySodaDownloadedTitle[] =
     u"* speech files partially downloaded";
-std::u16string kDictationOnlySodaDownloadedDesc =
+constexpr char16_t kDictationOnlySodaDownloadedDesc[] =
     u"Speech is processed locally and dictation works offline, but some voice "
     u"commands won’t work.";
 
@@ -281,14 +284,6 @@ bool IsSelectToSpeakEnabled() {
   return AccessibilityManager::Get()->IsSelectToSpeakEnabled();
 }
 
-void SetSwitchAccessEnabled(bool enabled) {
-  AccessibilityManager::Get()->SetSwitchAccessEnabled(enabled);
-}
-
-void SetMagnifierEnabled(bool enabled) {
-  MagnificationManager::Get()->SetMagnifierEnabled(enabled);
-}
-
 void SetDictationEnabled(bool enabled) {
   AccessibilityManager::Get()->SetDictationEnabled(enabled);
 }
@@ -413,11 +408,11 @@ std::optional<bool> GetDictationOfflineNudgePref(const std::string& locale) {
 }
 
 void AssertDictationNotificationShown(const std::u16string& display_language,
-                                      const std::u16string& title,
-                                      const std::u16string& description,
+                                      std::u16string_view title,
+                                      std::u16string_view description,
                                       bool is_critical) {
   // Replace the '*' placeholder in `title` with `display_name`.
-  std::u16string new_title = title;
+  std::u16string new_title(title);
   ASSERT_TRUE(
       base::ReplaceChars(new_title, u"*", display_language, &new_title));
 
@@ -504,10 +499,7 @@ class AccessibilityManagerTest : public MixinBasedInProcessBrowserTest {
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     scoped_feature_list_.InitWithFeatures(
-        {features::kOnDeviceSpeechRecognition,
-         ::features::kAccessibilityReducedAnimations,
-         ::features::kAccessibilityMouseKeys},
-        {});
+        {features::kOnDeviceSpeechRecognition}, {});
     MixinBasedInProcessBrowserTest::SetUpCommandLine(command_line);
   }
 
@@ -1028,7 +1020,7 @@ IN_PROC_BROWSER_TEST_F(AccessibilityManagerTest,
 
 // POC: ChromeVoxPanelWebContentsObserver::DidFinishNavigation() dispatches
 // EnterFullscreen()/Focus() purely on GetLastCommittedURL().GetRef() with no
-// origin check, and AccessibilityPanel (the WebContentsDelegate) does not
+// origin check, and ChromeVoxPanel (the WebContentsDelegate) does not
 // contain renderer-initiated cross-process navigations. Once arbitrary web
 // content commits in the panel WebContents, '#fullscreen' grants it a
 // fullscreen, activatable, keyboard-focused surface in
@@ -1877,12 +1869,7 @@ class AccessibilityManagerLoginTest : public OobeBaseTest {
  protected:
   AccessibilityManagerLoginTest()
       : disable_animations_(
-            gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION) {
-    scoped_feature_list_.InitWithFeatures(
-        {::features::kAccessibilityReducedAnimations,
-         ::features::kAccessibilityMouseKeys},
-        {});
-  }
+            gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION) {}
 
   AccessibilityManagerLoginTest(const AccessibilityManagerLoginTest&) = delete;
   AccessibilityManagerLoginTest& operator=(
@@ -1944,7 +1931,6 @@ class AccessibilityManagerLoginTest : public OobeBaseTest {
 
  private:
   gfx::ScopedAnimationDurationScaleMode disable_animations_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(AccessibilityManagerLoginTest, BrailleOnLoginScreen) {
@@ -2131,7 +2117,8 @@ IN_PROC_BROWSER_TEST_P(AccessibilityManagerUserTypeTest, BrailleWhenLoggedIn) {
   prefs.InitUserPrefsForTesting(
       static_cast<sync_preferences::PrefServiceSyncable*>(
           GetActiveUserProfile()->GetPrefs()),
-      user_manager::UserManager::Get()->GetActiveUser(),
+      BrowserContextHelper::Get()->GetUserByBrowserContext(
+          GetActiveUserProfile()),
       UserSessionManager::GetInstance()->GetDefaultIMEState(
           GetActiveUserProfile()));
 
@@ -2208,39 +2195,6 @@ IN_PROC_BROWSER_TEST_P(AccessibilityManagerUserTypeTest, BrailleWhenLoggedIn) {
       "Accessibility.CrosSpokenFeedback.BrailleDisplayConnected."
       "ConnectionDuration",
       1);
-}
-
-
-
-class AccessibilityManagerWithManifestV3Test : public AccessibilityManagerTest {
- public:
-  AccessibilityManagerWithManifestV3Test() = default;
-  AccessibilityManagerWithManifestV3Test(
-      const AccessibilityManagerWithManifestV3Test&) = delete;
-  AccessibilityManagerWithManifestV3Test& operator=(
-      const AccessibilityManagerWithManifestV3Test&) = delete;
-  ~AccessibilityManagerWithManifestV3Test() override = default;
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    command_line->AppendSwitch(
-        ::switches::kEnableExperimentalAccessibilityManifestV3);
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(AccessibilityManagerWithManifestV3Test, DoesNotCrash) {
-  SetSpokenFeedbackEnabled(true);
-  SetSelectToSpeakEnabled(true);
-  SetSwitchAccessEnabled(true);
-  SetAutoclickEnabled(true);
-  SetDictationEnabled(true);
-  SetMagnifierEnabled(true);
-
-  SetSpokenFeedbackEnabled(false);
-  SetSelectToSpeakEnabled(false);
-  SetSwitchAccessEnabled(false);
-  SetAutoclickEnabled(false);
-  SetDictationEnabled(false);
-  SetMagnifierEnabled(false);
 }
 
 enum class DictationKeyboardShortcutType { kKey, kKeyboardCombo };

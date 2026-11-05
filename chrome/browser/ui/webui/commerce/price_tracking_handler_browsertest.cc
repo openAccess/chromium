@@ -26,6 +26,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_web_ui.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/views/widget/any_widget_observer.h"
 #include "ui/views/widget/widget.h"
 
@@ -110,7 +111,7 @@ class PriceTrackingHandlerBrowserTest : public InProcessBrowserTest {
 
   void NavigateToURL(const GURL& url) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), url, WindowOpenDisposition::CURRENT_TAB,
+        browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     base::PlatformThread::Sleep(base::Seconds(2));
     base::RunLoop().RunUntilIdle();

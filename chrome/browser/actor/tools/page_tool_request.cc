@@ -8,6 +8,7 @@
 
 #include "base/feature_list.h"
 #include "base/notimplemented.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/tools/page_tool.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/actor/action_result.h"
@@ -15,7 +16,6 @@
 #include "chrome/common/chrome_features.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
-#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
@@ -25,7 +25,6 @@ namespace actor {
 using content::RenderFrameHost;
 using content::WebContents;
 using optimization_guide::DocumentIdentifierUserData;
-using tabs::TabHandle;
 
 namespace {
 constexpr absl::Overload ToMojoFn{
@@ -42,8 +41,9 @@ mojom::ToolTargetPtr ToMojo(const PageTarget& target) {
   return std::visit(ToMojoFn, target);
 }
 
-PageToolRequest::PageToolRequest(TabHandle tab_handle, const PageTarget& target)
-    : TabToolRequest(tab_handle), target_(target) {}
+PageToolRequest::PageToolRequest(ActorSurfaceHandle actor_surface_handle,
+                                 const PageTarget& target)
+    : TabToolRequest(actor_surface_handle), target_(target) {}
 
 PageToolRequest::~PageToolRequest() = default;
 
@@ -52,10 +52,11 @@ PageToolRequest::PageToolRequest(const PageToolRequest& other) = default;
 ToolRequest::CreateToolResult PageToolRequest::CreateTool(
     TaskId task_id,
     ToolDelegate& tool_delegate) const {
-  if (!GetTabHandle().Get()) {
-    return {/*tool=*/nullptr, MakeResult(mojom::ActionResultCode::kTabWentAway,
-                                         /*requires_page_stabilization=*/false,
-                                         "The tab is no longer present.")};
+  if (!GetActorSurfaceHandle().Get()) {
+    return {/*tool=*/nullptr,
+            MakeResult(mojom::ActionResultCode::kTabWentAway,
+                       /*requires_page_stabilization=*/false,
+                       "The target surface is no longer present.")};
   }
 
   return {std::make_unique<PageTool>(task_id, tool_delegate, *this),

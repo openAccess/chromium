@@ -13,12 +13,7 @@ include_rules = [
   # this list.
   "+chrome/browser/ash/file_system_provider",
   "+chrome/browser/ash/guest_os",
-  "+chrome/browser/ash/login/users",
-  "+chrome/browser/browser_process.h",
   "+chrome/browser/extensions/extension_apitest.h",
-  "+chrome/browser/profiles",
-  "+chrome/browser/ui/browser.h",
-  "+chrome/common",
 ]
 
 # This DEPS violation is a temporary workaround to continue supporting Chrome

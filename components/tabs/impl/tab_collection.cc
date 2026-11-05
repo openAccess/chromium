@@ -104,6 +104,9 @@ TabCollection::TabIterator::TabIterator(const tabs::TabCollection* root,
 
 TabCollection::TabIterator::TabIterator(const TabIterator& iterator) = default;
 
+TabCollection::TabIterator& TabCollection::TabIterator::operator=(
+    const TabIterator& iterator) = default;
+
 TabCollection::TabIterator::~TabIterator() = default;
 
 void TabCollection::TabIterator::Next() {
@@ -528,6 +531,7 @@ void TabCollection::DispatchPendingNotifications() {
 TabInterface* TabCollection::AddTab(ScopedTab tab, size_t index) {
   CHECK(tab);
   CHECK(supports_tabs_);
+  CHECK(!tab->GetParentCollection());
 
   TabInterface* inserted_tab = impl_->AddTab(std::move(tab), index);
   inserted_tab->OnReparented(this, GetPassKey());

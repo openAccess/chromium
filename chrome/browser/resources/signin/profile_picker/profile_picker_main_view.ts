@@ -16,8 +16,6 @@ import './signin_error_dialog.js';
 
 import {HelpBubbleMixinLit} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
 import type {CrButtonElement} from 'chrome://resources/cr_elements/cr_button/cr_button.js';
-import type {CrCheckboxElement} from 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
-import type {CrToggleElement} from 'chrome://resources/cr_elements/cr_toggle/cr_toggle.js';
 import {I18nMixinLit} from 'chrome://resources/cr_elements/i18n_mixin_lit.js';
 import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
 import {assert} from 'chrome://resources/js/assert.js';
@@ -29,17 +27,22 @@ import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {DraggableTileListInterface} from './drag_drop_reorder_tile_list_delegate.js';
 import {DragDropReorderTileListDelegate} from './drag_drop_reorder_tile_list_delegate.js';
 import type {ManageProfilesBrowserProxy, ProfileState} from './manage_profiles_browser_proxy.js';
-import {ManageProfilesBrowserProxyImpl} from './manage_profiles_browser_proxy.js';
+import {ManageProfilesBrowserProxyImpl, ProfileOrderUpdateType} from './manage_profiles_browser_proxy.js';
 import {navigateTo, NavigationMixin, Routes} from './navigation_mixin.js';
-import {isAskOnStartupAllowed, isGlicVersion, isProfileCreationAllowed, isUseRefreshedUI} from './profile_picker_flags.js';
+import type {ProfileCardElement} from './profile_card.js';
+import {isAskOnStartupAllowed, isGlicVersion, isProfileCreationAllowed, isProfilesReorderingEnabled, isUseRefreshedUI} from './profile_picker_flags.js';
 import {getCss} from './profile_picker_main_view.css.js';
 import {getHtml} from './profile_picker_main_view.html.js';
 import type {SigninErrorDialogElement} from './signin_error_dialog.js';
 
+export enum MoveProfileDirection {
+  LEFT = -1,
+  RIGHT = 1,
+}
+
 export interface ProfilePickerMainViewElement {
   $: {
     addProfile: CrButtonElement,
-    askOnStartup: CrCheckboxElement|CrToggleElement,
     pickerLogo: HTMLElement,
     browseAsGuestButton: HTMLElement,
     profilesContainer: HTMLElement,
@@ -224,7 +227,7 @@ export class ProfilePickerMainViewElement extends
    * one.
    */
   private initializeDragDelegate_() {
-    if (loadTimeData.getBoolean('profilesReorderingEnabled')) {
+    if (isProfilesReorderingEnabled()) {
       if (this.dragDelegate_) {
         this.dragDelegate_.clearListeners();
       }
@@ -301,6 +304,27 @@ export class ProfilePickerMainViewElement extends
     }
 
     this.dragDelegate_.toggleDrag(e.detail.toggle);
+  }
+
+  protected onMoveProfile_(e: CustomEvent<{direction: MoveProfileDirection}>) {
+    if (!isProfilesReorderingEnabled()) {
+      return;
+    }
+
+    const card = e.currentTarget as ProfileCardElement;
+    const initialIndex = card.profileIndex;
+    const finalIndex = initialIndex + e.detail.direction;
+    if (initialIndex < 0 || initialIndex >= this.profilesList_.length ||
+        finalIndex < 0 || finalIndex >= this.profilesList_.length) {
+      return;
+    }
+
+    const [movedProfile] = this.profilesList_.splice(initialIndex, 1);
+    assert(movedProfile);
+    this.profilesList_.splice(finalIndex, 0, movedProfile);
+    this.requestUpdate();
+    this.manageProfilesBrowserProxy_.updateProfileOrder(
+        initialIndex, finalIndex, ProfileOrderUpdateType.CONTEXT_MENU_BUTTON);
   }
 
   protected onDisableAllPickerButtons_() {
@@ -390,7 +414,7 @@ export class ProfilePickerMainViewElement extends
   // @override
   onDragEnd(initialIndex: number, finalIndex: number): void {
     this.manageProfilesBrowserProxy_.updateProfileOrder(
-        initialIndex, finalIndex);
+        initialIndex, finalIndex, ProfileOrderUpdateType.DRAG_AND_DROP);
   }
 
   // @override
@@ -402,6 +426,11 @@ export class ProfilePickerMainViewElement extends
   // @override
   getDraggableTileIndex(tile: HTMLElement): number {
     return Number(tile.dataset['index']);
+  }
+
+  // @override
+  getScrollableContainer(): HTMLElement {
+    return this.$.profilesContainer;
   }
 
   setDraggingTransitionDurationForTesting(duration: number) {

@@ -62,7 +62,7 @@ enum {
 };
 
 class BrowserAccessibilityAndroid;
-class WebContentsAccessibilityAndroid;
+class WebContentsAccessibilityBase;
 
 class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
     : public ui::BrowserAccessibilityManager {
@@ -79,7 +79,7 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
 
   BrowserAccessibilityManagerAndroid(
       const ui::AXTreeUpdate& initial_tree,
-      base::WeakPtr<WebContentsAccessibilityAndroid> web_contents_accessibility,
+      base::WeakPtr<WebContentsAccessibilityBase> web_contents_accessibility,
       ui::AXNodeIdDelegate& node_id_delegate,
       ui::AXPlatformTreeManagerDelegate* delegate);
 
@@ -101,7 +101,7 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
   }
 
   void set_web_contents_accessibility(
-      base::WeakPtr<WebContentsAccessibilityAndroid> wcax) {
+      base::WeakPtr<WebContentsAccessibilityBase> wcax) {
     web_contents_accessibility_ = std::move(wcax);
   }
   void ResetWebContentsAccessibility();
@@ -128,13 +128,6 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
   void FireGeneratedEvent(ui::AXEventGenerator::Event event_type,
                           const ui::AXNode* node) override;
 
-  void FireAriaNotificationEvent(
-      ui::BrowserAccessibility* node,
-      const std::string& announcement,
-      ax::mojom::AriaNotificationPriority priority_property,
-      ax::mojom::AriaNotificationInterrupt interrupt_property,
-      const std::string& type) override;
-
   void FireLocationChanged(ui::BrowserAccessibility* node);
 
   // Helper functions to compute the next start and end index when moving
@@ -160,8 +153,6 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
 
   std::u16string GenerateAccessibilityNodeInfoString(int32_t unique_id);
 
-  std::optional<std::vector<std::string>> GetMetadataForTree() const;
-
   struct AndroidPosition {
     raw_ptr<BrowserAccessibilityAndroid> node = nullptr;
     int offset = -1;
@@ -178,6 +169,16 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
   // API restrictions. If the output has value, all fields of the
   // `SelectionRange` are populated.
   std::optional<SelectionRange> GetSelectionRange() const;
+
+  // Returns the manager of the frame that contains the focused node of the
+  // page that this frame belongs to (see `GetFocus()`), or the manager of the
+  // root frame if there is no focused node.
+  BrowserAccessibilityManagerAndroid* GetManagerForFocusedFrame() const;
+
+
+  // Clears the selection in this frame by sending a kSetSelection action
+  // anchored on the frame root with kNoSelectionOffset.
+  void ClearSelection();
 
   // Creates an AXPosition for the given `node`, `offset`, and `offset_type`
   // that are received from Android. Returns Null Position if the offset is not
@@ -204,7 +205,7 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
       bool root_changed,
       const std::vector<ui::AXTreeObserver::Change>& changes) override;
 
-  WebContentsAccessibilityAndroid* GetWebContentsAXFromRootManager() const;
+  WebContentsAccessibilityBase* GetWebContentsAXFromRootManager() const;
 
   // This gives BrowserAccessibilityManager::Create access to the class
   // constructor.
@@ -213,7 +214,11 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
   // Handle a hover event from the renderer process.
   void HandleHoverEvent(ui::BrowserAccessibility* node);
 
-  void FireDocumentSelectionChangedEvent(WebContentsAccessibilityAndroid* wcax);
+  void FireDocumentSelectionChangedEvent(WebContentsAccessibilityBase* wcax);
+
+  // Fires a text selection changed event on the root of the main frame, which
+  // is the node that exposes the selection of the page on Android.
+  void FireSelectionChangedOnMainFrameRoot(WebContentsAccessibilityBase* wcax);
 
   // Given `node_id`, `offset`, and `affinity` which represent a selection
   // position in Chrome accessibility tree, creates an appropriate selection
@@ -229,11 +234,11 @@ class CONTENT_EXPORT BrowserAccessibilityManagerAndroid
   // A weak reference to WebContentsAccessibility for reaching Java layer.
   // Only the root manager has the reference. Should be accessed through
   // |GetWebContentsAXFromRootManager| rather than directly.
-  base::WeakPtr<WebContentsAccessibilityAndroid> web_contents_accessibility_;
+  base::WeakPtr<WebContentsAccessibilityBase> web_contents_accessibility_;
 
   // True if this instance should force enable the image descriptions feature
   // for testing. This allows us to mock generated image descriptions and test
-  // tree dumps for nodes without creating web_contents_accessibility_android.
+  // tree dumps for nodes without creating `WebContentsAccessibilityBase`.
   bool allow_image_descriptions_for_testing_ = false;
 
   // A set of |unique_id| values for nodes cleared from the cache

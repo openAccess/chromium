@@ -133,6 +133,7 @@ class WebViewAutofillClientIOS : public AutofillClientIOS {
       const AutofillClient::PopupOpenArgs& open_args,
       base::WeakPtr<AutofillSuggestionDelegate> delegate) override;
   void UpdateAutofillDataListValues(
+      const LocalFrameToken& frame_token,
       base::span<const SelectOption> datalist) override;
   void HideSuggestions(SuggestionHidingReason reason,
                        std::optional<FillingProduct> product) override;
@@ -147,6 +148,12 @@ class WebViewAutofillClientIOS : public AutofillClientIOS {
   autofill_metrics::FormInteractionsUkmLogger& GetFormInteractionsUkmLogger()
       override;
   bool IsLastQueriedField(FieldGlobalId field_id) override;
+  using AutofillClient::GetDeviceAuthenticator;
+  // Returns null if the embedder cannot authenticate the user.
+  std::unique_ptr<device_reauth::DeviceAuthenticator> GetDeviceAuthenticator(
+      std::string histogram) const override;
+  std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+  GetDeviceAuthAvailabilityChecker() const override;
 
   LogManager* GetCurrentLogManager() override;
 

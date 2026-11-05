@@ -4,8 +4,9 @@
 
 #import "ios/chrome/browser/visited_url_ranking/model/visited_url_ranking_service_factory.h"
 
+#import <utility>
+
 #import "components/history_clusters/core/config.h"
-#import "components/keyed_service/core/service_access_type.h"
 #import "components/sync_device_info/device_info_sync_service.h"
 #import "components/visited_url_ranking/internal/history_url_visit_data_fetcher.h"
 #import "components/visited_url_ranking/internal/session_url_visit_data_fetcher.h"
@@ -25,16 +26,8 @@
 #import "ios/chrome/browser/sync/model/session_sync_service_factory.h"
 #import "ios/chrome/browser/visited_url_ranking/model/ios_tab_model_url_visit_data_fetcher.h"
 
-// static
-visited_url_ranking::VisitedURLRankingService*
-VisitedURLRankingServiceFactory::GetForProfile(ProfileIOS* state) {
-  return GetInstance()
-      ->GetServiceForProfileAs<visited_url_ranking::VisitedURLRankingService>(
-          state, /*create=*/true);
-}
-
-VisitedURLRankingServiceFactory::VisitedURLRankingServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("VisitedURLRanking") {
+VisitedURLRankingServiceFactory::VisitedURLRankingServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key), "VisitedURLRanking") {
   DependsOn(SessionSyncServiceFactory::GetInstance());
   DependsOn(ios::HistoryServiceFactory::GetInstance());
   DependsOn(ios::BookmarkModelFactory::GetInstance());
@@ -43,18 +36,9 @@ VisitedURLRankingServiceFactory::VisitedURLRankingServiceFactory()
   DependsOn(DeviceInfoSyncServiceFactory::GetInstance());
 }
 
-// static
-VisitedURLRankingServiceFactory*
-VisitedURLRankingServiceFactory::GetInstance() {
-  static base::NoDestructor<VisitedURLRankingServiceFactory> instance;
-  return instance.get();
-}
-
-VisitedURLRankingServiceFactory::~VisitedURLRankingServiceFactory() {}
-
 std::unique_ptr<KeyedService>
 VisitedURLRankingServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   std::map<visited_url_ranking::Fetcher,
            std::unique_ptr<visited_url_ranking::URLVisitDataFetcher>>
       data_fetchers;
@@ -62,7 +46,7 @@ VisitedURLRankingServiceFactory::BuildServiceInstanceFor(
   data_fetchers.emplace(
       visited_url_ranking::Fetcher::kTabModel,
       std::make_unique<visited_url_ranking::IOSTabModelURLVisitDataFetcher>(
-          profile));
+          &profile));
 
   sync_sessions::SessionSyncService* session_sync_service =
       SessionSyncServiceFactory::GetForProfile(profile);
@@ -73,8 +57,7 @@ VisitedURLRankingServiceFactory::BuildServiceInstanceFor(
             session_sync_service));
   }
   history::HistoryService* history_service =
-      ios::HistoryServiceFactory::GetForProfile(
-          profile, ServiceAccessType::IMPLICIT_ACCESS);
+      ios::HistoryServiceFactory::GetForProfile(profile);
   if (history_service) {
     syncer::DeviceInfoSyncService* device_info_sync_service =
         DeviceInfoSyncServiceFactory::GetForProfile(profile);

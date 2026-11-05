@@ -35,6 +35,8 @@
 #include "chrome/browser/download/download_prompt_status.h"
 #include "chrome/browser/download/download_stats.h"
 #include "chrome/browser/history/history_service_factory.h"
+#include "chrome/browser/supervised_user/child_accounts/child_account_service_factory.h"
+#include "chrome/browser/supervised_user/supervised_user_test_util.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
@@ -47,8 +49,10 @@
 #include "components/history/core/browser/history_types.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/content/common/file_type_policies.h"
-#include "components/safe_browsing/content/common/file_type_policies_test_util.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies_test_util.h"
+#include "components/safe_browsing/core/common/features.h"
+#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "content/public/browser/download_item_utils.h"
@@ -64,6 +68,7 @@
 #include "net/base/mime_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 #include "url/origin.h"
 
@@ -658,7 +663,13 @@ void MockDownloadTargetDeterminerDelegate::NullDetermineLocalPath(
     DownloadItem* download,
     const base::FilePath& virtual_path,
     download::LocalPathCallback& callback) {
-  std::move(callback).Run(virtual_path, virtual_path.BaseName());
+  base::FilePath file_name = virtual_path.BaseName();
+#if BUILDFLAG(IS_ANDROID)
+  if (virtual_path.IsContentUri()) {
+    file_name.clear();
+  }
+#endif
+  std::move(callback).Run(virtual_path, file_name);
 }
 
 // NotifyExtensions implementation that overrides the path so that the target
@@ -725,6 +736,180 @@ TEST_F(DownloadTargetDeterminerTest, Basic) {
       safe_browsing::FileTypePolicies::GetInstance()->GetFileDangerLevel(
           base::FilePath(FILE_PATH_LITERAL("foo.kindabad")), GURL{}, nullptr));
   RunTestCasesWithActiveItem(kBasicTestCases);
+}
+
+TEST_F(DownloadTargetDeterminerTest, NoSafeBrowsingSuppressWarnings) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      safe_browsing::kSafeBrowsingNoProtectionSuppressWarnings);
+
+  safe_browsing::SetSafeBrowsingState(
+      profile()->GetPrefs(),
+      safe_browsing::SafeBrowsingState::NO_SAFE_BROWSING);
+
+  const DownloadTestCase kNoSBTestCases[] = {
+      {// When Safe Browsing is turned off and
+       // kSafeBrowsingNoProtectionSuppressWarnings is enabled, heuristic
+       // dangerous file warning is suppressed for ALLOW_ON_USER_GESTURE.
+       AUTOMATIC, download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
+       DownloadFileType::NOT_DANGEROUS, "http://example.com/foo.kindabad", "",
+       FILE_PATH_LITERAL(""),
+
+       FILE_PATH_LITERAL("foo.kindabad"),
+       DownloadItem::TARGET_DISPOSITION_OVERWRITE,
+
+       EXPECT_CRDOWNLOAD},
+
+      {// Dangerous file types (e.g. .bad) also have their warning suppressed.
+       AUTOMATIC, download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
+       DownloadFileType::NOT_DANGEROUS, "http://example.com/foo.bad", "",
+       FILE_PATH_LITERAL(""),
+
+       FILE_PATH_LITERAL("foo.bad"), DownloadItem::TARGET_DISPOSITION_OVERWRITE,
+
+       EXPECT_CRDOWNLOAD},
+  };
+
+  RunTestCasesWithActiveItem(kNoSBTestCases);
+}
+
+TEST_F(DownloadTargetDeterminerTest,
+       NoSafeBrowsingDisabledFeature_DoesNotSuppress) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      safe_browsing::kSafeBrowsingNoProtectionSuppressWarnings);
+
+  safe_browsing::SetSafeBrowsingState(
+      profile()->GetPrefs(),
+      safe_browsing::SafeBrowsingState::NO_SAFE_BROWSING);
+
+  const DownloadTestCase kNoSBDisabledTestCases[] = {
+      {// When the feature is disabled, dangerous file warnings are NOT
+       // suppressed in No Protection mode.
+       AUTOMATIC, download::DOWNLOAD_DANGER_TYPE_DANGEROUS_FILE,
+       DownloadFileType::ALLOW_ON_USER_GESTURE,
+       "http://example.com/foo.kindabad", "", FILE_PATH_LITERAL(""),
+
+       FILE_PATH_LITERAL("foo.kindabad"),
+       DownloadItem::TARGET_DISPOSITION_OVERWRITE,
+
+       EXPECT_UNCONFIRMED},
+  };
+
+  RunTestCasesWithActiveItem(kNoSBDisabledTestCases);
+}
+
+TEST_F(DownloadTargetDeterminerTest, StandardSafeBrowsing_DoesNotSuppress) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      safe_browsing::kSafeBrowsingNoProtectionSuppressWarnings);
+
+  safe_browsing::SetSafeBrowsingState(
+      profile()->GetPrefs(),
+      safe_browsing::SafeBrowsingState::STANDARD_PROTECTION);
+
+  const DownloadTestCase kStandardSBTestCases[] = {
+      {// For protected profiles, dangerous file warnings are NOT suppressed.
+       AUTOMATIC, download::DOWNLOAD_DANGER_TYPE_DANGEROUS_FILE,
+       DownloadFileType::ALLOW_ON_USER_GESTURE,
+       "http://example.com/foo.kindabad", "", FILE_PATH_LITERAL(""),
+
+       FILE_PATH_LITERAL("foo.kindabad"),
+       DownloadItem::TARGET_DISPOSITION_OVERWRITE,
+
+       EXPECT_UNCONFIRMED},
+  };
+
+  RunTestCasesWithActiveItem(kStandardSBTestCases);
+}
+
+TEST_F(DownloadTargetDeterminerTest,
+       NoSafeBrowsingSuppressWarnings_EnterprisePolicy) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      safe_browsing::kSafeBrowsingNoProtectionSuppressWarnings);
+
+  safe_browsing::SetSafeBrowsingState(
+      profile()->GetPrefs(),
+      safe_browsing::SafeBrowsingState::NO_SAFE_BROWSING);
+
+  // Set enterprise download restriction to block dangerous files.
+  profile()->GetPrefs()->SetInteger(
+      policy::policy_prefs::kDownloadRestrictions,
+      static_cast<int>(policy::DownloadRestriction::DANGEROUS_FILES));
+
+  const DownloadTestCase kNoSBPolicyTestCases[] = {
+      {// Even when Safe Browsing is turned off, enterprise download
+       // restrictions prevent suppression of dangerous file warnings.
+       AUTOMATIC, download::DOWNLOAD_DANGER_TYPE_DANGEROUS_FILE,
+       DownloadFileType::ALLOW_ON_USER_GESTURE,
+       "http://example.com/foo.kindabad", "", FILE_PATH_LITERAL(""),
+
+       FILE_PATH_LITERAL("foo.kindabad"),
+       DownloadItem::TARGET_DISPOSITION_OVERWRITE,
+
+       EXPECT_UNCONFIRMED},
+  };
+
+  RunTestCasesWithActiveItem(kNoSBPolicyTestCases);
+}
+
+TEST_F(DownloadTargetDeterminerTest,
+       NoSafeBrowsingSuppressWarnings_ExtensionControlled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      safe_browsing::kSafeBrowsingNoProtectionSuppressWarnings);
+
+  safe_browsing::SetSafeBrowsingState(
+      profile()->GetPrefs(),
+      safe_browsing::SafeBrowsingState::NO_SAFE_BROWSING);
+
+  // Mark Safe Browsing pref as extension-controlled.
+  profile()->GetTestingPrefService()->SetExtensionPref(
+      prefs::kSafeBrowsingEnabled, base::Value(false));
+
+  const DownloadTestCase kNoSBExtensionTestCases[] = {
+      {// Extension-controlled Safe Browsing setting prevents suppression.
+       AUTOMATIC, download::DOWNLOAD_DANGER_TYPE_DANGEROUS_FILE,
+       DownloadFileType::ALLOW_ON_USER_GESTURE,
+       "http://example.com/foo.kindabad", "", FILE_PATH_LITERAL(""),
+
+       FILE_PATH_LITERAL("foo.kindabad"),
+       DownloadItem::TARGET_DISPOSITION_OVERWRITE,
+
+       EXPECT_UNCONFIRMED},
+  };
+
+  RunTestCasesWithActiveItem(kNoSBExtensionTestCases);
+}
+
+TEST_F(DownloadTargetDeterminerTest,
+       NoSafeBrowsingSuppressWarnings_PolicyManagedSafeBrowsing) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      safe_browsing::kSafeBrowsingNoProtectionSuppressWarnings);
+
+  safe_browsing::SetSafeBrowsingState(
+      profile()->GetPrefs(),
+      safe_browsing::SafeBrowsingState::NO_SAFE_BROWSING);
+
+  // Mark Safe Browsing pref as enterprise-policy managed.
+  profile()->GetTestingPrefService()->SetManagedPref(
+      prefs::kSafeBrowsingEnabled, base::Value(false));
+
+  const DownloadTestCase kNoSBManagedTestCases[] = {
+      {// Policy-managed Safe Browsing setting prevents suppression.
+       AUTOMATIC, download::DOWNLOAD_DANGER_TYPE_DANGEROUS_FILE,
+       DownloadFileType::ALLOW_ON_USER_GESTURE,
+       "http://example.com/foo.kindabad", "", FILE_PATH_LITERAL(""),
+
+       FILE_PATH_LITERAL("foo.kindabad"),
+       DownloadItem::TARGET_DISPOSITION_OVERWRITE,
+
+       EXPECT_UNCONFIRMED},
+  };
+
+  RunTestCasesWithActiveItem(kNoSBManagedTestCases);
 }
 
 TEST_F(DownloadTargetDeterminerTest, CancelSaveAs) {
@@ -1853,6 +2038,67 @@ TEST_F(DownloadTargetDeterminerTest, BlockDownloads) {
   RunTestCasesWithActiveItem(kBlockDownloadsTestCases);
 }
 
+// Test that a download is blocked when the supervised user URL filter does not
+// allow the URL the content is served from, which is the URL at the end of the
+// redirect chain.
+TEST_F(DownloadTargetDeterminerTest, BlockDownloadsForSupervisedUser) {
+  const DownloadTestCase kBlockedForSupervisedUserTestCases[] = {
+      {AUTOMATIC, download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
+       DownloadFileType::NOT_DANGEROUS, "http://example.com/foo.txt", "",
+       FILE_PATH_LITERAL(""), FILE_PATH_LITERAL(""),
+       DownloadItem::TARGET_DISPOSITION_OVERWRITE, EXPECT_EMPTY},
+  };
+
+  ChildAccountServiceFactory::GetForProfile(profile());
+  profile()->SetIsSupervisedProfile();
+  supervised_user_test_util::SetManualFilterForHost(profile(), "example.com",
+                                                    /*allowlist=*/false);
+
+  base::HistogramTester histogram_tester;
+  RunTestCasesWithActiveItem(kBlockedForSupervisedUserTestCases);
+
+  histogram_tester.ExpectBucketCount(
+      "Download.CancelReason", DownloadCancelReason::kSupervisedUserBlocked, 1);
+}
+
+// Test that a download is blocked when an earlier URL in the redirect chain is
+// blocked by the supervised user URL filter, even if the final destination URL
+// is allowed.
+TEST_F(DownloadTargetDeterminerTest,
+       BlockDownloadsInRedirectChainForSupervisedUser) {
+  const DownloadTestCase kTestCase = {
+      AUTOMATIC,
+      download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
+      DownloadFileType::NOT_DANGEROUS,
+      "http://cdn.allowed.com/pdf/abc.pdf",
+      "",
+      FILE_PATH_LITERAL(""),
+      FILE_PATH_LITERAL(""),
+      DownloadItem::TARGET_DISPOSITION_OVERWRITE,
+      EXPECT_EMPTY};
+
+  ChildAccountServiceFactory::GetForProfile(profile());
+  profile()->SetIsSupervisedProfile();
+  supervised_user_test_util::SetManualFilterForHost(profile(), "blocked.com",
+                                                    /*allowlist=*/false);
+  supervised_user_test_util::SetManualFilterForHost(
+      profile(), "cdn.allowed.com", /*allowlist=*/true);
+
+  std::unique_ptr<download::MockDownloadItem> item =
+      CreateActiveDownloadItem(0, kTestCase);
+  std::vector<GURL> url_chain = {GURL("http://blocked.com/abc.pdf"),
+                                 GURL("http://cdn.allowed.com/pdf/abc.pdf")};
+  ON_CALL(*item, GetUrlChain()).WillByDefault(ReturnRefOfCopy(url_chain));
+  ON_CALL(*item, GetOriginalUrl())
+      .WillByDefault(ReturnRefOfCopy(url_chain.front()));
+
+  base::HistogramTester histogram_tester;
+  RunTestCase(kTestCase, base::FilePath(), item.get());
+
+  histogram_tester.ExpectBucketCount(
+      "Download.CancelReason", DownloadCancelReason::kSupervisedUserBlocked, 1);
+}
+
 // Test basic functionality supporting extensions that want to override download
 // filenames.
 TEST_F(DownloadTargetDeterminerTest, NotifyExtensionsSafe) {
@@ -2034,7 +2280,16 @@ TEST_F(DownloadTargetDeterminerTest, NotifyExtensionsDefaultPath) {
 
 // Test that relative paths returned by extensions are always relative to the
 // default downloads path, even if "Ask where to save" (prompt) is enabled.
-TEST_F(DownloadTargetDeterminerTest, NotifyExtensionsSuggestedPathWithPrompt) {
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+// TODO(crbug.com/531834681): Re-enable once MediaStore state is isolated.
+#define MAYBE_NotifyExtensionsSuggestedPathWithPrompt \
+  DISABLED_NotifyExtensionsSuggestedPathWithPrompt
+#else
+#define MAYBE_NotifyExtensionsSuggestedPathWithPrompt \
+  NotifyExtensionsSuggestedPathWithPrompt
+#endif
+TEST_F(DownloadTargetDeterminerTest,
+       MAYBE_NotifyExtensionsSuggestedPathWithPrompt) {
   // Enable "Ask where to save" (PromptForDownload).
   SetPromptForDownload(true);
 
@@ -3171,6 +3426,139 @@ TEST_F(DownloadTargetDeterminerTest, DetermineLocalPathReturnsContentUri) {
 
   EXPECT_EQ(info.target_info.display_name.value(), "foor.txt");
   EXPECT_EQ(info.target_info.target_path.value(), "content://media/123");
+}
+
+TEST_F(DownloadTargetDeterminerTest,
+       ContentUri_PreservesDisplayNameAndDangerLevel) {
+  const DownloadTestCase kSaveAsTestCase = {
+      SAVE_AS,
+      download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
+      DownloadFileType::NOT_DANGEROUS,
+      "http://example.com/foo.txt",
+      "text/plain",
+      FILE_PATH_LITERAL(""),
+      FILE_PATH_LITERAL("content://media/123"),
+      DownloadItem::TARGET_DISPOSITION_PROMPT,
+      EXPECT_LOCAL_PATH};
+
+  // Safe display name.
+  {
+    std::unique_ptr<download::MockDownloadItem> item =
+        CreateActiveDownloadItem(0, kSaveAsTestCase);
+    ui::SelectedFileInfo selected_file_info(
+        base::FilePath(FILE_PATH_LITERAL("content://media/123")));
+    selected_file_info.display_name = FILE_PATH_LITERAL("safe.txt");
+
+    EXPECT_CALL(*delegate(), RequestConfirmation_(
+                                 _, _, DownloadConfirmationReason::SAVE_AS, _))
+        .WillOnce(WithArg<3>(ScheduleCallback2(
+            DownloadConfirmationResult::CONFIRMED, selected_file_info)));
+
+    TargetInfoAndDangerLevel info =
+        RunDownloadTargetDeterminer(base::FilePath(), item.get());
+
+    EXPECT_EQ(info.target_info.display_name.value(), "safe.txt");
+    EXPECT_EQ(info.target_info.target_path.value(), "content://media/123");
+    EXPECT_EQ(download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
+              info.target_info.danger_type);
+  }
+
+  // Dangerous display name under download restriction policy.
+  {
+    profile()->GetTestingPrefService()->SetInteger(
+        policy::policy_prefs::kDownloadRestrictions,
+        static_cast<int>(policy::DownloadRestriction::DANGEROUS_FILES));
+
+    std::unique_ptr<download::MockDownloadItem> item =
+        CreateActiveDownloadItem(1, kSaveAsTestCase);
+    ui::SelectedFileInfo selected_file_info(
+        base::FilePath(FILE_PATH_LITERAL("content://media/123")));
+    selected_file_info.display_name = FILE_PATH_LITERAL("dangerous.bad");
+
+    EXPECT_CALL(*delegate(), RequestConfirmation_(
+                                 _, _, DownloadConfirmationReason::SAVE_AS, _))
+        .WillOnce(WithArg<3>(ScheduleCallback2(
+            DownloadConfirmationResult::CONFIRMED, selected_file_info)));
+
+    TargetInfoAndDangerLevel info =
+        RunDownloadTargetDeterminer(base::FilePath(), item.get());
+
+    EXPECT_EQ(info.target_info.display_name.value(), "dangerous.bad");
+    EXPECT_EQ(info.target_info.target_path.value(), "content://media/123");
+    EXPECT_EQ(download::DOWNLOAD_DANGER_TYPE_DANGEROUS_FILE,
+              info.target_info.danger_type);
+  }
+}
+
+TEST_F(DownloadTargetDeterminerTest,
+       ContentUri_BypassesDownloadPrefsSaveFilePath) {
+  const DownloadTestCase kSaveAsTestCase = {
+      SAVE_AS,
+      download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
+      DownloadFileType::NOT_DANGEROUS,
+      "http://example.com/foo.txt",
+      "text/plain",
+      FILE_PATH_LITERAL(""),
+      FILE_PATH_LITERAL("content://media/123"),
+      DownloadItem::TARGET_DISPOSITION_PROMPT,
+      EXPECT_LOCAL_PATH};
+
+  std::unique_ptr<download::MockDownloadItem> item =
+      CreateActiveDownloadItem(0, kSaveAsTestCase);
+  base::FilePath initial_save_dir = download_prefs()->SaveFilePath();
+
+  ui::SelectedFileInfo selected_file_info(
+      base::FilePath(FILE_PATH_LITERAL("content://media/123")));
+  selected_file_info.display_name = FILE_PATH_LITERAL("custom.txt");
+
+  EXPECT_CALL(*delegate(), RequestConfirmation_(
+                               _, _, DownloadConfirmationReason::SAVE_AS, _))
+      .WillOnce(WithArg<3>(ScheduleCallback2(
+          DownloadConfirmationResult::CONFIRMED, selected_file_info)));
+
+  TargetInfoAndDangerLevel info =
+      RunDownloadTargetDeterminer(base::FilePath(), item.get());
+
+  EXPECT_EQ(initial_save_dir, download_prefs()->SaveFilePath());
+}
+
+TEST_F(DownloadTargetDeterminerTest,
+       ContentUri_EmptyDisplayNameFallsBackToGenerateFileName) {
+  profile()->GetTestingPrefService()->SetInteger(
+      policy::policy_prefs::kDownloadRestrictions,
+      static_cast<int>(policy::DownloadRestriction::DANGEROUS_FILES));
+
+  const DownloadTestCase kSaveAsTestCase = {
+      SAVE_AS,
+      download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS,
+      DownloadFileType::NOT_DANGEROUS,
+      "http://example.com/foo.bad",
+      "application/octet-stream",
+      FILE_PATH_LITERAL(""),
+      FILE_PATH_LITERAL("content://media/123"),
+      DownloadItem::TARGET_DISPOSITION_PROMPT,
+      EXPECT_LOCAL_PATH};
+
+  std::unique_ptr<download::MockDownloadItem> item =
+      CreateActiveDownloadItem(0, kSaveAsTestCase);
+
+  ui::SelectedFileInfo selected_file_info(
+      base::FilePath(FILE_PATH_LITERAL("content://media/123")));
+  selected_file_info.display_name.clear();
+
+  EXPECT_CALL(*delegate(), RequestConfirmation_(
+                               _, _, DownloadConfirmationReason::SAVE_AS, _))
+      .WillOnce(WithArg<3>(ScheduleCallback2(
+          DownloadConfirmationResult::CONFIRMED, selected_file_info)));
+
+  TargetInfoAndDangerLevel info =
+      RunDownloadTargetDeterminer(base::FilePath(), item.get());
+
+  // Falls back to GenerateFileName(), which generates foo.bad.
+  EXPECT_EQ("foo.bad", info.target_info.display_name.value());
+  EXPECT_EQ("content://media/123", info.target_info.target_path.value());
+  EXPECT_EQ(download::DOWNLOAD_DANGER_TYPE_DANGEROUS_FILE,
+            info.target_info.danger_type);
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 

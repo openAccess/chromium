@@ -15,6 +15,7 @@
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/posix/eintr_wrapper.h"
+#include "base/synchronization/lock.h"
 #include "base/trace_event/trace_event.h"
 #include "ui/gfx/buffer_usage_util.h"
 #include "ui/gfx/geometry/size_conversions.h"
@@ -45,9 +46,10 @@ bool GbmPixmapWayland::InitializeBuffer(
     viz::SharedImageFormat format,
     NativePixmapUsageSet usage,
     std::optional<gfx::Size> visible_area_size) {
-  DCHECK(!visible_area_size ||
-         ((visible_area_size.value().width() <= size.width()) &&
-          (visible_area_size.value().height() <= size.height())));
+  CHECK(!visible_area_size ||
+            ((visible_area_size.value().width() <= size.width()) &&
+             (visible_area_size.value().height() <= size.height())),
+        base::NotFatalUntil::M163);
   TRACE_EVENT0("wayland", "GbmPixmapWayland::InitializeBuffer");
 
   widget_ = widget;
@@ -92,14 +94,21 @@ bool GbmPixmapWayland::InitializeBuffer(
   }
 
   if (!gbm_bo_) {
-    // Only log an error for a failing format once to avoid console spam.
+    // Only log an error for a failing format once to avoid console spam. This
+    // may run concurrently on the GPU main and IO threads, so access to the set
+    // of failed formats must be synchronized.
+    static base::NoDestructor<base::Lock> failed_formats_lock;
     static base::NoDestructor<base::flat_set<viz::SharedImageFormat>>
         failed_formats;
 
-    if (failed_formats->contains(format)) {
+    bool inserted;
+    {
+      base::AutoLock lock(*failed_formats_lock);
+      inserted = failed_formats->insert(format).second;
+    }
+    if (!inserted) {
       return false;
     }
-    failed_formats->insert(format);
 
     LOG(ERROR) << "Cannot create bo with format=" << format.ToString()
                << " and usage=" << ui::NativePixmapUsageToString(usage);
@@ -188,9 +197,8 @@ uint32_t GbmPixmapWayland::GetUniqueId() const {
 bool GbmPixmapWayland::ScheduleOverlayPlane(
     gfx::AcceleratedWidget widget,
     const gfx::OverlayPlaneData& overlay_plane_data,
-    std::vector<gfx::GpuFence> acquire_fences,
-    std::vector<gfx::GpuFence> release_fences) {
-  DCHECK_NE(widget, gfx::kNullAcceleratedWidget);
+    gfx::GpuFenceHandle acquire_fence) {
+  CHECK_NE(widget, gfx::kNullAcceleratedWidget, base::NotFatalUntil::M163);
 
   if (!created_wl_buffer_) {
     CreateDmabufBasedWlBuffer(overlay_plane_data);
@@ -200,18 +208,14 @@ bool GbmPixmapWayland::ScheduleOverlayPlane(
 
   auto* surface = buffer_manager_->GetSurface(widget);
   // This must never be hit.
-  DCHECK(surface);
+  CHECK(surface, base::NotFatalUntil::M163);
   GbmSurfacelessWayland* surfaceless =
       static_cast<GbmSurfacelessWayland*>(surface);
-  DCHECK(surfaceless);
+  CHECK(surfaceless, base::NotFatalUntil::M163);
 
-  DCHECK(acquire_fences.empty() || acquire_fences.size() == 1u);
-  surfaceless->QueueWaylandOverlayConfig(
-      {overlay_plane_data,
-       acquire_fences.empty()
-           ? nullptr
-           : std::make_unique<gfx::GpuFence>(std::move(acquire_fences[0])),
-       buffer_id_, surfaceless->surface_scale_factor()});
+  surfaceless->QueueWaylandOverlayConfig({overlay_plane_data,
+                                          std::move(acquire_fence), buffer_id_,
+                                          surfaceless->surface_scale_factor()});
   return true;
 }
 

@@ -10,6 +10,7 @@
 
 #include "base/check_is_test.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/timer/elapsed_timer.h"
@@ -29,13 +30,16 @@
 #include "components/no_state_prefetch/browser/no_state_prefetch_manager.h"
 #include "components/optimization_guide/core/hints/optimization_guide_decider.h"
 #include "components/optimization_guide/proto/hints.pb.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "net/base/network_anonymization_key.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+#include "services/network/public/cpp/connection_allowlist.h"
 #include "services/network/public/cpp/constants.h"
+#include "services/network/public/cpp/features.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/loader/lcp_critical_path_predictor_util.h"
@@ -70,6 +74,33 @@ void GetInitiatorIds(content::NavigationHandle* navigation_handle,
       frame_id = initiator_rfh->GetGlobalId();
     }
   }
+}
+
+// Returns true if `navigation_handle` is a session history navigation whose
+// initiator has an enforced or report-only Connection-Allowlist. The URL of a
+// history navigation comes from the session history entry rather than from the
+// initiator, so speculative requests made on its behalf must not be checked
+// against (and reported to) the initiator's Connection-Allowlist, as that would
+// disclose the history entry's URL and its predicted subresources to the
+// initiator's reporting endpoint.
+bool IsHistoryNavigationFromConnectionAllowlistInitiator(
+    content::NavigationHandle* navigation_handle) {
+  if (!base::FeatureList::IsEnabled(network::features::kConnectionAllowlists) ||
+      !navigation_handle->IsHistory() ||
+      !navigation_handle->GetInitiatorFrameToken().has_value()) {
+    return false;
+  }
+  content::RenderFrameHost* initiator_rfh =
+      content::RenderFrameHost::FromFrameToken(
+          content::GlobalRenderFrameHostToken(
+              navigation_handle->GetInitiatorProcessId(),
+              *navigation_handle->GetInitiatorFrameToken()));
+  if (!initiator_rfh || !initiator_rfh->HasPolicyContainerHost()) {
+    return false;
+  }
+  const network::ConnectionAllowlists& allowlists =
+      initiator_rfh->GetConnectionAllowlists();
+  return allowlists.enforced.has_value() || allowlists.report_only.has_value();
 }
 
 // Called only for subresources.
@@ -166,7 +197,8 @@ class ScopedOptimizationHintsReceiveStatusRecorder {
   ScopedOptimizationHintsReceiveStatusRecorder()
       : status_(OptimizationHintsReceiveStatus::kUnknown) {}
   ~ScopedOptimizationHintsReceiveStatusRecorder() {
-    DCHECK_NE(status_, OptimizationHintsReceiveStatus::kUnknown);
+    CHECK_NE(status_, OptimizationHintsReceiveStatus::kUnknown,
+             base::NotFatalUntil::M162);
     UMA_HISTOGRAM_ENUMERATION(
         kLoadingPredictorOptimizationHintsReceiveStatusHistogram, status_);
   }
@@ -186,32 +218,13 @@ bool ShouldConsultOptimizationGuide(const GURL& current_main_frame_url,
          url::Origin::Create(previous_main_frame_url);
 }
 
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class LcppHintStatus {
-  kSucceedToSet = 0,
-  kNoLcppData = 1,
-  kInvalidLcppStat = 2,
-  kConversionFailure = 3,
-  kMaxValue = kConversionFailure,
-};
-
 std::optional<blink::mojom::LCPCriticalPathPredictorNavigationTimeHint>
 GetLCPPHint(content::NavigationHandle& navigation_handle,
             LoadingPredictor& predictor) {
   std::optional<LcppStat> lcpp_stat =
       predictor.resource_prefetch_predictor()->GetLcppStat(
           navigation_handle.GetInitiatorOrigin(), navigation_handle.GetURL());
-  if (!lcpp_stat) {
-    base::UmaHistogramEnumeration(
-        "LoadingPredictor.SetLCPPNavigationHint.Status",
-        LcppHintStatus::kNoLcppData);
-    return std::nullopt;
-  }
-  if (!IsValidLcppStat(*lcpp_stat)) {
-    base::UmaHistogramEnumeration(
-        "LoadingPredictor.SetLCPPNavigationHint.Status",
-        LcppHintStatus::kInvalidLcppStat);
+  if (!lcpp_stat || !IsValidLcppStat(*lcpp_stat)) {
     return std::nullopt;
   }
 
@@ -246,15 +259,8 @@ void MaybeSetLCPPNavigationHint(content::NavigationHandle& navigation_handle,
   }
   if (hint) {
     navigation_handle.SetLCPPNavigationHint(hint->Clone());
-    base::UmaHistogramEnumeration(
-        "LoadingPredictor.SetLCPPNavigationHint.Status",
-        LcppHintStatus::kSucceedToSet);
     base::UmaHistogramTimes("LoadingPredictor.SetLCPPNavigationHint.Time",
                             timer.Elapsed());
-  } else {
-    base::UmaHistogramEnumeration(
-        "LoadingPredictor.SetLCPPNavigationHint.Status",
-        LcppHintStatus::kConversionFailure);
   }
 }
 
@@ -323,7 +329,7 @@ void LoadingPredictorTabHelper::PageData::
         content::RenderFrameHost& render_frame_host) {
   auto* navigation_holder =
       NavigationPageDataHolder::GetForNavigationHandle(navigation_handle);
-  DCHECK(navigation_holder);
+  CHECK(navigation_holder, base::NotFatalUntil::M162);
 
   auto* document_holder =
       DocumentPageDataHolder::GetOrCreateForCurrentDocument(&render_frame_host);
@@ -355,10 +361,13 @@ LoadingPredictorTabHelper::NavigationPageDataHolder::NavigationPageDataHolder(
 LoadingPredictorTabHelper::NavigationPageDataHolder::
     ~NavigationPageDataHolder() = default;
 
+DEFINE_USER_DATA(LoadingPredictorTabHelper);
+
 LoadingPredictorTabHelper::LoadingPredictorTabHelper(
+    tabs::TabInterface& tab,
     content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<LoadingPredictorTabHelper>(*web_contents) {
+      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
   auto* predictor = LoadingPredictorFactory::GetForProfile(profile);
@@ -377,9 +386,23 @@ LoadingPredictorTabHelper::LoadingPredictorTabHelper(
 
 LoadingPredictorTabHelper::~LoadingPredictorTabHelper() = default;
 
+// static
+LoadingPredictorTabHelper* LoadingPredictorTabHelper::From(
+    tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
+
+// static
+LoadingPredictorTabHelper* LoadingPredictorTabHelper::FromWebContents(
+    content::WebContents* web_contents) {
+  return web_contents
+             ? From(tabs::TabInterface::MaybeGetFromContents(web_contents))
+             : nullptr;
+}
+
 void LoadingPredictorTabHelper::DidStartNavigation(
     content::NavigationHandle* navigation_handle) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   TRACE_EVENT("navigation", "LoadingPredictorTabHelper::DidStartNavigation");
 
   if (!predictor_ || predictor_->WasShutdown()) {
@@ -393,6 +416,13 @@ void LoadingPredictorTabHelper::DidStartNavigation(
   // destination host would leak (e.g. via its DNS resolution) even though the
   // navigation is blocked. See https://github.com/WICG/connection-allowlists.
   if (navigation_handle->IsBlockedByConnectionAllowlist()) {
+    return;
+  }
+
+  // Likewise skip history navigations initiated by a document with a
+  // Connection-Allowlist, so that the speculative requests made for them don't
+  // queue reports to the initiator that reveal the session history entry.
+  if (IsHistoryNavigationFromConnectionAllowlistInitiator(navigation_handle)) {
     return;
   }
 
@@ -485,7 +515,7 @@ void LoadingPredictorTabHelper::PrepareForPageLoad(
 
 void LoadingPredictorTabHelper::DidRedirectNavigation(
     content::NavigationHandle* navigation_handle) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (!predictor_)
     return;
 
@@ -537,7 +567,7 @@ void LoadingPredictorTabHelper::DidRedirectNavigation(
 
 void LoadingPredictorTabHelper::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (!predictor_)
     return;
 
@@ -568,7 +598,7 @@ void LoadingPredictorTabHelper::ResourceLoadComplete(
     const content::GlobalRequestID& request_id,
     const GURL& original_url,
     const blink::mojom::ResourceLoadInfo& resource_load_info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (!predictor_)
     return;
 
@@ -589,7 +619,7 @@ void LoadingPredictorTabHelper::DidLoadResourceFromMemoryCache(
     const GURL& url,
     const std::string& mime_type,
     network::mojom::RequestDestination request_destination) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (!predictor_)
     return;
 
@@ -612,7 +642,7 @@ void LoadingPredictorTabHelper::DidLoadResourceFromMemoryCache(
 }
 
 void LoadingPredictorTabHelper::DocumentOnLoadCompletedInPrimaryMainFrame() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (!predictor_)
     return;
 
@@ -634,7 +664,7 @@ void LoadingPredictorTabHelper::OnOptimizationGuideDecision(
     content::GlobalRenderFrameHostId initiator_frame_id,
     optimization_guide::OptimizationGuideDecision decision,
     const optimization_guide::OptimizationMetadata& metadata) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 
   if (!predictor_)
     return;
@@ -745,6 +775,5 @@ void LoadingPredictorTabHelper::OnOptimizationGuideDecision(
 NAVIGATION_HANDLE_USER_DATA_KEY_IMPL(
     LoadingPredictorTabHelper::NavigationPageDataHolder);
 DOCUMENT_USER_DATA_KEY_IMPL(LoadingPredictorTabHelper::DocumentPageDataHolder);
-WEB_CONTENTS_USER_DATA_KEY_IMPL(LoadingPredictorTabHelper);
 
 }  // namespace predictors

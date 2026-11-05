@@ -107,10 +107,11 @@ class CONTENT_EXPORT RenderWidgetHostView {
   virtual void SetBounds(const gfx::Rect& rect) = 0;
 
   // Coordinate points received from a renderer process need to be transformed
-  // to the top-level frame's coordinate space. For coordinates received from
-  // the top-level frame's renderer this is a no-op as they are already
-  // properly transformed; however, coordinates received from an out-of-process
-  // iframe renderer process require transformation.
+  // to the top-level frame's coordinate space, in DIPs (points in physical
+  // pixels must be converted to DIPs first). For coordinates received from the
+  // top-level frame's renderer this is a no-op as they are already properly
+  // transformed; however, coordinates received from an out-of-process iframe
+  // renderer process require transformation.
   virtual gfx::PointF TransformPointToRootCoordSpaceF(
       const gfx::PointF& point) const = 0;
 
@@ -144,6 +145,9 @@ class CONTENT_EXPORT RenderWidgetHostView {
   virtual void Focus() = 0;
   // Returns true if the View currently has the focus.
   virtual bool HasFocus() = 0;
+  // Overrides the return value of HasFocus() for testing. Passing
+  // `std::nullopt` clears the override.
+  virtual void SetHasFocusForTesting(std::optional<bool> has_focus) {}
 
   // Whether the view is showing.
   virtual bool IsShowing() = 0;
@@ -252,6 +256,16 @@ class CONTENT_EXPORT RenderWidgetHostView {
       base::TimeDelta timeout,
       base::OnceCallback<void(const CopyFromSurfaceResult&)> callback) = 0;
 
+  // Similar to `CopyFromSurface()`, but marks the copy request as secure.
+  // A capture is considered secure if the captured content is not easily
+  // accessible to JavaScript or users, and cannot be trivially shared or
+  // streamed out of the device. Used for capture prevention, e.g. for protected
+  // content or by enterprise policy.
+  virtual void CopyFromSurfaceSecure(
+      const gfx::Rect& src_rect,
+      const gfx::Size& output_size,
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const CopyFromSurfaceResult&)> callback) = 0;
 
   // Creates a video capturer, which will allow the caller to receive a stream
   // of media::VideoFrames captured from this view. The capturer is configured
@@ -317,8 +331,6 @@ class CONTENT_EXPORT RenderWidgetHostView {
   // coordinates. No-op unless VirtualKeyboardMode is kOverlaysContent.
   virtual void NotifyVirtualKeyboardOverlayRect(
       const gfx::Rect& keyboard_rect) = 0;
-
-  virtual void ShowInterestInElement(int) = 0;
 
   // Returns true if this widget is a HTML popup, e.g. a <select> menu.
   virtual bool IsHTMLFormPopup() const = 0;

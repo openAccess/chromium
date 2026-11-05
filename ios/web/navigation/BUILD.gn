@@ -19,6 +19,7 @@ source_set("navigation") {
     ":navigation_manager_util",
     "//base",
     "//components/enterprise/client_certificates/core",
+    "//components/enterprise/net/core",
     "//components/security_interstitials/core:insecure_form_util",
     "//components/sessions:session_id",
     "//ios/components/security_interstitials/https_only_mode:feature",
@@ -60,8 +61,6 @@ source_set("navigation") {
     "url_schemes.mm",
     "web_kit_constants.cc",
     "web_kit_constants.h",
-    "wk_back_forward_list_item_holder.h",
-    "wk_back_forward_list_item_holder.mm",
     "wk_navigation_action_policy_util.h",
     "wk_navigation_action_policy_util.mm",
     "wk_navigation_action_util.h",
@@ -106,6 +105,8 @@ source_set("core") {
     "synthesized_session_restore.mm",
     "time_smoother.cc",
     "time_smoother.h",
+    "wk_back_forward_list_item_holder.h",
+    "wk_back_forward_list_item_holder.mm",
   ]
 }
 

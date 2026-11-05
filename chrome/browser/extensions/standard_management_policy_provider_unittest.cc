@@ -7,13 +7,21 @@
 #include <memory>
 
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_management_internal.h"
+#include "chrome/browser/extensions/extension_management_test_util.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/external_policy_loader.h"
+#include "chrome/browser/extensions/low_trust_policy_install_block_manager.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/enterprise/isolated_mode/scoped_isolated_mode_override_for_testing.h"
 #include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/themes/pref_names.h"
@@ -25,11 +33,16 @@
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_builder.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_urls.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
+#include "extensions/strings/grit/extensions_strings.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/l10n/l10n_util.h"
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#include "chrome/browser/extensions/policy_dse_ntp_override_metrics_reporter.h"
+#endif
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -183,8 +196,6 @@ TEST_F(StandardManagementPolicyProviderTest,
 }
 
 TEST_F(StandardManagementPolicyProviderTest, UnsupportedDeveloperExtension) {
-  base::test::ScopedFeatureList feature_list(
-      extensions_features::kExtensionDisableUnsupportedDeveloper);
   // Disable developer mode.
   util::SetDeveloperModeForProfile(&profile_, false);
   auto extension = CreateExtension(ManifestLocation::kUnpacked);
@@ -262,17 +273,337 @@ TEST_F(StandardManagementPolicyProviderTest, ThemeExtension) {
 
   // Setting policy theme prevents users from loading an extension theme.
   profile_.GetTestingPrefService()->SetManagedPref(
-      themes::prefs::kPolicyThemeColor, std::make_unique<base::Value>(100));
+      themes::kPolicyThemeColor, std::make_unique<base::Value>(100));
 
   EXPECT_FALSE(provider_.UserMayLoad(extension.get(), &error16));
   EXPECT_NE(std::u16string(), error16);
 
   // Unsetting policy theme allows users to load an extension theme.
   profile_.GetTestingPrefService()->RemoveManagedPref(
-      themes::prefs::kPolicyThemeColor);
+      themes::kPolicyThemeColor);
 
   EXPECT_TRUE(provider_.UserMayLoad(extension.get(), &error16));
 }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+TEST_F(StandardManagementPolicyProviderTest, LowTrustSettingsOverrideBlock) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kBlockPolicyDseNtpOverridesInLowTrust);
+
+  // DSE Override extension.
+  auto dse_extension =
+      ExtensionBuilder("DSE Override")
+          .SetLocation(ManifestLocation::kExternalPolicyDownload)
+          .SetManifestKey("update_url",
+                          extension_urls::kChromeWebstoreUpdateURL)
+          .AddJSON(R"(
+            "chrome_settings_overrides": {
+              "search_provider": {
+                "name": "Malware Search",
+                "keyword": "malware",
+                "search_url": "http://malware.com/s?q={searchTerms}",
+                "favicon_url": "http://malware.com/favicon.ico",
+                "encoding": "UTF-8",
+                "is_default": true
+              }
+            }
+          )")
+          .Build();
+
+  // NTP Override extension.
+  auto ntp_extension =
+      ExtensionBuilder("NTP Override")
+          .SetLocation(ManifestLocation::kExternalPolicyDownload)
+          .SetManifestKey("update_url",
+                          extension_urls::kChromeWebstoreUpdateURL)
+          .AddJSON(R"(
+            "chrome_url_overrides": {
+              "newtab": "custom_newtab.html"
+            }
+          )")
+          .Build();
+
+  // Normal (non-overriding) policy extension.
+  auto normal_extension =
+      ExtensionBuilder("Normal Policy")
+          .SetLocation(ManifestLocation::kExternalPolicyDownload)
+          .SetManifestKey("update_url",
+                          extension_urls::kChromeWebstoreUpdateURL)
+          .Build();
+
+  // Set policy configuration so GetInstallationMode returns force_installed /
+  // normal_installed.
+  {
+    ExtensionManagementPrefUpdater<sync_preferences::TestingPrefServiceSyncable>
+        pref_updater(profile_.GetTestingPrefService());
+    pref_updater.SetIndividualExtensionAutoInstalled(
+        dse_extension->id(), extension_urls::kChromeWebstoreUpdateURL,
+        /*forced=*/true);
+    pref_updater.SetIndividualExtensionAutoInstalled(
+        ntp_extension->id(), extension_urls::kChromeWebstoreUpdateURL,
+        /*forced=*/false);
+    pref_updater.SetIndividualExtensionAutoInstalled(
+        normal_extension->id(), extension_urls::kChromeWebstoreUpdateURL,
+        /*forced=*/true);
+  }
+
+  auto check_user_may_install =
+      [&](const scoped_refptr<const Extension>& extension) {
+        base::test::TestFuture<ManagementPolicy::Decision> test_future;
+        provider_.UserMayInstall(extension.get(), test_future.GetCallback());
+        return test_future.Take();
+      };
+
+  base::HistogramTester histograms;
+
+  // 1. Simulate an unmanaged (low trust) environment.
+  {
+    policy::ScopedManagementServiceOverrideForTesting platform_management(
+        policy::ManagementServiceFactory::GetForPlatform(),
+        policy::EnterpriseManagementAuthority::NONE);
+    policy::ScopedManagementServiceOverrideForTesting profile_management(
+        policy::ManagementServiceFactory::GetForProfile(&profile_),
+        policy::EnterpriseManagementAuthority::NONE);
+
+    // Verify that DSE override extension is blocked in low trust.
+    {
+      ManagementPolicy::Decision decision =
+          check_user_may_install(dse_extension);
+      EXPECT_FALSE(decision.allowed);
+      EXPECT_EQ(decision.error,
+                l10n_util::GetStringFUTF16(
+                    IDS_EXTENSION_CANT_POLICY_INSTALL_IN_LOW_TRUST,
+                    base::UTF8ToUTF16(dse_extension->name()),
+                    base::UTF8ToUTF16(dse_extension->id())));
+    }
+    LowTrustPolicyInstallBlockManager* block_manager =
+        settings_->low_trust_block_manager();
+    EXPECT_TRUE(block_manager->IsBlocked(dse_extension->id()));
+
+    // Verify that NTP override extension is blocked in low trust.
+    {
+      ManagementPolicy::Decision decision =
+          check_user_may_install(ntp_extension);
+      EXPECT_FALSE(decision.allowed);
+      EXPECT_EQ(decision.error,
+                l10n_util::GetStringFUTF16(
+                    IDS_EXTENSION_CANT_POLICY_INSTALL_IN_LOW_TRUST,
+                    base::UTF8ToUTF16(ntp_extension->name()),
+                    base::UTF8ToUTF16(ntp_extension->id())));
+    }
+    EXPECT_TRUE(block_manager->IsBlocked(ntp_extension->id()));
+
+    auto map = block_manager->GetAllBlocked();
+    EXPECT_EQ(map.size(), 2u);
+    EXPECT_EQ(map[dse_extension->id()].override_type,
+              util::DseNtpOverrideType::kDse);
+    EXPECT_EQ(map[dse_extension->id()].update_url,
+              extension_urls::kChromeWebstoreUpdateURL);
+    EXPECT_EQ(map[ntp_extension->id()].override_type,
+              util::DseNtpOverrideType::kNtp);
+    EXPECT_EQ(map[ntp_extension->id()].update_url,
+              extension_urls::kChromeWebstoreUpdateURL);
+
+    // Verify that normal policy extension is allowed in low trust.
+    {
+      ManagementPolicy::Decision decision =
+          check_user_may_install(normal_extension);
+      EXPECT_TRUE(decision.allowed);
+      EXPECT_TRUE(decision.error.empty());
+    }
+    EXPECT_FALSE(block_manager->IsBlocked(normal_extension->id()));
+  }
+
+  // 2. Simulate a managed (trusted) environment.
+  {
+    policy::ScopedManagementServiceOverrideForTesting
+        trusted_profile_management(
+            policy::ManagementServiceFactory::GetForProfile(&profile_),
+            policy::EnterpriseManagementAuthority::CLOUD);
+
+    // Verify that DSE override extension is allowed on trusted devices.
+    {
+      ManagementPolicy::Decision decision =
+          check_user_may_install(dse_extension);
+      EXPECT_TRUE(decision.allowed);
+      EXPECT_TRUE(decision.error.empty());
+    }
+
+    // Verify that NTP override extension is allowed on trusted devices.
+    {
+      ManagementPolicy::Decision decision =
+          check_user_may_install(ntp_extension);
+      EXPECT_TRUE(decision.allowed);
+      EXPECT_TRUE(decision.error.empty());
+    }
+  }
+
+  histograms.ExpectUniqueSample("Extensions.LowTrustPolicyBlock.Action",
+                                LowTrustPolicyBlockAction::kBlockedOnInstall,
+                                2);
+}
+
+// Tests that when an extension was previously blocked from policy install in
+// low-trust mode, a subsequent user install of the same extension is permitted.
+TEST_F(StandardManagementPolicyProviderTest, LowTrustManualInstallBypass) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kBlockPolicyDseNtpOverridesInLowTrust);
+
+  policy::ScopedManagementServiceOverrideForTesting platform_management(
+      policy::ManagementServiceFactory::GetForPlatform(),
+      policy::EnterpriseManagementAuthority::NONE);
+  policy::ScopedManagementServiceOverrideForTesting profile_management(
+      policy::ManagementServiceFactory::GetForProfile(&profile_),
+      policy::EnterpriseManagementAuthority::NONE);
+
+  constexpr char kNtpOverrideJson[] = R"(
+    "chrome_url_overrides": {
+      "newtab": "custom.html"
+    }
+  )";
+
+  constexpr char kDseOverrideJson[] = R"(
+    "chrome_settings_overrides": {
+      "search_provider": {
+        "name": "Search",
+        "keyword": "search",
+        "search_url": "http://example.com/s?q={searchTerms}",
+        "favicon_url": "http://example.com/favicon.ico",
+        "encoding": "UTF-8",
+        "is_default": true
+      }
+    }
+  )";
+
+  auto manual_ntp_extension = ExtensionBuilder("Manual NTP Override")
+                                  .SetLocation(ManifestLocation::kInternal)
+                                  .AddJSON(kNtpOverrideJson)
+                                  .Build();
+
+  auto policy_ntp_extension =
+      ExtensionBuilder("Manual NTP Override")
+          .SetLocation(ManifestLocation::kExternalPolicyDownload)
+          .AddJSON(kNtpOverrideJson)
+          .Build();
+  ASSERT_EQ(manual_ntp_extension->id(), policy_ntp_extension->id());
+
+  auto manual_dse_extension = ExtensionBuilder("Manual DSE Override")
+                                  .SetLocation(ManifestLocation::kInternal)
+                                  .AddJSON(kDseOverrideJson)
+                                  .Build();
+
+  auto policy_dse_extension =
+      ExtensionBuilder("Manual DSE Override")
+          .SetLocation(ManifestLocation::kExternalPolicyDownload)
+          .AddJSON(kDseOverrideJson)
+          .Build();
+  ASSERT_EQ(manual_dse_extension->id(), policy_dse_extension->id());
+
+  {
+    ExtensionManagementPrefUpdater<sync_preferences::TestingPrefServiceSyncable>
+        pref_updater(profile_.GetTestingPrefService());
+    pref_updater.SetIndividualExtensionAutoInstalled(
+        manual_ntp_extension->id(), extension_urls::kChromeWebstoreUpdateURL,
+        /*forced=*/true);
+    pref_updater.SetIndividualExtensionAutoInstalled(
+        manual_dse_extension->id(), extension_urls::kChromeWebstoreUpdateURL,
+        /*forced=*/true);
+  }
+
+  auto check_user_may_install =
+      [&](const scoped_refptr<const Extension>& extension) {
+        base::test::TestFuture<ManagementPolicy::Decision> test_future;
+        provider_.UserMayInstall(extension.get(), test_future.GetCallback());
+        return test_future.Take();
+      };
+
+  for (const auto& [manual_ext, policy_ext] :
+       {std::make_pair(manual_ntp_extension, policy_ntp_extension),
+        std::make_pair(manual_dse_extension, policy_dse_extension)}) {
+    // An attempt to install the extension via policy in a low-trust environment
+    // is blocked, and the extension is recorded in the blocked manager.
+    EXPECT_FALSE(check_user_may_install(policy_ext).allowed);
+    EXPECT_TRUE(settings_->IsExtensionBlockedByLowTrust(manual_ext->id()));
+
+    // A subsequent manual user install of the same extension is permitted,
+    // bypassing the forced policy block since the user explicitly initiated it.
+    EXPECT_TRUE(check_user_may_install(manual_ext).allowed);
+    EXPECT_FALSE(provider_.MustRemainEnabled(manual_ext.get(), nullptr));
+    EXPECT_TRUE(provider_.UserMayModifySettings(manual_ext.get(), nullptr));
+  }
+}
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+
+// Base struct used to initialize the Isolated Mode override before
+// `StandardManagementPolicyProviderTest` constructs `TestingProfile`.
+struct ScopedIsolatedModeInitializer {
+  enterprise_isolated_mode::ScopedIsolatedModeOverrideForTesting
+      scoped_isolated_mode;
+};
+
+class StandardManagementPolicyProviderIsolatedModeTest
+    : private ScopedIsolatedModeInitializer,
+      public StandardManagementPolicyProviderTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  StandardManagementPolicyProviderIsolatedModeTest()
+      : ScopedIsolatedModeInitializer{
+            enterprise_isolated_mode::ScopedIsolatedModeOverrideForTesting(
+                IsIsolatedMode())} {}
+
+  bool IsIsolatedMode() const { return GetParam(); }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         StandardManagementPolicyProviderIsolatedModeTest,
+                         testing::Bool());
+
+// Tests that when Enterprise Isolated Mode is enabled, only force-installed
+// extensions must remain enabled in Isolated Mode.
+TEST_P(StandardManagementPolicyProviderIsolatedModeTest,
+       MustRemainIsolatedModeEnabled) {
+  auto forced_extension =
+      ExtensionBuilder("forced")
+          .SetLocation(ManifestLocation::kExternalPolicyDownload)
+          .Build();
+  auto recommended_extension =
+      ExtensionBuilder("recommended")
+          .SetLocation(ManifestLocation::kExternalPrefDownload)
+          .Build();
+  auto internal_extension = ExtensionBuilder("internal")
+                                .SetLocation(ManifestLocation::kInternal)
+                                .Build();
+  auto not_allowed_forced_extension =
+      ExtensionBuilder("not_allowed")
+          .SetLocation(ManifestLocation::kExternalPolicyDownload)
+          .SetManifestKey("incognito", "not_allowed")
+          .Build();
+
+  {
+    ExtensionManagementPrefUpdater<sync_preferences::TestingPrefServiceSyncable>
+        pref_updater(profile_.GetTestingPrefService());
+    pref_updater.SetIndividualExtensionAutoInstalled(
+        forced_extension->id(), extension_urls::kChromeWebstoreUpdateURL,
+        /*forced=*/true);
+    pref_updater.SetIndividualExtensionAutoInstalled(
+        recommended_extension->id(), extension_urls::kChromeWebstoreUpdateURL,
+        /*forced=*/false);
+    pref_updater.SetIndividualExtensionAutoInstalled(
+        not_allowed_forced_extension->id(),
+        extension_urls::kChromeWebstoreUpdateURL,
+        /*forced=*/true);
+  }
+
+  EXPECT_EQ(
+      provider_.MustRemainIsolatedModeEnabled(forced_extension.get(), nullptr),
+      IsIsolatedMode());
+  EXPECT_FALSE(provider_.MustRemainIsolatedModeEnabled(
+      recommended_extension.get(), nullptr));
+  EXPECT_FALSE(provider_.MustRemainIsolatedModeEnabled(
+      internal_extension.get(), nullptr));
+  EXPECT_FALSE(provider_.MustRemainIsolatedModeEnabled(
+      not_allowed_forced_extension.get(), nullptr));
+}
 
 }  // namespace extensions

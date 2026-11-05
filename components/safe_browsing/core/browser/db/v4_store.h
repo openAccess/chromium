@@ -18,8 +18,8 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "components/safe_browsing/core/browser/db/hash_prefix_map.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/sb_store.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/v4_rice.h"
 #include "components/safe_browsing/core/common/proto/webui.pb.h"
 
@@ -209,6 +209,8 @@ class V4Store : public SBStore {
       DatabaseManagerInfo::DatabaseInfo::StoreInfo* store_info) override;
 
   const std::string& GetStoreState() const override;
+
+  std::vector<base::FilePath> GetPathsInUse() const override;
 
  protected:
   std::string GetMetricPrefix() const override;

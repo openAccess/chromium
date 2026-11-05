@@ -12,16 +12,19 @@
 
 #include "android_webview/browser/metrics/android_metrics_log_uploader.h"
 #include "android_webview/browser/metrics/android_metrics_provider.h"
+#include "android_webview/browser/metrics/aw_entropy_state_provider.h"
+#include "android_webview/browser/metrics/aw_metrics_service_accessor.h"
 #include "android_webview/common/aw_features.h"
 #include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/barrier_closure.h"
 #include "base/base_paths_android.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/hash/hash.h"
-#include "base/i18n/rtl.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/persistent_histogram_allocator.h"
 #include "base/metrics/statistics_recorder.h"
@@ -44,7 +47,6 @@
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/metrics/cpu_metrics_provider.h"
 #include "components/metrics/drive_metrics_provider.h"
-#include "components/metrics/entropy_state_provider.h"
 #include "components/metrics/file_metrics_provider.h"
 #include "components/metrics/metrics_features.h"
 #include "components/metrics/metrics_pref_names.h"
@@ -164,9 +166,20 @@ bool IsSamplesCounterEnabled() {
       kPersistentHistogramsFeature, "prev_run_metrics_count_only", false);
 }
 
-metrics::FileMetricsProvider::Params CreateBrowserMetricsParams(
-    base::FilePath metrics_dir) {
+// TODO(crbug.com/40158523): Unify this implementation with the one in
+// ChromeMetricsServiceClient.
+std::unique_ptr<metrics::FileMetricsProvider> CreateFileMetricsProvider(
+    PrefService* pref_service,
+    base::FilePath metrics_dir,
+    bool metrics_reporting_enabled) {
   using metrics::FileMetricsProvider;
+
+  // Create an object to monitor files of metrics and include them in reports.
+  // `is_fre` will always be false for Android WV because the concept of First
+  // Run Experience is not applicable.
+  std::unique_ptr<FileMetricsProvider> file_metrics_provider =
+      std::make_unique<FileMetricsProvider>(pref_service,
+                                            /*is_fre=*/false);
 
   FileMetricsProvider::Params browser_metrics_params(
       metrics_dir.AppendASCII(kBrowserMetricsName),
@@ -178,33 +191,8 @@ metrics::FileMetricsProvider::Params CreateBrowserMetricsParams(
   browser_metrics_params.max_dir_kib = kMaxHistogramStorageKiB;
   browser_metrics_params.filter =
       base::BindRepeating(FilterBrowserMetricsFiles);
-
-  return browser_metrics_params;
-}
-
-// TODO(crbug.com/40158523): Unify this implementation with the one in
-// ChromeMetricsServiceClient.
-std::unique_ptr<metrics::FileMetricsProvider> CreateFileMetricsProvider(
-    PrefService* pref_service,
-    base::FilePath metrics_dir,
-    base::FilePath old_metrics_dir,
-    bool metrics_reporting_enabled) {
-  using metrics::FileMetricsProvider;
-
-  // Create an object to monitor files of metrics and include them in reports.
-  // `is_fre` will always be false for Android WV because the concept of First
-  // Run Experience is not applicable.
-  std::unique_ptr<FileMetricsProvider> file_metrics_provider =
-      std::make_unique<FileMetricsProvider>(pref_service,
-                                            /*is_fre=*/false);
-
-  file_metrics_provider->RegisterSource(CreateBrowserMetricsParams(metrics_dir),
+  file_metrics_provider->RegisterSource(browser_metrics_params,
                                         metrics_reporting_enabled);
-
-  if (!old_metrics_dir.empty()) {
-    file_metrics_provider->RegisterSource(
-        CreateBrowserMetricsParams(old_metrics_dir), metrics_reporting_enabled);
-  }
 
   // WebView never configured Crashpad to actually create these metrics files,
   // so it's not useful to try to upload them.
@@ -339,20 +327,29 @@ void AwMetricsServiceClient::Initialize(PrefService* local_state) {
   synthetic_trial_registry_ =
       std::make_unique<variations::SyntheticTrialRegistry>();
   synthetic_trial_observation_.Observe(synthetic_trial_registry_.get());
+}
 
-  // Create the MetricsService immediately so that other code can make use of
-  // it. Chrome always creates the MetricsService as well.
+void AwMetricsServiceClient::PostFeatureListSetup() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(init_finished_);
+  CHECK(!metrics_service_);
+  // The MetricsService snapshots feature-dependent configuration on
+  // construction (e.g. the log storage limits from GetStorageLimits()), so it
+  // must not be created before the FeatureList is available.
+  CHECK(base::FeatureList::GetInstance());
+
+  // Create the MetricsService as soon as features are available so that other
+  // code can make use of it. Chrome always creates the MetricsService as well.
   metrics_service_ = std::make_unique<metrics::MetricsService>(
       metrics_state_manager_.get(), this, local_state_);
+
+  SetUpMetricsDir();
 
   // Registration of providers has to wait until consent is determined. To
   // do otherwise means the providers would always be configured with reporting
   // disabled (because when this is called in production consent hasn't been
   // determined).
-  // We also need the metrics directory to have been set up by calling
-  // SetUpMetricsDir().
-  // If consent has not been determined or the metrics directory not set, this
-  // does nothing.
+  // If consent has not been determined, this does nothing.
   MaybeStartMetrics();
 }
 
@@ -393,7 +390,7 @@ void AwMetricsServiceClient::MaybeStartMetrics() {
     // Even though reporting is not enabled, CreateFileMetricsProvider() is
     // called. This ensures on disk state is removed.
     metrics_service_->RegisterMetricsProvider(
-        CreateFileMetricsProvider(local_state_, metrics_dir_, old_metrics_dir_,
+        CreateFileMetricsProvider(local_state_, metrics_dir_,
                                   /* metrics_reporting_enabled */ false));
     local_state_->ClearPref(metrics::prefs::kMetricsClientID);
     local_state_->ClearPref(metrics::prefs::kMetricsProvisionalClientID);
@@ -415,13 +412,13 @@ void AwMetricsServiceClient::RegisterMetricsProvidersAndInitState() {
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::CPUMetricsProvider>());
   metrics_service_->RegisterMetricsProvider(
-      std::make_unique<metrics::EntropyStateProvider>(local_state_));
+      std::make_unique<AwEntropyStateProvider>(local_state_));
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::ScreenInfoMetricsProvider>());
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::FormFactorMetricsProvider>());
   metrics_service_->RegisterMetricsProvider(CreateFileMetricsProvider(
-      local_state_, metrics_dir_, old_metrics_dir_,
+      local_state_, metrics_dir_,
       metrics_state_manager_->IsMetricsReportingEnabled()));
   metrics_service_->RegisterMetricsProvider(
       std::make_unique<metrics::CallStackProfileMetricsProvider>());
@@ -466,8 +463,31 @@ void AwMetricsServiceClient::SetUploadIntervalForTesting(
   overridden_upload_interval_ = upload_interval;
 }
 
+void AwMetricsServiceClient::RegisterSyntheticFieldTrial(
+    std::string_view trial_name,
+    std::string_view group_name,
+    variations::SyntheticTrialAnnotationMode annotation_mode) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!metrics_service_) {
+    return;
+  }
+  AwMetricsServiceAccessor::RegisterSyntheticFieldTrial(
+      metrics_service_.get(), trial_name, group_name, annotation_mode);
+}
+
+void AwMetricsServiceClient::FlushPendingSyntheticTrialsFromJava() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  JNIEnv* env = base::android::AttachCurrentThread();
+  Java_AwMetricsServiceClient_flushPendingSyntheticTrials(env);
+}
+
 bool AwMetricsServiceClient::IsReadyToStart() const {
-  return init_finished_ && set_consent_finished_ && !metrics_dir_.empty();
+  return metrics_service_ && set_consent_finished_;
+}
+
+bool AwMetricsServiceClient::IsConsentDetermined() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return set_consent_finished_;
 }
 
 bool AwMetricsServiceClient::IsConsentGiven() const {
@@ -496,7 +516,7 @@ AwMetricsServiceClient::GetSyntheticTrialRegistry() {
 
 metrics::MetricsService* AwMetricsServiceClient::GetMetricsService() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  // This will be null if initialization hasn't finished.
+  // This will be null until PostFeatureListSetup() has run.
   return metrics_service_.get();
 }
 
@@ -515,7 +535,7 @@ std::string AwMetricsServiceClient::GetApplicationLocale() {
           metrics::features::kConsolidateMetricsServiceLocales)) {
     return language::GetApplicationLocale(local_state_);
   }
-  return base::i18n::GetConfiguredLocale();
+  return std::string(base::i18n::GetDefaultIcuLocale().tag_string());
 }
 
 const network_time::NetworkTimeTracker*
@@ -631,6 +651,9 @@ bool AwMetricsServiceClient::ShouldStartUpFast() const {
 
 metrics::MetricsLogStore::StorageLimits
 AwMetricsServiceClient::GetStorageLimits() const {
+  // The limits are read from feature params, which silently fall back to their
+  // defaults if read before the FeatureList is set up.
+  CHECK(base::FeatureList::GetInstance());
   return GetStorageLimitsImpl();
 }
 
@@ -713,78 +736,23 @@ std::string AwMetricsServiceClient::GetAppPackageName() {
 void AwMetricsServiceClient::SetUpMetricsDir() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // In the past, WebView used the normal data directory to store metrics.
-  base::FilePath data_dir;
-  if (!base::PathService::Get(base::DIR_ANDROID_APP_DATA, &data_dir)) {
-    NOTREACHED();
-  }
-
   base::FilePath no_backup_files_dir = GetNoBackupFilesDir();
   if (no_backup_files_dir.empty()) {
     // This will be empty if the app has configured a specific absolute path as
     // the data directory. The API doesn't have a way to configure the no backup
     // files dir, so for this case we don't migrate at all and just keep using
     // the data directory as before.
-    metrics_dir_ = std::move(data_dir);
-    MaybeStartMetrics();
-    return;
-  }
-
-  // To minimize metrics loss if we roll back this experiment, the migration is
-  // bidirectional - the feature flag is used to determine the direction, not
-  // whether to do it.
-  bool use_no_backup_files_dir = base::FeatureList::IsEnabled(
-      android_webview::features::kWebViewPersistentMetricsInNoBackupDir);
-  base::FilePath old_dir;
-  if (use_no_backup_files_dir) {
-    // Only try to create the no backup files directory if the flag is enabled,
-    // so that we don't unnecessarily create it when not doing the migration.
+    if (!base::PathService::Get(base::DIR_ANDROID_APP_DATA, &metrics_dir_)) {
+      NOTREACHED();
+    }
+  } else {
     base::CreateDirectory(no_backup_files_dir);
     metrics_dir_ = std::move(no_backup_files_dir);
-    old_dir = std::move(data_dir);
-  } else {
-    metrics_dir_ = std::move(data_dir);
-    old_dir = std::move(no_backup_files_dir);
   }
-
-  // On Android we can only persist metrics for the current session if a spare
-  // file was pre-created by a previous session. If we don't have a spare file
-  // in the "current" directory, try to move one from the "old" directory now,
-  // before we initialize persistent metrics.
-  base::FilePath cur_spare_file =
-      GetPersistentHistogramsSpareFilePath(metrics_dir_);
-  base::FilePath old_spare_file = GetPersistentHistogramsSpareFilePath(old_dir);
-  if (!base::PathExists(cur_spare_file)) {
-    // No-op if old file doesn't exist.
-    base::Move(old_spare_file, cur_spare_file);
-  } else {
-    // Already have a new file; if the old one exists, delete it.
-    base::DeleteFile(old_spare_file);
-  }
-
-  // Try to delete the old subdirectory for metrics awaiting upload. This will
-  // only succeed if it's empty as we aren't deleting recursively.
-  if (base::DeleteFile(old_dir.AppendASCII(kBrowserMetricsName))) {
-    // We either deleted it successfully because it was empty, or it didn't
-    // exist in the first place. Nothing to do.
-  } else {
-    // The directory exists and is non-empty. Rather than trying to move the
-    // files and have to deal with failures/collisions/etc, we'll just store the
-    // old path as well. Later, we'll configure the FileMetricsProvider to watch
-    // both paths; it will handle all the files the same way and eventually
-    // delete them, enabling us to remove the subdir on some future startup.
-    old_metrics_dir_ = std::move(old_dir);
-  }
-
-  MaybeStartMetrics();
 }
 
 base::FilePath AwMetricsServiceClient::GetMetricsDir() {
   return metrics_dir_;
-}
-
-base::FilePath AwMetricsServiceClient::GetOldMetricsDirForTesting() {
-  return old_metrics_dir_;
 }
 
 void AwMetricsServiceClient::OnApplicationNotIdle() {
@@ -867,6 +835,7 @@ void AwMetricsServiceClient::RegisterMetricsPrefs(
   metrics::FileMetricsProvider::RegisterPrefs(registry);
   metrics::StabilityMetricsHelper::RegisterPrefs(registry);
   AndroidMetricsProvider::RegisterPrefs(registry);
+  AwEntropyStateProvider::RegisterPrefs(registry);
 }
 
 // static
@@ -906,6 +875,17 @@ JNI_AwMetricsServiceClient_SetOnFinalMetricsCollectedListenerForTesting(
     base::RepeatingClosure listener) {
   AwMetricsServiceClient::GetInstance()
       ->SetOnFinalMetricsCollectedListenerForTesting(std::move(listener));
+}
+
+// static
+static void JNI_AwMetricsServiceClient_RegisterSyntheticFieldTrial(
+    JNIEnv* env,
+    const std::string& trial_name,
+    const std::string& group_name,
+    int32_t annotation_mode) {
+  AwMetricsServiceClient::GetInstance()->RegisterSyntheticFieldTrial(
+      trial_name, group_name,
+      static_cast<variations::SyntheticTrialAnnotationMode>(annotation_mode));
 }
 
 }  // namespace android_webview

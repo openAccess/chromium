@@ -10,8 +10,8 @@
 
 #include "base/android/scoped_java_ref.h"
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/ui/autofill/autofill_snackbar_controller.h"
-#include "chrome/browser/ui/autofill/autofill_snackbar_view.h"
+#include "chrome/browser/ui/android/autofill/autofill_snackbar_controller.h"
+#include "chrome/browser/ui/android/autofill/autofill_snackbar_view.h"
 
 namespace autofill {
 
@@ -32,13 +32,13 @@ class AutofillSnackbarViewAndroid : public AutofillSnackbarView {
   // --------------------------------------------------------------------------
   // Methods called from Java via JNI
   // --------------------------------------------------------------------------
-  void OnActionClicked(JNIEnv* env);
-  void OnDismissed(JNIEnv* env);
+  void OnActionClicked();
+  void OnDismissed();
 
  private:
   raw_ptr<AutofillSnackbarController> controller_;
   // The corresponding java object.
-  base::android::ScopedJavaGlobalRef<jobject> java_object_;
+  jni_zero::ScopedJavaGlobalRef<jobject> java_object_;
 };
 }  // namespace autofill
 

@@ -12,6 +12,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/policy_constants.h"
@@ -22,7 +23,7 @@
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/browser/app_window/native_app_window.h"
 #include "extensions/common/extension.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace policy {
 
@@ -107,7 +108,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenPolicyTest, FullscreenAllowedApp) {
       ->BrowserAppLauncher()
       ->LaunchAppWithParamsForTesting(apps::AppLaunchParams(
           extension->id(), apps::LaunchContainer::kLaunchContainerNone,
-          WindowOpenDisposition::NEW_WINDOW, apps::LaunchSource::kFromTest));
+          ui::mojom::WindowOpenDisposition::kNewWindow,
+          apps::LaunchSource::kFromTest));
   extensions::AppWindow* window = add_window_observer.WaitForAppWindow();
   ASSERT_TRUE(window);
 

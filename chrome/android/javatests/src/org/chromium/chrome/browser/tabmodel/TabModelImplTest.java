@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
-import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static com.google.common.truth.Truth.assertWithMessage;
@@ -15,14 +14,13 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.tabmodel.TabModelOrderControllerImpl.willOpenInForeground;
 import static org.chromium.chrome.test.util.ChromeTabUtils.getIndexOnUiThread;
 import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -42,6 +40,7 @@ import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
@@ -58,6 +57,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -65,7 +65,6 @@ import org.chromium.chrome.test.transit.Journeys;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
-import org.chromium.components.browser_ui.widget.ActionConfirmationResult;
 import org.chromium.content_public.common.ResourceRequestBody;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.mojom.WindowOpenDisposition;
@@ -97,8 +96,6 @@ public class TabModelImplTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private TabModelObserver mTabModelObserver;
-
-    @Mock private TabModelActionListener mTabModelActionListener;
 
     private String mTestUrl;
     private WebPageStation mPage;
@@ -169,6 +166,8 @@ public class TabModelImplTest {
     @SmallTest
     // TODO(crbug.com/457847264): Change to @Restriction(DeviceFormFactor.PHONE) after launch
     @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
+    // TODO(crbug.com/572884732): Re-enable.
+    @DisableIf.Device(DeviceFormFactor.PHONE_OR_TABLET)
     public void validIndexAfterRestored_FromPreviousActivity_WithIncognitoTabs() {
         mPage = Journeys.createIncognitoTabsWithWebPages(mPage, List.of(mTestUrl));
 
@@ -246,7 +245,9 @@ public class TabModelImplTest {
                     assertEquals(1, mTabModelJni.getCount());
 
                     GURL url = new GURL("https://www.chromium.org");
-                    Tab tab = mTabModelJni.openTabProgrammatically(url, 0, true);
+                    Tab tab =
+                            mTabModelJni.openTabProgrammatically(
+                                    url, 0, TabLaunchType.FROM_TAB_LIST_INTERFACE);
                     assertNotNull(tab);
                     assertEquals(url, tab.getUrl());
                     assertEquals(2, mTabModelJni.getCount());
@@ -275,7 +276,9 @@ public class TabModelImplTest {
                     assertEquals(1, mTabModelJni.getCount());
 
                     GURL url = new GURL("https://www.chromium.org");
-                    Tab tab = mTabModelJni.openTabProgrammatically(url, 0, false);
+                    Tab tab =
+                            mTabModelJni.openTabProgrammatically(
+                                    url, 0, TabLaunchType.FROM_TAB_LIST_INTERFACE_BACKGROUND);
                     assertNotNull(tab);
                     assertEquals(url, tab.getUrl());
                     assertEquals(2, mTabModelJni.getCount());
@@ -293,6 +296,25 @@ public class TabModelImplTest {
                                     TabLaunchType.FROM_TAB_LIST_INTERFACE_BACKGROUND,
                                     tab.isIncognitoBranded(),
                                     mTabModelJni.isIncognitoBranded()));
+                });
+    }
+
+    @Test
+    @SmallTest
+    public void testOpenTabProgrammatically_EmptyUrl() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    assertEquals(1, mTabModelJni.getCount());
+
+                    Tab tab =
+                            mTabModelJni.openTabProgrammatically(
+                                    GURL.emptyGURL(), 0, TabLaunchType.FROM_TAB_LIST_INTERFACE);
+                    assertNotNull(tab);
+                    GURL expectedUrl =
+                            UrlConstantResolverFactory.getForProfile(mTabModelJni.getProfile())
+                                    .getNtpGurl();
+                    assertEquals(expectedUrl, tab.getUrl());
+                    assertEquals(2, mTabModelJni.getCount());
                 });
     }
 
@@ -1261,24 +1283,20 @@ public class TabModelImplTest {
                     tabModel.pinTab(tab2.getId(), /* showUngroupDialog= */ false);
 
                     verify(mTabModelObserver).didMoveTab(tab2, 0, 2);
-                    verify(mTabModelObserver).willChangePinState(tab2);
                     verify(mTabModelObserver).didChangePinState(tab2);
 
                     tabModel.pinTab(tab1.getId(), /* showUngroupDialog= */ false);
 
                     verify(mTabModelObserver).didMoveTab(tab1, 1, 2);
-                    verify(mTabModelObserver).willChangePinState(tab1);
                     verify(mTabModelObserver).didChangePinState(tab1);
 
                     tabModel.unpinTab(tab2.getId());
 
                     verify(mTabModelObserver).didMoveTab(tab2, 1, 0);
-                    verify(mTabModelObserver, times(2)).willChangePinState(tab2);
                     verify(mTabModelObserver, times(2)).didChangePinState(tab2);
 
                     tabModel.unpinTab(tab1.getId());
 
-                    verify(mTabModelObserver, times(2)).willChangePinState(tab1);
                     verify(mTabModelObserver, times(2)).didChangePinState(tab1);
 
                     // Cleanup.
@@ -1779,7 +1797,7 @@ public class TabModelImplTest {
 
     @Test
     @SmallTest
-    public void testPinTabInGroup_ActionListener_Accept() {
+    public void testPinTabInGroup_Accept() {
         TabModel tabModel = mPage.getTabModel();
         createTabGroup(1, tabModel); // Group with 1 tab.
         // 0:Tab0 | Group0: 1:Tab1
@@ -1790,17 +1808,12 @@ public class TabModelImplTest {
                 () -> {
                     assertNotNull(tab1.getTabGroupId());
 
-                    mTabModelJni.pinTab(
-                            tab1.getId(), /* showUngroupDialog= */ true, mTabModelActionListener);
+                    mTabModelJni.pinTab(tab1.getId(), /* showUngroupDialog= */ true);
                 });
-        onViewWaiting(withText(R.string.delete_tab_group_action)).perform(click());
+        waitForView(withText(R.string.delete_tab_group_action)).click();
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    verify(mTabModelActionListener)
-                            .onConfirmationDialogResult(
-                                    eq(TabModelActionListener.DialogType.SYNC),
-                                    eq(ActionConfirmationResult.CONFIRMATION_POSITIVE));
                     assertTrue(tab1.getIsPinned());
                     assertNull(tab1.getTabGroupId());
 
@@ -1815,7 +1828,7 @@ public class TabModelImplTest {
     @Test
     @SmallTest
     @Restriction(DeviceFormFactor.PHONE_OR_TABLET) // crbug.com/503008051
-    public void testPinTabInGroup_ActionListener_Reject() {
+    public void testPinTabInGroup_Reject() {
         TabModel tabModel = mPage.getTabModel();
         createTabGroup(1, tabModel); // Group with 1 tab.
         // 0:Tab0 | Group0: 1:Tab1
@@ -1826,17 +1839,12 @@ public class TabModelImplTest {
                 () -> {
                     assertNotNull(tab1.getTabGroupId());
 
-                    mTabModelJni.pinTab(
-                            tab1.getId(), /* showUngroupDialog= */ true, mTabModelActionListener);
+                    mTabModelJni.pinTab(tab1.getId(), /* showUngroupDialog= */ true);
                 });
-        onViewWaiting(withText(R.string.cancel)).perform(click());
+        waitForView(withText(R.string.cancel)).click();
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    verify(mTabModelActionListener)
-                            .onConfirmationDialogResult(
-                                    eq(TabModelActionListener.DialogType.SYNC),
-                                    eq(ActionConfirmationResult.CONFIRMATION_NEGATIVE));
                     assertEquals(1, mTabModelJni.indexOf(tab1));
                     assertFalse(tab1.getIsPinned());
                     assertNotNull(tab1.getTabGroupId());

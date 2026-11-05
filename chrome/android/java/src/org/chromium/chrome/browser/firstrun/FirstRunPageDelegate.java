@@ -4,12 +4,15 @@
 
 package org.chromium.chrome.browser.firstrun;
 
+import androidx.annotation.StringRes;
+
 import org.chromium.base.Promise;
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
-import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninMediator;
+import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninLoadPoint;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.ui.base.WindowAndroid;
 
 /** Defines the host interface for First Run Experience pages. */
@@ -24,14 +27,14 @@ public interface FirstRunPageDelegate {
     boolean advanceToNextPage();
 
     /**
-     * Unsuccessfully aborts the First Run Experience.
-     * This usually means that the application will be closed.
+     * Unsuccessfully aborts the First Run Experience. This usually means that the application will
+     * be closed.
      */
     void abortFirstRunExperience();
 
     /**
-     * Successfully completes the First Run Experience.
-     * All results will be packaged and sent over to the main activity.
+     * Successfully completes the First Run Experience. All results will be packaged and sent over
+     * to the main activity.
      */
     void completeFirstRunExperience();
 
@@ -59,9 +62,19 @@ public interface FirstRunPageDelegate {
 
     /**
      * Show an informational web page. The page doesn't show navigation control.
+     *
      * @param url Resource id for the URL of the web page.
      */
-    void showInfoPage(int url);
+    void showInfoPage(@StringRes int url);
+
+    /**
+     * Show an informational web page. The page doesn't show navigation control. This function does
+     * not use LocalizationUtils.substituteLocalePlaceholder() and opens the URL as-is.
+     *
+     * @param url The URL of the web page. It must be a trusted, app-controlled URL starting with
+     *     "https://".
+     */
+    void showInfoPage(String url);
 
     /**
      * Records the FRE progress histogram MobileFre.Progress.
@@ -71,7 +84,7 @@ public interface FirstRunPageDelegate {
     void recordFreProgressHistogram(@MobileFreProgress int state);
 
     /** Records MobileFre.FromLaunch.NativeAndPoliciesLoaded histogram. */
-    void recordLoadCompletedHistograms(@FullscreenSigninMediator.LoadPoint int slowestLoadPoint);
+    void recordLoadCompletedHistograms(@FullscreenSigninLoadPoint int slowestLoadPoint);
 
     /** Records MobileFre.FromLaunch.NativeInitialized histogram. */
     void recordNativeInitializedHistogram();
@@ -115,4 +128,10 @@ public interface FirstRunPageDelegate {
 
     /** Sets whether the History Sync screen has been completed. */
     void setHistorySyncStepCompleted(boolean completed);
+
+    /** Returns the state shared between the Safety FRE promo pages. */
+    SafetyPromoFirstRunState getSafetyPromoFirstRunState();
+
+    /** Returns the {@link BottomSheetController} associated with the First Run Experience. */
+    BottomSheetController getBottomSheetController();
 }

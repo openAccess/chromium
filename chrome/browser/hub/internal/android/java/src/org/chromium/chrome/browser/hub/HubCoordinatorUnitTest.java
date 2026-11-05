@@ -21,6 +21,7 @@ import static org.mockito.Mockito.when;
 
 import android.view.View;
 import android.widget.FrameLayout;
+import android.widget.TextView;
 
 import org.junit.After;
 import org.junit.Before;
@@ -36,6 +37,7 @@ import org.robolectric.ParameterizedRobolectricTestRunner.Parameters;
 import org.robolectric.Robolectric;
 import org.robolectric.android.controller.ActivityController;
 
+import org.chromium.base.Callback;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -45,9 +47,12 @@ import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRule;
 import org.chromium.base.test.RobolectricUtil;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.UserActionTester;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.hub.HubColorMixer.ColorBlendProgress;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
@@ -62,6 +67,7 @@ import org.chromium.ui.base.TestActivity;
 
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Tests for {@link HubCoordinator}. */
 @RunWith(ParameterizedRobolectricTestRunner.class)
@@ -78,6 +84,7 @@ public class HubCoordinatorUnitTest {
     public boolean mIsXrDevice;
 
     private static final int TAB_ID = 7;
+    private static final int HUB_SIZE_PX = 1000;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -158,6 +165,8 @@ public class HubCoordinatorUnitTest {
                 .thenReturn(mPreviousLayoutTypeSupplier);
         when(mHubLayoutController.getIsAnimatingSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
+        when(mHubLayoutController.getIsHidingSupplier())
+                .thenReturn(ObservableSuppliers.alwaysFalse());
 
         PaneListBuilder builder =
                 new PaneListBuilder(new DefaultPaneOrderController())
@@ -212,6 +221,8 @@ public class HubCoordinatorUnitTest {
         assertFalse(mPreviousLayoutTypeSupplier.hasObservers());
         assertFalse(mIncognitoTabSwitcherBackPressSupplier.hasObservers());
         assertFalse(mTabSupplier.hasObservers());
+        assertFalse(mPaneManager.getFocusedPaneSupplier().hasObservers());
+        assertFalse(mHubCoordinator.getPaneTransitionProgressSupplierForTesting().hasObservers());
         mActivityController.close();
     }
 
@@ -596,5 +607,131 @@ public class HubCoordinatorUnitTest {
     public void testOnSwipeSwitchCancel_resetsColorBlendProgress() {
         mHubCoordinator.onSwipeSwitchCancel(true);
         assertNull(mSwipeAnimationProgressSupplier.get());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ENABLE_SWIPE_TO_SWITCH_PANE + ":animate_search_box/true")
+    public void testOnSwipeDragProgress_publishesPaneTransition() {
+        mHubCoordinator.onSwipeDragProgress(0.5f, true);
+
+        assertEquals(
+                new PaneTransitionProgress(
+                        PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER, 0.5f, true),
+                getPaneTransitionProgress());
+    }
+
+    @Test
+    public void testOnSwipeDragProgress_searchBoxAnimationDisabled_noPaneTransition() {
+        mHubCoordinator.onSwipeDragProgress(0.5f, true);
+
+        assertNull(getPaneTransitionProgress());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ENABLE_SWIPE_TO_SWITCH_PANE + ":animate_search_box/true")
+    public void testOnSwipeSwitchComplete_endsPaneTransitionAfterFocusChange() {
+        AtomicReference<PaneTransitionProgress> transitionOnFocusChange = new AtomicReference<>();
+        Callback<Pane> onFocusChange =
+                pane -> transitionOnFocusChange.set(getPaneTransitionProgress());
+        mHubCoordinator.onSwipeDragProgress(1.0f, true);
+        mPaneManager.getFocusedPaneSupplier().addSyncObserver(onFocusChange);
+
+        mHubCoordinator.onSwipeSwitchComplete(true);
+        mPaneManager.getFocusedPaneSupplier().removeObserver(onFocusChange);
+
+        assertNotNull(transitionOnFocusChange.get());
+        assertNull(getPaneTransitionProgress());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ENABLE_SWIPE_TO_SWITCH_PANE + ":animate_search_box/true")
+    public void testOnSwipeSwitchComplete_noNextPane_endsPaneTransition() {
+        mHubCoordinator.onSwipeDragProgress(0.5f, true);
+        // Focus moves to the last pane before the swipe completes, so there is no next pane.
+        assertTrue(mPaneManager.focusPane(PaneId.INCOGNITO_TAB_SWITCHER));
+
+        mHubCoordinator.onSwipeSwitchComplete(true);
+
+        assertNull(getPaneTransitionProgress());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ENABLE_SWIPE_TO_SWITCH_PANE + ":animate_search_box/true")
+    public void testOnSwipeSwitchCancel_endsPaneTransition() {
+        mHubCoordinator.onSwipeDragProgress(0.5f, true);
+
+        mHubCoordinator.onSwipeSwitchCancel(true);
+
+        assertNull(getPaneTransitionProgress());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ENABLE_SWIPE_TO_SWITCH_PANE + ":animate_search_box/true")
+    public void testOnSlideTransitionProgress_publishesPaneTransition() {
+        mHubCoordinator.onSlideTransitionProgress(
+                PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER, 0.5f, true);
+
+        assertEquals(
+                new PaneTransitionProgress(
+                        PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER, 0.5f, true),
+                getPaneTransitionProgress());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ENABLE_SWIPE_TO_SWITCH_PANE + ":animate_search_box/true")
+    public void testOnSlideTransitionEnd_endsPaneTransition() {
+        mHubCoordinator.onSlideTransitionProgress(
+                PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER, 0.5f, true);
+
+        mHubCoordinator.onSlideTransitionEnd();
+
+        assertNull(getPaneTransitionProgress());
+    }
+
+    @Test
+    public void testOnSlideTransitionProgress_searchBoxAnimationDisabled_noPaneTransition() {
+        mHubCoordinator.onSlideTransitionProgress(
+                PaneId.TAB_SWITCHER, PaneId.INCOGNITO_TAB_SWITCHER, 0.5f, true);
+
+        assertNull(getPaneTransitionProgress());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ENABLE_SWIPE_TO_SWITCH_PANE + ":animate_search_box/true")
+    public void testFocusPane_slideStartsFromPreviousPane() {
+        TestActivity activity = mActivityController.get();
+        when(mTabSwitcherPane.getRootView()).thenReturn(new FrameLayout(activity));
+        when(mIncognitoTabSwitcherPane.getRootView()).thenReturn(new FrameLayout(activity));
+        assertTrue(mPaneManager.focusPane(PaneId.INCOGNITO_TAB_SWITCHER));
+        layOutHub();
+
+        // The pane host's focus observer starts the slide, which reports its first frame at once.
+        assertTrue(mPaneManager.focusPane(PaneId.TAB_SWITCHER));
+
+        assertEquals(
+                new PaneTransitionProgress(
+                        PaneId.INCOGNITO_TAB_SWITCHER, PaneId.TAB_SWITCHER, 0f, false),
+                getPaneTransitionProgress());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ENABLE_SWIPE_TO_SWITCH_PANE + ":animate_search_box/true")
+    public void testOnSwipeDragProgress_toolbarShowsIncomingPaneHint() {
+        mHubCoordinator.onSwipeDragProgress(0.6f, true);
+
+        TextView searchBoxText = mRootView.findViewById(R.id.search_box_text);
+        assertEquals(
+                mActivityController.get().getString(R.string.hub_search_empty_hint_incognito),
+                searchBoxText.getHint());
+    }
+
+    private void layOutHub() {
+        int spec = View.MeasureSpec.makeMeasureSpec(HUB_SIZE_PX, View.MeasureSpec.EXACTLY);
+        mRootView.measure(spec, spec);
+        mRootView.layout(0, 0, HUB_SIZE_PX, HUB_SIZE_PX);
+    }
+
+    private @Nullable PaneTransitionProgress getPaneTransitionProgress() {
+        return mHubCoordinator.getPaneTransitionProgressSupplierForTesting().get();
     }
 }

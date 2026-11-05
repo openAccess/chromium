@@ -4,6 +4,29 @@
 
 assert(is_chromeos)
 
+# Kept apart from :test_support so that light fixtures such as
+# ChromeRenderViewHostTestHarness can depend on it without the login mixins.
+source_set("user_session_test_environment_delegate") {
+  testonly = true
+
+  sources = [
+    "chrome_user_session_test_environment_delegate.cc",
+    "chrome_user_session_test_environment_delegate.h",
+  ]
+
+  deps = [
+    "//base",
+    "//chrome/browser/ash/login/users",
+    "//chrome/browser/ash/login/users:test_support",
+    "//chrome/browser/ash/profiles",
+    "//chrome/test/base:testing_profile",
+    "//chromeos/ash/components/login/login_state",
+    "//components/account_id",
+    "//components/session_manager/test:test_support",
+    "//components/user_manager",
+  ]
+}
+
 static_library("test_support") {
   testonly = true
 
@@ -87,6 +110,7 @@ static_library("test_support") {
   ]
 
   public_deps = [
+    ":user_session_test_environment_delegate",
     "//ash/constants",
     "//base",
     "//base/test:test_support",
@@ -94,7 +118,6 @@ static_library("test_support") {
     "//chrome/browser/ash/login/enrollment",
     "//chrome/browser/ash/login/enrollment:test_support",
     "//chrome/browser/ash/login/screens",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/webui/ash/login",
     "//chrome/test:test_support_ui",
     "//chromeos/ash/components/dbus/cryptohome:cryptohome_proto",
@@ -105,6 +128,7 @@ static_library("test_support") {
     "//components/account_id",
     "//components/policy/core/common:test_support",
     "//components/session_manager/core",
+    "//components/session_manager/test:test_support",
     "//components/user_manager",
     "//components/user_manager:common",
     "//content/test:test_support",
@@ -125,6 +149,8 @@ static_library("test_support") {
     "//chrome/browser:main_extra_parts",
     "//chrome/browser/ash/login/session",
     "//chrome/browser/ash/login/session:test_support",
+    "//chrome/browser/ash/login/users",
+    "//chrome/browser/ash/login/users:test_support",
     "//chrome/browser/ash/net",
     "//chrome/browser/ash/policy/core:test_support",
     "//chrome/browser/ash/policy/enrollment",
@@ -138,6 +164,8 @@ static_library("test_support") {
     "//chrome/browser/ui/webui/signin:signin_utils",
     "//chrome/common:constants",
     "//chrome/common:non_code_constants",
+    "//chrome/test/base:testing_browser_process",
+    "//chrome/test/base:testing_profile",
     "//chromeos/ash/components/cryptohome",
     "//chromeos/ash/components/dbus",
     "//chromeos/ash/components/dbus/session_manager",
@@ -170,8 +198,27 @@ static_library("test_support") {
 
   allow_circular_includes_from =
       [ "//chrome/browser/ash/policy/core:test_support" ]
+}
 
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [ "chrome_user_session_test_environment_delegate_unittest.cc" ]
+
+  deps = [
+    ":test_support",
+    "//base",
+    "//chrome/browser/ash/profiles",
+    "//chrome/browser/ash/settings:test_support",
+    "//chrome/browser/profiles:profile",
+    "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
+    "//chromeos/ash/components/browser_context_helper",
+    "//components/account_id",
+    "//components/session_manager/test:test_support",
+    "//components/user_manager",
+    "//content/test:test_support",
+    "//google_apis",
+    "//testing/gtest",
+  ]
 }

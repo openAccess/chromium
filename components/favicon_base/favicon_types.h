@@ -9,7 +9,7 @@
 
 #include <memory>
 
-#include "base/containers/flat_set.h"
+#include "base/containers/enum_set.h"
 #include "base/memory/ref_counted_memory.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image.h"
@@ -43,7 +43,7 @@ enum class IconType {
   kCount
 };
 
-using IconTypeSet = base::flat_set<IconType>;
+using IconTypeSet = base::EnumSet<IconType, IconType::kInvalid, IconType::kMax>;
 
 // Defines a gfx::Image of size desired_size_in_dip composed of image
 // representations for each of the desired scale factors.
@@ -108,7 +108,8 @@ struct LargeIconResult {
 
   ~LargeIconResult();
 
-  LargeIconResult(LargeIconResult&& result);
+  LargeIconResult(LargeIconResult&& result) noexcept;
+  LargeIconResult& operator=(LargeIconResult&& result) noexcept;
 
   // The bitmap from the favicon database if the database has a sufficiently
   // large one.
@@ -131,6 +132,9 @@ struct LargeIconImageResult {
       std::unique_ptr<FallbackIconStyle> fallback_icon_style_in);
 
   ~LargeIconImageResult();
+
+  LargeIconImageResult(LargeIconImageResult&& result) noexcept;
+  LargeIconImageResult& operator=(LargeIconImageResult&& result) noexcept;
 
   // The image from the favicon database if the database has a sufficiently
   // large one.

@@ -5,6 +5,7 @@
 #include "components/page_load_metrics/browser/observers/core/uma_page_load_metrics_observer.h"
 
 #include <memory>
+#include <optional>
 
 #include "base/byte_size.h"
 #include "base/strings/string_number_conversions.h"
@@ -60,7 +61,8 @@ class UmaPageLoadMetricsObserverTest
     tracker->AddObserver(std::make_unique<UmaPageLoadMetricsObserver>());
   }
 
-  ::base::test::TracingEnvironment tracing_environment_;
+  std::optional<::base::test::TracingEnvironment> tracing_environment_{
+      std::in_place};
 
  protected:
   bool WithFencedFrames() { return GetParam(); }
@@ -94,12 +96,14 @@ class UmaPageLoadMetricsObserverTest
 
   void TearDown() override {
     content::ResetWebContentsListTrackRegistrationForTesting();
+    tracing_environment_.reset();
     page_load_metrics::PageLoadMetricsObserverContentTestHarness::TearDown();
   }
 
   void OnCpuTimingUpdate(RenderFrameHost* render_frame_host,
                          base::TimeDelta cpu_time_spent) {
-    page_load_metrics::mojom::CpuTiming cpu_timing(cpu_time_spent);
+    page_load_metrics::mojom::CpuTiming cpu_timing(cpu_time_spent,
+                                                   base::TimeDelta());
     tester()->SimulateCpuTimingUpdate(cpu_timing, render_frame_host);
   }
 

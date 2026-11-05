@@ -20,13 +20,19 @@ namespace chromeos {
 class PpdProvider;
 }
 
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
+
 namespace ash {
 
 class LocalPrinterImpl : public LocalPrinter {
  public:
   // `application_locale_storage` must be non-null and outlive this.
-  explicit LocalPrinterImpl(
-      const ApplicationLocaleStorage* application_locale_storage);
+  // `url_loader_factory` must be non-null.
+  LocalPrinterImpl(
+      const ApplicationLocaleStorage* application_locale_storage,
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
   LocalPrinterImpl(const LocalPrinterImpl&) = delete;
   LocalPrinterImpl& operator=(const LocalPrinterImpl&) = delete;
   ~LocalPrinterImpl() override;
@@ -52,11 +58,12 @@ class LocalPrinterImpl : public LocalPrinter {
                            GetOAuthAccessTokenCallback callback) override;
 
  protected:
-  virtual scoped_refptr<chromeos::PpdProvider> CreatePpdProvider(
+  virtual std::unique_ptr<chromeos::PpdProvider> CreatePpdProvider(
       Profile* profile);
 
  private:
   const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;
+  const scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 };
 
 }  // namespace ash

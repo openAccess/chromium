@@ -13,7 +13,6 @@
 #include <optional>
 
 #include "base/android/android_info.h"
-#include "base/android/jni_android.h"
 #include "base/bits.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
@@ -24,6 +23,7 @@
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -34,7 +34,6 @@
 #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
 #include "media/base/android/media_codec_util.h"
-#include "media/base/android/media_jni_headers/VideoAcceleratorUtil_jni.h"
 #include "media/base/bitstream_buffer.h"
 #include "media/base/encoder_status.h"
 #include "media/base/media_serializers_base.h"
@@ -86,34 +85,51 @@ constexpr const char* kMediaFormatKeyVideoBitrateLayering =
     "video-bitrate-layering";
 
 bool IsTemporalLayerEncodingEnabled() {
-  static bool enabled = []() {
-    JNIEnv* env = base::android::AttachCurrentThread();
-    return Java_VideoAcceleratorUtil_isTemporalLayerEncodingEnabled(env);
-  }();
-  return enabled;
+  return base::android::android_info::sdk_int() >=
+         base::android::android_info::SDK_VERSION_CINNAMON_BUN;
+}
+
+bool IsNdkSvcApiSupported() {
+  if (__builtin_available(android 37, *)) {
+    // On preview/canary OS builds, __builtin_available() evaluates to true
+    // because Bionic returns API 10000. Check sdk_int() to ensure we are
+    // running on actual Android 17+ (Cinnamon Bun, API 37) and not an
+    // Android 16 Canary.
+    if (base::android::android_info::sdk_int() <
+        base::android::android_info::SDK_VERSION_CINNAMON_BUN) {
+      return false;
+    }
+
+    // Guard against early preview images or incomplete platform stubs that may
+    // not export all required symbols in libmediandk.so.
+    return &AMediaCodecStore_getCodecInfo != nullptr &&
+           &AMediaCodecInfo_getEncoderCapabilities != nullptr &&
+           &ACodecEncoderCapabilities_getSupportedLayeringSchemas != nullptr;
+  }
+  return false;
 }
 
 bool IsTemporalLayerIdSupported() {
-  if (__builtin_available(android 37, *)) {
-    return base::FeatureList::IsEnabled(
-               media::kNdkVideoEncodeAcceleratorNativeSvc) &&
-           IsTemporalLayerEncodingEnabled();
-  }
-  return false;
+  return IsNdkSvcApiSupported() &&
+         base::FeatureList::IsEnabled(
+             media::kNdkVideoEncodeAcceleratorNativeSvc) &&
+         IsTemporalLayerEncodingEnabled();
 }
 
 bool IsBitrateLayeringSupported() {
-  if (__builtin_available(android 37, *)) {
-    return base::FeatureList::IsEnabled(
-               media::kNdkVideoEncodeAcceleratorBitrateLayering) &&
-           IsTemporalLayerEncodingEnabled();
-  }
-  return false;
+  return IsNdkSvcApiSupported() &&
+         base::FeatureList::IsEnabled(
+             media::kNdkVideoEncodeAcceleratorBitrateLayering) &&
+         IsTemporalLayerEncodingEnabled();
 }
 
 std::vector<std::string> GetSupportedLayeringSchemas(
     const std::string& codec_name) {
   if (__builtin_available(android 37, *)) {
+    if (!IsNdkSvcApiSupported()) {
+      return {};
+    }
+
     const AMediaCodecInfo* info = nullptr;
     media_status_t status =
         AMediaCodecStore_getCodecInfo(codec_name.c_str(), &info);
@@ -628,11 +644,12 @@ bool ProfileNeedsConfigDataInBitstream(VideoCodecProfile profile) {
   }
 }
 
-void WaitForSyncTokenOnGpuThread(
+void WaitForSyncTokensOnGpuThread(
     scoped_refptr<CommandBufferHelper> command_buffer_helper,
-    gpu::SyncToken sync_token,
+    std::vector<gpu::SyncToken> sync_tokens,
     base::OnceClosure done_cb) {
-  command_buffer_helper->WaitForSyncToken(sync_token, std::move(done_cb));
+  command_buffer_helper->WaitForSyncTokens(std::move(sync_tokens),
+                                           std::move(done_cb));
 }
 
 constexpr std::string_view kEncoderStatusHistogramPrefix =
@@ -862,6 +879,19 @@ void NdkVideoEncodeAccelerator::NotifyEncoderInfo() {
   encoder_info_.implementation_name =
       base::StringPrintf("NdkVideoEncodeAccelerator(%s) input: %s",
                          codec_name.c_str(), input_type_str);
+
+  if (config_.HasSpatialLayer() || config_.HasTemporalLayer()) {
+    DCHECK(!config_.spatial_layers.empty());
+    CHECK_LE(config_.spatial_layers.size(),
+             VideoEncoderInfo::kMaxSpatialLayers);
+    for (size_t i = 0; i < config_.spatial_layers.size(); ++i) {
+      encoder_info_.fps_allocation[i] =
+          GetFpsAllocation(config_.spatial_layers[i].num_of_temporal_layers);
+    }
+  } else {
+    constexpr uint8_t kFullFramerate = 255;
+    encoder_info_.fps_allocation[0] = {kFullFramerate};
+  }
   task_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(&VideoEncodeAccelerator::Client::NotifyEncoderInfoChange,
@@ -1008,8 +1038,10 @@ bool NdkVideoEncodeAccelerator::SetInputBufferLayout(
   // unfortunately, see https://crbug.com/1084702 for details. It seems they
   // only work when stride/y_plane_height information is provided.
   const auto aligned_size = gfx::Size(
-      base::bits::AlignDownDeprecatedDoNotUse(configured_size.width(), 16),
-      base::bits::AlignDownDeprecatedDoNotUse(configured_size.height(), 16));
+      base::bits::AlignDown(
+          base::checked_cast<uint32_t>(configured_size.width()), 16u),
+      base::bits::AlignDown(
+          base::checked_cast<uint32_t>(configured_size.height()), 16u));
 
   bool require_aligned_resolution = false;
   if (!AMediaFormat_getInt32(input_format.get(), AMEDIAFORMAT_KEY_STRIDE,
@@ -1118,8 +1150,9 @@ void NdkVideoEncodeAccelerator::FeedInput() {
                          weak_ptr_factory_.GetWeakPtr(), frame->unique_id()));
       gpu_task_runner_->PostTask(
           FROM_HERE,
-          base::BindOnce(&WaitForSyncTokenOnGpuThread, command_buffer_helper_,
-                         frame->acquire_sync_token(),
+          base::BindOnce(&WaitForSyncTokensOnGpuThread, command_buffer_helper_,
+                         frame->shared_image()->GetSyncTokensForVideoFrame(
+                             frame->acquire_sync_token()),
                          std::move(sync_done_callback)));
       return;
     }
@@ -1620,10 +1653,8 @@ void NdkVideoEncodeAccelerator::DrainOutput() {
   if (!timestamp_info.has_value()) {
     MEDIA_LOG(ERROR, log_) << "Failed to find timestamp for encoded frame. ts:"
                            << mc_buffer_info.presentationTimeUs;
-    NOTREACHED(base::NotFatalUntil::M150)
-        << "Failed to find timestamp for encoded frame. ts:"
-        << mc_buffer_info.presentationTimeUs;
-    timestamp_info = FrameTimestampInfo();
+    NOTREACHED() << "Failed to find timestamp for encoded frame. ts:"
+                 << mc_buffer_info.presentationTimeUs;
   }
   auto metadata = BitstreamBufferMetadata(
       mc_buffer_size + config_size, key_frame, timestamp_info->real_timestamp);

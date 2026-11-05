@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/core/paint/timing/paint_timing.h"
 
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/dom/element.h"
@@ -15,15 +17,20 @@
 #include "third_party/blink/renderer/core/paint/timing/paint_timing_test_base.h"
 #include "third_party/blink/renderer/core/paint/timing/text_paint_timing_detector.h"
 #include "third_party/blink/renderer/core/scroll/scroll_types.h"
+#include "third_party/blink/renderer/core/timing/soft_navigation_heuristics.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
+#include "third_party/blink/renderer/platform/heap/thread_state.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 using testing::_;
 using testing::A;
+using testing::AllOf;
+using testing::AnyNumber;
 using testing::ElementsAre;
 using testing::Eq;
 using testing::InSequence;
 using testing::IsEmpty;
-using testing::IsNull;
 using testing::Mock;
 using testing::NiceMock;
 using testing::Ref;
@@ -36,8 +43,12 @@ MATCHER_P(ForNode, node, "") {
   return arg && arg->GetNode() == node;
 }
 
-MATCHER_P(ForRecordWithNode, node, "") {
-  return arg && arg->GetNode() == node;
+MATCHER_P(WithPresentationTime, timestamp, "") {
+  return arg && arg->PaintTime() == timestamp;
+}
+
+MATCHER_P(WithWasPreviouslyReported, was_reported, "") {
+  return arg && arg->WasPreviouslyReported() == was_reported;
 }
 
 class MockPaintTimingClient : public GarbageCollected<MockPaintTimingClient>,
@@ -45,34 +56,38 @@ class MockPaintTimingClient : public GarbageCollected<MockPaintTimingClient>,
  public:
   MockPaintTimingClient() {
     // Set things up to ensure tests get all lifecycle events.
-    ON_CALL(*this, OnElementLastContentfulPaint(A<TextRecord*>(), _))
-        .WillByDefault([](TextRecord* record, bool was_previously_reported) {
-          record->SetIsNeededForLargestContentfulPaint(true);
-        });
-    ON_CALL(*this, OnElementLastContentfulPaint(A<ImageRecord*>()))
-        .WillByDefault([](ImageRecord* record) {
-          record->SetIsNeededForLargestContentfulPaint(true);
+    ON_CALL(*this, OnPaintFinished(_, _))
+        .WillByDefault([](const HeapVector<Member<ImageRecord>>& image_records,
+                          const HeapVector<Member<TextRecord>>& text_records)
+                           -> OptionalPaintTimingCallback {
+          for (auto& record : text_records) {
+            record->SetIsNeededForLargestContentfulPaint(true);
+          }
+          for (auto& record : image_records) {
+            record->SetIsNeededForLargestContentfulPaint(true);
+          }
+          return std::nullopt;
         });
   }
+
+  Type GetType() const override { return Type::kTest; }
 
   ~MockPaintTimingClient() override = default;
 
   MOCK_METHOD(void, OnElementFirstContentfulPaint, (ImageRecord*), (override));
-  MOCK_METHOD(void, OnElementLastContentfulPaint, (ImageRecord*), (override));
-  MOCK_METHOD(void,
-              OnElementLastContentfulPaint,
-              (TextRecord*, bool),
-              (override));
   MOCK_METHOD(void,
               OnImageRemoved,
-              (ImageRecord*, const LayoutObject&, const MediaTiming*),
+              (const LayoutObject&, const MediaTiming*),
               (override));
-  MOCK_METHOD(void, OnPaintFinished, (), (override));
+  MOCK_METHOD(OptionalPaintTimingCallback,
+              OnPaintFinished,
+              (const HeapVector<Member<ImageRecord>>&,
+               const HeapVector<Member<TextRecord>>&),
+              (override));
   MOCK_METHOD(void,
               OnFramePresented,
               (const HeapVector<Member<ImageRecord>>&,
                const HeapVector<Member<TextRecord>>&,
-               const GCedHeapVector<Member<ElementTimingInfo>>*,
                const DOMPaintTimingInfo&),
               (override));
   MOCK_METHOD(void, OnInputOrScroll, (), (override));
@@ -93,12 +108,7 @@ class PaintTimingTest : public PaintTimingTestBase {
   }
 
   void TearDown() override {
-    // Clear any remaining expectations.
-    VerifyAndClearExpectations();
-    // Unregister the client so we don't get notifications after this, e.g. for
-    // images being removed.
-    GetPaintTiming().RemoveClient(mock_paint_timing_client_.Get());
-
+    DetachMockClient();
     PaintTimingTestBase::TearDown();
   }
 
@@ -107,6 +117,20 @@ class PaintTimingTest : public PaintTimingTestBase {
 
   void VerifyAndClearExpectations() {
     Mock::VerifyAndClearExpectations(mock_paint_timing_client_.Get());
+  }
+
+  void DetachMockClient() {
+    if (!mock_paint_timing_client_) {
+      return;
+    }
+
+    // Clear any remaining expectations.
+    VerifyAndClearExpectations();
+    // Unregister the client so we don't get notifications after this, e.g. for
+    // images being removed.
+    GetPaintTiming().RemoveClient(mock_paint_timing_client_.Get());
+
+    mock_paint_timing_client_.Clear();
   }
 
  private:
@@ -122,20 +146,17 @@ TEST_F(PaintTimingTest, PaintTimingClientTextRenderingCallbacks) {
   ASSERT_TRUE(target);
 
   // Render the <div>.
-  {
-    InSequence s;
-    EXPECT_CALL(Client(),
-                OnElementLastContentfulPaint(
-                    ForNode(target), /*was_previously_reported=*/false));
-    EXPECT_CALL(Client(), OnPaintFinished());
-    SimulateRendering();
-    VerifyAndClearExpectations();
-  }
-
-  // Present the frame.
   EXPECT_CALL(
       Client(),
-      OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), IsNull(), _));
+      OnPaintFinished(IsEmpty(),
+                      ElementsAre(AllOf(ForNode(target),
+                                        WithWasPreviouslyReported(false)))));
+  SimulateRendering();
+  VerifyAndClearExpectations();
+
+  // Present the frame.
+  EXPECT_CALL(Client(),
+              OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), _));
   SimulatePresentationTime();
   VerifyAndClearExpectations();
 }
@@ -149,26 +170,22 @@ TEST_F(PaintTimingTest, PaintTimingClientTextRepaint) {
   ASSERT_TRUE(target);
 
   // Initial rendering.
-  {
-    InSequence s;
-    EXPECT_CALL(Client(),
-                OnElementLastContentfulPaint(
-                    ForNode(target), /*was_previously_reported=*/false));
-    EXPECT_CALL(Client(), OnPaintFinished());
-    EXPECT_CALL(
-        Client(),
-        OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), IsNull(), _));
-    SimulateRenderingAndPresentationTime();
-    VerifyAndClearExpectations();
-  }
+  EXPECT_CALL(
+      Client(),
+      OnPaintFinished(IsEmpty(),
+                      ElementsAre(AllOf(ForNode(target),
+                                        WithWasPreviouslyReported(false)))));
+  EXPECT_CALL(Client(),
+              OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), _));
+  SimulateRenderingAndPresentationTime();
+  VerifyAndClearExpectations();
 
   // Cause the text to be repainted without notifying PaintTiming, which should
   // not trigger callbacks for `target`. This works because there is no
   // associated SoftNavigationContext.
   To<HTMLElement>(target)->setInnerText("TextText");
-  // There are no new entries, so OnPaintFinished() is the only callback that
-  // should run.
-  EXPECT_CALL(Client(), OnPaintFinished());
+  // There are no new entries, so OnPaintFinished() is called with empty lists.
+  EXPECT_CALL(Client(), OnPaintFinished(IsEmpty(), IsEmpty()));
   SimulateRenderingAndPresentationTime();
   VerifyAndClearExpectations();
 
@@ -178,18 +195,15 @@ TEST_F(PaintTimingTest, PaintTimingClientTextRepaint) {
   GetPaintTimingDetector()
       .GetTextPaintTimingDetector()
       .ResetPaintTrackingOnInteraction(*target->GetLayoutObject());
-  {
-    InSequence s;
-    EXPECT_CALL(Client(),
-                OnElementLastContentfulPaint(ForNode(target),
-                                             /*was_previously_reported=*/true));
-    EXPECT_CALL(Client(), OnPaintFinished());
-    EXPECT_CALL(
-        Client(),
-        OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), IsNull(), _));
-    SimulateRenderingAndPresentationTime();
-    VerifyAndClearExpectations();
-  }
+  EXPECT_CALL(
+      Client(),
+      OnPaintFinished(IsEmpty(),
+                      ElementsAre(AllOf(ForNode(target),
+                                        WithWasPreviouslyReported(true)))));
+  EXPECT_CALL(Client(),
+              OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), _));
+  SimulateRenderingAndPresentationTime();
+  VerifyAndClearExpectations();
 }
 
 TEST_F(PaintTimingTest, PaintTimingClientDelayedPresentationFeedback_Text) {
@@ -204,37 +218,33 @@ TEST_F(PaintTimingTest, PaintTimingClientDelayedPresentationFeedback_Text) {
   ASSERT_TRUE(node2);
 
   // Frame 1: paint node1 but don't present yet.
-  {
-    InSequence s;
-    EXPECT_CALL(Client(),
-                OnElementLastContentfulPaint(
-                    ForNode(node1), /*was_previously_reported=*/false));
-    EXPECT_CALL(Client(), OnPaintFinished());
-    SimulateRendering();
-    VerifyAndClearExpectations();
-  }
+  EXPECT_CALL(
+      Client(),
+      OnPaintFinished(IsEmpty(),
+                      ElementsAre(AllOf(ForNode(node1),
+                                        WithWasPreviouslyReported(false)))));
+  SimulateRendering();
+  VerifyAndClearExpectations();
 
   // Frame 2: paint node2 but don't present yet.
   To<HTMLElement>(node2)->setInnerText("TextTextText");
-  {
-    InSequence s;
-    EXPECT_CALL(Client(),
-                OnElementLastContentfulPaint(
-                    ForNode(node2), /*was_previously_reported=*/false));
-    EXPECT_CALL(Client(), OnPaintFinished());
-    SimulateRendering();
-    VerifyAndClearExpectations();
-  }
+  EXPECT_CALL(
+      Client(),
+      OnPaintFinished(IsEmpty(),
+                      ElementsAre(AllOf(ForNode(node2),
+                                        WithWasPreviouslyReported(false)))));
+  SimulateRendering();
+  VerifyAndClearExpectations();
 
   // Present frame 1.
-  EXPECT_CALL(Client(), OnFramePresented(IsEmpty(), ElementsAre(ForNode(node1)),
-                                         IsNull(), _));
+  EXPECT_CALL(Client(),
+              OnFramePresented(IsEmpty(), ElementsAre(ForNode(node1)), _));
   SimulatePresentationTime();
   VerifyAndClearExpectations();
 
   // Present frame 2.
-  EXPECT_CALL(Client(), OnFramePresented(IsEmpty(), ElementsAre(ForNode(node2)),
-                                         IsNull(), _));
+  EXPECT_CALL(Client(),
+              OnFramePresented(IsEmpty(), ElementsAre(ForNode(node2)), _));
   SimulatePresentationTime();
   VerifyAndClearExpectations();
 }
@@ -248,20 +258,20 @@ TEST_F(PaintTimingTest, PaintTimingClientImageRenderingCallbacks) {
   Node* target = GetElementById("target");
   ASSERT_TRUE(target);
 
-  // Render the <img>. We should get callbacks for the first and last paints
-  // because the image is fully loaded.
+  // Render the <img>. We should get callbacks for the first paint and
+  // OnPaintFinished because the image is fully loaded.
   {
     InSequence s;
     EXPECT_CALL(Client(), OnElementFirstContentfulPaint(ForNode(target)));
-    EXPECT_CALL(Client(), OnElementLastContentfulPaint(ForNode(target)));
-    EXPECT_CALL(Client(), OnPaintFinished());
+    EXPECT_CALL(Client(),
+                OnPaintFinished(ElementsAre(ForNode(target)), IsEmpty()));
     SimulateRendering();
     VerifyAndClearExpectations();
   }
 
   // Present the frame.
-  EXPECT_CALL(Client(), OnFramePresented(ElementsAre(ForNode(target)),
-                                         IsEmpty(), IsNull(), _));
+  EXPECT_CALL(Client(),
+              OnFramePresented(ElementsAre(ForNode(target)), IsEmpty(), _));
   SimulatePresentationTime();
   VerifyAndClearExpectations();
 }
@@ -275,12 +285,12 @@ TEST_F(PaintTimingTest, PaintTimingClientPendingImageCallbacks) {
   Node* target = GetElementById("target");
   ASSERT_TRUE(target);
 
-  // Render the <img>. We should only get the first paint callback since the
-  // image is pending.
+  // Render the <img>. We should get the first paint callback since the image is
+  // pending, but empty records in OnPaintFinished.
   {
     InSequence s;
     EXPECT_CALL(Client(), OnElementFirstContentfulPaint(ForNode(target)));
-    EXPECT_CALL(Client(), OnPaintFinished());
+    EXPECT_CALL(Client(), OnPaintFinished(IsEmpty(), IsEmpty()));
     SimulateRendering();
     VerifyAndClearExpectations();
   }
@@ -311,8 +321,8 @@ TEST_F(PaintTimingTest, PaintTimingClientDelayedPresentationFeedback_Image) {
   {
     InSequence s;
     EXPECT_CALL(Client(), OnElementFirstContentfulPaint(ForNode(img1)));
-    EXPECT_CALL(Client(), OnElementLastContentfulPaint(ForNode(img1)));
-    EXPECT_CALL(Client(), OnPaintFinished());
+    EXPECT_CALL(Client(),
+                OnPaintFinished(ElementsAre(ForNode(img1)), IsEmpty()));
     SimulateRendering();
     VerifyAndClearExpectations();
   }
@@ -322,21 +332,21 @@ TEST_F(PaintTimingTest, PaintTimingClientDelayedPresentationFeedback_Image) {
   {
     InSequence s;
     EXPECT_CALL(Client(), OnElementFirstContentfulPaint(ForNode(img2)));
-    EXPECT_CALL(Client(), OnElementLastContentfulPaint(ForNode(img2)));
-    EXPECT_CALL(Client(), OnPaintFinished());
+    EXPECT_CALL(Client(),
+                OnPaintFinished(ElementsAre(ForNode(img2)), IsEmpty()));
     SimulateRendering();
     VerifyAndClearExpectations();
   }
 
   // Present frame 1.
-  EXPECT_CALL(Client(), OnFramePresented(ElementsAre(ForNode(img1)), IsEmpty(),
-                                         IsNull(), _));
+  EXPECT_CALL(Client(),
+              OnFramePresented(ElementsAre(ForNode(img1)), IsEmpty(), _));
   SimulatePresentationTime();
   VerifyAndClearExpectations();
 
   // Present frame 2.
-  EXPECT_CALL(Client(), OnFramePresented(ElementsAre(ForNode(img2)), IsEmpty(),
-                                         IsNull(), _));
+  EXPECT_CALL(Client(),
+              OnFramePresented(ElementsAre(ForNode(img2)), IsEmpty(), _));
   SimulatePresentationTime();
   VerifyAndClearExpectations();
 }
@@ -356,7 +366,7 @@ TEST_F(PaintTimingTest, PendingImageRemoval) {
   {
     InSequence s;
     EXPECT_CALL(Client(), OnElementFirstContentfulPaint(ForNode(target)));
-    EXPECT_CALL(Client(), OnPaintFinished());
+    EXPECT_CALL(Client(), OnPaintFinished(IsEmpty(), IsEmpty()));
     SimulateRenderingAndPresentationTime();
     VerifyAndClearExpectations();
   }
@@ -365,8 +375,7 @@ TEST_F(PaintTimingTest, PendingImageRemoval) {
   // pending `ImageRecord`, along with the `LayoutObject` and `MediaTiming`.
   const LayoutObject* object = target->GetLayoutObject();
   ASSERT_TRUE(object);
-  EXPECT_CALL(Client(), OnImageRemoved(ForRecordWithNode(target), Ref(*object),
-                                       Eq(timing)));
+  EXPECT_CALL(Client(), OnImageRemoved(Ref(*object), Eq(timing)));
   target->remove();
   VerifyAndClearExpectations();
 }
@@ -380,15 +389,15 @@ TEST_F(PaintTimingTest, LoadedImageRemoval) {
   Node* target = GetElementById("target");
   ASSERT_TRUE(target);
 
-  // Render and present the <img>. We should only get the first paint callback
-  // since the image is pending.
+  // Render and present the <img>. We should get callbacks for the first paint
+  // and OnPaintFinished.
   {
     InSequence s;
     EXPECT_CALL(Client(), OnElementFirstContentfulPaint(ForNode(target)));
-    EXPECT_CALL(Client(), OnElementLastContentfulPaint(ForNode(target)));
-    EXPECT_CALL(Client(), OnPaintFinished());
-    EXPECT_CALL(Client(), OnFramePresented(ElementsAre(ForNode(target)),
-                                           IsEmpty(), IsNull(), _));
+    EXPECT_CALL(Client(),
+                OnPaintFinished(ElementsAre(ForNode(target)), IsEmpty()));
+    EXPECT_CALL(Client(),
+                OnFramePresented(ElementsAre(ForNode(target)), IsEmpty(), _));
     SimulateRenderingAndPresentationTime();
     VerifyAndClearExpectations();
   }
@@ -397,7 +406,7 @@ TEST_F(PaintTimingTest, LoadedImageRemoval) {
   // the `LayoutObject` and `MediaTiming`, but not the loaded `ImageRecord`.
   const LayoutObject* object = target->GetLayoutObject();
   ASSERT_TRUE(object);
-  EXPECT_CALL(Client(), OnImageRemoved(Eq(nullptr), Ref(*object), Eq(timing)));
+  EXPECT_CALL(Client(), OnImageRemoved(Ref(*object), Eq(timing)));
   target->remove();
   VerifyAndClearExpectations();
 }
@@ -411,18 +420,15 @@ TEST_F(PaintTimingTest, DiscreteInput) {
   ASSERT_TRUE(target);
 
   // Initial rendering.
-  {
-    InSequence s;
-    EXPECT_CALL(Client(),
-                OnElementLastContentfulPaint(
-                    ForNode(target), /*was_previously_reported=*/false));
-    EXPECT_CALL(Client(), OnPaintFinished());
-    EXPECT_CALL(
-        Client(),
-        OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), IsNull(), _));
-    SimulateRenderingAndPresentationTime();
-    VerifyAndClearExpectations();
-  }
+  EXPECT_CALL(
+      Client(),
+      OnPaintFinished(IsEmpty(),
+                      ElementsAre(AllOf(ForNode(target),
+                                        WithWasPreviouslyReported(false)))));
+  EXPECT_CALL(Client(),
+              OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), _));
+  SimulateRenderingAndPresentationTime();
+  VerifyAndClearExpectations();
   EXPECT_NE(GetPaintTiming().GetLargestContentfulPaintManager(), nullptr);
 
   // Simulate input.
@@ -447,18 +453,15 @@ TEST_F(PaintTimingTest, UserInitiatedScroll) {
   ASSERT_TRUE(target);
 
   // Initial rendering.
-  {
-    InSequence s;
-    EXPECT_CALL(Client(),
-                OnElementLastContentfulPaint(
-                    ForNode(target), /*was_previously_reported=*/false));
-    EXPECT_CALL(Client(), OnPaintFinished());
-    EXPECT_CALL(
-        Client(),
-        OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), IsNull(), _));
-    SimulateRenderingAndPresentationTime();
-    VerifyAndClearExpectations();
-  }
+  EXPECT_CALL(
+      Client(),
+      OnPaintFinished(IsEmpty(),
+                      ElementsAre(AllOf(ForNode(target),
+                                        WithWasPreviouslyReported(false)))));
+  EXPECT_CALL(Client(),
+              OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), _));
+  SimulateRenderingAndPresentationTime();
+  VerifyAndClearExpectations();
   EXPECT_NE(GetPaintTiming().GetLargestContentfulPaintManager(), nullptr);
 
   // Simulate a user-initated scroll.
@@ -483,18 +486,15 @@ TEST_F(PaintTimingTest, ProgrammaticScroll) {
   ASSERT_TRUE(target);
 
   // Initial rendering.
-  {
-    InSequence s;
-    EXPECT_CALL(Client(),
-                OnElementLastContentfulPaint(
-                    ForNode(target), /*was_previously_reported=*/false));
-    EXPECT_CALL(Client(), OnPaintFinished());
-    EXPECT_CALL(
-        Client(),
-        OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), IsNull(), _));
-    SimulateRenderingAndPresentationTime();
-    VerifyAndClearExpectations();
-  }
+  EXPECT_CALL(
+      Client(),
+      OnPaintFinished(IsEmpty(),
+                      ElementsAre(AllOf(ForNode(target),
+                                        WithWasPreviouslyReported(false)))));
+  EXPECT_CALL(Client(),
+              OnFramePresented(IsEmpty(), ElementsAre(ForNode(target)), _));
+  SimulateRenderingAndPresentationTime();
+  VerifyAndClearExpectations();
   EXPECT_NE(GetPaintTiming().GetLargestContentfulPaintManager(), nullptr);
 
   // Simulate a programmatic scroll. Clients will not be notified for this.
@@ -506,6 +506,624 @@ TEST_F(PaintTimingTest, ProgrammaticScroll) {
   SimulateScroll(mojom::blink::ScrollType::kProgrammatic);
   VerifyAndClearExpectations();
   EXPECT_NE(GetPaintTiming().GetLargestContentfulPaintManager(), nullptr);
+}
+
+class PaintTimingOutOfOrderPresentationTimeTest
+    : public PaintTimingTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  PaintTimingOutOfOrderPresentationTimeTest() {
+    if (IsWaitForPresentationFrameIndexEnabled()) {
+      feature_list_.InitWithFeatures(
+          {kPaintTimingWaitForPresentationFrameIndex}, {});
+    } else {
+      feature_list_.InitWithFeatures(
+          {}, {kPaintTimingWaitForPresentationFrameIndex});
+    }
+  }
+
+  void SetPresentationTime() {
+    AdvanceClock(base::Milliseconds(100));
+    GetMockPaintTimingCallbackManager()->OnAnimationFramePresented(
+        base::TimeTicks::Now());
+  }
+
+  void InvokeLastPresentationCallback() {
+    GetMockPaintTimingCallbackManager()->InvokeCallbacksForLastAnimationFrame();
+  }
+
+  bool IsWaitForPresentationFrameIndexEnabled() const { return GetParam(); }
+
+  Element* AppendDivElementToBody(String content) {
+    Element* div = GetDocument().CreateRawElement(html_names::kDivTag);
+    Text* text = GetDocument().createTextNode(content);
+    div->AppendChild(text);
+    GetDocument().body()->AppendChild(div);
+    return div;
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+namespace {
+
+constexpr char kPresentationCallbackIdDeltaMetricName[] =
+    "Renderer.PaintTiming.PresentationCallbackIdDelta";
+
+constexpr char kPresentationTimeDeltaMetricName[] =
+    "Renderer.PaintTiming.PresentationTimeDelta";
+
+}  // namespace
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PaintTimingOutOfOrderPresentationTimeTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param
+                                      ? "WaitForPresentationFrameIndexEnabled"
+                                      : "WaitForPresentationFrameIndexDisabled";
+                         });
+
+TEST_P(PaintTimingOutOfOrderPresentationTimeTest, CallbackOrder) {
+  SetMainFrameBodyContent(R"HTML(
+    <div id="target1">Text</div>
+  )HTML");
+  // Frame 1: render the initial text.
+  Element* div1 = GetElementById("target1");
+  EXPECT_CALL(
+      Client(),
+      OnPaintFinished(
+          IsEmpty(),
+          ElementsAre(AllOf(ForNode(div1), WithWasPreviouslyReported(false)))));
+  SimulateRendering();
+  VerifyAndClearExpectations();
+
+  // Frame 2: Append and render more text.
+  Element* div2 = AppendDivElementToBody("Text Text");
+  EXPECT_CALL(
+      Client(),
+      OnPaintFinished(
+          IsEmpty(),
+          ElementsAre(AllOf(ForNode(div2), WithWasPreviouslyReported(false)))));
+  SimulateRendering();
+  VerifyAndClearExpectations();
+
+  // Frame 3: Append and render more text.
+  Element* div3 = AppendDivElementToBody("Text Text Text");
+  EXPECT_CALL(
+      Client(),
+      OnPaintFinished(
+          IsEmpty(),
+          ElementsAre(AllOf(ForNode(div3), WithWasPreviouslyReported(false)))));
+  SimulateRendering();
+  VerifyAndClearExpectations();
+
+  // Set presentation time for frame 1.
+  SetPresentationTime();
+  base::TimeTicks timestamp1 = base::TimeTicks::Now();
+
+  // Set presentation time for frame 2.
+  SetPresentationTime();
+  base::TimeTicks timestamp2 = base::TimeTicks::Now();
+  EXPECT_NE(timestamp1, timestamp2);
+
+  // Set presentation time for frame 3.
+  SetPresentationTime();
+  base::TimeTicks timestamp3 = base::TimeTicks::Now();
+  EXPECT_NE(timestamp2, timestamp3);
+
+  // Without kPaintTimingWaitForPresentationFrameIndex enabled, all of the
+  // timestamps should match `timestamp3`. Overwrite them here to make the
+  // expectations below more readable.
+  if (!IsWaitForPresentationFrameIndexEnabled()) {
+    timestamp1 = timestamp3;
+    timestamp2 = timestamp3;
+  }
+
+  // Invoke callbacks in reverse order.
+  InSequence s;
+
+  EXPECT_CALL(
+      Client(),
+      OnFramePresented(
+          IsEmpty(),
+          ElementsAre(AllOf(ForNode(div1), WithPresentationTime(timestamp1))),
+          _));
+  EXPECT_CALL(
+      Client(),
+      OnFramePresented(
+          IsEmpty(),
+          ElementsAre(AllOf(ForNode(div2), WithPresentationTime(timestamp2))),
+          _));
+  EXPECT_CALL(
+      Client(),
+      OnFramePresented(
+          IsEmpty(),
+          ElementsAre(AllOf(ForNode(div3), WithPresentationTime(timestamp3))),
+          _));
+  InvokeLastPresentationCallback();
+  InvokeLastPresentationCallback();
+  InvokeLastPresentationCallback();
+  VerifyAndClearExpectations();
+}
+
+TEST_P(PaintTimingOutOfOrderPresentationTimeTest, TestInOrderHistogram) {
+  // Histograms are only logged with the feature enabled.
+  if (!IsWaitForPresentationFrameIndexEnabled()) {
+    return;
+  }
+  DetachMockClient();
+  base::HistogramTester histogram_tester;
+
+  SetMainFrameBodyContent(R"HTML(
+    <div id="target1">Text</div>
+  )HTML");
+  // Frame 1: render the initial text.
+  SimulateRendering();
+
+  // Frame 2: Append and render more text.
+  AppendDivElementToBody("Text Text");
+  SimulateRendering();
+
+  // Frame 3: Append and render more text.
+  AppendDivElementToBody("Text Text Text");
+  SimulateRendering();
+
+  histogram_tester.ExpectTotalCount(kPresentationCallbackIdDeltaMetricName, 0);
+  histogram_tester.ExpectTotalCount(kPresentationTimeDeltaMetricName, 0);
+
+  SimulatePresentationTime();
+  histogram_tester.ExpectTotalCount(kPresentationCallbackIdDeltaMetricName, 1);
+  histogram_tester.ExpectBucketCount(kPresentationCallbackIdDeltaMetricName, 0,
+                                     1);
+  histogram_tester.ExpectTotalCount(kPresentationTimeDeltaMetricName, 1);
+  histogram_tester.ExpectTimeBucketCount(kPresentationTimeDeltaMetricName,
+                                         base::TimeDelta(), 1);
+
+  SimulatePresentationTime();
+  histogram_tester.ExpectTotalCount(kPresentationCallbackIdDeltaMetricName, 2);
+  histogram_tester.ExpectBucketCount(kPresentationCallbackIdDeltaMetricName, 0,
+                                     2);
+  histogram_tester.ExpectTotalCount(kPresentationTimeDeltaMetricName, 2);
+  histogram_tester.ExpectTimeBucketCount(kPresentationTimeDeltaMetricName,
+                                         base::TimeDelta(), 2);
+
+  SimulatePresentationTime();
+  histogram_tester.ExpectTotalCount(kPresentationCallbackIdDeltaMetricName, 3);
+  histogram_tester.ExpectBucketCount(kPresentationCallbackIdDeltaMetricName, 0,
+                                     3);
+  histogram_tester.ExpectTotalCount(kPresentationTimeDeltaMetricName, 3);
+  histogram_tester.ExpectTimeBucketCount(kPresentationTimeDeltaMetricName,
+                                         base::TimeDelta(), 3);
+}
+
+TEST_P(PaintTimingOutOfOrderPresentationTimeTest, TestOutOfOrderHistogram) {
+  // Histograms are only logged with the feature enabled.
+  if (!IsWaitForPresentationFrameIndexEnabled()) {
+    return;
+  }
+  DetachMockClient();
+  base::HistogramTester histogram_tester;
+
+  SetMainFrameBodyContent(R"HTML(
+    <div id="target1">Text</div>
+  )HTML");
+  // Frame 1: render the initial text.
+  SimulateRendering();
+
+  // Frame 2: Append and render more text.
+  AppendDivElementToBody("Text Text");
+  SimulateRendering();
+
+  // Frame 3: Append and render more text.
+  AppendDivElementToBody("Text Text Text");
+  SimulateRendering();
+
+  histogram_tester.ExpectTotalCount(kPresentationCallbackIdDeltaMetricName, 0);
+  histogram_tester.ExpectTotalCount(kPresentationTimeDeltaMetricName, 0);
+
+  // Set the presentation time for all three frames. The time delta metric isn't
+  // log until the callback data is processed.
+  SetPresentationTime();
+  base::TimeTicks presentation_time1 = base::TimeTicks::Now();
+
+  SetPresentationTime();
+  base::TimeTicks presentation_time2 = base::TimeTicks::Now();
+
+  SetPresentationTime();
+  base::TimeTicks presentation_time3 = base::TimeTicks::Now();
+
+  // Execute the presentation callbacks in reverse order. There should be one
+  // entry for each of three buckets: 0 (underflow), 1, and 2.
+  InvokeLastPresentationCallback();
+  histogram_tester.ExpectTotalCount(kPresentationCallbackIdDeltaMetricName, 1);
+  histogram_tester.ExpectBucketCount(kPresentationCallbackIdDeltaMetricName, 2,
+                                     1);
+  histogram_tester.ExpectTotalCount(kPresentationTimeDeltaMetricName, 0);
+
+  InvokeLastPresentationCallback();
+  histogram_tester.ExpectTotalCount(kPresentationCallbackIdDeltaMetricName, 2);
+  histogram_tester.ExpectBucketCount(kPresentationCallbackIdDeltaMetricName, 1,
+                                     1);
+  histogram_tester.ExpectTotalCount(kPresentationTimeDeltaMetricName, 0);
+
+  InvokeLastPresentationCallback();
+  histogram_tester.ExpectTotalCount(kPresentationCallbackIdDeltaMetricName, 3);
+  histogram_tester.ExpectBucketCount(kPresentationCallbackIdDeltaMetricName, 0,
+                                     1);
+  histogram_tester.ExpectTotalCount(kPresentationTimeDeltaMetricName, 3);
+
+  // Frame 3:
+  histogram_tester.ExpectTimeBucketCount(kPresentationTimeDeltaMetricName,
+                                         base::TimeDelta(), 1);
+  // Frame 2:
+  histogram_tester.ExpectTimeBucketCount(
+      kPresentationTimeDeltaMetricName, presentation_time3 - presentation_time2,
+      1);
+  // Frame 1:
+  histogram_tester.ExpectTimeBucketCount(
+      kPresentationTimeDeltaMetricName, presentation_time3 - presentation_time1,
+      1);
+}
+
+// Regression test for crbug.com/557111456: when a pseudo-element with a pending
+// background image is removed, its pending ImageRecord must be removed from
+// `pending_images_` so that if its originating element is garbage collected and
+// a new element reuses the layout object address, painting the loaded image
+// creates a new record rather than reusing a stale record with a null Node*.
+TEST_F(PaintTimingTest, PseudoElementPendingBackgroundImage) {
+  Persistent<ImageResourceContent> content = AddImageToMemoryCache(
+      "https://example.com/test.png", 100, 100, 0, ImageStatus::kPending);
+
+  SetMainFrameBodyContent(R"HTML(
+    <style>
+      #target::before {
+        content: "";
+        display: block;
+        width: 100px;
+        height: 100px;
+        background-image: url('https://example.com/test.png');
+      }
+    </style>
+    <div id="target"></div>
+  )HTML");
+
+  WeakPersistent<Element> target = GetElementById("target");
+  ASSERT_TRUE(target);
+
+  WeakPersistent<ImageRecord> first_paint_record;
+  EXPECT_CALL(Client(), OnElementFirstContentfulPaint(_))
+      .WillOnce([&](ImageRecord* record) { first_paint_record = record; });
+  EXPECT_CALL(Client(), OnPaintFinished(IsEmpty(), IsEmpty()));
+  SimulateRendering();
+  VerifyAndClearExpectations();
+
+  ASSERT_TRUE(first_paint_record);
+  EXPECT_EQ(first_paint_record->GetNode(), target);
+
+  // Ensure `SoftNavigationHeuristics` exists to observe paint timing
+  // notifications.
+  EXPECT_TRUE(GetDocument().domWindow()->GetSoftNavigationHeuristics());
+
+  // Removing target detaches the ::before pseudo-element and notifies that the
+  // image was removed for the pseudo-element's LayoutObject.
+  const LayoutObject* removed_layout_object = nullptr;
+  EXPECT_CALL(Client(), OnImageRemoved(_, _))
+      .WillOnce(
+          [&](const LayoutObject& object, const MediaTiming* media_timing) {
+            removed_layout_object = &object;
+          });
+
+  // Remove the target element from the DOM and run GC to collect it.
+  target->remove();
+  EXPECT_EQ(removed_layout_object,
+            first_paint_record->ImageGeneratingLayoutObject());
+  ThreadState::Current()->CollectAllGarbageForTesting();
+  EXPECT_FALSE(target);
+  EXPECT_FALSE(first_paint_record);
+
+  // Now create a new target element with the same style.
+  SetMainFrameBodyContent(R"HTML(
+    <style>
+      #target::before {
+        content: "";
+        display: block;
+        width: 100px;
+        height: 100px;
+        background-image: url('https://example.com/test.png');
+      }
+    </style>
+    <div id="target"></div>
+  )HTML");
+  Element* new_target = GetElementById("target");
+  ASSERT_TRUE(new_target);
+
+  // Mark the image load as completed.
+  scoped_refptr<SharedBuffer> buffer = SharedBuffer::Create();
+  buffer->Append(base::span_from_cstring(SIMPLE_IMAGE));
+  std::ignore = content->UpdateImage(
+      buffer, ResourceStatus::kCached, ImageResourceContent::kUpdateImage,
+      /*all_data_received=*/true, /*is_multipart=*/false);
+
+  ImageRecord* first_paint_record2 = nullptr;
+  ImageRecord* painted_record = nullptr;
+  EXPECT_CALL(Client(), OnElementFirstContentfulPaint(_))
+      .WillOnce([&](ImageRecord* record) { first_paint_record2 = record; });
+  EXPECT_CALL(Client(),
+              OnPaintFinished(ElementsAre(ForNode(new_target)), IsEmpty()))
+      .WillOnce([&](const HeapVector<Member<ImageRecord>>& image_records,
+                    const HeapVector<Member<TextRecord>>&)
+                    -> OptionalPaintTimingCallback {
+        painted_record = image_records[0].Get();
+        return std::nullopt;
+      });
+  SimulateRendering();
+
+  ASSERT_TRUE(painted_record);
+  EXPECT_EQ(painted_record, first_paint_record2);
+  EXPECT_EQ(painted_record->GetNode(), new_target);
+}
+
+TEST_F(PaintTimingTest, ContentfulPaintCountHistograms) {
+  DetachMockClient();
+  base::HistogramTester histogram_tester;
+
+  SetMainFrameBodyContent(R"HTML(
+    <div id="target1">Text 1</div>
+  )HTML");
+  SimulateRenderingAndPresentationTime();
+
+  // Second contentful paint.
+  Element* div2 = GetDocument().CreateRawElement(html_names::kDivTag);
+  div2->AppendChild(GetDocument().createTextNode("Text 2"));
+  GetDocument().body()->AppendChild(div2);
+  SimulateRenderingAndPresentationTime();
+
+  // Non-contentful paint should not increment the count.
+  SimulateRenderingAndPresentationTime();
+
+  histogram_tester.ExpectTotalCount(
+      "Renderer.PaintTiming.ContentfulPaintCount.BeforeInputOrScroll", 0);
+  histogram_tester.ExpectTotalCount(
+      "Renderer.PaintTiming.ContentfulPaintCount."
+      "UntilPageHiddenOrContextDestroyed",
+      0);
+
+  SimulateKeyDown();
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount.BeforeInputOrScroll", 2, 1);
+  histogram_tester.ExpectTotalCount(
+      "Renderer.PaintTiming.ContentfulPaintCount."
+      "UntilPageHiddenOrContextDestroyed",
+      0);
+
+  // Third contentful paint after input.
+  Element* div3 = GetDocument().CreateRawElement(html_names::kDivTag);
+  div3->AppendChild(GetDocument().createTextNode("Text 3"));
+  GetDocument().body()->AppendChild(div3);
+  SimulateRenderingAndPresentationTime();
+
+  GetPaintTiming().ContextDestroyed();
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount.BeforeInputOrScroll", 2, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount."
+      "UntilPageHiddenOrContextDestroyed",
+      3, 1);
+}
+
+TEST_F(PaintTimingTest, ContentfulPaintCountHistogramsOnPageHidden) {
+  DetachMockClient();
+  base::HistogramTester histogram_tester;
+
+  SetMainFrameBodyContent(R"HTML(
+    <div>Text 1</div>
+  )HTML");
+  SimulateRenderingAndPresentationTime();
+
+  GetPage().SetVisibilityState(mojom::blink::PageVisibilityState::kHidden,
+                               /*is_initial_state=*/false);
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount.BeforeInputOrScroll", 1, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount."
+      "UntilPageHiddenOrContextDestroyed",
+      1, 1);
+
+  // Subsequent context destruction should not record duplicate samples.
+  GetPaintTiming().ContextDestroyed();
+  histogram_tester.ExpectTotalCount(
+      "Renderer.PaintTiming.ContentfulPaintCount.BeforeInputOrScroll", 1);
+  histogram_tester.ExpectTotalCount(
+      "Renderer.PaintTiming.ContentfulPaintCount."
+      "UntilPageHiddenOrContextDestroyed",
+      1);
+}
+
+TEST_F(PaintTimingTest, ContentfulPaintCountHistogramsSubframe) {
+  DetachMockClient();
+  base::HistogramTester histogram_tester;
+
+  SetMainFrameBodyContent(R"HTML(
+    <iframe></iframe>
+  )HTML");
+  SetChildFrameBodyContent(R"HTML(
+    <div>Subframe text</div>
+  )HTML");
+  SimulateRenderingAndPresentationTime();
+
+  GetPage().SetVisibilityState(mojom::blink::PageVisibilityState::kHidden,
+                               /*is_initial_state=*/false);
+
+  // Main frame painted without contentful elements; subframe painted 1.
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount.BeforeInputOrScroll", 0, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount."
+      "UntilPageHiddenOrContextDestroyed",
+      0, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount.Subframe.BeforeInputOrScroll",
+      1, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount.Subframe."
+      "UntilPageHiddenOrContextDestroyed",
+      1, 1);
+}
+
+TEST_F(PaintTimingTest, ContentfulPaintCountHistogramsFilteredDocuments) {
+  DetachMockClient();
+  base::HistogramTester histogram_tester;
+
+  // Before `SetMainFrameBodyContent()`, the main document is still in the
+  // initial empty document state and should not record histograms on page hide.
+  EXPECT_TRUE(GetDocument().IsInitialEmptyDocument());
+  GetPage().SetVisibilityState(mojom::blink::PageVisibilityState::kHidden,
+                               /*is_initial_state=*/false);
+  GetPage().SetVisibilityState(mojom::blink::PageVisibilityState::kVisible,
+                               /*is_initial_state=*/false);
+  histogram_tester.ExpectTotalCount(
+      "Renderer.PaintTiming.ContentfulPaintCount.BeforeInputOrScroll", 0);
+  histogram_tester.ExpectTotalCount(
+      "Renderer.PaintTiming.ContentfulPaintCount."
+      "UntilPageHiddenOrContextDestroyed",
+      0);
+
+  // Once the main frame commits content (leaving the initial empty document
+  // state), user input before first paint should immediately record 0 for
+  // BeforeInputOrScroll. An un-navigated iframe remains an initial empty
+  // document and should not record subframe histograms.
+  SetMainFrameBodyContent(R"HTML(
+    <div>Main frame text</div>
+    <iframe></iframe>
+  )HTML");
+  EXPECT_FALSE(GetDocument().IsInitialEmptyDocument());
+  EXPECT_TRUE(ChildDocument().IsInitialEmptyDocument());
+
+  SimulateKeyDown();
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount.BeforeInputOrScroll", 0, 1);
+
+  SimulateRenderingAndPresentationTime();
+
+  GetPage().SetVisibilityState(mojom::blink::PageVisibilityState::kHidden,
+                               /*is_initial_state=*/false);
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount.BeforeInputOrScroll", 0, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Renderer.PaintTiming.ContentfulPaintCount."
+      "UntilPageHiddenOrContextDestroyed",
+      1, 1);
+  histogram_tester.ExpectTotalCount(
+      "Renderer.PaintTiming.ContentfulPaintCount.Subframe.BeforeInputOrScroll",
+      0);
+  histogram_tester.ExpectTotalCount(
+      "Renderer.PaintTiming.ContentfulPaintCount.Subframe."
+      "UntilPageHiddenOrContextDestroyed",
+      0);
+}
+
+// A "content: url(...)" image on a pseudo-element is painted by an anonymous
+// `LayoutImage`. The record is attributed to the originating element, but keyed
+// on the anonymous object, which is what removal is reported for.
+TEST_F(PaintTimingTest, PseudoElementContentImage) {
+  ScopedPaintTimingContentImagePseudoElementsForTest scoped_feature(true);
+  SetMainFrameBodyContent(R"HTML(
+    <style>
+      #target::before {
+        content: url()HTML" SIMPLE_IMAGE R"HTML();
+      }
+    </style>
+    <div id="target"></div>
+  )HTML");
+  Element* target = GetElementById("target");
+  ASSERT_TRUE(target);
+
+  ImageRecord* painted_record = nullptr;
+  EXPECT_CALL(Client(), OnElementFirstContentfulPaint(ForNode(target)));
+  EXPECT_CALL(Client(),
+              OnPaintFinished(ElementsAre(ForNode(target)), IsEmpty()))
+      .WillOnce([&](const HeapVector<Member<ImageRecord>>& image_records,
+                    const HeapVector<Member<TextRecord>>&)
+                    -> OptionalPaintTimingCallback {
+        painted_record = image_records[0].Get();
+        return std::nullopt;
+      });
+  SimulateRendering();
+  VerifyAndClearExpectations();
+
+  ASSERT_TRUE(painted_record);
+  const LayoutObject* image_object =
+      painted_record->ImageGeneratingLayoutObject();
+  ASSERT_TRUE(image_object);
+  EXPECT_TRUE(image_object->IsImage());
+  EXPECT_FALSE(image_object->GetNode());
+  EXPECT_FALSE(painted_record->WasNodeRemoved());
+
+  // The ::before box also reports removal of its style's content image.
+  EXPECT_CALL(Client(), OnImageRemoved(_, _)).Times(AnyNumber());
+  EXPECT_CALL(Client(), OnImageRemoved(Ref(*image_object), _));
+  target->remove();
+}
+
+TEST_F(PaintTimingTest, ClearPaintTimingOnWindowReuse) {
+  DetachMockClient();
+  LocalDOMWindow* initial_window = GetDocument().domWindow();
+  WindowPerformance* performance =
+      DOMWindowPerformance::performance(*initial_window);
+
+  // Paint on the initial empty document (before any navigation commits).
+  ASSERT_TRUE(GetDocument().IsInitialEmptyDocument());
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
+      "<div>Initial empty document text</div>");
+  SimulateRenderingAndPresentationTime();
+
+  ASSERT_NE(performance->FirstPaintTiming(), nullptr);
+  EXPECT_EQ(
+      performance->getEntriesByType(performance_entry_names::kPaint).size(),
+      2u);
+  EXPECT_EQ(performance
+                ->getBufferedEntriesByType(
+                    performance_entry_names::kLargestContentfulPaint)
+                .size(),
+            1u);
+
+  // Install a new Document on the same LocalDOMWindow via ClearForReuse().
+  scoped_refptr<SharedBuffer> data = SharedBuffer::Create(
+      base::byte_span_from_cstring("<!DOCTYPE html><div>Committed text</div>"));
+  GetFrame().ForceSynchronousDocumentInstall(AtomicString("text/html"), *data);
+  ASSERT_EQ(GetDocument().domWindow(), initial_window);
+  ASSERT_EQ(DOMWindowPerformance::performance(*GetDocument().domWindow()),
+            performance);
+
+  // Paint timing entries from the initial empty document should be cleared.
+  EXPECT_EQ(performance->FirstPaintTiming(), nullptr);
+  EXPECT_THAT(performance->getEntriesByType(performance_entry_names::kPaint),
+              IsEmpty());
+  EXPECT_THAT(performance->getBufferedEntriesByType(
+                  performance_entry_names::kLargestContentfulPaint),
+              IsEmpty());
+
+  // Subsequent paints on the newly installed Document should record fresh
+  // first-paint and first-contentful-paint entries without colliding with the
+  // initial empty document's entries.
+  GetPaintTiming().SetCallbackManagerForTest(
+      GetMockPaintTimingCallbackManager());
+  SimulateRenderingAndPresentationTime();
+
+  ASSERT_NE(performance->FirstPaintTiming(), nullptr);
+  PerformanceEntryVector paint_entries =
+      performance->getEntriesByType(performance_entry_names::kPaint);
+  ASSERT_EQ(paint_entries.size(), 2u);
+  EXPECT_EQ(paint_entries[0]->name(), performance_entry_names::kFirstPaint);
+  EXPECT_EQ(paint_entries[1]->name(),
+            performance_entry_names::kFirstContentfulPaint);
+  EXPECT_EQ(performance
+                ->getBufferedEntriesByType(
+                    performance_entry_names::kLargestContentfulPaint)
+                .size(),
+            1u);
 }
 
 }  // namespace blink

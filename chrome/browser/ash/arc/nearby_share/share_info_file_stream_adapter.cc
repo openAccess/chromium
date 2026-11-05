@@ -13,7 +13,6 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
-#include "chrome/browser/ash/arc/nearby_share/arc_nearby_share_uma.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/base/net_errors.h"
@@ -32,16 +31,17 @@ ShareInfoFileStreamAdapter::ShareInfoFileStreamAdapter(
       url_(url),
       offset_(offset),
       bytes_remaining_(file_size),
-      dest_fd_(std::move(dest_fd)),
+      dest_fd_(base::MakeRefCounted<base::RefCountedData<base::ScopedFD>>(
+          std::move(dest_fd))),
       result_callback_(std::move(result_callback)),
       net_iobuf_(base::MakeRefCounted<net::IOBufferWithSize>(buf_size)) {
-  DCHECK(url_.is_valid());
-  DCHECK(dest_fd_.is_valid());
-  DCHECK_GT(net_iobuf_->size(), 0);
+  CHECK(url_.is_valid(), base::NotFatalUntil::M160);
+  CHECK(dest_fd_->data.is_valid(), base::NotFatalUntil::M160);
+  CHECK_GT(net_iobuf_->size(), 0, base::NotFatalUntil::M160);
 }
 
 void ShareInfoFileStreamAdapter::StartRunner() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(
       // USER_BLOCKING because of downing files requested by the user and
@@ -54,18 +54,22 @@ void ShareInfoFileStreamAdapter::StartRunner() {
       base::BindOnce(&ShareInfoFileStreamAdapter::StartFileStreaming, this));
 }
 
-void ShareInfoFileStreamAdapter::StartRunnerForTesting() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+void ShareInfoFileStreamAdapter::StartRunnerForTesting(
+    scoped_refptr<base::SequencedTaskRunner> task_runner) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
-  task_runner_ = base::ThreadPool::CreateSequencedTaskRunner(
-      {base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN, base::MayBlock()});
+  task_runner_ = task_runner
+                     ? std::move(task_runner)
+                     : base::ThreadPool::CreateSequencedTaskRunner(
+                           {base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN,
+                            base::MayBlock()});
   content::GetIOThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce(&ShareInfoFileStreamAdapter::StartFileStreaming,
                                 base::Unretained(this)));
 }
 
 ShareInfoFileStreamAdapter::~ShareInfoFileStreamAdapter() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   // There was an abort mid-operation and did not complete streaming.
   if (result_callback_)
@@ -73,13 +77,12 @@ ShareInfoFileStreamAdapter::~ShareInfoFileStreamAdapter() {
 }
 
 void ShareInfoFileStreamAdapter::StartFileStreaming() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   stream_reader_ = context_->CreateFileStreamReader(
       url_, offset_, bytes_remaining_, base::Time());
   if (!stream_reader_) {
     LOG(ERROR) << "Failed to create FileStreamReader.";
-    UpdateNearbyShareIOFail(IOErrorResult::kFileReaderFailed);
     OnStreamingFinished(false);
     return;
   }
@@ -88,7 +91,7 @@ void ShareInfoFileStreamAdapter::StartFileStreaming() {
 }
 
 void ShareInfoFileStreamAdapter::PerformReadFileStream() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   if (bytes_remaining_ == 0) {
     OnStreamingFinished(true);
     return;
@@ -96,7 +99,7 @@ void ShareInfoFileStreamAdapter::PerformReadFileStream() {
 
   // Read only the minimum between the bytes remaining or the IO buffer size.
   const int bytes_read = stream_reader_->Read(
-      net_iobuf_.get(), std::min<int64_t>(net_iobuf_->size(), bytes_remaining_),
+      net_iobuf_, std::min<int64_t>(net_iobuf_->size(), bytes_remaining_),
       base::BindOnce(&ShareInfoFileStreamAdapter::OnReadFile,
                      weak_ptr_factory_.GetWeakPtr()));
 
@@ -107,17 +110,21 @@ void ShareInfoFileStreamAdapter::PerformReadFileStream() {
 }
 
 void ShareInfoFileStreamAdapter::WriteToFile(int bytes_read) {
-  DCHECK(dest_fd_.is_valid());
-  DCHECK_GT(bytes_read, 0);
+  CHECK(dest_fd_->data.is_valid(), base::NotFatalUntil::M160);
+  CHECK_GT(bytes_read, 0, base::NotFatalUntil::M160);
 
+  // Bind a strong reference to |dest_fd_| so the underlying file descriptor
+  // stays open until the posted write has run, even if the adapter is
+  // destroyed while the write is still queued.
   auto write_fd_func = base::BindOnce(
-      [](int fd, scoped_refptr<net::IOBuffer> buf, int size) -> bool {
-        const bool result =
-            base::WriteFileDescriptor(fd, std::string_view(buf->data(), size));
+      [](scoped_refptr<base::RefCountedData<base::ScopedFD>> fd,
+         scoped_refptr<net::IOBuffer> buf, int size) -> bool {
+        const bool result = base::WriteFileDescriptor(
+            fd->data.get(), std::string_view(buf->data(), size));
         PLOG_IF(ERROR, !result) << "Failed writing to fd.";
         return result;
       },
-      dest_fd_.get(), net_iobuf_, bytes_read);
+      dest_fd_, net_iobuf_, bytes_read);
 
   task_runner_->PostTaskAndReplyWithResult(
       FROM_HERE, std::move(write_fd_func),
@@ -126,35 +133,32 @@ void ShareInfoFileStreamAdapter::WriteToFile(int bytes_read) {
 }
 
 void ShareInfoFileStreamAdapter::OnReadFile(int bytes_read) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   if (bytes_read < 0) {
     LOG(ERROR) << " Reached EOF even though there are remaining bytes: "
                << bytes_remaining_;
-    UpdateNearbyShareIOFail(IOErrorResult::kEOFWithRemainingBytes);
     OnStreamingFinished(false);
     return;
   }
   if (bytes_read == 0) {
     LOG(ERROR) << "Read failed with error: " << net::ErrorToString(bytes_read);
-    UpdateNearbyShareIOFail(IOErrorResult::kReadFailed);
     OnStreamingFinished(false);
     return;
   }
   bytes_remaining_ -= bytes_read;
-  DCHECK_GE(bytes_remaining_, 0);
+  CHECK_GE(bytes_remaining_, 0, base::NotFatalUntil::M160);
 
-  if (dest_fd_.is_valid()) {
+  if (dest_fd_->data.is_valid()) {
     WriteToFile(bytes_read);
   } else {
     LOG(ERROR) << "Unexpected could not find valid endpoint for streamed data.";
-    UpdateNearbyShareIOFail(IOErrorResult::kStreamedDataInvalidEndpoint);
     OnStreamingFinished(false);
   }
 }
 
 void ShareInfoFileStreamAdapter::OnWriteFinished(bool result) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   if (!result) {
     OnStreamingFinished(false);
@@ -166,8 +170,8 @@ void ShareInfoFileStreamAdapter::OnWriteFinished(bool result) {
 }
 
 void ShareInfoFileStreamAdapter::OnStreamingFinished(bool result) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
-  DCHECK(result_callback_);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
+  CHECK(result_callback_, base::NotFatalUntil::M160);
 
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce(std::move(result_callback_), result));

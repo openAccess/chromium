@@ -222,6 +222,15 @@ void RecordPdfLoadedWithV2InkAnnotations(
                                 loaded_with_annotations);
 }
 
+void RecordSaveHasStrokes(bool has_strokes) {
+  base::UmaHistogramBoolean("PDF.Ink2SaveHasStrokes", has_strokes);
+}
+
+void RecordSaveHasTextAnnotations(bool has_text_annotations) {
+  base::UmaHistogramBoolean("PDF.Ink2SaveHasTextAnnotations",
+                            has_text_annotations);
+}
+
 void RecordTextAnnotationAddedCountOnSave(size_t count) {
   base::UmaHistogramCounts100("PDF.Ink2TextAnnotationAddedCountOnSave", count);
 }
@@ -246,6 +255,10 @@ void ReportTextAnnotationMetrics(const InkTextBoxAttributes& attributes) {
   base::UmaHistogramBoolean("PDF.Ink2TextAnnotationBold", attributes.is_bold);
   base::UmaHistogramBoolean("PDF.Ink2TextAnnotationItalic",
                             attributes.is_italic);
+  base::UmaHistogramBoolean("PDF.Ink2TextAnnotationStrikethrough",
+                            attributes.is_strikethrough);
+  base::UmaHistogramBoolean("PDF.Ink2TextAnnotationUnderline",
+                            attributes.is_underline);
 
   CHECK_EQ(attributes.css_font_size, std::trunc(attributes.css_font_size));
   int size = static_cast<int>(attributes.css_font_size);

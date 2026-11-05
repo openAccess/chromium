@@ -50,7 +50,8 @@ class MockSkillsService : public SkillsService {
                std::string_view,
                base::Time,
                base::Time,
-               sync_pb::SkillSource));
+               sync_pb::SkillSource,
+               bool));
   MOCK_METHOD(
       const Skill*,
       UpdateSkill,
@@ -58,6 +59,10 @@ class MockSkillsService : public SkillsService {
   MOCK_METHOD(bool, IsInitialized, (), (const));
   MOCK_METHOD(ServiceStatus, GetServiceStatus, (), (const));
   MOCK_METHOD(void, DeleteSkill, (std::string_view, UpdateSource));
+  MOCK_METHOD(void,
+              DeleteSkillsModifiedBetween,
+              (base::Time, base::Time),
+              (override));
   MOCK_METHOD(void, FetchDiscoverySkills, ());
   MOCK_METHOD(void, RefreshDiscoverySkills, ());
   MOCK_METHOD(void,

@@ -13,6 +13,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/types/expected.h"
 #include "chrome/browser/password_manager/password_change/change_password_form_filling_submission_helper.h"
+#include "chrome/browser/password_manager/password_change/change_password_form_waiter.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/password_manager/core/browser/password_string.h"
@@ -29,7 +30,6 @@ struct PasswordForm;
 }  // namespace password_manager
 
 class ModelQualityLogsUploader;
-class ChangePasswordFormWaiter;
 
 // Helper class which handles the change password form filling process.
 // It fills the form, handles the filling callback, and retries if form filling
@@ -53,8 +53,8 @@ class ChangePasswordFormFiller {
   // Fills the change password form.
   void FillForm(password_manager::PasswordFormManager* form_manager,
                 const std::u16string& username,
-                const std::u16string& login_password,
-                const std::u16string& generated_password,
+                const password_manager::PasswordString& login_password,
+                const password_manager::PasswordString& generated_password,
                 base::OnceCallback<void(FillingResult)> callback);
 
 #if defined(UNIT_TEST)
@@ -71,8 +71,7 @@ class ChangePasswordFormFiller {
 
   void OnFormFillingFailed();
 
-  void OnChangePasswordFormFound(
-      password_manager::PasswordFormManager* form_manager);
+  void OnChangePasswordFormFound(ChangePasswordFormWaiter::Result result);
 
   const raw_ptr<content::WebContents> web_contents_;
   const raw_ptr<password_manager::PasswordManagerClient> client_;

@@ -12,6 +12,7 @@
 #import "base/ios/block_types.h"
 #import "base/not_fatal_until.h"
 #import "base/notreached.h"
+#import "components/password_manager/core/common/browser_assisted_login_type.h"
 #import "components/webauthn/core/browser/passkey_model_utils.h"
 #import "components/webauthn/ios/passkey_types.h"
 #import "ios/chrome/common/app_group/app_group_metrics.h"
@@ -28,6 +29,7 @@
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
 #import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
+#import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/credential_provider_extension/account_verification_provider.h"
 #import "ios/chrome/credential_provider_extension/font_provider.h"
@@ -79,7 +81,6 @@ enum class PasskeyCreationEligibility {
 
 }  // namespace
 
-// TODO(crbug.com/454307667): Add unit tests for the whole file.
 @interface CredentialProviderViewController () <
     ConfirmationAlertActionHandler,
     CredentialResponseHandler,
@@ -99,14 +100,15 @@ enum class PasskeyCreationEligibility {
 @property(nonatomic, strong) ConsentCoordinator* consentCoordinator;
 
 // Reauthentication Module used for reauthentication.
-@property(nonatomic, strong) ReauthenticationModule* reauthenticationModule;
+@property(nonatomic, strong) id<ReauthenticationProtocol>
+    reauthenticationModule;
 
 // Interface for `reauthenticationModule`, handling mostly the case when no
 // hardware for authentication is available.
 @property(nonatomic, strong) ReauthenticationHandler* reauthenticationHandler;
 
-// Interface for verified that accounts are still valid.
-@property(nonatomic, strong) AccountVerificationProvider* accountVerificator;
+// Interface for verifying that accounts are still valid.
+@property(nonatomic, strong) id<AccountVerificationProvider> accountVerificator;
 
 // Loading indicator used for user validation, which APIs can take a long time.
 @property(nonatomic, strong) UIActivityIndicatorView* activityIndicatorView;
@@ -154,6 +156,16 @@ enum class PasskeyCreationEligibility {
   [self.view addSubview:navigationBar];
   AddSameConstraintsToSides(navigationBar, self.view.safeAreaLayoutGuide,
                             LayoutSides::kTop | LayoutSides::kHorizontal);
+
+  NSNotificationCenter* defaultCenter = [NSNotificationCenter defaultCenter];
+  [defaultCenter addObserver:self
+                    selector:@selector(extensionDidEnterBackground)
+                        name:UIApplicationDidEnterBackgroundNotification
+                      object:nil];
+  [defaultCenter addObserver:self
+                    selector:@selector(extensionDidEnterBackground)
+                        name:NSExtensionHostDidEnterBackgroundNotification
+                      object:nil];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -316,14 +328,6 @@ enum class PasskeyCreationEligibility {
 
 - (void)performPasskeyRegistrationWithoutUserInteractionIfPossible:
     (ASPasskeyCredentialRequest*)registrationRequest {
-  // TODO(crbug.com/515318495): Force disable registration to prevent the CPE
-  // startup crash in M149
-  [self exitWithErrorCode:ASExtensionErrorCodeFailed];
-  return;
-
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunreachable-code"
-
   PasskeyRequestDetails* passkeyRequestDetails =
       [self passkeyDetailsFromConditionalCreateRequest:registrationRequest];
   if (![passkeyRequestDetails
@@ -346,8 +350,6 @@ enum class PasskeyCreationEligibility {
 
   // Try to create a passkey while user interaction is disallowed.
   [self createPasskeyWithDetails:passkeyRequestDetails gaia:gaia];
-
-#pragma clang diagnostic pop
 }
 
 - (void)prepareInterfaceForPasskeyRegistration:
@@ -512,14 +514,14 @@ enum class PasskeyCreationEligibility {
   return _reauthenticationHandler;
 }
 
-- (ReauthenticationModule*)reauthenticationModule {
+- (id<ReauthenticationProtocol>)reauthenticationModule {
   if (!_reauthenticationModule) {
     _reauthenticationModule = [[ReauthenticationModule alloc] init];
   }
   return _reauthenticationModule;
 }
 
-- (AccountVerificationProvider*)accountVerificator {
+- (id<AccountVerificationProvider>)accountVerificator {
   if (!_accountVerificator) {
     _accountVerificator = [[AccountVerificationProvider alloc] init];
   }
@@ -531,6 +533,7 @@ enum class PasskeyCreationEligibility {
     self.passkeyNavigationController = [[UINavigationController alloc] init];
     self.passkeyNavigationController.modalPresentationStyle =
         UIModalPresentationCurrentContext;
+    self.passkeyNavigationController.presentationController.delegate = self;
   }
   return _passkeyNavigationController;
 }
@@ -598,8 +601,7 @@ enum class PasskeyCreationEligibility {
 }
 
 - (void)completeExtensionConfigurationRequest {
-  [self.consentCoordinator stop];
-  self.consentCoordinator = nil;
+  [self cleanUpPresentedUI];
   [self.extensionContext completeExtensionConfigurationRequest];
 }
 
@@ -673,10 +675,6 @@ enum class PasskeyCreationEligibility {
 
 - (void)passkeyWelcomeScreenViewControllerShouldBeDismissed:
     (PasskeyWelcomeScreenViewController*)passkeyWelcomeScreenViewController {
-  if (self.passkeyNavigationController.topViewController ==
-      passkeyWelcomeScreenViewController) {
-    [self.passkeyNavigationController popViewControllerAnimated:YES];
-  }
   [self exitWithErrorCode:ASExtensionErrorCodeUserCanceled];
 }
 
@@ -1002,8 +1000,7 @@ enum class PasskeyCreationEligibility {
 // -completeRequestWithSelectedCredential:completionHandler:.
 - (void)completeRequestWithSelectedCredential:
     (ASPasswordCredential*)credential {
-  [self.listCoordinator stop];
-  self.listCoordinator = nil;
+  [self cleanUpPresentedUI];
   [self.extensionContext completeRequestWithSelectedCredential:credential
                                              completionHandler:nil];
 }
@@ -1012,8 +1009,12 @@ enum class PasskeyCreationEligibility {
 // -completeAssertionRequestWithSelectedPasskeyCredential:completionHandler:.
 - (void)completeAssertionRequestWithSelectedPasskeyCredential:
     (ASPasskeyAssertionCredential*)credential {
-  [self.listCoordinator stop];
-  self.listCoordinator = nil;
+  UpdateHistogramCount(
+      @"PasswordManager.BrowserAssistedLogin.Type",
+      static_cast<int>(
+          password_manager::metrics_util::BrowserAssistedLoginType::
+              kPasskeyStoredInGPMFacilitatedThroughIOSUI));
+  [self cleanUpPresentedUI];
   [self.extensionContext
       completeAssertionRequestWithSelectedPasskeyCredential:credential
                                           completionHandler:nil];
@@ -1023,8 +1024,7 @@ enum class PasskeyCreationEligibility {
 // -completeRegistrationRequestWithSelectedPasskeyCredential:completionHandler:.
 - (void)completeRegistrationRequestWithSelectedPasskeyCredential:
     (ASPasskeyRegistrationCredential*)credential {
-  [self.listCoordinator stop];
-  self.listCoordinator = nil;
+  [self cleanUpPresentedUI];
   [self.extensionContext
       completeRegistrationRequestWithSelectedPasskeyCredential:credential
                                              completionHandler:nil];
@@ -1032,12 +1032,41 @@ enum class PasskeyCreationEligibility {
 
 // Convenience wrapper for -cancelRequestWithError.
 - (void)exitWithErrorCode:(ASExtensionErrorCode)errorCode {
-  [self.listCoordinator stop];
-  self.listCoordinator = nil;
+  [self cleanUpPresentedUI];
   NSError* error = [[NSError alloc] initWithDomain:ASExtensionErrorDomain
                                               code:errorCode
                                           userInfo:nil];
   [self.extensionContext cancelRequestWithError:error];
+}
+
+// Stops observing background notifications, stops active coordinators, and
+// dismisses and clears `passkeyNavigationController` if it was created.
+- (void)cleanUpPresentedUI {
+  NSNotificationCenter* defaultCenter = [NSNotificationCenter defaultCenter];
+  [defaultCenter removeObserver:self
+                           name:UIApplicationDidEnterBackgroundNotification
+                         object:nil];
+  [defaultCenter removeObserver:self
+                           name:NSExtensionHostDidEnterBackgroundNotification
+                         object:nil];
+  [self.consentCoordinator stop];
+  self.consentCoordinator = nil;
+  [self.listCoordinator stop];
+  self.listCoordinator = nil;
+  if (!_passkeyNavigationController) {
+    return;
+  }
+  [_passkeyNavigationController.presentingViewController
+      dismissViewControllerAnimated:NO
+                         completion:nil];
+  _passkeyNavigationController.viewControllers = @[];
+  _passkeyNavigationController = nil;
+}
+
+// Cancels the extension request and cleans up presented coordinators/navigation
+// controllers when the extension enters the background.
+- (void)extensionDidEnterBackground {
+  [self exitWithErrorCode:ASExtensionErrorCodeUserCanceled];
 }
 
 // Displays sheet with information that credential saving is disabled by the
@@ -1376,11 +1405,8 @@ enum class PasskeyCreationEligibility {
   // In this case, all that's left to do is dismiss the bootstrapping UI.
   // Otherwise, it means that the bootstrapping UI hasn't been shown, hence the
   // ConsentViewController needs to be presented.
-  if (self.passkeyNavigationController.visibleViewController) {
-    [self.passkeyNavigationController.presentingViewController
-        dismissViewControllerAnimated:YES
-                           completion:nil];
-    [self.extensionContext completeExtensionConfigurationRequest];
+  if (_passkeyNavigationController.visibleViewController) {
+    [self completeExtensionConfigurationRequest];
   } else {
     [self presentConsentViewController];
   }

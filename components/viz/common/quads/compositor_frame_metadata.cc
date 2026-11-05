@@ -31,12 +31,12 @@ void CompositorFrameMetadata::AsValueInto(
   cc::MathUtil::AddToTracedValue("root_scroll_offset", root_scroll_offset,
                                  value);
   value->SetDouble("page_scale_factor", page_scale_factor);
+  value->SetDouble("surface_backing_size_scale_factor",
+                   surface_backing_size_scale_factor);
   cc::MathUtil::AddToTracedValue("scrollable_viewport_size",
                                  scrollable_viewport_size, value);
   cc::MathUtil::AddToTracedValue("visible_viewport_size", visible_viewport_size,
                                  value);
-  value->SetInteger("content_color_usage",
-                    static_cast<int>(content_color_usage));
   value->SetBoolean("may_contain_video", may_contain_video);
   value->SetBoolean("may_throttle_if_undrawn_frames",
                     may_throttle_if_undrawn_frames);
@@ -58,8 +58,13 @@ void CompositorFrameMetadata::AsValueInto(
   value->EndArray();
 
   value->BeginArray("activation_dependencies");
-  for (const auto& surface_id : activation_dependencies) {
-    value->AppendString(surface_id.ToString());
+  for (const auto& dep : activation_dependencies) {
+    value->BeginDictionary();
+    value->SetString("surface_id", dep.surface_id.ToString());
+    if (dep.deadline_in_frames.has_value()) {
+      value->SetInteger("deadline_in_frames", *dep.deadline_in_frames);
+    }
+    value->EndDictionary();
   }
   value->EndArray();
 
@@ -77,6 +82,11 @@ void CompositorFrameMetadata::AsValueInto(
   if (top_controls_visible_height) {
     value->SetDouble("top_controls_visible_height",
                      *top_controls_visible_height);
+  }
+
+  if (view_transition_deadline_in_frames) {
+    value->SetInteger("view_transition_deadline_in_frames",
+                      *view_transition_deadline_in_frames);
   }
 
   value->SetInteger("display_transform_hint",
@@ -130,9 +140,10 @@ CompositorFrameMetadata::CompositorFrameMetadata(
     : device_scale_factor(other.device_scale_factor),
       root_scroll_offset(other.root_scroll_offset),
       page_scale_factor(other.page_scale_factor),
+      surface_backing_size_scale_factor(
+          other.surface_backing_size_scale_factor),
       scrollable_viewport_size(other.scrollable_viewport_size),
       visible_viewport_size(other.visible_viewport_size),
-      content_color_usage(other.content_color_usage),
       may_contain_video(other.may_contain_video),
       is_handling_interaction(other.is_handling_interaction),
       is_handling_animation(other.is_handling_animation),
@@ -146,9 +157,12 @@ CompositorFrameMetadata::CompositorFrameMetadata(
       send_frame_token_to_embedder(other.send_frame_token_to_embedder),
       min_page_scale_factor(other.min_page_scale_factor),
       top_controls_visible_height(other.top_controls_visible_height),
+      view_transition_deadline_in_frames(
+          other.view_transition_deadline_in_frames),
       display_transform_hint(other.display_transform_hint),
       is_mobile_optimized(other.is_mobile_optimized),
       transition_directives(other.transition_directives),
+      capture_bounds(other.capture_bounds),
       has_shared_element_resources(other.has_shared_element_resources),
       screenshot_destination(other.screenshot_destination),
       is_software(other.is_software),

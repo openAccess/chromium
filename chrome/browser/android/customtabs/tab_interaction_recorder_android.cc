@@ -23,6 +23,7 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/TabInteractionRecorder_jni.h"
@@ -30,7 +31,6 @@
 namespace customtabs {
 
 using autofill::AutofillManager;
-using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 using content::GlobalRenderFrameHostId;
 using content::RenderFrameHost;
@@ -125,7 +125,7 @@ void AutofillObserverImpl::OnAfterFormsSeen(
 
 void AutofillObserverImpl::Invalidate() {
   if (IsInObserverList()) {
-    DCHECK(autofill_manager_);
+    CHECK(autofill_manager_, base::NotFatalUntil::M161);
     autofill_manager_->RemoveObserver(this);
     autofill_manager_ = nullptr;
   }
@@ -151,13 +151,26 @@ bool FormInteractionData::GetHasFormInteractionData() {
   return had_form_interaction_data_;
 }
 
-TabInteractionRecorderAndroid::~TabInteractionRecorderAndroid() = default;
+TabInteractionRecorderAndroid::~TabInteractionRecorderAndroid() {
+  if (!java_obj_.is_null()) {
+    JNIEnv* env = base::android::AttachCurrentThread();
+    Java_TabInteractionRecorder_onNativeDestroyed(env, java_obj_);
+  }
+}
 
 TabInteractionRecorderAndroid::TabInteractionRecorderAndroid(
     content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents),
       content::WebContentsUserData<TabInteractionRecorderAndroid>(
-          *web_contents) {}
+          *web_contents) {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  java_obj_.Reset(
+      Java_TabInteractionRecorder_create(env, jni_zero::MakeRaw(this)));
+}
+
+ScopedJavaLocalRef<jobject> TabInteractionRecorderAndroid::GetJavaObject() {
+  return ScopedJavaLocalRef<jobject>(java_obj_);
+}
 
 bool TabInteractionRecorderAndroid::HasNavigatedFromFirstPage() const {
   return web_contents()->GetController().CanGoBack() ||
@@ -283,22 +296,19 @@ void TabInteractionRecorderAndroid::Reset(JNIEnv* env) {
 
 static ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_GetFromTab(
     JNIEnv* env,
-    const JavaRef<jobject>& jtab) {
-  TabAndroid* tab = TabAndroid::GetNativeTab(env, jtab);
+    TabAndroid* tab) {
   if (!tab || !tab->web_contents() || tab->web_contents()->IsBeingDestroyed()) {
     return nullptr;
   }
 
   auto* recorder =
       TabInteractionRecorderAndroid::FromWebContents(tab->web_contents());
-  return Java_TabInteractionRecorder_create(
-      env, reinterpret_cast<int64_t>(recorder));
+  return recorder ? recorder->GetJavaObject() : nullptr;
 }
 
 static ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_CreateForTab(
     JNIEnv* env,
-    const JavaRef<jobject>& jtab) {
-  TabAndroid* tab = TabAndroid::GetNativeTab(env, jtab);
+    TabAndroid* tab) {
   if (!tab || !tab->web_contents() || tab->web_contents()->IsBeingDestroyed()) {
     return nullptr;
   }
@@ -307,8 +317,7 @@ static ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_CreateForTab(
 
   auto* recorder =
       TabInteractionRecorderAndroid::FromWebContents(tab->web_contents());
-  return Java_TabInteractionRecorder_create(
-      env, reinterpret_cast<int64_t>(recorder));
+  return recorder ? recorder->GetJavaObject() : nullptr;
 }
 
 }  // namespace customtabs

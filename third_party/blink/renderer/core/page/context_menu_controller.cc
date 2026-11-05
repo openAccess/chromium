@@ -85,6 +85,7 @@
 #include "third_party/blink/renderer/core/html/media/html_audio_element.h"
 #include "third_party/blink/renderer/core/html/media/html_media_element.h"
 #include "third_party/blink/renderer/core/html/media/html_video_element.h"
+#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/input/context_menu_allowed_scope.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
 #include "third_party/blink/renderer/core/input_type_names.h"
@@ -100,6 +101,7 @@
 #include "third_party/blink/renderer/platform/exported/wrapped_resource_response.h"
 #include "third_party/blink/renderer/platform/graphics/dom_node_id.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_view.h"
 #include "ui/base/mojom/menu_source_type.mojom-blink.h"
 
 namespace blink {
@@ -443,6 +445,24 @@ static gfx::Rect ComputeSelectionRect(LocalFrame* selected_frame) {
   return combined_rect;
 }
 
+static gfx::Rect ComputeImageBounds(Element* element,
+                                    LocalFrame* selected_frame) {
+  element->GetDocument().UpdateStyleAndLayoutForNode(
+      element, DocumentUpdateReason::kContextMenu);
+  gfx::Rect bounds = element->VisibleBoundsRespectingClipsInLocalRoot();
+  if (selected_frame->LocalFrameRoot().IsOutermostMainFrame()) {
+    VisualViewport& visual_viewport =
+        selected_frame->GetPage()->GetVisualViewport();
+
+    gfx::Rect rect_in_visual_viewport =
+        visual_viewport.RootFrameToViewport(bounds);
+    rect_in_visual_viewport.Intersect(gfx::Rect(visual_viewport.Size()));
+    return rect_in_visual_viewport;
+  }
+
+  return bounds;
+}
+
 bool ContextMenuController::ShouldShowContextMenuFromTouch(
     const ContextMenuData& data) {
   return page_->GetSettings().GetAlwaysShowContextMenuOnTouch() ||
@@ -686,8 +706,14 @@ bool ContextMenuController::ShowContextMenu(
                 ContextMenuData::kCheckableMenuItemDisabled;
           }
         }
-        // Disable translation for plugins.
-        data.edit_flags &= ~ContextMenuDataEditFlags::kCanTranslate;
+        // Disable translation for plugins, except for the PDF viewer.
+        const AtomicString& plugin_type =
+            plugin_element->FastGetAttribute(html_names::kTypeAttr);
+        if (!EqualIgnoringAsciiCase(plugin_type, "application/pdf") &&
+            !EqualIgnoringAsciiCase(plugin_type,
+                                    "application/x-google-chrome-pdf")) {
+          data.edit_flags &= ~ContextMenuDataEditFlags::kCanTranslate;
+        }
 
         // Figure out the media flags.
         data.media_flags |= ContextMenuData::kMediaCanSave;
@@ -713,14 +739,13 @@ bool ContextMenuController::ShowContextMenu(
     if (potential_image_node != nullptr &&
         IsA<HTMLCanvasElement>(potential_image_node)) {
       data.media_type = mojom::blink::ContextMenuDataMediaType::kCanvas;
+      const auto* canvas = To<HTMLCanvasElement>(potential_image_node);
+      data.has_image_contents = canvas->OriginClean();
 #if BUILDFLAG(IS_LINUX)
       // TODO(crbug.com/40902474): Support reading from the WebGPU front buffer
       // on Linux and remove the below code, which results in "Copy Image" and
       // "Save Image To" being grayed out in the context menu.
-      data.has_image_contents =
-          !To<HTMLCanvasElement>(potential_image_node)->IsWebGPU();
-#else
-      data.has_image_contents = true;
+      data.has_image_contents &= !canvas->IsWebGPU();
 #endif
     } else if (potential_image_node != nullptr &&
                !HitTestResult::AbsoluteImageURL(potential_image_node)
@@ -730,6 +755,9 @@ bool ContextMenuController::ShowContextMenu(
       data.media_type = mojom::blink::ContextMenuDataMediaType::kImage;
       data.media_flags |= ContextMenuData::kMediaCanPrint;
       data.has_image_contents = HitTestResult::GetImage(potential_image_node);
+      if (auto* element = DynamicTo<Element>(potential_image_node)) {
+        data.image_bounds = ComputeImageBounds(element, selected_frame);
+      }
       if (auto* image_element =
               DynamicTo<HTMLImageElement>(potential_image_node)) {
         data.image_replacement_frame_token =

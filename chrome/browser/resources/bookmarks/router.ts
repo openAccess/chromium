@@ -11,6 +11,7 @@ import {selectFolder, setSearchTerm} from './actions.js';
 import {ROOT_NODE_ID} from './constants.js';
 import {Store} from './store.js';
 import type {BookmarksPageState} from './types.js';
+import {findIdByLegacyId} from './util.js';
 
 /**
  * This element is a one way bound interface that routes the page URL to
@@ -20,6 +21,8 @@ import type {BookmarksPageState} from './types.js';
 export class BookmarksRouter implements StoreObserver<BookmarksPageState> {
   private searchTerm_: string = '';
   private selectedId_: string = '';
+  // The id shown in the URL for `selectedId_`. See `getUrlId_()`.
+  private selectedUrlId_: string = '';
   private defaultId_: string = '';
   private updateStateTimeout_: number|null = null;
   private tracker_: EventTracker = new EventTracker();
@@ -61,13 +64,22 @@ export class BookmarksRouter implements StoreObserver<BookmarksPageState> {
       Store.getInstance().dispatch(setSearchTerm(searchTerm));
     }
 
-    if (selectedId && selectedId !== this.selectedId_) {
+    if (selectedId && selectedId !== this.selectedId_ &&
+        selectedId !== this.selectedUrlId_) {
       this.selectedId_ = selectedId;
+      this.selectedUrlId_ = selectedId;
       // Need to dispatch a deferred action so that during page load
       // `Store.getInstance().data` will only evaluate after the Store is
       // initialized.
       Store.getInstance().dispatchAsync((dispatch) => {
-        const action = selectFolder(selectedId, Store.getInstance().data.nodes);
+        const nodes = Store.getInstance().data.nodes;
+        // The browser (e.g. the bookmark bar context menu) and older saved
+        // URLs refer to folders by their legacy numeric id. Map those to the
+        // UUID-based ids used by the store.
+        const resolvedId = nodes[selectedId] ?
+            selectedId :
+            (findIdByLegacyId(nodes, selectedId) ?? selectedId);
+        const action = selectFolder(resolvedId, nodes);
         if (action) {
           dispatch(action);
         }
@@ -77,6 +89,7 @@ export class BookmarksRouter implements StoreObserver<BookmarksPageState> {
 
   onStateChanged(state: BookmarksPageState) {
     this.selectedId_ = state.selectedFolder;
+    this.selectedUrlId_ = this.getUrlId_(state, state.selectedFolder);
     this.searchTerm_ = state.search.term;
     // Default to the first child of root, which could be
     // ACCOUNT_HEADING_NODE_ID, the local bookmark bar, or the account bookmark
@@ -89,6 +102,23 @@ export class BookmarksRouter implements StoreObserver<BookmarksPageState> {
     this.updateStateTimeout_ = setTimeout(() => this.updateQueryParams_(), 0);
   }
 
+  /**
+   * Returns the id to show in the URL for the node with store id `id`.
+   *
+   * IMPORTANT: chrome://bookmarks/?id=<numeric id> is effectively a public
+   * API and must not change. Users bookmark and share these URLs, and
+   * automation reads the id from the URL and passes it to the
+   * chrome.bookmarks extension API, which uses the same numeric ids. The
+   * UUID-based store ids are an implementation detail and must not leak into
+   * the URL. This is covered by end-to-end browser tests.
+   *
+   * Nodes without a numeric id (e.g. the synthetic account/local headings)
+   * fall back to their store id.
+   */
+  private getUrlId_(state: BookmarksPageState, id: string): string {
+    return String(state.nodes[id]?.legacyId ?? id);
+  }
+
   private updateQueryParams_() {
     assert(this.updateStateTimeout_);
     clearTimeout(this.updateStateTimeout_);
@@ -98,7 +128,7 @@ export class BookmarksRouter implements StoreObserver<BookmarksPageState> {
     if (this.searchTerm_) {
       queryParams.set('q', this.searchTerm_);
     } else if (this.selectedId_ !== this.defaultId_) {
-      queryParams.set('id', this.selectedId_);
+      queryParams.set('id', this.selectedUrlId_);
     }
     CrRouter.getInstance().setQueryParams(queryParams);
   }

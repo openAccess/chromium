@@ -94,9 +94,6 @@ class PLATFORM_EXPORT ExceptionState {
   NOINLINE void ThrowTypeError(const String& message);
   NOINLINE void ThrowSyntaxError(const String& message);
 
-  // Throws WebAssembly Error object.
-  NOINLINE void ThrowWasmCompileError(const String& message);
-
   // These overloads reduce the binary code size because the call sites do not
   // need the conversion by String::String(const char*) that is inlined at each
   // call site. As there are many call sites that pass in a const char*, this
@@ -108,7 +105,6 @@ class PLATFORM_EXPORT ExceptionState {
   NOINLINE void ThrowRangeError(const char* message);
   NOINLINE void ThrowTypeError(const char* message);
   NOINLINE void ThrowSyntaxError(const char* message);
-  NOINLINE void ThrowWasmCompileError(const char* message);
 
   // Report the given value as the exception being thrown, but rethrow it
   // immediately via the v8::TryCatch instead of in the destructor.
@@ -126,9 +122,7 @@ class PLATFORM_EXPORT ExceptionState {
 
   // A helper for correctly asserting no pending v8 exception (which,
   // as it happens, involved properly excluding a termination exception).
-  static void AssertNoPendingException(v8::Isolate* isolate) {
-    CHECK(!isolate->HasPendingException() || isolate->IsExecutionTerminating());
-  }
+  static void AssertNoPendingException(v8::Isolate* isolate);
 
  protected:
   // Delegated constructor for NonThrowableExceptionState

@@ -35,9 +35,12 @@ if (is_android) {
     sources = [ "tips_agent_android_unittest.cc" ]
     deps = [
       "//base",
+      "//chrome/browser/flags:flags_android",
       "//chrome/browser/notifications/scheduler/public",
       "//chrome/browser/notifications/scheduler/test:test_support",
       "//chrome/browser/segmentation_platform",
+      "//chrome/browser/tips",
+      "//chrome/browser/tips/core",
       "//chrome/test:test_support",
       "//components/prefs:test_support",
       "//components/segmentation_platform/public",
@@ -75,9 +78,7 @@ if (!is_android) {
       "//chrome/browser/notifications/scheduler/public",
       "//chrome/browser/notifications/scheduler/test:test_support",
       "//chrome/browser/profiles:profile",
-      "//chrome/browser/ui",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//content/test:test_support",
       "//testing/gtest",
     ]

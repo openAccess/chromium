@@ -1,9 +1,9 @@
 // Copyright 2025 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-import {html, nothing} from '//resources/lit/v3_0/lit.rollup.js';
+import {html, nothing} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import {IconType} from 'chrome://resources/mojo/components/omnibox/browser/suggest_template_info.mojom-webui.js';
 
-import {IconType} from '../action_chips.mojom-webui.js';
 import type {ActionChip} from '../action_chips.mojom-webui.js';
 
 import {type ActionChipsElement} from './action_chips.js';
@@ -36,9 +36,11 @@ export function getHtml(this: ActionChipsElement) {
                         html`<img class='action-chip-recent-tab-favicon'
                     src="${this.getMostRecentTabFaviconUrl_(chip)}">` :
                         ''}
+              ${this.getIcon_(chip) ? html`
+                <cr-icon icon="${this.getIcon_(chip)}"></cr-icon>` : ''}
             </div>
             <div class="action-chip-text-container">
-              ${chip.suggestTemplateInfo.primaryText ?
+              ${chip.suggestTemplateInfo.primaryText.text ?
                   html`
                   <span class="chip-title">
                     ${chip.suggestTemplateInfo.primaryText.text}

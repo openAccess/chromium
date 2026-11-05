@@ -21,7 +21,8 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.BrowserRestartActivity;
 import org.chromium.chrome.browser.lifetime.ApplicationLifetime;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.SessionStartupPolicy;
-import org.chromium.chrome.browser.multiwindow.TabbedStartupWindowPolicyDelegate;
+import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
+import org.chromium.chrome.browser.multiwindow.TabbedStartupCoordinator;
 
 /**
  * Answers requests to kill and (potentially) restart Chrome's main browser process.
@@ -76,14 +77,23 @@ class ChromeLifetimeController
         // If the app is deterministically terminating (e.g. via an explicit restart or quit
         // request), maybe persist the session state so that it can be restored on next launch
         // when applicable.
-        TabbedStartupWindowPolicyDelegate.getInstance()
-                .maybeSaveSessionStateOnTermination(SessionStartupPolicy.RESTORE_ALL);
+        TabbedStartupCoordinator.onSessionTerminated(SessionStartupPolicy.RESTORE_ALL);
 
-        // Tell all Chrome Activities to finish themselves.
+        // Tell all Chrome Activities to finish themselves. When startup window policy is enabled,
+        // the feature supports restoring all windows/tasks on subsequent launch, making it safe to
+        // remove tasks from Android Recents so they do not linger as stray tasks or interfere with
+        // instance allocation on restart.
+        boolean removeTask =
+                MultiWindowUtils.isNewStartupWindowPolicyEnabled()
+                        || MultiWindowUtils.isRestoreOnStartupPrefSupported();
         for (Activity activity : ApplicationStatus.getRunningActivities()) {
             ApplicationStatus.registerStateListenerForActivity(this, activity);
             mRemainingActivitiesCount++;
-            activity.finish();
+            if (removeTask) {
+                activity.finishAndRemoveTask();
+            } else {
+                activity.finish();
+            }
         }
 
         if (BuildCompat.isAtLeastV()) {
@@ -92,8 +102,7 @@ class ChromeLifetimeController
             mHandler.post(mRestartRunnable);
         } else {
             // Kick off a timer to kill the process after a delay, which fires only if the
-            // Activities
-            // take too long to be finished.
+            // Activities take too long to be finished.
             mHandler.postDelayed(mRestartRunnable, WATCHDOG_DELAY_MS);
         }
     }

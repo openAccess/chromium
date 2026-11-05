@@ -10,6 +10,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/command_line.h"
@@ -20,7 +21,6 @@
 #include "base/hash/hash.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
-#include "base/no_destructor.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/threading/thread_restrictions.h"
@@ -261,6 +261,8 @@ class SimplePolicyPrefMappingTest {
 
     const std::string* location = test.FindString("pref_location");
     const base::DictValue* policy_settings = test.FindDict("policy_settings");
+    const base::ListValue* required_buildflags =
+        test.FindList("required_buildflags");
 
     const base::Value* default_value = test.Find("default_value");
     const base::Value* default_for_enterprise_users = nullptr;
@@ -307,6 +309,10 @@ class SimplePolicyPrefMappingTest {
       default_value_prefs_dict.Set(*pref_name,
                                    std::move(default_value_pref_dict));
       default_value_test_dict.Set("prefs", std::move(default_value_prefs_dict));
+      if (required_buildflags) {
+        default_value_test_dict.Set("required_buildflags",
+                                    required_buildflags->Clone());
+      }
       policy_pref_mapping_test_dicts_.push_back(
           std::move(default_value_test_dict));
     }
@@ -331,6 +337,10 @@ class SimplePolicyPrefMappingTest {
       }
       value_prefs_dict.Set(*pref_name, std::move(value_pref_dict));
       value_test_dict.Set("prefs", std::move(value_prefs_dict));
+      if (required_buildflags) {
+        value_test_dict.Set("required_buildflags",
+                            required_buildflags->Clone());
+      }
       policy_pref_mapping_test_dicts_.push_back(std::move(value_test_dict));
     }
   }
@@ -346,17 +356,32 @@ class SimplePolicyPrefMappingTest {
 // Populates buildflags as strings that policy pref mapping test cases
 // can depend on and implements a check if such a test case should run according
 // to the buildflags.
-bool CheckRequiredBuildFlagsSupported(const PolicyPrefMappingTest* test) {
-  static base::NoDestructor<base::flat_set<std::string>> kBuildFlags([] {
-    base::flat_set<std::string> flags;
-#if BUILDFLAG(USE_CUPS)
-    flags.insert("USE_CUPS");
-#endif
-    return flags;
-  }());
+bool CheckRequiredBuildFlagsSupported(
+    const PolicyPrefMappingTest* test,
+    base::span<const PolicyPrefMappingBuildFlag> embedder_buildflags) {
+  static constexpr PolicyPrefMappingBuildFlag kPolicyBuildFlags[] = {
+      {"USE_CUPS", BUILDFLAG(USE_CUPS)},
+  };
 
-  for (const auto& required_buildflag : test->required_buildflags()) {
-    if (!kBuildFlags->contains(required_buildflag)) {
+  for (const std::string& required_buildflag : test->required_buildflags()) {
+    auto buildflag = std::ranges::find(kPolicyBuildFlags, required_buildflag,
+                                       &PolicyPrefMappingBuildFlag::name);
+    if (buildflag != std::ranges::end(kPolicyBuildFlags)) {
+      if (!buildflag->enabled) {
+        return false;
+      }
+      continue;
+    }
+
+    auto embedder_buildflag =
+        std::ranges::find(embedder_buildflags, required_buildflag,
+                          &PolicyPrefMappingBuildFlag::name);
+    if (embedder_buildflag == embedder_buildflags.end()) {
+      ADD_FAILURE() << "Unknown required buildflag '" << required_buildflag
+                    << "'";
+      return false;
+    }
+    if (!embedder_buildflag->enabled) {
       return false;
     }
   }
@@ -426,26 +451,30 @@ class PolicyTestCase {
   bool IsOsSupported() const {
 #if BUILDFLAG(IS_DESKTOP_ANDROID)
     // For prefs testing desktop Android is considered a separate OS because it
-    // registers some additional prefs (e.g. extensions prefs).
-    const std::string os("desktop_android");
+    // registers some additional prefs (e.g. extensions prefs). It also runs
+    // test cases for "android".
+    static constexpr std::string_view kOsList[] = {"desktop_android",
+                                                   "android"};
 #elif BUILDFLAG(IS_ANDROID)
-    const std::string os("android");
+    static constexpr std::string_view kOsList[] = {"android"};
 #elif BUILDFLAG(IS_CHROMEOS)
-    const std::string os("chromeos");
+    static constexpr std::string_view kOsList[] = {"chromeos"};
 #elif BUILDFLAG(IS_IOS)
-    const std::string os("ios");
+    static constexpr std::string_view kOsList[] = {"ios"};
 #elif BUILDFLAG(IS_LINUX)
-    const std::string os("linux");
+    static constexpr std::string_view kOsList[] = {"linux"};
 #elif BUILDFLAG(IS_MAC)
-    const std::string os("mac");
+    static constexpr std::string_view kOsList[] = {"mac"};
 #elif BUILDFLAG(IS_WIN)
-    const std::string os("win");
+    static constexpr std::string_view kOsList[] = {"win"};
 #elif BUILDFLAG(IS_FUCHSIA)
-    const std::string os("fuchsia");
+    static constexpr std::string_view kOsList[] = {"fuchsia"};
 #else
 #error "Unknown platform"
 #endif
-    return std::ranges::contains(supported_os_, os);
+    return std::ranges::any_of(kOsList, [this](std::string_view os) {
+      return std::ranges::contains(supported_os_, os);
+    });
   }
 
   bool IsOsCovered() const {
@@ -678,12 +707,14 @@ void VerifyAllPoliciesHaveATestCase(const base::FilePath& test_case_dir) {
 
 // Verifies that policies make their corresponding preferences become managed,
 // and that the user can't override that setting.
-void VerifyPolicyToPrefMappings(const base::FilePath& test_case_dir,
-                                PrefService* local_state,
-                                PrefService* user_prefs,
-                                PrefService* signin_profile_prefs,
-                                MockConfigurationPolicyProvider* provider,
-                                PrefMappingChunkInfo* chunk_info) {
+void VerifyPolicyToPrefMappings(
+    const base::FilePath& test_case_dir,
+    PrefService* local_state,
+    PrefService* user_prefs,
+    PrefService* signin_profile_prefs,
+    MockConfigurationPolicyProvider* provider,
+    PrefMappingChunkInfo* chunk_info,
+    base::span<const PolicyPrefMappingBuildFlag> embedder_buildflags) {
   Schema chrome_schema = Schema::Wrap(GetChromeSchemaData());
   ASSERT_TRUE(chrome_schema.valid());
 
@@ -738,7 +769,8 @@ void VerifyPolicyToPrefMappings(const base::FilePath& test_case_dir,
             << "Test #" << i << " for " << policy_name << " is missing pref "
             << "values to check for";
 
-        if (!CheckRequiredBuildFlagsSupported(pref_mapping.get())) {
+        if (!CheckRequiredBuildFlagsSupported(pref_mapping.get(),
+                                              embedder_buildflags)) {
           LOG(INFO) << "Test #" << i << " for " << policy_name << " skipped "
                     << "due to buildflags";
           continue;

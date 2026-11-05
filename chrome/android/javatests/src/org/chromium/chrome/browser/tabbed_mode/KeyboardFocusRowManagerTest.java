@@ -26,19 +26,23 @@ import org.junit.runner.RunWith;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.CallbackUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.DisabledTest;
+import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
+import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils.BookmarkBarSettingChangeOrigin;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.OverrideContextWrapperTestRule;
@@ -46,6 +50,11 @@ import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.ReusedCtaTransitTestRule;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.components.bookmarks.BookmarkBarVisibilityState;
+import org.chromium.components.messages.DismissReason;
+import org.chromium.components.messages.MessageBannerProperties;
+import org.chromium.components.messages.MessageDispatcher;
+import org.chromium.components.messages.MessageDispatcherProvider;
 import org.chromium.ui.accessibility.KeyboardFocusRow;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -92,11 +101,12 @@ public class KeyboardFocusRowManagerTest {
                 (TabbedRootUiCoordinator) mActivity.getRootUiCoordinatorForTesting();
         mKeyboardFocusRowManager = mTabbedRootUiCoordinator.getKeyboardFocusRowManagerForTesting();
         mOverrideContextRule.setIsDesktop(true);
+        setShowBookmarksBar(false);
     }
 
     @After
     public void tearDown() {
-        setUserPrefsShowBookmarksBar(false);
+        setShowBookmarksBar(false);
     }
 
     @Test
@@ -115,6 +125,7 @@ public class KeyboardFocusRowManagerTest {
     @Test
     @SmallTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     @Feature("KeyboardShortcuts")
     public void testSwitchKeyboardFocusRow_withTabletTabStrip() {
         // Put something in the content view so we can focus on it.
@@ -155,7 +166,7 @@ public class KeyboardFocusRowManagerTest {
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
     @Feature("KeyboardShortcuts")
     public void testSwitchKeyboardFocusRow_withBookmarksBarOnly() {
-        setUserPrefsShowBookmarksBar(true);
+        setShowBookmarksBar(true);
 
         // Put something in the content view so we can focus on it.
         openNewTabAndFocusContent();
@@ -183,7 +194,8 @@ public class KeyboardFocusRowManagerTest {
     @Feature("KeyboardShortcuts")
     @EnableFeatures({
         ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL,
-        ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_DEV_FEATURE
+        ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_DEV_FEATURE,
+        ChromeFeatureList.BOOKMARKS_BAR_NTP
     })
     public void testSwitchKeyboardFocusRow_withSidePanelOnly() {
         ThreadUtils.runOnUiThreadBlocking(
@@ -215,15 +227,15 @@ public class KeyboardFocusRowManagerTest {
 
     @Test
     @SmallTest
-    @DisabledTest(message = "crbug.com/543500090")
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
     @Feature("KeyboardShortcuts")
     @EnableFeatures({
         ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL,
         ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_DEV_FEATURE
     })
+    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/543500090
     public void testSwitchKeyboardFocusRow_withBookmarksBarAndSidePanel() {
-        setUserPrefsShowBookmarksBar(true);
+        setShowBookmarksBar(true);
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> mTabbedRootUiCoordinator.getSidePanelDevFeatureForTesting().toggle());
@@ -262,10 +274,11 @@ public class KeyboardFocusRowManagerTest {
     @Feature("KeyboardShortcuts")
     @EnableFeatures({
         ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL,
-        ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_DEV_FEATURE
+        ChromeFeatureList.ENABLE_ANDROID_SIDE_PANEL_DEV_FEATURE,
+        ChromeFeatureList.BOOKMARKS_BAR_NTP
     })
     public void testSwitchKeyboardFocusRow_withBookmarksBarOnly_sidePanelFeatureEnabled() {
-        setUserPrefsShowBookmarksBar(true);
+        setShowBookmarksBar(true);
 
         // Put something in the content view so we can focus on it.
         openNewTabAndFocusContent();
@@ -292,7 +305,7 @@ public class KeyboardFocusRowManagerTest {
     @Feature("KeyboardShortcuts")
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
     public void testSwitchKeyboardFocusRow_withBookmarkBarFocus() {
-        setUserPrefsShowBookmarksBar(true);
+        setShowBookmarksBar(true);
 
         ThreadUtils.runOnUiThreadBlocking(
                 mTabbedRootUiCoordinator::initializeBookmarkBarCoordinatorForTesting);
@@ -318,6 +331,58 @@ public class KeyboardFocusRowManagerTest {
     @SmallTest
     @Feature("KeyboardShortcuts")
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    public void testSwitchKeyboardFocusRow_withMessages() {
+        // Put something in the content view so we can focus on it.
+        openNewTabAndFocusContent();
+
+        PropertyModel model = enqueueMessage();
+
+        // Switch the first time -> MESSAGE.
+        switchRow();
+        assertOnMessage();
+
+        // Switch a 2nd time -> OMNIBOX.
+        switchRow();
+        assertOnOmnibox();
+
+        // Switch a 3rd time -> TAB_STRIP.
+        switchRow();
+        assertOnTabStrip();
+
+        // Switch a 4th time -> NONE.
+        switchRow();
+        assertOnNone();
+
+        // Clean up message.
+        dismissMessage(model);
+    }
+
+    @Test
+    @SmallTest
+    @Feature("KeyboardShortcuts")
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    public void testSwitchKeyboardFocusRow_withMessages_reverse() {
+        // Put something in the content view so we can focus on it.
+        openNewTabAndFocusContent();
+
+        PropertyModel model = enqueueMessage();
+
+        // Switch forward to MESSAGE.
+        switchRow();
+        assertOnMessage();
+
+        // Switch in reverse back to NONE.
+        switchRowBackward();
+        assertOnNone();
+
+        // Clean up message.
+        dismissMessage(model);
+    }
+
+    @Test
+    @SmallTest
+    @Feature("KeyboardShortcuts")
+    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
     public void testSkipStripIfHidden() {
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
@@ -336,6 +401,13 @@ public class KeyboardFocusRowManagerTest {
         // Switch a 2nd time.
         switchRow();
         assertOnNone();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        mActivity
+                                .getLayoutManager()
+                                .getStripLayoutHelperManager()
+                                .setIsTabStripHiddenByHeightTransition(false));
     }
 
     @Test
@@ -429,6 +501,24 @@ public class KeyboardFocusRowManagerTest {
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
     }
 
+    private void switchRowBackward() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        mActivity.onMenuOrKeyboardAction(
+                                R.id.switch_keyboard_focus_row_reverse, false));
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+    }
+
+    private void assertOnMessage() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        assertEquals(
+                                "Expected focus to be on message after invocation of keyboard"
+                                        + " focus row switch",
+                                KeyboardFocusRow.MESSAGE,
+                                mKeyboardFocusRowManager.getKeyboardFocusRowForTesting()));
+    }
+
     private void assertOnOmnibox() {
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
@@ -479,12 +569,64 @@ public class KeyboardFocusRowManagerTest {
                                 mKeyboardFocusRowManager.getKeyboardFocusRowForTesting()));
     }
 
-    private void setUserPrefsShowBookmarksBar(boolean showBookmarksBar) {
+    private PropertyModel enqueueMessage() {
+        PropertyModel model =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () ->
+                                new PropertyModel.Builder(MessageBannerProperties.ALL_KEYS)
+                                        .with(MessageBannerProperties.TITLE, "Test title")
+                                        .with(MessageBannerProperties.PRIMARY_BUTTON_TEXT, "Action")
+                                        .with(
+                                                MessageBannerProperties.ON_DISMISSED,
+                                                CallbackUtils.emptyCallback())
+                                        .build());
+        MessageDispatcher messageDispatcher =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> MessageDispatcherProvider.from(mActivity.getWindowAndroid()));
         ThreadUtils.runOnUiThreadBlocking(
-                () ->
+                () -> messageDispatcher.enqueueWindowScopedMessage(model, true));
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    var coordinator =
+                            mTabbedRootUiCoordinator.getMessageContainerCoordinatorForTesting();
+                    return coordinator != null && coordinator.isVisible();
+                });
+        return model;
+    }
+
+    private void dismissMessage(PropertyModel model) {
+        MessageDispatcher messageDispatcher =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> MessageDispatcherProvider.from(mActivity.getWindowAndroid()));
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> messageDispatcher.dismissMessage(model, DismissReason.DISMISSED_BY_FEATURE));
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    var coordinator =
+                            mTabbedRootUiCoordinator.getMessageContainerCoordinatorForTesting();
+                    return coordinator == null || !coordinator.isVisible();
+                });
+    }
+
+    private void setShowBookmarksBar(boolean showBookmarksBar) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    Profile profile =
+                            mActivity.getProfileProviderSupplier().get().getOriginalProfile();
+                    if (ChromeFeatureList.isEnabled(ChromeFeatureList.BOOKMARKS_BAR_NTP)) {
+                        BookmarkBarUtils.setBookmarkBarVisibilityState(
+                                profile,
+                                showBookmarksBar
+                                        ? BookmarkBarVisibilityState.ALWAYS_SHOW
+                                        : BookmarkBarVisibilityState.ALWAYS_HIDE,
+                                BookmarkBarSettingChangeOrigin.APPEARANCE_SETTINGS);
+                    } else if (BookmarkBarUtils.shouldUseProfileUserPrefs()) {
                         BookmarkBarUtils.setUserPrefsShowBookmarksBar(
-                                mActivity.getProfileProviderSupplier().get().getOriginalProfile(),
-                                showBookmarksBar,
-                                /* fromKeyboardShortcut= */ false));
+                                profile, showBookmarksBar, /* fromKeyboardShortcut= */ false);
+                    } else {
+                        BookmarkBarUtils.setDevicePrefShowBookmarksBar(
+                                showBookmarksBar, /* fromKeyboardShortcut= */ false);
+                    }
+                });
     }
 }

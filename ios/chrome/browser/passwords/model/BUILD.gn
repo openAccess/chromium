@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-source_set("model") {
+source_set("password_check_manager") {
   sources = [
     "ios_chrome_bulk_leak_check_service_factory.h",
     "ios_chrome_bulk_leak_check_service_factory.mm",
@@ -10,6 +10,35 @@ source_set("model") {
     "ios_chrome_password_check_manager.mm",
     "ios_chrome_password_check_manager_factory.h",
     "ios_chrome_password_check_manager_factory.mm",
+  ]
+  public_deps = [
+    ":store_factory",
+    "//base",
+    "//components/keyed_service/core",
+    "//components/password_manager/core/browser",
+    "//ios/chrome/browser/shared/model/profile",
+  ]
+  deps = [
+    ":features",
+    ":password_checkup_metrics",
+    "//components/autofill/core/common",
+    "//components/password_manager/core/browser/affiliation:affiliation_fetching",
+    "//components/password_manager/core/browser/leak_detection",
+    "//components/password_manager/core/common",
+    "//components/prefs",
+    "//ios/chrome/app:tests_hook",
+    "//ios/chrome/browser/affiliations/model",
+    "//ios/chrome/browser/shared/model/application_context",
+    "//ios/chrome/browser/shared/model/profile:profile_keyed_service_factory",
+    "//ios/chrome/browser/signin/model",
+    "//ios/chrome/browser/sync/model",
+    "//ios/chrome/browser/webauthn/model",
+    "//ios/chrome/browser/webdata_services/model",
+  ]
+}
+
+source_set("model") {
+  sources = [
     "ios_chrome_password_manager_client.h",
     "ios_chrome_password_manager_client.mm",
     "ios_chrome_password_reuse_detection_manager_client.h",
@@ -32,8 +61,6 @@ source_set("model") {
     "password_manager_log_router_factory.h",
     "password_manager_util_ios.cc",
     "password_manager_util_ios.h",
-    "password_native_keystroke_autologin.h",
-    "password_native_keystroke_autologin.mm",
     "password_store_observer_bridge.h",
     "password_store_observer_bridge.mm",
     "password_tab_helper.h",
@@ -90,6 +117,9 @@ source_set("model") {
     "//ios/chrome/browser/infobars/model",
     "//ios/chrome/browser/infobars/model:public",
     "//ios/chrome/browser/infobars/ui_bundled/coordinators",
+    "//ios/chrome/browser/intelligence/actor/model:tab_helper",
+    "//ios/chrome/browser/intelligence/actor/public:actor_control_state",
+    "//ios/chrome/browser/level_up/model",
     "//ios/chrome/browser/metrics/model:profile_metrics_service_factory",
     "//ios/chrome/browser/optimization_guide/model",
     "//ios/chrome/browser/passwords/infobars/model",
@@ -118,13 +148,42 @@ source_set("model") {
     "//ios/web/common",
     "//ios/web/public/js_messaging",
     "//net",
+    "//services/metrics/public/cpp:metrics_cpp",
+    "//services/metrics/public/cpp:ukm_builders",
     "//ui/base",
     "//url",
   ]
   public_deps = [
+    ":password_check_manager",
     ":password_controller_delegate",
     ":store_factory",
   ]
+}
+
+# TODO(crbug.com/571972390): Move this target out of `model/` into a
+# coordinator/UI target since it inspects UIKit responder state.
+source_set("native_keystroke_autologin") {
+  visibility = [
+    ":*",
+    "//ios/chrome/browser/intelligence/actor/tools/model:*",
+    "//ios/chrome/browser/passwords/bottom_sheet/coordinator:*",
+  ]
+  sources = [
+    "password_native_keystroke_autologin.h",
+    "password_native_keystroke_autologin.mm",
+  ]
+  public_deps = [
+    "//base",
+    "//components/autofill/core/common",
+  ]
+  deps = [
+    "//components/password_manager/ios",
+    "//components/password_manager/ios:features",
+    "//ios/chrome/browser/shared/ui/util",
+    "//ios/web/public",
+    "//ios/web/public/js_messaging",
+  ]
+  frameworks = [ "UIKit.framework" ]
 }
 
 source_set("password_controller_delegate") {
@@ -228,12 +287,14 @@ source_set("unit_tests") {
     "password_checkup_utils_unittest.mm",
     "password_controller_js_unittest.mm",
     "password_controller_unittest.mm",
+    "password_native_keystroke_autologin_unittest.mm",
     "password_tab_helper_unittest.mm",
     "well_known_change_password_tab_helper_unittest.mm",
   ]
   deps = [
     ":features",
     ":model",
+    ":native_keystroke_autologin",
     ":password_checkup_metrics",
     "//base",
     "//base/test:test_support",
@@ -255,6 +316,7 @@ source_set("unit_tests") {
     "//components/password_manager/core/browser/leak_detection:test_support",
     "//components/password_manager/core/common",
     "//components/password_manager/ios",
+    "//components/password_manager/ios:features",
     "//components/password_manager/ios:test_support",
     "//components/prefs",
     "//components/prefs:test_support",
@@ -275,6 +337,8 @@ source_set("unit_tests") {
     "//ios/chrome/browser/autofill/ui_bundled:coordinator",
     "//ios/chrome/browser/enterprise/connectors/reporting",
     "//ios/chrome/browser/infobars/model",
+    "//ios/chrome/browser/intelligence/actor/model:tab_helper",
+    "//ios/chrome/browser/intelligence/actor/public:actor_control_state",
     "//ios/chrome/browser/passwords/infobars/model",
     "//ios/chrome/browser/passwords/model:store_factory",
     "//ios/chrome/browser/passwords/password_suggestion/ui:password_suggestion_utils",
@@ -282,6 +346,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/browser/shared/model/profile/test",
     "//ios/chrome/browser/shared/public/commands",
+    "//ios/chrome/browser/shared/ui/util",
     "//ios/chrome/browser/sync/model",
     "//ios/chrome/browser/sync/model:test_support",
     "//ios/chrome/browser/web/model:web_internal",
@@ -295,6 +360,7 @@ source_set("unit_tests") {
     "//ios/web/public/test/fakes",
     "//net:test_support",
     "//services/metrics/public/cpp:metrics_cpp",
+    "//services/metrics/public/cpp:ukm_builders",
     "//services/network:test_support",
     "//testing/gtest",
     "//third_party/ocmock",
@@ -323,7 +389,6 @@ source_set("eg2_tests") {
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/authentication/test:eg_test_support+eg2",
     "//ios/chrome/browser/autofill/ui_bundled:eg_test_support+eg2",
-    "//ios/chrome/browser/badges/model:features",
     "//ios/chrome/browser/badges/ui_bundled:public",
     "//ios/chrome/browser/infobars/ui_bundled/banners:public",
     "//ios/chrome/browser/metrics/model:eg_test_support+eg2",
@@ -334,6 +399,7 @@ source_set("eg2_tests") {
     "//ios/chrome/browser/signin/model:fake_system_identity",
     "//ios/chrome/test:eg_test_support+eg2",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
+    "//ios/testing:test_tag_registry",
     "//ios/testing/earl_grey:eg_test_support+eg2",
     "//net:test_support",
     "//ui/base",

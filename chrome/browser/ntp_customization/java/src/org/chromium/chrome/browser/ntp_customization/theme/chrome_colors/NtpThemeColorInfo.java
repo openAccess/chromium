@@ -55,8 +55,6 @@ public class NtpThemeColorInfo {
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/new_tab_page/enums.xml:NtpThemeColorId)
 
-    public static final int COLOR_NOT_SET = -1;
-
     public @NtpThemeColorId int id;
     // Used as Google logo color.
     public @ColorRes int primaryColorResId;
@@ -68,17 +66,22 @@ public class NtpThemeColorInfo {
 
     public @StringRes int colorStringResId;
 
+    // The name of the predefined color, used as the accessibility content description of its
+    // history card. Null for the default color and for custom colors.
+    public @Nullable String colorName;
+
     private static final float HIGHLIGHT_COLOR_ALPHA = 0.3f;
     private static final float BACKGROUND_COLOR_ALPHA = 0.15f;
 
     /**
      * Constructor for predefined colors.
      *
-     * @param context The Activity context.
+     * @param context The context to load the resources with. It isn't retained.
      * @param id The ID of the theme color.
      */
     public NtpThemeColorInfo(Context context, @NtpThemeColorId int id) {
         this.id = id;
+
         if (id == NtpThemeColorId.DEFAULT) {
             iconDrawable =
                     NtpThemeColorUtils.createColoredCircle(
@@ -91,6 +94,7 @@ public class NtpThemeColorInfo {
 
         this.primaryColorResId = NtpThemeColorUtils.getNtpThemePrimaryColorResId(id);
         this.colorStringResId = NtpThemeColorUtils.getNtpColorThemeStringResId(id);
+        this.colorName = context.getString(colorStringResId);
 
         @ColorInt int primaryColor = context.getColor(primaryColorResId);
         highlightColor = calculateHighlightColorForColorPalette(primaryColor);
@@ -104,7 +108,7 @@ public class NtpThemeColorInfo {
     /**
      * Constructor for custom colors.
      *
-     * @param context The Activity context.
+     * @param context The context to load the icon resources with. It isn't retained.
      * @param backgroundColor The background color.
      * @param primaryColor The primary color.
      */

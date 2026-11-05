@@ -2,11 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import <TargetConditionals.h>
-
-#import "base/ios/ios_util.h"
-#import "base/strings/strcat.h"
 #import "base/strings/sys_string_conversions.h"
+#import "components/autofill/core/browser/filling/field_filling_util.h"
 #import "components/autofill/core/common/autofill_debug_features.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/strings/grit/components_strings.h"
@@ -14,13 +11,11 @@
 #import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_constants.h"
 #import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
 #import "ios/chrome/browser/infobars/ui_bundled/infobar_earl_grey_ui_test_util.h"
-#import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_settings_constants.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/settings/autofill/autofill_ai/test/autofill_ai_settings_test_util.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
-#import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers_app_interface.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
@@ -37,17 +32,11 @@ NSString* const kPassportNumber = @"LR1234567";
 NSString* const kPassportEntityType = @"Passport";
 
 NSString* PassportSuggestionAccessibilityLabel() {
-  constexpr std::u16string_view kDots = u"\u2022\u2060\u2006\u2060";
-
-  NSString* last_four =
-      [kPassportNumber substringFromIndex:[kPassportNumber length] - 4];
-  std::u16string last_four_u16 = base::SysNSStringToUTF16(last_four);
-
   std::u16string obfuscated_number =
-      base::StrCat({kDots, kDots, kDots, kDots, last_four_u16});
-  NSString* obfuscated_number_ns = base::SysUTF16ToNSString(obfuscated_number);
-
-  return [NSString stringWithFormat:@"%@, %@ · %@", obfuscated_number_ns,
+      autofill::GetObfuscatedValue(base::SysNSStringToUTF16(kPassportNumber),
+                                   /*visible_suffix_length=*/4);
+  return [NSString stringWithFormat:@"%@, %@ · %@",
+                                    base::SysUTF16ToNSString(obfuscated_number),
                                     kPassportEntityType, kPassportOwnerName];
 }
 
@@ -100,21 +89,6 @@ void VerifyEntityVisibility(bool is_visible) {
       assertWithMatcher:is_visible ? grey_sufficientlyVisible() : grey_nil()];
 }
 
-// Label within a table view cell in "Addresses and more" settings.
-id<GREYMatcher> GetMatcherForLabel(NSString* label) {
-  return grey_allOf(
-      grey_accessibilityLabel(label),
-      grey_ancestor(grey_accessibilityID(kAutofillProfileTableViewID)),
-      grey_interactable(), nil);
-}
-
-// Verifies if a cell with the given label is visible.
-void VerifyCellVisibility(NSString* entity_label, bool is_visible) {
-  [[EarlGrey selectElementWithMatcher:GetMatcherForLabel(entity_label)]
-      assertWithMatcher:is_visible ? grey_sufficientlyVisible()
-                                   : grey_notVisible()];
-}
-
 // Verifies the flow of saving a new entity from the infobar banner.
 void VerifySaveNewEntityFlow() {
   // Tap the infobar save button.
@@ -138,8 +112,7 @@ void VerifySaveNewEntityFlow() {
 @implementation AutofillAIEGTest
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config;
-  config.features_disabled.push_back(kYourSavedInfoSettingsPageIos);
+  AppLaunchConfiguration config = [super appConfigurationForTestCase];
   config.features_enabled.push_back(
       autofill::features::kAutofillAiWithDataSchema);
   config.features_enabled.push_back(
@@ -222,11 +195,6 @@ void VerifySaveNewEntityFlow() {
 // Tests the infobar banner shows and can be tapped. Once tapped, the detailed
 // save entity UI is shown.
 - (void)testSaveEntityUI {
-  // TODO(crbug.com/516443975): Re-enable this flaky test on iOS below 26.
-  if (!base::ios::IsRunningOnIOS26OrLater()) {
-    EARL_GREY_TEST_DISABLED(@"Flaky on iOS below 26.");
-  }
-
   // Simulate a trigger for the infobar.
   [AutofillAppInterface showAutofillAiSaveEntityBubble];
 
@@ -235,19 +203,17 @@ void VerifySaveNewEntityFlow() {
   VerifySaveNewEntityFlow();
 }
 
-// Tests entity deletion from "Addresses and more" in Settings.
+// Tests entity deletion from "Travel" in Settings.
 - (void)testEntityDeletion {
   GREYAssertTrue(
       [AutofillAppInterface saveRedressNumberEntityWithName:kOwnerName
                                                      number:kRedressNumber],
       @"Failed to create an entity.");
-  // Open "Addresses and more" from settings.
-  [ChromeEarlGreyUI openSettingsMenu];
-  [ChromeEarlGreyUI
-      tapSettingsMenuButton:chrome_test_util::AddressesAndMoreButton()];
+  // Open "Travel" from settings.
+  [AutofillAISettingsTestUtil openTravelSettings];
 
   // Verify the entity just saved is visible in settings.
-  VerifyCellVisibility(kOwnerName, true);
+  [AutofillAISettingsTestUtil entityWithLabel:kOwnerName isVisible:YES];
 
   // Tap the Toolbar Edit button to enter edit mode.
   [[EarlGrey
@@ -255,8 +221,7 @@ void VerifySaveNewEntityFlow() {
       performAction:grey_tap()];
 
   // Select the cell containing the entity.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForLabel(kOwnerName)]
-      performAction:grey_tap()];
+  [AutofillAISettingsTestUtil tapEntityWithLabel:kOwnerName];
 
   // Tap the delete button in the bottom toolbar.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::
@@ -269,18 +234,11 @@ void VerifySaveNewEntityFlow() {
                      IDS_IOS_DELETE_ACTION_TITLE)] performAction:grey_tap()];
 
   // Ensure it's deleted.
-  VerifyCellVisibility(kOwnerName, false);
+  [AutofillAISettingsTestUtil entityWithLabel:kOwnerName isVisible:NO];
 }
 
 // Tests submitting a redress form.
-// TODO(crbug.com/506106151): Fix and re-enable on iOS 18 devices.
 - (void)testSubmitRedressForm {
-#if !TARGET_OS_SIMULATOR
-  if (base::ios::IsRunningOnIOS18OrLater()) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Disabled on iOS 18 devices due to crbug.com/506106151");
-  }
-#endif
   [self loadRedressNumberPage];
 
   // Filling is done in JavaScript to avoid flakiness.
@@ -294,14 +252,7 @@ void VerifySaveNewEntityFlow() {
 
 // Tests saving a new passport from a web form, verifying that it appears in
 // Settings and then deleting it.
-// TODO(crbug.com/506106151): Fix and re-enable on iOS 18 devices.
 - (void)testSavePassportForm {
-#if !TARGET_OS_SIMULATOR
-  if (base::ios::IsRunningOnIOS18OrLater()) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Disabled on iOS 18 devices due to crbug.com/506106151");
-  }
-#endif
   [self loadPassportPage];
 
   // Tap on fill button.
@@ -335,13 +286,11 @@ void VerifySaveNewEntityFlow() {
 
   [[EarlGrey selectElementWithMatcher:saveButton] performAction:grey_tap()];
 
-  // Navigate to Settings -> "Addresses and more" menu.
-  [ChromeEarlGreyUI openSettingsMenu];
-  [ChromeEarlGreyUI
-      tapSettingsMenuButton:chrome_test_util::AddressesAndMoreButton()];
+  // Navigate to Settings -> "Autofill and passwords" -> "Identity docs".
+  [AutofillAISettingsTestUtil openIdentityDocsSettings];
 
   // Verify cell visibility of owner name.
-  VerifyCellVisibility(kOwnerName, true);
+  [AutofillAISettingsTestUtil entityWithLabel:kOwnerName isVisible:YES];
 
   // Verify it is displayed as a passport.
   id<GREYMatcher> passportCell = grey_allOf(
@@ -359,8 +308,7 @@ void VerifySaveNewEntityFlow() {
       performAction:grey_tap()];
 
   // Select the cell containing the entity.
-  [[EarlGrey selectElementWithMatcher:GetMatcherForLabel(kOwnerName)]
-      performAction:grey_tap()];
+  [AutofillAISettingsTestUtil tapEntityWithLabel:kOwnerName];
 
   // Tap the delete button in the bottom toolbar.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::
@@ -373,18 +321,11 @@ void VerifySaveNewEntityFlow() {
                      IDS_IOS_DELETE_ACTION_TITLE)] performAction:grey_tap()];
 
   // Ensure it's deleted.
-  VerifyCellVisibility(kOwnerName, false);
+  [AutofillAISettingsTestUtil entityWithLabel:kOwnerName isVisible:NO];
 }
 
 // Tests that a wallet failure shows an error dialog when attempting to fill.
-// TODO(crbug.com/506106151): Fix and re-enable on iOS 18 devices.
 - (void)testWalletFailureShowsErrorDialog {
-#if !TARGET_OS_SIMULATOR
-  if (base::ios::IsRunningOnIOS18OrLater()) {
-    EARL_GREY_TEST_SKIPPED(
-        @"Disabled on iOS 18 devices due to crbug.com/506106151");
-  }
-#endif
   // Add server wallet passport entity.
   NSString* uuid = [AutofillAppInterface saveServerWalletPassportEntity];
 

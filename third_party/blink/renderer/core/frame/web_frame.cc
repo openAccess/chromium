@@ -12,8 +12,12 @@
 #include "third_party/blink/public/mojom/scroll/scrollbar_mode.mojom-blink.h"
 #include "third_party/blink/public/mojom/security_context/insecure_request_policy.mojom-blink.h"
 #include "third_party/blink/public/web/web_element.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_window.h"
 #include "third_party/blink/renderer/bindings/core/v8/window_proxy_manager.h"
 #include "third_party/blink/renderer/core/dom/increment_load_event_delay_count.h"
+#include "third_party/blink/renderer/core/frame/dom_window.h"
+#include "third_party/blink/renderer/core/frame/frame_owner.h"
+#include "third_party/blink/renderer/core/frame/frame_swap_scope.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/opened_frame_tracker.h"
@@ -42,9 +46,11 @@ bool WebFrame::Swap(
         remote_frame_receiver,
     blink::mojom::FrameReplicationStatePtr replicated_state,
     const std::optional<base::UnguessableToken>& devtools_frame_token) {
-  bool res = ToCoreFrame(*this)->Swap(frame, std::move(remote_frame_host),
-                                      std::move(remote_frame_receiver),
-                                      devtools_frame_token);
+  Frame* old_frame = ToCoreFrame(*this);
+  FrameSwapScope frame_swap_scope(old_frame->Owner());
+  bool res =
+      old_frame->Swap(frame, std::move(remote_frame_host),
+                      std::move(remote_frame_receiver), devtools_frame_token);
   if (!res)
     return false;
 
@@ -142,6 +148,14 @@ WebFrame* WebFrame::FromFrameOwnerElement(const WebNode& web_node) {
   return nullptr;
 }
 
+WebFrame* WebFrame::FromWindow(v8::Isolate* isolate,
+                               v8::Local<v8::Value> value) {
+  if (DOMWindow* window = V8Window::ToWrappable(isolate, value)) {
+    return FromCoreFrame(window->GetFrame());
+  }
+  return nullptr;
+}
+
 bool WebFrame::IsLoading() const {
   if (Frame* frame = ToCoreFrame(*this))
     return frame->IsLoading();
@@ -162,8 +176,6 @@ WebFrame::WebFrame(mojom::blink::TreeScopeType scope,
     : scope_(scope), frame_token_(frame_token) {
   DCHECK(frame_token.value());
 }
-
-void WebFrame::Close(DetachReason detach_reason) {}
 
 Frame* WebFrame::ToCoreFrame(const WebFrame& frame) {
   if (auto* web_local_frame = DynamicTo<WebLocalFrameImpl>(&frame))

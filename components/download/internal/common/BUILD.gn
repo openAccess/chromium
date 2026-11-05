@@ -90,11 +90,9 @@ source_set("internal") {
     "//services/service_manager/public/cpp",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   # TODO(crbug.com/40120259): Enable this on Fuchsia
   if (safe_browsing_mode > 0 && !is_fuchsia) {
-    deps += [ "//components/safe_browsing/content/common:file_type_policies" ]
+    deps += [ "//components/safe_browsing/content/common/file_type_policies" ]
   }
 
   if (enterprise_cloud_content_analysis || is_android) {
@@ -106,6 +104,8 @@ source_set("internal") {
     sources += [
       "android/download_collection_bridge.cc",
       "android/download_collection_bridge.h",
+      "android/download_document_uri_bridge.cc",
+      "android/download_document_uri_bridge.h",
       "in_memory_download_file.cc",
       "in_memory_download_file.h",
     ]
@@ -128,6 +128,7 @@ if (is_android) {
     sources = [
       "android/java/src/org/chromium/components/download/DownloadCollectionBridge.java",
       "android/java/src/org/chromium/components/download/DownloadDelegate.java",
+      "android/java/src/org/chromium/components/download/DownloadDocumentUriBridge.java",
       "android/java/src/org/chromium/components/download/InMemoryDownloadFile.java",
     ]
 
@@ -144,7 +145,23 @@ if (is_android) {
     visibility = [ ":*" ]
     sources = [
       "android/java/src/org/chromium/components/download/DownloadCollectionBridge.java",
+      "android/java/src/org/chromium/components/download/DownloadDocumentUriBridge.java",
       "android/java/src/org/chromium/components/download/InMemoryDownloadFile.java",
+    ]
+  }
+
+  robolectric_library("junit") {
+    testonly = true
+
+    sources = [ "android/junit/src/org/chromium/components/download/DownloadDocumentUriBridgeTest.java" ]
+
+    deps = [
+      ":internal_java",
+      "//base:base_java",
+      "//base:base_java_test_support",
+      "//base:base_junit_test_support",
+      "//third_party/androidx:androidx_test_core_java",
+      "//third_party/junit",
     ]
   }
 }
@@ -182,6 +199,10 @@ source_set("unit_tests") {
     "parallel_download_utils_unittest.cc",
     "rate_estimator_unittest.cc",
   ]
+
+  if (is_android) {
+    sources += [ "android/download_document_uri_bridge_unittest.cc" ]
+  }
 
   deps = [
     ":for_tests",

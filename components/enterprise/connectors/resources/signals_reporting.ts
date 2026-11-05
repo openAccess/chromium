@@ -6,7 +6,14 @@ import {CustomElement} from 'chrome://resources/js/custom_element.js';
 
 import {BrowserProxy} from './browser_proxy.js';
 import type {PageHandlerInterface, SignalsReportingState} from './connectors_internals.mojom-webui.js';
+import {SignalsSource} from './connectors_internals.mojom-webui.js';
+import {mojoDictionaryToJsonString} from './connectors_utils.js';
 import {getTemplate} from './signals_reporting.html.js';
+
+const SignalsSourceStringMap: Record<SignalsSource, string> = {
+  [SignalsSource.kLastUploadedReport]: 'Last successful upload',
+  [SignalsSource.kCollectedOnDemand]: 'Collected on demand',
+};
 
 export class SignalsReportingElement extends CustomElement {
   static get is() {
@@ -45,6 +52,10 @@ export class SignalsReportingElement extends CustomElement {
     this.setValueToElement('#can-collect-all', canCollectAllFields);
   }
 
+  set signalsSourceString(source: string) {
+    this.setValueToElement('#signals-source', source);
+  }
+
   set signalsJsonString(jsonString: string) {
     this.setValueToElement('#signals-json', jsonString);
   }
@@ -79,7 +90,14 @@ export class SignalsReportingElement extends CustomElement {
     this.lastUploadSuccessTimestamp = state.lastUploadSuccessTimestamp;
     this.lastSignalsUploadConfigString = state.lastSignalsUploadConfig;
     this.canCollectAllFieldsString = `${state.canCollectAllFields}`;
-    this.signalsJsonString = state.signalsJson || '{}';
+    if (state.signals) {
+      this.signalsSourceString =
+          SignalsSourceStringMap[state.signals.source] || 'None';
+      this.signalsJsonString = mojoDictionaryToJsonString(state.signals.values);
+    } else {
+      this.signalsSourceString = 'None';
+      this.signalsJsonString = '{}';
+    }
   }
 
   private fetchSignalsReportingState() {

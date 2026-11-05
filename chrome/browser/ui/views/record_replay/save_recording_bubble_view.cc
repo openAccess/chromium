@@ -6,6 +6,7 @@
 
 #include "base/i18n/icubridge/date_time_formatter.h"
 #include "base/i18n/icubridge/icu_bridge.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/time_formatting.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
@@ -115,8 +116,9 @@ void SaveRecordingBubbleView::Init() {
 
     base::Time now = base::Time::Now();
     std::string date_str =
-        base::UTF16ToUTF8(IcuBridge::GetInstance().date_time_formatter().Format(
-            now, GetKnownLanguageTag("en-US"), YMD::Short()));
+        base::UTF16ToUTF8(IcuBridge::GetInstance()
+                              .date_time_formatter(GetKnownLanguageTag("en-US"))
+                              .Format(now, YMD::Short()));
 
     placeholder_text =
         base::UTF8ToUTF16(domain) + u"_" + base::UTF8ToUTF16(date_str);

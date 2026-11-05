@@ -34,6 +34,10 @@ void UpdatePromptAction(gemini::EntryPoint entry_point,
                         NSString* prepopulated_prompt,
                         bool should_auto_submit) {}
 
+void UpdatePromptAction(gemini::InputType input_type,
+                        NSString* prepopulated_prompt,
+                        bool should_auto_submit) {}
+
 bool IsProtectedUrl(std::string url) {
   return false;
 }
@@ -96,6 +100,8 @@ int GetLiveCaptionsNumberOfLines() {
 
 void SetShouldShowSuggestionChips(bool should_show) {}
 
+void SetShouldShowInputPlate(bool should_show) {}
+
 void SetBlockQuerySubmissionWhileLoading(bool block_submission) {}
 
 void SetShowPageLoadingSnackbarOnOpeningInvocation(bool show_snackbar) {}
@@ -106,5 +112,15 @@ UIViewController* GetFloatyViewControllerWithConfiguration(
     GeminiConfiguration* gemini_configuration) {
   return nil;
 }
+
+bool IsFeatureModeDisabledByQuota(GeminiFeatureMode feature_mode) {
+  return false;
+}
+
+NSDate* GetRefillDateForFeatureMode(GeminiFeatureMode feature_mode) {
+  return nil;
+}
+
+void ForceRefreshQuotaInfo() {}
 
 }  // namespace ios::provider

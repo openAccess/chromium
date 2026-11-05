@@ -25,6 +25,7 @@
 #include "remoting/host/desktop_display_info_monitor.h"
 #include "remoting/host/desktop_environment.h"
 #include "remoting/host/fake_active_display_monitor.h"
+#include "remoting/host/fake_agent_integration_configurator.h"
 #include "remoting/host/fake_keyboard_layout_monitor.h"
 #include "remoting/host/fake_mouse_cursor_monitor.h"
 #include "remoting/host/file_transfer/file_operations.h"
@@ -40,6 +41,36 @@
 #include "third_party/webrtc/modules/desktop_capture/desktop_capture_types.h"
 
 namespace remoting {
+
+FakeAudioCapturer::FakeAudioCapturer() = default;
+FakeAudioCapturer::~FakeAudioCapturer() = default;
+
+bool FakeAudioCapturer::Start(const PacketCapturedCallback& callback) {
+  return true;
+}
+
+FakeAudioInjector::FakeAudioInjector(
+    std::unique_ptr<IpcFifoBufferReader> reader)
+    : reader_(std::move(reader)) {}
+FakeAudioInjector::~FakeAudioInjector() = default;
+
+bool FakeAudioInjector::Start(base::WeakPtr<Delegate> delegate) {
+  delegate_ = std::move(delegate);
+  start_called_ = true;
+  return true;
+}
+
+void FakeAudioInjector::SetSampleInfo(const protocol::AudioSampleInfo& info,
+                                      OnInfoSet done) {
+  last_sample_info_ = info;
+  if (done) {
+    std::move(done).Run(true);
+  }
+}
+
+base::WeakPtr<AudioInjector> FakeAudioInjector::GetWeakPtr() {
+  return weak_factory_.GetWeakPtr();
+}
 
 FakeInputInjector::FakeInputInjector() = default;
 FakeInputInjector::~FakeInputInjector() = default;
@@ -107,7 +138,7 @@ std::unique_ptr<ActionExecutor> FakeDesktopEnvironment::CreateActionExecutor() {
 }
 
 std::unique_ptr<AudioCapturer> FakeDesktopEnvironment::CreateAudioCapturer() {
-  return nullptr;
+  return std::make_unique<FakeAudioCapturer>();
 }
 
 std::unique_ptr<InputInjector> FakeDesktopEnvironment::CreateInputInjector() {
@@ -166,6 +197,11 @@ FakeDesktopEnvironment::CreateUrlForwarderConfigurator() {
   return std::make_unique<FakeUrlForwarderConfigurator>();
 }
 
+std::unique_ptr<AgentIntegrationConfigurator>
+FakeDesktopEnvironment::CreateAgentIntegrationConfigurator() {
+  return std::make_unique<FakeAgentIntegrationConfigurator>();
+}
+
 std::string FakeDesktopEnvironment::GetCapabilities() const {
   return capabilities_;
 }
@@ -181,7 +217,9 @@ FakeDesktopEnvironment::CreateRemoteWebAuthnStateChangeNotifier() {
 
 std::unique_ptr<AudioInjector> FakeDesktopEnvironment::CreateAudioInjector(
     std::unique_ptr<IpcFifoBufferReader> reader) {
-  return nullptr;
+  auto result = std::make_unique<FakeAudioInjector>(std::move(reader));
+  last_audio_injector_ = result->GetWeakPtrForTest();
+  return result;
 }
 
 const DesktopEnvironmentOptions& FakeDesktopEnvironment::options() const {
@@ -210,7 +248,7 @@ void FakeDesktopEnvironmentFactory::Create(
 }
 
 bool FakeDesktopEnvironmentFactory::SupportsAudioCapture() const {
-  return false;
+  return true;
 }
 
 }  // namespace remoting

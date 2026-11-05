@@ -10,12 +10,15 @@
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_initialized_observer.h"
 #include "chrome/browser/ui/tabs/tab_creation_metrics_controller.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/events/event.h"
@@ -291,15 +294,15 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
   EXPECT_EQ(controller()->GetFocusedGroup(), std::nullopt);
 
   // Focus on group1.
-  controller()->SetFocusedGroup(group1);
+  controller()->EnterFocusMode(group1);
   EXPECT_EQ(controller()->GetFocusedGroup(), group1);
 
   // Focus on group2.
-  controller()->SetFocusedGroup(group2);
+  controller()->EnterFocusMode(group2);
   EXPECT_EQ(controller()->GetFocusedGroup(), group2);
 
   // Unset focused group.
-  controller()->SetFocusedGroup(std::nullopt);
+  controller()->ExitFocusMode();
   EXPECT_EQ(controller()->GetFocusedGroup(), std::nullopt);
 }
 
@@ -311,7 +314,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
   const tab_groups::TabGroupId group = tab_strip_model()->AddToNewGroup({0, 1});
 
   // Focus on the group.
-  controller()->SetFocusedGroup(group);
+  controller()->EnterFocusMode(group);
   EXPECT_EQ(controller()->GetFocusedGroup(), group);
 
   // Delete the group by ungrouping all its tabs.
@@ -333,16 +336,34 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
   const tab_groups::TabGroupId group = tab_strip_model()->AddToNewGroup({0, 1});
 
   // Focus on the group.
-  controller()->SetFocusedGroup(group);
+  controller()->EnterFocusMode(group);
   EXPECT_NE(widget->user_color_override(), std::nullopt);
 
   // Unset focused group.
-  controller()->SetFocusedGroup(std::nullopt);
+  controller()->ExitFocusMode();
   EXPECT_EQ(widget->user_color_override(), std::nullopt);
 
   // Focus on the group again.
-  controller()->SetFocusedGroup(group);
+  controller()->EnterFocusMode(group);
   EXPECT_NE(widget->user_color_override(), std::nullopt);
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
+                       EphemeralGroupDoesNotUpdateTheme) {
+  BrowserWidget* widget =
+      BrowserView::GetBrowserViewForBrowser(browser())->browser_widget();
+  EXPECT_EQ(widget->user_color_override(), std::nullopt);
+
+  // Create a tab and an ephemeral group.
+  controller()->CreateNewTab(NewTabTypes::kNewTabCommand);
+  EXPECT_EQ(tab_strip_model()->count(), 2);
+  // Focus on an ephemeral group. The browser itself should not theme.
+  tab_strip_model()->EnterFocusMode({0, 1});
+  EXPECT_EQ(widget->user_color_override(), std::nullopt);
+
+  // Unset focused group.
+  controller()->ExitFocusMode();
+  EXPECT_EQ(widget->user_color_override(), std::nullopt);
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
@@ -353,7 +374,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusedGroup,
   const tab_groups::TabGroupId group = tab_strip_model()->AddToNewGroup({0, 1});
 
   // Focus on the group.
-  controller()->SetFocusedGroup(group);
+  controller()->EnterFocusMode(group);
   EXPECT_EQ(controller()->GetFocusedGroup(), group);
 
   // Creating a new tab via user intent (controller/command) should join the
@@ -411,7 +432,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       FreezingVoteReason::kFocusedGroup));
 
   // Focus on group1. Unpinned tabs outside group1 should be frozen.
-  controller()->SetFocusedGroup(group1);
+  controller()->EnterFocusMode(group1);
   EXPECT_FALSE(tabstrip()->tab_at(0)->HasFreezingVote(
       FreezingVoteReason::kFocusedGroup));
   EXPECT_FALSE(tabstrip()->tab_at(1)->HasFreezingVote(
@@ -422,7 +443,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       FreezingVoteReason::kFocusedGroup));
 
   // Unfocus group1. All tabs should be unfrozen.
-  controller()->SetFocusedGroup(std::nullopt);
+  controller()->ExitFocusMode();
   EXPECT_FALSE(tabstrip()->tab_at(0)->HasFreezingVote(
       FreezingVoteReason::kFocusedGroup));
   EXPECT_FALSE(tabstrip()->tab_at(1)->HasFreezingVote(
@@ -445,7 +466,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       tab_strip_model()->AddToNewGroup({1, 2});
 
   // Focus on group1.
-  controller()->SetFocusedGroup(group1);
+  controller()->EnterFocusMode(group1);
   // Pinned tab (0) and focused group tabs (1, 2) should not be frozen.
   EXPECT_FALSE(tabstrip()->tab_at(0)->HasFreezingVote(
       FreezingVoteReason::kFocusedGroup));
@@ -482,7 +503,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       tab_strip_model()->AddToNewGroup({2, 3});
 
   // Focus group1.
-  controller()->SetFocusedGroup(group1);
+  controller()->EnterFocusMode(group1);
   EXPECT_FALSE(tabstrip()->tab_at(0)->HasFreezingVote(
       FreezingVoteReason::kFocusedGroup));
   EXPECT_FALSE(tabstrip()->tab_at(1)->HasFreezingVote(
@@ -493,7 +514,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       FreezingVoteReason::kFocusedGroup));
 
   // Switch focus to group2.
-  controller()->SetFocusedGroup(group2);
+  controller()->EnterFocusMode(group2);
   EXPECT_TRUE(tabstrip()->tab_at(0)->HasFreezingVote(
       FreezingVoteReason::kFocusedGroup));
   EXPECT_TRUE(tabstrip()->tab_at(1)->HasFreezingVote(
@@ -532,7 +553,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
       FreezingVoteReason::kFocusedGroup));
 
   // Focus group1 while group2 is collapsed.
-  controller()->SetFocusedGroup(group1);
+  controller()->EnterFocusMode(group1);
   EXPECT_FALSE(tabstrip()->tab_at(0)->HasFreezingVote());
   EXPECT_FALSE(tabstrip()->tab_at(1)->HasFreezingVote());
   // Tabs in group2 now have both collapsed and unfocused freezing votes.
@@ -549,7 +570,7 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripControllerTestFocusFreezing,
 
   // Unfocus group1. Unfocused votes should be released, but collapsed votes
   // remain.
-  controller()->SetFocusedGroup(std::nullopt);
+  controller()->ExitFocusMode();
   EXPECT_TRUE(tabstrip()->tab_at(2)->HasFreezingVote(
       FreezingVoteReason::kCollapsedGroup));
   EXPECT_FALSE(tabstrip()->tab_at(2)->HasFreezingVote(

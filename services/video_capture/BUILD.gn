@@ -36,8 +36,6 @@ source_set("lib") {
     "virtual_device_enabled_device_factory.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [
     "//base",
     "//media",
@@ -62,6 +60,7 @@ source_set("tests") {
 
   sources = [
     "broadcasting_receiver_unittest.cc",
+    "device_factory_impl_unittest.cc",
     "device_media_to_mojo_adapter_unittest.cc",
     "devices_changed_notifier_unittest.cc",
     "gpu_memory_buffer_virtual_device_mojo_adapter_unittest.cc",
@@ -95,8 +94,4 @@ source_set("tests") {
     "//testing/gtest",
     "//ui/gfx:test_support",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

@@ -22,6 +22,7 @@ class WebContents;
 
 class ContentSettingImageModel;
 class ContentSettingImageViewDelegate;
+class PermissionDashboardController;
 class WebUIToolbarControlDelegate;
 
 // Manages the ContentSettingImageModels for WebUI toolbar and provides
@@ -47,6 +48,12 @@ class WebUIContentSettingImageControl {
       std::vector<std::unique_ptr<ContentSettingImageModel>> models,
       WebUIToolbarControlDelegate* webui_delegate = nullptr);
 
+  // Updates `permission_dashboard_controller` with the left-hand side activity
+  // indicator models (prioritizing Media Stream over Sensors). Returns `true`
+  // if that produced a user-visible change to the permission dashboard.
+  bool UpdatePermissionDashboard(
+      PermissionDashboardController* permission_dashboard_controller);
+
   // Returns the current state of all content setting images for `web_contents`,
   // auto-opens a bubble if requested, and updates model state for fields that
   // notify changes only once (notify accessibility, auto-open bubble, run
@@ -71,14 +78,12 @@ class WebUIContentSettingImageControl {
   bool IsBubbleShowing() const;
   bool TestPressed(size_t index);
   bool IsBubbleShowing(size_t index) const;
+  bool IsContentSettingImageVisible(size_t index) const;
+  views::Widget* GetBubbleWidget(size_t index);
 
   void SetSuppressionThresholdForTesting(base::TimeDelta threshold) {
     bubble_reopen_suppressor_.SetSuppressionThresholdForTesting(threshold);
   }
-
-  // Called when the WebUI animation for `type` has finished.
-  void OnContentSettingImageAnimationEnded(
-      toolbar_ui_api::mojom::ContentSettingImageType type);
 
  private:
   // Like ShowContentSettingsBubble(), but returns the result instead of passing

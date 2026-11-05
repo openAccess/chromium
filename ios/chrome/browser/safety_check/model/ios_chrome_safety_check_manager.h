@@ -5,6 +5,7 @@
 #ifndef IOS_CHROME_BROWSER_SAFETY_CHECK_MODEL_IOS_CHROME_SAFETY_CHECK_MANAGER_H_
 #define IOS_CHROME_BROWSER_SAFETY_CHECK_MODEL_IOS_CHROME_SAFETY_CHECK_MANAGER_H_
 
+#import "base/callback_list.h"
 #import "base/memory/scoped_refptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/observer_list.h"
@@ -15,7 +16,6 @@
 #import "components/keyed_service/core/keyed_service.h"
 #import "components/prefs/pref_change_registrar.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
-#import "ios/chrome/browser/omaha/model/omaha_service.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager.h"
 #import "ios/chrome/browser/passwords/model/password_checkup_utils.h"
 #import "ios/chrome/browser/safety_check/model/ios_chrome_safety_check_manager_constants.h"
@@ -75,7 +75,6 @@ class IOSChromeSafetyCheckManagerObserver : public base::CheckedObserver {
 class IOSChromeSafetyCheckManager
     : public KeyedService,
       public IOSChromePasswordCheckManager::Observer,
-      public OmahaServiceObserver,
       public signin::IdentityManager::Observer {
  public:
   explicit IOSChromeSafetyCheckManager(
@@ -113,12 +112,6 @@ class IOSChromeSafetyCheckManager
   void InsecureCredentialsChanged() override;
   void ManagerWillShutdown(
       IOSChromePasswordCheckManager* password_check_manager) override;
-
-  // `OmahaServiceObserver` implementation.
-  void OnServiceStarted(OmahaService* omaha_service) override;
-  void UpgradeRecommendedDetailsChanged(
-      UpgradeRecommendedDetails details) override;
-  void ServiceWillShutdown(OmahaService* omaha_service) override;
 
   // `signin::IdentityManager::Observer` implementation.
   void OnPrimaryAccountChanged(
@@ -164,7 +157,7 @@ class IOSChromeSafetyCheckManager
   //
   // If the app is outdated, sets `upgrade_url_` and `next_version_` to maintain
   // the upgrade details.
-  void HandleOmahaResponse(UpgradeRecommendedDetails details);
+  void HandleOmahaResponse(const UpgradeRecommendedDetails& details);
 
   // For unit-testing only.
   void StartOmahaCheckForTesting();
@@ -393,6 +386,9 @@ class IOSChromeSafetyCheckManager
   // Validates IOSChromeSafetyCheckManager::Observer events are evaluated on the
   // same sequence that IOSChromeSafetyCheckManager was created on.
   SEQUENCE_CHECKER(sequence_checker_);
+
+  // Subscription for pings with OmahaService.
+  base::CallbackListSubscription omaha_ping_subscription_;
 
   // Ensures IOSChromePasswordCheckManager::Observer events are posted on the
   // same sequence that IOSChromeSafetyCheckManager was created on.

@@ -133,7 +133,7 @@ enum class NotificationCatalogName {
   kSecurityToken = 113,
   kCrostiniExportImport = 114,
   // [Deprecated] kLacrosCannotLaunch = 115,
-  kRequestFileSystem = 116,
+  // [Deprecated] kRequestFileSystem = 116,
   kNetworkPortalDetector = 117,
   kCrostiniPackage = 118,
   kCrostiniUpgradeAvailable = 119,
@@ -349,7 +349,8 @@ enum class ToastCatalogName {
   kCameraNowAllowed = 61,
   kCameraNowDisallowed = 62,
   kCameraForceDisabled = 63,
-  kMaxValue = kCameraForceDisabled
+  kClipboardHistoryDisabledByPolicy = 64,
+  kMaxValue = kClipboardHistoryDisabledByPolicy
 };
 
 }  // namespace ash

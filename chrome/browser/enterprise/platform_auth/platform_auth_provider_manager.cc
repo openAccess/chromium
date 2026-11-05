@@ -29,6 +29,9 @@
 #include "base/task/thread_pool.h"
 #include "base/timer/elapsed_timer.h"
 #include "chrome/browser/enterprise/platform_auth/platform_auth_provider.h"
+#include "chrome/common/pref_names.h"
+#include "components/policy/core/common/policy_logger.h"
+#include "components/prefs/pref_service.h"
 #include "net/http/http_request_headers.h"
 #include "url/gurl.h"
 #include "url/url_canon.h"
@@ -36,7 +39,12 @@
 #if BUILDFLAG(IS_WIN)
 #include "chrome/browser/enterprise/platform_auth/cloud_ap_provider_win.h"
 #elif BUILDFLAG(IS_MAC)
+#include "base/features.h"
+#include "chrome/browser/enterprise/browser_management/management_service_factory.h"
+#include "chrome/browser/enterprise/platform_auth/extensible_enterprise_sso_metadata.h"
+#include "chrome/browser/enterprise/platform_auth/extensible_enterprise_sso_prefs_handler.h"
 #include "chrome/browser/enterprise/platform_auth/extensible_enterprise_sso_provider_mac.h"
+#include "chrome/browser/enterprise/platform_auth/platform_auth_features.h"
 #elif BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/enterprise/platform_auth/entra_provider_android.h"
 #endif
@@ -44,6 +52,8 @@
 namespace enterprise_auth {
 
 namespace {
+
+constexpr int kPolicyDisabled = 0;
 
 std::unique_ptr<PlatformAuthProvider> MakeProvider() {
 #if BUILDFLAG(IS_WIN)
@@ -57,6 +67,61 @@ std::unique_ptr<PlatformAuthProvider> MakeProvider() {
 #endif
 }
 
+#if BUILDFLAG(IS_WIN)
+
+bool ShouldBeEnabled(PrefService* local_state) {
+  // Enable the manager on windows if the CloudApAuthEnabled policy is enabled.
+  return local_state->GetInteger(prefs::kCloudApAuthEnabled) != kPolicyDisabled;
+}
+
+#elif BUILDFLAG(IS_MAC)
+
+using MdmConfig = ExtensibleEnterpriseSSOPrefsHandler::Config;
+
+bool ShouldBeEnabled(PrefService* local_state) {
+  // If the device is not managed we shouldn't enable the Manager.
+  if (!policy::ManagementServiceFactory::GetForPlatform()->IsManaged()) {
+    return false;
+  }
+
+  // This pref is set to 0 if the ExtensibleEnterpriseSSOBlocklist policy blocks
+  // all IdPs.
+  if (local_state->GetInteger(prefs::kExtensibleEnterpriseSSOEnabled) ==
+      kPolicyDisabled) {
+    return false;
+  }
+
+  if (base::FeatureList::IsEnabled(kPingSso)) {
+    // If there is no valid config there is no need to enable the manager.
+    const std::optional<MdmConfig> current_mdm_config =
+        ExtensibleEnterpriseSSOPrefsHandler::GetCurrentConfig();
+    if (!current_mdm_config.has_value()) {
+      return false;
+    }
+
+    const SsoExtensionMetadata* idp_metadata = FindSsoExtensionMetadata(
+        current_mdm_config->team_id, current_mdm_config->extension_id);
+    if (!idp_metadata) {
+      // Only support known IdPs.
+      return false;
+    }
+  }
+
+  return true;
+}
+
+#elif BUILDFLAG(IS_ANDROID)
+
+bool ShouldBeEnabled(PrefService* local_state) {
+  // Enable the manager on Android if the policy is enabled.
+  return local_state->GetInteger(prefs::kAndroidEntraSSOEnabled) !=
+         kPolicyDisabled;
+}
+
+#else
+#error Unsupported platform
+#endif
+
 }  // namespace
 
 // static
@@ -65,9 +130,19 @@ PlatformAuthProviderManager& PlatformAuthProviderManager::GetInstance() {
   return *instance;
 }
 
+// static
+void PlatformAuthProviderManager::EnableOrDisableIfNecessary(
+    PrefService* local_state) {
+  CHECK(local_state);
+  PlatformAuthProviderManager::GetInstance().SetEnabled(
+      ShouldBeEnabled(local_state), base::OnceClosure());
+}
+
 void PlatformAuthProviderManager::SetEnabled(bool enabled,
                                              base::OnceClosure on_complete) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  VLOG_POLICY(1, POLICY_AUTH)
+      << "PlatformAuthProviderManager " << (enabled ? "enabled" : "disabled");
 
   // Drop any pending fetch; its callback will never be run.
   weak_factory_.InvalidateWeakPtrs();
@@ -109,7 +184,7 @@ bool PlatformAuthProviderManager::IsEnabledFor(const GURL& url) const {
 void PlatformAuthProviderManager::GetData(const GURL& url,
                                           GetDataCallback callback) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M161);
 
   // Note: given the async nature of changes to the set of origins, it's
   // possible that a request could come in after the manager had been disabled
@@ -117,7 +192,7 @@ void PlatformAuthProviderManager::GetData(const GURL& url,
   if (!IsEnabledFor(url)) {
     std::move(callback).Run(net::HttpRequestHeaders());
   } else {
-    DCHECK(provider_);
+    CHECK(provider_, base::NotFatalUntil::M161);
     provider_->GetData(url, std::move(callback));
   }
 }

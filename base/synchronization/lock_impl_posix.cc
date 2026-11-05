@@ -41,7 +41,7 @@ namespace {
 
 #if BUILDFLAG(IS_POSIX)
 // static
-std::atomic<int> g_spin_count{0};
+std::atomic<int64_t> g_spin_count{0};
 #endif  // BUILDFLAG(IS_POSIX)
 
 #if BUILDFLAG(ENABLE_MUTEX_PRIORITY_INHERITANCE) && BUILDFLAG(IS_ANDROID)
@@ -81,13 +81,12 @@ std::string SystemErrorCodeToString(int error_code) {
 
 #if DCHECK_IS_ON()
 // These are out-of-line so that the .h file doesn't have to include ostream.
-void dcheck_trylock_result(int rv) {
-  DCHECK(rv == 0 || rv == EBUSY)
-      << ". " << base::internal::SystemErrorCodeToString(rv);
+void LogTryLockFailure(int rv) {
+  DCHECK(false) << ". " << base::internal::SystemErrorCodeToString(rv);
 }
 
-void dcheck_unlock_result(int rv) {
-  DCHECK_EQ(rv, 0) << ". " << strerror(rv);
+void LogUnlockFailure(int rv) {
+  DCHECK(false) << ". " << strerror(rv);
 }
 #endif
 
@@ -148,9 +147,9 @@ void LockImpl::LockInternal(const LockMetricTagList& tags) {
 #if BUILDFLAG(IS_POSIX)
 bool LockImpl::TrySpin() {
   // Logic same as in SpinningMutex::AcquireSpinThenBlock() in partition_alloc.
-  int tries = 0;
+  int64_t tries = 0;
   int backoff = 1;
-  const int spin_count = g_spin_count.load(std::memory_order_relaxed);
+  const int64_t spin_count = g_spin_count.load(std::memory_order_relaxed);
 
   while (tries < spin_count) {
     if (Try()) [[likely]] {
@@ -170,8 +169,13 @@ bool LockImpl::TrySpin() {
 }
 
 // static
-void LockImpl::SetTrySpinCount(int spin_count) {
+void LockImpl::SetTrySpinCount(int64_t spin_count) {
   g_spin_count.store(spin_count, std::memory_order_relaxed);
+}
+
+// static
+int64_t LockImpl::GetTrySpinCountForTesting() {
+  return g_spin_count.load(std::memory_order_relaxed);
 }
 #endif  // BUILDFLAG(IS_POSIX)
 

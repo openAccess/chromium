@@ -39,6 +39,7 @@
 #include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/favicon_status.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
@@ -257,7 +258,8 @@ void HandleAccessibilityRequestCallback(
     ui::AXMode initial_process_mode,
     const std::string& path,
     content::WebUIDataSource::GotDataCallback callback) {
-  DCHECK(ShouldHandleAccessibilityRequestCallback(path));
+  CHECK(ShouldHandleAccessibilityRequestCallback(path),
+        base::NotFatalUntil::M162);
 
   auto& browser_accessibility_state =
       *content::BrowserAccessibilityState::GetInstance();
@@ -734,7 +736,7 @@ void AccessibilityUIMessageHandler::OnJavascriptDisallowed() {
 }
 
 void AccessibilityUIMessageHandler::RegisterMessages() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   web_ui()->RegisterMessageCallback(
       "initialize",

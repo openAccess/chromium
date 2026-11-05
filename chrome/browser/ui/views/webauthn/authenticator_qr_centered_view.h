@@ -9,7 +9,6 @@
 
 #include "base/memory/raw_ptr.h"
 #include "ui/base/metadata/metadata_header_macros.h"
-#include "ui/gfx/geometry/size.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/view.h"
 
@@ -17,19 +16,12 @@ class AuthenticatorQrCenteredView : public views::View {
   METADATA_HEADER(AuthenticatorQrCenteredView, views::View)
 
  public:
-  static constexpr int kDefaultQrCodeImageSize = 240;
-  static constexpr int kDefaultQrCodeMargin = 40;
-
-  explicit AuthenticatorQrCenteredView(const std::string& qr_string,
-                                       int qr_size = kDefaultQrCodeImageSize,
-                                       int qr_margin = kDefaultQrCodeMargin);
+  explicit AuthenticatorQrCenteredView(const std::string& qr_string);
   ~AuthenticatorQrCenteredView() override;
 
   AuthenticatorQrCenteredView(const AuthenticatorQrCenteredView&) = delete;
   AuthenticatorQrCenteredView& operator=(const AuthenticatorQrCenteredView&) =
       delete;
-
-  void OnThemeChanged() override;
 
  private:
   raw_ptr<views::ImageView> qr_code_image_;

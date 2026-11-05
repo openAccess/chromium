@@ -384,6 +384,8 @@ ChromePermissionMessageRule::GetAllRules() {
       // blocking parts of pages, which is a subset of what the "<all_urls>"
       // access allows. Therefore we display only the "<all_urls>" warning
       // message if both permissions are required.
+      // Hiding the MIME handler warning behind the "<all_urls>" warning is an
+      // intentional compromise to avoid showing too many warnings.
       {IDS_EXTENSION_PROMPT_WARNING_ALL_HOSTS,
        {APIPermissionID::kHostsAll},
        {APIPermissionID::kDeclarativeWebRequest,
@@ -393,7 +395,8 @@ ChromePermissionMessageRule::GetAllRules() {
         APIPermissionID::kProcesses, APIPermissionID::kTab,
         APIPermissionID::kTopSites, APIPermissionID::kWebNavigation,
         APIPermissionID::kDeclarativeNetRequest,
-        APIPermissionID::kWebAuthenticationProxy}},
+        APIPermissionID::kWebAuthenticationProxy,
+        APIPermissionID::kMimeTypesHandlerPdf}},
       {IDS_EXTENSION_PROMPT_WARNING_ALL_HOSTS,
        {APIPermissionID::kWebAuthenticationProxy},
        {APIPermissionID::kDeclarativeWebRequest,
@@ -491,6 +494,11 @@ ChromePermissionMessageRule::GetAllRules() {
        {APIPermissionID::kPrintingMetrics},
        {}},
 
+      // Third-party MIME handlers, one warning per claimed MIME type.
+      {IDS_EXTENSION_PROMPT_WARNING_MIME_TYPES_HANDLER_PDF,
+       {APIPermissionID::kMimeTypesHandlerPdf},
+       {}},
+
       {IDS_EXTENSION_PROMPT_WARNING_DECLARATIVE_WEB_REQUEST,
        {APIPermissionID::kDeclarativeWebRequest},
        {}},
@@ -527,6 +535,18 @@ ChromePermissionMessageRule::GetAllRules() {
        {APIPermissionID::kUsbDeviceUnknownVendor}},
       {std::make_unique<USBDevicesFormatter>(),
        {APIPermissionID::kUsbDeviceUnknownVendor},
+       {}},
+      // A ChromeOS platform app that holds both "usb" and "printerProvider"
+      // becomes a Print Preview provisional USB printer provider for every
+      // vendor/product ID listed in its "usb_printers" manifest key. The
+      // filter list itself is not represented in any PermissionSet (its
+      // manifest handler creates no ManifestPermission), and neither kUsb nor
+      // kPrinterProvider produces a message on its own, so acquiring this
+      // capability through a silent auto-update was invisible to
+      // IsPrivilegeIncrease(). Surface a warning for the combination so that
+      // an update adding it disables the app pending user approval.
+      {IDS_EXTENSION_PROMPT_WARNING_USB_DEVICE_UNKNOWN_VENDOR,
+       {APIPermissionID::kUsb, APIPermissionID::kPrinterProvider},
        {}},
       // Access to users' devices should provide a single warning message
       // specifying the transport method used; serial and/or Bluetooth.
@@ -724,6 +744,9 @@ ChromePermissionMessageRule::GetAllRules() {
        {}},
       {IDS_EXTENSION_PROMPT_WARNING_ENTERPRISE_DEVICE_ATTRIBUTES,
        {APIPermissionID::kEnterpriseDeviceAttributes},
+       {}},
+      {IDS_EXTENSION_PROMPT_WARNING_ENTERPRISE_WEBRTC,
+       {APIPermissionID::kEnterpriseWebrtc},
        {}},
       {IDS_EXTENSION_PROMPT_WARNING_ENTERPRISE_KIOSK_INPUT,
        {APIPermissionID::kEnterpriseKioskInput},

@@ -37,6 +37,8 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/accessibility/dump_accessibility_events_views_browsertest_base.h"
@@ -45,6 +47,8 @@
 #include "chrome/browser/ui/views/omnibox/omnibox_placeholder_util.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_view_views.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -64,8 +68,10 @@
 #include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/security_interstitials/core/omnibox_https_upgrade_metrics.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/unified_consent/pref_names.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/url_constants.h"
@@ -87,6 +93,7 @@
 #include "ui/base/ime/mock_input_method.h"
 #include "ui/base/ime/text_edit_commands.h"
 #include "ui/base/ime/text_input_client.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_switches.h"
@@ -97,6 +104,7 @@
 #include "ui/views/accessibility/atomic_view_ax_tree_manager.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/textfield/textfield_test_api.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/views_features.h"
 
 #if BUILDFLAG(IS_OZONE)
@@ -141,8 +149,13 @@ class OmniboxViewViewsTest : public InProcessBrowserTest {
         /*disabled_features=*/
         // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
         // is enabled and then remove these two Features.
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
+        {
+            omnibox::internal::kWebUIOmniboxPopup,
+            omnibox::internal::kWebUIOmniboxAimPopup,
+            // kWebUILocationBar however replaces OmniboxViewViews, so almost
+            // all tests here are inherently incompatible with it
+            features::kWebUILocationBar,
+        });
   }
   ~OmniboxViewViewsTest() override = default;
 
@@ -563,7 +576,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, CloseOmniboxPopupOnTextDrag) {
   AutocompleteResult& results = autocomplete_controller->internal_result_;
   ACMatches matches;
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = u"http://autocomplete-result/";
   match.contents_class.emplace_back(0, ACMatchClassification::URL);
   match.destination_url = GURL("http://autocomplete-result/");
@@ -623,7 +636,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, MaintainCursorAfterFocusCycle) {
   AutocompleteResult& results = autocomplete_controller->internal_result_;
   ACMatches matches;
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = u"http://autocomplete-result/";
   match.contents_class.emplace_back(0, ACMatchClassification::URL);
   match.destination_url = GURL("http://autocomplete-result/");
@@ -724,7 +737,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, FriendlyAccessibleLabel) {
   ASSERT_NO_FATAL_FAILURE(GetOmniboxViewForBrowser(browser(), &omnibox_view));
   std::u16string match_url = u"https://google.com";
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = match_url;
   match.contents_class.emplace_back(0, ACMatchClassification::URL);
   match.destination_url = GURL(match_url);
@@ -827,7 +840,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, AccessiblePopup) {
 
   std::u16string match_url = u"https://google.com";
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = match_url;
   match.contents_class.emplace_back(0, ACMatchClassification::URL);
   match.destination_url = GURL(match_url);
@@ -912,7 +925,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, DISABLED_ReloadAfterKill) {
   // Verify the omnibox contents, URL and icon.
   EXPECT_EQ(u"", omnibox_view_views->GetText());
   EXPECT_EQ(GURL(url::kAboutBlankURL),
-            browser()->GetFeatures().location_bar_model()->GetURL());
+            LocationBarModel::From(browser())->GetURL());
 }
 
 // Omnibox un-elides and elides URL appropriately according to the Always Show
@@ -998,7 +1011,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsUIATest, AccessibleOmnibox) {
 
   std::u16string match_url = u"https://example.com";
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = match_url;
   match.contents_class.push_back(
       ACMatchClassification(0, ACMatchClassification::URL));
@@ -1126,7 +1139,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsUIATest, GetSelectionAndBounds) {
   omnibox_view_views->ConvertRectToScreen(omnibox_view_views,
                                           &bounds_in_screen);
 
-  std::vector<int32_t> offsets =
+  base::span<const int32_t> offsets =
       ax_tree_manager->GetRoot()->GetIntListAttribute(
           ax::mojom::IntListAttribute::kCharacterOffsets);
   int range_start_offset = offsets[selection_range.start()];
@@ -1267,9 +1280,9 @@ IN_PROC_BROWSER_TEST_F(OmniboxViewViewsTest, MAYBE_HandleExternalProtocolURLs) {
     const AutocompleteResult& result = controller->result();
     ASSERT_EQ(result.size(), 2U);
     EXPECT_EQ(result.match_at(0).type,
-              AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED);
+              omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
     EXPECT_EQ(result.match_at(1).type,
-              AutocompleteMatchType::URL_WHAT_YOU_TYPED);
+              omnibox::AutocompleteMatchType::kUrlWhatYouTyped);
 
     // Navigate to UWYT suggestion.
     ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_DOWN, false,
@@ -1398,9 +1411,12 @@ class OmniboxViewViewsOnFocusZpsTest : public OmniboxViewViewsTest {
         suggest_config;
     suggest_config.Get().enabled = true;
 
+    // TODO(crbug.com/579051362): Fix test failures related to organizer panel
+    // focus.
     base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndEnableFeature(
-        omnibox::kFocusTriggersWebAndSRPZeroSuggest);
+    scoped_feature_list.InitWithFeatures(
+        /*enabled_features=*/{omnibox::kFocusTriggersWebAndSRPZeroSuggest},
+        /*disabled_features=*/{organizer_panel::kOrganizerPanel});
 
     InProcessBrowserTest::SetUp();
   }
@@ -1786,7 +1802,10 @@ class OmniboxViewViewsPlaceholderTest : public InProcessBrowserTest {
         // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
         // is enabled and then remove these two Features.
         {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
+         omnibox::internal::kWebUIOmniboxAimPopup,
+         // kWebUILocationBar however replaces OmniboxViewViews, so almost
+         // all tests here are inherently incompatible with it
+         features::kWebUILocationBar});
   }
 
   void SetUpInProcessBrowserTestFixture() override {
@@ -2028,6 +2047,20 @@ IN_PROC_BROWSER_TEST_P(OmniboxViewViewsDumpAccessibilityEventsTest,
 
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
   chrome::FocusLocationBar(browser());
+// TODO(crbug.com/581293433): ViewAX blocks focusing omnibox on Mac.
+#if !BUILDFLAG(IS_MAC)
+  ui_test_utils::WaitForViewFocus(browser(), VIEW_ID_OMNIBOX, true);
+#endif  // !BUILDFLAG(IS_MAC)
+  if (features::IsWebUILocationBarEnabled()) {
+    if (auto* toolbar_webview = BrowserView::GetBrowserViewForBrowser(browser())
+                                    ->toolbar()
+                                    ->GetWebUIToolbarViewForTesting()) {
+      content::WaitForAccessibilityTreeToContainNodeWithName(
+          toolbar_webview->GetWebViewForTesting()->GetWebContents(),
+          l10n_util::GetStringUTF8(IDS_ACCNAME_LOCATION));
+    }
+  }
+  WaitForPendingSerialization();
 
   EXPECT_FALSE(omnibox_controller()->IsPopupOpen());
 

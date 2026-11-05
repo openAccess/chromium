@@ -26,6 +26,7 @@
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 #include <limits>
+#include <numbers>
 
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
@@ -60,8 +61,6 @@ TEST(StringTest, CreationFromHashTraits) {
   uint32_t hash = String("abc").Impl()->GetHash();
   EXPECT_EQ(hash, HashTraits<String>::GetHash(String("abc")));
   EXPECT_EQ(hash, HashTraits<String>::GetHash("abc"));
-  EXPECT_EQ(hash,
-            HashTraits<String>::GetHash(reinterpret_cast<const LChar*>("abc")));
   const UChar abc_wide[] = {'a', 'b', 'c', 0};
   EXPECT_EQ(hash, HashTraits<String>::GetHash(abc_wide));
 }
@@ -77,15 +76,6 @@ TEST(StringTest, EqualHashTraits) {
   EXPECT_FALSE(HashTraits<String>::Equal(abc, "def"));
   EXPECT_TRUE(HashTraits<String>::Equal("abc", abc));
   EXPECT_FALSE(HashTraits<String>::Equal("def", abc));
-
-  EXPECT_TRUE(
-      HashTraits<String>::Equal(abc, reinterpret_cast<const LChar*>("abc")));
-  EXPECT_FALSE(
-      HashTraits<String>::Equal(abc, reinterpret_cast<const LChar*>("def")));
-  EXPECT_TRUE(
-      HashTraits<String>::Equal(reinterpret_cast<const LChar*>("abc"), abc));
-  EXPECT_FALSE(
-      HashTraits<String>::Equal(reinterpret_cast<const LChar*>("def"), abc));
 
   const UChar abc_wide[] = {'a', 'b', 'c', 0};
   const UChar def_wide[] = {'d', 'e', 'f', 0};
@@ -115,7 +105,7 @@ void TestNumberToStringEcmaScript(double number, const char* reference) {
 }  // anonymous namespace
 
 TEST(StringTest, NumberToStringEcmaScriptBoundaries) {
-  typedef std::numeric_limits<double> Limits;
+  using Limits = std::numeric_limits<double>;
 
   // Infinity.
   TestNumberToStringEcmaScript(Limits::infinity(), "Infinity");
@@ -135,8 +125,8 @@ TEST(StringTest, NumberToStringEcmaScriptBoundaries) {
 
 TEST(StringTest, NumberToStringEcmaScriptRegularNumbers) {
   // Pi.
-  TestNumberToStringEcmaScript(kPiDouble, "3.141592653589793");
-  TestNumberToStringEcmaScript(kPiFloat, "3.1415927410125732");
+  TestNumberToStringEcmaScript(std::numbers::pi, "3.141592653589793");
+  TestNumberToStringEcmaScript(std::numbers::pi_v<float>, "3.1415927410125732");
   TestNumberToStringEcmaScript(kPiOverTwoDouble, "1.5707963267948966");
   TestNumberToStringEcmaScript(kPiOverTwoFloat, "1.5707963705062866");
   TestNumberToStringEcmaScript(kPiOverFourDouble, "0.7853981633974483");

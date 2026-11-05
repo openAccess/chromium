@@ -63,8 +63,6 @@
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_skia.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
 #include "v8/include/v8.h"
@@ -266,8 +264,9 @@ ScriptPromise<ImageBitmap> ImageBitmapFactories::CreateImageBitmap(
     const ImageBitmapOptions* options,
     ExceptionState& exception_state) {
   if (crop_rect && (crop_rect->width() == 0 || crop_rect->height() == 0)) {
-    exception_state.ThrowRangeError(UNSAFE_TODO(String::Format(
-        "The crop rect %s is 0.", crop_rect->width() ? "height" : "width")));
+    exception_state.ThrowRangeError(crop_rect->width()
+                                        ? "The crop rect height is 0."
+                                        : "The crop rect width is 0.");
     return EmptyPromise();
   }
 

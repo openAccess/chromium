@@ -7,13 +7,11 @@ package org.chromium.chrome.browser.contextmenu;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.Context;
-import android.text.style.ForegroundColorSpan;
-import android.text.style.RelativeSizeSpan;
-import android.text.style.SuperscriptSpan;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.StringRes;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
@@ -25,10 +23,8 @@ import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.translate.TranslateBridge;
-import org.chromium.components.browser_ui.styles.SemanticColorUtils;
+import org.chromium.components.browser_ui.styles.NewLabelUtils;
 import org.chromium.components.search_engines.TemplateUrl;
-import org.chromium.ui.text.SpanApplier;
-import org.chromium.ui.text.SpanApplier.SpanInfo;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -91,7 +87,8 @@ class ChromeContextMenuItem {
         Item.SEND_TAB_TO_SELF,
         Item.TRANSLATE,
         Item.CREATE_QR_CODE,
-        Item.ASK_GEMINI
+        Item.ASK_GEMINI,
+        Item.ASK_GEMINI_IMAGE
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface Item {
@@ -160,8 +157,9 @@ class ChromeContextMenuItem {
         int TRANSLATE = 51;
         int CREATE_QR_CODE = 52;
         int ASK_GEMINI = 53;
+        int ASK_GEMINI_IMAGE = 54;
         // ALWAYS UPDATE!
-        int NUM_ENTRIES = 54;
+        int NUM_ENTRIES = 55;
     }
 
     /** Mapping from {@link Item} to the ID found in the ids.xml. */
@@ -220,6 +218,7 @@ class ChromeContextMenuItem {
         R.id.contextmenu_translate, // Item.TRANSLATE
         R.id.contextmenu_create_qr_code, // Item.CREATE_QR_CODE
         R.id.contextmenu_ask_gemini, // Item.ASK_GEMINI
+        R.id.contextmenu_ask_gemini_image, // Item.ASK_GEMINI_IMAGE
     };
 
     /** Mapping from {@link Item} to the ID of the string that describes the action of the item. */
@@ -278,6 +277,7 @@ class ChromeContextMenuItem {
         R.string.contextmenu_translate, // Item.TRANSLATE
         R.string.contextmenu_create_qr_code, // Item.CREATE_QR_CODE
         R.string.glic_button_entrypoint_ask_gemini_label, // Item.ASK_GEMINI
+        R.string.glic_button_entrypoint_ask_gemini_label, // Item.ASK_GEMINI_IMAGE
     };
 
     /**
@@ -303,7 +303,8 @@ class ChromeContextMenuItem {
     }
 
     private static boolean isSaveAsEnabled() {
-        return ChromeFeatureList.isEnabled(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU);
+        return ChromeFeatureList.isEnabled(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
+                || DeviceInfo.isDesktop();
     }
 
     /**
@@ -313,7 +314,7 @@ class ChromeContextMenuItem {
      * @param context Requires to get the string resource related to the item.
      * @param profile The {@link Profile} associated with the current page.
      * @param item Context menu item id.
-     * @param showInProductHelp Whether the menu item should show the new superscript label.
+     * @param showInProductHelp Whether the menu item should show the "New" badge.
      * @return Returns a string for the menu item.
      */
     public static CharSequence getTitle(
@@ -347,37 +348,11 @@ class ChromeContextMenuItem {
                                 .getDefaultSearchEngineTemplateUrl();
                 assumeNonNull(templateUrl);
                 return context.getString(getStringId(item), templateUrl.getShortName());
-            case Item.READ_LATER:
-                return addOrRemoveNewLabel(context, item, null, showInProductHelp);
-            case Item.OPEN_IN_EPHEMERAL_TAB:
-                return addOrRemoveNewLabel(
-                        context,
-                        item,
-                        ChromePreferenceKeys.CONTEXT_MENU_OPEN_IN_EPHEMERAL_TAB_CLICKED,
-                        showInProductHelp);
-            case Item.OPEN_IMAGE_IN_EPHEMERAL_TAB:
-                return addOrRemoveNewLabel(
-                        context,
-                        item,
-                        ChromePreferenceKeys.CONTEXT_MENU_OPEN_IMAGE_IN_EPHEMERAL_TAB_CLICKED,
-                        showInProductHelp);
             case Item.SEARCH_TAB_WITH_GOOGLE_LENS:
                 return addOrRemoveNewLabel(
                         context,
                         item,
                         ChromePreferenceKeys.CONTEXT_MENU_SEARCH_TAB_WITH_GOOGLE_LENS_CLICKED,
-                        showInProductHelp);
-            case Item.SEARCH_IMAGE_WITH_GOOGLE_LENS:
-                return addOrRemoveNewLabel(
-                        context,
-                        item,
-                        ChromePreferenceKeys.CONTEXT_MENU_SEARCH_IMAGE_WITH_GOOGLE_LENS_CLICKED,
-                        showInProductHelp);
-            case Item.SHOP_IMAGE_WITH_GOOGLE_LENS:
-                return addOrRemoveNewLabel(
-                        context,
-                        item,
-                        ChromePreferenceKeys.CONTEXT_MENU_SHOP_IMAGE_WITH_GOOGLE_LENS_CLICKED,
                         showInProductHelp);
             case Item.OPEN_IN_CHROME_INCOGNITO_TAB:
                 if (IncognitoUtils.shouldOpenIncognitoAsWindow()) {
@@ -408,8 +383,8 @@ class ChromeContextMenuItem {
     }
 
     /**
-     * Modify the menu title by applying span attributes or removing the 'New' label if the menu has
-     * already been selected before.
+     * Returns the menu title with a "New" badge on it, or with the badge text taken out if the item
+     * has already been used.
      */
     private static CharSequence addOrRemoveNewLabel(
             Context context, @Item int item, @Nullable String prefKey, boolean showNewLabel) {
@@ -417,16 +392,8 @@ class ChromeContextMenuItem {
         if (!showNewLabel
                 || (prefKey != null
                         && ChromeSharedPreferences.getInstance().readBoolean(prefKey, false))) {
-            return SpanApplier.removeSpanText(menuTitle, new SpanInfo("<new>", "</new>"));
+            return NewLabelUtils.withoutBadge(menuTitle);
         }
-        return SpanApplier.applySpans(
-                menuTitle,
-                new SpanInfo(
-                        "<new>",
-                        "</new>",
-                        new SuperscriptSpan(),
-                        new RelativeSizeSpan(0.75f),
-                        new ForegroundColorSpan(
-                                SemanticColorUtils.getDefaultTextColorAccent1(context))));
+        return NewLabelUtils.withBadge(context, menuTitle);
     }
 }

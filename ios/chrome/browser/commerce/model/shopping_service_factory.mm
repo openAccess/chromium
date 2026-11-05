@@ -4,13 +4,14 @@
 
 #import "ios/chrome/browser/commerce/model/shopping_service_factory.h"
 
+#import <utility>
+
 #import "components/application_locale_storage/application_locale_storage.h"
 #import "components/commerce/core/commerce_feature_list.h"
 #import "components/commerce/core/proto/commerce_subscription_db_content.pb.h"
 #import "components/commerce/core/proto/parcel_tracking_db_content.pb.h"
 #import "components/commerce/core/shopping_service.h"
 #import "components/commerce/ios/browser/web_extractor_impl.h"
-#import "components/keyed_service/core/service_access_type.h"
 #import "components/prefs/pref_service.h"
 #import "components/variations/service/variations_service_utils.h"
 #import "ios/chrome/app/tests_hook.h"
@@ -29,28 +30,10 @@
 
 namespace commerce {
 
-// static
-ShoppingServiceFactory* ShoppingServiceFactory::GetInstance() {
-  static base::NoDestructor<ShoppingServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-ShoppingService* ShoppingServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<ShoppingService>(
-      profile, /*create=*/true);
-}
-
-// static
-ShoppingService* ShoppingServiceFactory::GetForProfileIfExists(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<ShoppingService>(
-      profile, /*create=*/false);
-}
-
-ShoppingServiceFactory::ShoppingServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("ShoppingService",
-                                    TestingCreation::kNoServiceForTests) {
+ShoppingServiceFactory::ShoppingServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "ShoppingService",
+                                         TestingCreation::kNoServiceForTests) {
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(ios::BookmarkModelFactory::GetInstance());
   DependsOn(OptimizationGuideServiceFactory::GetInstance());
@@ -66,20 +49,23 @@ ShoppingServiceFactory::ShoppingServiceFactory()
 }
 
 std::unique_ptr<KeyedService> ShoppingServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
-  if (auto service = tests_hook::CreateShoppingService(profile)) {
+    ProfileIOS& profile) const {
+  if (auto service = tests_hook::CreateShoppingService(&profile)) {
     return service;
   }
 
-  PrefService* pref_service = profile->GetPrefs();
+  PrefService* pref_service = profile.GetPrefs();
   return std::make_unique<ShoppingService>(
       GetCurrentCountryCode(GetApplicationContext()->GetVariationsService()),
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
+      std::string(GetApplicationContext()
+                      ->GetApplicationLocaleStorage()
+                      ->GetTag()
+                      .tag_string()),
       ios::BookmarkModelFactory::GetForProfile(profile),
       OptimizationGuideServiceFactory::GetForProfile(profile), pref_service,
       IdentityManagerFactory::GetForProfile(profile),
       SyncServiceFactory::GetForProfile(profile),
-      profile->GetSharedURLLoaderFactory(),
+      profile.GetSharedURLLoaderFactory(),
       SessionProtoDBFactory<commerce_subscription_db::
                                 CommerceSubscriptionContentProto>::GetInstance()
           ->GetForProfile(profile),
@@ -88,8 +74,7 @@ std::unique_ptr<KeyedService> ShoppingServiceFactory::BuildServiceInstanceFor(
       SessionProtoDBFactory<
           parcel_tracking_db::ParcelTrackingContent>::GetInstance()
           ->GetForProfile(profile),
-      ios::HistoryServiceFactory::GetForProfile(
-          profile, ServiceAccessType::EXPLICIT_ACCESS),
+      ios::HistoryServiceFactory::GetForProfile(profile),
       std::make_unique<commerce::WebExtractorImpl>(),
       IOSChromeTabRestoreServiceFactory::GetForProfile(profile));
 }

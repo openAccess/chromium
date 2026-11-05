@@ -10,6 +10,7 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
+#include "base/timer/timer.h"
 #include "chrome/browser/ash/login/login_client_cert_usage_observer.h"
 #include "chrome/browser/ash/login/signin_partition_manager.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
@@ -25,6 +26,8 @@
 #include "google_apis/gaia/gaia_urls.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
+
+class PrefService;
 
 namespace ash {
 
@@ -135,7 +138,8 @@ std::unique_ptr<UserContext> BuildUserContextForGaiaSignIn(
 
 // Returns user canonical e-mail. Finds already used account alias, if
 // user has already signed in.
-AccountId GetAccountId(const std::string& authenticated_email,
+AccountId GetAccountId(PrefService& local_state,
+                       const std::string& authenticated_email,
                        const std::string& id,
                        const AccountType& account_type);
 

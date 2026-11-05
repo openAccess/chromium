@@ -16,8 +16,11 @@ import android.text.TextUtils;
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.ActivityState;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
@@ -52,11 +55,13 @@ import org.chromium.components.messages.MessageScopeType;
 import org.chromium.components.messages.PrimaryActionClickBehavior;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
+import org.chromium.components.sync_device_info.RemoteDeviceInfo;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -67,6 +72,9 @@ import java.util.List;
 @JNINamespace("send_tab_to_self")
 @NullMarked
 public class SendTabToSelfAndroidBridge {
+    @JniType("::send_tab_to_self::TargetDeviceListWaiter")
+    interface NativeTargetDeviceListWaiter extends JniTypeToken {}
+
     /** Interface for a callback to receive the result of a send tab to self operation. */
     @FunctionalInterface
     public interface CommitConfirmationCallback {
@@ -108,6 +116,7 @@ public class SendTabToSelfAndroidBridge {
      * @param targetDeviceName The name of the target device.
      * @param url The URL being shared.
      * @param title The title of the page being shared.
+     * @param entryPoint The entry point from which the share was triggered.
      */
     public static void sendTabToDevice(
             Profile profile,
@@ -117,15 +126,91 @@ public class SendTabToSelfAndroidBridge {
             String url,
             String title,
             @ShareEntryPoint int entryPoint) {
-        SendTabToSelfAndroidBridgeJni.get()
-                .sendTabToDevice(
-                        profile,
-                        webContents,
-                        targetDeviceSyncCacheGuid,
-                        url,
-                        title,
-                        result -> showPostSendUi(profile, webContents, result, targetDeviceName),
-                        entryPoint);
+        sendTabsToDevice(
+                profile,
+                webContents,
+                targetDeviceSyncCacheGuid,
+                targetDeviceName,
+                Collections.singletonList(url),
+                title,
+                entryPoint,
+                /* onComplete= */ null);
+    }
+
+    /**
+     * Sends one or more URLs to the target device and shows a single post-send UI once all sends
+     * complete.
+     *
+     * @param profile The profile to use for sending.
+     * @param webContents The web contents of the current tab, or null if not available.
+     * @param targetDeviceSyncCacheGuid The GUID of the target device.
+     * @param targetDeviceName The name of the target device.
+     * @param urls The list of URLs being shared.
+     * @param title The title of the page being shared (only used when sharing a single URL), or
+     *     null.
+     * @param entryPoint The entry point from which the share was triggered.
+     * @param onComplete Optional callback invoked after the post-send UI is shown.
+     */
+    public static void sendTabsToDevice(
+            Profile profile,
+            @Nullable WebContents webContents,
+            String targetDeviceSyncCacheGuid,
+            String targetDeviceName,
+            List<String> urls,
+            @Nullable String title,
+            @ShareEntryPoint int entryPoint,
+            @Nullable Runnable onComplete) {
+        ThreadUtils.assertOnUiThread();
+        if (urls.isEmpty()) {
+            if (onComplete != null) onComplete.run();
+            return;
+        }
+
+        String effectiveTitle = (urls.size() == 1 && title != null) ? title : "";
+        CommitConfirmationCallback callback =
+                new CommitConfirmationCallback() {
+                    private int mRemaining = urls.size();
+                    private boolean mHasSuccess;
+                    private @Nullable @SendTabToSelfResult Integer mFirstFailure;
+
+                    @Override
+                    public void onResult(@SendTabToSelfResult int result) {
+                        ThreadUtils.assertOnUiThread();
+                        if (result == SendTabToSelfResult.SUCCESS) {
+                            mHasSuccess = true;
+                        } else if (result != SendTabToSelfResult.SUCCESS_THROTTLED
+                                && mFirstFailure == null) {
+                            mFirstFailure = result;
+                        }
+                        mRemaining--;
+                        if (mRemaining == 0) {
+                            // On partial failure, intentionally surface the failure rather than
+                            // claiming full success (there are no partial-failure strings, and
+                            // retrying already-sent URLs is safely deduplicated via
+                            // SUCCESS_THROTTLED).
+                            @SendTabToSelfResult
+                            int finalResult =
+                                    mFirstFailure != null
+                                            ? mFirstFailure
+                                            : (mHasSuccess
+                                                    ? SendTabToSelfResult.SUCCESS
+                                                    : SendTabToSelfResult.SUCCESS_THROTTLED);
+                            showPostSendUi(profile, webContents, finalResult, targetDeviceName);
+                            if (onComplete != null) onComplete.run();
+                        }
+                    }
+                };
+        for (String url : urls) {
+            SendTabToSelfAndroidBridgeJni.get()
+                    .sendTabToDevice(
+                            profile,
+                            webContents,
+                            targetDeviceSyncCacheGuid,
+                            url,
+                            effectiveTitle,
+                            callback,
+                            entryPoint);
+        }
     }
 
     private static void showPostSendUi(
@@ -133,10 +218,6 @@ public class SendTabToSelfAndroidBridge {
             @Nullable WebContents webContents,
             @SendTabToSelfResult int result,
             String targetDeviceName) {
-        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.SEND_TAB_TO_SELF_POST_SEND_TOAST)) {
-            return;
-        }
-
         String userEmail = getUserEmail(profile);
 
         if (!maybeShowPostSendSnackbar(webContents, result, targetDeviceName, userEmail)) {
@@ -166,13 +247,13 @@ public class SendTabToSelfAndroidBridge {
             }
         }
 
-        // Fallback: Get the window from the last focused activity. This is used when the tab was
-        // shared via a DirectSend action in the system Share Sheet triggered by Chrome.
+        // Fallback: Get the window from a visible SnackbarManageable activity. This is used when
+        // the tab was shared via a Direct Share action in the system Share Sheet triggered from
+        // Chrome (where SendTabToSelfShareTargetActivity may currently be on top of a PAUSED
+        // ChromeTabbedActivity).
         if (snackbarManager == null) {
-            Activity currentActivity = ApplicationStatus.getLastTrackedFocusedActivity();
-            if (currentActivity instanceof SnackbarManageable
-                    && !currentActivity.isFinishing()
-                    && !currentActivity.isDestroyed()) {
+            Activity currentActivity = findVisibleSnackbarManageableActivity();
+            if (currentActivity != null) {
                 snackbarManager = ((SnackbarManageable) currentActivity).getSnackbarManager();
                 context = currentActivity;
             }
@@ -189,11 +270,39 @@ public class SendTabToSelfAndroidBridge {
         return true;
     }
 
+    private static @Nullable Activity findVisibleSnackbarManageableActivity() {
+        Activity lastFocused = ApplicationStatus.getLastTrackedFocusedActivity();
+        if (isUsableSnackbarManageableActivity(lastFocused)) {
+            return lastFocused;
+        }
+        if (!ApplicationStatus.isInitialized()) return null;
+        Activity pausedCandidate = null;
+        for (Activity activity : ApplicationStatus.getRunningActivities()) {
+            if (!isUsableSnackbarManageableActivity(activity)) continue;
+            if (ApplicationStatus.getStateForActivity(activity) == ActivityState.RESUMED) {
+                return activity;
+            }
+            if (pausedCandidate == null) {
+                pausedCandidate = activity;
+            }
+        }
+        return pausedCandidate;
+    }
+
+    private static boolean isUsableSnackbarManageableActivity(@Nullable Activity activity) {
+        if (!(activity instanceof SnackbarManageable)
+                || activity.isFinishing()
+                || activity.isDestroyed()) {
+            return false;
+        }
+        if (!ApplicationStatus.isInitialized()) return true;
+        @ActivityState int state = ApplicationStatus.getStateForActivity(activity);
+        return state == ActivityState.RESUMED || state == ActivityState.PAUSED;
+    }
+
     // Shows the post-send toast; to be used as a fallback if the snackbar can't be shown.
     private static void showPostSendFallbackToast(
-            @SendTabToSelfResult int result,
-            String targetDeviceName,
-            @Nullable String userEmail) {
+            @SendTabToSelfResult int result, String targetDeviceName, @Nullable String userEmail) {
         Context context = ContextUtils.getApplicationContext();
         String message = getSnackbarMessage(context, result, targetDeviceName, userEmail);
         // Note: `org.chromium.ui.widget.Toast` does not work in this situation (where Chrome is not
@@ -284,9 +393,9 @@ public class SendTabToSelfAndroidBridge {
 
     /**
      * @param profile Profile of the user for whom to retrieve the targetDeviceInfos.
-     * @return All {@link TargetDeviceInfo} for the user, or an empty list if the model isn't ready.
+     * @return All {@link RemoteDeviceInfo} for the user, or an empty list if the model isn't ready.
      */
-    public static List<TargetDeviceInfo> getAllTargetDeviceInfos(Profile profile) {
+    public static List<RemoteDeviceInfo> getAllTargetDeviceInfos(Profile profile) {
         return SendTabToSelfAndroidBridgeJni.get().getAllTargetDeviceInfos(profile);
     }
 
@@ -295,16 +404,11 @@ public class SendTabToSelfAndroidBridge {
         return SendTabToSelfAndroidBridgeJni.get().getEntryPointDisplayReason(profile, url);
     }
 
-    public static long addTargetDeviceListWaiter(
+    public static JniUniquePtr<NativeTargetDeviceListWaiter> addTargetDeviceListWaiter(
             Profile profile, String url, Runnable onTargetDeviceListReady) {
         ThreadUtils.assertOnUiThread();
         return SendTabToSelfAndroidBridgeJni.get()
                 .addTargetDeviceListWaiter(profile, url, onTargetDeviceListReady);
-    }
-
-    public static void removeTargetDeviceListWaiter(long waiterPtr) {
-        ThreadUtils.assertOnUiThread();
-        SendTabToSelfAndroidBridgeJni.get().removeTargetDeviceListWaiter(waiterPtr);
     }
 
     /**
@@ -562,21 +666,19 @@ public class SendTabToSelfAndroidBridge {
         // native app if available.
         if (newestNewTabIndex != TabModel.INVALID_TAB_INDEX) {
             assert newestTab != null;
-            if (ChromeFeatureList.sSendTabToSelfRecordSnackbarActivation.isEnabled()) {
-                assert newestLabelData != null;
+            assert newestLabelData != null;
 
-                // The entry is going to be activated, so drop any label data. This also prevents
-                // the entry from being marked activated again upon tab activation.
-                newestLabelData.removeAndDestroy();
+            // The entry is going to be activated, so drop any label data. This also prevents
+            // the entry from being marked activated again upon tab activation.
+            newestLabelData.removeAndDestroy();
 
-                // Mark the entry as activated.
-                Profile profile = normalTabModel.getProfile();
-                if (profile != null) {
-                    SendTabToSelfAndroidBridge.markEntryActivated(
-                            profile,
-                            newestLabelData.getGuid(),
-                            ShareActivatedEntryPoint.MOBILE_MESSAGE_BANNER);
-                }
+            // Mark the entry as activated.
+            Profile profile = normalTabModel.getProfile();
+            if (profile != null) {
+                SendTabToSelfAndroidBridge.markEntryActivated(
+                        profile,
+                        newestLabelData.getGuid(),
+                        ShareActivatedEntryPoint.MOBILE_MESSAGE_BANNER);
             }
 
             // In the single-tab case, open the matching native app directly if available.
@@ -587,6 +689,15 @@ public class SendTabToSelfAndroidBridge {
             }
 
             normalTabModel.setIndex(newestNewTabIndex, TabSelectionType.FROM_USER);
+
+            // Enable the back press handler to intercept the back gesture from `newestTab` and
+            // switch back to the parent tab.
+            SendTabToSelfBackPressHandler handler =
+                    tabbedActivity.getSendTabToSelfBackPressHandler();
+            if (handler != null) {
+                handler.enable(newestTab);
+            }
+
             // In the multi-tab case, show the "open in app" message banner if applicable. This does
             // not happen automatically here, since the LabelData was already cleaned up above
             // (which it needs to be for metrics to be recorded correctly).
@@ -737,8 +848,8 @@ public class SendTabToSelfAndroidBridge {
                 @JniType("std::vector<uint8_t>") byte @Nullable [] pageContext,
                 @JniType("GURL") GURL url);
 
-        @JniType("std::vector")
-        List<TargetDeviceInfo> getAllTargetDeviceInfos(@JniType("Profile*") Profile profile);
+        @JniType("std::vector<syncer::RemoteDeviceInfo>")
+        List<RemoteDeviceInfo> getAllTargetDeviceInfos(@JniType("Profile*") Profile profile);
 
         @Nullable
         @EntryPointDisplayReason
@@ -763,11 +874,9 @@ public class SendTabToSelfAndroidBridge {
 
         boolean isModelReady(@JniType("Profile*") Profile profile);
 
-        long addTargetDeviceListWaiter(
+        JniUniquePtr<NativeTargetDeviceListWaiter> addTargetDeviceListWaiter(
                 @JniType("Profile*") Profile profile,
                 @JniType("std::string") String url,
                 @JniType("base::OnceClosure") Runnable onTargetDeviceListReady);
-
-        void removeTargetDeviceListWaiter(long waiterPtr);
     }
 }

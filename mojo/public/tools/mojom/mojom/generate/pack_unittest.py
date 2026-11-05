@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import sys
 import unittest
 
 from mojom.generate import module as mojom
@@ -80,7 +79,7 @@ class PackTest(unittest.TestCase):
       mojom.DPPIPE.MakeNullableKind(),
       mojom.Array(length=5).MakeNullableKind(),
       mojom.MSGPIPE.MakeNullableKind(),
-      mojom.Interface('test_interface').MakeNullableKind(),
+      mojom.PendingRemote().MakeNullableKind(),
       mojom.SHAREDBUFFER.MakeNullableKind(),
       mojom.PendingReceiver().MakeNullableKind(),
     )
@@ -256,11 +255,14 @@ class PackTest(unittest.TestCase):
     self.assertEqual(3, versions[1].num_packed_fields)
     self.assertEqual(5, versions[2].num_packed_fields)
 
-  def testInterfaceAlignment(self):
+  def testPendingRemoteAlignment(self):
     """Tests that interfaces are aligned on 4-byte boundaries, although the size
     of an interface is 8 bytes.
     """
-    kinds = (mojom.INT32, mojom.Interface('test_interface'))
+    kinds = (
+      mojom.INT32,
+      mojom.PendingRemote(mojom.Interface('test_interface')),
+    )
     fields = (1, 2)
     offsets = (0, 4)
     self._CheckPackSequence(kinds, fields, offsets)

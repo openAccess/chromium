@@ -15,6 +15,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/gtest_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_management_constants.h"
@@ -553,6 +554,37 @@ TEST(ExtensionSettingsPolicyHandlerTest, ApplyPolicySettings) {
   EXPECT_EQ(*policy_result, *value);
 }
 
+// A check whose result is not applied, e.g. when chrome://policy only lists
+// policy errors, leaves nothing pending, and a later check and apply still
+// work.
+TEST(ExtensionSettingsPolicyHandlerTest, OnPolicySettingsNotApplied) {
+  auto policy_result = base::JSONReader::ReadAndReturnValueWithError(
+      kTestManagementPolicy2, kJsonParseOptions);
+  ASSERT_TRUE(policy_result.has_value()) << policy_result.error().message;
+
+  policy::Schema chrome_schema =
+      policy::Schema::Wrap(policy::GetChromeSchemaData());
+  policy::PolicyMap policy_map;
+  policy::PolicyErrorMap errors;
+  PrefValueMap prefs;
+  ExtensionSettingsPolicyHandler handler(chrome_schema);
+
+  policy_map.Set(policy::key::kExtensionSettings,
+                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
+                 policy::POLICY_SOURCE_CLOUD, policy_result->Clone(), nullptr);
+  EXPECT_TRUE(handler.CheckPolicySettings(policy_map, &errors));
+  handler.OnPolicySettingsNotApplied();
+
+  // Nothing is left pending for ApplyPolicySettings().
+  EXPECT_CHECK_DEATH(handler.ApplyPolicySettings(policy_map, &prefs));
+
+  EXPECT_TRUE(handler.CheckPolicySettings(policy_map, &errors));
+  handler.ApplyPolicySettings(policy_map, &prefs);
+  base::Value* value = nullptr;
+  ASSERT_TRUE(prefs.GetValue(pref_names::kExtensionManagement, &value));
+  EXPECT_EQ(*policy_result, *value);
+}
+
 TEST(ExtensionSettingsPolicyHandlerTest, DropInvalidKeys) {
   // Check that invalid keys are dropped from the dictionary, but the rest of
   // the settings apply correctly.
@@ -619,6 +651,86 @@ TEST(ExtensionSettingsPolicyHandlerTest, NonManagedOffWebstoreExtension) {
   base::Value* value = nullptr;
   ASSERT_TRUE(prefs.GetValue(pref_names::kExtensionManagement, &value));
   EXPECT_EQ(*sanitized_policy_result, *value);
+}
+
+TEST(ExtensionSettingsPolicyHandlerTest, CheckPolicySettingsWithUpdateUrl) {
+  const char kUpdateUrlPolicy[] = R"({
+    "update_url:https://example.com/update.xml": {
+      "installation_mode": "allowed"
+    }
+  })";
+
+  auto policy_result = base::JSONReader::ReadAndReturnValueWithError(
+      kUpdateUrlPolicy, kJsonParseOptions);
+  ASSERT_TRUE(policy_result.has_value()) << policy_result.error().message;
+
+  policy::Schema chrome_schema =
+      policy::Schema::Wrap(policy::GetChromeSchemaData());
+  policy::PolicyMap policy_map;
+  policy::PolicyErrorMap errors;
+  PrefValueMap prefs;
+  ExtensionSettingsPolicyHandler handler(chrome_schema);
+
+  policy_map.Set(policy::key::kExtensionSettings,
+                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
+                 policy::POLICY_SOURCE_CLOUD, policy_result->Clone(), nullptr);
+  EXPECT_TRUE(handler.CheckPolicySettings(policy_map, &errors));
+  EXPECT_TRUE(errors.empty());
+
+  handler.ApplyPolicySettings(policy_map, &prefs);
+  base::Value* value = nullptr;
+  ASSERT_TRUE(prefs.GetValue(pref_names::kExtensionManagement, &value));
+  EXPECT_EQ(*policy_result, *value);
+}
+
+TEST(ExtensionSettingsPolicyHandlerTest,
+     CheckPolicySettingsWithUnknownTopLevelKey) {
+  const char kMixedPolicy[] = R"({
+    "update_url:https://example.com/update.xml": {
+      "installation_mode": "allowed"
+    },
+    "unknown_top_level_key": {
+      "installation_mode": "allowed"
+    }
+  })";
+
+  const char kExpectedSanitizedPolicy[] = R"({
+    "update_url:https://example.com/update.xml": {
+      "installation_mode": "allowed"
+    }
+  })";
+
+  auto policy_result = base::JSONReader::ReadAndReturnValueWithError(
+      kMixedPolicy, kJsonParseOptions);
+  ASSERT_TRUE(policy_result.has_value()) << policy_result.error().message;
+
+  auto expected_policy_result = base::JSONReader::ReadAndReturnValueWithError(
+      kExpectedSanitizedPolicy, kJsonParseOptions);
+  ASSERT_TRUE(expected_policy_result.has_value())
+      << expected_policy_result.error().message;
+
+  policy::Schema chrome_schema =
+      policy::Schema::Wrap(policy::GetChromeSchemaData());
+  policy::PolicyMap policy_map;
+  policy::PolicyErrorMap errors;
+  PrefValueMap prefs;
+  ExtensionSettingsPolicyHandler handler(chrome_schema);
+
+  policy_map.Set(policy::key::kExtensionSettings,
+                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
+                 policy::POLICY_SOURCE_CLOUD, policy_result->Clone(), nullptr);
+  // CheckPolicySettings returns true because unknown properties are tolerated
+  // with a warning under SCHEMA_ALLOW_UNKNOWN strategy.
+  EXPECT_TRUE(handler.CheckPolicySettings(policy_map, &errors));
+  EXPECT_FALSE(errors.empty());
+  EXPECT_FALSE(errors.HasFatalError(policy::key::kExtensionSettings));
+
+  // Verify that Schema::Normalize strips the unknown key while preserving the
+  // valid update_url entry in pref_names::kExtensionManagement.
+  handler.ApplyPolicySettings(policy_map, &prefs);
+  base::Value* value = nullptr;
+  ASSERT_TRUE(prefs.GetValue(pref_names::kExtensionManagement, &value));
+  EXPECT_EQ(*expected_policy_result, *value);
 }
 
 #if BUILDFLAG(IS_CHROMEOS)

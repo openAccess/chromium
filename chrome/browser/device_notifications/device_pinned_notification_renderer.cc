@@ -95,6 +95,8 @@ DevicePinnedNotificationRenderer::CreateNotification(Profile* profile) {
   message_center::RichNotificationData data;
 #if BUILDFLAG(IS_CHROMEOS)
   // The new pinned notification view uses a settings icon button.
+  // TODO(crbug.com/563193206): Remove AreOngoingProcessesEnabled() check once
+  // crrev.com/c/8572983 lands.
   if (ash::features::AreOngoingProcessesEnabled()) {
     data.buttons.emplace_back(message_center::ButtonInfo(
         /*vector_icon=*/&(features::IsRoundedIconsEnabled()
@@ -113,7 +115,7 @@ DevicePinnedNotificationRenderer::CreateNotification(Profile* profile) {
 
   auto* device_connection_tracker =
       device_system_tray_icon_->GetConnectionTracker(profile->GetWeakPtr());
-  DCHECK(device_connection_tracker);
+  CHECK(device_connection_tracker, base::NotFatalUntil::M161);
   auto delegate =
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
           base::BindRepeating(
@@ -127,7 +129,7 @@ DevicePinnedNotificationRenderer::CreateNotification(Profile* profile) {
                   return;
                 }
 
-                DCHECK_EQ(*button_index, 0);
+                CHECK_EQ(*button_index, 0, base::NotFatalUntil::M161);
                 connection_tracker->ShowContentSettingsExceptions();
               },
               device_connection_tracker));

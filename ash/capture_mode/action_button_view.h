@@ -31,7 +31,7 @@ class Label;
 
 namespace ash {
 
-class SystemShadow;
+class SystemDecoration;
 
 // A view that displays an action button. The action button may show both an
 // icon and text or be collapsed into just an icon.
@@ -64,13 +64,17 @@ class ASH_EXPORT ActionButtonView : public views::Button {
 
   const views::ImageView* image_view_for_testing() const { return image_view_; }
   const views::Label* label_for_testing() const { return label_; }
-  SystemShadow* shadow_for_testing() const { return shadow_.get(); }
+  SystemDecoration* shadow_for_testing() const { return shadow_.get(); }
+  SystemDecoration* highlight_border_for_testing() const {
+    return highlight_border_.get();
+  }
 
  private:
   // Rank used to determine ordering of action buttons.
   const ActionButtonRank rank_;
 
-  std::unique_ptr<SystemShadow> shadow_;
+  std::unique_ptr<SystemDecoration> shadow_;
+  std::unique_ptr<SystemDecoration> highlight_border_;
 
   raw_ptr<views::BoxLayout> box_layout_ = nullptr;
 

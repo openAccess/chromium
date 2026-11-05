@@ -58,6 +58,7 @@
 #include "components/enterprise/browser/controller/browser_dm_token_storage.h"
 #include "components/enterprise/browser/controller/chrome_browser_cloud_management_controller.h"
 #include "components/enterprise/browser/reporting/common_pref_names.h"
+#include "components/enterprise/browser/reporting/saas_usage/saas_usage_report_scheduler.h"
 #include "components/policy/core/browser/configuration_policy_handler_list.h"
 #include "components/policy/core/browser/policy_conversions.h"
 #include "components/policy/core/browser/webui/json_generation.h"
@@ -91,6 +92,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "extensions/buildflags/buildflags.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "ui/base/clipboard/clipboard_buffer.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
@@ -125,7 +127,8 @@ constexpr char kExtensionsKey[] = "extensions";
 
 }  // namespace
 
-PolicyUIHandler::PolicyUIHandler(Profile* profile) : profile_(*profile) {}
+PolicyUIHandler::PolicyUIHandler(Profile* profile)
+    : PolicyUIHandler(mojo::NullReceiver(), mojo::NullRemote(), profile) {}
 
 PolicyUIHandler::PolicyUIHandler(
     mojo::PendingReceiver<policy::mojom::PolicyPageHandler> receiver,
@@ -134,8 +137,17 @@ PolicyUIHandler::PolicyUIHandler(
     : receiver_(this, std::move(receiver)),
       client_(std::move(client)),
       profile_(*profile) {
+  auto update_callback(base::BindRepeating(&PolicyUIHandler::SendStatus,
+                                           base::Unretained(this)));
+  pref_change_registrar_ = std::make_unique<PrefChangeRegistrar>();
+  pref_change_registrar_->Init(g_browser_process->local_state());
+  pref_change_registrar_->Add(
+      enterprise_reporting::kLastUploadSucceededTimestamp, update_callback);
+
   policy_value_and_status_aggregator_ = policy::PolicyValueAndStatusAggregator::
       CreateDefaultPolicyValueAndStatusAggregator(&profile_.get());
+  policy_value_and_status_observation_.Observe(
+      policy_value_and_status_aggregator_.get());
 }
 
 PolicyUIHandler::~PolicyUIHandler() {
@@ -173,7 +185,6 @@ void PolicyUIHandler::AddCommonLocalizedStringsToSource(
       {"restartRequired", IDS_POLICY_RESTART_REQUIRED},
       {"scopeDevice", IDS_POLICY_SCOPE_DEVICE},
       {"scopeUser", IDS_POLICY_SCOPE_USER},
-      {"scopeAllUsers", IDS_POLICY_SCOPE_ALL_USERS},
       {"title", IDS_POLICY_TITLE},
       {"unknown", IDS_POLICY_UNKNOWN},
       {"unset", IDS_POLICY_UNSET},
@@ -197,18 +208,6 @@ void PolicyUIHandler::AddCommonLocalizedStringsToSource(
 }
 
 void PolicyUIHandler::RegisterMessages() {
-  auto update_callback(base::BindRepeating(&PolicyUIHandler::SendStatus,
-                                           base::Unretained(this)));
-  pref_change_registrar_ = std::make_unique<PrefChangeRegistrar>();
-  pref_change_registrar_->Init(g_browser_process->local_state());
-  pref_change_registrar_->Add(
-      enterprise_reporting::kLastUploadSucceededTimestamp, update_callback);
-
-  policy_value_and_status_aggregator_ = policy::PolicyValueAndStatusAggregator::
-      CreateDefaultPolicyValueAndStatusAggregator(&profile_.get());
-  policy_value_and_status_observation_.Observe(
-      policy_value_and_status_aggregator_.get());
-
   const auto* policy_schema_registry_service =
       profile_->GetPolicySchemaRegistryService();
   // In case web_ui() represents an OffTheRecordProfileImpl object (like in a
@@ -221,7 +220,7 @@ void PolicyUIHandler::RegisterMessages() {
 
   web_ui()->RegisterMessageCallback(
       "listenPoliciesUpdates",
-      base::BindRepeating(&PolicyUIHandler::HandleListenPoliciesUpdates,
+      base::BindRepeating(&PolicyUIHandler::SendInitialState,
                           base::Unretained(this)));
   web_ui()->RegisterMessageCallback(
       "reloadPolicies",
@@ -301,15 +300,20 @@ void PolicyUIHandler::SendSchema() {
   FireWebUIListener("schema-updated", PolicyUI::GetSchema(&profile_.get()));
 }
 
-void PolicyUIHandler::HandleListenPoliciesUpdates(const base::ListValue& args) {
-  // Send initial policy values and status to UI page.
-  AllowJavascript();
+void PolicyUIHandler::SendInitialState(const base::ListValue&) {
+  if (!IsMojoMigrationEnabled()) {
+    AllowJavascript();
+  }
   SendSchema();
   SendPolicies();
   SendStatus();
 }
 
 void PolicyUIHandler::HandleReloadPolicies(const base::ListValue&) {
+  ReloadPolicies();
+}
+
+void PolicyUIHandler::ReloadPolicies() {
   reload_policies_count_ += 1;
 #if BUILDFLAG(IS_CHROMEOS)
   // Allow user to manually fetch remote commands. Useful for testing or when
@@ -478,61 +482,94 @@ void PolicyUIHandler::GetPolicyLogs(GetPolicyLogsCallback callback) {
 
 #if !BUILDFLAG(IS_CHROMEOS)
 void PolicyUIHandler::HandleUploadReport(const base::ListValue& args) {
-  upload_report_count_ += 1;
-  DCHECK_EQ(1u, args.size());
-  const std::string& callback_id = args[0].GetString();
-  auto* report_scheduler = g_browser_process->browser_policy_connector()
-                               ->chrome_browser_cloud_management_controller()
-                               ->report_scheduler();
+  CHECK_EQ(1u, args.size(), base::NotFatalUntil::M162);
+  UploadReportImpl(
+      base::BindOnce(&PolicyUIHandler::OnReportUploadedWebUiWrapper,
+                     weak_factory_.GetWeakPtr(), args[0].Clone()));
+}
 
+void PolicyUIHandler::UploadReport(UploadReportCallback callback) {
+  UploadReportImpl(
+      mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(callback)));
+}
+
+void PolicyUIHandler::UploadReportImpl(base::OnceClosure on_report_uploaded) {
+  upload_report_count_ += 1;
+
+  auto* browser_controller = g_browser_process->browser_policy_connector()
+                                 ->chrome_browser_cloud_management_controller();
   auto* cloud_profile_reporting_service =
       enterprise_reporting::CloudProfileReportingServiceFactory::GetForProfile(
-          Profile::FromWebUI(web_ui()));
+          &profile_.get());
+
+  // Upload SaaS usage reports.
+  auto* browser_saas_scheduler =
+      browser_controller ? browser_controller->saas_usage_report_scheduler()
+                         : nullptr;
+  auto* profile_saas_scheduler =
+      cloud_profile_reporting_service
+          ? cloud_profile_reporting_service->saas_usage_report_scheduler()
+          : nullptr;
+
+  if (browser_saas_scheduler) {
+    browser_saas_scheduler->TriggerReport();
+  }
+  if (profile_saas_scheduler) {
+    profile_saas_scheduler->TriggerReport();
+  }
+
+  // Upload browser and profile reports.
+  auto* report_scheduler =
+      browser_controller ? browser_controller->report_scheduler() : nullptr;
   auto* profile_report_scheduler =
       cloud_profile_reporting_service
           ? cloud_profile_reporting_service->report_scheduler()
           : nullptr;
 
+  base::OnceClosure on_done =
+      base::BindOnce(&PolicyUIHandler::OnReportUploaded,
+                     weak_factory_.GetWeakPtr(), std::move(on_report_uploaded));
+
   if (report_scheduler && profile_report_scheduler) {
-    const auto on_report_uploaded = base::BarrierClosure(
-        2, base::BindOnce(&PolicyUIHandler::OnReportUploaded,
-                          weak_factory_.GetWeakPtr(), callback_id));
-    report_scheduler->UploadReport(on_report_uploaded);
-    profile_report_scheduler->UploadReport(on_report_uploaded);
+    const auto barrier = base::BarrierClosure(2, std::move(on_done));
+    report_scheduler->UploadReport(barrier);
+    profile_report_scheduler->UploadReport(barrier);
     return;
   }
 
   if (report_scheduler) {
-    report_scheduler->UploadReport(
-        base::BindOnce(&PolicyUIHandler::OnReportUploaded,
-                       weak_factory_.GetWeakPtr(), callback_id));
+    report_scheduler->UploadReport(std::move(on_done));
     return;
   }
 
   if (profile_report_scheduler) {
-    profile_report_scheduler->UploadReport(
-        base::BindOnce(&PolicyUIHandler::OnReportUploaded,
-                       weak_factory_.GetWeakPtr(), callback_id));
+    profile_report_scheduler->UploadReport(std::move(on_done));
     return;
   }
 
   // TODO(335639255): Consider disable the button when neither report
   // scheduler are ready. On at least show an error message to ask people
   // to try again.
-  OnReportUploaded(callback_id);
+  std::move(on_done).Run();
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
 void PolicyUIHandler::SendPolicies() {
-  if (!IsJavascriptAllowed()) {
-    return;
+  if (IsMojoMigrationEnabled()) {
+    client_->PoliciesUpdated(
+        policy_value_and_status_aggregator_->GetAggregatedPolicyNamesMojo(),
+        policy_value_and_status_aggregator_->GetAggregatedPolicyValuesMojo());
+  } else {
+    if (!IsJavascriptAllowed()) {
+      return;
+    }
+    FireWebUIListener(
+        "policies-updated",
+        base::Value(
+            policy_value_and_status_aggregator_->GetAggregatedPolicyNames()),
+        base::Value(
+            policy_value_and_status_aggregator_->GetAggregatedPolicyValues()));
   }
-  FireWebUIListener(
-      "policies-updated",
-      base::Value(
-          policy_value_and_status_aggregator_->GetAggregatedPolicyNames()),
-      base::Value(
-          policy_value_and_status_aggregator_->GetAggregatedPolicyValues()));
 }
 
 void PolicyUIHandler::SendStatus() {
@@ -608,13 +645,16 @@ void PolicyUIHandler::RecordBannerRedirected() {
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_CHROMEOS)
-void PolicyUIHandler::OnReportUploaded(const std::string& callback_id) {
+void PolicyUIHandler::OnReportUploaded(base::OnceClosure on_report_uploaded) {
+  SendStatus();
+  std::move(on_report_uploaded).Run();
+}
+
+void PolicyUIHandler::OnReportUploadedWebUiWrapper(base::Value callback_id) {
   if (!IsJavascriptAllowed()) {
     return;
   }
-  ResolveJavascriptCallback(base::Value(callback_id),
-                            /*response=*/base::Value());
-  SendStatus();
+  ResolveJavascriptCallback(callback_id, /*response=*/base::Value());
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 

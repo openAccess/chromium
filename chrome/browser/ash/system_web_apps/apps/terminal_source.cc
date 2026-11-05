@@ -26,14 +26,12 @@
 #include "chrome/browser/ash/file_system_provider/provider_interface.h"
 #include "chrome/browser/ash/file_system_provider/service.h"
 #include "chrome/browser/ash/guest_os/guest_os_terminal.h"
-#include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/channel/channel_info.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/prefs/pref_service.h"
-#include "components/tabs/public/tab_interface.h"
 #include "components/version_info/channel.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -43,6 +41,7 @@
 #include "third_party/zlib/google/compression_utils.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/template_expressions.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/webui/webui_allowlist.h"
 
 namespace {
@@ -53,9 +52,9 @@ constexpr char kDefaultMime[] = "text/html";
 class TerminalFileSystemProvider
     : public ash::file_system_provider::ExtensionProvider {
  public:
-  TerminalFileSystemProvider()
+  explicit TerminalFileSystemProvider(Profile* profile)
       : ash::file_system_provider::ExtensionProvider(
-            ProfileManager::GetPrimaryUserProfile(),
+            profile,
             ash::file_system_provider::ProviderId::CreateFromExtensionId(
                 guest_os::kTerminalSystemAppId),
             ash::file_system_provider::Capabilities{
@@ -143,7 +142,7 @@ std::unique_ptr<TerminalSource> TerminalSource::ForCrosh(Profile* profile) {
 // static
 std::unique_ptr<TerminalSource> TerminalSource::ForTerminal(Profile* profile) {
   ash::file_system_provider::Service::Get(profile)->RegisterProvider(
-      std::make_unique<TerminalFileSystemProvider>());
+      std::make_unique<TerminalFileSystemProvider>(profile));
   return base::WrapUnique(new TerminalSource(
       profile, ash::kChromeUIUntrustedTerminalURL,
       profile->GetPrefs()
@@ -198,15 +197,15 @@ void TerminalSource::StartDataRequest(
     content::WebContents* contents = wc_getter.Run();
     if (contents) {
       contents_url = contents->GetVisibleURL();
-      TabStripModel* tab_strip;
-      int tab_index;
-      extensions::ExtensionTabUtil::GetTabStripModel(contents, &tab_strip,
-                                                     &tab_index);
-      tabs::TabInterface* opener_tab = tab_strip->GetOpenerOfTabAt(tab_index);
-      if (opener_tab) {
-        CHECK(opener_tab->GetContents());
-        opener_background_color =
-            opener_tab->GetContents()->GetBackgroundColor();
+      ash::BrowserDelegate* browser =
+          ash::BrowserController::GetInstance()->GetBrowserForTab(contents);
+      std::optional<size_t> tab_index =
+          browser ? browser->GetIndexOfWebContents(contents) : std::nullopt;
+      content::WebContents* opener = tab_index.has_value()
+                                         ? browser->GetOpenerOfTabAt(*tab_index)
+                                         : nullptr;
+      if (opener) {
+        opener_background_color = opener->GetBackgroundColor();
       }
     }
     replacements["themeColor"] =
@@ -248,8 +247,6 @@ std::string TerminalSource::GetContentSecurityPolicy(
         return "frame-src 'self';";
       case network::mojom::CSPDirectiveName::ObjectSrc:
         return "object-src 'self';";
-      case network::mojom::CSPDirectiveName::ScriptSrc:
-        return "script-src 'self' 'wasm-unsafe-eval';";
       case network::mojom::CSPDirectiveName::WorkerSrc:
         return "worker-src 'self';";
       default:
@@ -262,6 +259,8 @@ std::string TerminalSource::GetContentSecurityPolicy(
       return "img-src * data: blob:;";
     case network::mojom::CSPDirectiveName::MediaSrc:
       return "media-src data:;";
+    case network::mojom::CSPDirectiveName::ScriptSrc:
+      return "script-src 'self' 'wasm-unsafe-eval';";
     case network::mojom::CSPDirectiveName::StyleSrc:
       return "style-src * 'unsafe-inline'; font-src *;";
     case network::mojom::CSPDirectiveName::RequireTrustedTypesFor:

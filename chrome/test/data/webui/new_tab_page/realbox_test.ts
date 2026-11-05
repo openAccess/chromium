@@ -34,6 +34,7 @@ const SAMPLE_INPUT_STATE = new MockInputState({
       hintText: '',
       aimUrlParams: [],
       menuTooltip: '',
+      icon: 0,
     },
     {
       tool: ToolMode.kImageGen,
@@ -43,6 +44,7 @@ const SAMPLE_INPUT_STATE = new MockInputState({
       hintText: '',
       aimUrlParams: [],
       menuTooltip: '',
+      icon: 0,
     },
   ],
   toolsSectionConfig: {header: ''},
@@ -80,6 +82,16 @@ function createAndAppendRealbox(properties: Partial<NtpSearchboxElement> = {}):
   return realbox;
 }
 
+// With `reportMetrics` set, the searchbox reports timing through
+// MetricsReporter, which must be mocked so it doesn't call PageMetricsHost.
+function installMetricsReporterMock() {
+  const proxy = TestMock.fromClass(BrowserProxyImpl);
+  proxy.setResultFor('getCallbackRouter', new PageMetricsCallbackRouter());
+  proxy.setResultFor('getMark', Promise.resolve(null));
+  BrowserProxyImpl.setInstance(proxy);
+  MetricsReporterImpl.setInstanceForTest(new MetricsReporterImpl());
+}
+
 suite('NewTabPageRealboxTabsTest', () => {
   let realbox: NtpSearchboxElement;
   let testProxy: TestSearchboxBrowserProxy;
@@ -99,6 +111,7 @@ suite('NewTabPageRealboxTabsTest', () => {
   setup(async () => {
     testProxy = new TestSearchboxBrowserProxy();
     SearchboxBrowserProxy.setInstance(testProxy);
+    installMetricsReporterMock();
 
     realbox = createAndAppendRealbox(
         {ntpRealboxNextEnabled: true, searchboxLayoutMode: 'Compact'});
@@ -200,15 +213,7 @@ suite('NewTabPageRealboxNextTest', () => {
         'getInputState', Promise.resolve({state: SAMPLE_INPUT_STATE}));
     SearchboxBrowserProxy.setInstance(testProxy);
 
-    // Set up MetricsReporter's browser proxy.
-    const testMetricsReporterProxy = TestMock.fromClass(BrowserProxyImpl);
-    testMetricsReporterProxy.reset();
-    const metricsReporterCallbackRouter = new PageMetricsCallbackRouter();
-    testMetricsReporterProxy.setResultFor(
-        'getCallbackRouter', metricsReporterCallbackRouter);
-    testMetricsReporterProxy.setResultFor('getMark', Promise.resolve(null));
-    BrowserProxyImpl.setInstance(testMetricsReporterProxy);
-    MetricsReporterImpl.setInstanceForTest(new MetricsReporterImpl());
+    installMetricsReporterMock();
     metrics = fakeMetricsPrivate();
     window.open = () => null;
     realbox = createAndAppendRealbox({
@@ -228,11 +233,7 @@ suite('NewTabPageRealboxNextTest', () => {
     // Act & Assert.
     const whenOpenComposeBox = eventToPromise<CustomEvent<ComposeboxState>>(
         'open-composebox', realbox);
-    contextElement.dispatchEvent(new CustomEvent('add-tab-context', {
-      detail: {id: 1, title: 'title'},
-      bubbles: true,
-      composed: true,
-    }));
+    contextElement.fire('add-tab-context', {id: 1, title: 'title'});
     const event = await whenOpenComposeBox;
     assertEquals(event.detail.files.length, 1);
     const tabUpload = event.detail.files[0] as TabUpload;
@@ -265,10 +266,7 @@ suite('NewTabPageRealboxNextTest', () => {
     // Act & Assert.
     const whenOpenComposeBox = eventToPromise<CustomEvent<ComposeboxState>>(
         'open-composebox', realbox);
-    contextElement.dispatchEvent(new CustomEvent('open-drive-upload', {
-      bubbles: true,
-      composed: true,
-    }));
+    contextElement.fire('open-drive-upload');
     const event = await whenOpenComposeBox;
     assertEquals(event.detail.files.length, 1);
     const driveUpload = event.detail.files[0] as DriveUpload;
@@ -297,10 +295,7 @@ suite('NewTabPageRealboxNextTest', () => {
     // Act & Assert.
     const whenOpenComposeBox = eventToPromise<CustomEvent<ComposeboxState>>(
         'open-composebox', realbox);
-    contextElement.dispatchEvent(new CustomEvent('open-drive-upload', {
-      bubbles: true,
-      composed: true,
-    }));
+    contextElement.fire('open-drive-upload');
     const event = await whenOpenComposeBox;
     assertEquals(event.detail.files.length, 0);
     assertEquals(1, event.detail.error);
@@ -514,11 +509,10 @@ suite('NewTabPageRealboxNextTest', () => {
   });
 
   test('clicking composebox button with text records user action', () => {
-    const inputEl = realbox.shadowRoot.querySelector('#input');
-    assertTrue(!!inputEl);
-    inputEl.shadowRoot!.querySelector<HTMLInputElement>('#input')!.value =
+    const inputEl = realbox.$.input;
+    inputEl.shadowRoot.querySelector<HTMLInputElement>('#input')!.value =
         'hello';
-    inputEl.shadowRoot!.querySelector('#input')!.dispatchEvent(
+    inputEl.shadowRoot.querySelector('#input')!.dispatchEvent(
         new InputEvent('input'));
 
     const composeButton =
@@ -561,10 +555,7 @@ suite('NewTabPageRealboxNextTest', () => {
 
     await composeButton.updateComplete;
 
-    const glowAnimationWrapper =
-        composeButton.shadowRoot.querySelector<HTMLElement>(
-            '#glowAnimationWrapper');
-    assertTrue(!!glowAnimationWrapper);
+    const glowAnimationWrapper = composeButton.$.glowAnimationWrapper;
 
     glowAnimationWrapper.classList.remove('play');
     assertFalse(glowAnimationWrapper.classList.contains('play'));
@@ -598,10 +589,7 @@ suite('NewTabPageRealboxNextTest', () => {
     assertTrue(!!composeButton);
     await composeButton.updateComplete;
 
-    const glowAnimationWrapper =
-        composeButton.shadowRoot.querySelector<HTMLElement>(
-            '#glowAnimationWrapper');
-    assertTrue(!!glowAnimationWrapper);
+    const glowAnimationWrapper = composeButton.$.glowAnimationWrapper;
     assertFalse(glowAnimationWrapper.classList.contains('play'));
   });
 
@@ -621,10 +609,7 @@ suite('NewTabPageRealboxNextTest', () => {
     assertTrue(!!composeButton);
     await composeButton.updateComplete;
 
-    const glowAnimationWrapper =
-        composeButton.shadowRoot.querySelector<HTMLElement>(
-            '#glowAnimationWrapper');
-    assertTrue(!!glowAnimationWrapper);
+    const glowAnimationWrapper = composeButton.$.glowAnimationWrapper;
     assertFalse(glowAnimationWrapper.classList.contains('play'));
   });
 
@@ -799,10 +784,7 @@ suite('NewTabPageRealboxNextTest', () => {
       status: DriveDisclaimerStatus.kAccepted,
     }));
 
-    entrypointAndMenu.dispatchEvent(new CustomEvent('open-drive-upload', {
-      bubbles: true,
-      composed: true,
-    }));
+    entrypointAndMenu.fire('open-drive-upload');
     await testProxy.handler.whenCalled('onDriveUploadClicked');
     await microtasksFinished();
     assertEquals(1, metrics.count(metricName, ContextType.DRIVE));
@@ -939,11 +921,10 @@ suite('NewTabPageRealboxNextTest', () => {
   test(
       'clicking composebox button with a URL clears text and opens composebox',
       async () => {
-        const inputEl = realbox.shadowRoot.querySelector('#input');
-        assertTrue(!!inputEl);
-        inputEl.shadowRoot!.querySelector<HTMLInputElement>('#input')!.value =
+        const inputEl = realbox.$.input;
+        inputEl.shadowRoot.querySelector<HTMLInputElement>('#input')!.value =
             'https://example.com';
-        inputEl.shadowRoot!.querySelector('#input')!.dispatchEvent(
+        inputEl.shadowRoot.querySelector('#input')!.dispatchEvent(
             new InputEvent('input'));
 
         const matches = [createSearchMatchForTesting({
@@ -986,11 +967,10 @@ suite('NewTabPageRealboxNextTest', () => {
       async () => {
         realbox.composeboxEnabled = false;
 
-        const inputEl = realbox.shadowRoot.querySelector('#input');
-        assertTrue(!!inputEl);
-        inputEl.shadowRoot!.querySelector<HTMLInputElement>('#input')!.value =
+        const inputEl = realbox.$.input;
+        inputEl.shadowRoot.querySelector<HTMLInputElement>('#input')!.value =
             'https://example.com';
-        inputEl.shadowRoot!.querySelector('#input')!.dispatchEvent(
+        inputEl.shadowRoot.querySelector('#input')!.dispatchEvent(
             new InputEvent('input'));
 
         const matches = [createSearchMatchForTesting({
@@ -1183,9 +1163,69 @@ suite('NewTabPageRealboxNextTest', () => {
       assertTrue(!!composeButton);
       assertFalse(composeButton.hasAttribute('dynamic'));
     });
+
+    test('has-user-input attribute is set when text is set', async () => {
+      loadTimeData.overrideValues({ntpRealboxDynamicAiModeButton: true});
+      realbox = createAndAppendRealbox({
+        composeButtonEnabled: true,
+        composeboxEnabled: true,
+        ntpRealboxNextEnabled: true,
+      });
+      await microtasksFinished();
+      const composeButton =
+          realbox.shadowRoot.querySelector('cr-searchbox-compose-button');
+      assertTrue(!!composeButton);
+      assertFalse(composeButton.hasAttribute('has-user-input'));
+
+      // Simulate the voice search transcript being placed in the input after
+      // the stop button is clicked. This does not fire
+      // `searchbox-input-text-updated`.
+      realbox.setInputText('hello world');
+      await microtasksFinished();
+      assertTrue(composeButton.hasAttribute('has-user-input'));
+
+      // Whitespace-only text does not count as user input.
+      realbox.setInputText('   ');
+      await microtasksFinished();
+      assertFalse(composeButton.hasAttribute('has-user-input'));
+
+      realbox.setInputText('hello world');
+      await microtasksFinished();
+      assertTrue(composeButton.hasAttribute('has-user-input'));
+
+      realbox.setInputText('');
+      await microtasksFinished();
+      assertFalse(composeButton.hasAttribute('has-user-input'));
+    });
+
+    test('flips arrow icon in RTL', async () => {
+      loadTimeData.overrideValues({ntpRealboxDynamicAiModeButton: true});
+      realbox = createAndAppendRealbox({
+        composeButtonEnabled: true,
+        composeboxEnabled: true,
+        ntpRealboxNextEnabled: true,
+      });
+      await microtasksFinished();
+      const composeButton =
+          realbox.shadowRoot.querySelector('cr-searchbox-compose-button');
+      assertTrue(!!composeButton);
+      const arrowIcon =
+          composeButton.shadowRoot.querySelector<HTMLElement>('#arrowIcon');
+      assertTrue(!!arrowIcon);
+      assertEquals('none', window.getComputedStyle(arrowIcon).scale);
+
+      try {
+        document.documentElement.dir = 'rtl';
+        assertEquals('-1 1', window.getComputedStyle(arrowIcon).scale);
+      } finally {
+        document.documentElement.dir = 'ltr';
+      }
+    });
   });
 });
 
+// TODO(crbug.com/570702014): Smart Tab Sharing is desktop-only.
+// <if expr="not is_android">
 suite('NewTabPageRealboxSmartTabSharingTest', () => {
   let realbox: NtpSearchboxElement;
   let testProxy: TestSearchboxBrowserProxy;
@@ -1231,4 +1271,53 @@ suite('NewTabPageRealboxSmartTabSharingTest', () => {
     contextElement.fire('smart-tab-sharing-active-changed', {active: true});
     await openComposeboxPromise;
   });
+
+  test('resetSmartTabSharing clears local state without calling backend by default', () => {
+    realbox.smartTabSharingActive = true;
+    realbox.resetSmartTabSharing();
+    assertFalse(realbox.smartTabSharingActive);
+    assertEquals(0, testProxy.handler.getCallCount('resetSmartTabSharing'));
+  });
+
+  test('resetSmartTabSharing resets via proxy when resetBackend is true', async () => {
+    realbox.smartTabSharingActive = true;
+    testProxy.handler.setResultFor(
+        'resetSmartTabSharing', Promise.resolve({active: false}));
+
+    realbox.resetSmartTabSharing(/*resetBackend=*/ true);
+    // Synchronously cleared to prevent UI flash when composebox closes.
+    assertFalse(realbox.smartTabSharingActive);
+
+    await testProxy.handler.whenCalled('resetSmartTabSharing');
+    await microtasksFinished();
+
+    assertFalse(realbox.smartTabSharingActive);
+  });
+
+  test('resetSmartTabSharing ignores stale responses with generation counter', async () => {
+    realbox.smartTabSharingActive = true;
+    let resolveReset: (value: {active: boolean}) => void;
+    testProxy.handler.setResultFor(
+        'resetSmartTabSharing', new Promise(resolve => {
+          resolveReset = resolve;
+        }));
+
+    realbox.resetSmartTabSharing(/*resetBackend=*/ true);
+    assertFalse(realbox.smartTabSharingActive);
+
+    // User re-enables STS while backend call is in flight.
+    const contextElement = realbox.shadowRoot.querySelector(
+        'cr-composebox-contextual-entrypoint-and-menu');
+    assertTrue(!!contextElement);
+    contextElement.fire('smart-tab-sharing-active-changed', {active: true});
+    assertTrue(realbox.smartTabSharingActive);
+
+    // Stale reset response arrives.
+    resolveReset!({active: false});
+    await microtasksFinished();
+
+    // Must remain true because newer user action incremented the generation.
+    assertTrue(realbox.smartTabSharingActive);
+  });
 });
+// </if>

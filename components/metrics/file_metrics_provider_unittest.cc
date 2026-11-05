@@ -7,7 +7,6 @@
 #include <array>
 #include <memory>
 
-#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -16,7 +15,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
-#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_span.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_base.h"
 #include "base/metrics/histogram_snapshot_manager.h"
@@ -153,7 +152,7 @@ class FileMetricsProviderTestBase : public testing::Test {
   ~FileMetricsProviderTestBase() override {
     // Clear out any final remaining tasks.
     task_environment_.RunUntilIdle();
-    DCHECK_EQ(0U, filter_actions_remaining_);
+    DCHECK(filter_actions_.empty());
     // If a global histogram allocator exists at this point then it likely
     // acquired histograms that will continue to point to the released
     // memory and potentially cause use-after-free memory corruption.
@@ -260,8 +259,7 @@ class FileMetricsProviderTestBase : public testing::Test {
     DCHECK(writer.IsValid()) << path;
     size_t file_size = create_large_files_ ? metrics->size() : metrics->used();
     bool success = writer.WriteAndCheck(
-        0, UNSAFE_BUFFERS(base::span(
-               static_cast<const uint8_t*>(metrics->data()), file_size)));
+        0, metrics->memory_allocator()->bytes().first(file_size));
     DCHECK(success);
   }
 
@@ -316,11 +314,10 @@ class FileMetricsProviderTestBase : public testing::Test {
     return created_histograms_[index];
   }
 
-  void SetFilterActions(FileMetricsProvider::Params* params,
-                        const FileMetricsProvider::FilterAction* actions,
-                        size_t count) {
+  void SetFilterActions(
+      FileMetricsProvider::Params* params,
+      base::span<const FileMetricsProvider::FilterAction> actions) {
     filter_actions_ = actions;
-    filter_actions_remaining_ = count;
     params->filter = base::BindRepeating(
         &FileMetricsProviderTestBase::FilterSourcePath, base::Unretained(this));
   }
@@ -331,9 +328,7 @@ class FileMetricsProviderTestBase : public testing::Test {
  private:
   FileMetricsProvider::FilterAction FilterSourcePath(
       const base::FilePath& path) {
-    DCHECK_LT(0U, filter_actions_remaining_);
-    --filter_actions_remaining_;
-    return UNSAFE_TODO(*filter_actions_++);
+    return filter_actions_.take_first_elem();
   }
 
   base::test::TaskEnvironment task_environment_;
@@ -343,9 +338,7 @@ class FileMetricsProviderTestBase : public testing::Test {
   std::unique_ptr<TestFileMetricsProvider> provider_;
   std::array<base::HistogramBase*, kMaxCreateHistograms> created_histograms_;
 
-  raw_ptr<const FileMetricsProvider::FilterAction, AllowPtrArithmetic>
-      filter_actions_ = nullptr;
-  size_t filter_actions_remaining_ = 0;
+  base::raw_span<const FileMetricsProvider::FilterAction> filter_actions_;
 };
 
 class FileMetricsProviderTest : public FileMetricsProviderTestBase,
@@ -457,7 +450,7 @@ TEST_P(FileMetricsProviderTest, FilterDelaysFile) {
   const FileMetricsProvider::FilterAction actions[] = {
       FileMetricsProvider::FILTER_TRY_LATER,
       FileMetricsProvider::FILTER_PROCESS_FILE};
-  SetFilterActions(&params, actions, std::size(actions));
+  SetFilterActions(&params, actions);
   provider()->RegisterSource(params, /*metrics_reporting_enabled=*/true);
 
   // Processing the file should touch it but yield no results. File timestamp
@@ -495,7 +488,7 @@ TEST_P(FileMetricsProviderTest, FilterSkipsFile) {
       FileMetricsProvider::ASSOCIATE_CURRENT_RUN, kMetricsName);
   const FileMetricsProvider::FilterAction actions[] = {
       FileMetricsProvider::FILTER_SKIP_FILE};
-  SetFilterActions(&params, actions, std::size(actions));
+  SetFilterActions(&params, actions);
   provider()->RegisterSource(params, /*metrics_reporting_enabled=*/true);
 
   // Processing the file should delete it.
@@ -527,22 +520,26 @@ TEST_P(FileMetricsProviderTest, AccessDirectory) {
                          allocator, base_time);
   // Histogram names must be 2 characters (see
   // DeltaRecordingHistogramSnapshotManager).
-  histogram = base::Histogram::FactoryGet("h1", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h1", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(1);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("a1.pma"),
                          allocator, base_time + base::Minutes(1));
 
-  histogram = base::Histogram::FactoryGet("h2", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h2", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(2);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("c2.pma"),
                          allocator, base_time + base::Minutes(2));
 
-  histogram = base::Histogram::FactoryGet("h3", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h3", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(3);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("b3.pma"),
                          allocator, base_time + base::Minutes(3));
 
-  histogram = base::Histogram::FactoryGet("h4", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h4", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(3);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("d4.pma"),
                          allocator, base_time + base::Minutes(4));
@@ -673,12 +670,14 @@ TEST_P(FileMetricsProviderTest, AccessTimeLimitedDirectory) {
   // (see DeltaRecordingHistogramSnapshotManager).
   base::ScopedTempDir metrics_files;
   EXPECT_TRUE(metrics_files.CreateUniqueTempDir());
-  histogram = base::Histogram::FactoryGet("h1", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h1", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(1);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("a1.pma"),
                          allocator, base::Time::Now() - base::Hours(1));
 
-  histogram = base::Histogram::FactoryGet("h2", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h2", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(2);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("b2.pma"),
                          allocator, base::Time::Now());
@@ -721,12 +720,14 @@ TEST_P(FileMetricsProviderTest, AccessCountLimitedDirectory) {
   // (see DeltaRecordingHistogramSnapshotManager).
   base::ScopedTempDir metrics_files;
   EXPECT_TRUE(metrics_files.CreateUniqueTempDir());
-  histogram = base::Histogram::FactoryGet("h1", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h1", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(1);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("a1.pma"),
                          allocator, base::Time::Now() - base::Hours(1));
 
-  histogram = base::Histogram::FactoryGet("h2", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h2", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(2);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("b2.pma"),
                          allocator, base::Time::Now());
@@ -775,12 +776,14 @@ TEST_P(FileMetricsProviderTest, AccessSizeLimitedDirectory) {
   // (see DeltaRecordingHistogramSnapshotManager).
   base::ScopedTempDir metrics_files;
   EXPECT_TRUE(metrics_files.CreateUniqueTempDir());
-  histogram = base::Histogram::FactoryGet("h1", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h1", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(1);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("a1.pma"),
                          allocator, base::Time::Now() - base::Hours(1));
 
-  histogram = base::Histogram::FactoryGet("h2", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h2", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(2);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("b2.pma"),
                          allocator, base::Time::Now());
@@ -828,22 +831,26 @@ TEST_P(FileMetricsProviderTest, AccessFilteredDirectory) {
   EXPECT_TRUE(metrics_files.CreateUniqueTempDir());
   // Histogram names must be 2 characters (see
   // DeltaRecordingHistogramSnapshotManager).
-  histogram = base::Histogram::FactoryGet("h1", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h1", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(1);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("a1.pma"),
                          allocator, base_time + base::Minutes(1));
 
-  histogram = base::Histogram::FactoryGet("h2", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h2", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(2);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("c2.pma"),
                          allocator, base_time + base::Minutes(2));
 
-  histogram = base::Histogram::FactoryGet("h3", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h3", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(3);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("b3.pma"),
                          allocator, base_time + base::Minutes(3));
 
-  histogram = base::Histogram::FactoryGet("h4", 1, 100, 10, 0);
+  histogram = base::Histogram::FactoryGet(
+      "h4", 1, 100, 10, base::HistogramBase::kUmaTargetedHistogramFlag);
   histogram->Add(3);
   WriteMetricsFileAtTime(metrics_files.GetPath().AppendASCII("d4.pma"),
                          allocator, base_time + base::Minutes(4));
@@ -867,7 +874,7 @@ TEST_P(FileMetricsProviderTest, AccessFilteredDirectory) {
       FileMetricsProvider::FILTER_SKIP_FILE,      // d4
       FileMetricsProvider::FILTER_PROCESS_FILE,   // b3
       FileMetricsProvider::FILTER_PROCESS_FILE};  // c2 (again)
-  SetFilterActions(&params, actions, std::size(actions));
+  SetFilterActions(&params, actions);
   provider()->RegisterSource(params, /*metrics_reporting_enabled=*/true);
 
   // Record embedded snapshots via snapshot-manager.

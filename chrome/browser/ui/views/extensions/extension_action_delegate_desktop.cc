@@ -10,12 +10,10 @@
 #include "base/check_deref.h"
 #include "chrome/browser/extensions/extension_view_host.h"
 #include "chrome/browser/extensions/extension_view_host_factory.h"
-#include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/extensions/accelerator_priority.h"
 #include "chrome/browser/ui/extensions/extension_action_view_model.h"
 #include "chrome/browser/ui/views/extensions/extension_popup.h"
 #include "chrome/browser/ui/views/extensions/extensions_container_views.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "extensions/common/api/extension_action/action_info.h"
 #include "extensions/common/command.h"
 #include "ui/views/view.h"
@@ -32,7 +30,7 @@ ExtensionActionDelegateDesktop::ExtensionActionDelegateDesktop(
 
 ExtensionActionDelegateDesktop::~ExtensionActionDelegateDesktop() {
   // Should have already unregistered.
-  DCHECK(!action_keybinding_);
+  CHECK(!action_keybinding_, base::NotFatalUntil::M162);
 }
 
 ExtensionActionDelegateDesktop*
@@ -48,7 +46,7 @@ void ExtensionActionDelegateDesktop::DoTriggerPopup(
     PopupShowAction show_action,
     bool by_user,
     ShowPopupCallback callback) {
-  DCHECK_EQ(this, GetPopupOwnerDelegate());
+  CHECK_EQ(this, GetPopupOwnerDelegate(), base::NotFatalUntil::M162);
 
   // Always hide the current popup, even if it's not owned by this extension.
   // Only one popup should be visible at a time.
@@ -88,9 +86,9 @@ void ExtensionActionDelegateDesktop::ShowPopup(
   // completed rendering on the screen.
   has_opened_popup_ = true;
 
-  // TOP_RIGHT is correct for both RTL and LTR, because the views platform
-  // performs the flipping in RTL cases.
-  views::BubbleBorder::Arrow arrow = views::BubbleBorder::TOP_RIGHT;
+  views::BubbleBorder::Arrow arrow =
+      extensions_container_views_ ? extensions_container_views_->GetPopupArrow()
+                                  : views::BubbleBorder::TOP_RIGHT;
   ExtensionPopup::ShowPopup(
       browser_, std::move(host),
       extensions_container_views_->GetReferenceButtonForPopup(model_->GetId()),
@@ -100,7 +98,8 @@ void ExtensionActionDelegateDesktop::ShowPopup(
 }
 
 void ExtensionActionDelegateDesktop::OnPopupClosed() {
-  DCHECK(popup_host_observation_.IsObservingSource(popup_host_.get()));
+  CHECK(popup_host_observation_.IsObservingSource(popup_host_.get()),
+        base::NotFatalUntil::M162);
   popup_host_observation_.Reset();
   popup_host_ = nullptr;
   has_opened_popup_ = false;
@@ -179,7 +178,10 @@ void ExtensionActionDelegateDesktop::HidePopup() {
 }
 
 gfx::NativeView ExtensionActionDelegateDesktop::GetPopupNativeViewForTesting() {
-  return popup_host_ ? popup_host_->view()->GetNativeView() : gfx::NativeView();
+  if (!popup_host_ || !popup_host_->view()) {
+    return gfx::NativeView();
+  }
+  return popup_host_->view()->GetNativeView();
 }
 
 void ExtensionActionDelegateDesktop::TriggerPopup(
@@ -197,6 +199,11 @@ void ExtensionActionDelegateDesktop::ShowContextMenuAsFallback() {
 
 void ExtensionActionDelegateDesktop::CloseExtensionsMenuIfOpen() {
   extensions_container_->CloseExtensionsMenuIfOpen();
+}
+
+content::WebContents* ExtensionActionDelegateDesktop::GetActiveWebContents()
+    const {
+  return extensions_container_->GetActiveWebContents();
 }
 
 bool ExtensionActionDelegateDesktop::AcceleratorPressed(

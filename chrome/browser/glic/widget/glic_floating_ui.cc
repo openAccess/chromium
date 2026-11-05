@@ -25,11 +25,22 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/prefs/pref_service.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "printing/buildflags/buildflags.h"
 #include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/widget/widget_delegate.h"
+
+#if BUILDFLAG(ENABLE_PRINTING)
+#include "chrome/browser/printing/print_view_manager_common.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "mojo/public/cpp/bindings/associated_remote.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_PRINTING)
 
 #if BUILDFLAG(IS_WIN)
 #include "ui/display/win/screen_win.h"
@@ -44,6 +55,7 @@ namespace glic {
 
 namespace {
 BASE_FEATURE(kGlicFloatingUiReattachment, base::FEATURE_ENABLED_BY_DEFAULT);
+constexpr gfx::Size kCompositeViewDefaultSize = {800, 480};
 }  // namespace
 
 // static
@@ -53,8 +65,7 @@ gfx::Size GlicFloatingUi::GetDefaultSize() {
 }
 
 gfx::Size GlicFloatingUi::GetCompositeViewDefaultSize() {
-  return {features::kGlicCompositeViewWidth.Get(),
-          features::kGlicCompositeViewHeight.Get()};
+  return kCompositeViewDefaultSize;
 }
 // end static
 
@@ -87,13 +98,15 @@ GlicFloatingUi::GlicFloatingUi(Profile* profile,
       PictureInPictureWindowManager::GetInstance()->GetOcclusionTracker();
   tracker->OnPictureInPictureWidgetOpened(glic_widget_.get());
   browser_attach_observation_ = ObserveBrowserForAttachment(profile_, this);
+  delegate_->host().AttachModalDialogManagerDelegate(
+      scoped_modal_dialog_delegate_);
+  host_observation_.Observe(&delegate_->host());
 }
 
 GlicFloatingUi::~GlicFloatingUi() {
-  if (IsShowing()) {
-    modal_dialog_host_observers_.Notify(
-        &web_modal::ModalDialogHostObserver::OnHostDestroying);
-  }
+  scoped_modal_dialog_delegate_.Reset();
+  modal_dialog_host_observers_.Notify(
+      &web_modal::ModalDialogHostObserver::OnHostDestroying);
 
   // Only clear the current detached glic if this is being torn
   // down before the profile manager is torn down.
@@ -101,7 +114,6 @@ GlicFloatingUi::~GlicFloatingUi() {
     profile_manager->SetCurrentDetachedGlic(nullptr);
   }
 
-  ClearWebContentsDelegate();
   PictureInPictureOcclusionTracker* tracker =
       PictureInPictureWindowManager::GetInstance()->GetOcclusionTracker();
   tracker->RemovePictureInPictureWidget(glic_widget_.get());
@@ -152,6 +164,12 @@ void GlicFloatingUi::CreateAndSetupWidget(gfx::Rect initial_bounds) {
       },
       weak_ptr_factory_.GetWeakPtr()));
 
+  glic_view->ConfigureLoadingPlaceholder(
+      GlicLoadingPlaceholderView::Mode::kFloating,
+      base::BindRepeating(&GlicFloatingUi::ClosePanel,
+                          weak_ptr_factory_.GetWeakPtr()));
+  glic_view->SetShowingLoadingPlaceholder(
+      delegate_->host().IsShowingNativeLoading());
   glic_view->SetWebContents(delegate_->host().webui_contents());
   glic_delegate_ =
       GlicWidget::CreateWidgetDelegate(std::move(glic_view), user_resizable_);
@@ -190,8 +208,7 @@ void GlicFloatingUi::FocusIfOpen() {
   if (!IsShowing() || HasFocus()) {
     return;
   }
-  GetGlicWidget()->Activate();
-  GetGlicView()->GetWebContents()->Focus();
+  Focus();
 }
 
 bool GlicFloatingUi::HasFocus() {
@@ -218,6 +235,31 @@ void GlicFloatingUi::ShowTitleBarContextMenuAt(gfx::Point event_loc) {
   views::ShowSystemMenuAtScreenPixelLocation(views::HWNDForView(GetGlicView()),
                                              event_loc);
 #endif  // BUILDFLAG(IS_WIN)
+}
+
+bool GlicFloatingUi::Print() {
+#if BUILDFLAG(ENABLE_PRINTING)
+  if (!profile_->GetPrefs()->GetBoolean(::prefs::kPrintingEnabled)) {
+    return false;
+  }
+  content::WebContents* web_contents = delegate_->host().web_client_contents();
+  if (!web_contents) {
+    web_contents = delegate_->host().webui_contents();
+  }
+  if (!web_contents || web_contents->IsCrashed()) {
+    return false;
+  }
+  printing::StartPrint(
+      web_contents,
+#if BUILDFLAG(IS_CHROMEOS)
+      /*print_renderer=*/mojo::NullAssociatedRemote(),
+#endif
+      profile_->GetPrefs()->GetBoolean(::prefs::kPrintPreviewDisabled),
+      /*has_selection=*/false);
+  return true;
+#else
+  return false;
+#endif  // BUILDFLAG(ENABLE_PRINTING)
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -250,7 +292,23 @@ void GlicFloatingUi::CloseSelectionOverlay() {
 }
 #endif
 
-void GlicFloatingUi::EnableDragResize(bool enabled) {
+void GlicFloatingUi::ActiveWebContentsChanged(
+    content::WebContents* new_contents) {
+  if (auto* glic_view = GetGlicView()) {
+    glic_view->SetWebContents(new_contents);
+  }
+  if (new_contents) {
+    scoped_modal_dialog_delegate_.AddWebContents(new_contents);
+  }
+}
+
+void GlicFloatingUi::NativeLoadingStateChanged(bool is_showing) {
+  if (auto* glic_view = GetGlicView()) {
+    glic_view->SetShowingLoadingPlaceholder(is_showing);
+  }
+}
+
+void GlicFloatingUi::SetDragResizeEnabled(bool enabled) {
   user_resizable_ = enabled;
 
   if (!GetGlicWidget() || !GetGlicWidget()->widget_delegate()) {
@@ -316,16 +374,6 @@ void GlicFloatingUi::CanAttachToBrowserChanged(bool can_attach) {
   FloatingPanelCanAttachChanged(can_attach && source_tab_.Get() != nullptr);
 }
 
-void GlicFloatingUi::ConfigureWebContentsModalDialogs() {
-  // Add capability to show web modal dialogs (e.g. Data Controls Dialogs for
-  // enterprise users) via constrained_window APIs.
-  web_modal::WebContentsModalDialogManager::CreateForWebContents(
-      delegate_->host().webui_contents());
-  web_modal::WebContentsModalDialogManager::FromWebContents(
-      delegate_->host().webui_contents())
-      ->SetDelegate(this);
-}
-
 void GlicFloatingUi::Attach() {
   if (!base::FeatureList::IsEnabled(kGlicFloatingUiReattachment)) {
     return;
@@ -362,20 +410,18 @@ void GlicFloatingUi::Show(const ShowOptions& options) {
   GetGlicView()->UpdateBackgroundColor();
   panel_visibility_dependent_hotkey_manager_->InitializeAccelerators();
   panel_focus_dependent_hotkey_manager_->InitializeAccelerators();
-  ConfigureWebContentsModalDialogs();
+  delegate_->host().AttachModalDialogManagerDelegate(
+      scoped_modal_dialog_delegate_);
 }
 
 void GlicFloatingUi::Close(const CloseOptions& options) {
   instance_metrics_->OnFloatyClosed();
+  scoped_modal_dialog_delegate_.Reset();
   if (IsShowing()) {
     modal_dialog_host_observers_.Notify(
         &web_modal::ModalDialogHostObserver::OnHostDestroying);
   }
-  ClearWebContentsDelegate();
   CloseSelectionOverlay();
-  if (screenshot_capturer_) {
-    screenshot_capturer_->CloseScreenPicker();
-  }
   FloatingPanelCanAttachChanged(false);
   glic_window_animator_.reset();
   glic_widget_observation_.Reset();
@@ -387,21 +433,14 @@ void GlicFloatingUi::Close(const CloseOptions& options) {
                          EmbedderCloseReason::kExplicitlyClosed);
 }
 
-void GlicFloatingUi::ClearWebContentsDelegate() {
-  if (auto* web_contents = delegate_->host().webui_contents()) {
-    auto* dialog_manager =
-        web_modal::WebContentsModalDialogManager::FromWebContents(web_contents);
-    if (dialog_manager->delegate() == this) {
-      dialog_manager->SetDelegate(nullptr);
-    }
-  }
-}
-
 void GlicFloatingUi::OnReload() {
   if (auto* glic_view = GetGlicView()) {
+    glic_view->SetShowingLoadingPlaceholder(
+        delegate_->host().IsShowingNativeLoading());
     glic_view->SetWebContents(delegate_->host().webui_contents());
-    ConfigureWebContentsModalDialogs();
   }
+  delegate_->host().AttachModalDialogManagerDelegate(
+      scoped_modal_dialog_delegate_);
 }
 
 void GlicFloatingUi::MaybeNotifyActivationChanged(bool window_active) {
@@ -419,8 +458,11 @@ void GlicFloatingUi::Focus() {
     return;
   }
   GetGlicWidget()->Activate();
-  if (auto* web_contents = delegate_->host().webui_contents()) {
+  if (auto* web_contents = delegate_->host().webui_contents();
+      web_contents && !delegate_->host().IsShowingNativeLoading()) {
     web_contents->Focus();
+  } else if (auto* glic_view = GetGlicView()) {
+    glic_view->RequestFocus();
   }
 }
 
@@ -525,15 +567,6 @@ void GlicFloatingUi::SwitchConversation(
   delegate_->SwitchConversation(
       ShowOptions::ForFloating(GetGlicWidget()->GetWindowBoundsInScreen()),
       std::move(info), std::move(callback));
-}
-
-void GlicFloatingUi::CaptureScreenshot(
-    glic::mojom::WebClientHandler::CaptureScreenshotCallback callback) {
-  if (!screenshot_capturer_) {
-    screenshot_capturer_ = GlicScreenshotCapturer::Create();
-  }
-  screenshot_capturer_->CaptureScreenshot(GetGlicWidget()->GetNativeWindow(),
-                                          std::move(callback));
 }
 
 void GlicFloatingUi::ClosePanel() {

@@ -76,7 +76,7 @@ export class PreloadScript {
     this.#channels =
       params.arguments?.map((a) => new ChannelProxy(a.value, logger)) ?? [];
     this.#functionDeclaration = params.functionDeclaration;
-    this.#sandbox = params.sandbox;
+    this.#sandbox = params.sandbox || undefined;
     this.#contexts = params.contexts;
     this.#userContexts = params.userContexts;
   }
@@ -94,6 +94,11 @@ export class PreloadScript {
   /** UserContexts of the preload script, if any */
   get userContexts(): Browser.UserContext[] | undefined {
     return this.#userContexts;
+  }
+
+  /** Sandbox / world name of the preload script, if any */
+  get sandbox(): string | undefined {
+    return this.#sandbox;
   }
 
   /**
@@ -118,7 +123,7 @@ export class PreloadScript {
   async initInTargets(
     cdpTargets: Iterable<CdpTarget>,
     runImmediately: boolean,
-  ) {
+  ): Promise<void> {
     await Promise.all(
       Array.from(cdpTargets).map((cdpTarget) =>
         this.initInTarget(cdpTarget, runImmediately),
@@ -130,7 +135,10 @@ export class PreloadScript {
    * Adds the script to the given CDP target by calling the
    * `Page.addScriptToEvaluateOnNewDocument` command.
    */
-  async initInTarget(cdpTarget: CdpTarget, runImmediately: boolean) {
+  async initInTarget(
+    cdpTarget: CdpTarget,
+    runImmediately: boolean,
+  ): Promise<void> {
     const addCdpPreloadScriptResult = await cdpTarget.cdpClient.sendCommand(
       'Page.addScriptToEvaluateOnNewDocument',
       {
@@ -150,7 +158,7 @@ export class PreloadScript {
   /**
    * Removes this script from all CDP targets.
    */
-  async remove() {
+  async remove(): Promise<void> {
     await Promise.all([
       this.#cdpPreloadScripts.map(async (cdpPreloadScript) => {
         const cdpTarget = cdpPreloadScript.target;
@@ -166,7 +174,7 @@ export class PreloadScript {
   }
 
   /** Removes the provided cdp target from the list of cdp preload scripts. */
-  dispose(cdpTargetId: Protocol.Target.TargetID) {
+  dispose(cdpTargetId: Protocol.Target.TargetID): void {
     this.#cdpPreloadScripts = this.#cdpPreloadScripts.filter(
       (cdpPreloadScript) => cdpPreloadScript.target?.id !== cdpTargetId,
     );

@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <list>
-#include <map>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -20,12 +19,12 @@
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/containers/to_vector.h"
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/weak_ptr.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
@@ -46,21 +45,19 @@
 #include "components/autofill/core/browser/form_import/form_data_importer.h"
 #include "components/autofill/core/browser/form_qualifiers.h"
 #include "components/autofill/core/browser/form_structure.h"
-#include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
-#include "components/autofill/core/browser/metrics/field_filling_stats_and_score_metrics.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
 #include "components/autofill/core/browser/metrics/quality_metrics.h"
 #include "components/autofill/core/browser/proto/server.pb.h"
+#include "components/autofill/core/browser/studies/hats_surveys_util.h"
 #include "components/autofill/core/browser/suggestions/suggestion_util.h"
 #include "components/autofill/core/common/autofill_constants.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/language_code.h"
 #include "components/autofill/core/common/signatures.h"
 #include "components/autofill/core/common/unique_ids.h"
-#include "components/one_time_tokens/core/browser/one_time_token_service.h"
+#include "components/one_time_tokens/core/browser/sms_otp_service.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 
 namespace autofill {
@@ -76,48 +73,6 @@ struct VotesUploader::VoteData {
   std::vector<LoyaltyCard> loyalty_cards;
   std::vector<OneTimeToken> otps;
 };
-
-namespace {
-
-// The minimum required number of fields for an user perception survey to be
-// triggered. This makes sure that for example forms that only contain a single
-// email field do not prompt a survey. Such survey answer would likely taint
-// our analysis.
-constexpr size_t kMinNumberAddressFieldsToTriggerAddressUserPerceptionSurvey =
-    4;
-
-// Converts `filling_stats` to a key-value representation, where the key
-// is the "stats category" and the value is the number of fields that match
-// such category. This is used to show users a survey that will measure the
-// perception of Autofill.
-std::map<std::string, std::string> FormFillingStatsToSurveyStringData(
-    autofill_metrics::FormGroupFillingStats& filling_stats) {
-  return {
-      {"Accepted fields", base::NumberToString(filling_stats.num_accepted)},
-      {"Corrected to same type",
-       base::NumberToString(filling_stats.num_corrected_to_same_type)},
-      {"Corrected to a different type",
-       base::NumberToString(filling_stats.num_corrected_to_different_type)},
-      {"Corrected to an unknown type",
-       base::NumberToString(filling_stats.num_corrected_to_unknown_type)},
-      {"Corrected to empty",
-       base::NumberToString(filling_stats.num_corrected_to_empty)},
-      {"Manually filled to same type",
-       base::NumberToString(filling_stats.num_manually_filled_to_same_type)},
-      {"Manually filled to a different type",
-       base::NumberToString(
-           filling_stats.num_manually_filled_to_different_type)},
-      {"Manually filled to an unknown type",
-       base::NumberToString(filling_stats.num_manually_filled_to_unknown_type)},
-      {"Total corrected", base::NumberToString(filling_stats.TotalCorrected())},
-      {"Total filled", base::NumberToString(filling_stats.TotalFilled())},
-      {"Total unfilled", base::NumberToString(filling_stats.TotalUnfilled())},
-      {"Total manually filled",
-       base::NumberToString(filling_stats.TotalManuallyFilled())},
-      {"Total number of fields", base::NumberToString(filling_stats.Total())}};
-}
-
-}  // namespace
 
 struct VotesUploader::PendingVote {
   LocalFrameToken frame_of_form;
@@ -237,7 +192,7 @@ void VotesUploader::OnAutofillDriverStateChanged(
   }
 
   if (old_state == kPendingReset) {
-    // Case (3): The was reset.
+    // Case (3): The driver was reset.
     FlushPendingVotesForFrame(driver.GetFrameToken());
   }
 }
@@ -249,6 +204,8 @@ bool VotesUploader::MaybeStartVoteUploadProcess(
     base::TimeTicks initial_interaction_timestamp,
     const std::u16string& last_unlocked_credit_card_cvc,
     ukm::SourceId ukm_source_id) {
+  SCOPED_UMA_HISTOGRAM_TIMER("Autofill.Timing.MaybeStartVoteUploadProcess");
+
   std::vector<const AutofillProfile*> profiles =
       client_->GetPersonalDataManager().address_data_manager().GetProfiles();
   std::vector<CreditCard> credit_cards =
@@ -274,10 +231,9 @@ bool VotesUploader::MaybeStartVoteUploadProcess(
   }
 
   std::vector<OneTimeToken> otps;
-  one_time_tokens::OneTimeTokenService* token_service =
-      client_->GetOneTimeTokenService();
-  if (token_service) {
-    otps = token_service->GetCachedOneTimeTokens();
+  one_time_tokens::SmsOtpService* sms_otp_service = client_->GetSmsOtpService();
+  if (sms_otp_service) {
+    otps = sms_otp_service->GetCachedOneTimeTokens();
   }
 
   VoteData vote_data = {
@@ -292,10 +248,7 @@ bool VotesUploader::MaybeStartVoteUploadProcess(
         return OneTimeToken::IsPotentialOtp(field->value());
       });
 
-  if (vote_data.empty() &&
-      (!has_potential_otp_field ||
-       !base::FeatureList::IsEnabled(
-           features::kAutofillSmsOtpCrowdsourcingFetchFromGmscore))) {
+  if (vote_data.empty() && !has_potential_otp_field) {
     return false;
   }
 
@@ -318,9 +271,7 @@ bool VotesUploader::MaybeStartVoteUploadProcess(
   std::set<FieldGlobalId> fields_that_match_state =
       PreProcessStateMatchingTypes(profiles, *form, client_->GetAppLocale());
 
-  if (token_service && vote_data.otps.empty() && has_potential_otp_field &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillSmsOtpCrowdsourcingFetchFromGmscore)) {
+  if (sms_otp_service && vote_data.otps.empty() && has_potential_otp_field) {
     // This is the 80 percentile latency of the otp success retrieval flow. The
     // longer the timeout, the more risk we have of losing votes because the
     // tab might be closed before we submit the votes.
@@ -328,7 +279,7 @@ bool VotesUploader::MaybeStartVoteUploadProcess(
     // The rest of the upload process is continued in `StartVoteUploadProcess`,
     // which will be called after a timeout, or when RequestOneTimeToken
     // returns.
-    token_service->RequestOneTimeToken(
+    sms_otp_service->RequestOneTimeToken(
         kOtpSubscriptionTimeout,
         base::BindOnce(
             [](base::WeakPtr<VotesUploader> weak_ptr,
@@ -463,8 +414,8 @@ void VotesUploader::OnFieldTypesDetermined(
 void VotesUploader::FlushOldestPendingVotesIfNecessary() {
   // Entries in pending_votes_ are submitted after navigations or form
   // submissions. To reduce the risk of collecting too much data that is not
-  // send, we allow only `kMaxEntriesInQueue` entries. Anything in excess will
-  // be sent when the queue becomes to long.
+  // sent, we allow only `kMaxEntriesInQueue` entries. Anything in excess will
+  // be sent when the queue becomes too long.
   constexpr int kMaxEntriesInQueue = 10;
   while (pending_votes_.size() >= kMaxEntriesInQueue) {
     base::OnceCallback oldest_callback =
@@ -481,59 +432,25 @@ void VotesUploader::UploadVote(
     base::TimeTicks submission_timestamp,
     bool observed_submission,
     ukm::SourceId ukm_source_id) {
-  auto count_types = [&submitted_form](FormType type) {
-    return std::ranges::count_if(
-        submitted_form->fields(),
-        [=](const std::unique_ptr<AutofillField>& field) {
-          return field->Type().GetFormTypes().contains(type);
-        });
-  };
-
-  size_t address_fields_count = count_types(FormType::kAddressForm);
-  autofill_metrics::FormGroupFillingStats address_filling_stats =
-      autofill_metrics::GetFormFillingStatsForFormType(FormType::kAddressForm,
-                                                       *submitted_form);
-  const bool can_trigger_address_survey =
-      address_fields_count >=
-          kMinNumberAddressFieldsToTriggerAddressUserPerceptionSurvey &&
-      address_filling_stats.TotalFilled() > 0 &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillAddressUserPerceptionSurvey);
-
-  size_t credit_card_fields_count = count_types(FormType::kCreditCardForm);
-  autofill_metrics::FormGroupFillingStats credit_card_filling_stats =
-      autofill_metrics::GetFormFillingStatsForFormType(
-          FormType::kCreditCardForm, *submitted_form);
-  const bool can_trigger_credit_card_survey =
-      credit_card_fields_count > 0 &&
-      credit_card_filling_stats.TotalFilled() > 0;
-
-  if (can_trigger_address_survey) {
-    client_->TriggerUserPerceptionOfAutofillSurvey(
-        FillingProduct::kAddress,
-        FormFillingStatsToSurveyStringData(address_filling_stats));
-  } else if (can_trigger_credit_card_survey &&
-             base::FeatureList::IsEnabled(
-                 features::kAutofillCreditCardUserPerceptionSurvey)) {
-    client_->TriggerUserPerceptionOfAutofillSurvey(
-        FillingProduct::kCreditCard,
-        FormFillingStatsToSurveyStringData(credit_card_filling_stats));
-  }
+  MaybeTriggerFormSubmissionHatsSurveys(*client_, *submitted_form);
 
   // If the form is submitted, we don't need to send pending votes from blur
   // (un-focus) events.
-  if (ShouldRunHeuristics(
+  const DenseSet<FormParsingPermission> parsing_permissions =
+      GetFormParsingPermissions(
           *submitted_form,
-          /*ignore_small_forms=*/!client_->IsTabInActorMode()) ||
-      ShouldRunHeuristicsForSingleFields(*submitted_form) ||
-      ShouldBeQueried(*submitted_form)) {
+          /*ignore_small_forms=*/!client_->IsTabInActorMode());
+  if (parsing_permissions.contains_any(
+          {FormParsingPermission::kHeuristics,
+           FormParsingPermission::kSingleFieldHeuristics,
+           FormParsingPermission::kServerQuery})) {
     autofill_metrics::LogQualityMetrics(
         *submitted_form, submitted_form->form_parsed_timestamp(),
         initial_interaction_timestamp, submission_timestamp,
         client_->GetFormInteractionsUkmLogger(), ukm_source_id,
         observed_submission, GetAcUnrecognizedBehavior(*client_));
   }
-  if (!ShouldBeUploaded(*submitted_form)) {
+  if (!parsing_permissions.contains(FormParsingPermission::kServerUpload)) {
     return;
   }
   if (autofill_metrics::ShouldRecordUkm() &&

@@ -47,7 +47,7 @@ class ThreadSpecific {
   USING_FAST_MALLOC(ThreadSpecific);
 
  public:
-  ThreadSpecific() : slot_(&Destroy) {}
+  ThreadSpecific() = default;
   ThreadSpecific(const ThreadSpecific&) = delete;
   ThreadSpecific& operator=(const ThreadSpecific&) = delete;
   bool
@@ -76,15 +76,13 @@ class ThreadSpecific {
 
   // This member must only be accessed or modified on the main thread.
   T* main_thread_storage_ = nullptr;
-  base::ThreadLocalStorage::Slot slot_;
+  base::ThreadLocalStorage::Slot slot_{&Destroy};
 };
 
 template <typename T>
 inline void ThreadSpecific<T>::Destroy(void* ptr) {
   // Never call destructors on the main thread. This is fine because Blink no
-  // longer has a graceful shutdown sequence. Be careful to call this function
-  // (which can be re-entrant) while the pointer is still set, to avoid lazily
-  // allocating Threading after it is destroyed.
+  // longer has a graceful shutdown sequence.
   if (blink::IsMainThread()) {
     return;
   }

@@ -13,6 +13,7 @@
 #include "third_party/blink/renderer/core/frame/navigator.h"
 #include "third_party/blink/renderer/core/geolocation/geolocation.h"
 #include "third_party/blink/renderer/core/html/html_capability_element_base.h"
+#include "third_party/blink/renderer/core/html/html_capability_element_metrics_util.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/text/platform_locale.h"
 #include "third_party/blink/renderer/platform/web_test_support.h"
@@ -116,12 +117,30 @@ void HTMLGeolocationElement::ParseAttribute(
   HTMLCapabilityElementBase::ParseAttribute(params);
 }
 
+void HTMLGeolocationElement::RunActivationBehavior(
+    Event& event,
+    EventDispatchHandlingState* handling_state) {
+  if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    if (event.defaultPrevented() || event.DefaultHandled()) {
+      return;
+    }
+    if (PermissionsGranted()) {
+      HandleActivation(event,
+                       blink::BindOnce(&HTMLGeolocationElement::OnActivated,
+                                       WrapWeakPersistent(this)));
+      return;
+    }
+  }
+  HTMLCapabilityElementBase::RunActivationBehavior(event, handling_state);
+}
+
 void HTMLGeolocationElement::DefaultEventHandler(Event& event) {
-  // We consume the click event here if the permission is already granted
-  // and propagate any other events to the parent HTMLCapabilityElementBase.
-  // HTMLCapabilityElementBase::HandleActivation checks that the event is
-  // trusted before proceeding with the permission request.
-  if (event.type() == event_type_names::kDOMActivate && PermissionsGranted()) {
+  if (!RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled() &&
+      event.type() == event_type_names::kDOMActivate && PermissionsGranted()) {
+    // We consume the click event here if the permission is already granted
+    // and propagate any other events to the parent HTMLCapabilityElementBase.
+    // HTMLCapabilityElementBase::HandleActivation checks that the event is
+    // trusted before proceeding with the permission request.
     HandleActivation(event,
                      blink::BindOnce(&HTMLGeolocationElement::OnActivated,
                                      WrapWeakPersistent(this)));
@@ -144,11 +163,17 @@ void HTMLGeolocationElement::OnPermissionStatusChange(
   }
 
   if (FastHasAttribute(html_names::kAutolocateAttr)) {
+    if (HasPendingPermissionRequest()) {
+      RecordGeolocationRequestInitiationFlow(
+          CapabilityElementGeolocationRequestFlow::kClickWithPromptGranted);
+    }
     MaybeTriggerAutolocate(HasPendingPermissionRequest()
                                ? ForceAutolocate::kYes
                                : ForceAutolocate::kNo);
   } else if (HasPendingPermissionRequest() ||
              has_made_permission_decision_granted) {
+    RecordGeolocationRequestInitiationFlow(
+        CapabilityElementGeolocationRequestFlow::kClickWithPromptGranted);
     RequestGeolocation();
   }
 }
@@ -167,6 +192,9 @@ void HTMLGeolocationElement::DidAddUserAgentShadowRoot(ShadowRoot& root) {
 }
 
 void HTMLGeolocationElement::OnActivated() {
+  RecordGeolocationRequestInitiationFlow(
+      CapabilityElementGeolocationRequestFlow::
+          kClickWithPermissionAlreadyGranted);
   if (FastHasAttribute(html_names::kAutolocateAttr)) {
     MaybeTriggerAutolocate(ForceAutolocate::kYes);
   } else {
@@ -221,15 +249,46 @@ void HTMLGeolocationElement::WatchPosition() {
 
 void HTMLGeolocationElement::CurrentPositionCallback(
     base::expected<Geoposition*, GeolocationPositionError*> position) {
+  const base::TimeTicks now = base::TimeTicks::Now();
   is_geolocation_request_in_progress_ = false;
   MaybeHideInProgressAppearance();
   if (position.has_value()) {
     position_ = position.value();
     error_ = nullptr;
+    if (location_request_start_time_.has_value()) {
+      RecordGeolocationRequestResult(
+          CapabilityElementGeolocationResult::kSuccess);
+      RecordGeolocationTimeToPosition(now -
+                                      location_request_start_time_.value());
+    }
   } else {
     error_ = position.error();
     position_ = nullptr;
+    if (location_request_start_time_.has_value()) {
+      RecordGeolocationRequestResult(
+          CapabilityElementGeolocationResult::kError);
+      RecordGeolocationTimeToError(now - location_request_start_time_.value());
+      if (error_) {
+        switch (error_->code()) {
+          case GeolocationPositionError::kPermissionDenied:
+            RecordGeolocationPositionErrorReason(
+                CapabilityElementGeolocationPositionErrorReason::
+                    kPermissionDenied);
+            break;
+          case GeolocationPositionError::kPositionUnavailable:
+            RecordGeolocationPositionErrorReason(
+                CapabilityElementGeolocationPositionErrorReason::
+                    kPositionUnavailable);
+            break;
+          case GeolocationPositionError::kTimeout:
+            RecordGeolocationPositionErrorReason(
+                CapabilityElementGeolocationPositionErrorReason::kTimeout);
+            break;
+        }
+      }
+    }
   }
+  location_request_start_time_.reset();
   EnqueueEvent(*Event::CreateCancelableBubble(event_type_names::kLocation),
                TaskType::kUserInteraction);
 }
@@ -266,6 +325,21 @@ void HTMLGeolocationElement::RequestGeolocation() {
   if (in_progress_appearance_started_time_ != base::TimeTicks()) {
     return;
   }
+
+  CapabilityElementGeolocationAccuracyMode accuracy_mode =
+      CapabilityElementGeolocationAccuracyMode::kDefault;
+  const AtomicString& mode = FastGetAttribute(html_names::kAccuracymodeAttr);
+  if (!mode.IsNull()) {
+    if (EqualIgnoringAsciiCase(mode, "precise")) {
+      accuracy_mode = CapabilityElementGeolocationAccuracyMode::kPrecise;
+    } else if (EqualIgnoringAsciiCase(mode, "approximate")) {
+      accuracy_mode = CapabilityElementGeolocationAccuracyMode::kApproximate;
+    }
+  }
+  RecordGeolocationAccuracyMode(accuracy_mode);
+
+  location_request_start_time_ = base::TimeTicks::Now();
+
   if (FastHasAttribute(html_names::kWatchAttr)) {
     WatchPosition();
   } else {
@@ -288,6 +362,10 @@ void HTMLGeolocationElement::MaybeTriggerAutolocate(ForceAutolocate force) {
   if (force == ForceAutolocate::kYes ||
       (!did_autolocate_trigger_request && IsRendered() &&
        PermissionsGranted())) {
+    if (force == ForceAutolocate::kNo) {
+      RecordGeolocationRequestInitiationFlow(
+          CapabilityElementGeolocationRequestFlow::kAutolocateOnLoad);
+    }
     did_autolocate_trigger_request = true;
     RequestGeolocation();
   }
@@ -299,10 +377,7 @@ void HTMLGeolocationElement::UpdateText() {
                             : IDS_PERMISSION_REQUEST_GEOLOCATION,
       ComputeInheritedLanguage().ToAsciiLower());
   CHECK(message_id);
-  String new_text = GetLocale().QueryString(message_id);
-  if (permission_text_span()->textContent() != new_text) {
-    permission_text_span()->setInnerText(new_text);
-  }
+  SetPermissionText(GetLocale().QueryString(message_id));
 }
 
 void HTMLGeolocationElement::UpdateIcon(

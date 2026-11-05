@@ -12,8 +12,6 @@ source_set("history") {
     "history_api.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [ "//extensions/browser" ]
 
   deps = [
@@ -29,4 +27,8 @@ source_set("history") {
     "//extensions/browser",
     "//extensions/buildflags",
   ]
+
+  if (!is_android) {
+    deps += [ "//components/webapps/isolated_web_apps:scheme" ]
+  }
 }

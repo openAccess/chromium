@@ -92,6 +92,9 @@ class CORE_EXPORT AnimationEffect : public ScriptWrappable {
   virtual bool Affects(const PropertyHandle&) const = 0;
 
   Timing::Phase GetPhase() const { return EnsureCalculated().phase; }
+  bool IsCurrentDirectionForward() const {
+    return EnsureCalculated().is_current_direction_forward;
+  }
   bool IsCurrent() const { return EnsureCalculated().is_current; }
   bool IsInEffect() const { return EnsureCalculated().is_in_effect; }
   bool IsInPlay() const { return EnsureCalculated().is_in_play; }
@@ -189,6 +192,7 @@ class CORE_EXPORT AnimationEffect : public ScriptWrappable {
   mutable bool needs_update_;
   mutable std::optional<AnimationTimeDelta> last_update_time_;
   mutable bool last_is_idle_ = false;
+  mutable bool last_requires_iteration_events_ = false;
   // This flag, together with |normalized_.*boundary_aligned|, indicates
   // whether this AnimationEffect should be endpoint-exclusive.
   // |normalized_.*boundary_aligned| is not sufficient for this purpose because

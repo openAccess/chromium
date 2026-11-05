@@ -57,16 +57,15 @@ void CreateFirstRunDesktopRefreshFieldTrial(
     case version_info::Channel::UNKNOWN:
     case version_info::Channel::CANARY:
     case version_info::Channel::DEV:
+    case version_info::Channel::BETA:
       enabled_percent = 50;
       disabled_percent = 50;
       default_percent = 0;
       break;
-    // TODO(crbug.com/475441477): Rollout this experiment to Beta and Stable.
-    case version_info::Channel::BETA:
     case version_info::Channel::STABLE:
-      enabled_percent = 0;
-      disabled_percent = 0;
-      default_percent = 100;
+      enabled_percent = 1;
+      disabled_percent = 1;
+      default_percent = 98;
       break;
   }
   constexpr base::FieldTrial::Probability total_probablility = 100;

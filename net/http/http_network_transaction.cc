@@ -8,6 +8,7 @@
 #include <optional>
 #include <queue>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -125,6 +126,25 @@ const size_t kAsyncRetryThresholdOnConnectionErrors =
 // multi-leg authentication), they may be triggered automatically. To avoid
 // looping forever, bound the number of restarts.
 const size_t kMaxRestarts = 32;
+
+// Max number of times auth state may be discarded due to a change in the proxy
+// chain used by a single transaction. Discarding auth state may result in new
+// auth challenges, so this prevents loops when the proxy chain keeps changing
+// (e.g., a PAC script that randomly selects a proxy). The transaction fails if
+// this is exceeded.
+const size_t kMaxAuthControllerResetsOnProxyChange = 3;
+
+// Returns true if `a` and `b` use the same proxy chain. Empty ProxyInfos only
+// match each other. Uses ProxyChain::operator==() to compare proxy chains,
+// which also compares fields other than just the proxies in a chain, so may
+// treat chains with the same proxies as different, erring on the side of
+// discarding auth state.
+bool AreUsingSameProxyChain(const ProxyInfo& a, const ProxyInfo& b) {
+  if (a.is_empty() || b.is_empty()) {
+    return a.is_empty() == b.is_empty();
+  }
+  return a.proxy_chain() == b.proxy_chain();
+}
 
 // Returns true when Early Hints are allowed on the given protocol.
 bool EarlyHintsAreAllowedOn(HttpConnectionInfo connection_info) {
@@ -360,6 +380,9 @@ HttpNetworkTransaction::~HttpNetworkTransaction() {
         kMaxRetryAttemptsOnConnectionErrors + 1);
   }
 
+  base::UmaHistogramEnumeration("Net.NetworkTransaction.TerminalState",
+                                terminal_state_);
+
 #if BUILDFLAG(ENABLE_REPORTING)
   // If no error or success report has been generated yet at this point, then
   // this network transaction was prematurely cancelled.
@@ -402,10 +425,12 @@ int HttpNetworkTransaction::Start(const HttpRequestInfo* request_info,
               NetLogWithSourceToFlow(net_log), "url", request_info->url);
 
   if (session_->power_suspended()) {
+    terminal_state_ = TerminalState::kOtherErrorBeforeSendingRequest;
     return ERR_NETWORK_IO_SUSPENDED;
   }
 
   if (request_info->load_flags & LOAD_ONLY_FROM_CACHE) {
+    terminal_state_ = TerminalState::kOtherErrorBeforeSendingRequest;
     return ERR_CACHE_MISS;
   }
 
@@ -471,6 +496,7 @@ int HttpNetworkTransaction::RestartIgnoringLastError(
   if (!CheckMaxRestarts())
     return ERR_TOO_MANY_RETRIES;
 
+  terminal_state_ = TerminalState::kAborted;
   next_state_ = STATE_CREATE_STREAM;
 
   int rv = DoLoop(OK);
@@ -662,6 +688,7 @@ int HttpNetworkTransaction::Read(IOBuffer* buf,
     DCHECK(proxy_info_.AnyProxyInChain(
         [](const ProxyServer& s) { return s.is_http_like(); }));
     DCHECK_EQ(headers->response_code(), HTTP_PROXY_AUTHENTICATION_REQUIRED);
+    terminal_state_ = TerminalState::kOtherErrorAfterSendingRequest;
     return ERR_TUNNEL_CONNECTION_FAILED;
   }
 
@@ -877,13 +904,22 @@ void HttpNetworkTransaction::OnStreamReady(const ProxyInfo& used_proxy_info,
   DCHECK_EQ(STATE_CREATE_STREAM_COMPLETE, next_state_);
   DCHECK(stream_request_.get());
 
+  int rv = SetProxyInfo(used_proxy_info);
+  if (rv != OK) {
+    // Discard the new stream, without having used it, and fail the request.
+    // DoCreateStreamComplete() will clean up `stream_request_`.
+    stream.reset();
+    SetProxyInfoInResponse(used_proxy_info, &response_);
+    OnIOComplete(rv);
+    return;
+  }
+
   if (stream_) {
     total_received_bytes_ += stream_->GetTotalReceivedBytes();
     total_sent_bytes_ += stream_->GetTotalSentBytes();
   }
   stream_ = std::move(stream);
   stream_->SetRequestHeadersCallback(request_headers_callback_);
-  proxy_info_ = used_proxy_info;
   negotiated_protocol_ = stream_request_->negotiated_protocol();
   // TODO(crbug.com/40473589): Remove `was_alpn_negotiated` when we remove
   // chrome.loadTimes API.
@@ -929,7 +965,9 @@ void HttpNetworkTransaction::OnStreamFailed(
   DCHECK(stream_request_.get());
   DCHECK(!stream_.get());
   net_error_details_ = net_error_details;
-  proxy_info_ = used_proxy_info;
+  // The stream request already failed, so prefer its error over any error
+  // caused by too many auth controller resets.
+  std::ignore = SetProxyInfo(used_proxy_info);
   SetProxyInfoInResponse(used_proxy_info, &response_);
   response_.resolve_error_info = resolve_error_info;
 
@@ -964,6 +1002,14 @@ void HttpNetworkTransaction::OnNeedsProxyAuth(
   DCHECK(stream_request_.get());
   DCHECK_EQ(STATE_CREATE_STREAM_COMPLETE, next_state_);
 
+  int rv = SetProxyInfo(used_proxy_info);
+  if (rv != OK) {
+    // Fail the request without exposing the proxy's response.
+    SetProxyInfoInResponse(used_proxy_info, &response_);
+    OnIOComplete(rv);
+    return;
+  }
+
   establishing_tunnel_ = true;
   response_.headers = proxy_response.headers;
   response_.auth_challenge = proxy_response.auth_challenge;
@@ -975,7 +1021,6 @@ void HttpNetworkTransaction::OnNeedsProxyAuth(
   }
 
   headers_valid_ = true;
-  proxy_info_ = used_proxy_info;
 
   auth_controllers_[HttpAuth::AUTH_PROXY] = auth_controller;
   pending_auth_target_ = HttpAuth::AUTH_PROXY;
@@ -1007,6 +1052,15 @@ bool HttpNetworkTransaction::UsingHttpProxyWithoutTunnel() const {
          request_->url.SchemeIs("http");
 }
 
+SSLInfo HttpNetworkTransaction::GetStreamSSLInfo() {
+  CHECK(stream_);
+  SSLInfo ssl_info;
+  if (IsSecureRequest()) {
+    stream_->GetSSLInfo(&ssl_info);
+  }
+  return ssl_info;
+}
+
 void HttpNetworkTransaction::DoCallback(int rv) {
   DCHECK_NE(rv, ERR_IO_PENDING);
   DCHECK(!callback_.is_null());
@@ -1031,8 +1085,10 @@ int HttpNetworkTransaction::DoLoop(int result) {
   DCHECK(next_state_ != STATE_NONE);
 
   int rv = result;
+  State last_state = STATE_NONE;
   do {
     State state = next_state_;
+    last_state = state;
     next_state_ = STATE_NONE;
     switch (state) {
       case STATE_CREATE_STREAM:
@@ -1128,6 +1184,29 @@ int HttpNetworkTransaction::DoLoop(int result) {
         NOTREACHED() << "bad state";
     }
   } while (rv != ERR_IO_PENDING && next_state_ != STATE_NONE);
+
+  // Update `terminal_state_` on final states only.
+  if (rv <= 0 && rv != ERR_IO_PENDING) {
+    const bool sent_request = last_state >= STATE_SEND_REQUEST_COMPLETE;
+    switch (rv) {
+      case OK:
+        terminal_state_ = last_state == STATE_READ_BODY_COMPLETE
+                              ? TerminalState::kSuccess
+                              : TerminalState::kResponseOk;
+        break;
+
+      case ERR_NETWORK_CHANGED:
+        terminal_state_ =
+            sent_request ? TerminalState::kNetworkChangedAfterSendingRequest
+                         : TerminalState::kNetworkChangedBeforeSendingRequest;
+        break;
+
+      default:
+        terminal_state_ = sent_request
+                              ? TerminalState::kOtherErrorAfterSendingRequest
+                              : TerminalState::kOtherErrorBeforeSendingRequest;
+    }
+  }
 
   return rv;
 }
@@ -1335,16 +1414,42 @@ int HttpNetworkTransaction::DoInitStreamComplete(int result) {
 
 int HttpNetworkTransaction::DoGenerateProxyAuthToken() {
   next_state_ = STATE_GENERATE_PROXY_AUTH_TOKEN_COMPLETE;
-  if (!ShouldApplyProxyAuth())
+  if (!ShouldApplyProxyAuth()) {
     return OK;
+  }
   HttpAuth::Target target = HttpAuth::AUTH_PROXY;
-  if (!auth_controllers_[target].get())
+  GURL auth_url = AuthURL(target);
+  // The proxy may have changed (for example due to fallback to another proxy
+  // in the list) since the controller was created for a previous attempt on
+  // this transaction. In that case, drop it and create a new one bound to the
+  // current proxy. This is redundant with SetProxyInfo() when
+  // kClearAuthControllersOnProxyChange is enabled.
+  // TODO(crbug.com/40704785): Make sure to update the matching logic here when
+  // fixing this bug.
+  if (auth_controllers_[target].get() &&
+      !auth_controllers_[target]->MatchesSchemeHostPort(
+          url::SchemeHostPort(auth_url))) {
+    auth_controllers_[target] = nullptr;
+  }
+  if (!auth_controllers_[target].get()) {
     auth_controllers_[target] = base::MakeRefCounted<HttpAuthController>(
-        target, AuthURL(target), request_->network_anonymization_key,
+        target, auth_url, request_->network_anonymization_key,
         session_->http_auth_cache(), session_->http_auth_handler_factory(),
         session_->host_resolver());
+  }
+  // This is only reached for GET proxies (see ShouldApplyProxyAuth()); CONNECT
+  // proxy auth is handled by the proxy client sockets instead. GET proxy auth
+  // controllers are never given a certificate, so pass an empty SSLInfo.
+  //
+  // GetStreamSSLInfo() would also return an empty SSLInfo here, because a GET
+  // proxy is only used for "http" requests, so IsSecureRequest() is false. It
+  // is not used, to avoid implying that the proxy's certificate could show up
+  // here: GetStreamSSLInfo() only describes the destination server.
+  //
+  // As a result, GET proxy auth handlers derive no channel bindings and are not
+  // pinned to the proxy's certificate. This is legacy behavior.
   return auth_controllers_[target]->MaybeGenerateAuthToken(
-      request_, io_callback_, net_log_);
+      request_, SSLInfo(), io_callback_, net_log_);
 }
 
 int HttpNetworkTransaction::DoGenerateProxyAuthTokenComplete(int rv) {
@@ -1362,13 +1467,15 @@ int HttpNetworkTransaction::DoGenerateServerAuthToken() {
         target, AuthURL(target), request_->network_anonymization_key,
         session_->http_auth_cache(), session_->http_auth_handler_factory(),
         session_->host_resolver());
-    if (request_->load_flags & LOAD_DO_NOT_USE_EMBEDDED_IDENTITY)
+    if (request_->load_flags & LOAD_DO_NOT_USE_EMBEDDED_IDENTITY) {
       auth_controllers_[target]->DisableEmbeddedIdentity();
+    }
   }
-  if (!ShouldApplyServerAuth())
+  if (!ShouldApplyServerAuth()) {
     return OK;
+  }
   return auth_controllers_[target]->MaybeGenerateAuthToken(
-      request_, io_callback_, net_log_);
+      request_, GetStreamSSLInfo(), io_callback_, net_log_);
 }
 
 int HttpNetworkTransaction::DoGenerateServerAuthTokenComplete(int rv) {
@@ -1592,9 +1699,13 @@ int HttpNetworkTransaction::DoReadHeadersComplete(int result) {
       early_response_headers_callback_.Run(std::move(response_.headers));
     }
 
-    // Reset response headers for the final response.
-    response_.headers =
-        base::MakeRefCounted<HttpResponseHeaders>(std::string());
+    // Clear response headers before reading the final response, so that if the
+    // connection is closed before the final response is received, the
+    // ERR_CONNECTION_CLOSED logic above doesn't treat the request as
+    // successful. This also puts us in the same state whether we passed
+    // ownership of headers to `early_response_headers_callback_` or not.
+    response_.headers = nullptr;
+    received_informational_response_ = true;
     next_state_ = STATE_READ_HEADERS;
     return OK;
   }
@@ -1653,8 +1764,10 @@ int HttpNetworkTransaction::DoReadHeadersComplete(int result) {
   //  * This is a WebSocket request, in which case we pass it on up.
   if (response_.headers->response_code() / 100 == 1 &&
       !ForWebSocketHandshake()) {
-    response_.headers =
-        base::MakeRefCounted<HttpResponseHeaders>(std::string());
+    // As in the 103 Early Hints case above, clear headers so a connection close
+    // before the final response results in an error.
+    response_.headers = nullptr;
+    received_informational_response_ = true;
     next_state_ = STATE_READ_HEADERS;
     return OK;
   }
@@ -2232,12 +2345,12 @@ int HttpNetworkTransaction::HandleIOError(int error) {
       ResetConnectionAndRequestForResend(*retry_reason);
       return OK;
     case RetryReason::kQuicProtocolError:
-      if (HasExceededMaxRetries() || GetResponseHeaders() != nullptr ||
+      if (HasExceededMaxRetries() || HasReceivedResponse() ||
           !stream_->GetAlternativeService(&retried_alternative_service_)) {
-        // If the response headers have already been received and passed up
-        // then the request can not be retried. Also, if there was no
-        // alternative service used for this request, then there is no
-        // alternative service to be disabled.
+        // If any response headers (including informational ones) have already
+        // been received and passed up then the request can not be retried.
+        // Also, if there was no alternative service used for this request,
+        // then there is no alternative service to be disabled.
         return error;
       }
 
@@ -2293,6 +2406,7 @@ void HttpNetworkTransaction::ResetStateForAuthRestart() {
   read_buf_ = nullptr;
   read_buf_len_ = 0;
   headers_valid_ = false;
+  received_informational_response_ = false;
   request_headers_.Clear();
   response_ = HttpResponseInfo();
   SetProxyInfoInResponse(proxy_info_, &response_);
@@ -2300,6 +2414,7 @@ void HttpNetworkTransaction::ResetStateForAuthRestart() {
   remote_endpoint_ = IPEndPoint();
   net_error_details_.quic_broken = false;
   net_error_details_.quic_connection_error = quic::QUIC_NO_ERROR;
+  terminal_state_ = TerminalState::kAborted;
 #if BUILDFLAG(ENABLE_REPORTING)
   network_error_logging_report_generated_ = false;
   start_timeticks_ = base::TimeTicks::Now();
@@ -2316,14 +2431,17 @@ HttpResponseHeaders* HttpNetworkTransaction::GetResponseHeaders() const {
   return response_.headers.get();
 }
 
+bool HttpNetworkTransaction::HasReceivedResponse() const {
+  return GetResponseHeaders() != nullptr || received_informational_response_;
+}
+
 bool HttpNetworkTransaction::ShouldResendRequest() const {
   bool connection_is_proven = stream_->IsConnectionReused();
-  bool has_received_headers = GetResponseHeaders() != nullptr;
 
   // NOTE: we resend a request only if we reused a keep-alive connection.
   // This automatically prevents an infinite resend loop because we'll run
   // out of the cached keep-alive connections eventually.
-  return connection_is_proven && !has_received_headers;
+  return connection_is_proven && !HasReceivedResponse();
 }
 
 bool HttpNetworkTransaction::HasExceededMaxRetries() const {
@@ -2381,6 +2499,71 @@ bool HttpNetworkTransaction::ShouldApplyServerAuth() const {
   return request_->privacy_mode == PRIVACY_MODE_DISABLED;
 }
 
+int HttpNetworkTransaction::SetProxyInfo(const ProxyInfo& used_proxy_info) {
+  bool proxy_chain_changed =
+      !AreUsingSameProxyChain(proxy_info_, used_proxy_info);
+  proxy_info_ = used_proxy_info;
+
+  // If `features::kClearAuthControllersOnProxyChange` is not enabled, nothing
+  // else to do.
+  if (!base::FeatureList::IsEnabled(
+          features::kClearAuthControllersOnProxyChange)) {
+    return OK;
+  }
+
+  if (!proxy_chain_changed) {
+    return OK;
+  }
+
+  // Need to figure out if any auth controller we're about to discard has
+  // handled an auth challenge yet. We want to increment
+  // `auth_controller_resets_on_proxy_change_` only in the case where we have
+  // attempted to provide auth credentials / likely retried the request due to
+  // an auth challenge. Controllers that have only used preemptive auth, or no
+  // auth at all, can be recreated from the auth cache without any challenges.
+  bool discarded_challenged_controller = false;
+
+  // Proxy auth controllers are bound to a specific proxy, and the new chain may
+  // not even use proxy auth (e.g., SOCKS or DIRECT), so always discard proxy
+  // auth state on proxy change. A new one will be created for the new proxy, if
+  // needed.
+  if (auth_controllers_[HttpAuth::AUTH_PROXY]) {
+    discarded_challenged_controller =
+        auth_controllers_[HttpAuth::AUTH_PROXY]->has_handled_challenge();
+    auth_controllers_[HttpAuth::AUTH_PROXY] = nullptr;
+  }
+
+  // For requests that use cryptographic schemes, the server auth controller
+  // checks that the server's certificate does not change, so it's safe to keep.
+  // Otherwise, the proxy chain can tamper with the server's responses, so
+  // discard any auth state. This includes controllers without a handler, which
+  // may still have state from previous challenges (e.g., disabled schemes).
+  //
+  // Note that a proxy chain change always means a new connection, so a
+  // connection-based handshake (e.g., NTLM) in progress on a kept server auth
+  // controller will incorrectly continue on the new connection, so we may want
+  // to unconditionally discard the auth controller here. For
+  // non-connection-based auth requests, the credentials should be cached, so it
+  // should also be safe to discard the controller here.
+  if (!IsSecureRequest() && auth_controllers_[HttpAuth::AUTH_SERVER]) {
+    if (auth_controllers_[HttpAuth::AUTH_SERVER]->has_handled_challenge()) {
+      discarded_challenged_controller = true;
+    }
+    auth_controllers_[HttpAuth::AUTH_SERVER] = nullptr;
+  }
+
+  if (!discarded_challenged_controller) {
+    return OK;
+  }
+
+  ++auth_controller_resets_on_proxy_change_;
+  if (auth_controller_resets_on_proxy_change_ >
+      kMaxAuthControllerResetsOnProxyChange) {
+    return ERR_TOO_MANY_RETRIES;
+  }
+  return OK;
+}
+
 int HttpNetworkTransaction::HandleAuthChallenge() {
   scoped_refptr<HttpResponseHeaders> headers(GetResponseHeaders());
   DCHECK(headers.get());
@@ -2394,14 +2577,38 @@ int HttpNetworkTransaction::HandleAuthChallenge() {
   if (target == HttpAuth::AUTH_PROXY && proxy_info_.is_direct())
     return ERR_UNEXPECTED_PROXY_AUTH;
 
-  // This case can trigger when an HTTPS server responds with a "Proxy
-  // authentication required" status code through a non-authenticating
-  // proxy.
+  // This case can trigger when a server, rather than a GET proxy, responds with
+  // a "407 proxy authentication required" status code.
   if (!auth_controllers_[target].get())
     return ERR_UNEXPECTED_PROXY_AUTH;
 
+  // If ShouldApplyProxyAuth() is false, `auth_controllers_[AUTH_PROXY]` should
+  // have been nullptr, so we should have returned ERR_UNEXPECTED_PROXY_AUTH
+  // above.
+  //
+  // DoGenerateProxyAuthToken() only creates a proxy auth controller when
+  // ShouldApplyProxyAuth() is true, and SetProxyInfo() discards it when the
+  // proxy chain changes. In the tunnel case, the auth controller is set by
+  // OnNeedsProxyAuth() and cleared by RestartWithAuth() before the request is
+  // sent.
+  if (target == HttpAuth::AUTH_PROXY &&
+      base::FeatureList::IsEnabled(
+          features::kClearAuthControllersOnProxyChange)) {
+    CHECK(ShouldApplyProxyAuth());
+  }
+
+  // CONNECT proxy auth challenges do not go through this path; they are
+  // handled by the proxy client sockets. Only challenges from GET proxies, or
+  // directly from servers, reach here. A proxy auth challenge sent by a server
+  // when there is no GET proxy results in ERR_UNEXPECTED_PROXY_AUTH above.
+  //
+  // GetStreamSSLInfo() describes the connection to the destination server, so
+  // only pass it to the server auth controller. The GET proxy auth controller
+  // gets an empty SSLInfo, matching DoGenerateProxyAuthToken().
+  const SSLInfo ssl_info =
+      target == HttpAuth::AUTH_SERVER ? GetStreamSSLInfo() : SSLInfo();
   int rv = auth_controllers_[target]->HandleAuthChallenge(
-      headers, response_.ssl_info, !ShouldApplyServerAuth(), false, net_log_);
+      headers, ssl_info, !ShouldApplyServerAuth(), false, net_log_);
   if (auth_controllers_[target]->HaveAuthHandler())
     pending_auth_target_ = target;
 
@@ -2478,8 +2685,9 @@ bool HttpNetworkTransaction::ContentEncodingsValid() const {
   // When "Accept-Encoding" is not specified, it is parsed as "*".
   // If "*" encoding is advertised, then any encoding should be "accepted".
   // This does not mean, that it will be successfully decoded.
-  if (allowed_encodings.find("*") != allowed_encodings.end())
+  if (allowed_encodings.contains("*")) {
     return true;
+  }
 
   bool result = true;
   for (auto const& encoding : used_encodings) {
@@ -2489,7 +2697,7 @@ bool HttpNetworkTransaction::ContentEncodingsValid() const {
     if (source_type == SourceStreamType::kUnknown) {
       continue;
     }
-    if (allowed_encodings.find(encoding) == allowed_encodings.end()) {
+    if (!allowed_encodings.contains(encoding)) {
       result = false;
       break;
     }
@@ -2540,21 +2748,31 @@ void HttpNetworkTransaction::RecordStreamRequestResult(int result) {
         create_stream_end_time_ - create_stream_start_time_;
 
     const std::string_view histogram_base_name =
-        ForWebSocketHandshake() ? "CreateWebSocketStreamTime4"
-                                : "CreateHttpStreamTime4";
+        ForWebSocketHandshake() ? "CreateWebSocketStreamTime"
+                                : "CreateHttpStreamTime";
     const std::string_view host_suffix =
         IsGoogleHostWithAlpnH3(url_.host()) ? ".GoogleHost" : "";
     const std::string_view protocol_suffix =
         NegotiatedProtocolToHistogramSuffixCoalesced(negotiated_protocol_);
-    std::string histogram_name =
-        base::StrCat({"Net.NetworkTransaction.", histogram_base_name,
-                      host_suffix, ".", protocol_suffix});
-    base::UmaHistogramTimes(histogram_name, create_time);
-
     const std::string_view address_suffix =
         AddressFamilyToString(endpoint.GetFamily());
-    base::UmaHistogramTimes(base::StrCat({histogram_name, ".", address_suffix}),
-                            create_time);
+
+    // TODO(crbug.com/531975349): Remove version 4 histograms once ongoing
+    // experiments have migrated to version 5.
+    std::string deprecated_histogram_name =
+        base::StrCat({"Net.NetworkTransaction.", histogram_base_name, "4",
+                      host_suffix, ".", protocol_suffix});
+    base::UmaHistogramTimes(deprecated_histogram_name, create_time);
+    base::UmaHistogramTimes(
+        base::StrCat({deprecated_histogram_name, ".", address_suffix}),
+        create_time);
+
+    std::string histogram_name =
+        base::StrCat({"Net.NetworkTransaction.", histogram_base_name, "5",
+                      host_suffix, ".", protocol_suffix});
+    base::UmaHistogramMediumTimes(histogram_name, create_time);
+    base::UmaHistogramMediumTimes(
+        base::StrCat({histogram_name, ".", address_suffix}), create_time);
 
     CHECK(stream_request_completion_details_.has_value());
     if (stream_request_completion_details_->session_source.has_value()) {

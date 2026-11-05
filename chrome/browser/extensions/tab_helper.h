@@ -28,6 +28,7 @@
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace content {
+class NavigationHandle;
 class RenderFrameHost;
 }
 
@@ -51,8 +52,10 @@ class TabHelper : public content::WebContentsObserver,
   void SetReloadRequired(PermissionsManager::UserSiteSetting site_setting);
 
   // Sets whether the tab requires a page reload for applying site access
-  // changes for the given extensions.
-  void SetReloadRequired(const std::vector<const Extension*>& extensions);
+  // changes for the given extensions. If `show_bubble_if_visible` is true,
+  // immediately shows the reload bubble if this WebContents is visible.
+  void SetReloadRequired(const std::vector<const Extension*>& extensions,
+                         bool show_bubble_if_visible = true);
 
   // Returns whether a page reload is required to apply the user site settings
   // in the tab.
@@ -104,6 +107,11 @@ class TabHelper : public content::WebContentsObserver,
   // Displays the reload page bubble if the tab is visible and reload extensions
   // are pending.
   void ShowReloadBubbleIfVisible();
+
+  // Records telemetry for extension-initiated navigations that redirect away
+  // from the default search engine results page to a cross-site destination.
+  void MaybeRecordSearchRedirectMetrics(
+      content::NavigationHandle* navigation_handle);
 
   raw_ptr<Profile> profile_;
 

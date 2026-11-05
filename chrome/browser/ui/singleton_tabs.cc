@@ -11,9 +11,12 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params_utils.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 void ShowSingletonTab(Profile* profile, const GURL& url) {
   chrome::ScopedTabbedBrowserDisplayer displayer(profile);
@@ -48,7 +51,8 @@ void ShowSingletonTabOverwritingNTP(
 }
 
 void ShowSingletonTabOverwritingNTP(NavigateParams* params) {
-  DCHECK_EQ(params->disposition, WindowOpenDisposition::SINGLETON_TAB);
+  CHECK_EQ(params->disposition, ui::mojom::WindowOpenDisposition::kSingletonTab,
+           base::NotFatalUntil::M162);
   content::WebContents* contents =
       params->browser->GetTabStripModel()->GetActiveWebContents();
   if (contents) {
@@ -58,7 +62,7 @@ void ShowSingletonTabOverwritingNTP(NavigateParams* params) {
       int tab_index =
           GetIndexOfExistingTabMatchingURL(params->browser, *params);
       if (tab_index < 0) {
-        params->disposition = WindowOpenDisposition::CURRENT_TAB;
+        params->disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
       } else {
         params->switch_to_singleton_tab =
             params->browser->GetTabStripModel()->GetWebContentsAt(tab_index);
@@ -71,7 +75,7 @@ void ShowSingletonTabOverwritingNTP(NavigateParams* params) {
 NavigateParams GetSingletonTabNavigateParams(BrowserWindowInterface* browser,
                                              const GURL& url) {
   NavigateParams params(browser, url, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-  params.disposition = WindowOpenDisposition::SINGLETON_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kSingletonTab;
   params.window_action = NavigateParams::WindowAction::kShowWindow;
   params.user_gesture = true;
   params.tabstrip_add_types |= AddTabTypes::ADD_INHERIT_OPENER;

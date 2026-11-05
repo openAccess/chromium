@@ -12,15 +12,15 @@
 #include "base/functional/bind.h"
 #include "base/metrics/user_metrics.h"
 #include "base/uuid.h"
+#include "chrome/browser/bookmarks/bookmark_bar_utils.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
-#include "chrome/browser/ui/bookmarks/bookmark_utils.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils_desktop.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/tabs/organizer/organizer_panel_state_controller.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_metrics.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -49,6 +49,7 @@
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/style/platform_style.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
 
@@ -70,7 +71,7 @@ SavedTabGroupBar::SavedTabGroupBar(BrowserWindowInterface* browser,
       tab_group_service_(tab_group_service),
       browser_(browser) {
   CHECK(tab_group_service_);
-  DCHECK(browser_);
+  CHECK(browser_, base::NotFatalUntil::M162);
   GetViewAccessibility().SetRole(ax::mojom::Role::kToolbar);
   GetViewAccessibility().SetName(
       l10n_util::GetStringUTF16(IDS_ACCNAME_SAVED_TAB_GROUPS));
@@ -327,6 +328,7 @@ void SavedTabGroupBar::Layout(PassKey) {
   const int last_visible_button_index = CalculateLastVisibleButtonIndexForWidth(
       stg_bar_width - everything_menu_button_width);
   UpdateButtonVisibilities(should_show_overflow, last_visible_button_index);
+  UpdateButtonFocusBehaviors();
 }
 
 int SavedTabGroupBar::CalculatePreferredWidthRestrictedBy(int max_width) const {
@@ -518,7 +520,8 @@ views::View* SavedTabGroupBar::GetButton(const base::Uuid& guid) {
 
 void SavedTabGroupBar::OnTabGroupButtonPressed(const base::Uuid& id,
                                                const ui::Event& event) {
-  DCHECK(tab_group_service_ && tab_group_service_->GetGroup(id).has_value());
+  CHECK(tab_group_service_ && tab_group_service_->GetGroup(id).has_value(),
+        base::NotFatalUntil::M162);
   chrome::UpdateBookmarkBarVisibilityPrefOnUserAction(browser_->GetProfile());
   const std::optional<SavedTabGroup> group = tab_group_service_->GetGroup(id);
 
@@ -573,6 +576,44 @@ void SavedTabGroupBar::UpdateButtonVisibilities(bool show_overflow,
   for (int i = 0; i < static_cast<int>(children().size()) - 1; ++i) {
     views::View* button = children()[i];
     button->SetVisible(i <= last_visible_button_index);
+  }
+}
+
+std::vector<views::View*>
+SavedTabGroupBar::GetVisibleKeyboardNavigationButtons() const {
+  std::vector<views::View*> buttons;
+  if (!GetVisible()) {
+    return buttons;
+  }
+  for (SavedTabGroupButton* button : GetSavedTabGroupButtons()) {
+    if (button->GetVisible()) {
+      buttons.push_back(button);
+    }
+  }
+  if (IsOverflowButtonVisible()) {
+    buttons.push_back(everything_menu_button_);
+  }
+  return buttons;
+}
+
+void SavedTabGroupBar::SetAreaKeyboardNavigationEnabled(bool enabled) {
+  if (area_keyboard_navigation_enabled_ == enabled) {
+    return;
+  }
+  area_keyboard_navigation_enabled_ = enabled;
+  InvalidateLayout();
+}
+
+void SavedTabGroupBar::UpdateButtonFocusBehaviors() {
+  if (!area_keyboard_navigation_enabled_) {
+    return;
+  }
+  const std::vector<views::View*> buttons =
+      GetVisibleKeyboardNavigationButtons();
+  for (size_t i = 0; i < buttons.size(); ++i) {
+    buttons[i]->SetFocusBehavior(
+        i == 0 ? views::PlatformStyle::kDefaultFocusBehavior
+               : views::View::FocusBehavior::ACCESSIBLE_ONLY);
   }
 }
 

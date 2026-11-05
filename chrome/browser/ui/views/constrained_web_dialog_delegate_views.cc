@@ -9,7 +9,6 @@
 #include "chrome/browser/renderer_preferences_util.h"
 #include "chrome/browser/ui/blocked_content/popunder_preventer.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/webui/chrome_web_contents_handler.h"
 #include "chrome/browser/ui/webui/constrained_web_dialog_ui.h"
 #include "components/constrained_window/constrained_window_views.h"
@@ -17,12 +16,14 @@
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
 #include "components/zoom/zoom_controller.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/view.h"
@@ -280,7 +281,7 @@ ConstrainedWebDialogDelegateViews::ConstrainedWebDialogDelegateViews(
               browser_context,
               initiator_web_contents,
               view)) {
-  DCHECK(web_dialog_delegate_);
+  CHECK(web_dialog_delegate_, base::NotFatalUntil::M162);
   web_contents_holder_ =
       WebContents::Create(WebContents::CreateParams(browser_context));
   web_contents_ = web_contents_holder_->GetWeakPtr();
@@ -474,7 +475,7 @@ bool ConstrainedDialogWebView::ShouldShowCloseButton() const {
 bool ConstrainedDialogWebView::AcceleratorPressed(
     const ui::Accelerator& accelerator) {
   // Pressing ESC closes the dialog.
-  DCHECK_EQ(ui::VKEY_ESCAPE, accelerator.key_code());
+  CHECK_EQ(ui::VKEY_ESCAPE, accelerator.key_code(), base::NotFatalUntil::M162);
   GetWebDialogDelegate()->OnDialogClosingFromKeyEvent();
   GetWidget()->CloseWithReason(views::Widget::ClosedReason::kEscKeyPressed);
   return true;
@@ -495,15 +496,16 @@ gfx::Size ConstrainedDialogWebView::CalculatePreferredSize(
 }
 
 gfx::Size ConstrainedDialogWebView::GetMinimumSize() const {
-  return min_size();
+  return AutoResizeMinSize();
 }
 
 gfx::Size ConstrainedDialogWebView::GetMaximumSize() const {
-  return !max_size().IsEmpty() ? max_size() : WebView::GetMaximumSize();
+  return !AutoResizeMaxSize().IsEmpty() ? AutoResizeMaxSize()
+                                        : WebView::GetMaximumSize();
 }
 
 void ConstrainedDialogWebView::DocumentOnLoadCompletedInPrimaryMainFrame() {
-  if (!max_size().IsEmpty() && initiator_web_contents_) {
+  if (!AutoResizeMaxSize().IsEmpty() && initiator_web_contents_) {
     content::WebContents* top_level_web_contents =
         constrained_window::GetTopLevelWebContents(
             initiator_web_contents_.get());
@@ -539,8 +541,8 @@ ConstrainedWebDialogDelegate* ShowConstrainedWebDialogWithAutoResize(
     content::WebContents* web_contents,
     const gfx::Size& min_size,
     const gfx::Size& max_size) {
-  DCHECK(!min_size.IsEmpty());
-  DCHECK(!max_size.IsEmpty());
+  CHECK(!min_size.IsEmpty(), base::NotFatalUntil::M162);
+  CHECK(!max_size.IsEmpty(), base::NotFatalUntil::M162);
   ConstrainedDialogWebView* dialog = new ConstrainedDialogWebView(
       browser_context, std::move(delegate), web_contents, min_size, max_size);
 
@@ -548,7 +550,7 @@ ConstrainedWebDialogDelegate* ShowConstrainedWebDialogWithAutoResize(
   // window.
   content::WebContents* top_level_web_contents =
       constrained_window::GetTopLevelWebContents(web_contents);
-  DCHECK(top_level_web_contents);
+  CHECK(top_level_web_contents, base::NotFatalUntil::M162);
   constrained_window::CreateWebModalDialogViews(dialog, top_level_web_contents);
   return dialog;
 }

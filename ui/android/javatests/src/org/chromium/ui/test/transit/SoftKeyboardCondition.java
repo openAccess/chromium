@@ -9,6 +9,9 @@ import android.content.Context;
 import android.os.Build;
 import android.provider.Settings;
 import android.view.View;
+import android.view.WindowInsets;
+
+import androidx.core.view.WindowInsetsCompat;
 
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.test.transit.ConditionStatusWithResult;
@@ -50,10 +53,22 @@ public class SoftKeyboardCondition extends ConditionWithResult<Boolean> {
         }
 
         View view = activity.getWindow().getDecorView();
-        return whether(
-                        KeyboardUtils.isAndroidSoftKeyboardShowing(view)
-                                == mExpectShowingWhenNoPhysicalKeyboard)
-                .withResult(true);
+        if (KeyboardUtils.isAndroidSoftKeyboardShowing(view)) {
+            return whether(mExpectShowingWhenNoPhysicalKeyboard, "IME insets present")
+                    .withResult(true);
+        }
+
+        // In split-screen, the system moves the window above the soft keyboard, so the window gets
+        // no IME insets even though the soft keyboard is showing. Check if the IME is visible.
+        View rootView = view.getRootView();
+        WindowInsets rootWindowInsets = rootView.getRootWindowInsets();
+        if (rootWindowInsets != null
+                && WindowInsetsCompat.toWindowInsetsCompat(rootWindowInsets, rootView)
+                        .isVisible(WindowInsetsCompat.Type.ime())) {
+            return whether(mExpectShowingWhenNoPhysicalKeyboard, "IME visible").withResult(true);
+        }
+
+        return whether(!mExpectShowingWhenNoPhysicalKeyboard, "IME not visible").withResult(true);
     }
 
     /**
@@ -63,6 +78,17 @@ public class SoftKeyboardCondition extends ConditionWithResult<Boolean> {
      * keyboard is not shown.
      */
     private void determineIfSoftKeyboardShouldShow(Context context) {
+        String defaultIme =
+                Settings.Secure.getString(
+                        context.getContentResolver(), Settings.Secure.DEFAULT_INPUT_METHOD);
+        if (defaultIme != null && defaultIme.startsWith("com.android.cts.mockime/")) {
+            // Shared lab devices may have CTS MockIme left as the default IME without an active
+            // MockImeSession, causing MockIme.onCreate() to crash and never show a soft keyboard.
+            mShouldSoftKeyboardShow = false;
+            mShouldSoftKeyboardShowReason = "default IME is CTS MockIme (" + defaultIme + ")";
+            return;
+        }
+
         if (!KeyboardUtils.isHardKeyboardConnected(context)) {
             mShouldSoftKeyboardShow = true;
             mShouldSoftKeyboardShowReason = "no hard keyboard";

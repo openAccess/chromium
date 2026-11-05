@@ -175,8 +175,7 @@ class SegmentationPlatformServiceFactoryTest : public PlatformTest {
     scoped_feature_list_.InitWithFeaturesAndParameters(
         {{optimization_guide::features::kOptimizationTargetPrediction, {}},
          {features::kSegmentationPlatformFeature, {}},
-         {features::kSegmentationPlatformUkmEngine, {}},
-         {features::kSegmentationPlatformEphemeralCardRanker, {}}},
+         {features::kSegmentationPlatformUkmEngine, {}}},
         {});
     scoped_command_line_.GetProcessCommandLine()->AppendSwitch(
         kSegmentationPlatformRefreshResultsSwitch);
@@ -292,10 +291,10 @@ class SegmentationPlatformServiceFactoryTest : public PlatformTest {
     ProfileData(ProfileData&) = delete;
 
     // Setup environment required to create the SegmentationPlatformService.
-    ProfileIOS* SetUpEnvironment(ProfileIOS* setup_profile) {
-      setup_profile->GetPrefs()->SetString(kSegmentationClientResultPrefs,
-                                           result_pref);
-      test_utils->SetupForProfile(setup_profile);
+    ProfileIOS& SetUpEnvironment(ProfileIOS& setup_profile) {
+      setup_profile.GetPrefs()->SetString(kSegmentationClientResultPrefs,
+                                          result_pref);
+      test_utils->SetupForProfile(&setup_profile);
       return setup_profile;
     }
 

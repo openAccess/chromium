@@ -14,7 +14,6 @@
 #import "components/password_manager/core/browser/password_generation_frame_helper.h"
 #import "components/password_manager/core/browser/password_manager.h"
 #import "components/password_manager/ios/ios_password_manager_driver_factory.h"
-#include "ui/gfx/geometry/rect_f.h"
 
 using password_manager::PasswordAutofillManager;
 using password_manager::PasswordManager;
@@ -45,6 +44,10 @@ IOSPasswordManagerDriver::IOSPasswordManagerDriver(
   // Cache these values early, so that it can be accessed after frame deletion.
   is_in_main_frame_ = web_frame->IsMainFrame();
   security_origin_ = web_frame->GetSecurityOrigin();
+  url_ = web_frame->GetUrl();
+  if (url_.is_empty() && !security_origin_.opaque()) {
+    url_ = security_origin_.GetURL();
+  }
 }
 
 IOSPasswordManagerDriver::~IOSPasswordManagerDriver() = default;
@@ -107,7 +110,7 @@ void IOSPasswordManagerDriver::FormEligibleForGenerationFound(
 }
 
 void IOSPasswordManagerDriver::GeneratedPasswordAccepted(
-    const std::u16string& password) {
+    const password_manager::PasswordString& password) {
   NOTIMPLEMENTED();
 }
 
@@ -153,7 +156,7 @@ void IOSPasswordManagerDriver::PreviewSuggestionById(
 }
 
 void IOSPasswordManagerDriver::PreviewGenerationSuggestion(
-    const std::u16string& password) {
+    const password_manager::PasswordString& password) {
   NOTIMPLEMENTED();
 }
 
@@ -211,7 +214,13 @@ int IOSPasswordManagerDriver::GetFrameId() const {
 }
 
 const GURL& IOSPasswordManagerDriver::GetLastCommittedURL() const {
-  return bridge_.lastCommittedURL;
+  if (is_in_main_frame_ && web_state_) {
+    const GURL& url = web_state_->GetLastCommittedURL();
+    if (!url.is_empty()) {
+      return url;
+    }
+  }
+  return url_;
 }
 
 const url::Origin& IOSPasswordManagerDriver::GetLastCommittedOrigin() const {
@@ -222,12 +231,6 @@ bool IOSPasswordManagerDriver::HasCrossOriginAncestor() const {
   // TODO(crbug.com/539923959): Implement once child frame registration is done,
   // and the ancestors of a web frame could be tracked.
   NOTREACHED();
-}
-
-gfx::RectF IOSPasswordManagerDriver::TransformToRootCoordinates(
-    const gfx::RectF& bounds_in_frame_coordinates) {
-  NOTIMPLEMENTED();
-  return bounds_in_frame_coordinates;
 }
 
 void IOSPasswordManagerDriver::CheckViewAreaVisible(

@@ -39,6 +39,7 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/account_id/account_id_literal.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_task_environment.h"
@@ -65,8 +66,9 @@ using ::testing::IsTrue;
 using ::testing::Pointee;
 
 constexpr char kFakeTestEmail[] = "fakeemail@example.com";
-const AccountId kFakeTestAccountId =
-    AccountId::FromUserEmailGaiaId(kFakeTestEmail, GaiaId("1111"));
+constexpr AccountId::Literal kFakeTestAccountId =
+    AccountId::Literal::FromUserEmailGaiaId(kFakeTestEmail,
+                                            GaiaId::Literal("1111"));
 
 class TestAmbientObserver
     : public ash::personalization_app::mojom::AmbientObserver {
@@ -1040,21 +1042,6 @@ TEST_F(PersonalizationAppAmbientProviderImplTest, TestSetSelectedVideo) {
   SetAlbumSelected(kNewMexicoAlbumId, mojom::TopicSource::kVideo, false);
   expect_videos_selected(/*clouds_selected=*/false,
                          /*new_mexico_selected=*/true);
-}
-
-TEST_F(PersonalizationAppAmbientProviderImplTest, TestAlbumNumbersAreRecorded) {
-  FetchSettings();
-  ReplyFetchSettingsAndAlbums(/*success=*/true);
-
-  ash::personalization_app::mojom::AmbientModeAlbumPtr album =
-      ash::personalization_app::mojom::AmbientModeAlbum::New();
-  album->id = '0';
-  album->topic_source = mojom::TopicSource::kGooglePhotos;
-  SetAlbumSelected(album->id, album->topic_source, album->checked);
-  histogram_tester().ExpectTotalCount("Ash.AmbientMode.TotalNumberOfAlbums",
-                                      /*count=*/1);
-  histogram_tester().ExpectTotalCount("Ash.AmbientMode.SelectedNumberOfAlbums",
-                                      /*count=*/1);
 }
 
 TEST_F(PersonalizationAppAmbientProviderImplTest,

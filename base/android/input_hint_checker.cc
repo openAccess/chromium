@@ -16,6 +16,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/rand_util.h"
+#include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -63,7 +64,14 @@ class InputHintChecker::OffThreadInitInvoker {
 
 InputHintChecker::InputHintChecker() : init_state_(InitState::kNotStarted) {}
 
-InputHintChecker::~InputHintChecker() = default;
+InputHintChecker::~InputHintChecker() {
+  // If off-thread initialization via pthread_create is still in progress, wait
+  // for it to complete before destroying members (e.g. `view_class_`) that the
+  // background thread accesses.
+  while (FetchState() == InitState::kInProgress) {
+    PlatformThread::YieldCurrentThread();
+  }
+}
 
 // static
 void InputHintChecker::InitializeFeatures() {
@@ -128,11 +136,8 @@ bool InputHintChecker::HasInputImplWithThrottling() {
     return false;
   }
 
-  // Input processing is associated with the root view. Early return when the
-  // root view is not available. It can happen in cases like multi-window.
-  JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jobject> scoped_view = view_.get(env);
-  if (!scoped_view) {
+  // Very inexpensive check.
+  if (view_.is_uninitialized()) {
     return false;
   }
 
@@ -141,6 +146,14 @@ bool InputHintChecker::HasInputImplWithThrottling() {
   if (last_checked_.is_null() || (now - last_checked_) >= g_poll_interval) {
     last_checked_ = now;
   } else {
+    return false;
+  }
+
+  // Input processing is associated with the root view. Early return when the
+  // root view is not available. It can happen in cases like multi-window.
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> scoped_view = view_.get(env);
+  if (!scoped_view) {
     return false;
   }
 
@@ -165,25 +178,10 @@ bool InputHintChecker::HasInputImplWithThrottlingForTesting(_JNIEnv* env) {
 }
 
 bool InputHintChecker::HasInputImpl(JNIEnv* env, jobject o) {
-  auto has_input_result = jni_zero::AdoptRef(
-      env, env->CallObjectMethod(reflect_method_for_has_input_.obj(),
-                                 invoke_id_, o, nullptr));
+  bool value =
+      static_cast<bool>(env->CallBooleanMethod(o, has_input_method_id_));
   if (ClearException(env)) {
-    LOG(ERROR) << "Exception when calling reflect_method_for_has_input_";
-    TransitionToState(InitState::kFailedToInitialize);
-    return false;
-  }
-  if (!has_input_result) {
-    LOG(ERROR) << "Returned null from reflection call";
-    TransitionToState(InitState::kFailedToInitialize);
-    return false;
-  }
-
-  // Convert result to bool and return.
-  bool value = static_cast<bool>(
-      env->CallBooleanMethod(has_input_result.obj(), boolean_value_id_));
-  if (ClearException(env)) {
-    LOG(ERROR) << "Exception when converting to boolean";
+    LOG(ERROR) << "Exception when calling has_input_method_id_";
     TransitionToState(InitState::kFailedToInitialize);
     return false;
   }
@@ -253,32 +251,9 @@ void InputHintChecker::InitGlobalRefsAndMethodIds(JNIEnv* env) {
     return;
   }
 
-  // Cache useful members for further calling Method.invoke(view).
-  reflect_method_for_has_input_ = ScopedJavaGlobalRef<jobject>(method);
-  jclass method_class =
-      env->GetObjectClass(reflect_method_for_has_input_.obj());
-  if (ClearException(env) || !method_class) {
-    LOG(ERROR) << "exception on GetObjectClass(getMethod) or null returned";
-    TransitionToState(InitState::kFailedToInitialize);
-    return;
-  }
-  invoke_id_ = env->GetMethodID(
-      method_class, "invoke",
-      "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;");
-  if (ClearException(env)) {
-    LOG(ERROR) << "exception when looking for invoke() of getMethod()";
-    TransitionToState(InitState::kFailedToInitialize);
-    return;
-  }
-  jclass boolean_class = env->FindClass("java/lang/Boolean");
-  if (ClearException(env) || !boolean_class) {
-    LOG(ERROR) << "exception when looking for class Boolean or null returned";
-    TransitionToState(InitState::kFailedToInitialize);
-    return;
-  }
-  boolean_value_id_ = env->GetMethodID(boolean_class, "booleanValue", "()Z");
-  if (ClearException(env)) {
-    LOG(ERROR) << "exception when looking for method booleanValue";
+  has_input_method_id_ = env->FromReflectedMethod(method.obj());
+  if (ClearException(env) || !has_input_method_id_) {
+    LOG(ERROR) << "exception on FromReflectedMethod or null returned";
     TransitionToState(InitState::kFailedToInitialize);
     return;
   }
@@ -301,6 +276,16 @@ InputHintChecker::ScopedOverrideInstance::ScopedOverrideInstance(
 }
 
 InputHintChecker::ScopedOverrideInstance::~ScopedOverrideInstance() {
+  // OffThreadInitInvoker::Run() calls
+  // InputHintChecker::GetInstance().RunOffThreadInitialization(), which
+  // resolves to g_test_instance. The override must remain installed until any
+  // in-flight off-thread initialization finishes so that the background thread
+  // does not access an unexpected instance.
+  if (g_test_instance) {
+    while (g_test_instance->FetchState() == InitState::kInProgress) {
+      PlatformThread::YieldCurrentThread();
+    }
+  }
   g_test_instance = nullptr;
 }
 

@@ -22,7 +22,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/not_fatal_until.h"
-#include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/one_shot_event.h"
 #include "base/strings/string_split.h"
@@ -56,12 +55,12 @@
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_navigation_handle_user_data.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_process.h"
-#include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_tabbed_utils.h"
 #include "chrome/browser/web_applications/link_capturing_features.h"
 #include "chrome/browser/web_applications/locks/app_lock.h"
@@ -95,10 +94,10 @@
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom-shared.h"
 #include "third_party/blink/public/mojom/manifest/manifest_launch_handler.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(ENABLE_HOSTED_APPS)
@@ -109,8 +108,8 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/ash/app_mode/kiosk_web_app_browser_controller.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
-#include "chrome/browser/chromeos/app_mode/kiosk_web_app_browser_controller.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/web_applications/chromeos_web_app_experiments.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
@@ -130,7 +129,10 @@ BrowserWindowInterface* ReparentWebContentsIntoAppBrowser(
     BrowserWindowInterface* target_browser,
     const webapps::AppId& app_id,
     bool insert_as_pinned_home_tab) {
-  DCHECK(target_browser->GetType() == BrowserWindowInterface::TYPE_APP);
+  CHECK(target_browser->GetType() == BrowserWindowInterface::TYPE_APP,
+        base::NotFatalUntil::M162);
+  CHECK(CanReparentWebContentsIntoBrowser(target_browser,
+                                          insert_as_pinned_home_tab));
   BrowserWindowInterface* source_browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(contents);
   CHECK(contents);
@@ -145,10 +147,12 @@ BrowserWindowInterface* ReparentWebContentsIntoAppBrowser(
     chrome::NewTab(source_browser, NewTabTypes::kNoUserAction);
   }
 
+  base::WeakPtr<BrowserWindowInterface> target_browser_weak =
+      target_browser->GetWeakPtr();
   ReparentWebContentsIntoBrowserImpl(
       source_browser, contents, target_browser,
       /*insert_as_pinned_home_tab=*/insert_as_pinned_home_tab);
-  return target_browser;
+  return target_browser_weak.get();
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -187,7 +191,7 @@ std::unique_ptr<AppBrowserController> CreateWebAppBrowserController(
       system_app && system_app->ShouldHaveTabStrip();
 #endif  // BUILDFLAG(IS_CHROMEOS)
   const bool has_tab_strip =
-      browser->GetType() != BrowserWindowInterface::Type::TYPE_APP_POPUP &&
+      browser->GetType() == BrowserWindowInterface::Type::TYPE_APP &&
       (should_have_tab_strip_for_swa ||
        provider->registrar_unsafe().IsTabbedWindowModeEnabled(app_id));
   return std::make_unique<WebAppBrowserController>(*provider, browser, app_id,
@@ -295,6 +299,33 @@ void RecordDiyOrCraftedAppLaunch(const WebApp& web_app) {
 
 }  // namespace
 
+bool IsBrowserClosing(BrowserWindowInterface* browser) {
+  return !browser || browser->IsDeleteScheduled() ||
+         (UnloadController::From(browser) &&
+          UnloadController::From(browser)->is_attempting_to_close_browser());
+}
+
+bool CanReparentWebContentsIntoBrowser(BrowserWindowInterface* target_browser,
+                                       bool insert_as_pinned_home_tab) {
+  if (IsBrowserClosing(target_browser) ||
+      (target_browser->GetType() != BrowserWindowInterface::TYPE_NORMAL &&
+       target_browser->GetType() != BrowserWindowInterface::TYPE_APP)) {
+    return false;
+  }
+  if (target_browser->GetType() == BrowserWindowInterface::TYPE_APP) {
+    if (!AppBrowserController::IsWebApp(target_browser)) {
+      return false;
+    }
+    if (!target_browser->GetTabStripModel()->empty() &&
+        !AppBrowserController::From(target_browser)->has_tab_strip() &&
+        !(insert_as_pinned_home_tab &&
+          HasPinnedHomeTab(target_browser->GetTabStripModel()))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void ReparentWebContentsIntoBrowserImpl(BrowserWindowInterface* source_browser,
                                         content::WebContents* web_contents,
                                         BrowserWindowInterface* target_browser,
@@ -305,6 +336,8 @@ void ReparentWebContentsIntoBrowserImpl(BrowserWindowInterface* source_browser,
   CHECK(AreWebAppsEnabled(target_browser->GetProfile()));
   CHECK(AreWebAppsEnabled(source_browser->GetProfile()));
   CHECK_EQ(source_browser->GetProfile(), target_browser->GetProfile());
+  CHECK(CanReparentWebContentsIntoBrowser(target_browser,
+                                          insert_as_pinned_home_tab));
 
   // In a reparent, the owning session service needs to be told it's tab
   // has been removed, otherwise it will reopen the tab on restoration.
@@ -383,7 +416,13 @@ void ReparentWebContentsIntoBrowserImpl(BrowserWindowInterface* source_browser,
     apps::EnableLinkCapturingInfoBarDelegate::RemoveInfoBar(web_contents);
   }
 #endif
+  base::WeakPtr<BrowserWindowInterface> target_browser_weak =
+      target_browser->GetWeakPtr();
   target_browser->GetWindow()->Show();
+
+  if (!target_browser_weak) {
+    return;
+  }
 
   // The window will be registered correctly, however the tab will not be
   // correctly tracked. We need to do a reset to get the tab correctly tracked
@@ -525,7 +564,7 @@ BrowserWindowInterface* ReparentWebContentsIntoAppBrowser(
   Profile* profile = Profile::FromBrowserContext(contents->GetBrowserContext());
   // Incognito tabs reparent correctly, but remain incognito without any
   // indication to the user, so disallow it.
-  DCHECK(!profile->IsOffTheRecord());
+  CHECK(!profile->IsOffTheRecord(), base::NotFatalUntil::M162);
 
   // Clear navigation history that occurred before the user most recently
   // entered the app's scope. The minimal-ui Back button will be initially
@@ -605,7 +644,8 @@ BrowserWindowInterface* ReparentWebContentsIntoAppBrowser(
       // gets executed.
       apps::AppLaunchParams params(
           app_id, apps::LaunchContainer::kLaunchContainerWindow,
-          WindowOpenDisposition::CURRENT_TAB, apps::LaunchSource::kFromOmnibox);
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
+          apps::LaunchSource::kFromOmnibox);
       params.override_url = launch_url;
       content::WebContents* new_web_contents =
           WebAppLaunchProcess::CreateAndRun(
@@ -621,6 +661,12 @@ BrowserWindowInterface* ReparentWebContentsIntoAppBrowser(
 
   if (registrar.IsTabbedWindowModeEnabled(app_id)) {
     browser = AppBrowserController::FindForWebApp(*profile, app_id);
+    if (!CanReparentWebContentsIntoBrowser(
+            browser,
+            browser && AppBrowserController::From(browser)->IsUrlInHomeTabScope(
+                           launch_url))) {
+      browser = nullptr;
+    }
   }
 
   if (!browser) {
@@ -641,6 +687,9 @@ BrowserWindowInterface* ReparentWebContentsIntoAppBrowser(
   BrowserWindowInterface* reparented_browser =
       ReparentWebContentsIntoAppBrowser(contents, browser, app_id,
                                         as_pinned_home_tab);
+  if (!reparented_browser) {
+    return nullptr;
+  }
 
   UpdateLaunchMetricsAndStats(
       app_id, apps::LaunchContainer::kLaunchContainerWindow,
@@ -692,7 +741,8 @@ void MaybeAddPinnedHomeTab(BrowserWindowInterface* browser,
       pinned_home_tab_url.has_value()) {
     NavigateParams home_tab_nav_params(browser, pinned_home_tab_url.value(),
                                        ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-    home_tab_nav_params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+    home_tab_nav_params.disposition =
+        ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
     home_tab_nav_params.tabstrip_add_types |= AddTabTypes::ADD_PINNED;
     Navigate(&home_tab_nav_params);
   }
@@ -759,8 +809,8 @@ void RecordAppWindowLaunchMetric(Profile* profile,
   DisplayMode display =
       provider->registrar_unsafe().GetAppEffectiveDisplayMode(app_id);
   if (display != DisplayMode::kUndefined) {
-    DCHECK_LT(DisplayMode::kUndefined, display);
-    DCHECK_LE(display, DisplayMode::kMaxValue);
+    CHECK_LT(DisplayMode::kUndefined, display, base::NotFatalUntil::M162);
+    CHECK_LE(display, DisplayMode::kMaxValue, base::NotFatalUntil::M162);
     base::UmaHistogramEnumeration("Launch.WebAppDisplayMode", display);
     if (web_app->is_diy_app()) {
       base::UmaHistogramEnumeration("Launch.Window.DiyApp.WebAppDisplayMode",
@@ -797,8 +847,8 @@ void RecordAppTabLaunchMetric(Profile* profile,
   DisplayMode display =
       provider->registrar_unsafe().GetEffectiveDisplayModeFromManifest(app_id);
   if (display != DisplayMode::kUndefined) {
-    DCHECK_LT(DisplayMode::kUndefined, display);
-    DCHECK_LE(display, DisplayMode::kMaxValue);
+    CHECK_LT(DisplayMode::kUndefined, display, base::NotFatalUntil::M162);
+    CHECK_LE(display, DisplayMode::kMaxValue, base::NotFatalUntil::M162);
     base::UmaHistogramEnumeration("Launch.BrowserTab.WebAppDisplayMode",
                                   display);
     if (web_app->is_diy_app()) {
@@ -869,7 +919,8 @@ void LaunchWebApp(apps::AppLaunchParams params,
         lock.registrar().GetAppEffectiveDisplayMode(params.app_id));
   }
 
-  DCHECK_NE(params.container, apps::LaunchContainer::kLaunchContainerNone);
+  CHECK_NE(params.container, apps::LaunchContainer::kLaunchContainerNone,
+           base::NotFatalUntil::M162);
 
   apps::LaunchContainer container;
   BrowserWindowInterface* browser = nullptr;
@@ -888,10 +939,10 @@ void LaunchWebApp(apps::AppLaunchParams params,
       } else {
         web_contents = WebAppLaunchProcess::CreateAndRun(
             profile, lock.registrar(), lock.os_integration_manager(), params);
-      }
-      if (web_contents) {
-        browser = GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
-            web_contents);
+        if (web_contents) {
+          browser = GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+              web_contents);
+        }
       }
     } else {
       debug_value.Set("error", "Unknown app id.");

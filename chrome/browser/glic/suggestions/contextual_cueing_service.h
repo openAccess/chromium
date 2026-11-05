@@ -28,10 +28,6 @@ class OptimizationGuideKeyedService;
 class PrefService;
 class TemplateURLService;
 
-namespace signin {
-class IdentityManager;
-}
-
 namespace content {
 class WebContents;
 }  // namespace content
@@ -58,7 +54,6 @@ class ContextualCueingService
           page_content_extraction_service,
       OptimizationGuideKeyedService* optimization_guide_keyed_service,
       predictors::LoadingPredictor* loading_predictor,
-      signin::IdentityManager* identity_manager,
       PrefService* pref_service,
       TemplateURLService* template_url_service);
   ~ContextualCueingService() override;
@@ -120,6 +115,8 @@ class ContextualCueingService
   GetOutstandingPinnedTabsContents();
 
  private:
+  friend class ContextualCueingServiceTest;
+
   // page_content_annotations::PageContentExtractionService::Observer:
   void OnPageContentExtracted(
       content::Page& page,
@@ -130,7 +127,7 @@ class ContextualCueingService
 
   // Returns true if the given url is of a page type eligible for contextual
   // suggestions.
-  bool IsPageTypeEligibleForContextualSuggestions(GURL url) const;
+  bool IsPageTypeEligibleForContextualSuggestions(const GURL& url) const;
 
   // Utility method to create the initial zero state suggestions request.
   std::unique_ptr<ZeroStateSuggestionsRequest> MakeZeroStateSuggestionsRequest(
@@ -184,8 +181,6 @@ class ContextualCueingService
   raw_ptr<PrefService> pref_service_ = nullptr;
 
   raw_ptr<TemplateURLService> template_url_service_ = nullptr;
-
-  raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;
 
   // Stores model execution url to save look up time.
   GURL mes_url_;

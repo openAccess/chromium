@@ -11,6 +11,8 @@
 extern const CGFloat kOmniboxMinHeight;
 extern const CGFloat kOmniboxCobrowseMinHeight;
 extern const CGFloat kOmniboxIPadMinHeight;
+/// The minimum width as percentage of the containing window.
+extern const CGFloat kOmniboxIPadMinWidthPercentage;
 /// The  margin  for the input plate container with its parent view.
 extern const CGFloat kInputPlateMargin;
 extern const CGFloat kInputPlateIpadMargin;
@@ -55,6 +57,8 @@ extern NSString* const kComposeboxCameraActionAccessibilityIdentifier;
 extern NSString* const kComposeboxAttachCurrentTabActionAccessibilityIdentifier;
 // Accessibility identifier for the Select Tabs button in the plus menu.
 extern NSString* const kComposeboxSelectTabsActionAccessibilityIdentifier;
+// Accessibility identifier for the Attach Drive button in the plus menu.
+extern NSString* const kComposeboxAttachDriveActionAccessibilityIdentifier;
 
 // Accessibility identifier for the carousel in the composebox.
 extern NSString* const kComposeboxCarouselAccessibilityIdentifier;
@@ -65,5 +69,11 @@ extern NSString* const
     kComposeboxInputItemCellCloseButtonAccessibilityIdentifier;
 // Accessibility identifier for the tabs accordion in cobrowse mode.
 extern NSString* const kComposeboxTabsAccordionAccessibilityIdentifier;
+
+// Accessibility identifier for the disclaimer in the Shared Tabs sheet.
+extern NSString* const kComposeboxSharedTabsDisclaimerAccessibilityIdentifier;
+
+// Accessibility identifier for the close button in the Shared Tabs sheet.
+extern NSString* const kComposeboxSharedTabsCloseButtonAccessibilityIdentifier;
 
 #endif  // IOS_CHROME_BROWSER_COMPOSEBOX_SHARED_UI_COMPOSEBOX_UI_CONSTANTS_H_

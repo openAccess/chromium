@@ -10,6 +10,8 @@
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "components/browsing_data/core/browsing_data_utils.h"
+#import "ios/chrome/browser/device_reauth/model/reauthentication_service.h"
+#import "ios/chrome/browser/device_reauth/model/reauthentication_service_factory.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/handoff_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/incognito/incognito_lock_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/incognito/incognito_lock_coordinator_delegate.h"
@@ -17,6 +19,7 @@
 #import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_navigation_commands.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_safe_browsing_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_table_view_controller.h"
+#import "ios/chrome/browser/settings/ui_bundled/privacy/universal_opt_out_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_navigation_controller.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -30,8 +33,7 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
-#import "ui/base/device_form_factor.h"
+#import "ios/chrome/common/ui/util/ui_util.h"
 
 @interface PrivacyCoordinator () <
     IncognitoLockCoordinatorDelegate,
@@ -75,10 +77,13 @@
 #pragma mark - ChromeCoordinator
 
 - (void)start {
-  ReauthenticationModule* module = [[ReauthenticationModule alloc] init];
+  id<ReauthenticationProtocol> reauthModule =
+      ReauthenticationServiceFactory::GetForProfile(self.profile)
+          ->GetReauthModule();
+  CHECK(reauthModule);
   PrivacyTableViewController* viewController =
       [[PrivacyTableViewController alloc] initWithBrowser:self.browser
-                                   reauthenticationModule:module];
+                                   reauthenticationModule:reauthModule];
   self.viewController = viewController;
 
   CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
@@ -111,7 +116,7 @@
 - (void)dealloc {
   // TODO(crbug.com/427791272): If stop is always called before dealloc, then
   // do all C++ cleanup in stop.
-  CHECK(_stopped, base::NotFatalUntil::M150);
+  CHECK(_stopped);
 }
 
 #pragma mark - PrivacyTableViewControllerPresentationDelegate
@@ -137,6 +142,14 @@
 
 #pragma mark - PrivacyNavigationCommands
 
+- (void)showUniversalOptOut {
+  UniversalOptOutTableViewController* viewController =
+      [[UniversalOptOutTableViewController alloc] initWithProfile:self.profile];
+  [self.viewController configureHandlersForRootViewController:viewController];
+  [self.baseNavigationController pushViewController:viewController
+                                           animated:YES];
+}
+
 - (void)showHandoff {
   HandoffTableViewController* viewController =
       [[HandoffTableViewController alloc] initWithProfile:self.profile];
@@ -154,9 +167,9 @@
 
   id<QuickDeleteCommands> quickDeleteHandler = HandlerForProtocol(
       self.browser->GetCommandDispatcher(), QuickDeleteCommands);
-  [quickDeleteHandler
-      showQuickDeleteAndCanPerformRadialWipeAnimation:
-          ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET];
+  [quickDeleteHandler showQuickDeleteAndCanPerformRadialWipeAnimation:
+                          IsRegularXRegularSizeClass(
+                              self.baseNavigationController.view.window)];
 }
 
 - (void)showSafeBrowsing {

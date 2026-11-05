@@ -12,11 +12,11 @@ export function getHtml(this: CrToolbarElement) {
 <div id="leftContent">
   <div id="leftSpacer">
     ${this.showMenu ? html`
-      <cr-icon-button id="menuButton" class="no-overlap"
-          iron-icon="cr20:menu" @click="${this.onMenuClick_}"
-          aria-label="${this.menuLabel || nothing}"
-          title="${this.menuLabel}">
-      </cr-icon-button>` : ''}
+      <cr-icon-button id="menuButton" class="no-overlap" iron-icon="cr20:menu"
+          @click="${this.onMenuClick_}"
+          aria-label="${this.menuLabel || nothing}" title="${this.menuLabel}">
+      </cr-icon-button>
+    ` : ''}
     <slot name="product-logo">
       <picture>
         <source media="(prefers-color-scheme: dark)"
@@ -33,6 +33,7 @@ export function getHtml(this: CrToolbarElement) {
 
 <div id="centeredContent" ?hidden="${!this.showSearch}">
   <cr-toolbar-search-field id="search" ?narrow="${this.narrow}"
+      part="search-field" exportparts="search-input"
       label="${this.searchPrompt}" clear-label="${this.clearLabel}"
       ?spinner-active="${this.spinnerActive}"
       ?showing-search="${this.showingSearch_}"

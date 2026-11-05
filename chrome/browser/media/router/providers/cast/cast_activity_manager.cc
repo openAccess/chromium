@@ -15,9 +15,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
-#include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
-#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/types/expected_macros.h"
 #include "chrome/browser/media/router/media_router_feature.h"
@@ -96,10 +94,10 @@ CastActivityManager::CastActivityManager(
       logger_(logger),
       debugger_(debugger),
       hash_token_(hash_token) {
-  DCHECK(media_sink_service_);
-  DCHECK(session_tracker_);
-  DCHECK(message_handler_);
-  DCHECK(media_router_);
+  CHECK(media_sink_service_, base::NotFatalUntil::M161);
+  CHECK(session_tracker_, base::NotFatalUntil::M161);
+  CHECK(message_handler_, base::NotFatalUntil::M161);
+  CHECK(media_router_, base::NotFatalUntil::M161);
   message_handler_->AddObserver(this);
   for (const auto& sink_id_session : session_tracker_->GetSessions()) {
     const MediaSinkInternal* sink =
@@ -196,11 +194,6 @@ void CastActivityManager::DoLaunchSession(DoLaunchSessionParams params) {
   std::string app_id = ChooseAppId(cast_source, params.sink);
   auto app_params = std::move(params.app_params);
 
-  if (IsSiteInitiatedMirroringSource(cast_source.source_id())) {
-    base::UmaHistogramBoolean(kHistogramAudioSender,
-                              cast_source.site_requested_audio_capture());
-  }
-
   cast_source.ContainsStreamingApp()
       ? AddMirroringActivity(route, app_id, frame_tree_node_id,
                              sink.cast_data())
@@ -241,8 +234,7 @@ AppActivity* CastActivityManager::FindActivityForSessionJoin(
   // We only allow joining by session ID. The Cast SDK uses
   // "cast-session_<Session ID>" as the presentation ID in the reconnect
   // request.
-  if (!base::StartsWith(presentation_id, kCastPresentationIdPrefix,
-                        base::CompareCase::SENSITIVE)) {
+  if (!presentation_id.starts_with(kCastPresentationIdPrefix)) {
     // TODO(crbug.com/1291725): Find session by presentation_id.
     return nullptr;
   }
@@ -613,7 +605,8 @@ void CastActivityManager::OnSessionAddedOrUpdated(const MediaSinkInternal& sink,
   }
 
   CastActivity* activity = activity_it->second.get();
-  DCHECK(activity->route().media_sink_id() == sink.sink().id());
+  CHECK(activity->route().media_sink_id() == sink.sink().id(),
+        base::NotFatalUntil::M161);
 
   const auto& existing_session_id = activity->session_id();
 
@@ -1021,7 +1014,7 @@ void CastActivityManager::HandleLaunchSessionResponseMiddleStages(
     DoLaunchSessionParams params,
     const std::string& message,
     cast_channel::LaunchSessionCallbackWrapper* out_callback) {
-  DCHECK(out_callback);
+  CHECK(out_callback, base::NotFatalUntil::M161);
   logger_.get()->LogInfo(mojom::LogCategory::kRoute, kLoggerComponent, message,
                          params.sink.id(), params.cast_source.source_id(),
                          MediaRoute::GetPresentationIdFromMediaRouteId(

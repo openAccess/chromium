@@ -30,20 +30,20 @@
 #include "components/send_tab_to_self/send_tab_to_self_entry.h"
 #include "components/send_tab_to_self/send_tab_to_self_model.h"
 #include "components/send_tab_to_self/send_tab_to_self_sync_service.h"
-#include "components/send_tab_to_self/target_device_info.h"
 #include "components/send_tab_to_self/target_device_list_waiter.h"
 #include "components/sync/protocol/send_tab_to_self_specifics.pb.h"
 #include "components/sync_device_info/device_info_sync_service.h"
 #include "components/sync_device_info/device_info_tracker.h"
+#include "components/sync_device_info/remote_device_info.h"
 #include "components/sync_sessions/session_sync_service.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "url/android/gurl_android.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/SendTabToSelfAndroidBridge_jni.h"
-#include "chrome/android/chrome_jni_headers/TargetDeviceInfo_jni.h"
 #include "chrome/browser/tab/jni_headers/SendTabToSelfTabCardLabelData_jni.h"
 
 using base::android::JavaRef;
@@ -140,25 +140,15 @@ class SendTabToSelfModelObserverBridge : public SendTabToSelfModelObserver,
 
 }  // namespace
 
-static std::vector<ScopedJavaLocalRef<jobject>>
-JNI_SendTabToSelfAndroidBridge_GetAllTargetDeviceInfos(JNIEnv* env,
-                                                       Profile* profile) {
-  std::vector<ScopedJavaLocalRef<jobject>> infos;
+static std::vector<syncer::RemoteDeviceInfo>
+JNI_SendTabToSelfAndroidBridge_GetAllTargetDeviceInfos(Profile* profile) {
   SendTabToSelfModel* model =
       SendTabToSelfSyncServiceFactory::GetForProfile(profile)
           ->GetSendTabToSelfModel();
-  if (model->IsReady()) {
-    std::vector<TargetDeviceInfo> sorted_devices =
-        model->GetTargetDeviceInfoSortedList();
-    infos.reserve(sorted_devices.size());
-    for (const TargetDeviceInfo& info : sorted_devices) {
-      infos.push_back(Java_TargetDeviceInfo_build(
-          env, info.device_name, info.cache_guid,
-          static_cast<int>(info.form_factor), static_cast<int>(info.os_type),
-          info.GetLastActiveTimeForDisplay()));
-    }
+  if (!model->IsReady()) {
+    return {};
   }
-  return infos;
+  return model->GetTargetDeviceInfoSortedList();
 }
 
 static void JNI_SendTabToSelfAndroidBridge_SendTabToDevice(
@@ -204,10 +194,10 @@ static void JNI_SendTabToSelfAndroidBridge_MarkEntryOpened(
     JNIEnv* env,
     Profile* profile,
     const std::string& guid) {
+  auto* service = SendTabToSelfSyncServiceFactory::GetForProfile(profile);
   SendTabToSelfModel* model =
-      SendTabToSelfSyncServiceFactory::GetForProfile(profile)
-          ->GetSendTabToSelfModel();
-  if (model->IsReady()) {
+      service ? service->GetSendTabToSelfModel() : nullptr;
+  if (model) {
     model->MarkEntryOpened(guid);
   }
 }
@@ -234,7 +224,7 @@ static void JNI_SendTabToSelfAndroidBridge_DismissEntry(
       SendTabToSelfSyncServiceFactory::GetForProfile(profile)
           ->GetSendTabToSelfModel();
   if (model->IsReady()) {
-    model->DismissEntry(guid);
+    model->DismissEntryNotification(guid);
   }
 }
 
@@ -355,7 +345,8 @@ static jboolean JNI_SendTabToSelfAndroidBridge_IsModelReady(JNIEnv* env,
   return model && model->IsReady();
 }
 
-static int64_t JNI_SendTabToSelfAndroidBridge_AddTargetDeviceListWaiter(
+static jni_zero::JniUniquePtr<TargetDeviceListWaiter>
+JNI_SendTabToSelfAndroidBridge_AddTargetDeviceListWaiter(
     JNIEnv* env,
     Profile* profile,
     const std::string& url,
@@ -368,18 +359,8 @@ static int64_t JNI_SendTabToSelfAndroidBridge_AddTargetDeviceListWaiter(
   // TargetDeviceListWaiter executes `on_target_device_list_ready`
   // asynchronously, ensuring Java receives the native pointer before the
   // callback runs.
-  auto waiter = std::make_unique<TargetDeviceListWaiter>(
+  return jni_zero::MakeUnique<TargetDeviceListWaiter>(
       sync_service, service, GURL(url), std::move(on_target_device_list_ready));
-
-  // Transfer ownership to Java, which will call RemoveTargetDeviceListWaiter
-  // when the callback fires or the bottom sheet is closed.
-  return reinterpret_cast<int64_t>(waiter.release());
-}
-
-static void JNI_SendTabToSelfAndroidBridge_RemoveTargetDeviceListWaiter(
-    JNIEnv* env,
-    int64_t waiter_ptr) {
-  delete reinterpret_cast<TargetDeviceListWaiter*>(waiter_ptr);
 }
 
 static void JNI_SendTabToSelfAndroidBridge_FillWebContents(
@@ -404,5 +385,4 @@ static void JNI_SendTabToSelfAndroidBridge_FillWebContents(
 }  // namespace send_tab_to_self
 
 DEFINE_JNI(SendTabToSelfAndroidBridge)
-DEFINE_JNI(TargetDeviceInfo)
 DEFINE_JNI(SendTabToSelfTabCardLabelData)

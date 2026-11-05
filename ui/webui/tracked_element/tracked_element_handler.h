@@ -15,6 +15,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/types/pass_key.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -26,6 +27,7 @@
 #include "ui/webui/resources/js/tracked_element/tracked_element.mojom.h"
 
 namespace content {
+class RenderFrameHost;
 class WebContents;
 class WebUIController;
 }
@@ -55,6 +57,13 @@ class TrackedElementHandler
   explicit TrackedElementHandler(content::WebUIController* controller);
   TrackedElementHandler(content::WebContents* web_contents,
                         ui::ElementContext context);
+  TrackedElementHandler(
+      content::WebContents* web_contents,
+      mojo::PendingReceiver<tracked_element::mojom::TrackedElementHandler>
+          receiver,
+      ui::ElementContext context,
+      const std::vector<ui::ElementIdentifier>& identifiers,
+      content::RenderFrameHost* render_frame_host = nullptr);
   ~TrackedElementHandler() override;
   TrackedElementHandler(const TrackedElementHandler&) = delete;
   TrackedElementHandler& operator=(const TrackedElementHandler&) = delete;
@@ -121,14 +130,16 @@ class TrackedElementHandler
 
   std::vector<std::string> GetIdentifiers();
   ui::ElementContext context() { return context_; }
+  content::RenderFrameHost* render_frame_host() const;
 
   // Flushes the C++ -> WebUI mojo pipe.
   void FlushManagerRemoteForTesting();
 
   // Interaction simulation methods.
   bool ClickElement(TrackedElementWebUI& element,
+                    tracked_element::mojom::InputType input_type,
                     base::PassKey<InteractionTestUtilSimulatorWebUI>) {
-    return ClickElement(element);
+    return ClickElement(element, input_type);
   }
   bool FocusElement(TrackedElementWebUI& element,
                     base::PassKey<InteractionTestUtilSimulatorWebUI>) {
@@ -174,12 +185,18 @@ class TrackedElementHandler
 
   // content::WebContentsObserver:
   void OnVisibilityChanged(content::Visibility new_visibility) override;
+  void OnRemoteSubframeViewportIntersectionStateChanged(
+      content::RenderFrameHost* rfh,
+      const blink::mojom::ViewportIntersectionState&
+          viewport_intersection_state) override;
 
  private:
   FRIEND_TEST_ALL_PREFIXES(TrackedElementHandlerTest, Interaction);
 
   // Interaction simulation methods.
-  bool ClickElement(TrackedElementWebUI& element);
+  bool ClickElement(TrackedElementWebUI& element,
+                    tracked_element::mojom::InputType input_type =
+                        tracked_element::mojom::InputType::kDontCare);
   bool FocusElement(TrackedElementWebUI& element);
   bool SelectTab(TrackedElementWebUI& element, size_t index);
   bool SelectDropdownItem(TrackedElementWebUI& element, size_t index);
@@ -188,7 +205,7 @@ class TrackedElementHandler
                  tracked_element::mojom::TextEntryMode mode);
   bool Confirm(TrackedElementWebUI& element);
 
-  void UpdateAllEffectiveVisibilities();
+  void UpdateAllEffectiveVisibilities(bool bounds_changed = false);
   void RegisterIdentifier(ui::ElementIdentifier id);
   TrackedElementWebUI* GetElement(
       const tracked_element::mojom::TrackedElementIdentifierPtr& id,
@@ -215,6 +232,7 @@ class TrackedElementHandler
 #endif
   mojo::Receiver<tracked_element::mojom::TrackedElementHandler> receiver_;
   mojo::Remote<tracked_element::mojom::TrackedElementManager> manager_remote_;
+  const content::GlobalRenderFrameHostId rfh_id_;
 
   base::WeakPtrFactory<TrackedElementHandler> weak_ptr_factory_{this};
 };

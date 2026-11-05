@@ -18,7 +18,6 @@
 #include "cc/debug/rendering_stats_instrumentation.h"
 #include "cc/layers/recording_source.h"
 #include "cc/paint/image_id.h"
-#include "cc/paint/scroll_offset_map.h"
 #include "gpu/command_buffer/client/raster_interface.h"
 #include "third_party/skia/include/core/SkPicture.h"
 #include "ui/gfx/color_space.h"
@@ -36,6 +35,7 @@ class AxisTransform2d;
 namespace cc {
 class DisplayItemList;
 class ImageProvider;
+struct RasterInducingValues;
 
 class CC_EXPORT RasterSource : public base::RefCountedThreadSafe<RasterSource> {
  public:
@@ -51,14 +51,11 @@ class CC_EXPORT RasterSource : public base::RefCountedThreadSafe<RasterSource> {
     // Specifies the sample count if MSAA is enabled for this tile.
     int msaa_sample_count = 0;
 
-    // Visible hint, GPU may use it as a hint to schedule raster tasks.
-    bool visible = false;
-
     // The HDR headroom (in log2 space) to use when tone mapping content.
     float hdr_headroom = 0.f;
 
     raw_ptr<ImageProvider> image_provider = nullptr;
-    raw_ptr<const ScrollOffsetMap> raster_inducing_scroll_offsets = nullptr;
+    raw_ptr<const RasterInducingValues> raster_inducing_values = nullptr;
   };
 
   RasterSource(const RasterSource&) = delete;
@@ -123,7 +120,7 @@ class CC_EXPORT RasterSource : public base::RefCountedThreadSafe<RasterSource> {
   }
 
   // Tracing functionality.
-  void DidBeginTracing();
+  void DidBeginTracing(int layer_id = 0);
   void AsValueInto(base::trace_event::TracedValue* array) const;
 
   const scoped_refptr<const DisplayItemList>& GetDisplayItemList() const {

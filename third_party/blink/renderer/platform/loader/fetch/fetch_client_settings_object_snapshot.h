@@ -11,7 +11,6 @@
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
 
 namespace blink {
 
@@ -94,6 +93,10 @@ class PLATFORM_EXPORT FetchClientSettingsObjectSnapshot final
       AllowedByNosniff::MimeTypeCheck,
       mojom::blink::InsecureRequestPolicy,
       InsecureNavigationsSet);
+
+  static FetchClientSettingsObjectSnapshot& CreateForTesting(
+      const KURL& script_url,
+      scoped_refptr<const SecurityOrigin> origin);
 
   ~FetchClientSettingsObjectSnapshot() override = default;
 

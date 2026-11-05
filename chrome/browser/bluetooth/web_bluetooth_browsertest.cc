@@ -24,7 +24,6 @@
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/chooser_bubble_testapi.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
@@ -72,6 +71,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/bluetooth/web_bluetooth_device_id.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace {
 
@@ -327,7 +327,7 @@ IN_PROC_BROWSER_TEST_F(WebBluetoothTest, WebBluetoothAfterCrash) {
   crash_observer.Wait();
 
   // Reload tab.
-  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(content::WaitForLoadStop(
       browser()->tab_strip_model()->GetActiveWebContents()));
 
@@ -453,7 +453,8 @@ IN_PROC_BROWSER_TEST_F(WebBluetoothTest, ShowChooserInBackgroundTab) {
 
   // Create a new foreground tab that covers |web_contents|.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(kExampleUrl), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL(kExampleUrl),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Try to show the chooser in the background tab.

@@ -63,12 +63,13 @@ bundle_id is '@BUNDLE_ID@'"""
         return """app dir is '@APP_DIR@'
 app product is '@APP_PRODUCT@'
 brand code is '@BRAND_CODE@'
-framework dir is '@FRAMEWORK_DIR@'"""
+framework dir is '@FRAMEWORK_DIR@'
+updater requirement is '@UPDATER_REQUIREMENT@'"""
 
     raise
 
 
-def _get_adjacent_item(l, o):
+def _get_adjacent_item(l, o):  # noqa: E741
     """Finds object |o| in collection |l| and returns the item at its index
     plus 1.
     """
@@ -446,7 +447,8 @@ bundle_id is 'test.signing.bundle_id'""",
             """app dir is 'App Product.app'
 app product is 'App Product'
 brand code is 'MOO'
-framework dir is 'App Product.app/Contents/Frameworks/Product Framework.framework'""",
+framework dir is 'App Product.app/Contents/Frameworks/Product Framework.framework'
+updater requirement is 'true '""",
         )
 
     @mock.patch('signing.pipeline.commands.write_plist', _write_plist)

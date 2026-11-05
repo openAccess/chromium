@@ -13,12 +13,15 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewStub;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.ImageButton;
+import android.widget.ImageView;
+import android.widget.TextView;
 
 import androidx.annotation.ColorInt;
 import androidx.annotation.ColorRes;
@@ -30,6 +33,7 @@ import androidx.core.widget.ImageViewCompat;
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackController;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -38,15 +42,18 @@ import org.chromium.chrome.browser.omnibox.LocationBar;
 import org.chromium.chrome.browser.omnibox.LocationBarCoordinator;
 import org.chromium.chrome.browser.omnibox.NewTabPageDelegate;
 import org.chromium.chrome.browser.omnibox.UrlBarData;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxCoordinator.FuseboxState;
+import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
 import org.chromium.chrome.browser.omnibox.status.StatusCoordinator;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.tabmodel.IncognitoStateProvider;
 import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.R;
 import org.chromium.chrome.browser.toolbar.ToolbarDataProvider;
+import org.chromium.chrome.browser.toolbar.ToolbarFeatures;
 import org.chromium.chrome.browser.toolbar.ToolbarProgressBar;
 import org.chromium.chrome.browser.toolbar.ToolbarTabController;
 import org.chromium.chrome.browser.toolbar.back_button.BackButtonCoordinator;
+import org.chromium.chrome.browser.toolbar.download_button.DownloadButtonCoordinator;
 import org.chromium.chrome.browser.toolbar.extensions.ExtensionsToolbarCoordinator;
 import org.chromium.chrome.browser.toolbar.forward_button.ForwardButtonCoordinator;
 import org.chromium.chrome.browser.toolbar.home_button.HomeButtonCoordinator;
@@ -116,13 +123,22 @@ public class ToolbarTablet extends ToolbarLayout {
     private @Nullable TabletCaptureStateToken mLastCaptureStateToken;
     private @DrawableRes int mBookmarkButtonImageRes;
     private @Nullable ExtensionsToolbarCoordinator mExtensionsToolbarCoordinator;
-    private @Nullable ImageButton mGlicActionChip;
+    private @Nullable View mGlicActionChip;
+    private @Nullable ImageView mGlicIcon;
+    private @Nullable TextView mGlicText;
     private @Nullable View mGlicDivider;
     private boolean mShouldShowGlicButton;
-    private boolean mHasSpaceToShowGlicButton = true;
+    private boolean mHasSpaceToShowGlicIcon = true;
+    private boolean mHasSpaceToShowGlicText = true;
     private boolean mIsGlicUiVisible;
     private View.@Nullable OnClickListener mGlicClickListener;
     private View.@Nullable OnLongClickListener mGlicLongClickListener;
+
+    private @Nullable AiOverlayMicrophoneButtonView mAiOverlayMicrophoneButton;
+
+    private @Nullable ImageButton mTtcButton;
+    private @Nullable Drawable mTtcButtonDefaultBackground;
+    private boolean mTtcButtonWanted;
 
     private final @Nullable ToolbarWidthConsumer[] mToolbarWidthConsumers =
             new ToolbarWidthConsumer[ToolbarComponentId.COUNT];
@@ -154,6 +170,8 @@ public class ToolbarTablet extends ToolbarLayout {
         mBookmarkButton = findViewById(R.id.bookmark_button);
         mFixedHeightBackground = findViewById(R.id.toolbar_tablet_fixed_height_bg);
         mToolbarTabletLayout = findViewById(R.id.toolbar_tablet_layout);
+        mAiOverlayMicrophoneButton = findViewById(R.id.ai_overlay_microphone_button);
+        mTtcButton = findViewById(R.id.ttc_toolbar_button);
 
         // Initialize values needed for showing/hiding toolbar buttons when the activity size
         // changes.
@@ -253,7 +271,7 @@ public class ToolbarTablet extends ToolbarLayout {
         VisibleUrlText visibleUrlText =
                 new VisibleUrlText(
                         urlBarData.displayText, mLocationBar.getOmniboxVisibleTextPrefixHint());
-        int tabCount = mTabCountSupplier == null ? 0 : mTabCountSupplier.get();
+        int tabCount = SupplierUtils.getOr(mTabCountSupplier, 0);
 
         return new TabletCaptureStateToken(
                 mHomeButton,
@@ -294,8 +312,14 @@ public class ToolbarTablet extends ToolbarLayout {
         if (mOptionalButton != null && mOptionalButtonUsesTint) {
             ImageViewCompat.setImageTintList(mOptionalButton, activityFocusTint);
         }
-        if (mGlicActionChip != null) {
-            ImageViewCompat.setImageTintList(mGlicActionChip, activityFocusTint);
+        if (mGlicIcon != null) {
+            ImageViewCompat.setImageTintList(mGlicIcon, activityFocusTint);
+        }
+        if (mAiOverlayMicrophoneButton != null) {
+            mAiOverlayMicrophoneButton.setIconTint(activityFocusTint);
+        }
+        if (mTtcButton != null) {
+            ImageViewCompat.setImageTintList(mTtcButton, activityFocusTint);
         }
     }
 
@@ -406,10 +430,12 @@ public class ToolbarTablet extends ToolbarLayout {
             @Nullable ForwardButtonCoordinator forwardButtonCoordinator,
             HomeButtonCoordinator homeButtonCoordinator,
             @Nullable SigninButtonCoordinator signinButtonCoordinator,
+            @Nullable DownloadButtonCoordinator downloadButtonCoordinator,
             ThemeColorProvider themeColorProvider,
             IncognitoStateProvider incognitoStateProvider,
             @Nullable Supplier<Integer> incognitoWindowCountSupplier,
-            WindowAndroid windowAndroid) {
+            WindowAndroid windowAndroid,
+            OmniboxResourceProvider omniboxResourceProvider) {
         assert tabSwitcherButtonCoordinator != null;
         super.initialize(
                 toolbarDataProvider,
@@ -425,10 +451,12 @@ public class ToolbarTablet extends ToolbarLayout {
                 forwardButtonCoordinator,
                 homeButtonCoordinator,
                 signinButtonCoordinator,
+                downloadButtonCoordinator,
                 themeColorProvider,
                 incognitoStateProvider,
                 incognitoWindowCountSupplier,
-                windowAndroid);
+                windowAndroid,
+                omniboxResourceProvider);
         mReloadButtonCoordinator = assertNonNull(reloadButtonCoordinator);
         mBackButtonCoordinator = assertNonNull(backButtonCoordinator);
         mForwardButtonCoordinator = assertNonNull(forwardButtonCoordinator);
@@ -460,10 +488,18 @@ public class ToolbarTablet extends ToolbarLayout {
             signinButtonCoordinator.setShowOnAllPages(
                     SigninFeatureMap.sProfileDiscOnAllPages.isEnabled());
         }
+        mToolbarWidthConsumers[ToolbarComponentId.DOWNLOAD_BUTTON] = downloadButtonCoordinator;
         mToolbarWidthConsumers[ToolbarComponentId.TAB_SWITCHER] = tabSwitcherButtonCoordinator;
         mToolbarWidthConsumers[ToolbarComponentId.MENU] = menuButtonCoordinator;
         mToolbarWidthConsumers[ToolbarComponentId.PADDING] =
                 new ToolbarPaddingWidthConsumer(mToolbarTabletLayout, mStartPaddingWithButtons);
+        if (ToolbarFeatures.isAiOverlayDialogEnabled()) {
+            mToolbarWidthConsumers[ToolbarComponentId.AI_OVERLAY_MICROPHONE_BUTTON] =
+                    new AiOverlayMicrophoneButtonWidthConsumer();
+        }
+        if (ToolbarFeatures.isTtcToolbarButtonSupported()) {
+            mToolbarWidthConsumers[ToolbarComponentId.TTC_BUTTON] = new TtcButtonWidthConsumer();
+        }
     }
 
     @Override
@@ -564,8 +600,6 @@ public class ToolbarTablet extends ToolbarLayout {
     @Override
     public void onWidthConsumerVisibilityChanged() {
         assert !mIsDestroyed;
-
-        if (!ToolbarUtils.isToolbarTabletResizeRefactorEnabled()) return;
 
         // Re-allocate width to account for a change in a width consumer's visibility.
         int unspecifiedSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED);
@@ -708,14 +742,13 @@ public class ToolbarTablet extends ToolbarLayout {
     }
 
     /**
-     * Ensure {@link ToolbarWidthConsumer} for Glic button pinned on the tab strip (moved to the
-     * toolbar when the tab strip becomes hidden) is installed.
+     * Ensure {@link ToolbarWidthConsumer}s for Glic button (icon and text) pinned on the tab strip
+     * (moved to the toolbar when the tab strip becomes hidden) are installed.
      */
     public void ensureGlicToolbarWidthConsumer() {
-        var widthConsumer = mToolbarWidthConsumers[ToolbarComponentId.GLIC_PINNED_MOVED];
-        if (widthConsumer != null) return;
+        if (mToolbarWidthConsumers[ToolbarComponentId.GLIC_ICON] != null) return;
 
-        mToolbarWidthConsumers[ToolbarComponentId.GLIC_PINNED_MOVED] =
+        mToolbarWidthConsumers[ToolbarComponentId.GLIC_ICON] =
                 new ToolbarWidthConsumer() {
                     @Override
                     public boolean isVisible() {
@@ -725,20 +758,24 @@ public class ToolbarTablet extends ToolbarLayout {
 
                     @Override
                     public boolean hasSpaceToShow() {
-                        return mHasSpaceToShowGlicButton;
+                        return mHasSpaceToShowGlicIcon;
                     }
 
                     @Override
                     public int updateVisibility(int availableWidth) {
                         if (!mShouldShowGlicButton) {
-                            mHasSpaceToShowGlicButton = false;
+                            mHasSpaceToShowGlicIcon = false;
+                            mHasSpaceToShowGlicText = false;
                             updateGlicActionChipVisibilityInternal();
                             return 0;
                         }
 
                         int width =
                                 getResources().getDimensionPixelSize(R.dimen.min_touch_target_size);
-                        mHasSpaceToShowGlicButton = availableWidth >= width;
+                        mHasSpaceToShowGlicIcon = availableWidth >= width;
+                        if (!mHasSpaceToShowGlicIcon) {
+                            mHasSpaceToShowGlicText = false;
+                        }
                         updateGlicActionChipVisibilityInternal();
                         return Math.min(width, availableWidth);
                     }
@@ -749,6 +786,68 @@ public class ToolbarTablet extends ToolbarLayout {
                         return updateVisibility(availableWidth);
                     }
                 };
+
+        mToolbarWidthConsumers[ToolbarComponentId.GLIC_TEXT] =
+                new ToolbarWidthConsumer() {
+                    @Override
+                    public boolean isVisible() {
+                        return mGlicActionChip != null
+                                && mGlicActionChip.getVisibility() == View.VISIBLE
+                                && mGlicText != null
+                                && mGlicText.getVisibility() == View.VISIBLE;
+                    }
+
+                    @Override
+                    public boolean hasSpaceToShow() {
+                        return mHasSpaceToShowGlicText;
+                    }
+
+                    @Override
+                    public int updateVisibility(int availableWidth) {
+                        if (!mShouldShowGlicButton || !mHasSpaceToShowGlicIcon) {
+                            mHasSpaceToShowGlicText = false;
+                            updateGlicActionChipVisibilityInternal();
+                            return 0;
+                        }
+
+                        int width = getGlicTextWidth();
+                        mHasSpaceToShowGlicText = availableWidth >= width;
+                        updateGlicActionChipVisibilityInternal();
+                        return Math.min(width, availableWidth);
+                    }
+
+                    @Override
+                    public int updateVisibilityWithAnimation(
+                            int availableWidth, Collection<Animator> animators) {
+                        return updateVisibility(availableWidth);
+                    }
+                };
+    }
+
+    private int getGlicTextWidth() {
+        if (mGlicText == null) {
+            inflateGlicActionChip();
+        }
+        if (mGlicText == null) return 0;
+
+        int unspecified = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED);
+        mGlicText.measure(unspecified, unspecified);
+        return mGlicText.getMeasuredWidth();
+    }
+
+    private void inflateGlicActionChip() {
+        if (mGlicActionChip != null) return;
+        ViewStub glicActionChipStub = findViewById(R.id.glic_action_chip_stub);
+
+        mGlicActionChip = assumeNonNull(glicActionChipStub).inflate();
+        mGlicActionChip.setVisibility(GONE);
+        mGlicIcon = mGlicActionChip.findViewById(R.id.glic_icon);
+        mGlicText = mGlicActionChip.findViewById(R.id.glic_text);
+        setGlicActionListeners();
+        setGlicPanelIsOpen(mIsGlicUiVisible);
+        if (mGlicIcon != null) {
+            ImageViewCompat.setImageTintList(mGlicIcon, getButtonTintList());
+        }
     }
 
     /**
@@ -764,35 +863,38 @@ public class ToolbarTablet extends ToolbarLayout {
         mShouldShowGlicButton = visible;
         mGlicClickListener = clickListener;
         mGlicLongClickListener = longClickListener;
+        if (mGlicActionChip != null) setGlicActionListeners();
         updateGlicActionChipVisibilityInternal();
         onWidthConsumerVisibilityChanged();
     }
 
+    private void setGlicActionListeners() {
+        assertNonNull(mGlicActionChip);
+        mGlicActionChip.setOnClickListener(mGlicClickListener);
+        mGlicActionChip.setOnLongClickListener(mGlicLongClickListener);
+        mGlicActionChip.setOnContextClickListener(
+                mGlicLongClickListener != null ? mGlicLongClickListener::onLongClick : null);
+    }
+
     private void updateGlicActionChipVisibilityInternal() {
-        boolean show = mShouldShowGlicButton && mHasSpaceToShowGlicButton;
+        boolean show = mShouldShowGlicButton && mHasSpaceToShowGlicIcon;
         if (mGlicDivider == null) {
             mGlicDivider = assumeNonNull(findViewById(R.id.glic_divider));
         }
         mGlicDivider.setVisibility(show ? VISIBLE : GONE);
         if (show) {
-            ViewStub glicActionChipStub = findViewById(R.id.glic_action_chip_stub);
-            if (mGlicActionChip == null && glicActionChipStub != null) {
-                mGlicActionChip = (ImageButton) glicActionChipStub.inflate();
-                mGlicActionChip.setOnClickListener(mGlicClickListener);
-                mGlicActionChip.setImageResource(R.drawable.ic_spark_24dp);
-                setGlicPanelIsOpen(mIsGlicUiVisible);
-                ImageViewCompat.setImageTintList(mGlicActionChip, getButtonTintList());
-            }
-            ImageButton actionChip = assumeNonNull(mGlicActionChip);
+            inflateGlicActionChip();
+            View actionChip = assumeNonNull(mGlicActionChip);
             actionChip.setVisibility(VISIBLE);
-            View.OnLongClickListener longClickListener = assumeNonNull(mGlicLongClickListener);
-            // These listeners are for Vertical Tabs only.
-            actionChip.setOnLongClickListener(longClickListener);
-            // Right-click has the same behavior as long-press.
-            actionChip.setOnContextClickListener(longClickListener::onLongClick);
+            if (mGlicText != null) {
+                mGlicText.setVisibility(mHasSpaceToShowGlicText ? VISIBLE : GONE);
+            }
         } else {
             if (mGlicActionChip != null) {
                 mGlicActionChip.setVisibility(GONE);
+            }
+            if (mGlicText != null) {
+                mGlicText.setVisibility(GONE);
             }
         }
     }
@@ -860,7 +962,6 @@ public class ToolbarTablet extends ToolbarLayout {
 
         @Override
         public int updateVisibility(int availableWidth) {
-            assert ToolbarUtils.isToolbarTabletResizeRefactorEnabled();
             int width =
                     Math.min(
                             availableWidth,
@@ -896,7 +997,6 @@ public class ToolbarTablet extends ToolbarLayout {
 
         @Override
         public int updateVisibility(int availableWidth) {
-            assert ToolbarUtils.isToolbarTabletResizeRefactorEnabled();
             if (mOptionalButtonForciblyHidden) {
                 setOptionalButtonVisibility(false);
                 mHasSpaceToShow = false;
@@ -906,6 +1006,96 @@ public class ToolbarTablet extends ToolbarLayout {
             int width = getResources().getDimensionPixelSize(R.dimen.toolbar_button_width);
             mHasSpaceToShow = availableWidth >= width;
             setOptionalButtonVisibility(mHasSpaceToShow);
+            return Math.min(availableWidth, width);
+        }
+
+        @Override
+        public int updateVisibilityWithAnimation(
+                int availableWidth, Collection<Animator> animators) {
+            return updateVisibility(availableWidth);
+        }
+    }
+
+    /**
+     * Shows or hides the TTC button, and highlights it while a TTC session is in progress. Whether
+     * it actually shows also depends on the available width.
+     *
+     * @param wanted Whether the window's TTC entry point asks for the button.
+     * @param active Whether a TTC session is in progress, which highlights the button.
+     * @param onClickListener Invoked when the button is clicked.
+     */
+    void setTtcButtonState(
+            boolean wanted, boolean active, View.@Nullable OnClickListener onClickListener) {
+        if (mTtcButton == null) return;
+        mTtcButton.setOnClickListener(onClickListener);
+        if (mTtcButtonDefaultBackground == null) {
+            mTtcButtonDefaultBackground = mTtcButton.getBackground();
+        }
+        mTtcButton.setActivated(active);
+        mTtcButton.setBackground(
+                active
+                        ? getContext().getDrawable(R.drawable.ttc_toolbar_button_active_background)
+                        : mTtcButtonDefaultBackground);
+        if (mTtcButtonWanted == wanted) return;
+        mTtcButtonWanted = wanted;
+        if (!wanted) mTtcButton.setVisibility(View.GONE);
+        onWidthConsumerVisibilityChanged();
+    }
+
+    private class TtcButtonWidthConsumer implements ToolbarWidthConsumer {
+        private boolean mHasSpaceToShow;
+
+        @Override
+        public boolean isVisible() {
+            return mTtcButton != null && mTtcButton.getVisibility() == View.VISIBLE;
+        }
+
+        @Override
+        public boolean hasSpaceToShow() {
+            return mHasSpaceToShow;
+        }
+
+        @Override
+        public int updateVisibility(int availableWidth) {
+            if (mTtcButton == null || !mTtcButtonWanted) {
+                if (mTtcButton != null) mTtcButton.setVisibility(View.GONE);
+                return 0;
+            }
+            int width = getResources().getDimensionPixelSize(R.dimen.toolbar_button_width);
+            mHasSpaceToShow = availableWidth >= width;
+            mTtcButton.setVisibility(mHasSpaceToShow ? View.VISIBLE : View.GONE);
+            return Math.min(availableWidth, width);
+        }
+
+        @Override
+        public int updateVisibilityWithAnimation(
+                int availableWidth, Collection<Animator> animators) {
+            return updateVisibility(availableWidth);
+        }
+    }
+
+    private class AiOverlayMicrophoneButtonWidthConsumer implements ToolbarWidthConsumer {
+        private boolean mHasSpaceToShow;
+
+        @Override
+        public boolean isVisible() {
+            return mAiOverlayMicrophoneButton != null
+                    && mAiOverlayMicrophoneButton.getVisibility() == View.VISIBLE;
+        }
+
+        @Override
+        public boolean hasSpaceToShow() {
+            return mHasSpaceToShow;
+        }
+
+        @Override
+        public int updateVisibility(int availableWidth) {
+            if (mAiOverlayMicrophoneButton == null || !ToolbarFeatures.isAiOverlayDialogEnabled()) {
+                return 0;
+            }
+            int width = getResources().getDimensionPixelSize(R.dimen.toolbar_button_width);
+            mHasSpaceToShow = availableWidth >= width;
+            mAiOverlayMicrophoneButton.setVisibility(mHasSpaceToShow ? View.VISIBLE : View.GONE);
             return Math.min(availableWidth, width);
         }
 
@@ -1065,6 +1255,11 @@ public class ToolbarTablet extends ToolbarLayout {
         mToolbarWidthConsumers[ToolbarComponentId.SIGNIN_BUTTON] = coordinator;
     }
 
+    void setDownloadButtonCoordinatorForTesting(
+            @Nullable DownloadButtonCoordinator downloadButtonCoordinator) {
+        mToolbarWidthConsumers[ToolbarComponentId.DOWNLOAD_BUTTON] = downloadButtonCoordinator;
+    }
+
     void setHomeButtonWidthConsumerForTesting(ToolbarWidthConsumer consumer) {
         mToolbarWidthConsumers[ToolbarComponentId.HOME] = consumer;
     }
@@ -1092,8 +1287,20 @@ public class ToolbarTablet extends ToolbarLayout {
         return mGlicActionChip;
     }
 
-    @Nullable ToolbarWidthConsumer getGlicWidthConsumerForTesting() {
-        return mToolbarWidthConsumers[ToolbarComponentId.GLIC_PINNED_MOVED];
+    @Nullable ToolbarWidthConsumer getGlicIconWidthConsumerForTesting() {
+        return mToolbarWidthConsumers[ToolbarComponentId.GLIC_ICON];
+    }
+
+    @Nullable ToolbarWidthConsumer getGlicTextWidthConsumerForTesting() {
+        return mToolbarWidthConsumers[ToolbarComponentId.GLIC_TEXT];
+    }
+
+    @Nullable View getGlicIconViewForTesting() {
+        return mGlicIcon;
+    }
+
+    @Nullable View getGlicTextViewForTesting() {
+        return mGlicText;
     }
 
     void setTabStackButtonCoordinatorForTesting(ToggleTabStackButtonCoordinator coordinator) {
@@ -1104,10 +1311,6 @@ public class ToolbarTablet extends ToolbarLayout {
     void setMenuButtonCoordinatorForTesting(MenuButtonCoordinator coordinator) {
         mMenuButtonCoordinator = coordinator;
         mToolbarWidthConsumers[ToolbarComponentId.MENU] = coordinator;
-    }
-
-    void setToolbarTabletLayoutForTesting(View view) {
-        mToolbarTabletLayout = view;
     }
 
     void ensurePaddingWidthConsumer() {
@@ -1146,7 +1349,8 @@ public class ToolbarTablet extends ToolbarLayout {
                             : mThemeColorProvider.getThemeColor());
             mShowingFusebox = false;
             updateHairlineVisibility();
-            layoutParams.height = ViewGroup.LayoutParams.MATCH_PARENT;
+            layoutParams.height =
+                    getResources().getDimensionPixelSize(R.dimen.toolbar_height_no_shadow);
         }
         setLayoutParams(layoutParams);
     }

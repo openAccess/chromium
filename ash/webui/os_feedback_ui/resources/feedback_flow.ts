@@ -156,6 +156,15 @@ export class FeedbackFlowElement extends PolymerElement {
     return {
       currentState: {type: String},
       feedbackContext: {type: Object, readonly: false, notify: true},
+      shouldShowBluetoothCheckbox: {type: Boolean, value: false},
+      shouldShowWifiDebugLogsCheckbox: {type: Boolean, value: false},
+      shouldShowAutofillCheckbox: {type: Boolean, value: false},
+      descriptionTemplate: {type: String, value: ''},
+      descriptionPlaceholderText: {type: String, value: ''},
+      sendReportStatus: {type: Number, value: null},
+      helpContentSearchResultCount: {type: Number, value: 0},
+      noHelpContentDisplayed: {type: Boolean, value: false},
+      isUserLoggedIn: {type: Boolean, value: false},
     };
   }
 
@@ -166,13 +175,13 @@ export class FeedbackFlowElement extends PolymerElement {
   declare protected feedbackContext: FeedbackContext|null;
 
   /**  Whether to show the bluetooth Logs checkbox in share data page. */
-  shouldShowBluetoothCheckbox: boolean = false;
+  declare shouldShowBluetoothCheckbox: boolean;
 
   /**  Whether to show the Wifi debug Logs checkbox in share data page. */
-  shouldShowWifiDebugLogsCheckbox = false;
+  declare shouldShowWifiDebugLogsCheckbox: boolean;
 
   /**  Whether to show the autofill checkbox in share data page. */
-  protected shouldShowAutofillCheckbox = false;
+  declare protected shouldShowAutofillCheckbox: boolean;
 
   private feedbackServiceProvider: FeedbackServiceProviderInterface;
 
@@ -180,23 +189,23 @@ export class FeedbackFlowElement extends PolymerElement {
    * The description entered by the user. It is set when the user clicks the
    * next button on the search page.
    */
-  private description: string;
+  private description = '';
 
   /**
    * The description template provided source application to help user write
    * feedback.
    */
-  protected descriptionTemplate: string;
+  declare protected descriptionTemplate: string;
 
   /**
    * The description placeholder text is used to give the user a hint on how
    * to write the description. Some apps, such as the Camera app can use a
    * custom placeholder.
    */
-  protected descriptionPlaceholderText: string;
+  declare protected descriptionPlaceholderText: string;
 
   /**  The status of sending report. */
-  private sendReportStatus: SendReportStatus|null;
+  declare private sendReportStatus: SendReportStatus|null;
 
   /**  Whether user clicks the help content or not. */
   private helpContentClicked = false;
@@ -205,10 +214,10 @@ export class FeedbackFlowElement extends PolymerElement {
   private helpContentOutcomeMetricEmitted = false;
 
   /**  Number of results returned in each search. */
-  private helpContentSearchResultCount: number;
+  declare private helpContentSearchResultCount: number;
 
   /**  Whether there is no help content shown(offline or search is down). */
-  private noHelpContentDisplayed: boolean;
+  declare private noHelpContentDisplayed: boolean;
 
   /**
    * When the feedback tool is opened as a dialog, feedback context is passed
@@ -217,7 +226,7 @@ export class FeedbackFlowElement extends PolymerElement {
   private dialogArgs: string;
 
   /**  Whether the user has logged in (not on oobe or on the login screen). */
-  private isUserLoggedIn: boolean;
+  declare private isUserLoggedIn: boolean;
 
   constructor() {
     super();

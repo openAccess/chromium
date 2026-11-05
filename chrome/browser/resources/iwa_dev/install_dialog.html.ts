@@ -12,7 +12,6 @@ import {TabIndex} from './install_dialog.js';
 import type {IwaDevInstallDialogElement} from './install_dialog.js';
 
 export function getHtml(this: IwaDevInstallDialogElement) {
-  // clang-format off
   return html`
 <cr-dialog id="dialog">
   <div slot="title">Install Isolated Web App</div>
@@ -25,21 +24,23 @@ export function getHtml(this: IwaDevInstallDialogElement) {
     </cr-tabs>
     <div class="tab-content">
       ${this.isOpened_ && this.selectedTab_ === TabIndex.DEV_PROXY ? html`
-        <iwa-dev-install-dev-proxy-tab
-            ?disabled="${this.isInstalling_}"
+        <iwa-dev-install-dev-proxy-tab ?disabled="${this.isInstalling_}"
             @valid-changed="${this.onTabValidChanged_}">
         </iwa-dev-install-dev-proxy-tab>
-      ` : this.selectedTab_ === TabIndex.LOCAL_BUNDLE ? html`
-        <iwa-dev-install-local-bundle-tab
-            ?disabled="${this.isInstalling_}"
-            @valid-changed="${this.onTabValidChanged_}">
-        </iwa-dev-install-local-bundle-tab>
-      ` : this.selectedTab_ === TabIndex.UPDATE_MANIFEST ? html`
-        <iwa-dev-install-update-manifest-tab
-            ?disabled="${this.isInstalling_}"
-            @valid-changed="${this.onTabValidChanged_}">
-        </iwa-dev-install-update-manifest-tab>
-      ` : ''}
+      ` : html`
+        ${this.selectedTab_ === TabIndex.LOCAL_BUNDLE ? html`
+          <iwa-dev-install-local-bundle-tab ?disabled="${this.isInstalling_}"
+              @valid-changed="${this.onTabValidChanged_}">
+          </iwa-dev-install-local-bundle-tab>
+        ` : html`
+          ${this.selectedTab_ === TabIndex.UPDATE_MANIFEST ? html`
+            <iwa-dev-install-update-manifest-tab
+                ?disabled="${this.isInstalling_}"
+                @valid-changed="${this.onTabValidChanged_}">
+            </iwa-dev-install-update-manifest-tab>
+          ` : ''}
+        `}
+      `}
       ${this.installationError_ ? html`
         <div class="error-message" aria-live="polite">
           ${this.installationError_}
@@ -52,8 +53,7 @@ export function getHtml(this: IwaDevInstallDialogElement) {
         ?disabled="${this.isInstalling_}">
       Cancel
     </cr-button>
-    <cr-button class="action-button"
-        @click="${this.onInstallClick_}"
+    <cr-button class="action-button" @click="${this.onInstallClick_}"
         ?disabled="${!this.isInstallButtonEnabled_()}">
       ${this.isInstalling_ ? 'Installing...' : 'Install'}
     </cr-button>

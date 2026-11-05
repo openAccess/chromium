@@ -37,7 +37,7 @@
 #include "third_party/blink/renderer/core/dom/node_rare_data_field.h"
 #include "third_party/blink/renderer/core/dom/tree_scope.h"
 #include "third_party/blink/renderer/core/html/parser/fragment_parser.h"
-#include "third_party/blink/renderer/core/trustedtypes/trusted_parser_options.h"
+#include "third_party/blink/renderer/core/trustedtypes/trusted_html_parser_options.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
@@ -112,9 +112,6 @@ class CORE_EXPORT ShadowRoot final : public DocumentFragment,
   void RebuildLayoutTree(WhitespaceAttacher&);
   void DetachLayoutTree(bool performing_reattach) override;
 
-  void RegisterScopedHTMLStyleChild();
-  void UnregisterScopedHTMLStyleChild();
-
   SlotAssignment& GetSlotAssignment() {
     DCHECK(slot_assignment_);
     return *slot_assignment_;
@@ -127,8 +124,6 @@ class CORE_EXPORT ShadowRoot final : public DocumentFragment,
   void DidChangeHostChildSlotName(const AtomicString& old_value,
                                   const AtomicString& new_value);
 
-  void DistributeIfNeeded();
-
   String GetInnerHTMLString() const;
   void SetInnerHTMLWithoutTrustedTypes(const String&,
                                        ExceptionState& = ASSERT_NO_EXCEPTION);
@@ -140,7 +135,7 @@ class CORE_EXPORT ShadowRoot final : public DocumentFragment,
                      SetHTMLUnsafeOptions*,
                      ExceptionState&);
   void setHTMLUnsafe(const V8UnionStringOrTrustedHTML* html,
-                     TrustedParserOptions*,
+                     TrustedHTMLParserOptions*,
                      ExceptionState&);
   void setHTML(const String& html, SetHTMLOptions*, ExceptionState&);
 

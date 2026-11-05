@@ -39,9 +39,6 @@ class EcheRecentAppClickHandlerTest : public testing::Test {
     fake_phone_hub_manager_.fake_feature_status_provider()->SetStatus(
         phonehub::FeatureStatus::kEnabledAndConnected);
     fake_feature_status_provider_.SetStatus(FeatureStatus::kIneligible);
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kEcheSWA},
-        /*disabled_features=*/{});
     launch_app_helper_ = std::make_unique<FakeLaunchAppHelper>(
         &fake_phone_hub_manager_,
         base::BindRepeating(
@@ -67,11 +64,11 @@ class EcheRecentAppClickHandlerTest : public testing::Test {
   }
 
   void TearDown() override {
-    apps_launch_info_provider_.reset();
-    launch_app_helper_.reset();
     handler_.reset();
     stream_status_change_handler_.reset();
+    apps_launch_info_provider_.reset();
     connection_status_handler_.reset();
+    launch_app_helper_.reset();
   }
 
   void FakeLaunchEcheAppFunction(

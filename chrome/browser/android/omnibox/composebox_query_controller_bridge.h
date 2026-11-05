@@ -42,18 +42,19 @@ class ComposeboxQueryControllerBridge
       Profile* profile,
       content::WebContents* web_contents);
   ~ComposeboxQueryControllerBridge() override;
-  void Destroy();
   void NotifySessionStarted();
   void NotifySessionAbandoned();
   std::string AddFile(JNIEnv* env,
                       const std::string& file_name,
                       const std::string& file_type,
                       const jni_zero::JavaRef<jobject>& file_data);
+  std::string AddDriveFile(const std::string& drive_id,
+                           const std::optional<std::string>& resource_key,
+                           const std::string& file_name,
+                           const std::string& mime_type);
   std::string AddTabContext(content::WebContents* web_contents,
                             bool is_suggested_tab);
   std::string AddTabContextFromCache(int64_t tab_id, bool is_suggested_tab);
-  void GetAimUrl(GURL url, base::OnceCallback<void(GURL)> callback);
-  void GetImageGenerationUrl(GURL url, base::OnceCallback<void(GURL)> callback);
 
   // Builds the URL to use for a navigation, supplementing the passed in URL
   // with additional parameters. This will do things such as include the current
@@ -66,7 +67,6 @@ class ComposeboxQueryControllerBridge
   void RemoveAttachment(const std::string& token);
   bool IsFuseboxEligible();
   bool IsPdfUploadEligible();
-  bool IsCreateImagesEligible();
   void SetActiveTool(omnibox::ToolMode tool_mode);
   void SetActiveModel(omnibox::ModelMode model_mode);
 
@@ -92,6 +92,7 @@ class ComposeboxQueryControllerBridge
   void OnTaskChanged() override;
   void InitializeInputStateModel() override;
   void UpdateStateFromUrl(const GURL& url) override;
+  std::vector<int32_t> GetSelectedTabIds() const override;
 
   // contextual_tasks::QueryContextualizer::Delegate:
   GURL GetTabUrl(contextual_tasks::QueryContextualizer::TabId id) override;

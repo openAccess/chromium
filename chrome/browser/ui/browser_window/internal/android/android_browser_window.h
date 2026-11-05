@@ -13,14 +13,7 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/sessions/core/session_id.h"
-#include "extensions/buildflags/buildflags.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
-
-#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-namespace extensions {
-class ExtensionBrowserWindowHelper;
-}  // namespace extensions
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 // Android implementation of |BrowserWindowInterface|.
 class AndroidBrowserWindow final : public BrowserWindowInterface {
@@ -33,12 +26,6 @@ class AndroidBrowserWindow final : public BrowserWindowInterface {
   AndroidBrowserWindow(const AndroidBrowserWindow&) = delete;
   AndroidBrowserWindow& operator=(const AndroidBrowserWindow&) = delete;
   ~AndroidBrowserWindow() override;
-
-  // Implements Java |AndroidBrowserWindow.Natives#destroy|.
-  void Destroy(JNIEnv* env);
-
-  // Implements Java |AndroidBrowserWindow.Natives#getSessionIdForTesting|.
-  int32_t GetSessionIdForTesting(JNIEnv* env) const;
 
   // Implements |BrowserWindowInterface|.
   ui::UnownedUserDataHost& GetUnownedUserDataHost() override;
@@ -61,10 +48,6 @@ class AndroidBrowserWindow final : public BrowserWindowInterface {
       base::OnceCallback<void(content::NavigationHandle&)>
           navigation_handle_callback) override;
 
-  // Returns a ChromeTabbedActivity Java object for this window, may be null if
-  // the task does not have an activity.
-  base::android::ScopedJavaLocalRef<jobject> GetActivity();
-
  private:
   base::android::ScopedJavaGlobalRef<jobject> java_android_browser_window_;
   ui::UnownedUserDataHost unowned_user_data_host_;
@@ -76,13 +59,6 @@ class AndroidBrowserWindow final : public BrowserWindowInterface {
   using BrowserDidCloseCallbackList =
       base::RepeatingCallbackList<void(BrowserWindowInterface*)>;
   BrowserDidCloseCallbackList browser_did_close_callback_list_;
-
-#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-  // Android doesn't have BrowserWindowFeatures, so this lives here.
-  // TODO(crbug.com/484037810): Introduce BrowserWindowFeatures for Android.
-  std::unique_ptr<extensions::ExtensionBrowserWindowHelper>
-      extension_browser_window_helper_;
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
   base::WeakPtrFactory<AndroidBrowserWindow> weak_ptr_factory_{this};
 };

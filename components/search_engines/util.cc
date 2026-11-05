@@ -107,7 +107,8 @@ GURL GetBaseSearchUrl(TemplateURLService* turl_service,
                       bool is_aim_search,
                       const base::Time& query_start_time,
                       const std::u16string& query_text,
-                      std::map<std::string, std::string> additional_params) {
+                      std::map<std::string, std::string> additional_params,
+                      bool append_multimodal_udm_if_not_aim = true) {
   const TemplateURLRef& url_ref =
       turl_service->GetDefaultSearchProvider()->url_ref();
   TemplateURLRef::SearchTermsArgs search_term_args =
@@ -131,7 +132,7 @@ GURL GetBaseSearchUrl(TemplateURLService* turl_service,
                                                     param.second);
   }
 
-  if (!is_aim_search) {
+  if (!is_aim_search && append_multimodal_udm_if_not_aim) {
     std::string udm_value = query_text.empty()
                                 ? kUnimodalUdmQueryParameterValue
                                 : kMultimodalUdmQueryParameterValue;
@@ -509,7 +510,7 @@ void RemoveDuplicatePrepopulateIDs(
 // If not found, returns NULL.
 TemplateURL* GetTemplateURLByID(
     const TemplateURLService::TemplateURLVector& template_urls,
-    int64_t id) {
+    TemplateURLID id) {
   for (auto i(template_urls.begin()); i != template_urls.end(); ++i) {
     if ((*i)->id() == id) {
       return *i;
@@ -1074,6 +1075,8 @@ void GetSearchProvidersUsingKeywordResult(
   GetSearchProvidersUsingLoadedEngines(
       service, prefs, template_url_data_resolver, template_urls,
       default_search_provider, search_terms_data, out_updated_keywords_metadata,
+      keyword_result.had_prepopulated_decryption_failure,
+      keyword_result.had_starter_pack_decryption_failure,
       removed_keyword_guids);
 
   // If a data change happened, it should not cause a version downgrade.
@@ -1092,6 +1095,8 @@ void GetSearchProvidersUsingLoadedEngines(
     TemplateURL* default_search_provider,
     const SearchTermsData& search_terms_data,
     WDKeywordsResult::Metadata& in_out_keywords_metadata,
+    bool had_prepopulated_decryption_failure,
+    bool had_starter_pack_decryption_failure,
     std::set<std::string>* removed_keyword_guids) {
   DCHECK(template_urls);
   std::vector<std::unique_ptr<TemplateURLData>> prepopulated_urls =
@@ -1104,13 +1109,17 @@ void GetSearchProvidersUsingLoadedEngines(
       ComputeMergeEnginesRequirements(template_url_data_resolver,
                                       in_out_keywords_metadata);
 
-  if (required_metadata.HasBuiltinKeywordData()) {
+  // A prepopulated row discarded after a decryption failure requires regional
+  // reconciliation independently of any version or country update.
+  if (required_metadata.HasBuiltinKeywordData() ||
+      had_prepopulated_decryption_failure) {
     MergeEnginesFromPrepopulateData(
         service, &prepopulated_urls, template_urls, default_search_provider,
         template_url_data_resolver, removed_keyword_guids);
   }
 
-  if (required_metadata.HasStarterPackData()) {
+  if (required_metadata.HasStarterPackData() ||
+      had_starter_pack_decryption_failure) {
     bool overwrite_user_edits =
         (in_out_keywords_metadata.starter_pack_version <
          template_url_starter_pack_data::GetFirstCompatibleDataVersion());
@@ -1203,9 +1212,10 @@ GURL GetUrlForMultimodalSearch(
     const std::string& lns_surface,
     const std::u16string& query_text,
     std::map<std::string, std::string> additional_params) {
-  GURL result_url =
-      GetBaseSearchUrl(turl_service, aim_entrypoint, is_aim_search,
-                       query_start_time, query_text, additional_params);
+  GURL result_url = GetBaseSearchUrl(
+      turl_service, aim_entrypoint, is_aim_search, query_start_time, query_text,
+      additional_params,
+      /*append_multimodal_udm_if_not_aim=*/request_id != nullptr);
   if (request_id) {
     std::string serialized_request_id;
     CHECK(request_id->SerializeToString(&serialized_request_id));

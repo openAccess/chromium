@@ -124,9 +124,8 @@ CameraPreviewView::CameraPreviewView(
 
   resize_button_->SetPaintToLayer();
   resize_button_->layer()->SetFillsBoundsOpaquely(false);
-  resize_button_->SetBackground(views::CreateRoundedRectBackground(
-      kColorAshShieldAndBase80,
-      resize_button_->GetPreferredSize().height() / 2.f));
+  resize_button_->SetBackground(
+      views::CreatePillBackground(kColorAshShieldAndBase80));
 
   accessibility_observation_.Observe(Shell::Get()->accessibility_controller());
   RefreshResizeButtonVisibility();
@@ -148,7 +147,7 @@ CameraPreviewView::~CameraPreviewView() {
 void CameraPreviewView::Initialize() {
   CHECK(GetWidget()) << "The view should have been added to a widget first.";
 
-  camera_video_renderer_.Initialize();
+  camera_video_renderer_.Init(camera_video_renderer_.host_window());
 
   capture_mode_util::MaybeUpdateCaptureModePrivacyIndicators();
   CaptureModeController::Get()->MaybeUpdateVcPanel();

@@ -18,6 +18,7 @@
 #include "chrome/test/base/fake_profile_manager.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -54,8 +55,7 @@ class ExtensionWindowControllerBridgeUnitTest : public testing::Test {
  protected:
   void InvokeJavaOnAddedToTask() const {
     Java_ExtensionWindowControllerBridgeNativeUnitTestSupport_invokeOnAddedToTask(
-        AttachCurrentThread(), java_test_support_,
-        reinterpret_cast<intptr_t>(mock_browser_.get()));
+        AttachCurrentThread(), java_test_support_, mock_browser_.get());
   }
 
   void InvokeJavaOnFeatureRemoved() const {
@@ -74,9 +74,8 @@ class ExtensionWindowControllerBridgeUnitTest : public testing::Test {
   }
 
   ExtensionWindowControllerBridge* InvokeJavaGetNativePtrForTesting() const {
-    return reinterpret_cast<ExtensionWindowControllerBridge*>(
-        Java_ExtensionWindowControllerBridgeNativeUnitTestSupport_invokeGetNativePtrForTesting(
-            AttachCurrentThread(), java_test_support_));
+    return Java_ExtensionWindowControllerBridgeNativeUnitTestSupport_invokeGetNativePtrForTesting(
+        AttachCurrentThread(), java_test_support_);
   }
 
  private:

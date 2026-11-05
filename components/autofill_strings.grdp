@@ -89,12 +89,6 @@
   <message name="IDS_AUTOFILL_REMOVE_ACCOUNT_NAME_AND_EMAIL_PROFILE_SUGGESTION_CONFIRMATION_BODY" desc="Title in a dialog to confirm that the user wants to delete their account name and email address from Autofill." formatter_data="android_java">
     You can edit your name in your <ph name="BEGIN_LINK">&lt;link&gt;</ph>Google Account<ph name="END_LINK">&lt;/link&gt;</ph> <ph name="ACCOUNT">$1<ex>example@gmail.com</ex></ph>
   </message>
-  <message name="IDS_AUTOFILL_REMOVE_VERIFIED_EMAIL_TITLE" desc="Title in a dialog to confirm that the user wants to delete a verified email address." formatter_data="android_java">
-    Remove verified email?
-  </message>
-  <message name="IDS_AUTOFILL_REMOVE_VERIFIED_EMAIL_BODY" desc="Text in a dialog to confirm that the user wants to delete a verified email address." formatter_data="android_java">
-    Chrome will stop automatically confirming this email on supported sites.
-  </message>
 
   <message name="IDS_AUTOFILL_REMOVE_SUGGESTION_BUTTON" desc="Text in a remove button for Autofill suggestion." formatter_data="android_java">
     Remove
@@ -181,7 +175,7 @@
     Test address from <ph name="ENTRY_VOICEOVER">$1<ex>United states</ex></ph> selected.
   </message>
 
-  <message name="IDS_AUTOFILL_EMAIL_VERIFIER_PROMPT_TITLE" desc="Title of the prompt asking user to verify their email." formatter_data="android_java">
+  <message name="IDS_AUTOFILL_EMAIL_VERIFIER_PROMPT_TITLE" desc="Title of the prompt asking user to verify their email.">
     Verify this email automatically?
   </message>
   <message name="IDS_AUTOFILL_EMAIL_VERIFIER_PROMPT_BODY" desc="Body of the prompt asking user to verify their email. $1 is the issuer domain (e.g., gmail.com) and $2 is the email address.">
@@ -243,10 +237,6 @@
     <message name="IDS_AUTOFILL_MANAGE_LOYALTY_CARDS" desc="The text displayed at the bottom of the Autofill popup to allow the user to manage loyalty cards that can be used by Chrome Autofill. Imperative. When the user clicks on it, opens the Wallet page." meaning="Manage loyalty cards in the user wallet that can be used by Chrome Autofill.">
       Manage loyalty cards...
     </message>
-
-    <message name="IDS_AUTOFILL_MANAGE_ENHANCED_AUTOFILL" desc="Hyperlink text that redirects the user to the central Chrome settings page where they can manage permissions, connected apps, and clear data features.">
-      Manage enhanced autofill
-    </message>
   </if>
   <if expr="use_titlecase">
     <message name="IDS_AUTOFILL_MANAGE_ADDRESSES" desc="In Title Case: The text displayed at the bottom of the Autofill popup to allow the user to manage their Autofill preferences for addresses. Imperative. When the user clicks on it, opens the Autofill settings page." meaning="Manage addresses in the user profile that can be used by Chrome Autofill.">
@@ -260,11 +250,11 @@
     <message name="IDS_AUTOFILL_MANAGE_LOYALTY_CARDS" desc="In Title Case: The text displayed at the bottom of the Autofill popup to allow the user to manage loyalty cards that can be used by Chrome Autofill. Imperative. When the user clicks on it, opens the Wallet page." meaning="Manage loyalty cards in the user wallet that can be used by Chrome Autofill.">
       Manage Loyalty Cards...
     </message>
-
-    <message name="IDS_AUTOFILL_MANAGE_ENHANCED_AUTOFILL" desc="In Title Case: Hyperlink text that redirects the user to the central Chrome settings page where they can manage permissions, connected apps, and clear data features.">
-      Manage Enhanced Autofill
-    </message>
   </if>
+
+  <message name="IDS_AUTOFILL_MANAGE_ENHANCED_AUTOFILL" desc="Hyperlink text that redirects the user to the central Chrome settings page where they can manage permissions, connected apps, and clear data features.">
+    Manage enhanced autofill
+  </message>
 
   <message name="IDS_AUTOFILL_MANAGE_LOYALTY_CARDS_A11Y_HINT" desc="Voice over text that is read out when the manage loyalty cards at the bottom of the Autofill popup is selected.">
     Manage loyalty cards in Google Wallet
@@ -313,6 +303,12 @@
   </message>
   <message name="IDS_AUTOFILL_IPH_ACCOUNT_NAME_EMAIL_SUGGESTION_TITLE" desc="Title text for IPH bubble for a suggestion item suggesting that name and email account profile is available to use.">
     Fill forms faster
+  </message>
+  <message name="IDS_AUTOFILL_IPH_AMBIENT_AUTOFILL_SPII_DISCLAIMER" desc="IPH bubble shown on Ambient Autofill suggestion chips containing sensitive personal information (such as passport, driver's license, or national ID card) extracted by Gemini, reminding the user to long-press the suggestion to review the original source and verify accuracy.">
+    Gemini can make mistakes. Long press the suggestion to review the original source and make sure this info is accurate.
+  </message>
+  <message name="IDS_AUTOFILL_IPH_AMBIENT_AUTOFILL_SPII_DISCLAIMER_SCREENREADER" is_accessibility_with_no_ui="true" desc="IPH bubble shown on Ambient Autofill suggestion chips containing sensitive personal information (such as passport, driver's license, or national ID card) extracted by Gemini, reminding the user to long-press the suggestion to review the original source and verify accuracy.">
+    Gemini can make mistakes. Long press the suggestion to review the original source and make sure this info is accurate.
   </message>
 
   <!-- Autofill credit card suggestion popup -->
@@ -404,27 +400,49 @@
   <message name="IDS_AUTOFILL_HOME_WORK_ADDRESS_EDIT_A11Y_LABEL" desc="The a11y label for the edit button for the home/work address in Settings.">
     Edit, opens new window
   </message>
-  <message name="IDS_AUTOFILL_ADDRESSES_SETTINGS_TITLE" desc="Title for the Autofill settings page that allows user to manage their list of saved addresses and Autofill preferences for addresses. Sentence-Cased." formatter_data="android_java">
+  <message name="IDS_AUTOFILL_ADDRESSES_SETTINGS_TITLE" desc="Title for the Autofill settings page that allows user to manage their list of saved addresses and Autofill preferences for addresses. Sentence-Cased.">
     Addresses and more
   </message>
   <message name="IDS_AUTOFILL_SETTINGS_EMAIL_VERIFICATION_LABEL" desc="Label for a toggle that allows users to control whether email addresses should be automatically confirmed on supported sites." formatter_data="android_java">
-    Automatically confirm your emails
+    Automatically verify your email
   </message>
   <message name="IDS_AUTOFILL_SETTINGS_EMAIL_VERIFICATION_SECTION_TITLE" desc="Title for the email verification section in settings." formatter_data="android_java">
-    Verified Email
+    Verified email
   </message>
   <message name="IDS_AUTOFILL_SETTINGS_EMAIL_VERIFICATION_EMPTY_LABEL" desc="Label shown when no verified email addresses are stored." formatter_data="android_java">
     Verified email addresses will appear here
   </message>
-  <message name="IDS_AUTOFILL_SETTINGS_EMAIL_VERIFICATION_SUMMARY" desc="Text shown below a verified email address indicating which identity provider verified it." formatter_data="android_java">
-    Verified by <ph name="IDP_ORIGIN">%1$s<ex>accounts.google.com</ex></ph>
+  <message name="IDS_AUTOFILL_SETTINGS_REMOVE_VERIFIED_EMAIL_PERMISSION" desc="Label for a menu item that removes the permission for a verified email address." formatter_data="android_java">
+    Remove permission
+  </message>
+  <message name="IDS_AUTOFILL_SETTINGS_REMOVE_VERIFIED_EMAIL_PERMISSION_TITLE" desc="Title for the confirmation dialog when removing a verified email permission." formatter_data="android_java">
+    Remove permission?
+  </message>
+  <if expr="is_android">
+    <message name="IDS_AUTOFILL_SETTINGS_REMOVE_VERIFIED_EMAIL_PERMISSION_BODY" desc="Body text for the confirmation dialog when removing a verified email permission." formatter_data="android_java">
+      Going forward, <ph name="ISSUER">%1$s<ex>google.com</ex></ph> will stop automatically confirming this email
+    </message>
+  </if>
+  <if expr="not is_android">
+    <message name="IDS_AUTOFILL_SETTINGS_REMOVE_VERIFIED_EMAIL_PERMISSION_BODY" desc="Body text for the confirmation dialog when removing a verified email permission.">
+      Going forward, <ph name="ISSUER">$1<ex>google.com</ex></ph> will stop automatically confirming this email
+    </message>
+  </if>
+  <message name="IDS_AUTOFILL_SETTINGS_EMAIL_VERIFICATION_WHEN_ON_CONFIRM" desc="Bullet point in the 'When on' section of the email verification settings, explaining what happens when the setting is turned on." formatter_data="android_java">
+    Email providers like google.com can confirm your email address so you don’t have to check your inbox
+  </message>
+  <message name="IDS_AUTOFILL_SETTINGS_EMAIL_VERIFICATION_CONSIDER_SUPPORTED_SITES" desc="Bullet point in the 'Things to consider' section of the email verification settings, noting that the feature only works on sites that support it." formatter_data="android_java">
+    Only works on supported sites
+  </message>
+  <message name="IDS_AUTOFILL_SETTINGS_EMAIL_VERIFICATION_CONSIDER_PER_EMAIL" desc="Bullet point in the 'Things to consider' section of the email verification settings, noting that the user is asked for permission for each email address individually." formatter_data="android_java">
+    You’ll be asked to allow each email address separately
+  </message>
+  <message name="IDS_AUTOFILL_SETTINGS_EMAIL_VERIFICATION_CONSIDER_SIGNED_IN" desc="Bullet point in the 'Things to consider' section of the email verification settings, noting that the user must be signed in to their email provider for the feature to work." formatter_data="android_java">
+    To use the feature, you need to be signed in to your email account
   </message>
   <!-- TODO(crbug.com/447113309): will no longer be used for title, update desc -->
   <message name="IDS_AUTOFILL_PAYMENT_METHODS" desc="Title for the list of saved payment methods that can be used to fill in forms. Also used as the title for the Autofill settings page that allows user to manage their list of saved payment methods and Autofill preferences for payment methods. Sentence-Cased." formatter_data="android_java">
     Payment methods
-  </message>
-  <message name="IDS_AUTOFILL_PAYMENT_METHODS_KEYWORDS" desc="Keyword list for search in settings" formatter_data="android_java">
-    Credit,Card,Debit
   </message>
   <message name="IDS_AUTOFILL_PAYMENT_METHODS_TABLE_ARIA_LABEL" is_accessibility_with_no_ui="true" desc="Aria label for the list of saved payment methods that can be used to fill in forms.">
     Saved payment methods table
@@ -435,8 +453,11 @@
   <message name="IDS_AUTOFILL_GMAIL_OTP_FILLING_TOGGLE_TITLE" desc="Title for the toggle that enables autofilling verification codes from Gmail.">
     Autofill verification codes from Gmail
   </message>
+  <message name="IDS_AUTOFILL_GMAIL_OTP_OPT_IN_LEARN_MORE_A11Y_NAME" is_accessibility_with_no_ui="true" desc="Accessible label for the link to learn more about the Gmail OTP filling feature, providing context for screen reader users.">
+    Learn more about this feature - Autofill verification codes from Gmail
+  </message>
   <message name="IDS_AUTOFILL_GMAIL_OTP_FILLING_TOGGLE_DESCRIPTION" desc="Description for the toggle that enables autofilling verification codes from Gmail.">
-    Autofill verification codes sites use to improve your security. Chrome can get these codes from your Gmail. <ph name="BEGIN_LINK">&lt;a href="$1" tabindex="0" aria-description="$2" target="_blank"&gt;</ph>Learn more about this feature<ph name="LINK_END">&lt;/a&gt;</ph>
+    Autofill verification codes sites use to improve your security. Chrome can get these codes from your Gmail. <ph name="BEGIN_LINK">&lt;a href="$1" tabindex="0" aria-description="$2" aria-label="$3" target="_blank"&gt;</ph>Learn more about this feature<ph name="LINK_END">&lt;/a&gt;</ph>
   </message>
   <message name="IDS_AUTOFILL_GMAIL_OTP_REQUIRED_TITLE" desc="Title of the dialog informing the user that smart features must be turned on in Gmail to use autofill for verification codes from Gmail.">
     To use this feature, first turn on smart features in Gmail
@@ -446,6 +467,39 @@
   </message>
   <message name="IDS_AUTOFILL_GMAIL_OTP_REQUIRED_STEP_2" desc="Second step in the Gmail OTP settings required dialog prompting the user to turn on smart features in other Google products.">
     Turn on “<ph name="BEGIN_LINK">&lt;a href="$1" tabindex="0" aria-description="$2" target="_blank"&gt;</ph>Smart features in other Google products<ph name="LINK_END">&lt;/a&gt;</ph>”
+  </message>
+  <message name="IDS_AUTOFILL_OPEN_GMAIL_FOR_OTP" desc="The text of the suggestion that opens Gmail to view one time passwords.">
+    Open Gmail
+  </message>
+  <message name="IDS_AUTOFILL_GMAIL_OTP_OPT_IN_TITLE" desc="Title of the bubble prompting the user to opt in to autofilling verification codes from Gmail.">
+    Autofill verification codes from Gmail
+  </message>
+  <message name="IDS_AUTOFILL_GMAIL_OTP_OPT_IN_DESCRIPTION" desc="Body text of the bubble prompting the user to opt in to autofilling verification codes from Gmail. Explains that Google Password Manager can retrieve verification codes from the user's Gmail account and contains a link to learn more in settings.">
+    Google Password Manager can get these codes for you from your Gmail <ph name="EMAIL">$1<ex>elisa.g.beckett@gmail.com</ex></ph>. You can change your mind and <ph name="IDS_AUTOFILL_GMAIL_OTP_OPT_IN_LEARN_MORE_LINK">$2<ex>learn more about this feature in settings</ex></ph>.
+  </message>
+  <message name="IDS_AUTOFILL_GMAIL_OTP_OPT_IN_LEARN_MORE_LINK" desc="Link text within the body of the Gmail OTP opt-in bubble that opens settings to learn more about autofilling verification codes from Gmail.">
+    learn more about this feature in settings
+  </message>
+  <message name="IDS_AUTOFILL_GMAIL_OTP_OPT_IN_TURN_ON_BUTTON" desc="Label for the accept button in the Gmail OTP opt-in bubble that turns on autofilling verification codes from Gmail.">
+    Turn on
+  </message>
+  <message name="IDS_AUTOFILL_GMAIL_OTP_OPT_IN_NO_THANKS_BUTTON" desc="Label for the cancel button in the Gmail OTP opt-in bubble that declines autofilling verification codes from Gmail.">
+    No thanks
+  </message>
+  <message name="IDS_AUTOFILL_GMAIL_OTP_VERIFICATION_CODE_LABEL" desc="Secondary title shown next to a Gmail one-time password suggestion in the Autofill popup.">
+    Verification code
+  </message>
+  <message name="IDS_AUTOFILL_GMAIL_OTP_FROM_ACCOUNT_LABEL" desc="Subtext shown below a Gmail one-time password suggestion indicating the user's Gmail account from which the code was retrieved.">
+    From <ph name="EMAIL">$1<ex>elisa.becket@gmail.com</ex></ph>
+  </message>
+  <message name="IDS_AUTOFILL_ONE_TIME_PASSWORD_VOICE_OVER_A11Y_LABEL" desc="Voice over label for the one time password field.">
+    Verification code: <ph name="OTP">$1<ex>123456</ex></ph>
+  </message>
+  <message name="IDS_AUTOFILL_GMAIL_ONE_TIME_PASSWORD_VOICE_OVER_A11Y_LABEL" is_accessibility_with_no_ui="true" desc="Voice over label for a one-time password verification code retrieved from Gmail. $1 is the OTP verification code (e.g. 123456), and $2 is the sender email address (e.g. login@service.com).">
+    Verification code: <ph name="OTP">$1<ex>123456</ex></ph> from <ph name="EMAIL">$2<ex>login@service.com</ex></ph>
+  </message>
+  <message name="IDS_AUTOFILL_A11Y_ANNOUNCE_FILLED_ONE_TIME_PASSWORD" desc="Accessibility announcement for when a one time password is autofilled.">
+    Autofilled code
   </message>
   <message name="IDS_AUTOFILL_DISABLE_SETTINGS_EXPLANATION_TITLE" desc="Title of the card explaining why the settings page was disabled. Sentence-Cased." formatter_data="android_java">
     Google isn’t your autofill provider
@@ -517,14 +571,8 @@
     <message name="IDS_AUTOFILL_ADDRESS_SHEET_EMPTY_MESSAGE" desc="Message indicating that no addresses are available for filling.">
       No saved addresses
     </message>
-    <message name="IDS_AUTOFILL_ADDRESS_SHEET_ALL_ADDRESSES_LINK" desc="The text of the link in the address sheet that opens the address management section.">
-      Manage addresses
-    </message>
-    <message name="IDS_AUTOFILL_ONE_TIME_PASSWORD_VOICE_OVER_A11Y_LABEL" desc="Voice over label for the one time password field.">
-      Verification Code: <ph name="OTP">$1<ex>123456</ex></ph>
-    </message>
-    <message name="IDS_AUTOFILL_A11Y_ANNOUNCE_FILLED_ONE_TIME_PASSWORD" desc="Accessibility announcement for when a one time password is autofilled.">
-      Autofilled code
+    <message name="IDS_AUTOFILL_ADDRESS_SHEET_ALL_ADDRESSES_LINK" desc="The text of the link in the address sheet that opens the contact info management section.">
+      Manage contact info
     </message>
     <message name="IDS_AUTOFILL_LOYALTY_CARDS_ALL_YOUR_CARDS_SUGGESTION" desc="The keyboard accessory suggestion to open the loyalty cards bottom sheet containing all the user loyalty cards.">
       Your loyalty cards
@@ -850,6 +898,12 @@
   <message name="IDS_AUTOFILL_AT_MEMORY_AI_DISCLOSURE_LINK" desc="Link text for the AI disclosure that points to a settings page." translateable="false">
     More about relevant data sent to Google
   </message>
+  <message name="IDS_AUTOFILL_AT_MEMORY_SHORTCUT_SETTINGS_PROMO" desc="The text shown at the bottom of the AtMemory search popup to inform the user that the keyboard shortcut for enhanced autofill can be changed in settings. $1 is the link text." translateable="false">
+    You can change keyboard shortcut for enhanced autofill in <ph name="SETTINGS_LINK">$1</ph>
+  </message>
+  <message name="IDS_AUTOFILL_AT_MEMORY_SHORTCUT_SETTINGS_PROMO_LINK" desc="Link text for the AtMemory shortcut promo that points to a settings page." translateable="false">
+    settings
+  </message>
   <message name="IDS_AUTOFILL_AT_MEMORY_NO_CONNECTION" desc="Message shown when AtMemory search fails to connect to the server." translateable="false">
     Couldn't connect
   </message>
@@ -868,6 +922,9 @@
   <message name="IDS_AUTOFILL_AT_MEMORY_SEARCH_AFFORDANCE_SUBTITLE" desc="Descriptor under the query for enhanced autofill. 'Gemini' is a brand name and should match standard branding guidelines across languages.">
     Find and fill with Gemini
   </message>
+  <message name="IDS_AUTOFILL_AT_MEMORY_SEARCH_RESULTS_A11Y_ANNOUNCEMENT" is_accessibility_with_no_ui="true" desc="Screen reader announcement when AtMemory search results are presented to the user." translateable="false">
+    Search results available. Use up and down arrow keys to navigate.
+  </message>
   <message name="IDS_AUTOFILL_AT_MEMORY_FETCHING" desc="Descriptor for the loading state when enhanced autofill is fetching results. 'Gemini' is a brand name and should match standard branding guidelines across languages.">
     Find and fill with Gemini
   </message>
@@ -880,6 +937,9 @@
   <message name="IDS_AUTOFILL_AT_MEMORY_FETCHING_PUTTING_IT_TOGETHER" desc="Loading message shown while putting information together during enhanced autofill search." translateable="false">
     Putting it all together...
   </message>
+  <message name="IDS_AUTOFILL_AT_MEMORY_LOADING_A11Y_ANNOUNCEMENT" is_accessibility_with_no_ui="true" desc="Accessibility announcement read by screen readers when enhanced autofill is loading search results." translateable="false">
+    Loading
+  </message>
   <message name="IDS_AUTOFILL_AT_MEMORY_UNSUPPORTED_QUERY_TITLE" desc="This error message is to help users understand that enhanced autofill wasn't able to find and fill relevant info. The technical reason is that the query is not supported by enhanced autofill. It appears on the query results empty state.">
     Couldn't find this info
   </message>
@@ -889,45 +949,70 @@
   <message name="IDS_AUTOFILL_AT_MEMORY_PREVIOUSLY_FILLED" desc="Title shown in the AtMemory suggestions above suggestions that was previously filled on this page." translateable="false">
     Previously filled
   </message>
+  <message name="IDS_AUTOFILL_AT_MEMORY_YOUR_SAVED_INFO" desc="Title shown in the AtMemory suggestions above Autofill-sourced suggestions." translateable="false">
+    Your saved info
+  </message>
+  <message name="IDS_AT_MEMORY_NOTICE_TEXT" desc="Body text of an informational notice introducing a new enhanced autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should remain unlocalized and match standard guidelines across languages. 'Manage settings' is a hyperlink that navigates the user to the Chrome settings page to adjust their preferences." formatter_data="android_java">
+    Powered by Gemini with Personal Intelligence. Your requests, page titles, and URLs may be reviewed to improve enhanced autofill. <ph name="BEGIN_LINK">&lt;link&gt;</ph>Manage settings<ph name="END_LINK">&lt;/link&gt;</ph>
+  </message>
   <message name="IDS_AT_MEMORY_NOTICE_TEXT_NO_LOGGING" desc="Body text of an informational notice introducing a new enhanced autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should remain unlocalized and match standard guidelines across languages. 'Manage settings' is a hyperlink that navigates the user to the Chrome settings page to adjust their preferences." formatter_data="android_java">
-    Powered by Personal Intelligence with Gemini. <ph name="BEGIN_LINK">&lt;link&gt;</ph>Manage settings<ph name="END_LINK">&lt;/link&gt;</ph>
+    Powered by Gemini with Personal Intelligence. <ph name="BEGIN_LINK">&lt;link&gt;</ph>Manage settings<ph name="END_LINK">&lt;/link&gt;</ph>
   </message>
   <message name="IDS_AT_MEMORY_NOTICE_TITLE" desc="Headline of an informational notice introducing a new enhanced autofill feature. 'Gmail' is a proper branding name and should remain unlocalized and match standard guidelines across languages." formatter_data="android_java">
     Now you can find and fill info from Gmail and more
+  </message>
+  <message name="IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE_ORDER_NUMBER" desc="Example search query shown in the AtMemory zero state for finding an order number." formatter_data="android_java" translateable="false">
+    Try "running shoes order number"
+  </message>
+  <message name="IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE_FLIGHT_CONFIRMATION_CODE" desc="Example search query shown in the AtMemory zero state for finding a flight confirmation code." formatter_data="android_java" translateable="false">
+    Try "confirmation code for LAX flight"
+  </message>
+  <message name="IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE_TRACKING_NUMBER" desc="Example search query shown in the AtMemory zero state for finding a shipment tracking number." formatter_data="android_java" translateable="false">
+    Try "running shoes tracking number"
+  </message>
+  <message name="IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE_HOTEL_ADDRESS" desc="Example search query shown in the AtMemory zero state for finding a hotel address." formatter_data="android_java" translateable="false">
+    Try "address for my hotel in Tokyo"
   </message>
   <if expr="is_android">
     <message name="IDS_AT_MEMORY_SEARCH_HINT" desc="Hint text for the search bar in the AtMemory bottom sheet." formatter_data="android_java" translateable="false">
       Find and fill
     </message>
     <message name="IDS_AT_MEMORY_OPEN_FLYOUT" desc="Content description for the button that opens the details page for a suggestion." formatter_data="android_java" translateable="false">
-      Show more
+      Show more for <ph name="DATA_TYPE">%1$s<ex>Flight</ex></ph> <ph name="PRIMARY_ATTRIBUTION">%2$s<ex>XYZ</ex></ph>
     </message>
     <message name="IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_TITLE" desc="Title text shown in zero state when there are no autofill suggestions in the bottom sheet." formatter_data="android_java" translateable="false">
       You’ll find your autofill suggestions here
-    </message>
-    <message name="IDS_AT_MEMORY_NOTICE_TEXT" desc="Body text of an informational notice introducing a new enhanced autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should remain unlocalized and match standard guidelines across languages. 'Manage settings' is a hyperlink that navigates the user to the Chrome settings page to adjust their preferences." formatter_data="android_java">
-      Powered by Personal Intelligence with Gemini. Your requests, page titles, and URLs may be reviewed to improve enhanced autofill. <ph name="BEGIN_LINK">&lt;link&gt;</ph>Manage settings<ph name="END_LINK">&lt;/link&gt;</ph>
-    </message>
-    <message name="IDS_AT_MEMORY_NOTICE_OK_BUTTON" desc="Standard acknowledgment button label to dismiss the informational notice." formatter_data="android_java">
-      OK
     </message>
     <message name="IDS_AT_MEMORY_AI_DISCLOSURE" desc="The text shown at the bottom of the AtMemory bottom sheet to set user expectations regarding potential incorrect suggestions." formatter_data="android_java" translateable="false">
       Gemini is AI and can make mistakes. <ph name="BEGIN_LINK">&lt;link&gt;</ph>More about relevant data sent to Google<ph name="END_LINK">&lt;/link&gt;</ph>
     </message>
   </if>
    <message name="IDS_AUTOFILL_AT_MEMORY_SUGGESTION_SOURCE_TEXT" desc="The label for a text in the At Memory flyout that shows the source of the autofill suggestion." formatter_data="android_java" translateable="false">
+    From Gemini and connected apps
+  </message>
+  <message name="IDS_AUTOFILL_AI_SUGGESTED_BY_GEMINI" desc="Sublabel text indicating that a suggestion is sourced from Gemini." translateable="false">
     Suggested by Gemini
   </message>
-  <message name="IDS_AUTOFILL_AI_SUGGESTED_BY_GEMINI" desc="Sublabel text indicating that a suggestion is sourced from Gemini.">
-    Suggested by Gemini
+  <message name="IDS_AUTOFILL_AI_SUGGESTED_BY_GEMINI_WITH_SOURCES" desc="Header for Autofill AI personal context child menu attributing the information to source applications. $1 is the formatted list of sources with citation badges (e.g. Gmail [1] [2] · Photos [1])." translateable="false">
+    From Gemini and connected apps · <ph name="SOURCES">$1<ex>Gmail [1] [2] · Photos [1]</ex></ph>
   </message>
-  <message name="IDS_AUTOFILL_AI_SOURCE_FROM_APP" desc="Source attribution showing which app an Autofill AI item came from. $1 is the app name (e.g. Photos, Gmail).">
-    From <ph name="APP_NAME">$1<ex>Photos</ex></ph>
+  <message name="IDS_AUTOFILL_AI_SUGGESTED_BY_GEMINI_MORE_SOURCES_SUFFIX" desc="Suffix appended to the source attribution header in the Autofill AI personal context child menu when there are more sources than the maximum number of citation badges shown. The plural selector is the number of additional sources not shown as citation badges.">
+    {NUM_SOURCES, plural,
+     =1 {+ 1 other source}
+     other {+ # other sources}}
   </message>
-  <message name="IDS_AUTOFILL_AI_SOURCE_APP_PHOTOS" desc="App name for Google Photos.">
+  <if expr="not is_android and not is_ios">
+    <message name="IDS_AUTOFILL_AI_SOURCE_ATTRIBUTION_LINK_A11Y_LABEL" is_accessibility_with_no_ui="true" desc="Accessibility label for a numbered source citation link in the Autofill AI source attribution row in the desktop popup. $1 is the source application name and $2 is the 1-based index of the source within that application.">
+      <ph name="APP_NAME">$1<ex>Gmail</ex></ph> source <ph name="SOURCE_INDEX">$2<ex>1</ex></ph>
+    </message>
+    <message name="IDS_AUTOFILL_AI_SOURCE_ATTRIBUTION_A11Y_INSTRUCTIONS" is_accessibility_with_no_ui="true" desc="Accessibility instructions for navigating the citation links in the Autofill AI source attribution row in the desktop popup using left or right arrow keys.">
+      Use left or right arrow keys to navigate the source links.
+    </message>
+  </if>
+  <message name="IDS_AUTOFILL_AI_SOURCE_APP_PHOTOS" desc="App name for Google Photos." formatter_data="android_java">
     Photos
   </message>
-  <message name="IDS_AUTOFILL_AI_SOURCE_APP_GMAIL" desc="App name for Gmail.">
+  <message name="IDS_AUTOFILL_AI_SOURCE_APP_GMAIL" desc="App name for Gmail." formatter_data="android_java">
     Gmail
   </message>
   <message name="IDS_AUTOFILL_AI_REMOVE_INFO" desc="Text for a child menu option to remove an Autofill AI suggestion.">
@@ -937,9 +1022,15 @@
     Manage contact info
   </message>
   <if expr="is_android or is_ios">
-  <message name="IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE" desc="Subtitle text shown in zero state when there are no autofill suggestions in the bottom sheet." formatter_data="android_java" translateable="false">
-    Type what you need to find and fill info from your Connected Apps
-  </message>
+    <message name="IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE" desc="Subtitle text shown in zero state when there are no autofill suggestions in the bottom sheet." formatter_data="android_java" translateable="false">
+      Type what you need to find and fill info from your Connected Apps
+    </message>
+    <message name="IDS_AT_MEMORY_NOTICE_OK_BUTTON" desc="Standard acknowledgment button label to dismiss the informational notice." formatter_data="android_java">
+      OK
+    </message>
+    <message name="IDS_AT_MEMORY_NOTICE_OK_BUTTON_A11Y_LABEL" translateable="false" is_accessibility_with_no_ui="true" desc="Accessibility label for a standard acknowledgment button label to dismiss the informational notice. Clicking the button will close only the notice row, but not the whole bottom sheet." formatter_data="android_java">
+      OK, close notice
+    </message>
   </if>
 
   <!-- Autofill Address Edit Dialog -->
@@ -993,12 +1084,10 @@
   <message name="IDS_AUTOFILL_AI_FLIGHT_RESERVATION_ENTITY_NAME" desc="The label for something that a user can autofill when filling a form. For context, a user has been able to fill addresses within Chrome for many users. Now a user can also fill a “Flight reservation”.">
     Flight
   </message>
-  <!-- TODO(crbug.com/485269384): Make Order entity translatable. -->
-  <message name="IDS_AUTOFILL_AI_ORDER_ENTITY_NAME" desc="The label for something that a user can autofill when filling a form. For context, a user has been able to fill addresses within Chrome for many users. Now a user can also fill an “Order”." translateable="false">
+  <message name="IDS_AUTOFILL_AI_ORDER_ENTITY_NAME" desc="The label for something that a user can autofill when filling a form. For context, a user has been able to fill addresses within Chrome for many users. Now a user can also fill an “Order”.">
     Order
   </message>
-  <!-- TODO(crbug.com/485363832): Make Shipment entity translatable. -->
-  <message name="IDS_AUTOFILL_AI_SHIPMENT_ENTITY_NAME" desc="The label for something that a user can autofill when filling a form. For context, a user has been able to fill addresses within Chrome for many users. Now a user can also fill a “Shipment”." translateable="false">
+  <message name="IDS_AUTOFILL_AI_SHIPMENT_ENTITY_NAME" desc="The label for something that a user can autofill when filling a form. For context, a user has been able to fill addresses within Chrome for many users. Now a user can also fill a “Shipment”.">
     Shipment
   </message>
 
@@ -1030,10 +1119,10 @@
   <message name="IDS_AUTOFILL_AI_FLIGHT_RESERVATIONS_TITLE" desc="The title of a chip referring to flights (IDS_AUTOFILL_AI_FLIGHT_RESERVATION_ENTITY_NAME) on Your saved info settings page.">
     Flight reservations
   </message>
-  <message name="IDS_AUTOFILL_AI_ORDERS_TITLE" desc="The title of a chip referring to orders (IDS_AUTOFILL_AI_ORDER_ENTITY_NAME) on Your saved info settings page." translateable="false">
+  <message name="IDS_AUTOFILL_AI_ORDERS_TITLE" desc="The title of a chip referring to orders (IDS_AUTOFILL_AI_ORDER_ENTITY_NAME) on Your saved info settings page.">
     Orders
   </message>
-  <message name="IDS_AUTOFILL_AI_SHIPMENTS_TITLE" desc="The title of a chip referring to shipments (IDS_AUTOFILL_AI_SHIPMENT_ENTITY_NAME) on Your saved info settings page." translateable="false">
+  <message name="IDS_AUTOFILL_AI_SHIPMENTS_TITLE" desc="The title of a chip referring to shipments (IDS_AUTOFILL_AI_SHIPMENT_ENTITY_NAME) on Your saved info settings page.">
     Shipments
   </message>
   <message name="IDS_AUTOFILL_AI_OTHER_ORDERS" desc="Main text for a suggestion that when hovered opens a subpopup displaying other orders.">
@@ -1165,48 +1254,58 @@
   </message>
 
   <!-- Attributes of the order entity -->
-  <!-- TODO(crbug.com/485269384): Make Order entity translatable. -->
-  <message name="IDS_AUTOFILL_AI_ORDER_ID_ATTRIBUTE_NAME" desc="Used as a general label for the order id attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_ORDER_ID_ATTRIBUTE_NAME" desc="Used as a general label for the order id attribute.">
     Id
   </message>
-  <message name="IDS_AUTOFILL_AI_ORDER_ACCOUNT_ATTRIBUTE_NAME" desc="Used as a general label for the order account attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_ORDER_ACCOUNT_ATTRIBUTE_NAME" desc="Used as a general label for the order account attribute.">
     Account
   </message>
-  <message name="IDS_AUTOFILL_AI_ORDER_DATE_ATTRIBUTE_NAME" desc="Used as a general label for the order date attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_ORDER_DATE_ATTRIBUTE_NAME" desc="Used as a general label for the order date attribute.">
     Date
   </message>
-  <message name="IDS_AUTOFILL_AI_ORDER_MERCHANT_NAME_ATTRIBUTE_NAME" desc="Used as a general label for the order merchant name attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_ORDER_MERCHANT_NAME_ATTRIBUTE_NAME" desc="Used as a general label for the order merchant name attribute.">
     Merchant name
   </message>
-  <message name="IDS_AUTOFILL_AI_ORDER_MERCHANT_DOMAIN_ATTRIBUTE_NAME" desc="Used as a general label for the order merchant domain attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_ORDER_MERCHANT_DOMAIN_ATTRIBUTE_NAME" desc="Used as a general label for the order merchant domain attribute.">
     Merchant domain
   </message>
-  <message name="IDS_AUTOFILL_AI_ORDER_PRODUCT_NAMES_ATTRIBUTE_NAME" desc="Used as a general label for the order product names attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_ORDER_PRODUCT_NAMES_ATTRIBUTE_NAME" desc="Used as a general label for the order product names attribute.">
     Product names
+  </message>
+  <message name="IDS_AUTOFILL_AI_ORDER_GRAND_TOTAL_ATTRIBUTE_NAME" desc="Used as a general label for the total amount of money paid for an order, including taxes and shipping costs.">
+    Total
   </message>
 
   <!-- Attributes of the shipment entity -->
-  <!-- TODO(crbug.com/485363832): Make Shipment entity translatable. -->
-  <message name="IDS_AUTOFILL_AI_SHIPMENT_TRACKING_NUMBER_ATTRIBUTE_NAME" desc="Used as a general label for the shipment tracking number attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_SHIPMENT_TRACKING_NUMBER_ATTRIBUTE_NAME" desc="Used as a general label for the shipment tracking number attribute.">
     Tracking number
   </message>
-  <message name="IDS_AUTOFILL_AI_SHIPMENT_DELIVERY_ZIP_CODE_ATTRIBUTE_NAME" desc="Used as a general label for the shipment delivery zip code attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_SHIPMENT_DELIVERY_ZIP_CODE_ATTRIBUTE_NAME" desc="Used as a general label for the shipment delivery zip code attribute.">
     Delivery zip code
   </message>
-  <message name="IDS_AUTOFILL_AI_SHIPMENT_CARRIER_NAME_ATTRIBUTE_NAME" desc="Used as a general label for the shipment carrier name attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_SHIPMENT_CARRIER_NAME_ATTRIBUTE_NAME" desc="Used as a general label for the shipment carrier name attribute.">
     Carrier name
   </message>
-  <message name="IDS_AUTOFILL_AI_SHIPMENT_CARRIER_DOMAIN_ATTRIBUTE_NAME" desc="Used as a general label for the shipment carrier domain attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_SHIPMENT_CARRIER_DOMAIN_ATTRIBUTE_NAME" desc="Used as a general label for the shipment carrier domain attribute.">
     Carrier domain
   </message>
-  <message name="IDS_AUTOFILL_AI_SHIPMENT_SHIPPED_DATE_ATTRIBUTE_NAME" desc="Used as a general label for the shipment shipped date attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_SHIPMENT_SHIPPED_DATE_ATTRIBUTE_NAME" desc="Used as a general label for the shipment shipped date attribute.">
     Shipped date
   </message>
-  <message name="IDS_AUTOFILL_AI_SHIPMENT_MERCHANT_NAME_ATTRIBUTE_NAME" desc="Used as a general label for the shipment merchant name attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_SHIPMENT_MERCHANT_NAME_ATTRIBUTE_NAME" desc="Used as a general label for the shipment merchant name attribute.">
     Merchant name
   </message>
-  <message name="IDS_AUTOFILL_AI_SHIPMENT_PRODUCT_NAMES_ATTRIBUTE_NAME" desc="Used as a general label for the shipment product names attribute." translateable="false">
+  <message name="IDS_AUTOFILL_AI_SHIPMENT_PRODUCT_NAMES_ATTRIBUTE_NAME" desc="Used as a general label for the shipment product names attribute.">
     Product names
+  </message>
+  <message name="IDS_AUTOFILL_AI_SHIPMENT_DELIVERY_ADDRESS_ATTRIBUTE_NAME" desc="Used as a general label for the address a shipment is delivered to.">
+    Delivery address
+  </message>
+  <message name="IDS_AUTOFILL_AI_SHIPMENT_ESTIMATED_DELIVERY_DATE_ATTRIBUTE_NAME" desc="Used as a general label for the date a shipment is expected to be delivered on.">
+    Estimated delivery date
+  </message>
+  <message name="IDS_AUTOFILL_AI_SHIPMENT_ASSOCIATED_ORDER_ID_ATTRIBUTE_NAME" desc="Used as a general label for the id of the order that a shipment belongs to. The id of the order itself is IDS_AUTOFILL_AI_ORDER_ID_ATTRIBUTE_NAME.">
+    Order ID
   </message>
 
   <!-- Attributes of the flight reservation entity -->
@@ -1364,23 +1463,17 @@
   </message>
 
   <!-- Iph -->
-  <message name="IDS_AUTOFILL_AI_OPT_IN_IPH_TITLE" desc="The title of a promotional bubble that is likely the user's first engagement with enhanced autofill. Many users are familiar with Chrome Autofill and use it to automatically fill in things like passwords and credit cards. This service promoted on this screen frames the new service as the autofill that users are familiar with but better, because it's powered by AI and can do more for you.">
-    Autofill just got better
-  </message>
-  <message name="IDS_AUTOFILL_AI_OPT_IN_IPH_BODY" desc="The body text in a promotional bubble that appears beneath the title: “Autofill just got better”. * “Turn on”: This new feature is opt in, so we want to encourage users to click “Go to settings” and turn the feature on. “enhanced autofill” is what we're calling this new feature. We want users to associate the new feature with the familiar autofill functionality they're already used to but want to convey how it's different (AI). * “automatically” should feel valuable to users as the autofill service is making tasks for them simpler. * “more fields”: the existing autofill functionality in Chrome covers things like passwords, credit cards, and building addresses. With this new service, we can also cover 1) passports, 2) vehicles, and 3) driver's licenses.">
-    Turn on enhanced autofill to automatically fill more fields
-  </message>
-  <message name="IDS_AUTOFILL_AI_OPT_IN_IPH_TURN_ON" desc="The right of two buttons that’s the user’s path learning more and turning on enhanced autofill. This button label should pair with the title (in other words, assume the user doesn’t read the body text. Does the title and primary button label make sense together)?">
-    Turn on
-  </message>
-  <message name="IDS_AUTOFILL_AI_OPT_IN_IPH_MAYBE_LATER" desc="The left of two buttons that’s essentially the user’s path to not learning more or turning on enhanced autofill. “Maybe later” conveys that the user won’t do it now but that they’ll have the choice to do it later. Localizer has existing translations of this button label.">
-    Maybe later
-  </message>
   <message name="IDS_AUTOFILL_AI_VALUABLES_IPH_TITLE" desc="IPH toast for a suggestion item with an item from Google Wallet.">
     Now you can autofill more info from Google Wallet
   </message>
   <message name="IDS_AUTOFILL_AI_VALUABLES_IPH_BODY" desc="IPH toast for a suggestion item with an item from Google Wallet.">
     Manage your information or turn these suggestions off in Settings
+  </message>
+  <message name="IDS_AUTOFILL_AI_SPII_DISCLAIMER_IPH_BODY" translateable="false" desc="IPH toast shown alongside a suggestion containing sensitive personal information (such as a passport, driver's license, or national ID card) extracted by Gemini, reminding the user to verify the original source before submitting.">
+    Gemini can make mistakes. Hover on the right side of a suggestion to review the original source and make sure the info is accurate.
+  </message>
+  <message name="IDS_AUTOFILL_AI_SPII_DISCLAIMER_IPH_BODY_SCREENREADER" translateable="false" is_accessibility_with_no_ui="true" desc="Screenreader text for the IPH toast shown alongside a suggestion containing sensitive personal information extracted by Gemini, reminding the user to verify the original source before submitting.">
+    Gemini can make mistakes. Open suggestion details to review the original source and make sure the info is accurate.
   </message>
 
   <!-- Save/ Update dialog-->
@@ -1390,8 +1483,17 @@
   <message name="IDS_AUTOFILL_AI_UPDATE_ENTITY_TO_WALLET_DIALOG_SUBTITLE" desc="A description that appears beneath the Update title prompt asking users whether they want to update their data stored in Google Wallet. For example, the user previously saved information related to their passport. Now, the user is filling out a new form either with additional details associated with the passport or with different values than what was previously saved. The interface shows new or modified values at the top with blue dots to indicate they’re new. Existing information associated with the passport that isn’t changing appears at the bottom without blue dots. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data updated at this moment. This is a similar moment to updating a password or credit card with Chrome.">
     Your info is saved in <ph name="IDS_AUTOFILL_GOOGLE_WALLET_TITLE">$1<ex>Google Wallet</ex></ph> for <ph name="ACCOUNT">$2<ex>alexpark@gmail.com</ex></ph>
   </message>
-  <message name="IDS_AUTOFILL_AI_SAVE_ENTITY_TO_WALLET_DIALOG_SUBTITLE_NEW" desc="A description that appears beneath the Save title prompt asking users whether they want to save their data to Google Wallet. This sentence essentially defines Autofill in Chrome. We prompt the user to save their information with Google Wallet with the promise that Chrome can then help the user fill out forms across devices more quickly using their saved info.">
+  <message name="IDS_AUTOFILL_AI_SAVE_ENTITY_TO_WALLET_DIALOG_SUBTITLE_NEW" desc="A description that appears beneath the Save title prompt asking users whether they want to save their public pass data to Google Wallet. Public passes is the product name for non-sensitive data such as Vehicle, Flight Reservation, Order, and Shipment. This sentence essentially defines Autofill in Chrome. We prompt the user to save their information with Google Wallet with the promise that Chrome can then help the user fill out forms across devices more quickly using their saved info.">
     Save your info in <ph name="GOOGLE_WALLET_TITLE_1">$1<ex>Google Wallet</ex></ph> and get things done faster, like filling forms across Google products. You can <ph name="MANAGE_INFO_LINK">$2<ex>manage your info</ex></ph> in <ph name="GOOGLE_WALLET_TITLE_2">$3<ex>Google Wallet</ex></ph> for <ph name="ACCOUNT">$4<ex>alexpark@gmail.com</ex></ph>.
+  </message>
+  <message name="IDS_AUTOFILL_AI_SAVE_ENTITY_TO_WALLET_DIALOG_SUBTITLE_PRIVATE_PASS" desc="A description that appears beneath the Save title prompt asking users whether they want to save their private pass data to Google Wallet. Private passes is the product name for sensitive data such as Passport, Driver's License, ID card, Known Traveler Number, and Redress Number. It informs the user that saving to Google Wallet helps fill forms across Google products, links to private pass settings to control how the info is used across Google, and links to the Privacy Policy.">
+    Save your info in <ph name="GOOGLE_WALLET_TITLE">$1<ex>Google Wallet</ex></ph> and get things done faster, like filling forms across Google products. You can control <ph name="HOW_INFO_IS_USED_LINK">$2<ex>how this info is used across Google</ex></ph> in your private pass settings for <ph name="ACCOUNT">$3<ex>alexpark@gmail.com</ex></ph>. <ph name="PRIVACY_POLICY_LINK">$4<ex>Privacy Policy</ex></ph>
+  </message>
+  <message name="IDS_AUTOFILL_HOW_THIS_INFO_IS_USED_ACROSS_GOOGLE_LINK" desc="Clickable link text that replaces HOW_INFO_IS_USED_LINK inside the middle of the sentence: 'Save your info in Google Wallet and get things done faster, like filling forms across Google products. You can control HOW_INFO_IS_USED_LINK in your private pass settings for alexpark@gmail.com. Privacy Policy'. Because this phrase appears mid-sentence after 'You can control', do not capitalize the first word or add trailing punctuation, and ensure it fits grammatically into the surrounding sentence.">
+    how this info is used across Google
+  </message>
+  <message name="IDS_AUTOFILL_PRIVACY_POLICY_LINK" desc="Clickable link text to the Google Privacy Policy that replaces PRIVACY_POLICY_LINK at the end of the notice: 'Save your info in Google Wallet and get things done faster, like filling forms across Google products. You can control how this info is used across Google in your private pass settings for alexpark@gmail.com. PRIVACY_POLICY_LINK'. Because it stands as a separate phrase after a period, keep standard capitalization for 'Privacy Policy' and do not add a trailing period.">
+    Privacy Policy
   </message>
   <!-- Prompt strings used on Desktop -->
   <if expr="not is_android">
@@ -1605,6 +1707,27 @@
     Got it
   </message>
 
+  <message name="IDS_AUTOFILL_AI_ENTITY_SUPPRESSION_UNDO_TOAST_TEXT" desc="Text displayed in a toast notification when an Autofill AI suggestion has been removed by the user, explaining that the suggestion is removed and the original source data is not deleted. The plural selector is the number of such sources. [ICU Syntax]">
+    {NUM_SOURCES, plural,
+     =1 {Suggestion removed. Your original source won't be deleted.}
+     other {Suggestion removed. Your original sources won't be deleted.}}
+  </message>
+  <message name="IDS_AUTOFILL_AI_ENTITY_SUPPRESSION_UNDO_TOAST_ACTION_BUTTON" meaning="Verb: action button to undo removal of an Autofill AI suggestion" desc="Label of the button in the toast notification that allows the user to undo removing an Autofill AI suggestion.">
+    Undo
+  </message>
+
+  <message name="IDS_AUTOFILL_AI_ENTITY_SUPPRESSION_CONFIRMATION_TITLE" desc="Title of the dialog that asks the user to confirm that an Autofill AI suggestion should no longer be suggested by Chrome.">
+    Remove from Chrome?
+  </message>
+  <message name="IDS_AUTOFILL_AI_ENTITY_SUPPRESSION_CONFIRMATION_BODY" desc="Body text of the dialog that asks the user to confirm that an Autofill AI suggestion should no longer be suggested by Chrome. It explains that only the suggestion disappears, while the data that the suggestion was extracted from (e.g. an email or a photo) is untouched. The plural selector is the number of such sources. [ICU Syntax]">
+    {NUM_SOURCES, plural,
+     =1 {Chrome will stop suggesting this info. Your original source won't be deleted.}
+     other {Chrome will stop suggesting this info. Your original sources won't be deleted.}}
+  </message>
+  <message name="IDS_AUTOFILL_AI_ENTITY_SUPPRESSION_CONFIRMATION_ACCEPT_BUTTON" desc="Label of the button that confirms that Chrome should stop suggesting an Autofill AI suggestion.">
+    Remove
+  </message>
+
   <message name="IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_TITLE" desc="A title of the notice that infroms the user that page content will be processed privately in the cloud.">
     Smarter autofill, kept private
   </message>
@@ -1777,7 +1900,7 @@
     <message name="IDS_AUTOFILL_AI_SAVE_OR_UPDATE_LOCAL_ENTITY_SOURCE_NOTICE" desc="A description that appears beneath the entity details notifying the user that their data is going to be stored locally on device." formatter_data="android_java">
       Your info is saved to your device
     </message>
-    <message name="IDS_AUTOFILL_AI_SAVE_OR_UPDATE_ENTITY_IN_WALLET_SOURCE_NOTICE" desc="A description that appears beneath the entity details notifying the user that their data is going to be stored in Google Wallet." formatter_data="android_java">
+    <message name="IDS_AUTOFILL_AI_SAVE_ENTITY_IN_WALLET_SOURCE_NOTICE" desc="A description that appears beneath the entity details notifying the user that their data is going to be stored in Google Wallet." formatter_data="android_java">
       Save your info in <ph name="IDS_AUTOFILL_GOOGLE_WALLET_TITLE_1">$1<ex>Google Wallet</ex></ph> and get things done faster, like filling forms across Google products. You can <ph name="BEGIN_LINK">&lt;link&gt;</ph>manage your info<ph name="END_LINK">&lt;/link&gt;</ph> in <ph name="IDS_AUTOFILL_GOOGLE_WALLET_TITLE_2">$2<ex>Google Wallet</ex></ph> for <ph name="ACCOUNT">$3<ex>alexpark@gmail.com</ex></ph>
     </message>
     <message name="IDS_AUTOFILL_AI_SAVE_OR_UPDATE_ENTITY_NEW_ATTRIBUTE_ACCESSIBILITY_NAME" desc="Used in entity update dialogs, as the accessible names for rows with new attributes" formatter_data="android_java">
@@ -1806,14 +1929,50 @@
       Filling your info
     </message>
 
-    <message name="IDS_AUTOFILL_AI_SUGGESTION_LONG_PRESS_DIALOG_DESCRIPTION" desc="The description text shown in the dialog after the user long presses a suggestion in the keyboard accessory." formatter_data="android_java">
-      Suggested by Gemini. Manage enhanced autofill in settings.
+    <message name="IDS_AUTOFILL_AI_SUGGESTION_LONG_PRESS_DIALOG_DESCRIPTION" desc="The description text shown in the dialog after the user long presses a suggestion in the keyboard accessory." formatter_data="android_java" translateable="false">
+      From Gemini and connected apps. Manage enhanced autofill in settings.
     </message>
     <message name="IDS_AUTOFILL_AI_SUGGESTION_LONG_PRESS_DIALOG_POSITIVE_BUTTON" desc="The positive button shown in the dialog after the user long presses a suggestion in the keyboard accessory." formatter_data="android_java">
       Settings
     </message>
     <message name="IDS_AUTOFILL_AI_SUGGESTION_LONG_PRESS_DIALOG_NEGATIVE_BUTTON" desc="The negative button shown in the dialog after the user long presses a suggestion in the keyboard accessory." formatter_data="android_java">
       Back
+    </message>
+
+    <!-- Autofill AI Suppression Dialog Strings (Android) -->
+    <!-- LINT.IfChange(SuppressionDialogTags) -->
+    <message name="IDS_AUTOFILL_AI_SUPPRESSION_DIALOG_BODY" desc="Description for the modal confirmation dialog on Android." translateable="false">
+      From Gemini and connected apps · <ph name="SRC_LINK">&lt;src_link&gt;</ph>View sources<ph name="END_SRC_LINK">&lt;/src_link&gt;</ph>
+You can remove this suggestion from Chrome. Your original source won't be deleted. <ph name="MANAGE_LINK">&lt;manage_link&gt;</ph>Manage enhanced autofill<ph name="END_MANAGE_LINK">&lt;/manage_link&gt;</ph>
+    </message>
+    <!-- LINT.ThenChange(/chrome/android/features/keyboard_accessory/internal/java/src/org/chromium/chrome/browser/keyboard_accessory/ManualFillingMediator.java:SuppressionDialogTags) -->
+    <message name="IDS_AUTOFILL_AI_SUPPRESSION_DIALOG_PRIMARY_BUTTON" desc="Label for the primary acknowledgment button in the Autofill AI suppression dialog on Android.">
+      Got it
+    </message>
+    <message name="IDS_AUTOFILL_AI_SUPPRESSION_DIALOG_SECONDARY_BUTTON" desc="Label for the secondary suppression action button in the Autofill AI suppression dialog on Android.">
+      Remove from Chrome
+    </message>
+    <message name="IDS_AUTOFILL_AI_ATTRIBUTION_BOTTOM_SHEET_TITLE" desc="Title for the Autofill AI source attribution bottom sheet on Android." formatter_data="android_java">
+      Sources
+    </message>
+    <message name="IDS_AUTOFILL_AI_ATTRIBUTION_SHEET_ACCESSIBILITY_TITLE" desc="Accessibility title announced by TalkBack when the Autofill AI source attribution bottom sheet opens at full height." formatter_data="android_java" is_accessibility_with_no_ui="true">
+      Sources for suggestion
+    </message>
+    <message name="IDS_AUTOFILL_AI_ATTRIBUTION_SHEET_CLOSED" desc="Accessibility announcement when the Autofill AI source attribution bottom sheet closes." formatter_data="android_java" is_accessibility_with_no_ui="true">
+      Sources sheet closed
+    </message>
+    <message name="IDS_AUTOFILL_AI_ATTRIBUTION_OPEN_SOURCE_DESCRIPTION" desc="Content description for TalkBack on an Autofill AI source card row. $1 is the app name (e.g. Gmail) and $2 is the source record title (e.g. Flight to San Francisco)." formatter_data="android_java" is_accessibility_with_no_ui="true">
+      Open <ph name="APP_NAME">%1$s<ex>Gmail</ex></ph> source: <ph name="TITLE">%2$s<ex>Flight to San Francisco</ex></ph>
+    </message>
+  </if>
+
+  <!-- Autofill AI Suppression Snackbar Strings (Android) -->
+  <if expr="is_android">
+    <message name="IDS_AUTOFILL_AI_SUPPRESSION_UNDO_SNACKBAR_MESSAGE" desc="Informational message shown in the snackbar after an Autofill AI suggestion has been removed from Chrome on Android.">
+      Suggestion removed from Chrome
+    </message>
+    <message name="IDS_AUTOFILL_AI_SUPPRESSION_UNDO_SNACKBAR_ACTION" meaning="Verb: action button to undo removal of an Autofill AI suggestion" desc="Action button label shown in the snackbar for ~10 seconds allowing the user to undo removal of an Autofill AI suggestion on Android. Keep label concise.">
+      Undo
     </message>
   </if>
 
@@ -1848,28 +2007,21 @@
     </message>
   </if>
 
-  <!-- FFR Dialog -->
-  <!-- TODO: crbug.com/440488776 - Remove FFR strings once default availability is launched. -->
-  <message name="IDS_AUTOFILL_AI_FFR_WHEN_ON_TITLE" desc="A sub title that highlights the benefits of using ‘enhanced autofill’. ‘More fields’ is referring to values in online forms. The user can fill more fields faster because ‘enhanced autofill’ supports more data types than standard autofill, including passports, driver’s licenses, and vehicles.">
-    Fill more fields faster
-  </message>
-  <message name="IDS_AUTOFILL_AI_FFR_WHEN_ON_DESCRIPTION" desc="Body text beneath the “Fill more fields faster” sub title. This conveys the value of using ‘enhanced autofill’.">
-    Enhanced autofill understands forms better and can autofill them faster for you
-  </message>
-  <message name="IDS_AUTOFILL_AI_FFR_CONSIDER_DESCRIPTION" desc="Body text beneath the “Things to consider” sub title. This describes to users things they might want to weigh before using this feature. Ideally, we lead with ‘To offer suggestions’, because it redefines the value of ‘enhanced autofill’ and offers a rationale for the data use that immediately follows. The data used includes 1) the URL of a page visited and 2) the content of that page. Both are shared from Chrome to a Google service that generates autofill suggestions. Inludes a placeholder for a learn more link, $1 = IDS_AUTOFILL_AI_FFR_CONSIDER_LEARN_MORE">
-    To offer suggestions and improve this feature, the page’s URL and content are shared with Google. Change your mind anytime and <ph name="LEARN_MORE">$1<ex>learn more about enhanced autofill in settings</ex></ph>.
-  </message>
-  <message name="IDS_AUTOFILL_AI_FFR_CONSIDER_LEARN_MORE" desc="Link for the enhanced autofill settings page to learn more about this feature.">
-    learn more about enhanced autofill in settings
-  </message>
   <message name="IDS_SETTINGS_AUTOFILL_AI_AUTHENTICATION_TOGGLE_TITLE" desc="The title of the toggle shown in the settings page that allows managing the authentication requirement before seeings smarter form understanding settings sensitive fields, such as passport number and national id card number." formatter_data="android_java">
     Verify it’s you to autofill sensitive info
   </message>
-  <message name="IDS_AT_MEMORY_PROMO_TITLE" desc="Title of the at-memory promo bubble.">
-    Type @@ in any form to find and fill info without switching tabs
-  </message>
-  <message name="IDS_AT_MEMORY_PROMO_DESCRIPTION" desc="Description of the at-memory promo bubble.">
-    Enhanced autofill can now find and fill info — like flight numbers and appointment times — from apps like Gmail and Photos
+  <if expr="is_macosx">
+    <message name="IDS_AT_MEMORY_PROMO_TITLE" desc="Title of the AtMemory promo bubble on macOS.">
+      Autofill works in more places — press ⌘ twice to find and fill info
+    </message>
+  </if>
+  <if expr="not is_macosx">
+    <message name="IDS_AT_MEMORY_PROMO_TITLE" desc="Title of the AtMemory promo bubble.">
+      Autofill works in more places — press Ctrl twice to find and fill info
+    </message>
+  </if>
+  <message name="IDS_AT_MEMORY_PROMO_DESCRIPTION" desc="Body text of the AtMemory promo bubble detailing the new autofill capabilities and data sources.">
+    Enhanced autofill can now find and fill info — like order numbers and flight confirmation codes — from apps like Gmail and Photos
   </message>
   <message name="IDS_AT_MEMORY_PROMO_LEARN_MORE_BUTTON" desc="Label of the 'Learn more' button in the at-memory promo bubble.">
     Learn more
@@ -1960,11 +2112,11 @@
     <message name="IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_TITLE" desc="Headline of an informational notice introducing a new enhanced autofill feature. 'Gmail' is a proper branding name and should remain unlocalized and match standard guidelines across languages.">
       Now you can find and fill info from Gmail and more.
     </message>
-    <message name="IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_SUBTITLE" desc="Body text of an informational notice introducing a new enhanced autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should remain unlocalized and match standard guidelines across languages.">
-      Powered by Personal Intelligence with Gemini.
+    <message name="IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_SUBTITLE" desc="Body text of an informational notice introducing a new enhanced autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should remain unlocalized and match standard guidelines across languages." translateable="false">
+      Powered by Gemini with Personal Intelligence.
     </message>
-    <message name="IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_SUBTITLE_WITH_LOGGING" desc="Body text of an informational notice introducing a new enhanced autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should remain unlocalized and match standard guidelines across languages.">
-      Powered by Personal Intelligence with Gemini. Your requests, page titles, and URLs may be reviewed to improve enhanced autofill.
+    <message name="IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_SUBTITLE_WITH_LOGGING" desc="Body text of an informational notice introducing a new enhanced autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should remain unlocalized and match standard guidelines across languages." translateable="false">
+      Powered by Gemini with Personal Intelligence. Your requests, page titles, and URLs may be reviewed to improve enhanced autofill.
     </message>
     <message name="IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_LINK_TEXT" desc="Link that navigates the user to the Chrome settings page to adjust their preferences.">
       Manage settings
@@ -1975,15 +2127,15 @@
     <message name="IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_OK_BUTTON_A11Y_LABEL" translateable="false" is_accessibility_with_no_ui="true" desc="Accessibility label for a standard acknowledgment button label to dismiss the informational notice. Clicking the button will close only the notice row, but not the whole popup.">
       OK, close notice
     </message>
+    <message name="IDS_AUTOFILL_POPUP_NOTICE_A11Y_INSTRUCTIONS" translateable="false" is_accessibility_with_no_ui="true" desc="Accessibility instructions for navigating between the notice link and the acknowledgment button in the Autofill popup using left or right arrow keys.">
+      Use left or right arrow keys to navigate the notice.
+    </message>
     <message name="IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_LINK_TEXT" desc="Link text for the private inference notice in Autofill AI popup.">
       Manage settings
     </message>
   </if>
 
   <!-- Personal Context Notice in Autofill Bottomsheet -->
-  <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_NOTICE_SHEET_CONTENT_DESCRIPTION" desc="Accessibility string read when the autofill personal context notice sheet is opened." formatter_data="android_java">
-    Autofill from Gmail and more notice opened
-  </message>
   <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_NOTICE_SHEET_FULL_HEIGHT" desc="Accessibility string read upon opening the autofill personal context notice sheet." formatter_data="android_java">
     Autofill from Gmail and more notice opened at full height
   </message>
@@ -1993,8 +2145,8 @@
   <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_NOTICE_TITLE" desc="Headline of an informational notice introducing a new autofill feature. 'Gmail' is a Google product name and must remain unlocalized." formatter_data="android_java">
     Now you can find and fill info from Gmail and more
   </message>
-  <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_NOTICE_DESCRIPTION" desc="Body text of an informational notice introducing a new autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should match standard branding guidelines across languages." formatter_data="android_java">
-    Powered by Personal Intelligence with Gemini. Manage your choices in settings.
+  <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_NOTICE_DESCRIPTION" desc="Body text of an informational notice introducing a new autofill feature. 'Personal Intelligence' and 'Gemini' are proper branding names and should match standard branding guidelines across languages." formatter_data="android_java" translateable="false">
+    Powered by Gemini with Personal Intelligence. Manage your choices in settings.
   </message>
   <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_NOTICE_OK_BUTTON" desc="Acknowledgment button label to dismiss the informational notice." formatter_data="android_java">
     OK
@@ -2002,4 +2154,67 @@
   <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_NOTICE_SETTINGS_LINK" desc="Standard navigation button label to open the Chrome settings menu." formatter_data="android_java">
     Settings
   </message>
+
+  <!-- Desktop Autofill Settings Personal Context preferences strings. -->
+  <if expr="not is_android and not is_ios">
+    <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_SETTINGS_TITLE" desc="Section header or page title in Chrome settings for the advanced, AI-powered form-filling features. 'Autofill' refers to the browser's ability to automatically populate form fields.">
+      Enhanced autofill
+    </message>
+    <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_SETTINGS_SUMMARY" desc="A subheader for a settings section for AI powered autofill. 'Personal Intelligence' and 'Gemini' are brand names and should match standard branding guidelines across languages." >
+      Powered by Personal Intelligence
+    </message>
+    <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_SETTINGS_SUBPAGE_SUMMARY" desc="Description appearing under the 'Enhanced autofill ' section in settings. It directs users to manage how the underlying AI model retrieves and fills data. 'Gemini' is a proper Google product name and must remain unlocalized." >
+      Manage finding and filling info with Gemini
+    </message>
+    <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_SETTINGS_TOGGLE_TITLE" desc="Toggle label in Chrome settings for enabling AI-driven autofill suggestions. 'Gemini' is a proper Google product name and must remain unlocalized.">
+      Find and fill with Gemini
+    </message>
+    <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_SETTINGS_TOGGLE_SUMMARY" desc="Description text under the 'Find and fill with Gemini' setting explaining the functionality and data sources. 'Gmail', 'Photos', and 'Personal Intelligence' are proper Google product and feature names that must adhere to standard branding guidelines.">
+      Autofill info from apps such as Gmail and Photos. Powered by Personal Intelligence.
+    </message>
+    <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_SETTINGS_MANAGE_CONNECTED_APPS_TITLE" desc="Linkout text in Chrome settings. It navigates the user to a Gemini page where they can manage which third-party or Google ecosystem applications are linked to the enhanced autofill feature.">
+      Manage Connected Apps
+    </message>
+    <message name="IDS_AUTOFILL_PERSONAL_CONTEXT_SETTINGS_MANAGE_CONNECTED_APPS_SUMMARY" desc="Subtext or description beneath the 'Manage Connected Apps' entry point, explaining its purpose. 'Gemini' is a proper product name and must remain unlocalized.">
+      Choose which apps Gemini connects to
+    </message>
+  </if>
+
+  <!-- Private Inference Notice in Autofill Bottomsheet -->
+  <if expr="is_android">
+    <message name="IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_SHEET_TITLE" desc="Headline of an informational notice explaining that page content may be processed in a private space in the cloud to improve autofill." formatter_data="android_java">
+      Smarter autofill, kept private
+    </message>
+    <message name="IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_SHEET_DESCRIPTION" desc="Body text of an informational notice explaining that page content may be processed in a private space in the cloud to improve autofill. 'Chrome' is a Google product name and must remain unlocalized." formatter_data="android_java">
+      Chrome can now detect and fill more forms with smarter form understanding. To do this, page content and URLs can be processed in a private space in the cloud. Manage in settings.
+    </message>
+    <message name="IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_SHEET_OK_BUTTON" desc="Acknowledgment button label to dismiss the informational notice." formatter_data="android_java">
+      Got it
+    </message>
+    <message name="IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_SHEET_SETTINGS_LINK" desc="Standard navigation button label to open the Chrome settings menu." formatter_data="android_java">
+      Settings
+    </message>
+    <message name="IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_SHEET_FULL_HEIGHT" is_accessibility_with_no_ui="true" desc="Accessibility string read upon opening the autofill private inference notice sheet." formatter_data="android_java">
+      Smarter autofill, kept private notice opened at full height
+    </message>
+    <message name="IDS_AUTOFILL_AI_PRIVATE_INFERENCE_NOTICE_SHEET_CLOSED" is_accessibility_with_no_ui="true" desc="Accessibility string read upon closing the autofill private inference notice sheet." formatter_data="android_java">
+      Smarter autofill, kept private notice closed
+    </message>
+  </if>
+
+  <!-- TODO(crbug.com/561395976): Finalize tapjacking strings. -->
+  <if expr="is_android">
+    <message name="IDS_AUTOFILL_TAPJACKING_CREDIT_CARD_CONFIRMATION_DIALOG_TITLE" desc="The title shown in the confirmation dialog which asks the user to authorize filling a credit card. The dialog notifies the user that some UI surface is currently overlaying Chrome." translateable="false">
+      Confirm action
+    </message>
+    <message name="IDS_AUTOFILL_TAPJACKING_CREDIT_CARD_CONFIRMATION_DIALOG_DESCRIPTION" desc="The description shown in the confirmation dialog which asks the user to authorize filling a credit card. The dialog notifies the user that some UI surface is currently overlaying Chrome." translateable="false">
+      Your credit card data is about to be filled, please confirm the action. This additional confirmation is required because the Chrome window is currently overlaid by another application.
+    </message>
+    <message name="IDS_AUTOFILL_TAPJACKING_CONFIRMATION_DIALOG_POSITIVE_BUTTON" desc="The positive button text shown in the confirmation dialog which asks the user to authorize filling some sensitive data. The dialog notifies the user that some UI surface is currently overlaying Chrome." translateable="false">
+      Confirm
+    </message>
+    <message name="IDS_AUTOFILL_TAPJACKING_CONFIRMATION_DIALOG_NEGATIVE_BUTTON" desc="The negative button text shown in the confirmation dialog which asks the user to authorize filling some sensitive data. The dialog notifies the user that some UI surface is currently overlaying Chrome." translateable="false">
+      Cancel
+    </message>
+  </if>
 </grit-part>

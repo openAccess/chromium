@@ -93,14 +93,6 @@ public class AccountCapabilities {
     }
 
     /**
-     * @return canRunChromePrivacySandboxTrials capability value.
-     */
-    public @Tribool int canRunChromePrivacySandboxTrials() {
-        return getCapabilityByName(
-                AccountCapabilitiesConstants.CAN_RUN_CHROME_PRIVACY_SANDBOX_TRIALS_CAPABILITY_NAME);
-    }
-
-    /**
      * @return canShowHistorySyncOptInsWithoutMinorModeRestrictions capability value.
      */
     public @Tribool int canShowHistorySyncOptInsWithoutMinorModeRestrictions() {
@@ -183,15 +175,6 @@ public class AccountCapabilities {
     }
 
     /**
-     * @return isSubjectToChromePrivacySandboxRestrictedMeasurementNotice capability value.
-     */
-    public @Tribool int isSubjectToChromePrivacySandboxRestrictedMeasurementNotice() {
-        return getCapabilityByName(
-                AccountCapabilitiesConstants
-                        .IS_SUBJECT_TO_CHROME_PRIVACY_SANDBOX_RESTRICTED_MEASUREMENT_NOTICE);
-    }
-
-    /**
      * @return isSubjectToEnterpriseFeatures capability value.
      */
     public @Tribool int isSubjectToEnterpriseFeatures() {
@@ -208,12 +191,54 @@ public class AccountCapabilities {
     }
 
     /**
+     * @return isSubjectToParentalControlsViaBundle capability value.
+     */
+    public @Tribool int isSubjectToParentalControlsViaBundle() {
+        return getCapabilityByName(
+                AccountCapabilitiesConstants
+                        .IS_SUBJECT_TO_PARENTAL_CONTROLS_VIA_BUNDLE_CAPABILITY_NAME);
+    }
+
+    /**
      * @return isSubjectToUniversalOptOut capability value.
      */
     public @Tribool int isSubjectToUniversalOptOut() {
         return getCapabilityByName(
                 AccountCapabilitiesConstants
                         .IS_SUBJECT_TO_UNIVERSAL_OPT_OUT_CAPABILITY_NAME);
+    }
+
+    /**
+     * @return mustShowEquallyWeightedButtonsForPrivatePassesInChromeAutofill capability value.
+     */
+    public @Tribool int mustShowEquallyWeightedButtonsForPrivatePassesInChromeAutofill() {
+        return getCapabilityByName(
+                AccountCapabilitiesConstants
+                        .MUST_SHOW_EQUALLY_WEIGHTED_BUTTONS_FOR_PRIVATE_PASSES_IN_CHROME_AUTOFILL_CAPABILITY_NAME);
+    }
+
+    /**
+     * @return shouldBeAddressedInFeminineGrammaticalGender capability value.
+     */
+    public @Tribool int shouldBeAddressedInFeminineGrammaticalGender() {
+        return getCapabilityByName(
+                AccountCapabilitiesConstants.SHOULD_BE_ADDRESSED_IN_FEMININE_GRAMMATICAL_GENDER);
+    }
+
+    /**
+     * @return shouldBeAddressedInMasculineGrammaticalGender capability value.
+     */
+    public @Tribool int shouldBeAddressedInMasculineGrammaticalGender() {
+        return getCapabilityByName(
+                AccountCapabilitiesConstants.SHOULD_BE_ADDRESSED_IN_MASCULINE_GRAMMATICAL_GENDER);
+    }
+
+    /**
+     * @return shouldBeAddressedInNeuterGrammaticalGender capability value.
+     */
+    public @Tribool int shouldBeAddressedInNeuterGrammaticalGender() {
+        return getCapabilityByName(
+                AccountCapabilitiesConstants.SHOULD_BE_ADDRESSED_IN_NEUTER_GRAMMATICAL_GENDER);
     }
 
     /**
@@ -225,31 +250,6 @@ public class AccountCapabilities {
     }
 
     /** keep-sorted end */
-
-    /**
-     * Merges capabilities from another {@link AccountCapabilities} object into this one.
-     *
-     * <p>New capabilities that were not already set are added and existing ones are updated with
-     * the new values.
-     *
-     * @param other The {@link AccountCapabilities} object to merge values from.
-     * @return true if this object's capabilities were changed as a result of the update and false
-     *     otherwise.
-     */
-    public boolean updateWith(AccountCapabilities other) {
-        boolean modified = false;
-        for (Map.Entry<String, Boolean> otherCapability : other.mAccountCapabilities.entrySet()) {
-            String name = otherCapability.getKey();
-            Boolean value = otherCapability.getValue();
-            if (mAccountCapabilities.containsKey(name)
-                    && mAccountCapabilities.get(name).equals(value)) {
-                continue;
-            }
-            mAccountCapabilities.put(name, value);
-            modified = true;
-        }
-        return modified;
-    }
 
     /**
      * @param capabilityName the name of the capability to lookup.

@@ -86,7 +86,7 @@ ci.builder(
             "debug_static_builder",
             "remoteexec",
             "arm64",
-            "webview_trichrome",
+            "webview_debug_package_name",
         ],
     ),
     targets = targets.bundle(
@@ -133,7 +133,7 @@ ci.builder(
             "minimal_symbols",
             "arm64",
             "strip_debug_info",
-            "webview_trichrome",
+            "webview_debug_package_name",
         ],
     ),
     targets = targets.bundle(
@@ -176,7 +176,7 @@ ci.builder(
             "debug_static_builder",
             "remoteexec",
             "x64",
-            "webview_trichrome",
+            "webview_debug_package_name",
             "webview_shell",
         ],
     ),
@@ -224,7 +224,7 @@ ci.builder(
             "minimal_symbols",
             "x64",
             "strip_debug_info",
-            "webview_trichrome",
+            "webview_debug_package_name",
             "webview_shell",
         ],
     ),
@@ -293,13 +293,14 @@ ci.thin_tester(
                     "--test-launcher-filter-file=../../testing/buildbot/filters/android.desktop.emulator_15.android_browsertests.filter",
                     "--emulator-debug-tags=all",
                 ],
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
                     shards = 50,
                 ),
             ),
             "chrome_public_test_apk_desktop": targets.mixin(
                 swarming = targets.swarming(
-                    shards = 3,
+                    shards = 6,
                 ),
             ),
             "chrome_public_unit_test_apk": targets.mixin(
@@ -310,6 +311,10 @@ ci.thin_tester(
                 ci_only = True,
             ),
             "android_chrome_wpt_tests": targets.mixin(
+                args = [
+                    # https://crbug.com/557344239: ChromeDriver hangs navigating from WebUI NTP on Android.
+                    "--additional-driver-flag=--disable-features=UseWebUiNtpAndroid",
+                ],
                 ci_only = True,
             ),
             "unit_tests": targets.mixin(
@@ -325,7 +330,9 @@ ci.thin_tester(
     targets_settings = targets.settings(
         os_type = targets.os_type.ANDROID,
     ),
+    builderless = True,
     cores = 8,
+    ssd = None,
     gardener_rotations = gardener_rotations.ANDROID,
     console_view_entry = consoles.console_view_entry(
         category = "tester|x64",

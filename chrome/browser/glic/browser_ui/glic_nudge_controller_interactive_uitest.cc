@@ -20,11 +20,11 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_observer.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
 #include "chrome/browser/ui/views/tabs/tab_strip_action_container.h"
 #include "chrome/test/base/interactive_test_utils.h"
@@ -41,11 +41,12 @@ class GlicNudgeControllerInteractiveUiTest : public test::InteractiveGlicTest {
   GlicNudgeControllerInteractiveUiTest() {
     feature_list_.InitWithFeatures(
         /*enabled_features=*/{},
-        /*disabled_features=*/{contextual_cueing::kContextualCueingV2});
+        /*disabled_features=*/{contextual_cueing::kContextualCueingV2,
+                               features::kGlicHorizontalTabToolbarButton});
   }
 
   void SetUpOnMainThread() override {
-    InteractiveBrowserTest::SetUpOnMainThread();
+    test::InteractiveGlicTest::SetUpOnMainThread();
     scoped_glic_bypass_.emplace();
     browser()->GetProfile()->GetPrefs()->SetBoolean(
         prefs::kGlicPinnedToTabstrip, true);
@@ -55,11 +56,11 @@ class GlicNudgeControllerInteractiveUiTest : public test::InteractiveGlicTest {
 
   void TearDownOnMainThread() override {
     scoped_glic_bypass_.reset();
-    InteractiveBrowserTest::TearDownOnMainThread();
+    test::InteractiveGlicTest::TearDownOnMainThread();
   }
 
   GlicNudgeController* nudge_controller() {
-    return browser()->GetFeatures().glic_nudge_controller();
+    return GlicNudgeController::From(browser());
   }
 
   TabStripActionContainer* tab_strip_action_container() {
@@ -113,7 +114,8 @@ class GlicNudgeControllerWarmingInteractiveUiTest
         /*enabled_features=*/{features::kGlicWarmOnNudge,
                               features::kGlicAnchorEntryPointForOnboardedUsers},
         /*disabled_features=*/{contextual_cueing::kContextualCueingV2,
-                               features::kGlicWarming});
+                               features::kGlicWarming,
+                               features::kGlicHorizontalTabToolbarButton});
   }
 
   void SetUp() override {
@@ -167,9 +169,9 @@ class GlicNudgeControllerWarmingDisabledInteractiveUiTest
   GlicNudgeControllerWarmingDisabledInteractiveUiTest() {
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/{features::kGlicAnchorEntryPointForOnboardedUsers},
-        /*disabled_features=*/{contextual_cueing::kContextualCueingV2,
-                               features::kGlicWarmOnNudge,
-                               features::kGlicWarming});
+        /*disabled_features=*/{
+            contextual_cueing::kContextualCueingV2, features::kGlicWarmOnNudge,
+            features::kGlicWarming, features::kGlicHorizontalTabToolbarButton});
   }
 
   void SetUp() override {

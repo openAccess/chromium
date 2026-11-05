@@ -18,6 +18,7 @@
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
+#include "chrome/common/url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/contextual_tasks/public/features.h"
 #include "components/contextual_tasks/public/mock_contextual_tasks_service.h"
@@ -26,6 +27,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_web_ui.h"
+#include "google_apis/gaia/gaia_urls.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -93,7 +95,6 @@ class ContextualTasksPageHandlerBrowserTest : public ::InProcessBrowserTest {
         mojo::PendingReceiver<mojom::PageHandler>(), contextual_tasks_ui_.get(),
         mock_contextual_tasks_ui_service_, mock_contextual_tasks_service_,
         nullptr);
-    page_handler_->set_skip_feedback_ui_for_testing(true);
   }
 
   void TearDownOnMainThread() override {
@@ -120,22 +121,42 @@ class ContextualTasksPageHandlerBrowserTest : public ::InProcessBrowserTest {
 };
 
 IN_PROC_BROWSER_TEST_F(ContextualTasksPageHandlerBrowserTest, OpenFeedbackUi) {
-  page_handler_->set_skip_feedback_ui_for_testing(false);
-
   EXPECT_CALL(*mock_contextual_tasks_ui_service_, OpenFeedbackUi(browser(), _))
       .Times(1);
 
-  page_handler_->OpenFeedbackUi();
+  contextual_tasks_ui_->OpenFeedbackUi();
 }
 
 IN_PROC_BROWSER_TEST_F(ContextualTasksPageHandlerBrowserTest, OpenMyActivityUi) {
   auto* tab_list = TabListInterface::From(browser());
   int start_count = tab_list->GetTabCount();
-  page_handler_->OpenMyActivityUi();
+  contextual_tasks_ui_->OpenMyActivityUi();
   EXPECT_EQ(tab_list->GetTabCount(), start_count + 1);
   content::WebContents* active_contents =
       browser()->GetActiveTabInterface()->GetContents();
   EXPECT_EQ(active_contents->GetURL().spec(), "https://myactivity.google.com/myactivity");
+}
+
+IN_PROC_BROWSER_TEST_F(ContextualTasksPageHandlerBrowserTest,
+                       OpenManageAccountUi) {
+  auto* tab_list = TabListInterface::From(browser());
+  int start_count = tab_list->GetTabCount();
+  contextual_tasks_ui_->OpenManageAccountUi();
+  EXPECT_EQ(tab_list->GetTabCount(), start_count + 1);
+  content::WebContents* active_contents =
+      browser()->GetActiveTabInterface()->GetContents();
+  EXPECT_EQ(active_contents->GetURL(), GURL(chrome::kGoogleAccountURL));
+}
+
+IN_PROC_BROWSER_TEST_F(ContextualTasksPageHandlerBrowserTest, OpenLogOutFlow) {
+  auto* tab_list = TabListInterface::From(browser());
+  int start_count = tab_list->GetTabCount();
+  contextual_tasks_ui_->OpenLogOutFlow();
+  EXPECT_EQ(tab_list->GetTabCount(), start_count + 1);
+  content::WebContents* active_contents =
+      browser()->GetActiveTabInterface()->GetContents();
+  EXPECT_EQ(active_contents->GetVisibleURL(),
+            GaiaUrls::GetInstance()->service_logout_url());
 }
 
 IN_PROC_BROWSER_TEST_F(ContextualTasksPageHandlerBrowserTest, OpenOnboardingHelpUi) {
@@ -151,11 +172,22 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksPageHandlerBrowserTest, OpenOnboardingHelp
 IN_PROC_BROWSER_TEST_F(ContextualTasksPageHandlerBrowserTest, OpenOverflowMenuHelpUi) {
   auto* tab_list = TabListInterface::From(browser());
   int start_count = tab_list->GetTabCount();
-  page_handler_->OpenOverflowMenuHelpUi();
+  contextual_tasks_ui_->OpenOverflowMenuHelpUi();
   EXPECT_EQ(tab_list->GetTabCount(), start_count + 1);
   content::WebContents* active_contents =
       browser()->GetActiveTabInterface()->GetContents();
   EXPECT_EQ(active_contents->GetURL().spec(), "https://support.google.com/chrome/answer/17025061");
+}
+
+IN_PROC_BROWSER_TEST_F(ContextualTasksPageHandlerBrowserTest, OpenAskGHelpUi) {
+  auto* tab_list = TabListInterface::From(browser());
+  int start_count = tab_list->GetTabCount();
+  page_handler_->OpenAskGHelpUi();
+  EXPECT_EQ(tab_list->GetTabCount(), start_count + 1);
+  content::WebContents* active_contents =
+      browser()->GetActiveTabInterface()->GetContents();
+  EXPECT_EQ(active_contents->GetURL().spec(),
+            contextual_tasks::GetContextualTasksTabHelpUrl());
 }
 
 }  // namespace contextual_tasks

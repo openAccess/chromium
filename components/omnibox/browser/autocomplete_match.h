@@ -37,7 +37,6 @@
 #include "third_party/omnibox_proto/chrome_searchbox_stats.pb.h"
 #include "third_party/omnibox_proto/groups.pb.h"
 #include "third_party/omnibox_proto/navigational_intent.pb.h"
-#include "third_party/omnibox_proto/rich_answer_template.pb.h"
 #include "third_party/omnibox_proto/suggest_template_info.pb.h"
 #include "third_party/omnibox_proto/types.pb.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
@@ -133,6 +132,9 @@ struct SessionData {
   // Whether the "Ask Google Lens about this page" action was shown at least
   // once in the session.
   bool lens_action_shown_in_session = false;
+
+  // Whether at least one agentic update suggestion was shown in the session.
+  bool agentic_update_suggestions_shown_in_session = false;
 };
 
 enum class IphType {
@@ -143,15 +145,8 @@ enum class IphType {
   kEnterpriseSearchAggregator,
   // Featured enterprise site search promo; shown in zero state.
   kFeaturedEnterpriseSiteSearch,
-  // Embeddings' setting promo when embeddings are disabled; shown in '@history'
-  // scope.
-  kHistoryEmbeddingsSettingsPromo,
-  // Disclaimer when embeddings are enabled; shown in '@history' scope.
-  kHistoryEmbeddingsDisclaimer,
-  // '@history' promo when embeddings are disabled; shown in zero state.
+  // '@history' promo; shown in zero state.
   kHistoryScopePromo,
-  // '@history' promo when embeddings are enabled; shown in zero state.
-  kHistoryEmbeddingsScopePromo,
 };
 
 enum class FeedbackType {
@@ -263,9 +258,9 @@ struct AutocompleteMatch {
   typedef std::map<std::string, std::string> AdditionalInfo;
 
   // The type of this match.
-  typedef AutocompleteMatchType::Type Type;
+  using Type = omnibox::AutocompleteMatchType;
 
-  // Document subtype, for AutocompleteMatchType::DOCUMENT.
+  // Document subtype, for omnibox::AutocompleteMatchType::kDocumentSuggestion.
   // Update kDocumentTypeStrings when updating DocumentType.
   // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.omnibox
   // GENERATED_JAVA_CLASS_NAME_OVERRIDE: DocumentType
@@ -367,8 +362,6 @@ struct AutocompleteMatch {
   void UpdateClipboardContent(JNIEnv* env);
   // Update the Java object with new destination URL.
   void UpdateJavaNavigationDetails();
-  // Update the Java object with new Answer-in-Suggest.
-  void UpdateJavaAnswer();
   // Update the Java object description.
   void UpdateJavaDescription();
 #endif
@@ -582,6 +575,10 @@ struct AutocompleteMatch {
   // Checks if this match is an  Aim threads history suggestion.
   bool IsThreadsHistorySuggestion() const;
 
+  // Checks if this match is an AI Mode thread suggestion that carries an
+  // agentic update from the server.
+  bool IsAgenticUpdateSuggestion() const;
+
   // Checks if this match is a specialized toolbelt match with actions on
   // a button row.
   bool IsToolbelt() const;
@@ -627,10 +624,7 @@ struct AutocompleteMatch {
   // `keyword_state` will be set to `KeywordState::kNone`.
   // `keyword_placeholder_out` will be set to any placeholder text the keyword
   // wants to display. Set for both hint and non-hint keyword modes.
-  // `is_history_embeddings_enabled` will affect the placeholder text for the
-  // @history keyword.
   void GetKeywordUiState(const TemplateURLService* template_url_service,
-                         bool is_history_embeddings_enabled,
                          KeywordState* keyword_state,
                          std::u16string* keyword_out,
                          std::u16string* keyword_placeholder_out) const;
@@ -645,9 +639,7 @@ struct AutocompleteMatch {
   // TemplateURL, returned for both hint and non-hint keyword modes.
   // The `template_url` may be nullptr and this method often defaults to
   // returning the empty string.
-  static std::u16string GetKeywordPlaceholder(
-      const TemplateURL* template_url,
-      bool is_history_embeddings_enabled);
+  static std::u16string GetKeywordPlaceholder(const TemplateURL* template_url);
 
   // Returns the `TemplateURL` associated with this match. This may be nullptr
   // if the match has no keyword OR if the keyword no longer corresponds to a
@@ -676,8 +668,8 @@ struct AutocompleteMatch {
 
   // Returns the value recorded for |property| in the |additional_info|
   // dictionary. Returns the empty string if no such value exists. This is for
-  // debugging in chrome://omnibox only. It should only be called by
-  // `OmniboxPageHandler` and tests. For match info that's used for
+  // debugging in chrome://omnibox-internals only. It should only be called by
+  // `OmniboxInternalsPageHandler` and tests. For match info that's used for
   // non-debugging, use class fields. Unfortunately, There are existing
   // non-debug callsites; those should be cleaned up, not added to.
   std::string GetAdditionalInfoForDebugging(const std::string& property) const;
@@ -927,15 +919,6 @@ struct AutocompleteMatch {
   // the match.
   GURL icon_url;
 
-  // Optional entity id for entity suggestions. Empty string means no entity ID.
-  // This is not meant for display, but internal use only. The actual UI display
-  // is controlled by the `type` and `image_url`.
-  std::string entity_id;
-
-  // Optional website URI for entity suggestions. Empty string means no website
-  // URI.
-  std::string website_uri;
-
   // Used for document suggestions to show the mime-corresponding icons.
   DocumentType document_type = DocumentType::NONE;
 
@@ -981,8 +964,6 @@ struct AutocompleteMatch {
   // before displaying.
   bool swap_contents_and_description = false;
 
-  std::optional<omnibox::RichAnswerTemplate> answer_template;
-
   std::optional<omnibox::SuggestTemplateInfo> suggest_template;
 
 
@@ -992,7 +973,7 @@ struct AutocompleteMatch {
   ui::PageTransition transition = ui::PAGE_TRANSITION_TYPED;
 
   // Type of this match.
-  Type type = AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED;
+  Type type = omnibox::AutocompleteMatchType::kSearchWhatYouTyped;
 
   // The type of this suggestion as reported from and back to the suggest server
   // via the server response and the ChromeSearchboxStats (reported in the match
@@ -1088,7 +1069,8 @@ struct AutocompleteMatch {
   std::unique_ptr<TemplateURLRef::PostContent> post_content;
 
   // Information dictionary into which each provider can optionally record a
-  // property and associated value and which is presented in chrome://omnibox.
+  // property and associated value and which is presented in
+  // chrome://omnibox-internals.
   AdditionalInfo additional_info;
 
   // A vector of matches culled during de-duplication process, sorted from

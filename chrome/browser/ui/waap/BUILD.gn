@@ -59,16 +59,24 @@ source_set("manager") {
 
 source_set("window_metrics_manager") {
   sources = [
+    "initial_webui_metrics_dispatcher.cc",
+    "initial_webui_metrics_dispatcher.h",
     "initial_webui_window_metrics_manager.cc",
     "initial_webui_window_metrics_manager.h",
   ]
-  deps = [
-    ":waap",
+  public_deps = [
     ":waap_utils",
     "//base",
+    "//content/public/browser",
+    "//ui/base/unowned_user_data",
+  ]
+  deps = [
+    ":waap",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/webui:webui_util",
+    "//third_party/blink/public/common",
   ]
 }
 
@@ -79,16 +87,77 @@ source_set("waap_utils") {
   ]
   deps = [
     "//base",
+    "//chrome/app:generated_resources",
     "//chrome/browser/page_load_metrics",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/task_manager",
     "//chrome/browser/themes",
+    "//chrome/browser/ui/prefs",
+    "//chrome/browser/ui/webui/top_chrome",
     "//chrome/common",
     "//chrome/common:chrome_features",
+    "//components/performance_manager",
     "//components/ukm/content",
     "//content/public/browser",
     "//content/public/common",
     "//ui/color",
     "//ui/native_theme",
+    "//ui/views/controls/webview",
+    "//url",
+  ]
+}
+
+source_set("browser_tests") {
+  testonly = true
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+  sources = [ "initial_webui_browsertest.cc" ]
+  deps = [
+    ":manager",
+    ":waap",
+    ":waap_utils",
+    ":window_metrics_manager",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/browser/extensions",
+    "//chrome/browser/page_load_metrics",
+    "//chrome/browser/prefs",
+    "//chrome/browser/prefs:util",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles:profile_test_util",
+    "//chrome/browser/sessions",
+    "//chrome/browser/ui:browser_command_controller",
+    "//chrome/browser/ui:browser_commands",
+    "//chrome/browser/ui:browser_window_header",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/browser_window:create_browser_window",
+    "//chrome/browser/ui/startup",
+    "//chrome/browser/ui/tabs/organizer",
+    "//chrome/browser/ui/views/frame:toolbar_button_provider",
+    "//chrome/browser/ui/webui:webui_util",
+    "//chrome/browser/ui/webui/webui_toolbar",
+    "//chrome/browser/ui/webui/webui_toolbar:test_support",
+    "//chrome/browser/ui/webui/webui_toolbar/adapters:impl",
+    "//chrome/common:chrome_features",
+    "//chrome/common:constants",
+    "//chrome/test:test_support",
+    "//chrome/test/base:profile_lifecycle_test_utils",
+    "//components/keep_alive_registry",
+    "//components/metrics:content",
+    "//components/metrics/mapping",
+    "//components/metrics/mapping:metrics_name_mapping_proto",
+    "//components/prefs",
+    "//components/startup_metric_utils",
+    "//components/ukm:test_support",
+    "//content/public/browser",
+    "//content/public/common",
+    "//content/test:test_support",
+    "//extensions/browser:test_support",
+    "//extensions/common",
+    "//services/metrics/public/cpp:metrics_cpp",
+    "//testing/gmock",
+    "//testing/gtest",
+    "//third_party/blink/public/common",
+    "//ui/base",
     "//url",
   ]
 }
@@ -97,6 +166,7 @@ source_set("unit_tests") {
   testonly = true
   sources = [
     "initial_web_ui_manager_unittest.cc",
+    "initial_webui_metrics_dispatcher_unittest.cc",
     "initial_webui_window_metrics_manager_unittest.cc",
     "waap_ui_metrics_recorder_unittest.cc",
     "waap_ui_metrics_service_unittest.cc",
@@ -108,13 +178,23 @@ source_set("unit_tests") {
     ":waap_utils",
     ":window_metrics_manager",
     "//base/test:test_support",
+    "//chrome/browser/task_manager",
     "//chrome/browser/ui:ui_features",
+    "//chrome/browser/ui/prefs",
+    "//chrome/browser/ui/webui/top_chrome",
     "//chrome/common",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//components/performance_manager",
+    "//components/performance_manager/test_support:test_support_common",
     "//components/startup_metric_utils",
+    "//content/public/browser",
+    "//content/public/common",
     "//content/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//third_party/blink/public/common",
+    "//ui/base:test_support",
     "//ui/events",
     "//ui/events:test_support",
     "//ui/views",

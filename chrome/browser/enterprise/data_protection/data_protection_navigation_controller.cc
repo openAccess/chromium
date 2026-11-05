@@ -7,17 +7,21 @@
 #include <algorithm>
 
 #include "base/feature_list.h"
-#include "chrome/browser/enterprise/connectors/connectors_service.h"
 #include "chrome/browser/enterprise/connectors/referrer_cache_utils.h"
-#include "chrome/browser/enterprise/data_protection/data_protection_features.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_navigation_observer.h"
 #include "chrome/browser/enterprise/watermark/settings.h"
+#include "chrome/browser/enterprise/watermark/watermark_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/enterprise/connectors/core/reporting_constants.h"
 #include "components/enterprise/data_protection/utils.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/tabs/public/tab_features.h"  // nogncheck
+#endif
 
 #if BUILDFLAG(ENTERPRISE_WATERMARK)
 #include "components/enterprise/watermarking/content/watermark_text_container.h"
@@ -25,6 +29,35 @@
 #endif  // BUILDFLAG(ENTERPRISE_WATERMARK)
 
 namespace enterprise_data_protection {
+
+// static
+DataProtectionNavigationController*
+DataProtectionNavigationController::FromWebContents(
+    content::WebContents* web_contents) {
+  if (!web_contents) {
+    return nullptr;
+  }
+#if !BUILDFLAG(IS_ANDROID)
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents);
+  if (!tab || !tab->GetTabFeatures()) {
+    return nullptr;
+  }
+  return tab->GetTabFeatures()->data_protection_controller();
+#else
+  return nullptr;
+#endif
+}
+
+bool IsScreenShareBlocked(content::WebContents* web_contents) {
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (auto* controller =
+          DataProtectionNavigationController::FromWebContents(web_contents)) {
+    return !controller->screenshot_allowed();
+  }
+#endif  // BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  return false;
+}
 
 DataProtectionNavigationController::DataProtectionNavigationController(
     tabs::TabInterface* tab_interface)
@@ -142,30 +175,9 @@ void DataProtectionNavigationController::DidFinishNavigation(
     return;
   }
 
-  auto* service =
-      enterprise_connectors::ConnectorsServiceFactory::GetForBrowserContext(
-          navigation_handle->GetWebContents()->GetBrowserContext());
-  if (!service) {
-    return;
-  }
-
   // Only cache referrer chain data if a policy that uses it has been enabled.
-  if (service->IsConnectorEnabled(
-          enterprise_connectors::AnalysisConnector::BULK_DATA_ENTRY) ||
-      service->IsConnectorEnabled(
-          enterprise_connectors::AnalysisConnector::FILE_ATTACHED) ||
-      service->IsConnectorEnabled(
-          enterprise_connectors::AnalysisConnector::FILE_DOWNLOADED) ||
-#if BUILDFLAG(IS_CHROMEOS)
-      service->IsConnectorEnabled(
-          enterprise_connectors::AnalysisConnector::FILE_TRANSFER) ||
-#endif
-      service->IsConnectorEnabled(
-          enterprise_connectors::AnalysisConnector::PRINT) ||
-      service->GetReportingSettings().has_value() ||
-      service->GetAppliedRealTimeUrlCheck() ==
-          enterprise_connectors::EnterpriseRealTimeUrlCheckMode::
-              REAL_TIME_CHECK_FOR_MAINFRAME_ENABLED) {
+  if (enterprise_connectors::IsReferrerChainNeededForEnterprise(
+          navigation_handle->GetWebContents()->GetBrowserContext())) {
     enterprise_connectors::SetReferrerChain(
         navigation_handle->GetURL(), *navigation_handle->GetWebContents());
   }
@@ -192,24 +204,30 @@ void DataProtectionNavigationController::
 #endif  // BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
 
 #if BUILDFLAG(ENTERPRISE_WATERMARK)
-  // Regardless of whether watermark text is empty, attach it as web contents
-  // user data so that other browser process code can draw watermarks outside
-  // of the context of a navigation (ex. when printing).
-  Profile* profile =
-      Profile::FromBrowserContext(expected_web_contents->GetBrowserContext());
-  enterprise_watermark::WatermarkBlock block =
-      enterprise_watermark::DrawWatermarkToPaintRecord(
-          settings.watermark_text,
-          enterprise_watermark::GetFillColor(profile->GetPrefs()),
-          enterprise_watermark::GetOutlineColor(profile->GetPrefs()),
-          enterprise_watermark::GetFontSize(profile->GetPrefs()));
-  enterprise_watermark::WatermarkTextContainer::CreateForWebContents(
-      expected_web_contents.get());
-  enterprise_watermark::WatermarkTextContainer::FromWebContents(
-      expected_web_contents.get())
-      ->SetWatermarkText(
-          block.record.ToSkPicture(SkRect::MakeWH(block.width, block.height)),
-          block.width, block.height);
+  // Attach the watermark as web contents user data, even when it is empty, so
+  // that other browser process code can draw watermarks outside of the context
+  // of a navigation (ex. when printing). An empty watermark clears any
+  // previously attached one.
+  auto* watermark_text_container =
+      enterprise_watermark::WatermarkTextContainer::GetOrCreateForWebContents(
+          expected_web_contents.get());
+  if (settings.watermark_text.empty() &&
+      base::FeatureList::IsEnabled(
+          enterprise_watermark::kEnableSkipEmptyWatermark)) {
+    watermark_text_container->SetWatermarkText(nullptr, 0, 0);
+  } else {
+    Profile* profile =
+        Profile::FromBrowserContext(expected_web_contents->GetBrowserContext());
+    enterprise_watermark::WatermarkBlock block =
+        enterprise_watermark::DrawWatermarkToPaintRecord(
+            settings.watermark_text,
+            enterprise_watermark::GetFillColor(profile->GetPrefs()),
+            enterprise_watermark::GetOutlineColor(profile->GetPrefs()),
+            enterprise_watermark::GetFontSize(profile->GetPrefs()));
+    watermark_text_container->SetWatermarkText(
+        block.record.ToSkPicture(SkRect::MakeWH(block.width, block.height)),
+        block.width, block.height);
+  }
 
   // For same document navigations, watermark clearing has to happen here,
   // because there is no document onload event that is invoked.

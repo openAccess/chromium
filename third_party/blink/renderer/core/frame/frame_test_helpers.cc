@@ -74,6 +74,9 @@
 #include "third_party/blink/public/web/web_settings.h"
 #include "third_party/blink/public/web/web_view_client.h"
 #include "third_party/blink/renderer/core/frame/csp/test_util.h"
+#include "third_party/blink/renderer/core/frame/frame_owner.h"
+#include "third_party/blink/renderer/core/frame/frame_swap_scope.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_frame_widget_impl.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/frame/web_remote_frame_impl.h"
@@ -345,7 +348,7 @@ WebLocalFrameImpl* CreateLocalChild(
   auto* frame = To<WebLocalFrameImpl>(
       parent.CreateLocalChild(scope, client, nullptr, LocalFrameToken()));
   client->Bind(frame, std::move(owned_client));
-  finish_creation(frame, DocumentToken(), base::UnguessableToken::Create(),
+  finish_creation(frame, DocumentToken(), InitiatorStateToken(),
                   mojo::NullRemote(),
                   std::make_unique<base::UnguessableToken>(
                       base::UnguessableToken::Create()));
@@ -366,7 +369,7 @@ WebLocalFrameImpl* CreateLocalChild(
   auto* frame = To<WebLocalFrameImpl>(
       parent.CreateLocalChild(scope, client, nullptr, LocalFrameToken()));
   client->Bind(frame, std::move(self_owned));
-  finish_creation(frame, DocumentToken(), base::UnguessableToken::Create(),
+  finish_creation(frame, DocumentToken(), InitiatorStateToken(),
                   mojo::NullRemote(),
                   std::make_unique<base::UnguessableToken>(
                       base::UnguessableToken::Create()));
@@ -401,6 +404,15 @@ WebRemoteFrameImpl* CreateRemoteChild(
           .BindNewEndpointAndPassDedicatedReceiver(),
       std::move(replicated_state), mojom::blink::FrameOwnerProperties::New());
   return frame;
+}
+
+bool SwapLocalFrame(WebFrame* old_frame, WebLocalFrame* new_local_frame) {
+  FrameSwapScope frame_swap_scope(WebFrame::ToCoreFrame(*old_frame)->Owner());
+  if (!old_frame->Swap(new_local_frame)) {
+    return false;
+  }
+  To<WebLocalFrameImpl>(new_local_frame)->GetFrame()->AttachViewToOwner();
+  return true;
 }
 
 void SwapRemoteFrame(
@@ -492,7 +504,7 @@ WebViewImpl* WebViewHelper::InitializeWithOpener(
   WebLocalFrame* frame = WebLocalFrame::CreateMainFrame(
       web_view_, web_frame_client, nullptr, mojo::NullRemote(),
       LocalFrameToken(), DocumentToken(),
-      /*initiator_state_token=*/base::UnguessableToken::Create(),
+      /*initiator_state_token=*/InitiatorStateToken(),
       // Passing a null policy_container will create an empty, default policy
       // container.
       /*policy_container=*/nullptr, opener,
@@ -622,7 +634,7 @@ WebLocalFrameImpl* WebViewHelper::CreateLocalChild(
   auto* frame = To<WebLocalFrameImpl>(parent.CreateLocalChild(
       mojom::blink::TreeScopeType::kDocument, name, FramePolicy(), client,
       nullptr, previous_sibling, properties, LocalFrameToken(), nullptr,
-      DocumentToken(), base::UnguessableToken::Create(), mojo::NullRemote(),
+      DocumentToken(), InitiatorStateToken(), mojo::NullRemote(),
       std::make_unique<WebPolicyContainer>(
           WebPolicyContainerPolicies(),
           mock_policy_container_host.BindNewEndpointAndPassDedicatedRemote())));
@@ -880,7 +892,7 @@ WebLocalFrame* TestWebFrameClient::CreateChildFrame(
   client->sandbox_flags_ = frame_policy.sandbox_flags;
   TestWebFrameClient* client_ptr = client.get();
   client_ptr->Bind(frame, std::move(client));
-  finish_creation(frame, DocumentToken(), base::UnguessableToken::Create(),
+  finish_creation(frame, DocumentToken(), InitiatorStateToken(),
                   mojo::NullRemote(),
                   std::make_unique<base::UnguessableToken>(
                       base::UnguessableToken::Create()));
@@ -1145,6 +1157,8 @@ void TestWebFrameWidgetHost::TextInputStateChanged(
     ui::mojom::blink::TextInputStatePtr state) {
   if (state->show_ime_if_needed)
     ++virtual_keyboard_request_count_;
+  ++text_input_state_changed_count_;
+  last_text_input_state_ = std::move(state);
 }
 
 void TestWebFrameWidgetHost::SelectionBoundsChanged(

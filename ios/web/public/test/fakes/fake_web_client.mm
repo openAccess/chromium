@@ -11,7 +11,6 @@
 #import "ios/web/common/features.h"
 #import "ios/web/common/uikit_ui_util.h"
 #import "ios/web/public/test/error_test_util.h"
-#import "ios/web/public/test/fakes/crw_fake_find_session.h"
 #import "ios/web/public/thread/web_task_traits.h"
 #import "ios/web/test/test_url_constants.h"
 #import "ui/base/resource/resource_bundle.h"
@@ -53,10 +52,6 @@ std::vector<JavaScriptFeature*> FakeWebClient::GetJavaScriptFeatures(
   return java_script_features_;
 }
 
-void FakeWebClient::SetPluginNotSupportedText(const std::u16string& text) {
-  plugin_not_supported_text_ = text;
-}
-
 void FakeWebClient::SetJavaScriptFeatures(
     std::vector<JavaScriptFeature*> features) {
   java_script_features_ = features;
@@ -91,6 +86,21 @@ UserAgentType FakeWebClient::GetDefaultUserAgent(web::WebState* web_state,
 
 bool FakeWebClient::IsSmoothScrollingSupported() const {
   return base::FeatureList::IsEnabled(web::features::kSmoothScrollingDefault);
+}
+
+UniversalOptOutState FakeWebClient::GetUniversalOptOutState(
+    BrowserState* browser_state) const {
+  return universal_opt_out_state_;
+}
+
+ExtensionController* FakeWebClient::GetExtensionController(
+    BrowserState* browser_state) const {
+  return extension_controller_;
+}
+
+void FakeWebClient::SetExtensionController(
+    ExtensionController* extension_controller) {
+  extension_controller_ = extension_controller;
 }
 
 }  // namespace web

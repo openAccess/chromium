@@ -64,6 +64,9 @@ cast::media::AudioConfiguration_AudioCodec ToGrpcTypes(AudioCodec codec) {
     case kCodecMpegHAudio:
       return cast::media::
           AudioConfiguration_AudioCodec_AUDIO_CODEC_MPEG_H_AUDIO;
+    case kCodecDTSXP2:
+    case kCodecDTSE:
+      return cast::media::AudioConfiguration_AudioCodec_AUDIO_CODEC_UNKNOWN;
     default:
       NOTREACHED();
   }
@@ -118,6 +121,8 @@ cast::media::AudioConfiguration_SampleFormat ToGrpcTypes(
           AudioConfiguration_SampleFormat_SAMPLE_FORMAT_PLANAR_S32;
     case kSampleFormatS24:
       return cast::media::AudioConfiguration_SampleFormat_SAMPLE_FORMAT_S24;
+    case kSampleFormatPlanarU8:
+      return cast::media::AudioConfiguration_SampleFormat_SAMPLE_FORMAT_UNKNOWN;
     default:
       NOTREACHED();
   }
@@ -225,9 +230,9 @@ ProxyCallTranslator::ProxyCallTranslator(
       client_(client),
       push_buffer_handler_(client_task_runner, push_buffer_client),
       weak_factory_(this) {
-  DCHECK(decoder_channel_.get());
-  DCHECK(client_task_runner_);
-  DCHECK(client_);
+  CHECK(decoder_channel_.get(), base::NotFatalUntil::M163);
+  CHECK(client_task_runner_, base::NotFatalUntil::M163);
+  CHECK(client_, base::NotFatalUntil::M163);
 }
 
 ProxyCallTranslator::~ProxyCallTranslator() = default;
@@ -266,6 +271,12 @@ void ProxyCallTranslator::SetVolume(float multiplier) {
 }
 
 bool ProxyCallTranslator::SetConfig(const AudioConfig& config) {
+  if (!IsValidConfig(config) ||
+      config.codec == kCodecDTSXP2 ||
+      config.codec == kCodecDTSE ||
+      config.sample_format == kSampleFormatPlanarU8) {
+    return false;
+  }
   return push_buffer_handler_.PushBuffer(ToGrpcTypes(config)) !=
          CmaBackend::BufferStatus::kBufferFailed;
 }

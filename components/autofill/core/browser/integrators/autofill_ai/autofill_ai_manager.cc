@@ -26,7 +26,6 @@
 #include "base/location.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -56,10 +55,12 @@
 #include "components/autofill/core/browser/ml_model/autofill_ai/autofill_ai_model_executor.h"
 #include "components/autofill/core/browser/network/autofill_ai/autofill_ai_personal_context_access_manager.h"
 #include "components/autofill/core/browser/network/autofill_ai/wallet_pass_access_manager.h"
+#include "components/autofill/core/browser/payments/wallet_reminder_notice_manager.h"
 #include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
 #include "components/autofill/core/browser/strike_databases/autofill_ai/autofill_ai_save_strike_database_by_attribute.h"
 #include "components/autofill/core/browser/strike_databases/autofill_ai/autofill_ai_save_strike_database_by_host.h"
 #include "components/autofill/core/browser/strike_databases/autofill_ai/autofill_ai_update_strike_database.h"
+#include "components/autofill/core/browser/studies/hats_surveys_util.h"
 #include "components/autofill/core/browser/suggestions/autofill_ai/autofill_ai_suggestion_generator.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_generator.h"
@@ -121,15 +122,6 @@ std::vector<std::string> GetAttributeStrikeKeys(const EntityInstance& entity,
   return base::ToVector(entity.type().strike_keys(), value_for_strike_key);
 }
 
-base::flat_set<EntityTypeName> GetSaveEntitiesTypesNames(
-    base::span<const EntityInstance> saved_entities) {
-  base::flat_set<EntityTypeName> entity_types;
-  for (const EntityInstance& entity : saved_entities) {
-    entity_types.insert(entity.type().name());
-  }
-  return entity_types;
-}
-
 EntityInstance GetMergedEntity(
     const EntityInstance& observed_entity,
     const EntityInstance& saved_entity,
@@ -147,8 +139,20 @@ EntityInstance GetMergedEntity(
     switch (target_record_type) {
       case EntityInstance::RecordType::kLocal:
         return EntityInstance::LocalRecordTypePayload{};
-      case EntityInstance::RecordType::kServerWallet:
-        return EntityInstance::WalletRecordTypePayload{};
+      case EntityInstance::RecordType::kServerWallet: {
+        // `observed_entity` is extracted from a form submission and never has a
+        // management URL. If `saved_entity` is already a Wallet entity (an
+        // update), preserve its management URL. If `saved_entity` is a local
+        // entity being migrated to Wallet, `std::get_if` returns nullptr and
+        // the management URL is default-constructed to empty until provisioned
+        // by the Wallet backend.
+        const EntityInstance::WalletRecordTypePayload* saved_payload =
+            std::get_if<EntityInstance::WalletRecordTypePayload>(
+                &saved_entity.record_type_data());
+        return EntityInstance::WalletRecordTypePayload{
+            .management_url =
+                saved_payload ? saved_payload->management_url : GURL()};
+      }
       case EntityInstance::RecordType::kPersonalContext:
         // pContext entities are read-only.
         NOTREACHED();
@@ -287,16 +291,7 @@ void AutofillAiManager::OnAutofillAiSuggestionsShown(
   }
   logger_.OnSuggestionsShown(form, field, entities_suggested, ukm_source_id);
 
-  auto it = user_suggestion_interactions_per_form_.Get(form.global_id());
-  // Do not overwrite cases in which a suggestion was previously accepted.
-  if (it == user_suggestion_interactions_per_form_.end() ||
-      !it->second.entity_type_accepted) {
-    user_suggestion_interactions_per_form_.Put(
-        {form.global_id(),
-         {.entity_type_accepted = std::nullopt,
-          .accepted_entity_record_type = std::nullopt,
-          .autofill_ai_field_types = field.Type().GetAutofillAiTypes()}});
-  }
+  user_suggestion_interactions_per_form_.SuggestionsShown(form, field);
 
   if (std::ranges::contains(shown_suggestions,
                             SuggestionType::kAutofillAiPrivateInferenceNotice,
@@ -384,11 +379,8 @@ void AutofillAiManager::OnDidFillSuggestion(
     return;
   }
   entity_manager->RecordEntityUsed(entity.guid(), base::Time::Now());
-  auto it = user_suggestion_interactions_per_form_.Get(form.global_id());
-  if (it != user_suggestion_interactions_per_form_.end()) {
-    it->second.entity_type_accepted = entity.type();
-    it->second.accepted_entity_record_type = entity.record_type();
-  }
+  user_suggestion_interactions_per_form_.SuggestionAccepted(form, filled_fields,
+                                                            entity);
 }
 
 void AutofillAiManager::OnEditedAutofilledField(const FormStructure& form,
@@ -435,6 +427,12 @@ void AutofillAiManager::UpdateLoggerReadinessData(const FormStructure& form) {
                               entity_manager->GetEntityInstances());
 }
 
+std::optional<RecentUserAutofillAiInteractionsForHats::InteractionDetails>
+AutofillAiManager::GetRecentUserInteractionForHats(FormGlobalId form_id) const {
+  return user_suggestion_interactions_per_form_.GetRecentUserInteraction(
+      form_id);
+}
+
 bool AutofillAiManager::OnFormSubmitted(const FormStructure& form,
                                         ukm::SourceId ukm_source_id) {
   logger_.RecordFormMetrics(form, ukm_source_id, /*submission_state=*/true,
@@ -454,26 +452,14 @@ bool AutofillAiManager::OnFormSubmitted(const FormStructure& form,
   //    entity. If the user has Wallet enabled and the resulting entity is not a
   //    duplicate of data saved in Wallet, a save prompt to Wallet is shown. On
   //    acceptance, the local entity is removed.
-  const bool form_imported = MaybeImportForm(form, ukm_source_id);
-  auto it = user_suggestion_interactions_per_form_.Get(form.global_id());
-  if (it != user_suggestion_interactions_per_form_.end()) {
-    const EntityDataManager* entity_manager = client_->GetEntityDataManager();
-    if (!entity_manager) {
-      LOG_AF(GetCurrentLogManager())
-          << LoggingScope::kAutofillAi << LogMessage::kAutofillAi
-          << "Entity data manager is not available";
-      return form_imported;
-    }
-    if (it->second.entity_type_accepted &&
-        it->second.accepted_entity_record_type ==
-            EntityInstance::RecordType::kPersonalContext) {
-      client_->TriggerAutofillAiFillingJourneySurvey(
-          /*suggestion_accepted=*/true, it->second.entity_type_accepted.value(),
-          GetSaveEntitiesTypesNames(entity_manager->GetEntityInstances()),
-          it->second.autofill_ai_field_types);
-    }
+  // 4. The user submits a form where no save, update, or migration prompt is
+  //    shown, and the last accepted suggestion on the form was for an eligible
+  //    saved Wallet pass. In this case, a Wallet reminder notice is shown.
+  bool prompt_or_notice_shown = MaybeImportForm(form, ukm_source_id);
+  if (!prompt_or_notice_shown) {
+    prompt_or_notice_shown = MaybeShowWalletReminderNotice(form);
   }
-  return form_imported;
+  return prompt_or_notice_shown;
 }
 
 bool AutofillAiManager::MaybeImportForm(const FormStructure& form,
@@ -494,11 +480,6 @@ bool AutofillAiManager::MaybeImportForm(const FormStructure& form,
     }
 
     prompt_shown = true;
-    AutofillClient::EntityImportPromptResultCallback prompt_result_callback =
-        base::BindOnce(&AutofillAiManager::HandlePromptResult, GetWeakPtr(),
-                       form.ToFormData(), candidate_entity, ukm_source_id,
-                       prompt_type);
-
     std::optional<EntityInstance> old_entity;
     if (prompt_type == AutofillClient::AutofillAiImportPromptType::kUpdate) {
       old_entity = *client_->GetEntityDataManager()->GetEntityInstance(
@@ -506,11 +487,117 @@ bool AutofillAiManager::MaybeImportForm(const FormStructure& form,
     }
     const bool is_save_synchronous = !IsSaveAsynchronous(
         candidate_entity.type(), candidate_entity.record_type());
-    client_->ShowEntityImportBubble(std::move(candidate_entity),
-                                    std::move(old_entity), is_save_synchronous,
-                                    std::move(prompt_result_callback));
+    const bool is_save_prompt =
+        prompt_type == AutofillClient::AutofillAiImportPromptType::kSave;
+    WalletPassAccessManager* const wallet_pass_access_manager =
+        client_->GetWalletPassAccessManager();
+    if (wallet_pass_access_manager &&
+        IsEligibleForWalletPassDisclosure(is_save_prompt, candidate_entity)) {
+      LogWalletNoticeFunnelEvent(
+          AutofillAiWalletNoticeFunnelEvents::kFetchingUpsertDetails);
+      const EntityType entity_type = candidate_entity.type();
+      wallet_pass_access_manager->GetDetailsForUpsertPass(
+          entity_type,
+          base::BindOnce(&AutofillAiManager::OnGetDetailsForUpsertPassResponse,
+                         GetWeakPtr(), form.ToFormData(), ukm_source_id,
+                         prompt_type, std::move(candidate_entity),
+                         std::move(old_entity), is_save_synchronous));
+    } else {
+      ShowEntityImportBubble(form.ToFormData(), ukm_source_id, prompt_type,
+                             std::move(candidate_entity), std::move(old_entity),
+                             is_save_synchronous, /*public_passes_notice=*/{},
+                             /*legal_message_token=*/std::nullopt);
+    }
   }
   return prompt_shown;
+}
+
+bool AutofillAiManager::MaybeShowWalletReminderNotice(
+    const FormStructure& form) {
+  std::optional<RecentUserAutofillAiInteractionsForHats::InteractionDetails>
+      interaction =
+          user_suggestion_interactions_per_form_.GetRecentUserInteraction(
+              form.global_id());
+  if (!interaction || interaction->entity_type_accepted.empty() ||
+      interaction->accepted_entity_record_type.empty()) {
+    return false;
+  }
+
+  payments::WalletReminderNoticeManager* notice_manager =
+      client_->GetWalletReminderNoticeManager();
+  if (notice_manager && notice_manager->IsWalletReminderNoticeEligible(
+                            interaction->entity_type_accepted.back(),
+                            interaction->accepted_entity_record_type.back())) {
+    notice_manager->ShowWalletReminderNotice(
+        payments::WalletReminderNoticeManager::FlowType::kWalletPass);
+    return true;
+  }
+  return false;
+}
+
+void AutofillAiManager::OnGetDetailsForUpsertPassResponse(
+    const FormData& form,
+    ukm::SourceId ukm_source_id,
+    AutofillClient::AutofillAiImportPromptType prompt_type,
+    EntityInstance new_entity,
+    std::optional<EntityInstance> old_entity,
+    bool is_save_synchronous,
+    base::expected<WalletPassAccessManager::GetDetailsForUpsertPassResponse,
+                   wallet::WalletHttpClient::WalletRequestError> response) {
+  LegalMessageLines public_passes_notice;
+  std::optional<std::string> legal_message_token;
+  if (!response.has_value() || !IsValidUpsertPassDetailsResponse(*response)) {
+    LogWalletNoticeFunnelEvent(
+        AutofillAiWalletNoticeFunnelEvents::kUpsertDetailsFetchError);
+    // If fetching details for the upsert pass failed, or if the user should
+    // see the legal message notice (`kEligible`) but `legal_message_lines` or
+    // `legal_message_token` is empty, fall back to saving locally.
+    new_entity =
+        new_entity.CopyWithNewRecordType(EntityInstance::RecordType::kLocal);
+    is_save_synchronous =
+        !IsSaveAsynchronous(new_entity.type(), new_entity.record_type());
+  } else {
+    LogWalletNoticeFunnelEvent(
+        AutofillAiWalletNoticeFunnelEvents::kUpsertDetailsFetchSuccess);
+    public_passes_notice = std::move(response->legal_message_lines);
+    legal_message_token = std::move(response->legal_message_token);
+  }
+  ShowEntityImportBubble(form, ukm_source_id, prompt_type,
+                         std::move(new_entity), std::move(old_entity),
+                         is_save_synchronous, std::move(public_passes_notice),
+                         std::move(legal_message_token));
+}
+
+void AutofillAiManager::ShowEntityImportBubble(
+    const FormData& form,
+    ukm::SourceId ukm_source_id,
+    AutofillClient::AutofillAiImportPromptType prompt_type,
+    EntityInstance new_entity,
+    std::optional<EntityInstance> old_entity,
+    bool is_save_synchronous,
+    LegalMessageLines public_passes_notice,
+    std::optional<std::string> legal_message_token) {
+  AutofillClient::EntityImportPromptResultCallback bubble_callback =
+      base::BindOnce(
+          [](base::WeakPtr<AutofillAiManager> manager, const FormData& form,
+             EntityInstance entity, ukm::SourceId ukm_source_id,
+             AutofillClient::AutofillAiImportPromptType prompt_type,
+             std::optional<std::string> legal_message_token,
+             AutofillClient::AutofillAiBubbleResult result,
+             std::optional<EntityInstance> edited_entity,
+             const AutofillClient::EntityImportUIContext& ui_context) {
+            if (manager) {
+              manager->HandlePromptResult(form, std::move(entity),
+                                          ukm_source_id, prompt_type, result,
+                                          std::move(edited_entity), ui_context,
+                                          std::move(legal_message_token));
+            }
+          },
+          GetWeakPtr(), form, new_entity, ukm_source_id, prompt_type,
+          std::move(legal_message_token));
+  client_->ShowEntityImportBubble(
+      std::move(new_entity), std::move(old_entity), is_save_synchronous,
+      std::move(public_passes_notice), std::move(bubble_callback));
 }
 
 void AutofillAiManager::HandlePromptResult(
@@ -520,7 +607,8 @@ void AutofillAiManager::HandlePromptResult(
     AutofillClient::AutofillAiImportPromptType prompt_type,
     AutofillClient::AutofillAiBubbleResult result,
     std::optional<EntityInstance> edited_entity,
-    const AutofillClient::EntityImportUIContext& ui_context) {
+    const AutofillClient::EntityImportUIContext& ui_context,
+    std::optional<std::string> legal_message_token) {
   if (edited_entity) {
     entity = std::exchange(edited_entity, std::nullopt).value();
   }
@@ -532,6 +620,10 @@ void AutofillAiManager::HandlePromptResult(
   AddOrClearImportPromptStrikes(prompt_type, result, form.url(), entity);
 
   if (!DidUserExplicitlyAcceptedImportPrompt(result)) {
+    if (legal_message_token && !legal_message_token->empty()) {
+      LogWalletNoticeFunnelEvent(
+          AutofillAiWalletNoticeFunnelEvents::kEntityNotSaved);
+    }
     return;
   }
 
@@ -542,12 +634,21 @@ void AutofillAiManager::HandlePromptResult(
   if (entity.record_type() == EntityInstance::RecordType::kServerWallet &&
       !MayPerformAutofillAiAction(*client_, AutofillAiAction::kImportToWallet,
                                   entity.type())) {
+    if (legal_message_token && !legal_message_token->empty()) {
+      LogWalletNoticeFunnelEvent(
+          AutofillAiWalletNoticeFunnelEvents::kEntityNotSaved);
+    }
     HandleIneligibleWalletFallback(prompt_type, std::move(entity));
     return;
   }
 
   if (!IsSaveAsynchronous(entity.type(), entity.record_type())) {
-    entity_manager.AddOrUpdateEntityInstance(std::move(entity));
+    if (legal_message_token && !legal_message_token->empty()) {
+      LogWalletNoticeFunnelEvent(
+          AutofillAiWalletNoticeFunnelEvents::kEntitySaved);
+    }
+    entity_manager.AddOrUpdateEntityInstance(std::move(entity),
+                                             std::move(legal_message_token));
     return;
   }
 
@@ -610,7 +711,6 @@ void AutofillAiManager::HandleIneligibleWalletFallback(
               return;
             }
 
-            // This is a no-op for public passes.
             self->client_->CloseEntityImportBubble();
 
             switch (prompt_type) {
@@ -651,43 +751,6 @@ std::vector<Suggestion> AutofillAiManager::GetSuggestions(
                                            &form, autofill_field, *client_,
                                            on_suggestions_generated);
   return suggestions;
-}
-
-bool AutofillAiManager::ShouldDisplayIph(const FormStructure& form,
-                                         FieldGlobalId field_id) const {
-  // This early return is just a performance optimization:
-  // AutofillAiAction::kIphForOptIn requires an EntityType, which we don't know
-  // at this point yet. Since kIphForOptIn is a stronger requirement than
-  // kOptIn, we can check kOptIn first.
-  if (!MayPerformAutofillAiAction(*client_, AutofillAiAction::kOptIn)) {
-    return false;
-  }
-
-  const AutofillField* const focused_field = form.GetFieldById(field_id);
-  if (!focused_field) {
-    return false;
-  }
-
-  // We want to show IPH if filling the `focused_field` and fields that belong
-  // to the same entity leads to an import.
-  std::map<EntityType, DenseSet<AttributeType>> attributes_in_form;
-  for (auto [entity, fields_and_types] : RationalizeAndDetermineAttributeTypes(
-           form.fields(), focused_field->section())) {
-    if (std::ranges::contains(fields_and_types, focused_field->global_id(),
-                              [](const AutofillFieldWithAttributeType& f) {
-                                return f.field->global_id();
-                              }) &&
-        MayPerformAutofillAiAction(*client_, AutofillAiAction::kIphForOptIn,
-                                   entity)) {
-      attributes_in_form[entity].insert_all(
-          DenseSet(fields_and_types, &AutofillFieldWithAttributeType::type));
-    }
-  }
-
-  return std::ranges::any_of(attributes_in_form, [](const auto& p) {
-    return !p.first.read_only() &&
-           AttributesMeetImportConstraints(p.first, p.second);
-  });
 }
 
 LogManager* AutofillAiManager::GetCurrentLogManager() {
@@ -950,9 +1013,6 @@ AutofillAiManager::GetMigratePromptCandidates(
     base::span<const EntityInstance> observed_entities,
     base::span<const EntityInstance> saved_entities,
     const FormStructure& form) const {
-  SCOPED_UMA_HISTOGRAM_TIMER(
-      "Autofill.Ai.Timing.GetEntityUpstreamCandidateFromSubmittedForm");
-
   std::vector<const EntityInstance*> saved_local_entities;
   std::vector<const EntityInstance*> saved_server_entities;
   for (const EntityInstance& entity : saved_entities) {

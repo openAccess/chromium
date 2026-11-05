@@ -7,11 +7,11 @@
 #import "base/test/metrics/histogram_tester.h"
 #import "components/ukm/ios/ukm_url_recorder.h"
 #import "components/ukm/test_ukm_recorder.h"
-#import "ios/chrome/browser/dom_distiller/model/distiller_service_factory.h"
 #import "ios/chrome/browser/reader_mode/model/constants.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_source_tab_helper.h"
+#import "ios/chrome/browser/web_distiller/model/distiller_service_factory.h"
 #import "ios/web/public/js_messaging/script_message.h"
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -28,6 +28,7 @@ class ReaderModeJavaScriptFeatureTest : public PlatformTest {
  public:
   ReaderModeJavaScriptFeatureTest() : valid_url_(GURL("https://example.com")) {
     profile_ = TestProfileIOS::Builder().Build();
+    web_state_.SetBrowserState(profile_.get());
 
     ReaderModeTabHelper::CreateForWebState(
         web_state(), DistillerServiceFactory::GetForProfile(profile_.get()));
@@ -85,15 +86,16 @@ class ReaderModeJavaScriptFeatureTest : public PlatformTest {
   }
 
  protected:
-  std::unique_ptr<base::Value> ValidDerivedFeatures() {
-    return std::make_unique<base::Value>(base::DictValue()
-                                             .Set("time", 10.0)
-                                             .Set("numElements", 0.0)
-                                             .Set("numAnchors", 0.0)
-                                             .Set("numForms", 0.0)
-                                             .Set("mozScore", 0.0)
-                                             .Set("mozScoreAllSqrt", 0.0)
-                                             .Set("mozScoreAllLinear", 0.0));
+  web::ScriptMessageValue ValidDerivedFeatures() {
+    return web::ScriptMessageValue(@{
+      @"time" : @(10.0),
+      @"numElements" : @(0.0),
+      @"numAnchors" : @(0.0),
+      @"numForms" : @(0.0),
+      @"mozScore" : @(0.0),
+      @"mozScoreAllSqrt" : @(0.0),
+      @"mozScoreAllLinear" : @(0.0),
+    });
   }
 
   web::WebTaskEnvironment task_environment_;
@@ -134,9 +136,8 @@ TEST_F(ReaderModeJavaScriptFeatureTest, AboutUrlNotEligible) {
 // malformed response.
 TEST_F(ReaderModeJavaScriptFeatureTest, MalformedResponseNotDict) {
   CommitNavigation();
-  auto invalid_body =
-      std::make_unique<base::Value>(base::Value("invalid_because_expect_dict"));
-  web::ScriptMessage script_message(std::move(invalid_body),
+  std::string value = "invalid_because_expect_dict";
+  web::ScriptMessage script_message(web::ScriptMessageValue(value),
                                     /*is_user_interacting=*/true,
                                     /*is_main_frame=*/true,
                                     /*request_url=*/valid_url(),
@@ -156,9 +157,7 @@ TEST_F(ReaderModeJavaScriptFeatureTest, MalformedResponseNotDict) {
 // response.
 TEST_F(ReaderModeJavaScriptFeatureTest, MalformedResponseMissingFeatures) {
   CommitNavigation();
-  auto invalid_body =
-      std::make_unique<base::Value>(base::Value(base::DictValue()));
-  web::ScriptMessage script_message(std::move(invalid_body),
+  web::ScriptMessage script_message(web::ScriptMessageValue(@{}),
                                     /*is_user_interacting=*/true,
                                     /*is_main_frame=*/true,
                                     /*request_url=*/valid_url(),

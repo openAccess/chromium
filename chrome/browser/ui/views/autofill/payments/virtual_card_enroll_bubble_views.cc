@@ -43,8 +43,7 @@ std::unique_ptr<views::Label> GetBadgeView() {
       .SetBorder(views::CreateRoundedRectBorder(
           /*thickness=*/0, /*corner_radius=*/100, gfx::Insets::VH(2, 8),
           ui::kColorSysNeutralContainer))
-      .SetBackground(views::CreateRoundedRectBackground(
-          ui::kColorSysNeutralContainer, 100))
+      .SetBackground(views::CreatePillBackground(ui::kColorSysNeutralContainer))
       .Build();
 }
 
@@ -53,7 +52,7 @@ VirtualCardEnrollBubbleViews::VirtualCardEnrollBubbleViews(
     content::WebContents* web_contents,
     VirtualCardEnrollBubbleController* controller)
     : AutofillLocationBarBubble(anchor, web_contents), controller_(controller) {
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
   SetButtonLabel(ui::mojom::DialogButton::kOk,
                  controller->GetUiModel().accept_action_text());
   SetButtonLabel(ui::mojom::DialogButton::kCancel,
@@ -249,7 +248,7 @@ VirtualCardEnrollBubbleViews::CreateLegalMessageView() {
   const LegalMessageLines issuer_legal_message =
       controller_->GetUiModel().enrollment_fields().issuer_legal_message;
 
-  DCHECK(!google_legal_message.empty());
+  CHECK(!google_legal_message.empty(), base::NotFatalUntil::M162);
   legal_message_view->AddChildView(::autofill::CreateLegalMessageView(
       google_legal_message, /*user_email=*/std::u16string(),
       /*user_avatar=*/ui::ImageModel(),

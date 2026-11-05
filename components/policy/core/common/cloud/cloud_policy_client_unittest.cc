@@ -782,6 +782,35 @@ TEST_F(CloudPolicyClientTest, SetupRegistrationAndPolicyFetch) {
       "Enterprise.DMServerCloudPolicyRequestStatus", DM_STATUS_SUCCESS, 1);
 }
 
+TEST_F(CloudPolicyClientTest, PolicyFetchWithStateKeysAndQuantumIndex) {
+  RegisterClient();
+
+  const std::vector<std::string> state_keys = {"state_key_1", "state_key_2"};
+  constexpr int64_t kQuantumIndex = 213;
+  client_->SetStateKeysToUpload(state_keys, kQuantumIndex);
+
+  ExpectAndCaptureJob(GetPolicyResponse());
+  RunClientTaskAndWaitPolicyFetch(base::BindLambdaForTesting(
+      [this]() { client_->FetchPolicy(kPolicyFetchReason); }));
+
+  EXPECT_EQ(DeviceManagementService::JobConfiguration::TYPE_POLICY_FETCH,
+            job_type_);
+  ASSERT_TRUE(job_request_.has_policy_request());
+  ASSERT_TRUE(job_request_.has_device_state_key_update_request());
+  const auto& key_update = job_request_.device_state_key_update_request();
+  ASSERT_EQ(2, key_update.server_backed_state_keys_size());
+  EXPECT_EQ("state_key_1", key_update.server_backed_state_keys(0));
+  EXPECT_EQ("state_key_2", key_update.server_backed_state_keys(1));
+  EXPECT_TRUE(key_update.has_current_time_quantum_index());
+  EXPECT_EQ(kQuantumIndex, key_update.current_time_quantum_index());
+
+  // Subsequent policy fetch should not include the state keys or quantum index.
+  ExpectAndCaptureJob(GetPolicyResponse());
+  RunClientTaskAndWaitPolicyFetch(base::BindLambdaForTesting(
+      [this]() { client_->FetchPolicy(kPolicyFetchReason); }));
+  EXPECT_FALSE(job_request_.has_device_state_key_update_request());
+}
+
 class CloudPolicyClientWithPolicyFetchReasonTest
     : public CloudPolicyClientTest,
       public testing::WithParamInterface<
@@ -2679,7 +2708,6 @@ TEST_P(CloudPolicyClientRegisterWithPsmParamsTest,
        RegistrationWithCertificateAndPsmResult) {
   constexpr int64_t kExpectedPsmDeterminationTimestamp = 2;
 
-  const em::DeviceManagementResponse policy_response = GetPolicyResponse();
   const PsmExecutionResult psm_execution_result = GetPsmExecutionResult();
 
   EXPECT_CALL(device_dmtoken_callback_observer_,
@@ -2797,8 +2825,13 @@ TEST_P(CloudPolicyClientUploadSecurityEventTest, TestWithProtoFormat) {
     EXPECT_EQ(GetOSPlatform(), request.device().os_platform());
     EXPECT_EQ(GetOSVersion(), request.device().os_version());
     EXPECT_EQ(policy::GetDeviceName(), request.device().name());
-    EXPECT_EQ(policy::GetDeviceFqdn(), request.device().device_fqdn());
-    EXPECT_EQ(policy::GetNetworkName(), request.device().network_name());
+    if (policy::features::IsEnhancedSecurityEventFieldsEnabled()) {
+      EXPECT_EQ(policy::GetDeviceFqdn(), request.device().device_fqdn());
+      EXPECT_EQ(policy::GetNetworkName(), request.device().network_name());
+    } else {
+      EXPECT_EQ(request.device().device_fqdn(), "");
+      EXPECT_EQ(request.device().network_name(), "");
+    }
   } else {
     EXPECT_EQ(request.device().dm_token(), "");
     EXPECT_EQ(request.device().client_id(), "");

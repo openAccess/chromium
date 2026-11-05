@@ -1041,7 +1041,7 @@ export class RemoteCallFilesApp extends RemoteCall {
         return true;
       }
 
-      return pending(caller, `Waiting for xf-cloud-panel to appear.`);
+      return pending(caller, 'Waiting for xf-cloud-panel to appear.');
     });
   }
 
@@ -1395,17 +1395,6 @@ export class RemoteCallFilesApp extends RemoteCall {
     // Ensure real root and files are shown.
     const files = TestEntryInfo.getExpectedRows(initialEntries);
     await this.waitForFiles(appId, files);
-  }
-
-  /**
-   * Returns true if the SinglePartitionFormat flag is on.
-   * @param appId Files app windowId.
-   */
-  async isSinglePartitionFormat(appId: string) {
-    const dialog =
-        await this.waitForElement(appId, ['files-format-dialog', 'cr-dialog']);
-    const flag = dialog.attributes['single-partition-format'] || '';
-    return !!flag;
   }
 
   /**

@@ -9,7 +9,10 @@ import android.view.View;
 import android.view.ViewStub;
 import android.widget.FrameLayout;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.base.ObserverList;
+import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.back_press.BackPressManager;
@@ -35,6 +38,17 @@ public class FindToolbarManager {
     private @Nullable SideUiStateProvider mSideUiStateProvider;
 
     /**
+     * Whether observers have been notified that the find toolbar is shown (and not yet notified
+     * that it is hidden). This mirrors exactly what {@link FindToolbarObserver}s have been told, so
+     * that observers registering late can be given the same notifications as the ones that
+     * registered earlier. This is intentionally not {@link #isShowing()}, which is based on the
+     * {@link View} visibility and can disagree with the notified state (e.g. while the tablet find
+     * toolbar plays its exit animation the view is still visible although observers have already
+     * been told that the toolbar is hidden).
+     */
+    private boolean mNotifiedShown;
+
+    /**
      * Creates an instance of a {@link FindToolbarManager}.
      *
      * @param findToolbarStub The {@link ViewStub} where for the find toolbar.
@@ -47,6 +61,7 @@ public class FindToolbarManager {
      * @param anchorView The {@link View} below which the find toolbar and result bar are
      *     positioned.
      * @param browserControlsStateProvider Provider for browser controls state.
+     * @param sideUiStateProviderSupplier Supplier for {@link SideUiStateProvider}.
      */
     public FindToolbarManager(
             ViewStub findToolbarStub,
@@ -56,7 +71,8 @@ public class FindToolbarManager {
             BackPressManager backPressManager,
             FrameLayout secondaryUiContainer,
             @Nullable View anchorView,
-            BrowserControlsStateProvider browserControlsStateProvider) {
+            BrowserControlsStateProvider browserControlsStateProvider,
+            @Nullable OneshotSupplier<SideUiStateProvider> sideUiStateProviderSupplier) {
         mFindToolbarStub = findToolbarStub;
         mTabModelSelector = tabModelSelector;
         mWindowAndroid = windowAndroid;
@@ -66,6 +82,9 @@ public class FindToolbarManager {
         mAnchorView = anchorView;
         mBrowserControlsStateProvider = browserControlsStateProvider;
         mObservers = new ObserverList<>();
+        if (sideUiStateProviderSupplier != null) {
+            sideUiStateProviderSupplier.runSyncOrOnAvailable(this::setSideUiStateProvider);
+        }
     }
 
     /**
@@ -109,6 +128,7 @@ public class FindToolbarManager {
                     new FindToolbarObserver() {
                         @Override
                         public void onFindToolbarShown() {
+                            mNotifiedShown = true;
                             for (FindToolbarObserver observer : mObservers) {
                                 observer.onFindToolbarShown();
                             }
@@ -116,6 +136,7 @@ public class FindToolbarManager {
 
                         @Override
                         public void onFindToolbarHidden() {
+                            mNotifiedShown = false;
                             for (FindToolbarObserver observer : mObservers) {
                                 observer.onFindToolbarHidden();
                             }
@@ -136,7 +157,8 @@ public class FindToolbarManager {
      *
      * @param sideUiStateProvider The {@link SideUiStateProvider} object.
      */
-    public void setSideUiStateProvider(@Nullable SideUiStateProvider sideUiStateProvider) {
+    @VisibleForTesting
+    void setSideUiStateProvider(@Nullable SideUiStateProvider sideUiStateProvider) {
         mSideUiStateProvider = sideUiStateProvider;
         if (mFindToolbar != null) {
             mFindToolbar.setSideUiStateProvider(mSideUiStateProvider);
@@ -147,7 +169,11 @@ public class FindToolbarManager {
     public void destroy() {
         if (mFindToolbar != null) {
             mFindToolbar.destroy();
+            mFindToolbar = null;
         }
+        mNotifiedShown = false;
+        mObservers.clear();
+        mSideUiStateProvider = null;
     }
 
     /** Sets the find query text string. */
@@ -156,9 +182,17 @@ public class FindToolbarManager {
         mFindToolbar.setFindQuery(findText);
     }
 
-    /** Add an observer for find in page changes. */
+    /**
+     * Adds an observer for find in page changes.
+     *
+     * <p>If the find toolbar is already shown, the observer is immediately (and synchronously) told
+     * about it, so that observers which subscribe after the toolbar was shown do not miss the
+     * event. Only the newly added observer is notified.
+     */
     public void addObserver(FindToolbarObserver observer) {
-        mObservers.addObserver(observer);
+        if (mObservers.addObserver(observer) && mNotifiedShown) {
+            observer.onFindToolbarShown();
+        }
     }
 
     /** Remove an observer for find in page changes. */

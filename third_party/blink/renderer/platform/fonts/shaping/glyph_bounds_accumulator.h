@@ -50,7 +50,7 @@ namespace blink {
 // coordinate, while ShapeResult::glyph_bounding_box_ is in logical coordinate.
 // To minimize the number of conversions, this class accumulates the bounding
 // boxes in physical coordinate, and convert the accumulated box to logical.
-template <bool is_horizontal_run>
+template <bool kIsHorizontalRun>
 struct GlyphBoundsAccumulator {
   // The accumulated glyph bounding box in physical coordinate, until
   // ConvertVerticalRunToLogicalIfNeeded().
@@ -74,7 +74,7 @@ struct GlyphBoundsAccumulator {
     // Glyphs are drawn at |origin + offset|. Move glyph_bounds to that point.
     // All positions in hb_glyph_position_t are relative to the current point.
     // https://behdad.github.io/harfbuzz/harfbuzz-Buffers.html#hb-glyph-position-t-struct
-    if constexpr (is_horizontal_run) {
+    if constexpr (kIsHorizontalRun) {
       bounds_for_glyph.set_x(bounds_for_glyph.x() + origin);
     } else {
       bounds_for_glyph.set_y(bounds_for_glyph.y() + origin);
@@ -103,7 +103,7 @@ struct GlyphBoundsAccumulator {
   // Convert vertical run glyph bounding box to logical. Horizontal runs do not
   // need conversions because physical and logical are the same.
   void ConvertVerticalRunToLogicalIfNeeded(const FontMetrics& font_metrics) {
-    if constexpr (is_horizontal_run) {
+    if constexpr (kIsHorizontalRun) {
       return;
     }
     // Convert physical glyph_bounding_box to logical.
@@ -115,8 +115,8 @@ struct GlyphBoundsAccumulator {
     // ShapeResult uses alphabetic baseline.
     // See diagrams of base lines at
     // https://drafts.csswg.org/css-writing-modes-3/#intro-baselines
-    int baseline_adjust = font_metrics.Ascent(kCentralBaseline) -
-                          font_metrics.Ascent(kAlphabeticBaseline);
+    int baseline_adjust = font_metrics.Ascent(FontBaseline::kCentral) -
+                          font_metrics.Ascent(FontBaseline::kAlphabetic);
     min_y += baseline_adjust;
     max_y += baseline_adjust;
   }
@@ -129,7 +129,7 @@ struct GlyphBoundsAccumulator {
 
 #if defined(USE_SIMD_FOR_COMPUTING_GLYPH_BOUNDS)
 
-template <bool is_horizontal_run>
+template <bool kIsHorizontalRun>
 class VectorizedGlyphBoundsAccumulator final {
  public:
   static constexpr size_t kStride = 4;
@@ -190,7 +190,7 @@ class VectorizedGlyphBoundsAccumulator final {
     auto x_offsets_v = hw::Load(tag, x_offsets.data());
     auto y_offsets_v = hw::Load(tag, y_offsets.data());
 
-    if constexpr (is_horizontal_run) {
+    if constexpr (kIsHorizontalRun) {
       x_mins_v = x_mins_v + origins_v + x_offsets_v;
       y_mins_v = y_mins_v + y_offsets_v;
     } else {
@@ -237,7 +237,7 @@ class VectorizedGlyphBoundsAccumulator final {
     // Glyphs are drawn at |origin + offset|. Move glyph_bounds to that point.
     // All positions in hb_glyph_position_t are relative to the current point.
     // https://behdad.github.io/harfbuzz/harfbuzz-Buffers.html#hb-glyph-position-t-struct
-    if constexpr (is_horizontal_run) {
+    if constexpr (kIsHorizontalRun) {
       bounds_for_glyph.set_x(bounds_for_glyph.x() + origin);
     } else {
       bounds_for_glyph.set_y(bounds_for_glyph.y() + origin);
@@ -311,7 +311,7 @@ class VectorizedGlyphBoundsAccumulator final {
       float& max_x,
       float& max_y,
       const FontMetrics& font_metrics) {
-    if constexpr (is_horizontal_run) {
+    if constexpr (kIsHorizontalRun) {
       return;
     }
     // Convert physical glyph_bounding_box to logical.
@@ -323,8 +323,8 @@ class VectorizedGlyphBoundsAccumulator final {
     // ShapeResult uses alphabetic baseline.
     // See diagrams of base lines at
     // https://drafts.csswg.org/css-writing-modes-3/#intro-baselines
-    const int baseline_adjust = font_metrics.Ascent(kCentralBaseline) -
-                                font_metrics.Ascent(kAlphabeticBaseline);
+    const int baseline_adjust = font_metrics.Ascent(FontBaseline::kCentral) -
+                                font_metrics.Ascent(FontBaseline::kAlphabetic);
     min_y += baseline_adjust;
     max_y += baseline_adjust;
   }

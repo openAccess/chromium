@@ -13,8 +13,10 @@
 #define OBU_PARAM_DEFINITIONS_DEMIXING_PARAM_DEFINITION_H_
 
 #include <memory>
+#include <string>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/write_bit_buffer.h"
 #include "iamf/obu/demixing_info_parameter_data.h"
@@ -23,7 +25,7 @@
 
 namespace iamf_tools {
 
-/* !\brief Parameter definition for demixing info.
+/*!\brief Parameter definition for demixing info.
  */
 class DemixingParamDefinition : public ParamDefinition {
  public:
@@ -55,17 +57,22 @@ class DemixingParamDefinition : public ParamDefinition {
    */
   absl::Status ReadAndValidate(ReadBitBuffer& rb) override;
 
-  /*!\brief Creates a parameter data.
+  /*!\brief Creates parameter data from a buffer.
    *
    * The created instance will be of type `DemixingInfoParameterData`.
    *
-   * \return Unique pointer to the created parameter data.
+   * \param rb Buffer to read from.
+   * \return Unique pointer to created parameter data, or specific error
+   *         on failure.
    */
-  std::unique_ptr<ParameterData> CreateParameterData() const override;
+  absl::StatusOr<std::unique_ptr<ParameterData>> CreateParameterDataFromBuffer(
+      ReadBitBuffer& rb) const override;
 
-  /*!\brief Prints the parameter definition.
+  /*!\brief Returns a string representation of the parameter definition.
+   *
+   * \return String representation of the parameter definition.
    */
-  void Print() const override;
+  std::string ToString() const override;
 
   DefaultDemixingInfoParameterData default_demixing_info_parameter_data_;
 };

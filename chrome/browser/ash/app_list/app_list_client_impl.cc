@@ -13,13 +13,13 @@
 #include <vector>
 
 #include "ash/app_list/app_list_view_delegate.h"
-#include "ash/app_list/apps_collections_controller.h"
 #include "ash/public/cpp/app_list/app_list_client.h"
 #include "ash/public/cpp/app_list/app_list_controller.h"
 #include "ash/public/cpp/app_list/app_list_features.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "ash/public/cpp/new_window_delegate.h"
 #include "ash/shell.h"
+#include "base/check.h"
 #include "base/check_deref.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -37,7 +37,6 @@
 #include "chrome/browser/ash/app_list/app_list_controller_delegate.h"
 #include "chrome/browser/ash/app_list/app_list_model_updater.h"
 #include "chrome/browser/ash/app_list/app_list_notifier_impl.h"
-#include "chrome/browser/ash/app_list/app_list_survey_handler.h"
 #include "chrome/browser/ash/app_list/app_list_syncable_service.h"
 #include "chrome/browser/ash/app_list/app_list_syncable_service_factory.h"
 #include "chrome/browser/ash/app_list/app_sync_ui_state_watcher.h"
@@ -45,32 +44,28 @@
 #include "chrome/browser/ash/app_list/search/ranking/launch_data.h"
 #include "chrome/browser/ash/app_list/search/search_controller.h"
 #include "chrome/browser/ash/app_list/search/search_controller_factory.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
-#include "chrome/browser/ash/browser_delegate/browser_type.h"
-#include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/shelf/app_shortcut_shelf_item_controller.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller_util.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
-#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
+#include "chromeos/ash/components/bookmarks/bookmark_model_provider.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
+#include "chromeos/ash/components/browser_delegate/browser_type.h"
 #include "chromeos/ash/components/search_engines/template_url_service_provider.h"
 #include "chromeos/ash/services/assistant/public/cpp/assistant_browser_delegate.h"
 #include "components/constrained_window/modal_dialog_host_property.h"
-#include "components/feature_engagement/public/feature_constants.h"
-#include "components/feature_engagement/public/tracker.h"
+#include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "ui/aura/window.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/display/screen.h"
 #include "ui/display/types/display_constants.h"
 #include "ui/gfx/image/image.h"
@@ -123,41 +118,6 @@ void RecordDefaultAppsForHistogram(const std::string& histogram_name,
   }
 }
 
-class ScopedIphSessionImpl : public ash::ScopedIphSession {
- public:
-  explicit ScopedIphSessionImpl(feature_engagement::Tracker* tracker,
-                                const base::Feature& iph_feature)
-      : tracker_(tracker), iph_feature_(iph_feature) {
-    CHECK(tracker_);
-  }
-
-  ~ScopedIphSessionImpl() override { tracker_->Dismissed(*iph_feature_); }
-
-  void NotifyEvent(const std::string& event) override {
-    tracker_->NotifyEvent(event);
-  }
-
- private:
-  raw_ptr<feature_engagement::Tracker> tracker_;
-  const raw_ref<const base::Feature> iph_feature_;
-};
-
-app_list::AppListSyncableService* GetAppListSyncableService(Profile* profile) {
-  return app_list::AppListSyncableServiceFactory::GetForProfile(profile);
-}
-
-Profile* GetProfile(const AccountId& account_id) {
-  return Profile::FromBrowserContext(
-      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
-          account_id));
-}
-
-bool IsPrimaryProfile(user_manager::UserManager& user_manager,
-                      Profile* profile) {
-  return user_manager.IsPrimaryUser(
-      ash::BrowserContextHelper::Get()->GetUserByBrowserContext(profile));
-}
-
 }  // namespace
 
 AppListClientImpl::AppListClientImpl(PrefService* local_state,
@@ -165,13 +125,11 @@ AppListClientImpl::AppListClientImpl(PrefService* local_state,
     : local_state_(CHECK_DEREF(local_state)),
       user_manager_(CHECK_DEREF(user_manager)),
       app_list_controller_(ash::AppListController::Get()) {
-  user_manager_observation_.Observe(user_manager);
-
   app_list_controller_->SetClient(this);
   user_manager->AddSessionStateObserver(this);
   session_manager::SessionManager::Get()->AddObserver(this);
 
-  DCHECK(!g_app_list_client_instance);
+  CHECK(!g_app_list_client_instance, base::NotFatalUntil::M160);
   g_app_list_client_instance = this;
 
   app_list_notifier_ =
@@ -188,7 +146,7 @@ AppListClientImpl::~AppListClientImpl() {
 
   session_manager::SessionManager::Get()->RemoveObserver(this);
 
-  DCHECK_EQ(this, g_app_list_client_instance);
+  CHECK_EQ(this, g_app_list_client_instance, base::NotFatalUntil::M160);
   g_app_list_client_instance = nullptr;
 
   if (app_list_controller_) {
@@ -261,8 +219,10 @@ void AppListClientImpl::OpenSearchResult(int profile_id,
   }
 
   auto requested_model_updater_iter = profile_model_mappings_.find(profile_id);
-  DCHECK(requested_model_updater_iter != profile_model_mappings_.end());
-  DCHECK_EQ(current_model_updater_, requested_model_updater_iter->second);
+  CHECK(requested_model_updater_iter != profile_model_mappings_.end(),
+        base::NotFatalUntil::M160);
+  CHECK_EQ(current_model_updater_, requested_model_updater_iter->second,
+           base::NotFatalUntil::M160);
 
   ChromeSearchResult* result = search_controller_->FindSearchResult(result_id);
   if (!result) {
@@ -381,7 +341,7 @@ void AppListClientImpl::ActivateItem(int profile_id,
   CHECK_EQ(requested_model_updater, current_model_updater_);
 
   MaybeRecordLauncherAction(launched_from);
-  MaybeRecordActivatedItemVisibility(id, launched_from, is_above_the_fold);
+  MaybeRecordActivatedItemVisibility(id, is_above_the_fold);
   requested_model_updater->ActivateChromeItem(id, event_flags);
 }
 
@@ -412,26 +372,6 @@ void AppListClientImpl::OnAppListVisibilityWillChange(bool visible) {
   }
 }
 
-void AppListClientImpl::MaybeRecalculateAppsGridDefaultOrder() {
-  // Do not attempt to calculate the experimental arm if the active
-  // profile is not the primary profile.
-  if (!IsPrimaryProfile(user_manager_.get(),
-                        ProfileManager::GetActiveUserProfile())) {
-    return;
-  }
-
-  ash::AppsCollectionsController* apps_collections_controller =
-      ash::AppsCollectionsController::Get();
-  apps_collections_controller->CalculateExperimentalArm();
-  if (apps_collections_controller->GetUserExperimentalArm() !=
-      ash::AppsCollectionsController::ExperimentalArm::kModifiedOrder) {
-    return;
-  }
-  CHECK(current_model_updater_);
-
-  current_model_updater_->RequestDefaultPositionForModifiedOrder();
-}
-
 void AppListClientImpl::OnAppListVisibilityChanged(bool visible) {
   app_list_visible_ = visible;
   if (visible) {
@@ -440,11 +380,7 @@ void AppListClientImpl::OnAppListVisibilityChanged(bool visible) {
       window->SetProperty(constrained_window::kModalDialogHostKey,
                           static_cast<web_modal::ModalDialogHost*>(this));
     }
-    RecordViewShown(
-        ash::AppsCollectionsController::Get()->ShouldShowAppsCollection());
-    if (survey_handler_) {
-      survey_handler_->MaybeTriggerSurvey();
-    }
+    RecordViewShown();
   } else if (current_model_updater_) {
     current_model_updater_->OnAppListHidden();
     // If the user started search, record no action if a result open event has
@@ -492,7 +428,14 @@ void AppListClientImpl::ActiveUserChanged(user_manager::User* active_user) {
 }
 
 void AppListClientImpl::UpdateProfile() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const auto* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session);
+  Profile* profile = Profile::FromBrowserContext(
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          active_session->account_id()));
+  CHECK(profile);
   app_list::AppListSyncableService* syncable_service =
       app_list::AppListSyncableServiceFactory::GetForProfile(profile);
   // AppListSyncableService is null in tests.
@@ -507,7 +450,7 @@ void AppListClientImpl::SetProfile(Profile* new_profile) {
   }
 
   if (profile_) {
-    DCHECK(current_model_updater_);
+    CHECK(current_model_updater_, base::NotFatalUntil::M160);
     current_model_updater_->SetActive(false);
 
     search_controller_.reset();
@@ -554,13 +497,14 @@ void AppListClientImpl::SetProfile(Profile* new_profile) {
 
   SetUpSearchUI();
   OnTemplateURLServiceChanged();
-  RecalculateWouldTriggerLauncherSearchIph();
 }
 
 void AppListClientImpl::SetUpSearchUI() {
   search_controller_ = app_list::CreateSearchController(
       &local_state_.get(), profile_, current_model_updater_, this,
-      GetNotifier(), template_url_service_);
+      GetNotifier(), template_url_service_,
+      ash::BookmarkModelProvider::Get().Find(CHECK_DEREF(
+          ash::AnnotatedAccountId::Get(profile_->GetOriginalProfile()))));
 
   // Refresh the results used for the suggestion chips with empty query.
   // This fixes crbug.com/40642741.
@@ -583,7 +527,6 @@ AppListModelUpdater* AppListClientImpl::GetModelUpdaterForTest() {
 void AppListClientImpl::InitializeAsIfNewUserLoginForTest() {
   new_user_session_activation_time_ = base::Time::Now();
   state_for_new_user_ = StateForNewUser();
-  is_primary_profile_new_user_ = true;
 }
 
 void AppListClientImpl::OnSessionStateChanged() {
@@ -597,7 +540,7 @@ void AppListClientImpl::OnSessionStateChanged() {
 }
 
 void AppListClientImpl::OnTemplateURLServiceChanged() {
-  DCHECK(current_model_updater_);
+  CHECK(current_model_updater_, base::NotFatalUntil::M160);
 
   const TemplateURL* default_provider =
       template_url_service_->GetDefaultSearchProvider();
@@ -676,59 +619,17 @@ void AppListClientImpl::CreateNewWindow(bool incognito,
 void AppListClientImpl::OpenURL(Profile* profile,
                                 const GURL& url,
                                 ui::PageTransition transition,
-                                WindowOpenDisposition disposition) {
-  NavigateParams params(profile, url, transition);
-  params.disposition = disposition;
-  Navigate(&params);
-}
-
-void AppListClientImpl::OnUserProfileCreated(const user_manager::User& user) {
-  // NOTE: Apps Collections in Ash is currently only supported for the primary
-  // user profile. This is a self-imposed restriction.
-  if (!user_manager_->IsPrimaryUser(&user)) {
-    return;
-  }
-
-  // Since we only currently support the primary user profile, we can stop
-  // observing the user manager once it has been created.
-  user_manager_observation_.Reset();
-
-  Profile* profile = Profile::FromBrowserContext(
-      ash::BrowserContextHelper::Get()->GetBrowserContextByUser(&user));
-
-  // Cache whether the user associated with the primary profile is considered
-  // new, based on whether the first app list sync in the session was the first
-  // sync ever across all ChromeOS devices and sessions for the given user.
-  if (auto* app_list_syncable_service = GetAppListSyncableService(profile)) {
-    app_list_syncable_service->OnFirstSync(base::BindOnce(
-        [](const base::WeakPtr<AppListClientImpl>& self,
-           bool was_first_sync_ever) {
-          if (!self) {
-            return;
-          }
-          self->is_primary_profile_new_user_ = was_first_sync_ever;
-          if (was_first_sync_ever) {
-            self->MaybeRecalculateAppsGridDefaultOrder();
-          }
-        },
-        weak_ptr_factory_.GetWeakPtr()));
-  }
-  survey_handler_ = std::make_unique<app_list::AppListSurveyHandler>(profile);
+                                ui::mojom::WindowOpenDisposition disposition) {
+  const AccountId& account_id =
+      CHECK_DEREF(
+          ash::BrowserContextHelper::Get()->GetUserByBrowserContext(profile))
+          .GetAccountId();
+  ash::BrowserController::GetInstance()->OpenUrl(
+      account_id, url, {.disposition = disposition, .transition = transition});
 }
 
 ash::AppListNotifier* AppListClientImpl::GetNotifier() {
   return app_list_notifier_.get();
-}
-
-void AppListClientImpl::RecalculateWouldTriggerLauncherSearchIph() {
-  // This can be called before a `Profile` is set to `AppListClientImpl`. If a
-  // `Profile` is not set yet, return here. `AppListClientImpl::SetProfile` will
-  // call this method once a `Profile` is set.
-  if (!current_model_updater_) {
-    return;
-  }
-
-  current_model_updater_->RecalculateWouldTriggerLauncherSearchIph();
 }
 
 bool AppListClientImpl::HasReordered() {
@@ -746,25 +647,6 @@ gfx::Image AppListClientImpl::GetGeminiIcon() {
   int resource_id = IDR_PRODUCT_LOGO_128;
 #endif
   return ui::ImageModel::FromResourceId(resource_id).GetImage();
-}
-
-std::unique_ptr<ash::ScopedIphSession>
-AppListClientImpl::CreateLauncherSearchIphSession() {
-  if (profile_ == nullptr) {
-    return nullptr;
-  }
-
-  feature_engagement::Tracker* tracker =
-      feature_engagement::TrackerFactory::GetForBrowserContext(profile_);
-  if (!tracker->ShouldTriggerHelpUI(
-          feature_engagement::kIPHLauncherSearchHelpUiFeature)) {
-    return nullptr;
-  }
-
-  // If we call `ShouldTriggerHelpUI` above, we must show an IPH, i.e. we must
-  // return `ScopedIphSessionImpl`.
-  return std::make_unique<ScopedIphSessionImpl>(
-      tracker, feature_engagement::kIPHLauncherSearchHelpUiFeature);
 }
 
 void AppListClientImpl::LoadIcon(int profile_id, const std::string& app_id) {
@@ -787,7 +669,7 @@ ash::AppListSortOrder AppListClientImpl::GetPermanentSortingOrder() const {
       ->GetPermanentSortingOrder();
 }
 
-void AppListClientImpl::RecordViewShown(bool is_app_collections_shown) {
+void AppListClientImpl::RecordViewShown() {
   base::RecordAction(base::UserMetricsAction("Launcher_Show"));
 
   // Record the time duration between session activation and the first launcher
@@ -801,7 +683,7 @@ void AppListClientImpl::RecordViewShown(bool is_app_collections_shown) {
   // TODO(crbug.com/40767698): If this bug is fixed, we might need to
   // do some changes here.
   if (!user_manager_->IsCurrentUserNew()) {
-    DCHECK(!state_for_new_user_);
+    CHECK(!state_for_new_user_, base::NotFatalUntil::M160);
     return;
   }
 
@@ -853,12 +735,6 @@ void AppListClientImpl::RecordViewShown(bool is_app_collections_shown) {
           "ClamshellMode",
           /*sample=*/opening_duration, kTimeMetricsMin, kTimeMetricsMax,
           kTimeMetricsBucketCount);
-      if (is_app_collections_shown) {
-        base::UmaHistogramTimes(
-            "Apps."
-            "TimeDurationBetweenNewUserSessionActivationAndAppsCollectionShown",
-            opening_duration);
-      }
     }
   }
 }
@@ -894,19 +770,19 @@ void AppListClientImpl::RecordOpenedResultFromSearchBox(
 
 void AppListClientImpl::MaybeRecordLauncherAction(
     ash::AppListLaunchedFrom launched_from) {
-  DCHECK(
+  CHECK(
       launched_from == ash::AppListLaunchedFrom::kLaunchedFromGrid ||
       launched_from == ash::AppListLaunchedFrom::kLaunchedFromRecentApps ||
       launched_from == ash::AppListLaunchedFrom::kLaunchedFromSearchBox ||
       launched_from == ash::AppListLaunchedFrom::kLaunchedFromContinueTask ||
       launched_from == ash::AppListLaunchedFrom::kLaunchedFromQuickAppAccess ||
-      launched_from == ash::AppListLaunchedFrom::kLaunchedFromAppsCollections ||
       launched_from == ash::AppListLaunchedFrom::kLaunchedFromDiscoveryChip ||
-      launched_from == ash::AppListLaunchedFrom::kLaunchedFromSearchBoxIcon);
+      launched_from == ash::AppListLaunchedFrom::kLaunchedFromSearchBoxIcon,
+      base::NotFatalUntil::M160);
 
   // Return early if the current user is not new.
   if (!user_manager_->IsCurrentUserNew()) {
-    DCHECK(!state_for_new_user_);
+    CHECK(!state_for_new_user_, base::NotFatalUntil::M160);
     return;
   }
 
@@ -924,7 +800,8 @@ void AppListClientImpl::MaybeRecordLauncherAction(
         "Apps.NewUserFirstLauncherAction.ClamshellMode", launched_from);
   }
 
-  DCHECK(new_user_session_activation_time_.has_value());
+  CHECK(new_user_session_activation_time_.has_value(),
+        base::NotFatalUntil::M160);
   const base::TimeDelta launcher_action_duration =
       base::Time::Now() - *new_user_session_activation_time_;
   if (launcher_action_duration >= base::TimeDelta()) {
@@ -950,7 +827,6 @@ void AppListClientImpl::MaybeRecordLauncherAction(
 
 void AppListClientImpl::MaybeRecordActivatedItemVisibility(
     const std::string& id,
-    ash::AppListLaunchedFrom launched_from,
     bool is_app_above_the_fold) {
   // Do not record this metric for tablet mode.
   if (display::Screen::Get()->InTabletMode()) {
@@ -963,55 +839,28 @@ void AppListClientImpl::MaybeRecordActivatedItemVisibility(
     return;
   }
 
-  const std::string_view app_list_page =
-      launched_from == ash::AppListLaunchedFrom::kLaunchedFromAppsCollections
-          ? "AppsCollectionsPage"
-          : "AppsPage";
   const std::string_view visibility =
       is_app_above_the_fold ? "AboveTheFold" : "BelowTheFold";
   base::UmaHistogramEnumeration(
-      base::StrCat({"Apps.AppListBubble.", app_list_page,
-                    ".AppLaunchesByVisibility.", visibility,
-                    ash::AppsCollectionsController::Get()
-                        ->GetUserExperimentalArmAsHistogramSuffix()}),
+      base::StrCat(
+          {"Apps.AppListBubble.AppsPage.AppLaunchesByVisibility.", visibility}),
       default_app_name.value());
-}
-
-std::optional<bool> AppListClientImpl::IsNewUser(
-    const AccountId& account_id) const {
-  // NOTE: Apps Collections in Ash is currently only supported for the primary
-  // user profile. This is a self-imposed restriction but may happen in tests.
-  auto* const profile = GetProfile(account_id);
-  if (!IsPrimaryProfile(user_manager_.get(), profile)) {
-    return false;
-  }
-  return is_primary_profile_new_user_;
 }
 
 void AppListClientImpl::RecordAppsDefaultVisibility(
     const std::vector<std::string>& apps_above_the_fold,
-    const std::vector<std::string>& apps_below_the_fold,
-    bool is_apps_collections_page) {
+    const std::vector<std::string>& apps_below_the_fold) {
   // Do not record this metric for tablet mode.
   if (display::Screen::Get()->InTabletMode()) {
     return;
   }
 
-  const std::string app_list_page =
-      is_apps_collections_page ? "AppsCollectionsPage" : "AppsPage";
-
   RecordDefaultAppsForHistogram(
-      base::StrCat({"Apps.AppListBubble.", app_list_page,
-                    ".AppVisibilityOnLauncherShown.AboveTheFold",
-                    ash::AppsCollectionsController::Get()
-                        ->GetUserExperimentalArmAsHistogramSuffix()}),
+      "Apps.AppListBubble.AppsPage.AppVisibilityOnLauncherShown.AboveTheFold",
       apps_above_the_fold);
 
   RecordDefaultAppsForHistogram(
-      base::StrCat({"Apps.AppListBubble.", app_list_page,
-                    ".AppVisibilityOnLauncherShown.BelowTheFold",
-                    ash::AppsCollectionsController::Get()
-                        ->GetUserExperimentalArmAsHistogramSuffix()}),
+      "Apps.AppListBubble.AppsPage.AppVisibilityOnLauncherShown.BelowTheFold",
       apps_below_the_fold);
 }
 

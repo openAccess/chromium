@@ -10,6 +10,7 @@
 #import "base/memory/weak_ptr.h"
 #import "base/values.h"
 #import "ios/chrome/browser/omaha/model/omaha_service.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/grit/ios_resources.h"
@@ -51,7 +52,7 @@ class OmahaDOMHandler : public WebUIIOSMessageHandler {
   void HandleRequestDebugInformation(const base::ListValue& args);
 
   // Called when the debug information have been computed.
-  void OnDebugInformationAvailable(const std::string& callback_id,
+  void OnDebugInformationAvailable(base::Value callback_id,
                                    base::DictValue debug_information);
 
   // WeakPtr factory needed because this object might be deleted before
@@ -73,18 +74,15 @@ void OmahaDOMHandler::RegisterMessages() {
 void OmahaDOMHandler::HandleRequestDebugInformation(
     const base::ListValue& args) {
   CHECK_EQ(1u, args.size());
-  const std::string& callback_id = args[0].GetString();
-
-  OmahaService::GetDebugInformation(
+  GetApplicationContext()->GetOmahaService().GetDebugInformation(
       base::BindOnce(&OmahaDOMHandler::OnDebugInformationAvailable,
-                     weak_ptr_factory_.GetWeakPtr(), callback_id));
+                     weak_ptr_factory_.GetWeakPtr(), args[0].Clone()));
 }
 
 void OmahaDOMHandler::OnDebugInformationAvailable(
-    const std::string& callback_id,
+    base::Value callback_id,
     base::DictValue debug_information) {
-  web_ui()->ResolveJavascriptCallback(base::Value(callback_id),
-                                      /*response=*/debug_information);
+  web_ui()->ResolveJavascriptCallback(callback_id, debug_information);
 }
 
 }  // namespace

@@ -12,7 +12,7 @@
 #include "ash/login/ui/access_code_input.h"
 #include "ash/public/cpp/login_types.h"
 #include "ash/public/cpp/tablet_mode_observer.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/system_decoration.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
@@ -101,10 +101,10 @@ class ASH_EXPORT PinRequestView : public views::DialogDelegateView,
     virtual ~Delegate() = default;
   };
 
-  class ASH_EXPORT TestApi {
+  class ASH_EXPORT TestApi : public views::ViewObserver {
    public:
     explicit TestApi(PinRequestView* view);
-    ~TestApi();
+    ~TestApi() override;
 
     LoginButton* back_button();
     views::Label* title_label();
@@ -117,8 +117,20 @@ class ASH_EXPORT PinRequestView : public views::DialogDelegateView,
     views::Textfield* GetInputTextField(int index);
     PinRequestViewState state() const;
 
+    // views::ViewObserver
+    void OnViewIsDeleting(views::View* observed_view) override;
+
    private:
-    const raw_ptr<PinRequestView, DanglingUntriaged> view_;
+    PinRequestView* pin_request_view() {
+      return static_cast<PinRequestView*>(scoped_view_observer_.GetSource());
+    }
+    const PinRequestView* pin_request_view() const {
+      return static_cast<const PinRequestView*>(
+          scoped_view_observer_.GetSource());
+    }
+
+    base::ScopedObservation<views::View, views::ViewObserver>
+        scoped_view_observer_{this};
   };
 
   // Creates pin request view that will enable the user to enter a pin.
@@ -207,7 +219,7 @@ class ASH_EXPORT PinRequestView : public views::DialogDelegateView,
   raw_ptr<FocusableLabelButton> help_button_ = nullptr;
   raw_ptr<views::Button> submit_button_ = nullptr;
 
-  std::unique_ptr<SystemShadow> shadow_;
+  std::unique_ptr<SystemDecoration> decoration_;
 
   display::ScopedDisplayObserver display_observer_{this};
 

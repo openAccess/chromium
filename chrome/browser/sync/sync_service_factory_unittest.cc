@@ -118,7 +118,7 @@ class SyncServiceFactoryTest : public testing::Test {
 
   // Returns the collection of default datatypes.
   syncer::DataTypeSet DefaultDatatypes() {
-    static_assert(65 == syncer::GetNumDataTypes(),
+    static_assert(64 == syncer::GetNumDataTypes(),
                   "When adding a new type, you probably want to add it here as "
                   "well (assuming it is already enabled). Check similar "
                   "function in "
@@ -140,9 +140,17 @@ class SyncServiceFactoryTest : public testing::Test {
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
+    datatypes.Put(syncer::WEB_APPS);
+#if BUILDFLAG(IS_CHROMEOS)
     datatypes.Put(syncer::APPS);
     datatypes.Put(syncer::APP_SETTINGS);
-    datatypes.Put(syncer::WEB_APPS);
+#else
+    if (!base::FeatureList::IsEnabled(
+            syncer::kSyncDoNotSyncAppsAndAppSettings)) {
+      datatypes.Put(syncer::APPS);
+      datatypes.Put(syncer::APP_SETTINGS);
+    }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 #if BUILDFLAG(IS_ANDROID)
@@ -195,7 +203,6 @@ class SyncServiceFactoryTest : public testing::Test {
     datatypes.Put(syncer::AUTOFILL_WALLET_CREDENTIAL);
     datatypes.Put(syncer::AUTOFILL_WALLET_DATA);
     datatypes.Put(syncer::AUTOFILL_WALLET_METADATA);
-    datatypes.Put(syncer::AUTOFILL_WALLET_OFFER);
     datatypes.Put(syncer::AUTOFILL_WALLET_USAGE);
     datatypes.Put(syncer::BOOKMARKS);
     datatypes.Put(syncer::CONTACT_INFO);
@@ -216,19 +223,11 @@ class SyncServiceFactoryTest : public testing::Test {
             data_sharing::features::kDataSharingFeature)) {
       datatypes.Put(syncer::COLLABORATION_GROUP);
       datatypes.Put(syncer::SHARED_TAB_GROUP_DATA);
-      if (base::FeatureList::IsEnabled(
-              syncer::kSyncSharedTabGroupAccountData)) {
-        datatypes.Put(syncer::SHARED_TAB_GROUP_ACCOUNT_DATA);
-      }
+      datatypes.Put(syncer::SHARED_TAB_GROUP_ACCOUNT_DATA);
       if (base::FeatureList::IsEnabled(syncer::kSyncSharedComment)) {
         datatypes.Put(syncer::SHARED_COMMENT);
       }
     }
-#if BUILDFLAG(IS_ANDROID)
-    if (base::FeatureList::IsEnabled(syncer::kWebApkBackupAndRestoreBackend)) {
-      datatypes.Put(syncer::WEB_APKS);
-    }
-#endif  // BUILDFLAG(IS_ANDROID)
 
     datatypes.Put(syncer::AUTOFILL_VALUABLE);
 
@@ -283,6 +282,10 @@ class SyncServiceFactoryTest : public testing::Test {
 
     if (base::FeatureList::IsEnabled(syncer::kSyncJourney)) {
       datatypes.Put(syncer::JOURNEY);
+    }
+
+    if (base::FeatureList::IsEnabled(syncer::kSyncAutofillEntitySuppression)) {
+      datatypes.Put(syncer::AUTOFILL_ENTITY_SUPPRESSION);
     }
 
     return datatypes;
@@ -453,3 +456,30 @@ TEST_F(SyncServiceFactoryWithBothThemeFeaturesTest,
   ASSERT_NE(nullptr, tracker);
   EXPECT_EQ(themes::ServiceStatus::kInitializing, tracker->GetServiceStatus());
 }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_CHROMEOS)
+class SyncServiceFactoryTestWithoutAppsAndAppSettings
+    : public SyncServiceFactoryTest {
+ public:
+  SyncServiceFactoryTestWithoutAppsAndAppSettings() {
+    feature_list_.InitAndEnableFeature(
+        syncer::kSyncDoNotSyncAppsAndAppSettings);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(SyncServiceFactoryTestWithoutAppsAndAppSettings,
+       AppsAndAppSettingsNotRegistered) {
+  syncer::SyncServiceImpl* sync_service =
+      SyncServiceFactory::GetAsSyncServiceImplForProfileForTesting(profile());
+  syncer::DataTypeSet types = sync_service->GetRegisteredDataTypesForTest();
+
+  EXPECT_FALSE(types.Has(syncer::APPS));
+  EXPECT_FALSE(types.Has(syncer::APP_SETTINGS));
+
+  // WEB_APPS should still be registered.
+  EXPECT_TRUE(types.Has(syncer::WEB_APPS));
+}
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_CHROMEOS)

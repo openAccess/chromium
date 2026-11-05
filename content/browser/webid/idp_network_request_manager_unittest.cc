@@ -1304,6 +1304,29 @@ TEST_F(IdpNetworkRequestManagerTest, ParseConfigBrandingMinSize) {
   }
 }
 
+// Icon URLs without a file extension (e.g. from image CDNs) are accepted.
+TEST_F(IdpNetworkRequestManagerTest, ParseConfigBrandingIconWithoutExtension) {
+  const char test_json[] = R"({
+  "branding" : {
+    "icons": [
+      {
+        "url": "https://cdn.example.com/abc123=s32",
+        "size": 32
+      }
+    ]
+  }
+  })";
+
+  FetchStatus fetch_status;
+  IdentityProviderMetadata idp_metadata;
+  std::tie(fetch_status, idp_metadata) =
+      SendConfigRequestAndWaitForResponse(test_json);
+
+  EXPECT_EQ(ParseStatus::kSuccess, fetch_status.parse_status);
+  EXPECT_EQ("https://cdn.example.com/abc123=s32",
+            idp_metadata.brand_icon_url.spec());
+}
+
 // Tests various scenarios on resolving branding icon's url for given config
 // url.
 TEST_F(IdpNetworkRequestManagerTest, ParseConfigBrandingIconReltivePath) {
@@ -1442,6 +1465,26 @@ TEST_F(IdpNetworkRequestManagerTest, ParseConfigRequestedLabel) {
   EXPECT_EQ(ParseStatus::kSuccess, fetch_status.parse_status);
   EXPECT_EQ(net::HTTP_OK, fetch_status.response_code);
   EXPECT_EQ("l1", idp_metadata.requested_label);
+}
+
+// Tests that the identity provider's account management page, privacy policy
+// and terms of service are parsed from the config file, including relative
+// URLs.
+TEST_F(IdpNetworkRequestManagerTest, ParseConfigIdpLinks) {
+  const char test_json[] = R"({
+    "account_management_url": "https://idp.test/account",
+    "privacy_policy_url": "/privacy",
+    "terms_of_service_url": "terms"
+  })";
+
+  auto [fetch_status, idp_metadata] =
+      SendConfigRequestAndWaitForResponse(test_json);
+
+  EXPECT_EQ(ParseStatus::kSuccess, fetch_status.parse_status);
+  EXPECT_EQ(GURL("https://idp.test/account"),
+            idp_metadata.account_management_url);
+  EXPECT_EQ(GURL("https://idp.test/privacy"), idp_metadata.privacy_policy_url);
+  EXPECT_EQ(GURL("https://idp.test/terms"), idp_metadata.terms_of_service_url);
 }
 
 // Tests that we send the correct origin for account requests.
@@ -2205,6 +2248,21 @@ TEST_F(IdpNetworkRequestManagerTest, FetchClientMetadataInvalidUrls) {
   ASSERT_EQ(GURL(), data.privacy_policy_url);
   ASSERT_EQ(GURL(), data.terms_of_service_url);
   ASSERT_EQ(GURL(), data.brand_icon_url);
+}
+
+// Icon URLs without a file extension (e.g. from image CDNs) are accepted.
+TEST_F(IdpNetworkRequestManagerTest, FetchClientMetadataIconWithoutExtension) {
+  const std::string brand_icon_url = "https://cdn.rp.example/abc123=s40";
+
+  IdpClientMetadata data = SendClientMetadataRequestAndWaitForResponse(
+      /*client_id=*/"123", R"({"icons": [
+      {
+        "url":  ")" + brand_icon_url +
+                               R"(",
+        "size": 40
+      }
+    ]})");
+  EXPECT_EQ(GURL(brand_icon_url), data.brand_icon_url);
 }
 
 TEST_F(IdpNetworkRequestManagerTest, WellKnownWrongMimeType) {
@@ -3120,6 +3178,80 @@ TEST_F(IdpNetworkRequestManagerTest, GetOrCreateNativeIdpFetcherIdempotent) {
 
   EXPECT_EQ(raw_fetcher, manager->GetNativeIdpFetcher(idp_origin));
   EXPECT_EQ(raw_fetcher, manager->GetOrCreateNativeIdpFetcher(idp_origin));
+}
+
+TEST_F(IdpNetworkRequestManagerTest,
+       AccountsResponseNativeUiDelegationEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kFedCmNativeIdPs);
+
+  const char test_accounts_json[] = R"({
+  "error": "use_native_ui_delegation"
+  })";
+
+  FetchStatus accounts_response;
+  IdpNetworkRequestManager::AccountsResponse accounts;
+  std::tie(accounts_response, accounts) =
+      SendAccountsRequestAndWaitForResponse(test_accounts_json);
+
+  EXPECT_EQ(ParseStatus::kUseNativeUiDelegation,
+            accounts_response.parse_status);
+  EXPECT_EQ(net::HTTP_OK, accounts_response.response_code);
+  EXPECT_TRUE(accounts.accounts.empty());
+  histogram_tester()->ExpectUniqueSample(
+      "Blink.FedCm.Status.AccountsResponseInvalidReason",
+      AccountsResponseInvalidReason::kUseNativeUiDelegation, 1);
+}
+
+TEST_F(IdpNetworkRequestManagerTest,
+       AccountsResponseNativeUiDelegationWithAccounts) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kFedCmNativeIdPs);
+
+  const char test_accounts_json[] = R"({
+  "error": "use_native_ui_delegation",
+  "accounts": [
+    {
+      "id": "1234",
+      "email": "ken@idp.test",
+      "name": "Ken R. Example"
+    }
+  ]
+  })";
+
+  FetchStatus accounts_response;
+  IdpNetworkRequestManager::AccountsResponse accounts;
+  std::tie(accounts_response, accounts) =
+      SendAccountsRequestAndWaitForResponse(test_accounts_json);
+
+  EXPECT_EQ(ParseStatus::kUseNativeUiDelegation,
+            accounts_response.parse_status);
+  EXPECT_EQ(net::HTTP_OK, accounts_response.response_code);
+  EXPECT_TRUE(accounts.accounts.empty());
+  histogram_tester()->ExpectUniqueSample(
+      "Blink.FedCm.Status.AccountsResponseInvalidReason",
+      AccountsResponseInvalidReason::kUseNativeUiDelegation, 1);
+}
+
+TEST_F(IdpNetworkRequestManagerTest,
+       AccountsResponseNativeUiDelegationDisabledWhenFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kFedCmNativeIdPs);
+
+  const char test_accounts_json[] = R"({
+  "error": "use_native_ui_delegation"
+  })";
+
+  FetchStatus accounts_response;
+  IdpNetworkRequestManager::AccountsResponse accounts;
+  std::tie(accounts_response, accounts) =
+      SendAccountsRequestAndWaitForResponse(test_accounts_json);
+
+  // Without the feature, no accounts key is treated as invalid response.
+  EXPECT_EQ(ParseStatus::kInvalidResponseError, accounts_response.parse_status);
+  histogram_tester()->ExpectUniqueSample(
+      "Blink.FedCm.Status.AccountsResponseInvalidReason",
+      AccountsResponseInvalidReason::kNoAccountsKey, 1);
 }
 
 }  // namespace

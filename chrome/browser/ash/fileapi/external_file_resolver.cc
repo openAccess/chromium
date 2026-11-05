@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/ash/fileapi/external_file_url_util.h"
 #include "chrome/browser/ash/fileapi/file_system_backend.h"
@@ -23,12 +24,21 @@
 #include "storage/browser/file_system/file_system_context.h"
 #include "storage/browser/file_system/isolated_context.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace ash {
 namespace {
 
 const char kMimeTypeForRFC822[] = "message/rfc822";
 const char kMimeTypeForMHTML[] = "multipart/related";
+
+// Revokes the file access granted to |origin| while resolving a URL.
+void RevokeFileAccess(scoped_refptr<storage::FileSystemContext> context,
+                      const url::Origin& origin) {
+  FileSystemBackend* const backend = FileSystemBackend::Get(*context);
+  CHECK(backend, base::NotFatalUntil::M163);
+  backend->RevokeAccessForOrigin(origin);
+}
 
 // Helper for obtaining FileSystemContext, FileSystemURL, and mime type on the
 // UI thread.
@@ -42,11 +52,12 @@ class URLHelper {
       net::Error,
       scoped_refptr<storage::FileSystemContext> file_system_context,
       file_manager::util::FileSystemURLAndHandle isolated_file_system,
+      base::ScopedClosureRunner file_access_scope,
       const std::string& mime_type)>;
 
   URLHelper(void* profile_id, const GURL& url, HelperCallback callback)
       : callback_(std::move(callback)) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+    CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
     Lifetime lifetime(this);
     content::GetUIThreadTaskRunner({})->PostTask(
         FROM_HERE,
@@ -59,7 +70,7 @@ class URLHelper {
 
  private:
   void RunOnUIThread(Lifetime lifetime, void* profile_id, const GURL& url) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
     if (!g_browser_process->profile_manager()->IsValidProfile(profile_id)) {
       ReplyResult(net::ERR_FAILED);
       return;
@@ -67,19 +78,23 @@ class URLHelper {
     Profile* const profile = reinterpret_cast<Profile*>(profile_id);
     content::StoragePartition* const storage =
         profile->GetDefaultStoragePartition();
-    DCHECK(storage);
+    CHECK(storage, base::NotFatalUntil::M160);
 
     scoped_refptr<storage::FileSystemContext> context =
         storage->GetFileSystemContext();
-    DCHECK(context.get());
+    CHECK(context.get(), base::NotFatalUntil::M160);
 
     // Obtain the absolute path in the file system.
     const base::FilePath virtual_path = ExternalFileURLToVirtualPath(url);
 
-    // Obtain the file system URL.
+    // Obtain the file system URL. The URL is minted with a unique opaque
+    // origin, and access is granted to that origin below, so that the
+    // operations performed while serving this request pass the per-path
+    // check in FileSystemBackend and nothing else can use the grant.
+    const url::Origin origin;
     isolated_file_system_ =
-        file_manager::util::CreateIsolatedURLFromVirtualPath(
-            *context, url::Origin(), virtual_path);
+        file_manager::util::CreateIsolatedURLFromVirtualPath(*context, origin,
+                                                             virtual_path);
 
     // Check if the obtained path providing external file URL or not.
     if (!isolated_file_system_.url.is_valid()) {
@@ -92,6 +107,12 @@ class URLHelper {
       return;
     }
 
+    FileSystemBackend* const backend = FileSystemBackend::Get(*context);
+    CHECK(backend, base::NotFatalUntil::M163);
+    backend->GrantFileAccessToOrigin(origin, virtual_path);
+    file_access_scope_ = base::ScopedClosureRunner(
+        base::BindOnce(&RevokeFileAccess, context, origin));
+
     file_system_context_ = std::move(context);
     extensions::app_file_handler_util::GetMimeTypeForLocalPath(
         profile, isolated_file_system_.url.path(),
@@ -101,7 +122,7 @@ class URLHelper {
 
   void OnGotMimeTypeOnUIThread(Lifetime lifetime,
                                const std::string& mime_type) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
     mime_type_ = mime_type;
 
     if (mime_type_ == kMimeTypeForRFC822)
@@ -111,18 +132,19 @@ class URLHelper {
   }
 
   void ReplyResult(net::Error error) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
     content::GetIOThreadTaskRunner({})->PostTask(
-        FROM_HERE,
-        base::BindOnce(std::move(callback_), error,
-                       std::move(file_system_context_),
-                       std::move(isolated_file_system_), mime_type_));
+        FROM_HERE, base::BindOnce(std::move(callback_), error,
+                                  std::move(file_system_context_),
+                                  std::move(isolated_file_system_),
+                                  std::move(file_access_scope_), mime_type_));
   }
 
   HelperCallback callback_;
   scoped_refptr<storage::FileSystemContext> file_system_context_;
   file_manager::util::FileSystemURLAndHandle isolated_file_system_;
+  base::ScopedClosureRunner file_access_scope_;
   std::string mime_type_;
 };
 
@@ -130,14 +152,14 @@ class URLHelper {
 
 ExternalFileResolver::ExternalFileResolver(void* profile_id)
     : profile_id_(profile_id), range_parse_result_(net::OK) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 }
 
 ExternalFileResolver::~ExternalFileResolver() = default;
 
 void ExternalFileResolver::ProcessHeaders(
     const net::HttpRequestHeaders& headers) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   // Read the range header if present.
   std::optional<std::string_view> range_header =
       headers.GetHeaderView(net::HttpRequestHeaders::kRange);
@@ -159,7 +181,7 @@ void ExternalFileResolver::Resolve(const std::string& method,
                                    ErrorCallback error_callback,
                                    RedirectCallback redirect_callback,
                                    StreamCallback stream_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   error_callback_ = std::move(error_callback);
   redirect_callback_ = std::move(redirect_callback);
   stream_callback_ = std::move(stream_callback);
@@ -193,16 +215,18 @@ void ExternalFileResolver::OnHelperResultObtained(
     net::Error error,
     scoped_refptr<storage::FileSystemContext> file_system_context,
     file_manager::util::FileSystemURLAndHandle isolated_file_system,
+    base::ScopedClosureRunner file_access_scope,
     const std::string& mime_type) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
 
   if (error != net::OK) {
     std::move(error_callback_).Run(error);
     return;
   }
 
-  DCHECK(file_system_context.get());
+  CHECK(file_system_context.get(), base::NotFatalUntil::M160);
   isolated_file_system_ = std::move(isolated_file_system);
+  file_access_scope_ = std::move(file_access_scope);
   mime_type_ = mime_type;
 
   file_system_context_ = std::move(file_system_context);
@@ -217,7 +241,7 @@ void ExternalFileResolver::OnHelperResultObtained(
 void ExternalFileResolver::OnFileInfoObtained(
     base::File::Error error,
     const base::File::Info& file_info) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M160);
   if (error == base::File::FILE_ERROR_NOT_FOUND) {
     std::move(error_callback_).Run(net::ERR_FILE_NOT_FOUND);
     return;

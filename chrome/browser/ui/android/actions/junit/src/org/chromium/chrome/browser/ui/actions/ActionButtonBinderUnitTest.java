@@ -11,7 +11,6 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
@@ -19,6 +18,7 @@ import static org.mockito.Mockito.verify;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.graphics.Color;
@@ -26,8 +26,6 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.view.View;
 import android.widget.ImageView;
-
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -115,7 +113,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIconId() {
         int resId = android.R.drawable.ic_delete;
         mModel.set(ActionProperties.ICON_ID, resId);
@@ -123,7 +120,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIconId_NullResId() {
         mModel.set(ActionProperties.ICON_ID, android.R.drawable.ic_delete);
         mModel.set(ActionProperties.ICON_ID, Resources.ID_NULL);
@@ -131,7 +127,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIconTint() {
         ColorStateList tint = ColorStateList.valueOf(Color.BLUE);
         mModel.set(ActionProperties.ICON_TINT, tint);
@@ -143,14 +138,12 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIconDrawable() {
         mModel.set(ActionProperties.ICON_DRAWABLE, mDrawable);
         assertEquals(mView.getDrawable(), mDrawable);
     }
 
     @Test
-    @SmallTest
     public void testIconDrawable_NullDrawable() {
         mModel.set(ActionProperties.ICON_DRAWABLE, mDrawable);
         mModel.set(ActionProperties.ICON_DRAWABLE, null);
@@ -158,7 +151,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIconDrawable_OverridesIconId() {
         int resId = android.R.drawable.ic_delete;
         Drawable resDrawable = mActivity.getDrawable(resId);
@@ -173,7 +165,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIconDrawable_FallbackToIconIdWhenNull() {
         int resId = android.R.drawable.ic_delete;
 
@@ -185,7 +176,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testContentDescription() {
         String description = "Test description";
         mModel.set(ActionProperties.CONTENT_DESCRIPTION_RESOLVER, context -> description);
@@ -193,34 +183,35 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testContentDescription_PluralString() {
         int count = 5;
         int pluralResId = 12345;
         String expectedDescription = "5 items";
 
         PropertyModel model = new PropertyModel.Builder(ActionProperties.ALL_KEYS).build();
-        ImageView mockView = spy(new ImageView(mActivity));
-        Context mockContext = mock(Context.class);
-        Resources mockResources = mock(Resources.class);
-
-        doReturn(mockContext).when(mockView).getContext();
-        doReturn(mockResources).when(mockContext).getResources();
+        Resources mockResources = spy(mActivity.getResources());
         doReturn(expectedDescription)
                 .when(mockResources)
                 .getQuantityString(pluralResId, count, count);
+        Context context =
+                new ContextWrapper(mActivity) {
+                    @Override
+                    public Resources getResources() {
+                        return mockResources;
+                    }
+                };
+        ImageView view = new ImageView(context);
 
-        PropertyModelChangeProcessor.create(model, mockView, ActionButtonBinder::bind);
+        PropertyModelChangeProcessor.create(model, view, ActionButtonBinder::bind);
 
         model.set(
                 ActionProperties.CONTENT_DESCRIPTION_RESOLVER,
                 new ResourceTextResolver(pluralResId, count));
 
-        assertEquals(expectedDescription, mockView.getContentDescription());
+        assertEquals(expectedDescription, view.getContentDescription());
     }
 
     @Test
-    @SmallTest
     public void testContentDescription_NullString() {
         mModel.set(ActionProperties.CONTENT_DESCRIPTION_RESOLVER, context -> "Test description");
         mModel.set(ActionProperties.CONTENT_DESCRIPTION_RESOLVER, null);
@@ -228,7 +219,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testTooltipText() {
         String tooltip = "Test tooltip";
         mModel.set(ActionProperties.TOOLTIP_TEXT_RESOLVER, context -> tooltip);
@@ -236,7 +226,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testTooltipText_NullString() {
         mModel.set(ActionProperties.TOOLTIP_TEXT_RESOLVER, context -> "Test tooltip");
         mModel.set(ActionProperties.TOOLTIP_TEXT_RESOLVER, null);
@@ -244,7 +233,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnPressCallback() {
         mModel.set(ActionProperties.ON_PRESS_CALLBACK, mOnPressCallback);
         mView.performClick();
@@ -252,7 +240,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnPressCallback_NullCallback() {
         mModel.set(ActionProperties.ON_PRESS_CALLBACK, mOnPressCallback);
         mModel.set(ActionProperties.ON_PRESS_CALLBACK, null);
@@ -262,7 +249,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnLongPressCallback() {
         mModel.set(ActionProperties.ON_LONG_PRESS_CALLBACK, mOnLongPressCallback);
         mView.performLongClick();
@@ -270,7 +256,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnLongPressCallback_NullCallback() {
         mModel.set(ActionProperties.ON_LONG_PRESS_CALLBACK, mOnLongPressCallback);
         mModel.set(ActionProperties.ON_LONG_PRESS_CALLBACK, null);
@@ -279,7 +264,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testButtonEnabledState_ClickListeners() {
         mModel.set(ActionProperties.ON_PRESS_CALLBACK, null);
         mModel.set(ActionProperties.ON_LONG_PRESS_CALLBACK, null);
@@ -299,7 +283,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testButtonState() {
         mModel.set(ActionProperties.ON_PRESS_CALLBACK, mOnPressCallback);
 
@@ -330,7 +313,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIsSelected() {
         mModel.set(ActionProperties.IS_SELECTED, true);
         assertTrue(mView.isSelected());
@@ -340,7 +322,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIphIntent() {
         mModel.set(ActionProperties.USER_EDUCATION_HELPER, mUserEducationHelper);
         mModel.set(ActionProperties.IPH_INTENT, mIphIntent);
@@ -350,14 +331,12 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test(expected = AssertionError.class)
-    @SmallTest
     public void testIphIntent_NullUserEducationHelper() {
         mModel.set(ActionProperties.USER_EDUCATION_HELPER, null);
         mModel.set(ActionProperties.IPH_INTENT, mIphIntent);
     }
 
     @Test
-    @SmallTest
     public void testIphIntent_NullIphIntent() {
         mModel.set(ActionProperties.USER_EDUCATION_HELPER, mUserEducationHelper);
         mModel.set(ActionProperties.IPH_INTENT, null);
@@ -366,7 +345,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIphIntent_MultipleViews() {
         ImageView view2 = new ImageView(mActivity);
         PropertyModelChangeProcessor.create(mModel, view2, ActionButtonBinder::bind);
@@ -391,7 +369,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDelegation() {
         ImageView targetView = new ImageView(mActivity);
         TestDelegatingView delegatingView = new TestDelegatingView(mActivity, targetView);
@@ -410,7 +387,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIconTint_RestoresDefaultTintFromTintedActionView() {
         ImageView targetView = new ImageView(mActivity);
         ColorStateList defaultTint = ColorStateList.valueOf(Color.GREEN);
@@ -431,7 +407,6 @@ public class ActionButtonBinderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testTabSwitcherButtonView_IconTintUpdatesDrawable() throws Exception {
         TabSwitcherButtonView tabSwitcherButtonView = new TabSwitcherButtonView(mActivity, null);
         TabSwitcherDrawable realDrawable =

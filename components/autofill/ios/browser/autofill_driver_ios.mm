@@ -12,6 +12,7 @@
 #import <type_traits>
 #import <utility>
 #import <variant>
+#import <vector>
 
 #import "base/barrier_callback.h"
 #import "base/check_deref.h"
@@ -30,7 +31,6 @@
 #import "components/autofill/core/browser/form_structure.h"
 #import "components/autofill/core/browser/foundations/autofill_driver_router.h"
 #import "components/autofill/core/common/autofill_debug_features.h"
-#import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/core/common/field_data_manager.h"
 #import "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
 #import "components/autofill/core/common/unique_ids.h"
@@ -279,9 +279,13 @@ void AutofillDriverIOS::ApplyFieldAction(
     mojom::ActionPersistence action_persistence,
     const FieldGlobalId& field_id,
     const std::u16string& value) {
-  auto callback = [](AutofillDriver& driver, mojom::FieldActionType action_type,
-                     mojom::ActionPersistence action_persistence,
-                     FieldRendererId field, const std::u16string& value) {
+  bool handled = false;
+  auto callback = [&handled](AutofillDriver& driver,
+                             mojom::FieldActionType action_type,
+                             mojom::ActionPersistence action_persistence,
+                             FieldRendererId field,
+                             const std::u16string& value) {
+    handled = true;
     // For now, only support filling.
     switch (action_persistence) {
       case mojom::ActionPersistence::kFill: {
@@ -298,6 +302,22 @@ void AutofillDriverIOS::ApplyFieldAction(
   };
   router_->ApplyFieldAction(callback, action_type, action_persistence, field_id,
                             value);
+  // If the frame was not registered in `FormForest` (e.g. for standalone
+  // contenteditable elements without standard HTML forms), find the matching
+  // driver and apply the action directly.
+  if (!handled &&
+      action_type == mojom::FieldActionType::kReplaceSelectionForAtMemory &&
+      base::FeatureList::IsEnabled(kAutofillSupportContentEditableIos)) {
+    if (field_id.frame_token == GetFrameToken()) {
+      callback(*this, action_type, action_persistence, field_id.renderer_id,
+               value);
+    } else if (AutofillDriverIOS* driver =
+                   AutofillDriverIOS::FromWebStateAndLocalFrameToken(
+                       web_state_, field_id.frame_token)) {
+      callback(*driver, action_type, action_persistence, field_id.renderer_id,
+               value);
+    }
+  }
 }
 
 void AutofillDriverIOS::ExtractFormWithField(
@@ -365,15 +385,13 @@ void AutofillDriverIOS::RendererShouldAcceptDataListSuggestion(
     const std::u16string& value) {}
 
 void AutofillDriverIOS::TriggerFormExtractionInDriverFrame(
-    AutofillDriverRouterAndFormForestPassKey pass_key) {
+    AutofillDriverRouterAndFormForestPassKey pass_key,
+    bool force) {
   if (!is_processed()) {
     return;
   }
 
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillAcrossIframesIosTriggerFormExtraction)) {
-    ScanForms();
-  }
+  ScanForms();
 }
 
 void AutofillDriverIOS::ScanForms(bool immediately,
@@ -416,6 +434,11 @@ void AutofillDriverIOS::FetchFormsFilteredByName(
     const std::u16string& form_name,
     FormFetchCompletion completion) {
   if (!web_frame()) {
+    // Report the failed lookup instead of dropping `completion` so callers
+    // querying suggestion availability (e.g. `AutofillAgent`, on behalf of
+    // `FormSuggestionController`'s provider loop) don't stall waiting for a
+    // reply.
+    std::move(completion).Run(std::nullopt);
     return;
   }
 
@@ -431,39 +454,22 @@ void AutofillDriverIOS::FetchFormsFilteredByName(
 }
 
 void AutofillDriverIOS::TriggerFormExtractionInAllFrames(
+    bool force,
     base::OnceCallback<void(bool)> form_extraction_finished_callback) {
-  if (!web_state_) {
-    std::move(form_extraction_finished_callback).Run(false);
-    return;
-  }
-
-  web::WebFramesManager* frames_manager =
-      AutofillJavaScriptFeature::GetInstance()->GetWebFramesManager(web_state_);
-  if (!frames_manager) {
-    std::move(form_extraction_finished_callback).Run(false);
-    return;
-  }
-
-  std::vector<AutofillDriverIOS*> drivers;
-  for (web::WebFrame* frame : frames_manager->GetAllWebFrames()) {
-    if (AutofillDriverIOS* driver =
-            FromWebStateAndWebFrame(web_state_, frame)) {
-      drivers.push_back(driver);
-    }
-  }
+  std::vector<AutofillDriver*> drivers =
+      client_->GetAutofillDriverFactory().GetExistingDrivers();
+  std::erase_if(drivers, [](const AutofillDriver* driver) {
+    return !driver->IsActive();
+  });
 
   auto barrier_callback = base::BarrierCallback<bool>(
       drivers.size(), base::BindOnce([](const std::vector<bool>& successes) {
                         return std::ranges::all_of(successes, std::identity());
                       }).Then(std::move(form_extraction_finished_callback)));
 
-  for (AutofillDriverIOS* driver : drivers) {
-    driver->ScanForms(/*immediately=*/false, barrier_callback);
+  for (AutofillDriver* driver : drivers) {
+    cast(driver)->ScanForms(/*immediately=*/false, barrier_callback);
   }
-}
-
-void AutofillDriverIOS::ClearFormCacheInAllFrames() {
-  // iOS does not maintain a renderer-side form cache across scans.
 }
 
 void AutofillDriverIOS::ObserveFieldVisibility(
@@ -889,13 +895,6 @@ void AutofillDriverIOS::GetNonceForEmailVerification(
 void AutofillDriverIOS::SendEmailVerificationToken(FieldGlobalId email_field_id,
                                                    const std::string& email,
                                                    const std::string& token) {
-  // TODO(crbug.com/380367784): Implement email verification on iOS.
-  NOTIMPLEMENTED();
-}
-
-void AutofillDriverIOS::UpdateEmailVerificationState(
-    const FieldGlobalId& email_field_id,
-    mojom::EmailVerificationState state) {
   // TODO(crbug.com/380367784): Implement email verification on iOS.
   NOTIMPLEMENTED();
 }

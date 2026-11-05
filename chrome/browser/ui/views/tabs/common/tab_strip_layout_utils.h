@@ -9,6 +9,7 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
 
 namespace views {
 class View;
@@ -34,6 +35,8 @@ struct TabStripCollectionLayoutInfo {
   int total_crossover_width = 0;
   int total_min_width = 0;
   int overlap_total = 0;
+  int leading_padding = 0;
+  int trailing_padding = 0;
 };
 
 using ChildVisibilityCallback =
@@ -70,10 +73,18 @@ int GetChildCrossoverWidth(const views::View* child);
 int GetChildOverlap(const views::View* prev_child,
                     const views::View* next_child);
 
+// Returns the leading padding for `child` when it is the first visible child in
+// a tab strip container.
+int GetLeadingChildPadding(const views::View* child);
+
+// Returns the trailing padding for `child` when it is the last visible child in
+// a tab strip container.
+int GetTrailingChildPadding(const views::View* child);
+
 // Measures preferred, crossover, and minimum widths and accumulates total
 // layout info for all visible, non-hidden children matching `is_child_visible`.
 TabStripCollectionLayoutInfo CollectVisibleChildLayoutInfo(
-    const std::vector<views::View*>& children,
+    TabCollectionNode::ChildViews children,
     int container_height,
     ChildVisibilityCallback is_child_visible);
 

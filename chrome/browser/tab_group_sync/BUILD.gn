@@ -29,10 +29,7 @@ source_set("impl") {
     "tab_group_trial.cc",
   ]
 
-  public_deps = [
-    ":tab_group_sync",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ ":tab_group_sync" ]
 
   deps = [
     "//chrome/browser/metrics",
@@ -102,8 +99,6 @@ source_set("factories_impl") {
       "//chrome/browser/tab_group_sync:android",
     ]
   }
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("utils") {
@@ -140,6 +135,7 @@ source_set("unit_tests") {
     ":tab_group_sync",
     "//base",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/saved_tab_groups/public:features",
     "//content/test:test_support",
     "//net",
@@ -199,6 +195,7 @@ if (is_android) {
       "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncControllerImpl.java",
       "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncDelegate.java",
       "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncLocalObserver.java",
+      "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncPendingReconciliation.java",
       "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncRemoteObserver.java",
       "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncUtils.java",
     ]
@@ -265,6 +262,7 @@ if (is_android) {
       "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncControllerImplUnitTest.java",
       "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncDelegateUnitTest.java",
       "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncLocalObserverUnitTest.java",
+      "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncPendingReconciliationUnitTest.java",
       "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncRemoteObserverUnitTest.java",
       "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncTestUtils.java",
       "android/java/src/org/chromium/chrome/browser/tab_group_sync/TabGroupSyncUtilsUnitTest.java",

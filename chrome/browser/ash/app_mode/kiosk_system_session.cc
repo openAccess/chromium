@@ -20,13 +20,13 @@
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_update_service.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_update_service_factory.h"
+#include "chrome/browser/ash/app_mode/kiosk_browser_window_handler.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_mode_idle_app_name_notification.h"
 #include "chrome/browser/ash/app_mode/metrics/network_connectivity_metrics_service.h"
 #include "chrome/browser/ash/app_mode/metrics/periodic_metrics_service.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/chromeos/app_mode/kiosk_browser_window_handler.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
+#include "chromeos/ash/components/network/network_handler.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user.h"
@@ -54,10 +54,12 @@ KioskSystemSession::KioskSystemSession(
     const std::optional<webapps::AppId>& app_id)
     : local_state_(local_state),
       profile_(profile),
-      browser_session_(profile),
+      browser_session_(&local_state, profile),
       kiosk_app_id_(kiosk_app_id),
       network_metrics_service_(
-          std::make_unique<NetworkConnectivityMetricsService>(local_state)),
+          std::make_unique<NetworkConnectivityMetricsService>(
+              &local_state,
+              NetworkHandler::Get()->network_state_handler())),
       periodic_metrics_service_(std::make_unique<PeriodicMetricsService>()),
       low_disk_metrics_service_(local_state),
       network_state_observer_(profile->GetPrefs()) {
@@ -112,7 +114,7 @@ void KioskSystemSession::ShuttingDown() {
 void KioskSystemSession::InitKioskAppUpdateService(const std::string& app_id) {
   // Set the app_id for the current instance of KioskAppUpdateService.
   auto* update_service = KioskAppUpdateServiceFactory::GetForProfile(profile());
-  DCHECK(update_service);
+  CHECK(update_service, base::NotFatalUntil::M160);
   if (update_service) {
     update_service->Init(app_id);
   }

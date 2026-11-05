@@ -11,8 +11,8 @@
 #include "base/time/time.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/upgrade_detector/upgrade_detector.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -21,6 +21,7 @@
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 using PendingUpdateState = UpdateMetricsProvider::PendingUpdateState;
@@ -51,13 +52,13 @@ class UpdateMetricsProviderBrowserTest : public InProcessBrowserTest {
 
   void AddTabInBrowser(BrowserWindowInterface* browser, const GURL& url) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser, url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        browser, url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   }
 
   void NavigateToURL(const GURL& url) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), url, WindowOpenDisposition::CURRENT_TAB,
+        browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   }
 

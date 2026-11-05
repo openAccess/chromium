@@ -12,7 +12,6 @@
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
-#include "ash/system/notification_center/ash_message_center_lock_screen_controller.h"
 #include "ash/system/notification_center/message_center_utils.h"
 #include "ash/system/tray/tray_constants.h"
 #include "ash/system/tray/tray_item_view.h"
@@ -44,15 +43,12 @@ constexpr int kNumberIconFontSize = 11;
 
 constexpr auto kSeparatorPadding = gfx::Insets::VH(6, 4);
 
-const gfx::FontList& GetNumberIconFontList() {
+gfx::FontList GetNumberIconFontList() {
   // |kNumberIconFontSize| is hard-coded as 11, which should be updated when
   // the tray icon size is changed.
   DCHECK_EQ(18, kUnifiedTrayIconSize);
-
-  static gfx::FontList font_list({"Roboto"}, gfx::Font::NORMAL,
-                                 kNumberIconFontSize,
-                                 gfx::Font::Weight::MEDIUM);
-  return font_list;
+  return gfx::FontList({"Roboto"}, gfx::Font::NORMAL, kNumberIconFontSize,
+                       gfx::Font::Weight::MEDIUM);
 }
 
 ui::ColorId SeparatorIconColorId(session_manager::SessionState state) {
@@ -208,6 +204,7 @@ END_METADATA
 
 QuietModeView::QuietModeView(Shelf* shelf) : TrayItemView(shelf) {
   CreateImageView();
+  UpdateLabelOrImageViewColor(is_active());
   image_view()->SetTooltipText(
       l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_QUIET_MODE_TOOLTIP));
   SetVisible(false);
@@ -233,11 +230,6 @@ void QuietModeView::Update() {
 void QuietModeView::HandleLocaleChange() {
   image_view()->SetTooltipText(
       l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_QUIET_MODE_TOOLTIP));
-}
-
-void QuietModeView::OnThemeChanged() {
-  TrayItemView::OnThemeChanged();
-  Update();
 }
 
 void QuietModeView::UpdateLabelOrImageViewColor(bool active) {

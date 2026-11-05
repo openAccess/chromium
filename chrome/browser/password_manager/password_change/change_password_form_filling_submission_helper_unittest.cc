@@ -16,6 +16,7 @@
 #include "base/test/mock_callback.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
+#include "base/types/expected.h"
 #include "base/types/pass_key.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
@@ -31,7 +32,9 @@
 #include "chrome/browser/password_manager/password_change/model_quality_logs_uploader.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/autofill/core/common/autofill_test_util.h"
+#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/core/model_execution/test/mock_remote_model_executor.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/password_manager/core/browser/fake_form_fetcher.h"
@@ -108,8 +111,8 @@ class MockStubPasswordManagerDriver
       (autofill::FieldRendererId,
        autofill::FieldRendererId,
        autofill::FieldRendererId,
-       const std::u16string&,
-       const std::u16string&,
+       const password_manager::PasswordString&,
+       const password_manager::PasswordString&,
        base::OnceCallback<void(const std::optional<autofill::FormData>&)>),
       (override));
   MOCK_METHOD(void,
@@ -213,8 +216,7 @@ class ChangePasswordFormFillingSubmissionHelperTest
     existing_credential_.password_value =
         password_manager::PasswordString(std::u16string(kOldPassword));
     existing_credential_.url = url();
-    existing_credential_.match_type =
-        password_manager::PasswordForm::MatchType::kExact;
+    existing_credential_.match_type = affiliations::MatchType::kExact;
     existing_credential_.in_store =
         password_manager::PasswordForm::Store::kProfileStore;
     existing_credential_.scheme = password_manager::PasswordForm::Scheme::kHtml;
@@ -273,11 +275,15 @@ class ChangePasswordFormFillingSubmissionHelperTest
                            ChangePasswordFormFillingSubmissionHelper* verifier,
                            std::optional<autofill::FormData> result) {
     base::RunLoop run_loop;
-    EXPECT_CALL(driver(), FillChangePasswordForm)
+    EXPECT_CALL(driver(),
+                FillChangePasswordForm(_, _, _, testing::Eq(kOldPassword),
+                                       testing::Eq(kNewPassword), _))
         .WillOnce(DoAll(Invoke(&run_loop, &base::RunLoop::Quit),
                         base::test::RunOnceCallback<5>(result)));
-    verifier->FillChangePasswordForm(manager, kUsername, kOldPassword,
-                                     kNewPassword);
+    verifier->FillChangePasswordForm(
+        manager, kUsername,
+        password_manager::PasswordString(std::u16string(kOldPassword)),
+        password_manager::PasswordString(std::u16string(kNewPassword)));
     run_loop.Run();
   }
 
@@ -453,7 +459,11 @@ TEST_F(ChangePasswordFormFillingSubmissionHelperTest,
 
   ASSERT_TRUE(verifier->capturer());
   static_cast<FakeAnnotatedPageContentCapturer*>(verifier->capturer())
-      ->SimulateResponse(base::unexpected("APC Capture Failed"));
+      ->SimulateResponse(
+          base::unexpected(optimization_guide::AIPageContentError{
+              optimization_guide::AIPageContentExtractionStatus::
+                  kMainFrameNotLive,
+              "APC Capture Failed"}));
 
   EXPECT_EQ(completion_future.Get().error(),
             SubmissionError::kFailedToCaptureContent);
@@ -470,8 +480,10 @@ TEST_F(ChangePasswordFormFillingSubmissionHelperTest, FailedDueToTimeout) {
 
   base::test::TestFuture<SubmissionResult> completion_future;
   auto verifier = CreateVerifier(form_manager, completion_future.GetCallback());
-  verifier->FillChangePasswordForm(form_manager, kUsername, kOldPassword,
-                                   kNewPassword);
+  verifier->FillChangePasswordForm(
+      form_manager, kUsername,
+      password_manager::PasswordString(std::u16string(kOldPassword)),
+      password_manager::PasswordString(std::u16string(kNewPassword)));
 
   EXPECT_FALSE(completion_future.IsReady());
   task_environment()->AdvanceClock(

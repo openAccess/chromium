@@ -9,6 +9,7 @@ import sys
 import unittest
 
 import linker_map_parser
+import models
 import test_util
 
 _SCRIPT_DIR = os.path.dirname(__file__)
@@ -97,6 +98,24 @@ class LinkerMapParserTest(unittest.TestCase):
     self.assertEqual((False, None), fun('void foo()'))
     self.assertEqual((False, None), fun('OUTLINED_FUNCTION_'))
     self.assertEqual((False, None), fun('abc'))
+
+  def test_ParseFeatureSection(self):
+    for section in ('.data', '.data.rel.ro'):
+      with self.subTest(section=section):
+        map_lines = [
+          '     VMA      LMA     Size Align Out     In      Symbol',
+          f'    1000     1000      100     8 {section}',
+          '    1000     1000       18     8         '
+          f'obj/foo.o:({section}..cr_features)',
+          '    1000     1000       18     1                 kMyFeature',
+        ]
+        parser = linker_map_parser.MapFileParserLld('lld_v1')
+        _, syms, _ = parser.Parse(iter(map_lines))
+        self.assertEqual(1, len(syms))
+        self.assertEqual('kMyFeature', syms[0].full_name)
+        self.assertEqual(section, syms[0].section_name)
+        self.assertTrue(syms[0].is_feature)
+        self.assertTrue(syms[0].flags & models.FLAG_FEATURE)
 
   @_CompareWithGolden()
   def test_Tokenize(self):

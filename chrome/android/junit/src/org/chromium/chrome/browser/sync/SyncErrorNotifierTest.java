@@ -14,8 +14,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.os.Bundle;
 
-import androidx.test.filters.SmallTest;
-
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -51,11 +50,16 @@ public class SyncErrorNotifierTest {
     @Mock private NotificationManagerProxy mNotificationManagerProxy;
     @Mock private SyncService mSyncService;
     @Mock private TrustedVaultClient mTrustedVaultClient;
+    @Mock private TrustedVaultClient.ProxyIntentFactory mTrustedVaultProxyIntent;
 
     @Captor private ArgumentCaptor<NotificationWrapper> mNotificationWrapperCaptor;
 
+    @Before
+    public void setup() {
+        when(mTrustedVaultClient.getProxyIntentFactory()).thenReturn(mTrustedVaultProxyIntent);
+    }
+
     @Test
-    @SmallTest
     public void testNoNotification() {
         when(mSyncService.getAccountInfo()).thenReturn(null);
         when(mSyncService.isEngineInitialized()).thenReturn(false);
@@ -73,7 +77,6 @@ public class SyncErrorNotifierTest {
     }
 
     @Test
-    @SmallTest
     public void testPassphraseNotificationMuted() {
         when(mSyncService.getAccountInfo())
                 .thenReturn(
@@ -93,7 +96,6 @@ public class SyncErrorNotifierTest {
     }
 
     @Test
-    @SmallTest
     public void testTrustedVaultIntentCreationFails() {
         when(mSyncService.getAccountInfo())
                 .thenReturn(
@@ -117,7 +119,6 @@ public class SyncErrorNotifierTest {
     }
 
     @Test
-    @SmallTest
     public void testPassphraseNotificationForSignedInUsers() {
         when(mSyncService.getAccountInfo())
                 .thenReturn(
@@ -158,7 +159,6 @@ public class SyncErrorNotifierTest {
     }
 
     @Test
-    @SmallTest
     public void testTrustedVaultNotificationForPasswordsForSignedInUsers() {
         when(mSyncService.getAccountInfo())
                 .thenReturn(
@@ -218,7 +218,6 @@ public class SyncErrorNotifierTest {
     }
 
     @Test
-    @SmallTest
     public void testTrustedVaultNotificationForEverythingForSignedInUsers() {
         when(mSyncService.getAccountInfo())
                 .thenReturn(

@@ -5,6 +5,9 @@
 #ifndef CONTENT_BROWSER_RENDERER_HOST_MEDIA_MOCK_VIDEO_CAPTURE_PROVIDER_H_
 #define CONTENT_BROWSER_RENDERER_HOST_MEDIA_MOCK_VIDEO_CAPTURE_PROVIDER_H_
 
+#include <optional>
+#include <vector>
+
 #include "base/functional/callback_forward.h"
 #include "base/token.h"
 #include "content/browser/renderer_host/media/video_capture_provider.h"
@@ -19,7 +22,25 @@ class MockVideoCaptureProvider : public VideoCaptureProvider {
   MockVideoCaptureProvider();
   ~MockVideoCaptureProvider() override;
 
-  MOCK_METHOD(void, GetDeviceInfosAsync, (GetDeviceInfosCallback), (override));
+  MOCK_METHOD(void,
+              DoGetDeviceInfosAsync,
+              (media::mojom::VideoCaptureDeviceEnumerationMode enumeration_mode,
+               GetDeviceInfosCallback result_callback));
+  void GetDeviceInfosAsync(
+      media::mojom::VideoCaptureDeviceEnumerationMode enumeration_mode,
+      GetDeviceInfosCallback result_callback) override;
+  std::optional<media::mojom::VideoCaptureDeviceEnumerationMode>
+  last_enumeration_mode() const {
+    if (enumeration_modes_.empty()) {
+      return std::nullopt;
+    }
+    return enumeration_modes_.back();
+  }
+  const std::vector<media::mojom::VideoCaptureDeviceEnumerationMode>&
+  enumeration_modes() const {
+    return enumeration_modes_;
+  }
+  void clear_enumeration_modes() { enumeration_modes_.clear(); }
   MOCK_METHOD(std::unique_ptr<VideoCaptureDeviceLauncher>,
               CreateDeviceLauncher,
               (),
@@ -49,6 +70,10 @@ class MockVideoCaptureProvider : public VideoCaptureProvider {
            callback),
       (override));
 #endif
+
+ private:
+  std::vector<media::mojom::VideoCaptureDeviceEnumerationMode>
+      enumeration_modes_;
 };
 
 class MockVideoCaptureDeviceLauncher : public VideoCaptureDeviceLauncher {
@@ -95,8 +120,6 @@ class MockLaunchedVideoCaptureDevice : public LaunchedVideoCaptureDevice {
           base::OnceCallback<void(media::mojom::ApplySubCaptureTargetResult)>));
   MOCK_METHOD0(RequestRefreshFrame, void());
   MOCK_METHOD0(InvalidateBuffers, void());
-  MOCK_METHOD2(DoSetDesktopCaptureWindowId,
-               void(gfx::NativeViewId window_id, base::OnceClosure* done_cb));
   MOCK_METHOD1(OnUtilizationReport, void(media::VideoCaptureFeedback));
 
   void GetPhotoState(
@@ -113,11 +136,6 @@ class MockLaunchedVideoCaptureDevice : public LaunchedVideoCaptureDevice {
   void TakePhoto(
       media::VideoCaptureDevice::TakePhotoCallback callback) override {
     DoTakePhoto(&callback);
-  }
-
-  void SetDesktopCaptureWindowIdAsync(gfx::NativeViewId window_id,
-                                      base::OnceClosure done_cb) override {
-    DoSetDesktopCaptureWindowId(window_id, &done_cb);
   }
 };
 

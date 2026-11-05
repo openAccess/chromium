@@ -8,11 +8,15 @@
 
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/notreached.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/values.h"
 #include "components/enterprise/net/core/enterprise_network_auth_service.h"
 #include "components/enterprise/net/core/provisioning_domain_fetcher.h"
 #include "components/enterprise/net/core/timer_utils.h"
 #include "components/enterprise/net/core/utils.h"
+#include "components/policy/core/common/policy_logger.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -21,39 +25,39 @@ namespace enterprise_net {
 
 namespace {
 
-bool IsTransientHttpError(int net_error, std::optional<int> response_code) {
+ProvisioningDomainProxyConfig::State ClassifyHttpError(
+    int net_error,
+    std::optional<int> response_code) {
   // Network / Socket errors
   if (net_error != net::OK) {
-    // Permanent network/client errors: certificate failures, browser blocks,
-    // invalid URLs, unknown URL scheme.
+    if (net_error == net::ERR_INVALID_URL ||
+        net_error == net::ERR_UNKNOWN_URL_SCHEME) {
+      return ProvisioningDomainProxyConfig::State::kFailedPermanent;
+    }
+
     if (net::IsCertificateError(net_error) ||
         net::IsClientCertificateError(net_error) ||
-        net::IsRequestBlockedError(net_error) ||
-        net_error == net::ERR_INVALID_URL ||
-        net_error == net::ERR_UNKNOWN_URL_SCHEME) {
-      return false;
+        net::IsRequestBlockedError(net_error)) {
+      return ProvisioningDomainProxyConfig::State::kFailedBlocked;
     }
 
     // Other net errors are considered to be transient.
-    return true;
+    return ProvisioningDomainProxyConfig::State::kFailedTransient;
   }
 
   // HTTP Status Codes
   if (response_code.has_value()) {
     int code = *response_code;
-    // 5xx errors are transient.
-    if (code / 100 == 5) {
-      return true;
-    }
-    // 408 and 429 are transient.
-    if (code == net::HTTP_TOO_MANY_REQUESTS ||
+    // 5xx, 401, 403, 408, and 429 are transient.
+    if (code / 100 == 5 || code == net::HTTP_UNAUTHORIZED ||
+        code == net::HTTP_FORBIDDEN || code == net::HTTP_TOO_MANY_REQUESTS ||
         code == net::HTTP_REQUEST_TIMEOUT) {
-      return true;
+      return ProvisioningDomainProxyConfig::State::kFailedTransient;
     }
-    return false;
+    return ProvisioningDomainProxyConfig::State::kFailedBlocked;
   }
 
-  return true;
+  return ProvisioningDomainProxyConfig::State::kFailedTransient;
 }
 
 ProvisioningDomainProxyConfig::State ClassifyFetchError(
@@ -78,20 +82,76 @@ ProvisioningDomainProxyConfig::State ClassifyFetchError(
         case TokenFetchError::kInvalidCredentials:
         case TokenFetchError::kAuthError:
         case TokenFetchError::kCanceled:
+        case TokenFetchError::kInapplicableServer:
           return ProvisioningDomainProxyConfig::State::kFailedBlocked;
         case TokenFetchError::kUnsupportedScope:
           return ProvisioningDomainProxyConfig::State::kFailedPermanent;
       }
 
     case ProvisioningDomainFetchResultStatus::kHttpError:
-      if (IsTransientHttpError(error.net_error, error.response_code)) {
-        return ProvisioningDomainProxyConfig::State::kFailedTransient;
-      }
-      return ProvisioningDomainProxyConfig::State::kFailedPermanent;
+      return ClassifyHttpError(error.net_error, error.response_code);
 
     case ProvisioningDomainFetchResultStatus::kSuccess:
       NOTREACHED();
   }
+}
+
+std::string_view FetchResultStatusToString(
+    ProvisioningDomainFetchResultStatus status) {
+  switch (status) {
+    case ProvisioningDomainFetchResultStatus::kInvalidUrl:
+      return "InvalidUrl";
+    case ProvisioningDomainFetchResultStatus::kTokenFetchError:
+      return "TokenFetchError";
+    case ProvisioningDomainFetchResultStatus::kHttpError:
+      return "HttpError";
+    case ProvisioningDomainFetchResultStatus::kParseError:
+      return "ParseError";
+    case ProvisioningDomainFetchResultStatus::kSuccess:
+      NOTREACHED();
+  }
+}
+
+std::string FormatFetchError(const ProvisioningDomainFetchError& error) {
+  std::string_view status_str = FetchResultStatusToString(error.status);
+  switch (error.status) {
+    case ProvisioningDomainFetchResultStatus::kInvalidUrl:
+      return base::StrCat({status_str, " (net_error: ",
+                           net::ErrorToShortString(error.net_error), ")"});
+    case ProvisioningDomainFetchResultStatus::kTokenFetchError:
+      CHECK(error.token_fetch_error.has_value());
+      return base::StrCat({status_str, " (",
+                           TokenFetchErrorToString(*error.token_fetch_error),
+                           ")"});
+    case ProvisioningDomainFetchResultStatus::kHttpError:
+      if (error.net_error != net::OK && error.response_code.has_value()) {
+        return base::StrCat(
+            {status_str,
+             " (net_error: ", net::ErrorToShortString(error.net_error),
+             ", http_status: ", base::NumberToString(*error.response_code),
+             ")"});
+      }
+      if (error.net_error != net::OK) {
+        return base::StrCat({status_str, " (net_error: ",
+                             net::ErrorToShortString(error.net_error), ")"});
+      }
+      if (error.response_code.has_value()) {
+        return base::StrCat({status_str, " (http_status: ",
+                             base::NumberToString(*error.response_code), ")"});
+      }
+      return std::string(status_str);
+    case ProvisioningDomainFetchResultStatus::kParseError:
+      return std::string(status_str);
+    case ProvisioningDomainFetchResultStatus::kSuccess:
+      NOTREACHED();
+  }
+}
+
+std::string FormatConfigSummary(const ProvisioningDomainProxyConfig& config) {
+  return base::StrCat({"(", base::NumberToString(config.proxy_endpoints.size()),
+                       " proxy endpoint(s), ",
+                       base::NumberToString(config.routing_rules.size()),
+                       " routing rule(s))"});
 }
 
 ProvisioningDomainConfig ParsePolicyFromValue(const base::Value& policy_val) {
@@ -130,9 +190,21 @@ ProxyProvisioningDomainManager::ProxyProvisioningDomainManager(
 
   const base::DictValue* dict = policy_val.GetIfDict();
   if (!dict || !ParseProxyProvisioningDomainPolicy(*dict).has_value()) {
+    LOG_POLICY(ERROR, ENTERPRISE_PROXY)
+        << "Invalid ProxyProvisioningDomains policy entry"
+        << (policy_.pvd_id.empty()
+                ? ""
+                : base::StrCat({" for PvD '", policy_.pvd_id, "'"}))
+        << ". Transitioning to "
+        << ProvisioningDomainStateToString(
+               ProvisioningDomainProxyConfig::State::kFailedPermanent)
+        << ".";
     fetched_config_.pvd_id = policy_.pvd_id;
     fetched_config_.state =
         ProvisioningDomainProxyConfig::State::kFailedPermanent;
+    last_failure_ = FailureDetails{
+        .invalid_policy = true,
+    };
     return;
   }
 
@@ -148,10 +220,18 @@ ProxyProvisioningDomainManager::ProxyProvisioningDomainManager(
         fetched_config_ = std::move(*parsed);
         fetched_config_.state =
             ProvisioningDomainProxyConfig::State::kRefreshNeeded;
+        VLOG_POLICY(1, ENTERPRISE_PROXY)
+            << "Restored cached configuration for PvD '" << policy_.pvd_id
+            << "' " << FormatConfigSummary(fetched_config_) << ".";
+      } else {
+        LOG_POLICY(WARNING, ENTERPRISE_PROXY)
+            << "Failed to parse cached configuration for PvD '"
+            << policy_.pvd_id << "'.";
       }
     }
   }
 
+  is_initial_refresh_pending_ = true;
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
       base::BindOnce(&ProxyProvisioningDomainManager::StartRefreshInternal,
@@ -176,14 +256,23 @@ void ProxyProvisioningDomainManager::ForceRefresh() {
   consecutive_transient_failures_ = 0;
   expiration_timer_.Stop();
   if (is_refresh_in_progress()) {
-    CancelRefresh();
+    CancelRefreshInternal();
   }
   StartRefreshInternal(/*force=*/true);
 }
 
 void ProxyProvisioningDomainManager::CancelRefresh() {
+  const bool was_refresh_in_progress = is_refresh_in_progress();
+  CancelRefreshInternal();
+  if (was_refresh_in_progress) {
+    TransitionToState(ProvisioningDomainProxyConfig::State::kRefreshNeeded);
+  }
+}
+
+void ProxyProvisioningDomainManager::CancelRefreshInternal() {
   expiration_timer_.Stop();
   weak_factory_.InvalidateWeakPtrs();
+  is_initial_refresh_pending_ = false;
   fetcher_.reset();
 }
 
@@ -193,6 +282,27 @@ base::DictValue ProxyProvisioningDomainManager::ToDict() const {
   dict.Set("policy", ProvisioningDomainConfigToDict(policy_));
   dict.Set("fetched_config",
            ProvisioningDomainProxyConfigToDict(fetched_config_));
+  if (last_failure_.has_value()) {
+    base::DictValue failure_dict;
+    if (last_failure_->invalid_policy) {
+      failure_dict.Set("failure_reason", "InvalidPolicy");
+    } else if (last_failure_->fetch_error.has_value()) {
+      const ProvisioningDomainFetchError& error = *last_failure_->fetch_error;
+      failure_dict.Set("failure_reason",
+                       FetchResultStatusToString(error.status));
+      if (error.token_fetch_error.has_value()) {
+        failure_dict.Set("token_fetch_error",
+                         TokenFetchErrorToString(*error.token_fetch_error));
+      }
+      if (error.net_error != net::OK) {
+        failure_dict.Set("net_error", net::ErrorToShortString(error.net_error));
+      }
+      if (error.response_code.has_value()) {
+        failure_dict.Set("http_response_code", *error.response_code);
+      }
+    }
+    dict.Set("last_failure", std::move(failure_dict));
+  }
   return dict;
 }
 
@@ -219,6 +329,7 @@ void ProxyProvisioningDomainManager::ScheduleProactiveRefresh() {
 }
 
 void ProxyProvisioningDomainManager::StartRefreshInternal(bool force) {
+  is_initial_refresh_pending_ = false;
   if (state() == ProvisioningDomainProxyConfig::State::kFailedPermanent) {
     return;
   }
@@ -231,10 +342,15 @@ void ProxyProvisioningDomainManager::StartRefreshInternal(bool force) {
   }
 
   if (!url_loader_factory_) {
+    LOG_POLICY(ERROR, ENTERPRISE_PROXY)
+        << "Failed to start refresh for PvD '" << policy_.pvd_id
+        << "': URL loader factory is unavailable.";
     consecutive_transient_failures_++;
     TransitionToState(ProvisioningDomainProxyConfig::State::kFailedTransient);
     return;
   }
+  VLOG_POLICY(1, ENTERPRISE_PROXY)
+      << "Fetching configuration for PvD '" << policy_.pvd_id << "'.";
   fetcher_ = std::make_unique<ProvisioningDomainFetcher>(policy_, auth_service_,
                                                          url_loader_factory_);
   TransitionToState(ProvisioningDomainProxyConfig::State::kFetching);
@@ -250,19 +366,46 @@ void ProxyProvisioningDomainManager::OnRefreshComplete(
 
   if (result.has_value()) {
     fetched_config_ = std::move(*result);
+    LOG_POLICY(INFO, ENTERPRISE_PROXY)
+        << "Successfully fetched configuration for PvD '" << policy_.pvd_id
+        << "' " << FormatConfigSummary(fetched_config_) << ".";
     TransitionToState(ProvisioningDomainProxyConfig::State::kValid);
   } else {
+    const ProvisioningDomainFetchError& error = result.error();
+    last_failure_ = FailureDetails{
+        .fetch_error = error,
+    };
+
     ProvisioningDomainProxyConfig::State error_state =
-        ClassifyFetchError(result.error());
+        ClassifyFetchError(error);
     if (error_state == ProvisioningDomainProxyConfig::State::kFailedTransient) {
       consecutive_transient_failures_++;
       if (consecutive_transient_failures_ >= kMaxTransientRetries) {
+        LOG_POLICY(ERROR, ENTERPRISE_PROXY)
+            << "Failed to fetch configuration for PvD '" << policy_.pvd_id
+            << "': " << FormatFetchError(error) << ". Max transient retries ("
+            << kMaxTransientRetries << ") reached; transitioning to "
+            << ProvisioningDomainStateToString(
+                   ProvisioningDomainProxyConfig::State::kFailedBlocked)
+            << ".";
         TransitionToState(ProvisioningDomainProxyConfig::State::kFailedBlocked);
       } else {
+        LOG_POLICY(WARNING, ENTERPRISE_PROXY)
+            << "Transient failure fetching configuration for PvD '"
+            << policy_.pvd_id << "' (attempt "
+            << consecutive_transient_failures_ << "/" << kMaxTransientRetries
+            << "): " << FormatFetchError(error) << ". Transitioning to "
+            << ProvisioningDomainStateToString(
+                   ProvisioningDomainProxyConfig::State::kFailedTransient)
+            << ".";
         TransitionToState(
             ProvisioningDomainProxyConfig::State::kFailedTransient);
       }
     } else {
+      LOG_POLICY(ERROR, ENTERPRISE_PROXY)
+          << "Failed to fetch configuration for PvD '" << policy_.pvd_id
+          << "': " << FormatFetchError(error) << ". Transitioning to "
+          << ProvisioningDomainStateToString(error_state) << ".";
       TransitionToState(error_state);
     }
   }
@@ -275,6 +418,7 @@ void ProxyProvisioningDomainManager::TransitionToState(
   switch (new_state) {
     case ProvisioningDomainProxyConfig::State::kValid:
       consecutive_transient_failures_ = 0;
+      last_failure_.reset();
       ScheduleProactiveRefresh();
       break;
 

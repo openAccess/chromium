@@ -488,6 +488,20 @@ uint32_t NextId() {
   return GetContext()->NextId<T>();
 }
 
+// Used by generated ToProto() functions for pending interface endpoints
+// (PendingRemote, PendingReceiver, PendingAssociatedRemote and
+// PendingAssociatedReceiver). Nullable interface fields may be invalid, and
+// those must not be bound or stored in the context. Returns true and sets
+// `output` to 0 (no instance) if `input` is invalid; returns false otherwise.
+template <typename T>
+bool ResetOutputIfNullableInterface(const T& input, uint32_t& output) {
+  if (input.is_valid()) {
+    return false;
+  }
+  output = 0;
+  return true;
+}
+
 // Common code shared between most fuzzer testcases.
 //
 // Per-testcase state needed to run the interface being tested. The lifetime of
@@ -679,6 +693,7 @@ void Testcase<ProtoTestcase, ProtoAction, kMaxActionCount, kMaxActionSize>::Run(
       const auto& action =
           proto_testcase_.actions(action_idx % proto_testcase_.actions_size());
       if (action.ByteSizeLong() <= kMaxActionSize) {
+        ++action_count_;
         RunAction(action, std::move(run_closure));
       } else {
         fuzzer_task_runner->PostTask(FROM_HERE, std::move(run_closure));

@@ -5,7 +5,7 @@
 #include "chrome/browser/chromeos/policy/dlp/clipboard_bubble.h"
 
 #include "ash/public/cpp/new_window_delegate.h"
-#include "ash/public/cpp/style/color_provider.h"
+#include "ash/style/style_util.h"
 #include "base/functional/bind.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_clipboard_bubble_constants.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_policy_constants.h"
@@ -126,8 +126,7 @@ ClipboardBubbleView::ClipboardBubbleView(const std::u16string& text) {
 
   if (chromeos::features::IsSystemBlurEnabled()) {
     layer()->SetBackgroundBlur(kBubbleBlurRadius);
-    layer()->SetBackdropFilterQuality(
-        ash::ColorProvider::kBackgroundBlurQuality);
+    layer()->SetBackdropFilterQuality(ash::StyleUtil::kBackgroundBlurQuality);
   }
 
   // Add the managed icon.
@@ -159,7 +158,7 @@ ClipboardBubbleView::ClipboardBubbleView(const std::u16string& text) {
   // Set the styling of the main text.
   // TODO(crbug.com/1150741): Handle RTL.
   views::StyledLabel::RangeStyleInfo message_style;
-  message_style.override_color_id = cros_tokens::kTextColorPrimary;
+  message_style.override_color = cros_tokens::kTextColorPrimary;
 
   label_->SetText(full_text);
   label_->AddStyleRange(gfx::Range(0, main_message_length), message_style);
@@ -168,7 +167,7 @@ ClipboardBubbleView::ClipboardBubbleView(const std::u16string& text) {
   views::StyledLabel::RangeStyleInfo link_style =
       views::StyledLabel::RangeStyleInfo::CreateForLink(
           base::BindRepeating(&OnLearnMoreLinkClicked));
-  link_style.override_color_id = cros_tokens::kLinkColor;
+  link_style.override_color = cros_tokens::kLinkColor;
 
   label_->AddStyleRange(gfx::Range(main_message_length, full_text.size()),
                         link_style);
@@ -186,7 +185,7 @@ ClipboardBubbleView::ClipboardBubbleView(const std::u16string& text) {
   auto shadow_border = std::make_unique<views::BubbleBorder>(
       views::BubbleBorder::FLOAT, views::BubbleBorder::STANDARD_SHADOW);
   shadow_border->set_rounded_corners(gfx::RoundedCornersF(kBubbleCornerRadius));
-  shadow_border->SetColor(SK_ColorTRANSPARENT);
+  shadow_border->set_background_color(SK_ColorTRANSPARENT);
   shadow_border->set_insets(kBubbleBorderInsets);
   border_->SetSize({kBubbleWidth, INT_MAX});
   border_->SetBorder(std::move(shadow_border));
@@ -221,14 +220,14 @@ ClipboardBlockBubble::ClipboardBlockBubble(const std::u16string& text)
 ClipboardBlockBubble::~ClipboardBlockBubble() = default;
 
 gfx::Size ClipboardBlockBubble::GetBubbleSize() const {
-  DCHECK(label_);
-  DCHECK(button_);
+  CHECK(label_, base::NotFatalUntil::M161);
+  CHECK(button_, base::NotFatalUntil::M161);
   return {kBubbleWidth, 2 * kBubblePadding + label_->bounds().height() +
                             kButtonLabelSpacing + button_->height()};
 }
 
 void ClipboardBlockBubble::SetDismissCallback(base::OnceClosure cb) {
-  DCHECK(button_);
+  CHECK(button_, base::NotFatalUntil::M161);
   button_->SetCallback(std::move(cb));
 }
 
@@ -268,20 +267,20 @@ ClipboardWarnBubble::~ClipboardWarnBubble() {
 }
 
 gfx::Size ClipboardWarnBubble::GetBubbleSize() const {
-  DCHECK(label_);
-  DCHECK(cancel_button_);
-  DCHECK(paste_button_);
+  CHECK(label_, base::NotFatalUntil::M161);
+  CHECK(cancel_button_, base::NotFatalUntil::M161);
+  CHECK(paste_button_, base::NotFatalUntil::M161);
   return {kBubbleWidth, 2 * kBubblePadding + label_->bounds().height() +
                             kButtonLabelSpacing + paste_button_->height()};
 }
 
 void ClipboardWarnBubble::SetDismissCallback(base::OnceClosure cb) {
-  DCHECK(cancel_button_);
+  CHECK(cancel_button_, base::NotFatalUntil::M161);
   cancel_button_->SetCallback(std::move(cb));
 }
 
 void ClipboardWarnBubble::SetProceedCallback(base::OnceClosure cb) {
-  DCHECK(paste_button_);
+  CHECK(paste_button_, base::NotFatalUntil::M161);
   paste_button_->SetCallback(std::move(cb));
 }
 

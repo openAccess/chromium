@@ -47,6 +47,7 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
@@ -140,11 +141,11 @@ END_METADATA
 #if BUILDFLAG(IS_CHROMEOS)
 bool IsArcShortcutApp(Profile* profile, const std::string& app_id) {
   ArcAppListPrefs* arc_prefs = ArcAppListPrefs::Get(profile);
-  DCHECK(arc_prefs);
+  CHECK(arc_prefs, base::NotFatalUntil::M162);
 
   std::unique_ptr<ArcAppListPrefs::AppInfo> app_info =
       arc_prefs->GetApp(app_id);
-  DCHECK(app_info);
+  CHECK(app_info, base::NotFatalUntil::M162);
   return app_info->shortcut;
 }
 #endif
@@ -161,8 +162,9 @@ std::u16string GetWindowTitleForApp(Profile* profile,
   }
 #else
   // On non-ChromeOS, only Chrome app and web app types meaningfully exist.
-  DCHECK(app_type != apps::AppType::kChromeApp &&
-         app_type != apps::AppType::kWeb);
+  CHECK(
+      app_type != apps::AppType::kChromeApp && app_type != apps::AppType::kWeb,
+      base::NotFatalUntil::M162);
 #endif
   return l10n_util::GetStringFUTF16(IDS_PROMPT_APP_UNINSTALL_TITLE,
                                     base::UTF8ToUTF16(app_name));
@@ -332,7 +334,7 @@ void AppUninstallDialogView::InitializeCheckbox(const GURL& app_start_url) {
       is_google ? IDS_APP_UNINSTALL_PROMPT_REMOVE_DATA_CHECKBOX_FOR_GOOGLE
                 : IDS_APP_UNINSTALL_PROMPT_REMOVE_DATA_CHECKBOX_FOR_NON_GOOGLE,
       replacements, &offsets));
-  DCHECK_EQ(replacements.size(), offsets.size());
+  CHECK_EQ(replacements.size(), offsets.size(), base::NotFatalUntil::M162);
   const size_t offset = offsets.back();
 
   checkbox_label->AddStyleRange(
@@ -368,7 +370,7 @@ void AppUninstallDialogView::InitializeViewForExtension(
   const extensions::Extension* extension =
       extensions::ExtensionRegistry::Get(profile)->GetInstalledExtension(
           app_id);
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M162);
 
   extensions::ExtensionManagement* extension_management =
       extensions::ExtensionManagementFactory::GetForBrowserContext(profile);

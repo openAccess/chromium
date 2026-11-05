@@ -10,7 +10,6 @@
 #include "base/barrier_closure.h"
 #include "base/check_is_test.h"
 #include "base/command_line.h"
-#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -84,12 +83,14 @@
 #include "chrome/browser/web_applications/scheduler/fetch_install_info_from_install_url_result.h"
 #include "chrome/browser/web_applications/scheduler/manifest_silent_update_result.h"
 #include "chrome/browser/web_applications/scheduler/update_validated_origin_associations_result.h"
+#include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_install_params.h"
 #include "chrome/browser/web_applications/web_app_management_type.h"
 #include "chrome/browser/web_applications/web_app_proto_utils.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
+#include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "chrome/browser/web_applications/web_app_ui_manager.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
@@ -103,6 +104,7 @@
 #include "components/webapps/browser/web_contents/web_app_url_loader.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/web_applications/isolated_web_apps/commands/cleanup_bundle_cache_command.h"
@@ -433,7 +435,8 @@ void WebAppCommandScheduler::GetControlledFramePartition(
 void WebAppCommandScheduler::InstallFromSync(const WebApp& web_app,
                                              OnceInstallCallback callback,
                                              const base::Location& location) {
-  DCHECK(web_app.is_from_sync_and_pending_installation());
+  CHECK(web_app.is_from_sync_and_pending_installation(),
+        base::NotFatalUntil::M162);
   std::vector<apps::IconInfo> manifest_icon_infos =
       ParseAppIconInfos("InstallFromSyncManifestIcons",
                         web_app.sync_proto().icon_infos())
@@ -447,9 +450,7 @@ void WebAppCommandScheduler::InstallFromSync(const WebApp& web_app,
     theme_color = web_app.sync_proto().theme_color();
   }
   std::optional<webapps::ManifestId> migrated_from_manifest_id;
-  if (base::FeatureList::IsEnabled(
-          features::kWebAppHandleAppMigrationViaSync) &&
-      web_app.sync_proto().has_migrated_from_manifest_id()) {
+  if (web_app.sync_proto().has_migrated_from_manifest_id()) {
     migrated_from_manifest_id = webapps::ManifestId::Create(
         GURL(web_app.sync_proto().migrated_from_manifest_id()));
   }
@@ -727,7 +728,7 @@ void WebAppCommandScheduler::RunIconDiagnosticsForApp(
 }
 
 void WebAppCommandScheduler::InstallAppFromManifest(
-    blink::mojom::ManifestPtr manifest,
+    blink::Manifest manifest,
     const GURL& manifest_url,
     base::WeakPtr<content::WebContents> initiating_web_contents,
     base::WeakPtr<content::Page> initiating_page,
@@ -874,16 +875,17 @@ void WebAppCommandScheduler::ScheduleResolveWebAppPendingMigrationInfo(
 void WebAppCommandScheduler::UpdateValidatedOriginAssociations(
     const webapps::AppId& app_id,
     base::OnceCallback<void(UpdateValidatedOriginAssociationsResult)> callback,
+    bool revalidate_migration_destination,
     const base::Location& location) {
   provider_->command_manager().ScheduleCommand(
       std::make_unique<UpdateValidatedOriginAssociationsCommand>(
-          app_id, std::move(callback)),
+          app_id, std::move(callback), revalidate_migration_destination),
       location);
 }
 
 void WebAppCommandScheduler::ScheduleWebAppInstallFromMigrateFromField(
     base::WeakPtr<content::WebContents> web_contents,
-    blink::mojom::ManifestPtr manifest,
+    blink::Manifest manifest,
     WebAppInstallFromMigrateFromFieldCallback callback,
     const base::Location& location) {
   provider_->command_manager().ScheduleCommand(
@@ -973,7 +975,16 @@ void WebAppCommandScheduler::LaunchAppWithKeepAlives(
     std::unique_ptr<ScopedProfileKeepAlive> profile_keep_alive,
     std::unique_ptr<ScopedKeepAlive> browser_keep_alive,
     const base::Location& location) {
-  DCHECK(provider_->is_registry_ready());
+  // TODO(crbug.com/crbug.com/506131577): `WebAppProvider::on_registry_ready()`
+  // may fire in the case database reads fail, `WebAppProvider` is not
+  // initialized and `WebAppProvider::is_registry_ready()` reports false. Either
+  // `on_registry_ready()` should be renamed to indicate it is independent of
+  // init success or better error handling is implemented.
+  if (!provider_->is_registry_ready()) {
+    std::move(callback).Run(nullptr, nullptr,
+                            apps::LaunchContainer::kLaunchContainerNone);
+    return;
+  }
 
   // Decorate the callback to ensure the keep alives are kept alive during the
   // execution of the launch.

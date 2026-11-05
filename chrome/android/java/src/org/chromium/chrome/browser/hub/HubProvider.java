@@ -10,7 +10,6 @@ import android.app.Activity;
 
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackController;
-import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
@@ -71,10 +70,10 @@ public class HubProvider {
             BackPressManager backPressManager,
             MenuOrKeyboardActionController menuOrKeyboardActionController,
             Supplier<SnackbarManager> snackbarManagerSupplier,
-            Supplier<BottomSheetController> bottomSheetControllerSupplier,
+            Supplier<@Nullable BottomSheetController> bottomSheetControllerSupplier,
             @Nullable BottomBarHostManager bottomBarHostManager,
             Supplier<TabModelSelector> tabModelSelectorSupplier,
-            Supplier<MenuButtonCoordinator> menuButtonCoordinatorSupplier,
+            Supplier<@Nullable MenuButtonCoordinator> menuButtonCoordinatorSupplier,
             MonotonicObservableSupplier<EdgeToEdgeController> edgeToEdgeSupplier,
             SearchActivityClient searchActivityClient,
             NonNullObservableSupplier<Boolean> xrSpaceModeObservableSupplier,
@@ -88,7 +87,9 @@ public class HubProvider {
                             assert tabModelSelectorSupplier.get() != null;
                             NullableObservableSupplier<Tab> tabSupplier =
                                     tabModelSelectorSupplier.get().getCurrentTabSupplier();
-                            assert menuButtonCoordinatorSupplier.get() != null;
+                            MenuButtonCoordinator menuButtonCoordinator =
+                                    menuButtonCoordinatorSupplier.get();
+                            assert menuButtonCoordinator != null;
 
                             SnackbarManager snackbarManager = snackbarManagerSupplier.get();
                             assert snackbarManager != null;
@@ -105,7 +106,7 @@ public class HubProvider {
                                     bottomSheetController,
                                     bottomBarHostManager,
                                     tabSupplier,
-                                    menuButtonCoordinatorSupplier.get(),
+                                    menuButtonCoordinator,
                                     mHubShowPaneHelper,
                                     edgeToEdgeSupplier,
                                     searchActivityClient,
@@ -121,11 +122,6 @@ public class HubProvider {
 
                     selector.commitAllTabClosures();
                     selector.selectModel(isIncognito);
-                    if (isIncognito) {
-                        int tabCount = selector.getCurrentModelTabCountSupplier().get();
-                        RecordHistogram.recordBooleanHistogram(
-                                "Android.TabSwitcher.IncognitoClickedIsEmpty", tabCount == 0);
-                    }
                 };
         assumeNonNull(mCallbackController);
         mHubManagerSupplier.onAvailable(

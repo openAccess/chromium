@@ -59,6 +59,8 @@ class IwaDevPageHandler
       const GURL& web_bundle_url,
       iwa_dev::mojom::UpdateInfoPtr update_info,
       InstallAppFromUpdateManifestCallback callback) override;
+  void LaunchApp(const std::string& app_id,
+                 LaunchAppCallback callback) override;
   void ParseUpdateManifestFromUrl(
       const GURL& update_manifest_url,
       ParseUpdateManifestFromUrlCallback callback) override;
@@ -123,6 +125,16 @@ class IwaDevPageHandler
 
   base::expected<const web_app::WebApp*, mojo_base::mojom::ErrorPtr>
   GetInstalledAppById(const std::string& app_id);
+
+  bool IsDevModeAppOrSubApp(const webapps::AppId& app_id) const;
+
+  iwa_dev::mojom::IwaDevModeAppInfoPtr MapToMojomIwaDevModeAppInfo(
+      const web_app::WebApp& app) const;
+
+  std::vector<iwa_dev::mojom::SubAppInfoPtr> GetDevModeSubAppsInfo(
+      const webapps::AppId& parent_app_id) const;
+
+  const web_app::WebApp& GetParentApp(const web_app::WebApp& sub_app) const;
 
   const raw_ref<Profile> profile_;
   const raw_ref<web_app::WebAppProvider> provider_;

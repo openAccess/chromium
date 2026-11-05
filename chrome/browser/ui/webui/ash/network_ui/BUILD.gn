@@ -13,17 +13,19 @@ static_library("network_ui") {
     "onc_import_message_handler.cc",
     "onc_import_message_handler.h",
   ]
-
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
+  public_deps = [
+    "//ash/constants",
+    "//chromeos/ash/services/cellular_setup/public/mojom",
+    "//chromeos/ash/services/connectivity/public/mojom",
+    "//chromeos/services/network_config/public/mojom",
+  ]
   deps = [
+    "//ash/public/cpp",
     "//ash/strings",
     "//ash/webui/common:trusted_types_util",
     "//ash/webui/network_ui:network_diagnostics_resource_provider",
     "//ash/webui/network_ui:network_health_resource_provider",
-    "//ash/webui/network_ui:traffic_counters_resource_provider",
     "//base",
-    "//chrome/browser:browser_process",
     "//chrome/browser/ash/file_manager",
     "//chrome/browser/ash/net/network_health",
     "//chrome/browser/ash/system_logs",
@@ -31,10 +33,11 @@ static_library("network_ui") {
     "//chrome/browser/extensions",
     "//chrome/browser/feedback",
     "//chrome/browser/net",
+    "//chrome/browser/policy",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/chromeos/network_ui:resources",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/ash/system",
+    "//chrome/browser/ui/select_file_policy",
     "//chrome/browser/ui/webui/ash/cellular_setup",
     "//chrome/browser/ui/webui/ash/internet",
     "//chrome/browser/ui/webui/certificate_manager",
@@ -48,9 +51,39 @@ static_library("network_ui") {
     "//components/device_event_log",
     "//components/onc",
     "//components/policy/core/browser",
+    "//components/prefs",
     "//components/server_certificate_database",
+    "//components/user_manager",
     "//content/public/browser",
     "//ui/chromeos/strings:strings_provider",
     "//ui/webui",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [
+    "network_config_message_handler_unittest.cc",
+    "onc_import_message_handler_unittest.cc",
+  ]
+
+  deps = [
+    ":network_ui",
+    "//ash/constants",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/browser/ash/login/users:test_support",
+    "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
+    "//chromeos/ash/components/dbus/hermes",
+    "//chromeos/ash/components/dbus/shill",
+    "//chromeos/ash/components/network",
+    "//chromeos/ash/components/network:test_support",
+    "//components/onc",
+    "//components/user_manager:test_support",
+    "//content/test:test_support",
+    "//testing/gtest",
+    "//ui/shell_dialogs",
+    "//ui/shell_dialogs:test_support",
   ]
 }

@@ -42,8 +42,10 @@ source_set("offline_pages") {
     "//components/offline_pages/core/background:background_offliner",
     "//components/offline_pages/core/request_header",
     "//components/sessions",
+    "//components/tabs:public",
     "//content/public/browser",
     "//net",
+    "//ui/base/unowned_user_data",
     "//url",
   ]
 }
@@ -69,7 +71,6 @@ source_set("impl") {
 
   public_deps = [ ":offline_pages" ]
   deps = [
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser:renderer_preferences_util",
     "//chrome/browser/content_settings",
     "//chrome/browser/content_settings:content_settings_factory",
@@ -81,6 +82,7 @@ source_set("impl") {
     "//components/offline_pages/content/background_loader",
     "//components/offline_pages/core/downloads:offline_pages_ui_adapter",
     "//components/offline_pages/core/request_header",
+    "//components/tabs:public",
     "//services/service_manager/public/cpp",
   ]
 
@@ -127,6 +129,7 @@ source_set("impl") {
       "//chrome/browser/ui/android/tab_model",
       "//components/image_fetcher/core",
       "//components/offline_items_collection/core",
+      "//components/paint_preview/buildflags",
     ]
   }
 }
@@ -170,11 +173,14 @@ source_set("unit_tests") {
     "//chrome/browser/preloading:prefs",
     "//chrome/browser/renderer_host",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//chrome/test/base:testing_browser_process",
     "//components/back_forward_cache",
     "//components/image_fetcher/core:test_support",
     "//components/offline_pages/content/background_loader:test_support",
     "//components/offline_pages/core:test_support",
     "//components/offline_pages/core/background:test_support",
+    "//components/tabs:test_support",
   ]
   if (is_android) {
     sources += [
@@ -199,6 +205,7 @@ if (is_android) {
       "//chrome/browser/profiles:profile",
       "//chrome/test:test_support",
       "//chrome/test:test_support_ui_android",
+      "//chrome/test/base:chrome_test_utils",
       "//components/offline_pages/core",
       "//components/offline_pages/core/background:background_offliner",
       "//content/test:test_support",

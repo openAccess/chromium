@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "base/run_loop.h"
+#include "base/strings/string_util.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -20,13 +21,12 @@
 #include "chrome/browser/ai/ai_test_utils.h"
 #include "chrome/browser/ai/features.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
+#include "components/optimization_guide/core/model_execution/configs/substitution_builder.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/fake_manifest_broker.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/test/scenario_builder.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
 #include "components/optimization_guide/core/model_execution/test/mock_on_device_capability.h"
-#include "components/optimization_guide/core/model_execution/test/substitution_builder.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/feature_configs.pb.h"
 #include "components/optimization_guide/proto/features/writing_assistance_api.pb.h"
@@ -50,7 +50,6 @@ using ::blink::mojom::AILanguageCode;
 using ::blink::mojom::AILanguageCodePtr;
 using ::on_device_model::mojom::PerformanceClass;
 using ::optimization_guide::FieldSubstitution;
-using ::optimization_guide::ForbidUnsafe;
 using ::optimization_guide::ProtoField;
 using ::optimization_guide::StringValueField;
 using ::optimization_guide::proto::WritingAssistanceApiRequest;
@@ -58,6 +57,8 @@ using ::optimization_guide::proto::WritingAssistanceApiResponse;
 using ::testing::_;
 using ::testing::ElementsAre;
 using ::testing::ElementsAreArray;
+using ::testing::HasSubstr;
+using ::testing::Not;
 
 constexpr char kSharedContextString[] = "test shared context";
 constexpr char kContextString[] = "test context";
@@ -115,42 +116,17 @@ blink::mojom::AIRewriterCreateOptionsPtr GetDefaultOptions() {
       /*output_language=*/AILanguageCode::New(""));
 }
 
-optimization_guide::proto::FeatureTextSafetyConfiguration CreateSafetyConfig() {
-  optimization_guide::proto::FeatureTextSafetyConfiguration safety_config;
-  safety_config.set_feature(optimization_guide::proto::
-                                MODEL_EXECUTION_FEATURE_WRITING_ASSISTANCE_API);
-  safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-  {
-    auto* check = safety_config.add_request_check();
-    check->mutable_input_template()->Add(FieldSubstitution(
-        "%s", ProtoField({WritingAssistanceApiRequest::kContextFieldNumber})));
-  }
-  {
-    auto* check = safety_config.add_request_check();
-    check->mutable_input_template()->Add(FieldSubstitution(
-        "%s",
-        ProtoField({WritingAssistanceApiRequest::kSharedContextFieldNumber})));
-  }
-  {
-    auto* check = safety_config.add_request_check();
-    check->mutable_input_template()->Add(FieldSubstitution(
-        "%s",
-        ProtoField({WritingAssistanceApiRequest::kRewriteTextFieldNumber})));
-  }
-
-  return safety_config;
-}
-
 optimization_guide::proto::OnDeviceModelExecutionFeatureConfig
 CreateRewriterConfig() {
   optimization_guide::proto::OnDeviceModelExecutionFeatureConfig config;
-  config.set_can_skip_text_safety(true);
   config.set_feature(optimization_guide::proto::ModelExecutionFeature::
                          MODEL_EXECUTION_FEATURE_WRITING_ASSISTANCE_API);
 
   auto& input_config = *config.mutable_input_config();
   input_config.set_request_base_name(
       WritingAssistanceApiRequest().GetTypeName());
+  input_config.set_max_execute_tokens(
+      blink::mojom::kWritingAssistanceMaxInputTokenSize);
 
   *input_config.add_execute_substitutions() = FieldSubstitution(
       "%s", ProtoField({WritingAssistanceApiRequest::kContextFieldNumber}));
@@ -177,7 +153,6 @@ class AIRewriterTest : public AITestUtils::AITestBase {
   proto::SolutionConfig CreateSolution() override {
     proto::SolutionConfig solution_config;
     *solution_config.mutable_feature() = CreateRewriterConfig();
-    *solution_config.mutable_safety() = CreateSafetyConfig();
     return solution_config;
   }
 
@@ -287,29 +262,6 @@ TEST_F(AIRewriterTest, CreateRewriterModelNotEligible) {
             blink::mojom::AIManagerCreateClientError::kUnableToCreateSession);
 }
 
-#if BUILDFLAG(IS_ANDROID)
-TEST_F(AIRewriterTest, CreateRewriterSafetyConfigNotAvailable) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    // Provide a safety asset that does not support rewriter.
-    solution_config.mutable_safety()->set_feature(
-        optimization_guide::proto::MODEL_EXECUTION_FEATURE_TEST);
-    return solution_config;
-  }());
-
-  TestCreateRewriterClient create_rewriter_client;
-  GetAIManagerRemote()->CreateRewriter(
-      create_rewriter_client.BindNewPipeAndPassRemote(), GetDefaultOptions(),
-      /*monitor=*/mojo::NullRemote());
-
-  CreateRewriterResult result = create_rewriter_client.result().Take();
-  EXPECT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().error,
-            blink::mojom::AIManagerCreateClientError::kUnableToCreateSession);
-}
-#endif
-
 TEST_F(AIRewriterTest, CreateRewriterUnableToCalculateTokenSize) {
   // Incorrect `request_base_name` cause session to fail constructing input
   // string and checking token size.
@@ -361,6 +313,43 @@ TEST_F(AIRewriterTest, ContextWindowUsesContextLimit) {
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(client.context_window(),
             blink::mojom::kWritingAssistanceMaxInputTokenSize);
+}
+
+TEST_F(AIRewriterTest, CustomInputContextLimit) {
+  constexpr uint32_t kCustomMaxTokens = 5000;
+  SetModelInputContextLimit(kCustomMaxTokens);
+
+  TestCreateRewriterClient client;
+  GetAIManagerRemote()->CreateRewriter(client.BindNewPipeAndPassRemote(),
+                                       GetDefaultOptions(),
+                                       /*monitor=*/mojo::NullRemote());
+  CreateRewriterResult result = client.result().Take();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(client.context_window(), kCustomMaxTokens);
+
+  SetSizeInTokens(kCustomMaxTokens + 1);
+
+  TestCreateRewriterClient create_client;
+  GetAIManagerRemote()->CreateRewriter(
+      create_client.BindNewPipeAndPassRemote(), GetDefaultOptions(),
+      /*monitor=*/mojo::NullRemote());
+  CreateRewriterResult create_result = create_client.result().Take();
+  EXPECT_FALSE(create_result.has_value());
+  EXPECT_EQ(create_result.error().error,
+            blink::mojom::AIManagerCreateClientError::kInitialInputTooLarge);
+  EXPECT_EQ(create_result.error().quota_error_info->requested,
+            kCustomMaxTokens + 1);
+  EXPECT_EQ(create_result.error().quota_error_info->quota, kCustomMaxTokens);
+
+  mojo::Remote<blink::mojom::AIRewriter> rewriter_remote(
+      std::move(result.value()));
+  AITestUtils::TestStreamingResponder responder;
+  rewriter_remote->Rewrite(kInputString, kContextString, responder.BindRemote());
+  EXPECT_FALSE(responder.WaitForCompletion());
+  EXPECT_EQ(responder.error_status(),
+            blink::mojom::ModelStreamingResponseStatus::kErrorInputTooLarge);
+  ASSERT_EQ(responder.quota_error_info().requested, kCustomMaxTokens + 1);
+  ASSERT_EQ(responder.quota_error_info().quota, kCustomMaxTokens);
 }
 
 TEST_F(AIRewriterTest, CanCreateDefaultOptions) {
@@ -533,119 +522,6 @@ TEST_F(AIRewriterTest, Priority) {
               ElementsAre("hi"));
 }
 
-TEST_F(AIRewriterTest, TextSafetyInput) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    return solution_config;
-  }());
-
-  fake_broker_->settings().set_execute_result({"hi"});
-  auto rewriter_remote = GetAIRewriterRemote();
-  EXPECT_THAT(Rewrite(*rewriter_remote, kInputString, kContextString),
-              ElementsAre("hi"));
-
-  AITestUtils::TestStreamingResponder responder;
-  rewriter_remote->Rewrite("unsafe", kContextString, responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-}
-
-TEST_F(AIRewriterTest, TextSafetyContext) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    return solution_config;
-  }());
-
-  fake_broker_->settings().set_execute_result({"hi"});
-  auto rewriter_remote = GetAIRewriterRemote();
-  EXPECT_THAT(Rewrite(*rewriter_remote, kInputString, kContextString),
-              ElementsAre("hi"));
-
-  AITestUtils::TestStreamingResponder responder;
-  rewriter_remote->Rewrite(kInputString, "unsafe", responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-}
-
-TEST_F(AIRewriterTest, TextSafetySharedContext) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    return solution_config;
-  }());
-
-  const auto options = blink::mojom::AIRewriterCreateOptions::New(
-      "unsafe", blink::mojom::AIRewriterTone::kAsIs,
-      blink::mojom::AIRewriterFormat::kAsIs,
-      blink::mojom::AIRewriterLength::kAsIs,
-      /*expected_input_languages=*/std::vector<AILanguageCodePtr>(),
-      /*expected_context_languages=*/std::vector<AILanguageCodePtr>(),
-      /*output_language=*/AILanguageCode::New(""));
-
-  mojo::Remote<blink::mojom::AIRewriter> rewriter_remote =
-      GetAIRewriterRemote(options.Clone());
-  AITestUtils::TestStreamingResponder responder;
-  rewriter_remote->Rewrite(kInputString, kContextString,
-                           responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-}
-
-TEST_F(AIRewriterTest, TextSafetyOutput) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_minimum_tokens(1000);
-    return solution_config;
-  }());
-
-  // Fake text safety checker looks for the string "unsafe".
-  fake_broker_->settings().set_execute_result(
-      {"a", "b", "c", "d", "e", "f", "g", "unsafe", "h"});
-  auto rewriter_remote = GetAIRewriterRemote();
-  AITestUtils::TestStreamingResponder responder;
-  rewriter_remote->Rewrite(kInputString, kContextString,
-                           responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-  EXPECT_TRUE(responder.responses().empty());
-}
-
-TEST_F(AIRewriterTest, TextSafetyOutputPartial) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_minimum_tokens(3);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_token_interval(2);
-    return solution_config;
-  }());
-
-  // Fake text safety checker looks for the string "unsafe".
-  fake_broker_->settings().set_execute_result(
-      {"a", "b", "c", "d", "e", "f", "g", "unsafe", "h"});
-  auto rewriter_remote = GetAIRewriterRemote();
-  AITestUtils::TestStreamingResponder responder;
-  rewriter_remote->Rewrite(kInputString, kContextString,
-                           responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-  // Partial checks should still allow some output to stream.
-  EXPECT_THAT(responder.responses(), ElementsAre("abc", "de", "fg"));
-}
-
 TEST_F(AIRewriterTest, ServiceCrash) {
   fake_broker_->settings().set_execute_result({"hi"});
 
@@ -749,6 +625,39 @@ TEST_F(AIRewriterTest, CreateOnDeviceAiUserSettingDisabled) {
   SetOnDeviceAiUserSetting(true);
 }
 
+TEST_F(AIRewriterTest, VerifyPromptComposition) {
+  mojo::Remote<blink::mojom::AIRewriter> rewriter_remote =
+      GetAIRewriterRemote(GetDefaultOptions());
+
+  // First execution verifies that shared_context, per-call context, and input
+  // are all composed into the prompt.
+  {
+    AITestUtils::TestStreamingResponder responder;
+    rewriter_remote->Rewrite("First input", "First context",
+                             responder.BindRemote());
+    ASSERT_TRUE(responder.WaitForCompletion());
+    std::string prompt1 = base::JoinString(responder.responses(), "");
+    EXPECT_THAT(prompt1, HasSubstr(kSharedContextString));
+    EXPECT_THAT(prompt1, HasSubstr("First context"));
+    EXPECT_THAT(prompt1, HasSubstr("First input"));
+  }
+
+  // Second execution on the same session verifies that shared_context is
+  // retained while execution fields are updated without leaking previous
+  // inputs.
+  {
+    AITestUtils::TestStreamingResponder responder;
+    rewriter_remote->Rewrite("Second input", "Second context",
+                             responder.BindRemote());
+    ASSERT_TRUE(responder.WaitForCompletion());
+    std::string prompt2 = base::JoinString(responder.responses(), "");
+    EXPECT_THAT(prompt2, HasSubstr(kSharedContextString));
+    EXPECT_THAT(prompt2, HasSubstr("Second context"));
+    EXPECT_THAT(prompt2, HasSubstr("Second input"));
+    EXPECT_THAT(prompt2, Not(HasSubstr("First input")));
+  }
+}
+
 #if !BUILDFLAG(IS_ANDROID)
 class AIRewriterWithFeatureConfigTest : public AIRewriterTest {
  public:
@@ -781,11 +690,10 @@ class AIRewriterWithFeatureConfigTest : public AIRewriterTest {
                 proto::BaseModelRecipe::PERFORMANCE_HINT_HIGHEST_QUALITY,
                 {}, kDefaultMaxTokens),
             optimization_guide::FakeBaseModelAsset::Content{}, "1.0.0.0")
-        .AddSafetyModel("safety")
-        .AddSafeSolution("writing_assistance_api", "base", "safety",
-                         default_solution)
-        .AddSafeSolution("rewriter_gemma4", "gemma4_base", "safety",
-                         default_solution)
+        .AddUnsafeSolution("writing_assistance_api", "base",
+                           default_solution)
+        .AddUnsafeSolution("rewriter_gemma4", "gemma4_base",
+                           default_solution)
         .SetFeatureConfig("writing_assistance_api",
                           optimization_guide::AnyWrapProto(writer_cfg))
         .Finish();

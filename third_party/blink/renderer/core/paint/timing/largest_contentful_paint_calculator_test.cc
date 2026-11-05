@@ -4,12 +4,16 @@
 
 #include "third_party/blink/renderer/core/paint/timing/largest_contentful_paint_calculator.h"
 
+#include <optional>
+
 #include "base/test/scoped_feature_list.h"
 #include "base/test/tracing/trace_event_analyzer.h"
 #include "base/test/tracing/trace_test_utils.h"
+#include "base/time/time.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html/html_image_element.h"
+#include "third_party/blink/renderer/core/loader/resource/image_resource_info.h"
 #include "third_party/blink/renderer/core/paint/paint_flags.h"
 #include "third_party/blink/renderer/core/paint/timing/largest_contentful_paint_manager.h"
 #include "third_party/blink/renderer/core/paint/timing/mock_paint_timing_callback_manager.h"
@@ -20,52 +24,79 @@
 #include "third_party/blink/renderer/core/timing/dom_window_performance.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_record_builder.h"
 #include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
+#include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
+#include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
+#include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
+#include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkSurface.h"
 
 namespace blink {
 
 namespace {
-constexpr const char kTraceCategories[] = "loading,rail,devtools.timeline";
 
+constexpr const char kTraceCategories[] = "loading,rail,devtools.timeline";
 constexpr const char kLCPCandidate[] = "largestContentfulPaint::Candidate";
+
+class CrossOriginNullImageResourceInfo final
+    : public GarbageCollected<CrossOriginNullImageResourceInfo>,
+      public ImageResourceInfo {
+ public:
+  CrossOriginNullImageResourceInfo() = default;
+
+  void Trace(Visitor* visitor) const override {
+    ImageResourceInfo::Trace(visitor);
+  }
+
+ private:
+  const KURL& Url() const override { return url_; }
+  bool IsAutomaticUpgrade() const override { return false; }
+  base::TimeTicks LoadResponseEnd() const override { return base::TimeTicks(); }
+  base::TimeTicks LoadStart() const override { return base::TimeTicks(); }
+  base::TimeTicks LoadEnd() const override { return base::TimeTicks(); }
+  base::TimeTicks DiscoveryTime() const override { return base::TimeTicks(); }
+  const ResourceResponse& GetResponse() const override { return response_; }
+  bool IsCacheValidator() const override { return false; }
+  bool IsCorsSameOrigin(
+      DoesCurrentFrameHaveSingleSecurityOrigin) const override {
+    return false;
+  }
+  std::optional<ResourceError> GetResourceError() const override {
+    return std::nullopt;
+  }
+  void SetDecodedSize(size_t) override {}
+  void WillAddClientOrObserver() override {}
+  void DidRemoveClientOrObserver() override {}
+  void EmulateLoadStartedForInspector(
+      ResourceFetcher*,
+      const AtomicString& initiator_name) override {}
+  void LoadDeferredImage(ResourceFetcher* fetcher) override {}
+  const std::optional<AdProvenance>& GetAdProvenance() const override {
+    return ad_provenance_;
+  }
+  const HashSet<String>* GetUnsupportedImageMimeTypes() const override {
+    return nullptr;
+  }
+  std::optional<WebURLRequest::Priority> RequestPriority() const override {
+    return std::nullopt;
+  }
+
+  const KURL url_;
+  const ResourceResponse response_;
+  std::optional<AdProvenance> ad_provenance_;
+};
+
 }  // namespace
 
-class LargestContentfulPaintCalculatorTest : public PaintTimingTestBase {
+class LargestContentfulPaintCalculatorTest : public PaintTimingTestBase,
+                                             public LcpTestSupport {
  public:
   void SetUp() override {
     PaintTimingTestBase::SetUp();
 
-    test_delegate_ = MakeGarbageCollected<LcpTestDelegate>();
-    GetLargestContentfulPaintCalculator()->SetDelegateForTest(test_delegate_);
+    AttachTo(GetDocument());
     trace_analyzer::Start(kTraceCategories);
   }
-
-  uint64_t LargestReportedSize() {
-    return test_delegate_->LargestReportedSize();
-  }
-
-  uint64_t LargestImagePaintSize() {
-    return GetLargestContentfulPaintCalculator()
-        ->LatestLcpDetails()
-        .largest_image_paint_size;
-  }
-
-  base::TimeTicks LargestImagePaintTime() {
-    return GetLargestContentfulPaintCalculator()
-        ->LatestLcpDetails()
-        .largest_image_paint_time;
-  }
-
-  double LargestContentfulPaintCandidateImageBPP() {
-    return GetLargestContentfulPaintCalculator()
-        ->LatestLcpDetails()
-        .largest_contentful_paint_image_bpp;
-  }
-
-  uint64_t CandidateCount() { return test_delegate_->CandidateCount(); }
-
-  Element* CurrentLcpCandidate() { return test_delegate_->CurrentCandidate(); }
 
   LargestContentfulPaintCalculator* GetLargestContentfulPaintCalculator() {
     return PaintTiming::From(GetDocument())
@@ -74,42 +105,7 @@ class LargestContentfulPaintCalculatorTest : public PaintTimingTestBase {
   }
 
  private:
-  // The tests override the `LargestContentfulPaintCalculator::Delegate` to
-  // monitor the stream of candidates.
-  class LcpTestDelegate : public GarbageCollected<LcpTestDelegate>,
-                          public LargestContentfulPaintCalculator::Delegate {
-   public:
-    void EmitLcpPerformanceEntry(const DOMPaintTimingInfo& paint_timing_info,
-                                 uint64_t paint_size,
-                                 base::TimeTicks load_time,
-                                 const AtomicString& id,
-                                 const String& url,
-                                 Element* element) override {
-      ++candidate_count_;
-      current_candidate_ = element;
-      largest_reported_size_ = paint_size;
-    }
-
-    void OnLcpMetricsForReportingChanged() override {}
-
-    bool IsHardNavigation() const override { return true; }
-
-    void Trace(Visitor* visitor) const override {
-      visitor->Trace(current_candidate_);
-    }
-
-    Element* CurrentCandidate() { return current_candidate_; }
-    wtf_size_t CandidateCount() { return candidate_count_; }
-    uint64_t LargestReportedSize() { return largest_reported_size_; }
-
-   private:
-    Member<Element> current_candidate_;
-    wtf_size_t candidate_count_ = 0;
-    uint64_t largest_reported_size_ = 0;
-  };
-
   base::test::TracingEnvironment tracing_environment_;
-  Persistent<LcpTestDelegate> test_delegate_;
 };
 
 TEST_F(LargestContentfulPaintCalculatorTest, SingleImage) {
@@ -136,9 +132,10 @@ TEST_F(LargestContentfulPaintCalculatorTest, SingleImage) {
   EXPECT_TRUE(arg_dict.FindDouble("imageLoadEnd").has_value());
   EXPECT_TRUE(arg_dict.FindDouble("imageDiscoveryTime").has_value());
 
-  EXPECT_EQ(LargestReportedSize(), 15000u);
-  EXPECT_FLOAT_EQ(LargestContentfulPaintCandidateImageBPP(), 0.8f);
-  EXPECT_EQ(CandidateCount(), 1u);
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), GetElementById("target"));
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 15000u);
+  EXPECT_FLOAT_EQ(LcpDetailsForReporting().image_bpp, 0.8f);
 }
 
 TEST_F(LargestContentfulPaintCalculatorTest, SingleText) {
@@ -148,10 +145,10 @@ TEST_F(LargestContentfulPaintCalculatorTest, SingleText) {
   )HTML");
   SimulateRenderingAndPresentationTime();
 
-  EXPECT_GT(LargestReportedSize(), 0u);
-  EXPECT_FLOAT_EQ(LargestContentfulPaintCandidateImageBPP(), 0.0f);
-  EXPECT_EQ(CandidateCount(), 1u);
-  EXPECT_EQ(CurrentLcpCandidate()->GetIdAttribute(), "text");
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), GetElementById("text"));
+  EXPECT_GT(CurrentLcpCandidate()->size(), 0u);
+  EXPECT_FLOAT_EQ(LcpDetailsForReporting().image_bpp, 0.0f);
   trace_analyzer::Stop();
 }
 
@@ -164,12 +161,12 @@ TEST_F(LargestContentfulPaintCalculatorTest, ImageLargerText) {
   SetImageContent("target", 3, 3, 100);
   SimulateRenderingAndPresentationTime();
 
-  EXPECT_GT(LargestReportedSize(), 9u);
-  EXPECT_EQ(CandidateCount(), 1u);
-  EXPECT_EQ(CurrentLcpCandidate()->GetIdAttribute(), "text");
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), GetElementById("text"));
+  EXPECT_GT(CurrentLcpCandidate()->size(), 9u);
   // The image is still reported to metrics even though it wasn't a web-exposed
   // candidate.
-  EXPECT_FLOAT_EQ(LargestContentfulPaintCandidateImageBPP(), 800.0f / 9.0f);
+  EXPECT_FLOAT_EQ(LcpDetailsForReporting().image_bpp, 800.0f / 9.0f);
   trace_analyzer::Stop();
 }
 
@@ -182,10 +179,10 @@ TEST_F(LargestContentfulPaintCalculatorTest, ImageSmallerText) {
   SetImageContent("target", 100, 200, /*bytes=*/250);
   SimulateRenderingAndPresentationTime();
 
-  EXPECT_EQ(LargestReportedSize(), 20000u);
-  EXPECT_FLOAT_EQ(LargestContentfulPaintCandidateImageBPP(), 0.1f);
-  EXPECT_EQ(CandidateCount(), 1u);
-  EXPECT_EQ(CurrentLcpCandidate()->GetIdAttribute(), "target");
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), GetElementById("target"));
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 20000u);
+  EXPECT_FLOAT_EQ(LcpDetailsForReporting().image_bpp, 0.1f);
   trace_analyzer::Stop();
 }
 
@@ -200,17 +197,19 @@ TEST_F(LargestContentfulPaintCalculatorTest, LargestImageRemoved) {
   SetImageContent("small", 3, 3, 18);
   SimulateRenderingAndPresentationTime();
   // Image is larger than the text.
-  EXPECT_EQ(LargestReportedSize(), 20000u);
-  EXPECT_FLOAT_EQ(LargestContentfulPaintCandidateImageBPP(), 0.08f);
-  EXPECT_EQ(CandidateCount(), 1u);
-  EXPECT_EQ(CurrentLcpCandidate()->GetIdAttribute(), "large");
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), GetElementById("large"));
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 20000u);
+  EXPECT_FLOAT_EQ(LcpDetailsForReporting().image_bpp, 0.08f);
 
-  GetDocument().getElementById(AtomicString("large"))->remove();
+  GetElementById("large")->remove();
   SimulateRenderingAndPresentationTime();
   // The LCP does not move after the image is removed.
-  EXPECT_EQ(LargestReportedSize(), 20000u);
-  EXPECT_FLOAT_EQ(LargestContentfulPaintCandidateImageBPP(), 0.08f);
-  EXPECT_EQ(CandidateCount(), 1u);
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 20000u);
+  EXPECT_FLOAT_EQ(LcpDetailsForReporting().image_bpp, 0.08f);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), nullptr);
+  EXPECT_EQ(CurrentLcpCandidate()->id(), "large");
   trace_analyzer::Stop();
 }
 
@@ -228,16 +227,17 @@ TEST_F(LargestContentfulPaintCalculatorTest, LargestTextRemoved) {
   SetImageContent("medium", 10, 5, /*bytes=*/50);
   SimulateRenderingAndPresentationTime();
   // Text is larger than the image.
-  EXPECT_GT(LargestReportedSize(), 50u);
-  EXPECT_EQ(CandidateCount(), 1u);
-  EXPECT_EQ(CurrentLcpCandidate()->GetIdAttribute(), "large");
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), GetElementById("large"));
+  EXPECT_GT(CurrentLcpCandidate()->size(), 50u);
 
-  GetDocument().getElementById(AtomicString("large"))->remove();
+  GetElementById("large")->remove();
   SimulateRenderingAndPresentationTime();
   // The LCP should not move after removal.
-  EXPECT_GT(LargestReportedSize(), 50u);
-  EXPECT_EQ(CandidateCount(), 1u);
-  EXPECT_EQ(CurrentLcpCandidate()->GetIdAttribute(), "large");
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_GT(CurrentLcpCandidate()->size(), 50u);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), nullptr);
+  EXPECT_EQ(CurrentLcpCandidate()->id(), "large");
   trace_analyzer::Stop();
 }
 
@@ -246,13 +246,12 @@ TEST_F(LargestContentfulPaintCalculatorTest, NoPaint) {
     <!DOCTYPE html>
   )HTML");
   SimulateRenderingAndPresentationTime();
-  EXPECT_EQ(LargestReportedSize(), 0u);
-  EXPECT_EQ(CandidateCount(), 0u);
+  EXPECT_EQ(LcpCandidateCount(), 0u);
+  EXPECT_FALSE(CurrentLcpCandidate());
   trace_analyzer::Stop();
 }
 
 TEST_F(LargestContentfulPaintCalculatorTest, SingleImageExcludedForEntropy) {
-  base::test::ScopedFeatureList scoped_features;
   SetMainFrameBodyContent(R"HTML(
     <!DOCTYPE html>
     <img id='target'/>
@@ -262,13 +261,12 @@ TEST_F(LargestContentfulPaintCalculatorTest, SingleImageExcludedForEntropy) {
   SetImageContent("target", 100, 150, 60);
   SimulateRenderingAndPresentationTime();
 
-  EXPECT_EQ(LargestReportedSize(), 0u);
-  EXPECT_EQ(CandidateCount(), 0u);
+  EXPECT_EQ(LcpCandidateCount(), 0u);
+  EXPECT_FALSE(CurrentLcpCandidate());
   trace_analyzer::Stop();
 }
 
 TEST_F(LargestContentfulPaintCalculatorTest, LargerImageExcludedForEntropy) {
-  base::test::ScopedFeatureList scoped_features;
   SetMainFrameBodyContent(R"HTML(
     <!DOCTYPE html>
     <img id='small'/>
@@ -280,28 +278,144 @@ TEST_F(LargestContentfulPaintCalculatorTest, LargerImageExcludedForEntropy) {
   SetImageContent("large", 100, 200, 80);
   SimulateRenderingAndPresentationTime();
 
-  EXPECT_EQ(LargestReportedSize(), 9u);
-  EXPECT_FLOAT_EQ(LargestContentfulPaintCandidateImageBPP(), 16.0f);
-  EXPECT_EQ(CandidateCount(), 1u);
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), GetElementById("small"));
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 9u);
+  EXPECT_FLOAT_EQ(LcpDetailsForReporting().image_bpp, 16.0f);
+  trace_analyzer::Stop();
+}
+
+TEST_F(LargestContentfulPaintCalculatorTest,
+       SingleImageExcludedForEntropyWhenCorsFails) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitWithFeatures({}, {kLcpEntropyGatedOnCors});
+
+  SetMainFrameBodyContent(R"HTML(
+    <!DOCTYPE html>
+    <img id='target'/>
+  )HTML");
+  // 60 bytes at 100x150 has an entropy of 0.032 bpp (below 0.05 bpp). Because
+  // the image is CORS-same-origin, the entropy check filters out the image.
+  ImageResourceContent* content = SetImageContent("target", 100, 150, 60);
+  content->SetImageResourceInfo(
+      MakeGarbageCollected<CrossOriginNullImageResourceInfo>());
+  SimulateRenderingAndPresentationTime();
+
+  EXPECT_EQ(LcpCandidateCount(), 0u);
+  EXPECT_FALSE(CurrentLcpCandidate());
+  trace_analyzer::Stop();
+}
+
+TEST_F(LargestContentfulPaintCalculatorTest,
+       SingleImageNotExcludedForEntropyWhenCorsFails) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitWithFeatures({kLcpEntropyGatedOnCors}, {});
+
+  SetMainFrameBodyContent(R"HTML(
+    <!DOCTYPE html>
+    <img id='target'/>
+  )HTML");
+  // 60 bytes at 100x150 has an entropy of 0.032 bpp (below 0.05 bpp),
+  // but because the image is not CORS-same-origin, the entropy check is
+  // bypassed.
+  ImageResourceContent* content = SetImageContent("target", 100, 150, 60);
+  content->SetImageResourceInfo(
+      MakeGarbageCollected<CrossOriginNullImageResourceInfo>());
+  SimulateRenderingAndPresentationTime();
+
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), GetElementById("target"));
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 15000u);
+  EXPECT_FLOAT_EQ(LcpDetailsForReporting().image_bpp, 0.032f);
+  trace_analyzer::Stop();
+}
+
+TEST_F(LargestContentfulPaintCalculatorTest,
+       LargerImageNotExcludedForEntropyWhenCorsFails) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitWithFeatures({kLcpEntropyGatedOnCors}, {});
+
+  SetMainFrameBodyContent(R"HTML(
+    <!DOCTYPE html>
+    <img id='small'/>
+    <img id='large'/>
+  )HTML");
+  SetImageContent("small", 3, 3, 18);
+  ImageResourceContent* large_content = SetImageContent("large", 100, 200, 80);
+  large_content->SetImageResourceInfo(
+      MakeGarbageCollected<CrossOriginNullImageResourceInfo>());
+  SimulateRenderingAndPresentationTime();
+
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), GetElementById("large"));
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 20000u);
+  EXPECT_FLOAT_EQ(LcpDetailsForReporting().image_bpp, 0.032f);
+  trace_analyzer::Stop();
+}
+
+TEST_F(LargestContentfulPaintCalculatorTest, DataUrlImageExcludedForEntropy) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitWithFeatures({kLcpEntropyGatedOnCors}, {});
+
+  SetMainFrameBodyContent(R"HTML(
+    <!DOCTYPE html>
+    <img id='target' width=100 height=150/>
+  )HTML");
+  KURL data_url(
+      "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='100' "
+      "height='150'></svg>");
+  ResourceRequest request(data_url);
+  FetchParameters fetch_params =
+      FetchParameters::CreateForTest(std::move(request));
+  ImageResourceContent* content =
+      ImageResourceContent::Fetch(fetch_params, GetDocument().Fetcher());
+  ASSERT_TRUE(content);
+  EXPECT_TRUE(content->IsCorsSameOrigin());
+
+  To<HTMLImageElement>(GetElementById("target"))->SetImageForTest(content);
+  SimulateRenderingAndPresentationTime();
+
+  EXPECT_EQ(LcpCandidateCount(), 0u);
+  EXPECT_FALSE(CurrentLcpCandidate());
+  trace_analyzer::Stop();
+}
+
+TEST_F(LargestContentfulPaintCalculatorTest,
+       ViewportCoveringImageExcludedEvenWhenCorsFails) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitWithFeatures({kLcpEntropyGatedOnCors}, {});
+
+  SetMainFrameBodyContent(R"HTML(
+    <style>body {margin: 0px;}</style>
+    <img id='target'/>
+  )HTML");
+  ImageResourceContent* content = SetImageContent("target", 3000, 3000, 60);
+  content->SetImageResourceInfo(
+      MakeGarbageCollected<CrossOriginNullImageResourceInfo>());
+  SimulateRenderingAndPresentationTime();
+
+  EXPECT_EQ(LcpCandidateCount(), 0u);
+  EXPECT_FALSE(CurrentLcpCandidate());
   trace_analyzer::Stop();
 }
 
 TEST_F(LargestContentfulPaintCalculatorTest,
        LowEntropyImageNotExcludedAtLowerThreshold) {
-  base::test::ScopedFeatureList scoped_features;
   SetMainFrameBodyContent(R"HTML(
     <!DOCTYPE html>
     <img id='small'/>
     <img id='large'/>
   )HTML");
   // Smaller image has 16 bpp of entropy, enough to be considered for LCP.
-  // Larger image has 0.32 bpp, which is now above the 0.2bpp threshold.
+  // Larger image has 0.32 bpp, which is now above the 0.05 bpp threshold.
   SetImageContent("small", 3, 3, 18);
   SetImageContent("large", 100, 200, 800);
   SimulateRenderingAndPresentationTime();
 
-  EXPECT_EQ(LargestReportedSize(), 20000u);
-  EXPECT_FLOAT_EQ(LargestContentfulPaintCandidateImageBPP(), 0.32f);
+  EXPECT_EQ(LcpCandidateCount(), 1u);
+  EXPECT_EQ(CurrentLcpCandidate()->element(), GetElementById("large"));
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 20000u);
+  EXPECT_FLOAT_EQ(LcpDetailsForReporting().image_bpp, 0.32f);
   trace_analyzer::Stop();
 }
 
@@ -312,7 +426,7 @@ TEST_F(LargestContentfulPaintCalculatorTest, LargestPendingImage) {
     <img id='large' width=100 height=300 />
   )HTML");
   // Smaller image has 16 bpp of entropy, enough to be considered for LCP.
-  // Larger image has 0.32 bpp, which is now above the 0.2bpp threshold.
+  // Larger image has 0.32 bpp, which is now above the 0.05 bpp threshold.
   SetImageContent("small", 3, 3, 18);
   SetImageContent("large", 100, 300, 800, ImageStatus::kPending);
   SimulateRenderingAndPresentationTime();
@@ -320,9 +434,11 @@ TEST_F(LargestContentfulPaintCalculatorTest, LargestPendingImage) {
   // The smaller image, which is the largest presented image, should be reported
   // to performance timeline, but the UKM value should correspond to the pending
   // image.
-  EXPECT_EQ(LargestReportedSize(), 9u);
-  EXPECT_EQ(LargestImagePaintSize(), 30000u);
-  EXPECT_TRUE(LargestImagePaintTime().is_null());
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 9u);
+  EXPECT_EQ(LcpDetailsForReporting().image_paint_size, 30000u);
+  EXPECT_EQ(LcpDetailsForReporting().image_paint_time, 0u);
+  EXPECT_EQ(LcpDetailsForReporting().merged_unclamped_paint_time,
+            base::TimeTicks());
   trace_analyzer::Stop();
 }
 
@@ -333,26 +449,74 @@ TEST_F(LargestContentfulPaintCalculatorTest, RemoveLargestPendingImage) {
     <img id='large' width=100 height=300 />
   )HTML");
   // Smaller image has 16 bpp of entropy, enough to be considered for LCP.
-  // Larger image has 0.32 bpp, which is now above the 0.2bpp threshold.
+  // Larger image has 0.32 bpp, which is now above the 0.05 bpp threshold.
   SetImageContent("small", 3, 3, 18);
   SetImageContent("large", 100, 300, 800, ImageStatus::kPending);
   SimulateRenderingAndPresentationTime();
+  auto initial_presentation_time = base::TimeTicks::Now();
 
   // The smaller image, which is the largest presented image, should be reported
   // to performance timeline, but the UKM value should correspond to the pending
   // image.
-  EXPECT_EQ(LargestReportedSize(), 9u);
-  EXPECT_EQ(LargestImagePaintSize(), 30000u);
-  EXPECT_TRUE(LargestImagePaintTime().is_null());
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 9u);
+  EXPECT_EQ(LcpDetailsForReporting().image_paint_size, 30000u);
+  EXPECT_EQ(LcpDetailsForReporting().image_paint_time, 0u);
+  EXPECT_EQ(LcpDetailsForReporting().merged_unclamped_paint_time,
+            base::TimeTicks());
+
+  AdvanceClock(base::Milliseconds(100));
 
   // Now remove the largest pending image. This should fall back to the largest
   // painted image, but it relies on another contentful paint to trigger the
   // LCP candidate update.
-  GetDocument().getElementById(AtomicString("large"))->remove();
+  GetElementById("large")->remove();
   GetLargestContentfulPaintCalculator()->MaybeFlushCandidates();
-  EXPECT_EQ(LargestReportedSize(), 9u);
-  EXPECT_EQ(LargestImagePaintSize(), 9u);
-  EXPECT_FALSE(LargestImagePaintTime().is_null());
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 9u);
+  EXPECT_EQ(LcpDetailsForReporting().image_paint_size, 9u);
+  EXPECT_GT(LcpDetailsForReporting().image_paint_time, 0u);
+  EXPECT_EQ(LcpDetailsForReporting().merged_unclamped_paint_time,
+            initial_presentation_time);
+  trace_analyzer::Stop();
+}
+
+TEST_F(LargestContentfulPaintCalculatorTest,
+       RemoveLargestPendingPseudoElementBackgroundImage) {
+  AddImageToMemoryCache("https://example.com/test.png", 100, 300, 800,
+                        ImageStatus::kPending);
+
+  SetMainFrameBodyContent(R"HTML(
+    <!DOCTYPE html>
+    <style>
+      #large::before {
+        content: "";
+        display: block;
+        width: 100px;
+        height: 300px;
+        background-image: url('https://example.com/test.png');
+      }
+    </style>
+    <div><img id='small' width=3 height=3 /></div>
+    <div id='large'></div>
+  )HTML");
+  SetImageContent("small", 3, 3, 18);
+  SimulateRenderingAndPresentationTime();
+  auto initial_presentation_time = base::TimeTicks::Now();
+
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 9u);
+  EXPECT_EQ(LcpDetailsForReporting().image_paint_size, 30000u);
+  EXPECT_EQ(LcpDetailsForReporting().image_paint_time, 0u);
+  EXPECT_EQ(LcpDetailsForReporting().merged_unclamped_paint_time,
+            base::TimeTicks());
+
+  AdvanceClock(base::Milliseconds(100));
+
+  GetElementById("large")->remove();
+  GetLargestContentfulPaintCalculator()->MaybeFlushCandidates();
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 9u);
+  EXPECT_EQ(LcpDetailsForReporting().image_paint_size, 9u);
+  EXPECT_GT(LcpDetailsForReporting().image_paint_time, 0u);
+  EXPECT_EQ(LcpDetailsForReporting().merged_unclamped_paint_time,
+            initial_presentation_time);
   trace_analyzer::Stop();
 }
 
@@ -372,48 +536,55 @@ TEST_F(LargestContentfulPaintCalculatorTest, MulitiplePendingImages) {
     <div><img id='largest' width=150 height=200 /></div>
   )HTML");
   // Smaller image has 16 bpp of entropy, enough to be considered for LCP.
-  // Larger image has 0.32 bpp, which is now above the 0.2bpp threshold.
+  // Larger image has 0.32 bpp, which is now above the 0.05 bpp threshold.
   SetImageContent("small", 3, 3, 18);
   SetImageContent("large", 100, 100, 800, ImageStatus::kPending);
   SetImageContent("largest", 150, 200, 800, ImageStatus::kPending);
   SimulateRenderingAndPresentationTime();
+  auto initial_presentation_time = base::TimeTicks::Now();
 
   // The smaller image, which is the largest presented image, should be reported
   // to performance timeline, but the UKM value should correspond to the pending
   // image.
-  EXPECT_EQ(LargestReportedSize(), 9u);
-  EXPECT_EQ(LargestImagePaintSize(), 30000u);
-  EXPECT_TRUE(LargestImagePaintTime().is_null());
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 9u);
+  EXPECT_EQ(LcpDetailsForReporting().image_paint_size, 30000u);
+  EXPECT_EQ(LcpDetailsForReporting().image_paint_time, 0u);
+  EXPECT_EQ(LcpDetailsForReporting().merged_unclamped_paint_time,
+            base::TimeTicks());
+
+  AdvanceClock(base::Milliseconds(100));
 
   // Now remove the largest pending image. After triggering a candidate update,
   // this should fall back to the largest painted image, not the next largest
   // pending image, which isn't supported.
-  GetDocument().getElementById(AtomicString("largest"))->remove();
+  GetElementById("largest")->remove();
   GetLargestContentfulPaintCalculator()->MaybeFlushCandidates();
-  EXPECT_EQ(LargestReportedSize(), 9u);
-  EXPECT_EQ(LargestImagePaintSize(), 9u);
-  EXPECT_FALSE(LargestImagePaintTime().is_null());
+  EXPECT_EQ(CurrentLcpCandidate()->size(), 9u);
+  EXPECT_EQ(LcpDetailsForReporting().image_paint_size, 9u);
+  EXPECT_GT(LcpDetailsForReporting().image_paint_time, 0u);
+  EXPECT_EQ(LcpDetailsForReporting().merged_unclamped_paint_time,
+            initial_presentation_time);
   trace_analyzer::Stop();
 }
 
 TEST_F(LargestContentfulPaintCalculatorTest, OutOfLifecyclePaintsIgnored) {
+  auto* client = MakeGarbageCollected<PaintTimingRecordObserverClient>();
+  GetPaintTiming().AddClient(client);
+
   SetMainFrameBodyContent(R"HTML(
     <!DOCTYPE html>
     <img id='large' width=100 height=300 />
   )HTML");
 
-  // Set the content as pending to force the image to be stored as the largest
-  // pending image if it gets painted.
-  SetImageContent("large", 100, 300, 800, ImageStatus::kPending);
+  SetImageContent("large", 100, 300, 800);
 
   // Paint outside of the normal lifecycle. This should be ignored by
   // paint timing.
   PaintRecordBuilder builder;
   GetFrameView().PaintOutsideOfLifecycle(builder.Context(), PaintFlag::kNoFlag,
                                          CullRect::Infinite());
-  EXPECT_EQ(GetLargestContentfulPaintCalculator()
-                ->LargestPaintedOrPendingImageForTest(),
-            nullptr);
+  EXPECT_EQ(client->ImageFirstPaintCount(), 0u);
+  EXPECT_EQ(client->PaintedImageRecordCount(), 0u);
   trace_analyzer::Stop();
 }
 

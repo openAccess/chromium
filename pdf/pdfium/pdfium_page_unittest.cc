@@ -4,6 +4,7 @@
 
 #include "pdf/pdfium/pdfium_page.h"
 
+#include <array>
 #include <optional>
 #include <string>
 #include <utility>
@@ -11,6 +12,8 @@
 
 #include "base/check.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -18,11 +21,14 @@
 #include "build/build_config.h"
 #include "pdf/accessibility_structs.h"
 #include "pdf/buildflags.h"
+#include "pdf/pdf_rect.h"
 #include "pdf/pdfium/pdfium_engine.h"
 #include "pdf/pdfium/pdfium_test_base.h"
 #include "pdf/test/test_client.h"
 #include "pdf/test/test_helpers.h"
 #include "pdf/ui/thumbnail.h"
+#include "printing/units.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/pdfium/public/fpdf_formfill.h"
 #include "third_party/skia/include/core/SkImage.h"
@@ -36,6 +42,10 @@
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/geometry/test/geometry_util.h"
 #include "ui/gfx/range/range.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "base/win/windows_version.h"
+#endif
 
 namespace chrome_pdf {
 
@@ -120,6 +130,19 @@ constexpr struct {
     {5, 2, {1399, 46}},  // Super wide
     {6, 2, {46, 1399}},  // Super tall
 };
+
+// Expects `actual` to match `expected`, comparing points within 1 px.
+void ExpectLineSegmentsNear(base::span<const AccessibilityLineSegment> expected,
+                            base::span<const AccessibilityLineSegment> actual) {
+  ASSERT_EQ(expected.size(), actual.size());
+  for (size_t i = 0; i < expected.size(); ++i) {
+    SCOPED_TRACE(testing::Message() << "at index " << i);
+    EXPECT_NEAR(expected[i].start.x(), actual[i].start.x(), 1.0f);
+    EXPECT_NEAR(expected[i].start.y(), actual[i].start.y(), 1.0f);
+    EXPECT_NEAR(expected[i].end.x(), actual[i].end.x(), 1.0f);
+    EXPECT_NEAR(expected[i].end.y(), actual[i].end.y(), 1.0f);
+  }
+}
 
 }  // namespace
 
@@ -561,6 +584,261 @@ TEST_P(PDFiumPageLinkTest, GetUTF8LinkTarget) {
 
 INSTANTIATE_TEST_SUITE_P(All, PDFiumPageLinkTest, testing::Bool());
 
+// PDFiumTestBase's parameter selects the renderer, which makes no difference
+// to link generation. Reuse it to toggle
+// kPdfAccessibilityHeuristicEnhancements instead.
+class PDFiumPageHeuristicEnhancementsTest : public PDFiumTestBase {
+ public:
+  PDFiumPageHeuristicEnhancementsTest() {
+    scoped_feature_list_.InitWithFeatureState(
+        ::features::kPdfAccessibilityHeuristicEnhancements,
+        HeuristicEnhancementsEnabled());
+  }
+
+ protected:
+  bool HeuristicEnhancementsEnabled() const { return GetParam(); }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Some PDFs both print a URL as visible text and wrap that text in a /Link
+// annotation. PDFium's text scanner and its annotation pass then each produce
+// a link for the same span, so the URL would show up twice.
+TEST_P(PDFiumPageHeuristicEnhancementsTest, AnnotLinkReplacesDuplicateWebLink) {
+  // `weblink_with_annot.pdf` prints one URL per line:
+  //   http://example.com/a  covered by an annotation with the same URI
+  //   http://example.com/b  not covered by any annotation
+  //   http://example.com/c  covered by an annotation with a different URI
+  //   http://example.com    covered by an annotation with URI
+  //                         "http://example.com/", which is the same URL
+  //                         spelled differently
+  // Only the first and last lines are genuine duplicates.
+  TestClient client(/*use_skia_renderer=*/false);
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("weblink_with_annot.pdf"));
+  ASSERT_TRUE(engine);
+
+  // The web links on the second and third lines always survive: no annotation
+  // covers the second, and the annotation covering the third points somewhere
+  // else, so the two are not interchangeable.
+  std::vector<std::string> expected_urls = {
+      "http://example.com/a", "http://example.com/b", "http://example.com/c",
+      "http://example.com/", "http://other.test/"};
+  if (!HeuristicEnhancementsEnabled()) {
+    // Without deduplication, each pass reports the duplicated links.
+    expected_urls.push_back("http://example.com/a");
+    expected_urls.push_back("http://example.com");
+  }
+
+  PDFiumPage& page = GetPDFiumPage(*engine, 0);
+  page.CalculateLinks();
+  const std::vector<std::string> actual_urls = base::ToVector(
+      page.links_,
+      [](const PDFiumPage::Link& link) { return link.target.url; });
+  EXPECT_THAT(actual_urls, testing::UnorderedElementsAreArray(expected_urls));
+}
+
+TEST_P(PDFiumPageHeuristicEnhancementsTest, GetGraphicInfo) {
+  TestClient client(/*use_skia_renderer=*/false);
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("graphic_with_text.pdf"));
+  ASSERT_TRUE(engine);
+
+  PDFiumPage& page = GetPDFiumPage(*engine, 0);
+  std::vector<AccessibilityFormGraphicInfo> graphics =
+      page.GetFormGraphicInfo();
+  if (!HeuristicEnhancementsEnabled()) {
+    EXPECT_TRUE(graphics.empty());
+    return;
+  }
+
+  // Only /Fm1 (combining a nested path form and visible text) is returned;
+  // /Fm2 (text-only) and /Fm3 (invisible text) are excluded.
+  ASSERT_EQ(1u, graphics.size());
+  EXPECT_EQ(1u, graphics[0].text_range.index);
+  EXPECT_EQ(1u, graphics[0].text_range.count);
+  EXPECT_EQ(gfx::RectF(70.0f, 188.0f, 164.0f, 84.0f), graphics[0].bounds);
+
+  std::vector<AccessibilityTextRunInfo> text_runs = page.GetTextRunInfo();
+  ASSERT_GE(text_runs.size(), 2u);
+  EXPECT_EQ(0u, text_runs[0].start_index);
+  EXPECT_EQ(16u, text_runs[0].len);
+  EXPECT_EQ(16u, text_runs[1].start_index);
+  EXPECT_EQ(16u, text_runs[1].len);
+}
+
+// Malformed PDFs can nest Form XObjects arbitrarily deep or have them invoke
+// themselves. Neither should hang or crash graphic detection.
+TEST_P(PDFiumPageHeuristicEnhancementsTest, GetGraphicInfoWithRecursiveForms) {
+  TestClient client(/*use_skia_renderer=*/false);
+  std::unique_ptr<PDFiumEngine> engine = InitializeEngine(
+      &client, FILE_PATH_LITERAL("graphic_with_recursive_forms.pdf"));
+  ASSERT_TRUE(engine);
+
+  EXPECT_EQ(
+      u"Before graphic\r\nToo deep graphic\r\nDeep graphic\r\nAfter graphic",
+      engine->GetPageText(/*page_index=*/0));
+
+  PDFiumPage& page = GetPDFiumPage(*engine, 0);
+  std::vector<AccessibilityFormGraphicInfo> graphics =
+      page.GetFormGraphicInfo();
+  if (!HeuristicEnhancementsEnabled()) {
+    EXPECT_TRUE(graphics.empty());
+    return;
+  }
+
+  // /FmDeep and /FmTooDeep both have visible text and reach the same path
+  // through a chain of nested forms, 31 and 32 levels down respectively. Only
+  // the former is within the maximum form depth. /FmLoop (self-referencing)
+  // has no text.
+  ASSERT_EQ(1u, graphics.size());
+  EXPECT_EQ(2u, graphics[0].text_range.index);
+  EXPECT_EQ(1u, graphics[0].text_range.count);
+  EXPECT_EQ(gfx::RectF(70.0f, 321.0f, 164.0f, 84.0f), graphics[0].bounds);
+}
+
+TEST_P(PDFiumPageHeuristicEnhancementsTest, GetLineSegmentInfo) {
+  TestClient client(/*use_skia_renderer=*/false);
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("table_lines.pdf"));
+  ASSERT_TRUE(engine);
+
+  PDFiumPage& page = GetPDFiumPage(*engine, 0);
+  std::vector<AccessibilityLineSegment> line_segments =
+      page.GetLineSegmentInfo();
+  if (!HeuristicEnhancementsEnabled()) {
+    EXPECT_TRUE(line_segments.empty());
+    return;
+  }
+
+  // Converts PDF coordinates on the 400x400 pt page to pixels.
+  auto to_pixel = [](float x, float y) {
+    return gfx::PointF(x * 4.0f / 3.0f, (400.0f - y) * 4.0f / 3.0f);
+  };
+
+  // Segments appear in path order. The curve, the filled-only rectangle, and
+  // the zero-length line are skipped.
+  const auto kExpectedSegments = std::to_array<AccessibilityLineSegment>({
+      // 3x3 grid.
+      {to_pixel(50, 300), to_pixel(350, 300)},
+      {to_pixel(50, 280), to_pixel(350, 280)},
+      {to_pixel(50, 260), to_pixel(350, 260)},
+      {to_pixel(50, 240), to_pixel(350, 240)},
+      {to_pixel(50, 240), to_pixel(50, 300)},
+      {to_pixel(150, 240), to_pixel(150, 300)},
+      {to_pixel(250, 240), to_pixel(250, 300)},
+      {to_pixel(350, 240), to_pixel(350, 300)},
+      // Touching segments.
+      {to_pixel(50, 200), to_pixel(200, 200)},
+      {to_pixel(200, 200), to_pixel(350, 200)},
+      // Stroked rectangle.
+      {to_pixel(50, 120), to_pixel(350, 120)},
+      {to_pixel(350, 120), to_pixel(350, 160)},
+      {to_pixel(350, 160), to_pixel(50, 160)},
+      {to_pixel(50, 160), to_pixel(50, 120)},
+      // Transformed line.
+      {to_pixel(50, 70), to_pixel(150, 70)},
+      // Closed subpath starting with a curve.
+      {to_pixel(360, 30), to_pixel(360, 10)},
+      {to_pixel(360, 10), to_pixel(300, 10)},
+      // Diagonal line.
+      {to_pixel(50, 50), to_pixel(150, 90)},
+      // Short line.
+      {to_pixel(300, 50), to_pixel(305, 50)},
+  });
+
+  ExpectLineSegmentsNear(kExpectedSegments, line_segments);
+}
+
+TEST_P(PDFiumPageHeuristicEnhancementsTest, GetLineSegmentInfoCached) {
+  TestClient client(/*use_skia_renderer=*/false);
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("table_lines.pdf"));
+  ASSERT_TRUE(engine);
+
+  PDFiumPage& page = GetPDFiumPage(*engine, 0);
+  EXPECT_EQ(page.GetLineSegmentInfo(), page.GetLineSegmentInfo());
+}
+
+TEST_P(PDFiumPageHeuristicEnhancementsTest, GetLineSegmentInfoNoPaths) {
+  TestClient client(/*use_skia_renderer=*/false);
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("hello_world2.pdf"));
+  ASSERT_TRUE(engine);
+
+  PDFiumPage& page = GetPDFiumPage(*engine, 0);
+  EXPECT_TRUE(page.GetLineSegmentInfo().empty());
+}
+
+TEST_P(PDFiumPageHeuristicEnhancementsTest, GetFilledRectInfo) {
+  TestClient client(/*use_skia_renderer=*/false);
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("thin_filled_rules.pdf"));
+  ASSERT_TRUE(engine);
+
+  PDFiumPage& page = GetPDFiumPage(*engine, 0);
+  std::vector<gfx::RectF> filled_rects = page.GetFilledRectInfo();
+  if (!HeuristicEnhancementsEnabled()) {
+    EXPECT_TRUE(filled_rects.empty());
+    return;
+  }
+
+  // Converts a rectangle on the 400x400 pt page to pixels.
+  auto to_pixel = [](const PdfRect& rect) {
+    return gfx::ScaleRect(gfx::RectF(rect.left(), 400.0f - rect.top(),
+                                     rect.width(), rect.height()),
+                          1.0f / printing::kUnitConversionFactorPixelsToPoints);
+  };
+
+  // Rectangles appear in path order. The curved subpath and the ignored shapes
+  // are skipped.
+  const auto kExpectedRects = std::to_array<gfx::RectF>({
+      // Simple horizontal rules.
+      to_pixel({50, 300, 350, 300.8f}),
+      to_pixel({50, 280, 350, 280.5f}),
+      to_pixel({50, 240, 350, 240.8f}),
+      // Two rules in one path.
+      to_pixel({50, 200, 350, 200.5f}),
+      to_pixel({50, 180, 350, 180.5f}),
+      // Skia-style closed and unclosed rectangles.
+      to_pixel({50, 169.25f, 350, 170}),
+      to_pixel({50, 154.25f, 350, 155}),
+      // Unclosed rectangle with its last point on the closing edge.
+      to_pixel({50, 100, 140, 100.8f}),
+      // Vertical rule.
+      to_pixel({149.6f, 125, 150.4f, 150}),
+      // Rectangles of other sizes.
+      to_pixel({300, 60, 340, 80}),
+      to_pixel({50, 60, 55, 60.5f}),
+      to_pixel({50, 80, 150, 83.6f}),
+      // Rectangle in a path with a curved subpath.
+      to_pixel({50, 10, 350, 10.5f}),
+  });
+
+  // Thin heights lose float precision when subtracting large coordinates.
+  constexpr float kTolerancePx = 0.001f;
+  ASSERT_EQ(kExpectedRects.size(), filled_rects.size());
+  for (size_t i = 0; i < kExpectedRects.size(); ++i) {
+    SCOPED_TRACE(testing::Message() << "at index " << i);
+    EXPECT_RECTF_NEAR(kExpectedRects[i], filled_rects[i], kTolerancePx);
+  }
+}
+
+TEST_P(PDFiumPageHeuristicEnhancementsTest, GetFilledRectInfoNoPaths) {
+  TestClient client(/*use_skia_renderer=*/false);
+  std::unique_ptr<PDFiumEngine> engine =
+      InitializeEngine(&client, FILE_PATH_LITERAL("hello_world2.pdf"));
+  ASSERT_TRUE(engine);
+
+  PDFiumPage& page = GetPDFiumPage(*engine, 0);
+  EXPECT_TRUE(page.GetFilledRectInfo().empty());
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PDFiumPageHeuristicEnhancementsTest,
+                         testing::Bool());
+
 using PDFiumPageImageTest = PDFiumTestBase;
 
 TEST_P(PDFiumPageImageTest, ImagesWithAltText) {
@@ -939,7 +1217,9 @@ TEST_P(PDFiumPageTextTest, HighlightTextRunInfo) {
 }
 
 TEST_P(PDFiumPageTextTest, GetTextRunInfoAtWithHeuristicEnhancements) {
+  constexpr int kDirectionRunCharIndex = 16;
   float font_size_disabled;
+  AccessibilityTextDirection direction_disabled;
   {
     base::test::ScopedFeatureList scoped_feature_list;
     scoped_feature_list.InitAndDisableFeature(
@@ -948,9 +1228,15 @@ TEST_P(PDFiumPageTextTest, GetTextRunInfoAtWithHeuristicEnhancements) {
         GetFontMatrixPDFTextRunInfo(0);
     ASSERT_TRUE(text_run_info.has_value());
     font_size_disabled = text_run_info->style.font_size;
+
+    std::optional<AccessibilityTextRunInfo> direction_run_info =
+        GetFontMatrixPDFTextRunInfo(kDirectionRunCharIndex);
+    ASSERT_TRUE(direction_run_info.has_value());
+    direction_disabled = direction_run_info->direction;
   }
 
   float font_size_enabled;
+  AccessibilityTextDirection direction_enabled;
   {
     base::test::ScopedFeatureList scoped_feature_list;
     scoped_feature_list.InitAndEnableFeature(
@@ -959,6 +1245,11 @@ TEST_P(PDFiumPageTextTest, GetTextRunInfoAtWithHeuristicEnhancements) {
         GetFontMatrixPDFTextRunInfo(0);
     ASSERT_TRUE(text_run_info.has_value());
     font_size_enabled = text_run_info->style.font_size;
+
+    std::optional<AccessibilityTextRunInfo> direction_run_info =
+        GetFontMatrixPDFTextRunInfo(kDirectionRunCharIndex);
+    ASSERT_TRUE(direction_run_info.has_value());
+    direction_enabled = direction_run_info->direction;
   }
 
   // For "A1", the base font size is 1.0, and the vertical scale of the matrix
@@ -973,6 +1264,8 @@ TEST_P(PDFiumPageTextTest, GetTextRunInfoAtWithHeuristicEnhancements) {
   float expected_font_size_disabled = UsingTestFonts() ? 10.667f : 12.0f;
   EXPECT_NEAR(font_size_disabled, expected_font_size_disabled, 0.001f);
   EXPECT_NEAR(font_size_enabled, 10.0f, 0.001f);
+  EXPECT_EQ(direction_disabled, AccessibilityTextDirection::kTopToBottom);
+  EXPECT_EQ(direction_enabled, AccessibilityTextDirection::kLeftToRight);
 }
 
 TEST_P(PDFiumPageTextTest, GetTextRunInfoFontWeight) {
@@ -1037,220 +1330,6 @@ TEST_P(PDFiumPageHighlightTest, PopulateHighlights) {
 }
 
 INSTANTIATE_TEST_SUITE_P(All, PDFiumPageHighlightTest, testing::Bool());
-
-using PDFiumPageTextFieldTest = PDFiumTestBase;
-
-TEST_P(PDFiumPageTextFieldTest, PopulateTextFields) {
-  struct ExpectedTextField {
-    const char* name;
-    const char* value;
-    gfx::Rect bounding_rect;
-    int flags;
-  };
-
-  static const auto kExpectedTextFields = std::to_array<ExpectedTextField>({
-      {"Text Box", "Text", {138, 230, 135, 41}, 0},
-      {"ReadOnly", "Elephant", {138, 163, 135, 41}, 1},
-      {"Required", "Required Field", {138, 303, 135, 34}, 2},
-      {"Password", "", {138, 356, 135, 35}, 8192},
-  });
-
-  TestClient client(/*use_skia_renderer=*/GetParam());
-  std::unique_ptr<PDFiumEngine> engine =
-      InitializeEngine(&client, FILE_PATH_LITERAL("form_text_fields.pdf"));
-  ASSERT_TRUE(engine);
-  ASSERT_EQ(1, engine->GetNumberOfPages());
-
-  PDFiumPage& page = GetPDFiumPage(*engine, 0);
-  page.PopulateAnnotations();
-  size_t text_fields_count = page.text_fields_.size();
-  ASSERT_EQ(std::size(kExpectedTextFields), text_fields_count);
-
-  for (size_t i = 0; i < text_fields_count; ++i) {
-    EXPECT_EQ(kExpectedTextFields[i].name, page.text_fields_[i].name);
-    EXPECT_EQ(kExpectedTextFields[i].value, page.text_fields_[i].value);
-    EXPECT_EQ(kExpectedTextFields[i].bounding_rect,
-              page.text_fields_[i].bounding_rect);
-    EXPECT_EQ(kExpectedTextFields[i].flags, page.text_fields_[i].flags);
-  }
-}
-
-INSTANTIATE_TEST_SUITE_P(All, PDFiumPageTextFieldTest, testing::Bool());
-
-using PDFiumPageChoiceFieldTest = PDFiumTestBase;
-
-TEST_P(PDFiumPageChoiceFieldTest, PopulateChoiceFields) {
-  struct ExpectedChoiceFieldOption {
-    const char* name;
-    bool is_selected;
-  };
-
-  struct ExpectedChoiceField {
-    const char* name;
-    std::vector<struct ExpectedChoiceFieldOption> options;
-    gfx::Rect bounding_rect;
-    int flags;
-  };
-
-  static const auto kExpectedChoiceFields = std::to_array<ExpectedChoiceField>({
-      {"Listbox_SingleSelect",
-       {{"Foo", false}, {"Bar", false}, {"Qux", false}},
-       {138, 296, 135, 41},
-       0},
-      {"Combo1",
-       {{"Apple", false}, {"Banana", true}, {"Cherry", false}},
-       {138, 230, 135, 41},
-       131072},
-      {"Listbox_ReadOnly",
-       {{"Dog", false}, {"Elephant", false}, {"Frog", false}},
-       {138, 96, 135, 41},
-       1},
-      {"Listbox_MultiSelectMultipleIndices",
-       {
-           {"Albania", false},
-           {"Belgium", true},
-           {"Croatia", false},
-           {"Denmark", true},
-           {"Estonia", false},
-       },
-       {138, 430, 135, 41},
-       2097152},
-      {"Listbox_MultiSelectMultipleValues",
-       {
-           {"Alpha", false},
-           {"Beta", false},
-           {"Gamma", true},
-           {"Delta", false},
-           {"Epsilon", true},
-       },
-       {138, 496, 135, 41},
-       2097152},
-      {"Listbox_MultiSelectMultipleMismatch",
-       {
-           {"Alligator", true},
-           {"Bear", false},
-           {"Cougar", true},
-           {"Deer", false},
-           {"Echidna", false},
-       },
-       {138, 563, 135, 41},
-       2097152},
-  });
-
-  TestClient client(/*use_skia_renderer=*/GetParam());
-  std::unique_ptr<PDFiumEngine> engine =
-      InitializeEngine(&client, FILE_PATH_LITERAL("form_choice_fields.pdf"));
-  ASSERT_TRUE(engine);
-  ASSERT_EQ(1, engine->GetNumberOfPages());
-
-  PDFiumPage& page = GetPDFiumPage(*engine, 0);
-  page.PopulateAnnotations();
-  size_t choice_fields_count = page.choice_fields_.size();
-  ASSERT_EQ(std::size(kExpectedChoiceFields), choice_fields_count);
-
-  for (size_t i = 0; i < choice_fields_count; ++i) {
-    EXPECT_EQ(kExpectedChoiceFields[i].name, page.choice_fields_[i].name);
-    size_t choice_field_options_count = page.choice_fields_[i].options.size();
-    ASSERT_EQ(std::size(kExpectedChoiceFields[i].options),
-              choice_field_options_count);
-    for (size_t j = 0; j < choice_field_options_count; ++j) {
-      EXPECT_EQ(kExpectedChoiceFields[i].options[j].name,
-                page.choice_fields_[i].options[j].name);
-      EXPECT_EQ(kExpectedChoiceFields[i].options[j].is_selected,
-                page.choice_fields_[i].options[j].is_selected);
-    }
-    EXPECT_EQ(kExpectedChoiceFields[i].bounding_rect,
-              page.choice_fields_[i].bounding_rect);
-    EXPECT_EQ(kExpectedChoiceFields[i].flags, page.choice_fields_[i].flags);
-  }
-}
-
-INSTANTIATE_TEST_SUITE_P(All, PDFiumPageChoiceFieldTest, testing::Bool());
-
-using PDFiumPageButtonTest = PDFiumTestBase;
-
-TEST_P(PDFiumPageButtonTest, PopulateButtons) {
-  struct ExpectedButton {
-    const char* name;
-    const char* value;
-    int type;
-    int flags;
-    bool is_checked;
-    uint32_t control_count;
-    int control_index;
-    gfx::Rect bounding_rect;
-  };
-
-  static const auto kExpectedButtons = std::to_array<ExpectedButton>({
-      {"readOnlyCheckbox",
-       "Yes",
-       FPDF_FORMFIELD_CHECKBOX,
-       1,
-       true,
-       1,
-       0,
-       {185, 43, 28, 28}},
-      {"checkbox",
-       "Yes",
-       FPDF_FORMFIELD_CHECKBOX,
-       2,
-       false,
-       1,
-       0,
-       {185, 96, 28, 28}},
-      {"RadioButton",
-       "value1",
-       FPDF_FORMFIELD_RADIOBUTTON,
-       49154,
-       false,
-       2,
-       0,
-       {185, 243, 28, 28}},
-      {"RadioButton",
-       "value2",
-       FPDF_FORMFIELD_RADIOBUTTON,
-       49154,
-       true,
-       2,
-       1,
-       {252, 243, 27, 28}},
-      {"PushButton",
-       "",
-       FPDF_FORMFIELD_PUSHBUTTON,
-       65536,
-       false,
-       0,
-       -1,
-       {118, 270, 55, 67}},
-  });
-
-  TestClient client(/*use_skia_renderer=*/GetParam());
-  std::unique_ptr<PDFiumEngine> engine =
-      InitializeEngine(&client, FILE_PATH_LITERAL("form_buttons.pdf"));
-  ASSERT_TRUE(engine);
-  ASSERT_EQ(1, engine->GetNumberOfPages());
-
-  PDFiumPage& page = GetPDFiumPage(*engine, 0);
-  page.PopulateAnnotations();
-  size_t buttons_count = page.buttons_.size();
-  ASSERT_EQ(std::size(kExpectedButtons), buttons_count);
-
-  for (size_t i = 0; i < buttons_count; ++i) {
-    EXPECT_EQ(kExpectedButtons[i].name, page.buttons_[i].name);
-    EXPECT_EQ(kExpectedButtons[i].value, page.buttons_[i].value);
-    EXPECT_EQ(kExpectedButtons[i].type, page.buttons_[i].type);
-    EXPECT_EQ(kExpectedButtons[i].flags, page.buttons_[i].flags);
-    EXPECT_EQ(kExpectedButtons[i].is_checked, page.buttons_[i].is_checked);
-    EXPECT_EQ(kExpectedButtons[i].control_count,
-              page.buttons_[i].control_count);
-    EXPECT_EQ(kExpectedButtons[i].control_index,
-              page.buttons_[i].control_index);
-    EXPECT_EQ(kExpectedButtons[i].bounding_rect,
-              page.buttons_[i].bounding_rect);
-  }
-}
-
-INSTANTIATE_TEST_SUITE_P(All, PDFiumPageButtonTest, testing::Bool());
 
 class PDFiumPageThumbnailTest : public PDFiumTestBase {
  public:
@@ -1364,6 +1443,13 @@ TEST_P(PDFiumPageThumbnailTest, GenerateThumbnailWithTransparency) {
 }
 
 TEST_P(PDFiumPageThumbnailTest, GenerateThumbnailWithOverlapCropBox) {
+#if BUILDFLAG(IS_WIN)
+  // TODO(crbug.com/566174935): Re-enable once the Skia expectation matches
+  // Win11 rendering after PDFium roll.
+  if (GetParam() && base::win::GetVersion() >= base::win::Version::WIN11) {
+    GTEST_SKIP() << "Skia rendering mismatch on Windows 11.";
+  }
+#endif
   TestClient client(/*use_skia_renderer=*/GetParam());
   std::unique_ptr<PDFiumEngine> engine =
       InitializeEngine(&client, FILE_PATH_LITERAL("hello_world_cropped.pdf"));

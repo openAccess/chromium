@@ -6,13 +6,18 @@
 #define CHROME_BROWSER_UI_WEBAUTHN_PASSKEY_UPGRADE_REQUEST_CONTROLLER_H_
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/types/expected.h"
 #include "chrome/browser/webauthn/gpm_enclave_controller.h"
+#include "components/password_manager/core/browser/password_store/password_store_backend_error.h"
 #include "components/password_manager/core/browser/password_store/password_store_consumer.h"
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
 #include "components/trusted_vault/trusted_vault_connection.h"
 
 namespace content {
@@ -43,7 +48,8 @@ enum class PasskeyUpgradeResult {
   kNoRecentlyUsedPassword = 6,
   kEnclaveError = 7,
   kSecurityDomainStateStale = 8,
-  kMaxValue = kSecurityDomainStateStale,
+  kOffTheRecord = 9,
+  kMaxValue = kOffTheRecord,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/webauthn/enums.xml:PasskeyUpgradeResultEnum)
 
@@ -92,7 +98,9 @@ class PasskeyUpgradeRequestController
   // password_manager::PasswordStoreConsumer:
   void OnGetPasswordStoreResultsOrErrorFrom(
       password_manager::PasswordStoreInterface* store,
-      password_manager::LoginsResultOrError results_or_error) override;
+      base::expected<std::vector<password_manager::StoredCredential>,
+                     password_manager::PasswordStoreBackendError>
+          results_or_error) override;
 
   void StartEnclaveTransaction();
 
@@ -123,6 +131,7 @@ class PasskeyUpgradeRequestController
 
   const raw_ptr<EnclaveManager> enclave_manager_;
   EnclaveState enclave_state_ = EnclaveState::kUnknown;
+  std::optional<PasskeyUpgradeResult> error_reason_;
   bool pending_request_ = false;
 
   std::unique_ptr<trusted_vault::TrustedVaultConnection::Request>

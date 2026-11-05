@@ -28,12 +28,14 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 using content::WebContents;
 using content::NavigationHandle;
@@ -162,7 +164,8 @@ IN_PROC_BROWSER_TEST_F(SessionRestoreObserverTest,
 IN_PROC_BROWSER_TEST_F(SessionRestoreObserverTest, MultipleTabSessionRestore) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetTestURL()));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GetTestURL(), WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), GetTestURL(),
+      ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // The restored browser should have 2 tabs.

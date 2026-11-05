@@ -43,7 +43,6 @@
 #include "chrome/browser/ash/app_list/chrome_app_list_model_updater.h"
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller_util.h"
 #include "chrome/browser/ui/ash/shelf/shelf_controller_helper.h"
@@ -61,11 +60,15 @@
 #include "content/public/test/browser_test.h"
 #include "net/http/http_status_code.h"
 #include "ui/base/models/menu_model.h"
+#include "ui/display/types/display_constants.h"
 
 namespace apps {
 
-const apps::PackageId kTestPackageId =
-    apps::PackageId(apps::PackageType::kArc, "com.test.package");
+constexpr char kTestPackageName[] = "com.test.package";
+
+apps::PackageId GetTestPackageId() {
+  return apps::PackageId(apps::PackageType::kArc, kTestPackageName);
+}
 
 ash::AppListItem* GetAppListItem(const std::string& id) {
   return ash::AppListModelProvider::Get()->model()->FindItem(id);
@@ -273,36 +276,36 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app registration in the cache should not result in a promise app
   // launcher item if should_show is false (which it is by default).
-  ash::AppListItem* item = GetAppListItem(kTestPackageId.ToString());
+  ash::AppListItem* item = GetAppListItem(GetTestPackageId().ToString());
   ASSERT_FALSE(item);
 
   // Update the promise app to allow showing in the Launcher.
   apps::PromiseAppPtr promise_app_update =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app_update->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app_update));
 
   // Promise app item should now exist in the model.
-  item = GetAppListItem(kTestPackageId.ToString());
+  item = GetAppListItem(GetTestPackageId().ToString());
   ASSERT_TRUE(item);
 
   // Verify that the promise app item is not added to local storage.
   const base::DictValue& local_items =
       profile()->GetPrefs()->GetDict(ash::prefs::kAppListLocalState);
   const base::DictValue* dict_item =
-      local_items.FindDict(kTestPackageId.ToString());
+      local_items.FindDict(GetTestPackageId().ToString());
   EXPECT_FALSE(dict_item);
 
   // Verify that promise app item is not uploaded to sync data.
   for (auto sync_change : sync_processor->changes()) {
     const std::string item_id =
         sync_change.sync_data().GetSpecifics().app_list().item_id();
-    EXPECT_NE(item_id, kTestPackageId.ToString());
+    EXPECT_NE(item_id, GetTestPackageId().ToString());
   }
 }
 
@@ -310,12 +313,12 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
                        PromiseAppItemContextMenu) {
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model.
-  ChromeAppListItem* item = GetChromeAppListItem(kTestPackageId);
+  ChromeAppListItem* item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
   ASSERT_EQ(item->name(),
             base::UTF16ToUTF8(ShelfControllerHelper::GetLabelForPromiseStatus(
@@ -389,13 +392,13 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
                        UpdatedFieldsShowInChromeAppListItem) {
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->status = PromiseStatus::kPending;
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model.
-  ChromeAppListItem* item = GetChromeAppListItem(kTestPackageId);
+  ChromeAppListItem* item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
   EXPECT_EQ(item->progress(), 0);
   EXPECT_EQ(item->app_status(), ash::AppStatus::kPending);
@@ -404,7 +407,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
                 apps::PromiseStatus::kPending)));
 
   // Update the promise app in the promise app registry cache.
-  apps::PromiseAppPtr update = std::make_unique<PromiseApp>(kTestPackageId);
+  apps::PromiseAppPtr update = std::make_unique<PromiseApp>(GetTestPackageId());
   update->progress = 0.3;
   update->status = PromiseStatus::kInstalling;
   cache()->OnPromiseApp(std::move(update));
@@ -422,7 +425,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest, SetToSyncPosition) {
 
   const std::string app_activity = "test.com.example.activity";
   const std::string app_id =
-      ArcAppListPrefs::GetAppId(kTestPackageId.identifier(), app_activity);
+      ArcAppListPrefs::GetAppId(GetTestPackageId().identifier(), app_activity);
 
   // Add entry in sync data that has a matching PackageId with the promise app.
   syncer::SyncDataList sync_list;
@@ -430,7 +433,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest, SetToSyncPosition) {
       app_id, "App Name", /*parent_id=*/std::string(),
       ordinal.ToInternalValue(), /*item_pin_ordinal=*/std::string(),
       /*item_type=*/sync_pb::AppListSpecifics_AppListItemType_TYPE_APP,
-      /*promise_package_id=*/kTestPackageId.ToString())));
+      /*promise_package_id=*/GetTestPackageId().ToString())));
   app_list_syncable_service()->MergeDataAndStartSyncing(
       syncer::APP_LIST, sync_list,
       std::make_unique<syncer::FakeSyncChangeProcessor>());
@@ -438,12 +441,12 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest, SetToSyncPosition) {
 
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model at the correct position.
-  ChromeAppListItem* item = GetChromeAppListItem(kTestPackageId);
+  ChromeAppListItem* item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
   EXPECT_EQ(item->position(), ordinal);
 
@@ -454,20 +457,20 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest, SetToSyncPosition) {
       app_list::CreateAppRemoteData(
           app_id, "Test App", "", ordinal_after_sync.ToInternalValue(), "",
           sync_pb::AppListSpecifics_AppListItemType_TYPE_APP,
-          kTestPackageId.ToString())));
+          GetTestPackageId().ToString())));
   app_list_syncable_service()->ProcessSyncChanges(base::Location(),
                                                   change_list);
 
   // Verify the promise package position gets updaed by sync.
-  item = GetChromeAppListItem(kTestPackageId);
+  item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
   EXPECT_EQ(item->position(), ordinal_after_sync);
 
   // Register (i.e. "install") an app with a matching package ID. This should
   // trigger removal of the promise app.
-  AddArcPackageWithApps(kTestPackageId.identifier(), {app_activity});
+  AddArcPackageWithApps(GetTestPackageId().identifier(), {app_activity});
 
-  EXPECT_FALSE(GetChromeAppListItem(kTestPackageId));
+  EXPECT_FALSE(GetChromeAppListItem(GetTestPackageId()));
   ChromeAppListItem* app_item = GetChromeAppListItem(app_id);
   ASSERT_TRUE(app_item);
   EXPECT_EQ(app_item->position(), ordinal_after_sync);
@@ -482,7 +485,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   const std::string app_activity = "test.com.example.activity";
   const std::string app_id =
-      ArcAppListPrefs::GetAppId(kTestPackageId.identifier(), app_activity);
+      ArcAppListPrefs::GetAppId(GetTestPackageId().identifier(), app_activity);
 
   // Add entry in sync data that has a matching PackageId with the promise app.
   syncer::SyncDataList sync_list;
@@ -497,24 +500,24 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model.
-  ChromeAppListItem* item = GetChromeAppListItem(kTestPackageId);
+  ChromeAppListItem* item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
 
   GetChromeAppListModelUpdater()->RequestPositionUpdate(
-      kTestPackageId.ToString(), app_ordinal,
+      GetTestPackageId().ToString(), app_ordinal,
       ash::RequestPositionUpdateReason::kMoveItem);
   EXPECT_EQ(item->position(), app_ordinal);
 
   // Register (i.e. "install") an app with a matching package ID. This should
   // trigger removal of the promise app.
-  AddArcPackageWithApps(kTestPackageId.identifier(), {app_activity});
+  AddArcPackageWithApps(GetTestPackageId().identifier(), {app_activity});
 
-  EXPECT_FALSE(GetChromeAppListItem(kTestPackageId));
+  EXPECT_FALSE(GetChromeAppListItem(GetTestPackageId()));
   ChromeAppListItem* app_item = GetChromeAppListItem(app_id);
   ASSERT_TRUE(app_item);
   EXPECT_EQ(app_item->position(), app_ordinal);
@@ -528,7 +531,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest, SetToSyncParent) {
 
   const std::string app_activity = "test.com.example.activity";
   const std::string app_id =
-      ArcAppListPrefs::GetAppId(kTestPackageId.identifier(), app_activity);
+      ArcAppListPrefs::GetAppId(GetTestPackageId().identifier(), app_activity);
 
   const std::string kFolderItemId = "folder_id";
   syncer::SyncDataList sync_list;
@@ -539,7 +542,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest, SetToSyncParent) {
       app_id, "App name", kFolderItemId, item_ordinal.ToInternalValue(),
       /*item_pin_ordinal=*/std::string(),
       /*item_type=*/sync_pb::AppListSpecifics_AppListItemType_TYPE_APP,
-      /*promise_package_id=*/kTestPackageId.ToString()));
+      /*promise_package_id=*/GetTestPackageId().ToString()));
 
   app_list_syncable_service()->MergeDataAndStartSyncing(
       syncer::APP_LIST, sync_list,
@@ -548,13 +551,13 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest, SetToSyncParent) {
 
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model within the folder specified in
   // sync data.
-  ChromeAppListItem* item = GetChromeAppListItem(kTestPackageId);
+  ChromeAppListItem* item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
   EXPECT_EQ(item->folder_id(), kFolderItemId);
 
@@ -564,20 +567,20 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest, SetToSyncParent) {
       app_list::CreateAppRemoteData(
           app_id, "App name", "", item_ordinal.ToInternalValue(), "",
           sync_pb::AppListSpecifics_AppListItemType_TYPE_APP,
-          kTestPackageId.ToString())));
+          GetTestPackageId().ToString())));
   app_list_syncable_service()->ProcessSyncChanges(base::Location(),
                                                   change_list);
 
   // Verify the promise package position gets updaed by sync.
-  item = GetChromeAppListItem(kTestPackageId);
+  item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
   EXPECT_EQ(item->folder_id(), "");
 
   // Register (i.e. "install") an app with a matching package ID. This should
   // trigger removal of the promise app.
-  AddArcPackageWithApps(kTestPackageId.identifier(), {app_activity});
+  AddArcPackageWithApps(GetTestPackageId().identifier(), {app_activity});
 
-  EXPECT_FALSE(GetChromeAppListItem(kTestPackageId));
+  EXPECT_FALSE(GetChromeAppListItem(GetTestPackageId()));
   ChromeAppListItem* app_item = GetChromeAppListItem(app_id);
   ASSERT_TRUE(app_item);
   EXPECT_EQ(app_item->folder_id(), "");
@@ -592,7 +595,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   const std::string app_activity = "test.com.example.activity";
   const std::string app_id =
-      ArcAppListPrefs::GetAppId(kTestPackageId.identifier(), app_activity);
+      ArcAppListPrefs::GetAppId(GetTestPackageId().identifier(), app_activity);
 
   const std::string kFolderItemId = "folder_id";
 
@@ -619,23 +622,23 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model at the correct position.
-  ChromeAppListItem* item = GetChromeAppListItem(kTestPackageId);
+  ChromeAppListItem* item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
 
   GetChromeAppListModelUpdater()->RequestMoveItemToFolder(
-      kTestPackageId.ToString(), kFolderItemId);
+      GetTestPackageId().ToString(), kFolderItemId);
   EXPECT_EQ(item->folder_id(), kFolderItemId);
 
   // Register (i.e. "install") an app with a matching package ID. This should
   // trigger removal of the promise app.
-  AddArcPackageWithApps(kTestPackageId.identifier(), {app_activity});
+  AddArcPackageWithApps(GetTestPackageId().identifier(), {app_activity});
 
-  EXPECT_FALSE(GetChromeAppListItem(kTestPackageId));
+  EXPECT_FALSE(GetChromeAppListItem(GetTestPackageId()));
   ChromeAppListItem* app_item = GetChromeAppListItem(app_id);
   ASSERT_TRUE(app_item);
   EXPECT_EQ(app_item->folder_id(), kFolderItemId);
@@ -645,13 +648,13 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
                        LabelMatchesWithStatus) {
   // Register test promise app.
-  PromiseAppPtr promise_app = std::make_unique<PromiseApp>(kTestPackageId);
+  PromiseAppPtr promise_app = std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->status = PromiseStatus::kPending;
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should now exist in the model.
-  ChromeAppListItem* item = GetChromeAppListItem(kTestPackageId);
+  ChromeAppListItem* item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
   ASSERT_EQ(item->app_status(), ash::AppStatus::kPending);
   ASSERT_EQ(item->name(),
@@ -659,7 +662,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
                 PromiseStatus::kPending)));
 
   // Push a status update to the promise app.
-  PromiseAppPtr update = std::make_unique<PromiseApp>(kTestPackageId);
+  PromiseAppPtr update = std::make_unique<PromiseApp>(GetTestPackageId());
   update->status = PromiseStatus::kInstalling;
   cache()->OnPromiseApp(std::move(update));
 
@@ -716,14 +719,14 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   const std::string app_activity = "test.com.example.activity";
   const std::string app_id =
-      ArcAppListPrefs::GetAppId(kTestPackageId.identifier(), app_activity);
+      ArcAppListPrefs::GetAppId(GetTestPackageId().identifier(), app_activity);
   // Add entry in sync data that has a matching PackageId with the promise app.
   syncer::SyncDataList sync_list;
   sync_list.push_back((app_list::CreateAppRemoteData(
       app_id, "App Name", /*parent_id=*/std::string(),
       ordinal.ToInternalValue(), pin_ordinal.ToInternalValue(),
       /*item_type=*/sync_pb::AppListSpecifics_AppListItemType_TYPE_APP,
-      /*promise_package_id=*/kTestPackageId.ToString())));
+      /*promise_package_id=*/GetTestPackageId().ToString())));
   app_list_syncable_service()->MergeDataAndStartSyncing(
       syncer::APP_LIST, sync_list,
       std::make_unique<syncer::FakeSyncChangeProcessor>());
@@ -731,12 +734,12 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model, and be pinned.
-  const std::string promise_app_id = kTestPackageId.ToString();
+  const std::string promise_app_id = GetTestPackageId().ToString();
   ash::AppListItem* item = GetAppListItem(promise_app_id);
   ASSERT_TRUE(item);
 
@@ -744,7 +747,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   // Register (i.e. "install") an app with a matching package ID. This should
   // trigger removal of the promise app.
-  AddArcPackageWithApps(kTestPackageId.identifier(), {app_activity});
+  AddArcPackageWithApps(GetTestPackageId().identifier(), {app_activity});
 
   // Promise app item should no longer exist in the model.
   item = GetAppListItem(promise_app_id);
@@ -752,7 +755,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
   EXPECT_FALSE(IsItemPinned(promise_app_id));
 
   const std::string installed_app_id =
-      ArcAppListPrefs::GetAppId(kTestPackageId.identifier(), app_activity);
+      ArcAppListPrefs::GetAppId(GetTestPackageId().identifier(), app_activity);
   // Verify that the app installed in place of the promise app is pinned.
   EXPECT_TRUE(IsItemPinned(installed_app_id));
 
@@ -769,14 +772,14 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   const std::string app_activity_in_sync = "test.com.example.activity.1";
   const std::string app_id_in_sync = ArcAppListPrefs::GetAppId(
-      kTestPackageId.identifier(), app_activity_in_sync);
+      GetTestPackageId().identifier(), app_activity_in_sync);
   // Add entry in sync data that has a matching PackageId with the promise app.
   syncer::SyncDataList sync_list;
   sync_list.push_back((app_list::CreateAppRemoteData(
       app_id_in_sync, "App Name", /*parent_id=*/std::string(),
       ordinal.ToInternalValue(), std::string(),
       /*item_type=*/sync_pb::AppListSpecifics_AppListItemType_TYPE_APP,
-      /*promise_package_id=*/kTestPackageId.ToString())));
+      /*promise_package_id=*/GetTestPackageId().ToString())));
   app_list_syncable_service()->MergeDataAndStartSyncing(
       syncer::APP_LIST, sync_list,
       std::make_unique<syncer::FakeSyncChangeProcessor>());
@@ -784,12 +787,12 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model, and be pinned.
-  const std::string promise_app_id = kTestPackageId.ToString();
+  const std::string promise_app_id = GetTestPackageId().ToString();
   ash::AppListItem* item = GetAppListItem(promise_app_id);
   ASSERT_TRUE(item);
 
@@ -803,7 +806,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
   // Register (i.e. "install") an app with a matching package ID. This should
   // trigger removal of the promise app.
   std::string extra_app_activity = "test.com.example.activity.2";
-  AddArcPackageWithApps(kTestPackageId.identifier(),
+  AddArcPackageWithApps(GetTestPackageId().identifier(),
                         {extra_app_activity, app_activity_in_sync});
 
   // Promise app item should no longer exist in the model.
@@ -812,7 +815,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
   EXPECT_FALSE(IsItemPinned(promise_app_id));
 
   const std::string extra_app_id = ArcAppListPrefs::GetAppId(
-      kTestPackageId.identifier(), extra_app_activity);
+      GetTestPackageId().identifier(), extra_app_activity);
   // Verify that the app installed in place of the promise app is pinned.
   EXPECT_TRUE(IsItemPinned(app_id_in_sync));
   EXPECT_FALSE(IsItemPinned(extra_app_id));
@@ -840,12 +843,12 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model, and be pinned.
-  const std::string promise_app_id = kTestPackageId.ToString();
+  const std::string promise_app_id = GetTestPackageId().ToString();
   ash::AppListItem* item = GetAppListItem(promise_app_id);
   ASSERT_TRUE(item);
 
@@ -862,7 +865,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   const std::string app_activity = "test.com.example.activity";
   const std::string app_id =
-      ArcAppListPrefs::GetAppId(kTestPackageId.identifier(), app_activity);
+      ArcAppListPrefs::GetAppId(GetTestPackageId().identifier(), app_activity);
 
   syncer::SyncChangeList change_list;
   change_list.push_back(syncer::SyncChange(
@@ -870,10 +873,10 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
       app_list::CreateAppRemoteData(
           app_id, "Test App", "", app_ordinal.ToInternalValue(), "",
           sync_pb::AppListSpecifics_AppListItemType_TYPE_APP,
-          kTestPackageId.ToString())));
+          GetTestPackageId().ToString())));
   app_list_syncable_service()->ProcessSyncChanges(base::Location(),
                                                   change_list);
-  AddArcPackageWithApps(kTestPackageId.identifier(), {app_activity});
+  AddArcPackageWithApps(GetTestPackageId().identifier(), {app_activity});
 
   // Promise app item should no longer exist in the model.
   item = GetAppListItem(promise_app_id);
@@ -895,21 +898,21 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->status = PromiseStatus::kPending;
   promise_app->name = app_name;
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model.
-  ChromeAppListItem* item = GetChromeAppListItem(kTestPackageId);
+  ChromeAppListItem* item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
   EXPECT_EQ(item->app_status(), ash::AppStatus::kPending);
   ASSERT_EQ(item->name(), "Waiting…");
   ASSERT_EQ(item->accessible_name(), "Long Name, waiting");
 
   // Update the promise app in the promise app registry cache.
-  apps::PromiseAppPtr update = std::make_unique<PromiseApp>(kTestPackageId);
+  apps::PromiseAppPtr update = std::make_unique<PromiseApp>(GetTestPackageId());
   update->progress = 0.3;
   update->status = PromiseStatus::kInstalling;
   cache()->OnPromiseApp(std::move(update));
@@ -924,18 +927,18 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
                        PlaceholderAccessibleLabelUsedWhenNoNameAvailable) {
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model.
-  ChromeAppListItem* item = GetChromeAppListItem(kTestPackageId);
+  ChromeAppListItem* item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
   EXPECT_EQ(item->app_status(), ash::AppStatus::kPending);
   ASSERT_EQ(item->accessible_name(), "An app, waiting");
 
   // Update the promise app in the promise app registry cache.
-  apps::PromiseAppPtr update = std::make_unique<PromiseApp>(kTestPackageId);
+  apps::PromiseAppPtr update = std::make_unique<PromiseApp>(GetTestPackageId());
   update->status = PromiseStatus::kInstalling;
   cache()->OnPromiseApp(std::move(update));
 
@@ -952,11 +955,11 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
       apps::PromiseAppLifecycleEvent::kCreatedInLauncher, 0);
 
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
-  ChromeAppListItem* item = GetChromeAppListItem(kTestPackageId);
+  ChromeAppListItem* item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
   histogram_tester.ExpectBucketCount(
       kPromiseAppLifecycleEventHistogram,
@@ -967,7 +970,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
                        ReinstallRemovedDefaultApp) {
   const std::string app_activity = "test.com.example.activity";
   const std::string app_id =
-      ArcAppListPrefs::GetAppId(kTestPackageId.identifier(), app_activity);
+      ArcAppListPrefs::GetAppId(GetTestPackageId().identifier(), app_activity);
 
   syncer::StringOrdinal ordinal = syncer::StringOrdinal::CreateInitialOrdinal();
   syncer::StringOrdinal pin_ordinal = ordinal.CreateAfter();
@@ -978,7 +981,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
       ordinal.ToInternalValue(), pin_ordinal.ToInternalValue(),
       /*item_type=*/
       sync_pb::AppListSpecifics_AppListItemType_TYPE_REMOVE_DEFAULT_APP,
-      /*promise_package_id=*/kTestPackageId.ToString())));
+      /*promise_package_id=*/GetTestPackageId().ToString())));
   app_list_syncable_service()->MergeDataAndStartSyncing(
       syncer::APP_LIST, sync_list,
       std::make_unique<syncer::FakeSyncChangeProcessor>());
@@ -986,11 +989,11 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
   // Register a promise app in the promise app registry cache.
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
-  const std::string promise_app_id = kTestPackageId.ToString();
+  const std::string promise_app_id = GetTestPackageId().ToString();
   ash::AppListItem* item = GetAppListItem(promise_app_id);
   ASSERT_TRUE(item);
 
@@ -1000,7 +1003,7 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
       ash::RequestPositionUpdateReason::kMoveItem);
   AppListClientImpl::GetInstance()->PinApp(promise_app_id);
 
-  AddArcPackageWithApps(kTestPackageId.identifier(), {app_activity});
+  AddArcPackageWithApps(GetTestPackageId().identifier(), {app_activity});
 
   EXPECT_FALSE(GetAppListItem(promise_app_id));
   EXPECT_FALSE(IsItemPinned(promise_app_id));
@@ -1012,12 +1015,12 @@ IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(AppServicePromiseAppItemBrowserTest, ContextMenu) {
   apps::PromiseAppPtr promise_app =
-      std::make_unique<PromiseApp>(kTestPackageId);
+      std::make_unique<PromiseApp>(GetTestPackageId());
   promise_app->should_show = true;
   cache()->OnPromiseApp(std::move(promise_app));
 
   // Promise app item should exist in the model.
-  ChromeAppListItem* item = GetChromeAppListItem(kTestPackageId);
+  ChromeAppListItem* item = GetChromeAppListItem(GetTestPackageId());
   ASSERT_TRUE(item);
   base::test::TestFuture<std::unique_ptr<ui::SimpleMenuModel>> future;
   item->GetContextMenuModel(ash::AppListItemContext::kNone,

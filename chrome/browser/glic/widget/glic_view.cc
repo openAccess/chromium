@@ -7,9 +7,13 @@
 #include "base/command_line.h"
 #include "base/metrics/user_metrics.h"
 #include "chrome/browser/file_select_helper.h"
+#include "chrome/browser/glic/host/glic_drag_and_drop_util.h"
+#include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/widget/web_contents_delegate_util.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -26,12 +30,15 @@
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/color/color_variant.h"
 #include "ui/events/event_observer.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/gfx/draggable_region.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/views/background.h"
 #include "ui/views/event_monitor.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
@@ -49,14 +56,18 @@ GlicView::GlicView(Profile* profile,
   SetSize(initial_size);
   // As there is no WebContents yet, this will apply the default background.
   UpdateBackgroundColor();
+  SetAcceleratorHandling(views::WebContentsAcceleratorHandling::kEnabled);
 }
 
-GlicView::~GlicView() = default;
+GlicView::~GlicView() {
+  loading_placeholder_controller_.ResetCapturer();
+  SetWebContentsDelegate(web_contents(), /*delegate=*/nullptr,
+                         /*expected_delegate=*/this);
+}
 
 bool GlicView::HandleKeyboardEvent(content::WebContents* source,
                                    const input::NativeWebKeyboardEvent& event) {
-  return GetWidget() && unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-                            event, GetWidget()->GetFocusManager());
+  return WebView::HandleKeyboardEvent(source, event);
 }
 
 void GlicView::RequestMediaAccessPermission(
@@ -65,6 +76,14 @@ void GlicView::RequestMediaAccessPermission(
     content::MediaResponseCallback callback) {
   MediaCaptureDevicesDispatcher::GetInstance()->ProcessMediaAccessRequest(
       web_contents, request, std::move(callback), nullptr);
+}
+
+bool GlicView::CheckMediaAccessPermission(
+    content::RenderFrameHost* render_frame_host,
+    const url::Origin& security_origin,
+    blink::mojom::MediaStreamType type) {
+  return MediaCaptureDevicesDispatcher::GetInstance()
+      ->CheckMediaAccessPermission(render_frame_host, security_origin, type);
 }
 
 void GlicView::RunFileChooser(
@@ -78,15 +97,18 @@ void GlicView::RunFileChooser(
 bool GlicView::CanDragEnter(content::WebContents* source,
                             const content::DropData& data,
                             blink::DragOperationsMask operations_allowed) {
+  // File upload is unavailable until the user completes the FRE; mirror the
+  // disabled "+" upload menu by rejecting drags too.
+  if (web_contents() &&
+      !GlicEnabling::HasConsentedForProfile(
+          Profile::FromBrowserContext(web_contents()->GetBrowserContext()))) {
+    return false;
+  }
+
   if (!base::FeatureList::IsEnabled(features::kGlicDragAndDropFileUpload)) {
     return false;
   }
-  // Check for local files or URLs.
-  bool has_files = !data.filenames.empty() || !data.file_system_files.empty();
-  bool has_url = !data.url_infos.empty();
-
-  return has_files || (has_url && base::FeatureList::IsEnabled(
-                                      features::kGlicWebDragAndDropFileUpload));
+  return IsValidDragPayload(data);
 }
 
 void GlicView::ContentsZoomChange(bool zoom_in) {
@@ -96,29 +118,74 @@ void GlicView::ContentsZoomChange(bool zoom_in) {
 }
 
 void GlicView::SetWebContents(content::WebContents* new_web_contents) {
+  loading_placeholder_controller_.ResetCapturer();
   // Clear the delegate on the old WebContents if this view is currently the
-  // delegate. Checks `GetDelegate() == this` to avoid clearing the delegate if
-  // another view has already taken over (e.g. during transitions between panel
-  // and floaty).
-  if (web_contents() && web_contents()->GetDelegate() == this) {
-    web_contents()->SetDelegate(nullptr);
-  }
+  // delegate. Passing `/*expected_delegate=*/this` avoids clearing the delegate
+  // if another view has already taken over (e.g. during transitions between
+  // panel and floaty).
+  SetWebContentsDelegate(web_contents(), /*delegate=*/nullptr,
+                         /*expected_delegate=*/this);
   views::WebView::SetWebContents(new_web_contents);
-  if (new_web_contents) {
-    new_web_contents->SetDelegate(this);
+  // Attach this view as the delegate for the new WebContents.
+  SetWebContentsDelegate(new_web_contents, /*delegate=*/this);
+
+  UpdateWebContentsSize();
+  loading_placeholder_controller_.OnWebContentsAttached(new_web_contents);
+}
+
+void GlicView::RequestFocus() {
+  if (loading_placeholder_controller_.MaybeRequestFocus()) {
+    return;
   }
+  views::WebView::RequestFocus();
+}
+
+views::View::FocusBehavior GlicView::GetFocusBehavior() const {
+  if (loading_placeholder_controller_.is_showing()) {
+    return FocusBehavior::NEVER;
+  }
+  return views::WebView::GetFocusBehavior();
+}
+
+void GlicView::RenderFrameCreated(content::RenderFrameHost* render_frame_host) {
+  views::WebView::RenderFrameCreated(render_frame_host);
+  loading_placeholder_controller_.SyncFocusAccessibilityState();
+  if (web_contents() &&
+      render_frame_host == web_contents()->GetPrimaryMainFrame()) {
+    UpdateWebContentsSize();
+  }
+}
+
+void GlicView::RenderFrameHostChanged(content::RenderFrameHost* old_host,
+                                      content::RenderFrameHost* new_host) {
+  views::WebView::RenderFrameHostChanged(old_host, new_host);
+  loading_placeholder_controller_.SyncFocusAccessibilityState();
+  if (web_contents() && new_host == web_contents()->GetPrimaryMainFrame()) {
+    UpdateWebContentsSize();
+  }
+}
+
+void GlicView::OnBoundsChanged(const gfx::Rect& previous_bounds) {
+  views::WebView::OnBoundsChanged(previous_bounds);
+  loading_placeholder_controller_.UpdateBounds();
+  UpdateWebContentsSize();
+}
+
+void GlicView::UpdateWebContentsSize() {
+  const gfx::Size contents_size = GetContentsBounds().size();
+  if (!web_contents() || contents_size.IsEmpty()) {
+    return;
+  }
+  if (auto* rwhv = web_contents()->GetRenderWidgetHostView()) {
+    rwhv->SetSize(contents_size);
+  }
+  InvalidateLayout();
 }
 
 void GlicView::DraggableRegionsChanged(
     const std::vector<blink::mojom::DraggableRegionPtr>& regions,
     content::WebContents* contents) {
-  SkRegion sk_region;
-  for (const auto& region : regions) {
-    sk_region.op(
-        SkIRect::MakeLTRB(region->bounds.x(), region->bounds.y(),
-                          region->bounds.right(), region->bounds.bottom()),
-        region->draggable ? SkRegion::kUnion_Op : SkRegion::kDifference_Op);
-  }
+  SkRegion sk_region = gfx::DraggableRegionsToSkRegion(regions);
 
   // `GlicView::DraggableRegionsChanged()` is called when draggable regions for
   // either the main-webcontents or guest-webcontents are changed.
@@ -128,7 +195,19 @@ void GlicView::DraggableRegionsChanged(
   SetDraggableRegion(sk_region, /*for_webview=*/is_webview_contents);
 }
 
+bool GlicView::HandleWindowCreation(
+    content::RenderFrameHost* opener,
+    const GURL& target_url,
+    ui::mojom::WindowOpenDisposition disposition,
+    const blink::mojom::WindowFeatures& features) {
+  return MaybeHandleGlicWindowCreation(opener, target_url, disposition,
+                                       features);
+}
+
 bool GlicView::IsPointWithinDraggableRegion(const gfx::Point& point) {
+  if (loading_placeholder_controller_.is_showing()) {
+    return loading_placeholder_controller_.IsPointWithinDraggableRegion(point);
+  }
   // Draggable region of webview takes precedence.
   return webview_draggable_region_.contains(point.x(), point.y()) ||
          draggable_region_.contains(point.x(), point.y());
@@ -165,7 +244,33 @@ void GlicView::SetBackgroundRoundedCorners(const gfx::RoundedCornersF& radii) {
   }
 
   background_radii_ = radii;
+  loading_placeholder_controller_.SetBackgroundRoundedCorners(radii);
   UpdateBackgroundColor();
+}
+
+void GlicView::ConfigureLoadingPlaceholder(
+    GlicLoadingPlaceholderView::Mode mode,
+    base::RepeatingClosure close_callback) {
+  loading_placeholder_controller_.Configure(mode, std::move(close_callback));
+}
+
+void GlicView::SetShowingLoadingPlaceholder(bool showing) {
+  loading_placeholder_controller_.SetShowing(showing);
+}
+
+bool GlicView::IsShowingLoadingPlaceholder() const {
+  return loading_placeholder_controller_.is_showing();
+}
+
+bool GlicView::HasFocusInHierarchy() const {
+  const views::FocusManager* focus_manager = GetFocusManager();
+  const views::View* focused_view =
+      focus_manager ? focus_manager->GetFocusedView() : nullptr;
+  return focused_view && Contains(focused_view);
+}
+
+GlicLoadingPlaceholderView* GlicView::loading_placeholder_view_for_testing() {
+  return loading_placeholder_controller_.placeholder_view();
 }
 
 bool GlicView::AcceleratorPressed(const ui::Accelerator& accelerator) {

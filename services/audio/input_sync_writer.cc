@@ -22,6 +22,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "media/audio/audio_trace_utils.h"
 #include "media/base/audio_bus.h"
 #include "media/base/audio_glitch_info.h"
 #include "media/base/media_switches.h"
@@ -50,7 +51,7 @@ InputSyncWriter::OverflowData::OverflowData(
       capture_time_(capture_time),
       glitch_info_(glitch_info),
       audio_bus_(std::move(audio_bus)) {}
-InputSyncWriter::OverflowData::~OverflowData() {}
+InputSyncWriter::OverflowData::~OverflowData() = default;
 InputSyncWriter::OverflowData::OverflowData(InputSyncWriter::OverflowData&&) =
     default;
 InputSyncWriter::OverflowData& InputSyncWriter::OverflowData::operator=(
@@ -94,6 +95,9 @@ InputSyncWriter::InputSyncWriter(
       "%s => (shared_memory_segment_size=[%u], audio_bus_memory_size=[%u])",
       __func__, shared_memory_segment_size_, audio_bus_memory_size_);
   DCHECK(glitch_counter_);
+
+  trace_flow_base_id_ =
+      media::GetAudioTraceFlowBaseId(shared_memory_region_.GetGUID());
 
   audio_buses_.resize(shared_memory_segment_count);
   input_buffers_.resize(shared_memory_segment_count);
@@ -238,7 +242,7 @@ void InputSyncWriter::Close() {
 
 void InputSyncWriter::CheckTimeSinceLastWrite() {
 #if !BUILDFLAG(IS_ANDROID)
-  static const base::TimeDelta kLogDelayThreadhold = base::Milliseconds(500);
+  constexpr base::TimeDelta kLogDelayThreadhold = base::Milliseconds(500);
 
   base::TimeTicks new_write_time = base::TimeTicks::Now();
   if (last_write_time_.is_null()) {
@@ -340,9 +344,11 @@ bool InputSyncWriter::WriteDataToCurrentSegment(
     const media::AudioGlitchInfo& glitch_info) {
   CHECK(number_of_filled_segments_ < audio_buses_.size());
 
-  TRACE_EVENT("audio", "WriteDataToCurrentSegment", "glitches",
-              glitch_info.count, "glitch_duration (ms)",
-              glitch_info.duration.InMillisecondsF(), "capture_time (ms)",
+  TRACE_EVENT("audio", "WriteDataToCurrentSegment",
+              media::AudioBufferFlow(trace_flow_base_id_, next_buffer_id_),
+              "buffer_id", next_buffer_id_, "glitches", glitch_info.count,
+              "glitch_duration (ms)", glitch_info.duration.InMillisecondsF(),
+              "capture_time (ms)",
               (capture_time - base::TimeTicks()).InMillisecondsF(),
               "capture_delay (ms)",
               (base::TimeTicks::Now() - capture_time).InMillisecondsF(),

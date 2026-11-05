@@ -4,10 +4,16 @@
 
 package org.chromium.chrome.browser.browserservices.intents;
 
+import android.app.PendingIntent;
 import android.content.Intent;
+import android.os.Bundle;
+import android.os.IBinder;
+import android.os.Parcel;
+import android.os.Parcelable;
 
 import androidx.browser.auth.AuthTabIntent;
 import androidx.browser.auth.AuthTabSessionToken;
+import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.browser.customtabs.CustomTabsSessionToken;
 
 import org.chromium.base.IntentUtils;
@@ -15,82 +21,184 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
 /**
- * Class that holds either a {@link CustomTabsSessionToken} or {@link AuthTabSessionToken}.
+ * Holds either a {@link CustomTabsSessionToken} or an {@link AuthTabSessionToken}.
  *
- * @param <T> The type of the session; either {@link CustomTabsSessionToken} or {@link
- *     AuthTabSessionToken}.
+ * <p>The hierarchy is sealed, so a session is always exactly one of {@link CustomTab} or {@link
+ * AuthTab}. To reach the underlying token, use a {@code switch} with a case for each: the compiler
+ * rejects the switch if either case is missing.
+ *
+ * <pre>{@code
+ * var callback = switch (sessionHolder) {
+ *     case SessionHolder.CustomTab customTab -> customTab.getToken().getCallback();
+ *     case SessionHolder.AuthTab authTab -> authTab.getToken().getCallback();
+ * };
+ * }</pre>
  */
 @NullMarked
-public class SessionHolder<T> {
-    private final T mSession;
-
-    public SessionHolder(T session) {
-        mSession = session;
-        assert isCustomTab() || isAuthTab();
+public sealed interface SessionHolder extends Parcelable
+        permits SessionHolder.CustomTab, SessionHolder.AuthTab {
+    /** Returns a holder for the given Custom Tab session. */
+    static CustomTab of(CustomTabsSessionToken token) {
+        return new CustomTab(token);
     }
 
-    public static @Nullable SessionHolder<?> getSessionHolderFromIntent(Intent intent) {
+    /** Returns a holder for the given Auth Tab session. */
+    static AuthTab of(AuthTabSessionToken token) {
+        return new AuthTab(token);
+    }
+
+    /**
+     * Returns a holder for the session the given intent belongs to, or null if the intent does not
+     * have a session.
+     */
+    static @Nullable SessionHolder getSessionHolderFromIntent(Intent intent) {
         boolean isAuthTab =
                 IntentUtils.safeGetBooleanExtra(intent, AuthTabIntent.EXTRA_LAUNCH_AUTH_TAB, false);
         if (isAuthTab) {
             AuthTabSessionToken token = AuthTabSessionToken.createSessionTokenFromIntent(intent);
-            if (token != null) {
-                return new SessionHolder<>(token);
-            }
-        } else {
-            CustomTabsSessionToken token = CustomTabsSessionToken.getSessionTokenFromIntent(intent);
-            if (token != null) {
-                return new SessionHolder<>(token);
-            }
+            return token != null ? of(token) : null;
         }
-        return null;
+        CustomTabsSessionToken token = CustomTabsSessionToken.getSessionTokenFromIntent(intent);
+        if (token == null) return null;
+        // Unlike AuthTabSessionToken, CustomTabsSessionToken#getCallbackBinder() and #getId() are
+        // package-private, so we extract and retain them from the intent here to support
+        // Parcelable serialization.
+        IBinder callbackBinder =
+                IntentUtils.safeGetBinderExtra(intent, CustomTabsIntent.EXTRA_SESSION);
+        PendingIntent sessionId =
+                IntentUtils.safeGetParcelableExtra(intent, CustomTabsIntent.EXTRA_SESSION_ID);
+        return new CustomTab(token, callbackBinder, sessionId);
     }
 
-    /** Returns the session held by this object. */
-    public T getSession() {
-        return mSession;
+    @Override
+    default int describeContents() {
+        return 0;
     }
 
-    /** Returns the session as a {@link CustomTabsSessionToken}. */
-    public CustomTabsSessionToken getSessionAsCustomTab() {
-        return (CustomTabsSessionToken) mSession;
-    }
+    Parcelable.Creator<SessionHolder> CREATOR =
+            new Parcelable.Creator<>() {
+                @Override
+                public @Nullable SessionHolder createFromParcel(Parcel in) {
+                    // Reads the values written in `CustomTab#writeToParcel` and
+                    // `AuthTab#writeToParcel`.
+                    boolean isAuthTab = in.readBoolean();
+                    IBinder callbackBinder = in.readStrongBinder();
+                    PendingIntent sessionId = in.readTypedObject(PendingIntent.CREATOR);
+                    Bundle bundle = new Bundle();
+                    bundle.putBoolean(AuthTabIntent.EXTRA_LAUNCH_AUTH_TAB, isAuthTab);
+                    bundle.putBinder(CustomTabsIntent.EXTRA_SESSION, callbackBinder);
+                    bundle.putParcelable(CustomTabsIntent.EXTRA_SESSION_ID, sessionId);
+                    return getSessionHolderFromIntent(new Intent().putExtras(bundle));
+                }
 
-    /** Returns the session as an {@link AuthTabSessionToken}. */
-    public AuthTabSessionToken getSessionAsAuthTab() {
-        return (AuthTabSessionToken) mSession;
-    }
+                @Override
+                public SessionHolder[] newArray(int size) {
+                    return new SessionHolder[size];
+                }
+            };
 
     /** Whether the session has an id. */
-    public boolean hasId() {
-        if (mSession instanceof AuthTabSessionToken session) {
-            return session.hasId();
-        } else if (mSession instanceof CustomTabsSessionToken session) {
-            return session.hasId();
+    boolean hasId();
+
+    /**
+     * Returns whether the session is a {@link CustomTabsSessionToken}. Prefer {@code instanceof
+     * SessionHolder.CustomTab customTab} when the token itself is needed, since the pattern binds
+     * it without a cast.
+     */
+    default boolean isCustomTab() {
+        return this instanceof CustomTab;
+    }
+
+    /**
+     * Returns whether the session is an {@link AuthTabSessionToken}. Prefer {@code instanceof
+     * SessionHolder.AuthTab authTab} when the token itself is needed, since the pattern binds it
+     * without a cast.
+     */
+    default boolean isAuthTab() {
+        return this instanceof AuthTab;
+    }
+
+    /** Holds the session of a Custom Tab. */
+    final class CustomTab implements SessionHolder {
+        private final CustomTabsSessionToken mToken;
+        private final @Nullable IBinder mCallbackBinder;
+        private final @Nullable PendingIntent mSessionId;
+
+        private CustomTab(CustomTabsSessionToken token) {
+            this(token, null, null);
         }
-        return false;
-    }
 
-    @Override
-    public int hashCode() {
-        return mSession.hashCode();
-    }
-
-    @Override
-    public boolean equals(@Nullable Object obj) {
-        if (obj instanceof SessionHolder<?> holder) {
-            return mSession.equals(holder.mSession);
+        private CustomTab(
+                CustomTabsSessionToken token,
+                @Nullable IBinder callbackBinder,
+                @Nullable PendingIntent sessionId) {
+            mToken = token;
+            mCallbackBinder = callbackBinder;
+            mSessionId = sessionId;
         }
-        return false;
+
+        /** Returns the token identifying the Custom Tab session. */
+        public CustomTabsSessionToken getToken() {
+            return mToken;
+        }
+
+        @Override
+        public void writeToParcel(Parcel dest, int flags) {
+            assert mCallbackBinder != null || mSessionId != null;
+            dest.writeBoolean(false);
+            dest.writeStrongBinder(mCallbackBinder);
+            dest.writeTypedObject(mSessionId, flags);
+        }
+
+        @Override
+        public boolean hasId() {
+            return mToken.hasId();
+        }
+
+        @Override
+        public boolean equals(@Nullable Object obj) {
+            return obj instanceof CustomTab other && mToken.equals(other.mToken);
+        }
+
+        @Override
+        public int hashCode() {
+            return mToken.hashCode();
+        }
     }
 
-    /** Returns whether the session is a {@link CustomTabsSessionToken}. */
-    public boolean isCustomTab() {
-        return mSession instanceof CustomTabsSessionToken;
-    }
+    /** Holds the session of an Auth Tab. */
+    final class AuthTab implements SessionHolder {
+        private final AuthTabSessionToken mToken;
 
-    /** Returns whether the session is an {@link AuthTabSessionToken}. */
-    public boolean isAuthTab() {
-        return mSession instanceof AuthTabSessionToken;
+        private AuthTab(AuthTabSessionToken token) {
+            mToken = token;
+        }
+
+        /** Returns the token identifying the Auth Tab session. */
+        public AuthTabSessionToken getToken() {
+            return mToken;
+        }
+
+        @Override
+        public void writeToParcel(Parcel dest, int flags) {
+            dest.writeBoolean(true);
+            dest.writeStrongBinder(mToken.getCallbackBinder());
+            dest.writeTypedObject(mToken.getId(), flags);
+        }
+
+        @Override
+        public boolean hasId() {
+            return mToken.hasId();
+        }
+
+        @Override
+        public boolean equals(@Nullable Object obj) {
+            return obj instanceof AuthTab other && mToken.equals(other.mToken);
+        }
+
+        @Override
+        public int hashCode() {
+            return mToken.hashCode();
+        }
     }
 }

@@ -8,6 +8,7 @@ import android.os.ConditionVariable;
 import android.os.SystemClock;
 import android.util.Pair;
 
+import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
@@ -32,6 +33,7 @@ import org.chromium.net.RequestFinishedInfo;
 import org.chromium.net.RttThroughputValues;
 import org.chromium.net.UploadDataProvider;
 import org.chromium.net.UrlRequest;
+import org.chromium.net.httpflags.ExperimentalOptionsFlags;
 import org.chromium.net.impl.CronetLogger.CronetVersion;
 import org.chromium.net.impl.proto.RequestContextConfigOptions;
 import org.chromium.net.urlconnection.CronetHttpURLConnection;
@@ -99,8 +101,8 @@ public class CronetUrlRequestContext extends CronetEngineBase {
     private final boolean mNetworkQualityEstimatorEnabled;
 
     /**
-     * Locks operations on network quality listeners, because listener
-     * addition and removal may occur on a different thread from notification.
+     * Locks operations on network quality listeners, because listener addition and removal may
+     * occur on a different thread from notification.
      */
     private final Object mNetworkQualityLock = new Object();
 
@@ -186,6 +188,8 @@ public class CronetUrlRequestContext extends CronetEngineBase {
 
     private List<VersionSafeProxyCallback> mProxyCallbacks;
 
+    @Nullable private final String mEffectiveExperimentalOptions;
+
     @VisibleForTesting final CronetAdaptiveRequestContext mAdaptiveRequestContext;
 
     long getLogId() {
@@ -194,6 +198,12 @@ public class CronetUrlRequestContext extends CronetEngineBase {
 
     CronetLogger getCronetLogger() {
         return mLogger;
+    }
+
+    @VisibleForTesting
+    @Nullable
+    public String getEffectiveExperimentalOptionsForTesting() {
+        return mEffectiveExperimentalOptions;
     }
 
     /**
@@ -255,9 +265,10 @@ public class CronetUrlRequestContext extends CronetEngineBase {
                 ScopedSysTraceEvent.scoped("CronetUrlRequestContext#CronetUrlRequestContext")) {
             mRttListenerList.disableThreadAsserts();
             mThroughputListenerList.disableThreadAsserts();
-            mNetworkQualityEstimatorEnabled = builder.networkQualityEstimatorEnabled();
             boolean triggeredInitialization =
                     CronetLibraryLoader.ensureInitialized(builder.getContext());
+            mNetworkQualityEstimatorEnabled =
+                    !shouldDisableNqe() && builder.networkQualityEstimatorEnabled();
             if (builder.httpCacheMode() == HttpCacheType.DISK) {
                 mInUseStoragePath = builder.storagePath();
                 synchronized (sInUseStoragePaths) {
@@ -272,6 +283,13 @@ public class CronetUrlRequestContext extends CronetEngineBase {
             if (builder.getProxyOptions() != null) {
                 mProxyCallbacks = builder.getProxyOptions().createProxyCallbackList();
             }
+            var cronetSource = NativeCronetEngineBuilderImpl.getCronetSource();
+            mEffectiveExperimentalOptions =
+                    ExperimentalOptionsFlags.applyOverrides(
+                            builder.experimentalOptions(),
+                            HttpFlagsForImpl.getHttpFlags(
+                                            ContextUtils.getApplicationContext(), cronetSource)
+                                    .flags());
             synchronized (mLock) {
                 try (var adapterTraceEvent =
                         ScopedSysTraceEvent.scoped(
@@ -280,13 +298,13 @@ public class CronetUrlRequestContext extends CronetEngineBase {
                     mUrlRequestContextAdapter =
                             CronetUrlRequestContextJni.get()
                                     .createRequestContextAdapter(
-                                            createNativeUrlRequestContextConfig(builder));
+                                            createNativeUrlRequestContextConfig(
+                                                    builder, mEffectiveExperimentalOptions));
                 }
                 if (mUrlRequestContextAdapter == 0) {
                     throw new NullPointerException("Context Adapter creation failed.");
                 }
             }
-            var cronetSource = NativeCronetEngineBuilderImpl.getCronetSource();
             mLogger = CronetLoggerFactory.createLogger(builder.getContext(), cronetSource);
             mLogId = mLogger.generateId();
             var builderLoggerInfo = builder.toLoggerInfo();
@@ -362,11 +380,14 @@ public class CronetUrlRequestContext extends CronetEngineBase {
     }
 
     @VisibleForTesting
-    public static long createNativeUrlRequestContextConfig(CronetEngineBuilderImpl builder) {
+    public static long createNativeUrlRequestContextConfig(
+            CronetEngineBuilderImpl builder, @Nullable String effectiveExperimentalOptions) {
         final long urlRequestContextConfig =
                 CronetUrlRequestContextJni.get()
                         .createRequestContextConfig(
-                                createRequestContextConfigOptions(builder).toByteArray());
+                                createRequestContextConfigOptions(
+                                                builder, effectiveExperimentalOptions)
+                                        .toByteArray());
         if (urlRequestContextConfig == 0) {
             throw new IllegalArgumentException("Experimental options parsing failed.");
         }
@@ -399,8 +420,53 @@ public class CronetUrlRequestContext extends CronetEngineBase {
     // CronetEngine.Builder brotli setting).
     public static final String ALWAYS_ENABLE_BROTLI_FLAG_NAME = "Cronet_always_enable_brotli";
 
+    @VisibleForTesting public static final String DISABLE_NQE_FLAG_NAME = "Cronet_disable_nqe";
+    private static Boolean sShouldDisableNqe;
+
+    private static boolean shouldDisableNqe() {
+        if (sShouldDisableNqe == null) {
+            var disableNqeFlagValue =
+                    HttpFlagsForImpl.getHttpFlags(
+                                    ContextUtils.getApplicationContext(),
+                                    NativeCronetEngineBuilderImpl.getCronetSource())
+                            .flags()
+                            .get(DISABLE_NQE_FLAG_NAME);
+            sShouldDisableNqe = disableNqeFlagValue != null && disableNqeFlagValue.getBoolValue();
+        }
+        return sShouldDisableNqe;
+    }
+
+    @VisibleForTesting
+    public static final String DISABLE_SHARED_BROTLI_FLAG_NAME = "Cronet_disable_shared_brotli";
+
+    @Override
+    boolean shouldDisableSharedBrotli() {
+        var disableSharedBrotliFlagValue =
+                HttpFlagsForImpl.getHttpFlags(
+                                ContextUtils.getApplicationContext(),
+                                NativeCronetEngineBuilderImpl.getCronetSource())
+                        .flags()
+                        .get(DISABLE_SHARED_BROTLI_FLAG_NAME);
+        return disableSharedBrotliFlagValue != null && disableSharedBrotliFlagValue.getBoolValue();
+    }
+
+    @VisibleForTesting
+    public static final String DISABLE_SET_IDEMPOTENCY_FLAG_NAME = "Cronet_disable_set_idempotency";
+
+    @Override
+    boolean shouldDisableSetIdempotency() {
+        var disableSetIdempotencyFlagValue =
+                HttpFlagsForImpl.getHttpFlags(
+                                ContextUtils.getApplicationContext(),
+                                NativeCronetEngineBuilderImpl.getCronetSource())
+                        .flags()
+                        .get(DISABLE_SET_IDEMPOTENCY_FLAG_NAME);
+        return disableSetIdempotencyFlagValue != null
+                && disableSetIdempotencyFlagValue.getBoolValue();
+    }
+
     private static RequestContextConfigOptions createRequestContextConfigOptions(
-            CronetEngineBuilderImpl engineBuilder) {
+            CronetEngineBuilderImpl engineBuilder, @Nullable String effectiveExperimentalOptions) {
         var flags =
                 HttpFlagsForImpl.getHttpFlags(
                                 ContextUtils.getApplicationContext(),
@@ -422,7 +488,8 @@ public class CronetUrlRequestContext extends CronetEngineBase {
                         .setHttpCacheMaxSize(engineBuilder.httpCacheMaxSize())
                         .setMockCertVerifier(engineBuilder.mockCertVerifier())
                         .setEnableNetworkQualityEstimator(
-                                engineBuilder.networkQualityEstimatorEnabled())
+                                !shouldDisableNqe()
+                                        && engineBuilder.networkQualityEstimatorEnabled())
                         .setBypassPublicKeyPinningForLocalTrustAnchors(
                                 engineBuilder.publicKeyPinningBypassForLocalTrustAnchorsEnabled())
                         .setNetworkThreadPriority(
@@ -446,8 +513,8 @@ public class CronetUrlRequestContext extends CronetEngineBase {
             resultBuilder.setQuicDefaultUserAgentId(engineBuilder.getDefaultQuicUserAgentId());
         }
 
-        if (engineBuilder.experimentalOptions() != null) {
-            resultBuilder.setExperimentalOptions(engineBuilder.experimentalOptions());
+        if (effectiveExperimentalOptions != null) {
+            resultBuilder.setExperimentalOptions(effectiveExperimentalOptions);
         }
 
         return resultBuilder.build();
@@ -782,6 +849,9 @@ public class CronetUrlRequestContext extends CronetEngineBase {
 
     @Override
     public int getEffectiveConnectionType() {
+        if (shouldDisableNqe()) {
+            return EFFECTIVE_CONNECTION_TYPE_UNKNOWN;
+        }
         if (!mNetworkQualityEstimatorEnabled) {
             throw new IllegalStateException("Network quality estimator must be enabled");
         }
@@ -792,6 +862,9 @@ public class CronetUrlRequestContext extends CronetEngineBase {
 
     @Override
     public int getHttpRttMs() {
+        if (shouldDisableNqe()) {
+            return CONNECTION_METRIC_UNKNOWN;
+        }
         if (!mNetworkQualityEstimatorEnabled) {
             throw new IllegalStateException("Network quality estimator must be enabled");
         }
@@ -804,6 +877,9 @@ public class CronetUrlRequestContext extends CronetEngineBase {
 
     @Override
     public int getTransportRttMs() {
+        if (shouldDisableNqe()) {
+            return CONNECTION_METRIC_UNKNOWN;
+        }
         if (!mNetworkQualityEstimatorEnabled) {
             throw new IllegalStateException("Network quality estimator must be enabled");
         }
@@ -816,6 +892,9 @@ public class CronetUrlRequestContext extends CronetEngineBase {
 
     @Override
     public int getDownstreamThroughputKbps() {
+        if (shouldDisableNqe()) {
+            return CONNECTION_METRIC_UNKNOWN;
+        }
         if (!mNetworkQualityEstimatorEnabled) {
             throw new IllegalStateException("Network quality estimator must be enabled");
         }
@@ -836,6 +915,9 @@ public class CronetUrlRequestContext extends CronetEngineBase {
             boolean useLocalHostRequests,
             boolean useSmallerResponses,
             boolean disableOfflineCheck) {
+        if (shouldDisableNqe()) {
+            return;
+        }
         if (!mNetworkQualityEstimatorEnabled) {
             throw new IllegalStateException("Network quality estimator must be enabled");
         }
@@ -852,6 +934,9 @@ public class CronetUrlRequestContext extends CronetEngineBase {
 
     @Override
     public void addRttListener(NetworkQualityRttListener listener) {
+        if (shouldDisableNqe()) {
+            return;
+        }
         if (!mNetworkQualityEstimatorEnabled) {
             throw new IllegalStateException("Network quality estimator must be enabled");
         }
@@ -870,6 +955,9 @@ public class CronetUrlRequestContext extends CronetEngineBase {
 
     @Override
     public void removeRttListener(NetworkQualityRttListener listener) {
+        if (shouldDisableNqe()) {
+            return;
+        }
         if (!mNetworkQualityEstimatorEnabled) {
             throw new IllegalStateException("Network quality estimator must be enabled");
         }
@@ -889,6 +977,9 @@ public class CronetUrlRequestContext extends CronetEngineBase {
 
     @Override
     public void addThroughputListener(NetworkQualityThroughputListener listener) {
+        if (shouldDisableNqe()) {
+            return;
+        }
         if (!mNetworkQualityEstimatorEnabled) {
             throw new IllegalStateException("Network quality estimator must be enabled");
         }
@@ -907,6 +998,9 @@ public class CronetUrlRequestContext extends CronetEngineBase {
 
     @Override
     public void removeThroughputListener(NetworkQualityThroughputListener listener) {
+        if (shouldDisableNqe()) {
+            return;
+        }
         if (!mNetworkQualityEstimatorEnabled) {
             throw new IllegalStateException("Network quality estimator must be enabled");
         }

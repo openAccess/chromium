@@ -89,7 +89,7 @@ class FilesRequestHandler : public FilesRequestHandlerBase::Delegate {
           request_start_callback) override;
   void ReportWarningBypass(std::optional<std::u16string> user_justification,
                            const ContentAnalysisInfoBase& info,
-                           const std::string& trigger,
+                           DataTransferEventTrigger trigger,
                            const std::string& content_transfer_method) override;
   bool UploadDataImpl() override;
   void UpdateRequestHandlerResult(size_t index,
@@ -107,6 +107,7 @@ class FilesRequestHandler : public FilesRequestHandlerBase::Delegate {
   std::string GetDestination() override;
   void SetHandler(FilesRequestHandlerBase* handler) override;
   void MaybeCancelAndReport() override;
+  void StopFileWork() override;
   void MarkFileAsReported(size_t index) override;
 
  private:

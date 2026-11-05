@@ -36,6 +36,7 @@
 #include "ui/views/controls/menu/menu_item_view.h"
 #include "ui/views/controls/menu/menu_model_adapter.h"
 #include "ui/views/controls/menu/menu_runner.h"
+#include "ui/views/controls/throbber.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_types.h"
 #include "ui/views/layout/layout_provider.h"
@@ -114,8 +115,31 @@ ToastView::ToastView(
     : BubbleDialogDelegateView(anchor_view, views::BubbleBorder::NONE),
       AnimationDelegateViews(this),
       toast_text_(toast_text),
-      icon_(icon),
+      icon_(&icon),
       image_override_(std::move(image_override)),
+      render_toast_over_web_contents_(render_toast_over_web_contents),
+      toast_close_callback_(std::move(toast_close_callback)) {
+  SetBackgroundColor(ui::kColorToastBackgroundProminent);
+  SetShowCloseButton(false);
+  DialogDelegate::SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
+  set_corner_radius(ChromeLayoutProvider::Get()->GetDistanceMetric(
+      DISTANCE_TOAST_BUBBLE_HEIGHT));
+  SetProperty(views::kElementIdentifierKey, kToastElementId);
+  set_close_on_deactivate(false);
+  SetProperty(views::kElementIdentifierKey, kToastViewId);
+  SetAccessibleWindowRole(ax::mojom::Role::kAlert);
+  SetAccessibleTitle(toast_text_);
+}
+
+ToastView::ToastView(
+    views::View* anchor_view,
+    const std::u16string& toast_text,
+    bool render_toast_over_web_contents,
+    base::RepeatingCallback<void(ToastCloseReason)> toast_close_callback)
+    : BubbleDialogDelegateView(anchor_view, views::BubbleBorder::NONE),
+      AnimationDelegateViews(this),
+      toast_text_(toast_text),
+      icon_(nullptr),
       render_toast_over_web_contents_(render_toast_over_web_contents),
       toast_close_callback_(std::move(toast_close_callback)) {
   SetBackgroundColor(ui::kColorToastBackgroundProminent);
@@ -158,6 +182,10 @@ void ToastView::AddMenu(std::unique_ptr<ui::MenuModel> model) {
                           ToastCloseReason::kMenuItemClick));
 }
 
+void ToastView::AddThrobber() {
+  has_throbber_ = true;
+}
+
 int ToastView::GetIconSize() {
   const ChromeLayoutProvider* lp = ChromeLayoutProvider::Get();
   return lp->GetDistanceMetric(DISTANCE_TOAST_BUBBLE_ICON_SIZE);
@@ -170,11 +198,35 @@ void ToastView::Init() {
   SetLayoutManager(std::make_unique<views::FlexLayout>())
       ->SetOrientation(views::LayoutOrientation::kHorizontal);
 
-  icon_view_ = AddChildView(std::make_unique<views::ImageView>());
-  icon_view_->SetProperty(
-      views::kMarginsKey,
-      gfx::Insets::VH(0, lp->GetDistanceMetric(
-                             DISTANCE_TOAST_BUBBLE_LEADING_ICON_SIDE_MARGINS)));
+  if (has_throbber_) {
+    CHECK(!icon_);
+    CHECK(!image_override_.has_value());
+    auto throbber = std::make_unique<views::Throbber>(GetIconSize());
+    throbber->SetColorId(ui::kColorToastForeground);
+    throbber->Start();
+    throbber_ = AddChildView(std::move(throbber));
+    throbber_->SetProperty(
+        views::kMarginsKey,
+        gfx::Insets::VH(0,
+                        lp->GetDistanceMetric(
+                            DISTANCE_TOAST_BUBBLE_LEADING_ICON_SIDE_MARGINS)));
+  } else {
+    CHECK(icon_ || image_override_.has_value());
+    icon_view_ = AddChildView(std::make_unique<views::ImageView>());
+    icon_view_->SetProperty(
+        views::kMarginsKey,
+        gfx::Insets::VH(0,
+                        lp->GetDistanceMetric(
+                            DISTANCE_TOAST_BUBBLE_LEADING_ICON_SIDE_MARGINS)));
+    if (image_override_.has_value() &&
+        IsCompatibleImageSize(image_override_.value())) {
+      icon_view_->SetImage(image_override_.value());
+    } else {
+      CHECK(icon_);
+      icon_view_->SetImage(ui::ImageModel::FromVectorIcon(
+          *icon_, ui::kColorToastForeground, GetIconSize()));
+    }
+  }
 
   label_ = AddChildView(
       std::make_unique<views::Label>(toast_text_, CONTEXT_TOAST_BODY_TEXT));
@@ -325,8 +377,9 @@ void ToastView::Init() {
 void ToastView::AnimationProgressed(const gfx::Animation* animation) {
   const double value = gfx::Tween::CalculateValue(
       height_animation_tween_, height_animation_.GetCurrentValue());
-  const gfx::Rect current_bounds = gfx::Tween::RectValueBetween(
-      value, starting_widget_bounds_, target_widget_bounds_);
+  gfx::Rect current_bounds = GetDesiredWidgetBounds();
+  current_bounds.Offset(0, gfx::Tween::IntValueBetween(
+                               value, starting_y_offset_, target_y_offset_));
   GetWidget()->SetBounds(current_bounds);
 }
 
@@ -335,9 +388,8 @@ void ToastView::AnimateIn() {
     return;
   }
 
-  target_widget_bounds_ = GetWidget()->GetWindowBoundsInScreen();
-  starting_widget_bounds_ =
-      target_widget_bounds_ - gfx::Vector2d{0, kAnimationHeightOffset};
+  starting_y_offset_ = -kAnimationHeightOffset;
+  target_y_offset_ = 0;
   height_animation_tween_ = gfx::Tween::ACCEL_5_70_DECEL_90;
   height_animation_.SetDuration(base::Milliseconds(kAnimationEntryDuration));
   height_animation_.Start();
@@ -434,19 +486,6 @@ gfx::Rect ToastView::GetBubbleBounds() {
   return gfx::Rect(x, y, width, preferred_size.height());
 }
 
-void ToastView::OnThemeChanged() {
-  BubbleDialogDelegateView::OnThemeChanged();
-  const auto* color_provider = GetColorProvider();
-  if (image_override_.has_value() &&
-      IsCompatibleImageSize(image_override_.value())) {
-    icon_view_->SetImage(image_override_.value());
-  } else {
-    icon_view_->SetImage(ui::ImageModel::FromVectorIcon(
-        *icon_, color_provider->GetColor(ui::kColorToastForeground),
-        GetIconSize()));
-  }
-}
-
 void ToastView::AnimateOut(base::OnceClosure callback,
                            bool show_height_animation) {
   if (!gfx::Animation::ShouldRenderRichAnimation()) {
@@ -461,9 +500,8 @@ void ToastView::AnimateOut(base::OnceClosure callback,
   }
 
   if (show_height_animation) {
-    starting_widget_bounds_ = GetWidget()->GetWindowBoundsInScreen();
-    target_widget_bounds_ =
-        starting_widget_bounds_ - gfx::Vector2d{0, kAnimationHeightOffset};
+    starting_y_offset_ = 0;
+    target_y_offset_ = -kAnimationHeightOffset;
     height_animation_tween_ = gfx::Tween::ACCEL_30_DECEL_20_85;
     height_animation_.SetDuration(base::Milliseconds(kAnimationExitDuration));
     height_animation_.Start();

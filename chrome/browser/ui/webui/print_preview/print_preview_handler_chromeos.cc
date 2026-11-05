@@ -39,6 +39,7 @@
 #include "components/device_event_log/device_event_log.h"
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "printing/buildflags/buildflags.h"  // USE_CUPS
@@ -158,11 +159,11 @@ void PrintPreviewHandlerChromeOS::OnJavascriptDisallowed() {
 
 void PrintPreviewHandlerChromeOS::HandleGrantExtensionPrinterAccess(
     const base::ListValue& args) {
-  DCHECK(args[0].is_string());
-  DCHECK(args[1].is_string());
+  CHECK(args[0].is_string(), base::NotFatalUntil::M162);
+  CHECK(args[1].is_string(), base::NotFatalUntil::M162);
   std::string callback_id = args[0].GetString();
   std::string printer_id = args[1].GetString();
-  DCHECK(!callback_id.empty());
+  CHECK(!callback_id.empty(), base::NotFatalUntil::M162);
   MaybeAllowJavascript();
 
   PrinterHandler* handler = GetPrinterHandler(mojom::PrinterType::kExtension);

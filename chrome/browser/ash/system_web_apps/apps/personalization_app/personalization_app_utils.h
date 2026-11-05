@@ -8,15 +8,27 @@
 #include <memory>
 #include <string_view>
 
+#include "base/memory/scoped_refptr.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/account_id/account_id.h"
 #include "components/user_manager/user.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "url/gurl.h"
 
+class ApplicationLocaleStorage;
+class PrefService;
+
 namespace content {
 class WebUI;
 }  // namespace content
+
+namespace manta {
+class MantaService;
+}  // namespace manta
+
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
 
 namespace ash::personalization_app {
 
@@ -33,9 +45,18 @@ enum class ManagedSeaPenSettings {
 
 // Creates a PersonalizationAppUI. Used as a callback by
 // PersonalizationAppUIConfig.
+// `local_state` and `application_locale_storage` must not be null and must
+// outlive the returned `WebUIController`.
+// `shared_url_loader_factory` must not be null.
+// `manta_service` is the profile's MantaService, resolved by the caller and
+// injected into the SeaPen fetcher; it may be null.
 std::unique_ptr<content::WebUIController> CreatePersonalizationAppUI(
+    PrefService* local_state,
+    const ApplicationLocaleStorage* application_locale_storage,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     content::WebUI* web_ui,
-    const GURL& url);
+    const GURL& url,
+    manta::MantaService* manta_service);
 
 // In general, by the time this function is called, it is already guaranteed
 // that there is a valid profile and user that has opened personalization app.

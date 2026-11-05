@@ -30,7 +30,8 @@
 #include "extensions/common/extension_id.h"
 #include "extensions/common/manifest.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -118,7 +119,8 @@ bool ControlledHomeDialogController::ShouldShow() {
 }
 
 void ControlledHomeDialogController::PendingShow() {
-  DCHECK_EQ(0u, GetPendingProfileSet().count(profile_));
+  CHECK_EQ(0u, GetPendingProfileSet().count(profile_),
+           base::NotFatalUntil::M162);
   // Mark the profile as having a pending bubble. This way, we won't queue up
   // another bubble if one is waiting for animation.
   GetPendingProfileSet().insert(profile_);
@@ -178,8 +180,9 @@ std::string ControlledHomeDialogController::GetAnchorActionId() {
 }
 
 void ControlledHomeDialogController::OnBubbleShown() {
-  DCHECK_EQ(0u, GetShownProfileSet().count(profile_));
-  DCHECK_EQ(1u, GetPendingProfileSet().count(profile_));
+  CHECK_EQ(0u, GetShownProfileSet().count(profile_), base::NotFatalUntil::M162);
+  CHECK_EQ(1u, GetPendingProfileSet().count(profile_),
+           base::NotFatalUntil::M162);
 
   GetShownProfileSet().insert(profile_);
   GetPendingProfileSet().erase(profile_);
@@ -190,8 +193,9 @@ void ControlledHomeDialogController::OnBubbleClosed(CloseAction action) {
   // "OnWidgetDestroying" notifications (this can at least happen when we close
   // a window with a notification open). Handle this gracefully.
   if (close_action_) {
-    DCHECK(close_action_ == CLOSE_DISMISS_USER_ACTION ||
-           close_action_ == CLOSE_DISMISS_DEACTIVATION);
+    CHECK(close_action_ == CLOSE_DISMISS_USER_ACTION ||
+              close_action_ == CLOSE_DISMISS_DEACTIVATION,
+          base::NotFatalUntil::M162);
     return;
   }
 
@@ -219,10 +223,11 @@ void ControlledHomeDialogController::OnBubbleClosed(CloseAction action) {
       if (!g_should_ignore_learn_more_for_testing && web_contents_) {
         GURL learn_more_url(chrome::kExtensionControlledSettingLearnMoreURL);
         CHECK(learn_more_url.is_valid());
-        content::OpenURLParams params(learn_more_url, content::Referrer(),
-                                      WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                      ui::PAGE_TRANSITION_LINK,
-                                      /*is_renderer_initiated=*/false);
+        content::OpenURLParams params =
+            content::OpenURLParams::CreateBrowserInitiated(
+                learn_more_url,
+                ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                ui::PAGE_TRANSITION_LINK);
         web_contents_->OpenURL(params, {});
       }
       break;

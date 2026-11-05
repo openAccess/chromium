@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #include "base/allocator/partition_alloc_features.h"
+#include "base/check.h"
 #include "base/feature_list.h"
 #include "base/features.h"
 #include "base/notreached.h"
@@ -31,6 +32,7 @@
 #include "sandbox/linux/bpf_dsl/bpf_dsl.h"
 #include "sandbox/linux/bpf_dsl/seccomp_macros.h"
 #include "sandbox/linux/seccomp-bpf-helpers/sigsys_handlers.h"
+#include "sandbox/linux/seccomp-bpf-helpers/syscall_sets.h"
 #include "sandbox/linux/seccomp-bpf/sandbox_bpf.h"
 #include "sandbox/linux/system_headers/linux_futex.h"
 #include "sandbox/linux/system_headers/linux_memfd.h"
@@ -230,13 +232,32 @@ ResultExpr RestrictPrctl() {
           If(option == PR_SET_PTRACER, Error(EPERM)).Else(CrashSIGSYSPrctl()));
 }
 
+#if defined(__x86_64__)
+ResultExpr RestrictArchPrctl() {
+  // ARCH_GET_UNTAG_MASK: The V8 sandbox tags upper address bits and checks that
+  // hardware untagging is disabled so tagged addresses consistently crash when
+  // dereferenced.
+  const Arg<int> code(0);
+  return If(code == ARCH_GET_UNTAG_MASK, Allow()).Else(CrashSIGSYS());
+}
+#endif
+
 ResultExpr RestrictIoctl() {
   const Arg<int> request(1);
   return Switch(request).Cases({TCGETS, FIONREAD}, Allow()).Default(
       CrashSIGSYSIoctl());
 }
 
-ResultExpr RestrictMmapFlags(uint64_t extra_allowed_mask) {
+ResultExpr RestrictMmapFlags(int sysno, uint64_t extra_allowed_mask) {
+#if defined(__i386__)
+  // On i386, __NR_mmap is the legacy sys_old_mmap which takes a single pointer
+  // to an argument struct that we cannot examine. Return ENOSYS so callers
+  // fall back to __NR_mmap2, which is filtered below.
+  if (sysno == __NR_mmap) {
+    return Error(ENOSYS);
+  }
+#endif
+  CHECK(SyscallSets::IsMmap(sysno));
 #if BUILDFLAG(IS_ANDROID) && defined(__x86_64__)
   const uint64_t kArchSpecificAllowedMask = MAP_32BIT;
 #else

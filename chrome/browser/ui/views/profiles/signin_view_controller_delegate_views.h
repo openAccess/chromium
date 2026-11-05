@@ -7,11 +7,9 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/types/strong_alias.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/chrome_web_modal_dialog_manager_delegate.h"
 #include "chrome/browser/ui/signin/signin_view_controller_delegate.h"
-#include "chrome/browser/ui/webui/signin/managed_user_profile_notice_ui.h"
 #include "chrome/browser/ui/webui/signin/signin_url_utils.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
 #include "components/signin/public/base/signin_buildflags.h"
@@ -19,13 +17,14 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
-#include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
+#include "ui/views/controls/webview/web_contents_delegate_views.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/window/dialog_delegate.h"
 
 class BrowserWindowInterface;
 class GURL;
-enum class SyncConfirmationStyle;
+class SigninUIError;
 
 namespace content {
 class WebContents;
@@ -43,7 +42,7 @@ class WebView;
 class SigninViewControllerDelegateViews
     : public views::DialogDelegateView,
       public SigninViewControllerDelegate,
-      public content::WebContentsDelegate,
+      public views::WebContentsDelegateViews<SigninViewControllerDelegateViews>,
       public content::WebContentsObserver,
       public ChromeWebModalDialogManagerDelegate,
       public views::ViewObserver {
@@ -55,11 +54,6 @@ class SigninViewControllerDelegateViews
   SigninViewControllerDelegateViews& operator=(
       const SigninViewControllerDelegateViews&) = delete;
 
-  static std::unique_ptr<views::WebView> CreateSyncConfirmationWebView(
-      BrowserWindowInterface* browser,
-      SyncConfirmationStyle style,
-      bool is_sync_promo);
-
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   static std::unique_ptr<views::WebView> CreateHistorySyncOptInWebView(
       BrowserWindowInterface* browser,
@@ -69,8 +63,11 @@ class SigninViewControllerDelegateViews
           history_optin_completed_callback);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
+#if !BUILDFLAG(IS_CHROMEOS)
   static std::unique_ptr<views::WebView> CreateSigninErrorWebView(
-      BrowserWindowInterface* browser);
+      BrowserWindowInterface* browser,
+      const SigninUIError& error);
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
   static std::unique_ptr<views::WebView> CreateProfileCustomizationWebView(
@@ -106,13 +103,11 @@ class SigninViewControllerDelegateViews
   // content::WebContentsDelegate:
   bool HandleContextMenu(content::RenderFrameHost& render_frame_host,
                          const content::ContextMenuParams& params) override;
-  bool HandleKeyboardEvent(content::WebContents* source,
-                           const input::NativeWebKeyboardEvent& event) override;
   content::WebContents* AddNewContents(
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
@@ -128,9 +123,6 @@ class SigninViewControllerDelegateViews
  private:
   friend SigninViewControllerDelegate;
   friend class SigninViewControllerDelegateViewsBrowserTest;
-
-  using InitializeSigninWebDialogUI =
-      base::StrongAlias<class InitializeSigninWebDialogUITag, bool>;
 
   // Creates and displays a constrained window containing |web_contents|. If
   // |wait_for_size| is true, the delegate will wait for ResizeNativeView() to
@@ -155,8 +147,7 @@ class SigninViewControllerDelegateViews
       BrowserWindowInterface* browser,
       const GURL& url,
       int dialog_height,
-      std::optional<int> dialog_width,
-      InitializeSigninWebDialogUI initialize_signin_web_dialog_ui);
+      std::optional<int> dialog_width);
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   // Deletes the ephemeral profile when cancelling the local profile creation
@@ -176,12 +167,10 @@ class SigninViewControllerDelegateViews
 
   const raw_ptr<views::WebView> content_view_;
   const raw_ptr<BrowserWindowInterface> browser_;
-  views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
   bool should_show_close_button_;
   base::ScopedClosureRunner on_closed_callback_;
   base::ScopedObservation<views::View, views::ViewObserver>
       content_view_observation_{this};
-  bool allow_closing_by_pressing_escape_ = true;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_PROFILES_SIGNIN_VIEW_CONTROLLER_DELEGATE_VIEWS_H_

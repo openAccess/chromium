@@ -117,6 +117,10 @@ class FullscreenController : public ExclusiveAccessControllerBase {
   content::FullscreenState GetFullscreenState(
       const content::WebContents* web_contents) const;
 
+  // Returns the origin of the frame currently in tab-initiated fullscreen.
+  // Returns an opaque origin if not in tab-initiated fullscreen.
+  const url::Origin& requesting_origin() const { return requesting_origin_; }
+
   // Returns true if |web_contents| is in fullscreen mode as a screen-captured
   // tab. See 'FullscreenWithinTab Note'.
   bool IsFullscreenWithinTab(const content::WebContents* web_contents) const;
@@ -288,6 +292,11 @@ class FullscreenController : public ExclusiveAccessControllerBase {
 
   // This is used for accessing HistoryService.
   base::CancelableTaskTracker task_tracker_;
+
+  // True while NotifyTabExclusiveAccessLost() is on the stack. Checked in
+  // ~FullscreenController() to ensure `this` is never destroyed reentrantly
+  // during tab fullscreen exit notifications.
+  bool in_notify_tab_exclusive_access_lost_ = false;
 
   const raw_ptr<chrome::BrowserCommandController> browser_command_controller_;
   const raw_ptr<BookmarkBarController> bookmark_bar_controller_;

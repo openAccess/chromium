@@ -16,7 +16,6 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
-import android.content.Context;
 import android.os.Handler;
 import android.view.KeyCharacterMap;
 import android.view.View;
@@ -24,27 +23,29 @@ import android.view.inputmethod.CorrectionInfo;
 import android.view.inputmethod.ExtractedText;
 import android.view.inputmethod.ExtractedTextRequest;
 import android.view.inputmethod.InputConnection;
-import android.view.inputmethod.InputMethodManager;
+import android.view.inputmethod.InputContentInfo;
 
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.InOrder;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.content_public.browser.ContentFeatureList;
+import org.chromium.content_public.browser.GlobalRenderFrameHostId;
 import org.chromium.content_public.common.ContentFeatures;
 
 import java.util.concurrent.Callable;
@@ -54,26 +55,18 @@ import java.util.concurrent.Callable;
 public class ThreadedInputConnectionTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock ImeAdapterImpl mImeAdapter;
+    @Mock CorrectionInfo mCorrectionInfo;
+    @Mock private InputContentInfo mInputContentInfo;
 
+    private final View mView = new View(ContextUtils.getApplicationContext());
     ThreadedInputConnection mConnection;
     InOrder mInOrder;
-    View mView;
-    Context mContext;
     boolean mRunningOnUiThread;
-    @Mock CorrectionInfo mCorrectionInfo;
 
     @Before
     public void setUp() {
-
-        mImeAdapter = Mockito.mock(ImeAdapterImpl.class);
         mInOrder = inOrder(mImeAdapter);
 
-        // Mocks required to create a ThreadedInputConnection object
-        mView = Mockito.mock(View.class);
-        mContext = Mockito.mock(Context.class);
-        when(mView.getContext()).thenReturn(mContext);
-        when(mContext.getSystemService(Context.INPUT_METHOD_SERVICE))
-                .thenReturn(Mockito.mock(InputMethodManager.class));
         // Let's create Handler for test thread and pretend that it is running on IME thread.
         mConnection =
                 new ThreadedInputConnection(mView, mImeAdapter, new Handler()) {
@@ -194,7 +187,7 @@ public class ThreadedInputConnectionTest {
     @Test
     @Feature({"TextInput"})
     @EnableFeatures({ContentFeatureList.ACCESSIBILITY_IME_GET_FORMATTED_TEXT})
-    @Ignore("crbug/632792")
+    @DisabledTest(message = "https://crbug.com/40478529")
     public void testFailToRequestToRenderer() {
         when(mImeAdapter.requestTextInputStateUpdate()).thenReturn(false);
         // Should not hang here. Return null to indicate failure.
@@ -204,7 +197,7 @@ public class ThreadedInputConnectionTest {
     @Test
     @Feature({"TextInput"})
     @EnableFeatures({ContentFeatureList.ACCESSIBILITY_IME_GET_FORMATTED_TEXT})
-    @Ignore("crbug/632792")
+    @DisabledTest(message = "https://crbug.com/40478529")
     public void testRendererCannotUpdateState() {
         when(mImeAdapter.requestTextInputStateUpdate()).thenReturn(true);
         // We found that renderer cannot update state, e.g., due to a crash.
@@ -399,5 +392,36 @@ public class ThreadedInputConnectionTest {
         RobolectricUtil.runAllBackgroundAndUi();
 
         mInOrder.verify(mImeAdapter).commitCorrection(mCorrectionInfo);
+    }
+
+    @Test
+    @Feature({"TextInput"})
+    @DisableFeatures(ContentFeatures.ANDROID_MEDIA_INSERTION)
+    public void testCommitContent_FeatureDisabled() {
+        assertFalse(mConnection.commitContent(mInputContentInfo, 0, null));
+    }
+
+    @Test
+    @Feature({"TextInput"})
+    @EnableFeatures(ContentFeatures.ANDROID_MEDIA_INSERTION)
+    public void testCommitContent_NullTargetFrame() {
+        when(mImeAdapter.getFocusedFrameId()).thenReturn(null);
+        mConnection.resetOnUiThread();
+        assertFalse(mConnection.commitContent(mInputContentInfo, 0, null));
+    }
+
+    @Test
+    @Feature({"TextInput"})
+    @EnableFeatures(ContentFeatures.ANDROID_MEDIA_INSERTION)
+    public void testCommitContent_TargetFrameClearedOnReset() {
+        GlobalRenderFrameHostId frameId = new GlobalRenderFrameHostId(1, 2);
+        when(mImeAdapter.getFocusedFrameId()).thenReturn(frameId);
+        mConnection.resetOnUiThread();
+
+        // Now clear the focused frame and reset again.
+        when(mImeAdapter.getFocusedFrameId()).thenReturn(null);
+        mConnection.resetOnUiThread();
+
+        assertFalse(mConnection.commitContent(mInputContentInfo, 0, null));
     }
 }

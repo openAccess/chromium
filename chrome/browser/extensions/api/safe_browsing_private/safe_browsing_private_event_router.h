@@ -27,10 +27,6 @@ namespace extensions {
 class EventRouter;
 }
 
-namespace signin {
-class IdentityManager;
-}
-
 class GURL;
 
 namespace extensions {
@@ -59,7 +55,7 @@ class SafeBrowsingPrivateEventRouter : public KeyedService {
 
   // Notifies listeners that the user changed the password associated with
   // |user_name|.
-  void OnPolicySpecifiedPasswordChanged(const std::string& user_name);
+  void OnPolicySpecifiedPasswordChanged(std::string_view user_name);
 
   // Notifies listeners that the user just opened a dangerous download.
   void OnDangerousDownloadOpened(const GURL& download_url,
@@ -81,10 +77,7 @@ class SafeBrowsingPrivateEventRouter : public KeyedService {
                                        const std::string& reason,
                                        int net_error_code);
 
-  void SetIdentityManagerForTesting(signin::IdentityManager* identity_manager);
-
  private:
-  raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;
   raw_ptr<content::BrowserContext> context_;
   raw_ptr<EventRouter> event_router_ = nullptr;
   base::WeakPtrFactory<SafeBrowsingPrivateEventRouter> weak_ptr_factory_{this};

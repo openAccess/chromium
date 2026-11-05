@@ -9,19 +9,14 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate_factory.h"
 #include "chrome/common/extensions/api/passwords_private.h"
-#include "components/password_manager/core/browser/manage_passwords_referrer.h"
 #include "components/password_manager/core/browser/password_manager_util.h"
-#include "components/password_manager/core/common/password_manager_pref_names.h"
-#include "components/prefs/pref_service.h"
 #include "components/sync/service/sync_service.h"
-#include "components/user_prefs/user_prefs.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_function_registry.h"
@@ -35,10 +30,6 @@ using ResponseAction = ExtensionFunction::ResponseAction;
 constexpr char kNoDelegateError[] =
     "Operation failed because PasswordsPrivateDelegate wasn't created.";
 
-constexpr char kPasswordManagerDisabledByPolicy[] =
-    "Operation failed because CredentialsEnableService policy is set to false "
-    "by admin.";
-
 scoped_refptr<PasswordsPrivateDelegate> GetDelegate(
     content::BrowserContext* browser_context) {
   return PasswordsPrivateDelegateFactory::GetForBrowserContext(
@@ -46,25 +37,7 @@ scoped_refptr<PasswordsPrivateDelegate> GetDelegate(
       /*create=*/false);
 }
 
-bool IsPasswordManagerDisabledByPolicy(
-    content::BrowserContext* browser_context) {
-  PrefService* prefs = user_prefs::UserPrefs::Get(browser_context);
-  return !prefs->GetBoolean(
-             password_manager::prefs::kCredentialsEnableService) &&
-         prefs->IsManagedPreference(
-             password_manager::prefs::kCredentialsEnableService);
-}
-
 }  // namespace
-
-// PasswordsPrivateRecordPasswordsPageAccessInSettingsFunction
-ResponseAction
-PasswordsPrivateRecordPasswordsPageAccessInSettingsFunction::Run() {
-  UMA_HISTOGRAM_ENUMERATION(
-      "PasswordManager.ManagePasswordsReferrer",
-      password_manager::ManagePasswordsReferrer::kChromeSettings);
-  return RespondNow(NoArguments());
-}
 
 // PasswordsPrivateChangeCredentialFunction
 ResponseAction PasswordsPrivateChangeCredentialFunction::Run() {
@@ -97,30 +70,6 @@ ResponseAction PasswordsPrivateRemoveCredentialFunction::Run() {
   EXTENSION_FUNCTION_VALIDATE(parameters);
   GetDelegate(browser_context())
       ->RemoveCredential(parameters->id, parameters->from_stores);
-  return RespondNow(NoArguments());
-}
-
-// PasswordsPrivateRemovePasswordExceptionFunction
-ResponseAction PasswordsPrivateRemovePasswordExceptionFunction::Run() {
-  if (!GetDelegate(browser_context())) {
-    return RespondNow(Error(kNoDelegateError));
-  }
-
-  auto parameters =
-      api::passwords_private::RemovePasswordException::Params::Create(args());
-  EXTENSION_FUNCTION_VALIDATE(parameters);
-  GetDelegate(browser_context())->RemovePasswordException(parameters->id);
-  return RespondNow(NoArguments());
-}
-
-// PasswordsPrivateUndoRemoveSavedPasswordOrExceptionFunction
-ResponseAction
-PasswordsPrivateUndoRemoveSavedPasswordOrExceptionFunction::Run() {
-  if (!GetDelegate(browser_context())) {
-    return RespondNow(Error(kNoDelegateError));
-  }
-
-  GetDelegate(browser_context())->UndoRemoveSavedPasswordOrException();
   return RespondNow(NoArguments());
 }
 
@@ -245,19 +194,6 @@ void PasswordsPrivateGetPasswordExceptionListFunction::GotList(
           entries)));
 }
 
-// PasswordsPrivateMovePasswordToAccountFunction
-ResponseAction PasswordsPrivateMovePasswordsToAccountFunction::Run() {
-  if (!GetDelegate(browser_context())) {
-    return RespondNow(Error(kNoDelegateError));
-  }
-
-  auto parameters =
-      api::passwords_private::MovePasswordsToAccount::Params::Create(args());
-  EXTENSION_FUNCTION_VALIDATE(parameters);
-  GetDelegate(browser_context())->MovePasswordsToAccount(parameters->ids);
-  return RespondNow(NoArguments());
-}
-
 // PasswordsPrivateFetchFamilyMembersFunction
 ResponseAction PasswordsPrivateFetchFamilyMembersFunction::Run() {
   if (!GetDelegate(browser_context())) {
@@ -301,10 +237,6 @@ void PasswordsPrivateFetchFamilyMembersFunction::FamilyFetchCompleted(
 ResponseAction PasswordsPrivateImportPasswordsFunction::Run() {
   if (!GetDelegate(browser_context())) {
     return RespondNow(Error(kNoDelegateError));
-  }
-
-  if (IsPasswordManagerDisabledByPolicy(browser_context())) {
-    return RespondNow(Error(kPasswordManagerDisabledByPolicy));
   }
 
   auto parameters =
@@ -353,60 +285,6 @@ void PasswordsPrivateContinueImportFunction::ImportCompleted(
       api::passwords_private::ImportPasswords::Results::Create(result)));
 }
 
-// PasswordsPrivateResetImporterFunction
-ResponseAction PasswordsPrivateResetImporterFunction::Run() {
-  if (!GetDelegate(browser_context())) {
-    return RespondNow(Error(kNoDelegateError));
-  }
-
-  auto parameters =
-      api::passwords_private::ResetImporter::Params::Create(args());
-  EXTENSION_FUNCTION_VALIDATE(parameters);
-  GetDelegate(browser_context())->ResetImporter(parameters->delete_file);
-  return RespondNow(NoArguments());
-}
-
-// PasswordsPrivateExportPasswordsFunction
-ResponseAction PasswordsPrivateExportPasswordsFunction::Run() {
-  if (!GetDelegate(browser_context())) {
-    return RespondNow(Error(kNoDelegateError));
-  }
-
-  GetDelegate(browser_context())
-      ->ExportPasswords(
-          base::BindOnce(
-              &PasswordsPrivateExportPasswordsFunction::ExportRequestCompleted,
-              this),
-          GetSenderWebContents());
-  return RespondLater();
-}
-
-void PasswordsPrivateExportPasswordsFunction::ExportRequestCompleted(
-    PasswordsPrivateDelegate::ExportPasswordsResult result) {
-  switch (result) {
-    case PasswordsPrivateDelegate::ExportPasswordsResult::kSuccess:
-      Respond(NoArguments());
-      break;
-    case PasswordsPrivateDelegate::ExportPasswordsResult::kInProgress:
-      Respond(Error("in-progress"));
-      break;
-    case PasswordsPrivateDelegate::ExportPasswordsResult::kReauthFailed:
-      Respond(Error("reauth-failed"));
-      break;
-  }
-}
-
-// PasswordsPrivateRequestExportProgressStatusFunction
-ResponseAction PasswordsPrivateRequestExportProgressStatusFunction::Run() {
-  if (!GetDelegate(browser_context())) {
-    return RespondNow(Error(kNoDelegateError));
-  }
-
-  return RespondNow(ArgumentList(
-      api::passwords_private::RequestExportProgressStatus::Results::Create(
-          GetDelegate(browser_context())->GetExportProgressStatus())));
-}
-
 // PasswordsPrivateGetInsecureCredentialsFunction:
 PasswordsPrivateGetInsecureCredentialsFunction::
     ~PasswordsPrivateGetInsecureCredentialsFunction() = default;
@@ -449,7 +327,7 @@ ResponseAction PasswordsPrivateMuteInsecureCredentialFunction::Run() {
   EXTENSION_FUNCTION_VALIDATE(parameters);
 
   if (!GetDelegate(browser_context())
-           ->MuteInsecureCredential(parameters->credential)) {
+           ->MuteInsecureCredential(parameters->credential.id)) {
     return RespondNow(
         Error("Could not mute the insecure credential. Probably no matching "
               "password could be found."));
@@ -472,38 +350,13 @@ ResponseAction PasswordsPrivateUnmuteInsecureCredentialFunction::Run() {
   EXTENSION_FUNCTION_VALIDATE(parameters);
 
   if (!GetDelegate(browser_context())
-           ->UnmuteInsecureCredential(parameters->credential)) {
+           ->UnmuteInsecureCredential(parameters->credential.id)) {
     return RespondNow(
         Error("Could not unmute the insecure credential. Probably no matching "
               "password could be found."));
   }
 
   return RespondNow(NoArguments());
-}
-
-// PasswordsPrivateStartPasswordCheckFunction:
-PasswordsPrivateStartPasswordCheckFunction::
-    ~PasswordsPrivateStartPasswordCheckFunction() = default;
-
-ResponseAction PasswordsPrivateStartPasswordCheckFunction::Run() {
-  if (!GetDelegate(browser_context())) {
-    return RespondNow(Error(kNoDelegateError));
-  }
-
-  GetDelegate(browser_context())
-      ->StartPasswordCheck(base::BindOnce(
-          &PasswordsPrivateStartPasswordCheckFunction::OnStarted, this));
-
-  // OnStarted() might respond before we reach this point.
-  return did_respond() ? AlreadyResponded() : RespondLater();
-}
-
-void PasswordsPrivateStartPasswordCheckFunction::OnStarted(
-    password_manager::BulkLeakCheckService::State state) {
-  const bool is_running =
-      state == password_manager::BulkLeakCheckService::State::kRunning;
-  Respond(is_running ? NoArguments()
-                     : Error("Starting password check failed."));
 }
 
 // PasswordsPrivateGetPasswordCheckStatusFunction:
@@ -549,10 +402,6 @@ ResponseAction PasswordsPrivateAddPasswordFunction::Run() {
     return RespondNow(Error(kNoDelegateError));
   }
 
-  if (IsPasswordManagerDisabledByPolicy(browser_context())) {
-    return RespondNow(Error(kPasswordManagerDisabledByPolicy));
-  }
-
   auto parameters = api::passwords_private::AddPassword::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(parameters);
 
@@ -568,49 +417,6 @@ ResponseAction PasswordsPrivateAddPasswordFunction::Run() {
   }
 
   return RespondNow(NoArguments());
-}
-
-// PasswordsPrivateShowExportedFileInShellFunction
-ResponseAction PasswordsPrivateShowExportedFileInShellFunction::Run() {
-  if (!GetDelegate(browser_context())) {
-    return RespondNow(Error(kNoDelegateError));
-  }
-
-  auto parameters =
-      api::passwords_private::ShowExportedFileInShell::Params::Create(args());
-  EXTENSION_FUNCTION_VALIDATE(parameters);
-
-  GetDelegate(browser_context())
-      ->ShowLastExportedFileInShell(GetSenderWebContents());
-  return RespondNow(NoArguments());
-}
-
-// PasswordsPrivateDisconnectCloudAuthenticatorFunction
-ResponseAction PasswordsPrivateDisconnectCloudAuthenticatorFunction::Run() {
-  if (auto delegate = GetDelegate(browser_context())) {
-    delegate->DisconnectCloudAuthenticator(
-        base::BindOnce(&PasswordsPrivateDisconnectCloudAuthenticatorFunction::
-                           OnDisconnectCloudAuthenticatorCompleted,
-                       this));
-    return did_respond() ? AlreadyResponded() : RespondLater();
-  }
-
-  return RespondNow(Error(kNoDelegateError));
-}
-
-void PasswordsPrivateDisconnectCloudAuthenticatorFunction::
-    OnDisconnectCloudAuthenticatorCompleted(bool success) {
-  Respond(WithArguments(success));
-}
-
-// PasswordsPrivateIsConnectedToCloudAuthenticatorFunction
-ResponseAction PasswordsPrivateIsConnectedToCloudAuthenticatorFunction::Run() {
-  if (auto delegate = GetDelegate(browser_context())) {
-    return RespondNow(
-        WithArguments(delegate->IsConnectedToCloudAuthenticator()));
-  }
-
-  return RespondNow(Error(kNoDelegateError));
 }
 
 }  // namespace extensions

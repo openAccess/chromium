@@ -30,15 +30,12 @@ class AutofillDriver;
 class PasswordManagerDelegate;
 }  // namespace autofill
 
-namespace gfx {
-class RectF;
-}  // namespace gfx
-
 namespace password_manager {
 
 class PasswordAutofillManager;
 class PasswordGenerationFrameHelper;
 class PasswordManagerInterface;
+class PasswordString;
 
 // Interface that allows PasswordManager core code to interact with its driver
 // (i.e., obtain information from it and give information to it).
@@ -71,9 +68,10 @@ class PasswordManagerDriver {
       const autofill::PasswordFormGenerationData& form) {}
 
   // Notifies the driver that the user has accepted a generated password.
+  // Keep the password protected until serializing it for the renderer.
   // TODO(crbug.com/40615624): delete this method. The UI should call the one
   // below.
-  virtual void GeneratedPasswordAccepted(const std::u16string& password) = 0;
+  virtual void GeneratedPasswordAccepted(const PasswordString& password) = 0;
 
   // Notifies the password manager that the user has accepted a generated
   // password. The password manager can bring up some disambiguation UI in
@@ -81,7 +79,7 @@ class PasswordManagerDriver {
   virtual void GeneratedPasswordAccepted(
       const autofill::FormData& form_data,
       autofill::FieldRendererId generation_element_id,
-      const std::u16string& password) {}
+      const PasswordString& password) {}
 
   // Notifies the driver that the user has rejected the generated password by
   // clicking cancel button.
@@ -110,12 +108,13 @@ class PasswordManagerDriver {
   // `password_element_id` with `old_password` and `new_password_element_id`,
   // `confirm_password_element_id` with `new_password`. Upon completion
   // asynchronously returns `form_data` with filled values.
+  // Keep the passwords protected until serializing them for the renderer.
   virtual void FillChangePasswordForm(
       autofill::FieldRendererId password_element_id,
       autofill::FieldRendererId new_password_element_id,
       autofill::FieldRendererId confirm_password_element_id,
-      const std::u16string& old_password,
-      const std::u16string& new_password,
+      const PasswordString& old_password,
+      const PasswordString& new_password,
       base::OnceCallback<void(const std::optional<autofill::FormData>&)>
           form_data_callback) {}
 
@@ -167,7 +166,8 @@ class PasswordManagerDriver {
       const std::u16string& password) = 0;
 
   // Tells the driver to preview a password generation suggestion.
-  virtual void PreviewGenerationSuggestion(const std::u16string& password) = 0;
+  // Keep the password protected until serializing it for the renderer.
+  virtual void PreviewGenerationSuggestion(const PasswordString& password) = 0;
 
   // Tells the driver to clear previewed password and username fields.
   virtual void ClearPreviewedForm() = 0;
@@ -235,9 +235,6 @@ class PasswordManagerDriver {
   // corresponding HTML attributes. It is used only for debugging.
   virtual void AnnotateFieldsWithParsingResult(
       const autofill::ParsingResult& parsing_result) {}
-
-  virtual gfx::RectF TransformToRootCoordinates(
-      const gfx::RectF& bounds_in_frame_coordinates) = 0;
 
   // Checks if the view area of the field is visible.
   virtual void CheckViewAreaVisible(autofill::FieldRendererId field_id,

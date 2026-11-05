@@ -7,7 +7,6 @@ import './history_clusters_shared_style.css.js';
 import '//resources/cr_elements/cr_button/cr_button.js';
 import '//resources/cr_elements/cr_dialog/cr_dialog.js';
 import '//resources/cr_elements/cr_infinite_list/cr_infinite_list.js';
-import '//resources/cr_elements/cr_lazy_render/cr_lazy_render.js';
 import '//resources/cr_elements/cr_toast/cr_toast.js';
 
 import type {CrDialogElement} from '//resources/cr_elements/cr_dialog/cr_dialog.js';
@@ -131,9 +130,9 @@ export class HistoryClustersElement extends HistoryClustersElementBase {
   accessor scrollOffset: number = 0;
   accessor scrollTarget: HTMLElement = document.documentElement;
   accessor timeRangeStart: Date|undefined;
-  protected accessor canLoadMore_: boolean = false;
+  private accessor canLoadMore_: boolean = false;
   protected accessor clusters_: Cluster[] = [];
-  protected accessor hasResult_: boolean = false;
+  private accessor hasResult_: boolean = false;
   protected accessor resultQuery_: string = '';
   private browserProxy_: BrowserProxy;
   private accessor inSidePanel_: boolean =

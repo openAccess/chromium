@@ -10,9 +10,7 @@
 #include <vector>
 
 #include "base/strings/string_util.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
-#include "components/history/core/browser/features.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/history/core/browser/url_database.h"
 #include "components/history/core/browser/visit_annotations_database.h"
@@ -1292,36 +1290,45 @@ TEST_F(VisitDatabaseTest, GetVisibleVisitsForURL) {
   options = QueryOptions();  // Reset options to default.
 
   // Now try with only per-day de-duping -- the second visit should appear,
-  // since it's a duplicate of visit6 but on a different day.
+  // since it's a duplicate of visit 9 but on a different day. 404s are included
+  // by default, so we expect visit 9 instead of visit6.
   options.duplicate_policy = QueryOptions::REMOVE_DUPLICATES_PER_DAY;
   GetVisibleVisitsForURL(url_id, options, &results);
   ASSERT_EQ(3U, results.size());
-  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[6]));
+#if !defined(ANDROID)
+  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[8]));
+#else
+  // On Android, the ones with an `app_id` are chosen among the duplicates.
+  // Visit 8 is the most recent of those.
+  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[7]));
+#endif
   EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[5]));
   EXPECT_THAT(results[2], MatchesVisitInfo(test_visit_rows[1]));
 
   // Now try without de-duping, expect to see all visible visits to url id 1.
   options.duplicate_policy = QueryOptions::KEEP_ALL_DUPLICATES;
   GetVisibleVisitsForURL(url_id, options, &results);
-  ASSERT_EQ(4U, results.size());
-  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[6]));
-  EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[5]));
-  EXPECT_THAT(results[2], MatchesVisitInfo(test_visit_rows[1]));
-  EXPECT_THAT(results[3], MatchesVisitInfo(test_visit_rows[0]));
+  ASSERT_EQ(6U, results.size());
+  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[8]));
+  EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[7]));
+  EXPECT_THAT(results[2], MatchesVisitInfo(test_visit_rows[6]));
+  EXPECT_THAT(results[3], MatchesVisitInfo(test_visit_rows[5]));
+  EXPECT_THAT(results[4], MatchesVisitInfo(test_visit_rows[1]));
+  EXPECT_THAT(results[5], MatchesVisitInfo(test_visit_rows[0]));
 
   // Now try with a `max_count` limit to get the newest 2 visits only.
   options.max_count = 2;
   GetVisibleVisitsForURL(url_id, options, &results);
   ASSERT_EQ(2U, results.size());
-  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[6]));
-  EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[5]));
-
-  // Try `max_count` again, including 404s this time.
-  options.policy_for_404_visits = VisitQuery404sPolicy::kInclude404s;
-  GetVisibleVisitsForURL(url_id, options, &results);
-  ASSERT_EQ(2U, results.size());
   EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[8]));
   EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[7]));
+
+  // Try `max_count` again, excluding 404s this time.
+  options.policy_for_404_visits = VisitQuery404sPolicy::kExclude404s;
+  GetVisibleVisitsForURL(url_id, options, &results);
+  ASSERT_EQ(2U, results.size());
+  EXPECT_THAT(results[0], MatchesVisitInfo(test_visit_rows[6]));
+  EXPECT_THAT(results[1], MatchesVisitInfo(test_visit_rows[5]));
 
   // Now try getting the oldest 2 visits and make sure they're ordered oldest
   // first.
@@ -2125,8 +2132,11 @@ TEST_F(VisitDatabaseTest, GetDailyVisitsToOrigin_WithVisits) {
   base::Time begin_time = base::Time::Now();
   base::Time end_time = begin_time + base::Days(10);
 
-  base::Time day1_time = begin_time.LocalMidnight() + base::Hours(24);
-  base::Time day2_time = day1_time + base::Hours(24);
+  // Due to DST, the next day at midnight may be more than 24 hours away, so
+  // add 36 hours and round back down to midnight.
+  base::Time day1_time =
+      (begin_time.LocalMidnight() + base::Hours(36)).LocalMidnight();
+  base::Time day2_time = (day1_time + base::Hours(36)).LocalMidnight();
 
   auto add_visit = [&](const GURL& url, base::Time visit_time) {
     VisitRow row{AddURL(URLRow(url)),
@@ -2145,8 +2155,7 @@ TEST_F(VisitDatabaseTest, GetDailyVisitsToOrigin_WithVisits) {
   add_visit(GURL("https://foo.com/"), begin_time - base::Hours(1));
   // Two visits on first day.
   add_visit(GURL("https://foo.com/bar"), day1_time);
-  add_visit(GURL("https://foo.com/baz"),
-            day1_time + base::Hours(24) - base::Seconds(1));
+  add_visit(GURL("https://foo.com/baz"), day2_time - base::Seconds(1));
   // Five visits on the next day.
   for (int i = 0; i < 5; ++i) {
     add_visit(GURL("https://foo.com/bar"), day2_time);
@@ -2443,28 +2452,17 @@ TEST_F(VisitDatabaseTest, ShouldFilterUserAndActorVisits) {
 
   struct TestCase {
     std::string name;
-    bool m3_enabled;
     bool include_user;
     bool include_actor;
     size_t expected_count;
   } cases[] = {
-      {"All History", true, true, true, 2},
-      {"User Only", true, true, false, 1},
-      {"Agent Only", true, false, true, 1},
-      {"M3 Disabled", false, false, true, 2},
+      {"All History", true, true, 2},
+      {"User Only", true, false, 1},
+      {"Agent Only", false, true, 1},
   };
 
   for (const auto& c : cases) {
     SCOPED_TRACE(c.name);
-    base::test::ScopedFeatureList feature_list;
-
-    if (c.m3_enabled) {
-      feature_list.InitAndEnableFeature(
-          history::kBrowsingHistoryActorIntegrationM3);
-    } else {
-      feature_list.InitAndDisableFeature(
-          history::kBrowsingHistoryActorIntegrationM3);
-    }
 
     QueryOptions options;
     options.include_user_visits = c.include_user;

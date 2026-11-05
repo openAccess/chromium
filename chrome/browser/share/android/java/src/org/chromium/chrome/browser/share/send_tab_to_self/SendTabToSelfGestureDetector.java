@@ -16,6 +16,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.components.sync_device_info.RemoteDeviceInfo;
 
 import java.util.List;
 import java.util.function.Supplier;
@@ -41,8 +42,8 @@ public class SendTabToSelfGestureDetector implements SensorEventListener {
 
     private final SensorManager mSensorManager;
     private final @Nullable Sensor mAccelerometer;
-    private final Supplier<Tab> mTabSupplier;
-    private final Supplier<Profile> mProfileSupplier;
+    private final Supplier<@Nullable Tab> mTabSupplier;
+    private final Supplier<@Nullable Profile> mProfileSupplier;
     // Threshold for considering an acceleration event as a "tap" (in m/s^2).
     // Dynamically configured based on the gesture sensitivity level.
     private final float mAccelerationThreshold;
@@ -51,7 +52,9 @@ public class SendTabToSelfGestureDetector implements SensorEventListener {
     private boolean mListening;
 
     public SendTabToSelfGestureDetector(
-            Context context, Supplier<Tab> tabSupplier, Supplier<Profile> profileSupplier) {
+            Context context,
+            Supplier<@Nullable Tab> tabSupplier,
+            Supplier<@Nullable Profile> profileSupplier) {
         mSensorManager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
         mAccelerometer = mSensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
         mTabSupplier = tabSupplier;
@@ -142,7 +145,7 @@ public class SendTabToSelfGestureDetector implements SensorEventListener {
                 break;
         }
 
-        List<TargetDeviceInfo> devices =
+        List<RemoteDeviceInfo> devices =
                 SendTabToSelfAndroidBridge.getAllTargetDeviceInfos(profile);
         // This should ideally have been caught by the switch case above, but in some rarest edge
         // cases, the device list may become empty between the check and now.
@@ -153,7 +156,7 @@ public class SendTabToSelfGestureDetector implements SensorEventListener {
 
         // `devices` is sorted based on the most recently used timestamp. Grab the device with the
         // freshest timestamp as the target.
-        TargetDeviceInfo target = devices.get(0);
+        RemoteDeviceInfo target = devices.get(0);
         SendTabToSelfMetricsRecorder.recordEntryPointInvoked(ShareEntryPoint.GESTURE);
         SendTabToSelfAndroidBridge.sendTabToDevice(
                 profile,

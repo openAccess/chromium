@@ -26,6 +26,43 @@
 #include "ui/gfx/geometry/transform.h"
 #include "ui/gfx/geometry/transform_util.h"
 
+#if BUILDFLAG(IS_LINUX)
+// The Vulkan functions the fake runtime uses. It loads them itself, since its
+// copy of gpu::VulkanFunctionPointers is unbound in non-component builds.
+#define FAKE_RUNTIME_VULKAN_FUNCTIONS(F) \
+  F(vkAllocateCommandBuffers)            \
+  F(vkAllocateMemory)                    \
+  F(vkBeginCommandBuffer)                \
+  F(vkBindBufferMemory)                  \
+  F(vkBindImageMemory)                   \
+  F(vkCmdCopyImageToBuffer)              \
+  F(vkCmdPipelineBarrier)                \
+  F(vkCreateBuffer)                      \
+  F(vkCreateCommandPool)                 \
+  F(vkCreateFence)                       \
+  F(vkCreateImage)                       \
+  F(vkDestroyBuffer)                     \
+  F(vkDestroyCommandPool)                \
+  F(vkDestroyFence)                      \
+  F(vkDestroyImage)                      \
+  F(vkEndCommandBuffer)                  \
+  F(vkFreeMemory)                        \
+  F(vkGetBufferMemoryRequirements)       \
+  F(vkGetDeviceQueue)                    \
+  F(vkGetImageMemoryRequirements)        \
+  F(vkGetPhysicalDeviceMemoryProperties) \
+  F(vkMapMemory)                         \
+  F(vkQueueSubmit)                       \
+  F(vkUnmapMemory)                       \
+  F(vkWaitForFences)
+
+struct OpenXrTestHelper::VulkanFunctions {
+#define DECLARE_VULKAN_FUNCTION(name) PFN_##name name = nullptr;
+  FAKE_RUNTIME_VULKAN_FUNCTIONS(DECLARE_VULKAN_FUNCTION)
+#undef DECLARE_VULKAN_FUNCTION
+};
+#endif  // BUILDFLAG(IS_LINUX)
+
 namespace {
 bool PathContainsString(const std::string& path, const std::string& s) {
   return path.contains(s);
@@ -66,6 +103,8 @@ const std::vector<const char*>& OpenXrTestHelper::GetSupportedExtensions() {
       XR_EXT_HAND_INTERACTION_EXTENSION_NAME,
       XR_FB_HAND_TRACKING_MESH_EXTENSION_NAME,
       XR_HTC_VIVE_COSMOS_CONTROLLER_INTERACTION_EXTENSION_NAME,
+      XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME,
+      XR_FB_TOUCH_CONTROLLER_PRO_EXTENSION_NAME,
       XR_MSFT_SECONDARY_VIEW_CONFIGURATION_EXTENSION_NAME,
       XR_EXT_HAND_TRACKING_EXTENSION_NAME,
       XR_KHR_VISIBILITY_MASK_EXTENSION_NAME,
@@ -132,6 +171,7 @@ void OpenXrTestHelper::Reset() {
   session_ = XR_NULL_HANDLE;
   swapchains_.clear();
   session_state_ = XR_SESSION_STATE_UNKNOWN;
+  state_after_end_.reset();
 
   system_id_ = 0;
   frame_begin_ = false;
@@ -139,9 +179,19 @@ void OpenXrTestHelper::Reset() {
   d3d_device_ = nullptr;
   textures_arr_.clear();
   acquired_swapchain_texture_ = 0;
+  released_swapchain_texture_ = 0;
 #elif BUILDFLAG(IS_ANDROID)
   opengl_es_textures_arrays_.clear();
   acquired_swapchain_textures_.clear();
+  released_swapchain_textures_.clear();
+#elif BUILDFLAG(IS_LINUX)
+  // DestroySession() destroyed the images, and the device may be gone now.
+  vulkan_images_.clear();
+  acquired_swapchain_textures_.clear();
+  released_swapchain_textures_.clear();
+  vulkan_physical_device_ = VK_NULL_HANDLE;
+  vulkan_device_ = VK_NULL_HANDLE;
+  vulkan_functions_.reset();
 #endif
   next_handle_ = 0;
   next_predicted_display_time_ = 0;
@@ -266,8 +316,7 @@ void OpenXrTestHelper::OnPresentedFrame(const XrFrameEndInfo* frame_end_info) {
             data.viewport = gfx::Rect(current_x, 0, properties.Width(),
                                       properties.Height());
             data.eye = GetEyeForIndex(j, view_properties.size());
-            CopyTextureDataIntoFrameData(views[j].subImage.swapchain, current_x,
-                                         data);
+            CopyTextureDataIntoFrameData(views[j].subImage, data);
             current_x += properties.Width();
           }
         }
@@ -299,6 +348,41 @@ void OpenXrTestHelper::OnPresentedFrame(const XrFrameEndInfo* frame_end_info) {
           reinterpret_cast<const XrCompositionLayerCubeKHR*>(layer);
       layer_data.face_colors =
           ReadCubeMapFirstPixelColor(cube_layer->swapchain);
+    }
+  }
+#elif BUILDFLAG(IS_LINUX)
+  // SAFETY: Test-only implementation of a C-Style API that thus has to
+  // provide arrays as a pointer and a size. The sole callers are our own
+  // product/test code.
+  auto layers = UNSAFE_BUFFERS(
+      base::span(frame_end_info->layers, frame_end_info->layerCount));
+  for (const XrCompositionLayerBaseHeader* layer : layers) {
+    if (layer->type != XR_TYPE_COMPOSITION_LAYER_PROJECTION) {
+      continue;
+    }
+    const auto* proj_layer =
+        reinterpret_cast<const XrCompositionLayerProjection*>(layer);
+    // SAFETY: As above.
+    auto views =
+        UNSAFE_BUFFERS(base::span(proj_layer->views, proj_layer->viewCount));
+    uint32_t current_x = 0;
+    for (XrViewConfigurationType view_config_type : view_configs_enabled_) {
+      const device::OpenXrViewConfiguration& view_config =
+          GetViewConfigInfo(view_config_type);
+      if (!view_config.Active()) {
+        continue;
+      }
+      const std::vector<device::OpenXrViewProperties>& view_properties =
+          view_config.Properties();
+      for (uint32_t j = 0; j < view_properties.size(); j++) {
+        const device::OpenXrViewProperties& properties = view_properties[j];
+        device::ViewData& data = submitted_views.emplace_back();
+        data.viewport =
+            gfx::Rect(current_x, 0, properties.Width(), properties.Height());
+        data.eye = GetEyeForIndex(j, view_properties.size());
+        CopyTextureDataIntoFrameData(views[j].subImage, data);
+        current_x += properties.Width();
+      }
     }
   }
 #endif
@@ -339,7 +423,7 @@ void OpenXrTestHelper::CopyTextureDataIntoFrameData(uint32_t x_start,
   D3D11_BOX box{x_start, 0, 0, x_start + 1, 1, 1};
   context->CopySubresourceRegion(
       texture_destination.Get(), 0, 0, 0, 0,
-      textures_arr_[acquired_swapchain_texture_].Get(), 0, &box);
+      textures_arr_[released_swapchain_texture_].Get(), 0, &box);
 
   D3D11_MAPPED_SUBRESOURCE map_data = {};
   hr = context->Map(texture_destination.Get(), 0, D3D11_MAP_READ, 0, &map_data);
@@ -354,29 +438,40 @@ void OpenXrTestHelper::CopyTextureDataIntoFrameData(uint32_t x_start,
   context->Unmap(texture_destination.Get(), 0);
 }
 #elif BUILDFLAG(IS_ANDROID)
-void OpenXrTestHelper::CopyTextureDataIntoFrameData(XrSwapchain swapchain,
-                                                    uint32_t x_start,
-                                                    device::ViewData& data) {
+void OpenXrTestHelper::CopyTextureDataIntoFrameData(
+    const XrSwapchainSubImage& sub_image,
+    device::ViewData& data) {
   DCHECK_NE(opengl_es_textures_arrays_.size(), 0u);
   // In some build environment, XR_NULL_HANDLE is a signed integer
   // while XrSwapchain is unsigned.
-  DCHECK_NE(swapchain, static_cast<XrSwapchain>(XR_NULL_HANDLE));
-  auto texture_index = acquired_swapchain_textures_[swapchain];
-  DCHECK_LT(texture_index, opengl_es_textures_arrays_[swapchain].size());
+  DCHECK_NE(sub_image.swapchain, static_cast<XrSwapchain>(XR_NULL_HANDLE));
+  auto texture_index = released_swapchain_textures_[sub_image.swapchain];
+  DCHECK_LT(texture_index,
+            opengl_es_textures_arrays_[sub_image.swapchain].size());
   uint8_t pixel[4];
 
   // Generate a framebuffer to read from and attach the current texture to it.
   GLuint fbo = 0;
   glGenFramebuffers(1, &fbo);
   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                         opengl_es_textures_arrays_[swapchain][texture_index],
-                         0);
+
+  const auto& swapchain_info = swapchains_[sub_image.swapchain];
+  if (swapchain_info.arraySize > 1) {
+    glFramebufferTextureLayer(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+        opengl_es_textures_arrays_[sub_image.swapchain][texture_index], 0,
+        sub_image.imageArrayIndex);
+  } else {
+    glFramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+        opengl_es_textures_arrays_[sub_image.swapchain][texture_index], 0);
+  }
 
   GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
   if (status == GL_FRAMEBUFFER_COMPLETE) {
-    // Read the single pixel at (x_start, 0) into our 4-byte RGBA buffer.
-    glReadPixels(x_start, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    // Read the single pixel into our 4-byte RGBA buffer.
+    glReadPixels(sub_image.imageRect.offset.x, sub_image.imageRect.offset.y, 1,
+                 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
     data.color = GetFirstColor(pixel);
   } else {
     DLOG(ERROR) << "Framebuffer not complete: " << std::hex << status;
@@ -390,7 +485,7 @@ SkColor OpenXrTestHelper::ReadTextureColor(
     const XrSwapchainSubImage& sub_image) {
   SkColor color = SK_ColorTRANSPARENT;
   DCHECK_NE(opengl_es_textures_arrays_.size(), 0u);
-  auto texture_index = acquired_swapchain_textures_[sub_image.swapchain];
+  auto texture_index = released_swapchain_textures_[sub_image.swapchain];
   DCHECK_LT(texture_index,
             opengl_es_textures_arrays_[sub_image.swapchain].size());
 
@@ -399,8 +494,14 @@ SkColor OpenXrTestHelper::ReadTextureColor(
   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
   auto texture = opengl_es_textures_arrays_[sub_image.swapchain][texture_index];
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                         texture, 0);
+  const auto& swapchain_info = swapchains_[sub_image.swapchain];
+  if (swapchain_info.arraySize > 1) {
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, texture, 0,
+                              sub_image.imageArrayIndex);
+  } else {
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           texture, 0);
+  }
 
   GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
   if (status == GL_FRAMEBUFFER_COMPLETE) {
@@ -421,7 +522,7 @@ std::vector<SkColor> OpenXrTestHelper::ReadCubeMapFirstPixelColor(
     XrSwapchain swapchain) {
   std::vector<SkColor> colors;
   DCHECK_NE(opengl_es_textures_arrays_.size(), 0u);
-  auto texture_index = acquired_swapchain_textures_[swapchain];
+  auto texture_index = released_swapchain_textures_[swapchain];
   DCHECK_LT(texture_index, opengl_es_textures_arrays_[swapchain].size());
 
   GLuint fbo = 0;
@@ -478,6 +579,13 @@ XrResult OpenXrTestHelper::CreateSession(XrSession* session) {
 XrResult OpenXrTestHelper::DestroySession(XrSession session) {
   RETURN_IF_XR_FAILED(ValidateSession(session));
 
+#if BUILDFLAG(IS_LINUX)
+  // Destroy the images while the session's device is still alive.
+  while (!vulkan_images_.empty()) {
+    DestroyTextures(vulkan_images_.begin()->first);
+  }
+#endif
+
   // Clear the test helper state so that tests can request multiple sessions.
   Reset();
 
@@ -492,6 +600,9 @@ XrSwapchain OpenXrTestHelper::CreateSwapchain(
 }
 
 XrResult OpenXrTestHelper::DestroySwapchain(XrSwapchain swapchain) {
+#if BUILDFLAG(IS_LINUX)
+  DestroyTextures(swapchain);
+#endif
   return swapchains_.erase(swapchain) ? XR_SUCCESS : XR_ERROR_HANDLE_INVALID;
 }
 
@@ -773,6 +884,9 @@ XrResult OpenXrTestHelper::BeginSession(
     return XR_ERROR_VIEW_CONFIGURATION_TYPE_UNSUPPORTED;
   }
 
+  // Each xrBeginSession() specifies the view configurations anew, e.g. when the
+  // session begins again after the runtime stopped it.
+  view_configs_enabled_.clear();
   // Add the primary view configuration first - this assumption is made in other
   // areas of the code.
   view_configs_enabled_.push_back(view_configs[0]);
@@ -800,6 +914,21 @@ XrResult OpenXrTestHelper::BeginSession(
   return XR_SUCCESS;
 }
 
+void OpenXrTestHelper::StopSession(
+    std::optional<XrSessionState> state_after_end) {
+  state_after_end_ = state_after_end;
+  SetSessionState(XR_SESSION_STATE_STOPPING);
+}
+
+void OpenXrTestHelper::MakeSessionReady() {
+  if (session_state_ == XR_SESSION_STATE_STOPPING) {
+    state_after_end_ = XR_SESSION_STATE_READY;
+    return;
+  }
+  CHECK_EQ(session_state_, XR_SESSION_STATE_IDLE);
+  SetSessionState(XR_SESSION_STATE_READY);
+}
+
 XrResult OpenXrTestHelper::EndSession() {
   // Per OpenXR 1.0 spec: "An application can only call xrEndSession when the
   // session is in the XR_SESSION_STATE_STOPPING state"
@@ -807,6 +936,9 @@ XrResult OpenXrTestHelper::EndSession() {
             XR_ERROR_SESSION_NOT_STOPPING,
             "Session state is not XR_ERROR_SESSION_NOT_STOPPING");
   SetSessionState(XR_SESSION_STATE_IDLE);
+  if (state_after_end_) {
+    SetSessionState(*state_after_end_);
+  }
   return XR_SUCCESS;
 }
 
@@ -942,6 +1074,7 @@ void OpenXrTestHelper::CreateTextures(XrSwapchain swapchain) {
 
   const auto& swapchain_info = swapchains_[swapchain];
   const bool is_cube = swapchain_info.faceCount == 6;
+  const bool is_array = swapchain_info.arraySize > 1;
   for (GLuint texture_id : textures) {
     // Allocate storage for the texture.
     if (is_cube) {
@@ -951,6 +1084,12 @@ void OpenXrTestHelper::CreateTextures(XrSwapchain swapchain) {
                      swapchain_info.width, swapchain_info.height, 0, GL_RGBA,
                      GL_UNSIGNED_BYTE, nullptr);
       }
+    } else if (is_array) {
+      glBindTexture(GL_TEXTURE_2D_ARRAY, texture_id);
+      glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, kSwapchainFormat,
+                   swapchain_info.width, swapchain_info.height,
+                   swapchain_info.arraySize, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                   nullptr);
     } else {
       glBindTexture(GL_TEXTURE_2D, texture_id);
       glTexImage2D(GL_TEXTURE_2D, 0, kSwapchainFormat, swapchain_info.width,
@@ -961,6 +1100,8 @@ void OpenXrTestHelper::CreateTextures(XrSwapchain swapchain) {
   // Unbind the last texture.
   if (is_cube) {
     glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+  } else if (is_array) {
+    glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
   } else {
     glBindTexture(GL_TEXTURE_2D, 0);
   }
@@ -1005,6 +1146,240 @@ PFN_vkGetInstanceProcAddr OpenXrTestHelper::GetVulkanGetInstanceProcAddr()
 
 VkInstance OpenXrTestHelper::GetVulkanInstance() const {
   return vulkan_instance_;
+}
+
+OpenXrTestHelper::VulkanSwapchainImages::VulkanSwapchainImages() = default;
+OpenXrTestHelper::VulkanSwapchainImages::~VulkanSwapchainImages() = default;
+OpenXrTestHelper::VulkanSwapchainImages::VulkanSwapchainImages(
+    VulkanSwapchainImages&&) = default;
+OpenXrTestHelper::VulkanSwapchainImages&
+OpenXrTestHelper::VulkanSwapchainImages::operator=(VulkanSwapchainImages&&) =
+    default;
+
+void OpenXrTestHelper::SetVulkanDevice(VkPhysicalDevice physical_device,
+                                       VkDevice device,
+                                       uint32_t queue_family_index,
+                                       uint32_t queue_index) {
+  vulkan_physical_device_ = physical_device;
+  vulkan_device_ = device;
+  vulkan_queue_family_index_ = queue_family_index;
+  vulkan_queue_index_ = queue_index;
+
+  vulkan_functions_ = std::make_unique<VulkanFunctions>();
+#define LOAD_VULKAN_FUNCTION(name)                              \
+  vulkan_functions_->name = reinterpret_cast<PFN_##name>(       \
+      vulkan_get_instance_proc_addr_(vulkan_instance_, #name)); \
+  CHECK(vulkan_functions_->name) << #name;
+  FAKE_RUNTIME_VULKAN_FUNCTIONS(LOAD_VULKAN_FUNCTION)
+#undef LOAD_VULKAN_FUNCTION
+}
+
+const std::vector<VkImage>& OpenXrTestHelper::GetSwapchainImages(
+    XrSwapchain swapchain) {
+  if (!vulkan_images_.contains(swapchain)) {
+    CreateTextures(swapchain);
+  }
+  return vulkan_images_[swapchain].images;
+}
+
+void OpenXrTestHelper::CreateTextures(XrSwapchain swapchain) {
+  DCHECK(swapchains_.contains(swapchain));
+  DCHECK_NE(vulkan_device_, VK_NULL_HANDLE);
+  const XrSwapchainCreateInfo& info = swapchains_[swapchain];
+  VulkanSwapchainImages& images = vulkan_images_[swapchain];
+  images.format = static_cast<VkFormat>(info.format);
+
+  const VulkanFunctions* vk = vulkan_functions_.get();
+  VkPhysicalDeviceMemoryProperties memory_properties;
+  vk->vkGetPhysicalDeviceMemoryProperties(vulkan_physical_device_,
+                                          &memory_properties);
+
+  VkImageCreateInfo image_info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  image_info.flags =
+      info.faceCount == 6 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+  image_info.imageType = VK_IMAGE_TYPE_2D;
+  image_info.format = images.format;
+  image_info.extent = {info.width, info.height, 1};
+  image_info.mipLevels = 1;
+  image_info.arrayLayers = info.arraySize * info.faceCount;
+  image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+  image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  image_info.usage =
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+  for (uint32_t i = 0; i < kMinSwapchainBuffering; i++) {
+    VkImage image = VK_NULL_HANDLE;
+    CHECK_EQ(vk->vkCreateImage(vulkan_device_, &image_info, nullptr, &image),
+             VK_SUCCESS);
+    VkMemoryRequirements requirements;
+    vk->vkGetImageMemoryRequirements(vulkan_device_, image, &requirements);
+    VkMemoryAllocateInfo allocate_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate_info.allocationSize = requirements.size;
+    allocate_info.memoryTypeIndex = memory_properties.memoryTypeCount;
+    for (uint32_t type = 0; type < memory_properties.memoryTypeCount; type++) {
+      if (requirements.memoryTypeBits & (1u << type)) {
+        allocate_info.memoryTypeIndex = type;
+        break;
+      }
+    }
+    CHECK_LT(allocate_info.memoryTypeIndex, memory_properties.memoryTypeCount);
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    CHECK_EQ(
+        vk->vkAllocateMemory(vulkan_device_, &allocate_info, nullptr, &memory),
+        VK_SUCCESS);
+    CHECK_EQ(vk->vkBindImageMemory(vulkan_device_, image, memory, 0),
+             VK_SUCCESS);
+    images.images.push_back(image);
+    images.memories.push_back(memory);
+  }
+}
+
+void OpenXrTestHelper::DestroyTextures(XrSwapchain swapchain) {
+  auto it = vulkan_images_.find(swapchain);
+  if (it == vulkan_images_.end()) {
+    return;
+  }
+  const VulkanFunctions* vk = vulkan_functions_.get();
+  for (VkImage image : it->second.images) {
+    vk->vkDestroyImage(vulkan_device_, image, nullptr);
+  }
+  for (VkDeviceMemory memory : it->second.memories) {
+    vk->vkFreeMemory(vulkan_device_, memory, nullptr);
+  }
+  vulkan_images_.erase(it);
+  acquired_swapchain_textures_.erase(swapchain);
+  released_swapchain_textures_.erase(swapchain);
+}
+
+void OpenXrTestHelper::CopyTextureDataIntoFrameData(
+    const XrSwapchainSubImage& sub_image,
+    device::ViewData& data) {
+  GetSwapchainImages(sub_image.swapchain);
+  const VulkanSwapchainImages& images = vulkan_images_[sub_image.swapchain];
+  VkImage image =
+      images.images[released_swapchain_textures_[sub_image.swapchain]];
+  const VulkanFunctions* vk = vulkan_functions_.get();
+
+  // Copy the sub image's first pixel into a host-visible buffer. The client
+  // finished its writes and left the image in COLOR_ATTACHMENT_OPTIMAL.
+  VkBufferCreateInfo buffer_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  buffer_info.size = 4;
+  buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  VkBuffer buffer = VK_NULL_HANDLE;
+  CHECK_EQ(vk->vkCreateBuffer(vulkan_device_, &buffer_info, nullptr, &buffer),
+           VK_SUCCESS);
+  VkMemoryRequirements requirements;
+  vk->vkGetBufferMemoryRequirements(vulkan_device_, buffer, &requirements);
+  VkPhysicalDeviceMemoryProperties memory_properties;
+  vk->vkGetPhysicalDeviceMemoryProperties(vulkan_physical_device_,
+                                          &memory_properties);
+  constexpr VkMemoryPropertyFlags kHostVisible =
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  VkMemoryAllocateInfo allocate_info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+  allocate_info.allocationSize = requirements.size;
+  allocate_info.memoryTypeIndex = memory_properties.memoryTypeCount;
+  auto memory_types = base::span(memory_properties.memoryTypes)
+                          .first(memory_properties.memoryTypeCount);
+  for (uint32_t type = 0; type < memory_types.size(); type++) {
+    if ((requirements.memoryTypeBits & (1u << type)) &&
+        (memory_types[type].propertyFlags & kHostVisible) == kHostVisible) {
+      allocate_info.memoryTypeIndex = type;
+      break;
+    }
+  }
+  CHECK_LT(allocate_info.memoryTypeIndex, memory_properties.memoryTypeCount);
+  VkDeviceMemory memory = VK_NULL_HANDLE;
+  CHECK_EQ(
+      vk->vkAllocateMemory(vulkan_device_, &allocate_info, nullptr, &memory),
+      VK_SUCCESS);
+  CHECK_EQ(vk->vkBindBufferMemory(vulkan_device_, buffer, memory, 0),
+           VK_SUCCESS);
+
+  VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+  pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+  pool_info.queueFamilyIndex = vulkan_queue_family_index_;
+  VkCommandPool pool = VK_NULL_HANDLE;
+  CHECK_EQ(vk->vkCreateCommandPool(vulkan_device_, &pool_info, nullptr, &pool),
+           VK_SUCCESS);
+  VkCommandBufferAllocateInfo command_info{
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+  command_info.commandPool = pool;
+  command_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  command_info.commandBufferCount = 1;
+  VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+  CHECK_EQ(vk->vkAllocateCommandBuffers(vulkan_device_, &command_info,
+                                        &command_buffer),
+           VK_SUCCESS);
+
+  VkCommandBufferBeginInfo begin_info{
+      VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+  begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  vk->vkBeginCommandBuffer(command_buffer, &begin_info);
+  VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  barrier.srcAccessMask =
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.image = image;
+  barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
+                              sub_image.imageArrayIndex, 1};
+  vk->vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                           nullptr, 1, &barrier);
+  VkBufferImageCopy region{};
+  region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                             sub_image.imageArrayIndex, 1};
+  region.imageOffset = {sub_image.imageRect.offset.x,
+                        sub_image.imageRect.offset.y, 0};
+  region.imageExtent = {1, 1, 1};
+  vk->vkCmdCopyImageToBuffer(command_buffer, image,
+                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1,
+                             &region);
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  vk->vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+                           nullptr, 1, &barrier);
+  vk->vkEndCommandBuffer(command_buffer);
+
+  VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  VkFence fence = VK_NULL_HANDLE;
+  CHECK_EQ(vk->vkCreateFence(vulkan_device_, &fence_info, nullptr, &fence),
+           VK_SUCCESS);
+  VkQueue queue = VK_NULL_HANDLE;
+  vk->vkGetDeviceQueue(vulkan_device_, vulkan_queue_family_index_,
+                       vulkan_queue_index_, &queue);
+  VkSubmitInfo submit_info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+  submit_info.commandBufferCount = 1;
+  submit_info.pCommandBuffers = &command_buffer;
+  CHECK_EQ(vk->vkQueueSubmit(queue, 1, &submit_info, fence), VK_SUCCESS);
+  CHECK_EQ(vk->vkWaitForFences(vulkan_device_, 1, &fence, VK_TRUE, UINT64_MAX),
+           VK_SUCCESS);
+
+  void* mapped = nullptr;
+  CHECK_EQ(vk->vkMapMemory(vulkan_device_, memory, 0, 4, 0, &mapped),
+           VK_SUCCESS);
+  // SAFETY: vkMapMemory mapped the 4 bytes of the buffer.
+  auto pixel =
+      UNSAFE_BUFFERS(base::span(static_cast<const uint8_t*>(mapped), 4u));
+  const bool bgra = images.format == VK_FORMAT_B8G8R8A8_SRGB ||
+                    images.format == VK_FORMAT_B8G8R8A8_UNORM;
+  data.color = bgra ? SkColorSetARGB(pixel[3], pixel[2], pixel[1], pixel[0])
+                    : GetFirstColor(pixel);
+  vk->vkUnmapMemory(vulkan_device_, memory);
+
+  vk->vkDestroyFence(vulkan_device_, fence, nullptr);
+  vk->vkDestroyCommandPool(vulkan_device_, pool, nullptr);
+  vk->vkDestroyBuffer(vulkan_device_, buffer, nullptr);
+  vk->vkFreeMemory(vulkan_device_, memory, nullptr);
 }
 #endif
 
@@ -1247,10 +1622,25 @@ uint32_t OpenXrTestHelper::NextSwapchainImageIndex(XrSwapchain swapchain) {
       (acquired_swapchain_textures_[swapchain] + 1) %
       opengl_es_textures_arrays_[swapchain].size();
   return acquired_swapchain_textures_[swapchain];
+#elif BUILDFLAG(IS_LINUX)
+  acquired_swapchain_textures_[swapchain] =
+      (acquired_swapchain_textures_[swapchain] + 1) %
+      GetSwapchainImages(swapchain).size();
+  return acquired_swapchain_textures_[swapchain];
 #else
-  // Linux: swapchain image management is not yet implemented.
   return 0;
 #endif
+}
+
+XrResult OpenXrTestHelper::ReleaseSwapchainImage(XrSwapchain swapchain) {
+  RETURN_IF_XR_FAILED(ValidateSwapchain(swapchain));
+#if BUILDFLAG(IS_WIN)
+  released_swapchain_texture_ = acquired_swapchain_texture_;
+#elif BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_LINUX)
+  released_swapchain_textures_[swapchain] =
+      acquired_swapchain_textures_[swapchain];
+#endif
+  return XR_SUCCESS;
 }
 
 XrTime OpenXrTestHelper::NextPredictedDisplayTime() {
@@ -1266,7 +1656,11 @@ void OpenXrTestHelper::UpdateEventQueue() {
         break;
       }
       if (data->type == device_test::mojom::EventType::kSessionLost) {
-        SetSessionState(XR_SESSION_STATE_STOPPING);
+        StopSession(XR_SESSION_STATE_EXITING);
+      } else if (data->type == device_test::mojom::EventType::kSessionStopped) {
+        StopSession(/*state_after_end=*/std::nullopt);
+      } else if (data->type == device_test::mojom::EventType::kSessionReady) {
+        MakeSessionReady();
       } else if (data->type ==
                  device_test::mojom::EventType::kVisibilityVisibleBlurred) {
         // WebXR Visible-Blurred map to OpenXR Visible
@@ -1348,9 +1742,12 @@ device::ControllerFrameData OpenXrTestHelper::GetControllerDataFromPath(
 }
 
 bool OpenXrTestHelper::IsSessionRunning() const {
+  // Per the OpenXR spec, a session runs from xrBeginSession() until
+  // xrEndSession(), so the app can still finish a frame while STOPPING.
   return session_state_ == XR_SESSION_STATE_SYNCHRONIZED ||
          session_state_ == XR_SESSION_STATE_VISIBLE ||
-         session_state_ == XR_SESSION_STATE_FOCUSED;
+         session_state_ == XR_SESSION_STATE_FOCUSED ||
+         session_state_ == XR_SESSION_STATE_STOPPING;
 }
 
 void OpenXrTestHelper::UpdateInteractionProfile(
@@ -1385,6 +1782,12 @@ void OpenXrTestHelper::UpdateInteractionProfile(
       break;
     case device::mojom::OpenXrInteractionProfileType::kExtHand:
       interaction_profile_ = device::kExtHandInteractionProfilePath;
+      break;
+    case device::mojom::OpenXrInteractionProfileType::kMetaTouchPlus:
+      interaction_profile_ = device::kMetaTouchPlusInteractionProfilePath;
+      break;
+    case device::mojom::OpenXrInteractionProfileType::kMetaTouchPro:
+      interaction_profile_ = device::kMetaTouchProInteractionProfilePath;
       break;
     case device::mojom::OpenXrInteractionProfileType::kInvalid:
     case device::mojom::OpenXrInteractionProfileType::kMetaHandAim:

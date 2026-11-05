@@ -4,13 +4,13 @@
 </head>
 <body>
   <div id="parent">
-    <install id="install-app" manifestid=""></install>
+    <install id="install-app"></install>
   </div>
   <script>
     // The installresult event has a 'result' property with values:
     // - "success"
     // - "aborted"
-    // - "invalid_data"
+    // - "invalid-data"
     document.getElementById('parent').addEventListener('installresult', (event) => {
       console.log(event.target.id + '-installresult-' + event.result);
     });

@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 import {hexToColor, Ink2Manager, pageToScreenCoordinates, PdfViewerPrivateProxyImpl, TEXT_COLORS, TextAlignment, TextAnnotationSource, TextStyle, TextTypeface} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
-import type {InkTextBoxElement, TextAnnotation, TextAnnotationMessageData, TextBoxRect, Viewport} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
+import type {DeleteTextAnnotationMessageData, InkTextBoxElement, TextAnnotation, TextAnnotationMessageData, TextBoxRect, Viewport} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
 import {isMac} from 'chrome://resources/js/platform.js';
 import type {ModifiersParam} from 'chrome://webui-test/keyboard_mock_interactions.js';
 import {keyDownOn, keyUpOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
@@ -15,6 +15,14 @@ import type {MockPdfPluginElement} from './test_util.js';
 
 export function getCtrlModifier(): ModifiersParam {
   return isMac ? ['meta'] : ['ctrl'];
+}
+
+export function getStrikethroughModifiers(): ModifiersParam {
+  return isMac ? ['meta', 'shift'] : ['alt', 'shift'];
+}
+
+export function getStrikethroughKey(): string {
+  return isMac ? 'x' : '5';
 }
 
 export async function setupTextBoxTest(
@@ -66,6 +74,7 @@ export function getTestAnnotation(
         [TextStyle.BOLD]: false,
         [TextStyle.ITALIC]: false,
         [TextStyle.STRIKETHROUGH]: false,
+        [TextStyle.UNDERLINE]: false,
       },
       typeface: TextTypeface.SANS_SERIF,
     },
@@ -159,6 +168,24 @@ export async function dragHandleWithKeyboard(
     keyUpOn(handle, 0, [], key);
   }
   await microtasksFinished();
+}
+
+export function verifyDeleteTextAnnotationMessage(
+    mockPlugin: MockPdfPluginElement, expectedId: number,
+    expectedPageIndex: number = 0,
+    expectedSource: TextAnnotationSource = TextAnnotationSource.USER) {
+  const message =
+      mockPlugin
+          .findMessage<{type: string, data: DeleteTextAnnotationMessageData}>(
+              'deleteTextAnnotation');
+  chrome.test.assertTrue(message !== undefined);
+  chrome.test.assertEq('deleteTextAnnotation', message.type);
+  const expectedMessageData: DeleteTextAnnotationMessageData = {
+    id: expectedId,
+    pageIndex: expectedPageIndex,
+    source: expectedSource,
+  };
+  assertDeepEquals(expectedMessageData, message.data);
 }
 
 export function verifyFinishTextAnnotationMessage(

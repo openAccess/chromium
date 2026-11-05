@@ -42,7 +42,6 @@
 #endif  // BUILDFLAG(ENABLE_PDF)
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "components/permissions/permission_indicators_tab_data.h"
 #include "components/tabs/public/tab_interface.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -104,7 +103,7 @@ void IndicatorUsageHistogramHelper(content::WebContents* web_contents,
     return;
   }
   permissions::PermissionIndicatorsTabData* permission_indicators_tab_data =
-      tab_model->GetTabFeatures()->permission_indicators_tab_data();
+      permissions::PermissionIndicatorsTabData::From(tab_model);
   if (permission_indicators_tab_data) {
     permission_indicators_tab_data->OnMediaCaptureChanged(request_type,
                                                           is_capturing);
@@ -137,7 +136,7 @@ void PageSpecificContentSettingsDelegate::OnCapturingStateChanged(
     content::WebContents* web_contents,
     ContentSettingsType type,
     bool is_capturing) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
 
   PageSpecificContentSettings* pscs = PageSpecificContentSettings::GetForFrame(
       web_contents->GetPrimaryMainFrame());
@@ -177,16 +176,16 @@ void PageSpecificContentSettingsDelegate::UpdateLocationBar() {
 
   if (state.Has(PageSpecificContentSettings::kCameraAccessed) ||
       state.Has(PageSpecificContentSettings::kMicrophoneAccessed)) {
-    auto* permission_tracker =
-        permissions::PermissionRecoverySuccessRateTracker::FromWebContents(
-            web_contents());
+    if (auto* permission_tracker =
+            permissions::PermissionRecoverySuccessRateTracker::FromWebContents(
+                web_contents())) {
+      if (state.Has(PageSpecificContentSettings::kMicrophoneAccessed)) {
+        permission_tracker->TrackUsage(ContentSettingsType::MEDIASTREAM_MIC);
+      }
 
-    if (state.Has(PageSpecificContentSettings::kMicrophoneAccessed)) {
-      permission_tracker->TrackUsage(ContentSettingsType::MEDIASTREAM_MIC);
-    }
-
-    if (state.Has(PageSpecificContentSettings::kCameraAccessed)) {
-      permission_tracker->TrackUsage(ContentSettingsType::MEDIASTREAM_CAMERA);
+      if (state.Has(PageSpecificContentSettings::kCameraAccessed)) {
+        permission_tracker->TrackUsage(ContentSettingsType::MEDIASTREAM_CAMERA);
+      }
     }
   }
 }
@@ -265,7 +264,7 @@ PageSpecificContentSettingsDelegate::GetMicrophoneCameraState() {
 content::WebContents* PageSpecificContentSettingsDelegate::
     MaybeGetSyncedWebContentsForPictureInPicture(
         content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
   content::WebContents* parent_web_contents =
       PictureInPictureWindowManager::GetInstance()->GetWebContents();
   content::WebContents* child_web_contents =
@@ -273,7 +272,7 @@ content::WebContents* PageSpecificContentSettingsDelegate::
 
   // For document picture-in-picture window, return the opener web contents.
   if (web_contents == child_web_contents) {
-    DCHECK(parent_web_contents);
+    CHECK(parent_web_contents, base::NotFatalUntil::M161);
     return parent_web_contents;
   }
 
@@ -320,8 +319,9 @@ void PageSpecificContentSettingsDelegate::OnContentBlocked(
 
 bool PageSpecificContentSettingsDelegate::IsBlockedOnSystemLevel(
     ContentSettingsType type) {
-  DCHECK(type == ContentSettingsType::MEDIASTREAM_MIC ||
-         type == ContentSettingsType::MEDIASTREAM_CAMERA);
+  CHECK(type == ContentSettingsType::MEDIASTREAM_MIC ||
+            type == ContentSettingsType::MEDIASTREAM_CAMERA,
+        base::NotFatalUntil::M161);
 
   return system_permission_settings::IsDenied(type);
 }
@@ -355,7 +355,7 @@ bool PageSpecificContentSettingsDelegate::IsFrameAllowlistedForJavaScript(
 
 bool PageSpecificContentSettingsDelegate::IsPiPWindow(
     content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
   content::WebContents* child_web_contents =
       PictureInPictureWindowManager::GetInstance()->GetChildWebContents();
 

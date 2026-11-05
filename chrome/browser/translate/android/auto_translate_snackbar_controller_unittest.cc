@@ -4,8 +4,9 @@
 
 #include "chrome/browser/translate/android/auto_translate_snackbar_controller.h"
 
+#include <string>
+
 #include "base/android/jni_android.h"
-#include "base/android/jni_string.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "components/language/core/browser/language_model.h"
 #include "components/language/core/browser/language_prefs.h"
@@ -51,9 +52,7 @@ class TestBridge : public AutoTranslateSnackbarController::Bridge {
                AutoTranslateSnackbarController*),
               (override));
 
-  void ShowSnackbar(
-      JNIEnv* env,
-      base::android::ScopedJavaLocalRef<jstring> target_language) override;
+  void ShowSnackbar(JNIEnv* env, std::string target_language) override;
   void WasDismissed() override;
   bool IsSnackbarShowing() override;
   MOCK_METHOD(void, DismissSnackbar, (JNIEnv * env), (override));
@@ -67,12 +66,9 @@ class TestBridge : public AutoTranslateSnackbarController::Bridge {
 
 TestBridge::~TestBridge() = default;
 
-void TestBridge::ShowSnackbar(
-    JNIEnv* env,
-    base::android::ScopedJavaLocalRef<jstring> target_language) {
+void TestBridge::ShowSnackbar(JNIEnv* env, std::string target_language) {
   is_showing_ = true;
-  target_language_ =
-      base::android::ConvertJavaStringToUTF8(env, target_language);
+  target_language_ = std::move(target_language);
 }
 
 void TestBridge::WasDismissed() {
@@ -128,6 +124,7 @@ class AutoTranslateSnackbarControllerTest : public ::testing::Test {
     manager_ = std::make_unique<TranslateManager>(client_.get(), ranker_.get(),
                                                   language_model_.get());
     manager_->GetLanguageState()->set_translation_declined(false);
+    TranslateDownloadManager::GetInstance()->ResetForTesting();
     TranslateDownloadManager::GetInstance()->set_application_locale("en");
 
     auto bridge = std::make_unique<TestBridge>();
@@ -137,6 +134,11 @@ class AutoTranslateSnackbarControllerTest : public ::testing::Test {
         std::make_unique<AutoTranslateSnackbarController>(
             /* web_contents= */ nullptr, manager_->GetWeakPtr(),
             std::move(bridge));
+  }
+
+  void TearDown() override {
+    TranslateDownloadManager::GetInstance()->ResetForTesting();
+    ::testing::Test::TearDown();
   }
 
   TestTranslateDriver driver_;
@@ -162,7 +164,7 @@ TEST_F(AutoTranslateSnackbarControllerTest, CreateAndDismissSnackbarNoAction) {
   EXPECT_EQ("tl", bridge_->GetTargetLanguage());
 
   // Dismiss snackbar from Java
-  auto_snackbar_controller_->OnDismissNoAction(env);
+  auto_snackbar_controller_->OnDismissNoAction();
   EXPECT_FALSE(bridge_->IsSnackbarShowing());
 }
 
@@ -183,8 +185,7 @@ TEST_F(AutoTranslateSnackbarControllerTest,
   EXPECT_EQ("tl", bridge_->GetTargetLanguage());
 
   // Click on Undo translation from Java
-  auto j_string = base::android::ConvertUTF8ToJavaString(env, "tl");
-  auto_snackbar_controller_->OnUndoActionPressed(env, j_string);
+  auto_snackbar_controller_->OnUndoActionPressed("tl");
   EXPECT_FALSE(bridge_->IsSnackbarShowing());
 
   // Check that the INFOBAR_REVERT histogram was recorded

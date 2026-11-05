@@ -27,11 +27,18 @@ namespace {
 
 using ::i18n::phonenumbers::PhoneNumberUtil;
 
+enum class PhoneFormat {
+  kE164,
+  kInternational,
+  kNational,
+  kNationalWithoutTrunkPrefix,
+};
+
 // Formats the `phone_number` to the specified `format`. Returns the original
 // number if the operation is not possible.
 std::string FormatPhoneNumber(std::string_view phone_number,
                               const std::string& country_code,
-                              PhoneNumberUtil::PhoneNumberFormat format) {
+                              PhoneFormat format) {
   ::i18n::phonenumbers::PhoneNumber parsed_number;
   PhoneNumberUtil* phone_number_util = PhoneNumberUtil::GetInstance();
   if (phone_number_util->Parse(std::string(phone_number), country_code,
@@ -41,7 +48,29 @@ std::string FormatPhoneNumber(std::string_view phone_number,
   }
 
   std::string formatted_number;
-  phone_number_util->Format(parsed_number, format, &formatted_number);
+  switch (format) {
+    case PhoneFormat::kE164:
+      phone_number_util->Format(parsed_number, PhoneNumberUtil::E164,
+                                &formatted_number);
+      break;
+    case PhoneFormat::kInternational:
+      phone_number_util->Format(parsed_number, PhoneNumberUtil::INTERNATIONAL,
+                                &formatted_number);
+      break;
+    case PhoneFormat::kNational:
+      phone_number_util->Format(parsed_number, PhoneNumberUtil::NATIONAL,
+                                &formatted_number);
+      break;
+    case PhoneFormat::kNationalWithoutTrunkPrefix:
+      // `Parse()` strips the trunk prefix. Setting `FROM_DEFAULT_COUNTRY` tells
+      // `FormatInOriginalFormat()` to use the national format without re-adding
+      // the trunk prefix.
+      parsed_number.set_country_code_source(
+          ::i18n::phonenumbers::PhoneNumber::FROM_DEFAULT_COUNTRY);
+      phone_number_util->FormatInOriginalFormat(parsed_number, country_code,
+                                                &formatted_number);
+      break;
+  }
   return formatted_number;
 }
 
@@ -212,13 +241,6 @@ bool ParsePhoneNumber(std::u16string_view value,
 
   // The region might be different from what we started with.
   phone_util->GetRegionCodeForNumber(*i18n_number, inferred_region);
-  constexpr std::string_view kUnknownPhoneRegionCode = "ZZ";
-  if (*inferred_region == kUnknownPhoneRegionCode ||
-      !phone_util->IsValidNumberForRegion(*i18n_number, *inferred_region)) {
-    // Reset inferred region to empty string if the region code or the phone
-    // number is invalid.
-    *inferred_region = "";
-  }
 
   return true;
 }
@@ -263,10 +285,28 @@ bool ConstructPhoneNumber(std::u16string_view input_whole_number,
   return true;
 }
 
+bool PhoneNumbersMatch(const ::i18n::phonenumbers::PhoneNumber& number_a,
+                       const ::i18n::phonenumbers::PhoneNumber& number_b,
+                       bool support_short_nsn_match) {
+  switch (PhoneNumberUtil::GetInstance()->IsNumberMatch(number_a, number_b)) {
+    case PhoneNumberUtil::INVALID_NUMBER:
+    case PhoneNumberUtil::NO_MATCH:
+      return false;
+    case PhoneNumberUtil::SHORT_NSN_MATCH:
+      return support_short_nsn_match;
+    case PhoneNumberUtil::NSN_MATCH:
+    case PhoneNumberUtil::EXACT_MATCH:
+      return true;
+  }
+
+  NOTREACHED();
+}
+
 bool PhoneNumbersMatch(std::u16string_view number_a,
                        std::u16string_view number_b,
                        std::string_view raw_region,
-                       std::string_view app_locale) {
+                       std::string_view app_locale,
+                       bool support_short_nsn_match) {
   if (number_a.empty() && number_b.empty()) {
     return true;
   }
@@ -293,18 +333,7 @@ bool PhoneNumbersMatch(std::u16string_view number_a,
     return false;
   }
 
-  switch (phone_util->IsNumberMatch(i18n_number1, i18n_number2)) {
-    case PhoneNumberUtil::INVALID_NUMBER:
-    case PhoneNumberUtil::NO_MATCH:
-      return false;
-    case PhoneNumberUtil::SHORT_NSN_MATCH:
-      return false;
-    case PhoneNumberUtil::NSN_MATCH:
-    case PhoneNumberUtil::EXACT_MATCH:
-      return true;
-  }
-
-  NOTREACHED();
+  return PhoneNumbersMatch(i18n_number1, i18n_number2, support_short_nsn_match);
 }
 
 std::u16string GetFormattedPhoneNumberForDisplay(const AutofillProfile& profile,
@@ -324,25 +353,27 @@ std::u16string GetFormattedPhoneNumberForDisplay(const AutofillProfile& profile,
   const std::string country_code =
       data_util::GetCountryCodeWithFallback(profile, locale);
   if (IsValidPhoneNumber(tentative_intl_phone, country_code)) {
-    return base::UTF8ToUTF16(
-        FormatPhoneNumber(tentative_intl_phone, country_code,
-                          PhoneNumberUtil::PhoneNumberFormat::INTERNATIONAL));
+    return base::UTF8ToUTF16(FormatPhoneNumber(
+        tentative_intl_phone, country_code, PhoneFormat::kInternational));
   }
 
   if (IsValidPhoneNumber(phone, country_code)) {
     return base::UTF8ToUTF16(
-        FormatPhoneNumber(phone, country_code,
-                          PhoneNumberUtil::PhoneNumberFormat::INTERNATIONAL));
+        FormatPhoneNumber(phone, country_code, PhoneFormat::kInternational));
   }
 
   return base::UTF8ToUTF16(phone);
 }
 
 std::string FormatPhoneNationallyForDisplay(std::string_view phone_number,
-                                            const std::string& country_code) {
+                                            const std::string& country_code,
+                                            FieldType field_type) {
   if (IsValidPhoneNumber(phone_number, country_code)) {
-    return FormatPhoneNumber(phone_number, country_code,
-                             PhoneNumberUtil::PhoneNumberFormat::NATIONAL);
+    return FormatPhoneNumber(
+        phone_number, country_code,
+        field_type == PHONE_HOME_CITY_AND_NUMBER_WITHOUT_TRUNK_PREFIX
+            ? PhoneFormat::kNationalWithoutTrunkPrefix
+            : PhoneFormat::kNational);
   }
   return std::string(phone_number);
 }
@@ -351,7 +382,7 @@ std::string FormatPhoneForDisplay(std::string_view phone_number,
                                   const std::string& country_code) {
   if (IsValidPhoneNumber(phone_number, country_code)) {
     return FormatPhoneNumber(phone_number, country_code,
-                             PhoneNumberUtil::PhoneNumberFormat::INTERNATIONAL);
+                             PhoneFormat::kInternational);
   }
   return std::string(phone_number);
 }
@@ -359,8 +390,7 @@ std::string FormatPhoneForDisplay(std::string_view phone_number,
 std::string FormatPhoneForResponse(std::string_view phone_number,
                                    const std::string& country_code) {
   if (IsValidPhoneNumber(phone_number, country_code)) {
-    return FormatPhoneNumber(phone_number, country_code,
-                             PhoneNumberUtil::PhoneNumberFormat::E164);
+    return FormatPhoneNumber(phone_number, country_code, PhoneFormat::kE164);
   }
   return std::string(phone_number);
 }
@@ -369,7 +399,9 @@ PhoneObject::PhoneObject() = default;
 
 PhoneObject::PhoneObject(std::u16string_view number,
                          const std::string& region,
-                         bool infer_country_code) {
+                         bool infer_country_code)
+    : creation_region_hint_(region),
+      infer_country_code_from_region_hint_(infer_country_code) {
   DCHECK_EQ(2u, region.size());
 
   auto i18n_number = std::make_unique<::i18n::phonenumbers::PhoneNumber>();
@@ -405,6 +437,9 @@ PhoneObject& PhoneObject::operator=(const PhoneObject& other) {
   }
 
   region_ = other.region_;
+  creation_region_hint_ = other.creation_region_hint_;
+  infer_country_code_from_region_hint_ =
+      other.infer_country_code_from_region_hint_;
 
   if (other.i18n_number_) {
     i18n_number_ = std::make_unique<::i18n::phonenumbers::PhoneNumber>(

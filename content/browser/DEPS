@@ -28,7 +28,6 @@ include_rules = [
   "+components/leveldb_proto/public",
   "+components/link_header_util",
   "+components/metrics",
-  "+components/metrics:single_sample_metrics",
   "+components/network_session_configurator/common",
   "+components/offline_pages/buildflags/buildflags.h",
   "+components/offline_pages/core/request_header",
@@ -93,7 +92,7 @@ include_rules = [
   # Other libraries.
   "+third_party/iaccessible2",
   "+third_party/isimpledom",
-  "+third_party/khronos",   # For enum definitions only
+  "+third_party/angle/include",   # For enum definitions only
   "+third_party/libaom/av1_buildflags.h",
   "+third_party/re2",
   "+third_party/rust/cxx",
@@ -142,7 +141,7 @@ specific_include_rules = {
   "browser_interface_binders\\.cc": [
     "+services/webnn/public/mojom/features.mojom-features.h",
   ],
-  "webnn_compiler_process_host\\.cc": [
+  "webnn_browser_host_impl\\.cc": [
     "+services/webnn/public/cpp/compiler_disconnect_reason.h",
   ],
   "browser_main_loop\\.cc": [

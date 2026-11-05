@@ -55,7 +55,7 @@ namespace remoting {
 
 namespace {
 constexpr std::int32_t kMinBitrateBps = 10485760;
-constexpr char kMinHostVersionForProtobuf[] = "155";
+constexpr char kMinHostVersionForProtobuf[] = "156";
 }
 
 RemotingClient::RemotingClient(
@@ -266,11 +266,6 @@ void RemotingClient::SetActiveDisplay(
 void RemotingClient::ControlMicrophone(
     const protocol::MicrophoneControl& control) {
   // This client implementation does not support microphone remoting.
-  NOTIMPLEMENTED();
-}
-
-void RemotingClient::DeliverTerminalControl(
-    const protocol::TerminalControl& terminal_control) {
   NOTIMPLEMENTED();
 }
 

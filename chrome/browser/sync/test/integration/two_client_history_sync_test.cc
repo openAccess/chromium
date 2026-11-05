@@ -22,9 +22,9 @@
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/signin/public/base/signin_switches.h"
-#include "components/sync/base/features.h"
 #include "components/sync/protocol/history_specifics.pb.h"
 #include "components/sync/service/sync_service_impl.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -52,14 +52,10 @@ namespace {
 
 class TestBrowsingHistoryDriver : public history::BrowsingHistoryDriver {
  public:
-  explicit TestBrowsingHistoryDriver(history::WebHistoryService* web_history)
-      : web_history_(web_history) {}
+  TestBrowsingHistoryDriver() = default;
   ~TestBrowsingHistoryDriver() override = default;
 
   bool AllowHistoryDeletions() override { return true; }
-  history::WebHistoryService* GetWebHistoryService() override {
-    return web_history_;
-  }
 
   void OnRemoveVisits(
       const std::vector<history::ExpireHistoryArgs>& expire_list) override {}
@@ -68,9 +64,6 @@ class TestBrowsingHistoryDriver : public history::BrowsingHistoryDriver {
       const syncer::SyncService* sync_service,
       history::WebHistoryService* history_service,
       base::OnceCallback<void(bool)> callback) override {}
-
- private:
-  const raw_ptr<history::WebHistoryService> web_history_;
 };
 
 class TwoClientHistorySyncTest
@@ -80,7 +73,6 @@ class TwoClientHistorySyncTest
   TwoClientHistorySyncTest() : SyncTest(TWO_CLIENT) {
     std::vector<base::test::FeatureRef> enabled_features;
     if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      enabled_features.push_back(syncer::kReplaceSyncPromosWithSignInPromos);
       enabled_features.push_back(switches::kSyncEnableBookmarksInTransportMode);
     }
     // TODO(crbug.com/40248833): Use HTTPS URLs in tests to avoid having to
@@ -319,9 +311,12 @@ IN_PROC_BROWSER_TEST_P(TwoClientHistorySyncTest, SyncsVisitsDeletion) {
                                            ServiceAccessType::EXPLICIT_ACCESS);
   history::WebHistoryService* web_history_service =
       WebHistoryServiceFactory::GetForProfile(GetProfile(0));
-  TestBrowsingHistoryDriver driver(web_history_service);
+  TestBrowsingHistoryDriver driver;
+  // No device tracker is needed as the service is not used to call
+  // `GetSyncedDevicesForFiltering`.
   history::BrowsingHistoryService browsing_history_service(
-      &driver, history_service, GetSyncService(0));
+      &driver, history_service, web_history_service, GetSyncService(0),
+      /*device_info_tracker=*/nullptr);
 
   browsing_history_service.RemoveVisits(items_to_remove);
   // Note that this API applies deletions to all matching visits on the same

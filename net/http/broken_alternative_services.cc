@@ -4,7 +4,9 @@
 
 #include "net/http/broken_alternative_services.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+#include <utility>
+
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/singleton.h"
@@ -175,8 +177,7 @@ bool BrokenAlternativeServices::IsBroken(
     const BrokenAlternativeService& broken_alternative_service) const {
   // Empty host means use host of origin, callers are supposed to substitute.
   DCHECK(!broken_alternative_service.alternative_service.host.empty());
-  return broken_alternative_service_map_.find(broken_alternative_service) !=
-         broken_alternative_service_map_.end();
+  return broken_alternative_service_map_.contains(broken_alternative_service);
 }
 
 bool BrokenAlternativeServices::IsBroken(
@@ -201,8 +202,7 @@ bool BrokenAlternativeServices::WasRecentlyBroken(
   return recently_broken_alternative_services_.Get(
              broken_alternative_service) !=
              recently_broken_alternative_services_.end() ||
-         broken_alternative_service_map_.find(broken_alternative_service) !=
-             broken_alternative_service_map_.end();
+         broken_alternative_service_map_.contains(broken_alternative_service);
 }
 
 void BrokenAlternativeServices::Confirm(
@@ -232,8 +232,9 @@ void BrokenAlternativeServices::Confirm(
 
 bool BrokenAlternativeServices::OnDefaultNetworkChanged() {
   bool changed = !broken_alternative_services_on_default_network_.empty();
-  while (!broken_alternative_services_on_default_network_.empty()) {
-    Confirm(*broken_alternative_services_on_default_network_.begin());
+  for (const auto& broken_alternative_service :
+       std::exchange(broken_alternative_services_on_default_network_, {})) {
+    Confirm(broken_alternative_service);
   }
   return changed;
 }
@@ -261,7 +262,7 @@ void BrokenAlternativeServices::SetBrokenAndRecentlyBrokenAlternativeServices(
   // Add back all existing recently broken alt svcs to cache so they're at
   // front of recency list (LRUCache::Get() does this automatically).
   for (const auto& [service, broken_count] :
-       base::Reversed(*recently_broken_alternative_services)) {
+       std::views::reverse(*recently_broken_alternative_services)) {
     if (recently_broken_alternative_services_.Get(service) ==
         recently_broken_alternative_services_.end()) {
       recently_broken_alternative_services_.Put(service, broken_count);
@@ -281,9 +282,10 @@ void BrokenAlternativeServices::SetBrokenAndRecentlyBrokenAlternativeServices(
   auto list_it = broken_alternative_service_list_.begin();
   for (size_t i = 0; i < num_broken_alt_svcs_added; ++i) {
     const BrokenAlternativeService& broken_alternative_service = list_it->first;
-    auto map_it =
-        broken_alternative_service_map_.find(broken_alternative_service);
-    if (map_it != broken_alternative_service_map_.end()) {
+
+    auto [map_it, inserted] = broken_alternative_service_map_.try_emplace(
+        broken_alternative_service, list_it);
+    if (!inserted) {
       // Implies this entry already exists somewhere else in
       // |broken_alternative_service_list_|. Remove the existing entry from
       // |broken_alternative_service_list_|, and update the
@@ -292,9 +294,6 @@ void BrokenAlternativeServices::SetBrokenAndRecentlyBrokenAlternativeServices(
       auto list_existing_entry_it = map_it->second;
       broken_alternative_service_list_.erase(list_existing_entry_it);
       map_it->second = list_it;
-    } else {
-      broken_alternative_service_map_.emplace(broken_alternative_service,
-                                              list_it);
     }
 
     if (recently_broken_alternative_services_.Peek(
@@ -356,10 +355,9 @@ bool BrokenAlternativeServices::AddToBrokenListAndMap(
     BrokenAlternativeServiceList::iterator* it) {
   DCHECK(it);
 
-  auto map_it =
-      broken_alternative_service_map_.find(broken_alternative_service);
-  if (map_it != broken_alternative_service_map_.end())
+  if (broken_alternative_service_map_.contains(broken_alternative_service)) {
     return false;
+  }
 
   // Iterate from end of |broken_alternative_service_list_| to find where to
   // insert it to keep the list sorted by expiration time.

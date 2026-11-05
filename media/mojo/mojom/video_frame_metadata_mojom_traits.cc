@@ -12,6 +12,7 @@
 #include "build/build_config.h"
 #include "media/base/capture_version.h"
 #include "mojo/public/cpp/base/time_mojom_traits.h"
+#include "mojo/public/cpp/base/token_mojom_traits.h"
 #include "mojo/public/cpp/base/unguessable_token_mojom_traits.h"
 
 namespace {
@@ -79,25 +80,35 @@ bool StructTraits<media::mojom::CaptureVersionDataView, media::CaptureVersion>::
 }
 
 // static
+bool StructTraits<
+    media::mojom::CaptureMetadataDataView,
+    media::CaptureMetadata>::Read(media::mojom::CaptureMetadataDataView input,
+                                  media::CaptureMetadata* output) {
+  output->counter = input.counter();
+  return input.ReadUpdateRect(&output->update_rect) &&
+         input.ReadSourceSize(&output->source_size) &&
+         input.ReadRegionCaptureRect(&output->region_capture_rect) &&
+         input.ReadRegionCaptureBounds(&output->region_capture_bounds) &&
+         input.ReadVersion(&output->version);
+}
+
+// static
 bool StructTraits<media::mojom::VideoFrameMetadataDataView,
                   media::VideoFrameMetadata>::
     Read(media::mojom::VideoFrameMetadataDataView input,
          media::VideoFrameMetadata* output) {
   // int.
-  output->capture_counter = input.capture_counter();
   output->frame_sequence = input.frame_sequence();
   output->source_id = input.source_id();
   output->background_blur = FromMojom(input.background_blur());
 
   // bool.
-  output->copy_required = input.copy_required();
   output->end_of_stream = input.end_of_stream();
   output->in_surface_view = input.in_surface_view();
   output->wants_promotion_hint = input.wants_promotion_hint();
   output->protected_video = input.protected_video();
   output->hw_protected = input.hw_protected();
   output->needs_detiling = input.needs_detiling();
-  output->is_webgpu_compatible = input.is_webgpu_compatible();
   output->power_efficient = input.power_efficient();
   output->read_lock_fences_enabled = input.read_lock_fences_enabled();
   output->interactive_content = input.interactive_content();
@@ -111,14 +122,14 @@ bool StructTraits<media::mojom::VideoFrameMetadataDataView,
   output->frame_rate = input.frame_rate();
   output->rtp_timestamp = input.rtp_timestamp();
 
+  if (!input.ReadCapture(&output->capture)) {
+    return false;
+  }
+
   READ_AND_ASSIGN_OPT(media::VideoTransformation, transformation,
                       Transformation);
 
   READ_AND_ASSIGN_OPT(base::UnguessableToken, tracking_token, TrackingToken);
-
-  READ_AND_ASSIGN_OPT(gfx::Size, source_size, SourceSize);
-  READ_AND_ASSIGN_OPT(gfx::Rect, capture_update_rect, CaptureUpdateRect);
-  READ_AND_ASSIGN_OPT(gfx::Rect, region_capture_rect, RegionCaptureRect);
 
   READ_AND_ASSIGN_OPT(base::TimeTicks, receive_time, ReceiveTime);
   READ_AND_ASSIGN_OPT(base::TimeTicks, capture_begin_time, CaptureBeginTime);
@@ -135,10 +146,6 @@ bool StructTraits<media::mojom::VideoFrameMetadataDataView,
 #if BUILDFLAG(IS_ANDROID)
   READ_AND_ASSIGN_OPT(gpu::VulkanYCbCrInfo, ycbcr_info, YcbcrInfo);
 #endif
-
-  if (!input.ReadCaptureVersion(&output->capture_version)) {
-    return false;
-  }
 
   return true;
 }

@@ -4,12 +4,12 @@
 
 #include "chrome/browser/ui/webui/ash/settings/pages/device/device_section.h"
 
+#include <optional>
+
 #include "ash/constants/ash_pref_names.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/ash/input_method/input_method_configuration.h"
 #include "chrome/browser/ash/printing/fake_cups_printers_manager.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/settings/os_settings_identifier.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
 #include "chrome/grit/generated_resources.h"
@@ -20,8 +20,11 @@
 #include "components/prefs/testing_pref_service.h"
 #include "components/spellcheck/browser/pref_names.h"
 #include "content/public/test/browser_task_environment.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ime/ash/mock_input_method_manager_impl.h"
+#include "ui/base/ime/ash/scoped_input_method_manager_for_testing.h"
 
 namespace ash::settings {
 
@@ -79,14 +82,15 @@ class DeviceSectionTest : public testing::Test {
 
  protected:
   void SetUp() override {
+    TestingBrowserProcess::GetGlobal()->SetSharedURLLoaderFactory(
+        test_url_loader_factory_.GetSafeWeakWrapper());
     profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(profile_manager_->SetUp());
     profile_ = profile_manager_->CreateTestingProfile("name");
 
     // Mock Input method manager and register prefs for Inputs settings
-    input_method::InitializeForTesting(
-        new input_method::MockInputMethodManagerImpl());
+    input_method_manager_.emplace();
     pref_service_.registry()->RegisterBooleanPref(
         prefs::kEmojiSuggestionEnterpriseAllowed, true);
     pref_service_.registry()->RegisterBooleanPref(
@@ -97,10 +101,11 @@ class DeviceSectionTest : public testing::Test {
     // Ensure `device_section_` is destroyed before `pref_service_`.
     device_section_.reset();
 
-    input_method::Shutdown();
+    input_method_manager_.reset();
 
     profile_ = nullptr;
     profile_manager_->DeleteTestingProfile("name");
+    TestingBrowserProcess::GetGlobal()->SetSharedURLLoaderFactory(nullptr);
   }
 
   TestingProfile* profile() { return profile_; }
@@ -114,10 +119,14 @@ class DeviceSectionTest : public testing::Test {
 
  private:
   content::BrowserTaskEnvironment task_environment_;
+  network::TestURLLoaderFactory test_url_loader_factory_;
   std::unique_ptr<ash::local_search_service::LocalSearchServiceProxy>
       local_search_service_proxy_;
   ash::settings::SearchTagRegistry search_tag_registry_;
   TestingPrefServiceSimple pref_service_;
+  std::optional<input_method::ScopedInputMethodManagerForTesting<
+      input_method::MockInputMethodManagerImpl>>
+      input_method_manager_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
   raw_ptr<TestingProfile> profile_;
   FakeCupsPrintersManager printers_manager_;
@@ -126,6 +135,7 @@ class DeviceSectionTest : public testing::Test {
 // Verify registry updated with Audio search tags.
 TEST_F(DeviceSectionTest, SearchResultIncludeAudio) {
   device_section_ = std::make_unique<DeviceSection>(
+      TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
       profile(), search_tag_registry(), printers_manager(), pref_service());
 
   std::string result_id = GetSubpageSearchResultId(
@@ -136,6 +146,7 @@ TEST_F(DeviceSectionTest, SearchResultIncludeAudio) {
 // Verify registry updated with Printing search tags.
 TEST_F(DeviceSectionTest, SearchResultIncludePrinting) {
   device_section_ = std::make_unique<DeviceSection>(
+      TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
       profile(), search_tag_registry(), printers_manager(), pref_service());
 
   std::string add_printer_result_id = GetSettingsSearchResultId(
@@ -158,6 +169,7 @@ TEST_F(DeviceSectionTest, SearchResultIncludePrinting) {
 // enabled.
 TEST_F(DeviceSectionTest, SearchResultChangeToSettingsSplitWithFlag) {
   device_section_ = std::make_unique<DeviceSection>(
+      TestingBrowserProcess::GetGlobal()->shared_url_loader_factory(),
       profile(), search_tag_registry(), printers_manager(), pref_service());
 
   std::string result_id = GetSubpageSearchResultId(

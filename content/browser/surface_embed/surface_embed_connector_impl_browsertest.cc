@@ -13,6 +13,7 @@
 #include "cc/input/touch_action.h"
 #include "cc/trees/render_frame_metadata.h"
 #include "components/input/cursor_manager.h"
+#include "components/viz/common/surfaces/local_surface_id.h"
 #include "content/browser/compositor/surface_utils.h"
 #include "content/browser/pointer_lock_browsertest.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
@@ -192,7 +193,10 @@ class SurfaceEmbedConnectorImplBrowserTest : public ContentBrowserTest {
   // invalidates the WeakPtr and crashes the test's mock delegate.
   ConnectorTestContext SetupConnectorTest(
       MockSurfaceEmbedConnectorDelegate* delegate,
-      bool navigate_child_before_attach = false) {
+      bool navigate_child_before_attach = false,
+      SurfaceEmbedConnector::PinchGestureMode pinch_gesture_mode =
+          SurfaceEmbedConnector::PinchGestureMode::
+              kDelegateToParentWebContents) {
     ConnectorTestContext context;
 
     context.parent_shell =
@@ -221,7 +225,8 @@ class SurfaceEmbedConnectorImplBrowserTest : public ContentBrowserTest {
         .Times(1);
     SurfaceEmbedConnector::Attach(
         child_web_contents_impl,
-        parent_web_contents_impl->GetPrimaryMainFrame(), delegate);
+        parent_web_contents_impl->GetPrimaryMainFrame(), delegate,
+        pinch_gesture_mode);
     testing::Mock::VerifyAndClearExpectations(delegate);
 
     context.connector = static_cast<SurfaceEmbedConnectorImpl*>(
@@ -333,6 +338,33 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest, Detach) {
             content::Visibility::HIDDEN);
 }
 
+// An occluded embedder should make the child occluded, not hidden.
+IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,
+                       OccludedEmbedderOccludesChild) {
+  MockSurfaceEmbedConnectorDelegate delegate;
+  auto context = SetupConnectorTest(&delegate);
+  auto* connector = context.connector.get();
+
+  connector->OnVisibilityChanged(
+      blink::mojom::FrameVisibility::kRenderedInViewport);
+  EXPECT_EQ(context.child_web_contents->GetVisibility(), Visibility::VISIBLE);
+
+  context.parent_web_contents->WasOccluded();
+  EXPECT_EQ(context.child_web_contents->GetVisibility(), Visibility::OCCLUDED);
+
+  context.parent_web_contents->WasShown();
+  EXPECT_EQ(context.child_web_contents->GetVisibility(), Visibility::VISIBLE);
+
+  context.parent_web_contents->WasHidden();
+  EXPECT_EQ(context.child_web_contents->GetVisibility(), Visibility::HIDDEN);
+
+  // A not-rendered <embed> stays hidden even when the embedder is occluded.
+  context.parent_web_contents->WasShown();
+  connector->OnVisibilityChanged(blink::mojom::FrameVisibility::kNotRendered);
+  context.parent_web_contents->WasOccluded();
+  EXPECT_EQ(context.child_web_contents->GetVisibility(), Visibility::HIDDEN);
+}
+
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest, Attach) {
   MockSurfaceEmbedConnectorDelegate delegate;
   auto context = SetupConnectorTest(&delegate);
@@ -425,7 +457,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,
   EXPECT_FALSE(connector->IsSubtreeThrottled());
   EXPECT_FALSE(connector->IsDisplayLocked());
 
-  connector->DidUpdateVisualProperties(cc::RenderFrameMetadata());  // void
+  connector->DidUpdateChildLocalSurfaceId(viz::LocalSurfaceId());   // void
   connector->SetVisibilityForChildViews(true);                      // void
 
   // Test updating local frame size separately.
@@ -652,6 +684,55 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,
+                       PinchZoomTargetDefaultsToParent) {
+  MockSurfaceEmbedConnectorDelegate delegate;
+  auto context = SetupConnectorTest(&delegate);
+
+  EXPECT_EQ(
+      SurfaceEmbedConnector::PinchGestureMode::kDelegateToParentWebContents,
+      context.connector->GetPinchGestureModeForTesting());
+  EXPECT_EQ(
+      context.connector->GetParentRenderWidgetHostView()->GetPinchZoomTarget(),
+      context.connector->GetPinchZoomTarget());
+}
+
+IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,
+                       PinchZoomCanTargetChild) {
+  MockSurfaceEmbedConnectorDelegate delegate;
+  auto context = SetupConnectorTest(
+      &delegate, /*navigate_child_before_attach=*/false,
+      SurfaceEmbedConnector::PinchGestureMode::kScaleChildWebContents);
+
+  EXPECT_EQ(SurfaceEmbedConnector::PinchGestureMode::kScaleChildWebContents,
+            context.connector->GetPinchGestureModeForTesting());
+  EXPECT_EQ(context.rwhvcf, context.connector->GetPinchZoomTarget());
+}
+
+IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,
+                       PinchZoomModeCanBeUpdated) {
+  MockSurfaceEmbedConnectorDelegate delegate;
+  auto context = SetupConnectorTest(&delegate);
+  auto* connector = context.connector.get();
+  auto* parent_zoom_target =
+      connector->GetParentRenderWidgetHostView()->GetPinchZoomTarget();
+
+  EXPECT_EQ(parent_zoom_target, connector->GetPinchZoomTarget());
+
+  connector->SetPinchGestureMode(
+      SurfaceEmbedConnector::PinchGestureMode::kScaleChildWebContents);
+  EXPECT_EQ(SurfaceEmbedConnector::PinchGestureMode::kScaleChildWebContents,
+            connector->GetPinchGestureModeForTesting());
+  EXPECT_EQ(context.rwhvcf, connector->GetPinchZoomTarget());
+
+  connector->SetPinchGestureMode(
+      SurfaceEmbedConnector::PinchGestureMode::kDelegateToParentWebContents);
+  EXPECT_EQ(
+      SurfaceEmbedConnector::PinchGestureMode::kDelegateToParentWebContents,
+      connector->GetPinchGestureModeForTesting());
+  EXPECT_EQ(parent_zoom_target, connector->GetPinchZoomTarget());
+}
+
+IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,
                        PropagateLocalSurfaceId) {
   MockSurfaceEmbedConnectorDelegate delegate;
   auto context = SetupConnectorTest(&delegate);
@@ -667,7 +748,8 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,
   // SurfaceEmbedConnectorImpl inherits from
   // FrameConnector so we can call
   // DidUpdateVisualProperties directly.
-  context.connector->DidUpdateVisualProperties(metadata);
+  context.connector->DidUpdateChildLocalSurfaceId(
+      metadata.local_surface_id.value());
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,
@@ -709,6 +791,46 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,
             grandparent_impl->GetRenderWidgetHostView());
   EXPECT_EQ(child_connector->GetParentRenderWidgetHostView(),
             parent_impl->GetRenderWidgetHostView());
+}
+
+IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,
+                       PinchZoomTargetDelegatesToOptedInParent) {
+  MockSurfaceEmbedConnectorDelegate child_delegate;
+  MockSurfaceEmbedConnectorDelegate parent_delegate;
+
+  WebContents::CreateParams create_params(
+      GetParentWebContents()->GetBrowserContext());
+  std::unique_ptr<WebContents> grandparent_web_contents =
+      WebContents::Create(create_params);
+  auto* grandparent_impl =
+      static_cast<WebContentsImpl*>(grandparent_web_contents.get());
+  ASSERT_TRUE(NavigateToURL(grandparent_impl, GURL("about:blank")));
+
+  std::unique_ptr<WebContents> parent_web_contents =
+      WebContents::Create(create_params);
+  auto* parent_impl = static_cast<WebContentsImpl*>(parent_web_contents.get());
+  SurfaceEmbedConnector::Attach(
+      parent_impl, grandparent_impl->GetPrimaryMainFrame(), &parent_delegate,
+      SurfaceEmbedConnector::PinchGestureMode::kScaleChildWebContents);
+  auto* parent_connector = static_cast<SurfaceEmbedConnectorImpl*>(
+      parent_impl->GetSurfaceEmbedConnector());
+
+  std::unique_ptr<WebContents> child_web_contents =
+      WebContents::Create(create_params);
+  auto* child_impl = static_cast<WebContentsImpl*>(child_web_contents.get());
+  ASSERT_TRUE(NavigateToURL(parent_impl, GURL("about:blank")));
+  SurfaceEmbedConnector::Attach(child_impl, parent_impl->GetPrimaryMainFrame(),
+                                &child_delegate);
+  auto* child_connector = static_cast<SurfaceEmbedConnectorImpl*>(
+      child_impl->GetSurfaceEmbedConnector());
+
+  EXPECT_EQ(SurfaceEmbedConnector::PinchGestureMode::kScaleChildWebContents,
+            parent_connector->GetPinchGestureModeForTesting());
+  EXPECT_EQ(
+      SurfaceEmbedConnector::PinchGestureMode::kDelegateToParentWebContents,
+      child_connector->GetPinchGestureModeForTesting());
+  ASSERT_TRUE(GetView(parent_connector));
+  EXPECT_EQ(GetView(parent_connector), child_connector->GetPinchZoomTarget());
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorImplBrowserTest,

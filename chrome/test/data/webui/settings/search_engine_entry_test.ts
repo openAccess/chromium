@@ -5,6 +5,7 @@
 // clang-format off
 import 'chrome://settings/lazy_load.js';
 
+import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import type {SettingsOmniboxExtensionEntryElement, SettingsSearchEngineEntryElement} from 'chrome://settings/lazy_load.js';
 import type {SearchEngine, CrActionMenuElement} from 'chrome://settings/settings.js';
 import {ExtensionControlBrowserProxyImpl, PrefsBrowserProxy, PrefService, SearchEnginesBrowserProxyImpl, ChoiceMadeLocation, SearchEnginesInteractions} from 'chrome://settings/settings.js';
@@ -14,7 +15,7 @@ import {loadTimeData} from 'chrome://settings/settings.js';
 
 import {TestExtensionControlBrowserProxy} from './test_extension_control_browser_proxy.js';
 import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
-import {createSampleOmniboxExtension, createSampleSearchEngine, TestSearchEnginesBrowserProxy} from './test_search_engines_browser_proxy.js';
+import {createSampleOmniboxExtension, createSampleSearchEngine, engineId, TestSearchEnginesBrowserProxy} from './test_search_engines_browser_proxy.js';
 // clang-format on
 
 function getInitialPrefs(): chrome.settingsPrivate.PrefObject[] {
@@ -168,7 +169,7 @@ suite('SearchEngineEntryTest', function() {
   test('Edit_Enabled', async function() {
     const engine = entry.engine;
     const editButton =
-        entry.shadowRoot.querySelector<HTMLButtonElement>(`#editIconButton`)!;
+        entry.shadowRoot.querySelector<HTMLButtonElement>('#editIconButton')!;
     assertTrue(isVisible(editButton));
 
     const promise = eventToPromise<ViewOrEditSearchEngineEvent>(
@@ -299,6 +300,38 @@ suite('SearchEngineEntryTest', function() {
             'searchEnginesMoreActionsAriaLabel', entry.engine.displayName),
         menuButton.ariaLabel);
   });
+
+  // Test that the extension controlled indicator only offers to turn off the
+  // extension when it can be disabled (e.g. not force-installed by policy).
+  test('ExtensionIndicatorCanBeDisabled', async function() {
+    const extension = {
+      id: 'dummyId',
+      name: 'dummyName',
+      canBeDisabled: false,
+      icon: 'chrome://extension-icon/some-extension-icon',
+    };
+    function getIndicator() {
+      const indicator =
+          entry.shadowRoot.querySelector('extension-controlled-indicator');
+      assertTrue(!!indicator);
+      return indicator;
+    }
+
+    entry.engine = createSampleSearchEngine({extension});
+    await microtasksFinished();
+    flush();
+    let indicator = getIndicator();
+    assertFalse(indicator.hasAttribute('extension-can-be-disabled'));
+    assertFalse(!!indicator.shadowRoot.querySelector('#disable'));
+
+    entry.engine = createSampleSearchEngine(
+        {extension: {...extension, canBeDisabled: true}});
+    await microtasksFinished();
+    flush();
+    indicator = getIndicator();
+    assertTrue(indicator.hasAttribute('extension-can-be-disabled'));
+    assertTrue(!!indicator.shadowRoot.querySelector('#disable'));
+  });
 });
 
 suite('OmniboxExtensionEntryTest', function() {
@@ -347,7 +380,7 @@ suite('EnterpriseSiteSearchEntryTests', function() {
    */
   const createSampleManagedSearchEngine = (): SearchEngine => {
     return createSampleSearchEngine({
-      id: 1,
+      id: engineId('db:1'),
       name: 'managed',
       canBeEdited: false,
       displayName: 'Managed',
@@ -361,7 +394,7 @@ suite('EnterpriseSiteSearchEntryTests', function() {
   const createSampleOverridableSearchEngine =
       (isFeatured: boolean): SearchEngine => {
         return createSampleSearchEngine({
-          id: 1,
+          id: engineId('db:1'),
           name: 'recommended',
           canBeEdited: !isFeatured,
           canBeRemoved: !isFeatured,
@@ -460,7 +493,7 @@ suite('EnterpriseSiteSearchEntryTests', function() {
     await microtasksFinished();
     const engineUnfeatured = entry.engine;
     const editButton =
-        entry.shadowRoot.querySelector<HTMLButtonElement>(`#editIconButton`)!;
+        entry.shadowRoot.querySelector<HTMLButtonElement>('#editIconButton')!;
     assertTrue(isVisible(editButton));
 
     const whenFired = eventToPromise<ViewOrEditSearchEngineEvent>(
@@ -577,7 +610,7 @@ suite('EnterpriseSiteSearchEntryTests', function() {
         const managedEngine = entry.engine;
         const viewDetailsButton =
             entry.shadowRoot.querySelector<HTMLButtonElement>(
-                `#viewDetailsButton`)!;
+                '#viewDetailsButton')!;
         assertTrue(isVisible(viewDetailsButton));
 
         const whenFired = eventToPromise<ViewOrEditSearchEngineEvent>(

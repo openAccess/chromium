@@ -7,6 +7,7 @@
 #include "base/logging.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/views/widget/widget.h"
 
 CredentialProviderWebDialogViewWithModal::
@@ -72,12 +73,12 @@ CredentialProviderWebDialogViewWithModal::CreateCustomWebContents(
     const GURL& opener_url,
     const std::string& frame_name,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     const content::StoragePartitionConfig& partition_config,
-    content::SessionStorageNamespace* session_storage_namespace) {
-  VLOG(0) << "Suppressed window creation for  " << target_url.GetHost()
-          << target_url.GetPath();
+    content::SessionStorageNamespaceHandle* session_storage_namespace) {
+  VLOG(0) << "Suppressed window creation for  " << target_url.host()
+          << target_url.path();
   return nullptr;
 }
 

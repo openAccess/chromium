@@ -48,8 +48,12 @@ std::vector<SurfaceRange> empty_surface_ranges() {
   return std::vector<SurfaceRange>();
 }
 
+// Templated on `T` (defaulting to `SurfaceId`) to accept both
+// `std::vector<SurfaceId>` (e.g. from `empty_surface_ids()` or initializer
+// lists) and `std::vector<SurfaceIdAndDeadline>` for per-dependency deadlines.
+template <typename T = SurfaceId>
 CompositorFrame MakeCompositorFrame(
-    std::vector<SurfaceId> activation_dependencies,
+    std::vector<T> activation_dependencies,
     std::vector<SurfaceRange> referenced_surfaces,
     std::vector<TransferableResource> resource_list,
     const FrameDeadline& deadline = FrameDeadline(),
@@ -759,7 +763,7 @@ TEST_F(SurfaceSynchronizationTest, ResourcesOnlyReturnedOnce) {
   // the child submits a CompositorFrame. The CompositorFrame also has
   // resources in its resource list.
   auto shared_image = gpu::ClientSharedImage::CreateForTesting(
-      {SinglePlaneFormat::kALPHA_8, gfx::Size(1234, 5678), gfx::ColorSpace(),
+      {SinglePlaneFormat::kRGBA_8888, gfx::Size(1234, 5678), gfx::ColorSpace(),
        kTopLeft_GrSurfaceOrigin, kPremul_SkAlphaType,
        gpu::SHARED_IMAGE_USAGE_DISPLAY_READ});
   TransferableResource resource = TransferableResource::Make(
@@ -1944,6 +1948,213 @@ TEST_F(SurfaceSynchronizationTest, IndependentDeadlines) {
   EXPECT_FALSE(child_surface2()->has_deadline());
   EXPECT_FALSE(child_surface2()->HasPendingFrame());
   EXPECT_TRUE(child_surface2()->HasActiveFrame());
+}
+
+// This test verifies that we can define different deadlines for the
+// dependencies and that their deadlines are tracked independently.
+TEST_F(SurfaceSynchronizationTest, PerDependencyDeadlines) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kPerDependencyDeadlines);
+
+  const SurfaceId parent_id = MakeSurfaceId(kParentFrameSink, 1);
+  const SurfaceId child_id_long = MakeSurfaceId(kChildFrameSink1, 1);
+  const SurfaceId child_id_short = MakeSurfaceId(kChildFrameSink2, 1);
+
+  // Submit compositor frame for parent blocking on A and B.
+  // A has a deadline of 100 frames.
+  // B has a deadline of 3 frames.
+  CompositorFrame parent_frame = MakeCompositorFrame(
+      std::vector<SurfaceIdAndDeadline>{{child_id_long, 100u},
+                                        {child_id_short, 3u}},
+      empty_surface_ranges(), std::vector<TransferableResource>(),
+      MakeDeadline(100u));
+
+  parent_support().SubmitCompositorFrame(parent_id.local_surface_id(),
+                                         std::move(parent_frame));
+
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+  EXPECT_FALSE(parent_surface()->HasActiveFrame());
+
+  // Frame 1 passes. Both should still block.
+  SendNextBeginFrame();
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+
+  // Frame 2 passes. Both should still block.
+  SendNextBeginFrame();
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+
+  // Frame 3 passes. Child B's deadline (3 frames) has passed.
+  // Child A (100 frames deadline) is not active and hasn't passed, so parent
+  // is still pending.
+  SendNextBeginFrame();
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+
+  // Now submit child_id_long frame. This satisfies Child A.
+  // Child B's deadline has already passed, but deadline expiration is evaluated
+  // on BeginFrame. So the parent remains pending until the next BeginFrame.
+  child_support1().SubmitCompositorFrame(
+      child_id_long.local_surface_id(),
+      MakeDefaultInteractiveCompositorFrame(kBeginFrameSourceId));
+
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+  EXPECT_FALSE(parent_surface()->HasActiveFrame());
+
+  // Next BeginFrame triggers deadline expiration and activates the parent.
+  SendNextBeginFrame();
+
+  EXPECT_FALSE(parent_surface()->HasPendingFrame());
+  EXPECT_TRUE(parent_surface()->HasActiveFrame());
+}
+
+// This test verifies that if Child B's deadline has passed, but the parent is
+// still waiting for Child A, a subsequent submission by B before A resolves is
+// still correctly integrated when the parent eventually activates.
+TEST_F(SurfaceSynchronizationTest,
+       DeadlinePassedDependencySubmitsBeforeActivation) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kPerDependencyDeadlines);
+
+  const SurfaceId parent_id = MakeSurfaceId(kParentFrameSink, 1);
+  const SurfaceId child_id_long = MakeSurfaceId(kChildFrameSink1, 1);
+  const SurfaceId child_id_short = MakeSurfaceId(kChildFrameSink2, 1);
+
+  // Parent blocks on both children.
+  // A (long): 100 frames.
+  // B (short): 3 frames.
+  CompositorFrame parent_frame = MakeCompositorFrame(
+      std::vector<SurfaceIdAndDeadline>{{child_id_long, 100u},
+                                        {child_id_short, 3u}},
+      empty_surface_ranges(), std::vector<TransferableResource>(),
+      MakeDeadline(100u));
+
+  parent_support().SubmitCompositorFrame(parent_id.local_surface_id(),
+                                         std::move(parent_frame));
+
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+  EXPECT_FALSE(parent_surface()->HasActiveFrame());
+
+  // Step 3 frames. Child B's deadline has passed. Parent remains pending
+  // because of Child A.
+  SendNextBeginFrame();
+  SendNextBeginFrame();
+  SendNextBeginFrame();
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+
+  // Child B submits a new frame at frame 5.
+  child_support2().SubmitCompositorFrame(
+      child_id_short.local_surface_id(),
+      MakeDefaultInteractiveCompositorFrame(kBeginFrameSourceId));
+
+  // Since B submitted, B has an active frame.
+  EXPECT_TRUE(child_surface2()->HasActiveFrame());
+
+  // Parent is still pending since A hasn't submitted yet.
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+
+  // Child A submits its new frame at frame 6.
+  child_support1().SubmitCompositorFrame(
+      child_id_long.local_surface_id(),
+      MakeDefaultInteractiveCompositorFrame(kBeginFrameSourceId));
+
+  // Since A is resolved, the parent activates now!
+  EXPECT_FALSE(parent_surface()->HasPendingFrame());
+  EXPECT_TRUE(parent_surface()->HasActiveFrame());
+
+  // Verify that both child surfaces have active frames correctly.
+  EXPECT_TRUE(child_surface1()->HasActiveFrame());
+  EXPECT_TRUE(child_surface2()->HasActiveFrame());
+}
+
+// This test verifies that if multiple dependencies have different deadlines,
+// the parent activates when the longest deadline expires even if no child
+// submits.
+TEST_F(SurfaceSynchronizationTest,
+       AllPerDependencyDeadlinesExpireActivatesParent) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kPerDependencyDeadlines);
+
+  const SurfaceId parent_id = MakeSurfaceId(kParentFrameSink, 1);
+  const SurfaceId child_id_long = MakeSurfaceId(kChildFrameSink1, 1);
+  const SurfaceId child_id_short = MakeSurfaceId(kChildFrameSink2, 1);
+
+  // Parent blocks on both children:
+  // A: 5 frames.
+  // B: 2 frames.
+  CompositorFrame parent_frame = MakeCompositorFrame(
+      std::vector<SurfaceIdAndDeadline>{{child_id_long, 5u},
+                                        {child_id_short, 2u}},
+      empty_surface_ranges(), std::vector<TransferableResource>(),
+      MakeDeadline(5u));
+
+  parent_support().SubmitCompositorFrame(parent_id.local_surface_id(),
+                                         std::move(parent_frame));
+
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+  EXPECT_FALSE(parent_surface()->HasActiveFrame());
+
+  // Frame 1: both pending.
+  SendNextBeginFrame();
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+
+  // Frame 2: B's deadline (2) expires, but A (5) is still pending.
+  SendNextBeginFrame();
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+
+  // Frame 3 & 4: still pending.
+  SendNextBeginFrame();
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+  SendNextBeginFrame();
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+
+  // Frame 5: A's deadline (5) expires. Now all dependencies have passed
+  // deadline, so parent activates!
+  SendNextBeginFrame();
+  EXPECT_FALSE(parent_surface()->HasPendingFrame());
+  EXPECT_TRUE(parent_surface()->HasActiveFrame());
+}
+
+// This test verifies that the global deadline is ignored when
+// kPerDependencyDeadlines is enabled, and the parent only activates when the
+// dependency's deadline passes.
+TEST_F(SurfaceSynchronizationTest,
+       GlobalDeadlineIgnoredWithPerDependencyDeadlines) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kPerDependencyDeadlines);
+
+  const SurfaceId parent_id = MakeSurfaceId(kParentFrameSink, 1);
+  const SurfaceId child_id_long = MakeSurfaceId(kChildFrameSink1, 1);
+
+  // Parent has an explicit global deadline of 2 frames (use_default_lower_bound
+  // = false), but the dependency has a deadline of 4 frames.
+  CompositorFrame parent_frame = MakeCompositorFrame(
+      std::vector<SurfaceIdAndDeadline>{{child_id_long, 4u}},
+      empty_surface_ranges(), std::vector<TransferableResource>(),
+      FrameDeadline(Now(), 2u, BeginFrameArgs::DefaultInterval(), false));
+
+  parent_support().SubmitCompositorFrame(parent_id.local_surface_id(),
+                                         std::move(parent_frame));
+
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+  EXPECT_FALSE(parent_surface()->HasActiveFrame());
+
+  // Frame 1: parent is still pending.
+  SendNextBeginFrame();
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+
+  // Frame 2: global deadline (2 frames) passes, but is ignored. Parent
+  // remains pending.
+  SendNextBeginFrame();
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+  EXPECT_FALSE(parent_surface()->HasActiveFrame());
+
+  // Frame 3: still pending.
+  SendNextBeginFrame();
+  EXPECT_TRUE(parent_surface()->HasPendingFrame());
+
+  // Frame 4: child dependency deadline (4 frames) passes. Parent activates.
+  SendNextBeginFrame();
+  EXPECT_FALSE(parent_surface()->HasPendingFrame());
+  EXPECT_TRUE(parent_surface()->HasActiveFrame());
 }
 
 // This test verifies that a child inherits its deadline from its dependent
@@ -3800,6 +4011,236 @@ TEST_F(SurfaceSynchronizationTest,
   // Since we are blocking our embedder, we should have been ACKed to allow for
   // frame production to begin on the new dependency.
   EXPECT_FALSE(child_surface1()->HasUnackedActiveFrame());
+}
+
+// Tests that a child active at an older parent sequence number does not satisfy
+// an active embedder referencing a newer one, until a covering surface arrives.
+TEST_F(SurfaceSynchronizationTest,
+       ActiveEmbedderAwaitsSurfaceWithNewerParentSequenceNumber) {
+  const SurfaceId parent_id = MakeSurfaceId(kParentFrameSink, 1, 1);
+  child_support1().SubmitCompositorFrame(
+      MakeSurfaceId(kChildFrameSink1, 6, 2).local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+  parent_support().SubmitCompositorFrame(
+      parent_id.local_surface_id(),
+      MakeCompositorFrame(
+          empty_surface_ids(),
+          {SurfaceRange(std::nullopt, MakeSurfaceId(kChildFrameSink1, 7, 1))},
+          {}));
+  EXPECT_TRUE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+
+  // (7, 2) covers (7, 1).
+  child_support1().SubmitCompositorFrame(
+      MakeSurfaceId(kChildFrameSink1, 7, 2).local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+  EXPECT_FALSE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+}
+
+// Tests that an active embedder referencing a surface in a new embed-token
+// allocation group with no active surfaces is awaited.
+TEST_F(SurfaceSynchronizationTest,
+       ActiveEmbedderAwaitsSurfaceInNewAllocationGroup) {
+  const SurfaceId parent_id = MakeSurfaceId(kParentFrameSink, 1, 1);
+  // Child is active in token group A.
+  child_support1().SubmitCompositorFrame(
+      MakeSurfaceId(kChildFrameSink1, 1, 1).local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+
+  // Parent references a surface with a newly generated embed token B.
+  const SurfaceId child_new_token_id(
+      kChildFrameSink1, LocalSurfaceId(1, base::UnguessableToken::Create()));
+  parent_support().SubmitCompositorFrame(
+      parent_id.local_surface_id(),
+      MakeCompositorFrame(empty_surface_ids(),
+                          {SurfaceRange(std::nullopt, child_new_token_id)},
+                          {}));
+  EXPECT_TRUE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+
+  // Submitting the awaited surface activates it and satisfies the embedder.
+  child_support1().SubmitCompositorFrame(
+      child_new_token_id.local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+  EXPECT_FALSE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+}
+
+// Tests that when an active embedder stops referencing a child surface,
+// the child is no longer considered awaited.
+TEST_F(SurfaceSynchronizationTest, ActiveEmbedderStopsReferencingChildSurface) {
+  const SurfaceId parent_id = MakeSurfaceId(kParentFrameSink, 1, 1);
+  child_support1().SubmitCompositorFrame(
+      MakeSurfaceId(kChildFrameSink1, 1, 1).local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+  parent_support().SubmitCompositorFrame(
+      parent_id.local_surface_id(),
+      MakeCompositorFrame(
+          empty_surface_ids(),
+          {SurfaceRange(std::nullopt, MakeSurfaceId(kChildFrameSink1, 2, 1))},
+          {}));
+  EXPECT_TRUE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+
+  // Parent submits a new frame to the same surface without referencing the
+  // child.
+  parent_support().SubmitCompositorFrame(
+      parent_id.local_surface_id(),
+      MakeCompositorFrame(empty_surface_ids(), empty_surface_ranges(), {}));
+  EXPECT_FALSE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+}
+
+// Tests that a newer reference from one embedder doesn't keep the child awaited
+// after that embedder stops referencing it, while another embedder's reference
+// is covered.
+TEST_F(SurfaceSynchronizationTest,
+       ActiveEmbedderAwaitEndsWhenOtherEmbedderDropsNewerReference) {
+  const SurfaceId display_id = MakeSurfaceId(kDisplayFrameSink, 1, 1);
+  const SurfaceId parent_id = MakeSurfaceId(kParentFrameSink, 1, 1);
+  const SurfaceId child_id = MakeSurfaceId(kChildFrameSink1, 6, 1);
+  child_support1().SubmitCompositorFrame(
+      child_id.local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+  display_support().SubmitCompositorFrame(
+      display_id.local_surface_id(),
+      MakeCompositorFrame(empty_surface_ids(),
+                          {SurfaceRange(std::nullopt, child_id)}, {}));
+  EXPECT_FALSE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+
+  parent_support().SubmitCompositorFrame(
+      parent_id.local_surface_id(),
+      MakeCompositorFrame(
+          empty_surface_ids(),
+          {SurfaceRange(std::nullopt, MakeSurfaceId(kChildFrameSink1, 10, 1))},
+          {}));
+  EXPECT_TRUE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+
+  // The display still references the child, but the child covers it.
+  parent_support().SubmitCompositorFrame(
+      parent_id.local_surface_id(),
+      MakeCompositorFrame(empty_surface_ids(), empty_surface_ranges(), {}));
+  EXPECT_FALSE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+}
+
+// Tests that the child isn't awaited after an embedder drops the newer of two
+// ranges into the child's allocation group, as when a ScopedKeepSurfaceAlive
+// ends.
+TEST_F(SurfaceSynchronizationTest,
+       ActiveEmbedderAwaitEndsWhenNewerRangeDropped) {
+  const SurfaceId parent_id = MakeSurfaceId(kParentFrameSink, 1, 1);
+  const SurfaceId child_id = MakeSurfaceId(kChildFrameSink1, 6, 1);
+  const SurfaceId newer_child_id = MakeSurfaceId(kChildFrameSink1, 10, 1);
+  child_support1().SubmitCompositorFrame(
+      child_id.local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+  parent_support().SubmitCompositorFrame(
+      parent_id.local_surface_id(),
+      MakeCompositorFrame(empty_surface_ids(),
+                          {SurfaceRange(std::nullopt, child_id),
+                           SurfaceRange(newer_child_id, newer_child_id)},
+                          {}));
+  EXPECT_TRUE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+
+  parent_support().SubmitCompositorFrame(
+      parent_id.local_surface_id(),
+      MakeCompositorFrame(empty_surface_ids(),
+                          {SurfaceRange(std::nullopt, child_id)}, {}));
+  EXPECT_FALSE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+}
+
+// Tests that a range stops counting toward its start's allocation group once a
+// surface at its end activates, even if another range keeps the embedder
+// registered with that group.
+TEST_F(SurfaceSynchronizationTest,
+       ActiveEmbedderAwaitIgnoresRangeStartAfterEndActivates) {
+  const SurfaceId parent_id = MakeSurfaceId(kParentFrameSink, 1, 1);
+  const SurfaceId child_id = MakeSurfaceId(kChildFrameSink1, 6, 1);
+  const SurfaceId fallback_id = MakeSurfaceId(kChildFrameSink1, 10, 1);
+  const SurfaceId new_child_id = MakeSurfaceId(kChildFrameSink2, 1, 1);
+  child_support1().SubmitCompositorFrame(
+      child_id.local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+
+  // Nothing at `new_child_id` is active yet, so the first range refers to
+  // `fallback_id`, which the child doesn't cover.
+  parent_support().SubmitCompositorFrame(
+      parent_id.local_surface_id(),
+      MakeCompositorFrame(empty_surface_ids(),
+                          {SurfaceRange(fallback_id, new_child_id),
+                           SurfaceRange(std::nullopt, child_id)},
+                          {}));
+  EXPECT_TRUE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+
+  // `fallback_id` isn't newer than (6, 2), so the first range now shows
+  // (6, 2), which is in the child's allocation group but doesn't cover
+  // `fallback_id`.
+  child_support1().SubmitCompositorFrame(
+      MakeSurfaceId(kChildFrameSink1, 6, 2).local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+  EXPECT_TRUE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+
+  // The first range now resolves to `new_child_id`. The second range keeps the
+  // parent registered with the child's allocation group, but the child covers
+  // it.
+  child_support2().SubmitCompositorFrame(
+      new_child_id.local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+  EXPECT_FALSE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+}
+
+// Tests that ranges that don't refer to the child's allocation group, including
+// ranges into another allocation group of the same child, don't keep the child
+// awaited.
+TEST_F(SurfaceSynchronizationTest,
+       ActiveEmbedderAwaitIgnoresRangesOutsideGroup) {
+  const SurfaceId parent_id = MakeSurfaceId(kParentFrameSink, 1, 1);
+  const SurfaceId child_id = MakeSurfaceId(kChildFrameSink1, 6, 1);
+  const SurfaceId other_group_id(
+      kChildFrameSink1, LocalSurfaceId(1, base::UnguessableToken::Create()));
+  // Nothing is ever submitted at `unused_id`.
+  const SurfaceId unused_id = MakeSurfaceId(kChildFrameSink2, 1, 1);
+  child_support1().SubmitCompositorFrame(
+      other_group_id.local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+  child_support1().SubmitCompositorFrame(
+      child_id.local_surface_id(),
+      MakeDefaultCompositorFrame(kBeginFrameSourceId));
+  parent_support().SubmitCompositorFrame(
+      parent_id.local_surface_id(),
+      MakeCompositorFrame(
+          empty_surface_ids(),
+          {SurfaceRange(std::nullopt, MakeSurfaceId(kChildFrameSink1, 10, 1))},
+          {}));
+  EXPECT_TRUE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
+
+  // Only the first range refers to `child_id`'s allocation group, and the child
+  // covers it. The last range reuses the child's embed token on another frame
+  // sink, so it refers to no allocation group.
+  const SurfaceId reused_token_id(
+      kChildFrameSink2,
+      LocalSurfaceId(1, 1, child_id.local_surface_id().embed_token()));
+  parent_support().SubmitCompositorFrame(
+      parent_id.local_surface_id(),
+      MakeCompositorFrame(empty_surface_ids(),
+                          {SurfaceRange(std::nullopt, child_id),
+                           SurfaceRange(std::nullopt, other_group_id),
+                           SurfaceRange(other_group_id, unused_id),
+                           SurfaceRange(MakeSurfaceId(kChildFrameSink1, 10, 1),
+                                        reused_token_id)},
+                          {}));
+  EXPECT_FALSE(surface_manager()->HasActiveEmbedderAwaitingNewerSurface(
+      kChildFrameSink1));
 }
 
 }  // namespace viz

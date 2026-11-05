@@ -21,9 +21,6 @@
 #include "chrome/browser/ash/app_list/search/types.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_provider_client.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
-#include "chrome/browser/bookmarks/bookmark_model_factory.h"
-#include "chrome/browser/favicon/favicon_service_factory.h"
-#include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
@@ -43,7 +40,7 @@ using ::ash::string_matching::TokenizedString;
 
 // Returns true if the match is a calculator answer.
 bool IsCalculator(const AutocompleteMatch& match) {
-  return match.type == AutocompleteMatchType::CALCULATOR;
+  return match.type == omnibox::AutocompleteMatchType::kCalculator;
 }
 
 }  //  namespace
@@ -53,17 +50,16 @@ bool IsCalculator(const AutocompleteMatch& match) {
 OmniboxProvider::OmniboxProvider(Profile* profile,
                                  AppListControllerDelegate* list_controller,
                                  TemplateURLService* template_url_service,
+                                 bookmarks::BookmarkModel* bookmark_model,
+                                 favicon::FaviconService* favicon_service,
+                                 history::HistoryService* history_service,
                                  int provider_types)
     : SearchProvider(SearchCategory::kOmnibox),
       profile_(profile),
       list_controller_(list_controller),
       template_url_service_(CHECK_DEREF(template_url_service)),
-      favicon_cache_(FaviconServiceFactory::GetForProfile(
-                         profile,
-                         ServiceAccessType::EXPLICIT_ACCESS),
-                     HistoryServiceFactory::GetForProfile(
-                         profile,
-                         ServiceAccessType::EXPLICIT_ACCESS)) {
+      bookmark_model_(bookmark_model),
+      favicon_cache_(favicon_service, history_service) {
   controller_ = std::make_unique<AutocompleteController>(
       std::make_unique<ChromeAutocompleteProviderClient>(profile),
       AutocompleteControllerConfig{.provider_types = provider_types,
@@ -116,25 +112,24 @@ void OmniboxProvider::PopulateFromACResult(const AutocompleteResult& result) {
     //   provider surfaces Drive results.
     // - The URL points to a local file. The Local file search provider handles
     //   local file results, even if they've been opened in the browser.
-    const bool is_drive = IsDriveUrl(match.destination_url) &&
-                          match.type != AutocompleteMatchType::OPEN_TAB;
+    const bool is_drive =
+        IsDriveUrl(match.destination_url) &&
+        match.type != omnibox::AutocompleteMatchType::kOpenTab;
     if (!match.destination_url.is_valid() || is_drive ||
         match.destination_url.SchemeIsFile()) {
       continue;
     }
 
-    if (match.type == AutocompleteMatchType::OPEN_TAB) {
+    if (match.type == omnibox::AutocompleteMatchType::kOpenTab) {
       // Filters out open tab results if web is disabled in launcher search
       // controls.
       if (!IsControlCategoryEnabled(profile_, ControlCategory::kWeb)) {
         continue;
       }
-      DCHECK(last_tokenized_query_.has_value());
+      CHECK(last_tokenized_query_.has_value(), base::NotFatalUntil::M160);
       new_results.emplace_back(std::make_unique<OpenTabResult>(
           profile_, list_controller_,
-          CreateResult(match, controller_.get(),
-                       BookmarkModelFactory::GetForBrowserContext(profile_),
-                       input_),
+          CreateResult(match, controller_.get(), bookmark_model_, input_),
           last_tokenized_query_.value(), &favicon_cache_));
     } else if (!IsCalculator(match)) {
       // Filters out omnibox results if web is disabled in launcher search
@@ -144,9 +139,7 @@ void OmniboxProvider::PopulateFromACResult(const AutocompleteResult& result) {
       }
       list_results.emplace_back(std::make_unique<OmniboxResult>(
           profile_, list_controller_, &template_url_service_.get(),
-          CreateResult(match, controller_.get(),
-                       BookmarkModelFactory::GetForBrowserContext(profile_),
-                       input_),
+          CreateResult(match, controller_.get(), bookmark_model_, input_),
           last_query_, &favicon_cache_));
     } else {
       new_results.emplace_back(std::make_unique<OmniboxAnswerResult>(
@@ -169,7 +162,7 @@ void OmniboxProvider::PopulateFromACResult(const AutocompleteResult& result) {
 
 void OmniboxProvider::OnResultChanged(AutocompleteController* controller,
                                       bool default_match_changed) {
-  DCHECK(controller == controller_.get());
+  CHECK(controller == controller_.get(), base::NotFatalUntil::M160);
 
   // Record the query latency.
   base::TimeDelta query_latency = base::TimeTicks::Now() - query_start_time_;

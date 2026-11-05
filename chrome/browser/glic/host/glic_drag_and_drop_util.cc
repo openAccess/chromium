@@ -4,55 +4,120 @@
 
 #include "chrome/browser/glic/host/glic_drag_and_drop_util.h"
 
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "base/feature_list.h"
-#include "base/functional/bind.h"
-#include "base/logging.h"
+#include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/strings/string_number_conversions.h"
-#include "base/strings/utf_string_conversions.h"
+#include "base/no_destructor.h"
 #include "base/unguessable_token.h"
-#include "chrome/browser/glic/host/context/glic_page_context_fetcher.h"
-#include "chrome/browser/glic/host/context/glic_tab_data.h"
-#include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/glic/service/metrics/metrics_types.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_features.h"
+#include "chrome/browser/ui/tabs/page_context_eligibility_helper.h"
+#include "components/optimization_guide/content/browser/page_context_eligibility_observer.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/weak_document_ptr.h"
+#include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/drop_data.h"
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "net/base/filename_util.h"
 
 namespace glic {
-
 namespace {
 
-const char16_t kGlicDragIdKey[] = u"chromium/x-drag-id";
+struct DragSourceInfo {
+  base::UnguessableToken drag_id;
+  bool is_eligible = false;
+  base::WeakPtr<content::BrowserContext> source_browser_context;
+  // The frame the drag started in. This is held for the whole drag and
+  // resolved at drop time to build the enterprise policy check's source
+  // endpoint.
+  //
+  // It is a `GlobalRenderFrameHostToken` rather than a
+  // `GlobalRenderFrameHostId` because the id's routing component is recycled
+  // once a RenderFrameHost is destroyed, so a stale id could resolve to an
+  // unrelated, live frame. Tokens are never reused for the lifetime of the
+  // browser process. See content/public/browser/render_frame_host.h.
+  //
+  // A token identifies a RenderFrameHost, not a document, so it does not pin
+  // the drop to the document the drag started in:
+  // - A same-site navigation can reuse the RenderFrameHost for the new
+  //   document. The token then resolves to the same frame showing a different
+  //   page.
+  // - A cross-document navigation can put the old RenderFrameHost into the
+  //   back/forward cache. The token then still resolves to the original
+  //   document, but that document is no longer active.
+  // Neither case affects page context eligibility, which is captured in
+  // `is_eligible` at drag start. The policy check, however, reads
+  // `source_rfh->GetMainFrame()->GetLastCommittedURL()` at drop time: in the
+  // first case it sees the new page's URL, while in the second case it still
+  // sees the original page's URL (and the invoke still succeeds while the
+  // frame remains in the back/forward cache).
+  content::GlobalRenderFrameHostToken source_rfh_token;
+  tabs::TabHandle source_tab_handle;
+};
 
-// Constructs the `glic::mojom::AdditionalContext` containing the dropped data
-// and the retrieved page context of the originating source tab.
+// Tracks the drag-start page context eligibility and source routing metadata
+// of the most recent web drag, keyed by `DropData::drag_id`. Modeled after
+// `GlicClipboardEligibilityMonitor` in
+// `chrome/browser/glic/host/guest_util.cc`, which tracks the most recent
+// copy's eligibility keyed by clipboard sequence number.
+class GlicDragEligibilityMonitor {
+ public:
+  static GlicDragEligibilityMonitor* GetInstance() {
+    static base::NoDestructor<GlicDragEligibilityMonitor> instance;
+    return instance.get();
+  }
+
+  GlicDragEligibilityMonitor() = default;
+  ~GlicDragEligibilityMonitor() = default;
+
+  void RecordDragStart(DragSourceInfo info) { last_drag_ = std::move(info); }
+
+  std::optional<DragSourceInfo> TakeDragSourceInfo(
+      const base::UnguessableToken& drag_id) {
+    if (!last_drag_ || last_drag_->drag_id != drag_id) {
+      return std::nullopt;
+    }
+    return std::exchange(last_drag_, std::nullopt);
+  }
+
+ private:
+  std::optional<DragSourceInfo> last_drag_;
+};
+
+// Constructs the `glic::mojom::AdditionalContext` containing the dropped data.
 // Needed to bundle all relevant multimodal web content (raw file bytes,
-// source tab IDs, filenames, page structures, and metadata) into a single
-// payload conforming to Glic's Mojo protocol before triggering the Glic Invoke
-// flow.
+// source tab IDs, filenames, and metadata) into a single payload conforming to
+// Glic's Mojo protocol before triggering the Glic Invoke flow. `TabContext` is
+// deliberately omitted: it was previously attached only so the web client could
+// validate page context eligibility on the dropped content, which is no longer
+// needed now that Chrome enforces eligibility before invoking.
 glic::mojom::AdditionalContextPtr BuildDragDropAdditionalContext(
     const content::DropData& drop_data,
-    tabs::TabInterface* source_tab,
-    glic::mojom::TabContextResultPtr tab_context) {
+    tabs::TabHandle source_tab_handle) {
   auto context = glic::mojom::AdditionalContext::New();
   context->source = glic::mojom::AdditionalContextSource::kWebDragDrop;
 
   std::vector<glic::mojom::AdditionalContextPartPtr> parts;
 
   auto context_data = mojom::ContextData::New();
-  // TODO(b/448726704): update to use an Image part.
+  // TODO(b/448726704): update to use an Image part. The real type is available
+  // on every platform via `drop_data.file_contents_filename_extension`; on
+  // Android it is the extension the source renderer encoded the image with.
   context_data->mime_type = "image/png";
   context_data->data =
       mojo_base::BigBuffer(base::as_byte_span(drop_data.file_contents));
@@ -69,17 +134,11 @@ glic::mojom::AdditionalContextPtr BuildDragDropAdditionalContext(
   parts.push_back(
       mojom::AdditionalContextPart::NewData(std::move(context_data)));
 
-  parts.push_back(
-      mojom::AdditionalContextPart::NewTabContext(std::move(tab_context)));
-
   if (!drop_data.url_infos.empty()) {
     context->name = drop_data.url_infos.front().url.spec();
   }
 
-  if (source_tab) {
-    context->tab_id = source_tab->GetHandle().raw_value();
-  }
-
+  context->tab_id = source_tab_handle.raw_value();
   context->parts = std::move(parts);
   return context;
 }
@@ -90,9 +149,10 @@ glic::mojom::AdditionalContextPtr BuildDragDropAdditionalContext(
 // where the user dropped the content, target that conversation specifically,
 // and activate the Glic panels using the assembled drop payload.
 void TriggerDragDropInvoke(content::WebContents* target_web_contents,
-                           content::RenderFrameHost* source_rfh,
-                           tabs::TabInterface* source_tab,
-                           glic::mojom::AdditionalContextPtr context) {
+                           content::GlobalRenderFrameHostId source_rfh_id,
+                           tabs::TabHandle source_tab_handle,
+                           glic::mojom::AdditionalContextPtr context,
+                           GlicMetricReporter reporter) {
   Profile* profile =
       Profile::FromBrowserContext(target_web_contents->GetBrowserContext());
   GlicKeyedService* service =
@@ -104,7 +164,7 @@ void TriggerDragDropInvoke(content::WebContents* target_web_contents,
 
   GlicInvokeOptions invoke_options(mojom::InvocationSource::kWebDragDrop);
   invoke_options.additional_context = AdditionalTabContext(
-      std::move(context), source_rfh->GetGlobalId(), PolicyCheck::kClipboard);
+      std::move(context), source_rfh_id, PolicyCheck::kClipboard);
 
   // We specify the panel's Glic WebContents as the target surface.
   GlicInstance* target_instance =
@@ -112,83 +172,23 @@ void TriggerDragDropInvoke(content::WebContents* target_web_contents,
           target_web_contents);
 
   if (target_instance) {
-    glic::Target::Surface fallback_surface =
-        source_tab ? glic::Target::Surface(source_tab->GetHandle())
-                   : glic::Target::Surface(glic::DefaultSurface());
-    invoke_options.target =
-        target_instance->GetInvokeTarget(std::move(fallback_surface));
-  } else if (source_tab) {
-    invoke_options.target.surface = source_tab->GetHandle();
+    invoke_options.target = target_instance->GetInvokeTarget(
+        glic::Target::Surface(source_tab_handle));
+  } else {
+    invoke_options.target.surface = source_tab_handle;
   }
 
-  base::UmaHistogramEnumeration("Glic.DragAndDrop.ValidationResult",
-                                GlicDragAndDropValidationResult::kSuccess);
+  reporter.RecordEnumeration("DragAndDrop.ValidationResult2",
+                             GlicDragAndDropValidationResult::kSuccess);
   service->Invoke(std::move(invoke_options));
-}
-
-void OnReceivedTabContextForDrag(
-    base::WeakPtr<content::WebContents> target_web_contents,
-    content::DropData drop_data,
-    content::WeakDocumentPtr source_document,
-    base::expected<glic::mojom::GetContextResultPtr,
-                   page_content_annotations::FetchPageContextErrorDetails>
-        result) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-
-  if (!target_web_contents) {
-    base::UmaHistogramEnumeration(
-        "Glic.DragAndDrop.ValidationResult",
-        GlicDragAndDropValidationResult::kTargetWebContentsDestroyed);
-    return;
-  }
-
-  content::RenderFrameHost* rfh = source_document.AsRenderFrameHostIfValid();
-  if (!rfh) {
-    base::UmaHistogramEnumeration(
-        "Glic.DragAndDrop.ValidationResult",
-        GlicDragAndDropValidationResult::
-            kSourceFrameNavigatedBeforeContextFetched);
-    return;
-  }
-
-  content::WebContents* source_wc =
-      content::WebContents::FromRenderFrameHost(rfh);
-  if (!source_wc) {
-    base::UmaHistogramEnumeration(
-        "Glic.DragAndDrop.ValidationResult",
-        GlicDragAndDropValidationResult::kSourceWebContentsDestroyed);
-    return;
-  }
-
-  if (!result.has_value() || !result.value()->is_tab_context()) {
-    base::UmaHistogramEnumeration(
-        "Glic.DragAndDrop.ValidationResult",
-        GlicDragAndDropValidationResult::kContextFetchFailed);
-    return;
-  }
-
-  tabs::TabInterface* source_tab =
-      tabs::TabInterface::MaybeGetFromContents(source_wc);
-  if (!source_tab) {
-    base::UmaHistogramEnumeration(
-        "Glic.DragAndDrop.ValidationResult",
-        GlicDragAndDropValidationResult::kSourceTabClosed);
-    return;
-  }
-
-  auto context = BuildDragDropAdditionalContext(
-      drop_data, source_tab, std::move(result.value()->get_tab_context()));
-
-  TriggerDragDropInvoke(target_web_contents.get(), rfh, source_tab,
-                        std::move(context));
 }
 
 // Restores drag-and-drop metadata (original source URL and file extensions)
 // that operating systems frequently strip during drag-and-drop actions. Needed
 // because OS pasteboards / clipboards are lossy channels (often stripping
 // source URLs for privacy or converting image formats to generic types like
-// TIFF). By matching the internally tracked drag ID to the initiating renderer,
-// this recovers precise original web source properties.
+// TIFF). When `url_infos` is present on `drop_data`, this recovers the source
+// URL and infers the missing file extension from it.
 content::DropData RestoreDragMetadata(const content::DropData& drop_data) {
   content::DropData augmented_drop_data = drop_data;
   if (!drop_data.url_infos.empty()) {
@@ -241,104 +241,161 @@ GlicDragAndDropContentType GetDragAndDropContentType(
 
 }  // namespace
 
-bool IsGlicWebDrag(const content::DropData& drop_data) {
-  return drop_data.custom_data.contains(kGlicDragIdKey);
+bool IsChromeWebDrag(const content::DropData& drop_data) {
+  return drop_data.drag_id.has_value();
+}
+
+bool IsValidDragPayload(const content::DropData& drop_data) {
+  // TODO(crbug.com/567183211): Temporarily reject non-file web drags (such as
+  // text and links) until extended drag-and-drop payload types are supported.
+  const bool has_files =
+      !drop_data.filenames.empty() || !drop_data.file_system_files.empty();
+  if (base::FeatureList::IsEnabled(features::kGlicWebDragAndDropFileUpload)) {
+    return has_files || !drop_data.file_contents.empty();
+  }
+  // With web drag-and-drop off, only OS file drags are accepted: in-memory
+  // file contents are how web image drags arrive on desktop, and on Android a
+  // web image drag enters as a file carrying a Chrome drag ID.
+  return has_files && !IsChromeWebDrag(drop_data);
+}
+
+GlicWebDragObserver::GlicWebDragObserver(tabs::TabInterface& tab)
+    : tabs::ContentsObservingTabFeature(tab) {}
+
+GlicWebDragObserver::~GlicWebDragObserver() = default;
+
+void GlicWebDragObserver::DidStartDrag(content::RenderFrameHost* source_rfh,
+                                       const content::DropData& drop_data) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
+  // `DidStartDrag` runs on every web drag in a tab, not only drags into Glic,
+  // so avoid heavier work such as metrics recording here. If a drag is later
+  // dropped onto Glic, `StartDragAndDropInvoke` validates it and records
+  // `Glic.DragAndDrop.ValidationResult2`.
+  if (!base::FeatureList::IsEnabled(features::kGlicWebDragAndDropFileUpload)) {
+    return;
+  }
+
+  if (!source_rfh || !drop_data.drag_id.has_value() ||
+      !source_rfh->IsActive()) {
+    return;
+  }
+
+  content::BrowserContext* browser_context = source_rfh->GetBrowserContext();
+  Profile* profile = Profile::FromBrowserContext(browser_context);
+  bool is_eligible = false;
+  if (GlicEnabling::IsProfileEligible(profile)) {
+    auto* helper = tabs::PageContextEligibilityHelper::From(&tab());
+    if (!helper) {
+      return;
+    }
+    optimization_guide::PageContextEligibilityStatus status =
+        helper->IsPageContextEligible();
+    is_eligible =
+        (status == optimization_guide::PageContextEligibilityStatus::kEligible);
+  }
+
+  GlicDragEligibilityMonitor::GetInstance()->RecordDragStart(DragSourceInfo{
+      .drag_id = *drop_data.drag_id,
+      .is_eligible = is_eligible,
+      .source_browser_context = browser_context->GetWeakPtr(),
+      .source_rfh_token = source_rfh->GetGlobalFrameToken(),
+      .source_tab_handle = tab().GetHandle(),
+  });
 }
 
 // Initiates the Glic drag-and-drop invocation workflow when a web drag is
 // dropped onto the Glic panel.
-//
-// It executes the following steps:
-// 1. Verifies the Glic drag-and-drop file upload feature flag is enabled.
-// 2. Deserializes the custom Glic drag ID (`chromium/x-drag-id`) from the drop
-// data.
-// 3. Resolves the unique drag ID back to the originating source WebContents in
-//    the same profile (guaranteeing cross-profile boundary safety).
-// 4. Restores original metadata (such as the source URL and pristine file
-// extension)
-//    which are stripped by OS-level pasteboards.
-// 5. Triggers an asynchronous `FetchPageContext` on the source tab to extract
-//    the annotated page structure, title, and page text.
-// 6. Invokes `OnReceivedTabContextForDrag` once page context is fetched to
-//    package the payload and activate Glic.
 void StartDragAndDropInvoke(content::WebContents* target_web_contents,
                             const content::DropData& drop_data) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  if (!IsGlicWebDrag(drop_data)) {
+  if (!target_web_contents || !IsChromeWebDrag(drop_data)) {
     return;
   }
 
+  GlicMetricReporter reporter(
+      Profile::FromBrowserContext(target_web_contents->GetBrowserContext()));
+
   // Record Content Type (intent/demand) immediately when the drop is
   // recognized.
-  base::UmaHistogramEnumeration("Glic.DragAndDrop.ContentType",
-                                GetDragAndDropContentType(drop_data));
+  reporter.RecordEnumeration("DragAndDrop.ContentType",
+                             GetDragAndDropContentType(drop_data));
+
+  // File upload is unavailable until the user completes the FRE; mirror the
+  // disabled "+" upload menu by rejecting drags too.
+  if (!GlicEnabling::HasConsentedForProfile(Profile::FromBrowserContext(
+          target_web_contents->GetBrowserContext()))) {
+    reporter.RecordEnumeration(
+        "DragAndDrop.ValidationResult2",
+        GlicDragAndDropValidationResult::kFreNotCompleted);
+    return;
+  }
 
   if (!base::FeatureList::IsEnabled(features::kGlicWebDragAndDropFileUpload)) {
-    base::UmaHistogramEnumeration(
-        "Glic.DragAndDrop.ValidationResult",
+    reporter.RecordEnumeration(
+        "DragAndDrop.ValidationResult2",
         GlicDragAndDropValidationResult::kBlockedByFeatureFlag);
     return;
   }
 
-  std::optional<base::UnguessableToken> raw_drag_id =
-      base::UnguessableToken::DeserializeFromString(
-          base::UTF16ToUTF8(drop_data.custom_data.at(kGlicDragIdKey)));
-  if (!raw_drag_id) {
-    base::UmaHistogramEnumeration(
-        "Glic.DragAndDrop.ValidationResult",
-        GlicDragAndDropValidationResult::kInvalidDragId);
+  // TODO(crbug.com/567183211): Temporarily reject non-file web drags (such as
+  // text and links) until extended drag-and-drop payload types are supported.
+  if (drop_data.file_contents.empty()) {
+    reporter.RecordEnumeration(
+        "DragAndDrop.ValidationResult2",
+        GlicDragAndDropValidationResult::kUnsupportedContentType);
     return;
   }
-  content::WebContents::DragId drag_id(*raw_drag_id);
 
-  // Look up the originating WebContents from the drag ID.
-  // Note: Passing the target's BrowserContext enforces that both the drag
-  // source and drop target must belong to the same browser profile. If the drag
-  // originated in a different profile, FromDragId will return nullptr,
-  // preventing cross-profile data leaks.
-  Profile* profile =
-      Profile::FromBrowserContext(target_web_contents->GetBrowserContext())
-          ->GetOriginalProfile();
-  content::WebContents* source_wc =
-      content::WebContents::FromDragId(profile, drag_id);
-  if (!source_wc) {
-    base::UmaHistogramEnumeration(
-        "Glic.DragAndDrop.ValidationResult",
+  std::optional<DragSourceInfo> info =
+      GlicDragEligibilityMonitor::GetInstance()->TakeDragSourceInfo(
+          *drop_data.drag_id);
+  if (!info) {
+    // No record of this drag in `GlicDragEligibilityMonitor`, e.g. because the
+    // drag source was not a tab or had no eligibility helper.
+    reporter.RecordEnumeration(
+        "DragAndDrop.ValidationResult2",
+        GlicDragAndDropValidationResult::kUnknownDragSource);
+    return;
+  }
+
+  if (info->source_browser_context.get() !=
+      target_web_contents->GetBrowserContext()) {
+    reporter.RecordEnumeration(
+        "DragAndDrop.ValidationResult2",
         GlicDragAndDropValidationResult::kCrossProfileDragBlocked);
     return;
   }
 
-  content::RenderFrameHost* rfh = source_wc->GetPrimaryMainFrame();
-  if (!rfh) {
-    base::UmaHistogramEnumeration(
-        "Glic.DragAndDrop.ValidationResult",
-        GlicDragAndDropValidationResult::kSourceWebContentsDestroyed);
+  if (!info->is_eligible) {
+    reporter.RecordEnumeration(
+        "DragAndDrop.ValidationResult2",
+        GlicDragAndDropValidationResult::kPageContextIneligible);
+    // TODO(b/552675444): Implement error signaling through Invoke for the
+    // purpose of showing these toasts in the web client.
     return;
   }
 
-  tabs::TabInterface* source_tab =
-      tabs::TabInterface::MaybeGetFromContents(source_wc);
-  if (!source_tab) {
-    base::UmaHistogramEnumeration(
-        "Glic.DragAndDrop.ValidationResult",
-        GlicDragAndDropValidationResult::kSourceTabClosed);
+  // `FromFrameToken` returns nullptr once the source frame has been destroyed,
+  // e.g. because its tab closed or the frame was removed from the page. This
+  // is also the liveness check relied upon by the enterprise policy check
+  // downstream. See `DragSourceInfo::source_rfh_token` for what a live token
+  // does and does not guarantee.
+  content::RenderFrameHost* source_rfh =
+      content::RenderFrameHost::FromFrameToken(info->source_rfh_token);
+  if (!source_rfh) {
+    reporter.RecordEnumeration(
+        "DragAndDrop.ValidationResult2",
+        GlicDragAndDropValidationResult::kSourceFrameDestroyed);
     return;
   }
 
   content::DropData augmented_drop_data = RestoreDragMetadata(drop_data);
-
-  auto options = mojom::TabContextOptions::New();
-  options->max_meta_tags = 32;
-  options->annotated_page_content = true;
-
-  FetchPageContext(
-      source_tab, *options,
-      base::BindOnce(&OnReceivedTabContextForDrag,
-                     target_web_contents->GetWeakPtr(), augmented_drop_data,
-                     rfh->GetWeakDocumentPtr()),
-      /*progress_listener=*/nullptr,
-      /*is_screenshot_annotated=*/false);
+  auto context = BuildDragDropAdditionalContext(augmented_drop_data,
+                                                info->source_tab_handle);
+  TriggerDragDropInvoke(target_web_contents, source_rfh->GetGlobalId(),
+                        info->source_tab_handle, std::move(context), reporter);
 }
 
 }  // namespace glic

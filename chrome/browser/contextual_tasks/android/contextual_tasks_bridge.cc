@@ -22,6 +22,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/jni_zero/jni_zero.h"
 #include "url/android/gurl_android.h"
@@ -79,10 +80,8 @@ DEFINE_USER_DATA(ContextualTasksBridge);
 
 static int64_t JNI_ContextualTasksBridge_Init(
     const jni_zero::JavaRef<jobject>& caller,
-    int64_t browser_window_ptr,
+    BrowserWindowInterface* browser_window,
     Profile* profile) {
-  auto* browser_window =
-      reinterpret_cast<BrowserWindowInterface*>(browser_window_ptr);
   CHECK(browser_window);
   return reinterpret_cast<intptr_t>(
       new ContextualTasksBridge(caller, browser_window, profile));

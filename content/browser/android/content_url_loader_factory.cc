@@ -15,6 +15,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
@@ -98,6 +99,8 @@ void GetMimeType(const network::ResourceRequest& request,
 
   if (out_mime_type->empty())
     *out_mime_type = base::GetContentUriMimeType(content_path);
+
+  *out_mime_type = base::ToLowerASCII(*out_mime_type);
 }
 
 class ContentURLLoader : public network::mojom::URLLoader {
@@ -161,7 +164,7 @@ class ContentURLLoader : public network::mojom::URLLoader {
     mojo::Remote<network::mojom::URLLoaderClient> client(
         std::move(client_remote));
 
-    DCHECK(request.url.SchemeIs("content"));
+    CHECK(request.url.SchemeIs("content"), base::NotFatalUntil::M159);
     base::FilePath path = base::FilePath(request.url.spec());
 
     // Get the file length.

@@ -25,12 +25,12 @@
 #include "base/test/values_test_util.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "content/browser/in_memory_federated_permission_context.h"
 #include "content/browser/webid/delegation/jwt_signer.h"
 #include "content/browser/webid/delegation/sd_jwt.h"
 #include "content/browser/webid/fake_identity_request_dialog_controller.h"
 #include "content/browser/webid/identity_registry.h"
-#include "content/browser/webid/request.h"
+#include "content/browser/webid/in_memory_federated_permission_context.h"
+#include "content/browser/webid/request_handler.h"
 #include "content/browser/webid/request_service.h"
 #include "content/browser/webid/test/mock_digital_identity_provider.h"
 #include "content/browser/webid/test/mock_identity_request_dialog_controller.h"
@@ -438,9 +438,9 @@ class WebIdBrowserTest : public ContentBrowserTest {
 
 class WebIdIdpSigninStatusBrowserTest : public WebIdBrowserTest {
  public:
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 };
@@ -453,9 +453,9 @@ class WebIdLightweightFedcmBrowserTest : public WebIdBrowserTest {
     scoped_feature_list_.InitWithFeatures(features, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 };
@@ -468,9 +468,9 @@ class WebIdIdpSigninStatusForFetchKeepAliveBrowserTest
         {blink::features::kKeepAliveInBrowserMigration}, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 };
@@ -487,9 +487,9 @@ class WebIdIdPRegistryBrowserTest : public WebIdBrowserTest {
     scoped_feature_list_.InitWithFeatures(features, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 
@@ -1174,9 +1174,9 @@ class WebIdDigitalCredentialsBrowserTest : public WebIdBrowserTest {
     scoped_feature_list_.InitWithFeatures(features, {});
   }
 
-  InMemoryFederatedPermissionContext* sharing_context() {
+  webid::InMemoryFederatedPermissionContext* sharing_context() {
     BrowserContext* context = shell()->web_contents()->GetBrowserContext();
-    return static_cast<InMemoryFederatedPermissionContext*>(
+    return static_cast<webid::InMemoryFederatedPermissionContext*>(
         context->GetFederatedIdentityPermissionContext());
   }
 
@@ -1746,7 +1746,7 @@ IN_PROC_BROWSER_TEST_F(WebIdBrowserTest,
   // The client id `client_id_1` is on the `approved_clients` list defined in
   // content/test/data/fedcm/accounts_endpoint.json so by exempting the IdP from
   // the check, auto re-authn can be triggered and a token can be returned.
-  static_cast<InMemoryFederatedPermissionContext*>(
+  static_cast<webid::InMemoryFederatedPermissionContext*>(
       shell()
           ->web_contents()
           ->GetBrowserContext()
@@ -2058,16 +2058,8 @@ IN_PROC_BROWSER_TEST_F(WebIdDelegationBrowserTest, ConditionalMediation) {
       testing::UnorderedElementsAre("Sam"));
 }
 
-// Flaky on mac, https://crbug.com/415953689
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_ConditionalMediationForMediatedRequest \
-  DISABLED_ConditionalMediationForMediatedRequest
-#else
-#define MAYBE_ConditionalMediationForMediatedRequest \
-  ConditionalMediationForMediatedRequest
-#endif
 IN_PROC_BROWSER_TEST_F(WebIdDelegationBrowserTest,
-                       MAYBE_ConditionalMediationForMediatedRequest) {
+                       ConditionalMediationForMediatedRequest) {
   idp_server()->SetConfigResponseDetails(BuildValidConfigDetails());
 
   auto mock = std::make_unique<
@@ -2733,9 +2725,11 @@ IN_PROC_BROWSER_TEST_F(WebIdEmbedderInitiatedLoginTest,
       shell()->web_contents(), url::Origin::Create(config_url),
       "not_real_account", base::DoNothing());
 
-  // Kick off the identity credential request via a navigation.
+  // Kick off the identity credential request via a navigation that the RP page
+  // initiates. Navigations without an initiator are not intercepted.
   LoadStopObserver stop_observer(shell()->web_contents());
-  shell()->LoadURL(config_url.Resolve("/intercept"));
+  EXPECT_TRUE(BeginNavigateToURLFromRenderer(shell(),
+                                             config_url.Resolve("/intercept")));
 
   // Wait for the redirect to load.
   stop_observer.Wait();
@@ -2750,6 +2744,78 @@ IN_PROC_BROWSER_TEST_F(WebIdEmbedderInitiatedLoginTest,
                                         .GetLastCommittedEntry();
   ASSERT_TRUE(entry);
   EXPECT_TRUE(entry->GetHasPostData());
+}
+
+IN_PROC_BROWSER_TEST_F(WebIdEmbedderInitiatedLoginTest,
+                       MismatchedIdPInPopupDoesNotTriggerEmbedderCallback) {
+  idp_server()->SetConfigResponseDetails(BuildValidConfigDetails());
+
+  const url::Origin expected_idp =
+      url::Origin::Create(GURL("https://expected-idp.example"));
+  const url::Origin actual_idp = url::Origin::Create(GURL(BaseIdpUrl()));
+  EXPECT_NE(expected_idp, actual_idp);
+
+  std::optional<webid::FederatedLoginResult> received_result;
+  webid::FederatedEmbedderLoginRequest::Set(
+      shell()->web_contents(), expected_idp, "expected_account",
+      base::BindLambdaForTesting([&](webid::FederatedLoginResult result) {
+        received_result = result;
+      }));
+
+  ShellAddedObserver popup_observer;
+  GURL popup_url = https_server().GetURL(kRpHostName, "/title1.html");
+  EXPECT_TRUE(
+      ExecJs(shell(), JsReplace("window.open($1, '_blank');", popup_url)));
+  Shell* popup = popup_observer.GetShell();
+  ASSERT_TRUE(popup);
+  EXPECT_TRUE(WaitForLoadStop(popup->web_contents()));
+
+  RenderFrameHost* opener_rfh = popup->web_contents()->GetOpener();
+  ASSERT_TRUE(opener_rfh);
+  EXPECT_EQ(shell()->web_contents(),
+            WebContents::FromRenderFrameHost(opener_rfh));
+  webid::FederatedEmbedderLoginRequest* req =
+      webid::FederatedEmbedderLoginRequest::Get(popup->web_contents());
+  ASSERT_TRUE(req);
+  EXPECT_EQ(expected_idp, req->idp_origin());
+
+  EXPECT_EQ(std::string(kToken), EvalJs(popup, GetBasicRequestString()));
+
+  EXPECT_FALSE(received_result.has_value());
+  EXPECT_NE(nullptr,
+            webid::FederatedEmbedderLoginRequest::Get(shell()->web_contents()));
+}
+
+IN_PROC_BROWSER_TEST_F(WebIdEmbedderInitiatedLoginTest,
+                       MatchingIdPInPopupTriggersEmbedderCallback) {
+  idp_server()->SetConfigResponseDetails(BuildValidConfigDetails());
+
+  const url::Origin expected_idp = url::Origin::Create(GURL(BaseIdpUrl()));
+
+  std::optional<webid::FederatedLoginResult> received_result;
+  base::RunLoop run_loop;
+  webid::FederatedEmbedderLoginRequest::Set(
+      shell()->web_contents(), expected_idp, "expected_account",
+      base::BindLambdaForTesting([&](webid::FederatedLoginResult result) {
+        received_result = result;
+        run_loop.Quit();
+      }));
+
+  ShellAddedObserver popup_observer;
+  GURL popup_url = https_server().GetURL(kRpHostName, "/title1.html");
+  EXPECT_TRUE(
+      ExecJs(shell(), JsReplace("window.open($1, '_blank');", popup_url)));
+  Shell* popup = popup_observer.GetShell();
+  ASSERT_TRUE(popup);
+  EXPECT_TRUE(WaitForLoadStop(popup->web_contents()));
+
+  EXPECT_EQ(std::string(kToken), EvalJs(popup, GetBasicRequestString()));
+
+  run_loop.Run();
+  ASSERT_TRUE(received_result.has_value());
+  EXPECT_EQ(webid::FederatedLoginResult::kSuccess, *received_result);
+  EXPECT_EQ(nullptr,
+            webid::FederatedEmbedderLoginRequest::Get(shell()->web_contents()));
 }
 
 }  // namespace content

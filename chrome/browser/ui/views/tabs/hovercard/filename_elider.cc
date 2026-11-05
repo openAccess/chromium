@@ -81,6 +81,9 @@ FilenameElider::LineLengths FilenameElider::GetLineLengths(
   render_text_->SetWhitespaceElision(true);
   render_text_->SetDisplayRect(display_rect);
 
+  render_text_->SetElideBehavior(gfx::ElideBehavior::NO_ELIDE);
+  const std::u16string_view unelided_text = render_text_->GetDisplayText();
+
   // Set our temporary RenderText to the unelided text and elide the start of
   // the string to give us a guess at where the second line of the label
   // should start.
@@ -91,7 +94,7 @@ FilenameElider::LineLengths FilenameElider::GetLineLengths(
   // If there is no elision, then the text will fit on a single line and
   // there's nothing to do.
   const size_t length = render_text_->text().length();
-  if (tentative_second_line == render_text_->text()) {
+  if (tentative_second_line == unelided_text) {
     return LineLengths(length, length);
   }
 
@@ -105,6 +108,8 @@ FilenameElider::LineLengths FilenameElider::GetLineLengths(
 
   // Since we truncated, expect the string to start with ellipsis, then
   // calculate the length of the string sans ellipsis.
+  // TODO(crbug.com/577275387): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK_EQ(gfx::kEllipsisUTF16[0], tentative_second_line[0]);
 
   // TODO(crbug.com/1239317): Elision is still a little flaky, so we'll make
@@ -138,10 +143,12 @@ std::u16string FilenameElider::ElideImpl(
   std::u16string_view text = render_text_->text();
 
   // Validate the inputs. All of these are base assumptions.
-  DCHECK_LE(line_lengths.first, text.length());
-  DCHECK_LE(line_lengths.second, text.length());
-  DCHECK(render_text_->IsGraphemeBoundary(line_lengths.first));
-  DCHECK(render_text_->IsGraphemeBoundary(text.length() - line_lengths.second));
+  CHECK_LE(line_lengths.first, text.length(), base::NotFatalUntil::M162);
+  CHECK_LE(line_lengths.second, text.length(), base::NotFatalUntil::M162);
+  CHECK(render_text_->IsGraphemeBoundary(line_lengths.first),
+        base::NotFatalUntil::M162);
+  CHECK(render_text_->IsGraphemeBoundary(text.length() - line_lengths.second),
+        base::NotFatalUntil::M162);
 
   // If the entire text fits on a single line, use it as-is.
   if (line_lengths.first == text.length() ||

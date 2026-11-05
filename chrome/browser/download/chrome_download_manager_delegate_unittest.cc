@@ -33,6 +33,7 @@
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/download/download_core_service_factory.h"
 #include "chrome/browser/download/download_core_service_impl.h"
+#include "chrome/browser/download/download_file_picker.h"
 #include "chrome/browser/download/download_item_model.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/download/insecure_download_blocking.h"
@@ -59,7 +60,7 @@
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/content/common/file_type_policies_test_util.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies_test_util.h"
 #include "components/safe_search_api/safe_search_util.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/browser/download_item_utils.h"
@@ -72,6 +73,8 @@
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/shell_dialogs/fake_select_file_dialog.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 #include "url/origin.h"
 
@@ -95,7 +98,6 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/device_info.h"
 #include "chrome/browser/download/download_prompt_status.h"
-#include "components/enterprise/connectors/core/features.h"
 #endif
 
 using download::DownloadItem;
@@ -129,6 +131,14 @@ class MockWebContentsDelegate : public content::WebContentsDelegate {
               (const GURL&,
                const std::string&,
                base::OnceCallback<void(bool)> callback),
+              (override));
+  MOCK_METHOD(content::FullscreenState,
+              GetFullscreenState,
+              (const content::WebContents* web_contents),
+              (const, override));
+  MOCK_METHOD(void,
+              ExitFullscreenModeForTab,
+              (content::WebContents * web_contents),
               (override));
 };
 
@@ -248,7 +258,14 @@ class TestChromeDownloadManagerDelegate : public ChromeDownloadManagerDelegate {
   void ShowFilePickerForDownload(
       DownloadItem* download,
       const base::FilePath& path,
-      DownloadTargetDeterminerDelegate::ConfirmationCallback) override {}
+      DownloadTargetDeterminerDelegate::ConfirmationCallback callback)
+      override {
+    show_file_picker_called_ = true;
+    std::move(callback).Run(DownloadConfirmationResult::CONFIRMED,
+                            ui::SelectedFileInfo(path));
+  }
+  bool show_file_picker_called() const { return show_file_picker_called_; }
+  void reset_show_file_picker_called() { show_file_picker_called_ = false; }
 
   void DetermineLocalPath(download::DownloadItem* download,
                           const base::FilePath& virtual_path,
@@ -264,6 +281,7 @@ class TestChromeDownloadManagerDelegate : public ChromeDownloadManagerDelegate {
   }
 
  private:
+  bool show_file_picker_called_ = false;
   friend class ChromeDownloadManagerDelegateTest;
 };
 
@@ -327,7 +345,7 @@ class ChromeDownloadManagerDelegateTest
   raw_ptr<sync_preferences::TestingPrefServiceSyncable> pref_service_ = nullptr;
   std::unique_ptr<content::MockDownloadManager> download_manager_;
   raw_ptr<TestChromeDownloadManagerDelegate> delegate_ = nullptr;
-  MockWebContentsDelegate web_contents_delegate_;
+  testing::NiceMock<MockWebContentsDelegate> web_contents_delegate_;
   std::vector<uint32_t> download_ids_;
   TestingProfileManager testing_profile_manager_;
 };
@@ -782,15 +800,34 @@ TEST_F(ChromeDownloadManagerDelegateTest, NoSafetyChecksNotBlockedByPolicy) {
 TEST_F(ChromeDownloadManagerDelegateTest, InterceptDownloadByOfflinePages) {
   const GURL kUrl("http://example.com/foo");
   std::string mime_type = "text/html";
-  bool should_intercept = delegate()->InterceptDownloadIfApplicable(
-      kUrl, "", "", mime_type, "", 10, false /*is_transient*/,
-      false /*is_content_initiated*/, nullptr);
-  EXPECT_TRUE(should_intercept);
+  bool should_intercept = false;
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(
+        download::features::kEnableDownloadSaveAsContextMenu);
+    base::android::device_info::set_is_desktop_for_testing(false);
+    base::ScopedClosureRunner reset_desktop(base::BindOnce(
+        &base::android::device_info::reset_is_desktop_for_testing));
+    should_intercept = delegate()->InterceptDownloadIfApplicable(
+        kUrl, "", "", mime_type, "", 10, false /*is_transient*/,
+        false /*is_content_initiated*/, nullptr);
+    EXPECT_TRUE(should_intercept);
+
+    base::android::device_info::set_is_desktop_for_testing(true);
+    should_intercept = delegate()->InterceptDownloadIfApplicable(
+        kUrl, "", "", mime_type, "", 10, false /*is_transient*/,
+        false /*is_content_initiated*/, nullptr);
+    EXPECT_FALSE(should_intercept);
+  }
 
   {
     base::test::ScopedFeatureList feature_list;
     feature_list.InitAndEnableFeature(
         download::features::kEnableDownloadSaveAsContextMenu);
+
+    base::android::device_info::set_is_desktop_for_testing(false);
+    base::ScopedClosureRunner reset_desktop(base::BindOnce(
+        &base::android::device_info::reset_is_desktop_for_testing));
     should_intercept = delegate()->InterceptDownloadIfApplicable(
         kUrl, "", "", mime_type, "", 10, false /*is_transient*/,
         false /*is_content_initiated*/, nullptr);
@@ -840,7 +877,6 @@ TEST_F(ChromeDownloadManagerDelegateTest, InterceptDownloadForAutomotive) {
   if (!base::android::device_info::is_automotive()) {
     GTEST_SKIP() << "This test should only run on automotive.";
   }
-  base::HistogramTester histograms;
 
   TestDownloadMessageBridge* message_bridge = new TestDownloadMessageBridge();
   delegate()->SetDownloadMessageBridgeForTesting(
@@ -858,8 +894,6 @@ TEST_F(ChromeDownloadManagerDelegateTest, InterceptDownloadForAutomotive) {
       kUrl, "", "", mime_type, "", 10, false /*is_transient*/,
       false /*is_content_initiated*/, nullptr);
   EXPECT_TRUE(should_intercept);
-  histograms.ExpectUniqueSample("Download.Blocked.ContentType.Automotive",
-                                download::DownloadContent::kPdf, 1);
 
   EXPECT_EQ(1, message_bridge->GetMessageShownCount());
 }
@@ -2422,6 +2456,39 @@ TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
   RunUnknownVerdictTest(FILE_PATH_LITERAL("test.apk.txt"),
                         download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
 }
+
+TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
+       AndroidApkCheck_RegisteredAppStore_SuppressesWarning) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(safe_browsing::kMaliciousApkDownloadCheck);
+
+  std::unique_ptr<download::MockDownloadItem> download_item =
+      CreateActiveDownloadItem(0);
+  EXPECT_CALL(*download_item, RequireSafetyChecks())
+      .WillRepeatedly(Return(true));
+  ON_CALL(*download_item, GetDangerType())
+      .WillByDefault(Return(download::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS));
+  ON_CALL(*download_item, IsDangerous()).WillByDefault(Return(false));
+  ON_CALL(*download_item, IsUserConfirmed()).WillByDefault(Return(false));
+  ON_CALL(*download_item, GetFileNameToReportUser())
+      .WillByDefault(Return(base::FilePath(FILE_PATH_LITERAL("test.apk"))));
+
+  auto sb_state =
+      std::make_unique<ChromeDownloadManagerDelegate::SafeBrowsingState>();
+  sb_state->CompleteDownload();
+  download_item->SetUserData(&ChromeDownloadManagerDelegate::SafeBrowsingState::
+                                 kSafeBrowsingUserDataKey,
+                             std::move(sb_state));
+
+  safe_browsing::DownloadProtectionService::SetDownloadProtectionData(
+      download_item.get(), /*token=*/std::string(),
+      safe_browsing::ClientDownloadResponse::SAFE,
+      safe_browsing::ClientDownloadResponse::TailoredVerdict(),
+      /*is_registered_app_store=*/true);
+
+  EXPECT_TRUE(delegate()->ShouldCompleteDownload(download_item.get(),
+                                                 base::DoNothing()));
+}
 #else
 TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
        NonAndroidApkCheck_IsNotDangerous) {
@@ -2456,11 +2523,6 @@ TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
 
 TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
        CheckSavePackageAllowed_MalwareTagExempted) {
-#if BUILDFLAG(IS_ANDROID)
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      enterprise_connectors::kEnableDownloadEnterpriseScanOnClank);
-#endif
   std::unique_ptr<download::MockDownloadItem> download_item =
       CreateActiveDownloadItem(0);
   EXPECT_CALL(*download_item, IsSavePackageDownload())
@@ -2500,11 +2562,6 @@ TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
 
 TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
        CheckSavePackageAllowed_TriggersScanAndSafeVerdict) {
-#if BUILDFLAG(IS_ANDROID)
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      enterprise_connectors::kEnableDownloadEnterpriseScanOnClank);
-#endif
   std::unique_ptr<download::MockDownloadItem> download_item =
       CreateActiveDownloadItem(0);
   EXPECT_CALL(*download_item, IsSavePackageDownload())
@@ -2574,11 +2631,6 @@ TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
 
 TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
        CheckSavePackageScanningDone_BlockedVerdict) {
-#if BUILDFLAG(IS_ANDROID)
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      enterprise_connectors::kEnableDownloadEnterpriseScanOnClank);
-#endif
   std::unique_ptr<download::MockDownloadItem> download_item =
       CreateActiveDownloadItem(0);
   EXPECT_CALL(*download_item, IsSavePackageDownload())
@@ -2914,6 +2966,93 @@ TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
   EXPECT_TRUE(delegate()->GetRenameHandlerForDownload(download_item.get()));
 }
 
+// Regression test for crbug.com/503210986: a rename handler must still be
+// produced after the download has been deobfuscated, which is when
+// DownloadItemImpl first asks for one. Unlike
+// GetRenameHandlerForDownload_Obfuscation above, this drives the real
+// deobfuscation path instead of setting the flag by hand.
+TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
+       GetRenameHandlerForDownload_AfterDeobfuscation) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      enterprise_obfuscation::kEnterpriseFileObfuscation);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath staging_path = temp_dir.GetPath().AppendASCII("staging.txt");
+  base::FilePath virtual_path("/media/fuse/odfs/final.txt");
+
+  // Write genuinely obfuscated content so that deobfuscation succeeds and
+  // `is_obfuscated` is cleared the way it is in production.
+  std::vector<uint8_t> original_contents(5000, 'a');
+  enterprise_obfuscation::DownloadObfuscator obfuscator;
+  auto obfuscation_result =
+      obfuscator.ObfuscateChunk(base::span(original_contents), true);
+  ASSERT_TRUE(obfuscation_result.has_value());
+  ASSERT_TRUE(base::WriteFile(staging_path, obfuscation_result.value()));
+
+  std::unique_ptr<download::MockDownloadItem> download_item =
+      CreateActiveDownloadItem(0);
+  EXPECT_CALL(*download_item, RequireSafetyChecks())
+      .WillRepeatedly(Return(true));
+  EXPECT_CALL(*download_item, GetTargetFilePath())
+      .WillRepeatedly(ReturnRef(staging_path));
+  EXPECT_CALL(*download_item, GetFullPath())
+      .WillRepeatedly(ReturnRef(staging_path));
+  EXPECT_CALL(*download_item, GetDangerType())
+      .WillRepeatedly(Return(download::DOWNLOAD_DANGER_TYPE_USER_VALIDATED));
+
+  auto mock_protection_service =
+      std::make_unique<::testing::NiceMock<TestDownloadProtectionService>>();
+  EXPECT_CALL(*delegate(), GetDownloadProtectionService())
+      .WillRepeatedly(Return(mock_protection_service.get()));
+
+  policy::SetDMTokenForTesting(policy::DMToken::CreateValidToken("dm_token"));
+  enterprise_connectors::test::SetAnalysisConnector(
+      pref_service(), enterprise_connectors::FILE_DOWNLOADED,
+      R"({
+        "service_provider": "google",
+        "enable": [
+          {
+            "url_list": ["*"],
+            "tags": ["malware", "dlp"]
+          }
+        ],
+        "block_until_verdict": 1
+      })");
+
+  auto obfuscation_data =
+      std::make_unique<enterprise_obfuscation::DownloadObfuscationData>(
+          /*is_obfuscated=*/true);
+  obfuscation_data->original_target_path = virtual_path;
+  download_item->SetUserData(
+      enterprise_obfuscation::DownloadObfuscationData::kUserDataKey,
+      std::move(obfuscation_data));
+  download_item->SetUserData(
+      &ChromeDownloadManagerDelegate::SafeBrowsingState::
+          kSafeBrowsingUserDataKey,
+      std::make_unique<ChromeDownloadManagerDelegate::SafeBrowsingState>());
+
+  // Completion defers while the file is deobfuscated in place.
+  base::RunLoop run_loop;
+  EXPECT_FALSE(delegate()->ShouldCompleteDownload(download_item.get(),
+                                                  run_loop.QuitClosure()));
+  run_loop.Run();
+
+  auto* final_data =
+      static_cast<enterprise_obfuscation::DownloadObfuscationData*>(
+          download_item->GetUserData(
+              enterprise_obfuscation::DownloadObfuscationData::kUserDataKey));
+  ASSERT_TRUE(final_data);
+  // Precondition: deobfuscation has cleared the flag.
+  ASSERT_FALSE(final_data->is_obfuscated);
+  ASSERT_EQ(virtual_path, final_data->original_target_path);
+
+  // The relocation to the virtual filesystem is still pending, so a rename
+  // handler is required here.
+  EXPECT_TRUE(delegate()->GetRenameHandlerForDownload(download_item.get()));
+}
+
 TEST_F(ChromeDownloadManagerDelegateTestWithSafeBrowsing,
        DetermineLocalPath_Obfuscation_NonLocalPath) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -3126,10 +3265,17 @@ class TestDownloadDialogBridge : public DownloadDialogBridge {
 }  // namespace
 
 TEST_F(ChromeDownloadManagerDelegateTest, RequestConfirmation_Android) {
+  base::android::device_info::set_is_desktop_for_testing(false);
+  base::ScopedClosureRunner reset_desktop(base::BindOnce(
+      &base::android::device_info::reset_is_desktop_for_testing));
+
   DeleteContents();
   SetContents(CreateTestWebContents());
 
   base::test::ScopedFeatureList scoped_list;
+  scoped_list.InitWithFeatures(
+      {}, {download::features::kEnableDownloadSaveAsContextMenu,
+           download::features::kEnableDownloadSaveAsSystemFileDialog});
   profile()->GetTestingPrefService()->SetInteger(
       prefs::kPromptForDownloadAndroid,
       static_cast<int>(DownloadPromptStatus::SHOW_PREFERENCE));
@@ -3238,4 +3384,298 @@ TEST_F(ChromeDownloadManagerDelegateTest, RequestConfirmation_Android) {
     download_item->NotifyObserversDownloadUpdated();
   }
 }
+
+TEST_F(ChromeDownloadManagerDelegateTest, RequestConfirmation_AndroidDesktop) {
+  base::android::device_info::set_is_desktop_for_testing(true);
+  base::ScopedClosureRunner reset_desktop(base::BindOnce(
+      &base::android::device_info::reset_is_desktop_for_testing));
+
+  DeleteContents();
+  SetContents(CreateTestWebContents());
+
+  std::unique_ptr<download::MockDownloadItem> download_item =
+      CreateActiveDownloadItem(1);
+  content::DownloadItemUtils::AttachInfoForTesting(download_item.get(),
+                                                   profile(), web_contents());
+  GURL url("http://example.com");
+  EXPECT_CALL(*download_item, GetURL()).WillRepeatedly(ReturnRef(url));
+
+  std::string unique_file_name =
+      "foo_" + base::Uuid::GenerateRandomV4().AsLowercaseString() + ".txt";
+  base::FilePath fake_path = GetPathInDownloadDir(unique_file_name.c_str());
+  EXPECT_CALL(*delegate(), RequestConfirmation_(_, _, _, _))
+      .WillRepeatedly(Invoke(
+          delegate(),
+          &TestChromeDownloadManagerDelegate::RequestConfirmationConcrete));
+
+  {
+    base::test::ScopedFeatureList scoped_list;
+    scoped_list.InitWithFeatures(
+        {download::features::kEnableDownloadSaveAsContextMenu,
+         download::features::kEnableDownloadSaveAsSystemFileDialog},
+        {});
+
+    base::test::TestFuture<DownloadConfirmationResult,
+                           const ui::SelectedFileInfo&>
+        future;
+    delegate()->RequestConfirmation(download_item.get(), fake_path,
+                                    DownloadConfirmationReason::SAVE_AS,
+                                    future.GetCallback());
+    EXPECT_TRUE(delegate()->show_file_picker_called());
+    EXPECT_EQ(DownloadConfirmationResult::CONFIRMED, future.Get<0>());
+    base::FilePath expected_path =
+        base::FilePath(
+            "content://com.android.externalstorage.documents/"
+            "document/primary%3ADownload")
+            .Append(fake_path.BaseName());
+    EXPECT_EQ(ui::SelectedFileInfo(expected_path), future.Get<1>());
+
+    OnConfirmationCallbackComplete(base::DoNothing(),
+                                   DownloadConfirmationResult::CONFIRMED,
+                                   ui::SelectedFileInfo(expected_path));
+    delegate()->reset_show_file_picker_called();
+    base::test::TestFuture<DownloadConfirmationResult,
+                           const ui::SelectedFileInfo&>
+        pref_future;
+    delegate()->RequestConfirmation(download_item.get(), fake_path,
+                                    DownloadConfirmationReason::PREFERENCE,
+                                    pref_future.GetCallback());
+    EXPECT_TRUE(delegate()->show_file_picker_called());
+    EXPECT_EQ(DownloadConfirmationResult::CONFIRMED, pref_future.Get<0>());
+    EXPECT_EQ(ui::SelectedFileInfo(expected_path), pref_future.Get<1>());
+
+    OnConfirmationCallbackComplete(base::DoNothing(),
+                                   DownloadConfirmationResult::CONFIRMED,
+                                   ui::SelectedFileInfo(expected_path));
+    delegate()->reset_show_file_picker_called();
+    profile()->GetTestingPrefService()->SetBoolean(prefs::kPromptForDownload,
+                                                   true);
+    base::test::TestFuture<DownloadConfirmationResult,
+                           const ui::SelectedFileInfo&>
+        conflict_future;
+    delegate()->RequestConfirmation(download_item.get(), fake_path,
+                                    DownloadConfirmationReason::TARGET_CONFLICT,
+                                    conflict_future.GetCallback());
+    EXPECT_EQ(DownloadConfirmationResult::CONFIRMED, conflict_future.Get<0>());
+    EXPECT_TRUE(delegate()->show_file_picker_called());
+    EXPECT_EQ(ui::SelectedFileInfo(expected_path), conflict_future.Get<1>());
+
+    OnConfirmationCallbackComplete(base::DoNothing(),
+                                   DownloadConfirmationResult::CONFIRMED,
+                                   ui::SelectedFileInfo(expected_path));
+    profile()->GetTestingPrefService()->SetBoolean(prefs::kPromptForDownload,
+                                                   false);
+  }
+
+  {
+    base::test::ScopedFeatureList scoped_list;
+    scoped_list.InitWithFeatures(
+        {download::features::kEnableDownloadSaveAsContextMenu},
+        {download::features::kEnableDownloadSaveAsSystemFileDialog});
+    delegate()->reset_show_file_picker_called();
+    profile()->GetTestingPrefService()->SetInteger(
+        prefs::kPromptForDownloadAndroid,
+        static_cast<int>(DownloadPromptStatus::SHOW_PREFERENCE));
+
+    TestDownloadDialogBridge* dialog_bridge = new TestDownloadDialogBridge();
+    delegate()->SetDownloadDialogBridgeForTesting(
+        static_cast<DownloadDialogBridge*>(dialog_bridge));
+
+    base::test::TestFuture<DownloadConfirmationResult,
+                           const ui::SelectedFileInfo&>
+        future;
+    delegate()->RequestConfirmation(download_item.get(), fake_path,
+                                    DownloadConfirmationReason::SAVE_AS,
+                                    future.GetCallback());
+    EXPECT_FALSE(delegate()->show_file_picker_called());
+    EXPECT_EQ(1, dialog_bridge->GetDialogShownCount());
+    EXPECT_EQ(DownloadLocationDialogType::FORCE_PROMPT,
+              dialog_bridge->GetDialogType());
+    EXPECT_EQ(DownloadConfirmationResult::CANCELED, future.Get<0>());
+
+    base::test::TestFuture<DownloadConfirmationResult,
+                           const ui::SelectedFileInfo&>
+        pref_future;
+    delegate()->RequestConfirmation(download_item.get(), fake_path,
+                                    DownloadConfirmationReason::PREFERENCE,
+                                    pref_future.GetCallback());
+    EXPECT_FALSE(delegate()->show_file_picker_called());
+    EXPECT_EQ(2, dialog_bridge->GetDialogShownCount());
+    EXPECT_EQ(DownloadLocationDialogType::DEFAULT,
+              dialog_bridge->GetDialogType());
+    EXPECT_EQ(DownloadConfirmationResult::CANCELED, pref_future.Get<0>());
+
+    base::test::TestFuture<DownloadConfirmationResult,
+                           const ui::SelectedFileInfo&>
+        conflict_future;
+    delegate()->RequestConfirmation(download_item.get(), fake_path,
+                                    DownloadConfirmationReason::TARGET_CONFLICT,
+                                    conflict_future.GetCallback());
+    EXPECT_EQ(DownloadConfirmationResult::CANCELED, conflict_future.Get<0>());
+    EXPECT_FALSE(delegate()->show_file_picker_called());
+    EXPECT_EQ(3, dialog_bridge->GetDialogShownCount());
+    EXPECT_EQ(DownloadLocationDialogType::NAME_CONFLICT,
+              dialog_bridge->GetDialogType());
+
+    EXPECT_CALL(*download_item, GetState())
+        .WillRepeatedly(Return(DownloadItem::COMPLETE));
+    download_item->NotifyObserversDownloadUpdated();
+  }
+}
+
+TEST_F(ChromeDownloadManagerDelegateTest,
+       RemovingDownloadBeforeShowingFilePicker_AndroidDesktop) {
+  base::android::device_info::set_is_desktop_for_testing(true);
+  base::ScopedClosureRunner reset_desktop(base::BindOnce(
+      &base::android::device_info::reset_is_desktop_for_testing));
+  base::test::ScopedFeatureList scoped_list;
+  scoped_list.InitWithFeatures(
+      {download::features::kEnableDownloadSaveAsContextMenu,
+       download::features::kEnableDownloadSaveAsSystemFileDialog},
+      {});
+
+  GURL download_url("http://example.com/foo.txt");
+
+  std::unique_ptr<download::MockDownloadItem> download1 =
+      CreateActiveDownloadItem(0);
+  EXPECT_CALL(*download1, GetURL())
+      .Times(AnyNumber())
+      .WillRepeatedly(ReturnRef(download_url));
+
+  std::unique_ptr<download::MockDownloadItem> download2 =
+      CreateActiveDownloadItem(1);
+  EXPECT_CALL(*download2, GetURL())
+      .Times(AnyNumber())
+      .WillRepeatedly(ReturnRef(download_url));
+
+  EXPECT_CALL(*delegate(), RequestConfirmation_(_, _, _, _))
+      .WillRepeatedly(Invoke(
+          delegate(),
+          &TestChromeDownloadManagerDelegate::RequestConfirmationConcrete));
+
+  base::FilePath expected_prompt_path(
+      GetPathInDownloadDir(FILE_PATH_LITERAL("foo.txt")));
+  delegate()->RequestConfirmation(download1.get(), expected_prompt_path,
+                                  DownloadConfirmationReason::PREFERENCE,
+                                  base::DoNothing());
+  EXPECT_TRUE(delegate()->show_file_picker_called());
+
+  delegate()->reset_show_file_picker_called();
+  base::test::TestFuture<DownloadConfirmationResult,
+                         const ui::SelectedFileInfo&>
+      future2;
+  delegate()->RequestConfirmation(download2.get(), expected_prompt_path,
+                                  DownloadConfirmationReason::PREFERENCE,
+                                  future2.GetCallback());
+  EXPECT_FALSE(delegate()->show_file_picker_called());
+
+  EXPECT_CALL(*download_manager(), GetDownloadByGuid(download2->GetGuid()))
+      .WillRepeatedly(Return(nullptr));
+
+  OnConfirmationCallbackComplete(base::DoNothing(),
+                                 DownloadConfirmationResult::CONFIRMED,
+                                 ui::SelectedFileInfo(expected_prompt_path));
+
+  EXPECT_EQ(DownloadConfirmationResult::CANCELED, future2.Get<0>());
+  EXPECT_FALSE(delegate()->show_file_picker_called());
+}
+
+TEST_F(ChromeDownloadManagerDelegateTest, ChooseSavePath_AndroidDesktop) {
+  base::android::device_info::set_is_desktop_for_testing(true);
+  base::ScopedClosureRunner reset_desktop(base::BindOnce(
+      &base::android::device_info::reset_is_desktop_for_testing));
+
+  DeleteContents();
+  SetContents(CreateTestWebContents());
+
+  base::FilePath suggested_path =
+      GetPathInDownloadDir(FILE_PATH_LITERAL("test_page.html"));
+
+  {
+    base::test::ScopedFeatureList scoped_list;
+    scoped_list.InitWithFeatures(
+        {download::features::kEnableDownloadSaveAsContextMenu,
+         download::features::kEnableDownloadSaveAsSystemFileDialog},
+        {});
+
+    ui::FakeSelectFileDialog::Factory* factory =
+        ui::FakeSelectFileDialog::RegisterFactory();
+    factory->SetOpenCallback(base::DoNothing());
+    base::ScopedClosureRunner reset_factory(
+        base::BindOnce([]() { ui::SelectFileDialog::SetFactory(nullptr); }));
+
+    base::test::TestFuture<content::SavePackagePathPickedParams,
+                           content::SavePackageDownloadCreatedCallback>
+        future;
+    delegate()->ChooseSavePath(
+        web_contents(), suggested_path, FILE_PATH_LITERAL("html"),
+        /*can_save_as_complete=*/true, future.GetCallback());
+    ui::FakeSelectFileDialog* dialog = factory->GetLastDialog();
+    ASSERT_NE(nullptr, dialog);
+    dialog->CallFileSelectionCanceled();
+  }
+
+  {
+    base::test::ScopedFeatureList scoped_list;
+    scoped_list.InitWithFeatures(
+        {download::features::kEnableDownloadSaveAsContextMenu},
+        {download::features::kEnableDownloadSaveAsSystemFileDialog});
+
+    TestDownloadDialogBridge* dialog_bridge = new TestDownloadDialogBridge();
+    delegate()->SetDownloadDialogBridgeForTesting(
+        static_cast<DownloadDialogBridge*>(dialog_bridge));
+
+    base::test::TestFuture<content::SavePackagePathPickedParams,
+                           content::SavePackageDownloadCreatedCallback>
+        future;
+    delegate()->ChooseSavePath(
+        web_contents(), suggested_path, FILE_PATH_LITERAL("html"),
+        /*can_save_as_complete=*/true, future.GetCallback());
+
+    EXPECT_EQ(1, dialog_bridge->GetDialogShownCount());
+    EXPECT_EQ(DownloadLocationDialogType::FORCE_PROMPT,
+              dialog_bridge->GetDialogType());
+  }
+}
 #endif  // BUILDFLAG(IS_ANDROID)
+
+TEST_F(ChromeDownloadManagerDelegateTest,
+       DownloadFilePicker_DropsFullscreenForSecurity) {
+  ui::FakeSelectFileDialog::Factory* factory =
+      ui::FakeSelectFileDialog::RegisterFactory();
+  factory->SetOpenCallback(base::DoNothing());
+  base::ScopedClosureRunner reset_factory(
+      base::BindOnce([]() { ui::SelectFileDialog::SetFactory(nullptr); }));
+
+  std::unique_ptr<download::MockDownloadItem> download_item =
+      CreateActiveDownloadItem(1);
+  GURL url("https://example.com/file.pdf");
+  EXPECT_CALL(*download_item, GetURL()).WillRepeatedly(ReturnRef(url));
+
+  content::FullscreenState fullscreen_state;
+  fullscreen_state.target_mode = content::FullscreenMode::kContent;
+  ON_CALL(*web_contents_delegate(), GetFullscreenState(web_contents()))
+      .WillByDefault(Return(fullscreen_state));
+  EXPECT_CALL(*web_contents_delegate(),
+              ExitFullscreenModeForTab(web_contents()))
+      .Times(1);
+
+  base::FilePath suggested_path = GetPathInDownloadDir("file.pdf");
+  base::test::TestFuture<DownloadConfirmationResult,
+                         const ui::SelectedFileInfo&>
+      future;
+  DownloadFilePicker::ShowFilePicker(download_item.get(), suggested_path,
+                                     future.GetCallback());
+  ASSERT_NE(nullptr, factory->GetLastDialog());
+  factory->GetLastDialog()->CallFileSelectionCanceled();
+  EXPECT_EQ(DownloadConfirmationResult::CANCELED, future.Get<0>());
+
+  // If exiting fullscreen destroys WebContents, the picker cancels cleanly.
+  future.Clear();
+  EXPECT_CALL(*web_contents_delegate(),
+              ExitFullscreenModeForTab(web_contents()))
+      .WillOnce([this](content::WebContents*) { DeleteContents(); });
+  DownloadFilePicker::ShowFilePicker(download_item.get(), suggested_path,
+                                     future.GetCallback());
+  EXPECT_EQ(DownloadConfirmationResult::CANCELED, future.Get<0>());
+}

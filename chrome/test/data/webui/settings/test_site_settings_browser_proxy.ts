@@ -86,6 +86,8 @@ export class TestSiteSettingsBrowserProxy extends TestBrowserProxy implements
       'revokeFileSystemGrant',
       'revokeFileSystemGrants',
       'setBlockAutoplayEnabled',
+      'initializeCaptureDevices',
+      'setPreferredCaptureDevice',
     ]);
 
 
@@ -136,11 +138,13 @@ export class TestSiteSettingsBrowserProxy extends TestBrowserProxy implements
       this.categoryList_.push(ContentSettingsTypes.KEYBOARD_LOCK);
     }
 
-    // <if expr="is_chromeos">
+    // <if expr="enable_smart_card">
     if (loadTimeData.getBoolean('enableSmartCardReadersContentSetting')) {
       this.categoryList_.push(ContentSettingsTypes.SMART_CARD_READERS);
     }
+    // </if>
 
+    // <if expr="is_chromeos">
     if (loadTimeData.getBoolean('enableWebPrintingContentSetting')) {
       this.categoryList_.push(ContentSettingsTypes.WEB_PRINTING);
     }
@@ -606,9 +610,13 @@ export class TestSiteSettingsBrowserProxy extends TestBrowserProxy implements
     return Promise.resolve(this.recentSitePermissions_);
   }
 
-  initializeCaptureDevices() {}
+  initializeCaptureDevices(type: string) {
+    this.methodCalled('initializeCaptureDevices', type);
+  }
 
-  setPreferredCaptureDevice() {}
+  setPreferredCaptureDevice(type: string, defaultValue: string) {
+    this.methodCalled('setPreferredCaptureDevice', [type, defaultValue]);
+  }
 
   setProtocolHandlerDefault(value: boolean) {
     this.methodCalled('setProtocolHandlerDefault', value);

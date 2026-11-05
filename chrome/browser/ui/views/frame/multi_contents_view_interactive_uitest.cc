@@ -17,7 +17,9 @@
 #include "chrome/browser/ui/side_panel/side_panel_action_callback.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/tabs/split_tab_highlight_controller.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/toolbar/bookmark_sub_menu_model.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -25,6 +27,7 @@
 #include "chrome/browser/ui/views/bookmarks/bookmark_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_container_outline.h"
+#include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/frame/custom_floating_corner.h"
 #include "chrome/browser/ui/views/frame/multi_contents_background_view.h"
 #include "chrome/browser/ui/views/frame/multi_contents_drop_target_view.h"
@@ -57,6 +60,7 @@
 #include "ui/events/event_modifiers.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/views/controls/separator.h"
 #include "ui/views/test/views_test_utils.h"
 
 #if BUILDFLAG(IS_MAC)
@@ -103,6 +107,12 @@ class MultiContentsViewUiTest
  public:
   MultiContentsViewUiTest() = default;
 
+  const std::vector<base::test::FeatureRef> GetDisabledFeatures() override {
+    // TODO(crbug.com/579025166): Fix test failures related to missing tab
+    // search bubble.
+    return {organizer_panel::kOrganizerPanel};
+  }
+
   void SetUpOnMainThread() override {
     SplitViewInteractiveTestMixin::SetUpOnMainThread();
     browser()->GetProfile()->GetPrefs()->SetBoolean(
@@ -123,8 +133,9 @@ class MultiContentsViewUiTest
   auto EnterSplitView(int active_tab,
                       std::optional<int> other_tab = std::nullopt,
                       double ratio = 0.5) {
-    return SplitViewInteractiveTestMixin::EnterSplitView(active_tab, other_tab,
-                                                         GetParam(), ratio);
+    return Steps(SplitViewInteractiveTestMixin::EnterSplitView(
+                     active_tab, other_tab, GetParam(), ratio),
+                 FinishTabstripAnimations());
   }
 
   auto CreateTabsAndEnterSplitView() {
@@ -1190,7 +1201,7 @@ class MultiContentsViewDragEntrypointsUiTest : public MultiContentsViewUiTest {
         RunSubsequence(
             Steps(
                 // Programmatically generate a list of mouse movement steps.
-                []() {
+                [this]() {
                   constexpr int kMouseMovements = 20;
                   constexpr base::TimeDelta kMovementDelay =
                       base::Milliseconds(250);

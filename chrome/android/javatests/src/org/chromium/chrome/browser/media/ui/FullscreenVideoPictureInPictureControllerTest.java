@@ -4,6 +4,9 @@
 
 package org.chromium.chrome.browser.media.ui;
 
+import android.app.Activity;
+import android.os.Build;
+
 import androidx.test.filters.MediumTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
@@ -41,6 +44,8 @@ import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.content_public.browser.NavigationHandle;
+import org.chromium.content_public.browser.ScreenOrientationDelegate;
+import org.chromium.content_public.browser.ScreenOrientationProvider;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.util.DOMUtils;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
@@ -56,14 +61,35 @@ import org.chromium.ui.test.util.DeviceRestriction;
     ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     MediaSwitches.AUTOPLAY_NO_GESTURE_REQUIRED_POLICY
 })
-@Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO) // PiP not supported on AAOS.
-@DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/481444525
+@Restriction({
+    DeviceRestriction.RESTRICTION_TYPE_NON_AUTO, // PiP not supported on AAOS.
+    DeviceFormFactor.PHONE_OR_TABLET // Fullscreen PiP deprecated on Desktop (crbug.com/521413134).
+})
 @EnableFeatures(ChromeFeatureList.FULLSCREEN_VIDEO_PICTURE_IN_PICTURE)
 public class FullscreenVideoPictureInPictureControllerTest {
     // TODO(peconn): Add a test for exit on Tab Reparenting.
     private static final String TEST_PATH = "/chrome/test/data/media/bigbuck-player.html";
     private static final String VIDEO_ID = "video";
     private static final long PIP_TIMEOUT_MS = 10000L;
+
+    /**
+     * Keeps fullscreen video from locking the orientation, which would rotate phones to landscape.
+     * If PiP is requested while that rotation is still running, Android S/T can abort the PiP
+     * transition without ever calling onPictureInPictureModeChanged(true). The Activity then keeps
+     * reporting isInPictureInPictureMode() for the rest of the batch. See crbug.com/566384602.
+     */
+    private static final ScreenOrientationDelegate NO_ORIENTATION_LOCK_DELEGATE =
+            new ScreenOrientationDelegate() {
+                @Override
+                public boolean canUnlockOrientation(Activity activity, int defaultOrientation) {
+                    return true;
+                }
+
+                @Override
+                public boolean canLockOrientation() {
+                    return false;
+                }
+            };
 
     @Rule
     public AutoResetCtaTransitTestRule mActivityTestRule =
@@ -75,22 +101,31 @@ public class FullscreenVideoPictureInPictureControllerTest {
     public void setUp() {
         mActivityTestRule.startOnWebPage(mActivityTestRule.getTestServer().getURL(TEST_PATH));
         mActivity = mActivityTestRule.getActivity();
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        ScreenOrientationProvider.getInstance()
+                                .setOrientationDelegate(NO_ORIENTATION_LOCK_DELEGATE));
     }
 
     @After
     public void tearDown() throws Exception {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> ScreenOrientationProvider.getInstance().setOrientationDelegate(null));
         if (mActivity != null) {
-            ThreadUtils.runOnUiThreadBlocking(
-                    () -> {
-                        if (mActivity.isInPictureInPictureMode()
-                                || mActivity.getLastPictureInPictureModeForTesting()) {
-                            mActivity.onPictureInPictureModeChanged(
-                                    false, mActivity.getResources().getConfiguration());
-                        }
-                    });
+            boolean wasInPip =
+                    ThreadUtils.runOnUiThreadBlocking(
+                            () ->
+                                    mActivity.isInPictureInPictureMode()
+                                            || mActivity.getLastPictureInPictureModeForTesting());
+            if (wasInPip) {
+                ThreadUtils.runOnUiThreadBlocking(
+                        () ->
+                                mActivity.onPictureInPictureModeChanged(
+                                        false, mActivity.getResources().getConfiguration()));
+            }
             int state = ApplicationStatus.getStateForActivity(mActivity);
-            // Restores the PAUSED/STOPPED activity back to RESUMED state.
-            if (state == ActivityState.PAUSED || state == ActivityState.STOPPED) {
+            // Restores the PAUSED/STOPPED activity or PiP window back to RESUMED state.
+            if (wasInPip || state == ActivityState.PAUSED || state == ActivityState.STOPPED) {
                 mActivityTestRule.launchMainActivityFromLauncher();
             }
         }
@@ -261,6 +296,7 @@ public class FullscreenVideoPictureInPictureControllerTest {
 
         enterFullscreen(true);
         triggerAutoPiPAndWait();
+        exitPipAndFullscreenAndWait();
     }
 
     private void exitPipAndFullscreenAndWait() throws Throwable {
@@ -410,6 +446,8 @@ public class FullscreenVideoPictureInPictureControllerTest {
 
     @Test
     @MediumTest
+    @DisableIf.Build(sdk_equals = Build.VERSION_CODES.S, message = "crbug.com/540400359")
+    @DisableIf.Build(sdk_equals = Build.VERSION_CODES.S_V2, message = "crbug.com/540400359")
     public void testMetricsRecorded() throws Throwable {
         HistogramWatcher enteredWatcher =
                 HistogramWatcher.newBuilder()

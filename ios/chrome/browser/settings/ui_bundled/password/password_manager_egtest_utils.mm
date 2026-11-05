@@ -13,6 +13,7 @@
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_table_view_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/reauthentication/local_reauthentication_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_root_table_constants.h"
+#import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -270,17 +271,14 @@ void SaveHiddenPasskeyToStore(NSString* rpId,
 
 void OpenPasswordManager() {
   [ChromeEarlGreyUI openSettingsMenu];
-  if ([ChromeEarlGrey isYourSavedInfoSettingsPageIosEnabled]) {
-    [ChromeEarlGreyUI
-        tapSettingsMenuButton:grey_accessibilityID(
-                                  @"kSettingsAutofillAndPasswordsCellId")];
-    [[EarlGrey selectElementWithMatcher:chrome_test_util::
-                                            SettingsMenuPasswordsButton()]
-        performAction:grey_tap()];
-  } else {
-    [ChromeEarlGreyUI
-        tapSettingsMenuButton:chrome_test_util::SettingsMenuPasswordsButton()];
-  }
+  [ChromeEarlGreyUI
+      tapSettingsMenuButton:grey_accessibilityID(
+                                kSettingsAutofillAndPasswordsCellId)];
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      chrome_test_util::SettingsMenuPasswordsButton()];
+  [[EarlGrey
+      selectElementWithMatcher:chrome_test_util::SettingsMenuPasswordsButton()]
+      performAction:grey_tap()];
   // The settings page requested results from PasswordStore. Make sure they
   // have already been delivered by posting a task to PasswordStore's
   // background task runner and wait until it is finished. Because the
@@ -290,6 +288,8 @@ void OpenPasswordManager() {
 }
 
 void TapNavigationBarEditButton() {
+  [ChromeEarlGrey
+      waitForSufficientlyVisibleElementWithMatcher:NavigationBarEditButton()];
   [[EarlGrey selectElementWithMatcher:NavigationBarEditButton()]
       performAction:grey_tap()];
 }

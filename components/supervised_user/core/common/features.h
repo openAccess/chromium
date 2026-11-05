@@ -36,9 +36,9 @@ BASE_DECLARE_FEATURE(kSupervisedUserVerificationPageOnAndroid);
 BASE_DECLARE_FEATURE(kEnableSupervisedUserVersionSignOutDialog);
 #endif
 
-// Whether the Pacp widget can process a url payload as part of the local
-// approval request.
-BASE_DECLARE_FEATURE(kLocalWebApprovalsWidgetSupportsUrlPayload);
+// Blocks downloads when any URL in the redirect chain is blocked by the
+// supervised user filter.
+BASE_DECLARE_FEATURE(kFilterDownloadUrls);
 
 // Returns whether local parent approvals on Family Link user's device are
 // enabled.

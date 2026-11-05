@@ -8,6 +8,7 @@
 #include <optional>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -19,7 +20,6 @@
 #include "components/omnibox/browser/searchbox.mojom.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/browser/web_ui.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -53,7 +53,7 @@ class ActionChipsHandler : public action_chips::mojom::ActionChipsHandler
       mojo::PendingReceiver<action_chips::mojom::ActionChipsHandler> receiver,
       mojo::PendingRemote<action_chips::mojom::Page> page,
       Profile* profile,
-      content::WebUI* web_ui,
+      content::WebContents* web_contents,
       std::unique_ptr<ActionChipsGenerator> action_chips_generator,
       GetSessionHandleCallback get_session_handle_callback);
   ActionChipsHandler(const ActionChipsHandler&) = delete;
@@ -87,13 +87,22 @@ class ActionChipsHandler : public action_chips::mojom::ActionChipsHandler
   bool ShouldThrottleRetrieval(const GURL& current_url);
   void OnVisibilityChanged();
 
+#if !BUILDFLAG(IS_ANDROID)
+  bool UpdateTabStripModelObservation();
+  void OnBrowserWindowInterfaceChanged();
+#endif
+
   mojo::Receiver<action_chips::mojom::ActionChipsHandler> receiver_;
   mojo::Remote<action_chips::mojom::Page> page_;
   raw_ptr<Profile> profile_;
-  raw_ptr<content::WebUI> web_ui_;
+  raw_ptr<content::WebContents> web_contents_;
   std::unique_ptr<ActionChipsGenerator> action_chips_generator_;
   GetSessionHandleCallback get_session_handle_callback_;
   PrefChangeRegistrar pref_change_registrar_;
+
+#if !BUILDFLAG(IS_ANDROID)
+  base::CallbackListSubscription browser_window_interface_subscription_;
+#endif
 
   std::optional<GURL> last_processed_url_;
   bool has_recorded_any_shown_ = false;

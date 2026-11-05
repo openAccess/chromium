@@ -8,7 +8,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/time/time.h"
-#include "build/build_config.h"
 #include "chrome/browser/after_startup_task_utils.h"
 #include "chrome/browser/page_load_metrics/observers/chrome_gws_page_load_metrics_observer.h"
 #include "chrome/browser/page_load_metrics/observers/histogram_suffixes.h"
@@ -19,16 +18,47 @@
 #include "components/page_load_metrics/common/test/page_load_metrics_test_util.h"
 #include "components/page_load_metrics/google/browser/gws_abandoned_page_load_metrics_observer.h"
 #include "components/page_load_metrics/google/browser/histogram_suffixes.h"
+#include "components/page_load_metrics/google/browser/search_preload_process_data.h"
+#include "components/page_load_metrics/google/browser/search_prewarm_coverage_status.h"
+#include "content/public/browser/child_process_security_policy.h"
+#include "content/public/browser/render_process_host.h"
+#include "content/public/browser/site_instance.h"
+#include "content/public/browser/spare_render_process_host_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/mock_navigation_handle.h"
+#include "content/public/test/navigation_simulator.h"
+#include "net/base/load_timing_internal_info.h"
 #include "net/dns/public/resolution_details.h"
+#include "net/spdy/multiplexed_session_creation_initiator.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/network/public/mojom/device_bound_sessions.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
+#include "url/gurl.h"
+#include "url/origin.h"
+
+using base::Bucket;
+using base::BucketsAre;
+using testing::IsEmpty;
+using testing::Pair;
+using testing::UnorderedElementsAre;
 
 namespace {
 
 constexpr char kGoogleSearchResultsUrl[] = "https://www.google.com/search?q=d";
+
+class GwsMockNavigationHandle : public content::MockNavigationHandle {
+ public:
+  using content::MockNavigationHandle::MockNavigationHandle;
+
+  bool NetworkAccessed() override { return network_accessed_; }
+  void set_network_accessed(bool network_accessed) {
+    network_accessed_ = network_accessed;
+  }
+
+ private:
+  bool network_accessed_ = false;
+};
 
 }  // namespace
 
@@ -97,6 +127,19 @@ class GWSPageLoadMetricsObserverTest
     PopulateRequiredTimingFields(timing);
   }
 
+  void PopulateNavigationTimingMilestones(
+      content::NavigationHandleTiming* timing,
+      base::TimeTicks base_time = base::TimeTicks::Now() +
+                                  base::Milliseconds(10)) {
+    timing->first_request_start_time = base_time;
+    timing->first_response_start_time = base_time + base::Milliseconds(10);
+    timing->first_loader_callback_time = base_time + base::Milliseconds(20);
+    timing->final_request_start_time = base_time + base::Milliseconds(30);
+    timing->final_response_start_time = base_time + base::Milliseconds(40);
+    timing->final_loader_callback_time = base_time + base::Milliseconds(50);
+    timing->navigation_commit_sent_time = base_time + base::Milliseconds(60);
+  }
+
  protected:
   raw_ptr<GWSPageLoadMetricsObserver, DanglingUntriaged> observer_ = nullptr;
 };
@@ -123,6 +166,10 @@ TEST_F(GWSPageLoadMetricsObserverTest, Search) {
 
   // Wait until the browser init is complete.
   AfterStartupTaskUtils::SetBrowserStartupIsCompleteForTesting();
+
+  // Clean up any spare renderer implicitly warmed during test harness setup so
+  // the navigation deterministically allocates a cold process on all platforms.
+  content::SpareRenderProcessHostManager::Get().CleanupSparesForTesting();
 
   NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
 
@@ -192,21 +239,11 @@ TEST_F(GWSPageLoadMetricsObserverTest, Search) {
       internal::kHistogramGWSLargestContentfulPaint, 1);
   tester()->histogram_tester().ExpectBucketCount(
       internal::kHistogramGWSLargestContentfulPaint, 100, 1);
-  tester()->histogram_tester().ExpectTotalCount(
-      "PageLoad.Clients.GoogleSearch.SiteInstanceProcessAssignment2."
+  tester()->histogram_tester().ExpectBucketCount(
+      "PageLoad.Clients.GoogleSearch.PrewarmPrerenderCoverageStatus2."
       "BrowserInitiated",
-      1);
-  tester()->histogram_tester().ExpectTotalCount(
-      "PageLoad.Clients.GoogleSearch.SiteInstanceProcessAssignment2."
-      "BrowserInitiated.NonPrerender",
-      1);
-  tester()->histogram_tester().ExpectTotalCount(
-      "PageLoad.Clients.GoogleSearch.HadPriorPrewarmCommitStatus2."
-      "BrowserInitiated",
-      1);
-  tester()->histogram_tester().ExpectTotalCount(
-      "PageLoad.Clients.GoogleSearch.HadPriorPrewarmCommitStatus2."
-      "BrowserInitiated.NonPrerender",
+      page_load_metrics::SearchPrewarmPrerenderCoverageStatus::
+          kColdProcessAllocated,
       1);
 }
 
@@ -937,4 +974,642 @@ TEST_F(GWSPageLoadMetricsObserverTest, FastFetchOpportunityTime) {
       internal::kHistogramGWSFastFetchOpportunityTimeFetchStart, 20, 1);
 }
 
-// trivial comment to force rebuild
+TEST_F(GWSPageLoadMetricsObserverTest,
+       QuicSessionEstablishmentAndReuseReasons) {
+  struct TestCase {
+    const char* description;
+    base::TimeDelta domain_lookup_delay;
+    base::TimeDelta connect_delay;
+    const char* expected_suffix;
+    std::vector<const char*> unexpected_suffixes;
+  } kTestCases[] = {
+      {"ConnectionReuse",
+       base::Milliseconds(0),
+       base::Milliseconds(0),
+       internal::kConnectionReuseSuffix,
+       {internal::kDNSReuseSuffix, internal::kNonConnectionReuseSuffix}},
+      {"DNSReuse",
+       base::Milliseconds(0),
+       base::Milliseconds(10),
+       internal::kDNSReuseSuffix,
+       {internal::kConnectionReuseSuffix, internal::kNonConnectionReuseSuffix}},
+      {"NonConnectionReuse",
+       base::Milliseconds(10),
+       base::Milliseconds(10),
+       internal::kNonConnectionReuseSuffix,
+       {internal::kConnectionReuseSuffix, internal::kDNSReuseSuffix}},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.description);
+    base::HistogramTester histogram_tester;
+
+    net::QuicConnectionReuseDetails quic_details;
+    quic_details.establishment_reason =
+        net::QuicSessionEstablishmentReason::kSessionExistedButNotPreconnect;
+    quic_details.non_reuse_reason =
+        net::QuicSessionNonReuseReason::kNoSessionExisted_TrueColdStart;
+
+    content::NavigationHandleTiming timing;
+    timing.first_request_domain_lookup_delay = test_case.domain_lookup_delay;
+    timing.first_request_connect_delay = test_case.connect_delay;
+    timing.session_details = {
+        .session_source = net::SessionSource::kNew,
+        .quic_connection_reuse_details = quic_details,
+        .session_creation_initiator =
+            net::MultiplexedSessionCreationInitiator::kPreconnect,
+    };
+    PopulateNavigationTimingMilestones(&timing);
+
+    NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+    GwsMockNavigationHandle handle(GURL(kGoogleSearchResultsUrl), main_rfh());
+    EXPECT_CALL(handle, GetNavigationHandleTiming())
+        .WillRepeatedly(testing::ReturnRef(timing));
+    EXPECT_CALL(handle, GetConnectionInfo())
+        .WillRepeatedly(testing::Return(net::HttpConnectionInfo::kQUIC_35));
+    handle.set_was_response_cached(false);
+    handle.set_network_accessed(true);
+
+    observer_->OnCommit(&handle);
+
+    page_load_metrics::mojom::PageLoadTiming page_load_timing;
+    InitializeTestPageLoadTiming(&page_load_timing);
+    tester()->SimulateTimingUpdate(page_load_timing);
+
+    tester()->NavigateToUntrackedUrl();
+
+    // Verify Base histograms.
+    histogram_tester.ExpectUniqueSample(
+        internal::kHistogramGWSQuicSessionEstablishmentReason,
+        static_cast<int>(net::QuicSessionEstablishmentReason::
+                             kSessionExistedButNotPreconnect),
+        1);
+    histogram_tester.ExpectUniqueSample(
+        internal::kHistogramGWSQuicSessionNonReuseReason,
+        static_cast<int>(
+            net::QuicSessionNonReuseReason::kNoSessionExisted_TrueColdStart),
+        1);
+    histogram_tester.ExpectUniqueSample(
+        base::StrCat(
+            {internal::kHistogramGWSSessionCreationInitiator, ".Http3"}),
+        static_cast<int>(net::MultiplexedSessionCreationInitiator::kPreconnect),
+        1);
+
+    // Verify Expected Suffix-specific histograms.
+    histogram_tester.ExpectUniqueSample(
+        base::StrCat({internal::kHistogramGWSQuicSessionEstablishmentReason,
+                      test_case.expected_suffix}),
+        static_cast<int>(net::QuicSessionEstablishmentReason::
+                             kSessionExistedButNotPreconnect),
+        1);
+    histogram_tester.ExpectUniqueSample(
+        base::StrCat({internal::kHistogramGWSQuicSessionNonReuseReason,
+                      test_case.expected_suffix}),
+        static_cast<int>(
+            net::QuicSessionNonReuseReason::kNoSessionExisted_TrueColdStart),
+        1);
+    histogram_tester.ExpectUniqueSample(
+        base::StrCat({internal::kHistogramGWSSessionCreationInitiator, ".Http3",
+                      test_case.expected_suffix}),
+        static_cast<int>(net::MultiplexedSessionCreationInitiator::kPreconnect),
+        1);
+
+    // Verify Unexpected Suffix-specific histograms are NOT recorded.
+    for (const char* unexpected_suffix : test_case.unexpected_suffixes) {
+      histogram_tester.ExpectTotalCount(
+          base::StrCat({internal::kHistogramGWSQuicSessionEstablishmentReason,
+                        unexpected_suffix}),
+          0);
+      histogram_tester.ExpectTotalCount(
+          base::StrCat({internal::kHistogramGWSQuicSessionNonReuseReason,
+                        unexpected_suffix}),
+          0);
+      histogram_tester.ExpectTotalCount(
+          base::StrCat({internal::kHistogramGWSSessionCreationInitiator,
+                        ".Http3", unexpected_suffix}),
+          0);
+    }
+  }
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       SessionDetails_Http2AndNonQuicProtocols) {
+  struct TestCase {
+    const char* description;
+    net::HttpConnectionInfo connection_info;
+    base::TimeDelta domain_lookup_delay;
+    base::TimeDelta connect_delay;
+    const char* expected_suffix;
+    bool expect_initiator_recorded;
+    const char* initiator_protocol_suffix;
+  } kTestCases[] = {
+      {"HTTP2_ConnectionReuse", net::HttpConnectionInfo::kHTTP2,
+       base::Milliseconds(0), base::Milliseconds(0),
+       internal::kConnectionReuseSuffix, true, ".Http2"},
+      {"HTTP2_DNSReuse", net::HttpConnectionInfo::kHTTP2, base::Milliseconds(0),
+       base::Milliseconds(10), internal::kDNSReuseSuffix, true, ".Http2"},
+      {"HTTP2_NonConnectionReuse", net::HttpConnectionInfo::kHTTP2,
+       base::Milliseconds(10), base::Milliseconds(10),
+       internal::kNonConnectionReuseSuffix, true, ".Http2"},
+      {"HTTP11_NoMetrics", net::HttpConnectionInfo::kHTTP1_1,
+       base::Milliseconds(0), base::Milliseconds(0),
+       internal::kConnectionReuseSuffix, false, ".Http1"},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.description);
+    base::HistogramTester histogram_tester;
+
+    net::QuicConnectionReuseDetails quic_details;
+    quic_details.establishment_reason =
+        net::QuicSessionEstablishmentReason::kSessionExistedButNotPreconnect;
+    quic_details.non_reuse_reason =
+        net::QuicSessionNonReuseReason::kNoSessionExisted_TrueColdStart;
+
+    content::NavigationHandleTiming timing;
+    timing.first_request_domain_lookup_delay = test_case.domain_lookup_delay;
+    timing.first_request_connect_delay = test_case.connect_delay;
+    timing.session_details = {
+        .session_source = net::SessionSource::kNew,
+        .quic_connection_reuse_details = quic_details,
+        .session_creation_initiator =
+            net::MultiplexedSessionCreationInitiator::kPreconnect,
+    };
+    PopulateNavigationTimingMilestones(&timing);
+
+    NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+    GwsMockNavigationHandle handle(GURL(kGoogleSearchResultsUrl), main_rfh());
+    EXPECT_CALL(handle, GetNavigationHandleTiming())
+        .WillRepeatedly(testing::ReturnRef(timing));
+    EXPECT_CALL(handle, GetConnectionInfo())
+        .WillRepeatedly(testing::Return(test_case.connection_info));
+    handle.set_was_response_cached(false);
+    handle.set_network_accessed(true);
+
+    observer_->OnCommit(&handle);
+
+    page_load_metrics::mojom::PageLoadTiming page_load_timing;
+    InitializeTestPageLoadTiming(&page_load_timing);
+    tester()->SimulateTimingUpdate(page_load_timing);
+
+    tester()->NavigateToUntrackedUrl();
+
+    if (test_case.expect_initiator_recorded) {
+      histogram_tester.ExpectUniqueSample(
+          base::StrCat({internal::kHistogramGWSSessionCreationInitiator,
+                        test_case.initiator_protocol_suffix}),
+          static_cast<int>(
+              net::MultiplexedSessionCreationInitiator::kPreconnect),
+          1);
+      histogram_tester.ExpectUniqueSample(
+          base::StrCat({internal::kHistogramGWSSessionCreationInitiator,
+                        test_case.initiator_protocol_suffix,
+                        test_case.expected_suffix}),
+          static_cast<int>(
+              net::MultiplexedSessionCreationInitiator::kPreconnect),
+          1);
+    } else {
+      histogram_tester.ExpectTotalCount(
+          base::StrCat({internal::kHistogramGWSSessionCreationInitiator,
+                        test_case.initiator_protocol_suffix}),
+          0);
+    }
+
+    // QUIC specific histograms must NOT be logged for non-QUIC connections.
+    histogram_tester.ExpectTotalCount(
+        internal::kHistogramGWSQuicSessionEstablishmentReason, 0);
+    histogram_tester.ExpectTotalCount(
+        internal::kHistogramGWSQuicSessionNonReuseReason, 0);
+  }
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest, SessionDetails_NetworkNotAccessed) {
+  base::HistogramTester histogram_tester;
+
+  net::QuicConnectionReuseDetails quic_details;
+  quic_details.establishment_reason =
+      net::QuicSessionEstablishmentReason::kSessionExistedButNotPreconnect;
+  quic_details.non_reuse_reason =
+      net::QuicSessionNonReuseReason::kNoSessionExisted_TrueColdStart;
+
+  content::NavigationHandleTiming timing;
+  timing.session_details = {
+      .session_source = net::SessionSource::kNew,
+      .quic_connection_reuse_details = quic_details,
+      .session_creation_initiator =
+          net::MultiplexedSessionCreationInitiator::kPreconnect,
+  };
+  PopulateNavigationTimingMilestones(&timing);
+
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  GwsMockNavigationHandle handle(GURL(kGoogleSearchResultsUrl), main_rfh());
+  EXPECT_CALL(handle, GetNavigationHandleTiming())
+      .WillRepeatedly(testing::ReturnRef(timing));
+  EXPECT_CALL(handle, GetConnectionInfo())
+      .WillRepeatedly(testing::Return(net::HttpConnectionInfo::kQUIC_35));
+  handle.set_was_response_cached(false);
+  handle.set_network_accessed(false);
+
+  observer_->OnCommit(&handle);
+
+  page_load_metrics::mojom::PageLoadTiming page_load_timing;
+  InitializeTestPageLoadTiming(&page_load_timing);
+  tester()->SimulateTimingUpdate(page_load_timing);
+
+  tester()->NavigateToUntrackedUrl();
+
+  // No session details metrics should be recorded when the network was not
+  // accessed.
+  histogram_tester.ExpectTotalCount(
+      internal::kHistogramGWSQuicSessionEstablishmentReason, 0);
+  histogram_tester.ExpectTotalCount(
+      internal::kHistogramGWSQuicSessionNonReuseReason, 0);
+  histogram_tester.ExpectTotalCount(
+      base::StrCat({internal::kHistogramGWSSessionCreationInitiator, ".Http3"}),
+      0);
+
+  for (const char* suffix :
+       {internal::kConnectionReuseSuffix, internal::kDNSReuseSuffix,
+        internal::kNonConnectionReuseSuffix}) {
+    histogram_tester.ExpectTotalCount(
+        base::StrCat(
+            {internal::kHistogramGWSQuicSessionEstablishmentReason, suffix}),
+        0);
+    histogram_tester.ExpectTotalCount(
+        base::StrCat(
+            {internal::kHistogramGWSQuicSessionNonReuseReason, suffix}),
+        0);
+    histogram_tester.ExpectTotalCount(
+        base::StrCat({internal::kHistogramGWSSessionCreationInitiator, ".Http3",
+                      suffix}),
+        0);
+  }
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest, SessionDetails_ResponseCached) {
+  base::HistogramTester histogram_tester;
+
+  net::QuicConnectionReuseDetails quic_details;
+  quic_details.establishment_reason =
+      net::QuicSessionEstablishmentReason::kSessionExistedButNotPreconnect;
+  quic_details.non_reuse_reason =
+      net::QuicSessionNonReuseReason::kNoSessionExisted_TrueColdStart;
+
+  content::NavigationHandleTiming timing;
+  timing.session_details = {
+      .session_source = net::SessionSource::kNew,
+      .quic_connection_reuse_details = quic_details,
+      .session_creation_initiator =
+          net::MultiplexedSessionCreationInitiator::kPreconnect,
+  };
+  PopulateNavigationTimingMilestones(&timing);
+
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  GwsMockNavigationHandle handle(GURL(kGoogleSearchResultsUrl), main_rfh());
+  EXPECT_CALL(handle, GetNavigationHandleTiming())
+      .WillRepeatedly(testing::ReturnRef(timing));
+  EXPECT_CALL(handle, GetConnectionInfo())
+      .WillRepeatedly(testing::Return(net::HttpConnectionInfo::kQUIC_35));
+  handle.set_was_response_cached(true);
+  handle.set_network_accessed(true);
+
+  observer_->OnCommit(&handle);
+
+  page_load_metrics::mojom::PageLoadTiming page_load_timing;
+  InitializeTestPageLoadTiming(&page_load_timing);
+  tester()->SimulateTimingUpdate(page_load_timing);
+
+  tester()->NavigateToUntrackedUrl();
+
+  // Base histograms should be recorded.
+  histogram_tester.ExpectUniqueSample(
+      internal::kHistogramGWSQuicSessionEstablishmentReason,
+      static_cast<int>(
+          net::QuicSessionEstablishmentReason::kSessionExistedButNotPreconnect),
+      1);
+  histogram_tester.ExpectUniqueSample(
+      internal::kHistogramGWSQuicSessionNonReuseReason,
+      static_cast<int>(
+          net::QuicSessionNonReuseReason::kNoSessionExisted_TrueColdStart),
+      1);
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat({internal::kHistogramGWSSessionCreationInitiator, ".Http3"}),
+      static_cast<int>(net::MultiplexedSessionCreationInitiator::kPreconnect),
+      1);
+
+  // Connection reuse suffixes should be omitted when the response was served
+  // from cache.
+  for (const char* suffix :
+       {internal::kConnectionReuseSuffix, internal::kDNSReuseSuffix,
+        internal::kNonConnectionReuseSuffix}) {
+    histogram_tester.ExpectTotalCount(
+        base::StrCat(
+            {internal::kHistogramGWSQuicSessionEstablishmentReason, suffix}),
+        0);
+    histogram_tester.ExpectTotalCount(
+        base::StrCat(
+            {internal::kHistogramGWSQuicSessionNonReuseReason, suffix}),
+        0);
+    histogram_tester.ExpectTotalCount(
+        base::StrCat({internal::kHistogramGWSSessionCreationInitiator, ".Http3",
+                      suffix}),
+        0);
+  }
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       PrewarmPrerenderCoverageStatus_SpareProcessUsed) {
+  content::SpareRenderProcessHostManager::Get().WarmupSpare(browser_context());
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  tester()->histogram_tester().ExpectUniqueSample(
+      "PageLoad.Clients.GoogleSearch.PrewarmPrerenderCoverageStatus2."
+      "BrowserInitiated",
+      page_load_metrics::SearchPrewarmPrerenderCoverageStatus::
+          kSpareProcessUsed,
+      1);
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       PrewarmPrerenderCoverageStatus_ColdProcessAllocated) {
+  content::SpareRenderProcessHostManager::Get().CleanupSparesForTesting();
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  tester()->histogram_tester().ExpectUniqueSample(
+      "PageLoad.Clients.GoogleSearch.PrewarmPrerenderCoverageStatus2."
+      "BrowserInitiated",
+      page_load_metrics::SearchPrewarmPrerenderCoverageStatus::
+          kColdProcessAllocated,
+      1);
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       PrewarmPrerenderCoverageStatus_BlankProcessReused) {
+  // Start on about:blank so the tab already has an active process.
+  NavigateAndCommit(GURL("about:blank"));
+
+  // Navigate to SRP in the same tab, reusing the empty process.
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  tester()->histogram_tester().ExpectBucketCount(
+      "PageLoad.Clients.GoogleSearch.PrewarmPrerenderCoverageStatus2."
+      "BrowserInitiated",
+      page_load_metrics::SearchPrewarmPrerenderCoverageStatus::
+          kBlankProcessReused,
+      1);
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       PrewarmPrerenderCoverageStatus_NonSameSiteNotCurrentProcessReused) {
+  // Start on an unrelated cross-site page.
+  NavigateAndCommit(GURL("https://example.com"));
+
+  content::SpareRenderProcessHostManager::Get().CleanupSparesForTesting();
+
+  // Navigate to SRP. Because starting site is not same-site with the search
+  // URL and no spare is available, this is classified as a cold process
+  // allocation, not current process reuse.
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  tester()->histogram_tester().ExpectBucketCount(
+      "PageLoad.Clients.GoogleSearch.PrewarmPrerenderCoverageStatus2."
+      "BrowserInitiated",
+      page_load_metrics::SearchPrewarmPrerenderCoverageStatus::
+          kColdProcessAllocated,
+      1);
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       PrewarmPrerenderCoverageStatus_CurrentProcessReused) {
+  // Navigate to SRP first so main_rfh() gets an existing process without
+  // preload data.
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  NavigateAndCommit(GURL("https://www.google.com/search?q=another"));
+
+  tester()->histogram_tester().ExpectBucketCount(
+      "PageLoad.Clients.GoogleSearch.PrewarmPrerenderCoverageStatus2."
+      "BrowserInitiated",
+      page_load_metrics::SearchPrewarmPrerenderCoverageStatus::
+          kCurrentProcessReused,
+      1);
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       PrewarmPrerenderCoverageStatus_CurrentProcessReused_Prewarm) {
+  // Navigate to SRP first.
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  // Tag main_rfh()->GetProcess() as a preload process.
+  page_load_metrics::SearchPreloadProcessData::GetOrCreate(
+      main_rfh()->GetProcess());
+
+  NavigateAndCommit(GURL("https://www.google.com/search?q=another"));
+
+  tester()->histogram_tester().ExpectBucketCount(
+      "PageLoad.Clients.GoogleSearch.PrewarmPrerenderCoverageStatus2."
+      "BrowserInitiated",
+      page_load_metrics::SearchPrewarmPrerenderCoverageStatus::
+          kCurrentProcessReused_Prewarm,
+      1);
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       PrewarmPrerenderCoverageStatus_OtherProcessReused) {
+  // Explicitly isolate the search origin for this test so that platforms
+  // without strict site isolation (e.g. Android) will require a dedicated
+  // process for google.com and will not share or randomly pick the existing
+  // process from example.com under renderer process limits.
+  content::ChildProcessSecurityPolicy::GetInstance()->AddFutureIsolatedOrigins(
+      {url::Origin::Create(GURL(kGoogleSearchResultsUrl))},
+      content::ChildProcessSecurityPolicy::IsolatedOriginSource::TEST,
+      browser_context());
+
+  // In the primary web_contents(), navigate to a different site first so its
+  // current process is not the google.com process.
+  NavigateAndCommit(GURL("https://example.com"));
+
+  // Create another WebContents in the same profile/BrowserContext that
+  // navigates to SRP, creating a renderer process for google.com.
+  std::unique_ptr<content::WebContents> second_web_contents =
+      CreateTestWebContents();
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      second_web_contents.get(), GURL(kGoogleSearchResultsUrl));
+
+  // Restrict max renderer process count so that the subsequent navigation
+  // reuses an existing suitable renderer process.
+  content::RenderProcessHost::SetMaxRendererProcessCount(1);
+
+  // Now navigate primary web_contents() to SRP. Under process limit, this
+  // reuses the existing google.com process from second_web_contents rather
+  // than the current tab's example.com process.
+  NavigateAndCommit(GURL("https://www.google.com/search?q=another"));
+
+  content::RenderProcessHost::SetMaxRendererProcessCount(0);
+
+  tester()->histogram_tester().ExpectBucketCount(
+      "PageLoad.Clients.GoogleSearch.PrewarmPrerenderCoverageStatus2."
+      "BrowserInitiated",
+      page_load_metrics::SearchPrewarmPrerenderCoverageStatus::
+          kOtherProcessReused,
+      1);
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       PrewarmPrerenderCoverageStatus_PreloadProcessReused) {
+  // Explicitly isolate the search origin for this test so that platforms
+  // without strict site isolation (e.g. Android) will require a dedicated
+  // process for google.com and will not share or randomly pick the existing
+  // process from example.com under renderer process limits.
+  content::ChildProcessSecurityPolicy::GetInstance()->AddFutureIsolatedOrigins(
+      {url::Origin::Create(GURL(kGoogleSearchResultsUrl))},
+      content::ChildProcessSecurityPolicy::IsolatedOriginSource::TEST,
+      browser_context());
+
+  // In the primary web_contents(), navigate to a different site first so its
+  // current process is not the google.com process.
+  NavigateAndCommit(GURL("https://example.com"));
+
+  // Create another WebContents in the same profile/BrowserContext that
+  // navigates to SRP, creating a renderer process for google.com, and tag it
+  // as a preload process.
+  std::unique_ptr<content::WebContents> second_web_contents =
+      CreateTestWebContents();
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      second_web_contents.get(), GURL(kGoogleSearchResultsUrl));
+
+  page_load_metrics::SearchPreloadProcessData::GetOrCreate(
+      second_web_contents->GetPrimaryMainFrame()->GetProcess());
+
+  // Restrict max renderer process count so that the subsequent navigation
+  // reuses an existing suitable renderer process.
+  content::RenderProcessHost::SetMaxRendererProcessCount(1);
+
+  NavigateAndCommit(GURL("https://www.google.com/search?q=another"));
+
+  content::RenderProcessHost::SetMaxRendererProcessCount(0);
+
+  tester()->histogram_tester().ExpectBucketCount(
+      "PageLoad.Clients.GoogleSearch.PrewarmPrerenderCoverageStatus2."
+      "BrowserInitiated",
+      page_load_metrics::SearchPrewarmPrerenderCoverageStatus::
+          kPreloadProcessReused_Prewarm,
+      1);
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest, DeviceBoundSessionsNavigationDeferred) {
+  base::HistogramTester histogram_tester;
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  content::NavigationHandleTiming timing;
+  GwsMockNavigationHandle handle(GURL(kGoogleSearchResultsUrl), main_rfh());
+  EXPECT_CALL(handle, GetNavigationHandleTiming())
+      .WillRepeatedly(testing::ReturnRef(timing));
+  handle.set_device_bound_session_usage(
+      network::mojom::DeviceBoundSessionUsage::kDeferred);
+  handle.set_is_renderer_initiated(false);
+
+  observer_->OnCommit(&handle);
+
+  EXPECT_THAT(
+      histogram_tester.GetAllSamplesForPrefix(
+          internal::kHistogramGWSDeviceBoundSessionsNavigationWasDeferred),
+      UnorderedElementsAre(
+          Pair(internal::kHistogramGWSDeviceBoundSessionsNavigationWasDeferred,
+               BucketsAre(Bucket(true, 1))),
+          Pair(base::StrCat(
+                   {internal::
+                        kHistogramGWSDeviceBoundSessionsNavigationWasDeferred,
+                    internal::kHistogramBrowserInitiatedSuffix}),
+               BucketsAre(Bucket(true, 1)))));
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       DeviceBoundSessionsNavigationNotDeferred) {
+  base::HistogramTester histogram_tester;
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  content::NavigationHandleTiming timing;
+  GwsMockNavigationHandle handle(GURL(kGoogleSearchResultsUrl), main_rfh());
+  EXPECT_CALL(handle, GetNavigationHandleTiming())
+      .WillRepeatedly(testing::ReturnRef(timing));
+  handle.set_device_bound_session_usage(
+      network::mojom::DeviceBoundSessionUsage::kInScopeRefreshNotYetNeeded);
+  handle.set_is_renderer_initiated(true);
+
+  observer_->OnCommit(&handle);
+
+  EXPECT_THAT(
+      histogram_tester.GetAllSamplesForPrefix(
+          internal::kHistogramGWSDeviceBoundSessionsNavigationWasDeferred),
+      UnorderedElementsAre(
+          Pair(internal::kHistogramGWSDeviceBoundSessionsNavigationWasDeferred,
+               BucketsAre(Bucket(false, 1))),
+          Pair(base::StrCat(
+                   {internal::
+                        kHistogramGWSDeviceBoundSessionsNavigationWasDeferred,
+                    internal::kHistogramRendererInitiatedSuffix}),
+               BucketsAre(Bucket(false, 1)))));
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest, DeviceBoundSessionsNotInScope) {
+  base::HistogramTester histogram_tester;
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  content::NavigationHandleTiming timing;
+  GwsMockNavigationHandle handle(GURL(kGoogleSearchResultsUrl), main_rfh());
+  EXPECT_CALL(handle, GetNavigationHandleTiming())
+      .WillRepeatedly(testing::ReturnRef(timing));
+  handle.set_device_bound_session_usage(
+      network::mojom::DeviceBoundSessionUsage::kSiteMatchNotInScope);
+
+  observer_->OnCommit(&handle);
+
+  EXPECT_THAT(
+      histogram_tester.GetAllSamplesForPrefix(
+          internal::kHistogramGWSDeviceBoundSessionsNavigationWasDeferred),
+      IsEmpty());
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       DeviceBoundSessionsNonSearchUrlNotRecorded) {
+  base::HistogramTester histogram_tester;
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  const GURL non_search_url("https://www.google.com/other");
+  GwsMockNavigationHandle handle(non_search_url, main_rfh());
+  handle.set_device_bound_session_usage(
+      network::mojom::DeviceBoundSessionUsage::kDeferred);
+
+  observer_->OnCommit(&handle);
+
+  EXPECT_THAT(
+      histogram_tester.GetAllSamplesForPrefix(
+          internal::kHistogramGWSDeviceBoundSessionsNavigationWasDeferred),
+      IsEmpty());
+}
+
+TEST_F(GWSPageLoadMetricsObserverTest,
+       DeviceBoundSessionsPrerenderNavigationNotRecorded) {
+  base::HistogramTester histogram_tester;
+  NavigateAndCommit(GURL(kGoogleSearchResultsUrl));
+
+  content::NavigationHandleTiming timing;
+  GwsMockNavigationHandle handle(GURL(kGoogleSearchResultsUrl), main_rfh());
+  EXPECT_CALL(handle, GetNavigationHandleTiming())
+      .WillRepeatedly(testing::ReturnRef(timing));
+  handle.set_device_bound_session_usage(
+      network::mojom::DeviceBoundSessionUsage::kDeferred);
+
+  observer_->OnPrerenderStart(&handle, GURL(kGoogleSearchResultsUrl));
+  observer_->OnCommit(&handle);
+
+  EXPECT_THAT(
+      histogram_tester.GetAllSamplesForPrefix(
+          internal::kHistogramGWSDeviceBoundSessionsNavigationWasDeferred),
+      IsEmpty());
+}

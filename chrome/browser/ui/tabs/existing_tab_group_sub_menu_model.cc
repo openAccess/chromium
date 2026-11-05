@@ -62,7 +62,7 @@ ExistingTabGroupSubMenuModel::ExistingTabGroupSubMenuModel(
                                kMinExistingTabGroupCommandId,
                                TabStripModel::CommandAddToNewGroup),
       tab_menu_model_delegate_(tab_menu_model_delegate) {
-  DCHECK(model->SupportsTabGroups());
+  CHECK(model->SupportsTabGroups(), base::NotFatalUntil::M162);
   std::vector<MenuItemInfo> menu_item_infos;
 
   menu_item_infos = GetMenuItemsFromModel(model);
@@ -78,15 +78,15 @@ ExistingTabGroupSubMenuModel::ExistingTabGroupSubMenuModel(
   if (tab_menu_model_delegate_) {
     for (BrowserWindowInterface* browser :
          tab_menu_model_delegate_->GetOtherBrowserWindows(/*is_app=*/false)) {
-      if (browser->GetFeatures().tab_strip_model() == model) {
+      if (browser->GetTabStripModel() == model) {
         continue;
       }
       const std::vector<MenuItemInfo> retrieved_menu_item_infos =
-          GetMenuItemsFromModel(browser->GetFeatures().tab_strip_model());
+          GetMenuItemsFromModel(browser->GetTabStripModel());
       menu_item_infos.insert(menu_item_infos.end(),
                              retrieved_menu_item_infos.begin(),
                              retrieved_menu_item_infos.end());
-      groups = GetGroupsFromModel(browser->GetFeatures().tab_strip_model());
+      groups = GetGroupsFromModel(browser->GetTabStripModel());
       CHECK_EQ(menu_item_infos.size(),
                groups.size() + target_index_to_group_mapping_.size());
       for (const auto& group : groups) {
@@ -113,6 +113,10 @@ ExistingTabGroupSubMenuModel::GetGroupsFromModel(TabStripModel* current_model) {
   // Add tab groups to `groups` if they differ from our indexes current group.
   std::vector<tab_groups::TabGroupId> groups;
   for (auto& group : current_model->group_model()->ListTabGroups()) {
+    if (current_model->IsEphemeralTabGroup(group)) {
+      continue;
+    }
+
     if (model() == current_model &&
         model()->GetTabGroupForTab(GetContextIndex()).has_value() &&
         model()->GetTabGroupForTab(GetContextIndex()).value() == group) {
@@ -188,7 +192,7 @@ bool ExistingTabGroupSubMenuModel::ShouldShowSubmenu(
     for (BrowserWindowInterface* browser :
          tab_menu_model_delegate->GetOtherBrowserWindows(/*is_app=*/false)) {
       TabGroupModel* browser_group_model =
-          browser->GetFeatures().tab_strip_model()->group_model();
+          browser->GetTabStripModel()->group_model();
       if (!browser_group_model) {
         continue;
       }
@@ -204,11 +208,6 @@ bool ExistingTabGroupSubMenuModel::ShouldShowSubmenu(
   return false;
 }
 
-void ExistingTabGroupSubMenuModel::ExecuteExistingCommandForTesting(
-    size_t target_index) {
-  ExecuteExistingCommand(target_index);
-}
-
 void ExistingTabGroupSubMenuModel::ExecuteExistingCommand(size_t target_index) {
   // The tab strip may have been modified while the context menu was open,
   // including closing the tab originally at `context_index`.
@@ -216,7 +215,8 @@ void ExistingTabGroupSubMenuModel::ExecuteExistingCommand(size_t target_index) {
     return;
   }
 
-  DCHECK_LE(size_t(target_index), target_index_to_group_mapping_.size());
+  CHECK_LE(size_t(target_index), target_index_to_group_mapping_.size(),
+           base::NotFatalUntil::M162);
   TabGroupModel* group_model = model()->group_model();
   if (!group_model) {
     return;
@@ -236,6 +236,10 @@ bool ExistingTabGroupSubMenuModel::ShouldShowGroup(
     TabStripModel* model,
     int context_index,
     tab_groups::TabGroupId group) {
+  if (model->IsEphemeralTabGroup(group)) {
+    return false;
+  }
+
   if (!model->IsTabSelected(context_index)) {
     if (group != model->GetTabGroupForTab(context_index)) {
       return true;
@@ -278,8 +282,7 @@ void ExistingTabGroupSubMenuModel::AddSelectedTabsToOpenGroup(
   std::vector<BrowserWindowInterface*> browsers =
       tab_menu_model_delegate_->GetOtherBrowserWindows(/*is_app=*/false);
   for (size_t i = 0; i < browsers.size(); ++i) {
-    TabStripModel* potential_model =
-        browsers[i]->GetFeatures().tab_strip_model();
+    TabStripModel* potential_model = browsers[i]->GetTabStripModel();
     if (potential_model && potential_model != model() &&
         potential_model->group_model()->ContainsTabGroup(group)) {
       browser_index = i;
@@ -313,7 +316,7 @@ void ExistingTabGroupSubMenuModel::AddSelectedTabsToOpenGroup(
                                             browser_index.value());
 
   TabStripModel* const found_model =
-      browsers[browser_index.value()]->GetFeatures().tab_strip_model();
+      browsers[browser_index.value()]->GetTabStripModel();
   // Find the tabs in the new window.
   selected_indices.clear();
   for (tabs::TabInterface* tab : tabs) {

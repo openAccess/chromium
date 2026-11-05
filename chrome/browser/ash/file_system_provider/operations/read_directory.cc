@@ -11,8 +11,8 @@
 
 #include "base/files/safe_base_name.h"
 #include "chrome/browser/ash/file_system_provider/operations/get_metadata.h"
-#include "chrome/common/extensions/api/file_system_provider.h"
-#include "chrome/common/extensions/api/file_system_provider_internal.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider_internal.h"
 #include "components/services/filesystem/public/mojom/types.mojom.h"
 
 namespace ash::file_system_provider::operations {
@@ -74,13 +74,15 @@ bool ReadDirectory::Execute(int request_id) {
   options.is_directory = true;
   options.name = true;
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      extensions::api::file_system_provider::OnReadDirectoryRequested::Create(
+          options));
   return SendEvent(
       request_id,
       extensions::events::FILE_SYSTEM_PROVIDER_ON_READ_DIRECTORY_REQUESTED,
       extensions::api::file_system_provider::OnReadDirectoryRequested::
           kEventName,
-      extensions::api::file_system_provider::OnReadDirectoryRequested::Create(
-          options));
+      std::move(event_args));
 }
 
 void ReadDirectory::OnSuccess(/*request_id=*/int,

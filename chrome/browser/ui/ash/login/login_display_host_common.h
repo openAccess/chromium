@@ -14,13 +14,13 @@
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/scoped_observation.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
 #include "chrome/browser/ash/login/oobe_quick_start/target_device_bootstrap_controller.h"
 #include "chrome/browser/ash/tpm/tpm_firmware_update.h"
 #include "chrome/browser/ui/ash/login/kiosk_app_menu_controller.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_ui_pref_controller.h"
 #include "chrome/browser/ui/ash/login/signin_ui.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/login/session/session_termination_manager.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/user_manager/user_type.h"
@@ -29,15 +29,32 @@ class AccountId;
 class ApplicationLocaleStorage;
 class PrefService;
 
+namespace component_updater {
+class ComponentManagerAsh;
+}  // namespace component_updater
+
+namespace metrics {
+class MetricsService;
+}  // namespace metrics
+
 namespace network {
 class SharedURLLoaderFactory;
 }  // namespace network
 
 namespace policy {
 class BrowserPolicyConnectorAsh;
+class DeviceRestrictionScheduleController;
 }  // namespace policy
 
+namespace user_manager {
+class MultiUserSignInPolicyController;
+}  // namespace user_manager
+
 namespace ash {
+
+namespace system {
+class SystemClock;
+}  // namespace system
 
 class LoginFeedback;
 class OobeMetricsHelper;
@@ -51,14 +68,24 @@ class LoginDisplayHostCommon : public LoginDisplayHost,
                                public SigninUI,
                                public ash::SessionTerminationManager::Observer {
  public:
-  // `local_state`, `application_locale_storage` and
-  // `browser_policy_connector_ash` must be non-null and must outlive `this`.
-  // `shared_url_loader_factory` must be non-null.
+  // `local_state`, `metrics_service`, `application_locale_storage`,
+  // `browser_policy_connector_ash`, `device_restriction_schedule_controller`,
+  // `multi_user_sign_in_policy_controller` and `system_clock` must be non-null
+  // and must outlive `this`.
+  // `shared_url_loader_factory` and `component_manager_ash` must be non-null.
   LoginDisplayHostCommon(
       PrefService* local_state,
+      ::metrics::MetricsService* metrics_service,
       ApplicationLocaleStorage* application_locale_storage,
       scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
       policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+      scoped_refptr<component_updater::ComponentManagerAsh>
+          component_manager_ash,
+      policy::DeviceRestrictionScheduleController*
+          device_restriction_schedule_controller,
+      const user_manager::MultiUserSignInPolicyController*
+          multi_user_sign_in_policy_controller,
+      system::SystemClock* system_clock,
       bool update_geolocation_usage_allowed);
 
   LoginDisplayHostCommon(const LoginDisplayHostCommon&) = delete;
@@ -149,11 +176,19 @@ class LoginDisplayHostCommon : public LoginDisplayHost,
   void NotifyWizardCreated();
 
   const raw_ref<PrefService> local_state_;
+  const raw_ref<::metrics::MetricsService> metrics_service_;
   const raw_ref<ApplicationLocaleStorage> application_locale_storage_;
   const scoped_refptr<network::SharedURLLoaderFactory>
       shared_url_loader_factory_;
   const raw_ref<policy::BrowserPolicyConnectorAsh>
       browser_policy_connector_ash_;
+  const scoped_refptr<component_updater::ComponentManagerAsh>
+      component_manager_ash_;
+  const raw_ref<policy::DeviceRestrictionScheduleController>
+      device_restriction_schedule_controller_;
+  const raw_ref<const user_manager::MultiUserSignInPolicyController>
+      multi_user_sign_in_policy_controller_;
+  const raw_ref<system::SystemClock> system_clock_;
 
  private:
   void Cleanup();

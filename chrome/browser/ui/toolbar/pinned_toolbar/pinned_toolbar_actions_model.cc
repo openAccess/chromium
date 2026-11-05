@@ -17,10 +17,10 @@
 #include "base/strings/strcat.h"
 #include "base/values.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ttc/core/features.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model_factory.h"
 #include "chrome/browser/ui/toolbar/toolbar_pref_names.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -247,13 +247,10 @@ void PinnedToolbarActionsModel::MaybeMigrateExistingPinnedStates() {
     UpdatePinnedState(kActionRouteMedia, previously_pinned);
     pref_service_->SetBoolean(prefs::kPinnedCastMigrationComplete, true);
   }
-  if (base::FeatureList::IsEnabled(
-          features::kTabsFromOtherDevicesSidePanelPinnedByDefault) &&
-      !pref_service_->GetBoolean(
-          prefs::kTabsFromOtherDevicesAutoPinnedMigration)) {
-    UpdatePinnedState(kActionSidePanelShowTabsFromOtherDevices, true);
-    pref_service_->SetBoolean(prefs::kTabsFromOtherDevicesAutoPinnedMigration,
-                              true);
+  if (base::FeatureList::IsEnabled(ttc::kTtc) &&
+      !pref_service_->GetBoolean(prefs::kTtcAutoPinnedMigration)) {
+    UpdatePinnedState(kActionTtcToolbar, true);
+    pref_service_->SetBoolean(prefs::kTtcAutoPinnedMigration, true);
   }
 }
 

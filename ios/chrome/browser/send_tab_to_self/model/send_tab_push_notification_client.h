@@ -8,10 +8,15 @@
 #import <Foundation/Foundation.h>
 #import <UserNotifications/UserNotifications.h>
 
-#import "base/memory/raw_ptr.h"
+#include <string_view>
+#include <vector>
+
+#include "base/callback_list.h"
+#include "base/memory/weak_ptr.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_client.h"
 
 class Browser;
+class GURL;
 class ProfileIOS;
 
 // Client for handling send tab notifications.
@@ -40,7 +45,7 @@ class SendTabPushNotificationClient : public PushNotificationClient {
   // Extracts the scroll text fragment if present and opens the URL in a new
   // tab.
   void LoadSendTabUrlInNewTab(const GURL& url,
-                              std::string_view identifier,
+                              std::string_view entry_guid,
                               Browser* browser);
 
   // Subscriptions for delayed actions.

@@ -50,10 +50,8 @@
 #include "chrome/browser/ash/extensions/default_app_order.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/common/chrome_switches.h"
+#include "chrome/browser/sync/glue/sync_start_util.h"
 #include "chromeos/ash/components/file_manager/app_id.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/app_constants/constants.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/services/app_service/public/cpp/app_registry_cache.h"
@@ -92,7 +90,7 @@ constexpr char kPromisePackageIdKey[] = "promise_package_id";
 
 void GetSyncSpecificsFromSyncItem(const AppListSyncableService::SyncItem* item,
                                   sync_pb::AppListSpecifics* specifics) {
-  DCHECK(specifics);
+  CHECK(specifics, base::NotFatalUntil::M160);
   specifics->set_item_id(item->item_id);
   specifics->set_item_type(item->item_type);
   specifics->set_item_name(item->item_name);
@@ -223,7 +221,7 @@ void UpdateSyncItemInLocalStorage(
     dict_item->Set(kHueKey, sync_item->item_color.hue());
   } else if (dict_item->Find(kBackgroundColorKey)) {
     dict_item->Remove(kBackgroundColorKey);
-    DCHECK(dict_item->Find(kHueKey));
+    CHECK(dict_item->Find(kHueKey), base::NotFatalUntil::M160);
     dict_item->Remove(kHueKey);
   }
 }
@@ -343,7 +341,7 @@ class AppListSyncableService::ModelUpdaterObserver
     // Only sync folders and page breaks which are added from Ash.
     if (!item->is_folder())
       return;
-    DCHECK(adding_item_id_.empty());
+    CHECK(adding_item_id_.empty(), base::NotFatalUntil::M160);
     adding_item_id_ = item->id();  // Ignore updates while adding an item.
     VLOG(2) << owner_ << " OnAppListItemAdded: " << item->ToDebugString();
     owner_->AddOrUpdateFromSyncItem(item);
@@ -361,7 +359,7 @@ class AppListSyncableService::ModelUpdaterObserver
     if (!active_)
       return;
 
-    DCHECK(adding_item_id_.empty());
+    CHECK(adding_item_id_.empty(), base::NotFatalUntil::M160);
     VLOG(2) << owner_ << " OnAppListItemDeleted: " << item->ToDebugString();
     // Don't sync folder removal in case the folder still exists on another
     // device (e.g. with device specific items in it). Empty folders will be
@@ -379,7 +377,7 @@ class AppListSyncableService::ModelUpdaterObserver
     if (!adding_item_id_.empty()) {
       // Adding an item may trigger update notifications which should be
       // ignored.
-      DCHECK_EQ(adding_item_id_, item->id());
+      CHECK_EQ(adding_item_id_, item->id(), base::NotFatalUntil::M160);
       return;
     }
     VLOG(2) << owner_ << " OnAppListItemUpdated: " << item->ToDebugString();
@@ -476,8 +474,8 @@ bool AppListSyncableService::IsExtensionServiceReady() const {
 
 void AppListSyncableService::InitFromLocalStorage() {
   // This should happen before sync and model is built.
-  DCHECK(!sync_processor_.get());
-  DCHECK(!IsInitialized());
+  CHECK(!sync_processor_.get(), base::NotFatalUntil::M160);
+  CHECK(!IsInitialized(), base::NotFatalUntil::M160);
 
   // Restore initial state from local storage.
   const base::DictValue& local_items =
@@ -536,14 +534,14 @@ void AppListSyncableService::InitFromLocalStorage() {
           &background_color);
 
       // Retrieve the hue.
-      DCHECK(item_dict->Find(kHueKey));
+      CHECK(item_dict->Find(kHueKey), base::NotFatalUntil::M160);
       int hue =
           item_dict->FindInt(kHueKey).value_or(ash::IconColor::kHueInvalid);
 
       sync_item->item_color = ash::IconColor(background_color, hue);
 
       // Assume that the color saved in pref is valid.
-      DCHECK(sync_item->item_color.IsValid());
+      CHECK(sync_item->item_color.IsValid(), base::NotFatalUntil::M160);
     }
 
     ProcessNewSyncItem(sync_item);
@@ -561,7 +559,7 @@ bool AppListSyncableService::IsSyncing() const {
 void AppListSyncableService::BuildModel() {
   InitFromLocalStorage();
 
-  DCHECK(IsExtensionServiceReady());
+  CHECK(IsExtensionServiceReady(), base::NotFatalUntil::M160);
   AppListClientImpl* client = AppListClientImpl::GetInstance();
   AppListControllerDelegate* controller = client;
 
@@ -570,7 +568,7 @@ void AppListSyncableService::BuildModel() {
   app_service_promise_apps_builder_ =
       std::make_unique<AppServicePromiseAppModelBuilder>(controller);
 
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
   SyncStarted();
 
   app_service_apps_builder_->Initialize(this, profile_, model_updater_.get());
@@ -845,7 +843,7 @@ AppListSyncableService::CreateSyncItemFromAppItem(
       GetAppListItemType(app_item);
   VLOG(2) << this << " CreateSyncItemFromAppItem:" << app_item->ToDebugString();
   SyncItem* sync_item = CreateSyncItem(app_item->id(), type, /*is_new=*/true);
-  DCHECK(app_item->position().IsValid());
+  CHECK(app_item->position().IsValid(), base::NotFatalUntil::M160);
   UpdateSyncItemFromAppItem(app_item, sync_item);
   UpdateSyncItemInLocalStorage(profile_, sync_item);
   SendSyncChange(sync_item, SyncChange::ACTION_ADD);
@@ -863,10 +861,10 @@ syncer::StringOrdinal AppListSyncableService::GetPinPosition(
 void AppListSyncableService::SetPinPosition(
     const std::string& app_id,
     const syncer::StringOrdinal& item_pin_ordinal) {
-  DCHECK(item_pin_ordinal.IsValid());
+  CHECK(item_pin_ordinal.IsValid(), base::NotFatalUntil::M160);
 
   // Pin position can be set only after model is built.
-  DCHECK(IsInitialized());
+  CHECK(IsInitialized(), base::NotFatalUntil::M160);
 
   SyncItem* sync_item = FindSyncItem(app_id);
   SyncChange::SyncChangeType sync_change_type;
@@ -956,7 +954,7 @@ void AppListSyncableService::CopyPromiseItemAttributesToItem(
 
 void AppListSyncableService::RemovePinPosition(const std::string& app_id) {
   // Pin position can be set only after model is built.
-  DCHECK(IsInitialized());
+  CHECK(IsInitialized(), base::NotFatalUntil::M160);
 
   SyncItem* sync_item = FindSyncItem(app_id);
   // No need to default-initialize already removed items.
@@ -975,7 +973,7 @@ void AppListSyncableService::AddOrUpdateFromSyncItem(
   for (auto& observer : observer_list_)
     observer.OnAddOrUpdateFromSyncItemForTest();
 
-  DCHECK(app_item->position().IsValid());
+  CHECK(app_item->position().IsValid(), base::NotFatalUntil::M160);
 
   SyncItem* sync_item = FindSyncItem(app_item->id());
   if (sync_item) {
@@ -1258,7 +1256,7 @@ void AppListSyncableService::PopulateSyncItemsForTest(
         sync_items_
             .emplace(std::make_pair(sync_item->item_id, std::move(sync_item)))
             .second;
-    DCHECK(success);
+    CHECK(success, base::NotFatalUntil::M160);
   }
 }
 
@@ -1268,7 +1266,7 @@ const AppListSyncableService::SyncItemMap& AppListSyncableService::sync_items()
 }
 
 void AppListSyncableService::WaitUntilReadyToSync(base::OnceClosure done) {
-  DCHECK(!wait_until_ready_to_sync_cb_);
+  CHECK(!wait_until_ready_to_sync_cb_, base::NotFatalUntil::M160);
 
   if (IsInitialized()) {
     std::move(done).Run();
@@ -1283,8 +1281,8 @@ AppListSyncableService::MergeDataAndStartSyncing(
     syncer::DataType type,
     const syncer::SyncDataList& initial_sync_data,
     std::unique_ptr<syncer::SyncChangeProcessor> sync_processor) {
-  DCHECK(!sync_processor_.get());
-  DCHECK(sync_processor.get());
+  CHECK(!sync_processor_.get(), base::NotFatalUntil::M160);
+  CHECK(sync_processor.get(), base::NotFatalUntil::M160);
 
   HandleUpdateStarted();
 
@@ -1309,7 +1307,7 @@ AppListSyncableService::MergeDataAndStartSyncing(
     const std::string& item_id = specifics.item_id();
     DVLOG(2) << this << "  Initial Sync Item: " << item_id
              << " Type: " << specifics.item_type();
-    DCHECK_EQ(syncer::APP_LIST, data.GetDataType());
+    CHECK_EQ(syncer::APP_LIST, data.GetDataType(), base::NotFatalUntil::M160);
     ProcessSyncItemSpecifics(specifics);
     if (specifics.item_type() != sync_pb::AppListSpecifics::TYPE_FOLDER &&
         !IsUnRemovableDefaultApp(item_id) && !AppIsOem(item_id) &&
@@ -1399,7 +1397,7 @@ AppListSyncableService::MergeDataAndStartSyncing(
 }
 
 void AppListSyncableService::StopSyncing(syncer::DataType type) {
-  DCHECK_EQ(type, syncer::APP_LIST);
+  CHECK_EQ(type, syncer::APP_LIST, base::NotFatalUntil::M160);
 
   sync_processor_.reset();
 }
@@ -1479,16 +1477,16 @@ void AppListSyncableService::SetAppListPreferredOrder(
   const auto reorder_params =
       reorder::GenerateReorderParamsForSyncItems(order, sync_items_);
   for (const auto& reorder_param : reorder_params) {
-    sync_pb::AppListSpecifics specifics;
     SyncItem* sync_item = FindSyncItem(reorder_param.sync_item_id);
     const syncer::StringOrdinal& old_ordinal = sync_item->item_ordinal;
     const syncer::StringOrdinal& new_ordinal = reorder_param.ordinal;
 
     // If the old ordinal is valid, the new ordinal should be different.
-    DCHECK(!old_ordinal.IsValid() || !old_ordinal.Equals(new_ordinal));
+    CHECK(!old_ordinal.IsValid() || !old_ordinal.Equals(new_ordinal),
+          base::NotFatalUntil::M160);
 
     // The new ordinal should be valid.
-    DCHECK(new_ordinal.IsValid());
+    CHECK(new_ordinal.IsValid(), base::NotFatalUntil::M160);
 
     sync_item->item_ordinal = new_ordinal;
     ProcessExistingSyncItem(sync_item);
@@ -1661,6 +1659,8 @@ void AppListSyncableService::SendSyncChange(
     // This can occur if an initial item is created before its folder item.
     // A sync item should already exist for the folder, so we do not want to
     // send an ADD event, since that would trigger a CHECK in the sync code.
+    // TODO(crbug.com/572957259): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(sync_item->item_type == sync_pb::AppListSpecifics::TYPE_FOLDER);
     DVLOG(2) << this << " - SendSyncChange: ADD before initial data processed: "
              << sync_item->ToString();
@@ -1685,6 +1685,8 @@ AppListSyncableService::SyncItem* AppListSyncableService::CreateSyncItem(
     const std::string& item_id,
     sync_pb::AppListSpecifics::AppListItemType item_type,
     bool is_new) {
+  // TODO(crbug.com/570370927): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!sync_items_.contains(item_id));
   sync_items_[item_id] = std::make_unique<SyncItem>(item_id, item_type, is_new);
 
@@ -1840,7 +1842,7 @@ void AppListSyncableService::PruneRedundantPageBreakItems() {
 void AppListSyncableService::UpdateSyncItemFromSync(
     const sync_pb::AppListSpecifics& specifics,
     AppListSyncableService::SyncItem* item) {
-  DCHECK_EQ(item->item_id, specifics.item_id());
+  CHECK_EQ(item->item_id, specifics.item_id(), base::NotFatalUntil::M160);
   item->item_type = specifics.item_type();
   item->item_name = specifics.item_name();
   if (specifics.has_promise_package_id()) {
@@ -1878,7 +1880,7 @@ void AppListSyncableService::UpdateSyncItemFromSync(
 bool AppListSyncableService::UpdateSyncItemFromAppItem(
     const ChromeAppListItem* app_item,
     AppListSyncableService::SyncItem* sync_item) {
-  DCHECK_EQ(sync_item->item_id, app_item->id());
+  CHECK_EQ(sync_item->item_id, app_item->id(), base::NotFatalUntil::M160);
 
   bool changed = false;
   // Allow sync changes for parent only for non OEM app.
@@ -1906,6 +1908,8 @@ bool AppListSyncableService::UpdateSyncItemFromAppItem(
   }
 
   if (sync_item->is_system_folder != app_item->is_system_folder()) {
+    // TODO(crbug.com/569773784): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(!sync_item->is_system_folder);
     sync_item->is_system_folder = app_item->is_system_folder();
     // Do not mark the item as changed - the persistent value is not expected to
@@ -1915,7 +1919,7 @@ bool AppListSyncableService::UpdateSyncItemFromAppItem(
   }
 
   if (sync_item->is_ephemeral != app_item->is_ephemeral()) {
-    DCHECK(!sync_item->is_ephemeral);
+    CHECK(!sync_item->is_ephemeral, base::NotFatalUntil::M160);
     sync_item->is_ephemeral = app_item->is_ephemeral();
     // Do not mark the item as changed - the ephemeral value is not expected to
     // be persisted to local state, nor synced. Ephemeral apps and folders are
@@ -1996,8 +2000,8 @@ void AppListSyncableService::SetOemFolderNameFromAppPreloadService(
 }
 
 void AppListSyncableService::InitNewItemPosition(ChromeAppListItem* new_item) {
-  DCHECK(!model_updater_->FindItem(new_item->id()));
-  DCHECK(!new_item->position().IsValid());
+  CHECK(!model_updater_->FindItem(new_item->id()), base::NotFatalUntil::M160);
+  CHECK(!new_item->position().IsValid(), base::NotFatalUntil::M160);
 
   // TODO(https://crbug.com/1260875): handle the case that `new_item` is a
   // folder.
@@ -2024,12 +2028,12 @@ void AppListSyncableService::InitNewItemPosition(ChromeAppListItem* new_item) {
   // If `new_item` cannot be placed following the specified order, `new_item`
   // should be placed at front. Also reset the sorting order.
   if (!is_successful) {
-    DCHECK(!position.IsValid());
+    CHECK(!position.IsValid(), base::NotFatalUntil::M160);
     position = CalculateGlobalFrontPosition();
     SetAppListPreferredOrder(ash::AppListSortOrder::kCustom);
   }
 
-  DCHECK(position.IsValid());
+  CHECK(position.IsValid(), base::NotFatalUntil::M160);
   new_item->SetChromePosition(position);
 }
 
@@ -2098,7 +2102,7 @@ void AppListSyncableService::MaybeAddOrUpdateGuestOsFolderSyncData(
   if (current_sync_data) {
     const syncer::StringOrdinal& item_position =
         current_sync_data->item_ordinal;
-    DCHECK(item_position.IsValid());
+    CHECK(item_position.IsValid(), base::NotFatalUntil::M160);
     folder.SetChromePosition(item_position);
   } else {
     InitNewItemPosition(&folder);
@@ -2117,7 +2121,7 @@ void AppListSyncableService::MaybeAddOrUpdateGuestOsFolderSyncData(
 bool AppListSyncableService::MaybeCreateFolderBeforeAddingItem(
     ChromeAppListItem* app_item,
     const std::string& folder_id) {
-  DCHECK(!folder_id.empty());
+  CHECK(!folder_id.empty(), base::NotFatalUntil::M160);
 
   const SyncItem* folder_sync_item = FindSyncItem(folder_id);
   if (!folder_sync_item) {
@@ -2126,7 +2130,7 @@ bool AppListSyncableService::MaybeCreateFolderBeforeAddingItem(
   }
 
   ChromeAppListItem* folder_item = model_updater_->FindItem(folder_id);
-  DCHECK(!folder_item || folder_item->is_folder());
+  CHECK(!folder_item || folder_item->is_folder(), base::NotFatalUntil::M160);
 
   // The folder item specified by `folder_id` already exists. Nothing to do.
   if (folder_item)
@@ -2148,8 +2152,7 @@ bool AppListSyncableService::IsAppDefaultPositionedForNewUsersOnly(
     return true;
   }
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  if (chromeos::features::IsGeminiAppPreinstallEnabled() &&
-      app_id == ash::kGeminiAppId) {
+  if (app_id == ash::kGeminiAppId) {
     return true;
   }
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)

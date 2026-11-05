@@ -5,13 +5,19 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBAUDIO_AUDIO_WORKLET_HANDLER_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBAUDIO_AUDIO_WORKLET_HANDLER_H_
 
+#include <memory>
+
+#include "base/containers/span.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/types/expected.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_worklet_node_options.h"
+#include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_node.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_param_map.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_worklet_processor_error_details.h"
+#include "third_party/blink/renderer/platform/audio/audio_array.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_persistent.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
 
@@ -20,7 +26,7 @@ namespace blink {
 class AudioNodeInput;
 class AudioWorkletProcessor;
 
-class AudioWorkletHandler final : public AudioHandler {
+class MODULES_EXPORT AudioWorkletHandler final : public AudioHandler {
  public:
   static scoped_refptr<AudioWorkletHandler> Create(
       AudioNode&,
@@ -42,11 +48,14 @@ class AudioWorkletHandler final : public AudioHandler {
 
   String Name() const { return name_; }
 
-  // Sets `AudioWorkletProcessor` and changes the state of the processor.
-  // MUST be called from the render thread.
-  void SetProcessorOnRenderThread(AudioWorkletProcessor*);
+  // Sets `AudioWorkletProcessor` or notifies the main thread on construction
+  // failure. MUST be called from the render thread.
+  void SetProcessorOnRenderThread(
+      base::expected<AudioWorkletProcessor*, AudioWorkletProcessorErrorDetails>
+          result);
 
   bool IsProcessorActive() { return is_processor_active_; }
+  void MarkProcessorInactiveOnMainThread();
 
  private:
   AudioWorkletHandler(
@@ -63,8 +72,6 @@ class AudioWorkletHandler final : public AudioHandler {
 
   void NotifyProcessorError(
       const AudioWorkletProcessorErrorDetails& error_details);
-
-  void MarkProcessorInactiveOnMainThread();
 
   bool HasActiveInputs();
   void FinishProcessorOnRenderThread();
@@ -86,7 +93,8 @@ class AudioWorkletHandler final : public AudioHandler {
   Vector<scoped_refptr<AudioBus>> unconnected_outputs_;
 
   HashMap<String, scoped_refptr<AudioParamHandler>> param_handler_map_;
-  HashMap<String, std::unique_ptr<AudioFloatArray>> param_value_map_;
+  HashMap<String, std::unique_ptr<AudioFloatArray>> param_buffers_;
+  HashMap<String, base::span<const float>> param_value_map_;
 
   scoped_refptr<base::SingleThreadTaskRunner> main_thread_task_runner_;
 

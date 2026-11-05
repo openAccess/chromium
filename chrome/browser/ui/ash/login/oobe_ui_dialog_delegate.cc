@@ -8,7 +8,6 @@
 #include <utility>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/login_accelerators.h"
 #include "ash/public/cpp/login_screen.h"
 #include "ash/public/cpp/login_screen_model.h"
@@ -26,9 +25,10 @@
 #include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
 #include "chrome/browser/ui/webui/chrome_web_contents_handler.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/web_ui.h"
 #include "ui/aura/window.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -38,13 +38,12 @@
 #include "ui/base/ui_base_features.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
-#include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
 #include "ui/views/controls/webview/web_dialog_view.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/metadata/type_conversion.h"
 #include "ui/views/property_effects.h"
 #include "ui/views/view.h"
-#include "ui/views/view_shadow.h"
+#include "ui/views/view_decoration.h"
 #include "ui/views/widget/widget.h"
 #include "ui/web_dialogs/web_dialog_delegate.h"
 
@@ -95,10 +94,8 @@ class OobeWebDialogView : public views::WebDialogView {
                              delegate,
                              std::move(handler),
                              web_contents) {
-    if (features::IsOobeJellyEnabled() || features::IsBootAnimationEnabled()) {
-      set_use_round_corners(/*round=*/true);
-      set_corner_radius(kOobeDialogCornerRadius);
-    }
+    set_use_round_corners(/*round=*/true);
+    set_corner_radius(kOobeDialogCornerRadius);
   }
 
   OobeWebDialogView(const OobeWebDialogView&) = delete;
@@ -126,13 +123,6 @@ class OobeWebDialogView : public views::WebDialogView {
     return true;
   }
 
-  bool HandleKeyboardEvent(
-      content::WebContents* source,
-      const input::NativeWebKeyboardEvent& event) override {
-    return unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-        event, GetFocusManager());
-  }
-
   OobeUI* GetOobeUI() const {
     content::WebContents* web_contents =
         const_cast<OobeWebDialogView*>(this)->web_contents();
@@ -150,9 +140,6 @@ class OobeWebDialogView : public views::WebDialogView {
     GetWidget()->Activate();
     web_contents()->Focus();
   }
-
- private:
-  views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
 };
 
 BEGIN_METADATA(OobeWebDialogView)
@@ -183,12 +170,10 @@ class LayoutWidgetDelegateView : public views::WidgetDelegateView {
     SetFocusTraversesOut(true);
     AddChildViewRaw(oobe_view_.get());
 
-    if (features::IsOobeJellyEnabled() || features::IsBootAnimationEnabled()) {
-      // Create a shadow for the OOBE dialog.
-      view_shadow_ = std::make_unique<views::ViewShadow>(
-          oobe_view_.get(), kOobeDialogShadowElevation);
-      view_shadow_->SetRoundedCornerRadius(kOobeDialogCornerRadius);
-    }
+    // Create a shadow for the OOBE dialog.
+    view_shadow_ = std::make_unique<views::ViewDecoration>(oobe_view_.get());
+    view_shadow_->SetRoundedCornerRadius(kOobeDialogCornerRadius);
+    view_shadow_->SetShadow(kOobeDialogShadowElevation);
   }
 
   LayoutWidgetDelegateView(const LayoutWidgetDelegateView&) = delete;
@@ -241,7 +226,7 @@ class LayoutWidgetDelegateView : public views::WidgetDelegateView {
   raw_ptr<OobeUIDialogDelegate, DanglingUntriaged> dialog_delegate_ =
       nullptr;                                      // Owned by us.
   raw_ptr<OobeWebDialogView> oobe_view_ = nullptr;  // Owned by views hierarchy.
-  std::unique_ptr<views::ViewShadow> view_shadow_;
+  std::unique_ptr<views::ViewDecoration> view_shadow_;
 
   // Indicates whether Oobe web view should fully occupy the hosting widget.
   bool fullscreen_ = false;
@@ -280,7 +265,7 @@ OobeUIDialogDelegate::OobeUIDialogDelegate(
         kLoginAcceleratorData[i].action;
   }
 
-  DCHECK(!dialog_view_ && !widget_);
+  CHECK(!dialog_view_ && !widget_, base::NotFatalUntil::M162);
   // Life cycle of `dialog_view_` is managed by the widget:
   // Widget owns a root view which has `dialog_view_` as its child view.
   // Before the widget is destroyed, it will clean up the view hierarchy
@@ -482,7 +467,7 @@ void OobeUIDialogDelegate::OnViewBoundsChanged(views::View* observed_view) {
 }
 
 void OobeUIDialogDelegate::OnViewIsDeleting(views::View* observed_view) {
-  DCHECK_EQ(observed_view, dialog_view_);
+  CHECK_EQ(observed_view, dialog_view_, base::NotFatalUntil::M162);
   view_observer_.Reset();
   dialog_view_ = nullptr;
 }
@@ -554,9 +539,7 @@ void OobeUIDialogDelegate::RemoveObserver(
 
 ui::WebDialogDelegate::FrameKind OobeUIDialogDelegate::GetWebDialogFrameKind()
     const {
-  return (features::IsOobeJellyEnabled() || features::IsBootAnimationEnabled())
-             ? ui::WebDialogDelegate::FrameKind::kDialog
-             : ui::WebDialogDelegate::FrameKind::kNonClient;
+  return ui::WebDialogDelegate::FrameKind::kDialog;
 }
 
 }  // namespace ash

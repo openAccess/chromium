@@ -224,7 +224,7 @@ class WebRtcAudioDeviceImplReleaseTest : public WebRtcAudioDeviceImplTest {
 
     web_local_frame_ = blink::WebLocalFrame::CreateMainFrame(
         web_view_, &web_local_frame_client_, nullptr, mojo::NullRemote(),
-        LocalFrameToken(), DocumentToken(), base::UnguessableToken::Create(),
+        LocalFrameToken(), DocumentToken(), InitiatorStateToken(),
         /*policy_container=*/nullptr);
 
     MediaStreamComponentVector dummy_components;
@@ -239,7 +239,6 @@ class WebRtcAudioDeviceImplReleaseTest : public WebRtcAudioDeviceImplTest {
         base::RepeatingCallback<void()>(), run_loop_.QuitClosure());
 
     test_audio_device_ = new webrtc::RefCountedObject<WebRtcAudioDeviceImpl>();
-    EXPECT_TRUE(test_audio_device_->SetAudioRenderer(renderer_.get()));
 
     worker_thread_ = std::make_unique<base::Thread>("WebRTC_Worker");
     worker_thread_->Start();
@@ -254,6 +253,8 @@ class WebRtcAudioDeviceImplReleaseTest : public WebRtcAudioDeviceImplTest {
                        base::Unretained(test_audio_device_.get()),
                        base::Unretained(&init_loop)));
     init_loop.Run();
+
+    EXPECT_TRUE(test_audio_device_->SetAudioRenderer(renderer_.get()));
   }
 
   ~WebRtcAudioDeviceImplReleaseTest() override {

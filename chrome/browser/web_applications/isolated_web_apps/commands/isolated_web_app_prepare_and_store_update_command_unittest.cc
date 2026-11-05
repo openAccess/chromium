@@ -42,9 +42,9 @@
 #include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/url_constants.h"
 
@@ -168,7 +168,6 @@ class IsolatedWebAppUpdatePrepareAndStoreCommandTest : public WebAppTest {
     EXPECT_EQ(paths, installed_app_paths);
   }
 
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
   IwaVersion installed_version_ = *IwaVersion::Create("1.0.0");
   IwaVersion update_version_ = *IwaVersion::Create("2.0.0");
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -476,8 +475,11 @@ TEST_F(IsolatedWebAppUpdatePrepareAndStoreCommandTest,
   auto url_info = InstallIwa();
   auto update_bundle = WriteUpdateBundleToDisk();
   auto& page_state = update_bundle->FakeInstallPageState(profile());
-  page_state.manifest_before_default_processing->scope =
-      GURL("https://example.com/foo/");
+  page_state.opt_manifest =
+      page_state.opt_manifest->ToBuilder()
+          .SetStartUrl(url_info.origin().GetURL().Resolve("/foo/index.html"))
+          .SetScope(url_info.origin().GetURL().Resolve("/foo/"))
+          .BuildChecked();
 
   const base::flat_set<base::FilePath> existing_dirs = GetIwaDirContent();
 

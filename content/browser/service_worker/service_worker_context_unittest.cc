@@ -6,15 +6,24 @@
 
 #include <stdint.h>
 
+#include <algorithm>
 #include <memory>
+#include <vector>
 
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/time/time.h"
+#include "base/unguessable_token.h"
+#include "content/browser/devtools/devtools_throttle_handle.h"
+#include "content/browser/devtools/service_worker_devtools_agent_host.h"
+#include "content/browser/devtools/service_worker_devtools_manager.h"
 #include "content/browser/service_worker/embedded_worker_instance.h"
 #include "content/browser/service_worker/embedded_worker_test_helper.h"
 #include "content/browser/service_worker/fake_embedded_worker_instance_client.h"
@@ -27,17 +36,22 @@
 #include "content/browser/service_worker/service_worker_registration.h"
 #include "content/browser/service_worker/service_worker_test_utils.h"
 #include "content/browser/service_worker/service_worker_version.h"
+#include "content/public/browser/devtools_agent_host.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/service_worker_context_observer.h"
 #include "content/public/browser/service_worker_registration_information.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/test_utils.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/service_worker/service_worker_types.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/frame/policy_container.mojom.h"
 #include "third_party/blink/public/mojom/loader/fetch_client_settings_object.mojom.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_database.mojom-forward.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_event_status.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration_options.mojom.h"
@@ -849,6 +863,58 @@ TEST_F(ServiceWorkerContextTest, StartWorkerForScopeFailsWhenWorkerNotLive) {
   EXPECT_EQ(blink::ServiceWorkerStatusCode::kErrorAbort, failure_status);
 }
 
+// Verification test for the case where a Service Worker registration request is
+// processed after the requesting frame has already been detached or destroyed.
+// This test ensures that the ancestor frame type (e.g., kFencedFrame) passed
+// from the client is preserved, instead of falling back to kNormalFrame due to
+// a failed frame lookup.
+TEST_F(ServiceWorkerContextTest, Register_AncestorFrameTypeWithDetachedFrame) {
+  GURL scope("https://www.example.com/");
+  const blink::StorageKey key =
+      blink::StorageKey::CreateFirstParty(url::Origin::Create(scope));
+  GURL script_url("https://www.example.com/service_worker.js");
+  blink::mojom::ServiceWorkerRegistrationOptions options;
+  options.scope = scope;
+
+  base::RunLoop run_loop;
+  bool called = false;
+  int64_t registration_id = blink::mojom::kInvalidServiceWorkerRegistrationId;
+
+  // Request Service Worker registration.
+  // Note: We pass a fake, non-existent `GlobalRenderFrameHostId`
+  // (child_id=1234, frame_routing_id=5678) as `requesting_frame_id`. Because
+  // this ID does not exist in the test's process or routing registry, any
+  // browser-side lookup using `RenderFrameHostImpl::FromID()` will return
+  // nullptr. This simulates the case where the frame was destroyed or detached
+  // before the Register IPC arrived at the browser process. We explicitly pass
+  // the ancestor frame type as `kFencedFrame`.
+  context()->RegisterServiceWorker(
+      script_url, key, options, CreateFetchClientSettingsObject(),
+      base::BindLambdaForTesting(
+          [&](blink::ServiceWorkerStatusCode result_status,
+              const std::string& /*status_message*/,
+              int64_t result_registration_id) {
+            EXPECT_EQ(blink::ServiceWorkerStatusCode::kOk, result_status);
+            called = true;
+            registration_id = result_registration_id;
+            run_loop.Quit();
+          }),
+      /*requesting_frame_id=*/
+      GlobalRenderFrameHostId(/*child_id=*/1234, /*frame_routing_id=*/5678),
+      PolicyContainerPolicies(), blink::mojom::AncestorFrameType::kFencedFrame);
+  run_loop.Run();
+
+  // Verify the registration succeeded and that the stored ancestor
+  // frame type matches the passed `kFencedFrame` value, rather than having
+  // defaulted to `kNormalFrame` due to the failed frame lookup.
+  EXPECT_TRUE(called);
+  scoped_refptr<ServiceWorkerRegistration> registration =
+      context()->GetLiveRegistration(registration_id);
+  ASSERT_TRUE(registration);
+  EXPECT_EQ(blink::mojom::AncestorFrameType::kFencedFrame,
+            registration->ancestor_frame_type());
+}
+
 // Test registration when the service worker rejects the install event. The
 // registration callback should indicate success, but there should be no waiting
 // or active worker in the registration.
@@ -1347,6 +1413,29 @@ TEST_F(ServiceWorkerContextTest, ContainerHostIterator) {
   EXPECT_TRUE(results.contains(service_worker_client2.get()));
 }
 
+class StorageWipedSyncObserver
+    : public ServiceWorkerContextObserverSynchronous {
+ public:
+  explicit StorageWipedSyncObserver(ServiceWorkerContext* context) {
+    scoped_observation_.Observe(context);
+  }
+
+  // ServiceWorkerContextObserverSynchronous:
+  void OnStorageWipedSync(ServiceWorkerContext* context) override {
+    wiped_contexts_.push_back(context);
+  }
+
+  const std::vector<raw_ptr<ServiceWorkerContext>>& wiped_contexts() const {
+    return wiped_contexts_;
+  }
+
+ private:
+  std::vector<raw_ptr<ServiceWorkerContext>> wiped_contexts_;
+  base::ScopedObservation<ServiceWorkerContext,
+                          ServiceWorkerContextObserverSynchronous>
+      scoped_observation_{this};
+};
+
 class ServiceWorkerContextRecoveryTest
     : public ServiceWorkerContextTest,
       public testing::WithParamInterface<bool /* is_storage_on_disk */> {
@@ -1373,6 +1462,8 @@ TEST_P(ServiceWorkerContextRecoveryTest, DeleteAndStartOver) {
     helper_ = std::make_unique<EmbeddedWorkerTestHelper>(user_data_directory);
     helper_->context_wrapper()->AddObserver(this);
   }
+
+  StorageWipedSyncObserver sync_observer(context_wrapper());
 
   int64_t registration_id = blink::mojom::kInvalidServiceWorkerRegistrationId;
   bool called = false;
@@ -1401,6 +1492,7 @@ TEST_P(ServiceWorkerContextRecoveryTest, DeleteAndStartOver) {
   EXPECT_EQ(service_worker_client->context().get(), context());
 
   context()->ScheduleDeleteAndStartOver();
+  EXPECT_TRUE(sync_observer.wiped_contexts().empty());
 
   // The storage is disabled while the recovery process is running, so the
   // operation should be aborted.
@@ -1410,6 +1502,11 @@ TEST_P(ServiceWorkerContextRecoveryTest, DeleteAndStartOver) {
                      blink::ServiceWorkerStatusCode::kErrorAbort,
                      false /* expect_waiting */, true /* expect_active */));
   content::RunAllTasksUntilIdle();
+
+  // Synchronous observers are notified once the recovery completed.
+  ASSERT_EQ(1u, sync_observer.wiped_contexts().size());
+  EXPECT_EQ(static_cast<ServiceWorkerContext*>(context_wrapper()),
+            sync_observer.wiped_contexts()[0].get());
 
   // The context started over and the storage was re-initialized, so the
   // registration should not be found.
@@ -1480,5 +1577,162 @@ TEST_P(ServiceWorkerContextRecoveryTest, DeleteAndStartOver) {
 INSTANTIATE_TEST_SUITE_P(ServiceWorkerContextRecoveryTest,
                          ServiceWorkerContextRecoveryTest,
                          testing::Bool() /* is_storage_on_disk */);
+
+namespace {
+
+class RecordingServiceWorkerDevToolsObserver
+    : public ServiceWorkerDevToolsManager::Observer {
+ public:
+  RecordingServiceWorkerDevToolsObserver() {
+    scoped_observation_.Observe(ServiceWorkerDevToolsManager::GetInstance());
+  }
+
+  // ServiceWorkerDevToolsManager::Observer:
+  void WorkerCreated(ServiceWorkerDevToolsAgentHost* host,
+                     bool* should_pause_on_start) override {}
+  void WorkerDestroyed(ServiceWorkerDevToolsAgentHost* host) override {
+    destroyed_hosts_.push_back(base::WrapRefCounted(host));
+  }
+
+  bool WasDestroyed(ServiceWorkerDevToolsAgentHost* host) const {
+    return std::ranges::contains(
+        destroyed_hosts_, host,
+        &scoped_refptr<ServiceWorkerDevToolsAgentHost>::get);
+  }
+
+ private:
+  ServiceWorkerDevToolsAgentHost::List destroyed_hosts_;
+  base::ScopedObservation<ServiceWorkerDevToolsManager,
+                          ServiceWorkerDevToolsManager::Observer>
+      scoped_observation_{this};
+};
+
+}  // namespace
+
+// DeleteAndStartOver() wipes the storage, so version IDs start over from 0,
+// while the ServiceWorkerContextWrapper stays the same. DevTools agent hosts
+// for versions from before the wipe must therefore not be matched against new
+// versions that happen to get the same version ID (crbug.com/573049974).
+TEST_F(ServiceWorkerContextTest,
+       DeleteAndStartOverDropsStaleDevToolsAgentHosts) {
+  ServiceWorkerDevToolsManager* manager =
+      ServiceWorkerDevToolsManager::GetInstance();
+  RecordingServiceWorkerDevToolsObserver devtools_observer;
+  StorageWipedSyncObserver sync_observer(context_wrapper());
+  const scoped_refptr<ServiceWorkerContextWrapper> wrapper(context_wrapper());
+  const GURL scope("https://www.example.com/");
+  const GURL script_url("https://www.example.com/service_worker.js");
+  constexpr int kRouteId = 1;
+  constexpr int64_t kStoppedVersionId = 0;
+  constexpr int64_t kRunningVersionId = 1;
+  constexpr int64_t kInstallingVersionId = 2;
+  const ChildProcessId kStoppedProcessId(1);
+  const ChildProcessId kRunningProcessId(2);
+  const ChildProcessId kNewProcessId(3);
+
+  // ServiceWorkerDevToolsManager is a process-wide singleton, so make sure
+  // that no hosts of this test leak into other tests, even if an assertion
+  // fails and returns early.
+  base::ScopedClosureRunner cleanup(base::BindLambdaForTesting([&]() {
+    manager->StorageWiped(wrapper.get());
+    for (ChildProcessId process_id :
+         {kStoppedProcessId, kRunningProcessId, kNewProcessId}) {
+      manager->WorkerStopped(process_id, kRouteId);
+    }
+  }));
+
+  auto start_worker = [&](ChildProcessId process_id, int64_t version_id) {
+    base::UnguessableToken devtools_worker_token;
+    bool pause_on_start = false;
+    manager->WorkerStarting(
+        process_id, kRouteId, wrapper, version_id, script_url, scope,
+        /*is_installed_version=*/true, /*client_security_state=*/nullptr,
+        /*coep_reporter=*/mojo::NullRemote(),
+        /*dip_reporter=*/mojo::NullRemote(), &devtools_worker_token,
+        &pause_on_start);
+    return base::WrapRefCounted(
+        manager->GetDevToolsAgentHostForWorker(process_id, kRouteId));
+  };
+  auto start_main_script_fetch = [&](int64_t version_id) {
+    manager->WorkerMainScriptFetchingStarting(
+        wrapper, version_id, script_url, scope, GlobalRenderFrameHostId(),
+        base::MakeRefCounted<DevToolsThrottleHandle>(base::DoNothing()));
+    return base::WrapRefCounted(
+        manager->GetDevToolsAgentHostForNewInstallingWorker(wrapper.get(),
+                                                            version_id));
+  };
+
+  // A stopped worker whose agent host is retained (e.g. by a DevTools client).
+  scoped_refptr<ServiceWorkerDevToolsAgentHost> stale_stopped_host =
+      start_worker(kStoppedProcessId, kStoppedVersionId);
+  ASSERT_TRUE(stale_stopped_host);
+  manager->WorkerStopped(kStoppedProcessId, kRouteId);
+
+  // A worker that keeps running across the wipe.
+  scoped_refptr<ServiceWorkerDevToolsAgentHost> stale_running_host =
+      start_worker(kRunningProcessId, kRunningVersionId);
+  ASSERT_TRUE(stale_running_host);
+
+  // A new worker whose main script fetch is in flight.
+  scoped_refptr<ServiceWorkerDevToolsAgentHost> stale_installing_host =
+      start_main_script_fetch(kInstallingVersionId);
+  ASSERT_TRUE(stale_installing_host);
+
+  context_wrapper()->DeleteAndStartOver();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !sync_observer.wiped_contexts().empty(); }));
+
+  // None of the hosts refers to a version ID anymore, since those IDs can be
+  // reused for unrelated versions.
+  EXPECT_EQ(blink::mojom::kInvalidServiceWorkerVersionId,
+            stale_stopped_host->version_id());
+  EXPECT_EQ(blink::mojom::kInvalidServiceWorkerVersionId,
+            stale_running_host->version_id());
+  EXPECT_EQ(blink::mojom::kInvalidServiceWorkerVersionId,
+            stale_installing_host->version_id());
+
+  // The hosts of the stopped and the installing workers are gone.
+  EXPECT_TRUE(devtools_observer.WasDestroyed(stale_stopped_host.get()));
+  EXPECT_FALSE(stale_stopped_host->version_doomed_time().is_null());
+  EXPECT_TRUE(devtools_observer.WasDestroyed(stale_installing_host.get()));
+  EXPECT_FALSE(manager->GetDevToolsAgentHostForNewInstallingWorker(
+      wrapper.get(), kInstallingVersionId));
+
+  // The host of the running worker stays until the worker stops, but since
+  // its version is gone, it must not be kept around for a restart.
+  EXPECT_FALSE(devtools_observer.WasDestroyed(stale_running_host.get()));
+  EXPECT_FALSE(stale_running_host->version_doomed_time().is_null());
+
+  // A new version reusing the ID of the still running worker gets a fresh
+  // agent host, and lookups by version ID find the new host.
+  scoped_refptr<ServiceWorkerDevToolsAgentHost> new_installing_host =
+      start_main_script_fetch(kRunningVersionId);
+  ASSERT_TRUE(new_installing_host);
+  EXPECT_NE(stale_running_host, new_installing_host);
+  EXPECT_EQ(
+      DevToolsAgentHost::GetForServiceWorker(wrapper.get(), kRunningVersionId),
+      new_installing_host);
+  scoped_refptr<ServiceWorkerDevToolsAgentHost> new_running_host =
+      start_worker(kNewProcessId, kRunningVersionId);
+  EXPECT_EQ(new_installing_host, new_running_host);
+  EXPECT_EQ(
+      DevToolsAgentHost::GetForServiceWorker(wrapper.get(), kRunningVersionId),
+      new_running_host);
+
+  // Once the old worker stops, its host is destroyed.
+  manager->WorkerStopped(kRunningProcessId, kRouteId);
+  EXPECT_TRUE(devtools_observer.WasDestroyed(stale_running_host.get()));
+  EXPECT_FALSE(devtools_observer.WasDestroyed(new_running_host.get()));
+
+  // A new version reusing the ID of the stopped worker gets a fresh agent
+  // host as well.
+  scoped_refptr<ServiceWorkerDevToolsAgentHost> new_stopped_id_host =
+      start_main_script_fetch(kStoppedVersionId);
+  ASSERT_TRUE(new_stopped_id_host);
+  EXPECT_NE(stale_stopped_host, new_stopped_id_host);
+  EXPECT_EQ(
+      DevToolsAgentHost::GetForServiceWorker(wrapper.get(), kStoppedVersionId),
+      new_stopped_id_host);
+}
 
 }  // namespace content

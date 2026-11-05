@@ -7,7 +7,6 @@
 
 #include <memory>
 
-#include "chrome/browser/ui/views/bubble/webui_bubble_manager.h"
 #include "chrome/browser/ui/webui/ash/emoji/emoji_page_handler.h"
 #include "chrome/browser/ui/webui/ash/emoji/emoji_picker.mojom.h"
 #include "chrome/browser/ui/webui/ash/emoji/emoji_search_proxy.h"
@@ -15,7 +14,6 @@
 #include "chrome/browser/ui/webui/ash/emoji/new_window_proxy.mojom.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"
-#include "chrome/browser/ui/webui/webui_load_timer.h"
 #include "chromeos/ash/components/emoji/emoji_search.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"

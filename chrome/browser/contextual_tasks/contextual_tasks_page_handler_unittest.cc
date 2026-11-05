@@ -14,8 +14,8 @@
 #include "base/test/gmock_callback_support.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/unguessable_token.h"
-#include "chrome/browser/actor/actor_actions_runner.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks.mojom.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_eligibility_manager.h"
@@ -29,16 +29,15 @@
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/signin/chrome_signin_client_factory.h"
+#include "chrome/browser/signin/chrome_signin_client_test_util.h"
 #include "chrome/browser/tab_list/mock_tab_list_interface.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "components/actor/core/actor_features.h"
-#include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/contextual_search/mock_contextual_search_context_controller.h"
 #include "components/contextual_search/mock_contextual_search_session_handle.h"
@@ -50,14 +49,16 @@
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/lens/lens_url_utils.h"
 #include "components/omnibox/common/composebox_features.h"
-#include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/prefs/pref_service.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/variations/scoped_variations_ids_provider.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_web_ui.h"
 #include "content/public/test/web_contents_tester.h"
 #include "net/base/url_util.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/lens_server_proto/aim_communication.pb.h"
@@ -106,6 +107,10 @@ class TestContextualTasksUI : public ContextualTasksUI {
   MOCK_METHOD(GURL, GetWebUiUrl, (), (override));
   MOCK_METHOD(content::WebContents*, GetInnerWebContents, (), (const, override));
   MOCK_METHOD(BrowserWindowInterface*, GetBrowser, (), (override));
+  MOCK_METHOD(void,
+              OnRestoredTabsFetched,
+              (std::vector<searchbox::mojom::TabInfoPtr> tabs),
+              (override));
 };
 
 class MockContextualTasksUiServiceForThreadLink
@@ -138,23 +143,25 @@ class MockContextualTasksUiServiceForThreadLink
 
 class ContextualTasksPageHandlerTest : public ChromeRenderViewHostTestHarness {
  public:
+  TestingProfile::TestingFactories GetTestingFactories() const override {
+    return {TestingProfile::TestingFactory{
+        ChromeSigninClientFactory::GetInstance(),
+        base::BindRepeating(&BuildChromeSigninClientWithURLLoader,
+                            &test_url_loader_factory_)}};
+  }
+
   void SetUp() override {
 #if !BUILDFLAG(IS_ANDROID)
     feature_list_.InitWithFeatures(
         {kContextualTasksContextLibrary,
          kEnableContextualTasksPinButtonInToolbar,
-         feature_engagement::kIPHSidePanelContextualTasksPinnableFeature,
-         features::kGlicActor, features::kGlicActorUi,
-         actor::kGlicActorEnableScriptTools, kContextualTasksScriptTools},
+         feature_engagement::kIPHSidePanelContextualTasksPinnableFeature},
         {kContextualTasksHideMenuOnAiPage});
     InitializeActionIdStringMapping();
 #else
-    feature_list_.InitWithFeatures(
-        {kContextualTasksContextLibrary,
-         kEnableContextualTasksPinButtonInToolbar, features::kGlicActor,
-         features::kGlicActorUi, actor::kGlicActorEnableScriptTools,
-         kContextualTasksScriptTools},
-        {});
+    feature_list_.InitWithFeatures({kContextualTasksContextLibrary,
+                                    kEnableContextualTasksPinButtonInToolbar},
+                                   {});
 #endif
     profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
@@ -192,6 +199,12 @@ class ContextualTasksPageHandlerTest : public ChromeRenderViewHostTestHarness {
     // Bind the mock page to the controller.
     contextual_tasks_ui_->GetPageRemote().Bind(page_.BindAndGetRemote());
 
+    mojo::Remote<contextual_tasks_toolbar::mojom::PageHandler>
+        toolbar_handler_remote;
+    contextual_tasks_ui_->CreatePageHandler(
+        toolbar_page_.BindAndGetRemote(),
+        toolbar_handler_remote.BindNewPipeAndPassReceiver());
+
     mock_contextual_tasks_service_ = static_cast<MockContextualTasksService*>(
         ContextualTasksServiceFactory::GetForProfile(profile()));
     mock_contextual_tasks_ui_service_ =
@@ -203,7 +216,6 @@ class ContextualTasksPageHandlerTest : public ChromeRenderViewHostTestHarness {
         mojo::PendingReceiver<mojom::PageHandler>(), contextual_tasks_ui_.get(),
         mock_contextual_tasks_ui_service_, mock_contextual_tasks_service_,
         mock_panel_controller_.get());
-    page_handler_->set_skip_feedback_ui_for_testing(true);
   }
 
   void TearDown() override {
@@ -230,7 +242,9 @@ class ContextualTasksPageHandlerTest : public ChromeRenderViewHostTestHarness {
   raw_ptr<MockContextualTasksUiServiceForThreadLink>
       mock_contextual_tasks_ui_service_;
   NiceMock<MockContextualTasksPage> page_;
+  NiceMock<MockContextualTasksToolbarPage> toolbar_page_;
   base::test::ScopedFeatureList feature_list_;
+  mutable network::TestURLLoaderFactory test_url_loader_factory_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
   variations::test::ScopedVariationsIdsProvider scoped_variations_ids_provider_{
       variations::VariationsIdsProvider::Mode::kUseSignedInState};
@@ -329,77 +343,6 @@ TEST_F(ContextualTasksPageHandlerTest, GetThreadUrl) {
     run_loop.Quit();
   }));
   run_loop.Run();
-}
-
-TEST_F(ContextualTasksPageHandlerTest, CreateNewThread_LegacyArchitecture) {
-  std::unique_ptr<content::WebContents> inner_web_contents =
-      content::WebContentsTester::CreateTestWebContents(profile(), nullptr);
-
-  EXPECT_CALL(*contextual_tasks_ui_, GetInnerWebContents())
-      .WillRepeatedly(Return(inner_web_contents.get()));
-
-  GURL expected_url(kAiPageUrl);
-  EXPECT_CALL(*mock_contextual_tasks_ui_service_, GetDefaultAiPageUrl())
-      .WillOnce(Return(expected_url));
-
-  page_handler_->CreateNewThread();
-
-  EXPECT_EQ(inner_web_contents->GetVisibleURL(), expected_url);
-}
-
-TEST_F(ContextualTasksPageHandlerTest,
-       CreateNewThread_SidePanelRearchitecture) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      kContextualTasksSidePanelRearchitecture);
-
-  std::unique_ptr<content::WebContents> active_web_contents =
-      content::WebContentsTester::CreateTestWebContents(profile(), nullptr);
-
-  EXPECT_CALL(*contextual_tasks_ui_, GetInnerWebContents())
-      .WillRepeatedly(Return(nullptr));
-  EXPECT_CALL(*mock_panel_controller_, GetActiveWebContents())
-      .WillRepeatedly(Return(active_web_contents.get()));
-
-  base::Uuid task_id = base::Uuid::GenerateRandomV4();
-  EXPECT_CALL(*mock_panel_controller_, GetCurrentTask())
-      .WillRepeatedly(Return(ContextualTask(task_id)));
-
-  GURL raw_url("https://www.google.com/search?udm=50");
-  EXPECT_CALL(*mock_contextual_tasks_ui_service_,
-              GetDefaultAiPageUrlForTask(task_id))
-      .WillOnce(Return(raw_url));
-
-  page_handler_->CreateNewThread();
-
-  GURL expected_url = ContextualTasksUiService::AddRequiredSidePanelUrlChanges(
-      raw_url, active_web_contents.get());
-  EXPECT_EQ(active_web_contents->GetVisibleURL(), expected_url);
-
-  std::string gsc_val;
-  EXPECT_TRUE(net::GetValueForKeyInQuery(expected_url, "gsc", &gsc_val));
-  EXPECT_EQ(gsc_val, "2");
-}
-
-TEST_F(ContextualTasksPageHandlerTest, CreateNewThread_NoWebContents_SafeNoOp) {
-  EXPECT_CALL(*contextual_tasks_ui_, GetInnerWebContents())
-      .WillRepeatedly(Return(nullptr));
-
-  // Should exit safely without crashing.
-  page_handler_->CreateNewThread();
-}
-
-TEST_F(ContextualTasksPageHandlerTest,
-       CreateNewThread_SidePanelRearchitecture_NoWebContents_SafeNoOp) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      kContextualTasksSidePanelRearchitecture);
-
-  EXPECT_CALL(*mock_panel_controller_, GetActiveWebContents())
-      .WillRepeatedly(Return(nullptr));
-
-  // Should exit safely without crashing.
-  page_handler_->CreateNewThread();
 }
 
 TEST_F(ContextualTasksPageHandlerTest, GetUrlForTask_InitialUrlExists) {
@@ -673,203 +616,49 @@ TEST_F(ContextualTasksPageHandlerTest, IsShownInTab) {
   run_loop.Run();
 }
 
-TEST_F(ContextualTasksPageHandlerTest, CloseSidePanel) {
-  EXPECT_CALL(*mock_panel_controller_, Close()).Times(1);
-  page_handler_->CloseSidePanel();
-}
-
-TEST_F(ContextualTasksPageHandlerTest, ShowThreadHistory) {
-  // ShowThreadHistory sends a message to the webview.
-  EXPECT_CALL(page_, PostAimMessage(_))
-      .WillOnce([&](const std::vector<uint8_t>& message) {
-        lens::ClientToAimMessage client_message;
-        ASSERT_TRUE(
-            client_message.ParseFromArray(message.data(), message.size()));
-        EXPECT_TRUE(client_message.has_open_threads_view());
-      });
-
-  page_handler_->ShowThreadHistory();
-}
-
-#if !BUILDFLAG(IS_ANDROID)
-TEST_F(ContextualTasksPageHandlerTest, PinSidePanel) {
-  auto* model = PinnedToolbarActionsModel::Get(profile());
-  ASSERT_TRUE(model);
-
-  // Initial state should be unpinned.
-  EXPECT_FALSE(model->Contains(kActionSidePanelShowContextualTasks));
-
-  // We expect the page to be notified when the action is pinned.
-  EXPECT_CALL(page_, OnSidePanelPinStateChanged(true)).Times(1);
-
-  // Pin the side panel.
-  page_handler_->PinSidePanel();
-  EXPECT_TRUE(model->Contains(kActionSidePanelShowContextualTasks));
-
-  // Now unpin.
-  EXPECT_CALL(page_, OnSidePanelPinStateChanged(false))
-      .Times(testing::AtLeast(1));
-  page_handler_->UnpinSidePanel();
-  EXPECT_FALSE(model->Contains(kActionSidePanelShowContextualTasks));
-}
-
-TEST_F(ContextualTasksPageHandlerTest, PinSidePanel_FeatureDisabled) {
-  feature_list_.Reset();
-  feature_list_.InitAndDisableFeature(
-      contextual_tasks::kEnableContextualTasksPinButtonInToolbar);
-
-  auto* model = PinnedToolbarActionsModel::Get(profile());
-  ASSERT_TRUE(model);
-
-  // Initial state should be unpinned.
-  EXPECT_FALSE(model->Contains(kActionSidePanelShowContextualTasks));
-
-  // Pin the side panel (should be a no-op when feature is disabled).
-  page_handler_->PinSidePanel();
-
-  // Should still be false.
-  EXPECT_FALSE(model->Contains(kActionSidePanelShowContextualTasks));
-}
-
-TEST_F(ContextualTasksPageHandlerTest, MaybeTriggerPinningPromo_PanelClosed) {
-  // If the side panel is not open for Contextual Tasks, we should not attempt
-  // to trigger the promo (no-op).
+TEST_F(ContextualTasksPageHandlerTest,
+       MoveActiveTabToNewThreadIfShared_ScopedToTab_MovesActiveTab) {
+  base::test::ScopedFeatureList feature_list(kContextualTasksSidePanelTabState);
   EXPECT_CALL(*mock_panel_controller_, IsPanelOpenForContextualTask())
-      .WillOnce(testing::Return(false));
+      .WillOnce(Return(true));
+  EXPECT_CALL(*mock_panel_controller_, GetActiveWebContents())
+      .WillOnce(Return(web_contents()));
+  EXPECT_CALL(*mock_panel_controller_, MoveActiveTabToNewThreadIfShared())
+      .WillOnce(Return(true));
 
-  page_handler_->MaybeTriggerPinningPromo();
+  base::test::TestFuture<bool> moved;
+  page_handler_->MoveActiveTabToNewThreadIfShared(moved.GetCallback());
+  EXPECT_TRUE(moved.Get());
 }
 
-TEST_F(ContextualTasksPageHandlerTest, MaybeTriggerPinningPromo_Success) {
-  // Set the post-onboarding session count to meet the default threshold (2).
-  profile()->GetPrefs()->SetInteger(
-      contextual_tasks::kContextualTasksSessionCountPostOnboarding, 2);
-
-  NiceMock<MockBrowserWindowInterface> mock_browser_window;
-  ui::UnownedUserDataHost window_user_data_host;
-  ON_CALL(mock_browser_window, GetUnownedUserDataHost())
-      .WillByDefault(ReturnRef(window_user_data_host));
-  ON_CALL(mock_browser_window, GetProfile())
-      .WillByDefault(Return(profile()));
-
-  // Instantiating MockBrowserUserEducationInterface automatically attaches it
-  // to the mock_browser_window (via the UnownedUserDataHost).
-  MockBrowserUserEducationInterface mock_user_education(&mock_browser_window);
-
+TEST_F(
+    ContextualTasksPageHandlerTest,
+    MoveActiveTabToNewThreadIfShared_ScopedToTab_InactivePanel_CancelsWithoutMoving) {
+  base::test::ScopedFeatureList feature_list(kContextualTasksSidePanelTabState);
   EXPECT_CALL(*mock_panel_controller_, IsPanelOpenForContextualTask())
-      .WillOnce(testing::Return(true));
-  EXPECT_CALL(*contextual_tasks_ui_, GetBrowser())
-      .WillRepeatedly(testing::Return(&mock_browser_window));
+      .WillOnce(Return(true));
+  EXPECT_CALL(*mock_panel_controller_, GetActiveWebContents())
+      .WillOnce(Return(nullptr));
+  EXPECT_CALL(*mock_panel_controller_, MoveActiveTabToNewThreadIfShared())
+      .Times(0);
 
-  EXPECT_CALL(*mock_contextual_tasks_ui_service_, IsAiUrl(testing::_))
-      .WillOnce(testing::Return(true));
-
-  // The pinning promo is expected to be tried.
-  EXPECT_CALL(mock_user_education, MaybeShowFeaturePromo(testing::Matcher<user_education::FeaturePromoParams>(testing::_)))
-      .WillOnce(testing::Return(true));
-
-  page_handler_->MaybeTriggerPinningPromo();
+  // Returning true stops the inactive cached panel from navigating its shared
+  // thread in place.
+  base::test::TestFuture<bool> moved;
+  page_handler_->MoveActiveTabToNewThreadIfShared(moved.GetCallback());
+  EXPECT_TRUE(moved.Get());
 }
 
 TEST_F(ContextualTasksPageHandlerTest,
-       MaybeTriggerPinningPromo_SessionsLessThanThreshold) {
-  // Set the count to 1 (less than the default threshold of 2).
-  profile()->GetPrefs()->SetInteger(
-      contextual_tasks::kContextualTasksSessionCountPostOnboarding, 1);
-
-  NiceMock<MockBrowserWindowInterface> mock_browser_window;
-  ui::UnownedUserDataHost window_user_data_host;
-  ON_CALL(mock_browser_window, GetUnownedUserDataHost())
-      .WillByDefault(ReturnRef(window_user_data_host));
-  ON_CALL(mock_browser_window, GetProfile()).WillByDefault(Return(profile()));
-
-  MockBrowserUserEducationInterface mock_user_education(&mock_browser_window);
-
-  EXPECT_CALL(*mock_panel_controller_, IsPanelOpenForContextualTask())
-      .WillOnce(testing::Return(true));
-  EXPECT_CALL(*contextual_tasks_ui_, GetBrowser())
-      .WillRepeatedly(testing::Return(&mock_browser_window));
-
-  EXPECT_CALL(*mock_contextual_tasks_ui_service_, IsAiUrl(testing::_))
-      .WillOnce(testing::Return(true));
-
-  // The pinning promo is NOT expected to be tried because threshold (2) is not
-  // met.
-  EXPECT_CALL(
-      mock_user_education,
-      MaybeShowFeaturePromo(
-          testing::Matcher<user_education::FeaturePromoParams>(testing::_)))
+       MoveActiveTabToNewThreadIfShared_TabStateDisabled_DoesNotMove) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kContextualTasksSidePanelTabState);
+  EXPECT_CALL(*mock_panel_controller_, MoveActiveTabToNewThreadIfShared())
       .Times(0);
 
-  page_handler_->MaybeTriggerPinningPromo();
-}
-
-TEST_F(ContextualTasksPageHandlerTest, MaybeTriggerPinningPromo_HideMenuOnAiPageEnabled) {
-  base::test::ScopedFeatureList test_features;
-  test_features.InitAndEnableFeature(kContextualTasksHideMenuOnAiPage);
-
-  NiceMock<MockBrowserWindowInterface> mock_browser_window;
-  ui::UnownedUserDataHost window_user_data_host;
-  ON_CALL(mock_browser_window, GetUnownedUserDataHost())
-      .WillByDefault(ReturnRef(window_user_data_host));
-  ON_CALL(mock_browser_window, GetProfile())
-      .WillByDefault(Return(profile()));
-
-  // Instantiating MockBrowserUserEducationInterface automatically attaches it
-  // to the mock_browser_window (via the UnownedUserDataHost).
-  MockBrowserUserEducationInterface mock_user_education(&mock_browser_window);
-
-  EXPECT_CALL(*mock_panel_controller_, IsPanelOpenForContextualTask())
-      .WillOnce(testing::Return(true));
-
-  // The pinning promo is not expected to be tried.
-  EXPECT_CALL(mock_user_education, MaybeShowFeaturePromo(testing::Matcher<user_education::FeaturePromoParams>(testing::_)))
-      .Times(0);
-
-  page_handler_->MaybeTriggerPinningPromo();
-}
-#endif
-
-TEST_F(ContextualTasksPageHandlerTest, MoveTaskUiToNewTab) {
-  base::Uuid task_id = base::Uuid::GenerateRandomV4();
-  contextual_tasks_ui_->SetTaskId(task_id);
-
-  EXPECT_CALL(*mock_contextual_tasks_ui_service_,
-              MoveTaskUiToNewTab(task_id, _, _))
-      .Times(1);
-
-  page_handler_->MoveTaskUiToNewTab();
-}
-
-TEST_F(ContextualTasksPageHandlerTest, OnTabClickedFromSourcesMenu) {
-  int32_t tab_id = 123;
-  GURL url(kExampleUrl);
-
-  EXPECT_CALL(*mock_contextual_tasks_ui_service_,
-              OnTabClickedFromSourcesMenu(tab_id, url, _))
-      .Times(1);
-
-  page_handler_->OnTabClickedFromSourcesMenu(tab_id, url);
-}
-
-TEST_F(ContextualTasksPageHandlerTest, OnFileClickedFromSourcesMenu) {
-  GURL url(kExamplePdfUrl);
-
-  EXPECT_CALL(*mock_contextual_tasks_ui_service_,
-              OnFileClickedFromSourcesMenu(url, _))
-      .Times(1);
-
-  page_handler_->OnFileClickedFromSourcesMenu(url);
-}
-
-TEST_F(ContextualTasksPageHandlerTest, OnImageClickedFromSourcesMenu) {
-  GURL url(kExampleUrl);
-
-  EXPECT_CALL(*mock_contextual_tasks_ui_service_,
-              OnImageClickedFromSourcesMenu(url, _))
-      .Times(1);
-
-  page_handler_->OnImageClickedFromSourcesMenu(url);
+  base::test::TestFuture<bool> moved;
+  page_handler_->MoveActiveTabToNewThreadIfShared(moved.GetCallback());
+  EXPECT_FALSE(moved.Get());
 }
 
 TEST_F(ContextualTasksPageHandlerTest, OnWebviewMessage_HandshakeResponse) {
@@ -882,6 +671,8 @@ TEST_F(ContextualTasksPageHandlerTest, OnWebviewMessage_HandshakeResponse) {
 
   EXPECT_CALL(page_, OnHandshakeComplete()).Times(1);
   EXPECT_CALL(page_, OnSidePanelStateChanged()).Times(1);
+  EXPECT_CALL(*mock_panel_controller_, RecordTimeToHandshakeComplete(_))
+      .Times(1);
 
   page_handler_->OnWebviewMessage(serialized);
 }
@@ -986,25 +777,10 @@ TEST_F(ContextualTasksPageHandlerTest,
   page_handler_->OnWebviewMessage(serialized);
 }
 
-TEST_F(ContextualTasksPageHandlerTest, OpenMyActivityUi) {
-  // Navigation smoke test. We provide a null browser to safely exit early
-  // and avoid crashes in Navigate() which requires a full TabStripModel.
-  EXPECT_CALL(*contextual_tasks_ui_, GetBrowser()).WillOnce(Return(nullptr));
-  page_handler_->OpenMyActivityUi();
-}
-
-
-
 TEST_F(ContextualTasksPageHandlerTest, OpenOnboardingHelpUi) {
   // Navigation smoke test.
   EXPECT_CALL(*contextual_tasks_ui_, GetBrowser()).WillOnce(Return(nullptr));
   page_handler_->OpenOnboardingHelpUi();
-}
-
-TEST_F(ContextualTasksPageHandlerTest, OpenOverflowMenuHelpUi) {
-  // Navigation smoke test.
-  EXPECT_CALL(*contextual_tasks_ui_, GetBrowser()).WillOnce(Return(nullptr));
-  page_handler_->OpenOverflowMenuHelpUi();
 }
 
 TEST_F(ContextualTasksPageHandlerTest, OnboardingTooltipDismissed) {
@@ -1015,17 +791,6 @@ TEST_F(ContextualTasksPageHandlerTest, OnboardingTooltipDismissed) {
   page_handler_->OnboardingTooltipDismissed();
   EXPECT_EQ(prefs->GetInteger(
                 contextual_tasks::kContextualTasksOnboardingTooltipDismissedCount),
-            1);
-}
-
-TEST_F(ContextualTasksPageHandlerTest, LensSearchTooltipDismissed) {
-  PrefService* prefs = profile()->GetPrefs();
-  EXPECT_EQ(prefs->GetInteger(
-                contextual_tasks::kContextualTasksLensSearchTooltipDismissedCount),
-            0);
-  page_handler_->LensSearchTooltipDismissed();
-  EXPECT_EQ(prefs->GetInteger(
-                contextual_tasks::kContextualTasksLensSearchTooltipDismissedCount),
             1);
 }
 
@@ -1147,7 +912,7 @@ TEST_F(
   NiceMock<contextual_search::MockContextualSearchSessionHandle>
       mock_session_handle;
   base::UnguessableToken token = base::UnguessableToken::Create();
-  mock_session_handle.set_submitted_context_tokens({token});
+  mock_session_handle.SetSubmittedContextTokens({token});
 
   ON_CALL(*contextual_tasks_ui_, GetOrCreateContextualSessionHandle())
       .WillByDefault(Return(&mock_session_handle));
@@ -1238,8 +1003,9 @@ TEST_F(ContextualTasksPageHandlerTest,
           });
 
   base::RunLoop run_loop;
-  EXPECT_CALL(page_, OnContextUpdated(_))
-      .WillOnce([&](std::vector<mojom::ContextInfoPtr> context) {
+  EXPECT_CALL(toolbar_page_, OnContextUpdated(_))
+      .WillOnce([&](std::vector<contextual_tasks_toolbar::mojom::ContextInfoPtr>
+                        context) {
         // Only the first 3 valid items should be present.
         ASSERT_EQ(context.size(), 4u);
 
@@ -1267,34 +1033,6 @@ TEST_F(ContextualTasksPageHandlerTest,
                                ContextualTasksService::TriggerSource::kLocal);
   run_loop.Run();
 }
-
-#if !BUILDFLAG(IS_ANDROID)
-TEST_F(ContextualTasksPageHandlerTest, OnReceivedPinStateChanged) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kEnableContextualTasksPinButtonInToolbar);
-
-  // Ignore any unpinned syncs fired initially by constructor setup.
-  EXPECT_CALL(page_, OnSidePanelPinStateChanged(false))
-      .Times(testing::AnyNumber());
-
-  // Recreate page_handler_ to pick up the feature flag.
-  page_handler_ = std::make_unique<ContextualTasksPageHandler>(
-      mojo::PendingReceiver<mojom::PageHandler>(), contextual_tasks_ui_.get(),
-      mock_contextual_tasks_ui_service_, mock_contextual_tasks_service_,
-      mock_panel_controller_.get());
-  page_handler_->set_skip_feedback_ui_for_testing(true);
-
-  base::RunLoop run_loop;
-  EXPECT_CALL(page_, OnSidePanelPinStateChanged(true))
-      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
-
-  auto* model = PinnedToolbarActionsModel::Get(profile());
-  ASSERT_TRUE(model);
-  model->UpdatePinnedState(kActionSidePanelShowContextualTasks, true);
-
-  run_loop.Run();
-}
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(ContextualTasksPageHandlerTest,
        OnReceivedInjectInput_OverridesExisting) {
@@ -1402,155 +1140,6 @@ TEST_F(ContextualTasksPageHandlerTest, OnContextMenuOpened) {
   page_handler_->OnContextMenuOpened();
 }
 
-TEST_F(ContextualTasksPageHandlerTest, OnWebviewMessage_ExecuteActions) {
-  base::Uuid task_id = base::Uuid::GenerateRandomV4();
-  contextual_tasks_ui_->SetTaskId(task_id);
-  SessionID shared_tab_id = SessionID::FromSerializedValue(1);
-  EXPECT_CALL(*mock_contextual_tasks_service_,
-              GetTabsAssociatedWithTask(task_id))
-      .WillRepeatedly(Return(std::vector<SessionID>{shared_tab_id}));
-
-  optimization_guide::proto::Actions actions;
-  auto* script_action = actions.add_actions();
-  auto* script_tool = script_action->mutable_script_tool();
-  script_tool->set_tool_name("test_tool");
-  script_tool->set_input_arguments("{}");
-  script_tool->set_tab_id(1);
-  script_tool->mutable_document_identifier()->set_serialized_token(
-      base::UnguessableToken::Create().ToString());
-  actions.set_skip_async_observation_collection(true);
-
-  lens::AimToClientMessage message;
-  auto* execute_actions = message.mutable_execute_actions();
-  *execute_actions->mutable_actions() = actions;
-
-  size_t size = message.ByteSizeLong();
-  std::vector<uint8_t> bytes(size);
-  message.SerializeToArray(bytes.data(), size);
-
-  base::RunLoop run_loop;
-  EXPECT_CALL(page_, PostAimMessage(_))
-      .WillOnce([&](const std::vector<uint8_t>& serialized_reply) {
-        lens::ClientToAimMessage reply;
-        EXPECT_TRUE(reply.ParseFromArray(serialized_reply.data(),
-                                         serialized_reply.size()));
-        EXPECT_TRUE(reply.has_actions_result());
-        run_loop.Quit();
-      });
-
-  page_handler_->OnWebviewMessage(bytes);
-  run_loop.Run();
-}
-
-TEST_F(ContextualTasksPageHandlerTest,
-       OnWebviewMessage_ExecuteActions_NoValidSharedTabIdRejected) {
-  contextual_tasks_ui_->SetTaskId(std::nullopt);
-
-  optimization_guide::proto::Actions actions;
-  auto* script_action = actions.add_actions();
-  auto* script_tool = script_action->mutable_script_tool();
-  script_tool->set_tool_name("test_tool");
-  script_tool->set_input_arguments("{}");
-  script_tool->set_tab_id(1);
-  script_tool->mutable_document_identifier()->set_serialized_token(
-      base::UnguessableToken::Create().ToString());
-  actions.set_skip_async_observation_collection(true);
-
-  lens::AimToClientMessage message;
-  auto* execute_actions = message.mutable_execute_actions();
-  *execute_actions->mutable_actions() = actions;
-
-  size_t size = message.ByteSizeLong();
-  std::vector<uint8_t> bytes(size);
-  message.SerializeToArray(bytes.data(), size);
-
-  base::RunLoop run_loop;
-  EXPECT_CALL(page_, PostAimMessage(_))
-      .WillOnce([&](const std::vector<uint8_t>& serialized_reply) {
-        lens::ClientToAimMessage reply;
-        EXPECT_TRUE(reply.ParseFromArray(serialized_reply.data(),
-                                         serialized_reply.size()));
-        EXPECT_TRUE(reply.has_actions_result());
-        const optimization_guide::proto::ActionsResult& result =
-            reply.actions_result().actions_result();
-        EXPECT_EQ(
-            result.action_result(),
-            static_cast<int32_t>(actor::mojom::ActionResultCode::kTabWentAway));
-        run_loop.Quit();
-      });
-
-  page_handler_->OnWebviewMessage(bytes);
-  run_loop.Run();
-
-  EXPECT_TRUE(page_handler_->actions_runner_for_testing() == nullptr);
-}
-
-TEST_F(ContextualTasksPageHandlerTest,
-       OnWebviewMessage_ExecuteActions_NonScriptToolRejected) {
-  lens::AimToClientMessage message;
-  auto* execute_actions = message.mutable_execute_actions();
-  optimization_guide::proto::Actions actions;
-  // Non-ScriptTool action (e.g. wait).
-  auto* action = actions.add_actions();
-  auto* wait = action->mutable_wait();
-  wait->set_wait_time_ms(10);
-  actions.set_skip_async_observation_collection(true);
-  *execute_actions->mutable_actions() = actions;
-
-  size_t size = message.ByteSizeLong();
-  std::vector<uint8_t> bytes(size);
-  message.SerializeToArray(bytes.data(), size);
-
-  base::RunLoop run_loop;
-  EXPECT_CALL(page_, PostAimMessage(_))
-      .WillOnce([&](const std::vector<uint8_t>& serialized_reply) {
-        lens::ClientToAimMessage reply;
-        EXPECT_TRUE(reply.ParseFromArray(serialized_reply.data(),
-                                         serialized_reply.size()));
-        EXPECT_TRUE(reply.has_actions_result());
-        const optimization_guide::proto::ActionsResult& result =
-            reply.actions_result().actions_result();
-        EXPECT_EQ(result.action_result(),
-                  static_cast<int32_t>(
-                      actor::mojom::ActionResultCode::kArgumentsInvalid));
-        run_loop.Quit();
-      });
-
-  page_handler_->OnWebviewMessage(bytes);
-  run_loop.Run();
-
-  EXPECT_TRUE(page_handler_->actions_runner_for_testing() == nullptr);
-}
-
-TEST_F(ContextualTasksPageHandlerTest,
-       OnWebviewMessage_ExecuteActions_FeatureDisabled) {
-  // Disable the feature flag.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(kContextualTasksScriptTools);
-
-  lens::AimToClientMessage message;
-  auto* execute_actions = message.mutable_execute_actions();
-  optimization_guide::proto::Actions actions;
-  // Add a simple wait action to execute.
-  auto* action = actions.add_actions();
-  auto* wait = action->mutable_wait();
-  wait->set_wait_time_ms(10);
-  actions.set_skip_async_observation_collection(true);
-  *execute_actions->mutable_actions() = actions;
-
-  size_t size = message.ByteSizeLong();
-  std::vector<uint8_t> bytes(size);
-  message.SerializeToArray(bytes.data(), size);
-
-  // Since the feature is disabled, OnReceivedExecuteActions should return early
-  // and NOT send any reply back to the webview, nor create a task.
-  EXPECT_CALL(page_, PostAimMessage(_)).Times(0);
-
-  page_handler_->OnWebviewMessage(bytes);
-
-  EXPECT_TRUE(page_handler_->actions_runner_for_testing() == nullptr);
-}
-
 TEST_F(ContextualTasksPageHandlerTest,
        OnWebviewMessage_UpdateThreadContextLibrary_HistoryLoad) {
   base::test::ScopedFeatureList local_features;
@@ -1573,22 +1162,44 @@ TEST_F(ContextualTasksPageHandlerTest,
   std::vector<uint8_t> serialized(size);
   message.SerializeToArray(serialized.data(), size);
 
+  NiceMock<contextual_search::MockContextualSearchSessionHandle>
+      mock_session_handle;
   EXPECT_CALL(*contextual_tasks_ui_, GetOrCreateContextualSessionHandle())
-      .WillOnce(Return(nullptr));
+      .WillRepeatedly(Return(&mock_session_handle));
   EXPECT_CALL(*mock_contextual_tasks_service_,
               SetUrlResourcesFromServer(task_id, _))
       .Times(1);
 
-  // Since is_history_thread_loading() is true, we expect GetContextForTask to
-  // be called.
+  ContextualTask task(task_id);
+  UrlResource tab_resource(GURL(kExampleUrl), ResourceType::kWebpage);
+  tab_resource.title = "History Tab";
+  tab_resource.tab_id = SessionID::NewUnique();
+  tab_resource.has_chrome_tab_data = true;
+  task.AddUrlResource(tab_resource);
+
   EXPECT_CALL(*mock_contextual_tasks_service_,
               GetContextForTask(task_id, _, _, _))
-      .Times(1);
+      .WillOnce(
+          [&](const base::Uuid&, const std::set<ContextualTaskContextSource>&,
+              std::unique_ptr<ContextDecorationParams>,
+              base::OnceCallback<void(std::unique_ptr<ContextualTaskContext>)>
+                  callback) {
+            std::move(callback).Run(
+                std::make_unique<ContextualTaskContext>(task));
+          });
+  EXPECT_CALL(*contextual_tasks_ui_, OnRestoredTabsFetched(_)).Times(1);
 
   page_handler_->OnWebviewMessage(serialized);
 
-  // Verify that the flag is reset to false after handling.
+  // Verify that the flag is reset to false after handling and the session
+  // handle's restored tabs are populated.
   EXPECT_FALSE(contextual_tasks_ui_->is_history_thread_loading());
+  const auto& restored = mock_session_handle.GetTabContextState().restored;
+  ASSERT_EQ(restored.size(), 1u);
+  EXPECT_EQ(restored[0].url, GURL(kExampleUrl));
+  EXPECT_EQ(restored[0].title, "History Tab");
+  EXPECT_EQ(restored[0].tab_id, tab_resource.tab_id->id());
+  EXPECT_TRUE(restored[0].submitted);
 }
 
 TEST_F(ContextualTasksPageHandlerTest,
@@ -1613,22 +1224,46 @@ TEST_F(ContextualTasksPageHandlerTest,
   std::vector<uint8_t> serialized(size);
   message.SerializeToArray(serialized.data(), size);
 
+  NiceMock<contextual_search::MockContextualSearchSessionHandle>
+      mock_session_handle;
   EXPECT_CALL(*contextual_tasks_ui_, GetOrCreateContextualSessionHandle())
-      .WillOnce(Return(nullptr));
+      .WillRepeatedly(Return(&mock_session_handle));
   EXPECT_CALL(*mock_contextual_tasks_service_,
               SetUrlResourcesFromServer(task_id, _))
       .Times(1);
 
-  // Since is_history_thread_loading() is false, GetContextForTask should NOT be
-  // called.
+  ContextualTask task(task_id);
+  UrlResource tab_resource(GURL(kExampleUrl), ResourceType::kWebpage);
+  tab_resource.title = "Active Turn Tab";
+  tab_resource.tab_id = SessionID::NewUnique();
+  tab_resource.has_chrome_tab_data = true;
+  task.AddUrlResource(tab_resource);
+
+  // On an active turn, GetContextForTask updates the session handle's restored
+  // tabs without invoking OnRestoredTabsFetched on the WebUI controller.
   EXPECT_CALL(*mock_contextual_tasks_service_,
               GetContextForTask(task_id, _, _, _))
-      .Times(0);
+      .WillOnce(
+          [&](const base::Uuid&, const std::set<ContextualTaskContextSource>&,
+              std::unique_ptr<ContextDecorationParams>,
+              base::OnceCallback<void(std::unique_ptr<ContextualTaskContext>)>
+                  callback) {
+            std::move(callback).Run(
+                std::make_unique<ContextualTaskContext>(task));
+          });
+  EXPECT_CALL(*contextual_tasks_ui_, OnRestoredTabsFetched(_)).Times(0);
 
   page_handler_->OnWebviewMessage(serialized);
 
-  // Verify that the flag remains false.
+  // Verify that the flag remains false and the session handle's restored tabs
+  // are updated.
   EXPECT_FALSE(contextual_tasks_ui_->is_history_thread_loading());
+  const auto& restored = mock_session_handle.GetTabContextState().restored;
+  ASSERT_EQ(restored.size(), 1u);
+  EXPECT_EQ(restored[0].url, GURL(kExampleUrl));
+  EXPECT_EQ(restored[0].title, "Active Turn Tab");
+  EXPECT_EQ(restored[0].tab_id, tab_resource.tab_id->id());
+  EXPECT_TRUE(restored[0].submitted);
 }
 
 }  // namespace contextual_tasks

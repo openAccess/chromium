@@ -11,7 +11,6 @@
 #include "android_webview/browser/aw_contents_io_thread_client.h"
 #include "android_webview/browser/aw_javascript_dialog_manager.h"
 #include "android_webview/browser/aw_permission_manager.h"
-#include "android_webview/browser/find_helper.h"
 #include "android_webview/browser/permission/media_access_permission_request.h"
 #include "android_webview/browser/permission/permission_request_handler.h"
 #include "android_webview/common/aw_features.h"
@@ -39,6 +38,7 @@
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "third_party/jni_zero/default_conversions.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -60,7 +60,7 @@ namespace android_webview {
 AwWebContentsDelegate::AwWebContentsDelegate(
     JNIEnv* env,
     const jni_zero::JavaRef<jobject>& obj)
-    : WebContentsDelegateAndroid(env, obj), is_fullscreen_(false) {}
+    : WebContentsDelegateAndroid(env, obj) {}
 
 AwWebContentsDelegate::~AwWebContentsDelegate() = default;
 
@@ -99,20 +99,6 @@ AwWebContentsDelegate::GetJavaScriptDialogManager(WebContents* source) {
   static base::NoDestructor<AwJavaScriptDialogManager>
       javascript_dialog_manager;
   return javascript_dialog_manager.get();
-}
-
-void AwWebContentsDelegate::FindReply(WebContents* web_contents,
-                                      int request_id,
-                                      int number_of_matches,
-                                      const gfx::Rect& selection_rect,
-                                      int active_match_ordinal,
-                                      bool final_update) {
-  CHECK(web_contents);
-  FindHelper* find_helper = FindHelper::FromWebContents(web_contents);
-
-  CHECK(find_helper);
-  find_helper->HandleFindReply(request_id, number_of_matches,
-                               active_match_ordinal, final_update);
 }
 
 void AwWebContentsDelegate::RunFileChooser(
@@ -157,13 +143,13 @@ WebContents* AwWebContentsDelegate::AddNewContents(
     WebContents* source,
     std::unique_ptr<WebContents> new_contents,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture,
     bool* was_blocked) {
   JNIEnv* env = AttachCurrentThread();
 
-  bool is_dialog = disposition == WindowOpenDisposition::NEW_POPUP;
+  bool is_dialog = disposition == ui::mojom::WindowOpenDisposition::kNewPopup;
   ScopedJavaLocalRef<jobject> java_delegate = GetJavaDelegate(env);
   bool create_popup = false;
 
@@ -390,8 +376,10 @@ bool AwWebContentsDelegate::ShouldAllowPartialParamMismatchOfPrerender2(
   // TODO(https://crbug.com/340416082): Relax initiator check for all platforms.
 
   // `ui::PAGE_TRANSITION_FROM_API` bit distinguishes that the activation
-  // navigation is triggered by `WebView.loadUrl()`.
-  return navigation_handle.GetPageTransition() & ui::PAGE_TRANSITION_FROM_API;
+  // navigation is triggered by `WebView.loadUrl()`, which is always
+  // browser-initiated.
+  return !navigation_handle.IsRendererInitiated() &&
+         (navigation_handle.GetPageTransition() & ui::PAGE_TRANSITION_FROM_API);
 }
 
 bool AwWebContentsDelegate::isModalContextMenu() const {

@@ -22,12 +22,12 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.view.View;
+import android.view.ViewGroup;
 
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.State;
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -37,7 +37,6 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.browser_ui.widget.displaystyle.HorizontalDisplayStyle;
@@ -48,18 +47,18 @@ import java.util.Locale;
 
 /** Unit tests for {@link CirclePagerIndicatorDecoration}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class CirclePagerIndicatorDecorationUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     private static final Locale DEFAULT_LOCALE = Locale.getDefault();
 
     @Mock private Canvas mCanvas;
-    @Mock private RecyclerView mRecyclerView;
     @Mock private RecyclerView.Adapter mAdapter;
     @Mock private LinearLayoutManager mLayoutManager;
     @Mock private RecyclerView.State mState;
-    @Mock private View mView1;
-    @Mock private View mView2;
+
+    private RecyclerView mRecyclerView;
+    private View mView1;
+    private View mView2;
 
     private int mIndicatorHeight;
 
@@ -72,11 +71,38 @@ public class CirclePagerIndicatorDecorationUnitTest {
     private CirclePagerIndicatorDecoration mDecoration;
     private Context mContext;
 
+    /** A minimal adapter of small fixed-size items, used to obtain real child adapter positions. */
+    private static class TestAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+        private final int mItemCount;
+
+        TestAdapter(int itemCount) {
+            mItemCount = itemCount;
+        }
+
+        @Override
+        public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            View view = new View(parent.getContext());
+            view.setLayoutParams(new RecyclerView.LayoutParams(10, 10));
+            return new RecyclerView.ViewHolder(view) {};
+        }
+
+        @Override
+        public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {}
+
+        @Override
+        public int getItemCount() {
+            return mItemCount;
+        }
+    }
+
     @Before
     public void setUp() {
         mContext = ApplicationProvider.getApplicationContext();
-        when(mRecyclerView.getAdapter()).thenReturn(mAdapter);
-        when(mRecyclerView.getLayoutManager()).thenReturn(mLayoutManager);
+        mRecyclerView = new RecyclerView(mContext);
+        mRecyclerView.setLayoutManager(mLayoutManager);
+        mRecyclerView.setAdapter(mAdapter);
+        mView1 = new View(mContext);
+        mView2 = new View(mContext);
 
         Resources resources = mContext.getResources();
         mIndicatorItemPadding =
@@ -88,19 +114,30 @@ public class CirclePagerIndicatorDecorationUnitTest {
                         + resources.getDimensionPixelSize(R.dimen.page_indicator_top_margin);
         mParentViewWidth = 800;
         mParentHeight = 400;
-        when(mRecyclerView.getHeight()).thenReturn(mParentHeight);
-        when(mRecyclerView.getMeasuredWidth()).thenReturn(mParentViewWidth);
-        when(mRecyclerView.getWidth()).thenReturn(mParentViewWidth);
+        mRecyclerView.setRight(mParentViewWidth);
+        mRecyclerView.setBottom(mParentHeight);
+    }
+
+    /** Returns a laid-out RecyclerView with {@code itemCount} real children. */
+    private RecyclerView createLaidOutRecyclerView(int itemCount) {
+        RecyclerView recyclerView = new RecyclerView(mContext);
+        recyclerView.setLayoutManager(
+                new LinearLayoutManager(mContext, LinearLayoutManager.HORIZONTAL, false));
+        recyclerView.setAdapter(new TestAdapter(itemCount));
+        recyclerView.measure(
+                View.MeasureSpec.makeMeasureSpec(mParentViewWidth, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(mParentHeight, View.MeasureSpec.EXACTLY));
+        recyclerView.layout(0, 0, mParentViewWidth, mParentHeight);
+        assertEquals(itemCount, recyclerView.getChildCount());
+        return recyclerView;
     }
 
     @Test
-    @SmallTest
     public void testNoScrolling_Phone() {
         testNoScrollingImpl(/* isTablet= */ false);
     }
 
     @Test
-    @SmallTest
     public void testNoScrolling_Tablet() {
         testNoScrollingImpl(/* isTablet= */ true);
     }
@@ -144,7 +181,6 @@ public class CirclePagerIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollTheRecyclerView_Phone() {
         mDecoration = create(/* isTablet= */ false);
         assertTrue(mDecoration.getIsLTRForTesting());
@@ -161,7 +197,7 @@ public class CirclePagerIndicatorDecorationUnitTest {
         // Begin to scroll the recyclerview.
         when(mLayoutManager.findFirstVisibleItemPosition()).thenReturn(0);
         when(mLayoutManager.findViewByPosition(0)).thenReturn(mView1);
-        when(mView1.getLeft()).thenReturn(10);
+        mView1.setLeft(10);
         // Verifies that the animation which is the round rectangle is drawn.
         mDecoration.onDrawOver(mCanvas, mRecyclerView, mState);
         verify(mCanvas)
@@ -174,7 +210,7 @@ public class CirclePagerIndicatorDecorationUnitTest {
                         eq(mIndicatorRadius),
                         any(Paint.class));
 
-        when(mView1.getLeft()).thenReturn(20);
+        mView1.setLeft(20);
         mDecoration.onDrawOver(mCanvas, mRecyclerView, mState);
         verify(mCanvas, times(2))
                 .drawRoundRect(
@@ -191,7 +227,7 @@ public class CirclePagerIndicatorDecorationUnitTest {
         when(mLayoutManager.findViewByPosition(1)).thenReturn(mView2);
 
         // Verifies that not drawing the animation the second item is shown without scrolling.
-        when(mView2.getLeft()).thenReturn(0);
+        mView2.setLeft(0);
         mDecoration.onDrawOver(mCanvas, mRecyclerView, mState);
         verify(mCanvas, times(2))
                 .drawRoundRect(
@@ -204,7 +240,7 @@ public class CirclePagerIndicatorDecorationUnitTest {
                         any(Paint.class));
 
         // Verifies that drawing the animation again if continue scrolling the recyclerview.
-        when(mView2.getLeft()).thenReturn(10);
+        mView2.setLeft(10);
         mDecoration.onDrawOver(mCanvas, mRecyclerView, mState);
         verify(mCanvas)
                 .drawRoundRect(
@@ -218,7 +254,6 @@ public class CirclePagerIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollTheRecyclerView_Tablet() {
         mDecoration = create(/* isTablet= */ true);
         mDecoration.setItemPerScreenForTesting(2);
@@ -236,7 +271,7 @@ public class CirclePagerIndicatorDecorationUnitTest {
         when(mLayoutManager.findFirstVisibleItemPosition()).thenReturn(0);
         when(mLayoutManager.findViewByPosition(0)).thenReturn(mView1);
         when(mLayoutManager.findLastCompletelyVisibleItemPosition()).thenReturn(1);
-        when(mView1.getLeft()).thenReturn(10);
+        mView1.setLeft(10);
 
         // Every time when onDrawOver() is called, all of the dots will be first drawn as inactive
         // dots. Use drawAsInactiveDotTimes to log how many times a dot is draw as inactive one (not
@@ -253,7 +288,7 @@ public class CirclePagerIndicatorDecorationUnitTest {
 
         drawAsInactiveDotTimes++;
         // Verifies that the same highlighted dot is drawn again.
-        when(mView1.getLeft()).thenReturn(20);
+        mView1.setLeft(20);
         mDecoration.onDrawOver(mCanvas, mRecyclerView, mState);
         verify(mCanvas, times(drawAsInactiveDotTimes + 2))
                 .drawCircle(
@@ -269,7 +304,7 @@ public class CirclePagerIndicatorDecorationUnitTest {
 
         drawAsInactiveDotTimes++;
         // Verifies that the second doc is highlighted.
-        when(mView2.getLeft()).thenReturn(0);
+        mView2.setLeft(0);
         mDecoration.onDrawOver(mCanvas, mRecyclerView, mState);
         verify(mCanvas, times(drawAsInactiveDotTimes + 1))
                 .drawCircle(
@@ -280,7 +315,7 @@ public class CirclePagerIndicatorDecorationUnitTest {
 
         drawAsInactiveDotTimes++;
         // Verifies that the same highlighted dot is drawn again.
-        when(mView2.getLeft()).thenReturn(10);
+        mView2.setLeft(10);
         mDecoration.onDrawOver(mCanvas, mRecyclerView, mState);
         verify(mCanvas, times(drawAsInactiveDotTimes + 2))
                 .drawCircle(
@@ -291,48 +326,43 @@ public class CirclePagerIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetItemOffsets_Phone() {
         mDecoration = create(/* isTablet= */ false);
 
         Rect rect = new Rect();
-        View view = Mockito.mock(View.class);
+        RecyclerView recyclerView = createLaidOutRecyclerView(/* itemCount= */ 3);
+        // The second item.
+        View view = recyclerView.getChildAt(1);
         RecyclerView.State state = Mockito.mock(State.class);
-        when(mAdapter.getItemCount()).thenReturn(3);
-        when(mRecyclerView.getChildAdapterPosition(view)).thenReturn(1);
 
-        mDecoration.getItemOffsetsImpl(rect, view, mRecyclerView, state);
+        mDecoration.getItemOffsetsImpl(rect, view, recyclerView, state);
         // Verifies that the page indicator is shown, but no extra padding is added to any view.
         assertEquals(mIndicatorHeight, rect.bottom);
         assertEquals(0, rect.left);
     }
 
     @Test
-    @SmallTest
     public void testGetItemOffsets_DoNotShowPageIndicator() {
         mDecoration = create(/* isTablet= */ true);
 
         Rect rect = new Rect();
-        View view = Mockito.mock(View.class);
         RecyclerView.State state = Mockito.mock(State.class);
 
         // The recyclerview has only 1 item shown.
-        int itemCount = 1;
-        when(mAdapter.getItemCount()).thenReturn(itemCount);
+        RecyclerView recyclerView = createLaidOutRecyclerView(/* itemCount= */ 1);
 
         // Sets the tablet as a wide screen.
         int itemPerScreen = 2;
         mDecoration.onDisplayStyleChanged(0, itemPerScreen);
-        mDecoration.getItemOffsetsImpl(rect, view, mRecyclerView, state);
+        mDecoration.getItemOffsetsImpl(rect, recyclerView.getChildAt(0), recyclerView, state);
         // Verifies that the space of the indicators are removed when the itemCount is less than the
         // itemPerScreen.
         assertEquals(0, rect.bottom);
         assertEquals(0, rect.left);
 
-        itemCount = 2;
-        when(mAdapter.getItemCount()).thenReturn(itemCount);
+        recyclerView = createLaidOutRecyclerView(/* itemCount= */ 2);
         mDecoration.onDisplayStyleChanged(0, itemPerScreen);
-        mDecoration.getItemOffsetsImpl(rect, view, mRecyclerView, state);
+        mDecoration.getItemOffsetsImpl(rect, recyclerView.getChildAt(0), recyclerView, state);
         // Verifies that the space of the indicators are removed when the itemCount equals to the
         // itemPerScreen.
         assertEquals(0, rect.bottom);
@@ -340,36 +370,31 @@ public class CirclePagerIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetItemOffsets_ShowPageIndicator() {
         mDecoration = create(/* isTablet= */ true);
 
         Rect rect = new Rect();
-        View view = Mockito.mock(View.class);
         RecyclerView.State state = Mockito.mock(State.class);
         // The recyclerview has 3 items shown.
-        int itemCount = 3;
-        when(mAdapter.getItemCount()).thenReturn(itemCount);
+        RecyclerView recyclerView = createLaidOutRecyclerView(/* itemCount= */ 3);
 
         // Sets the tablet as a wide screen.
         int itemPerScreen = 2;
         mDecoration.onDisplayStyleChanged(0, itemPerScreen);
-        mDecoration.getItemOffsetsImpl(rect, view, mRecyclerView, state);
+        mDecoration.getItemOffsetsImpl(rect, recyclerView.getChildAt(0), recyclerView, state);
         // Verifies that the page indicator is shown when all of the items can't fit in one screen.
         assertEquals(mIndicatorHeight, rect.bottom);
         // Verifies that no extra padding is added for the first child view.
         assertEquals(0, rect.left);
 
-        // Sets the view not be the first child.
-        when(mRecyclerView.getChildAdapterPosition(view)).thenReturn(1);
-        mDecoration.getItemOffsetsImpl(rect, view, mRecyclerView, state);
+        // Uses a view that is not the first child.
+        mDecoration.getItemOffsetsImpl(rect, recyclerView.getChildAt(1), recyclerView, state);
         // Verifies that an extra padding is added on the left side of the view.
         assertEquals(mIndicatorHeight, rect.bottom);
         assertEquals(mIndicatorItemPadding, rect.left);
     }
 
     @Test
-    @SmallTest
     public void testGetItemPerScreen() {
         // Sets the tablet as a wide screen.
         DisplayStyle displayStyle =
@@ -383,7 +408,6 @@ public class CirclePagerIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testNoScrolling_RTL() {
         Locale.setDefault(new Locale("ar"));
         mDecoration = create(/* isTablet= */ false);
@@ -393,7 +417,7 @@ public class CirclePagerIndicatorDecorationUnitTest {
         when(mAdapter.getItemCount()).thenReturn(count);
         when(mLayoutManager.findFirstVisibleItemPosition()).thenReturn(0);
         when(mLayoutManager.findViewByPosition(0)).thenReturn(mView1);
-        when(mView1.getRight()).thenReturn(mParentViewWidth);
+        mView1.setRight(mParentViewWidth);
 
         float dotsTotalLength = mIndicatorItemDiameter * count;
         float paddingBetweenItems = (count - 1) * mIndicatorItemPadding;
@@ -419,7 +443,6 @@ public class CirclePagerIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollTheRecyclerView_RTL() {
         Locale.setDefault(new Locale("ar"));
         mDecoration = create(/* isTablet= */ false);
@@ -441,7 +464,7 @@ public class CirclePagerIndicatorDecorationUnitTest {
         // will move to the right, beyond the parent width.
         // offset = activeChild.getRight() - parent.getWidth() + mStartMarginPx;
         // If it scrolls 10 pixels to the left, the right edge is at parentWidth + 10.
-        when(mView1.getRight()).thenReturn(mParentViewWidth + 10);
+        mView1.setRight(mParentViewWidth + 10);
 
         // Verifies that the animation (round rectangle) is drawn.
         // In RTL, visual index for position 0 is 2.

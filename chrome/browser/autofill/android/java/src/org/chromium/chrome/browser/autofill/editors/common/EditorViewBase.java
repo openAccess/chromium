@@ -151,14 +151,10 @@ public abstract class EditorViewBase extends AlwaysDismissedDialog
         assumeNonNull(getWindow()).setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         mActivity = activity;
         mFragmentManager = fragmentManager;
-        if (ChromeFeatureList.sAndroidSettingsContainment.isEnabled()) {
-            // TODO(crbug.com/439911511): Set the style directly in the layout instead.
-            mContext =
-                    new ContextThemeWrapper(
-                            activity, R.style.ThemeOverlay_Chromium_Settings_InputFields);
-        } else {
-            mContext = activity;
-        }
+        // TODO(crbug.com/439911511): Set the style directly in the layout instead.
+        mContext =
+                new ContextThemeWrapper(
+                        activity, R.style.ThemeOverlay_Chromium_Settings_InputFields);
 
         mContainerView =
                 LayoutInflater.from(mContext).inflate(R.layout.autofill_editor_dialog, null);
@@ -286,16 +282,15 @@ public abstract class EditorViewBase extends AlwaysDismissedDialog
 
     private void setDoneRunnableToFields() {
         for (FieldView view : mFieldViews) {
-            if (view instanceof TextFieldView) {
-                ((TextFieldView) view).setDoneRunnable(assumeNonNull(mDoneRunnable));
+            if (view instanceof TextFieldView textFieldView) {
+                textFieldView.setDoneRunnable(assumeNonNull(mDoneRunnable));
             }
         }
     }
 
     private void removeTextChangedListeners() {
         for (FieldView view : mFieldViews) {
-            if (view instanceof TextFieldView) {
-                TextFieldView textView = (TextFieldView) view;
+            if (view instanceof TextFieldView textView) {
                 textView.removeTextChangedListeners();
             }
         }
@@ -659,10 +654,9 @@ public abstract class EditorViewBase extends AlwaysDismissedDialog
         assert mActivity instanceof ModalDialogManagerHolder
                 : "Activity hosting EditorViewBase must implement ModalDialogManagerHolder to show"
                         + " confirmation dialogs.";
-        if (!(mActivity instanceof ModalDialogManagerHolder)) return;
+        if (!(mActivity instanceof ModalDialogManagerHolder holder)) return;
 
-        ModalDialogManager modalDialogManager =
-                ((ModalDialogManagerHolder) mActivity).getModalDialogManager();
+        ModalDialogManager modalDialogManager = holder.getModalDialogManager();
         var confirmationDialog = new ActionConfirmationDialog(mContext, modalDialogManager);
         ConfirmationDialogHandler confirmationDialogHandler =
                 (dismissHandler, buttonClickResult, stopShowing) -> {
@@ -728,8 +722,7 @@ public abstract class EditorViewBase extends AlwaysDismissedDialog
                                 KeyboardVisibilityDelegate.getInstance()
                                         .showKeyboard(getCurrentFocus());
                                 // Put the cursor to the end of the text.
-                                if (getCurrentFocus() instanceof EditText) {
-                                    EditText focusedEditText = (EditText) getCurrentFocus();
+                                if (getCurrentFocus() instanceof EditText focusedEditText) {
                                     focusedEditText.setSelection(
                                             focusedEditText.getText().length());
                                 }

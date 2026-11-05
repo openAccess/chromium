@@ -30,16 +30,14 @@ import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.m
 import type {LensSearchboxElement} from '/lens/shared/searchbox/lens_searchbox.js';
 import type {SearchboxGhostLoaderElement} from '/lens/shared/searchbox_ghost_loader.js';
 
-import {SidePanelResultStatus} from '../lens_side_panel.mojom-webui.js';
-import type {LensSidePanelPageHandlerInterface} from '../lens_side_panel.mojom-webui.js';
+import {browserProxyFactory, SidePanelResultStatus} from '../lens_side_panel.mojom-webui.js';
+import type {BrowserProxy as SidePanelBrowserProxy, LensSidePanelPageHandlerInterface} from '../lens_side_panel.mojom-webui.js';
 import {PageContentType} from '../page_content_type.mojom-webui.js';
 import {handleEscapeSearchbox} from '../searchbox_utils.js';
 
 import type {FeedbackToastElement} from './feedback_toast.js';
 import {PostMessageReceiver} from './post_message_communication.js';
 import {getTemplate} from './side_panel_app.html.js';
-import {SidePanelBrowserProxyImpl} from './side_panel_browser_proxy.js';
-import type {SidePanelBrowserProxy} from './side_panel_browser_proxy.js';
 import type {SidePanelErrorPageElement} from './side_panel_error_page.js';
 import type {SidePanelGhostLoaderElement} from './side_panel_ghost_loader.js';
 
@@ -61,7 +59,6 @@ export interface LensSidePanelAppElement {
     messageToastDismissButton: CrButtonElement,
     errorPage: SidePanelErrorPageElement,
     results: HTMLIFrameElement,
-    resultsWebview: chrome.webviewTag.WebView,
     searchbox: LensSearchboxElement,
     searchboxContainer: HTMLElement,
     searchboxGhostLoader: SearchboxGhostLoaderElement,
@@ -101,10 +98,6 @@ export class LensSidePanelAppElement extends LensSidePanelAppElementBase {
         type: Boolean,
         value: () => loadTimeData.getBoolean('enableClientSideAimHeader'),
       },
-      enableWebviewResults: {
-        type: Boolean,
-        value: () => loadTimeData.getBoolean('enableWebviewResults'),
-      },
       enableLensAimSuggestions: {
         reflectToAttribute: true,
         type: Boolean,
@@ -136,7 +129,8 @@ export class LensSidePanelAppElement extends LensSidePanelAppElementBase {
         value: false,
         reflectToAttribute: true,
       },
-      /* Used to decide whether to show back arrow onFocusOut in searchbox. */
+      /* Used to decide whether to show back arrow onFocusOut in
+         searchbox. */
       wasBackArrowAvailable: {
         type: Boolean,
         value: false,
@@ -201,7 +195,8 @@ export class LensSidePanelAppElement extends LensSidePanelAppElementBase {
       },
       /* TODO(385183449): Once WebUI preloading is implemented in the
        * side panel, update the loadTimeData for searchBoxHint in the side
-       * panel WebUI constructor insteading of passing it to the searchbox. */
+       * panel WebUI constructor insteading of passing it to the
+       * searchbox. */
       placeholderText: {
         type: String,
         computed:
@@ -289,8 +284,6 @@ export class LensSidePanelAppElement extends LensSidePanelAppElementBase {
   declare private enableFloatingGForHeader: boolean;
   // Whether the client side header is enabled via feature flag.
   declare private enableClientSideAimHeader: boolean;
-  // Whether the webview results container is enabled via feature flag.
-  declare private enableWebviewResults: boolean;
   declare private enableLensAimSuggestions: boolean;
   // Whether the gradient background for AIM suggestions is enabled via feature
   // flag.
@@ -322,7 +315,7 @@ export class LensSidePanelAppElement extends LensSidePanelAppElementBase {
   private feedbackToastShowAfterDelayTimeoutId = -1;
 
   private browserProxy: SidePanelBrowserProxy =
-      SidePanelBrowserProxyImpl.getInstance();
+      browserProxyFactory.getInstance();
   declare private darkMode: boolean;
   private listenerIds: number[];
   private pageHandler: LensSidePanelPageHandlerInterface;
@@ -353,7 +346,7 @@ export class LensSidePanelAppElement extends LensSidePanelAppElementBase {
         ({isContextualSearchbox}) => {
           this.isContextualSearchbox = isContextualSearchbox;
         });
-    this.pageHandler = SidePanelBrowserProxyImpl.getInstance().handler;
+    this.pageHandler = browserProxyFactory.getInstance().handler;
     ColorChangeUpdater.forDocument().start();
   }
 
@@ -423,7 +416,7 @@ export class LensSidePanelAppElement extends LensSidePanelAppElementBase {
 
     // Start listening to postMessages on the window.
     this.postMessageReceiver = new PostMessageReceiver(
-        SidePanelBrowserProxyImpl.getInstance(), this.getResults());
+        browserProxyFactory.getInstance(), this.$.results);
 
     // If the composebox is enabled, start listening to resize events to update
     // the composebox height.
@@ -540,7 +533,7 @@ export class LensSidePanelAppElement extends LensSidePanelAppElementBase {
 
   private loadResultsInFrame(resultsUrl: Url) {
     const url = new URL(resultsUrl);
-    const resultsBoundingRect = this.getResults().getBoundingClientRect();
+    const resultsBoundingRect = this.$.results.getBoundingClientRect();
     if (resultsBoundingRect.width > 0) {
       url.searchParams.set(
           VIEWPORT_WIDTH_KEY, resultsBoundingRect.width.toString());
@@ -552,7 +545,7 @@ export class LensSidePanelAppElement extends LensSidePanelAppElementBase {
     // The src needs to be reset explicitly every time this function is called
     // to force a reload. We cannot get the currently displayed URL from the
     // frame because of cross-origin restrictions.
-    this.getResults().src = url.href;
+    this.$.results.src = url.href;
     // Remove focus from the input when results are loaded. Does not have
     // any effect if input is not focused.
     this.blurSearchbox();
@@ -740,7 +733,7 @@ export class LensSidePanelAppElement extends LensSidePanelAppElementBase {
       this.hideAndReshowFeedbackToast();
     }
 
-    this.getResults().focus();
+    this.$.results.focus();
   }
 
   private focusSearchbox() {
@@ -773,15 +766,6 @@ export class LensSidePanelAppElement extends LensSidePanelAppElementBase {
       clearTimeout(this.feedbackToastReshowTimeoutId);
       this.showFeedbackToast();
     }
-  }
-
-  // Returns the container housing the results. Can either be the results
-  // iframe or webview.
-  private getResults(): HTMLIFrameElement|chrome.webviewTag.WebView {
-    if (this.enableWebviewResults) {
-      return this.$.resultsWebview;
-    }
-    return this.$.results;
   }
 
   private hideAndReshowFeedbackToast() {

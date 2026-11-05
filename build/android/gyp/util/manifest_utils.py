@@ -11,7 +11,7 @@ import shlex
 from xml.dom import minidom
 from xml.etree import ElementTree
 
-from util import build_utils  # pylint: disable=unused-import
+from util import build_utils  # noqa: F401
 import action_helpers  # build_utils adds //build to sys.path.
 
 ANDROID_NAMESPACE = 'http://schemas.android.com/apk/res/android'
@@ -200,7 +200,7 @@ def _CreateNodeHash(lines):
     """
     target_indent = lines[0].find('<')
     tag_closed = False
-    for i, l in enumerate(lines[1:]):
+    for i, l in enumerate(lines[1:]):  # noqa: E741
         cur_indent = l.find('<')
         if cur_indent != -1 and cur_indent <= target_indent:
             tag_lines = lines[: i + 1]
@@ -220,7 +220,7 @@ def _CreateNodeHash(lines):
 
 def _IsSelfClosing(lines):
     """Given pretty-printed xml, returns whether first node is self-closing."""
-    for l in lines:
+    for l in lines:  # noqa: E741
         idx = l.find('>')
         if idx != -1:
             return l[idx - 1] == '/'
@@ -238,7 +238,7 @@ def _AddDiffTags(lines):
     # This also ensures changed tags show up with outer <tag> elements rather than
     # showing only changed attributes.
     hash_stack = []
-    for i, l in enumerate(lines):
+    for i, l in enumerate(lines):  # noqa: E741
         stripped = l.lstrip()
         # Ignore non-indented tags and lines that are not the start/end of a node.
         if l[0] != ' ' or stripped[0] != '<':
@@ -261,9 +261,7 @@ def _AddDiffTags(lines):
     assert not hash_stack, 'hash_stack was not empty:\n' + '\n'.join(hash_stack)
 
 
-def NormalizeManifest(
-    manifest_contents, version_code_offset, library_version_offset
-):
+def NormalizeManifest(manifest_contents, version_code_offset):
     _RegisterElementTreeNamespaces()
     # This also strips comments and sorts node attributes alphabetically.
     root = ElementTree.fromstring(manifest_contents)
@@ -287,16 +285,6 @@ def NormalizeManifest(
             version_name = re.sub(r'\d+', '#', version_name)
             NamespacedSet(root, 'versionName', version_name)
 
-        # Trichrome's static library version number is updated daily. To avoid
-        # frequent manifest check failures, we remove the exact version number
-        # during normalization.
-        for node in app_node:
-            if node.tag in ['uses-static-library', 'static-library']:
-                version = NamespacedGet(node, 'version')
-                if version and library_version_offset:
-                    version = int(version) - int(library_version_offset)
-                    NamespacedSet(node, 'version', f'OFFSET={version}')
-
     # We also remove the exact package name (except the one at the root level)
     # to avoid noise during manifest comparison.
     def blur_package_name(node):
@@ -318,7 +306,7 @@ def NormalizeManifest(
     # Fix up whitespace/indentation.
     dom = minidom.parseString(ElementTree.tostring(root))
     out_lines = []
-    for l in dom.toprettyxml(indent='  ').splitlines():
+    for l in dom.toprettyxml(indent='  ').splitlines():  # noqa: E741
         if not l or l.isspace():
             continue
         if len(l) > _WRAP_LINE_LENGTH and any(x in l for x in _WRAP_CANDIDATES):

@@ -21,21 +21,17 @@ import 'chrome://resources/cr_elements/icons.html.js';
 import 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 
 import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
-import {addWebUiListener, sendWithPromise} from 'chrome://resources/js/cr.js';
+import {sendWithPromise} from 'chrome://resources/js/cr.js';
 import {FocusOutlineManager} from 'chrome://resources/js/focus_outline_manager.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {BrowserProxy} from './browser_proxy.js';
 import {GetPoliciesReason} from './policy.mojom-webui.js';
-import type {PolicyGroupsResponse, Status} from './policy.mojom-webui.js';
+import type {PolicyGroupNames, PolicyGroupsResponse, Status} from './policy.mojom-webui.js';
 import {getCss} from './policy_app.css.js';
 import {getHtml} from './policy_app.html.js';
 import type {PolicyTableModel} from './policy_table.js';
-
-export interface PolicyNamesResponse {
-  [id: string]: {name: string, policyNames: NonNullable<string[]>};
-}
 
 export class PolicyAppElement extends CrLitElement {
   static get is() {
@@ -56,15 +52,21 @@ export class PolicyAppElement extends CrLitElement {
       showUnset_: {type: Boolean},
       status_: {type: Object},
       policyGroups_: {type: Array},
+      // <if expr="not is_ios and not is_android">
       shouldShowPromo_: {type: Boolean},
+      // </if>
+      // <if expr="not is_ios and not is_android and not is_chromeos">
       shouldShowCommandLineArgumentsWarning_: {type: Boolean},
       commandLineArguments_: {type: String},
+      // </if>
       toastText_: {type: String},
       reloadButtonDisabled_: {type: Boolean},
+      hideExportButton_: {type: Boolean},
+      // <if expr="not is_chromeos">
       uploadReportButtonDisabled_: {type: Boolean},
       enableReportButton_: {type: Boolean},
-      hideExportButton_: {type: Boolean},
       hideUploadReportButton_: {type: Boolean},
+      // </if>
     };
   }
 
@@ -72,16 +74,21 @@ export class PolicyAppElement extends CrLitElement {
   protected accessor showUnset_: boolean = false;
   protected accessor status_: Record<string, Status> = {};
   protected accessor policyGroups_: PolicyTableModel[] = [];
+  // <if expr="not is_ios and not is_android">
   protected accessor shouldShowPromo_: boolean = false;
+  // </if>
+  // <if expr="not is_ios and not is_android and not is_chromeos">
   protected accessor shouldShowCommandLineArgumentsWarning_: boolean = false;
   protected accessor commandLineArguments_: string = '';
+  // </if>
   protected accessor toastText_: string = '';
   protected accessor reloadButtonDisabled_: boolean = false;
+  protected accessor hideExportButton_: boolean = false;
+  // <if expr="not is_chromeos">
   protected accessor uploadReportButtonDisabled_: boolean = false;
   protected accessor enableReportButton_: boolean = false;
-
-  protected accessor hideExportButton_ = false;
-  protected accessor hideUploadReportButton_ = false;
+  protected accessor hideUploadReportButton_: boolean = false;
+  // </if>
 
 
   private toastTimeoutId_: number|null = null;
@@ -90,6 +97,15 @@ export class PolicyAppElement extends CrLitElement {
 
   override async connectedCallback() {
     super.connectedCallback();
+
+    // Listeners must be setup before any `await` calls. Otherwise, the initial
+    // data will be dropped.
+    BrowserProxy.listenForStatusUpdated(
+        (status: Record<string, Status>) => this.status_ = status);
+    BrowserProxy.listenForPoliciesUpdated(
+        (names: Record<string, PolicyGroupNames>,
+         groups: PolicyGroupsResponse) =>
+            this.onPoliciesReceived_(names, groups));
 
     if (this.policyPageMojoMigrationEnabled_) {
       const message = await BrowserProxy.getDebugString();
@@ -117,22 +133,15 @@ export class PolicyAppElement extends CrLitElement {
 
     this.hideExportButton_ = loadTimeData.valueExists('hideExportButton') &&
         loadTimeData.getBoolean('hideExportButton');
+    // <if expr="not is_chromeos">
     this.hideUploadReportButton_ =
         loadTimeData.valueExists('hideUploadReportButton') &&
         loadTimeData.getBoolean('hideUploadReportButton');
+    // </if>
 
-    sendWithPromise<void>('listenPoliciesUpdates');
-    addWebUiListener(
-        'status-updated',
-        (status: Record<string, Status>) => this.status_ = status);
-    addWebUiListener(
-        'policies-updated',
-        (names: PolicyNamesResponse, groups: PolicyGroupsResponse) =>
-            this.onPoliciesReceived_(names, groups));
-  }
-
-  override disconnectedCallback() {
-    super.disconnectedCallback();
+    if (!this.policyPageMojoMigrationEnabled_) {
+      sendWithPromise<void>('listenPoliciesUpdates');
+    }
   }
 
   // <if expr="not is_ios and not is_android">
@@ -152,7 +161,7 @@ export class PolicyAppElement extends CrLitElement {
   // </if>
 
   private onPoliciesReceived_(
-      policyNames: PolicyNamesResponse,
+      policyNames: Record<string, PolicyGroupNames>,
       policyGroupsResponse: PolicyGroupsResponse) {
     const policyGroups = policyGroupsResponse.policyGroups;
     const policyIds: string[] = policyGroupsResponse.policyIdsPresentationOrder;
@@ -185,21 +194,27 @@ export class PolicyAppElement extends CrLitElement {
         name: group.forSigninScreen ?
             `${group.name} [${loadTimeData.getString('signinProfile')}]` :
             group.name,
-        id: id,
+        // For Web Apps (PWAs), multiple subpath PWAs sharing the same origin
+        // are keyed by scope URL in `policyGroups` so their map keys (`id`)
+        // don't collide, while `group.id` holds the display origin.
+        id: (group.isWebApp && group.id) ? group.id : id,
         isExtension: group.isExtension,
+        isWebApp: group.isWebApp,
         policies,
         ...(group.precedenceOrder && {precedenceOrder: group.precedenceOrder}),
       };
     });
 
     // <if expr="not is_chromeos">
-    this.enableReportButton_ =
-        [
-          'CloudReportingEnabled',
-          'CloudProfileReportingEnabled',
-          'UserSecuritySignalsReporting',
-        ].map(p => !!policyGroups['chrome']?.policies[p]?.value)
-            .reduce((accumulator, current) => accumulator ||= current, false);
+    const isNonEmpty = (value: unknown) =>
+        Array.isArray(value) ? value.length > 0 : !!value;
+    this.enableReportButton_ = [
+      'CloudReportingEnabled',
+      'CloudProfileReportingEnabled',
+      'UserSecuritySignalsReporting',
+      'SaasUsageReportingDomainUrlsForBrowsers',
+      'SaasUsageReportingDomainUrlsForProfiles',
+    ].some(p => isNonEmpty(policyGroups['chrome']?.policies[p]?.value));
     // </if>
     this.reloadPoliciesDone_();
   }
@@ -213,7 +228,7 @@ export class PolicyAppElement extends CrLitElement {
   protected onReloadPoliciesClick_() {
     this.reloadButtonDisabled_ = true;
     this.showToast_(loadTimeData.getString('reloadingPolicies'));
-    sendWithPromise<void>('reloadPolicies');
+    BrowserProxy.reloadPolicies();
   }
 
   protected onMoreActionsClick_(e: Event) {
@@ -234,15 +249,17 @@ export class PolicyAppElement extends CrLitElement {
     this.showToast_(loadTimeData.getString('copyPoliciesDone'));
   }
 
+  // <if expr="not is_chromeos">
   protected onUploadReportClick_() {
     this.closeActionMenu_();
     this.uploadReportButtonDisabled_ = true;
     this.showToast_(loadTimeData.getString('reportUploading'));
-    sendWithPromise<void>('uploadReport').then(() => {
+    BrowserProxy.uploadReport().then(() => {
       this.uploadReportButtonDisabled_ = false;
       this.showToast_(loadTimeData.getString('reportUploaded'));
     });
   }
+  // </if>
 
   protected onViewLogsClick_() {
     this.closeActionMenu_();

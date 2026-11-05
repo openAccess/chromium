@@ -39,7 +39,6 @@ import android.view.View;
 import androidx.annotation.Nullable;
 
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -52,6 +51,7 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Token;
 import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -60,6 +60,7 @@ import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.collaboration.CollaborationServiceFactory;
@@ -122,11 +123,9 @@ public class TabGroupUiMediatorUnitTest {
     private static final int POSITION1 = 0;
     private static final int POSITION2 = 1;
     private static final int POSITION3 = 2;
-    private static final int TAB1_ROOT_ID = TAB1_ID;
-    private static final int TAB2_ROOT_ID = TAB2_ID;
-    private static final int TAB3_ROOT_ID = TAB2_ID;
     private static final String GROUP_TITLE = "My Group";
     private static final Token TAB2_GROUP_ID = new Token(1L, 2L);
+    private static final Token TAB3_GROUP_ID = new Token(2L, 3L);
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -146,7 +145,6 @@ public class TabGroupUiMediatorUnitTest {
     @Mock private LayoutStateProvider mLayoutManager;
     @Spy private TabModel mTabModel;
     @Mock private TabModel mIncognitoTabModel;
-    @Mock private View mView;
     @Mock private TabGridDialogMediator.DialogController mTabGridDialogController;
     @Mock private SharedImageTilesCoordinator mSharedImageTilesCoordinator;
     @Mock private SharedImageTilesConfig.Builder mSharedImageTilesConfigBuilder;
@@ -166,6 +164,7 @@ public class TabGroupUiMediatorUnitTest {
     @Captor private ArgumentCaptor<ThemeColorObserver> mThemeColorObserverCaptor;
     @Captor private ArgumentCaptor<TintObserver> mTintObserverCaptor;
 
+    private final View mView = new View(ContextUtils.getApplicationContext());
     private final SettableMonotonicObservableSupplier<TabModel> mTabModelSupplier =
             ObservableSuppliers.createMonotonic();
     private final SettableNonNullObservableSupplier<Boolean> mOmniboxFocusStateSupplier =
@@ -184,7 +183,6 @@ public class TabGroupUiMediatorUnitTest {
     private Tab mTab1;
     private Tab mTab2;
     private Tab mTab3;
-    private List<Tab> mTabGroup1;
     private List<Tab> mTabGroup2;
     private PropertyModel mModel;
     private TabGroupUiMediator mTabGroupUiMediator;
@@ -192,16 +190,10 @@ public class TabGroupUiMediatorUnitTest {
     private InOrder mVisibilityControllerInOrder;
     private LazyOneshotSupplier<TabGridDialogMediator.DialogController> mDialogControllerSupplier;
 
-    private Tab prepareTab(int tabId, int rootId) {
-        Tab tab = TabUiUnitTestUtils.prepareTab(tabId, rootId);
+    private Tab prepareTab(int tabId) {
+        Tab tab = TabUiUnitTestUtils.prepareTab(tabId);
         doReturn(tab).when(mTabModelSelector).getTabById(tabId);
         return tab;
-    }
-
-    private void prepareIncognitoTabModel() {
-        Tab newTab = prepareTab(TAB4_ID, TAB4_ID);
-        List<Tab> tabs = new ArrayList<>(Arrays.asList(newTab));
-        doReturn(tabs).when(mTabModel).getRelatedTabList(TAB4_ID);
     }
 
     private void verifyNeverReset() {
@@ -227,7 +219,6 @@ public class TabGroupUiMediatorUnitTest {
         if (currentTab == null) {
             doReturn(TabModel.INVALID_TAB_INDEX).when(mTabModel).index();
             doReturn(0).when(mTabModel).getCount();
-            doReturn(0).when(mTabModel).getIndividualTabAndGroupCount();
             doReturn(null).when(mTabModelSelector).getCurrentTab();
             when(mTabModel.iterator()).thenAnswer(inv -> Collections.emptyList().iterator());
         } else {
@@ -269,9 +260,8 @@ public class TabGroupUiMediatorUnitTest {
 
         assertTrue(mTabModelSupplier.hasObservers());
         // Verify strip initial reset.
-        List<Tab> tabs = mTabModel.getRelatedTabList(currentTab.getId());
         if (mTabModel.isTabInTabGroup(currentTab)) {
-            verifyResetStrip(true, tabs);
+            verifyResetStrip(true, mTabModel.getTabsInGroup(currentTab.getTabGroupId()));
         } else {
             verifyNeverReset();
         }
@@ -303,16 +293,29 @@ public class TabGroupUiMediatorUnitTest {
         when(mDataSharingService.getUiDelegate()).thenReturn(mDataSharingUiDelegate);
 
         // Set up Tabs.
-        mTab1 = prepareTab(TAB1_ID, TAB1_ROOT_ID);
-        mTab2 = prepareTab(TAB2_ID, TAB2_ROOT_ID);
+        mTab1 = prepareTab(TAB1_ID);
+        mTab2 = prepareTab(TAB2_ID);
         when(mTab2.getTabGroupId()).thenReturn(TAB2_GROUP_ID);
-        mTab3 = prepareTab(TAB3_ID, TAB3_ROOT_ID);
+        mTab3 = prepareTab(TAB3_ID);
         when(mTab3.getTabGroupId()).thenReturn(TAB2_GROUP_ID);
-        mTabGroup1 = new ArrayList<>(Arrays.asList(mTab1));
         mTabGroup2 = new ArrayList<>(Arrays.asList(mTab2, mTab3));
 
         // Setup TabModel.
         when(mTabModel.getProfile()).thenReturn(mProfile);
+        when(mTabModel.getTabCountForGroup(any()))
+                .thenAnswer(
+                        (org.mockito.invocation.InvocationOnMock invocation) -> {
+                            Token groupId = invocation.getArgument(0);
+                            List<Tab> tabs = mTabModel.getTabsInGroup(groupId);
+                            return tabs == null ? 0 : tabs.size();
+                        });
+        when(mTabModel.getIndexOfTabInGroup(any()))
+                .thenAnswer(
+                        (org.mockito.invocation.InvocationOnMock invocation) -> {
+                            Tab tab = invocation.getArgument(0);
+                            List<Tab> tabs = mTabModel.getTabsInGroup(tab.getTabGroupId());
+                            return tabs == null ? -1 : tabs.indexOf(tab);
+                        });
         when(mTabModelSelector.isIncognitoSelected()).thenReturn(false);
         doReturn(mTabModel).when(mTabModel).getComprehensiveModel();
         doReturn(mTabModel).when(mTabModelSelector).getModel(false);
@@ -335,10 +338,7 @@ public class TabGroupUiMediatorUnitTest {
         doNothing().when(mTab3).addObserver(mTabObserverCaptor.capture());
 
         // Setup TabModel.
-        doReturn(2).when(mTabModel).getIndividualTabAndGroupCount();
-        doReturn(mTabGroup1).when(mTabModel).getRelatedTabList(TAB1_ID);
-        doReturn(mTabGroup2).when(mTabModel).getRelatedTabList(TAB2_ID);
-        doReturn(mTabGroup2).when(mTabModel).getRelatedTabList(TAB3_ID);
+        when(mTabModel.getTabsInGroup(TAB2_GROUP_ID)).thenReturn(mTabGroup2);
         doReturn(false).when(mTabModel).isTabInTabGroup(mTab1);
         doReturn(true).when(mTabModel).isTabInTabGroup(mTab2);
         doReturn(true).when(mTabModel).isTabInTabGroup(mTab3);
@@ -433,7 +433,7 @@ public class TabGroupUiMediatorUnitTest {
 
     @Test
     public void onClickNewTabButton_TabGroup() {
-        initAndAssertProperties(mTab1);
+        initAndAssertProperties(mTab2);
 
         View.OnClickListener listener =
                 mModel.get(TabGroupUiProperties.NEW_TAB_BUTTON_ON_CLICK_LISTENER);
@@ -443,7 +443,7 @@ public class TabGroupUiMediatorUnitTest {
 
         verify(mTabCreator)
                 .createNewTab(
-                        isA(LoadUrlParams.class), eq(TabLaunchType.FROM_TAB_GROUP_UI), eq(mTab1));
+                        isA(LoadUrlParams.class), eq(TabLaunchType.FROM_TAB_GROUP_UI), eq(mTab3));
     }
 
     @Test
@@ -465,14 +465,14 @@ public class TabGroupUiMediatorUnitTest {
         initAndAssertProperties(mTab2);
 
         // Mock that tab 1 is not a single tab.
-        Tab newTab = prepareTab(TAB4_ID, TAB4_ID);
+        Tab newTab = prepareTab(TAB4_ID);
         List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab1, newTab));
-        doReturn(tabs).when(mTabModel).getRelatedTabList(TAB1_ID);
-        doReturn(true).when(mTabModel).isTabInTabGroup(mTab1);
-        doReturn(true).when(mTabModel).isTabInTabGroup(newTab);
         Token tab1GroupId = new Token(1L, 32L);
         when(mTab1.getTabGroupId()).thenReturn(tab1GroupId);
         when(newTab.getTabGroupId()).thenReturn(tab1GroupId);
+        when(mTabModel.getTabsInGroup(tab1GroupId)).thenReturn(tabs);
+        doReturn(true).when(mTabModel).isTabInTabGroup(mTab1);
+        doReturn(true).when(mTabModel).isTabInTabGroup(newTab);
 
         // Mock selecting tab 1, and the last selected tab is tab 2 which is in different group.
         when(mTabModelSelector.getCurrentTab()).thenReturn(mTab1);
@@ -485,13 +485,10 @@ public class TabGroupUiMediatorUnitTest {
     }
 
     @Test
-    @SuppressWarnings("DirectInvocationOnMock")
     public void tabSelection_NotSameGroup_SingleTabToGroup() {
         initAndAssertProperties(mTab1);
 
         // Mock that tab 2 is not a single tab.
-        List<Tab> tabGroup = mTabModel.getRelatedTabList(TAB2_ID);
-        assertThat(tabGroup.size(), equalTo(2));
         when(mTabModelSelector.getCurrentTab()).thenReturn(mTab2);
 
         // Mock selecting tab 2, and the last selected tab is tab 1 which is a single tab.
@@ -500,7 +497,7 @@ public class TabGroupUiMediatorUnitTest {
                 .didSelectTab(mTab2, TabSelectionType.FROM_USER, TAB1_ID);
 
         // Strip should be showing since we are selecting a group.
-        verifyResetStrip(true, tabGroup);
+        verifyResetStrip(true, mTabGroup2);
     }
 
     @Test
@@ -508,9 +505,7 @@ public class TabGroupUiMediatorUnitTest {
         initAndAssertProperties(mTab1);
 
         // Mock that new tab is a single tab.
-        Tab newTab = prepareTab(TAB4_ID, TAB4_ID);
-        List<Tab> tabs = new ArrayList<>(Arrays.asList(newTab));
-        doReturn(tabs).when(mTabModel).getRelatedTabList(TAB4_ID);
+        Tab newTab = prepareTab(TAB4_ID);
 
         // Mock selecting new tab, and the last selected tab is tab 1 which is also a single tab.
         mTabModelObserverArgumentCaptor
@@ -535,14 +530,9 @@ public class TabGroupUiMediatorUnitTest {
     }
 
     @Test
-    @SuppressWarnings("DirectInvocationOnMock")
     public void tabSelection_ScrollToSelectedIndex() {
         initAndAssertProperties(mTab1);
         assertThat(mModel.get(TabGroupUiProperties.INITIAL_SCROLL_INDEX), equalTo(null));
-
-        // Mock that {tab2, tab3} are in the same tab group.
-        List<Tab> tabGroup = mTabModel.getRelatedTabList(TAB2_ID);
-        assertThat(tabGroup.size(), equalTo(2));
 
         // Mock selecting tab 3, and the last selected tab is tab 1 which is a single tab.
         doReturn(mTab3).when(mTabModelSelector).getCurrentTab();
@@ -553,7 +543,7 @@ public class TabGroupUiMediatorUnitTest {
         // Strip should be showing since we are selecting a group, and it should scroll to the index
         // of currently selected tab.
         RobolectricUtil.runAllBackgroundAndUi();
-        verifyResetStrip(true, tabGroup);
+        verifyResetStrip(true, mTabGroup2);
         assertThat(mModel.get(TabGroupUiProperties.INITIAL_SCROLL_INDEX), equalTo(1));
     }
 
@@ -590,8 +580,8 @@ public class TabGroupUiMediatorUnitTest {
     }
 
     // TODO(crbug.com/40637854): Ignore this test until we have a conclusion from the attached bug.
-    @Ignore
     @Test
+    @DisabledTest(message = "https://crbug.com/40637854")
     public void tabClosure_LastTabInGroup_GroupUiVisible() {
         initAndAssertProperties(mTab2);
 
@@ -600,7 +590,6 @@ public class TabGroupUiMediatorUnitTest {
         mTabModelObserverArgumentCaptor
                 .getValue()
                 .didSelectTab(mTab3, TabSelectionType.FROM_CLOSE, TAB2_ID);
-        doReturn(new ArrayList<>()).when(mTabModel).getRelatedTabList(TAB3_ID);
         mTabModelObserverArgumentCaptor
                 .getValue()
                 .didSelectTab(mTab1, TabSelectionType.FROM_CLOSE, TAB3_ID);
@@ -614,9 +603,7 @@ public class TabGroupUiMediatorUnitTest {
     public void tabAddition_SingleTab() {
         initAndAssertProperties(mTab1);
 
-        Tab newTab = prepareTab(TAB4_ID, TAB4_ID);
-        List<Tab> tabs = new ArrayList<>(Arrays.asList(newTab));
-        doReturn(tabs).when(mTabModel).getRelatedTabList(TAB4_ID);
+        Tab newTab = prepareTab(TAB4_ID);
 
         mTabModelObserverArgumentCaptor
                 .getValue()
@@ -641,15 +628,14 @@ public class TabGroupUiMediatorUnitTest {
     public void tabAddition_SingleTab_Refresh_WithoutAutoGroupCreation() {
         initAndAssertProperties(mTab1);
 
-        Tab newTab = prepareTab(TAB4_ID, TAB4_ID);
+        Tab newTab = prepareTab(TAB4_ID);
         List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab1, newTab));
-        doReturn(tabs).when(mTabModel).getRelatedTabList(TAB4_ID);
-        doReturn(tabs).when(mTabModel).getRelatedTabList(TAB1_ID);
-        doReturn(true).when(mTabModel).isTabInTabGroup(mTab1);
-        doReturn(true).when(mTabModel).isTabInTabGroup(newTab);
         Token tab1GroupId = new Token(3478L, 348L);
         when(mTab1.getTabGroupId()).thenReturn(tab1GroupId);
         when(newTab.getTabGroupId()).thenReturn(tab1GroupId);
+        when(mTabModel.getTabsInGroup(tab1GroupId)).thenReturn(tabs);
+        doReturn(true).when(mTabModel).isTabInTabGroup(mTab1);
+        doReturn(true).when(mTabModel).isTabInTabGroup(newTab);
 
         mTabModelObserverArgumentCaptor
                 .getValue()
@@ -667,9 +653,8 @@ public class TabGroupUiMediatorUnitTest {
     public void tabAddition_TabGroup_NoRefresh() {
         initAndAssertProperties(mTab2);
 
-        Tab newTab = prepareTab(TAB4_ID, TAB4_ID);
+        Tab newTab = prepareTab(TAB4_ID);
         mTabGroup2.add(newTab);
-        doReturn(mTabGroup1).when(mTabModel).getRelatedTabList(TAB4_ID);
 
         mTabModelObserverArgumentCaptor
                 .getValue()
@@ -698,15 +683,13 @@ public class TabGroupUiMediatorUnitTest {
     }
 
     @Test
-    @SuppressWarnings("DirectInvocationOnMock")
     public void tabAddition_TabGroup_ScrollToTheLast() {
         initAndAssertProperties(mTab2);
         assertThat(mModel.get(TabGroupUiProperties.INITIAL_SCROLL_INDEX), equalTo(0));
 
-        Tab newTab = prepareTab(TAB4_ID, TAB4_ID);
+        Tab newTab = prepareTab(TAB4_ID);
         mTabGroup2.add(newTab);
         when(newTab.getTabGroupId()).thenReturn(TAB2_GROUP_ID);
-        doReturn(mTabGroup2).when(mTabModel).getRelatedTabList(TAB4_ID);
 
         mTabModelObserverArgumentCaptor
                 .getValue()
@@ -719,7 +702,6 @@ public class TabGroupUiMediatorUnitTest {
 
         // Strip should be not be reset through adding tab from UI.
         verifyNeverReset();
-        assertThat(mTabModel.getRelatedTabList(TAB4_ID).size(), equalTo(3));
         assertThat(mModel.get(TabGroupUiProperties.INITIAL_SCROLL_INDEX), equalTo(2));
     }
 
@@ -784,10 +766,7 @@ public class TabGroupUiMediatorUnitTest {
         initAndAssertProperties(mTab2);
 
         // Simulate that another member of this group, newTab, is being undone from closure.
-        Tab newTab = prepareTab(TAB4_ID, TAB4_ID);
-        doReturn(new ArrayList<>(Arrays.asList(mTab2, mTab3, newTab)))
-                .when(mTabModel)
-                .getRelatedTabList(TAB4_ID);
+        Tab newTab = prepareTab(TAB4_ID);
 
         mTabModelObserverArgumentCaptor.getValue().tabClosureUndone(newTab);
 
@@ -803,13 +782,6 @@ public class TabGroupUiMediatorUnitTest {
         initAndAssertProperties(mTab1);
 
         // Simulate mTab2 and mTab3 being undone from closure with mTab1 still selected.
-        doReturn(new ArrayList<>(Arrays.asList(mTab2, mTab3)))
-                .when(mTabModel)
-                .getRelatedTabList(TAB2_ID);
-        doReturn(new ArrayList<>(Arrays.asList(mTab2, mTab3)))
-                .when(mTabModel)
-                .getRelatedTabList(TAB3_ID);
-        doReturn(new ArrayList<>(Arrays.asList(mTab1))).when(mTabModel).getRelatedTabList(TAB1_ID);
         doReturn(mTab1).when(mTabModelSelector).getCurrentTab();
 
         mTabModelObserverArgumentCaptor.getValue().tabClosureUndone(mTab2);
@@ -826,13 +798,12 @@ public class TabGroupUiMediatorUnitTest {
 
         // Simulate that newTab which was a tab in the same group as mTab1 is being undone from
         // closure.
-        Tab newTab = prepareTab(TAB4_ID, TAB4_ID);
+        Tab newTab = prepareTab(TAB4_ID);
         List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab1, newTab));
-        doReturn(tabs).when(mTabModel).getRelatedTabList(TAB1_ID);
-        doReturn(tabs).when(mTabModel).getRelatedTabList(TAB4_ID);
         Token tab1GroupId = new Token(1L, 3789L);
         when(mTab1.getTabGroupId()).thenReturn(tab1GroupId);
         when(newTab.getTabGroupId()).thenReturn(tab1GroupId);
+        when(mTabModel.getTabsInGroup(tab1GroupId)).thenReturn(tabs);
         doReturn(true).when(mTabModel).isTabInTabGroup(mTab1);
         doReturn(true).when(mTabModel).isTabInTabGroup(newTab);
         doReturn(mTab1).when(mTabModelSelector).getCurrentTab();
@@ -931,13 +902,23 @@ public class TabGroupUiMediatorUnitTest {
     }
 
     @Test
+    public void destroy_RemovesDialogBackPressObserver() {
+        initAndAssertProperties(mTab1);
+        mDialogControllerSupplier.get();
+        RobolectricUtil.runAllBackgroundAndUi();
+        assertTrue(mTabGridDialogBackPressSupplier.hasObservers());
+
+        mTabGroupUiMediator.destroy();
+
+        assertFalse(mTabGridDialogBackPressSupplier.hasObservers());
+    }
+
+    @Test
     public void uiNotVisibleAfterDragCurrentTabOutOfGroup() {
         initAndAssertProperties(mTab3);
 
-        List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab3));
-        doReturn(tabs).when(mTabModel).getRelatedTabList(TAB3_ID);
         doReturn(false).when(mTabModel).isTabInTabGroup(mTab3);
-        mTabGroupObserverArgumentCaptor.getValue().didMoveTabOutOfGroup(mTab3, 1);
+        mTabGroupObserverArgumentCaptor.getValue().didMoveTabOutOfGroup(mTab3, TAB2_GROUP_ID);
 
         verifyResetStrip(false, null);
     }
@@ -947,10 +928,10 @@ public class TabGroupUiMediatorUnitTest {
         initAndAssertProperties(mTab3);
 
         List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab3));
-        doReturn(tabs).when(mTabModel).getRelatedTabList(TAB3_ID);
+        when(mTabModel.getTabsInGroup(TAB3_GROUP_ID)).thenReturn(tabs);
         doReturn(true).when(mTabModel).isTabInTabGroup(mTab3);
-        doReturn(new Token(1L, TAB3_ROOT_ID)).when(mTab3).getTabGroupId();
-        mTabGroupObserverArgumentCaptor.getValue().didMoveTabOutOfGroup(mTab3, 1);
+        doReturn(TAB3_GROUP_ID).when(mTab3).getTabGroupId();
+        mTabGroupObserverArgumentCaptor.getValue().didMoveTabOutOfGroup(mTab3, TAB2_GROUP_ID);
 
         verifyResetStrip(true, tabs);
     }
@@ -960,9 +941,9 @@ public class TabGroupUiMediatorUnitTest {
         initAndAssertProperties(mTab1);
 
         List<Tab> tabs = new ArrayList<>(Arrays.asList(mTab1, mTab2));
-        doReturn(tabs).when(mTabModel).getRelatedTabList(TAB1_ID);
+        when(mTabModel.getTabsInGroup(TAB2_GROUP_ID)).thenReturn(tabs);
         doReturn(true).when(mTabModel).isTabInTabGroup(mTab1);
-        doReturn(new Token(1L, TAB2_ROOT_ID)).when(mTab1).getTabGroupId();
+        doReturn(TAB2_GROUP_ID).when(mTab1).getTabGroupId();
         mTabGroupObserverArgumentCaptor
                 .getValue()
                 .didMergeTabToGroup(mTab1, /* isDestinationTab= */ true);
@@ -1036,7 +1017,6 @@ public class TabGroupUiMediatorUnitTest {
     @Test
     public void switchTabModel_UiVisible_TabGroup() {
         initAndAssertProperties(mTab1);
-        prepareIncognitoTabModel();
 
         // Mock that tab2 is selected after tab model switch, and tab2 is in a group.
         when(mTabModelSelector.getCurrentTab()).thenReturn(mTab2);
@@ -1049,7 +1029,6 @@ public class TabGroupUiMediatorUnitTest {
     @Test
     public void switchTabModel_UiNotVisible_TabGroup() {
         initAndAssertProperties(mTab2);
-        prepareIncognitoTabModel();
 
         // Mock that tab1 is selected after tab model switch, and tab1 is a single tab.
         when(mTabModelSelector.getCurrentTab()).thenReturn(mTab1);

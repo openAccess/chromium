@@ -5,14 +5,37 @@
 #include "chrome/browser/actor/actor_proto_conversion.h"
 
 #include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
+#include "base/test/gmock_expected_support.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/unguessable_token.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
+#include "chrome/browser/actor/tools/click_tool_request.h"
+#include "chrome/browser/actor/tools/file_upload_tool_request.h"
+#include "chrome/browser/actor/tools/history_tool_request.h"
+#include "chrome/browser/actor/tools/password_manager/change_password/change_password_tool_request.h"
+#include "chrome/browser/actor/tools/script_tool_request.h"
+#include "chrome/browser/actor/tools/tab_management_tool_request.h"
+#include "chrome/browser/actor/tools/type_tool_request.h"
+#include "chrome/browser/actor/tools/wait_tool_request.h"
+#include "components/actor/core/actor_features.h"
+#include "components/actor/core/shared_types.h"
+#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
+#include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/optimization_guide/proto/features/common_quality_data_fuzzable.pb.h"
-#include "components/origin_gating/core/actor_container_config.h"
+#include "components/origin_gating/core/task_policy_config.h"
+#include "components/page_content_annotations/content/page_context_fetcher_metrics.h"
+#include "components/password_manager/core/browser/features/password_features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/fuzztest/src/fuzztest/fuzztest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/gfx/geometry/point.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -20,32 +43,121 @@ namespace actor {
 
 namespace {
 
+using ::optimization_guide::proto::Action;
 using ::optimization_guide::proto::AgentContainerConfig;
 using ::optimization_guide::proto::Protocol;
 using ::optimization_guide::proto::RuleMetadata;
-using ::origin_gating::ActorContainerConfig;
+using ::origin_gating::ClientTool;
+using ::origin_gating::TaskPolicyConfig;
 
-using Location = ActorContainerConfig::Location;
-using Rule = ActorContainerConfig::Rule;
-using Wildcard = ActorContainerConfig::Wildcard;
+using Location = TaskPolicyConfig::Location;
+using Rule = TaskPolicyConfig::Rule;
+using Wildcard = TaskPolicyConfig::Wildcard;
 
-Rule CreateExpectedRule(std::vector<Location> navigation_sources = {},
+Rule CreateExpectedRule(absl::flat_hash_set<Location> navigation_sources = {},
                         Rule::ResourceSet resources = {},
-                        Rule::CapabilitySet capabilities = {}) {
-  return Rule(std::move(navigation_sources), resources, capabilities);
+                        absl::flat_hash_set<ClientTool> allowed_tools = {}) {
+  return Rule(std::move(navigation_sources), resources,
+              std::move(allowed_tools));
+}
+
+optimization_guide::proto::LocationRule CreateRuleProto(
+    std::vector<RuleMetadata::ActuationCapability> capabilities,
+    std::vector<RuleMetadata::AgentResource> resources = {}) {
+  optimization_guide::proto::LocationRule rule;
+  rule.mutable_metadata()->mutable_capabilities()->Assign(capabilities.begin(),
+                                                          capabilities.end());
+  rule.mutable_metadata()->mutable_accessible_resources()->Assign(
+      resources.begin(), resources.end());
+  return rule;
+}
+
+optimization_guide::proto::LocationRule CreateWildcardRuleProto(
+    std::vector<RuleMetadata::ActuationCapability> capabilities,
+    std::vector<RuleMetadata::AgentResource> resources = {}) {
+  optimization_guide::proto::LocationRule rule =
+      CreateRuleProto(std::move(capabilities), std::move(resources));
+  rule.mutable_location()->mutable_wildcard();
+  return rule;
+}
+
+optimization_guide::proto::LocationRule CreateHttpsSiteRuleProto(
+    std::string_view domain,
+    std::vector<RuleMetadata::ActuationCapability> capabilities) {
+  optimization_guide::proto::LocationRule rule =
+      CreateRuleProto(std::move(capabilities));
+  auto* site = rule.mutable_location()->mutable_site();
+  site->set_protocol(Protocol::PROTOCOL_HTTPS);
+  site->set_domain(std::string(domain));
+  return rule;
+}
+
+AgentContainerConfig CreateConfigProto(
+    std::vector<optimization_guide::proto::LocationRule> rules) {
+  AgentContainerConfig config;
+  config.mutable_location_rules()->Assign(rules.begin(), rules.end());
+  return config;
+}
+
+optimization_guide::proto::Actions CreateActionsWithScriptTool(
+    std::optional<int32_t> tab_id,
+    std::optional<std::string> document_identifier) {
+  optimization_guide::proto::Actions actions;
+  optimization_guide::proto::ScriptToolAction* script_action =
+      actions.add_actions()->mutable_script_tool();
+  if (tab_id.has_value()) {
+    script_action->set_tab_id(*tab_id);
+  }
+  script_action->set_tool_name("echo");
+  script_action->set_input_arguments(R"({"text":"sample_input"})");
+  if (document_identifier.has_value()) {
+    script_action->mutable_document_identifier()->set_serialized_token(
+        *document_identifier);
+  }
+  return actions;
+}
+
+// Returns an Actions proto holding a single ClickToUploadAction with a valid
+// target but no files; tests add the files they need.
+optimization_guide::proto::Actions CreateActionsWithClickToUpload(
+    int32_t tab_id) {
+  optimization_guide::proto::Actions actions;
+  optimization_guide::proto::ClickToUploadAction* upload_action =
+      actions.add_actions()->mutable_click_to_upload();
+  upload_action->set_tab_id(tab_id);
+  optimization_guide::proto::ActionTarget* target =
+      upload_action->mutable_target();
+  target->set_content_node_id(42);
+  target->mutable_document_identifier()->set_serialized_token(
+      base::UnguessableToken::Create().ToString());
+  return actions;
+}
+
+void SetDomNodeTarget(optimization_guide::proto::ActionTarget* target,
+                      int node_id,
+                      const std::string& doc_token) {
+  target->set_content_node_id(node_id);
+  target->mutable_document_identifier()->set_serialized_token(doc_token);
 }
 
 }  // namespace
 
 class ActorProtoConversionTest : public testing::Test {
  public:
-  ActorProtoConversionTest() = default;
+  ActorProtoConversionTest() {
+    feature_list_.InitAndEnableFeature(kGlicActorEnableScriptTools);
+  }
   ~ActorProtoConversionTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_F(ActorProtoConversionTest, ConvertEmptyConfig) {
   AgentContainerConfig proto;
-  EXPECT_EQ(ConvertAgentContainerConfig(proto), ActorContainerConfig());
+  EXPECT_EQ(
+      ConvertAgentContainerConfig(proto),
+      TaskPolicyConfig({}, ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, ConvertWildcardRule) {
@@ -56,12 +168,14 @@ TEST_F(ActorProtoConversionTest, ConvertWildcardRule) {
   rule->mutable_metadata()->add_accessible_resources(
       RuleMetadata::RESOURCE_SESSION);
 
-  EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(Wildcard()),
-                 CreateExpectedRule({}, {Rule::Resource::kSession},
-                                    {Rule::Capability::kAll})},
-            }}));
+  EXPECT_EQ(
+      ConvertAgentContainerConfig(proto),
+      TaskPolicyConfig({{
+                           {Location(Wildcard()),
+                            CreateExpectedRule({}, {Rule::Resource::kSession},
+                                               GetAllActorTools())},
+                       }},
+                       ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, ConvertSiteRule) {
@@ -75,11 +189,13 @@ TEST_F(ActorProtoConversionTest, ConvertSiteRule) {
       RuleMetadata::RESOURCE_SESSION);
 
   EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(net::SchemefulSite(GURL("https://example.com"))),
-                 CreateExpectedRule({}, {Rule::Resource::kSession},
-                                    {Rule::Capability::kAll})},
-            }}));
+            TaskPolicyConfig(
+                {{
+                    {Location(net::SchemefulSite(GURL("https://example.com"))),
+                     CreateExpectedRule({}, {Rule::Resource::kSession},
+                                        GetAllActorTools())},
+                }},
+                ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, ConvertOriginRule) {
@@ -92,12 +208,15 @@ TEST_F(ActorProtoConversionTest, ConvertOriginRule) {
   rule->mutable_metadata()->add_accessible_resources(
       RuleMetadata::RESOURCE_SESSION);
 
-  EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(url::Origin::Create(GURL("https://a.example.com"))),
-                 CreateExpectedRule({}, {Rule::Resource::kSession},
-                                    {Rule::Capability::kAll})},
-            }}));
+  EXPECT_EQ(
+      ConvertAgentContainerConfig(proto),
+      TaskPolicyConfig(
+          {{
+              {Location(url::Origin::Create(GURL("https://a.example.com"))),
+               CreateExpectedRule({}, {Rule::Resource::kSession},
+                                  GetAllActorTools())},
+          }},
+          ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, ConvertMultipleRules) {
@@ -118,13 +237,15 @@ TEST_F(ActorProtoConversionTest, ConvertMultipleRules) {
   }
 
   EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(Wildcard()),
-                 CreateExpectedRule({}, {Rule::Resource::kSession},
-                                    {Rule::Capability::kAll})},
-                {Location(net::SchemefulSite(GURL("https://example.com"))),
-                 CreateExpectedRule({}, {}, {Rule::Capability::kAll})},
-            }}));
+            TaskPolicyConfig(
+                {{
+                    {Location(Wildcard()),
+                     CreateExpectedRule({}, {Rule::Resource::kSession},
+                                        GetAllActorTools())},
+                    {Location(net::SchemefulSite(GURL("https://example.com"))),
+                     CreateExpectedRule({}, {}, GetAllActorTools())},
+                }},
+                ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, ConvertMixedResourcesAndCapabilities) {
@@ -138,12 +259,14 @@ TEST_F(ActorProtoConversionTest, ConvertMixedResourcesAndCapabilities) {
   rule->mutable_metadata()->add_accessible_resources(
       RuleMetadata::RESOURCE_UNKNOWN);
 
-  EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(Wildcard()),
-                 CreateExpectedRule({}, {Rule::Resource::kSession},
-                                    {Rule::Capability::kAll})},
-            }}));
+  EXPECT_EQ(
+      ConvertAgentContainerConfig(proto),
+      TaskPolicyConfig({{
+                           {Location(Wildcard()),
+                            CreateExpectedRule({}, {Rule::Resource::kSession},
+                                               GetAllActorTools())},
+                       }},
+                       ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, ConvertRuleWithNoCapabilities) {
@@ -154,10 +277,12 @@ TEST_F(ActorProtoConversionTest, ConvertRuleWithNoCapabilities) {
       RuleMetadata::RESOURCE_SESSION);
 
   EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(Wildcard()),
-                 CreateExpectedRule({}, {Rule::Resource::kSession}, {})},
-            }}));
+            TaskPolicyConfig(
+                {{
+                    {Location(Wildcard()),
+                     CreateExpectedRule({}, {Rule::Resource::kSession}, {})},
+                }},
+                ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, ConvertProtocols_Http_Ws_Wss) {
@@ -185,14 +310,16 @@ TEST_F(ActorProtoConversionTest, ConvertProtocols_Http_Ws_Wss) {
   }
 
   EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(net::SchemefulSite(GURL("http://http.com"))),
-                 CreateExpectedRule({}, {}, {Rule::Capability::kAll})},
-                {Location(url::Origin::Create(GURL("ws://ws.com"))),
-                 CreateExpectedRule({}, {}, {Rule::Capability::kAll})},
-                {Location(url::Origin::Create(GURL("wss://wss.com"))),
-                 CreateExpectedRule({}, {}, {Rule::Capability::kAll})},
-            }}));
+            TaskPolicyConfig(
+                {{
+                    {Location(net::SchemefulSite(GURL("http://http.com"))),
+                     CreateExpectedRule({}, {}, GetAllActorTools())},
+                    {Location(url::Origin::Create(GURL("ws://ws.com"))),
+                     CreateExpectedRule({}, {}, GetAllActorTools())},
+                    {Location(url::Origin::Create(GURL("wss://wss.com"))),
+                     CreateExpectedRule({}, {}, GetAllActorTools())},
+                }},
+                ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, ConvertWithNavigationSources) {
@@ -210,12 +337,14 @@ TEST_F(ActorProtoConversionTest, ConvertWithNavigationSources) {
 
   EXPECT_EQ(
       ConvertAgentContainerConfig(proto),
-      ActorContainerConfig({{
-          {Location(Wildcard()),
-           CreateExpectedRule(
-               {Location(url::Origin::Create(GURL("https://source.com")))},
-               {Rule::Resource::kSession}, {Rule::Capability::kAll})},
-      }}));
+      TaskPolicyConfig(
+          {{
+              {Location(Wildcard()),
+               CreateExpectedRule(
+                   {Location(url::Origin::Create(GURL("https://source.com")))},
+                   {Rule::Resource::kSession}, GetAllActorTools())},
+          }},
+          ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, FiltersOutMalformedRules_SiteUnknownProtocol) {
@@ -234,11 +363,13 @@ TEST_F(ActorProtoConversionTest, FiltersOutMalformedRules_SiteUnknownProtocol) {
   valid_rule->mutable_metadata()->add_capabilities(
       RuleMetadata::CAPABILITY_ALL);
 
-  EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(Wildcard()),
-                 CreateExpectedRule({}, {}, {Rule::Capability::kAll})},
-            }}));
+  EXPECT_EQ(
+      ConvertAgentContainerConfig(proto),
+      TaskPolicyConfig({{
+                           {Location(Wildcard()),
+                            CreateExpectedRule({}, {}, GetAllActorTools())},
+                       }},
+                       ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest,
@@ -258,11 +389,13 @@ TEST_F(ActorProtoConversionTest,
   valid_rule->mutable_metadata()->add_capabilities(
       RuleMetadata::CAPABILITY_ALL);
 
-  EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(Wildcard()),
-                 CreateExpectedRule({}, {}, {Rule::Capability::kAll})},
-            }}));
+  EXPECT_EQ(
+      ConvertAgentContainerConfig(proto),
+      TaskPolicyConfig({{
+                           {Location(Wildcard()),
+                            CreateExpectedRule({}, {}, GetAllActorTools())},
+                       }},
+                       ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, FiltersOutMalformedRules_SiteNoDomain) {
@@ -280,11 +413,13 @@ TEST_F(ActorProtoConversionTest, FiltersOutMalformedRules_SiteNoDomain) {
   valid_rule->mutable_metadata()->add_capabilities(
       RuleMetadata::CAPABILITY_ALL);
 
-  EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(Wildcard()),
-                 CreateExpectedRule({}, {}, {Rule::Capability::kAll})},
-            }}));
+  EXPECT_EQ(
+      ConvertAgentContainerConfig(proto),
+      TaskPolicyConfig({{
+                           {Location(Wildcard()),
+                            CreateExpectedRule({}, {}, GetAllActorTools())},
+                       }},
+                       ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, FiltersOutMalformedRules_EmptyLocationRule) {
@@ -299,11 +434,13 @@ TEST_F(ActorProtoConversionTest, FiltersOutMalformedRules_EmptyLocationRule) {
   valid_rule->mutable_metadata()->add_capabilities(
       RuleMetadata::CAPABILITY_ALL);
 
-  EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(Wildcard()),
-                 CreateExpectedRule({}, {}, {Rule::Capability::kAll})},
-            }}));
+  EXPECT_EQ(
+      ConvertAgentContainerConfig(proto),
+      TaskPolicyConfig({{
+                           {Location(Wildcard()),
+                            CreateExpectedRule({}, {}, GetAllActorTools())},
+                       }},
+                       ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest,
@@ -325,11 +462,13 @@ TEST_F(ActorProtoConversionTest,
   valid_rule->mutable_metadata()->add_capabilities(
       RuleMetadata::CAPABILITY_ALL);
 
-  EXPECT_EQ(ConvertAgentContainerConfig(proto),
-            ActorContainerConfig({{
-                {Location(Wildcard()),
-                 CreateExpectedRule({}, {}, {Rule::Capability::kAll})},
-            }}));
+  EXPECT_EQ(
+      ConvertAgentContainerConfig(proto),
+      TaskPolicyConfig({{
+                           {Location(Wildcard()),
+                            CreateExpectedRule({}, {}, GetAllActorTools())},
+                       }},
+                       ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
 }
 
 TEST_F(ActorProtoConversionTest, ValidateActionsAreScriptTools_EmptyActions) {
@@ -365,6 +504,514 @@ TEST_F(ActorProtoConversionTest, ValidateActionsAreScriptTools_MixedActions) {
   action2->mutable_click();
 
   EXPECT_FALSE(ValidateActionsAreScriptTools(actions));
+}
+
+TEST_F(
+    ActorProtoConversionTest,
+    BuildToolRequest_ScriptTool_ValidProto_CreatesRequestWithCorrectParameters) {
+  base::UnguessableToken token = base::UnguessableToken::Create();
+  optimization_guide::proto::Actions actions =
+      CreateActionsWithScriptTool(/*tab_id=*/100, token.ToString());
+
+  BuildToolRequestResult requests = BuildToolRequest(actions);
+  ASSERT_TRUE(requests.has_value());
+  ASSERT_EQ(requests.value().size(), 1u);
+
+  ToolRequest& created_request = *requests.value().front();
+  EXPECT_EQ(ScriptToolRequest::kName, created_request.Name());
+
+  const ScriptToolRequest& script_request =
+      static_cast<const ScriptToolRequest&>(created_request);
+  EXPECT_EQ(100, script_request.GetActorSurfaceHandle().raw_value());
+  EXPECT_EQ(token, script_request.GetTargetDocumentIdForTesting());
+  EXPECT_EQ("echo", script_request.GetNameForTesting());
+  EXPECT_EQ(R"({"text":"sample_input"})",
+            script_request.GetInputArgumentsForTesting());
+}
+
+TEST_F(ActorProtoConversionTest, BuildToolRequest_Wait_ObserveIdIsSurfaceId) {
+  // `observe_tab_id` holds a surface ID, which need not resolve to a surface.
+  const ActorSurfaceHandle observe_actor_surface_handle =
+      ActorSurfaceHandle::CreateForTesting();
+  optimization_guide::proto::Actions actions;
+  actions.add_actions()->mutable_wait()->set_observe_tab_id(
+      observe_actor_surface_handle.raw_value());
+
+  BuildToolRequestResult requests = BuildToolRequest(actions);
+  ASSERT_TRUE(requests.has_value());
+  ASSERT_EQ(requests.value().size(), 1u);
+  const ToolRequest& request = *requests.value().front();
+  EXPECT_EQ(WaitToolRequest::kName, request.Name());
+  EXPECT_EQ(request.GetActorSurfaceForValidation(),
+            observe_actor_surface_handle);
+  EXPECT_TRUE(request.RequiresUrlCheckInCurrentTab());
+}
+
+TEST_F(ActorProtoConversionTest, BuildToolRequest_Wait_NoObserveId) {
+  optimization_guide::proto::Actions actions;
+  actions.add_actions()->mutable_wait();
+
+  BuildToolRequestResult requests = BuildToolRequest(actions);
+  ASSERT_TRUE(requests.has_value());
+  ASSERT_EQ(requests.value().size(), 1u);
+  const ToolRequest& request = *requests.value().front();
+  EXPECT_TRUE(request.GetActorSurfaceForValidation().is_null());
+  EXPECT_FALSE(request.RequiresUrlCheckInCurrentTab());
+}
+
+TEST_F(ActorProtoConversionTest,
+       BuildToolRequest_ScriptTool_MissingDocumentIdentifier_ReturnsError) {
+  optimization_guide::proto::Actions actions = CreateActionsWithScriptTool(
+      /*tab_id=*/100, /*document_identifier=*/std::nullopt);
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kArgumentsInvalid)));
+}
+
+TEST_F(ActorProtoConversionTest,
+       BuildToolRequest_ScriptTool_InvalidDocumentIdentifier_ReturnsError) {
+  optimization_guide::proto::Actions actions =
+      CreateActionsWithScriptTool(/*tab_id=*/100, "invalid_token");
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kArgumentsInvalid)));
+}
+
+TEST_F(ActorProtoConversionTest,
+       BuildToolRequest_ScriptTool_MissingTabId_ReturnsError) {
+  base::UnguessableToken token = base::UnguessableToken::Create();
+  optimization_guide::proto::Actions actions =
+      CreateActionsWithScriptTool(/*tab_id=*/std::nullopt, token.ToString());
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kArgumentsInvalid)));
+}
+
+TEST_F(ActorProtoConversionTest,
+       BuildToolRequest_ClickToUpload_CreatesRequestWithFiles) {
+  base::test::ScopedFeatureList file_upload_feature;
+  file_upload_feature.InitAndEnableFeature(kGlicActorFileUploadTool);
+
+  optimization_guide::proto::Actions actions =
+      CreateActionsWithClickToUpload(/*tab_id=*/100);
+  optimization_guide::proto::ClickToUploadAction::File* file =
+      actions.mutable_actions(0)->mutable_click_to_upload()->add_files();
+  file->set_download_url("https://example.com/download?id=1");
+  file->set_file_name("resume.pdf");
+
+  BuildToolRequestResult requests = BuildToolRequest(actions);
+  ASSERT_TRUE(requests.has_value());
+  ASSERT_EQ(requests.value().size(), 1u);
+
+  ToolRequest& created_request = *requests.value().front();
+  EXPECT_EQ(FileUploadToolRequest::kName, created_request.Name());
+
+  const FileUploadToolRequest& upload_request =
+      static_cast<const FileUploadToolRequest&>(created_request);
+  EXPECT_EQ(100, upload_request.GetActorSurfaceHandle().raw_value());
+  ASSERT_EQ(1u, upload_request.files().size());
+  const FileUploadSource& source = upload_request.files().front();
+  EXPECT_EQ(FileUploadSource::Type::kUrl, source.type);
+  EXPECT_EQ(GURL("https://example.com/download?id=1"), source.url);
+  EXPECT_EQ("resume.pdf", source.file_name);
+}
+
+TEST_F(ActorProtoConversionTest,
+       BuildToolRequest_ClickToUpload_MissingDownloadUrl_ReturnsError) {
+  base::test::ScopedFeatureList file_upload_feature;
+  file_upload_feature.InitAndEnableFeature(kGlicActorFileUploadTool);
+
+  optimization_guide::proto::Actions actions =
+      CreateActionsWithClickToUpload(/*tab_id=*/100);
+  // A file with only display metadata cannot be fetched.
+  actions.mutable_actions(0)
+      ->mutable_click_to_upload()
+      ->add_files()
+      ->set_file_name("resume.pdf");
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kArgumentsInvalid)));
+}
+
+TEST_F(ActorProtoConversionTest,
+       BuildToolRequest_ClickToUpload_NoFiles_ReturnsError) {
+  base::test::ScopedFeatureList file_upload_feature;
+  file_upload_feature.InitAndEnableFeature(kGlicActorFileUploadTool);
+
+  optimization_guide::proto::Actions actions =
+      CreateActionsWithClickToUpload(/*tab_id=*/100);
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kFileUploadEmptyFileList)));
+}
+
+TEST_F(ActorProtoConversionTest, ConvertRuleWithSpecificCapabilities) {
+  AgentContainerConfig proto = CreateConfigProto({CreateWildcardRuleProto(
+      {RuleMetadata::CAPABILITY_CLICK, RuleMetadata::CAPABILITY_TYPE},
+      {RuleMetadata::RESOURCE_SESSION})});
+
+  EXPECT_EQ(
+      ConvertAgentContainerConfig(proto),
+      TaskPolicyConfig(
+          {{
+              {Location(Wildcard()),
+               CreateExpectedRule({}, {Rule::Resource::kSession},
+                                  {ClientTool(RuleMetadata::CAPABILITY_CLICK),
+                                   ClientTool(RuleMetadata::CAPABILITY_TYPE)})},
+          }},
+          ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
+}
+
+TEST_F(ActorProtoConversionTest, ConvertRuleWithSpecificAndAllCapabilities) {
+  AgentContainerConfig proto = CreateConfigProto({
+      CreateWildcardRuleProto(
+          {RuleMetadata::CAPABILITY_CLICK, RuleMetadata::CAPABILITY_ALL}),
+      CreateHttpsSiteRuleProto("example.com", {RuleMetadata::CAPABILITY_ALL,
+                                               RuleMetadata::CAPABILITY_CLICK}),
+  });
+
+  EXPECT_EQ(ConvertAgentContainerConfig(proto),
+            TaskPolicyConfig(
+                {{
+                    {Location(Wildcard()),
+                     CreateExpectedRule({}, {}, GetAllActorTools())},
+                    {Location(net::SchemefulSite(GURL("https://example.com"))),
+                     CreateExpectedRule({}, {}, GetAllActorTools())},
+                }},
+                ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
+}
+
+TEST_F(ActorProtoConversionTest,
+       ConvertRuleWithSpecificAndUnknownCapabilities) {
+  AgentContainerConfig proto = CreateConfigProto({CreateWildcardRuleProto(
+      {RuleMetadata::CAPABILITY_UNKNOWN, RuleMetadata::CAPABILITY_CLICK})});
+
+  EXPECT_EQ(ConvertAgentContainerConfig(proto),
+            TaskPolicyConfig(
+                {{
+                    {Location(Wildcard()),
+                     CreateExpectedRule(
+                         {}, {}, {ClientTool(RuleMetadata::CAPABILITY_CLICK)})},
+                }},
+                ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
+}
+
+TEST_F(ActorProtoConversionTest, ConvertRuleWithOnlyUnknownCapability) {
+  AgentContainerConfig proto = CreateConfigProto(
+      {CreateWildcardRuleProto({RuleMetadata::CAPABILITY_UNKNOWN})});
+
+  EXPECT_EQ(ConvertAgentContainerConfig(proto),
+            TaskPolicyConfig(
+                {{
+                    {Location(Wildcard()), CreateExpectedRule({}, {}, {})},
+                }},
+                ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
+}
+
+TEST_F(ActorProtoConversionTest, ConvertRuleWithDuplicateCapabilities) {
+  AgentContainerConfig proto = CreateConfigProto({CreateWildcardRuleProto(
+      {RuleMetadata::CAPABILITY_CLICK, RuleMetadata::CAPABILITY_CLICK})});
+
+  EXPECT_EQ(ConvertAgentContainerConfig(proto),
+            TaskPolicyConfig(
+                {{
+                    {Location(Wildcard()),
+                     CreateExpectedRule(
+                         {}, {}, {ClientTool(RuleMetadata::CAPABILITY_CLICK)})},
+                }},
+                ClientTool(RuleMetadata::CAPABILITY_NAVIGATE)));
+}
+
+TEST_F(ActorProtoConversionTest, GetClientToolForRequest) {
+  ClickToolRequest click_req(
+      ActorSurfaceHandle::CreateForTesting(), PageTarget(gfx::Point(0, 0)),
+      mojom::ClickType::kLeft, mojom::ClickCount::kSingle);
+  EXPECT_EQ(GetClientToolForRequest(click_req),
+            ClientTool(RuleMetadata::CAPABILITY_CLICK));
+
+  WaitToolRequest wait_req(base::Seconds(1),
+                           ActorSurfaceHandle::CreateForTesting());
+  EXPECT_EQ(GetClientToolForRequest(wait_req),
+            ClientTool(RuleMetadata::CAPABILITY_WAIT));
+
+  HistoryBackToolRequest back_req(ActorSurfaceHandle::CreateForTesting());
+  EXPECT_EQ(GetClientToolForRequest(back_req),
+            ClientTool(RuleMetadata::CAPABILITY_BACK));
+
+  HistoryForwardToolRequest forward_req(ActorSurfaceHandle::CreateForTesting());
+  EXPECT_EQ(GetClientToolForRequest(forward_req),
+            ClientTool(RuleMetadata::CAPABILITY_FORWARD));
+
+  CreateTabToolRequest create_tab_req(
+      /*window_id=*/1, ::ui::mojom::WindowOpenDisposition::kNewForegroundTab);
+  EXPECT_EQ(GetClientToolForRequest(create_tab_req),
+            ClientTool(RuleMetadata::CAPABILITY_CREATE_TAB));
+
+  ActivateTabToolRequest activate_tab_req(ActorSurfaceHandle::FromRawValue(1));
+  EXPECT_EQ(GetClientToolForRequest(activate_tab_req),
+            ClientTool(RuleMetadata::CAPABILITY_ACTIVATE_TAB));
+
+  CloseTabToolRequest close_tab_req(ActorSurfaceHandle::FromRawValue(1));
+  EXPECT_EQ(GetClientToolForRequest(close_tab_req),
+            ClientTool(RuleMetadata::CAPABILITY_CLOSE_TAB));
+
+  ChangePasswordToolRequest change_password_req(
+      ActorSurfaceHandle::CreateForTesting(),
+      /*current_password_field=*/std::nullopt,
+      /*new_password_field=*/PageTarget(gfx::Point(0, 0)),
+      /*confirm_new_password_field=*/std::nullopt,
+      /*confirm_button=*/std::nullopt);
+  EXPECT_EQ(GetClientToolForRequest(change_password_req),
+            ClientTool(RuleMetadata::CAPABILITY_CHANGE_PASSWORD));
+}
+
+TEST_F(ActorProtoConversionTest, GetClientToolForRequest_NoCapability) {
+  ReloadPageToolRequest reload_req(ActorSurfaceHandle::CreateForTesting());
+  EXPECT_EQ(GetClientToolForRequest(reload_req),
+            ClientTool(RuleMetadata::CAPABILITY_UNKNOWN));
+  EXPECT_FALSE(std::ranges::contains(
+      GetAllActorTools(), ClientTool(RuleMetadata::CAPABILITY_UNKNOWN)));
+}
+
+TEST_F(
+    ActorProtoConversionTest,
+    BuildToolRequest_ChangePassword_ValidProto_CreatesRequestWithCorrectParameters) {
+  base::test::ScopedFeatureList change_password_feature;
+  change_password_feature.InitAndEnableFeature(
+      password_manager::features::kChangePasswordTool);
+
+  optimization_guide::proto::Actions actions;
+  optimization_guide::proto::ChangePasswordAction* change_password_action =
+      actions.add_actions()->mutable_change_password();
+  change_password_action->set_tab_id(100);
+  SetDomNodeTarget(change_password_action->mutable_current_password_field(), 10,
+                   "doc_token_1");
+  SetDomNodeTarget(change_password_action->mutable_new_password_field(), 20,
+                   "doc_token_1");
+  SetDomNodeTarget(change_password_action->mutable_confirm_new_password_field(),
+                   30, "doc_token_1");
+
+  ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<ToolRequest>> requests,
+                       BuildToolRequest(actions));
+  ASSERT_EQ(requests.size(), 1u);
+
+  ToolRequest& created_request = *requests.front();
+  EXPECT_EQ(ChangePasswordToolRequest::kName, created_request.Name());
+
+  const ChangePasswordToolRequest& change_password_request =
+      static_cast<const ChangePasswordToolRequest&>(created_request);
+  EXPECT_EQ(100, change_password_request.GetActorSurfaceHandle().raw_value());
+  EXPECT_EQ(
+      change_password_request.GetCurrentPasswordFieldForTesting(),
+      PageTarget(DomNode{.node_id = 10, .document_identifier = "doc_token_1"}));
+  EXPECT_EQ(
+      change_password_request.GetNewPasswordFieldForTesting(),
+      PageTarget(DomNode{.node_id = 20, .document_identifier = "doc_token_1"}));
+  EXPECT_EQ(
+      change_password_request.GetConfirmNewPasswordFieldForTesting(),
+      PageTarget(DomNode{.node_id = 30, .document_identifier = "doc_token_1"}));
+}
+
+TEST_F(ActorProtoConversionTest,
+       BuildToolRequest_ChangePassword_PartialPasswordFields_Succeeds) {
+  base::test::ScopedFeatureList change_password_feature;
+  change_password_feature.InitAndEnableFeature(
+      password_manager::features::kChangePasswordTool);
+
+  optimization_guide::proto::Actions actions;
+  optimization_guide::proto::ChangePasswordAction* change_password_action =
+      actions.add_actions()->mutable_change_password();
+  change_password_action->set_tab_id(100);
+  SetDomNodeTarget(change_password_action->mutable_new_password_field(), 20,
+                   "doc_token_1");
+
+  ASSERT_OK_AND_ASSIGN(std::vector<std::unique_ptr<ToolRequest>> requests,
+                       BuildToolRequest(actions));
+  ASSERT_EQ(requests.size(), 1u);
+
+  const ChangePasswordToolRequest& change_password_request =
+      static_cast<const ChangePasswordToolRequest&>(*requests.front());
+  EXPECT_EQ(change_password_request.GetCurrentPasswordFieldForTesting(),
+            std::nullopt);
+  EXPECT_EQ(
+      change_password_request.GetNewPasswordFieldForTesting(),
+      PageTarget(DomNode{.node_id = 20, .document_identifier = "doc_token_1"}));
+  EXPECT_EQ(change_password_request.GetConfirmNewPasswordFieldForTesting(),
+            std::nullopt);
+  EXPECT_EQ(change_password_request.GetConfirmButtonForTesting(), std::nullopt);
+}
+
+TEST_F(ActorProtoConversionTest,
+       BuildToolRequest_ChangePassword_FlagDisabled_ReturnsError) {
+  base::test::ScopedFeatureList change_password_feature;
+  change_password_feature.InitAndDisableFeature(
+      password_manager::features::kChangePasswordTool);
+
+  optimization_guide::proto::Actions actions;
+  optimization_guide::proto::ChangePasswordAction* change_password_action =
+      actions.add_actions()->mutable_change_password();
+  change_password_action->set_tab_id(100);
+  SetDomNodeTarget(change_password_action->mutable_new_password_field(), 20,
+                   "doc_token_1");
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kArgumentsInvalid)));
+}
+
+TEST_F(ActorProtoConversionTest,
+       BuildToolRequest_ChangePassword_MissingTabId_ReturnsError) {
+  base::test::ScopedFeatureList change_password_feature;
+  change_password_feature.InitAndEnableFeature(
+      password_manager::features::kChangePasswordTool);
+
+  optimization_guide::proto::Actions actions;
+  optimization_guide::proto::ChangePasswordAction* change_password_action =
+      actions.add_actions()->mutable_change_password();
+  SetDomNodeTarget(change_password_action->mutable_new_password_field(), 20,
+                   "doc_token_1");
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kArgumentsInvalid)));
+}
+
+TEST_F(ActorProtoConversionTest,
+       BuildToolRequest_ChangePassword_MissingAllPasswordFields_ReturnsError) {
+  base::test::ScopedFeatureList change_password_feature;
+  change_password_feature.InitAndEnableFeature(
+      password_manager::features::kChangePasswordTool);
+
+  optimization_guide::proto::Actions actions;
+  optimization_guide::proto::ChangePasswordAction* change_password_action =
+      actions.add_actions()->mutable_change_password();
+  change_password_action->set_tab_id(100);
+  SetDomNodeTarget(change_password_action->mutable_confirm_button(), 40,
+                   "doc_token_1");
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kArgumentsInvalid)));
+}
+
+TEST_F(
+    ActorProtoConversionTest,
+    BuildToolRequest_ChangePassword_InvalidCurrentPasswordFieldTarget_ReturnsError) {
+  base::test::ScopedFeatureList change_password_feature;
+  change_password_feature.InitAndEnableFeature(
+      password_manager::features::kChangePasswordTool);
+
+  optimization_guide::proto::Actions actions;
+  optimization_guide::proto::ChangePasswordAction* change_password_action =
+      actions.add_actions()->mutable_change_password();
+  change_password_action->set_tab_id(100);
+  // Empty ActionTarget without content_node_id or coordinate is invalid.
+  change_password_action->mutable_current_password_field();
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kArgumentsInvalid)));
+}
+
+TEST_F(
+    ActorProtoConversionTest,
+    BuildToolRequest_ChangePassword_InvalidNewPasswordFieldTarget_ReturnsError) {
+  base::test::ScopedFeatureList change_password_feature;
+  change_password_feature.InitAndEnableFeature(
+      password_manager::features::kChangePasswordTool);
+
+  optimization_guide::proto::Actions actions;
+  optimization_guide::proto::ChangePasswordAction* change_password_action =
+      actions.add_actions()->mutable_change_password();
+  change_password_action->set_tab_id(100);
+  change_password_action->mutable_new_password_field();
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kArgumentsInvalid)));
+}
+
+TEST_F(
+    ActorProtoConversionTest,
+    BuildToolRequest_ChangePassword_InvalidConfirmNewPasswordFieldTarget_ReturnsError) {
+  base::test::ScopedFeatureList change_password_feature;
+  change_password_feature.InitAndEnableFeature(
+      password_manager::features::kChangePasswordTool);
+
+  optimization_guide::proto::Actions actions;
+  optimization_guide::proto::ChangePasswordAction* change_password_action =
+      actions.add_actions()->mutable_change_password();
+  change_password_action->set_tab_id(100);
+  change_password_action->mutable_confirm_new_password_field();
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kArgumentsInvalid)));
+}
+
+TEST_F(
+    ActorProtoConversionTest,
+    BuildToolRequest_ChangePassword_InvalidConfirmButtonTarget_ReturnsError) {
+  base::test::ScopedFeatureList change_password_feature;
+  change_password_feature.InitAndEnableFeature(
+      password_manager::features::kChangePasswordTool);
+
+  optimization_guide::proto::Actions actions;
+  optimization_guide::proto::ChangePasswordAction* change_password_action =
+      actions.add_actions()->mutable_change_password();
+  change_password_action->set_tab_id(100);
+  SetDomNodeTarget(change_password_action->mutable_new_password_field(), 20,
+                   "doc_token_1");
+  change_password_action->mutable_confirm_button();
+
+  EXPECT_THAT(BuildToolRequest(actions),
+              base::test::ErrorIs(testing::Pair(
+                  0u, mojom::ActionResultCode::kArgumentsInvalid)));
+}
+
+TEST_F(ActorProtoConversionTest, ToAnnotatedPageContentResult) {
+  using optimization_guide::AIPageContentExtractionStatus;
+  using optimization_guide::proto::TabObservation;
+
+  EXPECT_EQ(
+      ToAnnotatedPageContentResult(AIPageContentExtractionStatus::kSuccess),
+      TabObservation::ANNOTATED_PAGE_CONTENT_OK);
+  EXPECT_EQ(ToAnnotatedPageContentResult(
+                AIPageContentExtractionStatus::kMainFrameTimeout),
+            TabObservation::ANNOTATED_PAGE_CONTENT_TIMEOUT);
+  EXPECT_EQ(
+      ToAnnotatedPageContentResult(AIPageContentExtractionStatus::kUnknown),
+      TabObservation::ANNOTATED_PAGE_CONTENT_ERROR);
+  EXPECT_EQ(ToAnnotatedPageContentResult(
+                AIPageContentExtractionStatus::kMainFrameNotLive),
+            TabObservation::ANNOTATED_PAGE_CONTENT_ERROR);
+  EXPECT_EQ(ToAnnotatedPageContentResult(
+                AIPageContentExtractionStatus::
+                    kMainFrameEmptyOrDisconnectedRendererResponse),
+            TabObservation::ANNOTATED_PAGE_CONTENT_ERROR);
+}
+
+TEST_F(ActorProtoConversionTest, ToScreenshotResult) {
+  using optimization_guide::proto::TabObservation;
+  using page_content_annotations::ScreenshotCaptureStatus;
+
+  EXPECT_EQ(ToScreenshotResult(ScreenshotCaptureStatus::kSuccess),
+            TabObservation::SCREENSHOT_OK);
+  EXPECT_EQ(ToScreenshotResult(ScreenshotCaptureStatus::kTimeout),
+            TabObservation::SCREENSHOT_TIMEOUT);
+  EXPECT_EQ(ToScreenshotResult(ScreenshotCaptureStatus::kUnknown),
+            TabObservation::SCREENSHOT_ERROR);
+  EXPECT_EQ(ToScreenshotResult(ScreenshotCaptureStatus::kNoViewOrSurface),
+            TabObservation::SCREENSHOT_ERROR);
+  EXPECT_EQ(ToScreenshotResult(ScreenshotCaptureStatus::kCopyFromSurfaceError),
+            TabObservation::SCREENSHOT_ERROR);
+  EXPECT_EQ(ToScreenshotResult(ScreenshotCaptureStatus::kEncodingError),
+            TabObservation::SCREENSHOT_ERROR);
 }
 
 void CanConvertAnyProto(

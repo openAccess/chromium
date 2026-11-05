@@ -5,6 +5,8 @@
 #import "ios/chrome/browser/cobrowse/ui/assistant_aim_history_view_controller.h"
 
 #import "base/strings/sys_string_conversions.h"
+#import "ios/chrome/browser/cobrowse/ui/assistant_aim_ui_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
@@ -22,6 +24,15 @@ const NSInteger kTitleNumberOfLines = 2;
 // Identifier for the section in diffable data source.
 NSString* const kHistorySectionIdentifier = @"kHistorySectionIdentifier";
 
+// The vertical spacing between the signed out zero state labels.
+const CGFloat kZeroStateLabelSpacing = 8.0;
+
+// The leading/trailing padding of the signed out zero state labels.
+const CGFloat kZeroStateHorizontalPadding = 32.0;
+
+// The minimum top/bottom padding around the signed out zero state labels.
+constexpr CGFloat kZeroStateVerticalPadding = 16.0;
+
 }  // namespace
 
 @interface AssistantAIMHistoryViewController () <UICollectionViewDelegate>
@@ -31,13 +42,19 @@ NSString* const kHistorySectionIdentifier = @"kHistorySectionIdentifier";
   UICollectionView* _collectionView;
   UICollectionViewDiffableDataSource<NSString*, NSString*>* _dataSource;
   std::vector<AssistantAIMHistoryItem> _items;
+  // Scrollable zero state displayed instead of the list when the user is signed
+  // out.
+  UIScrollView* _signedOutZeroStateScrollView;
 }
 
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.view.backgroundColor = [UIColor clearColor];
+  self.view.clipsToBounds = YES;
 
   [self setUpCollectionView];
+  [self setUpSignedOutZeroState];
+  [self updateContentVisibility];
 }
 
 - (void)setUpCollectionView {
@@ -109,6 +126,15 @@ NSString* const kHistorySectionIdentifier = @"kHistorySectionIdentifier";
   [self applySnapshot];
 }
 
+- (void)setSignedIn:(BOOL)signedIn {
+  _signedIn = signedIn;
+  // The sign-in state can be set before the view hierarchy is built; in that
+  // case `viewDidLoad` applies it.
+  if (self.viewLoaded) {
+    [self updateContentVisibility];
+  }
+}
+
 - (void)applySnapshot {
   NSDiffableDataSourceSnapshot<NSString*, NSString*>* snapshot =
       [[NSDiffableDataSourceSnapshot alloc] init];
@@ -144,7 +170,8 @@ NSString* const kHistorySectionIdentifier = @"kHistorySectionIdentifier";
 - (UIContextMenuConfiguration*)collectionView:(UICollectionView*)collectionView
     contextMenuConfigurationForItemAtIndexPath:(NSIndexPath*)indexPath
                                          point:(CGPoint)point {
-  if (static_cast<size_t>(indexPath.row) >= _items.size()) {
+  if (!IsAimHistoryThreadsManagementEnabled() ||
+      static_cast<size_t>(indexPath.row) >= _items.size()) {
     return nil;
   }
 
@@ -185,6 +212,99 @@ NSString* const kHistorySectionIdentifier = @"kHistorySectionIdentifier";
   deleteAction.attributes = UIMenuElementAttributesDestructive;
 
   return [UIMenu menuWithTitle:@"" children:@[ shareAction, deleteAction ]];
+}
+
+// Creates the zero state displayed when the user is signed out.
+- (void)setUpSignedOutZeroState {
+  _signedOutZeroStateScrollView = [[UIScrollView alloc] init];
+  _signedOutZeroStateScrollView.translatesAutoresizingMaskIntoConstraints = NO;
+  _signedOutZeroStateScrollView.clipsToBounds = YES;
+  [self.view addSubview:_signedOutZeroStateScrollView];
+  AddSameConstraints(_signedOutZeroStateScrollView, self.view);
+
+  UIView* contentView = [[UIView alloc] init];
+  contentView.translatesAutoresizingMaskIntoConstraints = NO;
+  [_signedOutZeroStateScrollView addSubview:contentView];
+  AddSameConstraints(contentView,
+                     _signedOutZeroStateScrollView.contentLayoutGuide);
+
+  // Match the scroll view's frame height at low priority so the stack stays
+  // vertically centered when it fits, while allowing `contentView` to expand
+  // and scroll when the stack exceeds the container height at AX text sizes.
+  NSLayoutConstraint* contentHeightConstraint = [contentView.heightAnchor
+      constraintEqualToAnchor:_signedOutZeroStateScrollView.frameLayoutGuide
+                                  .heightAnchor];
+  contentHeightConstraint.priority = UILayoutPriorityDefaultLow;
+
+  UILabel* titleLabel =
+      [self zeroStateLabelWithText:l10n_util::GetNSString(
+                                       IDS_IOS_AIM_HISTORY_SIGNED_OUT_TITLE)
+                         textStyle:UIFontTextStyleTitle2
+                             color:[UIColor colorNamed:kTextPrimaryColor]];
+  UILabel* subtitleLabel =
+      [self zeroStateLabelWithText:l10n_util::GetNSString(
+                                       IDS_IOS_AIM_HISTORY_SIGNED_OUT_SUBTITLE)
+                         textStyle:UIFontTextStyleSubheadline
+                             color:[UIColor colorNamed:kTextSecondaryColor]];
+
+  UIStackView* signedOutZeroStateView = [[UIStackView alloc]
+      initWithArrangedSubviews:@[ titleLabel, subtitleLabel ]];
+  signedOutZeroStateView.axis = UILayoutConstraintAxisVertical;
+  signedOutZeroStateView.spacing = kZeroStateLabelSpacing;
+  signedOutZeroStateView.alignment = UIStackViewAlignmentCenter;
+  signedOutZeroStateView.translatesAutoresizingMaskIntoConstraints = NO;
+  signedOutZeroStateView.accessibilityIdentifier =
+      kAssistantAIMHistorySignedOutViewAccessibilityIdentifier;
+
+  [contentView addSubview:signedOutZeroStateView];
+
+  [NSLayoutConstraint activateConstraints:@[
+    [contentView.widthAnchor
+        constraintEqualToAnchor:_signedOutZeroStateScrollView.frameLayoutGuide
+                                    .widthAnchor],
+    [contentView.heightAnchor
+        constraintGreaterThanOrEqualToAnchor:_signedOutZeroStateScrollView
+                                                 .frameLayoutGuide
+                                                 .heightAnchor],
+    contentHeightConstraint,
+    [signedOutZeroStateView.centerXAnchor
+        constraintEqualToAnchor:contentView.centerXAnchor],
+    [signedOutZeroStateView.centerYAnchor
+        constraintEqualToAnchor:contentView.centerYAnchor],
+    [signedOutZeroStateView.topAnchor
+        constraintGreaterThanOrEqualToAnchor:contentView.topAnchor
+                                    constant:kZeroStateVerticalPadding],
+    [signedOutZeroStateView.bottomAnchor
+        constraintLessThanOrEqualToAnchor:contentView.bottomAnchor
+                                 constant:-kZeroStateVerticalPadding],
+    [signedOutZeroStateView.leadingAnchor
+        constraintGreaterThanOrEqualToAnchor:contentView.leadingAnchor
+                                    constant:kZeroStateHorizontalPadding],
+    [signedOutZeroStateView.trailingAnchor
+        constraintLessThanOrEqualToAnchor:contentView.trailingAnchor
+                                 constant:-kZeroStateHorizontalPadding],
+  ]];
+}
+
+// Returns a centered, multiline label for the zero state.
+- (UILabel*)zeroStateLabelWithText:(NSString*)text
+                         textStyle:(UIFontTextStyle)textStyle
+                             color:(UIColor*)color {
+  UILabel* label = [[UILabel alloc] init];
+  label.text = text;
+  label.font = [UIFont preferredFontForTextStyle:textStyle];
+  label.adjustsFontForContentSizeCategory = YES;
+  label.textColor = color;
+  label.textAlignment = NSTextAlignmentCenter;
+  label.numberOfLines = 0;
+  return label;
+}
+
+// Displays either the history list or the signed out zero state, depending on
+// the sign-in state.
+- (void)updateContentVisibility {
+  _collectionView.hidden = !self.signedIn;
+  _signedOutZeroStateScrollView.hidden = self.signedIn;
 }
 
 @end

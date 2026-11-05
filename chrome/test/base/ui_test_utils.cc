@@ -40,7 +40,6 @@
 #include "chrome/browser/task_manager/providers/web_contents/web_contents_tag.h"
 #include "chrome/browser/task_manager/providers/web_contents/web_contents_tags_manager.h"
 #include "chrome/browser/task_manager/web_contents_tags.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_active_state_manager/browser_active_state_manager.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -57,6 +56,7 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
@@ -71,6 +71,7 @@
 #include "components/javascript_dialogs/app_modal_dialog_queue.h"
 #include "components/omnibox/browser/autocomplete_controller.h"
 #include "components/prefs/pref_service.h"
+#include "components/sessions/core/session_id.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/navigation_controller.h"
@@ -92,6 +93,8 @@
 #include "services/network/public/cpp/resource_request_body.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "third_party/blink/public/common/chrome_debug_urls.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_activation_waiter.h"
@@ -310,9 +313,9 @@ void NavigateToURLWithPost(BrowserWindowInterface* browser, const GURL& url) {
 
 content::RenderFrameHost* NavigateToURL(BrowserWindowInterface* browser,
                                         const GURL& url) {
-  return NavigateToURLWithDisposition(browser, url,
-                                      WindowOpenDisposition::CURRENT_TAB,
-                                      BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+  return NavigateToURLWithDisposition(
+      browser, url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+      BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 }
 
 content::RenderFrameHost*
@@ -320,7 +323,7 @@ NavigateToURLWithDispositionBlockUntilNavigationsComplete(
     BrowserWindowInterface* browser,
     const GURL& url,
     int number_of_navigations,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     int browser_test_flags) {
   TRACE_EVENT("test",
               "ui_test_utils::"
@@ -329,9 +332,10 @@ NavigateToURLWithDispositionBlockUntilNavigationsComplete(
               "disposition", disposition, "browser_test_flags",
               browser_test_flags);
   TabStripModel* tab_strip = browser->GetTabStripModel();
-  if (disposition == WindowOpenDisposition::CURRENT_TAB &&
-      tab_strip->GetActiveWebContents())
+  if (disposition == ui::mojom::WindowOpenDisposition::kCurrentTab &&
+      tab_strip->GetActiveWebContents()) {
     content::WaitForLoadStop(tab_strip->GetActiveWebContents());
+  }
   content::TestNavigationObserver same_tab_observer(
       tab_strip->GetActiveWebContents(), number_of_navigations,
       content::MessageLoopRunner::QuitMode::DEFERRED,
@@ -349,8 +353,8 @@ NavigateToURLWithDispositionBlockUntilNavigationsComplete(
   AllBrowserTabAddedWaiter tab_added_waiter;
 
   WebContents* const web_contents =
-      browser->OpenURL(OpenURLParams(url, Referrer(), disposition,
-                                     ui::PAGE_TRANSITION_TYPED, false),
+      browser->OpenURL(OpenURLParams::CreateBrowserInitiated(
+                           url, disposition, ui::PAGE_TRANSITION_TYPED),
                        /*navigation_handle_callback=*/{});
   if (browser_test_flags & BROWSER_TEST_WAIT_FOR_BROWSER) {
     // `WaitForBrowserNotInSet()` waits until the new browser is created, and
@@ -374,20 +378,21 @@ NavigateToURLWithDispositionBlockUntilNavigationsComplete(
     // Some other flag caused the wait prior to this.
     return nullptr;
   }
-  if (disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB) {
+  if (disposition == ui::mojom::WindowOpenDisposition::kNewBackgroundTab) {
     EXPECT_TRUE(web_contents)
         << " Unable to wait for navigation to \"" << url.spec()
         << "\" because the new tab is not available yet";
     if (!web_contents) {
       return nullptr;
     }
-  } else if ((disposition == WindowOpenDisposition::CURRENT_TAB) ||
-             (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB) ||
-             (disposition == WindowOpenDisposition::SINGLETON_TAB)) {
+  } else if ((disposition == ui::mojom::WindowOpenDisposition::kCurrentTab) ||
+             (disposition ==
+              ui::mojom::WindowOpenDisposition::kNewForegroundTab) ||
+             (disposition == ui::mojom::WindowOpenDisposition::kSingletonTab)) {
     // The tab we navigated should be the active one.
     EXPECT_EQ(web_contents, tab_strip->GetActiveWebContents());
   }
-  if (disposition == WindowOpenDisposition::CURRENT_TAB) {
+  if (disposition == ui::mojom::WindowOpenDisposition::kCurrentTab) {
     // Waiting for the navigation may destroy `web_contents` (e.g. navigating
     // to a resource that closes its own tab, such as a corrupted extension
     // page that gets disabled mid-navigation under enforced content
@@ -426,7 +431,7 @@ NavigateToURLWithDispositionBlockUntilNavigationsComplete(
 content::RenderFrameHost* NavigateToURLWithDisposition(
     BrowserWindowInterface* browser,
     const GURL& url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     int browser_test_flags) {
   return NavigateToURLWithDispositionBlockUntilNavigationsComplete(
       browser, url, 1, disposition, browser_test_flags);
@@ -437,7 +442,8 @@ content::RenderFrameHost* NavigateToURLBlockUntilNavigationsComplete(
     const GURL& url,
     int number_of_navigations) {
   return NavigateToURLWithDispositionBlockUntilNavigationsComplete(
-      browser, url, number_of_navigations, WindowOpenDisposition::CURRENT_TAB,
+      browser, url, number_of_navigations,
+      ui::mojom::WindowOpenDisposition::kCurrentTab,
       BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 }
 
@@ -524,8 +530,8 @@ int FindInPage(WebContents* tab,
   find_in_page::FindTabHelper* find_tab_helper =
       find_in_page::FindTabHelper::FromWebContents(tab);
   find_tab_helper->StartFinding(search_string, forward, match_case,
-                                true, /* find_match */
-                                true /* run_synchronously_for_testing */);
+                                /*find_match=*/true, /*scroll_to_match=*/true,
+                                /*run_synchronously_for_testing=*/true);
   FindResultWaiter observer(tab);
   observer.Wait();
   if (ordinal)
@@ -597,10 +603,9 @@ bool MaximizeAndWaitUntilUIUpdateDone(BrowserWindowInterface& browser) {
 
 FullscreenWaiter::FullscreenWaiter(BrowserWindowInterface* browser,
                                    FullscreenWaiter::Expectation expectation)
-    : FullscreenWaiter(browser->GetFeatures()
-                           .exclusive_access_manager()
-                           ->fullscreen_controller(),
-                       std::move(expectation)) {}
+    : FullscreenWaiter(
+          ExclusiveAccessManager::From(browser)->fullscreen_controller(),
+          std::move(expectation)) {}
 
 FullscreenWaiter::FullscreenWaiter(FullscreenController* controller,
                                    FullscreenWaiter::Expectation expectation)
@@ -669,10 +674,8 @@ void ToggleFullscreenModeAndWait(BrowserWindowInterface* browser) {
   // The waiting condition is following the current implementation.
   // If the mode is either browser/tab fullscreen, it will be existed.
   // Otherwise, entering into browser fullscreen.
-  bool current = browser->GetFeatures()
-                     .exclusive_access_manager()
-                     ->context()
-                     ->IsFullscreen();
+  bool current =
+      ExclusiveAccessManager::From(browser)->context()->IsFullscreen();
   FullscreenWaiter waiter(browser, current ? FullscreenWaiter::kNoFullscreen
                                            : FullscreenWaiter::Expectation{
                                                  .browser_fullscreen = true});

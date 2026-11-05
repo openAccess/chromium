@@ -143,11 +143,6 @@
     "show",
     "hide",
 
-    // Experimental fieldset attribute for the menu elements proposal.
-    // https://open-ui.org/components/menu.explainer/.
-    "single",
-    "multiple",
-
     // hidden=until-found attribute
     // https://html.spec.whatwg.org/#the-hidden-attribute
     "until-found",
@@ -294,5 +289,10 @@
     // https://github.com/explainers-by-googlers/inline-script-cache-hint
     "never",
     "default",
+
+    // Values of content attribute for <canvas> element.
+    // https://github.com/WICG/html-in-canvas
+    "drawable",
+    "fallback",
   ],
 }

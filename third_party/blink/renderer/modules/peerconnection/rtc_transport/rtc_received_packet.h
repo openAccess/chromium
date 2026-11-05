@@ -5,13 +5,17 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_TRANSPORT_RTC_RECEIVED_PACKET_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_TRANSPORT_RTC_RECEIVED_PACKET_H_
 
-#include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include <cstdint>
+#include <utility>
+
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_arraybufferallowshared_arraybufferviewallowshared.h"
 #include "third_party/blink/renderer/core/dom/dom_high_res_time_stamp.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
+#include "third_party/blink/renderer/platform/heap/visitor.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
@@ -26,7 +30,7 @@ class MODULES_EXPORT RtcReceivedPacket final : public ScriptWrappable {
 
   using AllowSharedBufferSource =
       V8UnionArrayBufferAllowSharedOrArrayBufferViewAllowShared;
-  void copyPayloadTo(const AllowSharedBufferSource* destination,
+  void copyPayloadTo(AllowSharedBufferSource* destination,
                      ExceptionState& exception_state);
 
   DOMHighResTimeStamp receiveTime() { return receive_time_; }

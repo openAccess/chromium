@@ -13,7 +13,7 @@ the exported function when called.
 """
 
 import optparse
-import os
+import os  # noqa: F401
 import sys
 
 import cpp_source
@@ -22,21 +22,27 @@ import cpp_source
 def main():
   parser = optparse.OptionParser()
   parser.add_option(
-      '', '--directory', type='string', default='.',
-      help='Path to directory where the cc/h js file should be created')
+    '',
+    '--directory',
+    type='string',
+    default='.',
+    help='Path to directory where the cc/h js file should be created',
+  )
   options, args = parser.parse_args()
 
   global_string_map = {}
   for js_file in args:
-    base_name = os.path.basename(js_file)[:-3].title().replace('_', '')
-    func_name = base_name[0].lower() + base_name[1:]
-    script_name = 'k%sScript' % base_name
+    script_name = 'kMapperScript'
     with open(js_file, 'r', encoding='utf-8') as f:
       contents = f.read()
       global_string_map[script_name] = contents
 
-  cpp_source.WriteSource('bidimapper', 'chrome/test/chromedriver/bidimapper',
-                         options.directory, global_string_map)
+  cpp_source.WriteSource(
+    'bidimapper',
+    'chrome/test/chromedriver/bidimapper',
+    options.directory,
+    global_string_map,
+  )
 
 
 if __name__ == '__main__':

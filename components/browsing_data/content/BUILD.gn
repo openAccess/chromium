@@ -39,9 +39,8 @@ static_library("content") {
     "//components/webid",
     "//content/public/browser",
     "//net",
+    "//third_party/blink/public:buildflags",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 source_set("unit_tests") {
@@ -58,6 +57,7 @@ source_set("unit_tests") {
     ":test_support",
     "//base",
     "//base/test:test_support",
+    "//components/browsing_data/core",
     "//content/test:test_support",
     "//extensions/buildflags",
     "//services/network:test_support",

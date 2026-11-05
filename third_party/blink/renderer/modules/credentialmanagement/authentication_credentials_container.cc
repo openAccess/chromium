@@ -66,7 +66,7 @@
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/page/frame_tree.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
-#include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
+#include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer_util.h"
 #include "third_party/blink/renderer/modules/credentialmanagement/authenticator_assertion_response.h"
 #include "third_party/blink/renderer/modules/credentialmanagement/authenticator_attestation_response.h"
 #include "third_party/blink/renderer/modules/credentialmanagement/credential.h"
@@ -91,6 +91,7 @@
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/base64.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
@@ -452,7 +453,7 @@ bool IsArrayBufferOrViewBelowSizeLimit(
     return true;
   }
   return base::CheckedNumeric<wtf_size_t>(
-             DOMArrayPiece(buffer_or_view).ByteLength())
+             AsSpan<SharedBufferPolicy::kDisallow>(*buffer_or_view).size())
       .IsValid();
 }
 
@@ -713,6 +714,9 @@ void OnMakePublicKeyCredentialComplete(
       prf_outputs->setResults(GetPRFExtensionResults(credential->prf_results));
     }
     extension_outputs->setPrf(prf_outputs);
+  }
+  if (credential->echo_remote_client_data_json) {
+    extension_outputs->setRemoteClientDataJSON(true);
   }
   resolver->Resolve(MakeGarbageCollected<PublicKeyCredential>(
       credential->info->id, raw_id, authenticator_response,
@@ -996,9 +1000,11 @@ bool IsPaymentExtensionValid(const CredentialCreationOptions* options,
 
 const char* validatePRFInputs(
     const blink::AuthenticationExtensionsPRFValues& values) {
-  if (DOMArrayPiece(values.first()).ByteLength() > device::kMaxPRFInputSize ||
-      (values.hasSecond() && DOMArrayPiece(values.second()).ByteLength() >
-                                 device::kMaxPRFInputSize)) {
+  if (AsSpan<SharedBufferPolicy::kDisallow>(*values.first()).size() >
+          device::kMaxPRFInputSize ||
+      (values.hasSecond() &&
+       AsSpan<SharedBufferPolicy::kDisallow>(*values.second()).size() >
+           device::kMaxPRFInputSize)) {
     return "'prf' extension contains excessively large input";
   }
   return nullptr;
@@ -1028,8 +1034,7 @@ const char* validateGetPublicKeyCredentialPRFExtension(
   std::vector<base::span<const uint8_t>> cred_ids;
   cred_ids.reserve(allow_credentials.size());
   for (const auto cred : allow_credentials) {
-    DOMArrayPiece piece(cred->id());
-    cred_ids.emplace_back(piece.Bytes(), piece.ByteLength());
+    cred_ids.push_back(AsSpan<SharedBufferPolicy::kDisallow>(*cred->id()));
   }
   const auto compare = [](base::span<const uint8_t> a,
                           base::span<const uint8_t> b) {
@@ -1959,6 +1964,18 @@ AuthenticationCredentialsContainer::create(
       }
     }
 
+    if (extensions->hasRemoteClientDataJSON() &&
+        !context->IsFeatureEnabled(
+            network::mojom::PermissionsPolicyFeature::
+                kPublicKeyCredentialsRemoteClientDataJson)) {
+      resolver->Reject(MakeGarbageCollected<DOMException>(
+          DOMExceptionCode::kNotAllowedError,
+          "The 'publickey-credentials-remote-client-data-json' feature is not "
+          "enabled in this document. Permissions Policy may be used to "
+          "delegate this capability to cross-origin child frames."));
+      return promise;
+    }
+
     RecordCreateExtensionsUseCounters(context, *extensions);
   }
 
@@ -1968,8 +1985,7 @@ AuthenticationCredentialsContainer::create(
   if (!IsSameSecurityOriginWithAncestors(
           To<LocalDOMWindow>(context)->GetFrame())) {
     bool has_user_activation = LocalFrame::ConsumeTransientUserActivation(
-        To<LocalDOMWindow>(context)->GetFrame(),
-        UserActivationUpdateSource::kRenderer);
+        To<LocalDOMWindow>(context)->GetFrame());
     if (!has_user_activation) {
       resolver->Reject(MakeGarbageCollected<DOMException>(
           DOMExceptionCode::kNotAllowedError,
@@ -2114,6 +2130,14 @@ AuthenticationCredentialsContainer::create(
     Mediation mediation = Mediation::MODAL;
     if (options->mediation() ==
         V8CredentialMediationRequirement::Enum::kConditional) {
+      if (options->publicKey()->hasExtensions() &&
+          options->publicKey()->extensions()->hasRemoteClientDataJSON()) {
+        resolver->Reject(MakeGarbageCollected<DOMException>(
+            DOMExceptionCode::kNotAllowedError,
+            "Conditional mediation cannot be used with a remoteClientDataJSON "
+            "request."));
+        return promise;
+      }
       UseCounter::Count(context, WebFeature::kWebAuthnConditionalCreate);
       mediation = Mediation::CONDITIONAL;
       mojo_options->is_conditional = true;
@@ -2186,6 +2210,16 @@ void AuthenticationCredentialsContainer::ForwardRequestToAuthenticator(
         MakeGarbageCollected<PublicKeyRequestAbortAlgorithm>(script_state));
     scoped_abort_state = std::make_unique<ScopedAbortState>(signal, handle);
   }
+  if (options->mediation() ==
+          V8CredentialMediationRequirement::Enum::kConditional &&
+      options->hasPublicKey() && options->publicKey()->hasExtensions() &&
+      options->publicKey()->extensions()->hasRemoteClientDataJSON()) {
+    resolver->Reject(MakeGarbageCollected<DOMException>(
+        DOMExceptionCode::kNotAllowedError,
+        "Conditional mediation cannot be used with a remoteClientDataJSON "
+        "request."));
+    return;
+  }
 
   Mediation mediation = Mediation::MODAL;
   if (RuntimeEnabledFeatures::WebAuthenticationAmbientEnabled() &&
@@ -2231,6 +2265,14 @@ void AuthenticationCredentialsContainer::ForwardRequestToAuthenticator(
       resolver->Reject(MakeGarbageCollected<DOMException>(
           DOMExceptionCode::kNotAllowedError,
           "Immediate mediation cannot be used with a remote desktop override "
+          "request."));
+      return;
+    }
+    if (options->hasPublicKey() && options->publicKey()->hasExtensions() &&
+        options->publicKey()->extensions()->hasRemoteClientDataJSON()) {
+      resolver->Reject(MakeGarbageCollected<DOMException>(
+          DOMExceptionCode::kNotAllowedError,
+          "Immediate mediation cannot be used with a remoteClientDataJSON "
           "request."));
       return;
     }
@@ -2298,8 +2340,9 @@ void AuthenticationCredentialsContainer::ForwardRequestToAuthenticator(
           return;
         }
         if (extensions->largeBlob()->hasWrite()) {
-          const size_t write_size =
-              DOMArrayPiece(extensions->largeBlob()->write()).ByteLength();
+          const size_t write_size = AsSpan<SharedBufferPolicy::kDisallow>(
+                                        *extensions->largeBlob()->write())
+                                        .size();
           if (write_size > kMaxLargeBlobSize) {
             resolver->Reject(MakeGarbageCollected<DOMException>(
                 DOMExceptionCode::kNotSupportedError,
@@ -2336,6 +2379,19 @@ void AuthenticationCredentialsContainer::ForwardRequestToAuthenticator(
             DOMExceptionCode::kNotAllowedError,
             "The 'payment' extension is only valid when creating a "
             "credential"));
+        return;
+      }
+
+      if (extensions->hasRemoteClientDataJSON() &&
+          !context->IsFeatureEnabled(
+              network::mojom::PermissionsPolicyFeature::
+                  kPublicKeyCredentialsRemoteClientDataJson)) {
+        resolver->Reject(MakeGarbageCollected<DOMException>(
+            DOMExceptionCode::kNotAllowedError,
+            "The 'publickey-credentials-remote-client-data-json' "
+            "feature is not enabled in this document. Permissions Policy may "
+            "be used to delegate this capability to cross-origin child "
+            "frames."));
         return;
       }
 
@@ -2478,8 +2534,7 @@ void AuthenticationCredentialsContainer::GetForIdentity(
     if (!provider_url.IsValid() || client_id.empty()) {
       resolver->Reject(MakeGarbageCollected<DOMException>(
           DOMExceptionCode::kInvalidStateError,
-          String::Format("Provider %i information is incomplete.",
-                         provider_index)));
+          Format("Provider {} information is incomplete.", provider_index)));
       return;
     }
     // We disallow redirects (in idp_network_request_manager.cc), so it is

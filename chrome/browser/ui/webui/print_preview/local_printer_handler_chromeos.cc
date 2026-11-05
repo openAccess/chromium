@@ -12,6 +12,7 @@
 
 #include "ash/constants/ash_pref_names.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
@@ -35,6 +36,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/browser_thread.h"
 #include "printing/backend/print_backend.h"
@@ -60,11 +62,15 @@ bool IsSecureIppPrinter(const chromeos::Printer& printer) {
 }
 
 bool IsActiveUserAffiliated() {
-  const user_manager::User* user =
-      user_manager::UserManager::IsInitialized()
-          ? user_manager::UserManager::Get()->GetActiveUser()
-          : nullptr;
-  return user ? user->IsAffiliated() : false;
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  if (!session) {
+    return false;
+  }
+  return CHECK_DEREF(
+             user_manager::UserManager::Get()->FindUser(session->account_id()))
+      .IsAffiliated();
 }
 
 void OnGetPrintersComplete(
@@ -381,6 +387,12 @@ base::DictValue LocalPrinterHandlerChromeos::ManagedPrintOptionsToValue(
       PrintOptionToValue(managed_print_options.print_as_image,
                          [](const bool& value) -> bool { return value; }));
 
+  result.Set(kManagedPrintOptions_Layout,
+             PrintOptionToValue(managed_print_options.layout,
+                                [](const chromeos::Printer::LayoutType& value) {
+                                  return static_cast<int>(value);
+                                }));
+
   return result;
 }
 
@@ -388,7 +400,7 @@ void LocalPrinterHandlerChromeos::Reset() {}
 
 void LocalPrinterHandlerChromeos::GetDefaultPrinter(
     DefaultPrinterCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   // TODO(b/172229329): Add default printers to ChromeOS.
   std::move(callback).Run(std::string());
 }
@@ -396,7 +408,7 @@ void LocalPrinterHandlerChromeos::GetDefaultPrinter(
 void LocalPrinterHandlerChromeos::StartGetPrinters(
     AddedPrintersCallback callback,
     GetPrintersDoneCallback done_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!local_printer_) {
     PRINTER_LOG(ERROR) << "Local printer not available (StartGetPrinters)";
     std::move(done_callback).Run();
@@ -414,7 +426,7 @@ void LocalPrinterHandlerChromeos::StartGetPrinters(
 void LocalPrinterHandlerChromeos::StartGetCapability(
     const std::string& device_name,
     GetCapabilityCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!local_printer_) {
     PRINTER_LOG(ERROR) << "Local printer not available (StartGetCapability)";
     std::move(callback).Run(base::DictValue());
@@ -433,7 +445,7 @@ void LocalPrinterHandlerChromeos::StartPrint(
     base::DictValue settings,
     scoped_refptr<base::RefCountedMemory> print_data,
     PrintCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   size_t size_in_kb = print_data->size() / 1024;
   base::UmaHistogramMemoryKB("Printing.CUPS.PrintDocumentSize", size_in_kb);
 
@@ -570,7 +582,7 @@ void LocalPrinterHandlerChromeos::CallStartLocalPrint(
 void LocalPrinterHandlerChromeos::StartGetEulaUrl(
     const std::string& destination_id,
     GetEulaUrlCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!local_printer_) {
     PRINTER_LOG(ERROR) << "Local printer not available (StartGetEulaUrl)";
     std::move(callback).Run("");
@@ -589,7 +601,7 @@ void LocalPrinterHandlerChromeos::StartGetEulaUrl(
 void LocalPrinterHandlerChromeos::StartPrinterStatusRequest(
     const std::string& printer_id,
     PrinterStatusRequestCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!local_printer_) {
     PRINTER_LOG(ERROR)
         << "Local printer not available (StartPrinterStatusRequest)";
@@ -600,7 +612,7 @@ void LocalPrinterHandlerChromeos::StartPrinterStatusRequest(
       // TODO(crbug.com/354842935): Replace by ash::AnnotatedAccountId.
       // TODO(crbug.com/479647640): Check if we should use current user than
       // primary user.
-      user_manager::UserManager::Get()->GetPrimaryUser()->GetAccountId(),
+      session_manager::SessionManager::Get()->GetPrimarySession()->account_id(),
       printer_id, base::BindOnce([](const chromeos::CupsPrinterStatus& status) {
                     return StatusToValue(status);
                   }).Then(std::move(callback)));

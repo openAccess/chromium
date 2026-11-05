@@ -191,6 +191,13 @@ class PermissionChipInteractiveUITest : public InProcessBrowserTest {
     ASSERT_FALSE(GetChipController()->GetBubbleWidget());
 
     chip->ExecuteForTesting();
+
+    // WebUIPermissionChip resolves the prompt bubble's anchor asynchronously,
+    // once the WebUI has registered the chip element over Mojo. Wait for it so
+    // that any pending prompt bubble is created by the time this returns.
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return !GetChipController()->is_waiting_for_anchor_for_testing();
+    }));
   }
 
   void ForceUpdateVisibility() {
@@ -235,10 +242,7 @@ class PermissionChipInteractiveUITest : public InProcessBrowserTest {
 
 class LocationBarIconOverrideTest : public PermissionChipInteractiveUITest {
  public:
-  LocationBarIconOverrideTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {}, {content_settings::features::kLeftHandSideActivityIndicators});
-  }
+  LocationBarIconOverrideTest() = default;
 
   bool IsLocationIconVisible() {
     return LocationIconTestAccessor(browser()).IsVisible();
@@ -254,9 +258,6 @@ class LocationBarIconOverrideTest : public PermissionChipInteractiveUITest {
           [&]() { return IsLocationIconVisible() == expected; }));
     }
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(LocationBarIconOverrideTest,
@@ -437,7 +438,6 @@ IN_PROC_BROWSER_TEST_F(ConfirmationChipEnabledInteractiveTest,
   EXPECT_FALSE(GetChip()->GetVisible());
 }
 
-
 class PageInfoChangedWithin1mUmaTest : public PermissionChipInteractiveUITest {
  public:
   PageInfoChangedWithin1mUmaTest() = default;
@@ -468,7 +468,8 @@ class PageInfoChangedWithin1mUmaTest : public PermissionChipInteractiveUITest {
     OpenPageInfoBubble(browser());
     run_loop.Run();
     auto* bubble_view = static_cast<PageInfoBubbleView*>(
-        PageInfoBubbleView::GetPageInfoBubbleForTesting());
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(
+            browser()->GetTabStripModel()->GetActiveWebContents()));
     EXPECT_TRUE(bubble_view);
 
     return bubble_view;
@@ -502,7 +503,8 @@ class PageInfoChangedWithin1mUmaTest : public PermissionChipInteractiveUITest {
   void OpenPageInfoBubble(BrowserWindowInterface* browser) {
     LocationIconTestAccessor(browser).ShowBubble();
     views::BubbleDialogDelegateView* page_info =
-        PageInfoBubbleView::GetPageInfoBubbleForTesting();
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(
+            browser->GetTabStripModel()->GetActiveWebContents());
     EXPECT_NE(nullptr, page_info);
     page_info->set_close_on_deactivate(false);
   }

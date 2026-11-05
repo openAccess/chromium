@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -28,8 +29,9 @@ namespace private_insights {
 class FcpHttpClientTest : public testing::Test {
  public:
   FcpHttpClientTest()
-      : request_manager_(test_url_loader_factory_.GetSafeWeakWrapper(),
-                         task_environment_.GetMainThreadTaskRunner()) {}
+      : request_manager_(base::MakeRefCounted<FcpHttpRequestManager>(
+            test_url_loader_factory_.GetSafeWeakWrapper(),
+            task_environment_.GetMainThreadTaskRunner())) {}
   ~FcpHttpClientTest() override = default;
 
  protected:
@@ -70,18 +72,54 @@ class FcpHttpClientTest : public testing::Test {
     return status;
   }
 
+  // Enqueues and performs a single GET request off the UI sequence, so that
+  // the handle is constructed on the worker thread as it is in production.
+  absl::Status EnqueueAndPerformRequestOffUiSequence(
+      FcpHttpClient* client,
+      const std::string& url,
+      fcp::client::http::HttpRequestCallback* callback) {
+    absl::Status status;
+    std::atomic<bool> done{false};
+    auto main_thread = task_environment_.GetMainThreadTaskRunner();
+    base::ThreadPool::PostTask(
+        FROM_HERE, {base::MayBlock(), base::WithBaseSyncPrimitives()},
+        base::BindOnce(
+            [](FcpHttpClient* client, std::string url,
+               fcp::client::http::HttpRequestCallback* callback,
+               absl::Status* status, std::atomic<bool>* done,
+               scoped_refptr<base::SequencedTaskRunner> main_thread) {
+              auto request =
+                  fcp::client::http::InMemoryHttpRequest::Create(
+                      url, fcp::client::http::HttpRequest::Method::kGet,
+                      /*extra_headers=*/{}, /*body=*/"",
+                      /*use_compression=*/false)
+                      .value();
+              auto handle = client->EnqueueRequest(std::move(request));
+              *status = client->PerformRequests({{handle.get(), callback}});
+              // Destroy the handle here, as FCP does, before the test returns.
+              handle.reset();
+              *done = true;
+              // Wake up the main thread's RunLoop to evaluate the RunUntil
+              // condition.
+              main_thread->PostTask(FROM_HERE, base::DoNothing());
+            },
+            client, url, callback, &status, &done, main_thread));
+    EXPECT_TRUE(base::test::RunUntil([&]() { return done.load(); }));
+    return status;
+  }
+
   base::test::TaskEnvironment task_environment_;
   network::TestURLLoaderFactory test_url_loader_factory_;
-  FcpHttpRequestManager request_manager_;
+  scoped_refptr<FcpHttpRequestManager> request_manager_;
 };
 
 TEST_F(FcpHttpClientTest, PerformRequestsEmpty) {
-  FcpHttpClient client(&request_manager_);
+  FcpHttpClient client(request_manager_);
   EXPECT_TRUE(client.PerformRequests({}).ok());
 }
 
 TEST_F(FcpHttpClientTest, PerformRequestsCanceledRequest) {
-  FcpHttpClient client(&request_manager_);
+  FcpHttpClient client(request_manager_);
   auto request =
       fcp::client::http::InMemoryHttpRequest::Create(
           "https://example.com", fcp::client::http::HttpRequest::Method::kGet,
@@ -103,7 +141,7 @@ TEST_F(FcpHttpClientTest, PerformRequestsCanceledRequest) {
 }
 
 TEST_F(FcpHttpClientTest, TotalSentReceivedBytesInitial) {
-  FcpHttpClient client(&request_manager_);
+  FcpHttpClient client(request_manager_);
   auto request =
       fcp::client::http::InMemoryHttpRequest::Create(
           "https://example.com", fcp::client::http::HttpRequest::Method::kGet,
@@ -117,7 +155,7 @@ TEST_F(FcpHttpClientTest, TotalSentReceivedBytesInitial) {
 }
 
 TEST_F(FcpHttpClientTest, TotalSentReceivedBytesUpdate) {
-  FcpHttpClient client(&request_manager_);
+  FcpHttpClient client(request_manager_);
   auto request =
       fcp::client::http::InMemoryHttpRequest::Create(
           "https://example.com", fcp::client::http::HttpRequest::Method::kPost,
@@ -214,7 +252,7 @@ class ErrorHttpRequest : public fcp::client::http::HttpRequest {
 };
 
 TEST_F(FcpHttpClientTest, PerformRequestsSuccessfulSingle) {
-  FcpHttpClient client(&request_manager_);
+  FcpHttpClient client(request_manager_);
   auto request = fcp::client::http::InMemoryHttpRequest::Create(
                      "https://example.com/test",
                      fcp::client::http::HttpRequest::Method::kGet,
@@ -250,7 +288,7 @@ TEST_F(FcpHttpClientTest, PerformRequestsSuccessfulSingle) {
 }
 
 TEST_F(FcpHttpClientTest, PerformRequestsSuccessfulBatch) {
-  FcpHttpClient client(&request_manager_);
+  FcpHttpClient client(request_manager_);
   auto request1 = fcp::client::http::InMemoryHttpRequest::Create(
                       "https://example.com/req1",
                       fcp::client::http::HttpRequest::Method::kGet,
@@ -287,8 +325,29 @@ TEST_F(FcpHttpClientTest, PerformRequestsSuccessfulBatch) {
   histogram_tester.ExpectTotalCount(kFcpHttpClientRunnerCountHistogram, 2);
 }
 
+// Regression test for the DETACH_FROM_SEQUENCE() in FcpHttpRequestHandle's
+// constructor: the handle is created off the UI sequence, but its response is
+// set on it. The other tests enqueue on the main thread, which hides this.
+TEST_F(FcpHttpClientTest, EnqueueOffUiSequenceThenRespondOnUiSequence) {
+  FcpHttpClient client(request_manager_);
+  TestHttpRequestCallback callback;
+
+  test_url_loader_factory_.AddResponse("https://example.com/off-sequence",
+                                       "off sequence payload");
+
+  absl::Status status = EnqueueAndPerformRequestOffUiSequence(
+      &client, "https://example.com/off-sequence", &callback);
+
+  EXPECT_TRUE(status.ok());
+  EXPECT_TRUE(callback.response_started_called_);
+  EXPECT_EQ(callback.status_code_, 200);
+  EXPECT_TRUE(callback.response_body_called_);
+  EXPECT_EQ(callback.body_received_, "off sequence payload");
+  EXPECT_TRUE(callback.response_completed_called_);
+}
+
 TEST_F(FcpHttpClientTest, PerformRequestsNetError) {
-  FcpHttpClient client(&request_manager_);
+  FcpHttpClient client(request_manager_);
   auto request = fcp::client::http::InMemoryHttpRequest::Create(
                      "https://example.com/failed",
                      fcp::client::http::HttpRequest::Method::kGet,
@@ -315,7 +374,7 @@ TEST_F(FcpHttpClientTest, PerformRequestsNetError) {
 }
 
 TEST_F(FcpHttpClientTest, PerformRequestsReadBodyError) {
-  FcpHttpClient client(&request_manager_);
+  FcpHttpClient client(request_manager_);
   auto handle = client.EnqueueRequest(std::make_unique<ErrorHttpRequest>());
   TestHttpRequestCallback callback;
 
@@ -329,7 +388,7 @@ TEST_F(FcpHttpClientTest, PerformRequestsReadBodyError) {
 }
 
 TEST_F(FcpHttpClientTest, PerformRequestsCancelViaHandle) {
-  FcpHttpClient client(&request_manager_);
+  FcpHttpClient client(request_manager_);
   auto request = fcp::client::http::InMemoryHttpRequest::Create(
                      "https://example.com/pending",
                      fcp::client::http::HttpRequest::Method::kGet,
@@ -343,8 +402,11 @@ TEST_F(FcpHttpClientTest, PerformRequestsCancelViaHandle) {
   std::atomic<bool> done{false};
   PostPerformRequestsTask(&client, {{handle.get(), &callback}}, &status, &done);
 
-  EXPECT_TRUE(base::test::RunUntil(
-      [&]() { return test_url_loader_factory_.NumPending() == 1; }));
+  // Reads `pending_requests()` directly so the predicate runs without a nested
+  // `RunLoop`, which keeps it working on iOS.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return test_url_loader_factory_.pending_requests()->size() == 1u;
+  }));
 
   handle->Cancel();
 

@@ -12,6 +12,7 @@
 
 #include "base/check_deref.h"
 #include "base/check_op.h"
+#include "base/containers/linear_find.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
@@ -47,6 +48,7 @@ PasswordFormMetricsRecorder::BubbleDismissalReason GetBubbleDismissalReason(
   switch (ui_dismissal_reason) {
     // Accepted by user.
     case metrics_util::CLICKED_ACCEPT:
+    case metrics_util::CLICKED_RESOLVE_ERROR:
       return BubbleDismissalReason::kAccepted;
 
     // Declined by user.
@@ -230,9 +232,7 @@ PasswordFormMetricsRecorder::FillingSource ComputeFillingSource(
 
 const FormFieldData* FindFieldByRendererId(const FormData& form,
                                            autofill::FieldRendererId field_id) {
-  auto field =
-      std::ranges::find(form.fields(), field_id, &FormFieldData::renderer_id);
-  return field == form.fields().end() ? nullptr : &*field;
+  return base::LinearFind(form.fields(), field_id, &FormFieldData::renderer_id);
 }
 
 PasswordFormMetricsRecorder::ClassificationCorrectness
@@ -1167,10 +1167,10 @@ void PasswordFormMetricsRecorder::RecordFillEvent(ManagerAutofillEvent event) {
   ukm_entry_builder_.SetManagerFill_Action(event);
 }
 
-std::string
-PasswordFormMetricsRecorder::FillingAssinstanceToHatsInProductDataString() {
+std::string_view
+PasswordFormMetricsRecorder::FillingAssistanceToHatsInProductDataString() {
   if (!std::holds_alternative<FillingAssistance>(filling_assistance_)) {
-    return std::string();
+    return "";
   }
 
   FillingAssistance filling_assistance =

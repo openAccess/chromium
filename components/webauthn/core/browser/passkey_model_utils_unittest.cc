@@ -4,15 +4,29 @@
 
 #include "components/webauthn/core/browser/passkey_model_utils.h"
 
+#include <array>
+#include <cstdint>
+
+#include "base/containers/span.h"
 #include "base/rand_util.h"
+#include "base/strings/string_view_util.h"
+#include "base/test/protobuf_matchers.h"
+#include "base/test/scoped_feature_list.h"
 #include "components/sync/protocol/webauthn_credential_specifics.pb.h"
+#include "components/webauthn/core/browser/device_authorization/device_authorization_features.h"
 #include "components/webauthn/core/browser/passkey_model.h"
 #include "crypto/keypair.h"
 #include "crypto/sign.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace webauthn::passkey_model_utils {
 namespace {
+
+using ::base::test::EqualsProto;
+using ::base::test::ScopedFeatureList;
+using ::webauthn::features::kDeviceAuthorizationPasskeyDecryption;
+using ::webauthn::features::kDeviceAuthorizationPasskeyEncryption;
 
 constexpr std::array<uint8_t, 32> kTestKey = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
@@ -32,6 +46,47 @@ sync_pb::WebauthnCredentialSpecifics CreateValidPasskey() {
   passkey.set_private_key({1, 2, 3, 4});
   passkey.set_user_name("username");
   passkey.set_user_display_name("display_name");
+  return passkey;
+}
+
+constexpr std::array<uint8_t, 32> kTestDeviceAuthorizationKey = {
+    31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16,
+    15, 14, 13, 12, 11, 10, 9,  8,  7,  6,  5,  4,  3,  2,  1,  0};
+constexpr int32_t kTestDeviceAuthorizationKeyVersion = 7;
+
+DeviceAuthorizationKey CreateTestDeviceAuthorizationKey() {
+  DeviceAuthorizationKey key;
+  key.set_key(base::as_string_view(kTestDeviceAuthorizationKey));
+  key.set_version(kTestDeviceAuthorizationKeyVersion);
+  return key;
+}
+
+// A key that is neither `kTestKey` nor `kTestDeviceAuthorizationKey`.
+constexpr std::array<uint8_t, 32> kWrongKey = {};
+
+// A `security_domain_encrypted` value with the `CreateTestSecrets()` secrets,
+// encrypted with `kTestKey` and `kTestDeviceAuthorizationKey`.
+constexpr auto kTestSecurityDomainEncrypted = base::span_from_cstring(
+    "\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x9d\xc7\xde\xd0"
+    "\x51\x65\x77\x76\x24\x8e\x64\x4d\x12\x10\xd5\x74\x30\x73\x44\xa1"
+    "\x77\xba\x83\x06\xec\x19\x43\x57\x60\x06\xf4\xa1\xb0\xb3\x57\x08"
+    "\x98\x8a\x64\x29\xd6\x00\x87\x0a\x8f\x93\xd5\x5b\x64\x97\xca\x0a"
+    "\x57\x87\xd2\xcd\x56\x71\x4e\xe6\xb1\x19\xe1\xb7\xf0\x48\xdc\x72"
+    "\xc2\x94\x7c\x02\xb1\xb5\x12\x97\xea\xd4");
+
+// Returns the secrets that `kTestSecurityDomainEncrypted` encrypts.
+sync_pb::WebauthnCredentialSpecifics_Encrypted CreateTestSecrets() {
+  sync_pb::WebauthnCredentialSpecifics_Encrypted secrets;
+  secrets.set_private_key("testprivatekey");
+  secrets.set_hmac_secret("testhmacsecret");
+  return secrets;
+}
+
+// Returns a passkey whose `security_domain_encrypted` field is `encrypted`.
+sync_pb::WebauthnCredentialSpecifics CreatePasskeyWithSecurityDomainEncrypted(
+    base::span<const char> encrypted) {
+  sync_pb::WebauthnCredentialSpecifics passkey;
+  passkey.set_security_domain_encrypted(base::as_string_view(encrypted));
   return passkey;
 }
 
@@ -79,7 +134,8 @@ TEST(PasskeyModelUtilsTest, DecryptWebauthnCredentialSpecificsData_Encrypted) {
     sync_pb::WebauthnCredentialSpecifics in;
     in.set_encrypted({t.encrypted.begin(), t.encrypted.end() - 1});
     sync_pb::WebauthnCredentialSpecifics_Encrypted out;
-    EXPECT_EQ(DecryptWebauthnCredentialSpecificsData(kTestKey, in, &out),
+    EXPECT_EQ(DecryptWebauthnCredentialSpecificsData(
+                  kTestKey, /*device_authorization_key=*/{}, in, &out),
               t.result);
     EXPECT_EQ(out.private_key(), t.expected.private_key);
     EXPECT_EQ(out.hmac_secret(), t.expected.hmac_secret);
@@ -116,7 +172,8 @@ TEST(PasskeyModelUtilsTest, DecryptWebauthnCredentialSpecificsData_PrivateKey) {
     sync_pb::WebauthnCredentialSpecifics in;
     in.set_private_key({t.encrypted.begin(), t.encrypted.end() - 1});
     sync_pb::WebauthnCredentialSpecifics_Encrypted out;
-    EXPECT_EQ(DecryptWebauthnCredentialSpecificsData(kTestKey, in, &out),
+    EXPECT_EQ(DecryptWebauthnCredentialSpecificsData(
+                  kTestKey, /*device_authorization_key=*/{}, in, &out),
               t.result);
     EXPECT_EQ(out.private_key(), t.expected_private_key);
     EXPECT_FALSE(out.has_hmac_secret());
@@ -129,7 +186,8 @@ TEST(PasskeyModelUtilsTest, DecryptWebauthnCredentialSpecificsData_PrivateKey) {
 TEST(PasskeyModelUtilsTest, DecryptWebauthnCredentialSpecificsData_NotSet) {
   sync_pb::WebauthnCredentialSpecifics in;
   sync_pb::WebauthnCredentialSpecifics_Encrypted out;
-  EXPECT_FALSE(DecryptWebauthnCredentialSpecificsData(kTestKey, in, &out));
+  EXPECT_FALSE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, /*device_authorization_key=*/{}, in, &out));
 }
 
 TEST(PasskeyModelUtilsTest, EncryptWebauthnCredentialSpecificsData) {
@@ -140,13 +198,13 @@ TEST(PasskeyModelUtilsTest, EncryptWebauthnCredentialSpecificsData) {
   plain.set_large_blob("d");
   plain.set_large_blob_uncompressed_size(1u);
   sync_pb::WebauthnCredentialSpecifics encrypted;
-  ASSERT_TRUE(
-      EncryptWebauthnCredentialSpecificsData(kTestKey, plain, &encrypted));
+  ASSERT_TRUE(EncryptWebauthnCredentialSpecificsData(
+      kTestKey, /*device_authorization_key=*/std::nullopt, plain, &encrypted));
   EXPECT_TRUE(encrypted.has_encrypted());
 
   sync_pb::WebauthnCredentialSpecifics_Encrypted decrypted;
-  EXPECT_TRUE(
-      DecryptWebauthnCredentialSpecificsData(kTestKey, encrypted, &decrypted));
+  EXPECT_TRUE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, /*device_authorization_key=*/{}, encrypted, &decrypted));
   EXPECT_EQ(decrypted.private_key(), plain.private_key());
   EXPECT_EQ(decrypted.hmac_secret(), plain.hmac_secret());
   EXPECT_EQ(decrypted.cred_blob(), plain.cred_blob());
@@ -157,7 +215,8 @@ TEST(PasskeyModelUtilsTest, EncryptWebauthnCredentialSpecificsData) {
 
 TEST(PasskeyModelUtilsTest, GeneratePasskeyAndEncryptSecrets) {
   auto [passkey, public_key_spki_der] = GeneratePasskeyAndEncryptSecrets(
-      kRpId, kTestUser, kTestKey, kTestKeyVersion, /*extension_input_data=*/{},
+      kRpId, kTestUser, kTestKey, kTestKeyVersion,
+      /*device_authorization_key=*/std::nullopt, /*extension_input_data=*/{},
       /*extension_output_data=*/nullptr);
   EXPECT_EQ(passkey.sync_id().size(), 16u);
   EXPECT_EQ(passkey.credential_id().size(), 16u);
@@ -177,8 +236,8 @@ TEST(PasskeyModelUtilsTest, GeneratePasskeyAndEncryptSecrets) {
 
   EXPECT_TRUE(passkey.has_encrypted());
   sync_pb::WebauthnCredentialSpecifics_Encrypted encrypted_data;
-  ASSERT_TRUE(DecryptWebauthnCredentialSpecificsData(kTestKey, passkey,
-                                                     &encrypted_data));
+  ASSERT_TRUE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, /*device_authorization_key=*/{}, passkey, &encrypted_data));
   EXPECT_FALSE(encrypted_data.private_key().empty());
   auto ec_key = crypto::keypair::PrivateKey::FromPrivateKeyInfo(
       base::as_byte_span(encrypted_data.private_key()));
@@ -196,10 +255,12 @@ TEST(PasskeyModelUtilsTest, GeneratePasskeyAndEncryptSecrets) {
 TEST(PasskeyModelUtilsTest, GeneratePasskeyWithPRFAndEncryptSecrets) {
   std::vector<uint8_t> prf_input1;
   prf_input1.emplace_back('a');
-  ExtensionInputData extension_input_data({prf_input1, std::nullopt});
+  ExtensionInputData extension_input_data(
+      device::PRFInput::FromUnhashedInputs(prf_input1, std::nullopt));
   ExtensionOutputData extension_output_data;
   auto [passkey, public_key_spki_der] = GeneratePasskeyAndEncryptSecrets(
-      kRpId, kTestUser, kTestKey, kTestKeyVersion, extension_input_data,
+      kRpId, kTestUser, kTestKey, kTestKeyVersion,
+      /*device_authorization_key=*/std::nullopt, extension_input_data,
       &extension_output_data);
   EXPECT_EQ(passkey.sync_id().size(), 16u);
   EXPECT_EQ(passkey.credential_id().size(), 16u);
@@ -219,8 +280,8 @@ TEST(PasskeyModelUtilsTest, GeneratePasskeyWithPRFAndEncryptSecrets) {
 
   EXPECT_TRUE(passkey.has_encrypted());
   sync_pb::WebauthnCredentialSpecifics_Encrypted encrypted_data;
-  ASSERT_TRUE(DecryptWebauthnCredentialSpecificsData(kTestKey, passkey,
-                                                     &encrypted_data));
+  ASSERT_TRUE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, /*device_authorization_key=*/{}, passkey, &encrypted_data));
   EXPECT_FALSE(encrypted_data.private_key().empty());
   auto ec_key = crypto::keypair::PrivateKey::FromPrivateKeyInfo(
       base::as_byte_span(encrypted_data.private_key()));
@@ -235,6 +296,25 @@ TEST(PasskeyModelUtilsTest, GeneratePasskeyWithPRFAndEncryptSecrets) {
   EXPECT_EQ(encrypted_data.large_blob_uncompressed_size(), 0u);
 
   EXPECT_EQ(extension_output_data.prf_result.size(), 32u);
+  EXPECT_EQ(extension_output_data.prf_result,
+            EvaluateHMAC(encrypted_data, device::PRFInput::FromUnhashedInputs(
+                                             prf_input1, std::nullopt)));
+}
+
+TEST(PasskeyModelUtilsTest, GeneratePasskeyWithPRFWithoutEval) {
+  ExtensionInputData extension_input_data(/*has_prf=*/true,
+                                          /*prf_input=*/std::nullopt);
+  ExtensionOutputData extension_output_data;
+  auto [passkey, public_key_spki_der] = GeneratePasskeyAndEncryptSecrets(
+      kRpId, kTestUser, kTestKey, kTestKeyVersion,
+      /*device_authorization_key=*/std::nullopt, extension_input_data,
+      &extension_output_data);
+
+  sync_pb::WebauthnCredentialSpecifics_Encrypted encrypted_data;
+  ASSERT_TRUE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, /*device_authorization_key=*/{}, passkey, &encrypted_data));
+  EXPECT_EQ(encrypted_data.hmac_secret().size(), 32u);
+  EXPECT_TRUE(extension_output_data.prf_result.empty());
 }
 
 TEST(PasskeyModelUtilsTest, PRFInputsEmptyVSMissing) {
@@ -244,59 +324,71 @@ TEST(PasskeyModelUtilsTest, PRFInputsEmptyVSMissing) {
   ExtensionOutputData extension_output_data;
 
   // First input empty, 2nd input missing, 1 PRF output.
-  PRFInputData input_data_0X({prf_empty_input, std::nullopt});
-  EXPECT_TRUE(input_data_0X.prf_input().input1.empty());
-  EXPECT_FALSE(input_data_0X.prf_input().input2.has_value());
+  device::PRFInput input_data_0X =
+      device::PRFInput::FromUnhashedInputs(prf_empty_input, std::nullopt);
+  EXPECT_TRUE(input_data_0X.input1.empty());
+  EXPECT_FALSE(input_data_0X.input2.has_value());
   GeneratePasskeyAndEncryptSecrets(kRpId, kTestUser, kTestKey, kTestKeyVersion,
+                                   /*device_authorization_key=*/std::nullopt,
                                    ExtensionInputData(input_data_0X),
                                    &extension_output_data);
   EXPECT_EQ(extension_output_data.prf_result.size(), 32u);
 
   // First input non empty, 2nd input missing, 1 PRF output.
-  PRFInputData input_data_1X({prf_non_empty_input, std::nullopt});
-  EXPECT_FALSE(input_data_1X.prf_input().input1.empty());
-  EXPECT_FALSE(input_data_1X.prf_input().input2.has_value());
+  device::PRFInput input_data_1X =
+      device::PRFInput::FromUnhashedInputs(prf_non_empty_input, std::nullopt);
+  EXPECT_FALSE(input_data_1X.input1.empty());
+  EXPECT_FALSE(input_data_1X.input2.has_value());
   GeneratePasskeyAndEncryptSecrets(kRpId, kTestUser, kTestKey, kTestKeyVersion,
+                                   /*device_authorization_key=*/std::nullopt,
                                    ExtensionInputData(input_data_1X),
                                    &extension_output_data);
   EXPECT_EQ(extension_output_data.prf_result.size(), 32u);
 
   // First input empty, 2nd input empty, 2 PRF outputs.
-  PRFInputData input_data_00({prf_empty_input, prf_empty_input});
-  EXPECT_TRUE(input_data_00.prf_input().input1.empty());
-  EXPECT_TRUE(input_data_00.prf_input().input2.has_value());
-  EXPECT_TRUE(input_data_00.prf_input().input2->empty());
+  device::PRFInput input_data_00 =
+      device::PRFInput::FromUnhashedInputs(prf_empty_input, prf_empty_input);
+  EXPECT_TRUE(input_data_00.input1.empty());
+  EXPECT_TRUE(input_data_00.input2.has_value());
+  EXPECT_TRUE(input_data_00.input2->empty());
   GeneratePasskeyAndEncryptSecrets(kRpId, kTestUser, kTestKey, kTestKeyVersion,
+                                   /*device_authorization_key=*/std::nullopt,
                                    ExtensionInputData(input_data_00),
                                    &extension_output_data);
   EXPECT_EQ(extension_output_data.prf_result.size(), 64u);
 
   // First input empty, 2nd input non empty, 2 PRF output2.
-  PRFInputData input_data_01({prf_empty_input, prf_non_empty_input});
-  EXPECT_TRUE(input_data_01.prf_input().input1.empty());
-  EXPECT_TRUE(input_data_01.prf_input().input2.has_value());
-  EXPECT_FALSE(input_data_01.prf_input().input2->empty());
+  device::PRFInput input_data_01 = device::PRFInput::FromUnhashedInputs(
+      prf_empty_input, prf_non_empty_input);
+  EXPECT_TRUE(input_data_01.input1.empty());
+  EXPECT_TRUE(input_data_01.input2.has_value());
+  EXPECT_FALSE(input_data_01.input2->empty());
   GeneratePasskeyAndEncryptSecrets(kRpId, kTestUser, kTestKey, kTestKeyVersion,
+                                   /*device_authorization_key=*/std::nullopt,
                                    ExtensionInputData(input_data_01),
                                    &extension_output_data);
   EXPECT_EQ(extension_output_data.prf_result.size(), 64u);
 
   // First input non empty, 2nd input empty, 2 PRF outputs.
-  PRFInputData input_data_10({prf_non_empty_input, prf_empty_input});
-  EXPECT_FALSE(input_data_10.prf_input().input1.empty());
-  EXPECT_TRUE(input_data_10.prf_input().input2.has_value());
-  EXPECT_TRUE(input_data_10.prf_input().input2->empty());
+  device::PRFInput input_data_10 = device::PRFInput::FromUnhashedInputs(
+      prf_non_empty_input, prf_empty_input);
+  EXPECT_FALSE(input_data_10.input1.empty());
+  EXPECT_TRUE(input_data_10.input2.has_value());
+  EXPECT_TRUE(input_data_10.input2->empty());
   GeneratePasskeyAndEncryptSecrets(kRpId, kTestUser, kTestKey, kTestKeyVersion,
+                                   /*device_authorization_key=*/std::nullopt,
                                    ExtensionInputData(input_data_10),
                                    &extension_output_data);
   EXPECT_EQ(extension_output_data.prf_result.size(), 64u);
 
   // First input non empty, 2nd input non empty, 2 PRF outputs.
-  PRFInputData input_data_11({prf_non_empty_input, prf_non_empty_input});
-  EXPECT_FALSE(input_data_11.prf_input().input1.empty());
-  EXPECT_TRUE(input_data_11.prf_input().input2.has_value());
-  EXPECT_FALSE(input_data_11.prf_input().input2->empty());
+  device::PRFInput input_data_11 = device::PRFInput::FromUnhashedInputs(
+      prf_non_empty_input, prf_non_empty_input);
+  EXPECT_FALSE(input_data_11.input1.empty());
+  EXPECT_TRUE(input_data_11.input2.has_value());
+  EXPECT_FALSE(input_data_11.input2->empty());
   GeneratePasskeyAndEncryptSecrets(kRpId, kTestUser, kTestKey, kTestKeyVersion,
+                                   /*device_authorization_key=*/std::nullopt,
                                    ExtensionInputData(input_data_11),
                                    &extension_output_data);
   EXPECT_EQ(extension_output_data.prf_result.size(), 64u);
@@ -401,6 +493,193 @@ TEST(PasskeyModelUtilsTest, GenerateEcSignature_NonP256Key) {
   // Invalid bytes should be rejected.
   const std::vector<uint8_t> invalid_bytes = {0x01, 0x02, 0x03};
   EXPECT_FALSE(GenerateEcSignature(invalid_bytes, data).has_value());
+}
+
+// Test that the device authorization key is ignored when decrypting the
+// `encrypted` case.
+TEST(PasskeyModelUtilsTest, IgnoresDeviceAuthorizationKeyForEncryptedCase) {
+  const sync_pb::WebauthnCredentialSpecifics_Encrypted secrets =
+      CreateTestSecrets();
+  sync_pb::WebauthnCredentialSpecifics passkey;
+  ASSERT_TRUE(EncryptWebauthnCredentialSpecificsData(
+      kTestKey, /*device_authorization_key=*/std::nullopt, secrets, &passkey));
+
+  sync_pb::WebauthnCredentialSpecifics_Encrypted out;
+  EXPECT_TRUE(DecryptWebauthnCredentialSpecificsData(kTestKey, kWrongKey,
+                                                     passkey, &out));
+  EXPECT_THAT(out, EqualsProto(secrets));
+}
+
+// Tests that `EncryptWebauthnCredentialSpecificsData` ignores the device
+// authorization key and writes `encrypted` if
+// `kDeviceAuthorizationPasskeyEncryption` is disabled.
+TEST(PasskeyModelUtilsTest, EncryptsAsEncryptedWithFeatureDisabled) {
+  ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kDeviceAuthorizationPasskeyEncryption);
+  const sync_pb::WebauthnCredentialSpecifics_Encrypted secrets =
+      CreateTestSecrets();
+  sync_pb::WebauthnCredentialSpecifics passkey;
+  ASSERT_TRUE(EncryptWebauthnCredentialSpecificsData(
+      kTestKey, CreateTestDeviceAuthorizationKey(), secrets, &passkey));
+  EXPECT_TRUE(passkey.has_encrypted());
+  EXPECT_FALSE(passkey.has_device_authorization_key_version());
+
+  sync_pb::WebauthnCredentialSpecifics_Encrypted out;
+  EXPECT_TRUE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, /*device_authorization_key=*/{}, passkey, &out));
+  EXPECT_THAT(out, EqualsProto(secrets));
+}
+
+// Test that the `security_domain_encrypted` case can't be decrypted if
+// `kDeviceAuthorizationPasskeyDecryption` is disabled.
+TEST(PasskeyModelUtilsTest,
+     FailsToDecryptSecurityDomainPasskeyWithFeatureDisabled) {
+  ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kDeviceAuthorizationPasskeyDecryption);
+  sync_pb::WebauthnCredentialSpecifics_Encrypted out;
+  EXPECT_FALSE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, kTestDeviceAuthorizationKey,
+      CreatePasskeyWithSecurityDomainEncrypted(kTestSecurityDomainEncrypted),
+      &out));
+}
+
+// Test fixture with `kDeviceAuthorizationPasskeyDecryption` and
+// `kDeviceAuthorizationPasskeyEncryption` enabled.
+class PasskeyModelUtilsDeviceAuthorizationTest : public testing::Test {
+ public:
+  PasskeyModelUtilsDeviceAuthorizationTest() {
+    feature_list_.InitWithFeatures({kDeviceAuthorizationPasskeyDecryption,
+                                    kDeviceAuthorizationPasskeyEncryption},
+                                   {});
+  }
+
+ private:
+  ScopedFeatureList feature_list_;
+};
+
+// Tests that `EncryptWebauthnCredentialSpecificsData` writes
+// `security_domain_encrypted` and `device_authorization_key_version`, and can
+// be decrypted with valid keys.
+TEST_F(PasskeyModelUtilsDeviceAuthorizationTest,
+       EncryptsAndDecryptsSecurityDomainPasskey) {
+  const sync_pb::WebauthnCredentialSpecifics_Encrypted secrets =
+      CreateTestSecrets();
+  sync_pb::WebauthnCredentialSpecifics passkey;
+  ASSERT_TRUE(EncryptWebauthnCredentialSpecificsData(
+      kTestKey, CreateTestDeviceAuthorizationKey(), secrets, &passkey));
+  EXPECT_TRUE(passkey.has_security_domain_encrypted());
+  EXPECT_EQ(passkey.device_authorization_key_version(),
+            kTestDeviceAuthorizationKeyVersion);
+
+  sync_pb::WebauthnCredentialSpecifics_Encrypted out;
+  EXPECT_TRUE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, kTestDeviceAuthorizationKey, passkey, &out));
+  EXPECT_THAT(out, EqualsProto(secrets));
+}
+
+// Tests that `EncryptWebauthnCredentialSpecificsData` fails without a device
+// authorization key when `kDeviceAuthorizationPasskeyEncryption` is enabled.
+TEST_F(PasskeyModelUtilsDeviceAuthorizationTest,
+       EncryptionFailsWithoutDeviceAuthorizationKey) {
+  sync_pb::WebauthnCredentialSpecifics passkey;
+  EXPECT_FALSE(EncryptWebauthnCredentialSpecificsData(
+      kTestKey, /*device_authorization_key=*/std::nullopt, CreateTestSecrets(),
+      &passkey));
+  EXPECT_EQ(passkey.encrypted_data_case(),
+            sync_pb::WebauthnCredentialSpecifics::ENCRYPTED_DATA_NOT_SET);
+  EXPECT_FALSE(passkey.has_device_authorization_key_version());
+}
+
+// Test decryption of the `security_domain_encrypted` case for
+// `WebAuthnCredentialSpecifics.encrypted_data`.
+TEST_F(PasskeyModelUtilsDeviceAuthorizationTest, DecryptsWithValidKeys) {
+  sync_pb::WebauthnCredentialSpecifics_Encrypted out;
+  EXPECT_TRUE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, kTestDeviceAuthorizationKey,
+      CreatePasskeyWithSecurityDomainEncrypted(kTestSecurityDomainEncrypted),
+      &out));
+  EXPECT_THAT(out, EqualsProto(CreateTestSecrets()));
+}
+
+// Test that the `security_domain_encrypted` case can't be decrypted without a
+// device authorization key.
+TEST_F(PasskeyModelUtilsDeviceAuthorizationTest,
+       DecryptionFailsWithoutDeviceAuthorizationKey) {
+  sync_pb::WebauthnCredentialSpecifics_Encrypted out;
+  EXPECT_FALSE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, /*device_authorization_key=*/{},
+      CreatePasskeyWithSecurityDomainEncrypted(kTestSecurityDomainEncrypted),
+      &out));
+}
+
+// Test that the `security_domain_encrypted` case can't be decrypted with the
+// wrong trusted vault key.
+TEST_F(PasskeyModelUtilsDeviceAuthorizationTest,
+       DecryptionFailsWithWrongTrustedVaultKey) {
+  sync_pb::WebauthnCredentialSpecifics_Encrypted out;
+  EXPECT_FALSE(DecryptWebauthnCredentialSpecificsData(
+      kWrongKey, kTestDeviceAuthorizationKey,
+      CreatePasskeyWithSecurityDomainEncrypted(kTestSecurityDomainEncrypted),
+      &out));
+}
+
+// Test that the `security_domain_encrypted` case can't be decrypted with the
+// wrong device authorization key.
+TEST_F(PasskeyModelUtilsDeviceAuthorizationTest,
+       DecryptionFailsWithWrongDeviceAuthorizationKey) {
+  sync_pb::WebauthnCredentialSpecifics_Encrypted out;
+  EXPECT_FALSE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, kWrongKey,
+      CreatePasskeyWithSecurityDomainEncrypted(kTestSecurityDomainEncrypted),
+      &out));
+}
+
+// Test that decryption fails if `security_domain_encrypted` doesn't decrypt to
+// a valid `SecurityDomainEncrypted` message.
+TEST_F(PasskeyModelUtilsDeviceAuthorizationTest,
+       DecryptionFailsWithInvalidOuterProto) {
+  // An invalid message (a single `0xff` byte) encrypted with `kTestKey`.
+  static constexpr auto kSecurityDomainEncrypted = base::span_from_cstring(
+      "\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x68\xee\xbe\xca"
+      "\x68\x6c\xff\x93\x2e\xaa\x46\x61\xa0\x71\x2f\x30\x3c");
+  sync_pb::WebauthnCredentialSpecifics_Encrypted out;
+  EXPECT_FALSE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, kTestDeviceAuthorizationKey,
+      CreatePasskeyWithSecurityDomainEncrypted(kSecurityDomainEncrypted),
+      &out));
+}
+
+// Test that decryption fails if `security_domain_encrypted` decrypts to a
+// `SecurityDomainEncrypted` message without `device_authorization_encrypted`.
+TEST_F(PasskeyModelUtilsDeviceAuthorizationTest,
+       DecryptionFailsWithEmptyOuterProto) {
+  // An empty `SecurityDomainEncrypted` message encrypted with `kTestKey`.
+  static constexpr auto kSecurityDomainEncrypted = base::span_from_cstring(
+      "\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\xdd\x7c\xdf\xef"
+      "\x9d\x6f\x60\x19\xe5\xaa\x0a\xa0\x69\x90\x07\x98");
+  sync_pb::WebauthnCredentialSpecifics_Encrypted out;
+  EXPECT_FALSE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, kTestDeviceAuthorizationKey,
+      CreatePasskeyWithSecurityDomainEncrypted(kSecurityDomainEncrypted),
+      &out));
+}
+
+// Test that decryption fails if `device_authorization_encrypted` doesn't
+// decrypt to a valid `Encrypted` message.
+TEST_F(PasskeyModelUtilsDeviceAuthorizationTest,
+       DecryptionFailsWithInvalidInnerProto) {
+  // Like `kTestSecurityDomainEncrypted`, but with an invalid message (a single
+  // `0xff` byte) instead of the `CreateTestSecrets()` secrets.
+  static constexpr auto kSecurityDomainEncrypted = base::span_from_cstring(
+      "\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x0a\x9d\xe6\xde\xd0"
+      "\x51\x65\x77\x76\x24\x8e\x64\x4d\x12\x10\x20\xd2\xb1\x05\x9b\xeb"
+      "\xdf\x19\x93\xbe\xac\xfe\x0b\xf1\x91\x09\xf0\x33\x78\x71\x85\x1f"
+      "\x94\x2d\x2c\xe4\x95\xe5\xcc\x20\x64\x84\x53");
+  sync_pb::WebauthnCredentialSpecifics_Encrypted out;
+  EXPECT_FALSE(DecryptWebauthnCredentialSpecificsData(
+      kTestKey, kTestDeviceAuthorizationKey,
+      CreatePasskeyWithSecurityDomainEncrypted(kSecurityDomainEncrypted),
+      &out));
 }
 
 }  // namespace

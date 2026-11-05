@@ -6,7 +6,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -46,7 +45,8 @@ IN_PROC_BROWSER_TEST_F(IFrameTest, InEmptyFrame) {
 // by an iframe, which is destroyed before the chooser is closed, does not
 // result in a use-after-free condition.
 // TODO(crbug.com/500416901, crbug.com/40904458): Fix and re-enable this test.
-#if defined(MEMORY_SANITIZER) && BUILDFLAG(IS_LINUX)
+#if (BUILDFLAG(IS_LINUX) && defined(ADDRESS_SANITIZER)) || \
+    (BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER))
 #define MAYBE_FileChooserInDestroyedSubframe \
   DISABLED_FileChooserInDestroyedSubframe
 #else

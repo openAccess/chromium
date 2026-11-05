@@ -20,7 +20,6 @@
 #include "media/mojo/mojom/speech_recognition.mojom.h"
 #include "media/mojo/mojom/speech_recognition_error.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom-forward.h"
 
 namespace media {
@@ -138,7 +137,6 @@ class CONTENT_EXPORT SpeechRecognitionManagerImpl
   ~SpeechRecognitionManagerImpl() override;
 
  private:
-
   // Data types for the internal Finite State Machine (FSM).
   enum FSMState {
     SESSION_STATE_IDLE = 0,
@@ -161,8 +159,9 @@ class CONTENT_EXPORT SpeechRecognitionManagerImpl
     Session();
     ~Session();
 
-    int id;
-    bool abort_requested;
+    int id = kSessionIDInvalid;
+    bool abort_requested = false;
+    bool has_error = false;
     SpeechRecognitionSessionConfig config;
     SpeechRecognitionSessionContext context;
     scoped_refptr<SpeechRecognizer> recognizer;
@@ -172,6 +171,7 @@ class CONTENT_EXPORT SpeechRecognitionManagerImpl
   };
 
   void AbortSessionImpl(int session_id);
+  void AbortSessionForPermissionRevocation(int session_id);
 
   // Callback issued by the SpeechRecognitionManagerDelegate for reporting
   // asynchronously the result of the CheckRecognitionIsAllowed call.

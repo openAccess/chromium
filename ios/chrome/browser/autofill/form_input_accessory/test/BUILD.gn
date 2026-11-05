@@ -7,6 +7,7 @@ source_set("eg2_tests") {
   testonly = true
   sources = [ "form_input_accessory_egtest.mm" ]
   deps = [
+    "//components/autofill/core/browser",
     "//components/autofill/core/browser:test_support",
     "//components/autofill/ios/common",
     "//components/feature_engagement/public",
@@ -33,6 +34,7 @@ source_set("eg2_tests") {
     "//ios/chrome/common/ui/elements:form_input_accessory",
     "//ios/chrome/test:eg_test_support+eg2",
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
+    "//ios/testing:test_tag_registry",
     "//ios/testing/earl_grey:eg_test_support+eg2",
     "//net",
     "//net:test_support",

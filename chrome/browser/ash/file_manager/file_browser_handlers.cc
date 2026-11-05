@@ -24,8 +24,8 @@
 #include "chrome/browser/ash/fileapi/file_system_backend.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/extensions/api/file_browser_handlers/file_browser_handler.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_browser_handlers/file_browser_handler.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/render_process_host.h"
@@ -130,7 +130,7 @@ FileBrowserHandlerExecutor::SetupFileAccessPermissions(
     scoped_refptr<storage::FileSystemContext> file_system_context_handler,
     const scoped_refptr<const Extension>& handler_extension,
     const std::vector<FileSystemURL>& file_urls) {
-  DCHECK(handler_extension.get());
+  CHECK(handler_extension.get(), base::NotFatalUntil::M161);
 
   auto* backend = ash::FileSystemBackend::Get(*file_system_context_handler);
 
@@ -215,7 +215,7 @@ void FileBrowserHandlerExecutor::ExecuteAfterSetupFileAccess(
 void FileBrowserHandlerExecutor::ExecuteDoneOnUIThread(
     bool success,
     std::string failure_reason) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   if (done_) {
     // In a multiprofile session, extension handlers will open on the desktop
     // corresponding to the profile that owns the files, so return
@@ -232,7 +232,7 @@ void FileBrowserHandlerExecutor::ExecuteDoneOnUIThread(
 void FileBrowserHandlerExecutor::ExecuteFileActionsOnUIThread(
     std::unique_ptr<FileDefinitionList> file_definition_list,
     std::unique_ptr<EntryDefinitionList> entry_definition_list) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (file_definition_list->empty() || entry_definition_list->empty()) {
     ExecuteDoneOnUIThread(false, "File list empty");
@@ -291,8 +291,8 @@ void FileBrowserHandlerExecutor::SetupPermissionsAndDispatchEvent(
   SetupHandlerHostFileAccessPermissions(file_definition_list.get(),
                                         extension_.get(), handler_pid);
 
-  base::ListValue event_args;
-  event_args.Append(action_id_);
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>();
+  event_args->data.Append(action_id_);
   base::DictValue details;
   // Get file definitions. These will be replaced with Entry instances by
   // dispatchEvent() method from event_binding.js.
@@ -300,7 +300,7 @@ void FileBrowserHandlerExecutor::SetupPermissionsAndDispatchEvent(
       *entry_definition_list);
 
   details.Set("entries", std::move(file_entries));
-  event_args.Append(std::move(details));
+  event_args->data.Append(std::move(details));
   auto event = std::make_unique<extensions::Event>(
       extensions::events::FILE_BROWSER_HANDLER_ON_EXECUTE,
       "fileBrowserHandler.onExecute", std::move(event_args), profile_);

@@ -27,7 +27,6 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
-#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/session_manager/fake_session_manager_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
@@ -37,7 +36,7 @@
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/identity_manager/account_managed_status_finder.h"
-#include "components/user_manager/fake_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/test/browser_test.h"
@@ -96,9 +95,12 @@ class CrashRestoreSimpleTest : public InProcessBrowserTest {
 
 IN_PROC_BROWSER_TEST_F(CrashRestoreSimpleTest, RestoreSessionForOneUser) {
   user_manager::UserManager* user_manager = user_manager::UserManager::Get();
-  user_manager::User* user = user_manager->GetActiveUser();
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  ASSERT_TRUE(active_session);
+  EXPECT_EQ(account_id1_, active_session->account_id());
+  const user_manager::User* user = user_manager->FindUser(account_id1_);
   ASSERT_TRUE(user);
-  EXPECT_EQ(account_id1_, user->GetAccountId());
   EXPECT_EQ(UserDataAuthClient::GetStubSanitizedUsername(cryptohome_id1_),
             user->username_hash());
   EXPECT_EQ(1UL, user_manager->GetLoggedInUsers().size());
@@ -206,10 +208,9 @@ class CrashRestoreComplexTest : public CrashRestoreSimpleTest {
 
     for (const auto& account_id : {account_id1_, account_id2_, account_id3_}) {
       const std::string user_id_hash =
-          user_manager::FakeUserManager::GetFakeUsernameHash(account_id);
+          user_manager::TestHelper::GetFakeUsernameHash(account_id);
       const base::FilePath user_profile_path = user_data_dir.Append(
-          base::FilePath(BrowserContextHelper::GetUserBrowserContextDirName(
-              user_id_hash)));
+          base::FilePath(user_manager::User::GetDirName(user_id_hash)));
       ASSERT_TRUE(base::CreateDirectory(user_profile_path));
 
       ASSERT_TRUE(
@@ -236,9 +237,12 @@ IN_PROC_BROWSER_TEST_F(CrashRestoreComplexTest,
   // User that is last in the user sessions map becomes active. This behavior
   // will become better defined once each user gets a separate user desktop.
   user_manager::UserManager* user_manager = user_manager::UserManager::Get();
-  user_manager::User* user = user_manager->GetActiveUser();
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  ASSERT_TRUE(active_session);
+  EXPECT_EQ(account_id3_, active_session->account_id());
+  const user_manager::User* user = user_manager->FindUser(account_id3_);
   ASSERT_TRUE(user);
-  EXPECT_EQ(account_id3_, user->GetAccountId());
   EXPECT_EQ(UserDataAuthClient::GetStubSanitizedUsername(cryptohome_id3_),
             user->username_hash());
   const user_manager::UserList& users = user_manager->GetLRULoggedInUsers();

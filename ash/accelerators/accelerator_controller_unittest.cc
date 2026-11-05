@@ -97,6 +97,7 @@
 #include "ui/base/accelerators/test_accelerator_target.h"
 #include "ui/base/ime/ash/fake_ime_keyboard.h"
 #include "ui/base/ime/ash/mock_input_method_manager.h"
+#include "ui/base/ime/ash/scoped_input_method_manager_for_testing.h"
 #include "ui/base/ime/init/input_method_factory.h"
 #include "ui/base/ime/mock_input_method.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -1617,7 +1618,7 @@ TEST_F(AcceleratorControllerTest, GlobalAcceleratorsToggleQuickSettings) {
 
 TEST_F(AcceleratorControllerTest, ToggleMultitaskMenu) {
   // Simulate fake user login to ensure pref registration is done correctly.
-  SimulateUserLogin({"fakeuser"});
+  SimulateUserLogin(AccountId::FromUserEmail("fakeuser"));
   // Enabling `kShortcutCustomization` will start letting
   // `AcceleratorControllerImpl` to observe changes to the accelerator list.
   // This includes accelerators added by enabling flags.
@@ -2608,11 +2609,10 @@ class SystemShortcutBehaviorTest : public AcceleratorControllerTest {
   void SetUp() override {
     AcceleratorControllerTest::SetUp();
 
-    auto user_prefs = std::make_unique<TestingPrefServiceSimple>();
-    user_prefs_ = user_prefs.get();
-    RegisterUserProfilePrefs(user_prefs->registry(), /*country=*/"",
-                             /*for_test=*/true);
-    SimulateUserLogin({kUserEmail}, std::nullopt, std::move(user_prefs));
+    AccountId account_id =
+        SimulateUserLogin({.account_id = AccountId::FromUserEmail(kUserEmail)});
+    user_prefs_ = static_cast<TestingPrefServiceSimple*>(
+        GetSessionControllerClient()->GetUserPrefService(account_id));
   }
 
   void TearDown() override {
@@ -2834,12 +2834,6 @@ class AcceleratorControllerImprovedKeyboardShortcutsTest
   };
 
   void SetUp() override {
-    // Setup our own |InputMethodManager| to test that the accelerator
-    // controller respects ArePositionalShortcutsUsedByCurrentInputMethod value
-    // from the |InputMethodManager|.
-    input_method_manager_ = new TestInputMethodManager();
-    input_method::InputMethodManager::Initialize(input_method_manager_);
-
     AcceleratorControllerTest::SetUp();
     EXPECT_TRUE(
         input_method_manager_->observers_.HasObserver(controller_.get()));
@@ -2849,14 +2843,13 @@ class AcceleratorControllerImprovedKeyboardShortcutsTest
     AcceleratorControllerTest::TearDown();
     EXPECT_FALSE(
         input_method_manager_->observers_.HasObserver(controller_.get()));
-
-    input_method_manager_ = nullptr;
-    input_method::InputMethodManager::Shutdown();
   }
 
  protected:
-  raw_ptr<TestInputMethodManager> input_method_manager_ =
-      nullptr;  // Not owned.
+  // Used to test that `AcceleratorController` respects the
+  // `ArePositionalShortcutsUsedByCurrentInputMethod` value.
+  input_method::ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager_;
 };
 
 TEST_F(AcceleratorControllerImprovedKeyboardShortcutsTest, InputMethodChanged) {
@@ -3108,7 +3101,7 @@ class MagnifiersAcceleratorsTester : public AcceleratorControllerTest {
   void SetUp() override {
     AcceleratorControllerTest::SetUp();
     // Create user session and simulate its login.
-    SimulateUserLogin({kUserEmail});
+    SimulateUserLogin(AccountId::FromUserEmail(kUserEmail));
   }
 };
 

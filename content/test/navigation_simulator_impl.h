@@ -22,12 +22,13 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/ip_endpoint.h"
-#include "net/base/load_flags.h"
 #include "net/dns/public/resolve_error_info.h"
 #include "net/http/http_connection_info.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
+#include "services/network/public/mojom/source_location.mojom.h"
 #include "third_party/blink/public/mojom/loader/mixed_content.mojom.h"
 #include "third_party/blink/public/mojom/loader/referrer.mojom-forward.h"
+#include "third_party/blink/public/mojom/navigation/navigation_params.mojom-forward.h"
 #include "url/gurl.h"
 
 namespace network {
@@ -188,7 +189,12 @@ class NavigationSimulatorImpl : public NavigationSimulator,
 
   void set_request_headers(const std::string& headers) { headers_ = headers; }
 
-  void set_load_flags(int load_flags) { load_flags_ = load_flags; }
+  // Overrides the navigation type sent to the browser for renderer-initiated
+  // navigations. By default, the type is derived from the transition. Note that
+  // the browser derives cache-related load flags from the navigation type.
+  void set_navigation_type(blink::mojom::NavigationType navigation_type) {
+    navigation_type_ = navigation_type;
+  }
 
   void set_mixed_content_context_type(
       blink::mojom::MixedContentContextType mixed_content_context_type) {
@@ -211,6 +217,12 @@ class NavigationSimulatorImpl : public NavigationSimulator,
   void set_request_context_type(
       blink::mojom::RequestContextType request_context_type) {
     request_context_type_ = request_context_type;
+  }
+
+  // Sets the source location reported for the navigation. Only supported for
+  // renderer-initiated navigations.
+  void set_source_location(network::mojom::SourceLocationPtr source_location) {
+    source_location_ = std::move(source_location);
   }
 
   void set_insecure_request_policy(
@@ -395,7 +407,7 @@ class NavigationSimulatorImpl : public NavigationSimulator,
   bool skip_service_worker_ = false;
   std::optional<url::Origin> initiator_origin_;
   std::string headers_;
-  int load_flags_ = net::LOAD_NORMAL;
+  std::optional<blink::mojom::NavigationType> navigation_type_;
   blink::mojom::MixedContentContextType mixed_content_context_type_ =
       blink::mojom::MixedContentContextType::kBlockable;
   GURL searchable_form_url_;
@@ -403,6 +415,7 @@ class NavigationSimulatorImpl : public NavigationSimulator,
   std::string href_translate_;
   blink::mojom::RequestContextType request_context_type_ =
       blink::mojom::RequestContextType::LOCATION;
+  network::mojom::SourceLocationPtr source_location_;
   blink::mojom::InsecureRequestPolicy insecure_request_policy_ =
       blink::mojom::InsecureRequestPolicy::kLeaveInsecureRequestsAlone;
   std::vector<uint32_t> insecure_navigations_set_;

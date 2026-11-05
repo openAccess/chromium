@@ -12,9 +12,11 @@
 #include "base/functional/callback_helpers.h"
 #include "base/hash/sha1.h"
 #include "base/test/mock_callback.h"
+#include "base/test/protobuf_matchers.h"
 #include "components/sync/base/client_tag_hash.h"
 #include "components/sync/base/collaboration_id.h"
 #include "components/sync/base/data_type.h"
+#include "components/sync/base/time.h"
 #include "components/sync/base/unique_position.h"
 #include "components/sync/protocol/collaboration_metadata.h"
 #include "components/sync/protocol/entity_data.h"
@@ -28,12 +30,14 @@ namespace syncer {
 
 namespace {
 
+using base::test::EqualsProto;
 using sync_pb::CommitResponse;
 using sync_pb::EntitySpecifics;
 using sync_pb::SharingMessageCommitError;
 using sync_pb::SyncEntity;
 using testing::IsEmpty;
 using testing::Not;
+using testing::Optional;
 using testing::SizeIs;
 
 constexpr char kValue[] = "value";
@@ -63,6 +67,17 @@ EntitySpecifics GenerateBookmarkSpecifics(const std::string& url,
                                         syncer::UniquePosition::RandomSuffix())
           .ToProto();
   return specifics;
+}
+
+std::unique_ptr<CommitRequestData> CreateCommitRequestData(
+    std::unique_ptr<EntityData> data) {
+  auto request_data = std::make_unique<CommitRequestData>();
+  request_data->sequence_number = 2;
+  request_data->base_version = 123;
+  request_data->specifics_hash = base::Base64Encode(
+      base::SHA1HashString(data->specifics.SerializeAsString()));
+  request_data->entity = std::move(data);
+  return request_data;
 }
 
 }  // namespace
@@ -366,6 +381,91 @@ TEST_F(CommitContributionImplTest, ShouldPopulateCollaborationId) {
                                               &entity);
 
   EXPECT_EQ(entity.collaboration().collaboration_id(), "collaboration");
+}
+
+// Verifies that `PopulateCommitProto` copies `EntityData::attachment_metadata`
+// into `SyncEntity::attachment` for non-deleted entities.
+TEST_F(CommitContributionImplTest, ShouldPopulateAttachment) {
+  std::unique_ptr<EntityData> data = CreateDefaultPreferenceEntityData();
+  const AttachmentMetadata attachment_metadata =
+      AttachmentMetadata::ForNew("temp_blob_id_123");
+  data->attachment_metadata = attachment_metadata;
+
+  SyncEntity entity;
+  CommitContributionImpl::PopulateCommitProto(
+      PREFERENCES, *CreateCommitRequestData(std::move(data)), &entity);
+
+  EXPECT_TRUE(entity.has_attachment());
+  EXPECT_THAT(entity.attachment(), EqualsProto(attachment_metadata.ToProto()));
+}
+
+// Verifies that `PopulateCommitProto` leaves `SyncEntity::attachment` unset
+// when `EntityData::attachment_metadata` is `std::nullopt`.
+TEST_F(CommitContributionImplTest, ShouldNotPopulateAttachmentWhenUnset) {
+  SyncEntity entity;
+  CommitContributionImpl::PopulateCommitProto(
+      PREFERENCES,
+      *CreateCommitRequestData(CreateDefaultPreferenceEntityData()), &entity);
+
+  EXPECT_FALSE(entity.has_attachment());
+}
+
+// Verifies that `PopulateCommitProto` does not populate
+// `SyncEntity::attachment` for tombstones even if
+// `EntityData::attachment_metadata` is present.
+TEST_F(CommitContributionImplTest, ShouldNotPopulateAttachmentForTombstone) {
+  std::unique_ptr<EntityData> data = CreateDefaultPreferenceEntityData();
+  data->specifics.Clear();
+  ASSERT_TRUE(data->is_deleted());
+  data->attachment_metadata = AttachmentMetadata::ForNew("temp_blob_id_123");
+
+  SyncEntity entity;
+  CommitContributionImpl::PopulateCommitProto(
+      PREFERENCES, *CreateCommitRequestData(std::move(data)), &entity);
+
+  EXPECT_TRUE(entity.deleted());
+  EXPECT_FALSE(entity.has_attachment());
+}
+
+// Verifies that `ProcessCommitResponse` propagates
+// `attachment_modification_time_unix_epoch_millis` from `EntryResponse` into
+// `CommitResponseData::attachment_modification_time`.
+TEST_F(CommitContributionImplTest,
+       ShouldPropagateAttachmentModificationTimeOnCommitResponse) {
+  CommitRequestDataList requests_data;
+  requests_data.push_back(
+      CreateCommitRequestData(CreateDefaultPreferenceEntityData()));
+
+  CommitResponseDataList committed_response_list;
+  CommitContributionImpl contribution(
+      PREFERENCES, sync_pb::DataTypeContext(), std::move(requests_data),
+      base::BindOnce(
+          [](CommitResponseDataList* out_committed,
+             const CommitResponseDataList& committed,
+             const FailedCommitResponseDataList& error_response_list) {
+            *out_committed = committed;
+          },
+          &committed_response_list),
+      /*on_full_commit_failure_callback=*/base::NullCallback(),
+      PassphraseType::kKeystorePassphrase);
+
+  sync_pb::ClientToServerMessage msg;
+  contribution.AddToCommitMessage(&msg);
+
+  sync_pb::ClientToServerResponse response;
+  sync_pb::CommitResponse_EntryResponse* entry =
+      response.mutable_commit()->add_entryresponse();
+  entry->set_response_type(CommitResponse::SUCCESS);
+  entry->set_id_string("server_id");
+  entry->set_version(124);
+  entry->set_attachment_modification_time_unix_epoch_millis(987654321);
+
+  StatusController status;
+  contribution.ProcessCommitResponse(response, &status);
+
+  ASSERT_THAT(committed_response_list, SizeIs(1));
+  EXPECT_THAT(committed_response_list[0].attachment_modification_time,
+              Optional(ProtoTimeToTime(987654321)));
 }
 
 }  // namespace syncer

@@ -20,6 +20,7 @@
 #include "base/time/time.h"
 #include "base/uuid.h"
 #include "chrome/browser/autofill/autofill_entity_data_manager_factory.h"
+#include "chrome/browser/autofill/personal_context_entity_metadata_manager_factory.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -29,6 +30,7 @@
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager_test_util.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/personal_context_entity_metadata_manager.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager_test_util.h"
@@ -39,10 +41,13 @@
 #include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #include "components/autofill/core/browser/test_utils/test_autofill_clock.h"
 #include "components/autofill/core/browser/webdata/autofill_webdata_service.h"
+#include "components/autofill/core/browser/webdata/personal_context/personal_context_entity_metadata_sync_bridge.h"
+#include "components/autofill/core/browser/webdata/personal_context/personal_context_entity_metadata_sync_bridge_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/browsing_data/core/browsing_data_utils.h"
 #include "components/browsing_data/core/counters/browsing_data_counter.h"
 #include "components/browsing_data/core/pref_names.h"
+#include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
 
@@ -60,6 +65,24 @@ class AutofillCounterTest : public InProcessBrowserTest {
   AutofillCounterTest& operator=(const AutofillCounterTest&) = delete;
 
   ~AutofillCounterTest() override = default;
+
+  void SetUpBrowserContextKeyedServices(
+      content::BrowserContext* context) override {
+    InProcessBrowserTest::SetUpBrowserContextKeyedServices(context);
+    // The default `PersonalContextEntityMetadataManager` can't record
+    // suppressions without Sync. The test bridge finishes loading during
+    // browser startup, before the test body runs.
+    autofill::PersonalContextEntityMetadataManagerFactory::GetInstance()
+        ->SetTestingFactory(
+            context,
+            base::BindRepeating(
+                [](content::BrowserContext*) -> std::unique_ptr<KeyedService> {
+                  return std::make_unique<
+                      autofill::PersonalContextEntityMetadataManager>(
+                      autofill::
+                          CreateTestPersonalContextEntityMetadataSyncBridge());
+                }));
+  }
 
   void SetUpOnMainThread() override {
     personal_data_manager_ =
@@ -81,7 +104,8 @@ class AutofillCounterTest : public InProcessBrowserTest {
 
   browsing_data::AutofillCounter GetCounter() {
     return {GetPersonalDataManager(), GetWebDataService(),
-            GetEntityDataManager(), /*sync_service=*/nullptr};
+            GetEntityDataManager(), GetPersonalContextEntityMetadataManager(),
+            /*sync_service=*/nullptr};
   }
 
   // Autocomplete suggestions --------------------------------------------------
@@ -108,8 +132,8 @@ class AutofillCounterTest : public InProcessBrowserTest {
   }
 
   void ClearAutocompleteSuggestions() {
-    web_data_service_->RemoveFormElementsAddedBetween(
-        base::Time(), base::Time::Max());
+    web_data_service_->RemoveFormElementsAddedBetween(base::Time(),
+                                                      base::Time::Max());
   }
 
   // Credit cards --------------------------------------------------------------
@@ -186,6 +210,12 @@ class AutofillCounterTest : public InProcessBrowserTest {
         browser()->GetProfile());
   }
 
+  autofill::PersonalContextEntityMetadataManager*
+  GetPersonalContextEntityMetadataManager() {
+    return autofill::PersonalContextEntityMetadataManagerFactory::GetForProfile(
+        browser()->GetProfile());
+  }
+
   autofill::PersonalDataManager* GetPersonalDataManager() {
     return personal_data_manager_;
   }
@@ -216,6 +246,10 @@ class AutofillCounterTest : public InProcessBrowserTest {
     return counter_value_;
   }
 
+  browsing_data::BrowsingDataCounter::ResultInt GetNumSuppressions() {
+    return num_suppressions_;
+  }
+
   void WaitForResult() {
     std::unique_ptr<browsing_data::BrowsingDataCounter::Result> result =
         future.Take();
@@ -230,6 +264,7 @@ class AutofillCounterTest : public InProcessBrowserTest {
     num_credit_cards_ = autofill_result->num_credit_cards();
     num_addresses_ = autofill_result->num_addresses();
     num_entities_ = autofill_result->num_entities();
+    num_suppressions_ = autofill_result->num_suppressions();
   }
 
  protected:
@@ -252,6 +287,7 @@ class AutofillCounterTest : public InProcessBrowserTest {
   browsing_data::BrowsingDataCounter::ResultInt num_credit_cards_;
   browsing_data::BrowsingDataCounter::ResultInt num_addresses_;
   browsing_data::BrowsingDataCounter::ResultInt num_entities_;
+  browsing_data::BrowsingDataCounter::ResultInt num_suppressions_;
 };
 
 // Tests that we count the correct number of autocomplete suggestions.
@@ -320,13 +356,59 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, Entities) {
   EXPECT_EQ(GetNumEntities(), 1);
 }
 
+// Tests that the counter counts entity suppression metadata in the deletion
+// range, so that the UI does not report "None" when the deletion is not a
+// no-op.
+IN_PROC_BROWSER_TEST_F(AutofillCounterTest, EntitySuppressions) {
+  browsing_data::AutofillCounter counter = GetCounter();
+  counter.Init(browser()->GetProfile()->GetPrefs(),
+               future.GetRepeatingCallback());
+  counter.Restart();
+  WaitForResult();
+  EXPECT_EQ(0, GetNumSuppressions());
+
+  const base::Time suppression_time = base::Time::Now();
+  ASSERT_TRUE(GetPersonalContextEntityMetadataManager()->SuppressEntity(
+      autofill::test::GetPassportEntityInstance()));
+  counter.Restart();
+  WaitForResult();
+  EXPECT_EQ(0, GetCounterValue());
+  EXPECT_EQ(0, GetNumCreditCards());
+  EXPECT_EQ(0, GetNumAddresses());
+  EXPECT_EQ(0, GetNumEntities());
+  // One suppression entry per satisfied merge constraint of the passport.
+  EXPECT_GE(GetNumSuppressions(), 1);
+  const browsing_data::BrowsingDataCounter::ResultInt num_passport_entries =
+      GetNumSuppressions();
+
+  ASSERT_TRUE(GetPersonalContextEntityMetadataManager()->SuppressEntity(
+      autofill::test::GetVehicleEntityInstance()));
+  counter.Restart();
+  WaitForResult();
+  EXPECT_GT(GetNumSuppressions(), num_passport_entries);
+
+  // Suppressions created before the start of the deletion period are not
+  // counted.
+  counter.SetPeriodStartForTesting(suppression_time + base::Hours(1));
+  counter.Restart();
+  WaitForResult();
+  EXPECT_EQ(0, GetNumSuppressions());
+
+  // Once the suppressions are cleared, nothing is counted anymore.
+  counter.SetPeriodStartForTesting(base::Time());
+  ASSERT_TRUE(GetPersonalContextEntityMetadataManager()->ClearSuppressions(
+      base::Time(), base::Time::Max()));
+  counter.Restart();
+  WaitForResult();
+  EXPECT_EQ(0, GetNumSuppressions());
+}
+
 // Tests that we count the correct number of credit cards.
 IN_PROC_BROWSER_TEST_F(AutofillCounterTest, CreditCards) {
   Profile* profile = browser()->GetProfile();
   browsing_data::AutofillCounter counter = GetCounter();
 
-  counter.Init(profile->GetPrefs(),
-               future.GetRepeatingCallback());
+  counter.Init(profile->GetPrefs(), future.GetRepeatingCallback());
   counter.Restart();
   WaitForResult();
 
@@ -368,8 +450,7 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, Addresses) {
   Profile* profile = browser()->GetProfile();
   browsing_data::AutofillCounter counter = GetCounter();
 
-  counter.Init(profile->GetPrefs(),
-               future.GetRepeatingCallback());
+  counter.Init(profile->GetPrefs(), future.GetRepeatingCallback());
   counter.Restart();
 
   WaitForResult();
@@ -425,8 +506,7 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, ComplexResult) {
   Profile* profile = browser()->GetProfile();
   browsing_data::AutofillCounter counter = GetCounter();
 
-  counter.Init(profile->GetPrefs(),
-               future.GetRepeatingCallback());
+  counter.Init(profile->GetPrefs(), future.GetRepeatingCallback());
   counter.Restart();
 
   WaitForResult();
@@ -438,7 +518,7 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, ComplexResult) {
 
 // Tests that the counting respects time ranges.
 IN_PROC_BROWSER_TEST_F(AutofillCounterTest, TimeRanges) {
-  autofill::TestAutofillClock test_clock;
+  autofill::TestAutofillClockDeprecated test_clock;
   const base::Time kTime1 = base::Time::FromSecondsSinceUnixEpoch(25);
   test_clock.SetNow(kTime1);
   AddAutocompleteSuggestion("email", "Email:", "example@example.com");
@@ -478,8 +558,7 @@ IN_PROC_BROWSER_TEST_F(AutofillCounterTest, TimeRanges) {
   Profile* profile = browser()->GetProfile();
   browsing_data::AutofillCounter counter = GetCounter();
 
-  counter.Init(profile->GetPrefs(),
-               future.GetRepeatingCallback());
+  counter.Init(profile->GetPrefs(), future.GetRepeatingCallback());
 
   for (size_t i = 0; i < std::size(test_cases); i++) {
     SCOPED_TRACE(base::StringPrintf("Test case %zu", i));

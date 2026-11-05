@@ -15,7 +15,35 @@ if (media_use_symphonia_decoder) {
     sources = [ "symphonia_decoder_bridge.rs" ]
     cxx_bindings = [ "symphonia_decoder_bridge.rs" ]
     visibility = [ ":*" ]
+    deps = [
+      "//third_party/rust/symphonia_bundle_flac/v0_6:lib",
+      "//third_party/rust/symphonia_bundle_mp3/v0_6:lib",
+      "//third_party/rust/symphonia_codec_pcm/v0_6:lib",
+      "//third_party/rust/symphonia_codec_vorbis/v0_6:lib",
+      "//third_party/rust/symphonia_core/v0_6:lib",
+    ]
+  }
+}
+
+if (media_use_symphonia_demuxer) {
+  source_set("symphonia_source_bridge") {
+    sources = [ "symphonia_source_bridge.h" ]
+    visibility = [ ":*" ]
+    public_deps = [
+      "//base",
+      "//build/rust:cxx_cppdeps",
+    ]
+  }
+
+  rust_static_library("symphonia_demuxer_bridge") {
+    allow_unsafe = true
+
+    crate_root = "symphonia_demuxer_bridge.rs"
+    sources = [ "symphonia_demuxer_bridge.rs" ]
+    cxx_bindings = [ "symphonia_demuxer_bridge.rs" ]
+    visibility = [ ":*" ]
     deps = [ "//third_party/rust/symphonia/v0_6:lib" ]
+    public_deps = [ ":symphonia_source_bridge" ]
   }
 }
 
@@ -162,6 +190,16 @@ source_set("filters") {
     deps += [ ":symphonia_decoder_bridge" ]
   }
 
+  if (media_use_symphonia_demuxer) {
+    sources += [
+      "symphonia_data_source_bridge.cc",
+      "symphonia_data_source_bridge.h",
+      "symphonia_demuxer_stream.cc",
+      "symphonia_demuxer_stream.h",
+    ]
+    deps += [ ":symphonia_demuxer_bridge" ]
+  }
+
   if (media_use_libvpx) {
     sources += [
       "vpx_video_decoder.cc",
@@ -174,6 +212,8 @@ source_set("filters") {
     sources += [
       "dav1d_video_decoder.cc",
       "dav1d_video_decoder.h",
+      "davxd_video_decoder_base.cc",
+      "davxd_video_decoder_base.h",
     ]
     deps += [ "//third_party/dav1d" ]
   }
@@ -362,12 +402,6 @@ source_set("unit_tests") {
     }
   }
 
-  # libvpx for running vpx test on chromecast doesn't support high bit depth.
-  # This may cause some unit tests failure. See b/65382374 for further context.
-  if (is_castos) {
-    defines = [ "LIBVPX_NO_HIGH_BIT_DEPTH" ]
-  }
-
   if (media_use_ffmpeg) {
     sources += [
       "audio_decoder_unittest.cc",
@@ -399,6 +433,7 @@ source_set("unit_tests") {
 
   if (media_use_libvpx) {
     sources += [ "vpx_video_decoder_unittest.cc" ]
+    deps += [ "//third_party/libvpx:libvpx_buildflags" ]
   }
 
   if (enable_dav1d_decoder) {
@@ -444,8 +479,16 @@ source_set("unit_tests") {
 
   # NOTE: if more rust tests that are not gated on Symphonia being enabled are
   # added to filters, this conditional can be dropped.
-  if (media_use_symphonia) {
+  if (media_use_symphonia_decoder) {
+    sources += [ "symphonia_audio_decoder_unittest.cc" ]
     deps += [ ":rust_unittests" ]
+  }
+  if (media_use_symphonia_demuxer) {
+    sources += [
+      "symphonia_data_source_bridge_unittest.cc",
+      "symphonia_demuxer_stream_unittest.cc",
+    ]
+    deps += [ ":symphonia_demuxer_bridge_unittests" ]
   }
 
   if (media_use_ffmpeg) {
@@ -474,6 +517,20 @@ if (media_use_symphonia_decoder) {
       ":symphonia_decoder_bridge",
       "//testing/rust_gtest_interop",
       "//third_party/rust/num_traits/v0_2:lib",
+      "//third_party/rust/symphonia/v0_6:lib",
+    ]
+  }
+}
+
+if (media_use_symphonia_demuxer) {
+  rust_static_library("symphonia_demuxer_bridge_unittests") {
+    testonly = true
+    is_gtest_unittests = true
+    crate_root = "symphonia_demuxer_bridge_unittest.rs"
+    sources = [ "symphonia_demuxer_bridge_unittest.rs" ]
+    deps = [
+      ":symphonia_demuxer_bridge",
+      "//testing/rust_gtest_interop",
       "//third_party/rust/symphonia/v0_6:lib",
     ]
   }

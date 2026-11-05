@@ -35,6 +35,9 @@ class CommandLine;
 class HighResolutionTimerManager;
 class SingleThreadTaskRunner;
 class SystemMonitor;
+namespace responsiveness {
+class Watcher;
+}  // namespace responsiveness
 }  // namespace base
 
 namespace data_decoder {
@@ -90,18 +93,14 @@ class ScreenlockMonitor;
 class SmsProvider;
 class SpeechRecognitionManagerImpl;
 class StartupTaskRunner;
+class BackgroundTracingManagerImpl;
 class TracingControllerImpl;
 }  // namespace content
 namespace tracing {
 class StartupTracingController;
-class BackgroundTracingManager;
 }
 namespace content {
 struct MainFunctionParams;
-
-namespace responsiveness {
-class Watcher;
-}  // namespace responsiveness
 
 #if BUILDFLAG(IS_ANDROID)
 class ScreenOrientationDelegate;
@@ -170,9 +169,6 @@ class CONTENT_EXPORT BrowserMainLoop {
   void ShutdownThreadsAndCleanUp();
 
   int GetResultCode() const { return result_code_; }
-
-  // Needed by some embedders.
-  void SetResultCode(int code) { result_code_ = code; }
 
   media::AudioManager* audio_manager() const;
   bool AudioServiceOutOfProcess() const;
@@ -379,8 +375,7 @@ class CONTENT_EXPORT BrowserMainLoop {
   std::unique_ptr<content::TracingControllerImpl> tracing_controller_;
   std::unique_ptr<tracing::StartupTracingController>
       startup_tracing_controller_;
-  std::unique_ptr<tracing::BackgroundTracingManager>
-      background_tracing_manager_;
+  std::unique_ptr<BackgroundTracingManagerImpl> background_tracing_manager_;
 #if !BUILDFLAG(IS_ANDROID)
   std::unique_ptr<viz::HostFrameSinkManager> host_frame_sink_manager_;
 
@@ -394,7 +389,7 @@ class CONTENT_EXPORT BrowserMainLoop {
   // END Members initialized in |PostCreateThreads()| --------------------------
 
   // Members initialized in |PreMainMessageLoopRun()| --------------------------
-  scoped_refptr<responsiveness::Watcher> responsiveness_watcher_;
+  scoped_refptr<base::responsiveness::Watcher> responsiveness_watcher_;
   base::CallbackListSubscription idle_callback_subscription_;
 
   // Members not associated with a specific phase.

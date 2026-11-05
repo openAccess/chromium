@@ -46,6 +46,21 @@
   overflow: hidden;
 }
 
+.card-image-preview {
+  background: var(--color-sys-surface-variant);
+  display: flex;
+  height: 80px;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.preview-image {
+  height: 100%;
+  min-width: 0;
+  object-fit: contain;
+  width: 100%;
+}
+
 .card-snippet {
   padding-block: 12px;
   padding-inline: 16px;
@@ -205,7 +220,7 @@ cr-input {
   box-shadow: var(--cr-elevation-2);
   box-sizing: border-box;
   inset-inline-start: 0;
-  max-height: 140px;
+  max-height: 120px;
   overflow-y: auto;
   position: absolute;
   top: calc(100% + 4px);
@@ -219,8 +234,8 @@ cr-input {
   font-size: 12px;
   line-height: 16px;
   overflow: hidden;
-  padding-block: 8px;
-  padding-inline: 12px;
+  padding-block: 5px;
+  padding-inline: 8px;
   text-overflow: ellipsis;
   user-select: none;
   white-space: nowrap;
@@ -290,8 +305,8 @@ cr-input {
 }
 
 .tag-suggestions {
-  max-width: 200px;
-  min-width: 130px;
+  max-width: 160px;
+  min-width: 100%;
   width: max-content;
 }
 

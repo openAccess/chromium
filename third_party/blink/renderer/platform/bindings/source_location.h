@@ -10,7 +10,6 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
@@ -58,6 +57,7 @@ class PLATFORM_EXPORT SourceLocation final : public GarbageCollected<SourceLocat
   bool IsUnknown() const {
     return url_.IsNull() && !script_id_ && !line_number_;
   }
+  bool IsOpaque() const { return is_opaque_; }
   const String& Url() const { return url_; }
   const String& Function() const { return function_; }
   unsigned LineNumber() const { return line_number_; }
@@ -104,6 +104,7 @@ class PLATFORM_EXPORT SourceLocation final : public GarbageCollected<SourceLocat
   int char_position_;
   std::unique_ptr<v8_inspector::V8StackTrace> stack_trace_;
   int script_id_;
+  bool is_opaque_ = false;
 };
 
 // Zero lineNumber and columnNumber mean unknown. Captures current stack

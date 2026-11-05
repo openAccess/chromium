@@ -59,8 +59,9 @@ void ThemeInstalledInfoBarDelegate::Create(
     const std::string& theme_id,
     std::unique_ptr<ThemeService::ThemeReinstaller> prev_theme_reinstaller) {
   // Create the new infobar.
-  std::unique_ptr<infobars::InfoBar> new_infobar(
-      CreateConfirmInfoBar(base::WrapUnique<ConfirmInfoBarDelegate>(
+  std::unique_ptr<infobars::InfoBar> new_infobar(CreateConfirmInfoBar(
+      ConfirmInfoBarCreationAllowlist::GetPassKeyForMigration(),
+      base::WrapUnique<ConfirmInfoBarDelegate>(
           new ThemeInstalledInfoBarDelegate(
               theme_service, theme_name, theme_id,
               std::move(prev_theme_reinstaller)))));
@@ -126,7 +127,7 @@ int ThemeInstalledInfoBarDelegate::GetButtons() const {
 
 std::u16string ThemeInstalledInfoBarDelegate::GetButtonLabel(
     InfoBarButton button) const {
-  DCHECK_EQ(BUTTON_CANCEL, button);
+  CHECK_EQ(BUTTON_CANCEL, button, base::NotFatalUntil::M161);
   return l10n_util::GetStringUTF16(IDS_THEME_INSTALL_INFOBAR_UNDO_BUTTON);
 }
 

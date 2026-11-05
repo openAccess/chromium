@@ -19,7 +19,9 @@
 void JsOptimizationsInfoBarDelegate::Create(
     infobars::ContentInfoBarManager* infobar_manager) {
   auto delegate = std::make_unique<JsOptimizationsInfoBarDelegate>();
-  infobar_manager->AddInfoBar(CreateConfirmInfoBar(std::move(delegate)));
+  infobar_manager->AddInfoBar(CreateConfirmInfoBar(
+      ConfirmInfoBarCreationAllowlist::GetPassKeyForMigration(),
+      std::move(delegate)));
 }
 
 JsOptimizationsInfoBarDelegate::JsOptimizationsInfoBarDelegate() = default;
@@ -47,7 +49,7 @@ int JsOptimizationsInfoBarDelegate::GetButtons() const {
 
 std::u16string JsOptimizationsInfoBarDelegate::GetButtonLabel(
     InfoBarButton button) const {
-  DCHECK_EQ(BUTTON_OK, button);
+  CHECK_EQ(BUTTON_OK, button, base::NotFatalUntil::M162);
   return l10n_util::GetStringUTF16(IDS_JS_OPTIMIZATION_SITE_RELOAD_BUTTON);
 }
 

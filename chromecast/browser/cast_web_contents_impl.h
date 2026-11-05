@@ -33,7 +33,6 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/media_playback_renderer_type.mojom.h"
-#include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
 #include "third_party/blink/public/mojom/favicon/favicon_url.mojom-forward.h"
@@ -84,6 +83,7 @@ class CastWebContentsImpl : public CastWebContents,
   void ClosePage() override;
   void Stop(int error_code) override;
   void SetWebVisibilityAndPaint(bool visible) override;
+  bool HasRendererFeature(std::string_view feature_name) const override;
   bool TryBindReceiver(mojo::GenericPendingReceiver& receiver) override;
   InterfaceBundle* local_interfaces() override;
   void BlockMediaLoading(bool blocked) override;
@@ -170,7 +170,6 @@ class CastWebContentsImpl : public CastWebContents,
   PageState last_state_;
   shell::RemoteDebuggingServer* const remote_debugging_server_;
   std::unique_ptr<CastMediaBlocker> media_blocker_;
-  std::optional<std::vector<std::string>> activity_url_filter_;
 
   // Retained so that this observer can be removed before being destroyed:
   content::RenderProcessHost* main_process_host_;

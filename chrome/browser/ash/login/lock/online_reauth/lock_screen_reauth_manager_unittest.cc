@@ -19,7 +19,7 @@
 #include "base/values.h"
 #include "chrome/browser/ash/login/saml/mock_lock_handler.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
-#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -138,6 +138,7 @@ void LockScreenReauthManagerTest::SetUp() {
 }
 
 void LockScreenReauthManagerTest::TearDown() {
+  DestroyLockScreenReauthManager();
   ash_test_helper_.TearDown();
   proximity_auth::ScreenlockBridge::Get()->SetLockHandler(nullptr);
 }
@@ -145,7 +146,8 @@ void LockScreenReauthManagerTest::TearDown() {
 void LockScreenReauthManagerTest::CreateLockScreenReauthManager() {
   DestroyLockScreenReauthManager();
   manager_ = std::make_unique<LockScreenReauthManager>(
-      TestingBrowserProcess::GetGlobal()->local_state(), primary_profile_);
+      TestingBrowserProcess::GetGlobal()->local_state(), primary_profile_,
+      IdentityManagerFactory::GetForProfile(primary_profile_));
   manager_->SetClockForTesting(test_environment_.GetMockClock());
   manager_->SetGetAuthfactorsConfigurationCallbackForTesting(
       auth_configuration_exit_future.GetRepeatingCallback());

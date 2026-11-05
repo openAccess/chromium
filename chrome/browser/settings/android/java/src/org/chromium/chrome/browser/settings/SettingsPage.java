@@ -5,16 +5,23 @@
 package org.chromium.chrome.browser.settings;
 
 import android.app.Activity;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.native_page.BasicNativePage;
 import org.chromium.chrome.browser.ui.native_page.NativePageHost;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandlerRegistry;
 import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
+
+import java.util.Objects;
+import java.util.function.Function;
 
 /** A native page holding the Chrome settings UI in a tab. */
 @NullMarked
@@ -22,14 +29,20 @@ public class SettingsPage extends BasicNativePage {
     /** Delegate to embed settings fragments into the settings page. */
     public interface FragmentDelegate {
         /**
-         * Initialize settings fragment inside the container with an optional initial URL.
+         * Initialize settings fragment inside the container with an optional initial URL and
+         * edge-to-edge pad adjuster generator.
          *
          * @param containerView Parent view container.
          * @param initialUrl Initial settings URL (e.g. restored tab URL
          *     "chrome://settings/language"). If an empty string is supplied, the URL resolves to
          *     "chrome://settings".
+         * @param padAdjusterGenerator Function that creates an {@link EdgeToEdgePadAdjuster} for a
+         *     view.
          */
-        void initSettings(ViewGroup containerView, String initialUrl);
+        void initSettings(
+                ViewGroup containerView,
+                String initialUrl,
+                Function<View, @Nullable EdgeToEdgePadAdjuster> padAdjusterGenerator);
 
         /**
          * Update displayed fragment for a new chrome://settings URL.
@@ -45,6 +58,7 @@ public class SettingsPage extends BasicNativePage {
     private final String mTitle;
     private final FrameLayout mContentView;
     private final FragmentDelegate mFragmentDelegate;
+    private boolean mIgnoreInitialUrlUpdate = true;
 
     /**
      * Create a new instance of the settings page with back press handling, and an initial URL.
@@ -69,13 +83,14 @@ public class SettingsPage extends BasicNativePage {
 
         mTitle = activity.getString(R.string.settings);
         mContentView = new FrameLayout(activity);
+        mContentView.setBackgroundColor(getBackgroundColor());
 
         mFragmentDelegate = fragmentDelegate;
-        mFragmentDelegate.initSettings(mContentView, url);
+        mFragmentDelegate.initSettings(mContentView, url, host::createEdgeToEdgePadAdjuster);
 
         initWithView(mContentView);
         setBackPressHandler(backPressHandler, backPressHandlerRegistry);
-        updateForUrl(url);
+        super.updateForUrl(url);
     }
 
     @Override
@@ -90,8 +105,30 @@ public class SettingsPage extends BasicNativePage {
 
     @Override
     public void updateForUrl(String url) {
+        // NativePageFactory calls this with the construction URL right after construction. That
+        // URL was already given to initSettings(), and re-applying it would reset a settings page
+        // restored across an activity recreation. https://crbug.com/578622279
+        boolean redundant = mIgnoreInitialUrlUpdate && Objects.equals(getUrl(), url);
+        mIgnoreInitialUrlUpdate = false;
         super.updateForUrl(url);
-        mFragmentDelegate.updateForUrl(url);
+        if (!redundant) mFragmentDelegate.updateForUrl(url);
+    }
+
+    @Override
+    public void reload() {
+        // Tab#reload() hands native pages to this method instead of reloading the WebContents,
+        // so re-apply the current URL, which re-creates the settings page shown for it.
+        updateForUrl(getUrl());
+    }
+
+    @Override
+    public boolean supportsEdgeToEdgeOnBottom() {
+        return true;
+    }
+
+    @Override
+    public int getBackgroundColor() {
+        return SemanticColorUtils.getSettingsBackgroundColor(mHost.getContext());
     }
 
     @Override

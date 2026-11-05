@@ -40,12 +40,15 @@
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/password_manager/chrome_webauthn_credentials_delegate.h"
 #include "chrome/browser/password_manager/chrome_webauthn_credentials_delegate_factory.h"
+#include "chrome/browser/ui/passwords/ui_utils.h"
+#include "chrome/browser/ui/webauthn/webauthn_ui_helpers.h"
 #include "chrome/browser/webauthn/authenticator_reference.h"
 #include "chrome/browser/webauthn/authenticator_request_dialog_controller.h"
 #include "chrome/browser/webauthn/authenticator_transport.h"
 #include "chrome/browser/webauthn/webauthn_pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/password_manager/core/browser/passkey_credential.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/prefs/pref_service.h"
@@ -325,9 +328,7 @@ class RepeatingValueCallbackReceiver {
     return future_.template GetRepeatingCallback<ArgumentType>();
   }
 
-  Value WaitForResult() {
-    return future_.Take();
-  }
+  Value WaitForResult() { return future_.Take(); }
 
  private:
   base::test::TestFuture<Value> future_{base::test::TestFutureMode::kQueue};
@@ -2142,33 +2143,33 @@ TEST_F(AuthenticatorRequestDialogControllerTest, BluetoothPermissionPrompt) {
   // QR code.
   for (const BleStatus ble_status :
        {BleStatus::kOn, BleStatus::kPermissionDenied}) {
-      SCOPED_TRACE(::testing::Message()
-                   << "ble_status=" << static_cast<int>(ble_status));
+    SCOPED_TRACE(::testing::Message()
+                 << "ble_status=" << static_cast<int>(ble_status));
 
-      auto model =
-          base::MakeRefCounted<AuthenticatorRequestDialogModel>(main_rfh());
-      AuthenticatorRequestDialogController controller(model.get(), main_rfh());
-      controller.set_cable_transport_info("fido:/1234");
-      TransportAvailabilityInfo transports_info;
-      transports_info.ble_status = ble_status;
-      transports_info.request_type = device::FidoRequestType::kGetAssertion;
-      transports_info.available_transports = {
-          AuthenticatorTransport::kHybrid,
-          AuthenticatorTransport::kUsbHumanInterfaceDevice};
-      UpdateModelBeforeStartFlow(model.get(), transports_info,
-                                 /*is_off_the_record=*/false);
-      controller.StartFlow(std::move(transports_info), {});
+    auto model =
+        base::MakeRefCounted<AuthenticatorRequestDialogModel>(main_rfh());
+    AuthenticatorRequestDialogController controller(model.get(), main_rfh());
+    controller.set_cable_transport_info("fido:/1234");
+    TransportAvailabilityInfo transports_info;
+    transports_info.ble_status = ble_status;
+    transports_info.request_type = device::FidoRequestType::kGetAssertion;
+    transports_info.available_transports = {
+        AuthenticatorTransport::kHybrid,
+        AuthenticatorTransport::kUsbHumanInterfaceDevice};
+    UpdateModelBeforeStartFlow(model.get(), transports_info,
+                               /*is_off_the_record=*/false);
+    controller.StartFlow(std::move(transports_info), {});
 
-      std::ranges::find_if(model->mechanisms, [](const auto& m) -> bool {
-        return std::holds_alternative<
-            AuthenticatorRequestDialogModel::Mechanism::Hybrid>(m.type);
-      })->callback.Run();
+    std::ranges::find_if(model->mechanisms, [](const auto& m) -> bool {
+      return std::holds_alternative<
+          AuthenticatorRequestDialogModel::Mechanism::Hybrid>(m.type);
+    })->callback.Run();
 
-      if (ble_status == BleStatus::kPermissionDenied) {
-        EXPECT_EQ(model->step(), Step::kBlePermissionMac);
-      } else {
-        EXPECT_EQ(model->step(), Step::kCableV2QRCode);
-      }
+    if (ble_status == BleStatus::kPermissionDenied) {
+      EXPECT_EQ(model->step(), Step::kBlePermissionMac);
+    } else {
+      EXPECT_EQ(model->step(), Step::kCableV2QRCode);
+    }
   }
 }
 #endif
@@ -2932,7 +2933,7 @@ TEST_F(AuthenticatorRequestDialogControllerTest, PopulatePasswordsWithOrigin) {
   exact_match->username_value = u"user_exact";
   exact_match->url = GURL("https://example.com/login");
   exact_match->signon_realm = "https://example.com/";
-  exact_match->match_type = password_manager::PasswordForm::MatchType::kExact;
+  exact_match->match_type = affiliations::MatchType::kExact;
   passwords.push_back(std::move(exact_match));
 
   // 2. PSL Match
@@ -2940,7 +2941,7 @@ TEST_F(AuthenticatorRequestDialogControllerTest, PopulatePasswordsWithOrigin) {
   psl_match->username_value = u"user_psl";
   psl_match->url = GURL("https://sub.example.com/login");
   psl_match->signon_realm = "https://sub.example.com/";
-  psl_match->match_type = password_manager::PasswordForm::MatchType::kPSL;
+  psl_match->match_type = affiliations::MatchType::kPSL;
   passwords.push_back(std::move(psl_match));
 
   // Start Flow
@@ -2983,4 +2984,24 @@ TEST_F(AuthenticatorRequestDialogControllerTest, PopulatePasswordsWithOrigin) {
   auto origin_psl = get_origin(mech_psl);
   EXPECT_TRUE(origin_psl.has_value());
   EXPECT_EQ(origin_psl.value(), u"sub.example.com");
+}
+
+TEST(WebAuthnUiHelpersTest, GetProviderIcon) {
+  using device::AuthenticatorType;
+
+  EXPECT_EQ(webauthn_ui_helpers::GetProviderIcon(AuthenticatorType::kEnclave),
+            &GooglePasswordManagerVectorIcon());
+  EXPECT_EQ(
+      webauthn_ui_helpers::GetProviderIcon(AuthenticatorType::kICloudKeychain),
+      &kApplePasswordsColorCustomIcon);
+  EXPECT_EQ(webauthn_ui_helpers::GetProviderIcon(AuthenticatorType::kWinNative),
+            &kWindowsHelloColorCustomIcon);
+  EXPECT_EQ(webauthn_ui_helpers::GetProviderIcon(AuthenticatorType::kTouchID),
+            &vector_icons::kProductRefreshIcon);
+
+  // Other sources have no provider icon.
+  EXPECT_EQ(webauthn_ui_helpers::GetProviderIcon(AuthenticatorType::kPhone),
+            nullptr);
+  EXPECT_EQ(webauthn_ui_helpers::GetProviderIcon(AuthenticatorType::kOther),
+            nullptr);
 }

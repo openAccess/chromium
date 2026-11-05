@@ -321,6 +321,13 @@ struct GPU_GLES2_EXPORT ContextState {
   // parameters user values; otherwise, set them to 0.
   void UpdateUnpackParameters() const;
 
+  // Resets UNPACK_ROW_LENGTH and UNPACK_IMAGE_HEIGHT in the real driver to
+  // their initial values (0) for a compressed texture upload; pixel storage
+  // modes are ignored when decoding a compressed texture image (ES 3.2
+  // sec. 8.7). No-op when the driver is not ES3-capable, like
+  // UpdateUnpackParameters(), which restores the tracked values afterwards.
+  void SetUnpackParametersForCompressedTexImage() const;
+
   void SetMaxWindowRectangles(size_t max);
   size_t GetMaxWindowRectangles() const;
   void SetWindowRectangles(GLenum mode,
@@ -394,7 +401,6 @@ struct GPU_GLES2_EXPORT ContextState {
   bool pack_reverse_row_order = false;
   bool ignore_cached_state = false;
 
-  mutable bool fbo_binding_for_scissor_workaround_dirty = false;
   mutable bool stencil_state_changed_since_validation = true;
 
   GLuint current_draw_framebuffer_client_id = 0;

@@ -22,7 +22,6 @@
 #include "base/memory/raw_ref.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/download/download_prefs.h"
@@ -34,6 +33,7 @@
 #include "chrome/browser/web_applications/locks/app_lock.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "components/application_locale_storage/application_locale_storage.h"
@@ -69,7 +69,8 @@ ash::OnDeviceToServerSpeechRecognitionFallbackReason GetFallbackReason(
         kEnforcedByFlag;
   }
 
-  DCHECK_NE(availability, ash::OnDeviceRecognitionAvailability::kAvailable);
+  CHECK_NE(availability, ash::OnDeviceRecognitionAvailability::kAvailable,
+           base::NotFatalUntil::M162);
   switch (availability) {
     case ash::OnDeviceRecognitionAvailability::kSodaNotAvailable:
       return ash::OnDeviceToServerSpeechRecognitionFallbackReason::
@@ -136,12 +137,12 @@ ProjectorClientImpl::GetSpeechRecognitionAvailability() const {
   availability.use_on_device = true;
   availability.on_device_availability = SpeechRecognitionRecognizerClientImpl::
       GetOnDeviceSpeechRecognitionAvailability(
-          application_locale_storage_->Get());
+          std::string(application_locale_storage_->GetTag().tag_string()));
   availability.server_based_availability =
       SpeechRecognitionRecognizerClientImpl::
           GetServerBasedRecognitionAvailability(
-              GetLocaleOrLanguageForServerSideRecognition(
-                  application_locale_storage_->Get()));
+              GetLocaleOrLanguageForServerSideRecognition(std::string(
+                  application_locale_storage_->GetTag().tag_string())));
 
   if (ash::features::ShouldForceEnableServerSideSpeechRecognition() ||
       (availability.on_device_availability !=
@@ -156,10 +157,11 @@ ProjectorClientImpl::GetSpeechRecognitionAvailability() const {
 
 void ProjectorClientImpl::StartSpeechRecognition() {
   const auto availability = GetSpeechRecognitionAvailability();
-  DCHECK(availability.IsAvailable());
-  DCHECK_EQ(speech_recognizer_.get(), nullptr);
+  CHECK(availability.IsAvailable(), base::NotFatalUntil::M162);
+  CHECK_EQ(speech_recognizer_.get(), nullptr, base::NotFatalUntil::M162);
   recognizer_status_ = SPEECH_RECOGNIZER_OFF;
-  const std::string& app_locale = application_locale_storage_->Get();
+  const std::string app_locale(
+      application_locale_storage_->GetTag().tag_string());
   const std::string locale =
       availability.use_on_device
           ? app_locale
@@ -200,7 +202,7 @@ bool ProjectorClientImpl::GetBaseStoragePath(base::FilePath* result) const {
 
   if (ash::ProjectorController::AreExtendedProjectorFeaturesDisabled()) {
     auto* profile = ProfileManager::GetActiveUserProfile();
-    DCHECK(profile);
+    CHECK(profile, base::NotFatalUntil::M162);
 
     DownloadPrefs* download_prefs = DownloadPrefs::FromBrowserContext(
         ProfileManager::GetActiveUserProfile());
@@ -208,7 +210,7 @@ bool ProjectorClientImpl::GetBaseStoragePath(base::FilePath* result) const {
     return true;
   }
 
-  *result = ProjectorDriveFsProvider::GetDriveFsMountPointPath();
+  *result = ProjectorDriveFsProvider::GetDriveFsMountPointPath(account_id_);
   return true;
 }
 
@@ -222,11 +224,11 @@ bool ProjectorClientImpl::IsDriveFsMounted() const {
     // folder for Projector storage.
     return true;
   }
-  return ProjectorDriveFsProvider::IsDriveFsMounted();
+  return ProjectorDriveFsProvider::IsDriveFsMounted(account_id_);
 }
 
 bool ProjectorClientImpl::IsDriveFsMountFailed() const {
-  return ProjectorDriveFsProvider::IsDriveFsMountFailed();
+  return ProjectorDriveFsProvider::IsDriveFsMountFailed(account_id_);
 }
 
 void ProjectorClientImpl::OpenProjectorApp() const {
@@ -273,7 +275,7 @@ void ProjectorClientImpl::OnSpeechResult(
     const std::u16string& text,
     bool is_final,
     const std::optional<media::SpeechRecognitionResult>& full_result) {
-  DCHECK(full_result.has_value());
+  CHECK(full_result.has_value(), base::NotFatalUntil::M162);
   controller_->OnTranscription(full_result.value());
 }
 
@@ -340,15 +342,24 @@ void ProjectorClientImpl::OnUserSessionStarted(bool is_primary_user) {
                           base::Unretained(this)));
 }
 
-void ProjectorClientImpl::MaybeSwitchDriveIntegrationServiceObservation() {
+void ProjectorClientImpl::MaybeSwitchDriveIntegrationServiceObservation(
+    const AccountId& account_id) {
   drive::DriveIntegrationService* const service =
-      ProjectorDriveFsProvider::GetActiveDriveIntegrationService();
-  if (!service || service == drive_observation_.GetSource()) {
+      account_id.is_valid()
+          ? ProjectorDriveFsProvider::GetDriveIntegrationService(account_id)
+          : nullptr;
+  if (account_id_ == account_id && service == drive_observation_.GetSource()) {
     return;
   }
 
+  // The ash::ProjectorClient methods below are called from //ash with no
+  // account, so remember whose DriveFS this is.
+  account_id_ = account_id;
+
   drive_observation_.Reset();
-  drive_observation_.Observe(service);
+  if (service) {
+    drive_observation_.Observe(service);
+  }
 }
 
 void ProjectorClientImpl::SpeechRecognitionEnded(bool forced) {

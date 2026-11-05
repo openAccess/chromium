@@ -22,6 +22,8 @@ import org.chromium.chrome.browser.password_manager.PasswordManagerResourceProvi
 import org.chromium.chrome.browser.touch_to_fill.common.TouchToFillUtil;
 import org.chromium.chrome.browser.touch_to_fill.password_generation.TouchToFillPasswordGenerationCoordinator.GenerationCallback;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
 
 /**
  * This class is responsible for rendering the password generation bottom sheet. It is a View in
@@ -29,6 +31,11 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
  */
 @NullMarked
 class TouchToFillPasswordGenerationView implements BottomSheetContent {
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder()
+                    .setUserCritical(UserCriticalFeature.TOUCH_TO_FILL_PASSWORD_GENERATION)
+                    .build();
+
     private final View mContent;
     private final Context mContext;
     private final TextView mPasswordView;
@@ -124,6 +131,11 @@ class TouchToFillPasswordGenerationView implements BottomSheetContent {
     public void destroy() {}
 
     @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
+    }
+
+    @Override
     public int getPriority() {
         return BottomSheetContent.ContentPriority.HIGH;
     }
@@ -131,11 +143,6 @@ class TouchToFillPasswordGenerationView implements BottomSheetContent {
     @Override
     public boolean swipeToDismissEnabled() {
         return false;
-    }
-
-    @Override
-    public String getSheetContentDescription(Context context) {
-        return context.getString(R.string.password_generation_bottom_sheet_content_description);
     }
 
     @Override
@@ -163,5 +170,10 @@ class TouchToFillPasswordGenerationView implements BottomSheetContent {
     @Override
     public float getFullHeightRatio() {
         return HeightMode.WRAP_CONTENT;
+    }
+
+    @Override
+    public boolean showHandlebar() {
+        return true;
     }
 }

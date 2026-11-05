@@ -33,7 +33,7 @@ public class WindowFocusSupplier
             ActivityLifecycleDispatcher activityLifecycleDispatcher, WindowAndroid windowAndroid) {
         WeakReference<Activity> activityRef = windowAndroid.getActivity();
         Activity activity = activityRef != null ? activityRef.get() : null;
-        boolean initialFocus = activity != null && activity.getWindow().isActive();
+        boolean initialFocus = activity != null && activity.hasWindowFocus();
         mSupplier = ObservableSuppliers.createNonNull(initialFocus);
         mActivityLifecycleDispatcher = activityLifecycleDispatcher;
         mActivityLifecycleDispatcher.register(this);
@@ -45,12 +45,12 @@ public class WindowFocusSupplier
     }
 
     @Override
-    public Boolean addObserver(Callback<Boolean> observer, int behavior) {
+    public Boolean addObserver(Callback<? super Boolean> observer, int behavior) {
         return mSupplier.addObserver(observer, behavior);
     }
 
     @Override
-    public void removeObserver(Callback<Boolean> observer) {
+    public void removeObserver(Callback<? super Boolean> observer) {
         mSupplier.removeObserver(observer);
     }
 

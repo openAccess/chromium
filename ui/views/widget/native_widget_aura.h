@@ -10,6 +10,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "build/build_config.h"
 #include "ui/aura/client/drag_drop_delegate.h"
 #include "ui/aura/client/focus_change_observer.h"
@@ -34,14 +35,15 @@ namespace aura {
 class Window;
 }
 
+namespace wm {
+class TransientWindowManager;
+}
+
 namespace views {
 
 class DropHelper;
 class FocusManagerEventHandler;
 class TooltipManagerAura;
-namespace legacy {
-class WindowReorderer;
-}
 class WindowReorderer;
 
 // NativeWidgetAura is a NativeWidgetPrivate implementation that does not own
@@ -289,7 +291,6 @@ class VIEWS_EXPORT NativeWidgetAura : public internal::NativeWidgetPrivate,
 
   // Reorders child windows of |window_| associated with a view based on the
   // order of the associated views in the widget's view hierarchy.
-  std::unique_ptr<legacy::WindowReorderer> legacy_window_reorderer_;
   std::unique_ptr<WindowReorderer> window_reorderer_;
 
   std::unique_ptr<DropHelper> drop_helper_;
@@ -297,6 +298,18 @@ class VIEWS_EXPORT NativeWidgetAura : public internal::NativeWidgetPrivate,
 
   // Native widget's handler to receive events before the event target.
   std::unique_ptr<FocusManagerEventHandler> focus_manager_event_handler_;
+
+  // Observes `window_`. Reset() in OnWindowDestroying() so the observation is
+  // dropped while the window is still alive.
+  base::ScopedObservation<aura::Window, aura::WindowObserver>
+      window_observation_{this};
+
+  // Observes the TransientWindowManager owned by `window_` as a window
+  // property. That manager is destroyed by Window::ClearProperties(), so this
+  // must also be Reset() in OnWindowDestroying().
+  base::ScopedObservation<wm::TransientWindowManager,
+                          wm::TransientWindowObserver>
+      transient_window_observation_{this};
 
   // The following factory is used to provide references to the NativeWidgetAura
   // instance. We need a separate factory from the |close_widget_factory_|

@@ -449,7 +449,7 @@ IndigoToolbar::~IndigoToolbar() {
 std::unique_ptr<views::View> IndigoToolbar::CreateToolbarView() {
   auto bubble_border = std::make_unique<views::BubbleBorder>(
       views::BubbleBorder::NONE, views::BubbleBorder::STANDARD_SHADOW);
-  bubble_border->SetColor(ui::kColorSysSurface);
+  bubble_border->set_background_color(ui::kColorSysSurface);
   bubble_border->set_rounded_corners(
       gfx::RoundedCornersF(kToolbarCornerRadius));
 
@@ -695,7 +695,7 @@ void IndigoToolbar::Show(views::View* parent_view) {
   }
 
   if (owned_view_) {
-    DCHECK(parent_view->children().empty());
+    CHECK(parent_view->children().empty(), base::NotFatalUntil::M162);
     parent_view->AddChildView(std::move(owned_view_));
     parent_view->InvalidateLayout();
   } else {
@@ -738,7 +738,7 @@ void IndigoToolbar::TabWillBecomeHidden() {
 
 void IndigoToolbar::TabDidBecomeVisible(views::View* parent_view) {
   if (owned_view_) {
-    DCHECK(parent_view->children().empty());
+    CHECK(parent_view->children().empty(), base::NotFatalUntil::M162);
     parent_view->AddChildView(std::move(owned_view_));
     parent_view->InvalidateLayout();
     StartAutoCompactTimerIfNeeded(kInitialAutoCompactDelay);

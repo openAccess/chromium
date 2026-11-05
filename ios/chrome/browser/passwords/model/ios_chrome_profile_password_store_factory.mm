@@ -8,7 +8,6 @@
 #import <utility>
 
 #import "base/functional/callback_helpers.h"
-#import "base/no_destructor.h"
 #import "base/time/time.h"
 #import "components/affiliations/core/browser/affiliation_service.h"
 #import "components/keyed_service/core/service_access_type.h"
@@ -26,39 +25,10 @@
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 
-namespace {
-
-using affiliations::AffiliationService;
-using password_manager::AffiliatedMatchHelper;
-
-}  // namespace
-
-// static
-scoped_refptr<password_manager::PasswordStoreInterface>
-IOSChromeProfilePasswordStoreFactory::GetForProfile(
-    ProfileIOS* profile,
-    ServiceAccessType access_type) {
-  // `profile` gets always redirected to a non-Incognito profile below, so
-  // Incognito & IMPLICIT_ACCESS means that incognito browsing session would
-  // result in traces in the normal profile without the user knowing it.
-  if (access_type == ServiceAccessType::IMPLICIT_ACCESS &&
-      profile->IsOffTheRecord()) {
-    return nullptr;
-  }
-  return GetInstance()
-      ->GetServiceForProfileAs<password_manager::PasswordStoreInterface>(
-          profile, /*create=*/true);
-}
-
-// static
-IOSChromeProfilePasswordStoreFactory*
-IOSChromeProfilePasswordStoreFactory::GetInstance() {
-  static base::NoDestructor<IOSChromeProfilePasswordStoreFactory> instance;
-  return instance.get();
-}
-
-IOSChromeProfilePasswordStoreFactory::IOSChromeProfilePasswordStoreFactory()
-    : RefcountedProfileKeyedServiceFactoryIOS(
+IOSChromeProfilePasswordStoreFactory::IOSChromeProfilePasswordStoreFactory(
+    PassKey key)
+    : TypedRefcountedProfileKeyedServiceFactoryIOS(
+          std::move(key),
           "ProfilePasswordStore",
           ProfileSelection::kRedirectedInIncognito,
           TestingCreation::kNoServiceForTests) {
@@ -66,31 +36,29 @@ IOSChromeProfilePasswordStoreFactory::IOSChromeProfilePasswordStoreFactory()
   DependsOn(IOSChromeAffiliationServiceFactory::GetInstance());
 }
 
-IOSChromeProfilePasswordStoreFactory::~IOSChromeProfilePasswordStoreFactory() {}
-
 scoped_refptr<RefcountedKeyedService>
 IOSChromeProfilePasswordStoreFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   std::unique_ptr<password_manager::LoginDatabase> login_db(
       password_manager::CreateLoginDatabase(password_manager::kProfileStore,
-                                            profile->GetStatePath(),
-                                            profile->GetPrefs()));
-  AffiliationService* affiliation_service =
+                                            profile.GetStatePath(),
+                                            profile.GetPrefs()));
+  affiliations::AffiliationService* affiliation_service =
       IOSChromeAffiliationServiceFactory::GetForProfile(profile);
   std::unique_ptr<password_manager::PasswordStoreBackend> backend =
       std::make_unique<password_manager::PasswordStoreBuiltInBackend>(
           std::move(login_db),
-          syncer::WipeModelUponSyncDisabledBehavior::kNever,
-          profile->GetPrefs(), GetApplicationContext()->GetOSCryptAsync(),
+          syncer::WipeModelUponSyncDisabledBehavior::kNever, profile.GetPrefs(),
+          GetApplicationContext()->GetOSCryptAsync(),
           std::make_unique<password_manager::AffiliatedMatchHelper>(
               affiliation_service));
   scoped_refptr<password_manager::PasswordStoreIOS> store =
       base::MakeRefCounted<password_manager::PasswordStoreIOS>(
-          std::move(backend), profile);
+          std::move(backend), &profile);
   store->Init();
   password_manager::SanitizeAndMigrateCredentials(
       CredentialsCleanerRunnerFactory::GetForProfile(profile), store,
-      password_manager::kProfileStore, profile->GetPrefs(), base::Seconds(60),
+      password_manager::kProfileStore, profile.GetPrefs(), base::Seconds(60),
       base::NullCallback());
   auto password_affiliation_adapter =
       std::make_unique<password_manager::PasswordAffiliationSourceAdapter>();

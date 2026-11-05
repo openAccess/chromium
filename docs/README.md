@@ -314,6 +314,8 @@ used when committed.
 *   [Other build-related Android docs](../build/android/docs/README.md)
 *   [Chrome for Android UI](ui/android/overview.md) - Resources and best practices for
     developing UI
+*   [Android Settings Search Testing](/components/browser_ui/settings/android/settings_search_testing.md) -
+    Testing guide and parity invariants for Android Settings Search.
 
 ### Misc iOS-Specific Docs
 *   [Continuous Build and Test Infrastructure for Chromium for iOS](ios/infra.md)
@@ -439,6 +441,8 @@ used when committed.
 ### Security
 *   [The Rule Of 2](security/rule-of-2.md) - An important security rule when
     handling untrustworthy contents (like anything downloaded from the web).
+*   [SECURITY.md Guidelines](security/security_md_guidelines.md) - Guidelines for writing
+    an effective SECURITY.md for Chromium components.
 
 ### Speed
 *   [Chrome Speed](speed/README.md) - Documentation for performance measurements and regressions in Chrome.

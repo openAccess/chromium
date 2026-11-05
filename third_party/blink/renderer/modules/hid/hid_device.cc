@@ -11,7 +11,6 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_hid_report_info.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
-#include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_data_view.h"
 #include "third_party/blink/renderer/modules/event_target_modules.h"
 #include "third_party/blink/renderer/modules/hid/hid_input_report_event.h"
@@ -134,8 +133,9 @@ V8HIDUnitSystem::Enum UnitSystemToV8Enum(uint8_t unit) {
 int8_t UnitFactorExponentToInt(uint8_t unit_factor_exponent) {
   DCHECK_LE(unit_factor_exponent, 0x0f);
   // Values from 0x08 to 0x0f encode negative exponents.
-  if (unit_factor_exponent > 0x08)
+  if (unit_factor_exponent >= 0x08) {
     return static_cast<int8_t>(unit_factor_exponent) - 16;
+  }
   return unit_factor_exponent;
 }
 
@@ -299,6 +299,7 @@ ScriptPromise<IDLUndefined> HIDDevice::close(ScriptState* script_state) {
 
   connection_.reset();
   receiver_.reset();
+  feature_handle_for_scheduler_.reset();
   resolver->Resolve();
   return promise;
 }
@@ -420,6 +421,7 @@ ScriptPromise<NotShared<DOMDataView>> HIDDevice::receiveFeatureReport(
 
 void HIDDevice::ContextDestroyed() {
   device_requests_.clear();
+  feature_handle_for_scheduler_.reset();
 }
 
 bool HIDDevice::HasPendingActivity() const {
@@ -494,6 +496,10 @@ void HIDDevice::FinishOpen(
         GetExecutionContext()->GetTaskRunner(TaskType::kMiscPlatformAPI));
     connection_.set_disconnect_handler(BindOnce(
         &HIDDevice::OnServiceConnectionError, WrapWeakPersistent(this)));
+    feature_handle_for_scheduler_ =
+        GetExecutionContext()->GetScheduler()->RegisterFeature(
+            SchedulingPolicy::Feature::kWebHID,
+            SchedulingPolicy{SchedulingPolicy::DisableAggressiveThrottling()});
     resolver->Resolve();
   } else {
     // If the connection or the context is null, the open failed.
@@ -508,10 +514,12 @@ void HIDDevice::FinishForget(ScriptPromiseResolver<IDLUndefined>* resolver) {
   device_is_forgotten_ = true;
   connection_.reset();
   receiver_.reset();
+  feature_handle_for_scheduler_.reset();
   resolver->Resolve();
 }
 
 void HIDDevice::OnServiceConnectionError() {
+  feature_handle_for_scheduler_.reset();
   for (auto& resolver : device_requests_) {
     resolver->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError, kUnexpectedClose));

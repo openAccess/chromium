@@ -49,11 +49,11 @@ class MockChildMemoryCoordinator : public mojom::ChildMemoryCoordinator {
               (override));
   MOCK_METHOD(void,
               SetOverrideLimit,
-              (uint32_t consumer_id, int32_t percentage),
+              (uint32_t consumer_id, base::MemoryLimit memory_limit),
               (override));
   MOCK_METHOD(void,
               ClearOverrideLimit,
-              (uint32_t consumer_id, int32_t policy_limit),
+              (uint32_t consumer_id, base::MemoryLimit policy_limit),
               (override));
 #if BUILDFLAG(ENABLE_MEMORY_COORDINATOR_INTERNALS)
   MOCK_METHOD(
@@ -66,7 +66,7 @@ class MockChildMemoryCoordinator : public mojom::ChildMemoryCoordinator {
 
 constexpr base::MemoryConsumerTraits kTestTraits(
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kFreesPagesWithoutTraversal,
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     base::MemoryConsumerTraits::ExecutionType::kSynchronous);
 
@@ -201,9 +201,10 @@ TEST_F(ChildMemoryConsumerRegistryHostTest, UpdateConsumers) {
   ASSERT_TRUE(host);
 
   EXPECT_CALL(mock_coordinator,
-              UpdateConsumers(testing::ElementsAre(
-                  MemoryConsumerUpdate{kConsumerId, 50, true})));
-  host->UpdateConsumers({{kConsumerId, 50, true}});
+              UpdateConsumers(testing::ElementsAre(MemoryConsumerUpdate{
+                  kConsumerId, base::MemoryLimit::FromPercent(50), true})));
+  host->UpdateConsumers(
+      {{kConsumerId, base::MemoryLimit::FromPercent(50), true}});
   coordinator_receiver.FlushForTesting();
 
   EXPECT_CALL(controller_, OnConsumerGroupRemoved(_, _));

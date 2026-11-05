@@ -16,7 +16,6 @@
 #include "third_party/blink/renderer/bindings/modules/v8/v8_image_decoder_init.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/fetch/readable_stream_bytes_consumer.h"
-#include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
 #include "third_party/blink/renderer/modules/webcodecs/image_track.h"
 #include "third_party/blink/renderer/modules/webcodecs/image_track_list.h"
 #include "third_party/blink/renderer/modules/webcodecs/video_frame.h"
@@ -29,9 +28,6 @@
 #include "third_party/blink/renderer/platform/heap/cross_thread_persistent.h"
 #include "third_party/blink/renderer/platform/image-decoders/segment_reader.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_skia.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_std.h"
 #include "third_party/blink/renderer/platform/wtf/text/format.h"
 
 namespace blink {
@@ -174,9 +170,10 @@ ImageDecoderExternal::ImageDecoderExternal(ScriptState* script_state,
     color_behavior = ColorBehavior::kIgnore;
   }
 
-  auto desired_size = SkISize::MakeEmpty();
-  if (init->hasDesiredWidth() && init->hasDesiredHeight())
-    desired_size = SkISize::Make(init->desiredWidth(), init->desiredHeight());
+  gfx::Size desired_size;
+  if (init->hasDesiredWidth() && init->hasDesiredHeight()) {
+    desired_size = gfx::Size(init->desiredWidth(), init->desiredHeight());
+  }
 
   mime_type_ = init->type().ToAsciiLower();
   if (!IsTypeSupportedInternal(mime_type_)) {
@@ -219,35 +216,15 @@ ImageDecoderExternal::ImageDecoderExternal(ScriptState* script_state,
     return;
   }
 
-  base::span<const uint8_t> array_span;
-  switch (init->data()->GetContentType()) {
-    case V8ImageBufferSource::ContentType::kArrayBufferAllowShared:
-      if (auto* buffer = init->data()->GetAsArrayBufferAllowShared()) {
-        if (!buffer->IsDetached()) {
-          array_span = buffer->ByteSpanMaybeShared();
-        }
-      }
-      break;
-    case V8ImageBufferSource::ContentType::kArrayBufferViewAllowShared:
-      if (auto* view = init->data()->GetAsArrayBufferViewAllowShared().Get()) {
-        if (!view->IsDetached()) {
-          array_span = view->ByteSpanMaybeShared();
-        }
-      }
-      break;
-    case V8ImageBufferSource::ContentType::kReadableStream:
-      NOTREACHED();
-  }
-
-  auto buffer_contents =
-      TransferArrayBufferForSpan(init->transfer(), array_span, exception_state,
-                                 script_state_->GetIsolate());
-  if (exception_state.HadException()) {
+  DOMArrayBufferView* data = CoerceToArrayBufferView(*init->data());
+  if (data->byteLength() == 0) {
+    exception_state.ThrowTypeError("No image data provided");
     return;
   }
 
-  if (array_span.empty()) {
-    exception_state.ThrowTypeError("No image data provided");
+  auto [buffer_contents, array_span] = TransferArrayBuffers(
+      script_state_->GetIsolate(), init->transfer(), data, exception_state);
+  if (exception_state.HadException()) {
     return;
   }
 

@@ -16,6 +16,7 @@ import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 
+import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ObserverList;
 import org.chromium.base.PackageUtils;
@@ -24,10 +25,11 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.task.AsyncTask;
 import org.chromium.base.task.PostTask;
+import org.chromium.base.task.SequencedTaskRunner;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.browserservices.intents.WebappInfo;
+import org.chromium.chrome.browser.browserservices.TwaValidator;
 import org.chromium.chrome.browser.browserservices.intents.WebappIntentUtils;
 import org.chromium.chrome.browser.browserservices.metrics.WebApkUmaRecorder;
 import org.chromium.chrome.browser.browserservices.permissiondelegation.InstalledWebappPermissionStore;
@@ -37,9 +39,10 @@ import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.embedder_support.util.Origin;
-import org.chromium.components.sync.protocol.WebApkSpecifics;
+import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.webapps.AppBannerManager;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.url.GURL;
 import org.chromium.webapk.lib.common.WebApkConstants;
 
 import java.util.ArrayList;
@@ -57,7 +60,8 @@ import java.util.Set;
  * SharedPreferences.
  *
  * <p>Aside from web app registration, which is asynchronous as a new SharedPreferences file must be
- * opened, all methods in this class are synchronous. All web app SharedPreferences known to
+ * opened, and {@link #queryIsAppInstalledForUrl}, which runs PackageManager IPCs on a background
+ * sequence, all methods in this class are synchronous. All web app SharedPreferences known to
  * WebappRegistry are pre-warmed on browser startup when creating the singleton WebappRegistry
  * instance, whilst registering a new web app will automatically cache the new SharedPreferences
  * after it is created.
@@ -68,9 +72,11 @@ import java.util.Set;
  */
 @NullMarked
 public class WebappRegistry {
-    /** Observer for changes in the list of installed web apps. */
+    /** Observer for changes in the list of installed or pending web apps. */
     public interface Observer {
         void onOriginsWithInstalledAppChanged();
+
+        default void onPendingAppInstallStatusChanged() {}
     }
 
     private @Nullable ObserverList<Observer> mObservers;
@@ -99,6 +105,13 @@ public class WebappRegistry {
         }
     }
 
+    public void notifyPendingAppInstallStatusChanged() {
+        ThreadUtils.assertOnUiThread();
+        for (Observer observer : getObservers()) {
+            observer.onPendingAppInstallStatusChanged();
+        }
+    }
+
     static final String REGISTRY_FILE_NAME = "webapp_registry";
     static final String KEY_WEBAPP_SET = "webapp_set";
     static final String KEY_LAST_CLEANUP = "last_cleanup";
@@ -112,7 +125,7 @@ public class WebappRegistry {
     /** Initialization-on-demand holder. This exists for thread-safe lazy initialization. */
     private static class Holder {
         // Not final for testing.
-        private static WebappRegistry sInstance = new WebappRegistry();
+        private static volatile WebappRegistry sInstance = new WebappRegistry();
     }
 
     private boolean mIsInitialized;
@@ -131,7 +144,14 @@ public class WebappRegistry {
     private final Map<String, String> mPendingManifestIdToPackageName = new HashMap<>();
 
     private final SharedPreferences mPreferences;
-    private InstalledWebappPermissionStore mPermissionStore;
+    private volatile InstalledWebappPermissionStore mPermissionStore;
+
+    /**
+     * Runs the PackageManager IPCs of {@link #queryIsAppInstalledForUrl} one at a time, so that a
+     * stuck PackageManager blocks at most one pool thread.
+     */
+    private final SequencedTaskRunner mQueryTaskRunner =
+            PostTask.createSequencedTaskRunner(TaskTraits.USER_VISIBLE_MAY_BLOCK);
 
     /**
      * Callback run when a WebappDataStorage object is registered for the first time. The storage
@@ -221,6 +241,7 @@ public class WebappRegistry {
                 String manifestId = storage.getWebApkManifestId();
                 if (manifestId != null) {
                     mPendingManifestIdToPackageName.remove(manifestId);
+                    notifyPendingAppInstallStatusChanged();
                 }
                 notifyOriginsWithInstalledAppChanged();
             }
@@ -235,6 +256,24 @@ public class WebappRegistry {
      */
     public @Nullable WebappDataStorage getWebappDataStorage(@Nullable String webappId) {
         return mStorages.get(webappId);
+    }
+
+    /**
+     * Returns the WebappDataStorage object for the specified WebAPK package name, or null if one
+     * cannot be found.
+     *
+     * @param packageName The package name of the WebAPK to look up.
+     * @return The storage object for the WebAPK, or null if one cannot be found.
+     */
+    public @Nullable WebappDataStorage getWebappDataStorageForPackage(
+            @Nullable String packageName) {
+        if (packageName == null) return null;
+        for (WebappDataStorage storage : mStorages.values()) {
+            if (packageName.equals(storage.getWebApkPackageName())) {
+                return storage;
+            }
+        }
+        return null;
     }
 
     /**
@@ -277,24 +316,76 @@ public class WebappRegistry {
     }
 
     /**
-     * Returns true if a WebAPK is found whose scope matches |origin|.
+     * Returns true if an installed WebAPK is found whose scope has the same origin as
+     * |targetOrigin|.
+     *
+     * @param targetOrigin The origin to search a WebAPK for.
+     */
+    public boolean hasAtLeastOneWebApkForOrigin(@Nullable Origin targetOrigin) {
+        return hasAtLeastOneWebApkForOrigin(targetOrigin, true);
+    }
+
+    /**
+     * Returns true if an installed WebAPK is found whose scope has the same origin as |origin|.
+     *
      * @param origin The origin to search a WebAPK for.
      */
-    public boolean hasAtLeastOneWebApkForOrigin(String origin) {
+    public boolean hasAtLeastOneWebApkForOrigin(@Nullable String origin) {
+        return hasAtLeastOneWebApkForOrigin(origin, true);
+    }
+
+    /**
+     * Returns true if a WebAPK is registered whose scope matches |origin|, without checking whether
+     * the WebAPK package is still installed.
+     *
+     * @param origin The origin to search a WebAPK for.
+     */
+    public boolean hasAtLeastOneWebApkForOriginWithoutPackageCheck(@Nullable String origin) {
+        return hasAtLeastOneWebApkForOrigin(origin, false);
+    }
+
+    private boolean hasAtLeastOneWebApkForOrigin(
+            @Nullable String origin, boolean checkPackageInstalled) {
+        if (TextUtils.isEmpty(origin)) {
+            return false;
+        }
+        return hasAtLeastOneWebApkForOrigin(Origin.create(origin), checkPackageInstalled);
+    }
+
+    private boolean hasAtLeastOneWebApkForOrigin(
+            @Nullable Origin targetOrigin, boolean checkPackageInstalled) {
+        ThreadUtils.assertOnUiThread();
+        if (targetOrigin == null) {
+            return false;
+        }
+
         for (WebappDataStorage storage : mStorages.values()) {
             String scope = getWebApkScopeFromStorage(storage);
             if (scope.isEmpty()) continue;
+            if (storage.getWebApkUninstallTimestamp() > 0) continue;
+
+            Origin scopeOrigin = Origin.create(scope);
+            if (scopeOrigin == null) continue;
+            if (!targetOrigin.equals(scopeOrigin)) continue;
 
             String webApkPackageName = storage.getWebApkPackageName();
-            assumeNonNull(webApkPackageName);
-            if (scope.startsWith(origin) && PackageUtils.isPackageInstalled(webApkPackageName)) {
+            if (webApkPackageName == null) continue;
+            if (!checkPackageInstalled) return true;
+
+            if (PackageUtils.isPackageInstalled(webApkPackageName)) {
                 return true;
             }
         }
         return false;
     }
 
-    /** Returns a Set of all origins that have an installed WebAPK. */
+    /**
+     * Returns a Set of all origins that have an installed WebAPK.
+     *
+     * <p>Note: Unlike {@link #hasAtLeastOneWebApkForOrigin}, this method checks only the uninstall
+     * timestamp and avoids verifying {@link PackageUtils#isPackageInstalled} for each storage entry
+     * to avoid repetitive PackageManager IPCs across all registered WebAPKs.
+     */
     private Set<String> getOriginsWithWebApk() {
         Set<String> origins = new HashSet<>();
         for (WebappDataStorage storage : mStorages.values()) {
@@ -303,8 +394,9 @@ public class WebappRegistry {
             if (storage.getWebApkUninstallTimestamp() > 0) continue;
 
             Origin origin = Origin.create(scope);
-            assumeNonNull(origin);
-            origins.add(origin.toString());
+            if (origin != null) {
+                origins.add(origin.toString());
+            }
         }
         return origins;
     }
@@ -317,70 +409,152 @@ public class WebappRegistry {
         return origins.toArray(originsArray);
     }
 
-    /*
-     * Returns an array of serialized |WebApkSpecifics| protos in byte[] format.
-     */
-    @CalledByNative
-    public static byte[][] getWebApkSpecifics() {
-        List<WebApkSpecifics> webApkSpecifics =
-                WebappRegistry.getInstance()
-                        .getWebApkSpecificsImpl(/* setWebappInfoForTesting= */ null);
-        List<byte[]> specificsBytes = new ArrayList<byte[]>();
-        for (WebApkSpecifics specifics : webApkSpecifics) {
-            specificsBytes.add(specifics.toByteArray());
-        }
-
-        byte[][] specificsBytesArray = new byte[specificsBytes.size()][];
-        return specificsBytes.toArray(specificsBytesArray);
-    }
-
-    /*
-     * Callback interface used for testing getWebApkSpecificsImpl().
-     */
-    public interface GetWebApkSpecificsImplSetWebappInfoForTesting {
-        void run(String scope);
-    }
-
-    /*
-     * Returns a List of |WebApkSpecifics| protos.
-     */
-    public List<WebApkSpecifics> getWebApkSpecificsImpl(
-            @Nullable GetWebApkSpecificsImplSetWebappInfoForTesting setWebappInfoForTesting) {
-        List<WebApkSpecifics> webApkSpecificsList = new ArrayList<>();
-        for (WebappDataStorage storage : mStorages.values()) {
-            String scope = getWebApkScopeFromStorage(storage);
-            if (scope.isEmpty()) {
-                continue;
-            }
-
-            if (setWebappInfoForTesting != null) {
-                setWebappInfoForTesting.run(scope);
-            }
-
-            WebappInfo webApkInfo = WebApkDataProvider.getPartialWebappInfo(scope);
-            WebApkSpecifics webApkSpecifics =
-                    WebApkSyncService.getWebApkSpecifics(webApkInfo, storage);
-            if (webApkSpecifics == null) {
-                continue;
-            }
-            webApkSpecificsList.add(webApkSpecifics);
-        }
-        return webApkSpecificsList;
-    }
-
-    /** Checks whether a TWA is installed for the origin, and no WebAPK. */
-    public boolean isTwaInstalled(String origin) {
-        Set<String> webApkOrigins = getOriginsWithWebApk();
-        Set<String> installedWebappOrigins = mPermissionStore.getStoredOrigins();
-        return installedWebappOrigins.contains(origin) && !webApkOrigins.contains(origin);
-    }
-
     /** Returns all origins that have a WebAPK or TWA installed. */
     public Set<String> getOriginsWithInstalledApp() {
         Set<String> origins = new HashSet<>();
         origins.addAll(getOriginsWithWebApk());
         origins.addAll(mPermissionStore.getStoredOrigins());
         return origins;
+    }
+
+    /**
+     * Checks whether an installed WebAPK or TWA exists for the specified GURL.
+     *
+     * <p>A WebAPK is considered installed for the URL only if the URL is within the WebAPK's scope
+     * (same origin and the scope path is a prefix of the URL path). Multiple WebAPKs with distinct
+     * scopes may coexist on one origin, so origin equality alone is not sufficient (see
+     * crbug.com/568841400).
+     *
+     * <p>Must be called on the UI thread, because it reads the registered WebAPKs. It also makes
+     * blocking PackageManager IPCs, so prefer {@link #queryIsAppInstalledForUrl}, which runs them
+     * on a background sequence.
+     *
+     * @param url The page GURL to check.
+     * @return True if a WebAPK or TWA is installed for this URL.
+     */
+    public boolean isAppInstalledForUrl(GURL url) {
+        ThreadUtils.assertOnUiThread();
+        if (getInstallableOrigin(url) == null) return false;
+        if (isAnyPackageInstalled(getWebApkPackageNamesForUrl(url))) {
+            return true;
+        }
+        return TwaValidator.isTwaInstalledForUrl(url);
+    }
+
+    /**
+     * Asynchronous version of {@link #isAppInstalledForUrl}: the PackageManager IPCs run on a
+     * background sequence. Must be called on the UI thread.
+     *
+     * @param url The page GURL to check.
+     * @param callback Run asynchronously on the UI thread with whether an app is installed.
+     */
+    public void queryIsAppInstalledForUrl(GURL url, Callback<Boolean> callback) {
+        ThreadUtils.assertOnUiThread();
+        Origin origin = getInstallableOrigin(url);
+        if (origin == null) {
+            PostTask.postTask(TaskTraits.UI_DEFAULT, callback.bind(false));
+            return;
+        }
+        // mStorages is not thread-safe, so find the in-scope WebAPKs on the UI thread. The worker
+        // thread reads only the permission store, which is safe on any thread.
+        List<String> webApkPackageNames = getWebApkPackageNamesForUrl(url);
+        mQueryTaskRunner.execute(
+                () -> {
+                    boolean isInstalled = false;
+                    try {
+                        isInstalled =
+                                isAnyPackageInstalled(webApkPackageNames)
+                                        || TwaValidator.isTwaInstalledForUrl(url);
+                    } catch (Exception e) {
+                        // Guard against unexpected PackageManager or binder errors so the callback
+                        // always runs on the UI thread.
+                    } finally {
+                        PostTask.postTask(TaskTraits.UI_DEFAULT, callback.bind(isInstalled));
+                    }
+                });
+    }
+
+    /**
+     * Returns a cache key for whether an app (WebAPK or TWA) is installed for {@code url}. It is
+     * meant for callers, such as the omnibox install button, that cache the result of {@link
+     * #queryIsAppInstalledForUrl} and reuse it for URLs with the same key. It is about installed
+     * apps, not about whether the page is installable.
+     *
+     * <p>URLs with equal keys get the same {@link #isAppInstalledForUrl} result, unless an app is
+     * installed or removed in a way only PackageManager knows about. The key is the origin (TWAs
+     * are verified per origin), the number of TWAs verified for the origin, and the sorted package
+     * names of registered WebAPKs whose scope contains the URL. So a registry change that can make
+     * an app installed for the URL changes its key. Makes no IPC calls. Must be called on the UI
+     * thread.
+     *
+     * <p>The TWA count is the number of delegate apps that {@link TwaValidator} checks. The key
+     * does not use {@code mPermissionStore.hasOrigin()}, because WebAPK permission updates also add
+     * their origin to the store.
+     *
+     * <p>Example keys, in the form "origin|TWA count|WebAPK package names":
+     *
+     * <ul>
+     *   <li>"https://example.com|0|" for no app.
+     *   <li>"https://example.com|0|org.chromium.webapk.a" for one in-scope WebAPK.
+     *   <li>"https://example.com|2|org.chromium.webapk.a,org.chromium.webapk.b" for two TWAs and
+     *       two in-scope WebAPKs.
+     * </ul>
+     *
+     * @param url The page GURL to get the key for.
+     * @return The key, or null if no app can be installed for the URL, e.g. for non-http(s) URLs.
+     */
+    public @Nullable String getAppInstallStateKeyForUrl(GURL url) {
+        ThreadUtils.assertOnUiThread();
+        Origin origin = getInstallableOrigin(url);
+        if (origin == null) return null;
+        int twaCount = mPermissionStore.getDelegateAppCount(origin);
+        List<String> webApkPackageNames = getWebApkPackageNamesForUrl(url);
+        Collections.sort(webApkPackageNames);
+        return origin + "|" + twaCount + "|" + TextUtils.join(",", webApkPackageNames);
+    }
+
+    private static @Nullable Origin getInstallableOrigin(GURL url) {
+        // Called on navigations, which include internal urls like about:blank or chrome://. Only
+        // http(s) URLs can have an installed app, and TwaValidator uses Origin.createOrThrow(), so
+        // bail out early for anything else.
+        // Tab.getUrl() can be built from a raw string (pending load params or saved tab state),
+        // so it can be invalid. This check also keeps getSpec() from asserting.
+        if (GURL.isEmptyOrInvalid(url)) return null;
+        return Origin.create(url.getSpec());
+    }
+
+    /**
+     * Returns the package names of registered, not uninstalled WebAPKs whose scope contains {@code
+     * url}. Does not check whether the packages are installed, so it makes no IPC calls.
+     *
+     * <p>Unlike {@link #hasAtLeastOneWebApkForOrigin(Origin)}, this matches at scope granularity so
+     * that several WebAPKs installed on the same origin are told apart. Scope matching uses the
+     * same predicate as WebApkVerifier.
+     */
+    private List<String> getWebApkPackageNamesForUrl(GURL url) {
+        List<String> packageNames = new ArrayList<>();
+        String urlSpec = url.getSpec();
+        for (WebappDataStorage storage : mStorages.values()) {
+            String scope = getWebApkScopeFromStorage(storage);
+            if (scope.isEmpty()) continue;
+            if (storage.getWebApkUninstallTimestamp() > 0) continue;
+            if (!UrlUtilities.isUrlWithinScope(urlSpec, scope)) continue;
+
+            String webApkPackageName = storage.getWebApkPackageName();
+            if (webApkPackageName != null) packageNames.add(webApkPackageName);
+        }
+        return packageNames;
+    }
+
+    /**
+     * Returns whether any of {@code packageNames} is installed. Makes IPC calls, and can be used on
+     * any thread.
+     */
+    private static boolean isAnyPackageInstalled(List<String> packageNames) {
+        for (String packageName : packageNames) {
+            if (PackageUtils.isPackageInstalled(packageName)) return true;
+        }
+        return false;
     }
 
     /** Returns an array of all origins that have a WebAPK or TWA installed. */
@@ -430,11 +604,16 @@ public class WebappRegistry {
     }
 
     public void registerPendingWebApk(String manifestId, String packageName) {
+        ThreadUtils.assertOnUiThread();
         mPendingManifestIdToPackageName.put(manifestId, packageName);
+        notifyPendingAppInstallStatusChanged();
     }
 
     public void removePendingWebApk(String manifestId) {
-        mPendingManifestIdToPackageName.remove(manifestId);
+        ThreadUtils.assertOnUiThread();
+        if (mPendingManifestIdToPackageName.remove(manifestId) != null) {
+            notifyPendingAppInstallStatusChanged();
+        }
     }
 
     /** Returns whether there is a pending WebAPK installation for the given manifest ID. */
@@ -480,12 +659,17 @@ public class WebappRegistry {
         long newestRegistrationTime = -1;
         for (WebappDataStorage storage : mStorages.values()) {
             if (!storage.getId().startsWith(WebApkConstants.WEBAPK_ID_PREFIX)) continue;
+            if (storage.getWebApkUninstallTimestamp() > 0) continue;
             String registeredManifestId = storage.getWebApkManifestId();
             if (TextUtils.equals(manifestId, registeredManifestId)) {
+                String packageName = storage.getWebApkPackageName();
+                if (packageName == null || !PackageUtils.isPackageInstalled(packageName)) {
+                    continue;
+                }
                 long registrationTime = storage.getLocalRegistrationTimestamp();
                 if (registrationTime > newestRegistrationTime) {
                     newestRegistrationTime = registrationTime;
-                    newestPackageName = storage.getWebApkPackageName();
+                    newestPackageName = packageName;
                 }
             }
         }
@@ -520,7 +704,8 @@ public class WebappRegistry {
                 openSharedPreferences().getStringSet(KEY_WEBAPP_SET, Collections.emptySet()));
     }
 
-    void clearForTesting() {
+    public void clearForTesting() {
+        mPendingManifestIdToPackageName.clear();
         Iterator<Map.Entry<String, WebappDataStorage>> it = mStorages.entrySet().iterator();
         while (it.hasNext()) {
             it.next().getValue().delete();
@@ -561,8 +746,6 @@ public class WebappRegistry {
             it.remove();
             deleted = true;
         }
-
-        WebApkSyncService.removeOldWebAPKsFromSync(currentTime);
 
         mPreferences
                 .edit()

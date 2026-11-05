@@ -17,6 +17,7 @@
 #include "chrome/browser/ash/crostini/crostini_manager.h"
 #include "chrome/browser/ui/webui/ash/crostini_installer/crostini_installer_ui.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -58,8 +59,9 @@ void CrostiniInstallerDialog::Show(
   }
 
   // TODO(lxj): Move installer status tracking into the CrostiniInstaller.
-  DCHECK(!crostini::CrostiniManager::GetForProfile(profile)
-              ->IsCrostiniInstallerOpen());
+  CHECK(!crostini::CrostiniManager::GetForProfile(profile)
+             ->IsCrostiniInstallerOpen(),
+        base::NotFatalUntil::M162);
   crostini::CrostiniManager::GetForProfile(profile)->SetCrostiniInstallerOpen(
       true);
 
@@ -127,11 +129,11 @@ void CrostiniInstallerDialog::OnDialogShown(content::WebUI* webui) {
 }
 
 void CrostiniInstallerDialog::OnWebContentsFinishedLoad() {
-  DCHECK(dialog_window());
+  CHECK(dialog_window(), base::NotFatalUntil::M162);
   dialog_window()->SetTitle(
       l10n_util::GetStringUTF16(IDS_CROSTINI_INSTALLER_TITLE));
   if (!on_loaded_callback_.is_null()) {
-    DCHECK(installer_ui_);
+    CHECK(installer_ui_, base::NotFatalUntil::M162);
     std::move(on_loaded_callback_).Run(installer_ui_);
   }
 }

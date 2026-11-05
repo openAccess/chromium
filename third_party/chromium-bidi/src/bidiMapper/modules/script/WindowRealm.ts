@@ -100,6 +100,7 @@ export class WindowRealm extends Realm {
       type: this.realmType,
       context: this.#browsingContextId,
       sandbox: this.sandbox,
+      userContext: this.browsingContext.userContext,
     };
   }
 
@@ -107,13 +108,14 @@ export class WindowRealm extends Realm {
     return {
       realm: this.realmId,
       context: this.browsingContext.id,
+      userContext: this.browsingContext.userContext,
     };
   }
 
   override serializeForBiDi(
     deepSerializedValue: Protocol.Runtime.DeepSerializedValue,
     internalIdMap: Map<number, string>,
-  ) {
+  ): Script.RemoteValue {
     const bidiValue = deepSerializedValue.value;
     if (deepSerializedValue.type === 'node' && bidiValue !== undefined) {
       if (Object.hasOwn(bidiValue, 'backendNodeId')) {

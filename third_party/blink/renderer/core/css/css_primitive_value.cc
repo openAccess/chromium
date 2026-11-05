@@ -22,6 +22,7 @@
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
 
 #include <cmath>
+#include <numbers>
 
 #include "build/build_config.h"
 #include "third_party/blink/renderer/core/css/css_length_resolver.h"
@@ -241,9 +242,8 @@ bool CSSPrimitiveValue::IsElementDependent() const {
          To<CSSMathFunctionValue>(this)->IsElementDependent();
 }
 
-bool CSSPrimitiveValue::HasContainerRelativeUnits() const {
-  CSSPrimitiveValue::LengthTypeFlags units;
-  AccumulateLengthUnitTypes(units);
+bool CSSPrimitiveValue::HasContainerRelativeUnits(
+    const LengthTypeFlags& length_type_flags) {
   const CSSPrimitiveValue::LengthTypeFlags container_units(
       (1ull << CSSPrimitiveValue::kUnitTypeContainerWidth) |
       (1ull << CSSPrimitiveValue::kUnitTypeContainerHeight) |
@@ -251,7 +251,13 @@ bool CSSPrimitiveValue::HasContainerRelativeUnits() const {
       (1ull << CSSPrimitiveValue::kUnitTypeContainerBlockSize) |
       (1ull << CSSPrimitiveValue::kUnitTypeContainerMin) |
       (1ull << CSSPrimitiveValue::kUnitTypeContainerMax));
-  return (units & container_units).any();
+  return (length_type_flags & container_units).any();
+}
+
+bool CSSPrimitiveValue::HasContainerRelativeUnits() const {
+  CSSPrimitiveValue::LengthTypeFlags units;
+  AccumulateLengthUnitTypes(units);
+  return HasContainerRelativeUnits(units);
 }
 
 // static
@@ -529,7 +535,7 @@ double CSSPrimitiveValue::ConversionToCanonicalUnitsScaleFactor(
       factor = kCssPixelsPerPica;
       break;
     case UnitType::kRadians:
-      factor = 180 / kPiDouble;
+      factor = 180 / std::numbers::pi;
       break;
     case UnitType::kGradians:
       factor = 0.9;

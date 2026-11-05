@@ -212,6 +212,8 @@ DXGI_FORMAT GetDXGIFormatForGMB(viz::SharedImageFormat format) {
     return DXGI_FORMAT_R16G16B16A16_FLOAT;
   } else if (format == viz::MultiPlaneFormat::kNV12) {
     return DXGI_FORMAT_NV12;
+  } else if (format == viz::MultiPlaneFormat::kP010) {
+    return DXGI_FORMAT_P010;
   }
 
   return DXGI_FORMAT_UNKNOWN;
@@ -279,16 +281,22 @@ D3DImageBackingFactory::D3DImageBackingFactory(
         (format_support & kRequiredUsage) == kRequiredUsage;
     d3d11_supports_nv12_ = SUCCEEDED(hr) && has_required_format_support;
 
+    hr = d3d11_device_->CheckFormatSupport(DXGI_FORMAT_P010, &format_support);
+    has_required_format_support =
+        (format_support & kRequiredUsage) == kRequiredUsage;
+    d3d11_supports_p010_ = SUCCEEDED(hr) && has_required_format_support;
+
     D3D_FEATURE_LEVEL feature_level = d3d11_device_->GetFeatureLevel();
     if (feature_level < D3D_FEATURE_LEVEL_9_3) {
-      max_nv12_dim_supported_ = 2048;
+      max_2d_texture_dim_supported_ = 2048;
     } else if (feature_level < D3D_FEATURE_LEVEL_11_0) {
-      max_nv12_dim_supported_ = 4096;
+      max_2d_texture_dim_supported_ = 4096;
     } else {
-      max_nv12_dim_supported_ = 16384;
+      max_2d_texture_dim_supported_ = 16384;
     }
   } else {
     d3d11_supports_nv12_ = false;
+    d3d11_supports_p010_ = false;
   }
 }
 
@@ -843,15 +851,7 @@ std::unique_ptr<SharedImageBacking> D3DImageBackingFactory::CreateSharedImage(
   }
 
   gfx::DXGIHandle dxgi_handle = std::move(handle).dxgi_handle();
-  // This shouldn't happen as the GpuMemoryBufferHandle constructor that takes a
-  // DXGIHandle asserts the handle is valid. However, it is currently possible
-  // for code to set the type to DXGI_SHARED_HANDLE directly but never actually
-  // set the handle. Make this an eventual CHECK() but handle this gracefully
-  // for now just in case.
-  CHECK(dxgi_handle.IsValid(), base::NotFatalUntil::M138);
-  if (!dxgi_handle.IsValid()) {
-    return nullptr;
-  }
+  CHECK(dxgi_handle.IsValid());
   scoped_refptr<DXGISharedHandleState> dxgi_shared_handle_state =
       dxgi_shared_handle_manager_->GetOrCreateSharedHandleState(
           dxgi_handle.token(), dxgi_handle.TakeBufferHandle(), d3d11_device_);
@@ -1172,21 +1172,22 @@ bool D3DImageBackingFactory::IsSupported(SharedImageUsageSet usage,
     return false;
   }
 
-  if (format == viz::MultiPlaneFormat::kNV12) {
-    // Return early if d3d11 cannot support nv12 formats.
-    if (!d3d11_supports_nv12_) {
-      LOG(ERROR) << "D3D device does not support NV12 texture creation";
+  if (format == viz::MultiPlaneFormat::kNV12 ||
+      format == viz::MultiPlaneFormat::kP010) {
+    const bool format_supported = format == viz::MultiPlaneFormat::kNV12
+                                      ? d3d11_supports_nv12_
+                                      : d3d11_supports_p010_;
+    if (!format_supported) {
+      LOG(ERROR) << "D3D device does not support " << format.ToString()
+                 << " texture creation";
       return false;
     }
-    // We know current size width and height must be within
-    // `max_nv12_dim_supported_` as nv12 creation is supported for
-    // `max_nv12_dim_supported_`.
-    if (size.width() > max_nv12_dim_supported_ ||
-        size.height() > max_nv12_dim_supported_) {
+    if (size.width() > max_2d_texture_dim_supported_ ||
+        size.height() > max_2d_texture_dim_supported_) {
       LOG(ERROR)
           << "Provided size=" << size.ToString()
           << "is not supported by d3d device, with max supported dimensions="
-          << max_nv12_dim_supported_;
+          << max_2d_texture_dim_supported_;
       return false;
     }
   }

@@ -153,10 +153,99 @@ TEST(OfferSyncUtilTest, TrimAutofillValuableSpecificsDataForCaching) {
       "https://image.com/logo.png");
   specifics.mutable_offer()->add_issuer_domains("safeway.com");
   specifics.mutable_offer()->set_description("50% off your next purchase");
+  specifics.mutable_offer()->set_issue_time_unix_epoch_micros(12345678);
+  specifics.set_pass_view_url("https://safeway.com/offer-details");
 
   EXPECT_EQ(
       TrimAutofillValuableSpecificsDataForCaching(specifics).ByteSizeLong(),
       0u);
+}
+
+TEST(OfferSyncUtilTest, CreateOfferDataFromValuableSpecifics) {
+  sync_pb::AutofillValuableSpecifics specifics;
+  specifics.set_id("999");
+  specifics.set_is_editable(true);
+  specifics.mutable_offer()->set_issuer_name("Safeway");
+  specifics.mutable_offer()->set_provider_name("coupon.com");
+  specifics.mutable_offer()->set_offer_short_title("50% off");
+  specifics.mutable_offer()->set_expiration_time_unix_epoch_micros(123456789);
+  specifics.mutable_offer()->set_offer_code("SAFEWAY50");
+  specifics.mutable_offer()->set_offer_title_image_url(
+      "https://image.com/logo.png");
+  specifics.mutable_offer()->add_issuer_domains("https://safeway.com");
+  specifics.mutable_offer()->set_description("50% off your next purchase");
+  specifics.mutable_offer()->set_issue_time_unix_epoch_micros(12345678);
+  specifics.set_pass_view_url("https://safeway.com/offer-details");
+
+  AutofillOfferData offer = CreateOfferDataFromValuableSpecifics(specifics);
+  EXPECT_EQ("999", offer.GetOfferId());
+  EXPECT_EQ(base::Time::UnixEpoch() + base::Microseconds(123456789),
+            offer.GetExpiry());
+  EXPECT_EQ(base::Time::UnixEpoch() + base::Microseconds(12345678),
+            offer.GetIssueTime());
+  EXPECT_EQ("SAFEWAY50", offer.GetPromoCode());
+  EXPECT_EQ("50% off your next purchase",
+            offer.GetDisplayStrings().value_prop_text);
+  EXPECT_EQ("50% off", offer.GetOfferShortTitle());
+  EXPECT_EQ(GURL("https://safeway.com/offer-details"),
+            offer.GetOfferDetailsUrl());
+  EXPECT_THAT(offer.GetMerchantOrigins(),
+              testing::ElementsAre(GURL("https://safeway.com")));
+}
+
+// The issue time is optional. If it is missing or not positive, the offer's
+// issue time is left null, i.e. unknown.
+TEST(OfferSyncUtilTest, CreateOfferDataFromValuableSpecifics_NoIssueTime) {
+  sync_pb::AutofillValuableSpecifics specifics = TestOfferSpecifics("999");
+  specifics.mutable_offer()->clear_issue_time_unix_epoch_micros();
+  EXPECT_TRUE(
+      CreateOfferDataFromValuableSpecifics(specifics).GetIssueTime().is_null());
+
+  specifics.mutable_offer()->set_issue_time_unix_epoch_micros(-1);
+  EXPECT_TRUE(
+      CreateOfferDataFromValuableSpecifics(specifics).GetIssueTime().is_null());
+}
+
+TEST(OfferSyncUtilTest, CreateEntityDataFromOfferData) {
+  const AutofillOfferData offer =
+      CreateOfferDataFromValuableSpecifics(TestOfferSpecifics(kId1));
+  std::unique_ptr<syncer::EntityData> entity_data =
+      CreateEntityDataFromOfferData(offer, /*base_specifics=*/{});
+
+  ASSERT_TRUE(entity_data->specifics.has_autofill_valuable());
+  EXPECT_EQ(kId1, entity_data->name);
+  EXPECT_EQ(offer, CreateOfferDataFromValuableSpecifics(
+                       entity_data->specifics.autofill_valuable()));
+}
+
+TEST(OfferSyncUtilTest, CreateSpecificsFromOfferData) {
+  const AutofillOfferData offer =
+      CreateOfferDataFromValuableSpecifics(TestOfferSpecifics(kId1));
+  const sync_pb::AutofillValuableSpecifics specifics =
+      CreateSpecificsFromOfferData(offer, /*base_specifics=*/{});
+
+  EXPECT_EQ(kId1, specifics.id());
+  EXPECT_EQ("https://safeway.com/offer-details", specifics.pass_view_url());
+  EXPECT_EQ("SAFEWAY50", specifics.offer().offer_code());
+  EXPECT_EQ("50% off", specifics.offer().offer_short_title());
+  EXPECT_EQ("50% off your next purchase", specifics.offer().description());
+  EXPECT_EQ(123456789, specifics.offer().expiration_time_unix_epoch_micros());
+  EXPECT_EQ(12345678, specifics.offer().issue_time_unix_epoch_micros());
+  EXPECT_THAT(specifics.offer().issuer_domains(),
+              testing::ElementsAre("https://safeway.com/"));
+}
+
+TEST(OfferSyncUtilTest, CreateSpecificsFromOfferData_MergesBaseSpecifics) {
+  sync_pb::AutofillValuableSpecifics base_specifics;
+  AddUnknownFieldToProto(base_specifics, "unknown_field");
+
+  const AutofillOfferData offer =
+      CreateOfferDataFromValuableSpecifics(TestOfferSpecifics(kId1));
+  const sync_pb::AutofillValuableSpecifics specifics =
+      CreateSpecificsFromOfferData(offer, base_specifics);
+
+  EXPECT_EQ("SAFEWAY50", specifics.offer().offer_code());
+  EXPECT_THAT(specifics, HasUnknownField("unknown_field"));
 }
 
 TEST(ValuableMetadataSyncUtilTest, CreateEntityDataFromValuableMetadata) {

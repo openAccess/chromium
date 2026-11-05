@@ -4,10 +4,9 @@
 
 #include "chrome/updater/test/server.h"
 
-#include <algorithm>
-#include <iterator>
 #include <list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -19,6 +18,7 @@
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/string_util.h"
+#include "base/synchronization/lock.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -26,13 +26,16 @@
 #include "chrome/updater/test/http_request.h"
 #include "chrome/updater/test/integration_test_commands.h"
 #include "chrome/updater/test/integration_tests_impl.h"
+#include "chrome/updater/test/request_matcher.h"
 #include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
+#include "third_party/re2/src/re2/re2.h"
 #include "third_party/zlib/google/compression_utils.h"
+#include "url/gurl.h"
 
 namespace updater::test {
 namespace {
@@ -71,10 +74,14 @@ std::string DebugStringForReq(HttpRequest& request) {
 
 }  // namespace
 
-ScopedServer::ScopedServer(scoped_refptr<IntegrationTestCommands> commands) {
+ScopedServer::ScopedServer() {
   test_server_.RegisterRequestHandler(base::BindRepeating(
       &ScopedServer::HandleRequest, base::Unretained(this)));
   EXPECT_TRUE((test_server_handle_ = test_server_.StartAndReturnHandle()));
+}
+
+ScopedServer::ScopedServer(scoped_refptr<IntegrationTestCommands> commands)
+    : ScopedServer() {
   CHECK(commands);
   commands->EnterTestMode(update_url(), crash_upload_url(),
                           /*app_logo_url=*/{},
@@ -84,19 +91,28 @@ ScopedServer::ScopedServer(scoped_refptr<IntegrationTestCommands> commands) {
 }
 
 ScopedServer::~ScopedServer() {
+  // Stop the server: `HandleRequest` must not run during the checks below or
+  // after the members it uses are destroyed.
+  test_server_handle_ = net::test_server::EmbeddedTestServerHandle();
+  base::AutoLock lock(lock_);
   for (const auto& request_matcher_group : request_matcher_groups_) {
-    // Forces `request_matcher` to log to help debugging, unless the
-    // matcher matches the empty request.
-    ADD_FAILURE() << "Unmet expectation: ";
-    std::ranges::for_each(request_matcher_group, [](request::Matcher matcher) {
-      matcher.Run(HttpRequest());
-    });
+    // Probes each matcher with an empty request to collect failure messages.
+    std::vector<std::string> unmet_reasons;
+    for (const request::Matcher& matcher : request_matcher_group) {
+      if (testing::AssertionResult result = matcher.Run(HttpRequest());
+          !result) {
+        unmet_reasons.push_back(result.message());
+      }
+    }
+    ADD_FAILURE() << "Unmet expectation:\n  "
+                  << base::JoinString(unmet_reasons, "\n  ");
   }
 }
 
 void ScopedServer::ExpectOnce(request::MatcherGroup request_matcher_group,
                               const std::string& response_body,
                               net::HttpStatusCode http_status_code) {
+  base::AutoLock lock(lock_);
   request_matcher_groups_.push_back(std::move(request_matcher_group));
   responses_.emplace_back(
       http_status_code,
@@ -109,8 +125,19 @@ void ScopedServer::ExpectOnce(
     request::MatcherGroup request_matcher_group,
     base::RepeatingCallback<std::string(bool)> response_body_provider,
     net::HttpStatusCode http_status_code) {
+  base::AutoLock lock(lock_);
   request_matcher_groups_.push_back(std::move(request_matcher_group));
   responses_.emplace_back(http_status_code, response_body_provider);
+}
+
+void ScopedServer::set_download_delay(base::TimeDelta delay) {
+  base::AutoLock lock(lock_);
+  download_delay_ = delay;
+}
+
+void ScopedServer::set_gzip_response(bool gzip_response) {
+  base::AutoLock lock(lock_);
+  gzip_response_ = gzip_response;
 }
 
 std::unique_ptr<net::test_server::HttpResponse> ScopedServer::HandleRequest(
@@ -119,20 +146,21 @@ std::unique_ptr<net::test_server::HttpResponse> ScopedServer::HandleRequest(
   VLOG(0) << "Handle request at path:" << request.relative_url;
   VLOG(3) << DebugStringForReq(request);
   auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+  base::AutoLock lock(lock_);
   if (request_matcher_groups_.empty()) {
     VLOG(0) << "Unexpected request.";
     ADD_FAILURE() << "Unexpected " << DebugStringForReq(request);
     response->set_code(net::HTTP_INTERNAL_SERVER_ERROR);
     return response;
   }
-  if (!std::ranges::all_of(request_matcher_groups_.front(),
-                           [&request](request::Matcher matcher) {
-                             return matcher.Run(request);
-                           })) {
-    VLOG(0) << "Request did not match.";
-    ADD_FAILURE() << "Unmatched " << DebugStringForReq(request);
-    response->set_code(net::HTTP_INTERNAL_SERVER_ERROR);
-    return response;
+  for (const request::Matcher& matcher : request_matcher_groups_.front()) {
+    if (testing::AssertionResult result = matcher.Run(request); !result) {
+      VLOG(0) << "Request did not match.";
+      ADD_FAILURE() << "Unmatched " << DebugStringForReq(request) << "\n  "
+                    << result.message();
+      response->set_code(net::HTTP_INTERNAL_SERVER_ERROR);
+      return response;
+    }
   }
 
   if (request.relative_url.starts_with(download_path()) &&

@@ -9,6 +9,10 @@
 #include "components/device_signals/core/browser/user_delegate.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
+#if BUILDFLAG(IS_ANDROID)
+#include "google_apis/gaia/gaia_id.h"
+#endif  // BUILDFLAG(IS_ANDROID)
+
 namespace device_signals {
 
 class MockUserDelegate : public UserDelegate {
@@ -22,10 +26,14 @@ class MockUserDelegate : public UserDelegate {
   MOCK_METHOD(bool, IsAffiliated, (), (const, override));
   MOCK_METHOD(bool, IsManagedUser, (), (const, override));
   MOCK_METHOD(bool, IsSameUser, (const GaiaId&), (const, override));
+#if BUILDFLAG(IS_ANDROID)
+  MOCK_METHOD(GaiaId, GetPrimaryAccountGaiaId, (), (const, override));
+#endif  // BUILDFLAG(IS_ANDROID)
   MOCK_METHOD(std::set<policy::PolicyScope>,
               GetPolicyScopesNeedingSignals,
               (),
               (const, override));
+  MOCK_METHOD(bool, IsCollectSignalsConsentRequired, (), (const, override));
 };
 
 }  // namespace device_signals

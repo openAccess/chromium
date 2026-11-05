@@ -5,60 +5,54 @@
 #ifndef CHROME_BROWSER_NTP_CUSTOMIZATION_NTP_SYNCED_THEME_BRIDGE_H_
 #define CHROME_BROWSER_NTP_CUSTOMIZATION_NTP_SYNCED_THEME_BRIDGE_H_
 
-#include <jni.h>
-
-#include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
-#include "base/memory/raw_ptr.h"
-#include "chrome/browser/profiles/profile.h"
-#include "components/themes/ntp_custom_background_service_observer.h"
 
-class NtpAndroidCustomBackgroundService;
+class Profile;
 
-using base::android::JavaRef;
-
-// The C++ counterpart to NtpSyncedThemeBridge.java. This class serves as
-// a bridge to the NTP theme services, handling theme collections and custom
-// backgrounds for the New Tab Page. It observes changes from
-// NtpAndroidCustomBackgroundService and communicates with the Java layer.
-class NtpSyncedThemeBridge : public NtpCustomBackgroundServiceObserver {
+// The C++ counterpart to NtpSyncedThemeBridge.java. It reports synced theme
+// changes from NtpAndroidCustomBackgroundService to its Java peer, which it
+// creates and owns.
+//
+// The service owns this bridge and creates it when Java first asks for the
+// bridge of a profile, see
+// NtpAndroidCustomBackgroundService::GetOrCreateSyncedThemeBridge(). Java
+// doesn't hold a native pointer to it: calls from Java reach the service
+// through static JNI methods keyed by Profile, so there is nothing for Java to
+// destroy, which the process-wide NtpSyncedThemeManager couldn't do in time.
+class NtpSyncedThemeBridge {
  public:
-  // Creates an instance of NtpSyncedThemeBridge.
-  NtpSyncedThemeBridge(JNIEnv* env,
-                       Profile* profile,
-                       const base::android::JavaRef<jobject>& j_java_obj);
+  // Creates the Java peer for `profile`.
+  explicit NtpSyncedThemeBridge(Profile* profile);
 
   NtpSyncedThemeBridge(const NtpSyncedThemeBridge&) = delete;
   NtpSyncedThemeBridge& operator=(const NtpSyncedThemeBridge&) = delete;
 
-  // Called by the Java counterpart to destroy this object.
-  void Destroy(JNIEnv* env);
+  virtual ~NtpSyncedThemeBridge();
 
-  // Fetches the next image for a theme collection with daily refresh enabled.
-  void FetchNextThemeCollectionImage(JNIEnv* env);
+  // Returns the Java peer owned by this bridge.
+  const base::android::ScopedJavaGlobalRef<jobject>& java_object() const {
+    return j_java_obj_;
+  }
 
-  // Fetches the current custom background information (e.g., URL, collection
-  // ID) from the NtpAndroidCustomBackgroundService.
-  base::android::ScopedJavaLocalRef<jobject> GetCustomBackgroundInfo(
-      JNIEnv* env);
+  // Called when a Chrome color is synced from Chrome Sync.
+  virtual void OnChromeColorSynced(int color_id);
 
-  // Exposes whether the underlying service is processing a sync update.
-  bool IsProcessingSyncUpdate(JNIEnv* env);
+  // Called when the default theme is restored from Chrome Sync.
+  virtual void OnDefaultThemeSynced();
 
-  // Disconnects from the custom background service when the service is
-  // destroyed.
-  void DisconnectCustomBackgroundService();
+  // Called when the underlying Android theme sync bridge reaches readiness.
+  virtual void OnThemeSyncReady();
 
-  // NtpCustomBackgroundServiceObserver:
-  void OnCustomBackgroundImageUpdated() override;
+  // Called when the theme collection background in preferences was updated
+  // either by sync (`is_sync` is true) or by the local daily refresh
+  // pre-fetching the next image (`is_sync` is false).
+  virtual void OnThemeCollectionUpdated(bool is_sync);
 
  protected:
+  // For mocks, which have no Java peer.
   NtpSyncedThemeBridge();
-  ~NtpSyncedThemeBridge() override;
 
  private:
-  raw_ptr<Profile> profile_;
-  raw_ptr<NtpAndroidCustomBackgroundService> ntp_custom_background_service_;
   base::android::ScopedJavaGlobalRef<jobject> j_java_obj_;
 };
 

@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/settings/autofill/autofill_and_passwords/coordinator/autofill_and_passwords_coordinator.h"
 
+#import <utility>
+
 #import "base/check_op.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
@@ -31,6 +33,7 @@
 #import "ios/chrome/browser/settings/autofill/suggestions_from_gemini/coordinator/suggestions_from_gemini_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_profile_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/password/passwords_coordinator.h"
+#import "ios/chrome/browser/settings/ui_bundled/password/reauthentication/password_manager_reauthentication_delegate.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/browser_commands.h"
@@ -40,6 +43,7 @@
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
+#import "ios/chrome/browser/signin/model/account_preview_data_service_factory.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
@@ -67,6 +71,7 @@ enum class YourSavedInfoDataCategory {
     AutofillCreditCardCoordinatorDelegate,
     AutofillSettingsCoordinatorDelegate,
     IdentityDocsCoordinatorDelegate,
+    PasswordManagerReauthenticationDelegate,
     PasswordsCoordinatorDelegate,
     SigninPromoViewMediatorDelegate,
     TravelInfoCoordinatorDelegate,
@@ -143,6 +148,8 @@ enum class YourSavedInfoDataCategory {
                         authService:authService
                     identityManager:identityManager
                         prefService:originalProfile->GetPrefs()
+          accountPreviewDataService:AccountPreviewDataServiceFactory::
+                                        GetForProfile(originalProfile)
                         syncService:syncService];
   _signinPromoMediator.consumer = _viewController;
   _signinPromoMediator.delegate = self;
@@ -156,10 +163,7 @@ enum class YourSavedInfoDataCategory {
 
 - (void)stop {
   [self stopSigninCoordinator];
-
-  _passwordsCoordinator.delegate = nil;
-  [_passwordsCoordinator stop];
-  _passwordsCoordinator = nil;
+  [self stopPasswordsCoordinator];
 
   _identityDocsCoordinator.delegate = nil;
   [_identityDocsCoordinator stop];
@@ -221,9 +225,12 @@ enum class YourSavedInfoDataCategory {
 
 - (void)autofillAndPasswordsTableViewControllerDidSelectPasswords:
     (AutofillAndPasswordsTableViewController*)controller {
-  if (_passwordsCoordinator) {
+  if (self.baseNavigationController.topViewController != controller) {
     return;
   }
+
+  // Stop the coordinator before restarting it, if it exists.
+  [self stopPasswordsCoordinator];
 
   base::RecordAction(base::UserMetricsAction("Options_ShowPasswordManager"));
   base::UmaHistogramEnumeration("PasswordManager.ManagePasswordsReferrer",
@@ -255,6 +262,9 @@ enum class YourSavedInfoDataCategory {
       initWithBaseNavigationController:self.baseNavigationController
                                browser:self.browser];
   _autofillCreditCardCoordinator.delegate = self;
+  _autofillCreditCardCoordinator.shouldShowLevelUpPaymentMethodsWalkthroughIPH =
+      self.shouldShowLevelUpPaymentMethodsWalkthroughIPH;
+  self.shouldShowLevelUpPaymentMethodsWalkthroughIPH = NO;
   [_autofillCreditCardCoordinator start];
 }
 
@@ -325,6 +335,10 @@ enum class YourSavedInfoDataCategory {
     return;
   }
 
+  base::UmaHistogramEnumeration(
+      "Autofill.YourSavedInfoSettingsPage.CategoryLinkClick",
+      YourSavedInfoDataCategory::kShopping);
+
   _shoppingCoordinator = [[ShoppingCoordinator alloc]
       initWithBaseNavigationController:self.baseNavigationController
                                browser:self.browser];
@@ -386,15 +400,36 @@ enum class YourSavedInfoDataCategory {
 
 #pragma mark - PasswordsCoordinatorDelegate
 
-- (void)dismissPasswordManagerAfterFailedReauthentication {
-  [self.delegate dismissPasswordManagerAfterFailedReauthentication];
+- (void)passwordsCoordinatorDidRemove:(PasswordsCoordinator*)coordinator {
+  CHECK_EQ(_passwordsCoordinator, coordinator);
+  [self stopPasswordsCoordinator];
 }
 
-- (void)passwordsCoordinatorDidRemove:(PasswordsCoordinator*)coordinator {
-  CHECK_EQ(_passwordsCoordinator, coordinator, base::NotFatalUntil::M151);
-  _passwordsCoordinator.delegate = nil;
-  [_passwordsCoordinator stop];
-  _passwordsCoordinator = nil;
+#pragma mark - PasswordManagerReauthenticationDelegate
+
+- (void)dismissPasswordManagerAfterFailedReauthentication {
+  UINavigationController* navigationController = self.baseNavigationController;
+  if (!_viewController ||
+      ![navigationController.viewControllers containsObject:_viewController]) {
+    return;
+  }
+
+  // Pop everything up to the Autofill and Passwords page.
+  // When there is content presented, don't animate the dismissal of the view
+  // controllers in the navigation controller to prevent revealing passwords
+  // when the presented content is the one covered by the reauthentication UI.
+  UIViewController* topViewController = navigationController.topViewController;
+  UIViewController* presentedViewController =
+      topViewController.presentedViewController;
+
+  [navigationController popToViewController:_viewController
+                                   animated:presentedViewController == nil];
+
+  [presentedViewController.presentingViewController
+      dismissViewControllerAnimated:YES
+                         completion:nil];
+
+  [self stopPasswordsCoordinator];
 }
 
 #pragma mark - TravelInfoCoordinatorDelegate
@@ -445,9 +480,9 @@ enum class YourSavedInfoDataCategory {
   [self stopSigninCoordinator];
   __weak __typeof(self) weakSelf = self;
   [command addSigninCompletion:^(SigninCoordinator* coordinator,
-                                 SigninCoordinatorResult result,
-                                 id<SystemIdentity> identity) {
-    [weakSelf signinDidCompleteWithCoordinator:coordinator result:result];
+                                 SigninCoordinatorResultOrIdentity result) {
+    [weakSelf signinDidCompleteWithCoordinator:coordinator
+                                        result:std::move(result)];
   }];
   _signinCoordinator = [SigninCoordinator
       signinCoordinatorWithCommand:command
@@ -460,11 +495,12 @@ enum class YourSavedInfoDataCategory {
 
 // Callback invoked when the sign-in flow completes.
 - (void)signinDidCompleteWithCoordinator:(SigninCoordinator*)coordinator
-                                  result:(SigninCoordinatorResult)result {
+                                  result:(SigninCoordinatorResultOrIdentity)
+                                             result {
   if (_signinCoordinator != coordinator) {
     return;
   }
-  [_signinPromoMediator signinDidCompleteWithResult:result];
+  [_signinPromoMediator signinDidCompleteWithResult:std::move(result)];
   [self stopSigninCoordinator];
 }
 
@@ -474,6 +510,13 @@ enum class YourSavedInfoDataCategory {
     [_signinCoordinator stop];
     _signinCoordinator = nil;
   }
+}
+
+// Stops `_passwordsCoordinator` and sets it to nil.
+- (void)stopPasswordsCoordinator {
+  _passwordsCoordinator.delegate = nil;
+  [_passwordsCoordinator stop];
+  _passwordsCoordinator = nil;
 }
 
 @end

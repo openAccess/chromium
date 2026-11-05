@@ -22,7 +22,6 @@
 #import "ios/web/public/session/proto/metadata.pb.h"
 #import "ios/web/public/session/proto/storage.pb.h"
 #import "ios/web/session/session_certificate_policy_cache_impl.h"
-#import "ios/web/web_state/deprecated/global_web_state_event_tracker.h"
 #import "ios/web/web_state/ui/crw_web_controller.h"
 #import "ios/web/web_state/web_state_impl_realized_web_state.h"
 #import "ios/web/web_state/web_state_impl_serialized_data.h"
@@ -80,7 +79,7 @@ void IgnoreOverRealizationCheck() {
 
 #pragma mark - WebStateImpl public methods
 
-WebStateImpl::WebStateImpl(const CreateParams& params) {
+WebStateImpl::WebStateImpl(PassKey, const CreateParams& params) {
   AddWebStateImplMarker();
 
   const base::Time creation_time = base::Time::Now();
@@ -91,11 +90,10 @@ WebStateImpl::WebStateImpl(const CreateParams& params) {
                                               WebStateID::NewUnique());
   pimpl_->Init(params.browser_state, last_active_time,
                params.created_with_opener);
-
-  SendGlobalCreationEvent();
 }
 
-WebStateImpl::WebStateImpl(BrowserState* browser_state,
+WebStateImpl::WebStateImpl(PassKey,
+                           BrowserState* browser_state,
                            WebStateID unique_identifier,
                            proto::WebStateMetadataStorage metadata,
                            WebStateStorageLoader storage_loader,
@@ -105,11 +103,9 @@ WebStateImpl::WebStateImpl(BrowserState* browser_state,
   saved_ = std::make_unique<SerializedData>(
       this, browser_state, unique_identifier, std::move(metadata),
       std::move(storage_loader), std::move(session_fetcher));
-
-  SendGlobalCreationEvent();
 }
 
-WebStateImpl::WebStateImpl(CloneFrom, const RealizedWebState& pimpl) {
+WebStateImpl::WebStateImpl(PassKey, CloneFrom, const RealizedWebState& pimpl) {
   AddWebStateImplMarker();
 
   // Serialize `pimpl` state to protobuf message.
@@ -130,8 +126,14 @@ WebStateImpl::WebStateImpl(CloneFrom, const RealizedWebState& pimpl) {
                         pimpl.GetTitle(), pimpl.GetVisibleURL(),
                         pimpl.GetFaviconStatus(), std::move(storage),
                         std::move(session_fetcher));
+}
 
-  SendGlobalCreationEvent();
+WebStateImpl::WebStateImpl(TestKey,
+                           const CreateParams& params,
+                           id<CRWWebViewNavigationProxy> web_view_for_testing)
+    : WebStateImpl(base::PassKey<WebStateImpl>{}, params) {
+  RealizedState()->SetWebViewNavigationProxyForTesting(  // IN-TEST
+      web_view_for_testing);
 }
 
 WebStateImpl::~WebStateImpl() {
@@ -161,18 +163,6 @@ WebStateImpl* WebStateImpl::FromWebState(WebState* web_state) {
   WebStateImpl* web_state_impl = static_cast<WebStateImpl*>(web_state);
   DCHECK_CALLED_ON_VALID_SEQUENCE(web_state_impl->sequence_checker_);
   return web_state_impl;
-}
-
-/* static */
-std::unique_ptr<WebStateImpl>
-WebStateImpl::CreateWithFakeWebViewNavigationProxyForTesting(
-    const WebState::CreateParams& params,
-    id<CRWWebViewNavigationProxy> web_view_for_testing) {
-  DCHECK(web_view_for_testing);
-  auto web_state = std::make_unique<WebStateImpl>(params);
-  web_state->pimpl_->SetWebViewNavigationProxyForTesting(  // IN-TEST
-      web_view_for_testing);
-  return web_state;
 }
 
 #pragma mark - WebState implementation
@@ -420,6 +410,16 @@ void WebStateImpl::OnAuthRequired(
   RealizedState()->OnAuthRequired(protection_space, std::move(callback));
 }
 
+void WebStateImpl::OnProxyAuthChallenge(
+    NSURLProtectionSpace* protection_space,
+    NSURLCredential* proposed_credential,
+    NSURLResponse* failure_response,
+    WebStateDelegate::ProxyAuthCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RealizedState()->OnProxyAuthChallenge(protection_space, proposed_credential,
+                                        failure_response, std::move(callback));
+}
+
 void WebStateImpl::CancelDialogs() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   RealizedState()->ClearDialogs();
@@ -465,6 +465,14 @@ void WebStateImpl::RequestPermissionsWithDecisionHandler(
                                                          handler);
 }
 
+void WebStateImpl::RequestGeolocationPermissionWithDecisionHandler(
+    const GURL& origin,
+    PermissionDecisionHandler handler) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RealizedState()->RequestGeolocationPermissionWithDecisionHandler(origin,
+                                                                   handler);
+}
+
 #pragma mark - WebState implementation
 
 void WebStateImpl::SerializeToProto(proto::WebStateStorage& storage) const {
@@ -505,7 +513,8 @@ std::unique_ptr<WebState> WebStateImpl::Clone() const {
   CHECK(IsRealized());
   CHECK(!is_being_destroyed_);
 
-  return std::make_unique<WebStateImpl>(CloneFrom{}, *pimpl_);
+  return std::make_unique<WebStateImpl>(base::PassKey<WebStateImpl>{},
+                                        CloneFrom{}, *pimpl_);
 }
 
 bool WebStateImpl::IsRealized() const {
@@ -1076,14 +1085,6 @@ void WebStateImpl::AddWebStateImplMarker() {
   // can safely be performed even before the end of the constructor.
   SetUserData(kWebStateIsWebStateImpl,
               std::make_unique<base::SupportsUserData::Data>());
-}
-
-void WebStateImpl::SendGlobalCreationEvent() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(saved_ || pimpl_);
-
-  // Send creation event.
-  GlobalWebStateEventTracker::GetInstance()->OnWebStateCreated(this);
 }
 
 }  // namespace web

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
 
+#include <memory>
 #include <variant>
 
 #include "base/callback_list.h"
@@ -16,7 +17,9 @@
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/hover_tab_selector.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
 #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/common/root_tab_collection_node.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
@@ -26,8 +29,10 @@
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -51,6 +56,7 @@ BaseTabStripRegionView::~BaseTabStripRegionView() {
   on_active_tab_changed_subscription_.reset();
 
   if (root_node_) {
+    root_node_->Deinitialize();
     root_node_->SetController(nullptr);
   }
   tab_strip_controller_.reset();
@@ -88,8 +94,9 @@ void BaseTabStripRegionView::InitializeTabStrip() {
 
   TabStripModel* tab_strip_model = browser_view_->browser()->GetTabStripModel();
   CHECK(tab_strip_model);
-  auto drag_handler = std::make_unique<TabDragHandlerImpl>(
+  auto drag_handler = std::make_unique<TabDragHandler>(
       *tab_strip_model, *root_node_.get(), *this);
+  drag_handler->SetProperty(views::kViewIgnoredByLayoutKey, true);
   drag_handler_ = drag_handler.get();
 
   CHECK(!tab_strip_controller_);
@@ -112,6 +119,13 @@ void BaseTabStripRegionView::InitializeTabStrip() {
   on_child_moved_subscription_ =
       root_node_->RegisterOnChildMovedCallback(base::BindRepeating(
           &BaseTabStripRegionView::OnChildMoved, base::Unretained(this)));
+  on_active_tab_changed_subscription_ =
+      root_node_->RegisterOnActiveTabChangedCallback(base::BindRepeating(
+          &BaseTabStripRegionView::OnActiveTabChanged, base::Unretained(this)));
+
+  if (const auto* active_tab = tab_strip_model->GetActiveTab()) {
+    OnActiveTabChanged(active_tab);
+  }
 }
 
 void BaseTabStripRegionView::ResetTabStrip() {
@@ -122,6 +136,7 @@ void BaseTabStripRegionView::ResetTabStrip() {
   on_children_added_subscription_.reset();
   on_children_removed_subscription_.reset();
   on_child_moved_subscription_.reset();
+  on_active_tab_changed_subscription_.reset();
 
   root_node_->Reset();
 
@@ -173,14 +188,10 @@ void BaseTabStripRegionView::UpdateLoadingAnimations(
     return;
   }
   for (tabs::TabInterface* tab : *tab_strip_model_) {
-    const TabCollectionNode* node =
-        root_node_->GetNodeForHandle(tab->GetHandle());
-    if (node) {
-      TabView* tab_view = views::AsViewClass<TabView>(node->view());
-      if (tab_view) {
-        tab_view->StepLoadingAnimation(elapsed_time);
-      }
-    }
+    SafeInvoke(root_node_->GetNodeForHandle(tab->GetHandle()))
+        .Then(&TabCollectionNode::view)
+        .Then(Overload<views::View*>(&views::AsViewClass<TabView>))
+        .Then(&TabView::StepLoadingAnimation, elapsed_time);
   }
 }
 
@@ -421,30 +432,38 @@ TabDragTarget* BaseTabStripRegionView::GetTabDragTarget(
 
 views::View* BaseTabStripRegionView::SetTabStripView(
     std::unique_ptr<views::View> view) {
-  CHECK(views::IsViewClass<TabStripView>(view.get()));
-  tab_strip_view_ = static_cast<TabStripView*>(view.get());
+  tab_strip_view_ = views::AsViewClass<TabStripView>(view.get());
+  CHECK(tab_strip_view_);
 
-  AddChildView(std::move(view));
+  // Add the tab strip. Note that it may not be added as a direct child of
+  // `this`, but should appear in the hierarchy.
+  AddTabStripView(std::move(view));
+  CHECK(Contains(tab_strip_view_));
 
-  tab_strip_view_->SetProperty(
-      views::kFlexBehaviorKey,
-      views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
-                               views::MaximumFlexSizeRule::kPreferred));
-
-  on_active_tab_changed_subscription_ =
-      root_node_->RegisterOnActiveTabChangedCallback(base::BindRepeating(
-          &BaseTabStripRegionView::OnActiveTabChanged, base::Unretained(this)));
-
-  OnTabStripViewSet();
   return tab_strip_view_;
 }
 
 void BaseTabStripRegionView::ClearTabStripView(views::View* view) {
   CHECK(tab_strip_view_);
-  CHECK(tab_strip_view_ == view);
-  on_active_tab_changed_subscription_.reset();
-  OnTabStripViewWillClear();
-  RemoveChildViewT(std::exchange(tab_strip_view_, nullptr));
+  CHECK_EQ(tab_strip_view_, view);
+
+  // Remove the tab strip. Note that the tab strip may not be a direct child of
+  // `this`. Hold onto the result temporarily so we can verify the view was
+  // removed without possibility of UAF.
+  const auto to_delete =
+      RemoveTabStripView(std::exchange(tab_strip_view_, nullptr));
+  CHECK_EQ(view, to_delete.get());
+}
+
+void BaseTabStripRegionView::AddTabStripView(
+    std::unique_ptr<views::View> view) {
+  AddChildView(std::move(view));
+}
+
+std::unique_ptr<views::View> BaseTabStripRegionView::RemoveTabStripView(
+    views::View* view) {
+  CHECK(Contains(view));
+  return view->parent()->RemoveChildViewT(view);
 }
 
 void BaseTabStripRegionView::RecordNewTabButtonPressed() {
@@ -453,23 +472,13 @@ void BaseTabStripRegionView::RecordNewTabButtonPressed() {
   base::RecordAction(base::UserMetricsAction("NewTab_Button"));
 }
 
-void BaseTabStripRegionView::AddedToWidget() {
-  widget_observation_.Observe(GetWidget());
-}
-
-void BaseTabStripRegionView::RemovedFromWidget() {
-  widget_observation_.Reset();
-}
-
-void BaseTabStripRegionView::OnWidgetVisibilityChanged(views::Widget* widget,
-                                                       bool visible) {
-  if (visible && is_first_window_presentation_) {
-    is_first_window_presentation_ = false;
-    // Only scroll-in the active tab for the first window presentation.
-    if (tab_strip_view()) {
-      tab_strip_view()->OnTabChanged(
-          root_node_->GetController()->GetActiveTab());
-    }
+void BaseTabStripRegionView::Layout(PassKey) {
+  LayoutSuperclass<TabStripRegionView>(this);
+  // `drag_handler_` (TabDragContext) is ignored by FlexLayout so that it does
+  // not consume layout space. Its bounds must match the region view so gesture
+  // and drag events can be accurately converted to screen coordinates.
+  if (drag_handler_) {
+    drag_handler_->GetDragContext()->SetBoundsRect(GetLocalBounds());
   }
 }
 
@@ -482,36 +491,17 @@ void BaseTabStripRegionView::OnChildrenAdded(
     new_tab_button_pressed_start_time_.reset();
   }
   hover_tab_selector_->CancelTabTransition();
-
-  const tabs::TabInterface* active_tab = tab_strip_model_->GetActiveTab();
-  if (!active_tab) {
-    return;
-  }
-
-  const tabs::TabInterface* last_new_tab = nullptr;
-  for (const auto& handle : handles) {
-    if (const auto* tab_handle = std::get_if<tabs::TabHandle>(&handle)) {
-      tabs::TabInterface* new_tab = tab_handle->Get();
-      if (new_tab && new_tab != active_tab) {
-        last_new_tab = new_tab;
-      }
-    }
-  }
-
-  if (last_new_tab && tab_strip_view_ && !is_first_window_presentation_) {
-    tab_strip_view_->ScrollToFitTabs(active_tab, last_new_tab);
-  }
+  tab_strip_view_->OnChildrenAdded(handles);
 }
 
 void BaseTabStripRegionView::OnChildrenRemoved() {
   hover_tab_selector_->CancelTabTransition();
+  tab_strip_view_->OnChildrenRemoved();
 }
 
 void BaseTabStripRegionView::OnChildMoved(TabCollectionNode* moved_node) {
   hover_tab_selector_->CancelTabTransition();
-  if (tab_strip_view_ && !is_first_window_presentation_) {
-    tab_strip_view_->OnChildMoved(moved_node);
-  }
+  tab_strip_view_->OnChildMoved(moved_node);
 }
 
 void BaseTabStripRegionView::OnActiveTabChanged(
@@ -520,9 +510,7 @@ void BaseTabStripRegionView::OnActiveTabChanged(
     hover_card_controller_->UpdateHoverCard(
         nullptr, TabSlotController::HoverCardUpdateType::kSelectionChanged);
   }
-  if (tab_strip_view_ && !is_first_window_presentation_) {
-    tab_strip_view_->OnTabChanged(active_tab);
-  }
+  tab_strip_view_->OnActiveTabChanged(active_tab);
 }
 
 
@@ -665,14 +653,8 @@ void BaseTabStripRegionView::OnGlassFrameEligibilityChanged(bool is_eligible) {
   SchedulePaint();
   // The parent of the Tab views are layer backed, so we need to explicitly
   // schedule a repaint on them.
-  if (UnpinnedTabContainerView* unpinned_tabs_container_view =
-          GetUnpinnedTabsContainer()) {
-    unpinned_tabs_container_view->SchedulePaint();
-  }
-  if (PinnedTabContainerView* pinned_tab_container_view =
-          GetPinnedTabsContainer()) {
-    pinned_tab_container_view->SchedulePaint();
-  }
+  SafeInvoke(GetUnpinnedTabsContainer()).Then(&views::View::SchedulePaint);
+  SafeInvoke(GetPinnedTabsContainer()).Then(&views::View::SchedulePaint);
 }
 
 BEGIN_METADATA(BaseTabStripRegionView)

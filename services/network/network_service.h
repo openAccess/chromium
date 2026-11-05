@@ -39,14 +39,12 @@
 #include "net/dns/host_resolver_manager.h"
 #include "net/dns/public/dns_over_https_config.h"
 #include "net/dns/public/secure_dns_mode.h"
-#include "net/first_party_sets/global_first_party_sets.h"
-#include "net/http/transport_security_state.h"
 #include "net/log/net_log.h"
 #include "net/log/trace_net_log_observer.h"
+#include "net/net_buildflags.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/devtools_durable_msg_collector.h"
 #include "services/network/devtools_durable_msg_collector_manager.h"
-#include "services/network/first_party_sets/first_party_sets_manager.h"
 #include "services/network/keepalive_statistics_recorder.h"
 #include "services/network/multiple_durable_message_writer_impl.h"
 #include "services/network/network_change_manager.h"
@@ -54,7 +52,6 @@
 #include "services/network/public/cpp/network_service_buildflags.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/host_resolver.mojom.h"
-#include "services/network/public/mojom/key_pinning.mojom.h"
 #include "services/network/public/mojom/net_log.mojom.h"
 #include "services/network/public/mojom/network_annotation_monitor.mojom.h"
 #include "services/network/public/mojom/network_change_manager.mojom.h"
@@ -74,6 +71,11 @@
 #if BUILDFLAG(IS_CT_SUPPORTED)
 #include "services/network/public/mojom/ct_log_info.mojom.h"
 #endif  // BUILDFLAG(IS_CT_SUPPORTED)
+
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+#include "net/http/transport_security_state.h"
+#include "services/network/public/mojom/key_pinning.mojom.h"
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 namespace net {
 class FileNetLogObserver;
@@ -252,15 +254,17 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
       SetCtEnforcementEnabledCallback callback) override;
 #endif  // BUILDFLAG(IS_CT_SUPPORTED)
 
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
   void UpdateKeyPinsList(mojom::PinListPtr pin_list,
-                         base::Time update_time) override;
+                         base::Time update_time,
+                         UpdateKeyPinsListCallback callback) override;
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 #if BUILDFLAG(IS_ANDROID)
   void DumpWithoutCrashing(base::Time dump_request_time) override;
 #endif  // BUILDFLAG(IS_ANDROID)
   void BindTestInterfaceForTesting(
       mojo::PendingReceiver<mojom::NetworkServiceTest> receiver) override;
-  void SetFirstPartySets(net::GlobalFirstPartySets sets) override;
 
   void SetExplicitlyAllowedPorts(const std::vector<uint16_t>& ports) override;
 #if BUILDFLAG(IS_LINUX)
@@ -359,10 +363,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
     return http_auth_cache_proxy_copier_.get();
   }
 
-  FirstPartySetsManager* first_party_sets_manager() const {
-    return first_party_sets_manager_.get();
-  }
-
   void set_host_resolver_factory_for_testing(
       std::unique_ptr<net::HostResolver::Factory> host_resolver_factory) {
     host_resolver_factory_ = std::move(host_resolver_factory);
@@ -386,6 +386,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   }
 #endif  // BUILDFLAG(IS_CT_SUPPORTED)
 
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
   bool pins_list_updated() const { return pins_list_updated_; }
 
   const std::vector<net::TransportSecurityState::PinSet>& pinsets() const {
@@ -398,6 +399,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   }
 
   base::Time pins_list_update_time() const { return pins_list_update_time_; }
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
   bool data_use_updates_enabled() const { return data_use_updates_enabled_; }
 
@@ -424,6 +426,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   }
 
   static NetworkService* GetNetworkServiceForTesting();
+
+  // Forces processing of shared cache eligible entries across all network
+  // contexts and invokes `callback` when done.
+  void ProcessSharedCacheEligibleEntriesForTesting(base::OnceClosure callback);
 
   std::unique_ptr<DevtoolsDurableMessageWriter> MaybeCreateDurableMessageWriter(
       const base::UnguessableToken& throttling_profile_id,
@@ -467,9 +473,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   // context.
   void OnNetworkContextConnectionClosed(NetworkContext* network_context);
 
-  // Sets First-Party Set data after having read it from a file.
-  void OnReadFirstPartySetsFile(const std::string& raw_sets);
-
   void SetSystemDnsResolver(
       mojo::PendingRemote<mojom::SystemDnsResolver> override_remote);
 
@@ -512,9 +515,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   std::unique_ptr<net::LoggingNetworkChangeObserver> network_change_observer_;
 
   std::unique_ptr<service_manager::BinderRegistry> registry_;
-
-  // Globally-scoped state for First-Party Sets.
-  std::unique_ptr<FirstPartySetsManager> first_party_sets_manager_;
 
   mojo::Receiver<mojom::NetworkService> receiver_{this};
 
@@ -616,6 +616,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   bool ct_enforcement_enabled_ = true;
 #endif  // BUILDFLAG(IS_CT_SUPPORTED)
 
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
   bool pins_list_updated_ = false;
 
   std::vector<net::TransportSecurityState::PinSet> pinsets_;
@@ -623,6 +624,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
   std::vector<net::TransportSecurityState::PinSetInfo> host_pins_;
 
   base::Time pins_list_update_time_;
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
   bool data_use_updates_enabled_ = false;
 

@@ -6,6 +6,7 @@
 #define COMPONENTS_SITE_ENGAGEMENT_CONTENT_SITE_ENGAGEMENT_HELPER_H_
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -14,10 +15,14 @@
 #include "components/site_engagement/content/site_engagement_service.h"
 #include "content/public/browser/media_player_id.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/browser/web_contents_user_data.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 namespace content {
 class NavigationHandle;
+}
+
+namespace tabs {
+class TabInterface;
 }
 
 namespace site_engagement {
@@ -26,13 +31,32 @@ enum class EngagementType;
 
 // Per-WebContents class to handle updating the site engagement scores for
 // origins.
-class SiteEngagementService::Helper
-    : public content::WebContentsObserver,
-      public content::WebContentsUserData<SiteEngagementService::Helper> {
+class SiteEngagementService::Helper : public content::WebContentsObserver {
  public:
+  DECLARE_USER_DATA(Helper);
+
   static void SetSecondsBetweenUserInputCheck(int seconds);
   static void SetSecondsTrackingDelayAfterNavigation(int seconds);
   static void SetSecondsTrackingDelayAfterShow(int seconds);
+
+  static Helper* From(tabs::TabInterface* tab);
+
+  // The `TabInterface` overload registers the helper on `tab`'s
+  // `UnownedUserDataHost` (`web_contents` is passed explicitly to support
+  // recreation during tab discarding before `tab` swaps its contents). The
+  // `WebContents`-only overload is used for non-tab `WebContents` (e.g.,
+  // `WebUIContentsWrapper` and unit tests). Optionally include
+  // `NoStatePrefetchManager` if no-state prefetches are possible in the
+  // embedder.
+  Helper(tabs::TabInterface& tab,
+         content::WebContents* web_contents,
+         prerender::NoStatePrefetchManager* prefetch_manager = nullptr);
+  explicit Helper(
+      content::WebContents* web_contents,
+      prerender::NoStatePrefetchManager* prefetch_manager = nullptr);
+
+  Helper(const Helper&) = delete;
+  Helper& operator=(const Helper&) = delete;
 
   ~Helper() override;
 
@@ -158,16 +182,6 @@ class SiteEngagementService::Helper
     std::vector<content::MediaPlayerId> active_media_players_;
   };
 
-  // Optionally include |NoStatePrefetchManager| if no state prefetches are
-  // possible in the embedder.
-  explicit Helper(
-      content::WebContents* web_contents,
-      prerender::NoStatePrefetchManager* prefetch_manager = nullptr);
-
-  Helper(const Helper&) = delete;
-  Helper& operator=(const Helper&) = delete;
-
-  friend class content::WebContentsUserData<SiteEngagementService::Helper>;
   friend class SiteEngagementHelperTest;
   friend class SiteEngagementHelperBrowserTest;
 
@@ -187,8 +201,7 @@ class SiteEngagementService::Helper
   MediaTracker media_tracker_;
   raw_ptr<SiteEngagementService> service_;
   raw_ptr<prerender::NoStatePrefetchManager> prefetch_manager_;
-
-  WEB_CONTENTS_USER_DATA_KEY_DECL();
+  std::optional<ui::ScopedUnownedUserData<Helper>> scoped_unowned_user_data_;
 };
 
 }  // namespace site_engagement

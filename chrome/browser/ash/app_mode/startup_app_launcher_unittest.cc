@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "ash/constants/chrome_switches.h"
 #include "ash/test/ash_test_helper.h"
 #include "base/check.h"
 #include "base/command_line.h"
@@ -28,6 +29,7 @@
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/app_service_test.h"
 #include "chrome/browser/apps/app_service/chrome_app_deprecation/chrome_app_deprecation.h"
+#include "chrome/browser/ash/app_mode/kiosk_app_external_loader.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launcher.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
@@ -36,17 +38,14 @@
 #include "chrome/browser/ash/extensions/scoped_app_window.h"
 #include "chrome/browser/ash/extensions/test_external_cache.h"
 #include "chrome/browser/ash/login/users/avatar/user_image_manager_impl.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/policy/core/device_local_account.h"
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
-#include "chrome/browser/chromeos/app_mode/kiosk_app_external_loader.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/browser/extensions/external_provider_impl.h"
 #include "chrome/browser/extensions/install_tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/apps/chrome_app_delegate.h"
-#include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/account_id/account_id.h"
@@ -194,9 +193,9 @@ class AppLaunchTracker : public extensions::TestEventRouter::EventObserver {
 
     ASSERT_EQ(event.event_name,
               extensions::api::app_runtime::OnLaunched::kEventName);
-    ASSERT_EQ(1u, event.event_args.size());
+    ASSERT_EQ(1u, event.args().size());
 
-    const base::Value& launch_data = event.event_args[0];
+    const base::Value& launch_data = event.args()[0];
     std::optional<bool> is_kiosk_session =
         launch_data.GetDict().FindBool("isKioskSession");
     ASSERT_TRUE(is_kiosk_session);
@@ -540,8 +539,9 @@ class StartupAppLauncherNoCreateTest
 
     UserImageManagerImpl::SkipDefaultUserImageDownloadForTesting();
     command_line_.GetProcessCommandLine()->AppendSwitch(
-        ::switches::kForceAppMode);
-    command_line_.GetProcessCommandLine()->AppendSwitch(::switches::kAppId);
+        ash::chrome_switches::kForceAppMode);
+    command_line_.GetProcessCommandLine()->AppendSwitch(
+        ash::chrome_switches::kAppId);
 
     extensions::ExtensionServiceTestBase::SetUp();
 

@@ -13,6 +13,7 @@
 
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
+#include "ash/constants/chrome_switches.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/public/cpp/session/session_controller.h"
 #include "ash/shell.h"
@@ -39,8 +40,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/app_session_service_factory.h"
 #include "chrome/browser/sessions/session_service_factory.h"
-#include "chrome/browser/web_applications/web_app_utils.h"
-#include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/login/session/session_termination_manager.h"
 #include "components/account_id/account_id.h"
 #include "components/app_constants/constants.h"
@@ -53,10 +52,14 @@
 #include "components/app_restore/restore_data.h"
 #include "components/app_restore/window_info.h"
 #include "components/prefs/pref_service.h"
+#include "components/sessions/core/command_storage_read_status.h"
+#include "components/sessions/core/session_id.h"
+#include "components/sessions/core/session_service_commands.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/url_formatter/url_formatter.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/common/url_constants.h"
 
 // Enable VLOG level 1.
@@ -159,7 +162,7 @@ FullRestoreService::FullRestoreService(Profile* profile)
   full_restore_save_handler->InsertIgnoreApplicationId(ash::kOsFeedbackAppId);
 
   PrefService* prefs = profile_->GetPrefs();
-  DCHECK(prefs);
+  CHECK(prefs, base::NotFatalUntil::M160);
 
   pref_change_registrar_.Init(prefs);
   pref_change_registrar_.Add(
@@ -244,7 +247,7 @@ void FullRestoreService::Init(bool& show_notification) {
   }
 
   PrefService* prefs = profile_->GetPrefs();
-  DCHECK(prefs);
+  CHECK(prefs, base::NotFatalUntil::M160);
 
   // Determine whether we should show the update string. Crash takes priority
   // over update but we do the computations to store the pref for the next
@@ -393,8 +396,8 @@ void FullRestoreService::Shutdown() {
 
 bool FullRestoreService::CanBeInited() const {
   auto* user_manager = user_manager::UserManager::Get();
-  DCHECK(user_manager);
-  DCHECK(user_manager->GetActiveUser());
+  CHECK(user_manager, base::NotFatalUntil::M160);
+  CHECK(user_manager->GetActiveUser(), base::NotFatalUntil::M160);
 
   // For non-primary user, wait for `OnTransitionedToNewActiveUser`.
   auto* user = ProfileHelper::Get()->GetUserByProfile(profile_);
@@ -409,7 +412,7 @@ bool FullRestoreService::CanBeInited() const {
   // restart process. For the restart process, `kLoginUser` should be in the
   // command line.
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
-  DCHECK(command_line);
+  CHECK(command_line, base::NotFatalUntil::M160);
   if (command_line->HasSwitch(switches::kLoginManager) ||
       !command_line->HasSwitch(switches::kLoginUser)) {
     return true;
@@ -558,7 +561,8 @@ void FullRestoreService::MaybeShowRestoreDialog(
 }
 
 void FullRestoreService::OnPreferenceChanged(const std::string& pref_name) {
-  DCHECK_EQ(pref_name, prefs::kRestoreAppsAndPagesPrefName);
+  CHECK_EQ(pref_name, prefs::kRestoreAppsAndPagesPrefName,
+           base::NotFatalUntil::M160);
 
   RestoreOption restore_option = static_cast<RestoreOption>(
       profile_->GetPrefs()->GetInteger(prefs::kRestoreAppsAndPagesPrefName));
@@ -600,7 +604,8 @@ void FullRestoreService::OnGotSessionAsh(
     base::OnceCallback<void(SessionWindows)> callback,
     SessionWindows session_windows,
     SessionID active_window_id,
-    bool read_error) {
+    sessions::CommandStorageReadStatus status,
+    sessions::SessionReplayResult replay_result) {
   std::move(callback).Run(std::move(session_windows));
 }
 
@@ -766,7 +771,7 @@ void FullRestoreService::MaybeShowInformedRestoreOnboarding(bool restore_on) {
   }
 
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          ::switches::kNoFirstRun)) {
+          ash::chrome_switches::kNoFirstRun)) {
     return;
   }
 

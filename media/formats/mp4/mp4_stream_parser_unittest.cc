@@ -39,7 +39,6 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest-param-test.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/gfx/switches.h"
 
 using ::testing::InSequence;
 using ::testing::StrictMock;
@@ -64,19 +63,19 @@ std::ostream& operator<<(std::ostream& os, Keyframeness k) {
 
 // Matchers for verifying common media log entry strings.
 MATCHER(SampleEncryptionInfoUnavailableLog, "") {
-  return CONTAINS_STRING(arg, "Sample encryption info is not available.");
+  return arg.contains("Sample encryption info is not available.");
 }
 
 MATCHER_P(InfoLog, error_string, "") {
-  return CONTAINS_STRING(arg, error_string) && CONTAINS_STRING(arg, "info");
+  return arg.contains(error_string) && arg.contains("info");
 }
 
 MATCHER_P(ErrorLog, error_string, "") {
-  return CONTAINS_STRING(arg, error_string) && CONTAINS_STRING(arg, "error");
+  return arg.contains(error_string) && arg.contains("error");
 }
 
 MATCHER_P(DebugLog, debug_string, "") {
-  return CONTAINS_STRING(arg, debug_string) && CONTAINS_STRING(arg, "debug");
+  return arg.contains(debug_string) && arg.contains("debug");
 }
 
 class MP4StreamParserTest : public testing::Test {
@@ -1200,9 +1199,7 @@ TEST_F(MP4StreamParserTest, MultiTrackFile) {
 #define MAYBE_TimedMetadataTrack DISABLED_TimedMetadataTrack
 #endif
 TEST_F(MP4StreamParserTest, MAYBE_TimedMetadataTrack) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures({kMP4TimedMetadataTrack, features::kHdrAgtm},
-                                {});
+  base::test::ScopedFeatureList feature_list(kMP4TimedMetadataTrack);
 
   auto params = GetDefaultInitParametersExpectations();
   params.liveness = StreamLiveness::kRecorded;
@@ -1232,8 +1229,12 @@ TEST_F(MP4StreamParserTest, MAYBE_TimedMetadataTrack) {
       }
     }
   }
-  EXPECT_GT(video_buffers_total, 0u);
-  EXPECT_EQ(video_buffers_with_agtm, video_buffers_total);
+  // Track 1 (video) in agtm-metadata-track-frag.mp4 has a 100ms leading empty
+  // edit, shifting its 14 100ms frames to [100ms, 1500ms), whereas Track 2
+  // (metadata) has no edit list and covers [0ms, 1400ms). Thus the first 13
+  // video frames overlap the metadata track and receive AGTM metadata.
+  EXPECT_EQ(video_buffers_total, 14u);
+  EXPECT_EQ(video_buffers_with_agtm, 13u);
 }
 
 // <cos(θ), sin(θ), θ expressed as a rotation Enum>

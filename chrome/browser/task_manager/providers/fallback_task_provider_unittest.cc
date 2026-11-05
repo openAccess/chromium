@@ -13,6 +13,8 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/task_manager/providers/task.h"
 #include "chrome/browser/task_manager/task_manager_observer.h"
+#include "components/sessions/core/session_id.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/common/process_type.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_utils.h"
@@ -34,7 +36,9 @@ class FakeTask : public Task {
 
   Type GetType() const override { return type_; }
 
-  int GetChildProcessUniqueID() const override { return 0; }
+  content::ChildProcessId GetChildProcessUniqueID() const override {
+    return content::ChildProcessId(1);
+  }
 
   base::WeakPtr<Task> GetParentTask() const override { return nullptr; }
 

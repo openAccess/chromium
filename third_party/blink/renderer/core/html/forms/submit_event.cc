@@ -37,17 +37,6 @@ void SubmitEvent::Trace(Visitor* visitor) const {
 }
 
 HTMLElement* SubmitEvent::submitter() const {
-  if (!submitter_) {
-    CHECK(!related_target_);
-    return nullptr;
-  }
-
-  if (RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
-          submitter_->GetExecutionContext())) {
-    EventTarget* related_target = related_target_.Get();
-    return related_target ? DynamicTo<HTMLElement>(related_target->ToNode())
-                          : nullptr;
-  }
   return submitter_.Get();
 }
 
@@ -56,11 +45,8 @@ const AtomicString& SubmitEvent::InterfaceName() const {
 }
 
 DispatchEventResult SubmitEvent::DispatchEvent(EventDispatcher& dispatcher) {
-  if (RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
-          dispatcher.GetNode().GetExecutionContext())) {
-    GetEventPath().AdjustForRelatedTarget(dispatcher.GetNode(),
+  GetEventPath().AdjustForReferenceTarget(dispatcher.GetNode(),
                                           relatedTarget());
-  }
   return dispatcher.Dispatch();
 }
 

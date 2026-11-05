@@ -315,6 +315,9 @@ void glDrawRangeElementsFn(GLenum mode,
                            const void* indices) override {}
 void glEGLImageTargetRenderbufferStorageOESFn(GLenum target,
                                               GLeglImageOES image) override {}
+void glEGLImageTargetTexStorageEXTFn(GLenum target,
+                                     GLeglImageOES image,
+                                     const GLint* attrib_list) override {}
 void glEGLImageTargetTexture2DOESFn(GLenum target,
                                     GLeglImageOES image) override {}
 void glEnableFn(GLenum cap) override {}
@@ -1137,6 +1140,7 @@ void glTransformFeedbackVaryingsFn(GLuint program,
                                    GLsizei count,
                                    const char* const* varyings,
                                    GLenum bufferMode) override {}
+void glTrimMemoryANGLEFn(GLenum trimLevel) override {}
 void glUniform1fFn(GLint location, GLfloat x) override {}
 void glUniform1fvFn(GLint location, GLsizei count, const GLfloat* v) override {}
 void glUniform1iFn(GLint location, GLint x) override {}

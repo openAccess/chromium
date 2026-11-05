@@ -16,17 +16,33 @@ if (is_win && use_fuzzing_engine) {
     sources =
         [ "//skia/tools/fuzzers/fuzzer_environment.cc" ] + skia_base_fuzzer_srcs
 
+    # Fuzzers compile Skia source and tool files directly (outside of
+    # "//skia"). Like "//skia" itself, they require both `skia_config` and
+    # `skia_library_config` to compile Skia internals (which "//skia" does
+    # not re-export to dependents).
     # Use public_deps and public_configs so each fuzzer_test doesn't need to
-    # explicitly depend on "//skia" and "//skia:skia_library_config".
-    public_deps = [ "//skia" ]
-    public_configs = [ "//skia:skia_library_config" ]
+    # explicitly redeclare these dependencies and configurations.
+    public_deps = [
+      "//base/allocator/partition_allocator/src/partition_alloc:raw_ptr",
+      "//skia",
+    ]
+    public_configs = [
+      "//skia:skia_config",
+      "//skia:skia_library_config",
+    ]
     deps = [ "//base/test:test_support" ]
   }
 
   static_library("skia_encoder_fuzzer_lib") {
     sources = [ "//third_party/skia/fuzz/FuzzEncoders.cpp" ]
     configs += [ "//skia:skia_library_config" ]
-    deps = [ "//skia" ]
+
+    # "//skia" depends on partition_alloc privately, but this target compiles
+    # private Skia files that include raw_ptr.h, so it needs the dep directly.
+    deps = [
+      "//base/allocator/partition_allocator/src/partition_alloc:raw_ptr",
+      "//skia",
+    ]
   }
 
   config("skia_test_fonts_includes_config") {
@@ -41,7 +57,13 @@ if (is_win && use_fuzzing_engine) {
     configs += [ "//skia:skia_library_config" ]
 
     public_configs = [ ":skia_test_fonts_includes_config" ]
-    deps = [ "//skia" ]
+
+    # "//skia" depends on partition_alloc privately, but this target compiles
+    # private Skia files that include raw_ptr.h, so it needs the dep directly.
+    deps = [
+      "//base/allocator/partition_allocator/src/partition_alloc:raw_ptr",
+      "//skia",
+    ]
     check_includes = false  # Builds some private Skia files
   }
 

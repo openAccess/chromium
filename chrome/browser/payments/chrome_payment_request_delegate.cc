@@ -22,7 +22,6 @@
 #include "chrome/browser/payments/payment_request_display_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -36,8 +35,8 @@
 #include "components/payments/content/payment_request_dialog.h"
 #include "components/payments/content/secure_payment_confirmation_controller.h"
 #include "components/payments/content/ssl_validity_checker.h"
-#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/payment_prefs.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/webauthn/content/browser/internal_authenticator_impl.h"
 #include "components/webdata_services/web_data_service_wrapper_factory.h"
@@ -96,8 +95,8 @@ ChromePaymentRequestDelegate::~ChromePaymentRequestDelegate() = default;
 
 void ChromePaymentRequestDelegate::ShowDialog(
     base::WeakPtr<PaymentRequest> request) {
-  DCHECK_EQ(nullptr, shown_dialog_.get());
-  DCHECK_EQ(nullptr, spc_dialog_.get());
+  CHECK_EQ(nullptr, shown_dialog_.get(), base::NotFatalUntil::M162);
+  CHECK_EQ(nullptr, spc_dialog_.get(), base::NotFatalUntil::M162);
 
   switch (dialog_type_) {
     case DialogType::PAYMENT_REQUEST:
@@ -210,7 +209,7 @@ ChromePaymentRequestDelegate::CreateInternalAuthenticator() const {
   // called at some point.
   if (!FrameSupportsPayments(rfh))
     return nullptr;
-  DCHECK(rfh->IsRenderFrameLive());
+  CHECK(rfh->IsRenderFrameLive(), base::NotFatalUntil::M162);
   return std::make_unique<content::InternalAuthenticatorImpl>(rfh);
 }
 
@@ -229,9 +228,11 @@ ChromePaymentRequestDelegate::GetDisplayManager() {
 
 void ChromePaymentRequestDelegate::EmbedPaymentHandlerWindow(
     const GURL& url,
+    const std::optional<gfx::Size>& preferred_web_contents_size,
     PaymentHandlerOpenWindowCallback callback) {
   if (shown_dialog_) {
-    shown_dialog_->ShowPaymentHandlerScreen(url, std::move(callback));
+    shown_dialog_->ShowPaymentHandlerScreen(url, preferred_web_contents_size,
+                                            std::move(callback));
   } else {
     std::move(callback).Run(/*success=*/false,
                             /*render_process_id=*/0,

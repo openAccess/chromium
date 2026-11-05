@@ -15,6 +15,10 @@ wayland_protocol("color_management_protocol") {
   sources = [ "src/staging/color-management/color-management-v1.xml" ]
 }
 
+wayland_protocol("color_representation_protocol") {
+  sources = [ "src/staging/color-representation/color-representation-v1.xml" ]
+}
+
 wayland_protocol("content_type_protocol") {
   sources = [ "unstable/content-type/content-type-v1.xml" ]
 }
@@ -29,6 +33,10 @@ wayland_protocol("cursor_shapes_protocol") {
 
 wayland_protocol("drm_lease_protocol") {
   sources = [ "src/staging/drm-lease/drm-lease-v1.xml" ]
+}
+
+wayland_protocol("ext_background_effect_protocol") {
+  sources = [ "src/staging/ext-background-effect/ext-background-effect-v1.xml" ]
 }
 
 wayland_protocol("extended_drag") {
@@ -51,12 +59,12 @@ wayland_protocol("gtk_primary_selection_protocol") {
   sources = [ "unstable/gtk-primary-selection/gtk-primary-selection.xml" ]
 }
 
-wayland_protocol("gtk_shell_protocol") {
-  sources = [ "gtk/gdk/wayland/protocol/gtk-shell.xml" ]
-}
-
 wayland_protocol("idle_inhibit_protocol") {
   sources = [ "src/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml" ]
+}
+
+wayland_protocol("idle_notify_protocol") {
+  sources = [ "src/staging/ext-idle-notify/ext-idle-notify-v1.xml" ]
 }
 
 wayland_protocol("input_method_protocol") {
@@ -96,11 +104,11 @@ wayland_protocol("notification_shell_protocol") {
 }
 
 wayland_protocol("org_kde_kwin_appmenu") {
-  sources = [ "kde/src/protocols/appmenu.xml" ]
+  sources = [ "kde/src/src/protocols/appmenu.xml" ]
 }
 
 wayland_protocol("org_kde_kwin_idle") {
-  sources = [ "kde/src/protocols/idle.xml" ]
+  sources = [ "kde/src/src/protocols/idle.xml" ]
 }
 
 wayland_protocol("pointer_constraints_protocol") {
@@ -110,6 +118,10 @@ wayland_protocol("pointer_constraints_protocol") {
 
 wayland_protocol("pointer_gestures_protocol") {
   sources = [ "src/unstable/pointer-gestures/pointer-gestures-unstable-v1.xml" ]
+}
+
+wayland_protocol("pointer_warp_protocol") {
+  sources = [ "src/staging/pointer-warp/pointer-warp-v1.xml" ]
 }
 
 wayland_protocol("presentation_time_protocol") {
@@ -150,6 +162,10 @@ wayland_protocol("stylus_tools_protocol") {
 
 wayland_protocol("tablet_protocol") {
   sources = [ "src/unstable/tablet/tablet-unstable-v2.xml" ]
+}
+
+wayland_protocol("tablet_v2_protocol") {
+  sources = [ "src/stable/tablet/tablet-v2.xml" ]
 }
 
 wayland_protocol("tearing_control_protocol") {
@@ -218,6 +234,11 @@ wayland_protocol("xdg_output_protocol") {
   sources = [ "src/unstable/xdg-output/xdg-output-unstable-v1.xml" ]
 }
 
+wayland_protocol("xdg_session_management_protocol") {
+  sources =
+      [ "src/staging/xdg-session-management/xdg-session-management-v1.xml" ]
+}
+
 wayland_protocol("xdg_shell_protocol") {
   sources = [
     "src/stable/xdg-shell/xdg-shell.xml",
@@ -231,6 +252,10 @@ wayland_protocol("xdg_toplevel_drag_protocol") {
 
 wayland_protocol("xdg_toplevel_icon_protocol") {
   sources = [ "src/staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml" ]
+}
+
+wayland_protocol("xdg_toplevel_tag_protocol") {
+  sources = [ "src/staging/xdg-toplevel-tag/xdg-toplevel-tag-v1.xml" ]
 }
 
 # Experimental session management protocol shipped in Mutter 47/48.

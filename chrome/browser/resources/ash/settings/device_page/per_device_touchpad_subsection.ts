@@ -23,7 +23,6 @@ import './per_device_install_row.js';
 import './per_device_subsection_header.js';
 import 'chrome://resources/ash/common/cr_elements/cr_slider/cr_slider.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import type {PolymerElementProperties} from 'chrome://resources/polymer/v3_0/polymer/interfaces.js';
@@ -35,7 +34,8 @@ import type {MousePolicies} from '../mojom-webui/input_device_settings.mojom-web
 import {MouseSettingsObserverReceiver} from '../mojom-webui/input_device_settings_provider.mojom-webui.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
 import {DisableTouchpadMode} from '../os_a11y_page/disable_touchpad_constants.js';
-import type {Route} from '../router.js';
+import type {Route} from '../os_settings_routes.js';
+import {PrefsMixin} from '../prefs/prefs_mixin.js';
 import {Router, routes} from '../router.js';
 
 import {FakeInputDeviceSettingsProvider} from './fake_input_device_settings_provider.js';
@@ -200,15 +200,6 @@ export class SettingsPerDeviceTouchpadSubsectionElement extends
         reflectToAttribute: true,
       },
 
-      isAltClickAndSixPackCustomizationEnabled: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean(
-              'enableAltClickAndSixPackCustomization');
-        },
-        readOnly: true,
-      },
-
       mice: {
         type: Array,
       },
@@ -254,23 +245,24 @@ export class SettingsPerDeviceTouchpadSubsectionElement extends
     Setting.kTouchpadSimulateRightClick,
   ]);
 
-  declare private touchpad: Touchpad;
-  declare private enableTapToClickPref: chrome.settingsPrivate.PrefObject;
-  declare private enableTapDraggingPref: chrome.settingsPrivate.PrefObject;
-  declare private accelerationPref: chrome.settingsPrivate.PrefObject;
-  declare private sensitivityPref: chrome.settingsPrivate.PrefObject;
-  declare private hapticClickSensitivityPref: chrome.settingsPrivate.PrefObject;
-  declare private simulateRightClickPref: chrome.settingsPrivate.PrefObject;
-  declare private reverseScrollValue: boolean;
-  declare private hapticFeedbackValue: boolean;
-  private isInitialized: boolean = false;
-  private inputDeviceSettingsProvider: InputDeviceSettingsProviderInterface =
+  declare protected touchpad: Touchpad;
+  declare protected enableTapToClickPref: chrome.settingsPrivate.PrefObject;
+  declare protected enableTapDraggingPref: chrome.settingsPrivate.PrefObject;
+  declare protected accelerationPref: chrome.settingsPrivate.PrefObject;
+  declare protected sensitivityPref: chrome.settingsPrivate.PrefObject;
+  declare protected hapticClickSensitivityPref:
+      chrome.settingsPrivate.PrefObject;
+  declare protected simulateRightClickPref: chrome.settingsPrivate.PrefObject;
+  declare protected reverseScrollValue: boolean;
+  declare protected hapticFeedbackValue: boolean;
+  private isInitialized_: boolean = false;
+  private inputDeviceSettingsProvider_: InputDeviceSettingsProviderInterface =
       getInputDeviceSettingsProvider();
-  declare private touchpadIndex: number;
-  declare private isLastDevice: boolean;
-  declare isAltClickAndSixPackCustomizationEnabled: boolean;
+  declare protected touchpadIndex: number;
+  declare protected isLastDevice: boolean;
   declare protected mice: Mouse[];
-  private mouseSettingsObserverReceiver: MouseSettingsObserverReceiver;
+  private mouseSettingsObserverReceiver_ =
+      new MouseSettingsObserverReceiver(this);
   declare private readonly hapticClickSensitivityValues_:
       Array<{value: number, ariaValue: number}>;
   declare private readonly sensitivityValues_: number[];
@@ -287,10 +279,10 @@ export class SettingsPerDeviceTouchpadSubsectionElement extends
   }
 
   private updateSettingsToCurrentPrefs(): void {
-    // `updateSettingsToCurrentPrefs` gets called when the `keyboard` object
+    // `updateSettingsToCurrentPrefs` gets called when the `touchpad` object
     // gets updated. This subsection element can be reused multiple times so we
-    // need to reset `isInitialized` so we do not make unneeded API calls.
-    this.isInitialized = false;
+    // need to reset `isInitialized_` so we do not make unneeded API calls.
+    this.isInitialized_ = false;
     this.set(
         'enableTapToClickPref.value', this.touchpad.settings.tapToClickEnabled);
     this.set(
@@ -307,7 +299,7 @@ export class SettingsPerDeviceTouchpadSubsectionElement extends
         this.touchpad.settings.hapticSensitivity);
     this.reverseScrollValue = this.touchpad.settings.reverseScrolling;
     this.hapticFeedbackValue = this.touchpad.settings.hapticEnabled;
-    this.isInitialized = true;
+    this.isInitialized_ = true;
   }
 
   private onLearnMoreLinkClicked_(event: Event): void {
@@ -337,21 +329,18 @@ export class SettingsPerDeviceTouchpadSubsectionElement extends
   onMousePoliciesUpdated(_mousePolicies: MousePolicies): void {}
 
   private observeMouseSettings(): void {
-    if (this.inputDeviceSettingsProvider instanceof
+    if (this.inputDeviceSettingsProvider_ instanceof
         FakeInputDeviceSettingsProvider) {
-      this.inputDeviceSettingsProvider.observeMouseSettings(this);
+      this.inputDeviceSettingsProvider_.observeMouseSettings(this);
       return;
     }
 
-    this.mouseSettingsObserverReceiver =
-        new MouseSettingsObserverReceiver(this);
-
-    this.inputDeviceSettingsProvider.observeMouseSettings(
-        this.mouseSettingsObserverReceiver.$.bindNewPipeAndPassRemote());
+    this.inputDeviceSettingsProvider_.observeMouseSettings(
+        this.mouseSettingsObserverReceiver_.$.bindNewPipeAndPassRemote());
   }
 
   private onSettingsChanged(): void {
-    if (!this.isInitialized) {
+    if (!this.isInitialized_) {
       return;
     }
 
@@ -372,7 +361,7 @@ export class SettingsPerDeviceTouchpadSubsectionElement extends
     }
 
     this.touchpad.settings = newSettings;
-    this.inputDeviceSettingsProvider.setTouchpadSettings(
+    this.inputDeviceSettingsProvider_.setTouchpadSettings(
         this.touchpad.id, this.touchpad.settings);
   }
 

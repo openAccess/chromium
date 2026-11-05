@@ -760,6 +760,30 @@ TEST_F(NetworkServiceTest, DnsClientEnableDisable) {
             dns_client_ptr->GetEffectiveConfig().secure_dns_mode);
 }
 
+TEST_F(NetworkServiceTest, InitialInsecureDnsMode) {
+  EXPECT_EQ(service()->host_resolver_manager()->GetDnsConfigAsValue().FindBool(
+                "can_use_insecure_dns_transactions"),
+            false);
+
+  if (!net::features::IsDnsPlatformSupported()) {
+    return;
+  }
+
+  DestroyService();
+  mojom::NetworkServiceParamsPtr params = mojom::NetworkServiceParams::New();
+  params->initial_insecure_dns_mode =
+      net::InsecureDnsMode::kEnabledPlatformNoSystem;
+  auto custom_service = std::make_unique<NetworkService>(
+      /*registry=*/nullptr, mojo::NullReceiver(),
+      /*delay_initialization_until_set_client=*/true);
+  custom_service->Initialize(std::move(params),
+                             /*mock_network_change_notifier=*/true);
+  EXPECT_EQ(
+      custom_service->host_resolver_manager()->GetDnsConfigAsValue().FindBool(
+          "can_use_insecure_dns_transactions"),
+      true);
+}
+
 TEST_F(NetworkServiceTest, HandlesAdditionalDnsQueryTypesEnableDisable) {
   // Create valid DnsConfig.
   net::DnsConfig config;
@@ -2000,6 +2024,29 @@ TEST_F(NetworkServiceTestWithService, SetNetworkConditions) {
   client()->RunUntilComplete();
   EXPECT_EQ(net::ERR_INTERNET_DISCONNECTED,
             client()->completion_status().error_code);
+
+  {
+    std::vector<mojom::MatchedNetworkConditionsPtr> network_conditions;
+    network_conditions.emplace_back(mojom::MatchedNetworkConditions::New());
+    network_conditions.back()->conditions = mojom::NetworkConditions::New();
+    network_conditions.back()->conditions->offline = false;
+    network_conditions.back()->conditions->latency = base::Milliseconds(100);
+    context()->SetNetworkConditions(profile_id, client_id,
+                                    std::move(network_conditions));
+  }
+  request.enable_load_timing = true;
+  StartLoadingURL(request, OriginatingProcessId::browser());
+  client()->RunUntilComplete();
+  EXPECT_EQ(net::OK, client()->completion_status().error_code);
+  const net::LoadTimingInfo& load_timing =
+      client()->response_head()->load_timing;
+  EXPECT_GE(load_timing.receive_headers_start - load_timing.send_end,
+            base::Milliseconds(100));
+  EXPECT_GE(load_timing.receive_non_informational_headers_start -
+                load_timing.send_end,
+            base::Milliseconds(100));
+  EXPECT_GE(load_timing.receive_headers_end, load_timing.receive_headers_start);
+
   context()->SetNetworkConditions(profile_id, client_id, {});
   StartLoadingURL(request, OriginatingProcessId::browser());
   client()->RunUntilComplete();
@@ -2336,6 +2383,8 @@ class ClearSiteDataAuthCertObserver : public TestURLLoaderNetworkObserver {
 
   void OnClearSiteData(
       const GURL& url,
+      const std::optional<net::SchemefulSite>& top_level_site,
+      const std::optional<base::UnguessableToken>& nonce,
       const std::string& header_value,
       int load_flags,
       const std::optional<net::CookiePartitionKey>& cookie_partition_key,

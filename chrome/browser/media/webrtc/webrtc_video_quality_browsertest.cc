@@ -25,9 +25,7 @@
 #include "chrome/browser/media/webrtc/webrtc_browsertest_common.h"
 #include "chrome/browser/media/webrtc/webrtc_browsertest_perf.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/infobars/content/content_infobar_manager.h"
@@ -225,7 +223,7 @@ class WebRtcVideoQualityBrowserTest : public WebRtcTestBase,
     // Print to stdout to ensure the perf numbers are parsed properly by the
     // buildbot step. The tool should print a handful RESULT lines.
     printf("Output was:\n\n%s\n", output.c_str());
-    bool has_result_lines = output.find("RESULT") != std::string::npos;
+    bool has_result_lines = output.contains("RESULT");
     if (!ok || !has_result_lines) {
       LOG(ERROR) << "Failed to compare videos; see output to see what "
                  << "the error was:\n\n"

@@ -6,9 +6,12 @@
 #define CHROME_BROWSER_UI_STARTUP_DEFAULT_BROWSER_PROMPT_DEFAULT_BROWSER_PROMPT_MANAGER_H_
 
 #include <memory>
+#include <utility>
 
 #include "base/memory/singleton.h"
 #include "chrome/browser/ui/startup/default_browser_prompt/default_browser_surface_manager.h"
+
+class Profile;
 
 // DefaultBrowserPromptManager is a Global singleton class that is responsible
 // for owning and displaying prompts that nudge user to set Chrome as their
@@ -26,13 +29,18 @@ class DefaultBrowserPromptManager {
 
   static DefaultBrowserPromptManager* GetInstance();
 
-  bool show_app_menu_item() const { return show_app_menu_item_; }
+  bool ShouldShowAppMenuItem(const Profile* profile) const;
 
   // Returns true if the prompt was shown, false if not.
   bool MaybeShowPrompt();
 
   DefaultBrowserSurfaceManager* GetPromptSurfaceManager() {
     return prompt_surface_manager_.get();
+  }
+
+  void SetPromptSurfaceManagerForTesting(
+      std::unique_ptr<DefaultBrowserSurfaceManager> surface_manager) {
+    prompt_surface_manager_ = std::move(surface_manager);
   }
 
   void ShowPrompts(bool can_pin_to_taskbar);

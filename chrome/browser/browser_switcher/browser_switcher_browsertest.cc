@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/browser_switcher/browser_switcher_service.h"
-
 #include <string.h>
 
 #include "base/command_line.h"
@@ -20,8 +18,8 @@
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "chrome/browser/browser_switcher/browser_switcher_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
@@ -31,6 +29,7 @@
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 namespace browser_switcher {
@@ -160,7 +159,8 @@ IN_PROC_BROWSER_TEST_F(BrowserSwitcherBrowserTest, RunsExternalCommand) {
   // We open a new tab, because closing the last tab in the browser
   // causes the whole browser to close.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(kTestUrl), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL(kTestUrl),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   base::RunLoop run_loop;
@@ -186,7 +186,7 @@ IN_PROC_BROWSER_TEST_F(BrowserSwitcherBrowserTest, DoesNotKeepSpaces) {
   // causes the whole browser to close.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(kTestUrlWithSpaces),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   base::RunLoop run_loop;
@@ -216,7 +216,7 @@ IN_PROC_BROWSER_TEST_F(BrowserSwitcherBrowserTest, UnencodesSingleQUotes) {
   // causes the whole browser to close.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(kTestUrlWithQuotes),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   base::RunLoop run_loop;
@@ -242,7 +242,8 @@ IN_PROC_BROWSER_TEST_F(BrowserSwitcherBrowserTest, DoesNotRunOnRandomUrls) {
   // We open a new tab, because closing the last tab in the browser
   // causes the whole browser to close.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(kOtherUrl), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL(kOtherUrl),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   base::RunLoop run_loop;

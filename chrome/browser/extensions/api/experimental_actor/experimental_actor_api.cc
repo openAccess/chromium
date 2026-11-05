@@ -40,6 +40,7 @@
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/tabs/public/tab_handle_factory.h"
 #include "components/tabs/public/tab_interface.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/common/features/feature_channel.h"
 
 namespace extensions {
@@ -244,6 +245,9 @@ ExperimentalActorPerformActionsFunction::Run() {
         ConvertActionTabId(action.mutable_attempt_otp_filling(),
                            browser_context());
         break;
+      case optimization_guide::proto::Action::kChangePassword:
+        ConvertActionTabId(action.mutable_change_password(), browser_context());
+        break;
       case optimization_guide::proto::Action::kTranslatePage:
         ConvertActionTabId(action.mutable_translate_page(), browser_context());
         break;
@@ -437,18 +441,16 @@ ExperimentalActorRequestTabObservationFunction::Run() {
   if (!ExtensionTabUtil::GetTabById(params->tab_id, browser_context(),
                                     include_incognito_information(),
                                     &web_contents)) {
-    return RespondNow(Error(
-        ErrorUtils::FormatErrorMessage(ExtensionTabUtil::kTabNotFoundError,
-                                       base::NumberToString(params->tab_id))));
+    return RespondNow(Error(ErrorUtils::FormatErrorMessage(
+        kTabNotFoundError, base::NumberToString(params->tab_id))));
   }
   tabs::TabInterface* tab =
       tabs::TabInterface::MaybeGetFromContents(web_contents);
   // Can be null for pre-render web-contents.
   // TODO(crbug.com/369319589): Remove this logic.
   if (!tab) {
-    return RespondNow(Error(
-        ErrorUtils::FormatErrorMessage(ExtensionTabUtil::kTabNotFoundError,
-                                       base::NumberToString(params->tab_id))));
+    return RespondNow(Error(ErrorUtils::FormatErrorMessage(
+        kTabNotFoundError, base::NumberToString(params->tab_id))));
   }
 
   auto* actor_service = actor::ActorKeyedService::Get(browser_context());

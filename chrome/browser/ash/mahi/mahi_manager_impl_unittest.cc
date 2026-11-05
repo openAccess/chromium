@@ -5,7 +5,10 @@
 #include "chrome/browser/ash/mahi/mahi_manager_impl.h"
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
@@ -15,27 +18,51 @@
 #include "ash/system/mahi/test/mock_mahi_media_app_content_manager.h"
 #include "ash/system/toast/anchored_nudge_manager_impl.h"
 #include "ash/test/ash_test_base.h"
+#include "ash/test/ash_test_helper.h"
 #include "base/auto_reset.h"
+#include "base/check.h"
 #include "base/command_line.h"
+#include "base/debug/stack_trace.h"
+#include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/gtest_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/unguessable_token.h"
+#include "base/version_info/channel.h"
 #include "chrome/browser/ash/magic_boost/magic_boost_state.h"
 #include "chrome/browser/ash/mahi/mahi_cache_manager.h"
 #include "chrome/browser/ash/mahi/web_contents/test_support/fake_mahi_web_contents_manager.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/test/base/testing_browser_process.h"
+#include "chromeos/ash/components/manta/manta_service_provider.h"
+#include "chromeos/ash/components/signin/fake_identity_manager_provider.h"
 #include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
 #include "chromeos/components/mahi/public/cpp/mahi_media_app_content_manager.h"
 #include "chromeos/components/mahi/public/cpp/mahi_types.h"
 #include "chromeos/components/mahi/public/cpp/mahi_web_contents_manager.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/constants/chromeos_switches.h"
+#include "components/account_id/account_id.h"
+#include "components/account_id/account_id_literal.h"
+#include "components/manta/manta_service.h"
+#include "components/metrics/metrics_state_manager.h"
+#include "components/metrics/startup_visibility.h"
+#include "components/metrics/test/test_enabled_state_provider.h"
+#include "components/prefs/pref_service.h"
+#include "components/session_manager/test/user_session_test_environment.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
+#include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "components/variations/pref_names.h"
+#include "components/variations/service/test_variations_service.h"
 #include "content/public/test/browser_task_environment.h"
+#include "google_apis/gaia/gaia_id.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -54,6 +81,25 @@ using ::testing::Return;
 constexpr char kFakeSummary[] = "Fake summary";
 constexpr char kFakeContent[] = "Test page content";
 constexpr char kFakeElucidation[] = "Fake elucidation";
+constexpr char kTestEmail[] = "user@example.com";
+constexpr AccountId::Literal kTestAccountId =
+    AccountId::Literal::FromUserEmailGaiaId(
+        kTestEmail,
+        GaiaId::Literal("gaia_id_for_user"));
+
+class TestMantaServiceProvider : public ash::MantaServiceProvider {
+ public:
+  explicit TestMantaServiceProvider(
+      std::unique_ptr<manta::MantaService> service)
+      : service_(std::move(service)) {}
+
+  manta::MantaService* Find(const AccountId& account_id) override {
+    return account_id == kTestAccountId ? service_.get() : nullptr;
+  }
+
+ private:
+  std::unique_ptr<manta::MantaService> service_;
+};
 
 class FakeMahiProvider : public manta::MahiProvider {
  public:
@@ -117,29 +163,52 @@ bool IsMahiNudgeShown() {
 
 namespace ash {
 
-class MahiManagerImplTest : public NoSessionAshTestBase {
+class MahiManagerImplTest : public AshTestBase {
  public:
   MahiManagerImplTest()
-      : NoSessionAshTestBase(
-            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+      : AshTestBase(std::unique_ptr<base::test::TaskEnvironment>(
+            std::make_unique<content::BrowserTaskEnvironment>(
+                base::test::TaskEnvironment::TimeSource::MOCK_TIME))) {}
 
   MahiManagerImplTest(const MahiManagerImplTest&) = delete;
   MahiManagerImplTest& operator=(const MahiManagerImplTest&) = delete;
 
   ~MahiManagerImplTest() override = default;
 
-  // NoSessionAshTestBase::
+  // AshTestBase:
+  void SetUpInitParams(ash::AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
+    init_params.users.clear();
+  }
+
   void SetUp() override {
     feature_list_.InitWithFeatures(
         /*enabled_features=*/{chromeos::features::kFeatureManagementMahi},
         /*disabled_features=*/{});
-    NoSessionAshTestBase::SetUp();
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
         chromeos::switches::kMahiRestrictionsOverride);
 
+    // Needed for `MagicBoostState` and `MahiManagerImpl`.
+    PrefService* local_state =
+        TestingBrowserProcess::GetGlobal()->local_state();
+    metrics_state_manager_ = metrics::MetricsStateManager::Create(
+        local_state, &metrics_enabled_state_provider_,
+        /*backup_registry_key=*/std::wstring(),
+        /*user_data_dir=*/base::FilePath(),
+        metrics::StartupVisibility::kUnknown);
+    test_variations_service_ =
+        std::make_unique<variations::TestVariationsService>(
+            local_state, metrics_state_manager_.get());
+    TestingBrowserProcess::GetGlobal()->SetVariationsService(
+        test_variations_service_.get());
+
+    AshTestBase::SetUp();
+
     magic_boost_state_ = std::make_unique<MagicBoostState>(
+        TestingBrowserProcess::GetGlobal()->variations_service(),
         base::BindRepeating([]() { return static_cast<Profile*>(nullptr); }));
-    mahi_manager_impl_ = std::make_unique<MahiManagerImpl>();
+    mahi_manager_impl_ = std::make_unique<MahiManagerImpl>(
+        TestingBrowserProcess::GetGlobal()->variations_service());
     mahi_manager_impl_->mahi_provider_ = CreateMahiProvider();
 
     SimulateUserLogin(kRegularUserLoginInfo);
@@ -148,7 +217,66 @@ class MahiManagerImplTest : public NoSessionAshTestBase {
   void TearDown() override {
     mahi_manager_impl_.reset();
     magic_boost_state_.reset();
-    NoSessionAshTestBase::TearDown();
+    manta_service_provider_.reset();
+    identity_manager_provider_.reset();
+
+    AshTestBase::TearDown();
+
+    TestingBrowserProcess::GetGlobal()->SetVariationsService(nullptr);
+    test_variations_service_.reset();
+    metrics_state_manager_.reset();
+  }
+
+  void SetCountryCode(std::string_view country_code) {
+    TestingBrowserProcess::GetGlobal()->local_state()->SetString(
+        variations::prefs::kVariationsCountry, country_code);
+  }
+
+  void SetUpRealEligibilityEnvironment(std::optional<bool> can_use_manta,
+                                       std::string_view country_code = "us") {
+    base::CommandLine::ForCurrentProcess()->RemoveSwitch(
+        chromeos::switches::kMahiRestrictionsOverride);
+
+    mahi_manager_impl_.reset();
+    magic_boost_state_.reset();
+
+    SetCountryCode(country_code);
+
+    auto& user_session_test_env =
+        ash_test_helper()->user_session_test_environment();
+    CHECK(user_session_test_env.AddRegularUser(kTestAccountId));
+    user_session_test_env.LogIn(kTestAccountId);
+
+    AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
+        kTestEmail, signin::ConsentLevel::kSignin);
+    if (can_use_manta.has_value()) {
+      AccountCapabilitiesTestMutator mutator(&account_info);
+      mutator.set_can_use_manta_service(*can_use_manta);
+      identity_test_env_.UpdateAccountInfoForAccount(account_info);
+    }
+
+    identity_manager_provider_ =
+        std::make_unique<FakeIdentityManagerProvider>();
+    identity_manager_provider_->SetIdentityManagerForAccount(
+        kTestAccountId, identity_test_env_.identity_manager());
+
+    manta_service_provider_ = std::make_unique<TestMantaServiceProvider>(
+        std::make_unique<manta::MantaService>(
+            test_url_loader_factory_.GetSafeWeakWrapper(),
+            identity_test_env_.identity_manager(),
+            /*is_demo_mode=*/false,
+            /*chrome_version=*/std::string(),
+            /*chrome_channel=*/version_info::Channel::DEFAULT,
+            /*locale=*/std::string()));
+
+    // Recreate `magic_boost_state_` and `mahi_manager_impl_` so they initialize
+    // against the non-overridden eligibility environment.
+    magic_boost_state_ = std::make_unique<MagicBoostState>(
+        TestingBrowserProcess::GetGlobal()->variations_service(),
+        base::BindRepeating([]() { return static_cast<Profile*>(nullptr); }));
+    mahi_manager_impl_ = std::make_unique<MahiManagerImpl>(
+        TestingBrowserProcess::GetGlobal()->variations_service());
+    mahi_manager_impl_->mahi_provider_ = CreateMahiProvider();
   }
 
   void SetMahiEnabledByUserPref(bool enabled) {
@@ -220,6 +348,10 @@ class MahiManagerImplTest : public NoSessionAshTestBase {
             &test_url_loader_factory_),
         identity_test_env_.identity_manager());
   }
+  metrics::TestEnabledStateProvider metrics_enabled_state_provider_{
+      /*consent=*/false, /*enabled=*/false};
+  std::unique_ptr<metrics::MetricsStateManager> metrics_state_manager_;
+  std::unique_ptr<variations::TestVariationsService> test_variations_service_;
   std::unique_ptr<MagicBoostState> magic_boost_state_;
   std::unique_ptr<MahiManagerImpl> mahi_manager_impl_;
   base::test::ScopedFeatureList feature_list_;
@@ -237,6 +369,8 @@ class MahiManagerImplTest : public NoSessionAshTestBase {
 
   network::TestURLLoaderFactory test_url_loader_factory_;
   signin::IdentityTestEnvironment identity_test_env_;
+  std::unique_ptr<FakeIdentityManagerProvider> identity_manager_provider_;
+  std::unique_ptr<TestMantaServiceProvider> manta_service_provider_;
 };
 
 TEST_F(MahiManagerImplTest, CacheSavedForContentRequest) {
@@ -286,27 +420,11 @@ TEST_F(MahiManagerImplTest, NoContentCallWhenContentIsInCache) {
   EXPECT_EQ(content, new_content);
 }
 
-// Title is included in the request proto.
-TEST_F(MahiManagerImplTest, SendingTitleOnly) {
-  feature_list_.Reset();
-  feature_list_.InitWithFeatures(
-      /*enabled_features=*/{chromeos::features::kFeatureManagementMahi},
-      /*disabled_features=*/{chromeos::features::kMahiSendingUrl});
+// Title and url are included in the request proto.
+TEST_F(MahiManagerImplTest, SendingTitleAndUrl) {
   RequestSummary();
 
   EXPECT_EQ(GetMahiProvider()->latest_title(), "Title of url1");
-  EXPECT_FALSE(GetMahiProvider()->latest_url().has_value());
-}
-
-// Url, on the other hand, is controlled by kMahiSendingUrl.
-TEST_F(MahiManagerImplTest, SendingTitleAndUrl) {
-  feature_list_.Reset();
-  feature_list_.InitWithFeatures({chromeos::features::kMahiSendingUrl,
-                                  chromeos::features::kFeatureManagementMahi},
-                                 /*disabled_features=*/{});
-
-  RequestSummary();
-
   EXPECT_TRUE(GetMahiProvider()->latest_url().has_value());
   EXPECT_EQ(GetMahiProvider()->latest_url().value(),
             "http://url1.com/abc#skip");
@@ -458,7 +576,7 @@ TEST_F(MahiManagerImplTest, SetMahiPrefOnLogin) {
         Shell::Get()->session_controller()->GetActiveAccountId();
 
     // Sets the pref for the second user.
-    SimulateUserLogin({"other@user.test"});
+    SimulateUserLogin(AccountId::FromUserEmail("other@user.test"));
     SetMahiEnabledByUserPref(!mahi_enabled);
     EXPECT_EQ(IsEnabled(), !mahi_enabled);
 
@@ -580,6 +698,59 @@ TEST_F(MahiManagerImplTest, GetSummaryForSelectedText) {
   // Checks the page content is request and cached even if the summary is for
   // selected text.
   EXPECT_EQ(GetCacheManager()->size(), 1);
+}
+
+TEST_F(MahiManagerImplTest, IsEnabled_ReturnsFalseWhenMantaCapabilityUnknown) {
+  SetUpRealEligibilityEnvironment(/*can_use_manta=*/std::nullopt);
+  SetMahiEnabledByUserPref(true);
+  EXPECT_FALSE(IsEnabled());
+}
+
+TEST_F(MahiManagerImplTest, IsEnabled_ReturnsFalseForMinorAccount) {
+  SetUpRealEligibilityEnvironment(/*can_use_manta=*/false);
+  SetMahiEnabledByUserPref(true);
+  EXPECT_FALSE(IsEnabled());
+}
+
+TEST_F(MahiManagerImplTest,
+       IsEnabled_ReturnsTrueForAdultInAllowedCountryWhenPrefEnabled) {
+  SetUpRealEligibilityEnvironment(/*can_use_manta=*/true,
+                                  /*country_code=*/"us");
+  SetMahiEnabledByUserPref(true);
+  EXPECT_TRUE(IsEnabled());
+
+  SetMahiEnabledByUserPref(false);
+  EXPECT_FALSE(IsEnabled());
+}
+
+TEST_F(MahiManagerImplTest, IsEnabled_ReturnsFalseInDisallowedCountry) {
+  SetUpRealEligibilityEnvironment(/*can_use_manta=*/true,
+                                  /*country_code=*/"cn");
+  SetMahiEnabledByUserPref(true);
+  EXPECT_FALSE(IsEnabled());
+}
+
+class MahiManagerImplDeathTest : public MahiManagerImplTest {
+ protected:
+  void SetUp() override {
+    GTEST_FLAG_SET(death_test_style, "fast");
+    MahiManagerImplTest::SetUp();
+  }
+
+ private:
+  base::debug::OverrideStackTraceOutputForTesting suppress_stack_traces_{
+      base::debug::OverrideStackTraceOutputForTesting::Mode::kSuppressOutput};
+};
+
+TEST_F(MahiManagerImplDeathTest,
+       OnContextMenuClicked_CrashesWhenUserNotEligible) {
+  SetUpRealEligibilityEnvironment(/*can_use_manta=*/false);
+  ASSERT_FALSE(
+      chromeos::MagicBoostState::Get()->IsUserEligibleForGenAIFeatures());
+
+  chromeos::MahiContextMenuRequest request;
+  request.action_type = chromeos::MahiActionType::kSummary;
+  EXPECT_CHECK_DEATH(mahi_manager_impl_->OnContextMenuClicked(request));
 }
 
 }  // namespace ash

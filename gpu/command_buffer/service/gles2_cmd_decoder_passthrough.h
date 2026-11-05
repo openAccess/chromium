@@ -13,11 +13,13 @@
 #include <optional>
 #include <vector>
 
+#include "base/cancelable_callback.h"
 #include "base/containers/circular_deque.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/common/debug_marker_manager.h"
 #include "gpu/command_buffer/common/discardable_handle.h"
@@ -35,7 +37,7 @@
 #include "ui/gl/gl_context.h"
 #include "ui/gl/gl_fence.h"
 #include "ui/gl/gl_surface.h"
-#include "ui/gl/gpu_switching_observer.h"
+#include "ui/gl/scoped_make_current.h"
 
 namespace gl {
 class GLFence;
@@ -95,7 +97,7 @@ struct PassthroughResources {
    public:
     SharedImageData();
     explicit SharedImageData(
-        const GLES2DecoderPassthroughImpl*,
+        GLES2DecoderPassthroughImpl*,
         std::unique_ptr<GLTexturePassthroughImageRepresentation>);
     SharedImageData(SharedImageData&& other);
 
@@ -113,8 +115,6 @@ struct PassthroughResources {
     // even if access is currently suspended.
     bool is_being_accessed() const { return access_mode_.has_value(); }
 
-    void EnsureClear(const GLES2DecoderPassthroughImpl*);
-
     bool BeginAccess(GLenum mode, gl::GLApi* api);
     void EndAccess();
 
@@ -122,6 +122,8 @@ struct PassthroughResources {
     void SuspendAccessIfNeeded();
 
    private:
+    void EnsureClear(GLES2DecoderPassthroughImpl*);
+
     std::unique_ptr<GLTexturePassthroughImageRepresentation> representation_;
     std::unique_ptr<GLTexturePassthroughImageRepresentation::ScopedAccess>
         scoped_access_;
@@ -137,9 +139,11 @@ struct PassthroughResources {
 // so we can stack-allocate load/store ops.
 static constexpr GLsizei kPassthroughMaxPLSPlanes = 8;
 
-class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl
-    : public GLES2Decoder,
-      public ui::GpuSwitchingObserver {
+// Minimum idle delay before memory is trimmed for this context. Actual delay
+// can be higher.
+static constexpr base::TimeDelta kIdleTrimDelay = base::Seconds(1);
+
+class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl : public GLES2Decoder {
  public:
   GLES2DecoderPassthroughImpl(DecoderClient* client,
                               CommandBufferServiceBase* command_buffer_service,
@@ -222,6 +226,9 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl
 
   void SetIgnoreCachedStateForTest(bool ignore) override;
   void SetForceShaderNameHashingForTest(bool force) override;
+  void ForceReinitializeFeatureInfoForTesting() {
+    feature_info_->ForceReinitialize();
+  }
 
   // Gets the QueryManager for this context.
   QueryManager* GetQueryManager() override;
@@ -330,9 +337,6 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl
   // directly, and needing to know if they failed due to loss.
   bool CheckResetStatus() override;
 
-  // Implement GpuSwitchingObserver.
-  void OnGpuSwitched() override;
-
   Logger* GetLogger() override;
 
   void BeginDecoding() override;
@@ -379,6 +383,8 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl
  private:
   // Allow unittests to inspect internal state tracking
   friend class GLES2DecoderPassthroughTestBase;
+  // Uses FlushErrors() to detect failures when clearing shared images.
+  friend class PassthroughResources::SharedImageData;
 
   const char* GetCommandName(unsigned int command_id) const;
 
@@ -482,6 +488,8 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl
 
   void BuildRequestableExtensionString();
 
+  bool CanRedefineBoundTexture(GLenum target);
+
   PassthroughProgramCache* get_passthrough_program_cache() const;
 
   int commands_to_process_;
@@ -508,7 +516,8 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl
   };
 
   // A table of CommandInfo for all the commands.
-  static const CommandInfo command_info[kNumCommands - kFirstGLES2Command];
+  static const std::array<CommandInfo, kNumCommands - kFirstGLES2Command>
+      command_info;
 
   // The GLApi to make the gl calls on.
   raw_ptr<gl::GLApi> api_ = nullptr;
@@ -758,6 +767,37 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl
   };
 
   std::unique_ptr<LazySharedContextState> lazy_context_;
+
+  // Makes `context` current for its lifetime, first interrupting pixel local
+  // storage if the decoder's context is current. On destruction, restores the
+  // previously current context and verifies that the decoder's context is
+  // current again. If it is not, the decoder's context is marked as lost and
+  // pixel local storage is not restored, so no further work runs on the wrong
+  // context.
+  class ScopedSharedContextCurrent {
+   public:
+    ScopedSharedContextCurrent(GLES2DecoderPassthroughImpl* impl,
+                               gl::GLContext* context,
+                               gl::GLSurface* surface);
+    ScopedSharedContextCurrent(const ScopedSharedContextCurrent&) = delete;
+    ScopedSharedContextCurrent& operator=(const ScopedSharedContextCurrent&) =
+        delete;
+    ~ScopedSharedContextCurrent();
+
+    // Returns whether `context` was successfully made current.
+    bool IsContextCurrent();
+
+   private:
+    raw_ptr<GLES2DecoderPassthroughImpl> impl_;
+    bool decoder_context_was_current_ = false;
+    bool pixel_local_storage_interrupted_ = false;
+    std::optional<ui::ScopedMakeCurrent> scoped_make_current_;
+  };
+
+  // Returns whether the decoder's context is current, according to both
+  // Chromium's and the underlying GL implementation's bookkeeping.
+  bool IsDecoderContextCurrent() const;
+
   // Tracing
   std::unique_ptr<GPUTracer> gpu_tracer_;
   int gpu_trace_level_;
@@ -777,13 +817,19 @@ class GPU_GLES2_EXPORT GLES2DecoderPassthroughImpl
 
   GLuint linking_program_service_id_ = 0u;
 
+  void ScheduleIdleMemoryTrim();
+  void PostIdleMemoryTrimTask();
+  void PerformIdleMemoryTrim();
+
+  base::TimeTicks last_active_time_;
+  base::CancelableOnceClosure idle_trim_cb_;
+
   base::WeakPtrFactory<GLES2DecoderPassthroughImpl> weak_ptr_factory_{this};
 
   class ScopedEnableTextureRectangleInShaderCompiler;
 
 // Include the prototypes of all the doer functions from a separate header to
 // keep this file clean.
-#include "base/time/time.h"
 #include "gpu/command_buffer/service/gles2_cmd_decoder_passthrough_doer_prototypes.h"
 };
 

@@ -548,10 +548,17 @@ TEST_F(PinRequestViewTest, AccessibleProperties) {
 
 class PinRequestWidgetTest : public PinRequestViewTest {
  public:
-  PinRequestWidgetTest() { set_start_session(true); }
+  PinRequestWidgetTest() = default;
   PinRequestWidgetTest(const PinRequestWidgetTest&) = delete;
   PinRequestWidgetTest& operator=(const PinRequestWidgetTest&) = delete;
   ~PinRequestWidgetTest() override = default;
+
+  // PinRequestViewTest:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    PinRequestViewTest::SetUpInitParams(init_params);
+    ASSERT_TRUE(init_params.users.empty());
+    init_params.users.push_back(LoginInfo{});
+  }
 };
 
 // Tests that the widget is properly resized when tablet mode changes.

@@ -3,14 +3,11 @@
 # found in the LICENSE file.
 
 # This is more akin to a .pyl/JSON file, so it's expected to be long.
-# pylint: disable=too-many-lines
 
 from collections.abc import Callable
 from enum import Enum
 import json
-import logging
 import os
-import posixpath
 import time
 import urllib.parse
 
@@ -22,7 +19,6 @@ from gpu_tests import crop_actions as ca
 from gpu_tests import overlay_support
 from gpu_tests import skia_gold_heartbeat_integration_test_base as sghitb
 from gpu_tests import skia_gold_matching_algorithms as algo
-from gpu_tests.util import websocket_server as wss
 
 CRASH_TYPE_BROWSER = 'browser'
 CRASH_TYPE_GPU = 'gpu-process'
@@ -72,7 +68,7 @@ class PixelTestPage(sghitb.SkiaGoldHeartbeatTestCase):
   from the old-style GPU tests.
   """
 
-  def __init__(  # pylint: disable=too-many-arguments
+  def __init__(
     self,
     url: str,
     name: str,
@@ -89,6 +85,7 @@ class PixelTestPage(sghitb.SkiaGoldHeartbeatTestCase):
     | None = None,
     requires_fullscreen_os_screenshot_func: Callable[[], bool] | None = None,
     known_flaky_output_test: bool = False,
+    collect_dawn_info: bool | None = None,
     **kwargs,
   ):
     # Video tests can result in non-hermetic test behavior due to overlays, so
@@ -134,6 +131,9 @@ class PixelTestPage(sghitb.SkiaGoldHeartbeatTestCase):
     # multiple times so that inexact matching with stricter parameters can
     # match.
     self.known_flaky_output_test = known_flaky_output_test
+    if collect_dawn_info is None:
+      collect_dawn_info = 'webgpu' in name.lower()
+    self.collect_dawn_info = collect_dawn_info
 
 
 # pytype: disable=signature-mismatch
@@ -210,123 +210,6 @@ class TestActionSleepBeforeRender(sghitb.TestAction):
     sghitb.EvalInTestIframe(tab, 'render()')
 
 
-class TestActionRunOffscreenCanvasIBRCWebGLLowPerfTest(sghitb.TestAction):
-  """Runs steps for an offscreen canvas IBRC WebGL test on the low power GPU."""
-
-  def Run(
-    self,
-    test_case: PixelTestPage,
-    tab_data: sghitb.TabData,
-    loop_state: sghitb.LoopState,
-    test_instance: sghitb.SkiaGoldHeartbeatIntegrationTestBase,
-  ) -> None:
-    tab = tab_data.tab
-    test_instance.AssertLowPowerGPU()
-    sghitb.EvalInTestIframe(tab, 'setup()')
-    # Wait a few seconds for any (incorrect) GPU switched notifications to
-    # propagate throughout the system.
-    time.sleep(5)
-    test_instance.AssertLowPowerGPU()
-    sghitb.EvalInTestIframe(tab, 'render()')
-
-
-class TestActionRunOffscreenCanvasIBRCWebGLHighPerfTest(sghitb.TestAction):
-  """Runs steps for an offscreen canvas IBRC WebGL test on the high perf GPU."""
-
-  def Run(
-    self,
-    test_case: PixelTestPage,
-    tab_data: sghitb.TabData,
-    loop_state: sghitb.LoopState,
-    test_instance: sghitb.SkiaGoldHeartbeatIntegrationTestBase,
-  ) -> None:
-    tab = tab_data.tab
-    test_instance.AssertLowPowerGPU()
-    sghitb.EvalInTestIframe(tab, 'setup(true)')
-    # Wait a few seconds for any (incorrect) GPU switched notifications to
-    # propagate throughout the system.
-    time.sleep(5)
-    test_instance.AssertHighPerformanceGPU()
-    sghitb.EvalInTestIframe(tab, 'render()')
-
-
-class TestActionRunTestWithHighPerformanceTab(sghitb.TestAction):
-  """Runs steps for a specific test with a high perf second tab present."""
-
-  def Run(
-    self,
-    test_case: PixelTestPage,
-    tab_data: sghitb.TabData,
-    loop_state: sghitb.LoopState,
-    test_instance: sghitb.SkiaGoldHeartbeatIntegrationTestBase,
-  ) -> None:
-    tab = tab_data.tab
-    if not test_instance.IsDualGPUMacLaptop():
-      # Short-circuit this test.
-      logging.info(
-        'Short-circuiting test because not running on dual-GPU Mac laptop'
-      )
-      sghitb.EvalInTestIframe(tab, 'initialize(false)')
-      return
-
-    high_performance_tab = tab.browser.tabs.New()
-    high_performance_file = posixpath.join(
-      gpu_path_util.GPU_DATA_RELATIVE_PATH,
-      'functional_webgl_high_performance.html',
-    )
-    high_performance_websocket_server = wss.WebsocketServer()
-    high_performance_websocket_server.StartServer()
-    high_performance_tab_data = sghitb.TabData(
-      high_performance_tab, high_performance_websocket_server
-    )
-    high_performance_loop_state = sghitb.LoopState()
-    try:
-      test_instance.NavigateTo(
-        high_performance_file, tab_data=high_performance_tab_data
-      )
-      test_instance.HandleMessageLoop(
-        SHORT_GLOBAL_TIMEOUT,
-        loop_state=high_performance_loop_state,
-        tab_data=high_performance_tab_data,
-      )
-      assert high_performance_loop_state.test_finished
-
-      # Wait a few seconds for the GPU switched notification to propagate
-      # throughout the system.
-      time.sleep(5)
-      # Switch back to the main tab and quickly start its rendering, while the
-      # high-power GPU is still active.
-      tab.Activate()
-      sghitb.EvalInTestIframe(tab, 'initialize(true)')
-      test_instance.HandleMessageLoop(
-        SHORT_GLOBAL_TIMEOUT, loop_state=loop_state, tab_data=tab_data
-      )
-      high_performance_tab.Close()
-    finally:
-      high_performance_websocket_server.StopServer()
-    # Wait for ~15 seconds for the system to switch back to the
-    # integrated GPU.
-    time.sleep(15)
-    # Run the page to completion.
-    sghitb.EvalInTestIframe(tab, 'setTimeout(runToCompletion, 0)')
-
-
-class TestActionRunLowToHighPowerTest(sghitb.TestAction):
-  """Runs steps for the low to high power GPU transition test."""
-
-  def Run(
-    self,
-    test_case: PixelTestPage,
-    tab_data: sghitb.TabData,
-    loop_state: sghitb.LoopState,
-    test_instance: sghitb.SkiaGoldHeartbeatIntegrationTestBase,
-  ) -> None:
-    is_dual_gpu = test_instance.IsDualGPUMacLaptop()
-    sghitb.EvalInTestIframe(
-      tab_data.tab, f'initialize({json.dumps(is_dual_gpu)})'
-    )
-
-
 # pytype: enable=signature-mismatch
 
 
@@ -352,18 +235,15 @@ def CaptureFullScreenshotOnFuchsia(browser: browser_module.Browser) -> bool:
 class PixelTestPages:
   @staticmethod
   def DefaultPages(base_name: str) -> list[PixelTestPage]:
-    sw_compositing_args = [cba.DISABLE_GPU_COMPOSITING]
+    sw_compositing_args = [
+      cba.DISABLE_GPU,
+      '--enable-unsafe-swiftshader',
+    ]
     experimental_hdr_args = [cba.ENABLE_EXPERIMENTAL_WEB_PLATFORM_FEATURES]
 
     switch_tab_test_actions = [
       sghitb.TestActionWaitForContinue(SHORT_GLOBAL_TIMEOUT),
       TestActionSwitchTabs(),
-      sghitb.TestActionWaitForFinish(SHORT_GLOBAL_TIMEOUT),
-    ]
-
-    low_power_test_actions = [
-      sghitb.TestActionWaitForContinue(SHORT_GLOBAL_TIMEOUT),
-      TestActionRunOffscreenCanvasIBRCWebGLLowPerfTest(),
       sghitb.TestActionWaitForFinish(SHORT_GLOBAL_TIMEOUT),
     ]
 
@@ -708,18 +588,6 @@ class PixelTestPages:
         crop_action=standard_crop,
         browser_args=sw_compositing_args,
         test_actions=switch_tab_test_actions,
-      ),
-      PixelTestPage(
-        'pixel_offscreen_canvas_ibrc_webgl_main.html',
-        base_name + '_OffscreenCanvasIBRCWebGLMain',
-        crop_action=standard_crop,
-        test_actions=low_power_test_actions,
-      ),
-      PixelTestPage(
-        'pixel_offscreen_canvas_ibrc_webgl_worker.html',
-        base_name + '_OffscreenCanvasIBRCWebGLWorker',
-        crop_action=standard_crop,
-        test_actions=low_power_test_actions,
       ),
       PixelTestPage(
         'pixel_webgl_preserved_after_tab_switch.html',
@@ -1119,6 +987,78 @@ class PixelTestPages:
 
     return testPages
 
+  @staticmethod
+  def WebGPUKillSwitchPages(base_name) -> list[PixelTestPage]:
+    """Tests that WebGPU's Finch kill switches work.
+
+    The kill switches are params on the WebGPUService feature (see
+    gpu/config/gpu_finch_features.cc and gpu/config/webgpu_blocklist_impl.cc).
+    In an emergency, a Finch config can use them to block adapters, WGSL
+    language features or WebGPU features, or to set Dawn toggles. It can also
+    disable WebGPUService entirely. These tests set them with
+    --enable-features=WebGPUService:<param>/<value>, which doesn't depend on
+    fieldtrial_testing_config.json.
+
+    These tests must not use --enable-unsafe-webgpu, which bypasses the kill
+    switches.
+    """
+    standard_crop = ca.NonWhiteContentCropAction(
+      initial_crop=ca.FixedRectCropAction(0, 0, 500, 500)
+    )
+    url = 'pixel_webgpu_kill_switch.html?test='
+
+    def kill_switch_arg(param: str, *values: str) -> str:
+      # Characters like ',' must be %-encoded in param values.
+      value = '%2C'.join(values)
+      return f'--enable-features=WebGPUService:{param}/{value}'
+
+    return [
+      PixelTestPage(
+        url + 'wgsl_language_feature',
+        base_name + '_WebGPUKillSwitch_WGSLLanguageFeature',
+        crop_action=standard_crop,
+        browser_args=[
+          # Exposes the chromium_testing_* WGSL language features, so that the
+          # test doesn't depend on which real features can currently be killed.
+          '--enable-dawn-features=expose_wgsl_testing_features',
+          kill_switch_arg(
+            'UnsafeWGSLFeatures', 'chromium_testing_shipped_with_killswitch'
+          ),
+        ],
+      ),
+      PixelTestPage(
+        url + 'webgpu_feature',
+        base_name + '_WebGPUKillSwitch_WebGPUFeature',
+        crop_action=standard_crop,
+        browser_args=[
+          kill_switch_arg(
+            'UnsafeFeatures', 'depth32float-stencil8', 'indirect-first-instance'
+          ),
+        ],
+      ),
+      PixelTestPage(
+        url + 'dawn_toggle',
+        base_name + '_WebGPUKillSwitch_DawnToggle',
+        crop_action=standard_crop,
+        browser_args=[
+          kill_switch_arg('EnabledToggles', 'disable_base_instance')
+        ],
+      ),
+      PixelTestPage(
+        url + 'no_adapter',
+        base_name + '_WebGPUKillSwitch_AdapterBlockList',
+        crop_action=standard_crop,
+        # '*' matches every adapter's vendor ID.
+        browser_args=[kill_switch_arg('AdapterBlockList', '*')],
+      ),
+      PixelTestPage(
+        url + 'no_adapter',
+        base_name + '_WebGPUKillSwitch_DisableWebGPU',
+        crop_action=standard_crop,
+        browser_args=['--disable-features=WebGPUService'],
+      ),
+    ]
+
   # Pages that should be run with GPU rasterization enabled.
   @staticmethod
   def GpuRasterizationPages(base_name: str) -> list[PixelTestPage]:
@@ -1181,7 +1121,8 @@ class PixelTestPages:
     ]
     unaccelerated_args = [
       cba.DISABLE_ACCELERATED_2D_CANVAS,
-      cba.DISABLE_GPU_COMPOSITING,
+      cba.DISABLE_GPU,
+      '--enable-unsafe-swiftshader',
     ]
     unaccelerated_canvas_accelerated_compositing_args = [
       cba.DISABLE_ACCELERATED_2D_CANVAS,
@@ -1257,13 +1198,13 @@ class PixelTestPages:
         'pixel_offscreenCanvas_webgl_commit_main.html',
         base_name + '_OffscreenCanvasWebGLSoftwareCompositing',
         crop_action=standard_crop,
-        browser_args=browser_args + [cba.DISABLE_GPU_COMPOSITING],
+        browser_args=browser_args + unaccelerated_args,
       ),
       PixelTestPage(
         'pixel_offscreenCanvas_webgl_commit_worker.html',
         base_name + '_OffscreenCanvasWebGLSoftwareCompositingWorker',
         crop_action=standard_crop,
-        browser_args=browser_args + [cba.DISABLE_GPU_COMPOSITING],
+        browser_args=browser_args + unaccelerated_args,
       ),
       PixelTestPage(
         'pixel_offscreenCanvas_2d_commit_main.html',
@@ -1350,7 +1291,8 @@ class PixelTestPages:
   def LowLatencyPages(base_name: str) -> list[PixelTestPage]:
     unaccelerated_args = [
       cba.DISABLE_ACCELERATED_2D_CANVAS,
-      cba.DISABLE_GPU_COMPOSITING,
+      cba.DISABLE_GPU,
+      '--enable-unsafe-swiftshader',
     ]
 
     standard_crop = ca.NonWhiteContentCropAction(
@@ -1414,7 +1356,7 @@ class PixelTestPages:
   def SwiftShaderPages(base_name: str) -> list[PixelTestPage]:
     browser_args = [
       cba.DISABLE_GPU,
-      '--enable-features=AllowSwiftShaderFallback',
+      '--enable-unsafe-swiftshader',
       '--disable-features=AllowD3D11WarpFallback',
     ]
     suffix = '_SwiftShader'
@@ -1454,7 +1396,6 @@ class PixelTestPages:
   def WARPPages(base_name: str) -> list[PixelTestPage]:
     browser_args = [
       cba.DISABLE_GPU,
-      '--disable-features=AllowSwiftShaderFallback',
       '--enable-features=AllowD3D11WarpFallback',
     ]
     suffix = '_WARP'
@@ -1673,65 +1614,6 @@ class PixelTestPages:
       ),
     ]
 
-  # Pages that should be run only on dual-GPU MacBook Pros (at the
-  # present time, anyway).
-  @staticmethod
-  def DualGPUMacSpecificPages(base_name: str) -> list[PixelTestPage]:
-
-    low_to_high_power_test_actions = [
-      sghitb.TestActionWaitForContinue(SHORT_GLOBAL_TIMEOUT),
-      TestActionRunLowToHighPowerTest(),
-      sghitb.TestActionWaitForFinish(SHORT_GLOBAL_TIMEOUT),
-    ]
-
-    high_perf_test_actions = [
-      sghitb.TestActionWaitForContinue(SHORT_GLOBAL_TIMEOUT),
-      TestActionRunOffscreenCanvasIBRCWebGLHighPerfTest(),
-      sghitb.TestActionWaitForFinish(SHORT_GLOBAL_TIMEOUT),
-    ]
-
-    standard_crop = ca.NonWhiteContentCropAction(
-      initial_crop=ca.FixedRectCropAction(0, 0, 350, 350)
-    )
-
-    return [
-      PixelTestPage(
-        'pixel_webgl_high_to_low_power.html',
-        base_name + '_WebGLHighToLowPower',
-        crop_action=standard_crop,
-        test_actions=[
-          sghitb.TestActionWaitForContinue(SHORT_GLOBAL_TIMEOUT),
-          TestActionRunTestWithHighPerformanceTab(),
-          sghitb.TestActionWaitForFinish(SHORT_GLOBAL_TIMEOUT),
-        ],
-      ),
-      PixelTestPage(
-        'pixel_webgl_low_to_high_power.html',
-        base_name + '_WebGLLowToHighPower',
-        crop_action=standard_crop,
-        test_actions=low_to_high_power_test_actions,
-      ),
-      PixelTestPage(
-        'pixel_webgl_low_to_high_power_alpha_false.html',
-        base_name + '_WebGLLowToHighPowerAlphaFalse',
-        crop_action=standard_crop,
-        test_actions=low_to_high_power_test_actions,
-      ),
-      PixelTestPage(
-        'pixel_offscreen_canvas_ibrc_webgl_main.html',
-        base_name + '_OffscreenCanvasIBRCWebGLHighPerfMain',
-        crop_action=standard_crop,
-        test_actions=high_perf_test_actions,
-      ),
-      PixelTestPage(
-        'pixel_offscreen_canvas_ibrc_webgl_worker.html',
-        base_name + '_OffscreenCanvasIBRCWebGLHighPerfWorker',
-        crop_action=standard_crop,
-        test_actions=high_perf_test_actions,
-      ),
-    ]
-
-  # pylint: disable=too-many-locals
   @staticmethod
   def DirectCompositionPages(
     base_name: str, swap_count: int | None = None
@@ -2088,8 +1970,6 @@ class PixelTestPages:
         matching_algorithm=VERY_PERMISSIVE_SOBEL_ALGO,
       ),
     ]
-
-  # pylint: enable=too-many-locals
 
   @staticmethod
   def VideoFromCanvasPages(base_name: str) -> list[PixelTestPage]:

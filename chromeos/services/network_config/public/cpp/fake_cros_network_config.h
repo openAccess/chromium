@@ -11,7 +11,6 @@
 
 #include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
 #include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/remote_set.h"
 
 namespace chromeos::network_config {
@@ -76,14 +75,6 @@ class FakeCrosNetworkConfig : public mojom::CrosNetworkConfig {
   void GetAlwaysOnVpn(GetAlwaysOnVpnCallback callback) override {}
   void SetAlwaysOnVpn(mojom::AlwaysOnVpnPropertiesPtr properties) override {}
   void GetSupportedVpnTypes(GetSupportedVpnTypesCallback callback) override {}
-  void RequestTrafficCounters(
-      const std::string& guid,
-      RequestTrafficCountersCallback callback) override {}
-  void ResetTrafficCounters(const std::string& guid) override {}
-  void SetTrafficCountersResetDay(
-      const std::string& guid,
-      mojom::UInt32ValuePtr day,
-      SetTrafficCountersResetDayCallback callback) override {}
   void CreateCustomApn(const std::string& network_guid,
                        chromeos::network_config::mojom::ApnPropertiesPtr apn,
                        CreateCustomApnCallback callback) override;

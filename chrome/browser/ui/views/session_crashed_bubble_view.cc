@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "base/scoped_observation.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
+#include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/metrics/metrics_reporting_state.h"
 #include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/profiles/profile.h"
@@ -26,6 +28,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/bubble_anchor_util.h"
+#include "chrome/browser/ui/session_crashed_bubble.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
@@ -45,8 +48,9 @@
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/window_open_disposition_utils.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/button/label_button_border.h"
@@ -90,8 +94,8 @@ bool DoesSupportConsentCheck() {
 void OpenUmaLink(BrowserWindowInterface* browser, const ui::Event& event) {
   browser->OpenGURL(
       GURL("https://support.google.com/chrome/answer/96817"),
-      ui::DispositionFromEventFlags(event.flags(),
-                                    WindowOpenDisposition::NEW_FOREGROUND_TAB));
+      ui::DispositionFromEventFlags(
+          event.flags(), ui::mojom::WindowOpenDisposition::kNewForegroundTab));
   RecordBubbleHistogramValue(SESSION_CRASHED_BUBBLE_HELP);
 }
 
@@ -104,13 +108,14 @@ class SessionCrashedBubbleDelegate : public ui::DialogModelDelegate {
             ExitTypeService::GetInstanceForProfile(profile)) {
       crashed_lock_ = exit_type_service->CreateCrashedLock();
     }
-
   }
 
   ~SessionCrashedBubbleDelegate() override { g_instance_for_test = nullptr; }
 
-
   void OpenStartupPages(BrowserWindowInterface* browser) {
+    if (RejectActionIfBrowserClosing(browser)) {
+      return;
+    }
     ignored_ = false;
     MaybeEnableUma();
     dialog_model()->host()->Close();
@@ -128,6 +133,10 @@ class SessionCrashedBubbleDelegate : public ui::DialogModelDelegate {
   }
 
   void RestorePreviousSession(BrowserWindowInterface* browser) {
+    if (RejectActionIfBrowserClosing(browser)) {
+      return;
+    }
+
     ignored_ = false;
     MaybeEnableUma();
     // The call to Close() deletes this. Grab the lock so that session restore
@@ -161,19 +170,28 @@ class SessionCrashedBubbleDelegate : public ui::DialogModelDelegate {
   }
 
  private:
+  bool RejectActionIfBrowserClosing(BrowserWindowInterface* browser) {
+    if (!browser_shutdown::HasShutdownStarted() &&
+        !browser->IsDeleteScheduled()) {
+      return false;
+    }
+
+    // Treat the stale action as handled rather than as a dismissed bubble.
+    ignored_ = false;
+    dialog_model()->host()->Close();
+    return true;
+  }
+
   bool ignored_ = true;
   std::unique_ptr<ExitTypeService::CrashedLock> crashed_lock_;
 };
 
-}  // namespace
-
 // A helper class that listens to browser removal event.
-class SessionCrashedBubbleView::BrowserRemovalObserver
-    : public BrowserCollectionObserver {
+class BrowserRemovalObserver : public BrowserCollectionObserver {
  public:
   explicit BrowserRemovalObserver(BrowserWindowInterface* browser)
       : browser_(browser) {
-    DCHECK(browser_);
+    CHECK(browser_, base::NotFatalUntil::M162);
     browser_collection_observation_.Observe(
         GlobalBrowserCollection::GetInstance());
   }
@@ -198,67 +216,9 @@ class SessionCrashedBubbleView::BrowserRemovalObserver
       browser_collection_observation_{this};
 };
 
-// static
-void SessionCrashedBubble::ShowIfNotOffTheRecordProfile(
-    BrowserWindowInterface* browser,
-    bool skip_tab_checking) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  if (browser->GetProfile()->IsOffTheRecord()) {
-    return;
-  }
-
-  // Observes possible browser removal before Show is called.
-  auto browser_observer =
-      std::make_unique<SessionCrashedBubbleView::BrowserRemovalObserver>(
-          browser);
-
-  if (DoesSupportConsentCheck()) {
-    GoogleUpdateSettings::CollectStatsConsentTaskRunner()
-        ->PostTaskAndReplyWithResult(
-            FROM_HERE,
-            base::BindOnce(&GoogleUpdateSettings::GetCollectStatsConsent),
-            base::BindOnce(&SessionCrashedBubbleView::Show,
-                           std::move(browser_observer), skip_tab_checking));
-  } else {
-    SessionCrashedBubbleView::Show(std::move(browser_observer),
-                                   skip_tab_checking, false);
-  }
-}
-
-// static
-void SessionCrashedBubbleView::Show(
-    std::unique_ptr<BrowserRemovalObserver> browser_observer,
-    bool skip_tab_checking,
-    bool uma_opted_in_already) {
-  // Determine whether or not the UMA opt-in option should be offered. It is
-  // offered only when it is a Google chrome build, user hasn't opted in yet,
-  // and the preference is modifiable by the user.
-  bool offer_uma_optin = false;
-
-  if (DoesSupportConsentCheck() && !uma_opted_in_already) {
-    offer_uma_optin = !metrics::IsMetricsReportingPolicyManaged();
-  }
-
-  BrowserWindowInterface* browser = browser_observer->browser();
-
-  if (browser && (skip_tab_checking ||
-                  browser->GetTabStripModel()->GetActiveWebContents())) {
-    ShowBubble(browser, uma_opted_in_already, offer_uma_optin);
-    return;
-  }
-
-  RecordBubbleHistogramValue(SESSION_CRASHED_BUBBLE_ERROR);
-}
-
-// static
-views::BubbleDialogDelegate* SessionCrashedBubbleView::GetInstanceForTest() {
-  return g_instance_for_test;
-}
-
-views::BubbleDialogDelegate* SessionCrashedBubbleView::ShowBubble(
-    BrowserWindowInterface* browser,
-    bool uma_opted_in_already,
-    bool offer_uma_optin) {
+views::BubbleDialogDelegate* ShowBubbleImpl(BrowserWindowInterface* browser,
+                                            bool uma_opted_in_already,
+                                            bool offer_uma_optin) {
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
   // TODO(webium): WebUI browser does not use BrowserView. Make an WebUI anchor
   // for the bubble.
@@ -327,4 +287,64 @@ views::BubbleDialogDelegate* SessionCrashedBubbleView::ShowBubble(
     RecordBubbleHistogramValue(SESSION_CRASHED_BUBBLE_ALREADY_UMA_OPTIN);
   }
   return bubble_ptr;
+}
+
+void Show(std::unique_ptr<BrowserRemovalObserver> browser_observer,
+          bool skip_tab_checking,
+          bool uma_opted_in_already) {
+  // Determine whether or not the UMA opt-in option should be offered. It is
+  // offered only when it is a Google chrome build, user hasn't opted in yet,
+  // and the preference is modifiable by the user.
+  bool offer_uma_optin = false;
+
+  if (DoesSupportConsentCheck() && !uma_opted_in_already) {
+    offer_uma_optin = !metrics::IsMetricsReportingPolicyManaged();
+  }
+
+  BrowserWindowInterface* browser = browser_observer->browser();
+
+  if (browser && (skip_tab_checking ||
+                  browser->GetTabStripModel()->GetActiveWebContents())) {
+    ShowBubbleImpl(browser, uma_opted_in_already, offer_uma_optin);
+    return;
+  }
+
+  RecordBubbleHistogramValue(SESSION_CRASHED_BUBBLE_ERROR);
+}
+
+}  // namespace
+
+void ShowSessionCrashedBubbleIfNotOffTheRecordProfile(
+    BrowserWindowInterface* browser,
+    bool skip_tab_checking) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  if (browser->GetProfile()->IsOffTheRecord()) {
+    return;
+  }
+
+  // Observes possible browser removal before Show is called.
+  auto browser_observer = std::make_unique<BrowserRemovalObserver>(browser);
+
+  if (DoesSupportConsentCheck()) {
+    GoogleUpdateSettings::CollectStatsConsentTaskRunner()
+        ->PostTaskAndReplyWithResult(
+            FROM_HERE,
+            base::BindOnce(&GoogleUpdateSettings::GetCollectStatsConsent),
+            base::BindOnce(&Show, std::move(browser_observer),
+                           skip_tab_checking));
+  } else {
+    Show(std::move(browser_observer), skip_tab_checking, false);
+  }
+}
+
+// static
+views::BubbleDialogDelegate* SessionCrashedBubbleView::GetInstanceForTest() {
+  return g_instance_for_test;
+}
+
+views::BubbleDialogDelegate* SessionCrashedBubbleView::ShowBubble(
+    BrowserWindowInterface* browser,
+    bool uma_opted_in_already,
+    bool offer_uma_optin) {
+  return ShowBubbleImpl(browser, uma_opted_in_already, offer_uma_optin);
 }

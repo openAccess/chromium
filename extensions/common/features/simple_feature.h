@@ -14,6 +14,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "base/containers/span.h"
@@ -35,7 +36,6 @@ namespace extensions {
 class FeatureProviderTest;
 class ExtensionAPITest;
 class ComplexFeature;
-struct SimpleFeatureData;
 
 // A retained view of a statically stored array. Its consteval constructors
 // enforce the lifetime without changing base::span's representation.
@@ -88,6 +88,19 @@ struct SimpleFeatureConfig {
   bool disallow_for_service_workers = false;
 };
 
+struct SimpleFeatureData {
+  FeatureData feature;
+  SimpleFeatureConfig config;
+};
+
+// SimpleFeature::config() recovers the descriptor from the FeatureData pointer
+// Feature holds, which requires the two to be pointer-interconvertible.
+static_assert(std::is_standard_layout_v<SimpleFeatureData>,
+              "SimpleFeatureData must be standard-layout so that a pointer to "
+              "its first member can be cast back to the descriptor");
+static_assert(offsetof(SimpleFeatureData, feature) == 0u,
+              "FeatureData must be the first member of SimpleFeatureData");
+
 class SimpleFeature : public Feature {
  public:
   // Used by tests to override the cached --allowlisted-extension-id.
@@ -113,12 +126,13 @@ class SimpleFeature : public Feature {
     std::vector<std::string> previous_ids_;
   };
 
-  explicit SimpleFeature(StaticFeatureData<SimpleFeatureData> data);
+  constexpr explicit SimpleFeature(StaticFeatureData<SimpleFeatureData> data)
+      : SimpleFeature(data.get()) {}
 
   SimpleFeature(const SimpleFeature&) = delete;
   SimpleFeature& operator=(const SimpleFeature&) = delete;
 
-  ~SimpleFeature() override;
+  ~SimpleFeature() override = default;
 
   Availability IsAvailableToContext(const Extension* extension,
                                     mojom::ContextType context,
@@ -133,7 +147,9 @@ class SimpleFeature : public Feature {
                                     int context_id,
                                     const ContextData& context_data) const {
     return IsAvailableToContextImpl(extension, context, GURL(), platform,
-                                    context_id, true, context_data);
+                                    context_id, /*check_developer_mode=*/true,
+                                    context_data,
+                                    /*delegated_handler=*/nullptr);
   }
   Availability IsAvailableToContext(const Extension* extension,
                                     mojom::ContextType context,
@@ -141,8 +157,9 @@ class SimpleFeature : public Feature {
                                     int context_id,
                                     const ContextData& context_data) const {
     return IsAvailableToContextImpl(extension, context, url,
-                                    GetCurrentPlatform(), context_id, true,
-                                    context_data);
+                                    GetCurrentPlatform(), context_id,
+                                    /*check_developer_mode=*/true, context_data,
+                                    /*delegated_handler=*/nullptr);
   }
   Availability IsAvailableToContext(const Extension* extension,
                                     mojom::ContextType context,
@@ -151,7 +168,9 @@ class SimpleFeature : public Feature {
                                     int context_id,
                                     const ContextData& context_data) const {
     return IsAvailableToContextImpl(extension, context, url, platform,
-                                    context_id, true, context_data);
+                                    context_id, /*check_developer_mode=*/true,
+                                    context_data,
+                                    /*delegated_handler=*/nullptr);
   }
 
   // extension::Feature:
@@ -166,9 +185,6 @@ class SimpleFeature : public Feature {
   bool IsIdInBlocklist(const HashedExtensionId& hashed_id) const override;
   bool IsIdInAllowlist(const HashedExtensionId& hashed_id) const override;
   bool RequiresDelegatedAvailabilityCheck() const override;
-  void SetDelegatedAvailabilityCheckHandler(
-      DelegatedAvailabilityCheckHandler handler) override;
-  bool HasDelegatedAvailabilityCheckHandler() const override;
 
   // Similar to mojom::ManifestLocation, these are the classes of locations
   // supported in feature files. These should only be used in this class and in
@@ -176,7 +192,8 @@ class SimpleFeature : public Feature {
   using Location = SimpleFeatureLocation;
 
  protected:
-  explicit SimpleFeature(const SimpleFeatureData* data);
+  constexpr explicit SimpleFeature(const SimpleFeatureData* data)
+      : Feature(data ? &data->feature : nullptr) {}
 
   // Accessors used by subclasses in feature verification.
   base::span<const std::string_view> blocklist() const;
@@ -221,7 +238,8 @@ class SimpleFeature : public Feature {
       Platform platform,
       int context_id,
       bool check_developer_mode,
-      const ContextData& context_data) const override;
+      const ContextData& context_data,
+      DelegatedAvailabilityCheckHandler delegated_handler) const override;
 
  private:
   friend class ComplexFeature;
@@ -295,26 +313,15 @@ class SimpleFeature : public Feature {
       Platform platform,
       int context_id,
       bool check_developer_mode,
-      const ContextData& context_data) const;
+      const ContextData& context_data,
+      DelegatedAvailabilityCheckHandler delegated_handler) const;
 
   bool MatchesURL(const GURL& url) const;
 
-  // Immutable configuration, owned by whoever constructed this feature. For
-  // generated features this is static storage; tests own their own copy.
-  RAW_PTR_EXCLUSION const SimpleFeatureConfig* simple_feature_config_;
-  // Whether to ignore channel-based restrictions (such as because the user has
-  // enabled experimental extension APIs). Note: this is lazily calculated, and
-  // then cached.
-  mutable std::optional<bool> ignore_channel_;
-
-  // If set and the feature needs to be overridden, this is the handler used
-  // to perform the override availability check.
-  DelegatedAvailabilityCheckHandler delegated_availability_check_handler_;
-};
-
-struct SimpleFeatureData {
-  FeatureData feature;
-  SimpleFeatureConfig config;
+  // The immutable configuration this feature was constructed from. Recovered
+  // from the FeatureData pointer the base class holds, since FeatureData is
+  // SimpleFeatureData's first member; see the static_asserts above.
+  const SimpleFeatureConfig& config() const;
 };
 
 }  // namespace extensions

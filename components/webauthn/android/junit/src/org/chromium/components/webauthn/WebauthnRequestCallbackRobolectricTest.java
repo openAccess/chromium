@@ -12,8 +12,6 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -21,7 +19,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.blink.mojom.Authenticator.GetCredential_Response;
@@ -34,7 +31,6 @@ import org.chromium.blink.mojom.MakeCredentialAuthenticatorResponse;
 
 /** Robolectric tests for {@link WebauthnRequestCallback}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class WebauthnRequestCallbackRobolectricTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -45,7 +41,6 @@ public class WebauthnRequestCallbackRobolectricTest {
     @Mock private Runnable mCompletionCallback;
 
     @Test
-    @SmallTest
     public void testMakeCredential_success() {
         WebauthnRequestCallback callback =
                 WebauthnRequestCallback.forMakeCredential(
@@ -74,7 +69,6 @@ public class WebauthnRequestCallbackRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testMakeCredential_failure() {
         WebauthnRequestCallback callback =
                 WebauthnRequestCallback.forMakeCredential(
@@ -103,7 +97,6 @@ public class WebauthnRequestCallbackRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testGetCredential_success() {
         WebauthnRequestCallback callback =
                 WebauthnRequestCallback.forGetCredential(
@@ -130,7 +123,6 @@ public class WebauthnRequestCallbackRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testGetCredential_failure() {
         WebauthnRequestCallback callback =
                 WebauthnRequestCallback.forGetCredential(
@@ -159,7 +151,6 @@ public class WebauthnRequestCallbackRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testReport() {
         WebauthnRequestCallback callback = WebauthnRequestCallback.forReport(mReportCallback);
         callback.setCompletionCallback(mCompletionCallback);
@@ -174,7 +165,6 @@ public class WebauthnRequestCallbackRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testOnComplete_multipleCallsIgnored() {
         WebauthnRequestCallback callback =
                 WebauthnRequestCallback.forMakeCredential(
@@ -200,7 +190,6 @@ public class WebauthnRequestCallbackRobolectricTest {
     }
 
     @Test
-    @SmallTest
     public void testOnComplete_mismatchedResponseIsIgnored() {
         WebauthnRequestCallback callback =
                 WebauthnRequestCallback.forMakeCredential(

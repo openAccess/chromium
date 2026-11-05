@@ -140,8 +140,7 @@ class HelpBubbleViewInteractiveUiTest : public InteractiveBrowserTest {
   void SetUpOnMainThread() override {
     InteractiveBrowserTest::SetUpOnMainThread();
     factories_.MaybeRegister<TestHelpBubbleFactory>();
-    factories_.MaybeRegister<user_education::HelpBubbleFactoryViews>(
-        GetHelpBubbleDelegate());
+    RegisterChromeHelpBubbleFactories(factories_);
   }
 
   void TearDownOnMainThread() override {
@@ -252,7 +251,7 @@ IN_PROC_BROWSER_TEST_F(HelpBubbleViewInteractiveUiTest,
 
       // Trigger the tab group editor.
       AfterShow(kTabGroupHeaderElementId,
-                [](ui::TrackedElement* element) {
+                [this](ui::TrackedElement* element) {
                   // Show the tab group editor bubble.
                   auto* const view = AsView(element);
                   view->ShowContextMenu(view->GetLocalBounds().CenterPoint(),

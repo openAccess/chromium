@@ -19,19 +19,20 @@
 #include "chrome/browser/enterprise/connectors/common.h"
 #include "chrome/browser/enterprise/util/affiliation.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager_factory.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/deep_scanning_utils.h"
 #include "components/enterprise/connectors/core/features.h"
 #include "components/enterprise/connectors/core/reporting_utils.h"
 #include "components/policy/core/common/management/management_service.h"
-#include "components/safe_browsing/content/browser/web_ui/web_ui_content_info_singleton.h"
 #include "components/safe_browsing/core/common/features.h"
+#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/safe_browsing/core/common/safebrowsing_switches.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/http/http_status_code.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/components/mgs/managed_guest_session_utils.h"
@@ -45,7 +46,7 @@ using ::enterprise_connectors::GetBrowserPolicyConnector;
 using ::enterprise_connectors::IsConsumerScanRequest;
 
 bool CanUseAccessToken(const BinaryUploadRequest& request, Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   // Consumer requests never need to use the access token.
   if (IsConsumerScanRequest(request)) {
     return false;

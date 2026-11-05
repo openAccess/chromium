@@ -26,8 +26,8 @@
 #include "mojo/core/embedder/scoped_ipc_support.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
 #include "mojo/public/cpp/system/invitation.h"
-#include "mojo/public/cpp/system/platform_handle.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/multiprocess_func_list.h"
@@ -254,13 +254,20 @@ TEST_F(SmbFsMounterTest, FilesystemMountAfterDestruction) {
   EXPECT_CALL(mock_disk_mount_manager_,
               MountPath(StartsWith(kMountUrlPrefix), _, kMountDir, _, _, _, _))
       .WillOnce(WithArgs<0, 6>(
-          [this](const std::string& source_path,
-                 ash::disks::DiskMountManager::MountPathCallback callback) {
+          [&run_loop](
+              const std::string& source_path,
+              ash::disks::DiskMountManager::MountPathCallback callback) {
             // This posts a mount event to the task queue, which will not be run
             // until |run_loop| is started.
-            PostMountEvent(source_path, kMountPath,
-                           ash::MountError::kInternalError,
-                           std::move(callback));
+            // MountPoint posts its weak-bound completion on this sequence. The
+            // reply is queued behind it, keeping the cancellation check after
+            // that task.
+            base::SequencedTaskRunner::GetCurrentDefault()->PostTaskAndReply(
+                FROM_HERE,
+                base::BindOnce(std::move(callback),
+                               ash::MountError::kInternalError,
+                               MakeMountPointInfo(source_path, kMountPath)),
+                run_loop.QuitClosure());
           }));
   EXPECT_CALL(mock_disk_mount_manager_, UnmountPath(_, _)).Times(0);
 
@@ -269,7 +276,7 @@ TEST_F(SmbFsMounterTest, FilesystemMountAfterDestruction) {
   // Delete the mounter. Callback should not be run.
   mounter.reset();
 
-  run_loop.RunUntilIdle();
+  run_loop.Run();
 }
 
 TEST_F(SmbFsMounterTest, MountOptions) {
@@ -302,9 +309,7 @@ TEST_F(SmbFsMounterTest, MountOptions) {
         EXPECT_EQ(options->password->length,
                   static_cast<int32_t>(strlen(kPassword)));
         std::string password_buf(options->password->length, 'a');
-        base::ScopedFD fd =
-            mojo::UnwrapPlatformHandle(std::move(options->password->fd))
-                .TakeFD();
+        base::ScopedFD fd = options->password->fd.TakeFD();
         EXPECT_TRUE(base::ReadFromFD(fd.get(), password_buf));
         EXPECT_EQ(password_buf, kPassword);
         EXPECT_TRUE(options->allow_ntlm);
@@ -624,9 +629,7 @@ MULTIPROCESS_TEST_MAIN(SmbFsMain) {
         EXPECT_EQ(options->password->length,
                   static_cast<int32_t>(strlen(kPassword)));
         std::string password_buf(options->password->length, 'a');
-        base::ScopedFD fd =
-            mojo::UnwrapPlatformHandle(std::move(options->password->fd))
-                .TakeFD();
+        base::ScopedFD fd = options->password->fd.TakeFD();
         EXPECT_TRUE(base::ReadFromFD(fd.get(), password_buf));
         EXPECT_EQ(password_buf, kPassword);
 

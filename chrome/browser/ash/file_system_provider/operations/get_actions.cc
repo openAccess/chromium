@@ -8,8 +8,8 @@
 #include <string>
 #include <utility>
 
-#include "chrome/common/extensions/api/file_system_provider.h"
-#include "chrome/common/extensions/api/file_system_provider_internal.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider_internal.h"
 
 namespace ash::file_system_provider::operations {
 namespace {
@@ -20,7 +20,7 @@ Actions ConvertRequestValueToActions(const RequestValue& value) {
       GetActionsRequestedSuccess::Params;
 
   const Params* params = value.get_actions_success_params();
-  DCHECK(params);
+  CHECK(params, base::NotFatalUntil::M160);
 
   Actions result;
   for (const auto& idl_action : params->actions) {
@@ -54,18 +54,20 @@ bool GetActions::Execute(int request_id) {
   for (const auto& entry_path : entry_paths_)
     options.entry_paths.push_back(entry_path.AsUTF8Unsafe());
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      extensions::api::file_system_provider::OnGetActionsRequested::Create(
+          options));
   return SendEvent(
       request_id,
       extensions::events::FILE_SYSTEM_PROVIDER_ON_GET_ACTIONS_REQUESTED,
       extensions::api::file_system_provider::OnGetActionsRequested::kEventName,
-      extensions::api::file_system_provider::OnGetActionsRequested::Create(
-          options));
+      std::move(event_args));
 }
 
 void GetActions::OnSuccess(/*request_id=*/int,
                            const RequestValue& result,
                            bool has_more) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
   std::move(callback_).Run(ConvertRequestValueToActions(result),
                            base::File::FILE_OK);
 }
@@ -73,7 +75,7 @@ void GetActions::OnSuccess(/*request_id=*/int,
 void GetActions::OnError(/*request_id=*/int,
                          /*result=*/const RequestValue&,
                          base::File::Error error) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
   std::move(callback_).Run(Actions(), error);
 }
 

@@ -24,6 +24,7 @@
 #include "base/containers/span.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/hash_functions_memory.h"
 #include "third_party/blink/renderer/platform/wtf/hash_table_deleted_value_type.h"
 #include "third_party/blink/renderer/platform/wtf/hash_traits.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
@@ -32,7 +33,9 @@
 namespace blink {
 
 struct QualifiedNameComponents {
-  DISALLOW_NEW();
+  STACK_ALLOCATED();
+
+ public:
   StringImpl* prefix_;
   StringImpl* local_name_;
   StringImpl* namespace_;
@@ -42,7 +45,9 @@ struct QualifiedNameComponents {
 // QNameTranslator.  For hashing and equality only the QualifiedNameComponents
 // fields are used.
 struct QualifiedNameData {
-  DISALLOW_NEW();
+  STACK_ALLOCATED();
+
+ public:
   QualifiedNameComponents components_;
   bool is_static_;
 };
@@ -54,14 +59,11 @@ class CORE_EXPORT QualifiedNameImpl : public RefCounted<QualifiedNameImpl> {
   static scoped_refptr<QualifiedNameImpl> Create(StringImpl* prefix,
                                                  StringImpl* local_name,
                                                  StringImpl* namespace_uri,
-                                                 bool is_static) {
-    return base::AdoptRef(
-        new QualifiedNameImpl(prefix, local_name, namespace_uri, is_static));
-  }
+                                                 bool is_static);
 
   ~QualifiedNameImpl();
 
-  unsigned ComputeHash() const;
+  uint32_t ComputeHash() const;
 
   bool IsStatic() const {
     return is_static_and_html_attribute_triggers_index_ != kNotStatic;
@@ -91,6 +93,7 @@ class CORE_EXPORT QualifiedNameImpl : public RefCounted<QualifiedNameImpl> {
   // doing hashing and use one of the bits for the is_static_ value.
   mutable unsigned existing_hash_ : 24;
   mutable unsigned is_static_and_html_attribute_triggers_index_ : 8;
+  mutable uint32_t bloom_filter_ = 0;
   const AtomicString prefix_;
   const AtomicString local_name_;
   const AtomicString namespace_;
@@ -166,6 +169,15 @@ class CORE_EXPORT QualifiedName {
   }
 
   const AtomicString& LocalNameUpperSlow() const;
+
+  uint32_t BloomFilter() const {
+    if (impl_->bloom_filter_) [[likely]] {
+      return impl_->bloom_filter_;
+    }
+    return BloomFilterSlow();
+  }
+
+  uint32_t BloomFilterSlow() const;
 
   void RegisterHTMLAttributeTriggersIndex(unsigned index) const {
     using enum QualifiedNameImpl::StaticAndAttributeTriggersConstants;
@@ -251,15 +263,15 @@ inline bool operator==(const QualifiedName& q, const AtomicString& a) {
   return a == q.LocalName();
 }
 
-inline unsigned HashComponents(const QualifiedNameComponents& buf) {
-  return StringHasher::HashMemory32(base::byte_span_from_ref(buf));
+inline uint32_t HashComponents(const QualifiedNameComponents& buf) {
+  return HashMemory64(base::byte_span_from_ref(buf)) & 0xFFFFFF;
 }
 
 CORE_EXPORT std::ostream& operator<<(std::ostream&, const QualifiedName&);
 
 template <>
 struct HashTraits<QualifiedNameImpl*> : GenericHashTraits<QualifiedNameImpl*> {
-  static unsigned GetHash(const QualifiedNameImpl* name) {
+  static uint32_t GetHash(const QualifiedNameImpl* name) {
     if (!name->existing_hash_) {
       name->existing_hash_ = name->ComputeHash();
     }
@@ -270,7 +282,7 @@ struct HashTraits<QualifiedNameImpl*> : GenericHashTraits<QualifiedNameImpl*> {
 
 template <>
 struct HashTraits<QualifiedName> : GenericHashTraits<QualifiedName> {
-  static unsigned GetHash(const QualifiedName& name) {
+  static uint32_t GetHash(const QualifiedName& name) {
     return blink::GetHash(name.Impl());
   }
   static constexpr bool kSafeToCompareToEmptyOrDeleted = false;

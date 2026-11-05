@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/functional/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -274,18 +275,76 @@ TEST_P(ProcessedLocalAudioSourceTest, VerifyAudioFlow) {
   MediaStreamAudioTrack::From(audio_track())->Stop();
 }
 
+// A capture error reported by the platform capturer (e.g. the Audio Service
+// stream failed) must stop the capturer and end the track, and the error code
+// must be recorded on the source.
+TEST_P(ProcessedLocalAudioSourceTest, CaptureErrorStopsCapturerAndEndsTrack) {
+  base::test::ScopedFeatureList scoped_feature_list;
 #if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
-TEST_P(ProcessedLocalAudioSourceTest,
-       SetVoiceIsolationCallsAudioProcessorControls) {
+  if (GetParam() == ProcessingLocation::kAudioService) {
+    scoped_feature_list.InitAndEnableFeature(
+        media::kChromeWideEchoCancellation);
+  } else {
+    scoped_feature_list.InitAndDisableFeature(
+        media::kChromeWideEchoCancellation);
+  }
+#endif
+
+  AudioProcessingProperties properties;
+  CreateProcessedLocalAudioSource(MediaStreamAudioProcessingLayout(
+      properties,
+      /*available_platform_effects=*/0,
+      /*channels=*/ChannelLayoutToChannelCount(kProcessedChannelLayout)));
+
+  EXPECT_CALL(*mock_audio_capturer_source(),
+              Initialize(_, capture_source_callback()));
+  EXPECT_CALL(*mock_audio_capturer_source(), SetAutomaticGainControl(_));
+  EXPECT_CALL(*mock_audio_capturer_source(), Start())
+      .WillOnce(Invoke(
+          capture_source_callback(),
+          &media::AudioCapturerSource::CaptureCallback::OnCaptureStarted));
+  ASSERT_TRUE(audio_source()->ConnectToInitializedTrack(audio_track()));
+  ASSERT_EQ(audio_track()->GetReadyState(), MediaStreamSource::kReadyStateLive);
+  ASSERT_FALSE(audio_source()->ErrorCode().has_value());
+
+  // The error is handled on a posted task, which must stop the capturer.
+  EXPECT_CALL(*mock_audio_capturer_source(), Stop());
+  capture_source_callback()->OnCaptureError(
+      media::AudioCapturerSource::ErrorCode::kUnknown, "stream error");
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return audio_track()->GetReadyState() ==
+           MediaStreamSource::kReadyStateEnded;
+  }));
+  EXPECT_EQ(audio_source()->ErrorCode(),
+            media::AudioCapturerSource::ErrorCode::kUnknown);
+}
+
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+TEST_P(
+    ProcessedLocalAudioSourceTest,
+    SetVoiceIsolationCallsAudioProcessorControlsAndUpdatesProcessingProperties) {
   if (GetParam() != ProcessingLocation::kAudioService) {
     GTEST_SKIP();
   }
 
-  // 1. Create processed local audio source.
+  // 1. Create processed local audio source with voice isolation enabled.
+  AudioProcessingProperties properties;
+  properties.voice_isolation =
+      AudioProcessingProperties::VoiceIsolationType::kVoiceIsolationEnabled;
   CreateProcessedLocalAudioSource(MediaStreamAudioProcessingLayout(
-      AudioProcessingProperties(),
+      properties,
       /*available_platform_effects=*/0,
       /*channels=*/ChannelLayoutToChannelCount(kProcessedChannelLayout)));
+
+  auto* source = ProcessedLocalAudioSource::From(audio_source());
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(source->GetInitialAudioProcessingProperties().has_value());
+  EXPECT_EQ(
+      source->GetInitialAudioProcessingProperties()->voice_isolation,
+      AudioProcessingProperties::VoiceIsolationType::kVoiceIsolationEnabled);
+  EXPECT_EQ(
+      audio_source()->GetAudioProcessingProperties()->voice_isolation,
+      AudioProcessingProperties::VoiceIsolationType::kVoiceIsolationEnabled);
 
   // 2. Connect the track, and expect the MockAudioCapturerSource to be
   // initialized and started by ProcessedLocalAudioSource.
@@ -300,20 +359,37 @@ TEST_P(ProcessedLocalAudioSourceTest,
           &media::AudioCapturerSource::CaptureCallback::OnCaptureStarted));
   ASSERT_TRUE(audio_source()->ConnectToInitializedTrack(audio_track()));
 
-  // 3. Call SetVoiceIsolation before controls are created. The setting should
-  // be cached in the proxy.
-  audio_source()->SetVoiceIsolation(true);
+  // 3. Call SetVoiceIsolation(false) before controls are created. The setting
+  // should be cached in the proxy.
+  audio_source()->SetVoiceIsolation(false);
+  EXPECT_EQ(
+      audio_source()->GetAudioProcessingProperties()->voice_isolation,
+      AudioProcessingProperties::VoiceIsolationType::kVoiceIsolationDisabled);
+  EXPECT_EQ(
+      source->GetInitialAudioProcessingProperties()->voice_isolation,
+      AudioProcessingProperties::VoiceIsolationType::kVoiceIsolationEnabled);
+  MediaStreamTrackPlatform::Settings settings;
+  audio_track()->GetSettings(settings);
+  EXPECT_EQ(settings.voice_isolation, false);
 
   // 4. Inject mock controls. The cached voice isolation setting should be
   // applied immediately.
   testing::StrictMock<MockAudioProcessorControls> mock_controls;
-  EXPECT_CALL(mock_controls, SetVoiceIsolation(true));
+  EXPECT_CALL(mock_controls, SetVoiceIsolation(false));
   capture_source_callback()->OnCaptureProcessorCreated(&mock_controls);
 
-  // 5. Call SetVoiceIsolation after controls are created. This should be
+  // 5. Call SetVoiceIsolation(true) after controls are created. This should be
   // forwarded to the mock controls immediately.
-  EXPECT_CALL(mock_controls, SetVoiceIsolation(false));
-  audio_source()->SetVoiceIsolation(false);
+  EXPECT_CALL(mock_controls, SetVoiceIsolation(true));
+  audio_source()->SetVoiceIsolation(true);
+  EXPECT_EQ(
+      audio_source()->GetAudioProcessingProperties()->voice_isolation,
+      AudioProcessingProperties::VoiceIsolationType::kVoiceIsolationEnabled);
+  EXPECT_EQ(
+      source->GetInitialAudioProcessingProperties()->voice_isolation,
+      AudioProcessingProperties::VoiceIsolationType::kVoiceIsolationEnabled);
+  audio_track()->GetSettings(settings);
+  EXPECT_EQ(settings.voice_isolation, true);
 
   // Clean up.
   EXPECT_CALL(*mock_audio_capturer_source(), Stop());

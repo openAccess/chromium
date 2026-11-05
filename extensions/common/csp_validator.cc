@@ -7,7 +7,6 @@
 #include <stddef.h>
 
 #include <algorithm>
-#include <initializer_list>
 #include <iterator>
 #include <set>
 #include <string_view>
@@ -15,7 +14,8 @@
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/feature_list.h"
+#include "base/command_line.h"
+#include "base/containers/linear_find.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -25,9 +25,9 @@
 #include "content/public/common/url_constants.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/error_utils.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/install_warning.h"
 #include "extensions/common/manifest_constants.h"
+#include "extensions/common/switches.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 
 namespace extensions::csp_validator {
@@ -70,6 +70,7 @@ constexpr std::string_view kHashSourcePrefixes[] = {
 };
 
 constexpr char kChromeResourcesUrl[] = "chrome://resources";
+constexpr char kChromeWebUITestUrl[] = "chrome://webui-test";
 constexpr const char* const kExtensionsAllowedToUseChromeResources[] = {
     extension_misc::kChromeVoxExtensionId,
     extension_misc::kIndigoExtensionId,
@@ -77,6 +78,7 @@ constexpr const char* const kExtensionsAllowedToUseChromeResources[] = {
     extension_misc::kChromeResourcesTestExtensionId,
     extension_misc::kAimEligibilityExtensionId,
     extension_misc::kContextualTasksExtensionId,
+    extension_misc::kNewTabPageExtensionId,
 };
 
 using Directive = CSPParser::Directive;
@@ -594,11 +596,11 @@ void CSPParser::Parse() {
 }
 
 std::string SanitizeContentSecurityPolicy(
-    const std::string& policy,
+    std::string_view policy,
     std::string manifest_key,
     int options,
     std::vector<InstallWarning>* warnings) {
-  CSPParser csp_parser(policy);
+  CSPParser csp_parser(std::string{policy});
 
   bool allow_insecure_object_src = options & OPTIONS_ALLOW_INSECURE_OBJECT_SRC;
   ExtensionCSPEnforcer csp_enforcer(std::move(manifest_key),
@@ -637,7 +639,7 @@ bool ContentSecurityPolicyIsSandboxed(
 
       // Platform apps don't allow navigation.
       if (type == Manifest::Type::kPlatformApp &&
-          token_lower_case == kAllowTopNavigation) {
+          base::StartsWith(token_lower_case, kAllowTopNavigation)) {
         return false;
       }
     }
@@ -648,26 +650,32 @@ bool ContentSecurityPolicyIsSandboxed(
 
 bool DoesCSPDisallowRemoteCode(const std::string& extension_id,
                                mojom::ManifestLocation location,
-                               const std::string& content_security_policy,
+                               std::string_view content_security_policy,
                                std::string_view manifest_key,
                                std::u16string* error) {
   DCHECK(error);
 
   struct DirectiveMapping {
-    explicit DirectiveMapping(DirectiveStatus status)
-        : status(std::move(status)) {}
-
     DirectiveStatus status;
-    raw_ptr<const CSPParser::Directive, DanglingUntriaged> directive = nullptr;
+    raw_ptr<const CSPParser::Directive> directive = nullptr;
     bool required = true;
   };
 
-  DirectiveMapping script_src_mapping(DirectiveStatus({kScriptSrc}));
-  DirectiveMapping worker_src_mapping(DirectiveStatus({kWorkerSrc}));
-  DirectiveMapping default_src_mapping(DirectiveStatus({kDefaultSrc}));
+  CSPParser csp_parser(std::string{content_security_policy});
 
-  DirectiveMapping object_src_mapping(DirectiveStatus({kObjectSrc}));
-  object_src_mapping.required = false;
+  DirectiveMapping script_src_mapping = {
+      .status = DirectiveStatus({kScriptSrc}),
+  };
+  DirectiveMapping worker_src_mapping = {
+      .status = DirectiveStatus({kWorkerSrc}),
+  };
+  DirectiveMapping default_src_mapping = {
+      .status = DirectiveStatus({kDefaultSrc}),
+  };
+  DirectiveMapping object_src_mapping = {
+      .status = DirectiveStatus({kObjectSrc}),
+      .required = false,
+  };
 
   DirectiveMapping* directive_mappings[] = {
       &script_src_mapping,
@@ -677,19 +685,15 @@ bool DoesCSPDisallowRemoteCode(const std::string& extension_id,
   };
 
   // Populate |directive_mappings|.
-  CSPParser csp_parser(content_security_policy);
   for (DirectiveMapping* mapping : directive_mappings) {
     // Find the first matching directive. As per
     // http://www.w3.org/TR/CSP/#parse-a-csp-policy, duplicate directive names
     // are ignored.
-    auto it = std::ranges::find_if(
+    mapping->directive = base::LinearFindIf(
         csp_parser.directives(),
         [mapping](const CSPParser::Directive& directive) {
           return mapping->status.Matches(directive.directive_name);
         });
-
-    if (it != csp_parser.directives().end())
-      mapping->directive = &(*it);
   }
 
   auto fallback_if_necessary = [](DirectiveMapping* from,
@@ -744,6 +748,14 @@ bool DoesCSPDisallowRemoteCode(const std::string& extension_id,
             return true;
           }
 
+          if (source_lower == kChromeWebUITestUrl &&
+              IsWebUITestAllowedForLocation(location)) {
+            // chrome://webui-test only exists in browser tests. Built-in
+            // component extensions may load test helpers from it when the
+            // test-only switch is set.
+            return true;
+          }
+
           return source_lower == kSelfSource || source_lower == kNoneSource ||
                  IsLocalHostSource(source_lower) ||
                  source_lower == kWasmUnsafeEvalSource;
@@ -764,7 +776,7 @@ bool DoesCSPDisallowRemoteCode(const std::string& extension_id,
     if (mapping == &default_src_mapping)
       continue;
 
-    if (mapping->directive && secure_directives.count(mapping->directive)) {
+    if (mapping->directive && secure_directives.contains(mapping->directive)) {
       // We already checked this directive and know it's secure. Skip it.
       continue;
     }
@@ -786,6 +798,12 @@ bool DoesCSPDisallowRemoteCode(const std::string& extension_id,
 bool IsExtensionAllowedToUseChromeResources(const std::string& extension_id) {
   return std::ranges::contains(kExtensionsAllowedToUseChromeResources,
                                extension_id);
+}
+
+bool IsWebUITestAllowedForLocation(mojom::ManifestLocation location) {
+  return location == mojom::ManifestLocation::kComponent &&
+         base::CommandLine::ForCurrentProcess()->HasSwitch(
+             switches::kAllowWebUITestInComponentExtensions);
 }
 
 }  // namespace extensions::csp_validator

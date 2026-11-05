@@ -17,6 +17,7 @@
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "net/base/load_flags.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 
@@ -115,7 +116,7 @@ UserCloudSigninRestrictionPolicyFetcher::
         const std::string& email,
         scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
     : email_(email), url_loader_factory_(url_loader_factory) {
-  DCHECK(url_loader_factory_);
+  CHECK(url_loader_factory_, base::NotFatalUntil::M162);
   user_info_fetcher_ =
       std::make_unique<policy::UserInfoFetcher>(this, url_loader_factory_);
 }
@@ -219,7 +220,7 @@ void UserCloudSigninRestrictionPolicyFetcher::
     GetSecondaryGoogleAccountUsageInternal() {
   policy_fetch_start_time_ = base::TimeTicks::Now();
   // Each url loader can only be used for one request.
-  DCHECK(!url_loader_);
+  CHECK(!url_loader_, base::NotFatalUntil::M162);
   url_loader_ =
       CreateUrlLoader(GURL(GetSecureConnectApiGetAccountSigninRestrictionUrl()),
                       access_token_, kAnnotation);

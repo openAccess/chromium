@@ -25,15 +25,15 @@ constexpr char kUserInteractionHistogramPattern[] =
     CAPABILITY_ELEMENT_BASE_HISTOGRAM_PATTERN ".UserInteraction";
 
 const char* GetCapabilityNameForHistogram(const QualifiedName& tag_name) {
-  if (tag_name == html_names::kGeolocationTag) {
+  if (tag_name.Matches(html_names::kGeolocationTag)) {
     return "Geolocation";
-  } else if (tag_name == html_names::kInstallTag) {
+  } else if (tag_name.Matches(html_names::kInstallTag)) {
     return "Install";
-  } else if (tag_name == html_names::kUsermediaTag) {
+  } else if (tag_name.Matches(html_names::kUsermediaTag)) {
     return "UserMedia";
-  } else if (tag_name == html_names::kCameraTag) {
+  } else if (tag_name.Matches(html_names::kCameraTag)) {
     return "Camera";
-  } else if (tag_name == html_names::kMicrophoneTag) {
+  } else if (tag_name.Matches(html_names::kMicrophoneTag)) {
     return "Microphone";
   } else {
     NOTREACHED();
@@ -43,15 +43,15 @@ const char* GetCapabilityNameForHistogram(const QualifiedName& tag_name) {
 
 void RecordPermissionElementUseCounter(Document& document,
                                        const QualifiedName& tag_name) {
-  if (tag_name == html_names::kGeolocationTag) {
+  if (tag_name.Matches(html_names::kGeolocationTag)) {
     UseCounter::Count(document, WebFeature::kHTMLGeolocationElement);
-  } else if (tag_name == html_names::kInstallTag) {
+  } else if (tag_name.Matches(html_names::kInstallTag)) {
     UseCounter::Count(document, WebFeature::kHTMLInstallElement);
-  } else if (tag_name == html_names::kUsermediaTag) {
+  } else if (tag_name.Matches(html_names::kUsermediaTag)) {
     UseCounter::Count(document, WebFeature::kHTMLUserMediaElement);
-  } else if (tag_name == html_names::kCameraTag) {
+  } else if (tag_name.Matches(html_names::kCameraTag)) {
     UseCounter::Count(document, WebFeature::kHTMLCameraElement);
-  } else if (tag_name == html_names::kMicrophoneTag) {
+  } else if (tag_name.Matches(html_names::kMicrophoneTag)) {
     UseCounter::Count(document, WebFeature::kHTMLMicrophoneElement);
   } else {
     NOTREACHED();
@@ -85,6 +85,97 @@ void RecordPermissionElementInvalidStyleReason(const QualifiedName& tag_name,
                          GetCapabilityNameForHistogram(tag_name)) +
           ".InvalidStyle.Reason",
       reason);
+}
+
+void RecordGeolocationRequestInitiationFlow(
+    CapabilityElementGeolocationRequestFlow flow) {
+  base::UmaHistogramEnumeration(
+      "Blink.CapabilityElement.Geolocation.RequestInitiationFlow", flow);
+}
+
+void RecordGeolocationRequestResult(CapabilityElementGeolocationResult result) {
+  base::UmaHistogramEnumeration(
+      "Blink.CapabilityElement.Geolocation.RequestResult", result);
+}
+
+void RecordGeolocationPositionErrorReason(
+    CapabilityElementGeolocationPositionErrorReason reason) {
+  base::UmaHistogramEnumeration(
+      "Blink.CapabilityElement.Geolocation.PositionError.Reason", reason);
+}
+
+void RecordGeolocationTimeToPosition(base::TimeDelta duration) {
+  base::UmaHistogramMediumTimes(
+      "Blink.CapabilityElement.Geolocation.TimeToPosition", duration);
+}
+
+void RecordGeolocationTimeToError(base::TimeDelta duration) {
+  base::UmaHistogramMediumTimes(
+      "Blink.CapabilityElement.Geolocation.TimeToError", duration);
+}
+
+void RecordGeolocationAccuracyMode(
+    CapabilityElementGeolocationAccuracyMode mode) {
+  base::UmaHistogramEnumeration(
+      "Blink.CapabilityElement.Geolocation.AccuracyMode", mode);
+}
+
+void RecordCapabilityElementConstraintsValidationError(
+    const QualifiedName& tag_name,
+    CapabilityElementMediaConstraintsValidationError error) {
+  base::UmaHistogramEnumeration(
+      base::StringPrintf(kCapabilityElementBaseHistogramPattern,
+                         GetCapabilityNameForHistogram(tag_name)) +
+          ".Constraints.ValidationError",
+      error);
+}
+
+void RecordCapabilityElementSetConstraintsRepeatedCall(
+    const QualifiedName& tag_name,
+    RepeatedCall repeated) {
+  base::UmaHistogramBoolean(
+      base::StringPrintf(kCapabilityElementBaseHistogramPattern,
+                         GetCapabilityNameForHistogram(tag_name)) +
+          ".SetConstraints.RepeatedCall",
+      repeated.value());
+}
+
+void RecordCapabilityElementMediaRequestFlow(
+    const QualifiedName& tag_name,
+    CapabilityElementMediaRequestFlow flow) {
+  base::UmaHistogramEnumeration(
+      base::StringPrintf(kCapabilityElementBaseHistogramPattern,
+                         GetCapabilityNameForHistogram(tag_name)) +
+          ".RequestInitiationFlow",
+      flow);
+}
+
+void RecordCapabilityElementMediaRequestOutcome(
+    const QualifiedName& tag_name,
+    CapabilityElementMediaRequestOutcome outcome) {
+  base::UmaHistogramEnumeration(
+      base::StringPrintf(kCapabilityElementBaseHistogramPattern,
+                         GetCapabilityNameForHistogram(tag_name)) +
+          ".RequestOutcome",
+      outcome);
+}
+
+void RecordCapabilityElementTimeToStreamOrTrack(const QualifiedName& tag_name,
+                                                base::TimeDelta duration) {
+  base::UmaHistogramTimes(
+      base::StringPrintf(kCapabilityElementBaseHistogramPattern,
+                         GetCapabilityNameForHistogram(tag_name)) +
+          ".TimeToStreamOrTrack",
+      duration);
+}
+
+void RecordCapabilityElementMediaTimeToError(const QualifiedName& tag_name,
+                                             base::TimeDelta duration) {
+  base::UmaHistogramTimes(
+      base::StringPrintf(kCapabilityElementBaseHistogramPattern,
+                         GetCapabilityNameForHistogram(tag_name)) +
+          ".TimeToError",
+      duration);
 }
 
 }  // namespace blink

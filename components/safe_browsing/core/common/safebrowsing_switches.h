@@ -27,8 +27,10 @@ extern const char kCloudBinaryUploadServiceUrlFlag[];
 extern const char kSbManualDownloadBlocklist[];
 extern const char kSbEnableEnhancedProtection[];
 extern const char kForceTreatUserAsAdvancedProtection[];
-extern const char kScamDetectionKeyboardLockTriggerAndroid[];
 extern const char kSbFastInitialListsUpdate[];
+
+// Command-line override for the temporary No Protection duration in seconds.
+extern const char kSafeBrowsingNoProtectionDurationSeconds[];
 
 }  // namespace safe_browsing::switches
 

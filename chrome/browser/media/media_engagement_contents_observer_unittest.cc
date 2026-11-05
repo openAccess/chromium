@@ -25,6 +25,8 @@
 #include "chrome/browser/ui/recently_audible_helper.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/tabs/public/mock_tab_interface.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_frame_host.h"
@@ -52,7 +54,9 @@ class MediaEngagementContentsObserverTest
 
     SetContents(content::WebContentsTester::CreateTestWebContents(
         browser_context(), nullptr));
-    RecentlyAudibleHelper::CreateForWebContents(web_contents());
+    tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(), &tab_);
+    recently_audible_helper_ =
+        std::make_unique<RecentlyAudibleHelper>(tab_, web_contents());
 
     service_ =
         base::WrapUnique(new MediaEngagementService(profile(), &test_clock_));
@@ -69,6 +73,11 @@ class MediaEngagementContentsObserverTest
     Advance15Minutes();
   }
 
+  void TearDown() override {
+    recently_audible_helper_.reset();
+    ChromeRenderViewHostTestHarness::TearDown();
+  }
+
   MediaEngagementContentsObserver* CreateContentsObserverFor(
       content::WebContents* web_contents) {
     MediaEngagementContentsObserver* contents_observer =
@@ -83,9 +92,10 @@ class MediaEngagementContentsObserverTest
 
   bool IsTimerRunningForPlayer(int id) const {
     content::MediaPlayerId player_id(content::GlobalRenderFrameHostId(), id);
-    auto audible_row = contents_observer_->audible_players_.find(player_id);
-    return audible_row != contents_observer_->audible_players_.end() &&
-           audible_row->second.second;
+    auto state_it = contents_observer_->player_states_.find(player_id);
+    return state_it != contents_observer_->player_states_.end() &&
+           state_it->second.was_audible &&
+           state_it->second.significant_playback_timer;
   }
 
   bool IsAudioContextTimerRunning() const {
@@ -104,7 +114,9 @@ class MediaEngagementContentsObserverTest
   }
 
   size_t GetSignificantActivePlayersCount() const {
-    return contents_observer_->significant_players_.size();
+    return std::ranges::count_if(
+        contents_observer_->player_states_,
+        [](const auto& pair) { return pair.second.is_significant; });
   }
 
   size_t GetStoredPlayerStatesCount() const {
@@ -382,6 +394,9 @@ class MediaEngagementContentsObserverTest
   }
 
  private:
+  tabs::MockTabInterface tab_;
+  std::unique_ptr<RecentlyAudibleHelper> recently_audible_helper_;
+
   // contents_observer_ auto-destroys when WebContents is destroyed.
   raw_ptr<MediaEngagementContentsObserver, DanglingUntriaged>
       contents_observer_;
@@ -1194,51 +1209,6 @@ TEST_F(MediaEngagementContentsObserverPrerenderTest,
       url, web_contents()->GetPrimaryMainFrame());
   EXPECT_EQ(prerender_frame->GetLifecycleState(),
             content::RenderFrameHost::LifecycleState::kActive);
-  EXPECT_EQ(0u, GetAudioContextPlayersCount());
-}
-
-class MediaEngagementContentsObserverFencedFrameTest
-    : public MediaEngagementContentsObserverTest {
- public:
-  MediaEngagementContentsObserverFencedFrameTest() {
-    scoped_feature_list_.InitAndEnableFeatureWithParameters(
-        blink::features::kFencedFrames, {{"implementation_type", "mparch"}});
-  }
-  ~MediaEngagementContentsObserverFencedFrameTest() override = default;
-
-  content::RenderFrameHost* CreateFencedFrame(
-      content::RenderFrameHost* parent) {
-    content::RenderFrameHost* fenced_frame =
-        content::RenderFrameHostTester::For(parent)->AppendFencedFrame();
-    return fenced_frame;
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(MediaEngagementContentsObserverFencedFrameTest,
-       EnsureDoNotCleanupAfterNavigation_AudioContextOnFencedFrame) {
-  GURL url("https://example.com");
-  content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents(),
-                                                             url);
-  EXPECT_EQ(0u, GetAudioContextPlayersCount());
-
-  SimulateAudioContextStarted(0);
-  EXPECT_EQ(1u, GetAudioContextPlayersCount());
-
-  // Navigate a fenced frame.
-  content::RenderFrameHostTester::For(main_rfh())
-      ->InitializeRenderFrameIfNeeded();
-  content::RenderFrameHost* fenced_frame_rfh = CreateFencedFrame(main_rfh());
-  std::unique_ptr<content::NavigationSimulator> navigation_simulator =
-      content::NavigationSimulator::CreateRendererInitiated(url,
-                                                            fenced_frame_rfh);
-  navigation_simulator->Commit();
-  EXPECT_TRUE(fenced_frame_rfh->IsFencedFrameRoot());
-  EXPECT_EQ(1u, GetAudioContextPlayersCount());
-
-  Navigate(url);
   EXPECT_EQ(0u, GetAudioContextPlayersCount());
 }
 

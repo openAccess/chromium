@@ -10,11 +10,12 @@ import android.app.Activity;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.drawable.BitmapDrawable;
 import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 
+import androidx.core.graphics.drawable.RoundedBitmapDrawable;
+import androidx.core.graphics.drawable.RoundedBitmapDrawableFactory;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.LargeTest;
@@ -30,7 +31,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 
-import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
@@ -86,7 +86,8 @@ public class ContactsPickerDialogTest
     public RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(RenderTestRule.Component.BLINK_CONTACTS)
-                    .setRevision(1)
+                    .setRevision(2)
+                    .setDescription("Ligatures and contextual alternates disabled in UI text")
                     .build();
 
     // The dialog we are testing.
@@ -145,9 +146,7 @@ public class ContactsPickerDialogTest
 
     @Before
     public void setupTest() throws Exception {
-        FakeAconfigFlaggedApiDelegate fakeDelegate = new FakeAconfigFlaggedApiDelegate();
-        fakeDelegate.setSystemContactsPickerEnabled(false);
-        AconfigFlaggedApiDelegate.setInstanceForTesting(fakeDelegate);
+        ContactsPickerFeatureMap.setSystemContactsPickerEnabledForTesting(false);
 
         mWindowAndroid =
                 ThreadUtils.runOnUiThreadBlocking(
@@ -527,7 +526,9 @@ public class ContactsPickerDialogTest
                             Arrays.asList("owner@example.com"),
                             /* phoneNumbers= */ null,
                             /* addresses= */ null);
-            owner.setSelfIcon(new BitmapDrawable(mIcon));
+            RoundedBitmapDrawable roundedIcon =
+                    RoundedBitmapDrawableFactory.create(mActivity.getResources(), mIcon);
+            owner.setSelfIcon(roundedIcon);
             ContactDetails owner2 =
                     new ContactDetails(
                             "7",

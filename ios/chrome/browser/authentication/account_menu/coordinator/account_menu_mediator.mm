@@ -11,12 +11,12 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
-#import "base/strings/sys_string_conversions.h"
 #import "components/prefs/pref_service.h"
 #import "components/signin/public/base/signin_switches.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/subscription_eligibility/objc/subscription_eligibility_observer_bridge.h"
 #import "components/subscription_eligibility/subscription_eligibility_service.h"
+#import "components/sync/service/sync_service_utils.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/authentication/account_menu/coordinator/account_menu_mediator_delegate.h"
 #import "ios/chrome/browser/authentication/account_menu/public/account_menu_constants.h"
@@ -25,11 +25,9 @@
 #import "ios/chrome/browser/authentication/account_menu/ui/account_menu_view_controller.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_delegate.h"
-#import "ios/chrome/browser/authentication/ui_bundled/cells/table_view_account_item.h"
 #import "ios/chrome/browser/authentication/ui_bundled/change_profile/change_profile_load_url.h"
 #import "ios/chrome/browser/authentication/ui_bundled/change_profile/change_profile_open_ntp.h"
 #import "ios/chrome/browser/authentication/ui_bundled/change_profile/change_profile_settings_continuation.h"
-#import "ios/chrome/browser/authentication/ui_bundled/continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/enterprise/enterprise_utils.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
@@ -37,15 +35,14 @@
 #import "ios/chrome/browser/settings/manage_sync/public/sync_error_settings_command_handler.h"
 #import "ios/chrome/browser/settings/model/sync/utils/account_error_ui_info.h"
 #import "ios/chrome/browser/settings/model/sync/utils/identity_error_util.h"
-#import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/sync/model/sync_observer_bridge.h"
-#import "ios/public/provider/chrome/browser/intelligence/signin/signin_ai_logo.h"
 
 @interface AccountMenuMediator () <AuthenticationFlowDelegate,
                                    AuthenticationServiceObserving,
@@ -101,7 +98,7 @@
   NSString* _primaryAccountDisplayedUserFullName;
   // The version of the avatar currently displayed. Not nil.
   UIImage* _primaryAccountDisplayedAvatar;
-  NSString* _primaryAccountDisplayedAITierFullName;
+  NSInteger _primaryAccountDisplayedAITier;
   // The URL which the the account menu was viewed from when
   // AccountMenuAccessPoint::kWeb.
   GURL _url;
@@ -160,6 +157,10 @@
     _syncObserver = std::make_unique<SyncObserverBridge>(self, _syncService);
     [self updateIdentitiesIfAllowed];
     _error = GetAccountErrorUIInfo(_syncService);
+    if (_error) {
+      syncer::MaybeRecordIdentityErrorShown(
+          syncer::IdentityErrorDisplaySurface::kAccountMenu, _error.errorType);
+    }
   }
   return self;
 }
@@ -238,24 +239,15 @@
                                             IdentityAvatarSize::Large);
 }
 
-- (BOOL)primaryAccountAvatarNeedsRing {
-  return self.AITier > 0;
-}
-
-- (NSString*)primaryAccountAITierFullName {
-  NSInteger AITier = self.AITier;
-  if (AITier <= 0) {
-    return nil;
+- (NSInteger)primaryAccountAITier {
+  if (_error || !IsAiSubscriptionAvatarRingIOSEnabled()) {
+    // In case of error, we do not want to display any AI Tier information. Even
+    // in the case where the error does not impact the tier feature access. That
+    // ensures the Account Menu and the NTP displays are consistent.
+    return 0;
   }
-  return ios::provider::GetAITierFullName(AITier);
-}
-
-- (NSString*)primaryAccountAITierName {
-  NSInteger AITier = self.AITier;
-  if (AITier <= 0) {
-    return nil;
-  }
-  return ios::provider::GetAITierName(AITier);
+  return std::max<NSInteger>(
+      _subscriptionEligibilityService->GetAiSubscriptionTier(), 0);
 }
 
 - (NSString*)managementDescription {
@@ -293,6 +285,10 @@
 }
 
 - (void)extendedAccountInfoDidUpdate:(const AccountInfo&)info {
+  // TODO(crbug.com/576575308): Currently called even for identities that do
+  // not match `kRestrictAccountsToPatterns` because
+  // `ChromeAccountManagerService::OnIdentityOnDeviceUpdated` does not filter
+  // them out.
   [self updateIdentitiesIfAllowed];
 }
 
@@ -312,6 +308,10 @@
     return;
   }
   _error = newError;
+  if (_error) {
+    syncer::MaybeRecordIdentityErrorShown(
+        syncer::IdentityErrorDisplaySurface::kAccountMenu, _error.errorType);
+  }
   [self.consumer updateErrorSection:_error];
   if (_subscriptionEligibilityService->GetAiSubscriptionTier() > 0 &&
       IsAiSubscriptionAvatarRingIOSEnabled()) {
@@ -393,12 +393,8 @@
         base::RecordAction(
             base::UserMetricsAction("Signin_AccountMenu_ErrorButton_MDM"));
         self.userInteractionsBlocked = YES;
-        __weak __typeof(self) weakSelf = self;
         [self.syncErrorSettingsCommandHandler
-            openMDMErrorDialogWithSystemIdentity:_primaryIdentityBeforeSignin
-                                      completion:^{
-                                        [weakSelf accountMenuIsUsable];
-                                      }];
+            openMDMErrorDialogWithSystemIdentity:_primaryIdentityBeforeSignin];
       }
       break;
     }
@@ -406,12 +402,8 @@
       base::RecordAction(
           base::UserMetricsAction("Signin_AccountMenu_ErrorButton_MDM"));
       self.userInteractionsBlocked = YES;
-      __weak __typeof(self) weakSelf = self;
       [self.syncErrorSettingsCommandHandler
-          openMDMErrorDialogWithSystemIdentity:_primaryIdentityBeforeSignin
-                                    completion:^{
-                                      [weakSelf accountMenuIsUsable];
-                                    }];
+          openMDMErrorDialogWithSystemIdentity:_primaryIdentityBeforeSignin];
       break;
     }
     case syncer::SyncService::UserActionableError::kNeedsPassphrase:
@@ -612,16 +604,6 @@
 
 #pragma mark - Private
 
-- (NSInteger)AITier {
-  if (_error || !IsAiSubscriptionAvatarRingIOSEnabled()) {
-    // In case of error, we do not want to display any AI Tier information. Even
-    // in the case where the error does not impact the tier feature access. That
-    // ensures the Account Menu and the NTP displays are consistent.
-    return 0;
-  }
-  return _subscriptionEligibilityService->GetAiSubscriptionTier();
-}
-
 // Updates the identity list in `_identities`, and sends an notification to
 // the consumer.
 - (void)updateIdentitiesIfAllowed {
@@ -731,10 +713,7 @@
   if (_primaryAccountDisplayedAvatar != self.primaryAccountAvatar ||
       _primaryAccountDisplayedUserFullName != self.primaryAccountUserFullName ||
       _primaryAccountDisplayedEmail != self.primaryAccountEmail ||
-      !([_primaryAccountDisplayedAITierFullName
-            isEqualToString:self.primaryAccountAITierFullName] ||
-        (_primaryAccountDisplayedAITierFullName == nil &&
-         self.primaryAccountAITierFullName == nil))) {
+      _primaryAccountDisplayedAITier != self.primaryAccountAITier) {
     [self recordPrimaryAccountDisplayedInfo];
     return YES;
   }
@@ -746,7 +725,7 @@
   _primaryAccountDisplayedEmail = self.primaryAccountEmail;
   _primaryAccountDisplayedUserFullName = self.primaryAccountUserFullName;
   _primaryAccountDisplayedAvatar = self.primaryAccountAvatar;
-  _primaryAccountDisplayedAITierFullName = self.primaryAccountAITierFullName;
+  _primaryAccountDisplayedAITier = self.primaryAccountAITier;
 }
 
 // Returns whether this mediator is disconnected

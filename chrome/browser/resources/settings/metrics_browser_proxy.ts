@@ -70,33 +70,6 @@ export enum SafetyHubCardState {
 // )
 
 /**
- * Contains all safety check notifications module interactions.
- *
- * These values are persisted to logs. Entries should not be renumbered and
- * numeric values should never be reused.
- *
- * Must be kept in sync with the SafetyCheckNotificationsModuleInteractions enum
- * in histograms/enums.xml
- */
-// LINT.IfChange(SafetyCheckNotificationsModuleInteractions)
-export enum SafetyCheckNotificationsModuleInteractions {
-  BLOCK = 0,
-  BLOCK_ALL = 1,
-  IGNORE = 2,
-  MINIMIZE = 3,
-  RESET = 4,
-  UNDO_BLOCK = 5,
-  UNDO_IGNORE = 6,
-  UNDO_RESET = 7,
-  OPEN_REVIEW_UI = 8,
-  UNDO_BLOCK_ALL = 9,
-  GO_TO_SETTINGS = 10,
-  // COUNT should be updated whenever new entries are added.
-  COUNT = 11,
-}
-// LINT.ThenChange(//tools/metrics/histograms/metadata/settings/enums.xml:SafetyCheckNotificationsModuleInteractions)
-
-/**
  * Contains all safety check unused site permissions module interactions.
  *
  * These values are persisted to logs. Entries should not be renumbered and
@@ -377,7 +350,7 @@ export enum CardBenefitsUserAction {
  */
 // LINT.IfChange(AiPageInteractions)
 export enum AiPageInteractions {
-  HISTORY_SEARCH_CLICK = 0,
+  // HISTORY_SEARCH_CLICK = 0, // DEPRECATED
   // COMPARE_CLICK = 1, // DEPRECATED
   COMPOSE_CLICK = 2,
   // TAB_ORGANIZATION_CLICK = 3, // DEPRECATED
@@ -392,25 +365,6 @@ export enum AiPageInteractions {
   COUNT = 12,
 }
 // LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageInteractions)
-
-/**
- * Contains all recorded interactions in the AI History Search settings page.
- *
- * These values are persisted to logs. Entries should not be renumbered and
- * numeric values should never be reused.
- *
- * Must be kept in sync with the SettingsAiPageHistorySearchInteractions enum in
- * histograms/metadata/settings/enums.xml
- */
-// LINT.IfChange(AiPageHistorySearchInteractions)
-export enum AiPageHistorySearchInteractions {
-  HISTORY_SEARCH_ENABLED = 0,
-  HISTORY_SEARCH_DISABLED = 1,
-  FEATURE_LINK_CLICKED = 2,
-  LEARN_MORE_LINK_CLICKED = 3,
-  COUNT = 4,
-}
-// LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageHistorySearchInteractions)
 
 /**
  * Contains all recorded interactions in the AI Compose settings page.
@@ -551,7 +505,51 @@ export enum SuggestionsFromGeminiAction {
 }
 // LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:SuggestionsFromGeminiAction)
 
+/**
+ * These values are persisted to logs. Entries should not be renumbered and
+ * numeric values should never be reused.
+ *
+ * Must be kept in sync with the SettingsSearchExitReasonDesktop enum in
+ * histograms/metadata/settings/enums.xml
+ */
+// LINT.IfChange(SettingsSearchExitReasonDesktop)
+export enum SettingsSearchExitReasonDesktop {
+  INTERACTED_WITH_RESULT = 0,
+  CLEAR_QUERY = 1,
+  NAVIGATE_SIDEBAR = 2,
+  EXIT_SETTINGS = 3,
+  BACK_NAVIGATION = 4,
+  COUNT = 5,
+}
+// LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsSearchExitReasonDesktop)
+
 export interface MetricsBrowserProxy {
+  /**
+   * Helper function that calls recordHistogram for the
+   * Settings.Search.ExitReasonDesktop histogram
+   */
+  recordSettingsSearchExitReason(reason: SettingsSearchExitReasonDesktop): void;
+
+  /**
+   * Helper function that records the Settings.Search.ResultDwellTime
+   * histogram, using a bucket range of up to one hour. Named rather than
+   * generic so that callers do not need to know which bucket range the
+   * histogram uses.
+   */
+  recordSettingsSearchResultDwellTime(time: number): void;
+
+  /**
+   * Helper function that triggers the C++ CUJ interaction sequence step when
+   * a navigation category in the settings menu is clicked.
+   */
+  recordSettingsNavCategoryClicked(): void;
+
+  /**
+   * Helper function that triggers the C++ CUJ interaction sequence step when
+   * a settings search query is submitted.
+   */
+  recordSettingsSearchQueryEntered(): void;
+
   /**
    * Helper function that calls recordAction with one action from
    * tools/metrics/actions/actions.xml.
@@ -593,20 +591,6 @@ export interface MetricsBrowserProxy {
    */
   recordSafetyHubCardStateClicked(
       histogramName: string, state: SafetyHubCardState): void;
-
-  /**
-   * Helper function that calls recordHistogram for the
-   * Settings.SafetyHub.NotificationPermissionsModule.Interactions histogram
-   */
-  recordSafetyHubNotificationPermissionsModuleInteractionsHistogram(
-      interaction: SafetyCheckNotificationsModuleInteractions): void;
-
-  /**
-   * Helper function that calls recordHistogram for
-   * Settings.SafetyHub.NotificationPermissionsModule.ListCount histogram
-   */
-  recordSafetyHubNotificationPermissionsModuleListCountHistogram(
-      suggestions: number): void;
 
   /**
    * Helper function that calls recordHistogram for the
@@ -697,6 +681,12 @@ export interface MetricsBrowserProxy {
   recordDeleteBrowsingDataAction(action: DeleteBrowsingDataAction): void;
 
   /**
+   * Notifies Chrome that the Clear Browsing Data dialog was cancelled or
+   * dismissed without clearing browsing data.
+   */
+  recordClearBrowsingDataCancelled(): void;
+
+  /**
    * Helper function that calls records an impression of the provided Safety Hub
    * surface.
    */
@@ -724,13 +714,6 @@ export interface MetricsBrowserProxy {
    * Settings.AiPage.Interactions histogram
    */
   recordAiPageInteractions(interaction: AiPageInteractions): void;
-
-  /**
-   * Helper function that calls recordHistogram for the
-   * Settings.AiPage.HistorySearch.Interactions histogram
-   */
-  recordAiPageHistorySearchInteractions(
-      interaction: AiPageHistorySearchInteractions): void;
 
   /**
    * Helper function that calls recordHistogram for the
@@ -774,6 +757,30 @@ export interface MetricsBrowserProxy {
 export const SAFETY_HUB_SUGGESTIONS_MAX_VALUE = 98;
 
 export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
+  recordSettingsSearchExitReason(reason: SettingsSearchExitReasonDesktop) {
+    chrome.send('metricsHandler:recordInHistogram', [
+      'Settings.Search.ExitReasonDesktop',
+      reason,
+      SettingsSearchExitReasonDesktop.COUNT,
+    ]);
+  }
+
+  recordSettingsSearchResultDwellTime(time: number) {
+    // The caller drops dwell times longer than one hour, which is wider than
+    // the 3 minute range of 'metricsHandler:recordMediumTime'. MetricsHandler
+    // exposes no recordLongTime message, so record through metricsPrivate.
+    chrome.metricsPrivate.recordLongTime(
+        'Settings.Search.ResultDwellTime', time);
+  }
+
+  recordSettingsNavCategoryClicked() {
+    chrome.send('recordSettingsNavCategoryClicked');
+  }
+
+  recordSettingsSearchQueryEntered() {
+    chrome.send('recordSettingsSearchQueryEntered');
+  }
+
   recordAction(action: string) {
     chrome.send('metricsHandler:recordAction', [action]);
   }
@@ -820,24 +827,6 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
     chrome.send('metricsHandler:recordBooleanHistogram', [
       'Settings.SafetyHub.HasDashboardShowAnyWarning',
       visible,
-    ]);
-  }
-
-  recordSafetyHubNotificationPermissionsModuleInteractionsHistogram(
-      interaction: SafetyCheckNotificationsModuleInteractions) {
-    chrome.send('metricsHandler:recordInHistogram', [
-      'Settings.SafetyHub.NotificationPermissionsModule.Interactions',
-      interaction,
-      SafetyCheckNotificationsModuleInteractions.COUNT,
-    ]);
-  }
-
-  recordSafetyHubNotificationPermissionsModuleListCountHistogram(
-      suggestions: number) {
-    chrome.send('metricsHandler:recordInHistogram', [
-      'Settings.SafetyHub.NotificationPermissionsModule.ListCount',
-      Math.min(suggestions, SAFETY_HUB_SUGGESTIONS_MAX_VALUE),
-      SAFETY_HUB_SUGGESTIONS_MAX_VALUE + 1,
     ]);
   }
 
@@ -937,6 +926,10 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
     ]);
   }
 
+  recordClearBrowsingDataCancelled(): void {
+    chrome.send('recordClearBrowsingDataCancelled');
+  }
+
   recordSafetyHubImpression(surface: SafetyHubSurfaces): void {
     chrome.send('metricsHandler:recordInHistogram', [
       'Settings.SafetyHub.Impression',
@@ -965,15 +958,6 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
       'Settings.AiPage.Interactions',
       interaction,
       AiPageInteractions.COUNT,
-    ]);
-  }
-
-  recordAiPageHistorySearchInteractions(
-      interaction: AiPageHistorySearchInteractions): void {
-    chrome.send('metricsHandler:recordInHistogram', [
-      'Settings.AiPage.HistorySearch.Interactions',
-      interaction,
-      AiPageHistorySearchInteractions.COUNT,
     ]);
   }
 

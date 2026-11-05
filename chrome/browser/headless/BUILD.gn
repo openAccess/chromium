@@ -31,8 +31,6 @@ source_set("initializer") {
     sources += [ "headless_mode_platform_mac.mm" ]
   }
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [ ":headless" ]
 
   deps = [
@@ -45,6 +43,7 @@ source_set("initializer") {
 
   if (is_linux) {
     deps += [
+      "//components/headless/gpu_util",
       "//ui/gl",
       "//ui/ozone",
     ]
@@ -61,8 +60,6 @@ source_set("metrics") {
     "headless_mode_metrics.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   deps = [
     ":headless",
     "//base",
@@ -78,12 +75,9 @@ if (!is_android) {
       "headless_command_processor.h",
     ]
 
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
     deps = [
       ":headless",
       "//base",
-      "//chrome/common:non_code_constants",
       "//components/headless/command_handler",
       "//components/keep_alive_registry",
       "//content/public/browser",
@@ -95,8 +89,6 @@ if (!is_android) {
       "chrome_browser_main_extra_parts_headless.cc",
       "chrome_browser_main_extra_parts_headless.h",
     ]
-
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
     deps = [
       ":headless",
@@ -145,7 +137,9 @@ if (!is_android) {
       "//base",
       "//chrome/browser",
       "//chrome/browser/infobars",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/views/exclusive_access",
+      "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/common:constants",
       "//chrome/test:test_support",
       "//components/headless/clipboard",
@@ -159,7 +153,6 @@ if (!is_android) {
     if (is_linux || is_win || is_mac) {
       deps += [
         "//chrome/browser/profiles",
-        "//chrome/browser/ui",
         "//chrome/browser/ui/browser_window",
         "//chrome/browser/ui/views/frame:toolbar_button_provider",
         "//components/devtools/simple_devtools_protocol_client",
@@ -199,10 +192,6 @@ if (!is_android) {
       "//third_party/blink/web_tests/http/tests/inspector-protocol/resources/inspector-protocol-test-subtarget.html",
       "//third_party/blink/web_tests/http/tests/inspector-protocol/resources/http-interceptor.js",
     ]
-
-    # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-    # enable the diagnostic by removing this line.
-    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
 }
 
@@ -210,9 +199,6 @@ source_set("interactive_ui_tests") {
   testonly = true
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
   sources = []
-  if (is_win) {
-    sources += [ "test/headless_mode_interactive_uitest_win.cc" ]
-  }
   deps = [
     ":initializer",
     "//base",
@@ -225,10 +211,19 @@ source_set("interactive_ui_tests") {
     "//testing/gtest",
     "//ui/gfx",
   ]
+
+  if (is_win) {
+    deps += [ "//chrome/browser/ui:browser_window_header" ]
+    sources += [ "test/headless_mode_interactive_uitest_win.cc" ]
+  }
   if (use_aura && is_win) {
     deps += [
       "//ui/aura",
       "//ui/compositor",
     ]
+  }
+
+  if (!is_android) {
+    deps += [ "//chrome/browser/ui/views/frame:browser_view_header" ]
   }
 }

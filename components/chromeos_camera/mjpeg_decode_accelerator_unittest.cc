@@ -724,8 +724,8 @@ void JpegClient::PrepareMemory(int32_t task_id) {
     ASSERT_TRUE(in_shm_.IsValid());
     in_shm_mapping_ = in_shm_.Map();
     ASSERT_TRUE(in_shm_mapping_.IsValid());
-    UNSAFE_TODO(memcpy(in_shm_mapping_.memory(), task.image->data_str.data(),
-                       task.image->data_str.size()));
+    base::span(in_shm_mapping_)
+        .copy_from(base::as_byte_span(task.image->data_str));
 
     // Only I420 output buffer is used in the shared memory path.
     hw_out_frame_ = g_env->CreateMemoryVideoFrame(
@@ -1188,6 +1188,22 @@ TEST_P(MjpegDecodeAcceleratorTest, DecodeBlit) {
                                  (image->visible_size.height() / 2) & ~1));
   }
   const std::vector<ClientState> expected_status(tasks.size(), CS_DECODE_PASS);
+  TestDecode(tasks, expected_status);
+}
+#endif
+
+#if BUILDFLAG(USE_V4L2_CODEC)
+// The V4L2 backend does not support scaling, so a JPEG whose frame dimensions
+// exceed the requested output frame must be rejected instead of being sent to
+// the hardware decoder.
+TEST_P(MjpegDecodeAcceleratorTest, RejectOversizedInput) {
+  std::vector<DecodeTask> tasks;
+  for (auto& image : g_env->image_data_user_) {
+    tasks.emplace_back(image.get(),
+                       gfx::Size((image->visible_size.width() / 2) & ~1,
+                                 (image->visible_size.height() / 2) & ~1));
+  }
+  const std::vector<ClientState> expected_status(tasks.size(), CS_ERROR);
   TestDecode(tasks, expected_status);
 }
 #endif

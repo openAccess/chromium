@@ -22,7 +22,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -31,6 +30,7 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.MockTab;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
+import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
@@ -45,7 +45,6 @@ import java.util.List;
 
 /** Robolectric tests for {@link QuickDeleteTabsFilter}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class QuickDeleteTabsFilterTest {
     private static final long INITIAL_TIME_IN_MS = 1000;
     private static final Token TAB_GROUP_ID = new Token(3748L, 3483L);
@@ -184,6 +183,7 @@ public class QuickDeleteTabsFilterTest {
                 TabClosureParams.closeTabs(filteredTabs)
                         .allowUndo(false)
                         .saveToTabRestoreService(false)
+                        .tabClosingSource(TabClosingSource.QUICK_DELETE)
                         .build();
         verify(mTabRemoverMock).closeTabs(params, false);
     }
@@ -221,6 +221,7 @@ public class QuickDeleteTabsFilterTest {
                 TabClosureParams.closeTabs(filteredTabs)
                         .allowUndo(false)
                         .saveToTabRestoreService(false)
+                        .tabClosingSource(TabClosingSource.QUICK_DELETE)
                         .build();
         verify(mTabRemoverMock).closeTabs(params, false);
     }
@@ -254,6 +255,7 @@ public class QuickDeleteTabsFilterTest {
                 TabClosureParams.closeTabs(filteredTabs)
                         .allowUndo(false)
                         .saveToTabRestoreService(false)
+                        .tabClosingSource(TabClosingSource.QUICK_DELETE)
                         .build();
         verify(mTabRemoverMock).closeTabs(params, false);
     }

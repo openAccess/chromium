@@ -17,7 +17,6 @@
 #import "ios/chrome/browser/home_customization/model/home_background_image_service_factory.h"
 #import "ios/chrome/browser/home_customization/ui/background_customization_configuration.h"
 #import "ios/chrome/browser/home_customization/ui/home_customization_background_color_picker_view_controller.h"
-#import "ios/chrome/browser/home_customization/ui/home_customization_background_photo_library_picker_view_controller.h"
 #import "ios/chrome/browser/home_customization/ui/home_customization_background_picker_presentation_delegate.h"
 #import "ios/chrome/browser/home_customization/ui/home_customization_background_preset_gallery_picker_view_controller.h"
 #import "ios/chrome/browser/home_customization/utils/home_customization_constants.h"
@@ -90,7 +89,7 @@ CGFloat const kSheetCornerRadius = 30;
       ImageFetcherServiceFactory::GetForProfile(self.profile);
   image_fetcher::ImageFetcher* imageFetcher =
       imageFetcherService->GetImageFetcher(
-          image_fetcher::ImageFetcherConfig::kReducedMode);
+          image_fetcher::ImageFetcherConfig::kDiskCacheOnly);
   HomeBackgroundImageService* homeBackgroundImageService =
       HomeBackgroundImageServiceFactory::GetForProfile(self.profile);
   HomeBackgroundCustomizationService* homeBackgroundCustomizationService =
@@ -102,7 +101,9 @@ CGFloat const kSheetCornerRadius = 30;
               homeBackgroundCustomizationService
                                     imageFetcher:imageFetcher
                       homeBackgroundImageService:homeBackgroundImageService
-                        userUploadedImageManager:nil];
+                        userUploadedImageManager:nil
+                                     prefService:self.profile->GetPrefs()
+                        featureEngagementTracker:nullptr];
   _backgroundConfigurationMediator.delegate = self.presentationDelegate;
 
   [self
@@ -248,6 +249,7 @@ CGFloat const kSheetCornerRadius = 30;
           "UserUploaded.Tapped"));
       return;
     case HomeCustomizationBackgroundStyle::kDefault:
+    case HomeCustomizationBackgroundStyle::kEphemeral:
       NOTREACHED();
   }
 
@@ -385,6 +387,7 @@ CGFloat const kSheetCornerRadius = 30;
           _backgroundConfigurationMediator.backgroundSelectionOutcome);
       break;
     case HomeCustomizationBackgroundStyle::kDefault:
+    case HomeCustomizationBackgroundStyle::kEphemeral:
       return;
   }
 }

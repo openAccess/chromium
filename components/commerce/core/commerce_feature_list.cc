@@ -15,7 +15,6 @@
 #if !BUILDFLAG(IS_ANDROID)
 #include "components/commerce/core/commerce_heuristics_data.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
-#include "components/commerce/core/commerce_heuristics_data_metrics_helper.h"
 #include "components/commerce/core/pref_names.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
@@ -88,8 +87,6 @@ const re2::RE2& GetRulePartnerMerchantPattern() {
           .GetRuleDiscountPartnerMerchantPattern();
   if (pattern_from_component && kRulePartnerMerchantPattern.Get() ==
                                     kRulePartnerMerchantPattern.default_value) {
-    CommerceHeuristicsDataMetricsHelper::RecordPartnerMerchantPatternSource(
-        CommerceHeuristicsDataMetricsHelper::HeuristicsSource::FROM_COMPONENT);
     return *pattern_from_component;
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -97,9 +94,6 @@ const re2::RE2& GetRulePartnerMerchantPattern() {
   options.set_case_sensitive(false);
   static base::NoDestructor<re2::RE2> instance(
       kRulePartnerMerchantPattern.Get(), options);
-  CommerceHeuristicsDataMetricsHelper::RecordPartnerMerchantPatternSource(
-      CommerceHeuristicsDataMetricsHelper::HeuristicsSource::
-          FROM_FEATURE_PARAMETER);
   return *instance;
 }
 
@@ -159,9 +153,6 @@ BASE_FEATURE(kTabResumptionShopCard, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Discount on navigation
 BASE_FEATURE(kEnableDiscountInfoApi, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Force traffic to alternate Chrome shopping server.
-BASE_FEATURE(kShoppingAlternateServer, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // TODO(crbug.com/406555154): Clean up this flag when discount on clank launched.
 const char kDiscountOnShoppyPageParam[] = "discount-on-shoppy-page";
@@ -228,8 +219,6 @@ BASE_FEATURE(kInStockNotification, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kShoppingPageTypes, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kRetailCoupons, base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kCommerceDeveloper, base::FEATURE_DISABLED_BY_DEFAULT);
 
 const char kRetailCouponsWithCodeParam[] = "RetailCouponsWithCodeParam";
 

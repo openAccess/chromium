@@ -10,11 +10,12 @@
 #import "base/files/file_path.h"
 #import "base/functional/callback.h"
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper_factory.h"
 
 namespace base {
 class FilePath;
 class TimeDelta;
-}
+}  // namespace base
 @class PageContextWrapper;
 namespace web {
 class WebState;
@@ -43,8 +44,8 @@ struct SavePageContextResult {
 PageContextWrapper* CreatePageContextWrapper(
     web::WebState* web_state,
     bool rich_extraction,
-    base::OnceCallback<void(PageContextWrapperCallbackResponse)>
-        completion_callback);
+    PageContextWrapperFactory::CompletionCallback completion,
+    PageContextWrapperFactory* factory = nullptr);
 
 // Populates the page context from the `wrapper` for the given `web_state`.
 // If the page is still loading, it waits for it to finish before populating.
@@ -65,11 +66,5 @@ SavePageContextResult SaveSerializedPageContextToDisk(
     const optimization_guide::proto::PageContext& page_context,
     const std::string& dir_name,
     const std::string& file_name);
-
-std::string FileNameForPageContext(
-    const optimization_guide::proto::PageContext& page_context);
-
-// Sanitze give `url` to be used as file name.
-NSString* SanitizeUrl(NSString* url);
 
 #endif  // IOS_CHROME_BROWSER_AI_PROTOTYPING_UTILS_PAGE_CONTEXT_UTIL_H_

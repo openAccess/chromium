@@ -14,27 +14,13 @@ namespace ios {
 
 using autofill::LogRouter;
 
-// static
-LogRouter* PasswordManagerLogRouterFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<LogRouter>(profile,
-                                                          /*create=*/true);
-}
-
-// static
-PasswordManagerLogRouterFactory*
-PasswordManagerLogRouterFactory::GetInstance() {
-  static base::NoDestructor<PasswordManagerLogRouterFactory> instance;
-  return instance.get();
-}
-
-PasswordManagerLogRouterFactory::PasswordManagerLogRouterFactory()
-    : ProfileKeyedServiceFactoryIOS("PasswordManagerInternalsService") {}
-
-PasswordManagerLogRouterFactory::~PasswordManagerLogRouterFactory() = default;
+PasswordManagerLogRouterFactory::PasswordManagerLogRouterFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "PasswordManagerInternalsService") {}
 
 std::unique_ptr<KeyedService>
 PasswordManagerLogRouterFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   return std::make_unique<LogRouter>();
 }
 

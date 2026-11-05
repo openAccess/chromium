@@ -25,7 +25,6 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/i18n/break_iterator.h"
-#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -248,7 +247,7 @@ class AXPosition {
       base::RepeatingCallback<bool(const AXPositionInstance&)>;
 
   using BoundaryTextOffsetsFunc =
-      base::RepeatingCallback<const std::vector<int32_t>&(
+      base::RepeatingCallback<base::span<const int32_t>(
           const AXPositionInstance&)>;
 
   static const int BEFORE_TEXT = -1;
@@ -765,7 +764,7 @@ class AXPosition {
       case AXPositionKind::TREE_POSITION:
         NOTREACHED();
       case AXPositionKind::TEXT_POSITION: {
-        const std::vector<int32_t>& word_starts =
+        base::span<const int32_t> word_starts =
             text_position->GetWordStartOffsets();
         return std::ranges::contains(word_starts,
                                      int32_t{text_position->text_offset_});
@@ -792,7 +791,7 @@ class AXPosition {
       case AXPositionKind::TREE_POSITION:
         NOTREACHED();
       case AXPositionKind::TEXT_POSITION: {
-        const std::vector<int32_t>& word_ends =
+        base::span<const int32_t> word_ends =
             text_position->GetWordEndOffsets();
         return std::ranges::contains(word_ends,
                                      int32_t{text_position->text_offset_});
@@ -957,7 +956,7 @@ class AXPosition {
       case AXPositionKind::TREE_POSITION:
         NOTREACHED();
       case AXPositionKind::TEXT_POSITION: {
-        const std::vector<int32_t>& format_starts =
+        base::span<const int32_t> format_starts =
             text_position->GetFormatStartOffsets();
         if (format_starts.size() <= 1) {
           return GetFormatStartBoundaryType() != AXBoundaryType::kNone;
@@ -1021,7 +1020,7 @@ class AXPosition {
       case AXPositionKind::TREE_POSITION:
         NOTREACHED();
       case AXPositionKind::TEXT_POSITION: {
-        const std::vector<int32_t>& format_ends =
+        base::span<const int32_t> format_ends =
             text_position->GetFormatEndOffsets();
         if (format_ends.size() <= 1) {
           return GetFormatEndBoundaryType() != AXBoundaryType::kNone;
@@ -1062,7 +1061,7 @@ class AXPosition {
       case AXPositionKind::TREE_POSITION:
         NOTREACHED();
       case AXPositionKind::TEXT_POSITION: {
-        const std::vector<int32_t>& sentence_starts =
+        base::span<const int32_t> sentence_starts =
             text_position->GetAnchor()->GetIntListAttribute(
                 ax::mojom::IntListAttribute::kSentenceStarts);
         return std::ranges::contains(sentence_starts,
@@ -1090,7 +1089,7 @@ class AXPosition {
       case AXPositionKind::TREE_POSITION:
         NOTREACHED();
       case AXPositionKind::TEXT_POSITION: {
-        const std::vector<int32_t>& sentence_ends =
+        base::span<const int32_t> sentence_ends =
             text_position->GetAnchor()->GetIntListAttribute(
                 ax::mojom::IntListAttribute::kSentenceEnds);
         return std::ranges::contains(sentence_ends,
@@ -1457,6 +1456,34 @@ class AXPosition {
     return ancestor_position;
   }
 
+  // Returns this position's text offset in `ancestor_anchor`, or nullopt if
+  // the position cannot be represented on that ancestor.
+  std::optional<int> GetTextOffsetInAncestor(
+      const AXNode* ancestor_anchor,
+      ax::mojom::MoveDirection move_direction) const {
+    AXPositionInstance ancestor_position =
+        AsTextPosition()->CreateAncestorPosition(ancestor_anchor,
+                                                 move_direction);
+    if (ancestor_position->IsNullPosition()) {
+      return std::nullopt;
+    }
+    return ancestor_position->text_offset();
+  }
+
+  // Returns the static-text parent if this position is anchored to a nonempty,
+  // unignored inline text box, or nullptr otherwise.
+  const AXNode* GetNonemptyInlineTextBoxParent() const {
+    const AXNode* anchor = GetAnchor();
+    if (!anchor || anchor->GetRole() != ax::mojom::Role::kInlineTextBox ||
+        anchor->IsIgnored() || MaxTextOffset() <= 0) {
+      return nullptr;
+    }
+    const AXNode* parent = anchor->GetParent();
+    return parent && parent->GetRole() == ax::mojom::Role::kStaticText
+               ? parent
+               : nullptr;
+  }
+
   // If the position is not valid, we return a new valid position that is
   // closest to the original position if possible, or a null position otherwise.
   AXPositionInstance AsValidPosition() const {
@@ -1519,7 +1546,10 @@ class AXPosition {
         if (!position->GetAnchor())
           return CreateNullPosition();
 
-        if (const AXNode* empty_object_node = GetEmptyObjectAncestorNode()) {
+        // An empty text field can be its own empty-object ancestor. Positions
+        // on that anchor still use normal offset clamping.
+        const AXNode* empty_object_node = GetEmptyObjectAncestorNode();
+        if (empty_object_node && empty_object_node != position->GetAnchor()) {
           // This is needed because an empty object as defined in this class can
           // have descendants that should not be exposed. See comment above in
           // similar implementation for AXPositionKind::TREE_POSITION.
@@ -2021,8 +2051,10 @@ class AXPosition {
   // an anchor boundary. This means that if the position is at the start or end
   // of the anchor, it will return a position at the start or end of the anchor,
   // respectively. This is useful when we want to ensure that the resulting
-  // position is still within the same anchor. If no unignored position can be
-  // found, it will return a null position.
+  // position is still within the same anchor. It will return a null position
+  // if the anchor itself is ignored or if no position can be rooted at it. If
+  // the position found on the anchor is still ignored, it will return this
+  // position unchanged.
   AXPositionInstance TryAsUnignoredPositionPreservingAnchor(
       AXPositionAdjustmentBehavior behavior) const {
     if (IsNullPosition()) {
@@ -2034,37 +2066,39 @@ class AXPosition {
       return new_position;
     }
 
-    // As a last resort, AsUnignoredPosition() may return a position that is
-    // anchored at a different node. In such case, we need to create a new
-    // position that is anchored at the same node as this position. To do this,
-    // Try Calling AsUnignoredPosition in the other direction, starting from
-    // one of the ends, as there may not have been any unignored positions in
-    // the original direction.
-    switch (behavior) {
-      case AXPositionAdjustmentBehavior::kMoveBackward:
-        new_position = CreatePositionAtStartOfAnchor()->AsUnignoredPosition(
-            AXPositionAdjustmentBehavior::kMoveForward);
-        break;
-      case AXPositionAdjustmentBehavior::kMoveForward:
-        new_position = CreatePositionAtEndOfAnchor()->AsUnignoredPosition(
-            AXPositionAdjustmentBehavior::kMoveBackward);
-        break;
+    // AsUnignoredPosition() may return a position that is anchored at a
+    // different node: an unignored ancestor, a descendant leaf, or the nearest
+    // unignored leaf in the requested direction, possibly outside this
+    // position's subtree. In such case, we need to create a new position that
+    // is anchored at the same node as this position. To do this, check to see
+    // if it can be expressed in terms of the original anchor.
+    const ax::mojom::MoveDirection move_direction =
+        behavior == AXPositionAdjustmentBehavior::kMoveForward
+            ? ax::mojom::MoveDirection::kForward
+            : ax::mojom::MoveDirection::kBackward;
+    new_position =
+        new_position->CreateAncestorPosition(GetAnchor(), move_direction);
+    if (new_position->IsNullPosition()) {
+      // The position found is outside the original anchor's subtree. Instead,
+      // start from the anchor boundary in the requested direction and call
+      // AsUnignoredPosition() in the opposite direction.
+      switch (behavior) {
+        case AXPositionAdjustmentBehavior::kMoveBackward:
+          new_position = CreatePositionAtStartOfAnchor()->AsUnignoredPosition(
+              AXPositionAdjustmentBehavior::kMoveForward);
+          break;
+        case AXPositionAdjustmentBehavior::kMoveForward:
+          new_position = CreatePositionAtEndOfAnchor()->AsUnignoredPosition(
+              AXPositionAdjustmentBehavior::kMoveBackward);
+          break;
+      }
+      new_position =
+          new_position->CreateAncestorPosition(GetAnchor(), move_direction);
     }
-    if (GetAnchor() != new_position->GetAnchor()) {
-      // Check to see if the new position can be expressed in terms of the
-      // current anchor.
-      new_position = new_position->CreateAncestorPosition(
-          GetAnchor(), behavior == AXPositionAdjustmentBehavior::kMoveForward
-                           ? ax::mojom::MoveDirection::kForward
-                           : ax::mojom::MoveDirection::kBackward);
-    }
-    // It could be that there are no unignored positions that can be rooted
-    // at the current anchor.
+    // `new_position` is now either rooted at the original anchor or null. If it
+    // is still ignored, return the original position, or null if the anchor
+    // itself is ignored. Return null also if `new_position` is null.
     if (new_position->IsIgnored()) {
-      // If the anchor itself is unignored, its end is still a valid boundary
-      // rooted on this node, even when the leaf equivalent is ignored because
-      // the anchor's text is followed by ignored content. Returning null here
-      // would drop the anchor's last line.
       if (!GetAnchor()->IsIgnored()) {
         return Clone();
       }
@@ -3353,43 +3387,58 @@ class AXPosition {
     }
 
     if (text_position->IsFollowedByGeneratedNewline()) {
-      return CreateNextPositionAtAnchorWithText();
-    }
+      // If kStopAtAnchorBoundary is not set, simply return the next character
+      // position, which is the start of the next anchor with text and might
+      // potentially be on another node.
+      if (options.boundary_behavior !=
+          AXBoundaryBehavior::kStopAtAnchorBoundary) {
+        return CreateNextPositionAtAnchorWithText();
+      }
+      // With kStopAtAnchorBoundary and kCheckInitialPosition, keep this
+      // position, which is already at a character boundary before the newline.
+      if (IsTextPosition() && options.boundary_detection ==
+                                  AXBoundaryDetection::kCheckInitialPosition) {
+        return Clone();
+      }
+      // Otherwise, follow the same steps as for any other character boundary so
+      // that the result stays on this position's anchor.
+      text_position = CreateNextPositionAtAnchorWithText();
+    } else {
+      // Calling "AsLeafTextPositionBeforeCharacter" should have created a text
+      // position that is either at a grapheme boundary, or a null position. If
+      // our text offset is pointing to a position that is in the middle of a
+      // grapheme cluster, we should not erroneously assume that we are at a
+      // character boundary and stop because we had been asked to "stop if
+      // already at boundary". However, we should not modify our position if
+      // `AsLeafTextPositionBeforeCharacter` has simply moved us to the start of
+      // the next leaf anchor because we originally happened to be at the end of
+      // our current anchor. We also need to ensure that we are comparing two
+      // positions that have the same affinity, since
+      // `AsLeafTextPositionBeforeCharacter` resets the affinity to downstream,
+      // while the original affinity might have been upstream.
+      if (options.boundary_behavior ==
+              AXBoundaryBehavior::kStopAtAnchorBoundary &&
+          options.boundary_detection ==
+              AXBoundaryDetection::kCheckInitialPosition &&
+          (AtEndOfAnchor() ||
+           (IsTextPosition() &&
+            *text_position == *CloneWithDownstreamAffinity()))) {
+        return Clone();
+      }
 
-    // Calling "AsLeafTextPositionBeforeCharacter" should have created a text
-    // position that is either at a grapheme boundary, or a null position. If
-    // our text offset is pointing to a position that is in the middle of a
-    // grapheme cluster, we should not erroneously assume that we are at a
-    // character boundary and stop because we had been asked to "stop if already
-    // at boundary". However, we should not modify our position if
-    // `AsLeafTextPositionBeforeCharacter` has simply moved us to the start of
-    // the next leaf anchor because we originally happened to be at the end of
-    // our current anchor. We also need to ensure that we are comparing two
-    // positions that have the same affinity, since
-    // `AsLeafTextPositionBeforeCharacter` resets the affinity to downstream,
-    // while the original affinity might have been upstream.
-    if (options.boundary_behavior ==
-            AXBoundaryBehavior::kStopAtAnchorBoundary &&
-        options.boundary_detection ==
-            AXBoundaryDetection::kCheckInitialPosition &&
-        (AtEndOfAnchor() ||
-         (IsTextPosition() &&
-          *text_position == *CloneWithDownstreamAffinity()))) {
-      return Clone();
+      int max_text_offset = text_position->MaxTextOffset();
+      DCHECK_LT(text_position->text_offset_, max_text_offset);
+      std::unique_ptr<base::i18n::BreakIterator> grapheme_iterator =
+          text_position->GetGraphemeIterator();
+      do {
+        ++text_position->text_offset_;
+      } while (text_position->text_offset_ < max_text_offset &&
+               grapheme_iterator &&
+               !grapheme_iterator->IsGraphemeBoundary(
+                   static_cast<size_t>(text_position->text_offset_)));
+      DCHECK_GT(text_position->text_offset_, 0);
+      DCHECK_LE(text_position->text_offset_, text_position->MaxTextOffset());
     }
-
-    int max_text_offset = text_position->MaxTextOffset();
-    DCHECK_LT(text_position->text_offset_, max_text_offset);
-    std::unique_ptr<base::i18n::BreakIterator> grapheme_iterator =
-        text_position->GetGraphemeIterator();
-    do {
-      ++text_position->text_offset_;
-    } while (text_position->text_offset_ < max_text_offset &&
-             grapheme_iterator &&
-             !grapheme_iterator->IsGraphemeBoundary(
-                 static_cast<size_t>(text_position->text_offset_)));
-    DCHECK_GT(text_position->text_offset_, 0);
-    DCHECK_LE(text_position->text_offset_, text_position->MaxTextOffset());
 
     // If the character boundary is in the same subtree, return a position
     // rooted at this position's anchor. This is necessary because we don't want
@@ -3442,10 +3491,25 @@ class AXPosition {
     // position that is either at the start of an anchor that is preceded by a
     // generated newline, at a grapheme boundary or a null position.
     if (text_position->IsPrecededByGeneratedNewline()) {
-      // When `text_position` is right after a generated newline character, we
-      // should create a position located at the end of the previous anchor.
-      text_position = CreatePreviousPositionAtAnchorWithText();
-      DCHECK(!text_position->IsNullPosition());
+      // With kStopAtAnchorBoundary and kCheckInitialPosition, keep this
+      // position, which is already at a character boundary after the newline.
+      if (IsTextPosition() &&
+          options.boundary_behavior ==
+              AXBoundaryBehavior::kStopAtAnchorBoundary &&
+          options.boundary_detection ==
+              AXBoundaryDetection::kCheckInitialPosition) {
+        return Clone();
+      }
+      // When `text_position` is right after a generated newline, the preceding
+      // character boundary is at the end of the previous anchor with text or,
+      // if there isn't one before the newline, at the start of content.
+      AXPositionInstance previous_position =
+          CreatePreviousPositionAtAnchorWithText();
+      if (previous_position->IsNullPosition()) {
+        previous_position = text_position->CreatePositionAtStartOfContent()
+                                ->AsLeafTextPosition();
+      }
+      text_position = std::move(previous_position);
     } else {
       // If our text offset is pointing to a position that is in the middle of a
       // grapheme cluster, we should not erroneously assume that we are at a
@@ -4124,8 +4188,19 @@ class AXPosition {
       }
     }
 
-    if (IsTreePosition())
+    if (IsTreePosition()) {
       text_position = text_position->AsTreePosition();
+    }
+
+    if (options.boundary_behavior ==
+        AXBoundaryBehavior::kStopAtAnchorBoundary) {
+      // With kStopAtAnchorBoundary, the result must stay on this same anchor.
+      return text_position->TryAsUnignoredPositionPreservingAnchor(
+          move_direction == ax::mojom::MoveDirection::kBackward
+              ? AXPositionAdjustmentBehavior::kMoveBackward
+              : AXPositionAdjustmentBehavior::kMoveForward);
+    }
+
     AXPositionInstance unignored_position = text_position->AsUnignoredPosition(
         AXPositionAdjustmentBehavior::kMoveBackward);
     // If there are no unignored positions then `text_position` is anchored in
@@ -4152,6 +4227,32 @@ class AXPosition {
   AXPositionInstance CreatePreviousAnchorPosition() const {
     return CreatePreviousAnchorPosition(
         base::BindRepeating(&DefaultAbortMovePredicate));
+  }
+
+  // Returns true if the positions resolve to ordered, disjoint, unignored text
+  // leaves with content after this position and before `other`. This proves
+  // that they are not equivalent without translating offsets to a common
+  // ancestor. A false result does not imply equivalence; boundary positions,
+  // ignored content and overlapping anchors still require full comparison.
+  bool IsBeforeInDisjointTextAnchors(const AXPosition& other) const {
+    const AXPositionInstance start_leaf = AsLeafTextPosition();
+    const AXPositionInstance end_leaf = other.AsLeafTextPosition();
+    if (start_leaf->IsNullPosition() || end_leaf->IsNullPosition() ||
+        start_leaf->IsIgnored() || end_leaf->IsIgnored() ||
+        start_leaf->AtEndOfAnchor() || end_leaf->AtStartOfAnchor()) {
+      return false;
+    }
+
+    const AXNode* start_anchor = start_leaf->GetAnchor();
+    const AXNode* end_anchor = end_leaf->GetAnchor();
+    const AXNode* parent = start_anchor->GetParent();
+    if (parent && parent == end_anchor->GetParent()) {
+      return start_anchor->GetIndexInParent() < end_anchor->GetIndexInParent();
+    }
+    const std::optional<int> anchor_order =
+        start_anchor->CompareTo(*end_anchor);
+    return anchor_order && *anchor_order < 0 &&
+           !end_anchor->IsDescendantOfCrossingTreeBoundary(start_anchor);
   }
 
   // Returns an optional integer indicating the logical order of this position
@@ -4229,6 +4330,41 @@ class AXPosition {
       // |other| normalized to a position past the end of the whole content.
       // Since we don't know if one position is the ancestor of the other, we
       // need to use the slow path.
+      return SlowCompareTo(other);
+    }
+
+    // `AsLeafTextPositionBeforeCharacter` keeps a text position at the end of
+    // its anchor only when that position is followed by a generated newline,
+    // i.e. it is at the end of a paragraph. Such a position was not moved to
+    // the start of the next text anchor, so the order of the first uncommon
+    // ancestors (computed below) is no longer guaranteed to reflect the order
+    // of the two positions in the tree's text representation. For example, an
+    // unignored empty object that sits between the end of the paragraph and
+    // the next text contributes no text and is skipped when normalizing a
+    // position anchored to it, but it still occupies its own slot among the
+    // uncommon ancestors. The two methods would then disagree on whether a
+    // position in that empty object is after or at the end of the paragraph.
+    // Defer to "SlowCompareTo", which compares equivalent ancestor positions,
+    // including their affinity, on the common anchor.
+    //
+    // ++1 kRootWebArea
+    // ++++2 kGenericContainer kIsLineBreakingObject
+    // ++++++3 kTextField "Hello"
+    // ++++++++4 kStaticText "Hello"
+    // ++++++++++5 kInlineTextBox "Hello"
+    // ++++++6 kGenericContainer kIsLineBreakingObject (empty, unignored)
+    // ++++++7 kButton "Go"
+    // ++++++++8 kStaticText "Go"
+    // ++++++++++9 kInlineTextBox "Go"
+    //
+    // TextPosition anchor_id=5 text_offset=5 (annotated_text=Hello<>) is kept
+    // as is, because a generated newline separates it from "Go", while
+    // TextPosition anchor_id=6 text_offset=0 is normalized to anchor_id=9
+    // text_offset=0, i.e. after the generated newline.
+    if ((normalized_this_position->IsTextPosition() &&
+         normalized_this_position->AtEndOfAnchor()) ||
+        (normalized_other_position->IsTextPosition() &&
+         normalized_other_position->AtEndOfAnchor())) {
       return SlowCompareTo(other);
     }
 
@@ -4730,8 +4866,6 @@ class AXPosition {
       return std::u16string();
     }
 
-    static const base::NoDestructor<std::u16string> embedded_character_str(
-        AXNode::kEmbeddedObjectCharacterUTF16);
     switch (embedded_object_behavior) {
       case AXEmbeddedObjectBehavior::kSuppressCharacter:
         return GetAnchor()->GetTextContentUTF16();
@@ -4744,7 +4878,7 @@ class AXPosition {
         // character to assistive software that tries to retrieve the node's
         // text content.
         if (IsInUnignoredEmptyObject()) {
-          return *embedded_character_str;
+          return AXNode::kEmbeddedObjectCharacterUTF16;
         }
         return GetAnchor()->GetHypertext();
       case AXEmbeddedObjectBehavior::kUIAExposeCharacterForTextContent:
@@ -4775,7 +4909,7 @@ class AXPosition {
           if (EmptyObjectShouldProvideNameFromAttribute()) {
             return GetAnchor()->GetNameUTF16();
           }
-          return *embedded_character_str;
+          return AXNode::kEmbeddedObjectCharacterUTF16;
         }
         // However, for UIA, we don't want to expose the Hypertext like the
         // kExposeCharacterForHypertext case does, since that computation for
@@ -5209,10 +5343,9 @@ class AXPosition {
 
   ax::mojom::Role GetRole(AXNode* node) const { return node->GetRole(); }
 
-  const std::vector<int32_t>& GetWordStartOffsets() const {
+  base::span<const int32_t> GetWordStartOffsets() const {
     if (IsNullPosition()) {
-      static const base::NoDestructor<std::vector<int32_t>> empty_word_starts;
-      return *empty_word_starts;
+      return {};
     }
     DCHECK(GetAnchor());
 
@@ -5231,21 +5364,17 @@ class AXPosition {
          (g_ax_embedded_object_behavior ==
               AXEmbeddedObjectBehavior::kUIAExposeCharacterForTextContent &&
           !EmptyObjectShouldProvideNameFromAttribute()))) {
-      // Using braces ensures that the vector will contain the given value, and
-      // not create a vector of size 0.
-      static const base::NoDestructor<std::vector<int32_t>>
-          embedded_word_starts{{0}};
-      return *embedded_word_starts;
+      static constexpr int32_t kEmbeddedWordStarts[] = {0};
+      return kEmbeddedWordStarts;
     }
 
     return GetAnchor()->GetIntListAttribute(
         ax::mojom::IntListAttribute::kWordStarts);
   }
 
-  const std::vector<int32_t>& GetWordEndOffsets() const {
+  base::span<const int32_t> GetWordEndOffsets() const {
     if (IsNullPosition()) {
-      static const base::NoDestructor<std::vector<int32_t>> empty_word_ends;
-      return *empty_word_ends;
+      return {};
     }
     DCHECK(GetAnchor());
 
@@ -5266,21 +5395,17 @@ class AXPosition {
          (g_ax_embedded_object_behavior ==
               AXEmbeddedObjectBehavior::kUIAExposeCharacterForTextContent &&
           !EmptyObjectShouldProvideNameFromAttribute()))) {
-      // Using braces ensures that the vector will contain the given value, and
-      // not create a vector of size 1.
-      static const base::NoDestructor<std::vector<int32_t>> embedded_word_ends{
-          {1}};
-      return *embedded_word_ends;
+      static constexpr int32_t kEmbeddedWordEnds[] = {1};
+      return kEmbeddedWordEnds;
     }
 
     return GetAnchor()->GetIntListAttribute(
         ax::mojom::IntListAttribute::kWordEnds);
   }
 
-  const std::vector<int32_t>& GetFormatStartOffsets() const {
+  base::span<const int32_t> GetFormatStartOffsets() const LIFETIME_BOUND {
     if (IsNullPosition()) {
-      static const base::NoDestructor<std::vector<int32_t>> empty_format_starts;
-      return *empty_format_starts;
+      return {};
     }
     DCHECK(GetAnchor());
 
@@ -5288,27 +5413,26 @@ class AXPosition {
     // exceptions are inline text boxes with CSS highlights or spelling/grammar
     // markers. Therefore, unless the node is an inline text box with such
     // markers, we can assume the node's format starts only at index 0.
-    static const base::NoDestructor<std::vector<int32_t>> default_format_starts{
-        {0}};
+    static constexpr int32_t kDefaultFormatStarts[] = {0};
 
     if (GetAnchor()->GetRole() != ax::mojom::Role::kInlineTextBox) {
-      return *default_format_starts;
+      return kDefaultFormatStarts;
     }
 
     AXNode* parent = GetAnchor()->GetUnignoredParent();
     if (!parent) {
-      return *default_format_starts;
+      return kDefaultFormatStarts;
     }
 
-    const std::vector<int32_t>& marker_types =
+    base::span<const int32_t> marker_types =
         parent->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerTypes);
 
     // If there are no markers, there are no format boundaries to add.
     if (marker_types.empty()) {
-      return *default_format_starts;
+      return kDefaultFormatStarts;
     }
 
-    const std::vector<int32_t>& highlight_types = parent->GetIntListAttribute(
+    base::span<const int32_t> highlight_types = parent->GetIntListAttribute(
         ax::mojom::IntListAttribute::kHighlightTypes);
 
     // highlight_types may be empty for regular spelling/grammar markers.
@@ -5317,9 +5441,9 @@ class AXPosition {
       CHECK_EQ(marker_types.size(), highlight_types.size());
     }
 
-    const std::vector<int>& marker_starts =
+    base::span<const int> marker_starts =
         parent->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerStarts);
-    const std::vector<int>& marker_ends =
+    base::span<const int> marker_ends =
         parent->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
     CHECK_EQ(marker_types.size(), marker_starts.size());
@@ -5333,7 +5457,7 @@ class AXPosition {
     int text_length = GetAnchor()->GetTextContentLengthUTF16();
     int box_end = box_start + text_length;
 
-    // Store in member variable to return by reference.
+    // Store in member variable to back the returned span.
     cached_format_start_offsets_.clear();
     cached_format_start_offsets_.push_back(0);
 
@@ -5374,10 +5498,9 @@ class AXPosition {
     return cached_format_start_offsets_;
   }
 
-  const std::vector<int32_t>& GetFormatEndOffsets() const {
+  base::span<const int32_t> GetFormatEndOffsets() const LIFETIME_BOUND {
     if (IsNullPosition()) {
-      static const base::NoDestructor<std::vector<int32_t>> empty_format_ends;
-      return *empty_format_ends;
+      return {};
     }
     DCHECK(GetAnchor());
 
@@ -5398,7 +5521,7 @@ class AXPosition {
       return cached_format_end_offsets_;
     }
 
-    const std::vector<int32_t>& marker_types =
+    base::span<const int32_t> marker_types =
         parent->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerTypes);
 
     // If there are no markers, there are no format boundaries to add.
@@ -5407,7 +5530,7 @@ class AXPosition {
       return cached_format_end_offsets_;
     }
 
-    const std::vector<int32_t>& highlight_types = parent->GetIntListAttribute(
+    base::span<const int32_t> highlight_types = parent->GetIntListAttribute(
         ax::mojom::IntListAttribute::kHighlightTypes);
 
     // highlight_types may be empty for regular spelling/grammar markers.
@@ -5416,9 +5539,9 @@ class AXPosition {
       CHECK_EQ(marker_types.size(), highlight_types.size());
     }
 
-    const std::vector<int>& marker_starts =
+    base::span<const int> marker_starts =
         parent->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerStarts);
-    const std::vector<int>& marker_ends =
+    base::span<const int> marker_ends =
         parent->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
     CHECK_EQ(marker_types.size(), marker_starts.size());
@@ -5428,7 +5551,7 @@ class AXPosition {
     int box_start = ComputeTextStartOfChildInParent(GetAnchor(), parent);
     int box_end = box_start + text_length;
 
-    // Store in member variable to return by reference.
+    // Store in member variable to back the returned span.
     cached_format_end_offsets_.clear();
     for (size_t i = 0; i < marker_types.size(); ++i) {
       ax::mojom::MarkerType marker_type =
@@ -5950,11 +6073,11 @@ class AXPosition {
       int box_start = ComputeTextStartOfChildInParent(anchor, parent);
       int parent_offset = box_start + offset;
 
-      const std::vector<int32_t>& marker_types = parent->GetIntListAttribute(
+      base::span<const int32_t> marker_types = parent->GetIntListAttribute(
           ax::mojom::IntListAttribute::kMarkerTypes);
-      const std::vector<int>& marker_starts = parent->GetIntListAttribute(
+      base::span<const int> marker_starts = parent->GetIntListAttribute(
           ax::mojom::IntListAttribute::kMarkerStarts);
-      const std::vector<int>& marker_ends =
+      base::span<const int> marker_ends =
           parent->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
       for (size_t i = 0; i < marker_types.size(); ++i) {
@@ -5973,11 +6096,11 @@ class AXPosition {
     }
 
     // For StaticText or other nodes, check if offset is in any marker range.
-    const std::vector<int32_t>& marker_types =
+    base::span<const int32_t> marker_types =
         anchor->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerTypes);
-    const std::vector<int>& marker_starts =
+    base::span<const int> marker_starts =
         anchor->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerStarts);
-    const std::vector<int>& marker_ends =
+    base::span<const int> marker_ends =
         anchor->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
     for (size_t i = 0; i < marker_types.size(); ++i) {
@@ -6029,11 +6152,11 @@ class AXPosition {
       }
       int parent_offset = box_start + offset;
 
-      const std::vector<int32_t>& marker_types = parent->GetIntListAttribute(
+      base::span<const int32_t> marker_types = parent->GetIntListAttribute(
           ax::mojom::IntListAttribute::kMarkerTypes);
-      const std::vector<int>& marker_starts = parent->GetIntListAttribute(
+      base::span<const int> marker_starts = parent->GetIntListAttribute(
           ax::mojom::IntListAttribute::kMarkerStarts);
-      const std::vector<int>& marker_ends =
+      base::span<const int> marker_ends =
           parent->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
       for (size_t i = 0; i < marker_types.size(); ++i) {
@@ -6052,11 +6175,11 @@ class AXPosition {
     }
 
     // For other node types, check markers directly on the node.
-    const std::vector<int32_t>& marker_types =
+    base::span<const int32_t> marker_types =
         anchor->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerTypes);
-    const std::vector<int>& marker_starts =
+    base::span<const int> marker_starts =
         anchor->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerStarts);
-    const std::vector<int>& marker_ends =
+    base::span<const int> marker_ends =
         anchor->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
     for (size_t i = 0; i < marker_types.size(); ++i) {
@@ -6099,11 +6222,11 @@ class AXPosition {
       }
       int box_end = box_start + anchor->GetTextContentLengthUTF16();
 
-      const std::vector<int32_t>& marker_types = parent->GetIntListAttribute(
+      base::span<const int32_t> marker_types = parent->GetIntListAttribute(
           ax::mojom::IntListAttribute::kMarkerTypes);
-      const std::vector<int>& marker_starts = parent->GetIntListAttribute(
+      base::span<const int> marker_starts = parent->GetIntListAttribute(
           ax::mojom::IntListAttribute::kMarkerStarts);
-      const std::vector<int>& marker_ends =
+      base::span<const int> marker_ends =
           parent->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerEnds);
 
       for (size_t i = 0; i < marker_types.size(); ++i) {
@@ -6122,7 +6245,7 @@ class AXPosition {
     }
 
     // For StaticText or other nodes, check if they have any markers.
-    const std::vector<int32_t>& marker_types =
+    base::span<const int32_t> marker_types =
         anchor->GetIntListAttribute(ax::mojom::IntListAttribute::kMarkerTypes);
     for (int32_t type : marker_types) {
       if (type == static_cast<int32_t>(ax::mojom::MarkerType::kSpelling) ||
@@ -6366,45 +6489,42 @@ class AXPosition {
     NOTREACHED();
   }
 
-  static const std::vector<int32_t>& GetSentenceStartOffsetsFunc(
+  static base::span<const int32_t> GetSentenceStartOffsetsFunc(
       const AXPositionInstance& position) {
     if (position->IsNullPosition()) {
-      static const base::NoDestructor<std::vector<int32_t>>
-          empty_sentence_starts;
-      return *empty_sentence_starts;
+      return {};
     }
     DCHECK(position->GetAnchor());
     return position->GetAnchor()->GetIntListAttribute(
         ax::mojom::IntListAttribute::kSentenceStarts);
   }
 
-  static const std::vector<int32_t>& GetSentenceEndOffsetsFunc(
+  static base::span<const int32_t> GetSentenceEndOffsetsFunc(
       const AXPositionInstance& position) {
     if (position->IsNullPosition()) {
-      static const base::NoDestructor<std::vector<int32_t>> empty_sentence_ends;
-      return *empty_sentence_ends;
+      return {};
     }
     DCHECK(position->GetAnchor());
     return position->GetAnchor()->GetIntListAttribute(
         ax::mojom::IntListAttribute::kSentenceEnds);
   }
 
-  static const std::vector<int32_t>& GetWordStartOffsetsFunc(
+  static base::span<const int32_t> GetWordStartOffsetsFunc(
       const AXPositionInstance& position) {
     return position->GetWordStartOffsets();
   }
 
-  static const std::vector<int32_t>& GetWordEndOffsetsFunc(
+  static base::span<const int32_t> GetWordEndOffsetsFunc(
       const AXPositionInstance& position) {
     return position->GetWordEndOffsets();
   }
 
-  static const std::vector<int32_t>& GetFormatStartOffsetsFunc(
+  static base::span<const int32_t> GetFormatStartOffsetsFunc(
       const AXPositionInstance& position) {
     return position->GetFormatStartOffsets();
   }
 
-  static const std::vector<int32_t>& GetFormatEndOffsetsFunc(
+  static base::span<const int32_t> GetFormatEndOffsetsFunc(
       const AXPositionInstance& position) {
     return position->GetFormatEndOffsets();
   }
@@ -6490,10 +6610,10 @@ class AXPosition {
       return Clone();
 
     AXPositionInstance text_position = AsTextPosition();
-    const std::vector<int32_t>& boundary_offsets =
-        get_offsets.Run(text_position);
-    if (boundary_offsets.empty())
+    base::span<const int32_t> boundary_offsets = get_offsets.Run(text_position);
+    if (boundary_offsets.empty()) {
       return text_position;
+    }
 
     switch (move_direction) {
       case ax::mojom::MoveDirection::kNone:
@@ -6546,8 +6666,7 @@ class AXPosition {
       return Clone();
 
     AXPositionInstance text_position = AsTextPosition();
-    const std::vector<int32_t>& boundary_offsets =
-        get_offsets.Run(text_position);
+    base::span<const int32_t> boundary_offsets = get_offsets.Run(text_position);
     switch (move_direction) {
       case ax::mojom::MoveDirection::kNone:
         NOTREACHED();
@@ -6646,7 +6765,7 @@ class AXPosition {
         break;
     }
 
-    DCHECK(text_position->IsValid());
+    CHECK(text_position->IsValid(), base::NotFatalUntil::M163);
     return text_position;
   }
 

@@ -14,6 +14,12 @@ namespace switches {
 // of the API that are not linked to the Chrome baked key yet.
 const char kAutofillAPIKey[] = "autofill-api-key";
 
+// Directory with an `index.json` file and the custom form control scripts it
+// references. Only used if `features::kAutofillCustomFormControlScripts` is
+// enabled.
+const char kAutofillCustomFormControlScriptsDir[] =
+    "autofill-custom-form-control-scripts-dir";
+
 // Override the default autofill server URL with "scheme://host[:port]/prefix/".
 const char kAutofillServerURL[] = "autofill-server-url";
 
@@ -21,6 +27,10 @@ const char kAutofillServerURL[] = "autofill-server-url";
 // which an upload has been sent.
 const char kAutofillUploadThrottlingPeriodInDays[] =
     "autofill-upload-throttling-period-in-days";
+
+// Automatically grants permission prompts for email verification for testing.
+const char kAutoGrantEmailVerificationPermissionForTesting[] =
+    "auto-grant-email-verification-permission-for-testing";
 
 // Ignores autocomplete="off" for Autofill data (profiles + credit cards).
 const char kIgnoreAutocompleteOffForAutofill[] =

@@ -16,8 +16,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -28,7 +26,6 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.metrics.RecordHistogram;
@@ -61,7 +58,6 @@ import java.util.concurrent.TimeUnit;
 
 /** Unit tests for {@link CommerceSubscriptionsService}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class CommerceSubscriptionsServiceUnitTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -120,7 +116,6 @@ public class CommerceSubscriptionsServiceUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testInitDeferredStartupForActivity() {
         mService.initDeferredStartupForActivity(mTabModelSelector, mActivityLifecycleDispatcher);
         verify(mActivityLifecycleDispatcher, times(1))
@@ -132,7 +127,6 @@ public class CommerceSubscriptionsServiceUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnResume() {
         setupTestOnResume();
         assertThat(
@@ -151,7 +145,6 @@ public class CommerceSubscriptionsServiceUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnResume_FeatureDisabled() {
         doReturn(false).when(mCommerceFeatureUtilsJniMock).isShoppingListEligible(anyLong());
 
@@ -163,7 +156,6 @@ public class CommerceSubscriptionsServiceUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnResume_TooFrequent() {
         mSharedPreferencesManager.writeLong(
                 CommerceSubscriptionsService.CHROME_MANAGED_SUBSCRIPTIONS_TIMESTAMP,

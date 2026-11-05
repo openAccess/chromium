@@ -4,14 +4,21 @@
 
 package org.chromium.chrome.browser.facilitated_payments;
 
+import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ProgressScreenProperties.MESSAGE_TEXT;
+import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ProgressScreenProperties.SHOW_GPAY_ICON;
+
 import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.FrameLayout;
+import android.widget.TextView;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ProgressScreenProperties;
+import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 
-// This class is used to show a progress spinner.
+/** A view that shows a progress spinner. */
 @NullMarked
 public class FacilitatedPaymentsProgressScreen implements FacilitatedPaymentsSequenceView {
     private View mView;
@@ -31,11 +38,32 @@ public class FacilitatedPaymentsProgressScreen implements FacilitatedPaymentsSeq
         return mView;
     }
 
-    // The progress screen doesn't have any properties set by the feature. So its view model is
-    // empty.
     @Override
     public PropertyModel getModel() {
-        return new PropertyModel();
+        PropertyModel model = new PropertyModel.Builder(ProgressScreenProperties.ALL_KEYS).build();
+        PropertyModelChangeProcessor.create(
+                model, mView, FacilitatedPaymentsProgressScreen::bindProgressScreen);
+        return model;
+    }
+
+    /**
+     * Updates the progress screen view based on property changes within the underlying model, such
+     * as setting or hiding the progress message text or GPay icon.
+     */
+    static void bindProgressScreen(PropertyModel model, View view, PropertyKey propertyKey) {
+        if (propertyKey == MESSAGE_TEXT) {
+            TextView messageView = view.findViewById(R.id.progress_message);
+            String message = model.get(MESSAGE_TEXT);
+            if (message == null || message.isEmpty()) {
+                messageView.setVisibility(View.INVISIBLE);
+            } else {
+                messageView.setText(message);
+                messageView.setVisibility(View.VISIBLE);
+            }
+        } else if (propertyKey == SHOW_GPAY_ICON) {
+            View gpayIcon = view.findViewById(R.id.gpay_icon);
+            gpayIcon.setVisibility(model.get(SHOW_GPAY_ICON) ? View.VISIBLE : View.GONE);
+        }
     }
 
     // The progress screen isn't scrollable.

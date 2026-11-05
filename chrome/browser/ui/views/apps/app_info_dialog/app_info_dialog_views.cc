@@ -88,6 +88,10 @@ AppInfoDialog::AppInfoDialog(Profile* profile, const extensions::Extension* app)
 
   dialog_header_ =
       AddChildView(std::make_unique<AppInfoHeaderPanel>(profile, app));
+  constexpr int kHorizontalSeparatorHeight = 1;
+  dialog_header_->SetBorder(views::CreateSolidSidedBorder(
+      gfx::Insets::TLBR(0, 0, kHorizontalSeparatorHeight, 0),
+      ui::kColorSeparator));
 
   dialog_body_ = AddChildView(std::move(dialog_body));
   layout->SetFlexForView(dialog_body_, 1);
@@ -95,6 +99,9 @@ AppInfoDialog::AppInfoDialog(Profile* profile, const extensions::Extension* app)
   auto dialog_footer = AppInfoFooterPanel::CreateFooterPanel(profile, app);
   if (dialog_footer) {
     dialog_footer_ = AddChildView(std::move(dialog_footer));
+    dialog_footer_->SetBorder(views::CreateSolidSidedBorder(
+        gfx::Insets::TLBR(kHorizontalSeparatorHeight, 0, 0, 0),
+        ui::kColorSeparator));
   }
 
   // Close the dialog if the app is uninstalled, unloaded, or if the profile is
@@ -113,7 +120,7 @@ void AppInfoDialog::Close() {
 }
 
 void AppInfoDialog::StartObservingExtensionRegistry() {
-  DCHECK(!extension_registry_);
+  CHECK(!extension_registry_, base::NotFatalUntil::M162);
 
   extension_registry_ = extensions::ExtensionRegistry::Get(profile_);
   extension_registry_->AddObserver(this);
@@ -124,19 +131,6 @@ void AppInfoDialog::StopObservingExtensionRegistry() {
     extension_registry_->RemoveObserver(this);
   }
   extension_registry_ = nullptr;
-}
-
-void AppInfoDialog::OnThemeChanged() {
-  views::View::OnThemeChanged();
-
-  constexpr int kHorizontalSeparatorHeight = 1;
-  const SkColor color = GetColorProvider()->GetColor(ui::kColorSeparator);
-  dialog_header_->SetBorder(views::CreateSolidSidedBorder(
-      gfx::Insets::TLBR(0, 0, kHorizontalSeparatorHeight, 0), color));
-  if (dialog_footer_) {
-    dialog_footer_->SetBorder(views::CreateSolidSidedBorder(
-        gfx::Insets::TLBR(kHorizontalSeparatorHeight, 0, 0, 0), color));
-  }
 }
 
 void AppInfoDialog::OnExtensionUnloaded(
@@ -162,7 +156,7 @@ void AppInfoDialog::OnExtensionUninstalled(
 }
 
 void AppInfoDialog::OnShutdown(extensions::ExtensionRegistry* registry) {
-  DCHECK_EQ(extension_registry_, registry);
+  CHECK_EQ(extension_registry_, registry, base::NotFatalUntil::M162);
   StopObservingExtensionRegistry();
   Close();
 }

@@ -18,10 +18,7 @@ source_set("fullscreen") {
 source_set("impl") {
   sources = [ "browser_window_fullscreen_controller.cc" ]
 
-  public_deps = [
-    ":fullscreen",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ ":fullscreen" ]
 
   deps = [
     "//base",
@@ -29,6 +26,7 @@ source_set("impl") {
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/immersive:immersive_mode_controller",
     "//chrome/browser/ui/interaction",
+    "//chrome/browser/ui/views/frame:browser_frame_view",
     "//chrome/browser/ui/views/interaction",
     "//ui/views",
   ]

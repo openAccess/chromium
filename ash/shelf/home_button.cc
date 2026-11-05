@@ -14,8 +14,6 @@
 #include "ash/app_list/model/app_list_model.h"
 #include "ash/app_list/quick_app_access_model.h"
 #include "ash/ash_element_identifiers.h"
-#include "ash/constants/ash_features.h"
-#include "ash/constants/ash_switches.h"
 #include "ash/public/cpp/ash_typography.h"
 #include "ash/public/cpp/shelf_config.h"
 #include "ash/public/cpp/shelf_types.h"
@@ -28,13 +26,12 @@
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
-#include "ash/style/ash_color_provider.h"
+#include "ash/style/style_util.h"
 #include "ash/style/typography.h"
 #include "ash/user_education/user_education_class_properties.h"
 #include "base/check_op.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/field_trial_params.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/time/time.h"
@@ -207,7 +204,7 @@ class HomeButton::ButtonImageView : public views::View {
   void UpdateForShelfConfigChange() {
     layer()->SetBackgroundBlur(
         ShelfConfig::Get()->GetShelfControlButtonBlurRadius());
-    layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+    layer()->SetBackdropFilterQuality(StyleUtil::kBackgroundBlurQuality);
     UpdateBackground();
     UpdateIconImageModel();
   }
@@ -262,25 +259,8 @@ class HomeButton::ButtonImageView : public views::View {
   }
 
   void UpdateIconImageModel() {
-    const std::string campbell_config = base::GetFieldTrialParamValueByFeature(
-        features::kCampbellGlyph, "icon");
-
-    if (!campbell_config.empty() && switches::IsCampbellSecretKeyMatched()) {
-      if (campbell_config == "hero") {
-        image_model_ =
-            ui::ImageModel::FromVectorIcon(kCampbellHeroIcon, GetIconColorId());
-      } else if (campbell_config == "action") {
-        image_model_ = ui::ImageModel::FromVectorIcon(kCampbellActionIcon,
-                                                      GetIconColorId());
-      } else if (campbell_config == "text") {
-        image_model_ =
-            ui::ImageModel::FromVectorIcon(kCampbellTextIcon, GetIconColorId());
-      } else if (campbell_config == "9dot") {
-        image_model_ =
-            ui::ImageModel::FromVectorIcon(kCampbell9dotIcon, GetIconColorId());
-      }
-    } else if (Shell::Get()->keyboard_capability()->GetMetaKeyToDisplay() ==
-               ui::mojom::MetaKey::kLauncherRefresh) {
+    if (Shell::Get()->keyboard_capability()->GetMetaKeyToDisplay() ==
+        ui::mojom::MetaKey::kLauncherRefresh) {
       image_model_ =
           ui::ImageModel::FromVectorIcon(kCampbellHeroIcon, GetIconColorId());
     } else {
@@ -341,7 +321,7 @@ HomeButton::HomeButton(Shelf* shelf)
   views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::ON);
 
   SetEventTargeter(std::make_unique<views::ViewTargeter>(this));
-  layer()->SetName("shelf/Homebutton");
+  layer()->SetName("HomeButton");
 
   // Added at 0 index to ensure it's painted below focus ring view.
   button_image_view_ =
@@ -352,11 +332,9 @@ HomeButton::HomeButton(Shelf* shelf)
   quick_app_model_observation_.Observe(
       AppListModelProvider::Get()->quick_app_access_model());
 
-  if (features::IsUserEducationEnabled()) {
-    // NOTE: Set `kHelpBubbleContextKey` before `views::kElementIdentifierKey`
-    // in case registration causes a help bubble to be created synchronously.
-    SetProperty(kHelpBubbleContextKey, HelpBubbleContext::kAsh);
-  }
+  // NOTE: Set `kHelpBubbleContextKey` before `views::kElementIdentifierKey`
+  // in case registration causes a help bubble to be created synchronously.
+  SetProperty(kHelpBubbleContextKey, HelpBubbleContext::kAsh);
   SetProperty(views::kElementIdentifierKey, kHomeButtonElementId);
 
   ui::DeviceDataManager::GetInstance()->AddObserver(this);
@@ -651,7 +629,8 @@ void HomeButton::CreateExpandableContainer() {
   expandable_container_->SetBackground(views::CreateLayerBasedRoundedBackground(
       cros_tokens::kCrosSysSystemOnBase,
       gfx::RoundedCornersF(home_button_width / 2.f)));
-  expandable_container_->background()->SetInternalName("NudgeLabelContainer");
+  expandable_container_->background()->SetInternalName(
+      "HomeButton:NudgeLabelContainer");
 }
 
 void HomeButton::UpdateTooltipText() {
@@ -676,7 +655,7 @@ void HomeButton::CreateNudgeLabel() {
       views::CreateEmptyBorder(gfx::Insets::TLBR(0, 12, 0, 0)));
   label_mask->SetPaintToLayer(ui::LAYER_NOT_DRAWN);
   label_mask->layer()->SetMasksToBounds(true);
-  label_mask->layer()->SetName("NudgeLabelMask");
+  label_mask->layer()->SetName("HomeButton:NudgeLabelMask");
 
   nudge_label_ = label_mask->AddChildView(std::make_unique<views::Label>(
       l10n_util::GetStringUTF16(IDS_SHELF_LAUNCHER_NUDGE_TEXT)));
@@ -754,6 +733,7 @@ void HomeButton::AnimateNudgeRipple(views::AnimationBuilder& builder) {
   // Create the ripple layer and its delegate for the nudge animation.
   nudge_ripple_layer_.Reset(std::make_unique<ui::LayerTextured>());
   ui::Layer* ripple_layer = nudge_ripple_layer_.layer();
+  ripple_layer->SetName("HomeButton:NudgeRipple");
 
   float ripple_diameter =
       ShelfControlButton::CalculatePreferredSize({}).width();

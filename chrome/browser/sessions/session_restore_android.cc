@@ -14,12 +14,13 @@
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "components/sessions/content/content_serialized_navigation_builder.h"
 #include "components/sessions/core/session_types.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/restore_type.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "extensions/buildflags/buildflags.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace {
 
@@ -51,19 +52,19 @@ BrowserWindowInterface::Type BrowserTypeFromWindowType(
 content::WebContents* SessionRestore::RestoreForeignSessionTab(
     content::WebContents* web_contents,
     const sessions::SessionTab& session_tab,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     bool skip_renderer_creation) {
-  DCHECK(session_tab.navigations.size() > 0);
+  CHECK(session_tab.navigations.size() > 0, base::NotFatalUntil::M163);
   content::BrowserContext* context = web_contents->GetBrowserContext();
   Profile* profile = Profile::FromBrowserContext(context);
   TabModel* tab_model = TabModelList::GetTabModelForWebContents(web_contents);
-  DCHECK(tab_model);
+  CHECK(tab_model, base::NotFatalUntil::M163);
   std::vector<std::unique_ptr<content::NavigationEntry>> entries =
       sessions::ContentSerializedNavigationBuilder::ToNavigationEntries(
           session_tab.navigations, profile);
 
   bool is_background_tab =
-      disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB;
+      disposition == ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   content::WebContents::CreateParams create_params(context);
   if (is_background_tab && skip_renderer_creation) {
     create_params.initially_hidden = true;
@@ -71,7 +72,8 @@ content::WebContents* SessionRestore::RestoreForeignSessionTab(
         content::WebContents::CreateParams::kNoRendererProcess;
   }
   // Ensure that skipping renderer creation is only enabled for background tabs.
-  DCHECK(skip_renderer_creation ? is_background_tab : true);
+  CHECK(skip_renderer_creation ? is_background_tab : true,
+        base::NotFatalUntil::M163);
   std::unique_ptr<content::WebContents> new_web_contents =
       content::WebContents::Create(create_params);
 
@@ -81,11 +83,11 @@ content::WebContents* SessionRestore::RestoreForeignSessionTab(
       selected_index, content::RestoreType::kRestored, &entries);
 
   TabAndroid* current_tab = TabAndroid::FromWebContents(web_contents);
-  DCHECK(current_tab);
+  CHECK(current_tab, base::NotFatalUntil::M163);
   // Fake replacing the current tab's WebContents with a new one by creating and
   // selecting a new tab then closing the old one. Using the current tab as the
   // parent will ensure group state, position, etc. should be kept.
-  if (disposition == WindowOpenDisposition::CURRENT_TAB) {
+  if (disposition == ui::mojom::WindowOpenDisposition::kCurrentTab) {
     // This will never be a bulk session restore so we can select the tab here.
     tab_model->CreateTab(current_tab, std::move(new_web_contents),
                          TabModel::kInvalidIndex,
@@ -94,11 +96,12 @@ content::WebContents* SessionRestore::RestoreForeignSessionTab(
     tab_model->CloseTab(current_tab->GetHandle());
     return raw_new_web_contents;
   }
-  DCHECK(disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
-         disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB);
+  CHECK(disposition == ui::mojom::WindowOpenDisposition::kNewForegroundTab ||
+            disposition == ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
+        base::NotFatalUntil::M163);
   // Do not select a tab here it will interrupt bulk session restores.
   TabModel::TabLaunchType launch_type =
-      disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB
+      disposition == ui::mojom::WindowOpenDisposition::kNewForegroundTab
           ? TabModel::TabLaunchType::FROM_RECENT_TABS_FOREGROUND
           : TabModel::TabLaunchType::FROM_RECENT_TABS;
   tab_model->CreateTab(current_tab, std::move(new_web_contents),

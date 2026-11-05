@@ -9,6 +9,7 @@ import json
 import logging
 import pathlib
 import subprocess
+import sys
 import tempfile
 from util import jj_log
 from util import run_command
@@ -23,6 +24,20 @@ from util import MUTABLE_PARENTS
 def fatal(*args, **kwargs):
   logging.critical(*args, **kwargs)
   exit(1)
+
+
+def check_presubmit_results(results: dict, allow_warnings: bool) -> None:
+  if results.get('errors', []):
+    fatal('git cl presubmit had errors.')
+  if results.get('warnings', []) and not allow_warnings:
+    if not sys.stdin.isatty():
+      fatal(
+        'git cl presubmit had warnings.\n'
+        + 'Hint: maybe you want --allow-warnings?'
+      )
+    val = input('Are you sure you wish to continue? (y/N): ')
+    if val.strip().lower() not in ('y', 'yes'):
+      exit(1)
 
 
 def get_refspec_opts(args) -> list[str]:
@@ -124,7 +139,7 @@ def main(args, unknown_args):
   if not args.bypass_hooks:
     # Find the commits that `git cl presubmit` will actually run on
     got_presubmits = jj_log(
-      revisions=f'mutable()::@',
+      revisions='mutable()::@',
       templates={'empty': 'empty', 'immutable_parents': IMMUTABLE_PARENTS},
       ignore_working_copy=snapshot_taken,
     )
@@ -189,12 +204,7 @@ def main(args, unknown_args):
         )
         run_command(presubmit_cmd, cwd=jj_root)
         results = json.loads(out.read_text())
-        if results.get('errors', []) or results.get('warnings', []):
-          if not args.allow_warnings:
-            fatal(
-              'git cl presubmit had warnings.\n'
-              + 'Hint: maybe you want --allow-warnings?'
-            )
+        check_presubmit_results(results, args.allow_warnings)
       finally:
         # On Windows, NamedTemporaryFile cannot be opened by another process
         # while it is still open by the creating process. We use delete=False

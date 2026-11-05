@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/features.gni")
 import("//build/config/zip.gni")
 import("//build/rust/rust_static_library.gni")
 
@@ -182,7 +183,6 @@ source_set("unit_tests") {
     "//components/history/core/common",
     "//components/history/core/test",
     "//components/password_manager/core/browser/features:utils",
-    "//components/password_manager/core/browser/import:csv",
     "//components/password_manager/core/browser/import:importer",
     "//components/password_manager/core/browser/password_store:test_support",
     "//components/password_manager/core/browser/ui",
@@ -213,11 +213,10 @@ source_set("unit_tests") {
       "//components/password_manager/services/csv_password:fake_password_parser_service",
       "//components/user_data_importer/content",
       "//components/user_data_importer/content:test_support",
-      "//content/test:test_support",
     ]
   }
 
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+  if (use_blink) {
+    deps += [ "//content/test:test_support" ]
+  }
 }

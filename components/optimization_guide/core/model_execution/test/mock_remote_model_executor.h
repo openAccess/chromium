@@ -7,7 +7,6 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
-#include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -30,6 +29,10 @@ class MockRemoteModelExecutor : public RemoteModelExecutor {
               (ModelBasedCapabilityKey feature,
                const StreamingModelExecutionOptions& options,
                OptimizationGuideModelExecutionStreamingCallback callback),
+              (override));
+  MOCK_METHOD(void,
+              PrewarmModelExecution,
+              (ModelBasedCapabilityKey feature),
               (override));
 };
 

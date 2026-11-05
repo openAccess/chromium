@@ -6,12 +6,14 @@
 
 #include <algorithm>
 
+#include "base/containers/fixed_flat_map.h"
 #include "base/feature_list.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/gfx/shadow_value.h"
+#include "ui/views/layout/layout_provider.h"
 
 namespace {
 
@@ -20,19 +22,20 @@ ChromeLayoutProvider* g_chrome_layout_provider = nullptr;
 }  // namespace
 
 ChromeLayoutProvider::ChromeLayoutProvider() {
-  DCHECK_EQ(nullptr, g_chrome_layout_provider);
+  CHECK_EQ(nullptr, g_chrome_layout_provider, base::NotFatalUntil::M162);
   g_chrome_layout_provider = this;
 }
 
 ChromeLayoutProvider::~ChromeLayoutProvider() {
-  DCHECK_EQ(this, g_chrome_layout_provider);
+  CHECK_EQ(this, g_chrome_layout_provider, base::NotFatalUntil::M162);
   g_chrome_layout_provider = nullptr;
 }
 
 // static
 ChromeLayoutProvider* ChromeLayoutProvider::Get() {
   // Check to avoid downcasting a base LayoutProvider.
-  DCHECK_EQ(g_chrome_layout_provider, views::LayoutProvider::Get());
+  CHECK_EQ(g_chrome_layout_provider, views::LayoutProvider::Get(),
+           base::NotFatalUntil::M162);
   return static_cast<ChromeLayoutProvider*>(views::LayoutProvider::Get());
 }
 
@@ -43,7 +46,7 @@ ChromeLayoutProvider::CreateLayoutProvider() {
 }
 
 gfx::Insets ChromeLayoutProvider::GetInsetsMetric(int metric) const {
-  DCHECK_LT(metric, views::VIEWS_INSETS_MAX);
+  CHECK_LT(metric, views::VIEWS_INSETS_MAX, base::NotFatalUntil::M162);
   const bool touch_ui = ui::TouchUiController::Get()->touch_ui();
   switch (metric) {
     case views::INSETS_DIALOG:
@@ -88,30 +91,34 @@ gfx::Insets ChromeLayoutProvider::GetInsetsMetric(int metric) const {
       return gfx::Insets::TLBR(4, 20, 20, 20);
     case INSETS_PAGE_INFO_FOOTER_BUTTON:
       return gfx::Insets::VH(12, 20);
-    case INSETS_ACTION_APP_MENU_POPUP:
-      return gfx::Insets::VH(16, 16);
     case INSETS_ACTION_APP_MENU_ITEM:
-      return gfx::Insets::TLBR(0, 16, 0, 12);
-    case INSETS_ACTION_APP_MENU_FOOTER:
+      return gfx::Insets::VH(0, 24);
+    case INSETS_ACTION_APP_MENU_SEARCH_BAR_MARGIN:
+      return gfx::Insets::TLBR(2, 12, 10, 12);
+    case INSETS_ACTION_APP_MENU_BLOCK_MARGIN:
+      return gfx::Insets::TLBR(0, 12, 8, 12);
+    case INSETS_ACTION_APP_MENU_HEADER:
+      return gfx::Insets::VH(0, 12);
+    case INSETS_ACTION_APP_MENU_FOOTER_MARGIN:
       return gfx::Insets::TLBR(8, 12, 8, 12);
+    case INSETS_ACTION_APP_MENU_FOOTER_BOTTOM_CONTAINER:
+      return gfx::Insets::TLBR(0, 0, 4, 0);
     case INSETS_ACTION_APP_MENU_FOOTER_BUTTON:
       return gfx::Insets::VH(4, 8);
-    case INSETS_PROFILE_SIGNIN_STATUS_CHIP:
+    case INSETS_APP_MENU_CHIP:
       // Relies on the parent menu's margins for vertical alignment
       // with other items.
       return gfx::Insets::VH(0, 12);
-    case INSETS_ACTION_APP_MENU_BLOCK_ROW:
-      return gfx::Insets::VH(4, 4);
     case INSETS_ACTION_APP_MENU_BLOCK_ENTRY_BUTTON:
-      return gfx::Insets::VH(8, 0);
+      return gfx::Insets::VH(11, 6);
     default:
       return LayoutProvider::GetInsetsMetric(metric);
   }
 }
 
 int ChromeLayoutProvider::GetDistanceMetric(int metric) const {
-  DCHECK_GE(metric, views::VIEWS_DISTANCE_START);
-  DCHECK_LT(metric, views::VIEWS_DISTANCE_MAX);
+  CHECK_GE(metric, views::VIEWS_DISTANCE_START, base::NotFatalUntil::M162);
+  CHECK_LT(metric, views::VIEWS_DISTANCE_MAX, base::NotFatalUntil::M162);
 
   if (metric < views::VIEWS_DISTANCE_END) {
     return LayoutProvider::GetDistanceMetric(metric);
@@ -170,8 +177,6 @@ int ChromeLayoutProvider::GetDistanceMetric(int metric) const {
       return 20;
     case DISTANCE_SIDE_PANEL_HEADER_INTERIOR_MARGIN_HORIZONTAL:
       return 4;
-    case DISTANCE_SIDE_PANEL_CONTENT_RADIUS:
-      return 8;
     case DISTANCE_HORIZONTAL_SEPARATOR_PADDING_PAGE_INFO_VIEW:
       return 20;
     case DISTANCE_INFOBAR_HORIZONTAL_ICON_LABEL_PADDING:
@@ -226,16 +231,12 @@ int ChromeLayoutProvider::GetDistanceMetric(int metric) const {
       return 32;
     case DISTANCE_RECENT_ACTIVITY_AVATAR_FALLBACK_SIZE:
       return 24;
-    case DISTANCE_RECENT_ACTIVITY_FAVICON_CONTAINER_RADIUS:
-      return 9;
     case DISTANCE_RECENT_ACTIVITY_FAVICON_CONTAINER_BORDER_WIDTH:
       return 2;
     case DISTANCE_RECENT_ACTIVITY_FAVICON_CONTAINER_PADDING:
       return 4;
     case DISTANCE_RECENT_ACTIVITY_FAVICON_CONTAINER_OFFSET_FROM_AVATAR:
       return 2;
-    case DISTANCE_RECENT_ACTIVITY_CONTAINER_RADIUS:
-      return 8;
     case DISTANCE_RECENT_ACTIVITY_CONTAINER_VERTICAL_MARGIN:
       return 10;
     case DISTANCE_RECENT_ACTIVITY_CONTAINER_VERTICAL_PADDING:
@@ -250,49 +251,53 @@ int ChromeLayoutProvider::GetDistanceMetric(int metric) const {
       return 1;
     case DISTANCE_TEXTFIELD_ACCOUNT_CARD_VERTICAL:
       return 4;
-    case DISTANCE_FEATURE_FIRST_RUN_INFO_BOX_ICON_SIZE:
-      return 16;
-    case DISTANCE_FEATURE_FIRST_RUN_INFO_BOX_PADDING:
-      return 12;
-    case DISTANCE_FEATURE_FIRST_RUN_INFO_BOX_ROUNDED_BORDER_RADIUS:
-      return 12;
     case DISTANCE_FEATURE_FIRST_RUN_INFO_BOX_VERTICAL:
       return 1;
     case DISTANCE_INFOBAR_BUTTON_VERTICAL_PADDING:
       return 8;
     case DISTANCE_INFOBAR_BUTTON_HORIZONTAL_PADDING:
       return 12;
-    // Block-style Action App Menu layout constants.
-    case DISTANCE_ACTION_APP_MENU_MINIMUM_WIDTH:
-      return 440;
-    case DISTANCE_ACTION_APP_MENU_CONTAINER_CORNER_RADIUS:
-      return 8;
-    case DISTANCE_ACTION_APP_MENU_ITEM_FIRST_TOP_PADDING:
-      return 14;
-    case DISTANCE_ACTION_APP_MENU_ITEM_LAST_BOTTOM_PADDING:
-      return 14;
-    case DISTANCE_ACTION_APP_MENU_ITEM_DEFAULT_VERTICAL_MARGIN:
-      return 8;
-    case DISTANCE_ACTION_APP_MENU_ICON_SIZE:
+    case DISTANCE_ACTION_APP_MENU_DEFAULT_ICON_SIZE:
       return 16;
+    case DISTANCE_ACTION_APP_MENU_NOTIFICATION_ICON_SIZE:
+      return 18;
     case DISTANCE_ACTION_APP_MENU_FULL_ITEM_HEIGHT:
       return 32;
+    case DISTANCE_ACTION_APP_MENU_MEDIUM_ITEM_HEIGHT:
+      return 36;
+    case DISTANCE_ACTION_APP_MENU_LARGE_ITEM_HEIGHT:
+      return 40;
+    case DISTANCE_ACTION_APP_MENU_EXPANDED_ITEM_HEIGHT:
+      return 48;
     case DISTANCE_ACTION_APP_MENU_BLOCK_ENTRY_WIDTH:
-      return 105;
+      return 94;
     case DISTANCE_ACTION_APP_MENU_BLOCK_ENTRY_HEIGHT:
       return 56;
     case DISTANCE_ACTION_APP_MENU_BLOCK_ENTRY_ICON_SIZE:
       return 20;
+    case DISTANCE_ACTION_APP_MENU_BLOCK_ENTRY_LINE_HEIGHT:
+      return 13;
     case DISTANCE_ACTION_APP_MENU_FOOTER_BUTTON_SPACING:
       return 12;
+    case DISTANCE_ACTION_APP_MENU_FOOTER_BOTTOM_CONTAINER_SPACING:
+      return 8;
+    case DISTANCE_ACTION_APP_MENU_FOOTER_SEPARATOR_BOTTOM_MARGIN:
+      return 4;
+    case DISTANCE_ACTION_APP_MENU_CONTAINER_MARGIN:
+    case DISTANCE_ACTION_APP_MENU_NOTIFICATION_MARGIN:
+      return 12;
+    case DISTANCE_ACTION_APP_MENU_CONTAINER_VERTICAL_PADDING:
+      return 6;
     case DISTANCE_ACTION_APP_MENU_FOOTER_BUTTON_BETWEEN_CHILD_SPACING:
-    case DISTANCE_ACTION_APP_MENU_FOOTER_BUTTON_CORNER_RADIUS:
     case DISTANCE_ACTION_APP_MENU_HEADER_VERTICAL_MARGIN:
     case DISTANCE_ACTION_APP_MENU_BLOCK_ROW_SPACING:
-    case DISTANCE_ACTION_APP_MENU_BLOCK_ENTRY_CORNER_RADIUS:
+    case DISTANCE_ACTION_APP_MENU_SEARCH_SEPARATOR_BOTTOM_MARGIN:
+    case DISTANCE_ACTION_APP_MENU_SEARCH_BLOCK_MARGIN:
       return 8;
     case DISTANCE_ACTION_APP_MENU_BLOCK_ENTRY_BETWEEN_CHILD_SPACING:
-      return 4;
+      return 1;
+    case DISTANCE_ACTION_APP_MENU_MAX_WIDTH:
+      return 800;
   }
   NOTREACHED();
 }
@@ -315,4 +320,54 @@ const views::TypographyProvider& ChromeLayoutProvider::GetTypographyProvider()
 
 bool ChromeLayoutProvider::ShouldShowWindowIcon() const {
   return false;
+}
+
+views::ShapeSysTokens GetShapeSysToken(views::ShapeContextToken id) {
+  static constexpr auto shape_token_map =
+      base::MakeFixedFlatMap<views::ShapeContextToken, views::ShapeSysTokens>({
+          {kExtensionsMenuButtonRadius, views::ShapeSysTokens::kXSmall},
+          {kFindBarViewRadius, views::ShapeSysTokens::kSmall},
+          {kSidePanelContentRadius, views::ShapeSysTokens::kSmall},
+          {kRecentActivityContainerRadius, views::ShapeSysTokens::kSmall},
+          {kActionAppMenuFooterButtonCornerRadius,
+           views::ShapeSysTokens::kSmall},
+          {kFeatureFirstRunInfoBoxRoundedBorderRadius,
+           views::ShapeSysTokens::kMediumSmall},
+          {kActionAppMenuContainerCornerRadius,
+           views::ShapeSysTokens::kMediumSmall},
+          {kActionAppMenuBlockEntryCornerRadius,
+           views::ShapeSysTokens::kMediumSmall},
+          {kOmniboxExpandedRadius, views::ShapeSysTokens::kMedium},
+      });
+  const auto it = shape_token_map.find(id);
+  return it == shape_token_map.end() ? views::ShapeSysTokens::kDefault
+                                     : it->second;
+}
+
+int ChromeLayoutProvider::GetCornerRadiusMetric(views::ShapeContextToken token,
+                                                const gfx::Size& size) const {
+  CHECK_GE(token, views::kShapeContextTokenStart, base::NotFatalUntil::M162);
+  CHECK_LT(token, kChromeShapeContextTokenEnd, base::NotFatalUntil::M162);
+
+  if (token < views::ShapeContextTokens::kShapeContextTokenEnd) {
+    return LayoutProvider::GetCornerRadiusMetric(token, size);
+  }
+
+  switch (token) {
+    case kSidePanelContentRadius:
+    case kRecentActivityContainerRadius:
+    case kActionAppMenuFooterButtonCornerRadius:
+    case kFeatureFirstRunInfoBoxRoundedBorderRadius:
+    case kActionAppMenuContainerCornerRadius:
+    case kActionAppMenuBlockEntryCornerRadius:
+    case kExtensionsMenuButtonRadius:
+    case kFindBarViewRadius:
+    case kOmniboxExpandedRadius:
+      return GetCornerRadiusMetric(GetShapeSysToken(token));
+    case kRecentActivityFaviconContainerRadius:
+      return 9;
+    case kActionAppMenuDividerAdjacentCornerRadius:
+      return 2;
+  }
+  NOTREACHED();
 }

@@ -2,16 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/feedback/report_unsafe_site_dialog_views.h"
+
 #include "base/functional/callback.h"
 #include "base/test/mock_callback.h"
-#include "base/test/scoped_feature_list.h"
 #include "build/branding_buildflags.h"
-#include "chrome/browser/browser_features.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/feedback/report_unsafe_site_dialog.h"
-#include "chrome/browser/feedback/report_unsafe_site_dialog_views.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -106,10 +106,6 @@ class ReportUnsafeSiteDialogInteractiveUiTest : public InteractiveBrowserTest {
     return InAnyContext(ClickDialogElement("#cancel-button"),
                         WaitForDialogHide());
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kReportUnsafeSite};
 };
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)

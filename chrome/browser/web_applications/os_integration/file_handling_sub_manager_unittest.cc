@@ -37,6 +37,7 @@
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/webapps/browser/install_result_code.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "url/gurl.h"
 
 namespace web_app {
@@ -189,6 +190,102 @@ TEST_F(FileHandlingSubManagerConfigureTest, InstallWithFilehandlers) {
             ".baz");
 }
 
+TEST_F(FileHandlingSubManagerConfigureTest, InvalidMimeTypesIgnored) {
+  apps::FileHandlers file_handlers;
+  {
+    apps::FileHandler file_handler;
+    file_handler.action = GURL("https://app.site/open-foo");
+    file_handler.display_name = u"Mixed opener";
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      // "x-scheme-handler/mailto" is invalid file handler data (it represents a
+      // FreeDesktop URL scheme pseudo-MIME type rather than a valid file media
+      // type) and must be filtered out when configuring OS file handling state.
+      accept_entry.mime_type = "x-scheme-handler/mailto";
+      accept_entry.file_extensions.insert(".eml");
+      file_handler.accept.push_back(accept_entry);
+    }
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      // Bare "x-scheme-handler" without trailing slash must also be skipped.
+      accept_entry.mime_type = "x-scheme-handler";
+      accept_entry.file_extensions.insert(".bad");
+      file_handler.accept.push_back(accept_entry);
+    }
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      // Uppercase "X-Scheme-Handler/..." must also be skipped.
+      accept_entry.mime_type = "X-Scheme-Handler/mailto";
+      accept_entry.file_extensions.insert(".eml2");
+      file_handler.accept.push_back(accept_entry);
+    }
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      // Uppercase bare "X-Scheme-Handler" must also be skipped.
+      accept_entry.mime_type = "X-Scheme-Handler";
+      accept_entry.file_extensions.insert(".bad2");
+      file_handler.accept.push_back(accept_entry);
+    }
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      accept_entry.mime_type = "application/foo";
+      accept_entry.file_extensions.insert(".foo");
+      file_handler.accept.push_back(accept_entry);
+    }
+    file_handlers.push_back(file_handler);
+  }
+
+  const webapps::AppId& app_id = InstallWebAppWithFileHandlers(file_handlers);
+  auto state =
+      provider().registrar_unsafe().GetAppCurrentOsIntegrationState(app_id);
+  EXPECT_TRUE(state.has_value());
+  const proto::os_state::WebAppOsIntegration& os_integration_state =
+      state.value();
+  EXPECT_TRUE(os_integration_state.has_file_handling());
+  const proto::os_state::FileHandling& file_handling =
+      os_integration_state.file_handling();
+  EXPECT_EQ(file_handling.file_handlers_size(), 1);
+  EXPECT_EQ(file_handling.file_handlers(0).accept_size(), 1);
+  EXPECT_EQ(file_handling.file_handlers(0).accept(0).mimetype(),
+            "application/foo");
+}
+
+TEST_F(FileHandlingSubManagerConfigureTest,
+       AllSchemeHandlersFilteredResultsInNoFileHandling) {
+  apps::FileHandlers file_handlers;
+  {
+    apps::FileHandler file_handler;
+    file_handler.action = GURL("https://app.site/open-foo");
+    file_handler.display_name = u"Scheme opener";
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      accept_entry.mime_type = "x-scheme-handler/mailto";
+      accept_entry.file_extensions.insert(".eml");
+      file_handler.accept.push_back(accept_entry);
+    }
+    {
+      apps::FileHandler::AcceptEntry accept_entry;
+      accept_entry.mime_type = "X-Scheme-Handler";
+      accept_entry.file_extensions.insert(".bad");
+      file_handler.accept.push_back(accept_entry);
+    }
+    file_handlers.push_back(file_handler);
+  }
+
+  const webapps::AppId& app_id = InstallWebAppWithFileHandlers(file_handlers);
+  auto state =
+      provider().registrar_unsafe().GetAppCurrentOsIntegrationState(app_id);
+  EXPECT_TRUE(state.has_value());
+  const proto::os_state::WebAppOsIntegration& os_integration_state =
+      state.value();
+  // File handling is enabled in OS integration state, but because all accept
+  // entries were filtered out as scheme handlers, no file handler entries
+  // are retained. HasFileHandling() in FileHandlingSubManager::Execute avoids
+  // registering with the OS.
+  EXPECT_TRUE(os_integration_state.has_file_handling());
+  EXPECT_EQ(os_integration_state.file_handling().file_handlers_size(), 0);
+}
+
 TEST_F(FileHandlingSubManagerConfigureTest, UpdateUserChoiceDisallowed) {
   apps::FileHandlers file_handlers;
 
@@ -226,32 +323,30 @@ TEST_F(FileHandlingSubManagerConfigureTest,
        PolicyDefinedFileHandlerOverUserChoice) {
   const GURL kInstallUrl =
       GURL("https://www.example.com/path/install_url.html");
-  const GURL kStartUrl = GURL("https://example.com/path/");
+  const GURL kStartUrl = GURL("https://www.example.com/path/");
   const GURL kManifestUrl = GURL("https://www.example.com/path/manifest.json");
   const webapps::AppId app_id = web_app::GenerateAppId(std::nullopt, kStartUrl);
   const std::string file_extension = ".txt";
 
   {
     fake_provider().GetFakeWebContentsManager()->CreateBasicInstallPageState(
-        kInstallUrl, kManifestUrl, kWebAppUrl);
+        kInstallUrl, kManifestUrl, kStartUrl);
     auto& page_state =
         fake_provider().GetFakeWebContentsManager()->GetOrCreatePageState(
             kInstallUrl);
 
-    auto manifest = blink::mojom::Manifest::New();
-    manifest->id = manifest->start_url.GetWithoutRef();
-    manifest->scope = manifest->start_url.GetWithoutFilename();
-    manifest->manifest_url = page_state.manifest_url;
-    manifest->start_url = kStartUrl;
-
-    auto handler = blink::mojom::ManifestFileHandler::New();
-    handler->action = kStartUrl;
-    handler->name = u"Text";
+    blink::Manifest::FileHandler handler;
+    handler.action = kStartUrl;
+    handler.name = u"Text";
     std::vector<std::u16string> extensions = {u".txt"};
-    handler->accept.emplace(u"text/plain", extensions);
-    manifest->file_handlers.push_back(std::move(handler));
+    handler.accept.emplace(u"text/plain", extensions);
 
-    page_state.manifest_before_default_processing = std::move(manifest);
+    page_state.opt_manifest =
+        blink::Manifest::Builder(kStartUrl, kStartUrl,
+                                 kStartUrl.GetWithoutFilename())
+            .SetManifestUrl(page_state.manifest_url)
+            .SetFileHandlers({std::move(handler)})
+            .BuildChecked();
   }
 
   // Install app with file handlers
@@ -322,32 +417,30 @@ TEST_F(FileHandlingSubManagerConfigureTest,
        PolicyRemovedMidSessionRevertsToUserChoice) {
   const GURL kInstallUrl =
       GURL("https://www.example.com/path/install_url.html");
-  const GURL kStartUrl = GURL("https://example.com/path/");
+  const GURL kStartUrl = GURL("https://www.example.com/path/");
   const GURL kManifestUrl = GURL("https://www.example.com/path/manifest.json");
   const webapps::AppId app_id = web_app::GenerateAppId(std::nullopt, kStartUrl);
   const std::string file_extension = ".txt";
 
   {
     fake_provider().GetFakeWebContentsManager()->CreateBasicInstallPageState(
-        kInstallUrl, kManifestUrl, kWebAppUrl);
+        kInstallUrl, kManifestUrl, kStartUrl);
     auto& page_state =
         fake_provider().GetFakeWebContentsManager()->GetOrCreatePageState(
             kInstallUrl);
 
-    auto manifest = blink::mojom::Manifest::New();
-    manifest->id = manifest->start_url.GetWithoutRef();
-    manifest->scope = manifest->start_url.GetWithoutFilename();
-    manifest->manifest_url = page_state.manifest_url;
-    manifest->start_url = kStartUrl;
-
-    auto handler = blink::mojom::ManifestFileHandler::New();
-    handler->action = kStartUrl;
-    handler->name = u"Text";
+    blink::Manifest::FileHandler handler;
+    handler.action = kStartUrl;
+    handler.name = u"Text";
     std::vector<std::u16string> extensions = {u".txt"};
-    handler->accept.emplace(u"text/plain", extensions);
-    manifest->file_handlers.push_back(std::move(handler));
+    handler.accept.emplace(u"text/plain", extensions);
 
-    page_state.manifest_before_default_processing = std::move(manifest);
+    page_state.opt_manifest =
+        blink::Manifest::Builder(kStartUrl, kStartUrl,
+                                 kStartUrl.GetWithoutFilename())
+            .SetManifestUrl(page_state.manifest_url)
+            .SetFileHandlers({std::move(handler)})
+            .BuildChecked();
   }
 
   // Install app with file handlers
@@ -412,7 +505,7 @@ TEST_F(FileHandlingSubManagerConfigureTest,
 TEST_F(FileHandlingSubManagerConfigureTest,
        PolicyDefinedFileHandlerAddedMidSessionToManifest) {
   const GURL kInstallUrl("https://www.example.com/install.html");
-  const GURL kStartUrl("https://example.com/path/");
+  const GURL kStartUrl("https://www.example.com/path/");
   const GURL kManifestUrl("https://www.example.com/manifest.json");
   const webapps::AppId app_id = web_app::GenerateAppId(std::nullopt, kStartUrl);
   const std::string file_extension = ".txt";
@@ -425,10 +518,11 @@ TEST_F(FileHandlingSubManagerConfigureTest,
     page_state.url_load_result = {webapps::WebAppUrlLoaderResult::kUrlLoaded};
     page_state.manifest_url = kManifestUrl;
 
-    auto manifest = blink::mojom::Manifest::New();
-    manifest->start_url = kStartUrl;
-    manifest->scope = kStartUrl.GetWithoutFilename();
-    page_state.manifest_before_default_processing = std::move(manifest);
+    page_state.opt_manifest =
+        blink::Manifest::Builder(kStartUrl, kStartUrl,
+                                 kStartUrl.GetWithoutFilename())
+            .SetManifestUrl(page_state.manifest_url)
+            .BuildChecked();
 
     std::vector<ExternalInstallOptions> install_options_list;
     install_options_list.emplace_back(kInstallUrl,
@@ -453,13 +547,14 @@ TEST_F(FileHandlingSubManagerConfigureTest,
         fake_provider().GetFakeWebContentsManager()->GetOrCreatePageState(
             kInstallUrl);
 
-    auto handler = blink::mojom::ManifestFileHandler::New();
-    handler->action = kStartUrl;
-    handler->name = u"Text";
-    handler->accept.emplace(u"text/plain",
-                            std::vector<std::u16string>{u".txt"});
-    page_state.manifest_before_default_processing->file_handlers.push_back(
-        std::move(handler));
+    blink::Manifest::FileHandler handler;
+    handler.action = kStartUrl;
+    handler.name = u"Text";
+    handler.accept.emplace(u"text/plain", std::vector<std::u16string>{u".txt"});
+    CHECK(page_state.opt_manifest.has_value());
+    page_state.opt_manifest = page_state.opt_manifest->ToBuilder()
+                                  .SetFileHandlers({std::move(handler)})
+                                  .BuildChecked();
   }
 
   EXPECT_EQ(

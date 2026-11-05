@@ -14,7 +14,7 @@
 #include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
 #include "chrome/common/safe_browsing/download_type_util.h"
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/utils.h"
@@ -51,7 +51,7 @@ CheckFileSystemAccessWriteRequest::CheckFileSystemAccessWriteRequest(
           DownloadProtectionService::GetDownloadAttributionUserGestureLimit())),
       metadata_(std::make_unique<FileSystemAccessMetadata>(std::move(item))),
       weak_metadata_(metadata_->GetWeakPtr()) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 }
 
 CheckFileSystemAccessWriteRequest ::~CheckFileSystemAccessWriteRequest() =
@@ -110,7 +110,8 @@ void CheckFileSystemAccessWriteRequest::NotifySendRequest(
 void CheckFileSystemAccessWriteRequest::SetDownloadProtectionData(
     const std::string& token,
     const ClientDownloadResponse::Verdict& verdict,
-    const ClientDownloadResponse::TailoredVerdict& tailored_verdict) {
+    const ClientDownloadResponse::TailoredVerdict& tailored_verdict,
+    bool is_registered_app_store) {
   // TODO(crbug.com/41477698): Actually store token for
   // IncidentReportingService usage.
 }
@@ -212,7 +213,7 @@ bool CheckFileSystemAccessWriteRequest::ShouldShowScanFailure() const {
 void CheckFileSystemAccessWriteRequest::NotifyRequestFinished(
     DownloadCheckResult result,
     DownloadCheckResultReason reason) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   weakptr_factory_.InvalidateWeakPtrs();
 }
 

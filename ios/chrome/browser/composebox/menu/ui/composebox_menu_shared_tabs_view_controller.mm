@@ -10,9 +10,9 @@
 #import "components/strings/grit/components_strings.h"
 #import "components/url_formatter/elide_url.h"
 #import "ios/chrome/browser/composebox/menu/coordinator/composebox_menu_shared_tab.h"
+#import "ios/chrome/browser/composebox/shared/ui/composebox_ui_constants.h"
 #import "ios/chrome/browser/shared/ui/elements/extended_touch_target_button.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
-#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
@@ -27,6 +27,15 @@ namespace {
 // Close button symbol size for the header close button.
 const CGFloat kCloseButtonSymbolPointSize = 15.0;
 
+// Size and trailing padding of the header close button.
+const CGFloat kCloseButtonSize = 40.0;
+const CGFloat kCloseButtonTrailingPadding = 16.0;
+
+// Shadow of the header close button, matching Assistant AIM.
+const CGFloat kCloseButtonShadowOpacity = 0.07;
+const CGFloat kCloseButtonShadowRadius = 3.0;
+const CGFloat kCloseButtonShadowOffsetY = 1.0;
+
 // Navigation bar padding.
 const CGFloat kNavigationBarTopPadding = 8.0;
 const CGFloat kNavigationBarTrailingPadding = 4.0;
@@ -39,6 +48,14 @@ const CGFloat kCollectionViewTopPadding = 8.0;
 const CGFloat kHorizontalMargin = 16.0;
 const CGFloat kFaviconSize = 24.0;
 const CGFloat kTrashSymbolPointSize = 18.0;
+
+// Number of lines for the tab title and domain labels in a cell (0 means
+// unlimited).
+const NSInteger kTitleNumberOfLines = 0;
+const NSInteger kDomainNumberOfLines = 0;
+
+// Insets for the collection view.
+const NSDirectionalEdgeInsets kListSectionInsets = {16, 16.0, 0, 16.0};
 
 // Section identifier for the collection view diffable data source.
 NSString* const kSharedTabsSectionIdentifier = @"kSharedTabsSectionIdentifier";
@@ -122,13 +139,19 @@ UIButtonConfiguration* CreateHeaderButtonConfiguration(UIImage* image) {
                                            primaryAction:nil];
   _closeButton.translatesAutoresizingMaskIntoConstraints = NO;
   _closeButton.tintColor = [UIColor clearColor];
+  _closeButton.accessibilityIdentifier =
+      kComposeboxSharedTabsCloseButtonAccessibilityIdentifier;
   [_closeButton addTarget:self
                    action:@selector(didTapCloseButton)
          forControlEvents:UIControlEventTouchUpInside];
-
-  UIBarButtonItem* closeBarButtonItem =
-      [[UIBarButtonItem alloc] initWithCustomView:_closeButton];
-  navigationItem.rightBarButtonItem = closeBarButtonItem;
+  _closeButton.layer.shadowColor = [UIColor blackColor].CGColor;
+  _closeButton.layer.shadowOpacity = kCloseButtonShadowOpacity;
+  _closeButton.layer.shadowOffset = CGSizeMake(0, kCloseButtonShadowOffsetY);
+  _closeButton.layer.shadowRadius = kCloseButtonShadowRadius;
+  // The close button is laid out over the navigation bar rather than as a bar
+  // button item, because the navigation bar resizes and decorates the custom
+  // views of its items, which prevents matching the Assistant AIM header.
+  [self.view addSubview:_closeButton];
 
   [_navigationBar pushNavigationItem:navigationItem animated:NO];
 
@@ -140,19 +163,49 @@ UIButtonConfiguration* CreateHeaderButtonConfiguration(UIImage* image) {
     [_navigationBar.trailingAnchor
         constraintEqualToAnchor:self.view.trailingAnchor
                        constant:-kNavigationBarTrailingPadding],
+    [_closeButton.centerYAnchor
+        constraintEqualToAnchor:_navigationBar.centerYAnchor],
+    [_closeButton.trailingAnchor
+        constraintEqualToAnchor:self.view.trailingAnchor
+                       constant:-kCloseButtonTrailingPadding],
   ]];
+  AddSizeConstraints(_closeButton,
+                     CGSizeMake(kCloseButtonSize, kCloseButtonSize));
 }
 
 - (void)setUpDisclaimerTextView {
   _disclaimerTextView = CreateUITextViewWithTextKit1();
   _disclaimerTextView.translatesAutoresizingMaskIntoConstraints = NO;
+  _disclaimerTextView.accessibilityIdentifier =
+      kComposeboxSharedTabsDisclaimerAccessibilityIdentifier;
   _disclaimerTextView.editable = NO;
   _disclaimerTextView.scrollEnabled = NO;
   _disclaimerTextView.textContainerInset = UIEdgeInsetsZero;
   _disclaimerTextView.textContainer.lineFragmentPadding = 0;
   _disclaimerTextView.backgroundColor = [UIColor clearColor];
   _disclaimerTextView.delegate = self;
+  [self updateDisclaimerText];
 
+  // The font is part of the attributed text, which UIKit doesn't update when
+  // the text size changes (`adjustsFontForContentSizeCategory` doesn't reliably
+  // apply to attributed text), so rebuild the text on every change.
+  [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
+                     withAction:@selector(updateDisclaimerText)];
+
+  [self.view addSubview:_disclaimerTextView];
+
+  AddSameConstraintsToSidesWithInsets(
+      _disclaimerTextView, self.view, LayoutSides::kHorizontal,
+      NSDirectionalEdgeInsetsMake(0, kHorizontalMargin, 0, kHorizontalMargin));
+  [_disclaimerTextView.topAnchor
+      constraintEqualToAnchor:_navigationBar.bottomAnchor
+                     constant:kDisclaimerTopPadding]
+      .active = YES;
+}
+
+// Sets the disclaimer's attributed text, with fonts matching the current
+// content size category.
+- (void)updateDisclaimerText {
   NSString* description = l10n_util::GetNSString(
       IDS_CONTEXTUAL_TASKS_FIRST_RUN_EXPERIENCE_DESCRIPTION);
   NSString* learnMore = l10n_util::GetNSString(
@@ -160,9 +213,12 @@ UIButtonConfiguration* CreateHeaderButtonConfiguration(UIImage* image) {
   NSString* fullText = [NSString
       stringWithFormat:@"%@ BEGIN_LINK%@END_LINK", description, learnMore];
 
+  // Resolve the font for this view controller's traits rather than the app's,
+  // so that it also follows content size category overrides.
   NSDictionary* textAttributes = @{
     NSFontAttributeName :
-        PreferredFontForTextStyle(UIFontTextStyleFootnote, UIFontWeightRegular),
+        [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote
+            compatibleWithTraitCollection:self.traitCollection],
     NSForegroundColorAttributeName : [UIColor colorNamed:kTextSecondaryColor]
   };
 
@@ -176,33 +232,39 @@ UIButtonConfiguration* CreateHeaderButtonConfiguration(UIImage* image) {
 
   _disclaimerTextView.attributedText = AttributedStringFromStringWithLink(
       fullText, textAttributes, linkAttributes);
-
-  [self.view addSubview:_disclaimerTextView];
-
-  AddSameConstraintsToSidesWithInsets(
-      _disclaimerTextView, self.view, LayoutSides::kHorizontal,
-      NSDirectionalEdgeInsetsMake(0, kHorizontalMargin, 0, kHorizontalMargin));
-  [_disclaimerTextView.topAnchor
-      constraintEqualToAnchor:_navigationBar.bottomAnchor
-                     constant:kDisclaimerTopPadding]
-      .active = YES;
 }
 
+// Creates the compositional layout for the shared tabs collection view.
+- (UICollectionViewLayout*)createCollectionViewLayout {
+  return [[UICollectionViewCompositionalLayout alloc]
+      initWithSectionProvider:^NSCollectionLayoutSection*(
+          NSInteger sectionIndex,
+          id<NSCollectionLayoutEnvironment> layoutEnvironment) {
+        UICollectionLayoutListConfiguration* config =
+            [[UICollectionLayoutListConfiguration alloc]
+                initWithAppearance:
+                    UICollectionLayoutListAppearanceInsetGrouped];
+        config.backgroundColor = [UIColor colorNamed:kSecondaryBackgroundColor];
+        NSCollectionLayoutSection* section = [NSCollectionLayoutSection
+            sectionWithListConfiguration:config
+                       layoutEnvironment:layoutEnvironment];
+        section.contentInsets = kListSectionInsets;
+        return section;
+      }];
+}
+
+// Sets up the collection view and its diffable data source.
 - (void)setUpCollectionView {
-  UICollectionLayoutListConfiguration* config =
-      [[UICollectionLayoutListConfiguration alloc]
-          initWithAppearance:UICollectionLayoutListAppearanceInsetGrouped];
-  config.backgroundColor = [UIColor colorNamed:kSecondaryBackgroundColor];
-
-  UICollectionViewCompositionalLayout* layout =
-      [UICollectionViewCompositionalLayout layoutWithListConfiguration:config];
-
-  _collectionView = [[UICollectionView alloc] initWithFrame:CGRectZero
-                                       collectionViewLayout:layout];
+  _collectionView = [[UICollectionView alloc]
+             initWithFrame:CGRectZero
+      collectionViewLayout:[self createCollectionViewLayout]];
   _collectionView.translatesAutoresizingMaskIntoConstraints = NO;
   _collectionView.delegate = self;
+  _collectionView.allowsSelection = NO;
   _collectionView.backgroundColor =
       [UIColor colorNamed:kSecondaryBackgroundColor];
+  _collectionView.contentInsetAdjustmentBehavior =
+      UIScrollViewContentInsetAdjustmentNever;
 
   [self.view addSubview:_collectionView];
 
@@ -246,7 +308,7 @@ UIButtonConfiguration* CreateHeaderButtonConfiguration(UIImage* image) {
   content.textProperties.font =
       [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
   content.textProperties.color = [UIColor colorNamed:kTextPrimaryColor];
-  content.textProperties.numberOfLines = 1;
+  content.textProperties.numberOfLines = kTitleNumberOfLines;
   content.textProperties.lineBreakMode = NSLineBreakByTruncatingTail;
 
   NSString* domain = @"";
@@ -262,7 +324,7 @@ UIButtonConfiguration* CreateHeaderButtonConfiguration(UIImage* image) {
       [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
   content.secondaryTextProperties.color =
       [UIColor colorNamed:kTextSecondaryColor];
-  content.secondaryTextProperties.numberOfLines = 1;
+  content.secondaryTextProperties.numberOfLines = kDomainNumberOfLines;
   content.secondaryTextProperties.lineBreakMode = NSLineBreakByTruncatingTail;
 
   if (tab.favicon) {
@@ -274,6 +336,18 @@ UIButtonConfiguration* CreateHeaderButtonConfiguration(UIImage* image) {
   content.imageProperties.cornerRadius = 4.0;
 
   cell.contentConfiguration = content;
+
+  __weak __typeof(self) weakSelf = self;
+  UIAccessibilityCustomAction* removeAction =
+      [[UIAccessibilityCustomAction alloc]
+           initWithName:l10n_util::GetNSString(
+                            IDS_IOS_COMPOSEBOX_MENU_REMOVE_TAB)
+                  image:SymbolWithPointSize(SymbolTrash, kTrashSymbolPointSize)
+          actionHandler:^BOOL(UIAccessibilityCustomAction* action) {
+            [weakSelf removeTab:tab];
+            return YES;
+          }];
+  cell.accessibilityCustomActions = @[ removeAction ];
 }
 
 - (void)applySnapshot {
@@ -333,8 +407,9 @@ UIButtonConfiguration* CreateHeaderButtonConfiguration(UIImage* image) {
   [snapshot deleteItemsWithIdentifiers:@[ tab ]];
   [_dataSource applySnapshot:snapshot animatingDifferences:YES];
 
-  [self.delegate composeboxMenuSharedTabsViewController:self
-                            didRemoveTabWithServerToken:tab.serverToken];
+  [self.delegate
+      composeboxMenuSharedTabsViewController:self
+         didRemoveTabWithInputItemIdentifier:tab.inputItemIdentifier];
 }
 
 #pragma mark - User Actions

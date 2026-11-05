@@ -4,15 +4,26 @@
 
 #include "third_party/blink/renderer/platform/mediastream/webaudio_media_stream_source.h"
 
+#include <cstddef>
 #include <utility>
 
-#include "base/functional/callback_helpers.h"
+#include "base/check_op.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/synchronization/lock.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/threading/thread_checker.h"
+#include "base/time/time.h"
 #include "media/base/audio_bus.h"
-#include "media/base/audio_glitch_info.h"
+#include "media/base/channel_layout.h"
+#include "third_party/blink/renderer/platform/mediastream/media_stream_audio_source.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
 
 namespace blink {
 
@@ -49,7 +60,7 @@ void WebAudioMediaStreamSource::AudioConsumer::SetFormat(int number_of_channels,
 }
 
 void WebAudioMediaStreamSource::AudioConsumer::ConsumeAudio(
-    const Vector<const float*>& audio_data,
+    const Vector<base::span<const float>>& audio_data,
     int number_of_frames) {
   base::AutoTryLock try_lock(lock_);
   if (try_lock.is_acquired() && owner_) {
@@ -63,7 +74,7 @@ void WebAudioMediaStreamSource::SetFormat(int number_of_channels,
   VLOG(1) << "WebAudio media stream source changed format to: channels="
           << number_of_channels << ", sample_rate=" << sample_rate;
 
-  CHECK_LE(number_of_channels, 32, base::NotFatalUntil::M151);
+  CHECK_LE(number_of_channels, 32);
 
   // Set the format used by this WebAudioMediaStreamSource. We are using 10ms
   // data as a buffer size since that is the native buffer size of WebRtc packet
@@ -80,7 +91,7 @@ void WebAudioMediaStreamSource::SetFormat(int number_of_channels,
 }
 
 void WebAudioMediaStreamSource::ConsumeAudioInternal(
-    const Vector<const float*>& audio_data,
+    const Vector<base::span<const float>>& audio_data,
     int number_of_frames) {
   TRACE_EVENT1(TRACE_DISABLED_BY_DEFAULT("mediastream"),
                "WebAudioMediaStreamSource::ConsumeAudioInternal", "frames",
@@ -91,12 +102,17 @@ void WebAudioMediaStreamSource::ConsumeAudioInternal(
   current_reference_time_ = base::TimeTicks::Now();
   wrapper_bus_->set_frames(number_of_frames);
   DCHECK_EQ(wrapper_bus_->channels(), static_cast<int>(audio_data.size()));
+  const size_t frames = base::checked_cast<size_t>(number_of_frames);
   for (wtf_size_t i = 0; i < audio_data.size(); ++i) {
-    // TODO(crbug.com/375449662): Spanify `audio_data`.
+    const base::span<const float> channel = audio_data[i].first(frames);
+    // `media::AudioBus` can only wrap mutable memory, but `wrapper_bus_` is
+    // only ever read from (by `fifo_`), so dropping constness here is fine.
+    // SAFETY: The resulting span covers exactly the same memory as `channel`,
+    // which was bounds-checked against `audio_data[i]` above.
     wrapper_bus_->SetChannelData(
         static_cast<int>(i),
-        UNSAFE_TODO(base::span(const_cast<float*>(audio_data[i]),
-                               base::checked_cast<size_t>(number_of_frames))));
+        UNSAFE_BUFFERS(base::span<float>(const_cast<float*>(channel.data()),
+                                         channel.size())));
   }
 
   // The following will result in zero, one, or multiple synchronous calls to

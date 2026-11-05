@@ -4,11 +4,13 @@
 
 from collections import defaultdict
 import fnmatch
+import inspect
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 
 _REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
 
@@ -68,6 +70,19 @@ class MockInputApi(object):
   attribute as the list of changed files.
   """
 
+    DEFAULT_FILES_TO_CHECK = (
+        r'.+\.c$',
+        r'.+\.cc$',
+        r'.+\.cpp$',
+        r'.+\.h$',
+        r'.+\.m$',
+        r'.+\.mm$',
+        r'.+\.go$',
+        r'.+\.py$',
+        r'.+\.js$',
+        r'.+\.ts$',
+        r'.+\.rs$',
+    )
     DEFAULT_FILES_TO_SKIP = ()
 
     def __init__(self):
@@ -76,6 +91,7 @@ class MockInputApi(object):
         self.fnmatch = fnmatch
         self.json = json
         self.re = re
+        self.time = time
 
         # We want os_path.exists() and os_path.isfile() to work for files
         # that are both in the filesystem and mock files we have added
@@ -141,7 +157,10 @@ class MockInputApi(object):
         self.os_path.isfile = mock_isfile
         self.glob = mock_glob
 
-    def AffectedFiles(self, include_deletes=True, file_filter=None):
+    def AffectedFiles(self,
+                      include_deletes=True,
+                      file_filter=None,
+                      include_dirs=False):
         for file in self.files:
             if file_filter and not file_filter(file):
                 continue
@@ -189,6 +208,17 @@ class MockInputApi(object):
     def LocalPaths(self):
         return [file.LocalPath() for file in self.files]
 
+    def AffectedExtensions(self):
+        exts = set()
+        for f in self.AffectedFiles(include_deletes=True):
+            path = f.LocalPath().replace('\\', '/')
+            basename = self.os_path.basename(path).lower()
+            if basename.startswith('.') and '.' not in basename[1:]:
+                exts.add(basename)
+            else:
+                exts.add(self.os_path.splitext(basename)[1])
+        return frozenset(exts)
+
     def PresubmitLocalPath(self):
         return self.presubmit_local_path
 
@@ -202,6 +232,60 @@ class MockInputApi(object):
                 return '\n'.join(file_.NewContents())
         # Otherwise, file is not in our mock API.
         raise IOError("No such file or directory: '%s'" % filename)
+
+    class Command(object):
+
+        def __init__(self,
+                     name,
+                     cmd,
+                     kwargs,
+                     message=None,
+                     python3=True,
+                     output_parser=None):
+            self.name = name
+            self.cmd = cmd
+            self.stdin = kwargs.get('stdin')
+            self.kwargs = kwargs.copy()
+            self.kwargs['stdout'] = subprocess.PIPE
+            if output_parser and len(
+                    inspect.signature(output_parser).parameters) == 3:
+                self.kwargs['stderr'] = subprocess.PIPE
+            else:
+                self.kwargs['stderr'] = subprocess.STDOUT
+            self.kwargs['stdin'] = subprocess.PIPE
+            self.message = message
+            self.output_parser = output_parser
+
+    def RunTests(self, tests_mix, parallel=True):
+        results = []
+        for test in tests_mix:
+            if not hasattr(test, 'cmd'):
+                if test:
+                    results.append(test)
+                continue
+            kwargs = test.kwargs.copy()
+            if not kwargs.get('cwd'):
+                kwargs['cwd'] = self.PresubmitLocalPath()
+            p = self.subprocess.Popen(test.cmd, **kwargs)
+            stdout, stderr = p.communicate(input=test.stdin)
+            returncode = p.returncode
+            stdout = stdout.decode('utf-8', 'ignore')
+            if test.output_parser:
+                if stderr is not None:
+                    stderr = stderr.decode('utf-8', 'ignore')
+                    res = test.output_parser(returncode, stdout, stderr)
+                else:
+                    res = test.output_parser(returncode, stdout)
+                if res:
+                    if isinstance(res, (list, tuple)):
+                        results.extend(res)
+                    else:
+                        results.append(res)
+            elif returncode != 0 and test.message:
+                results.append(
+                    test.message('%s failed\n%s' % (test.name, stdout)))
+        return results
+
 
 
 class MockOutputApi(object):
@@ -272,18 +356,31 @@ class MockFile(object):
                  new_contents,
                  old_contents=None,
                  action='A',
-                 scm_diff=None):
+                 scm_diff=None,
+                 local_root=None):
         self._local_path = local_path
+        self._local_root = local_root or _REPO_ROOT
         self._new_contents = new_contents
-        self._changed_contents = [(i + 1, l)
-                                  for i, l in enumerate(new_contents)]
+        self._changed_contents = [
+            (i + 1, l)
+            for i, l in enumerate(new_contents)  # noqa: E741
+        ]
         self._action = action
+        import difflib
         if scm_diff:
             self._scm_diff = scm_diff
+        elif old_contents:
+            self._scm_diff = "\n".join(
+                difflib.unified_diff(
+                    old_contents,
+                    new_contents,
+                    fromfile=local_path,
+                    tofile=local_path,
+                    lineterm="")) + "\n"
         else:
             self._scm_diff = ("--- /dev/null\n+++ %s\n@@ -0,0 +1,%d @@\n" %
                               (local_path, len(new_contents)))
-            for l in new_contents:
+            for l in new_contents:  # noqa: E741
                 self._scm_diff += "+%s\n" % l
         self._old_contents = old_contents or []
 
@@ -303,7 +400,9 @@ class MockFile(object):
         return self._local_path
 
     def AbsoluteLocalPath(self):
-        return os.path.join(_REPO_ROOT, self._local_path)
+        if os.path.isabs(self._local_path):
+            return self._local_path
+        return os.path.join(self._local_root, self._local_path)
 
     # This method must be functionally identical to
     # AffectedFile.UnixLocalPath(), but must normalize Windows-style
@@ -358,10 +457,15 @@ class MockChange(object):
         return self._changed_files
 
     def AffectedFiles(self,
-                      include_dirs=False,
                       include_deletes=True,
-                      file_filter=None):
-        return self._changed_files
+                      file_filter=None,
+                      include_dirs=False):
+        files = self._changed_files
+        if not include_deletes:
+            files = list(filter(lambda f: f.Action() != 'D', files))
+        if file_filter:
+            files = list(filter(file_filter, files))
+        return files
 
     def GitFootersFromDescription(self):
         return self.footers

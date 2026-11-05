@@ -4,11 +4,14 @@
 
 #include "third_party/blink/renderer/modules/webaudio/analyser_handler.h"
 
+#include <bit>
+
 #include "third_party/blink/renderer/modules/webaudio/audio_node_input.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_node_output.h"
 #include "third_party/blink/renderer/modules/webaudio/base_audio_context.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
@@ -48,8 +51,8 @@ void AnalyserHandler::Process(uint32_t frames_to_process) {
 
   // It's possible that output is not connected. Assign nullptr to indicate
   // such case.
-  AudioBus* output_bus = Output(0).RenderingFanOutCount() > 0
-      ? Output(0).Bus() : nullptr;
+  AudioBus* output_bus =
+      Output(0).IsConnectedDuringRendering() ? Output(0).Bus() : nullptr;
 
   if (!IsInitialized() && output_bus) {
     output_bus->Zero();
@@ -85,18 +88,28 @@ void AnalyserHandler::Process(uint32_t frames_to_process) {
 
 void AnalyserHandler::SetFftSize(unsigned size,
                                  ExceptionState& exception_state) {
-  if (!analyser_.SetFftSize(size)) {
+  if (size < RealtimeAnalyser::kMinFFTSize ||
+      size > RealtimeAnalyser::kMaxFFTSize) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        (size < RealtimeAnalyser::kMinFFTSize ||
-         size > RealtimeAnalyser::kMaxFFTSize)
-            ? ExceptionMessages::IndexOutsideRange(
-                  "FFT size", size, RealtimeAnalyser::kMinFFTSize,
-                  ExceptionMessages::kInclusiveBound,
-                  RealtimeAnalyser::kMaxFFTSize,
-                  ExceptionMessages::kInclusiveBound)
-            : StrCat({"The value provided (", String::Number(size),
-                      ") is not a power of two."}));
+        ExceptionMessages::IndexOutsideRange(
+            "FFT size", size, RealtimeAnalyser::kMinFFTSize,
+            ExceptionMessages::kInclusiveBound,
+            RealtimeAnalyser::kMaxFFTSize,
+            ExceptionMessages::kInclusiveBound));
+    return;
+  }
+  if (!std::has_single_bit(size)) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kIndexSizeError,
+        Format("The value provided ({}) is not a power of two.", size));
+    return;
+  }
+  if (!analyser_.SetFftSize(size)) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kNotSupportedError,
+        "Failed to resize AnalyserNode buffers due to insufficient memory.");
+    return;
   }
 }
 
@@ -130,9 +143,10 @@ void AnalyserHandler::SetMinMaxDecibels(double min_decibels,
   if (min_decibels >= max_decibels) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"maxDecibels (", String::Number(max_decibels),
-                ") must be greater than or equal to minDecibels ( ",
-                String::Number(min_decibels), ")."}));
+        Format(
+            "maxDecibels ({:g}) must be greater than or equal to minDecibels "
+            "({:g}).",
+            max_decibels, min_decibels));
     return;
   }
   analyser_.SetMinDecibels(min_decibels);
@@ -194,8 +208,8 @@ double AnalyserHandler::TailTime() const {
 void AnalyserHandler::PullInputs(uint32_t frames_to_process) {
   DCHECK(Context()->IsAudioThread());
 
-  AudioBus* output_bus = Output(0).RenderingFanOutCount() > 0
-      ? Output(0).Bus() : nullptr;
+  AudioBus* output_bus =
+      Output(0).IsConnectedDuringRendering() ? Output(0).Bus() : nullptr;
 
   Input(0).Pull(output_bus, frames_to_process);
 }

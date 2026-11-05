@@ -193,12 +193,11 @@ class VIEWS_EXPORT TableView : public View, public ui::TableModelObserver {
             TableType table_type,
             bool single_selection);
 
-  // Assigns a new model to the table view, detaching the old one if present.
-  // If |model| is NULL, the table view cannot be used after this call. This
-  // should be called in the containing view's destructor to avoid destruction
-  // issues when the model needs to be deleted before the table.
-  void SetModel(ui::TableModel* model);
   ui::TableModel* model() const { return model_; }
+
+  // This should be called in the containing view's destructor to avoid
+  // destruction issues when the model needs to be deleted before the table.
+  void ClearModel();
 
   void SetColumns(const std::vector<ui::TableColumn>& columns);
 
@@ -235,9 +234,15 @@ class VIEWS_EXPORT TableView : public View, public ui::TableModelObserver {
     return selection_model_;
   }
 
-  // Changes the visibility of the specified column (by id).
+  // Changes the visibility of the specified column (by id). The last visible
+  // column cannot be hidden: a request to hide it is ignored, so a table that
+  // has columns always shows at least one of them.
   void SetColumnVisibility(int id, bool is_visible);
   bool IsColumnVisible(int id) const;
+
+  // Returns true if the column with the specified id is the only visible
+  // column, i.e. the one SetColumnVisibility() refuses to hide.
+  bool IsLastVisibleColumn(int id) const;
 
   // Returns true if the column with the specified id is known (either visible
   // or not).
@@ -406,6 +411,9 @@ class VIEWS_EXPORT TableView : public View, public ui::TableModelObserver {
     size_t max_column = 0;
   };
 
+  // Sets the model for the table view. `model` must not be null
+  void SetModel(ui::TableModel* model);
+
   void OnPaintImpl(gfx::Canvas* canvas);
 
   // Draws a string with the desired parameters in an efficient way by reusing
@@ -443,7 +451,7 @@ class VIEWS_EXPORT TableView : public View, public ui::TableModelObserver {
   // Used to sort the two rows. Returns a value < 0, == 0 or > 0 indicating
   // whether the row2 comes before row1, row2 is the same as row1 or row1 comes
   // after row2. This invokes CompareValues on the model with the sorted column.
-  int CompareRows(size_t model_row1, size_t model_row2);
+  int CompareRows(size_t model_row1, size_t model_row2) const;
 
   // Returns the bounds of the specified row.
   gfx::Rect GetRowBounds(size_t row) const;
@@ -778,7 +786,6 @@ VIEW_BUILDER_PROPERTY(std::optional<size_t>, ActiveVisibleColumnIndex)
 VIEW_BUILDER_PROPERTY(const std::vector<ui::TableColumn>&,
                       Columns,
                       std::vector<ui::TableColumn>)
-VIEW_BUILDER_PROPERTY(ui::TableModel*, Model)
 VIEW_BUILDER_PROPERTY(TableType, TableType)
 VIEW_BUILDER_PROPERTY(bool, SingleSelection)
 VIEW_BUILDER_PROPERTY(TableGrouper*, Grouper)

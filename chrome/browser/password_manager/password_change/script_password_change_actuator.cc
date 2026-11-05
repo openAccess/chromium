@@ -27,7 +27,8 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 namespace {
@@ -40,7 +41,7 @@ using SubmissionError =
 using SubmissionVerificationResult =
     PasswordChangeSubmissionVerifier::SubmissionVerificationResult;
 
-std::u16string GeneratePassword(
+password_manager::PasswordString GeneratePassword(
     const password_manager::PasswordForm& form,
     password_manager::PasswordGenerationFrameHelper* generation_helper,
     ModelQualityLogsUploader* logs_uploader) {
@@ -126,7 +127,7 @@ ScriptPasswordChangeActuator::ScriptPasswordChangeActuator(
     ModelQualityLogsUploader* logs_uploader)
     : change_password_url_(std::move(change_password_url)),
       username_(std::move(password_form_info.username_value)),
-      original_password_(password_form_info.password_value.value()),
+      original_password_(std::move(password_form_info.password_value)),
       profile_(profile),
       logs_uploader_(logs_uploader) {}
 
@@ -184,10 +185,10 @@ void ScriptPasswordChangeActuator::OpenPasswordChangeTab(
   content::WebContents* web_contents = GetExecutorWebContents();
   if (!web_contents) {
     web_contents = originator->OpenURL(
-        content::OpenURLParams(GURL(change_password_url_), content::Referrer(),
-                               WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                               ui::PAGE_TRANSITION_LINK,
-                               /* is_renderer_initiated= */ false),
+        content::OpenURLParams::CreateBrowserInitiated(
+            GURL(change_password_url_),
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            ui::PAGE_TRANSITION_LINK),
         /*navigation_handle_callback=*/{});
     CHECK(web_contents);
   } else if (hidden_executor_) {
@@ -197,7 +198,8 @@ void ScriptPasswordChangeActuator::OpenPasswordChangeTab(
   }
 }
 
-std::u16string ScriptPasswordChangeActuator::GetGeneratedPassword() const {
+password_manager::PasswordString
+ScriptPasswordChangeActuator::GetGeneratedPassword() const {
   return generated_password_;
 }
 
@@ -372,9 +374,6 @@ void ScriptPasswordChangeActuator::ReportFlowInterruption(
         status);
     return;
   }
-
-  logs_uploader_->SetFlowInterrupted(
-      FlowStep::PasswordChangeRequest_FlowStep_IS_LOGGED_IN_STEP, status);
 }
 
 void ScriptPasswordChangeActuator::NotifyStateChanged(

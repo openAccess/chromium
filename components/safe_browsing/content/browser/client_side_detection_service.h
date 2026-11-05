@@ -40,7 +40,6 @@
 #include "net/base/ip_address.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "url/gurl.h"
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -103,6 +102,7 @@ class ClientSideDetectionService
  private:
   // ClientSideDetectionServiceBase implementation:
   void OnModelUpdated() override;
+  bool ShouldCreateBrowserScorer() const override;
   void DidSendClientReportPhishingRequest(
       std::unique_ptr<ClientPhishingRequest> request,
       const std::string& access_token) override;

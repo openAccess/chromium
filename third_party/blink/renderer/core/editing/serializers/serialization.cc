@@ -66,6 +66,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/html/html_anchor_element.h"
+#include "third_party/blink/renderer/core/html/html_base_element.h"
 #include "third_party/blink/renderer/core/html/html_body_element.h"
 #include "third_party/blink/renderer/core/html/html_br_element.h"
 #include "third_party/blink/renderer/core/html/html_div_element.h"
@@ -73,6 +74,8 @@
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_head_element.h"
 #include "third_party/blink/renderer/core/html/html_html_element.h"
+#include "third_party/blink/renderer/core/html/html_link_element.h"
+#include "third_party/blink/renderer/core/html/html_meta_element.h"
 #include "third_party/blink/renderer/core/html/html_quote_element.h"
 #include "third_party/blink/renderer/core/html/html_span_element.h"
 #include "third_party/blink/renderer/core/html/html_style_element.h"
@@ -89,12 +92,15 @@
 #include "third_party/blink/renderer/core/sanitizer/sanitizer_api.h"
 #include "third_party/blink/renderer/core/svg/svg_style_element.h"
 #include "third_party/blink/renderer/core/svg/svg_use_element.h"
+#include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/core/trustedtypes/trusted_types_names.h"
 #include "third_party/blink/renderer/platform/bindings/exception_context.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/runtime_call_stats.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/url_loader_client.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
@@ -322,7 +328,47 @@ Element* HighestAncestorToWrapMarkup(
   return special_common_ancestor;
 }
 
+bool IsForeignElementForSerialization(const Element& element) {
+  if (!IsA<HTMLElement>(element)) {
+    return true;
+  }
+  const AtomicString& local_name = element.localName();
+  return EqualIgnoringAsciiCase(local_name,
+                                mathml_names::kMathTag.LocalName()) ||
+         EqualIgnoringAsciiCase(local_name, svg_names::kSVGTag.LocalName());
+}
+
 }  // namespace
+
+bool IsInForeignContentForSerialization(const Node& node) {
+  // Check both DOM tree (`NodeTraversal`) and flat tree (`FlatTreeTraversal`)
+  // ancestors because serialization can run with either `EditingStrategy` or
+  // `EditingInFlatTreeStrategy` (and `StyledMarkupAccumulator` is not templated
+  // on `Strategy`):
+  // - A light-DOM node slotted into a `<slot>` inside a shadow-DOM `<math>` has
+  //   `<math>` as an ancestor only in `FlatTreeTraversal`, not `NodeTraversal`.
+  // - Conversely, `<slot>` elements or unslotted children inside `<math>`
+  //   serialized via `EditingStrategy` have `<math>` as an ancestor only in
+  //   `NodeTraversal`, not `FlatTreeTraversal`.
+  for (const Node& runner : NodeTraversal::InclusiveAncestorsOf(node)) {
+    if (const auto* element = DynamicTo<Element>(runner)) {
+      if (IsForeignElementForSerialization(*element)) {
+        return true;
+      }
+    }
+  }
+  if (!node.GetDocument().IsFlatTreeTraversalForbidden() &&
+      !node.IsShadowRoot()) {
+    for (const Node& runner : FlatTreeTraversal::InclusiveAncestorsOf(node)) {
+      if (const auto* element = DynamicTo<Element>(runner)) {
+        if (IsForeignElementForSerialization(*element)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
 
 bool PropertyMissingOrEqualToNone(CSSPropertyValueSet* style,
                                   CSSPropertyID property_id) {
@@ -605,12 +651,12 @@ bool IsPlainTextMarkup(Node* node) {
 static bool ShouldPreserveNewline(const EphemeralRange& range) {
   if (Node* node = range.StartPosition().NodeAsRangeFirstNode()) {
     if (LayoutObject* layout_object = node->GetLayoutObject())
-      return layout_object->StyleRef().ShouldPreserveBreaks();
+      return layout_object->Style().ShouldPreserveBreaks();
   }
 
   if (Node* node = range.StartPosition().AnchorNode()) {
     if (LayoutObject* layout_object = node->GetLayoutObject())
-      return layout_object->StyleRef().ShouldPreserveBreaks();
+      return layout_object->Style().ShouldPreserveBreaks();
   }
 
   return false;
@@ -724,6 +770,11 @@ void ReplaceChildrenWithFragment(ContainerNode* container,
       RuntimeCallStats::CounterId::kReplaceChildrenWithFragment);
   ContainerNode* container_node(container);
 
+  if (RuntimeEnabledFeatures::ReplaceChildrenWithFragmentFastPathEnabled() &&
+      !fragment->firstChild() && !container_node->hasChildren()) {
+    return;
+  }
+
   ChildListMutationScope mutation(*container_node);
 
   if (!fragment->firstChild()) {
@@ -739,7 +790,10 @@ void ReplaceChildrenWithFragment(ContainerNode* container,
     return;
   }
 
-  container_node->RemoveChildren();
+  if (!RuntimeEnabledFeatures::ReplaceChildrenWithFragmentFastPathEnabled() ||
+      container_node->hasChildren()) {
+    container_node->RemoveChildren();
+  }
   container_node->AppendChild(fragment, exception_state);
 }
 
@@ -810,7 +864,7 @@ static Document* CreateStagingDocumentForMarkupSanitization(
   frame->SetView(frame_view);
   // TODO(https://crbug.com/1355751) Initialize `storage_key`.
   frame->Init(/*opener=*/nullptr, DocumentToken(),
-              /*initiator_state_token=*/base::UnguessableToken::Create(),
+              /*initiator_state_token=*/InitiatorStateToken(),
               /*policy_container=*/nullptr, StorageKey(),
               /*document_ukm_source_id=*/ukm::kInvalidSourceId,
               /*creator_base_url=*/NullUrl());
@@ -833,14 +887,42 @@ static bool ContainsStyleElements(const DocumentFragment& fragment) {
   return false;
 }
 
+// Remove <base>, <link>, and <meta>, which can change URL resolution, load
+// resources, or navigate when inserted into a document. Do not rely on
+// unrendered-element filtering: author CSS can make these elements rendered.
+static void StripBaseLinkAndMetaElements(DocumentFragment& fragment) {
+  HeapVector<Member<DocumentFragment>> fragments;
+  fragments.push_back(&fragment);
+  while (!fragments.empty()) {
+    DocumentFragment* current_fragment = fragments.back();
+    fragments.pop_back();
+    Node* next = nullptr;
+    for (Node* node = current_fragment->firstChild(); node; node = next) {
+      if (IsA<HTMLBaseElement>(*node) || IsA<HTMLLinkElement>(*node) ||
+          IsA<HTMLMetaElement>(*node)) {
+        next = NodeTraversal::NextSkippingChildren(*node, current_fragment);
+        node->remove();
+      } else {
+        // Template contents are separate fragments, not ordinary DOM children.
+        if (auto* template_element = DynamicTo<HTMLTemplateElement>(*node)) {
+          if (DocumentFragment* content = template_element->getContent()) {
+            fragments.push_back(content);
+          }
+        }
+        next = NodeTraversal::Next(*node, current_fragment);
+      }
+    }
+  }
+}
+
 // Returns true if any svg <use> element is removed.
 static bool StripSvgUseNonLocalHrefs(Node& node) {
   if (auto* use = DynamicTo<SVGUseElement>(node)) {
     SVGURLReferenceResolver resolver(use->HrefString(), use->GetDocument());
     if (!resolver.IsLocal() || resolver.AbsoluteUrl().ProtocolIsData()) {
       node.remove();
+      return true;
     }
-    return true;
   }
   bool stripped = false;
   for (Node* child = node.firstChild(); child;) {
@@ -890,6 +972,8 @@ String CreateStrictlyProcessedMarkupWithContext(
       staging_document->GetPage()->WillBeDestroyed();
       return String();
     }
+
+    StripBaseLinkAndMetaElements(*fragment);
 
     bool needs_sanitization = false;
     if (ContainsStyleElements(*fragment))

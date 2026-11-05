@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
@@ -58,6 +59,7 @@
 #include "chrome/browser/password_manager/android/save_update_password_message_delegate.h"
 #include "chrome/browser/touch_to_fill/password_manager/touch_to_fill_password_manager_controller.h"
 #include "components/enterprise/connectors/core/features.h"
+#include "components/password_manager/content/browser/keyboard_replacing_surface_visibility_controller.h"
 #include "components/password_manager/core/browser/credential_cache.h"
 #include "components/password_manager/core/browser/first_cct_page_load_passwords_ukm_recorder.h"
 #endif
@@ -182,7 +184,11 @@ class ChromePasswordManagerClient
 #endif
 
   bool IsReauthBeforeFillingRequired(
+      device_reauth::DeviceAuthAvailabilityChecker* checker) override;
+  bool IsReauthBeforeFillingRequiredLegacy(
       device_reauth::DeviceAuthenticator* authenticator) override;
+  std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+  GetDeviceAuthAvailabilityChecker() override;
   // Returns a pointer to the DeviceAuthenticator which is created on demand.
   // This is currently only implemented for Android, Mac and Windows. On all
   // other platforms this will always be null.
@@ -269,8 +275,8 @@ class ChromePasswordManagerClient
   safe_browsing::PasswordProtectionService* GetPasswordProtectionService()
       const override;
 #endif
-  void TriggerUserPerceptionOfPasswordManagerSurvey(
-      const std::string& filling_assistance) override;
+  void TriggerPersonalizationAndTrustSurvey(
+      std::string_view filling_assistance) override;
 
 #if defined(ON_FOCUS_PING_ENABLED) && BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   void CheckSafeBrowsingReputation(const GURL& form_action,
@@ -318,8 +324,8 @@ class ChromePasswordManagerClient
   void UpdateFormManagers() override;
   void NavigateToManagePasswordsPage(
       password_manager::ManagePasswordsReferrer referrer) override;
-  void OnPasswordFilled(password_manager::PasswordManagerDriver* driver,
-                        const GURL& url) override;
+  void OnPasswordFilled(
+      password_manager::PasswordManagerDriver* driver) override;
 
 #if BUILDFLAG(IS_ANDROID)
   void NavigateToManagePasskeysPage(
@@ -401,6 +407,12 @@ class ChromePasswordManagerClient
     touch_to_fill_controller_ = std::move(controller);
   }
 
+  void SetKeyboardReplacingSurfaceVisibilityControllerForTesting(
+      std::unique_ptr<
+          password_manager::KeyboardReplacingSurfaceVisibilityController>
+          controller) {
+    keyboard_replacing_surface_visibility_controller_ = std::move(controller);
+  }
 #endif  // BUILDFLAG(IS_ANDROID)
 #endif  // defined(UNIT_TEST)
 
@@ -499,13 +511,10 @@ class ChromePasswordManagerClient
   void ShowPasswordGenerationPopup(
       autofill::password_generation::PasswordGenerationType type,
       password_manager::ContentPasswordManagerDriver* driver,
-      const autofill::password_generation::PasswordGenerationUIData& ui_data);
+      const autofill::password_generation::PasswordGenerationUIData& ui_data,
+      bool is_manually_triggered);
   void MaybeShowSavePasswordPrimingPromo(const url::Origin& origin) override;
 #endif  // !BUILDFLAG(IS_ANDROID)
-
-  gfx::RectF TransformToRootCoordinates(
-      content::RenderFrameHost* frame_host,
-      const gfx::RectF& bounds_in_frame_coordinates);
 
 #if BUILDFLAG(IS_ANDROID)
   void ResetErrorMessageDelegate();
@@ -532,6 +541,11 @@ class ChromePasswordManagerClient
   void PropagatePredictionsToPasswordManager(autofill::AutofillManager& manager,
                                              autofill::FormGlobalId form_id,
                                              FieldTypeSource source);
+
+  // `T` is `device_reauth::DeviceAuthenticator` or
+  // `device_reauth::DeviceAuthAvailabilityChecker`.
+  template <typename T>
+  bool IsReauthBeforeFillingRequiredImpl(T* availability_provider);
 
   void OnNonPasswordLoginDetected();
 

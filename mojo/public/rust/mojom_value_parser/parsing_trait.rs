@@ -14,6 +14,26 @@
 //! implement `MojomParse` for enums whose variants don't carry any additional
 //! data (a C++-style enum). That trait is also derived via macro, and the
 //! derivation automatically provides `MojomParse` as well.
+//!
+//! # Typemapping
+//!
+//! This file contains direct definitions of `MojomParse` for primitive types;
+//! definitions for complex mojom-defined types are derived using
+//! `#[derive(MojomParse)]`. However, for user types, it's a little more
+//! complicated. At a high-level, we follow a two-step approach:
+//!
+//! 1. The message is parsed into the auto-generated Mojom struct (which
+//!    implements `MojomParse` via the derive macro).
+//! 2. The generated struct is then converted into the user's custom type using
+//!    standard `From` or `TryFrom` traits.
+//!
+//! This is done in the generated bindings code, via an implementation of
+//! `MojomParse<MojomTy> for UserTy` which calls `into()` internally.
+//!
+//! The traits are provided by the user in a separate file, which is compiled as
+//! a submodule of the generated bindings crate. This makes the implementations
+//! local to the generated crate, avoiding violations of the Rust orphan rule
+//! when custom types are in external crates.
 
 chromium::import! {
     "//mojo/public/rust/system";
@@ -32,11 +52,23 @@ use system::mojo_types::UntypedHandle;
 
 /// This trait allows a type to be serialized/deserialized into a Mojom message.
 ///
+/// `impl MojomParse<MojomTy, _> for UserTy` can be read as "We can
+/// (de)serialize `UserTy` by converting it to `MojomTy`, and using `MojomTy`'s
+/// implementation of `MojomParse`.
+///
+/// In other words, the `WireAs` parameter, (when it isn't `Self`) allows types
+/// to delegate their parsing implementation to another type. This is used to
+/// support typemapping by implementing `MojomParse` for user type in generated
+/// binding code.
+///
 /// The `Context` parameter allows the trait to specify additional information
 /// that is needed for converting to/from `MojomValue`s. In practice, this
 /// context value is unused for all types except associated remotes and
 /// receivers.
-pub trait MojomParse<Context = ()>: Sized + 'static {
+pub trait MojomParse<WireAs = Self, Context = ()>: Sized + 'static
+where
+    WireAs: 'static,
+{
     /// Returns the MojomType associated with this rust struct. This function
     /// should always return the same value.
     fn mojom_type() -> MojomType;
@@ -59,16 +91,19 @@ pub trait MojomParse<Context = ()>: Sized + 'static {
         // TypeId to represent them at runtime.
         type WireTypeCache = HashMap<TypeId, &'static MojomWireType>;
 
-        // Sadly, we can't initialize an RwLock static directly because the initializer
-        // wouldn't be a constant expression, so have to wrap it in LazyLock.
+        // Sadly, we can't initialize an RwLock static directly because the
+        // initializer wouldn't be a constant expression, so have to
+        // wrap it in LazyLock.
         static WIRE_TYPE: LazyLock<RwLock<WireTypeCache>> =
             LazyLock::new(|| RwLock::new(WireTypeCache::new()));
 
-        // The read can only fail if a writer panicked at some point; packing never
-        // panics so we know it's safe to unwrap here.
-        // `cloned` transforms Option<&& MojomWireType> -> Option<& MojomWireType>
-        let contents: Option<&'static MojomWireType> =
-            WIRE_TYPE.read().unwrap().get(&TypeId::of::<Self>()).cloned();
+        let key = TypeId::of::<(Self, WireAs)>();
+
+        // The read can only fail if a writer panicked at some point; packing
+        // never panics so we know it's safe to unwrap here.
+        // `cloned` transforms Option<&& MojomWireType> -> Option<&
+        // MojomWireType>
+        let contents: Option<&'static MojomWireType> = WIRE_TYPE.read().unwrap().get(&key).cloned();
 
         match contents {
             Some(wire_type_ref) => {
@@ -79,7 +114,7 @@ pub trait MojomParse<Context = ()>: Sized + 'static {
                 // No current entry, initialize it by packing the input type.
                 let wire_type_box = Box::new(pack_mojom_type(&Self::mojom_type()));
                 let wire_type_ref: &'static MojomWireType = Box::leak(wire_type_box);
-                WIRE_TYPE.write().unwrap().insert(TypeId::of::<Self>(), wire_type_ref);
+                WIRE_TYPE.write().unwrap().insert(key, wire_type_ref);
                 wire_type_ref
             }
         }
@@ -104,7 +139,7 @@ pub trait PrimitiveEnum: Into<i32> + TryFrom<i32, Error = anyhow::Error> + Sized
 /// MojomType and MojomValue use identically-named variants.
 macro_rules! mojomparse_leaf_impl {
     ($target_type:ty, $variant:ident) => {
-        impl<Context> MojomParse<Context> for $target_type {
+        impl<Context> MojomParse<$target_type, Context> for $target_type {
             fn mojom_type() -> MojomType {
                 MojomType::$variant
             }
@@ -152,53 +187,37 @@ mojomparse_leaf_impl!(DataPipeConsumerHandle, Handle);
 mojomparse_leaf_impl!(DataPipeProducerHandle, Handle);
 mojomparse_leaf_impl!(SharedBuffer, Handle);
 
-// Implement MojomParse for any type that implements PrimitiveEnum and the other
-// requirements for MojomParse.
-impl<Context, T> MojomParse<Context> for T
-where
-    T: PrimitiveEnum + 'static,
-{
-    fn mojom_type() -> MojomType {
-        MojomType::Enum { is_valid: Predicate::new::<T>(&(Self::is_valid as fn(i32) -> bool)) }
-    }
-
-    fn into_mojom_value(self, _context: &Context) -> MojomValue {
-        MojomValue::Enum(self.into())
-    }
-
-    fn try_from_mojom_value(value: MojomValue, _context: &Context) -> anyhow::Result<Self> {
-        if let MojomValue::Enum(v) = value {
-            Ok(Self::try_from(v)?)
-        } else {
-            ::anyhow::bail!(
-                "Cannot construct a value of type {} from non-enum MojomValue {:?}",
-                std::any::type_name::<Self>(),
-                value
-            )
-        }
-    }
-}
 // Implement MojomParse for arrays and vectors
 // It would be neat to do this more generally, e.g. anything that can be cast
 // to a slice, but rust doesn't have a way for us to prove that the different
 // implementations of the trait are disjoint.
 
-impl<Context, T> MojomParse<Context> for Vec<T>
+// This can be read as "If T can be serialized by converting to a W,
+// then Vec<T> can be serialized by converting to Vec<W>"
+impl<Context, T, W> MojomParse<Vec<W>, Context> for Vec<T>
 where
-    T: MojomParse<Context>,
+    T: MojomParse<W, Context>,
+    W: 'static,
 {
     fn mojom_type() -> MojomType {
-        MojomType::Array { element_type: Box::new(T::mojom_type()), num_elements: None }
+        MojomType::Array {
+            element_type: Box::new(<T as MojomParse<W, Context>>::mojom_type()),
+            num_elements: None,
+        }
     }
 
     fn into_mojom_value(self, context: &Context) -> MojomValue {
-        MojomValue::Array(self.into_iter().map(|v| v.into_mojom_value(context)).collect())
+        MojomValue::Array(
+            self.into_iter()
+                .map(|v| <T as MojomParse<W, Context>>::into_mojom_value(v, context))
+                .collect(),
+        )
     }
 
     fn try_from_mojom_value(value: MojomValue, context: &Context) -> anyhow::Result<Self> {
         if let MojomValue::Array(v) = value {
             v.into_iter()
-                .map(|val| T::try_from_mojom_value(val, context))
+                .map(|val| <T as MojomParse<W, Context>>::try_from_mojom_value(val, context))
                 .collect::<anyhow::Result<_>>()
         } else {
             anyhow::bail!(
@@ -210,16 +229,24 @@ where
     }
 }
 
-impl<Context, T, const N: usize> MojomParse<Context> for [T; N]
+impl<Context, T, W, const N: usize> MojomParse<[W; N], Context> for [T; N]
 where
-    T: MojomParse<Context>,
+    T: MojomParse<W, Context>,
+    W: 'static,
 {
     fn mojom_type() -> MojomType {
-        MojomType::Array { element_type: Box::new(T::mojom_type()), num_elements: Some(N) }
+        MojomType::Array {
+            element_type: Box::new(<T as MojomParse<W, Context>>::mojom_type()),
+            num_elements: Some(N),
+        }
     }
 
     fn into_mojom_value(self, context: &Context) -> MojomValue {
-        MojomValue::Array(self.into_iter().map(|v| v.into_mojom_value(context)).collect())
+        MojomValue::Array(
+            self.into_iter()
+                .map(|v| <T as MojomParse<W, Context>>::into_mojom_value(v, context))
+                .collect(),
+        )
     }
 
     fn try_from_mojom_value(value: MojomValue, context: &Context) -> anyhow::Result<Self> {
@@ -241,7 +268,7 @@ where
 
         let arr_of_t: [T; N] = v
             .into_iter()
-            .map(|val| T::try_from_mojom_value(val, context))
+            .map(|val| <T as MojomParse<W, Context>>::try_from_mojom_value(val, context))
             .process_results(|iter| {
                 // Unwrap will succeed because we just checked the length above.
                 iter.collect_array().unwrap()
@@ -255,22 +282,29 @@ where
 // probably what most users will want, but we can extend it to
 // other map types if we need to.
 
-impl<Context, K, V> MojomParse<Context> for HashMap<K, V>
+impl<Context, K, V, WK, WV> MojomParse<HashMap<WK, WV>, Context> for HashMap<K, V>
 where
-    K: MojomParse<Context> + Eq + std::hash::Hash,
-    V: MojomParse<Context>,
+    K: MojomParse<WK, Context> + Eq + std::hash::Hash,
+    V: MojomParse<WV, Context>,
+    WK: 'static,
+    WV: 'static,
 {
     fn mojom_type() -> MojomType {
         MojomType::Map {
-            key_type: Box::new(K::mojom_type()),
-            value_type: Box::new(V::mojom_type()),
+            key_type: Box::new(<K as MojomParse<WK, Context>>::mojom_type()),
+            value_type: Box::new(<V as MojomParse<WV, Context>>::mojom_type()),
         }
     }
 
     fn into_mojom_value(self, context: &Context) -> MojomValue {
         let hashmap = self
             .into_iter()
-            .map(|(k, v)| (k.into_mojom_value(context), v.into_mojom_value(context)))
+            .map(|(k, v)| {
+                (
+                    <K as MojomParse<WK, Context>>::into_mojom_value(k, context),
+                    <V as MojomParse<WV, Context>>::into_mojom_value(v, context),
+                )
+            })
             .collect();
         MojomValue::Map(hashmap)
     }
@@ -280,7 +314,10 @@ where
             let converted_map: Self = hashmap
                 .into_iter()
                 .map(|(k, v)| -> anyhow::Result<(K, V)> {
-                    Ok((K::try_from_mojom_value(k, context)?, V::try_from_mojom_value(v, context)?))
+                    Ok((
+                        <K as MojomParse<WK, Context>>::try_from_mojom_value(k, context)?,
+                        <V as MojomParse<WV, Context>>::try_from_mojom_value(v, context)?,
+                    ))
                 })
                 // Fail if any of the conversions failed
                 .collect::<Result<_, _>>()?;
@@ -297,21 +334,25 @@ where
 
 // Implement MojomParse for Options
 
-impl<Context, T> MojomParse<Context> for Option<T>
+impl<Context, T, W> MojomParse<Option<W>, Context> for Option<T>
 where
-    T: MojomParse<Context>,
+    T: MojomParse<W, Context>,
+    W: 'static,
 {
     fn mojom_type() -> MojomType {
-        MojomType::Nullable { inner_type: Box::new(T::mojom_type()) }
+        MojomType::Nullable { inner_type: Box::new(<T as MojomParse<W, Context>>::mojom_type()) }
     }
 
     fn into_mojom_value(self, context: &Context) -> MojomValue {
-        MojomValue::Nullable(self.map(|v| Box::new(v.into_mojom_value(context))))
+        MojomValue::Nullable(
+            self.map(|v| Box::new(<T as MojomParse<W, Context>>::into_mojom_value(v, context))),
+        )
     }
 
     fn try_from_mojom_value(value: MojomValue, context: &Context) -> anyhow::Result<Self> {
         if let MojomValue::Nullable(opt) = value {
-            opt.map(|v| T::try_from_mojom_value(*v, context)).transpose()
+            opt.map(|v| <T as MojomParse<W, Context>>::try_from_mojom_value(*v, context))
+                .transpose()
         } else {
             anyhow::bail!(
                 "Cannot construct a value of type {} from this MojomValue: {:?}",
@@ -319,5 +360,23 @@ where
                 value
             );
         }
+    }
+}
+
+impl<Context, T, W> MojomParse<Box<W>, Context> for Box<T>
+where
+    T: MojomParse<W, Context>,
+    W: 'static,
+{
+    fn mojom_type() -> MojomType {
+        <T as MojomParse<W, Context>>::mojom_type()
+    }
+
+    fn into_mojom_value(self, context: &Context) -> MojomValue {
+        <T as MojomParse<W, Context>>::into_mojom_value(*self, context)
+    }
+
+    fn try_from_mojom_value(value: MojomValue, context: &Context) -> anyhow::Result<Self> {
+        <T as MojomParse<W, Context>>::try_from_mojom_value(value, context).map(Box::new)
     }
 }

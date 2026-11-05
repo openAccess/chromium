@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <algorithm>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -14,11 +15,13 @@
 
 #include "base/command_line.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/to_vector.h"
+#include "base/debug/dump_without_crashing.h"
 #include "base/logging.h"
+#include "base/memory/raw_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -660,7 +663,8 @@ TEST_F(TemplateURLPrepopulateDataTest, GetEngineTypeForAlternateURLs) {
 
 TEST_F(TemplateURLPrepopulateDataTest, GetEngineTypeForAllPrepopulatedEngines) {
   base::test::ScopedFeatureList feature_list(
-      switches::kPrepopulatedEnginesMigration);
+      {switches::kPrepopulatedEnginesMigration,
+       switches::kApplySearchEngineTypeMigration});
 
   using PrepopulatedEngine = TemplateURLPrepopulateData::PrepopulatedEngine;
   const auto all_engines = regional_capabilities::GetAllPrepopulatedEngines();
@@ -833,6 +837,104 @@ TEST_F(TemplateURLPrepopulateDataTest, GetPrepopulatedEngineFromFullList) {
           TemplateURLPrepopulateData::ecosia.keyword);
   ASSERT_TRUE(found_engine_by_keyword);
   ExpectSimilar(expected_engine.get(), found_engine_by_keyword.get());
+}
+
+TEST_F(TemplateURLPrepopulateDataTest, GetAllPrepopulatedEngines_UniqueIds) {
+  OverrideCountryId(CountryId("US"));
+  std::vector<raw_ptr<const TemplateURLPrepopulateData::PrepopulatedEngine>>
+      engines = prepopulate_data_resolver().GetAllPrepopulatedEngines();
+  ASSERT_FALSE(engines.empty());
+
+  base::flat_set<int> seen_ids;
+  for (const TemplateURLPrepopulateData::PrepopulatedEngine* engine : engines) {
+    ASSERT_TRUE(engine);
+    EXPECT_TRUE(seen_ids.insert(engine->id).second)
+        << "Duplicate prepopulate_id: " << engine->id;
+  }
+
+  for (const TemplateURLPrepopulateData::PrepopulatedEngine* engine :
+       regional_capabilities::GetPrepopulatedEnginesInRegionalLists()) {
+    EXPECT_TRUE(seen_ids.contains(engine->id))
+        << "Missing prepopulate_id: " << engine->id;
+  }
+}
+
+TEST_F(TemplateURLPrepopulateDataTest,
+       GetAllPrepopulatedEngines_ExcludesEnginesNotInRegionalLists) {
+  OverrideCountryId(CountryId("US"));
+  std::vector<raw_ptr<const TemplateURLPrepopulateData::PrepopulatedEngine>>
+      engines = prepopulate_data_resolver().GetAllPrepopulatedEngines();
+  ASSERT_FALSE(engines.empty());
+
+  // The US engines are referenced by the US list, so every returned engine is
+  // expected to be referenced by a regional list. Matching definitions rather
+  // than IDs also checks that unreferenced variants (e.g. `yahoo_ar`) are not
+  // returned.
+  const auto engines_in_regional_lists =
+      regional_capabilities::GetPrepopulatedEnginesInRegionalLists();
+  for (const TemplateURLPrepopulateData::PrepopulatedEngine* engine : engines) {
+    EXPECT_TRUE(std::ranges::contains(engines_in_regional_lists, engine))
+        << "Engine " << engine->id << " is not referenced by a regional list";
+  }
+}
+
+TEST_F(TemplateURLPrepopulateDataTest,
+       GetAllPrepopulatedEngines_RegionalPriority) {
+  auto find_by_id =
+      [](const std::vector<
+             raw_ptr<const TemplateURLPrepopulateData::PrepopulatedEngine>>&
+             engines,
+         int id) -> const TemplateURLPrepopulateData::PrepopulatedEngine* {
+    auto it = std::ranges::find(
+        engines, id, &TemplateURLPrepopulateData::PrepopulatedEngine::id);
+    return it != engines.end() ? *it : nullptr;
+  };
+
+  OverrideCountryId(CountryId("JP"));
+  EXPECT_EQ(&TemplateURLPrepopulateData::yahoo_jp,
+            find_by_id(prepopulate_data_resolver().GetAllPrepopulatedEngines(),
+                       TemplateURLPrepopulateData::yahoo_jp.id));
+
+  OverrideCountryId(CountryId("US"));
+  EXPECT_EQ(&TemplateURLPrepopulateData::yahoo,
+            find_by_id(prepopulate_data_resolver().GetAllPrepopulatedEngines(),
+                       TemplateURLPrepopulateData::yahoo.id));
+}
+
+TEST_F(TemplateURLPrepopulateDataTest,
+       GetAllPrepopulatedEngines_SkipsMigratingTargets) {
+  OverrideCountryId(CountryId("JP"));
+  std::vector<raw_ptr<const TemplateURLPrepopulateData::PrepopulatedEngine>>
+      engines = prepopulate_data_resolver().GetAllPrepopulatedEngines();
+
+  EXPECT_NE(std::ranges::find(engines, &TemplateURLPrepopulateData::yahoo_jp),
+            engines.end());
+  EXPECT_EQ(
+      std::ranges::find(engines, &TemplateURLPrepopulateData::yahoo_jp_next),
+      engines.end());
+}
+
+TEST_F(TemplateURLPrepopulateDataTest,
+       GetAllPrepopulatedEngines_MatchesGetEngineFromFullList) {
+  OverrideCountryId(CountryId("US"));
+  for (const TemplateURLPrepopulateData::PrepopulatedEngine* engine :
+       prepopulate_data_resolver().GetAllPrepopulatedEngines()) {
+    std::unique_ptr<TemplateURLData> from_catalog =
+        TemplateURLDataFromPrepopulatedEngine(*engine);
+    std::unique_ptr<TemplateURLData> from_full_list =
+        prepopulate_data_resolver().GetEngineFromFullList(engine->id);
+    ASSERT_TRUE(from_full_list);
+    ExpectSimilar(from_catalog.get(), from_full_list.get());
+  }
+}
+
+TEST_F(TemplateURLPrepopulateDataTest,
+       GetAllPrepopulatedEngines_EmptyWhenOverridesHonored) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(switches::kIgnoreSearchProviderOverrides);
+
+  OverrideCountryId(CountryId("US"));
+  EXPECT_TRUE(prepopulate_data_resolver().GetAllPrepopulatedEngines().empty());
 }
 
 TEST_F(TemplateURLPrepopulateDataTest, GetPrepopulatedEngineWithVariants) {
@@ -1170,7 +1272,8 @@ TEST_F(TemplateURLPrepopulateDataMigrationTest,
 TEST_F(TemplateURLPrepopulateDataMigrationTest,
        GetEngineTypeForMigratingEngine_PostMigration) {
   base::test::ScopedFeatureList feature_list(
-      switches::kPrepopulatedEnginesMigration);
+      {switches::kPrepopulatedEnginesMigration,
+       switches::kApplySearchEngineTypeMigration});
   auto scoped_override =
       regional_capabilities::SetPrepopulatedEnginesOverrideForTesting(
           {&TemplateURLPrepopulateData::google, &fake_engine_deprecated},
@@ -1186,7 +1289,8 @@ TEST_F(TemplateURLPrepopulateDataMigrationTest,
 TEST_F(TemplateURLPrepopulateDataMigrationTest,
        GetEngineTypeForMigratingEngine_PostRollout) {
   base::test::ScopedFeatureList feature_list(
-      switches::kPrepopulatedEnginesMigration);
+      {switches::kPrepopulatedEnginesMigration,
+       switches::kApplySearchEngineTypeMigration});
   auto scoped_override =
       regional_capabilities::SetPrepopulatedEnginesOverrideForTesting(
           {&TemplateURLPrepopulateData::google, &fake_engine_new},
@@ -1274,13 +1378,11 @@ struct UpdateRequirementsTestParams {
   bool is_engine_migration_enabled = false;
   bool is_shadow_variants_enabled = false;
 
-  // Indicates that the call should CHECK on most builds.
-  bool hits_dcheck = false;
+  // Indicates that the call should report a migration rollback through
+  // `base::debug::DumpWithoutCrashing()`.
+  bool expects_rollback_report = false;
 
   // Expected output of the call.
-  //
-  // Should be indicated even for params with `hits_dcheck`, as official builds
-  // can execute the code. Indicates what would be the output in that case.
   std::optional<BuiltinKeywordsMetadata> expected_output;
 };
 
@@ -1338,6 +1440,22 @@ class TemplateURLPrepopulateDataUpdateRequirementsTest
     disabled_features.push_back(switches::kIgnoreSearchProviderOverrides);
 
     scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
+
+    // Rollbacks are reported through `DumpWithoutCrashing()`, which is
+    // throttled per call site. Reset it so that each test case can observe it.
+    dump_without_crashing_count_ = 0;
+    base::debug::ResetDumpWithoutCrashingThrottlingForTesting();
+    base::debug::SetDumpWithoutCrashingFunction(
+        []() { ++dump_without_crashing_count_; });
+  }
+
+  void TearDown() override {
+    base::debug::SetDumpWithoutCrashingFunction(nullptr);
+    TemplateURLPrepopulateDataTest::TearDown();
+  }
+
+  static int dump_without_crashing_count() {
+    return dump_without_crashing_count_;
   }
 
   static auto Cases() {
@@ -1430,8 +1548,10 @@ class TemplateURLPrepopulateDataUpdateRequirementsTest
             .db_migration_state = migration_only,
             .profile_country = "DE",
             .is_engine_migration_enabled = false,
-            .hits_dcheck = true,
-            .expected_output = std::nullopt,
+            .expects_rollback_report = true,
+            // The database gets updated to reflect the current state.
+            .expected_output = BuildMetadata(CountryId("DE"),
+                                             kCurrentDataVersion, no_migration),
         },
         UpdateRequirementsTestParams{
             .test_case_name = "DifferentCountryWithEngineMigrationDowngrade",
@@ -1440,9 +1560,20 @@ class TemplateURLPrepopulateDataUpdateRequirementsTest
             .db_migration_state = migration_only,
             .profile_country = "JP",
             .is_engine_migration_enabled = false,
-            .hits_dcheck = true,
+            .expects_rollback_report = true,
             .expected_output = BuildMetadata(CountryId("JP"),
                                              kCurrentDataVersion, no_migration),
+        },
+        UpdateRequirementsTestParams{
+            .test_case_name = "DbMoreRecentWithEngineMigrationDowngrade",
+            .db_country = "DE",
+            .db_version = kCurrentDataVersion + 1,
+            .db_migration_state = migration_only,
+            .profile_country = "DE",
+            .is_engine_migration_enabled = false,
+            .expects_rollback_report = true,
+            // Data version downgrades are never written.
+            .expected_output = std::nullopt,
         },
         UpdateRequirementsTestParams{
             .test_case_name = "UpToDateMetadataWithShadowVariants",
@@ -1472,8 +1603,10 @@ class TemplateURLPrepopulateDataUpdateRequirementsTest
             .db_migration_state = shadow_variants_only,
             .profile_country = "DE",
             .is_shadow_variants_enabled = false,
-            .hits_dcheck = true,
-            .expected_output = std::nullopt,
+            .expects_rollback_report = true,
+            // The database gets updated to reflect the current state.
+            .expected_output = BuildMetadata(CountryId("DE"),
+                                             kCurrentDataVersion, no_migration),
         },
         UpdateRequirementsTestParams{
             .test_case_name = "UpgradeToBoth",
@@ -1485,6 +1618,19 @@ class TemplateURLPrepopulateDataUpdateRequirementsTest
             .is_shadow_variants_enabled = true,
             .expected_output =
                 BuildMetadata(CountryId("DE"), kCurrentDataVersion, both),
+        },
+        UpdateRequirementsTestParams{
+            .test_case_name =
+                "EngineMigrationRollbackWithShadowVariantsUpgrade",
+            .db_country = "DE",
+            .db_version = kCurrentDataVersion,
+            .db_migration_state = migration_only,
+            .profile_country = "DE",
+            .is_engine_migration_enabled = false,
+            .is_shadow_variants_enabled = true,
+            .expects_rollback_report = true,
+            .expected_output = BuildMetadata(
+                CountryId("DE"), kCurrentDataVersion, shadow_variants_only),
         },
     });
   }
@@ -1506,6 +1652,9 @@ class TemplateURLPrepopulateDataUpdateRequirementsTest
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;
+
+ private:
+  static inline int dump_without_crashing_count_ = 0;
 };
 
 TEST_P(TemplateURLPrepopulateDataUpdateRequirementsTest,
@@ -1520,20 +1669,13 @@ TEST_P(TemplateURLPrepopulateDataUpdateRequirementsTest,
           : std::optional(regional_capabilities::CountryIdHolder(
                 country_codes::CountryId(GetParam().db_country)));
 
-#if !defined(OFFICIAL_BUILD) || DCHECK_IS_ON()
-  if (GetParam().hits_dcheck) {
-    EXPECT_NOTREACHED_DEATH(
-        prepopulate_data_resolver().ComputeDatabaseUpdateRequirements(
-            database_metadata));
-  } else
-#endif
-  {
-    std::optional<BuiltinKeywordsMetadata> out =
-        prepopulate_data_resolver().ComputeDatabaseUpdateRequirements(
-            database_metadata);
+  std::optional<BuiltinKeywordsMetadata> out =
+      prepopulate_data_resolver().ComputeDatabaseUpdateRequirements(
+          database_metadata);
 
-    EXPECT_EQ(GetParam().expected_output, out);
-  }
+  EXPECT_EQ(GetParam().expected_output, out);
+  EXPECT_EQ(GetParam().expects_rollback_report ? 1 : 0,
+            dump_without_crashing_count());
 }
 
 INSTANTIATE_TEST_SUITE_P(

@@ -17,6 +17,7 @@
 #include "third_party/blink/renderer/core/css/parser/allowed_rules.h"
 #include "third_party/blink/renderer/core/css/parser/css_nesting_type.h"
 #include "third_party/blink/renderer/core/css/parser/css_tokenizer.h"
+#include "third_party/blink/renderer/core/css/property_registry.h"
 #include "third_party/blink/renderer/core/css/style_rule_font_feature_values.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
@@ -49,7 +50,6 @@ class StyleRuleNavigation;
 class StyleRulePage;
 class StyleRulePositionTry;
 class StyleRuleProperty;
-class StyleRulePrivate;
 class StyleRuleSupports;
 class StyleSheetContents;
 class Element;
@@ -215,10 +215,17 @@ class CORE_EXPORT CSSParserImpl {
   static bool ParseDeclarationList(MutableCSSPropertyValueSet*,
                                    const String&,
                                    const CSSParserContext*);
+  static void ConsumeDeclarationListForPrivate(
+      CSSParserTokenStream&,
+      const CSSParserContext&,
+      PropertyRegistry&,
+      PrivateNameMap&,
+      HeapVector<CSSPropertyValue, 64>&);
   // This is used for parsing CSSNestedDeclarations from ParseRuleForInsert
   // (CSSGroupingRule/CSSStyleRule.insertRule).
   static StyleRuleBase* ParseNestedDeclarationsRule(
       const CSSParserContext*,
+      StyleSheetContents*,
       CSSNestingType,
       StyleRule* parent_rule_for_nesting,
       StringView);
@@ -349,7 +356,7 @@ class CORE_EXPORT CSSParserImpl {
   ConsumeFunctionParameters(CSSParserTokenStream& stream);
   StyleRuleMixin* ConsumeMixinRule(CSSParserTokenStream& stream);
   StyleRuleResult* ConsumeResultRule(CSSParserTokenStream& stream);
-  StyleRulePrivate* ConsumePrivateRule(CSSParserTokenStream& stream);
+  StyleRule* ConsumePrivateRule(CSSParserTokenStream& stream);
   StyleRuleApplyMixin* ConsumeApplyMixinRule(CSSParserTokenStream& stream);
   StyleRuleContentsStatement* ConsumeContentsRule(CSSParserTokenStream& stream);
   StyleRuleCustomMedia* ConsumeCustomMediaRule(CSSParserTokenStream& stream);
@@ -506,6 +513,8 @@ class CORE_EXPORT CSSParserImpl {
 
   // True when parsing a @mixin.
   bool in_mixin_ = false;
+
+  PrivateNameMap* private_names_ = nullptr;
 
   HeapHashMap<String, Member<const MediaQuerySet>> media_query_cache_;
 };

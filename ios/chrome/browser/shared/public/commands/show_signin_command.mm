@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 
+#import <utility>
+
 #import "base/check.h"
 #import "base/functional/callback.h"
 #import "base/functional/callback_helpers.h"
@@ -152,11 +154,11 @@
   CHECK(completion);
   SigninCoordinatorCompletionCallback firstCompletion = self.completion;
   _completion = ^(SigninCoordinator* coordinator,
-                  SigninCoordinatorResult result, id<SystemIdentity> identity) {
+                  SigninCoordinatorResultOrIdentity result) {
     if (firstCompletion) {
-      firstCompletion(coordinator, result, identity);
+      firstCompletion(coordinator, result);
     }
-    completion(coordinator, result, identity);
+    completion(coordinator, std::move(result));
   };
 }
 

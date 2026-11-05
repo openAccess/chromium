@@ -46,6 +46,7 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
             " 2) ChromeOS Enterprise robot (for commercial It2Me) "
             " 3) Chromoting robot (for remote access, aka Me2Me) "
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "remotedesktop-pa.googleapis.com"
           internal {
             contacts { owners: "//remoting/OWNERS" }
           }
@@ -97,6 +98,11 @@ void IceConfigFetcherDefault::GetIceConfig(OnIceConfigCallback callback) {
     request_config->authenticated = false;
     request_config->api_key = google_apis::GetRemotingAPIKey();
   }
+#if !defined(NDEBUG)
+  // Debug builds default to sandbox endpoints which require client certificate
+  // authentication (mTLS) at the edge.
+  request_config->provide_certificate = true;
+#endif
   request_config->UseSimpleRetryPolicy();
   auto request =
       std::make_unique<ProtobufHttpRequest>(std::move(request_config));

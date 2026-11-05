@@ -14,6 +14,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/webapps/installable/installed_webapp_geolocation_context.h"
 #include "services/device/public/cpp/geolocation/geoposition.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "url/android/gurl_android.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -27,7 +28,7 @@ InstalledWebappGeolocationBridge::InstalledWebappGeolocationBridge(
       origin_(origin),
       high_accuracy_(false),
       receiver_(this, std::move(receiver)) {
-  DCHECK(context_);
+  CHECK(context_, base::NotFatalUntil::M162);
   receiver_.set_disconnect_handler(
       base::BindOnce(&InstalledWebappGeolocationBridge::OnConnectionError,
                      base::Unretained(this)));
@@ -41,7 +42,7 @@ void InstalledWebappGeolocationBridge::StartListeningForUpdates() {
   JNIEnv* env = base::android::AttachCurrentThread();
   if (java_ref_.is_null()) {
     java_ref_.Reset(InstalledWebappGeolocationBridgeJni::create(
-        env, reinterpret_cast<intptr_t>(this),
+        env, jni_zero::MakeRaw(this),
         url::GURLAndroid::FromNativeGURL(env, origin_.GetURL())));
   }
   java_ref_->start(env, high_accuracy_);
@@ -130,7 +131,7 @@ void InstalledWebappGeolocationBridge::OnConnectionError() {
 
 void InstalledWebappGeolocationBridge::OnLocationUpdate(
     device::mojom::GeopositionResultPtr result) {
-  DCHECK(context_);
+  CHECK(context_, base::NotFatalUntil::M162);
   CHECK(result);
 
   current_position_ = std::move(result);
@@ -140,7 +141,7 @@ void InstalledWebappGeolocationBridge::OnLocationUpdate(
 }
 
 void InstalledWebappGeolocationBridge::ReportCurrentPosition() {
-  DCHECK(position_callback_);
+  CHECK(position_callback_, base::NotFatalUntil::M162);
   CHECK(current_position_);
   std::move(position_callback_).Run(std::move(current_position_));
 }

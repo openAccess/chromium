@@ -7,7 +7,6 @@
  * 'settings-main' displays the selected settings page.
  */
 import 'chrome://resources/cr_components/managed_footnote/managed_footnote.js';
-import 'chrome://resources/cr_elements/cr_shared_style.css.js';
 import 'chrome://resources/cr_elements/cr_view_manager/cr_view_manager.js';
 import 'chrome://resources/cr_elements/icons.html.js';
 import '../about_page/about_page.js';
@@ -28,24 +27,35 @@ import '../default_browser_page/default_browser_page.js';
 import {getInstance as getAnnouncerInstance} from 'chrome://resources/cr_elements/cr_a11y_announcer/cr_a11y_announcer.js';
 import type {CrViewManagerElement} from 'chrome://resources/cr_elements/cr_view_manager/cr_view_manager.js';
 import {assert} from 'chrome://resources/js/assert.js';
+import {EventTracker} from 'chrome://resources/js/event_tracker.js';
 import {PromiseResolver} from 'chrome://resources/js/promise_resolver.js';
-import {beforeNextRender, flush, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {ensureLazyLoaded} from '../ensure_lazy_loaded.js';
 import {loadTimeData} from '../i18n_setup.js';
-// <if expr="not is_chromeos">
-import type {LanguagesModel} from '../languages_page/languages_types.js';
-// </if>
 import {pageVisibility} from '../page_visibility.js';
-import type {PageVisibility} from '../page_visibility.js';
+import type {AppearancePageVisibility, PageVisibility, PrivacyPageVisibility} from '../page_visibility.js';
 import {getTopLevelRoute, routes} from '../route.js';
-import {RouteObserverMixin} from '../router.js';
+import {RouteObserverMixinLit} from '../router.js';
 import type {Route, SettingsRoutes} from '../router.js';
 import {combineSearchResults} from '../search_settings.js';
 
-import {getTemplate} from './settings_main.html.js';
+import {getCss} from './settings_main.css.js';
+import {getHtml} from './settings_main.html.js';
 import type {SettingsPlugin} from './settings_plugin.js';
 
+
+export interface SearchFinishedDetail {
+  query: string;
+  matchCount: number;
+}
+
+declare global {
+  interface HTMLElementEventMap {
+    'search-finished': CustomEvent<SearchFinishedDetail>;
+  }
+}
 
 export interface SettingsMainElement {
   $: {
@@ -54,88 +64,54 @@ export interface SettingsMainElement {
   };
 }
 
-const SettingsMainElementBase = RouteObserverMixin(PolymerElement);
+const SettingsMainElementBase = RouteObserverMixinLit(CrLitElement);
 
 export class SettingsMainElement extends SettingsMainElementBase {
   static get is() {
     return 'settings-main';
   }
 
-  static get template() {
-    return getTemplate();
+  static override get styles() {
+    return getCss();
   }
 
-  static get properties() {
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
     return {
-      /**
-       * Preferences state.
-       */
-      prefs: {
-        type: Object,
-        notify: true,
-      },
-
-      pageVisibility_: {
-        type: Object,
-        value: () => pageVisibility || {},
-      },
-
-      lastRoute_: {
-        type: Object,
-        value: null,
-      },
-
-      routes_: {
-        type: Object,
-        value: () => routes,
-      },
+      pageVisibility_: {type: Object},
+      lastRoute_: {type: Object},
+      routes_: {type: Object},
 
       /**
        * Whether a search operation is in progress or previous search results
        * are being displayed.
        */
-      inSearchMode_: {
-        type: Boolean,
-        value: false,
-      },
-
-      showNoResultsFound_: {
-        type: Boolean,
-        value: false,
-      },
-
-      showResetProfileBanner_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('showResetProfileBanner');
-        },
-      },
-
+      inSearchMode_: {type: Boolean},
+      showNoResultsFound_: {type: Boolean},
+      showResetProfileBanner_: {type: Boolean},
+      settingsRefresh2026Enabled_: {type: Boolean},
       toolbarSpinnerActive: {
         type: Boolean,
-        value: false,
         notify: true,
       },
-
-      // <if expr="not is_chromeos">
-      languages_: Object,
-      // </if>
     };
   }
 
-  declare prefs: Record<string, unknown>;
-  declare private pageVisibility_: PageVisibility;
-  declare private lastRoute_: Route|null;
-  declare private routes_: SettingsRoutes;
-  declare private inSearchMode_: boolean;
-  declare private showNoResultsFound_: boolean;
-  declare private showResetProfileBanner_: boolean;
-  declare toolbarSpinnerActive: boolean;
+  protected accessor pageVisibility_: PageVisibility = pageVisibility || {};
+  private accessor lastRoute_: Route|null = null;
+  protected accessor routes_: SettingsRoutes = routes;
+  protected accessor inSearchMode_: boolean = false;
+  protected accessor showNoResultsFound_: boolean = false;
+  protected accessor showResetProfileBanner_: boolean =
+      loadTimeData.getBoolean('showResetProfileBanner');
+  protected accessor settingsRefresh2026Enabled_: boolean =
+      loadTimeData.getString('settingsRefresh2026') !== '';
+  accessor toolbarSpinnerActive: boolean = false;
 
-  // <if expr="not is_chromeos">
-  declare private languages_?: LanguagesModel;
-  // </if>
-
+  private eventTracker_: EventTracker = new EventTracker();
   private pendingViewSwitching_: PromiseResolver<void> = new PromiseResolver();
   private topLevelEquivalentRoute_: Route = getTopLevelRoute();
   private currentQuery_: string = '';
@@ -149,10 +125,19 @@ export class SettingsMainElement extends SettingsMainElementBase {
     requestIdleCallback(() => ensureLazyLoaded());
   }
 
-  private beforeNextRenderPromise_(): Promise<void> {
-    return new Promise(res => {
-      beforeNextRender(this, res);
-    });
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    this.eventTracker_.removeAll();
+  }
+
+  override updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
+
+    const changedPrivateProperties =
+        changedProperties as Map<PropertyKey, unknown>;
+    if (changedPrivateProperties.has('inSearchMode_')) {
+      this.onInSearchModeChanged_(this.inSearchMode_);
+    }
   }
 
   override async currentRouteChanged(route: Route) {
@@ -174,22 +159,17 @@ export class SettingsMainElement extends SettingsMainElementBase {
     }
 
     this.lastRoute_ = effectiveRoute;
+    await this.updateComplete;
 
-    const newSection = effectiveRoute.section;
-    let sectionElement = this.$.switcher.querySelector(`#${newSection}`);
-    if (!sectionElement) {
-      // Wait for any pageVisibility <dom-if>s to render and try again.
-      await this.beforeNextRenderPromise_();
-
-      if (this.lastRoute_ !== effectiveRoute || !this.isConnected) {
-        // A newer currentRouteChanged call happened while awaiting or no longer
-        // connected (both can happen in tests). Do nothing.
-        this.pendingViewSwitching_.resolve();
-        return;
-      }
-      sectionElement = this.$.switcher.querySelector(`#${newSection}`);
+    if (this.lastRoute_ !== effectiveRoute || !this.isConnected) {
+      // A newer currentRouteChanged call happened while awaiting or no longer
+      // connected (both can happen in tests). Do nothing.
+      this.pendingViewSwitching_.resolve();
+      return;
     }
 
+    const newSection = effectiveRoute.section;
+    const sectionElement = this.$.switcher.querySelector(`#${newSection}`);
     assert(sectionElement);
     await this.$.switcher.switchView(
         sectionElement.id, 'no-animation', 'no-animation');
@@ -206,7 +186,7 @@ export class SettingsMainElement extends SettingsMainElementBase {
   /**
    * @return A promise indicating that searching finished.
    */
-  searchContents(query: string): Promise<void> {
+  async searchContents(query: string): Promise<void> {
     this.inSearchMode_ = true;
     this.toolbarSpinnerActive = true;
     this.currentQuery_ = query;
@@ -217,8 +197,8 @@ export class SettingsMainElement extends SettingsMainElementBase {
       this.$.switcher.toggleAttribute('show-all', false);
     }
 
-    // Call flush() to ensure any dom-if nodes have been updated.
-    flush();
+    // Ensure any dynamically rendered plugins have been stamped.
+    await this.updateComplete;
 
     // Issue a search requests for each plugin.
     const toSearch =
@@ -243,52 +223,86 @@ export class SettingsMainElement extends SettingsMainElementBase {
       return result;
     });
 
-    return Promise.all(promises).then(results => {
-      const result = combineSearchResults(results);
-      if (result.canceled) {
-        // Nothing to do here. A previous search request was canceled
-        // because a new search request was issued with a different query
-        // before the previous completed.
-        return;
-      }
+    const results = await Promise.all(promises);
+    const result = combineSearchResults(results);
+    if (result.canceled) {
+      // Nothing to do here. A previous search request was canceled
+      // because a new search request was issued with a different query
+      // before the previous completed.
+      return;
+    }
 
-      this.toolbarSpinnerActive = false;
-      this.inSearchMode_ = !result.wasClearSearch;
-      this.showNoResultsFound_ = this.inSearchMode_ && result.matchCount === 0;
+    this.toolbarSpinnerActive = false;
+    this.inSearchMode_ = !result.wasClearSearch;
+    this.showNoResultsFound_ = this.inSearchMode_ && result.matchCount === 0;
 
-      if (this.inSearchMode_) {
-        getAnnouncerInstance().announce(
-            this.showNoResultsFound_ ?
-                loadTimeData.getString('searchNoResults') :
-                loadTimeData.getStringF('searchResults', query));
-      }
-    });
+    if (this.inSearchMode_) {
+      getAnnouncerInstance().announce(
+          this.showNoResultsFound_ ?
+              loadTimeData.getString('searchNoResults') :
+              loadTimeData.getStringF('searchResults', query));
+    }
+
+    this.fire('search-finished', {query, matchCount: result.matchCount});
   }
 
-  private renderPlugin_(route: Route): boolean {
+  /**
+   * Notifies about the user interacting with one of the search results, but
+   * only while search results are being displayed, so that no listener is
+   * registered during normal browsing of the Settings page.
+   *
+   * Both 'click' and 'change' are observed, because neither covers every
+   * result on its own. Results that navigate elsewhere when opened are only
+   * visible as a 'click', whereas controls that commonly show up as results,
+   * settings-toggle-button and cr-toggle for example, stop 'click' events from
+   * propagating and fire no 'click' at all when activated with the keyboard.
+   * Those do fire a composed 'change' event when their value changes.
+   *
+   * The two can both fire for a single interaction, and 'click' also fires for
+   * clicks that landed next to a result rather than on one, so this is an
+   * upper bound rather than an exact signal. Consumers are expected to be
+   * interested in the first notification only.
+   */
+  private onInSearchModeChanged_(inSearchMode: boolean) {
+    if (!inSearchMode) {
+      this.eventTracker_.remove(this.$.switcher, 'click');
+      this.eventTracker_.remove(this.$.switcher, 'change');
+      return;
+    }
+
+    const notifyInteraction = () => {
+      this.fire('search-result-interaction');
+    };
+    this.eventTracker_.add(this.$.switcher, 'click', notifyInteraction);
+    this.eventTracker_.add(this.$.switcher, 'change', notifyInteraction);
+  }
+
+  protected renderPlugin_(route: Route): boolean {
     return this.inSearchMode_ ||
         (!!this.lastRoute_ && route.contains(this.lastRoute_));
   }
 
-  private showPage_(visibility?: boolean): boolean {
+  protected showPage_(
+      visibility?: boolean|AppearancePageVisibility|
+      PrivacyPageVisibility): boolean {
     return visibility !== false;
   }
 
-  private showAiPage_(visibility?: boolean): boolean {
+  protected showAiPage_(visibility?: boolean): boolean {
     return loadTimeData.getBoolean('showAiPage') && this.showPage_(visibility);
   }
 
-  private showManagedHeader_(): boolean {
+  protected showManagedHeader_(): boolean {
     return !this.inSearchMode_ && !!this.lastRoute_ &&
         this.lastRoute_ !== routes.ABOUT && !this.lastRoute_.isSubpage();
   }
 
-  private shouldShowAll_(): boolean {
+  protected shouldShowAll_(): boolean {
     return this.inSearchMode_ && !!this.lastRoute_ &&
         !this.lastRoute_.isSubpage();
   }
 
-  private onResetProfileBannerClose_() {
+  protected onResetProfileBannerClose_() {
     this.showResetProfileBanner_ = false;
   }
 }

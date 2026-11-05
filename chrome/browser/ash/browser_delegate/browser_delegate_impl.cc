@@ -5,23 +5,27 @@
 #include "chrome/browser/ash/browser_delegate/browser_delegate_impl.h"
 
 #include "ash/wm/window_pin_util.h"
+#include "base/check.h"
 #include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "components/sessions/core/session_id.h"
+#include "ui/base/page_transition_types.h"
 // TODO(crbug.com/365146870): on_task_locked_controller.h|cc and associated code
 // will be removed.
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_type.h"
 #include "chrome/browser/ash/browser_delegate/browser_type_conversion.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
@@ -35,11 +39,17 @@
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
+#include "chrome/common/chrome_features.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/browser_delegate/browser_type.h"
+#include "chromeos/ui/base/window_properties.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_info.h"
 #include "components/tabs/public/tab_group.h"
+#include "components/tabs/public/tab_interface.h"
+#include "ui/aura/window.h"
 #include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace ash {
 
@@ -102,6 +112,20 @@ content::WebContents* BrowserDelegateImpl::GetWebContentsAt(
   return browser_->tab_strip_model()->GetWebContentsAt(index);
 }
 
+std::optional<size_t> BrowserDelegateImpl::GetIndexOfWebContents(
+    const content::WebContents* contents) const {
+  int index = browser_->tab_strip_model()->GetIndexOfWebContents(contents);
+  return index == TabStripModel::kNoTab ? std::nullopt
+                                        : std::optional<size_t>(index);
+}
+
+content::WebContents* BrowserDelegateImpl::GetOpenerOfTabAt(
+    size_t index) const {
+  tabs::TabInterface* opener =
+      browser_->tab_strip_model()->GetOpenerOfTabAt(index);
+  return opener ? opener->GetContents() : nullptr;
+}
+
 tabs::TabIteratorRange BrowserDelegateImpl::GetTabIterator() const {
   TabStripModel* tab_strip_model = browser_->tab_strip_model();
   return {tab_strip_model->begin(), tab_strip_model->end()};
@@ -121,7 +145,9 @@ content::WebContents* BrowserDelegateImpl::GetInspectedWebContents() const {
 }
 
 ui::BaseWindow* BrowserDelegateImpl::GetWindow() const {
-  return browser_->GetWindow();
+  ui::BaseWindow* window = browser_->GetWindow();
+  CHECK(window);
+  return window;
 }
 
 aura::Window* BrowserDelegateImpl::GetNativeWindow() const {
@@ -203,17 +229,35 @@ void BrowserDelegateImpl::Close() {
   browser_->GetWindow()->Close();
 }
 
+void BrowserDelegateImpl::CloseAllTabs() {
+  browser_->tab_strip_model()->CloseAllTabs();
+}
+
 void BrowserDelegateImpl::SetSkipWarningUserOnClose(bool skip) {
   if (auto* unload_controller = UnloadController::From(&*browser_)) {
     unload_controller->set_force_skip_warning_user_on_close(skip);
   }
 }
 
-void BrowserDelegateImpl::AddTab(const GURL& url,
-                                 std::optional<size_t> index,
-                                 TabDisposition disposition) {
-  chrome::AddTabAt(&browser_.get(), url, index.has_value() ? *index : -1,
-                   disposition == TabDisposition::kForeground);
+content::WebContents* BrowserDelegateImpl::AddTab(
+    const GURL& url,
+    std::optional<size_t> index,
+    TabDisposition disposition,
+    ui::PageTransition transition) {
+  const GURL resolved_url =
+      url.is_empty() ? chrome::GetNewTabURL(&browser_.get()) : url;
+  NavigateParams params(&browser_.get(), resolved_url, transition);
+  params.disposition =
+      disposition == TabDisposition::kForeground
+          ? ui::mojom::WindowOpenDisposition::kNewForegroundTab
+          : ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
+  if (index.has_value()) {
+    params.tabstrip_index = static_cast<int>(*index);
+  }
+  params.web_app_navigation_data.emplace();
+  params.web_app_navigation_data->SetNavigationCapturingForceOff(true);
+  Navigate(&params);
+  return params.navigated_or_inserted_contents;
 }
 
 void BrowserDelegateImpl::CloseWebContentsAt(size_t index,
@@ -224,23 +268,30 @@ void BrowserDelegateImpl::CloseWebContentsAt(size_t index,
                  : TabCloseTypes::CLOSE_NONE);
 }
 
-content::WebContents* BrowserDelegateImpl::NavigateWebApp(
-    const GURL& url,
-    TabPinning pin_tab,
-    std::optional<webapps::LaunchParams> launch_params) {
-  CHECK(GetType() == BrowserType::kApp || GetType() == BrowserType::kAppPopup)
-      << "Unexpected browser type " << static_cast<int>(GetType()) << "("
-      << browser_->GetType() << ")";
+void BrowserDelegateImpl::ForceCloseWebContentsAt(size_t index) {
+  browser_->tab_strip_model()->DetachAndDeleteWebContentsAt(index);
+}
 
-  NavigateParams nav_params(&browser_.get(), url,
-                            ui::PAGE_TRANSITION_AUTO_BOOKMARK);
-  if (pin_tab == TabPinning::kYes) {
+content::WebContents* BrowserDelegateImpl::LoadUrl(
+    const GURL& url,
+    ui::PageTransition transition,
+    LoadUrlParams params) {
+  const bool is_app_browser =
+      GetType() == BrowserType::kApp || GetType() == BrowserType::kAppPopup;
+
+  NavigateParams nav_params(&browser_.get(), url, transition);
+  if (params.show_window) {
+    nav_params.window_action = NavigateParams::WindowAction::kShowWindow;
+  }
+  if (params.pin_tab) {
+    CHECK(is_app_browser);
     nav_params.tabstrip_add_types |= AddTabTypes::ADD_PINNED;
   }
-  if (launch_params) {
+  if (params.launch_params) {
+    CHECK(is_app_browser);
     nav_params.web_app_navigation_data.emplace();
     nav_params.web_app_navigation_data->SetLaunchParams(
-        *std::move(launch_params));
+        *std::move(params.launch_params));
   }
 
   Navigate(&nav_params);
@@ -308,6 +359,26 @@ void BrowserDelegateImpl::ResetLocationBar() {
 }
 
 void BrowserDelegateImpl::SetOnTaskState(OnTaskState state) {
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    auto* const controller =
+        chromeos::LockedStateController::From(&browser_.get());
+    switch (state) {
+      case OnTaskState::kUnlocked:
+        controller->Unlock(chromeos::LockedState::kOnTaskLocked);
+        break;
+      case OnTaskState::kPrepared:
+        controller->Lock(chromeos::LockedState::kOnTaskPrepared);
+        break;
+      case OnTaskState::kLocked:
+        controller->Lock(chromeos::LockedState::kOnTaskLocked);
+        break;
+      case OnTaskState::kPaused:
+        controller->Lock(chromeos::LockedState::kOnTaskLockedPaused);
+        break;
+    }
+    return;
+  }
+
   switch (state) {
     case OnTaskState::kUnlocked:
       if (IsLockedFullscreen()) {
@@ -341,6 +412,26 @@ void BrowserDelegateImpl::SetOnTaskState(OnTaskState state) {
 }
 
 bool BrowserDelegateImpl::IsOnTaskState(OnTaskState state) const {
+  if (features::IsUseUnifiedLockedStateControllerEnabled()) {
+    auto* const controller =
+        chromeos::LockedStateController::From(&browser_.get());
+    switch (state) {
+      case OnTaskState::kUnlocked:
+        return controller->GetState() == chromeos::LockedState::kUnlocked;
+      case OnTaskState::kPrepared:
+        return controller->GetState() == chromeos::LockedState::kOnTaskPrepared;
+      case OnTaskState::kLocked:
+        // Paused is a locked (pinned) state with additional restrictions, so
+        // it also counts as locked. This matches the legacy implementation.
+        return controller->GetState() == chromeos::LockedState::kOnTaskLocked ||
+               controller->GetState() ==
+                   chromeos::LockedState::kOnTaskLockedPaused;
+      case OnTaskState::kPaused:
+        return controller->GetState() ==
+               chromeos::LockedState::kOnTaskLockedPaused;
+    }
+  }
+
   switch (state) {
     case OnTaskState::kUnlocked:
       return !boca::OnTaskLockedController::From(&browser_.get())
@@ -360,6 +451,13 @@ bool BrowserDelegateImpl::IsOnTaskState(OnTaskState state) const {
   }
 }
 
+void BrowserDelegateImpl::SetImmersiveAllowedWhileTrustedPinned(bool allowed) {
+  GetNativeWindow()->SetProperty(chromeos::kUseImmersiveInTrustedPinned,
+                                 allowed);
+  BrowserView::GetBrowserViewForBrowser(&browser_.get())
+      ->FullscreenStateChanged();
+}
+
 void BrowserDelegateImpl::EnterLockedFullscreen() {
   CHECK(!IsLockedFullscreen());
   ash::PinWindow(GetNativeWindow(), /*trusted=*/true);
@@ -375,10 +473,8 @@ void BrowserDelegateImpl::LeaveLockedFullscreen() {
 }
 
 bool BrowserDelegateImpl::IsLockedFullscreen() const {
-  // TODO(crbug.com/438540029): Rename WindowPinType::kLockedFullscreen to
-  // WindowPinType::kTrustedPinned.
   return ash::GetWindowPinType(GetNativeWindow()) ==
-         chromeos::WindowPinType::kLockedFullscreen;
+         chromeos::WindowPinType::kTrustedPinned;
 }
 
 void BrowserDelegateImpl::SetDevToolsCommandsEnabled(bool enabled) {

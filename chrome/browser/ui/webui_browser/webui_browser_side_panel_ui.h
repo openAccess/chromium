@@ -10,7 +10,7 @@
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui_base.h"
 
-class Browser;
+class BrowserWindowInterface;
 class WebUIBrowserWindow;
 
 namespace views {
@@ -19,7 +19,7 @@ class View;
 
 class WebUIBrowserSidePanelUI : public SidePanelUIBase {
  public:
-  explicit WebUIBrowserSidePanelUI(Browser* browser);
+  explicit WebUIBrowserSidePanelUI(BrowserWindowInterface* browser);
   ~WebUIBrowserSidePanelUI() override;
 
   // SidePanelUI:
@@ -29,6 +29,8 @@ class WebUIBrowserSidePanelUI : public SidePanelUIBase {
               SidePanelOpenTrigger open_trigger) override;
   void ShowFrom(SidePanelEntryKey entry_key,
                 gfx::Rect starting_bounds_in_browser_coordinates) override;
+  void OverrideContentsWidth(int width) override;
+  void ResetContentsWidthOverride() override;
   content::WebContents* GetWebContentsForTest(SidePanelEntryId id) override;
   void DisableAnimationsForTesting() override;
   void SetNoDelaysForTesting(bool no_delays_for_testing) override;

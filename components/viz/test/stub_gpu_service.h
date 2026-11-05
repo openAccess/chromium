@@ -26,8 +26,7 @@ class StubGpuService : public mojom::GpuService {
   // mojom::GpuService:
   void EstablishGpuChannel(int32_t client_id,
                            uint64_t client_tracing_id,
-                           bool is_gpu_host,
-                           bool enable_extra_handles_validation,
+                           mojom::GpuClientType client_type,
                            mojo::ScopedMessagePipeHandle channel_handle,
                            EstablishGpuChannelCallback callback) override;
   void SetChannelClientPid(int32_t client_id,
@@ -80,7 +79,6 @@ class StubGpuService : public mojom::GpuService {
                   const std::string& key,
                   const std::string& data) override;
   void WakeUpGpu() override;
-  void GpuSwitched() override;
   void DisplayAdded() override;
   void DisplayRemoved() override;
   void DisplayMetricsChanged() override;

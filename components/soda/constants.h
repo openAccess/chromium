@@ -11,6 +11,7 @@
 #include <string_view>
 
 #include "base/files/file_path.h"
+#include "base/i18n/language_tag.h"
 #include "components/soda/pref_names.h"
 #include "components/strings/grit/components_strings.h"
 
@@ -22,6 +23,12 @@ extern const char kUsEnglishLocale[];
 extern const char kEnglishLocaleNoCountry[];
 inline constexpr char kSpeechRecognitionSmallExpertModelLanguage[] =
     "speech_recognition_small_expert_model";
+
+// Command line switch used to pass the path of the SODA binary to the speech
+// recognition utility process. The utility process must preload exactly the
+// binary that it is later asked to load, because the sandbox prevents
+// `libsoda.so` from running its initializers after the sandbox is engaged.
+inline constexpr char kSodaBinaryPathSwitch[] = "soda-binary-path";
 
 // Metrics names for keeping track of SODA installation.
 extern const char kSodaPreemptiveDownloadStarted[];
@@ -281,15 +288,20 @@ const base::FilePath GetSodaLanguagePacksDirectory();
 const base::FilePath GetSodaTestResourcesDirectory();
 
 // Get the absolute path of the latest SODA language pack for a given language
-// (e.g. en-US).
+// (e.g. en-US). Version directories are compared numerically and directories
+// that do not actually contain the language pack are skipped, falling back to
+// the highest version directory if none of them contain it. Returns an empty
+// path if there are no language packs installed for the language.
 const base::FilePath GetLatestSodaLanguagePackDirectory(
     std::string_view language);
 
 // Get the directory containing the latest version of SODA. In most cases
 // there will only be one version of SODA, but it is possible for there to be
 // multiple versions if a newer version of SODA was recently downloaded before
-// the old version gets cleaned up. Returns an empty path if SODA is not
-// installed.
+// the old version gets cleaned up. Version directories are compared
+// numerically and directories that do not actually contain the SODA binary are
+// skipped, falling back to the highest version directory if none of them
+// contain it. Returns an empty path if SODA is not installed.
 const base::FilePath GetLatestSodaDirectory();
 
 // Get the path to the SODA binary. Returns an empty path if SODA is not
@@ -364,9 +376,9 @@ std::string_view GetDefaultLiveCaptionLanguage(
 // Otherwise, return `language_name`.
 const std::string MaybeMapToChineseLocale(std::string_view language_name);
 
-// Return a BCP47 language code for the given SODA language code. If the given
+// Return a BCP47 language tag for the given SODA language code. If the given
 // input is not a string corresponding a SODA language, then return nullopt.
-std::optional<std::string> GetBCP47LanguageCodeFromSodaLanguage(
+std::optional<base::i18n::LanguageTag> GetLanguageTagFromSodaLanguage(
     std::string_view soda_language);
 
 }  // namespace speech

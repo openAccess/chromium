@@ -13,6 +13,9 @@
 #include "base/test/test_future.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/page_action/action_ids.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_model.h"
@@ -29,12 +32,16 @@
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom.h"
 #include "components/tabs/public/mock_tab_interface.h"
 #include "components/tabs/public/tab_interface.h"
+#include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/navigation_simulator.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/actions/actions.h"
+#include "ui/base/interaction/element_test_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
 
 namespace page_actions {
@@ -43,6 +50,20 @@ namespace {
 
 using testing::_;
 using testing::NiceMock;
+
+class TestBrowserElements : public BrowserElements {
+ public:
+  DECLARE_SAFE_CAST_TARGET()
+  TestBrowserElements(BrowserWindowInterface& browser,
+                      ui::ElementContext context)
+      : BrowserElements(browser), context_(context) {}
+  ui::ElementContext GetContext() override { return context_; }
+
+ private:
+  ui::ElementContext context_;
+};
+
+DEFINE_SAFE_CAST_TARGET(TestBrowserElements)
 
 class MockPageActionModelObserver
     : public page_actions::PageActionModelObserver {
@@ -104,9 +125,15 @@ class WebUIPageActionControlTest : public ChromeRenderViewHostTestHarness {
     // Create dummy ActionItem tree.
     root_action_item_ =
         actions::ActionItem::Builder()
-            .AddChild(actions::ActionItem::Builder().SetActionId(kActionAiMode))
-            .AddChild(actions::ActionItem::Builder().SetActionId(
-                kActionShowTranslate))
+            .AddChild(actions::ActionItem::Builder()
+                          .SetActionId(kActionAiMode)
+                          .SetText(u"AI Mode"))
+            .AddChild(actions::ActionItem::Builder()
+                          .SetActionId(kActionShowTranslate)
+                          .SetText(u"Translate"))
+            .AddChild(actions::ActionItem::Builder()
+                          .SetActionId(kActionSidePanelShowLensOverlayResults)
+                          .SetText(u"Lens"))
             .Build();
 
     control_ =
@@ -115,6 +142,7 @@ class WebUIPageActionControlTest : public ChromeRenderViewHostTestHarness {
   }
 
   void TearDown() override {
+    scoped_feature_list_.Reset();
     control_.reset();
     page_action_controller_.reset();
     tab_features_.reset();
@@ -125,6 +153,50 @@ class WebUIPageActionControlTest : public ChromeRenderViewHostTestHarness {
   }
 
  protected:
+  struct TabContext {
+    std::unique_ptr<content::WebContents> web_contents;
+    ui::UnownedUserDataHost user_data_host;
+    tabs::MockTabInterface mock_tab;
+    tabs::TabFeatures tab_features;
+    std::unique_ptr<page_actions::PageActionControllerImpl> controller;
+  };
+
+  std::unique_ptr<TabContext> CreateTestTabContext() {
+    auto context = std::make_unique<TabContext>();
+    context->web_contents = CreateTestWebContents();
+    ON_CALL(context->mock_tab, GetUnownedUserDataHost())
+        .WillByDefault(testing::ReturnRef(context->user_data_host));
+    ON_CALL(context->mock_tab, GetContents())
+        .WillByDefault(testing::Return(context->web_contents.get()));
+    ON_CALL(context->mock_tab, GetProfile())
+        .WillByDefault(testing::Return(profile()));
+    ON_CALL(context->mock_tab, RegisterDidActivate(_))
+        .WillByDefault([](tabs::TabInterface::DidActivateCallback) {
+          return base::CallbackListSubscription();
+        });
+    ON_CALL(context->mock_tab, RegisterWillDeactivate(_))
+        .WillByDefault([](tabs::TabInterface::WillDeactivateCallback) {
+          return base::CallbackListSubscription();
+        });
+    ON_CALL(context->mock_tab, IsActivated())
+        .WillByDefault(testing::Return(true));
+
+    tabs::TabLookupFromWebContents::CreateForWebContents(
+        context->web_contents.get(), &context->mock_tab);
+    ON_CALL(context->mock_tab, GetTabFeatures())
+        .WillByDefault(testing::Return(&context->tab_features));
+
+    auto* pinned_actions_model = PinnedToolbarActionsModel::Get(profile());
+    context->controller =
+        std::make_unique<page_actions::PageActionControllerImpl>(
+            context->mock_tab,
+            std::vector<actions::ActionId>(page_actions::kActionIds.begin(),
+                                           page_actions::kActionIds.end()),
+            page_actions::PageActionPropertiesProvider(), pinned_actions_model);
+
+    return context;
+  }
+
   base::test::ScopedFeatureList scoped_feature_list_;
   NiceMock<MockWebUIToolbarControlDelegate> webui_delegate_;
   std::unique_ptr<actions::ActionItem> root_action_item_;
@@ -280,6 +352,11 @@ TEST_F(WebUIPageActionControlTest, ChipShowingChangedForwarding) {
       observation(&observer);
   controller->AddObserver(target_action_id, observation);
 
+  // Before WebUI notifies chip showing changed, IsChipShowing is false.
+  const auto* model = control_->GetObservedModel(target_action_id);
+  ASSERT_TRUE(model);
+  EXPECT_FALSE(model->IsChipShowing());
+
   EXPECT_CALL(observer, OnPageActionModelChanged(_))
       .WillOnce([](const page_actions::PageActionModelInterface& model) {
         EXPECT_TRUE(model.IsChipShowing());
@@ -287,7 +364,7 @@ TEST_F(WebUIPageActionControlTest, ChipShowingChangedForwarding) {
 
   base::RunLoop run_loop;
   control_->OnPageActionChipShowingChanged(
-      target_mojom_id,
+      target_mojom_id, /*is_showing=*/true,
       base::BindOnce(
           [](base::RunLoop* run_loop,
              base::expected<std::monostate, mojo_base::mojom::ErrorPtr>
@@ -297,6 +374,120 @@ TEST_F(WebUIPageActionControlTest, ChipShowingChangedForwarding) {
           },
           &run_loop));
   run_loop.Run();
+
+  EXPECT_TRUE(model->IsChipShowing());
+
+  // Verify the expectation for showing was satisfied and clear before
+  // testing hide.
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  // Hiding the chip updates ShouldShowSuggestionChip(), but IsChipShowing()
+  // remains true until WebUI completes the transition and reports
+  // OnPageActionChipShowingChanged().
+  controller->HideSuggestionChip(target_action_id);
+  EXPECT_TRUE(model->IsChipShowing());
+
+  EXPECT_CALL(observer, OnPageActionModelChanged(_))
+      .WillOnce([](const page_actions::PageActionModelInterface& model) {
+        EXPECT_FALSE(model.IsChipShowing());
+      });
+
+  base::RunLoop hide_run_loop;
+  control_->OnPageActionChipShowingChanged(
+      target_mojom_id, /*is_showing=*/false,
+      base::BindOnce(
+          [](base::RunLoop* run_loop,
+             base::expected<std::monostate, mojo_base::mojom::ErrorPtr>
+                 result) {
+            EXPECT_OK(result);
+            run_loop->Quit();
+          },
+          &hide_run_loop));
+  hide_run_loop.Run();
+
+  EXPECT_FALSE(model->IsChipShowing());
+}
+
+TEST_F(WebUIPageActionControlTest,
+       SwitchingControllerDoesNotForceChipShowingStatus) {
+  control_->UpdateController(web_contents());
+
+  tabs::TabInterface* tab1 =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  ASSERT_TRUE(tab1);
+  page_actions::PageActionController* controller1 =
+      page_actions::PageActionController::From(tab1);
+  ASSERT_TRUE(controller1);
+
+  actions::ActionId target_action_id = kActionAiMode;
+  toolbar_ui_api::mojom::PageActionId target_mojom_id =
+      toolbar_ui_api::mojom::PageActionId::kActionAiMode;
+
+  controller1->Show(target_action_id);
+  controller1->ShowSuggestionChip(target_action_id);
+
+  // Simulate WebUI notifying chip showing for tab 1.
+  {
+    base::test::TestFuture<
+        base::expected<std::monostate, mojo_base::mojom::ErrorPtr>>
+        future;
+    control_->OnPageActionChipShowingChanged(target_mojom_id,
+                                             /*is_showing=*/true,
+                                             future.GetCallback());
+    EXPECT_OK(future.Get());
+  }
+  EXPECT_TRUE(control_->GetObservedModel(target_action_id)->IsChipShowing());
+
+  // Create a second tab context where the action chip should also be shown,
+  // but has not yet received confirmation from WebUI.
+  auto tab2 = CreateTestTabContext();
+  tab2->controller->Show(target_action_id);
+  tab2->controller->ShowSuggestionChip(target_action_id);
+
+  // Switch to tab 2. Switching controller should NOT force IsChipShowing on
+  // the new controller's model.
+  control_->UpdateController(tab2->web_contents.get());
+  EXPECT_FALSE(control_->GetObservedModel(target_action_id)->IsChipShowing());
+
+  // Once WebUI signals OnPageActionChipShowingChanged, the new controller's
+  // model is updated.
+  {
+    base::test::TestFuture<
+        base::expected<std::monostate, mojo_base::mojom::ErrorPtr>>
+        future;
+    control_->OnPageActionChipShowingChanged(target_mojom_id,
+                                             /*is_showing=*/true,
+                                             future.GetCallback());
+    EXPECT_OK(future.Get());
+  }
+  EXPECT_TRUE(control_->GetObservedModel(target_action_id)->IsChipShowing());
+}
+
+TEST_F(WebUIPageActionControlTest, SlideAndCrossfadeState) {
+  control_->UpdateController(web_contents());
+
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  page_actions::PageActionController* controller =
+      page_actions::PageActionController::From(tab);
+
+  actions::ActionId target_action_id = kActionAiMode;
+  controller->Show(target_action_id);
+  controller->SetAnimationStyle(
+      target_action_id,
+      page_actions::PageActionAnimationStyle::kSlideAndCrossfade);
+  controller->SetTrailingImage(
+      target_action_id,
+      ui::ImageModel::FromVectorIcon(vector_icons::kArrowForwardIcon));
+  controller->SetShowTrailingIcon(target_action_id, true);
+
+  auto states = control_->GetPageActionStates();
+  ASSERT_EQ(states.size(), 1u);
+  EXPECT_EQ(
+      states[0]->animation_style,
+      toolbar_ui_api::mojom::PageActionAnimationStyle::kSlideAndCrossfade);
+  EXPECT_TRUE(states[0]->show_trailing_icon);
+  EXPECT_TRUE(states[0]->trailing_icon.has_value());
 }
 
 TEST_F(WebUIPageActionControlTest, AccessibilityAnnouncement) {
@@ -362,6 +553,29 @@ TEST_F(WebUIPageActionControlTest, UpdateControllerToNullResetsState) {
   EXPECT_FALSE(control_->IsAnchoredMessageShowing(target_action_id));
 }
 
+// Only exercises the "state unchanged -> no notify" path: this harness has no
+// ColorProvider (the mock delegate's GetView() returns null), so GetState()
+// resolves no colors. Verifying that colors actually re-resolve on theme change
+// would require a real Widget.
+TEST_F(WebUIPageActionControlTest, OnThemeChangedOnlyNotifiesWhenStateChanges) {
+  control_->UpdateController(web_contents());
+
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  page_actions::PageActionController* controller =
+      page_actions::PageActionController::From(tab);
+
+  controller->Show(kActionAiMode);
+  ASSERT_EQ(1u, control_->GetPageActionStates().size());
+  testing::Mock::VerifyAndClearExpectations(&webui_delegate_);
+
+  // Without a ColorProvider in this harness, re-resolving yields an identical
+  // state, so the WebUI must not be notified.
+  EXPECT_CALL(webui_delegate_, OnPageActionChanged(_)).Times(0);
+  control_->OnThemeChanged();
+  ASSERT_EQ(1u, control_->GetPageActionStates().size());
+}
+
 TEST_F(WebUIPageActionControlTest, GetPageActionViewInterfaceAndMethods) {
   control_->UpdateController(web_contents());
 
@@ -377,8 +591,6 @@ TEST_F(WebUIPageActionControlTest, GetPageActionViewInterfaceAndMethods) {
   page_actions::PageActionViewInterface* view_interface =
       control_->GetPageActionViewInterface(target_action_id);
   ASSERT_TRUE(view_interface);
-
-  EXPECT_DEATH(view_interface->GetIconLabelBubbleViewNotMigrated(), "");
 
   controller->OverrideTooltip(target_action_id, u"Test Tooltip");
   controller->OverrideAccessibleName(target_action_id, u"Test Accessible Name");
@@ -399,145 +611,61 @@ TEST_F(WebUIPageActionControlTest, GetPageActionViewInterfaceAndMethods) {
   EXPECT_TRUE(control_->GetPageActionStates().empty());
 }
 
-TEST_F(WebUIPageActionControlTest, MouseClickSuppression) {
-  control_->UpdateController(web_contents());
+TEST_F(WebUIPageActionControlTest, GetBubbleAnchor) {
+  constexpr ui::ElementContext kTestContext =
+      ui::ElementContext::CreateFakeContextForTesting(1);
+  NiceMock<MockBrowserWindowInterface> mock_browser;
+  TestBrowserElements browser_elements(mock_browser, kTestContext);
 
-  tabs::TabInterface* tab =
-      tabs::TabInterface::MaybeGetFromContents(web_contents());
-  ASSERT_TRUE(tab);
-  page_actions::PageActionController* controller =
-      page_actions::PageActionController::From(tab);
-  ASSERT_TRUE(controller);
+  page_actions::PageActionViewInterface* ai_mode_view =
+      control_->GetPageActionViewInterface(kActionAiMode);
+  ASSERT_TRUE(ai_mode_view);
 
-  actions::ActionItem* ai_mode_action_item =
-      actions::ActionManager::Get().FindAction(kActionAiMode,
-                                               root_action_item_.get());
-  ASSERT_TRUE(ai_mode_action_item);
-  actions::ActionItem* translate_action_item =
-      actions::ActionManager::Get().FindAction(kActionShowTranslate,
-                                               root_action_item_.get());
-  ASSERT_TRUE(translate_action_item);
+  page_actions::PageActionViewInterface* lens_view =
+      control_->GetPageActionViewInterface(
+          kActionSidePanelShowLensOverlayResults);
+  ASSERT_TRUE(lens_view);
 
-  int ai_mode_invoked_count = 0;
-  ai_mode_action_item->SetInvokeActionCallback(
-      base::BindRepeating([](int* count, actions::ActionItem*,
-                             actions::ActionInvocationContext) { ++(*count); },
-                          &ai_mode_invoked_count));
+  // 1. When browser is null, BubbleAnchor is null.
+  EXPECT_CALL(webui_delegate_, GetBrowser())
+      .WillRepeatedly(testing::Return(nullptr));
+  EXPECT_TRUE(ai_mode_view->GetBubbleAnchor().IsNull());
 
-  int translate_invoked_count = 0;
-  translate_action_item->SetInvokeActionCallback(
-      base::BindRepeating([](int* count, actions::ActionItem*,
-                             actions::ActionInvocationContext) { ++(*count); },
-                          &translate_invoked_count));
+  // 2. When browser is present, but neither the page action element nor the
+  // location bar element is tracked, BubbleAnchor is null.
+  EXPECT_CALL(webui_delegate_, GetBrowser())
+      .WillRepeatedly(testing::Return(&mock_browser));
+  EXPECT_TRUE(ai_mode_view->GetBubbleAnchor().IsNull());
+  EXPECT_TRUE(lens_view->GetBubbleAnchor().IsNull());
 
-  controller->Show(kActionAiMode);
-  controller->Show(kActionShowTranslate);
+  // 3. When the specific page action element is not tracked, but the location
+  // bar element is tracked, GetBubbleAnchor falls back to the location bar.
+  ui::test::TestElement location_bar_element(kLocationBarElementId,
+                                             kTestContext);
+  location_bar_element.Show();
 
-  control_->SetSuppressionThresholdForTesting(base::Seconds(1));
+  views::BubbleAnchor fallback_anchor = ai_mode_view->GetBubbleAnchor();
+  EXPECT_FALSE(fallback_anchor.IsNull());
+  EXPECT_EQ(fallback_anchor.GetIfElement(), &location_bar_element);
 
-  // 1. Initial click without bubble being shown is NOT suppressed.
-  control_->OnPageActionPointerDown(
-      toolbar_ui_api::mojom::PageActionId::kActionAiMode);
-  {
-    base::test::TestFuture<
-        base::expected<std::monostate, mojo_base::mojom::ErrorPtr>>
-        future;
-    control_->OnPageActionClick(
-        toolbar_ui_api::mojom::PageActionId::kActionAiMode,
-        PageActionTrigger::kMouse, future.GetCallback());
-    EXPECT_OK(future.Get());
-    EXPECT_EQ(1, ai_mode_invoked_count);
-  }
+  // An action without a specific element identifier (e.g. LensOverlay) also
+  // anchors to the location bar.
+  views::BubbleAnchor lens_anchor = lens_view->GetBubbleAnchor();
+  EXPECT_FALSE(lens_anchor.IsNull());
+  EXPECT_EQ(lens_anchor.GetIfElement(), &location_bar_element);
 
-  // 2. Simulate bubble showing and then closing.
-  ai_mode_action_item->SetIsShowingBubble(true);
-  ai_mode_action_item->SetIsShowingBubble(false);
+  // 4. When the specific page action element is tracked, GetBubbleAnchor
+  // anchors to that specific element instead of the location bar.
+  ui::test::TestElement ai_mode_element(kAiModePageActionIconElementId,
+                                        kTestContext);
+  ai_mode_element.Show();
 
-  // Pointer down occurs immediately within the suppression threshold.
-  control_->OnPageActionPointerDown(
-      toolbar_ui_api::mojom::PageActionId::kActionAiMode);
+  views::BubbleAnchor specific_anchor = ai_mode_view->GetBubbleAnchor();
+  EXPECT_FALSE(specific_anchor.IsNull());
+  EXPECT_EQ(specific_anchor.GetIfElement(), &ai_mode_element);
 
-  // 3. A non-pointer click (e.g. keyboard) should NOT be suppressed.
-  {
-    base::test::TestFuture<
-        base::expected<std::monostate, mojo_base::mojom::ErrorPtr>>
-        future;
-    control_->OnPageActionClick(
-        toolbar_ui_api::mojom::PageActionId::kActionAiMode,
-        PageActionTrigger::kKeyboard, future.GetCallback());
-    EXPECT_OK(future.Get());
-    EXPECT_EQ(2, ai_mode_invoked_count);
-  }
-
-  // 4. A mouse click immediately after bubble close + pointerdown IS
-  // suppressed.
-  ai_mode_action_item->SetIsShowingBubble(true);
-  ai_mode_action_item->SetIsShowingBubble(false);
-  control_->OnPageActionPointerDown(
-      toolbar_ui_api::mojom::PageActionId::kActionAiMode);
-  {
-    base::test::TestFuture<
-        base::expected<std::monostate, mojo_base::mojom::ErrorPtr>>
-        future;
-    control_->OnPageActionClick(
-        toolbar_ui_api::mojom::PageActionId::kActionAiMode,
-        PageActionTrigger::kMouse, future.GetCallback());
-    EXPECT_OK(future.Get());
-    // Action should NOT have been invoked.
-    EXPECT_EQ(2, ai_mode_invoked_count);
-  }
-
-  // 5. A gesture/touch click immediately after bubble close + pointerdown IS
-  // suppressed.
-  ai_mode_action_item->SetIsShowingBubble(true);
-  ai_mode_action_item->SetIsShowingBubble(false);
-  control_->OnPageActionPointerDown(
-      toolbar_ui_api::mojom::PageActionId::kActionAiMode);
-  {
-    base::test::TestFuture<
-        base::expected<std::monostate, mojo_base::mojom::ErrorPtr>>
-        future;
-    control_->OnPageActionClick(
-        toolbar_ui_api::mojom::PageActionId::kActionAiMode,
-        PageActionTrigger::kGesture, future.GetCallback());
-    EXPECT_OK(future.Get());
-    // Action should NOT have been invoked.
-    EXPECT_EQ(2, ai_mode_invoked_count);
-  }
-
-  // 6. Clicking a different page action chip is NOT suppressed.
-  ai_mode_action_item->SetIsShowingBubble(true);
-  ai_mode_action_item->SetIsShowingBubble(false);
-  control_->OnPageActionPointerDown(
-      toolbar_ui_api::mojom::PageActionId::kActionShowTranslate);
-  {
-    base::test::TestFuture<
-        base::expected<std::monostate, mojo_base::mojom::ErrorPtr>>
-        future;
-    control_->OnPageActionClick(
-        toolbar_ui_api::mojom::PageActionId::kActionShowTranslate,
-        PageActionTrigger::kMouse, future.GetCallback());
-    EXPECT_OK(future.Get());
-    EXPECT_EQ(1, translate_invoked_count);
-  }
-
-  // 7. Pointer down while bubble is still open suppresses the subsequent
-  // mouse click.
-  ai_mode_action_item->SetIsShowingBubble(true);
-  control_->OnPageActionPointerDown(
-      toolbar_ui_api::mojom::PageActionId::kActionAiMode);
-  ai_mode_action_item->SetIsShowingBubble(false);
-  {
-    base::test::TestFuture<
-        base::expected<std::monostate, mojo_base::mojom::ErrorPtr>>
-        future;
-    control_->OnPageActionClick(
-        toolbar_ui_api::mojom::PageActionId::kActionAiMode,
-        PageActionTrigger::kMouse, future.GetCallback());
-    EXPECT_OK(future.Get());
-    // Action should NOT have been invoked.
-    EXPECT_EQ(2, ai_mode_invoked_count);
-  }
+  ai_mode_element.Hide();
+  location_bar_element.Hide();
 }
 
 TEST_F(WebUIPageActionControlTest, AnchoredMessageState) {
@@ -590,6 +718,533 @@ TEST_F(WebUIPageActionControlTest, AnchoredMessageState) {
   EXPECT_FALSE(control_->IsAnchoredMessageShowing(target_action_id));
 }
 
+TEST_F(WebUIPageActionControlTest,
+       ClickWhileAnchoredMessageActiveDowngradesToChipWithoutInvokingAction) {
+  control_->UpdateController(web_contents());
+
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  ASSERT_TRUE(tab);
+  page_actions::PageActionController* controller =
+      page_actions::PageActionController::From(tab);
+  ASSERT_TRUE(controller);
+
+  actions::ActionItem* translate_action_item =
+      actions::ActionManager::Get().FindAction(kActionShowTranslate,
+                                               root_action_item_.get());
+  ASSERT_TRUE(translate_action_item);
+
+  int translate_invoked_count = 0;
+  translate_action_item->SetInvokeActionCallback(
+      base::BindRepeating([](int* count, actions::ActionItem*,
+                             actions::ActionInvocationContext) { ++(*count); },
+                          &translate_invoked_count));
+
+  controller->Show(kActionShowTranslate);
+  controller->ShowAnchoredMessage(kActionShowTranslate,
+                                  page_actions::AnchoredMessageConfig{});
+  EXPECT_EQ(controller->GetActiveAnchoredMessage(), kActionShowTranslate);
+
+  auto states = control_->GetPageActionStates();
+  ASSERT_EQ(1u, states.size());
+  EXPECT_FALSE(states[0]->should_show_chip);
+
+  // Clicking the page action while the anchored message is active should
+  // downgrade it to a suggestion chip without invoking the underlying action.
+  {
+    base::test::TestFuture<
+        base::expected<std::monostate, mojo_base::mojom::ErrorPtr>>
+        future;
+    control_->OnPageActionClick(
+        toolbar_ui_api::mojom::PageActionId::kActionShowTranslate,
+        PageActionTrigger::kMouse, future.GetCallback());
+    EXPECT_OK(future.Get());
+  }
+
+  EXPECT_EQ(controller->GetActiveAnchoredMessage(), std::nullopt);
+  EXPECT_FALSE(control_->IsAnchoredMessageShowing(kActionShowTranslate));
+  EXPECT_EQ(0, translate_invoked_count);
+
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(1u, states.size());
+  EXPECT_TRUE(states[0]->should_show_chip);
+}
+
+TEST_F(WebUIPageActionControlTest, TabSwitchTokenUpdatesOnTabSwitch) {
+  control_->UpdateController(web_contents());
+
+  // Show an action so we can get states.
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  page_actions::PageActionController* controller =
+      page_actions::PageActionController::From(tab);
+  controller->Show(kActionAiMode);
+
+  auto states = control_->GetPageActionStates();
+  ASSERT_EQ(1u, states.size());
+  const uint32_t initial_token = states[0]->tab_switch_token;
+
+  // Update controller with the same web contents. Token should not change.
+  control_->UpdateController(web_contents());
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(1u, states.size());
+  EXPECT_EQ(initial_token, states[0]->tab_switch_token);
+
+  // Set up a second tab.
+  std::unique_ptr<content::WebContents> web_contents2 = CreateTestWebContents();
+  tabs::MockTabInterface mock_tab2;
+  ui::UnownedUserDataHost user_data_host2;
+  ON_CALL(mock_tab2, GetUnownedUserDataHost())
+      .WillByDefault(testing::ReturnRef(user_data_host2));
+  ON_CALL(mock_tab2, GetContents())
+      .WillByDefault(testing::Return(web_contents2.get()));
+  ON_CALL(mock_tab2, GetProfile()).WillByDefault(testing::Return(profile()));
+  ON_CALL(mock_tab2, RegisterDidActivate(_))
+      .WillByDefault([](tabs::TabInterface::DidActivateCallback cb) {
+        return base::CallbackListSubscription();
+      });
+  ON_CALL(mock_tab2, RegisterWillDeactivate(_))
+      .WillByDefault([](tabs::TabInterface::WillDeactivateCallback cb) {
+        return base::CallbackListSubscription();
+      });
+  ON_CALL(mock_tab2, IsActivated()).WillByDefault(testing::Return(true));
+
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents2.get(),
+                                                       &mock_tab2);
+
+  auto tab_features2 = std::make_unique<tabs::TabFeatures>();
+  ON_CALL(mock_tab2, GetTabFeatures())
+      .WillByDefault(testing::Return(tab_features2.get()));
+
+  auto page_action_controller2 =
+      std::make_unique<page_actions::PageActionControllerImpl>(
+          mock_tab2,
+          std::vector<actions::ActionId>(page_actions::kActionIds.begin(),
+                                         page_actions::kActionIds.end()),
+          page_actions::PageActionPropertiesProvider(),
+          PinnedToolbarActionsModel::Get(profile()));
+
+  // Show action on second tab too.
+  page_action_controller2->Show(kActionAiMode);
+
+  // Switch to second tab. Token should increment and delegates should be
+  // notified with the new token.
+  uint32_t notified_token = 0;
+  EXPECT_CALL(webui_delegate_, OnPageActionChanged(_))
+      .WillOnce([&notified_token](
+                    std::vector<toolbar_ui_api::mojom::PageActionStatePtr>
+                        action_states) {
+        ASSERT_FALSE(action_states.empty());
+        notified_token = action_states[0]->tab_switch_token;
+      });
+  control_->UpdateController(web_contents2.get());
+  EXPECT_NE(initial_token, notified_token);
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(1u, states.size());
+  EXPECT_EQ(notified_token, states[0]->tab_switch_token);
+  const uint32_t second_token = states[0]->tab_switch_token;
+
+  // Switch back to first tab. Token should increment again and delegates should
+  // be notified with the new token.
+  uint32_t third_token = 0;
+  EXPECT_CALL(webui_delegate_, OnPageActionChanged(_))
+      .WillOnce(
+          [&third_token](std::vector<toolbar_ui_api::mojom::PageActionStatePtr>
+                             action_states) {
+            ASSERT_FALSE(action_states.empty());
+            third_token = action_states[0]->tab_switch_token;
+          });
+  control_->UpdateController(web_contents());
+  EXPECT_NE(second_token, third_token);
+  EXPECT_NE(initial_token, third_token);
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(1u, states.size());
+  EXPECT_EQ(third_token, states[0]->tab_switch_token);
+}
+
+TEST_F(WebUIPageActionControlTest, TabSwitchTokenUpdatesOnNavigation) {
+  control_->UpdateController(web_contents());
+
+  // Show an action so we can get states.
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  page_actions::PageActionController* controller =
+      page_actions::PageActionController::From(tab);
+  controller->Show(kActionAiMode);
+
+  auto states = control_->GetPageActionStates();
+  ASSERT_EQ(1u, states.size());
+  const uint32_t initial_token = states[0]->tab_switch_token;
+
+  // Navigate to a new page in the same tab.
+  NavigateAndCommit(GURL("https://example.com/new_page"));
+  uint32_t notified_token = 0;
+  EXPECT_CALL(webui_delegate_, OnPageActionChanged(_))
+      .WillOnce([&notified_token](
+                    std::vector<toolbar_ui_api::mojom::PageActionStatePtr>
+                        action_states) {
+        ASSERT_FALSE(action_states.empty());
+        notified_token = action_states[0]->tab_switch_token;
+      });
+  control_->UpdateController(web_contents());
+  EXPECT_NE(initial_token, notified_token);
+
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(1u, states.size());
+  // Token should have incremented.
+  EXPECT_EQ(notified_token, states[0]->tab_switch_token);
+  EXPECT_NE(initial_token, states[0]->tab_switch_token);
+}
+
+TEST_F(WebUIPageActionControlTest,
+       TabSwitchTokenUpdatesWhenModelChangesBeforeUpdateController) {
+  NavigateAndCommit(GURL("https://example.test/initial"));
+  control_->UpdateController(web_contents());
+
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  page_actions::PageActionController* controller =
+      page_actions::PageActionController::From(tab);
+  controller->Show(kActionAiMode);
+  controller->Show(kActionShowTranslate);
+
+  auto states = control_->GetPageActionStates();
+  ASSERT_EQ(2u, states.size());
+  const uint32_t initial_token = states[0]->tab_switch_token;
+
+  // Commit a same-tab navigation, then mutate a page action model *before*
+  // UpdateController() is called (matching WebContentsObserver ordering).
+  NavigateAndCommit(GURL("https://example.test/new_page"));
+
+  uint32_t notified_token = 0;
+  EXPECT_CALL(webui_delegate_, OnPageActionChanged(_))
+      .WillOnce([&notified_token](
+                    std::vector<toolbar_ui_api::mojom::PageActionStatePtr>
+                        action_states) {
+        ASSERT_EQ(2u, action_states.size());
+        notified_token = action_states[0]->tab_switch_token;
+        EXPECT_EQ(notified_token, action_states[1]->tab_switch_token);
+      });
+  controller->OverrideImage(kActionAiMode,
+                            ui::ImageModel::FromVectorIcon(kZoomInIcon));
+  EXPECT_NE(initial_token, notified_token);
+
+  // Subsequent UpdateController() for the same committed URL should not emit a
+  // redundant notification because all visible delegates already pushed the
+  // updated token.
+  EXPECT_CALL(webui_delegate_, OnPageActionChanged(_)).Times(0);
+  control_->UpdateController(web_contents());
+}
+
+TEST_F(WebUIPageActionControlTest,
+       TabSwitchTokenUpdatesOnPendingNavigationVisibleUrlChange) {
+  NavigateAndCommit(GURL("https://example.test/initial"));
+  control_->UpdateController(web_contents());
+
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  page_actions::PageActionController* controller =
+      page_actions::PageActionController::From(tab);
+  controller->Show(kActionAiMode);
+
+  auto states = control_->GetPageActionStates();
+  ASSERT_EQ(1u, states.size());
+  const uint32_t initial_token = states[0]->tab_switch_token;
+
+  // Start a browser-initiated navigation without committing yet. GetVisibleURL
+  // updates immediately (which BookmarkTabHelper::DidStartNavigation reads),
+  // while GetLastCommittedURL remains at the initial URL.
+  auto navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      GURL("https://example.test/pending"), web_contents());
+  navigation->Start();
+  ASSERT_EQ(GURL("https://example.test/pending"),
+            web_contents()->GetVisibleURL());
+  ASSERT_EQ(GURL("https://example.test/initial"),
+            web_contents()->GetLastCommittedURL());
+
+  uint32_t pending_token = 0;
+  EXPECT_CALL(webui_delegate_, OnPageActionChanged(_))
+      .WillOnce([&pending_token](
+                    std::vector<toolbar_ui_api::mojom::PageActionStatePtr>
+                        action_states) {
+        ASSERT_EQ(1u, action_states.size());
+        pending_token = action_states[0]->tab_switch_token;
+      });
+  controller->OverrideImage(kActionAiMode,
+                            ui::ImageModel::FromVectorIcon(kZoomInIcon));
+  EXPECT_NE(initial_token, pending_token);
+
+  // Committing the pending navigation updates GetLastCommittedURL() and must
+  // advance the token once more.
+  navigation->Commit();
+  uint32_t committed_token = 0;
+  EXPECT_CALL(webui_delegate_, OnPageActionChanged(_))
+      .WillOnce([&committed_token](
+                    std::vector<toolbar_ui_api::mojom::PageActionStatePtr>
+                        action_states) {
+        ASSERT_EQ(1u, action_states.size());
+        committed_token = action_states[0]->tab_switch_token;
+      });
+  control_->UpdateController(web_contents());
+  EXPECT_NE(pending_token, committed_token);
+
+  // A subsequent in-page icon change (neither visible nor committed URL
+  // changed) must preserve the token so user interactions still animate.
+  uint32_t in_page_token = 0;
+  EXPECT_CALL(webui_delegate_, OnPageActionChanged(_))
+      .WillOnce([&in_page_token](
+                    std::vector<toolbar_ui_api::mojom::PageActionStatePtr>
+                        action_states) {
+        ASSERT_EQ(1u, action_states.size());
+        in_page_token = action_states[0]->tab_switch_token;
+      });
+  controller->ClearOverrideImage(kActionAiMode);
+  EXPECT_EQ(committed_token, in_page_token);
+}
+
+TEST_F(WebUIPageActionControlTest,
+       SwitchingControllerClosesActiveAnchoredMessage) {
+  control_->UpdateController(web_contents());
+
+  tabs::TabInterface* tab1 =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  ASSERT_TRUE(tab1);
+  page_actions::PageActionController* controller1 =
+      page_actions::PageActionController::From(tab1);
+  ASSERT_TRUE(controller1);
+
+  actions::ActionId target_action_id = kActionAiMode;
+  controller1->Show(target_action_id);
+  controller1->ShowAnchoredMessage(target_action_id,
+                                   page_actions::AnchoredMessageConfig{});
+  EXPECT_EQ(controller1->GetActiveAnchoredMessage(), target_action_id);
+
+  // Switching controller to nullptr should close the active anchored message on
+  // the previous controller.
+  control_->UpdateController(nullptr);
+  EXPECT_EQ(controller1->GetActiveAnchoredMessage(), std::nullopt);
+}
+
+TEST_F(WebUIPageActionControlTest,
+       SwitchingToNewControllerClosesActiveAnchoredMessage) {
+  control_->UpdateController(web_contents());
+
+  tabs::TabInterface* tab1 =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  ASSERT_TRUE(tab1);
+  page_actions::PageActionController* controller1 =
+      page_actions::PageActionController::From(tab1);
+  ASSERT_TRUE(controller1);
+
+  actions::ActionId target_action_id = kActionAiMode;
+  controller1->Show(target_action_id);
+  controller1->ShowAnchoredMessage(target_action_id,
+                                   page_actions::AnchoredMessageConfig{});
+  EXPECT_EQ(controller1->GetActiveAnchoredMessage(), target_action_id);
+
+  // Set up a second WebContents and Tab with its own PageActionController.
+  auto tab2 = CreateTestTabContext();
+
+  // Switching controller to web_contents2 should close the active anchored
+  // message on controller1.
+  control_->UpdateController(tab2->web_contents.get());
+  EXPECT_EQ(controller1->GetActiveAnchoredMessage(), std::nullopt);
+  EXPECT_FALSE(control_->IsAnchoredMessageShowing(target_action_id));
+  EXPECT_EQ(tab2->controller->GetActiveAnchoredMessage(), std::nullopt);
+}
+
+TEST_F(WebUIPageActionControlTest,
+       SwitchingToNewControllerWithActiveAnchoredMessage) {
+  control_->UpdateController(web_contents());
+
+  tabs::TabInterface* tab1 =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  ASSERT_TRUE(tab1);
+  page_actions::PageActionController* controller1 =
+      page_actions::PageActionController::From(tab1);
+  ASSERT_TRUE(controller1);
+
+  actions::ActionId target_action_id = kActionAiMode;
+  controller1->Show(target_action_id);
+  controller1->ShowAnchoredMessage(target_action_id,
+                                   page_actions::AnchoredMessageConfig{});
+  EXPECT_EQ(controller1->GetActiveAnchoredMessage(), target_action_id);
+
+  // Set up a second WebContents and Tab with its own PageActionController.
+  auto tab2 = CreateTestTabContext();
+
+  // Show an active anchored message on controller2 before switching.
+  tab2->controller->Show(target_action_id);
+  tab2->controller->ShowAnchoredMessage(target_action_id,
+                                        page_actions::AnchoredMessageConfig{});
+  EXPECT_EQ(tab2->controller->GetActiveAnchoredMessage(), target_action_id);
+
+  // Switching controller to web_contents2 should close the active anchored
+  // message on controller1 while retaining controller2's active anchored
+  // message.
+  control_->UpdateController(tab2->web_contents.get());
+  EXPECT_EQ(controller1->GetActiveAnchoredMessage(), std::nullopt);
+}
+
+TEST_F(WebUIPageActionControlTest,
+       AnchoredMessagesPromotedAheadOfChipsAndIcons) {
+  control_->UpdateController(web_contents());
+
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  ASSERT_TRUE(tab);
+  page_actions::PageActionController* controller =
+      page_actions::PageActionController::From(tab);
+  ASSERT_TRUE(controller);
+
+  // In kActionIds, initial order is:
+  // 1. kActionAiMode
+  // 2. kActionSidePanelShowLensOverlayResults
+  // 3. kActionShowTranslate
+  controller->Show(kActionAiMode);
+  controller->Show(kActionSidePanelShowLensOverlayResults);
+  controller->Show(kActionShowTranslate);
+
+  // Initially all are icons, preserving initial order.
+  auto states = control_->GetPageActionStates();
+  ASSERT_EQ(3u, states.size());
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionAiMode,
+            states[0]->page_action_id);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::
+                kActionSidePanelShowLensOverlayResults,
+            states[1]->page_action_id);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionShowTranslate,
+            states[2]->page_action_id);
+
+  // Promote kActionShowTranslate to a suggestion chip. Chips precede regular
+  // icons.
+  controller->ShowSuggestionChip(kActionShowTranslate);
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(3u, states.size());
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionShowTranslate,
+            states[0]->page_action_id);
+  EXPECT_TRUE(states[0]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionAiMode,
+            states[1]->page_action_id);
+  EXPECT_FALSE(states[1]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::
+                kActionSidePanelShowLensOverlayResults,
+            states[2]->page_action_id);
+  EXPECT_FALSE(states[2]->should_show_chip);
+
+  // Show an anchored message on kActionSidePanelShowLensOverlayResults.
+  // Page actions with anchored messages are placed before chips and icons.
+  page_actions::AnchoredMessageConfig config{};
+  controller->ShowAnchoredMessage(kActionSidePanelShowLensOverlayResults,
+                                  config);
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(3u, states.size());
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::
+                kActionSidePanelShowLensOverlayResults,
+            states[0]->page_action_id);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionShowTranslate,
+            states[1]->page_action_id);
+  EXPECT_TRUE(states[1]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionAiMode,
+            states[2]->page_action_id);
+  EXPECT_FALSE(states[2]->should_show_chip);
+
+  // Promote kActionAiMode to a chip as well. The anchored message remains
+  // first, followed by chips in their initial order (AiMode before
+  // ShowTranslate).
+  controller->ShowSuggestionChip(kActionAiMode);
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(3u, states.size());
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::
+                kActionSidePanelShowLensOverlayResults,
+            states[0]->page_action_id);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionAiMode,
+            states[1]->page_action_id);
+  EXPECT_TRUE(states[1]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionShowTranslate,
+            states[2]->page_action_id);
+  EXPECT_TRUE(states[2]->should_show_chip);
+
+  // Hide the anchored message. The two chips now lead (in initial order),
+  // followed by the remaining icon.
+  controller->HideAnchoredMessage(kActionSidePanelShowLensOverlayResults);
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(3u, states.size());
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionAiMode,
+            states[0]->page_action_id);
+  EXPECT_TRUE(states[0]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionShowTranslate,
+            states[1]->page_action_id);
+  EXPECT_TRUE(states[1]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::
+                kActionSidePanelShowLensOverlayResults,
+            states[2]->page_action_id);
+  EXPECT_FALSE(states[2]->should_show_chip);
+
+  // Show an anchored message on a chip action (kActionShowTranslate). It should
+  // now be placed first, ahead of the other chip (kActionAiMode).
+  controller->ShowAnchoredMessage(kActionShowTranslate, config);
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(3u, states.size());
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionShowTranslate,
+            states[0]->page_action_id);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionAiMode,
+            states[1]->page_action_id);
+  EXPECT_TRUE(states[1]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::
+                kActionSidePanelShowLensOverlayResults,
+            states[2]->page_action_id);
+  EXPECT_FALSE(states[2]->should_show_chip);
+
+  // Hide the anchored message again. Showing an anchored message downgraded
+  // kActionShowTranslate from a chip to an icon, so kActionAiMode is the sole
+  // chip and leads, followed by the two icons in initial order
+  // (LensOverlayResults before ShowTranslate).
+  controller->HideAnchoredMessage(kActionShowTranslate);
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(3u, states.size());
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionAiMode,
+            states[0]->page_action_id);
+  EXPECT_TRUE(states[0]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::
+                kActionSidePanelShowLensOverlayResults,
+            states[1]->page_action_id);
+  EXPECT_FALSE(states[1]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionShowTranslate,
+            states[2]->page_action_id);
+  EXPECT_FALSE(states[2]->should_show_chip);
+
+  // Re-promoting kActionShowTranslate to a chip brings both chips to the front.
+  controller->ShowSuggestionChip(kActionShowTranslate);
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(3u, states.size());
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionAiMode,
+            states[0]->page_action_id);
+  EXPECT_TRUE(states[0]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionShowTranslate,
+            states[1]->page_action_id);
+  EXPECT_TRUE(states[1]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::
+                kActionSidePanelShowLensOverlayResults,
+            states[2]->page_action_id);
+  EXPECT_FALSE(states[2]->should_show_chip);
+
+  // Downgrading all actions back to icons restores initial order.
+  controller->HideSuggestionChip(kActionAiMode);
+  controller->HideSuggestionChip(kActionShowTranslate);
+  states = control_->GetPageActionStates();
+  ASSERT_EQ(3u, states.size());
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionAiMode,
+            states[0]->page_action_id);
+  EXPECT_FALSE(states[0]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::
+                kActionSidePanelShowLensOverlayResults,
+            states[1]->page_action_id);
+  EXPECT_FALSE(states[1]->should_show_chip);
+  EXPECT_EQ(toolbar_ui_api::mojom::PageActionId::kActionShowTranslate,
+            states[2]->page_action_id);
+  EXPECT_FALSE(states[2]->should_show_chip);
+}
 }  // namespace
 
 }  // namespace page_actions

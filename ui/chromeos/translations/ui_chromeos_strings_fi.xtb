@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Väärä salasana</translation>
 <translation id="5059127710849015030">translitteroitu nepali</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> on määrittänyt välityspalvelimen ohitussäännöt</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> tiedostoja poistetaan</translation>
 <translation id="508423945471810158">Siirretään <ph name="NUMBER_OF_ITEMS" /> kohdetta kansioon <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Tapahtui virhe.</translation>
-<translation id="5102922915594634436">Ylläpidä synkronoituja kansioita</translation>
 <translation id="5109254780565519649">Tapahtui virhe. Kaikkia kohteita ei välttämättä palautettu.</translation>
 <translation id="5110329002213341433">englanti (Kanada)</translation>
 <translation id="5119780910075847424">Synkronointi keskeytetty</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">hindi</translation>
 <translation id="7665680517722058469">Kokeile toista hakua</translation>
 <translation id="7689532716264131859"><ph name="NUMBER_OF_ITEMS" /> kohdetta siirretty roskakoriin</translation>
-<translation id="7693909743393669729">Aseman alustaminen poistaa kaiken sille tallennetun datan sekä kaikki osiot, myös näkymättömät sellaiset. Tätä toimintoa ei voi kumota.</translation>
 <translation id="7695430100978772476">Ei voitu alustaa: <ph name="DRIVE_NAME" /></translation>
 <translation id="76959938259365003">Roskakorin tyhjentäminen epäonnistui.</translation>
 <translation id="7705251383879779343"><ph name="FILE_NAME" /> kopioitu.</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">Yhdysvallat, kansainvälinen Workman</translation>
 <translation id="7903984238293908205">Katakana</translation>
 <translation id="7908378463497120834">Ainakaan yhtä ulkoisen tallennustilan osioista ei voitu ottaa käyttöön.</translation>
-<translation id="7908793776359722643">Osion alustaminen poistaa kaiken sille tallennetun datan. Tätä toimintoa ei voi kumota.</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">Omassa Drivessa olevat tiedostot synkronoituvat Chromebookiin automaattisesti, joten voit käyttää niitä ilman internetyhteyttä.</translation>
 <translation id="7925247922861151263">AAA-testi epäonnistui</translation>

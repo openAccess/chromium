@@ -14,6 +14,8 @@
 #include "build/build_config.h"
 #include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/metrics/testing/metrics_consent_override.h"
+#include "chrome/browser/personal_context/personal_context_eligibility_service_factory.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/browser/sync/test/integration/bookmarks_helper.h"
@@ -23,21 +25,23 @@
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "components/browser_sync/browser_sync_switches.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "components/personal_context/core/mock_personal_context_eligibility_service.h"
 #include "components/personal_context/core/personal_context_features.h"
 #include "components/personal_context/core/personal_context_key_manager.h"
 #include "components/personal_context/core/personal_context_prefs.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/base/hybrid_encryption_key.pb.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/base/tink_key.pb.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/time.h"
 #include "components/sync/protocol/device_info_specifics.pb.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
 #include "components/sync/protocol/sync.pb.h"
 #include "components/sync/protocol/sync_entity.pb.h"
 #include "components/sync/protocol/sync_enums.pb.h"
+#include "components/sync/service/device_statistics_scheduler.h"
 #include "components/sync/service/device_statistics_tracker.h"
 #include "components/sync/test/fake_server.h"
 #include "components/sync_device_info/device_info.h"
@@ -46,7 +50,9 @@
 #include "components/sync_device_info/device_info_util.h"
 #include "components/sync_device_info/device_name_util.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_launcher.h"
+#include "google_apis/gaia/gaia_urls.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -197,20 +203,10 @@ class SingleClientDeviceInfoSyncTest
     : public SyncTest,
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  explicit SingleClientDeviceInfoSyncTest(
-      bool enable_device_statistics_metrics = false)
-      : SyncTest(SINGLE_CLIENT) {
+  SingleClientDeviceInfoSyncTest() : SyncTest(SINGLE_CLIENT) {
     std::vector<base::test::FeatureRefAndParams> enabled_features;
     std::vector<base::test::FeatureRef> disabled_features;
-    if (enable_device_statistics_metrics) {
-      enabled_features.emplace_back(
-          syncer::kSyncRecordDeviceStatisticsMetrics,
-          base::FieldTrialParams{
-              {syncer::kSyncRecordDeviceStatisticsMetricsDelay.name, "0"}});
-    }
     if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      enabled_features.emplace_back(syncer::kReplaceSyncPromosWithSignInPromos,
-                                    base::FieldTrialParams{});
       enabled_features.emplace_back(
           switches::kSyncEnableBookmarksInTransportMode,
           base::FieldTrialParams{});
@@ -377,25 +373,12 @@ IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTest, DownloadRemoteDevices) {
                            ModelEntryHasCacheGuid(CacheGuidForSuffix(2))));
 }
 
-class SingleClientDeviceInfoSyncTestWithServerDeterminedName
-    : public SingleClientDeviceInfoSyncTest {
- public:
-  SingleClientDeviceInfoSyncTestWithServerDeterminedName() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/{syncer::kSyncSimplifyDeviceNaming,
-                              syncer::kSyncUseServerDeterminedDeviceName},
-        /*disabled_features=*/{});
-  }
-
- protected:
-  static constexpr char kServerDeterminedModelName[] = "Galaxy S22 Ultra";
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTestWithServerDeterminedName,
+// Verifies that a remote device's `server_determined_model_name` is synced and
+// used as its display name by `syncer::GetDeviceDisplayName()`.
+IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTest,
                        UseServerDeterminedDeviceName) {
+  constexpr char kServerDeterminedModelName[] = "Galaxy S22 Ultra";
+
   // Inject a remote Android device with a server-determined model name.
   sync_pb::DeviceInfoSpecifics specifics = CreateSpecifics(/*suffix=*/1);
   specifics.set_os_type(sync_pb::SyncEnums_OsType_OS_TYPE_ANDROID);
@@ -414,7 +397,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTestWithServerDeterminedName,
 
   // Get the remote device info.
   const syncer::DeviceInfo* remote_device =
-      GetDeviceInfoTracker()->GetDeviceInfo(CacheGuidForSuffix(1));
+      GetDeviceInfoTracker()->GetChromeDeviceInfo(CacheGuidForSuffix(1));
   ASSERT_TRUE(remote_device);
   EXPECT_EQ(remote_device->server_determined_model_name(),
             kServerDeterminedModelName);
@@ -424,30 +407,53 @@ IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTestWithServerDeterminedName,
             kServerDeterminedModelName);
 }
 
-INSTANTIATE_TEST_SUITE_P(,
-                         SingleClientDeviceInfoSyncTestWithServerDeterminedName,
-                         GetSyncTestModes(),
-                         testing::PrintToStringParamName());
-
 class SingleClientDeviceInfoSyncTestWithPersonalContext
     : public SingleClientDeviceInfoSyncTest {
  public:
   SingleClientDeviceInfoSyncTestWithPersonalContext() {
-    feature_list_.InitAndEnableFeature(
-        personal_context::features::kPersonalContextHandleEncryptedPayloads);
+    feature_list_.InitWithFeatures(
+        {personal_context::features::kPersonalContext,
+         personal_context::features::kPersonalContextHandleEncryptedPayloads},
+        {});
+  }
+
+  void SetUpInProcessBrowserTestFixture() override {
+    SingleClientDeviceInfoSyncTest::SetUpInProcessBrowserTestFixture();
+    create_services_subscription_ =
+        BrowserContextDependencyManager::GetInstance()
+            ->RegisterCreateServicesCallbackForTesting(base::BindRepeating(
+                &SingleClientDeviceInfoSyncTestWithPersonalContext::
+                    OnWillCreateBrowserContextServices,
+                base::Unretained(this)));
   }
 
  private:
+  void OnWillCreateBrowserContextServices(content::BrowserContext* context) {
+    PersonalContextEligibilityServiceFactory::GetInstance()->SetTestingFactory(
+        context, base::BindRepeating([](content::BrowserContext*)
+                                         -> std::unique_ptr<KeyedService> {
+          auto mock = std::make_unique<testing::NiceMock<
+              personal_context::MockPersonalContextEligibilityService>>();
+          ON_CALL(*mock, IsInitialized).WillByDefault(testing::Return(true));
+          ON_CALL(*mock, IsEligibleForEncryption)
+              .WillByDefault(testing::Return(true));
+          return mock;
+        }));
+  }
+
   base::test::ScopedFeatureList feature_list_;
+  base::CallbackListSubscription create_services_subscription_;
 };
 
 IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTestWithPersonalContext,
                        UploadLocalPersonalContextPublicKey) {
   ASSERT_TRUE(SetupSync());
 
-  std::vector<uint8_t> expected_public_key =
-      personal_context::PersonalContextKeyManager::
-          GetOrCreateLocalPublicKeyBytes(GetProfile(0)->GetPrefs());
+  std::vector<uint8_t> expected_public_key = personal_context::
+      PersonalContextKeyManager::GetOrCreateLocalPublicKeyBytes(
+          GetProfile(0)->GetPrefs(),
+          PersonalContextEligibilityServiceFactory::GetForProfile(
+              GetProfile(0)));
   ASSERT_FALSE(expected_public_key.empty());
 
   tink::Keyset keyset;
@@ -457,11 +463,20 @@ IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTestWithPersonalContext,
   ASSERT_EQ(keyset.key_size(), 1);
   ASSERT_EQ(keyset.key(0).key_data().type_url(),
             "type.googleapis.com/google.crypto.tink.HpkePublicKey");
-  ASSERT_FALSE(keyset.key(0).key_data().value().empty());
+
+  tink::HpkePublicKey hpke_public_key;
+  ASSERT_TRUE(hpke_public_key.ParseFromString(
+      keyset.key(0).key_data().value()));
+  EXPECT_EQ(hpke_public_key.version(), 0u);
+  EXPECT_EQ(hpke_public_key.params().kem(), tink::HpkeKem::ML_KEM768);
+  EXPECT_EQ(hpke_public_key.params().kdf(), tink::HpkeKdf::HKDF_SHA256);
+  EXPECT_EQ(hpke_public_key.params().aead(), tink::HpkeAead::AES_128_GCM);
+  EXPECT_EQ(hpke_public_key.public_key().size(), 1184u);
 
   sync_pb::PersonalContextSpecificFields expected_personal_context_fields;
   expected_personal_context_fields.set_serialized_tink_keyset(
       expected_public_key.data(), expected_public_key.size());
+  expected_personal_context_fields.set_eligible_for_spii(false);
 
   // The local device with the personal context public key should be committed
   // to the server.
@@ -475,7 +490,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTestWithPersonalContext,
   // Verify that the local DeviceInfo in the tracker contains the personal
   // context info.
   const syncer::DeviceInfo* local_device =
-      GetDeviceInfoTracker()->GetDeviceInfo(GetLocalCacheGuid());
+      GetDeviceInfoTracker()->GetChromeDeviceInfo(GetLocalCacheGuid());
   ASSERT_TRUE(local_device);
   ASSERT_TRUE(local_device->personal_context_info().has_value());
   EXPECT_EQ(local_device->personal_context_info()->serialized_tink_keyset,
@@ -487,25 +502,29 @@ IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTestWithPersonalContext,
   ASSERT_TRUE(SetupSync());
 
   const syncer::DeviceInfo* local_device =
-      GetDeviceInfoTracker()->GetDeviceInfo(GetLocalCacheGuid());
+      GetDeviceInfoTracker()->GetChromeDeviceInfo(GetLocalCacheGuid());
   ASSERT_TRUE(local_device);
 
   // Clear existing private key from prefs to simulate first-time generation.
   GetProfile(0)->GetPrefs()->ClearPref(
       personal_context::prefs::kPersonalContextPrivateKey);
 
+  personal_context::PersonalContextEligibilityService* eligibility_service =
+      PersonalContextEligibilityServiceFactory::GetForProfile(GetProfile(0));
+
   // Trigger key generation via PersonalContextKeyManager with DeviceInfoSyncService.
   personal_context::PersonalContextKeyManager key_manager(
       GetProfile(0)->GetPrefs(),
-      DeviceInfoSyncServiceFactory::GetForProfile(GetProfile(0)));
-  key_manager.GetOrCreatePrivateKey();
-  std::vector<uint8_t> expected_public_key =
-      personal_context::PersonalContextKeyManager::
-          GetOrCreateLocalPublicKeyBytes(GetProfile(0)->GetPrefs());
+      DeviceInfoSyncServiceFactory::GetForProfile(GetProfile(0)),
+      eligibility_service);
+  std::vector<uint8_t> expected_public_key = personal_context::
+      PersonalContextKeyManager::GetOrCreateLocalPublicKeyBytes(
+          GetProfile(0)->GetPrefs(), eligibility_service);
 
   sync_pb::PersonalContextSpecificFields expected_personal_context_fields;
   expected_personal_context_fields.set_serialized_tink_keyset(
       expected_public_key.data(), expected_public_key.size());
+  expected_personal_context_fields.set_eligible_for_spii(false);
 
   // Verify that RefreshLocalDeviceInfo() was called and immediately triggered
   // a commit to the server with the new public key.
@@ -523,6 +542,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTestWithPersonalContext,
   sync_pb::DeviceInfoSpecifics specifics = CreateSpecifics(/*suffix=*/1);
   specifics.mutable_personal_context_fields()->set_serialized_tink_keyset(
       kRemoteKeyset.data(), kRemoteKeyset.size());
+  specifics.mutable_personal_context_fields()->set_eligible_for_spii(true);
   InjectDeviceInfoSpecificsToServer(specifics);
 
   ASSERT_TRUE(SetupSync());
@@ -534,11 +554,12 @@ IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTestWithPersonalContext,
                            ModelEntryHasCacheGuid(CacheGuidForSuffix(1))));
 
   const syncer::DeviceInfo* remote_device =
-      GetDeviceInfoTracker()->GetDeviceInfo(CacheGuidForSuffix(1));
+      GetDeviceInfoTracker()->GetChromeDeviceInfo(CacheGuidForSuffix(1));
   ASSERT_TRUE(remote_device);
   ASSERT_TRUE(remote_device->personal_context_info().has_value());
   EXPECT_EQ(remote_device->personal_context_info()->serialized_tink_keyset,
             kRemoteKeyset);
+  EXPECT_TRUE(remote_device->personal_context_info()->eligible_for_spii);
 }
 
 
@@ -921,7 +942,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientDeviceInfoSyncTest,
   ASSERT_TRUE(GetClient(0)->AwaitInvalidationsStatus(/*expected_status=*/true));
 
   // Ensure any pending local changes are committed.
-  CommittedAllNudgedChangesChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(CommittedAllNudgedChangesChecker(GetSyncService(0)).Wait());
 
   // Verify that no DeviceInfo has been committed to the server.
   const std::vector<sync_pb::SyncEntity> entities_after =
@@ -937,9 +958,14 @@ class SingleClientDeviceInfoWithDeviceStatisticsSyncTest
  public:
   explicit SingleClientDeviceInfoWithDeviceStatisticsSyncTest(
       bool metrics_consent_value = true)
-      : SingleClientDeviceInfoSyncTest(
-            /*enable_device_statistics_metrics=*/true),
-        metrics_consent_value_(metrics_consent_value) {}
+      : metrics_consent_value_(metrics_consent_value) {
+    syncer::DeviceStatisticsScheduler::SetStartupDelayForTesting(
+        base::Seconds(0));
+  }
+
+  ~SingleClientDeviceInfoWithDeviceStatisticsSyncTest() override {
+    syncer::DeviceStatisticsScheduler::ResetStartupDelayForTesting();
+  }
 
   void SetUpInProcessBrowserTestFixture() override {
     create_services_subscription_ =
@@ -1012,8 +1038,7 @@ IN_PROC_BROWSER_TEST_P(
   // Wait long enough so that the DeviceStatisticsTracker would've started, if
   // it were going to.
   const base::Time wait_start = base::Time::Now();
-  const base::TimeDelta wait_time = std::max(
-      base::Seconds(1), syncer::kSyncRecordDeviceStatisticsMetricsDelay.Get());
+  const base::TimeDelta wait_time = base::Seconds(1);
   ASSERT_TRUE(base::test::RunUntil(
       [&]() { return base::Time::Now() - wait_start > wait_time; }));
 
@@ -1111,6 +1136,10 @@ IN_PROC_BROWSER_TEST_P(
   signin::MakeAccountAvailable(identity_manager,
                                options.Build(GetClient(0)->GetEmailForAccount(
                                    SyncTestAccount::kDefaultAccount)));
+  // Signing in on the web sets Gaia cookies. It must outlive the PRE_ test.
+  ASSERT_TRUE(content::SetCookie(
+      GetProfile(0), GaiaUrls::GetInstance()->secure_google_url(),
+      "SAPISID=fake; Secure; Domain=.google.com; Max-Age=86400"));
 }
 
 // TODO(crbug.com/483936092): signin::MakeAccountAvailable() (needed by the PRE_

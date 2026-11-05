@@ -116,7 +116,7 @@ class ExtensionPrefs : public KeyedService {
   using ChromeSettingScope = extensions::api::types::ChromeSettingScope;
 
   // Vector containing identifiers for preferences.
-  typedef std::set<std::string> PrefKeySet;
+  using PrefKeySet = std::set<std::string>;
 
   // This enum is used to store the reason an extension's install has been
   // delayed.  Do not remove items or re-order this enum as it is used in
@@ -645,12 +645,22 @@ class ExtensionPrefs : public KeyedService {
   bool IsActive(const ExtensionId& extension_id) const;
 
   // Returns true if the user enabled this extension to be loaded in incognito
-  // mode.
+  // mode. This always reads the incognito pref, regardless of whether
+  // Enterprise Isolated Mode replaces Incognito.
   //
   // IMPORTANT: you probably want to use extensions::util::IsIncognitoEnabled
   // instead of this method.
   bool IsIncognitoEnabled(const ExtensionId& extension_id) const;
   void SetIsIncognitoEnabled(const ExtensionId& extension_id, bool enabled);
+
+  // Returns true if the user enabled this extension to be loaded in Enterprise
+  // Isolated Mode. This always reads the isolated_mode pref, regardless of
+  // whether Enterprise Isolated Mode replaces Incognito.
+  //
+  // IMPORTANT: you probably want to use extensions::util::IsIncognitoEnabled
+  // instead of this method.
+  bool IsIsolatedModeEnabled(const ExtensionId& extension_id) const;
+  void SetIsIsolatedModeEnabled(const ExtensionId& extension_id, bool enabled);
 #if BUILDFLAG(IS_CHROMEOS)
   void SetIsIncognitoEnabledDelayed(const ExtensionId& extension_id,
                                     bool enabled);
@@ -772,11 +782,6 @@ class ExtensionPrefs : public KeyedService {
   bool NeedsSync(const ExtensionId& extension_id) const;
   void SetNeedsSync(const ExtensionId& extension_id, bool needs_sync);
 
-  // Backfills the first_install_time pref for currently installed extensions
-  // that did not have the pref recorded when they were installed.
-  // TODO(anunoy): Remove this in M113.
-  void BackfillAndMigrateInstallTimePrefs();
-
   // Migrates the disable reasons extension pref for extensions that were
   // disabled due to a deprecated reason.
   // TODO(archanasimha): Remove this around M89.
@@ -846,7 +851,6 @@ class ExtensionPrefs : public KeyedService {
   friend class ExtensionPrefsUninstallExtension;     // Unit test.
   friend class ExtensionPrefsDisableReasonsBitflagToListMigration;  // Unit
                                                                     // test.
-  friend class ExtensionPrefsMigratesToLastUpdateTime;  // Unit test.
   friend class
       ExtensionPrefsBitMapPrefValueClearedIfEqualsDefaultValue;  // Unit test.
 
@@ -979,6 +983,10 @@ class ExtensionPrefs : public KeyedService {
   // for a given extension.
   bool HasWithholdingPermissionsSetting(const ExtensionId& extension_id) const;
 
+  // Returns whether Enterprise Isolated Mode replaces Incognito mode for
+  // `browser_context_`, caching the result on first evaluation.
+  bool IsolatedModeReplacesIncognito();
+
   raw_ptr<content::BrowserContext> browser_context_;
 
   // The pref service specific to this set of extension prefs. Owned by the
@@ -998,6 +1006,10 @@ class ExtensionPrefs : public KeyedService {
   raw_ptr<base::Clock> clock_;
 
   bool extensions_disabled_;
+
+  // TODO(crbug.com/576933996): Initialize eagerly in constructor once tests set
+  // up Isolated Mode before ExtensionPrefs creation.
+  std::optional<bool> isolated_mode_;
 
   // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
   base::ObserverList<

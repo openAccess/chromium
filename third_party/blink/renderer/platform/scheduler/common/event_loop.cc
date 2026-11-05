@@ -12,7 +12,6 @@
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/renderer/platform/bindings/cpp_heap_external_tag.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
-#include "third_party/blink/renderer/platform/scheduler/public/frame_or_worker_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/task_attribution_tracker.h"
 #include "v8/include/v8-cpp-heap-external.h"
 #include "v8/include/v8.h"
@@ -35,8 +34,10 @@ class EventLoopMicrotaskWrapper final
 };
 
 EventLoop::PauseMicrotasksHandle::~PauseMicrotasksHandle() {
-  CHECK_GT(loop_->microtasks_pause_count_, 0);
-  --loop_->microtasks_pause_count_;
+  if (loop_) {
+    CHECK_GT(loop_->microtasks_pause_count_, 0);
+    --loop_->microtasks_pause_count_;
+  }
 }
 
 EventLoop::EventLoop(Delegate* delegate,
@@ -54,7 +55,11 @@ EventLoop::EventLoop(Delegate* delegate,
 }
 
 EventLoop::~EventLoop() {
-  DCHECK(schedulers_.empty());
+  // `microtask_queue_` may be cleared before sweeping during heap termination.
+  if (microtask_queue_) {
+    microtask_queue_->RemoveMicrotasksCompletedCallback(
+        &EventLoop::RunEndOfCheckpointTasks, this);
+  }
 }
 
 void EventLoop::EnqueueMicrotask(base::OnceClosure task) {
@@ -87,6 +92,7 @@ void EventLoop::RunEndOfMicrotaskCheckpointTasks() {
     // execution was interrupted by the debugger. V8 expects that any pending
     // microtasks are discarded here. See https://crbug.com/1394714.
     pending_microtasks_.clear();
+    ++microtask_discard_count_;
   }
 
   if (delegate_) {
@@ -117,24 +123,8 @@ void EventLoop::PerformIsolateGlobalMicrotasksCheckpoint(v8::Isolate* isolate) {
   v8::MicrotasksScope::PerformCheckpoint(isolate);
 }
 
-void EventLoop::AttachScheduler(FrameOrWorkerScheduler* scheduler) {
-  DCHECK(loop_enabled_);
-  DCHECK(!schedulers_.Contains(scheduler));
-  schedulers_.insert(scheduler);
-}
-
-void EventLoop::DetachScheduler(FrameOrWorkerScheduler* scheduler) {
-  DCHECK(loop_enabled_);
-  DCHECK(schedulers_.Contains(scheduler));
-  schedulers_.erase(scheduler);
-}
-
-bool EventLoop::IsSchedulerAttachedForTest(FrameOrWorkerScheduler* scheduler) {
-  return schedulers_.Contains(scheduler);
-}
-
 std::unique_ptr<EventLoop::PauseMicrotasksHandle> EventLoop::PauseMicrotasks() {
-  return base::WrapUnique(new PauseMicrotasksHandle(this));
+  return base::WrapUnique(new PauseMicrotasksHandle(*this));
 }
 
 // static

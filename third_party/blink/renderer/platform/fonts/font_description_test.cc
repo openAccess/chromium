@@ -67,14 +67,14 @@ TEST_F(FontDescriptionTest, TestHashCollision) {
       std::to_array<FontSelectionValue>({kNormalSlopeValue, kItalicSlopeValue});
 
   FontDescription source;
-  Vector<unsigned> hashes;
-  for (size_t i = 0; i < std::size(weights); i++) {
-    source.SetWeight(weights[i]);
-    for (size_t j = 0; j < std::size(stretches); j++) {
-      source.SetStretch(stretches[j]);
-      for (size_t k = 0; k < std::size(slopes); k++) {
-        source.SetStyle(slopes[k]);
-        unsigned hash = source.StyleHashWithoutFamilyList();
+  Vector<uint32_t> hashes;
+  for (const auto& weight : weights) {
+    source.SetWeight(weight);
+    for (const auto& stretch : stretches) {
+      source.SetStretch(stretch);
+      for (const auto& slope : slopes) {
+        source.SetStyle(slope);
+        uint32_t hash = source.StyleHashWithoutFamilyList();
         ASSERT_FALSE(hashes.Contains(hash));
         hashes.push_back(hash);
       }
@@ -228,14 +228,14 @@ TEST_F(FontDescriptionTest, AllFeaturesHash) {
   FontDescription font_description;
   font_description.SetFamily(
       FontFamily(font_family_names::kSerif, FontFamily::Type::kGenericFamily));
-  unsigned key_a = font_description.GetHash();
+  uint32_t key_a = font_description.GetHash();
 
   // Test every relevant property except font families, which are tested in
   // CompositeKeyFontFamilies. Check that the key is different from
   // a description without the property change and that it is the same upon
   // re-query (i.e. that the key is stable).
   font_description.SetComputedSize(15.0);
-  unsigned key_b = font_description.GetHash();
+  uint32_t key_b = font_description.GetHash();
   EXPECT_NE(key_a, key_b);
   key_a = font_description.GetHash();
   EXPECT_EQ(key_a, key_b);
@@ -334,13 +334,13 @@ TEST_F(FontDescriptionTest, AllFeaturesHash) {
   key_a = font_description.GetHash();
   EXPECT_EQ(key_a, key_b);
 
-  font_description.SetFontSmoothing(kAntialiased);
+  font_description.SetFontSmoothing(FontSmoothingMode::kAntialiased);
   key_b = font_description.GetHash();
   EXPECT_NE(key_a, key_b);
   key_a = font_description.GetHash();
   EXPECT_EQ(key_a, key_b);
 
-  font_description.SetFontOpticalSizing(kNoneOpticalSizing);
+  font_description.SetFontOpticalSizing(OpticalSizing::kNone);
   key_b = font_description.GetHash();
   EXPECT_NE(key_a, key_b);
   key_a = font_description.GetHash();
@@ -459,8 +459,8 @@ TEST_F(FontDescriptionTest, FontFamiliesHash) {
   b.SetFamily(
       FontFamily(font_family_names::kSerif, FontFamily::Type::kGenericFamily));
 
-  unsigned key_a = a.GetHash();
-  unsigned key_b = b.GetHash();
+  uint32_t key_a = a.GetHash();
+  uint32_t key_b = b.GetHash();
 
   EXPECT_EQ(key_a, key_b);
 
@@ -506,8 +506,8 @@ TEST_F(FontDescriptionTest, GenericFamilyDifferentHash) {
   b.SetFamily(
       FontFamily(font_family_names::kSerif, FontFamily::Type::kFamilyName));
 
-  unsigned key_a = a.GetHash();
-  unsigned key_b = b.GetHash();
+  uint32_t key_a = a.GetHash();
+  uint32_t key_b = b.GetHash();
 
   ASSERT_NE(key_a, key_b);
 }

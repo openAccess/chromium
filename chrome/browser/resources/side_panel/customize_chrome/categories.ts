@@ -23,8 +23,8 @@ import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {getCss} from './categories.css.js';
 import {getHtml} from './categories.html.js';
 import {CustomizeChromeAction, NtpImageType, recordCustomizeChromeAction, recordCustomizeChromeImageError} from './common.js';
-import type {BackgroundCollection, Theme} from './customize_chrome.mojom-webui.js';
-import {CustomizeChromeApiProxy} from './customize_chrome_api_proxy.js';
+import type {BackgroundCollection, BrowserProxy, Theme} from './customize_chrome.mojom-webui.js';
+import {browserProxyFactory} from './customize_chrome.mojom-webui.js';
 import {WindowProxy} from './window_proxy.js';
 
 export enum CategoryType {
@@ -50,7 +50,6 @@ const CategoriesElementBase = I18nMixinLit(HelpBubbleMixinLit(CrLitElement));
 
 export interface CategoriesElement {
   $: {
-    chromeWebStoreTile: HTMLElement,
     classicChromeTile: HTMLElement,
     heading: SpHeadingElement,
     uploadImageTile: HTMLElement,
@@ -79,6 +78,7 @@ export class CategoriesElement extends CategoriesElementBase {
       isLocalImageSelected_: {type: Boolean},
       isWallpaperSearchSelected_: {type: Boolean},
       wallpaperSearchEnabled_: {type: Boolean},
+      chromeWebStoreThemesEnabled_: {type: Boolean},
     };
   }
 
@@ -91,11 +91,12 @@ export class CategoriesElement extends CategoriesElementBase {
   protected accessor isWallpaperSearchSelected_: boolean = false;
   protected accessor wallpaperSearchEnabled_: boolean =
       loadTimeData.getBoolean('wallpaperSearchEnabled');
+  protected accessor chromeWebStoreThemesEnabled_: boolean =
+      loadTimeData.getBoolean('chromeWebStoreThemesEnabled');
   protected imageErrorDetectionEnabled_: boolean =
       loadTimeData.getBoolean('imageErrorDetectionEnabled');
 
-  private apiProxy_: CustomizeChromeApiProxy =
-      CustomizeChromeApiProxy.getInstance();
+  private apiProxy_: BrowserProxy = browserProxyFactory.getInstance();
   private previewImageLoadStartEpoch_: number;
   private setThemeListenerId_: number|null = null;
 

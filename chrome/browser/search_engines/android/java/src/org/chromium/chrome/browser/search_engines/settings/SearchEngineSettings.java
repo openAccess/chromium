@@ -81,7 +81,7 @@ public class SearchEngineSettings extends ListFragment
         assert mProfile != null;
         RegionalCapabilitiesService regionalCapabilities =
                 RegionalCapabilitiesServiceFactory.getForProfile(mProfile);
-        if (regionalCapabilities.isInEeaCountry()) {
+        if (regionalCapabilities.isInSearchEngineChoiceScreenRegion()) {
             View headerView =
                     getLayoutInflater()
                             .inflate(R.layout.search_engine_choice_header, listView, false);
@@ -101,8 +101,17 @@ public class SearchEngineSettings extends ListFragment
         mSearchEngineAdapter.stop();
     }
 
+    @Override
+    public void onDestroy() {
+        if (mSearchEngineAdapter != null) {
+            mSearchEngineAdapter.destroy();
+        }
+        super.onDestroy();
+    }
+
     /**
      * Sets a runnable that disables auto search engine switching.
+     *
      * @param runnable Runnable to disable auto search engine switching.
      */
     public void setDisableAutoSwitchRunnable(Runnable runnable) {
@@ -141,7 +150,7 @@ public class SearchEngineSettings extends ListFragment
     }
 
     private void openSiteSearchSettings() {
-        SettingsNavigationFactory.createSettingsNavigation()
+        SettingsNavigationFactory.createSettingsNavigation(getContext())
                 .startSettings(
                         getContext(),
                         SiteSearchSettings.class,

@@ -15,10 +15,15 @@
   align-self: center;
   /* Enable interpolation between 'max-content' and 0 */
   interpolate-size: allow-keywords;
-  /* LINT.IfChange(AvatarRingSpecs) */
-  /* kAvatarRingGapDip (2px) + kAvatarRingThicknessDip (3px) = 5px */
-  --avatar-ring-delta: 5px;
-  /* LINT.ThenChange(//chrome/browser/ui/profiles/profile_view_utils.h:AvatarRingSpecs) */
+}
+
+:host(.overflow-display-none) {
+  display: none !important;
+}
+
+#button[has-label] {
+  margin-inline: calc(var(--toolbar-button-refresh-expanded-margin) -
+                      var(--toolbar-icon-default-margin));
 }
 
 #button {
@@ -66,6 +71,16 @@
   margin-inline-start: 0;
   max-width: 0;
   opacity: 0;
+}
+
+:host(.initial-load) #text {
+  transition: none !important;
+}
+
+/* Like native toolbar buttons, whose label is disabled while the browser
+ * window is inactive on Mac (the browser sets controls-appear-inactive). */
+:host-context(toolbar-app[controls-appear-inactive]) #text {
+  color: var(--color-label-foreground-disabled);
 }
 
 #button.highlight-default {

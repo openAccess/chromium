@@ -5,9 +5,9 @@
 import 'chrome://settings/lazy_load.js';
 
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {CaptionsBrowserProxyImpl, getLanguageHelperInstance, LanguageHelperImpl} from 'chrome://settings/lazy_load.js';
 import type {SettingsLiveTranslateElement} from 'chrome://settings/lazy_load.js';
-import {CaptionsBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
-import {CrSettingsPrefs, loadTimeData, PrefsBrowserProxy, PrefService} from 'chrome://settings/settings.js';
+import {loadTimeData, PrefsBrowserProxy, PrefService} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
 import {getFakeLanguagePrefs} from './fake_language_settings_private.js';
@@ -52,13 +52,9 @@ suite('LiveTranslateSection', function() {
     prefService = PrefService.getInstance();
     await prefService.whenInitialized();
 
-    const settingsPrefs = document.createElement('settings-prefs');
-    settingsPrefs.initialize(prefsBrowserProxy.fakeApi);
-    document.body.appendChild(settingsPrefs);
-    await CrSettingsPrefs.initialized;
-
-    const settingsLanguages = document.createElement('settings-languages');
-    document.body.appendChild(settingsLanguages);
+    LanguageHelperImpl.resetInstanceForTesting();
+    const languageHelper = getLanguageHelperInstance();
+    await languageHelper.whenReady();
 
     // Set up test browser proxy.
     browserProxy = new TestCaptionsBrowserProxy();
@@ -68,14 +64,10 @@ suite('LiveTranslateSection', function() {
     document.body.appendChild(liveTranslateSection);
 
     flush();
-    return settingsLanguages.whenReady();
   });
 
   test('translate.enable toggle', function() {
-    const settingsToggle =
-        liveTranslateSection.shadowRoot.querySelector<HTMLElement>(
-            '#liveTranslateToggleButton');
-    assertTrue(!!settingsToggle);
+    const settingsToggle = liveTranslateSection.$.liveTranslateToggleButton;
 
     // Clicking on the toggle switches it to true.
     settingsToggle.click();

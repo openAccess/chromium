@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/functional/bind.h"
+#include "base/time/time.h"
 #include "chrome/browser/extensions/browser_window_util.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
@@ -19,6 +20,7 @@
 #include "extensions/browser/extensions_browser_client.h"
 #include "extensions/buildflags/buildflags.h"
 #include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(ENABLE_PLATFORM_APPS)
@@ -26,7 +28,20 @@
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/android/tab_android.h"
+#include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
+#include "chrome/browser/content_settings/request_desktop_site_web_contents_observer_android.h"
+#include "chrome/browser/extensions/tab_helper.h"
+#include "chrome/browser/history/history_tab_helper.h"
+#include "chrome/browser/optimization_guide/optimization_guide_web_contents_observer.h"
+#include "chrome/browser/page_load_metrics/page_load_metrics_initialize.h"
+#include "chrome/browser/subresource_filter/chrome_content_subresource_filter_web_contents_helper_factory.h"
+#include "components/content_settings/browser/page_specific_content_settings.h"
+#include "components/optimization_guide/core/optimization_guide_features.h"
+#include "extensions/browser/view_type_utils.h"
+#include "extensions/common/mojom/view_type.mojom.h"
+#else
+#include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
+#include "chrome/browser/ui/waap/waap_utils.h"
 #endif
 
 // This file contains code shared between Android and non-Android platforms.
@@ -50,7 +65,7 @@ void ChromeExtensionHostDelegate::CreateTab(
     std::unique_ptr<content::WebContents> web_contents,
     const GURL& target_url,
     const ExtensionId& extension_id,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture) {
   // Verify that the browser is not shutting down. It can be the case if the
@@ -61,20 +76,35 @@ void ChromeExtensionHostDelegate::CreateTab(
   }
 
   CHECK(web_contents);
-#if BUILDFLAG(IS_ANDROID)
-  // On Android, tab creation is asynchronous, but `CreateNewWindow()`
-  // immediately starts navigation. Attach `TabHelpers` synchronously so
-  // observers like `RequestDesktopSiteWebContentsObserverAndroid` are present
-  // for the initial load. This matches
-  // `TabWebContentsDelegateAndroid::AddNewContents()`. It is safe to
-  // attach `TabHelpers` multiple times since `AttachTabHelpers()` is
-  // idempotent.
-  // TODO(crbug.com/499200457): Add instrumentation test.
-  TabAndroid::AttachTabHelpers(web_contents.get());
-#endif
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
   CHECK(profile);
+#if BUILDFLAG(IS_ANDROID)
+  // On Android, tab creation is asynchronous, but `CreateNewWindow()`
+  // immediately starts navigation. Attach early helpers synchronously so
+  // observers like `RequestDesktopSiteWebContentsObserverAndroid` are present
+  // for the initial load. This matches
+  // `TabWebContentsDelegateAndroid::AddNewContents()`.
+  // TODO(crbug.com/499200457): Add instrumentation test.
+  CreateSubresourceFilterWebContentsHelper(web_contents.get());
+  content_settings::PageSpecificContentSettings::CreateForWebContents(
+      web_contents.get(), std::make_unique<PageSpecificContentSettingsDelegate>(
+                              web_contents.get()));
+  if (!profile->IsOffTheRecord()) {
+    HistoryTabHelper::GetOrCreateForWebContents(web_contents.get());
+  }
+  if (optimization_guide::features::IsOptimizationHintsEnabled()) {
+    OptimizationGuideWebContentsObserver::CreateForWebContents(
+        web_contents.get());
+  }
+  InitializePageLoadMetricsForWebContents(web_contents.get());
+  RequestDesktopSiteWebContentsObserverAndroid::CreateForWebContents(
+      web_contents.get());
+  if (GetViewType(web_contents.get()) == mojom::ViewType::kInvalid) {
+    SetViewType(web_contents.get(), mojom::ViewType::kTabContents);
+  }
+  TabHelper::CreateForWebContents(web_contents.get());
+#endif
   BrowserWindowInterface* browser =
       browser_window_util::GetLastActiveNormalBrowserWithProfile(
           *profile, /*include_incognito_or_parent=*/false);
@@ -106,8 +136,13 @@ void ChromeExtensionHostDelegate::CreateTab(
   return;
 #else
   // Other platforms create windows synchronously.
+  const base::TimeTicks now = base::TimeTicks::Now();
   browser = CreateBrowserWindow(std::move(params));
   CHECK(browser);
+  if (auto* manager = InitialWebUIWindowMetricsManager::From(browser)) {
+    manager->SetWindowCreationInfo(waap::NewWindowCreationSource::kExtension,
+                                   now);
+  }
   NavigateBrowser(/*browser_created=*/true, std::move(web_contents), target_url,
                   extension_id, disposition, window_features, user_gesture,
                   browser);
@@ -119,7 +154,7 @@ void ChromeExtensionHostDelegate::NavigateBrowser(
     std::unique_ptr<content::WebContents> web_contents,
     GURL target_url,
     ExtensionId extension_id,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     blink::mojom::WindowFeatures window_features,
     bool user_gesture,
     BrowserWindowInterface* browser) {
@@ -132,8 +167,8 @@ void ChromeExtensionHostDelegate::NavigateBrowser(
   // supported. See browser_navigator_android.cc or http://crbug.com/441594986.
   auto params =
       std::make_unique<NavigateParams>(browser, /*contents_to_insert=*/nullptr);
-  if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
-      disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB) {
+  if (disposition == ui::mojom::WindowOpenDisposition::kNewForegroundTab ||
+      disposition == ui::mojom::WindowOpenDisposition::kNewBackgroundTab) {
     params->contents_to_insert = std::move(web_contents);
   } else {
     params->url = std::move(target_url);
@@ -148,7 +183,7 @@ void ChromeExtensionHostDelegate::NavigateBrowser(
   // among other things, whether the location bar gets displayed.
   // TODO(mpcomplete): This seems wrong. What if the extension content is
   // hosted in a tab?
-  if (disposition == WindowOpenDisposition::NEW_POPUP) {
+  if (disposition == ui::mojom::WindowOpenDisposition::kNewPopup) {
     params->app_id = extension_id;
   }
 

@@ -28,11 +28,11 @@ BASE_DIR = os.path.abspath(
 )
 
 sys.path.append(os.path.join(BASE_DIR, 'build', 'android'))
-from pylib.results.presentation import standard_gtest_merge
-from lib.common import google_storage_helper  # pylint: disable=import-error
+from pylib.results.presentation import standard_gtest_merge  # noqa: E402
+from lib.common import google_storage_helper  # noqa: E402
 
 sys.path.append(os.path.join(BASE_DIR, 'third_party'))
-import jinja2  # pylint: disable=import-error
+import jinja2  # noqa: E402
 
 JINJA_ENVIRONMENT = jinja2.Environment(
     loader=jinja2.FileSystemLoader(os.path.dirname(__file__)), autoescape=True
@@ -364,7 +364,7 @@ def results_to_html(
     )
 
     if local_output:
-        html_render = main_template.render(  #  pylint: disable=no-member
+        html_render = main_template.render(
             {
                 'tb_values': [suite_table_values, test_table_values],
                 'feedback_url': feedback_url(None),
@@ -377,7 +377,7 @@ def results_to_html(
     result_details_link = google_storage_helper.get_url_link(
         dest, '%s/html' % bucket
     )
-    html_render = main_template.render(  #  pylint: disable=no-member
+    html_render = main_template.render(
         {
             'tb_values': [suite_table_values, test_table_values],
             'feedback_url': feedback_url(result_details_link),
@@ -405,7 +405,7 @@ def result_details(
     with open(json_path) as json_file:
         json_object = json.loads(json_file.read())
 
-    if not 'per_iteration_data' in json_object:
+    if 'per_iteration_data' not in json_object:
         return 'Error: json file missing per_iteration_data.'
 
     results_dict = collections.defaultdict(list)
@@ -439,11 +439,10 @@ def upload_to_google_bucket(html, bucket, dest):
 def ui_screenshot_set(json_path):
     with open(json_path) as json_file:
         json_object = json.loads(json_file.read())
-    if not 'per_iteration_data' in json_object:
+    if 'per_iteration_data' not in json_object:
         # This will be reported as an error by result_details, no need to duplicate.
         return None
     ui_screenshots = []
-    # pylint: disable=too-many-nested-blocks
     for testsuite_run in json_object['per_iteration_data']:
         for _, test_runs in testsuite_run.items():
             for test_run in test_runs:
@@ -466,7 +465,6 @@ def ui_screenshot_set(json_path):
                             continue
                         test_screenshots = json.loads(screenshot_string)
                     ui_screenshots.extend(test_screenshots)
-    # pylint: enable=too-many-nested-blocks
 
     if ui_screenshots:
         return json.dumps(ui_screenshots)
@@ -566,8 +564,8 @@ def main():
 
     if args.build_properties:
         build_properties = json.loads(args.build_properties)
-        if (not 'buildnumber' in build_properties) or (
-            not 'buildername' in build_properties
+        if ('buildnumber' not in build_properties) or (
+            'buildername' not in build_properties
         ):
             raise parser.error('Build number/builder name not specified.')
         build_number = build_properties['buildnumber']
@@ -597,23 +595,24 @@ def main():
     if not os.path.exists(json_file):
         raise IOError('--json-file %s not found.' % json_file)
 
-    # Link to result details presentation page is a part of the page.
-    result_html_string, dest, result_details_link = result_details(
-        json_file,
-        args.test_name,
-        args.cs_base_url,
-        args.bucket,
-        builder_name,
-        build_number,
-    )
+    if not args.output_json:
+        # Link to result details presentation page is a part of the page.
+        result_html_string, dest, result_details_link = result_details(
+            json_file,
+            args.test_name,
+            args.cs_base_url,
+            args.bucket,
+            builder_name,
+            build_number,
+        )
 
-    result_details_link_2 = upload_to_google_bucket(
-        result_html_string.encode('UTF-8'), args.bucket, dest
-    )
-    assert result_details_link == result_details_link_2, (
-        'Result details link do not match. The link returned by get_url_link'
-        ' should be the same as that returned by upload.'
-    )
+        result_details_link_2 = upload_to_google_bucket(
+            result_html_string.encode('UTF-8'), args.bucket, dest
+        )
+        assert result_details_link == result_details_link_2, (
+            'Result details link do not match. The link returned by'
+            ' get_url_link should be the same as that returned by upload.'
+        )
 
     ui_screenshot_set_link = upload_screenshot_set(
         json_file, args.test_name, args.bucket, builder_name, build_number
@@ -629,9 +628,7 @@ def main():
     if args.output_json:
         with open(json_file) as original_json_file:
             json_object = json.load(original_json_file)
-            json_object['links'] = {
-                'result_details (logcats, flakiness links)': result_details_link
-            }
+            json_object['links'] = {}
 
             if ui_screenshot_set_link:
                 json_object['links']['ui screenshots'] = ui_screenshot_link

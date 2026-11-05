@@ -251,6 +251,12 @@ below:
       <message name="IDS_FORM_INPUT_ALT" desc="Alt text for &lt;input&gt; elements with no alt, title, or value">
         Submit
       </message>
+      <message name="IDS_FORM_PASSWORD_SHOWN" desc="Announcement spoken by assistive technology after a user reveals the value of a password input.">
+        Password shown
+      </message>
+      <message name="IDS_FORM_PASSWORD_HIDDEN" desc="Announcement spoken by assistive technology after a user hides the value of a password input.">
+        Password hidden
+      </message>
       <message name="IDS_FORM_RESET_LABEL" desc="default label for Reset buttons in forms on webpages">
         Reset
       </message>
@@ -595,6 +601,29 @@ below:
 
       <message name="IDS_MEDIA_PLAYBACK_ERROR" desc="Message informing that the user that there were issues playing back their media.">
         Unable to play media.
+      </message>
+
+      <!-- XSLT deprecation banner -->
+      <message name="IDS_XSLT_DEPRECATION_BANNER_TEXT" desc="Text of a banner shown at the top of a web page that was generated using XSLT, a technology that is being removed from the browser. The two placeholders are the texts of links: the first points to documentation about the removal, and the second points to browser extensions that restore the functionality.">
+        This site uses XSLT; that functionality is being <ph name="REMOVAL_LINK">$1<ex>removed from this browser very soon</ex></ph>. When that happens, this page will likely no longer display correctly. You might be able to <ph name="EXTENSION_LINK">$2<ex>install a browser extension</ex></ph> that allows you to continue viewing it. Otherwise, you should contact the maintainer of the site for further information.
+      </message>
+      <message name="IDS_XSLT_DEPRECATION_BANNER_REMOVAL_LINK" desc="Text of a link, within the XSLT deprecation banner, pointing to documentation about the removal of XSLT from the browser.">
+        removed from this browser very soon
+      </message>
+      <message name="IDS_XSLT_DEPRECATION_BANNER_CAP_ALERT_TEXT" desc="Text of a banner shown at the top of a CAP (Common Alerting Protocol) alert, such as a weather or emergency alert, that was generated using XSLT, a technology that is being removed from the browser. The two placeholders are the texts of links: the first points to documentation about the removal, and the second points to browser extensions that restore the functionality.">
+        This CAP alert uses technology called XSLT; that functionality is being <ph name="REMOVAL_LINK">$1<ex>removed from this browser</ex></ph>. When that happens, this alert will be shown as raw XML data. You might be able to <ph name="EXTENSION_LINK">$2<ex>install a browser extension</ex></ph> that allows you to continue viewing it.
+      </message>
+      <message name="IDS_XSLT_DEPRECATION_BANNER_CAP_ALERT_HUB_TEXT" desc="Sentence appended to the end of the XSLT deprecation banner shown on a CAP (Common Alerting Protocol) alert. The placeholder is the text of a link to the alert-hub website, which has more details about the removal of XSLT. The link text is the name of the website and is not translated.">
+        See <ph name="ALERT_HUB_LINK">$1<ex>alert-hub</ex></ph> for more details.
+      </message>
+      <message name="IDS_XSLT_DEPRECATION_BANNER_CAP_ALERT_REMOVAL_LINK" desc="Text of a link, within the XSLT deprecation banner shown on a CAP (Common Alerting Protocol) alert, pointing to documentation about the removal of XSLT from the browser.">
+        removed from this browser
+      </message>
+      <message name="IDS_XSLT_DEPRECATION_BANNER_EXTENSION_LINK" desc="Text of a link, within the XSLT deprecation banner, pointing to a list of browser extensions that let the page keep working after XSLT is removed.">
+        install a browser extension
+      </message>
+      <message name="IDS_XSLT_DEPRECATION_BANNER_NEVER_SHOW_AGAIN" desc="Label of a checkbox in the XSLT deprecation banner. Checking it and then closing the banner stops the banner from being shown on any site.">
+        Never show this warning
       </message>
 
       <!-- Byte size units -->

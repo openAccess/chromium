@@ -60,6 +60,7 @@
 #include "components/safe_browsing/core/common/features.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/base/schemeful_site.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/cookies/static_cookie_policy.h"
@@ -1518,10 +1519,11 @@ TEST_F(HostContentSettingsMapTest, IncognitoDontInheritWebsiteSetting) {
   }
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 TEST_F(HostContentSettingsMapTest, IncognitoDontInheritContentSetting) {
   // Content settings marked DONT_INHERIT_IN_INCOGNITO in
-  // ContentSettingsRegistry (e.g. Storage Access Header origin trial, which is
-  // a special case) don't inherit any values from from regular to incognito.
+  // ContentSettingsRegistry (e.g. DISPLAY_MEDIA_SYSTEM_AUDIO) don't inherit any
+  // values from regular to incognito.
   TestingProfile profile;
   Profile* otr_profile =
       profile.GetPrimaryOTRProfile(/*create_if_needed=*/true);
@@ -1532,30 +1534,27 @@ TEST_F(HostContentSettingsMapTest, IncognitoDontInheritContentSetting) {
 
   GURL host("https://example.com/");
 
-  // Storage Access Header origin trial content settings defaults to BLOCK.
-  EXPECT_EQ(
-      CONTENT_SETTING_BLOCK,
-      map->GetContentSetting(
-          host, host, ContentSettingsType::STORAGE_ACCESS_HEADER_ORIGIN_TRIAL));
-  EXPECT_EQ(
-      CONTENT_SETTING_BLOCK,
-      otr_map->GetContentSetting(
-          host, host, ContentSettingsType::STORAGE_ACCESS_HEADER_ORIGIN_TRIAL));
+  // Default is BLOCK.
+  EXPECT_EQ(CONTENT_SETTING_BLOCK,
+            map->GetContentSetting(
+                host, host, ContentSettingsType::DISPLAY_MEDIA_SYSTEM_AUDIO));
+  EXPECT_EQ(CONTENT_SETTING_BLOCK,
+            otr_map->GetContentSetting(
+                host, host, ContentSettingsType::DISPLAY_MEDIA_SYSTEM_AUDIO));
 
   map->SetContentSettingDefaultScope(
-      host, host, ContentSettingsType::STORAGE_ACCESS_HEADER_ORIGIN_TRIAL,
+      host, host, ContentSettingsType::DISPLAY_MEDIA_SYSTEM_AUDIO,
       CONTENT_SETTING_ALLOW);
 
   // The setting is not inherited by |otr_map|.
-  EXPECT_EQ(
-      CONTENT_SETTING_ALLOW,
-      map->GetContentSetting(
-          host, host, ContentSettingsType::STORAGE_ACCESS_HEADER_ORIGIN_TRIAL));
-  EXPECT_EQ(
-      CONTENT_SETTING_BLOCK,
-      otr_map->GetContentSetting(
-          host, host, ContentSettingsType::STORAGE_ACCESS_HEADER_ORIGIN_TRIAL));
+  EXPECT_EQ(CONTENT_SETTING_ALLOW,
+            map->GetContentSetting(
+                host, host, ContentSettingsType::DISPLAY_MEDIA_SYSTEM_AUDIO));
+  EXPECT_EQ(CONTENT_SETTING_BLOCK,
+            otr_map->GetContentSetting(
+                host, host, ContentSettingsType::DISPLAY_MEDIA_SYSTEM_AUDIO));
 }
+#endif
 
 TEST_F(HostContentSettingsMapTest, PrefExceptionsOperation) {
   const char kUrl1[] = "http://user_exception_allow.com";
@@ -2508,21 +2507,6 @@ TEST_F(HostContentSettingsMapTest, GetPatternsFromScopingType) {
   EXPECT_EQ(settings[0].secondary_pattern, ContentSettingsPattern::Wildcard());
 
   // Testing cases:
-  //   WebsiteSettingsInfo::REQUESTING_ORIGIN_AND_TOP_SCHEMEFUL_SITE_SCOPE,
-  host_content_settings_map->SetContentSettingDefaultScope(
-      primary_url, secondary_url, ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS,
-      CONTENT_SETTING_ALLOW);
-
-  settings = host_content_settings_map->GetSettingsForOneType(
-      ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS);
-
-  EXPECT_EQ(settings[0].primary_pattern,
-            ContentSettingsPattern::FromURLNoWildcard(primary_url));
-  EXPECT_EQ(
-      settings[0].secondary_pattern,
-      ContentSettingsPattern::FromURLToSchemefulSitePattern(secondary_url));
-
-  // Testing cases:
   //   WebsiteSettingsInfo::REQUESTING_ORIGIN_ONLY_SCOPE,
   //   WebsiteSettingsInfo::TOP_ORIGIN_ONLY_SCOPE,
   //   WebsiteSettingsInfo::GENERIC_SINGLE_ORIGIN_SCOPE.
@@ -2579,18 +2563,6 @@ TEST_F(HostContentSettingsMapTest, GetPatternsForContentSettingsType) {
   EXPECT_EQ(patterns.first,
             ContentSettingsPattern::FromURLToSchemefulSitePattern(primary_url));
   EXPECT_EQ(patterns.second, ContentSettingsPattern::Wildcard());
-
-  // Testing cases:
-  //   WebsiteSettingsInfo::REQUESTING_ORIGIN_AND_TOP_SCHEMEFUL_SITE_SCOPE,
-  patterns = HostContentSettingsMap::GetPatternsForContentSettingsType(
-      primary_url, secondary_url,
-      ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS);
-
-  EXPECT_EQ(patterns.first,
-            ContentSettingsPattern::FromURLNoWildcard(primary_url));
-  EXPECT_EQ(
-      patterns.second,
-      ContentSettingsPattern::FromURLToSchemefulSitePattern(secondary_url));
 
   // Testing cases:
   //   WebsiteSettingsInfo::TOP_ORIGIN_WITH_RESOURCE_EXCEPTIONS_SCOPE,
@@ -2948,6 +2920,43 @@ TEST_P(HostContentSettingsMapActiveExpirationTest,
   ASSERT_EQ(1u, settings.size());
 }
 
+TEST_P(HostContentSettingsMapActiveExpirationTest, RecordsRevokedSettingType) {
+  constexpr char kHistogram[] =
+      "ContentSettings.ActiveExpiry.RevokedSettingType";
+  TestingProfile profile;
+  HostContentSettingsMap* map =
+      HostContentSettingsMapFactory::GetForProfile(&profile);
+  base::HistogramTester t;
+
+  const ContentSettingsType type = ContentSettingsType::MEDIASTREAM_CAMERA;
+  const GURL url1("https://example.com");
+  const GURL url2("https://other_site.example");
+
+  content_settings::ContentSettingConstraints constraints;
+  constraints.set_lifetime(base::Seconds(100));
+  map->SetContentSettingDefaultScope(url1, url1, type, CONTENT_SETTING_ALLOW,
+                                     constraints);
+  map->SetContentSettingDefaultScope(url2, url2, type, CONTENT_SETTING_ALLOW,
+                                     constraints);
+
+  // Nothing has expired yet, so nothing is recorded.
+  RunExpirationMechanismIfFeatureEnabled(map, type);
+  t.ExpectTotalCount(kHistogram, 0);
+
+  // Once the grants are about to expire, the enforcement timer fires and
+  // revokes both of them, recording one sample each.
+  FastForwardTime(base::Seconds(101));
+  EXPECT_EQ(CONTENT_SETTING_ASK, map->GetContentSetting(url1, url1, type));
+  EXPECT_EQ(CONTENT_SETTING_ASK, map->GetContentSetting(url2, url2, type));
+  if (GetParam()) {
+    t.ExpectUniqueSample(
+        kHistogram,
+        content_settings_uma_util::ContentSettingTypeToHistogramValue(type), 2);
+  } else {
+    t.ExpectTotalCount(kHistogram, 0);
+  }
+}
+
 TEST_F(HostContentSettingsMapTest, StorageAccessMetrics) {
   const ContentSettingsType type = ContentSettingsType::STORAGE_ACCESS;
   const GURL url1("https://example1.com");
@@ -3219,13 +3228,8 @@ TEST_F(HostContentSettingsMapTest, RecordDefaultSensorsSetting) {
 TEST_F(HostContentSettingsMapTest, DeleteStorageAccessRwsGrantsOnStartup) {
   TestingProfile profile;
 
-  // 1. Enable the feature.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      content_settings::features::kStorageAccessAPIRelatedWebsiteSets);
-
   // Create map and inject grant.
-  scoped_refptr<HostContentSettingsMap> map_with_feature_enabled =
+  scoped_refptr<HostContentSettingsMap> initial_map =
       base::MakeRefCounted<HostContentSettingsMap>(
           profile.GetPrefs(), /*is_off_the_record=*/false,
           /*store_last_modified=*/false, /*restore_session=*/false,
@@ -3237,35 +3241,30 @@ TEST_F(HostContentSettingsMapTest, DeleteStorageAccessRwsGrantsOnStartup) {
   content_settings::ContentSettingConstraints constraints;
   constraints.set_decided_by_related_website_sets(true);
 
-  map_with_feature_enabled->SetContentSettingDefaultScope(
+  initial_map->SetContentSettingDefaultScope(
       requesting_url, embedding_url, ContentSettingsType::STORAGE_ACCESS,
       CONTENT_SETTING_ALLOW, constraints);
 
   // Verify it is there.
-  EXPECT_EQ(CONTENT_SETTING_ALLOW, map_with_feature_enabled->GetContentSetting(
+  EXPECT_EQ(CONTENT_SETTING_ALLOW, initial_map->GetContentSetting(
                                        requesting_url, embedding_url,
                                        ContentSettingsType::STORAGE_ACCESS));
 
-  // Shutdown map_with_feature_enabled to make sure it is not used anymore.
-  map_with_feature_enabled->ShutdownOnUIThread();
-  map_with_feature_enabled.reset();
-
-  // 2. Disable the feature.
-  feature_list.Reset();
-  feature_list.InitAndDisableFeature(
-      content_settings::features::kStorageAccessAPIRelatedWebsiteSets);
+  // Shutdown initial_map to make sure it is not used anymore.
+  initial_map->ShutdownOnUIThread();
+  initial_map.reset();
 
   // Create a new map with the same prefs.
-  scoped_refptr<HostContentSettingsMap> map_after_feature_disabled =
+  scoped_refptr<HostContentSettingsMap> map_on_startup =
       base::MakeRefCounted<HostContentSettingsMap>(
           profile.GetPrefs(), /*is_off_the_record=*/false,
           /*store_last_modified=*/false, /*restore_session=*/false,
           /*should_record_metrics=*/false);
 
   // Verify the grant is gone (deleted on startup).
-  EXPECT_EQ(CONTENT_SETTING_ASK, map_after_feature_disabled->GetContentSetting(
+  EXPECT_EQ(CONTENT_SETTING_ASK, map_on_startup->GetContentSetting(
                                      requesting_url, embedding_url,
                                      ContentSettingsType::STORAGE_ACCESS));
 
-  map_after_feature_disabled->ShutdownOnUIThread();
+  map_on_startup->ShutdownOnUIThread();
 }

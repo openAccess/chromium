@@ -14,10 +14,12 @@
 #include "base/version.h"
 #include "build/build_config.h"
 #include "content/browser/accessibility/accessibility_browsertest.h"
+#include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_aura.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/test/accessibility_notification_waiter.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
@@ -25,6 +27,7 @@
 #include "ui/accessibility/platform/ax_platform.h"
 #include "ui/accessibility/platform/ax_platform_node_auralinux.h"
 #include "ui/accessibility/platform/browser_accessibility.h"
+#include "ui/base/glib/scoped_gobject.h"
 #include "ui/base/glib/scoped_gsignal.h"
 
 // TODO(crbug.com/40248581): Remove this again.
@@ -468,17 +471,11 @@ IN_PROC_BROWSER_TEST_F(AccessibilityAuraLinuxBrowserTest,
   CheckTextAtOffset(atk_text, 46, ATK_TEXT_BOUNDARY_LINE_START, 32,
                     contents_string_length, "\"KHTML, like\".\n");
 
-  {
-    // There should be no text at an offset one past the last character.
-    int start_offset = 0;
-    int end_offset = 0;
-    char* text = atk_text_get_text_at_offset(atk_text, contents_string_length,
-                                             ATK_TEXT_BOUNDARY_LINE_START,
-                                             &start_offset, &end_offset);
-    EXPECT_EQ(0, start_offset);
-    EXPECT_EQ(0, end_offset);
-    EXPECT_EQ(nullptr, text);
-  }
+  // An offset one past the last character should return the last line which is
+  // blank. This is represented by Blink with yet another line break.
+  CheckTextAtOffset(atk_text, contents_string_length,
+                    ATK_TEXT_BOUNDARY_LINE_START, contents_string_length,
+                    (contents_string_length + 1), "\n");
 
   {
     // There should be no text after the blank line.
@@ -2497,6 +2494,38 @@ IN_PROC_BROWSER_TEST_F(AccessibilityAuraLinuxBrowserTest,
     EXPECT_EQ(i, atk_object_get_index_in_parent(p));
     g_object_unref(p);
   }
+}
+
+IN_PROC_BROWSER_TEST_F(AccessibilityAuraLinuxBrowserTest,
+                       HiddenIframeDocumentGetIndexInParent) {
+  // 1. Load an iframe and keep its accessible document.
+  LoadInitialAccessibilityTreeFromHtml(R"HTML(
+      <iframe srcdoc="<title>Child document</title>"></iframe>
+      )HTML");
+  WebContents* web_contents = shell()->web_contents();
+  WaitForAccessibilityTreeToContainNodeWithName(web_contents, "Child document");
+
+  auto* child_frame = static_cast<RenderFrameHostImpl*>(
+      ChildFrameAt(web_contents->GetPrimaryMainFrame(), 0));
+  ASSERT_TRUE(child_frame);
+  auto* child_manager = child_frame->browser_accessibility_manager();
+  ASSERT_TRUE(child_manager);
+  auto child_document = WrapGObject(
+      child_manager->GetBrowserAccessibilityRoot()->GetNativeViewAccessible());
+
+  // 2. Hide the iframe, then query its document's parent and index.
+  AccessibilityNotificationWaiter waiter(web_contents,
+                                         ax::mojom::Event::kEndOfTest);
+  ASSERT_TRUE(ExecJs(
+      web_contents, "document.querySelector('iframe').style.display = 'none'"));
+  auto* manager = static_cast<WebContentsImpl*>(web_contents)
+                      ->GetRootBrowserAccessibilityManager();
+  manager->SignalEndOfTest();
+  ASSERT_TRUE(waiter.WaitForNotification());
+
+  ASSERT_TRUE(ui::AXPlatformNodeAuraLinux::FromAtkObject(child_document));
+  EXPECT_EQ(-1, atk_object_get_index_in_parent(child_document));
+  EXPECT_EQ(nullptr, atk_object_get_parent(child_document));
 }
 
 IN_PROC_BROWSER_TEST_F(AccessibilityAuraLinuxBrowserTest,

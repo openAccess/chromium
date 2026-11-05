@@ -44,10 +44,11 @@ BtmState BtmStorage::ReadSite(std::string site) {
 
   if (state.has_value()) {
     // We should not have entries in the DB without any timestamps.
-    CHECK(state->user_activation_times.has_value() ||
-              state->bounce_times.has_value() ||
-              state->web_authn_assertion_times.has_value(),
-          base::NotFatalUntil::M158);
+    // TODO(crbug.com/567725132): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(state->user_activation_times.has_value() ||
+           state->bounce_times.has_value() ||
+           state->web_authn_assertion_times.has_value());
 
     return BtmState(this, std::move(site), state.value());
   }
@@ -60,28 +61,6 @@ void BtmStorage::Write(const BtmState& state) {
 
   db_->Write(state.site(), state.user_activation_times(), state.bounce_times(),
              state.web_authn_assertion_times());
-}
-
-std::optional<PopupsStateValue> BtmStorage::ReadPopup(
-    const std::string& first_party_site,
-    const std::string& tracking_site) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(db_, base::NotFatalUntil::M158);
-
-  return db_->ReadPopup(first_party_site, tracking_site);
-}
-
-bool BtmStorage::WritePopup(const std::string& first_party_site,
-                            const std::string& tracking_site,
-                            const uint64_t access_id,
-                            const base::Time& popup_time,
-                            bool is_current_interaction,
-                            bool is_authentication_interaction) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(db_, base::NotFatalUntil::M158);
-
-  return db_->WritePopup(first_party_site, tracking_site, access_id, popup_time,
-                         is_current_interaction, is_authentication_interaction);
 }
 
 void BtmStorage::RemoveEvents(base::Time delete_begin,
@@ -104,13 +83,13 @@ void BtmStorage::RemoveEvents(base::Time delete_begin,
     db_->RemoveEventsByTime(delete_begin, delete_end, type);
   } else if (type == BtmEventRemovalType::kStorage && filter->origins.empty()) {
     // Site-filtered deletion is only supported for cookie-related
-    // DIPS events, since only cookie deletion allows domains but not hosts.
+    // BTM events, since only cookie deletion allows domains but not hosts.
     //
     // TODO(jdh): Assess the use of cookie deletions with both a time range and
     // a list of domains to determine whether supporting time ranges here is
     // necessary.
     // Time ranges aren't currently supported for site-filtered
-    // deletion of DIPS Events.
+    // deletion of BTM Events.
     if (delete_begin != base::Time::Min() || delete_end != base::Time::Max()) {
       // TODO (kaklilu@): Add a UMA metric to record if this happens.
       return;
@@ -128,7 +107,7 @@ void BtmStorage::RemoveRows(const std::vector<std::string>& sites) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(db_, base::NotFatalUntil::M158);
 
-  db_->RemoveRows(BtmDatabaseTable::kBounces, sites);
+  db_->RemoveRows(sites);
 }
 
 void BtmStorage::RemoveRowsWithoutProtectiveEvent(

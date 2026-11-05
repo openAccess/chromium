@@ -27,6 +27,8 @@ enum class ColumnSpecifier {
   V8_MEMORY,
   V8_MEMORY_USED,
   SQLITE_MEMORY_USED,
+  CPPGC_MEMORY,
+  CPPGC_MEMORY_USED,
   IDLE_WAKEUPS,
   NETWORK_USE,
   TOTAL_NETWORK_USE,
@@ -84,10 +86,6 @@ std::u16string MatchBFCache(std::string_view title);
 std::u16string MatchAnyBFCache();
 std::u16string MatchPrerender(std::string_view title);
 std::u16string MatchAnyPrerender();
-std::u16string MatchFencedFrame(std::string_view title);
-std::u16string MatchAnyFencedFrame();
-std::u16string MatchIncognitoFencedFrame(std::string_view title);
-std::u16string MatchAnyIncognitoFencedFrame();
 }  // namespace browsertest_util
 }  // namespace task_manager
 

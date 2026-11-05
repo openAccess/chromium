@@ -9,11 +9,11 @@
 #include "base/run_loop.h"
 #include "chrome/browser/chromeos/extensions/login_screen/login_state/session_state_changed_event_dispatcher.h"
 #include "chrome/common/chrome_constants.h"
-#include "chrome/common/extensions/api/login_state.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/login/login_state/login_state.h"
+#include "chromeos/ash/experiences/extensions/common/api/login_state.h"
 #include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
@@ -53,8 +53,8 @@ bool WasSessionStateChangedEventDispatched(
   }
 
   const extensions::Event& event = *iter->second;
-  CHECK_EQ(1u, event.event_args.size());
-  std::string session_state = event.event_args[0].GetString();
+  CHECK_EQ(1u, event.args().size());
+  std::string session_state = event.args()[0].GetString();
   return extensions::api::login_state::ParseSessionState(session_state) ==
          expected_state;
 }

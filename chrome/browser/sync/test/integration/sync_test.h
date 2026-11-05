@@ -5,7 +5,6 @@
 #ifndef CHROME_BROWSER_SYNC_TEST_INTEGRATION_SYNC_TEST_H_
 #define CHROME_BROWSER_SYNC_TEST_INTEGRATION_SYNC_TEST_H_
 
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,7 +19,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager_observer.h"
 #include "chrome/browser/profiles/profile_observer.h"
-#include "chrome/browser/sync/test/integration/invalidations/fake_server_sync_invalidation_sender.h"
 #include "chrome/browser/sync/test/integration/sync_test_account.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/test/base/platform_browser_test.h"
@@ -29,6 +27,7 @@
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/test/embedded_fake_server_adapter.h"
 #include "components/sync/test/fake_server.h"
+#include "components/sync/test/fake_server_sync_invalidation_sender.h"
 #include "content/public/test/network_connection_change_simulator.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_status_code.h"
@@ -63,8 +62,6 @@
 #define E2E_ENABLED(test_name) MACRO_CONCAT(test_name, E2ETest)
 
 class BrowserWindowInterface;
-class FakeSyncGCMDriver;
-class KeyedService;
 class ProfileManager;
 class SyncServiceImplHarness;
 
@@ -335,10 +332,6 @@ class SyncTest : public PlatformBrowserTest,
   // determined at runtime based on server type.
   bool CreateProfile(int index);
 
-  // Creates a fake GCMProfileService to simulate sync invalidations.
-  std::unique_ptr<KeyedService> CreateGCMProfileService(
-      content::BrowserContext* context);
-
 #if !BUILDFLAG(IS_ANDROID)
   // Called when the |browser| was removed externally. This just marks the
   // |browser| in the |browsers_| list as nullptr to keep indexes in |browsers_|
@@ -370,10 +363,6 @@ class SyncTest : public PlatformBrowserTest,
       SyncWaitCondition wait_condition,
       SyncTestAccount account,
       bool enable_history_sync_in_transport_mode);
-
-  // Used to determine whether ARC_PACKAGE data type needs to be enabled. This
-  // is applicable on ChromeOS-Ash platform only.
-  bool UseArcPackage();
 
   // Waits for all the changes which might be done asynchronously after setting
   // up sync engine. This is used to prevent starting another sync cycle after
@@ -415,7 +404,7 @@ class SyncTest : public PlatformBrowserTest,
 
     // The profile for this sync client. Owned by ProfileManager. Can be null if
     // destroyed earlier (e.g. in OnProfileWillBeDestroyed).
-    raw_ptr<Profile, AcrossTasksDanglingUntriaged> profile = nullptr;
+    raw_ptr<Profile> profile = nullptr;
     std::unique_ptr<SyncServiceImplHarness> harness;
 #if !BUILDFLAG(IS_ANDROID)
     std::vector<raw_ptr<BrowserWindowInterface, AcrossTasksDanglingUntriaged>>
@@ -436,14 +425,14 @@ class SyncTest : public PlatformBrowserTest,
   // sync harness, and browser windows.
   std::vector<SyncClientState> clients_;
 
-  // Used to deliver invalidations to different profiles within
-  // FakeSyncServerInvalidationSender.
-  // TODO(crbug.com/40855871): Move this into SyncClientState.
-  std::map<raw_ptr<Profile, AcrossTasksDanglingUntriaged>,
-           raw_ptr<FakeSyncGCMDriver, AcrossTasksDanglingUntriaged>>
-      profile_to_fake_gcm_driver_;
-
   syncer::DataTypeSet excluded_types_from_check_for_data_type_failures_;
+
+  // Disable DSE Prewarm to avoid spawning background prerender processes on
+  // every tab load in sync integration tests (https://crbug.com/423465927).
+  // Wrapped to avoid introducing `namespace test` in this header, which
+  // conflicts with `using sync_datatype_helper::test` in sync test helpers.
+  class ScopedPrewarmDisabler;
+  std::unique_ptr<ScopedPrewarmDisabler> prewarm_disabler_;
 
 #if !BUILDFLAG(IS_ANDROID)
   // Disable extension install verification.

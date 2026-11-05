@@ -15,8 +15,6 @@ import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.tab.TabSelectionType.FROM_USER;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -26,6 +24,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.Token;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
@@ -83,22 +82,6 @@ public class HubTabSwitcherMetricsRecorderUnitTest {
         mIncognitoTabModel.addTab(INCOGNITO_TAB_1_ID);
         mIncognitoTabModel.setIndex(INCOGNITO_TAB_0_INDEX, FROM_USER);
 
-        Tab regularTab0 = mRegularTabModel.getTabAt(REGULAR_TAB_0_INDEX);
-        Tab regularTab1 = mRegularTabModel.getTabAt(REGULAR_TAB_1_INDEX);
-        Tab incognitoTab0 = mIncognitoTabModel.getTabAt(INCOGNITO_TAB_0_INDEX);
-        Tab incognitoTab1 = mIncognitoTabModel.getTabAt(INCOGNITO_TAB_1_INDEX);
-
-        when(mRegularTabModel.isTabInTabGroup(regularTab0)).thenReturn(false);
-        when(mRegularTabModel.isTabInTabGroup(regularTab1)).thenReturn(false);
-        when(mRegularTabModel.representativeIndexOf(regularTab0)).thenReturn(REGULAR_TAB_0_INDEX);
-        when(mRegularTabModel.representativeIndexOf(regularTab1)).thenReturn(REGULAR_TAB_1_INDEX);
-        when(mIncognitoTabModel.representativeIndexOf(incognitoTab0))
-                .thenReturn(INCOGNITO_TAB_0_INDEX);
-        when(mIncognitoTabModel.representativeIndexOf(incognitoTab1))
-                .thenReturn(INCOGNITO_TAB_1_INDEX);
-        when(mIncognitoTabModel.isTabInTabGroup(incognitoTab0)).thenReturn(false);
-        when(mIncognitoTabModel.isTabInTabGroup(incognitoTab1)).thenReturn(false);
-
         when(mTabModelSelector.getCurrentModel()).thenReturn(mRegularTabModel);
         when(mTabModelSelector.getModel(false)).thenReturn(mRegularTabModel);
         when(mTabModelSelector.getModel(true)).thenReturn(mIncognitoTabModel);
@@ -132,7 +115,6 @@ public class HubTabSwitcherMetricsRecorderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testToggleHubVisibility() {
         mHubVisibilitySupplier.set(true);
         RobolectricUtil.runAllBackgroundAndUi();
@@ -148,7 +130,6 @@ public class HubTabSwitcherMetricsRecorderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSamePane_NoTabChange() {
         mHubVisibilitySupplier.set(true);
         RobolectricUtil.runAllBackgroundAndUi();
@@ -160,10 +141,9 @@ public class HubTabSwitcherMetricsRecorderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSamePane_ChangedTabs_WithGroup() {
         Tab regularTab1 = mRegularTabModel.getTabAt(REGULAR_TAB_1_INDEX);
-        when(mRegularTabModel.isTabInTabGroup(regularTab1)).thenReturn(true);
+        regularTab1.setTabGroupId(Token.createRandom());
         mHubVisibilitySupplier.set(true);
         RobolectricUtil.runAllBackgroundAndUi();
 
@@ -173,7 +153,6 @@ public class HubTabSwitcherMetricsRecorderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSamePane_ChangedTabs_WithoutGroup() {
         mHubVisibilitySupplier.set(true);
         RobolectricUtil.runAllBackgroundAndUi();
@@ -184,7 +163,6 @@ public class HubTabSwitcherMetricsRecorderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testNewPane_NoSwitch() {
         mHubVisibilitySupplier.set(true);
         changePanes();
@@ -196,10 +174,9 @@ public class HubTabSwitcherMetricsRecorderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testNewPane_ChangedTabs_WithGroup() {
         Tab incognitoTab1 = mIncognitoTabModel.getTabAt(INCOGNITO_TAB_1_INDEX);
-        when(mIncognitoTabModel.isTabInTabGroup(incognitoTab1)).thenReturn(true);
+        incognitoTab1.setTabGroupId(Token.createRandom());
 
         mHubVisibilitySupplier.set(true);
         changePanes();
@@ -211,7 +188,6 @@ public class HubTabSwitcherMetricsRecorderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testNewPane_ChangedTabs_WithoutGroup() {
         mHubVisibilitySupplier.set(true);
         changePanes();

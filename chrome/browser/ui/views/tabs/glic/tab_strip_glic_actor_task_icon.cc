@@ -8,8 +8,6 @@
 
 #include "base/feature_list.h"
 #include "chrome/app/vector_icons/vector_icons.h"
-#include "chrome/browser/actor/resources/grit/actor_browser_resources.h"
-#include "chrome/browser/glic/browser_ui/glic_vector_icon_manager.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
@@ -29,10 +27,6 @@ namespace glic {
 BASE_FEATURE(kGlicActorTaskIconUseGlicButtonAltIconBackgroundColor,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-const gfx::VectorIcon& GetTaskIcon() {
-  return glic::GlicVectorIconManager::GetVectorIcon(IDR_ACTOR_AUTO_BROWSE_ICON);
-}
-
 TabStripGlicActorTaskIcon::TabStripGlicActorTaskIcon(
     BrowserWindowInterface* browser_window_interface,
     PressedCallback pressed_callback)
@@ -44,7 +38,7 @@ TabStripGlicActorTaskIcon::TabStripGlicActorTaskIcon(
                                              std::u16string(),
                                              kGlicActorTaskIconElementId,
                                              Edge::kNone,
-                                             GetTaskIcon(),
+                                             kCursorSparkIcon,
                                              /*show_close_button=*/false),
       browser_window_interface_(browser_window_interface) {
   SetTaskIconToDefault();

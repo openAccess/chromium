@@ -561,13 +561,13 @@ TEST_F(PaletteTrayNoSessionTestWithInternalStylus,
   };
 
   // Add a external display, then sign in.
-  UpdateDisplay("300x200,300x200");
+  UpdateDisplay("320x200,320x200");
   display::test::DisplayManagerTestApi(display_manager())
       .SetFirstDisplayAsInternalDisplay();
   Shell::RootWindowControllerList controllers =
       Shell::GetAllRootWindowControllers();
   ASSERT_EQ(2u, controllers.size());
-  SimulateUserLogin({"test@test.com"});
+  SimulateUserLogin(AccountId::FromUserEmail("test@test.com"));
 
   base::CommandLine::ForCurrentProcess()->RemoveSwitch(
       switches::kAshEnablePaletteOnAllDisplays);
@@ -600,10 +600,10 @@ class PaletteTrayTestWithOOBE : public PaletteTrayTest {
   PaletteTrayTestWithOOBE() = default;
   ~PaletteTrayTestWithOOBE() override = default;
 
-  // PalatteTrayTest:
-  void SetUp() override {
-    set_start_session(false);
-    PaletteTrayTest::SetUp();
+  // PaletteTrayTest:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    PaletteTrayTest::SetUpInitParams(init_params);
+    init_params.users.clear();
   }
 };
 
@@ -648,13 +648,13 @@ class PaletteTrayTestMultiDisplay : public PaletteTrayTest {
         switches::kAshEnablePaletteOnAllDisplays);
 
     // Add a external display, then sign in.
-    UpdateDisplay("300x200,300x200");
+    UpdateDisplay("320x200,320x200");
     display::test::DisplayManagerTestApi(display_manager())
         .SetFirstDisplayAsInternalDisplay();
     Shell::RootWindowControllerList controllers =
         Shell::GetAllRootWindowControllers();
     ASSERT_EQ(2u, controllers.size());
-    SimulateUserLogin({"test@test.com"});
+    SimulateUserLogin(AccountId::FromUserEmail("test@test.com"));
 
     palette_tray_ = controllers[0]->GetStatusAreaWidget()->palette_tray();
     palette_tray_external_ =
@@ -854,9 +854,7 @@ TEST_F(PaletteTrayTestWithProjector,
 
 class PaletteTrayTestWithAnnotator : public PaletteTrayTest {
  public:
-  PaletteTrayTestWithAnnotator() {
-    scoped_feature_list_.InitAndEnableFeature(ash::features::kAnnotatorMode);
-  }
+  PaletteTrayTestWithAnnotator() = default;
 
   PaletteTrayTestWithAnnotator(const PaletteTrayTestWithAnnotator&) = delete;
   PaletteTrayTestWithAnnotator& operator=(const PaletteTrayTestWithAnnotator&) =
@@ -881,7 +879,6 @@ class PaletteTrayTestWithAnnotator : public PaletteTrayTest {
   }
 
  protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
   MockAnnotatorClient annotator_client_;
 };
 

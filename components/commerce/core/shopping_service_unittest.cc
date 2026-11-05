@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <string>
+#include <type_traits>
 
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
@@ -44,7 +45,6 @@
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/test/test_sync_service.h"
 #include "components/unified_consent/pref_names.h"
@@ -112,8 +112,7 @@ using PriceSummary_ProductOfferCondition::
 
 }  // namespace
 
-class ShoppingServiceTest : public ShoppingServiceTestBase,
-                            public testing::WithParamInterface<bool> {
+class ShoppingServiceTest : public ShoppingServiceTestBase {
  public:
   ShoppingServiceTest()
       : ShoppingServiceTest(syncer::SyncService::TransportState::ACTIVE) {}
@@ -123,37 +122,20 @@ class ShoppingServiceTest : public ShoppingServiceTestBase,
 
   explicit ShoppingServiceTest(
       syncer::SyncService::TransportState initial_sync_transport_state) {
-    if (ShouldEnableReplaceSyncPromosWithSignInPromos()) {
-      // `syncer::kSyncEnableBookmarksInTransportMode` must be enabled too in
-      // order to use account bookmarks.
-      scoped_feature_list_.InitWithFeatures(
-          /*enabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos,
-                                switches::kSyncEnableBookmarksInTransportMode},
-          /*disabled_features=*/{});
-      bookmark_model_->CreateAccountPermanentFolders();
-      identity_test_env_->MakePrimaryAccountAvailable(
-          "test@example.com", signin::ConsentLevel::kSignin);
-    } else {
-      // Whether `syncer::kSyncEnableBookmarksInTransportMode` is enabled or not
-      // makes no difference in this case.
-      scoped_feature_list_.InitAndDisableFeature(
-          syncer::kReplaceSyncPromosWithSignInPromos);
-      identity_test_env_->MakePrimaryAccountAvailable(
-          "test@example.com", signin::ConsentLevel::kSync);
-    }
+    // `syncer::kSyncEnableBookmarksInTransportMode` must be enabled too in
+    // order to use account bookmarks.
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{switches::kSyncEnableBookmarksInTransportMode},
+        /*disabled_features=*/{});
+    bookmark_model_->CreateAccountPermanentFolders();
+    identity_test_env_->MakePrimaryAccountAvailable(
+        "test@example.com", signin::ConsentLevel::kSignin);
 
-    sync_service_->SetSignedIn(ShouldEnableReplaceSyncPromosWithSignInPromos()
-                                   ? signin::ConsentLevel::kSignin
-                                   : signin::ConsentLevel::kSync);
+    sync_service_->SetSignedIn(signin::ConsentLevel::kSignin);
     sync_service_->SetMaxTransportState(initial_sync_transport_state);
 
     static_cast<bookmarks::TestBookmarkClient*>(bookmark_model_->client())
-        ->SetIsSyncFeatureEnabledIncludingBookmarks(
-            !ShouldEnableReplaceSyncPromosWithSignInPromos());
-  }
-
-  bool ShouldEnableReplaceSyncPromosWithSignInPromos() const {
-    return GetParam();
+        ->SetIsSyncFeatureEnabledIncludingBookmarks(false);
   }
 
  private:
@@ -161,7 +143,7 @@ class ShoppingServiceTest : public ShoppingServiceTestBase,
 };
 
 // Test that product info is processed correctly.
-TEST_P(ShoppingServiceTest, TestProductInfoResponse) {
+TEST_F(ShoppingServiceTest, TestProductInfoResponse) {
   // Ensure a feature that uses product info is enabled. This doesn't
   // necessarily need to be the shopping list.
   test_features_.InitWithFeatures({commerce::kShoppingList}, {});
@@ -233,7 +215,7 @@ TEST_P(ShoppingServiceTest, TestProductInfoResponse) {
 
 // Test that product info is fetched on demand if there is no web page open but
 // the cache has an entry for the queried URL.
-TEST_P(ShoppingServiceTest, TestProductInfoResponse_FallbackToOnDemand) {
+TEST_F(ShoppingServiceTest, TestProductInfoResponse_FallbackToOnDemand) {
   // Ensure a feature that uses product info is enabled. This doesn't
   // necessarily need to be the shopping list.
   test_features_.InitWithFeatures({commerce::kShoppingList}, {});
@@ -287,7 +269,7 @@ TEST_P(ShoppingServiceTest, TestProductInfoResponse_FallbackToOnDemand) {
   GetCache().RemoveRef(GURL(kProductUrl));
 }
 
-TEST_P(ShoppingServiceTest, TestBatchProductInfoResponse) {
+TEST_F(ShoppingServiceTest, TestBatchProductInfoResponse) {
   // Ensure a feature that uses product info is enabled. This doesn't
   // necessarily need to be the shopping list.
   test_features_.InitWithFeatures({commerce::kShoppingList}, {});
@@ -371,7 +353,7 @@ TEST_P(ShoppingServiceTest, TestBatchProductInfoResponse) {
 }
 
 // Test multiple on demand calls to get product info.
-TEST_P(ShoppingServiceTest, TestProductInfoResponse_MultipleOnDemandRequests) {
+TEST_F(ShoppingServiceTest, TestProductInfoResponse_MultipleOnDemandRequests) {
   test_features_.InitWithFeatures({commerce::kShoppingList}, {});
   OptimizationMetadata meta = opt_guide_->BuildPriceTrackingResponse(
       kTitle, kImageUrl, kOfferId, kClusterId, kCountryCode, kPrice,
@@ -418,7 +400,7 @@ TEST_P(ShoppingServiceTest, TestProductInfoResponse_MultipleOnDemandRequests) {
 }
 // Test that the product info api fails gracefully (callback run with nullopt)
 // if it is disabled.
-TEST_P(ShoppingServiceTest, TestProductInfoResponse_ApiDisabled) {
+TEST_F(ShoppingServiceTest, TestProductInfoResponse_ApiDisabled) {
   // Ensure a feature that uses product info is disabled.
   test_features_.InitWithFeatures(
       {}, {kShoppingList, ntp_features::kNtpChromeCartModule});
@@ -436,7 +418,7 @@ TEST_P(ShoppingServiceTest, TestProductInfoResponse_ApiDisabled) {
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestProductInfoResponse_CurrencyMismatch) {
+TEST_F(ShoppingServiceTest, TestProductInfoResponse_CurrencyMismatch) {
   // Ensure a feature that uses product info is enabled. This doesn't
   // necessarily need to be the shopping list.
   test_features_.InitWithFeatures({commerce::kShoppingList}, {});
@@ -479,7 +461,7 @@ TEST_P(ShoppingServiceTest, TestProductInfoResponse_CurrencyMismatch) {
 }
 
 // Test that no object is provided for a negative optimization guide response.
-TEST_P(ShoppingServiceTest, TestProductInfoResponse_OptGuideFalse) {
+TEST_F(ShoppingServiceTest, TestProductInfoResponse_OptGuideFalse) {
   test_features_.InitWithFeatures({kShoppingList, kCommerceAllowLocalImages},
                                   {});
 
@@ -501,7 +483,7 @@ TEST_P(ShoppingServiceTest, TestProductInfoResponse_OptGuideFalse) {
 }
 
 // Test that the product info cache only keeps track of live tabs.
-TEST_P(ShoppingServiceTest, TestProductInfoCacheURLCount) {
+TEST_F(ShoppingServiceTest, TestProductInfoCacheURLCount) {
   test_features_.InitWithFeatures({kShoppingList, kCommerceAllowLocalImages},
                                   {});
 
@@ -548,7 +530,7 @@ TEST_P(ShoppingServiceTest, TestProductInfoCacheURLCount) {
 }
 
 // Ensure we keep track of live web wrappers.
-TEST_P(ShoppingServiceTest, TestWebWrapperSet) {
+TEST_F(ShoppingServiceTest, TestWebWrapperSet) {
   test_features_.InitWithFeatures({kShoppingList}, {});
 
   std::string url1 = "http://example.com/foo";
@@ -605,7 +587,7 @@ TEST_P(ShoppingServiceTest, TestWebWrapperSet) {
 }
 
 // Ensure we correctly identify open tabs with products.
-TEST_P(ShoppingServiceTest, TestWebWrapperSetWithProducts) {
+TEST_F(ShoppingServiceTest, TestWebWrapperSetWithProducts) {
   test_features_.InitWithFeatures({kShoppingList}, {});
 
   std::string url1 = "http://example.com/product";
@@ -655,7 +637,7 @@ TEST_P(ShoppingServiceTest, TestWebWrapperSetWithProducts) {
 }
 
 // Make sure recent URLs doesn't contain duplicates.
-TEST_P(ShoppingServiceTest, TestRecentUrls_NoDuplicates) {
+TEST_F(ShoppingServiceTest, TestRecentUrls_NoDuplicates) {
   std::string url1 = "http://example.com/foo";
   NiceMockWebWrapper web1(GURL(url1), false);
   std::string url2 = "http://example.com/bar";
@@ -688,8 +670,43 @@ TEST_P(ShoppingServiceTest, TestRecentUrls_NoDuplicates) {
   ASSERT_EQ(urls[1].url, GURL(url2));
 }
 
+// Viewing the URL at the head of the list again refreshes its title in place
+// and leaves the rest of the list untouched.
+TEST_F(ShoppingServiceTest, TestRecentUrls_ViewingHeadAgainUpdatesTitle) {
+  // UrlInfo needs real, non-throwing move operations. Without them, the
+  // recently viewed list deep copies its entries every time it is reordered.
+  static_assert(std::is_nothrow_move_constructible_v<UrlInfo>);
+  static_assert(std::is_nothrow_move_assignable_v<UrlInfo>);
+
+  const std::string url1 = "http://example.com/foo";
+  NiceMockWebWrapper web1(GURL(url1), false, nullptr, u"Old title");
+  NiceMockWebWrapper web1_renamed(GURL(url1), false, nullptr, u"New title");
+  const std::string url2 = "http://example.com/bar";
+  NiceMockWebWrapper web2(GURL(url2), false, nullptr, u"Bar");
+
+  OnWebWrapperSwitched(&web2);
+  OnWebWrapperSwitched(&web1);
+  OnWebWrapperSwitched(&web1_renamed);
+
+  std::vector<UrlInfo> urls =
+      shopping_service_->GetUrlInfosForRecentlyViewedWebWrappers();
+  ASSERT_EQ(2u, urls.size());
+  EXPECT_EQ(GURL(url1), urls[0].url);
+  EXPECT_EQ(u"New title", urls[0].title);
+  EXPECT_EQ(GURL(url2), urls[1].url);
+  EXPECT_EQ(u"Bar", urls[1].title);
+
+  // Moving an entry that is not at the head to the front still works.
+  OnWebWrapperSwitched(&web2);
+  urls = shopping_service_->GetUrlInfosForRecentlyViewedWebWrappers();
+  ASSERT_EQ(2u, urls.size());
+  EXPECT_EQ(GURL(url2), urls[0].url);
+  EXPECT_EQ(GURL(url1), urls[1].url);
+  EXPECT_EQ(u"New title", urls[1].title);
+}
+
 // Make sure recent URLs doesn't go over the max size.
-TEST_P(ShoppingServiceTest, TestRecentUrls_MaxCount) {
+TEST_F(ShoppingServiceTest, TestRecentUrls_MaxCount) {
   for (int i = 0; i < 20; i++) {
     NiceMockWebWrapper wrapper = NiceMockWebWrapper(
         GURL("http://example.com/" + base::NumberToString(i)), false);
@@ -705,7 +722,7 @@ TEST_P(ShoppingServiceTest, TestRecentUrls_MaxCount) {
       10u, shopping_service_->GetUrlInfosForRecentlyViewedWebWrappers().size());
 }
 
-TEST_P(ShoppingServiceTest, TestRecentUrls_ClearedOnHistoryDeletion) {
+TEST_F(ShoppingServiceTest, TestRecentUrls_ClearedOnHistoryDeletion) {
   std::string url1 = "http://example.com/foo";
   MockWebWrapper web1(GURL(url1), false);
   std::string url2 = "http://example.com/bar";
@@ -733,7 +750,7 @@ TEST_P(ShoppingServiceTest, TestRecentUrls_ClearedOnHistoryDeletion) {
       0u, shopping_service_->GetUrlInfosForRecentlyViewedWebWrappers().size());
 }
 
-TEST_P(ShoppingServiceTest, TestRecentUrls_SingleHistoryItemDeletion) {
+TEST_F(ShoppingServiceTest, TestRecentUrls_SingleHistoryItemDeletion) {
   std::string url1 = "http://example.com/foo";
   MockWebWrapper web1(GURL(url1), false);
   std::string url2 = "http://example.com/bar";
@@ -763,7 +780,7 @@ TEST_P(ShoppingServiceTest, TestRecentUrls_SingleHistoryItemDeletion) {
       0u, shopping_service_->GetUrlInfosForRecentlyViewedWebWrappers().size());
 }
 
-TEST_P(ShoppingServiceTest, TestRecentUrls_CacheEntriesRetained) {
+TEST_F(ShoppingServiceTest, TestRecentUrls_CacheEntriesRetained) {
   const size_t max_recents = 10;
   std::vector<std::unique_ptr<NiceMockWebWrapper>> web_wrappers;
   for (size_t i = 0; i < max_recents; i++) {
@@ -798,7 +815,7 @@ TEST_P(ShoppingServiceTest, TestRecentUrls_CacheEntriesRetained) {
 
 // Test that product info is inserted into the cache without a client
 // necessarily querying for it.
-TEST_P(ShoppingServiceTest, TestProductInfoCacheFullLifecycle) {
+TEST_F(ShoppingServiceTest, TestProductInfoCacheFullLifecycle) {
   test_features_.InitWithFeatures({kShoppingList, kCommerceAllowLocalImages},
                                   {});
 
@@ -850,7 +867,7 @@ TEST_P(ShoppingServiceTest, TestProductInfoCacheFullLifecycle) {
 
 // Test the full lifecycle of product info assuming the page loads after
 // optimization guide has provided a response.
-TEST_P(ShoppingServiceTest,
+TEST_F(ShoppingServiceTest,
        TestProductInfoCacheFullLifecycleWithFallback_PageNotLoaded) {
   test_features_.InitWithFeatures({kShoppingList, kCommerceAllowLocalImages},
                                   {});
@@ -924,7 +941,7 @@ TEST_P(ShoppingServiceTest,
 // Test the full lifecycle of product info assuming the page has loaded prior
 // to optimization guide providing a response. This will happen for single-page
 // webapps.
-TEST_P(ShoppingServiceTest,
+TEST_F(ShoppingServiceTest,
        TestProductInfoCacheFullLifecycleWithFallback_PageLoaded) {
   test_features_.InitWithFeatures({kCommerceAllowLocalImages}, {});
 
@@ -989,7 +1006,7 @@ TEST_P(ShoppingServiceTest,
 
 // The on-demand api should not be triggered in the case where we have an
 // explicit negative signal from the page.
-TEST_P(ShoppingServiceTest, TestProductInfoWithFallback_NoOnDemandCalls) {
+TEST_F(ShoppingServiceTest, TestProductInfoWithFallback_NoOnDemandCalls) {
   NiceMockWebWrapper web(GURL(kProductUrl), false);
 
   // Assume the page has already loaded for the navigation. This is usually the
@@ -1036,7 +1053,7 @@ TEST_P(ShoppingServiceTest, TestProductInfoWithFallback_NoOnDemandCalls) {
 
 // If there's a reference to the url in the cache and opt guide doesn't know
 // about the url, we should be allowed to call the on-demand api.
-TEST_P(ShoppingServiceTest,
+TEST_F(ShoppingServiceTest,
        TestProductInfoWithFallback_CallsOnDemandOnce_RefInCache) {
   // The on-demand api should not be called if there isn't a page open and
   // there isn't a reference in the cache.
@@ -1096,7 +1113,7 @@ TEST_P(ShoppingServiceTest,
 }
 
 // Test that merchant info is processed correctly.
-TEST_P(ShoppingServiceTest, TestMerchantInfoResponse) {
+TEST_F(ShoppingServiceTest, TestMerchantInfoResponse) {
   // Ensure a feature that uses merchant info is enabled.
   test_features_.InitAndEnableFeature(kCommerceMerchantViewer);
 
@@ -1130,7 +1147,7 @@ TEST_P(ShoppingServiceTest, TestMerchantInfoResponse) {
 }
 
 // Test that the merchant info fails gracefully when the api is disabled.
-TEST_P(ShoppingServiceTest, TestMerchantInfoResponse_ApiDisabled) {
+TEST_F(ShoppingServiceTest, TestMerchantInfoResponse_ApiDisabled) {
   // Ensure a feature that uses merchant info is disabled.
   test_features_.InitAndDisableFeature(kCommerceMerchantViewer);
 
@@ -1147,7 +1164,7 @@ TEST_P(ShoppingServiceTest, TestMerchantInfoResponse_ApiDisabled) {
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestGetUpdatedProductInfoForBookmarks) {
+TEST_F(ShoppingServiceTest, TestGetUpdatedProductInfoForBookmarks) {
   const bookmarks::BookmarkNode* product1 = AddProductBookmark(
       bookmark_model_.get(), u"title", GURL(kProductUrl), kClusterId, false);
 
@@ -1183,7 +1200,7 @@ TEST_P(ShoppingServiceTest, TestGetUpdatedProductInfoForBookmarks) {
   EXPECT_EQ(0, expected_calls);
 }
 
-TEST_P(ShoppingServiceTest, TestDataMergeWithLeadImage) {
+TEST_F(ShoppingServiceTest, TestDataMergeWithLeadImage) {
   ProductInfo info;
   info.image_url = GURL(kImageUrl);
 
@@ -1195,7 +1212,7 @@ TEST_P(ShoppingServiceTest, TestDataMergeWithLeadImage) {
   EXPECT_EQ(kImageUrl, info.image_url);
 }
 
-TEST_P(ShoppingServiceTest, TestDataMergeWithNoLeadImage) {
+TEST_F(ShoppingServiceTest, TestDataMergeWithNoLeadImage) {
   test_features_.InitWithFeatures({kCommerceAllowLocalImages}, {});
   ProductInfo info;
 
@@ -1207,7 +1224,7 @@ TEST_P(ShoppingServiceTest, TestDataMergeWithNoLeadImage) {
   EXPECT_EQ(kImageUrl, info.image_url.spec());
 }
 
-TEST_P(ShoppingServiceTest, TestDataMergeWithTitle) {
+TEST_F(ShoppingServiceTest, TestDataMergeWithTitle) {
   ProductInfo info;
   info.title = kTitle;
 
@@ -1219,7 +1236,7 @@ TEST_P(ShoppingServiceTest, TestDataMergeWithTitle) {
   EXPECT_EQ(kTitle, info.title);
 }
 
-TEST_P(ShoppingServiceTest, TestDataMergeWithNoTitle) {
+TEST_F(ShoppingServiceTest, TestDataMergeWithNoTitle) {
   ProductInfo info;
 
   base::DictValue data_map;
@@ -1230,7 +1247,7 @@ TEST_P(ShoppingServiceTest, TestDataMergeWithNoTitle) {
   EXPECT_EQ(kTitle, info.title);
 }
 
-TEST_P(ShoppingServiceTest, TestShoppingListEligible_Policy) {
+TEST_F(ShoppingServiceTest, TestShoppingListEligible_Policy) {
   test_features_.InitWithFeatures({kShoppingList}, {});
 
   TestingPrefServiceSimple prefs;
@@ -1248,7 +1265,7 @@ TEST_P(ShoppingServiceTest, TestShoppingListEligible_Policy) {
   ASSERT_FALSE(IsShoppingListEligible(&checker));
 }
 
-TEST_P(ShoppingServiceTest, TestShoppingListEligible_FeatureFlagOff) {
+TEST_F(ShoppingServiceTest, TestShoppingListEligible_FeatureFlagOff) {
   test_features_.InitWithFeatures({}, {kShoppingList});
 
   TestingPrefServiceSimple prefs;
@@ -1263,7 +1280,7 @@ TEST_P(ShoppingServiceTest, TestShoppingListEligible_FeatureFlagOff) {
   ASSERT_FALSE(IsShoppingListEligible(&checker));
 }
 
-TEST_P(ShoppingServiceTest, TestShoppingListEligible_MSBB) {
+TEST_F(ShoppingServiceTest, TestShoppingListEligible_MSBB) {
   test_features_.InitWithFeatures({kShoppingList}, {});
 
   TestingPrefServiceSimple prefs;
@@ -1282,7 +1299,7 @@ TEST_P(ShoppingServiceTest, TestShoppingListEligible_MSBB) {
   ASSERT_FALSE(IsShoppingListEligible(&checker));
 }
 
-TEST_P(ShoppingServiceTest, TestShoppingListEligible_SignIn) {
+TEST_F(ShoppingServiceTest, TestShoppingListEligible_SignIn) {
   test_features_.InitWithFeatures({kShoppingList}, {});
 
   TestingPrefServiceSimple prefs;
@@ -1301,7 +1318,7 @@ TEST_P(ShoppingServiceTest, TestShoppingListEligible_SignIn) {
   ASSERT_FALSE(IsShoppingListEligible(&checker));
 }
 
-TEST_P(ShoppingServiceTest, TestShoppingListEligible_ChildAccount) {
+TEST_F(ShoppingServiceTest, TestShoppingListEligible_ChildAccount) {
   test_features_.InitWithFeatures({kShoppingList}, {});
 
   TestingPrefServiceSimple prefs;
@@ -1320,7 +1337,7 @@ TEST_P(ShoppingServiceTest, TestShoppingListEligible_ChildAccount) {
   ASSERT_FALSE(IsShoppingListEligible(&checker));
 }
 
-TEST_P(ShoppingServiceTest, TestShoppingListEligible_SyncState) {
+TEST_F(ShoppingServiceTest, TestShoppingListEligible_SyncState) {
   test_features_.InitWithFeatures({kShoppingList}, {});
 
   TestingPrefServiceSimple prefs;
@@ -1339,7 +1356,7 @@ TEST_P(ShoppingServiceTest, TestShoppingListEligible_SyncState) {
   ASSERT_FALSE(IsShoppingListEligible(&checker));
 }
 
-TEST_P(ShoppingServiceTest, TestShoppingListEligible_CountryAndLocale) {
+TEST_F(ShoppingServiceTest, TestShoppingListEligible_CountryAndLocale) {
   test_features_.InitWithFeatures({kShoppingList}, {});
 
   TestingPrefServiceSimple prefs;
@@ -1361,7 +1378,7 @@ TEST_P(ShoppingServiceTest, TestShoppingListEligible_CountryAndLocale) {
   ASSERT_TRUE(IsShoppingListEligible(&checker));
 }
 
-TEST_P(ShoppingServiceTest,
+TEST_F(ShoppingServiceTest,
        TestShoppingListEligible_CountryAndLocale_BothFlags) {
   test_features_.InitWithFeatures({kShoppingList}, {});
 
@@ -1384,7 +1401,7 @@ TEST_P(ShoppingServiceTest,
   ASSERT_TRUE(IsShoppingListEligible(&checker));
 }
 
-TEST_P(ShoppingServiceTest, TestShoppingListEligible_CountryAndLocale_NoFlags) {
+TEST_F(ShoppingServiceTest, TestShoppingListEligible_CountryAndLocale_NoFlags) {
   test_features_.InitWithFeatures({}, {kShoppingList});
 
   TestingPrefServiceSimple prefs;
@@ -1401,7 +1418,7 @@ TEST_P(ShoppingServiceTest, TestShoppingListEligible_CountryAndLocale_NoFlags) {
   ASSERT_FALSE(IsShoppingListEligible(&checker));
 }
 
-TEST_P(ShoppingServiceTest,
+TEST_F(ShoppingServiceTest,
        TestShoppingListEligible_CountryAndLocale_RegionLaunched) {
   // Specifically set up the flags so that the feature is not in an "overridden"
   // state.
@@ -1431,7 +1448,7 @@ TEST_P(ShoppingServiceTest,
   ASSERT_FALSE(IsShoppingListEligible(&checker));
 }
 
-TEST_P(ShoppingServiceTest,
+TEST_F(ShoppingServiceTest,
        TestShoppingListEligible_CountryAndLocale_RegionLaunched_Override) {
   // Specifically set up the flags so that the feature is in an "overridden"
   // state. Even with the region launched map set up to ordinarily allow the
@@ -1472,7 +1489,7 @@ class ShoppingServiceReadyTest : public ShoppingServiceTest {
   ~ShoppingServiceReadyTest() override = default;
 };
 
-TEST_P(ShoppingServiceReadyTest,
+TEST_F(ShoppingServiceReadyTest,
        TestServiceReadyDelaysForSync_TransportStartsInactive) {
   test_features_.InitWithFeatures({kShoppingList}, {});
 
@@ -1497,7 +1514,7 @@ TEST_P(ShoppingServiceReadyTest,
   ASSERT_TRUE(service_ready);
 }
 
-TEST_P(ShoppingServiceReadyTest,
+TEST_F(ShoppingServiceReadyTest,
        TestServiceReadyDelaysForSync_TransportStartsActive) {
   test_features_.InitWithFeatures({kShoppingList}, {});
 
@@ -1517,9 +1534,7 @@ TEST_P(ShoppingServiceReadyTest,
   ASSERT_TRUE(service_ready);
 }
 
-INSTANTIATE_TEST_SUITE_P(All, ShoppingServiceReadyTest, ::testing::Bool());
-
-TEST_P(ShoppingServiceTest, TestPriceInsightsInfoResponse) {
+TEST_F(ShoppingServiceTest, TestPriceInsightsInfoResponse) {
   test_features_.InitAndEnableFeature(kPriceInsights);
 
   std::vector<std::tuple<std::string, int64_t>> history_prices;
@@ -1566,7 +1581,7 @@ TEST_P(ShoppingServiceTest, TestPriceInsightsInfoResponse) {
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest,
+TEST_F(ShoppingServiceTest,
        TestPriceInsightsInfoResponse_DifferentCurrencyCode) {
   test_features_.InitAndEnableFeature(kPriceInsights);
 
@@ -1608,7 +1623,7 @@ TEST_P(ShoppingServiceTest,
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestPriceInsightsInfoResponse_EmptyClusterId) {
+TEST_F(ShoppingServiceTest, TestPriceInsightsInfoResponse_EmptyClusterId) {
   test_features_.InitAndEnableFeature(kPriceInsights);
 
   std::vector<std::tuple<std::string, int64_t>> history_prices;
@@ -1639,7 +1654,7 @@ TEST_P(ShoppingServiceTest, TestPriceInsightsInfoResponse_EmptyClusterId) {
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestPriceInsightsInfoResponse_EmptyRange) {
+TEST_F(ShoppingServiceTest, TestPriceInsightsInfoResponse_EmptyRange) {
   test_features_.InitAndEnableFeature(kPriceInsights);
 
   std::vector<std::tuple<std::string, int64_t>> history_prices;
@@ -1685,7 +1700,32 @@ TEST_P(ShoppingServiceTest, TestPriceInsightsInfoResponse_EmptyRange) {
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestPriceInsightsInfoResponse_WithoutCache) {
+TEST_F(ShoppingServiceTest,
+       TestPriceInsightsInfoResponse_InvalidJackpotUrlScheme) {
+  test_features_.InitAndEnableFeature(kPriceInsights);
+
+  OptimizationMetadata meta = opt_guide_->BuildPriceInsightsResponse(
+      kClusterId, kCurrencyCode, kLowTypicalPrice, kHighTypicalPrice,
+      kCurrencyCode, kAttributes, {}, "chrome://version",
+      PriceBucket::kHighPrice, true);
+
+  opt_guide_->SetResponse(GURL(kPriceInsightsUrl),
+                          OptimizationType::PRICE_INSIGHTS,
+                          OptimizationGuideDecision::kTrue, meta);
+
+  base::RunLoop run_loop;
+  shopping_service_->GetPriceInsightsInfoForUrl(
+      GURL(kPriceInsightsUrl),
+      base::BindOnce([](const GURL& url,
+                        const std::optional<PriceInsightsInfo>& info) {
+        ASSERT_TRUE(info.has_value());
+        ASSERT_EQ(kClusterId, info->product_cluster_id);
+        ASSERT_FALSE(info->jackpot_url.has_value());
+      }).Then(run_loop.QuitClosure()));
+  run_loop.Run();
+}
+
+TEST_F(ShoppingServiceTest, TestPriceInsightsInfoResponse_WithoutCache) {
   test_features_.InitAndEnableFeature(kPriceInsights);
 
   std::vector<std::tuple<std::string, int64_t>> history_prices;
@@ -1734,7 +1774,7 @@ TEST_P(ShoppingServiceTest, TestPriceInsightsInfoResponse_WithoutCache) {
   run_loop2.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestPriceInsightsInfoResponse_WithCache) {
+TEST_F(ShoppingServiceTest, TestPriceInsightsInfoResponse_WithCache) {
   test_features_.InitAndEnableFeature(kPriceInsights);
 
   std::vector<std::tuple<std::string, int64_t>> history_prices;
@@ -1802,7 +1842,7 @@ TEST_P(ShoppingServiceTest, TestPriceInsightsInfoResponse_WithCache) {
   run_loop3.Run();
 }
 
-TEST_P(ShoppingServiceTest,
+TEST_F(ShoppingServiceTest,
        TestPriceInsightsInfoResponse_WithCacheMultipleTabs) {
   test_features_.InitAndEnableFeature(kPriceInsights);
 
@@ -1877,7 +1917,7 @@ TEST_P(ShoppingServiceTest,
   run_loop3.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestIsShoppingPage) {
+TEST_F(ShoppingServiceTest, TestIsShoppingPage) {
   opt_guide_->SetDefaultShoppingPage(false);
   std::array<base::RunLoop, 3> run_loop;
   OptimizationMetadata meta;
@@ -1936,7 +1976,7 @@ TEST_P(ShoppingServiceTest, TestIsShoppingPage) {
   run_loop[2].Run();
 }
 
-TEST_P(ShoppingServiceTest, TestDiscountInfoResponse_ForMerchant) {
+TEST_F(ShoppingServiceTest, TestDiscountInfoResponse_ForMerchant) {
   test_features_.InitWithFeatures({kDiscountAutofill}, {});
 
   EXPECT_CALL(*discount_infos_storage_, LoadDiscountsWithPrefix).Times(1);
@@ -1962,7 +2002,7 @@ TEST_P(ShoppingServiceTest, TestDiscountInfoResponse_ForMerchant) {
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestDiscountInfoResponse) {
+TEST_F(ShoppingServiceTest, TestDiscountInfoResponse) {
   test_features_.InitWithFeatures({kEnableDiscountInfoApi}, {});
 
   std::vector<DiscountInfo> infos;
@@ -2016,7 +2056,7 @@ TEST_P(ShoppingServiceTest, TestDiscountInfoResponse) {
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest,
+TEST_F(ShoppingServiceTest,
        TestDiscountInfoResponse_InfoWithCrawledPromotionType) {
   test_features_.InitWithFeatures({kEnableDiscountInfoApi}, {});
 
@@ -2057,7 +2097,7 @@ TEST_P(ShoppingServiceTest,
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithoutId) {
+TEST_F(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithoutId) {
   test_features_.InitWithFeatures({kEnableDiscountInfoApi}, {});
 
   std::vector<DiscountInfo> infos;
@@ -2101,7 +2141,7 @@ TEST_P(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithoutId) {
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithoutTerms) {
+TEST_F(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithoutTerms) {
   test_features_.InitWithFeatures({kEnableDiscountInfoApi}, {});
 
   std::vector<DiscountInfo> infos;
@@ -2143,7 +2183,7 @@ TEST_P(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithoutTerms) {
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithoutDiscountCode) {
+TEST_F(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithoutDiscountCode) {
   test_features_.InitWithFeatures({kEnableDiscountInfoApi}, {});
 
   std::vector<DiscountInfo> infos;
@@ -2180,7 +2220,7 @@ TEST_P(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithoutDiscountCode) {
   run_loop.Run();
 }
 
-TEST_P(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithUnspecifiedType) {
+TEST_F(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithUnspecifiedType) {
   test_features_.InitWithFeatures({kEnableDiscountInfoApi}, {});
 
   std::vector<DiscountInfo> infos;
@@ -2216,7 +2256,5 @@ TEST_P(ShoppingServiceTest, TestDiscountInfoResponse_InfoWithUnspecifiedType) {
                                 &run_loop));
   run_loop.Run();
 }
-
-INSTANTIATE_TEST_SUITE_P(All, ShoppingServiceTest, ::testing::Bool());
 
 }  // namespace commerce

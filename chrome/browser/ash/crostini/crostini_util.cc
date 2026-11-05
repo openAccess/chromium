@@ -41,7 +41,6 @@
 #include "chrome/browser/ui/ash/shelf/shelf_spinner_controller.h"
 #include "chrome/browser/ui/ash/shelf/shelf_spinner_item_controller.h"
 #include "chrome/browser/ui/views/crostini/crostini_recovery_view.h"
-#include "chrome/common/chrome_features.h"
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "components/prefs/pref_service.h"
@@ -121,15 +120,15 @@ void LaunchApplication(
     crostini::CrostiniSuccessCallback callback) {
   ChromeShelfController* chrome_shelf_controller =
       ChromeShelfController::instance();
-  DCHECK(chrome_shelf_controller);
+  CHECK(chrome_shelf_controller, base::NotFatalUntil::M160);
 
   AppServiceAppWindowShelfController* app_service_controller =
       chrome_shelf_controller->app_service_app_window_controller();
-  DCHECK(app_service_controller);
+  CHECK(app_service_controller, base::NotFatalUntil::M160);
 
   AppServiceAppWindowCrostiniTracker* crostini_tracker =
       app_service_controller->app_service_crostini_tracker();
-  DCHECK(crostini_tracker);
+  CHECK(crostini_tracker, base::NotFatalUntil::M160);
 
   crostini_tracker->OnAppLaunchRequested(app_id, display_id);
 

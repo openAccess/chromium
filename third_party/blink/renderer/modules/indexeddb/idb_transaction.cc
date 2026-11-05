@@ -30,7 +30,6 @@
 
 #include "base/auto_reset.h"
 #include "base/format_macros.h"
-#include "base/not_fatal_until.h"
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/active_script_wrappable_creation_key.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_idb_transaction_durability.h"
@@ -51,6 +50,7 @@
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 
 namespace blink {
 
@@ -379,10 +379,10 @@ void IDBTransaction::commit(ExceptionState& exception_state) {
 }
 
 void IDBTransaction::RegisterRequest(IDBRequest* request) {
-  CHECK(request, base::NotFatalUntil::M145);
-  CHECK_EQ(state_, kActive, base::NotFatalUntil::M145);
+  CHECK(request);
+  CHECK_EQ(state_, kActive);
   auto add_result = request_list_.insert(request);
-  CHECK(add_result.is_new_entry, base::NotFatalUntil::M145);
+  CHECK(add_result.is_new_entry);
 }
 
 void IDBTransaction::UnregisterRequest(IDBRequest* request) {
@@ -552,10 +552,9 @@ void IDBTransaction::Put(int64_t object_store_id,
         mojom::blink::IDBTransactionPutResult::NewErrorResult(
             mojom::blink::IDBError::New(
                 mojom::blink::IDBException::kUnknownError,
-                String::Format("The serialized keys and/or value are too large"
-                               " (size=%" PRIuS " bytes, max=%" PRIuS
-                               " bytes).",
-                               estimated_size, max_put_value_size))));
+                Format("The serialized keys and/or value are too large "
+                       "(size={} bytes, max={} bytes).",
+                       estimated_size, max_put_value_size))));
     return;
   }
 

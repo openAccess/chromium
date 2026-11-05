@@ -63,8 +63,7 @@ constexpr std::string_view kWifiAccessPointsKey = "wifiAccessPoints";
 
 void RecordUmaLocationRequestResult(NetworkLocationRequestResult result_code) {
   UMA_HISTOGRAM_ENUMERATION("Geolocation.NetworkLocationRequest.Result",
-                            result_code,
-                            NetworkLocationRequestResult::kMaxValue);
+                            result_code);
 }
 
 void RecordUmaResponseCode(int code) {
@@ -233,6 +232,7 @@ void NetworkLocationRequest::MakeRequest(
             "IP address is available."
           data: "Wi-Fi data, IP address."
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "geolocation.googleapis.com"
         }
         policy {
           cookies_allowed: NO

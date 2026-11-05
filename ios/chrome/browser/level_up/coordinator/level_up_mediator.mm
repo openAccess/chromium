@@ -4,6 +4,10 @@
 
 #import "ios/chrome/browser/level_up/coordinator/level_up_mediator.h"
 
+#import <memory>
+#import <set>
+#import <vector>
+
 #import "base/memory/raw_ptr.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/prefs/ios/pref_observer_bridge.h"
@@ -14,7 +18,9 @@
 #import "ios/chrome/browser/level_up/coordinator/level_up_category.h"
 #import "ios/chrome/browser/level_up/coordinator/level_up_stat.h"
 #import "ios/chrome/browser/level_up/coordinator/level_up_task.h"
+#import "ios/chrome/browser/level_up/model/level_up_metrics.h"
 #import "ios/chrome/browser/level_up/model/level_up_service.h"
+#import "ios/chrome/browser/level_up/model/level_up_service_observer_bridge.h"
 #import "ios/chrome/browser/level_up/model/task_info.h"
 #import "ios/chrome/browser/level_up/model/task_types.h"
 #import "ios/chrome/browser/level_up/ui/level_up_consumer.h"
@@ -29,7 +35,9 @@
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util.h"
 
-@interface LevelUpMediator () <IdentityManagerObserving, PrefObserverDelegate>
+@interface LevelUpMediator () <IdentityManagerObserving,
+                               PrefObserverDelegate,
+                               LevelUpServiceObserving>
 @end
 
 @implementation LevelUpMediator {
@@ -53,6 +61,14 @@
   PrefChangeRegistrar _prefChangeRegistrar;
   // Bridge to listen to Pref changes.
   std::unique_ptr<PrefObserverBridge> _prefObserverBridge;
+  // Bridge to listen to LevelUpService changes.
+  std::unique_ptr<LevelUpServiceObserverBridge> _levelUpServiceObserverBridge;
+  // The active level variable.
+  int _level;
+  // The number of remaining tasks to reach the next level.
+  int _remainingTasksForNextLevel;
+  // The list of recommended tasks.
+  NSMutableArray<LevelUpTask*>* _recommendedTasks;
 }
 
 - (instancetype)
@@ -75,6 +91,12 @@
     _prefChangeRegistrar.Init(prefService);
     _prefObserverBridge->ObserveChangesForPreference(prefs::kLevelUpUIEnabled,
                                                      &_prefChangeRegistrar);
+    _prefObserverBridge->ObserveChangesForPreference(prefs::kLevelUpOptIn,
+                                                     &_prefChangeRegistrar);
+    _prefObserverBridge->ObserveChangesForPreference(
+        prefs::kLevelUpNewTasksNotificationEnabled, &_prefChangeRegistrar);
+    _levelUpServiceObserverBridge =
+        std::make_unique<LevelUpServiceObserverBridge>(_levelUpService, self);
   }
   return self;
 }
@@ -104,65 +126,29 @@
     [self.consumer setProgressUpdatesEnabled:updatesEnabled];
   }
 
-  int level = _levelUpService->GetCurrentLevel();
-
-  NSMutableArray<LevelUpTask*>* productivityTasks =
-      [[NSMutableArray alloc] init];
-  NSMutableArray<LevelUpTask*>* safetyTasks = [[NSMutableArray alloc] init];
-  NSMutableArray<LevelUpTask*>* searchTasks = [[NSMutableArray alloc] init];
-  NSMutableArray<LevelUpTask*>* allTasks = [[NSMutableArray alloc] init];
-
-  const auto& tasks = _levelUpService->GetTasks();
-  for (const auto& [type, info] : tasks) {
-    BOOL completed = _levelUpService->IsTaskCompleted(type);
-    LevelUpTask* task = [[LevelUpTask alloc] initWithTaskInfo:info.get()
-                                                    completed:completed];
-    [allTasks addObject:task];
-
-    switch (task.category) {
-      case LevelUpTaskCategory::kProductivity:
-        [productivityTasks addObject:task];
-        break;
-      case LevelUpTaskCategory::kSafety:
-        [safetyTasks addObject:task];
-        break;
-      case LevelUpTaskCategory::kSearch:
-        [searchTasks addObject:task];
-        break;
-    }
+  if ([self.consumer
+          respondsToSelector:@selector(setNewTasksNotificationEnabled:)]) {
+    BOOL newTasksNotificationEnabled =
+        _prefService->GetBoolean(prefs::kLevelUpNewTasksNotificationEnabled);
+    [self.consumer setNewTasksNotificationEnabled:newTasksNotificationEnabled];
   }
 
-  // TODO(crbug.com/523325903): Update this to match the final design spec. Use
-  // the first 4 uncompleted tasks for now.
-  NSMutableArray<LevelUpTask*>* uncompletedTasks =
-      [[NSMutableArray alloc] init];
-  for (LevelUpTask* task in allTasks) {
-    if (!task.completed) {
-      [uncompletedTasks addObject:task];
-      if (uncompletedTasks.count == 4) {
-        break;
-      }
-    }
-  }
-  NSArray<LevelUpTask*>* tasksForCurrentLevel = uncompletedTasks;
+  _level = _levelUpService->GetCurrentLevel();
 
-  if ([self.consumer respondsToSelector:@selector(setLevel:tasksForLevel:)]) {
-    [self.consumer setLevel:level tasksForLevel:tasksForCurrentLevel];
-  }
+  auto [remainingTasksForNextLevel, totalTasksForNextLevel] =
+      _levelUpService->GetTasksRemainingForNextLevel();
+  _remainingTasksForNextLevel = remainingTasksForNextLevel;
 
-  _categories = @[
-    [[LevelUpCategory alloc] initWithTitle:@"Productivity"
-                                     tasks:productivityTasks],
-    [[LevelUpCategory alloc] initWithTitle:@"Safety" tasks:safetyTasks],
-    [[LevelUpCategory alloc] initWithTitle:@"Search" tasks:searchTasks]
-  ];
-
-  if ([self.consumer respondsToSelector:@selector(addCategoryCard:)]) {
-    for (LevelUpCategory* category in _categories) {
-      [self.consumer addCategoryCard:category];
-    }
+  if ([self.consumer
+          respondsToSelector:@selector(setLevel:remainingTasksForNextLevel:
+                                       totalTasksForNextLevel:)]) {
+    [self.consumer setLevel:_level
+        remainingTasksForNextLevel:_remainingTasksForNextLevel
+            totalTasksForNextLevel:totalTasksForNextLevel];
   }
-  [self configureTaskStat:allTasks];
+  [self updateTasks];
+  [self createRecommendedTasks];
+  [self configureTaskStat];
 }
 
 - (void)configureAllTasksConsumer:(id<LevelUpConsumer>)allTasksConsumer {
@@ -176,7 +162,8 @@
 - (void)disconnect {
   _identityManagerObserverBridge.reset();
   _prefObserverBridge.reset();
-  _prefChangeRegistrar.RemoveAll();
+  _levelUpServiceObserverBridge.reset();
+  _prefChangeRegistrar.Reset();
   _authService = nullptr;
   _identityManager = nullptr;
   _levelUpService = nullptr;
@@ -192,88 +179,310 @@
             respondsToSelector:@selector(setProgressUpdatesEnabled:)]) {
       [self.consumer setProgressUpdatesEnabled:updatesEnabled];
     }
+  } else if (preferenceName == prefs::kLevelUpOptIn) {
+    if (_prefService && !_prefService->GetBoolean(prefs::kLevelUpOptIn)) {
+      [self.delegate levelUpMediatorWantsToBeDismissed:self];
+    }
+  } else if (preferenceName == prefs::kLevelUpNewTasksNotificationEnabled) {
+    BOOL newTasksNotificationEnabled =
+        _prefService->GetBoolean(prefs::kLevelUpNewTasksNotificationEnabled);
+    if ([self.consumer
+            respondsToSelector:@selector(setNewTasksNotificationEnabled:)]) {
+      [self.consumer
+          setNewTasksNotificationEnabled:newTasksNotificationEnabled];
+    }
   }
+}
+
+#pragma mark - LevelUpServiceObserving
+
+- (void)levelUpServiceDidCompleteTask:(LevelUpService*)service {
+  [self updateConsumer];
+  // TODO(crbug.com/571654448): Sync task updates to the All Tasks page.
+}
+
+- (void)levelUpServiceDidUpdateStats:(LevelUpService*)service {
+  [self configureTaskStat];
 }
 
 #pragma mark - Private
 
-// Configures the task stat.
-- (void)configureTaskStat:(NSArray<LevelUpTask*>*)allTasks {
-  NSMutableArray<LevelUpStat*>* stats = [[NSMutableArray alloc] init];
+// Updates the consumer with the latest data from the LevelUpService.
+- (void)updateConsumer {
+  if (!self.consumer) {
+    return;
+  }
 
-  int tabsDecluttered =
-      _levelUpService->GetStatValue(LevelUpTaskStatType::kTabsDecluttered);
-  NSString* title1 = l10n_util::GetPluralNSStringF(
-      IDS_IOS_LEVEL_UP_STAT_TABS_DECLUTTERED, tabsDecluttered);
-  NSString* subtitle1 =
-      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_STAT_SUBTITLE_TABS_DECLUTTERED);
-  LevelUpStat* stat1 =
-      [[LevelUpStat alloc] initWithTitle:title1
-                                subtitle:subtitle1
-                         imageLottieName:@"tabs_decluttered"
-                                    type:LevelUpTaskStatType::kTabsDecluttered];
-  [stats addObject:stat1];
+  int currentLevel = _levelUpService->GetCurrentLevel();
 
-  int typingSaved =
-      _levelUpService->GetStatValue(LevelUpTaskStatType::kTypingSaved);
-  NSString* title2 = l10n_util::GetPluralNSStringF(
-      IDS_IOS_LEVEL_UP_STAT_TYPING_SAVED, typingSaved);
-  NSString* subtitle2 =
-      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_STAT_SUBTITLE_TYPING_SAVED);
-  LevelUpStat* stat2 =
-      [[LevelUpStat alloc] initWithTitle:title2
-                                subtitle:subtitle2
-                         imageLottieName:@"typing_saved"
-                                    type:LevelUpTaskStatType::kTypingSaved];
-  [stats addObject:stat2];
+  auto [remainingTasksForNextLevel, totalTasksForNextLevel] =
+      _levelUpService->GetTasksRemainingForNextLevel();
 
-  int passwordsVerified =
-      _levelUpService->GetStatValue(LevelUpTaskStatType::kPasswordsVerified);
-  NSString* title3 = l10n_util::GetPluralNSStringF(
-      IDS_IOS_LEVEL_UP_STAT_PASSWORDS_VERIFIED, passwordsVerified);
-  NSString* subtitle3 =
-      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_STAT_SUBTITLE_PASSWORDS_VERIFIED);
-  LevelUpStat* stat3 = [[LevelUpStat alloc]
-        initWithTitle:title3
-             subtitle:subtitle3
-      imageLottieName:@"passwords_verified"
-                 type:LevelUpTaskStatType::kPasswordsVerified];
-  [stats addObject:stat3];
-
-  int photoSearchesPerformed = _levelUpService->GetStatValue(
-      LevelUpTaskStatType::kPhotoSearchesPerformed);
-  NSString* title4 = l10n_util::GetPluralNSStringF(
-      IDS_IOS_LEVEL_UP_STAT_PHOTO_SEARCHES_PERFORMED, photoSearchesPerformed);
-  NSString* subtitle4 = l10n_util::GetNSString(
-      IDS_IOS_LEVEL_UP_STAT_SUBTITLE_PHOTO_SEARCHES_PERFORMED);
-  LevelUpStat* stat4 = [[LevelUpStat alloc]
-        initWithTitle:title4
-             subtitle:subtitle4
-      imageLottieName:@"photo_searches_performed"
-                 type:LevelUpTaskStatType::kPhotoSearchesPerformed];
-  [stats addObject:stat4];
-
-  if ([self.consumer respondsToSelector:@selector(setStats:)]) {
-    [self.consumer setStats:stats];
+  if (_level != currentLevel ||
+      _remainingTasksForNextLevel != remainingTasksForNextLevel) {
+    _level = currentLevel;
+    _remainingTasksForNextLevel = remainingTasksForNextLevel;
+    if ([self.consumer
+            respondsToSelector:@selector(setLevel:remainingTasksForNextLevel:
+                                         totalTasksForNextLevel:)]) {
+      [self.consumer setLevel:_level
+          remainingTasksForNextLevel:_remainingTasksForNextLevel
+              totalTasksForNextLevel:totalTasksForNextLevel];
+    }
+    [self updateTasks];
+    [self updateRecommendedTasks];
+    [self configureTaskStat];
   }
 }
 
-- (void)toggleProgressUpdates {
+// Populates tasks into categories and updates the consumer.
+- (void)updateTasks {
+  NSMutableArray<LevelUpTask*>* productivityTasks =
+      [[NSMutableArray alloc] init];
+  NSMutableArray<LevelUpTask*>* safetyTasks = [[NSMutableArray alloc] init];
+  NSMutableArray<LevelUpTask*>* searchTasks = [[NSMutableArray alloc] init];
+
+  const auto& tasks = _levelUpService->GetTasks();
+  for (const auto& [type, info] : tasks) {
+    BOOL completed = _levelUpService->IsTaskCompleted(type);
+    LevelUpTask* task = [[LevelUpTask alloc] initWithTaskInfo:info.get()
+                                                    completed:completed];
+
+    switch (task.category) {
+      case LevelUpTaskCategory::kProductivity:
+        [productivityTasks addObject:task];
+        break;
+      case LevelUpTaskCategory::kSafety:
+        [safetyTasks addObject:task];
+        break;
+      case LevelUpTaskCategory::kSearch:
+        [searchTasks addObject:task];
+        break;
+    }
+  }
+
+  _categories = @[
+    [[LevelUpCategory alloc]
+        initWithTitle:l10n_util::GetNSString(
+                          IDS_IOS_LEVEL_UP_CATEGORY_PRODUCTIVITY)
+                tasks:productivityTasks],
+    [[LevelUpCategory alloc]
+        initWithTitle:l10n_util::GetNSString(IDS_IOS_LEVEL_UP_CATEGORY_SAFETY)
+                tasks:safetyTasks],
+    [[LevelUpCategory alloc]
+        initWithTitle:l10n_util::GetNSString(IDS_IOS_LEVEL_UP_CATEGORY_SEARCH)
+                tasks:searchTasks]
+  ];
+
+  if ([self.consumer respondsToSelector:@selector(addCategoryCard:)]) {
+    for (LevelUpCategory* category in _categories) {
+      [self.consumer addCategoryCard:category];
+    }
+  }
+}
+
+// Creates four random recommended tasks in "All tasks" section. If there are
+// less than four new tasks available, backfill with completed tasks.
+- (void)createRecommendedTasks {
+  _recommendedTasks = [[NSMutableArray alloc] init];
+  const auto recommendedTaskInfos = _levelUpService->GetRecommendedTasks();
+  for (const TaskInfo* info : recommendedTaskInfos) {
+    BOOL completed = _levelUpService->IsTaskCompleted(info->GetTaskType());
+    [_recommendedTasks
+        addObject:[[LevelUpTask alloc] initWithTaskInfo:info
+                                              completed:completed]];
+  }
+  if ([self.consumer respondsToSelector:@selector(setRecommendedTasks:)]) {
+    [self.consumer setRecommendedTasks:_recommendedTasks];
+  }
+}
+
+// Replaces completed task(s) with new task(s) in the "All tasks" section.
+// If there are less than four new tasks available, keep the completed tasks
+// in completed status.
+- (void)updateRecommendedTasks {
+  const auto& tasks = _levelUpService->GetTasks();
+  std::set<TaskType> recommendedTaskTypes;
+  for (LevelUpTask* task in _recommendedTasks) {
+    recommendedTaskTypes.insert(task.taskInfo->GetTaskType());
+  }
+  for (NSUInteger i = 0; i < _recommendedTasks.count; ++i) {
+    if (_levelUpService->IsTaskCompleted(
+            _recommendedTasks[i].taskInfo->GetTaskType())) {
+      _recommendedTasks[i].completed = YES;
+      for (const auto& [type, info] : tasks) {
+        if (!_levelUpService->IsTaskCompleted(type) &&
+            !recommendedTaskTypes.contains(type)) {
+          _recommendedTasks[i] =
+              [[LevelUpTask alloc] initWithTaskInfo:info.get() completed:NO];
+          recommendedTaskTypes.insert(type);
+          break;
+        }
+      }
+    }
+  }
+  if ([self.consumer respondsToSelector:@selector(setRecommendedTasks:)]) {
+    [self.consumer setRecommendedTasks:_recommendedTasks];
+  }
+}
+
+// Configures the task stats sorted in reverse order of their associated task's
+// completion recency (most recent first).
+- (void)configureTaskStat {
+  if (![self.consumer respondsToSelector:@selector(setStats:)]) {
+    return;
+  }
+
+  NSMutableArray<LevelUpStat*>* stats = [[NSMutableArray alloc] init];
+
+  for (LevelUpTaskStatType statType : _levelUpService->GetOrderedStatTypes()) {
+    LevelUpStat* stat = nil;
+    switch (statType) {
+      case LevelUpTaskStatType::kTabsDecluttered:
+        stat = [self tabsDeclutteredStat];
+        break;
+      case LevelUpTaskStatType::kPasswordsAutofilled:
+        stat = [self passwordsAutofilledStat];
+        break;
+      case LevelUpTaskStatType::kPasswordsVerified:
+        stat = [self passwordsVerifiedStat];
+        break;
+      case LevelUpTaskStatType::kPhotoSearchesPerformed:
+        stat = [self photoSearchesPerformedStat];
+        break;
+    }
+    if (stat) {
+      [stats addObject:stat];
+    }
+  }
+
+  [self.consumer setStats:stats];
+}
+
+- (LevelUpStat*)tabsDeclutteredStat {
+  int tabsDecluttered =
+      _levelUpService->GetStatValue(LevelUpTaskStatType::kTabsDecluttered);
+  if (tabsDecluttered <= 0) {
+    return nil;
+  }
+
+  NSString* title;
+  if (tabsDecluttered <= 15) {
+    title = l10n_util::GetPluralNSStringF(
+        IDS_IOS_LEVEL_UP_STAT_TABS_DECLUTTERED, tabsDecluttered);
+  } else {
+    title = l10n_util::GetNSString(IDS_IOS_LEVEL_UP_STAT_TABS_DECLUTTERED_MAX);
+  }
+  NSString* subtitle =
+      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_STAT_SUBTITLE_TABS_DECLUTTERED);
+  return
+      [[LevelUpStat alloc] initWithTitle:title
+                                subtitle:subtitle
+                         imageLottieName:@"tabs_decluttered"
+                                    type:LevelUpTaskStatType::kTabsDecluttered];
+}
+
+- (LevelUpStat*)passwordsAutofilledStat {
+  int passwordsAutofilled =
+      _levelUpService->GetStatValue(LevelUpTaskStatType::kPasswordsAutofilled);
+  if (passwordsAutofilled <= 0) {
+    return nil;
+  }
+
+  NSString* title;
+  if (passwordsAutofilled <= 40) {
+    title = l10n_util::GetPluralNSStringF(
+        IDS_IOS_LEVEL_UP_STAT_PASSWORDS_AUTOFILLED, passwordsAutofilled);
+  } else {
+    title =
+        l10n_util::GetNSString(IDS_IOS_LEVEL_UP_STAT_PASSWORDS_AUTOFILLED_MAX);
+  }
+  NSString* subtitle = l10n_util::GetNSString(
+      IDS_IOS_LEVEL_UP_STAT_SUBTITLE_PASSWORDS_AUTOFILLED);
+  return [[LevelUpStat alloc]
+        initWithTitle:title
+             subtitle:subtitle
+      imageLottieName:@"typing_saved"
+                 type:LevelUpTaskStatType::kPasswordsAutofilled];
+}
+
+- (LevelUpStat*)passwordsVerifiedStat {
+  int passwordsVerified =
+      _levelUpService->GetStatValue(LevelUpTaskStatType::kPasswordsVerified);
+  if (passwordsVerified <= 0) {
+    return nil;
+  }
+
+  NSString* title;
+  if (passwordsVerified <= 25) {
+    title = l10n_util::GetPluralNSStringF(
+        IDS_IOS_LEVEL_UP_STAT_PASSWORDS_VERIFIED, passwordsVerified);
+  } else {
+    title =
+        l10n_util::GetNSString(IDS_IOS_LEVEL_UP_STAT_PASSWORDS_VERIFIED_MAX);
+  }
+
+  NSString* subtitle =
+      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_STAT_SUBTITLE_PASSWORDS_VERIFIED);
+  return [[LevelUpStat alloc]
+        initWithTitle:title
+             subtitle:subtitle
+      imageLottieName:@"passwords_verified"
+                 type:LevelUpTaskStatType::kPasswordsVerified];
+}
+
+- (LevelUpStat*)photoSearchesPerformedStat {
+  int photoSearchesPerformed = _levelUpService->GetStatValue(
+      LevelUpTaskStatType::kPhotoSearchesPerformed);
+  if (photoSearchesPerformed <= 0) {
+    return nil;
+  }
+  NSString* title;
+  if (photoSearchesPerformed <= 20) {
+    title = l10n_util::GetPluralNSStringF(
+        IDS_IOS_LEVEL_UP_STAT_PHOTO_SEARCHES_PERFORMED, photoSearchesPerformed);
+  } else {
+    title = l10n_util::GetNSString(
+        IDS_IOS_LEVEL_UP_STAT_PHOTO_SEARCHES_PERFORMED_MAX);
+  }
+  NSString* subtitle = l10n_util::GetNSString(
+      IDS_IOS_LEVEL_UP_STAT_SUBTITLE_PHOTO_SEARCHES_PERFORMED);
+  return [[LevelUpStat alloc]
+        initWithTitle:title
+             subtitle:subtitle
+      imageLottieName:@"photo_searches_performed"
+                 type:LevelUpTaskStatType::kPhotoSearchesPerformed];
+}
+
+- (BOOL)toggleProgressUpdates {
+  CHECK(_prefService);
   BOOL oldValue = _prefService->GetBoolean(prefs::kLevelUpUIEnabled);
   BOOL newValue = !oldValue;
   _prefService->SetBoolean(prefs::kLevelUpUIEnabled, newValue);
+  RecordLevelUpNotificationsStateChanged(newValue);
   if ([self.consumer
           respondsToSelector:@selector(setProgressUpdatesEnabled:)]) {
     [self.consumer setProgressUpdatesEnabled:newValue];
   }
+  return newValue;
+}
+
+- (void)setNewTasksNotificationEnabled:(BOOL)enabled {
+  _prefService->SetBoolean(prefs::kLevelUpNewTasksNotificationEnabled, enabled);
+  RecordLevelUpNewTaskNotificationsStateChanged(enabled);
 }
 
 - (void)turnOffLevelUp {
   if (!_levelUpService) {
     return;
   }
+  RecordLevelUpOptInStateChanged(false);
   _levelUpService->ResetAllTasksStatus();
-  [self.delegate levelUpMediatorWantsToBeDismissed:self];
+  if (_prefService) {
+    _prefService->SetBoolean(prefs::kLevelUpOptIn, false);
+  } else {
+    [self.delegate levelUpMediatorWantsToBeDismissed:self];
+  }
 }
 
 // Updates the profile consumer with the primary identity credentials.

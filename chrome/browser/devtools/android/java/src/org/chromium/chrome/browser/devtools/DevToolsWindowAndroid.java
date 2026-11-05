@@ -4,13 +4,19 @@
 
 package org.chromium.chrome.browser.devtools;
 
+import android.content.Context;
+
+import org.jni_zero.JniPtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask.NativeBrowserWindowInterface;
 import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.content_public.browser.ContentFeatureMap;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.DeviceFormFactor;
 
 /** DevToolsWindowAndroid provides an interface to control DevTools windows. */
 @NullMarked
@@ -19,14 +25,20 @@ public class DevToolsWindowAndroid {
     // non-static method.
     private DevToolsWindowAndroid() {}
 
-    public static boolean isDevToolsAllowedFor(Profile profile, WebContents webContents) {
+    public static boolean isDevToolsAvailable(Context context) {
         return ContentFeatureMap.isEnabled(ContentFeatureList.ANDROID_DEV_TOOLS_FRONTEND)
+                && DeviceFormFactor.isNonMultiDisplayContextOnTablet(context);
+    }
+
+    public static boolean isDevToolsAllowedFor(
+            Context context, Profile profile, @Nullable WebContents webContents) {
+        return isDevToolsAvailable(context)
                 && DevToolsWindowAndroidJni.get().isDevToolsAllowedFor(profile, webContents);
     }
 
-    public static boolean canViewSource(Profile profile, WebContents webContents) {
+    public static boolean canViewSource(Context context, Profile profile, WebContents webContents) {
         // Disallow ViewSource if DevTools are disabled.
-        return isDevToolsAllowedFor(profile, webContents)
+        return isDevToolsAllowedFor(context, profile, webContents)
                 && webContents.getNavigationController().canViewSource();
     }
 
@@ -40,21 +52,45 @@ public class DevToolsWindowAndroid {
     }
 
     /**
+     * Opens a DevTools window with the console panel visible for the given WebContents.
+     *
+     * @param webContents The web contents to be inspected by DevTools.
+     */
+    public static void openDevToolsConsole(WebContents webContents) {
+        DevToolsWindowAndroidJni.get().openDevToolsConsole(webContents);
+    }
+
+    /**
+     * Opens a DevTools window in element inspection mode for the given WebContents.
+     *
+     * @param webContents The web contents to be inspected by DevTools.
+     */
+    public static void openDevToolsInspect(WebContents webContents) {
+        DevToolsWindowAndroidJni.get().openDevToolsInspect(webContents);
+    }
+
+    /**
      * Attaches the DevTools frontend web contents to the browser window.
      *
      * @param webContents DevTools frontend web contents.
-     * @param nativeBrowserWindowPtr Browser window to host the DevTools frontend.
+     * @param browserWindow Browser window to host the DevTools frontend.
      */
-    public static void attachToBrowser(WebContents webContents, long nativeBrowserWindowPtr) {
-        DevToolsWindowAndroidJni.get().attachToBrowser(webContents, nativeBrowserWindowPtr);
+    public static void attachToBrowser(
+            WebContents webContents, JniPtr<NativeBrowserWindowInterface> browserWindow) {
+        DevToolsWindowAndroidJni.get().attachToBrowser(webContents, browserWindow);
     }
 
     @NativeMethods
     interface Natives {
         void openDevTools(WebContents webContents);
 
-        boolean isDevToolsAllowedFor(Profile profile, WebContents webContents);
+        void openDevToolsConsole(WebContents webContents);
 
-        void attachToBrowser(WebContents webContents, long nativeBrowserWindowPtr);
+        void openDevToolsInspect(WebContents webContents);
+
+        boolean isDevToolsAllowedFor(Profile profile, @Nullable WebContents webContents);
+
+        void attachToBrowser(
+                WebContents webContents, JniPtr<NativeBrowserWindowInterface> browserWindow);
     }
 }

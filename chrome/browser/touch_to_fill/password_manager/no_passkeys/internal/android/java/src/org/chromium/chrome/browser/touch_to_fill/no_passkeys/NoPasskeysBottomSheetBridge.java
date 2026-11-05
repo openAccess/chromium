@@ -9,9 +9,14 @@ import android.content.Context;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
 import org.chromium.ui.base.WindowAndroid;
@@ -21,11 +26,16 @@ import java.lang.ref.WeakReference;
 /** JNI wrapper for C++ NoPasskeysBottomSheetBridge. Delegates calls from native to Java. */
 @NullMarked
 class NoPasskeysBottomSheetBridge implements NoPasskeysBottomSheetCoordinator.NativeDelegate {
+    @JniType("::NoPasskeysBottomSheetBridge")
+    interface NativeNoPasskeysBottomSheetBridge extends JniTypeToken {}
+
     private final NoPasskeysBottomSheetCoordinator mNoPasskeysSheet;
-    private long mNativeBridge;
+    private @Nullable JniRawPtr<NativeNoPasskeysBottomSheetBridge> mNativeBridge;
 
     @CalledByNative
-    NoPasskeysBottomSheetBridge(long nativeNoPasskeysBottomSheetBridge, WindowAndroid window) {
+    NoPasskeysBottomSheetBridge(
+            JniRawPtr<NativeNoPasskeysBottomSheetBridge> nativeNoPasskeysBottomSheetBridge,
+            @JniType("ui::WindowAndroid*") WindowAndroid window) {
         this(
                 nativeNoPasskeysBottomSheetBridge,
                 window.getContext(),
@@ -34,43 +44,48 @@ class NoPasskeysBottomSheetBridge implements NoPasskeysBottomSheetCoordinator.Na
 
     @VisibleForTesting
     NoPasskeysBottomSheetBridge(
-            long nativeNoPasskeysBottomSheetBridge,
+            JniRawPtr<NativeNoPasskeysBottomSheetBridge> nativeNoPasskeysBottomSheetBridge,
             WeakReference<Context> context,
-            WeakReference<BottomSheetController> bottomSheetController) {
+            WeakReference<@Nullable BottomSheetController> bottomSheetController) {
         mNativeBridge = nativeNoPasskeysBottomSheetBridge;
         mNoPasskeysSheet =
                 new NoPasskeysBottomSheetCoordinator(context, bottomSheetController, this);
     }
 
     @CalledByNative
-    void show(String origin) {
+    void show(@JniType("std::string") String origin) {
         mNoPasskeysSheet.show(origin);
     }
 
     @CalledByNative
     void dismiss() {
         mNoPasskeysSheet.destroy();
-        mNativeBridge = 0;
+        if (mNativeBridge != null) {
+            mNativeBridge.release();
+            mNativeBridge = null;
+        }
     }
 
     @Override
     public void onClickUseAnotherDevice() {
-        if (mNativeBridge == 0) return;
+        if (mNativeBridge == null) return;
 
         NoPasskeysBottomSheetBridgeJni.get().onClickUseAnotherDevice(mNativeBridge);
     }
 
     @Override
     public void onDismissed() {
-        if (mNativeBridge == 0) return;
+        if (mNativeBridge == null) return;
 
         NoPasskeysBottomSheetBridgeJni.get().onDismissed(mNativeBridge);
+        mNativeBridge.release();
+        mNativeBridge = null;
     }
 
     @NativeMethods
     interface Natives {
-        void onDismissed(long nativeNoPasskeysBottomSheetBridge);
+        void onDismissed(JniPtr<NativeNoPasskeysBottomSheetBridge> self);
 
-        void onClickUseAnotherDevice(long nativeNoPasskeysBottomSheetBridge);
+        void onClickUseAnotherDevice(JniPtr<NativeNoPasskeysBottomSheetBridge> self);
     }
 }

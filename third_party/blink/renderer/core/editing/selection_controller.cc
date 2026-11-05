@@ -230,7 +230,15 @@ SelectionInFlatTree AdjustSelectionByUserSelect(
 
     if (!ShouldIgnoreNodeForCheckSelectable(enclosing_block, iter.GetNode()) &&
         IsNonSelectable(iter.GetNode())) {
-      new_start_pos = current_pos;
+      // A position inside content which is both non-selectable and
+      // non-editable has no canonical position, so clamping to it collapses
+      // the whole selection. Keeping the wider boundary is safe: readers of
+      // the range skip non-selectable content. See crbug.com/553831659.
+      const bool can_clamp_to_current_pos =
+          !RuntimeEnabledFeatures::
+              AvoidNonSelectableSelectionBoundaryEnabled() ||
+          CreateVisiblePosition(current_pos).IsNotNull();
+      new_start_pos = can_clamp_to_current_pos ? current_pos : anchor;
       break;
     }
   }
@@ -249,7 +257,11 @@ SelectionInFlatTree AdjustSelectionByUserSelect(
 
     if (!ShouldIgnoreNodeForCheckSelectable(enclosing_block, iter.GetNode()) &&
         IsNonSelectable(iter.GetNode())) {
-      new_end_pos = current_pos;
+      const bool can_clamp_to_current_pos =
+          !RuntimeEnabledFeatures::
+              AvoidNonSelectableSelectionBoundaryEnabled() ||
+          CreateVisiblePosition(current_pos).IsNotNull();
+      new_end_pos = can_clamp_to_current_pos ? current_pos : focus;
       break;
     }
   }
@@ -711,6 +723,13 @@ bool SelectionController::UpdateSelectionForMouseDownDispatchingSelectStart(
     Node* target_node,
     const SelectionInFlatTree& selection,
     const SetSelectionOptions& set_selection_options) {
+  if (RuntimeEnabledFeatures::LongPressHitTestInFrameEnabled()) {
+    if ((target_node && target_node->GetDocument() != GetDocument()) ||
+        !selection.Anchor().IsValidFor(GetDocument()) ||
+        !selection.Focus().IsValidFor(GetDocument())) {
+      return false;
+    }
+  }
   if (target_node && target_node->GetLayoutObject() &&
       !target_node->GetLayoutObject()->IsSelectable())
     return false;
@@ -724,6 +743,11 @@ bool SelectionController::UpdateSelectionForMouseDownDispatchingSelectStart(
   // |DispatchSelectStart()| can change document hosted by |frame_|.
   if (!Selection().IsAvailable())
     return false;
+  if (RuntimeEnabledFeatures::LongPressHitTestInFrameEnabled() &&
+      (!selection.Anchor().IsValidFor(GetDocument()) ||
+       !selection.Focus().IsValidFor(GetDocument()))) {
+    return false;
+  }
 
   // TODO(editing-dev): Use of UpdateStyleAndLayout
   // needs to be audited.  See http://crbug.com/590369 for more details.
@@ -1025,6 +1049,12 @@ void SelectionController::SetCaretAtHitTestResult(
     const HitTestResult& hit_test_result) {
   Node* inner_node = hit_test_result.InnerPossiblyPseudoNode();
   DCHECK(inner_node);
+  // TODO(crbug.com/570656468): Compute the position upfront before dispatching
+  // 'selectstart' in HandleGestureLongPress() and avoid re-querying layout here
+  // or falling back to caret placement when 'selectstart' is canceled by JS.
+  if (LocalFrameView* view = inner_node->GetDocument().View()) {
+    view->UpdateAllLifecyclePhasesExceptPaint(DocumentUpdateReason::kSelection);
+  }
   const PositionInFlatTreeWithAffinity visible_hit_pos =
       CreateVisiblePosition(
           PositionWithAffinityOfHitTestResult(hit_test_result))
@@ -1328,7 +1358,10 @@ bool SelectionController::HandleGestureLongPress(
   }
 
   Node* inner_node = hit_test_result.InnerPossiblyPseudoNode();
-  inner_node->GetDocument().UpdateStyleAndLayoutTree();
+  if (LocalFrameView* view = inner_node->GetDocument().View()) {
+    view->UpdateAllLifecyclePhasesExceptPaint(DocumentUpdateReason::kSelection);
+  }
+
   bool inner_node_is_selectable = IsEditable(*inner_node) ||
                                   inner_node->IsTextNode() ||
                                   inner_node->CanStartSelection();

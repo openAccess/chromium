@@ -22,15 +22,7 @@ import type {ContentSettingsTypes} from '../site_settings/constants.js';
 export enum SafetyHubEvent {
   UNUSED_PERMISSIONS_MAYBE_CHANGED =
       'unused-permission-review-list-maybe-changed',
-  NOTIFICATION_PERMISSIONS_MAYBE_CHANGED =
-      'notification-permission-review-list-maybe-changed',
   EXTENSIONS_CHANGED = 'extensions-review-list-maybe-changed',
-}
-
-// The notification permission information passed from safety_hub_handler.cc.
-export interface NotificationPermission {
-  origin: string;
-  notificationInfoString: string;
 }
 
 // LINT.IfChange(PermissionsRevocationType)
@@ -55,7 +47,11 @@ export interface UnusedSitePermissions {
   origin: string;
   permissions: UnusedSitePermission[];
   expiration: string;
+  // LINT.IfChange(RevocationTypeKey)
   revocationType: PermissionsRevocationType;
+  // LINT.ThenChange(
+  //   //chrome/browser/ui/webui/settings/safety_hub_handler.cc:RevocationTypeKey
+  // )
 }
 
 // The information for top cards in Safety Hub page.
@@ -123,27 +119,6 @@ export interface SafetyHubBrowserProxy {
   undoAllowPermissionsAgainForUnusedSite(unusedSitePermissions:
                                              UnusedSitePermissions): void;
 
-  /** Gets the site list that send a lot of notifications. */
-  getNotificationPermissionReview(): Promise<NotificationPermission[]>;
-
-  /** Blocks the notification permission for all origins in the list. */
-  blockNotificationPermissionForOrigins(origins: string[]): void;
-
-  /** Allows the notification permission for all origins in the list */
-  allowNotificationPermissionForOrigins(origins: string[]): void;
-
-  /** Adds the origins to blocklist for the notification permissions feature. */
-  ignoreNotificationPermissionForOrigins(origins: string[]): void;
-
-  /**
-   * Removes the origins from the blocklist for the notification permissions
-   * feature.
-   */
-  undoIgnoreNotificationPermissionForOrigins(origins: string[]): void;
-
-  /** Resets the notification permission for the origins. */
-  resetNotificationPermissionForOrigins(origin: string[]): void;
-
   /**
    * When Safety Hub is visited, the active three-dot menu notification is
    * dismissed, if there is any.
@@ -197,31 +172,6 @@ export class SafetyHubBrowserProxyImpl implements SafetyHubBrowserProxy {
                                              UnusedSitePermissions) {
     chrome.send(
         'undoAllowPermissionsAgainForUnusedSite', [unusedSitePermissions]);
-  }
-
-  getNotificationPermissionReview() {
-    return sendWithPromise<NotificationPermission[]>(
-        'getNotificationPermissionReview');
-  }
-
-  blockNotificationPermissionForOrigins(origins: string[]) {
-    chrome.send('blockNotificationPermissionForOrigins', [origins]);
-  }
-
-  allowNotificationPermissionForOrigins(origins: string[]) {
-    chrome.send('allowNotificationPermissionForOrigins', [origins]);
-  }
-
-  ignoreNotificationPermissionForOrigins(origins: string[]) {
-    chrome.send('ignoreNotificationPermissionReviewForOrigins', [origins]);
-  }
-
-  undoIgnoreNotificationPermissionForOrigins(origins: string[]) {
-    chrome.send('undoIgnoreNotificationPermissionReviewForOrigins', [origins]);
-  }
-
-  resetNotificationPermissionForOrigins(origins: string[]) {
-    chrome.send('resetNotificationPermissionForOrigins', [origins]);
   }
 
   dismissActiveMenuNotification() {

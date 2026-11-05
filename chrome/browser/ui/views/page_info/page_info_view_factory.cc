@@ -8,7 +8,6 @@
 #include <string>
 
 #include "base/memory/raw_ptr.h"
-#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
@@ -42,7 +41,6 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/metadata/view_factory.h"
-#include "ui/views/vector_icons.h"
 
 constexpr int PageInfoViewFactory::kMinBubbleWidth;
 constexpr int PageInfoViewFactory::kMaxBubbleWidth;
@@ -64,9 +62,14 @@ class PageInfoSubpageView : public views::View {
 
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override {
-    // Only the with of |content_| is taken into account, because the header
+    // Only the width of |content_| is taken into account, because the header
     // view contains site origin in the subtitle which can be very long.
-    const int width = content_->GetPreferredSize(available_size).width();
+    int width = 0;
+    if (available_size.width().is_bounded()) {
+      width = available_size.width().value();
+    } else if (content_) {
+      width = content_->GetPreferredSize({}).width();
+    }
     return gfx::Size(
         width, GetLayoutManager()->GetPreferredHeightForWidth(this, width));
   }
@@ -120,11 +123,16 @@ PageInfoViewFactory::PageInfoViewFactory(
     PageInfo* presenter,
     ChromePageInfoUiDelegate* ui_delegate,
     PageInfoNavigationHandler* navigation_handler,
-    bool allow_extended_site_info)
+    bool allow_extended_site_info,
+    base::RepeatingClosure open_extensions_menu_callback)
     : presenter_(presenter),
       ui_delegate_(ui_delegate),
       navigation_handler_(navigation_handler),
-      allow_extended_site_info_(allow_extended_site_info) {}
+      allow_extended_site_info_(allow_extended_site_info),
+      open_extensions_menu_callback_(std::move(open_extensions_menu_callback)) {
+}
+
+PageInfoViewFactory::~PageInfoViewFactory() = default;
 
 std::unique_ptr<views::View> PageInfoViewFactory::CreatePageView(
     std::u16string title,
@@ -138,7 +146,8 @@ std::unique_ptr<views::View> PageInfoViewFactory::CreateMainPageView(
     base::OnceClosure initialized_callback) {
   return std::make_unique<PageInfoMainView>(
       presenter_, ui_delegate_, navigation_handler_,
-      std::move(initialized_callback), allow_extended_site_info_);
+      std::move(initialized_callback), allow_extended_site_info_,
+      open_extensions_menu_callback_);
 }
 
 std::unique_ptr<views::View> PageInfoViewFactory::CreateSecurityPageView() {
@@ -863,6 +872,13 @@ const ui::ImageModel PageInfoViewFactory::GetSiteSettingsIcon() {
 }
 
 // static
+const ui::ImageModel PageInfoViewFactory::GetExtensionIcon() {
+  return GetImageModel(features::IsRoundedIconsEnabled()
+                           ? vector_icons::kChromeExtensionIcon
+                           : vector_icons::kExtensionChromeRefreshOldIcon);
+}
+
+// static
 const ui::ImageModel PageInfoViewFactory::GetLaunchIcon() {
   return ui::ImageModel::FromVectorIcon(
       features::IsRoundedIconsEnabled()
@@ -889,16 +905,6 @@ const ui::ImageModel PageInfoViewFactory::GetOpenSubpageIcon() {
           ? vector_icons::kKeyboardArrowRightFlippableIcon
           : vector_icons::kSubmenuArrowChromeRefreshOldIcon,
       ui::kColorIcon, kIconSize);
-}
-
-// static
-const gfx::VectorIcon& PageInfoViewFactory::GetAboutThisSiteVectorIcon() {
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  return vector_icons::kPageInsightsIcon;
-#else
-  return features::IsRoundedIconsEnabled() ? views::kInfoIcon
-                                           : views::kInfoChromeRefreshOldIcon;
-#endif  // !BUILDFLAG(GOOGLE_CHROME_BRANDING)
 }
 
 // static

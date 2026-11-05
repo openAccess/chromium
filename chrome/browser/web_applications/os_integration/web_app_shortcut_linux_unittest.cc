@@ -24,7 +24,10 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_path_override.h"
+#include "base/test/test_future.h"
+#include "base/test/with_feature_override.h"
 #include "chrome/browser/shell_integration_linux.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_test_override.h"
 #include "chrome/browser/web_applications/os_integration/web_app_shortcut.h"
@@ -37,13 +40,19 @@
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/image/image.h"
+#include "ui/gfx/image/image_family.h"
 #include "ui/gfx/image/image_skia.h"
 #include "url/gurl.h"
 
 namespace web_app {
 
-class WebAppShortcutLinuxTest : public WebAppTest {
+class WebAppShortcutLinuxTest : public base::test::WithFeatureOverride,
+                                public WebAppTest {
  public:
+  WebAppShortcutLinuxTest()
+      : base::test::WithFeatureOverride(kWebAppsUseDynamicLauncherPortal) {}
+
   base::FilePath CreateShortcutInPath(const base::FilePath& path) {
     EXPECT_TRUE(base::PathExists(path));
     base::FilePath shortcut_path = path.Append(GetTemplateFilename());
@@ -187,9 +196,12 @@ class WebAppShortcutLinuxTest : public WebAppTest {
 
  private:
   OsIntegrationTestOverrideBlockingRegistration os_integration_override_;
+  // The portal is only used in app sandboxes.
+  base::nix::ScopedAppSandboxOverrideForTesting app_sandbox_override_{
+      base::nix::AppSandbox::kFlatpak};
 };
 
-TEST_F(WebAppShortcutLinuxTest, GetExistingShortcutLocations) {
+TEST_P(WebAppShortcutLinuxTest, GetExistingShortcutLocations) {
   base::FilePath kTemplateFilepath(GetTemplateFilename());
 
   // No existing shortcuts.
@@ -275,12 +287,12 @@ TEST_F(WebAppShortcutLinuxTest, GetExistingShortcutLocations) {
   }
 }
 
-TEST_F(WebAppShortcutLinuxTest, GetExtensionShortcutFilename) {
+TEST_P(WebAppShortcutLinuxTest, GetExtensionShortcutFilename) {
   EXPECT_EQ(base::FilePath("chrome-extensionid-Profile_1.desktop"),
             GetAppDesktopShortcutFilename(GetProfilePath(), "extensionid"));
 }
 
-TEST_F(WebAppShortcutLinuxTest, ShortcutIdentityDoesNotChangeWhenTitleChanges) {
+TEST_P(WebAppShortcutLinuxTest, ShortcutIdentityDoesNotChangeWhenTitleChanges) {
   std::unique_ptr<ShortcutInfo> shortcut_info = GetShortcutInfo();
   std::unique_ptr<ShortcutInfo> renamed_shortcut_info = GetShortcutInfo();
   renamed_shortcut_info->title = u"renamed app";
@@ -293,7 +305,41 @@ TEST_F(WebAppShortcutLinuxTest, ShortcutIdentityDoesNotChangeWhenTitleChanges) {
                                           renamed_shortcut_info->app_id));
 }
 
-TEST_F(WebAppShortcutLinuxTest, DeleteDesktopShortcuts) {
+namespace {
+
+bool CreateDesktopShortcutForTest(const ShortcutInfo& shortcut_info,
+                                  const ShortcutLocations& creation_locations) {
+  base::test::TestFuture<bool> future;
+  CreateDesktopShortcut(shortcut_info, creation_locations,
+                        future.GetCallback());
+  return future.Get();
+}
+
+bool DeleteDesktopShortcutsForTest(const base::FilePath& profile_path,
+                                   const std::string& extension_id) {
+  base::test::TestFuture<bool> future;
+  DeleteDesktopShortcuts(profile_path, extension_id, future.GetCallback());
+  return future.Get();
+}
+
+bool DeleteAllDesktopShortcutsForTest(const base::FilePath& profile_path) {
+  base::test::TestFuture<bool> future;
+  DeleteAllDesktopShortcuts(profile_path, future.GetCallback());
+  return future.Get();
+}
+
+bool UpdateDesktopShortcutsForTest(
+    const ShortcutInfo& shortcut_info,
+    std::optional<ShortcutLocations> user_specified_locations) {
+  base::test::TestFuture<bool> future;
+  UpdateDesktopShortcuts(shortcut_info, user_specified_locations,
+                         future.GetCallback());
+  return future.Get();
+}
+
+}  // namespace
+
+TEST_P(WebAppShortcutLinuxTest, DeleteDesktopShortcuts) {
   base::FilePath autostart_shortcut_path =
       CreateShortcutInPath(GetAutostartPath());
   base::FilePath desktop_shortcut_path = CreateShortcutInPath(GetDesktopPath());
@@ -310,14 +356,13 @@ TEST_F(WebAppShortcutLinuxTest, DeleteDesktopShortcuts) {
 
   EXPECT_TRUE(base::PathExists(desktop_shortcut_path));
   EXPECT_TRUE(base::PathExists(autostart_shortcut_path));
-  EXPECT_TRUE(
-      DeleteDesktopShortcuts(/*env=*/nullptr, GetProfilePath(), GetAppId()));
+  EXPECT_TRUE(DeleteDesktopShortcutsForTest(GetProfilePath(), GetAppId()));
   EXPECT_EQ(invoke_count, 1);
   EXPECT_FALSE(base::PathExists(desktop_shortcut_path));
   EXPECT_FALSE(base::PathExists(autostart_shortcut_path));
 }
 
-TEST_F(WebAppShortcutLinuxTest, DeleteAllDesktopShortcuts) {
+TEST_P(WebAppShortcutLinuxTest, DeleteAllDesktopShortcuts) {
   base::FilePath desktop_shortcut_path = CreateShortcutInPath(GetDesktopPath());
   base::ScopedPathOverride user_desktop_override(base::DIR_USER_DESKTOP,
                                                  GetDesktopPath());
@@ -340,13 +385,45 @@ TEST_F(WebAppShortcutLinuxTest, DeleteAllDesktopShortcuts) {
 
   EXPECT_TRUE(base::PathExists(desktop_shortcut_path));
   EXPECT_TRUE(base::PathExists(autostart_shortcut_path));
-  EXPECT_TRUE(DeleteAllDesktopShortcuts(/*env=*/nullptr, GetProfilePath()));
+  EXPECT_TRUE(DeleteAllDesktopShortcutsForTest(GetProfilePath()));
   EXPECT_EQ(invoke_count, 1);
   EXPECT_FALSE(base::PathExists(desktop_shortcut_path));
   EXPECT_FALSE(base::PathExists(autostart_shortcut_path));
 }
 
-TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutUsesAbsoluteIconPath) {
+// A failure to delete one applications menu shortcut must not prevent the
+// remaining shortcuts from being deleted.
+TEST_P(WebAppShortcutLinuxTest,
+       DeleteAllDesktopShortcutsContinuesAfterFailure) {
+  ASSERT_TRUE(base::CreateDirectory(GetApplicationsPath()));
+  const std::string kOtherFilename = "chrome-other_extension-Profile_1.desktop";
+  ASSERT_TRUE(
+      base::WriteFile(GetApplicationsPath().Append(GetTemplateFilename()), ""));
+  ASSERT_TRUE(
+      base::WriteFile(GetApplicationsPath().Append(kOtherFilename), ""));
+
+  std::vector<std::string> uninstalled;
+  LaunchXdgUtilityForTesting launch_xdg_utility = base::BindLambdaForTesting(
+      [&](const std::vector<std::string>& argv, int* exit_code) -> bool {
+        EXPECT_EQ(argv[0], "xdg-desktop-menu");
+        EXPECT_EQ(argv[1], "uninstall");
+        uninstalled.push_back(argv.back());
+        *exit_code = 0;
+        // Fail the first deletion.
+        bool success = uninstalled.size() > 1;
+        if (uninstalled.size() < 2) {
+          SetLaunchXdgUtilityForTesting(launch_xdg_utility);
+        }
+        return success;
+      });
+  SetLaunchXdgUtilityForTesting(launch_xdg_utility);
+
+  EXPECT_FALSE(DeleteAllDesktopShortcutsForTest(GetProfilePath()));
+  EXPECT_THAT(uninstalled, testing::UnorderedElementsAre(GetTemplateFilename(),
+                                                         kOtherFilename));
+}
+
+TEST_P(WebAppShortcutLinuxTest, CreateDesktopShortcutUsesAbsoluteIconPath) {
   int invoke_count = 0;
   LaunchXdgUtilityForTesting launch_xdg_utility = base::BindLambdaForTesting(
       [&](const std::vector<std::string>& argv, int* exit_code) -> bool {
@@ -366,8 +443,7 @@ TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutUsesAbsoluteIconPath) {
   ShortcutLocations locations;
   locations.on_desktop = true;
 
-  ASSERT_TRUE(
-      CreateDesktopShortcut(/*env=*/nullptr, *shortcut_info, locations));
+  ASSERT_TRUE(CreateDesktopShortcutForTest(*shortcut_info, locations));
   EXPECT_EQ(invoke_count, 2);
 
   std::string shortcut_contents;
@@ -377,7 +453,7 @@ TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutUsesAbsoluteIconPath) {
               testing::HasSubstr("Icon=" + GetExpectedIconPath() + "\n"));
 }
 
-TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcut) {
+TEST_P(WebAppShortcutLinuxTest, CreateDesktopShortcut) {
   int invoke_count = 0;
   LaunchXdgUtilityForTesting CreateDesktopShortcutLaunchXdgUtility =
       base::BindLambdaForTesting([&](const std::vector<std::string>& argv,
@@ -400,8 +476,7 @@ TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcut) {
   locations.in_startup = true;
   locations.applications_menu_location = APP_MENU_LOCATION_SUBDIR_CHROMEAPPS;
 
-  EXPECT_TRUE(
-      CreateDesktopShortcut(/*env=*/nullptr, *shortcut_info, locations));
+  EXPECT_TRUE(CreateDesktopShortcutForTest(*shortcut_info, locations));
   EXPECT_EQ(invoke_count, 4);
 
   // At this point, we've already validated creation in the Application menu
@@ -449,7 +524,7 @@ TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcut) {
 
 // Validates protocols are only added to the applications folder
 // .desktop file.
-TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutWithProtocols) {
+TEST_P(WebAppShortcutLinuxTest, CreateDesktopShortcutWithProtocols) {
   std::unique_ptr<ShortcutInfo> shortcut_info = GetShortcutInfo();
   ShortcutLocations locations;
   locations.on_desktop = true;
@@ -497,8 +572,7 @@ TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutWithProtocols) {
 
   SetLaunchXdgUtilityForTesting(CreateDesktopShortcutLaunchXdgUtility);
 
-  EXPECT_TRUE(
-      CreateDesktopShortcut(/*env=*/nullptr, *shortcut_info, locations));
+  EXPECT_TRUE(CreateDesktopShortcutForTest(*shortcut_info, locations));
   EXPECT_EQ(invoke_count, 4);
 
   // At this point, we've already validated creation in the Application menu
@@ -538,13 +612,93 @@ TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutWithProtocols) {
     ASSERT_TRUE(base::PathExists(autostart_shortcut_path));
 
     std::string actual_contents;
-    ASSERT_TRUE(
+    EXPECT_TRUE(
         base::ReadFileToString(autostart_shortcut_path, &actual_contents));
     EXPECT_EQ(expected_contents, actual_contents);
   }
 }
 
-TEST_F(WebAppShortcutLinuxTest,
+TEST_P(WebAppShortcutLinuxTest,
+       CreateDesktopShortcutWithFileHandlersAndProtocols) {
+  std::unique_ptr<ShortcutInfo> shortcut_info = GetShortcutInfo();
+  ShortcutLocations locations;
+  locations.on_desktop = true;
+  locations.in_startup = true;
+  locations.applications_menu_location = APP_MENU_LOCATION_SUBDIR_CHROMEAPPS;
+
+  // Add file handler MIME types, including an unexpected x-scheme-handler
+  // entry.
+  shortcut_info->file_handler_mime_types.emplace("image/png");
+  shortcut_info->file_handler_mime_types.emplace("text/plain");
+  shortcut_info->file_handler_mime_types.emplace("x-scheme-handler/mailto");
+  shortcut_info->file_handler_mime_types.emplace("x-scheme-handler");
+  shortcut_info->file_handler_mime_types.emplace("X-Scheme-Handler/custom");
+  shortcut_info->file_handler_mime_types.emplace("X-Scheme-Handler");
+
+  // Add protocol handlers.
+  shortcut_info->protocol_handlers.emplace("web+testing");
+
+  int invoke_count = 0;
+  LaunchXdgUtilityForTesting CreateDesktopShortcutLaunchXdgUtility =
+      base::BindLambdaForTesting([&](const std::vector<std::string>& argv,
+                                     int* exit_code) -> bool {
+        ValidateCreateDesktopShortcutLaunchXdgUtility(
+            argv, exit_code, GetApplicationsPath(), invoke_count);
+
+        // Validate MIME types were added to contents correctly:
+        // - "image/png" and "text/plain" from file_handler_mime_types are kept.
+        // - "x-scheme-handler/web+testing" is added from protocol_handlers.
+        // - "x-scheme-handler/mailto" from file_handler_mime_types is filtered
+        //   out and must NOT appear in the .desktop file.
+        // Each of these expectations is explicitly asserted below.
+        if (invoke_count == 2) {
+          std::string expected_contents =
+              shell_integration_linux::GetDesktopFileContents(
+                  shell_integration_linux::internal::GetChromeExePath(),
+                  GenerateApplicationNameFromInfo(*shortcut_info),
+                  shortcut_info->url, shortcut_info->app_id,
+                  shortcut_info->title, GetExpectedIconPath(),
+                  shortcut_info->profile_path, "",
+                  "image/png;text/plain;x-scheme-handler/web+testing", false,
+                  "", shortcut_info->actions);
+
+          base::FilePath application_shortcut_path(argv[5]);
+          EXPECT_TRUE(base::PathExists(application_shortcut_path));
+
+          std::string actual_contents;
+          EXPECT_TRUE(base::ReadFileToString(application_shortcut_path,
+                                             &actual_contents));
+          EXPECT_EQ(expected_contents, actual_contents);
+
+          // Explicitly verify protocol handler is present in .desktop file.
+          EXPECT_THAT(actual_contents,
+                      testing::HasSubstr("x-scheme-handler/web+testing"));
+
+          // Explicitly verify valid file handler MIME types are present.
+          EXPECT_THAT(actual_contents, testing::HasSubstr("image/png"));
+          EXPECT_THAT(actual_contents, testing::HasSubstr("text/plain"));
+
+          // Explicitly verify x-scheme-handler/mailto from file handlers was
+          // filtered out and does not exist in the .desktop file.
+          EXPECT_THAT(
+              actual_contents,
+              testing::Not(testing::HasSubstr("x-scheme-handler/mailto")));
+        }
+        invoke_count++;
+
+        if (invoke_count < 4) {
+          SetLaunchXdgUtilityForTesting(CreateDesktopShortcutLaunchXdgUtility);
+        }
+        return true;
+      });
+
+  SetLaunchXdgUtilityForTesting(CreateDesktopShortcutLaunchXdgUtility);
+
+  EXPECT_TRUE(CreateDesktopShortcutForTest(*shortcut_info, locations));
+  EXPECT_EQ(invoke_count, 4);
+}
+
+TEST_P(WebAppShortcutLinuxTest,
        CreateDesktopShortcutWithNonExistantUserDesktopDir) {
   auto CreateDesktopShortcutLaunchXdgUtility = base::BindLambdaForTesting(
       [&](const std::vector<std::string>& argv, int* exit_code) -> bool {
@@ -564,8 +718,7 @@ TEST_F(WebAppShortcutLinuxTest,
   // Force a failure by deleting the |scoped_desktop_path| location.
   base::FilePath desktop_path = GetDesktopPath();
   EXPECT_TRUE(DeletePathRecursively(desktop_path));
-  EXPECT_FALSE(
-      CreateDesktopShortcut(/*env=*/nullptr, *shortcut_info, locations));
+  EXPECT_FALSE(CreateDesktopShortcutForTest(*shortcut_info, locations));
 
   // At this point, we've already validated creation in the Application menu
   // because of the hook into XdgUtilityForTesting.
@@ -596,7 +749,7 @@ TEST_F(WebAppShortcutLinuxTest,
   }
 }
 
-TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutEmptyExtension) {
+TEST_P(WebAppShortcutLinuxTest, CreateDesktopShortcutEmptyExtension) {
   int invoke_count = 0;
   LaunchXdgUtilityForTesting CreateDesktopShortcutLaunchXdgUtility =
       base::BindLambdaForTesting([&](const std::vector<std::string>& argv,
@@ -672,8 +825,7 @@ TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutEmptyExtension) {
   locations.in_startup = true;
   locations.applications_menu_location = APP_MENU_LOCATION_SUBDIR_CHROMEAPPS;
 
-  EXPECT_TRUE(
-      CreateDesktopShortcut(/*env=*/nullptr, *shortcut_info, locations));
+  EXPECT_TRUE(CreateDesktopShortcutForTest(*shortcut_info, locations));
   EXPECT_EQ(invoke_count, 3);
 
   // At this point, we've already validated creation in the Application menu
@@ -722,7 +874,7 @@ TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutEmptyExtension) {
   }
 }
 
-TEST_F(WebAppShortcutLinuxTest, UpdateDesktopShortcuts) {
+TEST_P(WebAppShortcutLinuxTest, UpdateDesktopShortcuts) {
   CreateShortcutInPath(GetDesktopPath());
   CreateShortcutInPath(GetApplicationsPath());
 
@@ -744,8 +896,8 @@ TEST_F(WebAppShortcutLinuxTest, UpdateDesktopShortcuts) {
 
   std::unique_ptr<ShortcutInfo> shortcut_info = GetShortcutInfo();
 
-  UpdateDesktopShortcuts(/*env=*/nullptr, *shortcut_info,
-                         /*user_specified_locations=*/std::nullopt);
+  UpdateDesktopShortcutsForTest(*shortcut_info,
+                                /*user_specified_locations=*/std::nullopt);
   EXPECT_EQ(invoke_count, 4);
 
   // At this point, we've already validated creation in the Application menu
@@ -769,7 +921,7 @@ TEST_F(WebAppShortcutLinuxTest, UpdateDesktopShortcuts) {
   EXPECT_EQ(expected_contents, actual_contents);
 }
 
-TEST_F(WebAppShortcutLinuxTest, GetShortcutLocations) {
+TEST_P(WebAppShortcutLinuxTest, GetShortcutLocations) {
   // No existing shortcuts.
   {
     ShortcutLocations locations;
@@ -830,7 +982,7 @@ TEST_F(WebAppShortcutLinuxTest, GetShortcutLocations) {
 
 // Validates Shortcut Menu actions are only added to the applications folder
 // .desktop file.
-TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutWithShortcutMenuActions) {
+TEST_P(WebAppShortcutLinuxTest, CreateDesktopShortcutWithShortcutMenuActions) {
   std::unique_ptr<ShortcutInfo> shortcut_info = GetShortcutInfo();
   ShortcutLocations locations;
   locations.on_desktop = true;
@@ -883,8 +1035,7 @@ TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutWithShortcutMenuActions) {
 
   SetLaunchXdgUtilityForTesting(CreateDesktopShortcutLaunchXdgUtility);
 
-  EXPECT_TRUE(
-      CreateDesktopShortcut(/*env=*/nullptr, *shortcut_info, locations));
+  EXPECT_TRUE(CreateDesktopShortcutForTest(*shortcut_info, locations));
   EXPECT_EQ(invoke_count, 4);
 
   // At this point, we've already validated creation in the Application menu
@@ -929,5 +1080,262 @@ TEST_F(WebAppShortcutLinuxTest, CreateDesktopShortcutWithShortcutMenuActions) {
     EXPECT_EQ(expected_contents, actual_contents);
   }
 }
+
+TEST_P(WebAppShortcutLinuxTest,
+       StripNameAndIconFromDesktopFileStripsExtraGroupsAndActions) {
+  constexpr std::string_view kSampleDesktopFile =
+      "[Desktop Entry]\n"
+      "Version=1.0\n"
+      "Name=My App\n"
+      "Icon=app_icon\n"
+      "Exec=chrome --app=https://example.com\n"
+      "Actions=action1;\n"
+      "\n"
+      "[Desktop Action action1]\n"
+      "Name=Open Action 1\n"
+      "Exec=chrome --app=https://example.com/1\n";
+
+  std::string stripped =
+      internals::StripNameAndIconFromDesktopFile(kSampleDesktopFile);
+
+  EXPECT_TRUE(stripped.find("Name=My App") == std::string::npos);
+  EXPECT_TRUE(stripped.find("Icon=app_icon") == std::string::npos);
+  EXPECT_TRUE(stripped.find("Actions=action1;") == std::string::npos);
+  EXPECT_TRUE(stripped.find("[Desktop Action action1]") == std::string::npos);
+  EXPECT_TRUE(stripped.find("Name=Open Action 1") == std::string::npos);
+  EXPECT_TRUE(stripped.find("[Desktop Entry]") != std::string::npos);
+  EXPECT_TRUE(stripped.find("Exec=chrome --app=https://example.com") !=
+              std::string::npos);
+}
+
+TEST_P(WebAppShortcutLinuxTest, GetPortalDesktopFileIdAvoidsDoublePrefixing) {
+  std::unique_ptr<base::Environment> env = base::Environment::Create();
+  base::FilePath raw_filename("chrome-app_id-Profile_1.desktop");
+  std::string portal_id =
+      internals::GetPortalDesktopFileId(env.get(), raw_filename);
+  EXPECT_TRUE(portal_id.find("chrome-app_id-Profile_1.desktop") !=
+              std::string::npos);
+
+  // Calling it again on the already-prefixed ID should return the exact same
+  // string
+  std::string double_portal_id =
+      internals::GetPortalDesktopFileId(env.get(), base::FilePath(portal_id));
+  EXPECT_EQ(portal_id, double_portal_id);
+}
+
+// Without a portal token (e.g. for silent manifest updates), an existing
+// portal-installed launcher must be kept when the portal is enabled, and
+// replaced with a legacy launcher when it is disabled.
+TEST_P(WebAppShortcutLinuxTest,
+       CreateDesktopShortcutWithoutTokenHandlesExistingPortalLauncher) {
+  base::Environment* env = OsIntegrationTestOverrideImpl::Get()->environment();
+  std::string portal_id = internals::GetPortalDesktopFileId(
+      env, base::FilePath(GetTemplateFilename()));
+  ASSERT_NE(portal_id, GetTemplateFilename());
+  ASSERT_TRUE(base::CreateDirectory(GetApplicationsPath()));
+  base::FilePath portal_launcher_path = GetApplicationsPath().Append(portal_id);
+  ASSERT_TRUE(base::WriteFile(portal_launcher_path, "[Desktop Entry]\n"));
+
+  std::vector<std::vector<std::string>> xdg_calls;
+  LaunchXdgUtilityForTesting launch_xdg_utility = base::BindLambdaForTesting(
+      [&](const std::vector<std::string>& argv, int* exit_code) -> bool {
+        xdg_calls.push_back(argv);
+        *exit_code = 0;
+        return true;
+      });
+  SetLaunchXdgUtilityForTesting(launch_xdg_utility);
+
+  std::unique_ptr<ShortcutInfo> shortcut_info = GetShortcutInfo();
+  ASSERT_TRUE(shortcut_info->portal_token.empty());
+  ShortcutLocations locations;
+  locations.applications_menu_location = APP_MENU_LOCATION_SUBDIR_CHROMEAPPS;
+  EXPECT_TRUE(CreateDesktopShortcutForTest(*shortcut_info, locations));
+
+  auto has_menu_call = [&](std::string_view action, std::string_view file) {
+    return std::ranges::any_of(
+        xdg_calls, [&](const std::vector<std::string>& argv) {
+          return argv.size() >= 2 && argv[0] == "xdg-desktop-menu" &&
+                 argv[1] == action && argv.back().ends_with(file);
+        });
+  };
+
+  EXPECT_TRUE(base::PathExists(portal_launcher_path));
+  if (IsParamFeatureEnabled()) {
+    EXPECT_FALSE(has_menu_call("uninstall", portal_id));
+    EXPECT_FALSE(has_menu_call("install", GetTemplateFilename()));
+  } else {
+    EXPECT_TRUE(has_menu_call("uninstall", portal_id));
+    EXPECT_TRUE(has_menu_call("install", GetTemplateFilename()));
+  }
+}
+
+// Outside of an app sandbox the portal is never used, so a portal launcher
+// left behind is replaced with a legacy one regardless of the feature state.
+TEST_P(WebAppShortcutLinuxTest,
+       CreateDesktopShortcutWithoutSandboxReplacesPortalLauncher) {
+  base::nix::ScopedAppSandboxOverrideForTesting no_sandbox(
+      base::nix::AppSandbox::kNone);
+  EXPECT_FALSE(ShouldUseDynamicLauncherPortal());
+
+  base::Environment* env = OsIntegrationTestOverrideImpl::Get()->environment();
+  std::string portal_id = internals::GetPortalDesktopFileId(
+      env, base::FilePath(GetTemplateFilename()));
+  ASSERT_TRUE(base::CreateDirectory(GetApplicationsPath()));
+  ASSERT_TRUE(base::WriteFile(GetApplicationsPath().Append(portal_id),
+                              "[Desktop Entry]\n"));
+
+  std::vector<std::vector<std::string>> xdg_calls;
+  LaunchXdgUtilityForTesting launch_xdg_utility = base::BindLambdaForTesting(
+      [&](const std::vector<std::string>& argv, int* exit_code) -> bool {
+        xdg_calls.push_back(argv);
+        *exit_code = 0;
+        return true;
+      });
+  SetLaunchXdgUtilityForTesting(launch_xdg_utility);
+
+  std::unique_ptr<ShortcutInfo> shortcut_info = GetShortcutInfo();
+  ShortcutLocations locations;
+  locations.applications_menu_location = APP_MENU_LOCATION_SUBDIR_CHROMEAPPS;
+  EXPECT_TRUE(CreateDesktopShortcutForTest(*shortcut_info, locations));
+
+  auto has_menu_call = [&](std::string_view action, std::string_view file) {
+    return std::ranges::any_of(
+        xdg_calls, [&](const std::vector<std::string>& argv) {
+          return argv.size() >= 2 && argv[0] == "xdg-desktop-menu" &&
+                 argv[1] == action && argv.back().ends_with(file);
+        });
+  };
+  EXPECT_TRUE(has_menu_call("uninstall", portal_id));
+  EXPECT_TRUE(has_menu_call("install", GetTemplateFilename()));
+}
+
+// Uninstalling falls back to the legacy path when the portal can't be used
+// (here because of the testing hook), which must also remove a launcher that
+// was installed through the portal.
+TEST_P(WebAppShortcutLinuxTest, DeleteDesktopShortcutsRemovesPortalLauncher) {
+  base::Environment* env = OsIntegrationTestOverrideImpl::Get()->environment();
+  std::string portal_id = internals::GetPortalDesktopFileId(
+      env, base::FilePath(GetTemplateFilename()));
+  ASSERT_NE(portal_id, GetTemplateFilename());
+  ASSERT_TRUE(base::CreateDirectory(GetApplicationsPath()));
+  ASSERT_TRUE(base::WriteFile(GetApplicationsPath().Append(portal_id),
+                              "[Desktop Entry]\n"));
+
+  std::vector<std::string> uninstalled;
+  LaunchXdgUtilityForTesting launch_xdg_utility = base::BindLambdaForTesting(
+      [&](const std::vector<std::string>& argv, int* exit_code) -> bool {
+        if (argv.size() >= 2 && argv[0] == "xdg-desktop-menu" &&
+            argv[1] == "uninstall") {
+          uninstalled.push_back(argv.back());
+        }
+        *exit_code = 0;
+        return true;
+      });
+  SetLaunchXdgUtilityForTesting(launch_xdg_utility);
+
+  EXPECT_TRUE(DeleteDesktopShortcutsForTest(GetProfilePath(), GetAppId()));
+  EXPECT_THAT(uninstalled, testing::Contains(portal_id));
+}
+
+// The portal is only used in Flatpak. It doesn't support snaps, and isn't
+// needed outside of an app sandbox.
+TEST_P(WebAppShortcutLinuxTest, ShouldUseDynamicLauncherPortalOnlyInFlatpak) {
+  {
+    base::nix::ScopedAppSandboxOverrideForTesting flatpak(
+        base::nix::AppSandbox::kFlatpak);
+    EXPECT_EQ(ShouldUseDynamicLauncherPortal(), IsParamFeatureEnabled());
+  }
+  {
+    base::nix::ScopedAppSandboxOverrideForTesting snap(
+        base::nix::AppSandbox::kSnap);
+    EXPECT_FALSE(ShouldUseDynamicLauncherPortal());
+  }
+  {
+    base::nix::ScopedAppSandboxOverrideForTesting none(
+        base::nix::AppSandbox::kNone);
+    EXPECT_FALSE(ShouldUseDynamicLauncherPortal());
+  }
+}
+
+// When the portal's Install call fails, the legacy install runs instead and the
+// failure is recorded separately from legacy install failures.
+TEST_P(WebAppShortcutLinuxTest, FinishPortalInstallFallsBackToLegacyOnFailure) {
+  for (bool legacy_result : {true, false}) {
+    SCOPED_TRACE(legacy_result);
+    base::HistogramTester histograms;
+    std::vector<std::vector<std::string>> xdg_calls;
+    LaunchXdgUtilityForTesting launch_xdg_utility = base::BindLambdaForTesting(
+        [&](const std::vector<std::string>& argv, int* exit_code) -> bool {
+          xdg_calls.push_back(argv);
+          *exit_code = 0;
+          return true;
+        });
+    SetLaunchXdgUtilityForTesting(launch_xdg_utility);
+
+    int legacy_install_calls = 0;
+    base::test::TestFuture<bool> future;
+    internals::FinishPortalInstall(GetApplicationsPath(),
+                                   base::BindLambdaForTesting([&] {
+                                     ++legacy_install_calls;
+                                     return legacy_result;
+                                   }),
+                                   future.GetCallback(),
+                                   /*portal_success=*/false);
+
+    EXPECT_EQ(future.Get(), legacy_result);
+    EXPECT_EQ(legacy_install_calls, 1);
+    EXPECT_TRUE(xdg_calls.empty());
+    histograms.ExpectUniqueSample("Apps.CreateShortcuts.Linux.Result",
+                                  /*kPortalInstallFailed*/ 11, 1);
+  }
+}
+
+TEST_P(WebAppShortcutLinuxTest, FinishPortalInstallSuccessSkipsLegacy) {
+  base::HistogramTester histograms;
+  std::vector<std::vector<std::string>> xdg_calls;
+  LaunchXdgUtilityForTesting launch_xdg_utility = base::BindLambdaForTesting(
+      [&](const std::vector<std::string>& argv, int* exit_code) -> bool {
+        xdg_calls.push_back(argv);
+        *exit_code = 0;
+        return true;
+      });
+  SetLaunchXdgUtilityForTesting(launch_xdg_utility);
+
+  base::test::TestFuture<bool> future;
+  internals::FinishPortalInstall(
+      GetApplicationsPath(), base::BindOnce([]() -> bool {
+        ADD_FAILURE() << "Legacy install must not run";
+        return false;
+      }),
+      future.GetCallback(), /*portal_success=*/true);
+
+  EXPECT_TRUE(future.Get());
+  EXPECT_THAT(xdg_calls,
+              testing::ElementsAre(testing::ElementsAre(
+                  "update-desktop-database", GetApplicationsPath().value())));
+  histograms.ExpectTotalCount("Apps.CreateShortcuts.Linux.Result", 0);
+}
+
+TEST_P(WebAppShortcutLinuxTest, GetShortcutIconBytesPrefersDownscaling) {
+  gfx::ImageFamily family;
+  family.Add(gfx::Image(CreateDefaultApplicationIcon(32)));
+  family.Add(gfx::Image(CreateDefaultApplicationIcon(1024)));
+  std::vector<uint8_t> png = GetShortcutIconBytes(family);
+  gfx::Image image = gfx::Image::CreateFrom1xPNGBytes(png);
+  EXPECT_EQ(image.Width(), 512);
+  EXPECT_EQ(image.Height(), 512);
+}
+
+TEST_P(WebAppShortcutLinuxTest, GetShortcutIconBytesDoesNotUpscale) {
+  gfx::ImageFamily family;
+  family.Add(gfx::Image(CreateDefaultApplicationIcon(32)));
+  family.Add(gfx::Image(CreateDefaultApplicationIcon(128)));
+  std::vector<uint8_t> png = GetShortcutIconBytes(family);
+  gfx::Image image = gfx::Image::CreateFrom1xPNGBytes(png);
+  EXPECT_EQ(image.Width(), 128);
+  EXPECT_EQ(image.Height(), 128);
+}
+
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(WebAppShortcutLinuxTest);
 
 }  // namespace web_app

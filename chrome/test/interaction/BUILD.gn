@@ -26,7 +26,6 @@ if (!is_android) {
       "webcontents_interaction_test_util.h",
     ]
     public_deps = [
-      "//chrome/browser/ui",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/interaction",
       "//chrome/browser/ui/test:dialog",
@@ -43,6 +42,7 @@ if (!is_android) {
       "//chrome/browser/ui:browser_element_identifiers",
       "//chrome/browser/ui/navigator",
       "//chrome/browser/ui/views/frame",
+      "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/views/frame:contents_web_view",
       "//chrome/browser/ui/views/interaction",
       "//chrome/browser/ui/views/omnibox",
@@ -59,6 +59,7 @@ if (!is_android) {
       "//ui/views:test_support",
       "//ui/views/controls/webview",
       "//ui/webui/tracked_element",
+      "//ui/webui/tracked_element:test_support",
     ]
   }
 
@@ -86,6 +87,12 @@ if (!is_android) {
     ]
     deps = [
       ":interaction",
+      "//chrome/browser/ui:browser_commands",
+      "//chrome/browser/ui:browser_element_identifiers",
+      "//chrome/browser/ui:browser_window_header",
+      "//chrome/browser/ui/toolbar",
+      "//chrome/browser/ui/views/frame:browser_view_header",
+      "//chrome/browser/ui/views/frame:vertical_tab_strip_region_view",
       "//chrome/browser/ui/views/tabs:tab_strip",
       "//chrome/test/base:in_process_browser_test",
       "//chrome/test/base:test_switches",
@@ -110,12 +117,18 @@ if (toolkit_views) {
     ]
     deps = [
       ":interaction",
+      "//chrome/browser/ui:browser_commands",
+      "//chrome/browser/ui:browser_window_header",
+      "//chrome/browser/ui/actions:actions_headers",
       "//chrome/browser/ui/side_panel:side_panel_views_dependent",
       "//chrome/browser/ui/tabs:tab_menu",
+      "//chrome/browser/ui/tabs/organizer",
       "//chrome/browser/ui/views/bubble",
+      "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/views/interaction",
       "//chrome/browser/ui/views/tabs:tab_strip",
       "//chrome/browser/ui/views/toolbar",
+      "//chrome/browser/ui/views/toolbar:test_support",
       "//chrome/test/base:in_process_browser_test",
       "//net:test_support",
       "//ui/base:test_support",

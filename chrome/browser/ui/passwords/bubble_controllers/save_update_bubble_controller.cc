@@ -358,6 +358,8 @@ bool SaveUpdateBubbleController::IsSavingBlockedByTrustedVaultError() const {
 void SaveUpdateBubbleController::OnTrustedVaultUnlockClicked() {
   CHECK(GetState() == password_manager::ui::PENDING_PASSWORD_STATE ||
         GetState() == password_manager::ui::PENDING_PASSWORD_UPDATE_STATE);
-  delegate_->SavePasswordAfterTrustedVaultErrorResolution();
+  SetDismissalReason(metrics_util::CLICKED_RESOLVE_ERROR);
+  delegate_->SavePasswordAfterTrustedVaultErrorResolution(
+      GetPendingPassword().username_value, GetPendingPassword().password_value);
   delegate_->StartTrustedVaultErrorResolutionFlow();
 }

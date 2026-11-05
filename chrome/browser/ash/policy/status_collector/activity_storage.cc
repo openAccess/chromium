@@ -10,6 +10,7 @@
 
 #include "base/base64.h"
 #include "base/check.h"
+#include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
@@ -30,17 +31,19 @@ ActivityStorage::ActivityStorage(PrefService* pref_service,
     : pref_service_(pref_service),
       pref_name_(pref_name),
       day_start_offset_(day_start_offset) {
-  DCHECK(pref_service_);
-  const PrefService::PrefInitializationStatus pref_service_status =
-      pref_service_->GetInitializationStatus();
-  DCHECK(pref_service_status != PrefService::INITIALIZATION_STATUS_WAITING &&
-         pref_service_status != PrefService::INITIALIZATION_STATUS_ERROR);
+  CHECK(pref_service_, base::NotFatalUntil::M160);
+  // `INITIALIZATION_STATUS_ERROR` is intentionally allowed because disk or
+  // JSON read errors on `Preferences` / `Local State` are tolerated at runtime
+  // on ChromeOS (`JsonPrefStore` initializes an empty in-memory dict).
+  CHECK_NE(pref_service_->GetInitializationStatus(),
+           PrefService::INITIALIZATION_STATUS_WAITING,
+           base::NotFatalUntil::M160);
 }
 
 ActivityStorage::~ActivityStorage() = default;
 
 base::Time ActivityStorage::GetBeginningOfDay(base::Time timestamp) const {
-  DCHECK(!timestamp.is_max());
+  CHECK(!timestamp.is_max(), base::NotFatalUntil::M160);
   return timestamp.LocalMidnight() + day_start_offset_;
 }
 
@@ -155,6 +158,8 @@ ActivityStorage::GetActivityPeriods(base::Time end_time) const {
 void ActivityStorage::AddActivityPeriod(base::Time start,
                                         base::Time end,
                                         const std::string& activity_id) {
+  // TODO(crbug.com/570656895): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(start <= end);
   DCHECK(!start.is_max());
   DCHECK(!end.is_max());
@@ -217,7 +222,7 @@ int64_t ActivityStorage::LocalTimeToUtcDayStart(base::Time timestamp) const {
   day_start.LocalExplode(&exploded);
   base::Time out_time;
   bool conversion_success = base::Time::FromUTCExploded(exploded, &out_time);
-  DCHECK(conversion_success);
+  CHECK(conversion_success, base::NotFatalUntil::M160);
   return out_time.InMillisecondsSinceUnixEpoch();
 }
 

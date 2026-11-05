@@ -11,13 +11,18 @@
 #include "base/containers/flat_map.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
+#include "base/i18n/chinese_helpers.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/legacy_language_tag_helpers.h"
+#include "base/i18n/tag_converters.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/version.h"
 #include "build/build_config.h"
 #include "components/component_updater/component_updater_paths.h"
 #include "components/crx_file/id_util.h"
@@ -28,6 +33,11 @@
 
 namespace speech {
 namespace {
+
+using ::base::i18n::GetKnownLanguageTag;
+using ::base::i18n::GetLanguageTagFromString;
+using ::base::i18n::LanguageTag;
+
 constexpr auto kChineseLocaleMap =
     base::MakeFixedFlatMap<std::string_view, std::string_view>(
         {{"cmn-hans-cn", "cmn-Hans-CN"},
@@ -37,20 +47,44 @@ constexpr auto kChineseLocaleMap =
          {"zh-hant-tw", "cmn-Hant-TW"},
          {"zh-tw", "cmn-Hant-TW"}});
 
-constexpr auto kSodaLanguageToBcp47Map =
-    base::MakeFixedFlatMap<std::string_view, std::string_view>({
-        {"cmn-hans-cn", "zh"}, {"cmn-hant-tw", "zh-Hant"}, {"da-dk", "da-DK"},
-        {"de-be", "de-BE"},    {"de-ch", "de-CH"},         {"de-de", "de-DE"},
-        {"en-au", "en-AU"},    {"en-gb", "en-GB"},         {"en-ie", "en-IE"},
-        {"en-in", "en-IN"},    {"en-sg", "en-SG"},         {"en-us", "en-US"},
-        {"es-es", "es-ES"},    {"es-us", "es-US"},         {"fr-be", "fr-BE"},
-        {"fr-ca", "fr-CA"},    {"fr-ch", "fr-CH"},         {"fr-fr", "fr-FR"},
-        {"hi-in", "hi-IN"},    {"id-id", "id-ID"},         {"it-it", "it-IT"},
-        {"ja-jp", "ja-JP"},    {"ko-kr", "ko-KR"},         {"nb-no", "nb-NO"},
-        {"nl-nl", "nl-NL"},    {"pl-pl", "pl-PL"},         {"pt-br", "pt-BR"},
-        {"ru-ru", "ru-RU"},    {"sv-se", "sv-SE"},         {"th-th", "th-TH"},
-        {"tr-tr", "tr-TR"},    {"vi-vn", "vi-VN"},
-    });
+// Returns the subdirectory of `parent_dir` whose name is the highest version
+// number, or an empty path if there isn't one. Directories that aren't named
+// after a version are ignored. Directories that actually contain
+// `expected_subpath` win over ones that don't, so that a partially installed or
+// partially cleaned up component doesn't shadow a working one.
+base::FilePath GetLatestVersionDirectory(
+    const base::FilePath& parent_dir,
+    const base::FilePath::CharType* expected_subpath) {
+  if (parent_dir.empty()) {
+    return base::FilePath();
+  }
+
+  base::FileEnumerator enumerator(parent_dir, /*recursive=*/false,
+                                  base::FileEnumerator::DIRECTORIES);
+  base::FilePath latest_dir;
+  base::Version latest_version;
+  base::FilePath latest_verified_dir;
+  base::Version latest_verified_version;
+  for (base::FilePath version_dir = enumerator.Next(); !version_dir.empty();
+       version_dir = enumerator.Next()) {
+    const base::Version version(version_dir.BaseName().MaybeAsASCII());
+    if (!version.IsValid()) {
+      continue;
+    }
+    if (!latest_version.IsValid() || latest_version < version) {
+      latest_version = version;
+      latest_dir = version_dir;
+    }
+    if ((!latest_verified_version.IsValid() ||
+         latest_verified_version < version) &&
+        base::PathExists(version_dir.Append(expected_subpath))) {
+      latest_verified_version = version;
+      latest_verified_dir = version_dir;
+    }
+  }
+
+  return latest_verified_dir.empty() ? latest_dir : latest_verified_dir;
+}
 
 }  // namespace
 
@@ -66,13 +100,19 @@ const std::string MaybeMapToChineseLocale(std::string_view language_name) {
   return std::string(language_name);
 }
 
-std::optional<std::string> GetBCP47LanguageCodeFromSodaLanguage(
+std::optional<LanguageTag> GetLanguageTagFromSodaLanguage(
     std::string_view soda_language) {
-  auto it = kSodaLanguageToBcp47Map.find(base::ToLowerASCII(soda_language));
-  if (it != kSodaLanguageToBcp47Map.end()) {
-    return std::string(it->second);
+  std::optional<LanguageTag> soda_language_tag =
+      GetLanguageTagFromString(soda_language);
+  if (!soda_language_tag) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  if (!base::i18n::IsChinese(*soda_language_tag)) {
+    return *soda_language_tag;
+  }
+  return base::i18n::IsTraditionalChinese(*soda_language_tag)
+             ? GetKnownLanguageTag("zh-Hant")
+             : GetKnownLanguageTag("zh");
 }
 
 const char kUsEnglishLocale[] = "en-US";
@@ -146,33 +186,17 @@ const base::FilePath GetSodaTestResourcesDirectory() {
 
 const base::FilePath GetLatestSodaLanguagePackDirectory(
     std::string_view language) {
-  base::FileEnumerator enumerator(
-      GetSodaLanguagePacksDirectory().AppendASCII(language), false,
-      base::FileEnumerator::DIRECTORIES);
-
-  // Use the lexographical order of the directory names to determine the latest
-  // version. This mirrors the logic in the component updater.
-  base::FilePath latest_version_dir;
-  for (base::FilePath version_dir = enumerator.Next(); !version_dir.empty();
-       version_dir = enumerator.Next()) {
-    latest_version_dir =
-        latest_version_dir < version_dir ? version_dir : latest_version_dir;
-  }
-
-  return latest_version_dir.Append(kSodaLanguagePackDirectoryRelativePath);
+  base::FilePath latest_version_dir = GetLatestVersionDirectory(
+      GetSodaLanguagePacksDirectory().AppendASCII(language),
+      kSodaLanguagePackDirectoryRelativePath);
+  return latest_version_dir.empty()
+             ? base::FilePath()
+             : latest_version_dir.Append(
+                   kSodaLanguagePackDirectoryRelativePath);
 }
 
 const base::FilePath GetLatestSodaDirectory() {
-  base::FileEnumerator enumerator(GetSodaDirectory(), false,
-                                  base::FileEnumerator::DIRECTORIES);
-  base::FilePath latest_version_dir;
-  for (base::FilePath version_dir = enumerator.Next(); !version_dir.empty();
-       version_dir = enumerator.Next()) {
-    latest_version_dir =
-        latest_version_dir < version_dir ? version_dir : latest_version_dir;
-  }
-
-  return latest_version_dir;
+  return GetLatestVersionDirectory(GetSodaDirectory(), kSodaBinaryRelativePath);
 }
 
 const base::FilePath GetSodaBinaryPath() {
@@ -270,14 +294,19 @@ LanguageCode GetLanguageCode(std::string_view language_name) {
 
 const std::u16string GetLanguageDisplayName(std::string_view language_name,
                                             std::string_view display_locale) {
-  if (language_name.substr(0, 3) == kChineseLocaleNoCountry) {
-    return l10n_util::GetDisplayNameForLocale(language_name.substr(0, 8),
-                                              display_locale, true);
-
-  } else {
-    return l10n_util::GetDisplayNameForLocaleWithoutCountry(
-        language_name, display_locale, true);
+  std::optional<LanguageTag> language_tag_name =
+      GetLanguageTagFromString(language_name);
+  std::optional<LanguageTag> display_locale_tag =
+      GetLanguageTagFromString(display_locale);
+  if (!language_tag_name || !display_locale_tag) {
+    return std::u16string();
   }
+
+  return l10n_util::GetDisplayNameForLocale(
+      base::i18n::IsChinese(*language_tag_name)
+          ? *language_tag_name
+          : language_tag_name->WithLanguageSubtagOnly(),
+      *display_locale_tag, true);
 }
 
 const std::string GetInstallationSuccessTimeMetricForLanguagePack(

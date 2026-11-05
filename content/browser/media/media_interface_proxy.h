@@ -14,6 +14,7 @@
 #include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "content/browser/media/media_interface_factory_holder.h"
+#include "content/common/content_export.h"
 #include "content/public/browser/document_user_data.h"
 #include "content/public/common/cdm_info.h"
 #include "media/cdm/cdm_type.h"
@@ -25,7 +26,6 @@
 #include "media/mojo/services/media_service.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/unique_receiver_set.h"
@@ -43,8 +43,9 @@ class RenderFrameHost;
 // This implements the media::mojom::InterfaceFactory interface for a
 // RenderFrameHostImpl to help create remote media components in different
 // processes.
-class MediaInterfaceProxy final : public DocumentUserData<MediaInterfaceProxy>,
-                                  public media::mojom::InterfaceFactory {
+class CONTENT_EXPORT MediaInterfaceProxy final
+    : public DocumentUserData<MediaInterfaceProxy>,
+      public media::mojom::InterfaceFactory {
  public:
   ~MediaInterfaceProxy() final;
 
@@ -56,11 +57,11 @@ class MediaInterfaceProxy final : public DocumentUserData<MediaInterfaceProxy>,
   void CreateVideoDecoder(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
       mojo::PendingRemote<media::mojom::VideoDecoder> dst_video_decoder) final;
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   void CreateVideoDecoderWithTracker(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
       mojo::PendingRemote<media::mojom::VideoDecoderTracker> tracker) final;
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   void CreateAudioEncoder(
       mojo::PendingReceiver<media::mojom::AudioEncoder> receiver) final;
   void CreateDefaultRenderer(
@@ -90,6 +91,7 @@ class MediaInterfaceProxy final : public DocumentUserData<MediaInterfaceProxy>,
 
  private:
   friend class DocumentUserData<MediaInterfaceProxy>;
+  friend class MediaInterfaceProxyTest;
   explicit MediaInterfaceProxy(RenderFrameHost* rfh);
   DOCUMENT_USER_DATA_KEY_DECL();
 
@@ -100,7 +102,18 @@ class MediaInterfaceProxy final : public DocumentUserData<MediaInterfaceProxy>,
   mojo::PendingRemote<media::mojom::FrameInterfaceFactory> GetFrameServices(
       const media::CdmType& cdm_type);
 
+  void OnCdmCreated(
+      const media::CdmConfig& cdm_config,
+      CreateCdmCallback callback,
+      bool is_cached_factory,
+      mojo::PendingRemote<media::mojom::ContentDecryptionModule> receiver,
+      media::mojom::CdmContextPtr cdm_context,
+      media::CreateCdmStatus status);
+
 #if BUILDFLAG(ENABLE_LIBRARY_CDMS)
+  void CreateLibraryCdm(const media::CdmConfig& cdm_config,
+                        CreateCdmCallback callback);
+
   // Gets a CdmFactory pointer for |key_system|. Returns null if unexpected
   // error happened.
   media::mojom::CdmFactory* GetCdmFactory(const std::string& key_system);
@@ -138,6 +151,15 @@ class MediaInterfaceProxy final : public DocumentUserData<MediaInterfaceProxy>,
       const media::CdmConfig& cdm_config);
 
   mojo::Remote<media::mojom::InterfaceFactory> mf_interface_factory_remote_;
+
+  // Only authorize audibility-bypass grants when this document actually
+  // established a MediaFoundation playback context: either MediaFoundation
+  // clear playback is enabled, or a hardware-secure CDM was set up through
+  // CreateCdm(). This stops a (compromised) renderer from self-minting
+  // AudibilityBypassTracker grants by merely calling
+  // CreateMediaFoundationRenderer(), which requires no CDM, no content setting
+  // and no user interaction.
+  bool mf_protected_playback_context_ = false;
 #endif  // BUILDFLAG(IS_WIN)
 
   mojo::UniqueReceiverSet<media::mojom::FrameInterfaceFactory> frame_factories_;

@@ -10,29 +10,23 @@
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_base.h"
 #include "base/metrics/histogram_functions.h"
-#include "chrome/browser/dom_distiller/tab_utils.h"
+#include "base/types/pass_key.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/reader_mode/tab_utils.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_triggers.h"
 #include "chrome/browser/ui/read_anything/read_anything_controller.h"
 #include "chrome/browser/ui/read_anything/read_anything_enums.h"
 #include "chrome/browser/ui/read_anything/read_anything_prefs.h"
-#include "chrome/browser/ui/read_anything/read_anything_side_panel_controller_utils.h"
 #include "chrome/browser/ui/side_panel/side_panel_action_callback.h"
-#include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
-#include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "components/feature_engagement/public/feature_constants.h"
-#include "components/optimization_guide/core/filters/optimization_hints_component_update_listener.h"
 #include "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/hints.pb.h"
@@ -74,7 +68,7 @@ int GetOmniboxChipIgnoredCount(PrefService* prefs) {
 }
 
 bool ShouldShowOmniboxChip(BrowserWindowInterface* bwi) {
-  return GetOmniboxChipIgnoredCount(bwi->GetProfile()->GetPrefs()) <=
+  return GetOmniboxChipIgnoredCount(bwi->GetProfile()->GetPrefs()) <
          kMaxChipIgnoredCount;
 }
 
@@ -160,7 +154,7 @@ void OnReadabilityDecision(base::OnceCallback<void(bool)> result_callback,
 void RunReadabilityHeuristic(content::WebContents* contents,
                              base::OnceCallback<void(bool)> result_callback) {
   CHECK(contents);
-  RunReadabilityHeuristicsOnWebContents(
+  RunHeuristicsOnWebContents(
       contents,
       base::BindOnce(&OnReadabilityDecision, std::move(result_callback)));
 }
@@ -206,11 +200,17 @@ void RunOptimizationGuide(
   CHECK(optimization_guide_decider);
   CHECK(bwi);
 
+  tabs::TabInterface* tab = bwi->GetActiveTabInterface();
+  if (!tab || !tab->GetContents()) {
+    std::move(result_callback).Run(false);
+    return;
+  }
+
   optimization_guide_decider->CanApplyOptimization(
-      bwi->GetActiveTabInterface()->GetContents()->GetLastCommittedURL(),
+      tab->GetContents()->GetLastCommittedURL(),
       optimization_guide::proto::READER_MODE_ELIGIBLE,
       base::BindOnce(&OnOptimizationGuideDecision,
-                     bwi->GetActiveTabInterface()->GetContents()->GetWeakPtr(),
+                     tab->GetContents()->GetWeakPtr(),
                      std::move(result_callback)));
 }
 
@@ -259,7 +259,8 @@ void ReadAnythingEntryPointController::InvokePageAction(
 // static
 void ReadAnythingEntryPointController::ShowUI(
     BrowserWindowInterface* bwi,
-    ReadAnythingOpenTrigger open_trigger) {
+    ReadAnythingOpenTrigger open_trigger,
+    Presentation presentation) {
   if (!bwi) {
     return;
   }
@@ -268,13 +269,33 @@ void ReadAnythingEntryPointController::ShowUI(
                                   open_trigger);
   }
 
-  // TODO(crbug.com/471001915): Change IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE,
-  // one of the triggers of this method, to reflect that it's opening Immersive
-  // mode instead of Side Panel.
   if (tabs::TabInterface* tab = bwi->GetActiveTabInterface()) {
     auto* controller = ReadAnythingController::From(tab);
     CHECK(controller);
-    controller->ShowInPreferredUI(open_trigger);
+    switch (presentation) {
+      case Presentation::kPreferred:
+        controller->ShowInPreferredUI(
+            base::PassKey<ReadAnythingEntryPointController>(), open_trigger);
+        break;
+      case Presentation::kSidePanel:
+        controller->ShowInSidePanel(
+            base::PassKey<ReadAnythingEntryPointController>(), open_trigger);
+        break;
+    }
+  }
+}
+
+// static
+void ReadAnythingEntryPointController::CloseUI(BrowserWindowInterface* bwi,
+                                               ReadAnythingCloseReason reason) {
+  if (!bwi) {
+    return;
+  }
+  if (tabs::TabInterface* tab = bwi->GetActiveTabInterface()) {
+    auto* controller = ReadAnythingController::From(tab);
+    CHECK(controller);
+    controller->CloseUI(base::PassKey<ReadAnythingEntryPointController>(),
+                        reason);
   }
 }
 
@@ -294,7 +315,17 @@ void ReadAnythingEntryPointController::ToggleUI(
   if (tabs::TabInterface* tab = bwi->GetActiveTabInterface()) {
     auto* controller = ReadAnythingController::From(tab);
     CHECK(controller);
-    controller->ToggleUI(open_trigger);
+    // Tell user education the keyboard shortcut was used, whether it opens or
+    // closes Reading Mode.
+    if (open_trigger == ReadAnythingOpenTrigger::kKeyboardShortcut) {
+      if (auto* user_ed = BrowserUserEducationInterface::From(bwi)) {
+        user_ed->NotifyFeaturePromoFeatureUsed(
+            feature_engagement::kIPHReadingModeKeyboardShortcutFeature,
+            FeaturePromoFeatureUsedAction::kClosePromoIfPresent);
+      }
+    }
+    controller->ToggleUI(base::PassKey<ReadAnythingEntryPointController>(),
+                         open_trigger);
   }
 }
 
@@ -302,11 +333,13 @@ void ReadAnythingEntryPointController::ToggleUI(
 bool ReadAnythingEntryPointController::IsUIShowing(
     BrowserWindowInterface* bwi) {
   if (!bwi) {
-    return IsReadAnythingEntryShowing(bwi);
+    return false;
   }
 
   auto* controller = ReadAnythingController::From(bwi->GetActiveTabInterface());
-  CHECK(controller);
+  if (!controller) {
+    return false;
+  }
   auto state = controller->GetPresentationState();
   return state ==
              ReadAnythingController::PresentationState::kInImmersiveOverlay ||
@@ -334,7 +367,11 @@ void ReadAnythingEntryPointController::UpdatePageActionVisibility(
   }
 
   page_actions::PageActionController* page_action_controller =
-      tab->GetTabFeatures()->page_action_controller();
+      tab->GetTabFeatures() ? tab->GetTabFeatures()->page_action_controller()
+                            : nullptr;
+  if (!page_action_controller) {
+    return;
+  }
   auto* const user_ed = BrowserUserEducationInterface::From(bwi);
 
   // No need to show the button if reading mode is already open.
@@ -344,12 +381,12 @@ void ReadAnythingEntryPointController::UpdatePageActionVisibility(
       page_action_controller->ShowSuggestionChip(
           kActionSidePanelShowReadAnything);
     }
-    user_education::FeaturePromoParams params(
-        feature_engagement::kIPHReadingModePageActionLabelFeature);
     if (show_promo_callback) {
+      user_education::FeaturePromoParams params(
+          feature_engagement::kIPHReadingModePageActionLabelFeature);
       params.show_promo_result_callback = std::move(show_promo_callback);
+      user_ed->MaybeShowFeaturePromo(std::move(params));
     }
-    user_ed->MaybeShowFeaturePromo(std::move(params));
     return;
   }
 
@@ -388,7 +425,11 @@ bool ReadAnythingEntryPointController::CheckIfShouldSuggestReadingModeNaive(
   // Don't show the omnibox entrypoint for non-HTTP(S) URLs. These URLs are
   // not supported by Readability, which is used to check whether the current
   // page is a good candidate for distillation.
-  content::WebContents* contents = bwi->GetActiveTabInterface()->GetContents();
+  tabs::TabInterface* tab = bwi->GetActiveTabInterface();
+  if (!tab || !tab->GetContents()) {
+    return false;
+  }
+  content::WebContents* contents = tab->GetContents();
   const GURL& url = contents->GetLastCommittedURL();
   if (!url.SchemeIsHTTPOrHTTPS()) {
     LogDecision(ReadAnythingOmniboxChipDecision::kHideNonHttp);
@@ -431,7 +472,12 @@ void ReadAnythingEntryPointController::CheckIfShouldSuggestReadingMode(
   // If this page is a PDF, then other heuristics will always return false.
   // But since PDFs are distilled via Screen2x, use a custom heuristic to
   // determine if the PDF will distill well with RM.
-  content::WebContents* contents = bwi->GetActiveTabInterface()->GetContents();
+  tabs::TabInterface* tab = bwi->GetActiveTabInterface();
+  if (!tab || !tab->GetContents()) {
+    std::move(result_callback).Run(false);
+    return;
+  }
+  content::WebContents* contents = tab->GetContents();
   if (auto* pdf_helper = GetPdf(*contents)) {
     RunPdfDistillableHeuristic(pdf_helper, std::move(result_callback));
     return;
@@ -467,11 +513,16 @@ void ReadAnythingEntryPointController::OnPageActionIgnored(
                     GetOmniboxChipIgnoredCount(prefs) + 1);
   if (!ShouldShowOmniboxChip(bwi)) {
     page_actions::PageActionController* page_action_controller =
-        bwi->GetActiveTabInterface()
-            ->GetTabFeatures()
-            ->page_action_controller();
-    page_action_controller->HideSuggestionChip(
-        kActionSidePanelShowReadAnything);
+        bwi->GetActiveTabInterface() &&
+                bwi->GetActiveTabInterface()->GetTabFeatures()
+            ? bwi->GetActiveTabInterface()
+                  ->GetTabFeatures()
+                  ->page_action_controller()
+            : nullptr;
+    if (page_action_controller) {
+      page_action_controller->HideSuggestionChip(
+          kActionSidePanelShowReadAnything);
+    }
   }
 }
 

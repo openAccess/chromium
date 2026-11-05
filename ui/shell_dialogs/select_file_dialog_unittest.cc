@@ -7,8 +7,15 @@
 #include <stddef.h>
 
 #include <array>
+#include <memory>
+#include <utility>
 
+#include "base/memory/raw_ptr.h"
+#include "base/test/task_environment.h"
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/shell_dialogs/select_file_dialog_factory.h"
+#include "ui/shell_dialogs/select_file_policy.h"
 
 TEST(ShellDialogs, ShortenFileNameIfNeeded) {
   struct ShortenFileNameTestCase {
@@ -119,3 +126,92 @@ TEST(ShellDialogs, ShortenFileNameIfNeeded) {
               255u);
   }
 }
+
+namespace {
+
+class TrackingSelectFileDialogFactory : public ui::SelectFileDialogFactory {
+ public:
+  TrackingSelectFileDialogFactory(int id, int* last_called_id)
+      : id_(id), last_called_id_(last_called_id) {}
+
+  ui::SelectFileDialog* Create(
+      ui::SelectFileDialog::Listener* listener,
+      std::unique_ptr<ui::SelectFilePolicy> policy) override {
+    if (last_called_id_) {
+      *last_called_id_ = id_;
+    }
+    return nullptr;
+  }
+
+ private:
+  int id_;
+  raw_ptr<int> last_called_id_;
+};
+
+}  // namespace
+
+TEST(ShellDialogs, ScopedSetSelectFileDialogFactory) {
+  int last_called_id = 0;
+
+  // Set initial factory.
+  ui::SelectFileDialog::SetFactory(
+      std::make_unique<TrackingSelectFileDialogFactory>(100, &last_called_id));
+
+  {
+    ui::ScopedSetSelectFileDialogFactory scoped_factory1(
+        std::make_unique<TrackingSelectFileDialogFactory>(1, &last_called_id));
+    ui::SelectFileDialog::Create(nullptr, nullptr);
+    EXPECT_EQ(last_called_id, 1);
+
+    {
+      ui::ScopedSetSelectFileDialogFactory scoped_factory2(
+          std::make_unique<TrackingSelectFileDialogFactory>(
+              2, &last_called_id));
+      ui::SelectFileDialog::Create(nullptr, nullptr);
+      EXPECT_EQ(last_called_id, 2);
+    }
+
+    // After scoped_factory2 is destroyed, factory1 should be restored.
+    ui::SelectFileDialog::Create(nullptr, nullptr);
+    EXPECT_EQ(last_called_id, 1);
+  }
+
+  // After scoped_factory1 is destroyed, the initial factory should be restored.
+  ui::SelectFileDialog::Create(nullptr, nullptr);
+  EXPECT_EQ(last_called_id, 100);
+
+  // Clean up.
+  ui::SelectFileDialog::SetFactory(nullptr);
+}
+
+#if BUILDFLAG(IS_ANDROID)
+namespace {
+
+class TestSelectFileDialogListener : public ui::SelectFileDialog::Listener {
+ public:
+  void FileSelectionCanceled() override { canceled_ = true; }
+  bool canceled() const { return canceled_; }
+
+ private:
+  bool canceled_ = false;
+};
+
+}  // namespace
+
+TEST(ShellDialogs, SelectFileWithNullOwningWindowCancels) {
+  base::test::SingleThreadTaskEnvironment task_environment;
+  TestSelectFileDialogListener listener;
+  scoped_refptr<ui::SelectFileDialog> dialog =
+      ui::SelectFileDialog::Create(&listener, nullptr);
+  ASSERT_TRUE(dialog);
+
+  dialog->SelectFile(ui::SelectFileDialog::SELECT_SAVEAS_FILE, std::u16string(),
+                     base::FilePath(FILE_PATH_LITERAL("foo.txt")), nullptr, 0,
+                     base::FilePath::StringType(), gfx::NativeWindow(),
+                     nullptr);
+  EXPECT_FALSE(listener.canceled());
+  task_environment.RunUntilIdle();
+  EXPECT_TRUE(listener.canceled());
+  dialog->ListenerDestroyed();
+}
+#endif  // BUILDFLAG(IS_ANDROID)

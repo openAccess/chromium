@@ -10,7 +10,6 @@
 #import "components/autofill/ios/browser/autofill_client_ios.h"
 #import "components/autofill/ios/browser/autofill_driver_ios.h"
 #import "components/autofill/ios/browser/autofill_util.h"
-#import "components/send_tab_to_self/features.h"
 #import "components/send_tab_to_self/outgoing_tab_form_field_extractor.h"
 #import "components/send_tab_to_self/received_tab_forms_filler.h"
 #import "components/send_tab_to_self/send_tab_to_self_entry.h"
@@ -28,10 +27,6 @@ namespace send_tab_to_self {
 
 bool IsOmniboxEntryPointEligible(web::WebState* web_state,
                                  ProfileIOS* profile) {
-  if (!base::FeatureList::IsEnabled(
-          send_tab_to_self::kSendTabToSelfExtraEntryPoints)) {
-    return false;
-  }
   if (!web_state || !profile) {
     return false;
   }
@@ -65,15 +60,16 @@ PageContext ExtractFormFieldsFromWebState(web::WebState* web_state) {
   if (!web_state) {
     return PageContext();
   }
-
-  const url::Origin main_origin =
-      url::Origin::Create(web_state->GetLastCommittedURL());
-
   PageContext context;
 
   web::WebFramesManager* frames_manager =
       autofill::GetWebFramesManagerForAutofill(web_state);
+  if (!frames_manager) {
+    return context;
+  }
 
+  const url::Origin main_origin =
+      url::Origin::Create(web_state->GetLastCommittedURL());
   for (web::WebFrame* frame : frames_manager->GetAllWebFrames()) {
     autofill::AutofillDriverIOS* driver =
         autofill::AutofillDriverIOS::FromWebStateAndWebFrame(web_state, frame);

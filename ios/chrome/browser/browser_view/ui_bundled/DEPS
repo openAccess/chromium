@@ -66,6 +66,7 @@ include_rules = [
   "+ios/chrome/browser/intelligence/bwg/model",
   "+ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h",
   "+ios/chrome/browser/intelligence/bwg/utils/gemini_entry_flow_result.h",
+  "+ios/chrome/browser/intelligence/contextual_cueing/contextual_cueing_tab_helper.h",
   "+ios/chrome/browser/intelligence/enhanced_calendar/coordinator/enhanced_calendar_coordinator.h",
   "+ios/chrome/browser/intelligence/enhanced_calendar/model/enhanced_calendar_configuration.h",
   "+ios/chrome/browser/intelligence/features",
@@ -109,6 +110,7 @@ include_rules = [
   "+ios/chrome/browser/price_notifications/ui_bundled/price_notifications_view_coordinator.h",
   "+ios/chrome/browser/print/coordinator",
   "+ios/chrome/browser/promos_manager/coordinator/promos_manager_coordinator.h",
+  "+ios/chrome/browser/promos_manager/coordinator/promos_manager_ui_handler.h",
   "+ios/chrome/browser/promos_manager/model/app_store_review_swift.h",
   "+ios/chrome/browser/qr_scanner/coordinator/qr_scanner_legacy_coordinator.h",
   "+ios/chrome/browser/reader_mode/coordinator",
@@ -166,7 +168,6 @@ include_rules = [
   "+ios/chrome/browser/web_state_list/model",
   "+ios/chrome/browser/webauthn/coordinator",
   "+ios/chrome/browser/webui",
-  "+ios/chrome/browser/welcome_back/coordinator",
   "+ios/chrome/browser/whats_new/coordinator",
   "+ios/chrome/browser/window_activities/model/window_activity_helpers.h",
   # keep-sorted end

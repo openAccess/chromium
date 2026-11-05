@@ -6,10 +6,12 @@
 #define COMPONENTS_PDF_RENDERER_PDF_ACCESSIBILITY_TREE_BUILDER_H_
 
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
+#include "components/pdf/renderer/pdf_accessibility_table_detector.h"
 #include "components/pdf/renderer/pdf_accessibility_tree.h"
 #include "pdf/accessibility_structs.h"
 #include "pdf/page_character_index.h"
@@ -65,7 +67,8 @@ class PdfAccessibilityTreeBuilder {
   }
   ui::AXNodeData* page_node() const { return page_node_; }
   const std::vector<chrome_pdf::AccessibilityTextRunInfo>& text_runs() const {
-    return *text_runs_;
+    return split_result_.text_runs.empty() ? *text_runs_
+                                           : split_result_.text_runs;
   }
   const std::vector<chrome_pdf::AccessibilityCharInfo>& chars() const {
     return *chars_;
@@ -83,16 +86,9 @@ class PdfAccessibilityTreeBuilder {
       const {
     return *highlights_;
   }
-  const std::vector<chrome_pdf::AccessibilityTextFieldInfo>& text_fields()
+  const std::vector<chrome_pdf::AccessibilityFormGraphicInfo>& graphics()
       const {
-    return *text_fields_;
-  }
-  const std::vector<chrome_pdf::AccessibilityButtonInfo>& buttons() const {
-    return *buttons_;
-  }
-  const std::vector<chrome_pdf::AccessibilityChoiceFieldInfo>& choice_fields()
-      const {
-    return *choice_fields_;
+    return *graphics_;
   }
   uint32_t page_index() const { return page_index_; }
 
@@ -114,12 +110,6 @@ class PdfAccessibilityTreeBuilder {
       const chrome_pdf::AccessibilityHighlightInfo& highlight);
   ui::AXNodeData* CreatePopupNoteNode(
       const chrome_pdf::AccessibilityHighlightInfo& highlight);
-  ui::AXNodeData* CreateTextFieldNode(
-      const chrome_pdf::AccessibilityTextFieldInfo& text_field);
-  ui::AXNodeData* CreateButtonNode(
-      const chrome_pdf::AccessibilityButtonInfo& button);
-  ui::AXNodeData* CreateChoiceFieldNode(
-      const chrome_pdf::AccessibilityChoiceFieldInfo& choice_field);
 #if BUILDFLAG(ENABLE_SCREEN_AI_SERVICE)
   ui::AXNodeData* CreateOcrWrapperNode(const gfx::PointF& position, bool start);
 #endif
@@ -130,20 +120,36 @@ class PdfAccessibilityTreeBuilder {
       ui::AXNodeData* ax_node_data);
   void AddWordStartsAndEnds(ui::AXNodeData* inline_text_box);
   ui::AXNodeData* CreateStaticTextNode();
-  ui::AXNodeData* CreateListboxOptionNode(
-      const chrome_pdf::AccessibilityChoiceFieldOptionInfo& choice_field_option,
-      ax::mojom::Restriction restriction);
-  ui::AXNodeData* CreateListboxNode(
-      const chrome_pdf::AccessibilityChoiceFieldInfo& choice_field,
-      ui::AXNodeData* control_node);
-  ui::AXNodeData* CreateComboboxInputNode(
-      const chrome_pdf::AccessibilityChoiceFieldInfo& choice_field,
-      ax::mojom::Restriction restriction);
-  ui::AXNodeData* CreateComboboxNode(
-      const chrome_pdf::AccessibilityChoiceFieldInfo& choice_field);
+
+  // Names each heading on this page from the text of its static text
+  // descendants, including text nested in links and highlights.
+  //
+  // Per the ARIA specification, `role=heading` declares
+  // `nameFrom: [contents, author]` with `nameRequired: true`. Nothing
+  // downstream computes names from contents for PDF nodes, so it is done here
+  // once the page tree is complete.
+  void NameHeadingsFromContents();
 
   const bool mark_headings_using_heuristic_;
-  std::vector<uint32_t> text_run_start_indices_;
+
+  // Each member through `graphics_` may be initialized from the ones before it,
+  // so keep them in this order.
+  //
+  // Whether `BuildPageTree()` uses the structure tree instead of heuristics.
+  const bool use_structure_mode_;
+  // Only extracted in heuristic mode, since the structure tree refers to text
+  // runs that must not change.
+  const std::vector<RulingLine> ruling_lines_;
+  // Text runs split at vertical lines in `ruling_lines_`, such as table column
+  // dividers. `split_result_.text_runs` is used in place of `text_runs_` if not
+  // empty.
+  const SplitTextRunsResult split_result_;
+  const std::vector<uint32_t> text_run_start_indices_;
+  // Copies of the links, images, highlights, and graphics with text run indices
+  // remapped to `split_result_.text_runs`, or unset if no run was split. All
+  // other fields are left empty. `links_` through `graphics_` refer to these if
+  // set.
+  const std::optional<chrome_pdf::AccessibilityPageObjects> split_page_objects_;
   const raw_ref<const std::vector<chrome_pdf::AccessibilityTextRunInfo>>
       text_runs_;
   const raw_ref<const std::vector<chrome_pdf::AccessibilityCharInfo>> chars_;
@@ -151,12 +157,8 @@ class PdfAccessibilityTreeBuilder {
   const raw_ref<const std::vector<chrome_pdf::AccessibilityImageInfo>> images_;
   const raw_ref<const std::vector<chrome_pdf::AccessibilityHighlightInfo>>
       highlights_;
-  const raw_ref<const std::vector<chrome_pdf::AccessibilityTextFieldInfo>>
-      text_fields_;
-  const raw_ref<const std::vector<chrome_pdf::AccessibilityButtonInfo>>
-      buttons_;
-  const raw_ref<const std::vector<chrome_pdf::AccessibilityChoiceFieldInfo>>
-      choice_fields_;
+  const raw_ref<const std::vector<chrome_pdf::AccessibilityFormGraphicInfo>>
+      graphics_;
   const raw_ptr<const chrome_pdf::AccessibilityStructureElement>
       page_structure_tree_;
 
@@ -165,6 +167,8 @@ class PdfAccessibilityTreeBuilder {
   raw_ptr<ui::AXNodeData> page_node_;
   raw_ptr<blink::WebAXObject> container_obj_;
   raw_ptr<std::vector<std::unique_ptr<ui::AXNodeData>>> nodes_;
+  // Index in `nodes_` of this page's first node.
+  const size_t first_node_index_;
   raw_ptr<std::map<int32_t, chrome_pdf::PageCharacterIndex>>
       node_id_to_page_char_index_;
   raw_ptr<std::map<int32_t, PdfAccessibilityTree::AnnotationInfo>>

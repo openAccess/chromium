@@ -5,13 +5,16 @@
 #ifndef CHROME_BROWSER_WEBAUTHN_ENCLAVE_MANAGER_INTERFACE_H_
 #define CHROME_BROWSER_WEBAUTHN_ENCLAVE_MANAGER_INTERFACE_H_
 
+#include <optional>
+
 #include "base/functional/callback_forward.h"
 #include "base/observer_list.h"
+#include "build/build_config.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/trusted_vault/trusted_vault_connection.h"
+#include "google_apis/gaia/gaia_id.h"
 
 class EnclaveManager;
-class GaiaId;
 
 class EnclaveManagerInterface : public KeyedService {
  public:
@@ -87,6 +90,10 @@ class EnclaveManagerInterface : public KeyedService {
   // Returns true if the current user has been registered with the enclave.
   virtual bool IsRegistered() const = 0;
 
+  // Loads the persistent state from disk if needed and invokes `callback` with
+  // whether the current user is registered with the enclave.
+  virtual void LoadAndCheckIsRegistered(Callback callback) = 0;
+
   // Returns true if the persistent state has been loaded from the disk. (Or
   // else the loading failed and an empty state is being used.)
   virtual bool IsLoaded() const = 0;
@@ -107,6 +114,22 @@ class EnclaveManagerInterface : public KeyedService {
   [[nodiscard]] virtual std::unique_ptr<
       trusted_vault::TrustedVaultConnection::Request>
   CheckGpmPinAvailability(GpmPinAvailabilityCallback callback) = 0;
+
+#if BUILDFLAG(IS_MAC)
+  // Attempts to recover the security domain secret using local iCloud Keychain
+  // recovery keys, storing the recovered key in `EnclaveManager` on success and
+  // reporting whether recovery succeeded via `callback`. `account_state` is the
+  // security domain state of the account with `account_state_gaia_id` if the
+  // caller has already downloaded it (both or neither must be set). It is used
+  // if `account_state_gaia_id` still matches the primary account when recovery
+  // runs; otherwise a fresh state is downloaded.
+  virtual void RecoverWithICloudKeychain(
+      std::optional<
+          trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult>
+          account_state,
+      std::optional<GaiaId> account_state_gaia_id,
+      Callback callback) = 0;
+#endif  // BUILDFLAG(IS_MAC)
 
   virtual void LoadAfterDelay(base::TimeDelta delay,
                               base::OnceClosure closure) = 0;

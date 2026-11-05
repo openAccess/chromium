@@ -41,12 +41,9 @@ bool VerifyDescription(const AudioDecoderConfig& config,
                        String* js_error_message) {
   // https://www.w3.org/TR/webcodecs-flac-codec-registration
   // https://www.w3.org/TR/webcodecs-vorbis-codec-registration
-  bool description_required = false;
-  if (config.codec() == "flac" || config.codec() == "vorbis") {
-    description_required = true;
-  }
-
-  if (description_required && !config.hasDescription()) {
+  const bool is_flac_or_vorbis =
+      config.codec() == "flac" || config.codec() == "vorbis";
+  if (is_flac_or_vorbis && !config.hasDescription()) {
     *js_error_message = "Invalid config; description is required.";
     return false;
   }
@@ -62,11 +59,35 @@ bool VerifyDescription(const AudioDecoderConfig& config,
   }
 
   if (config.hasDescription()) {
-    auto desc_wrapper = AsSpan<const uint8_t>(config.description());
+    base::span<const uint8_t> desc_wrapper =
+        AsSpan<SharedBufferPolicy::kAllow>(*config.description());
 
-    if (!desc_wrapper.data()) {
-      *js_error_message = "Invalid config; description is detached.";
+    // Detached buffers are already rejected in `IsValidAudioDecoderConfig()`,
+    // which is called before `VerifyDescription()`.
+    CHECK(desc_wrapper.data());
+
+    if (is_flac_or_vorbis && desc_wrapper.empty()) {
+      *js_error_message = "Invalid config; description must not be empty.";
       return false;
+    }
+
+    if (config.codec() == "opus") {
+      if (desc_wrapper.empty()) {
+        *js_error_message =
+            config.numberOfChannels() > 2
+                ? "Invalid config; description must not be empty."
+                : "Invalid config; description must not be empty (omit "
+                  "description if not needed).";
+        return false;
+      }
+
+      // A size of 19 bytes corresponds to the minimum length of an Opus
+      // Identification Header for a standard mono or stereo stream.
+      constexpr size_t kMinDescriptionSize = 19;
+      if (desc_wrapper.size() < kMinDescriptionSize) {
+        *js_error_message = "Invalid config; description is too short.";
+        return false;
+      }
     }
   }
 
@@ -79,7 +100,8 @@ AudioDecoderConfig* CopyConfig(const AudioDecoderConfig& config) {
   copy->setSampleRate(config.sampleRate());
   copy->setNumberOfChannels(config.numberOfChannels());
   if (config.hasDescription()) {
-    auto desc_wrapper = AsSpan<const uint8_t>(config.description());
+    base::span<const uint8_t> desc_wrapper =
+        AsSpan<SharedBufferPolicy::kAllow>(*config.description());
     if (!desc_wrapper.empty()) {
       DOMArrayBuffer* buffer_copy = DOMArrayBuffer::Create(desc_wrapper);
       copy->setDescription(
@@ -231,16 +253,20 @@ std::optional<media::AudioType> AudioDecoder::IsValidAudioDecoderConfig(
     *js_error_message = "Invalid codec; codec is required.";
     return std::nullopt;
   }
+  if (config.hasDescription()) {
+    base::span<const uint8_t> desc_wrapper =
+        AsSpan<SharedBufferPolicy::kAllow>(*config.description());
+    if (!desc_wrapper.data()) {
+      *js_error_message = "Invalid config; description is detached.";
+      return std::nullopt;
+    }
+  }
+
   // Match codec strings from the codec registry:
   // https://www.w3.org/TR/webcodecs-codec-registry/#audio-codec-registry
   std::optional<media::AudioCodec> pcm_type = TryGetPcmCodec(config.codec());
   if (pcm_type.has_value()) {
     return media::AudioType{.codec = *pcm_type};
-  }
-
-  if (!VerifyDescription(config, js_error_message)) {
-    CHECK(!js_error_message->empty());
-    return std::nullopt;
   }
 
   std::optional<media::AudioType> audio_type =
@@ -267,27 +293,15 @@ AudioDecoder::MakeMediaAudioDecoderConfig(const ConfigType& config,
     return std::nullopt;
   }
 
+  if (!VerifyDescription(config, js_error_message)) {
+    CHECK(!js_error_message->empty());
+    return std::nullopt;
+  }
+
   std::vector<uint8_t> extra_data;
   if (config.hasDescription()) {
-    auto desc_wrapper = AsSpan<const uint8_t>(config.description());
-
-    if (!desc_wrapper.data()) {
-      // We should never get here, since this should be caught in
-      // IsValidAudioDecoderConfig().
-      *js_error_message = "Invalid config; description is detached.";
-      return std::nullopt;
-    }
-
-    if (config.codec() == "opus") {
-      // A size of 19 bytes corresponds to the minimum length of an Opus
-      // Identification Header for a standard mono or stereo stream.
-      constexpr size_t kMinDescriptionSize = 19;
-      if (desc_wrapper.size() < kMinDescriptionSize) {
-        *js_error_message = "Invalid config; description is too short.";
-        return std::nullopt;
-      }
-    }
-
+    base::span<const uint8_t> desc_wrapper =
+        AsSpan<SharedBufferPolicy::kAllow>(*config.description());
     if (!desc_wrapper.empty()) {
       extra_data.assign(base::to_address(desc_wrapper.begin()),
                         base::to_address(desc_wrapper.end()));
@@ -360,36 +374,36 @@ std::optional<media::AudioDecoderConfig> AudioDecoder::MakeMediaConfig(
   return MakeMediaAudioDecoderConfig(config, js_error_message /* out */);
 }
 
-media::DecoderStatus::Or<scoped_refptr<media::DecoderBuffer>>
+base::expected<scoped_refptr<media::DecoderBuffer>, media::DecoderStatus>
 AudioDecoder::MakeInput(const InputType& chunk, bool verify_key_frame) {
   if (verify_key_frame && !chunk.buffer()->is_key_frame())
-    return media::DecoderStatus::Codes::kKeyFrameRequired;
+    return base::unexpected(media::DecoderStatus::Codes::kKeyFrameRequired);
   return chunk.buffer();
 }
 
-media::DecoderStatus::Or<AudioDecoder::OutputType*> AudioDecoder::MakeOutput(
-    scoped_refptr<MediaOutputType> output,
-    ExecutionContext* context) {
+base::expected<AudioDecoder::OutputType*, media::DecoderStatus>
+AudioDecoder::MakeOutput(scoped_refptr<MediaOutputType> output,
+                         ExecutionContext* context) {
   if (!blink::audio_utilities::IsValidAudioBufferSampleRate(
           output->sample_rate())) {
-    return media::DecoderStatus(
+    return base::unexpected(media::DecoderStatus(
         media::DecoderStatus::Codes::kInvalidArgument,
         Format("Invalid decoded audio output sample rate. Got {}, which is "
                "outside [{:f}, {:f}]",
                output->sample_rate(),
                blink::audio_utilities::MinAudioBufferSampleRate(),
                blink::audio_utilities::MaxAudioBufferSampleRate())
-            .Ascii());
+            .Ascii()));
   }
 
   if (static_cast<uint32_t>(output->channel_count()) >
       BaseAudioContext::MaxNumberOfChannels()) {
-    return media::DecoderStatus(
+    return base::unexpected(media::DecoderStatus(
         media::DecoderStatus::Codes::kInvalidArgument,
         Format("Invalid decoded audio output channel count. Got {}, which "
                "exceeds {}",
                output->channel_count(), BaseAudioContext::MaxNumberOfChannels())
-            .Ascii());
+            .Ascii()));
   }
 
   return MakeGarbageCollected<AudioDecoderTraits::OutputType>(

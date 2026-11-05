@@ -39,6 +39,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "base/cancelable_callback.h"
@@ -47,6 +48,7 @@
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "base/unguessable_token.h"
 #include "media/audio/agc_audio_stream.h"
 #include "media/audio/apple/glitch_helper.h"
 #include "media/audio/audio_io.h"
@@ -76,6 +78,7 @@ class MEDIA_EXPORT AUAudioInputStream
   AUAudioInputStream(AudioManagerApple* manager,
                      const AudioParameters& input_params,
                      AudioDeviceID audio_device_id,
+                     const std::string& device_unique_id,
                      const AudioManager::LogCallback& log_callback);
 
   AUAudioInputStream(const AUAudioInputStream&) = delete;
@@ -125,6 +128,9 @@ class MEDIA_EXPORT AUAudioInputStream
  private:
   bool OpenAUHAL();
   bool OpenVoiceProcessingAU();
+  // Attempts to set the IO buffer size of `audio_unit_` to the requested
+  // frames per buffer. Logs the error and returns false on failure.
+  bool ChangeBufferSize();
   void SetSystemAGC(bool enable);
 
   // Callback functions called on a real-time priority I/O thread from the audio
@@ -201,6 +207,8 @@ class MEDIA_EXPORT AUAudioInputStream
   // creating thread which is the main browser thread (CrBrowserMain) on Mac.
   THREAD_CHECKER(thread_checker_);
 
+  const base::UnguessableToken id_;
+
   // Our creator, the audio manager needs to be notified when we close.
   const raw_ptr<AudioManagerApple> manager_;
 
@@ -226,6 +234,9 @@ class MEDIA_EXPORT AUAudioInputStream
 
   // The UID refers to the current input audio device.
   const AudioDeviceID input_device_id_;
+
+  // Unique ID string of the audio input device (e.g. GUID or "default").
+  const std::string device_unique_id_;
 
   // Provides a mechanism for encapsulating one or more buffers of audio data.
   AudioBufferList audio_buffer_list_;

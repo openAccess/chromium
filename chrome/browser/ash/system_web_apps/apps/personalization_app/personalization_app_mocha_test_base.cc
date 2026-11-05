@@ -14,10 +14,10 @@
 #include "ash/wallpaper/wallpaper_controller_test_api.h"
 #include "ash/webui/personalization_app/personalization_app_url_constants.h"
 #include "base/files/file_util.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
 #include "chrome/browser/ash/wallpaper_handlers/test_wallpaper_fetcher_delegate.h"
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/wallpaper/wallpaper_controller_client_impl.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/test_chrome_web_ui_controller_factory.h"
@@ -78,15 +78,22 @@ void PersonalizationAppMochaTestBase::SetUpOnMainThread() {
   WallpaperControllerClientImpl::Get()->SetWallpaperFetcherDelegateForTesting(
       std::make_unique<wallpaper_handlers::TestWallpaperFetcherDelegate>());
   WebUIMochaBrowserTest::SetUpOnMainThread();
+  test_webui_provider_.emplace(local_state);
   test_factory_.AddFactoryOverride(kChromeUIPersonalizationAppHost,
-                                   &test_webui_provider_);
+                                   &test_webui_provider_.value());
 
   CreateDefaultWallpapers();
-  auto wallpaper_controller_test_api =
-      std::make_unique<WallpaperControllerTestApi>(
-          ::ash::Shell::Get()->wallpaper_controller());
-  wallpaper_controller_test_api->SetDefaultWallpaper(
+  WallpaperControllerTestApi wallpaper_controller_test_api(
+      ::ash::Shell::Get()->wallpaper_controller());
+  wallpaper_controller_test_api.SetDefaultWallpaper(
       GetAccountId(browser()->GetProfile()));
+}
+
+void PersonalizationAppMochaTestBase::TearDownOnMainThread() {
+  test_factory_.RemoveFactoryOverride(kChromeUIPersonalizationAppHost);
+  test_webui_provider_.reset();
+
+  WebUIMochaBrowserTest::TearDownOnMainThread();
 }
 
 // Initializes default wallpaper paths for regular users and writes JPEG

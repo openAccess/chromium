@@ -4,6 +4,9 @@
 
 #include "components/update_client/update_engine.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <algorithm>
 #include <memory>
 #include <optional>
@@ -185,6 +188,16 @@ base::RepeatingClosure UpdateEngine::InvokeOperation(
                      }
                    },
                    update_context);
+}
+
+void UpdateEngine::Cancel(const std::string& id) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  for (const auto& [session_id, context] : update_contexts_) {
+    auto it = context->components.find(id);
+    if (it != context->components.end()) {
+      it->second->Cancel();
+    }
+  }
 }
 
 void UpdateEngine::StartOperation(

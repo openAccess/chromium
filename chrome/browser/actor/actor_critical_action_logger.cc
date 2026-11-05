@@ -4,27 +4,22 @@
 
 #include "chrome/browser/actor/actor_critical_action_logger.h"
 
-#include <algorithm>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
-#include "base/check.h"
 #include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/json/json_writer.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_util.h"
-#include "base/uuid.h"
 #include "base/values.h"
 #include "chrome/browser/actor/actor_task.h"
-#include "chrome/browser/actor/tools/attempt_form_filling_tool_request.h"
-#include "chrome/browser/actor/tools/attempt_login_tool_request.h"
-#include "chrome/browser/actor/tools/attempt_otp_filling_tool_request.h"
+#include "chrome/browser/actor/tools/autofill/attempt_form_filling/attempt_form_filling_tool_request.h"
+#include "chrome/browser/actor/tools/one_time_token/attempt_otp_filling_tool_request.h"
+#include "chrome/browser/actor/tools/password_manager/attempt_login/attempt_login_tool_request.h"
+#include "chrome/browser/actor/tools/script_tool_request.h"
 #include "chrome/browser/actor/tools/tool_request.h"
-#include "chrome/browser/actor/tools/type_tool_request.h"
 #include "chrome/browser/critical_actions/critical_action_factory.h"
 #include "chrome/browser/feature_engagement/tracker_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -34,20 +29,17 @@
 #include "components/critical_actions/core/browser/critical_action_service.h"
 #include "components/critical_actions/core/browser/features.h"
 #include "components/feature_engagement/public/tracker.h"
+#include "third_party/blink/public/mojom/content_extraction/script_tools.mojom.h"
 
 namespace actor {
 
 namespace {
 
-std::string GetActionMetadata(const ToolRequest& action,
-                              critical_actions::ActionType action_type) {
-  if (action_type != critical_actions::ActionType::kFormFill) {
-    return "";
-  }
-
+std::string GetFormFillMetadata(const ToolRequest& action) {
   CHECK_EQ(action.Name(), AttemptFormFillingToolRequest::kName);
   const auto& form_req =
-      *static_cast<const AttemptFormFillingToolRequest*>(&action);
+      static_cast<const AttemptFormFillingToolRequest&>(action);
+
   base::ListValue data_list;
   for (const auto& req : form_req.requests()) {
     data_list.Append(autofill::ActorFormFillingRequestedDataToStringView(
@@ -61,6 +53,54 @@ std::string GetActionMetadata(const ToolRequest& action,
     return json_metadata;
   }
   return "";
+}
+
+std::string GetWebMcpToolMetadata(const mojom::ActionResult& result) {
+  if (!result.script_tool_response || !result.script_tool_response->tool) {
+    return "";
+  }
+
+  const blink::mojom::ScriptTool& tool = *result.script_tool_response->tool;
+  base::DictValue dict;
+  dict.Set("tool_name", tool.name);
+  if (tool.title.has_value() && !tool.title->empty()) {
+    dict.Set("tool_title", *tool.title);
+  }
+  dict.Set("tool_description", tool.description);
+
+  if (tool.annotations) {
+    dict.Set("annotations",
+             base::DictValue()
+                 .Set("consequential", tool.annotations->consequential)
+                 .Set("read_only", tool.annotations->read_only)
+                 .Set("untrusted_content", tool.annotations->untrusted_content)
+                 .Set("debugging", tool.annotations->debugging));
+  }
+
+  std::string json_metadata;
+  if (base::JSONWriter::Write(dict, &json_metadata)) {
+    return json_metadata;
+  }
+  return "";
+}
+
+std::string GetActionMetadata(const ToolRequest& action,
+                              critical_actions::ActionType action_type,
+                              const mojom::ActionResult& result) {
+  switch (action_type) {
+    case critical_actions::ActionType::kFormFill:
+      return GetFormFillMetadata(action);
+    case critical_actions::ActionType::kWebMcpTool:
+      return GetWebMcpToolMetadata(result);
+    case critical_actions::ActionType::kDownload:
+    case critical_actions::ActionType::kSettingChange:
+    case critical_actions::ActionType::kCredentialAccess:
+    case critical_actions::ActionType::kGooglePasswordManager:
+    case critical_actions::ActionType::kFederatedLogin:
+    case critical_actions::ActionType::kCredentialsOtp:
+    case critical_actions::ActionType::kUnknown:
+      return "";
+  }
 }
 
 critical_actions::ActionType EvaluateLoginRequest(
@@ -102,6 +142,9 @@ critical_actions::ActionType EvaluateToolRequest(
     }
     return critical_actions::ActionType::kFormFill;
   }
+  if (name == ScriptToolRequest::kName) {
+    return critical_actions::ActionType::kWebMcpTool;
+  }
 
   return critical_actions::ActionType::kUnknown;
 }
@@ -126,16 +169,14 @@ void ActorCriticalActionLogger::MaybeLogAction(
   }
 
   LogAgentSelfReportedAction(profile, task.source_info().id.value_or(""),
-                             action_type, action.GetURLForJournal(),
-                             navigation_id, task.id(),
-                             GetActionMetadata(action, action_type));
+                             action_type, navigation_id, task.id(),
+                             GetActionMetadata(action, action_type, result));
 }
 
 void ActorCriticalActionLogger::LogAgentSelfReportedAction(
     Profile* profile,
     std::string conversation_id,
     critical_actions::ActionType action_type,
-    const GURL& url,
     int64_t navigation_id,
     TaskId actor_task_id,
     std::string metadata) {
@@ -155,7 +196,7 @@ void ActorCriticalActionLogger::LogAgentSelfReportedAction(
   }
 
   LogEntry(*service, action_type, std::move(conversation_id), actor_task_id,
-           url, std::move(metadata), navigation_id);
+           std::move(metadata), navigation_id);
 
   if (feature_engagement::Tracker* tracker =
           feature_engagement::TrackerFactory::GetForBrowserContext(profile)) {
@@ -168,22 +209,19 @@ void ActorCriticalActionLogger::LogEntry(
     critical_actions::ActionType action_type,
     std::string conversation_id,
     TaskId actor_task_id,
-    const GURL& url,
     std::string metadata,
     int64_t navigation_id) {
-  critical_actions::CriticalActionEntry entry;
-  entry.critical_action_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
-  entry.timestamp = base::Time::Now();
-  entry.action_source = critical_actions::ActionSource::kActor;
-  entry.action_type = action_type;
-  entry.conversation_id = std::move(conversation_id);
-  entry.actor_task_id = actor_task_id.is_null()
-                            ? ""
-                            : base::NumberToString(actor_task_id.value());
-  entry.url = url;
-  entry.metadata = std::move(metadata);
-
-  service.AddCriticalActionWithNavigationId(entry, navigation_id);
+  service.AddCriticalActionWithNavigationId(
+      critical_actions::CriticalActionEntry::Builder()
+          .SetActionType(action_type)
+          .SetActionSource(critical_actions::ActionSource::kActor)
+          .SetConversationId(std::move(conversation_id))
+          .SetActorTaskId(actor_task_id.is_null()
+                              ? ""
+                              : base::NumberToString(actor_task_id.value()))
+          .SetMetadata(std::move(metadata))
+          .Build(),
+      navigation_id);
 }
 
 }  // namespace actor

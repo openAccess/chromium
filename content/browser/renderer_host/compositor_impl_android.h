@@ -34,7 +34,7 @@
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "services/viz/privileged/mojom/compositing/begin_frame_observer.mojom.h"
 #include "services/viz/privileged/mojom/compositing/display_private.mojom.h"
-#include "third_party/khronos/GLES2/gl2.h"
+#include "third_party/angle/include/GLES2/gl2.h"
 #include "ui/android/resources/resource_manager_impl.h"
 #include "ui/android/resources/ui_resource_provider.h"
 #include "ui/android/window_android.h"
@@ -82,6 +82,10 @@ class CONTENT_EXPORT CompositorImpl : public Compositor,
   ~CompositorImpl() override;
 
   static bool IsInitialized();
+
+  // Returns the display visibility state for Viz, combining client visibility,
+  // draw paused state, and window occlusion state.
+  viz::mojom::DisplayVisibility GetDisplayVisibility() const;
 
   void MaybeCompositeNow();
 
@@ -167,6 +171,7 @@ class CONTENT_EXPORT CompositorImpl : public Compositor,
       base::TimeDelta timeout) override;
   void PostRequestSuccessfulPresentationTimeForNextFrame(
       SuccessfulPresentationTimeCallback callback) override;
+  void SetWindowOccluded(bool occluded) override;
 
   // viz::HostFrameSinkClient implementation.
   void OnFirstSurfaceActivation(const viz::SurfaceInfo& surface_info) override;
@@ -219,6 +224,7 @@ class CONTENT_EXPORT CompositorImpl : public Compositor,
       base::StrongAlias<struct PendingSurfaceCopyIdTag, uint32_t>;
   void RemoveScopedKeepSurfaceAlive(
       const PendingSurfaceCopyId& scoped_keep_surface_alive_id);
+  void UpdateDisplayVisibility();
 
   viz::FrameSinkId frame_sink_id_;
   const bool is_offscreen_rendering_;
@@ -249,6 +255,8 @@ class CONTENT_EXPORT CompositorImpl : public Compositor,
   bool needs_animate_;
 
   bool draw_paused_ = false;
+  bool window_occluded_ = false;
+  base::ScopedClosureRunner defer_begin_frame_;
 
   // The number of SubmitFrame calls that have not returned and ACK'd from
   // the GPU thread.

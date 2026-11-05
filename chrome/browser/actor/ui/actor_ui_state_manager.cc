@@ -7,8 +7,12 @@
 #include "base/logging.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
+#include "base/types/pass_key.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/execution_engine.h"
+#include "chrome/browser/actor/ui/actor_ui_tab_controller_interface.h"
+#include "chrome/browser/actor/ui/states/handoff_button_state.h"
 #include "chrome/browser/actor/ui/ui_event_debugstring.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
@@ -30,7 +34,6 @@
 
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
 #include "chrome/browser/actor/ui/actor_ui_state_manager_prefs.h"
-#include "chrome/browser/actor/ui/actor_ui_tab_controller.h"
 #include "chrome/browser/actor/ui/actor_ui_tab_controller_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck
@@ -117,7 +120,7 @@ void LogUiChangeError(bool result) {
 
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
 bool MaybeShowToastViaController(BrowserWindowInterface* bwi) {
-  if (auto* controller = bwi->GetFeatures().toast_controller()) {
+  if (auto* controller = ToastController::From(bwi)) {
     return controller->MaybeShowToast(
         ToastParams(ToastId::kGeminiWorkingOnTask));
   }
@@ -126,6 +129,17 @@ bool MaybeShowToastViaController(BrowserWindowInterface* bwi) {
 #endif
 
 }  // namespace
+
+// static
+ActorUiStateManager* ActorUiStateManager::Get(
+    content::BrowserContext* context) {
+  auto* actor_service = ActorKeyedService::Get(context);
+  if (!actor_service) {
+    return nullptr;
+  }
+  return actor_service->GetActorUiStateManager(
+      base::PassKey<ActorUiStateManager>());
+}
 
 ActorUiStateManager::ActorUiStateManager(ActorKeyedService& actor_service)
     : actor_service_(actor_service) {}
@@ -268,8 +282,8 @@ void ActorUiStateManager::OnActorTaskStateChange(
 std::vector<tabs::TabInterface*> ActorUiStateManager::GetTabs(TaskId id) {
   if (ActorTask* task = actor_service_->GetTask(id)) {
     std::vector<tabs::TabInterface*> tabs;
-    for (const tabs::TabHandle& handle : task->GetTabs()) {
-      if (tabs::TabInterface* tab = handle.Get()) {
+    for (ActorSurfaceHandle actor_surface_handle : task->GetActorSurfaces()) {
+      if (tabs::TabInterface* tab = actor_surface_handle.GetTabHandle().Get()) {
         tabs.push_back(tab);
       }
     }
@@ -378,8 +392,14 @@ void ActorUiStateManager::OnUiEvent(SyncUiEvent event) {
               tab_controller->OnUiTabStateChange(
                   kCompletedUiTabState, base::BindOnce(&LogUiChangeError));
             }
+          },
+          [](const TaskStepProgressUpdated&) {
+            // Handled by UpdateCursorChip() on desktop.
           }},
       event);
+#if !BUILDFLAG(IS_ANDROID)
+  UpdateCursorChip(event);
+#endif
 }
 
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
@@ -457,10 +477,16 @@ std::optional<std::string> ActorUiStateManager::GetActorTaskTitle(TaskId id) {
 std::optional<raw_ptr<tabs::TabInterface>>
 ActorUiStateManager::GetLastActedOnTab(TaskId id) {
   if (ActorTask* task = actor_service_->GetTask(id)) {
-    actor::ActorTask::TabHandleSet tabs = task->GetLastActedTabs();
     // TODO(crbug.com/441064175): Will need to be updated for multi-tab
     // actuation.
-    return tabs.empty() ? nullptr : tabs.begin()->Get();
+    for (ActorSurfaceHandle actor_surface_handle :
+         task->GetLastActedActorSurfaces()) {
+      if (tabs::TabHandle tab = actor_surface_handle.GetTabHandle();
+          tab != tabs::TabHandle::Null()) {
+        return tab.Get();
+      }
+    }
+    return nullptr;
   }
   if (auto it = stopped_task_info_.find(id); it != stopped_task_info_.end()) {
     return it->second.last_acted_on_tab_handle.Get();
@@ -497,6 +523,34 @@ void ActorUiStateManager::LazyInitTabTracker() {
   }
 }
 #endif
+
+base::WeakPtr<ActorNavigationThrottle::Delegate>
+ActorUiStateManager::GetNavigationDelegate() {
+  return weak_factory_.GetWeakPtr();
+}
+
+bool ActorUiStateManager::MaybeDeferNavigation(
+    tabs::TabInterface* tab,
+    const GURL& url,
+    NavigationConfirmedCallback callback) {
+  if (!tab || !actor_service_->IsActiveOnTab(*tab)) {
+    return false;
+  }
+  if (auto* tab_controller = ActorUiTabControllerInterface::From(tab)) {
+    return tab_controller->MaybeDeferNavigation(tab, url, std::move(callback));
+  }
+  return false;
+}
+
+void ActorUiStateManager::CancelNavigationConfirmation(
+    tabs::TabInterface* tab) {
+  if (!tab) {
+    return;
+  }
+  if (auto* tab_controller = ActorUiTabControllerInterface::From(tab)) {
+    tab_controller->CancelNavigationConfirmation(tab);
+  }
+}
 
 void ActorUiStateManager::SetTabPendingActuation(tabs::TabHandle tab_handle) {
   tabs::TabInterface* tab = tab_handle.Get();
@@ -538,5 +592,68 @@ void ActorUiStateManager::OnPendingTabDetached(
     ClearTabPendingActuation(tab->GetHandle());
   }
 }
+
+#if !BUILDFLAG(IS_ANDROID)
+void ActorUiStateManager::UpdateCursorChip(const SyncUiEvent& event) {
+  if (!base::FeatureList::IsEnabled(features::kGlicActorUiMagicCursorChip)) {
+    return;
+  }
+  std::visit(
+      absl::Overload{
+          [](const StartTask&) {},
+          [this](const TaskStateChanged& e) {
+            using enum ActorTask::State;
+            // Keep the text while waiting on the user so it shows again on
+            // kActing. Drop it on other states. The client sends the text
+            // for an act right before its PerformActions call.
+            // An interrupt with user control reaches the UI as
+            // kPausedByActor, so it drops the text like a pause.
+            // TODO(b/573229718): Drop the text when an act fails before
+            // kActing. Otherwise the next act without new text shows it.
+            if (e.state != kActing && e.state != kWaitingOnUser) {
+              step_progress_.erase(e.task_id);
+            }
+            auto it = step_progress_.find(e.task_id);
+            const bool show = e.state == kActing && it != step_progress_.end();
+            SetCursorChipForTask(e.task_id, show ? it->second : "");
+          },
+          [this](const StopTask& e) {
+            // ActorTask::Stop() removes every tab first, and
+            // StoppedActingOnTab clears each chip.
+            step_progress_.erase(e.task_id);
+          },
+          [](const StoppedActingOnTab& e) {
+            tabs::TabInterface* tab = e.tab_handle.Get();
+            if (!tab) {
+              return;
+            }
+            if (auto* tab_controller =
+                    ActorUiTabControllerInterface::From(tab)) {
+              tab_controller->SetCursorChipText("");
+            }
+          },
+          [this](const TaskStepProgressUpdated& e) {
+            step_progress_[e.task_id] = e.step_progress;
+            if (GetActorTaskState(e.task_id) == ActorTask::State::kActing) {
+              SetCursorChipForTask(e.task_id, e.step_progress);
+            }
+          }},
+      event);
+}
+
+void ActorUiStateManager::SetCursorChipForTask(TaskId task_id,
+                                               const std::string& text) {
+  ActorTask* task = actor_service_->GetTask(task_id);
+  if (!task) {
+    return;
+  }
+  const tabs::TabHandle target = task->GetLastActuatedTabHandle();
+  for (tabs::TabInterface* tab : GetTabs(task_id)) {
+    if (auto* tab_controller = ActorUiTabControllerInterface::From(tab)) {
+      tab_controller->SetCursorChipText(tab->GetHandle() == target ? text : "");
+    }
+  }
+}
+#endif
 
 }  // namespace actor::ui

@@ -44,11 +44,6 @@ inline constexpr char kChromeUIBluetoothPairingHost[] = "bluetooth-pairing";
 inline constexpr char kChromeUIBluetoothPairingURL[] =
     "chrome://bluetooth-pairing/";
 inline constexpr char kChromeUIBorealisCreditsHost[] = "borealis-credits";
-
-// The host and URL for the Borealis MOTD Dialog
-inline constexpr char kChromeUIBorealisMOTDHost[] = "borealis-motd";
-inline constexpr char kChromeUIBorealisMOTDURL[] = "chrome://borealis-motd";
-
 inline constexpr char kChromeUIChromeOSAssetHost[] = "chromeos-asset";
 inline constexpr char kChromeUICloudUploadHost[] = "cloud-upload";
 inline constexpr char kChromeUICloudUploadURL[] = "chrome://cloud-upload/";
@@ -113,9 +108,6 @@ inline constexpr char kChromeUILockScreenNetworkURL[] = "chrome://lock-network";
 inline constexpr char kChromeUILockScreenStartReauthHost[] = "lock-reauth";
 inline constexpr char kChromeUILockScreenStartReauthURL[] =
     "chrome://lock-reauth";
-inline constexpr char kChromeUIManageMirrorSyncHost[] = "manage-mirrorsync";
-inline constexpr char kChromeUIManageMirrorSyncURL[] =
-    "chrome://manage-mirrorsync";
 inline constexpr char kChromeUIMobileSetupHost[] = "mobilesetup";
 inline constexpr char kChromeUIMobileSetupURL[] = "chrome://mobilesetup/";
 inline constexpr char kChromeUIMultiDeviceInternalsHost[] =

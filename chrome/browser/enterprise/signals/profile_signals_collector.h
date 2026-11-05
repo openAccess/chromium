@@ -16,6 +16,7 @@ class PolicyBlocklistService;
 
 namespace policy {
 class CloudPolicyManager;
+class ProfilePolicyConnector;
 }  // namespace policy
 
 namespace enterprise_connectors {
@@ -43,12 +44,16 @@ class ProfileSignalsCollector : public BaseSignalsCollector {
                          SignalsAggregationResponse& response,
                          base::OnceClosure done_closure);
 
+  const bool is_isolated_mode_;
+
   // These objects are owned directly by the Profile. During the interleaved teardown of
   // ChromeOS multi-user tests, the memory for these profile-owned services might get freed
   // before the SignalsAggregator (and this collector) is fully destroyed.
   const raw_ptr<PolicyBlocklistService, DisableDanglingPtrDetection> policy_blocklist_service_;
   const raw_ptr<PrefService, DisableDanglingPtrDetection> profile_prefs_;
   const raw_ptr<policy::CloudPolicyManager, DisableDanglingPtrDetection> policy_manager_;
+  const raw_ptr<policy::ProfilePolicyConnector, DisableDanglingPtrDetection>
+      profile_policy_connector_;
 #if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
   const raw_ptr<enterprise_connectors::ConnectorsService, DisableDanglingPtrDetection> connectors_service_;
 #endif

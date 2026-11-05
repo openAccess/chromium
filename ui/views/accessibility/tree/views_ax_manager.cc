@@ -118,7 +118,7 @@ void ViewsAXManager::OnDataChanged(views::View* view) {
     return;
   }
 
-  DCHECK(tree_source_.get());
+  CHECK(tree_source_.get(), base::NotFatalUntil::M163);
 
   views::Widget* widget = view->GetWidget();
   if (widget && !widget->GetNativeView()) {
@@ -150,7 +150,7 @@ void ViewsAXManager::OnVirtualViewDataChanged(
     return;
   }
 
-  DCHECK(tree_source_.get());
+  CHECK(tree_source_.get(), base::NotFatalUntil::M163);
 
   views::AXAuraObjWrapper* obj = virtual_view->GetOrCreateWrapper(cache_.get());
   if (!obj) {
@@ -177,7 +177,7 @@ void ViewsAXManager::PerformAction(const ui::AXActionData& data) {
   base::AutoReset<ax::mojom::Action> reset_action(&currently_performing_action_,
                                                   data.action);
 
-  DCHECK(tree_source_.get());
+  CHECK(tree_source_.get(), base::NotFatalUntil::M163);
 
   base::AutoReset<ax::mojom::Action> reset_currently_performing_action(
       &currently_performing_action_, data.action);
@@ -192,6 +192,16 @@ void ViewsAXManager::PerformAction(const ui::AXActionData& data) {
   // node to perform the action on first.
   if (data.action == ax::mojom::Action::kHitTest) {
     PerformHitTest(data);
+    return;
+  }
+
+  // Clients only know about nodes that have been serialized to them. Ignore
+  // actions targeting nodes outside of the client tree, e.g. nodes with an
+  // ancestor that's marked invisible, mirroring how events on such nodes are
+  // suppressed in SendPendingUpdate().
+  views::AXAuraObjWrapper* target = tree_source_->GetActionTarget(data);
+  if (!tree_serializer_ || !target ||
+      !tree_serializer_->IsInClientTree(target)) {
     return;
   }
 
@@ -235,7 +245,7 @@ void ViewsAXManager::OnChildWindowRemoved(views::AXAuraObjWrapper* parent) {
     return;
   }
 
-  DCHECK(tree_source_.get());
+  CHECK(tree_source_.get(), base::NotFatalUntil::M163);
 
   if (!parent) {
     parent = tree_source_->GetRoot();

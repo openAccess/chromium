@@ -18,7 +18,6 @@ import android.content.Context;
 import android.view.ViewGroup;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -54,9 +53,7 @@ import org.chromium.ui.shadows.ShadowAppCompatResources;
 
 /** Test relating to {@link EducationalTipModuleBuilder} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowAppCompatResources.class})
+@Config(shadows = {ShadowAppCompatResources.class})
 @EnableFeatures({ChromeFeatureList.SEGMENTATION_PLATFORM_EPHEMERAL_CARD_RANKER})
 public class EducationalTipModuleBuilderUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -109,7 +106,6 @@ public class EducationalTipModuleBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateView_CelebratoryPromoUsesCustomLayout() {
         EducationalTipModuleBuilder celebratoryBuilder =
                 new EducationalTipModuleBuilder(
@@ -119,7 +115,6 @@ public class EducationalTipModuleBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateView_RegularPromoUsesStandardLayout() {
         EducationalTipModuleBuilder regularBuilder =
                 new EducationalTipModuleBuilder(ModuleType.QUICK_DELETE_PROMO, mActionDelegate);
@@ -128,7 +123,6 @@ public class EducationalTipModuleBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({ChromeFeatureList.SEGMENTATION_PLATFORM_EPHEMERAL_CARD_RANKER})
     public void testBuildEducationalTipModule_Eligible() {
         assertTrue(mModuleBuilder.build(mModuleDelegate, mBuildCallback));
@@ -136,7 +130,6 @@ public class EducationalTipModuleBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({
         ChromeFeatureList.SEGMENTATION_PLATFORM_EPHEMERAL_CARD_RANKER,
     })
@@ -149,7 +142,6 @@ public class EducationalTipModuleBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures({ChromeFeatureList.SEGMENTATION_PLATFORM_EPHEMERAL_CARD_RANKER})
     public void testCreateInputContext() {
         when(mSetupListManager.isSetupListActive()).thenReturn(true);
@@ -182,10 +174,9 @@ public class EducationalTipModuleBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIsEligible_SetupList_StrictlyFollowsManager() {
         // Mock Setup List module.
-        int setupListModule = ModuleType.SIGN_IN_PROMO;
+        int setupListModule = ModuleType.ENHANCED_SAFE_BROWSING_PROMO;
         when(mSetupListManager.isSetupListActive()).thenReturn(true);
         when(mSetupListManager.isSetupListModule(setupListModule)).thenReturn(true);
         EducationalTipModuleBuilder builder =
@@ -201,7 +192,6 @@ public class EducationalTipModuleBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIsEligible_RegularTip_RequiresProfile() {
         // Mock regular Educational Tip module.
         int regularTipModule = ModuleType.QUICK_DELETE_PROMO;
@@ -220,7 +210,6 @@ public class EducationalTipModuleBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     @DisableFeatures({ChromeFeatureList.SEGMENTATION_PLATFORM_EPHEMERAL_CARD_RANKER})
     public void testBuild_SetupList_BypassesGlobalKillSwitch() {
         int setupListModule = ModuleType.DEFAULT_BROWSER_PROMO;
@@ -235,15 +224,11 @@ public class EducationalTipModuleBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetManualRank_ReturnsRankForSetupListModuleWhenActive() {
         when(mSetupListManager.isSetupListActive()).thenReturn(true);
         when(mSetupListManager.getManualRank(ModuleType.ADDRESS_BAR_PLACEMENT_PROMO)).thenReturn(0);
         when(mSetupListManager.getManualRank(ModuleType.ENHANCED_SAFE_BROWSING_PROMO))
                 .thenReturn(1);
-        when(mSetupListManager.getManualRank(ModuleType.SIGN_IN_PROMO)).thenReturn(2);
-        when(mSetupListManager.getManualRank(ModuleType.SAVE_PASSWORDS_PROMO)).thenReturn(3);
-        when(mSetupListManager.getManualRank(ModuleType.PASSWORD_CHECKUP_PROMO)).thenReturn(4);
 
         EducationalTipModuleBuilder builder1 =
                 new EducationalTipModuleBuilder(
@@ -258,28 +243,9 @@ public class EducationalTipModuleBuilderUnitTest {
         Integer manualOrder2 = builder2.getManualRank();
         assertNotNull(manualOrder2);
         assertEquals(1, manualOrder2.intValue()); // ENHANCED_SAFE_BROWSING_PROMO is at index 1
-
-        EducationalTipModuleBuilder builder3 =
-                new EducationalTipModuleBuilder(ModuleType.SIGN_IN_PROMO, mActionDelegate);
-        Integer manualOrder3 = builder3.getManualRank();
-        assertNotNull(manualOrder3);
-        assertEquals(2, manualOrder3.intValue()); // SIGN_IN_PROMO is at index 2
-
-        EducationalTipModuleBuilder builder4 =
-                new EducationalTipModuleBuilder(ModuleType.SAVE_PASSWORDS_PROMO, mActionDelegate);
-        Integer manualOrder4 = builder4.getManualRank();
-        assertNotNull(manualOrder4);
-        assertEquals(3, manualOrder4.intValue()); // SAVE_PASSWORDS_PROMO is at index 3
-
-        EducationalTipModuleBuilder builder5 =
-                new EducationalTipModuleBuilder(ModuleType.PASSWORD_CHECKUP_PROMO, mActionDelegate);
-        Integer manualOrder5 = builder5.getManualRank();
-        assertNotNull(manualOrder5);
-        assertEquals(4, manualOrder5.intValue()); // PASSWORD_CHECKUP_PROMO is at index 4
     }
 
     @Test
-    @SmallTest
     public void testGetManualRank_ReturnsEmptyForNonSetupListModuleWhenActive() {
         when(mSetupListManager.isSetupListActive()).thenReturn(true);
 
@@ -289,7 +255,6 @@ public class EducationalTipModuleBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetManualRank_ReturnsEmptyWhenSetupListInactive() {
         EducationalTipModuleBuilder builder =
                 new EducationalTipModuleBuilder(

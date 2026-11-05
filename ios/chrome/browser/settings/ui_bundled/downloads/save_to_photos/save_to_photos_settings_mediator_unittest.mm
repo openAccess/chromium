@@ -19,6 +19,7 @@
 #import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -253,8 +254,7 @@ TEST_F(SaveToPhotosSettingsMediatorTest, DISABLED_CanMutateSelectedIdentity) {
   mediator.accountConfirmationConsumer = fake_consumer;
   mediator.accountSelectionConsumer = fake_consumer;
 
-  GaiaId gaiaID = fake_identity_b_.gaiaId;
-  [mediator setSelectedIdentityGaiaID:&gaiaID];
+  [mediator setSelectedIdentityGaiaID:fake_identity_b_.gaiaId];
   EXPECT_EQ(
       fake_identity_b_.gaiaId.ToString(),
       profile_->GetPrefs()->GetString(prefs::kIosSaveToPhotosDefaultGaiaId));

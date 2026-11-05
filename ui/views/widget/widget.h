@@ -13,8 +13,8 @@
 #include <vector>
 
 #include "base/callback_list.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/scoped_observation.h"
@@ -162,7 +162,7 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   // The macro is maintained by the memory safety team.
   // `Widget` is used extensively and has a complicated lifetime. This macro
   // enables additional lifetime checks.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   METADATA_HEADER_BASE(Widget);
@@ -371,6 +371,11 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
 
     bool accept_events = true;
 
+    // Whether drag and drop should be enabled for this widget. If nullopt, it
+    // is inferred based on `accept_events` and `type` (e.g. disabled if
+    // `!accept_events` or `type == TYPE_TOOLTIP` or `type == TYPE_DRAG`).
+    std::optional<bool> accept_drag_drop;
+
     Activatable activatable = Activatable::kDefault;
 
     // The class of window and its overall z-order level. This level is visible
@@ -507,9 +512,6 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
     // with the launch event that created it. Used for both X11 and Wayland.
     std::string startup_id;
 #endif  // BUILDFLAG(IS_LINUX)
-
-    // If true then the widget uses software compositing.
-    bool force_software_compositing = false;
 
     // If set, the window size will follow the content preferred size.
     bool autosize = false;
@@ -984,12 +986,10 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   // default implementation simply calls CanActivate().
   virtual bool ShouldViewsStyleFollowWidgetActivation() const;
 
-  // [Deprecated] Legacy implementation of above method.
-  bool ShouldDescendIntoChildForEventHandlingDeprecated(
-      ui::Layer* root_layer,
-      gfx::NativeView child,
-      ui::Layer* child_layer,
-      const gfx::Point& location);
+  // Returns true if views hosted by this widget may hold FocusManager focus
+  // while native/OS window activation and focus remain on the owner window.
+  // False by default.
+  virtual bool CanFocusViewsWithoutActivation() const;
 
   // Sets the z-order of the widget. This only applies to top-level widgets.
   void SetZOrderLevel(ui::ZOrderLevel order);
@@ -1125,7 +1125,7 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   const FocusManager* GetFocusManager() const;
 
   // Returns the ui::InputMethod for this widget.
-  ui::InputMethod* GetInputMethod();
+  virtual ui::InputMethod* GetInputMethod();
 
   // Returns the SublevelManager for this widget.
   SublevelManager* GetSublevelManager();
@@ -1262,10 +1262,6 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   // reordering if there are no views with an associated NativeView.
   void ReorderNativeViews();
 
-  // Called by a View when the status of it's layer or one of the views
-  // descendants layer status changes.
-  void LayerTreeChanged();
-
   const NativeWidget* native_widget() const;
   NativeWidget* native_widget();
 
@@ -1370,6 +1366,13 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   // Prevents the widget from being rendered as inactive during the lifetime of
   // the returned lock. Multiple locks can exist with disjoint lifetimes. The
   // returned lock can safely outlive the associated widget.
+  //
+  // IMPORTANT SAFETY NOTE: When the paint-as-active state of a window changes,
+  // callbacks are called. Destroying a widget synchronously in response to it
+  // gaining or losing paint-on-active status will cause a crash, but it is
+  // possible for a callback from an ancestor widget to indirectly delete the
+  // widget. Do not assume that a widget is still valid after adding or removing
+  // a paint-as-active lock.
   std::unique_ptr<PaintAsActiveLock> LockPaintAsActive();
 
   // Undoes LockPaintAsActive(). This should never be called outside of
@@ -1386,9 +1389,16 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   // the ShouldPaintAsActive() state.
   void NotifyPaintAsActiveChanged();
 
-  // Enables input protection. Installs standard policies (occlusion, window
+  // Enables input activation protection. Installs standard policies (window
   // activation, click-spam) if `custom_protector` is nullptr. Otherwise, the
-  // caller must configure the provided protector with the desired policies.
+  // caller must configure the provided protector with the desired policies. A
+  // `custom_protector` may only be provided when first enabling protection.
+  //
+  // Enabling this also activates occlusion protection for non-located events
+  // (e.g. keyboard action keys like Space or Return) in
+  // `OccludedWidgetInputProtector` (whereas unprotected widgets only check
+  // located pointer events).
+  //
   // See ui/views/input_protection/README.md for details on how this works.
   void EnableInputEventActivationProtection(
       std::unique_ptr<InputEventActivationProtector> custom_protector =
@@ -1597,13 +1607,13 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   };
 
   class PaintAsActiveLockImpl;
+  class ParentThemeObserver;
   class ScopedCallStackLock;
 
   friend class ButtonTest;
   friend class ComboboxTest;
   friend class PaintAsActiveLockImpl;
   friend class TextfieldTest;
-  friend class ViewAuraTest;
   friend class ui_devtools::BubbleLocking;
   friend void DisableActivationChangeHandlingForTests();
 
@@ -1638,11 +1648,6 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   // the delegate wants to use a specified bounds.
   bool GetSavedWindowPlacement(gfx::Rect* bounds,
                                ui::mojom::WindowShowState* show_state);
-
-  // Returns the Views whose layers are parented directly to the Widget's
-  // layer in reverse z-order (i.e views later in the returned vector have a
-  // higher z-order).
-  const View::Views& GetViewsWithLayersInZOrder();
 
   // Called when the focus manager will be destroyed, or detached.  If a
   // descendent of |root_view_| is focused, then clear the focus.  If this is a
@@ -1826,12 +1831,6 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   // true.
   bool auto_release_capture_ = true;
 
-  // See description in GetViewsWithLayers().
-  View::Views views_with_layers_;
-
-  // Does |views_with_layers_| need updating?
-  bool views_with_layers_dirty_ = false;
-
   // True when window movement via mouse interaction with the frame should be
   // disabled.
   bool movement_disabled_ = false;
@@ -1889,6 +1888,7 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
   std::unique_ptr<ui::ColorProviderSourceObserver> parent_theme_observer_;
 
   void ProcessScheduledThemeChanged();
+  void UpdateThemeObservation();
 
   // True if a ThemeChanged() run has been scheduled and is pending.
   bool theme_update_scheduled_ = false;

@@ -4,6 +4,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
+#include "base/process/process_handle.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -16,6 +17,7 @@
 #include "chrome/browser/media/webrtc/webrtc_browsertest_base.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
@@ -30,6 +32,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/permissions/permission_request_manager.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_switches.h"
@@ -47,10 +50,10 @@
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/ash/system_web_apps/test_support/system_web_app_browsertest_base.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #endif
 
 using content::WebContents;
@@ -222,14 +225,11 @@ class WindowCaptureSession {
   raw_ptr<content::WebContents> capturer_contents_ = nullptr;
 };
 
-const std::string& GetCapturedWindowTitle() {
-  // Because this is static, it is initialized exactly once per OS process
-  // (batch). All tests in this batch will share it, while parallel batches
-  // get unique ones.
-  static const std::string title =
-      base::StringPrintf("Capture Target - %s",
-                         base::UnguessableToken::Create().ToString().c_str());
-  return title;
+std::string GetCapturedWindowTitle() {
+  // Tests in the same OS process (batch) share the title, while parallel
+  // batches, which run in other processes, get unique ones.
+  return base::StringPrintf("Capture Target - %d",
+                            static_cast<int>(base::GetCurrentProcId()));
 }
 
 #if defined(USE_AURA)
@@ -269,8 +269,7 @@ class NativeWindowTitleWatcher : public aura::WindowObserver {
 
  private:
   bool HasExpectedTitle() const {
-    return window_ &&
-           window_->GetTitle().find(expected_title_) != std::u16string::npos;
+    return window_ && window_->GetTitle().contains(expected_title_);
   }
 
   raw_ptr<aura::Window> window_ = nullptr;

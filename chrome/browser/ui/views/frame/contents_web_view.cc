@@ -7,6 +7,8 @@
 #include "base/debug/dump_without_crashing.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/views/animations/common_animation_values.h"
+#include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
 #include "chrome/browser/ui/views/frame/web_contents_close_handler.h"
 #include "chrome/browser/ui/views/status_bubble_views.h"
 #include "components/tabs/public/tab_interface.h"
@@ -27,11 +29,19 @@
 #include "ui/wm/core/window_util.h"
 #endif
 
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/actor/actor_util.h"  // nogncheck
+#endif
+
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(ContentsWebView,
                                       kContentsWebViewElementId);
 
 ContentsWebView::ContentsWebView(content::BrowserContext* browser_context)
-    : views::WebView(browser_context) {
+    : views::WebView(browser_context),
+      use_default_deadline_when_animating_(
+          browser_animations::GetPanelAnimationType() ==
+          browser_animations::PanelAnimationType::
+              kContinuousFrameResizeWithSurfaceSync) {
   // Draws the ContentsWebView background.
   SetPaintToLayer(ui::LAYER_SOLID_COLOR);
   SetProperty(views::kElementIdentifierKey, kContentsWebViewElementId);
@@ -75,7 +85,8 @@ void ContentsWebView::SetBackgroundRadii(const gfx::RoundedCornersF& radii) {
   background_layer->SetIsFastRoundedCorner(true);
 }
 
-void ContentsWebView::SetIsAnimatingBounds(bool is_animating) {
+void ContentsWebView::SetIsAnimatingBounds(bool is_animating,
+                                           bool is_origin_changing) {
   if (is_animating_bounds_ == is_animating) {
     return;
   }
@@ -87,14 +98,27 @@ void ContentsWebView::SetIsAnimatingBounds(bool is_animating) {
       status_bubble_->Hide();
     }
 
-    if (use_default_deadline_when_animating_ && web_contents()) {
+    if (use_default_deadline_when_animating_ && is_origin_changing) {
       // Update the render widget host view to set to use default deadline when
       // animating. This is a best effort synchronization between browser and
       // web contents.
-      if (content::RenderWidgetHostView* rwhv =
-              web_contents()->GetRenderWidgetHostView()) {
-        rwhv->SetShouldUseDefaultDeadlineOnResize(true);
-      }
+      SafeInvoke(web_contents())
+          .Then(&content::WebContents::GetRenderWidgetHostView)
+          .Then(&content::RenderWidgetHostView::
+                    SetShouldUseDefaultDeadlineOnResize,
+                /*enable=*/true);
+    }
+  } else {
+    if (status_bubble_) {
+      status_bubble_->Reposition();
+    }
+
+    if (use_default_deadline_when_animating_) {
+      SafeInvoke(web_contents())
+          .Then(&content::WebContents::GetRenderWidgetHostView)
+          .Then(&content::RenderWidgetHostView::
+                    SetShouldUseDefaultDeadlineOnResize,
+                /*enable=*/false);
     }
   }
 }
@@ -118,16 +142,6 @@ void ContentsWebView::OnVisibleBoundsChanged() {
   // bubble as an optimization since it's expensive on some platform.
   if (!is_animating_bounds_ && status_bubble_) {
     status_bubble_->Reposition();
-  }
-
-  // Reset using default deadline once animation is completed after the final
-  // bounds changes are made.
-  if (!is_animating_bounds_ && use_default_deadline_when_animating_ &&
-      web_contents()) {
-    if (content::RenderWidgetHostView* rwhv =
-            web_contents()->GetRenderWidgetHostView()) {
-      rwhv->SetShouldUseDefaultDeadlineOnResize(false);
-    }
   }
 }
 
@@ -162,11 +176,9 @@ void ContentsWebView::SetWebContents(content::WebContents* web_contents) {
 
   // Ensure any dialogs already showing for the webcontents gets
   // re-centered when the active tab changes or a split tab is created.
-  web_modal::WebContentsModalDialogManager* const dialog_manager =
-      web_modal::WebContentsModalDialogManager::FromWebContents(web_contents);
-  if (dialog_manager) {
-    dialog_manager->UpdateDialogHost();
-  }
+  SafeInvoke(
+      web_modal::WebContentsModalDialogManager::FromWebContents(web_contents))
+      .Then(&web_modal::WebContentsModalDialogManager::UpdateDialogHost);
 }
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -174,13 +186,23 @@ void ContentsWebView::DidGetUserInteraction(const blink::WebInputEvent& event) {
   // If the user interacts with the web contents, ensure it is activated.
   // This handles cases where the native window does not receive a focus
   // event, such as when a permission prompt is open in another split view.
-  if (event.GetType() == blink::WebInputEvent::Type::kMouseDown ||
-      event.GetType() == blink::WebInputEvent::Type::kTouchStart) {
-    // RequestFocus() ensures the container view receives focus,
-    // which is sufficient to update the browser UI.
-    if (!HasFocus()) {
-      RequestFocus();
-    }
+  if (event.GetType() != blink::WebInputEvent::Type::kMouseDown &&
+      event.GetType() != blink::WebInputEvent::Type::kTouchStart) {
+    return;
+  }
+
+  // Clicks simulated by the actor must not steal focus or activate the window.
+  // This isn't perfect: there are some edge cases, such as short-lived tasks
+  // (less than a few seconds), where user input is not blocked, so real clicks
+  // skip this too.
+  if (actor::HaveActiveTaskForContents(web_contents())) {
+    return;
+  }
+
+  // RequestFocus() ensures the container view receives focus,
+  // which is sufficient to update the browser UI.
+  if (!HasFocus()) {
+    RequestFocus();
   }
 }
 #endif
@@ -203,14 +225,10 @@ void ContentsWebView::UpdateBackgroundColor() {
   background_layer->SetColor(
       SkColor4f::FromColor(background_visible_ ? color : SK_ColorTRANSPARENT));
 
-  if (web_contents()) {
-    content::RenderWidgetHostView* rwhv =
-        web_contents()->GetRenderWidgetHostView();
-    if (rwhv) {
-      rwhv->SetBackgroundColor(background_visible_ ? color
-                                                   : SK_ColorTRANSPARENT);
-    }
-  }
+  SafeInvoke(web_contents())
+      .Then(&content::WebContents::GetRenderWidgetHostView)
+      .Then(&content::RenderWidgetHostView::SetBackgroundColor,
+            background_visible_ ? color : SK_ColorTRANSPARENT);
 }
 
 std::unique_ptr<ui::Layer> ContentsWebView::RecreateLayer() {

@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#import "base/strings/sys_string_conversions.h"
+#import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "ios/web/navigation/navigation_manager_impl.h"
 #import "ios/web/public/test/navigation_test_util.h"
@@ -13,7 +15,37 @@
 #import "net/test/embedded_test_server/default_handlers.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 
+@interface WKWebView (CRWTesting)
+- (void)_close;
+@end
+
 namespace web {
+
+namespace {
+
+// Ensures a hung `WKWebView` is closed before `WebIntTest::TearDown()` attempts
+// to clear website data and wait on unresponsive WebContent process callbacks.
+class ScopedForceCloseWebView {
+ public:
+  explicit ScopedForceCloseWebView(WebState* web_state)
+      : web_state_(web_state) {}
+  ~ScopedForceCloseWebView() {
+    if (!web_state_) {
+      return;
+    }
+    CRWWebController* web_controller = web::test::GetWebController(web_state_);
+    WKWebView* web_view = [web_controller ensureWebViewCreated];
+    if ([web_view respondsToSelector:@selector(_close)]) {
+      [web_view _close];
+    }
+    [web_controller removeWebView];
+  }
+
+ private:
+  raw_ptr<WebState> web_state_;
+};
+
+}  // namespace
 
 // Test fixture for navigation manager tests requiring a real webview (for
 // example, those involving session restoration).
@@ -249,6 +281,319 @@ TEST_F(NavigationManagerImplTest, DetachedModeLoadURLWithParams) {
 
   histogram_tester_.ExpectTotalCount(kRestoreNavigationItemCount, 1);
   histogram_tester_.ExpectBucketCount(kRestoreNavigationItemCount, 3, 1);
+}
+
+// Tests that LoadURLWithParams correctly handles virtual URL masking on a
+// WKWebView navigation while preserving the underlying actual URL.
+TEST_F(NavigationManagerImplTest, LoadURLWithVirtualURL) {
+  GURL actual_url = test_server_->GetURL("/echo");
+  GURL virtual_url("https://virtual.example.com/");
+
+  NavigationManager::WebLoadParams params(actual_url);
+  params.virtual_url = virtual_url;
+
+  ASSERT_TRUE(LoadWithParams(params));
+
+  EXPECT_EQ(1, navigation_manager()->GetItemCount());
+  NavigationItemImpl* item =
+      navigation_manager_impl().GetLastCommittedItemImpl();
+  ASSERT_TRUE(item);
+  EXPECT_EQ(actual_url, item->GetURL());
+  EXPECT_EQ(virtual_url, item->GetVirtualURL());
+
+  // Verify that virtual URL masking has not overwritten the underlying URL in
+  // the visible item.
+  NavigationItem* visible_item = navigation_manager()->GetVisibleItem();
+  ASSERT_TRUE(visible_item);
+  EXPECT_EQ(actual_url, visible_item->GetURL());
+  EXPECT_EQ(virtual_url, visible_item->GetVirtualURL());
+}
+
+// Test that LoadURLWithParams correctly delivers custom HTTP extra headers and
+// POST data to the WKWebView.
+TEST_F(NavigationManagerImplTest, LoadURLWithHeadersAndPostData) {
+  NSString* const kCustomHeaderName = @"X-Custom-Test-Header";
+  NSString* const kCustomHeaderValue = @"CustomHeaderValue123";
+  NSString* const kPostData = @"sample_post_key=sample_post_value";
+
+  GURL actual_url = test_server_->GetURL("/echoall");
+
+  NavigationManager::WebLoadParams params(actual_url);
+  params.extra_headers = @{
+    kCustomHeaderName : kCustomHeaderValue,
+    @"Content-Type" : @"application/x-www-form-urlencoded"
+  };
+  params.post_data = [kPostData dataUsingEncoding:NSUTF8StringEncoding];
+
+  ASSERT_TRUE(LoadWithParams(params));
+
+  EXPECT_EQ(1, navigation_manager()->GetItemCount());
+  NavigationItemImpl* item =
+      navigation_manager_impl().GetLastCommittedItemImpl();
+  ASSERT_TRUE(item);
+  EXPECT_EQ(actual_url, item->GetURL());
+
+  // Verify POST data state and payload on NavigationItem.
+  EXPECT_TRUE(item->HasPostData());
+  EXPECT_TRUE([params.post_data isEqualToData:item->GetPostData()]);
+
+  // Verify custom HTTP headers and POST payload delivered to web
+  // view/server.
+  NSString* const kExpectedHeaderText = [NSString
+      stringWithFormat:@"%@: %@", kCustomHeaderName, kCustomHeaderValue];
+  EXPECT_TRUE(test::IsWebViewContainingText(
+      web_state(), base::SysNSStringToUTF8(kExpectedHeaderText)));
+  EXPECT_TRUE(test::IsWebViewContainingText(
+      web_state(), base::SysNSStringToUTF8(kPostData)));
+}
+
+// Tests that calling LoadURLWithParams while the NavigationManager is in a
+// detached state restores the cached session history into the WKWebView,
+// attaches the web view, and appends the new pending item.
+TEST_F(NavigationManagerImplTest, LoadURLFromDetachedState) {
+  GURL initial_url = test_server_->GetURL("/initial");
+  NavigationManager::WebLoadParams initial_params(initial_url);
+  ASSERT_TRUE(LoadWithParams(initial_params));
+  EXPECT_EQ(1, navigation_manager()->GetItemCount());
+
+  // Put NavigationManager into detached state and discard the web view.
+  navigation_manager_impl().DetachFromWebView();
+  [web::test::GetWebController(web_state()) removeWebView];
+  EXPECT_FALSE([web::test::GetWebController(web_state()) isViewAlive]);
+
+  GURL new_url = test_server_->GetURL("/new");
+  NavigationManager::WebLoadParams params(new_url);
+
+  // LoadURLWithParams will execute the detached branch, restore cached items
+  // and load the new item.
+  ASSERT_TRUE(LoadWithParams(params));
+
+  // Verify web view is re-attached and alive.
+  EXPECT_TRUE([web::test::GetWebController(web_state()) isViewAlive]);
+
+  // Assert real session history state on WKWebView.
+  ASSERT_EQ(2, navigation_manager()->GetItemCount());
+  EXPECT_EQ(1, navigation_manager()->GetLastCommittedItemIndex());
+  EXPECT_EQ(initial_url, navigation_manager()->GetItemAtIndex(0)->GetURL());
+  NavigationItem* item = navigation_manager()->GetLastCommittedItem();
+  ASSERT_TRUE(item);
+  EXPECT_EQ(new_url, item->GetURL());
+
+  // Verify session restore metric recorded 2 items (1 cached + 1 committed).
+  histogram_tester_.ExpectBucketCount(kRestoreNavigationItemCount, 2, 1);
+}
+
+// Tests that LoadURLWithParams with a hash fragment URL (on the same document)
+// marks the pending NavigationItem as created from a hash change.
+TEST_F(NavigationManagerImplTest, LoadURLWithHashChange) {
+  GURL initial_url = test_server_->GetURL("/echo");
+  ASSERT_TRUE(LoadUrl(initial_url));
+
+  GURL hash_url = test_server_->GetURL("/echo#section2");
+  NavigationManager::WebLoadParams params(hash_url);
+
+  ASSERT_TRUE(LoadWithParams(params));
+
+  EXPECT_EQ(2, navigation_manager()->GetItemCount());
+  NavigationItemImpl* item =
+      navigation_manager_impl().GetLastCommittedItemImpl();
+  ASSERT_TRUE(item);
+  EXPECT_EQ(hash_url, item->GetURL());
+  EXPECT_TRUE(item->IsCreatedFromHashChange());
+}
+
+// Tests that calling LoadURLWithParams with the current URL after a pushState
+// navigation to a URL with a fragment reloads the page and clears the hash
+// change flag on the NavigationItem.
+TEST_F(NavigationManagerImplTest,
+       ReloadWithLoadWithParamsAfterPushStateWithFragment) {
+  GURL initial_url = test_server_->GetURL("/echo");
+  ASSERT_TRUE(LoadUrl(initial_url));
+
+  // Push state to a URL with a fragment.
+  GURL hash_url = test_server_->GetURL("/echo#section2");
+  web::test::ExecuteJavaScript(@"history.pushState(null, '', '#section2');",
+                               web_state());
+
+  // Wait for the pushState navigation to commit.
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForPageLoadTimeout, ^{
+        return navigation_manager()->GetLastCommittedItem() &&
+               navigation_manager()->GetLastCommittedItem()->GetURL() ==
+                   hash_url;
+      }));
+
+  // Modify DOM text to verify that the subsequent reload replaces page content.
+  web::test::ExecuteJavaScript(@"document.body.innerText = 'Modified';",
+                               web_state());
+  ASSERT_TRUE(test::WaitForWebViewContainingText(web_state(), "Modified"));
+
+  // Reload the current URL with LoadURLWithParams (as the omnibox does).
+  NavigationManager::WebLoadParams params(hash_url);
+  params.transition_type = ui::PAGE_TRANSITION_TYPED;
+  ASSERT_TRUE(LoadWithParams(params));
+
+  EXPECT_EQ(hash_url, navigation_manager()->GetLastCommittedItem()->GetURL());
+  NavigationItemImpl* item =
+      navigation_manager_impl().GetLastCommittedItemImpl();
+  ASSERT_TRUE(item);
+  EXPECT_FALSE(item->IsCreatedFromHashChange());
+
+  // Verify that the document reloaded from the server.
+  EXPECT_TRUE(test::WaitForWebViewContainingText(web_state(), "Echo"));
+}
+
+// Tests that calling Reload with the current URL after a pushState navigation
+// to a URL with a fragment reloads the page without crashing on DCHECKs,
+// keeping GetLastCommittedItemIndex at the pushed item index.
+TEST_F(NavigationManagerImplTest, ReloadAfterPushStateWithFragment) {
+  GURL initial_url = test_server_->GetURL("/echo");
+  ASSERT_TRUE(LoadUrl(initial_url));
+
+  // Push state to a URL with a fragment.
+  GURL hash_url = test_server_->GetURL("/echo#section2");
+  web::test::ExecuteJavaScript(@"history.pushState(null, '', '#section2');",
+                               web_state());
+
+  // Wait for the pushState navigation to commit.
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForPageLoadTimeout, ^{
+        return navigation_manager()->GetLastCommittedItem() &&
+               navigation_manager()->GetLastCommittedItem()->GetURL() ==
+                   hash_url;
+      }));
+
+  // Modify DOM text to verify that the subsequent reload replaces page content.
+  web::test::ExecuteJavaScript(@"document.body.innerText = 'Modified';",
+                               web_state());
+  ASSERT_TRUE(test::WaitForWebViewContainingText(web_state(), "Modified"));
+
+  // Reload via NavigationManager::Reload (e.g. pull-to-refresh).
+  ASSERT_TRUE(ExecuteBlockAndWaitForLoad(hash_url, ^{
+    navigation_manager()->Reload(web::ReloadType::NORMAL,
+                                 /*check_for_repost=*/false);
+
+    // During the reload, GetLastCommittedItem must remain non-null and point to
+    // the pushed URL without failing DCHECK_EQ(0, GetItemCount()).
+    EXPECT_EQ(1, navigation_manager()->GetLastCommittedItemIndex());
+    NavigationItem* item = navigation_manager()->GetLastCommittedItem();
+    EXPECT_NE(nullptr, item);
+    if (item) {
+      EXPECT_EQ(hash_url, item->GetURL());
+    }
+  }));
+
+  // Verify that the document reloaded from the server.
+  EXPECT_TRUE(test::WaitForWebViewContainingText(web_state(), "Echo"));
+  EXPECT_EQ(hash_url, navigation_manager()->GetLastCommittedItem()->GetURL());
+}
+
+// Tests that LoadURLWithParams on a detached NavigationManager with empty
+// history attaches the web view without restoring items.
+TEST_F(NavigationManagerImplTest, LoadURLFromDetachedStateWithEmptyHistory) {
+  ASSERT_EQ(0, navigation_manager()->GetItemCount());
+
+  // Detach while history is empty and discard the web view.
+  navigation_manager_impl().DetachFromWebView();
+  [web::test::GetWebController(web_state()) removeWebView];
+  EXPECT_FALSE([web::test::GetWebController(web_state()) isViewAlive]);
+
+  GURL url = test_server_->GetURL("/echo");
+  NavigationManager::WebLoadParams params(url);
+
+  ASSERT_TRUE(LoadWithParams(params));
+
+  // Verify web view is re-attached and alive.
+  EXPECT_TRUE([web::test::GetWebController(web_state()) isViewAlive]);
+
+  EXPECT_EQ(1, navigation_manager()->GetItemCount());
+  NavigationItem* item = navigation_manager()->GetLastCommittedItem();
+  ASSERT_TRUE(item);
+  ASSERT_EQ(url, item->GetURL());
+
+  // Verify that restore was skipped when history was empty.
+  histogram_tester_.ExpectTotalCount(kRestoreNavigationItemCount, 0);
+}
+
+// Tests that when an opener opens a blank child window (`window.open('',
+// '_blank')`), injects content via `document.write`, starts a cross-origin
+// navigation, stops it, and stalls the shared WebContent process, neither
+// reloading nor starting a user-initiated navigation in the child window
+// spoofs the pending URL as the visible URL before the navigation commits.
+TEST_F(NavigationManagerImplTest,
+       StalledEmptyWindowOpenChildTabDoesNotSpoofVisibleURL) {
+  net::EmbeddedTestServer target_server;
+  net::test_server::RegisterDefaultHandlers(&target_server);
+  ASSERT_TRUE(target_server.Start());
+
+  const GURL opener_url = test_server_->GetURL("/echo");
+  const GURL slow_target_url = target_server.GetURL("localhost", "/hung");
+  const GURL trusted_url = target_server.GetURL("localhost", "/echo");
+
+  web_state_delegate_.allow_popups(opener_url.DeprecatedGetOriginAsURL());
+  ASSERT_TRUE(LoadUrl(opener_url));
+
+  ScopedForceCloseWebView close_opener(web_state());
+
+  // Open an initial empty window and write attacker-controlled HTML into it.
+  web::test::ExecuteJavaScript(@"window.__childTab = window.open('', '_blank');"
+                                "window.__childTab.document.open();"
+                                "window.__childTab.document.write("
+                                "'<html><body>Attacker Content</body></html>');"
+                                "window.__childTab.document.close(); 0;",
+                               web_state());
+
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForPageLoadTimeout, ^{
+        return web_state_delegate_.child_windows().size() == 1;
+      }));
+
+  WebState* child_web_state = web_state_delegate_.child_windows()[0].get();
+  ASSERT_TRUE(child_web_state);
+  ScopedForceCloseWebView close_child(child_web_state);
+  ASSERT_TRUE(
+      test::WaitForWebViewContainingText(child_web_state, "Attacker Content"));
+  EXPECT_EQ(opener_url, child_web_state->GetLastCommittedURL());
+
+  // Start a cross-origin navigation in the child tab, then stop it and stall
+  // the shared WebContent process synchronously.
+  NSString* start_nav_script =
+      [NSString stringWithFormat:@"window.__childTab.location.href = '%s'; 0;",
+                                 slow_target_url.spec().c_str()];
+  web::test::ExecuteJavaScript(start_nav_script, web_state());
+
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForPageLoadTimeout, ^{
+        return child_web_state->GetNavigationManager()->GetPendingItem() !=
+               nullptr;
+      }));
+  EXPECT_EQ(opener_url, child_web_state->GetVisibleURL());
+
+  WKWebView* opener_web_view =
+      [web::test::GetWebController(web_state()) ensureWebViewCreated];
+  [opener_web_view evaluateJavaScript:@"setTimeout(function() {"
+                                       "  window.__childTab.stop();"
+                                       "  while (true) {}"
+                                       "}, 0);"
+                    completionHandler:nil];
+
+  // Wait until the shared WebContent process has entered the infinite loop.
+  base::test::ios::SpinRunLoopWithMinDelay(base::Milliseconds(100));
+
+  // Reloading promotes the pending item to `BROWSER_INITIATED`, but the visible
+  // URL must remain the committed empty window open item (`opener_url`).
+  child_web_state->GetNavigationManager()->Reload(ReloadType::NORMAL,
+                                                  /*check_for_repost=*/true);
+  EXPECT_EQ(opener_url, child_web_state->GetVisibleURL());
+
+  // Starting a manual user-initiated navigation while the empty window open
+  // item is still the last committed item must also not expose the uncommitted
+  // pending URL as the visible URL.
+  NavigationManager::WebLoadParams manual_params(trusted_url);
+  manual_params.transition_type = ui::PAGE_TRANSITION_TYPED;
+  child_web_state->GetNavigationManager()->LoadURLWithParams(manual_params);
+  EXPECT_EQ(opener_url, child_web_state->GetLastCommittedURL());
+  EXPECT_EQ(opener_url, child_web_state->GetVisibleURL());
 }
 
 }  // namespace web

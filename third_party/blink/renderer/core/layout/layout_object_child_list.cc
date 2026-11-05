@@ -65,7 +65,7 @@ void InvalidateInlineItems(LayoutObject* object) {
   // be prohibited when moved to different parent as if it were destroyed.
   if (object->FirstInlineFragmentItemIndex()) {
     if (auto* text = DynamicTo<LayoutText>(object))
-      text->DetachAxHooksIfNeeded();
+      text->ClearAccessibilityCacheIfNeeded();
     FragmentItems::LayoutObjectWillBeMoved(*object);
   }
   object->SetIsInLayoutNGInlineFormattingContext(false);
@@ -234,8 +234,6 @@ void LayoutObjectChildList::InsertChildNode(LayoutObject* owner,
 }
 
 void LayoutObjectChildList::InvalidatePaintOnRemoval(LayoutObject& old_child) {
-  if (!old_child.IsRooted())
-    return;
   if (old_child.View() &&
       (old_child.IsBody() || old_child.IsDocumentElement())) {
     old_child.View()->SetShouldDoFullPaintInvalidation();

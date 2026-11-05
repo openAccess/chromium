@@ -11,8 +11,6 @@ static_library("dns_over_https") {
     "templates_uri_resolver_impl.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash/constants",
     "//base",
@@ -41,6 +39,7 @@ source_set("unit_tests") {
     "//chrome/browser/ash/policy/core",
     "//chrome/browser/net",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/dbus/shill",
     "//chromeos/ash/components/install_attributes:test_support",
     "//chromeos/ash/components/network",

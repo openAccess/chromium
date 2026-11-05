@@ -5,9 +5,9 @@
 #include "ui/views/controls/tree/tree_view.h"
 
 #include <algorithm>
+#include <ranges>
 #include <utility>
 
-#include "base/containers/adapters.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/ptr_util.h"
 #include "build/build_config.h"
@@ -46,6 +46,7 @@
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/tree/tree_view_controller.h"
+#include "ui/views/deprecated_layout_immediately_pass_key.h"
 #include "ui/views/style/platform_style.h"
 #include "ui/views/widget/widget.h"
 
@@ -124,12 +125,8 @@ TreeView::TreeView()
 TreeView::~TreeView() {
   if (GetInputMethod() && selector_.get()) {
     // TreeView should have been blurred before destroy.
-    DCHECK(selector_.get() != GetInputMethod()->GetTextInputClient());
-  }
-
-  if (focus_manager_) {
-    focus_manager_->RemoveFocusChangeListener(this);
-    focus_manager_ = nullptr;
+    CHECK(selector_.get() != GetInputMethod()->GetTextInputClient(),
+          base::NotFatalUntil::M163);
   }
 }
 
@@ -153,14 +150,12 @@ void TreeView::SetModel(TreeModel* model) {
   model_ = model;
   selected_node_ = nullptr;
   active_node_ = nullptr;
-  icons_.clear();
   root_.Reset(nullptr);
   root_.DeleteAll();
   GetViewAccessibility().RemoveAllVirtualChildViews();
 
   if (model_) {
     tree_model_observation_.Observe(model_);
-    model_->GetIcons(&icons_);
 
     ConfigureInternalNode(model_->GetRoot(), &root_);
     std::unique_ptr<AXVirtualView> ax_root_view =
@@ -189,7 +184,7 @@ void TreeView::SetEditable(bool editable) {
 }
 
 void TreeView::StartEditing(TreeModelNode* node) {
-  DCHECK(node);
+  CHECK(node, base::NotFatalUntil::M163);
   // Cancel the current edit.
   CancelEdit();
   // Make sure all ancestors are expanded.
@@ -201,7 +196,7 @@ void TreeView::StartEditing(TreeModelNode* node) {
   if (GetSelectedNode() != node) {
     return;  // Selection failed for some reason, don't start editing.
   }
-  DCHECK(!editing_);
+  CHECK(!editing_, base::NotFatalUntil::M163);
   editing_ = true;
   if (!editor_) {
     editor_ = new Textfield;
@@ -225,9 +220,8 @@ void TreeView::StartEditing(TreeModelNode* node) {
   editor_->SelectAll(false);
 
   // Listen for focus changes so that we can cancel editing.
-  focus_manager_ = GetFocusManager();
-  if (focus_manager_) {
-    focus_manager_->AddFocusChangeListener(this);
+  if (FocusManager* focus_manager = GetFocusManager()) {
+    focus_manager_observation_.Observe(focus_manager);
   }
 
   // Accelerators to commit/cancel edit.
@@ -243,10 +237,7 @@ void TreeView::CancelEdit() {
   // WARNING: don't touch |selected_node_|, it may be bogus.
 
   editing_ = false;
-  if (focus_manager_) {
-    focus_manager_->RemoveFocusChangeListener(this);
-    focus_manager_ = nullptr;
-  }
+  focus_manager_observation_.Reset();
   editor_->SetVisible(false);
   SchedulePaint();
 
@@ -259,7 +250,7 @@ void TreeView::CommitEdit() {
     return;
   }
 
-  DCHECK(selected_node_);
+  CHECK(selected_node_, base::NotFatalUntil::M163);
   const bool editor_has_focus = editor_->HasFocus();
   model_->SetTitle(GetSelectedNode(), std::u16string(editor_->GetText()));
   editor_->GetViewAccessibility().SetName(
@@ -340,12 +331,12 @@ void TreeView::Expand(TreeModelNode* node) {
 }
 
 void TreeView::ExpandAll(TreeModelNode* node) {
-  DCHECK(node);
+  CHECK(node, base::NotFatalUntil::M163);
   // Expand the node.
   bool expanded_at_least_one = ExpandImpl(node);
   // And recursively expand all the children.
   const auto& children = model_->GetChildren(node);
-  for (TreeModelNode* child : base::Reversed(children)) {
+  for (TreeModelNode* child : std::views::reverse(children)) {
     if (ExpandImpl(child)) {
       expanded_at_least_one = true;
     }
@@ -455,7 +446,8 @@ bool TreeView::AcceleratorPressed(const ui::Accelerator& accelerator) {
   if (accelerator.key_code() == ui::VKEY_RETURN) {
     CommitEdit();
   } else {
-    DCHECK_EQ(ui::VKEY_ESCAPE, accelerator.key_code());
+    CHECK_EQ(ui::VKEY_ESCAPE, accelerator.key_code(),
+             base::NotFatalUntil::M163);
     CancelEdit();
     RequestFocus();
   }
@@ -576,7 +568,8 @@ void TreeView::TreeNodeAdded(TreeModel* model,
       CreateAndSetAccessibilityView(child.get());
   UpdateAccessiblePositionalProperties(child.get());
   parent_node->Add(std::move(child), index);
-  DCHECK_LE(index, parent_node->accessibility_view()->GetChildCount());
+  CHECK_LE(index, parent_node->accessibility_view()->GetChildCount(),
+           base::NotFatalUntil::M163);
   parent_node->accessibility_view()->AddChildViewAt(std::move(ax_view), index);
 
   // Adding a node may change positional properties of its existing siblings,
@@ -614,8 +607,9 @@ void TreeView::TreeNodeRemoved(TreeModel* model,
     reset_active_node = true;
   }
 
-  DCHECK(parent_node->accessibility_view()->Contains(
-      child_removing->accessibility_view()));
+  CHECK(parent_node->accessibility_view()->Contains(
+            child_removing->accessibility_view()),
+        base::NotFatalUntil::M163);
   {
     AXVirtualView* view_to_remove = child_removing->accessibility_view();
     child_removing = nullptr;
@@ -951,8 +945,8 @@ bool TreeView::OnClickOrTap(const ui::LocatedEvent& event) {
 }
 
 void TreeView::LoadChildren(InternalNode* node) {
-  DCHECK(node->children().empty());
-  DCHECK(!node->loaded_children());
+  CHECK(node->children().empty(), base::NotFatalUntil::M163);
+  CHECK(!node->loaded_children(), base::NotFatalUntil::M163);
   node->set_loaded_children(true);
   for (auto* model_child : model_->GetChildren(node->model_node())) {
     std::unique_ptr<InternalNode> child = std::make_unique<InternalNode>();
@@ -1050,7 +1044,7 @@ void TreeView::UpdateNodeTextWidth(InternalNode* node) {
 
 std::unique_ptr<AXVirtualView> TreeView::CreateAndSetAccessibilityView(
     InternalNode* node) {
-  DCHECK(node);
+  CHECK(node, base::NotFatalUntil::M163);
   auto ax_view = std::make_unique<AXVirtualView>();
   ax_view->SetRole(ax::mojom::Role::kTreeItem);
   if (base::i18n::IsRTL()) {
@@ -1070,7 +1064,7 @@ void TreeView::SetAccessibleSelectionForNode(InternalNode* node,
     return;
   }
   AXVirtualView* ax_view = node->accessibility_view();
-  DCHECK(ax_view);
+  CHECK(ax_view, base::NotFatalUntil::M163);
 
   ax_view->SetIsSelected(selected);
   ax_view->SetDefaultActionVerb(ax::mojom::DefaultActionVerb::kSelect);
@@ -1111,7 +1105,7 @@ void TreeView::LayoutEditor() {
     return;
   }
 
-  DCHECK(selected_node_);
+  CHECK(selected_node_, base::NotFatalUntil::M163);
   // Position the editor so that its text aligns with the text we drew.
   gfx::Rect row_bounds = GetForegroundBoundsForNode(selected_node_);
 
@@ -1145,7 +1139,7 @@ void TreeView::LayoutEditor() {
   // Scroll as necessary to ensure that the editor is visible.
   ScrollRectToVisible(outter_bounds);
   editor_->SetBoundsRect(row_bounds);
-  editor_->DeprecatedLayoutImmediately();
+  editor_->DeprecatedLayoutImmediately(DeprecatedLayoutImmediatelyPassKey());
 }
 
 void TreeView::SchedulePaintForNode(InternalNode* node) {
@@ -1275,25 +1269,12 @@ void TreeView::PaintExpandControl(gfx::Canvas* canvas,
 void TreeView::PaintNodeIcon(gfx::Canvas* canvas,
                              InternalNode* node,
                              const gfx::Rect& bounds) {
-  std::optional<size_t> icon_index = model_->GetIconIndex(node->model_node());
   int icon_x = kArrowRegionSize + kImagePadding;
-  if (!icon_index.has_value()) {
-    // Flip just the |bounds| region of |canvas|.
-    gfx::ScopedCanvas scoped_canvas(canvas);
-    canvas->Translate(gfx::Vector2d(bounds.x(), 0));
-    scoped_canvas.FlipIfRTL(bounds.width());
-    // Now paint the icon local to that flipped region.
-    PaintRowIcon(canvas, folder_icon_.Rasterize(GetColorProvider()), icon_x,
-                 gfx::Rect(0, bounds.y(), bounds.width(), bounds.height()));
-  } else {
-    const gfx::ImageSkia& icon =
-        icons_[icon_index.value()].Rasterize(GetColorProvider());
-    icon_x += (folder_icon_.Size().width() - icon.width()) / 2;
-    if (base::i18n::IsRTL()) {
-      icon_x = bounds.width() - icon_x - icon.width();
-    }
-    PaintRowIcon(canvas, icon, icon_x, bounds);
-  }
+  gfx::ScopedCanvas scoped_canvas(canvas);
+  canvas->Translate(gfx::Vector2d(bounds.x(), 0));
+  scoped_canvas.FlipIfRTL(bounds.width());
+  PaintRowIcon(canvas, folder_icon_.Rasterize(GetColorProvider()), icon_x,
+               gfx::Rect(0, bounds.y(), bounds.width(), bounds.height()));
 }
 
 TreeView::InternalNode* TreeView::GetInternalNodeForModelNode(
@@ -1324,15 +1305,15 @@ TreeView::InternalNode* TreeView::GetInternalNodeForVirtualView(
   if (ax_view == root_.accessibility_view()) {
     return &root_;
   }
-  DCHECK(ax_view);
+  CHECK(ax_view, base::NotFatalUntil::M163);
   InternalNode* parent_internal_node =
       GetInternalNodeForVirtualView(ax_view->virtual_parent_view());
   if (!parent_internal_node) {
     return nullptr;
   }
-  DCHECK(parent_internal_node->loaded_children());
+  CHECK(parent_internal_node->loaded_children(), base::NotFatalUntil::M163);
   AXVirtualView* parent_ax_view = parent_internal_node->accessibility_view();
-  DCHECK(parent_ax_view);
+  CHECK(parent_ax_view, base::NotFatalUntil::M163);
   auto index = parent_ax_view->GetIndexOf(ax_view);
   return parent_internal_node->children()[index.value()].get();
 }
@@ -1400,7 +1381,8 @@ gfx::Rect TreeView::GetForegroundBoundsForNodeImpl(InternalNode* node,
 }
 
 int TreeView::GetRowForInternalNode(InternalNode* node, int* depth) {
-  DCHECK(!node->parent() || IsExpanded(node->parent()->model_node()));
+  CHECK(!node->parent() || IsExpanded(node->parent()->model_node()),
+        base::NotFatalUntil::M163);
   *depth = -1;
   int row = -1;
   const InternalNode* tmp_node = node;
@@ -1480,7 +1462,7 @@ void TreeView::IncrementSelection(IncrementType type) {
     if (type == IncrementType::kPrevious) {
       size_t row_count = GetRowCount();
       int depth = 0;
-      DCHECK(row_count);
+      CHECK(row_count, base::NotFatalUntil::M163);
       InternalNode* node =
           GetNodeByRow(static_cast<int>(row_count - 1), &depth);
       SetSelectedNode(node->model_node());
@@ -1527,7 +1509,7 @@ bool TreeView::ExpandImpl(TreeModelNode* model_node) {
   TreeModelNode* parent = model_->GetParent(model_node);
   if (!parent) {
     // Node should be the root.
-    DCHECK_EQ(root_.model_node(), model_node);
+    CHECK_EQ(root_.model_node(), model_node, base::NotFatalUntil::M163);
     bool was_expanded = root_.is_expanded();
     root_.set_is_expanded(true);
     UpdateAccessiblePositionalPropertiesForNodeAndChildren(&root_);
@@ -1538,7 +1520,7 @@ bool TreeView::ExpandImpl(TreeModelNode* model_node) {
   bool return_value = ExpandImpl(parent);
   InternalNode* internal_node =
       GetInternalNodeForModelNode(model_node, CreateType::kCreateIfNotLoaded);
-  DCHECK(internal_node);
+  CHECK(internal_node, base::NotFatalUntil::M163);
   if (!internal_node->is_expanded()) {
     if (!internal_node->loaded_children()) {
       LoadChildren(internal_node);

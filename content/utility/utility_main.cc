@@ -36,6 +36,7 @@
 #include "content/public/utility/content_utility_client.h"
 #include "content/utility/on_device_model/on_device_model_sandbox_init.h"
 #include "content/utility/utility_thread_impl.h"
+#include "device/vr/buildflags/buildflags.h"
 #include "printing/buildflags/buildflags.h"
 #include "sandbox/policy/mojom/sandbox.mojom.h"
 #include "sandbox/policy/sandbox.h"
@@ -69,14 +70,16 @@
 
 #if BUILDFLAG(USE_VAAPI)
 #include "media/gpu/vaapi/vaapi_wrapper.h"
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #include "media/mojo/mojom/video_decoder_factory_process.mojom.h"
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #endif  // BUILDFLAG(USE_VAAPI)
 
 #endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #include "media/gpu/sandbox/hardware_video_decoding_sandbox_hook_linux.h"
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 #if BUILDFLAG(ENABLE_PRINTING)
 #include "printing/sandbox/print_backend_sandbox_hook_linux.h"
@@ -88,6 +91,10 @@
 #endif
 
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
+#include "content/services/isolated_xr_device/xr_sandbox_hook_linux.h"
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/ash/services/ime/ime_sandbox_hook.h"
@@ -156,11 +163,13 @@ std::vector<std::string> GetNetworkContextsParentDirectories() {
 }
 
 bool ShouldUseAmdGpuPolicy(sandbox::mojom::Sandbox sandbox_type) {
-#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION) || \
-    BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-  const bool obtain_gpu_info =
-      sandbox_type == sandbox::mojom::Sandbox::kHardwareVideoDecoding ||
+#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
+  bool obtain_gpu_info =
       sandbox_type == sandbox::mojom::Sandbox::kHardwareVideoEncoding;
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
+  obtain_gpu_info |=
+      sandbox_type == sandbox::mojom::Sandbox::kHardwareVideoDecoding;
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
   if (obtain_gpu_info) {
     // The kHardwareVideoDecoding and kHardwareVideoEncoding sandboxes need to
@@ -169,8 +178,7 @@ bool ShouldUseAmdGpuPolicy(sandbox::mojom::Sandbox sandbox_type) {
     gpu::CollectBasicGraphicsInfo(&gpu_info);
     return angle::IsAMD(gpu_info.active_gpu().vendor_id);
   }
-#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION) ||
-        // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
   return false;
 }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
@@ -289,20 +297,26 @@ int UtilityMain(MainFunctionParams parameters) {
     }
   }
 
+  // On Linux and ChromeOS, `PreSandboxInit()` is deferred to `PreSandboxHook()`
+  // so the broker process can be safely forked before driver warming spawns
+  // threads. Any threads spawned by `PreSandboxInit()` are then covered by
+  // Seccomp-BPF via TSYNC.
+#if !BUILDFLAG(IS_LINUX) && !BUILDFLAG(IS_CHROMEOS)
   if (utility_sub_type == on_device_model::mojom::OnDeviceModelService::Name_) {
     CHECK(on_device_model::PreSandboxInit());
   }
+#endif
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
-#if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION) && BUILDFLAG(USE_VAAPI)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER) && BUILDFLAG(USE_VAAPI)
   // Regardless of the sandbox status, the VaapiWrapper needs to be initialized
   // for decoder utility processes on devices that use VA-API.
   if (utility_sub_type == media::mojom::VideoDecoderFactoryProcess::Name_) {
     media::VaapiWrapper::PreSandboxInitialization(
         /*allow_disabling_global_lock=*/true);
   }
-#endif  // BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION) && BUILDFLAG(USE_VAAPI)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER) && BUILDFLAG(USE_VAAPI)
 
   // Thread type delegate of the process should be registered before first
   // thread type change in ChildProcess constructor. It also needs to be
@@ -316,6 +330,10 @@ int UtilityMain(MainFunctionParams parameters) {
   auto sandbox_type =
       sandbox::policy::SandboxTypeFromCommandLine(*parameters.command_line);
   sandbox::policy::SandboxLinux::Options sandbox_options;
+  // Set a default before the switch below, so that per-sandbox code (e.g.
+  // on_device_model::AddSandboxLinuxOptions) can refine it.
+  sandbox_options.use_amd_specific_policies =
+      ShouldUseAmdGpuPolicy(sandbox_type);
   sandbox::policy::SandboxLinux::PreSandboxHook pre_sandbox_hook;
   switch (sandbox_type) {
     case sandbox::mojom::Sandbox::kNetwork:
@@ -338,8 +356,15 @@ int UtilityMain(MainFunctionParams parameters) {
       break;
     case sandbox::mojom::Sandbox::kSpeechRecognition:
       pre_sandbox_hook =
-          base::BindOnce(&speech::SpeechRecognitionPreSandboxHook);
+          base::BindOnce(&speech::SpeechRecognitionPreSandboxHook,
+                         parameters.command_line->GetSwitchValuePath(
+                             speech::GetSodaBinaryPathSwitch()));
       break;
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
+    case sandbox::mojom::Sandbox::kXrCompositing:
+      pre_sandbox_hook = base::BindOnce(&vr::XrPreSandboxHook);
+      break;
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
 #if BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION) && \
     (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS))
     case sandbox::mojom::Sandbox::kOnDeviceTranslation:
@@ -363,12 +388,12 @@ int UtilityMain(MainFunctionParams parameters) {
       pre_sandbox_hook =
           base::BindOnce(&shape_detection::ShapeDetectionPreSandboxHook);
       break;
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
     case sandbox::mojom::Sandbox::kHardwareVideoDecoding:
       pre_sandbox_hook =
           base::BindOnce(&media::HardwareVideoDecodingPreSandboxHook);
       break;
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 #if BUILDFLAG(USE_LINUX_VIDEO_ACCELERATION)
     case sandbox::mojom::Sandbox::kHardwareVideoEncoding:
       pre_sandbox_hook =
@@ -389,8 +414,6 @@ int UtilityMain(MainFunctionParams parameters) {
   }
   if (!sandbox::policy::IsUnsandboxedSandboxType(sandbox_type) &&
       (parameters.zygote_child || !pre_sandbox_hook.is_null())) {
-    sandbox_options.use_amd_specific_policies =
-        ShouldUseAmdGpuPolicy(sandbox_type);
     sandbox::policy::Sandbox::Initialize(
         sandbox_type, std::move(pre_sandbox_hook), sandbox_options);
   }

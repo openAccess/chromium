@@ -9,12 +9,15 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/mock_callback.h"
 #include "base/test/values_test_util.h"
 #include "build/build_config.h"
+#include "chrome/browser/bluetooth/bluetooth_chooser_context_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
 #include "chrome/browser/history/history_service_factory.h"
+#include "chrome/browser/page_info/merchant_trust_service_factory.h"
 #include "chrome/browser/permissions/system/system_permission_settings.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_service_factory.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
@@ -45,7 +48,9 @@
 #include "components/content_settings/core/common/pref_names.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/page_info/core/features.h"
+#include "components/page_info/core/merchant_trust_service.h"
 #include "components/page_info/page_info_ui_delegate.h"
+#include "components/permissions/contexts/bluetooth_chooser_context.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/permissions/permission_recovery_success_rate_tracker.h"
 #include "components/permissions/permission_uma_util.h"
@@ -57,12 +62,14 @@
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/ssl_status.h"
 #include "content/public/common/buildflags.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_web_contents_factory.h"
 #include "media/base/media_switches.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "net/base/features.h"
 #include "net/cert/cert_status_flags.h"
 #include "net/ssl/ssl_connection_status_flags.h"
 #include "net/ssl/ssl_info.h"
@@ -71,6 +78,7 @@
 #include "services/device/public/cpp/test/fake_usb_device_manager.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/bluetooth/web_bluetooth_device_id.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -81,6 +89,7 @@
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/test/scoped_views_test_helper.h"
+#include "ui/views/test/test_views.h"
 
 #if BUILDFLAG(ENABLE_PLUGINS)
 #include "chrome/browser/plugins/chrome_plugin_service_filter.h"
@@ -112,31 +121,38 @@ class PageInfoBubbleViewTestApi {
   PageInfoBubbleViewTestApi& operator=(const PageInfoBubbleViewTestApi&) =
       delete;
 
-  void CreateView() {
+  void CreateView(base::RepeatingClosure open_extensions_menu_callback =
+                      base::RepeatingClosure(),
+                  const GURL& url = GURL(kUrl)) {
     if (bubble_delegate_) {
       bubble_delegate_->GetWidget()->CloseNow();
     }
 
+    PageInfoBubbleSpecification::Builder builder(views::BubbleAnchor(), parent_,
+                                                 web_contents_, url);
+    builder.AddPageInfoClosingCallback(
+        base::BindOnce(&PageInfoBubbleViewTestApi::OnPageInfoBubbleClosed,
+                       base::Unretained(this), run_loop_.QuitClosure()));
+    if (!open_extensions_menu_callback.is_null()) {
+      builder.SetOnExtensionsClickedCallback(
+          std::move(open_extensions_menu_callback));
+    }
     std::unique_ptr<PageInfoBubbleSpecification> specification =
-        PageInfoBubbleSpecification::Builder(views::BubbleAnchor(), parent_,
-                                             web_contents_, GURL(kUrl))
-            .AddPageInfoClosingCallback(base::BindOnce(
-                &PageInfoBubbleViewTestApi::OnPageInfoBubbleClosed,
-                base::Unretained(this), run_loop_.QuitClosure()))
-            .Build();
+        builder.Build();
 
     auto* const bubble = static_cast<PageInfoBubbleView*>(
         PageInfoBubbleView::CreatePageInfoBubble(std::move(specification)));
     presenter_ = bubble->presenter_for_testing();
     navigation_handler_ = bubble;
     bubble_delegate_ = bubble;
-    toggle_rows_ =
-        &static_cast<PageInfoMainView*>(current_view())->toggle_rows_;
   }
 
   views::View* current_view() {
     return bubble_delegate_->GetViewByID(
         PageInfoViewFactory::VIEW_ID_PAGE_INFO_CURRENT_VIEW);
+  }
+  PageInfoMainView* main_view() {
+    return static_cast<PageInfoMainView*>(current_view());
   }
   bool reload_prompt() const { return *reload_prompt_; }
   views::Widget::ClosedReason closed_reason() const { return *closed_reason_; }
@@ -154,6 +170,11 @@ class PageInfoBubbleViewTestApi {
   views::View* cookie_button() {
     return bubble_delegate_->GetViewByID(
         PageInfoViewFactory::VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_COOKIE_DIALOG);
+  }
+
+  views::View* see_extensions_button() {
+    return bubble_delegate_->GetViewByID(
+        PageInfoViewFactory::VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_SEE_EXTENSIONS);
   }
 
   views::View* cookies_buttons_container_view() {
@@ -209,7 +230,7 @@ class PageInfoBubbleViewTestApi {
   std::u16string GetWindowTitle() { return bubble_delegate_->GetWindowTitle(); }
 
   PermissionToggleRowView* GetPermissionToggleRowAt(int index) {
-    return (*toggle_rows_)[index];
+    return main_view()->toggle_rows_[index];
   }
 
   views::ToggleButton* GetToggleViewAt(int index) {
@@ -324,13 +345,16 @@ class PageInfoBubbleViewTestApi {
     return certificate_button()->GetSubtitleText();
   }
 
-  const views::View::Views& GetChosenObjectChildren() {
+  const views::View::Views& GetChosenObjectChildren(int index = 0) {
     const views::View* parent = permissions_view();
-    const int object_view_index = 0;
     ChosenObjectView* object_view =
-        static_cast<ChosenObjectView*>(parent->children()[object_view_index]);
+        static_cast<ChosenObjectView*>(parent->children()[index]);
     views::View* row_view = object_view->children()[0];
     return row_view->children();
+  }
+
+  views::BubbleDialogDelegateView* bubble_delegate() {
+    return bubble_delegate_;
   }
 
   void WaitForBubbleClose() { run_loop_.Run(); }
@@ -346,9 +370,6 @@ class PageInfoBubbleViewTestApi {
 
   raw_ptr<views::BubbleDialogDelegateView, DanglingUntriaged> bubble_delegate_;
   raw_ptr<PageInfo, DanglingUntriaged> presenter_ = nullptr;
-  raw_ptr<std::vector<raw_ptr<PermissionToggleRowView, VectorExperimental>>,
-          DanglingUntriaged>
-      toggle_rows_ = nullptr;
 
   raw_ptr<PageInfoNavigationHandler, DanglingUntriaged> navigation_handler_ =
       nullptr;
@@ -811,6 +832,29 @@ TEST_F(PageInfoBubbleViewTest, ResetPermissionInfoWithUsbDevice) {
   EXPECT_EQ(kExpectedChildren, api_->GetPermissionsCount());
   EXPECT_FALSE(api_->reset_permissions_button());
   EXPECT_FALSE(store->HasDevicePermission(origin, *device_info));
+}
+
+TEST_F(PageInfoBubbleViewTest, SetPermissionInfoWithBluetoothDevice) {
+  base::test::ScopedFeatureList feature_list(
+      features::kWebBluetoothNewPermissionsBackend);
+  const auto origin = url::Origin::Create(GURL(kUrl));
+  auto* context = BluetoothChooserContextFactory::GetForProfile(
+      web_contents_helper_->profile());
+  base::DictValue object;
+  object.Set("device-address", "00:11:22:33:44:55");
+  object.Set("name", "Malicious\nDevice\u202EName");
+  object.Set("web-bluetooth-device-id",
+             blink::WebBluetoothDeviceId::Create().str());
+  object.Set("services", base::DictValue());
+  object.Set("manufacturer-data", base::DictValue());
+  context->GrantObjectPermission(origin, std::move(object));
+
+  PermissionInfoList list;
+  api_->SetPermissionInfo(list);
+  const auto& chosen_object_children = api_->GetChosenObjectChildren();
+  ASSERT_EQ(3u, chosen_object_children.size());
+  EXPECT_EQ(u"\u2068Malicious Device\u202EName\u2069",
+            GetChosenObjectTitle(chosen_object_children)->GetText());
 }
 
 namespace {
@@ -1361,4 +1405,388 @@ TEST_F(PageInfoUIAutoBlockedToUIStringTest, PermissionAutoBlockedToUIString) {
           content::PermissionStatusSource::UNSPECIFIED)));
   EXPECT_EQ(std::u16string(),
             PageInfoUI::PermissionAutoBlockedToUIString(&delegate, permission));
+}
+
+TEST_F(PageInfoBubbleViewTest, SeeExtensionsButton) {
+  // By default, the button is not present.
+  EXPECT_EQ(nullptr, api_->see_extensions_button());
+
+  // When a see extensions callback is set, the button is present.
+  api_->CreateView(base::DoNothing());
+  EXPECT_NE(nullptr, api_->see_extensions_button());
+}
+
+TEST_F(PageInfoBubbleViewTest, SeeExtensionsButtonClick) {
+  base::MockRepeatingCallback<void()> callback;
+  api_->CreateView(callback.Get());
+  auto* button = static_cast<views::Button*>(api_->see_extensions_button());
+  ASSERT_NE(nullptr, button);
+
+  EXPECT_CALL(callback, Run()).Times(1);
+
+  ui::MouseEvent click_event(
+      ui::EventType::kMousePressed, gfx::Point(), gfx::Point(),
+      base::TimeTicks(), ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
+  button->OnMousePressed(click_event);
+  button->OnMouseReleased(click_event);
+}
+
+// Regression test for crbug.com/393077432. The main view's height calculation
+// must respect the width constraint rather than its unconstrained content
+// width, ensuring the bubble dialog's height matches its content without
+// trailing blank space.
+TEST_F(PageInfoBubbleViewTest, BubbleHeightMatchesContentHeightForLongUrl) {
+  const GURL long_url(
+      "https://www.example-long-domain-name-that-wraps-lines-in-page-info-"
+      "dialog.com/store/products/item?param=12345");
+  api_->CreateView(base::RepeatingClosure(), long_url);
+
+  PageInfoMainView* main_view = api_->main_view();
+  ASSERT_NE(nullptr, main_view);
+
+  PageInfoUI::IdentityInfo identity;
+  identity.identity_status = PageInfo::SITE_IDENTITY_STATUS_CERT;
+  identity.connection_status = PageInfo::SITE_CONNECTION_STATUS_ENCRYPTED;
+  main_view->SetIdentityInfo(identity);
+
+  // Unconstrained width should exclude the header view (and be less than
+  // kMinBubbleWidth).
+  const int min_width = PageInfoViewFactory::kMinBubbleWidth;
+  EXPECT_LT(main_view->GetPreferredSize({}).width(), min_width);
+
+  // Main view calculated height for min bubble width matches its layout
+  // manager.
+  EXPECT_EQ(main_view->GetHeightForWidth(min_width),
+            main_view->GetLayoutManager()->GetPreferredHeightForWidth(
+                main_view, min_width));
+
+  // Bubble width is clamped to kMinBubbleWidth,
+  // and bubble height matches content height (no extra blank vertical space).
+  const gfx::Size bubble_size = api_->bubble_delegate()->GetPreferredSize({});
+  EXPECT_EQ(bubble_size.width(), min_width);
+  EXPECT_EQ(bubble_size.height(),
+            main_view->GetLayoutManager()->GetPreferredHeightForWidth(
+                main_view, bubble_size.width()));
+}
+
+TEST_F(PageInfoBubbleViewTest, DynamicSizingSupportsWideContent) {
+  const GURL url("https://example.com");
+  api_->CreateView(base::RepeatingClosure(), url);
+
+  PageInfoMainView* main_view = api_->main_view();
+  ASSERT_NE(nullptr, main_view);
+
+  PageInfoUI::IdentityInfo identity;
+  identity.identity_status = PageInfo::SITE_IDENTITY_STATUS_CERT;
+  identity.connection_status = PageInfo::SITE_CONNECTION_STATUS_ENCRYPTED;
+  main_view->SetIdentityInfo(identity);
+
+  // Bubble width defaults to kMinBubbleWidth (320px).
+  EXPECT_EQ(PageInfoViewFactory::kMinBubbleWidth,
+            api_->bubble_delegate()->GetPreferredSize({}).width());
+
+  // Add a wide child view (450px) to simulate wider content.
+  constexpr int kWideChildWidth = 450;
+  main_view->AddChildView(
+      std::make_unique<views::StaticSizedView>(gfx::Size(kWideChildWidth, 30)));
+
+  // Dialog preferred width should dynamically expand to accommodate wide
+  // content.
+  const gfx::Size bubble_size = api_->bubble_delegate()->GetPreferredSize({});
+  EXPECT_EQ(kWideChildWidth, bubble_size.width());
+
+  // And the calculated height should match the layout's preferred height at
+  // this width.
+  const int content_height =
+      main_view->GetLayoutManager()->GetPreferredHeightForWidth(
+          main_view, kWideChildWidth);
+  EXPECT_EQ(bubble_size.height(), content_height);
+}
+
+TEST_F(PageInfoBubbleViewTest, BubbleWidthClampedToMaxBubbleWidth) {
+  const GURL url("https://example.com");
+  api_->CreateView(base::RepeatingClosure(), url);
+
+  views::View* main_view = api_->current_view();
+  ASSERT_NE(nullptr, main_view);
+
+  // Add an extraordinarily wide child view (1200px) exceeding kMaxBubbleWidth
+  // (1000px).
+  constexpr int kExtraWideChildWidth = 1200;
+  main_view->AddChildView(std::make_unique<views::StaticSizedView>(
+      gfx::Size(kExtraWideChildWidth, 30)));
+
+  // Dialog preferred width should be clamped to kMaxBubbleWidth (1000px).
+  const gfx::Size bubble_size = api_->bubble_delegate()->GetPreferredSize({});
+  EXPECT_EQ(PageInfoViewFactory::kMaxBubbleWidth, bubble_size.width());
+
+  // Layout height should be computed at kMaxBubbleWidth.
+  const int content_height =
+      main_view->GetLayoutManager()->GetPreferredHeightForWidth(
+          main_view, PageInfoViewFactory::kMaxBubbleWidth);
+  EXPECT_EQ(bubble_size.height(), content_height);
+}
+
+TEST_F(PageInfoBubbleViewTest, SubpageHeightMatchesContentForLongUrl) {
+  const GURL long_url(
+      "https://www.example-store-reviews-long-domain-name.com/store/products/"
+      "item?param=12345");
+  api_->CreateView(base::RepeatingClosure(), long_url);
+
+  // Open the security subpage.
+  api_->navigation_handler()->OpenSecurityPage();
+
+  views::View* subpage_view = api_->current_view();
+  ASSERT_NE(nullptr, subpage_view);
+
+  const gfx::Size bubble_size = api_->bubble_delegate()->GetPreferredSize({});
+  const int expected_height =
+      subpage_view->GetLayoutManager()->GetPreferredHeightForWidth(
+          subpage_view, bubble_size.width());
+
+  EXPECT_EQ(bubble_size.height(), expected_height);
+}
+
+TEST_F(PageInfoBubbleViewTest,
+       MainViewPreferredWidthIgnoresHeaderAndHiddenViews) {
+  const GURL long_url(
+      "https://"
+      "www.example-very-long-domain-name-exceeding-any-reasonable-width.com/"
+      "path/to/resource?param=12345678901234567890");
+  api_->CreateView(base::RepeatingClosure(), long_url);
+
+  PageInfoMainView* main_view = api_->main_view();
+  ASSERT_NE(nullptr, main_view);
+
+  PageInfoUI::IdentityInfo identity;
+  identity.identity_status = PageInfo::SITE_IDENTITY_STATUS_CERT;
+  identity.connection_status = PageInfo::SITE_CONNECTION_STATUS_ENCRYPTED;
+  main_view->SetIdentityInfo(identity);
+
+  // Natural content width must only reflect visible non-header children (<
+  // 320px).
+  const int natural_width = main_view->GetPreferredSize({}).width();
+  EXPECT_LT(natural_width, PageInfoViewFactory::kMinBubbleWidth);
+
+  // Adding a wide child view (600px) that is hidden should NOT expand natural
+  // width.
+  auto* hidden_view = main_view->AddChildView(
+      std::make_unique<views::StaticSizedView>(gfx::Size(600, 30)));
+  hidden_view->SetVisible(false);
+  EXPECT_EQ(natural_width, main_view->GetPreferredSize({}).width());
+
+  // Making it visible should expand natural width.
+  hidden_view->SetVisible(true);
+  EXPECT_EQ(600, main_view->GetPreferredSize({}).width());
+}
+
+TEST_F(PageInfoBubbleViewTest, DialogResizesWhenNavigatingToSubpageAndBack) {
+  api_->CreateView();
+
+  const gfx::Size main_page_size =
+      api_->bubble_delegate()->GetPreferredSize({});
+
+  // Navigate to security subpage.
+  api_->navigation_handler()->OpenSecurityPage();
+  const gfx::Size security_page_size =
+      api_->bubble_delegate()->GetPreferredSize({});
+
+  // Both should respect kMinBubbleWidth.
+  EXPECT_GE(main_page_size.width(), PageInfoViewFactory::kMinBubbleWidth);
+  EXPECT_GE(security_page_size.width(), PageInfoViewFactory::kMinBubbleWidth);
+  // Different pages have different content heights.
+  EXPECT_NE(main_page_size.height(), security_page_size.height());
+
+  // Navigate back to main page.
+  api_->navigation_handler()->OpenMainPage(base::DoNothing());
+  const gfx::Size restored_size = api_->bubble_delegate()->GetPreferredSize({});
+  EXPECT_EQ(main_page_size, restored_size);
+}
+
+namespace {
+
+class MockMerchantTrustService : public page_info::MerchantTrustService {
+ public:
+  MockMerchantTrustService()
+      : MerchantTrustService(nullptr, nullptr, false, nullptr) {}
+  MOCK_METHOD(void,
+              GetMerchantTrustInfo,
+              (const GURL&, page_info::MerchantDataCallback),
+              (const, override));
+  MOCK_METHOD(void,
+              RecordMerchantTrustInteraction,
+              (const GURL&, page_info::MerchantTrustInteraction),
+              (const, override));
+};
+
+std::unique_ptr<KeyedService> BuildMockMerchantTrustService(
+    content::BrowserContext* context) {
+  return std::make_unique<testing::NiceMock<MockMerchantTrustService>>();
+}
+
+}  // namespace
+
+// Regression test for crbug.com/573528668: closing the Merchant Trust subpage
+// before an asynchronous GetMerchantTrustInfo callback completes must not cause
+// a dangling pointer / use-after-free in PageInfoMerchantTrustController.
+TEST_F(PageInfoBubbleViewTest,
+       MerchantTrustControllerDestroyedBeforeCallbackCompletes) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      page_info::kMerchantTrust,
+      {{page_info::kMerchantTrustForceShowUIForTestingName, "true"}});
+  auto* mock_service = static_cast<MockMerchantTrustService*>(
+      MerchantTrustServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          web_contents_helper_->profile(),
+          base::BindRepeating(&BuildMockMerchantTrustService)));
+
+  api_->CreateView();
+
+  page_info::MerchantDataCallback pending_callback;
+  EXPECT_CALL(*mock_service, GetMerchantTrustInfo(_, _))
+      .WillOnce(
+          [&](const GURL& url, page_info::MerchantDataCallback callback) {
+            pending_callback = std::move(callback);
+          });
+
+  // Open the Merchant Trust subpage, which creates
+  // PageInfoMerchantTrustController and initiates the async fetch.
+  api_->navigation_handler()->OpenMerchantTrustPage();
+  ASSERT_TRUE(pending_callback);
+
+  // Navigate back to the main page, destroying PageInfoMerchantTrustContentView
+  // and PageInfoMerchantTrustController while `pending_callback` is still
+  // in flight.
+  api_->navigation_handler()->OpenMainPage(base::DoNothing());
+
+  // Running the callback after the controller is destroyed should safely no-op.
+  page_info::MerchantData merchant_data;
+  merchant_data.star_rating = 4.5;
+  merchant_data.count_rating = 100;
+  merchant_data.page_url = GURL("https://reviews.example.com");
+  merchant_data.reviews_summary = "Great store";
+  std::move(pending_callback).Run(GURL(kUrl), merchant_data);
+}
+
+TEST_F(PageInfoBubbleViewTest,
+       ResetPermissionInfoAfterDeletingOneOfTwoUsbDevices) {
+  const auto origin = url::Origin::Create(GURL(kUrl));
+
+  device::FakeUsbDeviceManager usb_device_manager;
+  mojo::PendingRemote<device::mojom::UsbDeviceManager> usb_manager;
+  usb_device_manager.AddReceiver(usb_manager.InitWithNewPipeAndPassReceiver());
+  UsbChooserContext* store =
+      UsbChooserContextFactory::GetForProfile(web_contents_helper_->profile());
+  store->SetDeviceManagerForTesting(std::move(usb_manager));
+
+  auto device1 = usb_device_manager.CreateAndAddDevice(
+      0, 0, "Google", "Gizmo 1", "1234567890");
+  auto device2 = usb_device_manager.CreateAndAddDevice(
+      0, 0, "Google", "Gizmo 2", "0987654321");
+  store->GrantDevicePermission(origin, *device1);
+  store->GrantDevicePermission(origin, *device2);
+
+  PermissionInfoList list;
+  api_->SetPermissionInfo(list);
+  ASSERT_EQ(2u, api_->GetPermissionsCount());
+
+  const ui::MouseEvent event(ui::EventType::kMousePressed, gfx::Point(),
+                             gfx::Point(), ui::EventTimeForNow(), 0, 0);
+
+  // Delete the second row via its delete button. This hides the second row
+  // while keeping the permissions section open for the remaining device.
+  views::Button* delete_button_2 =
+      GetChosenObjectButton(api_->GetChosenObjectChildren(1));
+  views::test::ButtonTestApi(delete_button_2).NotifyClick(event);
+  EXPECT_FALSE(store->HasDevicePermission(origin, *device1));
+  EXPECT_TRUE(store->HasDevicePermission(origin, *device2));
+  ASSERT_NE(nullptr, api_->reset_permissions_button());
+
+  // Now click the reset permissions button. Revoking the remaining device
+  // causes SetPermissionInfo({}, {}) to synchronously destroy all child views
+  // in permissions_view_; the reset loop must not access the freed second row.
+  views::test::ButtonTestApi(api_->reset_permissions_button())
+      .NotifyClick(event);
+  EXPECT_FALSE(store->HasDevicePermission(origin, *device2));
+  EXPECT_EQ(0u, api_->GetPermissionsCount());
+  EXPECT_EQ(nullptr, api_->reset_permissions_button());
+}
+
+TEST_F(PageInfoBubbleViewTest,
+       UpdatePermissionsAfterDeletingLastChosenObjectInPlace) {
+  const auto origin = url::Origin::Create(GURL(kUrl));
+
+  device::FakeUsbDeviceManager usb_device_manager;
+  mojo::PendingRemote<device::mojom::UsbDeviceManager> usb_manager;
+  usb_device_manager.AddReceiver(usb_manager.InitWithNewPipeAndPassReceiver());
+  UsbChooserContext* store =
+      UsbChooserContextFactory::GetForProfile(web_contents_helper_->profile());
+  store->SetDeviceManagerForTesting(std::move(usb_manager));
+
+  auto device_info = usb_device_manager.CreateAndAddDevice(
+      0, 0, "Google", "Gizmo", "1234567890");
+  store->GrantDevicePermission(origin, *device_info);
+
+  PermissionInfoList empty_list;
+  api_->SetPermissionInfo(empty_list);
+  ASSERT_EQ(1u, api_->GetPermissionsCount());
+
+  // Delete the only USB device via its row delete button, which triggers
+  // SetPermissionInfo({}, {}) and removes all children of permissions_view_.
+  views::Button* button = GetChosenObjectButton(api_->GetChosenObjectChildren());
+  const ui::MouseEvent event(ui::EventType::kMousePressed, gfx::Point(),
+                             gfx::Point(), ui::EventTimeForNow(), 0, 0);
+  views::test::ButtonTestApi(button).NotifyClick(event);
+  EXPECT_EQ(0u, api_->GetPermissionsCount());
+
+  // Now update permissions on the same PageInfoMainView instance.
+  // UpdateResetButton and the reset permissions button must not access freed
+  // ChosenObjectView pointers from chosen_object_rows_.
+  PermissionInfoList list(1);
+  list.back().type = ContentSettingsType::IMAGES;
+  list.back().setting = CONTENT_SETTING_BLOCK;
+  list.back().default_setting = CONTENT_SETTING_ALLOW;
+  list.back().source = content_settings::SettingSource::kUser;
+  api_->main_view()->SetPermissionInfo(list, ChosenObjectInfoList());
+  EXPECT_EQ(1u, api_->GetPermissionsCount());
+  ASSERT_NE(nullptr, api_->reset_permissions_button());
+  views::test::ButtonTestApi(api_->reset_permissions_button())
+      .NotifyClick(event);
+}
+
+TEST_F(PageInfoBubbleViewTest,
+       SecurityContentViewSetIdentityInfoMultipleTimes) {
+  base::test::ScopedFeatureList feature_list(net::features::kVerifyQWACs);
+  api_->navigation_handler()->OpenSecurityPage();
+  ASSERT_GE(api_->current_view()->children().size(), 2u);
+  auto* security_content_view = static_cast<PageInfoSecurityContentView*>(
+      api_->current_view()->children()[1]);
+  ASSERT_NE(nullptr, security_content_view);
+
+  scoped_refptr<net::X509Certificate> cert =
+      net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem");
+  ASSERT_TRUE(cert);
+
+  // First call: 1-QWAC + 2-QWAC + certificate.
+  PageInfoUI::IdentityInfo identity;
+  identity.identity_status = PageInfo::SITE_IDENTITY_STATUS_1QWAC_CERT;
+  identity.connection_status = PageInfo::SITE_CONNECTION_STATUS_ENCRYPTED;
+  identity.certificate = cert;
+  identity.two_qwac = cert;
+  security_content_view->SetIdentityInfo(identity);
+  EXPECT_NE(nullptr, api_->certificate_button());
+
+  // Second call: regular cert (no 1-QWAC, no 2-QWAC). Must cleanly remove old
+  // 1-QWAC, 2-QWAC, and certificate views without dangling raw_ptrs.
+  identity.identity_status = PageInfo::SITE_IDENTITY_STATUS_CERT;
+  identity.two_qwac = nullptr;
+  security_content_view->SetIdentityInfo(identity);
+  EXPECT_NE(nullptr, api_->certificate_button());
+
+  // Third call: no certificate at all.
+  identity.identity_status = PageInfo::SITE_IDENTITY_STATUS_NO_CERT;
+  identity.connection_status = PageInfo::SITE_CONNECTION_STATUS_UNENCRYPTED;
+  identity.certificate = nullptr;
+  security_content_view->SetIdentityInfo(identity);
+  EXPECT_EQ(nullptr, api_->certificate_button());
 }

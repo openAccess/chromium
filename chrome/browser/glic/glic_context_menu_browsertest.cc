@@ -2,20 +2,30 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/devtools/devtools_window_testing.h"
+#include "chrome/browser/glic/glic_selection_observer.h"
+#include "chrome/browser/glic/host/glic_no_webview_contents_manager.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/selection/selection_overlay_controller.h"
+#include "chrome/browser/glic/service/glic_instance_impl.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
+#include "chrome/browser/renderer_context_menu/render_view_context_menu_browsertest_util.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_test_util.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/user_education/user_education_service.h"
+#include "chrome/browser/user_education/user_education_service_factory.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/search_test_utils.h"
@@ -23,11 +33,20 @@
 #include "components/search_engines/search_engines_pref_names.h"
 #include "components/search_engines/template_url_service.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
+#include "printing/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom.h"
 #include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
+
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
+#include "chrome/browser/printing/print_view_manager.h"
+#include "chrome/browser/printing/test_print_view_manager_for_request_preview.h"
+#endif
 
 namespace glic {
 
@@ -152,6 +171,7 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuShareImageDisabledBrowserTest,
   menu->Init();
 
   EXPECT_FALSE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLICSHAREIMAGE));
 }
 
 IN_PROC_BROWSER_TEST_F(GlicContextMenuBrowserTest,
@@ -190,6 +210,7 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuBrowserTest,
   menu->Init();
 
   EXPECT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLICSHAREIMAGE));
 }
 
 IN_PROC_BROWSER_TEST_F(GlicContextMenuBrowserTest,
@@ -203,8 +224,8 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuBrowserTest,
   TemplateURLData data;
   data.SetShortName(u"Google");
   data.SetKeyword(u"google.com");
-  data.SetURL("http://www.google.com/search?q={searchTerms}");
-  data.image_url = "http://www.google.com/searchbyimage/upload";
+  data.SetURL("https://www.google.com/search?q={searchTerms}");
+  data.image_url = "https://www.google.com/searchbyimage/upload";
   TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
   model->SetUserSelectedDefaultSearchProvider(template_url);
 
@@ -386,7 +407,7 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuBrowserTest,
   TemplateURLData data;
   data.SetShortName(u"Google");
   data.SetKeyword(u"google.com");
-  data.SetURL("http://www.google.com/search?q={searchTerms}");
+  data.SetURL("https://www.google.com/search?q={searchTerms}");
   TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
   model->SetUserSelectedDefaultSearchProvider(template_url);
 
@@ -427,7 +448,7 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuBrowserTest,
   TemplateURLData data;
   data.SetShortName(u"Google");
   data.SetKeyword(u"google.com");
-  data.SetURL("http://www.google.com/search?q={searchTerms}");
+  data.SetURL("https://www.google.com/search?q={searchTerms}");
   TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
   model->SetUserSelectedDefaultSearchProvider(template_url);
 
@@ -487,7 +508,7 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuSimplificationBrowserTest,
   TemplateURLData data;
   data.SetShortName(u"Google");
   data.SetKeyword(u"google.com");
-  data.SetURL("http://www.google.com/search?q={searchTerms}");
+  data.SetURL("https://www.google.com/search?q={searchTerms}");
   TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
   model->SetUserSelectedDefaultSearchProvider(template_url);
 
@@ -565,7 +586,7 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuStandardBrowserTest,
   TemplateURLData data;
   data.SetShortName(u"Google");
   data.SetKeyword(u"google.com");
-  data.SetURL("http://www.google.com/search?q={searchTerms}");
+  data.SetURL("https://www.google.com/search?q={searchTerms}");
   TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
   model->SetUserSelectedDefaultSearchProvider(template_url);
 
@@ -606,7 +627,7 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuStandardBrowserTest,
   TemplateURLData data;
   data.SetShortName(u"Google");
   data.SetKeyword(u"google.com");
-  data.SetURL("http://www.google.com/search?q={searchTerms}");
+  data.SetURL("https://www.google.com/search?q={searchTerms}");
   TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
   model->SetUserSelectedDefaultSearchProvider(template_url);
 
@@ -775,7 +796,7 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuBelowSearchBrowserTest,
   TemplateURLData data;
   data.SetShortName(u"Google");
   data.SetKeyword(u"google.com");
-  data.SetURL("http://www.google.com/search?q={searchTerms}");
+  data.SetURL("https://www.google.com/search?q={searchTerms}");
   TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
   model->SetUserSelectedDefaultSearchProvider(template_url);
 
@@ -816,7 +837,7 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuBelowSearchBrowserTest,
   TemplateURLData data;
   data.SetShortName(u"Google");
   data.SetKeyword(u"google.com");
-  data.SetURL("http://www.google.com/search?q={searchTerms}");
+  data.SetURL("https://www.google.com/search?q={searchTerms}");
   TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
   model->SetUserSelectedDefaultSearchProvider(template_url);
 
@@ -858,8 +879,8 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuBelowSearchBrowserTest,
   TemplateURLData data;
   data.SetShortName(u"Google");
   data.SetKeyword(u"google.com");
-  data.SetURL("http://www.google.com/search?q={searchTerms}");
-  data.image_url = "http://www.google.com/searchbyimage/upload";
+  data.SetURL("https://www.google.com/search?q={searchTerms}");
+  data.image_url = "https://www.google.com/searchbyimage/upload";
   TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
   model->SetUserSelectedDefaultSearchProvider(template_url);
 
@@ -884,6 +905,483 @@ IN_PROC_BROWSER_TEST_F(GlicContextMenuBelowSearchBrowserTest,
   ASSERT_TRUE(lens_index.has_value());
   EXPECT_EQ(glic_index->first, lens_index->first);
   EXPECT_GT(glic_index->second, lens_index->second);
+}
+
+class GlicInternalContextMenuBrowserTest
+    : public GlicBrowserTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  GlicInternalContextMenuBrowserTest() {
+    std::vector<base::test::FeatureRef> enabled_features = {
+        features::kGlic, features::kGlicArchiveConversation};
+    std::vector<base::test::FeatureRef> disabled_features;
+    if (IsNoWebview()) {
+      enabled_features.push_back(features::kGlicNoWebview);
+    } else {
+      disabled_features.push_back(features::kGlicNoWebview);
+    }
+    scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
+  }
+
+  bool IsNoWebview() const { return GetParam(); }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         GlicInternalContextMenuBrowserTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "NoWebview" : "Webview";
+                         });
+
+IN_PROC_BROWSER_TEST_P(GlicInternalContextMenuBrowserTest,
+                       GuestContextMenuShowsCustomItemsAndSuppressesPageItems) {
+  ASSERT_OK_AND_ASSIGN(GlicInstanceImpl * instance, OpenGlicForActiveTab());
+  ASSERT_OK(WaitForGlicClient(instance));
+  content::WebContents* guest_contents = instance->host().web_client_contents();
+  ASSERT_TRUE(guest_contents);
+
+  content::ContextMenuParams params;
+  params.page_url = guest_contents->GetVisibleURL();
+  auto menu = std::make_unique<TestRenderViewContextMenu>(
+      *guest_contents->GetPrimaryMainFrame(), params);
+  menu->Init();
+
+  // Reload should be present and enabled.
+  EXPECT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_RELOAD_GLIC));
+  EXPECT_TRUE(menu->IsItemEnabled(IDC_CONTENT_CONTEXT_RELOAD_GLIC));
+  EXPECT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_ARCHIVE_GLIC));
+
+  // Standard page navigation items should be suppressed.
+  EXPECT_FALSE(menu->IsItemPresent(IDC_BACK));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_FORWARD));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_RELOAD));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_SAVE_PAGE));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_VIEW_SOURCE));
+
+  // Ask Gemini should not appear recursively.
+  EXPECT_FALSE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC));
+}
+
+IN_PROC_BROWSER_TEST_P(GlicInternalContextMenuBrowserTest,
+                       GuestLinkContextMenuShowsCopyLinkOnly) {
+  ASSERT_OK_AND_ASSIGN(GlicInstanceImpl * instance, OpenGlicForActiveTab());
+  ASSERT_OK(WaitForGlicClient(instance));
+  content::WebContents* guest_contents = instance->host().web_client_contents();
+  ASSERT_TRUE(guest_contents);
+
+  content::ContextMenuParams params;
+  params.page_url = guest_contents->GetVisibleURL();
+  params.link_url = GURL("https://example.com");
+  params.unfiltered_link_url = GURL("https://example.com");
+  auto menu = std::make_unique<TestRenderViewContextMenu>(
+      *guest_contents->GetPrimaryMainFrame(), params);
+  menu->Init();
+
+  EXPECT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_COPYLINKLOCATION));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_OPENLINKNEWTAB));
+}
+
+IN_PROC_BROWSER_TEST_P(GlicInternalContextMenuBrowserTest,
+                       GuestContextMenuReloadReloadsContents) {
+  ASSERT_OK_AND_ASSIGN(GlicInstanceImpl * instance, OpenGlicForActiveTab());
+  ASSERT_OK(WaitForGlicClient(instance));
+  ASSERT_TRUE(instance->host().web_client_contents());
+  base::WeakPtr<content::WebContents> initial_guest_contents =
+      instance->host().web_client_contents()->GetWeakPtr();
+
+  content::ContextMenuParams params;
+  params.page_url = initial_guest_contents->GetVisibleURL();
+  auto menu = std::make_unique<TestRenderViewContextMenu>(
+      *initial_guest_contents->GetPrimaryMainFrame(), params);
+  menu->Init();
+  ASSERT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_RELOAD_GLIC));
+
+  GlicClientConnectionObserver connection_observer(instance);
+  menu->ExecuteCommand(IDC_CONTENT_CONTEXT_RELOAD_GLIC, 0);
+
+  ASSERT_OK(connection_observer.WaitForDisconnected());
+  ASSERT_OK(connection_observer.WaitForConnected());
+  EXPECT_OK(
+      WaitForWebUiContentsVisibility(instance, content::Visibility::VISIBLE));
+  EXPECT_NE(initial_guest_contents.get(),
+            instance->host().web_client_contents());
+}
+
+#if BUILDFLAG(ENABLE_PRINT_PREVIEW)
+IN_PROC_BROWSER_TEST_P(GlicInternalContextMenuBrowserTest,
+                       GuestContextMenuPrintTriggersPrintPreview) {
+  ASSERT_OK_AND_ASSIGN(GlicInstanceImpl * instance, OpenGlicForActiveTab());
+  ASSERT_OK(WaitForGlicClient(instance));
+  content::WebContents* guest_contents = instance->host().web_client_contents();
+  ASSERT_TRUE(guest_contents);
+
+  // Verify that PrintViewManager was attached to the guest WebContents.
+  ASSERT_NE(nullptr,
+            printing::PrintViewManager::FromWebContents(guest_contents));
+
+  printing::TestPrintViewManagerForRequestPreview::CreateForWebContents(
+      guest_contents);
+  auto* test_print_manager =
+      printing::TestPrintViewManagerForRequestPreview::FromWebContents(
+          guest_contents);
+  ASSERT_TRUE(test_print_manager);
+
+  base::RunLoop run_loop;
+  test_print_manager->set_quit_closure(run_loop.QuitClosure());
+
+  content::ContextMenuParams params;
+  params.page_url = guest_contents->GetVisibleURL();
+  auto menu = std::make_unique<TestRenderViewContextMenu>(
+      *guest_contents->GetPrimaryMainFrame(), params);
+  menu->Init();
+
+  EXPECT_TRUE(menu->IsItemPresent(IDC_PRINT));
+  EXPECT_TRUE(menu->IsItemEnabled(IDC_PRINT));
+
+  menu->ExecuteCommand(IDC_PRINT, 0);
+
+  run_loop.Run();
+}
+#endif  // BUILDFLAG(ENABLE_PRINT_PREVIEW)
+
+IN_PROC_BROWSER_TEST_P(GlicInternalContextMenuBrowserTest,
+                       GuestContextMenuInspectElementOpensDevTools) {
+  ASSERT_OK_AND_ASSIGN(GlicInstanceImpl * instance, OpenGlicForActiveTab());
+  ASSERT_OK(WaitForGlicClient(instance));
+  content::WebContents* guest_contents = instance->host().web_client_contents();
+  ASSERT_TRUE(guest_contents);
+
+  content::ContextMenuParams params;
+  params.page_url = guest_contents->GetVisibleURL();
+  auto menu = std::make_unique<TestRenderViewContextMenu>(
+      *guest_contents->GetPrimaryMainFrame(), params);
+  menu->Init();
+
+  EXPECT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_INSPECTELEMENT));
+  EXPECT_TRUE(menu->IsItemEnabled(IDC_CONTENT_CONTEXT_INSPECTELEMENT));
+
+  DevToolsWindowCreationObserver observer;
+  menu->ExecuteCommand(IDC_CONTENT_CONTEXT_INSPECTELEMENT, 0);
+  observer.WaitForLoad();
+  DevToolsWindow* window = observer.devtools_window();
+  EXPECT_TRUE(window);
+  observer.CloseAllSync();
+}
+
+class GlicNoWebviewOverlayContextMenuBrowserTest : public GlicBrowserTest {
+ public:
+  GlicNoWebviewOverlayContextMenuBrowserTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {features::kGlic, features::kGlicNoWebview}, {});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(GlicNoWebviewOverlayContextMenuBrowserTest,
+                       OverlayContextMenuShowsReloadAndSuppressesPageItems) {
+  GlicNoWebviewContentsManager manager(GetProfile(), &service()->enabling(),
+                                       /*initially_hidden=*/false);
+  manager.SetVisibility(content::Visibility::VISIBLE);
+  content::WebContents* overlay = manager.overlay_contents();
+  ASSERT_TRUE(overlay);
+
+  content::ContextMenuParams params;
+  params.page_url = overlay->GetVisibleURL();
+  auto menu = std::make_unique<TestRenderViewContextMenu>(
+      *overlay->GetPrimaryMainFrame(), params);
+  menu->Init();
+
+  EXPECT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_RELOAD_GLIC));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_BACK));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_FORWARD));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_RELOAD));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_SAVE_PAGE));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_VIEW_SOURCE));
+  EXPECT_FALSE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC));
+}
+
+class GlicSmartSuggestionContextMenuBrowserTest
+    : public GlicContextMenuBrowserTestBase {
+ public:
+  GlicSmartSuggestionContextMenuBrowserTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kGlic, features::kGlicContextMenu,
+                              features::kGlicSuggestionContextMenu,
+                              features::kGlicSelectionOverlayPromptBox},
+        /*disabled_features=*/{features::kGlicSelectionPrompt});
+  }
+
+ protected:
+  std::unique_ptr<TestRenderViewContextMenu> CreateContextMenuWithParams(
+      content::ContextMenuParams params) {
+    content::WebContents* web_contents =
+        browser()->tab_strip_model()->GetActiveWebContents();
+    params.page_url = web_contents->GetVisibleURL();
+    auto menu = std::make_unique<TestRenderViewContextMenu>(
+        *web_contents->GetPrimaryMainFrame(), params);
+    menu->Init();
+    return menu;
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ItemPresentAndOpensOverlay) {
+  base::HistogramTester histogram_tester;
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+  auto* controller = SelectionOverlayController::FromTabWebContents(
+      browser()->tab_strip_model()->GetActiveWebContents());
+  ASSERT_TRUE(controller);
+
+  auto menu = CreateContextMenu();
+  ASSERT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+  menu->ExecuteCommand(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION,
+                       /*event_flags=*/0);
+  histogram_tester.ExpectUniqueSample("SmartSelection.Invocation.ByEntryPoint",
+                                      ::selection::EntryPoint::kContextMenuPage,
+                                      1);
+
+  ASSERT_OK(RunUntilEqual([&]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timed out waiting for the selection overlay."));
+  EXPECT_EQ(controller->GetSelectedRegionCount(), 0u);
+  content::RenderFrameHost* overlay_frame = controller->GetOverlayMainFrame();
+  ASSERT_TRUE(overlay_frame);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(overlay_frame, R"(
+      (() => {
+        const app = document.querySelector('selection-overlay-app');
+        const overlay =
+            app?.shadowRoot?.querySelector('glic-selection-overlay');
+        return !!app?.screenshot_ && !!overlay &&
+               !overlay.hideHandles && !overlay.disableMultiSelect;
+      })();
+    )")
+        .ExtractBool();
+  }));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ExecWithTextSelectionPreselectsRegionAndSetsOptions) {
+  base::HistogramTester histogram_tester;
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(web_contents);
+  ASSERT_TRUE(controller);
+
+  web_contents->SelectAll();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    std::optional<gfx::Rect> bounds = web_contents->GetTextSelectionBounds(
+        web_contents->GetPrimaryMainFrame());
+    return bounds.has_value() && !bounds->IsEmpty();
+  }));
+
+  content::ContextMenuParams params;
+  // Only needs to be non-empty; the bounds come from the real selection above.
+  params.selection_text = u"OK";
+  auto menu = CreateContextMenuWithParams(params);
+  ASSERT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+  menu->ExecuteCommand(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION,
+                       /*event_flags=*/0);
+  histogram_tester.ExpectUniqueSample("SmartSelection.Invocation.ByEntryPoint",
+                                      ::selection::EntryPoint::kContextMenuText,
+                                      1);
+
+  ASSERT_OK(RunUntilEqual([&]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timed out waiting for the selection overlay."));
+  EXPECT_EQ(controller->GetSelectedRegionCount(), 1u);
+  content::RenderFrameHost* overlay_frame = controller->GetOverlayMainFrame();
+  ASSERT_TRUE(overlay_frame);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(overlay_frame, R"(
+      (() => {
+        const app = document.querySelector('selection-overlay-app');
+        const overlay =
+            app?.shadowRoot?.querySelector('glic-selection-overlay');
+        return !!app?.screenshot_ && !!overlay &&
+               overlay.hideHandles && overlay.disableMultiSelect &&
+               overlay.skipIntroAnimation;
+      })();
+    )")
+        .ExtractBool();
+  }));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ExecWithImagePreselectsRegionAndSetsOptions) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(web_contents);
+  ASSERT_TRUE(controller);
+
+  ASSERT_TRUE(content::EvalJs(web_contents, R"(
+    new Promise((resolve) => {
+      const img = document.createElement('img');
+      img.style.cssText =
+          'position: fixed; left: 20px; top: 30px; width: 100px; height: 80px;';
+      img.onload = () => resolve(true);
+      img.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      document.body.appendChild(img);
+    })
+  )")
+                  .ExtractBool());
+  content::WaitForCopyableViewInWebContents(web_contents);
+
+  ContextMenuNotificationObserver menu_observer(
+      IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION);
+  content::SimulateMouseClickAt(web_contents, 0,
+                                blink::WebMouseEvent::Button::kRight,
+                                gfx::Point(50, 50));
+
+  ASSERT_OK(RunUntilEqual([&]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timed out waiting for the selection overlay."));
+  EXPECT_EQ(controller->GetSelectedRegionCount(), 1u);
+  content::RenderFrameHost* overlay_frame = controller->GetOverlayMainFrame();
+  ASSERT_TRUE(overlay_frame);
+  gfx::Rect view_bounds = web_contents->GetViewBounds();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(overlay_frame,
+                           content::JsReplace(
+                               R"(
+      (() => {
+        const app = document.querySelector('selection-overlay-app');
+        const overlay =
+            app?.shadowRoot?.querySelector('glic-selection-overlay');
+        const sel = overlay?.activeSelection;
+        if (!app?.screenshot_ || !overlay || !sel) {
+          return false;
+        }
+        const expectedLeft = 20 / $1;
+        const expectedTop = 30 / $2;
+        const expectedWidth = 100 / $1;
+        const expectedHeight = 80 / $2;
+        return !overlay.hideHandles && overlay.disableMultiSelect &&
+               overlay.skipIntroAnimation &&
+               Math.abs(sel.left - expectedLeft) < 0.01 &&
+               Math.abs(sel.top - expectedTop) < 0.01 &&
+               Math.abs(sel.width - expectedWidth) < 0.01 &&
+               Math.abs(sel.height - expectedHeight) < 0.01;
+      })();
+    )",
+                               view_bounds.width(), view_bounds.height()))
+        .ExtractBool();
+  }));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ItemPresentForTextSelectionAndSanitizesLabel) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+
+  content::ContextMenuParams params;
+  params.selection_text = u"  line1\u2028line2\r\nline3  ";
+  auto menu = CreateContextMenuWithParams(params);
+  ASSERT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+
+  auto index =
+      menu->GetMenuModelAndItemIndex(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION);
+  ASSERT_TRUE(index.has_value());
+  EXPECT_EQ(
+      index->first->GetLabelAt(index->second),
+      l10n_util::GetStringFUTF16(IDS_GLIC_CONTEXT_MENU_ASK_ABOUT_SELECTION,
+                                 u"line1 line2  line3"));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ItemHasNewBadge) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+  auto* user_education_service =
+      UserEducationServiceFactory::GetForBrowserContext(
+          browser()->GetProfile());
+  ASSERT_TRUE(user_education_service);
+  auto* new_badge_controller = user_education_service->new_badge_controller();
+  ASSERT_TRUE(new_badge_controller);
+  // New badges are not shown to brand-new profiles.
+  user_education_service->user_education_storage_service()
+      .set_profile_creation_time_for_testing(base::Time::Now() -
+                                             base::Days(100));
+  new_badge_controller->InitData();
+
+  auto menu = CreateContextMenu();
+  auto index =
+      menu->GetMenuModelAndItemIndex(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION);
+  ASSERT_TRUE(index.has_value());
+  EXPECT_TRUE(index->first->IsNewFeatureAt(index->second));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ItemAbsentInEditableField) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+
+  content::ContextMenuParams params;
+  params.selection_text = u"selected text";
+  params.is_editable = true;
+  EXPECT_FALSE(CreateContextMenuWithParams(params)->IsItemPresent(
+      IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ItemPresentForImage) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+
+  content::ContextMenuParams params;
+  params.has_image_contents = true;
+  params.media_type = blink::mojom::ContextMenuDataMediaType::kImage;
+  EXPECT_TRUE(CreateContextMenuWithParams(params)->IsItemPresent(
+      IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+
+  // The item is not shown for a plain link.
+  content::ContextMenuParams link_params;
+  link_params.link_url = GURL("https://example.com");
+  link_params.unfiltered_link_url = GURL("https://example.com");
+  EXPECT_FALSE(CreateContextMenuWithParams(link_params)
+                   ->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+}
+
+class GlicSelectionPromptContextMenuBrowserTest
+    : public GlicContextMenuBrowserTestBase {
+ public:
+  GlicSelectionPromptContextMenuBrowserTest() {
+    feature_list_.InitWithFeatures({features::kGlic, features::kGlicContextMenu,
+                                    features::kGlicSelectionPrompt},
+                                   {});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(GlicSelectionPromptContextMenuBrowserTest,
+                       ContextMenuDismissesSelectionWidget) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+  tabs::TabInterface* tab = browser()->tab_strip_model()->GetActiveTab();
+  ASSERT_TRUE(tab);
+  content::WebContents* web_contents = tab->GetContents();
+  ASSERT_TRUE(web_contents);
+
+  auto* selection_observer = GlicSelectionObserver::From(tab);
+  ASSERT_TRUE(selection_observer);
+  EXPECT_FALSE(selection_observer->IsShowingWidgetForTesting());
+
+  web_contents->Focus();
+  web_contents->SelectAll();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return selection_observer->IsShowingWidgetForTesting(); }));
+
+  auto menu = CreateContextMenu();
+  EXPECT_FALSE(selection_observer->IsShowingWidgetForTesting());
 }
 
 }  // namespace glic

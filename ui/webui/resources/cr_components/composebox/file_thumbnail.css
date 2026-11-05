@@ -10,7 +10,6 @@
 :host {
   --image-chip-border-radius_: var(--file-chip-border-radius, 8px);
   --pdf-icon-background-color_: rgba(219, 69, 55, 1); /* red */
-  --pdf-icon-color_: white;
 }
 
 @keyframes spin {
@@ -131,17 +130,22 @@
 }
 
 .pdf-icon {
-  background-color: var(--pdf-icon-background-color_);
-  /* TODO(crbug.com/467758241): fix radius of svg itself. */
-  border-radius: var(--pdf-icon-border-radius, 4px);
   box-sizing: border-box;
-  color: var(--pdf-icon-color_);
+  color: var(--pdf-icon-background-color_);
   height: var(--pdf-icon-size, 100%);
   width: var(--pdf-icon-size, 100%);
 }
 
+/* No colored tile behind generic document file icons by default.
+ * However, PDF icons has colored tile. Embedders that want one can add
+ * it via ::part(thumbnail) and
+ * '--color-composebox-file-chip-favicon-background'.
+ */
+#documentThumbnail:not([has-pdf-icon]) {
+  background-color: transparent;
+}
+
 .document-icon {
-  background-color: var(--color-composebox-background);
   box-sizing: border-box;
   color: var(--color-composebox-document-chip-icon);
   height: var(--document-icon-size, 100%);
@@ -459,11 +463,6 @@ cr-spinner {
   height: 24px;
   justify-content: center;
   width: 24px;
-}
-
-/* No dedicated icon background on Clank. */
-:host([is-android]) .document-icon {
-  background-color: transparent;
 }
 
 @media (forced-colors: active) {

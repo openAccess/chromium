@@ -21,11 +21,14 @@
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
+#include "base/version.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/component_extensions_allowlist/allowlist.h"
 #include "chrome/browser/extensions/component_loader_factory.h"
+#include "chrome/browser/extensions/component_loader_prefs.h"
 #include "chrome/browser/extensions/data_deleter.h"
 #include "chrome/browser/extensions/glic_util.h"
 #include "chrome/browser/extensions/profile_util.h"
@@ -41,8 +44,10 @@
 #include "chrome/grit/component_extension_resources.h"
 #include "chrome/grit/contextual_tasks_extension_resources.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/component_updater/component_updater_paths.h"
 #include "components/crx_file/id_util.h"
 #include "components/omnibox/common/omnibox_features.h"
+#include "components/prefs/pref_service.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/common/content_switches.h"
@@ -64,6 +69,7 @@
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/webui/buildflags.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_extension_constants.h"
@@ -90,6 +96,11 @@
 #include "chrome/browser/defaults.h"
 #endif
 
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+#include "chrome/grit/new_tab_page_extension_resources.h"
+#include "components/search/ntp_features.h"
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
+
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using content::BrowserThread;
@@ -99,7 +110,8 @@ namespace extensions {
 namespace {
 
 #if BUILDFLAG(ENABLE_HANGOUT_SERVICES_EXTENSION)
-BASE_FEATURE(kHangoutsExtensionV3, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kHangoutsExtensionV3, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kRemoveHangoutsExtension, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(ENABLE_HANGOUT_SERVICES_EXTENSION)
 
 bool g_enable_background_extensions_during_testing = false;
@@ -109,14 +121,71 @@ bool g_enable_background_extensions_during_testing = false;
 bool g_enable_help_app = true;
 #endif
 
-ExtensionId GenerateId(const base::DictValue& manifest,
-                       const base::FilePath& path) {
-  std::string id_input;
+ExtensionId TryGenerateId(const base::DictValue& manifest) {
   const std::string* raw_key = manifest.FindString(manifest_keys::kPublicKey);
-  CHECK(raw_key != nullptr);
-  CHECK(Extension::ParsePEMKeyBytes(*raw_key, &id_input));
-  ExtensionId id = crx_file::id_util::GenerateId(id_input);
+  if (!raw_key) {
+    return ExtensionId();
+  }
+  std::string id_input;
+  if (!Extension::ParsePEMKeyBytes(*raw_key, &id_input)) {
+    return ExtensionId();
+  }
+  return crx_file::id_util::GenerateId(id_input);
+}
+
+ExtensionId GenerateId(const base::DictValue& manifest) {
+  ExtensionId id = TryGenerateId(manifest);
+  CHECK(!id.empty());
   return id;
+}
+
+// Extracts the extension version from an extension manifest dictionary.
+base::Version GetVersionFromManifest(const base::DictValue& manifest) {
+  const std::string* version_str = manifest.FindString(manifest_keys::kVersion);
+  return version_str ? base::Version(*version_str) : base::Version();
+}
+
+// Validates that `manifest` has an extension ID matching `extension_id` and a
+// valid version that is strictly newer than the bundled version loaded from
+// `manifest_resource_id`.
+bool ValidateCandidateExtensionManifest(const base::DictValue& manifest,
+                                        const ExtensionId& extension_id,
+                                        int manifest_resource_id) {
+  CHECK(!extension_id.empty());
+  if (TryGenerateId(manifest) != extension_id) {
+    VLOG(1) << "Candidate manifest ID does not match " << extension_id << ".";
+    return false;
+  }
+
+  base::Version version = GetVersionFromManifest(manifest);
+  if (!version.IsValid()) {
+    VLOG(1) << "Candidate manifest version is invalid for " << extension_id
+            << ".";
+    return false;
+  }
+
+  std::string bundled_manifest =
+      ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(
+          manifest_resource_id);
+  std::optional<base::DictValue> bundled_manifest_dict =
+      base::JSONReader::ReadDict(bundled_manifest,
+                                 base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  if (!bundled_manifest_dict) {
+    VLOG(1) << "Failed to parse bundled manifest for " << extension_id << ".";
+    return false;
+  }
+
+  base::Version bundled_version =
+      GetVersionFromManifest(*bundled_manifest_dict);
+  CHECK(bundled_version.IsValid());
+  if (version <= bundled_version) {
+    VLOG(1) << "Candidate version (" << version.GetString()
+            << ") is <= bundled version (" << bundled_version.GetString()
+            << ") for " << extension_id << ".";
+    return false;
+  }
+
+  return true;
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -124,7 +193,8 @@ std::optional<base::DictValue> LoadManifestOnFileThread(
     const base::FilePath& root_directory,
     const base::FilePath::CharType* manifest_filename,
     bool localize_manifest) {
-  DCHECK(GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence());
+  CHECK(GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M161);
   std::string error;
   std::optional<base::DictValue> manifest(
       file_util::LoadManifest(root_directory, manifest_filename, &error));
@@ -169,7 +239,7 @@ ComponentLoader::ComponentExtensionInfo::ComponentExtensionInfo(
     CHECK(base::PathService::Get(chrome::DIR_RESOURCES, &root_directory));
     root_directory = root_directory.Append(directory);
   }
-  extension_id = GenerateId(manifest, root_directory);
+  extension_id = GenerateId(manifest);
 }
 
 ComponentLoader::ComponentExtensionInfo::ComponentExtensionInfo(
@@ -192,6 +262,37 @@ ComponentLoader::ComponentExtensionInfo::~ComponentExtensionInfo() = default;
 // static
 ComponentLoader* ComponentLoader::Get(content::BrowserContext* context) {
   return ComponentLoaderFactory::GetForBrowserContext(context);
+}
+
+// static
+bool ComponentLoader::MaybeStageExtension(
+    PrefService& local_state,
+    const ExtensionId& extension_id,
+    int manifest_resource_id,
+    const base::FilePath& relative_path,
+    std::optional<base::DictValue> manifest) {
+  // Clear staged prefs on any failure return.
+  base::ScopedClosureRunner clear_staged_prefs(
+      base::BindOnce(&component_loader_prefs::ClearExtension,
+                     std::ref(local_state), extension_id));
+
+  if (!manifest || relative_path.empty() || relative_path.IsAbsolute() ||
+      relative_path.ReferencesParent()) {
+    return false;
+  }
+
+  if (!ValidateCandidateExtensionManifest(*manifest, extension_id,
+                                          manifest_resource_id)) {
+    return false;
+  }
+
+  component_loader_prefs::StageExtension(local_state, extension_id,
+                                         relative_path, std::move(*manifest));
+
+  // The downloaded manifest is valid; release the closure to avoid clearing the
+  // prefs.
+  std::ignore = clear_staged_prefs.Release();
+  return true;
 }
 
 ComponentLoader::ComponentLoader(Profile* profile)
@@ -302,7 +403,7 @@ ExtensionId ComponentLoader::AddOrReplace(const base::FilePath& path) {
                << "'. " << error;
     return std::string();
   }
-  Remove(GenerateId(*manifest, absolute_path));
+  Remove(GenerateId(*manifest));
 
   // We don't check component extensions loaded by path because this is only
   // used by developers for testing.
@@ -331,11 +432,57 @@ void ComponentLoader::Load(const ComponentExtensionInfo& info) {
   registrar->AddComponentExtension(extension.get());
 }
 
+bool ComponentLoader::MaybeLoadStagedExtension(const ExtensionId& extension_id,
+                                               int manifest_resource_id) {
+  PrefService* local_state =
+      g_browser_process ? g_browser_process->local_state() : nullptr;
+  if (!local_state) {
+    return false;
+  }
+
+  // Clear staged prefs on any failure return.
+  base::ScopedClosureRunner clear_staged_prefs(
+      base::BindOnce(&component_loader_prefs::ClearExtension,
+                     std::ref(*local_state), extension_id));
+
+  std::optional<component_loader_prefs::StagedComponentExtensionInfo>
+      staged_info =
+          component_loader_prefs::GetExtension(*local_state, extension_id);
+  if (!staged_info) {
+    return false;
+  }
+
+  if (!ValidateCandidateExtensionManifest(staged_info->manifest, extension_id,
+                                          manifest_resource_id)) {
+    return false;
+  }
+
+  base::FilePath user_component_dir;
+  if (!base::PathService::Get(component_updater::DIR_COMPONENT_USER,
+                              &user_component_dir)) {
+    return false;
+  }
+
+  CHECK(!staged_info->relative_path.empty());
+  CHECK(!staged_info->relative_path.IsAbsolute());
+  CHECK(!staged_info->relative_path.ReferencesParent());
+  base::FilePath install_dir =
+      user_component_dir.Append(staged_info->relative_path);
+  if (Add(std::move(staged_info->manifest), install_dir).empty()) {
+    return false;
+  }
+
+  // The staged manifest is valid; release the closure to avoid clearing the
+  // prefs.
+  std::ignore = clear_staged_prefs.Release();
+  return true;
+}
+
 void ComponentLoader::Remove(const base::FilePath& root_directory) {
   // Find the ComponentExtensionInfo for the extension.
   for (const auto& component_extension : component_extensions_) {
     if (component_extension.root_directory == root_directory) {
-      Remove(GenerateId(component_extension.manifest, root_directory));
+      Remove(component_extension.extension_id);
       break;
     }
   }
@@ -378,6 +525,9 @@ std::vector<ExtensionId> ComponentLoader::GetRegisteredComponentExtensionsIds()
 
 #if BUILDFLAG(ENABLE_HANGOUT_SERVICES_EXTENSION)
 void ComponentLoader::AddHangoutServicesExtension() {
+  if (base::FeatureList::IsEnabled(kRemoveHangoutsExtension)) {
+    return;
+  }
   // Finch controlled migration to a v3 Manifest - see crbug.com/326877912.
   if (base::FeatureList::IsEnabled(kHangoutsExtensionV3)) {
     Add(IDR_HANGOUT_SERVICES_MANIFEST_V3,
@@ -400,11 +550,40 @@ void ComponentLoader::AddNetworkSpeechSynthesisExtension() {
 }
 
 void ComponentLoader::AddAimEligibilityExtension() {
-  if (base::FeatureList::IsEnabled(
+  if (!base::FeatureList::IsEnabled(
           omnibox::kAimEligibilityComponentExtension)) {
-    Add(IDR_AIM_ELIGIBILITY_EXTENSION_MANIFEST_JSON,
-        base::FilePath(FILE_PATH_LITERAL("aim_eligibility_extension")));
+    return;
   }
+
+  // Try to load a newer version from disk installed by the component updater.
+  if (omnibox::kAimEligibilityUseComponentUpdater.Get() &&
+      MaybeLoadStagedExtension(extension_misc::kAimEligibilityExtensionId,
+                               IDR_AIM_ELIGIBILITY_EXTENSION_MANIFEST_JSON)) {
+    return;
+  }
+
+  // Fallback to bundled extension if no newer version exists on disk.
+  Add(IDR_AIM_ELIGIBILITY_EXTENSION_MANIFEST_JSON,
+      base::FilePath(extension_misc::kAimEligibilityExtensionDirName));
+}
+
+void ComponentLoader::AddNewTabPageExtension() {
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+  if (!base::FeatureList::IsEnabled(ntp_features::kNtpComponentExtension)) {
+    return;
+  }
+
+  // Try to load a newer version from disk installed by the component updater.
+  if (ntp_features::kNtpComponentExtensionUseComponentUpdater.Get() &&
+      MaybeLoadStagedExtension(extension_misc::kNewTabPageExtensionId,
+                               IDR_NEW_TAB_PAGE_EXTENSION_MANIFEST_JSON)) {
+    return;
+  }
+
+  // Fallback to bundled extension if no newer version exists on disk.
+  Add(IDR_NEW_TAB_PAGE_EXTENSION_MANIFEST_JSON,
+      base::FilePath(extension_misc::kNewTabPageExtensionDirName));
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
 }
 
 void ComponentLoader::AddGlicExtension() {
@@ -534,7 +713,7 @@ void ComponentLoader::AddDefaultComponentExtensions(
 
   AddKeyboardApp();
 #else   // BUILDFLAG(IS_CHROMEOS)
-  DCHECK(!skip_session_components);
+  CHECK(!skip_session_components, base::NotFatalUntil::M161);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   if (!skip_session_components) {
@@ -621,7 +800,6 @@ void ComponentLoader::AddDefaultComponentExtensionsWithBackgroundPages(
           switches::kLoadGuestModeTestExtension));
       AddGuestModeTestExtension(path);
     }
-    AddImageLoaderExtension();
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
     // TODO(https://crbug.com/1005083): Force the off the record profile to be
@@ -637,6 +815,7 @@ void ComponentLoader::AddDefaultComponentExtensionsWithBackgroundPages(
   }
 
   AddAimEligibilityExtension();
+  AddNewTabPageExtension();
   AddGlicExtension();
   AddContextualTasksExtension();
 
@@ -689,7 +868,7 @@ void ComponentLoader::AddComponentFromDirWithManifestFilename(
     const base::FilePath::CharType* guest_manifest_file_name,
     base::OnceClosure done_cb,
     base::OnceClosure error_cb) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   CHECK(!IsPendingAdd(extension_id));
   pending_extension_ids_.emplace(extension_id);
@@ -715,7 +894,7 @@ void ComponentLoader::FinishAddComponentFromDir(
     base::OnceClosure done_cb,
     base::OnceClosure error_cb,
     std::optional<base::DictValue> manifest) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Extension is removed during loading. Skip adding in this case.
   if (!IsPendingAdd(extension_id)) {
@@ -775,9 +954,7 @@ void ComponentLoader::AddChromeOsSpeechSynthesisExtensions() {
   if (!ExistsOrPendingAdd(extension_misc::kEspeakSpeechSynthesisExtensionId)) {
     AddComponentFromDir(
         base::FilePath(
-            ::features::IsAccessibilityManifestV3EnabledForEspeakNGTts()
-                ? extension_misc::kEspeakManifestV3SpeechSynthesisExtensionPath
-                : extension_misc::kEspeakSpeechSynthesisExtensionPath),
+            extension_misc::kEspeakManifestV3SpeechSynthesisExtensionPath),
         extension_misc::kEspeakSpeechSynthesisExtensionId,
         base::BindRepeating(
             &ComponentLoader::FinishLoadSpeechSynthesisExtension,

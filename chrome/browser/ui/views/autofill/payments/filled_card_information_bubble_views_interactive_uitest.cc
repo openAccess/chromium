@@ -36,6 +36,7 @@
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/grit/components_scaled_resources.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/prerender_test_util.h"
 #include "ui/base/clipboard/clipboard.h"
@@ -45,6 +46,7 @@
 #include "ui/base/test/ui_controls.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/test/widget_test.h"
 
@@ -85,7 +87,7 @@ class FilledCardInformationBubbleViewsInteractiveUiTest
         static_cast<FilledCardInformationBubbleControllerImpl*>(
             FilledCardInformationBubbleControllerImpl::GetOrCreate(
                 browser()->GetTabStripModel()->GetActiveWebContents()));
-    DCHECK(controller);
+    CHECK(controller, base::NotFatalUntil::M162);
     controller->SetEventObserverForTesting(this);
   }
 
@@ -155,7 +157,7 @@ class FilledCardInformationBubbleViewsInteractiveUiTest
     auto* provider = browser_view->toolbar_button_provider();
     auto* icon =
         provider->GetPageActionViewInterface(kActionFilledCardInformation);
-    DCHECK(icon);
+    CHECK(icon, base::NotFatalUntil::M162);
     return icon;
   }
 
@@ -493,6 +495,16 @@ IN_PROC_BROWSER_TEST_F(FilledCardInformationBubbleViewsInteractiveUiTest,
       GetIconView()->GetAccessibleName(),
       l10n_util::GetStringUTF16(
           IDS_AUTOFILL_FILLED_CARD_INFORMATION_ICON_TOOLTIP_VIRTUAL_CARD));
+}
+
+IN_PROC_BROWSER_TEST_F(FilledCardInformationBubbleViewsInteractiveUiTest,
+                       CardholderNameButtonHiddenWhenEmpty) {
+  CreditCard card = test::GetVirtualCard();
+  card.SetRawInfo(CREDIT_CARD_NAME_FULL, /*value=*/u"");
+  ShowBubble(&card, u"123");
+  ASSERT_TRUE(GetBubbleViews());
+  EXPECT_FALSE(GetBubbleViews()->fields_to_buttons_map_.contains(
+      FilledCardInformationBubbleField::kCardholderName));
 }
 
 IN_PROC_BROWSER_TEST_F(FilledCardInformationBubbleViewsInteractiveUiTest,

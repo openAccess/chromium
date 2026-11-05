@@ -204,8 +204,6 @@ using ScopedTabGroupSyncObservation =
 }
 
 - (void)newTabButtonTapped:(id)sender {
-  CHECK(!IsChromeNextIaEnabled() ||
-        ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET);
   // Ignore the tap if the current page is disabled for some reason, by policy
   // for instance. This is to avoid situations where the tap action from an
   // enabled page can make it to a disabled page by releasing the
@@ -284,8 +282,11 @@ using ScopedTabGroupSyncObservation =
     [self configureButtonsInSelectionMode:toolbarsConfiguration];
   } else {
     toolbarsConfiguration.closeAllButton = [self canCloseRegularOrInactiveTabs];
-    toolbarsConfiguration.exitTabGridButton = !self.webStateList->empty();
+    toolbarsConfiguration.exitTabGridButton =
+        !self.webStateList->empty() &&
+        self.modeHolder.mode == TabGridMode::kNormal;
     toolbarsConfiguration.newTabButton = YES;
+    toolbarsConfiguration.searchButtonHidden = NO;
     toolbarsConfiguration.searchButton = YES;
     toolbarsConfiguration.selectTabsButton = [self canCloseTabs];
     toolbarsConfiguration.closeOtherTabsButton = [self canCloseOtherTabs];

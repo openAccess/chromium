@@ -28,18 +28,8 @@ public class ContentFeatureList {
     // Features files, then remove the constants below.
 
     // Alphabetical:
-    public static final String ACCESSIBILITY_ATOMIC_LIVE_REGIONS = "AccessibilityAtomicLiveRegions";
-
-    public static final String ACCESSIBILITY_DEPRECATE_TYPE_ANNOUNCE =
-            "AccessibilityDeprecateTypeAnnounce";
-
-    public static final String ACCESSIBILITY_EXTENDED_SELECTION = "AccessibilityExtendedSelection";
-
     public static final String ACCESSIBILITY_IME_GET_FORMATTED_TEXT =
             "AccessibilityImeGetFormattedText";
-
-    public static final String ACCESSIBILITY_IMPROVE_LIVE_REGION_ANNOUNCE =
-            "AccessibilityImproveLiveRegionAnnounce";
 
     public static final String ACCESSIBILITY_PAGE_ZOOM_V2 = "AccessibilityPageZoomV2";
 
@@ -48,10 +38,6 @@ public class ContentFeatureList {
 
     public static final String ACCESSIBILITY_SEQUENTIAL_FOCUS = "AccessibilitySequentialFocus";
 
-    public static final String ACCESSIBILITY_SET_SELECTABLE_ON_ALL_NODES_WITH_TEXT =
-            "AccessibilitySetSelectableOnAllNodesWithText";
-
-    public static final String ACCESSIBILITY_UNIFIED_SNAPSHOTS = "AccessibilityUnifiedSnapshots";
     public static final String ACCESSIBILITY_MANAGE_BROADCAST_RECEIVER_ON_BACKGROUND =
             "AccessibilityManageBroadcastReceiverOnBackground";
 
@@ -75,12 +61,6 @@ public class ContentFeatureList {
             "AndroidPkAutocorrectUnderlineV2";
 
     public static final String ANDROID_SPELLCHECK_FULL_API_BLINK = "AndroidSpellcheckFullApiBlink";
-
-    public static final String ANDROID_BLOCK_MISSPELLING_SUGGESTION_SPAN_IN_COMPOSITION_MODE =
-            "AndroidBlockMisspellingSuggestionSpanInCompositionMode";
-
-    public static final String ANDROID_BLOCK_GRAMMAR_SUGGESTION_SPAN_IN_COMPOSITION_MODE =
-            "AndroidBlockGrammarSuggestionSpanInCompositionMode";
 
     public static final String HIDE_PASTE_POPUP_ON_GSB = "HidePastePopupOnGSB";
 
@@ -107,6 +87,22 @@ public class ContentFeatureList {
     public static final String TEXT_CLASSIFIER_TIMEOUT = "TextClassifierTimeout";
 
     public static final String DIPS_TTL = "DIPSTtl";
+
+    private static final MutableFlagWithSafeDefault sAccessibilityAndroidBackgroundThread =
+            new MutableFlagWithSafeDefault(
+                    ContentFeatureMap.getInstance(),
+                    AccessibilityFeatures.ACCESSIBILITY_ANDROID_BACKGROUND_THREAD,
+                    false);
+
+    /**
+     * Checks "AccessibilityAndroidBackgroundThread" feature flag, including that current
+     * environment is at least required Android SDK 30 (R). Matches
+     * `features::IsAccessibilityAndroidBackgroundThreadEnabled()` in C++.
+     */
+    public static boolean enabledAccessibilityAndroidBackgroundThread() {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                && sAccessibilityAndroidBackgroundThread.isEnabled();
+    }
 
     private static final MutableFlagWithSafeDefault sAccessibilityCheckJavaNodeCacheFreshness =
             new MutableFlagWithSafeDefault(
@@ -176,7 +172,7 @@ public class ContentFeatureList {
             new MutableFlagWithSafeDefault(
                     ContentFeatureMap.getInstance(),
                     ContentInternalFeatures.EARLY_TOP_APP_FOR_SANDBOXED_RENDERER,
-                    false);
+                    true);
 
     public static final MutableFlagWithSafeDefault sSpareRendererProcessPriority =
             new MutableFlagWithSafeDefault(

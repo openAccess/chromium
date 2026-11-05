@@ -14,13 +14,22 @@
 #include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
 #include "third_party/blink/renderer/core/style/scoped_css_name.h"
-#include "third_party/blink/renderer/platform/heap/persistent.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/heap/visitor.h"
+#include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "third_party/blink/renderer/platform/wtf/vector_traits.h"
 
 namespace blink {
 
 // https://drafts.csswg.org/css-animations-2/#typedef-single-animation-timeline
 class CORE_EXPORT StyleTimeline {
+  // StyleTimeline is an embedded value type (part object) stored by value in
+  // HeapVector collections (e.g. CSSAnimationData::timeline_list_).
+  // DISALLOW_NEW enables Oilpan to trace its Member<const ScopedCSSName>
+  // without requiring standalone heap allocation for each timeline entry.
+  DISALLOW_NEW();
+
  public:
   // https://drafts.csswg.org/scroll-animations-1/#scroll-notation
   class ScrollData {
@@ -74,29 +83,48 @@ class CORE_EXPORT StyleTimeline {
   };
 
   explicit StyleTimeline(CSSValueID keyword) : data_(keyword) {}
-  explicit StyleTimeline(const AtomicString& name) : data_(name) {}
+  explicit StyleTimeline(const ScopedCSSName* name)
+      : data_(std::monostate()), name_(name) {}
   explicit StyleTimeline(const ScrollData& scroll_data) : data_(scroll_data) {}
   explicit StyleTimeline(const ViewData& view_data) : data_(view_data) {}
 
   bool operator==(const StyleTimeline& other) const {
     if (IsName() && other.IsName()) {
-      return base::ValuesEquivalent(&GetName(), &other.GetName());
+      return base::ValuesEquivalent(GetScopedName(), other.GetScopedName());
     }
     return data_ == other.data_;
   }
 
   bool IsKeyword() const { return std::holds_alternative<CSSValueID>(data_); }
-  bool IsName() const { return std::holds_alternative<AtomicString>(data_); }
+  bool IsName() const { return std::holds_alternative<std::monostate>(data_); }
   bool IsScroll() const { return std::holds_alternative<ScrollData>(data_); }
   bool IsView() const { return std::holds_alternative<ViewData>(data_); }
 
   const CSSValueID& GetKeyword() const { return std::get<CSSValueID>(data_); }
-  const AtomicString& GetName() const { return std::get<AtomicString>(data_); }
+  const AtomicString& GetName() const {
+    const ScopedCSSName* scoped_name = GetScopedName();
+    return scoped_name ? scoped_name->GetName() : g_null_atom;
+  }
+  const ScopedCSSName* GetScopedName() const {
+    DCHECK(IsName());
+    return name_.Get();
+  }
   const ScrollData& GetScroll() const { return std::get<ScrollData>(data_); }
   const ViewData& GetView() const { return std::get<ViewData>(data_); }
 
+  void Trace(Visitor* visitor) const { visitor->Trace(name_); }
+
  private:
-  std::variant<CSSValueID, AtomicString, ScrollData, ViewData> data_;
+  std::variant<std::monostate, CSSValueID, ScrollData, ViewData> data_;
+  Member<const ScopedCSSName> name_;
+};
+
+template <>
+struct VectorTraits<StyleTimeline> : VectorTraitsBase<StyleTimeline> {
+  static const bool kCanClearUnusedSlotsWithMemset = true;
+  static const bool kCanInitializeWithMemset = true;
+  static const bool kCanMoveWithMemcpy = true;
+  static const bool kCanTraceConcurrently = true;
 };
 
 }  // namespace blink

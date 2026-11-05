@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from spdx_writer import SpdxWriter
 
@@ -172,8 +172,6 @@ ADDITIONAL_PATHS_FILENAME = 'additional_readme_paths.json'
 ADDITIONAL_PATHS = (
   os.path.join('chrome', 'test', 'chromeos', 'autotest'),
   os.path.join('chrome', 'test', 'data'),
-  os.path.join('native_client'),
-  os.path.join('third_party', 'android_deps', 'autorolled'),
   os.path.join('third_party', 'boringssl', 'src', 'third_party', 'fiat'),
   os.path.join(
     'third_party', 'devtools-frontend', 'src', 'front_end', 'third_party'
@@ -198,24 +196,11 @@ ADDITIONAL_PATHS = (
 # any metadata files with errors and if you encounter a parsing issue,
 # please file a bug.
 SPECIAL_CASES = {
-  os.path.join('native_client'): {
-    "Name": "native client",
-    "URL": "https://code.google.com/p/nativeclient",
-    "Shipped": "yes",
-    "License": "BSD",
-    "License File": ["//native_client/LICENSE"],
-  },
-  os.path.join('third_party', 'angle'): {
-    "Name": "Almost Native Graphics Layer Engine",
-    "URL": "https://chromium.googlesource.com/angle/angle/",
-    "Shipped": "yes",
-    "License": "BSD",
-  },
   os.path.join('third_party', 'cros_system_api'): {
     "Name": "Chromium OS system API",
     "URL": "https://www.chromium.org/chromium-os",
     "Shipped": "yes",
-    "License": "BSD",
+    "License": "BSD-3-Clause",
     # Absolute path here is resolved as relative to the source root.
     "License File": ["//LICENSE.chromium_os"],
   },
@@ -223,21 +208,21 @@ SPECIAL_CASES = {
     "Name": "ipcz",
     "URL": ("https://chromium.googlesource.com/chromium/src/third_party/ipcz"),
     "Shipped": "yes",
-    "License": "BSD",
+    "License": "BSD-3-Clause",
     "License File": ["//third_party/ipcz/LICENSE"],
   },
   os.path.join('third_party', 'lss'): {
     "Name": "linux-syscall-support",
     "URL": "https://chromium.googlesource.com/linux-syscall-support/",
     "Shipped": "yes",
-    "License": "BSD",
+    "License": "BSD-3-Clause",
     "License File": ["//third_party/lss/LICENSE"],
   },
   os.path.join('third_party', 'openscreen', 'src', 'third_party', 'abseil'): {
     "Name": "abseil",
     "URL": "https://github.com/abseil/abseil-cpp/",
     "Shipped": "yes",
-    "License": "Apache 2.0",
+    "License": "Apache-2.0",
     "License File": ["//third_party/abseil-cpp/LICENSE"],
   },
   os.path.join(
@@ -246,7 +231,7 @@ SPECIAL_CASES = {
     "Name": "BoringSSL",
     "URL": "https://boringssl.googlesource.com/boringssl/",
     "Shipped": "yes",
-    "License": "BSDish",
+    "License": "Apache-2.0, BSD-3-Clause",
     "License File": ["//third_party/boringssl/src/LICENSE"],
   },
   os.path.join('third_party', 'openscreen', 'src', 'third_party', 'jsoncpp'): {
@@ -256,47 +241,11 @@ SPECIAL_CASES = {
     "License": "MIT",
     "License File": ["//third_party/jsoncpp/LICENSE"],
   },
-  os.path.join('third_party', 'openscreen', 'src', 'third_party', 'mozilla'): {
-    "Name": "mozilla",
-    "URL": "https://github.com/mozilla",
-    "Shipped": "yes",
-    "License": "MPL 1.1/GPL 2.0/LGPL 2.1",
-    "License File": ["LICENSE.txt"],
-  },
   os.path.join('third_party', 'pdfium'): {
     "Name": "PDFium",
     "URL": "https://pdfium.googlesource.com/pdfium/",
     "Shipped": "yes",
-    "License": "BSD",
-  },
-  os.path.join('third_party', 'ppapi'): {
-    "Name": "ppapi",
-    "URL": "https://code.google.com/p/ppapi/",
-    "Shipped": "yes",
-  },
-  os.path.join(
-    'third_party', 'crashpad', 'crashpad', 'third_party', 'getopt'
-  ): {
-    "Name": "getopt",
-    "URL": "https://sourceware.org/ml/newlib/2005/msg00758.html",
-    "Shipped": "yes",
-    "License": "Public domain",
-    "License File": [
-      "//third_party/crashpad/crashpad/third_party/getopt/LICENSE",
-    ],
-  },
-  os.path.join('third_party', 'crashpad', 'crashpad', 'third_party', 'xnu'): {
-    "Name": "xnu",
-    "URL": "https://opensource.apple.com/source/xnu/",
-    "Shipped": "yes",
-    "License": "Apple Public Source License 2.0",
-    "License File": ["APPLE_LICENSE"],
-  },
-  os.path.join('third_party', 'v8-i18n'): {
-    "Name": "Internationalization Library for v8",
-    "URL": "https://code.google.com/p/v8-i18n/",
-    "Shipped": "yes",
-    "License": "Apache 2.0",
+    "License": "Apache-2.0, BSD-3-Clause",
   },
   os.path.join('third_party', 'blink'): {
     # about:credits doesn't show "Blink" but "WebKit".
@@ -306,7 +255,7 @@ SPECIAL_CASES = {
     "Name": "WebKit",
     "URL": "https://webkit.org/",
     "Shipped": "yes",
-    "License": "BSD and LGPL v2 and LGPL v2.1",
+    "License": "BSD-2-Clause, BSD-3-Clause, LGPL-2.0, LGPL-2.1",
     # Absolute path here is resolved as relative to the source root.
     "License File": ["//third_party/blink/LICENSE_FOR_ABOUT_CREDITS"],
   },
@@ -314,13 +263,13 @@ SPECIAL_CASES = {
     "Name": "V8 JavaScript Engine",
     "URL": "https://v8.dev/",
     "Shipped": "yes",
-    "License": "BSD",
+    "License": "BSD-3-Clause",
   },
   os.path.join('v8', 'strongtalk'): {
     "Name": "Strongtalk",
     "URL": "https://www.strongtalk.org/",
     "Shipped": "yes",
-    "License": "BSD",
+    "License": "BSD-3-Clause",
     # Absolute path here is resolved as relative to the source root.
     "License File": ["//v8/LICENSE.strongtalk"],
   },
@@ -328,7 +277,7 @@ SPECIAL_CASES = {
     "Name": "fdlibm",
     "URL": "https://www.netlib.org/fdlibm/",
     "Shipped": "yes",
-    "License": "Freely Distributable",
+    "License": "SunPro",
     # Absolute path here is resolved as relative to the source root.
     "License File": ["//v8/LICENSE.fdlibm"],
     "License Android Compatible": "yes",
@@ -337,7 +286,7 @@ SPECIAL_CASES = {
     "Name": "SwiftShader",
     "URL": "https://swiftshader.googlesource.com/SwiftShader",
     "Shipped": "yes",
-    "License": "Apache 2.0 and compatible licenses",
+    "License": "Apache-2.0",
     "License Android Compatible": "yes",
     "License File": ["//third_party/swiftshader/LICENSE.txt"],
   },
@@ -345,7 +294,7 @@ SPECIAL_CASES = {
     "Name": "SPIRV-Tools",
     "URL": "https://github.com/KhronosGroup/SPIRV-Tools",
     "Shipped": "yes",
-    "License": "Apache 2.0",
+    "License": "Apache-2.0",
     "License File": [
       "//third_party/swiftshader/third_party/SPIRV-Tools/LICENSE",
     ],
@@ -354,24 +303,17 @@ SPECIAL_CASES = {
     "Name": "SPIRV-Headers",
     "URL": "https://github.com/KhronosGroup/SPIRV-Headers",
     "Shipped": "yes",
-    "License": "Apache 2.0",
+    "License": "Khronos, MIT, CC-BY-4.0",
     "License File": [
       "//third_party/swiftshader/third_party/SPIRV-Headers/LICENSE",
     ],
-  },
-  os.path.join('third_party', 'dawn', 'third_party', 'khronos'): {
-    "Name": "khronos_platform",
-    "URL": "https://registry.khronos.org/EGL/",
-    "Shipped": "yes",
-    "License": "Apache 2.0",
-    "License File": ["//third_party/dawn/third_party/khronos/LICENSE"],
   },
   # This entry is for the integration tests.
   os.path.join('third_party', 'sample3'): {
     "Name": "Sample 3",
     "URL": "https://sample3",
     "Shipped": "yes",
-    "License": "Apache 2.0",
+    "License": "Apache-2.0",
     "License File": ["//third_party/sample3/the_license"],
   },
 }
@@ -459,7 +401,6 @@ KNOWN_NON_IOS_LIBRARIES = set(
     os.path.join('third_party', 'iaccessible2'),
     os.path.join('third_party', 'isimpledom'),
     os.path.join('third_party', 'jsoncpp'),
-    os.path.join('third_party', 'khronos'),
     os.path.join('third_party', 'libcxx', 'libc++'),
     os.path.join('third_party', 'libcxx', 'libc++abi'),
     os.path.join('third_party', 'libevent'),
@@ -474,7 +415,6 @@ KNOWN_NON_IOS_LIBRARIES = set(
     os.path.join('third_party', 'npapi'),
     os.path.join('third_party', 'ots'),
     os.path.join('third_party', 'perfetto'),
-    os.path.join('third_party', 'ppapi'),
     os.path.join('third_party', 're2'),
     os.path.join('third_party', 'safe_browsing'),
     os.path.join('third_party', 'smhasher'),
@@ -482,7 +422,6 @@ KNOWN_NON_IOS_LIBRARIES = set(
     os.path.join('third_party', 'swig'),
     os.path.join('third_party', 'talloc'),
     os.path.join('third_party', 'usb_ids'),
-    os.path.join('third_party', 'v8-i18n'),
     os.path.join('third_party', 'wtl'),
     os.path.join('third_party', 'yasm'),
     os.path.join('v8', 'strongtalk'),
@@ -500,6 +439,12 @@ SAFE_RECIPROCAL_HOSTS = {
   "aomedia.googlesource.com",
   "boringssl.googlesource.com",
 }
+
+# Fallback Gitiles repository URL for the main Chromium source tree.
+_CHROMIUM_SRC_GITILES_URL = "https://chromium.googlesource.com/chromium/src"
+
+# Formattable URL pattern for Gitiles review links.
+_GITILES_URL_PATTERN = "{base_url}/+/main/{path}"
 
 
 _read_paths = set()
@@ -1237,39 +1182,78 @@ def GenerateLicenseFile(args, metadatas):
   _WriteIfChanged(pathlib.Path(args.output_file), license_txt)
 
 
+_GIT_ORIGIN_CACHE = {}
+_GIT_ROOT_CACHE = {}
+
+
+def _ResolveRemoteUrl(raw_url: str, repo_dir: str) -> List[str]:
+  """Resolves a git remote config value to upstream web URLs.
+
+  If raw_url is a local directory (e.g. a bot git cache), recursively
+  inspects that directory's remotes. Otherwise returns the clean web URL.
+  """
+  local_dir = (
+    raw_url if os.path.isabs(raw_url) else os.path.join(repo_dir, raw_url)
+  )
+  if os.path.isdir(local_dir) and os.path.abspath(local_dir) != repo_dir:
+    return _GetGitOriginUrls(local_dir)
+
+  clean_url = raw_url[:-4] if raw_url.endswith(".git") else raw_url
+  return [clean_url]
+
+
 def _GetGitOriginUrls(dep_dir: str) -> List[str]:
   """Dynamically queries all Git remote URLs of the given directory."""
   if not os.path.exists(dep_dir):
     return []
+  abs_dir = os.path.abspath(dep_dir)
+  if abs_dir in _GIT_ORIGIN_CACHE:
+    return _GIT_ORIGIN_CACHE[abs_dir]
   try:
-    # Use .* instead of assuming 'origin'.
+    # Query all remote URLs, prioritizing 'origin' remotes.
     output = (
       subprocess.check_output(
-        ["git", "config", "--get-regexp", r"^remote\..*\.url$"], cwd=dep_dir
+        ["git", "config", "--get-regexp", r"^remote\..*\.url$"], cwd=abs_dir
       )
       .decode("utf-8")
       .strip()
     )
-    urls = []
+    origin_urls = []
+    other_urls = []
     for line in output.splitlines():
       # 'line' will be either a path to the original checkout, or
       # (once at the checkout) the upstream url.
       # remote.origin.url /Volumes/Work/s/w/ir/cache/git/chromium.googlesource.com-chromium-src
       # remote.origin.url https://chromium.googlesource.com/chromium/src.git
       parts = line.split(None, 1)
-      if len(parts) == 2:
-        url = parts[1].strip()
-        # Build environments use local cache directories which don't start with
-        # https:// (e.g. /b/s/w/ir/cache/git/chromium.googlesource.com...).
-        if os.path.isdir(url) and os.path.abspath(url) != os.path.abspath(
-          dep_dir
-        ):
-          urls.extend(_GetGitOriginUrls(url))
-        else:
-          urls.append(url)
-    return urls
+      if len(parts) != 2:
+        continue
+      key, raw_url = parts[0].strip(), parts[1].strip()
+      resolved = _ResolveRemoteUrl(raw_url, abs_dir)
+      if "origin" in key.lower():
+        origin_urls.extend(resolved)
+      else:
+        other_urls.extend(resolved)
+    result = origin_urls + other_urls
   except Exception:
-    return []
+    result = []
+  _GIT_ORIGIN_CACHE[abs_dir] = result
+  return result
+
+
+def _FindGitRoot(dep_dir: str) -> Optional[str]:
+  """Returns the absolute path to the root of the Git repository for dep_dir."""
+  abs_dir = os.path.abspath(dep_dir)
+  if abs_dir in _GIT_ROOT_CACHE:
+    return _GIT_ROOT_CACHE[abs_dir]
+  curr_dir = abs_dir
+  while curr_dir and curr_dir != os.path.dirname(curr_dir):
+    if os.path.exists(os.path.join(curr_dir, ".git")):
+      _GIT_ROOT_CACHE[abs_dir] = curr_dir
+      return curr_dir
+    curr_dir = os.path.dirname(curr_dir)
+  _GIT_ROOT_CACHE[abs_dir] = None
+  return None
 
 
 def _IsSafeForReciprocal(dep_dir: str) -> bool:
@@ -1284,6 +1268,55 @@ def _IsSafeForReciprocal(dep_dir: str) -> bool:
       if safe_host in url:
         return True
   return False
+
+
+def _FormatGitilesUrl(base_url: str, rel_path: Union[str, os.PathLike]) -> str:
+  """Constructs a Gitiles web URL, normalizing path separators to POSIX forward slashes."""
+  posix_path = pathlib.PurePath(rel_path).as_posix()
+  return _GITILES_URL_PATTERN.format(base_url=base_url, path=posix_path)
+
+
+def _ResolveGitLicenseUrl(lic_full_path: str) -> Optional[str]:
+  """Attempts to construct a Gitiles URL for a file from its local Git repository.
+
+  Returns None if the file is not in a resolvable Git repository.
+  """
+  lic_full_dir = os.path.dirname(lic_full_path)
+  git_urls = _GetGitOriginUrls(lic_full_dir)
+  if not git_urls:
+    return None
+
+  git_root = _FindGitRoot(lic_full_dir)
+  if not git_root:
+    return None
+
+  try:
+    repo_rel_path = pathlib.Path(lic_full_path).relative_to(git_root)
+    return _FormatGitilesUrl(git_urls[0], repo_rel_path)
+  except ValueError:
+    return None
+
+
+def _CalculateLicenseUrl(scan_root: str, lic_path: str) -> str:
+  """Calculates the repository URL for a single license file."""
+  lic_full_path = os.path.abspath(os.path.join(scan_root, lic_path))
+  git_url = _ResolveGitLicenseUrl(lic_full_path)
+  if git_url:
+    return git_url
+
+  # Fallback to Chromium src Gitiles repo if Git resolution returned None.
+  return _FormatGitilesUrl(_CHROMIUM_SRC_GITILES_URL, lic_path)
+
+
+def _GetLicenseUrls(scan_root: str, license_files: List[str]) -> List[str]:
+  """Constructs the repository URLs for the given license files.
+
+  Navigates the directory structure to identify the innermost Git repository
+  for a given file. Using the repository's origin URL, it constructs a
+  fully qualified web link to the exact file path on the main branch.
+  Falls back to the main Chromium Gitiles repository if unresolved.
+  """
+  return [_CalculateLicenseUrl(scan_root, lic_path) for lic_path in license_files]
 
 
 def GenerateLicenseFileCsv(
@@ -1324,18 +1357,7 @@ def GenerateLicenseFileCsv(
   for m in metadatas:
     data_row = [m["Name"]]
 
-    urls = []
-    for f in m["License File"]:
-      # The review process requires that a link is provided to each license
-      # which is included. We can achieve this by combining a static
-      # Chromium googlesource URL with the relative path to the license
-      # file from the top level Chromium src directory.
-      lic_url = f"https://source.chromium.org/chromium/chromium/src/+/main:{f}"
-
-      # Since these are URLs and not paths, replace any Windows path `\`
-      # separators with a `/`
-      urls.append(lic_url.replace("\\", "/"))
-
+    urls = _GetLicenseUrls(scan_root, m["License File"])
     data_row.append(", ".join(urls) or "UNKNOWN")
     data_row.append(m["License"] or "UNKNOWN")
 
@@ -1358,6 +1380,7 @@ def GenerateLicenseFileCsv(
         readme_dir,
         is_open_source_project=is_open_source,
         android_compatible=m.get("License Android Compatible"),
+        is_shipped=(m.get("Shipped", "yes").lower() == "yes"),
       )
     except Exception as e:
       logging.warning(

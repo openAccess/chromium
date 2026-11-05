@@ -9,14 +9,16 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "ash/constants/ash_features.h"
+#include "base/check_deref.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/values.h"
 #include "chrome/browser/ash/policy/dlp/dlp_files_controller_ash.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/policy/dlp/data_transfer_dlp_controller.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_policy_constants.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager.h"
@@ -47,63 +49,55 @@ using RulesConditionsMap = std::map<RuleId, UrlConditionId>;
 constexpr char kDrivePattern[] = "drive.google.com";
 constexpr char kOneDrivePattern[] = "onedrive.live.com";
 
+constexpr base::TimeDelta kMaxSetFilesPolicyRetryDelay = base::Minutes(5);
+
 // Creates a condition set for the given `url`.
 scoped_refptr<url_matcher::URLMatcherConditionSet> CreateConditionSet(
     url_matcher::URLMatcher* matcher,
     UrlConditionId condition_id,
-    const std::string& url) {
+    std::string_view url) {
   CHECK(matcher);
 
-  std::string scheme;
-  std::string host;
-  uint16_t port = 0;
-  std::string path;
-  std::string query;
-  bool match_subdomains = true;
-
-  if (!url_matcher::util::FilterToComponents(
-          url, &scheme, &host, &match_subdomains, &port, &path, &query)) {
+  std::optional<url_matcher::util::FilterComponents> components =
+      url_matcher::util::FilterToComponents(url);
+  if (!components) {
     LOG(ERROR) << "Invalid pattern " << url;
     return nullptr;
   }
-  return url_matcher::util::CreateConditionSet(matcher, condition_id, scheme,
-                                               host, match_subdomains, port,
-                                               path, query, /*allow=*/true);
+  return url_matcher::util::CreateConditionSet(matcher, condition_id,
+                                               *components);
 }
 
-// Creates `urls` conditions, saves patterns strings mapping in
-// `patterns_mapping`, and saves conditions ids to rules ids mapping in `map`.
-void AddUrlConditions(url_matcher::URLMatcher* matcher,
-                      UrlConditionId& condition_id,
-                      const base::ListValue* urls,
-                      url_matcher::URLMatcherConditionSet::Vector& conditions,
-                      std::map<UrlConditionId, std::string>& patterns_mapping,
-                      RuleId rule_id,
-                      std::map<UrlConditionId, RuleId>& map) {
-  DCHECK(urls);
-  for (const auto& list_entry : *urls) {
-    std::string url = list_entry.GetString();
-
-    ++condition_id;
-    auto condition_set = CreateConditionSet(matcher, condition_id, url);
-    if (!condition_set) {
-      continue;
-    }
-    conditions.push_back(std::move(condition_set));
-    map[condition_id] = rule_id;
-    patterns_mapping[condition_id] = url;
+// Creates a condition for `url`, saves its pattern string mapping in
+// `patterns_mapping`, and saves its condition id to rule id mapping in `map`.
+void AddUrlCondition(std::string_view url,
+                     RuleId rule_id,
+                     url_matcher::URLMatcher* matcher,
+                     UrlConditionId& condition_id,
+                     url_matcher::URLMatcherConditionSet::Vector& conditions,
+                     std::map<UrlConditionId, std::string>& patterns_mapping,
+                     std::map<UrlConditionId, RuleId>& map) {
+  ++condition_id;
+  auto condition_set = CreateConditionSet(matcher, condition_id, url);
+  if (!condition_set) {
+    return;
   }
+  conditions.push_back(std::move(condition_set));
+  map[condition_id] = rule_id;
+  patterns_mapping[condition_id] = url;
 }
 
-// Returns the URLs associated with the given component. An empty vector is
+// Returns the URLs associated with the given component. An empty span is
 // returned if there are none.
-std::vector<std::string> GetAssociatedUrlsConditions(
+base::span<const std::string_view> GetAssociatedUrlsConditions(
     data_controls::Component component) {
+  static constexpr std::string_view kDriveUrls[] = {kDrivePattern};
+  static constexpr std::string_view kOneDriveUrls[] = {kOneDrivePattern};
   switch (component) {
     case data_controls::Component::kDrive:
-      return {kDrivePattern};
+      return kDriveUrls;
     case data_controls::Component::kOneDrive:
-      return {kOneDrivePattern};
+      return kOneDriveUrls;
     case data_controls::Component::kUnknownComponent:
     case data_controls::Component::kArc:
     case data_controls::Component::kCrostini:
@@ -116,37 +110,16 @@ std::vector<std::string> GetAssociatedUrlsConditions(
 // Add URL conditions associated with the given `component`.
 void AddAssociatedUrlConditions(
     data_controls::Component component,
+    RuleId rule_id,
     url_matcher::URLMatcher* matcher,
     UrlConditionId& condition_id,
     url_matcher::URLMatcherConditionSet::Vector& conditions,
     std::map<UrlConditionId, std::string>& patterns_mapping,
-    RuleId rule_id,
     std::map<UrlConditionId, RuleId>& map) {
-  base::ListValue destinations_urls;
-
-  for (const auto& url : GetAssociatedUrlsConditions(component)) {
-    destinations_urls.Append(url);
+  for (std::string_view url : GetAssociatedUrlsConditions(component)) {
+    AddUrlCondition(url, rule_id, matcher, condition_id, conditions,
+                    patterns_mapping, map);
   }
-
-  if (!destinations_urls.empty()) {
-    AddUrlConditions(matcher, condition_id, &destinations_urls, conditions,
-                     patterns_mapping, rule_id, map);
-  }
-}
-
-void OnSetDlpFilesPolicy(const ::dlp::SetDlpFilesPolicyResponse response) {
-  data_controls::DlpBooleanHistogram(
-      data_controls::dlp::kErrorsFilesPolicySetup,
-      response.has_error_message());
-  if (response.has_error_message()) {
-    DlpScopedFileAccessDelegate::DeleteInstance();
-    LOG(ERROR) << "Failed to set DLP Files policy and start DLP daemon, error: "
-               << response.error_message();
-    return;
-  }
-  DCHECK(chromeos::DlpClient::Get()->IsAlive());
-  DlpScopedFileAccessDelegate::Initialize(
-      base::BindRepeating(chromeos::DlpClient::Get));
 }
 
 ::dlp::DlpRuleLevel GetLevelProtoEnum(const DlpRulesManager::Level level) {
@@ -180,9 +153,10 @@ DlpRulesManager::Level DlpRulesManagerImpl::IsRestrictedComponent(
     Restriction restriction,
     std::string* out_source_pattern,
     RuleMetadata* out_rule_metadata) const {
-  DCHECK(src_url_matcher_);
-  DCHECK(restriction == Restriction::kClipboard ||
-         restriction == Restriction::kFiles);
+  CHECK(src_url_matcher_, base::NotFatalUntil::M161);
+  CHECK(restriction == Restriction::kClipboard ||
+            restriction == Restriction::kFiles,
+        base::NotFatalUntil::M161);
 
   if (destination == data_controls::Component::kUnknownComponent) {
     return DlpRulesManager::Level::kAllow;
@@ -232,9 +206,10 @@ DlpRulesManager::Level DlpRulesManagerImpl::IsRestrictedComponent(
 DlpRulesManager::AggregatedComponents
 DlpRulesManagerImpl::GetAggregatedComponents(const GURL& source,
                                              Restriction restriction) const {
-  DCHECK(src_url_matcher_);
-  DCHECK(restriction == Restriction::kClipboard ||
-         restriction == Restriction::kFiles);
+  CHECK(src_url_matcher_, base::NotFatalUntil::M161);
+  CHECK(restriction == Restriction::kClipboard ||
+            restriction == Restriction::kFiles,
+        base::NotFatalUntil::M161);
 
   std::map<Level, std::set<data_controls::Component>> result;
   for (data_controls::Component component : data_controls::kAllComponents) {
@@ -249,8 +224,8 @@ DlpRulesManagerImpl::GetAggregatedComponents(const GURL& source,
 
 DlpRulesManagerImpl::DlpRulesManagerImpl(PrefService* local_state,
                                          Profile* profile)
-    : DlpRulesManager(profile) {
-  pref_change_registrar_.Init(local_state);
+    : DlpRulesManager(profile), local_state_(CHECK_DEREF(local_state)) {
+  pref_change_registrar_.Init(&local_state_.get());
   pref_change_registrar_.Add(
       policy_prefs::kDlpRulesList,
       base::BindRepeating(&DlpRulesManagerImpl::OnDataLeakPreventionRulesUpdate,
@@ -266,8 +241,7 @@ DlpRulesManagerImpl::DlpRulesManagerImpl(PrefService* local_state,
 }
 
 bool DlpRulesManagerImpl::IsReportingEnabled() const {
-  return g_browser_process->local_state()->GetBoolean(
-      policy_prefs::kDlpReportingEnabled);
+  return local_state_->GetBoolean(policy_prefs::kDlpReportingEnabled);
 }
 
 data_controls::DlpReportingManager* DlpRulesManagerImpl::GetReportingManager()
@@ -280,8 +254,7 @@ DlpFilesController* DlpRulesManagerImpl::GetDlpFilesController() const {
 }
 
 size_t DlpRulesManagerImpl::GetClipboardCheckSizeLimitInBytes() const {
-  return pref_change_registrar_.prefs()->GetInteger(
-      policy_prefs::kDlpClipboardCheckSizeLimit);
+  return local_state_->GetInteger(policy_prefs::kDlpClipboardCheckSizeLimit);
 }
 
 bool DlpRulesManagerImpl::IsFilesPolicyEnabled() const {
@@ -294,6 +267,37 @@ bool DlpRulesManagerImpl::IsFilesPolicyEnabled() const {
 void DlpRulesManagerImpl::DlpDaemonRestarted() {
   // This should trigger re-notification of DLP daemon if needed.
   OnDataLeakPreventionRulesUpdate();
+}
+
+void DlpRulesManagerImpl::OnSetDlpFilesPolicy(
+    const ::dlp::SetDlpFilesPolicyResponse response) {
+  data_controls::DlpBooleanHistogram(
+      data_controls::dlp::kErrorsFilesPolicySetup,
+      response.has_error_message());
+
+  // Always initialize the delegate so that file accesses are routed to the
+  // daemon. If the daemon timed out or returned an error during policy setup,
+  // keeping the delegate initialized prevents failing open locally in Chrome
+  // while a retry is pending.
+  DlpScopedFileAccessDelegate::Initialize(
+      base::BindRepeating(chromeos::DlpClient::Get));
+
+  if (response.has_error_message()) {
+    LOG(ERROR) << "Failed to set DLP Files policy and start DLP daemon, error: "
+               << response.error_message();
+    const base::TimeDelta delay = set_files_policy_retry_delay_;
+    set_files_policy_retry_delay_ = std::min(set_files_policy_retry_delay_ * 2,
+                                             kMaxSetFilesPolicyRetryDelay);
+    set_files_policy_retry_timer_.Start(
+        FROM_HERE, delay,
+        base::BindOnce(&DlpRulesManagerImpl::OnDataLeakPreventionRulesUpdate,
+                       weak_ptr_factory_.GetWeakPtr()));
+    return;
+  }
+
+  set_files_policy_retry_timer_.Stop();
+  set_files_policy_retry_delay_ = kInitialSetFilesPolicyRetryDelay;
+  CHECK(chromeos::DlpClient::Get()->IsAlive(), base::NotFatalUntil::M161);
 }
 
 void DlpRulesManagerImpl::Shutdown() {
@@ -317,9 +321,10 @@ void DlpRulesManagerImpl::OnDataLeakPreventionRulesUpdate() {
   dst_conditions_.clear();
   rules_id_metadata_mapping_.clear();
   files_controller_ = nullptr;
+  set_files_policy_retry_timer_.Stop();
 
   const base::ListValue& rules_list =
-      g_browser_process->local_state()->GetList(policy_prefs::kDlpRulesList);
+      local_state_->GetList(policy_prefs::kDlpRulesList);
 
   data_controls::DlpBooleanHistogram(data_controls::dlp::kDlpPolicyPresentUMA,
                                      !rules_list.empty());
@@ -338,35 +343,41 @@ void DlpRulesManagerImpl::OnDataLeakPreventionRulesUpdate() {
   for (const base::Value& rule_value : rules_list) {
     const base::DictValue& rule = rule_value.GetDict();
     const base::DictValue* sources = rule.FindDict("sources");
-    DCHECK(sources);
+    CHECK(sources, base::NotFatalUntil::M161);
     const base::ListValue* sources_urls = sources->FindList("urls");
-    DCHECK(sources_urls);  // This DCHECK should be removed when other types are
-                           // supported as sources.
+    CHECK(sources_urls,
+          base::NotFatalUntil::M161);  // This DCHECK should be removed when
+                                       // other types are supported as sources.
 
-    AddUrlConditions(src_url_matcher_.get(), src_url_condition_id, sources_urls,
-                     src_conditions_, src_patterns_mapping_, rules_counter,
-                     src_url_rules_mapping_);
+    for (const auto& list_entry : *sources_urls) {
+      AddUrlCondition(list_entry.GetString(), rules_counter,
+                      src_url_matcher_.get(), src_url_condition_id,
+                      src_conditions_, src_patterns_mapping_,
+                      src_url_rules_mapping_);
+    }
 
     const base::DictValue* destinations = rule.FindDict("destinations");
     const base::ListValue* destinations_urls =
         destinations ? destinations->FindList("urls") : nullptr;
     if (destinations_urls) {
-      AddUrlConditions(dst_url_matcher_.get(), dst_url_condition_id,
-                       destinations_urls, dst_conditions_,
-                       dst_patterns_mapping_, rules_counter,
-                       dst_url_rules_mapping_);
+      for (const auto& list_entry : *destinations_urls) {
+        AddUrlCondition(list_entry.GetString(), rules_counter,
+                        dst_url_matcher_.get(), dst_url_condition_id,
+                        dst_conditions_, dst_patterns_mapping_,
+                        dst_url_rules_mapping_);
+      }
     }
     const base::ListValue* destinations_components =
         destinations ? destinations->FindList("components") : nullptr;
     if (destinations_components) {
       for (const auto& component : *destinations_components) {
-        DCHECK(component.is_string());
+        CHECK(component.is_string(), base::NotFatalUntil::M161);
         data_controls::Component component_mapping =
             data_controls::GetComponentMapping(component.GetString());
         components_rules_[component_mapping].insert(rules_counter);
-        AddAssociatedUrlConditions(component_mapping, dst_url_matcher_.get(),
-                                   dst_url_condition_id, dst_conditions_,
-                                   dst_patterns_mapping_, rules_counter,
+        AddAssociatedUrlConditions(component_mapping, rules_counter,
+                                   dst_url_matcher_.get(), dst_url_condition_id,
+                                   dst_conditions_, dst_patterns_mapping_,
                                    dst_url_rules_mapping_);
       }
     }
@@ -381,13 +392,13 @@ void DlpRulesManagerImpl::OnDataLeakPreventionRulesUpdate() {
     }
 
     const base::ListValue* restrictions = rule.FindList("restrictions");
-    DCHECK(restrictions);
+    CHECK(restrictions, base::NotFatalUntil::M161);
     for (const auto& restriction_value : *restrictions) {
       const base::DictValue& restriction = restriction_value.GetDict();
       const std::string* rule_class_str = restriction.FindString("class");
-      DCHECK(rule_class_str);
+      CHECK(rule_class_str, base::NotFatalUntil::M161);
       const std::string* rule_level_str = restriction.FindString("level");
-      DCHECK(rule_level_str);
+      CHECK(rule_level_str, base::NotFatalUntil::M161);
 
       const Restriction rule_restriction =
           data_controls::Rule::StringToRestriction(*rule_class_str);
@@ -407,20 +418,20 @@ void DlpRulesManagerImpl::OnDataLeakPreventionRulesUpdate() {
           (rule_has_destinations || rule_has_components)) {
         ::dlp::DlpFilesRule files_rule;
         for (const auto& url : *sources_urls) {
-          DCHECK(url.is_string());
+          CHECK(url.is_string(), base::NotFatalUntil::M161);
           files_rule.add_source_urls(url.GetString());
         }
 
         if (rule_has_destinations) {
           for (const auto& url : *destinations_urls) {
-            DCHECK(url.is_string());
+            CHECK(url.is_string(), base::NotFatalUntil::M161);
             files_rule.add_destination_urls(url.GetString());
           }
         }
 
         if (rule_has_components) {
           for (const auto& component : *destinations_components) {
-            DCHECK(component.is_string());
+            CHECK(component.is_string(), base::NotFatalUntil::M161);
             files_rule.add_destination_components(
                 data_controls::GetComponentProtoMapping(component.GetString()));
             for (const auto& url :
@@ -459,7 +470,9 @@ void DlpRulesManagerImpl::OnDataLeakPreventionRulesUpdate() {
       data_controls::DlpBooleanHistogram(
           data_controls::dlp::kFilesDaemonStartedUMA, true);
       chromeos::DlpClient::Get()->SetDlpFilesPolicy(
-          request_to_daemon, base::BindOnce(&OnSetDlpFilesPolicy));
+          request_to_daemon,
+          base::BindOnce(&DlpRulesManagerImpl::OnSetDlpFilesPolicy,
+                         weak_ptr_factory_.GetWeakPtr()));
       if (!files_controller_) {
         files_controller_ =
             std::make_unique<DlpFilesControllerAsh>(*this, profile_);
@@ -469,7 +482,9 @@ void DlpRulesManagerImpl::OnDataLeakPreventionRulesUpdate() {
       // The daemon is running, but should be deactivated by sending empty
       // policy.
       chromeos::DlpClient::Get()->SetDlpFilesPolicy(
-          request_to_daemon, base::BindOnce(&OnSetDlpFilesPolicy));
+          request_to_daemon,
+          base::BindOnce(&DlpRulesManagerImpl::OnSetDlpFilesPolicy,
+                         weak_ptr_factory_.GetWeakPtr()));
     } else {
       // The daemon is not running and should not be communicated.
       DlpScopedFileAccessDelegate::DeleteInstance();

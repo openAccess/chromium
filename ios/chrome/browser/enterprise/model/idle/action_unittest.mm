@@ -27,7 +27,6 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_opener.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -52,8 +51,7 @@ class IdleActionTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
@@ -144,11 +142,11 @@ class IdleActionTest : public PlatformTest {
 
  protected:
   web::WebTaskEnvironment task_environment_;
-  raw_ptr<AuthenticationService, DanglingUntriaged> authentication_service_;
   // ScopedTestingLocalState needed for the authentication service.
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   TestProfileManagerIOS profile_manager_;
   std::unique_ptr<ActionFactory> action_factory_;
+  raw_ptr<AuthenticationService> authentication_service_;
   raw_ptr<signin::IdentityManager> identity_manager_;
   std::unique_ptr<FakeBrowsingDataRemover> main_browsing_data_remover_;
   std::unique_ptr<FakeBrowsingDataRemover> incognito_browsing_data_remover_;

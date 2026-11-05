@@ -11,24 +11,8 @@
 import {assertNotReached} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 
-import {ExportPasswordsResult, ExportProgressStatus, ImportEntryStatus, ImportResultsStatus, PageCallbackRouter, PageHandlerFactory, PageHandlerRemote, PasswordAutomaticChangeState, PasswordManagerActionableError, PasswordStoreSet as MojoPasswordStoreSet} from './password_manager.mojom-webui.js';
-import type {ActorLoginPermission, ImportEntry, ImportResults} from './password_manager.mojom-webui.js';
-
-export {
-  ExportPasswordsResult,
-  ExportProgressStatus,
-  ImportEntryStatus,
-  ImportResultsStatus,
-  PageCallbackRouter,
-  PageHandlerFactory,
-  PageHandlerRemote,
-  PasswordAutomaticChangeState,
-  PasswordManagerActionableError,
-};
-export type {
-  ImportEntry,
-  ImportResults,
-};
+import {ImportEntryStatus, ImportResultsStatus, PageCallbackRouter, PageHandlerFactory, PageHandlerRemote, PasswordManagerActionableError, PasswordStoreSet as MojoPasswordStoreSet} from './password_manager.mojom-webui.js';
+import type {ActorLoginPermission, ExportPasswordsResult, ExportProgressStatus, ImportResults} from './password_manager.mojom-webui.js';
 
 export type BlockedSite = chrome.passwordsPrivate.ExceptionEntry;
 
@@ -39,8 +23,6 @@ export type CredentialsChangedListener =
 export type PasswordCheckStatusChangedListener =
     (status: chrome.passwordsPrivate.PasswordCheckStatus) => void;
 export type BlockedSitesListChangedListener = (entries: BlockedSite[]) => void;
-export type PasswordsFileExportProgressListener =
-    (progress: chrome.passwordsPrivate.PasswordExportProgress) => void;
 export type PasswordManagerAuthTimeoutListener = () => void;
 export type PasswordManagerActionableErrorChangedListener =
     (error: chrome.passwordsPrivate.PasswordManagerActionableError) => void;
@@ -334,18 +316,6 @@ export interface PasswordManagerProxy {
   exportPasswords(): Promise<ExportPasswordsResult>;
 
   /**
-   * Add an observer to the export progress.
-   */
-  addPasswordsFileExportProgressListener(
-      listener: PasswordsFileExportProgressListener): void;
-
-  /**
-   * Remove an observer from the export progress.
-   */
-  removePasswordsFileExportProgressListener(
-      listener: PasswordsFileExportProgressListener): void;
-
-  /**
    * Switches Biometric authentication before filling state after
    * successful authentication.
    * @return A promise that resolves with authentication result.
@@ -477,30 +447,6 @@ export interface PasswordManagerProxy {
    * Returns the current actionable error.
    */
   getPasswordManagerActionableError(): Promise<PasswordManagerActionableError>;
-}
-
-/**
- * Maps chrome.passwordsPrivate.ExportProgressStatus to
- * password_manager.mojom.ExportProgressStatus.
- */
-export function toMojoExportProgressStatus(
-    status: chrome.passwordsPrivate.ExportProgressStatus):
-    ExportProgressStatus {
-  const PrivateStatus = chrome.passwordsPrivate.ExportProgressStatus;
-  switch (status) {
-    case PrivateStatus.NOT_STARTED:
-      return ExportProgressStatus.kNotStarted;
-    case PrivateStatus.IN_PROGRESS:
-      return ExportProgressStatus.kInProgress;
-    case PrivateStatus.SUCCEEDED:
-      return ExportProgressStatus.kSucceeded;
-    case PrivateStatus.FAILED_CANCELLED:
-      return ExportProgressStatus.kFailed;
-    case PrivateStatus.FAILED_WRITE_FAILED:
-      return ExportProgressStatus.kFailedWrite;
-    default:
-      return ExportProgressStatus.kNotStarted;
-  }
 }
 
 /**
@@ -717,10 +663,6 @@ export class PasswordManagerImpl implements PasswordManagerProxy {
   }
 
   startBulkPasswordCheck() {
-    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApi')) {
-      chrome.passwordsPrivate.startPasswordCheck().catch(() => {});
-      return;
-    }
     this.handler.startBulkPasswordCheck();
   }
 
@@ -764,7 +706,11 @@ export class PasswordManagerImpl implements PasswordManagerProxy {
 
   removeCredential(
       id: number, fromStores: chrome.passwordsPrivate.PasswordStoreSet) {
-    chrome.passwordsPrivate.removeCredential(id, fromStores);
+    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApiPhase2')) {
+      chrome.passwordsPrivate.removeCredential(id, fromStores);
+      return;
+    }
+    this.handler.removeCredential(id, toMojoPasswordStoreSet(fromStores));
   }
 
   removeBackupPassword(id: number) {
@@ -772,28 +718,28 @@ export class PasswordManagerImpl implements PasswordManagerProxy {
   }
 
   removeBlockedSite(id: number) {
-    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApi')) {
-      chrome.passwordsPrivate.removePasswordException(id);
-      return;
-    }
     this.handler.removePasswordException(id);
   }
 
   muteInsecureCredential(insecureCredential:
                              chrome.passwordsPrivate.PasswordUiEntry) {
-    chrome.passwordsPrivate.muteInsecureCredential(insecureCredential);
+    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApiPhase2')) {
+      chrome.passwordsPrivate.muteInsecureCredential(insecureCredential);
+      return;
+    }
+    this.handler.muteInsecureCredential(insecureCredential.id);
   }
 
   unmuteInsecureCredential(insecureCredential:
                                chrome.passwordsPrivate.PasswordUiEntry) {
-    chrome.passwordsPrivate.unmuteInsecureCredential(insecureCredential);
+    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApiPhase2')) {
+      chrome.passwordsPrivate.unmuteInsecureCredential(insecureCredential);
+      return;
+    }
+    this.handler.unmuteInsecureCredential(insecureCredential.id);
   }
 
   undoRemoveSavedPasswordOrException() {
-    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApi')) {
-      chrome.passwordsPrivate.undoRemoveSavedPasswordOrException();
-      return;
-    }
     this.handler.undoRemoveSavedPasswordOrException();
   }
 
@@ -825,48 +771,16 @@ export class PasswordManagerImpl implements PasswordManagerProxy {
   }
 
   resetImporter(deleteFile: boolean) {
-    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApi')) {
-      return chrome.passwordsPrivate.resetImporter(deleteFile);
-    }
     return this.handler.resetImporter(deleteFile).then(() => {});
   }
 
   requestExportProgressStatus() {
-    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApi')) {
-      return chrome.passwordsPrivate.requestExportProgressStatus().then(
-          status => toMojoExportProgressStatus(status));
-    }
     return this.handler.getPasswordsExportProgress().then(
         response => response.status);
   }
 
   exportPasswords() {
-    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApi')) {
-      return chrome.passwordsPrivate.exportPasswords()
-          .then(() => ExportPasswordsResult.kSuccess)
-          .catch((error: unknown) => {
-            const errorMessage = error instanceof Error ? error.message : error;
-            if (errorMessage === 'in-progress') {
-              return ExportPasswordsResult.kInProgress;
-            }
-            if (errorMessage === 'reauth-failed') {
-              return ExportPasswordsResult.kReauthFailed;
-            }
-            throw error;
-          });
-    }
     return this.handler.requestPasswordsExport().then(({result}) => result);
-  }
-
-  addPasswordsFileExportProgressListener(
-      listener: PasswordsFileExportProgressListener) {
-    chrome.passwordsPrivate.onPasswordsFileExportProgress.addListener(listener);
-  }
-
-  removePasswordsFileExportProgressListener(
-      listener: PasswordsFileExportProgressListener) {
-    chrome.passwordsPrivate.onPasswordsFileExportProgress.removeListener(
-        listener);
   }
 
   switchBiometricAuthBeforeFillingState() {
@@ -926,10 +840,6 @@ export class PasswordManagerImpl implements PasswordManagerProxy {
   }
 
   movePasswordsToAccount(ids: number[]) {
-    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApi')) {
-      chrome.passwordsPrivate.movePasswordsToAccount(ids);
-      return;
-    }
     this.handler.movePasswordsToAccount(ids);
   }
 
@@ -948,17 +858,11 @@ export class PasswordManagerImpl implements PasswordManagerProxy {
   }
 
   disconnectCloudAuthenticator() {
-    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApi')) {
-      return chrome.passwordsPrivate.disconnectCloudAuthenticator();
-    }
     return this.handler.disconnectCloudAuthenticator().then(
         result => result.success);
   }
 
   isConnectedToCloudAuthenticator() {
-    if (!loadTimeData.getBoolean('enablePasswordManagerMojoApi')) {
-      return chrome.passwordsPrivate.isConnectedToCloudAuthenticator();
-    }
     return this.handler.isConnectedToCloudAuthenticator().then(
         result => result.connected);
   }

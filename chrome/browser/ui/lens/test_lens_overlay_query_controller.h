@@ -75,6 +75,17 @@ class MockLensOverlayQueryController : public LensOverlayQueryController {
                std::optional<SkBitmap>),
               (override));
 
+  MOCK_METHOD(std::string, search_session_id, (), (const, override));
+  MOCK_METHOD(std::unique_ptr<lens::LensOverlayRequestId>,
+              GetNextRequestId,
+              (lens::RequestIdUpdateMode,
+               lens::LensOverlayRequestId::MediaType),
+              (override));
+  MOCK_METHOD(std::optional<lens::LensOverlayVisualSearchInteractionData>,
+              GetVisualSearchInteractionData,
+              (),
+              (override));
+
   MOCK_METHOD(const lens::proto::LensOverlaySuggestInputs&,
               GetLensSuggestInputs,
               (),
@@ -137,6 +148,18 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
     fake_cluster_info_response_ = response;
   }
 
+  void set_next_cluster_info_request_should_return_error(
+      bool next_cluster_info_request_should_return_error) {
+    next_cluster_info_request_should_return_error_ =
+        next_cluster_info_request_should_return_error;
+  }
+
+  void set_next_cluster_info_request_should_return_parse_error(
+      bool next_cluster_info_request_should_return_parse_error) {
+    next_cluster_info_request_should_return_parse_error_ =
+        next_cluster_info_request_should_return_parse_error;
+  }
+
   void set_fake_objects_response(lens::LensOverlayObjectsResponse response) {
     fake_objects_response_ = response;
   }
@@ -172,12 +195,30 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
     disable_page_upload_response_callback = disable;
   }
 
+  void set_fake_identity_delegation_headers(
+      std::optional<std::vector<std::string>> headers) {
+    fake_identity_delegation_headers_ = std::move(headers);
+  }
+
+  void set_reject_requests_with_auth_header_with_401(bool reject) {
+    reject_requests_with_auth_header_with_401_ = reject;
+  }
+
   void RunUploadProgressCallback() {
     std::move(last_upload_progress_callback_).Run(1, 1);
   }
 
   // Accessors.
   const GURL& sent_fetch_url() const { return sent_fetch_url_; }
+
+  const std::vector<std::string>& sent_request_headers() const {
+    return sent_request_headers_;
+  }
+
+  const std::vector<std::vector<std::string>>& sent_request_headers_history()
+      const {
+    return sent_request_headers_history_;
+  }
 
   const lens::LensOverlayClientLogs& sent_client_logs() const {
     return sent_client_logs_;
@@ -394,8 +435,17 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
 
   void RunSuggestInputsCallback() override;
 
+  std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
+  CreateOAuthHeadersAndContinue(OAuthHeadersCreatedCallback callback) override;
+
   // The fake response to return for cluster info requests.
   lens::LensOverlayServerClusterInfoResponse fake_cluster_info_response_;
+
+  // If true, the next cluster info request will return an error.
+  bool next_cluster_info_request_should_return_error_ = false;
+
+  // If true, the next cluster info request will return invalid proto data.
+  bool next_cluster_info_request_should_return_parse_error_ = false;
 
   // The fake response to return for objects requests.
   lens::LensOverlayObjectsResponse fake_objects_response_;
@@ -485,6 +535,9 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
   // The last page url sent by the query controller.
   GURL last_sent_page_url_;
 
+  // The last request headers sent by the query controller.
+  std::vector<std::string> sent_request_headers_;
+
   // The last significant region boxes sent to the query controller.
   std::vector<lens::mojom::CenterRotatedBoxPtr>
       last_sent_significant_region_boxes_;
@@ -548,6 +601,17 @@ class TestLensOverlayQueryController : public LensOverlayQueryController {
 
   // The last upload progress callback sent by the query controller.
   UploadProgressCallback last_upload_progress_callback_;
+
+  // Optional fake identity delegation headers to return from
+  // CreateOAuthHeadersAndContinue.
+  std::optional<std::vector<std::string>> fake_identity_delegation_headers_;
+
+  // If true, any request containing an Authorization header will return HTTP
+  // 401 Unauthorized.
+  bool reject_requests_with_auth_header_with_401_ = false;
+
+  // History of request headers sent across all requests.
+  std::vector<std::vector<std::string>> sent_request_headers_history_;
 };
 
 }  // namespace lens

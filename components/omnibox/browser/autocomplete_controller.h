@@ -12,8 +12,8 @@
 
 #include "base/compiler_specific.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/sanitized_object.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
@@ -39,6 +39,7 @@ class ClipboardProvider;
 class ContextualSearchProvider;
 class DocumentProvider;
 class FeaturedSearchProvider;
+class GURL;
 class HistoryFuzzyProvider;
 class HistoryQuickProvider;
 class HistoryURLProvider;
@@ -85,7 +86,7 @@ inline constexpr char kOmniboxGeminiHeader[] = "X-Omnibox-Gemini";
 class AutocompleteController : public AutocompleteProviderListener,
                                public base::trace_event::MemoryDumpProvider {
   // TODO(crbug.com/449894891): Remove this macro once it gets fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   // Describes an autocomplete pass.
@@ -144,6 +145,9 @@ class AutocompleteController : public AutocompleteProviderListener,
     // Invoked when autocomplete stop timer is triggered.
     virtual void OnAutocompleteStopTimerTriggered(
         const AutocompleteInput& input) {}
+
+    // Invoked when the |controller| is being destroyed.
+    virtual void OnControllerDestroying(AutocompleteController* controller) {}
   };
 
   // Converts `UpdateType` to string.
@@ -263,6 +267,17 @@ class AutocompleteController : public AutocompleteProviderListener,
   // Constructs and sets the final destination URL on the given match.
   void SetMatchDestinationURL(AutocompleteMatch* match) const;
 
+  // Computes the alternative navigation match for `match` opened for `input`,
+  // if any, or constructs one for a precomputed `alternate_nav_url`. Used to
+  // suggest a direct navigation when a search was performed for what could be
+  // an intranet hostname.
+  AutocompleteMatch ComputeAlternativeNavMatch(
+      const AutocompleteInput& input,
+      const AutocompleteMatch& match) const;
+  AutocompleteMatch ComputeAlternativeNavMatch(
+      const AutocompleteInput& input,
+      const GURL& alternate_nav_url) const;
+
   HistoryURLProvider* history_url_provider() const {
     return history_url_provider_;
   }
@@ -300,7 +315,7 @@ class AutocompleteController : public AutocompleteProviderListener,
   // Returns whether the given provider should be ran based on whether we're in
   // keyword mode and which keyword we're searching. Currently runs all enabled
   // providers unless in a Starter Pack scope, except for the @tabs scope.
-  bool ShouldRunProvider(AutocompleteProvider* provider) const;
+  bool ShouldRunProvider(const AutocompleteProvider* provider) const;
 
   const base::TimeTicks& last_time_default_match_changed() const {
     return last_time_default_match_changed_;
@@ -340,6 +355,9 @@ class AutocompleteController : public AutocompleteProviderListener,
   FRIEND_TEST_ALL_PREFIXES(
       AutocompleteControllerTest,
       UpdateKeywordDescriptions_StaticContextualSearchSuggestion);
+  FRIEND_TEST_ALL_PREFIXES(
+      AutocompleteControllerTest,
+      UpdateKeywordDescriptions_ContextualSearchSidePanelDescription);
   FRIEND_TEST_ALL_PREFIXES(AutocompleteControllerTest,
                            FilterMatchesForInstantKeywordWithBareAt);
   FRIEND_TEST_ALL_PREFIXES(AutocompleteControllerTest,

@@ -19,15 +19,11 @@
 
 namespace blink {
 
-// For base::PassKey<NavigationAuction>.
-// TODO(crbug.com/1347953): Remove when the accessor is removed.
-class NavigatorAuction;
-
 // FencedFrameConfig class implements the FencedFrameConfig IDL. It specifies
 // the fenced frame's inner properties. It can be returned by shared storage's
-// selectURL() and FLEDGE's runAdAuction(), or directly constructed for
-// navigation to non-opaque URLs. Please see the link for examples of installing
-// FencedFrameConfig in fenced frames.
+// selectURL(), or directly constructed for navigation to non-opaque URLs.
+// Please see the link for examples of installing FencedFrameConfig in fenced
+// frames.
 // https://github.com/WICG/fenced-frame/issues/48#issuecomment-1245809738.
 class CORE_EXPORT FencedFrameConfig final : public ScriptWrappable {
   DEFINE_WRAPPERTYPEINFO();
@@ -52,9 +48,6 @@ class CORE_EXPORT FencedFrameConfig final : public ScriptWrappable {
     kLast = kNull,
   };
 
-  // Create an inner config with a given url, the url will be transparent.
-  static FencedFrameConfig* Create(const String& url);
-
   static FencedFrameConfig* Create(const KURL url,
                                    std::optional<KURL> urn_uuid,
                                    std::optional<gfx::Size> container_size,
@@ -64,9 +57,6 @@ class CORE_EXPORT FencedFrameConfig final : public ScriptWrappable {
 
   static FencedFrameConfig* From(
       const FencedFrame::RedactedFencedFrameConfig& config);
-
-  // Construct an inner config with a given url, the url will be transparent.
-  explicit FencedFrameConfig(const String& url);
 
   explicit FencedFrameConfig(const KURL url,
                              std::optional<KURL> urn_uuid,
@@ -86,8 +76,6 @@ class CORE_EXPORT FencedFrameConfig final : public ScriptWrappable {
   V8UnionOpaquePropertyOrUnsignedLong* width() const;
   V8UnionOpaquePropertyOrUnsignedLong* height() const;
 
-  void setSharedStorageContext(const String& context_string);
-
   // Get attribute's value ignoring visibility.
   template <Attribute attr>
   auto GetValueIgnoringVisibility() const {
@@ -102,12 +90,6 @@ class CORE_EXPORT FencedFrameConfig final : public ScriptWrappable {
   }
 
   std::optional<KURL> urn_uuid(base::PassKey<V8ScriptValueSerializer>) {
-    return urn_uuid_;
-  }
-
-  // Temporary accessor for `deprecatedURNToURL` and `deprecatedReplaceInURN`.
-  // TODO(crbug.com/1347953): Remove when those functions are removed.
-  std::optional<KURL> urn_uuid(base::PassKey<NavigatorAuction>) {
     return urn_uuid_;
   }
 
@@ -223,7 +205,7 @@ class CORE_EXPORT FencedFrameConfig final : public ScriptWrappable {
   // compatibility.
   bool deprecated_should_freeze_initial_size_ = false;
 
-  static_assert(__LINE__ == 226, R"(
+  static_assert(__LINE__ == 208, R"(
 If adding or modifying a field in FencedFrameConfig, be sure to also make
 the field serializable. To do that:
 

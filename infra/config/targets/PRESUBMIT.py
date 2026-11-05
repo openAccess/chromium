@@ -4,9 +4,9 @@
 
 PRESUBMIT_VERSION = '2.0.0'
 
-import os
-import re
-import difflib
+import os  # noqa: E402
+import re  # noqa: E402
+import difflib  # noqa: E402
 
 
 def CheckBundlesOrder(input_api, output_api):
@@ -51,6 +51,8 @@ def CheckBundlesOrder(input_api, output_api):
 
 def CheckLucicfgLint(input_api, output_api):
   """Checks if infra/config/targets/*.star files have lint issue or not."""
+  if not input_api.HasAffectedFiles(extensions='.star'):
+    return []
   d = input_api.PresubmitLocalPath()
   return input_api.RunTests(
     [

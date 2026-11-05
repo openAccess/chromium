@@ -59,9 +59,9 @@ blink::WebCSPSourceList ToWebCSPSourceList(
     const network::mojom::CSPSourceListPtr& source_list) {
   return {base::ToVector(source_list->sources, ToWebCSPSource),
           ToVectorOfWebStrings(source_list->nonces),
-          base::ToVector(source_list->hashes),
-          base::ToVector(source_list->url_hashes),
-          base::ToVector(source_list->eval_hashes),
+          source_list->hashes,
+          source_list->url_hashes,
+          source_list->eval_hashes,
           source_list->allow_self,
           source_list->allow_star,
           source_list->allow_inline,
@@ -112,8 +112,7 @@ network::mojom::ContentSecurityPolicyPtr BuildContentSecurityPolicy(
   return network::mojom::ContentSecurityPolicy::New(
       BuildCSPSource(policy_in.self_origin), std::move(raw_directives),
       std::move(directives), policy_in.upgrade_insecure_requests,
-      policy_in.treat_as_public_address, policy_in.block_all_mixed_content,
-      policy_in.sandbox,
+      policy_in.block_all_mixed_content, policy_in.sandbox,
       network::mojom::ContentSecurityPolicyHeader::New(
           policy_in.header.header_value.Utf8(), policy_in.header.type,
           policy_in.header.source),
@@ -146,7 +145,6 @@ blink::WebContentSecurityPolicy ToWebContentSecurityPolicy(
           raw_directives,
           directives,
           policy_in->upgrade_insecure_requests,
-          policy_in->treat_as_public_address,
           policy_in->block_all_mixed_content,
           policy_in->sandbox,
           ToWebContentSecurityPolicyHeader(policy_in->header),

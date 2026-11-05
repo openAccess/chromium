@@ -7,33 +7,43 @@
 
 #import <UIKit/UIKit.h>
 
+#import "ios/chrome/browser/assistant/ui/assistant_container_delegate.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_view_state_delegate.h"
+#import "ios/chrome/browser/intelligence/bwg/ui/gemini_container_consumer.h"
+#import "ios/chrome/browser/intelligence/bwg/ui/gemini_container_mutator.h"
 #import "ios/chrome/browser/intelligence/zero_state_suggestions/ui/gemini_zero_state_mutator.h"
+
+namespace actor {
+class ActorService;
+}  // namespace actor
 
 namespace gemini {
 enum class EntryPoint;
 }  // namespace gemini
 
+class AuthenticationService;
 class Browser;
 class GeminiContainerMediatorEventHandler;
-class WebStateList;
+class GeminiSharedTabsDelegate;
 @class GeminiConfiguration;
 @class GeminiGatewayManager;
 @class GeminiPageContext;
+@class GeminiSessionMetricsManager;
 @class GeminiStartupState;
 @protocol AssistantContainerCommands;
 @protocol BWGGatewayProtocol;
 @protocol GeminiCommands;
+@protocol GeminiContainerMediatorDelegate;
 @protocol GeminiZeroStateConsumer;
-
-#import "ios/chrome/browser/assistant/ui/assistant_container_delegate.h"
-#import "ios/chrome/browser/assistant/ui/assistant_container_detent.h"
-#import "ios/chrome/browser/intelligence/bwg/ui/gemini_container_consumer.h"
 
 // Mediator for the Gemini container.
 @interface GeminiContainerMediator : NSObject <AssistantContainerDelegate,
+                                               GeminiContainerMutator,
                                                GeminiViewStateDelegate,
                                                GeminiZeroStateMutator>
+
+// Delegate notified of Gemini actuation task transitions.
+@property(nonatomic, weak) id<GeminiContainerMediatorDelegate> delegate;
 
 // Delegate for handling events from the mediator. Temporarily used by
 // `GeminiBrowserAgent` to support pre-migration logic.
@@ -47,21 +57,6 @@ class WebStateList;
 
 // Consumer interface for handling UI updates from the coordinator.
 @property(nonatomic, weak) id<GeminiContainerConsumer> consumer;
-
-// Whether the container grabber is visible.
-@property(nonatomic, assign) BOOL hasGrabber;
-
-// Current detent size of the container.
-@property(nonatomic, assign) AssistantContainerDetent detentSize;
-
-// Whether the container should display the zero state UI.
-@property(nonatomic, assign, getter=isZeroStateVisible) BOOL zeroStateVisible;
-
-// Current processing status of the Gemini client.
-@property(nonatomic, readonly) ios::provider::GeminiClientMode processingStatus;
-
-// Current view mode of the Gemini UI (e.g. chat or live).
-@property(nonatomic, readonly) ios::provider::GeminiViewMode viewMode;
 
 // The gateway for bridging internal protocols.
 @property(nonatomic, readonly) id<BWGGatewayProtocol> gateway;
@@ -77,19 +72,24 @@ class WebStateList;
 
 // TODO(crbug.com/537719170): Mediator should be the target directly.
 // Initializes the mediator with the given dependencies.
-- (instancetype)initWithBrowser:(Browser*)browser
-                   eventHandler:
-                       (GeminiContainerMediatorEventHandler*)eventHandler
+- (instancetype)
+          initWithBrowser:(Browser*)browser
+             actorService:(actor::ActorService*)actorService
+    authenticationService:(AuthenticationService*)authService
+             eventHandler:(GeminiContainerMediatorEventHandler*)eventHandler
+       sharedTabsDelegate:(GeminiSharedTabsDelegate*)sharedTabsDelegate
+    sessionMetricsManager:(GeminiSessionMetricsManager*)sessionMetricsManager
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 
 // TODO(crbug.com/535579970): Move to private after migration is complete.
-// Creates and returns the GeminiConfiguration for the active web state.
+// Creates and returns the GeminiConfiguration for the active web state, using
+// `pageContext` as its initial page context (e.g. an already generated full
+// page context). Falls back to the partial page context when nil.
 - (GeminiConfiguration*)
     createGeminiConfigurationForActiveWebState:(GeminiStartupState*)startupState
-                            baseViewController:
-                                (UIViewController*)baseViewController;
+                                   pageContext:(GeminiPageContext*)pageContext;
 
 // TODO(crbug.com/535579970): Move to private after migration is complete.
 // Applies user preferences (e.g. page content sharing setting) to page context.
@@ -111,25 +111,50 @@ class WebStateList;
 - (BOOL)shouldShowPageLoadingSnackbarOnOpeningInvocationForEntryPoint:
     (gemini::EntryPoint)entryPoint;
 
-// Currently, `GeminiBrowserAgent` does some of the state cleanup after each
-// floaty dismissal, but some of the cleanup such as releasing the handlers
-// happens on GeminiBrowserAgent destruction.
+// Handles initial setup for UI state and page context generation when the
+// container session starts.
+- (void)connect;
+
+// Currently, `GeminiBrowserAgent` does some of the state setup/cleanup on each
+// floaty invocation/dismissal, while full destruction happens on
+// `GeminiBrowserAgent` destruction.
+// `onFloatyInvoked` handles setup (such as attaching `WebState` observers) that
+// should happen on floaty invocation in legacy mode.
 // `onFloatyDismiss` handles all the cleanup that should happen on floaty
 // dismissal.
 // `disconnect` handles all the cleanup that should happen before
 // mediator/`GeminiBrowserAgent` destruction.
 // TODO(crbug.com/535579970): After the migration is done we can merge
-// `onFloatyDismiss` and `disconnect` as for the new code path the lifcylce
-// of floaty and the mediator will be the same, meaning the mediator will be
-// destructed on each floaty dismissal.
+// `onFloatyInvoked`/`onFloatyDismiss` into `connect`/`disconnect` as for the
+// new code path the lifecycle of floaty and the mediator will be the same.
+- (void)onFloatyInvoked;
 - (void)onFloatyDismiss;
 
 // Fetches zero-state suggestions for the active web state.
 - (void)fetchZeroStateSuggestions:(GeminiStartupState*)startupState;
 
+// Handles initial setup for UI state, page context generation, and connecting
+// observed services (e.g. actor service) when the container session starts.
+- (void)connect;
+
 // Disconnects raw pointers owned by the mediator and dismisses handlers.
 // Handles all the cleanup that needs to happen before mediator dealloc.
 - (void)disconnect;
+
+// Updates the mediator and provider state with a new `startupState` when the
+// floaty is already invoked.
+- (void)updateWithStartupState:(GeminiStartupState*)startupState;
+
+// Propagates active page context and shared tabs from `sharedTabsDelegate` to
+// the provider.
+- (void)propagatePageContext:(GeminiPageContext*)pageContext;
+
+// Requests full page context generation for the active web state and propagates
+// it to the provider upon completion.
+- (void)requestActivePageContextGeneration;
+
+// Updates the provider with partial page context for the active web state.
+- (void)updateFloatyWithPartialPageContext;
 
 @end
 

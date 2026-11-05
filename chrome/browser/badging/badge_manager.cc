@@ -7,6 +7,7 @@
 #include <tuple>
 #include <utility>
 
+#include "base/containers/to_vector.h"
 #include "base/i18n/number_formatting.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/default_clock.h"
@@ -14,19 +15,18 @@
 #include "chrome/browser/badging/badge_manager_delegate.h"
 #include "chrome/browser/badging/badge_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/web_applications/app_browser_controller.h"
-#include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"
 #include "chrome/browser/web_applications/web_app_filter.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
 #include "components/ukm/app_source_url_recorder.h"
-#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
-#include "services/metrics/public/cpp/delegating_ukm_recorder.h"
+#include "content/public/browser/service_worker_version_base_info.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/metrics/public/cpp/ukm_recorder.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_ancestor_frame_type.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/strings/grit/ui_strings.h"
 
@@ -81,11 +81,16 @@ void BadgeManager::SetDelegate(std::unique_ptr<BadgeManagerDelegate> delegate) {
 void BadgeManager::BindFrameReceiverIfAllowed(
     content::RenderFrameHost* frame,
     mojo::PendingReceiver<blink::mojom::BadgeService> receiver) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // The Badging API is not allowed for the fenced frames.
   if (frame->IsNestedWithinFencedFrame()) {
     mojo::ReportBadMessage("The Badging API is not allowed in a fenced frame");
+    return;
+  }
+
+  // The Badging API is only allowed in first-party contexts.
+  if (frame->GetStorageKey().IsThirdPartyContext()) {
     return;
   }
 
@@ -96,8 +101,7 @@ void BadgeManager::BindFrameReceiverIfAllowed(
   if (!badge_manager)
     return;
 
-  auto context = std::make_unique<FrameBindingContext>(
-      frame->GetProcess()->GetDeprecatedID(), frame->GetRoutingID());
+  auto context = std::make_unique<FrameBindingContext>(frame->GetGlobalId());
   badge_manager->receivers_.Add(badge_manager, std::move(receiver),
                                 std::move(context));
 }
@@ -106,12 +110,17 @@ void BadgeManager::BindServiceWorkerReceiverIfAllowed(
     content::RenderProcessHost* service_worker_process_host,
     const content::ServiceWorkerVersionBaseInfo& info,
     mojo::PendingReceiver<blink::mojom::BadgeService> receiver) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // The Badging API is not allowed for the fenced frames.
   if (info.ancestor_frame_type ==
       blink::mojom::AncestorFrameType::kFencedFrame) {
     mojo::ReportBadMessage("The Badging API is not allowed in a fenced frame");
+    return;
+  }
+
+  // The Badging API is only allowed in first-party contexts.
+  if (info.storage_key.IsThirdPartyContext()) {
     return;
   }
 
@@ -124,7 +133,7 @@ void BadgeManager::BindServiceWorkerReceiverIfAllowed(
     return;
 
   auto context = std::make_unique<BadgeManager::ServiceWorkerBindingContext>(
-      service_worker_process_host->GetDeprecatedID(), info.scope);
+      service_worker_process_host->GetID(), info.scope, info.storage_key);
 
   badge_manager->receivers_.Add(badge_manager, std::move(receiver),
                                 std::move(context));
@@ -175,6 +184,10 @@ const base::Clock* BadgeManager::SetClockForTesting(const base::Clock* clock) {
   return previous;
 }
 
+void BadgeManager::FlushReceiversForTesting() {
+  receivers_.FlushForTesting();
+}
+
 void BadgeManager::UpdateBadge(const webapps::AppId& app_id,
                                std::optional<BadgeValue> value) {
   web_app::WebAppSyncBridge* sync_bridge =
@@ -212,10 +225,8 @@ void BadgeManager::SetBadge(blink::mojom::BadgeValuePtr mojo_value) {
                          ? std::nullopt
                          : std::make_optional(mojo_value->get_number());
 
-  // ukm::SourceId source_id = ukm::UkmRecorder::GetNewSourceID();
   ukm::UkmRecorder* recorder = ukm::UkmRecorder::Get();
-  for (const auto& app : app_ids_and_urls) {
-    GURL url = std::get<1>(app);
+  for (const auto& [app_id, url] : app_ids_and_urls) {
     // The app's start_url is used to identify the app
     // for recording badging usage per app.
     ukm::SourceId source_id = ukm::AppSourceUrlRecorder::GetSourceIdForPWA(url);
@@ -230,7 +241,7 @@ void BadgeManager::SetBadge(blink::mojom::BadgeValuePtr mojo_value) {
     }
     ukm::AppSourceUrlRecorder::MarkSourceForDeletion(source_id);
 
-    UpdateBadge(/*app_id=*/std::get<0>(app), std::make_optional(value));
+    UpdateBadge(app_id, std::make_optional(value));
   }
 }
 
@@ -239,65 +250,70 @@ void BadgeManager::ClearBadge() {
       receivers_.current_context()->GetAppIdsAndUrlsForBadging();
 
   ukm::UkmRecorder* recorder = ukm::UkmRecorder::Get();
-  for (const auto& app : app_ids_and_urls) {
+  for (const auto& [app_id, url] : app_ids_and_urls) {
     // The app's start_url is used to identify the app
     // for recording badging usage per app.
-    GURL url = std::get<1>(app);
     ukm::SourceId source_id = ukm::AppSourceUrlRecorder::GetSourceIdForPWA(url);
     ukm::builders::Badging(source_id)
         .SetUpdateAppBadge(kClearBadge)
         .Record(recorder);
     ukm::AppSourceUrlRecorder::MarkSourceForDeletion(source_id);
-    UpdateBadge(/*app_id=*/std::get<0>(app), std::nullopt);
+    UpdateBadge(app_id, std::nullopt);
   }
 }
 
 std::vector<std::tuple<webapps::AppId, GURL>>
 BadgeManager::FrameBindingContext::GetAppIdsAndUrlsForBadging() const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  content::RenderFrameHost* frame =
-      content::RenderFrameHost::FromID(process_id_, frame_id_);
-  if (!frame)
-    return std::vector<std::tuple<webapps::AppId, GURL>>{};
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  content::RenderFrameHost* frame = content::RenderFrameHost::FromID(frame_id_);
+  if (!frame || frame->GetStorageKey().IsThirdPartyContext()) {
+    return {};
+  }
 
   const WebAppProvider* provider = WebAppProvider::GetForLocalAppsUnchecked(
       Profile::FromBrowserContext(frame->GetBrowserContext()));
-  if (!provider)
-    return std::vector<std::tuple<webapps::AppId, GURL>>{};
+  if (!provider) {
+    return {};
+  }
 
   const web_app::WebAppRegistrar& registrar = provider->registrar_unsafe();
   const std::optional<webapps::AppId> app_id =
       registrar.FindBestAppWithUrlInScope(
           frame->GetLastCommittedURL(),
           web_app::WebAppFilter::DisplaysBadgeOnOs());
-  if (!app_id)
-    return std::vector<std::tuple<webapps::AppId, GURL>>{};
-  return std::vector<std::tuple<webapps::AppId, GURL>>{std::make_tuple(
-      app_id.value(), registrar.GetAppStartUrl(app_id.value()))};
+  if (!app_id) {
+    return {};
+  }
+  return {{*app_id, registrar.GetAppStartUrl(*app_id)}};
 }
 
 std::vector<std::tuple<webapps::AppId, GURL>>
 BadgeManager::ServiceWorkerBindingContext::GetAppIdsAndUrlsForBadging() const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+
+  if (storage_key_.IsThirdPartyContext()) {
+    return {};
+  }
 
   content::RenderProcessHost* render_process_host =
       content::RenderProcessHost::FromID(process_id_);
-  if (!render_process_host)
-    return std::vector<std::tuple<webapps::AppId, GURL>>{};
+  if (!render_process_host) {
+    return {};
+  }
 
   const WebAppProvider* provider = WebAppProvider::GetForLocalAppsUnchecked(
       Profile::FromBrowserContext(render_process_host->GetBrowserContext()));
-  if (!provider)
-    return std::vector<std::tuple<webapps::AppId, GURL>>{};
+  if (!provider) {
+    return {};
+  }
 
   const web_app::WebAppRegistrar& registrar = provider->registrar_unsafe();
-  std::vector<std::tuple<webapps::AppId, GURL>> app_ids_urls{};
-  for (const auto& app_id : registrar.FindAllAppsNestedInUrl(
-           scope_, web_app::WebAppFilter::DisplaysBadgeOnOs())) {
-    app_ids_urls.push_back(
-        std::make_tuple(app_id, registrar.GetAppStartUrl(app_id)));
-  }
-  return app_ids_urls;
+  return base::ToVector(registrar.FindAllAppsNestedInUrl(
+                            scope_, web_app::WebAppFilter::DisplaysBadgeOnOs()),
+                        [&registrar](const webapps::AppId& app_id) {
+                          return std::tuple{app_id,
+                                            registrar.GetAppStartUrl(app_id)};
+                        });
 }
 
 std::string GetBadgeString(std::optional<uint64_t> badge_content) {

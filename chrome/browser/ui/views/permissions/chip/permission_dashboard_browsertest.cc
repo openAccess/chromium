@@ -4,14 +4,13 @@
 
 #include "base/run_loop.h"
 #include "base/test/run_until.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_chip_interface.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_chip_view.h"
 #include "chrome/browser/ui/views/permissions/chip/permission_dashboard_controller.h"
@@ -23,7 +22,6 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
-#include "components/content_settings/core/common/features.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -56,10 +54,7 @@ class PermissionDashboardBrowserTest : public InProcessBrowserTest {
  public:
   PermissionDashboardBrowserTest()
       : animation_mode_reset_(gfx::AnimationTestApi::SetRichAnimationRenderMode(
-            gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED)) {
-    feature_list_.InitAndEnableFeature(
-        content_settings::features::kLeftHandSideActivityIndicators);
-  }
+            gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED)) {}
 
   PermissionDashboardBrowserTest(const PermissionDashboardBrowserTest&) =
       delete;
@@ -92,8 +87,7 @@ class PermissionDashboardBrowserTest : public InProcessBrowserTest {
   }
 
   LocationBar* location_bar() {
-    return BrowserView::GetBrowserViewForBrowser(browser())
-        ->GetLocationBarView();
+    return BrowserWindow::FromBrowser(browser())->GetLocationBar();
   }
 
   PermissionDashboardController* dashboard_controller() {
@@ -105,7 +99,6 @@ class PermissionDashboardBrowserTest : public InProcessBrowserTest {
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
   // Some of these tests rely on animation being enabled. This forces
   // animation on even if it's turned off in the OS.
   gfx::AnimationTestApi::RenderModeResetter animation_mode_reset_;
@@ -368,5 +361,43 @@ IN_PROC_BROWSER_TEST_F(PermissionDashboardBrowserTest,
           .FireNow();
 
   EXPECT_FALSE(chip->GetVisible());
+}
+
+IN_PROC_BROWSER_TEST_F(PermissionDashboardBrowserTest,
+                       DisplayLHSIndicatorForCameraAllowedAfterBlocked) {
+  PermissionChipInterface* chip = indicator_chip();
+
+  content_settings::PageSpecificContentSettings* pscs =
+      content_settings::PageSpecificContentSettings::GetForFrame(
+          web_contents()->GetPrimaryMainFrame());
+  ASSERT_TRUE(pscs);
+
+  // 1. Show blocked camera indicator and let it collapse and hide.
+  pscs->OnMediaStreamPermissionSet(
+      GURL("http://a.com"),
+      {content_settings::PageSpecificContentSettings::kCameraAccessed,
+       content_settings::PageSpecificContentSettings::kCameraBlocked});
+
+  WaitForAnimationCompletion();
+  EXPECT_TRUE(chip->GetVisible());
+  EXPECT_TRUE(dashboard_controller()->is_verbose());
+
+  dashboard_controller()->get_collapse_timer_for_testing().FireNow();
+  EXPECT_TRUE(base::test::RunUntil([&]() { return chip->IsAnimating(); }));
+  WaitForAnimationCompletion();
+  EXPECT_FALSE(dashboard_controller()->is_verbose());
+
+  pscs->ResetMediaBlockedState(ContentSettingsType::MEDIASTREAM_CAMERA,
+                               /*update_indicators=*/true);
+  EXPECT_FALSE(chip->GetVisible());
+
+  // 2. Subsequent in-use camera indicator should still expand to verbose state.
+  pscs->OnMediaStreamPermissionSet(
+      GURL("http://a.com"),
+      {content_settings::PageSpecificContentSettings::kCameraAccessed});
+
+  WaitForAnimationCompletion();
+  EXPECT_TRUE(chip->GetVisible());
+  EXPECT_TRUE(dashboard_controller()->is_verbose());
 }
 #endif

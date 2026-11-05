@@ -45,7 +45,6 @@ bool IsAppListSearchResultAnApp(AppListSearchResultType result_type) {
     case AppListSearchResultType::kPlayStoreReinstallApp:
     case AppListSearchResultType::kArcAppShortcut:
     case AppListSearchResultType::kInstantApp:
-    case AppListSearchResultType::kGames:
     case AppListSearchResultType::kZeroStateApp:
     case AppListSearchResultType::kAppShortcutV2:
       return true;
@@ -97,7 +96,6 @@ bool IsZeroStateResultType(AppListSearchResultType result_type) {
     case AppListSearchResultType::kDriveSearch:
     case AppListSearchResultType::kKeyboardShortcut:
     case AppListSearchResultType::kOpenTab:
-    case AppListSearchResultType::kGames:
     case AppListSearchResultType::kPersonalization:
     case AppListSearchResultType::kImageSearch:
     case AppListSearchResultType::kSystemInfo:
@@ -231,8 +229,6 @@ std::ostream& operator<<(std::ostream& os, AppListBubblePage page) {
       return os << "None";
     case AppListBubblePage::kApps:
       return os << "Apps";
-    case AppListBubblePage::kAppsCollections:
-      return os << "AppsCollections";
     case AppListBubblePage::kSearch:
       return os << "Search";
     case AppListBubblePage::kAssistant:

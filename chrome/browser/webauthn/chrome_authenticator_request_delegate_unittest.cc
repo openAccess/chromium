@@ -19,13 +19,16 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
+#include "chrome/browser/password_manager/chrome_password_manager_client.h"
 #include "chrome/browser/password_manager/chrome_webauthn_credentials_delegate_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
+#include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/webauthn/authenticator_request_dialog_model.h"
 #include "chrome/browser/webauthn/chrome_web_authentication_delegate.h"
 #include "chrome/browser/webauthn/fake_password_credential_fetcher.h"
@@ -34,13 +37,14 @@
 #include "chrome/browser/webauthn/password_credential_fetcher.h"
 #include "chrome/browser/webauthn/password_credential_ui_controller.h"
 #include "chrome/browser/webauthn/webauthn_pref_names.h"
+#include "chrome/browser/webauthn/webauthn_scoped_fake_unexportable_key_provider.h"
 #include "chrome/browser/webauthn/webauthn_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 #include "chrome/browser/signin/dice_tab_helper.h"
-#include "chrome/browser/ui/signin/signin_qrcode_model.h"
+#include "components/signin/public/base/signin_switches.h"
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_service.h"
@@ -55,15 +59,17 @@
 #include "content/public/browser/authenticator_request_client_delegate.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/test/web_contents_tester.h"
-#include "crypto/scoped_fake_unexportable_key_provider.h"
+#include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/fido/cable/v2_constants.h"
 #include "device/fido/discoverable_credential_metadata.h"
+#include "device/fido/fido_device_authenticator.h"
 #include "device/fido/fido_discovery_factory.h"
 #include "device/fido/fido_request_handler_base.h"
 #include "device/fido/public/features.h"
 #include "device/fido/public/fido_constants.h"
 #include "device/fido/public/fido_types.h"
 #include "device/fido/public/public_key_credential_user_entity.h"
+#include "device/fido/virtual_ctap2_device.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -136,6 +142,24 @@ class MockCableDiscoveryFactory : public device::FidoDiscoveryFactory {
   std::optional<std::array<uint8_t, device::cablev2::kQRKeySize>> qr_key;
 };
 
+class MockPasswordManagerClient : public ChromePasswordManagerClient {
+ public:
+  static MockPasswordManagerClient* Create(content::WebContents* contents) {
+    auto client = std::make_unique<MockPasswordManagerClient>(contents);
+    auto* raw = client.get();
+    contents->SetUserData(UserDataKey(), std::move(client));
+    return raw;
+  }
+
+  explicit MockPasswordManagerClient(content::WebContents* web_contents)
+      : ChromePasswordManagerClient(web_contents) {}
+
+  MOCK_METHOD(void,
+              TriggerPersonalizationAndTrustSurvey,
+              (std::string_view),
+              (override));
+};
+
 class ChromeAuthenticatorRequestDelegateTest
     : public ChromeRenderViewHostTestHarness {
  public:
@@ -145,6 +169,11 @@ class ChromeAuthenticatorRequestDelegateTest
 
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
+    // Keeps `DiceTabHelper` from creating a real Bluetooth adapter on the
+    // Chrome sign-in page.
+    bluetooth_values_ =
+        device::BluetoothAdapterFactory::Get()->InitGlobalOverrideValues();
+    bluetooth_values_->SetLESupported(false);
     PasskeyModelFactory::GetInstance()->SetTestingFactoryAndUse(
         profile(),
         base::BindRepeating(
@@ -167,6 +196,8 @@ class ChromeAuthenticatorRequestDelegateTest
 
  protected:
   Observer observer_;
+  std::unique_ptr<device::BluetoothAdapterFactory::GlobalOverrideValues>
+      bluetooth_values_;
 };
 
 class TestAuthenticatorModelObserver final
@@ -335,6 +366,43 @@ TEST_F(ChromeAuthenticatorRequestDelegateTest, ConditionalUI) {
   }
 }
 
+// Conditional and ambient requests must not dispatch to external authenticators
+// (e.g. USB security keys) before the user selects an option. Otherwise, an
+// authenticator that cannot satisfy the request can end it with a page-modal
+// error.
+TEST_F(ChromeAuthenticatorRequestDelegateTest,
+       PassiveRequestsDeferExternalAuthenticatorDispatch) {
+  content::WebContentsTester::For(web_contents())
+      ->NavigateAndCommit(GURL("https://example.com"));
+  ChromeWebAuthnCredentialsDelegateFactory::CreateForWebContents(
+      web_contents());
+
+  device::FidoDeviceAuthenticator usb_authenticator(
+      std::make_unique<device::VirtualCtap2Device>());
+  ASSERT_EQ(usb_authenticator.AuthenticatorTransport(),
+            device::FidoTransportProtocol::kUsbHumanInterfaceDevice);
+
+  const struct {
+    UIPresentation ui_presentation;
+    bool expect_embedder_controls_dispatch;
+  } kTests[] = {
+      {UIPresentation::kAutofill, true},
+      {UIPresentation::kAmbient, true},
+      {UIPresentation::kModal, false},
+  };
+  for (const auto& test : kTests) {
+    SCOPED_TRACE(static_cast<int>(test.ui_presentation));
+    ChromeAuthenticatorRequestDelegate delegate(main_rfh());
+    delegate.SetUIPresentation(test.ui_presentation);
+    delegate.SetRelyingPartyId(kRpId);
+    TransportAvailabilityInfo transports_info;
+    transports_info.request_type = device::FidoRequestType::kGetAssertion;
+    delegate.OnTransportAvailabilityEnumerated(std::move(transports_info));
+    EXPECT_EQ(delegate.EmbedderControlsAuthenticatorDispatch(usb_authenticator),
+              test.expect_embedder_controls_dispatch);
+  }
+}
+
 TEST_F(ChromeAuthenticatorRequestDelegateTest, FilterGoogleComPasskeys) {
   auto HasCreds = device::FidoRequestHandlerBase::RecognizedCredential::
       kHasRecognizedCredential;
@@ -469,8 +537,14 @@ TEST_F(ChromeAuthenticatorRequestDelegateTest,
 }
 
 class EnclaveAuthenticatorRequestDelegateTest
-    : public ChromeAuthenticatorRequestDelegateTest {
+    : public ChromeAuthenticatorRequestDelegateTest,
+      public testing::WithParamInterface<bool> {
  public:
+  EnclaveAuthenticatorRequestDelegateTest() {
+    scoped_feature_list_.InitWithFeatureState(
+        device::kWebAuthnSoftwareKeysWhenTpmAbsent, GetParam());
+  }
+
   void SetUp() override {
     ChromeAuthenticatorRequestDelegateTest::SetUp();
     SyncServiceFactory::GetInstance()->SetTestingFactory(
@@ -480,9 +554,16 @@ class EnclaveAuthenticatorRequestDelegateTest
           return std::make_unique<syncer::TestSyncService>();
         }));
   }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-TEST_F(EnclaveAuthenticatorRequestDelegateTest,
+INSTANTIATE_TEST_SUITE_P(All,
+                         EnclaveAuthenticatorRequestDelegateTest,
+                         testing::Bool());
+
+TEST_P(EnclaveAuthenticatorRequestDelegateTest,
        BrowserProvidedPasskeysAvailable) {
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile());
@@ -496,7 +577,7 @@ TEST_F(EnclaveAuthenticatorRequestDelegateTest,
       // sync unexp result
       {true, true, true},
       {false, true, false},
-      {true, false, false},
+      {true, false, GetParam()},
   };
   for (const auto& test : kTestCases) {
     SCOPED_TRACE(testing::Message()
@@ -510,12 +591,12 @@ TEST_F(EnclaveAuthenticatorRequestDelegateTest,
     test_sync_service->GetUserSettings()->SetSelectedType(
         syncer::UserSelectableType::kPasswords, test.is_syncing_passwords);
 
-    std::variant<crypto::ScopedNullUnexportableKeyProvider,
-                 crypto::ScopedFakeUnexportableKeyProvider>
+    std::variant<WebAuthnScopedNullUnexportableKeyProvider,
+                 WebAuthnScopedFakeUnexportableKeyProvider>
         unexportable_key_provider;
     if (test.has_unexportable_keys) {
       unexportable_key_provider
-          .emplace<crypto::ScopedFakeUnexportableKeyProvider>();
+          .emplace<WebAuthnScopedFakeUnexportableKeyProvider>();
     }
 
     base::test::TestFuture<bool> future;
@@ -528,7 +609,7 @@ TEST_F(EnclaveAuthenticatorRequestDelegateTest,
 
 // This test is separated from BrowserProvidedPasskeysAvailable because ChromeOS
 // does not support clearing the primary account once Chrome is running.
-TEST_F(EnclaveAuthenticatorRequestDelegateTest,
+TEST_P(EnclaveAuthenticatorRequestDelegateTest,
        BrowserProvidedPasskeysAvailable_NoAccount) {
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile());
@@ -536,7 +617,7 @@ TEST_F(EnclaveAuthenticatorRequestDelegateTest,
       SyncServiceFactory::GetInstance()->GetForProfile(profile()));
   test_sync_service->GetUserSettings()->SetSelectedType(
       syncer::UserSelectableType::kPasswords, true);
-  crypto::ScopedFakeUnexportableKeyProvider unexportable_key_provider;
+  WebAuthnScopedFakeUnexportableKeyProvider unexportable_key_provider;
 
   {
     base::test::TestFuture<bool> future;
@@ -563,7 +644,7 @@ TEST_F(EnclaveAuthenticatorRequestDelegateTest,
 // BrowserProvidedPasskeysAvailable() return true. Sync-the-feature should not
 // be necessary as long as the user consented to using passwords and passkeys
 // from their Google account.
-TEST_F(EnclaveAuthenticatorRequestDelegateTest,
+TEST_P(EnclaveAuthenticatorRequestDelegateTest,
        BrowserProvidedPasskeysAvailableForSignedInUsers) {
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile());
@@ -576,7 +657,7 @@ TEST_F(EnclaveAuthenticatorRequestDelegateTest,
   test_sync_service->SetSignedIn(signin::ConsentLevel::kSignin);
   test_sync_service->GetUserSettings()->SetSelectedType(
       syncer::UserSelectableType::kPasswords, true);
-  crypto::ScopedFakeUnexportableKeyProvider unexportable_key_provider;
+  WebAuthnScopedFakeUnexportableKeyProvider unexportable_key_provider;
 
   base::test::TestFuture<bool> future;
   ChromeWebAuthenticationDelegate delegate;
@@ -896,10 +977,12 @@ TEST_F(ChromeAuthenticatorRequestDelegateTest, ImmediateMediationRateLimit) {
   }
 }
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-TEST_F(ChromeAuthenticatorRequestDelegateTest, SigninQRCodeModelPopulation) {
-  // 1. Initialize the sign-in flow on the DiceTabHelper of the WebContents.
-  // This makes `IsChromeSigninPage(main_rfh())` return `true`.
+#if BUILDFLAG(IS_WIN)
+TEST_F(ChromeAuthenticatorRequestDelegateTest, MagiChromeForceHybridDiscovery) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      switches::kMagiChromePasskeySignIn, {{"flow_type", "autofill"}});
+
   DiceTabHelper::CreateForWebContents(web_contents());
   DiceTabHelper::FromWebContents(web_contents())
       ->InitializeSigninFlow(
@@ -907,19 +990,503 @@ TEST_F(ChromeAuthenticatorRequestDelegateTest, SigninQRCodeModelPopulation) {
           signin_metrics::Reason::kSigninPrimaryAccount,
           signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO, GURL(),
           /*record_signin_started_metrics=*/false, base::DoNothing(),
-          base::DoNothing(), base::DoNothing(), base::DoNothing());
+          base::DoNothing(), base::DoNothing());
 
-  // 2. Instantiate the delegate.
   MockCableDiscoveryFactory discovery_factory;
-  std::unique_ptr<ChromeAuthenticatorRequestDelegate> delegate =
-      std::make_unique<ChromeAuthenticatorRequestDelegate>(main_rfh());
-  delegate->SetRelyingPartyId(kRpId);
+  ChromeAuthenticatorRequestDelegate delegate(main_rfh());
+  delegate.SetRelyingPartyId(kRpId);
 
-  // Verify that the model is initially empty/does not exist.
-  EXPECT_FALSE(SigninQRCodeModel::FromWebContents(web_contents()));
+  delegate.ConfigureDiscoveries(url::Origin::Create(GURL(kOrigin)), kOrigin,
+                                content::AuthenticatorRequestClientDelegate::
+                                    RequestSource::kWebAuthentication,
+                                device::FidoRequestType::kGetAssertion,
+                                device::ResidentKeyRequirement::kRequired,
+                                device::UserVerificationRequirement::kRequired,
+                                /*cmtg_key_requested=*/false,
+                                /*user_name=*/std::nullopt,
+                                /*is_enclave_authenticator_available=*/false,
+                                &discovery_factory);
 
-  // 3. Configure discoveries, which triggers caBLEv2 QR code generation and
-  // populates the SigninQRCodeModel.
+  EXPECT_TRUE(discovery_factory.force_hybrid_discovery());
+}
+#endif  // BUILDFLAG(IS_WIN)
+
+class ChromeAuthenticatorRequestDelegateHybridPasskeyTestBase
+    : public ChromeAuthenticatorRequestDelegateTest {
+ protected:
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  void SetUpChromeSigninPage() {
+    feature_list_.InitAndEnableFeatureWithParameters(
+        switches::kMagiChromePasskeySignIn, {{"flow_type", "autofill"}});
+
+    DiceTabHelper::CreateForWebContents(web_contents());
+    DiceTabHelper::FromWebContents(web_contents())
+        ->InitializeSigninFlow(
+            GURL(kOrigin), signin_metrics::AccessPoint::kSettings,
+            signin_metrics::Reason::kSigninPrimaryAccount,
+            signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO, GURL(),
+            /*record_signin_started_metrics=*/false, base::DoNothing(),
+            base::DoNothing(), base::DoNothing());
+  }
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+
+  std::unique_ptr<ChromeAuthenticatorRequestDelegate> CreateDelegate(
+      MockCableDiscoveryFactory* discovery_factory) {
+    auto delegate =
+        std::make_unique<ChromeAuthenticatorRequestDelegate>(main_rfh());
+    delegate->SetRelyingPartyId(kRpId);
+    delegate->ConfigureDiscoveries(
+        url::Origin::Create(GURL(kOrigin)), kOrigin,
+        content::AuthenticatorRequestClientDelegate::RequestSource::
+            kWebAuthentication,
+        device::FidoRequestType::kGetAssertion,
+        device::ResidentKeyRequirement::kRequired,
+        device::UserVerificationRequirement::kRequired,
+        /*cmtg_key_requested=*/false,
+        /*user_name=*/std::nullopt,
+        /*is_enclave_authenticator_available=*/false, discovery_factory);
+    return delegate;
+  }
+
+  base::test::ScopedFeatureList feature_list_;
+  base::HistogramTester histogram_tester_;
+};
+
+// The context in which a hybrid request is made.
+enum class HybridOutcomeContext {
+  // A regular website.
+  kWebsite,
+  // The Chrome sign-in page, with the MagiChrome passkey feature enabled.
+  kChromeSignin,
+};
+
+// Tests `WebAuthentication.Hybrid.Outcome`, which is recorded in every context,
+// and `Signin.HybridPasskey.Outcome`, which is only recorded for Chrome sign-in
+// requests.
+class ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest
+    : public ChromeAuthenticatorRequestDelegateHybridPasskeyTestBase,
+      public testing::WithParamInterface<HybridOutcomeContext> {
+ public:
+  void SetUp() override {
+    ChromeAuthenticatorRequestDelegateHybridPasskeyTestBase::SetUp();
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+    if (GetParam() == HybridOutcomeContext::kChromeSignin) {
+      SetUpChromeSigninPage();
+    }
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+  }
+
+ protected:
+  static constexpr char kGeneralOutcome[] = "WebAuthentication.Hybrid.Outcome";
+  static constexpr char kSigninOutcome[] = "Signin.HybridPasskey.Outcome";
+
+  using Outcome = ChromeAuthenticatorRequestDelegate::HybridPasskeyOutcome;
+
+  bool IsChromeSignin() const {
+    return GetParam() == HybridOutcomeContext::kChromeSignin;
+  }
+
+  void ExpectUniqueOutcome(Outcome outcome, int count) {
+    histogram_tester_.ExpectUniqueSample(kGeneralOutcome, outcome, count);
+    if (IsChromeSignin()) {
+      histogram_tester_.ExpectUniqueSample(kSigninOutcome, outcome, count);
+    } else {
+      histogram_tester_.ExpectTotalCount(kSigninOutcome, 0);
+    }
+  }
+
+  void ExpectOutcomeBucketCount(Outcome outcome, int count) {
+    histogram_tester_.ExpectBucketCount(kGeneralOutcome, outcome, count);
+    if (IsChromeSignin()) {
+      histogram_tester_.ExpectBucketCount(kSigninOutcome, outcome, count);
+    } else {
+      histogram_tester_.ExpectTotalCount(kSigninOutcome, 0);
+    }
+  }
+
+  void ExpectTotalOutcomeCount(int count) {
+    histogram_tester_.ExpectTotalCount(kGeneralOutcome, count);
+    histogram_tester_.ExpectTotalCount(kSigninOutcome,
+                                       IsChromeSignin() ? count : 0);
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+    testing::Values(
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+        HybridOutcomeContext::kChromeSignin,
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+        HybridOutcomeContext::kWebsite),
+    [](const testing::TestParamInfo<HybridOutcomeContext>& info) {
+      return info.param == HybridOutcomeContext::kWebsite ? "Website"
+                                                          : "ChromeSignin";
+    });
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest, Success) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kPhoneConnected);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kReady);
+
+  delegate->OnTransactionSuccessful(
+      content::AuthenticatorRequestClientDelegate::RequestSource::
+          kWebAuthentication,
+      device::FidoRequestType::kGetAssertion,
+      device::AuthenticatorType::kPhone);
+
+  ExpectUniqueOutcome(Outcome::kSuccess, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       NonHybridSuccessDoesNotRecordOutcome) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  // When signing in with a non-hybrid passkey (e.g. Enclave), no hybrid
+  // outcome or drop-off should be logged.
+  delegate->OnTransactionSuccessful(
+      content::AuthenticatorRequestClientDelegate::RequestSource::
+          kWebAuthentication,
+      device::FidoRequestType::kGetAssertion,
+      device::AuthenticatorType::kEnclave);
+  delegate.reset();
+
+  ExpectTotalOutcomeCount(0);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       NonPhoneFailureAfterScanRecordsOtherAuthenticatorUsed) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  base::MockCallback<base::OnceClosure> cancel_callback;
+  EXPECT_CALL(cancel_callback, Run());
+  delegate->RegisterActionCallbacks(
+      cancel_callback.Get(),
+      /*immediate_not_found_callback=*/base::DoNothing(),
+      /*start_over_callback=*/base::DoNothing(),
+      /*account_preselected_callback=*/base::DoNothing(),
+      /*password_selected_callback=*/base::DoNothing(),
+      /*request_callback=*/base::DoNothing(),
+      /*cancel_ui_timeout_callback=*/base::DoNothing(),
+      /*bluetooth_adapter_power_on_callback=*/base::DoNothing(),
+      /*bluetooth_query_status_callback=*/base::DoNothing());
+
+  // The user scans the QR code, then a different authenticator fails. This is
+  // recorded as kOtherAuthenticatorUsed, not mapped from the failure reason.
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kPhoneConnected);
+  delegate->OnTransactionFailed(
+      device::AuthenticatorType::kOther,
+      ChromeAuthenticatorRequestDelegate::InterestingFailureReason::
+          kUserConsentDenied);
+  ExpectUniqueOutcome(Outcome::kOtherAuthenticatorUsed, 1);
+
+  // Dismissing the resulting error dialog doesn't record another sample.
+  delegate->OnCancelRequest();
+  ExpectTotalOutcomeCount(1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       NoScanOnDestroyDoesNotRecordOutcome) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  // Destroying the delegate without scanning (no caBLE events) does not record
+  // an outcome.
+  delegate.reset();
+
+  ExpectTotalOutcomeCount(0);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       NoScanOnCancelDoesNotRecordOutcome) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  base::MockCallback<base::OnceClosure> cancel_callback;
+  EXPECT_CALL(cancel_callback, Run());
+  delegate->RegisterActionCallbacks(
+      cancel_callback.Get(),
+      /*immediate_not_found_callback=*/base::DoNothing(),
+      /*start_over_callback=*/base::DoNothing(),
+      /*account_preselected_callback=*/base::DoNothing(),
+      /*password_selected_callback=*/base::DoNothing(),
+      /*request_callback=*/base::DoNothing(),
+      /*cancel_ui_timeout_callback=*/base::DoNothing(),
+      /*bluetooth_adapter_power_on_callback=*/base::DoNothing(),
+      /*bluetooth_query_status_callback=*/base::DoNothing());
+
+  // Cancelling the request without scanning (no caBLE events) does not record
+  // an outcome.
+  delegate->OnCancelRequest();
+
+  ExpectTotalOutcomeCount(0);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       CancelledAfterBleAdvertReceived) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  base::MockCallback<base::OnceClosure> cancel_callback;
+  EXPECT_CALL(cancel_callback, Run());
+  delegate->RegisterActionCallbacks(
+      cancel_callback.Get(),
+      /*immediate_not_found_callback=*/base::DoNothing(),
+      /*start_over_callback=*/base::DoNothing(),
+      /*account_preselected_callback=*/base::DoNothing(),
+      /*password_selected_callback=*/base::DoNothing(),
+      /*request_callback=*/base::DoNothing(),
+      /*cancel_ui_timeout_callback=*/base::DoNothing(),
+      /*bluetooth_adapter_power_on_callback=*/base::DoNothing(),
+      /*bluetooth_query_status_callback=*/base::DoNothing());
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnCancelRequest();
+
+  ExpectUniqueOutcome(Outcome::kCancelledAfterBleAdvertReceived, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       CancelledAfterPhoneConnected) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  base::MockCallback<base::OnceClosure> cancel_callback;
+  EXPECT_CALL(cancel_callback, Run());
+  delegate->RegisterActionCallbacks(
+      cancel_callback.Get(),
+      /*immediate_not_found_callback=*/base::DoNothing(),
+      /*start_over_callback=*/base::DoNothing(),
+      /*account_preselected_callback=*/base::DoNothing(),
+      /*password_selected_callback=*/base::DoNothing(),
+      /*request_callback=*/base::DoNothing(),
+      /*cancel_ui_timeout_callback=*/base::DoNothing(),
+      /*bluetooth_adapter_power_on_callback=*/base::DoNothing(),
+      /*bluetooth_query_status_callback=*/base::DoNothing());
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kPhoneConnected);
+  delegate->OnCancelRequest();
+
+  ExpectUniqueOutcome(Outcome::kCancelledAfterPhoneConnected, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       CancelledWhileWaitingForPhone) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  base::MockCallback<base::OnceClosure> cancel_callback;
+  EXPECT_CALL(cancel_callback, Run());
+  delegate->RegisterActionCallbacks(
+      cancel_callback.Get(),
+      /*immediate_not_found_callback=*/base::DoNothing(),
+      /*start_over_callback=*/base::DoNothing(),
+      /*account_preselected_callback=*/base::DoNothing(),
+      /*password_selected_callback=*/base::DoNothing(),
+      /*request_callback=*/base::DoNothing(),
+      /*cancel_ui_timeout_callback=*/base::DoNothing(),
+      /*bluetooth_adapter_power_on_callback=*/base::DoNothing(),
+      /*bluetooth_query_status_callback=*/base::DoNothing());
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kPhoneConnected);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kReady);
+  delegate->OnCancelRequest();
+
+  ExpectUniqueOutcome(Outcome::kCancelledWhileWaitingForPhone, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       FailedAfterBleAdvertReceived) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate.reset();
+
+  ExpectUniqueOutcome(Outcome::kFailedAfterBleAdvertReceived, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       FailedAfterPhoneConnected) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kPhoneConnected);
+  delegate.reset();
+
+  ExpectUniqueOutcome(Outcome::kFailedAfterPhoneConnected, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       FailedWhileWaitingForPhone) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kPhoneConnected);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kReady);
+  delegate.reset();
+
+  ExpectUniqueOutcome(Outcome::kFailedWhileWaitingForPhone, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       CancelledOrNoPasskeysOnPhone_UserConsentDenied) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kReady);
+  delegate->OnTransactionFailed(
+      device::AuthenticatorType::kPhone,
+      ChromeAuthenticatorRequestDelegate::InterestingFailureReason::
+          kUserConsentDenied);
+
+  ExpectUniqueOutcome(Outcome::kCancelledOrNoPasskeysOnPhone, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       CancelledOrNoPasskeysOnPhone_NoPasskeys) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kReady);
+  delegate->OnTransactionFailed(device::AuthenticatorType::kPhone,
+                                ChromeAuthenticatorRequestDelegate::
+                                    InterestingFailureReason::kNoPasskeys);
+
+  ExpectUniqueOutcome(Outcome::kCancelledOrNoPasskeysOnPhone, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       CancelledOrNoPasskeysOnPhone_KeyNotRegistered) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kReady);
+  delegate->OnTransactionFailed(
+      device::AuthenticatorType::kPhone,
+      ChromeAuthenticatorRequestDelegate::InterestingFailureReason::
+          kKeyNotRegistered);
+
+  ExpectUniqueOutcome(Outcome::kCancelledOrNoPasskeysOnPhone, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       PhoneConsentDeniedRecordsCancelledOnPhoneRegardlessOfStage) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  // E.g. a second phone's BLE advert moved the stage back after the first
+  // phone became ready.
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnTransactionFailed(
+      device::AuthenticatorType::kPhone,
+      ChromeAuthenticatorRequestDelegate::InterestingFailureReason::
+          kUserConsentDenied);
+
+  ExpectUniqueOutcome(Outcome::kCancelledOrNoPasskeysOnPhone, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       HybridTransportError) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnTransactionFailed(
+      device::AuthenticatorType::kPhone,
+      ChromeAuthenticatorRequestDelegate::InterestingFailureReason::
+          kHybridTransportError);
+
+  ExpectUniqueOutcome(Outcome::kHybridTransportError, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       NonPhoneSuccessAfterScanRecordsOtherAuthenticatorUsed) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  // The user scans the QR code, then signs in with a different authenticator
+  // (e.g. Google Password Manager).
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kPhoneConnected);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kReady);
+  delegate->OnTransactionSuccessful(
+      content::AuthenticatorRequestClientDelegate::RequestSource::
+          kWebAuthentication,
+      device::FidoRequestType::kGetAssertion,
+      device::AuthenticatorType::kEnclave);
+
+  ExpectUniqueOutcome(Outcome::kOtherAuthenticatorUsed, 1);
+
+  // Teardown doesn't record another sample.
+  delegate.reset();
+  ExpectTotalOutcomeCount(1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       FailedTimeout) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnTransactionFailed(
+      /*authenticator_type=*/std::nullopt,
+      ChromeAuthenticatorRequestDelegate::InterestingFailureReason::kTimeout);
+
+  ExpectUniqueOutcome(Outcome::kFailedTimeout, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       TimeoutWithoutScanDoesNotRecordOutcome) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  delegate->OnTransactionFailed(
+      /*authenticator_type=*/std::nullopt,
+      ChromeAuthenticatorRequestDelegate::InterestingFailureReason::kTimeout);
+
+  ExpectTotalOutcomeCount(0);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       RestartRequestRecordsPriorOutcome) {
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  base::MockCallback<base::RepeatingClosure> start_over_callback;
+  delegate->RegisterActionCallbacks(
+      /*cancel_callback=*/base::DoNothing(),
+      /*immediate_not_found_callback=*/base::DoNothing(),
+      start_over_callback.Get(),
+      /*account_preselected_callback=*/base::DoNothing(),
+      /*password_selected_callback=*/base::DoNothing(),
+      /*request_callback=*/base::DoNothing(),
+      /*cancel_ui_timeout_callback=*/base::DoNothing(),
+      /*bluetooth_adapter_power_on_callback=*/base::DoNothing(),
+      /*bluetooth_query_status_callback=*/base::DoNothing());
+
+  // First attempt: phone received BLE advert.
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+
+  // Request restarts within the same delegate.
+  EXPECT_CALL(start_over_callback, Run());
+  delegate->OnStartOver();
+
+  // The first attempt should be recorded as cancelled after BLE advert
+  // received.
+  ExpectOutcomeBucketCount(Outcome::kCancelledAfterBleAdvertReceived, 1);
+
+  // Discoveries are re-configured for the second attempt.
   delegate->ConfigureDiscoveries(url::Origin::Create(GURL(kOrigin)), kOrigin,
                                  content::AuthenticatorRequestClientDelegate::
                                      RequestSource::kWebAuthentication,
@@ -931,24 +1498,346 @@ TEST_F(ChromeAuthenticatorRequestDelegateTest, SigninQRCodeModelPopulation) {
                                  /*is_enclave_authenticator_available=*/false,
                                  &discovery_factory);
 
-  // 4. Verify that the model has been successfully created and populated!
-  SigninQRCodeModel* model = SigninQRCodeModel::FromWebContents(web_contents());
-  ASSERT_TRUE(model);
-  EXPECT_TRUE(model->qr_code_string().has_value());
+  // Second attempt: proceeds to success.
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kPhoneConnected);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kReady);
+  delegate->OnTransactionSuccessful(
+      content::AuthenticatorRequestClientDelegate::RequestSource::
+          kWebAuthentication,
+      device::FidoRequestType::kGetAssertion,
+      device::AuthenticatorType::kPhone);
 
-  // Verify that the QR code string in the model matches the one in the dialog
-  // model.
-  std::optional<std::string> qr_string =
-      delegate->dialog_model()->cable_qr_string;
-  ASSERT_TRUE(qr_string.has_value());
-  EXPECT_EQ(model->qr_code_string(), *qr_string);
-
-  // 5. Destroy the delegate and verify that the model's QR code is successfully
-  // reset/cleared!
-  delegate.reset();
-  EXPECT_FALSE(model->qr_code_string().has_value());
+  ExpectOutcomeBucketCount(Outcome::kSuccess, 1);
+  ExpectTotalOutcomeCount(2);
 }
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
+       NotChromeSigninRequestRecordsOnlyGeneralOutcome) {
+  std::unique_ptr<content::WebContents> non_signin_web_contents =
+      CreateTestWebContents();
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = std::make_unique<ChromeAuthenticatorRequestDelegate>(
+      non_signin_web_contents->GetPrimaryMainFrame());
+  delegate->SetRelyingPartyId("example.com");
+  delegate->ConfigureDiscoveries(
+      url::Origin::Create(GURL("https://example.com")), "https://example.com",
+      content::AuthenticatorRequestClientDelegate::RequestSource::
+          kWebAuthentication,
+      device::FidoRequestType::kGetAssertion,
+      device::ResidentKeyRequirement::kRequired,
+      device::UserVerificationRequirement::kRequired,
+      /*cmtg_key_requested=*/false,
+      /*user_name=*/std::nullopt,
+      /*is_enclave_authenticator_available=*/false, &discovery_factory);
+
+  // Requests from a tab that is not the Chrome sign-in page record
+  // WebAuthentication.Hybrid.Outcome but not Signin.HybridPasskey.Outcome,
+  // regardless of the context the fixture was set up with.
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate.reset();
+
+  histogram_tester_.ExpectUniqueSample(
+      kGeneralOutcome, Outcome::kFailedAfterBleAdvertReceived, 1);
+  histogram_tester_.ExpectTotalCount(kSigninOutcome, 0);
+}
+
+// The surface on which the hybrid QR code is shown.
+enum class HybridQrSurface {
+  // Inline in the Autofill dropdown on the Chrome sign-in page. Recorded as
+  // `Signin.HybridPasskey.InlineQrEngagement`.
+  kInlineAutofill,
+  // In the WebAuthn modal dialog. Recorded as
+  // `WebAuthentication.Hybrid.QrEngagement`.
+  kModal,
+};
+
+class ChromeAuthenticatorRequestDelegateHybridPasskeyEngagementTest
+    : public ChromeAuthenticatorRequestDelegateHybridPasskeyTestBase,
+      public testing::WithParamInterface<HybridQrSurface> {
+ public:
+  void SetUp() override {
+    ChromeAuthenticatorRequestDelegateHybridPasskeyTestBase::SetUp();
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+    if (GetParam() == HybridQrSurface::kInlineAutofill) {
+      SetUpChromeSigninPage();
+    }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+  }
+
+ protected:
+  using Engagement =
+      ChromeAuthenticatorRequestDelegate::HybridPasskeyEngagement;
+
+  // The histogram recorded for the surface under test.
+  const char* engagement_histogram() const {
+    return GetParam() == HybridQrSurface::kInlineAutofill
+               ? "Signin.HybridPasskey.InlineQrEngagement"
+               : "WebAuthentication.Hybrid.QrEngagement";
+  }
+
+  // The only signal that arms the engagement metric for the surface under
+  // test.
+  void ShowQrCode(ChromeAuthenticatorRequestDelegate* delegate) {
+    switch (GetParam()) {
+      case HybridQrSurface::kInlineAutofill:
+        delegate->OnHybridPasskeyQrCodeShownInAutofill();
+        break;
+      case HybridQrSurface::kModal:
+        delegate->dialog_model()->SetStep(
+            AuthenticatorRequestDialogModel::Step::kCableV2QRCode);
+        break;
+    }
+  }
+
+  void ScanQrCode(ChromeAuthenticatorRequestDelegate* delegate) {
+    delegate->OnCableEventForTesting(
+        device::cablev2::Event::kBLEAdvertReceived);
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    ChromeAuthenticatorRequestDelegateHybridPasskeyEngagementTest,
+    testing::Values(
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+        HybridQrSurface::kInlineAutofill,
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+        HybridQrSurface::kModal),
+    [](const testing::TestParamInfo<HybridQrSurface>& info) {
+      return info.param == HybridQrSurface::kModal ? "Modal" : "InlineAutofill";
+    });
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyEngagementTest,
+       ScanWithoutQrEmitsNoSample) {
+  MockCableDiscoveryFactory discovery_factory;
+  std::unique_ptr<ChromeAuthenticatorRequestDelegate> delegate =
+      CreateDelegate(&discovery_factory);
+
+  // A scan can occur in an attempt that never showed the QR code on the
+  // surface under test, e.g. one where the QR code was only shown on the
+  // other surface.
+  ScanQrCode(delegate.get());
+  delegate.reset();
+
+  histogram_tester_.ExpectTotalCount(engagement_histogram(), 0);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyEngagementTest,
+       RepeatedQrSignalsEmitOneSample) {
+  MockCableDiscoveryFactory discovery_factory;
+  std::unique_ptr<ChromeAuthenticatorRequestDelegate> delegate =
+      CreateDelegate(&discovery_factory);
+
+  // The QR code may be re-shown several times within a single attempt.
+  ShowQrCode(delegate.get());
+  ShowQrCode(delegate.get());
+  ShowQrCode(delegate.get());
+
+  delegate.reset();
+
+  histogram_tester_.ExpectUniqueSample(engagement_histogram(),
+                                       Engagement::kNoScanDetected, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyEngagementTest,
+       ScanDetectedBucket) {
+  MockCableDiscoveryFactory discovery_factory;
+  std::unique_ptr<ChromeAuthenticatorRequestDelegate> delegate =
+      CreateDelegate(&discovery_factory);
+
+  ShowQrCode(delegate.get());
+  ScanQrCode(delegate.get());
+  delegate->OnCableEventForTesting(device::cablev2::Event::kPhoneConnected);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kReady);
+  delegate->OnTransactionSuccessful(
+      content::AuthenticatorRequestClientDelegate::RequestSource::
+          kWebAuthentication,
+      device::FidoRequestType::kGetAssertion,
+      device::AuthenticatorType::kPhone);
+  delegate.reset();
+
+  histogram_tester_.ExpectUniqueSample(engagement_histogram(),
+                                       Engagement::kScanDetected, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyEngagementTest,
+       NoScanDetectedBucket) {
+  MockCableDiscoveryFactory discovery_factory;
+  std::unique_ptr<ChromeAuthenticatorRequestDelegate> delegate =
+      CreateDelegate(&discovery_factory);
+
+  // No cable event ever arrives, whether because the user ignored the QR code
+  // or because they scanned it and the advert never reached us.
+  ShowQrCode(delegate.get());
+  delegate.reset();
+
+  histogram_tester_.ExpectUniqueSample(engagement_histogram(),
+                                       Engagement::kNoScanDetected, 1);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyEngagementTest,
+       StartOverEmitsOneSamplePerAttempt) {
+  MockCableDiscoveryFactory discovery_factory;
+  std::unique_ptr<ChromeAuthenticatorRequestDelegate> delegate =
+      CreateDelegate(&discovery_factory);
+
+  base::MockCallback<base::RepeatingClosure> start_over_callback;
+  delegate->RegisterActionCallbacks(
+      /*cancel_callback=*/base::DoNothing(),
+      /*immediate_not_found_callback=*/base::DoNothing(),
+      start_over_callback.Get(),
+      /*account_preselected_callback=*/base::DoNothing(),
+      /*password_selected_callback=*/base::DoNothing(),
+      /*request_callback=*/base::DoNothing(),
+      /*cancel_ui_timeout_callback=*/base::DoNothing(),
+      /*bluetooth_adapter_power_on_callback=*/base::DoNothing(),
+      /*request_ble_permission_callback=*/base::DoNothing());
+
+  // First attempt: the QR code is shown and never scanned.
+  ShowQrCode(delegate.get());
+
+  EXPECT_CALL(start_over_callback, Run());
+  delegate->OnStartOver();
+
+  histogram_tester_.ExpectUniqueSample(engagement_histogram(),
+                                       Engagement::kNoScanDetected, 1);
+
+  // Second attempt: the QR code is shown again and scanned.
+  ShowQrCode(delegate.get());
+  ScanQrCode(delegate.get());
+  delegate.reset();
+
+  histogram_tester_.ExpectBucketCount(engagement_histogram(),
+                                      Engagement::kScanDetected, 1);
+  histogram_tester_.ExpectTotalCount(engagement_histogram(), 2);
+}
+
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyEngagementTest,
+       NotChromeSigninRequestRecordsOnlyModalEngagement) {
+  std::unique_ptr<content::WebContents> non_signin_web_contents =
+      CreateTestWebContents();
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = std::make_unique<ChromeAuthenticatorRequestDelegate>(
+      non_signin_web_contents->GetPrimaryMainFrame());
+  delegate->SetRelyingPartyId("example.com");
+  delegate->ConfigureDiscoveries(
+      url::Origin::Create(GURL("https://example.com")), "https://example.com",
+      content::AuthenticatorRequestClientDelegate::RequestSource::
+          kWebAuthentication,
+      device::FidoRequestType::kGetAssertion,
+      device::ResidentKeyRequirement::kRequired,
+      device::UserVerificationRequirement::kRequired,
+      /*cmtg_key_requested=*/false,
+      /*user_name=*/std::nullopt,
+      /*is_enclave_authenticator_available=*/false, &discovery_factory);
+
+  ShowQrCode(delegate.get());
+  delegate.reset();
+
+  // The inline QR code is only recorded on the Chrome sign-in page, but the
+  // modal QR code is recorded for every website.
+  if (GetParam() == HybridQrSurface::kModal) {
+    histogram_tester_.ExpectUniqueSample(engagement_histogram(),
+                                         Engagement::kNoScanDetected, 1);
+  } else {
+    histogram_tester_.ExpectTotalCount(engagement_histogram(), 0);
+  }
+}
+
+// Tests that a HaT survey is triggered when WebAuthn credentials are used for
+// sign-in.
+TEST_F(ChromeAuthenticatorRequestDelegateTest,
+       TriggerPersonalizationAndTrustSurvey_WebAuthnCredentialUsed) {
+  autofill::ChromeAutofillClient::CreateForWebContents(web_contents());
+  MockPasswordManagerClient* client =
+      MockPasswordManagerClient::Create(web_contents());
+
+  EXPECT_CALL(*client, TriggerPersonalizationAndTrustSurvey(
+                           "WebAuthn credential was used"));
+
+  ChromeAuthenticatorRequestDelegate delegate(main_rfh());
+  delegate.OnTransactionSuccessful(content::AuthenticatorRequestClientDelegate::
+                                       RequestSource::kWebAuthentication,
+                                   device::FidoRequestType::kGetAssertion,
+                                   device::AuthenticatorType::kEnclave);
+}
+
+// Tests that a HaT survey is triggered when WebAuthn credentials are created.
+TEST_F(ChromeAuthenticatorRequestDelegateTest,
+       TriggerPersonalizationAndTrustSurvey_WebAuthnCredentialCreated) {
+  autofill::ChromeAutofillClient::CreateForWebContents(web_contents());
+  MockPasswordManagerClient* client =
+      MockPasswordManagerClient::Create(web_contents());
+
+  EXPECT_CALL(*client, TriggerPersonalizationAndTrustSurvey(
+                           "WebAuthn credential was created"));
+
+  ChromeAuthenticatorRequestDelegate delegate(main_rfh());
+  delegate.OnTransactionSuccessful(content::AuthenticatorRequestClientDelegate::
+                                       RequestSource::kWebAuthentication,
+                                   device::FidoRequestType::kMakeCredential,
+                                   device::AuthenticatorType::kOther);
+}
+
+// Tests that no HaT survey is triggered when no major Chrome UI interaction is
+// required by the user in the WebAuthn flow.
+TEST_F(
+    ChromeAuthenticatorRequestDelegateTest,
+    TriggerPersonalizationAndTrustSurvey_ExcludedWithoutChromeUiInteraction) {
+  autofill::ChromeAutofillClient::CreateForWebContents(web_contents());
+  MockPasswordManagerClient* client =
+      MockPasswordManagerClient::Create(web_contents());
+
+  EXPECT_CALL(*client, TriggerPersonalizationAndTrustSurvey).Times(0);
+
+  ChromeAuthenticatorRequestDelegate delegate(main_rfh());
+  delegate.OnTransactionSuccessful(content::AuthenticatorRequestClientDelegate::
+                                       RequestSource::kWebAuthentication,
+                                   device::FidoRequestType::kGetAssertion,
+                                   device::AuthenticatorType::kWinNative);
+  delegate.OnTransactionSuccessful(content::AuthenticatorRequestClientDelegate::
+                                       RequestSource::kWebAuthentication,
+                                   device::FidoRequestType::kGetAssertion,
+                                   device::AuthenticatorType::kICloudKeychain);
+}
+
+// Tests that a HaT survey is triggered when a WebAuthn sign-in or creation
+// offer is dismissed by the user.
+TEST_F(ChromeAuthenticatorRequestDelegateTest,
+       TriggerPersonalizationAndTrustSurvey_WebAuthnDismissed) {
+  autofill::ChromeAutofillClient::CreateForWebContents(web_contents());
+  MockPasswordManagerClient* client =
+      MockPasswordManagerClient::Create(web_contents());
+
+  EXPECT_CALL(*client, TriggerPersonalizationAndTrustSurvey(
+                           "WebAuthn credential sign-in offer dismissed"));
+  EXPECT_CALL(*client, TriggerPersonalizationAndTrustSurvey(
+                           "WebAuthn credential creation offer dismissed"));
+
+  auto cancel_request_at_step =
+      [&](AuthenticatorRequestDialogModel::Step step,
+          device::FidoRequestType request_type =
+              device::FidoRequestType::kGetAssertion,
+          std::vector<device::DiscoverableCredentialMetadata> creds = {}) {
+        ChromeAuthenticatorRequestDelegate delegate(main_rfh());
+        delegate.RegisterActionCallbacks(
+            base::DoNothing(), base::DoNothing(), base::DoNothing(),
+            base::DoNothing(), base::DoNothing(), base::DoNothing(),
+            base::DoNothing(), base::DoNothing(), base::DoNothing());
+        delegate.dialog_model()->request_type = request_type;
+        delegate.dialog_model()->SetStep(step);
+        delegate.dialog_model()->creds = std::move(creds);
+        delegate.OnCancelRequest();
+      };
+
+  cancel_request_at_step(AuthenticatorRequestDialogModel::Step::kSelectAccount,
+                         device::FidoRequestType::kGetAssertion,
+                         {device::DiscoverableCredentialMetadata()});
+  cancel_request_at_step(
+      AuthenticatorRequestDialogModel::Step::kGPMCreatePasskey,
+      device::FidoRequestType::kMakeCredential);
+}
 
 }  // namespace
 
@@ -1007,7 +1896,8 @@ TEST_F(ChromeAuthenticatorRequestDelegatePrivateTest,
       ChromeAuthenticatorRequestDelegate::RequestSource::
           kSecurePaymentConfirmation,
       /*is_active_profile_authenticator_user=*/false,
-      /*has_icloud_drive_enabled=*/true, /*request_is_for_google_com=*/true,
+      /*is_icloud_keychain_configured=*/true,
+      /*request_is_for_google_com=*/true,
       /*preference=*/true));
 
   // For the valid request type, the preference should be controlling if set.
@@ -1017,7 +1907,7 @@ TEST_F(ChromeAuthenticatorRequestDelegatePrivateTest,
                   ChromeAuthenticatorRequestDelegate::RequestSource::
                       kWebAuthentication,
                   /*is_active_profile_authenticator_user=*/false,
-                  /*has_icloud_drive_enabled=*/true,
+                  /*is_icloud_keychain_configured=*/true,
                   /*request_is_for_google_com=*/true,
                   /*preference=*/preference));
 

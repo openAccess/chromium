@@ -5,6 +5,7 @@
 #include "chrome/browser/thumbnail/generator/android/thumbnail_generator.h"
 
 #include <memory>
+#include <string>
 
 #include "base/android/jni_string.h"
 #include "base/functional/bind.h"
@@ -14,15 +15,16 @@
 #include "chrome/browser/thumbnail/generator/android/thumbnail_media_parser.h"
 #include "chrome/browser/thumbnail/generator/thumbnail_util.h"
 #include "content/public/browser/browser_thread.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/gfx/android/java_bitmap.h"
 
-// Must come after all headers that specialize FromJniType() / ToJniType().
+// Must come after headers that provide symbols used by @JniType.
 #include "chrome/browser/thumbnail/generator/jni_headers/ThumbnailGenerator_jni.h"
 
 class SkBitmap;
 
-using base::android::JavaRef;
-using base::android::ScopedJavaGlobalRef;
+using jni_zero::JavaRef;
+using jni_zero::ScopedJavaGlobalRef;
 
 namespace {
 
@@ -33,10 +35,8 @@ void ForwardJavaCallback(const ScopedJavaGlobalRef<jobject>& java_delegate,
                          SkBitmap thumbnail) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   JNIEnv* env = base::android::AttachCurrentThread();
-  Java_ThumbnailGenerator_onThumbnailRetrieved(
-      env, java_delegate, content_id, icon_size,
-      thumbnail.drawsNothing() ? nullptr : gfx::ConvertToJavaBitmap(thumbnail),
-      callback);
+  Java_ThumbnailGenerator_onThumbnailRetrieved(env, java_delegate, content_id,
+                                               icon_size, thumbnail, callback);
 }
 
 void OnThumbnailScaled(base::OnceCallback<void(SkBitmap)> java_callback,
@@ -52,11 +52,8 @@ ThumbnailGenerator::ThumbnailGenerator(const JavaRef<jobject>& jobj)
   DCHECK(!jobj.is_null());
 }
 
-ThumbnailGenerator::~ThumbnailGenerator() = default;
-
-void ThumbnailGenerator::Destroy(JNIEnv* env) {
+ThumbnailGenerator::~ThumbnailGenerator() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  delete this;
 }
 
 void ThumbnailGenerator::OnImageThumbnailRetrieved(
@@ -91,21 +88,14 @@ void ThumbnailGenerator::OnVideoThumbnailRetrieved(
                                                              std::move(parser));
 }
 
-void ThumbnailGenerator::RetrieveThumbnail(JNIEnv* env,
-                                           const JavaRef<jstring>& jcontent_id,
-                                           const JavaRef<jstring>& jfile_path,
-                                           const JavaRef<jstring>& jmime_type,
+void ThumbnailGenerator::RetrieveThumbnail(const JavaRef<jstring>& jcontent_id,
+                                           const std::string& file_path_str,
+                                           const std::string& mime_type,
                                            int32_t icon_size,
                                            const JavaRef<jobject>& callback) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  base::FilePath file_path = base::FilePath::FromUTF8Unsafe(
-      base::android::ConvertJavaStringToUTF8(env, jfile_path));
-
-  std::string mime_type =
-      jmime_type.is_null()
-          ? ""
-          : base::android::ConvertJavaStringToUTF8(env, jmime_type);
+  base::FilePath file_path = base::FilePath::FromUTF8Unsafe(file_path_str);
 
   // Bind everything passed back to Java.
   auto java_callback =
@@ -138,9 +128,9 @@ void ThumbnailGenerator::RetrieveThumbnail(JNIEnv* env,
 }
 
 // static
-static int64_t JNI_ThumbnailGenerator_Init(JNIEnv* env,
-                                           const JavaRef<jobject>& jobj) {
-  return reinterpret_cast<intptr_t>(new ThumbnailGenerator(jobj));
+static jni_zero::JniUniquePtr<ThumbnailGenerator> JNI_ThumbnailGenerator_Init(
+    const JavaRef<jobject>& jobj) {
+  return jni_zero::MakeUnique<ThumbnailGenerator>(jobj);
 }
 
 DEFINE_JNI(ThumbnailGenerator)

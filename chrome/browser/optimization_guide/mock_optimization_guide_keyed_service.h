@@ -7,7 +7,9 @@
 
 #include "base/test/gmock_callback_support.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
+#include "components/optimization_guide/core/model_execution/model_broker_client.h"
+#include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom-forward.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -73,6 +75,10 @@ class MockOptimizationGuideKeyedService : public OptimizationGuideKeyedService {
        const optimization_guide::StreamingModelExecutionOptions&,
        optimization_guide::OptimizationGuideModelExecutionStreamingCallback),
       (override));
+  MOCK_METHOD(void,
+              PrewarmModelExecution,
+              (optimization_guide::ModelBasedCapabilityKey),
+              (override));
   MOCK_METHOD(void,
               AddOnDeviceModelAvailabilityChangeObserver,
               (optimization_guide::mojom::OnDeviceFeature feature,

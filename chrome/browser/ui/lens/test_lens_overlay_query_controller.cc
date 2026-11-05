@@ -4,8 +4,10 @@
 
 #include "test_lens_overlay_query_controller.h"
 
+#include "base/base64.h"
 #include "base/base64url.h"
 #include "base/containers/span.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/protobuf_matchers.h"
 #include "components/lens/lens_features.h"
@@ -226,6 +228,15 @@ TestLensOverlayQueryController::CreateEndpointFetcher(
     num_cluster_info_fetch_requests_sent_++;
     fake_server_response_string =
         fake_cluster_info_response_.SerializeAsString();
+    if (next_cluster_info_request_should_return_error_) {
+      fake_server_response_code =
+          google_apis::ApiErrorCode::HTTP_INTERNAL_SERVER_ERROR;
+      next_cluster_info_request_should_return_error_ = false;
+    }
+    if (next_cluster_info_request_should_return_parse_error_) {
+      fake_server_response_string = "invalid proto response";
+      next_cluster_info_request_should_return_parse_error_ = false;
+    }
     if (!request_string.empty()) {
       lens::LensOverlayServerClusterInfoRequest cluster_info_request;
       cluster_info_request.ParseFromString(request_string);
@@ -347,6 +358,28 @@ TestLensOverlayQueryController::CreateEndpointFetcher(
   }
 
   sent_fetch_url_ = fetch_url;
+  sent_request_headers_ = request_headers;
+  sent_request_headers_history_.push_back(request_headers);
+  bool has_auth_header = false;
+  for (size_t i = 0; i + 1 < request_headers.size(); i += 2) {
+    if (base::EqualsCaseInsensitiveASCII(request_headers[i], "Authorization")) {
+      has_auth_header = true;
+      break;
+    }
+  }
+  if (reject_requests_with_auth_header_with_401_ && has_auth_header) {
+    fake_server_response_code = google_apis::ApiErrorCode::HTTP_UNAUTHORIZED;
+  }
+  if (lens::features::UseIdentityDelegationForLensComposeboxRequests()) {
+    sent_request_headers_.push_back("X-Goog-Encode-Response-If-Executable");
+    sent_request_headers_.push_back("base64");
+  }
+
+  if (lens::features::UseIdentityDelegationForLensComposeboxRequests() &&
+      !fake_server_response_string.empty()) {
+    fake_server_response_string =
+        base::Base64Encode(fake_server_response_string);
+  }
 
   // Create the fake endpoint fetcher to return the fake response.
   EndpointResponse fake_endpoint_response;
@@ -437,5 +470,16 @@ void TestLensOverlayQueryController::RunSuggestInputsCallback() {
          "you call RunSuggestInputsCallback() after updating the request id?";
 
   LensOverlayQueryController::RunSuggestInputsCallback();
+}
+
+std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
+TestLensOverlayQueryController::CreateOAuthHeadersAndContinue(
+    OAuthHeadersCreatedCallback callback) {
+  if (fake_identity_delegation_headers_.has_value()) {
+    std::move(callback).Run(*fake_identity_delegation_headers_);
+    return nullptr;
+  }
+  return LensOverlayQueryController::CreateOAuthHeadersAndContinue(
+      std::move(callback));
 }
 }  // namespace lens
